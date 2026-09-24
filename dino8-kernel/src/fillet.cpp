@@ -7,6 +7,7 @@
 #include <string>
 #include <utility>
 
+#include "dino8/kernel/detail/circle_clip3d.h"
 #include "dino8/kernel/detail/ellipse_clip3d.h"
 #include "dino8/kernel/detail/halfspace_clip3d.h"
 
@@ -2189,7 +2190,15 @@ void CollapseNotchRun(std::vector<Brep::PlanarFace>& other_faces, const Point3d&
       const bool at_p2 = PointsEqual(loop[k], p2, tol);
       if (!at_p1 && !at_p2) continue;
       const Point3d& target = at_p1 ? p2 : p1;
-      for (size_t len = 2; len < n; ++len) {
+      // len starts at 1 (not 2): a run can be a genuine dense notch
+      // polyline (RemoveBlend's own fillet-corner-notch case, len ~200)
+      // OR a plain 2-point edge with NOTHING between p1 and p2 at all
+      // (RemoveChamfer's own end-face splice - see ChamferEndAtVertex's
+      // own doc comment: a chamfer's end condition replaces a corner
+      // with exactly two adjacent points, no dense polyline). Both are
+      // "a run between two known points, collapse it to one vertex" in
+      // exactly the same sense; nothing below assumes len > 1.
+      for (size_t len = 1; len < n; ++len) {
         const size_t idx = (k + len) % n;
         if (!PointsEqual(loop[idx], target, tol)) continue;
         if (idx < k) {
@@ -2256,8 +2265,21 @@ namespace {
 // FilletConvexEdge's/FilletConvexEdgeTapered's own doc comments rely on
 // to weld a fillet patch to its two adjacent planar faces in the first
 // place. Returns -1 if none matches.
-int FindFaceWithEdge(const std::vector<Brep::PlanarFace>& faces, const Point3d& A, const Point3d& B, double tol) {
+// `exclude` (default -1, i.e. none) skips one face index entirely - needed
+// by RemoveChamfer, where the chamfer quad being removed is ITSELF one of
+// `faces` and its own loop trivially contains {A, B} as one of its own four
+// consecutive-point edges whenever A/B are two of the quad's own corners
+// (the "third face" rail search there is deliberately re-using the quad's
+// own corner points). Without this, a scan order where the quad's own
+// index precedes the genuine third face's index returns a spurious
+// self-match instead of the real neighbor - confirmed directly: a second,
+// independently-chamfered corner on the same solid shifted the quad to an
+// earlier array index than its own top-face neighbor, and the unguarded
+// search silently "found" the rail edge on the quad itself.
+int FindFaceWithEdge(const std::vector<Brep::PlanarFace>& faces, const Point3d& A, const Point3d& B, double tol,
+                      int exclude = -1) {
   for (size_t f = 0; f < faces.size(); ++f) {
+    if (static_cast<int>(f) == exclude) continue;
     const std::vector<Point3d>& loop = faces[f].loop;
     const size_t n = loop.size();
     for (size_t k = 0; k < n; ++k) {
@@ -2537,5 +2559,208 @@ Brep RemoveBlend(const Brep& solid, Point3d point_on_fillet) {
   }
   return RemoveConicalBlend(mf, best_cone, faces, tol);
 }
+
+
+namespace {
+
+// A candidate rail pair for RemoveChamfer: the quad's own edge indices
+// (k, k1) and (k2, k3) - two OPPOSITE edges of the 4-point loop.
+struct ChamferRailCandidate {
+  size_t k = 0, k1 = 0, k2 = 0, k3 = 0;
+};
+
+// Attempts to reconstruct the sharp edge from ONE candidate rail pair
+// (see RemoveChamfer's own doc comment, step 3). Returns true and fills
+// edge_p0/edge_p1/idx_a/idx_b on success; false (no throw) if this
+// specific candidate simply doesn't check out - RemoveChamfer itself
+// decides what "zero or two candidates succeeded" means.
+bool TryReconstructChamferRails(const std::vector<Brep::PlanarFace>& faces, const std::vector<Point3d>& quad,
+                                const ChamferRailCandidate& cand, double tol, int exclude_face, Point3d& edge_p0_out,
+                                Point3d& edge_p1_out, int& idx_a_out, int& idx_b_out) {
+  const Point3d& A0 = quad[cand.k];
+  const Point3d& A1 = quad[cand.k1];
+  const Point3d& B1 = quad[cand.k2];
+  const Point3d& B0 = quad[cand.k3];
+  const int idx_a = FindFaceWithEdge(faces, A0, A1, tol, exclude_face);
+  const int idx_b = FindFaceWithEdge(faces, B0, B1, tol, exclude_face);
+  if (idx_a < 0 || idx_b < 0) return false;  // a real chamfer's own rails are never free boundaries
+
+  const ON_Plane& plane_a = faces[static_cast<size_t>(idx_a)].plane;
+  const ON_Plane& plane_b = faces[static_cast<size_t>(idx_b)].plane;
+  const Vector3d& n_a = plane_a.zaxis;
+  const Vector3d& n_b = plane_b.zaxis;
+  Vector3d e = ON_CrossProduct(n_a, n_b);
+  // Vector3d::Unitize() alone is not a reliable degeneracy test here: for
+  // two EXACTLY parallel unit normals (the common "wrong pairing treats a
+  // solid's own two parallel side faces as if they were rails" case -
+  // e.g. a box's own +x/-x faces), the cross product is mathematically
+  // exactly zero but can carry a tiny nonzero floating-point residual
+  // (observed directly: ~1e-17, not exactly 0.0) that Unitize() happily
+  // normalizes into an ARBITRARY unit direction instead of failing -
+  // caught by comparing e's own raw length against an explicit
+  // tolerance BEFORE unitizing, not by trusting Unitize()'s own success
+  // flag.
+  if (e.Length() < 1e-9) return false;  // candidate faces are parallel - the wrong pairing, or a degenerate one
+  e.Unitize();
+
+  const double d_a = n_a * (plane_a.origin - Point3d(0, 0, 0));
+  const double d_b = n_b * (plane_b.origin - Point3d(0, 0, 0));
+  const Vector3d cross_term = ON_CrossProduct(d_a * n_b - d_b * n_a, e);
+  const double e_len2 = e * e;  // == 1.0 (e already unitized), kept explicit to match the doc comment's formula
+  const Point3d P0 = Point3d(0, 0, 0) + (1.0 / e_len2) * cross_term;
+
+  auto project = [&](const Point3d& p) { return P0 + ((p - P0) * e) * e; };
+  const Point3d edge_p0 = project(A0);
+  const Point3d edge_p1 = project(A1);
+  // Genuinely discriminating cross-check: the OTHER pair's own corners
+  // (from face b's own rail) must independently project to the SAME two
+  // points - not merely restating the pairing's own construction, since
+  // B0/B1 were never used to build P0/e above.
+  if (project(B0).DistanceTo(edge_p0) > std::max(tol * 100.0, 1e-6) ||
+      project(B1).DistanceTo(edge_p1) > std::max(tol * 100.0, 1e-6)) {
+    return false;
+  }
+  edge_p0_out = edge_p0;
+  edge_p1_out = edge_p1;
+  idx_a_out = idx_a;
+  idx_b_out = idx_b;
+  return true;
+}
+
+// Genuine euclidean distance from a 3D point to a planar polygon (its
+// own boundary AND interior, not just the infinite plane it lies in) -
+// needed here because plane-distance alone is not a reliable "nearest
+// face" proxy once a solid has several planar faces whose OWN infinite
+// planes all happen to pass close to a given point while only one of
+// them actually has that point over its own real, trimmed extent
+// (confirmed directly: on a solid with two chamfers, plane-distance
+// alone picked an unrelated face whose plane merely passed nearby,
+// silently reconstructing garbage rather than throwing - caught by a
+// two-chamfer regression, not assumed). Projects `p` onto the face's own
+// plane using its (xaxis, yaxis) basis, and either returns the plain
+// perpendicular distance (the projection lies inside the polygon, via
+// the same PointInPolygon2d this codebase's own clipping code already
+// trusts) or the true 3D distance to the polygon's nearest boundary
+// point (projection outside) - a real Pythagorean combination of the
+// perpendicular and in-plane distances, not an approximation of either.
+double DistanceToPlanarFace(const Brep::PlanarFace& f, const Point3d& p) {
+  const ON_Plane& pl = f.plane;
+  const double perp = pl.DistanceTo(p);
+  std::vector<Point2d> poly2d;
+  poly2d.reserve(f.loop.size());
+  for (const Point3d& v : f.loop) {
+    const Vector3d d = v - pl.origin;
+    poly2d.emplace_back(d * pl.xaxis, d * pl.yaxis);
+  }
+  const Vector3d dp = p - pl.origin;
+  const Point2d p2d(dp * pl.xaxis, dp * pl.yaxis);
+  if (dino8::kernel::detail::circle_clip_detail::PointInPolygon2d(p2d.x, p2d.y, poly2d)) {
+    return std::fabs(perp);
+  }
+  double best_edge_d2 = std::numeric_limits<double>::infinity();
+  const size_t n = poly2d.size();
+  for (size_t k = 0; k < n; ++k) {
+    const Point2d& a = poly2d[k];
+    const Point2d& b = poly2d[(k + 1) % n];
+    const double ex = b.x - a.x, ey = b.y - a.y;
+    const double len2 = ex * ex + ey * ey;
+    double t = len2 > 0.0 ? ((p2d.x - a.x) * ex + (p2d.y - a.y) * ey) / len2 : 0.0;
+    t = std::max(0.0, std::min(1.0, t));
+    const double cx = a.x + t * ex, cy = a.y + t * ey;
+    const double dx = p2d.x - cx, dy = p2d.y - cy;
+    best_edge_d2 = std::min(best_edge_d2, dx * dx + dy * dy);
+  }
+  return std::sqrt(perp * perp + best_edge_d2);
+}
+
+}  // namespace
+
+Brep RemoveChamfer(const Brep& solid, Point3d point_on_chamfer) {
+  const std::vector<Brep::PlanarFace> faces = solid.PlanarFaces();
+  const double tol = RelativeTol(faces);
+
+  // Nearest planar face by genuine point-to-polygon distance (see
+  // DistanceToPlanarFace's own doc comment for why plane distance alone
+  // is not enough).
+  int best = -1;
+  double best_d = std::numeric_limits<double>::infinity();
+  for (size_t f = 0; f < faces.size(); ++f) {
+    const double d = DistanceToPlanarFace(faces[f], point_on_chamfer);
+    if (d < best_d) {
+      best_d = d;
+      best = static_cast<int>(f);
+    }
+  }
+  if (best < 0 || best_d > std::max(tol * 100.0, 1e-4)) {
+    throw std::invalid_argument("dino8::kernel::RemoveChamfer: `point_on_chamfer` is not near any planar face of `solid`");
+  }
+  const std::vector<Point3d>& quad = faces[static_cast<size_t>(best)].loop;
+  if (quad.size() != 4) {
+    throw std::invalid_argument(
+        "dino8::kernel::RemoveChamfer: the nearest face to `point_on_chamfer` is not a quad - a chamfer built by "
+        "ChamferConvexEdge/ChamferConvexEdgeAngle is always exactly 4 points");
+  }
+
+  const ChamferRailCandidate cand_a{0, 1, 2, 3};
+  const ChamferRailCandidate cand_b{1, 2, 3, 0};
+  Point3d edge_p0, edge_p1;
+  int idx_i = -1, idx_j = -1;
+  const bool ok_a = TryReconstructChamferRails(faces, quad, cand_a, tol, best, edge_p0, edge_p1, idx_i, idx_j);
+  Point3d edge_p0_b, edge_p1_b;
+  int idx_i_b = -1, idx_j_b = -1;
+  const bool ok_b = TryReconstructChamferRails(faces, quad, cand_b, tol, best, edge_p0_b, edge_p1_b, idx_i_b, idx_j_b);
+  if (ok_a == ok_b) {
+    throw std::invalid_argument(
+        "dino8::kernel::RemoveChamfer: the nearest quad face does not reconstruct as a chamfer (neither, or both, "
+        "of its two opposite-edge pairings check out) - is this really a ChamferConvexEdge-built face?");
+  }
+  if (ok_b) {
+    edge_p0 = edge_p0_b;
+    edge_p1 = edge_p1_b;
+    idx_i = idx_i_b;
+    idx_j = idx_j_b;
+  }
+  if (idx_i == idx_j) {
+    throw std::invalid_argument("dino8::kernel::RemoveChamfer: both rails resolve to the same face - degenerate geometry");
+  }
+
+  // Rail corners, in the SAME face-i-first order TryReconstructChamferRails
+  // used to build edge_p0/edge_p1 (A0->edge_p0, A1->edge_p1 on face i's
+  // own rail).
+  const ChamferRailCandidate& winner = ok_a ? cand_a : cand_b;
+  const Point3d R_i0 = quad[winner.k], R_i1 = quad[winner.k1];
+  const Point3d R_j1 = quad[winner.k2], R_j0 = quad[winner.k3];
+
+  std::vector<Brep::PlanarFace> mixed_planar = faces;
+  ReplaceLoopEdge(mixed_planar[static_cast<size_t>(idx_i)].loop, R_i0, R_i1, edge_p0, edge_p1, tol);
+  ReplaceLoopEdge(mixed_planar[static_cast<size_t>(idx_j)].loop, R_j0, R_j1, edge_p0, edge_p1, tol);
+
+  std::vector<Brep::PlanarFace> others;
+  std::vector<size_t> others_idx;
+  for (size_t f = 0; f < mixed_planar.size(); ++f) {
+    if (static_cast<int>(f) == idx_i || static_cast<int>(f) == idx_j || static_cast<int>(f) == best) continue;
+    others.push_back(mixed_planar[f]);
+    others_idx.push_back(f);
+  }
+  // End conditions: the two OTHER edges of the chamfer quad (R_j0-R_i0
+  // near edge_p0, R_i1-R_j1 near edge_p1) - if a third face was
+  // chamfered against there, its own loop has that exact 2-point edge
+  // (ChamferEndAtVertex's own splice, no dense polyline); collapse it
+  // back to the single restored vertex. A free end (no matching edge on
+  // any other face) is a silent no-op, exactly like NotchCornerAtVertex's
+  // own contract.
+  CollapseNotchRun(others, R_j0, R_i0, edge_p0, tol);
+  CollapseNotchRun(others, R_i1, R_j1, edge_p1, tol);
+  for (size_t o = 0; o < others.size(); ++o) mixed_planar[others_idx[o]] = std::move(others[o]);
+
+  std::vector<Brep::PlanarFace> result_faces;
+  result_faces.reserve(mixed_planar.size() - 1);
+  for (size_t f = 0; f < mixed_planar.size(); ++f) {
+    if (static_cast<int>(f) == best) continue;
+    result_faces.push_back(std::move(mixed_planar[f]));
+  }
+  return Brep::FromMixedFaces(result_faces, {});
+}
+
 
 }  // namespace dino8::kernel
