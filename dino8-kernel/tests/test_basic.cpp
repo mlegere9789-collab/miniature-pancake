@@ -27145,6 +27145,142 @@ void TestRemoveChamferRejectsUnsupportedConfigurations() {
         "rejects a point far from every planar face of a chamfered solid too");
 }
 
+// ---- FilletConcaveEdge ----
+
+namespace {
+
+// An L-shaped prism (footprint (0,0)-(2,0)-(2,1)-(1,1)-(1,2)-(0,2), z in
+// [0, 1]) with exactly ONE concave (reflex) vertical edge, at
+// (1,1,0)-(1,1,1), interior dihedral angle 3*pi/2 (a 90-degree notch).
+// Built directly via Brep::FromPlanarFaces with the L-hexagon as a SINGLE
+// polygon for both caps - deliberately NOT via BooleanCombinePlanar
+// (unioning two boxes gives the same footprint but splits each cap into
+// 3 separate coplanar rectangles instead of one hexagon, so 3+ faces
+// meet at the concave vertex there, a genuinely different, non-manifold-
+// notch topology FilletConcaveEdge correctly refuses - confirmed
+// directly, not assumed, while developing this fixture).
+dino8::kernel::Brep ConcaveLShapedPrism() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  const std::vector<Point3d> footprint = {Point3d(0, 0, 0), Point3d(2, 0, 0), Point3d(2, 1, 0),
+                                          Point3d(1, 1, 0), Point3d(1, 2, 0), Point3d(0, 2, 0)};
+  auto make_face = [](const std::vector<Point3d>& loop, Vector3d normal) {
+    Brep::PlanarFace f;
+    f.loop = loop;
+    f.plane = ON_Plane(loop[0], normal);
+    return f;
+  };
+
+  // `footprint`, as listed, has positive shoelace area (CCW as seen from
+  // +z looking down) - correct winding for the TOP cap (outward +z);
+  // REVERSED for the BOTTOM cap (outward -z, whose own "outside" is
+  // below).
+  std::vector<Point3d> top_loop = footprint;
+  for (Point3d& p : top_loop) p = Point3d(p.x, p.y, 1.0);
+  std::vector<Point3d> bottom_loop = footprint;
+  std::reverse(bottom_loop.begin(), bottom_loop.end());
+
+  std::vector<Brep::PlanarFace> faces;
+  faces.push_back(make_face(bottom_loop, Vector3d(0, 0, -1)));
+  faces.push_back(make_face(top_loop, Vector3d(0, 0, 1)));
+
+  const size_t n = footprint.size();
+  for (size_t k = 0; k < n; ++k) {
+    const Point3d& a = footprint[k];
+    const Point3d& b = footprint[(k + 1) % n];
+    const std::vector<Point3d> wall = {a, b, Point3d(b.x, b.y, 1), Point3d(a.x, a.y, 1)};
+    Vector3d edge_dir = b - a;
+    edge_dir.Unitize();
+    Vector3d normal = ON_CrossProduct(edge_dir, Vector3d(0, 0, 1));
+    normal.Unitize();
+    faces.push_back(make_face(wall, normal));
+  }
+  return Brep::FromPlanarFaces(faces);
+}
+
+}  // namespace
+
+void TestFilletConcaveEdgeAddsExactQuarterRoundVolume() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConcaveEdge;
+  using dino8::kernel::Point3d;
+
+  const Brep prism = ConcaveLShapedPrism();
+  const double footprint_volume = prism.TessellateToClosedMesh(4, 4).Volume();
+  Check(std::fabs(footprint_volume - 3.0) < 1e-6, "sanity: the L-shaped prism's own footprint area is exactly 3");
+
+  const Point3d edge_p0(1, 1, 0), edge_p1(1, 1, 1);
+  const double radius = 0.3;
+  const Brep filleted = FilletConcaveEdge(prism, edge_p0, edge_p1, radius);
+
+  Check(filleted.FaceCount() == 9, "9 faces: the 6 original minus the 2 re-trimmed plus those 2 back, plus the "
+                                    "new cylindrical patch (8 - 2 + 2 + 1)");
+  ON_TextLog log;
+  bool oriented = false, has_boundary = true;
+  Check(filleted.raw().IsValid(&log) && filleted.raw().IsManifold(&oriented, &has_boundary) && oriented &&
+            !has_boundary && filleted.raw().IsSolid(),
+        "the filleted solid is itself a valid, closed, manifold solid");
+
+  // Closed form: a rolling ball of radius r filling a 90-degree concave
+  // notch of length L ADDS exactly L * r^2 * (1 - pi/4) of volume - the
+  // "square minus quarter-disk" cross-section (see this function's own
+  // doc comment for the full derivation).
+  const double L = 1.0;
+  const double expected = footprint_volume + L * radius * radius * (1.0 - ON_PI / 4.0);
+  Check(std::fabs(filleted.TessellateToClosedMeshAdaptive(1e-6).Volume() - expected) < 1e-6,
+        "the fillet ADDS exactly r^2*(1 - pi/4) per unit length - the concave mirror of a convex corner's own "
+        "REMOVED area");
+
+  const Brep::MixedFacesResult mf = filleted.MixedFaces();
+  Check(mf.cylindrical.size() == 1, "exactly one new cylindrical patch");
+  Check(mf.cylindrical[0].outward == false,
+        "the patch is marked outward=false - it bounds material from the CONCAVE side, so its presented normal "
+        "points radially INWARD toward the ball center, not the 'natural' outward-from-axis direction");
+
+  // The two concave-adjacent faces are cut back to x=1.3/y=1.3 exactly
+  // (trim_back == radius for this 90-degree case); the sharp reflex
+  // corner point itself is gone from the result.
+  Check(ChamferTestBrepHasVertexNear(filleted, Point3d(1.3, 1, 0), 1e-9) &&
+            ChamferTestBrepHasVertexNear(filleted, Point3d(1, 1.3, 0), 1e-9),
+        "both adjacent faces are cut back to their own new tangent points");
+  Check(!ChamferTestBrepHasVertexNear(filleted, edge_p0, 1e-9) && !ChamferTestBrepHasVertexNear(filleted, edge_p1, 1e-9),
+        "the original sharp concave corner vertices are gone");
+}
+
+void TestFilletConcaveEdgeRejectsUnsupportedConfigurations() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConcaveEdge;
+  using dino8::kernel::Point3d;
+  auto throws = [](const std::function<void()>& fn) {
+    try {
+      fn();
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+    return false;
+  };
+
+  Check(throws([&] { FilletConcaveEdge(ConcaveLShapedPrism(), Point3d(1, 1, 0), Point3d(1, 1, 1), -0.1); }),
+        "rejects a non-positive radius");
+
+  // A plain box's every edge is CONVEX - FilletConcaveEdge must refuse it
+  // with a clear message, not silently (mis)build something, and not
+  // merely happen to be caught later by an unrelated extent check.
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+  Check(throws([&] { FilletConcaveEdge(box, Point3d(0, 0, 1), Point3d(1, 0, 1), 0.1); }),
+        "rejects a genuinely convex edge");
+
+  Check(throws([&] { FilletConcaveEdge(box, Point3d(5, 5, 5), Point3d(5, 5, 6), 0.1); }),
+        "rejects an edge that isn't a shared boundary edge of the solid at all");
+
+  // Radius too large to fit within either adjacent face's own extent from
+  // the edge.
+  Check(throws([&] { FilletConcaveEdge(ConcaveLShapedPrism(), Point3d(1, 1, 0), Point3d(1, 1, 1), 2.0); }),
+        "rejects a radius too large to fit");
+}
+
 // ---- NurbsSurface::UnrollDevelopable ----
 
 namespace {
@@ -28968,6 +29104,8 @@ int main() {
   TestRemoveChamferLeavesTheOtherChamferIntactAmongTwo();
   TestRemoveChamferRoundTripsADistanceAngleChamfer();
   TestRemoveChamferRejectsUnsupportedConfigurations();
+  TestFilletConcaveEdgeAddsExactQuarterRoundVolume();
+  TestFilletConcaveEdgeRejectsUnsupportedConfigurations();
   TestBrepFromPlanarFacesBuildsValidOpenNurbsTopology();
   TestBrepAdjacencyQueries();
   TestBooleanCombinePlanarResultHasValidClosedTopology();

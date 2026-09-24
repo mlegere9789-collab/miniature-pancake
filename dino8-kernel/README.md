@@ -4257,6 +4257,94 @@ honestly out of scope.
   chamfer in the first place, never cross-checked against a coexisting
   fillet; noted plainly rather than staged to look covered.
 
+- **`FilletConcaveEdge(solid, edge_p0, edge_p1, radius)`** - the rolling
+  ball's OTHER case: fillets a CONCAVE (reflex, interior dihedral > pi)
+  straight edge, ADDING a smooth quarter-round instead of cutting a
+  convex one away. Every existing fillet/chamfer function in this file is
+  convex-only, and this is the geometric MIRROR of `FilletConvexEdge`, not
+  an independent construction: the ball sits OUTSIDE the material, in the
+  empty wedge the concave edge notches out of it, tangent to both
+  adjacent faces from that side. Concretely (n_i/n_j the two faces' own
+  outward normals, bis/cosb/offset built exactly as `FilletConvexEdge`
+  builds them): `axis_point(p) = p + bis*offset` (the sign FLIPS from
+  `FilletConvexEdge`'s own `p - bis*offset` - the ball center moves INTO
+  the empty wedge, not into the material), `contact_i/j(p) = axis_point(p)
+  - n_i/j*radius` (flipped from `+`), and `outward = false` on the new
+  `Brep::CylindricalFace` (an existing field, previously only exercised by
+  a drilled-hole-style use case) tells `FromMixedFaces()` this patch's
+  presented normal points radially INWARD, the genuine boundary-
+  representation normal for material that is now OUTSIDE the swept
+  circle. `theta = pi - psi` (psi = angle between the normals) is UNCHANGED
+  in form from the convex case and still the right wedge angle for
+  `trim_back = radius/tan(theta/2)` - a real algebraic identity (the
+  convex case's interior material angle is `pi - psi`; the concave case's
+  is `pi + psi`, so the EMPTY wedge being filled is `2*pi - (pi + psi) =
+  pi - psi`, the exact same expression), not a coincidence of the one test
+  angle it was checked against. The perpendicular-third-face end condition
+  reuses `FilletConvexEdge`'s own `NotchCornerAtVertex` completely
+  unchanged - it was already a generic "splice this vertex into an arc
+  around axis_pt" operation with no convex-specific assumption baked in.
+  A genuinely NEW check, `EdgeConvexity`, discriminates convex from
+  concave: `arccos(n_i . n_j)` alone cannot (it is IDENTICAL for a convex
+  edge and its "mirror" concave edge, the same two face planes with
+  material on the opposite side) - confirmed directly, not assumed:
+  feeding `FilletConvexEdge` a genuine concave fixture left its own
+  `theta in (0, pi)` check passing unchanged, and only the unrelated,
+  confusingly-worded "radius too large to fit" extent check downstream
+  happened to reject it, for every radius tried - an accidental side
+  effect of its convex-only sign-fix math picking the wrong in-face
+  direction for a concave input, not a safeguard worth relying on for a
+  new function's own primary validation. `EdgeConvexity` instead samples
+  the OTHER vertices of face i's own loop against face j's plane (the
+  sign of that distance is the one fact that actually distinguishes
+  "material on the intersection side" from "material on the union side"
+  of the two half-spaces - information the two planes' normals alone
+  cannot carry).
+  A SECOND, independent bug was found and fixed while building the
+  correct frame: which face should serve as the cylinder's own angle-0
+  reference (`frame.xaxis`) is not a free choice - it must be whichever
+  face makes a RIGHT-HANDED frame (`xaxis`, `yaxis = e x xaxis`, `zaxis =
+  e`) also land on the OTHER face's own tangent point at `angle =
+  sweep_angle`, and unlike `FilletConvexEdge` (where "face i", the one
+  whose loop walks `edge_p0->edge_p1`, always works, confirmed
+  algebraically: `n_i x (cos(psi)*n_i + sin(psi)*(e x n_i)) = sin(psi)*e`
+  via the vector triple product, for ANY `n_i`, `e` with `n_i . e == 0`),
+  a concave edge does not - the SAME walked-direction convention that
+  gives `sign((n_i x n_j) . e) == +1` for a standard convex box corner
+  gave `-1` for this function's own concave test fixture, so using "face
+  i" unconditionally reached the WRONG tangent point at `angle =
+  sweep_angle`, silently building a non-solid result (`IsSolid() ==
+  false`) rather than throwing - caught by this function's own volume
+  regression against the closed form below, not assumed safe from the
+  algebra alone. Fixed by relabeling which face is "i" whenever that sign
+  comes out negative, before any of the rest of the construction runs.
+  Verified (`TestFilletConcaveEdgeAddsExactQuarterRoundVolume`,
+  `TestFilletConcaveEdgeRejectsUnsupportedConfigurations`) against an
+  L-shaped prism (a single hexagonal `Brep::FromPlanarFaces` cap, not a
+  `BooleanCombinePlanar` union of two boxes - the union splits each cap
+  into 3 separate coplanar rectangles instead of one hexagon, so 3+ faces
+  meet at the concave vertex there, a genuinely different, non-manifold-
+  notch topology `FilletConcaveEdge` correctly refuses rather than
+  mis-building; found directly while developing this fixture, not
+  assumed): the fillet round-trips to a valid, closed, manifold solid,
+  and its volume matches the closed form for a 90-degree concave notch
+  (`V = V(K) + L * radius^2 * (1 - pi/4)`, the "square minus quarter-disk"
+  cross-section a rolling ball traces filling a 90-degree notch - the same
+  magnitude `FilletConvexEdges`' own Steiner-formula cross term uses for a
+  90-degree CONVEX corner's own REMOVED area, here ADDED instead of
+  removed) to 5e-8. Full `dino8_kernel_smoke`: 3226 checks, 0 failures;
+  `dino8_general_boolean_sweep` unaffected (no dependency on
+  `boolean.cpp`/`mesh.cpp`/`boolean_general.cpp`). Honestly still open,
+  stated plainly rather than silently narrowed: an OBLIQUE third face at
+  either endpoint is left untouched (the ellipse-cap machinery
+  `FilletConvexEdge`'s own oblique-end generalization uses is convex-
+  specific in its own derivation and has not been re-derived for the
+  concave sign convention); multi-edge propagation and vertex blends at
+  concave (or mixed convex/concave) corners are out of scope for this
+  first increment, matching how `FilletConvexEdge` itself started before
+  `FilletConvexEdges` generalized it - the natural next gap in this
+  subsystem.
+
 ## What's still not done (as of chunk 2)
 
 - `Brep::Box()`, `Brep::Sphere()`, `Brep::TrimmedPlanarFace()`

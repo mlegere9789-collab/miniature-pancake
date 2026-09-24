@@ -159,6 +159,99 @@ struct FilletRadiusStation {
 // convex/non-convex scoping.
 Brep FilletConvexEdge(const Brep& solid, Point3d edge_p0, Point3d edge_p1, double radius);
 
+// CONCAVE (reflex) edge fillet - the rolling ball's OTHER case: ADDS a
+// smooth quarter-round to a concave (interior dihedral angle > pi)
+// straight edge between two planar faces, instead of cutting a convex one
+// away (Parasolid/Rhino would call this the same "fillet edge" operation
+// FilletConvexEdge performs, just applied to a reflex rather than a
+// convex edge - the two share no dihedral-angle overlap, so they are
+// genuinely two functions, not one dispatching on sign).
+//
+// THE CONSTRUCTION is the exact geometric mirror of FilletConvexEdge's
+// own (see that function's own doc comment for the full derivation this
+// one flips): the ball sits OUTSIDE the material, in the empty wedge the
+// concave edge notches out of it, tangent to both adjacent faces from
+// that side. Concretely, with n_i/n_j the two faces' own outward normals,
+// bis = normalize(n_i + n_j), cosb = bis . n_i, offset = radius / cosb:
+//   axis_point(p) = p + bis*offset (FilletConvexEdge: p - bis*offset) -
+//     the ball center moves INTO the empty wedge, not into the material.
+//   contact_i(p)/contact_j(p) = axis_point(p) - n_i/n_j * radius
+//     (FilletConvexEdge: +) - the tangent point on each face's own plane,
+//     reached from the externally-located ball center back toward it.
+//   theta = pi - psi (psi = arccos(n_i . n_j)) is UNCHANGED in form from
+//     FilletConvexEdge, and still the correct wedge angle for trim_back =
+//     radius/tan(theta/2): for a convex edge theta IS the interior
+//     material angle; for a concave edge the interior material angle is
+//     pi + psi, so the EMPTY wedge being filled here is 2*pi - (pi + psi)
+//     = pi - psi - the same expression, a genuine algebraic identity, not
+//     a coincidence of any one test angle.
+//   the cylinder's own frame uses xaxis = -n_i (FilletConvexEdge: +n_i)
+//     so frame.origin + radius*xaxis lands exactly on contact_i; yaxis =
+//     e x xaxis, the same construction FilletConvexEdge's own frame uses.
+//     `outward = false` (see Brep::CylindricalFace's own doc comment) is
+//     then the one remaining bit telling FromMixedFaces() this patch
+//     bounds material from the concave side, so its presented normal
+//     points radially INWARD, toward the ball center - a genuine
+//     boundary-representation outward normal for material that is now
+//     OUTSIDE the swept circle rather than inside it.
+// The corner-notch end condition (a third face exactly PERPENDICULAR to
+// the edge at edge_p0/edge_p1) reuses FilletConvexEdge's own
+// NotchCornerAtVertex UNCHANGED: it is already a generic "splice this
+// vertex into an arc around axis_pt, from radius*xaxis to
+// radius*(cos(sweep_angle)*xaxis + sin(sweep_angle)*yaxis)" operation
+// with no convex-specific assumption baked in, so passing this function's
+// own (negated) frame.xaxis/frame.yaxis produces the correct OUTWARD-
+// bulging notch (ADDING, not cutting, that face's own corner)
+// automatically, from the same code the convex case uses to cut one.
+//
+// VALIDATION: `radius` > 0; the two-face shared-boundary-edge topology
+// FilletConvexEdge itself requires; and, genuinely new here, an explicit
+// check that the edge really IS concave, not convex. This check is
+// necessary, not decorative: arccos(n_i . n_j) alone (always in [0, pi])
+// is IDENTICAL for a convex edge and its "mirror" concave edge (the same
+// two face planes, material on the opposite side of the shared edge) -
+// confirmed directly, not assumed: feeding FilletConvexEdge a genuine
+// concave fixture left its own "theta in (0, pi)" check passing
+// unchanged, and it was only the unrelated, confusingly-worded "radius
+// too large to fit" extent check downstream that happened to reject it,
+// for every tested radius - an accidental side effect of its convex-only
+// sign-fix math picking the wrong in-face direction for a concave input,
+// not a principled safeguard this function relies on. The real check
+// instead samples the OTHER vertices of face i's own loop against face
+// j's plane (the sign of that distance is the one fact that actually
+// distinguishes "material on the intersection side" from "material on
+// the union side" of the two half-spaces, information the two planes'
+// normals alone cannot carry) and throws std::invalid_argument, with a
+// message pointing at FilletConvexEdge instead, if the edge turns out to
+// be convex (or degenerate/ambiguous cases are let through to the
+// existing downstream checks, which still catch a truly flat or near-
+// 180-degree edge).
+//
+// SCOPE: a straight edge between exactly two PLANAR faces (same
+// PlanarFaces() precondition as FilletConvexEdge), one constant radius,
+// with any third face at either endpoint either a free boundary or
+// exactly PERPENDICULAR to the edge (closed via the corner notch above).
+// UNLIKE FilletConvexEdge, an OBLIQUE third face at an endpoint is left
+// untouched here - the ellipse-cap machinery FilletConvexEdge's own
+// oblique-end generalization uses is convex-specific in its own
+// derivation and has not been re-derived for the concave sign convention;
+// a genuine, disclosed future increment, not silently approximated.
+// Multi-edge propagation and vertex blends at concave (or mixed convex/
+// concave) corners are likewise out of scope for this first increment,
+// matching how FilletConvexEdge itself started before FilletConvexEdges
+// generalized it.
+//
+// CLOSED FORM this was checked against (dino8-kernel's own regression
+// tests): for a concave edge of length L with interior dihedral angle
+// 3*pi/2 (a 90-degree notch, e.g. the reflex edge of an L-shaped solid
+// built by unioning two boxes), the fillet ADDS exactly L * radius^2 *
+// (1 - pi/4) of volume - the same magnitude FilletConvexEdges' own
+// Steiner-formula cross term uses for a 90-degree CONVEX corner's own
+// REMOVED area, here added instead of removed, by the same "square minus
+// quarter-disk" cross-section a rolling ball of that radius traces
+// filling a 90-degree notch.
+Brep FilletConcaveEdge(const Brep& solid, Point3d edge_p0, Point3d edge_p1, double radius);
+
 // LINEAR-TAPER generalization of FilletConvexEdge: rolls a ball of
 // radius r(t) = radius0 + m*t (t = arc length along the edge from
 // edge_p0, m = (radius1 - radius0) / |edge_p1 - edge_p0|) instead of a
