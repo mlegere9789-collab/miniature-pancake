@@ -60,6 +60,21 @@ MatchSrf
 210,5,5
 SelSrf
 List
+# --- MatchSrf: exact G1 (Tangency) match of a flat floor plane onto a
+# box's vertical front face - the kernel's real NurbsSurface::MatchEdge()
+# (real NURBS algebra, self-checked by evaluation), not the app's older
+# per-control-point loop, which only that older path still uses for a
+# curve target (exercised just above).
+SelAll
+Hide
+Box 340,0,0 350,10,0 10
+Plane 340,-10,0 350,0,0
+MatchSrf
+Continuity=Tangency
+345,-0.5,0
+345,0,1
+SelSrf
+List
 # --- SplitFace: split a plane's surface where a real 3D curve pierces it twice
 # (a straight line can only cross a flat plane once, so the cutter is a
 # V-shaped polyline that dips below z=0 and back above it, at x=255 y=1
@@ -244,4 +259,4 @@ Enter
 SelAll
 Volume
 SelNone
-@expect_objects 38
+@expect_objects 40

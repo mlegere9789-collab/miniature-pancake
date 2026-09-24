@@ -1300,25 +1300,158 @@ class Brep {
   // more than one lump (see boolean.h).
   std::vector<std::pair<int, int>> LumpFaceRanges() const;
 
+  // Splits this Brep into its disjoint pieces: the maximal groups of
+  // faces connected to each other by a shared EDGE (an actual shared
+  // edge record - m_ei on a trim on both faces' loops - not merely
+  // touching in space), each returned as its own independent Brep. The
+  // gap this closes: LumpFaceRanges() above can only replay Compound()'s
+  // OWN bookkeeping, so it says nothing about a Brep loaded from a file,
+  // built by any other factory, or raw()-edited into several actually-
+  // disconnected shells - nothing here could answer "how many separate
+  // bodies is this really, and what are they" for such a Brep before.
+  //
+  // Connectivity is computed by `ON_Brep::LabelConnectedComponents()` on
+  // a private copy of this Brep - a real graph search (verified by
+  // reading its source): it walks, from each face, every trim on every
+  // loop out to that trim's edge and every OTHER face incident to that
+  // same edge, so two faces sharing an edge land in the same component
+  // however many faces are strung between them; it does NOT check for
+  // vertex-only connections (documented on the OpenNURBS method itself),
+  // so two faces meeting only at a single shared vertex - with no shared
+  // edge - count as separate pieces. This is also, deliberately, why two
+  // Compound() lumps that only touch along a curve (the unwelded XOR
+  // case Compound()'s own doc comment describes) come back as separate
+  // pieces here: they were never given a shared edge record to begin
+  // with.
+  //
+  // Each piece is then built by `ON_Brep::DuplicateFaces()` (also
+  // verified by reading its source to be a real deep copy, not a stub) -
+  // it duplicates exactly the referenced surfaces, curves, vertices,
+  // edges, trims and loops for that piece's own faces, nothing shared
+  // with the other pieces or left dangling from the original. This
+  // class's own per-face side tables (the PlanarFace/CylindricalFace
+  // verbatim records FromMixedFaces() attaches, cylinder cap-notch rows,
+  // trim/hole polygons and arc runs) survive the split intact and
+  // correctly reordered: DuplicateFaces() itself records each duplicated
+  // face's ORIGINAL index in its own `m_face_user.i` (an OpenNURBS
+  // guarantee documented on the method), which is exactly the index this
+  // reads each side-table entry from - not a re-derivation or a
+  // best-effort guess. A side table not in lockstep with FaceCount() (a
+  // raw()-assigned Brep - see Compound()'s own such check) is treated as
+  // absent for every piece, the same safe "lose the fast path, never a
+  // wrong shape" fallback MixedFaces() itself already relies on.
+  //
+  // Pieces are returned in the order LabelConnectedComponents() finds
+  // them - the piece containing the lowest original face index first,
+  // and so on - deterministic, not an iteration-order accident. A Brep
+  // with a single connected component (the overwhelmingly common case)
+  // returns a single-element vector holding an exact copy of *this, side
+  // tables and all, untouched - nothing was actually split, so nothing
+  // needed to be recomputed or could be lost. A Brep with no faces
+  // returns an empty vector.
+  //
+  // An honest limitation found WHILE building this, not assumed: since
+  // connectivity is read from real loop/trim/edge records, this throws
+  // std::invalid_argument outright (naming the offending face) rather
+  // than ever running the search, whenever this Brep has more than one
+  // face and ANY of them has none of that topology - which is exactly
+  // every face `Box()`, `Sphere()`, `FromSurface()` and
+  // `TrimmedPlanarFace()` build (see this class's own class-level doc
+  // comment on the "minimal NewFace(surface_index)-only path" those four
+  // factories use). Silently proceeding on such a Brep would not
+  // degrade gracefully - `LabelConnectedComponents()` has nothing at all
+  // to walk from a loop-less face, so it reports EVERY one of them as
+  // its own separate one-face "piece", a confident and wrong answer for
+  // one of the most common Breps in this kernel (a plain `Box()`), not
+  // a merely incomplete one. Callers must first give the Brep real
+  // topology - `FromPlanarFaces()`/`FromMixedFaces()` (whose own results,
+  // and everything assembled from them - `BooleanCombinePlanar()`,
+  // `BooleanCombineMixed()`, `ShellConvexPlanar()`, `FilletConvexEdge()` -
+  // already have it, per this class's own class-level doc comment), or a
+  // Brep loaded from a genuine `.3dm` file. Throws std::runtime_error
+  // only if `DuplicateFaces()` itself fails for a face list this
+  // method's own labeling just reported as valid, which should not
+  // happen.
+  std::vector<Brep> SplitDisjointPieces() const;
+
   // Bounding box over the Brep's actual curved geometry, not just its
   // control points - a real gap nothing here could answer without
   // tessellating first (Mesh::GetBoundingBox() only sees a tessellation's
-  // sampled vertices, an approximation of the true surface). Delegates to
-  // ON_Brep::GetTightBoundingBox, which despite its name is NOT a
-  // genuine tight/exact bound in the public OpenNURBS build for a face
-  // whose true extremum lies strictly inside its parameter domain (it
-  // only samples each face's boundary/Greville-abscissa isocurves and
-  // control points, never searches the true 2D interior - verified by
-  // testing: a doubly-curved bicubic bulge whose true peak is at its
-  // center comes back overshot, at exactly half the peak control point's
-  // height above its neighbors instead of the analytically exact value).
-  // Still always a valid, safe bound (it can overshoot, never exclude
-  // part of the surface) - exact for Box() (flat faces) and, more subtly,
-  // Sphere() (the extrema of a standard rational-NURBS sphere's meridian
-  // circles coincide exactly with points its isocurve sampling actually
+  // sampled vertices, an approximation of the true surface).
+  //
+  // A real, previously-undocumented gap found (not assumed) while
+  // building SplitDisjointPieces() above, and corrected here rather than
+  // left stale: `ON_Brep::GetTightBoundingBox()` (read in full) computes
+  // each face's box from its UNDERLYING SURFACE alone - vertices, a
+  // Greville-abscissa isocurve refinement, and each face's own bbox are
+  // all unioned in - and NEVER consults that face's own trim boundary at
+  // all, even when a real trim loop exists. For a face whose surface
+  // genuinely extends beyond its own trim (FromMixedFaces() pads a
+  // planar face's underlying surface 5% beyond its trim loop for an
+  // unrelated tessellation reason - see its own "small margin" comment;
+  // TrimmedPlanarFace() lets a caller trim an arbitrarily small polygon
+  // out of an arbitrarily large surface directly), the box this returned
+  // was the UNTRIMMED surface's own box, silently oversized - this
+  // repo's own former doc comment here claiming "exact for Box() (flat
+  // faces)" was true only because Box()'s own faces happen to be
+  // untrimmed (trim == the surface's own full domain), not because flat
+  // faces are handled correctly in general; a real trim on a flat face
+  // was never exact before this fix.
+  //
+  // Now exact for a face whose surface is a genuine, non-rational,
+  // bilinear (degree (1,1), 4 control points) surface with a ZERO
+  // "twist" term (`P00 - P10 - P01 + P11`, checked directly on the
+  // surface's own control points, not assumed from which factory built
+  // it) - i.e. a true AFFINE map, exactly what
+  // FromPlanarFaces()/FromMixedFaces()/TrimmedPlanarFace() build for
+  // every planar face. Zero twist is required, not just flatness: a
+  // merely planar-IMAGE bilinear patch (4 coplanar corners) can still
+  // curve a diagonal (u, v) line WITHIN that same plane if its twist is
+  // nonzero - confirmed with a concrete hand-built counterexample before
+  // this was trusted - which could make a naive corner-or-vertex-only
+  // box UNDERSHOOT the true one; true zero twist rules that out exactly,
+  // since every straight edge of the face's own stored trim polygon
+  // (`face_trim_loops_`, straight-in-UV by that table's own convention)
+  // then maps to a straight edge in 3D too, so the box of its own stored
+  // vertices (or, for an untrimmed such face, its own domain corners) IS
+  // the face's exact real boundary, not an approximation of a curved
+  // one. Only trusted when that side table is genuinely in lockstep with
+  // this Brep's own FaceCount() (the same self-check Compound() and
+  // SplitDisjointPieces() apply) - a raw()-assigned Brep whose tables
+  // don't cover its faces gets the fallback below instead, never a
+  // mismatched lookup.
+  //
+  // Every OTHER face (curved, rational, a twisted bilinear, or this
+  // Brep's side tables not in lockstep) is completely untouched: this
+  // reproduces EXACTLY what `ON_Brep::GetTightBoundingBox()` itself
+  // computes for that one face, by building a throwaway single-face
+  // `ON_Brep` from its own surface and running that SAME whole-Brep
+  // method on it - not the more obvious-looking, directly callable
+  // `ON_BrepFace::GetTightBoundingBox()`, a real pitfall found (via a
+  // direct probe, not assumed) and rejected: that inherited method is a
+  // DIFFERENT, cruder algorithm - it returned a bicubic test surface's
+  // raw control-point extent, completely missing the Greville-abscissa
+  // isocurve refinement the whole-Brep method implements as its own
+  // inline per-face logic - so calling it would have silently LOOSENED
+  // this method's own already-tested behavior for every curved face,
+  // exactly the opposite of "completely untouched." A safe bound that
+  // can overshoot but never excludes part of the surface, same as before
+  // this fix, including its own prior limitation: NOT a genuine
+  // tight/exact bound for a face whose true extremum lies strictly
+  // inside its parameter domain (it only samples boundary/Greville-
+  // abscissa isocurves and control points, never searches the true 2D
+  // interior - verified by testing: a doubly-curved bicubic bulge whose
+  // true peak is at its center comes back overshot, at exactly half the
+  // peak control point's height above its neighbors instead of the
+  // analytically exact value). Exact for Sphere(), more subtly: the
+  // extrema of a standard rational-NURBS sphere's meridian circles
+  // coincide exactly with points its isocurve sampling actually
   // evaluates, not because the underlying algorithm does a real 3D
-  // extremum search). Throws std::runtime_error if OpenNURBS' own call
-  // fails (e.g. a face with an invalid surface).
+  // extremum search.
+  //
+  // Throws std::runtime_error only if no face produced any usable box
+  // (including a genuinely empty Brep) AND OpenNURBS' own whole-Brep
+  // fallback also fails.
   BoundingBox GetTightBoundingBox() const;
 
   // Tessellates each face into a triangle mesh via NurbsSurface's grid

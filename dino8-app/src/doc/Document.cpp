@@ -41,6 +41,20 @@ void Document::Clear() {
   squish_features_.clear();
   subd_pack_features_.clear();
   symmetry_links_.clear();
+  // These id-keyed/name-keyed tables belong to the OLD document only: New
+  // used to leave them in place, so the new document's first objects -
+  // handed the same small ids Clear() just reset the counter to - could
+  // silently inherit an unrelated old HistoryRecord/ProvenanceInfo (see
+  // UpdateHistory/SelExtrusion), the old block table kept offering stale
+  // block definitions to Insert/BlockManager, and old cage bindings kept
+  // pointing at ids a brand new document could reissue.
+  blocks_.clear();
+  history_records_.clear();
+  provenance_.clear();
+  cage_bindings_.clear();
+  prev_selection_.clear();
+  named_selections_.clear();
+  named_positions_.clear();
   user_text_.clear();
   notes_.clear();
   settings_ = DocumentSettings{};
@@ -291,12 +305,51 @@ bool Document::RemoveLayer(int index) {
   for (const Layer& l : layers_) {
     if (l.parent == index) return false;
   }
+  // "In use" also covers every OTHER holder of a layer index, not just live
+  // document objects: a block definition's own member objects (what Insert
+  // copies each instance from) and a cage binding's captive originals (what
+  // ExtractOriginalCaptives/CageEdit's re-evaluation read back) are real
+  // geometry that would otherwise be silently left pointing at a shifted-
+  // or out-of-range layer index once the erase below renumbers everything
+  // after it.
+  for (const BlockDefinition& b : blocks_) {
+    for (const SceneObject& o : b.objects) {
+      if (o.layer_index == index) return false;
+    }
+  }
+  for (const auto& kv : cage_bindings_) {
+    for (const Captive& c : kv.second.captives) {
+      if (c.original.layer_index == index) return false;
+    }
+  }
   layers_.erase(layers_.begin() + index);
   for (SceneObject& o : objects_) {
     if (o.layer_index > index) --o.layer_index;
   }
   for (Layer& l : layers_) {
     if (l.parent > index) --l.parent;
+  }
+  for (BlockDefinition& b : blocks_) {
+    for (SceneObject& o : b.objects) {
+      if (o.layer_index > index) --o.layer_index;
+    }
+  }
+  for (auto& kv : cage_bindings_) {
+    for (Captive& c : kv.second.captives) {
+      if (c.original.layer_index > index) --c.original.layer_index;
+    }
+  }
+  // A layout detail's per-detail hidden-layer list is just a note, not
+  // geometry - it isn't part of the "in use" check above - so a purged
+  // layer's own entry is dropped outright rather than left dangling, and
+  // every later index shifts down like everywhere else above.
+  for (Layout& lay : layouts_) {
+    for (LayoutDetail& d : lay.details) {
+      d.hidden_layers.erase(std::remove(d.hidden_layers.begin(), d.hidden_layers.end(), index), d.hidden_layers.end());
+      for (int& li : d.hidden_layers) {
+        if (li > index) --li;
+      }
+    }
   }
   if (current_layer_ > index) --current_layer_;
   Touch();
@@ -507,7 +560,10 @@ void Document::Restore(const Snapshot& s) {
   lights_ = s.lights;
   clipping_planes_ = s.clipping_planes;
   layouts_ = s.layouts;
-  next_id_ = s.next_id;
+  // Monotonic for the same reason as ApplyDelta(): a named-snapshot restore
+  // must never let a later Add() reuse an id that a side-table record made
+  // since the snapshot still refers to.
+  next_id_ = std::max(next_id_, s.next_id);
   next_group_id_ = s.next_group_id;
   next_light_id_ = s.next_light_id;
   for (SceneObject& o : objects_) o.InvalidateDisplay();
@@ -888,7 +944,20 @@ void Document::ApplyDelta(const StateDelta& d, bool undo) {
   lights_ = undo ? d.lights_before : d.lights_after;
   clipping_planes_ = undo ? d.clipping_planes_before : d.clipping_planes_after;
   layouts_ = undo ? d.layouts_before : d.layouts_after;
-  next_id_ = undo ? d.next_id_before : d.next_id_after;
+  // Object ids are never handed out twice, even across Undo: the counter only
+  // ever moves forward (like Rhino's own runtime serial numbers). Rolling it
+  // back to next_id_before here used to let the very next Add() reuse the id
+  // of the object this Undo just removed - and every id-keyed record that is
+  // deliberately NOT part of the undo history (the HistoryRecord/Provenance/
+  // HoleFeature/PipeFeature/SymmetryLink/cage-binding side tables, plus
+  // cross-references like a HistoryRecord's source ids, a ProvenanceInfo's
+  // parent_id or a detail's hidden_objects) would then silently attach to
+  // that unrelated new object: UpdateHistory rebuilt a freshly-drawn Box into
+  // the undone extrusion, SelExtrusion selected it, and so on. Keeping the
+  // counter monotonic makes a stale id resolve to nothing (Find() == null),
+  // which every one of those consumers already handles, while Redo still
+  // re-adds the recorded objects under their original, still-unique ids.
+  next_id_ = std::max(next_id_, undo ? d.next_id_before : d.next_id_after);
   next_group_id_ = undo ? d.next_group_id_before : d.next_group_id_after;
   next_light_id_ = undo ? d.next_light_id_before : d.next_light_id_after;
   Touch();

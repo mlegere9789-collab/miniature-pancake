@@ -422,6 +422,24 @@ class NurbsSurface {
   // seam-wide margin off - verified on a radius-3 sphere, an ~8.7-degree-
   // off-seam query used to return a point ~0.26 units from the true
   // answer, about 8.7% of the radius).
+  //
+  // `u_divisions`/`v_divisions` above this method's own default (20) only
+  // add per-level SAMPLING precision, not extra ability to correct a bad
+  // early guess: the window-narrowing step between levels is internally
+  // capped as if at most 24 divisions were requested (see surface.cpp),
+  // fixing a real, confirmed bug where a caller-requested finer grid
+  // (fewer levels needed to reach floating-point precision, but each
+  // level's window shrinks by ~2/divisions) could leave the search unable
+  // to travel far enough from an early level's best sample to reach a true
+  // nearby minimum - i.e. a FINER grid converging to a WORSE answer than a
+  // coarser one on the exact same surface and query, the opposite of the
+  // expected trend. That's on top of, not instead of, this method's own
+  // pre-existing "not a guaranteed global minimum" caveat above: a
+  // pathological multi-modal distance landscape can still make two
+  // different grid resolutions land in two different, genuinely separate
+  // local minima from the very first level, each one converged to
+  // correctly - that residual is inherent to any finite-sampling search
+  // and isn't fixable by adjusting the narrowing step.
   Point2d ClosestPointParameter(Point3d point, int u_divisions = 20, int v_divisions = 20) const;
 
   // The actual closest point: `PointAt(ClosestPointParameter(point,
