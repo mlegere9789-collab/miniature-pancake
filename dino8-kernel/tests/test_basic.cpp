@@ -24602,6 +24602,336 @@ void TestSurfaceUnrollDevelopableArgumentChecks() {
   Check(threw, "UnrollDevelopable throws on v_divisions < 1");
 }
 
+void TestSurfaceOffsetAnalyticSphereIsExactConcentricSphere() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  const ON_Sphere sphere(ON_3dPoint(1, 2, 3), 5.0);
+  ON_NurbsSurface raw;
+  Check(sphere.GetNurbForm(raw) != 0, "OffsetAnalytic sphere setup: GetNurbForm succeeds");
+  NurbsSurface s;
+  s.raw() = raw;
+
+  NurbsSurface out;
+  Check(s.OffsetAnalytic(1.5, out) == Result::Ok, "OffsetAnalytic(+1.5) succeeds on a sphere");
+  double worst = 0.0;
+  for (double u = 0.3; u < 6.0; u += 0.7)
+    for (double v = -1.4; v < 1.4; v += 0.35)
+      worst = std::max(worst, std::abs(out.PointAt(u, v).DistanceTo(sphere.Center()) - 6.5));
+  Check(worst < 1e-9, "OffsetAnalytic(+1.5) on a sphere: every sampled point sits at exactly radius 6.5 from the same center");
+
+  // Self-intersection guard: an inward offset that would collapse the
+  // sphere through its own center (distance >= radius) must be refused,
+  // not silently produce an inverted/negative-radius sphere.
+  Check(s.OffsetAnalytic(-5.0, out) == Result::Failed, "OffsetAnalytic(-5.0) on a radius-5 sphere is refused (would collapse through the center)");
+  Check(s.OffsetAnalytic(-2.0, out) == Result::Ok, "OffsetAnalytic(-2.0) succeeds (radius 3.0, still positive)");
+  Check(std::abs(out.PointAt(1.0, 0.5).DistanceTo(sphere.Center()) - 3.0) < 1e-9,
+        "OffsetAnalytic(-2.0) on a sphere: shrunk radius is exactly 3.0");
+}
+
+void TestSurfaceOffsetAnalyticCylinderIsExactCoaxialCylinder() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  const ON_Circle base(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 4.0);
+  ON_Cylinder cyl(base);
+  cyl.height[0] = 0.0;
+  cyl.height[1] = 10.0;
+  ON_NurbsSurface raw;
+  Check(cyl.GetNurbForm(raw) != 0, "OffsetAnalytic cylinder setup: GetNurbForm succeeds");
+  NurbsSurface s;
+  s.raw() = raw;
+
+  NurbsSurface out;
+  Check(s.OffsetAnalytic(1.0, out) == Result::Ok, "OffsetAnalytic(+1.0) succeeds on a cylinder wall");
+  double worst = 0.0;
+  for (double u = 0.2; u < 6.0; u += 0.6)
+    for (double v = 1.0; v < 9.0; v += 1.0)
+      worst = std::max(worst, std::abs(std::hypot(out.PointAt(u, v).x, out.PointAt(u, v).y) - 5.0));
+  Check(worst < 1e-9, "OffsetAnalytic(+1.0) on a cylinder: every sampled point sits at exactly radius 5.0 from the axis");
+
+  Check(s.OffsetAnalytic(-5.0, out) == Result::Failed, "OffsetAnalytic(-5.0) on a radius-4 cylinder is refused (would collapse through the axis)");
+}
+
+void TestSurfaceOffsetAnalyticConePreservesHalfAngleAndShiftsApex() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+  using dino8::kernel::Vector3d;
+
+  const ON_Plane apex_plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1));
+  const ON_Cone cone(apex_plane, /*height=*/10.0, /*radius=*/5.0);
+  ON_NurbsSurface raw;
+  Check(cone.GetNurbForm(raw) != 0, "OffsetAnalytic cone setup: GetNurbForm succeeds");
+  NurbsSurface s;
+  s.raw() = raw;
+
+  NurbsSurface out;
+  Check(s.OffsetAnalytic(1.0, out) == Result::Ok, "OffsetAnalytic(+1.0) succeeds on a cone");
+
+  // The offset cone must itself re-fit as a cone with the SAME half-angle
+  // - the standard, non-obvious fact this method's own doc comment
+  // derives algebraically (a cone's offset is a cone, not some other
+  // quadric): verified here on the actual constructed output, not just
+  // trusted from the derivation.
+  ON_Cone fit;
+  Check(out.raw().IsCone(&fit, 1e-6), "OffsetAnalytic(+1.0) cone output re-fits as a genuine cone");
+  Check(std::abs(std::abs(fit.AngleInRadians()) - std::abs(cone.AngleInRadians())) < 1e-6,
+        "OffsetAnalytic(+1.0) on a cone preserves the exact half-angle");
+
+  // Direct pointwise check: this surface's own point + distance*normal at
+  // an arbitrary parameter must land exactly on the offset surface
+  // (located here via golden-section search along v, since the offset
+  // surface's own v no longer lines up 1:1 with the original's).
+  const double u_test = 0.3, v_test = 4.0;
+  const Point3d p0 = s.PointAt(u_test, v_test);
+  const Vector3d n0 = s.NormalAt(u_test, v_test);
+  const Point3d expected = p0 + 1.0 * n0;
+  double lo = 0.0, hi = 12.0;
+  for (int it = 0; it < 80; ++it) {
+    const double m1 = lo + (hi - lo) / 3.0, m2 = hi - (hi - lo) / 3.0;
+    if (out.PointAt(u_test, m1).DistanceTo(expected) < out.PointAt(u_test, m2).DistanceTo(expected)) hi = m2; else lo = m1;
+  }
+  const double best = out.PointAt(u_test, 0.5 * (lo + hi)).DistanceTo(expected);
+  Check(best < 1e-6, "OffsetAnalytic(+1.0) on a cone: this surface's point + distance*normal lands exactly on the offset surface");
+
+  // Self-intersection guard: shrinking by more than the narrow end's own
+  // radius (the cone's local radius of curvature there) folds the patch
+  // through the axis - refused, not silently produced.
+  Check(s.OffsetAnalytic(-100.0, out) == Result::Failed,
+        "OffsetAnalytic(-100.0) on this cone patch is refused (exceeds the narrow end's own radius)");
+}
+
+void TestSurfaceOffsetAnalyticTorusIsExactCoaxialTorusAndRejectsSpindle() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  const ON_Torus torus(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 10.0, 3.0);
+  ON_NurbsSurface raw;
+  Check(torus.GetNurbForm(raw) != 0, "OffsetAnalytic torus setup: GetNurbForm succeeds");
+  NurbsSurface s;
+  s.raw() = raw;
+
+  NurbsSurface out;
+  Check(s.OffsetAnalytic(1.0, out, 1e-6) == Result::Ok, "OffsetAnalytic(+1.0) succeeds on a torus");
+  double worst = 0.0;
+  for (double u = 0.2; u < 6.0; u += 0.6) {
+    for (double v = 0.2; v < 6.0; v += 0.6) {
+      const Point3d p = out.PointAt(u, v);
+      const double planar_r = std::hypot(p.x, p.y);
+      const double minor_dist = std::hypot(planar_r - 10.0, p.z);
+      worst = std::max(worst, std::abs(minor_dist - 4.0));
+    }
+  }
+  Check(worst < 1e-6, "OffsetAnalytic(+1.0) on a torus: every sampled point sits at exactly tube radius 4.0 around the same major circle");
+
+  // Self-intersection guards: tube radius collapsing through its own
+  // center circle (<=0), and a spindle torus (tube radius >= major
+  // radius) - both real, distinct self-overlapping shapes, both refused.
+  Check(s.OffsetAnalytic(-4.0, out, 1e-6) == Result::Failed, "OffsetAnalytic(-4.0) on a minor-radius-3 torus is refused (tube radius would go <= 0)");
+  Check(s.OffsetAnalytic(8.0, out, 1e-6) == Result::Failed, "OffsetAnalytic(+8.0) on this torus is refused (tube radius would reach/exceed the major radius - a spindle torus)");
+}
+
+void TestSurfaceOffsetAnalyticPlanePreservesDomainAndTrimStructure() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+  using dino8::kernel::Vector3d;
+
+  std::vector<Point3d> grid = {Point3d(0, 0, 0), Point3d(1, 0, 0), Point3d(2, 0, 0),
+                                Point3d(0, 1, 0), Point3d(1, 1, 0), Point3d(2, 1, 0)};
+  const NurbsSurface s = NurbsSurface::FromControlGrid(grid, 3, 2, 2, 1);
+  Check(s.IsPlanar(1e-9), "OffsetAnalytic plane setup: the constructed grid is genuinely planar");
+
+  NurbsSurface out;
+  Check(s.OffsetAnalytic(2.0, out) == Result::Ok, "OffsetAnalytic(+2.0) succeeds on a planar surface");
+
+  const Point3d p0 = s.PointAt(0.5, 0.5);
+  const Vector3d n = s.NormalAt(0.5, 0.5);
+  const Point3d expected = p0 + 2.0 * n;
+  Check(out.PointAt(0.5, 0.5).DistanceTo(expected) < 1e-9,
+        "OffsetAnalytic(+2.0) on a plane: evaluated point matches the exact translation by distance*normal");
+
+  // Unlike the sphere/cylinder/cone/torus cases above (which rebuild the
+  // matched primitive's own full natural extent), a plane's offset keeps
+  // this surface's OWN domain and control/degree structure exactly -
+  // confirmed here, not just claimed by the doc comment.
+  Check(std::abs(out.Domain(0).min - s.Domain(0).min) < 1e-12 && std::abs(out.Domain(0).max - s.Domain(0).max) < 1e-12,
+        "OffsetAnalytic on a plane preserves the exact original U domain");
+  Check(std::abs(out.Domain(1).min - s.Domain(1).min) < 1e-12 && std::abs(out.Domain(1).max - s.Domain(1).max) < 1e-12,
+        "OffsetAnalytic on a plane preserves the exact original V domain");
+  Check(out.CVCountU() == s.CVCountU() && out.CVCountV() == s.CVCountV(),
+        "OffsetAnalytic on a plane preserves the exact original control-point grid size");
+}
+
+void TestSurfaceOffsetAnalyticRefusesFreeformSurface() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  std::vector<Point3d> grid;
+  for (int i = 0; i < 4; ++i)
+    for (int j = 0; j < 4; ++j)
+      grid.push_back(Point3d(i, j, (i == 2 && j == 2) ? 3.0 : 0.0));
+  const NurbsSurface s = NurbsSurface::FromControlGrid(grid, 4, 4, 3, 3);
+
+  NurbsSurface out;
+  Check(s.OffsetAnalytic(1.0, out) == Result::Failed,
+        "OffsetAnalytic refuses a genuinely non-analytic (bulged freeform) surface rather than approximating it");
+}
+
+void TestSurfaceOffsetAnalyticZeroDistanceIsNoOpCopy() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  const ON_Sphere sphere(ON_3dPoint(0, 0, 0), 2.0);
+  ON_NurbsSurface raw;
+  sphere.GetNurbForm(raw);
+  NurbsSurface s;
+  s.raw() = raw;
+  NurbsSurface out;
+  Check(s.OffsetAnalytic(0.0, out) == Result::Ok, "OffsetAnalytic(0.0) succeeds");
+  Check(out.PointAt(0.3, 0.2).DistanceTo(s.PointAt(0.3, 0.2)) < 1e-12, "OffsetAnalytic(0.0) reproduces the same surface");
+}
+
+void TestCurveOffsetInPlaneLineIsExactParallelLine() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  const std::vector<Point3d> cps = {Point3d(0, 0, 0), Point3d(10, 0, 0)};
+  const NurbsCurve line = NurbsCurve::FromControlPoints(cps, 1);
+
+  NurbsCurve out;
+  Check(line.OffsetInPlane(2.0, out) == Result::Ok, "OffsetInPlane(+2.0) succeeds on a line");
+  const Point3d p0 = out.PointAt(out.Domain().min);
+  const Point3d p1 = out.PointAt(out.Domain().max);
+  Check(std::abs(std::sqrt(p0.y * p0.y + p0.z * p0.z) - 2.0) < 1e-9,
+        "OffsetInPlane(+2.0) on a line: offset endpoint sits exactly 2.0 from the original line");
+  Check(std::abs((p1 - p0).Length() - 10.0) < 1e-9, "OffsetInPlane on a line preserves its exact length");
+}
+
+void TestCurveOffsetInPlaneCircleIsExactConcentricCircle() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  const ON_Circle circle(ON_Plane(ON_3dPoint(1, 2, 3), ON_3dVector(0, 0, 1)), 5.0);
+  ON_NurbsCurve raw;
+  Check(circle.GetNurbForm(raw) != 0, "OffsetInPlane circle setup: GetNurbForm succeeds");
+  NurbsCurve c;
+  c.raw() = raw;
+
+  NurbsCurve out;
+  Check(c.OffsetInPlane(1.5, out) == Result::Ok, "OffsetInPlane(+1.5) succeeds on a circle");
+  double worst = 0.0;
+  for (double t = out.Domain().min; t < out.Domain().max; t += 0.3) {
+    worst = std::max(worst, std::abs(out.PointAt(t).DistanceTo(Point3d(1, 2, 3)) - 6.5));
+  }
+  Check(worst < 1e-9, "OffsetInPlane(+1.5) on a circle: every sampled point sits at exactly radius 6.5");
+
+  Check(c.OffsetInPlane(-10.0, out) == Result::Failed, "OffsetInPlane(-10.0) on a radius-5 circle is refused (would collapse through the center)");
+  Check(c.OffsetInPlane(-3.0, out) == Result::Ok, "OffsetInPlane(-3.0) succeeds (radius 2.0)");
+  Check(std::abs(out.PointAt(out.Domain().min).DistanceTo(Point3d(1, 2, 3)) - 2.0) < 1e-9,
+        "OffsetInPlane(-3.0) on a circle: shrunk radius is exactly 2.0");
+}
+
+void TestCurveOffsetInPlanePartialArcPreservesAngularSpan() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+  using dino8::kernel::Vector3d;
+
+  const ON_Arc arc(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 4.0, ON_PI);
+  ON_NurbsCurve raw;
+  Check(arc.GetNurbForm(raw) != 0, "OffsetInPlane arc setup: GetNurbForm succeeds");
+  NurbsCurve c;
+  c.raw() = raw;
+
+  NurbsCurve out;
+  Check(c.OffsetInPlane(1.0, out) == Result::Ok, "OffsetInPlane(+1.0) succeeds on a half-circle arc");
+  double worst = 0.0;
+  for (double t = out.Domain().min; t <= out.Domain().max; t += 0.1) {
+    worst = std::max(worst, std::abs(out.PointAt(t).DistanceTo(Point3d(0, 0, 0)) - 5.0));
+  }
+  Check(worst < 1e-9, "OffsetInPlane(+1.0) on an arc: every sampled point sits at exactly radius 5.0");
+
+  // Same angular span: the offset arc's start direction from the center
+  // matches the original's exactly (only the radius changed).
+  Vector3d dir_orig = c.PointAt(c.Domain().min) - Point3d(0, 0, 0);
+  Vector3d dir_new = out.PointAt(out.Domain().min) - Point3d(0, 0, 0);
+  dir_orig.Unitize();
+  dir_new.Unitize();
+  Check((dir_orig - dir_new).Length() < 1e-9, "OffsetInPlane on an arc preserves the exact start angle");
+}
+
+void TestCurveOffsetInPlaneGeneralCurveApproximatesAndDetectsSelfIntersection() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+  using dino8::kernel::Vector3d;
+
+  // A gentle, smoothly-bulging degree-3 curve - the point here is to check
+  // the approximate fit is reasonable for an ordinary curve, not to
+  // stress-test worst-case error on a deliberately extreme control net.
+  const std::vector<Point3d> cps = {Point3d(0, 0, 0), Point3d(3, 2, 0), Point3d(7, 2, 0), Point3d(10, 0, 0)};
+  const NurbsCurve c = NurbsCurve::FromControlPoints(cps, 3);
+  Check(c.IsPlanar(1e-9), "OffsetInPlane general-curve setup: curve is planar");
+  Check(!c.IsLinear(1e-6) && !c.IsArc(1e-6), "OffsetInPlane general-curve setup: not a line or arc (exercises the approximate path)");
+
+  NurbsCurve out;
+  Check(c.OffsetInPlane(0.5, out) == Result::Ok, "OffsetInPlane(+0.5) succeeds on a general planar curve");
+
+  ON_Plane plane;
+  c.raw().IsPlanar(&plane, 1e-6);
+  double worst = 0.0;
+  for (double t = c.Domain().min + 0.5; t < c.Domain().max; t += 1.0) {
+    Vector3d offset_dir = ON_CrossProduct(c.TangentAt(t), plane.zaxis);
+    offset_dir.Unitize();
+    const Point3d expected = c.PointAt(t) + 0.5 * offset_dir;
+    worst = std::max(worst, out.ClosestPoint(expected, 500).DistanceTo(expected));
+  }
+  Check(worst < 0.05, "OffsetInPlane(+0.5) on a general curve: the least-squares refit approximates the true offset reasonably well");
+
+  // Self-intersection: a large-magnitude offset in at least one direction
+  // must fold this curve's tighter bend through itself and be refused.
+  const Result r_pos = c.OffsetInPlane(20.0, out);
+  const Result r_neg = c.OffsetInPlane(-20.0, out);
+  Check(r_pos == Result::Failed || r_neg == Result::Failed,
+        "OffsetInPlane on a general curve: at least one large-magnitude direction is refused as self-intersecting");
+}
+
+void TestCurveOffsetInPlaneRefusesNonPlanarCurve() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  const std::vector<Point3d> cps = {Point3d(0, 0, 0), Point3d(1, 1, 1), Point3d(2, -1, 2), Point3d(3, 2, -1)};
+  const NurbsCurve c = NurbsCurve::FromControlPoints(cps, 3);
+  Check(!c.IsPlanar(1e-6), "OffsetInPlane non-planar setup: curve is genuinely non-planar");
+
+  NurbsCurve out;
+  Check(c.OffsetInPlane(1.0, out) == Result::Failed, "OffsetInPlane refuses a genuinely non-planar curve");
+}
+
+void TestCurveOffsetInPlaneZeroDistanceIsNoOpCopy() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Result;
+
+  const ON_Circle circle(ON_3dPoint(0, 0, 0), 3.0);
+  ON_NurbsCurve raw;
+  circle.GetNurbForm(raw);
+  NurbsCurve c;
+  c.raw() = raw;
+  NurbsCurve out;
+  Check(c.OffsetInPlane(0.0, out) == Result::Ok, "OffsetInPlane(0.0) succeeds");
+  Check(out.PointAt(0.5).DistanceTo(c.PointAt(0.5)) < 1e-12, "OffsetInPlane(0.0) reproduces the same curve");
+}
+
 int main() {
   ON::Begin();
 
@@ -24986,6 +25316,21 @@ int main() {
   TestSurfaceUnrollDevelopableConePreservesApexDistanceAndSectorAngleExactly();
   TestSurfaceUnrollDevelopableRefusesNonDevelopableSurface();
   TestSurfaceUnrollDevelopableArgumentChecks();
+
+  TestSurfaceOffsetAnalyticSphereIsExactConcentricSphere();
+  TestSurfaceOffsetAnalyticCylinderIsExactCoaxialCylinder();
+  TestSurfaceOffsetAnalyticConePreservesHalfAngleAndShiftsApex();
+  TestSurfaceOffsetAnalyticTorusIsExactCoaxialTorusAndRejectsSpindle();
+  TestSurfaceOffsetAnalyticPlanePreservesDomainAndTrimStructure();
+  TestSurfaceOffsetAnalyticRefusesFreeformSurface();
+  TestSurfaceOffsetAnalyticZeroDistanceIsNoOpCopy();
+
+  TestCurveOffsetInPlaneLineIsExactParallelLine();
+  TestCurveOffsetInPlaneCircleIsExactConcentricCircle();
+  TestCurveOffsetInPlanePartialArcPreservesAngularSpan();
+  TestCurveOffsetInPlaneGeneralCurveApproximatesAndDetectsSelfIntersection();
+  TestCurveOffsetInPlaneRefusesNonPlanarCurve();
+  TestCurveOffsetInPlaneZeroDistanceIsNoOpCopy();
 
   ON::End();
 

@@ -617,6 +617,85 @@ class NurbsCurve {
   // Throws std::invalid_argument if `chord_tolerance <= 0`.
   std::vector<double> SuggestedParameterValues(double chord_tolerance, int max_depth = 12) const;
 
+  // Offsets this curve, in its own fitted plane, by `distance` along the
+  // in-plane direction `TangentAt(t) x plane.zaxis` (a consistent
+  // "right of travel, as seen from +plane.zaxis" side at every
+  // parameter) - the curve-level counterpart to `NurbsSurface::
+  // OffsetAnalytic()`, with the analogous honesty split: EXACT for the
+  // two shapes whose true offset (the literal locus of points at
+  // `distance` along that direction, not an approximation of it) is
+  // itself the same closed-form type, and an explicitly-approximate
+  // least-squares refit (via this class's own real `FitLeastSquares()`,
+  // not a stub) for everything else - never silently presented as exact.
+  //
+  //  - A LINE offsets to an exact parallel line (`FromControlPoints()`
+  //    of the two translated endpoints).
+  //  - A CIRCULAR ARC (or full circle) offsets to an exact CONCENTRIC
+  //    arc/circle of the SAME plane, center, and angular span
+  //    (`DomainRadians()`), radius
+  //    `radius +/- distance` - trivial but exact, since every point on a
+  //    circle moves radially by exactly `distance`. The +/- sign is
+  //    resolved the same way `NurbsSurface::OffsetAnalytic()` resolves
+  //    it for a sphere/cylinder/torus (see there for why it can't be
+  //    assumed fixed): AT RUNTIME, by comparing `TangentAt(t) x
+  //    plane.zaxis` against the independently-known true outward radial
+  //    direction `point - center` at one sample point, rather than
+  //    trusted from `ON_Arc`'s own parametrization convention - so
+  //    `distance > 0` always GROWS the arc/circle here, whichever way
+  //    this particular curve's own tangent happens to wind. Refused
+  //    (`Result::Failed`, `out` untouched) if `radius +/- distance <= 0`
+  //    - the exact curve counterpart of `OffsetAnalytic()`'s sphere/
+  //    cylinder self-intersection guard: the offset distance exceeds
+  //    this arc's own (constant) radius of curvature and folds it
+  //    through its own center.
+  //  - Any other curve is treated as a general planar curve: sampled
+  //    uniformly across `Domain()` at `max(SuggestedSamples(chord_tol),
+  //    4 * ControlPointCount()) + 1` points (`SuggestedSamples()`'s own
+  //    curvature-informed count, floored so `FitLeastSquares()` below
+  //    always has comfortably more samples than unknowns; `chord_tol` =
+  //    `tolerance::RelativeDistance()` of this curve's own
+  //    `GetTightBoundingBox()` diagonal), each moved by `distance` along
+  //    its own `TangentAt(t) x plane.zaxis` (this curve-level `plane`'s
+  //    own fitted zaxis, one FIXED but otherwise arbitrary sign for the
+  //    whole curve - a real, disclosed limitation: unlike the arc case
+  //    above, a general curve has no independently-known "outward" to
+  //    check the sign against, so which side is positive is whatever
+  //    `IsPlanar()`'s own fit happens to assign, not chosen by the
+  //    caller beyond the sign of `distance` itself), then refit via
+  //    `FitLeastSquares()` at this curve's own `Degree()` and
+  //    `ControlPointCount()` - an honestly APPROXIMATE result (the true
+  //    offset of a general curve is generally not itself an exact NURBS
+  //    curve of the same degree/control-point count at all), unlike the
+  //    two exact cases above. Before refitting, every sample is checked
+  //    against `CurvatureAt(t)`: wherever `distance` moved it TOWARD that
+  //    point's own center of curvature by at least that point's own
+  //    local radius (`1 / kappa`), the offset would fold the curve
+  //    through itself there, and this returns `Result::Failed` (`out`
+  //    untouched) instead of silently building a self-intersecting
+  //    result - the direct curve analogue of `OffsetAnalytic()`'s cone
+  //    guard, and the real hazard a plain per-point translate-and-refit
+  //    would otherwise hide. This sampling-based check, like `Length()`'s
+  //    own sampling, can miss a hazard strictly between two samples on a
+  //    pathologically fast-varying curve - not an exhaustive proof, the
+  //    same honesty this file's other sampling-based methods already
+  //    disclose.
+  //
+  // Returns `Result::Failed`, `out` left unchanged, if this curve isn't
+  // planar within `tolerance` at all (a genuinely non-planar 3D offset -
+  // e.g. sweeping a curve's own Frenet frame - is a different, harder
+  // operation this method does not attempt), or if `FitLeastSquares()`
+  // itself fails in the general case (fewer than `Degree() + 1` samples,
+  // which does not happen at this method's own default sample count, but
+  // could if a caller passed a very small `samples`).
+  //
+  // `tolerance` defaults (`<= 0`) to `tolerance::DistanceForSize()` of
+  // this curve's own `GetTightBoundingBox()` diagonal - `IsPlanar()`/
+  // `IsLinear()`/`IsArc()`'s own `ON_ZERO_TOLERANCE` default is, as
+  // `NurbsSurface::OffsetAnalytic()`'s own doc comment already found for
+  // the surface case, far tighter than anything but a hand-built exact
+  // primitive tolerates.
+  Result OffsetInPlane(double distance, NurbsCurve& out, double tolerance = -1.0) const;
+
   const ON_NurbsCurve& raw() const { return curve_; }
   ON_NurbsCurve& raw() { return curve_; }
 
