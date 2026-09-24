@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <functional>
 #include <limits>
 #include <map>
 #include <set>
@@ -152,7 +153,7 @@ Point3d Mesh::GetCentroid() const {
     }
   }
 
-  if (std::abs(volume_sum) <= 1e-12) {
+  if (std::abs(volume_sum) <= tolerance::kZero) {
     throw std::invalid_argument(
         "dino8::kernel::Mesh::GetCentroid: mesh volume is (near) zero - not a "
         "closed, non-degenerate solid this formula can compute a centroid for");
@@ -205,7 +206,7 @@ namespace {
 bool LineTriangleParameter(const Point3d& origin, const Vector3d& direction, const Point3d& a,
                            const Point3d& b, const Point3d& c, double& t, double& u, double& v,
                            double slack = 0.0) {
-  constexpr double kEpsilon = 1e-12;
+  constexpr double kEpsilon = tolerance::kZero;
   const Vector3d edge1 = b - a;
   const Vector3d edge2 = c - a;
   const Vector3d h = ON_CrossProduct(direction, edge2);
@@ -233,7 +234,7 @@ bool LineTriangleParameter(const Point3d& origin, const Vector3d& direction, con
 // (a, b, c). Used by ContainsPoint()'s ray-casting test.
 bool RayIntersectsTriangle(const Point3d& origin, const Vector3d& direction, const Point3d& a,
                             const Point3d& b, const Point3d& c) {
-  constexpr double kEpsilon = 1e-12;
+  constexpr double kEpsilon = tolerance::kZero;
   double t = 0, u = 0, v = 0;
   return LineTriangleParameter(origin, direction, a, b, c, t, u, v) && t > kEpsilon;
 }
@@ -525,7 +526,7 @@ MassProperties Mesh::VolumeMassProperties() const {
 
   MassProperties mp;
   mp.volume = intg[0];
-  if (std::abs(mp.volume) <= 1e-12) {
+  if (std::abs(mp.volume) <= tolerance::kZero) {
     throw std::invalid_argument(
         "dino8::kernel::Mesh::VolumeMassProperties: mesh volume is (near) zero - "
         "not a closed, non-degenerate solid whose moments are defined");
@@ -786,7 +787,7 @@ std::vector<Vector3d> Mesh::ComputeVertexNormals() const {
   }
 
   for (Vector3d& n : normals) {
-    if (n.Length() > 1e-12) {
+    if (n.Length() > tolerance::kZero) {
       n.Unitize();
     }
   }
@@ -1302,8 +1303,15 @@ Mesh Mesh::MergeAndWeld(const std::vector<Mesh>& meshes, double tolerance) {
   // Snap each coordinate to a grid of `tolerance` size so two vertices
   // within `tolerance` of each other (in particular, the same seam point
   // computed independently by two adjacent faces) map to the same key.
+  // std::llround, not std::lround: the quotient is coordinate / tolerance,
+  // routinely 1e9..1e11 (a brep mesher welds at diagonal * 1e-8, some
+  // callers at 1e-9), and std::lround returns `long`, which is only 32 bits
+  // on Windows (LLP64). There every coordinate beyond ~2^31 * tolerance
+  // overflowed to the same key, so distinct vertices a few units apart were
+  // welded into one and closed solids came back as open, garbage meshes -
+  // while the 64-bit `long` on Linux/macOS hid it entirely.
   auto snap = [tolerance](float v) {
-    return static_cast<long long>(std::lround(static_cast<double>(v) / tolerance));
+    return std::llround(static_cast<double>(v) / tolerance);
   };
 
   std::map<std::tuple<long long, long long, long long>, int> vertex_by_position;
@@ -1632,11 +1640,11 @@ bool IsPlanarRingSimple(const std::vector<Point3d>& ring) {
     const Vector3d e1 = ring[(i + 1) % n] - ring[i];
     const Vector3d e2 = ring[(i + 2) % n] - ring[i];
     normal = ON_CrossProduct(e1, e2);
-    if (normal.Length() > 1e-9) {
+    if (normal.Length() > tolerance::kZeroVector) {
       break;
     }
   }
-  if (normal.Length() <= 1e-9) {
+  if (normal.Length() <= tolerance::kZeroVector) {
     // Every triple tried was collinear/degenerate - not planar-polygon
     // shaped at all; leave that to fail elsewhere (or trivially "pass"
     // here) rather than misclassify a degenerate ring as self-intersecting.
@@ -1662,12 +1670,12 @@ bool IsRingPlanar(const std::vector<Point3d>& ring) {
     const Vector3d e1 = ring[(i + 1) % n] - ring[i];
     const Vector3d e2 = ring[(i + 2) % n] - ring[i];
     normal = ON_CrossProduct(e1, e2);
-    if (normal.Length() > 1e-9) {
+    if (normal.Length() > tolerance::kZeroVector) {
       origin_index = i;
       break;
     }
   }
-  if (normal.Length() <= 1e-9) {
+  if (normal.Length() <= tolerance::kZeroVector) {
     // Every triple tried was collinear/degenerate - not planar-polygon
     // shaped at all; leave that to fail elsewhere rather than misclassify
     // a degenerate ring as non-planar.
@@ -1774,7 +1782,7 @@ Mesh Mesh::RevolveProfile(const std::vector<Point2d>& profile, Point3d axis_poin
         "dino8::kernel::Mesh::RevolveProfile: revolve_segments must be at "
         "least 3 (fewer can't form a non-degenerate ring)");
   }
-  constexpr double kOnAxisEpsilon = 1e-9;
+  constexpr double kOnAxisEpsilon = tolerance::kZeroVector;
   const bool front_is_apex = std::abs(profile.front().x) <= kOnAxisEpsilon;
   const bool back_is_apex = std::abs(profile.back().x) <= kOnAxisEpsilon;
 
@@ -2112,6 +2120,336 @@ Mesh Mesh::Torus(Point3d center, Vector3d axis, double major_radius, double mino
   }
 
   return result;
+}
+
+// ---------------------------------------------------------------------------
+// Check / heal - see mesh.h's own doc comments on each method.
+
+namespace {
+
+// Reverses one face's winding in place - the exact per-face operation
+// Mesh::FlipNormals() applies to every face (see its own comment on why
+// a triangle's vi[3] must follow vi[2]).
+void FlipOneFace(ON_MeshFace& f) {
+  if (f.IsQuad()) {
+    std::swap(f.vi[0], f.vi[3]);
+    std::swap(f.vi[1], f.vi[2]);
+  } else {
+    std::swap(f.vi[0], f.vi[2]);
+    f.vi[3] = f.vi[2];
+  }
+}
+
+// Calls visit(a, b) for each directed edge of `f` in its winding order.
+template <typename Visit>
+void ForEachDirectedEdge(const ON_MeshFace& f, Visit visit) {
+  visit(f.vi[0], f.vi[1]);
+  visit(f.vi[1], f.vi[2]);
+  if (f.IsQuad()) {
+    visit(f.vi[2], f.vi[3]);
+    visit(f.vi[3], f.vi[0]);
+  } else {
+    visit(f.vi[2], f.vi[0]);
+  }
+}
+
+// Groups of vertex indices (from `candidates`) that are within
+// `tolerance` of each other, by TRUE distance: each candidate is hashed
+// into a grid of cell size `tolerance` and compared against every
+// candidate in its own and the 26 neighbouring cells, so two points
+// straddling a cell boundary are still found (the case plain grid
+// snapping misses). Union-find over the pairs; returns each vertex's
+// representative (the lowest index in its group), or -1 for a vertex
+// not in `candidates`.
+std::vector<int> WeldGroups(const ON_Mesh& mesh, const std::vector<int>& candidates, double tolerance) {
+  std::vector<int> parent(static_cast<size_t>(mesh.m_V.Count()), -1);
+  for (const int v : candidates) parent[static_cast<size_t>(v)] = v;
+  std::function<int(int)> find = [&](int v) {
+    while (parent[static_cast<size_t>(v)] != v) {
+      parent[static_cast<size_t>(v)] = parent[static_cast<size_t>(parent[static_cast<size_t>(v)])];
+      v = parent[static_cast<size_t>(v)];
+    }
+    return v;
+  };
+  auto unite = [&](int a, int b) {
+    a = find(a);
+    b = find(b);
+    if (a == b) return;
+    if (a < b) parent[static_cast<size_t>(b)] = a; else parent[static_cast<size_t>(a)] = b;
+  };
+  const double cell = std::max(tolerance, tolerance::kZero);
+  auto key_of = [&](const ON_3fPoint& p) {
+    return std::make_tuple(static_cast<long long>(std::floor(p.x / cell)),
+                           static_cast<long long>(std::floor(p.y / cell)),
+                           static_cast<long long>(std::floor(p.z / cell)));
+  };
+  std::map<std::tuple<long long, long long, long long>, std::vector<int>> grid;
+  for (const int v : candidates) grid[key_of(mesh.m_V[v])].push_back(v);
+  for (const int v : candidates) {
+    const ON_3fPoint& p = mesh.m_V[v];
+    const auto [kx, ky, kz] = key_of(p);
+    for (long long dx = -1; dx <= 1; ++dx) {
+      for (long long dy = -1; dy <= 1; ++dy) {
+        for (long long dz = -1; dz <= 1; ++dz) {
+          const auto it = grid.find(std::make_tuple(kx + dx, ky + dy, kz + dz));
+          if (it == grid.end()) continue;
+          for (const int w : it->second) {
+            if (w <= v) continue;
+            const ON_3fPoint& q = mesh.m_V[w];
+            const double d = ON_3dPoint(p).DistanceTo(ON_3dPoint(q));
+            if (d <= tolerance) unite(v, w);
+          }
+        }
+      }
+    }
+  }
+  std::vector<int> rep(static_cast<size_t>(mesh.m_V.Count()), -1);
+  for (const int v : candidates) rep[static_cast<size_t>(v)] = find(v);
+  return rep;
+}
+
+}  // namespace
+
+Mesh::CheckReport Mesh::Check(double tolerance) const {
+  CheckReport report;
+  const double tol = std::max(tolerance, 0.0);
+  std::map<std::pair<int, int>, int> undirected_count;
+  std::map<std::pair<int, int>, int> directed_count;
+  for (int i = 0; i < mesh_.m_F.Count(); ++i) {
+    const ON_MeshFace& f = mesh_.m_F[i];
+    ForEachDirectedEdge(f, [&](int a, int b) {
+      ++undirected_count[std::minmax(a, b)];
+      ++directed_count[std::make_pair(a, b)];
+    });
+
+    // Degeneracy: repeated index, a too-short edge, or a too-small height.
+    const int n = f.IsQuad() ? 4 : 3;
+    bool degenerate = false;
+    for (int a = 0; a < n && !degenerate; ++a) {
+      for (int b = a + 1; b < n && !degenerate; ++b) {
+        if (f.vi[a] == f.vi[b]) degenerate = true;
+      }
+    }
+    if (!degenerate) {
+      const ON_3dPoint p0(mesh_.m_V[f.vi[0]]), p1(mesh_.m_V[f.vi[1]]), p2(mesh_.m_V[f.vi[2]]);
+      double longest = std::max({p0.DistanceTo(p1), p1.DistanceTo(p2), p2.DistanceTo(p0)});
+      double area2 = ON_CrossProduct(p1 - p0, p2 - p0).Length();
+      double shortest = std::min({p0.DistanceTo(p1), p1.DistanceTo(p2), p2.DistanceTo(p0)});
+      if (f.IsQuad()) {
+        const ON_3dPoint p3(mesh_.m_V[f.vi[3]]);
+        longest = std::max({longest, p2.DistanceTo(p3), p3.DistanceTo(p0)});
+        shortest = std::min({shortest, p2.DistanceTo(p3), p3.DistanceTo(p0)});
+        area2 += ON_CrossProduct(p2 - p0, p3 - p0).Length();
+      }
+      const double height = longest > 0.0 ? area2 / longest : 0.0;
+      if (shortest <= tol || height <= tol) degenerate = true;
+    }
+    if (degenerate) ++report.degenerate_faces;
+  }
+  for (const auto& [edge, count] : undirected_count) {
+    if (count == 1) ++report.naked_edges;
+    else if (count > 2) ++report.non_manifold_edges;
+  }
+  for (const auto& [edge, count] : directed_count) {
+    if (count > 1) ++report.orientation_conflicts;
+    if (count == 1 && undirected_count[std::minmax(edge.first, edge.second)] == 1) {
+      report.naked_edge_list.push_back(edge);
+    }
+  }
+  // naked_edge_list in face order, not map order.
+  {
+    std::set<std::pair<int, int>> naked(report.naked_edge_list.begin(), report.naked_edge_list.end());
+    report.naked_edge_list.clear();
+    for (int i = 0; i < mesh_.m_F.Count(); ++i) {
+      ForEachDirectedEdge(mesh_.m_F[i], [&](int a, int b) {
+        if (naked.count({a, b})) report.naked_edge_list.emplace_back(a, b);
+      });
+    }
+  }
+  // Duplicate vertices: every vertex is a candidate.
+  std::vector<int> all(static_cast<size_t>(mesh_.m_V.Count()));
+  for (int i = 0; i < mesh_.m_V.Count(); ++i) all[static_cast<size_t>(i)] = i;
+  const std::vector<int> rep = WeldGroups(mesh_, all, tol);
+  std::map<int, int> group_size;
+  for (int i = 0; i < mesh_.m_V.Count(); ++i) ++group_size[rep[static_cast<size_t>(i)]];
+  for (int i = 0; i < mesh_.m_V.Count(); ++i) {
+    if (group_size[rep[static_cast<size_t>(i)]] > 1) ++report.duplicate_vertices;
+  }
+  return report;
+}
+
+std::vector<std::vector<int>> Mesh::NakedEdgeLoops() const {
+  const CheckReport report = Check();
+  std::map<int, std::vector<int>> next;
+  for (const auto& [a, b] : report.naked_edge_list) next[a].push_back(b);
+  std::vector<std::vector<int>> loops;
+  std::set<int> used;
+  for (const auto& [a, b] : report.naked_edge_list) {
+    if (used.count(a)) continue;
+    std::vector<int> loop;
+    int v = a;
+    bool ok = true;
+    while (true) {
+      const auto it = next.find(v);
+      if (it == next.end() || it->second.size() != 1 || used.count(v)) {
+        ok = false;  // dead end, bowtie vertex, or re-entry into a used vertex
+        break;
+      }
+      used.insert(v);
+      loop.push_back(v);
+      v = it->second[0];
+      if (v == a) break;
+    }
+    if (ok && loop.size() >= 3) loops.push_back(std::move(loop));
+  }
+  return loops;
+}
+
+int Mesh::CloseNakedEdges(double tolerance) {
+  const CheckReport report = Check(tolerance);
+  std::set<int> boundary;
+  for (const auto& [a, b] : report.naked_edge_list) {
+    boundary.insert(a);
+    boundary.insert(b);
+  }
+  if (boundary.empty()) return 0;
+  const std::vector<int> candidates(boundary.begin(), boundary.end());
+  const std::vector<int> rep = WeldGroups(mesh_, candidates, std::max(tolerance, 0.0));
+  int welded = 0;
+  std::vector<int> remap(static_cast<size_t>(mesh_.m_V.Count()));
+  for (int i = 0; i < mesh_.m_V.Count(); ++i) {
+    const int r = rep[static_cast<size_t>(i)];
+    remap[static_cast<size_t>(i)] = (r >= 0) ? r : i;
+    if (r >= 0 && r != i) ++welded;
+  }
+  if (welded == 0) return 0;
+
+  // Remap faces, dropping the ones that collapsed.
+  ON_SimpleArray<ON_MeshFace> faces;
+  for (int i = 0; i < mesh_.m_F.Count(); ++i) {
+    ON_MeshFace f = mesh_.m_F[i];
+    const bool quad = f.IsQuad();
+    for (int k = 0; k < 4; ++k) f.vi[k] = remap[static_cast<size_t>(f.vi[k])];
+    std::vector<int> distinct;
+    for (int k = 0; k < (quad ? 4 : 3); ++k) {
+      if (std::find(distinct.begin(), distinct.end(), f.vi[k]) == distinct.end()) distinct.push_back(f.vi[k]);
+    }
+    if (distinct.size() < 3) continue;
+    if (distinct.size() == 3) {
+      f.vi[0] = distinct[0];
+      f.vi[1] = distinct[1];
+      f.vi[2] = distinct[2];
+      f.vi[3] = distinct[2];
+    }
+    faces.Append(f);
+  }
+  // Compact the vertex list to the ones still referenced.
+  std::vector<int> new_index(static_cast<size_t>(mesh_.m_V.Count()), -1);
+  ON_3fPointArray vertices;
+  for (int i = 0; i < faces.Count(); ++i) {
+    for (int k = 0; k < 4; ++k) {
+      int& v = faces[i].vi[k];
+      if (new_index[static_cast<size_t>(v)] < 0) {
+        new_index[static_cast<size_t>(v)] = vertices.Count();
+        vertices.Append(mesh_.m_V[v]);
+      }
+      v = new_index[static_cast<size_t>(v)];
+    }
+  }
+  mesh_.m_V = vertices;
+  mesh_.m_F = faces;
+  mesh_.m_S.Destroy();
+  mesh_.m_N.Destroy();
+  mesh_.m_FN.Destroy();
+  return welded;
+}
+
+int Mesh::FillSmallHoles(double max_extent) {
+  int filled = 0;
+  for (const std::vector<int>& loop : NakedEdgeLoops()) {
+    ON_BoundingBox box;
+    for (const int v : loop) box.Set(ON_3dPoint(mesh_.m_V[v]), true);
+    if (box.Diagonal().Length() > max_extent) continue;
+    if (loop.size() == 3) {
+      ON_MeshFace f;
+      f.vi[0] = loop[2];
+      f.vi[1] = loop[1];
+      f.vi[2] = loop[0];
+      f.vi[3] = loop[0];
+      mesh_.m_F.Append(f);
+    } else {
+      ON_3dPoint centroid(0, 0, 0);
+      for (const int v : loop) centroid += ON_3dPoint(mesh_.m_V[v]);
+      centroid = ON_3dPoint(centroid.x / loop.size(), centroid.y / loop.size(), centroid.z / loop.size());
+      const int c = mesh_.m_V.Count();
+      mesh_.m_V.Append(ON_3fPoint(centroid));
+      for (size_t i = 0; i < loop.size(); ++i) {
+        const int a = loop[i], b = loop[(i + 1) % loop.size()];
+        ON_MeshFace f;
+        f.vi[0] = b;  // reverse of the naked edge a -> b
+        f.vi[1] = a;
+        f.vi[2] = c;
+        f.vi[3] = c;
+        mesh_.m_F.Append(f);
+      }
+    }
+    ++filled;
+  }
+  if (filled > 0) {
+    mesh_.m_S.Destroy();
+    mesh_.m_N.Destroy();
+    mesh_.m_FN.Destroy();
+  }
+  return filled;
+}
+
+int Mesh::UnifyNormals() {
+  const int n = mesh_.m_F.Count();
+  std::map<std::pair<int, int>, std::vector<int>> faces_of_edge;
+  for (int i = 0; i < n; ++i) {
+    ForEachDirectedEdge(mesh_.m_F[i], [&](int a, int b) { faces_of_edge[std::minmax(a, b)].push_back(i); });
+  }
+  auto walks = [&](int face, int a, int b) {
+    bool forward = false;
+    ForEachDirectedEdge(mesh_.m_F[face], [&](int x, int y) {
+      if (x == a && y == b) forward = true;
+    });
+    return forward;
+  };
+  std::vector<char> done(static_cast<size_t>(n), 0);
+  int flipped = 0;
+  for (int seed = 0; seed < n; ++seed) {
+    if (done[static_cast<size_t>(seed)]) continue;
+    std::vector<int> queue = {seed};
+    done[static_cast<size_t>(seed)] = 1;
+    while (!queue.empty()) {
+      const int fi = queue.back();
+      queue.pop_back();
+      std::vector<std::pair<int, int>> edges;
+      ForEachDirectedEdge(mesh_.m_F[fi], [&](int a, int b) { edges.emplace_back(a, b); });
+      for (const auto& [a, b] : edges) {
+        const std::vector<int>& users = faces_of_edge[std::minmax(a, b)];
+        if (users.size() != 2) continue;
+        const int other = users[0] == fi ? users[1] : users[0];
+        if (done[static_cast<size_t>(other)]) continue;
+        if (walks(other, a, b)) {
+          FlipOneFace(mesh_.m_F[other]);
+          ++flipped;
+        }
+        done[static_cast<size_t>(other)] = 1;
+        queue.push_back(other);
+      }
+    }
+  }
+  if (IsClosedManifold() && Volume() < 0.0) {
+    for (int i = 0; i < n; ++i) FlipOneFace(mesh_.m_F[i]);
+    flipped += n;
+  }
+  if (flipped > 0) {
+    mesh_.m_N.Destroy();
+    mesh_.m_FN.Destroy();
+  }
+  return flipped;
 }
 
 }  // namespace dino8::kernel

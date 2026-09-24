@@ -742,6 +742,181 @@ Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op);
 //       explains why - IsConvexPolygon()'s 1e-12 collinearity threshold).
 //       This IS the (38,111) gap's own root cause, confirmed above, not a
 //       separate concern layered on top of it.
+//
+//   MESH-LEVEL SEAM REPAIR (a later session - SHIPPED, measured): the
+//       "act at the MESH level" next step above is implemented as
+//       RepairMergedSeams() (boolean_general.cpp, see its own doc comment
+//       for each operation's exact rule), run by TessellateGeneralBoolean-
+//       ClosedMesh on the ONE mesh Mesh::MergeAndWeld() returns, after
+//       every per-face pass above. It touches only edges whose undirected
+//       count is not 2 (naked / nonmanifold) and the vertices on them, so
+//       a mesh that is already IsClosedManifold() passes through untouched
+//       - a no-op on every previously-closing case by construction.
+//       DINO8_NO_SEAM_REPAIR=1 disables it; DINO8_SEAM_REPAIR_DEBUG=1
+//       prints per-iteration counts, =2 also dumps every residual edge.
+//
+//       MEASURED (tests/general_boolean_sweep.cpp, 76 cases, diffed case-
+//       by-case against the pre-change baseline): non-EMPTY closedmesh=0
+//       count 55 -> 19 (36 cases newly closed, verified key-by-key against
+//       the baseline output, not just the aggregate count). ZERO
+//       regressions of any kind (no closedmesh 1->0, no valid 1->0, no
+//       OK -> other verdict, no exception - all 76 cases stay "| OK").
+//       box+cylinder Union (tests/general_boolean_sweep.cpp's own case 01,
+//       built via that file's FrameFromAxis cylinder frame) goes from
+//       IsClosedManifold's `orientation_consistent=0 bad-edge-count=1177`
+//       to `orientation_consistent=1 bad-edge-count=0`, and all four of
+//       its ops close. Volumes moved on 49 ops, 40 of them TOWARD the
+//       closed-form value: every box+cylinder-01 op now sits at err
+//       0.040-0.041, which is exactly the tessellation's own inherent
+//       inscribed-32-gon deficit (0.64% of pi r^2 h) - the previously-open
+//       meshes were off by up to 0.073 - and no op's error grew by more
+//       than 0.011 (all far inside the sweep's own 2% tolerance). Full
+//       ctest suite (dino8_kernel_smoke, 1663+ checks): 100% pass, 241.37s
+//       wall clock. tests/general_boolean_sweep.cpp's own 76-case sweep:
+//       150.70s wall clock (`time` on the standalone binary).
+//
+//       NOT UNIFORM ACROSS SEAM ANGLE (found while wiring up ctest
+//       assertions on this): tests/test_basic.cpp's OWN longstanding
+//       box+cylinder fixture (TestBooleanCombineGeneralBoxCylinder,
+//       MakeCylinderZForBoxCylinderTest - this file's own disclosed
+//       fixture throughout its history, box (-2,-2,-1)-(2,2,1), cylinder
+//       radius 1 z in [-2,2]) is the SAME shape as the sweep's case 01
+//       above, but built with a DIFFERENT cylinder frame convention
+//       (xaxis=(1,0,0), i.e. its wall's own u=0 periodic seam sits at
+//       physical angle 0, point (1,0,z) - the sweep's own FrameFromAxis
+//       picks xaxis=(0,-1,0) for the same +z axis, seam at angle 90deg).
+//       Measured directly (tests/scratch_test.cpp's own STANDALONE-REPRO
+//       block, deterministic across repeated runs - confirmed NOT a
+//       full-ctest-suite-context artifact): at seam angle 0, Union and
+//       Difference EACH retain a 4-edge residual (Intersection alone
+//       closes); the identical shape with the seam rotated 90deg (i.e.
+//       the sweep's own case 01) closes on all four ops, confirming the
+//       shape itself is not the variable - only the seam's absolute
+//       angle is. Root-caused with DINO8_SEAM_REPAIR_DEBUG=2: the 4
+//       residual edges form one small quadrilateral hole (at the wall's
+//       u=0 seam, which the seam-angle-0 fixture places exactly on the
+//       box-cap cut circle's own x-axis crossing) whose TWO possible
+//       triangulating diagonals are BOTH already saturated (undirected
+//       count 2) by the box cap's own and the wall's own separately-
+//       closed local tessellation - no 2-triangle fan using only the
+//       hole's own 4 existing corners can close it without pushing a
+//       diagonal to count 3, and this pass never invents a new interior
+//       vertex to sidestep that (a genuinely different mechanism from
+//       every residual shape (a)-(d) below, none of which involve BOTH
+//       diagonals of a hole already being spoken for). Not pursued this
+//       session: a targeted "collapse a proper edge anyway when both its
+//       endpoints are otherwise-unmatched and small relative to local
+//       scale" rule was considered and rejected without writing code -
+//       this file's own investigation above already measured twice
+//       (kEdgeFraction shrink, then h_j-direct) that loosening exactly
+//       this kind of guard on close-but-real edges reliably regresses
+//       OTHER cases in the sweep, and the payoff here is one seam-angle-
+//       dependent fixture, not a broad case class. tests/test_basic.cpp's
+//       ctest assertions were scoped to match this measurement exactly
+//       (IsClosedManifold() asserted for Intersection only, volume-match
+//       asserted on all three ops' closed-mesh results either way).
+//
+//       WHY THE SUGGESTED "mutually-nearest broken-vertex merge" ALONE
+//       WAS NOT ENOUGH (measured on box+cylinder Union at 32x128 with a
+//       standalone diagnostic re-deriving IsClosedManifold's edge counts
+//       on the final mesh): the residual is NOT mostly near-duplicate
+//       vertex pairs. Of 1122 broken vertices only 359 are mutually-
+//       nearest pairs and only 20 are within 1e-4 of their partner; the
+//       1171 naked edges form 48 chain components of up to 74 vertices,
+//       i.e. long stretches where the two faces sample the SAME seam with
+//       different point sets that never coincide at all - e.g. one face
+//       carrying a single 0.07-long chord across a span the other face
+//       covers with five short edges through four true-circle points ~6e-4
+//       off that chord (its sagitta, ~0.9% of its length, past the per-
+//       face passes' 5e-3-of-length acceptance). A merge-only pass got
+//       1171 -> 1071 naked (53 pairs) and stopped. The kEdgeFraction pinch
+//       this file's investigation ends on IS there (c_in / h_j / c_out,
+//       pairwise ~1.2e-4 apart) and IS what the merge step closes - but
+//       as a 3-WAY tie, which is exactly why "merge if closer than a
+//       fraction of the SHORTEST incident edge" (the first thing tried)
+//       vetoes every one of its pairs: each pair's own third point is an
+//       equally short edge away. Keying the radius to the LONGEST incident
+//       edge (the surrounding mesh's own cell size, 0.1x) fixed that.
+//
+//       The four further operations (all local, all bounded, all only ever
+//       on broken edges) that the residual's own measured shapes demanded:
+//       (a) naked zip - a naked vertex fanned into the nearest non-incident
+//           naked edge that one of ITS OWN naked edges runs antiparallel
+//           to (the other face's copy of the seam; a face's own next edge
+//           is parallel and never matches), within 0.02 / 0.05 / 0.1 of
+//           that edge's length coarse-to-fine, t in [0.02, 0.98]: 1071 ->
+//           198 naked;
+//       (b) sub-cell hole fill - a remaining naked loop of <= 8 vertices
+//           no wider than two local cells, fanned closed wound opposite to
+//           its naked edges: the cap/wall rim, where the cap's grid
+//           crossings sit up to ~4e-3 radially inside the wall's exact
+//           circle points - 25% of the 0.017 local edge length, past any
+//           sane relative tolerance: 198 -> 0 on Union;
+//       (c) flap flip - a triangle whose apex is in no other triangle, on
+//           a base walked in the SAME direction by another face: it and
+//           its own-face partner tile a quad with the wrong diagonal;
+//           re-diagonalizing leaves a plain naked T-junction (a) closes.
+//           Pre-existing (not created here) on box+cyl Intersection/B-A;
+//       (d) fold / duplicate removal - two triangles on the same three
+//           vertices (opposite winding: a zero-thickness fold whose signed
+//           volumes and directed edges cancel exactly; same winding: a
+//           double cover). A closed manifold cannot contain either, so
+//           dropping them is safe by construction. Found - AFTER (a)-(c)
+//           had closed every naked edge - to be the ENTIRE residual on
+//           box+cone / cyl+cyl / box+cyl(blind) Intersection: a rim
+//           sliver fanned in once by each of the per-face passes upstream
+//           with opposite winding, at every count-4 edge those ops had.
+//       An admissibility guard on (a) and (b) - a fan triangle may not
+//       duplicate an existing one nor push any edge past count 2 -
+//       mattered measurably: without it the zip could itself manufacture
+//       a count-3 edge or a fold (box+cyl Intersection at 32x128 was left
+//       with exactly 4 such edges), and adding it took the sweep from
+//       33/76 to 40/76 closed on its own, 7 more cases.
+//
+//       WHAT IS LEFT (final residual: 19 of the sweep's 76 cases, all
+//       still "| OK" on volume - closedmesh=0 on exactly these ops: 05
+//       cyl+cyl parallel axes Union/Intersection; 06 cyl+cyl perpendicular
+//       equal radii Union/B-A; 07 cyl+cyl perpendicular unequal radii
+//       Union/B-A; 08 cyl+cyl SKEW Union/B-A; 09 sphere+box FACE Union/
+//       Intersection/A-B; 10 sphere+box EDGE Union/Intersection/A-B; 12
+//       sphere+sphere unequal radii Union/Intersection/B-A; 13 sphere+cyl
+//       piercing Union/B-A). Four shapes, none of them a near-miss of the
+//       rules above:
+//       (i)  a ZIGZAG boundary at a cylinder cap rim (cyl+cyl Union, the
+//            x=3 cap of A): the cap's naked chain runs BACKWARD along the
+//            rim from a wall vertex, then forward past its own start,
+//            closed by a chord the wall walks in the same direction as a
+//            cap sliver (count 3) - a multi-point version of (c) whose
+//            fix would need to know which of two same-direction triangles
+//            is "the other face's", provenance MergeAndWeld() has already
+//            discarded. Deliberately not guessed at. The same shape is
+//            what keeps box+cyl Intersection open at the coarse 8x8 /
+//            8x32 (it closes at 16x64 and 32x128).
+//       (ii) sphere+sphere Union/Intersection/B-A: the two spheres' own
+//            boundary polylines along the intersection circle sit 0.1-
+//            0.27 of an edge length apart (0.008-0.013 absolute on a
+//            radius-2 sphere) - far beyond a chord's sagitta and beyond
+//            any local tolerance this pass could honestly use. An
+//            upstream sampling defect, not diagnosed further here.
+//       (iii) a handful of near-duplicate vertices the merge step's link
+//            condition correctly refuses (merging would create a count-3
+//            edge), e.g. sphere+sphere Union's v457/v458 pair 1.9e-4 apart.
+//       (iv) a small quadrilateral hole whose TWO possible triangulating
+//            diagonals are BOTH already saturated (count 2) by two
+//            different faces' own separately-closed local tessellation -
+//            not in the sweep's own 76 cases (all of which use this file's
+//            FrameFromAxis cylinder frame), but confirmed on tests/
+//            test_basic.cpp's own longstanding box+cylinder fixture, whose
+//            DIFFERENT cylinder frame convention happens to place the
+//            wall's own periodic seam exactly on the box-cap cut circle's
+//            axis crossing - see the "NOT UNIFORM ACROSS SEAM ANGLE" entry
+//            above for the full mechanism and why it was left open.
+//
+//       DELIBERATELY NOT DONE: widening any tolerance further. The zip's
+//       0.1-of-length ceiling is already 20x the per-face passes' 5e-3 and
+//       is safe only because both the point and the edge are ALREADY naked
+//       - the same reasoning does not extend to (ii), where the honest
+//       statement is that the two boundaries are simply different curves.
 Mesh TessellateGeneralBooleanClosedMesh(const Brep& result, int u_divisions = 8, int v_divisions = 8);
 
 }  // namespace dino8::kernel

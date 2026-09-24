@@ -9,6 +9,7 @@
 #include <functional>
 #include <limits>
 #include <map>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -2278,6 +2279,7 @@ void TestBooleanCombineGeneralBoxCylinder() {
   using dino8::kernel::BooleanOp;
   using dino8::kernel::Brep;
   using dino8::kernel::Mesh;
+  using dino8::kernel::TessellateGeneralBooleanClosedMesh;
 
   // The general engine's first PROVEN curved-operand case: a 4x4x2 box
   // fully pierced by a radius-1 cylinder along its own z-axis, the cylinder
@@ -2313,9 +2315,10 @@ void TestBooleanCombineGeneralBoxCylinder() {
   // (32, 128) tested here, versus roughly double that at (16, 64)), i.e.
   // genuine, convergent tessellation error, not a fixed leak.
   //
-  // Deliberately NOT asserted here, unlike TestBooleanCombineGeneralBoxBox
-  // above: Mesh::IsClosedManifold(). Confirmed by direct measurement (on
-  // BOTH this fixture and, importantly, the box+box case above too) that
+  // Deliberately NOT asserted on the PLAIN TessellateToClosedMesh() meshes
+  // below, unlike TestBooleanCombineGeneralBoxBox above:
+  // Mesh::IsClosedManifold(). Confirmed by direct measurement (on BOTH
+  // this fixture and, importantly, the box+box case above too) that
   // BooleanCombineGeneral's own reassembled meshes are not
   // IsClosedManifold() at any tessellation resolution tried, plain or
   // Conforming - box+box's own mesh volume still comes out exact despite
@@ -2326,6 +2329,43 @@ void TestBooleanCombineGeneralBoxCylinder() {
   // this engine's own polyline edges across adjacent faces - not
   // introduced, and not fixed, by this session's periodicity work, and
   // out of that work's own scope.
+  //
+  // Partially asserted (a later session) on TessellateGeneralBooleanClosed
+  // Mesh (boolean_general.h), this engine's own closed-manifold-oriented
+  // tessellator, at the same (32, 128) tests/general_boolean_sweep.cpp
+  // measures at, with that function's mesh-level seam repair (see
+  // boolean_general.h's own "MESH-LEVEL SEAM REPAIR" section) applied.
+  // Intersection closes cleanly and IS asserted below. Union and
+  // Difference are NOT: measured directly (tests/scratch_test.cpp's own
+  // "STANDALONE-REPRO" fixture, byte-for-byte this same box+cylinder), the
+  // repair leaves each with exactly 4 residual naked edges, root-caused
+  // with DINO8_SEAM_REPAIR_DEBUG=2 to one small quadrilateral hole (at the
+  // cylindrical face's own u=0 periodic seam, which THIS fixture's
+  // MakeCylinderZForBoxCylinderTest happens to place at physical angle 0,
+  // i.e. point (r,0,z)) whose two possible triangulating diagonals are
+  // BOTH already saturated (undirected count 2) by the box cap's own and
+  // the wall's own separately-closed local tessellation - no 2-triangle
+  // fan using only the hole's own 4 existing corners can close it without
+  // pushing a diagonal to count 3, and this repair pass never invents a
+  // new interior vertex to sidestep that. This is genuinely seam-angle-
+  // dependent, not a property of the geometry alone: the same box+cylinder
+  // combination with the wall's u=0 seam at a different absolute angle
+  // (tests/general_boolean_sweep.cpp's own case 01, built via a different
+  // frame convention) closes on all four of its ops - confirmed directly,
+  // not inferred, by re-running this exact fixture with the seam rotated
+  // 90deg (still exactly the same box+cylinder shape, since the box is
+  // 90deg-symmetric and 32 divisions is an exact multiple of 4). Not
+  // pursued further this session - see boolean_general.h's own doc
+  // comment for why. All three ops' volumes still land at the
+  // tessellation's OWN inherent inscribed-32-gon deficit (~0.64% of the
+  // cylinder's pi*r^2 cross-section, 0.040 on the 6.28 intersection) even
+  // where closure is incomplete - the repair does not trade volume for
+  // closure, whether or not it fully closes. Not asserted at coarser
+  // resolutions on purpose: measured directly, Union/Difference also close
+  // at (8, 8) and (8, 32) but Intersection is left with a handful of
+  // broken edges there (6-9 naked, 2-3 nonmanifold) that the repair's
+  // bounded, local moves do not reach - a disclosed residual, see the same
+  // doc section.
   const double tol = 0.8;
 
   {
@@ -2335,6 +2375,13 @@ void TestBooleanCombineGeneralBoxCylinder() {
     Check(std::abs(m.Volume() - expect_u) < tol,
           "box+cylinder Union's tessellated volume matches the closed-form "
           "box + cylinder - intersection to within tessellation tolerance");
+    // NOT asserted IsClosedManifold() here - see this function's own top
+    // comment: this exact fixture's cylinder seam angle leaves a disclosed
+    // 4-edge residual on Union. Volume is still checked: closure and
+    // volume-correctness are independent properties of this repair pass.
+    const Mesh closed = TessellateGeneralBooleanClosedMesh(u, 32, 128);
+    Check(std::abs(closed.Volume() - expect_u) < tol,
+          "box+cylinder Union's TessellateGeneralBooleanClosedMesh(32, 128) mesh still matches the closed-form volume");
   }
   {
     const Brep i = BooleanCombineGeneral(box, cyl, BooleanOp::Intersection);
@@ -2343,6 +2390,11 @@ void TestBooleanCombineGeneralBoxCylinder() {
     Check(std::abs(m.Volume() - expect_i) < tol,
           "box+cylinder Intersection's tessellated volume matches the "
           "closed-form pi*r^2*box_height to within tessellation tolerance");
+    const Mesh closed = TessellateGeneralBooleanClosedMesh(i, 32, 128);
+    Check(closed.IsClosedManifold(),
+          "box+cylinder Intersection's TessellateGeneralBooleanClosedMesh(32, 128) result is a genuine closed manifold");
+    Check(std::abs(closed.Volume() - expect_i) < tol,
+          "box+cylinder Intersection's closed-manifold mesh still matches the closed-form volume");
   }
   {
     const Brep d = BooleanCombineGeneral(box, cyl, BooleanOp::Difference);
@@ -2351,6 +2403,11 @@ void TestBooleanCombineGeneralBoxCylinder() {
     Check(std::abs(m.Volume() - expect_d) < tol,
           "box+cylinder Difference's tessellated volume matches the "
           "closed-form box - intersection to within tessellation tolerance");
+    // NOT asserted IsClosedManifold() here either - same disclosed 4-edge
+    // residual as Union above (this fixture's own cylinder seam angle).
+    const Mesh closed = TessellateGeneralBooleanClosedMesh(d, 32, 128);
+    Check(std::abs(closed.Volume() - expect_d) < tol,
+          "box+cylinder Difference's TessellateGeneralBooleanClosedMesh(32, 128) mesh still matches the closed-form volume");
   }
 }
 
@@ -5908,6 +5965,439 @@ void TestTolerancePolicyValuesAreTheOnesInForce() {
     threw_big = true;
   }
   Check(threw_big, "...and rejects one 3*kPlanarityRelative*extent out of plane - the routed constant is in force");
+
+  // The second routing pass (brep.cpp's radius/edge-length fit
+  // tolerances and unit-vector alignment checks, mesh.cpp's degeneracy
+  // floors) - same "name and route, prove nothing moved" contract as
+  // above, pinned by VALUE since these sites are covered behaviourally
+  // by the existing cylinder/cone/steinmetz/planar-ring test suite
+  // (unchanged pass/fail there, plus the byte-identical boolean sweep,
+  // is what proves the routing changed nothing measurable).
+  Check(tol::kTinyDistance == 1e-9, "tolerance::kTinyDistance is the 1e-9 the radius/edge-length fit sites always used");
+  Check(tol::RelativeDistance(0.0) == tol::kTinyDistance && tol::RelativeDistance(10.0) == 10.0 * tol::kRelative,
+        "RelativeDistance() floors at kTinyDistance and scales by kRelative above it - DistanceForSize()'s purely-relative sibling");
+  Check(tol::kAlignment == 1e-6, "tolerance::kAlignment is the 1e-6 the unit-vector dot-product-deficit sites always used");
+}
+
+// --- Check / heal fixtures ---------------------------------------------
+//
+// A unit box as six FromPlanarFaces() faces with REAL topology (shared
+// ON_BrepEdge records), so a deliberately broken variant of it exercises
+// the actual vertex/edge/trim/loop checks - Box() itself has no topology
+// to break (see brep.h's class-level comment). `top_z` lets the top face
+// be built off its true height on purpose (the "offset an edge by 1e-4"
+// fixture), and `top` lets the top face be replaced/split entirely.
+dino8::kernel::Brep::PlanarFace CheckHealFace(std::vector<dino8::kernel::Point3d> loop, ON_3dVector normal) {
+  dino8::kernel::Brep::PlanarFace f;
+  f.loop = std::move(loop);
+  f.plane = ON_Plane(f.loop[0], normal);
+  return f;
+}
+
+std::vector<dino8::kernel::Brep::PlanarFace> CheckHealBoxFaces(double top_z = 1.0) {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  const std::vector<Point3d> b = {Point3d(0, 0, 0), Point3d(1, 0, 0), Point3d(1, 1, 0), Point3d(0, 1, 0)};
+  const std::vector<Point3d> t = {Point3d(0, 0, 1), Point3d(1, 0, 1), Point3d(1, 1, 1), Point3d(0, 1, 1)};
+  std::vector<Brep::PlanarFace> faces;
+  faces.push_back(CheckHealFace({b[3], b[2], b[1], b[0]}, ON_3dVector(0, 0, -1)));  // face 0: bottom
+  faces.push_back(CheckHealFace({Point3d(0, 0, top_z), Point3d(1, 0, top_z), Point3d(1, 1, top_z), Point3d(0, 1, top_z)},
+                                ON_3dVector(0, 0, 1)));  // face 1: top
+  for (size_t i = 0; i < 4; ++i) {  // faces 2..5: sides, in b's own CCW order
+    const size_t j = (i + 1) % 4;
+    ON_3dVector n = ON_CrossProduct(b[j] - b[i], t[i] - b[i]);
+    n.Unitize();
+    faces.push_back(CheckHealFace({b[i], b[j], t[j], t[i]}, n));
+  }
+  return faces;
+}
+
+// The clean fixture reports nothing at all, and every summary flag the
+// repairs below are measured against starts out true - so a later
+// "clean after repair" is a return to THIS state, not to a weaker one.
+void TestBrepCheckReportsCleanBoxAsClean() {
+  using dino8::kernel::Brep;
+  const Brep box = Brep::FromPlanarFaces(CheckHealBoxFaces());
+  const Brep::CheckReport r = box.Check();
+  Check(r.IsClean(), "Check() on a clean FromPlanarFaces box reports no issues");
+  Check(r.topology_valid && r.is_closed && r.is_oriented,
+        "...and reports it as topologically valid, closed and oriented");
+  Check(box.raw().IsValid() && box.raw().IsSolid(), "the clean fixture is a valid solid ON_Brep to begin with");
+  Check(std::fabs(box.TessellateToClosedMesh(4, 4).Volume() - 1.0) < 1e-9, "the clean fixture's volume is exactly 1");
+  // Every Kind counts zero, via the counting accessor the later tests use.
+  Check(r.Count(Brep::CheckIssue::Kind::NakedEdge) == 0 && r.Count(Brep::CheckIssue::Kind::DegenerateFace) == 0 &&
+            r.Count(Brep::CheckIssue::Kind::SliverFace) == 0 && r.Count(Brep::CheckIssue::Kind::TrimEdgeGap) == 0,
+        "Count() reports zero for every kind on the clean fixture");
+}
+
+// Flip one face: Check() names the flipped face on each of its 4 edges
+// (index = the flipped face, other_index = each neighbour), the welded
+// mesh is no longer a closed manifold (an orientation conflict on every
+// one of those edges), and UnifyNormals() restores a valid solid with
+// volume exactly +1 - not -1, and not a mesh that merely closes.
+void TestBrepCheckAndUnifyNormalsOnFlippedFace() {
+  using dino8::kernel::Brep;
+  Brep box = Brep::FromPlanarFaces(CheckHealBoxFaces());
+  box.raw().FlipFace(box.raw().m_F[1]);
+
+  const Brep::CheckReport before = box.Check();
+  Check(before.Count(Brep::CheckIssue::Kind::InconsistentFaceOrientation) == 4 && before.issues.size() == 4,
+        "flipping the top face yields exactly 4 InconsistentFaceOrientation issues (its 4 edges) and nothing else");
+  bool names_flipped_face = true;
+  std::set<int> neighbours;
+  for (const Brep::CheckIssue& issue : before.issues) {
+    if (issue.index != 1) names_flipped_face = false;
+    neighbours.insert(issue.other_index);
+    if (std::fabs(issue.location.z - 1.0) > 1e-12) names_flipped_face = false;
+  }
+  Check(names_flipped_face && neighbours == std::set<int>{2, 3, 4, 5},
+        "each issue names the flipped face as `index`, one distinct side face as `other_index`, and an edge midpoint at z=1");
+  Check(before.is_closed && !before.is_oriented && before.topology_valid,
+        "the flipped box is still closed and topologically valid, just not oriented");
+  Check(!box.TessellateToClosedMesh(4, 4).IsClosedManifold(),
+        "the flipped box's welded mesh is not a closed manifold (its top face's triangles walk shared edges backwards)");
+
+  const int flips = box.UnifyNormals();
+  Check(flips == 1 || flips == 11,
+        "UnifyNormals() flips either the one bad face or the five others plus an outward re-flip of all six");
+  const Brep::CheckReport after = box.Check();
+  Check(after.IsClean() && after.is_oriented, "after UnifyNormals() the box checks clean and oriented");
+  Check(box.raw().IsValid() && box.raw().IsSolid(), "...and is a valid solid ON_Brep again");
+  const dino8::kernel::Mesh mesh = box.TessellateToClosedMesh(4, 4);
+  Check(mesh.IsClosedManifold() && std::fabs(mesh.Volume() - 1.0) < 1e-9,
+        "...whose welded mesh is a closed manifold with volume exactly +1 (outward, not inside-out)");
+
+  // Whole-shell inversion: every face flipped is perfectly consistent
+  // (no InconsistentFaceOrientation at all) yet inside-out, volume -1.
+  // Only the outward step can catch that - and does.
+  for (int i = 0; i < box.raw().m_F.Count(); ++i) box.raw().FlipFace(box.raw().m_F[i]);
+  Check(box.Check().IsClean(), "an inside-out box (every face flipped) is internally consistent, so Check() is clean");
+  Check(std::fabs(box.TessellateToClosedMesh(4, 4).Volume() + 1.0) < 1e-9, "...but its volume is -1");
+  Check(box.UnifyNormals() == 6, "UnifyNormals() flips all 6 faces of the inside-out box");
+  Check(std::fabs(box.TessellateToClosedMesh(4, 4).Volume() - 1.0) < 1e-9, "...restoring volume +1");
+}
+
+// Drop a face: Check() reports exactly the 4 exposed edges as naked
+// (with their midpoints), and CapPlanarHoles() rebuilds the missing
+// planar face, joins it, and yields a valid solid of volume 1 whose
+// welded mesh is a genuinely closed manifold - not just a Brep that
+// passes IsSolid() while its mesh has T-junction seams (the failure
+// mode an ON_BrepTrimmedPlane-built cap actually had; see
+// CapPlanarHoles' own comment).
+void TestBrepCheckReportsDroppedFaceAndCapPlanarHolesRestoresIt() {
+  using dino8::kernel::Brep;
+  Brep box = Brep::FromPlanarFaces(CheckHealBoxFaces());
+  box.raw().DeleteFace(box.raw().m_F[1], /*bDeleteFaceEdges=*/true);
+  box.raw().Compact();
+  box.raw().SetTolerancesBoxesAndFlags();
+  Check(box.FaceCount() == 5, "the fixture has 5 faces after deleting the top");
+
+  const Brep::CheckReport before = box.Check();
+  Check(before.Count(Brep::CheckIssue::Kind::NakedEdge) == 4 && before.issues.size() == 4,
+        "deleting the top face yields exactly 4 NakedEdge issues and nothing else");
+  bool all_at_top = true;
+  for (const Brep::CheckIssue& issue : before.issues) {
+    if (std::fabs(issue.location.z - 1.0) > 1e-12 || issue.other_index != 1) all_at_top = false;
+  }
+  Check(all_at_top, "each naked edge's location is its midpoint at z=1 and other_index is its trim count, 1");
+  Check(!before.is_closed && before.is_oriented && !box.raw().IsSolid(),
+        "the open box reports not closed (but still oriented), and ON_Brep::IsSolid() agrees");
+  Check(!box.TessellateToClosedMesh(4, 4).IsClosedManifold(), "the open box's welded mesh is open");
+
+  Check(box.CapPlanarHoles() == 1, "CapPlanarHoles() adds exactly one cap");
+  Check(box.FaceCount() == 6 && box.raw().m_E.Count() == 12, "the capped box has 6 faces and 12 edges again");
+  const Brep::CheckReport after = box.Check();
+  Check(after.IsClean() && after.is_closed && after.is_oriented, "the capped box checks clean, closed and oriented");
+  Check(box.raw().IsValid() && box.raw().IsSolid(), "...and is a valid solid ON_Brep");
+  const dino8::kernel::Mesh mesh = box.TessellateToClosedMesh(4, 4);
+  Check(mesh.IsClosedManifold(), "the capped box's plain welded mesh is a closed manifold (the cap's grid conforms to its neighbours')");
+  Check(std::fabs(mesh.Volume() - 1.0) < 1e-9, "...with volume exactly 1");
+
+  // A second call has nothing to cap.
+  Check(box.CapPlanarHoles() == 0, "a closed box has no hole to cap");
+}
+
+// Offset an edge by 1e-4: the top face is built at z = 1 + 1e-4, so none
+// of its 4 edges weld to the sides' (kWeld is 1e-6) - 8 naked edges.
+// JoinNakedEdges(2e-4) joins the 4 pairs and records the 1e-4 gap as
+// each surviving edge's own tolerance (Parasolid's tolerant edge), which
+// Check() at the default 1e-6 then honours: clean, closed, oriented and
+// a valid solid ON_Brep. The mesh side is the honest part: the plain
+// tessellation's fixed kWeld weld leaves that 1e-4 seam open, and only
+// TessellateToClosedMeshTolerant() closes it - with the volume within
+// the gap of 1.
+void TestBrepJoinNakedEdgesRecordsTolerantEdges() {
+  using dino8::kernel::Brep;
+  namespace tol = dino8::kernel::tolerance;
+  const double gap = 1e-4;
+  Brep box = Brep::FromPlanarFaces(CheckHealBoxFaces(1.0 + gap));
+
+  const Brep::CheckReport before = box.Check();
+  Check(before.Count(Brep::CheckIssue::Kind::NakedEdge) == 8 && before.issues.size() == 8,
+        "a top face 1e-4 above the sides leaves exactly 8 naked edges (4 on the top, 4 on the sides) and nothing else");
+  Check(!before.is_closed, "...so the box is reported open");
+  Check(box.Check(2e-4).Count(Brep::CheckIssue::Kind::NakedEdge) == 8,
+        "Check()'s own tolerance does not paper over naked edges - they are topological, not a gap measurement");
+
+  Check(box.JoinNakedEdges(2.0 * gap) == 4, "JoinNakedEdges(2e-4) joins exactly the 4 pairs");
+  Check(box.raw().m_E.Count() == 12, "...leaving 12 edges");
+  int tolerant_edges = 0;
+  bool tolerances_are_the_gap = true;
+  for (int ei = 0; ei < box.raw().m_E.Count(); ++ei) {
+    const double t = box.raw().m_E[ei].m_tolerance;
+    if (t > tol::kDistance) {
+      ++tolerant_edges;
+      if (std::fabs(t - gap) > 1e-12) tolerances_are_the_gap = false;
+    }
+  }
+  Check(tolerant_edges == 4 && tolerances_are_the_gap,
+        "exactly the 4 joined edges carry a recorded tolerance, and it is the measured 1e-4 gap (to 1e-12), not a default");
+  const Brep::CheckReport after = box.Check();
+  Check(after.IsClean() && after.is_closed && after.is_oriented,
+        "at the default 1e-6 tolerance the joined box checks clean: the 1e-4 trim/edge disagreement is covered by the edges' own recorded tolerance");
+  Check(box.Check(1e-3).IsClean(), "...and at a looser 1e-3 too");
+  Check(box.raw().IsValid() && box.raw().IsSolid(), "the joined box is a valid solid ON_Brep");
+
+  const dino8::kernel::Mesh plain = box.TessellateToClosedMesh(4, 4);
+  Check(!plain.IsClosedManifold(), "the plain tessellation's fixed kWeld weld leaves the 1e-4 tolerant seam open (disclosed in brep.h)");
+  const dino8::kernel::Mesh tolerant = box.TessellateToClosedMeshTolerant(4, 4);
+  Check(tolerant.IsClosedManifold(), "TessellateToClosedMeshTolerant() closes it (naked-vertex true-distance weld at 2x the recorded tolerance)");
+  Check(std::fabs(tolerant.Volume() - 1.0) <= 2.0 * gap && std::fabs(tolerant.Volume() - 1.0) > 0.0,
+        "...with a volume within the 1e-4 gap of 1 (the top genuinely sits 1e-4 high; the seam closes onto one side's vertices)");
+
+  // Nothing left to join.
+  Check(box.JoinNakedEdges(2.0 * gap) == 0, "a second JoinNakedEdges() finds nothing");
+}
+
+// A hairline strip on the top: the top face is split into a main face
+// and a `width`-wide strip along y=1. For width 1e-5 (above kDistance,
+// below kEdgeJoin) Check() reports the strip as a SliverFace with that
+// width, and RemoveSliverFaces(2e-5) deletes it and re-joins the exposed
+// edges as tolerant edges of tolerance 1e-5. For width 8e-7 (below
+// kDistance, but above the weld snap so the strip's vertices genuinely
+// exist) the same face is a DegenerateFace, its two short edges are
+// DegenerateEdges, and RemoveDegenerateFaces() closes it exactly. Both
+// end as valid solids whose tolerant tessellation is closed with volume
+// within the strip's width of 1.
+void TestBrepRemoveSliverAndDegenerateFacesHealHairlineStrip() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  namespace tol = dino8::kernel::tolerance;
+  for (const double width : {1e-5, 8e-7}) {
+    const bool sliver = width > tol::kDistance;
+    std::vector<Brep::PlanarFace> faces = CheckHealBoxFaces();
+    faces[1] = CheckHealFace({Point3d(0, 0, 1), Point3d(1, 0, 1), Point3d(1, 1 - width, 1), Point3d(0, 1 - width, 1)},
+                             ON_3dVector(0, 0, 1));
+    faces.push_back(CheckHealFace({Point3d(0, 1 - width, 1), Point3d(1, 1 - width, 1), Point3d(1, 1, 1), Point3d(0, 1, 1)},
+                                  ON_3dVector(0, 0, 1)));
+    Brep box = Brep::FromPlanarFaces(faces);
+    Check(box.FaceCount() == 7, sliver ? "the 1e-5 strip fixture has 7 faces" : "the 8e-7 strip fixture has 7 faces");
+
+    const Brep::CheckReport before = box.Check();
+    const auto kind = sliver ? Brep::CheckIssue::Kind::SliverFace : Brep::CheckIssue::Kind::DegenerateFace;
+    int strip_reports = 0;
+    bool strip_measured = true;
+    for (const Brep::CheckIssue& issue : before.issues) {
+      if (issue.kind != kind) continue;
+      ++strip_reports;
+      if (issue.index != 6 || std::fabs(issue.measure - width) > 1e-12 || std::fabs(issue.location.y - (1 - width / 2)) > 1e-9) {
+        strip_measured = false;
+      }
+    }
+    Check(strip_reports == 1 && strip_measured,
+          sliver ? "Check() reports exactly the strip (face 6) as a SliverFace, with its 1e-5 width as `measure` and its centroid as `location`"
+                 : "Check() reports exactly the strip (face 6) as a DegenerateFace, with its 8e-7 width as `measure` and its centroid as `location`");
+    Check(before.Count(Brep::CheckIssue::Kind::DegenerateEdge) == (sliver ? 0 : 2),
+          sliver ? "a 1e-5 strip's short edges are not degenerate at 1e-6" : "the 8e-7 strip's two short edges are reported as DegenerateEdge");
+    Check(before.Count(Brep::CheckIssue::Kind::NakedEdge) == 6,
+          "the strip fixture's sides don't share the split top's edges: 6 naked edges (the 2 split side edges on each of 3 faces)");
+
+    const int removed = sliver ? box.RemoveSliverFaces(2.0 * width) : box.RemoveDegenerateFaces(tol::kDistance);
+    Check(removed == 1, sliver ? "RemoveSliverFaces(2e-5) removes exactly the strip" : "RemoveDegenerateFaces() removes exactly the strip");
+    Check(box.FaceCount() == 6 && box.raw().m_E.Count() == 12, "...leaving a 6-face, 12-edge box");
+    const Brep::CheckReport after = box.Check();
+    Check(after.IsClean() && after.is_closed && after.is_oriented, "the healed box checks clean, closed and oriented");
+    Check(box.raw().IsValid() && box.raw().IsSolid(), "...and is a valid solid ON_Brep");
+    int tolerant_edges = 0;
+    for (int ei = 0; ei < box.raw().m_E.Count(); ++ei) {
+      if (box.raw().m_E[ei].m_tolerance > tol::kDistance) ++tolerant_edges;
+    }
+    Check(tolerant_edges == (sliver ? 3 : 0),
+          sliver ? "the sliver's 3 re-joined edges (the y=1 rim plus its two side stubs) are recorded as tolerant edges"
+                 : "the degenerate strip's re-joined edges close within kDistance, so no tolerant edge is recorded");
+    const dino8::kernel::Mesh mesh = box.TessellateToClosedMeshTolerant(4, 4);
+    Check(mesh.IsClosedManifold(), "the healed box's tolerant tessellation is a closed manifold");
+    Check(std::fabs(mesh.Volume() - 1.0) <= 2.0 * width, "...with volume within the strip's width of 1");
+  }
+}
+
+// A shared micro edge: both the top face and the y=1 side face carry an
+// extra vertex 8e-7 from the (1,1,1) corner, so the edge between them is
+// a genuine 2-trim edge of length 8e-7. Check() reports exactly that
+// edge as DegenerateEdge (with its length), RemoveDegenerateEdges()
+// collapses it via ON_Brep::CollapseEdge() and closes the residual 2D
+// loop gap the collapse leaves behind (see CloseLoopGapsWithinTolerance),
+// and the result is a valid solid with 12 edges and volume 1.
+void TestBrepRemoveDegenerateEdgesCollapsesSharedMicroEdge() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  const double w = 8e-7;
+  std::vector<Brep::PlanarFace> faces = CheckHealBoxFaces();
+  faces[1] = CheckHealFace({Point3d(0, 0, 1), Point3d(1, 0, 1), Point3d(1, 1, 1), Point3d(1 - w, 1, 1), Point3d(0, 1, 1)},
+                           ON_3dVector(0, 0, 1));
+  faces[4] = CheckHealFace({Point3d(1, 1, 0), Point3d(0, 1, 0), Point3d(0, 1, 1), Point3d(1 - w, 1, 1), Point3d(1, 1, 1)},
+                           ON_3dVector(0, 1, 0));
+  Brep box = Brep::FromPlanarFaces(faces);
+  Check(box.raw().m_E.Count() == 13 && box.raw().IsValid() && box.raw().IsSolid(),
+        "the micro-edge fixture is a valid 13-edge solid (the extra vertex is above the weld snap, so it genuinely exists)");
+
+  const Brep::CheckReport before = box.Check();
+  Check(before.issues.size() == 1 && before.Count(Brep::CheckIssue::Kind::DegenerateEdge) == 1,
+        "Check() reports exactly one issue: the DegenerateEdge");
+  const Brep::CheckIssue& issue = before.issues[0];
+  Check(issue.other_index == 2 && std::fabs(issue.measure - w) < 1e-12 && std::fabs(issue.location.y - 1.0) < 1e-12 &&
+            std::fabs(issue.location.z - 1.0) < 1e-12,
+        "...a 2-trim edge of measured length 8e-7 at the top y=1 rim");
+  Check(before.is_closed && before.is_oriented, "the micro-edge box is closed and oriented (a degenerate edge is not a hole)");
+
+  Check(box.RemoveDegenerateEdges() == 1, "RemoveDegenerateEdges() collapses exactly the one micro edge");
+  Check(box.raw().m_E.Count() == 12 && box.raw().m_V.Count() == 8, "...leaving 12 edges and 8 vertices");
+  const Brep::CheckReport after = box.Check();
+  Check(after.IsClean() && after.topology_valid, "the collapsed box checks clean and topologically valid");
+  Check(box.raw().IsValid() && box.raw().IsSolid(), "...and is a valid solid ON_Brep (its loops close exactly again)");
+  const dino8::kernel::Mesh mesh = box.TessellateToClosedMeshTolerant(4, 4);
+  Check(mesh.IsClosedManifold() && std::fabs(mesh.Volume() - 1.0) < 1e-6,
+        "...whose tolerant tessellation is a closed manifold of volume 1");
+}
+
+// Mesh-level Check()/FillSmallHoles(): drop one triangle (a 3-vertex
+// hole, filled with a single triangle) and then a whole quad face (a
+// 4-vertex hole, filled with a centroid fan); the box sits away from the
+// origin so a missing face measurably changes the divergence-theorem
+// volume. The vertex/face counts below are hand-derived from the
+// 12-triangle box (a triangle fill adds 0 vertices / 1 face, a centroid
+// fan over a 4-loop adds 1 vertex / 4 faces), not read back.
+void TestMeshCheckAndFillSmallHolesRestoreDroppedFaces() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  const Mesh box = Brep::Box(1, 1, 1, 2, 2, 2).TessellateToClosedMesh(1, 1);
+  Check(box.VertexCount() == 8 && box.FaceCount() == 12 && box.IsClosedManifold(),
+        "the 1x1-division box mesh is 8 vertices / 12 triangles, closed");
+  const Mesh::CheckReport clean = box.Check();
+  Check(clean.naked_edges == 0 && clean.non_manifold_edges == 0 && clean.orientation_conflicts == 0 &&
+            clean.degenerate_faces == 0 && clean.duplicate_vertices == 0 && clean.IsClosedManifold(),
+        "Mesh::Check() on the clean box counts zero of everything");
+
+  // One triangle dropped: a 3-loop.
+  {
+    Mesh m = box;
+    m.raw().m_F.Remove(11);
+    const Mesh::CheckReport r = m.Check();
+    Check(r.naked_edges == 3 && r.naked_edge_list.size() == 3 && !r.IsClosedManifold(),
+          "dropping one triangle leaves exactly 3 naked edges");
+    Check(std::fabs(m.Volume() - 1.0) > 0.01, "...and the open mesh's volume is visibly not 1 (the box is off-origin)");
+    const auto loops = m.NakedEdgeLoops();
+    Check(loops.size() == 1 && loops[0].size() == 3, "NakedEdgeLoops() chains them into one 3-vertex loop");
+    Check(m.FillSmallHoles(0.5) == 0 && m.Check().naked_edges == 3,
+          "FillSmallHoles(0.5) refuses a hole whose bounding diagonal (>= 1.4) exceeds the bound");
+    Check(m.FillSmallHoles(2.0) == 1, "FillSmallHoles(2.0) fills it");
+    Check(m.VertexCount() == 8 && m.FaceCount() == 12 && m.IsClosedManifold(),
+          "a 3-vertex hole is filled with one triangle and no new vertex: 8 vertices / 12 faces, closed");
+    Check(std::fabs(m.Volume() - 1.0) < 1e-6, "...and the volume is exactly 1 again (the fill is wound outward)");
+  }
+  // A whole quad face (both triangles) dropped: a 4-loop.
+  {
+    Mesh m = box;
+    // Find the two triangles of the z=2 top face by their vertex heights.
+    std::vector<int> top;
+    for (int i = 0; i < m.raw().m_F.Count(); ++i) {
+      const ON_MeshFace& f = m.raw().m_F[i];
+      if (m.raw().m_V[f.vi[0]].z > 1.5f && m.raw().m_V[f.vi[1]].z > 1.5f && m.raw().m_V[f.vi[2]].z > 1.5f) top.push_back(i);
+    }
+    Check(top.size() == 2, "the top face is exactly 2 triangles");
+    m.raw().m_F.Remove(top[1]);
+    m.raw().m_F.Remove(top[0]);
+    const Mesh::CheckReport r = m.Check();
+    Check(r.naked_edges == 4, "dropping the whole top face leaves exactly 4 naked edges");
+    const auto loops = m.NakedEdgeLoops();
+    Check(loops.size() == 1 && loops[0].size() == 4, "NakedEdgeLoops() chains them into one 4-vertex loop");
+    Check(m.FillSmallHoles(2.0) == 1, "FillSmallHoles(2.0) fills the 4-vertex hole");
+    Check(m.VertexCount() == 9 && m.FaceCount() == 14 && m.IsClosedManifold(),
+          "a 4-vertex hole is filled with a centroid fan: 1 new vertex, 4 triangles (9 vertices / 14 faces), closed");
+    Check(std::fabs(m.Volume() - 1.0) < 1e-6, "...with volume exactly 1 (the centroid lies in the top plane)");
+    Check(m.FillSmallHoles(2.0) == 0, "a closed mesh has no hole to fill");
+  }
+}
+
+// Mesh-level UnifyNormals(): one triangle wound backwards yields exactly
+// its 3 orientation conflicts and a wrong volume; UnifyNormals() flips
+// it back. A wholly inverted mesh has NO conflicts (consistent, just
+// inside-out) and volume -1, and only the outward step fixes that.
+void TestMeshUnifyNormalsFixesFlippedAndInvertedFaces() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  const Mesh box = Brep::Box(1, 1, 1, 2, 2, 2).TessellateToClosedMesh(1, 1);
+  {
+    Mesh m = box;
+    ON_MeshFace& f = m.raw().m_F[3];
+    std::swap(f.vi[0], f.vi[2]);
+    f.vi[3] = f.vi[2];
+    const Mesh::CheckReport r = m.Check();
+    Check(r.orientation_conflicts == 3 && r.naked_edges == 0 && !r.IsClosedManifold(),
+          "one backwards triangle yields exactly 3 orientation conflicts and no naked edges");
+    Check(std::fabs(m.Volume() - 1.0) > 0.01, "...and a visibly wrong volume");
+    const int flips = m.UnifyNormals();
+    Check(flips == 1 || flips == 23, "UnifyNormals() flips the one bad face (or the other 11 plus an outward re-flip of all 12)");
+    Check(m.IsClosedManifold() && std::fabs(m.Volume() - 1.0) < 1e-6, "...restoring a closed manifold of volume exactly 1");
+  }
+  {
+    Mesh m = box.FlipNormals();
+    Check(m.Check().orientation_conflicts == 0 && m.IsClosedManifold(), "a wholly inverted box is still a consistent closed manifold");
+    Check(std::fabs(m.Volume() + 1.0) < 1e-6, "...with volume -1");
+    Check(m.UnifyNormals() == 12, "UnifyNormals() flips all 12 faces of the inverted box");
+    Check(std::fabs(m.Volume() - 1.0) < 1e-6, "...restoring volume +1");
+  }
+}
+
+// Mesh-level CloseNakedEdges(): a duplicated vertex (one face pointing at
+// a second copy of a corner) opens the 4 edges around it and shows up as
+// 2 duplicate vertices; welding at kDistance closes it with the copy
+// removed. The same corner copied 1e-4 away is NOT a duplicate at
+// kDistance (nor welded by it), and IS welded at 2e-4 - a true-distance
+// weld, not a grid snap.
+void TestMeshCloseNakedEdgesWeldsDuplicateAndOffsetVertices() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  namespace tol = dino8::kernel::tolerance;
+  const Mesh box = Brep::Box(1, 1, 1, 2, 2, 2).TessellateToClosedMesh(1, 1);
+  auto split_corner = [&](float dz) {
+    Mesh m = box;
+    ON_MeshFace& f = m.raw().m_F[5];
+    ON_3fPoint copy = m.raw().m_V[f.vi[0]];
+    copy.z += dz;
+    m.raw().m_V.Append(copy);
+    f.vi[0] = m.raw().m_V.Count() - 1;
+    return m;
+  };
+  {
+    Mesh m = split_corner(0.0f);
+    const Mesh::CheckReport r = m.Check();
+    Check(r.naked_edges == 4 && r.duplicate_vertices == 2 && !r.IsClosedManifold(),
+          "a duplicated corner opens 4 naked edges and counts as 2 duplicate vertices");
+    Check(m.CloseNakedEdges(tol::kDistance) == 1, "CloseNakedEdges(kDistance) welds the one copy away");
+    Check(m.VertexCount() == 8 && m.FaceCount() == 12 && m.IsClosedManifold(), "...restoring 8 vertices / 12 faces, closed");
+    Check(std::fabs(m.Volume() - 1.0) < 1e-6 && m.Check().duplicate_vertices == 0, "...with volume 1 and no duplicates left");
+  }
+  {
+    Mesh m = split_corner(1e-4f);
+    const Mesh::CheckReport r = m.Check();
+    Check(r.naked_edges == 4 && r.duplicate_vertices == 0, "a corner copied 1e-4 away opens 4 naked edges but is not a duplicate at 1e-6");
+    Check(m.CloseNakedEdges(tol::kDistance) == 0 && m.Check().naked_edges == 4,
+          "CloseNakedEdges(kDistance) refuses it (1e-4 > 1e-6), leaving the seam open");
+    Check(m.CloseNakedEdges(2e-4) == 1, "CloseNakedEdges(2e-4) welds it");
+    Check(m.IsClosedManifold() && m.VertexCount() == 8 && std::fabs(m.Volume() - 1.0) < 1e-6,
+          "...restoring a closed 8-vertex manifold of volume 1 (the original corner survives at its own position)");
+  }
 }
 
 void TestLoftClosedRingsConcaveEndCapsExactPrismVolume() {
@@ -23236,6 +23726,15 @@ int main() {
   TestSurfaceMatchEdgePositionTangentCurvature();
   TestSurfaceMatchEdgeToRationalSphereAndRefusals();
   TestTolerancePolicyValuesAreTheOnesInForce();
+  TestBrepCheckReportsCleanBoxAsClean();
+  TestBrepCheckAndUnifyNormalsOnFlippedFace();
+  TestBrepCheckReportsDroppedFaceAndCapPlanarHolesRestoresIt();
+  TestBrepJoinNakedEdgesRecordsTolerantEdges();
+  TestBrepRemoveSliverAndDegenerateFacesHealHairlineStrip();
+  TestBrepRemoveDegenerateEdgesCollapsesSharedMicroEdge();
+  TestMeshCheckAndFillSmallHolesRestoreDroppedFaces();
+  TestMeshUnifyNormalsFixesFlippedAndInvertedFaces();
+  TestMeshCloseNakedEdgesWeldsDuplicateAndOffsetVertices();
 
   sweep_tests::TestMergeAndWeldDropsCollapsedPoleTriangles();
   sweep_tests::TestExtrudeRectangleIsExactCappedSolid();
