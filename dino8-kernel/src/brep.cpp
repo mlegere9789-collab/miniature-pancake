@@ -8,8 +8,10 @@
 #include <cstdlib>
 #include <functional>
 #include <limits>
+#include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <stdexcept>
 #include <unordered_map>
 #include <utility>
@@ -5001,6 +5003,637 @@ Result Brep::RemoveNakedMicroEdge(int edge_index, double tolerance) {
   face_notch_rows_.clear();
   face_records_.clear();
   return Result::Ok;
+}
+
+// ---------------------------------------------------------------------------
+// Check / heal - see brep.h's own doc comments on each method. Everything
+// here reads or edits this class's own ON_Brep directly, the same way the
+// topology-surgery methods above do.
+
+namespace {
+
+using CheckKind = Brep::CheckIssue::Kind;
+
+// A trim's own 3D point at normalized parameter `s` in [0, 1] of its
+// domain, evaluated THROUGH the proxy (ON_BrepTrim is an ON_CurveProxy,
+// so a reversed or sub-domain proxy of its 2D curve is honoured) and
+// then through its face's surface. False if the trim has no 2D curve or
+// no surface.
+bool TrimPoint3d(const ON_BrepTrim& trim, double s, ON_3dPoint& out) {
+  if (!trim.TrimCurveOf()) return false;
+  const ON_Surface* srf = trim.SurfaceOf();
+  if (!srf) return false;
+  const ON_3dPoint uv = trim.PointAt(trim.Domain().ParameterAt(s));
+  out = srf->PointAt(uv.x, uv.y);
+  return true;
+}
+
+// The largest distance, over the trim's start/middle/end, between the
+// trim's 3D image (TrimPoint3d) and the edge's own 3D curve at the
+// matching parameter (reversed when m_bRev3d says the trim runs against
+// the edge). `where` receives the trim-side point at the worst sample.
+// Returns -1.0 if the trim can't be evaluated.
+double TrimEdgeGapMeasure(const ON_BrepTrim& trim, const ON_BrepEdge& edge, ON_3dPoint* where) {
+  double worst = -1.0;
+  const ON_Interval ed = edge.Domain();
+  for (const double s : {0.0, 0.5, 1.0}) {
+    ON_3dPoint tp;
+    if (!TrimPoint3d(trim, s, tp)) return -1.0;
+    const ON_3dPoint ep = edge.PointAt(ed.ParameterAt(trim.m_bRev3d ? 1.0 - s : s));
+    const double d = tp.DistanceTo(ep);
+    if (d > worst) {
+      worst = d;
+      if (where) *where = tp;
+    }
+  }
+  return worst;
+}
+
+// Polyline-sampled 3D length of an edge's curve, 16 segments - the same
+// kind of measurement NurbsCurve::Length() makes, without requiring a
+// NURBS form first.
+double SampledEdgeLength(const ON_BrepEdge& edge) {
+  constexpr int kSegments = 16;
+  const ON_Interval d = edge.Domain();
+  double length = 0.0;
+  ON_3dPoint prev = edge.PointAt(d.ParameterAt(0.0));
+  for (int i = 1; i <= kSegments; ++i) {
+    const ON_3dPoint p = edge.PointAt(d.ParameterAt(static_cast<double>(i) / kSegments));
+    length += prev.DistanceTo(p);
+    prev = p;
+  }
+  return length;
+}
+
+// The loop's own SampleLoop() samples (the ones Tessellate() derives a
+// trim from when no side table applies), mapped through the face's
+// surface to 3D. Empty if the face has no surface.
+std::vector<ON_3dPoint> LoopSamples3d(const ON_Brep& b, const ON_BrepLoop& loop) {
+  std::vector<ON_3dPoint> out;
+  const ON_Surface* srf = loop.SurfaceOf();
+  if (!srf) return out;
+  for (const Point2d& uv : SampleLoop(b, loop)) out.push_back(srf->PointAt(uv.x, uv.y));
+  return out;
+}
+
+// Width of a 3D point set about its own longest chord: find the two
+// farthest-apart points (O(n^2), n is a loop's handful of samples), then
+// the largest distance of any point from the line through them. Zero
+// when every point is within `tol` of every other (no chord at all).
+// `centroid` receives the plain average of the points.
+double PointSetWidth(const std::vector<ON_3dPoint>& pts, double tol, ON_3dPoint* centroid) {
+  ON_3dPoint c(0, 0, 0);
+  for (const ON_3dPoint& p : pts) c += p;
+  if (!pts.empty()) c = ON_3dPoint(c.x / pts.size(), c.y / pts.size(), c.z / pts.size());
+  if (centroid) *centroid = c;
+  size_t ia = 0, ib = 0;
+  double best = 0.0;
+  for (size_t i = 0; i < pts.size(); ++i) {
+    for (size_t j = i + 1; j < pts.size(); ++j) {
+      const double d = pts[i].DistanceTo(pts[j]);
+      if (d > best) {
+        best = d;
+        ia = i;
+        ib = j;
+      }
+    }
+  }
+  if (best <= tol) return 0.0;
+  ON_3dVector dir = pts[ib] - pts[ia];
+  dir.Unitize();
+  double width = 0.0;
+  for (const ON_3dPoint& p : pts) {
+    const ON_3dVector v = p - pts[ia];
+    const double along = ON_DotProduct(v, dir);
+    const double off = (v - along * dir).Length();
+    if (off > width) width = off;
+  }
+  return width;
+}
+
+// Whether `trim` walks its edge "material on the left as seen from the
+// face's OUTWARD side": the stored 3D direction (m_bRev3d) XOR the
+// face's own flip (m_bRev) XOR a clockwise-stored loop (ON_Brep::
+// LoopDirection() < 0). Two faces are consistently oriented across a
+// shared edge exactly when their two trims disagree here - ON_Brep::
+// IsManifold()'s own orientation rule (m_bRev3d XOR m_bRev), plus the
+// loop-direction term the app layer's proven OrientBrepFaces
+// (cmd_common.h) already carries for a clockwise-stored outer loop.
+bool TrimWalksMaterialLeft(const ON_Brep& b, const ON_BrepTrim& trim) {
+  bool d = trim.m_bRev3d;
+  const ON_BrepFace* face = trim.Face();
+  if (face && face->m_bRev) d = !d;
+  const ON_BrepLoop* loop = trim.Loop();
+  if (loop && b.LoopDirection(*loop) < 0) d = !d;
+  return d;
+}
+
+// Sets every live edge's and vertex's own recorded tolerance from the
+// gaps ACTUALLY present in the geometry (edge curve vs each trim's 3D
+// image; edge curve endpoints vs the vertex), whenever that gap exceeds
+// `floor` - the tolerant-edge bookkeeping JoinNakedEdges() relies on
+// (see brep.h). Must run AFTER SetTolerancesBoxesAndFlags()/
+// FixUnsetEdgeTolerances(), which would otherwise reset what this sets
+// (see FixUnsetEdgeTolerances' own comment). A gap at or below `floor`
+// leaves the existing value alone (0.0 for an exact edge).
+void RecordMeasuredTolerances(ON_Brep& b, double floor) {
+  for (int ei = 0; ei < b.m_E.Count(); ++ei) {
+    ON_BrepEdge& e = b.m_E[ei];
+    if (e.m_edge_index < 0) continue;
+    double gap = 0.0;
+    for (int k = 0; k < e.m_ti.Count(); ++k) {
+      const int ti = e.m_ti[k];
+      if (ti < 0 || ti >= b.m_T.Count()) continue;
+      const double g = TrimEdgeGapMeasure(b.m_T[ti], e, nullptr);
+      if (g > gap) gap = g;
+    }
+    if (gap > floor && !(e.m_tolerance >= gap)) e.m_tolerance = gap;
+    for (int k = 0; k < 2; ++k) {
+      const int vi = e.m_vi[k];
+      if (vi < 0 || vi >= b.m_V.Count()) continue;
+      ON_BrepVertex& v = b.m_V[vi];
+      const ON_3dPoint p = (k == 0) ? e.PointAtStart() : e.PointAtEnd();
+      const double g = p.DistanceTo(v.point);
+      if (g > floor && !(v.m_tolerance >= g)) v.m_tolerance = g;
+    }
+  }
+}
+
+// Closes, exactly, every consecutive-trim gap in every loop whose 3D image
+// (the two trims' end/start points through the surface) is within `tol`:
+// the next trim's own 2D curve is moved (SetStartPoint(), or
+// SetEndPoint() for a reversed proxy) to the previous trim's exact end.
+// ON_Brep::CollapseEdge() with bCloseTrimGap leaves the loop's other
+// junction open by the collapsed edge's own parameter-space length
+// (checked directly: a 7.3e-7 residual in (u, v) that ON_Brep::
+// IsValidLoop()'s 1e-10-relative match test then rejects), so
+// RemoveDegenerateEdges() runs this before re-validating. A gap wider
+// than `tol` in 3D is NOT touched - that is a real LoopGap for Check()
+// to report, not numerical residue to hide.
+void CloseLoopGapsWithinTolerance(ON_Brep& b, double tol) {
+  for (int li = 0; li < b.m_L.Count(); ++li) {
+    const ON_BrepLoop& loop = b.m_L[li];
+    if (loop.m_loop_index < 0) continue;
+    const int n = loop.m_ti.Count();
+    const ON_Surface* srf = loop.SurfaceOf();
+    if (!srf || n < 2) continue;
+    for (int k = 0; k < n; ++k) {
+      const int ta = loop.m_ti[k], tb = loop.m_ti[(k + 1) % n];
+      if (ta < 0 || ta >= b.m_T.Count() || tb < 0 || tb >= b.m_T.Count() || ta == tb) continue;
+      ON_BrepTrim& t0 = b.m_T[ta];
+      ON_BrepTrim& t1 = b.m_T[tb];
+      if (!t0.TrimCurveOf() || !t1.TrimCurveOf()) continue;
+      const ON_3dPoint e = t0.PointAtEnd();
+      const ON_3dPoint s0 = t1.PointAtStart();
+      if (e.x == s0.x && e.y == s0.y) continue;
+      const ON_3dPoint e3 = srf->PointAt(e.x, e.y), s3 = srf->PointAt(s0.x, s0.y);
+      if (e3.DistanceTo(s3) > tol) continue;
+      if (t1.m_c2i < 0 || t1.m_c2i >= b.m_C2.Count() || !b.m_C2[t1.m_c2i]) continue;
+      ON_Curve* c2 = b.m_C2[t1.m_c2i];
+      const ON_3dPoint target(e.x, e.y, 0.0);
+      if (t1.ProxyCurveIsReversed()) c2->SetEndPoint(target); else c2->SetStartPoint(target);
+    }
+  }
+}
+
+}  // namespace
+
+int Brep::CheckReport::Count(CheckIssue::Kind kind) const {
+  int n = 0;
+  for (const CheckIssue& issue : issues) {
+    if (issue.kind == kind) ++n;
+  }
+  return n;
+}
+
+Brep::CheckReport Brep::Check(double tolerance, double sliver_width) const {
+  const ON_Brep& b = brep_;
+  CheckReport report;
+  const double tol = std::max(tolerance, 0.0);
+  auto add = [&report](CheckKind kind, int index, int other, const ON_3dPoint& where, double measure) {
+    CheckIssue issue;
+    issue.kind = kind;
+    issue.index = index;
+    issue.other_index = other;
+    issue.location = where;
+    issue.measure = measure;
+    report.issues.push_back(issue);
+  };
+
+  // Edges: manifoldness, orientation across the edge, length, and the
+  // curve-vs-vertex gaps.
+  for (int ei = 0; ei < b.m_E.Count(); ++ei) {
+    const ON_BrepEdge& e = b.m_E[ei];
+    if (e.m_edge_index < 0) continue;
+    const int tc = e.m_ti.Count();
+    const ON_3dPoint mid = e.PointAt(e.Domain().Mid());
+    if (tc < 2) {
+      add(CheckKind::NakedEdge, ei, tc, mid, 0.0);
+    } else if (tc > 2) {
+      add(CheckKind::NonManifoldEdge, ei, tc, mid, 0.0);
+    } else {
+      const int t0 = e.m_ti[0], t1 = e.m_ti[1];
+      if (t0 >= 0 && t0 < b.m_T.Count() && t1 >= 0 && t1 < b.m_T.Count()) {
+        const ON_BrepTrim& trim0 = b.m_T[t0];
+        const ON_BrepTrim& trim1 = b.m_T[t1];
+        const int f0 = trim0.FaceIndexOf(), f1 = trim1.FaceIndexOf();
+        if (f0 >= 0 && f1 >= 0 && TrimWalksMaterialLeft(b, trim0) == TrimWalksMaterialLeft(b, trim1)) {
+          add(CheckKind::InconsistentFaceOrientation, f0, f1, mid, 0.0);
+        }
+      }
+    }
+    const double length = SampledEdgeLength(e);
+    if (length <= tol) add(CheckKind::DegenerateEdge, ei, tc, mid, length);
+    for (int k = 0; k < 2; ++k) {
+      const int vi = e.m_vi[k];
+      if (vi < 0 || vi >= b.m_V.Count()) continue;
+      const ON_BrepVertex& v = b.m_V[vi];
+      const ON_3dPoint p = (k == 0) ? e.PointAtStart() : e.PointAtEnd();
+      const double gap = p.DistanceTo(v.point);
+      const double allowed = std::max(tol, v.m_tolerance >= 0.0 ? v.m_tolerance : 0.0);
+      if (gap > allowed) add(CheckKind::EdgeVertexGap, ei, vi, v.point, gap);
+    }
+  }
+
+  // Trims: validity, and each trim's 3D image against its own edge.
+  for (int ti = 0; ti < b.m_T.Count(); ++ti) {
+    const ON_BrepTrim& t = b.m_T[ti];
+    if (t.m_trim_index < 0) continue;
+    if (t.m_type == ON_BrepTrim::singular || t.m_type == ON_BrepTrim::ptonsrf) continue;
+    const ON_Curve* c2 = t.TrimCurveOf();
+    const ON_Surface* srf = t.SurfaceOf();
+    const bool edge_ok = t.m_ei >= 0 && t.m_ei < b.m_E.Count() && b.m_E[t.m_ei].m_edge_index >= 0;
+    ON_3dPoint where(0, 0, 0);
+    if (!edge_ok || !c2 || !srf) {
+      if (c2 && srf) TrimPoint3d(t, 0.0, where);
+      add(CheckKind::InvalidTrim, ti, t.m_li, where, 0.0);
+      continue;
+    }
+    const ON_Interval du = srf->Domain(0), dv = srf->Domain(1);
+    double outside = 0.0;
+    for (const double s : {0.0, 1.0}) {
+      const ON_3dPoint uv = t.PointAt(t.Domain().ParameterAt(s));
+      outside = std::max({outside, du.Min() - uv.x, uv.x - du.Max(), dv.Min() - uv.y, uv.y - dv.Max()});
+    }
+    if (outside > tol) {
+      TrimPoint3d(t, 0.0, where);
+      add(CheckKind::InvalidTrim, ti, t.m_li, where, outside);
+    }
+    const ON_BrepEdge& e = b.m_E[t.m_ei];
+    const double gap = TrimEdgeGapMeasure(t, e, &where);
+    const double allowed = std::max(tol, e.m_tolerance >= 0.0 ? e.m_tolerance : 0.0);
+    if (gap > allowed) add(CheckKind::TrimEdgeGap, ti, t.m_ei, where, gap);
+  }
+
+  // Loops: continuity between consecutive trims, and self-intersection
+  // of the sampled 2D polygon.
+  for (int li = 0; li < b.m_L.Count(); ++li) {
+    const ON_BrepLoop& loop = b.m_L[li];
+    if (loop.m_loop_index < 0) continue;
+    const int n = loop.m_ti.Count();
+    for (int k = 0; k < n; ++k) {
+      const int ta = loop.m_ti[k], tb = loop.m_ti[(k + 1) % n];
+      if (ta < 0 || ta >= b.m_T.Count() || tb < 0 || tb >= b.m_T.Count()) continue;
+      ON_3dPoint pa, pb;
+      if (!TrimPoint3d(b.m_T[ta], 1.0, pa) || !TrimPoint3d(b.m_T[tb], 0.0, pb)) continue;
+      const double gap = pa.DistanceTo(pb);
+      if (gap > tol) add(CheckKind::LoopGap, li, ta, pa, gap);
+    }
+    if (loop.m_type == ON_BrepLoop::outer || loop.m_type == ON_BrepLoop::inner) {
+      const std::vector<Point2d> poly = SampleLoop(b, loop);
+      if (poly.size() >= 4 && !dino8::kernel::detail::IsSimplePolygon(poly)) {
+        ON_3dPoint where(0, 0, 0);
+        if (const ON_Surface* srf = loop.SurfaceOf()) where = srf->PointAt(poly[0].x, poly[0].y);
+        add(CheckKind::SelfIntersectingLoop, li, loop.m_fi, where, 0.0);
+      }
+    }
+  }
+
+  // Faces: degenerate (collinear/empty boundary, no loop, no surface) and
+  // sliver, from the outer loop's own 3D samples.
+  for (int fi = 0; fi < b.m_F.Count(); ++fi) {
+    const ON_BrepFace& f = b.m_F[fi];
+    if (f.m_face_index < 0) continue;
+    if (!f.SurfaceOf() || f.m_li.Count() == 0) {
+      add(CheckKind::DegenerateFace, fi, -1, ON_3dPoint(0, 0, 0), 0.0);
+      continue;
+    }
+    int outer_li = f.m_li[0];
+    for (int k = 0; k < f.m_li.Count(); ++k) {
+      const int li = f.m_li[k];
+      if (li >= 0 && li < b.m_L.Count() && b.m_L[li].m_type == ON_BrepLoop::outer) {
+        outer_li = li;
+        break;
+      }
+    }
+    if (outer_li < 0 || outer_li >= b.m_L.Count()) {
+      add(CheckKind::DegenerateFace, fi, outer_li, ON_3dPoint(0, 0, 0), 0.0);
+      continue;
+    }
+    const std::vector<ON_3dPoint> pts = LoopSamples3d(b, b.m_L[outer_li]);
+    ON_3dPoint centroid(0, 0, 0);
+    const double width = PointSetWidth(pts, tol, &centroid);
+    if (pts.size() < 3 || width <= tol) {
+      add(CheckKind::DegenerateFace, fi, outer_li, centroid, width);
+    } else if (width <= sliver_width) {
+      add(CheckKind::SliverFace, fi, outer_li, centroid, width);
+    }
+  }
+
+  report.topology_valid = b.IsValidTopology();
+  int live_faces = 0;
+  for (int fi = 0; fi < b.m_F.Count(); ++fi) {
+    if (b.m_F[fi].m_face_index >= 0) ++live_faces;
+  }
+  report.is_closed = live_faces > 0 && report.Count(CheckKind::NakedEdge) == 0 &&
+                     report.Count(CheckKind::NonManifoldEdge) == 0;
+  report.is_oriented = report.Count(CheckKind::InconsistentFaceOrientation) == 0;
+  return report;
+}
+
+void Brep::ClearFaceSideTables() {
+  face_trim_loops_.clear();
+  face_exact_clip_.clear();
+  face_hole_loops_.clear();
+  face_arc_runs_.clear();
+  face_notch_rows_.clear();
+  face_records_.clear();
+}
+
+int Brep::JoinNakedEdges(double tolerance) {
+  // Same reasoning as MergeCoplanarFaces(): CombineCoincidentEdges()/
+  // Compact() renumber edges and trims, and the surviving face's own trim
+  // loop now references a different edge, so the per-face side tables
+  // can't be trusted afterwards (see MergeCoplanarFaces' own comment).
+  ClearFaceSideTables();
+  const int joined = WeldCoincidentNakedEdges(brep_, std::max(tolerance, 0.0));
+  if (joined == 0) return 0;
+  brep_.Compact();
+  brep_.SetTolerancesBoxesAndFlags();
+  FixUnsetEdgeTolerances(brep_);
+  RecordMeasuredTolerances(brep_, tolerance::kDistance);
+  UnifyNormals();
+  return joined;
+}
+
+int Brep::UnifyNormals() {
+  ON_Brep& b = brep_;
+  std::vector<char> done(static_cast<size_t>(b.m_F.Count()), 0);
+  int flipped = 0;
+  for (int seed = 0; seed < b.m_F.Count(); ++seed) {
+    if (done[static_cast<size_t>(seed)] || b.m_F[seed].m_face_index < 0) continue;
+    std::vector<int> queue = {seed};
+    done[static_cast<size_t>(seed)] = 1;
+    while (!queue.empty()) {
+      const int fi = queue.back();
+      queue.pop_back();
+      const ON_BrepFace& f = b.m_F[fi];
+      for (int li = 0; li < f.m_li.Count(); ++li) {
+        const int loop_index = f.m_li[li];
+        if (loop_index < 0 || loop_index >= b.m_L.Count()) continue;
+        const ON_BrepLoop& loop = b.m_L[loop_index];
+        for (int k = 0; k < loop.m_ti.Count(); ++k) {
+          const int ti = loop.m_ti[k];
+          if (ti < 0 || ti >= b.m_T.Count()) continue;
+          const ON_BrepTrim& t = b.m_T[ti];
+          if (t.m_ei < 0 || t.m_ei >= b.m_E.Count()) continue;
+          const ON_BrepEdge& e = b.m_E[t.m_ei];
+          if (e.m_ti.Count() != 2) continue;  // naked or non-manifold: no neighbour to agree with
+          const int oti = e.m_ti[0] == ti ? e.m_ti[1] : e.m_ti[0];
+          if (oti < 0 || oti >= b.m_T.Count()) continue;
+          const ON_BrepTrim& ot = b.m_T[oti];
+          const int ofi = ot.FaceIndexOf();
+          if (ofi < 0 || ofi >= b.m_F.Count() || done[static_cast<size_t>(ofi)]) continue;
+          if (TrimWalksMaterialLeft(b, t) == TrimWalksMaterialLeft(b, ot)) {
+            b.FlipFace(b.m_F[ofi]);
+            ++flipped;
+          }
+          done[static_cast<size_t>(ofi)] = 1;
+          queue.push_back(ofi);
+        }
+      }
+    }
+  }
+
+  // Outward: only meaningful for a closed shell (every live edge shared
+  // by exactly two trims); decided by the sign of the tessellated
+  // divergence-theorem volume, the same integral Mesh::Volume() reports.
+  bool closed = false;
+  int live_faces = 0;
+  for (int fi = 0; fi < b.m_F.Count(); ++fi) {
+    if (b.m_F[fi].m_face_index >= 0) ++live_faces;
+  }
+  if (live_faces > 0) {
+    closed = true;
+    for (int ei = 0; ei < b.m_E.Count() && closed; ++ei) {
+      const ON_BrepEdge& e = b.m_E[ei];
+      if (e.m_edge_index >= 0 && e.m_ti.Count() != 2) closed = false;
+    }
+  }
+  if (closed && TessellateToClosedMesh(4, 4).Volume() < 0.0) {
+    for (int fi = 0; fi < b.m_F.Count(); ++fi) {
+      if (b.m_F[fi].m_face_index < 0) continue;
+      b.FlipFace(b.m_F[fi]);
+      ++flipped;
+    }
+  }
+  return flipped;
+}
+
+int Brep::RemoveThinFaces(double width, double join_tolerance, bool slivers_too) {
+  const double tol = std::max(width, 0.0);
+  const CheckReport report = slivers_too ? Check(std::min(tolerance::kDistance, tol), tol) : Check(tol, tol);
+  std::vector<int> doomed;
+  for (const CheckIssue& issue : report.issues) {
+    if (issue.kind == CheckKind::DegenerateFace || (slivers_too && issue.kind == CheckKind::SliverFace)) {
+      doomed.push_back(issue.index);
+    }
+  }
+  if (doomed.empty()) return 0;
+  ClearFaceSideTables();
+  int removed = 0;
+  for (const int fi : doomed) {
+    if (fi < 0 || fi >= brep_.m_F.Count() || brep_.m_F[fi].m_face_index < 0) continue;
+    brep_.DeleteFace(brep_.m_F[fi], /*bDeleteFaceEdges=*/true);
+    ++removed;
+  }
+  brep_.Compact();
+  brep_.SetTolerancesBoxesAndFlags();
+  FixUnsetEdgeTolerances(brep_);
+  JoinNakedEdges(join_tolerance);
+  return removed;
+}
+
+int Brep::RemoveDegenerateFaces(double tolerance) {
+  return RemoveThinFaces(tolerance, tolerance, /*slivers_too=*/false);
+}
+
+int Brep::RemoveSliverFaces(double max_width) {
+  return RemoveThinFaces(max_width, max_width, /*slivers_too=*/true);
+}
+
+int Brep::RemoveDegenerateEdges(double tolerance) {
+  const CheckReport report = Check(tolerance, tolerance);
+  std::vector<int> doomed;
+  for (const CheckIssue& issue : report.issues) {
+    if (issue.kind == CheckKind::DegenerateEdge) doomed.push_back(issue.index);
+  }
+  if (doomed.empty()) return 0;
+  ClearFaceSideTables();
+  int collapsed = 0;
+  for (const int ei : doomed) {
+    if (ei < 0 || ei >= brep_.m_E.Count() || brep_.m_E[ei].m_edge_index < 0) continue;
+    if (brep_.CollapseEdge(ei, /*bCloseTrimGap=*/true, /*vertex_index=*/-1)) ++collapsed;
+  }
+  brep_.Compact();
+  CloseLoopGapsWithinTolerance(brep_, std::max(tolerance, 0.0));
+  brep_.SetTolerancesBoxesAndFlags();
+  FixUnsetEdgeTolerances(brep_);
+  return collapsed;
+}
+
+Mesh Brep::TessellateToClosedMeshTolerant(int u_divisions, int v_divisions) const {
+  Mesh mesh = TessellateToClosedMesh(u_divisions, v_divisions);
+  double max_tolerance = 0.0;
+  for (int ei = 0; ei < brep_.m_E.Count(); ++ei) {
+    const ON_BrepEdge& e = brep_.m_E[ei];
+    if (e.m_edge_index >= 0 && e.m_tolerance > max_tolerance) max_tolerance = e.m_tolerance;
+  }
+  mesh.CloseNakedEdges(std::max(tolerance::kWeld, 2.0 * max_tolerance));
+  return mesh;
+}
+
+int Brep::CapPlanarHoles(double tolerance) {
+  ON_Brep& b = brep_;
+  const double tol = std::max(tolerance, 0.0);
+
+  // Naked edges by vertex, for chaining.
+  std::map<int, std::vector<int>> naked_at_vertex;
+  std::vector<int> naked_edges;
+  for (int ei = 0; ei < b.m_E.Count(); ++ei) {
+    const ON_BrepEdge& e = b.m_E[ei];
+    if (e.m_edge_index < 0 || e.m_ti.Count() != 1) continue;
+    naked_edges.push_back(ei);
+    naked_at_vertex[e.m_vi[0]].push_back(ei);
+    if (e.m_vi[1] != e.m_vi[0]) naked_at_vertex[e.m_vi[1]].push_back(ei);
+  }
+  if (naked_edges.empty()) return 0;
+
+  // Chain each naked edge into a closed loop of vertices, walking each
+  // edge head-to-tail through its own two vertices.
+  std::set<int> used;
+  std::vector<PlanarFace> caps;
+  for (const int start : naked_edges) {
+    if (used.count(start)) continue;
+    std::vector<int> loop_vertices;
+    int ei = start;
+    bool rev = false;
+    const int origin = b.m_E[start].m_vi[0];
+    bool ok = true;
+    while (true) {
+      const ON_BrepEdge& e = b.m_E[ei];
+      if (used.count(ei)) {
+        ok = false;
+        break;
+      }
+      used.insert(ei);
+      // A curved naked edge can't be capped by a straight-edged planar
+      // face without polygonizing it into edges the join could never
+      // match - refused rather than left as a loose, unjoined face.
+      if (!e.IsLinear(tolerance::kDistance)) ok = false;
+      loop_vertices.push_back(rev ? e.m_vi[1] : e.m_vi[0]);
+      const int head = rev ? e.m_vi[0] : e.m_vi[1];
+      if (head == origin) break;
+      const std::vector<int>& next = naked_at_vertex[head];
+      if (next.size() != 2) {
+        ok = false;  // dead end or ambiguous junction
+        break;
+      }
+      const int nei = next[0] == ei ? next[1] : next[0];
+      const ON_BrepEdge& ne = b.m_E[nei];
+      if (ne.m_vi[0] == head) rev = false;
+      else if (ne.m_vi[1] == head) rev = true;
+      else {
+        ok = false;
+        break;
+      }
+      ei = nei;
+    }
+    if (!ok || loop_vertices.size() < 3) continue;
+
+    std::vector<Point3d> loop;
+    for (const int vi : loop_vertices) {
+      if (vi < 0 || vi >= b.m_V.Count()) {
+        ok = false;
+        break;
+      }
+      loop.push_back(b.m_V[vi].point);
+    }
+    if (!ok) continue;
+
+    // Plane through the loop: Newell normal (the normal the loop is CCW
+    // about, which is exactly PlanarFace's own "CCW as seen from
+    // outside" convention - JoinNakedEdges()'s UnifyNormals() fixes the
+    // sign against the neighbours afterwards either way), centroid
+    // origin, every vertex within tolerance of it.
+    ON_3dPoint centroid(0, 0, 0);
+    for (const Point3d& p : loop) centroid += p;
+    centroid = ON_3dPoint(centroid.x / loop.size(), centroid.y / loop.size(), centroid.z / loop.size());
+    ON_3dVector normal(0, 0, 0);
+    double extent = 0.0;
+    for (size_t i = 0; i < loop.size(); ++i) {
+      const Point3d& p = loop[i];
+      const Point3d& q = loop[(i + 1) % loop.size()];
+      normal.x += (p.y - q.y) * (p.z + q.z);
+      normal.y += (p.z - q.z) * (p.x + q.x);
+      normal.z += (p.x - q.x) * (p.y + q.y);
+      extent = std::max(extent, p.DistanceTo(centroid));
+    }
+    if (normal.Length() <= tolerance::kZeroVector) continue;
+    normal.Unitize();
+    const double plane_tol = std::max(tol, tolerance::DistanceForSize(extent));
+    bool planar = true;
+    for (const Point3d& p : loop) {
+      if (std::fabs(ON_DotProduct(p - centroid, normal)) > plane_tol) {
+        planar = false;
+        break;
+      }
+    }
+    if (!planar) continue;
+    PlanarFace cap;
+    cap.plane = ON_Plane(centroid, normal);
+    cap.loop = loop;
+    caps.push_back(cap);
+  }
+  if (caps.empty()) return 0;
+
+  // Built through FromPlanarFaces() - the SAME padded-bilinear-surface +
+  // exact-clip construction every planar face of this class already uses
+  // - rather than ON_BrepTrimmedPlane(), so the cap's own tessellation
+  // grid lands on the same cut lines as its neighbours' and the welded
+  // mesh closes (checked directly: an ON_BrepTrimmedPlane cap over an
+  // unpadded [-0.5, 0.5]^2 domain put its grid rows at 0.25 where the
+  // 5%-padded neighbours' clipped rows sit at 0.225 - a valid, solid
+  // ON_Brep whose mesh nonetheless had 32 T-junction naked edges).
+  ClearFaceSideTables();
+  int added = 0;
+  for (const PlanarFace& cap : caps) {
+    Brep one;
+    try {
+      one = FromPlanarFaces({cap});
+    } catch (const std::exception&) {
+      continue;
+    }
+    if (one.FaceCount() != 1) continue;
+    b.Append(one.brep_);
+    ++added;
+  }
+  if (added == 0) return 0;
+  b.Compact();
+  b.SetTolerancesBoxesAndFlags();
+  FixUnsetEdgeTolerances(b);
+  JoinNakedEdges(tol);
+  return added;
 }
 
 }  // namespace dino8::kernel

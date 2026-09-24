@@ -1882,6 +1882,117 @@ honestly out of scope.
   chaining several chamfers on one solid (the second call is rejected by
   `PlanarFaces()` only if the first left a curved face; two chamfers are
   both planar and do chain).
+- `Brep::Check()` and the healing operations built on it - the Parasolid
+  "check/heal" class (`PK_BODY_check`, `PK_BODY_repair`) this kernel had
+  no counterpart to: `ON_Brep::IsValid()` is one bool, reports every
+  `Box()`/`Sphere()`-built Brep as invalid for lacking topology (see
+  brep.h's class comment), and says nothing about WHERE or HOW MUCH.
+  `Check(tolerance, sliver_width)` returns a structured `CheckReport`: a
+  list of `CheckIssue`s, each with a kind, an index into the raw
+  `m_E`/`m_F`/`m_T`/`m_L` arrays, a second index where one applies (the
+  other face, the vertex, the edge), a 3D `location` and a `measure`,
+  plus `topology_valid`/`is_closed`/`is_oriented` summary flags and a
+  `Count(kind)` accessor. Eleven kinds: `NakedEdge` (trim count < 2),
+  `NonManifoldEdge` (>= 3), `InconsistentFaceOrientation` (two faces
+  walking a shared edge the same way - `ON_Brep::IsManifold()`'s own
+  `m_bRev3d XOR m_bRev` rule, plus the `LoopDirection()` term the app
+  layer's `OrientBrepFaces` already carries for a clockwise-stored
+  loop), `DegenerateEdge` (16-segment sampled length within tolerance),
+  `DegenerateFace` (outer loop's 3D samples collinear within tolerance:
+  width about the longest chord, an exact zero-area test for a polygon
+  that a Newell-area test gets wrong on a full-cylinder loop whose two
+  circles cancel), `SliverFace` (width within `sliver_width`),
+  `EdgeVertexGap`, `TrimEdgeGap` (the trim's 3D image at start/middle/
+  end vs the edge curve at the matching, `m_bRev3d`-aware parameter),
+  `LoopGap` (consecutive trims not meeting, measured in 3D through the
+  surface), `InvalidTrim` (no edge/curve/surface, or 2D endpoints
+  outside the surface domain) and `SelfIntersectingLoop`
+  (`detail::IsSimplePolygon` on the same `SampleLoop()` samples
+  `Tessellate()` would use). Both gap kinds honour a TOLERANT edge: a
+  gap is reported only above `max(tolerance, edge.m_tolerance)` (or the
+  vertex's own), so a deliberately tolerant join is not re-reported as
+  a defect. Repairs, all on this class's own `ON_Brep` with the side
+  tables cleared the way `MergeCoplanarFaces()` already does:
+  - `JoinNakedEdges(tol)` joins coincident naked-edge pairs (the
+    kernel's own `WeldCoincidentNakedEdges`, previously private to
+    `MergeCoplanarFaces()`), then RECORDS the measured trim-vs-edge gap
+    on each surviving edge's `m_tolerance` (and each vertex's) - after
+    `SetTolerancesBoxesAndFlags()`, which resets those (see
+    `FixUnsetEdgeTolerances`' own comment) - and orients the faces.
+    Checked directly: a top face built 1e-4 above its sides leaves 8
+    naked edges; `JoinNakedEdges(2e-4)` joins 4 pairs and exactly those
+    4 edges carry `m_tolerance == 1e-4` (to 1e-12), after which the
+    default `Check()` is clean and `IsValid()`/`IsSolid()` hold.
+  - `UnifyNormals()` - the app's `OrientBrepFaces` brought into the
+    kernel, plus the step it lacked: for a closed shell, the sign of
+    `TessellateToClosedMesh(4, 4).Volume()` decides outward, so an
+    inside-out shell (every face flipped: perfectly consistent, volume
+    -1, nothing for a consistency check to find) is fixed too.
+  - `RemoveDegenerateFaces(tol)`/`RemoveSliverFaces(width)` delete the
+    faces `Check()` reports and re-join the exposed neighbour edges with
+    `JoinNakedEdges` - a 1e-5-wide strip on a box top becomes three
+    tolerant edges of tolerance 1e-5, an 8e-7 strip closes exactly.
+  - `RemoveDegenerateEdges(tol)` collapses via `ON_Brep::CollapseEdge()`
+    - which, found by testing rather than assumed, leaves the loop's
+    OTHER junction open by the collapsed edge's own parameter-space
+    length (a 7.3e-7 (u, v) residual `ON_Brep::IsValidLoop()`'s
+    1e-10-relative match test rejects); `CloseLoopGapsWithinTolerance`
+    moves the next trim's 2D start exactly onto the previous end
+    wherever the 3D gap is within tolerance, and the result is
+    `IsValid()` again.
+  - `CapPlanarHoles(tol)` chains naked edges through their vertices
+    (straight edges only - a curved one is refused rather than left as
+    an unjoined polygonal cap), fits a plane (Newell normal, every
+    vertex within `DistanceForSize(extent)`), and builds the cap
+    THROUGH `FromPlanarFaces()` rather than `ON_BrepTrimmedPlane()`:
+    the first attempt used the latter and produced a valid, solid
+    `ON_Brep` whose welded mesh nonetheless had 32 naked T-junction
+    edges, because `FromMixedFaces()`'s planar surfaces are 5%-padded
+    and exact-clipped (grid rows at 0.225) while the unpadded cap's
+    grid rows sat at 0.25 - a real, measured mismatch, not a theory.
+  - `TessellateToClosedMeshTolerant()` - the plain call plus a
+    true-distance `Mesh::CloseNakedEdges()` over the mesh's naked seams
+    at `max(kWeld, 2 * largest edge tolerance)`. Deliberately a
+    separate entry point, not a change to `TessellateToClosedMesh()`:
+    notched conical fillet caps already carry genuine edge tolerances
+    and their plain-path output is pinned by existing tests, so
+    widening that weld silently was not an option in this pass. It also
+    closes the sub-`kWeld` seam grid snapping misses (two points 8e-7
+    apart straddling a 1e-6 snap-cell boundary stay unwelded - the
+    8e-7-strip fixture's plain mesh is open for exactly that reason).
+  `Mesh` gets the same layer: `Check()` (naked/non-manifold/conflicting
+  edge counts, degenerate faces by repeated index or height within
+  tolerance, duplicate vertices by true distance through a 27-cell grid
+  lookup, and the naked-edge list in face order), `NakedEdgeLoops()`,
+  `CloseNakedEdges(tol)` (true-distance weld restricted to boundary
+  vertices - the lowest index survives at its own position, collapsed
+  faces are dropped, quads that lose a corner become triangles),
+  `FillSmallHoles(max_extent)` (one triangle for a 3-loop, a centroid
+  fan otherwise, each fill triangle walking its boundary edge in
+  reverse of the existing face; loops larger than the bound are left
+  open on purpose) and `UnifyNormals()` (BFS flip plus the same
+  outward-by-volume step). Every repair is tested on a DELIBERATELY
+  BROKEN fixture with hand-derived expectations, and every diagnostic
+  is checked for firing with the right index/location/measure before
+  the repair and going silent after it: a flipped face (4
+  `InconsistentFaceOrientation` issues naming face 1 and each of its 4
+  neighbours; 1 or 11 flips; volume +1, and -1 -> +1 for the inside-out
+  shell), a dropped face (4 naked edges at z=1; one cap; 6 faces / 12
+  edges; the PLAIN mesh closed with volume exactly 1), the 1e-4-lifted
+  top (above), the hairline strips (above; volume within the strip's
+  width of 1 via the tolerant tessellation), a shared 8e-7 micro edge
+  (one `DegenerateEdge` of measured length 8e-7 on a 13-edge solid;
+  collapsed to 12 edges / 8 vertices, `IsValid()`, volume 1), and on
+  the mesh side a dropped triangle (3-loop, 8 vertices / 12 faces after
+  the fill) and a dropped quad (4-loop, 9 / 14), a backwards triangle
+  (3 conflicts) and an inverted box (0 conflicts, volume -1, 12 flips),
+  a duplicated corner (4 naked edges, 2 duplicate vertices, 1 weld) and
+  a corner copied 1e-4 away (refused at 1e-6, welded at 2e-4). Honest
+  limits: face width and edge length are SAMPLED (the loop's own trim
+  samples, 16 segments per edge), not exact minimum-width computations;
+  a degenerate face split as a T-junction leaves naked edges after
+  removal (no endpoint pair coincides), reported, never hidden; and
+  `CapPlanarHoles()` handles straight-edged planar holes only.
 
 ## What's still not done (as of chunk 2)
 

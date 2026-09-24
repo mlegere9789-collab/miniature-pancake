@@ -1754,10 +1754,245 @@ class Brep {
   // this returns Result::Failed before touching this Brep at all.
   Result RemoveNakedMicroEdge(int edge_index, double tolerance = tolerance::kEdgeJoin);
 
+  // --- Check / heal ------------------------------------------------------
+  //
+  // The Parasolid PK_BODY_check / ACIS api_check_entity class of
+  // diagnostics, as a STRUCTURED list rather than ON_Brep::IsValid()'s
+  // bare bool (which also, per this class's own top comment, reports
+  // every Box()/Sphere()/FromSurface()/TrimmedPlanarFace()-built Brep as
+  // invalid for lacking topology, so it can't tell a broken solid from a
+  // surface-only one). Every issue names WHAT is wrong, WHERE (an index
+  // into this Brep's own raw() m_E/m_F/m_T/m_L arrays plus a 3D point to
+  // look at) and HOW MUCH (a gap distance, an edge length, a face width -
+  // the number a caller compares against a tolerance to decide whether
+  // to heal or refuse).
+  struct CheckIssue {
+    enum class Kind {
+      // An edge used by fewer than two trims: 1 = an open boundary
+      // (`other_index` is the trim count, so 0 = a dangling edge no face
+      // uses at all). `index` is the edge.
+      NakedEdge,
+      // An edge used by three or more trims. `index` is the edge,
+      // `other_index` its trim count.
+      NonManifoldEdge,
+      // Two faces sharing a 2-trim edge both walk it the same way in 3D,
+      // so one is wound backwards relative to the other - ON_Brep::
+      // IsManifold()'s own "not oriented" condition, per edge. `index`
+      // and `other_index` are the two faces; `location` the edge's
+      // midpoint. Reported once per offending edge, so a single flipped
+      // face on a box shows up as 4 issues (its 4 edges), not 1.
+      InconsistentFaceOrientation,
+      // An edge whose 3D curve is no longer than `tolerance` (its two
+      // vertices coincide within tolerance too). `index` is the edge,
+      // `measure` its sampled length.
+      DegenerateEdge,
+      // A face whose outer boundary, mapped to 3D, is collinear within
+      // `tolerance` (zero area: all boundary points within `measure` of
+      // one line), has fewer than 3 distinct boundary points, has no
+      // loop, or has no surface. `index` is the face; `location` its
+      // boundary's centroid.
+      DegenerateFace,
+      // A face that is not degenerate but whose boundary is within
+      // `sliver_width` of one line - a hairline face, the kind a bad
+      // trim or an almost-coincident boolean cut leaves behind. `index`
+      // is the face, `measure` its width.
+      SliverFace,
+      // An edge's 3D curve does not start/end at its own vertex: the
+      // gap is `measure`, above `tolerance` AND above the vertex's own
+      // recorded tolerance. `index` is the edge, `other_index` the
+      // vertex, `location` the vertex.
+      EdgeVertexGap,
+      // A trim's 2D curve, mapped through its face's surface, strays
+      // from the 3D edge it claims to lie on by `measure` (sampled at
+      // the trim's start, middle and end), above `tolerance` AND above
+      // the edge's own recorded ON_BrepEdge::m_tolerance - so a
+      // deliberately TOLERANT edge (see JoinNakedEdges) is not
+      // re-reported as a gap. `index` is the trim, `other_index` the
+      // edge, `location` the trim's own 3D point at the worst sample.
+      TrimEdgeGap,
+      // Two consecutive trims of a loop don't meet: the 3D distance
+      // between one trim's end and the next's start, through the
+      // surface, is `measure` > `tolerance`. `index` is the loop,
+      // `other_index` the first of the two trims.
+      LoopGap,
+      // A non-singular trim with no edge, no 2D curve, or a 2D curve
+      // whose endpoints lie outside the surface's own (u, v) domain by
+      // more than `tolerance` (in parameter units). `index` is the
+      // trim, `other_index` its loop.
+      InvalidTrim,
+      // A loop whose sampled 2D trim polygon crosses itself
+      // (detail::IsSimplePolygon on the same samples Tessellate() would
+      // derive the trim from). `index` is the loop, `location` the 3D
+      // point of its first sample.
+      SelfIntersectingLoop,
+    };
+    Kind kind = Kind::NakedEdge;
+    int index = -1;
+    int other_index = -1;
+    Point3d location = Point3d(0, 0, 0);
+    double measure = 0.0;
+  };
+
+  struct CheckReport {
+    std::vector<CheckIssue> issues;
+    // ON_Brep::IsValidTopology() - index consistency of the raw arrays,
+    // independent of everything above (a Box() reports false here while
+    // having no issues at all; see the class-level comment).
+    bool topology_valid = false;
+    // No NakedEdge and no NonManifoldEdge issue, and at least one face.
+    bool is_closed = false;
+    // No InconsistentFaceOrientation issue.
+    bool is_oriented = false;
+
+    int Count(CheckIssue::Kind kind) const;
+    // No issues at all (does NOT require topology_valid - see above).
+    bool IsClean() const { return issues.empty(); }
+  };
+
+  // Runs every check above and returns the full list plus the summary
+  // flags. Deleted (m_*_index < 0) faces/edges/trims/loops are skipped,
+  // the same way ON_Brep::IsManifold() skips them. `tolerance` is the
+  // distance below which a gap or an edge length counts as zero (the
+  // kernel's own kDistance by default); `sliver_width` the face width at
+  // or below which a non-degenerate face is reported as a sliver (the
+  // edge-join distance by default: a sliver narrower than what
+  // JoinNakedEdges would close is the one RemoveSliverFaces can heal
+  // without leaving a gap behind). Never throws and never modifies this
+  // Brep. Face-width and edge-length are SAMPLED measurements (the trim
+  // loop's own samples through the surface, 16 samples per edge curve),
+  // not exact minimum-width computations - fine for the "is this
+  // essentially zero" question they answer, not a general shape metric.
+  CheckReport Check(double tolerance = tolerance::kDistance,
+                    double sliver_width = tolerance::kEdgeJoin) const;
+
+  // Joins every pair of naked (single-trim) edges whose endpoints (and
+  // midpoints) coincide within `tolerance`, in either direction, into
+  // one shared edge - the missing "Join" this class's app layer had to
+  // carry itself (cmd_common.h's JoinNakedEdges), now here with the one
+  // thing that version lacked: TOLERANT-edge bookkeeping. After joining,
+  // every edge's ON_BrepEdge::m_tolerance and every vertex's
+  // ON_BrepVertex::m_tolerance are set from the ACTUAL measured gap
+  // between that edge's 3D curve and each of its trims' 3D images (the
+  // same samples Check()'s TrimEdgeGap uses), so a pair joined across a
+  // 1e-4 gap records 1e-4 on the surviving edge, exactly Parasolid's
+  // tolerant-edge notion: the kernel knows, and Check() honours, how far
+  // that edge's sides may legitimately disagree - instead of the join
+  // silently pretending the gap was zero. A pair whose gap is at or below
+  // kDistance records 0 (the same exact claim FromPlanarFaces makes).
+  // Then makes face orientations consistent across the newly shared
+  // edges (UnifyNormals(), below), the same way Rhino's own Join does.
+  // Returns the number of edge pairs joined. Clears this class's own
+  // per-face side tables (see MergeCoplanarFaces' comment for why every
+  // topology-surgery method here must). The surviving edge of each pair
+  // is the LOWER-indexed one, its 3D curve kept verbatim; the other
+  // face's trims now refer to it with the recorded tolerance - this
+  // does NOT move either face's surface, so TessellateToClosedMesh()'s
+  // fixed kWeld weld will still leave a 1e-4 seam open in the MESH;
+  // TessellateToClosedMeshTolerant() (below) is the tessellation that
+  // honours the recorded edge tolerances and closes it.
+  int JoinNakedEdges(double tolerance = tolerance::kEdgeJoin);
+
+  // Makes face orientations consistent across every shared 2-trim edge
+  // (breadth-first from each not-yet-visited face, flipping whichever
+  // neighbour walks a shared edge the same way in 3D - the rule ON_Brep::
+  // IsManifold() itself checks, extended by the app layer's proven
+  // ON_Brep::LoopDirection() term so a face whose outer loop happens to
+  // be stored clockwise still orients correctly), then, if the result is
+  // closed (ON_Brep::IsManifold() with no boundary), makes the whole
+  // shell face OUTWARD by the sign of TessellateToClosedMesh(4, 4)'s
+  // divergence-theorem volume - flipping every face if it is negative.
+  // Returns the total number of face flips performed (a box with one
+  // face flipped may report 1 or 11: if the traversal happens to seed
+  // from the flipped face, the other five flip to match it and the
+  // outward step then flips all six back - the FINAL state is the same
+  // either way). Never throws; an open shell is only made consistent,
+  // not oriented outward (there is no "outward" for it). Leaves the
+  // side tables intact: FlipFace() changes m_bRev only, never a face
+  // index or a trim.
+  int UnifyNormals();
+
+  // Deletes every face Check() would report as DegenerateFace at
+  // `tolerance` (collinear/empty boundary, no loop, no surface), then
+  // re-joins the naked edges that deletion exposes on the neighbours
+  // with JoinNakedEdges(tolerance): a degenerate face's two sides ARE
+  // coincident within `tolerance`, so its neighbours' newly-naked edges
+  // join back into one shared edge and the shell stays closed. Returns
+  // the number of faces removed. Honest limit: a degenerate face whose
+  // two sides are split differently (three collinear edges a-b, b-c,
+  // c-a - a T-junction) leaves its neighbours' edges naked after
+  // removal, since no endpoint pair coincides; those show up as
+  // NakedEdge in a subsequent Check(), never silently.
+  int RemoveDegenerateFaces(double tolerance = tolerance::kDistance);
+
+  // Same as RemoveDegenerateFaces() but for SliverFace at `max_width`:
+  // deletes every face whose boundary is within `max_width` of one
+  // line (including outright degenerate ones) and re-joins the exposed
+  // neighbour edges with JoinNakedEdges(max_width). The surviving shell
+  // then carries the sliver's width as the joined edges' tolerance (see
+  // JoinNakedEdges) - a tolerant edge replaces a hairline face, which is
+  // exactly what Parasolid's own sliver-removal heal does. Returns the
+  // number of faces removed.
+  int RemoveSliverFaces(double max_width = tolerance::kEdgeJoin);
+
+  // Collapses every edge Check() would report as DegenerateEdge at
+  // `tolerance` (3D length within tolerance) to a single vertex via
+  // ON_Brep::CollapseEdge() (which closes the resulting 2D trim gaps in
+  // the adjoining loops itself), then Compact()s. Works on shared and
+  // naked edges alike, unlike RemoveNakedMicroEdge() (which is the
+  // heavier re-trim for a naked sliver that is NOT below tolerance).
+  // Returns the number of edges collapsed. Clears the side tables.
+  int RemoveDegenerateEdges(double tolerance = tolerance::kDistance);
+
+  // Caps every planar hole in this Brep's open boundary with a new
+  // planar face - Rhino's own Cap for the case Check() reports as a
+  // closed chain of NakedEdge issues: each chain of naked (single-trim)
+  // edges is walked head-to-tail through its own vertices (a vertex with
+  // more than two naked edges is ambiguous and its chains are skipped,
+  // never guessed), its edge curves are duplicated and reversed as
+  // needed into one closed boundary, and, if every point sampled on
+  // that boundary lies within `tolerance` (floored at
+  // tolerance::DistanceForSize of the loop's own extent) of one plane
+  // (Newell's method through the samples), a trimmed planar face is
+  // built on it with ON_BrepTrimmedPlane() - the same construction
+  // MergeCoplanarFaces() already relies on - and appended. The new
+  // face's naked boundary is then joined onto the chain's own edges
+  // with JoinNakedEdges(tolerance), which also orients it (and, for a
+  // now-closed shell, the whole shell) consistently, so the cap's own
+  // plane-normal sign never has to be guessed. A non-planar hole is left
+  // open (it needs a real surface fit this kernel doesn't have) and
+  // still shows up as NakedEdge in a following Check(). Returns the
+  // number of caps added. Clears the side tables.
+  int CapPlanarHoles(double tolerance = tolerance::kEdgeJoin);
+
+  // TessellateToClosedMesh() for a Brep that carries TOLERANT edges
+  // (JoinNakedEdges()/RemoveSliverFaces()/a .3dm with real edge
+  // tolerances): the plain call welds only at tolerance::kWeld by grid
+  // snapping, so the very gap a tolerant edge records - or even a
+  // sub-kWeld gap that happens to straddle a snap-cell boundary - stays
+  // open in the mesh. This runs the plain tessellation and then
+  // Mesh::CloseNakedEdges() over its naked seams at
+  // max(kWeld, 2 * the largest ON_BrepEdge::m_tolerance in this Brep):
+  // a true-distance weld restricted to boundary vertices, so nothing
+  // interior is ever touched and a Brep with only exact edges gets the
+  // plain result plus at most a kWeld-wide true-distance boundary weld.
+  // Deliberately a separate entry point rather than a change to
+  // TessellateToClosedMesh() itself: notched conical fillet caps
+  // (FromMixedFaces) already carry genuinely computed edge tolerances,
+  // and the plain path's output on them is pinned by existing tests, so
+  // widening their weld silently was not an option in this pass.
+  Mesh TessellateToClosedMeshTolerant(int u_divisions = 8, int v_divisions = 8) const;
+
   const ON_Brep& raw() const { return brep_; }
   ON_Brep& raw() { return brep_; }
 
  private:
+  // Clears every per-face side table (face_trim_loops_ and its siblings
+  // below) - what every topology-surgery method here must do first; see
+  // MergeCoplanarFaces' own comment for why.
+  void ClearFaceSideTables();
+  // Shared body of RemoveDegenerateFaces()/RemoveSliverFaces().
+  int RemoveThinFaces(double width, double join_tolerance, bool slivers_too);
+
   ON_Brep brep_;
   // Parallel to brep_.m_F: face_trim_loops_[i] is empty for an untrimmed
   // face, or the trim polygon for a face built by TrimmedPlanarFace().
