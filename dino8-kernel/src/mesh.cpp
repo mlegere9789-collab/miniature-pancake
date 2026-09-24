@@ -2448,6 +2448,43 @@ void ForEachDirectedEdge(const ON_MeshFace& f, Visit visit) {
 // snapping misses). Union-find over the pairs; returns each vertex's
 // representative (the lowest index in its group), or -1 for a vertex
 // not in `candidates`.
+//
+// INVESTIGATION LOG - a SPOTTED, NOT YET MEASURED, tolerance-compounding
+// concern (found while looking for the next healing/tolerance gap to
+// close; left as a documented concern rather than a guessed-at fix, per
+// this codebase's own standard for an unproven correctness worry - see
+// boolean_general.h's own investigation-log entries for the house style):
+// union-find welding is SINGLE-LINKAGE clustering, which has no bound on
+// a group's own diameter. Three candidates A, B, C with |AB| = |BC| =
+// 0.9*tolerance but |AC| = 1.8*tolerance (comfortably ABOVE tolerance,
+// so A and C are NOT themselves "the same point" by this function's own
+// stated contract) still end up in ONE group here, because A-B and B-C
+// each individually pass the pairwise test - and CloseNakedEdges()
+// (this function's own caller, mesh.h) then snaps C onto A's position,
+// 1.8*tolerance away, not <= tolerance away. Nothing bounds this to one
+// extra hop either: a longer chain of candidates each tolerance-close to
+// the next can walk arbitrarily far in aggregate before landing in a
+// single group, all merged onto whichever member happens to have the
+// lowest index - an amount of drift with NO relationship to `tolerance`
+// itself, which is exactly the "does this silently drift instead of
+// compounding correctly" failure shape this pass was asked to look for.
+// NOT fixed here: every plausible fix (clustering by distance-to-the-
+// group's-own-representative instead of distance-to-any-member, which
+// bounds a group's diameter to 2*tolerance at the cost of welding fewer
+// candidates per pass) changes what CloseNakedEdges() welds on EVERY
+// existing caller, and this function backs the mesh-level side of the
+// exact seam-closing machinery boolean_general.h's own "closedmesh gap"
+// investigation spent an entire session tuning case-by-case (see its own
+// "WHY THE SUGGESTED... WAS NOT ENOUGH" and "WHAT IS LEFT" entries) -
+// changing its clustering rule here risks silently reopening some of
+// that already-hard-won closed-mesh territory in a way a quick pass
+// cannot responsibly verify. Whether a REAL chain of that shape ever
+// actually arises on this kernel's own naked-edge fixtures (as opposed
+// to being merely possible in principle) was not established either way
+// - this needed the same kind of dedicated, instrumented investigation
+// boolean_general.h's own log entries used, not a guess. Left as a
+// documented concern for a future, dedicated pass rather than an
+// uncertain fix landed under this one's own time budget.
 std::vector<int> WeldGroups(const ON_Mesh& mesh, const std::vector<int>& candidates, double tolerance) {
   std::vector<int> parent(static_cast<size_t>(mesh.m_V.Count()), -1);
   for (const int v : candidates) parent[static_cast<size_t>(v)] = v;
@@ -2988,6 +3025,65 @@ int Mesh::UnifyNormals() {
     mesh_.m_FN.Destroy();
   }
   return flipped;
+}
+
+Mesh Mesh::Offset(double distance) const {
+  Mesh result = *this;
+  const std::vector<Vector3d> normals = ComputeVertexNormals();
+  for (int i = 0; i < result.mesh_.m_V.Count(); ++i) {
+    const ON_3dPoint moved = ON_3dPoint(result.mesh_.m_V[i]) + distance * normals[static_cast<size_t>(i)];
+    result.mesh_.m_V[i] = ON_3fPoint(moved);
+  }
+  result.mesh_.m_N.Destroy();
+  result.mesh_.m_FN.Destroy();
+  return result;
+}
+
+Mesh Mesh::Thicken(double distance) const {
+  if (distance == 0.0) {
+    throw std::invalid_argument("dino8::kernel::Mesh::Thicken: distance must be nonzero");
+  }
+  const CheckReport report = Check();
+  if (report.naked_edge_list.empty()) {
+    throw std::invalid_argument(
+        "dino8::kernel::Mesh::Thicken: this mesh has no naked edges to wall "
+        "up (it's already closed) - Thicken() only handles an open sheet; "
+        "a closed mesh needs a hollowing/shell operation this method "
+        "doesn't attempt");
+  }
+
+  const Mesh outer = Offset(distance);
+  const int n = mesh_.m_V.Count();
+
+  Mesh result;
+  ON_Mesh& raw = result.raw();
+  raw.m_V.Reserve(n * 2);
+  for (int i = 0; i < n; ++i) raw.m_V.Append(mesh_.m_V[i]);
+  for (int i = 0; i < n; ++i) raw.m_V.Append(outer.raw().m_V[i]);
+
+  raw.m_F.Reserve(mesh_.m_F.Count() * 2 + static_cast<int>(report.naked_edge_list.size()));
+  // Inner wall: the original faces, flipped.
+  for (int i = 0; i < mesh_.m_F.Count(); ++i) {
+    ON_MeshFace f = mesh_.m_F[i];
+    FlipOneFace(f);
+    raw.m_F.Append(f);
+  }
+  // Outer wall: the offset copy's faces, same winding, reindexed by +n.
+  for (int i = 0; i < mesh_.m_F.Count(); ++i) {
+    ON_MeshFace f = mesh_.m_F[i];
+    for (int k = 0; k < 4; ++k) f.vi[k] += n;
+    raw.m_F.Append(f);
+  }
+  // Side walls: one quad per naked edge (a, b), already directed outward.
+  for (const auto& [a, b] : report.naked_edge_list) {
+    ON_MeshFace f;
+    f.vi[0] = a;
+    f.vi[1] = b;
+    f.vi[2] = b + n;
+    f.vi[3] = a + n;
+    raw.m_F.Append(f);
+  }
+  return result;
 }
 
 }  // namespace dino8::kernel
