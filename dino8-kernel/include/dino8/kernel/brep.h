@@ -455,6 +455,42 @@ class Brep {
                            bool cap = true, int stations = 32);
 
   int FaceCount() const;
+  int VertexCount() const;
+  int EdgeCount() const;
+
+  // Topology & adjacency queries - the reusable equivalent of the ad-hoc
+  // brep_.m_V/m_E/m_F/m_T walks scattered through this file (e.g.
+  // MergeCoplanarFaces' own loop_a.Trim(k)->Edge()->m_ti walk). All three
+  // read raw()'s own topology directly and are safe on any Brep this
+  // class produces or that raw() was assigned a genuine-topology .3dm
+  // Brep into; a Brep built by one of the surface-only factories (Box(),
+  // Sphere(), TrimmedPlanarFace(), FromSurface() - see this class's own
+  // top comment) has no ON_BrepVertex/ON_BrepEdge/ON_BrepTrim records at
+  // all, so VertexCount()/EdgeCount() report 0 and EdgesOfVertex()/
+  // FacesOfEdge()/NeighborFaces() have nothing to walk.
+
+  // Every edge incident to vertex `vertex_index`, in ON_BrepVertex::m_ei's
+  // own stored order (not sorted or deduplicated - a genuine ON_Brep never
+  // lists the same edge twice against one vertex). Throws std::out_of_range
+  // for an out-of-range vertex_index.
+  std::vector<int> EdgesOfVertex(int vertex_index) const;
+
+  // The distinct faces bordering edge `edge_index` - one entry per face
+  // touching the edge through any of its trims, in first-occurrence order
+  // (a naked edge gives one face; a manifold interior edge gives two; a
+  // non-manifold edge with 3+ trims on faces that repeat gives each face
+  // once). Throws std::out_of_range for an out-of-range edge_index, or
+  // std::invalid_argument if edge_index names a deleted edge slot.
+  std::vector<int> FacesOfEdge(int edge_index) const;
+
+  // The distinct faces sharing an edge with face `face_index` (walking
+  // every trim of every loop of the face, then every OTHER trim on that
+  // trim's own edge), in first-occurrence order - face_index itself is
+  // never included, even if a self-intersecting or non-manifold loop
+  // makes it its own edge-neighbour. Throws std::out_of_range for an
+  // out-of-range face_index, or std::invalid_argument if face_index names
+  // a deleted face slot.
+  std::vector<int> NeighborFaces(int face_index) const;
 
   // One planar face's boundary as a real 3D polygon plus its plane -
   // the representation an exact (non-tessellated) planar B-rep boolean
