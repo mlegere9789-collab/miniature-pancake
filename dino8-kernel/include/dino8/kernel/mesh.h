@@ -623,18 +623,19 @@ class Mesh {
   //
   // The mesh-level counterpart of Brep::Check() and its repairs: the
   // same questions IsClosedManifold() answers with one bool, as COUNTS
-  // and LOCATIONS a caller can act on, plus the four repairs that turn
+  // and LOCATIONS a caller can act on, plus the five repairs that turn
   // the common "almost closed" or "almost clean" meshes back into closed,
   // valid ones (CloseNakedEdges() and FillSmallHoles() for naked_edges,
   // UnifyNormals() for orientation_conflicts, RemoveDegenerateFaces() for
-  // degenerate_faces below). Two of CheckReport's five conditions still
-  // have no repair here: non_manifold_edges (repairing a 3+-face edge
-  // needs a judgment call - which faces stay grouped together - this
-  // class doesn't make for you) and interior duplicate_vertices away
-  // from any naked edge (CloseNakedEdges() only welds boundary ones, by
-  // design - an interior feature that happens to be `tolerance`-close to
-  // another is not the same bug as a seam left open by construction, and
-  // silently welding it could collapse real geometry).
+  // degenerate_faces, RemoveDuplicateFaces() for duplicate_faces, below).
+  // Two of CheckReport's six conditions still have no repair here:
+  // non_manifold_edges (repairing a 3+-face edge needs a judgment call -
+  // which faces stay grouped together - this class doesn't make for you)
+  // and interior duplicate_vertices away from any naked edge
+  // (CloseNakedEdges() only welds boundary ones, by design - an interior
+  // feature that happens to be `tolerance`-close to another is not the
+  // same bug as a seam left open by construction, and silently welding
+  // it could collapse real geometry).
   struct CheckReport {
     // Undirected edges used by exactly one face (the open boundary).
     int naked_edges = 0;
@@ -652,6 +653,15 @@ class Mesh {
     // twice" MergeAndWeld() exists to prevent, and CloseNakedEdges()
     // repairs when it happened on a boundary.
     int duplicate_vertices = 0;
+    // Faces that are the exact same polygon as another face already
+    // counted (same vertex indices, in the same cyclic order OR its
+    // exact reverse - i.e. the identical shape, winding-direction-
+    // agnostic) - counted per LATER occurrence, so two duplicates of the
+    // same triangle count as 1, not 2. Independent of degenerate_faces:
+    // two perfectly valid, non-degenerate triangles sitting exactly on
+    // top of each other (a common "appended the same geometry twice"
+    // import defect) trip this, not that.
+    int duplicate_faces = 0;
     // Every naked edge as (a, b) in the direction its one face walks it,
     // in face order - the input FillSmallHoles() chains into loops.
     std::vector<std::pair<int, int>> naked_edge_list;
@@ -706,6 +716,25 @@ class Mesh {
   // removed face may have lost the only UV that referenced it uniquely.
   // Returns the number of faces removed.
   int RemoveDegenerateFaces(double tolerance = tolerance::kDistance);
+
+  // Removes every face Check() would count in duplicate_faces - the
+  // LATER occurrence of each repeated polygon is dropped, the first
+  // survives untouched at its original index order (only later indices
+  // shift down). "Duplicate" means the exact same vertex indices in the
+  // same cyclic order or its exact reverse (so a triangle and its
+  // opposite-wound twin both count, along with an ordinary reordered
+  // repeat) - not merely "close in space" the way CloseNakedEdges()'s
+  // vertex welding is; two faces built from entirely different vertex
+  // INDICES that happen to sit at the same 3D positions are a
+  // duplicate_vertices problem for CloseNakedEdges(), not this. Distinct
+  // from RemoveDegenerateFaces(): a duplicate pair can be two perfectly
+  // valid, non-degenerate triangles sitting exactly on top of each
+  // other (e.g. an import that appended the same geometry twice), which
+  // Check()'s degenerate_faces test alone would never catch (each one,
+  // taken alone, is a fine triangle). Compacts now-unused vertices and
+  // drops texture coordinates, same as RemoveDegenerateFaces(). Returns
+  // the number of faces removed.
+  int RemoveDuplicateFaces();
 
   // Fills every boundary loop (NakedEdgeLoops()) whose vertices' axis-
   // aligned bounding-box diagonal is at most `max_extent`: a 3-vertex

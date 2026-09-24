@@ -6852,6 +6852,58 @@ void TestMeshRemoveDegenerateFacesDropsOnlyDegenerateOnes() {
         "the surviving face is the original (0,0,0)-(1,0,0)-(0,1,0) triangle, reindexed but not moved");
 }
 
+// Mesh-level RemoveDuplicateFaces(): a triangle repeated 3 ways (an exact
+// index-order repeat, a rotated-index repeat, and an opposite-winding
+// repeat) - all 3 are the SAME polygon and must all count as duplicates
+// of whichever came first - alongside one genuinely distinct triangle
+// that must survive untouched. Also confirms duplicate_faces is
+// independent of degenerate_faces: every face here is individually a
+// perfectly valid, non-degenerate triangle.
+void TestMeshRemoveDuplicateFacesKeepsOneCopyPerPolygon() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+
+  Mesh clean_box = Brep::Box(1, 1, 1, 2, 2, 2).TessellateToClosedMesh(1, 1);
+  Check(clean_box.Check().duplicate_faces == 0 && clean_box.RemoveDuplicateFaces() == 0 &&
+            clean_box.FaceCount() == 12,
+        "a clean mesh has no duplicate faces and RemoveDuplicateFaces() leaves it untouched");
+
+  Mesh m;
+  ON_Mesh& raw = m.raw();
+  raw.m_V.Append(ON_3fPoint(0, 0, 0));  // 0
+  raw.m_V.Append(ON_3fPoint(1, 0, 0));  // 1
+  raw.m_V.Append(ON_3fPoint(0, 1, 0));  // 2
+  raw.m_V.Append(ON_3fPoint(5, 5, 5));  // 3
+  raw.m_V.Append(ON_3fPoint(6, 5, 5));  // 4
+  raw.m_V.Append(ON_3fPoint(5, 6, 5));  // 5
+  auto add_tri = [&](int a, int b, int c) {
+    ON_MeshFace f;
+    f.vi[0] = a;
+    f.vi[1] = b;
+    f.vi[2] = c;
+    f.vi[3] = c;
+    raw.m_F.Append(f);
+  };
+  add_tri(0, 1, 2);  // the original
+  add_tri(3, 4, 5);  // a genuinely distinct triangle
+  add_tri(1, 2, 0);  // duplicate: same winding, rotated start
+  add_tri(2, 1, 0);  // duplicate: exact reverse winding
+
+  const Mesh::CheckReport before = m.Check();
+  Check(before.duplicate_faces == 2, "Check() counts exactly 2 duplicates of the (0,1,2) triangle");
+  Check(before.degenerate_faces == 0, "...and none of the 4 faces are individually degenerate");
+
+  Check(m.RemoveDuplicateFaces() == 2, "RemoveDuplicateFaces() removes exactly those 2 later duplicates");
+  Check(m.FaceCount() == 2, "the original (0,1,2) and the distinct (3,4,5) triangle both survive");
+  Check(m.VertexCount() == 6, "no vertex is dropped - every one is still used by a surviving face");
+  Check(m.Check().duplicate_faces == 0, "no duplicates remain, by Check()'s own count");
+  Check(m.RemoveDuplicateFaces() == 0, "a second call is a no-op");
+
+  const ON_MeshFace& f0 = m.raw().m_F[0];
+  Check(f0.vi[0] == 0 && f0.vi[1] == 1 && f0.vi[2] == 2,
+        "the SURVIVING copy is the first occurrence (0,1,2), not one of the later duplicates");
+}
+
 void TestLoftClosedRingsConcaveEndCapsExactPrismVolume() {
   using dino8::kernel::BooleanCombine;
   using dino8::kernel::BooleanOp;
@@ -26133,6 +26185,7 @@ int main() {
   TestMeshUnifyNormalsFixesFlippedAndInvertedFaces();
   TestMeshCloseNakedEdgesWeldsDuplicateAndOffsetVertices();
   TestMeshRemoveDegenerateFacesDropsOnlyDegenerateOnes();
+  TestMeshRemoveDuplicateFacesKeepsOneCopyPerPolygon();
 
   sweep_tests::TestMergeAndWeldDropsCollapsedPoleTriangles();
   sweep_tests::TestExtrudeRectangleIsExactCappedSolid();
