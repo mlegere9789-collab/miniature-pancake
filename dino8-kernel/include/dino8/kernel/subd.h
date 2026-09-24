@@ -28,6 +28,23 @@ struct SubDNurbsPatch {
   bool exact;
 };
 
+// One control-net vertex's exact Catmull-Clark limit-surface point, from
+// SubD::LimitPoints().
+struct SubDLimitPoint {
+  unsigned int vertex_id = 0;  // ON_SubDVertex::m_id (stable across edits, not an array index)
+  Point3d control_point;       // the vertex's current control-net position
+  Point3d limit_point;         // the point on the limit surface this vertex converges to
+  // Unit limit-surface normal at `limit_point`, or the zero vector if
+  // OpenNURBS reports it undefined. For a crease/corner vertex the
+  // limit surface has one normal PER SECTOR (per smooth region around
+  // the vertex, separated by its crease edges); this is the sector
+  // containing the vertex's first face - the other sectors' normals
+  // differ and aren't reported here.
+  Vector3d limit_normal;
+  int valence = 0;      // number of edges at the vertex
+  bool smooth = false;  // ON_SubDVertex::IsSmooth(): interior, not on a crease/corner/dart
+};
+
 // Wraps ON_SubD - OpenNURBS' real, working Catmull-Clark subdivision
 // surface implementation. Unlike ON_Brep::CreateMesh/ON_Surface::CreateMesh
 // (chunk 2) and ON_SubD::BrepForm/GetSurfaceBrep (checked for this chunk),
@@ -38,13 +55,18 @@ struct SubDNurbsPatch {
 // computation, verified by reading its implementation, not just calling it
 // and hoping.
 //
-// What OpenNURBS' public API does *not* give us: an exact limit-surface
-// evaluator or mesher. GetControlNetMesh() only ever returns the current
-// subdivision level's control net (a mesh of flat quads through the
-// control points) - repeatedly subdividing and re-extracting that net is
-// the standard "just subdivide a lot" approximation technique, not exact
-// limit-surface evaluation. A real product needs the latter for accurate
-// rendering at any zoom level; this chunk only adds the former.
+// What OpenNURBS' public API does *not* give us: a limit-surface MESHER,
+// or evaluation at an arbitrary point inside a face. GetControlNetMesh()
+// only ever returns the current subdivision level's control net (a mesh
+// of flat quads through the control points) - repeatedly subdividing and
+// re-extracting that net is the standard "just subdivide a lot"
+// approximation technique, not exact limit-surface evaluation. CORRECTED
+// (this comment used to claim no exact limit evaluator existed at all):
+// it does ship exact per-VERTEX limit evaluation, `ON_SubDVertex::
+// SurfacePoint()`/`SurfaceNormal()`, real and non-stub in
+// opennurbs_subd_eval.cpp - wrapped as LimitPoints() below and verified
+// against the closed-form limit masks. Face-interior exactness comes
+// from ToNurbsPatches() on regular faces only.
 class SubD {
  public:
   // Builds a SubD control cage directly from `control_mesh`'s own faces -
@@ -171,6 +193,39 @@ class SubD {
   // own doc comment recommends), counting edges whose tag is genuinely
   // a crease.
   int CreaseEdgeCount() const;
+
+  // The EXACT limit-surface point (and normal) of every vertex of the
+  // current subdivision level's control net, in ON_SubD's own vertex
+  // iteration order - one SubDLimitPoint per VertexCount(). This is
+  // genuine limit evaluation, not "subdivide a lot": the point each
+  // control vertex converges to under infinitely many Catmull-Clark
+  // refinements, in closed form.
+  //
+  // CORRECTS this class's own long-standing claim (see the comment
+  // above, and the README's "What's still not done") that OpenNURBS'
+  // public API ships no exact limit-surface evaluator: it does, for the
+  // vertices. `ON_SubDVertex::SurfacePoint()`/`SurfaceNormal()` are
+  // implemented in opennurbs_subd_eval.cpp (verified by reading the
+  // source, not assumed - a real sector-based computation that walks
+  // the vertex's incident faces via ON_SubDSectorIterator and fills the
+  // vertex's cached limit point/normal, unlike the `BrepForm()`/
+  // `CreaseEdgeCount()` stubs this file already documents). Verified
+  // numerically too, not just by code reading: on a cube cage the limit
+  // points land exactly where the standard closed-form Catmull-Clark
+  // limit mask puts a valence-3 vertex, `(n^2 v + 4 sum(edge neighbors)
+  // + sum(diagonal neighbors)) / (n (n + 5))` (Halstead, Kass & DeRose
+  // 1993), and repeated `Subdivide()` visibly converges toward them.
+  //
+  // What this still is NOT: evaluation at an arbitrary (u, v) inside a
+  // face - only the vertices' own limit positions. Away from
+  // extraordinary vertices `ToNurbsPatches()`'s exact regular patches
+  // already cover the face interiors; the irregular-face interior stays
+  // approximate (see that method).
+  //
+  // Throws std::runtime_error if OpenNURBS can't evaluate a vertex's
+  // limit point (a vertex with no faces, e.g. from a degenerate control
+  // mesh) - never silently returns a NaN position.
+  std::vector<SubDLimitPoint> LimitPoints() const;
 
   const ON_SubD& raw() const { return subd_; }
   ON_SubD& raw() { return subd_; }
