@@ -718,4 +718,74 @@ Brep ChamferConvexEdgeAngle(const Brep& solid, Point3d edge_p0, Point3d edge_p1,
 // faces, and variable radii remain out of scope for this function.
 Brep FilletConvexEdges(const Brep& solid, const std::vector<std::pair<Point3d, Point3d>>& edges, double radius);
 
+
+// BLEND REMOVAL: the inverse of FilletConvexEdge - restores the original
+// sharp edge a constant-radius, planar/planar fillet rounded off, purely
+// from the FILLETED solid's own geometry (no separate history/provenance
+// is stored anywhere in a Brep, so this genuinely RECOVERS the original
+// shape rather than replaying a recorded operation - the same "read it
+// back out of the geometry" spirit MixedFaces() already uses for
+// Brep::CylindricalFace/ConicalFace/SphericalFace recognition).
+//
+// `point_on_fillet` identifies which CylindricalFace to remove: the
+// closest of `solid.MixedFaces().cylindrical` to that point (by distance
+// to the trimmed cylindrical surface itself, not just its infinite
+// extension) - mirroring how dino8-app's own edge-pick commands identify
+// a face by a clicked point rather than an index. Throws
+// std::invalid_argument if no cylindrical face is within a reasonable
+// tolerance of the point.
+//
+// The construction, the genuine inverse of FilletConvexEdge's own steps:
+//   1. Recover face i/j: the two PlanarFace records whose own loop has an
+//      edge exactly matching the cylinder's own two straight rails (its
+//      v=0/v=length corners at angle 0, and separately at angle `angle`)
+//      - the SAME rail-sharing fact FilletConvexEdge's own doc comment
+//      relies on to weld them in the first place.
+//   2. Recover the two faces' own outward normals n_i/n_j (read directly
+//      off their own PlanarFace::plane, no fitting needed) and, from
+//      those plus the cylinder's own `radius`, the SAME bis/cosb/offset
+//      FilletConvexEdge's own construction used. Before trusting this,
+//      each end is checked against every SphericalFace of `solid`: a
+//      FilletConvexEdges corner cylinder is set back so its own end rail
+//      corners sit EXACTLY on a corner sphere's own surface, at that
+//      sphere's own radius (see FilletConvexEdges' own doc comment) - an
+//      end matching this is a spherical vertex blend, not a plain
+//      corner-notch or free boundary, and throws std::invalid_argument
+//      rather than silently restoring the wrong shape there (a plain
+//      m==1 end is unaffected either way, since FilletConvexEdge and
+//      FilletConvexEdges use IDENTICAL math for that case).
+//   3. The restored sharp edge's own two endpoints follow directly:
+//      edge_p0 = frame.origin + bis*offset, edge_p1 = edge_p0 +
+//      length*frame.zaxis - the exact algebraic inverse of
+//      axis_point(p) = p - bis*offset.
+//   4. Face i's and face j's own loops are re-trimmed by replacing their
+//      shared rail edge with the restored sharp edge - literally
+//      splicing (edge_p0, edge_p1) in place of the rail's own two
+//      corner points, in whichever direction each face's own loop
+//      already walks that edge.
+//   5. Any THIRD face notched by FilletConvexEdge's own corner-notch
+//      construction (a dense polygonal run between the SAME two rail
+//      corners at one end - see NotchCornerAtVertex's own doc comment)
+//      is found the same way (a run of more than 2 consecutive loop
+//      points between those two corners) and collapsed back to the
+//      single vertex edge_p0 or edge_p1 - the genuine inverse splice.
+//      A face with NO notch there (an untouched sharp corner, or a free
+//      boundary) needs no change and gets none.
+//   6. The one CylindricalFace is dropped; every other face of `solid`
+//      (including any OTHER fillet's own CylindricalFace/ConicalFace/
+//      SphericalFace, for a solid with several independent fillets) is
+//      carried through unchanged via Brep::FromMixedFaces.
+//
+// SCOPE, stated plainly: this reverses exactly what FilletConvexEdge
+// itself can build - a CylindricalFace whose two ends are each either a
+// free boundary or a plain perpendicular corner-notch (NOT an oblique
+// end's sloped ellipse notch, and NOT a spherical vertex-blend corner
+// from FilletConvexEdges) - throwing std::invalid_argument for either of
+// those harder cases rather than silently restoring the wrong shape.
+// FilletConvexEdgeTapered's own ConicalFace and FilletConvexEdges' own
+// spherical corners are real, disclosed, out-of-scope future work for
+// this function, exactly as FilletConvexEdge's own end conditions were
+// once narrower than they are today.
+Brep RemoveBlend(const Brep& solid, Point3d point_on_fillet);
+
 }  // namespace dino8::kernel

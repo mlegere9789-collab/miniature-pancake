@@ -557,6 +557,37 @@ Result NurbsCurve::Extend(double t0, double t1) {
   return curve_.Extend(ON_Interval(t0, t1)) ? Result::Ok : Result::Failed;
 }
 
+Result NurbsCurve::Join(const NurbsCurve& other, double tolerance) {
+  if (curve_.CVCount() < 2 || other.curve_.CVCount() < 2) {
+    return Result::Failed;
+  }
+  if (curve_.IsClosed()) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsCurve::Join: this curve is closed - nothing can be "
+        "appended to a closed loop");
+  }
+  // ON_NurbsCurve::Append discards `other`'s first control point without
+  // ever checking it coincides with this curve's last one (see the
+  // header comment), so the meeting condition is enforced here.
+  const Point3d end = curve_.PointAtEnd();
+  const double gap_to_start = end.DistanceTo(other.curve_.PointAtStart());
+  const double gap_to_end = end.DistanceTo(other.curve_.PointAtEnd());
+  ON_NurbsCurve tail = other.curve_;
+  if (gap_to_start > tolerance) {
+    if (gap_to_end > tolerance) {
+      throw std::invalid_argument(
+          "dino8::kernel::NurbsCurve::Join: neither end of `other` meets this "
+          "curve's end within tolerance " +
+          std::to_string(tolerance) + " (gap to other's start " + std::to_string(gap_to_start) +
+          ", gap to other's end " + std::to_string(gap_to_end) + ")");
+    }
+    if (!tail.Reverse()) {
+      return Result::Failed;
+    }
+  }
+  return curve_.Append(tail) ? Result::Ok : Result::Failed;
+}
+
 Result NurbsCurve::MakePeriodicExact() {
   if (curve_.IsPeriodic()) {
     return Result::NoOpAlreadySatisfied;

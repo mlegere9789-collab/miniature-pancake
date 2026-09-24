@@ -28,6 +28,7 @@
 #include "dino8/kernel/file_io.h"
 #include "dino8/kernel/fillet.h"
 #include "dino8/kernel/mesh.h"
+#include "dino8/kernel/point_cloud.h"
 #include "dino8/kernel/subd.h"
 #include "dino8/kernel/surface.h"
 #include "dino8/kernel/surface_intersect.h"
@@ -966,6 +967,110 @@ void TestCurveSplit() {
   Check(line.Split(1.0, left, right) == Result::Failed,
         "Split() fails when t is at the domain's own end rather than "
         "strictly inside it");
+}
+
+void TestCurveJoin() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // Case 1: two unit-domain lines meeting at (1, 0, 0). Every expected
+  // value is hand-derivable from FromControlPoints()'s clamped-uniform
+  // knots (a 2-control-point degree-1 line has domain [0, 1] and is
+  // linear in position): the join keeps degree 1, merges the shared
+  // junction control point (2 + 2 - 1 = 3 control points), extends the
+  // domain to exactly [0, 2] (this curve's [0, 1] plus other's length
+  // 1), puts the junction at exactly t = 1, and Length() is exactly 3
+  // (1 + 2; the 1000-sample polyline lands a sample exactly on t = 1).
+  NurbsCurve polyline = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(1, 0, 0)}, /*degree=*/1);
+  const NurbsCurve second = NurbsCurve::FromControlPoints({Point3d(1, 0, 0), Point3d(1, 2, 0)}, /*degree=*/1);
+  Check(polyline.Join(second) == Result::Ok, "Join of two lines meeting end-to-start succeeds");
+  Check(polyline.Degree() == 1 && polyline.ControlPointCount() == 3,
+        "joining two degree-1 lines keeps degree 1 with 3 control points (the shared junction point merged)");
+  Check(std::abs(polyline.Domain().min - 0.0) < 1e-12 && std::abs(polyline.Domain().max - 2.0) < 1e-12,
+        "the joined domain is exactly [0, 2]: this curve's [0, 1] extended by other's domain length");
+  Check(polyline.PointAt(0.0).DistanceTo(Point3d(0, 0, 0)) < 1e-12 &&
+            polyline.PointAt(1.0).DistanceTo(Point3d(1, 0, 0)) < 1e-12 &&
+            polyline.PointAt(1.5).DistanceTo(Point3d(1, 1, 0)) < 1e-12 &&
+            polyline.PointAt(2.0).DistanceTo(Point3d(1, 2, 0)) < 1e-12,
+        "the joined curve runs (0,0,0) -> (1,0,0) at exactly t = 1 (the junction) -> (1,1,0) at t = 1.5 -> (1,2,0)");
+  Check(std::abs(polyline.Length() - 3.0) < 1e-9, "the joined polyline's length is exactly 3");
+
+  // Case 2: a genuinely different operand - a rational degree-2 quarter
+  // arc (ON_Arc::GetNurbForm, radius 1, center (1,3,0), from (1,2,0) to
+  // (2,3,0)) joined onto the degree-1 polyline. Append must elevate the
+  // polyline to degree 2 and make the result rational, WITHOUT changing
+  // either operand's shape: the polyline part is re-checked at the same
+  // parameters as before, and the arc part is checked at its own
+  // parameters shifted by exactly 2 (old Domain().max - arc Domain().min):
+  // its midpoint is center + (cos45, sin45) in the arc's plane frame =
+  // (1 + 1/sqrt2, 3 - 1/sqrt2, 0), its end (2, 3, 0).
+  const ON_Plane arc_plane(ON_3dPoint(1, 3, 0), ON_3dVector(0, -1, 0), ON_3dVector(1, 0, 0));
+  ON_NurbsCurve arc_nurbs;
+  Check(ON_Arc(ON_Circle(arc_plane, 1.0), ON_PI / 2).GetNurbForm(arc_nurbs) != 0, "ON_Arc::GetNurbForm succeeds");
+  NurbsCurve arc;
+  arc.raw() = arc_nurbs;
+  Check(arc.Degree() == 2 && arc.IsRational() && arc.PointAt(arc.Domain().min).DistanceTo(Point3d(1, 2, 0)) < 1e-12,
+        "sanity: the arc is a rational degree-2 curve starting exactly at the polyline's end (1, 2, 0)");
+  const double arc_min = arc.Domain().min, arc_max = arc.Domain().max;
+  const double arc_length_param = arc_max - arc_min;
+  NurbsCurve joined = polyline;
+  Check(joined.Join(arc) == Result::Ok, "Join of the polyline with a rational quarter arc succeeds");
+  Check(joined.Degree() == 2 && joined.IsRational(),
+        "the result is degree 2 and rational (the polyline was elevated and made rational to match the arc)");
+  Check(std::abs(joined.Domain().max - (2.0 + arc_length_param)) < 1e-12,
+        "the domain grew by exactly the arc's own domain length");
+  Check(joined.PointAt(0.5).DistanceTo(Point3d(0.5, 0, 0)) < 1e-9 &&
+            joined.PointAt(1.0).DistanceTo(Point3d(1, 0, 0)) < 1e-9 &&
+            joined.PointAt(1.5).DistanceTo(Point3d(1, 1, 0)) < 1e-9 &&
+            joined.PointAt(2.0).DistanceTo(Point3d(1, 2, 0)) < 1e-9,
+        "the polyline part is unchanged at its own parameters after degree elevation (shape-preserving)");
+  const double shift = 2.0 - arc_min;
+  Check(joined.PointAt(shift + 0.5 * (arc_min + arc_max)).DistanceTo(Point3d(1 + std::sqrt(0.5), 3 - std::sqrt(0.5), 0)) <
+                1e-9 &&
+            joined.PointAt(joined.Domain().max).DistanceTo(Point3d(2, 3, 0)) < 1e-9,
+        "the arc part is reproduced at its own parameters shifted by exactly 2: midpoint "
+        "(1 + 1/sqrt2, 3 - 1/sqrt2, 0), end (2, 3, 0)");
+  // Length(): the default 1000-sample polyline now straddles both kinks
+  // (t = 1 and t = 2 no longer land on a sample once the domain is
+  // 3.57 long) and cuts their corners by ~1e-3, so measure with enough
+  // samples for that chord error to drop below 1e-4 - the true length
+  // is exactly 3 + pi/2.
+  Check(std::abs(joined.Length(200000) - (3.0 + ON_PI / 2)) < 1e-4,
+        "the joined curve's length is 3 + pi/2 (two lines plus a quarter circle)");
+
+  // Case 3: `other` given in the opposite direction - its END meets this
+  // curve's end - is auto-reversed (Rhino's Join convenience), yielding
+  // the same curve as case 1.
+  NurbsCurve auto_reversed = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(1, 0, 0)}, /*degree=*/1);
+  const NurbsCurve backwards = NurbsCurve::FromControlPoints({Point3d(1, 2, 0), Point3d(1, 0, 0)}, /*degree=*/1);
+  Check(auto_reversed.Join(backwards) == Result::Ok && auto_reversed.PointAt(1.5).DistanceTo(Point3d(1, 1, 0)) < 1e-12 &&
+            auto_reversed.PointAt(2.0).DistanceTo(Point3d(1, 2, 0)) < 1e-12,
+        "an `other` whose END meets this curve's end is reversed and joined, giving the same curve");
+
+  // Case 4: neither end meets -> throws rather than letting Append
+  // silently snap the junction (its documented discard-first-CV behavior).
+  bool threw_gap = false;
+  try {
+    NurbsCurve line = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(1, 0, 0)}, /*degree=*/1);
+    line.Join(NurbsCurve::FromControlPoints({Point3d(5, 5, 5), Point3d(6, 6, 6)}, /*degree=*/1));
+  } catch (const std::invalid_argument&) {
+    threw_gap = true;
+  }
+  Check(threw_gap, "Join throws when neither end of `other` meets this curve's end");
+
+  // Case 5: a closed curve can't be appended to.
+  bool threw_closed = false;
+  try {
+    ON_NurbsCurve circle_nurbs;
+    ON_Circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 1.0).GetNurbForm(circle_nurbs);
+    NurbsCurve circle;
+    circle.raw() = circle_nurbs;
+    circle.Join(NurbsCurve::FromControlPoints({Point3d(1, 0, 0), Point3d(2, 0, 0)}, /*degree=*/1));
+  } catch (const std::invalid_argument&) {
+    threw_closed = true;
+  }
+  Check(threw_closed, "Join throws when this curve is closed");
 }
 
 void TestCurveExtend() {
@@ -4010,6 +4115,135 @@ void TestSurfaceClosestPoint() {
         "the seam point itself");
 }
 
+// A real, confirmed bug found by randomized fuzzing against an independent
+// brute-force reference: ClosestPointParameter()'s per-level window (the
+// search range the NEXT refinement level scans) narrows to best +/- one
+// grid cell of THIS level, using `(u_hi - u_lo) / u_divisions` - i.e. the
+// SAME u_divisions/v_divisions the caller passed for sampling density. That
+// couples the window's cross-level "drift budget" (how far it can move
+// from wherever the very first, coarsest-relative-to-the-full-domain level
+// happened to land) to 1/divisions, so passing a FINER grid - which should
+// only ever help - can instead leave the window unable to travel far
+// enough to reach a true minimum sitting more than a few of its own (now
+// much smaller) grid cells away from that first sample. Confirmed via a
+// hand-instrumented trace (dumping best_u/best_v/window bounds at every
+// level) on this exact surface+query: both a 24x24 and a 100x100 run land
+// their very first level's best sample in the SAME basin (u in [0.29,
+// 0.30], v=1), but 24x24's much wider per-level step lets it walk from
+// u~0.29 down to the true nearby optimum at u~0.246 (distance ~893.39)
+// within the fixed 8 refinement levels, while 100x100's much narrower step
+// only reaches u~0.290 (distance ~908.57) - the opposite of the expected
+// finer-is-better-or-equal trend, not just an unlucky pick of a different,
+// worse local minimum (this is the SAME basin, arrived at less
+// completely). Fixed by capping the divisor used for the window-narrowing
+// step (not the sampling density, which keeps benefiting fully from a
+// larger u_divisions/v_divisions) so the drift budget never gets worse
+// than this method's own default (20x20) provides. Verified via a
+// stash-based before/after: fails (908.57 vs 893.39, gap ~15.2) on the
+// pre-fix code, passes (~895.2 vs ~893.39, gap ~1.8 - the ordinary
+// residual noise any finite multi-level grid search has, already covered
+// by this method's own "not a guaranteed global minimum" doc comment) on
+// the fix.
+void TestSurfaceClosestPointFinerGridNotWorseThanCoarser() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+
+  constexpr int kDegU = 1, kDegV = 3, kCvU = 6, kCvV = 8;
+  const double kKnotsU[kCvU + kDegU - 1] = {0, 0.16375993954552437, 0.8712146450345144, 0.88836447635676197,
+                                             0.97739768666491145, 1};
+  const double kKnotsV[kCvV + kDegV - 1] = {0,
+                                             0,
+                                             0,
+                                             0.46349031362127513,
+                                             0.46642385788116175,
+                                             0.5478672675887597,
+                                             0.97460768787465912,
+                                             1,
+                                             1,
+                                             1};
+  // Control points, row-major u-fastest (dumped from the exact fuzzed
+  // surface that reproduced the bug).
+  const double kCvs[kCvU * kCvV][3] = {
+      {-1275.5014096421548, 1476.2458531541276, 786.45586609157658},
+      {500.02412185403068, -1387.6312611617536, 1002.5707287152434},
+      {205.28156051407768, -1340.8279845419443, 1014.8190084864184},
+      {1302.9143343176604, 61.360849633582347, 679.23119982726507},
+      {-262.98997383546953, -1115.8554912798843, 923.76275166296159},
+      {-1229.6249972217199, -278.98431249360578, 21.763030897905765},
+      {584.06021397397103, -150.94200394564928, -934.62265131931701},
+      {-96.681654535167127, -272.77795538424266, -1412.8974139500594},
+      {-1466.6522302351996, 930.0100971953218, 894.56290524207793},
+      {-436.32780613989803, 541.02399455025966, -1221.9053378125343},
+      {-746.28401729019822, 786.25619099688424, 1423.0243600014685},
+      {-842.02027670601933, 234.08759694076798, -1235.4232348465482},
+      {468.20877813596849, -633.23101322871935, 271.77716590942441},
+      {-1271.5115905814826, -1233.0003695570715, -985.9535194759809},
+      {1408.3592043241836, 1179.0212805649087, -825.56643015005068},
+      {-522.21445993647546, 454.93903642969462, -572.94531359665734},
+      {901.63612822668915, -1268.8704321762098, -832.66287990016451},
+      {280.22611584374818, 1345.5066380304936, 55.028217177012266},
+      {1209.494317964042, 565.99221075463197, 804.87320200621139},
+      {-889.98761636293898, -1309.0189606838276, -29.878281241650484},
+      {109.88921122120723, -1152.6632253340629, -972.35468108816781},
+      {-316.25456178466357, 783.07108419756901, -1416.219711933056},
+      {-1423.6185928750533, 183.78151041651927, 1476.082116362775},
+      {-831.98395857956825, 1235.3907118370992, 558.49515702875055},
+      {1094.585597577098, -190.32725255855439, -1409.3587087960957},
+      {733.01532616895724, 526.47758044156785, -508.27413596091537},
+      {685.08798794408608, 1266.4427000126082, 1070.2197243410967},
+      {-1105.8811855183073, -1240.8137865554916, 878.69547336272058},
+      {955.99191678631246, -740.96822884391611, 1287.8104219303343},
+      {1367.1450169371353, -517.43246602811007, 387.97439745145675},
+      {-558.75675145318905, 194.71557004896317, 146.74477622758104},
+      {-153.4879474763834, 1139.3968701316001, -313.95508085496044},
+      {-169.25857427498363, -1520.3047602968193, -1188.9510301361584},
+      {-1495.6428144293939, -329.52202497580765, 651.82804415346232},
+      {47.533688510964794, -893.37711621591461, -1149.5569969053922},
+      {931.86095304560808, 1293.6732528522709, 987.51883317918077},
+      {-408.58722569153542, 937.0672945109261, -1066.421396566639},
+      {590.37806465230165, -1116.8414232387249, 1126.6003362668037},
+      {-675.07445255110349, -229.99478786535838, 686.08150210696954},
+      {276.46549401547873, 310.27503634759796, -939.53546537043007},
+      {-1023.0502256973793, 190.9370882148437, -451.04875140490458},
+      {-783.60736417951193, 719.84658280172403, 264.11605912803179},
+      {-1298.4072079749114, -1478.6888511464351, -1.5265976432572188},
+      {1268.0596413097539, 722.18728546851048, -1517.6825039895925},
+      {459.00911282331344, 1383.2857883666236, 1424.382637124723},
+      {926.48748252130531, -14.95874617045024, 1150.1734037832009},
+      {-1302.7626364415794, 1097.6518405063046, -787.4158668430191},
+      {-102.96386915832363, -1.5057176929615252, 646.75030107233783},
+  };
+
+  ON_NurbsSurface raw;
+  Check(raw.Create(3, /*is_rat=*/false, kDegU + 1, kDegV + 1, kCvU, kCvV),
+        "ON_NurbsSurface::Create succeeds for the reproduced bug's degree/CV counts");
+  for (int i = 0; i < kCvU + kDegU - 1; ++i) raw.SetKnot(0, i, kKnotsU[i]);
+  for (int i = 0; i < kCvV + kDegV - 1; ++i) raw.SetKnot(1, i, kKnotsV[i]);
+  for (int j = 0; j < kCvV; ++j) {
+    for (int i = 0; i < kCvU; ++i) {
+      const double* cv = kCvs[static_cast<size_t>(j) * kCvU + i];
+      raw.SetCV(i, j, ON_3dPoint(cv[0], cv[1], cv[2]));
+    }
+  }
+  NurbsSurface surface;
+  surface.raw() = raw;
+
+  const Point3d query(1937.233924, 541.1802437, -636.9584755);
+  const Point3d coarse = surface.ClosestPoint(query, 24, 24);
+  const Point3d fine = surface.ClosestPoint(query, 100, 100);
+  const double d_coarse = (coarse - query).Length();
+  const double d_fine = (fine - query).Length();
+
+  Check(d_coarse < 894.0, "sanity: the 24x24 grid still finds ~893.39, matching the debug trace this test's own "
+                          "comment cites (regression-guards the reference case itself, not just the fix)");
+  Check(d_fine <= d_coarse + 5.0,
+        "a 100x100 (finer) grid does not converge to a meaningfully WORSE "
+        "closest point than a 24x24 (coarser) grid on the same surface and "
+        "query - before the fix this gap was ~15.2 (908.57 vs 893.39); the "
+        "small residual gap left after the fix (~1.8) is ordinary "
+        "multi-level-grid-search noise, not this bug");
+}
+
 void TestSurfaceClosestPointGlobalReportsConvergenceFailure() {
   using dino8::kernel::Point3d;
   using dino8::kernel::SurfaceClosestPointGlobal;
@@ -5181,6 +5415,94 @@ void TestBrepGetTightBoundingBox() {
         "boundary/Greville isocurves, never the genuine 2D interior "
         "extremum, the same real public-build limitation "
         "TestCurveGetTightBoundingBox found for a curve");
+}
+
+// The real, previously-undocumented gap found and fixed alongside
+// SplitDisjointPieces(): ON_Brep::GetTightBoundingBox() measures each
+// face's UNDERLYING SURFACE, never its trim boundary, so a genuinely
+// trimmed face's box came back the size of its (possibly much larger)
+// untrimmed surface. Now exact for a face whose surface is a real,
+// zero-twist affine bilinear map (exactly what
+// FromPlanarFaces()/FromMixedFaces()/TrimmedPlanarFace() build) - proven
+// here on TWO independent constructions, plus a direct regression guard
+// that the general (non-affine) case never undershoots.
+void TestBrepGetTightBoundingBoxExactForTrimmedPlanarFaces() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point2d;
+  using dino8::kernel::Point3d;
+
+  // 1. The original repro, via FromPlanarFaces(): before this fix, this
+  // came back (-0.05,-0.05,-0.05)-(1.05,1.05,1.05) - FromMixedFaces()'s
+  // own 5%-padded underlying surface, not the box's real (0,0,0)-(1,1,1).
+  {
+    const Brep box = Brep::FromPlanarFaces(Brep::Box(0, 0, 0, 1, 1, 1).PlanarFaces());
+    const auto bounds = box.GetTightBoundingBox();
+    Check(bounds.min.DistanceTo(Point3d(0, 0, 0)) < 1e-12 && bounds.max.DistanceTo(Point3d(1, 1, 1)) < 1e-12,
+          "FromPlanarFaces(unit box)'s GetTightBoundingBox is now EXACTLY (0,0,0)-(1,1,1), not the padded "
+          "underlying-surface box");
+  }
+  {
+    const Brep box = Brep::FromPlanarFaces(Brep::Box(0, 0, 0, 2, 3, 4).PlanarFaces());
+    const auto bounds = box.GetTightBoundingBox();
+    Check(bounds.min.DistanceTo(Point3d(0, 0, 0)) < 1e-12 && bounds.max.DistanceTo(Point3d(2, 3, 4)) < 1e-12,
+          "a 2x3x4 FromPlanarFaces() box's GetTightBoundingBox is also exactly its own true corners");
+  }
+
+  // 2. The general, factory-independent root cause, isolated directly:
+  // TrimmedPlanarFace() lets a caller trim an arbitrarily small polygon
+  // out of an arbitrarily large surface - a 100x100 flat surface with
+  // only its [40,60]x[40,60] middle actually trimmed in. Before this
+  // fix, GetTightBoundingBox() returned the WHOLE (0,0,0)-(100,100,0)
+  // surface, ignoring the trim entirely; this proves the fix isn't
+  // specific to FromMixedFaces()'s own padding, but the same OpenNURBS
+  // behavior found in a completely different construction.
+  {
+    const std::vector<Point3d> grid = {Point3d(0, 0, 0), Point3d(100, 0, 0), Point3d(0, 100, 0), Point3d(100, 100, 0)};
+    const NurbsSurface surface = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+    const std::vector<Point2d> trim = {Point2d(0.4, 0.4), Point2d(0.6, 0.4), Point2d(0.6, 0.6), Point2d(0.4, 0.6)};
+    const Brep face = Brep::TrimmedPlanarFace(surface, trim);
+    const auto bounds = face.GetTightBoundingBox();
+    Check(bounds.min.DistanceTo(Point3d(40, 40, 0)) < 1e-9 && bounds.max.DistanceTo(Point3d(60, 60, 0)) < 1e-9,
+          "TrimmedPlanarFace()'s small trim on a much bigger flat surface now gives exactly the trim's own "
+          "(40,40,0)-(60,60,0) box, not the untrimmed surface's (0,0,0)-(100,100,0)");
+  }
+
+  // 3. The safety net: a genuinely CURVED face (a cylinder, degree > 1 -
+  // never eligible for the exact affine-bilinear path) must still come
+  // back as a SAFE bound - a superset of a dense, independent sampling
+  // of that exact same surface, never smaller. This is the regression
+  // guard against ever accidentally undershooting the general case: the
+  // exact-affine fast path must never fire here, and the untouched
+  // OpenNURBS fallback must still cover every sampled point.
+  {
+    ON_NurbsSurface cyl_srf;
+    const ON_Cylinder cyl(ON_Circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 5.0), 10.0);
+    Check(cyl.GetNurbForm(cyl_srf) == 2, "sanity: ON_Cylinder::GetNurbForm succeeds");
+    NurbsSurface cyl_surface;
+    cyl_surface.raw() = cyl_srf;
+    const Brep cyl_brep = Brep::FromSurface(cyl_surface);
+    const auto bounds = cyl_brep.GetTightBoundingBox();
+
+    bool all_inside = true;
+    const ON_Interval du = cyl_srf.Domain(0), dv = cyl_srf.Domain(1);
+    constexpr int kSamples = 97;  // deliberately not a divisor of anything above - no accidental alignment
+    for (int i = 0; i <= kSamples && all_inside; ++i) {
+      for (int j = 0; j <= kSamples && all_inside; ++j) {
+        const double u = du.ParameterAt(static_cast<double>(i) / kSamples);
+        const double v = dv.ParameterAt(static_cast<double>(j) / kSamples);
+        const Point3d p = cyl_surface.PointAt(u, v);
+        if (p.x < bounds.min.x - 1e-9 || p.x > bounds.max.x + 1e-9 || p.y < bounds.min.y - 1e-9 ||
+            p.y > bounds.max.y + 1e-9 || p.z < bounds.min.z - 1e-9 || p.z > bounds.max.z + 1e-9) {
+          all_inside = false;
+        }
+      }
+    }
+    Check(all_inside,
+          "a curved (cylindrical) face's GetTightBoundingBox is still a safe superset: a 98x98 independent "
+          "sampling of the exact same surface all falls within the returned box - never undershoots the general, "
+          "non-affine case");
+  }
 }
 
 void TestBrepBooleanEndToEnd() {
@@ -7056,6 +7378,96 @@ void TestMeshVolumeMassProperties() {
   Check(threw_empty, "VolumeMassProperties throws on a mesh with no volume");
 }
 
+// GetOrientedBoundingBox() reuses VolumeMassProperties()'s own
+// principal_axes (see its own doc comment for why that's the right frame,
+// not a separate PCA) - this test is built to have a fully hand-derivable
+// exact answer for both an axis-aligned box AND the same box rotated to
+// an arbitrary orientation, since the whole point is that the box's OWN
+// axes are recovered regardless of how it sits in world space.
+void TestMeshGetOrientedBoundingBox() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::OrientedBoundingBox;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  // A box with three DISTINCT dimensions (4, 2, 1) so its principal axes
+  // are unambiguous (no repeated eigenvalue) and hand-derivable: treating
+  // the solid box as uniform density, its centroidal moments are
+  // Ixx = (V/12)(Ly^2+Lz^2), Iyy = (V/12)(Lz^2+Lx^2), Izz = (V/12)(Lx^2+Ly^2)
+  // - algebraically Ixx < Iyy < Izz exactly when Lx > Ly > Lz (each
+  // successive difference is (V/12) times a positive difference of
+  // squares), so VolumeMassProperties()'s ascending-moment order puts the
+  // LONGEST dimension (X, length 4) at principal_axes[0], down to the
+  // SHORTEST (Z, length 1) at principal_axes[2] - which is exactly what
+  // GetOrientedBoundingBox() below is predicted to reproduce as its own
+  // axis order and half-extents (2, 1, 0.5).
+  const Mesh box = MakeQuadBoxMesh(0, 0, 0, 4, 2, 1);
+  const OrientedBoundingBox obb = box.GetOrientedBoundingBox();
+
+  auto parallel_to_axis = [](Vector3d v, Vector3d axis) { return std::fabs(std::fabs(ON_DotProduct(v, axis)) - 1.0) < 1e-4; };
+
+  Check(obb.center.DistanceTo(Point3d(2, 1, 0.5)) < 1e-4,
+        "an axis-aligned box's OBB is centered at its own true center (2, 1, 0.5)");
+  Check(parallel_to_axis(obb.axes[0], Vector3d(1, 0, 0)) && parallel_to_axis(obb.axes[1], Vector3d(0, 1, 0)) &&
+            parallel_to_axis(obb.axes[2], Vector3d(0, 0, 1)),
+        "the axes are exactly world X, Y, Z (up to sign) in longest-to-shortest order - the hand-derived moment "
+        "ordering for Lx=4 > Ly=2 > Lz=1");
+  Check(std::fabs(obb.half_extents[0] - 2.0) < 1e-4 && std::fabs(obb.half_extents[1] - 1.0) < 1e-4 &&
+            std::fabs(obb.half_extents[2] - 0.5) < 1e-4,
+        "the half-extents are exactly (2, 1, 0.5) - half of the box's own true (4, 2, 1) dimensions, matching "
+        "GetBoundingBox()'s own answer here since the box already IS axis-aligned");
+
+  // The same box, rotated 41 degrees about the (1,1,1) axis through its
+  // own center (2, 1, 0.5) - an orientation with no special alignment to
+  // any world axis. GetOrientedBoundingBox() must recover the SAME
+  // center, the SAME half-extents in the SAME order, and axes that are
+  // exactly the world X/Y/Z axes carried through that same rotation
+  // (up to sign) - proving the box's own shape, not its world placement,
+  // determines the answer.
+  ON_3dVector rotation_axis(1, 1, 1);
+  rotation_axis.Unitize();
+  const double angle = 41.0 * ON_PI / 180.0;
+  ON_Xform xf;
+  xf.Rotation(angle, rotation_axis, ON_3dPoint(2, 1, 0.5));
+  const Mesh rotated = box.Transform(xf);
+  const OrientedBoundingBox obb2 = rotated.GetOrientedBoundingBox();
+
+  Check(obb2.center.DistanceTo(Point3d(2, 1, 0.5)) < 1e-4,
+        "the rotated box's OBB is still centered at (2, 1, 0.5) - the rotation's own fixed point");
+  Check(std::fabs(obb2.half_extents[0] - 2.0) < 1e-4 && std::fabs(obb2.half_extents[1] - 1.0) < 1e-4 &&
+            std::fabs(obb2.half_extents[2] - 0.5) < 1e-4,
+        "the rotated box's half-extents are unchanged (2, 1, 0.5) in the same order - rotation cannot change the "
+        "box's own shape");
+  const Vector3d rx = xf * Vector3d(1, 0, 0), ry = xf * Vector3d(0, 1, 0), rz = xf * Vector3d(0, 0, 1);
+  Check(parallel_to_axis(obb2.axes[0], rx) && parallel_to_axis(obb2.axes[1], ry) && parallel_to_axis(obb2.axes[2], rz),
+        "the rotated box's axes are exactly the world X/Y/Z axes carried through the SAME rotation (up to sign) - "
+        "the box's principal axes rotate rigidly with the box");
+
+  // The defining guarantee, checked directly rather than assumed: every
+  // vertex of the ROTATED box lies within the returned OBB along all
+  // three axes simultaneously.
+  bool all_contained = true;
+  for (int i = 0; i < rotated.raw().m_V.Count(); ++i) {
+    const Vector3d d = Point3d(rotated.raw().m_V[i]) - obb2.center;
+    for (int k = 0; k < 3; ++k) {
+      if (std::fabs(ON_DotProduct(d, obb2.axes[k])) > obb2.half_extents[static_cast<size_t>(k)] + 1e-6) {
+        all_contained = false;
+      }
+    }
+  }
+  Check(all_contained, "every vertex of the rotated box lies within the returned OBB along all three axes");
+
+  // Same precondition as VolumeMassProperties() (inherited, not
+  // re-checked): an open/zero-volume mesh throws.
+  bool threw_empty = false;
+  try {
+    Mesh().GetOrientedBoundingBox();
+  } catch (const std::invalid_argument&) {
+    threw_empty = true;
+  }
+  Check(threw_empty, "GetOrientedBoundingBox throws on a mesh with no volume (VolumeMassProperties()'s own precondition)");
+}
+
 // A single-triangle mesh for the surface/surface distance tests below.
 dino8::kernel::Mesh MakeTriangleMesh(dino8::kernel::Point3d a, dino8::kernel::Point3d b,
                                      dino8::kernel::Point3d c) {
@@ -7268,6 +7680,120 @@ void TestMeshClashWith() {
     threw = true;
   }
   Check(threw, "ClashWith throws on an open (zero-volume) operand rather than classifying it");
+}
+
+void TestPointCloudSpatialQueries() {
+  using dino8::kernel::Point3d;
+  using dino8::kernel::PointCloud;
+  using dino8::kernel::PointCloudNeighbor;
+
+  // Six points with hand-derivable exact distances from the origin, plus
+  // a deliberate duplicate (index 5 == index 1's position) so tie-break
+  // ordering is actually exercised, not just assumed:
+  //   idx 0: (0,0,0)  distance 0
+  //   idx 1: (1,0,0)  distance 1
+  //   idx 5: (1,0,0)  distance 1  (duplicate of idx 1 - a genuine tie)
+  //   idx 2: (0,2,0)  distance 2
+  //   idx 3: (2,2,0)  distance sqrt(8) = 2*sqrt(2)
+  //   idx 4: (0,0,3)  distance 3
+  // Appended out of distance order (0, 1, 2, 3, 4, then the idx-5
+  // duplicate last) so a passing test can't be an accident of insertion
+  // order already being sorted.
+  PointCloud cloud;
+  cloud.AppendPoint(Point3d(0, 0, 0));
+  cloud.AppendPoint(Point3d(1, 0, 0));
+  cloud.AppendPoint(Point3d(0, 2, 0));
+  cloud.AppendPoint(Point3d(2, 2, 0));
+  cloud.AppendPoint(Point3d(0, 0, 3));
+  cloud.AppendPoint(Point3d(1, 0, 0));
+  const Point3d query(0, 0, 0);
+
+  // KNearest(3): the three smallest distances are 0, 1, 1 (the tie
+  // between idx 1 and idx 5), broken by ascending index - so idx 1
+  // strictly before idx 5, both strictly before idx 2 (distance 2).
+  {
+    const auto k3 = cloud.KNearest(query, 3);
+    Check(k3.size() == 3, "KNearest(3) returns exactly 3 neighbors");
+    Check(k3[0].index == 0 && std::abs(k3[0].distance - 0.0) < 1e-12, "1st nearest is idx 0 at distance 0");
+    Check(k3[1].index == 1 && std::abs(k3[1].distance - 1.0) < 1e-12,
+          "2nd nearest is idx 1 at distance 1 (tie-break: lower index first)");
+    Check(k3[2].index == 5 && std::abs(k3[2].distance - 1.0) < 1e-12,
+          "3rd nearest is idx 5, the coincident duplicate, also at distance 1");
+  }
+
+  // KNearest(k >= PointCount()) clamps to all 6 points, still sorted,
+  // rather than erroring - so the full ascending order is checked,
+  // including the sqrt(8) and the two remaining singletons.
+  {
+    const auto all = cloud.KNearest(query, 100);
+    Check(all.size() == 6, "KNearest(k > PointCount()) clamps to all 6 points rather than throwing");
+    const std::vector<int> expected_order = {0, 1, 5, 2, 3, 4};
+    bool order_ok = true;
+    for (size_t i = 0; i < expected_order.size(); ++i) {
+      if (all[i].index != expected_order[i]) order_ok = false;
+    }
+    Check(order_ok, "KNearest(all) is fully sorted: 0, 1, 5 (tie), 2, 3, 4");
+    Check(std::abs(all[3].distance - 2.0) < 1e-12, "idx 2's distance is exactly 2");
+    Check(std::abs(all[4].distance - 2.0 * std::sqrt(2.0)) < 1e-9, "idx 3's distance is exactly 2*sqrt(2)");
+    Check(std::abs(all[5].distance - 3.0) < 1e-12, "idx 4's distance is exactly 3");
+  }
+
+  // PointsWithinRadius: radius 1.0 catches exactly the distance-0 and
+  // the two distance-1 points (0, 1, 5), same tie order as KNearest;
+  // radius 0.5 catches only the exact match; radius 10 catches all 6;
+  // radius 0 catches only idx 0 itself (distance == radius, inclusive).
+  {
+    const auto r1 = cloud.PointsWithinRadius(query, 1.0);
+    Check(r1.size() == 3, "PointsWithinRadius(1.0) finds exactly 3 points (distances 0, 1, 1)");
+    Check(r1[0].index == 0 && r1[1].index == 1 && r1[2].index == 5,
+          "PointsWithinRadius(1.0) is sorted 0, 1, 5 - same tie-break as KNearest");
+
+    Check(cloud.PointsWithinRadius(query, 0.5).size() == 1, "PointsWithinRadius(0.5) finds only the exact match at idx 0");
+    Check(cloud.PointsWithinRadius(query, 10.0).size() == 6, "PointsWithinRadius(10.0) finds all 6 points");
+    Check(cloud.PointsWithinRadius(query, 0.0).size() == 1,
+          "PointsWithinRadius(0.0) is inclusive: the coincident point at distance exactly 0 still counts");
+  }
+
+  // An empty cloud: PointsWithinRadius validly returns nothing (zero
+  // matches is a legitimate answer), but KNearest has nothing it could
+  // return as "the nearest points" and throws instead.
+  {
+    const PointCloud empty;
+    Check(empty.PointsWithinRadius(query, 1e9).empty(),
+          "PointsWithinRadius on an empty cloud returns an empty result, not an error");
+    bool threw_empty = false;
+    try {
+      empty.KNearest(query, 1);
+    } catch (const std::invalid_argument&) {
+      threw_empty = true;
+    }
+    Check(threw_empty, "KNearest on an empty cloud throws (there is no nearest point to report)");
+  }
+
+  // Invalid arguments: k <= 0 and a negative radius are caller bugs,
+  // not sparse-data edge cases, so both throw regardless of cloud
+  // contents.
+  {
+    bool threw_k0 = false, threw_kneg = false, threw_radius = false;
+    try {
+      cloud.KNearest(query, 0);
+    } catch (const std::invalid_argument&) {
+      threw_k0 = true;
+    }
+    try {
+      cloud.KNearest(query, -1);
+    } catch (const std::invalid_argument&) {
+      threw_kneg = true;
+    }
+    try {
+      cloud.PointsWithinRadius(query, -0.001);
+    } catch (const std::invalid_argument&) {
+      threw_radius = true;
+    }
+    Check(threw_k0, "KNearest(k = 0) throws");
+    Check(threw_kneg, "KNearest(k < 0) throws");
+    Check(threw_radius, "PointsWithinRadius(negative radius) throws");
+  }
 }
 
 void TestMeshAreaCountsBothQuadTriangles() {
@@ -19505,6 +20031,137 @@ void TestMixedFacesReturnsVerbatimRecordsForBooleanResults() {
         "LumpFaceRanges() on an ordinary (non-compound) Brep is the single range [0, FaceCount())");
 }
 
+// SplitDisjointPieces() is the real, topology-based counterpart to
+// LumpFaceRanges(): the latter can only replay Compound()'s own
+// bookkeeping (as the test just above shows: an ordinary Brep, even a
+// genuinely multi-body one that was never built via Compound(), always
+// reports one lump). This builds a single Brep with two ACTUALLY
+// disjoint bodies WITHOUT ever calling Compound() - by handing
+// FromPlanarFaces() two separate boxes' own PlanarFace lists in one call,
+// so there is no shared vertex/edge between them at all - and confirms
+// SplitDisjointPieces() finds both from the real topology alone.
+void TestBrepSplitDisjointPieces() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+
+  // Exact bounding box straight from a piece's own trim-loop vertices
+  // (Brep::PlanarFaces()'s real extraction, not an approximation) -
+  // deliberately NOT Brep::GetTightBoundingBox(): that delegates to
+  // ON_Brep::GetTightBoundingBox(), which turns out (found while writing
+  // this test, not assumed) to measure a FromMixedFaces()-built planar
+  // face's UNDERLYING bilinear surface, not its trimmed boundary - and
+  // that surface is deliberately padded 5% beyond the trim loop by
+  // FromMixedFaces() itself (see its own "small margin" comment in
+  // brep.cpp) so a box's real GetTightBoundingBox() comes back 5%
+  // oversized on every side. A real, if separate, gap in an existing
+  // method - not this one - so this test routes around it with the
+  // exact loop data instead of asserting through it.
+  auto exact_bbox_from_loops = [](const Brep& b) {
+    Point3d lo(0, 0, 0), hi(0, 0, 0);
+    bool first = true;
+    for (const Brep::PlanarFace& f : b.PlanarFaces()) {
+      for (const Point3d& p : f.loop) {
+        if (first) {
+          lo = hi = p;
+          first = false;
+          continue;
+        }
+        lo.x = std::min(lo.x, p.x);
+        lo.y = std::min(lo.y, p.y);
+        lo.z = std::min(lo.z, p.z);
+        hi.x = std::max(hi.x, p.x);
+        hi.y = std::max(hi.y, p.y);
+        hi.z = std::max(hi.z, p.z);
+      }
+    }
+    return std::make_pair(lo, hi);
+  };
+  auto close = [](Point3d a, Point3d b) { return a.DistanceTo(b) < 1e-9; };
+
+  // A single ordinary Brep WITH REAL TOPOLOGY (FromPlanarFaces() - see
+  // the throwing case below for why a plain Box() can't be used here):
+  // exactly one piece, an exact copy of itself (nothing to split, so
+  // nothing should change).
+  {
+    const Brep box = Brep::FromPlanarFaces(Brep::Box(0, 0, 0, 2, 3, 4).PlanarFaces());
+    const std::vector<Brep> pieces = box.SplitDisjointPieces();
+    Check(pieces.size() == 1, "a single-body Brep with real topology splits into exactly 1 piece");
+    Check(pieces[0].FaceCount() == box.FaceCount(), "the single piece has the same face count as the original");
+    const auto bbox = exact_bbox_from_loops(pieces[0]);
+    Check(close(bbox.first, Point3d(0, 0, 0)) && close(bbox.second, Point3d(2, 3, 4)),
+          "the single piece's exact trim-loop bounding box is unchanged");
+  }
+
+  // An empty Brep: no faces, no pieces.
+  {
+    const Brep empty;
+    Check(empty.SplitDisjointPieces().empty(), "a Brep with no faces splits into zero pieces");
+  }
+
+  // A real, found-not-assumed limitation: Box() (like Sphere(),
+  // FromSurface() and TrimmedPlanarFace()) builds each face via the
+  // "minimal NewFace(surface_index)-only path" (brep.h's own class-level
+  // doc comment) - no ON_BrepLoop/ON_BrepTrim/ON_BrepEdge at all, so
+  // LabelConnectedComponents() has nothing to walk between its faces and
+  // would otherwise report all 6 as separate one-face "pieces": a
+  // confident, wrong split for one of the most ordinary Breps in this
+  // kernel. SplitDisjointPieces() must refuse this outright rather than
+  // ever emitting that wrong answer.
+  {
+    bool threw = false;
+    try {
+      Brep::Box(0, 0, 0, 1, 1, 1).SplitDisjointPieces();
+    } catch (const std::invalid_argument&) {
+      threw = true;
+    }
+    Check(threw,
+          "SplitDisjointPieces() throws on a plain Box() (no real loop/trim/edge topology to determine "
+          "connectivity from) instead of silently reporting its 6 faces as 6 separate pieces");
+  }
+
+  // Two boxes, different sizes so their bounding boxes can't be confused,
+  // far enough apart that FromPlanarFaces()'s own vertex welder (which
+  // only merges geometrically coincident points) can't possibly join
+  // them: box A is [0,1]^3 (faces 0-5), box B is [10,11]x[10,12]x[10,13]
+  // (faces 6-11), one Brep, 12 faces, no shared vertex or edge anywhere.
+  const std::vector<Brep::PlanarFace> faces_a = Brep::Box(0, 0, 0, 1, 1, 1).PlanarFaces();
+  const std::vector<Brep::PlanarFace> faces_b = Brep::Box(10, 10, 10, 11, 12, 13).PlanarFaces();
+  std::vector<Brep::PlanarFace> combined = faces_a;
+  combined.insert(combined.end(), faces_b.begin(), faces_b.end());
+  const Brep two_body = Brep::FromPlanarFaces(combined);
+  Check(two_body.FaceCount() == 12, "the combined Brep has all 12 faces (6 + 6)");
+
+  // The actual gap: LumpFaceRanges() knows nothing about this Brep ever
+  // holding two bodies (it was never built via Compound()), so it still
+  // reports one lump spanning every face.
+  Check(two_body.LumpFaceRanges() == std::vector<std::pair<int, int>>{{0, 12}},
+        "LumpFaceRanges() reports ONE lump for this genuinely two-body Brep - it only replays Compound()'s own "
+        "bookkeeping and was never told about a split, unlike SplitDisjointPieces() below");
+
+  const std::vector<Brep> pieces = two_body.SplitDisjointPieces();
+  Check(pieces.size() == 2, "SplitDisjointPieces() finds both actually-disjoint bodies from the real topology alone");
+  Check(pieces[0].FaceCount() == 6 && pieces[1].FaceCount() == 6, "each piece has exactly the 6 faces of its own box");
+
+  // Order: the piece containing the LOWEST original face index comes
+  // first - box A's faces are 0-5, box B's are 6-11, so box A's piece is
+  // pieces[0].
+  const auto bbox0 = exact_bbox_from_loops(pieces[0]);
+  Check(close(bbox0.first, Point3d(0, 0, 0)) && close(bbox0.second, Point3d(1, 1, 1)),
+        "pieces[0] is exactly box A's [0,1]^3 - the lower-original-face-index piece comes first");
+  const auto bbox1 = exact_bbox_from_loops(pieces[1]);
+  Check(close(bbox1.first, Point3d(10, 10, 10)) && close(bbox1.second, Point3d(11, 12, 13)),
+        "pieces[1] is exactly box B's [10,11]x[10,12]x[10,13]");
+
+  ON_TextLog log;
+  bool oriented0 = false, boundary0 = true, oriented1 = false, boundary1 = true;
+  Check(pieces[0].raw().IsValid(&log) && pieces[0].raw().IsManifold(&oriented0, &boundary0) && oriented0 && !boundary0 &&
+            pieces[0].raw().IsSolid(),
+        "pieces[0] is itself a genuinely valid, closed, oriented, solid Brep - not just a face list");
+  Check(pieces[1].raw().IsValid(&log) && pieces[1].raw().IsManifold(&oriented1, &boundary1) && oriented1 && !boundary1 &&
+            pieces[1].raw().IsSolid(),
+        "pieces[1] is itself a genuinely valid, closed, oriented, solid Brep");
+}
+
 // The scope limits that are meant to stay honest throws, and the new
 // refusals: SymmetricDifference of the parallel-crossing pair still hits
 // B - A's cap-trim refusal; Difference(Steinmetz Union, b) still hits the
@@ -23561,6 +24218,131 @@ void TestFilletConvexEdgeObliqueEndRejectsInvalidInput() {
         "an oversized radius on the obliquely-ended fixture is still rejected");
 }
 
+// ---------------------------------------------------------------------------
+// RemoveBlend (fillet.h) - blend removal, the inverse of FilletConvexEdge:
+// restores the original sharp edge purely from the filleted geometry.
+
+void TestRemoveBlendRoundTripsASingleFillet() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConvexEdge;
+  using dino8::kernel::Point3d;
+
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+  const Point3d edge_p0(0, 0, 1), edge_p1(1, 0, 1);
+  const Brep filleted = FilletConvexEdge(box, edge_p0, edge_p1, 0.3);
+
+  const Brep::MixedFacesResult mf = filleted.MixedFaces();
+  Check(mf.cylindrical.size() == 1, "sanity: the filleted box has exactly one cylindrical face");
+  const Brep::CylindricalFace& cf = mf.cylindrical[0];
+  const Point3d mid_on_cyl = cf.frame.origin + 0.5 * cf.length * cf.frame.zaxis +
+                            cf.radius * std::cos(cf.angle * 0.5) * cf.frame.xaxis +
+                            cf.radius * std::sin(cf.angle * 0.5) * cf.frame.yaxis;
+  const Brep restored = dino8::kernel::RemoveBlend(filleted, mid_on_cyl);
+
+  // Brep::Box() itself never builds genuine ON_Brep topology (see brep.h's
+  // own class-level comment: only FromPlanarFaces()/FromMixedFaces() do),
+  // so its own raw().m_E/m_V counts are 0 - comparing against the literal
+  // expected counts instead of against `box`'s own (topology-less) raw
+  // counts.
+  Check(restored.FaceCount() == 6 && restored.raw().m_E.Count() == 12 && restored.raw().m_V.Count() == 8,
+        "RemoveBlend restores the exact face/edge/vertex counts of the pre-fillet box (6 faces, 12 edges, 8 vertices)");
+  ON_TextLog log;
+  bool oriented = false, has_boundary = true;
+  Check(restored.raw().IsValid(&log) && restored.raw().IsManifold(&oriented, &has_boundary) && oriented && !has_boundary &&
+            restored.raw().IsSolid(),
+        "the restored solid is itself a valid, closed, manifold solid");
+  Check(std::fabs(restored.TessellateToClosedMesh(4, 4).Volume() - box.TessellateToClosedMesh(4, 4).Volume()) < 1e-9,
+        "the restored solid's volume matches the original box's exactly (both are exact planar polyhedra)");
+  for (const Point3d& v : {Point3d(0, 0, 0), Point3d(1, 0, 0), Point3d(1, 1, 0), Point3d(0, 1, 0), Point3d(0, 0, 1),
+                           Point3d(1, 0, 1), Point3d(1, 1, 1), Point3d(0, 1, 1)}) {
+    Check(ChamferTestBrepHasVertexNear(restored, v, 1e-9), "the restored box has its original sharp corner vertex back");
+  }
+  Check(!ChamferTestBrepHasVertexNear(restored, mid_on_cyl, 1e-9),
+        "the fillet's own cylindrical surface point is gone from the restored solid");
+}
+
+void TestRemoveBlendLeavesTheOtherFilletIntactAmongTwo() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConvexEdges;
+  using dino8::kernel::Point3d;
+
+  // Two parallel top-edge fillets sharing double-notched end faces (see
+  // TestFilletConvexEdgesParallelPairDoubleNotchesEndFaces) - removing ONE
+  // must leave the OTHER fillet's own notch correctly intact, not merely
+  // geometrically present but with STALE index metadata (a real bug this
+  // regression exists to catch: an earlier draft passed a single-fillet
+  // round trip while silently corrupting this exact two-notch case, see
+  // fillet.cpp's own CollapseNotchRun for the fix).
+  const double r = 0.2;
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+  const Brep two = FilletConvexEdges(box, {{Point3d(0, 0, 1), Point3d(1, 0, 1)}, {Point3d(0, 1, 1), Point3d(1, 1, 1)}}, r);
+  const Brep::MixedFacesResult mf_two = two.MixedFaces();
+  Check(mf_two.cylindrical.size() == 2, "sanity: two parallel fillets give two cylindrical faces");
+
+  const Brep::CylindricalFace& cf0 = mf_two.cylindrical[0];
+  const Point3d mid0 = cf0.frame.origin + 0.5 * cf0.length * cf0.frame.zaxis +
+                       cf0.radius * std::cos(cf0.angle * 0.5) * cf0.frame.xaxis +
+                       cf0.radius * std::sin(cf0.angle * 0.5) * cf0.frame.yaxis;
+  const Brep one_left = dino8::kernel::RemoveBlend(two, mid0);
+
+  ON_TextLog log;
+  bool oriented = false, has_boundary = true;
+  const bool manifold = one_left.raw().IsManifold(&oriented, &has_boundary);
+  Check(one_left.raw().IsValid(&log) && manifold && oriented && !has_boundary,
+        "removing one of two parallel fillets leaves a CLOSED 2-manifold - the OTHER fillet's own notch keeps a "
+        "single shared edge, not a naked boundary from stale notch-run indices");
+  Check(one_left.raw().IsSolid(), "removing one of two parallel fillets leaves a genuine solid");
+  const Brep::MixedFacesResult mf_one = one_left.MixedFaces();
+  Check(mf_one.cylindrical.size() == 1, "exactly one cylindrical face (the untouched fillet) remains");
+  const double expected = 1.0 - r * r * (1.0 - ON_PI / 4.0);
+  Check(std::fabs(one_left.TessellateToClosedMeshAdaptive(1e-6).Volume() - expected) < 2e-6,
+        "the remaining single fillet's own volume matches r^2(1 - pi/4) removed, not both");
+}
+
+void TestRemoveBlendRejectsUnsupportedConfigurations() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConvexEdge;
+  using dino8::kernel::FilletConvexEdges;
+  using dino8::kernel::Point3d;
+  auto throws = [](const std::function<void()>& fn) {
+    try {
+      fn();
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+    return false;
+  };
+
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+  Check(throws([&] { dino8::kernel::RemoveBlend(box, Point3d(0.5, 0.5, 0.5)); }),
+        "rejects a solid with no cylindrical face at all");
+
+  const Brep filleted = FilletConvexEdge(box, Point3d(0, 0, 1), Point3d(1, 0, 1), 0.3);
+  Check(throws([&] { dino8::kernel::RemoveBlend(filleted, Point3d(0.5, 0.5, 0.001)); }),
+        "rejects a point far from every cylindrical face");
+
+  // A FilletConvexEdges spherical vertex-blend corner is out of scope.
+  const Brep rounded = FilletConvexEdges(box, AllUnitBoxEdges(), 0.2);
+  const Brep::MixedFacesResult mf_r = rounded.MixedFaces();
+  const Brep::CylindricalFace& cfr = mf_r.cylindrical[0];
+  const Point3d mid_r = cfr.frame.origin + 0.5 * cfr.length * cfr.frame.zaxis +
+                        cfr.radius * std::cos(cfr.angle * 0.5) * cfr.frame.xaxis +
+                        cfr.radius * std::sin(cfr.angle * 0.5) * cfr.frame.yaxis;
+  Check(throws([&] { dino8::kernel::RemoveBlend(rounded, mid_r); }),
+        "rejects a FilletConvexEdges cylinder with a spherical vertex-blend corner at either end");
+
+  // A FilletConvexEdge oblique end (sloped ellipse cap notch) is out of scope.
+  const Brep hex = FilletObliqueTestHexahedron(0.3);
+  const Brep obl = FilletConvexEdge(hex, Point3d(0, 0, 1), Point3d(1, 0, 1), 0.2);
+  const Brep::MixedFacesResult mf_o = obl.MixedFaces();
+  const Brep::CylindricalFace& cfo = mf_o.cylindrical[0];
+  const Point3d mid_o = cfo.frame.origin + 0.5 * cfo.length * cfo.frame.zaxis +
+                        cfo.radius * std::cos(cfo.angle * 0.5) * cfo.frame.xaxis +
+                        cfo.radius * std::sin(cfo.angle * 0.5) * cfo.frame.yaxis;
+  Check(throws([&] { dino8::kernel::RemoveBlend(obl, mid_o); }),
+        "rejects a FilletConvexEdge oblique-end cylinder (sloped ellipse cap notch)");
+}
+
 int main() {
   ON::Begin();
 
@@ -23587,6 +24369,7 @@ int main() {
   TestCurveTrim();
   TestCurveSplit();
   TestCurveExtend();
+  TestCurveJoin();
   TestCurveMakePeriodicExact();
   TestCurveClosestPoint();
   TestCurveFitLeastSquares();
@@ -23634,6 +24417,7 @@ int main() {
   TestSurfaceApproximateArea();
   TestSurfaceCVCount();
   TestSurfaceClosestPoint();
+  TestSurfaceClosestPointFinerGridNotWorseThanCoarser();
   TestSurfaceClosestPointGlobalReportsConvergenceFailure();
   TestSurfaceCurvature();
   TestSurfaceSuggestedDivisions();
@@ -23663,6 +24447,7 @@ int main() {
   TestBrepBoxIsClosedAndWatertight();
   TestBrepLacksFullOpenNurbsTopologyButStillUsable();
   TestBrepGetTightBoundingBox();
+  TestBrepGetTightBoundingBoxExactForTrimmedPlanarFaces();
   TestBrepBooleanEndToEnd();
   TestBrepSphereIsClosedAndWatertight();
   TestBrepSphereBooleanEndToEnd();
@@ -23694,9 +24479,11 @@ int main() {
   TestMeshClosestPoint();
   TestMeshSignedDistance();
   TestMeshVolumeMassProperties();
+  TestMeshGetOrientedBoundingBox();
   TestMeshFireRay();
   TestMeshDistanceTo();
   TestMeshClashWith();
+  TestPointCloudSpatialQueries();
   TestMeshAreaCountsBothQuadTriangles();
   TestSubDFromBoxSubdividesToExactCatmullClarkCounts();
   TestSubDFromControlMeshRejectsEmptyMesh();
@@ -23760,6 +24547,9 @@ int main() {
   TestFilletConvexEdgeObliqueEndMatchesPerpendicularAtZeroSlope();
   TestFilletConvexEdgeObliqueEndClosedFormAtASecondSlope();
   TestFilletConvexEdgeObliqueEndRejectsInvalidInput();
+  TestRemoveBlendRoundTripsASingleFillet();
+  TestRemoveBlendLeavesTheOtherFilletIntactAmongTwo();
+  TestRemoveBlendRejectsUnsupportedConfigurations();
   TestBrepFromPlanarFacesBuildsValidOpenNurbsTopology();
   TestBooleanCombinePlanarResultHasValidClosedTopology();
   TestShellConvexPlanarResultHasValidTopology();
@@ -23876,6 +24666,7 @@ int main() {
   TestBooleanCombineMixedChainedCallsHonorClosedOperands();
   TestBooleanCombineMixedChainedCallsThroughNotchedResults();
   TestMixedFacesReturnsVerbatimRecordsForBooleanResults();
+  TestBrepSplitDisjointPieces();
   TestBooleanCombineMixedChainedNegativeControls();
   TestBooleanCombineMixedUnequalRadiusGeneralAngleIntersectionAndAllOps();
   TestBooleanCombineMixedUnequalRadiusGeneralAngleArgumentOrderAndSharedArcIsBitIdentical();

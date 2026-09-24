@@ -65,3 +65,43 @@ History
 # --- RecordHistory is the same toggle as History (Rhino's alternate name).
 RecordHistory Off
 History
+
+# --- Undo must never let a NEW object reuse an undone object's id. The
+# HistoryRecord side table (like Provenance/HoleFeature/PipeFeature/
+# SymmetryLink) is keyed by ObjectId and deliberately not part of the undo
+# history, so before Document::ApplyDelta kept the id counter monotonic a
+# Box drawn right after undoing a tracked Extrude was handed the undone
+# extrusion's own id (6 here), History listed the Box as "object 6: Extrude
+# <- 5", SelExtrusion selected it, and UpdateHistory silently rebuilt the
+# user's Box into the extrusion of line 5. Now the Box must get a fresh id
+# (7), UpdateHistory must report the undone extrusion's record as orphaned,
+# and the Box's own geometry must be untouched.
+History On
+Line 40,0,0 50,0,0
+SelNone
+SelID 5
+Extrude
+5
+@expect_objects 6
+# An Undo/Redo round trip keeps both the tracked object (same id 6) and its
+# record: the record is still listed after Redo.
+Undo
+@expect_objects 5
+Redo
+@expect_objects 6
+History
+Undo
+@expect_objects 5
+Box 50,50,0 60,60,0 10
+@expect_objects 6
+SelNone
+SelLast
+What
+SelNone
+SelExtrusion
+@expect_selected 2
+UpdateHistory
+SelNone
+SelLast
+What
+History

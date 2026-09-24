@@ -1478,30 +1478,67 @@ class MatchSrfCommand : public Command {
     const int cv_index_row0 = at_min ? 0 : raw.CVCount(fixed_dir) - 1;
     const int cv_index_row1 = at_min ? 1 : raw.CVCount(fixed_dir) - 2;
     int moved = 0;
-    for (int k = 0; k < n_cross; ++k) {
-      ON_3dPoint cv;
-      const int i = fixed_dir == 0 ? cv_index_row0 : k;
-      const int j = fixed_dir == 0 ? k : cv_index_row0;
-      raw.GetCV(i, j, cv);
-      const double gu = raw.GrevilleAbcissa(0, i), gv = raw.GrevilleAbcissa(1, j);
-      Point3d boundary_pt = raw.PointAt(gu, gv);
-      Point3d target;
-      if (target_curve) target = target_curve->PointAt(CurveClosestParamGlobal(*target_curve, boundary_pt));
-      else target = target_brep->m_F[target_face->face].SurfaceOf()->PointAt(gu, gv);  // best-effort shared parameterisation
-      raw.SetCV(i, j, target);
-      ++moved;
-      if (tangency_) {
-        ON_3dPoint cv1;
-        const int i1 = fixed_dir == 0 ? cv_index_row1 : k;
-        const int j1 = fixed_dir == 0 ? k : cv_index_row1;
-        raw.GetCV(i1, j1, cv1);
-        Vector3d tang;
-        if (target_curve) { double tp = CurveClosestParamGlobal(*target_curve, boundary_pt); tang = target_curve->TangentAt(tp); }
-        else tang = target_brep->m_F[target_face->face].SurfaceOf()->NormalAt(gu, gv);
-        Vector3d old_step = cv1 - cv;
-        const double mag = old_step.Length();
-        Vector3d perp = old_step - tang * ON_DotProduct(old_step, tang);
-        if (perp.Length() > 1e-9) { perp.Unitize(); raw.SetCV(i1, j1, target + perp * mag); }
+    // Against a target *surface* edge, try the exact kernel::NurbsSurface::
+    // MatchEdge() first: real NURBS algebra (shared edge curve, matched
+    // cross derivatives via the clamped end-derivative formula) rather
+    // than this command's own older per-control-point loop below, which
+    // for a surface target moves each control point onto the target
+    // evaluated at *this* surface's own (u, v) - a "shared parameterization"
+    // assumption that's only ever true by coincidence between two
+    // independently-built surfaces. MatchEdge() self-checks its own result
+    // by evaluation and fails closed, so falling through to the per-CV
+    // loop below on Result::Failed (e.g. a periodic edge, or continuity
+    // beyond what the target's degree supports) never leaves this command
+    // worse off than before this swap.
+    bool matched_exact = false;
+    kernel::MatchEdgeReport exact_report;
+    if (target_brep && target_face) {
+      std::optional<ON_NurbsSurface> ts = SurfaceOfObject(*ctx.Doc().Find(target_face->id), target_face->face);
+      if (ts) {
+        kernel::NurbsSurface kt;
+        kt.raw() = *ts;
+        double tu, tv;
+        if (SurfaceClosestPointGlobal(*ts, target_pick, tu, tv)) {
+          const ON_Interval tdu = ts->Domain(0), tdv = ts->Domain(1);
+          const double teu0 = tu - tdu.Min(), teu1 = tdu.Max() - tu, tev0 = tv - tdv.Min(), tev1 = tdv.Max() - tv;
+          const double tm = std::min({teu0, teu1, tev0, tev1});
+          const bool t_is_u_edge = (tm == teu0 || tm == teu1);
+          const int target_fixed_dir = t_is_u_edge ? 0 : 1;
+          const bool target_at_min = t_is_u_edge ? (tm == teu0) : (tm == tev0);
+          const kernel::MatchContinuity continuity = tangency_ ? kernel::MatchContinuity::Tangent : kernel::MatchContinuity::Position;
+          if (ks.MatchEdge(fixed_dir, at_min, kt, target_fixed_dir, target_at_min, continuity, &exact_report) == kernel::Result::Ok) {
+            matched_exact = true;
+            moved = n_cross;
+          }
+        }
+      }
+    }
+    if (!matched_exact) {
+      for (int k = 0; k < n_cross; ++k) {
+        ON_3dPoint cv;
+        const int i = fixed_dir == 0 ? cv_index_row0 : k;
+        const int j = fixed_dir == 0 ? k : cv_index_row0;
+        raw.GetCV(i, j, cv);
+        const double gu = raw.GrevilleAbcissa(0, i), gv = raw.GrevilleAbcissa(1, j);
+        Point3d boundary_pt = raw.PointAt(gu, gv);
+        Point3d target;
+        if (target_curve) target = target_curve->PointAt(CurveClosestParamGlobal(*target_curve, boundary_pt));
+        else target = target_brep->m_F[target_face->face].SurfaceOf()->PointAt(gu, gv);  // best-effort shared parameterisation
+        raw.SetCV(i, j, target);
+        ++moved;
+        if (tangency_) {
+          ON_3dPoint cv1;
+          const int i1 = fixed_dir == 0 ? cv_index_row1 : k;
+          const int j1 = fixed_dir == 0 ? k : cv_index_row1;
+          raw.GetCV(i1, j1, cv1);
+          Vector3d tang;
+          if (target_curve) { double tp = CurveClosestParamGlobal(*target_curve, boundary_pt); tang = target_curve->TangentAt(tp); }
+          else tang = target_brep->m_F[target_face->face].SurfaceOf()->NormalAt(gu, gv);
+          Vector3d old_step = cv1 - cv;
+          const double mag = old_step.Length();
+          Vector3d perp = old_step - tang * ON_DotProduct(old_step, tang);
+          if (perp.Length() > 1e-9) { perp.Unitize(); raw.SetCV(i1, j1, target + perp * mag); }
+        }
       }
     }
     delete target_curve;
@@ -1516,7 +1553,12 @@ class MatchSrfCommand : public Command {
       }
       orig->InvalidateDisplay();
     }
-    ctx.Print("MatchSrf: " + std::to_string(moved) + " boundary control point(s) moved to " + (tangency_ ? "position and tangent" : "position") + (target_curve ? " on the target curve" : " on the target surface"));
+    if (matched_exact) {
+      ctx.Print("MatchSrf: exact edge match (" + std::string(tangency_ ? "G1" : "G0") + ") to the target surface, max position error " +
+                 FormatNumber(exact_report.max_position_error) + (tangency_ ? ", max tangent error " + FormatNumber(exact_report.max_tangent_error) : ""));
+    } else {
+      ctx.Print("MatchSrf: " + std::to_string(moved) + " boundary control point(s) moved to " + (tangency_ ? "position and tangent" : "position") + (target_curve ? " on the target curve" : " on the target surface"));
+    }
   }
 
  private:

@@ -906,8 +906,28 @@ Point2d NurbsSurface::ClosestPointParameter(Point3d point, int u_divisions, int 
         }
       }
     }
-    const double u_step = (u_hi - u_lo) / u_divisions;
-    const double v_step = (v_hi - v_lo) / v_divisions;
+    // The window for the NEXT level is best +/- one grid cell of THIS
+    // level - normally `(u_hi - u_lo) / u_divisions`. But using the
+    // caller's own (possibly large) u_divisions/v_divisions here too
+    // was a real, confirmed bug: it makes the total distance the window
+    // can drift across all `kRefinementLevels` (a geometric series with
+    // ratio ~2/divisions per level) shrink roughly as `1/divisions` -
+    // so a FINER grid, which should only ever improve accuracy, instead
+    // shrinks this "drift budget" and can leave the window unable to
+    // travel far enough to reach a true minimum that the level-0 sample
+    // landed more than a few of its own (now much smaller) grid cells
+    // away from - confirmed directly on a degree-(1,3) rational-free
+    // surface where 100x100 sampling converged to a parameter ~0.011
+    // short of the true minimum's basin (dist ~908.57) while 24x24
+    // sampling had enough drift budget to reach it (dist ~893.39), the
+    // opposite of the expected finer-is-better-or-equal trend. Capping
+    // the divisor used HERE (not the sampling density above, which
+    // still benefits fully from a larger u_divisions/v_divisions) keeps
+    // the drift budget at least as large as this method's own default
+    // (20x20) provides, regardless of how fine the caller's sampling is.
+    constexpr int kMaxNarrowingDivisions = 24;
+    const double u_step = (u_hi - u_lo) / std::min(u_divisions, kMaxNarrowingDivisions);
+    const double v_step = (v_hi - v_lo) / std::min(v_divisions, kMaxNarrowingDivisions);
     u_lo = u_closed ? (best_u - u_step) : std::max(u_domain.Min(), best_u - u_step);
     u_hi = u_closed ? (best_u + u_step) : std::min(u_domain.Max(), best_u + u_step);
     v_lo = v_closed ? (best_v - v_step) : std::max(v_domain.Min(), best_v - v_step);
