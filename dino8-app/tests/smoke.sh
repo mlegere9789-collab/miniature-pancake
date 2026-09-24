@@ -860,6 +860,9 @@ secheck "HBar: locked the distance between control points 0 and 1 of '(unnamed)'
 secheck "HBarSetDistance: locked distance set to 20 - control point 1 moved to match" "HBarSetDistance changed the locked value and re-applied the constraint"
 secheck "HBarDragSelfTest: moved anchor control point 0 by 5,0,0; anchor-handle distance is now 20 (locked at 20)" "HBarDragSelfTest exercised the exact TransformSubObjects+ApplyHBarConstraint call sequence a real mouse drag makes, and the handle swung to keep the locked distance"
 secheck "Bounding box min 4205,0,0 max 4225,0,0" "BoundingBox independently confirms the curve's own control points actually moved to where the constraint math says they should (anchor 4200+5=4205, handle 4205+20=4225) - not just HBarDragSelfTest's own report"
+secheck "ExtendSrf: extended by 3 along V (linear)" "ExtendSrf Type=Linear ran on a curved sphere - the flat Plane fixture earlier in this script can't tell Type=Linear apart from the default Type=Smooth"
+secheck "Area = 331.8" "ExtendSrf Type=Linear produced a genuinely different area (331.8) than Type=Smooth's 334.6 on the same sphere/pick/distance - the two extension modes are not just differently labelled, they build different geometry"
+secheck "smoke: frames=[0-9]* objects=119" "surface-edit script's final object count includes the ExtendSrf Type=Linear sphere fixture"
 
 # Mesh tools: deformations, mesh editing and mesh primitives (see meshtools_script.txt).
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
@@ -2029,6 +2032,16 @@ if echo "$VW" | grep -q "^FAIL"; then fail=1; fi
 echo "$VW" | grep -q "^smoke:" || { echo "$VW"; echo "FAIL: view script produced no smoke line"; fail=1; }
 [ -s "$TMPW/view/view.bmp" ] && echo "ok   ViewCaptureToFile wrote view.bmp" || { echo "FAIL ViewCaptureToFile"; fail=1; }
 [ -s "$TMPW/view/screen.bmp" ] && echo "ok   ScreenCaptureToFile wrote screen.bmp" || { echo "FAIL ScreenCaptureToFile"; fail=1; }
+
+# A genuine, 100%-reproducible Windows-only hang (RHINO8_KILLER_AUDIT.md row
+# L) has been seen starting exactly here on every Windows CI run since it was
+# first noticed: the $BIN launch below produces zero output - not even the
+# unbuffered startup breadcrumbs main.cpp now prints before glfwInit() - until
+# the job's own timeout kills it. It is not caused by anything in
+# state_script2.txt itself (never reached). A 3-second pause here (testing an
+# OS-resource-contention-between-back-to-back-launches hypothesis) was tried
+# and made no difference (commit e59759b) - see row L for what that rules out
+# and what's still open.
 
 # Extended state/window/misc: the remaining cmd_state.cpp and cmd_misc.cpp
 # commands not already exercised elsewhere (see state_script2.txt).

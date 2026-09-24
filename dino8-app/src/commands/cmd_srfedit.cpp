@@ -673,7 +673,11 @@ void Unroll(CommandContext& ctx, const std::vector<ObjectId>& ids, const char* l
 
 class ExtendSrfCommand : public Command {
  public:
-  void Begin(CommandContext&) override { WantPoint("Click near the surface edge to extend"); }
+  void Begin(CommandContext&) override {
+    options = {{"Type", "Smooth", {"Smooth", "Linear"}, false, false}};
+    WantPoint("Click near the surface edge to extend");
+  }
+  void OnOption(CommandContext&, const std::string& n, const std::string& v) override { if (n == "Type") linear_ = (v == "Linear"); }
   void OnPoint(CommandContext& ctx, Point3d p) override {
     if (!pick_) {
       pick_ = PickFace(ctx, p);
@@ -708,20 +712,33 @@ class ExtendSrfCommand : public Command {
     ON_Interval nd = (side_ % 2 == 0) ? ON_Interval(d.Min() - dt, d.Max()) : ON_Interval(d.Min(), d.Max() + dt);
     ctx.Doc().BeginChange("ExtendSrf");
     ON_NurbsSurface ext = *s;
-    if (!ext.Extend(dir, nd)) { ctx.Warn("ExtendSrf: could not extend"); Finish(); return; }
+    bool ok;
+    if (linear_) {
+      // NurbsSurface::ExtendLinear(): a genuine zero-curvature straight
+      // continuation (Rhino/Parasolid's ExtendSrf Type=Linear), instead
+      // of Type=Smooth's polynomial continuation below.
+      kernel::NurbsSurface ks;
+      ks.raw() = ext;
+      ok = ks.ExtendLinear(dir, nd.Min(), nd.Max()) != kernel::Result::Failed;
+      ext = ks.raw();
+    } else {
+      ok = ext.Extend(dir, nd);
+    }
+    if (!ok) { ctx.Warn("ExtendSrf: could not extend"); Finish(); return; }
     if (o->kind == ObjectKind::Surface) { o->surface->raw() = ext; o->InvalidateDisplay(); }
     else {
       ON_Brep nb; ON_NurbsSurface* nsp = new ON_NurbsSurface(ext); nb.Create(nsp);
       if (o->brep->raw().m_F.Count() <= 1) { o->brep->raw() = nb; o->InvalidateDisplay(); }
       else { SceneObject like = *o; ON_Brep b = o->brep->raw(); b.DeleteFace(b.m_F[pick_->face], true); b.Compact(); o->brep->raw() = b; o->InvalidateDisplay(); AddBrepFrom(ctx, nb, like); }
     }
-    ctx.Print("ExtendSrf: extended by " + FormatNumber(len) + " along " + (dir == 0 ? "U" : "V"));
+    ctx.Print("ExtendSrf: extended by " + FormatNumber(len) + " along " + (dir == 0 ? "U" : "V") + (linear_ ? " (linear)" : " (smooth)"));
     Finish();
   }
   void OnText(CommandContext& ctx, const std::string& t) override { char* e; double v = std::strtod(t.c_str(), &e); if (e && !*e) OnNumber(ctx, v); }
   void OnEnter(CommandContext& ctx) override { if (pick_) OnNumber(ctx, 10); }
   std::optional<FacePick> pick_;
   int side_ = 0;
+  bool linear_ = false;
 };
 
 void MergeSrf(CommandContext& ctx, const std::vector<ObjectId>& ids) {

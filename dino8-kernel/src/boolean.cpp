@@ -242,6 +242,24 @@ Mesh MinkowskiDifference(const Mesh& a, const Mesh& b) {
   return FromManifold(result);
 }
 
+Mesh OffsetSolid(const Mesh& solid, double distance, int sphere_divisions) {
+  if (distance == 0.0) return solid;
+  if (sphere_divisions < 3) {
+    throw std::invalid_argument("dino8::kernel::OffsetSolid: sphere_divisions must be >= 3");
+  }
+  const Brep sphere_brep = Brep::Sphere(Point3d(0.0, 0.0, 0.0), std::fabs(distance));
+  const Mesh sphere = sphere_brep.TessellateToClosedMesh(sphere_divisions, sphere_divisions);
+  if (distance > 0.0) return MinkowskiSum(solid, sphere);
+  const Mesh eroded = MinkowskiDifference(solid, sphere);
+  if (eroded.VertexCount() == 0) {
+    throw std::runtime_error(
+        "dino8::kernel::OffsetSolid: this shrink exceeds the solid's own "
+        "smallest feature size and erodes it away to nothing - not a "
+        "valid offset result");
+  }
+  return eroded;
+}
+
 std::vector<Mesh> Decompose(const Mesh& mesh) {
   const std::vector<manifold::Manifold> pieces = ToManifold(mesh).Decompose();
   std::vector<Mesh> result;
@@ -1155,6 +1173,132 @@ Brep ShellConvexPlanar(const Brep& solid, const std::vector<int>& removed_faces,
                    rim_j[static_cast<size_t>(rm)]};
       result.push_back(std::move(quad));
     }
+  }
+
+  return Brep::FromPlanarFaces(result);
+}
+
+Brep ShellClosedSphere(Point3d center, double outer_radius, double thickness) {
+  if (!(outer_radius > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::ShellClosedSphere: outer_radius must be positive");
+  }
+  if (!(thickness > 0.0) || !(thickness < outer_radius)) {
+    throw std::invalid_argument(
+        "dino8::kernel::ShellClosedSphere: thickness must be strictly between 0 "
+        "and outer_radius - otherwise the inner sphere collapses through, or "
+        "inverts past, the center");
+  }
+  Brep outer = Brep::Sphere(center, outer_radius);
+  Brep inner = Brep::Sphere(center, outer_radius - thickness);
+  inner.raw().FlipFace(inner.raw().m_F[0]);
+  return Brep::Compound({outer, inner});
+}
+
+Brep ShellClosedTorus(const ON_Plane& plane, double major_radius, double outer_minor_radius, double thickness) {
+  if (!(major_radius > 0.0) || !(outer_minor_radius > 0.0)) {
+    throw std::invalid_argument(
+        "dino8::kernel::ShellClosedTorus: major_radius and outer_minor_radius must be positive");
+  }
+  if (!(outer_minor_radius < major_radius)) {
+    throw std::invalid_argument(
+        "dino8::kernel::ShellClosedTorus: outer_minor_radius must be less than "
+        "major_radius - otherwise the OUTER torus itself is already a "
+        "self-intersecting spindle torus");
+  }
+  if (!(thickness > 0.0) || !(thickness < outer_minor_radius)) {
+    throw std::invalid_argument(
+        "dino8::kernel::ShellClosedTorus: thickness must be strictly between 0 "
+        "and outer_minor_radius - otherwise the inner torus collapses through, "
+        "or inverts past, the center circle");
+  }
+
+  auto build_torus = [&](double minor_radius) {
+    ON_Torus torus(plane, major_radius, minor_radius);
+    ON_NurbsSurface raw;
+    if (torus.GetNurbForm(raw) == 0) {
+      throw std::runtime_error("dino8::kernel::ShellClosedTorus: ON_Torus::GetNurbForm failed");
+    }
+    NurbsSurface surface;
+    surface.raw() = raw;
+    return Brep::FromSurface(surface);
+  };
+
+  Brep outer = build_torus(outer_minor_radius);
+  Brep inner = build_torus(outer_minor_radius - thickness);
+  inner.raw().FlipFace(inner.raw().m_F[0]);
+  return Brep::Compound({outer, inner});
+}
+
+Brep OffsetFace(const Brep& solid, int face_index, double distance) {
+  const std::vector<Brep::PlanarFace> faces = solid.PlanarFaces();
+  const int n = static_cast<int>(faces.size());
+  if (face_index < 0 || face_index >= n) {
+    throw std::invalid_argument(
+        "dino8::kernel::OffsetFace: face_index is out of range for solid.PlanarFaces()");
+  }
+
+  const double tol = RelativeTol(faces);
+  if (!IsConvex(faces, tol)) {
+    throw std::invalid_argument(
+        "dino8::kernel::OffsetFace: solid must be convex (a vertex of one "
+        "of its own faces lies outside one of its own other faces' "
+        "half-spaces) - see BooleanIntersectConvexPlanar's own doc comment "
+        "for why non-convex input isn't handled here");
+  }
+
+  // Every face's new plane: face_index's own translated by
+  // distance*zaxis, every other face's plane unchanged.
+  std::vector<ON_Plane> new_planes(static_cast<size_t>(n));
+  for (int i = 0; i < n; ++i) {
+    new_planes[static_cast<size_t>(i)] = faces[static_cast<size_t>(i)].plane;
+    if (i == face_index) {
+      new_planes[static_cast<size_t>(i)].origin =
+          new_planes[static_cast<size_t>(i)].origin + distance * new_planes[static_cast<size_t>(i)].zaxis;
+      new_planes[static_cast<size_t>(i)].UpdateEquation();
+    }
+  }
+
+  // A generous superset, guaranteed to contain the true new polytope's
+  // own boundary at every face regardless of which way any plane moved -
+  // the standard "start oversized, clip down to the exact bounded
+  // result" technique for reconstructing a convex polytope directly from
+  // a set of half-spaces (see this function's own doc comment).
+  ON_BoundingBox bbox;
+  for (const Brep::PlanarFace& f : faces) {
+    for (const Point3d& p : f.loop) bbox.Set(p, true);
+  }
+  const double half_size = 50.0 * std::max(tol, bbox.Diagonal().Length());
+
+  std::vector<Brep::PlanarFace> result;
+  result.reserve(static_cast<size_t>(n));
+  for (int i = 0; i < n; ++i) {
+    const ON_Plane& pl = new_planes[static_cast<size_t>(i)];
+    const std::vector<Point3d> oversized = {
+        pl.origin + half_size * pl.xaxis + half_size * pl.yaxis,
+        pl.origin - half_size * pl.xaxis + half_size * pl.yaxis,
+        pl.origin - half_size * pl.xaxis - half_size * pl.yaxis,
+        pl.origin + half_size * pl.xaxis - half_size * pl.yaxis,
+    };
+    std::vector<ON_Plane> others;
+    others.reserve(static_cast<size_t>(n - 1));
+    for (int k = 0; k < n; ++k) {
+      if (k == i) continue;
+      others.push_back(new_planes[static_cast<size_t>(k)]);
+    }
+    std::vector<Point3d> clipped = ClipConvexPolygon(oversized, pl, others, tol);
+    const double area = PlanarPolygonArea(clipped, pl.zaxis);
+    const double area_tol = tol * tol;
+    if (clipped.size() < 3 || area <= area_tol) {
+      throw std::invalid_argument(
+          "dino8::kernel::OffsetFace: distance collapses face " + std::to_string(i) +
+          "'s own boundary to fewer than 3 vertices or ~0 area - the resulting "
+          "solid's topology would need to change (a face vanishing entirely), "
+          "which is out of scope here");
+    }
+    Brep::PlanarFace new_face;
+    new_face.plane = pl;
+    new_face.loop = std::move(clipped);
+    result.push_back(std::move(new_face));
   }
 
   return Brep::FromPlanarFaces(result);

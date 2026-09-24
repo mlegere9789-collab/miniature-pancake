@@ -159,6 +159,116 @@ struct FilletRadiusStation {
 // convex/non-convex scoping.
 Brep FilletConvexEdge(const Brep& solid, Point3d edge_p0, Point3d edge_p1, double radius);
 
+// CONCAVE (reflex) edge fillet - the rolling ball's OTHER case: ADDS a
+// smooth quarter-round to a concave (interior dihedral angle > pi)
+// straight edge between two planar faces, instead of cutting a convex one
+// away (Parasolid/Rhino would call this the same "fillet edge" operation
+// FilletConvexEdge performs, just applied to a reflex rather than a
+// convex edge - the two share no dihedral-angle overlap, so they are
+// genuinely two functions, not one dispatching on sign).
+//
+// THE CONSTRUCTION is the exact geometric mirror of FilletConvexEdge's
+// own (see that function's own doc comment for the full derivation this
+// one flips): the ball sits OUTSIDE the material, in the empty wedge the
+// concave edge notches out of it, tangent to both adjacent faces from
+// that side. Concretely, with n_i/n_j the two faces' own outward normals,
+// bis = normalize(n_i + n_j), cosb = bis . n_i, offset = radius / cosb:
+//   axis_point(p) = p + bis*offset (FilletConvexEdge: p - bis*offset) -
+//     the ball center moves INTO the empty wedge, not into the material.
+//   contact_i(p)/contact_j(p) = axis_point(p) - n_i/n_j * radius
+//     (FilletConvexEdge: +) - the tangent point on each face's own plane,
+//     reached from the externally-located ball center back toward it.
+//   theta = pi - psi (psi = arccos(n_i . n_j)) is UNCHANGED in form from
+//     FilletConvexEdge, and still the correct wedge angle for trim_back =
+//     radius/tan(theta/2): for a convex edge theta IS the interior
+//     material angle; for a concave edge the interior material angle is
+//     pi + psi, so the EMPTY wedge being filled here is 2*pi - (pi + psi)
+//     = pi - psi - the same expression, a genuine algebraic identity, not
+//     a coincidence of any one test angle.
+//   the cylinder's own frame uses xaxis = -n_i (FilletConvexEdge: +n_i)
+//     so frame.origin + radius*xaxis lands exactly on contact_i; yaxis =
+//     e x xaxis, the same construction FilletConvexEdge's own frame uses.
+//     `outward = false` (see Brep::CylindricalFace's own doc comment) is
+//     then the one remaining bit telling FromMixedFaces() this patch
+//     bounds material from the concave side, so its presented normal
+//     points radially INWARD, toward the ball center - a genuine
+//     boundary-representation outward normal for material that is now
+//     OUTSIDE the swept circle rather than inside it.
+// The corner-notch end condition (a third face exactly PERPENDICULAR to
+// the edge at edge_p0/edge_p1) reuses FilletConvexEdge's own
+// NotchCornerAtVertex UNCHANGED: it is already a generic "splice this
+// vertex into an arc around axis_pt, from radius*xaxis to
+// radius*(cos(sweep_angle)*xaxis + sin(sweep_angle)*yaxis)" operation
+// with no convex-specific assumption baked in, so passing this function's
+// own (negated) frame.xaxis/frame.yaxis produces the correct OUTWARD-
+// bulging notch (ADDING, not cutting, that face's own corner)
+// automatically, from the same code the convex case uses to cut one.
+//
+// An OBLIQUE third face at edge_p0/edge_p1 (not perpendicular to the
+// edge) is ALSO closed, reusing FilletConvexEdge's own
+// FindObliqueThirdFaceCrossing/EllipseNotchCornerAtVertexCylindrical
+// UNCHANGED - both are already generic in `radius`/`frame`/the D_i/D_j
+// rail-offset vectors, with no convex-specific assumption baked into
+// either. The ONLY thing that needed re-deriving is D_i/D_j themselves:
+// contact_i(p) - p is a fixed vector (independent of p, the same fact
+// FilletConvexEdge's own doc comment relies on), and for THIS function's
+// own contact_i(p) = axis_point(p) - n_i*radius = p + bis*offset -
+// n_i*radius, so D_i = bis*offset - n_i*radius - the NEGATION of
+// FilletConvexEdge's own D_i = radius*n_i - bis*offset, confirmed by
+// direct substitution rather than assumed from the sign pattern
+// elsewhere in this derivation. Verified against a genuine oblique
+// fixture (the same L-shaped footprint, capped by an oblique plane
+// instead of a flat one): the hand-derived crossing height t_i =
+// radius*slope (for a cap tilted by `slope` in the direction
+// perpendicular to the corner's own bisector) matches the function's own
+// computed CylindricalFace::length to floating-point precision, and the
+// result is a valid, closed, manifold solid.
+//
+// VALIDATION: `radius` > 0; the two-face shared-boundary-edge topology
+// FilletConvexEdge itself requires; and, genuinely new here, an explicit
+// check that the edge really IS concave, not convex. This check is
+// necessary, not decorative: arccos(n_i . n_j) alone (always in [0, pi])
+// is IDENTICAL for a convex edge and its "mirror" concave edge (the same
+// two face planes, material on the opposite side of the shared edge) -
+// confirmed directly, not assumed: feeding FilletConvexEdge a genuine
+// concave fixture left its own "theta in (0, pi)" check passing
+// unchanged, and it was only the unrelated, confusingly-worded "radius
+// too large to fit" extent check downstream that happened to reject it,
+// for every tested radius - an accidental side effect of its convex-only
+// sign-fix math picking the wrong in-face direction for a concave input,
+// not a principled safeguard this function relies on. The real check
+// instead samples the OTHER vertices of face i's own loop against face
+// j's plane (the sign of that distance is the one fact that actually
+// distinguishes "material on the intersection side" from "material on
+// the union side" of the two half-spaces, information the two planes'
+// normals alone cannot carry) and throws std::invalid_argument, with a
+// message pointing at FilletConvexEdge instead, if the edge turns out to
+// be convex (or degenerate/ambiguous cases are let through to the
+// existing downstream checks, which still catch a truly flat or near-
+// 180-degree edge).
+//
+// SCOPE: a straight edge between exactly two PLANAR faces (same
+// PlanarFaces() precondition as FilletConvexEdge), one constant radius,
+// with any third face at either endpoint either a free boundary or
+// PERPENDICULAR or OBLIQUE to the edge - matching FilletConvexEdge's own
+// scope exactly, now that the oblique case is closed here too (see
+// above). Multi-edge propagation and vertex blends at concave (or mixed
+// convex/concave) corners remain out of scope for this increment,
+// matching how FilletConvexEdge itself started before FilletConvexEdges
+// generalized it - the one genuine gap still left disclosed rather than
+// silently approximated.
+//
+// CLOSED FORM this was checked against (dino8-kernel's own regression
+// tests): for a concave edge of length L with interior dihedral angle
+// 3*pi/2 (a 90-degree notch, e.g. the reflex edge of an L-shaped solid
+// built by unioning two boxes), the fillet ADDS exactly L * radius^2 *
+// (1 - pi/4) of volume - the same magnitude FilletConvexEdges' own
+// Steiner-formula cross term uses for a 90-degree CONVEX corner's own
+// REMOVED area, here added instead of removed, by the same "square minus
+// quarter-disk" cross-section a rolling ball of that radius traces
+// filling a 90-degree notch.
+Brep FilletConcaveEdge(const Brep& solid, Point3d edge_p0, Point3d edge_p1, double radius);
+
 // LINEAR-TAPER generalization of FilletConvexEdge: rolls a ball of
 // radius r(t) = radius0 + m*t (t = arc length along the edge from
 // edge_p0, m = (radius1 - radius0) / |edge_p1 - edge_p0|) instead of a
@@ -605,6 +715,67 @@ Brep ChamferConvexEdge(const Brep& solid, Point3d edge_p0, Point3d edge_p1, doub
 Brep ChamferConvexEdgeAngle(const Brep& solid, Point3d edge_p0, Point3d edge_p1, double distance_i,
                              double angle_from_i);
 
+// CONCAVE (reflex) edge chamfer - the flat-bevel MIRROR of
+// ChamferConvexEdge, for a concave (interior dihedral > pi) straight
+// edge: fills the notch with a flat bevel instead of cutting a convex
+// corner's own wedge away (the chamfer's counterpart to how
+// FilletConcaveEdge relates to FilletConvexEdge).
+//
+// UNLIKE FilletConcaveEdge (which needs a genuinely mirrored axis_point/
+// contact_i/contact_j derivation - see that function's own doc comment
+// for why), ChamferConvexEdge's own rail construction ALREADY works
+// correctly for a concave edge, completely unchanged: its m_i/m_j sign-
+// fix is extent-based (picks whichever of the two in-plane, perpendicular-
+// to-the-edge directions actually has POSITIVE extent within that face's
+// own real polygon - see ChamferConvexEdge's own doc comment/body), not
+// built from a convex-specific contact-point formula the way
+// FilletConvexEdge's own axis_point is - so it already discovers the
+// correct "into this face's own material" direction regardless of which
+// side of the two half-spaces is material. The chamfer triangle's own
+// vertex angle at the corner (what the law-of-sines dispatch below needs)
+// is, by the same token, the angle BETWEEN m_i and m_j - and this equals
+// `pi - psi` (psi = arccos(n_i . n_j)) in BOTH the convex and the concave
+// case: for convex it's theta_material itself (already < pi, so
+// arccos(m_i . m_j) recovers it directly); for concave, theta_material =
+// pi + psi (> pi, a genuine reflex angle no two-vector arccos() can ever
+// return), but arccos(m_i . m_j) recovers its ACUTE complement 2*pi -
+// theta_material = pi - psi instead - the same expression, so the
+// EXISTING `theta = pi - acos(n_i . n_j)` formula (already used
+// unmodified throughout this file) is the correct angle for the concave
+// triangle too, with no re-derivation needed.
+// Confirmed directly, not assumed from the algebra alone: fed a genuine
+// concave fixture (the L-shaped prism FilletConcaveEdge's own tests use),
+// ChamferConvexEdge produces a valid, closed, manifold solid whose added
+// volume matches the exact closed form (distance_i * distance_j / 2 per
+// unit length - the right-triangle cross-section filling the notch) to
+// floating-point precision, with NO code change to that function at all.
+//
+// This function and ChamferConcaveEdgeAngle below are therefore thin,
+// VALIDATING wrappers: each checks the edge is genuinely CONCAVE (the
+// same EdgeConvexity check FilletConcaveEdge uses - arccos(n_i . n_j)
+// alone cannot distinguish a convex edge from its "mirror" concave edge,
+// see FilletConcaveEdge's own doc comment for why) and then dispatches to
+// ChamferConvexEdge's own construction verbatim - the same "two names,
+// one shared construction" shape ChamferConvexEdgeAngle already uses for
+// its own dispatch to the two-distance form. A failure INSIDE that
+// shared construction (a distance too large to fit, a degenerate vertex,
+// an unsupported third-face pattern) is reported with ChamferConvexEdge's
+// own name in the exception message, not this function's - disclosed
+// here rather than hidden, since re-threading every message through a
+// caller-name parameter was judged not worth the added surface area for
+// what is, underneath, genuinely the same code path being reused, not
+// duplicated.
+Brep ChamferConcaveEdge(const Brep& solid, Point3d edge_p0, Point3d edge_p1, double distance_i, double distance_j);
+
+// DISTANCE + ANGLE form of ChamferConcaveEdge, exactly mirroring
+// ChamferConvexEdgeAngle's own relationship to ChamferConvexEdge (see
+// both those doc comments): validates the edge is concave, then applies
+// the SAME law-of-sines formula (see ChamferConcaveEdge's own doc
+// comment for why no re-derivation is needed for the concave case) to
+// get distance_j, and dispatches to ChamferConcaveEdge.
+Brep ChamferConcaveEdgeAngle(const Brep& solid, Point3d edge_p0, Point3d edge_p1, double distance_i,
+                             double angle_from_i);
+
 
 // MULTI-EDGE constant-radius rolling-ball fillet with genuine SPHERICAL
 // VERTEX BLENDS - the piece of Parasolid's blend class that turns
@@ -718,6 +889,47 @@ Brep ChamferConvexEdgeAngle(const Brep& solid, Point3d edge_p0, Point3d edge_p1,
 // faces, and variable radii remain out of scope for this function.
 Brep FilletConvexEdges(const Brep& solid, const std::vector<std::pair<Point3d, Point3d>>& edges, double radius);
 
+// MULTI-EDGE concave-edge fillet - FilletConcaveEdge's own counterpart to
+// FilletConvexEdges, letting several INDEPENDENT concave edges of the
+// same solid be filleted in one call (chaining single FilletConcaveEdge
+// calls is not possible at all here: the first call's own output already
+// carries a curved CylindricalFace, and PlanarFaces() - which every one
+// of these functions calls first - rejects any solid already carrying
+// one, exactly as it does for FilletConvexEdge; confirmed directly, not
+// assumed, while developing this function).
+//
+// Every per-edge quantity (bis/cosb/offset/contact_i/contact_j/the
+// hand-sign frame fix/trim_back) is FilletConcaveEdge's own, verbatim,
+// just computed once per edge in a loop instead of once - see that
+// function's own doc comment for every derivation this reuses.
+//
+// SCOPE, stated plainly rather than silently narrowed: every edge must be
+// a genuine shared concave boundary edge (the same EdgeConvexity check
+// FilletConcaveEdge itself uses, applied per edge); one radius for all
+// edges; no edge listed twice; and - the one deliberate limit this first
+// multi-edge increment carries, matching where FilletConvexEdges ITSELF
+// started before its own trihedral spherical-corner support was added -
+// every filleted edge's own two endpoints must have EXACTLY ONE filleted
+// edge incident (m == 1): two or more concave edges meeting at a shared
+// vertex is a genuine vertex-blend problem (and, for concave corners, one
+// this codebase has not attempted at all yet - not even the m == 3
+// trihedral case FilletConvexEdges already closes for the convex side)
+// and throws std::invalid_argument rather than guessing at a shape.
+// Oblique third faces are likewise out of scope here (unlike the single-
+// edge FilletConcaveEdge, which already closes that case) - only a free
+// boundary or a third face exactly PERPENDICULAR to the edge is closed,
+// via the same NotchCornerAtVertex splice FilletConvexEdges' own m == 1
+// case uses. Both gaps are genuine, disclosed future increments for this
+// function specifically.
+//
+// CLOSED FORM this was checked against (dino8-kernel's own regression
+// tests): two INDEPENDENT 90-degree concave notches (no shared vertex) on
+// the same prism, each filleted with the same radius r, together ADD
+// exactly 2 * r^2 * (1 - pi/4) of volume - the same per-notch closed form
+// FilletConcaveEdge's own single-edge tests check, simply summed, since
+// the two notches share no geometry to interact through.
+Brep FilletConcaveEdges(const Brep& solid, const std::vector<std::pair<Point3d, Point3d>>& edges, double radius);
+
 
 // BLEND REMOVAL: the inverse of FilletConvexEdge - restores the original
 // sharp edge a constant-radius, planar/planar fillet rounded off, purely
@@ -755,9 +967,16 @@ Brep FilletConvexEdges(const Brep& solid, const std::vector<std::pair<Point3d, P
 //      m==1 end is unaffected either way, since FilletConvexEdge and
 //      FilletConvexEdges use IDENTICAL math for that case).
 //   3. The restored sharp edge's own two endpoints follow directly:
-//      edge_p0 = frame.origin + bis*offset, edge_p1 = edge_p0 +
+//      edge_p0 = frame.origin +/- bis*offset, edge_p1 = edge_p0 +
 //      length*frame.zaxis - the exact algebraic inverse of
-//      axis_point(p) = p - bis*offset.
+//      FilletConvexEdge's own axis_point(p) = p - bis*offset (the "+"
+//      sign) or FilletConcaveEdge's own axis_point(p) = p + bis*offset
+//      (the "-" sign) - `CylindricalFace::outward` (true for
+//      FilletConvexEdge, false for FilletConcaveEdge - see that field's
+//      own doc comment) is exactly the bit that tells this step which
+//      construction built the patch, so which sign to invert with; `bis`
+//      and `offset` themselves are symmetric in n_i/n_j and need no
+//      change either way.
 //   4. Face i's and face j's own loops are re-trimmed by replacing their
 //      shared rail edge with the restored sharp edge - literally
 //      splicing (edge_p0, edge_p1) in place of the rail's own two
@@ -776,16 +995,124 @@ Brep FilletConvexEdges(const Brep& solid, const std::vector<std::pair<Point3d, P
 //      SphericalFace, for a solid with several independent fillets) is
 //      carried through unchanged via Brep::FromMixedFaces.
 //
-// SCOPE, stated plainly: this reverses exactly what FilletConvexEdge
-// itself can build - a CylindricalFace whose two ends are each either a
-// free boundary or a plain perpendicular corner-notch (NOT an oblique
-// end's sloped ellipse notch, and NOT a spherical vertex-blend corner
-// from FilletConvexEdges) - throwing std::invalid_argument for either of
-// those harder cases rather than silently restoring the wrong shape.
-// FilletConvexEdgeTapered's own ConicalFace and FilletConvexEdges' own
-// spherical corners are real, disclosed, out-of-scope future work for
-// this function, exactly as FilletConvexEdge's own end conditions were
-// once narrower than they are today.
+// A CONICAL FACE (a FilletConvexEdgeTapered-built taper, or one segment
+// of an N-station one) is inverted the same way, in closed form, WITHOUT
+// separately recovering the taper's own apex/axis construction at all:
+// the rolling-ball radii r_lo/r_hi at the segment's own two ends follow
+// directly from the cone's own true radii (radius0 = r_lo*c, radius1 =
+// r_hi*c, where c = 1/sqrt(1 + tan_half_angle^2) and tan_half_angle =
+// (radius1 - radius0)/length are already known, no unknowns), and the
+// cone's own rail corner at (v0, angle 0) is EXACTLY edge_p0 + r_lo*k_i
+// (FilletConvexEdgeTapered's own rail_i(0), k_i = n_i - bis/cosb a fixed
+// vector once n_i/n_j are recovered) - so edge_p0/edge_p1 follow directly
+// by subtraction, with the SAME reconstruction from face j's own k_j
+// (k_i != k_j, so this is a genuinely discriminating checked invariant,
+// not a vacuous one) required to agree. Unlike the cylindrical case, a
+// notched end here needs NO separate oblique-rejection branch: EVERY
+// corner-notch a ConicalFace ever carries is already the dense-ellipse-
+// run kind (`EllipseNotchCornerAtVertex`, fillet.cpp - even for a
+// perpendicular third face, since a tapered cone's own perpendicular
+// cross-section is generally an ellipse, not a circle), and
+// CollapseNotchRun's own splice works purely by matching 3D points,
+// agnostic to which curve family produced the run.
+//
+// `point_on_fillet` is matched against BOTH `solid.MixedFaces().
+// cylindrical` and `.conical`, and whichever face's own trimmed surface
+// is closer wins - so this one function removes either kind of fillet
+// patch a caller might have clicked on.
+//
+// SCOPE, stated plainly: this reverses exactly what FilletConvexEdge and
+// FilletConvexEdgeTapered themselves can build - a patch whose two ends
+// are each either a free boundary or a plain corner-notch (NOT an
+// oblique-end CYLINDRICAL fillet's own sloped ellipse notch, which is a
+// genuinely different, not-yet-inverted construction - see
+// FilletConvexEdge's own doc comment for why that case's cylinder is
+// shifted/set back in a way this function does not attempt to undo, and
+// NOT a spherical vertex-blend corner from FilletConvexEdges) - throwing
+// std::invalid_argument for any of those harder cases rather than
+// silently restoring the wrong shape. Removing one segment of an
+// N-station tapered profile restores only that segment's own straight
+// span, leaving any adjacent segments' own cones in place with a short
+// straight edge spliced between them - well-defined, if partial,
+// behavior, not a bug; removing every segment of a profile in turn fully
+// restores the original straight edge.
 Brep RemoveBlend(const Brep& solid, Point3d point_on_fillet);
+
+
+// BLEND REMOVAL for a CHAMFER: the inverse of ChamferConvexEdge, restoring
+// the original sharp edge a two-distance (or distance+angle) chamfer
+// replaced with a flat strip - purely from the chamfered solid's own
+// geometry, the same "read it back out" spirit RemoveBlend's own doc
+// comment describes for the fillet case.
+//
+// UNLIKE a fillet, a chamfer face is an ORDINARY Brep::PlanarFace - there
+// is no dedicated face type MixedFaces() can hand back to identify it, so
+// `point_on_chamfer` is matched against `solid.PlanarFaces()` directly
+// (the closest face, measured by distance to its own trimmed polygon,
+// wins) and this function must GEOMETRICALLY verify the candidate face
+// really is a chamfer before touching anything - never assumed from
+// being merely the nearest quad.
+//
+// The construction:
+//   1. The candidate face must be a quad (exactly 4 loop points) -
+//      throws std::invalid_argument otherwise (a chamfer is always a
+//      quad, by ChamferConvexEdge's own construction).
+//   2. A chamfer quad's own two RAIL edges (shared with the two faces
+//      the chamfer was built between) are a pair of OPPOSITE edges of
+//      the quad - the other opposite pair are the two END conditions.
+//      There are only two ways to split a quad's 4 edges into opposite
+//      pairs; this function tries BOTH and requires EXACTLY ONE to
+//      reconstruct successfully (see step 3), throwing
+//      std::invalid_argument if zero or both do - the discriminating
+//      check is genuine, not a coin flip: for the WRONG pairing, the two
+//      candidate "rail" edges' own neighbouring faces are frequently
+//      PARALLEL to each other (e.g. treating a box chamfer's own two END
+//      edges, bordering the box's own parallel side faces, as if they
+//      were rails), which makes plane_a x plane_b degenerate and fails
+//      immediately; when it does not fail outright, the deeper check in
+//      step 3 (both candidate rail corners projecting to the SAME
+//      restored edge endpoint) still catches it. The neighbouring-face
+//      search itself excludes the candidate quad's OWN index - each of
+//      its 4 edges trivially "matches itself" otherwise (the quad's own
+//      loop obviously contains its own edges), which on a solid with a
+//      second, independently-built chamfer elsewhere can shift the quad
+//      to an array index earlier than its genuine neighbour and produce
+//      a spurious self-match instead of ever reaching the real one;
+//      caught by a two-chamfer regression, not assumed from the single-
+//      chamfer case alone.
+//   3. For a candidate rail pair with neighbouring faces a/b: e =
+//      normalize(n_a x n_b) (throws if degenerate - parallel candidate
+//      faces, an immediate sign the pairing is wrong); a point on the
+//      two planes' own intersection line follows the standard closed
+//      form P0 = ((d_a*n_b - d_b*n_a) x e) / |e|^2 (d_a = n_a . plane_a.
+//      origin, d_b likewise); each of the pair's own two quad corners is
+//      then projected onto that line (P0 + ((corner - P0).e)*e) to
+//      recover a candidate edge_p0/edge_p1 - and the OTHER pair's own
+//      two corners (the ones NOT used for the projection) must
+//      independently project to the SAME two points, within tolerance,
+//      for this pairing to be accepted; a genuinely discriminating cross-
+//      check (not vacuous - the two projections use different starting
+//      corners on different edges of the quad).
+//   4. Face a's and face b's own loops are re-trimmed by replacing their
+//      shared rail edge with the restored sharp edge - the exact inverse
+//      of ChamferConvexEdge's own half-space re-trim.
+//   5. Either END of the chamfer, if it met a third face there (see
+//      ChamferEndAtVertex's own doc comment: a chamfer's own end
+//      condition splices exactly two adjacent points into that face's
+//      loop, never a dense polyline - the flat, purely planar sibling of
+//      a fillet's own arc notch), has that two-point edge collapsed back
+//      to the single restored vertex, via the same CollapseNotchRun this
+//      file's own fillet-removal path uses (now also handling a plain
+//      2-point run, not only a dense one). A free boundary end needs no
+//      change and gets none.
+//   6. The chamfer face itself is dropped; every other face of `solid`
+//      is carried through unchanged via Brep::FromMixedFaces.
+//
+// SCOPE: reverses exactly what ChamferConvexEdge/ChamferConvexEdgeAngle
+// themselves can build (both dispatch to the same two-distance
+// construction, so this one inverse covers both). A solid already
+// carrying a curved face is out of scope, since PlanarFaces() itself
+// rejects it.
+Brep RemoveChamfer(const Brep& solid, Point3d point_on_chamfer);
 
 }  // namespace dino8::kernel
