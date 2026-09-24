@@ -985,6 +985,124 @@ Brep FilletConvexEdges(const Brep& solid, const std::vector<std::pair<Point3d, P
 // this file's own scope to fix.
 Brep FilletConcaveEdges(const Brep& solid, const std::vector<std::pair<Point3d, Point3d>>& edges, double radius);
 
+// VERTEX CHAMFER: cuts off one trihedral (valence-3), CONVEX corner of
+// `solid` with a single new planar facet, offset `distance` from `vertex`
+// along each of the corner's 3 edges - the genuine 3D analogue of a
+// single-edge chamfer (ChamferConvexEdge), for the corner itself rather
+// than an edge, and NOT derived from or dependent on any edge chamfer:
+// a standalone construction that clips each of the 3 touching faces once.
+//
+// Unlike FilletConvexEdges' own trihedral SPHERE corner (which requires
+// one of the 3 faces to be perpendicular to the other two, or the blend
+// isn't a sphere at all), a PLANE always exists through any 3 points not
+// all collinear, so this function has no such restriction: it accepts
+// ANY convex trihedral corner, including ones (e.g. a tetrahedron's own
+// corner) FilletConvexEdges itself rejects - confirmed directly by this
+// function's own regression test against that exact tetrahedron fixture.
+//
+// The construction:
+//   1. The 3 faces touching `vertex` (exactly 3, or this throws - only a
+//      valence-3 corner is supported) and, from their own loops' pred/succ
+//      neighbors of `vertex`, the 3 edges meeting there: each edge is the
+//      one neighbor point shared by exactly one PAIR of the 3 faces (the
+//      standard trihedral-corner combinatorics - 3 faces, 3 edges, each
+//      face bordering 2 of the edges, each edge bordering 2 of the faces).
+//   2. Every edge is checked convex via EdgeConvexity (the same
+//      other-loop-vertex-vs-the-other-face's-plane test FilletConcaveEdge
+//      itself introduced - a plain arccos(n_a . n_b) angle cannot tell a
+//      convex edge from its mirror-concave one, see EdgeConvexity's own
+//      doc comment) - throws otherwise, leaving the concave case to
+//      ChamferConcaveVertex.
+//   3. The 3 chamfer points P_k = vertex + distance * e_k, e_k the unit
+//      direction from `vertex` to edge k's own far neighbor - throws if
+//      `distance` reaches or exceeds that edge's own length.
+//   4. The new chamfer face: the plane through P_0, P_1, P_2, its loop
+//      wound (and, if needed, reversed) so it is CCW as seen from outside,
+//      checked via a Newell normal against the sum of the 3 touching
+//      faces' own outward normals - exactly ChamferConvexEdge's own
+//      orientation convention, not a new one.
+//   5. Each of the 3 touching faces is re-trimmed by clipping its own loop
+//      against that same chamfer plane (detail::ClipByHalfspace3d, the
+//      same primitive FilletConvexEdge/ChamferConvexEdge already use),
+//      oriented so `vertex` itself lands on the clipped-away side
+//      (checked directly, not assumed from convexity - the shared
+//      construction ChamferConcaveVertex's own doc comment explains why
+//      this needs to be checked rather than assumed) - removing exactly
+//      the corner sliver each face contributes, leaving the chamfer
+//      face's own edge as each face's new boundary there.
+//
+// VALIDATION: `distance` > 0; `vertex` touched by exactly 3 faces forming
+// a genuine trihedral corner; every one of its 3 edges convex; `distance`
+// less than every edge's own length; a face left with fewer than 3
+// vertices by its own clip also throws (distance too large for the
+// solid's geometry there).
+//
+// CLOSED FORM this was checked against (dino8-kernel's own regression
+// tests): the removed volume is EXACTLY the tetrahedron {vertex, P_0, P_1,
+// P_2} - the standard scalar triple product volume = (distance^3 / 6) *
+// |e_0 . (e_1 x e_2)| for the 3 UNIT edge directions e_k, valid for ANY
+// (not just mutually-perpendicular) trihedral corner. For the unit box's
+// own corner at the origin (mutually-perpendicular edges, triple product
+// magnitude 1) that is 1 - distance^3/6; for the tetrahedron fixture
+// {(1,1,1),(1,-1,-1),(-1,1,-1),(-1,-1,1)}'s own corner at (1,1,1) (edges
+// NOT mutually perpendicular) the same triple-product formula against
+// that corner's own 3 unit edge directions matches the tessellated volume
+// directly, confirming the construction on a genuinely oblique corner.
+//
+// SCOPE: convex trihedral (valence-3) corners of a solid PlanarFaces() can
+// describe only (an input already carrying a curved face is rejected by
+// PlanarFaces() itself); one shared distance along all 3 edges (asymmetric
+// per-edge distances, the vertex analogue of ChamferConvexEdge's own
+// distance_i/distance_j, are out of scope here); higher-valence corners
+// (4 or more edges meeting at one vertex) are out of scope, rejected
+// rather than guessed at.
+Brep ChamferConvexVertex(const Brep& solid, Point3d vertex, double distance);
+
+// The CONCAVE mirror of ChamferConvexVertex: cuts across a trihedral,
+// valence-3 CONCAVE (reflex) corner's own deepest point with a single new
+// planar facet, ADDING the tetrahedron {vertex, P_0, P_1, P_2} of material
+// back into the solid instead of removing it - the vertex analogue of
+// ChamferConcaveEdge's own relationship to ChamferConvexEdge.
+//
+// Exactly like ChamferConcaveEdge itself (fillet.cpp's own
+// RequireConcaveEdge - validate, then dispatch straight to the convex
+// construction unchanged), this function validates that all 3 of
+// `vertex`'s own edges are concave (EdgeConvexity, the opposite sense from
+// ChamferConvexVertex's own check) and then runs the IDENTICAL shared
+// construction (fillet.cpp's own ChamferVertexCore) ChamferConvexVertex
+// uses - not a re-derivation. That construction was written to take no
+// stance on convex vs. concave in the first place: which of the new
+// chamfer plane's two normal directions is "into the corner sliver being
+// cut away" is decided by checking directly which side `vertex` itself
+// lands on (ClipByHalfspace3d's own "outside" convention), not by
+// assuming a sign from convexity - the same self-determining-sign
+// philosophy ChamferConvexEdge's own extent_along() checks already use
+// for its m_i/m_j directions, which is exactly why THAT edge construction
+// already worked, unmodified, for ChamferConcaveEdge's own concave edges.
+// Verified directly here too, not just assumed from the edge-level
+// precedent: this function's own regression test runs it against a
+// genuinely concave (reflex) corner (NotchedCubeCorner's own vertex) and
+// checks the resulting solid's ADDED volume against the closed form
+// below, the same fixed-resolution-tessellation convergence check
+// FilletConcaveEdges' own trihedral sphere test already uses for that
+// fixture.
+//
+// VALIDATION: identical to ChamferConvexVertex's own, with the convexity
+// sense of the per-edge check reversed (throws if an edge is convex, not
+// if it is concave).
+//
+// CLOSED FORM this was checked against (dino8-kernel's own regression
+// tests): on NotchedCubeCorner's own reflex vertex (three mutually-
+// perpendicular concave edges), the ADDED volume is EXACTLY
+// distance^3 / 6 - the same tetrahedron formula ChamferConvexVertex's own
+// doc comment gives (triple-product magnitude 1 for this fixture's
+// mutually-perpendicular edges), added instead of removed.
+//
+// SCOPE: identical to ChamferConvexVertex's own (valence-3 corners only,
+// PlanarFaces()-describable solids only, one shared distance for all 3
+// edges, no mixed convex/concave corner support).
+Brep ChamferConcaveVertex(const Brep& solid, Point3d vertex, double distance);
+
 
 // BLEND REMOVAL: the inverse of FilletConvexEdge - restores the original
 // sharp edge a constant-radius, planar/planar fillet rounded off, purely

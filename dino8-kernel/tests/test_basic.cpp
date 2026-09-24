@@ -28602,6 +28602,145 @@ void TestFilletConcaveEdgesRejectsMixedVertexConfigurations() {
         "rejects two (not one, not three) filleted edges meeting at one vertex");
 }
 
+void TestChamferConvexVertexRemovesExactTetrahedronVolumeOnBoxCorner() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::ChamferConvexVertex;
+  using dino8::kernel::Point3d;
+
+  const double d = 0.3;
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+  const Brep c = ChamferConvexVertex(box, Point3d(0, 0, 0), d);
+  Check(c.FaceCount() == 7, "box corner chamfer: 6 box faces (3 re-trimmed) + 1 new triangular facet = 7");
+
+  ON_TextLog log;
+  bool oriented = false, has_boundary = true;
+  Check(c.raw().IsValid(&log) && c.raw().IsManifold(&oriented, &has_boundary) && oriented && !has_boundary &&
+            c.raw().IsSolid(),
+        "the chamfered box corner is a valid, closed, manifold solid");
+
+  // Closed form: the mutually-perpendicular corner's own removed tetrahedron
+  // {origin, (d,0,0), (0,d,0), (0,0,d)} has volume d^3/6 (unit triple
+  // product for orthogonal unit edge directions).
+  const double expected = 1.0 - d * d * d / 6.0;
+  Check(std::fabs(c.TessellateToClosedMeshAdaptive(1e-9).Volume() - expected) < 1e-8,
+        "the box corner chamfer's volume matches 1 - distance^3/6");
+}
+
+void TestChamferConvexVertexWorksOnObliqueCornerFilletConvexEdgesRejects() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::ChamferConvexVertex;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  // The same regular-tetrahedron fixture TestFilletConvexEdgesRejectsUnsupportedConfigurations
+  // uses to show FilletConvexEdges' own trihedral SPHERE corner requires a
+  // face perpendicular to the other two: no face of a regular tetrahedron
+  // is perpendicular to the other two, so that function rejects every one
+  // of its corners. ChamferConvexVertex has no such restriction (a plane
+  // always exists through 3 non-collinear points) - this test proves that
+  // directly, not just from the algebra.
+  // NOTE: this is the SAME 4 points TestFilletConvexEdgesRejectsUnsupportedConfigurations
+  // uses, but with each loop's own winding REVERSED from that test's own
+  // {A,C,B}/{A,B,D}/{A,D,C}/{B,C,D} - confirmed directly (not assumed) that
+  // THAT ordering gives INWARD normals here (irrelevant to that test, which
+  // only checks IsSolid() and an unconditional rejection), which would
+  // silently invert every convexity/orientation check this function's own
+  // construction relies on.
+  const Point3d A(1, 1, 1), B(1, -1, -1), C(-1, 1, -1), D(-1, -1, 1);
+  const std::vector<Brep::PlanarFace> tf = {ChamferTestPlanarFace({A, B, C}), ChamferTestPlanarFace({A, D, B}),
+                                            ChamferTestPlanarFace({A, C, D}), ChamferTestPlanarFace({B, D, C})};
+  const Brep tet = Brep::FromPlanarFaces(tf);
+  Check(tet.raw().IsSolid(), "sanity: the tetrahedron fixture is a closed solid");
+
+  const double d = 0.2;
+  const Brep c = ChamferConvexVertex(tet, A, d);
+  Check(c.FaceCount() == 5, "tetrahedron corner chamfer: 4 original faces (3 re-trimmed) + 1 new facet = 5");
+
+  ON_TextLog log;
+  bool oriented = false, has_boundary = true;
+  Check(c.raw().IsValid(&log) && c.raw().IsManifold(&oriented, &has_boundary) && oriented && !has_boundary &&
+            c.raw().IsSolid(),
+        "the chamfered tetrahedron corner is a valid, closed, manifold solid");
+
+  // Closed form: tet_volume - (d^3/6)*|e1 . (e2 x e3)| for the 3 UNIT edge
+  // directions from A - the general (not just orthogonal) triple-product
+  // tetrahedron formula.
+  Vector3d e1 = B - A, e2 = C - A, e3 = D - A;
+  const double tet_volume = std::fabs((B - A) * ON_CrossProduct(C - A, D - A)) / 6.0;
+  e1.Unitize();
+  e2.Unitize();
+  e3.Unitize();
+  const double triple = std::fabs(e1 * ON_CrossProduct(e2, e3));
+  const double expected = tet_volume - d * d * d / 6.0 * triple;
+  Check(std::fabs(c.TessellateToClosedMeshAdaptive(1e-9).Volume() - expected) < 1e-8,
+        "the oblique tetrahedron corner chamfer's volume matches the general triple-product closed form");
+}
+
+void TestChamferConcaveVertexAddsExactTetrahedronVolumeOnNotchedCubeCorner() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::ChamferConcaveVertex;
+  using dino8::kernel::Point3d;
+
+  const Brep notched = NotchedCubeCorner();
+  const double base_volume = notched.TessellateToClosedMesh(4, 4).Volume();
+  Check(std::fabs(base_volume - 26.0) < 1e-6, "sanity: the notched-cube-corner fixture's own volume is exactly 26");
+
+  const double d = 0.3;
+  const Brep c = ChamferConcaveVertex(notched, Point3d(2, 2, 2), d);
+  Check(c.FaceCount() == 10, "concave corner chamfer: 9 fixture faces (3 re-trimmed) + 1 new facet = 10");
+
+  ON_TextLog log;
+  bool oriented = false, has_boundary = true;
+  Check(c.raw().IsValid(&log) && c.raw().IsManifold(&oriented, &has_boundary) && oriented && !has_boundary &&
+            c.raw().IsSolid(),
+        "the chamfered concave corner is a valid, closed, manifold solid");
+
+  const ON_Brep& raw = c.raw();
+  int naked = 0;
+  for (int e = 0; e < raw.m_E.Count(); ++e) {
+    if (raw.m_E[e].m_ti.Count() == 1) ++naked;
+  }
+  Check(naked == 0, "no naked edges - the new facet welds cleanly to all 3 re-trimmed notch faces");
+
+  // Closed form: the concave mirror of the convex case ADDS the tetrahedron
+  // {vertex, P0, P1, P2} instead of removing it - this fixture's own 3
+  // edges are mutually perpendicular (triple product magnitude 1), so
+  // added volume = d^3/6.
+  const double expected = base_volume + d * d * d / 6.0;
+  Check(std::fabs(c.TessellateToClosedMesh(20, 20).Volume() - expected) < 1e-3,
+        "the concave corner chamfer's volume matches base_volume + distance^3/6");
+}
+
+void TestChamferVertexRejectsWrongConvexityAndOtherBadInputs() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::ChamferConcaveVertex;
+  using dino8::kernel::ChamferConvexVertex;
+  using dino8::kernel::Point3d;
+  auto throws = [](const std::function<void()>& fn) {
+    try {
+      fn();
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+    return false;
+  };
+
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+  const Brep notched = NotchedCubeCorner();
+
+  Check(throws([&] { ChamferConvexVertex(box, Point3d(0, 0, 0), 0.0); }), "rejects distance 0");
+  Check(throws([&] { ChamferConvexVertex(box, Point3d(0, 0, 0), 1.5); }),
+        "rejects a distance exceeding an edge's own length");
+  Check(throws([&] { ChamferConvexVertex(notched, Point3d(2, 2, 2), 0.3); }),
+        "ChamferConvexVertex rejects a genuinely CONCAVE corner");
+  Check(throws([&] { ChamferConcaveVertex(box, Point3d(0, 0, 0), 0.3); }),
+        "ChamferConcaveVertex rejects a genuinely CONVEX corner");
+  // A box's own edge midpoint is touched by only 2 faces, not 3 - not a
+  // trihedral vertex at all.
+  Check(throws([&] { ChamferConvexVertex(box, Point3d(0.5, 0, 0), 0.1); }),
+        "rejects a point that is not touched by exactly 3 faces");
+}
+
 void TestRemoveBlendRoundTripsAConcaveFillet() {
   using dino8::kernel::Brep;
   using dino8::kernel::FilletConcaveEdge;
@@ -30604,6 +30743,10 @@ int main() {
   TestRemoveBlendLeavesTheOtherConcaveFilletIntactAmongTwo();
   TestFilletConcaveEdgesTrihedralCornerAddsExactSphericalBlendVolume();
   TestFilletConcaveEdgesRejectsMixedVertexConfigurations();
+  TestChamferConvexVertexRemovesExactTetrahedronVolumeOnBoxCorner();
+  TestChamferConvexVertexWorksOnObliqueCornerFilletConvexEdgesRejects();
+  TestChamferConcaveVertexAddsExactTetrahedronVolumeOnNotchedCubeCorner();
+  TestChamferVertexRejectsWrongConvexityAndOtherBadInputs();
   TestRemoveBlendRoundTripsAConcaveFillet();
   TestChamferConcaveEdgeAddsExactRightTriangleVolume();
   TestChamferConcaveEdgeAngleMatchesTwoDistanceForm();
