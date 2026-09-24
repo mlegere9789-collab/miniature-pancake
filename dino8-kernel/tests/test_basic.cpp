@@ -23561,6 +23561,131 @@ void TestFilletConvexEdgeObliqueEndRejectsInvalidInput() {
         "an oversized radius on the obliquely-ended fixture is still rejected");
 }
 
+// ---------------------------------------------------------------------------
+// RemoveBlend (fillet.h) - blend removal, the inverse of FilletConvexEdge:
+// restores the original sharp edge purely from the filleted geometry.
+
+void TestRemoveBlendRoundTripsASingleFillet() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConvexEdge;
+  using dino8::kernel::Point3d;
+
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+  const Point3d edge_p0(0, 0, 1), edge_p1(1, 0, 1);
+  const Brep filleted = FilletConvexEdge(box, edge_p0, edge_p1, 0.3);
+
+  const Brep::MixedFacesResult mf = filleted.MixedFaces();
+  Check(mf.cylindrical.size() == 1, "sanity: the filleted box has exactly one cylindrical face");
+  const Brep::CylindricalFace& cf = mf.cylindrical[0];
+  const Point3d mid_on_cyl = cf.frame.origin + 0.5 * cf.length * cf.frame.zaxis +
+                            cf.radius * std::cos(cf.angle * 0.5) * cf.frame.xaxis +
+                            cf.radius * std::sin(cf.angle * 0.5) * cf.frame.yaxis;
+  const Brep restored = dino8::kernel::RemoveBlend(filleted, mid_on_cyl);
+
+  // Brep::Box() itself never builds genuine ON_Brep topology (see brep.h's
+  // own class-level comment: only FromPlanarFaces()/FromMixedFaces() do),
+  // so its own raw().m_E/m_V counts are 0 - comparing against the literal
+  // expected counts instead of against `box`'s own (topology-less) raw
+  // counts.
+  Check(restored.FaceCount() == 6 && restored.raw().m_E.Count() == 12 && restored.raw().m_V.Count() == 8,
+        "RemoveBlend restores the exact face/edge/vertex counts of the pre-fillet box (6 faces, 12 edges, 8 vertices)");
+  ON_TextLog log;
+  bool oriented = false, has_boundary = true;
+  Check(restored.raw().IsValid(&log) && restored.raw().IsManifold(&oriented, &has_boundary) && oriented && !has_boundary &&
+            restored.raw().IsSolid(),
+        "the restored solid is itself a valid, closed, manifold solid");
+  Check(std::fabs(restored.TessellateToClosedMesh(4, 4).Volume() - box.TessellateToClosedMesh(4, 4).Volume()) < 1e-9,
+        "the restored solid's volume matches the original box's exactly (both are exact planar polyhedra)");
+  for (const Point3d& v : {Point3d(0, 0, 0), Point3d(1, 0, 0), Point3d(1, 1, 0), Point3d(0, 1, 0), Point3d(0, 0, 1),
+                           Point3d(1, 0, 1), Point3d(1, 1, 1), Point3d(0, 1, 1)}) {
+    Check(ChamferTestBrepHasVertexNear(restored, v, 1e-9), "the restored box has its original sharp corner vertex back");
+  }
+  Check(!ChamferTestBrepHasVertexNear(restored, mid_on_cyl, 1e-9),
+        "the fillet's own cylindrical surface point is gone from the restored solid");
+}
+
+void TestRemoveBlendLeavesTheOtherFilletIntactAmongTwo() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConvexEdges;
+  using dino8::kernel::Point3d;
+
+  // Two parallel top-edge fillets sharing double-notched end faces (see
+  // TestFilletConvexEdgesParallelPairDoubleNotchesEndFaces) - removing ONE
+  // must leave the OTHER fillet's own notch correctly intact, not merely
+  // geometrically present but with STALE index metadata (a real bug this
+  // regression exists to catch: an earlier draft passed a single-fillet
+  // round trip while silently corrupting this exact two-notch case, see
+  // fillet.cpp's own CollapseNotchRun for the fix).
+  const double r = 0.2;
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+  const Brep two = FilletConvexEdges(box, {{Point3d(0, 0, 1), Point3d(1, 0, 1)}, {Point3d(0, 1, 1), Point3d(1, 1, 1)}}, r);
+  const Brep::MixedFacesResult mf_two = two.MixedFaces();
+  Check(mf_two.cylindrical.size() == 2, "sanity: two parallel fillets give two cylindrical faces");
+
+  const Brep::CylindricalFace& cf0 = mf_two.cylindrical[0];
+  const Point3d mid0 = cf0.frame.origin + 0.5 * cf0.length * cf0.frame.zaxis +
+                       cf0.radius * std::cos(cf0.angle * 0.5) * cf0.frame.xaxis +
+                       cf0.radius * std::sin(cf0.angle * 0.5) * cf0.frame.yaxis;
+  const Brep one_left = dino8::kernel::RemoveBlend(two, mid0);
+
+  ON_TextLog log;
+  bool oriented = false, has_boundary = true;
+  const bool manifold = one_left.raw().IsManifold(&oriented, &has_boundary);
+  Check(one_left.raw().IsValid(&log) && manifold && oriented && !has_boundary,
+        "removing one of two parallel fillets leaves a CLOSED 2-manifold - the OTHER fillet's own notch keeps a "
+        "single shared edge, not a naked boundary from stale notch-run indices");
+  Check(one_left.raw().IsSolid(), "removing one of two parallel fillets leaves a genuine solid");
+  const Brep::MixedFacesResult mf_one = one_left.MixedFaces();
+  Check(mf_one.cylindrical.size() == 1, "exactly one cylindrical face (the untouched fillet) remains");
+  const double expected = 1.0 - r * r * (1.0 - ON_PI / 4.0);
+  Check(std::fabs(one_left.TessellateToClosedMeshAdaptive(1e-6).Volume() - expected) < 2e-6,
+        "the remaining single fillet's own volume matches r^2(1 - pi/4) removed, not both");
+}
+
+void TestRemoveBlendRejectsUnsupportedConfigurations() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConvexEdge;
+  using dino8::kernel::FilletConvexEdges;
+  using dino8::kernel::Point3d;
+  auto throws = [](const std::function<void()>& fn) {
+    try {
+      fn();
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+    return false;
+  };
+
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+  Check(throws([&] { dino8::kernel::RemoveBlend(box, Point3d(0.5, 0.5, 0.5)); }),
+        "rejects a solid with no cylindrical face at all");
+
+  const Brep filleted = FilletConvexEdge(box, Point3d(0, 0, 1), Point3d(1, 0, 1), 0.3);
+  Check(throws([&] { dino8::kernel::RemoveBlend(filleted, Point3d(0.5, 0.5, 0.001)); }),
+        "rejects a point far from every cylindrical face");
+
+  // A FilletConvexEdges spherical vertex-blend corner is out of scope.
+  const Brep rounded = FilletConvexEdges(box, AllUnitBoxEdges(), 0.2);
+  const Brep::MixedFacesResult mf_r = rounded.MixedFaces();
+  const Brep::CylindricalFace& cfr = mf_r.cylindrical[0];
+  const Point3d mid_r = cfr.frame.origin + 0.5 * cfr.length * cfr.frame.zaxis +
+                        cfr.radius * std::cos(cfr.angle * 0.5) * cfr.frame.xaxis +
+                        cfr.radius * std::sin(cfr.angle * 0.5) * cfr.frame.yaxis;
+  Check(throws([&] { dino8::kernel::RemoveBlend(rounded, mid_r); }),
+        "rejects a FilletConvexEdges cylinder with a spherical vertex-blend corner at either end");
+
+  // A FilletConvexEdge oblique end (sloped ellipse cap notch) is out of scope.
+  const Brep hex = FilletObliqueTestHexahedron(0.3);
+  const Brep obl = FilletConvexEdge(hex, Point3d(0, 0, 1), Point3d(1, 0, 1), 0.2);
+  const Brep::MixedFacesResult mf_o = obl.MixedFaces();
+  const Brep::CylindricalFace& cfo = mf_o.cylindrical[0];
+  const Point3d mid_o = cfo.frame.origin + 0.5 * cfo.length * cfo.frame.zaxis +
+                        cfo.radius * std::cos(cfo.angle * 0.5) * cfo.frame.xaxis +
+                        cfo.radius * std::sin(cfo.angle * 0.5) * cfo.frame.yaxis;
+  Check(throws([&] { dino8::kernel::RemoveBlend(obl, mid_o); }),
+        "rejects a FilletConvexEdge oblique-end cylinder (sloped ellipse cap notch)");
+}
+
 int main() {
   ON::Begin();
 
@@ -23760,6 +23885,9 @@ int main() {
   TestFilletConvexEdgeObliqueEndMatchesPerpendicularAtZeroSlope();
   TestFilletConvexEdgeObliqueEndClosedFormAtASecondSlope();
   TestFilletConvexEdgeObliqueEndRejectsInvalidInput();
+  TestRemoveBlendRoundTripsASingleFillet();
+  TestRemoveBlendLeavesTheOtherFilletIntactAmongTwo();
+  TestRemoveBlendRejectsUnsupportedConfigurations();
   TestBrepFromPlanarFacesBuildsValidOpenNurbsTopology();
   TestBooleanCombinePlanarResultHasValidClosedTopology();
   TestShellConvexPlanarResultHasValidTopology();

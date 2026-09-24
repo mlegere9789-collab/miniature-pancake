@@ -2590,6 +2590,64 @@ honestly out of scope.
   `FilletConvexEdges` corner) remains out of scope, since `PlanarFaces()`
   itself rejects it - closing that is this subsystem's own next gap.
 
+- **`RemoveBlend(solid, point_on_fillet)`** - blend removal, the
+  Parasolid "blend/chamfer" class's own last standard operation: restores
+  the sharp edge a `FilletConvexEdge` call rounded off, working PURELY
+  from the filleted solid's own geometry (a `Brep` carries no separate
+  operation history anywhere, so this genuinely RECOVERS the original
+  shape rather than replaying a recorded step - the same "read it back
+  out of the geometry" spirit `MixedFaces()` already uses to recognize a
+  `CylindricalFace`/`ConicalFace`/`SphericalFace`). Construction: the
+  cylindrical face nearest `point_on_fillet` is identified (measured
+  against its own trimmed extent, not the infinite cylinder); its two
+  adjacent planar faces are found by matching their own loop against the
+  cylinder's two straight rails; the restored sharp edge follows directly
+  from the algebraic inverse of `FilletConvexEdge`'s own `axis_point`
+  construction (`edge_p0 = frame.origin + bis*offset`, recomputing
+  `bis`/`cosb`/`offset` from the two recovered face normals and the
+  cylinder's own radius); each adjacent face's rail edge is spliced back
+  to the sharp edge; and any third face's own corner-notch (a dense
+  polygonal run between the same two rail corners - `NotchCornerAtVertex`'s
+  own construction) is found and collapsed back to the single restored
+  vertex - the genuine inverse splice, `CollapseNotchRun`. Before
+  trusting any of this, each end is checked against every `SphericalFace`
+  of `solid`: a `FilletConvexEdges` corner cylinder is set back so its own
+  end rail corners sit exactly on a corner sphere's own surface, and an
+  end matching that pattern throws rather than silently restoring the
+  wrong shape (a plain `m == 1` end - whichever function built it - is
+  unaffected, since the math is identical either way); a cylinder with a
+  non-empty `cap0_notch_points`/`cap1_notch_points` (an oblique-end
+  fillet's own sloped ellipse cap) is rejected the same way.
+  A GENUINE BUG was caught and fixed while building this, not merely
+  disclosed after the fact: `CollapseNotchRun`'s first draft passed a
+  single-fillet round trip cleanly but silently corrupted the case where
+  a face carries TWO separate notch runs (two parallel fillets sharing an
+  end face, `PlanarFace::notch_runs`) - the point-removal itself
+  ROTATED the loop (starting the new array at the collapsed run's own far
+  end and appending the restored vertex last) while the notch-metadata
+  shift assumed a plain in-place erase-and-insert, so the OTHER,
+  untouched notch's own recorded indices silently pointed at the wrong
+  loop positions after the rebuild - producing a `Brep` that still
+  reported `IsValid()` and `IsManifold()` returning true/oriented but
+  `has_boundary` ALSO true (a real naked edge), caught by an explicit
+  regression for exactly that two-notch scenario, not by the simpler
+  round trip alone. Fixed by making the point removal a genuine in-place
+  erase-and-insert matching the metadata math exactly.
+  Verified (`TestRemoveBlend*` in test_basic.cpp): a single fillet on a
+  unit box round-trips to a 6-face/12-edge/8-vertex solid with the
+  original box's own volume to floating-point precision and every one of
+  its 8 corner vertices restored exactly; removing one of two parallel
+  `FilletConvexEdges` fillets sharing double-notched end faces leaves a
+  closed, valid, solid `Brep` with exactly the OTHER fillet's own volume
+  remaining (not both, and not a naked boundary); and a solid with no
+  cylindrical face, a point far from every cylindrical face, a
+  spherical-corner cylinder, and an oblique-end cylinder are all
+  rejected. Full `dino8_kernel_smoke`: 2397 checks, 0 failures.
+  `dino8_general_boolean_sweep` output is unchanged. Honestly still open:
+  `FilletConvexEdgeTapered`'s own `ConicalFace` and `FilletConvexEdges`'
+  own spherical corners remain out of scope, disclosed rather than
+  approximated - the natural next increment for this one function.
+
 ## What's still not done (as of chunk 2)
 
 - `Brep::Box()`, `Brep::Sphere()`, `Brep::TrimmedPlanarFace()`
