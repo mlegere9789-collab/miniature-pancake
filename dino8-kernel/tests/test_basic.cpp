@@ -7362,6 +7362,107 @@ void TestBrepSplitNakedEdgeAtRefusesInvalidInputs() {
   Check(threw_deleted, "edge_index 0 marked deleted (m_edge_index < 0) throws std::invalid_argument, not Result::Failed");
 }
 
+// SewTJunctions() on the classic T-junction: a unit square A (x in
+// [0,1], y in [0,1]) sits beside two smaller squares B (x in [1,2], y in
+// [0,0.5]) and C (x in [1,2], y in [0.5,1]) - built as 3 SEPARATE
+// PlanarFaces via FromMixedFaces(), so A's right boundary is ONE naked
+// edge (1,0,0)-(1,1,0) while B and C's own left boundaries are TWO
+// separate naked edges meeting at (1,0.5,0) - exactly the "one endpoint
+// lands strictly inside another edge's own span" case JoinNakedEdges()
+// alone can never close (hand-verified: A's two ends are 1.0 away from
+// (1,0.5,0), far outside any ordinary tolerance). B and C's own OTHER
+// shared boundary (x=1..2, y=0.5, an ordinary exact endpoint-to-endpoint
+// match) IS welded into one shared edge already at construction time
+// (confirmed directly: FromMixedFaces's builder reuses an existing edge
+// between the same two vertices rather than duplicating it) - an
+// unrelated, already-working case, not what this test is about. Every
+// count below is hand-derived from the fixture's own geometry (confirmed
+// against the actual construction via a standalone print of every edge),
+// not merely "changed by some amount".
+void TestBrepSewTJunctionsClosesActualTJunction() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+
+  Brep::PlanarFace a = CheckHealFace(
+      {Point3d(0, 0, 0), Point3d(1, 0, 0), Point3d(1, 1, 0), Point3d(0, 1, 0)}, ON_3dVector(0, 0, 1));
+  Brep::PlanarFace b = CheckHealFace(
+      {Point3d(1, 0, 0), Point3d(2, 0, 0), Point3d(2, 0.5, 0), Point3d(1, 0.5, 0)}, ON_3dVector(0, 0, 1));
+  Brep::PlanarFace c = CheckHealFace(
+      {Point3d(1, 0.5, 0), Point3d(2, 0.5, 0), Point3d(2, 1, 0), Point3d(1, 1, 0)}, ON_3dVector(0, 0, 1));
+  Brep plate = Brep::FromMixedFaces({a, b, c}, {});
+  Check(plate.FaceCount() == 3, "the T-junction fixture has its 3 separate faces");
+  Check(plate.raw().m_E.Count() == 11,
+        "11 edges total: 4 per face (12) minus 1, since B and C's own exactly-matching shared boundary is welded "
+        "into a single shared edge already at construction time");
+  Check(plate.raw().m_V.Count() == 8, "8 distinct vertices after vertex welding (4 + 3 new from B + 1 new from C)");
+
+  const Brep::CheckReport before = plate.Check();
+  Check(before.Count(Brep::CheckIssue::Kind::NakedEdge) == 10,
+        "10 of the 11 edges are naked before sewing (everything except the already-shared B|C edge) - the "
+        "A/B and A/C T-junction is NOT yet closed");
+
+  double area_before = 0.0;
+  for (const dino8::kernel::Mesh& m : plate.Tessellate(8, 8)) area_before += m.Area();
+  Check(std::fabs(area_before - 2.0) < 1e-6, "the fixture's own combined area is the 2x1 rectangle's 2.0 before sewing");
+
+  const int splits = plate.SewTJunctions();
+  Check(splits == 1, "exactly 1 T-junction split was needed (A's single right edge against B+C's two half edges)");
+  Check(plate.raw().IsValid(), "the sewn plate is still a valid ON_Brep");
+  Check(plate.raw().m_E.Count() == 10,
+        "10 edges survive: A's edge became 2 halves (11-1+2=12 total), then 2 more pairs joined into shared edges "
+        "(12-2=10)");
+  Check(plate.raw().m_V.Count() == 8,
+        "still 8 vertices - the split's own new vertex at (1,0.5,0) duplicated an existing one, and the "
+        "join that followed welded the duplicate back out");
+
+  const Brep::CheckReport after = plate.Check();
+  Check(after.Count(Brep::CheckIssue::Kind::NakedEdge) == 7,
+        "7 boundary edges remain naked - the 2x1 rectangle's own outer boundary, walked hand: "
+        "(0,0)-(1,0)-(2,0)-(2,.5)-(2,1)-(1,1)-(0,1)-(0,0) is 7 segments - now that the 3 interior "
+        "edges (A|B, A|C, B|C) are shared, not naked");
+  Check(after.Count(Brep::CheckIssue::Kind::LoopGap) == 0 && after.Count(Brep::CheckIssue::Kind::InvalidTrim) == 0,
+        "sewing introduced no LoopGap or InvalidTrim defect");
+
+  int shared = 0;
+  for (int ei = 0; ei < plate.raw().m_E.Count(); ++ei) {
+    const ON_BrepEdge& e = plate.raw().m_E[ei];
+    if (e.m_edge_index >= 0 && e.TrimCount() == 2) ++shared;
+  }
+  Check(shared == 3, "exactly 3 edges are now shared (2-trim): the two split A-halves against B and C, plus B|C's "
+                     "own already-matching pair");
+
+  double area_after = 0.0;
+  for (const dino8::kernel::Mesh& m : plate.Tessellate(8, 8)) area_after += m.Area();
+  Check(std::fabs(area_after - area_before) < 1e-9,
+        "sewing is purely topological - the tessellated area is unchanged (to the same float-vertex floor) from "
+        "before the split");
+}
+
+// SewTJunctions() is a genuine no-op (returns 0, leaves the Brep exactly
+// as it was) on inputs that have no T-junction at all: a closed box (no
+// naked edges to begin with) and a lone unit-square plate (naked edges,
+// but no OTHER naked edge for any of them to land inside of).
+void TestBrepSewTJunctionsNoOpOnCleanBreps() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+
+  Brep box = Brep::FromPlanarFaces(CheckHealBoxFaces());
+  const int box_edges_before = box.raw().m_E.Count();
+  const int box_verts_before = box.raw().m_V.Count();
+  Check(box.SewTJunctions() == 0, "a closed box (every edge already shared) has no T-junction to close");
+  Check(box.raw().m_E.Count() == box_edges_before && box.raw().m_V.Count() == box_verts_before,
+        "...and is left completely untouched");
+
+  Brep::PlanarFace bottom = CheckHealFace(
+      {Point3d(0, 1, 0), Point3d(1, 1, 0), Point3d(1, 0, 0), Point3d(0, 0, 0)}, ON_3dVector(0, 0, -1));
+  Brep plate = Brep::FromPlanarFaces({bottom});
+  const int plate_edges_before = plate.raw().m_E.Count();
+  const int plate_verts_before = plate.raw().m_V.Count();
+  Check(plate.SewTJunctions() == 0, "a lone plate's 4 naked edges have no OTHER naked edge to T-junction against");
+  Check(plate.raw().m_E.Count() == plate_edges_before && plate.raw().m_V.Count() == plate_verts_before,
+        "...and is left completely untouched");
+}
+
 // Brep::Check()'s 3D counterpart to its own 2D SelfIntersectingLoop check
 // (CheckIssue::Kind::SelfIntersectingLoop3d's own doc comment has the full
 // rationale): a loop's sampled 2D trim polygon can be perfectly simple
@@ -30518,6 +30619,8 @@ int main() {
   TestBrepSplitNakedEdgeAtStraightEdgeSubdividesBoundaryExactly();
   TestBrepSplitNakedEdgeAtRefusesACurvedEdge();
   TestBrepSplitNakedEdgeAtRefusesInvalidInputs();
+  TestBrepSewTJunctionsClosesActualTJunction();
+  TestBrepSewTJunctionsNoOpOnCleanBreps();
   TestBrepCheckDetects3dSelfIntersectingLoopBeyondThe2dTrimCheck();
   TestMeshCheckAndFillSmallHolesRestoreDroppedFaces();
   TestMeshUnifyNormalsFixesFlippedAndInvertedFaces();
