@@ -37,13 +37,16 @@ bool MeshFaceIndicesInRange(const ON_Mesh& mesh) {
 }
 
 // Shared by every Add*() below: a fresh UUID, plus `name` set via
-// SetName() when non-empty, `layer_index` written straight through, and
+// SetName() when non-empty, `layer_index` written straight through,
 // `render_color` (when present) written to `m_color` with `ColorSource()`
-// switched to ON::color_from_object. See file_io.h's own doc comment on
-// the `name`/`layer_index`/`render_color` parameters for why this exists
-// and why an empty name, a layer_index of 0, and std::nullopt are no-ops.
+// switched to ON::color_from_object, and every `user_strings` pair written
+// via SetUserString(). See file_io.h's own doc comment on the
+// `name`/`layer_index`/`render_color`/`user_strings` parameters for why
+// this exists and why an empty name, a layer_index of 0, std::nullopt, and
+// an empty list are all no-ops.
 ON_3dmObjectAttributes MakeAttributes(const std::string& name, int layer_index,
-                                       std::optional<Color> render_color) {
+                                       std::optional<Color> render_color,
+                                       const UserStrings& user_strings) {
   ON_3dmObjectAttributes attributes;
   ON_CreateUuid(attributes.m_uuid);
   if (!name.empty()) {
@@ -53,6 +56,9 @@ ON_3dmObjectAttributes MakeAttributes(const std::string& name, int layer_index,
   if (render_color.has_value()) {
     attributes.m_color = ON_Color(render_color->r, render_color->g, render_color->b);
     attributes.SetColorSource(ON::color_from_object);
+  }
+  for (const auto& [key, value] : user_strings) {
+    attributes.SetUserString(ON_wString(key.c_str()), ON_wString(value.c_str()));
   }
   return attributes;
 }
@@ -69,37 +75,37 @@ int Model::AddLayer(const std::string& name, Color color) {
 }
 
 void Model::AddCurve(const NurbsCurve& curve, const std::string& name, int layer_index,
-                      std::optional<Color> render_color) {
+                      std::optional<Color> render_color, const UserStrings& user_strings) {
   auto* geometry = new ON_NurbsCurve(curve.raw());
-  ON_3dmObjectAttributes attributes = MakeAttributes(name, layer_index, render_color);
+  ON_3dmObjectAttributes attributes = MakeAttributes(name, layer_index, render_color, user_strings);
   model_.AddModelGeometryComponent(geometry, &attributes);
 }
 
 void Model::AddBrep(const Brep& brep, const std::string& name, int layer_index,
-                     std::optional<Color> render_color) {
+                     std::optional<Color> render_color, const UserStrings& user_strings) {
   auto* geometry = new ON_Brep(brep.raw());
-  ON_3dmObjectAttributes attributes = MakeAttributes(name, layer_index, render_color);
+  ON_3dmObjectAttributes attributes = MakeAttributes(name, layer_index, render_color, user_strings);
   model_.AddModelGeometryComponent(geometry, &attributes);
 }
 
 void Model::AddMesh(const Mesh& mesh, const std::string& name, int layer_index,
-                     std::optional<Color> render_color) {
+                     std::optional<Color> render_color, const UserStrings& user_strings) {
   auto* geometry = new ON_Mesh(mesh.raw());
-  ON_3dmObjectAttributes attributes = MakeAttributes(name, layer_index, render_color);
+  ON_3dmObjectAttributes attributes = MakeAttributes(name, layer_index, render_color, user_strings);
   model_.AddModelGeometryComponent(geometry, &attributes);
 }
 
 void Model::AddSubD(const SubD& subd, const std::string& name, int layer_index,
-                     std::optional<Color> render_color) {
+                     std::optional<Color> render_color, const UserStrings& user_strings) {
   auto* geometry = new ON_SubD(subd.raw());
-  ON_3dmObjectAttributes attributes = MakeAttributes(name, layer_index, render_color);
+  ON_3dmObjectAttributes attributes = MakeAttributes(name, layer_index, render_color, user_strings);
   model_.AddModelGeometryComponent(geometry, &attributes);
 }
 
 void Model::AddPointCloud(const PointCloud& cloud, const std::string& name, int layer_index,
-                           std::optional<Color> render_color) {
+                           std::optional<Color> render_color, const UserStrings& user_strings) {
   auto* geometry = new ON_PointCloud(cloud.raw());
-  ON_3dmObjectAttributes attributes = MakeAttributes(name, layer_index, render_color);
+  ON_3dmObjectAttributes attributes = MakeAttributes(name, layer_index, render_color, user_strings);
   model_.AddModelGeometryComponent(geometry, &attributes);
 }
 
