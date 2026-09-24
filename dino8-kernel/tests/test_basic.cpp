@@ -1250,6 +1250,102 @@ void TestCurveMakePeriodicExact() {
         "rather than rebuilding it");
 }
 
+// NurbsSurface::MakePeriodicExact() - the surface counterpart of
+// NurbsCurve::MakePeriodicExact() above, reusing it directly rather than
+// re-deriving the same knot-vector math a second way. Fixture: a full-
+// circle Brep::Revolve() wall of a straight vertical line - its own U
+// (profile) direction is degree 1 and NOT closed, but its V (revolve
+// angle) direction is the exact rational-quadratic construction
+// RevolvedSurface() (sweep.cpp) builds: closed (a full circle) but only
+// C0-clamped at the seam, not itself ON-periodic - precisely the
+// "closed but not periodic" case this method exists for, on a genuinely
+// rational surface (the same weight-handling case the curve version's
+// own circle fixture already proves this doesn't distort).
+void TestSurfaceMakePeriodicExact() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+  using dino8::kernel::Vector3d;
+
+  const NurbsCurve line = NurbsCurve::FromControlPoints({Point3d(1, 0, 0), Point3d(1, 0, 3)}, 1);
+  const Brep revolved = Brep::Revolve(line, Point3d(0, 0, 0), Vector3d(0, 0, 1));
+  NurbsSurface wall;
+  wall.raw() = *ON_NurbsSurface::Cast(revolved.raw().m_F[0].SurfaceOf());
+
+  Check(!wall.IsClosed(0) && wall.raw().Degree(0) == 1,
+        "fixture: the wall's U (profile) direction is open and degree 1");
+  Check(wall.IsClosed(1) && !wall.IsPeriodic(1) && wall.raw().Degree(1) == 2,
+        "fixture: the wall's V (revolve angle) direction is closed but not periodic, "
+        "degree 2 (rational) - the case MakePeriodicExact exists to handle");
+
+  const ON_Interval du = wall.raw().Domain(0), dv = wall.raw().Domain(1);
+  constexpr int kSamples = 12;
+  std::vector<Point3d> before;
+  for (int i = 0; i <= kSamples; ++i) {
+    for (int j = 0; j <= kSamples; ++j) {
+      const double u = du.ParameterAt(static_cast<double>(i) / kSamples);
+      const double v = dv.ParameterAt(static_cast<double>(j) / kSamples);
+      before.push_back(wall.raw().PointAt(u, v));
+    }
+  }
+
+  const Result result = wall.MakePeriodicExact(1);
+  Check(result == Result::Ok, "MakePeriodicExact(1) returns Ok on the closed-but-not-periodic V direction");
+  Check(wall.IsPeriodic(1), "the result is genuinely ON-periodic in V, not just closed");
+  Check(wall.raw().IsValid(),
+        "the resulting knot vector and control net form a genuinely valid ON_NurbsSurface");
+  Check(!wall.IsPeriodic(0) && wall.raw().Degree(0) == 1,
+        "the U direction (untouched) keeps its own original degree/structure exactly");
+
+  double max_error = 0.0;
+  size_t idx = 0;
+  for (int i = 0; i <= kSamples; ++i) {
+    for (int j = 0; j <= kSamples; ++j) {
+      const double u = du.ParameterAt(static_cast<double>(i) / kSamples);
+      const double v = dv.ParameterAt(static_cast<double>(j) / kSamples);
+      const double error = wall.raw().PointAt(u, v).DistanceTo(before[idx++]);
+      max_error = std::max(max_error, error);
+    }
+  }
+  Check(max_error < 1e-9,
+        "the exact claim, proven numerically over a (u, v) grid spanning the wall's full "
+        "original domain (including both domain ends in v, where the underlying "
+        "construction places its one deliberately-nudged zero-width knot span): every "
+        "sampled point matches the original (pre-conversion) surface's PointAt(u, v) to "
+        "within 1e-9 - not a 'looks similar' tolerance (measured ~2.8e-13 in a standalone "
+        "diagnostic before picking this bound)");
+
+  // Negative controls, mirroring the curve version's own.
+  {
+    NurbsSurface degree1;
+    degree1.raw() = *ON_NurbsSurface::Cast(revolved.raw().m_F[0].SurfaceOf());
+    Check(degree1.MakePeriodicExact(0) == Result::Failed,
+          "MakePeriodicExact() refuses the degree-1 U direction rather than fabricating a "
+          "periodic form ON's own convention says degree-1 directions cannot have");
+  }
+  {
+    NurbsSurface already_periodic;
+    already_periodic.raw() = *ON_NurbsSurface::Cast(revolved.raw().m_F[0].SurfaceOf());
+    Check(already_periodic.MakePeriodicExact(1) == Result::Ok, "fixture: first call succeeds");
+    Check(already_periodic.MakePeriodicExact(1) == Result::NoOpAlreadySatisfied,
+          "a second call reports NoOpAlreadySatisfied rather than rebuilding an already-periodic "
+          "direction");
+  }
+  {
+    NurbsSurface copy;
+    copy.raw() = *ON_NurbsSurface::Cast(revolved.raw().m_F[0].SurfaceOf());
+    bool threw = false;
+    try {
+      copy.MakePeriodicExact(2);
+    } catch (const std::invalid_argument&) {
+      threw = true;
+    }
+    Check(threw, "MakePeriodicExact() throws std::invalid_argument for a direction other than 0 or 1");
+  }
+}
+
 void TestCurveClosestPoint() {
   using dino8::kernel::NurbsCurve;
   using dino8::kernel::Point3d;
@@ -30169,6 +30265,7 @@ int main() {
   TestCurveExtend();
   TestCurveJoin();
   TestCurveMakePeriodicExact();
+  TestSurfaceMakePeriodicExact();
   TestCurveClosestPoint();
   TestCurveFitLeastSquares();
   TestCurveFitLeastSquaresConstrainedRefit();
