@@ -2110,6 +2110,90 @@ Brep ChamferConvexEdgeAngle(const Brep& solid, Point3d edge_p0, Point3d edge_p1,
   return ChamferConvexEdge(solid, edge_p0, edge_p1, distance_i, distance_j);
 }
 
+namespace {
+
+// Shared by ChamferConcaveEdge/ChamferConcaveEdgeAngle: throws unless
+// edge_p0->edge_p1 is a genuinely CONCAVE shared boundary edge of `solid`
+// - see ChamferConcaveEdge's own doc comment (fillet.h) for why this
+// check exists at all (arccos(n_i . n_j) alone cannot tell convex from
+// concave) and why it is safe to then dispatch straight to
+// ChamferConvexEdge's own construction.
+void RequireConcaveEdge(const std::vector<Brep::PlanarFace>& faces, Point3d edge_p0, Point3d edge_p1, double tol,
+                        const char* who) {
+  int idx_i = -1, idx_j = -1;
+  size_t k_i = 0;
+  for (size_t f = 0; f < faces.size() && (idx_i < 0 || idx_j < 0); ++f) {
+    const std::vector<Point3d>& loop = faces[f].loop;
+    const size_t n = loop.size();
+    for (size_t k = 0; k < n; ++k) {
+      const Point3d& a = loop[k];
+      const Point3d& b = loop[(k + 1) % n];
+      if (idx_i < 0 && PointsEqual(a, edge_p0, tol) && PointsEqual(b, edge_p1, tol)) {
+        idx_i = static_cast<int>(f);
+        k_i = k;
+      }
+      if (idx_j < 0 && PointsEqual(a, edge_p1, tol) && PointsEqual(b, edge_p0, tol)) {
+        idx_j = static_cast<int>(f);
+      }
+    }
+  }
+  if (idx_i < 0 || idx_j < 0 || idx_i == idx_j) {
+    throw std::invalid_argument(std::string("dino8::kernel::") + who +
+                                ": edge_p0->edge_p1 is not a shared boundary edge of two distinct "
+                                "faces of `solid`, walked in opposite directions on their own loops");
+  }
+  const std::vector<Point3d>& loop_i = faces[static_cast<size_t>(idx_i)].loop;
+  const ON_Plane& plane_j = faces[static_cast<size_t>(idx_j)].plane;
+  const size_t k_i1 = (k_i + 1) % loop_i.size();
+  bool degenerate = false;
+  const bool convex = EdgeConvexity(loop_i, k_i, k_i1, plane_j, tol, &degenerate);
+  if (!degenerate && convex) {
+    throw std::invalid_argument(std::string("dino8::kernel::") + who +
+                                ": edge is a CONVEX dihedral edge, not concave - see ChamferConvexEdge instead");
+  }
+}
+
+}  // namespace
+
+Brep ChamferConcaveEdge(const Brep& solid, Point3d edge_p0, Point3d edge_p1, double distance_i, double distance_j) {
+  if (!(distance_i > 0.0) || !(distance_j > 0.0)) {
+    throw std::invalid_argument(
+        "dino8::kernel::ChamferConcaveEdge: distance_i and distance_j must both be strictly positive");
+  }
+  const std::vector<Brep::PlanarFace> faces = solid.PlanarFaces();
+  const double tol = RelativeTol(faces);
+  RequireConcaveEdge(faces, edge_p0, edge_p1, tol, "ChamferConcaveEdge");
+  return ChamferConvexEdge(solid, edge_p0, edge_p1, distance_i, distance_j);
+}
+
+Brep ChamferConcaveEdgeAngle(const Brep& solid, Point3d edge_p0, Point3d edge_p1, double distance_i,
+                             double angle_from_i) {
+  if (!(distance_i > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::ChamferConcaveEdgeAngle: distance_i must be strictly positive");
+  }
+  const std::vector<Brep::PlanarFace> faces = solid.PlanarFaces();
+  const double tol = RelativeTol(faces);
+  RequireConcaveEdge(faces, edge_p0, edge_p1, tol, "ChamferConcaveEdgeAngle");
+
+  int idx_i = -1, idx_j = -1;
+  FindEdgeFaces(faces, edge_p0, edge_p1, tol, "ChamferConcaveEdgeAngle", idx_i, idx_j);
+  const Vector3d n_i = faces[static_cast<size_t>(idx_i)].plane.zaxis;
+  const Vector3d n_j = faces[static_cast<size_t>(idx_j)].plane.zaxis;
+  const double dot_ij = std::max(-1.0, std::min(1.0, n_i * n_j));
+  // Same expression as ChamferConvexEdgeAngle's own `theta`, and correct
+  // for the concave case too - see ChamferConcaveEdge's own doc comment
+  // for why arccos(m_i . m_j) (the chamfer triangle's own true vertex
+  // angle) equals `pi - psi` in both the convex and the concave case.
+  const double theta = ON_PI - std::acos(dot_ij);
+  if (!(angle_from_i > 1e-9) || !(angle_from_i < ON_PI - theta - 1e-9)) {
+    throw std::invalid_argument(
+        "dino8::kernel::ChamferConcaveEdgeAngle: angle_from_i must lie strictly between 0 and "
+        "pi - theta for the chamfer plane to reach face j");
+  }
+  const double distance_j = distance_i * std::sin(angle_from_i) / std::sin(theta + angle_from_i);
+  return ChamferConcaveEdge(solid, edge_p0, edge_p1, distance_i, distance_j);
+}
+
 
 // ---------------------------------------------------------------------------
 // FilletConvexEdges: multi-edge constant-radius fillet with spherical

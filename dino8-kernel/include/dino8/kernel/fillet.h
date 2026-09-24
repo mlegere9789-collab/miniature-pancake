@@ -698,6 +698,67 @@ Brep ChamferConvexEdge(const Brep& solid, Point3d edge_p0, Point3d edge_p1, doub
 Brep ChamferConvexEdgeAngle(const Brep& solid, Point3d edge_p0, Point3d edge_p1, double distance_i,
                              double angle_from_i);
 
+// CONCAVE (reflex) edge chamfer - the flat-bevel MIRROR of
+// ChamferConvexEdge, for a concave (interior dihedral > pi) straight
+// edge: fills the notch with a flat bevel instead of cutting a convex
+// corner's own wedge away (the chamfer's counterpart to how
+// FilletConcaveEdge relates to FilletConvexEdge).
+//
+// UNLIKE FilletConcaveEdge (which needs a genuinely mirrored axis_point/
+// contact_i/contact_j derivation - see that function's own doc comment
+// for why), ChamferConvexEdge's own rail construction ALREADY works
+// correctly for a concave edge, completely unchanged: its m_i/m_j sign-
+// fix is extent-based (picks whichever of the two in-plane, perpendicular-
+// to-the-edge directions actually has POSITIVE extent within that face's
+// own real polygon - see ChamferConvexEdge's own doc comment/body), not
+// built from a convex-specific contact-point formula the way
+// FilletConvexEdge's own axis_point is - so it already discovers the
+// correct "into this face's own material" direction regardless of which
+// side of the two half-spaces is material. The chamfer triangle's own
+// vertex angle at the corner (what the law-of-sines dispatch below needs)
+// is, by the same token, the angle BETWEEN m_i and m_j - and this equals
+// `pi - psi` (psi = arccos(n_i . n_j)) in BOTH the convex and the concave
+// case: for convex it's theta_material itself (already < pi, so
+// arccos(m_i . m_j) recovers it directly); for concave, theta_material =
+// pi + psi (> pi, a genuine reflex angle no two-vector arccos() can ever
+// return), but arccos(m_i . m_j) recovers its ACUTE complement 2*pi -
+// theta_material = pi - psi instead - the same expression, so the
+// EXISTING `theta = pi - acos(n_i . n_j)` formula (already used
+// unmodified throughout this file) is the correct angle for the concave
+// triangle too, with no re-derivation needed.
+// Confirmed directly, not assumed from the algebra alone: fed a genuine
+// concave fixture (the L-shaped prism FilletConcaveEdge's own tests use),
+// ChamferConvexEdge produces a valid, closed, manifold solid whose added
+// volume matches the exact closed form (distance_i * distance_j / 2 per
+// unit length - the right-triangle cross-section filling the notch) to
+// floating-point precision, with NO code change to that function at all.
+//
+// This function and ChamferConcaveEdgeAngle below are therefore thin,
+// VALIDATING wrappers: each checks the edge is genuinely CONCAVE (the
+// same EdgeConvexity check FilletConcaveEdge uses - arccos(n_i . n_j)
+// alone cannot distinguish a convex edge from its "mirror" concave edge,
+// see FilletConcaveEdge's own doc comment for why) and then dispatches to
+// ChamferConvexEdge's own construction verbatim - the same "two names,
+// one shared construction" shape ChamferConvexEdgeAngle already uses for
+// its own dispatch to the two-distance form. A failure INSIDE that
+// shared construction (a distance too large to fit, a degenerate vertex,
+// an unsupported third-face pattern) is reported with ChamferConvexEdge's
+// own name in the exception message, not this function's - disclosed
+// here rather than hidden, since re-threading every message through a
+// caller-name parameter was judged not worth the added surface area for
+// what is, underneath, genuinely the same code path being reused, not
+// duplicated.
+Brep ChamferConcaveEdge(const Brep& solid, Point3d edge_p0, Point3d edge_p1, double distance_i, double distance_j);
+
+// DISTANCE + ANGLE form of ChamferConcaveEdge, exactly mirroring
+// ChamferConvexEdgeAngle's own relationship to ChamferConvexEdge (see
+// both those doc comments): validates the edge is concave, then applies
+// the SAME law-of-sines formula (see ChamferConcaveEdge's own doc
+// comment for why no re-derivation is needed for the concave case) to
+// get distance_j, and dispatches to ChamferConcaveEdge.
+Brep ChamferConcaveEdgeAngle(const Brep& solid, Point3d edge_p0, Point3d edge_p1, double distance_i,
+                             double angle_from_i);
+
 
 // MULTI-EDGE constant-radius rolling-ball fillet with genuine SPHERICAL
 // VERTEX BLENDS - the piece of Parasolid's blend class that turns

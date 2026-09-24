@@ -4463,6 +4463,56 @@ honestly out of scope.
   exactly as disclosed there - this increment only extends removal to
   match what construction already covers.
 
+- **`ChamferConcaveEdge`/`ChamferConcaveEdgeAngle`** - the chamfer's
+  counterpart to `FilletConcaveEdge`: fills a concave (reflex) straight
+  edge with a flat bevel instead of cutting a convex corner's own wedge
+  away. Unlike the fillet case, this needed NO new geometric derivation
+  at all: `ChamferConvexEdge`'s own rail construction is ALREADY correct
+  for a concave edge, unchanged, because its `m_i`/`m_j` sign-fix is
+  extent-based (picks whichever of the two in-plane, perpendicular-to-
+  the-edge directions actually has POSITIVE extent within that face's own
+  real polygon) rather than built from the convex-specific contact-point
+  formula `FilletConvexEdge`'s own `axis_point` uses - so it already
+  discovers the correct "into this face's own material" direction
+  regardless of which side of the two half-spaces is material. The
+  chamfer triangle's own vertex angle at the corner (what
+  `ChamferConvexEdgeAngle`'s law-of-sines dispatch needs) is, by the same
+  token, the angle between `m_i` and `m_j` - and this equals `pi - psi`
+  (`psi = arccos(n_i . n_j)`) in BOTH the convex and the concave case: for
+  convex it's the interior material angle itself (already < pi, so
+  `arccos(m_i . m_j)` recovers it directly); for concave, the interior
+  material angle is `pi + psi` (> pi, a genuine reflex angle no two-
+  vector `arccos()` can ever return), but `arccos(m_i . m_j)` recovers its
+  ACUTE complement `2*pi - (pi + psi) = pi - psi` instead - the same
+  expression already used unmodified throughout this file, so the
+  existing law-of-sines formula needed no re-derivation either.
+  Confirmed directly, not assumed from the algebra alone: fed the same
+  L-shaped prism fixture `FilletConcaveEdge`'s own tests use,
+  `ChamferConvexEdge` (with no code change) produces a valid, closed,
+  manifold solid whose added volume matches the exact closed form
+  (`distance_i * distance_j / 2` per unit length, the right-triangle
+  cross-section filling the notch) to floating-point precision, and the
+  angle form's own symmetric-angle case (`distance_j == distance_i`)
+  matches too. `ChamferConcaveEdge`/`ChamferConcaveEdgeAngle` are
+  therefore thin, VALIDATING wrappers: each checks the edge is genuinely
+  concave (the same `EdgeConvexity` check `FilletConcaveEdge` uses) and
+  then dispatches straight to `ChamferConvexEdge`'s own construction - the
+  same "two names, one shared construction" shape
+  `ChamferConvexEdgeAngle` already uses for its own dispatch to the two-
+  distance form. `RemoveChamfer` needed no changes either and was
+  verified directly (not assumed) to round-trip a concave-built chamfer:
+  it works purely from the chamfered solid's own geometry (a two-plane
+  intersection reconstruction), with no memory of which entry point built
+  the quad it is reading back. Full `dino8_kernel_smoke`: 3275 checks, 0
+  failures; `dino8_general_boolean_sweep` unaffected. Honestly disclosed:
+  a failure INSIDE the shared construction (a distance too large to fit,
+  a degenerate vertex, an unsupported third-face pattern) is reported
+  with `ChamferConvexEdge`'s own name in the exception message rather
+  than the caller's, a deliberate, documented trade-off rather than a
+  bug - re-threading every message through a caller-name parameter was
+  judged not worth the added surface area for what is, underneath,
+  genuinely the same code path being reused, not duplicated.
+
 ## What's still not done (as of chunk 2)
 
 - `Brep::Box()`, `Brep::Sphere()`, `Brep::TrimmedPlanarFace()`

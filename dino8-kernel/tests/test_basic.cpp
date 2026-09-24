@@ -27532,6 +27532,128 @@ void TestRemoveBlendRoundTripsAConcaveFillet() {
         "the fillet's own cylindrical surface point is gone from the restored solid");
 }
 
+void TestChamferConcaveEdgeAddsExactRightTriangleVolume() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::ChamferConcaveEdge;
+  using dino8::kernel::Point3d;
+
+  const Brep prism = ConcaveLShapedPrism();
+  const double base_volume = prism.TessellateToClosedMesh(4, 4).Volume();
+  const Point3d edge_p0(1, 1, 0), edge_p1(1, 1, 1);
+  const double di = 0.3, dj = 0.2;
+  const Brep c = ChamferConcaveEdge(prism, edge_p0, edge_p1, di, dj);
+
+  ON_TextLog log;
+  bool oriented = false, has_boundary = true;
+  Check(c.raw().IsValid(&log) && c.raw().IsManifold(&oriented, &has_boundary) && oriented && !has_boundary &&
+            c.raw().IsSolid(),
+        "the concave chamfer produces a valid, closed, manifold solid");
+  // Closed form: filling a concave notch with a flat bevel ADDS the
+  // right-triangle cross-section (legs di, dj) per unit length - the
+  // chamfer's own straight-edged mirror of FilletConcaveEdge's "square
+  // minus quarter-disk".
+  const double L = 1.0;
+  const double expected = base_volume + L * 0.5 * di * dj;
+  Check(std::fabs(c.TessellateToClosedMeshAdaptive(1e-6).Volume() - expected) < 1e-6,
+        "the chamfer ADDS exactly di*dj/2 per unit length");
+  Check(!ChamferTestBrepHasVertexNear(c, edge_p0, 1e-9) && !ChamferTestBrepHasVertexNear(c, edge_p1, 1e-9),
+        "the original sharp concave corner vertices are gone");
+}
+
+void TestChamferConcaveEdgeAngleMatchesTwoDistanceForm() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::ChamferConcaveEdgeAngle;
+  using dino8::kernel::Point3d;
+
+  const Brep prism = ConcaveLShapedPrism();
+  const double base_volume = prism.TessellateToClosedMesh(4, 4).Volume();
+  const Point3d edge_p0(1, 1, 0), edge_p1(1, 1, 1);
+  // This fixture's own concave notch angle theta = pi/2 (see
+  // ConcaveLShapedPrism's own comment); angle_from_i = (pi - theta)/2 is
+  // the symmetric case, where distance_j == distance_i exactly (same
+  // claim ChamferConvexEdgeAngle's own doc comment makes for the convex
+  // case, and - per ChamferConcaveEdge's own doc comment - equally true
+  // here since the law-of-sines formula is unmodified for concave).
+  const double theta = ON_PI / 2.0;
+  const double angle_from_i = (ON_PI - theta) / 2.0;
+  const double di = 0.25;
+  const Brep c = ChamferConcaveEdgeAngle(prism, edge_p0, edge_p1, di, angle_from_i);
+
+  ON_TextLog log;
+  bool oriented = false, has_boundary = true;
+  Check(c.raw().IsValid(&log) && c.raw().IsManifold(&oriented, &has_boundary) && oriented && !has_boundary &&
+            c.raw().IsSolid(),
+        "the concave distance/angle chamfer produces a valid, closed, manifold solid");
+  const double expected = base_volume + 1.0 * 0.5 * di * di;  // symmetric: dj == di
+  Check(std::fabs(c.TessellateToClosedMeshAdaptive(1e-6).Volume() - expected) < 1e-6,
+        "the symmetric angle form matches the two-distance form with distance_j == distance_i");
+}
+
+void TestChamferConcaveEdgeRejectsUnsupportedConfigurations() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::ChamferConcaveEdge;
+  using dino8::kernel::ChamferConcaveEdgeAngle;
+  using dino8::kernel::Point3d;
+  auto throws = [](const std::function<void()>& fn) {
+    try {
+      fn();
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+    return false;
+  };
+
+  const Brep prism = ConcaveLShapedPrism();
+  const Point3d edge_p0(1, 1, 0), edge_p1(1, 1, 1);
+  Check(throws([&] { ChamferConcaveEdge(prism, edge_p0, edge_p1, -0.1, 0.1); }),
+        "rejects a non-positive distance");
+
+  // A plain box's every edge is CONVEX - ChamferConcaveEdge must refuse
+  // it, not silently dispatch to ChamferConvexEdge's own construction
+  // for the wrong reason.
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+  Check(throws([&] { ChamferConcaveEdge(box, Point3d(0, 0, 1), Point3d(1, 0, 1), 0.1, 0.1); }),
+        "rejects a genuinely convex edge");
+  Check(throws([&] { ChamferConcaveEdgeAngle(box, Point3d(0, 0, 1), Point3d(1, 0, 1), 0.1, ON_PI / 4.0); }),
+        "the angle form rejects a genuinely convex edge too");
+
+  Check(throws([&] { ChamferConcaveEdge(prism, Point3d(5, 5, 5), Point3d(5, 5, 6), 0.1, 0.1); }),
+        "rejects an edge that isn't a shared boundary edge of the solid at all");
+
+  // A distance too large to fit within either adjacent face's own extent.
+  Check(throws([&] { ChamferConcaveEdge(prism, edge_p0, edge_p1, 5.0, 0.1); }), "rejects a distance too large to fit");
+}
+
+void TestRemoveChamferRoundTripsAConcaveChamfer() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::ChamferConcaveEdge;
+  using dino8::kernel::Point3d;
+
+  const Brep prism = ConcaveLShapedPrism();
+  const double base_volume = prism.TessellateToClosedMesh(4, 4).Volume();
+  const Point3d edge_p0(1, 1, 0), edge_p1(1, 1, 1);
+  const double di = 0.3, dj = 0.2;
+  const Brep c = ChamferConcaveEdge(prism, edge_p0, edge_p1, di, dj);
+
+  // RemoveChamfer is purely geometric (reads the chamfer quad back and
+  // reconstructs via two-plane intersection) and does not care whether
+  // ChamferConvexEdge or ChamferConcaveEdge built the quad - verified
+  // directly here, not merely assumed from that symmetry.
+  const Point3d mid = 0.25 * (Point3d(1 + di, 1, 0) + Point3d(1 + di, 1, 1) + Point3d(1, 1 + dj, 1) +
+                              Point3d(1, 1 + dj, 0));
+  const Brep restored = dino8::kernel::RemoveChamfer(c, mid);
+
+  ON_TextLog log;
+  bool oriented = false, has_boundary = true;
+  Check(restored.raw().IsValid(&log) && restored.raw().IsManifold(&oriented, &has_boundary) && oriented &&
+            !has_boundary && restored.raw().IsSolid(),
+        "RemoveChamfer restores a valid, closed, manifold solid from a concave-built chamfer");
+  Check(std::fabs(restored.TessellateToClosedMesh(4, 4).Volume() - base_volume) < 1e-6,
+        "the restored solid's volume matches the original L-shaped prism's exactly");
+  Check(ChamferTestBrepHasVertexNear(restored, edge_p0, 1e-9) && ChamferTestBrepHasVertexNear(restored, edge_p1, 1e-9),
+        "the restored solid has its original sharp concave corner vertices back");
+}
+
 // ---- NurbsSurface::UnrollDevelopable ----
 
 namespace {
@@ -29359,6 +29481,10 @@ int main() {
   TestFilletConcaveEdgeAddsExactQuarterRoundVolume();
   TestFilletConcaveEdgeRejectsUnsupportedConfigurations();
   TestRemoveBlendRoundTripsAConcaveFillet();
+  TestChamferConcaveEdgeAddsExactRightTriangleVolume();
+  TestChamferConcaveEdgeAngleMatchesTwoDistanceForm();
+  TestChamferConcaveEdgeRejectsUnsupportedConfigurations();
+  TestRemoveChamferRoundTripsAConcaveChamfer();
   TestBrepFromPlanarFacesBuildsValidOpenNurbsTopology();
   TestBrepAdjacencyQueries();
   TestBooleanCombinePlanarResultHasValidClosedTopology();
