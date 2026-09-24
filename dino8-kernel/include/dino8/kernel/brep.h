@@ -474,6 +474,79 @@ class Brep {
   int VertexCount() const;
   int EdgeCount() const;
 
+  // Mass-properties volume via the divergence theorem - direct NURBS
+  // integration, not a tessellation chord approximation: sum over every
+  // face of INT INT (1/3) S(u,v) . (Su(u,v) x Sv(u,v)) du dv over that
+  // face's own parameter domain, 5-point-per-span Gauss-Legendre product
+  // quadrature (exact for any polynomial up to degree 9 per span,
+  // comfortably covering every degree this kernel's own Brep factories
+  // build - degree <= 3 skinned sections, degree-2 rational conics for
+  // Sphere()/Torus()/Pipe()'s own circles). OpenNURBS' public build ships
+  // no MassProperties module at all (the same "stub in the public build"
+  // gap this kernel's own AssembleSweptBody() comment already flags for
+  // ON_Brep::CreateMesh - see sweep.cpp), so this is a genuine, direct
+  // implementation, not a thin wrapper. `face.m_bRev` is honored (a
+  // reversed face's contribution is negated, matching Tessellate()'s own
+  // `FlipNormals()` convention for the same flag), so the result is
+  // correct regardless of which faces the orientation cross-check in
+  // AssembleSweptBody() happened to flip. Quadrature is exact for a
+  // NON-RATIONAL (polynomial) face (Box()'s own bilinear walls); for a
+  // RATIONAL one (Sphere()/Torus()/Pipe()/a NURBS circle - S(u,v)
+  // involves a division by the weight function, so the true integrand
+  // isn't a polynomial at all) it converges rapidly rather than landing
+  // exactly - verified directly at ~1e-10 relative for Sphere()/Torus(),
+  // not assumed, in TestBrepVolumeAndAreaMatchClosedForms.
+  //
+  // Requires the faces to geometrically close up into one watertight,
+  // consistently outward-oriented solid - checked via
+  // `TessellateToClosedMesh(8, 8).IsClosedManifold()` (the same
+  // "tessellate a coarse check mesh and inspect it" approach
+  // AssembleSweptBody()'s own orientation cross-check already uses in
+  // sweep.cpp), NOT `raw().IsSolid()`: that requires genuine shared
+  // ON_Brep edge/vertex topology between faces, which several of this
+  // kernel's own factories never build - Box()/Sphere()/Torus() each add
+  // their faces via the plain single-surface NewFace(int) overload (see
+  // their own doc comments), so raw().IsSolid() is false for every one
+  // of them despite being genuinely closed solids. Throws
+  // std::invalid_argument if that check fails.
+  //
+  // Also requires every face to cover its ENTIRE underlying surface
+  // parameter domain - real ON_Brep topology's own way of saying that
+  // (`raw().FaceIsSurface(face_index)`) OR this kernel's own "no loop at
+  // all" convention for an untrimmed face (`NewFace(int)`'s own plain
+  // overload, which Box()/Sphere()/Torus() use, never builds a loop, so
+  // FaceIsSurface() alone would wrongly call every one of them trimmed -
+  // see FaceCoversWholeDomain()'s own comment in brep.cpp), as long as
+  // none of this kernel's own pseudo-trim side tables (the ones
+  // TrimmedPlanarFace()'s own doc comment describes - face_trim_loops_/
+  // face_hole_loops_/face_arc_runs_/face_notch_rows_, invisible to
+  // FaceIsSurface() itself since they're consumed only by Tessellate())
+  // are populated for it - a trimmed face's true integration region is
+  // its trim loop, not its full surface rectangle, a materially
+  // different (harder) problem this does not attempt. Throws
+  // std::invalid_argument naming which face, rather than silently
+  // integrating the wrong region - every primitive/sweep factory here
+  // whose faces are each untrimmed (Box(), Sphere(), Torus(), a capped
+  // Extrude()/Revolve()/Loft()/Sweep1()/Sweep2()/Pipe()/PipeVariable())
+  // satisfies this; a general-boolean or TrimmedPlanarFace() result does
+  // not.
+  double Volume() const;
+
+  // Exact surface area: the same divergence-theorem machinery Volume()
+  // uses, minus the dot with S(u,v) - sum over every face of
+  // INT INT |Su(u,v) x Sv(u,v)| du dv over that face's own parameter
+  // domain, same 5-point-per-span Gauss-Legendre quadrature and the same
+  // whole-domain-face requirement (naming which face fails it), but
+  // WITHOUT Volume()'s own closedness requirement - an open surface has a
+  // perfectly well-defined area even though it has no enclosed volume.
+  // Unlike Volume()'s integrand, |Su x Sv|'s square root is never
+  // exactly polynomial even for a non-rational face, so this always
+  // converges rather than landing exactly - verified at ~1e-9 relative
+  // against Sphere()'s and Box()'s own closed-form areas in
+  // TestBrepVolumeAndAreaMatchClosedForms, a real measured bound, not a
+  // loose one.
+  double Area() const;
+
   // Topology & adjacency queries - the reusable equivalent of the ad-hoc
   // brep_.m_V/m_E/m_F/m_T walks scattered through this file (e.g.
   // MergeCoplanarFaces' own loop_a.Trim(k)->Edge()->m_ti walk). All three
@@ -2596,7 +2669,44 @@ class Brep {
   // primitive, not built into it here).
   Result SplitNakedEdgeAt(int edge_index, Point3d point, double tolerance = tolerance::kDistance);
 
-  // Caps every planar hole in this Brep's open boundary with a new
+  // The orchestration SplitNakedEdgeAt() itself deliberately leaves to a
+  // caller (see that method's own doc comment): closes PARITY_MAP.md's
+  // "[missing] Tolerant sewing with edge splitting" gap by finding every
+  // T-junction among this Brep's naked (1-trim) edges - a naked edge B
+  // whose endpoint lands strictly INSIDE another naked, LINEAR edge A's
+  // own span, not at either of A's ends (an ordinary endpoint match is
+  // already JoinNakedEdges()'s job, untouched here) - splitting the
+  // longer edge A there via SplitNakedEdgeAt(), and finally calling
+  // JoinNakedEdges(tolerance) once so every newly-matching endpoint pair
+  // (the fresh split halves against B and its own true neighbours) is
+  // actually sewn shut, not merely split.
+  //
+  // "Strictly inside A's span" is measured by projecting B's endpoint
+  // onto the segment between A's own two vertices (the closed-form
+  // point-to-segment distance detail::ClosestSegmentSegment() already
+  // provides elsewhere in this file, degenerate segment against a single
+  // point): within `tolerance` of the line AND at least `tolerance` away
+  // from either of A's own endpoints (otherwise it's an ordinary
+  // coincident-endpoint case, not a T-junction, and splitting there would
+  // just create a near-zero-length sliver edge SplitNakedEdgeAt() itself
+  // already refuses). Only LINEAR naked edges are ever split - the same
+  // restriction SplitNakedEdgeAt() places on itself - so a curved naked
+  // edge is left for a future, curve-aware pass rather than guessed at.
+  //
+  // Iterates (re-scanning after every successful split, since Compact()
+  // inside SplitNakedEdgeAt() renumbers every edge/vertex index) until a
+  // full pass finds nothing left to split, bounded defensively at 4x this
+  // Brep's own edge count so a pathological, never-converging input
+  // cannot loop forever. Returns the number of splits performed (0 if
+  // this Brep has no T-junction among its naked edges - the ordinary,
+  // already-clean case). A T-junction with three or more edges meeting a
+  // single longer edge (not just two) is closed by repeated splits within
+  // the same call, one per iteration. Never throws on its own; clears the
+  // per-face side tables whenever it performs at least one split (see
+  // SplitNakedEdgeAt()'s own comment for why).
+  int SewTJunctions(double tolerance = tolerance::kEdgeJoin);
+
+  // Caps every planar hole in this Brep's
   // planar face - Rhino's own Cap for the case Check() reports as a
   // closed chain of NakedEdge issues: each chain of naked (single-trim)
   // edges is walked head-to-tail through its own vertices (a vertex with
@@ -2652,6 +2762,11 @@ class Brep {
   // whose trims live entirely in brep_'s own real loop topology (the
   // sweep-class factories in src/sweep.cpp).
   void AppendUntrimmedFaceSideTables(int count);
+  // Volume()/Area()'s own shared "is this face safe to integrate over
+  // its full surface parameter domain" test - see its own doc comment
+  // in brep.cpp for exactly what it checks and why raw().FaceIsSurface()
+  // alone isn't enough.
+  bool FaceCoversWholeDomain(int face_index) const;
   // The sweep-class factories' shared assembly step (src/sweep.cpp):
   // takes ownership of `wall`, adds it and the requested caps as real
   // ON_Brep topology, appends the side tables and applies the closed-

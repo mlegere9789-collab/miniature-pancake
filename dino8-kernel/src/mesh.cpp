@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <functional>
 #include <limits>
@@ -19,6 +20,8 @@
 #include <vector>
 
 #include "dino8/kernel/boolean.h"
+#include "dino8/kernel/brep.h"
+#include "dino8/kernel/curve.h"
 #include "dino8/kernel/detail/polygon2d.h"
 #include "dino8/kernel/tolerance.h"
 #include "dino8/kernel/detail/segment3d.h"
@@ -1306,10 +1309,15 @@ Result LoadBinaryStl(const std::string& path, uint32_t triangle_count, Mesh& out
 }
 
 // One "property <type> <name>" or "property list <count_type> <type>
-// <name>" line from a PLY header.
+// <name>" line from a PLY header. `type`/`count_type`/`value_type` are
+// kept (not just parsed and discarded) so a binary-format payload can be
+// read at each property's own declared byte width - see PlyTypeInfo().
 struct PlyProperty {
   bool is_list = false;
   std::string name;
+  std::string type;        // scalar property's own type
+  std::string count_type;  // list property's own count type (e.g. "uchar")
+  std::string value_type;  // list property's own element type (e.g. "int")
 };
 
 // One "element <name> <count>" block from a PLY header, plus the
@@ -1320,29 +1328,115 @@ struct PlyElement {
   std::vector<PlyProperty> properties;
 };
 
-// Parses an ASCII PLY header (everything up to and including
-// "end_header") into an ordered list of elements. Returns false on any
-// header line this kernel doesn't recognize, a "property" line before
-// any "element" line, or a "format" line that isn't exactly
-// "format ascii <version>" - PLY's binary_little_endian/
-// binary_big_endian formats are a disclosed, out-of-scope gap (see
-// Mesh::SavePly()'s own doc comment), not silently misread as ASCII.
-bool ParsePlyHeader(std::istream& in, std::vector<PlyElement>& out_elements) {
+// Byte width and representation of a PLY scalar type name, covering both
+// spellings the spec allows (the "short" char/uchar/short/... names and
+// the "long" int8/uint8/int16/... ones). `bytes == 0` means this kernel
+// doesn't recognize the name (a legitimate PLY type this kernel has no
+// use for, e.g. int64/uint64 - genuinely out of scope, see
+// ReadPlyBinaryScalar()).
+struct PlyTypeInfo {
+  int bytes = 0;
+  bool is_float = false;
+  bool is_signed = false;
+};
+
+PlyTypeInfo LookupPlyType(const std::string& type) {
+  if (type == "char" || type == "int8") return {1, false, true};
+  if (type == "uchar" || type == "uint8") return {1, false, false};
+  if (type == "short" || type == "int16") return {2, false, true};
+  if (type == "ushort" || type == "uint16") return {2, false, false};
+  if (type == "int" || type == "int32") return {4, false, true};
+  if (type == "uint" || type == "uint32") return {4, false, false};
+  if (type == "float" || type == "float32") return {4, true, false};
+  if (type == "double" || type == "float64") return {8, true, false};
+  return {};  // bytes == 0: unrecognized
+}
+
+// Reads one binary-encoded scalar of `type` from `in`, widened to
+// double, assuming a little-endian host (the same assumption
+// Mesh::LoadStl()'s own LoadBinaryStl() already makes and documents -
+// true for every platform this kernel is actually built on). Returns
+// false (and leaves `out` untouched) on a short read or an unrecognized
+// type, never on a value out of some expected range - callers validate
+// the widened double themselves (e.g. a face index or corner count).
+bool ReadPlyBinaryScalar(std::istream& in, const std::string& type, double& out) {
+  const PlyTypeInfo info = LookupPlyType(type);
+  if (info.bytes == 0) return false;
+  char buf[8];
+  if (!in.read(buf, info.bytes)) return false;
+  if (info.is_float) {
+    if (info.bytes == 4) {
+      float v;
+      std::memcpy(&v, buf, sizeof(v));
+      out = v;
+    } else {
+      double v;
+      std::memcpy(&v, buf, sizeof(v));
+      out = v;
+    }
+  } else if (info.is_signed) {
+    switch (info.bytes) {
+      case 1: { int8_t v; std::memcpy(&v, buf, sizeof(v)); out = v; break; }
+      case 2: { int16_t v; std::memcpy(&v, buf, sizeof(v)); out = v; break; }
+      default: { int32_t v; std::memcpy(&v, buf, sizeof(v)); out = v; break; }
+    }
+  } else {
+    switch (info.bytes) {
+      case 1: { uint8_t v; std::memcpy(&v, buf, sizeof(v)); out = v; break; }
+      case 2: { uint16_t v; std::memcpy(&v, buf, sizeof(v)); out = v; break; }
+      default: { uint32_t v; std::memcpy(&v, buf, sizeof(v)); out = v; break; }
+    }
+  }
+  return true;
+}
+
+// Strips one trailing '\r' - std::getline() on a stream opened in binary
+// mode (which LoadPly() needs for its own binary payload - see its own
+// doc comment) leaves a CRLF line ending's '\r' in place, unlike text
+// mode's automatic translation, so a Windows-authored .ply's header
+// lines would otherwise fail to compare equal to their Unix-line-ending
+// literals below.
+std::string TrimTrailingCr(std::string s) {
+  if (!s.empty() && s.back() == '\r') s.pop_back();
+  return s;
+}
+
+// Parses a PLY header (everything up to and including "end_header") into
+// an ordered list of elements, and reports via `out_binary` whether the
+// format line was "binary_little_endian" rather than "ascii". Returns
+// false on any header line this kernel doesn't recognize, a "property"
+// line before any "element" line, or a "format" line that isn't exactly
+// "format ascii <version>" or "format binary_little_endian <version>" -
+// "binary_big_endian" is a disclosed, out-of-scope gap (this kernel
+// assumes a little-endian host throughout, see LoadBinaryStl()'s own
+// comment), rejected outright rather than silently byte-swapped or
+// misread.
+bool ParsePlyHeader(std::istream& in, std::vector<PlyElement>& out_elements, bool& out_binary) {
+  out_binary = false;
   std::string line;
-  if (!std::getline(in, line) || line != "ply") {
+  if (!std::getline(in, line) || TrimTrailingCr(line) != "ply") {
     return false;
   }
   if (!std::getline(in, line)) {
     return false;
   }
+  line = TrimTrailingCr(line);
   {
     std::istringstream header(line);
     std::string tag, format;
-    if (!(header >> tag >> format) || tag != "format" || format != "ascii") {
+    if (!(header >> tag >> format) || tag != "format") {
       return false;
+    }
+    if (format == "ascii") {
+      out_binary = false;
+    } else if (format == "binary_little_endian") {
+      out_binary = true;
+    } else {
+      return false;  // binary_big_endian or anything else: out of scope
     }
   }
   while (std::getline(in, line)) {
+    line = TrimTrailingCr(line);
     std::istringstream stream(line);
     std::string tag;
     stream >> tag;
@@ -1375,10 +1469,13 @@ bool ParsePlyHeader(std::istream& in, std::vector<PlyElement>& out_elements) {
           return false;
         }
         property.is_list = true;
+        property.count_type = count_type;
+        property.value_type = value_type;
       } else {
         if (!(stream >> property.name)) {
           return false;
         }
+        property.type = type;
       }
       out_elements.back().properties.push_back(std::move(property));
       continue;
@@ -1390,8 +1487,13 @@ bool ParsePlyHeader(std::istream& in, std::vector<PlyElement>& out_elements) {
 
 }  // namespace
 
-Result Mesh::SavePly(const std::string& path) const {
-  std::ofstream out(path);
+Result Mesh::SavePly(const std::string& path, bool binary) const {
+  // Binary mode throughout: a no-op difference for the ASCII payload (the
+  // '\n' bytes written below are already exactly what text mode would
+  // translate to on any platform this kernel builds for), but required
+  // for the binary payload to reach disk untranslated - see LoadPly()'s
+  // own doc comment for the read-side half of this.
+  std::ofstream out(path, std::ios::binary);
   if (!out) {
     return Result::Failed;
   }
@@ -1400,7 +1502,7 @@ Result Mesh::SavePly(const std::string& path) const {
   const bool has_uvs = HasTextureCoordinates();
 
   out << "ply\n";
-  out << "format ascii 1.0\n";
+  out << "format " << (binary ? "binary_little_endian" : "ascii") << " 1.0\n";
   out << "comment written by dino8-kernel\n";
   out << "element vertex " << mesh_.m_V.Count() << '\n';
   out << "property float x\n";
@@ -1417,19 +1519,45 @@ Result Mesh::SavePly(const std::string& path) const {
   out << "property list uchar int vertex_indices\n";
   out << "end_header\n";
 
+  auto write_f32 = [&](double v) {
+    const float f = static_cast<float>(v);
+    out.write(reinterpret_cast<const char*>(&f), sizeof(f));
+  };
+
   for (int i = 0; i < mesh_.m_V.Count(); ++i) {
     const ON_3fPoint& p = mesh_.m_V[i];
     const Vector3d& n = normals[static_cast<size_t>(i)];
-    out << p.x << ' ' << p.y << ' ' << p.z << ' ' << n.x << ' ' << n.y << ' ' << n.z;
-    if (has_uvs) {
-      const Point2d uv = TextureCoordinateAt(i);
-      out << ' ' << uv.x << ' ' << uv.y;
+    if (binary) {
+      write_f32(p.x);
+      write_f32(p.y);
+      write_f32(p.z);
+      write_f32(n.x);
+      write_f32(n.y);
+      write_f32(n.z);
+      if (has_uvs) {
+        const Point2d uv = TextureCoordinateAt(i);
+        write_f32(uv.x);
+        write_f32(uv.y);
+      }
+    } else {
+      out << p.x << ' ' << p.y << ' ' << p.z << ' ' << n.x << ' ' << n.y << ' ' << n.z;
+      if (has_uvs) {
+        const Point2d uv = TextureCoordinateAt(i);
+        out << ' ' << uv.x << ' ' << uv.y;
+      }
+      out << '\n';
     }
-    out << '\n';
   }
   for (int i = 0; i < mesh_.m_F.Count(); ++i) {
     const ON_MeshFace& f = mesh_.m_F[i];
-    if (f.IsQuad()) {
+    const bool quad = f.IsQuad();
+    if (binary) {
+      const uint8_t count = quad ? 4 : 3;
+      out.write(reinterpret_cast<const char*>(&count), sizeof(count));
+      int32_t idx[4];
+      for (uint8_t c = 0; c < count; ++c) idx[c] = static_cast<int32_t>(f.vi[c]);
+      out.write(reinterpret_cast<const char*>(idx), sizeof(int32_t) * count);
+    } else if (quad) {
       out << "4 " << f.vi[0] << ' ' << f.vi[1] << ' ' << f.vi[2] << ' ' << f.vi[3] << '\n';
     } else {
       out << "3 " << f.vi[0] << ' ' << f.vi[1] << ' ' << f.vi[2] << '\n';
@@ -1440,15 +1568,40 @@ Result Mesh::SavePly(const std::string& path) const {
 }
 
 Result Mesh::LoadPly(const std::string& path, Mesh& out_mesh) {
-  std::ifstream in(path);
+  // Binary mode throughout - the header is plain ASCII either way
+  // (TrimTrailingCr() in ParsePlyHeader() strips a CRLF line ending's
+  // stray '\r', which text mode would otherwise have translated away for
+  // us), and a binary-format payload needs its raw bytes untranslated.
+  std::ifstream in(path, std::ios::binary);
   if (!in) {
     return Result::Failed;
   }
 
   std::vector<PlyElement> elements;
-  if (!ParsePlyHeader(in, elements)) {
+  bool is_binary = false;
+  if (!ParsePlyHeader(in, elements, is_binary)) {
     return Result::Failed;
   }
+
+  // Reads one element row's scalar properties, in the encoding
+  // ParsePlyHeader() already determined: whitespace-separated ASCII
+  // tokens on one line, or each property's own binary width in order.
+  auto read_scalar_row = [&](const PlyElement& element, std::vector<double>& values) {
+    values.assign(element.properties.size(), 0.0);
+    if (!is_binary) {
+      std::string line;
+      if (!std::getline(in, line)) return false;
+      std::istringstream stream(line);
+      for (double& value : values) {
+        if (!(stream >> value)) return false;
+      }
+      return true;
+    }
+    for (size_t i = 0; i < element.properties.size(); ++i) {
+      if (!ReadPlyBinaryScalar(in, element.properties[i].type, values[i])) return false;
+    }
+    return true;
+  };
 
   Mesh result;
   ON_Mesh& raw = result.raw();
@@ -1480,17 +1633,10 @@ Result Mesh::LoadPly(const std::string& path, Mesh& out_mesh) {
       }
       have_uvs = idx_u >= 0 && idx_v >= 0;
 
-      std::string line;
+      std::vector<double> values;
       for (int row = 0; row < element.count; ++row) {
-        if (!std::getline(in, line)) {
+        if (!read_scalar_row(element, values)) {
           return Result::Failed;
-        }
-        std::istringstream stream(line);
-        std::vector<double> values(element.properties.size());
-        for (double& value : values) {
-          if (!(stream >> value)) {
-            return Result::Failed;
-          }
         }
         raw.m_V.Append(ON_3fPoint(values[static_cast<size_t>(idx_x)],
                                    values[static_cast<size_t>(idx_y)],
@@ -1504,20 +1650,42 @@ Result Mesh::LoadPly(const std::string& path, Mesh& out_mesh) {
       if (element.properties.size() != 1 || !element.properties[0].is_list) {
         return Result::Failed;  // this kernel only reads the ordinary "one index list" face shape
       }
-      std::string line;
+      const PlyProperty& list_property = element.properties[0];
       for (int row = 0; row < element.count; ++row) {
-        if (!std::getline(in, line)) {
-          return Result::Failed;
-        }
-        std::istringstream stream(line);
         int corner_count = 0;
-        if (!(stream >> corner_count) || corner_count < 3 || corner_count > 4) {
-          return Result::Failed;
-        }
         int indices[4] = {0, 0, 0, 0};
-        for (int i = 0; i < corner_count; ++i) {
-          if (!(stream >> indices[i]) || indices[i] < 0 || indices[i] >= raw.m_V.Count()) {
+        if (!is_binary) {
+          std::string line;
+          if (!std::getline(in, line)) {
             return Result::Failed;
+          }
+          std::istringstream stream(line);
+          if (!(stream >> corner_count) || corner_count < 3 || corner_count > 4) {
+            return Result::Failed;
+          }
+          for (int i = 0; i < corner_count; ++i) {
+            if (!(stream >> indices[i]) || indices[i] < 0 || indices[i] >= raw.m_V.Count()) {
+              return Result::Failed;
+            }
+          }
+        } else {
+          double count_value;
+          if (!ReadPlyBinaryScalar(in, list_property.count_type, count_value)) {
+            return Result::Failed;
+          }
+          corner_count = static_cast<int>(count_value);
+          if (corner_count < 3 || corner_count > 4) {
+            return Result::Failed;
+          }
+          for (int i = 0; i < corner_count; ++i) {
+            double index_value;
+            if (!ReadPlyBinaryScalar(in, list_property.value_type, index_value)) {
+              return Result::Failed;
+            }
+            indices[i] = static_cast<int>(index_value);
+            if (indices[i] < 0 || indices[i] >= raw.m_V.Count()) {
+              return Result::Failed;
+            }
           }
         }
         ON_MeshFace face;
@@ -1527,7 +1695,7 @@ Result Mesh::LoadPly(const std::string& path, Mesh& out_mesh) {
         face.vi[3] = (corner_count == 4) ? indices[3] : indices[2];
         raw.m_F.Append(face);
       }
-    } else {
+    } else if (!is_binary) {
       // An element type this kernel doesn't read (e.g. a color-only
       // "edge" element) - skip its data lines rather than rejecting the
       // file over data this kernel was never going to use.
@@ -1535,6 +1703,29 @@ Result Mesh::LoadPly(const std::string& path, Mesh& out_mesh) {
       for (int row = 0; row < element.count; ++row) {
         if (!std::getline(in, line)) {
           return Result::Failed;
+        }
+      }
+    } else {
+      // Same skip, but a binary payload has no line breaks to skip by -
+      // every property of every row must still be read (at its own
+      // declared width) to keep the stream aligned for whatever element
+      // follows this one.
+      double scalar;
+      for (int row = 0; row < element.count; ++row) {
+        for (const PlyProperty& property : element.properties) {
+          if (property.is_list) {
+            double count_value;
+            if (!ReadPlyBinaryScalar(in, property.count_type, count_value)) {
+              return Result::Failed;
+            }
+            const int count = static_cast<int>(count_value);
+            if (count < 0) return Result::Failed;
+            for (int i = 0; i < count; ++i) {
+              if (!ReadPlyBinaryScalar(in, property.value_type, scalar)) return Result::Failed;
+            }
+          } else if (!ReadPlyBinaryScalar(in, property.type, scalar)) {
+            return Result::Failed;
+          }
         }
       }
     }
@@ -2057,7 +2248,7 @@ Mesh Mesh::Cone(Point3d base_center, Vector3d axis, double radius, double height
 }
 
 Mesh Mesh::RevolveProfile(const std::vector<Point2d>& profile, Point3d axis_point, Vector3d axis,
-                          int revolve_segments) {
+                          int revolve_segments, double angle) {
   const int m = static_cast<int>(profile.size());
   if (m < 2) {
     throw std::invalid_argument(
@@ -2068,6 +2259,51 @@ Mesh Mesh::RevolveProfile(const std::vector<Point2d>& profile, Point3d axis_poin
     throw std::invalid_argument(
         "dino8::kernel::Mesh::RevolveProfile: revolve_segments must be at "
         "least 3 (fewer can't form a non-degenerate ring)");
+  }
+  if (!ON_IsValid(angle) || !(angle > 0.0) || angle > 2.0 * ON_PI + 1e-12) {
+    throw std::invalid_argument("dino8::kernel::Mesh::RevolveProfile: angle must be in (0, 2*pi] radians");
+  }
+  if (angle < 2.0 * ON_PI - 1e-12) {
+    // Partial angle: this function's own fast, exact-shared-vertex ring
+    // construction below has no notion of a "start"/"end" pie-slice cap
+    // (only ever the two on-axis-or-disc END caps a FULL revolve needs),
+    // so building one from scratch here would duplicate machinery this
+    // kernel already has and has already verified: Brep::Revolve()'s own
+    // partial-angle support (fan fan caps in the start/end half-planes -
+    // see its own doc comment for exactly which profile shapes it can
+    // and can't cap at a partial angle). Delegate to it instead of
+    // re-deriving cap topology a second, independent way.
+    //
+    // The profile is placed in an ARBITRARY plane containing `axis` (any
+    // unit vector `ex` perpendicular to it will do - Brep::Revolve()
+    // derives its own actual radial reference from the profile's own
+    // farthest-from-axis point, not from whatever plane it happens to be
+    // handed), as a degree-1 (piecewise-linear) 3D curve through the
+    // profile's own (radius, height) points - the same L-shaped-polyline
+    // convention Brep::Revolve()'s own doc comment uses for its cylinder
+    // example.
+    ON_3dVector n = axis;
+    if (!n.Unitize()) {
+      throw std::invalid_argument("dino8::kernel::Mesh::RevolveProfile: axis must be non-zero");
+    }
+    const ON_3dVector reference = (std::abs(n.z) < 0.9) ? ON_3dVector(0, 0, 1) : ON_3dVector(1, 0, 0);
+    ON_3dVector ex = ON_CrossProduct(reference, n);
+    ex.Unitize();
+    std::vector<Point3d> profile_points;
+    profile_points.reserve(static_cast<size_t>(m));
+    for (const Point2d& p : profile) profile_points.push_back(axis_point + ex * p.x + n * p.y);
+    const NurbsCurve profile_curve = NurbsCurve::FromControlPoints(profile_points, 1);
+    const Brep revolved = Brep::Revolve(profile_curve, axis_point, axis, angle, /*cap=*/true);
+    // u (profile) divisions: one per input segment, so a straight run of
+    // the (exactly piecewise-linear) wall between consecutive profile
+    // points is resolved at least at its own two endpoints - coarser
+    // than that would still lie exactly ON the true ruled surface (a
+    // degree-1 NURBS curve/surface is exact everywhere along its own
+    // parameter, not just at its knots) but could visibly round off an
+    // interior profile vertex into a single averaged facet. v (angle)
+    // divisions: `revolve_segments`, the same angular resolution the
+    // full-circle path below uses.
+    return revolved.TessellateToClosedMesh(std::max(1, m - 1), revolve_segments);
   }
   constexpr double kOnAxisEpsilon = tolerance::kZeroVector;
   const bool front_is_apex = std::abs(profile.front().x) <= kOnAxisEpsilon;
