@@ -1080,6 +1080,97 @@ class NurbsSurface {
   // anything but a hand-built exact primitive.
   Result OffsetAnalytic(double distance, NurbsSurface& out, double tolerance = -1.0) const;
 
+  // The general, explicitly-approximate offset OffsetAnalytic()'s own doc
+  // comment above promises for every surface that isn't one of its five
+  // exact primitive types - a real, honest fallback rather than leaving
+  // "offset a freeform surface" entirely unimplemented at the kernel
+  // level (the app's own OffsetNurbs, cmd_surface.cpp, already does this
+  // same per-control-point technique for exactly this reason, but only
+  // at the app layer, unusable by kernel-level booleans/fillets).
+  //
+  // Method: translate each of this surface's own control points by
+  // `distance * NormalAt(gu, gv)`, where `(gu, gv)` is that control
+  // point's own Greville abscissa pair (`GrevilleAbcissa()`) - the same
+  // homogeneous-translation formula OffsetAnalytic()'s plane branch uses
+  // with one shared normal for every control point, generalized here to
+  // one normal PER control point. This is exact when the surface is
+  // planar (the normal is constant, so every control point moves by the
+  // same vector - reduces to exactly OffsetAnalytic()'s plane branch),
+  // and a first-order approximation everywhere else: a curved surface's
+  // TRUE offset is generally not itself expressible as a NURBS surface at
+  // all (OffsetAnalytic()'s own doc comment on why it refuses freeform
+  // surfaces rather than pretending otherwise), so moving control points
+  // toward where the true offset surface roughly lies is the best a
+  // NURBS-surface-shaped ANSWER can do - not a hidden exactness claim.
+  // The actual pointwise error this introduces, measured against
+  // OffsetAnalytic()'s own exact sphere/cylinder ground truth for curved
+  // test surfaces, is documented (with real numbers) in this method's
+  // own README changelog entry and in
+  // TestSurfaceOffsetApproximateMatchesExactOffsetWithinMeasuredError.
+  //
+  // Self-intersection guard: a real one, not skipped because the general
+  // case is harder than OffsetAnalytic()'s closed forms. At a genuinely
+  // fine sample grid across the domain (independent of the control net,
+  // since curvature can vary between control points and the fold can
+  // happen anywhere, not just at one), this computes CurvatureAt(u, v)
+  // and refuses (Result::Failed, `out` unchanged) if EITHER principal
+  // curvature `k` satisfies `distance * k >= 1.0` at any sampled point.
+  // Why that's the exact right test, not a heuristic: CurvatureAt()'s own
+  // doc comment establishes (and verifies against a real sphere) that its
+  // `k1`/`k2` are signed relative to this SAME NormalAt() convention this
+  // method offsets along, and that a surface curving away from its own
+  // outward normal (like a sphere) gets a NEGATIVE curvature there. That
+  // sign convention places the center of curvature for a principal
+  // direction with curvature `k` at exactly `point + (1/k) * normal`
+  // (checked directly against the sphere case: outward normal, k =
+  // -1/radius, center at point + (-radius)*normal = point -
+  // radius*normal = the sphere's own center - matches by construction).
+  // Offsetting by `distance` along that same normal reaches or passes
+  // that center exactly when `distance` and `1/k` have the same sign and
+  // `|distance| >= |1/k|`, i.e. `distance * k >= 1.0` - which correctly
+  // predicts, with no extra sign bookkeeping, that offsetting a sphere
+  // OUTWARD along its own outward normal never folds (distance*k stays
+  // negative for any positive distance) while offsetting it INWARD by
+  // more than its own radius does (matching OffsetAnalytic()'s own
+  // `new_radius <= 0` guard on the same sphere, to the same threshold).
+  // Each principal direction is checked independently, so this also
+  // correctly handles a saddle point where the two principal curvatures
+  // have opposite signs (an offset can fold in one principal direction
+  // without folding in the other).
+  //
+  // Sampled at domain-interior midpoints of a grid at least as fine as
+  // `4 * max(CVCountU(), CVCountV())` per direction (never touching the
+  // exact domain boundary, where a surface built from a matched
+  // primitive's own natural parametrization - e.g. a full sphere's own
+  // GetNurbForm(), whose first/last CV row's Greville abscissa lands
+  // exactly on that boundary - can have a genuine parametric pole; a pole
+  // is a coordinate-singularity of THAT PARTICULAR parametrization, not a
+  // geometric feature the surface itself has at every point nearby, so a
+  // sample placed exactly on it would spuriously throw rather than
+  // reflect a real hazard). Each control point's own Greville-point
+  // normal evaluation nudges `(gu, gv)` a small distance (1e-6 of the
+  // domain's own extent in each direction) toward the domain interior
+  // before calling NormalAt() for the identical reason - negligible for
+  // any genuinely interior control point, but avoids evaluating exactly
+  // on a boundary pole for a natural-parametrization surface's edge
+  // control points.
+  //
+  // Unlike OffsetAnalytic(), there's no independent "true outward"
+  // reference direction available for an arbitrary freeform surface (no
+  // known center/axis to compare against) - the sign of `distance`
+  // follows this surface's OWN NormalAt() convention exactly, whichever
+  // way that happens to point. A caller who needs to know which way that
+  // is should sample NormalAt() themselves first, the same caveat
+  // OffsetAnalytic()'s own doc comment already gives for why its sign
+  // resolution can't be assumed fixed.
+  //
+  // `tolerance` (default `<= 0`, meaning `tolerance::DistanceForSize()`
+  // of this surface's bounding-box diagonal) sets the curvature-guard
+  // sampling density via SuggestedDivisions(); it does not affect the
+  // per-control-point translation itself. Throws std::invalid_argument
+  // if `distance` isn't finite; `distance == 0.0` returns an exact copy.
+  Result OffsetApproximate(double distance, NurbsSurface& out, double tolerance = -1.0) const;
+
   const ON_NurbsSurface& raw() const { return surface_; }
   ON_NurbsSurface& raw() { return surface_; }
 
