@@ -5493,6 +5493,48 @@ void TestOffsetSolidShrinkStaysExactForConvexSolid() {
         "with no Steiner rounding term at all (a convex shrink stays sharp)");
 }
 
+void TestOffsetSolidExcessiveShrinkErodesToNothingAndThrows() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::OffsetSolid;
+
+  // A thin plate: half-thickness is 0.5. Shrinking by MORE than that
+  // mathematically erodes the whole solid away to nothing - a real
+  // correctness hazard (the standing concern this whole offset/shell/
+  // thicken subsystem was scoped to check for: does the kernel detect an
+  // infeasible offset, or silently hand back something wrong?), not a
+  // hypothetical: confirmed directly (before this guard existed) that
+  // MinkowskiDifference() itself returns a genuinely empty mesh here with
+  // no error at all.
+  const Brep plate_brep = Brep::Box(0, 0, 0, 10, 10, 1);
+  const Mesh plate = plate_brep.TessellateToClosedMesh(4, 4);
+
+  bool threw_excessive = false;
+  try {
+    OffsetSolid(plate, -0.6, 24);
+  } catch (const std::runtime_error&) {
+    threw_excessive = true;
+  }
+  Check(threw_excessive,
+        "OffsetSolid(-0.6) on a plate whose half-thickness is 0.5 throws rather than "
+        "silently returning the empty mesh MinkowskiDifference() itself produces");
+
+  bool threw_way_excessive = false;
+  try {
+    OffsetSolid(plate, -5.0, 24);
+  } catch (const std::runtime_error&) {
+    threw_way_excessive = true;
+  }
+  Check(threw_way_excessive, "OffsetSolid(-5.0), far beyond feasible, also throws");
+
+  // A safe shrink (well within the half-thickness) must still succeed and
+  // produce genuine, non-empty geometry - this guard only catches the
+  // real infeasible case, not every inward offset.
+  const Mesh safe = OffsetSolid(plate, -0.2, 24);
+  Check(safe.VertexCount() > 0 && safe.FaceCount() > 0,
+        "OffsetSolid(-0.2) on the same plate (well within its half-thickness) succeeds normally");
+}
+
 void TestOffsetSolidZeroDistanceIsIdentityAndArgumentChecks() {
   using dino8::kernel::Brep;
   using dino8::kernel::Mesh;
@@ -28995,6 +29037,7 @@ int main() {
   TestMinkowskiSum();
   TestOffsetSolidGrowMatchesSteinerFormula();
   TestOffsetSolidShrinkStaysExactForConvexSolid();
+  TestOffsetSolidExcessiveShrinkErodesToNothingAndThrows();
   TestOffsetSolidZeroDistanceIsIdentityAndArgumentChecks();
   TestDecompose();
   TestMinGap();

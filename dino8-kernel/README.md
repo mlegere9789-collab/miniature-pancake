@@ -4030,6 +4030,42 @@ honestly out of scope.
   after, as expected (this never touches `boolean_general.cpp`, and
   reuses `MinkowskiSum`/`MinkowskiDifference` exactly as already
   implemented there).
+  **Follow-up fix, same day:** the correctness hazard this whole
+  subsystem was scoped to check for - does an infeasible offset get
+  caught, or silently produce something wrong? - had a real, disclosed-
+  nowhere gap in this exact function. A shrink whose magnitude exceeds
+  the solid's own smallest feature size (e.g. a 10x10x1 plate, half-
+  thickness 0.5, shrunk by 0.6) mathematically erodes the ENTIRE solid
+  away to nothing; `MinkowskiDifference()` itself returns that empty mesh
+  without complaint (confirmed directly: `VertexCount() == 0`, no
+  exception), and `OffsetSolid` was simply returning it as-is - a caller
+  had no way to distinguish "this shrink was infeasible" from any other
+  empty-mesh outcome. Unlike a naive per-vertex offset, morphological
+  erosion by a ball can never produce an INVALID or self-intersecting
+  mesh (it's a mathematically well-defined operation), so this isn't the
+  same self-intersection hazard `OffsetAnalytic()`/`OffsetInPlane()`
+  guard against - it's a narrower, unambiguous one: the result is either
+  a genuine (possibly smaller, possibly disconnected) solid, or it's
+  empty, and empty is never what a caller asking for a body offset
+  wants. Fixed by checking the eroded mesh's own `VertexCount()` after
+  the fact (the erosion is actually performed and its result checked,
+  not predicted from a closed-form local radius the way the analytic
+  surface/curve guards can - no such simple bound exists for an
+  arbitrary, possibly non-convex mesh) and throwing `std::runtime_error`
+  when it comes back empty, rather than handing back a silently-wrong
+  "successful" empty result. Growing is never checked this way -
+  dilation by a ball only ever adds volume.
+  Verified in `tests/test_basic.cpp`
+  (`TestOffsetSolidExcessiveShrinkErodesToNothingAndThrows`): the 0.6
+  shrink on the 0.5-half-thickness plate throws, a far-more-excessive 5.0
+  shrink also throws, and a safe 0.2 shrink on the same plate still
+  succeeds normally with genuine non-empty geometry - so this guard
+  catches the real infeasible case without falsely rejecting a legitimate
+  one. Confirmed via `git stash` on just `boolean.h`/`boolean.cpp`: both
+  new throw-checks genuinely FAIL (a runtime failure, not a compile
+  error, since `OffsetSolid` already existed) against the old code, while
+  every pre-existing `OffsetSolid` test still passes unchanged either
+  way.
   Deliberately out of scope, same as `MinkowskiSum`/`MinkowskiDifference`
   themselves: a NON-uniform (per-face or per-region) body offset, and
   producing an exact B-rep result rather than a tessellated mesh (this
