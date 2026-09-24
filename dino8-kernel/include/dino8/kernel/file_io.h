@@ -1,5 +1,6 @@
 #pragma once
 
+#include <optional>
 #include <string>
 
 #include <opennurbs.h>
@@ -46,19 +47,24 @@ class Model {
   // asked to add a named layer.
   int AddLayer(const std::string& name, Color color = Color());
 
-  // Every Add*() below takes an optional object `name` and `layer_index`.
-  // Before `name` existed, every object this kernel ever put into a Model
-  // got a default, empty ON_3dmObjectAttributes - a real, disclosed gap in
-  // .3dm metadata fidelity (PARITY_MAP.md's own "kernel-level data
-  // exchange" evidence: "write a default ON_3dmObjectAttributes only"): a
-  // caller had no way to attach even the most basic identifying metadata
-  // .3dm consumers actually rely on (Rhino's own object name, used for
-  // selection-by-name, block/part naming, and round-tripping identity
-  // across a save/reload; and, now, which layer the object lives on,
-  // needed for the same reasons AddLayer() itself exists - see its own
-  // doc comment above). An empty (default) `name` and a `layer_index` of 0
-  // (the model's always-present default layer, `AddLayer()`'s own doc
-  // comment aside) leave the attributes exactly as before - no behavior
+  // Every Add*() below takes an optional object `name`, `layer_index`, and
+  // `object_color`. Before `name` existed, every object this kernel ever
+  // put into a Model got a default, empty ON_3dmObjectAttributes - a real,
+  // disclosed gap in .3dm metadata fidelity (PARITY_MAP.md's own
+  // "kernel-level data exchange" evidence: "write a default
+  // ON_3dmObjectAttributes only"): a caller had no way to attach even the
+  // most basic identifying metadata .3dm consumers actually rely on
+  // (Rhino's own object name, used for selection-by-name, block/part
+  // naming, and round-tripping identity across a save/reload; which layer
+  // the object lives on, needed for the same reasons AddLayer() itself
+  // exists - see its own doc comment above; and, now, a per-object display
+  // color overriding its layer's - Rhino's other most basic way to
+  // distinguish objects, e.g. color-coding boolean results by operand,
+  // that PARITY_MAP.md's same evidence line names alongside layers and was
+  // equally unreachable from this API). An empty (default) `name`, a
+  // `layer_index` of 0 (the model's always-present default layer,
+  // `AddLayer()`'s own doc comment aside), and a `std::nullopt`
+  // `object_color` leave the attributes exactly as before - no behavior
   // change for existing callers. A non-empty `name` is set via
   // ON_3dmObjectAttributes::SetName(..., /*bFixInvalidName=*/true), the
   // same call dino8-app/src/io/File3dm.cpp already uses for every other
@@ -68,10 +74,17 @@ class Model {
   // silently dropping the name or failing outright. `layer_index` is
   // written straight to ON_3dmObjectAttributes::m_layer_index; passing an
   // index AddLayer() didn't return is a caller error (as it is for
-  // ONX_Model itself), not something this wrapper detects.
+  // ONX_Model itself), not something this wrapper detects. A present
+  // `object_color` is written to ON_3dmObjectAttributes::m_color and
+  // switches ColorSource() to ON::color_from_object (Rhino's own "this
+  // object's color overrides its layer's" flag); a `std::nullopt` leaves
+  // ColorSource() at its default, ON::color_from_layer, so the object
+  // keeps displaying whatever color its layer carries, exactly as before
+  // this parameter existed.
   void AddCurve(const NurbsCurve& curve, const std::string& name = std::string(),
-                int layer_index = 0);
-  void AddBrep(const Brep& brep, const std::string& name = std::string(), int layer_index = 0);
+                int layer_index = 0, std::optional<Color> object_color = std::nullopt);
+  void AddBrep(const Brep& brep, const std::string& name = std::string(), int layer_index = 0,
+               std::optional<Color> object_color = std::nullopt);
 
   // Adds a mesh (a box, cylinder, boolean result, ...) as its own model
   // object - the missing counterpart to AddCurve()/AddBrep() that closed
@@ -80,14 +93,16 @@ class Model {
   // a .3dm file at all, only to export it separately via
   // Mesh::SaveObj()/SaveStl(). Same pattern as the other two: copies
   // `mesh`'s underlying ON_Mesh into a new model geometry component.
-  void AddMesh(const Mesh& mesh, const std::string& name = std::string(), int layer_index = 0);
+  void AddMesh(const Mesh& mesh, const std::string& name = std::string(), int layer_index = 0,
+               std::optional<Color> object_color = std::nullopt);
 
   // Adds a SubD control cage/subdivision surface as its own model
   // object - the same "no way to put this object type into a .3dm at
   // all" gap AddMesh() closed, just for SubD instead of Mesh. Same
   // pattern: copies the SubD's underlying ON_SubD into a new model
   // geometry component.
-  void AddSubD(const SubD& subd, const std::string& name = std::string(), int layer_index = 0);
+  void AddSubD(const SubD& subd, const std::string& name = std::string(), int layer_index = 0,
+               std::optional<Color> object_color = std::nullopt);
 
   // Adds a point cloud as its own model object. PointCloud's own doc
   // comment claims ON_PointCloud is "the same one [OpenNURBS'] .3dm
@@ -100,7 +115,7 @@ class Model {
   // `cloud`'s underlying ON_PointCloud (positions, and per-point colors/
   // normals when present) into a new model geometry component.
   void AddPointCloud(const PointCloud& cloud, const std::string& name = std::string(),
-                     int layer_index = 0);
+                     int layer_index = 0, std::optional<Color> object_color = std::nullopt);
 
   int ObjectCount() const;
 

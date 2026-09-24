@@ -37,16 +37,24 @@ bool MeshFaceIndicesInRange(const ON_Mesh& mesh) {
 }
 
 // Shared by every Add*() below: a fresh UUID, plus `name` set via
-// SetName() when non-empty and `layer_index` written straight through. See
-// file_io.h's own doc comment on the `name`/`layer_index` parameters for
-// why this exists and why an empty name / a layer_index of 0 are no-ops.
-ON_3dmObjectAttributes MakeAttributes(const std::string& name, int layer_index) {
+// SetName() when non-empty, `layer_index` written straight through, and
+// `object_color` - when present - written to m_color with ColorSource()
+// switched to ON::color_from_object. See file_io.h's own doc comment on
+// the `name`/`layer_index`/`object_color` parameters for why this exists
+// and why an empty name, a layer_index of 0, and a std::nullopt color are
+// no-ops.
+ON_3dmObjectAttributes MakeAttributes(const std::string& name, int layer_index,
+                                       std::optional<Color> object_color) {
   ON_3dmObjectAttributes attributes;
   ON_CreateUuid(attributes.m_uuid);
   if (!name.empty()) {
     attributes.SetName(ON_wString(name.c_str()), true);
   }
   attributes.m_layer_index = layer_index;
+  if (object_color.has_value()) {
+    attributes.m_color = ON_Color(object_color->r, object_color->g, object_color->b);
+    attributes.SetColorSource(ON::color_from_object);
+  }
   return attributes;
 }
 
@@ -61,33 +69,38 @@ int Model::AddLayer(const std::string& name, Color color) {
   return model_.AddLayer(ON_wString(name.c_str()), ON_Color(color.r, color.g, color.b));
 }
 
-void Model::AddCurve(const NurbsCurve& curve, const std::string& name, int layer_index) {
+void Model::AddCurve(const NurbsCurve& curve, const std::string& name, int layer_index,
+                      std::optional<Color> object_color) {
   auto* geometry = new ON_NurbsCurve(curve.raw());
-  ON_3dmObjectAttributes attributes = MakeAttributes(name, layer_index);
+  ON_3dmObjectAttributes attributes = MakeAttributes(name, layer_index, object_color);
   model_.AddModelGeometryComponent(geometry, &attributes);
 }
 
-void Model::AddBrep(const Brep& brep, const std::string& name, int layer_index) {
+void Model::AddBrep(const Brep& brep, const std::string& name, int layer_index,
+                     std::optional<Color> object_color) {
   auto* geometry = new ON_Brep(brep.raw());
-  ON_3dmObjectAttributes attributes = MakeAttributes(name, layer_index);
+  ON_3dmObjectAttributes attributes = MakeAttributes(name, layer_index, object_color);
   model_.AddModelGeometryComponent(geometry, &attributes);
 }
 
-void Model::AddMesh(const Mesh& mesh, const std::string& name, int layer_index) {
+void Model::AddMesh(const Mesh& mesh, const std::string& name, int layer_index,
+                     std::optional<Color> object_color) {
   auto* geometry = new ON_Mesh(mesh.raw());
-  ON_3dmObjectAttributes attributes = MakeAttributes(name, layer_index);
+  ON_3dmObjectAttributes attributes = MakeAttributes(name, layer_index, object_color);
   model_.AddModelGeometryComponent(geometry, &attributes);
 }
 
-void Model::AddSubD(const SubD& subd, const std::string& name, int layer_index) {
+void Model::AddSubD(const SubD& subd, const std::string& name, int layer_index,
+                     std::optional<Color> object_color) {
   auto* geometry = new ON_SubD(subd.raw());
-  ON_3dmObjectAttributes attributes = MakeAttributes(name, layer_index);
+  ON_3dmObjectAttributes attributes = MakeAttributes(name, layer_index, object_color);
   model_.AddModelGeometryComponent(geometry, &attributes);
 }
 
-void Model::AddPointCloud(const PointCloud& cloud, const std::string& name, int layer_index) {
+void Model::AddPointCloud(const PointCloud& cloud, const std::string& name, int layer_index,
+                           std::optional<Color> object_color) {
   auto* geometry = new ON_PointCloud(cloud.raw());
-  ON_3dmObjectAttributes attributes = MakeAttributes(name, layer_index);
+  ON_3dmObjectAttributes attributes = MakeAttributes(name, layer_index, object_color);
   model_.AddModelGeometryComponent(geometry, &attributes);
 }
 
