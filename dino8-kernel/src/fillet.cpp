@@ -2,7 +2,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <stdexcept>
+#include <string>
 #include <utility>
 
 #include "dino8/kernel/detail/halfspace_clip3d.h"
@@ -1196,6 +1198,329 @@ Brep FilletConvexEdgeTapered(const Brep& solid, Point3d edge_p0, Point3d edge_p1
 Brep FilletConvexEdgeTapered(const Brep& solid, Point3d edge_p0, Point3d edge_p1, double radius0, double radius1) {
   return FilletConvexEdgeTapered(solid, edge_p0, edge_p1,
                                   std::vector<FilletRadiusStation>{{0.0, radius0}, {edge_p0.DistanceTo(edge_p1), radius1}});
+}
+
+
+// ---------------------------------------------------------------------------
+// Exact planar chamfer (see fillet.h's own ChamferConvexEdge doc comment for
+// the construction this implements step by step).
+
+namespace {
+
+// Locates the two faces of `faces` sharing the directed edge (p0 -> p1 on
+// face i, p1 -> p0 on face j) - verbatim the same topology test
+// FilletConvexEdge's own step (1) uses, factored for ChamferConvexEdge.
+// Throws std::invalid_argument (with `who` in the message) if not found.
+void FindEdgeFaces(const std::vector<Brep::PlanarFace>& faces, const Point3d& p0, const Point3d& p1,
+                   double tol, const char* who, int& idx_i, int& idx_j) {
+  idx_i = -1;
+  idx_j = -1;
+  for (size_t f = 0; f < faces.size() && (idx_i < 0 || idx_j < 0); ++f) {
+    const std::vector<Point3d>& loop = faces[f].loop;
+    const size_t n = loop.size();
+    for (size_t k = 0; k < n; ++k) {
+      const Point3d& a = loop[k];
+      const Point3d& b = loop[(k + 1) % n];
+      if (idx_i < 0 && PointsEqual(a, p0, tol) && PointsEqual(b, p1, tol)) idx_i = static_cast<int>(f);
+      if (idx_j < 0 && PointsEqual(a, p1, tol) && PointsEqual(b, p0, tol)) idx_j = static_cast<int>(f);
+    }
+  }
+  if (idx_i < 0 || idx_j < 0 || idx_i == idx_j) {
+    throw std::invalid_argument(std::string("dino8::kernel::") + who +
+                                ": edge_p0->edge_p1 is not a shared boundary edge of two distinct "
+                                "faces of `solid`, walked in opposite directions on their own loops - "
+                                "see FilletConvexEdge's own doc comment for the required topology");
+  }
+}
+
+// One end of a chamfer: the two rail points Q_i/Q_j where the chamfer's
+// own end edge sits (see fillet.h's own step 5), plus every third face
+// re-cornered there. `vertex` is edge_p0 or edge_p1; `R_i`/`R_j` are the
+// rails' own points in the plane through `vertex` perpendicular to `e`
+// (vertex + distance*m). Returns Q_i/Q_j via the out-params; leaves them
+// equal to R_i/R_j when no third face touches `vertex` at all.
+void ChamferEndAtVertex(std::vector<Brep::PlanarFace>& other_faces, const Point3d& vertex, const Vector3d& e,
+                        const ON_Plane& plane_i, const ON_Plane& plane_j, const Point3d& R_i, const Point3d& R_j,
+                        double tol, Point3d& Q_i_out, Point3d& Q_j_out) {
+  Q_i_out = R_i;
+  Q_j_out = R_j;
+  int touching = 0, matched = 0;
+  for (Brep::PlanarFace& f : other_faces) {
+    std::vector<Point3d>& loop = f.loop;
+    const size_t n = loop.size();
+    for (size_t k = 0; k < n; ++k) {
+      if (loop[k].DistanceTo(vertex) > tol) continue;
+      ++touching;
+      const Point3d& pred = loop[(k + n - 1) % n];
+      const Point3d& succ = loop[(k + 1) % n];
+      const bool pred_on_i = std::fabs(plane_i.DistanceTo(pred)) <= tol;
+      const bool pred_on_j = std::fabs(plane_j.DistanceTo(pred)) <= tol;
+      const bool succ_on_i = std::fabs(plane_i.DistanceTo(succ)) <= tol;
+      const bool succ_on_j = std::fabs(plane_j.DistanceTo(succ)) <= tol;
+      bool i_first;
+      if (pred_on_i && succ_on_j && !pred_on_j && !succ_on_i) {
+        i_first = true;   // walk: (on i) -> vertex -> (on j)  ==>  splice Q_i, Q_j
+      } else if (pred_on_j && succ_on_i && !pred_on_i && !succ_on_j) {
+        i_first = false;  // walk: (on j) -> vertex -> (on i)  ==>  splice Q_j, Q_i
+      } else {
+        break;  // not the trihedral pattern on this face; counted as touching only
+      }
+      const Vector3d n_k = f.plane.zaxis;
+      const double e_dot_n = e * n_k;
+      if (std::fabs(e_dot_n) < 1e-9) {
+        throw std::invalid_argument(
+            "dino8::kernel::ChamferConvexEdge: a third face at an edge endpoint is "
+            "parallel to the edge itself - the chamfer's own rails never pierce its "
+            "plane (degenerate vertex geometry)");
+      }
+      // Q = R + t*e with (Q - vertex).n_k == 0  (R - vertex is perpendicular
+      // to e, so this is a single linear equation in t; for a face
+      // perpendicular to e, (R - vertex).n_k == 0 already and t == 0).
+      const Point3d Q_i = R_i - (((R_i - vertex) * n_k) / e_dot_n) * e;
+      const Point3d Q_j = R_j - (((R_j - vertex) * n_k) / e_dot_n) * e;
+      // Each Q must lie ON face k's own existing edge toward that
+      // neighbour (between the vertex and the neighbour), else the
+      // chamfer overruns the third face.
+      auto along = [&](const Point3d& Q, const Point3d& neighbour) {
+        const Vector3d w = neighbour - vertex;
+        const double len2 = w * w;
+        if (len2 <= 0.0) return -1.0;
+        const double s = ((Q - vertex) * w) / len2;
+        // Q must also actually sit on that line (its perpendicular
+        // distance from the line must vanish) - a checked invariant of
+        // step 5's own argument, not merely trusted.
+        const Point3d foot = vertex + s * w;
+        if (foot.DistanceTo(Q) > 1e3 * tol) return -1.0;
+        return s;
+      };
+      const Point3d& nb_i = i_first ? pred : succ;
+      const Point3d& nb_j = i_first ? succ : pred;
+      const double s_i = along(Q_i, nb_i);
+      const double s_j = along(Q_j, nb_j);
+      if (s_i < 0.0 || s_j < 0.0 || s_i > 1.0 + 1e-9 || s_j > 1.0 + 1e-9) {
+        throw std::invalid_argument(
+            "dino8::kernel::ChamferConvexEdge: the chamfer overruns a third face at an "
+            "edge endpoint (a rail pierces that face's plane beyond the far end of the "
+            "face's own edge, or off that edge entirely) - distances too large for this "
+            "solid's geometry");
+      }
+      // A rail piercing face k EXACTLY at that edge's far vertex (s == 1) is
+      // legitimate, not an overrun: the chamfer's end edge then simply
+      // terminates at an existing vertex of the solid, which becomes a
+      // valence-4 vertex. The one producer this kernel itself has is two
+      // equal-setback chamfers meeting at a box corner (the second
+      // chamfer's plane passes exactly through the first chamfer face's
+      // own corner on the shared side face) - checked directly by
+      // dino8-kernel's own chained-chamfer test. That vertex is already in
+      // face k's loop, so the splice below must not insert it a second
+      // time (a zero-length loop edge is not a shape FromMixedFaces or
+      // the exact-clip tessellator is meant for).
+      const bool q_i_is_nb = Q_i.DistanceTo(nb_i) <= tol;
+      const bool q_j_is_nb = Q_j.DistanceTo(nb_j) <= tol;
+      if (matched > 0 && (Q_i.DistanceTo(Q_i_out) > tol || Q_j.DistanceTo(Q_j_out) > tol)) {
+        throw std::invalid_argument(
+            "dino8::kernel::ChamferConvexEdge: two different third faces meet the edge "
+            "at the same endpoint with different planes - not a manifold trihedral "
+            "vertex; out of scope");
+      }
+      Q_i_out = Q_i;
+      Q_j_out = Q_j;
+      ++matched;
+
+      std::vector<Point3d> new_loop;
+      new_loop.reserve(n + 1);
+      for (size_t m = 0; m < n; ++m) {
+        if (m == k) {
+          if (i_first) {
+            if (!q_i_is_nb) new_loop.push_back(Q_i);
+            if (!q_j_is_nb) new_loop.push_back(Q_j);
+          } else {
+            if (!q_j_is_nb) new_loop.push_back(Q_j);
+            if (!q_i_is_nb) new_loop.push_back(Q_i);
+          }
+        } else {
+          new_loop.push_back(loop[m]);
+        }
+      }
+      loop = std::move(new_loop);
+      break;  // this face's corner is done
+    }
+  }
+  if (touching > 0 && matched == 0) {
+    throw std::invalid_argument(
+        "dino8::kernel::ChamferConvexEdge: faces meet the edge at an endpoint but none "
+        "has the simple trihedral corner pattern (its two loop neighbours on faces i "
+        "and j) - a genuine vertex-blend problem this function does not attempt, see "
+        "fillet.h's own doc comment");
+  }
+}
+
+}  // namespace
+
+Brep ChamferConvexEdge(const Brep& solid, Point3d edge_p0, Point3d edge_p1, double distance_i,
+                        double distance_j) {
+  if (!(distance_i > 0.0) || !(distance_j > 0.0)) {
+    throw std::invalid_argument(
+        "dino8::kernel::ChamferConvexEdge: distance_i and distance_j must both be strictly positive");
+  }
+
+  const std::vector<Brep::PlanarFace> faces = solid.PlanarFaces();
+  const double tol = RelativeTol(faces);
+
+  int idx_i = -1, idx_j = -1;
+  FindEdgeFaces(faces, edge_p0, edge_p1, tol, "ChamferConvexEdge", idx_i, idx_j);
+  const Brep::PlanarFace& face_i = faces[static_cast<size_t>(idx_i)];
+  const Brep::PlanarFace& face_j = faces[static_cast<size_t>(idx_j)];
+  const ON_Plane& plane_i = face_i.plane;
+  const ON_Plane& plane_j = face_j.plane;
+  const Vector3d n_i = plane_i.zaxis;
+  const Vector3d n_j = plane_j.zaxis;
+
+  Vector3d e = edge_p1 - edge_p0;
+  if (!e.Unitize()) {
+    throw std::invalid_argument("dino8::kernel::ChamferConvexEdge: edge_p0 and edge_p1 coincide");
+  }
+
+  const double dot_ij = std::max(-1.0, std::min(1.0, n_i * n_j));
+  const double theta = ON_PI - std::acos(dot_ij);  // interior dihedral angle
+  if (!(theta > 1e-9) || !(theta < ON_PI - 1e-9)) {
+    throw std::invalid_argument(
+        "dino8::kernel::ChamferConvexEdge: edge is not a convex dihedral edge (interior "
+        "angle theta is <= 0 or >= pi) - concave/degenerate edges are out of scope, see "
+        "FilletConvexEdge's own doc comment");
+  }
+
+  // Into-material, in-plane, perpendicular-to-the-edge directions. For a
+  // CCW-outward loop walking p0 -> p1 the interior is to the LEFT, i.e.
+  // along n x e; checked against the face's own vertex extent rather
+  // than trusted (a sign error here would chamfer thin air).
+  auto extent_along = [](const std::vector<Point3d>& loop, const Vector3d& m, const Point3d& ref) {
+    double best = -std::numeric_limits<double>::infinity();
+    for (const Point3d& v : loop) best = std::max(best, m * (v - ref));
+    return best;
+  };
+  Vector3d m_i = ON_CrossProduct(n_i, e);
+  Vector3d m_j = ON_CrossProduct(n_j, -e);
+  if (!m_i.Unitize() || !m_j.Unitize()) {
+    throw std::invalid_argument(
+        "dino8::kernel::ChamferConvexEdge: degenerate face/edge geometry (a face normal is "
+        "parallel to the edge)");
+  }
+  if (extent_along(face_i.loop, m_i, edge_p0) <= tol) m_i = -m_i;
+  if (extent_along(face_j.loop, m_j, edge_p0) <= tol) m_j = -m_j;
+  const double extent_i = extent_along(face_i.loop, m_i, edge_p0);
+  const double extent_j = extent_along(face_j.loop, m_j, edge_p0);
+  if (!(distance_i < extent_i - tol) || !(distance_j < extent_j - tol)) {
+    throw std::invalid_argument(
+        "dino8::kernel::ChamferConvexEdge: a chamfer distance is too large to fit - it "
+        "reaches or exceeds that face's own extent from the edge");
+  }
+
+  // Rails: R_i(t) = edge_p0 + distance_i*m_i + t*e, likewise R_j.
+  const Point3d R_i0 = edge_p0 + distance_i * m_i;
+  const Point3d R_j0 = edge_p0 + distance_j * m_j;
+  const Point3d R_i1 = edge_p1 + distance_i * m_i;
+  const Point3d R_j1 = edge_p1 + distance_j * m_j;
+
+  // Re-trim faces i/j by their own rail line (ClipByHalfspace3d keeps the
+  // side the plane normal points AWAY from - see FilletConvexEdge).
+  // When the rail passes EXACTLY through an existing loop vertex (the
+  // chained equal-setback corner case - see ChamferEndAtVertex's own
+  // s == 1 comment), Sutherland-Hodgman emits that vertex twice (once as
+  // the kept vertex, once as the crossing point at t == 0), leaving a
+  // zero-length loop edge that FromMixedFaces would turn into a
+  // degenerate trim and a non-manifold vertex. Collapse consecutive
+  // coincident points (wraparound included) - a pure representation
+  // clean-up, not a geometric change.
+  auto dedupe_consecutive = [tol](std::vector<Point3d>& loop) {
+    std::vector<Point3d> out;
+    out.reserve(loop.size());
+    for (const Point3d& p : loop) {
+      if (!out.empty() && out.back().DistanceTo(p) <= tol) continue;
+      out.push_back(p);
+    }
+    while (out.size() > 1 && out.front().DistanceTo(out.back()) <= tol) out.pop_back();
+    loop = std::move(out);
+  };
+  Brep::PlanarFace retrimmed_i = face_i;
+  retrimmed_i.loop = detail::ClipByHalfspace3d(retrimmed_i.loop, ON_Plane(R_i0, -m_i), tol);
+  dedupe_consecutive(retrimmed_i.loop);
+  Brep::PlanarFace retrimmed_j = face_j;
+  retrimmed_j.loop = detail::ClipByHalfspace3d(retrimmed_j.loop, ON_Plane(R_j0, -m_j), tol);
+  dedupe_consecutive(retrimmed_j.loop);
+  if (retrimmed_i.loop.size() < 3 || retrimmed_j.loop.size() < 3) {
+    throw std::invalid_argument(
+        "dino8::kernel::ChamferConvexEdge: re-trimming an adjacent face left fewer than 3 "
+        "vertices - distances too large for this solid's geometry");
+  }
+
+  std::vector<Brep::PlanarFace> others;
+  others.reserve(faces.size() - 2);
+  for (size_t f = 0; f < faces.size(); ++f) {
+    if (static_cast<int>(f) != idx_i && static_cast<int>(f) != idx_j) others.push_back(faces[f]);
+  }
+
+  // End conditions (step 5): the chamfer quad's own four corners are the
+  // rail/third-face piercing points at each end.
+  Point3d Q_i0, Q_j0, Q_i1, Q_j1;
+  ChamferEndAtVertex(others, edge_p0, e, plane_i, plane_j, R_i0, R_j0, tol, Q_i0, Q_j0);
+  ChamferEndAtVertex(others, edge_p1, e, plane_i, plane_j, R_i1, R_j1, tol, Q_i1, Q_j1);
+
+  // The chamfer face itself: outward normal n_c strictly between n_i and
+  // n_j, loop wound CCW as seen from outside (checked via its own Newell
+  // normal against n_i + n_j, not assumed from the corner order).
+  Brep::PlanarFace chamfer;
+  std::vector<Point3d> quad = {Q_i0, Q_i1, Q_j1, Q_j0};
+  Vector3d newell(0, 0, 0);
+  for (size_t k = 0; k < quad.size(); ++k) {
+    const Point3d& a = quad[k];
+    const Point3d& b = quad[(k + 1) % quad.size()];
+    newell.x += (a.y - b.y) * (a.z + b.z);
+    newell.y += (a.z - b.z) * (a.x + b.x);
+    newell.z += (a.x - b.x) * (a.y + b.y);
+  }
+  if (newell * (n_i + n_j) < 0.0) std::reverse(quad.begin(), quad.end());
+  Vector3d n_c = ON_CrossProduct(quad[1] - quad[0], quad[2] - quad[0]);
+  if (!n_c.Unitize() || n_c * (n_i + n_j) <= 0.0) {
+    throw std::runtime_error(
+        "dino8::kernel::ChamferConvexEdge: degenerate chamfer quad - please report this as a bug");
+  }
+  chamfer.plane = ON_Plane(quad[0], n_c);
+  chamfer.loop = std::move(quad);
+
+  std::vector<Brep::PlanarFace> all = std::move(others);
+  all.push_back(std::move(retrimmed_i));
+  all.push_back(std::move(retrimmed_j));
+  all.push_back(std::move(chamfer));
+  return Brep::FromMixedFaces(all, {});
+}
+
+Brep ChamferConvexEdgeAngle(const Brep& solid, Point3d edge_p0, Point3d edge_p1, double distance_i,
+                             double angle_from_i) {
+  if (!(distance_i > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::ChamferConvexEdgeAngle: distance_i must be strictly positive");
+  }
+  const std::vector<Brep::PlanarFace> faces = solid.PlanarFaces();
+  const double tol = RelativeTol(faces);
+  int idx_i = -1, idx_j = -1;
+  FindEdgeFaces(faces, edge_p0, edge_p1, tol, "ChamferConvexEdgeAngle", idx_i, idx_j);
+  const Vector3d n_i = faces[static_cast<size_t>(idx_i)].plane.zaxis;
+  const Vector3d n_j = faces[static_cast<size_t>(idx_j)].plane.zaxis;
+  const double dot_ij = std::max(-1.0, std::min(1.0, n_i * n_j));
+  const double theta = ON_PI - std::acos(dot_ij);
+  if (!(theta > 1e-9) || !(theta < ON_PI - 1e-9)) {
+    throw std::invalid_argument(
+        "dino8::kernel::ChamferConvexEdgeAngle: edge is not a convex dihedral edge - see "
+        "ChamferConvexEdge");
+  }
+  if (!(angle_from_i > 1e-9) || !(angle_from_i < ON_PI - theta - 1e-9)) {
+    throw std::invalid_argument(
+        "dino8::kernel::ChamferConvexEdgeAngle: angle_from_i must lie strictly between 0 and "
+        "pi - theta (the edge's exterior angle) for the chamfer plane to reach face j");
+  }
+  // Law of sines in the chamfer cross-section triangle (see fillet.h).
+  const double distance_j = distance_i * std::sin(angle_from_i) / std::sin(theta + angle_from_i);
+  return ChamferConvexEdge(solid, edge_p0, edge_p1, distance_i, distance_j);
 }
 
 }  // namespace dino8::kernel

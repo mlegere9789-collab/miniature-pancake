@@ -53,6 +53,7 @@ add_library(dino8_kernel STATIC
   src/boolean.cpp
   src/boolean_general.cpp
   src/fillet.cpp
+  src/sweep.cpp
   src/file_io.cpp
   src/subd.cpp
   src/convex_hull.cpp

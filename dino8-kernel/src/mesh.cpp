@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "dino8/kernel/detail/polygon2d.h"
+#include "dino8/kernel/tolerance.h"
 
 namespace dino8::kernel {
 
@@ -365,6 +366,139 @@ Point3d Mesh::ClosestPoint(Point3d point) const {
 double Mesh::SignedDistance(Point3d point) const {
   const double distance = (ClosestPoint(point) - point).Length();
   return ContainsPoint(point) ? -distance : distance;
+}
+
+MassProperties Mesh::VolumeMassProperties() const {
+  // Eberly, "Polyhedral Mass Properties (Revisited)": the ten volume
+  // integrals of {1, x, y, z, x^2, y^2, z^2, xy, yz, zx} are each turned
+  // into a surface integral by the divergence theorem, and over a flat
+  // triangle those surface integrals have closed-form polynomial values
+  // in the three vertices. `intg[]` accumulates, in that order, the
+  // un-scaled per-triangle terms; the 1/6, 1/24, 1/60, 1/120 factors are
+  // applied once at the end.
+  std::array<double, 10> intg{};
+
+  auto subexpressions = [](double w0, double w1, double w2, double& f1, double& f2, double& f3,
+                           double& g0, double& g1, double& g2) {
+    const double temp0 = w0 + w1;
+    f1 = temp0 + w2;
+    const double temp1 = w0 * w0;
+    const double temp2 = temp1 + w1 * temp0;
+    f2 = temp2 + w2 * f1;
+    f3 = w0 * temp1 + w1 * temp2 + w2 * f2;
+    g0 = f2 + w0 * (f1 + w0);
+    g1 = f2 + w1 * (f1 + w1);
+    g2 = f2 + w2 * (f1 + w2);
+  };
+
+  auto accumulate_triangle = [&](const ON_3fPoint& fa, const ON_3fPoint& fb, const ON_3fPoint& fc) {
+    const double x0 = fa.x, y0 = fa.y, z0 = fa.z;
+    const double x1 = fb.x, y1 = fb.y, z1 = fb.z;
+    const double x2 = fc.x, y2 = fc.y, z2 = fc.z;
+
+    // Edge vectors and their cross product (the triangle's un-normalized
+    // outward normal, magnitude twice its area).
+    const double a1 = x1 - x0, b1 = y1 - y0, c1 = z1 - z0;
+    const double a2 = x2 - x0, b2 = y2 - y0, c2 = z2 - z0;
+    const double d0 = b1 * c2 - b2 * c1;
+    const double d1 = a2 * c1 - a1 * c2;
+    const double d2 = a1 * b2 - a2 * b1;
+
+    double f1x, f2x, f3x, g0x, g1x, g2x;
+    double f1y, f2y, f3y, g0y, g1y, g2y;
+    double f1z, f2z, f3z, g0z, g1z, g2z;
+    subexpressions(x0, x1, x2, f1x, f2x, f3x, g0x, g1x, g2x);
+    subexpressions(y0, y1, y2, f1y, f2y, f3y, g0y, g1y, g2y);
+    subexpressions(z0, z1, z2, f1z, f2z, f3z, g0z, g1z, g2z);
+
+    intg[0] += d0 * f1x;
+    intg[1] += d0 * f2x;
+    intg[2] += d1 * f2y;
+    intg[3] += d2 * f2z;
+    intg[4] += d0 * f3x;
+    intg[5] += d1 * f3y;
+    intg[6] += d2 * f3z;
+    intg[7] += d0 * (y0 * g0x + y1 * g1x + y2 * g2x);
+    intg[8] += d1 * (z0 * g0y + z1 * g1y + z2 * g2y);
+    intg[9] += d2 * (x0 * g0z + x1 * g1z + x2 * g2z);
+  };
+
+  for (int i = 0; i < mesh_.m_F.Count(); ++i) {
+    const ON_MeshFace& f = mesh_.m_F[i];
+    accumulate_triangle(mesh_.m_V[f.vi[0]], mesh_.m_V[f.vi[1]], mesh_.m_V[f.vi[2]]);
+    if (f.IsQuad()) {
+      accumulate_triangle(mesh_.m_V[f.vi[0]], mesh_.m_V[f.vi[2]], mesh_.m_V[f.vi[3]]);
+    }
+  }
+
+  const std::array<double, 10> mult = {1.0 / 6.0,  1.0 / 24.0,  1.0 / 24.0,  1.0 / 24.0,  1.0 / 60.0,
+                                       1.0 / 60.0, 1.0 / 60.0,  1.0 / 120.0, 1.0 / 120.0, 1.0 / 120.0};
+  for (size_t i = 0; i < intg.size(); ++i) {
+    intg[i] *= mult[i];
+  }
+
+  MassProperties mp;
+  mp.volume = intg[0];
+  if (std::abs(mp.volume) <= 1e-12) {
+    throw std::invalid_argument(
+        "dino8::kernel::Mesh::VolumeMassProperties: mesh volume is (near) zero - "
+        "not a closed, non-degenerate solid whose moments are defined");
+  }
+  if (mp.volume < 0.0) {
+    throw std::invalid_argument(
+        "dino8::kernel::Mesh::VolumeMassProperties: mesh volume is negative - the "
+        "mesh is inside-out (wound CW from outside); FlipNormals() it first "
+        "rather than trusting negated moments");
+  }
+
+  mp.centroid = Point3d(intg[1] / mp.volume, intg[2] / mp.volume, intg[3] / mp.volume);
+  const double cx = mp.centroid.x, cy = mp.centroid.y, cz = mp.centroid.z;
+
+  // intg[4..6] are the integrals of x^2, y^2, z^2; intg[7..9] of xy, yz, zx.
+  mp.ixx_origin = intg[5] + intg[6];
+  mp.iyy_origin = intg[4] + intg[6];
+  mp.izz_origin = intg[4] + intg[5];
+  mp.ixy_origin = intg[7];
+  mp.iyz_origin = intg[8];
+  mp.ixz_origin = intg[9];
+
+  // Parallel-axis theorem, origin -> centroid.
+  mp.ixx = mp.ixx_origin - mp.volume * (cy * cy + cz * cz);
+  mp.iyy = mp.iyy_origin - mp.volume * (cz * cz + cx * cx);
+  mp.izz = mp.izz_origin - mp.volume * (cx * cx + cy * cy);
+  mp.ixy = mp.ixy_origin - mp.volume * cx * cy;
+  mp.iyz = mp.iyz_origin - mp.volume * cy * cz;
+  mp.ixz = mp.ixz_origin - mp.volume * cz * cx;
+
+  // ON_Sym3x3EigenSolver's matrix layout is [[A, D, F], [D, B, E], [F, E,
+  // C]] (its own doc comment) - so the off-diagonal entries are the
+  // NEGATED products of inertia, per the tensor convention documented on
+  // MassProperties.
+  double e[3];
+  Vector3d v[3];
+  if (!ON_Sym3x3EigenSolver(mp.ixx, mp.iyy, mp.izz, -mp.ixy, -mp.iyz, -mp.ixz, &e[0], v[0], &e[1], v[1],
+                            &e[2], v[2])) {
+    throw std::runtime_error(
+        "dino8::kernel::Mesh::VolumeMassProperties: ON_Sym3x3EigenSolver reported "
+        "failure on the centroidal inertia tensor");
+  }
+  std::array<int, 3> order = {0, 1, 2};
+  std::sort(order.begin(), order.end(), [&](int p, int q) { return e[p] < e[q]; });
+  for (int k = 0; k < 3; ++k) {
+    mp.principal_moments[static_cast<size_t>(k)] = e[order[static_cast<size_t>(k)]];
+    Vector3d axis = v[order[static_cast<size_t>(k)]];
+    axis.Unitize();
+    mp.principal_axes[static_cast<size_t>(k)] = axis;
+  }
+  // Make the frame right-handed: for a symmetric matrix the eigenvectors
+  // are mutually orthogonal, so the cross product of the first two is
+  // +/- the third and still an eigenvector of it.
+  mp.principal_axes[2] = ON_CrossProduct(mp.principal_axes[0], mp.principal_axes[1]);
+  mp.principal_axes[2].Unitize();
+  for (size_t k = 0; k < 3; ++k) {
+    mp.radii_of_gyration[k] = std::sqrt(std::max(mp.principal_moments[k], 0.0) / mp.volume);
+  }
+  return mp;
 }
 
 std::vector<Vector3d> Mesh::ComputeVertexNormals() const {
@@ -848,6 +982,14 @@ Result LoadBinaryStl(const std::string& path, uint32_t triangle_count, Mesh& out
       if (!in.read(reinterpret_cast<char*>(xyz), sizeof(xyz))) {
         return Result::Failed;
       }
+      // The raw bytes can encode NaN/Inf, which the ASCII path can never
+      // produce (operator>> refuses "nan"/"inf"/overflowing tokens) - and
+      // which, if let through, silently poisons every downstream query
+      // on the returned mesh (Volume()/GetCentroid() go NaN, the vertex
+      // never welds) rather than failing here. See LoadStl()'s doc comment.
+      if (!std::isfinite(xyz[0]) || !std::isfinite(xyz[1]) || !std::isfinite(xyz[2])) {
+        return Result::Failed;
+      }
       face.vi[i] = raw.m_V.Count();
       raw.m_V.Append(ON_3fPoint(xyz[0], xyz[1], xyz[2]));
     }
@@ -933,6 +1075,38 @@ Mesh Mesh::MergeAndWeld(const std::vector<Mesh>& meshes, double tolerance) {
       remapped.vi[1] = remap[static_cast<size_t>(face.vi[1])];
       remapped.vi[2] = remap[static_cast<size_t>(face.vi[2])];
       remapped.vi[3] = remap[static_cast<size_t>(face.vi[3])];
+      // A face that welding collapsed - two of its corners landed on one
+      // vertex - is dropped (or, for a quad with one repeated corner,
+      // kept as the triangle that remains). Before this, a pole row of a
+      // sphere/cone/fan-cap tessellation (every sample at v=v0 is the
+      // same physical point) survived as zero-area triangles (a, a, b)
+      // whose edge {a, b} was then counted by THREE faces, so
+      // Brep::Sphere().TessellateToClosedMesh() never reported
+      // Mesh::IsClosedManifold() even though it was geometrically
+      // watertight - see TestMergeAndWeldDropsCollapsedPoleTriangles.
+      // Volume()/Area() are unchanged by this (a collapsed face
+      // contributes exactly zero to both).
+      if (face.IsQuad()) {
+        int v[4] = {remapped.vi[0], remapped.vi[1], remapped.vi[2], remapped.vi[3]};
+        int distinct[4];
+        int nd = 0;
+        for (int k = 0; k < 4; ++k) {
+          if (v[k] != v[(k + 3) % 4]) distinct[nd++] = v[k];  // drop a corner equal to its predecessor (cyclically)
+        }
+        if (nd == 4) {
+          if (v[0] == v[2] || v[1] == v[3]) continue;  // opposite corners coincide: no area
+          out.m_F.Append(remapped);
+        } else if (nd == 3) {
+          ON_MeshFace tri;
+          tri.vi[0] = distinct[0];
+          tri.vi[1] = distinct[1];
+          tri.vi[2] = distinct[2];
+          tri.vi[3] = distinct[2];
+          out.m_F.Append(tri);
+        }
+        continue;
+      }
+      if (remapped.vi[0] == remapped.vi[1] || remapped.vi[1] == remapped.vi[2] || remapped.vi[2] == remapped.vi[0]) continue;
       out.m_F.Append(remapped);
     }
   }
@@ -1245,17 +1419,18 @@ bool IsRingPlanar(const std::vector<Point3d>& ring) {
   for (const Point3d& p : ring) {
     scale = std::max(scale, (p - origin).Length());
   }
-  if (scale <= 1e-12) {
+  if (scale <= tolerance::kZero) {
     return true;
   }
 
   // Relative, not absolute, tolerance: a ring's own coordinates set the
   // scale a "how far out of plane" check has to be judged against, the
-  // same reasoning MergeAndWeld()'s own tolerance already uses.
-  constexpr double kRelativeTolerance = 1e-6;
-  const double tolerance = scale * kRelativeTolerance;
+  // same reasoning MergeAndWeld()'s own tolerance already uses. The
+  // fraction itself is the kernel's policy value (tolerance.h), not a
+  // literal of this function's own.
+  const double plane_tolerance = scale * tolerance::kPlanarityRelative;
   for (const Point3d& p : ring) {
-    if (std::abs(ON_DotProduct(p - origin, normal)) > tolerance) {
+    if (std::abs(ON_DotProduct(p - origin, normal)) > plane_tolerance) {
       return false;
     }
   }
