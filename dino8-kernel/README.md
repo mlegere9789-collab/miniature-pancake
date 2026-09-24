@@ -2071,6 +2071,112 @@ honestly out of scope.
   `(10, -5, 2)` instead of the origin. Throws `std::invalid_argument` on
   an inside-out (negative-volume) mesh rather than returning negated
   moments, and on an empty/zero-volume one - both checked.
+- Three mesh spatial queries that didn't exist in any form, each exact:
+  - `Mesh::FireRay(origin, direction)` returns every crossing of a ray
+    with the mesh, sorted by parameter (`RayHit`: t, point, face index,
+    entering/leaving) - `ContainsPoint()` had always fired a ray
+    internally but only ever counted crossings, so nothing could say
+    WHERE a ray lands or on which face (a pick, a visibility test). The
+    existing private Moller-Trumbore helper was refactored to return its
+    parameter and barycentrics (`ContainsPoint()` now wraps it with the
+    identical `t > 1e-12` rule, so its results are unchanged - the
+    full smoke suite and the 76-case boolean sweep both confirm that).
+    A hit exactly on a quad face's shared diagonal is reported once,
+    via a hair (1e-9) of barycentric slack so round-off can't make both
+    triangles reject it; the honest degenerate case (a ray exactly
+    grazing an edge or vertex shared by two faces) is stated, not
+    hidden. Verified: a +x ray through the [0,2]^3 box hits at exactly
+    t=1 and t=3 (faces 4 then 5, entering then leaving); doubling the
+    direction halves both t without moving the points (t is in units of
+    `direction`, documented); a ray from inside hits once, leaving at
+    exactly t=0.7; misses and away-pointing rays return empty; a ray
+    through both x faces' diagonals reports 2 hits, not 4; an oblique
+    ray's two hits land at the hand-derived plane crossings (0, 0.7,
+    0.55) and (2, 1.7, 1.05).
+  - `Mesh::DistanceTo(other)` is the exact minimum surface/surface
+    distance with the closest pair of points and faces - the clearance
+    query `ClosestPoint()` (point-to-mesh only) couldn't answer. Exact
+    per triangle pair through all three feature families the minimum
+    can live in: vertex/triangle (Ericson's region test, 6 pairs),
+    edge/edge (closed-form segment/segment closest points, 9 pairs,
+    now shared with the CCX seeding via `detail/segment3d.h`), and
+    edge-pierces-triangle (which the first two families can't see -
+    nothing on either boundary is at distance 0, yet they cross - so
+    without it a crossing pair would report the nearest vertex's
+    positive distance, silently wrong). Per-pair bounding-box reject
+    against the running best; no BVH. Verified: parallel-face boxes at
+    exactly 1 (and a debug run showed the tie resolving on a corner
+    that belongs to the bottom face, so the test asserts only the tie-
+    invariant properties, not a face index it can't claim); corner-to-
+    corner boxes at exactly `sqrt(3)` between (2,2,2) and (3,3,3), and
+    symmetric under swapping the operands; a hand-built skew-
+    perpendicular edge pair whose unique minimum (checked by hand
+    against every vertex/triangle candidate: sqrt(13), 5, sqrt(8), 5,
+    plane distances 3.29 and 2.63) is exactly 2 between the two edges'
+    midpoints; a piercing pair reporting 0 at exactly (1,1,0) where the
+    nearest vertex is 1 away; boxes sharing a face at 0.
+  - `Mesh::ClashWith(other)` classifies two closed solids as `Clear`,
+    `Touching`, `Intersecting`, `ThisInsideOther` or `OtherInsideThis`.
+    The first draft used edge-pierces-face predicates and was
+    abandoned before it ever ran, on paper: the most ordinary CAD clash
+    - two equal-height boxes overlapping in plan - has EVERY edge/face
+    crossing landing exactly on a face's edge or lying in a face's own
+    plane, degenerate for any such predicate, so it would have
+    misreported the commonest case as not intersecting. Instead it's
+    decided from the exact overlap VOLUME, `vol(this ∩ other)` from the
+    existing Manifold-backed `BooleanCombine()` (exact predicates with
+    symbolic perturbation, built for coincident geometry), with
+    `DistanceTo()` deciding Touching vs. Clear when there's no shared
+    volume. The volume tolerance is relative (1e-6) because `ON_Mesh`
+    stores single-precision vertices, so a touching pair with non-
+    representable coordinates can carry a round-off sliver. A debug run
+    confirmed the boolean itself gives exactly 2.0 for the equal-height
+    case and exactly 0 (an empty mesh) for the shared-face case before
+    the classifications were asserted. Verified: boxes 1 apart Clear;
+    sharing a face, an edge, or only a corner all Touching (they meet,
+    share no volume); equal-height plan overlap AND generic overlap both
+    Intersecting; containment both ways, including a part touching its
+    container's wall from inside and an identical pair (ThisInsideOther,
+    documented). A real gap the debug run caught in this function's own
+    precondition check: a lone open triangle has a nonzero SIGNED
+    `Volume()` (its origin tetrahedron doesn't cancel), so "volume > 0"
+    let an open mesh through to Manifold's own less specific error -
+    fixed by checking `IsClosedManifold()` directly first, as the
+    documented precondition says.
+- `SubD::LimitPoints()`: the EXACT Catmull-Clark limit-surface point and
+  normal of every control-net vertex - closing the "not exact limit-
+  surface evaluation" item this file's own "What's still not done" list
+  carried since chunk 2, at least for the vertices. A corrected
+  assumption, found by reading rather than trusting: `subd.h`'s class
+  comment (and that list) said OpenNURBS' public API ships no exact
+  limit evaluator, but `ON_SubDVertex::SurfacePoint()`/`SurfaceNormal()`
+  are real, non-stub implementations in `opennurbs_subd_eval.cpp` (a
+  sector-based computation walking the vertex's incident faces via
+  `ON_SubDSectorIterator` - unlike the `BrepForm()`/`CreaseEdgeCount()`
+  stubs the same comment correctly documents). Being real in the source
+  isn't being correct, so it was verified numerically against the
+  standard closed-form limit masks before being trusted, all confirmed
+  by a debug run first: on the [-1,1]^3 cube cage every valence-3
+  corner's limit point is exactly half its control position, which is
+  what Halstead/Kass/DeRose's `(n^2 v + 4 sum(edge nbrs) + sum(diagonal
+  nbrs)) / (n(n+5))` gives by hand ((9+4-1)/24 = 1/2), with the outward
+  body diagonal as its unit normal; on a flat 3x3 grid the regular
+  interior vertex and the boundary-crease edge midpoints stay exactly
+  put while the corners land at exactly `(1/6, 1/6, 0)`, the crease
+  mask `(e1 + 4v + e2)/6` by hand, with every normal exactly `(0,0,1)`.
+  Two further independent cross-checks against the subdivision itself:
+  repeated `Subdivide()` brings the control net strictly closer to the
+  reported limit points at every level (measured 0.096, 0.016, 4.4e-4,
+  1.2e-5 at levels 1, 2, 4, 6 - genuine geometric convergence, the
+  defining property of a limit point), and the level-1 net's own limit
+  points reproduce the level-0 ones to 1.7e-16 (the limit surface is
+  invariant under subdivision). Honest scope on the declaration: this is
+  per-vertex only, not evaluation at an arbitrary (u, v) inside an
+  irregular face (`ToNurbsPatches()` already covers regular faces
+  exactly); a crease/corner vertex's normal is reported for the sector
+  of its first face only, since the limit surface genuinely has one
+  normal per sector there. `subd.h`'s class comment and the "What's
+  still not done" bullet are both corrected rather than left stale.
 
 ## What's still not done (as of chunk 2)
 
@@ -2119,9 +2225,13 @@ honestly out of scope.
   different resolutions along their shared edge) — vertex-snapping can't
   fix a genuine T-junction, only near-identical positions at matching
   sample counts.
-- `SubD` wraps real Catmull-Clark refinement, but not exact limit-surface
-  evaluation — `ToApproximateMesh()` is the repeated-subdivision
-  approximation, not the true smooth surface. Interior creases are now
+- `SubD` wraps real Catmull-Clark refinement; exact limit-surface
+  evaluation now exists at the VERTICES (`LimitPoints()`, see below -
+  OpenNURBS turned out to ship a real per-vertex limit evaluator after
+  all) and over regular faces (`ToNurbsPatches()`), but not at an
+  arbitrary point inside an irregular face — `ToApproximateMesh()` is
+  still the repeated-subdivision approximation there, not the true
+  smooth surface. Interior creases are now
   supported (see below) but only that one crease option; no SubD editing
   (adding/removing faces, extrude, etc.), and no SubD ↔ Brep conversion
   (that direction is the stubbed `BrepForm()`/`GetSurfaceBrep()` this

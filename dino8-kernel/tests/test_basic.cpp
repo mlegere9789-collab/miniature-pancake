@@ -6566,6 +6566,220 @@ void TestMeshVolumeMassProperties() {
   Check(threw_empty, "VolumeMassProperties throws on a mesh with no volume");
 }
 
+// A single-triangle mesh for the surface/surface distance tests below.
+dino8::kernel::Mesh MakeTriangleMesh(dino8::kernel::Point3d a, dino8::kernel::Point3d b,
+                                     dino8::kernel::Point3d c) {
+  dino8::kernel::Mesh mesh;
+  ON_Mesh& raw = mesh.raw();
+  raw.m_V.Append(ON_3fPoint(a));
+  raw.m_V.Append(ON_3fPoint(b));
+  raw.m_V.Append(ON_3fPoint(c));
+  ON_MeshFace face;
+  face.vi[0] = 0;
+  face.vi[1] = 1;
+  face.vi[2] = 2;
+  face.vi[3] = 2;
+  raw.m_F.Append(face);
+  return mesh;
+}
+
+void TestMeshFireRay() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::RayHit;
+  using dino8::kernel::Vector3d;
+
+  // The [0,2]^3 quad box. Query points use off-diagonal (y, z) = (0.7,
+  // 1.3) so no hit lands on a quad's own shared diagonal (every face's
+  // diagonal here runs corner to corner, i.e. y = z on the +/-x faces),
+  // keeping the ordinary cases ordinary. MakeQuadBoxMesh's face order:
+  // 0 bottom, 1 top, 2 front (-y), 3 back (+y), 4 left (-x), 5 right (+x).
+  const auto box = MakeQuadBoxMesh(0, 0, 0, 2, 2, 2);
+
+  // Case 1: a +x ray from outside crosses the -x face at x = 0 (t = 1
+  // from x = -1) and leaves through the +x face at x = 2 (t = 3), in
+  // that order, entering then leaving.
+  const std::vector<RayHit> through = box.FireRay(Point3d(-1, 0.7, 1.3), Vector3d(1, 0, 0));
+  Check(through.size() == 2, "a ray straight through the box hits exactly two faces");
+  if (through.size() == 2) {
+    Check(std::abs(through[0].t - 1.0) < 1e-12 && std::abs(through[1].t - 3.0) < 1e-12,
+          "the hits are at exactly t = 1 (x = 0 face) then t = 3 (x = 2 face), sorted");
+    Check(through[0].point.DistanceTo(Point3d(0, 0.7, 1.3)) < 1e-12 &&
+              through[1].point.DistanceTo(Point3d(2, 0.7, 1.3)) < 1e-12,
+          "the hit points are exactly (0, 0.7, 1.3) and (2, 0.7, 1.3)");
+    Check(through[0].face_index == 4 && through[1].face_index == 5,
+          "the hits are attributed to the -x face (index 4) then the +x face (index 5)");
+    Check(through[0].entering && !through[1].entering,
+          "the first hit enters the solid, the second leaves it");
+  }
+
+  // Case 2: t is in units of `direction`, not a distance - doubling the
+  // direction halves every t but leaves the hit points where they are.
+  const std::vector<RayHit> scaled = box.FireRay(Point3d(-1, 0.7, 1.3), Vector3d(2, 0, 0));
+  Check(scaled.size() == 2 && std::abs(scaled[0].t - 0.5) < 1e-12 && std::abs(scaled[1].t - 1.5) < 1e-12 &&
+            scaled[0].point.DistanceTo(Point3d(0, 0.7, 1.3)) < 1e-12,
+        "a direction of length 2 halves the t values (0.5, 1.5) without moving the hit points");
+
+  // Case 3: from inside, straight up: exactly one hit, leaving through
+  // the top face at t = 0.7 (z from 1.3 to 2.0).
+  const std::vector<RayHit> inside = box.FireRay(Point3d(1, 0.7, 1.3), Vector3d(0, 0, 1));
+  Check(inside.size() == 1 && std::abs(inside[0].t - 0.7) < 1e-12 && inside[0].face_index == 1 &&
+            !inside[0].entering,
+        "a ray fired from inside hits exactly once, leaving through the top face at t = 0.7");
+
+  // Case 4: misses, and a ray pointing away from the box (its line would
+  // hit at negative t, which must not count).
+  Check(box.FireRay(Point3d(-1, 5, 5), Vector3d(1, 0, 0)).empty(), "a ray that misses the box returns no hits");
+  Check(box.FireRay(Point3d(-1, 0.7, 1.3), Vector3d(-1, 0, 0)).empty(),
+        "a ray pointing away from the box returns no hits (negative t is not a hit)");
+
+  // Case 5: a ray that crosses both x faces exactly on their shared
+  // diagonals (y = z = 1). Each quad is two triangles that both contain
+  // that point, so a naive per-triangle report would list 4 hits; the
+  // right answer is 2, one per face, at t = 1 and t = 3.
+  const std::vector<RayHit> diagonal = box.FireRay(Point3d(-1, 1, 1), Vector3d(1, 0, 0));
+  Check(diagonal.size() == 2, "a ray through both faces' shared diagonals is reported once per face, not per triangle");
+  if (diagonal.size() == 2) {
+    Check(std::abs(diagonal[0].t - 1.0) < 1e-12 && std::abs(diagonal[1].t - 3.0) < 1e-12 &&
+              diagonal[0].face_index == 4 && diagonal[1].face_index == 5,
+          "the diagonal hits are still at exactly t = 1 and t = 3 on faces 4 and 5");
+  }
+
+  // Case 6: an oblique ray, checked against the hand-derived plane
+  // crossings rather than an axis-aligned shortcut: from (-1, 0.2, 0.3)
+  // along (1, 0.5, 0.25) the x = 0 plane is reached at t = 1, where
+  // (y, z) = (0.7, 0.55) - inside the -x face - and the ray then leaves
+  // where it first exits the box: x = 2 at t = 3 gives (y, z) =
+  // (1.7, 1.05), still inside, and y = 2 would be t = 3.6, z = 2 would
+  // be t = 6.8, so the +x face at t = 3 is the exit.
+  const std::vector<RayHit> oblique = box.FireRay(Point3d(-1, 0.2, 0.3), Vector3d(1, 0.5, 0.25));
+  Check(oblique.size() == 2 && std::abs(oblique[0].t - 1.0) < 1e-12 && std::abs(oblique[1].t - 3.0) < 1e-12 &&
+            oblique[0].point.DistanceTo(Point3d(0, 0.7, 0.55)) < 1e-12 &&
+            oblique[1].point.DistanceTo(Point3d(2, 1.7, 1.05)) < 1e-12,
+        "an oblique ray's two hits are at the hand-derived plane crossings (0, 0.7, 0.55) and (2, 1.7, 1.05)");
+
+  bool threw = false;
+  try {
+    box.FireRay(Point3d(0, 0, 0), Vector3d(0, 0, 0));
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "FireRay throws on a zero-length direction");
+}
+
+void TestMeshDistanceTo() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::MeshDistance;
+  using dino8::kernel::Point3d;
+
+  const auto box = MakeQuadBoxMesh(0, 0, 0, 2, 2, 2);
+
+  // Case 1: face-to-face. [0,2]^3 and [3,5]x[0,2]x[0,2] are exactly 1
+  // apart across parallel faces: the distance is exactly 1, attained at
+  // some pair of points with x = 2 and x = 3 and equal (y, z). WHICH
+  // pair (and so which face index - the x = 2 face's own corners belong
+  // to the top/bottom/front/back faces too, and a debug run showed the
+  // tie resolved on the bottom face's corner (2, 2, 0)) is a genuine
+  // tie, so only the tie-invariant properties are asserted.
+  const MeshDistance gap = box.DistanceTo(MakeQuadBoxMesh(3, 0, 0, 5, 2, 2));
+  Check(std::abs(gap.distance - 1.0) < 1e-12, "two boxes 1 apart across parallel faces have distance exactly 1");
+  Check(std::abs(gap.point_on_this.x - 2.0) < 1e-12 && std::abs(gap.point_on_other.x - 3.0) < 1e-12 &&
+            std::abs(gap.point_on_this.y - gap.point_on_other.y) < 1e-12 &&
+            std::abs(gap.point_on_this.z - gap.point_on_other.z) < 1e-12,
+        "the closest pair sits on x = 2 and x = 3 at the same (y, z)");
+  Check(gap.face_on_this >= 0 && gap.face_on_this < 6 && gap.face_on_other >= 0 && gap.face_on_other < 6,
+        "the closest pair is attributed to real face indices on both meshes");
+
+  // Case 2: corner-to-corner, a unique closest pair: [3,4]^3 is nearest
+  // to [0,2]^3 exactly between the corners (2, 2, 2) and (3, 3, 3),
+  // distance sqrt(3).
+  const MeshDistance corner = box.DistanceTo(MakeQuadBoxMesh(3, 3, 3, 4, 4, 4));
+  Check(std::abs(corner.distance - std::sqrt(3.0)) < 1e-12 && corner.point_on_this.DistanceTo(Point3d(2, 2, 2)) < 1e-12 &&
+            corner.point_on_other.DistanceTo(Point3d(3, 3, 3)) < 1e-12,
+        "corner-to-corner boxes: distance exactly sqrt(3) between (2, 2, 2) and (3, 3, 3)");
+  const MeshDistance corner_rev = MakeQuadBoxMesh(3, 3, 3, 4, 4, 4).DistanceTo(box);
+  Check(std::abs(corner_rev.distance - std::sqrt(3.0)) < 1e-12 &&
+            corner_rev.point_on_this.DistanceTo(Point3d(3, 3, 3)) < 1e-12 &&
+            corner_rev.point_on_other.DistanceTo(Point3d(2, 2, 2)) < 1e-12,
+        "DistanceTo is symmetric: swapping the operands swaps the two closest points");
+
+  // Case 3: the edge/edge feature, the one case neither vertex-to-
+  // triangle test can find. Triangle A has its top edge along the x axis
+  // ((-2,0,0)-(2,0,0)) and slopes down and back to (0,-0.5,-3); triangle
+  // B stands in the x = 0 plane with its bottom edge along y at height 2
+  // ((0,-3,2)-(0,3,2)) and apex (0,0,5). The two edges are skew and
+  // perpendicular, closest at their midpoints (0,0,0) and (0,0,2),
+  // distance exactly 2 - and that pair is unique: every other point of A
+  // is either off the x = 0 plane or below z = 0, so strictly further
+  // from B's edge, and every vertex of either triangle is further than 2
+  // from the other triangle (checked by hand: sqrt(13), 5, sqrt(8), 5 and
+  // the plane distances 3.29, 2.63).
+  const MeshDistance ee = MakeTriangleMesh(Point3d(-2, 0, 0), Point3d(2, 0, 0), Point3d(0, -0.5, -3))
+                              .DistanceTo(MakeTriangleMesh(Point3d(0, -3, 2), Point3d(0, 3, 2), Point3d(0, 0, 5)));
+  Check(std::abs(ee.distance - 2.0) < 1e-12, "skew perpendicular edges: distance exactly 2 (the edge/edge feature)");
+  Check(ee.point_on_this.DistanceTo(Point3d(0, 0, 0)) < 1e-12 && ee.point_on_other.DistanceTo(Point3d(0, 0, 2)) < 1e-12,
+        "the closest pair is the two edges' midpoints (0, 0, 0) and (0, 0, 2), interior to both edges");
+
+  // Case 4: a piercing pair. B's vertical edge (1,1,-1)-(1,1,1) passes
+  // through the interior of the big z = 0 triangle A at (1, 1, 0). No
+  // vertex of either is on the other (B's are 1 away, A's are far), and
+  // no two edges meet, so only the segment/triangle test can report the
+  // true distance, 0, at that crossing point.
+  const MeshDistance pierce =
+      MakeTriangleMesh(Point3d(-5, -5, 0), Point3d(5, -5, 0), Point3d(0, 5, 0))
+          .DistanceTo(MakeTriangleMesh(Point3d(1, 1, -1), Point3d(1, 1, 1), Point3d(2, 2, 1)));
+  Check(pierce.distance < 1e-12, "an edge piercing the other triangle's interior gives distance 0, not the nearest vertex's 1");
+  Check(pierce.point_on_this.DistanceTo(Point3d(1, 1, 0)) < 1e-12 && pierce.point_on_other.DistanceTo(Point3d(1, 1, 0)) < 1e-12,
+        "the piercing pair is the crossing point (1, 1, 0) on both");
+
+  // Case 5: two boxes sharing a face touch: distance 0.
+  Check(box.DistanceTo(MakeQuadBoxMesh(2, 0, 0, 4, 2, 2)).distance < 1e-12,
+        "two boxes sharing a face have distance 0");
+
+  bool threw = false;
+  try {
+    box.DistanceTo(Mesh());
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "DistanceTo throws when the other mesh has no faces");
+}
+
+void TestMeshClashWith() {
+  using dino8::kernel::Clash;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+
+  const auto box = MakeQuadBoxMesh(0, 0, 0, 2, 2, 2);
+
+  Check(box.ClashWith(MakeQuadBoxMesh(3, 0, 0, 5, 2, 2)) == Clash::Clear, "boxes 1 apart are Clear");
+  Check(box.ClashWith(MakeQuadBoxMesh(2, 0, 0, 4, 2, 2)) == Clash::Touching,
+        "boxes sharing exactly one face are Touching, not Intersecting (no shared volume)");
+  Check(box.ClashWith(MakeQuadBoxMesh(2, 2, 0, 4, 4, 2)) == Clash::Touching, "boxes sharing exactly one edge are Touching");
+  Check(box.ClashWith(MakeQuadBoxMesh(2, 2, 2, 4, 4, 4)) == Clash::Touching, "boxes sharing exactly one corner are Touching");
+  // The case that defeats edge/face piercing predicates: same height,
+  // overlapping in plan. Every edge crossing lands on a face edge or
+  // lies in a face plane, but the overlap volume is plainly 1*1*2 = 2.
+  Check(box.ClashWith(MakeQuadBoxMesh(1, 1, 0, 3, 3, 2)) == Clash::Intersecting,
+        "equal-height boxes overlapping in plan are Intersecting (the degenerate-crossings case)");
+  Check(box.ClashWith(MakeQuadBoxMesh(1, 1, 1, 3, 3, 3)) == Clash::Intersecting, "generically overlapping boxes are Intersecting");
+  Check(MakeQuadBoxMesh(0, 0, 0, 4, 4, 4).ClashWith(MakeQuadBoxMesh(1, 1, 1, 3, 3, 3)) == Clash::OtherInsideThis,
+        "a box wholly containing the other reports OtherInsideThis");
+  Check(MakeQuadBoxMesh(1, 1, 1, 3, 3, 3).ClashWith(MakeQuadBoxMesh(0, 0, 0, 4, 4, 4)) == Clash::ThisInsideOther,
+        "a box wholly inside the other reports ThisInsideOther");
+  Check(MakeQuadBoxMesh(0, 0, 0, 1, 1, 1).ClashWith(MakeQuadBoxMesh(0, 0, 0, 4, 4, 4)) == Clash::ThisInsideOther,
+        "a box inside the other and touching its walls from inside still reports ThisInsideOther");
+  Check(box.ClashWith(box) == Clash::ThisInsideOther, "an identical pair reports ThisInsideOther (documented)");
+
+  bool threw = false;
+  try {
+    box.ClashWith(MakeTriangleMesh(Point3d(0, 0, 5), Point3d(1, 0, 5), Point3d(0, 1, 5)));
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "ClashWith throws on an open (zero-volume) operand rather than classifying it");
+}
+
 void TestMeshAreaCountsBothQuadTriangles() {
   using dino8::kernel::Mesh;
 
@@ -6925,6 +7139,150 @@ void TestSubDToNurbsPatchesExactOnRegularFlatGrid() {
         "(1+u, 1+v, 0) at every sampled (u,v) - confirming ToNurbsPatches' "
         "neighbor-gathering and B-spline-to-Bezier conversion are both "
         "correct for the regular case, not just plausible");
+}
+
+void TestSubDLimitPointsExactCubeAndFlatGrid() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SubD;
+  using dino8::kernel::SubDLimitPoint;
+  using dino8::kernel::Vector3d;
+
+  // Case 1: the [-1,1]^3 cube cage. Every corner is a valence-3 vertex
+  // whose exact Catmull-Clark limit position follows from the standard
+  // closed-form limit mask (Halstead, Kass & DeRose 1993):
+  //   limit = (n^2 v + 4 sum(edge neighbors) + sum(diagonal neighbors))
+  //           / (n (n + 5)),   n = 3
+  // For v = (1,1,1): edge neighbors (-1,1,1),(1,-1,1),(1,1,-1) sum to
+  // (1,1,1); the diagonal (face-opposite) neighbors (-1,-1,1),(-1,1,-1),
+  // (1,-1,-1) sum to (-1,-1,-1); so limit = (9+4-1)/24 * (1,1,1) =
+  // (0.5, 0.5, 0.5) - i.e. exactly half of every corner's own position,
+  // by the cube's symmetry. Not a number read off the implementation.
+  const Mesh cube = MakeQuadBoxMesh(-1, -1, -1, 1, 1, 1);
+  const SubD subd = SubD::FromControlMesh(cube);
+  const std::vector<SubDLimitPoint> lps = subd.LimitPoints();
+  Check(lps.size() == 8 && static_cast<int>(lps.size()) == subd.VertexCount(),
+        "LimitPoints returns one entry per control-net vertex (8 for the cube cage)");
+  bool all_half = true, all_valence3_smooth = true, all_normals_diagonal = true;
+  for (const SubDLimitPoint& lp : lps) {
+    const Point3d expect(0.5 * lp.control_point.x, 0.5 * lp.control_point.y, 0.5 * lp.control_point.z);
+    if (lp.limit_point.DistanceTo(expect) > 1e-9) all_half = false;
+    if (lp.valence != 3 || !lp.smooth) all_valence3_smooth = false;
+    // By symmetry the limit normal at a corner is the outward body
+    // diagonal, (+/-1, +/-1, +/-1)/sqrt(3) with the corner's own signs.
+    Vector3d diag = Vector3d(lp.control_point.x, lp.control_point.y, lp.control_point.z);
+    diag.Unitize();
+    if (std::abs(ON_DotProduct(lp.limit_normal, diag) - 1.0) > 1e-9) all_normals_diagonal = false;
+  }
+  Check(all_half, "every cube-cage corner's limit point is exactly half its control position, "
+                  "the closed-form valence-3 Catmull-Clark limit mask");
+  Check(all_valence3_smooth, "every cube-cage corner reports valence 3 and smooth");
+  Check(all_normals_diagonal, "every cube-cage corner's unit limit normal is its outward body diagonal");
+
+  // Case 2: independent cross-check against the subdivision itself.
+  // Repeated Subdivide() must converge toward the reported limit points
+  // (the corner's descendant vertex approaches it geometrically): the
+  // nearest control-net vertex to each limit point gets strictly closer
+  // at every level checked, and is within 1e-4 after 6 levels (a debug
+  // run measured 0.096, 0.016, 4.4e-4, 1.2e-5 at levels 1, 2, 4, 6).
+  double previous = std::numeric_limits<double>::infinity();
+  bool strictly_closer = true;
+  double at_six = 0;
+  for (int levels : {1, 2, 4, 6}) {
+    SubD copy = SubD::FromControlMesh(cube);
+    copy.Subdivide(levels);
+    const Mesh m = copy.ToApproximateMesh();
+    double worst = 0;
+    for (const SubDLimitPoint& lp : lps) {
+      double best = std::numeric_limits<double>::infinity();
+      for (int i = 0; i < m.raw().m_V.Count(); ++i) {
+        best = std::min(best, Point3d(m.raw().m_V[i]).DistanceTo(lp.limit_point));
+      }
+      worst = std::max(worst, best);
+    }
+    if (!(worst < previous)) strictly_closer = false;
+    previous = worst;
+    if (levels == 6) at_six = worst;
+  }
+  Check(strictly_closer, "repeated subdivision brings the control net strictly closer to the "
+                         "reported limit points at every level checked (1, 2, 4, 6)");
+  Check(at_six < 1e-4, "after 6 subdivisions every limit point is within 1e-4 of a control-net vertex");
+
+  // Case 3: the limit surface is invariant under subdivision, so the
+  // level-1 control net's own limit points must include the 8 level-0
+  // ones (to round-off) - the level-0 corners' descendants converge to
+  // the same points.
+  SubD once = SubD::FromControlMesh(cube);
+  once.Subdivide(1);
+  const std::vector<SubDLimitPoint> l1 = once.LimitPoints();
+  Check(l1.size() == 26, "after one subdivision the cube has 26 limit points (8 + 12 + 6)");
+  double worst_l1 = 0;
+  for (const SubDLimitPoint& lp : lps) {
+    double best = std::numeric_limits<double>::infinity();
+    for (const SubDLimitPoint& q : l1) best = std::min(best, q.limit_point.DistanceTo(lp.limit_point));
+    worst_l1 = std::max(worst_l1, best);
+  }
+  Check(worst_l1 < 1e-12, "each level-0 limit point reappears exactly among the level-1 limit points "
+                          "(the limit surface is invariant under subdivision)");
+
+  // Case 4: the flat 2x2-quad grid (3x3 vertices). Three hand-derivable
+  // regimes on one control net: the interior valence-4 vertex (1,1,0)
+  // is regular, and the regular limit mask (16 v + 4 sum(edge) +
+  // sum(diagonal))/36 of a uniform grid is v itself; a boundary edge is a
+  // crease, whose limit mask (e1 + 4 v + e2)/6 leaves a boundary edge
+  // midpoint like (1,0,0) at itself (its crease neighbors (0,0,0) and
+  // (2,0,0) average to it) but pulls a corner like (0,0,0) - crease
+  // neighbors (1,0,0) and (0,1,0) - to exactly (1/6, 1/6, 0). Every
+  // limit normal is (0,0,1): the grid is flat.
+  Mesh grid;
+  ON_Mesh& raw = grid.raw();
+  for (int i = 0; i < 3; ++i) {
+    for (int j = 0; j < 3; ++j) {
+      raw.m_V.Append(ON_3fPoint(static_cast<double>(i), static_cast<double>(j), 0.0));
+    }
+  }
+  auto idx = [](int i, int j) { return i * 3 + j; };
+  for (int i = 0; i < 2; ++i) {
+    for (int j = 0; j < 2; ++j) {
+      ON_MeshFace face;
+      face.vi[0] = idx(i, j);
+      face.vi[1] = idx(i + 1, j);
+      face.vi[2] = idx(i + 1, j + 1);
+      face.vi[3] = idx(i, j + 1);
+      raw.m_F.Append(face);
+    }
+  }
+  const std::vector<SubDLimitPoint> grid_lps = SubD::FromControlMesh(grid).LimitPoints();
+  Check(grid_lps.size() == 9, "the flat 3x3 grid has 9 limit points");
+  bool interior_ok = false, edges_ok = true, corners_ok = true, normals_ok = true;
+  int interior_seen = 0, edge_seen = 0, corner_seen = 0;
+  for (const SubDLimitPoint& lp : grid_lps) {
+    const Point3d& c = lp.control_point;
+    const bool on_x_edge = (c.x == 0.0 || c.x == 2.0), on_y_edge = (c.y == 0.0 || c.y == 2.0);
+    if (!on_x_edge && !on_y_edge) {
+      ++interior_seen;
+      interior_ok = lp.valence == 4 && lp.smooth && lp.limit_point.DistanceTo(c) < 1e-9;
+    } else if (on_x_edge && on_y_edge) {
+      ++corner_seen;
+      const Point3d expect(c.x == 0.0 ? 1.0 / 6.0 : 2.0 - 1.0 / 6.0, c.y == 0.0 ? 1.0 / 6.0 : 2.0 - 1.0 / 6.0, 0.0);
+      if (lp.valence != 2 || lp.smooth || lp.limit_point.DistanceTo(expect) > 1e-9) corners_ok = false;
+    } else {
+      ++edge_seen;
+      if (lp.valence != 3 || lp.smooth || lp.limit_point.DistanceTo(c) > 1e-9) edges_ok = false;
+    }
+    if (std::abs(lp.limit_normal.z - 1.0) > 1e-9 || std::abs(lp.limit_normal.x) > 1e-9 ||
+        std::abs(lp.limit_normal.y) > 1e-9) {
+      normals_ok = false;
+    }
+  }
+  Check(interior_seen == 1 && interior_ok,
+        "the grid's one interior vertex is regular (valence 4, smooth) and its limit point is exactly itself");
+  Check(edge_seen == 4 && edges_ok,
+        "the 4 boundary edge midpoints (valence 3, on a crease) have limit points exactly at themselves");
+  Check(corner_seen == 4 && corners_ok,
+        "the 4 corners (valence 2, on a crease) land at exactly (1/6, 1/6, 0) and its mirrors, "
+        "the boundary-crease limit mask (e1 + 4v + e2)/6");
+  Check(normals_ok, "every flat-grid limit normal is exactly (0, 0, 1)");
 }
 
 void TestMeshComputeVertexNormals() {
@@ -21746,12 +22104,16 @@ int main() {
   TestMeshClosestPoint();
   TestMeshSignedDistance();
   TestMeshVolumeMassProperties();
+  TestMeshFireRay();
+  TestMeshDistanceTo();
+  TestMeshClashWith();
   TestMeshAreaCountsBothQuadTriangles();
   TestSubDFromBoxSubdividesToExactCatmullClarkCounts();
   TestSubDFromControlMeshRejectsEmptyMesh();
   TestSubDCreaseAtDoubleEdgeKeepsFoldStraight();
   TestSubDFlatQuadGridStaysFlatAndAreaExact();
   TestSubDToNurbsPatchesExactOnRegularFlatGrid();
+  TestSubDLimitPointsExactCubeAndFlatGrid();
   TestMeshComputeVertexNormals();
   TestMeshSaveObjRoundTrips();
   TestMeshTextureCoordinates();
