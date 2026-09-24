@@ -399,6 +399,45 @@ class NurbsCurve {
   // documented restriction), or OpenNURBS' own call fails.
   Result Extend(double t0, double t1);
 
+  // Joins `other` onto the end of this curve in place, producing ONE
+  // continuous NURBS curve - the first curve-combining operation here
+  // (every earlier method cuts a curve down or reshapes one in place;
+  // nothing could chain two curves into a single one, the "Join" every
+  // modeler has). Exact, not a re-fit: delegates to
+  // `ON_NurbsCurve::Append` after verifying by reading its source that
+  // it's a real implementation - it degree-elevates the lower-degree
+  // operand, makes both rational if either is, clamps the ends, then
+  // splices the two knot vectors with `other`'s knots shifted so its
+  // domain continues from this curve's end - so both operands' own
+  // shapes survive to floating-point round-off (degree elevation and
+  // clamping are shape-preserving, the same machinery `ElevateDegree()`
+  // and `Trim()` already rely on).
+  //
+  // A real `Append` behavior, found by reading rather than assumed, that
+  // this wrapper exists to guard: `Append` never checks that the two
+  // curves actually meet - it simply DISCARDS `other`'s first control
+  // point in favour of this curve's last one (its control-point copy
+  // loop starts at index 1), so appending a curve that doesn't start
+  // where this one ends would silently snap the junction shut and
+  // distort `other`'s first span rather than fail. So this checks first:
+  // `other`'s start must lie within `tolerance` of this curve's end - or,
+  // as a convenience matching Rhino's own Join, `other`'s END may
+  // instead, in which case a reversed copy of `other` is what gets
+  // appended. Throws std::invalid_argument if neither end meets (the
+  // message reports both measured gaps) or if this curve is closed
+  // (nothing can be appended to a closed loop). `tolerance` defaults to
+  // the same 1e-6 `Mesh::MergeAndWeld()` uses for coincident points.
+  //
+  // Continuity at the junction is exactly what the two curves had
+  // geometrically: always C0 (position), a tangent kink if their
+  // tangents differ there - no smoothing is applied. The result's domain
+  // is this curve's domain extended by `other`'s domain length, with the
+  // junction at exactly this curve's previous `Domain().max`, so a
+  // parameter `s` on `other` maps to `old_max + (s - other_min)` on the
+  // result. Returns Result::Failed if either curve has fewer than 2
+  // control points or OpenNURBS' own Append fails.
+  Result Join(const NurbsCurve& other, double tolerance = 1e-6);
+
   // The curve's own parameter domain [min, max] - the valid range for
   // `t` in `PointAt(t)`, `TangentAt(t)`, `CurvatureAt(t)`, and every
   // other by-parameter method below. Not necessarily [0, 1]: e.g.

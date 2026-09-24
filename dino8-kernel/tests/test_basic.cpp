@@ -922,6 +922,110 @@ void TestCurveSplit() {
         "strictly inside it");
 }
 
+void TestCurveJoin() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // Case 1: two unit-domain lines meeting at (1, 0, 0). Every expected
+  // value is hand-derivable from FromControlPoints()'s clamped-uniform
+  // knots (a 2-control-point degree-1 line has domain [0, 1] and is
+  // linear in position): the join keeps degree 1, merges the shared
+  // junction control point (2 + 2 - 1 = 3 control points), extends the
+  // domain to exactly [0, 2] (this curve's [0, 1] plus other's length
+  // 1), puts the junction at exactly t = 1, and Length() is exactly 3
+  // (1 + 2; the 1000-sample polyline lands a sample exactly on t = 1).
+  NurbsCurve polyline = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(1, 0, 0)}, /*degree=*/1);
+  const NurbsCurve second = NurbsCurve::FromControlPoints({Point3d(1, 0, 0), Point3d(1, 2, 0)}, /*degree=*/1);
+  Check(polyline.Join(second) == Result::Ok, "Join of two lines meeting end-to-start succeeds");
+  Check(polyline.Degree() == 1 && polyline.ControlPointCount() == 3,
+        "joining two degree-1 lines keeps degree 1 with 3 control points (the shared junction point merged)");
+  Check(std::abs(polyline.Domain().min - 0.0) < 1e-12 && std::abs(polyline.Domain().max - 2.0) < 1e-12,
+        "the joined domain is exactly [0, 2]: this curve's [0, 1] extended by other's domain length");
+  Check(polyline.PointAt(0.0).DistanceTo(Point3d(0, 0, 0)) < 1e-12 &&
+            polyline.PointAt(1.0).DistanceTo(Point3d(1, 0, 0)) < 1e-12 &&
+            polyline.PointAt(1.5).DistanceTo(Point3d(1, 1, 0)) < 1e-12 &&
+            polyline.PointAt(2.0).DistanceTo(Point3d(1, 2, 0)) < 1e-12,
+        "the joined curve runs (0,0,0) -> (1,0,0) at exactly t = 1 (the junction) -> (1,1,0) at t = 1.5 -> (1,2,0)");
+  Check(std::abs(polyline.Length() - 3.0) < 1e-9, "the joined polyline's length is exactly 3");
+
+  // Case 2: a genuinely different operand - a rational degree-2 quarter
+  // arc (ON_Arc::GetNurbForm, radius 1, center (1,3,0), from (1,2,0) to
+  // (2,3,0)) joined onto the degree-1 polyline. Append must elevate the
+  // polyline to degree 2 and make the result rational, WITHOUT changing
+  // either operand's shape: the polyline part is re-checked at the same
+  // parameters as before, and the arc part is checked at its own
+  // parameters shifted by exactly 2 (old Domain().max - arc Domain().min):
+  // its midpoint is center + (cos45, sin45) in the arc's plane frame =
+  // (1 + 1/sqrt2, 3 - 1/sqrt2, 0), its end (2, 3, 0).
+  const ON_Plane arc_plane(ON_3dPoint(1, 3, 0), ON_3dVector(0, -1, 0), ON_3dVector(1, 0, 0));
+  ON_NurbsCurve arc_nurbs;
+  Check(ON_Arc(ON_Circle(arc_plane, 1.0), ON_PI / 2).GetNurbForm(arc_nurbs) != 0, "ON_Arc::GetNurbForm succeeds");
+  NurbsCurve arc;
+  arc.raw() = arc_nurbs;
+  Check(arc.Degree() == 2 && arc.IsRational() && arc.PointAt(arc.Domain().min).DistanceTo(Point3d(1, 2, 0)) < 1e-12,
+        "sanity: the arc is a rational degree-2 curve starting exactly at the polyline's end (1, 2, 0)");
+  const double arc_min = arc.Domain().min, arc_max = arc.Domain().max;
+  const double arc_length_param = arc_max - arc_min;
+  NurbsCurve joined = polyline;
+  Check(joined.Join(arc) == Result::Ok, "Join of the polyline with a rational quarter arc succeeds");
+  Check(joined.Degree() == 2 && joined.IsRational(),
+        "the result is degree 2 and rational (the polyline was elevated and made rational to match the arc)");
+  Check(std::abs(joined.Domain().max - (2.0 + arc_length_param)) < 1e-12,
+        "the domain grew by exactly the arc's own domain length");
+  Check(joined.PointAt(0.5).DistanceTo(Point3d(0.5, 0, 0)) < 1e-9 &&
+            joined.PointAt(1.0).DistanceTo(Point3d(1, 0, 0)) < 1e-9 &&
+            joined.PointAt(1.5).DistanceTo(Point3d(1, 1, 0)) < 1e-9 &&
+            joined.PointAt(2.0).DistanceTo(Point3d(1, 2, 0)) < 1e-9,
+        "the polyline part is unchanged at its own parameters after degree elevation (shape-preserving)");
+  const double shift = 2.0 - arc_min;
+  Check(joined.PointAt(shift + 0.5 * (arc_min + arc_max)).DistanceTo(Point3d(1 + std::sqrt(0.5), 3 - std::sqrt(0.5), 0)) <
+                1e-9 &&
+            joined.PointAt(joined.Domain().max).DistanceTo(Point3d(2, 3, 0)) < 1e-9,
+        "the arc part is reproduced at its own parameters shifted by exactly 2: midpoint "
+        "(1 + 1/sqrt2, 3 - 1/sqrt2, 0), end (2, 3, 0)");
+  // Length(): the default 1000-sample polyline now straddles both kinks
+  // (t = 1 and t = 2 no longer land on a sample once the domain is
+  // 3.57 long) and cuts their corners by ~1e-3, so measure with enough
+  // samples for that chord error to drop below 1e-4 - the true length
+  // is exactly 3 + pi/2.
+  Check(std::abs(joined.Length(200000) - (3.0 + ON_PI / 2)) < 1e-4,
+        "the joined curve's length is 3 + pi/2 (two lines plus a quarter circle)");
+
+  // Case 3: `other` given in the opposite direction - its END meets this
+  // curve's end - is auto-reversed (Rhino's Join convenience), yielding
+  // the same curve as case 1.
+  NurbsCurve auto_reversed = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(1, 0, 0)}, /*degree=*/1);
+  const NurbsCurve backwards = NurbsCurve::FromControlPoints({Point3d(1, 2, 0), Point3d(1, 0, 0)}, /*degree=*/1);
+  Check(auto_reversed.Join(backwards) == Result::Ok && auto_reversed.PointAt(1.5).DistanceTo(Point3d(1, 1, 0)) < 1e-12 &&
+            auto_reversed.PointAt(2.0).DistanceTo(Point3d(1, 2, 0)) < 1e-12,
+        "an `other` whose END meets this curve's end is reversed and joined, giving the same curve");
+
+  // Case 4: neither end meets -> throws rather than letting Append
+  // silently snap the junction (its documented discard-first-CV behavior).
+  bool threw_gap = false;
+  try {
+    NurbsCurve line = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(1, 0, 0)}, /*degree=*/1);
+    line.Join(NurbsCurve::FromControlPoints({Point3d(5, 5, 5), Point3d(6, 6, 6)}, /*degree=*/1));
+  } catch (const std::invalid_argument&) {
+    threw_gap = true;
+  }
+  Check(threw_gap, "Join throws when neither end of `other` meets this curve's end");
+
+  // Case 5: a closed curve can't be appended to.
+  bool threw_closed = false;
+  try {
+    ON_NurbsCurve circle_nurbs;
+    ON_Circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 1.0).GetNurbForm(circle_nurbs);
+    NurbsCurve circle;
+    circle.raw() = circle_nurbs;
+    circle.Join(NurbsCurve::FromControlPoints({Point3d(1, 0, 0), Point3d(2, 0, 0)}, /*degree=*/1));
+  } catch (const std::invalid_argument&) {
+    threw_closed = true;
+  }
+  Check(threw_closed, "Join throws when this curve is closed");
+}
+
 void TestCurveExtend() {
   using dino8::kernel::NurbsCurve;
   using dino8::kernel::Point3d;
@@ -20914,6 +21018,7 @@ int main() {
   TestCurveTrim();
   TestCurveSplit();
   TestCurveExtend();
+  TestCurveJoin();
   TestCurveMakePeriodicExact();
   TestCurveClosestPoint();
   TestCurveFitLeastSquares();

@@ -1968,6 +1968,40 @@ What this repo does instead:
   of its first face only, since the limit surface genuinely has one
   normal per sector there. `subd.h`'s class comment and the "What's
   still not done" bullet are both corrected rather than left stale.
+- `NurbsCurve::Join(other, tolerance)`: joins `other` onto this curve's
+  end, in place, into ONE continuous NURBS - the first curve-combining
+  operation here (`Trim()`/`Split()`/`Extend()` all cut or stretch a
+  single curve; nothing could chain two into the "Join" every modeler
+  has). Exact, not a re-fit: `ON_NurbsCurve::Append`, verified by
+  reading its source to be a real implementation that degree-elevates
+  the lower-degree operand, makes both rational if either is, clamps,
+  and splices the knot vectors with `other`'s knots shifted to continue
+  from this curve's end. A real `Append` behavior found by that reading,
+  which the wrapper exists to guard: it never checks that the curves
+  meet - it silently DISCARDS `other`'s first control point in favour of
+  this curve's last (its copy loop starts at index 1), so a non-meeting
+  pair would get its junction snapped shut and `other`'s first span
+  distorted rather than an error. `Join()` therefore requires `other`'s
+  start (or, auto-reversing a copy as Rhino's Join does, its end) within
+  `tolerance` of this curve's end, throwing `std::invalid_argument` with
+  both measured gaps otherwise, and refuses a closed `this`. Verified
+  with hand-derivable exact values, confirmed by a debug run first: two
+  unit-domain lines meeting at (1,0,0) join to degree 1 with 3 control
+  points (the junction merged), domain exactly `[0, 2]`, the junction at
+  exactly `t = 1`, `(1,1,0)` at `t = 1.5`, length exactly 3; joining a
+  genuine rational degree-2 quarter arc (`ON_Arc::GetNurbForm`) onto
+  that polyline elevates it to degree 2 and makes it rational while the
+  polyline part is unchanged at its own parameters (degree elevation is
+  shape-preserving) and the arc part is reproduced at its own parameters
+  shifted by exactly 2 (midpoint `(1 + 1/sqrt2, 3 - 1/sqrt2, 0)`, end
+  `(2, 3, 0)`), total length `3 + pi/2`; the reversed-operand case gives
+  the identical curve; and both error paths throw. One honest nuance
+  the debug run surfaced about an EXISTING method, not this one:
+  `Length()`'s default 1000-sample polyline lands a sample exactly on
+  the two-line join's kink (so that length is exactly 3) but not on the
+  three-piece curve's kinks once its domain is 3.57 long, cutting each
+  corner by ~1e-3 - the same polyline approximation `Length()` has
+  always documented, so the test measures that case at 200000 samples.
 
 ## What's still not done (as of chunk 2)
 
