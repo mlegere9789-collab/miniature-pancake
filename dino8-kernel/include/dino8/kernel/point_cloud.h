@@ -8,6 +8,15 @@
 
 namespace dino8::kernel {
 
+// One neighbor found by PointCloud::KNearest() or
+// PointsWithinRadius(): the index of a point in this cloud (exactly what
+// PointAt(index) would return) paired with its exact Euclidean distance
+// to the query point that found it.
+struct PointCloudNeighbor {
+  int index = -1;
+  double distance = 0;
+};
+
 // Wraps ON_PointCloud - OpenNURBS' own point-set geometry class, the same
 // one its own .3dm reader/writer already round-trips (ON_BinaryArchive's
 // object table dispatches on ON_Geometry::Cast the same way every other
@@ -68,6 +77,41 @@ class PointCloud {
   // NurbsCurve/NurbsSurface's own in-place-vs-Brep::Transform split use
   // elsewhere in this kernel.
   PointCloud Transform(const ON_Xform& xform) const;
+
+  // The `k` closest points to `query`, nearest first - the search a
+  // "select nearby points" tool, a local normal-estimation step, or a
+  // nearest-sample lookup needs, which nothing here could answer before
+  // (only a per-point-BY-INDEX PointAt() existed; nothing could ask
+  // "which points are near this one"). Exact Euclidean distance to every
+  // point in the cloud, brute force - no spatial acceleration structure
+  // (no kd-tree/R-tree, despite OpenNURBS shipping a real ON_RTree this
+  // could have been layered on), the same "exact answer over every
+  // candidate, no BVH" tradeoff Mesh::DistanceTo() documents for its own
+  // point-to-triangle search; honest about being O(PointCount()) per
+  // query rather than claiming a scalability this doesn't have. Ties
+  // (exactly equal distance) are broken by ascending index, so the
+  // result is fully deterministic and repeatable. If `k >= PointCount()`,
+  // every point is returned, sorted by distance - not an error, the same
+  // "clamp rather than reject" a request for more neighbors than exist
+  // gets elsewhere. Throws std::invalid_argument if `k <= 0` or the cloud
+  // has no points (there is no reasonable set of "nearest points" to a
+  // query into an empty cloud, unlike PointsWithinRadius() below, where
+  // zero matches is itself a legitimate answer).
+  std::vector<PointCloudNeighbor> KNearest(Point3d query, int k) const;
+
+  // Every point within `radius` of `query` (inclusive: distance <=
+  // radius), sorted by ascending distance - the search a "select points
+  // near here" tool or a local-density/outlier check needs. Exact
+  // Euclidean distance to every point, brute force (same
+  // no-acceleration-structure tradeoff as KNearest() above, and the same
+  // ascending-index tie-break for determinism). An empty result is not an
+  // error - nothing lying within `radius` is a legitimate answer, not a
+  // failed query, so an empty cloud or a radius smaller than every
+  // distance both just return an empty vector. A negative `radius` IS
+  // rejected: throws std::invalid_argument (there is no such thing as a
+  // negative-radius neighborhood, so this can only be a caller bug, not
+  // a sparse region).
+  std::vector<PointCloudNeighbor> PointsWithinRadius(Point3d query, double radius) const;
 
   const ON_PointCloud& raw() const { return cloud_; }
   ON_PointCloud& raw() { return cloud_; }
