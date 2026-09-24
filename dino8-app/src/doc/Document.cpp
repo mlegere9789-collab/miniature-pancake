@@ -291,12 +291,51 @@ bool Document::RemoveLayer(int index) {
   for (const Layer& l : layers_) {
     if (l.parent == index) return false;
   }
+  // "In use" also covers every OTHER holder of a layer index, not just live
+  // document objects: a block definition's own member objects (what Insert
+  // copies each instance from) and a cage binding's captive originals (what
+  // ExtractOriginalCaptives/CageEdit's re-evaluation read back) are real
+  // geometry that would otherwise be silently left pointing at a shifted-
+  // or out-of-range layer index once the erase below renumbers everything
+  // after it.
+  for (const BlockDefinition& b : blocks_) {
+    for (const SceneObject& o : b.objects) {
+      if (o.layer_index == index) return false;
+    }
+  }
+  for (const auto& kv : cage_bindings_) {
+    for (const Captive& c : kv.second.captives) {
+      if (c.original.layer_index == index) return false;
+    }
+  }
   layers_.erase(layers_.begin() + index);
   for (SceneObject& o : objects_) {
     if (o.layer_index > index) --o.layer_index;
   }
   for (Layer& l : layers_) {
     if (l.parent > index) --l.parent;
+  }
+  for (BlockDefinition& b : blocks_) {
+    for (SceneObject& o : b.objects) {
+      if (o.layer_index > index) --o.layer_index;
+    }
+  }
+  for (auto& kv : cage_bindings_) {
+    for (Captive& c : kv.second.captives) {
+      if (c.original.layer_index > index) --c.original.layer_index;
+    }
+  }
+  // A layout detail's per-detail hidden-layer list is just a note, not
+  // geometry - it isn't part of the "in use" check above - so a purged
+  // layer's own entry is dropped outright rather than left dangling, and
+  // every later index shifts down like everywhere else above.
+  for (Layout& lay : layouts_) {
+    for (LayoutDetail& d : lay.details) {
+      d.hidden_layers.erase(std::remove(d.hidden_layers.begin(), d.hidden_layers.end(), index), d.hidden_layers.end());
+      for (int& li : d.hidden_layers) {
+        if (li > index) --li;
+      }
+    }
   }
   if (current_layer_ > index) --current_layer_;
   Touch();

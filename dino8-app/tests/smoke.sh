@@ -3206,4 +3206,22 @@ hcheck "UpdateHistory: 1 object(s) re-evaluated from their source curve(s)' curr
 hcheck_absent "Bounding box: (40, 0, 0) to (50, 0, 5)" "the Box was never rebuilt into line 5's extrusion (the exact silent wrong result the id reuse produced before)"
 hcheck "Bounding box: (50, 50, 0) to (60, 60, 10)" "the Box's own geometry is untouched after UpdateHistory"
 
+# RemoveLayer must keep every OTHER holder of a layer index consistent, not
+# just live objects (see tests/layer_remap_script.txt): a layout detail's
+# per-detail hidden layers, a block definition's own member objects, and its
+# "in use" check must also look at block definition members, not just live
+# objects.
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  LR="$("$BIN" --smoke 200 --script "$HERE/layer_remap_script.txt" 2>&1)" || { echo "$LR"; echo "FAIL: layer-remap script exited non-zero"; exit 1; }
+else
+  LR="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 200 --script "$HERE/layer_remap_script.txt" 2>&1)" || { echo "$LR"; echo "FAIL: layer-remap script exited non-zero"; exit 1; }
+fi
+echo "$LR" | grep -E "^(ok|FAIL)"
+if echo "$LR" | grep -q "^FAIL"; then fail=1; fi
+echo "$LR" | grep -q "^smoke:" || { echo "$LR"; echo "FAIL: layer-remap script produced no smoke line"; fail=1; }
+lcheck() { if echo "$LR" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+lcheck "ShowLayersInDetail: 1 layer(s) in 1 detail(s)" "the detail's hidden-layer entry followed Walls to its new index (0 before the fix - the stale index resolved to the wrong, or no, layer)"
+lcheck "  Layer index: 1" "a fresh Bk instance lands on Walls (index 1 after Purge removes Spare), not Roof (index 2 before the fix, since block members were never remapped)"
+lcheck "Purge: nothing to remove" "Walls is reported in use (and left alone) once only a block definition's member is on it - the 'in use' check before the fix looked at live objects only"
+
 exit $fail
