@@ -151,7 +151,7 @@ Point3d Mesh::GetCentroid() const {
     }
   }
 
-  if (std::abs(volume_sum) <= 1e-12) {
+  if (std::abs(volume_sum) <= tolerance::kZero) {
     throw std::invalid_argument(
         "dino8::kernel::Mesh::GetCentroid: mesh volume is (near) zero - not a "
         "closed, non-degenerate solid this formula can compute a centroid for");
@@ -198,7 +198,7 @@ namespace {
 // way this file's own winding conventions did.
 bool RayIntersectsTriangle(const Point3d& origin, const Vector3d& direction, const Point3d& a,
                             const Point3d& b, const Point3d& c) {
-  constexpr double kEpsilon = 1e-12;
+  constexpr double kEpsilon = tolerance::kZero;
   const Vector3d edge1 = b - a;
   const Vector3d edge2 = c - a;
   const Vector3d h = ON_CrossProduct(direction, edge2);
@@ -440,7 +440,7 @@ MassProperties Mesh::VolumeMassProperties() const {
 
   MassProperties mp;
   mp.volume = intg[0];
-  if (std::abs(mp.volume) <= 1e-12) {
+  if (std::abs(mp.volume) <= tolerance::kZero) {
     throw std::invalid_argument(
         "dino8::kernel::Mesh::VolumeMassProperties: mesh volume is (near) zero - "
         "not a closed, non-degenerate solid whose moments are defined");
@@ -529,7 +529,7 @@ std::vector<Vector3d> Mesh::ComputeVertexNormals() const {
   }
 
   for (Vector3d& n : normals) {
-    if (n.Length() > 1e-12) {
+    if (n.Length() > tolerance::kZero) {
       n.Unitize();
     }
   }
@@ -1340,11 +1340,11 @@ bool IsPlanarRingSimple(const std::vector<Point3d>& ring) {
     const Vector3d e1 = ring[(i + 1) % n] - ring[i];
     const Vector3d e2 = ring[(i + 2) % n] - ring[i];
     normal = ON_CrossProduct(e1, e2);
-    if (normal.Length() > 1e-9) {
+    if (normal.Length() > tolerance::kZeroVector) {
       break;
     }
   }
-  if (normal.Length() <= 1e-9) {
+  if (normal.Length() <= tolerance::kZeroVector) {
     // Every triple tried was collinear/degenerate - not planar-polygon
     // shaped at all; leave that to fail elsewhere (or trivially "pass"
     // here) rather than misclassify a degenerate ring as self-intersecting.
@@ -1370,12 +1370,12 @@ bool IsRingPlanar(const std::vector<Point3d>& ring) {
     const Vector3d e1 = ring[(i + 1) % n] - ring[i];
     const Vector3d e2 = ring[(i + 2) % n] - ring[i];
     normal = ON_CrossProduct(e1, e2);
-    if (normal.Length() > 1e-9) {
+    if (normal.Length() > tolerance::kZeroVector) {
       origin_index = i;
       break;
     }
   }
-  if (normal.Length() <= 1e-9) {
+  if (normal.Length() <= tolerance::kZeroVector) {
     // Every triple tried was collinear/degenerate - not planar-polygon
     // shaped at all; leave that to fail elsewhere rather than misclassify
     // a degenerate ring as non-planar.
@@ -1482,7 +1482,7 @@ Mesh Mesh::RevolveProfile(const std::vector<Point2d>& profile, Point3d axis_poin
         "dino8::kernel::Mesh::RevolveProfile: revolve_segments must be at "
         "least 3 (fewer can't form a non-degenerate ring)");
   }
-  constexpr double kOnAxisEpsilon = 1e-9;
+  constexpr double kOnAxisEpsilon = tolerance::kZeroVector;
   const bool front_is_apex = std::abs(profile.front().x) <= kOnAxisEpsilon;
   const bool back_is_apex = std::abs(profile.back().x) <= kOnAxisEpsilon;
 

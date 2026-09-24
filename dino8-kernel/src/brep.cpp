@@ -497,7 +497,7 @@ Brep::CylindricalFace ExtractCylindricalFace(const ON_Brep& brep, int face_index
 
   Vector3d xaxis = p_corner - frame_origin;
   const double radius = cyl.circle.Radius();
-  const double radius_tol = std::max(1e-9, radius * 1e-6);
+  const double radius_tol = tolerance::RelativeDistance(radius);
   if (std::fabs(xaxis.Length() - radius) > radius_tol || !xaxis.Unitize()) {
     throw std::runtime_error(
         "dino8::kernel::Brep::MixedFaces: face " + std::to_string(face_index) +
@@ -1501,7 +1501,7 @@ Brep Brep::FromMixedFaces(const std::vector<Brep::PlanarFace>& faces,
         // evaluated back through the REAL surface, must reproduce the same
         // 3D point this whole notch is built from.
         const Point3d check = surface->PointAt(u, height);
-        const double check_tol = std::max(1e-6, cf.radius * 1e-6);
+        const double check_tol = tolerance::DistanceForSize(cf.radius);
         if (check.DistanceTo(p) > check_tol) {
           throw std::runtime_error(
               "dino8::kernel::Brep::FromMixedFaces: a CylindricalFace's own cap "
@@ -2154,7 +2154,7 @@ bool SameCircleAsCylinder(const Point3d& center, double radius, const Vector3d& 
   if (center.DistanceTo(axis_point) > rtol) return false;
   if (std::fabs(radius - cf.radius) > rtol) return false;
   const double align = std::fabs(ON_DotProduct(normal, cf.frame.zaxis));
-  if (align < 1.0 - 1e-6) return false;
+  if (align < 1.0 - tolerance::kAlignment) return false;
   return true;
 }
 
@@ -2223,8 +2223,8 @@ bool SameWedgeAsCylinder(const Brep::CylindricalFace& a, const Brep::Cylindrical
   const Point3d axis_point = a.frame.origin + height * a.frame.zaxis;
   if (b.frame.origin.DistanceTo(axis_point) > rtol) return false;
   if (std::fabs(a.radius - b.radius) > rtol) return false;
-  if (ON_DotProduct(a.frame.zaxis, b.frame.zaxis) < 1.0 - 1e-6) return false;
-  if (ON_DotProduct(a.frame.xaxis, b.frame.xaxis) < 1.0 - 1e-6) return false;
+  if (ON_DotProduct(a.frame.zaxis, b.frame.zaxis) < 1.0 - tolerance::kAlignment) return false;
+  if (ON_DotProduct(a.frame.xaxis, b.frame.xaxis) < 1.0 - tolerance::kAlignment) return false;
   if (std::fabs(a.angle - b.angle) > 1e-6) return false;
   return true;
 }
@@ -3418,7 +3418,7 @@ std::unordered_map<int, std::array<std::vector<EdgeForce>, 4>> ComputePlainQuadS
         const Point3d a_to = PlainQuadEdgeTo(qa.corner, ea);
         const double edge_len = a_from.DistanceTo(a_to);
         if (edge_len < 1e-12) continue;  // degenerate - nothing to match
-        const double lin_tol = std::max(1e-9, edge_len * 1e-6);
+        const double lin_tol = tolerance::RelativeDistance(edge_len);
         for (int eb = 0; eb < 4; ++eb) {
           const Point3d b_from = PlainQuadEdgeFrom(qb.corner, eb);
           const Point3d b_to = PlainQuadEdgeTo(qb.corner, eb);
@@ -3984,7 +3984,7 @@ std::vector<Mesh> Brep::TessellateConforming(int u_divisions, int v_divisions, i
           const double edge_len2 = edge_vec.LengthSquared();
           if (edge_len2 < 1e-18) continue;
           const double edge_len = std::sqrt(edge_len2);
-          const double lin_tol = std::max(1e-9, edge_len * 1e-6);
+          const double lin_tol = tolerance::RelativeDistance(edge_len);
 
           auto project = [&](const Point3d& p, double* t_out) {
             const Vector3d d = p - from;
@@ -4639,7 +4639,7 @@ int Brep::MergeCoplanarFaces(double tolerance) {
 
         // Coplanar AND coincident: same-direction normal, and fb's plane
         // origin lies in fa's own plane.
-        if (ON_DotProduct(pa.plane.zaxis, pb.plane.zaxis) < 1.0 - 1e-6) continue;
+        if (ON_DotProduct(pa.plane.zaxis, pb.plane.zaxis) < 1.0 - tolerance::kAlignment) continue;
         if (std::fabs(ON_DotProduct(pa.plane.zaxis, pb.plane.origin - pa.plane.origin)) > tol) continue;
 
         if (TryMergeCoplanarPair(brep_, fa, fb, edge->m_edge_index, pa.plane, tol)) {

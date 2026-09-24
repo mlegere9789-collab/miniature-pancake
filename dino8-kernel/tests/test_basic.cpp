@@ -5909,6 +5909,18 @@ void TestTolerancePolicyValuesAreTheOnesInForce() {
     threw_big = true;
   }
   Check(threw_big, "...and rejects one 3*kPlanarityRelative*extent out of plane - the routed constant is in force");
+
+  // The second routing pass (brep.cpp's radius/edge-length fit
+  // tolerances and unit-vector alignment checks, mesh.cpp's degeneracy
+  // floors) - same "name and route, prove nothing moved" contract as
+  // above, pinned by VALUE since these sites are covered behaviourally
+  // by the existing cylinder/cone/steinmetz/planar-ring test suite
+  // (unchanged pass/fail there, plus the byte-identical boolean sweep,
+  // is what proves the routing changed nothing measurable).
+  Check(tol::kTinyDistance == 1e-9, "tolerance::kTinyDistance is the 1e-9 the radius/edge-length fit sites always used");
+  Check(tol::RelativeDistance(0.0) == tol::kTinyDistance && tol::RelativeDistance(10.0) == 10.0 * tol::kRelative,
+        "RelativeDistance() floors at kTinyDistance and scales by kRelative above it - DistanceForSize()'s purely-relative sibling");
+  Check(tol::kAlignment == 1e-6, "tolerance::kAlignment is the 1e-6 the unit-vector dot-product-deficit sites always used");
 }
 
 // --- Check / heal fixtures ---------------------------------------------

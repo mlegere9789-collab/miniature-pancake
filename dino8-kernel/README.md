@@ -1826,11 +1826,35 @@ What this repo does instead:
   have failed the 3x rejection instead. Honest limits, unchanged from
   before and now stated in one place: `kDistance` is not scaled by model
   size, so a 1e-6 gap on a 1e6-unit model is below double precision's
-  own resolution there; and the many OTHER literals still in brep.cpp/
-  boolean.cpp (`scale * 1e-6` planarity checks, `1e-4` cylinder-fit
-  tolerances, `1e-9` axis floors) are not routed yet - only the sites
-  the "Known gaps" note itself named, plus the weld/join family, so the
-  byte-identical sweep claim stays checkable one family at a time.
+  own resolution there.
+
+  A second, later routing pass (same commit series, same name-and-route
+  discipline, checked the same two ways - byte-identical sweep, full
+  green ctest - one family at a time) added `tolerance::kTinyDistance`
+  (1e-9) and `RelativeDistance(size)` = `max(kTinyDistance, size *
+  kRelative)` - `DistanceForSize()`'s purely-relative sibling, for the
+  `std::max(1e-9, x * 1e-6)` radius/edge-length fit tolerances brep.cpp
+  used by hand (a cylinder/cone axis-distance check, the plain-quad seam
+  and general-boolean linear-fit tolerances) - and routed the several
+  `1.0 - 1e-6` unit-vector-alignment checks (cylinder/cone/Steinmetz
+  parallelism, `MergeCoplanarFaces()`'s own plane-normal match) through
+  the existing `kAlignment`, plus `mesh.cpp`'s remaining `1e-9`/`1e-12`
+  degeneracy floors (the volume/centroid/vertex-normal zero checks,
+  `IsPlanarRingSimple()`/`IsRingPlanar()`'s own degenerate-triple
+  fallback) through `kZeroVector`/`kZero`. Verified by BOTH value and
+  behaviour: `TestTolerancePolicyValuesAreTheOnesInForce` pins
+  `kTinyDistance`/`kAlignment` and `RelativeDistance()`'s own floor/scale
+  by value, and the unchanged pass/fail of the existing cylinder, cone,
+  Steinmetz and planar-ring tests (whose fits and alignment checks route
+  through these exact sites) is what proves nothing measurable moved -
+  the same claim the byte-identical sweep makes for the boolean path.
+  What's left unrouted after both passes: `TrimmedPlanarFace()`'s
+  clipping-boundary sample-count heuristics and a handful of one-off
+  epsilons with no natural family yet (`FromMixedFaces`' 5%
+  surface-padding margin, `boolean.cpp`'s own `kConvexTol`/
+  `kMinCylinderPairPieceAngle`/`kTiny`) - narrower, more special-purpose
+  constants than the two families routed so far, left for a pass with
+  its own dedicated verification rather than folded in here.
 
 ## Blending build log (Parasolid "blend/chamfer" class, chronological)
 
