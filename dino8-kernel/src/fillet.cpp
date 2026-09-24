@@ -2248,43 +2248,34 @@ void CollapseNotchRun(std::vector<Brep::PlanarFace>& other_faces, const Point3d&
 
 }  // namespace
 
-Brep RemoveBlend(const Brep& solid, Point3d point_on_fillet) {
-  const Brep::MixedFacesResult mf = solid.MixedFaces();
-  if (mf.cylindrical.empty()) {
-    throw std::invalid_argument("dino8::kernel::RemoveBlend: `solid` has no cylindrical face to remove");
-  }
+namespace {
 
-  // Locate the cylindrical face closest to `point_on_fillet`, measured
-  // against its own TRIMMED extent (axial position clamped to [0,
-  // length], angular position clamped to [0, angle]) - not the infinite
-  // cylinder, so a point near a DIFFERENT fillet's own cylinder (sharing
-  // the same axis/radius by coincidence) is never mismatched.
-  int best = -1;
-  double best_d = std::numeric_limits<double>::infinity();
-  for (size_t c = 0; c < mf.cylindrical.size(); ++c) {
-    const Brep::CylindricalFace& cf = mf.cylindrical[c];
-    const Vector3d d = point_on_fillet - cf.frame.origin;
-    const double h = std::max(0.0, std::min(cf.length, d * cf.frame.zaxis));
-    double phi = std::atan2(d * cf.frame.yaxis, d * cf.frame.xaxis);
-    if (phi < 0.0) phi += 2.0 * ON_PI;
-    phi = std::max(0.0, std::min(cf.angle, phi));
-    const Point3d on_surface =
-        cf.frame.origin + h * cf.frame.zaxis + cf.radius * (std::cos(phi) * cf.frame.xaxis + std::sin(phi) * cf.frame.yaxis);
-    const double dist = on_surface.DistanceTo(point_on_fillet);
-    if (dist < best_d) {
-      best_d = dist;
-      best = static_cast<int>(c);
+// Shared by both the cylindrical and conical branches of RemoveBlend:
+// locates a face among `faces` whose own loop has an edge exactly
+// matching {A, B} (either walk order) - the same rail-sharing fact
+// FilletConvexEdge's/FilletConvexEdgeTapered's own doc comments rely on
+// to weld a fillet patch to its two adjacent planar faces in the first
+// place. Returns -1 if none matches.
+int FindFaceWithEdge(const std::vector<Brep::PlanarFace>& faces, const Point3d& A, const Point3d& B, double tol) {
+  for (size_t f = 0; f < faces.size(); ++f) {
+    const std::vector<Point3d>& loop = faces[f].loop;
+    const size_t n = loop.size();
+    for (size_t k = 0; k < n; ++k) {
+      const size_t k1 = (k + 1) % n;
+      if ((PointsEqual(loop[k], A, tol) && PointsEqual(loop[k1], B, tol)) ||
+          (PointsEqual(loop[k], B, tol) && PointsEqual(loop[k1], A, tol))) {
+        return static_cast<int>(f);
+      }
     }
   }
-  // Use MixedFaces()' own planar records (NOT PlanarFaces(), which throws
-  // outright on any non-planar face - exactly the cylindrical face this
-  // function exists to remove).
-  const std::vector<Brep::PlanarFace>& faces = mf.planar;
-  const double tol = RelativeTol(faces);
-  if (best < 0 || best_d > std::max(tol * 100.0, 1e-4)) {
-    throw std::invalid_argument(
-        "dino8::kernel::RemoveBlend: `point_on_fillet` is not near any cylindrical face of `solid`");
-  }
+  return -1;
+}
+
+// The genuine inverse of FilletConvexEdge's own construction (see
+// RemoveBlend's own doc comment for the full derivation) - removes
+// `mf.cylindrical[best]` and restores the sharp edge it rounded off.
+Brep RemoveCylindricalBlend(const Brep::MixedFacesResult& mf, int best, const std::vector<Brep::PlanarFace>& faces,
+                            double tol) {
   const Brep::CylindricalFace& cf = mf.cylindrical[static_cast<size_t>(best)];
   if (!cf.cap0_notch_points.empty() || !cf.cap1_notch_points.empty()) {
     throw std::invalid_argument(
@@ -2292,42 +2283,19 @@ Brep RemoveBlend(const Brep& solid, Point3d point_on_fillet) {
         "- out of scope, see this function's own doc comment");
   }
 
-  // Step 1: locate face i (shares the angle-0 rail) and face j (shares
-  // the angle-`angle` rail) among `solid`'s own PlanarFaces() - the exact
-  // rail corner points, read directly off `cf`.
   const Point3d R0 = cf.frame.origin + cf.radius * cf.frame.xaxis;
   const Point3d R1 = R0 + cf.length * cf.frame.zaxis;
   const Point3d S0 = cf.frame.origin + cf.radius * (std::cos(cf.angle) * cf.frame.xaxis + std::sin(cf.angle) * cf.frame.yaxis);
   const Point3d S1 = S0 + cf.length * cf.frame.zaxis;
 
-  auto find_face_with_edge = [&](const Point3d& A, const Point3d& B) {
-    for (size_t f = 0; f < faces.size(); ++f) {
-      const std::vector<Point3d>& loop = faces[f].loop;
-      const size_t n = loop.size();
-      for (size_t k = 0; k < n; ++k) {
-        const size_t k1 = (k + 1) % n;
-        if ((PointsEqual(loop[k], A, tol) && PointsEqual(loop[k1], B, tol)) ||
-            (PointsEqual(loop[k], B, tol) && PointsEqual(loop[k1], A, tol))) {
-          return static_cast<int>(f);
-        }
-      }
-    }
-    return -1;
-  };
-  const int idx_i = find_face_with_edge(R0, R1);
-  const int idx_j = find_face_with_edge(S0, S1);
+  const int idx_i = FindFaceWithEdge(faces, R0, R1, tol);
+  const int idx_j = FindFaceWithEdge(faces, S0, S1, tol);
   if (idx_i < 0 || idx_j < 0 || idx_i == idx_j) {
     throw std::invalid_argument(
         "dino8::kernel::RemoveBlend: could not find the two planar faces sharing this cylinder's own two straight "
         "rails - is this really a FilletConvexEdge-built face?");
   }
 
-  // Step 2: recover n_i/n_j directly, then bis/cosb/offset exactly as
-  // FilletConvexEdge's own construction, and CHECK the round trip (this
-  // rejects a CylindricalFace this function's own inverse does not apply
-  // to, e.g. one of FilletConvexEdges' own spherically-set-back
-  // cylinders, whose R0 is NOT at axis_point(edge_p0) + radius*n_i for
-  // the plain edge_p0 this reconstructs).
   const Vector3d n_i = faces[static_cast<size_t>(idx_i)].plane.zaxis;
   const Vector3d n_j = faces[static_cast<size_t>(idx_j)].plane.zaxis;
   Vector3d bis = n_i + n_j;
@@ -2364,14 +2332,10 @@ Brep RemoveBlend(const Brep& solid, Point3d point_on_fillet) {
         "ends (from FilletConvexEdges) - out of scope, see this function's own doc comment");
   }
 
-  // Step 3-4: re-trim faces i/j back to the restored sharp edge.
   std::vector<Brep::PlanarFace> mixed_planar = faces;
   ReplaceLoopEdge(mixed_planar[static_cast<size_t>(idx_i)].loop, R0, R1, edge_p0, edge_p1, tol);
   ReplaceLoopEdge(mixed_planar[static_cast<size_t>(idx_j)].loop, S0, S1, edge_p0, edge_p1, tol);
 
-  // Step 5: collapse any corner notch at either end on a THIRD face -
-  // scanning every face except i/j (mirroring NotchCornerAtVertex's own
-  // "other_faces" scope).
   std::vector<Brep::PlanarFace> others;
   std::vector<size_t> others_idx;
   for (size_t f = 0; f < mixed_planar.size(); ++f) {
@@ -2383,12 +2347,195 @@ Brep RemoveBlend(const Brep& solid, Point3d point_on_fillet) {
   CollapseNotchRun(others, R1, S1, edge_p1, tol);
   for (size_t o = 0; o < others.size(); ++o) mixed_planar[others_idx[o]] = std::move(others[o]);
 
-  // Step 6: drop this cylinder, keep every other face untouched.
   std::vector<Brep::CylindricalFace> remaining_cyl;
   for (size_t c = 0; c < mf.cylindrical.size(); ++c) {
     if (static_cast<int>(c) != best) remaining_cyl.push_back(mf.cylindrical[c]);
   }
   return Brep::FromMixedFaces(mixed_planar, remaining_cyl, mf.conical, mf.spherical);
+}
+
+// The genuine inverse of FilletConvexEdgeTapered's own construction -
+// removes `mf.conical[best]` and restores the sharp edge (or, for one
+// segment of a multi-station taper, that segment's own straight span)
+// it rounded off.
+//
+// The rolling-ball radii r_lo/r_hi at the segment's own two ends follow
+// directly from the cone's own TRUE radii: radius0_true = r_lo*c,
+// radius1_true = r_hi*c where c = 1/sqrt(1 + tan_half_angle^2) (the
+// exact algebraic inverse of BuildTaperedConeSegment's own radius0_true
+// = r_lo*c derivation, itself already known in closed form here since
+// tan_half_angle = (radius1_true - radius0_true) / length is read
+// straight off the ConicalFace's own fields, no unknowns).
+//
+// Rather than also inverting the apex/axis construction (m, Umag, c) to
+// recover edge_p0/edge_p1 directly, this uses the SAME fact
+// FilletConvexEdge's own inverse does: k_i = n_i - bis/cosb is a FIXED
+// vector (no unknowns, computed from the two recovered face normals
+// alone), and the cone's own rail corner at (v0, angle 0) is EXACTLY
+// edge_p0 + r_lo*k_i (FilletConvexEdgeTapered's own rail_i(0) - see its
+// doc comment) - so edge_p0 = (that rail corner) - r_lo*k_i, and
+// likewise edge_p1 from the (v1, angle 0) corner and r_hi*k_i. This
+// needs no separate recovery of the taper's own apex/axis geometry at
+// all. The SAME two points, reconstructed independently from face j's
+// own k_j instead of face i's own k_i, are then a genuine, discriminating
+// checked invariant (not vacuous, since k_i != k_j) - not merely trusted.
+Brep RemoveConicalBlend(const Brep::MixedFacesResult& mf, int best, const std::vector<Brep::PlanarFace>& faces,
+                        double tol) {
+  const Brep::ConicalFace& cf = mf.conical[static_cast<size_t>(best)];
+  if (!(cf.length > 0.0) || std::fabs(cf.radius1 - cf.radius0) < 1e-300) {
+    throw std::invalid_argument("dino8::kernel::RemoveBlend: degenerate conical face (please report this as a bug)");
+  }
+  const double tan_half_angle = (cf.radius1 - cf.radius0) / cf.length;
+  const double c = 1.0 / std::sqrt(1.0 + tan_half_angle * tan_half_angle);
+  const double r_lo = cf.radius0 / c;
+  const double r_hi = cf.radius1 / c;
+  const double v0 = cf.radius0 / tan_half_angle;
+  const double v1 = cf.radius1 / tan_half_angle;
+
+  const Point3d R0 = cf.frame.origin + v0 * cf.frame.zaxis + cf.radius0 * cf.frame.xaxis;
+  const Point3d R1 = cf.frame.origin + v1 * cf.frame.zaxis + cf.radius1 * cf.frame.xaxis;
+  const Point3d S0 =
+      cf.frame.origin + v0 * cf.frame.zaxis + cf.radius0 * (std::cos(cf.angle) * cf.frame.xaxis + std::sin(cf.angle) * cf.frame.yaxis);
+  const Point3d S1 =
+      cf.frame.origin + v1 * cf.frame.zaxis + cf.radius1 * (std::cos(cf.angle) * cf.frame.xaxis + std::sin(cf.angle) * cf.frame.yaxis);
+
+  const int idx_i = FindFaceWithEdge(faces, R0, R1, tol);
+  const int idx_j = FindFaceWithEdge(faces, S0, S1, tol);
+  if (idx_i < 0 || idx_j < 0 || idx_i == idx_j) {
+    throw std::invalid_argument(
+        "dino8::kernel::RemoveBlend: could not find the two planar faces sharing this cone's own two straight "
+        "rails - is this really a FilletConvexEdgeTapered-built face?");
+  }
+
+  const Vector3d n_i = faces[static_cast<size_t>(idx_i)].plane.zaxis;
+  const Vector3d n_j = faces[static_cast<size_t>(idx_j)].plane.zaxis;
+  Vector3d bis = n_i + n_j;
+  if (!bis.Unitize()) {
+    throw std::invalid_argument("dino8::kernel::RemoveBlend: degenerate (near-180-degree) adjacent-face dihedral");
+  }
+  const double cosb = bis * n_i;
+  if (cosb < 1e-9) {
+    throw std::invalid_argument("dino8::kernel::RemoveBlend: degenerate bisector geometry (cosb too small)");
+  }
+  const Vector3d k_i = n_i - bis * (1.0 / cosb);
+  const Vector3d k_j = n_j - bis * (1.0 / cosb);
+
+  const Point3d edge_p0 = R0 - r_lo * k_i;
+  const Point3d edge_p1 = R1 - r_hi * k_i;
+  // Checked invariant, genuinely discriminating (k_i != k_j): face j's
+  // own rail corners must reconstruct the SAME two edge points.
+  const Point3d edge_p0_check = S0 - r_lo * k_j;
+  const Point3d edge_p1_check = S1 - r_hi * k_j;
+  const double check_tol = std::max(tol * 100.0, 1e-6);
+  if (edge_p0.DistanceTo(edge_p0_check) > check_tol || edge_p1.DistanceTo(edge_p1_check) > check_tol) {
+    throw std::invalid_argument(
+        "dino8::kernel::RemoveBlend: this conical face's own two rails do not reconstruct the same sharp edge - it "
+        "was not built by FilletConvexEdgeTapered's own construction (please report this as a bug if it was)");
+  }
+  if (!(r_lo > 0.0) || !(r_hi > 0.0)) {
+    throw std::invalid_argument(
+        "dino8::kernel::RemoveBlend: reconstructed a non-positive rolling-ball radius - not a "
+        "FilletConvexEdgeTapered-built face");
+  }
+
+  std::vector<Brep::PlanarFace> mixed_planar = faces;
+  ReplaceLoopEdge(mixed_planar[static_cast<size_t>(idx_i)].loop, R0, R1, edge_p0, edge_p1, tol);
+  ReplaceLoopEdge(mixed_planar[static_cast<size_t>(idx_j)].loop, S0, S1, edge_p0, edge_p1, tol);
+
+  std::vector<Brep::PlanarFace> others;
+  std::vector<size_t> others_idx;
+  for (size_t f = 0; f < mixed_planar.size(); ++f) {
+    if (static_cast<int>(f) == idx_i || static_cast<int>(f) == idx_j) continue;
+    others.push_back(mixed_planar[f]);
+    others_idx.push_back(f);
+  }
+  // CollapseNotchRun works purely by matching 3D points, agnostic to
+  // whether the dense run it finds is a plain circle-arc (a perpendicular
+  // third face on a constant-radius fillet) or the tapered cone's own
+  // ellipse notch (EllipseNotchCornerAtVertex, fillet.h) - no separate
+  // oblique-rejection branch is needed here the way the cylindrical case
+  // needs one, since EVERY notched end of a ConicalFace already uses that
+  // same dense-run splice regardless of the third face's own orientation.
+  CollapseNotchRun(others, R0, S0, edge_p0, tol);
+  CollapseNotchRun(others, R1, S1, edge_p1, tol);
+  for (size_t o = 0; o < others.size(); ++o) mixed_planar[others_idx[o]] = std::move(others[o]);
+
+  std::vector<Brep::ConicalFace> remaining_cone;
+  for (size_t c = 0; c < mf.conical.size(); ++c) {
+    if (static_cast<int>(c) != best) remaining_cone.push_back(mf.conical[c]);
+  }
+  return Brep::FromMixedFaces(mixed_planar, mf.cylindrical, remaining_cone, mf.spherical);
+}
+
+}  // namespace
+
+Brep RemoveBlend(const Brep& solid, Point3d point_on_fillet) {
+  const Brep::MixedFacesResult mf = solid.MixedFaces();
+  if (mf.cylindrical.empty() && mf.conical.empty()) {
+    throw std::invalid_argument("dino8::kernel::RemoveBlend: `solid` has no cylindrical or conical face to remove");
+  }
+  // Use MixedFaces()' own planar records (NOT PlanarFaces(), which throws
+  // outright on any non-planar face - exactly the fillet face this
+  // function exists to remove).
+  const std::vector<Brep::PlanarFace>& faces = mf.planar;
+  const double tol = RelativeTol(faces);
+
+  // Locate the closest fillet face to `point_on_fillet` - cylindrical or
+  // conical - measured against its own TRIMMED extent (axial/height
+  // position and angular position both clamped to the patch's own real
+  // domain), not the infinite surface, so a point near a DIFFERENT
+  // fillet's own patch (sharing axis/radius by coincidence) is never
+  // mismatched.
+  int best_cyl = -1;
+  double best_cyl_d = std::numeric_limits<double>::infinity();
+  for (size_t c = 0; c < mf.cylindrical.size(); ++c) {
+    const Brep::CylindricalFace& cf = mf.cylindrical[c];
+    const Vector3d d = point_on_fillet - cf.frame.origin;
+    const double h = std::max(0.0, std::min(cf.length, d * cf.frame.zaxis));
+    double phi = std::atan2(d * cf.frame.yaxis, d * cf.frame.xaxis);
+    if (phi < 0.0) phi += 2.0 * ON_PI;
+    phi = std::max(0.0, std::min(cf.angle, phi));
+    const Point3d on_surface =
+        cf.frame.origin + h * cf.frame.zaxis + cf.radius * (std::cos(phi) * cf.frame.xaxis + std::sin(phi) * cf.frame.yaxis);
+    const double dist = on_surface.DistanceTo(point_on_fillet);
+    if (dist < best_cyl_d) {
+      best_cyl_d = dist;
+      best_cyl = static_cast<int>(c);
+    }
+  }
+  int best_cone = -1;
+  double best_cone_d = std::numeric_limits<double>::infinity();
+  for (size_t c = 0; c < mf.conical.size(); ++c) {
+    const Brep::ConicalFace& cf = mf.conical[c];
+    if (std::fabs(cf.radius1 - cf.radius0) < 1e-300 || !(cf.length > 0.0)) continue;  // degenerate, skip
+    const double tan_half_angle = (cf.radius1 - cf.radius0) / cf.length;
+    const double v0 = cf.radius0 / tan_half_angle;
+    const double v1 = cf.radius1 / tan_half_angle;
+    const double h_lo = std::min(v0, v1), h_hi = std::max(v0, v1);
+    const Vector3d d = point_on_fillet - cf.frame.origin;
+    const double h = std::max(h_lo, std::min(h_hi, d * cf.frame.zaxis));
+    double phi = std::atan2(d * cf.frame.yaxis, d * cf.frame.xaxis);
+    if (phi < 0.0) phi += 2.0 * ON_PI;
+    phi = std::max(0.0, std::min(cf.angle, phi));
+    const double radius_at_h = std::fabs(h * tan_half_angle);
+    const Point3d on_surface =
+        cf.frame.origin + h * cf.frame.zaxis + radius_at_h * (std::cos(phi) * cf.frame.xaxis + std::sin(phi) * cf.frame.yaxis);
+    const double dist = on_surface.DistanceTo(point_on_fillet);
+    if (dist < best_cone_d) {
+      best_cone_d = dist;
+      best_cone = static_cast<int>(c);
+    }
+  }
+
+  const double accept_tol = std::max(tol * 100.0, 1e-4);
+  if ((best_cyl < 0 || best_cyl_d > accept_tol) && (best_cone < 0 || best_cone_d > accept_tol)) {
+    throw std::invalid_argument(
+        "dino8::kernel::RemoveBlend: `point_on_fillet` is not near any cylindrical or conical face of `solid`");
+  }
+  if (best_cyl >= 0 && (best_cone < 0 || best_cyl_d <= best_cone_d)) {
+    return RemoveCylindricalBlend(mf, best_cyl, faces, tol);
+  }
+  return RemoveConicalBlend(mf, best_cone, faces, tol);
 }
 
 }  // namespace dino8::kernel

@@ -3954,6 +3954,46 @@ honestly out of scope.
   the method's own internal self-check catch the wrong result and fail
   closed, which the corresponding test then observes.
 
+- **`RemoveBlend` extended to `ConicalFace`** - closes the first of the
+  two gaps that increment's own README entry disclosed: a
+  `FilletConvexEdgeTapered`-built taper (or one segment of an N-station
+  one) can now be removed the same way a plain constant-radius fillet
+  can. The inverse is genuinely simpler than inverting the taper's own
+  apex/axis construction directly: the rolling-ball radii at the
+  segment's own two ends follow in closed form from the cone's own TRUE
+  radii (`r_lo = radius0/c`, `r_hi = radius1/c`, `c = 1/sqrt(1 +
+  tan_half_angle^2)`, with `tan_half_angle` already computable from the
+  cone's own `radius0`/`radius1`/`length` alone), and the cone's own rail
+  corner at `(v0, angle 0)` is EXACTLY `edge_p0 + r_lo*k_i`
+  (`FilletConvexEdgeTapered`'s own `rail_i(0)`, `k_i = n_i - bis/cosb` a
+  fixed vector once the two adjacent face normals are recovered) - so
+  `edge_p0`/`edge_p1` fall out by subtraction, with NO separate recovery
+  of `m`/`Umag` ever needed. The SAME two points reconstructed
+  independently from face j's own `k_j` (a genuinely different vector
+  from `k_i`, so this is a real, discriminating checked invariant) must
+  agree, or the call throws rather than restoring the wrong shape. A
+  notched tapered end needs no separate oblique-rejection branch the way
+  the cylindrical case does: every `ConicalFace` corner-notch already
+  uses the dense-ellipse-run construction regardless of the third face's
+  own orientation, and `CollapseNotchRun` works purely by matching 3D
+  points, agnostic to which curve family produced the run. `RemoveBlend`
+  now checks a point against both `MixedFaces().cylindrical` and
+  `.conical` and removes whichever patch is actually closer.
+  Verified (`TestRemoveBlendRoundTripsATaperedFillet`): a box edge
+  tapered-filleted 0.2->0.35 (both ends perpendicular, so BOTH get the
+  ellipse corner-notch `FilletConvexEdgeTapered`'s own v1 gap-closing
+  built) round-trips to the exact 6-face/12-edge/8-vertex unit box, valid/
+  manifold/closed/solid, volume matching to floating-point precision,
+  every corner restored. Full `dino8_kernel_smoke`: 2409 checks, 0
+  failures; `dino8_general_boolean_sweep` unchanged. Honestly still open:
+  `FilletConvexEdges`' own spherical vertex-blend corners remain the one
+  disclosed gap left - no existing kernel entry point can even BUILD a
+  solid carrying both a cylindrical and a conical fillet in one call, so
+  the cylindrical-vs-conical distance comparison this increment adds is
+  exercised only by each type's own single-fillet fixture, not by a
+  genuine two-type one; noted plainly in the test file rather than staged
+  to look covered.
+
 ## What's still not done (as of chunk 2)
 
 - `Brep::Box()`, `Brep::Sphere()`, `Brep::TrimmedPlanarFace()`

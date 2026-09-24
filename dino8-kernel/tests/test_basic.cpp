@@ -26950,6 +26950,61 @@ void TestRemoveBlendRejectsUnsupportedConfigurations() {
         "rejects a FilletConvexEdge oblique-end cylinder (sloped ellipse cap notch)");
 }
 
+void TestRemoveBlendRoundTripsATaperedFillet() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConvexEdgeTapered;
+  using dino8::kernel::Point3d;
+
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+  const Point3d edge_p0(0, 0, 1), edge_p1(1, 0, 1);
+  const Brep tapered = FilletConvexEdgeTapered(box, edge_p0, edge_p1, 0.2, 0.35);
+
+  const Brep::MixedFacesResult mf = tapered.MixedFaces();
+  Check(mf.cylindrical.empty() && mf.conical.size() == 1,
+        "sanity: a genuinely tapered (radius0 != radius1) fillet is one ConicalFace, no CylindricalFace");
+  const Brep::ConicalFace& cf = mf.conical[0];
+  const double tan_half = (cf.radius1 - cf.radius0) / cf.length;
+  const double v0 = cf.radius0 / tan_half, v1 = cf.radius1 / tan_half;
+  const double vmid = 0.5 * (v0 + v1);
+  const double rmid = std::fabs(vmid * tan_half);
+  const double phimid = cf.angle * 0.5;
+  const Point3d mid_on_cone =
+      cf.frame.origin + vmid * cf.frame.zaxis + rmid * (std::cos(phimid) * cf.frame.xaxis + std::sin(phimid) * cf.frame.yaxis);
+
+  const Brep restored = dino8::kernel::RemoveBlend(tapered, mid_on_cone);
+  Check(restored.FaceCount() == 6 && restored.raw().m_E.Count() == 12 && restored.raw().m_V.Count() == 8,
+        "RemoveBlend restores a tapered fillet's box to 6 faces, 12 edges, 8 vertices - including collapsing BOTH "
+        "perpendicular ends' own ellipse corner-notches (FilletConvexEdgeTapered's own v1 gap-closing) back to plain "
+        "vertices");
+  ON_TextLog log;
+  bool oriented = false, has_boundary = true;
+  Check(restored.raw().IsValid(&log) && restored.raw().IsManifold(&oriented, &has_boundary) && oriented && !has_boundary &&
+            restored.raw().IsSolid(),
+        "the restored solid is a valid, closed, manifold solid");
+  Check(std::fabs(restored.TessellateToClosedMesh(4, 4).Volume() - 1.0) < 1e-9,
+        "the restored solid's volume matches the original unit box exactly");
+  for (const Point3d& v : {Point3d(0, 0, 0), Point3d(1, 0, 0), Point3d(1, 1, 0), Point3d(0, 1, 0), Point3d(0, 0, 1),
+                           Point3d(1, 0, 1), Point3d(1, 1, 1), Point3d(0, 1, 1)}) {
+    Check(ChamferTestBrepHasVertexNear(restored, v, 1e-9), "the restored box has its original sharp corner vertex back");
+  }
+}
+
+// FilletConvexEdge/FilletConvexEdgeTapered both require a purely-planar
+// PlanarFaces() input (see their own doc comments), so a solid with BOTH
+// a cylindrical and a conical fillet face cannot be built by chaining
+// public kernel calls the way this test would need to construct one -
+// only FilletConvexEdges (plural, constant-radius-only) can add several
+// fillets to one solid in a single call. The cylindrical-vs-conical
+// distance comparison inside RemoveBlend is therefore exercised only
+// indirectly here: TestRemoveBlendRoundTripsASingleFillet's own fixture
+// has ZERO conical faces (so best_cone stays unmatched and the
+// cylindrical branch is chosen only because it is the sole candidate,
+// not because it was compared against a closer alternative) and
+// TestRemoveBlendRoundTripsATaperedFillet's own fixture is the mirror
+// image. A genuine two-type fixture, and hence a real regression for the
+// comparison itself, would need a kernel-level "add one more fillet to
+// an already-filleted solid" entry point this codebase does not have yet
+// - honestly left uncovered rather than staged to look tested.
 // ---- NurbsSurface::UnrollDevelopable ----
 
 namespace {
@@ -28328,6 +28383,7 @@ int main() {
   TestRemoveBlendRoundTripsASingleFillet();
   TestRemoveBlendLeavesTheOtherFilletIntactAmongTwo();
   TestRemoveBlendRejectsUnsupportedConfigurations();
+  TestRemoveBlendRoundTripsATaperedFillet();
   TestBrepFromPlanarFacesBuildsValidOpenNurbsTopology();
   TestBrepAdjacencyQueries();
   TestBooleanCombinePlanarResultHasValidClosedTopology();

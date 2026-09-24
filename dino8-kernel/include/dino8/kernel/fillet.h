@@ -776,16 +776,47 @@ Brep FilletConvexEdges(const Brep& solid, const std::vector<std::pair<Point3d, P
 //      SphericalFace, for a solid with several independent fillets) is
 //      carried through unchanged via Brep::FromMixedFaces.
 //
-// SCOPE, stated plainly: this reverses exactly what FilletConvexEdge
-// itself can build - a CylindricalFace whose two ends are each either a
-// free boundary or a plain perpendicular corner-notch (NOT an oblique
-// end's sloped ellipse notch, and NOT a spherical vertex-blend corner
-// from FilletConvexEdges) - throwing std::invalid_argument for either of
-// those harder cases rather than silently restoring the wrong shape.
-// FilletConvexEdgeTapered's own ConicalFace and FilletConvexEdges' own
-// spherical corners are real, disclosed, out-of-scope future work for
-// this function, exactly as FilletConvexEdge's own end conditions were
-// once narrower than they are today.
+// A CONICAL FACE (a FilletConvexEdgeTapered-built taper, or one segment
+// of an N-station one) is inverted the same way, in closed form, WITHOUT
+// separately recovering the taper's own apex/axis construction at all:
+// the rolling-ball radii r_lo/r_hi at the segment's own two ends follow
+// directly from the cone's own true radii (radius0 = r_lo*c, radius1 =
+// r_hi*c, where c = 1/sqrt(1 + tan_half_angle^2) and tan_half_angle =
+// (radius1 - radius0)/length are already known, no unknowns), and the
+// cone's own rail corner at (v0, angle 0) is EXACTLY edge_p0 + r_lo*k_i
+// (FilletConvexEdgeTapered's own rail_i(0), k_i = n_i - bis/cosb a fixed
+// vector once n_i/n_j are recovered) - so edge_p0/edge_p1 follow directly
+// by subtraction, with the SAME reconstruction from face j's own k_j
+// (k_i != k_j, so this is a genuinely discriminating checked invariant,
+// not a vacuous one) required to agree. Unlike the cylindrical case, a
+// notched end here needs NO separate oblique-rejection branch: EVERY
+// corner-notch a ConicalFace ever carries is already the dense-ellipse-
+// run kind (`EllipseNotchCornerAtVertex`, fillet.cpp - even for a
+// perpendicular third face, since a tapered cone's own perpendicular
+// cross-section is generally an ellipse, not a circle), and
+// CollapseNotchRun's own splice works purely by matching 3D points,
+// agnostic to which curve family produced the run.
+//
+// `point_on_fillet` is matched against BOTH `solid.MixedFaces().
+// cylindrical` and `.conical`, and whichever face's own trimmed surface
+// is closer wins - so this one function removes either kind of fillet
+// patch a caller might have clicked on.
+//
+// SCOPE, stated plainly: this reverses exactly what FilletConvexEdge and
+// FilletConvexEdgeTapered themselves can build - a patch whose two ends
+// are each either a free boundary or a plain corner-notch (NOT an
+// oblique-end CYLINDRICAL fillet's own sloped ellipse notch, which is a
+// genuinely different, not-yet-inverted construction - see
+// FilletConvexEdge's own doc comment for why that case's cylinder is
+// shifted/set back in a way this function does not attempt to undo, and
+// NOT a spherical vertex-blend corner from FilletConvexEdges) - throwing
+// std::invalid_argument for any of those harder cases rather than
+// silently restoring the wrong shape. Removing one segment of an
+// N-station tapered profile restores only that segment's own straight
+// span, leaving any adjacent segments' own cones in place with a short
+// straight edge spliced between them - well-defined, if partial,
+// behavior, not a bug; removing every segment of a profile in turn fully
+// restores the original straight edge.
 Brep RemoveBlend(const Brep& solid, Point3d point_on_fillet);
 
 }  // namespace dino8::kernel
