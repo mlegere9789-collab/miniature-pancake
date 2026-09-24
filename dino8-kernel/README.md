@@ -769,6 +769,29 @@ What this repo does instead:
   reloaded object's own `ON_3dmObjectAttributes::Name()` exactly matches
   what it was given - including the unnamed curve coming back with a
   genuinely empty name, not some default placeholder.
+- `Model::AddLayer()` plus a new `layer_index` parameter on every
+  `Model::Add*()`, closing another real gap in `.3dm` metadata fidelity
+  flagged by the same PARITY_MAP.md evidence as the `name` parameter
+  above: before this, this kernel had no concept of a layer at all (`grep
+  ON_Layer` in `dino8-kernel/src` found nothing), so nothing it saved
+  could carry Rhino's most basic organizational metadata - color-by-layer,
+  per-layer visibility, selection-by-layer - even though `ONX_Model` (and
+  the `.3dm` format underneath) has always supported it.
+  `Model::AddLayer(name, color)` wraps `ONX_Model::AddLayer()`, OpenNURBS'
+  own "easy way to add a layer" helper, and returns the new layer's index
+  for use as every `Add*()`'s new `layer_index` argument; an empty `name`
+  returns `-1` instead of forwarding to OpenNURBS, whose own contract for
+  that case (aliasing the "Default" layer) would be a surprising silent
+  success for a caller who asked to add a named layer. `layer_index`
+  defaults to 0 (the model's always-present default layer, the same value
+  every existing object's attributes already carried), so the change is
+  additive - no existing caller's behavior changes. Verified with a real
+  round trip through an actual `.3dm` file: added a named, colored layer,
+  placed a `Mesh` on it by index, left a `Brep` on the default layer,
+  saved, reloaded, and confirmed the reloaded layer's name and color
+  exactly match what `AddLayer()` was given, the mesh's reloaded
+  `ON_3dmObjectAttributes::m_layer_index` matches the returned index, and
+  the brep's stayed at 0.
 - `Brep::GetTightBoundingBox()` closes a real gap: nothing here could
   answer "roughly how big/where is this Brep" without tessellating it
   first, and even then Mesh::GetBoundingBox() only sees a tessellation's

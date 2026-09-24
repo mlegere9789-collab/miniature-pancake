@@ -4994,6 +4994,72 @@ void TestModelAddObjectNameRoundTrips() {
   std::remove(path.c_str());
 }
 
+// Model::AddLayer() plus every Add*()'s new `layer_index` parameter: before
+// this, this kernel had no concept of a layer at all (PARITY_MAP.md's
+// "kernel-level data exchange" evidence: "grep ON_Layer/ON_Material in
+// dino8-kernel/src: none"), so nothing it saved could carry Rhino's most
+// basic organizational metadata. Checks a real round trip through an
+// actual .3dm file: a named, colored layer; an object placed on it via
+// its returned index; a second object left on the default layer (proving
+// the new parameter is additive, not a behavior change for existing
+// callers); and AddLayer()'s own -1 contract for an empty name.
+void TestModelAddLayerRoundTrips() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Color;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Model;
+  using dino8::kernel::Result;
+
+  Model model;
+  const int layer_index = model.AddLayer("MyLayer", Color{200, 100, 50});
+  Check(layer_index >= 0, "AddLayer() with a non-empty name returns a valid (>= 0) index");
+  Check(model.AddLayer("") == -1, "AddLayer() with an empty name returns -1 rather than aliasing "
+                                  "OpenNURBS' own \"Default\" layer");
+
+  const auto box_mesh = MakeQuadBoxMesh(0, 0, 0, 1, 1, 1);
+  model.AddMesh(box_mesh, "OnMyLayer", layer_index);
+  const auto box_brep = Brep::Box(0, 0, 0, 1, 1, 1);
+  model.AddBrep(box_brep);  // no layer given: stays on the default layer
+
+  const std::string path = "dino8_kernel_model_layer_roundtrip_test.3dm";
+  Check(model.Save(path) == Result::Ok, ".3dm save with a named layer succeeded");
+
+  Model loaded;
+  Check(Model::Load(path, loaded) == Result::Ok, ".3dm load succeeded");
+
+  const ON_ModelComponentReference layer_ref = loaded.raw().LayerFromIndex(layer_index);
+  const ON_Layer* layer = ON_Layer::Cast(layer_ref.ModelComponent());
+  Check(layer != nullptr, "the reloaded model still has a layer at the returned index");
+  Check(layer->Name() == ON_wString("MyLayer"),
+        "the reloaded layer's name exactly matches what AddLayer() was given (\"MyLayer\")");
+  Check(layer->Color() == ON_Color(200, 100, 50),
+        "the reloaded layer's color exactly matches what AddLayer() was given");
+
+  ONX_ModelComponentIterator iterator(loaded.raw(), ON_ModelComponent::Type::ModelGeometry);
+  bool found_layered_mesh = false;
+  bool found_default_brep = false;
+  for (const ON_ModelComponent* component = iterator.FirstComponent(); component != nullptr;
+       component = iterator.NextComponent()) {
+    const auto* geometry_component = static_cast<const ON_ModelGeometryComponent*>(component);
+    const ON_3dmObjectAttributes* attributes = geometry_component->Attributes(nullptr);
+    const ON_Geometry* geometry = geometry_component->Geometry(nullptr);
+    if (dynamic_cast<const ON_Mesh*>(geometry) != nullptr) {
+      found_layered_mesh = true;
+      Check(attributes->m_layer_index == layer_index,
+            "the reloaded mesh's layer index exactly matches what AddMesh() was given");
+    } else if (dynamic_cast<const ON_Brep*>(geometry) != nullptr) {
+      found_default_brep = true;
+      Check(attributes->m_layer_index == 0,
+            "the reloaded brep - added with no layer_index argument - stayed on the default "
+            "layer (index 0), proving the new parameter is a no-op when omitted");
+    }
+  }
+  Check(found_layered_mesh && found_default_brep,
+        "both object types (layered mesh, default-layer brep) were found in the reloaded model");
+
+  std::remove(path.c_str());
+}
+
 void TestBoxVolume() {
   const auto box = MakeBox(0, 0, 0, 2, 2, 2);
   Check(std::abs(box.Volume() - 8.0) < 1e-9, "unit-scaled box volume is correct");
@@ -26707,6 +26773,7 @@ int main() {
   TestModelAddSubDRoundTrips();
   TestModelAddPointCloudRoundTrips();
   TestModelAddObjectNameRoundTrips();
+  TestModelAddLayerRoundTrips();
   TestModelLoadRejectsMeshWithOutOfRangeFaceIndex();
   TestSplitByPlane();
   TestConvexHull();
