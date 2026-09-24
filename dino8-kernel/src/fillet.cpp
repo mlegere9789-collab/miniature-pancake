@@ -2556,6 +2556,269 @@ Brep FilletConvexEdges(const Brep& solid, const std::vector<std::pair<Point3d, P
   return Brep::FromMixedFaces(work, cyls, {}, spheres);
 }
 
+// MULTI-EDGE concave-edge fillet - FilletConcaveEdge's own counterpart to
+// FilletConvexEdges, letting several INDEPENDENT concave edges of the
+// same solid be filleted in one call (unlike chaining single
+// FilletConcaveEdge calls, which is not possible at all here: the first
+// call's own output already carries a curved CylindricalFace, and
+// PlanarFaces() - which every one of these functions calls first -
+// rejects any solid already carrying one, exactly as it does for
+// FilletConvexEdge; confirmed directly, not assumed, while developing
+// this function).
+//
+// Reuses `MultiEdge` (defined just above, for FilletConvexEdges) purely
+// as a per-edge data record - every field it holds is generic geometry
+// (a face index, a normal, a fixed offset vector), nothing convex-
+// specific baked into the TYPE itself, only into how FilletConvexEdges
+// happens to populate it. This function populates the SAME fields with
+// FilletConcaveEdge's own mirrored formulas instead (see that function's
+// own doc comment for the sign derivations: axis_point(p) = p +
+// bis*offset, contact_i/j(p) = axis_point(p) -/- n_i/j*radius, and the
+// "which face is the angle-0 xaxis reference" hand-sign fix that a
+// concave edge - unlike a convex one - genuinely needs).
+// `sphere_at_p0`/`sphere_at_p1`/`t_start`/`t_end` are left at their
+// defaults (false / 0 / L) since this function's own SCOPE (below) never
+// runs the trihedral-corner branch that would set them.
+//
+// SCOPE, stated plainly rather than silently narrowed: every edge must
+// be a genuine shared concave boundary edge (same EdgeConvexity check
+// FilletConcaveEdge itself uses, applied per edge); one radius for all
+// edges; no edge listed twice; and - the one deliberate limit this first
+// multi-edge increment carries, matching where FilletConvexEdges ITSELF
+// started before its own trihedral spherical-corner support was added -
+// every filleted edge's own two endpoints must have EXACTLY ONE filleted
+// edge incident (m == 1): two or more concave edges meeting at a shared
+// vertex is a genuine vertex-blend problem (and, for concave corners,
+// one this codebase has not attempted at all yet - not even the m == 3
+// trihedral case FilletConvexEdges already closes for the convex side)
+// and throws std::invalid_argument rather than guessing at a shape.
+// Oblique third faces are likewise out of scope here (unlike the single-
+// edge FilletConcaveEdge, which already closes that case) - only a free
+// boundary or a third face exactly PERPENDICULAR to the edge is closed,
+// via the same NotchCornerAtVertex splice FilletConvexEdges' own m == 1
+// case uses; both gaps are genuine, disclosed future increments for THIS
+// function specifically, not something either sibling (FilletConcaveEdge
+// or FilletConvexEdges) already covers for it.
+//
+// CLOSED FORM this was checked against (dino8-kernel's own regression
+// tests): two INDEPENDENT 90-degree concave notches (no shared vertex) on
+// the same prism, each filleted with the same radius r, together ADD
+// exactly 2 * r^2 * (1 - pi/4) of volume - the same per-notch closed form
+// FilletConcaveEdge's own single-edge tests check, simply summed, since
+// the two notches share no geometry to interact through.
+Brep FilletConcaveEdges(const Brep& solid, const std::vector<std::pair<Point3d, Point3d>>& edges, double radius) {
+  if (!(radius > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::FilletConcaveEdges: radius must be positive");
+  }
+  if (edges.empty()) {
+    throw std::invalid_argument("dino8::kernel::FilletConcaveEdges: at least one edge is required");
+  }
+  const std::vector<Brep::PlanarFace> faces = solid.PlanarFaces();
+  const double tol = RelativeTol(faces);
+
+  std::vector<MultiEdge> me;
+  me.reserve(edges.size());
+  for (const std::pair<Point3d, Point3d>& ed : edges) {
+    MultiEdge m;
+    m.p0 = ed.first;
+    m.p1 = ed.second;
+    for (const MultiEdge& other : me) {
+      if ((PointsEqual(other.p0, m.p0, tol) && PointsEqual(other.p1, m.p1, tol)) ||
+          (PointsEqual(other.p0, m.p1, tol) && PointsEqual(other.p1, m.p0, tol))) {
+        throw std::invalid_argument("dino8::kernel::FilletConcaveEdges: an edge is listed twice");
+      }
+    }
+
+    int idx_i = -1, idx_j = -1;
+    size_t k_i = 0;
+    for (size_t f = 0; f < faces.size() && (idx_i < 0 || idx_j < 0); ++f) {
+      const std::vector<Point3d>& loop = faces[f].loop;
+      const size_t n = loop.size();
+      for (size_t k = 0; k < n; ++k) {
+        const Point3d& a = loop[k];
+        const Point3d& b = loop[(k + 1) % n];
+        if (idx_i < 0 && PointsEqual(a, m.p0, tol) && PointsEqual(b, m.p1, tol)) {
+          idx_i = static_cast<int>(f);
+          k_i = k;
+        }
+        if (idx_j < 0 && PointsEqual(a, m.p1, tol) && PointsEqual(b, m.p0, tol)) idx_j = static_cast<int>(f);
+      }
+    }
+    if (idx_i < 0 || idx_j < 0 || idx_i == idx_j) {
+      throw std::invalid_argument(
+          "dino8::kernel::FilletConcaveEdges: an edge is not a shared boundary edge of two distinct faces of "
+          "`solid`, walked in opposite directions on their own loops");
+    }
+    {
+      const std::vector<Point3d>& loop_i = faces[static_cast<size_t>(idx_i)].loop;
+      const ON_Plane& plane_j_pre = faces[static_cast<size_t>(idx_j)].plane;
+      const size_t k_i1 = (k_i + 1) % loop_i.size();
+      bool degenerate = false;
+      const bool convex = EdgeConvexity(loop_i, k_i, k_i1, plane_j_pre, tol, &degenerate);
+      if (!degenerate && convex) {
+        throw std::invalid_argument(
+            "dino8::kernel::FilletConcaveEdges: an edge is a CONVEX dihedral edge, not concave - see "
+            "FilletConvexEdges instead");
+      }
+    }
+
+    m.e = m.p1 - m.p0;
+    m.L = m.p0.DistanceTo(m.p1);
+    if (!m.e.Unitize()) {
+      throw std::invalid_argument("dino8::kernel::FilletConcaveEdges: an edge's two endpoints coincide");
+    }
+
+    // Same hand-sign fix FilletConcaveEdge's own doc comment derives:
+    // whichever face gives a POSITIVE (n_i x n_j) . e is the correct
+    // angle-0 xaxis reference for a right-handed frame that also reaches
+    // the other face's own tangent point at angle = sweep_angle.
+    const Vector3d n_i_pre = faces[static_cast<size_t>(idx_i)].plane.zaxis;
+    const Vector3d n_j_pre = faces[static_cast<size_t>(idx_j)].plane.zaxis;
+    if ((ON_CrossProduct(n_i_pre, n_j_pre) * m.e) < 0.0) std::swap(idx_i, idx_j);
+    m.idx_i = idx_i;
+    m.idx_j = idx_j;
+    m.n_i = faces[static_cast<size_t>(idx_i)].plane.zaxis;
+    m.n_j = faces[static_cast<size_t>(idx_j)].plane.zaxis;
+
+    const double dot_ij = std::max(-1.0, std::min(1.0, m.n_i * m.n_j));
+    m.sweep = std::acos(dot_ij);
+    m.theta = ON_PI - m.sweep;
+    if (!(m.theta > 0.0) || !(m.theta < ON_PI)) {
+      throw std::invalid_argument(
+          "dino8::kernel::FilletConcaveEdges: degenerate edge (interior angle is <= 0 or >= pi)");
+    }
+    m.bis = m.n_i + m.n_j;
+    if (!m.bis.Unitize()) {
+      throw std::invalid_argument("dino8::kernel::FilletConcaveEdges: degenerate (near-180-degree) dihedral");
+    }
+    m.cosb = m.bis * m.n_i;
+    if (m.cosb < 1e-9) {
+      throw std::invalid_argument("dino8::kernel::FilletConcaveEdges: degenerate bisector geometry (cosb too small)");
+    }
+    const double offset = radius / m.cosb;
+    // Concave contact points: axis_point(p) = p + bis*offset,
+    // contact_i/j(p) = axis_point(p) - n_i/j*radius (see
+    // FilletConcaveEdge's own doc comment - the negation of
+    // FilletConvexEdges' own contact formula just above).
+    const Point3d contact_i0 = m.p0 + m.bis * offset - m.n_i * radius;
+    const Point3d contact_j1 = m.p1 + m.bis * offset - m.n_j * radius;
+    m.m_i = ON_CrossProduct(m.n_i, m.e);
+    m.m_j = ON_CrossProduct(m.n_j, -m.e);
+    if (!m.m_i.Unitize() || !m.m_j.Unitize()) {
+      throw std::invalid_argument(
+          "dino8::kernel::FilletConcaveEdges: degenerate face/edge geometry (a face normal is parallel to the edge)");
+    }
+    if (m.m_i * (m.p0 - contact_i0) >= 0.0) m.m_i = -m.m_i;
+    if (m.m_j * (m.p1 - contact_j1) >= 0.0) m.m_j = -m.m_j;
+    const double trim_back = radius / std::tan(m.theta / 2.0);
+    auto max_extent_from_edge = [](const std::vector<Point3d>& loop, const Vector3d& mm, const Point3d& edge_ref) {
+      double best = 0.0;
+      for (const Point3d& v : loop) best = std::max(best, mm * (v - edge_ref));
+      return best;
+    };
+    if (trim_back > max_extent_from_edge(faces[static_cast<size_t>(idx_i)].loop, m.m_i, m.p0) ||
+        trim_back > max_extent_from_edge(faces[static_cast<size_t>(idx_j)].loop, m.m_j, m.p1)) {
+      throw std::invalid_argument(
+          "dino8::kernel::FilletConcaveEdges: radius is too large to fit - a fillet's own trim-back distance "
+          "exceeds one of the adjacent faces' extent from the edge");
+    }
+    // frame.xaxis = -n_i (concave sign - see FilletConcaveEdge's own doc
+    // comment); m.n_i is kept as the plain, ORIGINAL face normal
+    // throughout (not pre-negated) - every use site below negates it
+    // explicitly instead, to keep this one sign flip visible at each
+    // point it matters rather than baked silently into the stored value.
+    m.frame_y = ON_CrossProduct(m.e, -m.n_i);
+    if (!m.frame_y.Unitize()) {
+      throw std::invalid_argument("dino8::kernel::FilletConcaveEdges: degenerate fillet frame");
+    }
+    m.t_start = 0.0;
+    m.t_end = m.L;
+    me.push_back(m);
+  }
+
+  // --- distinct vertices touched by filleted edges: every one must be
+  // m == 1 (see this function's own SCOPE comment) ---
+  struct VertexUse {
+    Point3d p;
+    int count = 0;
+  };
+  std::vector<VertexUse> verts;
+  for (const MultiEdge& ed : me) {
+    for (const Point3d& p : {ed.p0, ed.p1}) {
+      bool found = false;
+      for (VertexUse& v : verts) {
+        if (PointsEqual(v.p, p, tol)) {
+          ++v.count;
+          found = true;
+          break;
+        }
+      }
+      if (!found) verts.push_back({p, 1});
+    }
+  }
+  for (const VertexUse& v : verts) {
+    if (v.count > 1) {
+      throw std::invalid_argument(
+          "dino8::kernel::FilletConcaveEdges: two or more filleted edges share a vertex - concave vertex blending "
+          "is out of scope for this function, see its own doc comment");
+    }
+  }
+
+  std::vector<Brep::PlanarFace> work = faces;
+
+  // --- re-trim every face by every filleted edge it carries ---
+  for (const MultiEdge& ed : me) {
+    const double offset = radius / ed.cosb;
+    const Point3d contact_i0 = ed.p0 + ed.bis * offset - ed.n_i * radius;
+    const Point3d contact_j1 = ed.p1 + ed.bis * offset - ed.n_j * radius;
+    Brep::PlanarFace& fi = work[static_cast<size_t>(ed.idx_i)];
+    Brep::PlanarFace& fj = work[static_cast<size_t>(ed.idx_j)];
+    fi.loop = detail::ClipByHalfspace3d(fi.loop, ON_Plane(contact_i0, -ed.m_i), tol);
+    fj.loop = detail::ClipByHalfspace3d(fj.loop, ON_Plane(contact_j1, -ed.m_j), tol);
+    if (fi.loop.size() < 3 || fj.loop.size() < 3) {
+      throw std::invalid_argument(
+          "dino8::kernel::FilletConcaveEdges: re-trimming an adjacent face left fewer than 3 vertices - radius too "
+          "large for this solid's geometry");
+    }
+  }
+
+  // --- cylinders, and the m == 1 corner notches ---
+  std::vector<Brep::CylindricalFace> cyls;
+  cyls.reserve(me.size());
+  for (const MultiEdge& ed : me) {
+    Brep::CylindricalFace cf;
+    const Point3d axis_p0 = ed.p0 + ed.bis * (radius / ed.cosb);
+    cf.frame.origin = axis_p0 + ed.t_start * ed.e;
+    cf.frame.xaxis = -ed.n_i;  // concave sign
+    cf.frame.yaxis = ed.frame_y;
+    cf.frame.zaxis = ed.e;
+    cf.frame.UpdateEquation();
+    cf.radius = radius;
+    cf.angle = ed.sweep;
+    cf.length = ed.t_end - ed.t_start;
+    cf.outward = false;
+    cyls.push_back(cf);
+  }
+  for (const MultiEdge& ed : me) {
+    const ON_Plane& plane_i = faces[static_cast<size_t>(ed.idx_i)].plane;
+    const ON_Plane& plane_j = faces[static_cast<size_t>(ed.idx_j)].plane;
+    const Point3d axis_p0 = ed.p0 + ed.bis * (radius / ed.cosb);
+    std::vector<Brep::PlanarFace> others;
+    std::vector<size_t> others_idx;
+    for (size_t f = 0; f < work.size(); ++f) {
+      if (static_cast<int>(f) == ed.idx_i || static_cast<int>(f) == ed.idx_j) continue;
+      others.push_back(work[f]);
+      others_idx.push_back(f);
+    }
+    NotchCornerAtVertex(others, ed.p0, ed.e, plane_i, plane_j, axis_p0, -ed.n_i, ed.frame_y, radius, ed.sweep, tol);
+    NotchCornerAtVertex(others, ed.p1, ed.e, plane_i, plane_j, axis_p0 + ed.L * ed.e, -ed.n_i, ed.frame_y, radius,
+                        ed.sweep, tol);
+    for (size_t o = 0; o < others.size(); ++o) work[others_idx[o]] = std::move(others[o]);
+  }
+
+  return Brep::FromMixedFaces(work, cyls, {}, {});
+}
+
 
 namespace {
 

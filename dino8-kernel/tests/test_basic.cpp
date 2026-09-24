@@ -27579,6 +27579,158 @@ void TestFilletConcaveEdgeObliqueEndFaceIsExactAndClosed() {
         "plain perpendicular corner notch, untouched by this generalization");
 }
 
+namespace {
+
+// A big rectangle (1,0)-(6,0)-(6,2)-(5,2)-(5,3)-(0,3)-(0,1)-(1,1) with TWO
+// INDEPENDENT unit-square notches removed from opposite corners (bottom-
+// left and top-right of the original (0,0)-(6,3) rectangle), giving 2
+// separate 90-degree concave vertical edges - at (1,1,z) and (5,2,z) -
+// that share no vertex with each other and both touch the same flat
+// top/bottom caps. Footprint area = 6*3 - 1 - 1 = 16 (checked directly
+// via the shoelace formula while designing this fixture, not merely
+// assumed from the two subtracted unit squares).
+dino8::kernel::Brep TwoConcaveNotchPrism() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  const std::vector<Point3d> footprint = {Point3d(1, 0, 0), Point3d(6, 0, 0), Point3d(6, 2, 0), Point3d(5, 2, 0),
+                                          Point3d(5, 3, 0), Point3d(0, 3, 0), Point3d(0, 1, 0), Point3d(1, 1, 0)};
+  auto make_face = [](const std::vector<Point3d>& loop, Vector3d normal) {
+    Brep::PlanarFace f;
+    f.loop = loop;
+    f.plane = ON_Plane(loop[0], normal);
+    return f;
+  };
+
+  std::vector<Point3d> top_loop = footprint;
+  for (Point3d& p : top_loop) p = Point3d(p.x, p.y, 1.0);
+  std::vector<Point3d> bottom_loop = footprint;
+  std::reverse(bottom_loop.begin(), bottom_loop.end());
+
+  std::vector<Brep::PlanarFace> faces;
+  faces.push_back(make_face(bottom_loop, Vector3d(0, 0, -1)));
+  faces.push_back(make_face(top_loop, Vector3d(0, 0, 1)));
+
+  const size_t n = footprint.size();
+  for (size_t k = 0; k < n; ++k) {
+    const Point3d& a = footprint[k];
+    const Point3d& b = footprint[(k + 1) % n];
+    const std::vector<Point3d> wall = {a, b, Point3d(b.x, b.y, 1), Point3d(a.x, a.y, 1)};
+    Vector3d edge_dir = b - a;
+    edge_dir.Unitize();
+    Vector3d normal = ON_CrossProduct(edge_dir, Vector3d(0, 0, 1));
+    normal.Unitize();
+    faces.push_back(make_face(wall, normal));
+  }
+  return Brep::FromPlanarFaces(faces);
+}
+
+}  // namespace
+
+void TestFilletConcaveEdgesAddsExactVolumeForTwoIndependentNotches() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConcaveEdges;
+  using dino8::kernel::Point3d;
+
+  const Brep prism = TwoConcaveNotchPrism();
+  const double base_volume = prism.TessellateToClosedMesh(4, 4).Volume();
+  Check(std::fabs(base_volume - 16.0) < 1e-6, "sanity: the two-notch prism's own footprint area is exactly 16");
+
+  const Point3d e1p0(1, 1, 0), e1p1(1, 1, 1);
+  const Point3d e2p0(5, 2, 0), e2p1(5, 2, 1);
+  const double r = 0.2;
+  const Brep filleted = FilletConcaveEdges(prism, {{e1p0, e1p1}, {e2p0, e2p1}}, r);
+
+  ON_TextLog log;
+  bool oriented = false, has_boundary = true;
+  Check(filleted.raw().IsValid(&log) && filleted.raw().IsManifold(&oriented, &has_boundary) && oriented &&
+            !has_boundary && filleted.raw().IsSolid(),
+        "filleting two independent concave edges in one call gives a valid, closed, manifold solid");
+  Check(filleted.FaceCount() == 12, "12 faces: 8 original - 4 re-trimmed + 4 back + 2 new cylindrical patches");
+
+  const Brep::MixedFacesResult mf = filleted.MixedFaces();
+  Check(mf.cylindrical.size() == 2, "exactly two new cylindrical patches, one per independent notch");
+  for (const Brep::CylindricalFace& cf : mf.cylindrical) {
+    Check(cf.outward == false, "each patch is marked outward=false - both bound material from the concave side");
+  }
+
+  // Closed form: each independent 90-degree notch adds r^2*(1-pi/4) per
+  // unit length; the two notches share no geometry to interact through,
+  // so the total added volume is simply their sum.
+  const double expected = base_volume + 2.0 * r * r * (1.0 - ON_PI / 4.0);
+  Check(std::fabs(filleted.TessellateToClosedMeshAdaptive(1e-6).Volume() - expected) < 1e-6,
+        "the two independent fillets together ADD exactly 2*r^2*(1-pi/4) - the sum of each notch's own closed form");
+}
+
+void TestFilletConcaveEdgesRejectsUnsupportedConfigurations() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConcaveEdges;
+  using dino8::kernel::Point3d;
+  auto throws = [](const std::function<void()>& fn) {
+    try {
+      fn();
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+    return false;
+  };
+
+  const Brep prism = TwoConcaveNotchPrism();
+  const Point3d e1p0(1, 1, 0), e1p1(1, 1, 1);
+
+  Check(throws([&] { FilletConcaveEdges(prism, {}, 0.2); }), "rejects an empty edge list");
+  Check(throws([&] { FilletConcaveEdges(prism, {{e1p0, e1p1}}, -0.1); }), "rejects a non-positive radius");
+  Check(throws([&] { FilletConcaveEdges(prism, {{e1p0, e1p1}, {e1p1, e1p0}}, 0.2); }),
+        "rejects the same edge listed twice, even walked the other way");
+
+  // A plain box's every edge is CONVEX.
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+  Check(throws([&] { FilletConcaveEdges(box, {{Point3d(0, 0, 1), Point3d(1, 0, 1)}}, 0.1); }),
+        "rejects a genuinely convex edge");
+
+  // The "m > 1 at a shared vertex" rejection itself (two concave edges
+  // genuinely meeting at one vertex) is exercised only by code review
+  // here, not by a dedicated fixture: building one needs exactly the
+  // harder 3-edge concave-corner geometry this function's own SCOPE
+  // deliberately stays out of, so a fixture for it is no easier to
+  // construct than the vertex-blend feature itself would be - honestly
+  // left uncovered by a targeted test rather than exercised through an
+  // unrelated failure (a topology mismatch, say) that would only look
+  // like it tests the right thing.
+}
+
+void TestRemoveBlendLeavesTheOtherConcaveFilletIntactAmongTwo() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConcaveEdges;
+  using dino8::kernel::Point3d;
+
+  const Brep prism = TwoConcaveNotchPrism();
+  const double base_volume = prism.TessellateToClosedMesh(4, 4).Volume();
+  const Point3d e1p0(1, 1, 0), e1p1(1, 1, 1);
+  const Point3d e2p0(5, 2, 0), e2p1(5, 2, 1);
+  const double r = 0.2;
+  const Brep filleted = FilletConcaveEdges(prism, {{e1p0, e1p1}, {e2p0, e2p1}}, r);
+
+  const Brep::MixedFacesResult mf = filleted.MixedFaces();
+  const Brep::CylindricalFace& cf0 = mf.cylindrical[0];
+  const Point3d mid0 = cf0.frame.origin + 0.5 * cf0.length * cf0.frame.zaxis +
+                       cf0.radius * std::cos(cf0.angle * 0.5) * cf0.frame.xaxis +
+                       cf0.radius * std::sin(cf0.angle * 0.5) * cf0.frame.yaxis;
+  const Brep one_left = dino8::kernel::RemoveBlend(filleted, mid0);
+
+  ON_TextLog log;
+  bool oriented = false, has_boundary = true;
+  Check(one_left.raw().IsValid(&log) && one_left.raw().IsManifold(&oriented, &has_boundary) && oriented &&
+            !has_boundary && one_left.raw().IsSolid(),
+        "removing one of two independent concave fillets leaves a CLOSED, manifold solid");
+  const Brep::MixedFacesResult mf_one = one_left.MixedFaces();
+  Check(mf_one.cylindrical.size() == 1, "exactly one cylindrical face (the untouched fillet) remains");
+  const double expected = base_volume + 1.0 * r * r * (1.0 - ON_PI / 4.0);
+  Check(std::fabs(one_left.TessellateToClosedMeshAdaptive(1e-6).Volume() - expected) < 1e-6,
+        "the remaining single fillet's own volume matches r^2*(1-pi/4) added, not both");
+}
+
 void TestRemoveBlendRoundTripsAConcaveFillet() {
   using dino8::kernel::Brep;
   using dino8::kernel::FilletConcaveEdge;
@@ -29567,6 +29719,9 @@ int main() {
   TestFilletConcaveEdgeAddsExactQuarterRoundVolume();
   TestFilletConcaveEdgeRejectsUnsupportedConfigurations();
   TestFilletConcaveEdgeObliqueEndFaceIsExactAndClosed();
+  TestFilletConcaveEdgesAddsExactVolumeForTwoIndependentNotches();
+  TestFilletConcaveEdgesRejectsUnsupportedConfigurations();
+  TestRemoveBlendLeavesTheOtherConcaveFilletIntactAmongTwo();
   TestRemoveBlendRoundTripsAConcaveFillet();
   TestChamferConcaveEdgeAddsExactRightTriangleVolume();
   TestChamferConcaveEdgeAngleMatchesTwoDistanceForm();

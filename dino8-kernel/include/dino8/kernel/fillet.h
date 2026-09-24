@@ -889,6 +889,47 @@ Brep ChamferConcaveEdgeAngle(const Brep& solid, Point3d edge_p0, Point3d edge_p1
 // faces, and variable radii remain out of scope for this function.
 Brep FilletConvexEdges(const Brep& solid, const std::vector<std::pair<Point3d, Point3d>>& edges, double radius);
 
+// MULTI-EDGE concave-edge fillet - FilletConcaveEdge's own counterpart to
+// FilletConvexEdges, letting several INDEPENDENT concave edges of the
+// same solid be filleted in one call (chaining single FilletConcaveEdge
+// calls is not possible at all here: the first call's own output already
+// carries a curved CylindricalFace, and PlanarFaces() - which every one
+// of these functions calls first - rejects any solid already carrying
+// one, exactly as it does for FilletConvexEdge; confirmed directly, not
+// assumed, while developing this function).
+//
+// Every per-edge quantity (bis/cosb/offset/contact_i/contact_j/the
+// hand-sign frame fix/trim_back) is FilletConcaveEdge's own, verbatim,
+// just computed once per edge in a loop instead of once - see that
+// function's own doc comment for every derivation this reuses.
+//
+// SCOPE, stated plainly rather than silently narrowed: every edge must be
+// a genuine shared concave boundary edge (the same EdgeConvexity check
+// FilletConcaveEdge itself uses, applied per edge); one radius for all
+// edges; no edge listed twice; and - the one deliberate limit this first
+// multi-edge increment carries, matching where FilletConvexEdges ITSELF
+// started before its own trihedral spherical-corner support was added -
+// every filleted edge's own two endpoints must have EXACTLY ONE filleted
+// edge incident (m == 1): two or more concave edges meeting at a shared
+// vertex is a genuine vertex-blend problem (and, for concave corners, one
+// this codebase has not attempted at all yet - not even the m == 3
+// trihedral case FilletConvexEdges already closes for the convex side)
+// and throws std::invalid_argument rather than guessing at a shape.
+// Oblique third faces are likewise out of scope here (unlike the single-
+// edge FilletConcaveEdge, which already closes that case) - only a free
+// boundary or a third face exactly PERPENDICULAR to the edge is closed,
+// via the same NotchCornerAtVertex splice FilletConvexEdges' own m == 1
+// case uses. Both gaps are genuine, disclosed future increments for this
+// function specifically.
+//
+// CLOSED FORM this was checked against (dino8-kernel's own regression
+// tests): two INDEPENDENT 90-degree concave notches (no shared vertex) on
+// the same prism, each filleted with the same radius r, together ADD
+// exactly 2 * r^2 * (1 - pi/4) of volume - the same per-notch closed form
+// FilletConcaveEdge's own single-edge tests check, simply summed, since
+// the two notches share no geometry to interact through.
+Brep FilletConcaveEdges(const Brep& solid, const std::vector<std::pair<Point3d, Point3d>>& edges, double radius);
+
 
 // BLEND REMOVAL: the inverse of FilletConvexEdge - restores the original
 // sharp edge a constant-radius, planar/planar fillet rounded off, purely

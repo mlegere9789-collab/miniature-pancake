@@ -4550,6 +4550,61 @@ honestly out of scope.
   trihedral corners - is unchanged and is now the last one standing for
   this pairing, the natural next increment in this subsystem.
 
+- **`FilletConcaveEdges`** - `FilletConcaveEdge`'s own counterpart to
+  `FilletConvexEdges`: fillets several INDEPENDENT concave edges of the
+  same solid in one call. This is genuinely necessary, not a convenience
+  wrapper - chaining single `FilletConcaveEdge` calls is IMPOSSIBLE here,
+  confirmed directly while starting this increment: the first call's own
+  output already carries a curved `CylindricalFace`, and `PlanarFaces()`
+  (which every one of these functions calls first) rejects any solid
+  already carrying one, exactly as it does for `FilletConvexEdge`.
+  Every per-edge quantity (`bis`/`cosb`/`offset`/`contact_i`/`contact_j`/
+  the hand-sign frame fix/`trim_back`) is `FilletConcaveEdge`'s own,
+  verbatim, computed once per edge in a loop instead of once - reusing
+  `FilletConvexEdges`' own existing `MultiEdge` struct purely as a
+  generic per-edge data record (nothing convex-specific is baked into the
+  type itself, only into how `FilletConvexEdges` happens to populate it).
+  One deliberate implementation choice worth recording: `MultiEdge::n_i`
+  is kept as each face's plain, ORIGINAL normal throughout, with the
+  concave sign flip (`frame.xaxis = -n_i`) applied explicitly at each of
+  the 3 use sites instead of being baked into a pre-negated stored value -
+  an early draft did the latter and, while it worked, was judged too easy
+  to get backwards on a future read (the exact class of subtle sign bug
+  this whole `FilletConcaveEdge` pairing has repeatedly surfaced), so it
+  was rewritten before being trusted, not merely reviewed.
+  SCOPE, matching where `FilletConvexEdges` itself started before its own
+  trihedral spherical-corner support was added: every filleted edge's own
+  two endpoints must have EXACTLY ONE filleted edge incident (`m == 1`) -
+  two or more concave edges meeting at a shared vertex throws
+  `std::invalid_argument` rather than guessing at a shape, a genuine
+  vertex-blend problem this codebase has not attempted at all yet for
+  concave corners (not even the `m == 3` trihedral case `FilletConvexEdges`
+  already closes for convex ones). Oblique third faces are also out of
+  scope for this multi-edge function specifically (unlike the single-edge
+  `FilletConcaveEdge`, which already closes that case) - only a free
+  boundary or a third face exactly PERPENDICULAR to the edge is closed.
+  Verified (`TestFilletConcaveEdgesAddsExactVolumeForTwoIndependentNotches`,
+  `TestFilletConcaveEdgesRejectsUnsupportedConfigurations`,
+  `TestRemoveBlendLeavesTheOtherConcaveFilletIntactAmongTwo`) against a
+  fixture with two INDEPENDENT 90-degree concave notches (no shared
+  vertex) cut from opposite corners of a rectangular prism: filleting
+  both in one call gives a valid, closed, manifold solid whose added
+  volume matches the exact sum of each notch's own closed form
+  (`2 * r^2 * (1 - pi/4)`) to floating-point precision, and `RemoveBlend`
+  - unmodified, since it already dispatches on `CylindricalFace::outward`
+  - correctly removes either one independently, leaving the other intact.
+  Full `dino8_kernel_smoke`: 3296 checks, 0 failures;
+  `dino8_general_boolean_sweep` unaffected. Honestly disclosed: the
+  `m > 1` shared-vertex rejection itself is exercised only by code review
+  here, not by a dedicated fixture - building one needs exactly the
+  harder 3-edge concave-corner geometry this function's own scope stays
+  out of, so a fixture for it would be no easier to construct than the
+  vertex-blend feature itself; left uncovered by a targeted test rather
+  than exercised through an unrelated failure that would only look like
+  it tests the right thing. Concave (and mixed convex/concave) vertex
+  blends at trihedral corners remain the one gap genuinely still open for
+  this entire pairing.
+
 ## What's still not done (as of chunk 2)
 
 - `Brep::Box()`, `Brep::Sphere()`, `Brep::TrimmedPlanarFace()`
