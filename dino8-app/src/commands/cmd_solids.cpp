@@ -160,6 +160,10 @@ class BoxCommand : public Command {
   }
   void OnNumber(CommandContext& ctx, double v) override { if (pts_.size() == 2) Build(ctx, v); }
   void OnText(CommandContext& ctx, const std::string& t) override { char* e; double v = std::strtod(t.c_str(), &e); if (e && !*e) OnNumber(ctx, v); }
+  // A typed height is a literal number (this->OnNumber above), never a
+  // distance-toward-the-cursor point to re-derive height from by
+  // projection - see the comment on Command::NumberIsLiteralValue().
+  bool NumberIsLiteralValue() const override { return true; }
   void OnEnter(CommandContext& ctx) override {
     if (pts_.size() == 2) Build(ctx, std::min((pts_[1] - pts_[0]).Length(), std::fabs(pts_[1].x - pts_[0].x) > 0 ? std::fabs(pts_[1].x - pts_[0].x) : (pts_[1] - pts_[0]).Length()));
   }

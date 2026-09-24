@@ -671,7 +671,8 @@ void CommandEngine::FeedText(const std::string& text) {
         Print(FormatPoint(p));
         DINO8_GUARD(active_->OnPoint(ctx, p));
         last_point_ = p;
-      } else if (std::sscanf(text.c_str(), "%lf", &number) == 1 && last_point_ && hover_point_) {
+      } else if (std::sscanf(text.c_str(), "%lf", &number) == 1 && last_point_ && hover_point_ &&
+                 !active_->NumberIsLiteralValue()) {
         // Distance constraint: a number places the point `number` units
         // from the last point, in the direction of the cursor.
         Vector3d dir = *hover_point_ - *last_point_;
