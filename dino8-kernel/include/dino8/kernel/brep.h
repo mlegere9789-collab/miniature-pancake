@@ -2343,6 +2343,25 @@ class Brep {
       // derive the trim from). `index` is the loop, `location` the 3D
       // point of its first sample.
       SelfIntersectingLoop,
+      // A loop whose 2D trim polygon is perfectly simple (the check
+      // above finds nothing) but whose 3D IMAGE - the same samples,
+      // mapped through the face's surface - genuinely crosses itself: a
+      // fold/warp in the surface (a bad fit, a corrupted control net, a
+      // degenerate Coons/loft patch) can map two non-crossing regions of
+      // parameter space onto the same physical neighbourhood. The
+      // textbook case is a bilinear-ish surface whose four corners are
+      // wired as a "bowtie" - the parameter-space boundary is an
+      // ordinary rectangle (perfectly simple in (u, v)), but connecting
+      // the corners in that order draws a self-crossing quadrilateral in
+      // 3D. `index` is the loop, `other_index` its face, `location` the
+      // midpoint of the two closest points found, `measure` their
+      // distance (always <= `tolerance`, since that is the trigger).
+      // Detection-only, like SelfIntersectingLoop above: this never
+      // changes what a Brep IS, only what Check() reports about it. See
+      // Segments3dProperlyCross()'s own doc comment (brep.cpp) for the
+      // exact test and its honest limitations (nearly-parallel segments
+      // are not checked - that is SliverFace's own job, not this one's).
+      SelfIntersectingLoop3d,
     };
     Kind kind = Kind::NakedEdge;
     int index = -1;
