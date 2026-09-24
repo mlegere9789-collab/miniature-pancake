@@ -6968,6 +6968,89 @@ void TestMeshRemoveDuplicateFacesKeepsOneCopyPerPolygon() {
         "the SURVIVING copy is the first occurrence (0,1,2), not one of the later duplicates");
 }
 
+// Mesh::FindSelfIntersections(): the "does this otherwise-closed-manifold
+// mesh actually pass through itself" question Check() cannot answer at all
+// (its own six conditions are every one an edge-adjacency defect - see
+// FindSelfIntersections' own doc comment). Four hand-derived cases:
+//
+//  (1) an ordinary closed box mesh - lots of triangles sharing edges and
+//      vertices, zero genuine crossings - must report nothing: the
+//      "shares a vertex" skip has to actually fire on every adjacent pair
+//      a real mesh throws at it, not just a hand-picked one.
+//  (2) two triangles built to cross exactly through the origin like an X -
+//      one lying in the z=0 plane (A0=(-2,-2,0), A1=(2,-2,0), A2=(0,2,0)),
+//      the other in the y=0 plane (B0=(-2,0,-2), B1=(2,0,-2), B2=(0,0,2)) -
+//      share no vertex and must be reported. Both triangles' own crossing
+//      segments (where each meets the OTHER's plane) land at exactly the
+//      same interval, x in [-1, 1] at y=z=0 (hand-derived: on edge A0-A2,
+//      y crosses 0 at t=0.5, giving x=-1; on A1-A2 likewise x=1; B's own
+//      B0-B2/B1-B2 crossings give the identical x=-1/x=1 at z=0) - so the
+//      overlap length is exactly 2, and the tolerance boundary is exactly
+//      checked: still reported at 1.9, NOT reported at 2.0 or 2.5 ("more
+//      than tolerance", not "at least" - see FindSelfIntersections' own
+//      doc comment).
+//  (3) two triangles sharing NO vertex and not overlapping at all (one far
+//      out at (100, 100, 100)) - a true negative distinct from (1)'s
+//      vertex-sharing exclusion, since this pair has nothing to skip on.
+//  (4) two overlapping COPLANAR triangles (both in the z=0 plane) - the
+//      documented honest gap: a real overlap this method does NOT catch,
+//      because coplanar triangles have no shared cross-product line to
+//      measure an overlap along. Pinned here so a future change to that
+//      behavior is a deliberate test update, never a silent regression.
+void TestMeshFindSelfIntersectionsDetectsOnlyGenuineCrossings() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  namespace tol = dino8::kernel::tolerance;
+
+  // (1)
+  const Mesh box = Brep::Box(1, 1, 1, 2, 2, 2).TessellateToClosedMesh(3, 3);
+  Check(box.FindSelfIntersections().empty(),
+        "an ordinary closed box mesh has no self-intersections, despite many triangles sharing edges/vertices");
+
+  auto add_tri = [](Mesh& m, double ax, double ay, double az, double bx, double by, double bz, double cx, double cy,
+                     double cz) {
+    ON_Mesh& raw = m.raw();
+    const int base = raw.m_V.Count();
+    raw.m_V.Append(ON_3fPoint(ax, ay, az));
+    raw.m_V.Append(ON_3fPoint(bx, by, bz));
+    raw.m_V.Append(ON_3fPoint(cx, cy, cz));
+    ON_MeshFace f;
+    f.vi[0] = base;
+    f.vi[1] = base + 1;
+    f.vi[2] = base + 2;
+    f.vi[3] = base + 2;
+    raw.m_F.Append(f);
+  };
+
+  // (2)
+  Mesh crossing;
+  add_tri(crossing, -2, -2, 0, 2, -2, 0, 0, 2, 0);   // face 0: lies in the z = 0 plane
+  add_tri(crossing, -2, 0, -2, 2, 0, -2, 0, 0, 2);   // face 1: lies in the y = 0 plane
+  const auto hits = crossing.FindSelfIntersections(tol::kDistance);
+  Check(hits.size() == 1 && hits[0] == std::make_pair(0, 1),
+        "two triangles crossing like an X through the origin, sharing no vertex, are reported as one pair");
+  Check(crossing.FindSelfIntersections(1.9).size() == 1,
+        "the hand-derived overlap length is exactly 2 (x in [-1,1], both triangles' own crossing segments coincide) "
+        "- still reported just below it");
+  Check(crossing.FindSelfIntersections(2.0).empty() && crossing.FindSelfIntersections(2.5).empty(),
+        "...but not reported AT or above the exact overlap length itself - 'more than tolerance', not 'at least'");
+
+  // (3)
+  Mesh apart;
+  add_tri(apart, -2, -2, 0, 2, -2, 0, 0, 2, 0);
+  add_tri(apart, 100, 100, 100, 101, 100, 100, 100, 101, 100);
+  Check(apart.FindSelfIntersections().empty(),
+        "two triangles that share no vertex and don't overlap at all are correctly reported clean");
+
+  // (4)
+  Mesh coplanar;
+  add_tri(coplanar, 0, 0, 0, 4, 0, 0, 0, 4, 0);
+  add_tri(coplanar, 1, 1, 0, 5, 1, 0, 1, 5, 0);
+  Check(coplanar.FindSelfIntersections().empty(),
+        "two overlapping COPLANAR triangles are NOT reported - a documented limitation, not a silent one (see "
+        "FindSelfIntersections' own doc comment)");
+}
+
 void TestLoftClosedRingsConcaveEndCapsExactPrismVolume() {
   using dino8::kernel::BooleanCombine;
   using dino8::kernel::BooleanOp;
@@ -26770,6 +26853,7 @@ int main() {
   TestMeshCloseNakedEdgesWeldsDuplicateAndOffsetVertices();
   TestMeshRemoveDegenerateFacesDropsOnlyDegenerateOnes();
   TestMeshRemoveDuplicateFacesKeepsOneCopyPerPolygon();
+  TestMeshFindSelfIntersectionsDetectsOnlyGenuineCrossings();
 
   sweep_tests::TestMergeAndWeldDropsCollapsedPoleTriangles();
   sweep_tests::TestExtrudeRectangleIsExactCappedSolid();

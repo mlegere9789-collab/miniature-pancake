@@ -2562,6 +2562,72 @@ void CompactUnusedVertices(ON_Mesh& mesh) {
   mesh.m_V = vertices;
 }
 
+// --- self-intersection -------------------------------------------------
+
+// Whether triangle `p` genuinely crosses the plane with unit normal `n`
+// through `q0`, filling `out` with the two points where its boundary
+// crosses it. A vertex within `eps` of the plane counts as on the positive
+// side (the same convention surface_intersect.cpp's own CrossPlane uses for
+// its cross-surface intersection curves); false if all three vertices land
+// on the same side (no crossing at all).
+bool CrossesPlane(const Point3d p[3], const Vector3d& n, const Point3d& q0, double eps, Point3d out[2]) {
+  double s[3];
+  int pos = 0, neg = 0;
+  for (int i = 0; i < 3; ++i) {
+    s[i] = ON_DotProduct(p[i] - q0, n);
+    if (s[i] > -eps && s[i] < eps) s[i] = eps;
+    if (s[i] > 0) ++pos; else ++neg;
+  }
+  if (pos == 0 || neg == 0) return false;
+  int k = 0;
+  for (int i = 0; i < 3 && k < 2; ++i) {
+    const int j = (i + 1) % 3;
+    if ((s[i] > 0) == (s[j] > 0)) continue;
+    const double t = s[i] / (s[i] - s[j]);
+    out[k++] = p[i] + (p[j] - p[i]) * t;
+  }
+  return k == 2;
+}
+
+// Whether two triangles that share NO vertex genuinely overlap in 3D by more
+// than `tolerance` - Mesh::FindSelfIntersections()'s own per-pair test,
+// the same construction as surface_intersect.cpp's own cross-surface TriTri
+// (used there for two independent meshes' intersection curve, with UV
+// tracking this test doesn't need), specialized to a single mesh's
+// self-overlap question: each triangle is split by the other's plane, and
+// the two resulting intervals along the two planes' own cross-product line
+// must overlap by MORE than `tolerance`, so a hairline touch (two triangles
+// meeting exactly at a tolerance-close edge or point) is not reported, only
+// a genuine crossing is. Coplanar or parallel triangles (near-zero cross
+// product of their normals) return false - the same "handled by neighbours"
+// limitation TriTri's own comment documents; see FindSelfIntersections'
+// own doc comment for why that is an honest, not silent, gap.
+bool TrianglesProperlyOverlap(const Point3d a[3], const Point3d b[3], double tolerance) {
+  Vector3d na = ON_CrossProduct(a[1] - a[0], a[2] - a[0]);
+  Vector3d nb = ON_CrossProduct(b[1] - b[0], b[2] - b[0]);
+  // A degenerate triangle is Check()'s degenerate_faces's own job, not this
+  // test's - treat it as never overlapping rather than dividing by zero.
+  if (!na.Unitize() || !nb.Unitize()) return false;
+  Vector3d dir = ON_CrossProduct(na, nb);
+  const double dir_len = dir.Length();
+  if (dir_len < tolerance::kZeroVector) return false;  // coplanar or parallel
+  dir /= dir_len;
+
+  Point3d ca[2], cb[2];
+  if (!CrossesPlane(a, nb, b[0], tolerance, ca)) return false;
+  if (!CrossesPlane(b, na, a[0], tolerance, cb)) return false;
+
+  double ta0 = ON_DotProduct(ca[0] - Point3d::Origin, dir);
+  double ta1 = ON_DotProduct(ca[1] - Point3d::Origin, dir);
+  double tb0 = ON_DotProduct(cb[0] - Point3d::Origin, dir);
+  double tb1 = ON_DotProduct(cb[1] - Point3d::Origin, dir);
+  if (ta0 > ta1) std::swap(ta0, ta1);
+  if (tb0 > tb1) std::swap(tb0, tb1);
+  const double t0 = std::max(ta0, tb0);
+  const double t1 = std::min(ta1, tb1);
+  return t1 - t0 > tolerance;
+}
+
 }  // namespace
 
 Mesh::CheckReport Mesh::Check(double tolerance) const {
@@ -2610,6 +2676,117 @@ Mesh::CheckReport Mesh::Check(double tolerance) const {
     if (group_size[rep[static_cast<size_t>(i)]] > 1) ++report.duplicate_vertices;
   }
   return report;
+}
+
+std::vector<std::pair<int, int>> Mesh::FindSelfIntersections(double tolerance) const {
+  const double tol = std::max(tolerance, 0.0);
+
+  // Flat triangle list: each face contributes one triangle, or two -
+  // (0,1,2) and (0,2,3) - for a quad, the exact split Contains()'s own ray
+  // cast already uses. A quad's own two triangles always share an edge, so
+  // they fall out through the ordinary "shares a vertex" skip below, the
+  // same as any other legitimately adjacent pair.
+  struct Tri {
+    int face;
+    int vi[3];
+    ON_BoundingBox box;
+  };
+  std::vector<Tri> tris;
+  tris.reserve(static_cast<size_t>(mesh_.m_F.Count()) * 2);
+  auto add_tri = [&](int face, int i0, int i1, int i2) {
+    Tri t;
+    t.face = face;
+    t.vi[0] = i0;
+    t.vi[1] = i1;
+    t.vi[2] = i2;
+    t.box.Set(Point3d(mesh_.m_V[i0]), true);
+    t.box.Set(Point3d(mesh_.m_V[i1]), true);
+    t.box.Set(Point3d(mesh_.m_V[i2]), true);
+    tris.push_back(t);
+  };
+  for (int i = 0; i < mesh_.m_F.Count(); ++i) {
+    const ON_MeshFace& f = mesh_.m_F[i];
+    add_tri(i, f.vi[0], f.vi[1], f.vi[2]);
+    if (f.IsQuad()) add_tri(i, f.vi[0], f.vi[2], f.vi[3]);
+  }
+  if (tris.size() < 2) return {};
+
+  // Broad phase: a uniform grid over every triangle's own bounding box,
+  // cell count scaled to triangle count - mirrors surface_intersect.cpp's
+  // own Grid (built there for a cross-mesh test; here for a single mesh's
+  // self-test). Every triangle is inserted into every cell its own,
+  // `tol`-padded bounding box overlaps, so a near-miss at a cell boundary
+  // is still found; this never skips a genuine candidate pair, only
+  // (in the ordinary case) avoids testing every pair outright.
+  ON_BoundingBox box = tris[0].box;
+  for (size_t i = 1; i < tris.size(); ++i) box.Union(tris[i].box);
+  const ON_3dVector pad(tol, tol, tol);
+  box.m_min -= pad;
+  box.m_max += pad;
+  const double diag = std::max(box.Diagonal().Length(), 1.0);
+  const double target = std::max(1.0, std::cbrt(static_cast<double>(tris.size())));
+  int n[3];
+  double cell[3];
+  for (int k = 0; k < 3; ++k) {
+    n[k] = static_cast<int>(std::clamp(std::ceil(target), 1.0, 48.0));
+    const double ext = box.m_max[k] - box.m_min[k];
+    if (ext > 0) {
+      cell[k] = ext / n[k];
+    } else {
+      n[k] = 1;
+      cell[k] = diag;
+    }
+  }
+  auto index_of = [&](int x, int y, int z) { return (static_cast<size_t>(z) * n[1] + y) * static_cast<size_t>(n[0]) + x; };
+  auto box_range = [&](const ON_BoundingBox& b, int lo[3], int hi[3]) {
+    for (int k = 0; k < 3; ++k) {
+      lo[k] = static_cast<int>(std::clamp(std::floor((b.m_min[k] - box.m_min[k]) / cell[k]), 0.0, static_cast<double>(n[k] - 1)));
+      hi[k] = static_cast<int>(std::clamp(std::floor((b.m_max[k] - box.m_min[k]) / cell[k]), 0.0, static_cast<double>(n[k] - 1)));
+    }
+  };
+  std::map<size_t, std::vector<int>> cells;
+  for (size_t t = 0; t < tris.size(); ++t) {
+    int lo[3], hi[3];
+    box_range(tris[t].box, lo, hi);
+    for (int z = lo[2]; z <= hi[2]; ++z)
+      for (int y = lo[1]; y <= hi[1]; ++y)
+        for (int x = lo[0]; x <= hi[0]; ++x) cells[index_of(x, y, z)].push_back(static_cast<int>(t));
+  }
+
+  std::set<std::pair<int, int>> hits;
+  std::vector<int> stamp(tris.size(), -1);
+  int mark = 0;
+  for (size_t ta = 0; ta < tris.size(); ++ta) {
+    int lo[3], hi[3];
+    box_range(tris[ta].box, lo, hi);
+    ++mark;
+    for (int z = lo[2]; z <= hi[2]; ++z)
+      for (int y = lo[1]; y <= hi[1]; ++y)
+        for (int x = lo[0]; x <= hi[0]; ++x) {
+          const auto it = cells.find(index_of(x, y, z));
+          if (it == cells.end()) continue;
+          for (int tb : it->second) {
+            if (tb <= static_cast<int>(ta) || stamp[static_cast<size_t>(tb)] == mark) continue;
+            stamp[static_cast<size_t>(tb)] = mark;
+            const Tri& A = tris[ta];
+            const Tri& B = tris[static_cast<size_t>(tb)];
+            if (A.face == B.face) continue;  // a quad's own two split triangles
+            bool shares_vertex = false;
+            for (int i = 0; i < 3 && !shares_vertex; ++i) {
+              for (int j = 0; j < 3 && !shares_vertex; ++j) {
+                if (A.vi[i] == B.vi[j]) shares_vertex = true;
+              }
+            }
+            if (shares_vertex) continue;
+            const Point3d pa[3] = {Point3d(mesh_.m_V[A.vi[0]]), Point3d(mesh_.m_V[A.vi[1]]), Point3d(mesh_.m_V[A.vi[2]])};
+            const Point3d pb[3] = {Point3d(mesh_.m_V[B.vi[0]]), Point3d(mesh_.m_V[B.vi[1]]), Point3d(mesh_.m_V[B.vi[2]])};
+            if (TrianglesProperlyOverlap(pa, pb, tol)) {
+              hits.insert(std::minmax(A.face, B.face));
+            }
+          }
+        }
+  }
+  return std::vector<std::pair<int, int>>(hits.begin(), hits.end());
 }
 
 std::vector<std::vector<int>> Mesh::NakedEdgeLoops() const {
