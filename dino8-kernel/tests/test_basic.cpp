@@ -6849,6 +6849,113 @@ void TestBrepRemoveDegenerateEdgesCollapsesSharedMicroEdge() {
         "...whose tolerant tessellation is a closed manifold of volume 1");
 }
 
+// Brep::Check()'s 3D counterpart to its own 2D SelfIntersectingLoop check
+// (CheckIssue::Kind::SelfIntersectingLoop3d's own doc comment has the full
+// rationale): a loop's sampled 2D trim polygon can be perfectly simple
+// while its 3D image still crosses itself, if the surface underneath it
+// folds space between the loop's two arms. The textbook counterexample,
+// built here directly via the raw OpenNURBS API (this kernel's own
+// factories never need a folded surface, so there is no higher-level way
+// to construct one): a bilinear (degree-1 x degree-1) surface whose four
+// corners are wired "bowtie"-style. NurbsSurface::FromControlGrid's own
+// documented indexing (control_grid[u*v_count+v]) and ON_Brep::
+// NewFace(surface)'s own documented trim order ("south, east, north, and
+// west side... in that order", i.e. (u:0->1,v=0), (u=1,v:0->1),
+// (v=1,u:1->0), (u=0,v:1->0)) together mean corners [P00,P01,P10,P11]
+// produce the loop P00->P10->P11->P01->P00 - and with P00=(0,0,0),
+// P10=(1,1,0), P11=(1,0,z), P01=(0,1,z), the loop's first and third edges
+// (P00-P10 and P11-P01) are the unit square's own two diagonals: their
+// (x, y) projections cross at exactly (0.5, 0.5) regardless of z, at a 3D
+// distance of exactly |z| apart there (hand-derived: both segments' own
+// closest-approach parameter works out to s = t = 0.5 - checked directly
+// against Segments3dProperlyCross's own algorithm, not merely assumed).
+// The (u, v) loop itself is always just the ordinary unit square - always
+// simple - confirmed throughout via SelfIntersectingLoop's own Count()
+// staying 0.
+void TestBrepCheckDetects3dSelfIntersectingLoopBeyondThe2dTrimCheck() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+
+  auto bowtie_brep = [](double z_diag2) {
+    // control_grid[u*2+v]: [P(0,0), P(0,1), P(1,0), P(1,1)].
+    const std::vector<Point3d> grid = {
+        Point3d(0, 0, 0),        // P00
+        Point3d(0, 1, z_diag2),  // P01
+        Point3d(1, 1, 0),        // P10
+        Point3d(1, 0, z_diag2),  // P11
+    };
+    const NurbsSurface surface = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+    Brep b;
+    b.raw().NewFace(surface.raw());
+    b.raw().SetTrimIsoFlags();
+    b.raw().SetTolerancesBoxesAndFlags();
+    return b;
+  };
+
+  // (1) Exact crossing (z = 0: both diagonals lie in the z = 0 plane) -
+  // the pure bowtie. Reported, and reported ONLY as the new 3D kind.
+  {
+    const Brep b = bowtie_brep(0.0);
+    const Brep::CheckReport r = b.Check();
+    Check(r.Count(Brep::CheckIssue::Kind::SelfIntersectingLoop3d) == 1,
+          "a bowtie-wired bilinear patch's 3D-crossing diagonals are reported exactly once");
+    Check(r.Count(Brep::CheckIssue::Kind::SelfIntersectingLoop) == 0,
+          "...while the EXISTING 2D check finds nothing - the (u, v) loop is a plain, simple unit square");
+    const auto it = std::find_if(r.issues.begin(), r.issues.end(), [](const Brep::CheckIssue& i) {
+      return i.kind == Brep::CheckIssue::Kind::SelfIntersectingLoop3d;
+    });
+    Check(it != r.issues.end() && it->measure < 1e-9 && std::abs(it->location.x - 0.5) < 1e-9 &&
+              std::abs(it->location.y - 0.5) < 1e-9 && std::abs(it->location.z) < 1e-9,
+          "...at the hand-derived crossing point (0.5, 0.5, 0), measured distance ~0");
+  }
+
+  // (2) Tolerance boundary: separate the two diagonals along z by exactly
+  // `h`, so their true closest approach (hand-derived above) is exactly
+  // `h`, independent of the (u, v) loop's own shape.
+  {
+    constexpr double t = 1e-3;
+    Check(bowtie_brep(0.9 * t).Check(t).Count(Brep::CheckIssue::Kind::SelfIntersectingLoop3d) == 1,
+          "diagonals 0.9*tolerance apart (in z) are still reported");
+    Check(bowtie_brep(t).Check(t).Count(Brep::CheckIssue::Kind::SelfIntersectingLoop3d) == 1,
+          "...and exactly AT tolerance too (measure <= tolerance triggers - the same inclusive convention "
+          "Mesh::CheckReport's own duplicate_vertices uses)");
+    Check(bowtie_brep(1.1 * t).Check(t).Count(Brep::CheckIssue::Kind::SelfIntersectingLoop3d) == 0,
+          "...but not at 1.1*tolerance - these diagonals genuinely miss each other, not a sampling artifact");
+  }
+
+  // (3) Documented limitation: two long sides separated by only 1e-9 (far
+  // closer than the default 1e-6 tolerance - if the check tested proximity
+  // alone, this WOULD trigger) but running PARALLEL rather than crossing:
+  // Segments3dProperlyCross's own doc comment names exactly this shape
+  // (two sides of a thin-but-legitimate sliver-ish face) as excluded by
+  // design - a close-but-parallel pair is SliverFace/DegenerateFace's own
+  // territory, not a fold, and is never reported here however close.
+  {
+    const std::vector<Point3d> grid = {
+        Point3d(0, 0, 0), Point3d(0, 1e-9, 0), Point3d(1, 0, 0), Point3d(1, 1e-9, 0),
+    };
+    const NurbsSurface surface = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+    Brep sliver;
+    sliver.raw().NewFace(surface.raw());
+    sliver.raw().SetTrimIsoFlags();
+    sliver.raw().SetTolerancesBoxesAndFlags();
+    Check(sliver.Check().Count(Brep::CheckIssue::Kind::SelfIntersectingLoop3d) == 0,
+          "a hairline-thin but non-crossing (parallel-sided) loop is not reported as a 3D self-intersection, "
+          "despite its two long sides sitting far closer than the default tolerance - a disclosed limitation, "
+          "see Segments3dProperlyCross's own doc comment");
+  }
+
+  // (4) True negative: the ordinary, already-exercised clean fixture (the
+  // real-topology box every other Check() test in this file uses) has no
+  // fold anywhere, so the new check adds nothing to its report.
+  {
+    const Brep box = Brep::FromPlanarFaces(CheckHealBoxFaces());
+    Check(box.Check().Count(Brep::CheckIssue::Kind::SelfIntersectingLoop3d) == 0,
+          "the ordinary clean box fixture has no 3D self-intersection either");
+  }
+}
+
 // Mesh-level Check()/FillSmallHoles(): drop one triangle (a 3-vertex
 // hole, filled with a single triangle) and then a whole quad face (a
 // 4-vertex hole, filled with a centroid fan); the box sits away from the
@@ -7091,6 +7198,81 @@ void TestMeshRemoveDuplicateFacesKeepsOneCopyPerPolygon() {
   const ON_MeshFace& f0 = m.raw().m_F[0];
   Check(f0.vi[0] == 0 && f0.vi[1] == 1 && f0.vi[2] == 2,
         "the SURVIVING copy is the first occurrence (0,1,2), not one of the later duplicates");
+}
+
+// Builds a single flat unit-square quad face at z=0, wound CCW when
+// viewed from +Z (vertices (0,0,0),(1,0,0),(1,1,0),(0,1,0)) - the
+// simplest possible fixture with an exact, hand-derivable vertex normal
+// ((0,0,1) everywhere, since both of the quad's own triangles share that
+// same flat normal) and an exact hand-derivable Offset()/Thicken()
+// result.
+dino8::kernel::Mesh MakeFlatUnitSquareMesh() {
+  dino8::kernel::Mesh m;
+  ON_Mesh& raw = m.raw();
+  raw.m_V.Append(ON_3fPoint(0, 0, 0));
+  raw.m_V.Append(ON_3fPoint(1, 0, 0));
+  raw.m_V.Append(ON_3fPoint(1, 1, 0));
+  raw.m_V.Append(ON_3fPoint(0, 1, 0));
+  ON_MeshFace f;
+  f.vi[0] = 0;
+  f.vi[1] = 1;
+  f.vi[2] = 2;
+  f.vi[3] = 3;
+  raw.m_F.Append(f);
+  return m;
+}
+
+void TestMeshOffsetMovesVerticesAlongExactVertexNormal() {
+  using dino8::kernel::Point3d;
+
+  const auto square = MakeFlatUnitSquareMesh();
+  const auto offset = square.Offset(2.5);
+  Check(offset.VertexCount() == 4 && offset.FaceCount() == 1, "Offset() doesn't change vertex/face counts");
+  // Every vertex shifts by exactly (0, 0, 2.5) - the flat square's own
+  // exact (0,0,1) normal times the offset distance.
+  bool all_exact = true;
+  for (int i = 0; i < 4; ++i) {
+    const Point3d before(square.raw().m_V[i]);
+    const Point3d after(offset.raw().m_V[i]);
+    all_exact = all_exact && std::fabs(after.x - before.x) < 1e-9 && std::fabs(after.y - before.y) < 1e-9 &&
+                std::fabs(after.z - before.z - 2.5) < 1e-9;
+  }
+  Check(all_exact, "every vertex moves by exactly (0, 0, 2.5) - the flat square's exact normal times the distance");
+}
+
+// Thicken() on the same flat unit square must produce an EXACT unit cube
+// (for distance = 1): 8 vertices, 6 faces (1 flipped original bottom, 1
+// offset top, 4 side walls), closed manifold, volume exactly 1 - a fully
+// hand-derivable result, not merely plausible-looking.
+void TestMeshThickenBuildsExactUnitCubeFromFlatSquare() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+
+  const auto square = MakeFlatUnitSquareMesh();
+
+  bool threw_zero = false;
+  try {
+    (void)square.Thicken(0.0);
+  } catch (const std::invalid_argument&) {
+    threw_zero = true;
+  }
+  Check(threw_zero, "Thicken(0.0) throws - a zero-thickness solid is meaningless");
+
+  const Mesh box = Brep::Box(1, 1, 1, 2, 2, 2).TessellateToClosedMesh(1, 1);
+  bool threw_closed = false;
+  try {
+    (void)box.Thicken(1.0);
+  } catch (const std::invalid_argument&) {
+    threw_closed = true;
+  }
+  Check(threw_closed, "Thicken() on an already-closed mesh throws - it only handles an open sheet");
+
+  const Mesh cube = square.Thicken(1.0);
+  Check(cube.VertexCount() == 8 && cube.FaceCount() == 6,
+        "Thicken(1.0) on the flat unit square gives exactly 8 vertices / 6 faces");
+  Check(cube.IsClosedManifold(), "...and the result is a genuine closed 2-manifold");
+  Check(std::fabs(cube.Volume() - 1.0) < 1e-9,
+        "...with volume exactly 1 - the flat square's own area (1) times the offset distance (1)");
 }
 
 // Mesh::FindSelfIntersections(): the "does this otherwise-closed-manifold
@@ -27542,11 +27724,14 @@ int main() {
   TestBrepJoinNakedEdgesRecordsTolerantEdges();
   TestBrepRemoveSliverAndDegenerateFacesHealHairlineStrip();
   TestBrepRemoveDegenerateEdgesCollapsesSharedMicroEdge();
+  TestBrepCheckDetects3dSelfIntersectingLoopBeyondThe2dTrimCheck();
   TestMeshCheckAndFillSmallHolesRestoreDroppedFaces();
   TestMeshUnifyNormalsFixesFlippedAndInvertedFaces();
   TestMeshCloseNakedEdgesWeldsDuplicateAndOffsetVertices();
   TestMeshRemoveDegenerateFacesDropsOnlyDegenerateOnes();
   TestMeshRemoveDuplicateFacesKeepsOneCopyPerPolygon();
+  TestMeshOffsetMovesVerticesAlongExactVertexNormal();
+  TestMeshThickenBuildsExactUnitCubeFromFlatSquare();
   TestMeshFindSelfIntersectionsDetectsOnlyGenuineCrossings();
 
   sweep_tests::TestMergeAndWeldDropsCollapsedPoleTriangles();

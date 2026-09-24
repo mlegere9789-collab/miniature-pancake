@@ -2990,4 +2990,63 @@ int Mesh::UnifyNormals() {
   return flipped;
 }
 
+Mesh Mesh::Offset(double distance) const {
+  Mesh result = *this;
+  const std::vector<Vector3d> normals = ComputeVertexNormals();
+  for (int i = 0; i < result.mesh_.m_V.Count(); ++i) {
+    const ON_3dPoint moved = ON_3dPoint(result.mesh_.m_V[i]) + distance * normals[static_cast<size_t>(i)];
+    result.mesh_.m_V[i] = ON_3fPoint(moved);
+  }
+  result.mesh_.m_N.Destroy();
+  result.mesh_.m_FN.Destroy();
+  return result;
+}
+
+Mesh Mesh::Thicken(double distance) const {
+  if (distance == 0.0) {
+    throw std::invalid_argument("dino8::kernel::Mesh::Thicken: distance must be nonzero");
+  }
+  const CheckReport report = Check();
+  if (report.naked_edge_list.empty()) {
+    throw std::invalid_argument(
+        "dino8::kernel::Mesh::Thicken: this mesh has no naked edges to wall "
+        "up (it's already closed) - Thicken() only handles an open sheet; "
+        "a closed mesh needs a hollowing/shell operation this method "
+        "doesn't attempt");
+  }
+
+  const Mesh outer = Offset(distance);
+  const int n = mesh_.m_V.Count();
+
+  Mesh result;
+  ON_Mesh& raw = result.raw();
+  raw.m_V.Reserve(n * 2);
+  for (int i = 0; i < n; ++i) raw.m_V.Append(mesh_.m_V[i]);
+  for (int i = 0; i < n; ++i) raw.m_V.Append(outer.raw().m_V[i]);
+
+  raw.m_F.Reserve(mesh_.m_F.Count() * 2 + static_cast<int>(report.naked_edge_list.size()));
+  // Inner wall: the original faces, flipped.
+  for (int i = 0; i < mesh_.m_F.Count(); ++i) {
+    ON_MeshFace f = mesh_.m_F[i];
+    FlipOneFace(f);
+    raw.m_F.Append(f);
+  }
+  // Outer wall: the offset copy's faces, same winding, reindexed by +n.
+  for (int i = 0; i < mesh_.m_F.Count(); ++i) {
+    ON_MeshFace f = mesh_.m_F[i];
+    for (int k = 0; k < 4; ++k) f.vi[k] += n;
+    raw.m_F.Append(f);
+  }
+  // Side walls: one quad per naked edge (a, b), already directed outward.
+  for (const auto& [a, b] : report.naked_edge_list) {
+    ON_MeshFace f;
+    f.vi[0] = a;
+    f.vi[1] = b;
+    f.vi[2] = b + n;
+    f.vi[3] = a + n;
+    raw.m_F.Append(f);
+  }
+  return result;
+}
+
 }  // namespace dino8::kernel
