@@ -204,6 +204,26 @@ Brep FilletConvexEdge(const Brep& solid, Point3d edge_p0, Point3d edge_p1, doubl
 // bulging notch (ADDING, not cutting, that face's own corner)
 // automatically, from the same code the convex case uses to cut one.
 //
+// An OBLIQUE third face at edge_p0/edge_p1 (not perpendicular to the
+// edge) is ALSO closed, reusing FilletConvexEdge's own
+// FindObliqueThirdFaceCrossing/EllipseNotchCornerAtVertexCylindrical
+// UNCHANGED - both are already generic in `radius`/`frame`/the D_i/D_j
+// rail-offset vectors, with no convex-specific assumption baked into
+// either. The ONLY thing that needed re-deriving is D_i/D_j themselves:
+// contact_i(p) - p is a fixed vector (independent of p, the same fact
+// FilletConvexEdge's own doc comment relies on), and for THIS function's
+// own contact_i(p) = axis_point(p) - n_i*radius = p + bis*offset -
+// n_i*radius, so D_i = bis*offset - n_i*radius - the NEGATION of
+// FilletConvexEdge's own D_i = radius*n_i - bis*offset, confirmed by
+// direct substitution rather than assumed from the sign pattern
+// elsewhere in this derivation. Verified against a genuine oblique
+// fixture (the same L-shaped footprint, capped by an oblique plane
+// instead of a flat one): the hand-derived crossing height t_i =
+// radius*slope (for a cap tilted by `slope` in the direction
+// perpendicular to the corner's own bisector) matches the function's own
+// computed CylindricalFace::length to floating-point precision, and the
+// result is a valid, closed, manifold solid.
+//
 // VALIDATION: `radius` > 0; the two-face shared-boundary-edge topology
 // FilletConvexEdge itself requires; and, genuinely new here, an explicit
 // check that the edge really IS concave, not convex. This check is
@@ -230,16 +250,13 @@ Brep FilletConvexEdge(const Brep& solid, Point3d edge_p0, Point3d edge_p1, doubl
 // SCOPE: a straight edge between exactly two PLANAR faces (same
 // PlanarFaces() precondition as FilletConvexEdge), one constant radius,
 // with any third face at either endpoint either a free boundary or
-// exactly PERPENDICULAR to the edge (closed via the corner notch above).
-// UNLIKE FilletConvexEdge, an OBLIQUE third face at an endpoint is left
-// untouched here - the ellipse-cap machinery FilletConvexEdge's own
-// oblique-end generalization uses is convex-specific in its own
-// derivation and has not been re-derived for the concave sign convention;
-// a genuine, disclosed future increment, not silently approximated.
-// Multi-edge propagation and vertex blends at concave (or mixed convex/
-// concave) corners are likewise out of scope for this first increment,
+// PERPENDICULAR or OBLIQUE to the edge - matching FilletConvexEdge's own
+// scope exactly, now that the oblique case is closed here too (see
+// above). Multi-edge propagation and vertex blends at concave (or mixed
+// convex/concave) corners remain out of scope for this increment,
 // matching how FilletConvexEdge itself started before FilletConvexEdges
-// generalized it.
+// generalized it - the one genuine gap still left disclosed rather than
+// silently approximated.
 //
 // CLOSED FORM this was checked against (dino8-kernel's own regression
 // tests): for a concave edge of length L with interior dihedral angle

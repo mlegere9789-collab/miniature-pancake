@@ -1143,8 +1143,33 @@ Brep FilletConcaveEdge(const Brep& solid, Point3d edge_p0, Point3d edge_p1, doub
 
   const double L = edge_p0.DistanceTo(edge_p1);
 
+  // OBLIQUE END CONDITION, the concave mirror of FilletConvexEdge's own
+  // (see that function's own doc comment for the full derivation this
+  // reuses verbatim): FindObliqueThirdFaceCrossing and
+  // EllipseNotchCornerAtVertexCylindrical are both already generic in
+  // `radius`/`frame`/D_i/D_j - neither hardcodes a convex-only sign
+  // convention - so the ONLY thing that needs to change here is D_i/D_j
+  // themselves: contact_i(p) - p is a FIXED vector (independent of p,
+  // same fact FilletConvexEdge's own doc comment relies on), and for this
+  // function's own contact_i(p) = axis_point(p) - n_i*radius =
+  // p + bis*offset - n_i*radius, so D_i = bis*offset - n_i*radius - the
+  // NEGATION of FilletConvexEdge's own D_i = radius*n_i - bis*offset, not
+  // the same formula reused as-is (confirmed by direct substitution, not
+  // assumed from the sign pattern elsewhere in this function).
+  const Vector3d D_i = bis * offset - n_i * radius;
+  const Vector3d D_j = bis * offset - n_j * radius;
+  const ObliqueEndCrossing cross_p0 = FindObliqueThirdFaceCrossing(others, edge_p0, e, plane_i, plane_j, D_i, D_j, tol);
+  const ObliqueEndCrossing cross_p1 = FindObliqueThirdFaceCrossing(others, edge_p1, e, plane_i, plane_j, D_i, D_j, tol);
+  const double v0_start = cross_p0.found ? cross_p0.t_i : 0.0;
+  const double v1_end = cross_p1.found ? (L + cross_p1.t_i) : L;
+  if (!(v1_end - v0_start > tol)) {
+    throw std::invalid_argument(
+        "dino8::kernel::FilletConcaveEdge: the oblique end condition(s) leave no positive cylinder length between "
+        "them - radius too large for this solid's geometry");
+  }
+
   Brep::CylindricalFace fillet_face;
-  fillet_face.frame.origin = axis_point(edge_p0);
+  fillet_face.frame.origin = axis_point(edge_p0) + v0_start * e;
   fillet_face.frame.xaxis = -n_i;
   Vector3d frame_yaxis = ON_CrossProduct(e, fillet_face.frame.xaxis);
   if (!frame_yaxis.Unitize()) {
@@ -1156,13 +1181,23 @@ Brep FilletConcaveEdge(const Brep& solid, Point3d edge_p0, Point3d edge_p1, doub
   fillet_face.frame.UpdateEquation();
   fillet_face.radius = radius;
   fillet_face.angle = sweep_angle;
-  fillet_face.length = L;
+  fillet_face.length = v1_end - v0_start;
   fillet_face.outward = false;
 
-  NotchCornerAtVertex(others, edge_p0, e, plane_i, plane_j, fillet_face.frame.origin, fillet_face.frame.xaxis,
-                      frame_yaxis, radius, sweep_angle, tol);
-  NotchCornerAtVertex(others, edge_p1, e, plane_i, plane_j, fillet_face.frame.origin + fillet_face.length * e,
-                      fillet_face.frame.xaxis, frame_yaxis, radius, sweep_angle, tol);
+  if (cross_p0.found) {
+    EllipseNotchCornerAtVertexCylindrical(others, edge_p0, e, plane_i, plane_j, fillet_face, sweep_angle, tol,
+                                          fillet_face.cap0_notch_points, fillet_face.cap0_notch_tolerance);
+  } else {
+    NotchCornerAtVertex(others, edge_p0, e, plane_i, plane_j, fillet_face.frame.origin, fillet_face.frame.xaxis,
+                        frame_yaxis, radius, sweep_angle, tol);
+  }
+  if (cross_p1.found) {
+    EllipseNotchCornerAtVertexCylindrical(others, edge_p1, e, plane_i, plane_j, fillet_face, sweep_angle, tol,
+                                          fillet_face.cap1_notch_points, fillet_face.cap1_notch_tolerance);
+  } else {
+    NotchCornerAtVertex(others, edge_p1, e, plane_i, plane_j, fillet_face.frame.origin + fillet_face.length * e,
+                        fillet_face.frame.xaxis, frame_yaxis, radius, sweep_angle, tol);
+  }
 
   std::vector<Brep::PlanarFace> mixed_planar = std::move(others);
   mixed_planar.push_back(std::move(retrimmed_i));

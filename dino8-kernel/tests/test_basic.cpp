@@ -27412,6 +27412,53 @@ dino8::kernel::Brep ConcaveLShapedPrism() {
   return Brep::FromPlanarFaces(faces);
 }
 
+// Same L-shaped footprint, but the TOP cap is the OBLIQUE plane z = 1 +
+// slope*(y - 1) instead of the flat z = 1 (the concave vertex's own
+// height at y=1 stays exactly 1, matching the perpendicular fixture
+// above, so only the rest of the top cap tilts away from it) - every
+// wall stays exactly planar and vertical regardless of `slope`, since a
+// wall's own plane is the vertical plane through its own footprint edge,
+// independent of how the top boundary's height varies along it.
+dino8::kernel::Brep ConcaveLShapedPrismObliqueTop(double slope) {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  const std::vector<Point3d> footprint = {Point3d(0, 0, 0), Point3d(2, 0, 0), Point3d(2, 1, 0),
+                                          Point3d(1, 1, 0), Point3d(1, 2, 0), Point3d(0, 2, 0)};
+  auto top_z = [&](double y) { return 1.0 + slope * (y - 1.0); };
+  auto make_face = [](const std::vector<Point3d>& loop, Vector3d normal) {
+    Brep::PlanarFace f;
+    f.loop = loop;
+    f.plane = ON_Plane(loop[0], normal);
+    return f;
+  };
+
+  std::vector<Point3d> top_loop = footprint;
+  for (Point3d& p : top_loop) p = Point3d(p.x, p.y, top_z(p.y));
+  std::vector<Point3d> bottom_loop = footprint;
+  std::reverse(bottom_loop.begin(), bottom_loop.end());
+
+  std::vector<Brep::PlanarFace> faces;
+  faces.push_back(make_face(bottom_loop, Vector3d(0, 0, -1)));
+  Vector3d top_n(0, -slope, 1);
+  top_n.Unitize();
+  faces.push_back(make_face(top_loop, top_n));
+
+  const size_t n = footprint.size();
+  for (size_t k = 0; k < n; ++k) {
+    const Point3d& a = footprint[k];
+    const Point3d& b = footprint[(k + 1) % n];
+    const std::vector<Point3d> wall = {a, b, Point3d(b.x, b.y, top_z(b.y)), Point3d(a.x, a.y, top_z(a.y))};
+    Vector3d edge_dir = b - a;
+    edge_dir.Unitize();
+    Vector3d normal = ON_CrossProduct(edge_dir, Vector3d(0, 0, 1));
+    normal.Unitize();
+    faces.push_back(make_face(wall, normal));
+  }
+  return Brep::FromPlanarFaces(faces);
+}
+
 }  // namespace
 
 void TestFilletConcaveEdgeAddsExactQuarterRoundVolume() {
@@ -27491,6 +27538,45 @@ void TestFilletConcaveEdgeRejectsUnsupportedConfigurations() {
   // the edge.
   Check(throws([&] { FilletConcaveEdge(ConcaveLShapedPrism(), Point3d(1, 1, 0), Point3d(1, 1, 1), 2.0); }),
         "rejects a radius too large to fit");
+}
+
+void TestFilletConcaveEdgeObliqueEndFaceIsExactAndClosed() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConcaveEdge;
+  using dino8::kernel::Point3d;
+
+  const double slope = 0.3, radius = 0.15;
+  const Brep prism = ConcaveLShapedPrismObliqueTop(slope);
+  ON_TextLog log0;
+  Check(prism.raw().IsValid(&log0) && prism.raw().IsSolid(), "sanity: the oblique-topped fixture is a valid solid");
+
+  const Point3d edge_p0(1, 1, 0), edge_p1(1, 1, 1);
+  const Brep c = FilletConcaveEdge(prism, edge_p0, edge_p1, radius);
+
+  ON_TextLog log;
+  bool oriented = false, has_boundary = true;
+  Check(c.raw().IsValid(&log) && c.raw().IsManifold(&oriented, &has_boundary) && oriented && !has_boundary,
+        "the obliquely-ended concave fillet is a CLOSED 2-manifold - the oblique end's own ellipse notch is a "
+        "literal shared boundary with the cylinder's own cap, exactly as FilletConvexEdge's own oblique-end case");
+  Check(c.raw().IsSolid(), "the obliquely-ended concave fillet reports IsSolid() == true");
+  Check(c.FaceCount() == 9, "9 faces: the 8 original (6 walls + bottom + oblique top) minus the 2 re-trimmed plus "
+                            "those 2 back, plus the new cylindrical patch");
+
+  // Hand-derived crossing height (see FilletConcaveEdge's own doc
+  // comment): D_i = bis*offset - n_i*radius, t_i = -(D_i.n_f)/(e.n_f). For
+  // this fixture's own right-angle (theta = pi/2) concave notch and a top
+  // cap tilted by `slope` purely in y, this reduces in closed form to
+  // t_i = radius*slope exactly - the cylinder's own length is therefore L
+  // + radius*slope, not merely L (an oblique end can lengthen OR shorten
+  // the patch, unlike the always-symmetric perpendicular case).
+  const Brep::MixedFacesResult mf = c.MixedFaces();
+  Check(mf.cylindrical.size() == 1, "sanity: exactly one cylindrical patch");
+  const double expected_length = 1.0 + radius * slope;
+  Check(std::fabs(mf.cylindrical[0].length - expected_length) < 1e-9,
+        "the cylinder's own length matches the hand-derived L + radius*slope exactly");
+  Check(mf.cylindrical[0].cap0_notch_points.empty() && !mf.cylindrical[0].cap1_notch_points.empty(),
+        "only the oblique (top, cap1) end got the dense ellipse notch - the flat (bottom, cap0) end keeps its "
+        "plain perpendicular corner notch, untouched by this generalization");
 }
 
 void TestRemoveBlendRoundTripsAConcaveFillet() {
@@ -29480,6 +29566,7 @@ int main() {
   TestRemoveChamferRejectsUnsupportedConfigurations();
   TestFilletConcaveEdgeAddsExactQuarterRoundVolume();
   TestFilletConcaveEdgeRejectsUnsupportedConfigurations();
+  TestFilletConcaveEdgeObliqueEndFaceIsExactAndClosed();
   TestRemoveBlendRoundTripsAConcaveFillet();
   TestChamferConcaveEdgeAddsExactRightTriangleVolume();
   TestChamferConcaveEdgeAngleMatchesTwoDistanceForm();

@@ -4513,6 +4513,43 @@ honestly out of scope.
   judged not worth the added surface area for what is, underneath,
   genuinely the same code path being reused, not duplicated.
 
+- **`FilletConcaveEdge`'s own oblique-end support** - closes the one
+  disclosed gap in `FilletConcaveEdge`'s own entry above: a third face at
+  edge_p0/edge_p1 OBLIQUE to the edge (not perpendicular) is now closed
+  exactly as `FilletConvexEdge`'s own oblique-end generalization does,
+  and by REUSING that same machinery unchanged -
+  `FindObliqueThirdFaceCrossing`/`EllipseNotchCornerAtVertexCylindrical`
+  are both already generic in `radius`/`frame`/the `D_i`/`D_j` rail-
+  offset vectors, with no convex-specific assumption baked into either.
+  The only thing that needed re-deriving is `D_i`/`D_j` themselves:
+  `contact_i(p) - p` is a fixed vector (independent of `p`), and for
+  `FilletConcaveEdge`'s own `contact_i(p) = axis_point(p) - n_i*radius =
+  p + bis*offset - n_i*radius`, so `D_i = bis*offset - n_i*radius` - the
+  NEGATION of `FilletConvexEdge`'s own `D_i = radius*n_i - bis*offset`,
+  confirmed by direct substitution rather than assumed from the sign
+  pattern elsewhere in the concave derivation. Verified two ways: the
+  perpendicular-cap fixture from `FilletConcaveEdge`'s own earlier tests
+  produces a BIT-IDENTICAL result through the new code path (both
+  `cross_p0.found`/`cross_p1.found` come out false there, so `v0_start`/
+  `v1_end` reduce to the old `0`/`L` exactly - confirmed by direct
+  comparison, not assumed from the code reading like a no-op); and a NEW
+  oblique fixture (the same L-shaped footprint, capped by the oblique
+  plane `z = 1 + slope*(y - 1)` instead of a flat one - every wall stays
+  exactly planar and vertical regardless of `slope`, since a wall's own
+  plane is the vertical plane through its own footprint edge) produces a
+  valid, closed, manifold solid whose cylinder length matches the hand-
+  derived closed form `L + radius*slope` to floating-point precision.
+  Full `dino8_kernel_smoke`: 3282 checks, 0 failures;
+  `dino8_general_boolean_sweep` unaffected. `RemoveBlend` needed no
+  changes: it already rejects ANY notched-cap cylindrical face outright
+  (`cap0_notch_points`/`cap1_notch_points` non-empty), the same rule that
+  already applied to `FilletConvexEdge`'s own oblique-end fillets, so an
+  obliquely-ended concave fillet is consistently out of scope for removal
+  too, not a newly-introduced gap. The remaining disclosed gap - multi-
+  edge propagation and vertex blends at concave (or mixed convex/concave)
+  trihedral corners - is unchanged and is now the last one standing for
+  this pairing, the natural next increment in this subsystem.
+
 ## What's still not done (as of chunk 2)
 
 - `Brep::Box()`, `Brep::Sphere()`, `Brep::TrimmedPlanarFace()`
