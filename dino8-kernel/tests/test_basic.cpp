@@ -3776,6 +3776,135 @@ void TestSurfaceClosestPoint() {
         "the seam point itself");
 }
 
+// A real, confirmed bug found by randomized fuzzing against an independent
+// brute-force reference: ClosestPointParameter()'s per-level window (the
+// search range the NEXT refinement level scans) narrows to best +/- one
+// grid cell of THIS level, using `(u_hi - u_lo) / u_divisions` - i.e. the
+// SAME u_divisions/v_divisions the caller passed for sampling density. That
+// couples the window's cross-level "drift budget" (how far it can move
+// from wherever the very first, coarsest-relative-to-the-full-domain level
+// happened to land) to 1/divisions, so passing a FINER grid - which should
+// only ever help - can instead leave the window unable to travel far
+// enough to reach a true minimum sitting more than a few of its own (now
+// much smaller) grid cells away from that first sample. Confirmed via a
+// hand-instrumented trace (dumping best_u/best_v/window bounds at every
+// level) on this exact surface+query: both a 24x24 and a 100x100 run land
+// their very first level's best sample in the SAME basin (u in [0.29,
+// 0.30], v=1), but 24x24's much wider per-level step lets it walk from
+// u~0.29 down to the true nearby optimum at u~0.246 (distance ~893.39)
+// within the fixed 8 refinement levels, while 100x100's much narrower step
+// only reaches u~0.290 (distance ~908.57) - the opposite of the expected
+// finer-is-better-or-equal trend, not just an unlucky pick of a different,
+// worse local minimum (this is the SAME basin, arrived at less
+// completely). Fixed by capping the divisor used for the window-narrowing
+// step (not the sampling density, which keeps benefiting fully from a
+// larger u_divisions/v_divisions) so the drift budget never gets worse
+// than this method's own default (20x20) provides. Verified via a
+// stash-based before/after: fails (908.57 vs 893.39, gap ~15.2) on the
+// pre-fix code, passes (~895.2 vs ~893.39, gap ~1.8 - the ordinary
+// residual noise any finite multi-level grid search has, already covered
+// by this method's own "not a guaranteed global minimum" doc comment) on
+// the fix.
+void TestSurfaceClosestPointFinerGridNotWorseThanCoarser() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+
+  constexpr int kDegU = 1, kDegV = 3, kCvU = 6, kCvV = 8;
+  const double kKnotsU[kCvU + kDegU - 1] = {0, 0.16375993954552437, 0.8712146450345144, 0.88836447635676197,
+                                             0.97739768666491145, 1};
+  const double kKnotsV[kCvV + kDegV - 1] = {0,
+                                             0,
+                                             0,
+                                             0.46349031362127513,
+                                             0.46642385788116175,
+                                             0.5478672675887597,
+                                             0.97460768787465912,
+                                             1,
+                                             1,
+                                             1};
+  // Control points, row-major u-fastest (dumped from the exact fuzzed
+  // surface that reproduced the bug).
+  const double kCvs[kCvU * kCvV][3] = {
+      {-1275.5014096421548, 1476.2458531541276, 786.45586609157658},
+      {500.02412185403068, -1387.6312611617536, 1002.5707287152434},
+      {205.28156051407768, -1340.8279845419443, 1014.8190084864184},
+      {1302.9143343176604, 61.360849633582347, 679.23119982726507},
+      {-262.98997383546953, -1115.8554912798843, 923.76275166296159},
+      {-1229.6249972217199, -278.98431249360578, 21.763030897905765},
+      {584.06021397397103, -150.94200394564928, -934.62265131931701},
+      {-96.681654535167127, -272.77795538424266, -1412.8974139500594},
+      {-1466.6522302351996, 930.0100971953218, 894.56290524207793},
+      {-436.32780613989803, 541.02399455025966, -1221.9053378125343},
+      {-746.28401729019822, 786.25619099688424, 1423.0243600014685},
+      {-842.02027670601933, 234.08759694076798, -1235.4232348465482},
+      {468.20877813596849, -633.23101322871935, 271.77716590942441},
+      {-1271.5115905814826, -1233.0003695570715, -985.9535194759809},
+      {1408.3592043241836, 1179.0212805649087, -825.56643015005068},
+      {-522.21445993647546, 454.93903642969462, -572.94531359665734},
+      {901.63612822668915, -1268.8704321762098, -832.66287990016451},
+      {280.22611584374818, 1345.5066380304936, 55.028217177012266},
+      {1209.494317964042, 565.99221075463197, 804.87320200621139},
+      {-889.98761636293898, -1309.0189606838276, -29.878281241650484},
+      {109.88921122120723, -1152.6632253340629, -972.35468108816781},
+      {-316.25456178466357, 783.07108419756901, -1416.219711933056},
+      {-1423.6185928750533, 183.78151041651927, 1476.082116362775},
+      {-831.98395857956825, 1235.3907118370992, 558.49515702875055},
+      {1094.585597577098, -190.32725255855439, -1409.3587087960957},
+      {733.01532616895724, 526.47758044156785, -508.27413596091537},
+      {685.08798794408608, 1266.4427000126082, 1070.2197243410967},
+      {-1105.8811855183073, -1240.8137865554916, 878.69547336272058},
+      {955.99191678631246, -740.96822884391611, 1287.8104219303343},
+      {1367.1450169371353, -517.43246602811007, 387.97439745145675},
+      {-558.75675145318905, 194.71557004896317, 146.74477622758104},
+      {-153.4879474763834, 1139.3968701316001, -313.95508085496044},
+      {-169.25857427498363, -1520.3047602968193, -1188.9510301361584},
+      {-1495.6428144293939, -329.52202497580765, 651.82804415346232},
+      {47.533688510964794, -893.37711621591461, -1149.5569969053922},
+      {931.86095304560808, 1293.6732528522709, 987.51883317918077},
+      {-408.58722569153542, 937.0672945109261, -1066.421396566639},
+      {590.37806465230165, -1116.8414232387249, 1126.6003362668037},
+      {-675.07445255110349, -229.99478786535838, 686.08150210696954},
+      {276.46549401547873, 310.27503634759796, -939.53546537043007},
+      {-1023.0502256973793, 190.9370882148437, -451.04875140490458},
+      {-783.60736417951193, 719.84658280172403, 264.11605912803179},
+      {-1298.4072079749114, -1478.6888511464351, -1.5265976432572188},
+      {1268.0596413097539, 722.18728546851048, -1517.6825039895925},
+      {459.00911282331344, 1383.2857883666236, 1424.382637124723},
+      {926.48748252130531, -14.95874617045024, 1150.1734037832009},
+      {-1302.7626364415794, 1097.6518405063046, -787.4158668430191},
+      {-102.96386915832363, -1.5057176929615252, 646.75030107233783},
+  };
+
+  ON_NurbsSurface raw;
+  Check(raw.Create(3, /*is_rat=*/false, kDegU + 1, kDegV + 1, kCvU, kCvV),
+        "ON_NurbsSurface::Create succeeds for the reproduced bug's degree/CV counts");
+  for (int i = 0; i < kCvU + kDegU - 1; ++i) raw.SetKnot(0, i, kKnotsU[i]);
+  for (int i = 0; i < kCvV + kDegV - 1; ++i) raw.SetKnot(1, i, kKnotsV[i]);
+  for (int j = 0; j < kCvV; ++j) {
+    for (int i = 0; i < kCvU; ++i) {
+      const double* cv = kCvs[static_cast<size_t>(j) * kCvU + i];
+      raw.SetCV(i, j, ON_3dPoint(cv[0], cv[1], cv[2]));
+    }
+  }
+  NurbsSurface surface;
+  surface.raw() = raw;
+
+  const Point3d query(1937.233924, 541.1802437, -636.9584755);
+  const Point3d coarse = surface.ClosestPoint(query, 24, 24);
+  const Point3d fine = surface.ClosestPoint(query, 100, 100);
+  const double d_coarse = (coarse - query).Length();
+  const double d_fine = (fine - query).Length();
+
+  Check(d_coarse < 894.0, "sanity: the 24x24 grid still finds ~893.39, matching the debug trace this test's own "
+                          "comment cites (regression-guards the reference case itself, not just the fix)");
+  Check(d_fine <= d_coarse + 5.0,
+        "a 100x100 (finer) grid does not converge to a meaningfully WORSE "
+        "closest point than a 24x24 (coarser) grid on the same surface and "
+        "query - before the fix this gap was ~15.2 (908.57 vs 893.39); the "
+        "small residual gap left after the fix (~1.8) is ordinary "
+        "multi-level-grid-search noise, not this bug");
+}
+
 void TestSurfaceClosestPointGlobalReportsConvergenceFailure() {
   using dino8::kernel::Point3d;
   using dino8::kernel::SurfaceClosestPointGlobal;
@@ -20370,6 +20499,7 @@ int main() {
   TestSurfaceApproximateArea();
   TestSurfaceCVCount();
   TestSurfaceClosestPoint();
+  TestSurfaceClosestPointFinerGridNotWorseThanCoarser();
   TestSurfaceClosestPointGlobalReportsConvergenceFailure();
   TestSurfaceCurvature();
   TestSurfaceSuggestedDivisions();
