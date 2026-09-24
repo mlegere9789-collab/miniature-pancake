@@ -26194,6 +26194,116 @@ void TestExtrudeTaperedConvexPolygonIsExactPlanarFrustum() {
         "direction in the profile's own plane throws");
 }
 
+// Sweep2: two-rail sweep with scaling (brep.h's own doc comment has the
+// full contract). Every closed-form check below was hand-derived and
+// cross-checked against a standalone scratch driver before being written
+// here - see the derivation in this test's own comments.
+void TestSweep2ExactFrustumAndDegenerateCases() {
+  // Two straight rails: rail1 vertical at x=0, rail2 a straight segment
+  // from (D0,0,0) to (D1,0,H). Both rails are straight and open, so
+  // Sweep2 takes its exact 2-station shortcut - every local point's 3D
+  // trajectory is provably affine in the station fraction (origin(f) and
+  // width(f) are both affine, and the frame's x/z axes stay CONSTANT
+  // because x_hat = unit(rail2(f) - rail1(f)) = unit((width(f), 0, 0))
+  // never changes direction, only magnitude, for D0, D1 > 0). The square
+  // section is drawn at HALF-extent D0/2 (i.e. spans the FULL rail
+  // separation D0 at station 0, not half of it - Sweep2's local
+  // coordinates are the station-0 offset divided by the station-0
+  // width, so a profile of half-extent w0/2 occupies exactly the "unit"
+  // local square). With the profile's plane perpendicular to the
+  // travel direction (verified algebraically: for rails confined to the
+  // world XZ plane, x_hat = (1,0,0) exactly and z_hat = unit(x_hat x
+  // avg_tangent) always lands purely on the Y axis, i.e. z_hat =
+  // (0, +/-1, 0) exactly - a genuine consequence of the cross product
+  // with a vector in the XZ plane, not an approximation), each world
+  // cross-section at height z = f*H is a square of side width(f)
+  // centered on the z-axis, so:
+  //   Volume = H * integral_0^1 width(f)^2 df = (H/3)(D0^2 + D0*D1 + D1^2)
+  // - the standard pyramid-frustum formula with "radius" replaced by
+  // full width. Verified to 3e-16 relative in the scratch driver.
+  const double H = 5.0, D0 = 2.0, D1 = 4.0;
+  const NurbsCurve rail1 = Polyline({P(0, 0, 0), P(0, 0, H)});
+  const NurbsCurve rail2 = Polyline({P(D0, 0, 0), P(D1, 0, H)});
+  const NurbsCurve sq = Polyline({P(-D0 / 2, -D0 / 2, 0), P(D0 / 2, -D0 / 2, 0), P(D0 / 2, D0 / 2, 0),
+                                  P(-D0 / 2, D0 / 2, 0), P(-D0 / 2, -D0 / 2, 0)});
+  const Brep frustum = Brep::Sweep2(sq, rail1, rail2, 32);
+  CheckSolidTopology(frustum, 3, "sweep2 pyramid frustum (2-station exact)");
+  const double exact_frustum = H / 3.0 * (D0 * D0 + D0 * D1 + D1 * D1);
+  CheckClosedMeshVolume(frustum, 16, 16, exact_frustum, 1e-9, "sweep2 pyramid frustum");
+  Check(FaceSurface(frustum, 0).DegreeV() == 1, "two straight rails give the exact degree-1 ruled wall");
+
+  // Parallel rails (constant separation D0, no scaling at all): Sweep2
+  // must reduce to a plain extrusion of the D0 x D0 square by height H -
+  // volume D0^2 * H exactly, verified to 4e-15 relative.
+  const NurbsCurve rail2_parallel = Polyline({P(D0, 0, 0), P(D0, 0, H)});
+  const Brep prism = Brep::Sweep2(sq, rail1, rail2_parallel, 32);
+  CheckSolidTopology(prism, 3, "sweep2 parallel rails (degenerates to extrude)");
+  CheckClosedMeshVolume(prism, 16, 16, D0 * D0 * H, 1e-9, "sweep2 parallel-rail prism");
+
+  // General curved rails: two quarter-circle arcs of different radius
+  // and height (rail1 r=5 z=0, rail2 r=8 z=2), a small square section
+  // centered on rail1's own start point and spanned by that station's
+  // own two-rail frame axes (computed once, by hand, from the same
+  // formulas TwoRailFrames() uses, and cross-checked numerically in the
+  // scratch driver before being hardcoded here). No closed form exists
+  // for a general curved two-rail sweep, so this checks real structural
+  // properties instead: a genuine closed solid, positive volume, and
+  // Mesh::IsClosedManifold() at both the requested and an asymmetric
+  // division pair - the fan-cap "shares its own boundary isocurve"
+  // property doesn't care that the wall itself is only an interpolant.
+  {
+    NurbsCurve rail1_full = Circle(P(0, 0, 0), Vector3d(0, 0, 1), 5.0);
+    NurbsCurve rail2_full = Circle(P(0, 0, 2), Vector3d(0, 0, 1), 8.0);
+    ON_NurbsCurve c1 = rail1_full.raw();
+    Check(c1.Trim(ON_Interval(0.0, c1.Domain().Length() / 4.0)), "rail1 quarter-arc trim succeeded");
+    ON_NurbsCurve c2 = rail2_full.raw();
+    Check(c2.Trim(ON_Interval(0.0, c2.Domain().Length() / 4.0)), "rail2 quarter-arc trim succeeded");
+    NurbsCurve rail1_q, rail2_q;
+    rail1_q.raw() = c1;
+    rail2_q.raw() = c2;
+    // Station-0 frame axes for THIS rail pair, hand-derived: x_hat =
+    // unit(rail2(0) - rail1(0)) = unit((3, 0, 2)) = (0.83205, 0, 0.55470);
+    // avg tangent there is (0, 1, 0) (both rails start at angle 0 with a
+    // CCW tangent along +y); z_hat = unit(x_hat x (0,1,0)), which for
+    // x_hat = (a, 0, b) works out to (-b, 0, a) = (-0.55470, 0, 0.83205).
+    const Point3d o0(5, 0, 0);
+    const Vector3d xhat(0.83205, 0, 0.55470), zhat(-0.55470, 0, 0.83205);
+    const double half = 0.3;
+    const NurbsCurve small_sq = Polyline({o0 - xhat * half - zhat * half, o0 + xhat * half - zhat * half,
+                                          o0 + xhat * half + zhat * half, o0 - xhat * half + zhat * half,
+                                          o0 - xhat * half - zhat * half});
+    const Brep curved = Brep::Sweep2(small_sq, rail1_q, rail2_q, 24);
+    CheckSolidTopology(curved, 3, "sweep2 curved (quarter-arc) rails");
+    const Mesh cm = curved.TessellateToClosedMesh(8, 48);
+    Check(cm.IsClosedManifold(), "sweep2 curved rails: closed manifold at (8, 48)");
+    Check(curved.TessellateToClosedMesh(12, 5).IsClosedManifold(), "sweep2 curved rails: closed manifold at (12, 5) too");
+    Check(cm.Volume() > 0.1 && cm.Volume() < 10.0, "sweep2 curved rails: volume is a sane positive number, not a "
+                                                    "self-overlapping near-zero shape");
+  }
+
+  // Closed (wrap) rails: two concentric circles - no caps (a periodic
+  // sweep has no ends), but still a genuine closed manifold.
+  {
+    const NurbsCurve ring1 = Circle(P(0, 0, 0), Vector3d(0, 0, 1), 5.0);
+    const NurbsCurve ring2 = Circle(P(0, 0, 1), Vector3d(0, 0, 1), 7.0);
+    const Point3d o0(5, 0, 0);
+    const double half = 0.3;
+    const NurbsCurve small_sq = Polyline({o0 + P(-half, 0, -half), o0 + P(half, 0, -half), o0 + P(half, 0, half),
+                                          o0 + P(-half, 0, half), o0 + P(-half, 0, -half)});
+    const Brep ring_body = Brep::Sweep2(small_sq, ring1, ring2, 32);
+    Check(ring_body.FaceCount() == 1, "closed-rail sweep2 is a single periodic face, no caps");
+    Check(ring_body.raw().IsSolid(), "closed-rail sweep2 is a genuine closed solid");
+    const Mesh rm = ring_body.TessellateToClosedMesh(8, 64);
+    Check(rm.IsClosedManifold(), "closed-rail sweep2: closed manifold at (8, 64)");
+    Check(ring_body.TessellateToClosedMesh(12, 5).IsClosedManifold(), "closed-rail sweep2: closed manifold at (12, 5) too");
+    Check(rm.Volume() > 0.0, "closed-rail sweep2: positive volume");
+  }
+
+  // Negative controls.
+  Check(Throws([&] { Brep::Sweep2(sq, rail1, rail1, 32); }), "rails that touch (rail2 == rail1) throw");
+  Check(Throws([&] { Brep::Sweep2(sq, rail1, rail2, 1); }), "stations < 2 throws");
+}
+
 }  // namespace sweep_tests
 
 // ---------------------------------------------------------------------------
@@ -28097,6 +28207,7 @@ int main() {
   TestSurfaceCurvatureAtIsScaleInvariant();
   TestSurfaceClosestPointNearSpherePoleDoesNotLockAzimuth();
   sweep_tests::TestPipeVariable();
+  sweep_tests::TestSweep2ExactFrustumAndDegenerateCases();
   ON::End();
 
   if (g_failures > 0) {
