@@ -62,6 +62,20 @@ int main() {
     std::snprintf(label, sizeof(label), "box closed at tol %g", tol);
     Check(mb.IsClosedManifold() && std::fabs(std::fabs(mb.Volume()) - 24.0) < 1e-6, label);
     delete box;
+
+    // The same check far from the origin (the smoke suite's own
+    // "Box 1800,0,0 1810,10,0 10" fixture). MeshBrepClosed welds its face
+    // meshes at diagonal * 1e-8, so the vertex-snapping quotient
+    // coordinate / tolerance is ~1e10 here: that overflowed the 32-bit
+    // `long` std::lround returns on Windows (Mesh::MergeAndWeld now uses
+    // std::llround), welding the box's far corners together and returning
+    // an open mesh - which the origin box above could never show.
+    ON_3dPoint far_corners[8] = {ON_3dPoint(1800, 0, 0), ON_3dPoint(1810, 0, 0), ON_3dPoint(1810, 10, 0), ON_3dPoint(1800, 10, 0), ON_3dPoint(1800, 0, 10), ON_3dPoint(1810, 0, 10), ON_3dPoint(1810, 10, 10), ON_3dPoint(1800, 10, 10)};
+    ON_Brep* far_box = ON_BrepBox(far_corners);
+    dino8::kernel::Mesh mfb = MeshBrepClosed(*far_box, opt);
+    std::snprintf(label, sizeof(label), "box at x=1800 closed with volume 1000 at tol %g (got volume %.6f)", tol, std::fabs(mfb.Volume()));
+    Check(mfb.IsClosedManifold() && std::fabs(std::fabs(mfb.Volume()) - 1000.0) < 1e-3, label);
+    delete far_box;
   }
   std::printf("%s\n", failures == 0 ? "ALL PASSED" : "FAILURES");
   return failures == 0 ? 0 : 1;

@@ -1790,6 +1790,140 @@ What this repo does instead:
   at all, not just a slightly-off approximation of one. Only genuinely
   shape-preserving when every weight was already equal (the mirror-image
   condition of `MakeRational()`'s own guarantee).
+- `NurbsSurface::RemoveKnotAt(direction, knot_index, tolerance,
+  &max_deviation)` (new `src/surface_edit.cpp`): the exact inverse of
+  `InsertKnotAt()`, a gap OpenNURBS itself leaves open (verified against
+  the v8 source: `ON_NurbsCurve`/`ON_NurbsSurface` have `InsertKnot`,
+  `IncreaseDegree`, `Extend`, `Trim`, `Split`, but no knot removal at
+  all - `RemoveSpan` deletes a whole span's geometry, which is a
+  different operation). Implemented from scratch as Tiller's algorithm
+  (Piegl & Tiller A5.8, single removal), run in homogeneous 4D on every
+  row/column of the control net at once so it handles rational surfaces
+  too, with the knot vector converted between ON's compressed storage
+  (which drops the two redundant end knots) and the textbook form the
+  algorithm indexes. The important property: knot removal is only
+  shape-preserving when the surface genuinely has the extra continuity
+  at that knot, and this kernel's rule is never to ship a silently-wrong
+  approximation, so the method computes a *rigorous* upper bound on the
+  max 3D deviation the removal would cause - the algorithm's own control-
+  net discrepancy, which bounds the surface error because it is the
+  coefficient of a single non-negative, partition-of-unity basis
+  function (on a rational surface the discrepancy lives in homogeneous
+  space and is converted to a Euclidean bound via P&T eq. 5.30's
+  `TOL = d * w_min / (1 + |P|_max)`, looser but still rigorous) - and
+  only commits when that bound is within `tolerance`, otherwise leaving
+  the surface bit-identical and still reporting the bound. Verified with
+  computed geometry, not just counts: inserting a knot into a wiggly
+  bicubic and removing it again recovers every original control point
+  to 1e-9 and the sampled surface to 1e-9; the same on a rational
+  radius-3 sphere (every sampled point still exactly radius 3);
+  removing a genuinely non-removable knot is refused at 1e-6 with the
+  net untouched, then committed at a permissive tolerance where the
+  sampled deviation on a 129x33 grid is confirmed to be both nonzero and
+  <= the reported bound (and > 25% of it, so the bound isn't vacuous);
+  and removing one multiplicity of a sphere's quarter-point double knot
+  has its sampled deviation <= the rational bound. A mutation check
+  (skipping the algorithm's control-point recomputation) makes four of
+  those checks fail, so the test genuinely exercises the math. Knot
+  vectors that aren't clamped in that direction (periodic surfaces)
+  are refused honestly rather than half-handled: their wrapped control
+  points would need matching edits this doesn't do. Companion
+  `MaxSampledDeviationFrom(other, nu, nv)` is the sampled (lower-bound)
+  deviation measurement the tests use, exposed because refit/rebuild-
+  style operations need the same report.
+- `NurbsSurface::SetDomain(direction, t0, t1)`: reparameterizes one
+  direction onto exactly `[t0, t1]` - an affine rescale of that
+  direction's knot vector and nothing else, delegating to
+  `ON_NurbsSurface::SetDomain` after reading its source to confirm it's
+  the real linear knot map, not a stub. Verified by computed geometry:
+  every U knot lands at the affine image of its old value to 1e-12, the
+  same *normalized* (u, v) evaluates to the same 3D point to 1e-12 on a
+  13x13 grid, and every control point stays bit-identical. Reported as
+  a no-op on the current domain, refused for an empty/reversed interval.
+- `NurbsSurface::Rebuild(u_count, v_count, u_degree, v_degree, out,
+  &max_deviation, u_samples, v_samples)`: Rhino's Rebuild / a
+  Parasolid-style refit, as the *global tensor-product least-squares*
+  solution rather than the "sample the surface and use the samples as
+  control points" shortcut (which shrinks any curved surface toward its
+  interior, since a B-spline never passes through its interior control
+  points). Piegl & Tiller A9.7: sample the source on a parameter grid,
+  least-squares-fit every sample row in U with the two end control
+  points pinned (eq. 9.63-9.67), then fit every column of those
+  intermediate points in V the same way - with gridded parameters and
+  one shared clamped-uniform knot vector per direction the row-then-
+  column solve is the exact tensor-product least-squares solution, so
+  the corners are interpolated exactly and the result reproduces the
+  source's own parameterization and domain. The deviation report is a
+  genuine measurement (both surfaces evaluated on a grid twice as fine
+  as the fit samples, offset half a step so it never re-uses a sample
+  the fit already saw, plus the four boundary curves), documented as a
+  sampled lower bound rather than claimed exact. Verified with computed
+  geometry: refitting a wiggly 6x4 bicubic onto its own net recovers
+  every control point to 1e-9 with deviation < 1e-9; onto a 9x7 net
+  whose knots are a superset it is still exact (< 1e-9, confirmed by an
+  independent 65x65 sampling); onto a 5-CV net that can't hold the
+  source's knots the reported deviation is > 1e-3, agrees with an
+  independent 129x65 sampling within 5%, the corners stay exact to
+  1e-12, and the least-squares fit deviates less than a third as much
+  as the sample-as-control-point construction on the same net; a
+  rational radius-2 sphere refit to a 16x10 cubic net reports a
+  deviation between 1e-6 and 0.02 that bounds the measured radius
+  error within 5%. A mutation check (writing samples straight into the
+  control points instead of solving the normal equations) fails five of
+  those checks.
+- `NurbsSurface::MatchEdge(fixed_direction, at_min, target,
+  target_fixed_direction, target_at_min, continuity, &report,
+  cross_scale)` (Position/Tangent/Curvature = G0/G1/G2): Rhino's
+  MatchSrf, done as exact NURBS algebra on the control net rather than
+  by moving control points onto sampled target points (the app's own
+  pre-existing `MatchSrfCommand` did the latter - see below for where
+  this replaces it). G0 makes the two boundary curves the *same* curve:
+  the target edge is oriented to match (reversal auto-detected from
+  corner distances, reported), reparameterized onto this edge's domain
+  (`SetDomain`, shape-preserving), both sides degree-elevated to the
+  higher edge degree and knot-refined to their union knot vector
+  (`InsertKnot`, both shape-preserving so the target is never altered),
+  then this surface's edge control row is replaced by the target's
+  (homogeneous coordinates, so a rational target's weights carry over -
+  making this surface rational too if it wasn't). G1 additionally sets
+  the next row so this surface's cross-boundary first derivative equals
+  `-scale` times the target's inward one, via the standard clamped-
+  B-spline end-derivative formula `p / (V_{p+1} - V_1) * (R_1 - R_0)`;
+  G2 sets the third row the same way for the second derivative
+  (`scale^2`). With a constant `scale` this is exactly C1/C2 in the
+  reparameterization `v' = scale * v`, hence genuinely G1/G2 - not
+  merely "close" - and `scale` defaults to this surface's own mean
+  cross-derivative speed over the target's (so the match keeps this
+  surface's parameterization rather than adopting the target's), or can
+  be forced. The method runs its own self-check by evaluation after
+  editing (never trusts the algebra blindly): `report`, if non-null,
+  receives the measured max position/tangent/curvature residual along
+  the edge, and the whole edit is rolled back to
+  `Result::Failed` if any residual exceeds a tight tolerance scaled by
+  the surfaces' own size - so a caller can never silently receive a
+  wrong match. The far edge is left untouched (verified: the cross
+  direction is only widened enough, via degree elevation / one knot
+  insertion, to hold the rewritten rows, both shape-preserving).
+  Verified with real differential-geometry checks, not just "didn't
+  crash": G0 gives 1e-12 boundary-curve coincidence but leaves a real
+  crease (`|n_S x n_T|` stays > 1e-3); G1 additionally drives that
+  cross-product to < 1e-12 (unit normals genuinely parallel along the
+  whole edge) while still leaving second-derivative mismatch, and
+  forcing `cross_scale = 1` reproduces exact textbook C1/C2 against the
+  target's own raw derivatives; G2 drives the cross-product of the
+  Gaussian curvatures to < 1e-9 along the edge and confirmed on this
+  surface's other three edge/direction combinations too (u=max, a
+  reversed target orientation); matching onto a genuine rational sphere
+  cap makes the candidate's edge an exact circle on the sphere (every
+  sampled point exactly radius 2, Gaussian curvature exactly `1/r^2`
+  along the whole edge to 1e-9, every resulting weight still positive).
+  Refused (surface untouched) for a periodic/unclamped edge or cross
+  direction, or Curvature continuity against a degree-1 target (no
+  second derivative to match) - both checked directly. A mutation
+  (breaking the tangent-row derivative-scaling coefficient) makes the
+  self-check itself catch the corruption and fail closed - 9 of the
+  new checks fail under it, confirming the tests (and the guard) are
+  real.
 - `include/dino8/kernel/tolerance.h` - the kernel's tolerance policy,
   closing the one "Known gaps" point below that had stayed accurate
   since chunk 1 ("no tolerance-management policy defined yet"). Three
@@ -1826,11 +1960,35 @@ What this repo does instead:
   have failed the 3x rejection instead. Honest limits, unchanged from
   before and now stated in one place: `kDistance` is not scaled by model
   size, so a 1e-6 gap on a 1e6-unit model is below double precision's
-  own resolution there; and the many OTHER literals still in brep.cpp/
-  boolean.cpp (`scale * 1e-6` planarity checks, `1e-4` cylinder-fit
-  tolerances, `1e-9` axis floors) are not routed yet - only the sites
-  the "Known gaps" note itself named, plus the weld/join family, so the
-  byte-identical sweep claim stays checkable one family at a time.
+  own resolution there.
+
+  A second, later routing pass (same commit series, same name-and-route
+  discipline, checked the same two ways - byte-identical sweep, full
+  green ctest - one family at a time) added `tolerance::kTinyDistance`
+  (1e-9) and `RelativeDistance(size)` = `max(kTinyDistance, size *
+  kRelative)` - `DistanceForSize()`'s purely-relative sibling, for the
+  `std::max(1e-9, x * 1e-6)` radius/edge-length fit tolerances brep.cpp
+  used by hand (a cylinder/cone axis-distance check, the plain-quad seam
+  and general-boolean linear-fit tolerances) - and routed the several
+  `1.0 - 1e-6` unit-vector-alignment checks (cylinder/cone/Steinmetz
+  parallelism, `MergeCoplanarFaces()`'s own plane-normal match) through
+  the existing `kAlignment`, plus `mesh.cpp`'s remaining `1e-9`/`1e-12`
+  degeneracy floors (the volume/centroid/vertex-normal zero checks,
+  `IsPlanarRingSimple()`/`IsRingPlanar()`'s own degenerate-triple
+  fallback) through `kZeroVector`/`kZero`. Verified by BOTH value and
+  behaviour: `TestTolerancePolicyValuesAreTheOnesInForce` pins
+  `kTinyDistance`/`kAlignment` and `RelativeDistance()`'s own floor/scale
+  by value, and the unchanged pass/fail of the existing cylinder, cone,
+  Steinmetz and planar-ring tests (whose fits and alignment checks route
+  through these exact sites) is what proves nothing measurable moved -
+  the same claim the byte-identical sweep makes for the boolean path.
+  What's left unrouted after both passes: `TrimmedPlanarFace()`'s
+  clipping-boundary sample-count heuristics and a handful of one-off
+  epsilons with no natural family yet (`FromMixedFaces`' 5%
+  surface-padding margin, `boolean.cpp`'s own `kConvexTol`/
+  `kMinCylinderPairPieceAngle`/`kTiny`) - narrower, more special-purpose
+  constants than the two families routed so far, left for a pass with
+  its own dedicated verification rather than folded in here.
 
 - `Brep::Extrude()` / `Revolve()` / `Loft()` / `Sweep1()` / `Pipe()`
   (`src/sweep.cpp`): the first B-rep-level sweep-class operations here
@@ -1999,6 +2157,117 @@ honestly out of scope.
   chaining several chamfers on one solid (the second call is rejected by
   `PlanarFaces()` only if the first left a curved face; two chamfers are
   both planar and do chain).
+- `Brep::Check()` and the healing operations built on it - the Parasolid
+  "check/heal" class (`PK_BODY_check`, `PK_BODY_repair`) this kernel had
+  no counterpart to: `ON_Brep::IsValid()` is one bool, reports every
+  `Box()`/`Sphere()`-built Brep as invalid for lacking topology (see
+  brep.h's class comment), and says nothing about WHERE or HOW MUCH.
+  `Check(tolerance, sliver_width)` returns a structured `CheckReport`: a
+  list of `CheckIssue`s, each with a kind, an index into the raw
+  `m_E`/`m_F`/`m_T`/`m_L` arrays, a second index where one applies (the
+  other face, the vertex, the edge), a 3D `location` and a `measure`,
+  plus `topology_valid`/`is_closed`/`is_oriented` summary flags and a
+  `Count(kind)` accessor. Eleven kinds: `NakedEdge` (trim count < 2),
+  `NonManifoldEdge` (>= 3), `InconsistentFaceOrientation` (two faces
+  walking a shared edge the same way - `ON_Brep::IsManifold()`'s own
+  `m_bRev3d XOR m_bRev` rule, plus the `LoopDirection()` term the app
+  layer's `OrientBrepFaces` already carries for a clockwise-stored
+  loop), `DegenerateEdge` (16-segment sampled length within tolerance),
+  `DegenerateFace` (outer loop's 3D samples collinear within tolerance:
+  width about the longest chord, an exact zero-area test for a polygon
+  that a Newell-area test gets wrong on a full-cylinder loop whose two
+  circles cancel), `SliverFace` (width within `sliver_width`),
+  `EdgeVertexGap`, `TrimEdgeGap` (the trim's 3D image at start/middle/
+  end vs the edge curve at the matching, `m_bRev3d`-aware parameter),
+  `LoopGap` (consecutive trims not meeting, measured in 3D through the
+  surface), `InvalidTrim` (no edge/curve/surface, or 2D endpoints
+  outside the surface domain) and `SelfIntersectingLoop`
+  (`detail::IsSimplePolygon` on the same `SampleLoop()` samples
+  `Tessellate()` would use). Both gap kinds honour a TOLERANT edge: a
+  gap is reported only above `max(tolerance, edge.m_tolerance)` (or the
+  vertex's own), so a deliberately tolerant join is not re-reported as
+  a defect. Repairs, all on this class's own `ON_Brep` with the side
+  tables cleared the way `MergeCoplanarFaces()` already does:
+  - `JoinNakedEdges(tol)` joins coincident naked-edge pairs (the
+    kernel's own `WeldCoincidentNakedEdges`, previously private to
+    `MergeCoplanarFaces()`), then RECORDS the measured trim-vs-edge gap
+    on each surviving edge's `m_tolerance` (and each vertex's) - after
+    `SetTolerancesBoxesAndFlags()`, which resets those (see
+    `FixUnsetEdgeTolerances`' own comment) - and orients the faces.
+    Checked directly: a top face built 1e-4 above its sides leaves 8
+    naked edges; `JoinNakedEdges(2e-4)` joins 4 pairs and exactly those
+    4 edges carry `m_tolerance == 1e-4` (to 1e-12), after which the
+    default `Check()` is clean and `IsValid()`/`IsSolid()` hold.
+  - `UnifyNormals()` - the app's `OrientBrepFaces` brought into the
+    kernel, plus the step it lacked: for a closed shell, the sign of
+    `TessellateToClosedMesh(4, 4).Volume()` decides outward, so an
+    inside-out shell (every face flipped: perfectly consistent, volume
+    -1, nothing for a consistency check to find) is fixed too.
+  - `RemoveDegenerateFaces(tol)`/`RemoveSliverFaces(width)` delete the
+    faces `Check()` reports and re-join the exposed neighbour edges with
+    `JoinNakedEdges` - a 1e-5-wide strip on a box top becomes three
+    tolerant edges of tolerance 1e-5, an 8e-7 strip closes exactly.
+  - `RemoveDegenerateEdges(tol)` collapses via `ON_Brep::CollapseEdge()`
+    - which, found by testing rather than assumed, leaves the loop's
+    OTHER junction open by the collapsed edge's own parameter-space
+    length (a 7.3e-7 (u, v) residual `ON_Brep::IsValidLoop()`'s
+    1e-10-relative match test rejects); `CloseLoopGapsWithinTolerance`
+    moves the next trim's 2D start exactly onto the previous end
+    wherever the 3D gap is within tolerance, and the result is
+    `IsValid()` again.
+  - `CapPlanarHoles(tol)` chains naked edges through their vertices
+    (straight edges only - a curved one is refused rather than left as
+    an unjoined polygonal cap), fits a plane (Newell normal, every
+    vertex within `DistanceForSize(extent)`), and builds the cap
+    THROUGH `FromPlanarFaces()` rather than `ON_BrepTrimmedPlane()`:
+    the first attempt used the latter and produced a valid, solid
+    `ON_Brep` whose welded mesh nonetheless had 32 naked T-junction
+    edges, because `FromMixedFaces()`'s planar surfaces are 5%-padded
+    and exact-clipped (grid rows at 0.225) while the unpadded cap's
+    grid rows sat at 0.25 - a real, measured mismatch, not a theory.
+  - `TessellateToClosedMeshTolerant()` - the plain call plus a
+    true-distance `Mesh::CloseNakedEdges()` over the mesh's naked seams
+    at `max(kWeld, 2 * largest edge tolerance)`. Deliberately a
+    separate entry point, not a change to `TessellateToClosedMesh()`:
+    notched conical fillet caps already carry genuine edge tolerances
+    and their plain-path output is pinned by existing tests, so
+    widening that weld silently was not an option in this pass. It also
+    closes the sub-`kWeld` seam grid snapping misses (two points 8e-7
+    apart straddling a 1e-6 snap-cell boundary stay unwelded - the
+    8e-7-strip fixture's plain mesh is open for exactly that reason).
+  `Mesh` gets the same layer: `Check()` (naked/non-manifold/conflicting
+  edge counts, degenerate faces by repeated index or height within
+  tolerance, duplicate vertices by true distance through a 27-cell grid
+  lookup, and the naked-edge list in face order), `NakedEdgeLoops()`,
+  `CloseNakedEdges(tol)` (true-distance weld restricted to boundary
+  vertices - the lowest index survives at its own position, collapsed
+  faces are dropped, quads that lose a corner become triangles),
+  `FillSmallHoles(max_extent)` (one triangle for a 3-loop, a centroid
+  fan otherwise, each fill triangle walking its boundary edge in
+  reverse of the existing face; loops larger than the bound are left
+  open on purpose) and `UnifyNormals()` (BFS flip plus the same
+  outward-by-volume step). Every repair is tested on a DELIBERATELY
+  BROKEN fixture with hand-derived expectations, and every diagnostic
+  is checked for firing with the right index/location/measure before
+  the repair and going silent after it: a flipped face (4
+  `InconsistentFaceOrientation` issues naming face 1 and each of its 4
+  neighbours; 1 or 11 flips; volume +1, and -1 -> +1 for the inside-out
+  shell), a dropped face (4 naked edges at z=1; one cap; 6 faces / 12
+  edges; the PLAIN mesh closed with volume exactly 1), the 1e-4-lifted
+  top (above), the hairline strips (above; volume within the strip's
+  width of 1 via the tolerant tessellation), a shared 8e-7 micro edge
+  (one `DegenerateEdge` of measured length 8e-7 on a 13-edge solid;
+  collapsed to 12 edges / 8 vertices, `IsValid()`, volume 1), and on
+  the mesh side a dropped triangle (3-loop, 8 vertices / 12 faces after
+  the fill) and a dropped quad (4-loop, 9 / 14), a backwards triangle
+  (3 conflicts) and an inverted box (0 conflicts, volume -1, 12 flips),
+  a duplicated corner (4 naked edges, 2 duplicate vertices, 1 weld) and
+  a corner copied 1e-4 away (refused at 1e-6, welded at 2e-4). Honest
+  limits: face width and edge length are SAMPLED (the loop's own trim
+  samples, 16 segments per edge), not exact minimum-width computations;
+  a degenerate face split as a T-junction leaves naked edges after
+  removal (no endpoint pair coincides), reported, never hidden; and
+  `CapPlanarHoles()` handles straight-edged planar holes only.
 - `IntersectCurves(a, b, opt)` (CCX, `surface_intersect.h`): the
   curve/curve counterpart to the existing `IntersectSurfaces()` (SSX)
   and `IntersectCurveSurface()` (CSX) - the public OpenNURBS SDK ships
@@ -2071,6 +2340,255 @@ honestly out of scope.
   `(10, -5, 2)` instead of the origin. Throws `std::invalid_argument` on
   an inside-out (negative-volume) mesh rather than returning negated
   moments, and on an empty/zero-volume one - both checked.
+- Three mesh spatial queries that didn't exist in any form, each exact:
+  - `Mesh::FireRay(origin, direction)` returns every crossing of a ray
+    with the mesh, sorted by parameter (`RayHit`: t, point, face index,
+    entering/leaving) - `ContainsPoint()` had always fired a ray
+    internally but only ever counted crossings, so nothing could say
+    WHERE a ray lands or on which face (a pick, a visibility test). The
+    existing private Moller-Trumbore helper was refactored to return its
+    parameter and barycentrics (`ContainsPoint()` now wraps it with the
+    identical `t > 1e-12` rule, so its results are unchanged - the
+    full smoke suite and the 76-case boolean sweep both confirm that).
+    A hit exactly on a quad face's shared diagonal is reported once,
+    via a hair (1e-9) of barycentric slack so round-off can't make both
+    triangles reject it; the honest degenerate case (a ray exactly
+    grazing an edge or vertex shared by two faces) is stated, not
+    hidden. Verified: a +x ray through the [0,2]^3 box hits at exactly
+    t=1 and t=3 (faces 4 then 5, entering then leaving); doubling the
+    direction halves both t without moving the points (t is in units of
+    `direction`, documented); a ray from inside hits once, leaving at
+    exactly t=0.7; misses and away-pointing rays return empty; a ray
+    through both x faces' diagonals reports 2 hits, not 4; an oblique
+    ray's two hits land at the hand-derived plane crossings (0, 0.7,
+    0.55) and (2, 1.7, 1.05).
+  - `Mesh::DistanceTo(other)` is the exact minimum surface/surface
+    distance with the closest pair of points and faces - the clearance
+    query `ClosestPoint()` (point-to-mesh only) couldn't answer. Exact
+    per triangle pair through all three feature families the minimum
+    can live in: vertex/triangle (Ericson's region test, 6 pairs),
+    edge/edge (closed-form segment/segment closest points, 9 pairs,
+    now shared with the CCX seeding via `detail/segment3d.h`), and
+    edge-pierces-triangle (which the first two families can't see -
+    nothing on either boundary is at distance 0, yet they cross - so
+    without it a crossing pair would report the nearest vertex's
+    positive distance, silently wrong). Per-pair bounding-box reject
+    against the running best; no BVH. Verified: parallel-face boxes at
+    exactly 1 (and a debug run showed the tie resolving on a corner
+    that belongs to the bottom face, so the test asserts only the tie-
+    invariant properties, not a face index it can't claim); corner-to-
+    corner boxes at exactly `sqrt(3)` between (2,2,2) and (3,3,3), and
+    symmetric under swapping the operands; a hand-built skew-
+    perpendicular edge pair whose unique minimum (checked by hand
+    against every vertex/triangle candidate: sqrt(13), 5, sqrt(8), 5,
+    plane distances 3.29 and 2.63) is exactly 2 between the two edges'
+    midpoints; a piercing pair reporting 0 at exactly (1,1,0) where the
+    nearest vertex is 1 away; boxes sharing a face at 0.
+  - `Mesh::ClashWith(other)` classifies two closed solids as `Clear`,
+    `Touching`, `Intersecting`, `ThisInsideOther` or `OtherInsideThis`.
+    The first draft used edge-pierces-face predicates and was
+    abandoned before it ever ran, on paper: the most ordinary CAD clash
+    - two equal-height boxes overlapping in plan - has EVERY edge/face
+    crossing landing exactly on a face's edge or lying in a face's own
+    plane, degenerate for any such predicate, so it would have
+    misreported the commonest case as not intersecting. Instead it's
+    decided from the exact overlap VOLUME, `vol(this ∩ other)` from the
+    existing Manifold-backed `BooleanCombine()` (exact predicates with
+    symbolic perturbation, built for coincident geometry), with
+    `DistanceTo()` deciding Touching vs. Clear when there's no shared
+    volume. The volume tolerance is relative (1e-6) because `ON_Mesh`
+    stores single-precision vertices, so a touching pair with non-
+    representable coordinates can carry a round-off sliver. A debug run
+    confirmed the boolean itself gives exactly 2.0 for the equal-height
+    case and exactly 0 (an empty mesh) for the shared-face case before
+    the classifications were asserted. Verified: boxes 1 apart Clear;
+    sharing a face, an edge, or only a corner all Touching (they meet,
+    share no volume); equal-height plan overlap AND generic overlap both
+    Intersecting; containment both ways, including a part touching its
+    container's wall from inside and an identical pair (ThisInsideOther,
+    documented). A real gap the debug run caught in this function's own
+    precondition check: a lone open triangle has a nonzero SIGNED
+    `Volume()` (its origin tetrahedron doesn't cancel), so "volume > 0"
+    let an open mesh through to Manifold's own less specific error -
+    fixed by checking `IsClosedManifold()` directly first, as the
+    documented precondition says.
+- `SubD::LimitPoints()`: the EXACT Catmull-Clark limit-surface point and
+  normal of every control-net vertex - closing the "not exact limit-
+  surface evaluation" item this file's own "What's still not done" list
+  carried since chunk 2, at least for the vertices. A corrected
+  assumption, found by reading rather than trusting: `subd.h`'s class
+  comment (and that list) said OpenNURBS' public API ships no exact
+  limit evaluator, but `ON_SubDVertex::SurfacePoint()`/`SurfaceNormal()`
+  are real, non-stub implementations in `opennurbs_subd_eval.cpp` (a
+  sector-based computation walking the vertex's incident faces via
+  `ON_SubDSectorIterator` - unlike the `BrepForm()`/`CreaseEdgeCount()`
+  stubs the same comment correctly documents). Being real in the source
+  isn't being correct, so it was verified numerically against the
+  standard closed-form limit masks before being trusted, all confirmed
+  by a debug run first: on the [-1,1]^3 cube cage every valence-3
+  corner's limit point is exactly half its control position, which is
+  what Halstead/Kass/DeRose's `(n^2 v + 4 sum(edge nbrs) + sum(diagonal
+  nbrs)) / (n(n+5))` gives by hand ((9+4-1)/24 = 1/2), with the outward
+  body diagonal as its unit normal; on a flat 3x3 grid the regular
+  interior vertex and the boundary-crease edge midpoints stay exactly
+  put while the corners land at exactly `(1/6, 1/6, 0)`, the crease
+  mask `(e1 + 4v + e2)/6` by hand, with every normal exactly `(0,0,1)`.
+  Two further independent cross-checks against the subdivision itself:
+  repeated `Subdivide()` brings the control net strictly closer to the
+  reported limit points at every level (measured 0.096, 0.016, 4.4e-4,
+  1.2e-5 at levels 1, 2, 4, 6 - genuine geometric convergence, the
+  defining property of a limit point), and the level-1 net's own limit
+  points reproduce the level-0 ones to 1.7e-16 (the limit surface is
+  invariant under subdivision). Honest scope on the declaration: this is
+  per-vertex only, not evaluation at an arbitrary (u, v) inside an
+  irregular face (`ToNurbsPatches()` already covers regular faces
+  exactly); a crease/corner vertex's normal is reported for the sector
+  of its first face only, since the limit surface genuinely has one
+  normal per sector there. `subd.h`'s class comment and the "What's
+  still not done" bullet are both corrected rather than left stale.
+
+- **`Brep::SphericalFace` + `FilletConvexEdges(solid, edges, radius)`:
+  multi-edge constant-radius fillets with EXACT spherical vertex blends.**
+  Until now the kernel could round one straight edge at a time and only
+  close its ends against a perpendicular face with a flat corner notch;
+  rounding a second edge of the same solid was rejected outright by
+  `PlanarFaces()`, and the corner where three fillets meet - the shape a
+  rolling ball actually leaves, a sphere octant - had no representation.
+  Three additive pieces close that: (1) a fourth `FromMixedFaces` face
+  kind, `SphericalFace` (frame, radius, longitude sweep, latitude range),
+  built from `ON_Sphere::GetNurbForm` and trimmed in the sphere's own
+  (u, v) with the same NURBS-parameter/radian conversion the cylinder
+  path uses for u and the shifted-knot equivalent for v - both CHECKED by
+  evaluating the real surface at every trim corner against the closed
+  form; its pole side (the normal case for a vertex blend) becomes an
+  `ON_Brep` SINGULAR trim, and `BuildFaceLoop` now takes an explicit
+  per-segment table (`FaceTopology::segs`: isocurve direction, constant,
+  parameter range, singular flag) that defaults to the legacy 4-point
+  cylinder/cone rectangle so every existing face is built bit-for-bit
+  as before. `MixedFaces()` hands the record back or, with no record,
+  recovers frame/radius/angle/latitudes from `IsSphere` plus the
+  surface's own quadrant points and the trim bounds. (2)
+  `PlanarFace::notch_runs`: a face notched at several corners (a box end
+  face under two parallel fillets) keeps one collapsed shared edge per
+  notch instead of the second notch silently overwriting the first and
+  leaving ~200 unshared micro-edges - found by checking `IsSolid()` on
+  exactly that case. (3) `FilletConvexEdges`: every listed edge gets
+  `FilletConvexEdge`'s own cylinder and rail re-trim (one half-space clip
+  per filleted edge per face, so a face with two filleted edges meeting
+  at a corner is inset to the single point `C + r*n_f`); at a trihedral
+  vertex with all three edges filleted the ball center `C` is the 3x3
+  solve `n_f.(C - V) = -r`, checked to lie on all three fillet axes, the
+  three cylinders are SET BACK to the planes through `C` so their caps
+  are great circles of the corner sphere, and the octant/spherical
+  triangle is a `SphericalFace` whose equator arc is parameterized
+  IDENTICALLY to the equator cylinder's cap (same xaxis, same
+  orientation) so `FromMixedFaces`' arc-identity check welds them as one
+  edge; the two meridians are quadrants, symmetric under reversal. One
+  face of the corner must be perpendicular to the other two (every box
+  corner, every prism corner with perpendicular caps - any side dihedral);
+  a general tetrahedron corner, two fillets meeting where the third edge
+  stays sharp, and valence > 3 vertices throw with the reason. Also fixed
+  in passing: `Mesh::MergeAndWeld` now drops faces whose corners welded
+  to one vertex (the zero-area triangles every grid tessellation emits
+  along a sphere's pole row), so a welded `Brep::Sphere` finally reports
+  `IsClosedManifold()` - it was watertight but failed the manifold check
+  before, confirmed by reverting only that change. Verified
+  (`TestSphericalFace*`, `TestFilletConvexEdges*`, `TestMergeAndWeld*`):
+  the unit box with ALL 12 edges filleted at r = 0.2 is a 26-face, 48-edge,
+  24-vertex `IsValid()`/`IsManifold()`-closed/`IsSolid()` Brep whose
+  adaptive-tessellated volume converges from below to Steiner's formula
+  `(1-2r)^3 + 6(1-2r)^2 r + 3(1-2r) pi r^2 + 4/3 pi r^3 = 0.907704993`
+  (errors 1.7e-5, 1.8e-6, 1.9e-7 at chord tolerances 1e-5, 1e-6, 1e-7 -
+  linear in the tolerance, i.e. pure chordal deficit); a regular
+  hexagonal prism with all 18 edges filleted (60-degree equator sweeps)
+  matches the same Steiner formula to 3e-7 at 1e-7; one rounded corner
+  matches `1 - 3(1-r) r^2 (1-pi/4) - r^3 (1-pi/6)`; two parallel fillets
+  are a closed solid with both end faces double-notched; a single-edge
+  call reproduces `FilletConvexEdge`'s volume to 1e-12; the record round
+  trip rebuilds the rounded box as a 26-face solid; and every unsupported
+  configuration above is rejected. Honestly still open: a rounded solid's
+  `TessellateToClosedMesh()` is NOT yet a closed manifold mesh - not
+  because of the spheres (their seams with the cylinders coincide sample
+  for sample at u_divisions = 2*v_divisions) but because every exact-clip
+  PLANAR face adds boundary vertices where its own grid lines cross its
+  polygon, T-junctions the adjacent cylinder rail does not share; this
+  pre-dates this entry (a single `FilletConvexEdge` box has the same
+  gap), `TessellateConforming()` does not yet close it either, and it is
+  the next tessellation increment. General spherical-triangle corners,
+  mixed radii, and concave edges remain out of scope as documented in
+  `fillet.h`.
+
+- **`FilletConvexEdge`'s OBLIQUE end condition, now closed** - the one
+  disclosed gap its own doc comment named plainly: a third face at
+  edge_p0/edge_p1 that is NOT perpendicular to the edge used to be left
+  untouched (a genuinely free boundary there, or a topologically-invalid
+  result whenever that third face was actually load-bearing). Where the
+  perpendicular case's own cap is a plain circle (NotchCornerAtVertex),
+  an oblique face cuts the fillet's circular CYLINDER in a true ELLIPSE -
+  closed here by REUSING, not re-deriving, `detail/ellipse_clip3d.h`'s
+  own `ComputeEllipseFrame3d`/`EllipsePointAt` (already exact and
+  exercised for exactly this: an oblique plane's true intersection with a
+  circular cylinder, from `BooleanCombineMixed`'s own oblique
+  plane+cylinder case). The genuinely new geometry:
+  `FindObliqueThirdFaceCrossing` (fillet.cpp) solves where each of the
+  fillet's two straight rail lines crosses the oblique face's plane - a
+  single linear equation per rail, `t = -(D.n_f)/(e.n_f)` where `D =
+  radius*n_i - bis*offset` is the SAME fixed offset `contact_i`/
+  `contact_j` already add to a point on the edge (getting this exactly
+  right mattered: an earlier draft used the simpler-looking but WRONG `D
+  = radius*n_i`, which silently mislocated every oblique crossing by the
+  bisector offset - caught by cross-checking a hand-picked point against
+  the oblique plane's own equation directly, not merely trusted, before
+  it reached a test). The two rail crossings generally land at TWO
+  DIFFERENT heights along the edge (unlike the perpendicular case, where
+  both sit at the vertex's own height) - the i-side one becomes the
+  cylinder's own new v=0 or v=length reference (shifting frame.origin/
+  length so it's exactly the flat corner
+  `Brep::CylindricalFace::cap0_notch_points`' own contract already
+  requires), the j-side one becomes that cap's own genuinely SLOPED back
+  point - precisely the "sloped cut chain" shape that field's own doc
+  comment already anticipated for an unrelated producer (the unequal-
+  radius cylinder/cylinder split), just reached here from the fillet's
+  own end condition instead. `EllipseNotchCornerAtVertexCylindrical`
+  splices the identical dense ellipse sample into both the third face's
+  own notch and the cylinder's own `cap0_notch_points`/
+  `cap1_notch_points` - a literal shared boundary curve, mirroring
+  `FilletConvexEdgeTapered`'s own already-established principle for its
+  cone case. Every rail crossing is also checked to land within the third
+  face's own real extent (mirroring `ChamferConvexEdge`'s own
+  `ChamferEndAtVertex` overrun check), throwing rather than silently
+  building a corner past where the geometry actually has material. When
+  no third face is oblique at either end (v0_start == 0, v1_end == L
+  exactly), the whole construction is an inert no-op - verified
+  bit-identical to before, not merely argued: see
+  `TestFilletConvexEdgeObliqueEndMatchesPerpendicularAtZeroSlope`.
+  Verified (`TestFilletConvexEdgeObliqueEnd*` in test_basic.cpp): a
+  hexahedron whose +x end face is the oblique plane `x = 1 + slope*y`
+  (the same fixture family `ChamferConvexEdge`'s own oblique test uses)
+  fillets to an `IsValid()`/`IsManifold()`-closed/`IsSolid()` Brep whose
+  two rail/oblique-plane crossing vertices land exactly at the hand-
+  derived points `(1 + slope*r, r, 1)` and `(1, 0, 1 - r)`, whose cylinder
+  length is shifted to `1 + slope*r`, and whose volume matches an
+  independently-derived closed form - the removed wedge's own constant
+  cross-sectional area times the affine "height along the edge" function
+  evaluated at the wedge's own centroid (the standard fact that an affine
+  function integrates over a region as its own value at that region's
+  centroid times the area) - to within 5e-6, checked at TWO independent
+  (slope, radius) pairs; a degenerately-perpendicular "oblique" end
+  (slope = 0) reproduces a plain box fillet's face/edge/vertex counts and
+  volume bit-for-bit; and an oversized radius on the oblique fixture is
+  still rejected. Full `dino8_kernel_smoke`: 2147 checks, 0 failures.
+  `dino8_general_boolean_sweep` output is byte-identical to the baseline.
+  Honestly still open: the dedicated overrun check
+  (`FindObliqueThirdFaceCrossing`'s own third-face-extent test) has no
+  test that isolates it from the pre-existing, unrelated "radius exceeds
+  a face's own extent" check - both happen to coincide for every simple
+  quadrilateral-faced fixture this increment's own tests use, and
+  distinguishing them would need a non-quadrilateral face i shape, left
+  for a future increment rather than staged to look tested when it isn't.
+  A solid already carrying a curved face (from an earlier fillet or a
+  `FilletConvexEdges` corner) remains out of scope, since `PlanarFaces()`
+  itself rejects it - closing that is this subsystem's own next gap.
 
 ## What's still not done (as of chunk 2)
 
@@ -2119,9 +2637,13 @@ honestly out of scope.
   different resolutions along their shared edge) — vertex-snapping can't
   fix a genuine T-junction, only near-identical positions at matching
   sample counts.
-- `SubD` wraps real Catmull-Clark refinement, but not exact limit-surface
-  evaluation — `ToApproximateMesh()` is the repeated-subdivision
-  approximation, not the true smooth surface. Interior creases are now
+- `SubD` wraps real Catmull-Clark refinement; exact limit-surface
+  evaluation now exists at the VERTICES (`LimitPoints()`, see below -
+  OpenNURBS turned out to ship a real per-vertex limit evaluator after
+  all) and over regular faces (`ToNurbsPatches()`), but not at an
+  arbitrary point inside an irregular face — `ToApproximateMesh()` is
+  still the repeated-subdivision approximation there, not the true
+  smooth surface. Interior creases are now
   supported (see below) but only that one crease option; no SubD editing
   (adding/removing faces, extrude, etc.), and no SubD ↔ Brep conversion
   (that direction is the stubbed `BrepForm()`/`GetSurfaceBrep()` this
