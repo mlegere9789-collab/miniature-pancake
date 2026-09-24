@@ -539,6 +539,7 @@ Open $TMPW/dwg_mtext_fixture.dwg
 SelAll
 List
 SelAnnotationStyle
+BoundingBox
 EOS
   if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
     DWM="$("$BIN" --smoke 30 --script "$TMPW/dwg_mtext_script.txt" 2>&1)" || { echo "$DWM"; echo "FAIL: DWG MTEXT script exited non-zero"; exit 1; }
@@ -549,7 +550,31 @@ EOS
   dwmcheck "DWG: 6 curves, 0 points" "ImportDwg read the MTEXT entity"
   [ "$(echo "$DWM" | grep -c "^history:   degree 1, [0-9]* control points, non-rational, closed$")" = "6" ] && echo "ok   DWG MTEXT's two \\P-separated 'Hi' lines (with \\C/\\H/{}} codes stripped) each converted into exactly 3 closed glyph-outline curves (6 total)" || { echo "FAIL DWG MTEXT did not produce the expected glyph curves"; fail=1; }
   [ "$(echo "$DWM" | grep -c "^history: 6 object(s) selected$")" = "2" ] && echo "ok   DWG MTEXT's glyph curves carry the same Annotation=Text/Style=Standard user text as TEXT import (SelAnnotationStyle finds all 6, same as SelAll)" || { echo "FAIL DWG MTEXT glyph curves are not tagged/selectable like TEXT import's"; fail=1; }
-  dwmcheck "CV\[0\] 17.14,26.25,0" "DWG MTEXT's middle-center attachment (5) offset the block both horizontally and vertically around the insertion point (20,20,0), not left uncentred like the top-left default"
+  # The middle-center attachment is asserted as a PROPERTY, not a coordinate.
+  # BuildMTextGlyphs centres each line horizontally by half its glyph-advance
+  # width and the whole block vertically by half its line-spaced total
+  # height, so the glyphs' overall bounding box (BoundingBox, run on the 6
+  # curves SelAnnotationStyle left selected) must be centred on the
+  # insertion point (20,20) - with WHICHEVER outline font TextOutline.cpp's
+  # CandidateFontFiles found on this machine (DejaVu Sans on the Linux
+  # runner, Arial on the Windows runner, Helvetica/Arial on macOS). The
+  # previous check grepped a hard-coded first control point (CV[0]
+  # 17.14,26.25,0) that is only true for DejaVu Sans' advance widths, so it
+  # failed deterministically on every Windows run while proving nothing
+  # about centring. Tolerance 0.5 = a tenth of the 5-unit text height:
+  # comfortably above the font-to-font differences that DO legitimately
+  # move the box (an 'H' left side bearing vs an 'i' right side bearing, an
+  # i-dot poking above cap height), yet an order of magnitude below what
+  # the top-left default would leave (~half a line width, ~3.5, to the
+  # right and ~half the block height, ~6.7, below the insertion point).
+  # The width/height > 1 guards reject a degenerate (empty/collapsed) box
+  # that would otherwise be trivially "centred".
+  DWM_BB="$(echo "$DWM" | tr -d '\r' | grep -m1 "Bounding box min " | sed 's/^.*Bounding box min \([^ ]*\) max \([^ ]*\)$/\1 \2/')"
+  if [ -n "$DWM_BB" ] && echo "$DWM_BB" | awk -F'[ ,]' -v tol=0.5 '{ cx = ($1 + $4) / 2; cy = ($2 + $5) / 2; dx = cx - 20; dy = cy - 20; if (dx < 0) dx = -dx; if (dy < 0) dy = -dy; exit !(NF == 6 && dx < tol && dy < tol && $4 - $1 > 1 && $5 - $2 > 1) }'; then
+    echo "ok   DWG MTEXT's middle-center attachment (5) centred the glyph block on the insertion point (20,20,0) both horizontally and vertically (bounding box min/max: $DWM_BB), not left uncentred like the top-left default"
+  else
+    echo "FAIL DWG MTEXT's middle-center attachment (5) did not centre the glyph block on the insertion point (20,20,0) (bounding box min/max: ${DWM_BB:-not printed})"; fail=1
+  fi
 else
   echo "FAIL dwg_fixture_gen was not built next to $BIN (DINO8_BUILD_TESTS off?) - skipping the MTEXT fixture check"
   fail=1
