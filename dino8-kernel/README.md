@@ -2518,6 +2518,78 @@ honestly out of scope.
   mixed radii, and concave edges remain out of scope as documented in
   `fillet.h`.
 
+- **`FilletConvexEdge`'s OBLIQUE end condition, now closed** - the one
+  disclosed gap its own doc comment named plainly: a third face at
+  edge_p0/edge_p1 that is NOT perpendicular to the edge used to be left
+  untouched (a genuinely free boundary there, or a topologically-invalid
+  result whenever that third face was actually load-bearing). Where the
+  perpendicular case's own cap is a plain circle (NotchCornerAtVertex),
+  an oblique face cuts the fillet's circular CYLINDER in a true ELLIPSE -
+  closed here by REUSING, not re-deriving, `detail/ellipse_clip3d.h`'s
+  own `ComputeEllipseFrame3d`/`EllipsePointAt` (already exact and
+  exercised for exactly this: an oblique plane's true intersection with a
+  circular cylinder, from `BooleanCombineMixed`'s own oblique
+  plane+cylinder case). The genuinely new geometry:
+  `FindObliqueThirdFaceCrossing` (fillet.cpp) solves where each of the
+  fillet's two straight rail lines crosses the oblique face's plane - a
+  single linear equation per rail, `t = -(D.n_f)/(e.n_f)` where `D =
+  radius*n_i - bis*offset` is the SAME fixed offset `contact_i`/
+  `contact_j` already add to a point on the edge (getting this exactly
+  right mattered: an earlier draft used the simpler-looking but WRONG `D
+  = radius*n_i`, which silently mislocated every oblique crossing by the
+  bisector offset - caught by cross-checking a hand-picked point against
+  the oblique plane's own equation directly, not merely trusted, before
+  it reached a test). The two rail crossings generally land at TWO
+  DIFFERENT heights along the edge (unlike the perpendicular case, where
+  both sit at the vertex's own height) - the i-side one becomes the
+  cylinder's own new v=0 or v=length reference (shifting frame.origin/
+  length so it's exactly the flat corner
+  `Brep::CylindricalFace::cap0_notch_points`' own contract already
+  requires), the j-side one becomes that cap's own genuinely SLOPED back
+  point - precisely the "sloped cut chain" shape that field's own doc
+  comment already anticipated for an unrelated producer (the unequal-
+  radius cylinder/cylinder split), just reached here from the fillet's
+  own end condition instead. `EllipseNotchCornerAtVertexCylindrical`
+  splices the identical dense ellipse sample into both the third face's
+  own notch and the cylinder's own `cap0_notch_points`/
+  `cap1_notch_points` - a literal shared boundary curve, mirroring
+  `FilletConvexEdgeTapered`'s own already-established principle for its
+  cone case. Every rail crossing is also checked to land within the third
+  face's own real extent (mirroring `ChamferConvexEdge`'s own
+  `ChamferEndAtVertex` overrun check), throwing rather than silently
+  building a corner past where the geometry actually has material. When
+  no third face is oblique at either end (v0_start == 0, v1_end == L
+  exactly), the whole construction is an inert no-op - verified
+  bit-identical to before, not merely argued: see
+  `TestFilletConvexEdgeObliqueEndMatchesPerpendicularAtZeroSlope`.
+  Verified (`TestFilletConvexEdgeObliqueEnd*` in test_basic.cpp): a
+  hexahedron whose +x end face is the oblique plane `x = 1 + slope*y`
+  (the same fixture family `ChamferConvexEdge`'s own oblique test uses)
+  fillets to an `IsValid()`/`IsManifold()`-closed/`IsSolid()` Brep whose
+  two rail/oblique-plane crossing vertices land exactly at the hand-
+  derived points `(1 + slope*r, r, 1)` and `(1, 0, 1 - r)`, whose cylinder
+  length is shifted to `1 + slope*r`, and whose volume matches an
+  independently-derived closed form - the removed wedge's own constant
+  cross-sectional area times the affine "height along the edge" function
+  evaluated at the wedge's own centroid (the standard fact that an affine
+  function integrates over a region as its own value at that region's
+  centroid times the area) - to within 5e-6, checked at TWO independent
+  (slope, radius) pairs; a degenerately-perpendicular "oblique" end
+  (slope = 0) reproduces a plain box fillet's face/edge/vertex counts and
+  volume bit-for-bit; and an oversized radius on the oblique fixture is
+  still rejected. Full `dino8_kernel_smoke`: 2147 checks, 0 failures.
+  `dino8_general_boolean_sweep` output is byte-identical to the baseline.
+  Honestly still open: the dedicated overrun check
+  (`FindObliqueThirdFaceCrossing`'s own third-face-extent test) has no
+  test that isolates it from the pre-existing, unrelated "radius exceeds
+  a face's own extent" check - both happen to coincide for every simple
+  quadrilateral-faced fixture this increment's own tests use, and
+  distinguishing them would need a non-quadrilateral face i shape, left
+  for a future increment rather than staged to look tested when it isn't.
+  A solid already carrying a curved face (from an earlier fillet or a
+  `FilletConvexEdges` corner) remains out of scope, since `PlanarFaces()`
+  itself rejects it - closing that is this subsystem's own next gap.
+
 ## What's still not done (as of chunk 2)
 
 - `Brep::Box()`, `Brep::Sphere()`, `Brep::TrimmedPlanarFace()`
