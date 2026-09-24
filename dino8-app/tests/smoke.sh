@@ -1566,13 +1566,31 @@ print("found by name: %d" % len(by_name))
 dino8.RunCommand("NewLayer", "Parts")
 PY
 sed "s|@TMP@|$TMPW|g" "$HERE/python_script.txt" > "$TMPW/python_script.txt"
+# Captured with set +e, not "|| { ...; exit 1; }": python_script.txt's own
+# final "@expect_objects 1" line assumes the earlier Python commands
+# actually ran and created that object, so on a build without Python
+# (DINO8_ENABLE_PYTHON=OFF - see CMakeLists.txt) main.cpp's own
+# expect_objects handler makes the whole process exit non-zero even though
+# RunPythonScript itself printed a normal, honest "not available" warning
+# and did not crash. An immediate "||" here can never reach the skip check
+# below it, since bash already took the "failed" branch by the time that
+# check would run - exactly what broke this section on Windows once
+# DINO8_ENABLE_PYTHON defaulted OFF there. Checking the exit code
+# ourselves, after first checking for the expected message, keeps a
+# genuine crash a hard failure while treating the expected skip as one.
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
-  PS="$("$BIN" --smoke 100 --script "$TMPW/python_script.txt" 2>&1)" || { echo "$PS"; echo "FAIL: python script exited non-zero"; exit 1; }
+  set +e; PS="$("$BIN" --smoke 100 --script "$TMPW/python_script.txt" 2>&1)"; ps_ec=$?; set -e
 else
-  PS="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 100 --script "$TMPW/python_script.txt" 2>&1)" || { echo "$PS"; echo "FAIL: python script exited non-zero"; exit 1; }
+  set +e; PS="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 100 --script "$TMPW/python_script.txt" 2>&1)"; ps_ec=$?; set -e
 fi
-if echo "$PS" | grep -q "no Python 3 development install"; then
+# Matches every "Python unavailable" message this build prints (they don't
+# all share the same word order - RunPythonScript's own says "without a
+# Python 3 development install", others say "no Python 3 development
+# install" - but all three name it this way; see cmd_misc.cpp).
+if echo "$PS" | grep -q "Python 3 development install"; then
   echo "skip Python scripting not available in this build (compiled without Python3 Development.Embed - see CMakeLists.txt)"
+elif [ "$ps_ec" -ne 0 ]; then
+  echo "$PS"; echo "FAIL: python script exited non-zero"; exit 1
 else
   echo "$PS" | grep -E "^(ok|FAIL)"
   if echo "$PS" | grep -q "^FAIL"; then fail=1; fi
@@ -1613,13 +1631,18 @@ EditPythonScript $TMPW/editor_test.py
 ScriptEditorRun
 @expect_objects 1
 EOF
+# Same reasoning as python_script.txt above: scripteditor_run.txt's own
+# final "@expect_objects 1" also depends on Python actually having run, so
+# the exit code is only checked after the skip message is ruled out.
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
-  SER="$("$BIN" --smoke 100 --script "$TMPW/scripteditor_run.txt" 2>&1)" || { echo "$SER"; echo "FAIL: Script Editor Run test exited non-zero"; exit 1; }
+  set +e; SER="$("$BIN" --smoke 100 --script "$TMPW/scripteditor_run.txt" 2>&1)"; ser_ec=$?; set -e
 else
-  SER="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 100 --script "$TMPW/scripteditor_run.txt" 2>&1)" || { echo "$SER"; echo "FAIL: Script Editor Run test exited non-zero"; exit 1; }
+  set +e; SER="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 100 --script "$TMPW/scripteditor_run.txt" 2>&1)"; ser_ec=$?; set -e
 fi
-if echo "$SER" | grep -q "no Python 3 development install"; then
+if echo "$SER" | grep -q "Python 3 development install"; then
   echo "skip Script Editor Run->Python test not available in this build (compiled without Python3 Development.Embed)"
+elif [ "$ser_ec" -ne 0 ]; then
+  echo "$SER"; echo "FAIL: Script Editor Run test exited non-zero"; exit 1
 else
   echo "$SER" | grep -E "^(ok|FAIL)"
   if echo "$SER" | grep -q "^FAIL"; then fail=1; fi
