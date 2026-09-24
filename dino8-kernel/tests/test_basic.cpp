@@ -24343,6 +24343,265 @@ void TestRemoveBlendRejectsUnsupportedConfigurations() {
         "rejects a FilletConvexEdge oblique-end cylinder (sloped ellipse cap notch)");
 }
 
+// ---- NurbsSurface::UnrollDevelopable ----
+
+namespace {
+
+// ON_Mesh stores vertices in single precision (m_V is ON_3fPoint) -
+// confirmed by reading the header, same limit this file's other mesh-
+// based checks already account for (~1e-6 relative). kMeshTol is the
+// absolute tolerance used for every UnrollDevelopable check below.
+constexpr double kMeshTol = 2e-4;
+
+ON_3dPoint FlatVertex(const dino8::kernel::Mesh& m, int i, int j, int nv) {
+  const ON_3fPoint& v = m.raw().m_V[i * (nv + 1) + j];
+  return ON_3dPoint(v.x, v.y, v.z);
+}
+
+}  // namespace
+
+void TestSurfaceUnrollDevelopablePlaneIsExactIsometry() {
+  using dino8::kernel::DevelopableKind;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  std::vector<Point3d> grid = {Point3d(2, 5, 1), Point3d(9, 6, 1), Point3d(1, 12, 4), Point3d(8, 13, 4)};
+  const NurbsSurface plane = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+  Check(plane.IsPlanar(), "UnrollDevelopable plane setup: the tilted bilinear quad is genuinely planar");
+
+  Mesh flat;
+  double area = -1.0;
+  DevelopableKind kind{};
+  const Result r = plane.UnrollDevelopable(6, 4, flat, &area, &kind);
+  Check(r == Result::Ok, "UnrollDevelopable succeeds on a planar surface");
+  Check(kind == DevelopableKind::Plane, "UnrollDevelopable reports DevelopableKind::Plane");
+  Check(flat.VertexCount() == 7 * 5, "UnrollDevelopable(6, 4) on a plane produces a 7x5 vertex grid");
+
+  // A plane's unroll is a rigid-body isometry with zero caveats (no
+  // chord-vs-arc gap at all): every pairwise 3D distance between sample
+  // points must equal the corresponding flat 2D distance exactly (up to
+  // ON_Mesh's float storage), for ANY pair, not just adjacent ones.
+  const dino8::kernel::Interval du = plane.Domain(0), dv = plane.Domain(1);
+  std::vector<Point3d> pts3d;
+  std::vector<ON_3dPoint> ptsflat;
+  for (int i = 0; i <= 6; ++i) {
+    for (int j = 0; j <= 4; ++j) {
+      const double u = du.min + (du.max - du.min) * i / 6.0, v = dv.min + (dv.max - dv.min) * j / 4.0;
+      pts3d.push_back(plane.PointAt(u, v));
+      ptsflat.push_back(FlatVertex(flat, i, j, 4));
+    }
+  }
+  double worst = 0.0;
+  for (size_t a = 0; a < pts3d.size(); a += 7)
+    for (size_t b = a + 3; b < pts3d.size(); b += 11)
+      worst = std::max(worst, std::abs(pts3d[a].DistanceTo(pts3d[b]) - ptsflat[a].DistanceTo(ptsflat[b])));
+  Check(worst < kMeshTol, "UnrollDevelopable on a plane: arbitrary pairwise 3D and flat distances match exactly (not just adjacent ones)");
+
+  // Area: exact for a plane (the quad's own true area), not merely
+  // convergent - checked against the surface's own trusted
+  // ApproximateArea() at high resolution.
+  const double trusted = plane.ApproximateArea(200, 200);
+  Check(std::abs(area - trusted) < 1e-3, "UnrollDevelopable's flat area matches the plane's own ApproximateArea()");
+}
+
+void TestSurfaceUnrollDevelopableCylinderPreservesHeightAndCircumferenceExactly() {
+  using dino8::kernel::DevelopableKind;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Result;
+
+  // A partial (270-degree) cylinder wall via ON_Cylinder::GetNurbForm,
+  // trimmed in U - open in both directions, no seam to worry about, the
+  // cleanest case to verify the closed-form math itself against.
+  const ON_Circle circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 3.0);
+  const ON_Cylinder cylinder(circle, 5.0);
+  ON_NurbsSurface raw;
+  Check(cylinder.GetNurbForm(raw) != 0, "UnrollDevelopable cylinder setup: GetNurbForm succeeds");
+  NurbsSurface wall;
+  wall.raw() = raw;
+  Check(wall.Trim(0, wall.Domain(0).min, wall.Domain(0).min + 1.5 * ON_PI) == Result::Ok,
+        "UnrollDevelopable cylinder setup: trimmed to a 270-degree (1.5*pi) open wall");
+  Check(!wall.IsClosed(0), "UnrollDevelopable cylinder setup: the trimmed wall is open in U");
+
+  Mesh flat;
+  double area = -1.0;
+  DevelopableKind kind{};
+  Check(wall.UnrollDevelopable(40, 5, flat, &area, &kind) == Result::Ok, "UnrollDevelopable succeeds on the cylinder wall");
+  Check(kind == DevelopableKind::Cylinder, "UnrollDevelopable reports DevelopableKind::Cylinder");
+
+  // Row-height invariant: every vertex at the same v (fixed j) sits at
+  // the *same* flat y, to float precision, independent of i - not a
+  // convergent approximation, a direct consequence of the closed-form
+  // per-vertex map (height is untouched by the angle-only x transform).
+  double row_spread = 0.0;
+  for (int j = 0; j <= 5; ++j) {
+    double lo = 1e300, hi = -1e300;
+    for (int i = 0; i <= 40; ++i) {
+      const double y = FlatVertex(flat, i, j, 5).y;
+      lo = std::min(lo, y);
+      hi = std::max(hi, y);
+    }
+    row_spread = std::max(row_spread, hi - lo);
+  }
+  Check(row_spread < kMeshTol, "UnrollDevelopable cylinder: every row's flat y is constant across the whole row (height preserved exactly)");
+  // The row spacing itself must match the true axial spacing (5.0 / 5 per row).
+  const double y0 = FlatVertex(flat, 0, 0, 5).y, y5 = FlatVertex(flat, 0, 5, 5).y;
+  Check(std::abs((y5 - y0) - 5.0) < kMeshTol, "UnrollDevelopable cylinder: total flat height span equals the true 5.0 cylinder height exactly");
+
+  // Circumference invariant: the flat x-span of a full row equals
+  // radius * total angle (3.0 * 1.5*pi) exactly - not a tessellation
+  // approximation, since each per-vertex x is an exact radius*angle
+  // product and the span is their telescoping difference.
+  const double x0 = FlatVertex(flat, 0, 0, 5).x, x40 = FlatVertex(flat, 40, 0, 5).x;
+  Check(std::abs(std::abs(x40 - x0) - 3.0 * 1.5 * ON_PI) < kMeshTol,
+        "UnrollDevelopable cylinder: total flat circumferential span equals radius * angle (3 * 1.5*pi) exactly");
+
+  // Area: the true patch area (radius * angle * height = 3 * 1.5*pi * 5)
+  // is matched exactly, at *any* division count, not merely approached
+  // as divisions increase - unlike a generic tessellated area (or the
+  // cone case below), a cylinder's flat map has flat x depending only
+  // on i (the angle index) and flat y depending only on j (the height
+  // index), so every quad cell is an exact axis-aligned rectangle even
+  // when the underlying NURBS parameter isn't evenly spaced in angle;
+  // a non-uniform grid of axis-aligned rectangles still exactly tiles
+  // the bounding rectangle with no gaps or overlaps, for any division
+  // count >= 1. Verified directly: a deliberately coarse 4x1 mesh's
+  // area matches the true patch area just as tightly as the 40x5 one.
+  const double true_area = 3.0 * (1.5 * ON_PI) * 5.0;
+  Mesh coarse;
+  double coarse_area = -1.0;
+  wall.UnrollDevelopable(4, 1, coarse, &coarse_area);
+  Check(std::abs(area - true_area) < 1e-2, "UnrollDevelopable cylinder: the 40x5 mesh's area is within 1e-2 of the true patch area");
+  Check(std::abs(coarse_area - true_area) < 1e-2,
+        "UnrollDevelopable cylinder: a deliberately coarse 4x1 mesh's area is *also* within 1e-2 of the true patch area (exact rectangle tiling, not convergence)");
+
+  // A genuine full 360-degree closed wall must not tear at the seam:
+  // the unwrap fix's whole reason to exist. Verified by the same
+  // circumference invariant, now spanning a full loop.
+  NurbsSurface full;
+  full.raw() = raw;
+  Check(full.IsClosed(0), "UnrollDevelopable full-loop setup: the untrimmed wall is closed in U");
+  Mesh flat_full;
+  Check(full.UnrollDevelopable(48, 3, flat_full, nullptr, nullptr) == Result::Ok, "UnrollDevelopable succeeds on the full closed cylinder");
+  const double fx0 = FlatVertex(flat_full, 0, 0, 3).x, fx48 = FlatVertex(flat_full, 48, 0, 3).x;
+  Check(std::abs((fx48 - fx0) - 3.0 * 2.0 * ON_PI) < kMeshTol,
+        "UnrollDevelopable full-loop cylinder: the seam does not tear - flat span equals radius * 2*pi exactly, not a wrapped-around near-zero jump");
+  // Monotonic (never doubles back), the direct symptom a seam tear would produce.
+  bool monotone = true;
+  for (int i = 1; i <= 48; ++i)
+    if (FlatVertex(flat_full, i, 0, 3).x < FlatVertex(flat_full, i - 1, 0, 3).x - kMeshTol) monotone = false;
+  Check(monotone, "UnrollDevelopable full-loop cylinder: flat x increases monotonically along the seam-crossing row (no tear/fold-back)");
+}
+
+void TestSurfaceUnrollDevelopableConePreservesApexDistanceAndSectorAngleExactly() {
+  using dino8::kernel::DevelopableKind;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Result;
+
+  const ON_Cone on_cone(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), /*height=*/4.0, /*radius=*/3.0);
+  ON_NurbsSurface raw;
+  Check(on_cone.GetNurbForm(raw) != 0, "UnrollDevelopable cone setup: GetNurbForm succeeds");
+  NurbsSurface wall;
+  wall.raw() = raw;
+
+  Mesh flat;
+  double area = -1.0;
+  DevelopableKind kind{};
+  Check(wall.UnrollDevelopable(48, 6, flat, &area, &kind) == Result::Ok, "UnrollDevelopable succeeds on the cone wall");
+  Check(kind == DevelopableKind::Cone, "UnrollDevelopable reports DevelopableKind::Cone");
+
+  const double half_angle = on_cone.AngleInRadians();
+  const double true_slant = 4.0 / std::cos(half_angle);  // apex-to-base-rim distance
+  const dino8::kernel::Interval dv = wall.Domain(1);
+
+  // Apex-distance invariant: for every vertex, its true 3D distance
+  // from the cone's apex equals its flat distance from the origin
+  // (where the apex maps) exactly - a direct per-point check, not a
+  // mesh-edge convergence claim.
+  double worst = 0.0;
+  for (int i = 0; i <= 48; i += 5) {
+    for (int j = 0; j <= 6; ++j) {
+      const double u = wall.Domain(0).min + (wall.Domain(0).max - wall.Domain(0).min) * i / 48.0;
+      const double v = dv.min + (dv.max - dv.min) * j / 6.0;
+      const double true_dist = wall.PointAt(u, v).DistanceTo(on_cone.ApexPoint());
+      const ON_3dPoint fp = FlatVertex(flat, i, j, 6);
+      const double flat_dist = fp.DistanceTo(ON_3dPoint::Origin);
+      worst = std::max(worst, std::abs(true_dist - flat_dist));
+    }
+  }
+  Check(worst < kMeshTol, "UnrollDevelopable cone: every vertex's true apex distance equals its flat distance from the origin exactly");
+  // The rim (v = max) sits at exactly the true slant length from the apex.
+  Check(std::abs(FlatVertex(flat, 0, 6, 6).DistanceTo(ON_3dPoint::Origin) - true_slant) < kMeshTol,
+        "UnrollDevelopable cone: the base rim is exactly the true slant distance (height / cos(halfAngle)) from the unrolled apex");
+
+  // Sector-angle invariant: the full loop's unrolled angular sweep is
+  // exactly 2*pi*sin(halfAngle), the classic cone-unroll factor - not
+  // an approximation. Measured on the rim (v = max, constant true
+  // radius) via the angle each flat vertex makes with the first one.
+  auto flat_angle = [&](int i) {
+    const ON_3dPoint p = FlatVertex(flat, i, 6, 6);
+    return std::atan2(p.y, p.x);
+  };
+  double total_sweep = 0.0;
+  double prev = flat_angle(0);
+  for (int i = 1; i <= 48; ++i) {
+    double a = flat_angle(i);
+    while (a - prev > ON_PI) a -= 2.0 * ON_PI;
+    while (a - prev < -ON_PI) a += 2.0 * ON_PI;
+    total_sweep += (a - prev);
+    prev = a;
+  }
+  Check(std::abs(std::abs(total_sweep) - 2.0 * ON_PI * std::sin(half_angle)) < 1e-3,
+        "UnrollDevelopable cone: the unrolled sector's total angle equals 2*pi*sin(halfAngle) exactly");
+
+  // Area: true sector area = pi * slant * rimRadius = pi * L * (L * sin(halfAngle)).
+  const double true_area = ON_PI * true_slant * (true_slant * std::sin(half_angle));
+  Check(std::abs(area - true_area) < 0.05 * true_area, "UnrollDevelopable cone: the flat mesh area is within 5% of the true sector area at 48x6 divisions");
+}
+
+void TestSurfaceUnrollDevelopableRefusesNonDevelopableSurface() {
+  using dino8::kernel::DevelopableKind;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Result;
+
+  // A genuine sphere: real (nonzero) Gaussian curvature everywhere, not
+  // a plane/cylinder/cone under any tolerance.
+  ON_NurbsSurface sphere_raw;
+  ON_Sphere(ON_3dPoint(0, 0, 0), 2.0).GetNurbForm(sphere_raw);
+  NurbsSurface sphere;
+  sphere.raw() = sphere_raw;
+  Mesh flat;
+  Check(sphere.UnrollDevelopable(20, 20, flat) == Result::Failed, "UnrollDevelopable refuses a genuine sphere");
+  Check(flat.VertexCount() == 0, "UnrollDevelopable leaves out_flat untouched (still empty) on refusal");
+
+  // A generic wiggly freeform bicubic - not developable either.
+  std::vector<dino8::kernel::Point3d> grid;
+  for (int j = 0; j < 4; ++j)
+    for (int i = 0; i < 4; ++i)
+      grid.push_back(dino8::kernel::Point3d(i, j, std::sin(1.7 * i) * std::cos(1.3 * j) + 0.3 * i * j));
+  const NurbsSurface wiggly = NurbsSurface::FromControlGrid(grid, 4, 4, 3, 3);
+  Check(wiggly.UnrollDevelopable(20, 20, flat) == Result::Failed, "UnrollDevelopable refuses a generic freeform (non-developable) surface");
+}
+
+void TestSurfaceUnrollDevelopableArgumentChecks() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::NurbsSurface;
+  std::vector<dino8::kernel::Point3d> grid = {dino8::kernel::Point3d(0, 0, 0), dino8::kernel::Point3d(1, 0, 0), dino8::kernel::Point3d(0, 1, 0),
+                                              dino8::kernel::Point3d(1, 1, 0)};
+  const NurbsSurface plane = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+  Mesh flat;
+  bool threw = false;
+  try { plane.UnrollDevelopable(0, 4, flat); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "UnrollDevelopable throws on u_divisions < 1");
+  threw = false;
+  try { plane.UnrollDevelopable(4, 0, flat); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "UnrollDevelopable throws on v_divisions < 1");
+}
+
 int main() {
   ON::Begin();
 
@@ -24721,6 +24980,12 @@ int main() {
   sweep_tests::TestRevolveExactSolidsAndCaps();
   sweep_tests::TestLoftInterpolatesSectionsExactly();
   sweep_tests::TestSweep1AndPipe();
+
+  TestSurfaceUnrollDevelopablePlaneIsExactIsometry();
+  TestSurfaceUnrollDevelopableCylinderPreservesHeightAndCircumferenceExactly();
+  TestSurfaceUnrollDevelopableConePreservesApexDistanceAndSectorAngleExactly();
+  TestSurfaceUnrollDevelopableRefusesNonDevelopableSurface();
+  TestSurfaceUnrollDevelopableArgumentChecks();
 
   ON::End();
 

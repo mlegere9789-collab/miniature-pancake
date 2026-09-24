@@ -10,6 +10,7 @@
 #include <stdexcept>
 #include <vector>
 
+#include "dino8/kernel/mesh.h"
 #include "dino8/kernel/surface.h"
 
 namespace dino8::kernel {
@@ -591,6 +592,142 @@ Result NurbsSurface::MatchEdge(int fixed_direction, bool at_min, const NurbsSurf
     surface_ = backup;
     return Result::Failed;
   }
+  return Result::Ok;
+}
+
+Result NurbsSurface::UnrollDevelopable(int u_divisions, int v_divisions, Mesh& out_flat, double* out_area,
+                                       DevelopableKind* out_kind) const {
+  if (u_divisions < 1 || v_divisions < 1) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsSurface::UnrollDevelopable: division counts must be >= 1");
+  }
+  // A generous tolerance relative to the surface's own size: IsPlanar/
+  // IsCylinder/IsCone's default ON_ZERO_TOLERANCE is an absolute 1e-12,
+  // too tight for anything but a hand-built exact primitive (e.g. a real
+  // NurbsSurface::FromControlGrid() plane already fails it once the grid
+  // spans more than a few units, from ordinary floating-point rounding
+  // in PointAt() - confirmed by a debug run). DistanceForSize()-style
+  // relative scaling, same reasoning as the rest of this file's
+  // tolerance choices.
+  ON_BoundingBox bbox;
+  surface_.GetBoundingBox(bbox, false);
+  const double tol = std::max(1e-9, 1e-7 * bbox.Diagonal().Length());
+
+  ON_Cylinder cyl;
+  ON_Cone cone;
+  ON_Plane plane;
+  DevelopableKind kind;
+  if (surface_.IsCylinder(&cyl, tol)) {
+    kind = DevelopableKind::Cylinder;
+  } else if (surface_.IsCone(&cone, tol)) {
+    kind = DevelopableKind::Cone;
+  } else if (surface_.IsPlanar(&plane, tol)) {
+    kind = DevelopableKind::Plane;
+  } else {
+    return Result::Failed;
+  }
+
+  const Interval du = Domain(0), dv = Domain(1);
+  const int nu = u_divisions, nv = v_divisions;
+  ON_Mesh m;
+  const double cos_half_angle = kind == DevelopableKind::Cone ? std::cos(cone.AngleInRadians()) : 0.0;
+  const double sin_half_angle = kind == DevelopableKind::Cone ? std::sin(cone.AngleInRadians()) : 0.0;
+
+  // Which parametric direction is the primitive's own circular one -
+  // ON_Cylinder::ClosestPointTo()/ON_Cone::ClosestPointTo()'s "angular
+  // parameter" wraps at +/-pi (ON's own atan2-based convention), so a
+  // naive per-vertex angle lookup would tear a closed (full-circle)
+  // sweep apart at that branch cut - one column's worth of vertices
+  // would jump back by a full 2*pi instead of continuing smoothly,
+  // producing a self-overlapping flat mesh at the seam. Real, not
+  // hypothetical: confirmed by a debug run on a genuine 360-degree
+  // ON_Cylinder::GetNurbForm() wall (see the "unwraps" tests). Fixed by
+  // detecting which direction is circular (IsClosed() is unambiguous
+  // when the sweep is a genuine full loop; GetNurbForm()'s own
+  // convention - closed in U - is the fallback for a partial sweep,
+  // where no wrap can occur but a direction still must be picked) and
+  // unwrapping that direction's raw angle sequence to be continuous
+  // (standard phase-unwrap: add/subtract 2*pi whenever a step's jump
+  // exceeds pi) before it's ever turned into a flat coordinate.
+  const int circular_dir = (surface_.IsClosed(1) && !surface_.IsClosed(0)) ? 1 : 0;
+
+  // Pass 1: raw (angle-or-x, height-or-y) at every grid point, plus the
+  // per-row/column continuous-unwrap correction along circular_dir.
+  std::vector<std::vector<double>> a(static_cast<size_t>(nu) + 1, std::vector<double>(static_cast<size_t>(nv) + 1));
+  std::vector<std::vector<double>> b(static_cast<size_t>(nu) + 1, std::vector<double>(static_cast<size_t>(nv) + 1));
+  for (int i = 0; i <= nu; ++i) {
+    const double u = du.min + (du.max - du.min) * i / nu;
+    for (int j = 0; j <= nv; ++j) {
+      const double v = dv.min + (dv.max - dv.min) * j / nv;
+      const ON_3dPoint p = PointAt(u, v);
+      switch (kind) {
+        case DevelopableKind::Cylinder: cyl.ClosestPointTo(p, &a[static_cast<size_t>(i)][static_cast<size_t>(j)], &b[static_cast<size_t>(i)][static_cast<size_t>(j)]); break;
+        case DevelopableKind::Cone: cone.ClosestPointTo(p, &a[static_cast<size_t>(i)][static_cast<size_t>(j)], &b[static_cast<size_t>(i)][static_cast<size_t>(j)]); break;
+        case DevelopableKind::Plane: {
+          double pu = 0.0, pv = 0.0;
+          plane.ClosestPointTo(p, &pu, &pv);
+          a[static_cast<size_t>(i)][static_cast<size_t>(j)] = pu;
+          b[static_cast<size_t>(i)][static_cast<size_t>(j)] = pv;
+          break;
+        }
+      }
+    }
+  }
+  if (kind != DevelopableKind::Plane) {
+    auto unwrap_line = [](std::vector<double>& line) {
+      for (size_t k = 1; k < line.size(); ++k) {
+        while (line[k] - line[k - 1] > ON_PI) line[k] -= 2.0 * ON_PI;
+        while (line[k] - line[k - 1] < -ON_PI) line[k] += 2.0 * ON_PI;
+      }
+    };
+    if (circular_dir == 0) {
+      for (int j = 0; j <= nv; ++j) {
+        std::vector<double> line(static_cast<size_t>(nu) + 1);
+        for (int i = 0; i <= nu; ++i) line[static_cast<size_t>(i)] = a[static_cast<size_t>(i)][static_cast<size_t>(j)];
+        unwrap_line(line);
+        for (int i = 0; i <= nu; ++i) a[static_cast<size_t>(i)][static_cast<size_t>(j)] = line[static_cast<size_t>(i)];
+      }
+    } else {
+      for (int i = 0; i <= nu; ++i) unwrap_line(a[static_cast<size_t>(i)]);
+    }
+  }
+
+  // Pass 2: map the now-continuous (angle-or-x, height-or-y) grid to
+  // flat coordinates and write the mesh.
+  for (int i = 0; i <= nu; ++i) {
+    for (int j = 0; j <= nv; ++j) {
+      const double angle = a[static_cast<size_t>(i)][static_cast<size_t>(j)];
+      const double lin = b[static_cast<size_t>(i)][static_cast<size_t>(j)];
+      double fx = 0.0, fy = 0.0;
+      switch (kind) {
+        case DevelopableKind::Cylinder:
+          fx = cyl.circle.radius * angle;
+          fy = lin;
+          break;
+        case DevelopableKind::Cone: {
+          const double slant = lin / cos_half_angle;
+          const double flat_angle = angle * sin_half_angle;
+          fx = slant * std::cos(flat_angle);
+          fy = slant * std::sin(flat_angle);
+          break;
+        }
+        case DevelopableKind::Plane:
+          fx = angle;
+          fy = lin;
+          break;
+      }
+      m.SetVertex(i * (nv + 1) + j, ON_3dPoint(fx, fy, 0.0));
+    }
+  }
+  for (int i = 0; i < nu; ++i) {
+    for (int j = 0; j < nv; ++j) {
+      m.SetQuad(i * nv + j, i * (nv + 1) + j, (i + 1) * (nv + 1) + j, (i + 1) * (nv + 1) + j + 1, i * (nv + 1) + j + 1);
+    }
+  }
+  m.ComputeFaceNormals();
+  out_flat.raw() = m;
+  if (out_area) *out_area = out_flat.Area();
+  if (out_kind) *out_kind = kind;
   return Result::Ok;
 }
 
