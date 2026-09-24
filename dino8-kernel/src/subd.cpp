@@ -55,6 +55,38 @@ int SubD::CreaseEdgeCount() const {
   return count;
 }
 
+std::vector<SubDLimitPoint> SubD::LimitPoints() const {
+  std::vector<SubDLimitPoint> out;
+  ON_SubDVertexIterator vit = subd_.VertexIterator();
+  for (const ON_SubDVertex* v = vit.FirstVertex(); v != nullptr; v = vit.NextVertex()) {
+    SubDLimitPoint lp;
+    lp.vertex_id = v->m_id;
+    lp.control_point = v->ControlNetPoint();
+    lp.valence = static_cast<int>(v->EdgeCount());
+    lp.smooth = v->IsSmooth();
+    // ON_SubDVertex::SurfacePoint() returns ON_3dPoint::NanPoint on
+    // failure rather than a bool - so the validity check IS the failure
+    // check, and it's an error here, never a NaN handed back as data.
+    const ON_3dPoint p = v->SurfacePoint();
+    if (!p.IsValid()) {
+      throw std::runtime_error(
+          "dino8::kernel::SubD::LimitPoints: ON_SubDVertex::SurfacePoint failed for "
+          "a vertex (no incident faces, or invalid SubD topology)");
+    }
+    lp.limit_point = p;
+    // The normal is per sector; use the sector containing the vertex's
+    // first face (SurfaceNormal(nullptr, ...) refuses a crease/corner
+    // vertex outright, since it would be ambiguous there). Undefined ->
+    // zero vector, documented on SubDLimitPoint.
+    const ON_SubDFace* sector_face = v->FaceCount() > 0 ? v->Face(0) : nullptr;
+    const ON_3dVector n = sector_face ? v->SurfaceNormal(sector_face, /*bUndefinedNormalPossible=*/true)
+                                      : ON_3dVector::NanVector;
+    lp.limit_normal = n.IsValid() ? n : ON_3dVector::ZeroVector;
+    out.push_back(lp);
+  }
+  return out;
+}
+
 namespace {
 
 // The vertex of `nf` (one of `v`'s incident faces, sharing the edge

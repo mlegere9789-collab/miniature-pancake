@@ -17,8 +17,10 @@
 #include <utility>
 #include <vector>
 
+#include "dino8/kernel/boolean.h"
 #include "dino8/kernel/detail/polygon2d.h"
 #include "dino8/kernel/tolerance.h"
+#include "dino8/kernel/detail/segment3d.h"
 
 namespace dino8::kernel {
 
@@ -189,35 +191,119 @@ double Mesh::Area() const {
 
 namespace {
 
-// Moller-Trumbore ray-triangle intersection: whether the ray
-// `origin + t*direction` (t > kEpsilon, i.e. strictly ahead of origin,
-// not behind it or exactly at it) crosses triangle (a, b, c). Used by
-// ContainsPoint()'s ray-casting test - a standard, well-known
-// intersection formula, not something needing independent derivation the
-// way this file's own winding conventions did.
-bool RayIntersectsTriangle(const Point3d& origin, const Vector3d& direction, const Point3d& a,
-                            const Point3d& b, const Point3d& c) {
+// Moller-Trumbore ray/line-triangle intersection: whether the line
+// `origin + t*direction` crosses triangle (a, b, c) at all, and if so at
+// which parameter `t` (any sign - the caller decides whether "behind the
+// origin" counts) and barycentric (u, v) in the triangle. `slack` widens
+// the barycentric inclusion test by that much on every side (0 = the
+// exact closed triangle), so a caller that must not drop a crossing
+// landing exactly on an edge to round-off can ask for a hair of
+// tolerance. A standard, well-known intersection formula, not something
+// needing independent derivation the way this file's own winding
+// conventions did. Shared by ContainsPoint()'s ray-casting test,
+// FireRay(), and DistanceTo()'s segment/triangle piercing test.
+bool LineTriangleParameter(const Point3d& origin, const Vector3d& direction, const Point3d& a,
+                           const Point3d& b, const Point3d& c, double& t, double& u, double& v,
+                           double slack = 0.0) {
   constexpr double kEpsilon = 1e-12;
   const Vector3d edge1 = b - a;
   const Vector3d edge2 = c - a;
   const Vector3d h = ON_CrossProduct(direction, edge2);
   const double det = ON_DotProduct(edge1, h);
   if (std::abs(det) < kEpsilon) {
-    return false;  // ray parallel to the triangle's plane
+    return false;  // line parallel to the triangle's plane
   }
   const double inv_det = 1.0 / det;
   const Vector3d s = origin - a;
-  const double u = inv_det * ON_DotProduct(s, h);
-  if (u < 0.0 || u > 1.0) {
+  u = inv_det * ON_DotProduct(s, h);
+  if (u < -slack || u > 1.0 + slack) {
     return false;
   }
   const Vector3d q = ON_CrossProduct(s, edge1);
-  const double v = inv_det * ON_DotProduct(direction, q);
-  if (v < 0.0 || u + v > 1.0) {
+  v = inv_det * ON_DotProduct(direction, q);
+  if (v < -slack || u + v > 1.0 + slack) {
     return false;
   }
-  const double t = inv_det * ON_DotProduct(edge2, q);
-  return t > kEpsilon;
+  t = inv_det * ON_DotProduct(edge2, q);
+  return true;
+}
+
+// Whether the ray `origin + t*direction` (t > kEpsilon, i.e. strictly
+// ahead of origin, not behind it or exactly at it) crosses triangle
+// (a, b, c). Used by ContainsPoint()'s ray-casting test.
+bool RayIntersectsTriangle(const Point3d& origin, const Vector3d& direction, const Point3d& a,
+                            const Point3d& b, const Point3d& c) {
+  constexpr double kEpsilon = 1e-12;
+  double t = 0, u = 0, v = 0;
+  return LineTriangleParameter(origin, direction, a, b, c, t, u, v) && t > kEpsilon;
+}
+
+// Exact minimum distance between triangles (a0, a1, a2) and (b0, b1, b2)
+// and the points where it's attained - see DistanceTo()'s own doc
+// comment for the three feature families (vertex/triangle, edge/edge,
+// edge-pierces-triangle) that between them cover every configuration.
+// `ClosestPointOnTriangle` is declared below; this is defined after it.
+Point3d ClosestPointOnTriangle(const Point3d& p, const Point3d& a, const Point3d& b, const Point3d& c);
+double TriangleTriangleDistance(const std::array<Point3d, 3>& ta, const std::array<Point3d, 3>& tb, Point3d& on_a,
+                                Point3d& on_b) {
+  double best = std::numeric_limits<double>::infinity();
+  // Vertex of one vs. the other triangle (both ways).
+  for (int i = 0; i < 3; ++i) {
+    const Point3d q = ClosestPointOnTriangle(ta[static_cast<size_t>(i)], tb[0], tb[1], tb[2]);
+    const double d = q.DistanceTo(ta[static_cast<size_t>(i)]);
+    if (d < best) {
+      best = d;
+      on_a = ta[static_cast<size_t>(i)];
+      on_b = q;
+    }
+    const Point3d p = ClosestPointOnTriangle(tb[static_cast<size_t>(i)], ta[0], ta[1], ta[2]);
+    const double e = p.DistanceTo(tb[static_cast<size_t>(i)]);
+    if (e < best) {
+      best = e;
+      on_a = p;
+      on_b = tb[static_cast<size_t>(i)];
+    }
+  }
+  // Edge vs. edge (9 pairs).
+  for (int i = 0; i < 3; ++i) {
+    const Point3d& p0 = ta[static_cast<size_t>(i)];
+    const Point3d& p1 = ta[static_cast<size_t>((i + 1) % 3)];
+    for (int j = 0; j < 3; ++j) {
+      const Point3d& q0 = tb[static_cast<size_t>(j)];
+      const Point3d& q1 = tb[static_cast<size_t>((j + 1) % 3)];
+      double s = 0, t = 0;
+      const double d2 = detail::ClosestSegmentSegment(p0, p1, q0, q1, s, t);
+      const double d = std::sqrt(std::max(d2, 0.0));
+      if (d < best) {
+        best = d;
+        on_a = p0 + (p1 - p0) * s;
+        on_b = q0 + (q1 - q0) * t;
+      }
+    }
+  }
+  // Edge of one piercing the other's interior: the one configuration the
+  // two feature families above can't see (nothing on either boundary is
+  // at distance 0 from the other triangle, yet they cross). A crossing
+  // exactly on the other triangle's boundary is already an edge/edge
+  // zero above, so the exact (slack-free) inclusion test suffices here.
+  if (best > 0.0) {
+    auto pierce = [&](const std::array<Point3d, 3>& edges_of, const std::array<Point3d, 3>& tri) {
+      for (int i = 0; i < 3 && best > 0.0; ++i) {
+        const Point3d& p0 = edges_of[static_cast<size_t>(i)];
+        const Point3d& p1 = edges_of[static_cast<size_t>((i + 1) % 3)];
+        double t = 0, u = 0, v = 0;
+        if (LineTriangleParameter(p0, p1 - p0, tri[0], tri[1], tri[2], t, u, v) && t >= 0.0 && t <= 1.0) {
+          best = 0.0;
+          const Point3d x = p0 + (p1 - p0) * t;
+          on_a = x;
+          on_b = x;
+        }
+      }
+    };
+    pierce(ta, tb);
+    pierce(tb, ta);
+  }
+  return best;
 }
 
 // Closest point on triangle (a, b, c) to `p` - the standard region-based
@@ -499,6 +585,178 @@ MassProperties Mesh::VolumeMassProperties() const {
     mp.radii_of_gyration[k] = std::sqrt(std::max(mp.principal_moments[k], 0.0) / mp.volume);
   }
   return mp;
+}
+
+std::vector<RayHit> Mesh::FireRay(Point3d origin, Vector3d direction) const {
+  if (direction.LengthSquared() <= 0.0) {
+    throw std::invalid_argument(
+        "dino8::kernel::Mesh::FireRay: direction is the zero vector - a ray needs "
+        "a direction");
+  }
+  constexpr double kEpsilon = 1e-12;
+  std::vector<RayHit> hits;
+  for (int i = 0; i < mesh_.m_F.Count(); ++i) {
+    const ON_MeshFace& f = mesh_.m_F[i];
+    auto try_triangle = [&](int i0, int i1, int i2) {
+      const Point3d a(mesh_.m_V[i0]), b(mesh_.m_V[i1]), c(mesh_.m_V[i2]);
+      double t = 0, u = 0, v = 0;
+      // A hair of barycentric slack so a crossing landing exactly on a
+      // quad's shared diagonal isn't rejected by BOTH triangles to
+      // round-off (u + v = 1 - 1e-17 in one, u = -1e-17 in the other).
+      if (!LineTriangleParameter(origin, direction, a, b, c, t, u, v, /*slack=*/1e-9) || t <= kEpsilon) {
+        return false;
+      }
+      RayHit h;
+      h.t = t;
+      h.point = origin + direction * t;
+      h.face_index = i;
+      h.entering = ON_DotProduct(direction, ON_CrossProduct(b - a, c - a)) < 0.0;
+      hits.push_back(h);
+      return true;
+    };
+    const bool hit_first = try_triangle(f.vi[0], f.vi[1], f.vi[2]);
+    if (f.IsQuad()) {
+      // A planar quad is crossed at most once, so a hit in both of its
+      // triangles is the same point on their shared diagonal - report it
+      // once. (A non-planar quad genuinely crossed twice is not a case
+      // this kernel's own tessellators ever emit.)
+      if (!hit_first) {
+        try_triangle(f.vi[0], f.vi[2], f.vi[3]);
+      }
+    }
+  }
+  std::sort(hits.begin(), hits.end(), [](const RayHit& x, const RayHit& y) { return x.t < y.t; });
+  return hits;
+}
+
+MeshDistance Mesh::DistanceTo(const Mesh& other) const {
+  if (mesh_.m_F.Count() == 0 || other.mesh_.m_F.Count() == 0) {
+    throw std::invalid_argument(
+        "dino8::kernel::Mesh::DistanceTo: a mesh has no faces - there's no "
+        "surface to measure to");
+  }
+
+  struct Tri {
+    std::array<Point3d, 3> p;
+    int face = -1;
+    Point3d lo, hi;
+  };
+  auto collect = [](const ON_Mesh& m) {
+    std::vector<Tri> tris;
+    auto add = [&](int face, int i0, int i1, int i2) {
+      Tri t;
+      t.p = {Point3d(m.m_V[i0]), Point3d(m.m_V[i1]), Point3d(m.m_V[i2])};
+      t.face = face;
+      t.lo = t.hi = t.p[0];
+      for (int k = 1; k < 3; ++k) {
+        const Point3d& q = t.p[static_cast<size_t>(k)];
+        t.lo.x = std::min(t.lo.x, q.x);
+        t.lo.y = std::min(t.lo.y, q.y);
+        t.lo.z = std::min(t.lo.z, q.z);
+        t.hi.x = std::max(t.hi.x, q.x);
+        t.hi.y = std::max(t.hi.y, q.y);
+        t.hi.z = std::max(t.hi.z, q.z);
+      }
+      tris.push_back(t);
+    };
+    for (int i = 0; i < m.m_F.Count(); ++i) {
+      const ON_MeshFace& f = m.m_F[i];
+      add(i, f.vi[0], f.vi[1], f.vi[2]);
+      if (f.IsQuad()) {
+        add(i, f.vi[0], f.vi[2], f.vi[3]);
+      }
+    }
+    return tris;
+  };
+  const std::vector<Tri> ta = collect(mesh_);
+  const std::vector<Tri> tb = collect(other.mesh_);
+
+  // Lower bound on the distance between two triangles: the gap between
+  // their axis-aligned boxes (0 if the boxes overlap). A pair whose
+  // bound already meets the best exact distance found can't improve it.
+  auto box_gap_squared = [](const Tri& a, const Tri& b) {
+    double g2 = 0.0;
+    auto axis = [&](double alo, double ahi, double blo, double bhi) {
+      const double gap = std::max(std::max(blo - ahi, alo - bhi), 0.0);
+      g2 += gap * gap;
+    };
+    axis(a.lo.x, a.hi.x, b.lo.x, b.hi.x);
+    axis(a.lo.y, a.hi.y, b.lo.y, b.hi.y);
+    axis(a.lo.z, a.hi.z, b.lo.z, b.hi.z);
+    return g2;
+  };
+
+  MeshDistance best;
+  best.distance = std::numeric_limits<double>::infinity();
+  for (const Tri& a : ta) {
+    for (const Tri& b : tb) {
+      if (box_gap_squared(a, b) >= best.distance * best.distance) {
+        continue;
+      }
+      Point3d on_a, on_b;
+      const double d = TriangleTriangleDistance(a.p, b.p, on_a, on_b);
+      if (d < best.distance) {
+        best.distance = d;
+        best.point_on_this = on_a;
+        best.point_on_other = on_b;
+        best.face_on_this = a.face;
+        best.face_on_other = b.face;
+        if (d == 0.0) {
+          return best;
+        }
+      }
+    }
+  }
+  return best;
+}
+
+Clash Mesh::ClashWith(const Mesh& other, double distance_tolerance, double relative_volume_tolerance) const {
+  if (distance_tolerance < 0.0 || relative_volume_tolerance < 0.0 || relative_volume_tolerance >= 1.0) {
+    throw std::invalid_argument(
+        "dino8::kernel::Mesh::ClashWith: distance_tolerance must be >= 0 and "
+        "relative_volume_tolerance in [0, 1)");
+  }
+  // Classify by the exact overlap VOLUME rather than by edge/face
+  // piercing predicates: the most ordinary CAD clash - two equal-height
+  // boxes overlapping in plan - has every edge/face crossing landing
+  // exactly on a face edge or lying in a face's own plane, degenerate for
+  // any such predicate, whereas the overlap volume is simply 2. The
+  // Manifold-backed BooleanCombine() (exact predicates with symbolic
+  // perturbation, built for coincident faces) already exists for exactly
+  // this kind of robustness. Throws BooleanCombine()'s own
+  // std::runtime_error if either mesh isn't a closed manifold.
+  // The documented precondition, checked directly: a lone open patch can
+  // have a nonzero SIGNED Volume() (the origin-based tetrahedra don't
+  // cancel), so "volume > 0" alone would let an open mesh through to
+  // Manifold's own less specific rejection.
+  if (!IsClosedManifold() || !other.IsClosedManifold()) {
+    throw std::invalid_argument(
+        "dino8::kernel::Mesh::ClashWith: both meshes must be closed, "
+        "consistently-oriented manifolds (IsClosedManifold()) - an open "
+        "surface has no solid to clash");
+  }
+  const double volume_a = Volume();
+  const double volume_b = other.Volume();
+  if (volume_a <= 0.0 || volume_b <= 0.0) {
+    throw std::invalid_argument(
+        "dino8::kernel::Mesh::ClashWith: both meshes must enclose positive "
+        "volume (wound CCW from outside) - an inside-out mesh's overlap "
+        "volume would be meaningless; FlipNormals() it first");
+  }
+  const double overlap = BooleanCombine(*this, other, BooleanOp::Intersection).Volume();
+  if (overlap >= (1.0 - relative_volume_tolerance) * volume_a) {
+    return Clash::ThisInsideOther;
+  }
+  if (overlap >= (1.0 - relative_volume_tolerance) * volume_b) {
+    return Clash::OtherInsideThis;
+  }
+  if (overlap > relative_volume_tolerance * std::min(volume_a, volume_b)) {
+    return Clash::Intersecting;
+  }
+  if (DistanceTo(other).distance <= distance_tolerance) {
+    return Clash::Touching;
+  }
+  return Clash::Clear;
 }
 
 std::vector<Vector3d> Mesh::ComputeVertexNormals() const {
