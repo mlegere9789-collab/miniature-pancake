@@ -68,6 +68,13 @@ void Model::AddSubD(const SubD& subd) {
   model_.AddModelGeometryComponent(geometry, &attributes);
 }
 
+void Model::AddPointCloud(const PointCloud& cloud) {
+  auto* geometry = new ON_PointCloud(cloud.raw());
+  ON_3dmObjectAttributes attributes;
+  ON_CreateUuid(attributes.m_uuid);
+  model_.AddModelGeometryComponent(geometry, &attributes);
+}
+
 int Model::ObjectCount() const {
   return static_cast<int>(
       model_.ActiveComponentCount(ON_ModelComponent::Type::ModelGeometry));
