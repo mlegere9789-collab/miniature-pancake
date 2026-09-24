@@ -942,6 +942,106 @@ class NurbsSurface {
   Result UnrollDevelopable(int u_divisions, int v_divisions, Mesh& out_flat, double* out_area = nullptr,
                            DevelopableKind* out_kind = nullptr) const;
 
+  // Computes the EXACT offset of this surface by `distance` along its own
+  // NormalAt(u, v) direction, for the five analytic types whose true
+  // offset (the literal "surface of points at distance `distance` along
+  // the normal", not an approximation of it) is itself expressible in
+  // the same closed form: a plane, sphere, cylinder, cone, or torus
+  // (detected the same real, tolerance-based way IsPlanar()/IsSphere()/
+  // IsCylinder()/IsCone()/IsTorus() and UnrollDevelopable() already do,
+  // not a name check). This is the general-surface counterpart to
+  // Parasolid's PK_BODY_offset computing an exact analytic offset face
+  // rather than approximating it with a refit spline - the honest
+  // "approximate elsewhere" freeform case this deliberately does NOT
+  // attempt is refused outright (see the failure list below), not
+  // silently approximated.
+  //
+  // What each case actually returns (every one verified algebraically,
+  // not assumed from "offsetting shrinks/grows a round thing"):
+  //  - Plane: this surface's OWN control points translated by
+  //    `distance * NormalAt(u, v)` (the same vector everywhere a plane's
+  //    normal is constant) - exact for ANY planar surface regardless of
+  //    its actual shape/domain/control structure, unlike the four cases
+  //    below, since a constant per-control-point translation moves every
+  //    evaluated point by that same vector (NURBS partition of unity),
+  //    which for a constant normal field is precisely what "offset by
+  //    distance along the normal" means. Preserves this surface's exact
+  //    domain and control/weight structure - a genuine caller-facing
+  //    difference from the other four cases, which instead rebuild the
+  //    matched primitive's own natural full extent from scratch via
+  //    GetNurbForm() (a plane has no such single natural bounded form to
+  //    rebuild from, since a plane itself is unbounded).
+  //  - Sphere / Cylinder: a concentric sphere / coaxial cylinder with
+  //    radius `radius +/- distance` (the sign resolved per surface, see
+  //    below) - trivially exact, every point moves radially by exactly
+  //    `distance`.
+  //  - Cone: a coaxial cone with the exact SAME half-angle, apex shifted
+  //    along the cone's own axis by `distance / sin(half_angle)` - the
+  //    standard, non-obvious fact (verified here by direct algebraic
+  //    derivation, not assumed) that a cone's offset is itself a cone
+  //    with unchanged opening angle: parametrizing the cone as
+  //    P(h, theta) = (h*tan(alpha)*cos(theta), h*tan(alpha)*sin(theta), h)
+  //    (h = distance from apex along the axis, alpha = half-angle) and
+  //    solving for the one apex position z_a such that
+  //    P(h, theta) + distance * outward_normal(h, theta) lies exactly on
+  //    a same-alpha cone with apex at z_a gives the closed form
+  //    z_a = -distance / sin(alpha), independent of h and theta - i.e.
+  //    this genuinely holds at every point of the surface, not just
+  //    near where it was checked.
+  //  - Torus: a coaxial torus with the SAME major (center-circle) radius
+  //    and tube radius `minor_radius +/- distance` - by the same kind of
+  //    exact derivation as the cone case (a torus is a tube of circles
+  //    around its own center circle; offsetting that tube by a constant
+  //    distance is exactly a tube of radius `minor_radius +/- distance`
+  //    around the SAME center circle).
+  //
+  // The sign for each +/- above is resolved AT RUNTIME by comparing this
+  // surface's own NormalAt() at a sample point against the fitted
+  // primitive's independently-known true outward direction there (e.g.
+  // `point - sphere.Center()` for a sphere) - deliberately not assumed
+  // to be a fixed convention, since nothing guarantees every possible
+  // NurbsSurface's own du x dv handedness agrees with "outward" (this
+  // file's own IsSphere() doc comment already records EvNormal's sign
+  // behaving surprisingly for at least one shape). This makes the result
+  // correct for whichever of the two possible normal fields this
+  // particular surface happens to have, instead of silently producing a
+  // shrunk surface when a caller who read "distance > 0 means grow"
+  // expected it to grow.
+  //
+  // A real, deliberately enforced correctness guard against a genuine
+  // self-intersection hazard (the same one Parasolid's own offset is
+  // documented to check for), not an omission: this returns
+  // Result::Failed, `out` left unchanged, rather than silently building
+  // an invalid or self-overlapping surface, when the requested offset:
+  //  - would make a sphere/cylinder's radius, or a torus's tube radius,
+  //    <= 0 (the offset distance exceeds that constant-curvature
+  //    surface's own radius of curvature - it folds through its own
+  //    axis/center);
+  //  - would make a torus's tube radius >= its own major radius (a
+  //    self-intersecting spindle torus, not merely a fatter one);
+  //  - would, for a cone, shrink the radius below zero anywhere within
+  //    this surface's own existing v-domain (checked at both v-domain
+  //    ends, where a cone's monotonically-varying radius is smallest) -
+  //    the direct cone analogue of "offset exceeds local radius of
+  //    curvature", since a cone's local radius of curvature in the
+  //    circumferential direction is exactly its distance from the axis
+  //    at that point.
+  //
+  // Returns Result::Failed, `out` unchanged, if this surface isn't
+  // (within `tolerance`) one of the five types above - a general
+  // freeform surface's true offset is generally NOT itself expressible
+  // as an exact NURBS surface at all (it's a genuinely different,
+  // typically non-rational algebraic surface), so this deliberately
+  // refuses rather than quietly returning an approximation dressed up as
+  // an exact one; that harder, inherently-approximate case belongs to a
+  // different, explicitly-approximate method this one is not. `tolerance`
+  // defaults (`<= 0`) to `tolerance::DistanceForSize()` of this surface's
+  // own bounding-box diagonal, the same reasoning UnrollDevelopable()
+  // already applies: IsPlanar()/IsSphere()/IsCylinder()/IsCone()/
+  // IsTorus()'s own `ON_ZERO_TOLERANCE` default is far too tight for
+  // anything but a hand-built exact primitive.
+  Result OffsetAnalytic(double distance, NurbsSurface& out, double tolerance = -1.0) const;
+
   const ON_NurbsSurface& raw() const { return surface_; }
   ON_NurbsSurface& raw() { return surface_; }
 

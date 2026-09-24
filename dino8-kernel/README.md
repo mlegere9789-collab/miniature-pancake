@@ -3135,6 +3135,157 @@ honestly out of scope.
   mutation (disabling the angle-unwrap pass) makes exactly the 5 checks
   that depend on it fail, including the full-loop seam check, closing
   the loop on why that fix was needed rather than just asserting it.
+- **`NurbsSurface::OffsetAnalytic(distance, out, tolerance)`** (2026-09-24)
+  - the kernel's first surface-offset capability at all (Parasolid
+  `PK_BODY_offset`'s per-face case): before this, nothing in the kernel
+  could compute *any* surface offset, exact or approximate. Scoped
+  deliberately to the five analytic types whose true offset (the actual
+  locus of points at `distance` along the normal, not a refit
+  approximation of it) is ITSELF expressible in exactly the same closed
+  form, detected the same real, tolerance-based way `UnrollDevelopable()`
+  already does (`IsPlanar`/`IsSphere`/`IsCylinder`/`IsCone`/`IsTorus`, not
+  a name check): a plane offsets to a translated plane; a sphere/cylinder
+  to a concentric/coaxial one of radius `radius +/- distance`; a torus to
+  a coaxial one with the SAME major radius and tube radius `minor_radius
+  +/- distance`. The cone case is the interesting one, and is exact for a
+  genuinely non-obvious reason, not assumed: parametrizing the cone as
+  `P(h, theta) = (h*tan(alpha)*cos(theta), h*tan(alpha)*sin(theta), h)`
+  and solving for the one apex shift `z_a` that makes
+  `P(h, theta) + distance * outward_normal` land exactly on a
+  same-half-angle cone with apex at `z_a` gives the closed form
+  `z_a = -distance / sin(alpha)`, independent of `h` and `theta` - i.e.
+  a cone's offset really is another cone with the SAME half-angle, apex
+  shifted along the axis, everywhere on the surface, not just near one
+  checked point (confirmed in the test to 3e-14 via a golden-section
+  search matching an arbitrary sampled point's own `point + distance *
+  normal` against the constructed offset surface, not merely trusted
+  from the algebra). A genuinely freeform (non-analytic) surface's true
+  offset is generally not an exact NURBS surface at all - that harder,
+  inherently-approximate case is deliberately refused
+  (`Result::Failed`) rather than silently approximated, matching this
+  file's own honesty standard elsewhere (`UnrollDevelopable`'s "refused,
+  not distorted" for a non-developable surface).
+  A real, easy-to-get-wrong wrinkle found and fixed before finalizing:
+  the sign of "along the normal" can't be assumed fixed, since nothing
+  guarantees a given `NurbsSurface`'s own `du x dv` handedness agrees
+  with the geometrically "outward" direction (this file's own
+  `IsSphere()` doc comment already found `EvNormal`'s sign surprising in
+  exactly this way for one shape) - so the sign is resolved AT RUNTIME
+  per call, by comparing `NormalAt()` at a sample point against the
+  fitted primitive's independently-known true outward direction there
+  (e.g. `point - sphere.Center()`), rather than hard-coded. A second real
+  bug, caught only by testing (not by reading the derivation): the
+  natural-seeming `cylinder.circle.plane.ClosestPointTo(point)` does NOT
+  give the closest point on the cylinder's AXIS - it projects onto the
+  circle's own 2D cross-section plane, dropping only the along-axis
+  component, so it returns a point still `radius` away from the true
+  axis whenever the sample sits at a different height than that plane's
+  own origin (caught because the test's sample height happened to
+  coincide with the fitted cross-section's own height, making the bug
+  read as `ClosestPointTo(p) == p` exactly - too clean a result to be
+  right). Fixed by projecting onto the axis LINE directly
+  (`origin + dot(p - origin, axis) * axis`), not the plane. A third real
+  finding, structural rather than a bug: `ON_Surface::IsCylinder()`'s own
+  fallback fit (the only path that ever runs here, since a bare
+  `ON_NurbsSurface` never casts to `ON_RevSurface`) never recovers the
+  surface's actual finite height extent - it leaves `cylinder.height[0]
+  == height[1] == 0`, OpenNURBS' own "infinite cylinder" encoding, whose
+  `GetNurbForm()` always fails - so the real extent has to be recovered
+  independently here from this surface's own v-domain ends before an
+  offset cylinder can be built at all.
+  Also enforces the real self-intersection hazard Parasolid's own offset
+  is documented to guard against, rather than silently building an
+  invalid or self-overlapping surface: refused when a sphere/cylinder's
+  radius or a torus's tube radius would go `<= 0` (the offset exceeds
+  that constant-curvature surface's own radius of curvature), when a
+  torus's tube radius would reach or exceed its major radius (a
+  self-intersecting spindle torus, a materially different degenerate
+  shape from merely "too fat", not the same check restated), and, for a
+  cone, when the offset shrinks the radius through zero anywhere within
+  the surface's own existing v-domain (checked at both domain ends,
+  where a cone's monotonic radius is smallest) - the cone's own
+  analogue of "offset exceeds local radius of curvature", since a
+  cone's circumferential radius of curvature at a point is exactly its
+  distance from the axis there. The plane case is handled differently
+  from the other four, and deliberately better: rather than rebuilding a
+  primitive's natural full extent via `GetNurbForm()` (a plane has no
+  such single bounded natural form to rebuild - a plane itself is
+  unbounded), it translates THIS surface's own existing control points
+  by `distance * normal` directly (weight-preserving, via the
+  homogeneous `ON_4dPoint` CV form, not the Euclidean `SetCV()` overload
+  that resets a rational control point's weight to 1 as a documented
+  side effect elsewhere in this file) - exact for ANY planar surface
+  regardless of its actual shape, and the only one of the five cases
+  that preserves the original surface's exact domain, control-point
+  count, and trim compatibility, confirmed directly in the test (domain
+  and CV-grid size checked equal before/after, not just claimed).
+  Verified in `tests/test_basic.cpp`
+  (`TestSurfaceOffsetAnalytic*`): exact concentric/coaxial radius checks
+  for sphere/cylinder/torus; half-angle preservation plus a
+  golden-section-search pointwise match (3e-14) for the cone; exact
+  translation-by-normal and domain/CV-count preservation for the plane;
+  all four self-intersection refusals (sphere/cylinder collapse,
+  spindle torus, cone through-axis fold); refusal on a genuine freeform
+  bulge surface; and the `distance == 0` no-op case. Confirmed the tests
+  actually exercise this code, not merely compile around it: reverting
+  just `surface.h`/`surface.cpp` (`git stash`) makes every
+  `OffsetAnalytic` test a compile error, not a runtime failure - the
+  method genuinely did not exist before this entry.
+  Deliberately out of scope at the time, disclosed rather than silently
+  missing: curve offset (closed the same day, see below), body/solid
+  (Minkowski-style) offset, shell/hollow beyond the existing
+  `ShellConvexPlanar`, per-face wall-thickness overrides, and
+  thicken-sheet-to-solid - the last four still aren't implemented.
+- **`NurbsCurve::OffsetInPlane(distance, out, tolerance)`** (2026-09-24) -
+  the curve-level counterpart to `OffsetAnalytic()` above, and, like it,
+  the kernel's first curve-offset capability at all. Same honesty split:
+  EXACT for a line (translated parallel) and a circular arc/full circle
+  (concentric, same plane/center/`DomainRadians()` angular span, radius
+  `radius +/- distance`), an explicitly-APPROXIMATE least-squares refit
+  (this class's own real `FitLeastSquares()`) for every other planar
+  curve, and outright refusal (`Result::Failed`) for a non-planar curve
+  or a distance that would fold the curve through itself - never a
+  silent approximation dressed up as exact, and never a silently
+  self-intersecting result. The offset direction at parameter `t` is
+  `TangentAt(t) x plane.zaxis` (`plane` from this curve's own
+  `IsPlanar()` fit); for the arc case specifically, the +/- sign is
+  resolved the SAME way `OffsetAnalytic()` resolves it for a sphere/
+  cylinder/torus - at runtime, by comparing that direction against the
+  independently-known true outward radial `point - center` at one
+  sample, not trusted from `ON_Arc`'s own parametrization convention -
+  so `distance > 0` reliably GROWS an arc/circle regardless of which way
+  a particular curve's tangent happens to wind (deliberately not
+  assumed fixed, the same reasoning already documented for the surface
+  case). For a general curve there is no such independently-known
+  "outward" to check against, so that curve's own `IsPlanar()`-fitted
+  zaxis sign is used as-is - a real, disclosed asymmetry with the arc
+  case, not an oversight.
+  Self-intersection is checked in the general (approximate) path by
+  comparing, AT EVERY SAMPLE, the signed component of `distance` toward
+  that point's own `CurvatureAt(t)` center against that point's own
+  local radius `1/kappa`: reaching or exceeding it means the offset
+  folds the curve through itself there - the direct curve analogue of
+  `OffsetAnalytic()`'s cone guard, and the real hazard a naive per-point
+  translate-and-refit would otherwise hide silently in a plausible-
+  looking but self-overlapping result. Verified in
+  `tests/test_basic.cpp` (`TestCurveOffsetInPlane*`): exact
+  radius/length checks for the line, circle, and a partial (half-circle)
+  arc (the arc case additionally checked to preserve its exact start
+  angle, not just its radius); a smoothly-curved general cubic's offset
+  matches a direct per-point `point + distance*normal` construction to
+  within a loose but meaningful tolerance (worst case ~0.004 units on a
+  10-unit curve, nowhere near the 0.05 threshold - not tuned to just
+  barely pass); both self-intersection guards (an oversized circle
+  offset and, on the general curve, at least one of a large positive or
+  negative offset folding through a tight bend); refusal on a genuine
+  non-planar curve; and the `distance == 0` no-op case. Confirmed by the
+  same stash-based method as `OffsetAnalytic()`'s own entry: reverting
+  just `curve.h`/`curve.cpp` turns every `OffsetInPlane` test into a
+  compile error, not a runtime failure.
+  Still deliberately out of scope: a genuinely non-planar 3D curve
+  offset (e.g. sweeping a Frenet frame along the curve), body/solid
+  offset, shell/hollow beyond `ShellConvexPlanar`, per-face wall-
+  thickness overrides, and thicken-sheet-to-solid.
 - `NurbsSurface::CoonsPatch(bottom, top, left, right, out, tolerance,
   &out_corner_gap)`: the exact bilinearly-blended Coons patch through 4
   boundary curves (Parasolid/Rhino's NetworkSrf/EdgeSrf for exactly 4

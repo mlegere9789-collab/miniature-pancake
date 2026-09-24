@@ -5,9 +5,20 @@
 #include <stdexcept>
 #include <string>
 
+#include "dino8/kernel/tolerance.h"
+
 namespace dino8::kernel {
 
 namespace {
+
+// Which of the two possible in-plane perpendicular directions `dir`
+// belongs to, relative to a geometrically-known "true outward" direction
+// at the same point - same reasoning as NurbsSurface::OffsetAnalytic()'s
+// own OffsetNormalSign() (surface.cpp), duplicated here rather than
+// shared since the two files have no common detail header for it.
+double OffsetSignAlong(const Vector3d& dir, const Vector3d& true_outward) {
+  return ON_DotProduct(dir, true_outward) >= 0.0 ? 1.0 : -1.0;
+}
 
 void SubdivideForFlatness(const NurbsCurve& curve, double t0, double t1, double chord_tolerance,
                            int depth, int max_depth, std::vector<double>& out) {
@@ -706,6 +717,91 @@ Result NurbsCurve::Split(double t, NurbsCurve& out_left, NurbsCurve& out_right) 
   out_right.curve_ = *right_nurbs;
   delete left_curve;
   delete right_curve;
+  return Result::Ok;
+}
+
+Result NurbsCurve::OffsetInPlane(double distance, NurbsCurve& out, double tolerance) const {
+  if (!ON_IsValid(distance)) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsCurve::OffsetInPlane: distance must be finite");
+  }
+
+  const BoundingBox bbox = GetTightBoundingBox();
+  const double diag = (bbox.max - bbox.min).Length();
+  const double tol = tolerance > 0.0 ? tolerance : dino8::kernel::tolerance::DistanceForSize(diag);
+
+  ON_Plane plane;
+  if (!curve_.IsPlanar(&plane, tol)) {
+    return Result::Failed;
+  }
+
+  if (distance == 0.0) {
+    out.curve_ = curve_;
+    return Result::Ok;
+  }
+
+  const Interval dom = Domain();
+  const double t_mid = 0.5 * (dom.min + dom.max);
+
+  // --- Line ------------------------------------------------------------
+  if (curve_.IsLinear(tol)) {
+    const Point3d p0 = curve_.PointAtStart();
+    const Point3d p1 = curve_.PointAtEnd();
+    Vector3d dir = p1 - p0;
+    if (!dir.Unitize()) return Result::Failed;
+    Vector3d offset_dir = ON_CrossProduct(dir, plane.zaxis);
+    if (!offset_dir.Unitize()) return Result::Failed;
+    out = NurbsCurve::FromControlPoints({p0 + distance * offset_dir, p1 + distance * offset_dir}, 1);
+    return Result::Ok;
+  }
+
+  // --- Circular arc / full circle ---------------------------------------
+  {
+    ON_Arc arc;
+    if (curve_.IsArc(nullptr, &arc, tol)) {
+      const Vector3d tangent = TangentAt(t_mid);
+      Vector3d offset_dir = ON_CrossProduct(tangent, arc.plane.zaxis);
+      Vector3d radial = PointAt(t_mid) - arc.Center();
+      if (!offset_dir.Unitize() || !radial.Unitize()) return Result::Failed;
+      const double sign = OffsetSignAlong(offset_dir, radial);
+      const double new_radius = arc.radius + sign * distance;
+      if (!(new_radius > 0.0)) return Result::Failed;
+      const ON_Circle new_circle(arc.plane, new_radius);
+      const ON_Arc new_arc(new_circle, arc.DomainRadians());
+      ON_NurbsCurve nc;
+      if (new_arc.GetNurbForm(nc) == 0) return Result::Failed;
+      out.curve_ = nc;
+      return Result::Ok;
+    }
+  }
+
+  // --- General planar curve: approximate, curvature-checked ---------------
+  const double chord_tol = dino8::kernel::tolerance::RelativeDistance(diag);
+  const int n = std::max(SuggestedSamples(chord_tol), 4 * ControlPointCount());
+  std::vector<Point3d> offset_points;
+  offset_points.reserve(static_cast<size_t>(n) + 1);
+  for (int i = 0; i <= n; ++i) {
+    const double t = dom.min + (dom.max - dom.min) * i / n;
+    Vector3d offset_dir = ON_CrossProduct(TangentAt(t), plane.zaxis);
+    if (!offset_dir.Unitize()) return Result::Failed;  // degenerate (zero) tangent
+
+    const Vector3d kappa_vec = CurvatureAt(t);
+    const double kappa = kappa_vec.Length();
+    if (kappa > dino8::kernel::tolerance::kZeroVector) {
+      Vector3d to_center = kappa_vec;
+      to_center.Unitize();
+      const double inward_component = distance * OffsetSignAlong(offset_dir, to_center);
+      if (inward_component >= 1.0 / kappa) return Result::Failed;  // folds through its own center of curvature
+    }
+
+    offset_points.push_back(PointAt(t) + distance * offset_dir);
+  }
+
+  NurbsCurve fitted;
+  if (NurbsCurve::FitLeastSquares(offset_points, Degree(), ControlPointCount(), fitted) != Result::Ok) {
+    return Result::Failed;
+  }
+  out = fitted;
   return Result::Ok;
 }
 
