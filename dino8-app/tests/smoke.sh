@@ -19,6 +19,12 @@ TMP="$(mktemp -d)"
 # to Win32 file APIs, and avoids backslash-escaping issues in sed/heredoc
 # text); on Linux/macOS (no cygpath) this is just $TMP again, a no-op.
 if command -v cygpath >/dev/null 2>&1; then TMPW="$(cygpath -m "$TMP")"; else TMPW="$TMP"; fi
+# Same reasoning as TMPW above, for $HERE (this file's own directory):
+# a handful of sed substitutions below bake $HERE into a *.dflow/script
+# path that becomes literal TEXT inside a generated script file (an
+# @DINO8ROOT@/@TREEFILE@/@SOLVERFILE@/@GEOMFILE@ token, not a bash-level
+# file argument), so it needs the same OS-native form.
+if command -v cygpath >/dev/null 2>&1; then HEREW="$(cygpath -m "$HERE")"; else HEREW="$HERE"; fi
 # Isolate settings so persisted toggles (Ortho, snaps, theme) from earlier runs cannot leak into the checks.
 export XDG_CONFIG_HOME="$TMPW/config"
 mkdir -p "$XDG_CONFIG_HOME"
@@ -1046,7 +1052,7 @@ for got, exp, name in ((ax, exp_ax, "Ax"), (ay, exp_ay, "Ay")):
         assert abs(g - e) < 0.01, f"{name}: got {got}, expected {exp}"
 PY
 # Annotation, linetype, hatch and block tools (see annotate2_script.txt).
-sed -e "s|@TMP@|$TMPW|g" -e "s|@DINO8ROOT@|$HERE/..|g" "$HERE/annotate2_script.txt" > "$TMPW/annotate2_script.txt"
+sed -e "s|@TMP@|$TMPW|g" -e "s|@DINO8ROOT@|$HEREW/..|g" "$HERE/annotate2_script.txt" > "$TMPW/annotate2_script.txt"
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   A2="$("$BIN" --smoke 150 --script "$TMPW/annotate2_script.txt" 2>&1)" || { echo "$A2"; echo "FAIL: annotate2 script exited non-zero"; exit 1; }
 else
@@ -1709,7 +1715,7 @@ fl2check "Total length = 55.23 " "the re-baked line picked up the slider=55 edit
 # Construct Point -> Bake (see flow_tree_script.txt / flow_tree_graph.dflow).
 # AttachGHSData/GetUserText surface each node's Tree::Summary() so the
 # branch structure Graft/Flatten produce is directly checkable as text.
-sed "s|@TREEFILE@|$HERE/flow_tree_graph.dflow|g" "$HERE/flow_tree_script.txt" > "$TMPW/flow_tree_script.txt"
+sed "s|@TREEFILE@|$HEREW/flow_tree_graph.dflow|g" "$HERE/flow_tree_script.txt" > "$TMPW/flow_tree_script.txt"
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   FT="$("$BIN" --smoke 100 --script "$TMPW/flow_tree_script.txt" 2>&1)" || { echo "$FT"; echo "FAIL: flow tree script exited non-zero"; exit 1; }
 else
@@ -1727,7 +1733,7 @@ ftcheck "  4,0,0" "List Item(index 2) of Range(0,10,5) read back as 4 via the ba
 # Solver, a known-optimum problem (minimum 0 at x=3) checked two ways: the
 # GrasshopperPlayer summary line, and the baked (best-x, best-fitness) point
 # (see flow_solver_script.txt / flow_solver_graph.dflow).
-sed "s|@SOLVERFILE@|$HERE/flow_solver_graph.dflow|g" "$HERE/flow_solver_script.txt" > "$TMPW/flow_solver_script.txt"
+sed "s|@SOLVERFILE@|$HEREW/flow_solver_graph.dflow|g" "$HERE/flow_solver_script.txt" > "$TMPW/flow_solver_script.txt"
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   FS="$("$BIN" --smoke 100 --script "$TMPW/flow_solver_script.txt" 2>&1)" || { echo "$FS"; echo "FAIL: flow solver script exited non-zero"; exit 1; }
 else
@@ -1743,7 +1749,7 @@ fscheck "  3,0,0" "the baked point (best gene, best fitness) is exactly (3, 0, 0
 # of kind CURVE) - proving the plugin ABI's opaque geometry handles round-
 # trip plugin-to-plugin, not just plugin-to-document (see
 # flow_plugin_geom_script.txt / flow_plugin_geom_graph.dflow).
-sed "s|@GEOMFILE@|$HERE/flow_plugin_geom_graph.dflow|g" "$HERE/flow_plugin_geom_script.txt" > "$TMPW/flow_plugin_geom_script.txt"
+sed "s|@GEOMFILE@|$HEREW/flow_plugin_geom_graph.dflow|g" "$HERE/flow_plugin_geom_script.txt" > "$TMPW/flow_plugin_geom_script.txt"
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   FG="$("$BIN" --smoke 100 --script "$TMPW/flow_plugin_geom_script.txt" 2>&1)" || { echo "$FG"; echo "FAIL: flow plugin geom script exited non-zero"; exit 1; }
 else
