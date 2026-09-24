@@ -2559,6 +2559,42 @@ What this repo does instead:
   writing the test (which triangle's flip direction and which wall
   vertex order produce an outward-facing cube), not verified after the
   fact by adjusting signs until a check passed.
+- **`Mesh::FindOffsetSelfIntersections(distance, tolerance)`** (2026-09-24)
+  - directly answers the hazard `Offset()`'s own entry above already
+  names but had no way to check: whether a given `distance` folds the
+  mesh through itself. A one-line composition, not new intersection
+  math - `Offset(distance).FindSelfIntersections(tolerance)` - made a
+  named, directly-callable entry point specifically because the real
+  content worth adding here is a genuine, non-degenerate demonstration
+  that it actually catches something, not the composition itself.
+  A real dead end hit and recorded while building that demonstration,
+  not smoothed over: the first fixture tried was two PARALLEL walls of
+  a narrow slot, offset toward each other past the point where they'd
+  swap relative order - this reports ZERO intersections at ANY distance,
+  because two exactly parallel planes' normals have a zero cross
+  product, and `FindSelfIntersections()`'s own doc comment already
+  states that a zero cross product between two triangles' planes means
+  "this test can't place them along a shared line at all" (the same
+  documented blind spot as its coplanar-triangle case) - parallel walls
+  swapping x-position are two planes that never truly cross as sets,
+  whatever their order, so there was never anything for the test to
+  detect there. The working fixture is a narrow V-GROOVE (two
+  NON-parallel walls converging at an apex) - offsetting INTO the groove
+  by enough pushes the two converging walls past each other near the
+  apex, a genuine, non-parallel triangle crossing this method correctly
+  reports (confirmed empirically by scanning a range of distances in
+  both directions, not asserted from the construction alone - the exact
+  distance used in the test is one a scan actually found to intersect,
+  not a guessed "surely large enough" value). Small distances in either
+  direction on the same groove correctly report no intersection, and the
+  result is checked to match a manual `Offset()` + `FindSelfIntersections()`
+  call exactly, confirming this is genuinely the same composition, not
+  independent logic that happens to agree in the one case tested.
+  Deliberately out of scope, inherited directly from `FindSelfIntersections()`
+  itself: detecting an overlap between two exactly PARALLEL (or coplanar)
+  offset surfaces - the dead end above - and any form of repair (clamping
+  the distance, splitting at the fold) rather than reporting where a
+  problem exists.
 - `Mesh::CheckReport::non_manifold_edge_list`: localizes what
   `non_manifold_edges` had only ever COUNTED - a real gap `naked_edges`
   never had, since `naked_edge_list` already existed for it. Undirected
