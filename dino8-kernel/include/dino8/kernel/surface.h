@@ -126,10 +126,16 @@ class NurbsSurface {
   //
   // `bottom`/`top` run in the same direction (both start at the "left"
   // side and end at the "right" side); `left`/`right` likewise both run
-  // from "bottom" to "top" - the standard Coons convention. `top` and
-  // `right` are each tried both as given and reversed (4 combinations
-  // total) and whichever combination best closes all 4 corners is used
-  // - `bottom` and `left` set the reference orientation. Classical
+  // from "bottom" to "top" - the standard Coons convention, though only
+  // `bottom` actually needs to be handed in that orientation: `top`,
+  // `left` and `right` are each tried both as given and reversed (8
+  // combinations total) and whichever combination best closes all 4
+  // corners is used, since a caller chaining arbitrarily-picked curves
+  // (dino8-app's own NetworkSrf, for instance) has no way to guarantee
+  // any of the other 3 curves' own stored directions already match.
+  // `bottom` alone sets the reference orientation (it defines the two
+  // "bottom" corners unambiguously; there is nothing to compare it
+  // against). Classical
   // construction: each curve is reparameterized onto [0, 1]
   // (`SetDomain`, shape-preserving), `bottom`/`top` are brought to a
   // shared degree and knot vector (the higher of the two degrees,

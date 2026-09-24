@@ -838,33 +838,45 @@ Result NurbsSurface::CoonsPatch(const NurbsCurve& bottom, const NurbsCurve& top,
   c1_fwd.SetDomain(0.0, 1.0);
   d0.SetDomain(0.0, 1.0);
   d1_fwd.SetDomain(0.0, 1.0);
-  ON_NurbsCurve c1_rev = c1_fwd, d1_rev = d1_fwd;
+  ON_NurbsCurve d0_fwd = d0;
+  ON_NurbsCurve c1_rev = c1_fwd, d0_rev = d0_fwd, d1_rev = d1_fwd;
   // ON_NurbsCurve::Reverse() does not preserve the [0, 1] domain just
   // set above (confirmed by a debug run: its own domain ends up
   // negated, e.g. [-1, 0]) - re-normalize immediately so PointAt(0)/
   // PointAt(1) below correctly mean "new start"/"new end".
   c1_rev.Reverse();
   c1_rev.SetDomain(0.0, 1.0);
+  d0_rev.Reverse();
+  d0_rev.SetDomain(0.0, 1.0);
   d1_rev.Reverse();
   d1_rev.SetDomain(0.0, 1.0);
 
-  // Try all 4 orientations of (top, right) against the fixed (bottom,
-  // left) reference and keep whichever best closes all 4 corners.
+  // Try all 8 orientations of (top, left, right) against the fixed
+  // `bottom` reference (the one curve whose direction defines P00/P10
+  // unambiguously) and keep whichever best closes all 4 corners. A
+  // caller that chains 4 arbitrarily-picked curves into a loop (e.g.
+  // dino8-app's own NetworkSrf) has no guarantee any of the other 3
+  // curves' own stored directions happen to already match the bottom-
+  // to-top / left-to-right convention this method documents.
   const ON_3dPoint p00 = c0.PointAt(0.0), p10 = c0.PointAt(1.0);
   double best_gap = std::numeric_limits<double>::infinity();
-  int best_c1 = 0, best_d1 = 0;  // 0 = forward, 1 = reversed
+  int best_c1 = 0, best_d0 = 0, best_d1 = 0;  // 0 = forward, 1 = reversed
   for (int ci = 0; ci < 2; ++ci) {
     const ON_NurbsCurve& c1 = ci == 0 ? c1_fwd : c1_rev;
-    for (int di = 0; di < 2; ++di) {
-      const ON_NurbsCurve& d1 = di == 0 ? d1_fwd : d1_rev;
-      const double gap = d0.PointAt(0.0).DistanceTo(p00) + d1.PointAt(0.0).DistanceTo(p10) +
-                          d0.PointAt(1.0).DistanceTo(c1.PointAt(0.0)) + d1.PointAt(1.0).DistanceTo(c1.PointAt(1.0));
-      if (gap < best_gap) { best_gap = gap; best_c1 = ci; best_d1 = di; }
+    for (int d0i = 0; d0i < 2; ++d0i) {
+      const ON_NurbsCurve& d0_try = d0i == 0 ? d0_fwd : d0_rev;
+      for (int d1i = 0; d1i < 2; ++d1i) {
+        const ON_NurbsCurve& d1 = d1i == 0 ? d1_fwd : d1_rev;
+        const double gap = d0_try.PointAt(0.0).DistanceTo(p00) + d1.PointAt(0.0).DistanceTo(p10) +
+                            d0_try.PointAt(1.0).DistanceTo(c1.PointAt(0.0)) + d1.PointAt(1.0).DistanceTo(c1.PointAt(1.0));
+        if (gap < best_gap) { best_gap = gap; best_c1 = ci; best_d0 = d0i; best_d1 = d1i; }
+      }
     }
   }
   if (out_corner_gap) *out_corner_gap = best_gap;
   if (!(best_gap <= 4.0 * tolerance)) return Result::Failed;
   ON_NurbsCurve c1 = best_c1 == 0 ? c1_fwd : c1_rev;
+  d0 = best_d0 == 0 ? d0_fwd : d0_rev;
   ON_NurbsCurve d1 = best_d1 == 0 ? d1_fwd : d1_rev;
 
   // Shared degree/knots within each curve pair (shape-preserving).
