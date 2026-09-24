@@ -319,6 +319,53 @@ class SubD {
   // Returns true only when the edge's tag genuinely changed.
   bool SetCrease(const Point3d& p0, const Point3d& p1, bool crease, double point_tolerance = 0.0);
 
+  // Caps ONE open boundary loop of the current subdivision level's
+  // control net with a single new N-GON SubD face spanning the whole
+  // loop - the SubD-level counterpart to `Mesh::FillSmallHoles()`,
+  // closing PARITY_MAP.md's subd_mesh "SubD hole/opening capping at
+  // kernel level" [missing] item. Genuinely SubD-native, not a ported
+  // mesh trick: `Mesh::FillSmallHoles()` needs a centroid vertex and a
+  // triangle fan because `ON_MeshFace` tops out at 4 indices, but
+  // `ON_SubDFace` supports any edge count directly - so an n-sided hole
+  // becomes exactly one new n-gon face, no extra vertex, and (being a
+  // real SubD face like any other) a fully genuine, further-subdividable
+  // part of the control net from the moment it's added.
+  //
+  // Identifies the loop from ONE of its own boundary vertices (`start`):
+  // every boundary vertex has exactly 2 naked (single-face) edges, so
+  // the walk from `start` - follow a naked edge to its far end, take
+  // that vertex's OTHER naked edge, repeat - is unambiguous and
+  // terminates by returning to `start`, UNLESS `start` is a "bowtie"
+  // vertex where two different boundary loops touch (more than 2 naked
+  // edges) - there this picks whichever loop its first naked edge
+  // happens to belong to (`ON_SubDVertex::EdgeCount()`'s own iteration
+  // order), the same acknowledged ambiguity `NakedEdgeLoops()` documents
+  // for the identical case on `Mesh`. The collected edges are handed to
+  // the real, working `ON_SubD::AddFace(const ON_SimpleArray<ON_SubDEdge*>&)`
+  // (verified by reading its implementation in opennurbs_subd.cpp: it
+  // validates the loop genuinely closes and computes each edge's
+  // orientation from shared vertices automatically, not a stub).
+  //
+  // After capping, the loop's own edges - tagged Crease purely because
+  // they were a boundary (OpenNURBS' "an open SubD's own boundary edges
+  // are themselves always creases" convention this file's
+  // `crease_at_double_edges` comment already documents, not because
+  // anyone asked for a sharp seam there) - are retagged Smooth via the
+  // same `ON_SubD::SetEdgeTags()` primitive `SetCrease()` above already
+  // wraps, so the cap blends into the surrounding surface instead of
+  // leaving an unintended permanent crease ring where the hole used to
+  // be. A caller who DOES want a sharp ring around the cap can call
+  // `SetCrease()` again afterward - this method's own job is only to
+  // reproduce the "ordinary hole in an otherwise smooth surface" case.
+  //
+  // Returns false, unchanged, if: no vertex is found at `start` within
+  // `point_tolerance`; that vertex has no naked edge (it's fully
+  // interior, or the SubD is already closed); or the boundary doesn't
+  // close back on itself (a dead end / non-manifold boundary chain,
+  // e.g. one `NakedEdgeLoops()` would also refuse to chain) - refuses
+  // rather than adding a wrong or malformed face.
+  bool CapBoundaryLoop(const Point3d& start, double point_tolerance = 0.0);
+
   // The EXACT limit-surface point (and normal) of every vertex of the
   // current subdivision level's control net, in ON_SubD's own vertex
   // iteration order - one SubDLimitPoint per VertexCount(). This is
