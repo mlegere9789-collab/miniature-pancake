@@ -25358,6 +25358,107 @@ void TestPipeVariable() {
         "closed rail with mismatched seam radii throws");
 }
 
+void TestSweep2() {
+  // Two parallel straight rails at constant separation 5, both along Z:
+  // rail1 at x=0, rail2 at x=5. The section (a straight segment from
+  // (0,0,0) to (5,0,0)) already matches the rails' own separation
+  // everywhere, so every station's scale factor is exactly 1 and the
+  // whole wall is the exact flat rectangle x in [0, 5], z in [0, 10].
+  {
+    const NurbsCurve rail1 = Polyline({P(0, 0, 0), P(0, 0, 10)});
+    const NurbsCurve rail2 = Polyline({P(5, 0, 0), P(5, 0, 10)});
+    const NurbsCurve section = Polyline({P(0, 0, 0), P(5, 0, 0)});
+    const Brep wall = Brep::Sweep2(section, rail1, rail2, 12);
+    Check(wall.FaceCount() == 1, "constant-separation Sweep2 has one face");
+    Check(wall.raw().IsValid(), "constant-separation Sweep2 is a valid ON_Brep");
+    const NurbsSurface s = FaceSurface(wall, 0);
+    const ON_Interval du = s.raw().Domain(0), dv = s.raw().Domain(1);
+    double worst = 0.0;
+    for (int i = 0; i <= 8; ++i) {
+      for (int j = 0; j <= 8; ++j) {
+        const double u = i / 8.0, v = j / 8.0;
+        const Point3d p = s.PointAt(du.ParameterAt(u), dv.ParameterAt(v));
+        const Point3d expected(5.0 * u, 0.0, 10.0 * v);
+        worst = std::max(worst, p.DistanceTo(expected));
+      }
+    }
+    Check(worst < 1e-9, "constant-separation Sweep2 is exactly the flat rectangle between the two rails");
+    const Mesh m = wall.Tessellate(4, 40).front();
+    Check(std::abs(m.Area() - 50.0) < 1e-6, "constant-separation Sweep2 mesh area is exactly width x length");
+  }
+
+  // Two parallel straight rails that CONVERGE linearly (rail2 goes from
+  // x=5 at z=0 to x=2 at z=10): since both rails are straight, arc-length
+  // station k is at z = 10k/(m-1) on both, so the chord P2(k) - P1(k) =
+  // (5 - 3k/(m-1), 0, 0) is an EXACT affine function of the station
+  // fraction - direction constant (no rotation needed), length linear.
+  // The whole per-station transform (translate + uniform scale, no
+  // rotation) is then affine in v, so ANY interpolating skin degree
+  // reproduces it exactly at every v, not only at the stations - checked
+  // densely, not just at the input stations.
+  {
+    const NurbsCurve rail1 = Polyline({P(0, 0, 0), P(0, 0, 10)});
+    const NurbsCurve rail2 = Polyline({P(5, 0, 0), P(2, 0, 10)});
+    const NurbsCurve section = Polyline({P(0, 0, 0), P(5, 0, 0)});
+    const Brep wall = Brep::Sweep2(section, rail1, rail2, 8);
+    const NurbsSurface s = FaceSurface(wall, 0);
+    const ON_Interval du = s.raw().Domain(0), dv = s.raw().Domain(1);
+    double worst = 0.0;
+    for (int i = 0; i <= 8; ++i) {
+      for (int j = 0; j <= 40; ++j) {
+        const double u = i / 8.0, v = j / 40.0;
+        const Point3d p = s.PointAt(du.ParameterAt(u), dv.ParameterAt(v));
+        const double z = 10.0 * v;
+        const double x_lo = 0.0, x_hi = 5.0 - 3.0 * v;  // rail1(v), rail2(v)
+        const Point3d expected(x_lo + u * (x_hi - x_lo), 0.0, z);
+        worst = std::max(worst, p.DistanceTo(expected));
+      }
+    }
+    Check(worst < 1e-6, "converging straight rails: Sweep2 exactly reproduces the affine taper everywhere, not just at stations");
+    // The end sections are still exactly the input section's own shape,
+    // uniformly scaled to the rails' own start/end separation (5 and 2).
+    double p0 = 0.0, p1 = 0.0;
+    for (int i = 0; i < 4; ++i) {
+      const Point3d a = s.PointAt(du.ParameterAt(i / 4.0), dv.Min());
+      const Point3d b = s.PointAt(du.ParameterAt((i + 1) / 4.0), dv.Min());
+      p0 += a.DistanceTo(b);
+    }
+    for (int i = 0; i < 4; ++i) {
+      const Point3d a = s.PointAt(du.ParameterAt(i / 4.0), dv.Max());
+      const Point3d b = s.PointAt(du.ParameterAt((i + 1) / 4.0), dv.Max());
+      p1 += a.DistanceTo(b);
+    }
+    Check(std::abs(p0 - 5.0) < 1e-9 && std::abs(p1 - 2.0) < 1e-9, "Sweep2's end sections span exactly the rails' own end separations");
+  }
+
+  // A closed pair of rails (two concentric circles in the same plane,
+  // radii 6 and 3) with a straight radial section: this is exactly a flat
+  // annulus - every station's scale is (radius(k)) / L0 with L0 the
+  // section's own length (3), constant all the way around since both
+  // rails are circles of fixed radius, so the swept wall is periodic in v
+  // and its area is exactly pi (R^2 - r^2).
+  {
+    const NurbsCurve rail1 = Circle(P(0, 0, 0), Vector3d(0, 0, 1), 3.0);
+    const NurbsCurve rail2 = Circle(P(0, 0, 0), Vector3d(0, 0, 1), 6.0);
+    const NurbsCurve section = Polyline({P(3, 0, 0), P(6, 0, 0)});
+    const Brep annulus = Brep::Sweep2(section, rail1, rail2, 64);
+    Check(FaceSurface(annulus, 0).IsClosed(1), "closed-rail Sweep2 is periodic along the sweep direction");
+    const Mesh m = annulus.Tessellate(4, 128).front();
+    const double exact = M_PI * (36.0 - 9.0);
+    Check(std::abs(m.Area() - exact) / exact < 0.01, "concentric-circle Sweep2 area within 1% of the exact annulus");
+  }
+
+  // Negative controls.
+  const NurbsCurve line_a = Polyline({P(0, 0, 0), P(0, 0, 5)});
+  const NurbsCurve line_b = Polyline({P(1, 0, 0), P(1, 0, 5)});
+  const NurbsCurve open_section = Polyline({P(0, 0, 0), P(1, 0, 0)});
+  Check(Throws([&] { Brep::Sweep2(open_section, line_a, line_b, 1); }), "fewer than 2 stations throws");
+  Check(Throws([&] { Brep::Sweep2(Circle(P(0, 0, 0), Vector3d(0, 0, 1), 1.0), line_a, line_b); }), "closed section throws");
+  Check(Throws([&] { Brep::Sweep2(Polyline({P(0, 0, 0), P(0, 0, 0)}), line_a, line_b); }), "section with coincident endpoints throws");
+  Check(Throws([&] { Brep::Sweep2(open_section, Circle(P(0, 0, 0), Vector3d(0, 0, 1), 1.0), line_b); }), "mismatched open/closed rails throws");
+  Check(Throws([&] { Brep::Sweep2(Polyline({P(0, 0, 0), P(1, 0, 0)}), line_a, line_a); }), "coincident rails throw (zero separation)");
+}
+
 void TestExtrudeTaperedCircularProfileIsExactConeFrustum() {
   // Shrinking: r0=2 -> r1=1 over height 3, tan(theta) = (r0 - r1) / h.
   const double r0 = 2.0, r1 = 1.0, h = 3.0;
@@ -27400,6 +27501,7 @@ int main() {
   TestSurfaceCurvatureAtIsScaleInvariant();
   TestSurfaceClosestPointNearSpherePoleDoesNotLockAzimuth();
   sweep_tests::TestPipeVariable();
+  sweep_tests::TestSweep2();
   ON::End();
 
   if (g_failures > 0) {

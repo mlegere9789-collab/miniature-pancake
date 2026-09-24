@@ -422,6 +422,62 @@ class Brep {
   static Brep PipeVariable(const NurbsCurve& rail, const std::vector<std::pair<double, double>>& radius_points,
                            bool cap = true, int stations = 32);
 
+  // Sweep2: `section` carried between TWO rails with cross-section
+  // SCALING - Rhino's "Sweep 2 Rails" in its simplest form (no additional
+  // shape blending between different end sections, which this does not
+  // attempt). `section` must be an OPEN curve: its two distinct endpoints
+  // are the ones matched to the rails - PointAtStart() always lands
+  // exactly on `rail1` and PointAtEnd() exactly on `rail2`, at EVERY
+  // station, not only at the ends. A closed section (no two distinct
+  // endpoints to match) is refused.
+  //
+  // `stations` divides rail1 and rail2 each into `stations` equal-arc-
+  // length pieces independently (the same "arc-length parametrization"
+  // convention Sweep1()/PipeVariable() already use - DivideByCount() on
+  // each rail), so station k is the SAME fraction k / (stations - 1) of
+  // rail1's own arc length and of rail2's own arc length (Rhino's "same
+  // parameter"/chord correspondence between rails - the simplest of
+  // several correspondence conventions Rhino itself offers, and the one
+  // used here). A closed pair of rails (both must be closed, or both
+  // open - mismatched throws) divides both into `stations` equal pieces
+  // instead, periodic, with no last-station duplicate.
+  //
+  // Station k's copy of `section` is built in two steps:
+  //   - UNIFORMLY scaled about its own start point by the ratio
+  //     |rail2(k) - rail1(k)| / |section.PointAtEnd() - section.PointAtStart()|
+  //     of the current rail separation to the input section's own
+  //     endpoint separation - the section's shape (aspect ratio) never
+  //     changes, only its overall size, which is exactly what "cross-
+  //     section scaling" means (as opposed to Rhino's optional "shape
+  //     blending" between two different end sections).
+  //   - then rigidly rotated/translated so its start point sits exactly
+  //     at rail1's station point and its end point exactly at rail2's:
+  //     the rotation carrying the section's own (start -> end) direction
+  //     onto the current rail1 -> rail2 chord, with the perpendicular
+  //     in-plane reference direction rotation-minimizing transported
+  //     station to station (Wang et al. 2008's double-reflection method -
+  //     the same one RmfFrames()/Sweep1() use along a rail's tangent,
+  //     applied here to the CHORD direction between the two rails
+  //     instead) so the section does not spin needlessly along the
+  //     sweep.
+  // The stations are then skinned exactly as Sweep1()'s own multi-
+  // station case (global interpolation, degree min(3, stations - 1)), so
+  // every station's exact scaled/positioned copy of `section` lies
+  // exactly on the surface there; between stations the surface
+  // interpolates, tighter as `stations` grows.
+  //
+  // The result is always an open (uncapped) wall: an open section has no
+  // planar end to fan-cap, and its own two long edges - the loci of
+  // PointAtStart()/PointAtEnd() riding the two rails - are left as the
+  // surface's own u = 0 / u = 1 boundaries. Closed in v (periodic) when
+  // both rails are closed; an ordinary open surface otherwise.
+  //
+  // Throws std::invalid_argument for stations < 2, a closed section, a
+  // section whose start and end points coincide, rail1/rail2 not both
+  // open or both closed, or the two rails meeting (zero separation) at
+  // any station.
+  static Brep Sweep2(const NurbsCurve& section, const NurbsCurve& rail1, const NurbsCurve& rail2, int stations = 32);
+
   int FaceCount() const;
 
   // One planar face's boundary as a real 3D polygon plus its plane -
