@@ -506,6 +506,93 @@ class Mesh {
   const ON_Mesh& raw() const { return mesh_; }
   ON_Mesh& raw() { return mesh_; }
 
+  // --- Check / heal ------------------------------------------------------
+  //
+  // The mesh-level counterpart of Brep::Check() and its repairs: the
+  // same questions IsClosedManifold() answers with one bool, as COUNTS
+  // and LOCATIONS a caller can act on, plus the three repairs that turn
+  // the common "almost closed" meshes back into closed manifolds.
+  struct CheckReport {
+    // Undirected edges used by exactly one face (the open boundary).
+    int naked_edges = 0;
+    // Undirected edges used by three or more faces.
+    int non_manifold_edges = 0;
+    // Directed edges used twice - two faces walking a shared edge the
+    // same way, IsClosedManifold()'s own orientation-conflict condition.
+    int orientation_conflicts = 0;
+    // Faces with a repeated vertex index, an edge shorter than
+    // `tolerance`, or a height (2*area / longest edge) at or below
+    // `tolerance` - a face contributing nothing but bad edges.
+    int degenerate_faces = 0;
+    // Distinct vertex indices within `tolerance` of another (counted per
+    // vertex that has at least one such partner): the "same point stored
+    // twice" MergeAndWeld() exists to prevent, and CloseNakedEdges()
+    // repairs when it happened on a boundary.
+    int duplicate_vertices = 0;
+    // Every naked edge as (a, b) in the direction its one face walks it,
+    // in face order - the input FillSmallHoles() chains into loops.
+    std::vector<std::pair<int, int>> naked_edge_list;
+    // Same three conditions as Mesh::IsClosedManifold().
+    bool IsClosedManifold() const {
+      return naked_edges == 0 && non_manifold_edges == 0 && orientation_conflicts == 0;
+    }
+  };
+  CheckReport Check(double tolerance = tolerance::kDistance) const;
+
+  // The open boundary as closed loops of vertex indices: each naked edge
+  // (a, b) chained a -> b -> ... in the direction its face walks it, so
+  // walking a loop keeps the existing faces on the same side a
+  // reversed-edge fill needs. A loop through a vertex with more than one
+  // outgoing naked edge (a bowtie: two holes touching at one vertex) is
+  // ambiguous and is NOT returned (its edges are left unchained rather
+  // than guessed); a chain that never closes (only possible on a
+  // non-manifold boundary) is dropped the same way. Empty for a closed
+  // mesh.
+  std::vector<std::vector<int>> NakedEdgeLoops() const;
+
+  // Welds vertices that lie on naked edges and are within `tolerance`
+  // of another naked-edge vertex into one - a TRUE distance test (every
+  // pair within `tolerance` welds, unlike MergeAndWeld()'s grid snapping,
+  // which can leave two points a hair apart in adjacent cells unwelded),
+  // restricted to boundary vertices so an interior feature smaller than
+  // `tolerance` is never touched. The lowest-indexed vertex of each
+  // group survives at ITS OWN position (nothing is averaged or moved);
+  // faces are remapped, a face that collapses to fewer than 3 distinct
+  // vertices is dropped, a quad that collapses to 3 becomes a triangle,
+  // and vertices no longer used by any face are removed. This is the
+  // repair for a seam that construction left `tolerance`-wide open: a
+  // duplicated vertex (two copies of the same point, each used by
+  // different faces), or the mesh of a Brep whose JoinNakedEdges()
+  // recorded a tolerant edge (see brep.h). Returns the number of
+  // vertices welded away. Texture coordinates are dropped (a welded
+  // vertex has no single UV).
+  int CloseNakedEdges(double tolerance);
+
+  // Fills every boundary loop (NakedEdgeLoops()) whose vertices' axis-
+  // aligned bounding-box diagonal is at most `max_extent`: a 3-vertex
+  // loop gets one triangle, any larger loop a fan of triangles from a
+  // NEW vertex at the loop's own centroid (so a non-planar or non-convex
+  // hole still gets a valid, non-self-overlapping fill without any
+  // ear-clipping; a planar hole's fill lies exactly in its plane, since
+  // the centroid does). Every fill triangle walks its boundary edge in
+  // REVERSE of the existing face, so the result is orientation-
+  // consistent with the surrounding mesh. Loops larger than `max_extent`
+  // are left open (the bound is what keeps this from "filling" a whole
+  // missing side of a model with a fan nobody asked for). Returns the
+  // number of holes filled.
+  int FillSmallHoles(double max_extent);
+
+  // Makes face windings consistent across every manifold (2-face) edge
+  // by breadth-first traversal from each not-yet-visited face, flipping
+  // whichever neighbour walks a shared edge the same way (the same
+  // per-face reversal FlipNormals() applies to all faces), then, if the
+  // result IsClosedManifold() and Volume() is negative, flips every face
+  // so the mesh faces outward. Non-manifold (3+-face) edges are skipped
+  // (no single "other side" to agree with). Returns the number of face
+  // flips performed; an open mesh is only made consistent, not oriented
+  // outward.
+  int UnifyNormals();
+
   // Concatenates several independently-tessellated meshes into one and
   // welds vertices within `tolerance` of each other into a single shared
   // vertex. Needed because Brep::Tessellate() tessellates each face on

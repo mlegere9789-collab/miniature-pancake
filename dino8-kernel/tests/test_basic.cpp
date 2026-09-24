@@ -9,6 +9,7 @@
 #include <functional>
 #include <limits>
 #include <map>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -5908,6 +5909,439 @@ void TestTolerancePolicyValuesAreTheOnesInForce() {
     threw_big = true;
   }
   Check(threw_big, "...and rejects one 3*kPlanarityRelative*extent out of plane - the routed constant is in force");
+
+  // The second routing pass (brep.cpp's radius/edge-length fit
+  // tolerances and unit-vector alignment checks, mesh.cpp's degeneracy
+  // floors) - same "name and route, prove nothing moved" contract as
+  // above, pinned by VALUE since these sites are covered behaviourally
+  // by the existing cylinder/cone/steinmetz/planar-ring test suite
+  // (unchanged pass/fail there, plus the byte-identical boolean sweep,
+  // is what proves the routing changed nothing measurable).
+  Check(tol::kTinyDistance == 1e-9, "tolerance::kTinyDistance is the 1e-9 the radius/edge-length fit sites always used");
+  Check(tol::RelativeDistance(0.0) == tol::kTinyDistance && tol::RelativeDistance(10.0) == 10.0 * tol::kRelative,
+        "RelativeDistance() floors at kTinyDistance and scales by kRelative above it - DistanceForSize()'s purely-relative sibling");
+  Check(tol::kAlignment == 1e-6, "tolerance::kAlignment is the 1e-6 the unit-vector dot-product-deficit sites always used");
+}
+
+// --- Check / heal fixtures ---------------------------------------------
+//
+// A unit box as six FromPlanarFaces() faces with REAL topology (shared
+// ON_BrepEdge records), so a deliberately broken variant of it exercises
+// the actual vertex/edge/trim/loop checks - Box() itself has no topology
+// to break (see brep.h's class-level comment). `top_z` lets the top face
+// be built off its true height on purpose (the "offset an edge by 1e-4"
+// fixture), and `top` lets the top face be replaced/split entirely.
+dino8::kernel::Brep::PlanarFace CheckHealFace(std::vector<dino8::kernel::Point3d> loop, ON_3dVector normal) {
+  dino8::kernel::Brep::PlanarFace f;
+  f.loop = std::move(loop);
+  f.plane = ON_Plane(f.loop[0], normal);
+  return f;
+}
+
+std::vector<dino8::kernel::Brep::PlanarFace> CheckHealBoxFaces(double top_z = 1.0) {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  const std::vector<Point3d> b = {Point3d(0, 0, 0), Point3d(1, 0, 0), Point3d(1, 1, 0), Point3d(0, 1, 0)};
+  const std::vector<Point3d> t = {Point3d(0, 0, 1), Point3d(1, 0, 1), Point3d(1, 1, 1), Point3d(0, 1, 1)};
+  std::vector<Brep::PlanarFace> faces;
+  faces.push_back(CheckHealFace({b[3], b[2], b[1], b[0]}, ON_3dVector(0, 0, -1)));  // face 0: bottom
+  faces.push_back(CheckHealFace({Point3d(0, 0, top_z), Point3d(1, 0, top_z), Point3d(1, 1, top_z), Point3d(0, 1, top_z)},
+                                ON_3dVector(0, 0, 1)));  // face 1: top
+  for (size_t i = 0; i < 4; ++i) {  // faces 2..5: sides, in b's own CCW order
+    const size_t j = (i + 1) % 4;
+    ON_3dVector n = ON_CrossProduct(b[j] - b[i], t[i] - b[i]);
+    n.Unitize();
+    faces.push_back(CheckHealFace({b[i], b[j], t[j], t[i]}, n));
+  }
+  return faces;
+}
+
+// The clean fixture reports nothing at all, and every summary flag the
+// repairs below are measured against starts out true - so a later
+// "clean after repair" is a return to THIS state, not to a weaker one.
+void TestBrepCheckReportsCleanBoxAsClean() {
+  using dino8::kernel::Brep;
+  const Brep box = Brep::FromPlanarFaces(CheckHealBoxFaces());
+  const Brep::CheckReport r = box.Check();
+  Check(r.IsClean(), "Check() on a clean FromPlanarFaces box reports no issues");
+  Check(r.topology_valid && r.is_closed && r.is_oriented,
+        "...and reports it as topologically valid, closed and oriented");
+  Check(box.raw().IsValid() && box.raw().IsSolid(), "the clean fixture is a valid solid ON_Brep to begin with");
+  Check(std::fabs(box.TessellateToClosedMesh(4, 4).Volume() - 1.0) < 1e-9, "the clean fixture's volume is exactly 1");
+  // Every Kind counts zero, via the counting accessor the later tests use.
+  Check(r.Count(Brep::CheckIssue::Kind::NakedEdge) == 0 && r.Count(Brep::CheckIssue::Kind::DegenerateFace) == 0 &&
+            r.Count(Brep::CheckIssue::Kind::SliverFace) == 0 && r.Count(Brep::CheckIssue::Kind::TrimEdgeGap) == 0,
+        "Count() reports zero for every kind on the clean fixture");
+}
+
+// Flip one face: Check() names the flipped face on each of its 4 edges
+// (index = the flipped face, other_index = each neighbour), the welded
+// mesh is no longer a closed manifold (an orientation conflict on every
+// one of those edges), and UnifyNormals() restores a valid solid with
+// volume exactly +1 - not -1, and not a mesh that merely closes.
+void TestBrepCheckAndUnifyNormalsOnFlippedFace() {
+  using dino8::kernel::Brep;
+  Brep box = Brep::FromPlanarFaces(CheckHealBoxFaces());
+  box.raw().FlipFace(box.raw().m_F[1]);
+
+  const Brep::CheckReport before = box.Check();
+  Check(before.Count(Brep::CheckIssue::Kind::InconsistentFaceOrientation) == 4 && before.issues.size() == 4,
+        "flipping the top face yields exactly 4 InconsistentFaceOrientation issues (its 4 edges) and nothing else");
+  bool names_flipped_face = true;
+  std::set<int> neighbours;
+  for (const Brep::CheckIssue& issue : before.issues) {
+    if (issue.index != 1) names_flipped_face = false;
+    neighbours.insert(issue.other_index);
+    if (std::fabs(issue.location.z - 1.0) > 1e-12) names_flipped_face = false;
+  }
+  Check(names_flipped_face && neighbours == std::set<int>{2, 3, 4, 5},
+        "each issue names the flipped face as `index`, one distinct side face as `other_index`, and an edge midpoint at z=1");
+  Check(before.is_closed && !before.is_oriented && before.topology_valid,
+        "the flipped box is still closed and topologically valid, just not oriented");
+  Check(!box.TessellateToClosedMesh(4, 4).IsClosedManifold(),
+        "the flipped box's welded mesh is not a closed manifold (its top face's triangles walk shared edges backwards)");
+
+  const int flips = box.UnifyNormals();
+  Check(flips == 1 || flips == 11,
+        "UnifyNormals() flips either the one bad face or the five others plus an outward re-flip of all six");
+  const Brep::CheckReport after = box.Check();
+  Check(after.IsClean() && after.is_oriented, "after UnifyNormals() the box checks clean and oriented");
+  Check(box.raw().IsValid() && box.raw().IsSolid(), "...and is a valid solid ON_Brep again");
+  const dino8::kernel::Mesh mesh = box.TessellateToClosedMesh(4, 4);
+  Check(mesh.IsClosedManifold() && std::fabs(mesh.Volume() - 1.0) < 1e-9,
+        "...whose welded mesh is a closed manifold with volume exactly +1 (outward, not inside-out)");
+
+  // Whole-shell inversion: every face flipped is perfectly consistent
+  // (no InconsistentFaceOrientation at all) yet inside-out, volume -1.
+  // Only the outward step can catch that - and does.
+  for (int i = 0; i < box.raw().m_F.Count(); ++i) box.raw().FlipFace(box.raw().m_F[i]);
+  Check(box.Check().IsClean(), "an inside-out box (every face flipped) is internally consistent, so Check() is clean");
+  Check(std::fabs(box.TessellateToClosedMesh(4, 4).Volume() + 1.0) < 1e-9, "...but its volume is -1");
+  Check(box.UnifyNormals() == 6, "UnifyNormals() flips all 6 faces of the inside-out box");
+  Check(std::fabs(box.TessellateToClosedMesh(4, 4).Volume() - 1.0) < 1e-9, "...restoring volume +1");
+}
+
+// Drop a face: Check() reports exactly the 4 exposed edges as naked
+// (with their midpoints), and CapPlanarHoles() rebuilds the missing
+// planar face, joins it, and yields a valid solid of volume 1 whose
+// welded mesh is a genuinely closed manifold - not just a Brep that
+// passes IsSolid() while its mesh has T-junction seams (the failure
+// mode an ON_BrepTrimmedPlane-built cap actually had; see
+// CapPlanarHoles' own comment).
+void TestBrepCheckReportsDroppedFaceAndCapPlanarHolesRestoresIt() {
+  using dino8::kernel::Brep;
+  Brep box = Brep::FromPlanarFaces(CheckHealBoxFaces());
+  box.raw().DeleteFace(box.raw().m_F[1], /*bDeleteFaceEdges=*/true);
+  box.raw().Compact();
+  box.raw().SetTolerancesBoxesAndFlags();
+  Check(box.FaceCount() == 5, "the fixture has 5 faces after deleting the top");
+
+  const Brep::CheckReport before = box.Check();
+  Check(before.Count(Brep::CheckIssue::Kind::NakedEdge) == 4 && before.issues.size() == 4,
+        "deleting the top face yields exactly 4 NakedEdge issues and nothing else");
+  bool all_at_top = true;
+  for (const Brep::CheckIssue& issue : before.issues) {
+    if (std::fabs(issue.location.z - 1.0) > 1e-12 || issue.other_index != 1) all_at_top = false;
+  }
+  Check(all_at_top, "each naked edge's location is its midpoint at z=1 and other_index is its trim count, 1");
+  Check(!before.is_closed && before.is_oriented && !box.raw().IsSolid(),
+        "the open box reports not closed (but still oriented), and ON_Brep::IsSolid() agrees");
+  Check(!box.TessellateToClosedMesh(4, 4).IsClosedManifold(), "the open box's welded mesh is open");
+
+  Check(box.CapPlanarHoles() == 1, "CapPlanarHoles() adds exactly one cap");
+  Check(box.FaceCount() == 6 && box.raw().m_E.Count() == 12, "the capped box has 6 faces and 12 edges again");
+  const Brep::CheckReport after = box.Check();
+  Check(after.IsClean() && after.is_closed && after.is_oriented, "the capped box checks clean, closed and oriented");
+  Check(box.raw().IsValid() && box.raw().IsSolid(), "...and is a valid solid ON_Brep");
+  const dino8::kernel::Mesh mesh = box.TessellateToClosedMesh(4, 4);
+  Check(mesh.IsClosedManifold(), "the capped box's plain welded mesh is a closed manifold (the cap's grid conforms to its neighbours')");
+  Check(std::fabs(mesh.Volume() - 1.0) < 1e-9, "...with volume exactly 1");
+
+  // A second call has nothing to cap.
+  Check(box.CapPlanarHoles() == 0, "a closed box has no hole to cap");
+}
+
+// Offset an edge by 1e-4: the top face is built at z = 1 + 1e-4, so none
+// of its 4 edges weld to the sides' (kWeld is 1e-6) - 8 naked edges.
+// JoinNakedEdges(2e-4) joins the 4 pairs and records the 1e-4 gap as
+// each surviving edge's own tolerance (Parasolid's tolerant edge), which
+// Check() at the default 1e-6 then honours: clean, closed, oriented and
+// a valid solid ON_Brep. The mesh side is the honest part: the plain
+// tessellation's fixed kWeld weld leaves that 1e-4 seam open, and only
+// TessellateToClosedMeshTolerant() closes it - with the volume within
+// the gap of 1.
+void TestBrepJoinNakedEdgesRecordsTolerantEdges() {
+  using dino8::kernel::Brep;
+  namespace tol = dino8::kernel::tolerance;
+  const double gap = 1e-4;
+  Brep box = Brep::FromPlanarFaces(CheckHealBoxFaces(1.0 + gap));
+
+  const Brep::CheckReport before = box.Check();
+  Check(before.Count(Brep::CheckIssue::Kind::NakedEdge) == 8 && before.issues.size() == 8,
+        "a top face 1e-4 above the sides leaves exactly 8 naked edges (4 on the top, 4 on the sides) and nothing else");
+  Check(!before.is_closed, "...so the box is reported open");
+  Check(box.Check(2e-4).Count(Brep::CheckIssue::Kind::NakedEdge) == 8,
+        "Check()'s own tolerance does not paper over naked edges - they are topological, not a gap measurement");
+
+  Check(box.JoinNakedEdges(2.0 * gap) == 4, "JoinNakedEdges(2e-4) joins exactly the 4 pairs");
+  Check(box.raw().m_E.Count() == 12, "...leaving 12 edges");
+  int tolerant_edges = 0;
+  bool tolerances_are_the_gap = true;
+  for (int ei = 0; ei < box.raw().m_E.Count(); ++ei) {
+    const double t = box.raw().m_E[ei].m_tolerance;
+    if (t > tol::kDistance) {
+      ++tolerant_edges;
+      if (std::fabs(t - gap) > 1e-12) tolerances_are_the_gap = false;
+    }
+  }
+  Check(tolerant_edges == 4 && tolerances_are_the_gap,
+        "exactly the 4 joined edges carry a recorded tolerance, and it is the measured 1e-4 gap (to 1e-12), not a default");
+  const Brep::CheckReport after = box.Check();
+  Check(after.IsClean() && after.is_closed && after.is_oriented,
+        "at the default 1e-6 tolerance the joined box checks clean: the 1e-4 trim/edge disagreement is covered by the edges' own recorded tolerance");
+  Check(box.Check(1e-3).IsClean(), "...and at a looser 1e-3 too");
+  Check(box.raw().IsValid() && box.raw().IsSolid(), "the joined box is a valid solid ON_Brep");
+
+  const dino8::kernel::Mesh plain = box.TessellateToClosedMesh(4, 4);
+  Check(!plain.IsClosedManifold(), "the plain tessellation's fixed kWeld weld leaves the 1e-4 tolerant seam open (disclosed in brep.h)");
+  const dino8::kernel::Mesh tolerant = box.TessellateToClosedMeshTolerant(4, 4);
+  Check(tolerant.IsClosedManifold(), "TessellateToClosedMeshTolerant() closes it (naked-vertex true-distance weld at 2x the recorded tolerance)");
+  Check(std::fabs(tolerant.Volume() - 1.0) <= 2.0 * gap && std::fabs(tolerant.Volume() - 1.0) > 0.0,
+        "...with a volume within the 1e-4 gap of 1 (the top genuinely sits 1e-4 high; the seam closes onto one side's vertices)");
+
+  // Nothing left to join.
+  Check(box.JoinNakedEdges(2.0 * gap) == 0, "a second JoinNakedEdges() finds nothing");
+}
+
+// A hairline strip on the top: the top face is split into a main face
+// and a `width`-wide strip along y=1. For width 1e-5 (above kDistance,
+// below kEdgeJoin) Check() reports the strip as a SliverFace with that
+// width, and RemoveSliverFaces(2e-5) deletes it and re-joins the exposed
+// edges as tolerant edges of tolerance 1e-5. For width 8e-7 (below
+// kDistance, but above the weld snap so the strip's vertices genuinely
+// exist) the same face is a DegenerateFace, its two short edges are
+// DegenerateEdges, and RemoveDegenerateFaces() closes it exactly. Both
+// end as valid solids whose tolerant tessellation is closed with volume
+// within the strip's width of 1.
+void TestBrepRemoveSliverAndDegenerateFacesHealHairlineStrip() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  namespace tol = dino8::kernel::tolerance;
+  for (const double width : {1e-5, 8e-7}) {
+    const bool sliver = width > tol::kDistance;
+    std::vector<Brep::PlanarFace> faces = CheckHealBoxFaces();
+    faces[1] = CheckHealFace({Point3d(0, 0, 1), Point3d(1, 0, 1), Point3d(1, 1 - width, 1), Point3d(0, 1 - width, 1)},
+                             ON_3dVector(0, 0, 1));
+    faces.push_back(CheckHealFace({Point3d(0, 1 - width, 1), Point3d(1, 1 - width, 1), Point3d(1, 1, 1), Point3d(0, 1, 1)},
+                                  ON_3dVector(0, 0, 1)));
+    Brep box = Brep::FromPlanarFaces(faces);
+    Check(box.FaceCount() == 7, sliver ? "the 1e-5 strip fixture has 7 faces" : "the 8e-7 strip fixture has 7 faces");
+
+    const Brep::CheckReport before = box.Check();
+    const auto kind = sliver ? Brep::CheckIssue::Kind::SliverFace : Brep::CheckIssue::Kind::DegenerateFace;
+    int strip_reports = 0;
+    bool strip_measured = true;
+    for (const Brep::CheckIssue& issue : before.issues) {
+      if (issue.kind != kind) continue;
+      ++strip_reports;
+      if (issue.index != 6 || std::fabs(issue.measure - width) > 1e-12 || std::fabs(issue.location.y - (1 - width / 2)) > 1e-9) {
+        strip_measured = false;
+      }
+    }
+    Check(strip_reports == 1 && strip_measured,
+          sliver ? "Check() reports exactly the strip (face 6) as a SliverFace, with its 1e-5 width as `measure` and its centroid as `location`"
+                 : "Check() reports exactly the strip (face 6) as a DegenerateFace, with its 8e-7 width as `measure` and its centroid as `location`");
+    Check(before.Count(Brep::CheckIssue::Kind::DegenerateEdge) == (sliver ? 0 : 2),
+          sliver ? "a 1e-5 strip's short edges are not degenerate at 1e-6" : "the 8e-7 strip's two short edges are reported as DegenerateEdge");
+    Check(before.Count(Brep::CheckIssue::Kind::NakedEdge) == 6,
+          "the strip fixture's sides don't share the split top's edges: 6 naked edges (the 2 split side edges on each of 3 faces)");
+
+    const int removed = sliver ? box.RemoveSliverFaces(2.0 * width) : box.RemoveDegenerateFaces(tol::kDistance);
+    Check(removed == 1, sliver ? "RemoveSliverFaces(2e-5) removes exactly the strip" : "RemoveDegenerateFaces() removes exactly the strip");
+    Check(box.FaceCount() == 6 && box.raw().m_E.Count() == 12, "...leaving a 6-face, 12-edge box");
+    const Brep::CheckReport after = box.Check();
+    Check(after.IsClean() && after.is_closed && after.is_oriented, "the healed box checks clean, closed and oriented");
+    Check(box.raw().IsValid() && box.raw().IsSolid(), "...and is a valid solid ON_Brep");
+    int tolerant_edges = 0;
+    for (int ei = 0; ei < box.raw().m_E.Count(); ++ei) {
+      if (box.raw().m_E[ei].m_tolerance > tol::kDistance) ++tolerant_edges;
+    }
+    Check(tolerant_edges == (sliver ? 3 : 0),
+          sliver ? "the sliver's 3 re-joined edges (the y=1 rim plus its two side stubs) are recorded as tolerant edges"
+                 : "the degenerate strip's re-joined edges close within kDistance, so no tolerant edge is recorded");
+    const dino8::kernel::Mesh mesh = box.TessellateToClosedMeshTolerant(4, 4);
+    Check(mesh.IsClosedManifold(), "the healed box's tolerant tessellation is a closed manifold");
+    Check(std::fabs(mesh.Volume() - 1.0) <= 2.0 * width, "...with volume within the strip's width of 1");
+  }
+}
+
+// A shared micro edge: both the top face and the y=1 side face carry an
+// extra vertex 8e-7 from the (1,1,1) corner, so the edge between them is
+// a genuine 2-trim edge of length 8e-7. Check() reports exactly that
+// edge as DegenerateEdge (with its length), RemoveDegenerateEdges()
+// collapses it via ON_Brep::CollapseEdge() and closes the residual 2D
+// loop gap the collapse leaves behind (see CloseLoopGapsWithinTolerance),
+// and the result is a valid solid with 12 edges and volume 1.
+void TestBrepRemoveDegenerateEdgesCollapsesSharedMicroEdge() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  const double w = 8e-7;
+  std::vector<Brep::PlanarFace> faces = CheckHealBoxFaces();
+  faces[1] = CheckHealFace({Point3d(0, 0, 1), Point3d(1, 0, 1), Point3d(1, 1, 1), Point3d(1 - w, 1, 1), Point3d(0, 1, 1)},
+                           ON_3dVector(0, 0, 1));
+  faces[4] = CheckHealFace({Point3d(1, 1, 0), Point3d(0, 1, 0), Point3d(0, 1, 1), Point3d(1 - w, 1, 1), Point3d(1, 1, 1)},
+                           ON_3dVector(0, 1, 0));
+  Brep box = Brep::FromPlanarFaces(faces);
+  Check(box.raw().m_E.Count() == 13 && box.raw().IsValid() && box.raw().IsSolid(),
+        "the micro-edge fixture is a valid 13-edge solid (the extra vertex is above the weld snap, so it genuinely exists)");
+
+  const Brep::CheckReport before = box.Check();
+  Check(before.issues.size() == 1 && before.Count(Brep::CheckIssue::Kind::DegenerateEdge) == 1,
+        "Check() reports exactly one issue: the DegenerateEdge");
+  const Brep::CheckIssue& issue = before.issues[0];
+  Check(issue.other_index == 2 && std::fabs(issue.measure - w) < 1e-12 && std::fabs(issue.location.y - 1.0) < 1e-12 &&
+            std::fabs(issue.location.z - 1.0) < 1e-12,
+        "...a 2-trim edge of measured length 8e-7 at the top y=1 rim");
+  Check(before.is_closed && before.is_oriented, "the micro-edge box is closed and oriented (a degenerate edge is not a hole)");
+
+  Check(box.RemoveDegenerateEdges() == 1, "RemoveDegenerateEdges() collapses exactly the one micro edge");
+  Check(box.raw().m_E.Count() == 12 && box.raw().m_V.Count() == 8, "...leaving 12 edges and 8 vertices");
+  const Brep::CheckReport after = box.Check();
+  Check(after.IsClean() && after.topology_valid, "the collapsed box checks clean and topologically valid");
+  Check(box.raw().IsValid() && box.raw().IsSolid(), "...and is a valid solid ON_Brep (its loops close exactly again)");
+  const dino8::kernel::Mesh mesh = box.TessellateToClosedMeshTolerant(4, 4);
+  Check(mesh.IsClosedManifold() && std::fabs(mesh.Volume() - 1.0) < 1e-6,
+        "...whose tolerant tessellation is a closed manifold of volume 1");
+}
+
+// Mesh-level Check()/FillSmallHoles(): drop one triangle (a 3-vertex
+// hole, filled with a single triangle) and then a whole quad face (a
+// 4-vertex hole, filled with a centroid fan); the box sits away from the
+// origin so a missing face measurably changes the divergence-theorem
+// volume. The vertex/face counts below are hand-derived from the
+// 12-triangle box (a triangle fill adds 0 vertices / 1 face, a centroid
+// fan over a 4-loop adds 1 vertex / 4 faces), not read back.
+void TestMeshCheckAndFillSmallHolesRestoreDroppedFaces() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  const Mesh box = Brep::Box(1, 1, 1, 2, 2, 2).TessellateToClosedMesh(1, 1);
+  Check(box.VertexCount() == 8 && box.FaceCount() == 12 && box.IsClosedManifold(),
+        "the 1x1-division box mesh is 8 vertices / 12 triangles, closed");
+  const Mesh::CheckReport clean = box.Check();
+  Check(clean.naked_edges == 0 && clean.non_manifold_edges == 0 && clean.orientation_conflicts == 0 &&
+            clean.degenerate_faces == 0 && clean.duplicate_vertices == 0 && clean.IsClosedManifold(),
+        "Mesh::Check() on the clean box counts zero of everything");
+
+  // One triangle dropped: a 3-loop.
+  {
+    Mesh m = box;
+    m.raw().m_F.Remove(11);
+    const Mesh::CheckReport r = m.Check();
+    Check(r.naked_edges == 3 && r.naked_edge_list.size() == 3 && !r.IsClosedManifold(),
+          "dropping one triangle leaves exactly 3 naked edges");
+    Check(std::fabs(m.Volume() - 1.0) > 0.01, "...and the open mesh's volume is visibly not 1 (the box is off-origin)");
+    const auto loops = m.NakedEdgeLoops();
+    Check(loops.size() == 1 && loops[0].size() == 3, "NakedEdgeLoops() chains them into one 3-vertex loop");
+    Check(m.FillSmallHoles(0.5) == 0 && m.Check().naked_edges == 3,
+          "FillSmallHoles(0.5) refuses a hole whose bounding diagonal (>= 1.4) exceeds the bound");
+    Check(m.FillSmallHoles(2.0) == 1, "FillSmallHoles(2.0) fills it");
+    Check(m.VertexCount() == 8 && m.FaceCount() == 12 && m.IsClosedManifold(),
+          "a 3-vertex hole is filled with one triangle and no new vertex: 8 vertices / 12 faces, closed");
+    Check(std::fabs(m.Volume() - 1.0) < 1e-6, "...and the volume is exactly 1 again (the fill is wound outward)");
+  }
+  // A whole quad face (both triangles) dropped: a 4-loop.
+  {
+    Mesh m = box;
+    // Find the two triangles of the z=2 top face by their vertex heights.
+    std::vector<int> top;
+    for (int i = 0; i < m.raw().m_F.Count(); ++i) {
+      const ON_MeshFace& f = m.raw().m_F[i];
+      if (m.raw().m_V[f.vi[0]].z > 1.5f && m.raw().m_V[f.vi[1]].z > 1.5f && m.raw().m_V[f.vi[2]].z > 1.5f) top.push_back(i);
+    }
+    Check(top.size() == 2, "the top face is exactly 2 triangles");
+    m.raw().m_F.Remove(top[1]);
+    m.raw().m_F.Remove(top[0]);
+    const Mesh::CheckReport r = m.Check();
+    Check(r.naked_edges == 4, "dropping the whole top face leaves exactly 4 naked edges");
+    const auto loops = m.NakedEdgeLoops();
+    Check(loops.size() == 1 && loops[0].size() == 4, "NakedEdgeLoops() chains them into one 4-vertex loop");
+    Check(m.FillSmallHoles(2.0) == 1, "FillSmallHoles(2.0) fills the 4-vertex hole");
+    Check(m.VertexCount() == 9 && m.FaceCount() == 14 && m.IsClosedManifold(),
+          "a 4-vertex hole is filled with a centroid fan: 1 new vertex, 4 triangles (9 vertices / 14 faces), closed");
+    Check(std::fabs(m.Volume() - 1.0) < 1e-6, "...with volume exactly 1 (the centroid lies in the top plane)");
+    Check(m.FillSmallHoles(2.0) == 0, "a closed mesh has no hole to fill");
+  }
+}
+
+// Mesh-level UnifyNormals(): one triangle wound backwards yields exactly
+// its 3 orientation conflicts and a wrong volume; UnifyNormals() flips
+// it back. A wholly inverted mesh has NO conflicts (consistent, just
+// inside-out) and volume -1, and only the outward step fixes that.
+void TestMeshUnifyNormalsFixesFlippedAndInvertedFaces() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  const Mesh box = Brep::Box(1, 1, 1, 2, 2, 2).TessellateToClosedMesh(1, 1);
+  {
+    Mesh m = box;
+    ON_MeshFace& f = m.raw().m_F[3];
+    std::swap(f.vi[0], f.vi[2]);
+    f.vi[3] = f.vi[2];
+    const Mesh::CheckReport r = m.Check();
+    Check(r.orientation_conflicts == 3 && r.naked_edges == 0 && !r.IsClosedManifold(),
+          "one backwards triangle yields exactly 3 orientation conflicts and no naked edges");
+    Check(std::fabs(m.Volume() - 1.0) > 0.01, "...and a visibly wrong volume");
+    const int flips = m.UnifyNormals();
+    Check(flips == 1 || flips == 23, "UnifyNormals() flips the one bad face (or the other 11 plus an outward re-flip of all 12)");
+    Check(m.IsClosedManifold() && std::fabs(m.Volume() - 1.0) < 1e-6, "...restoring a closed manifold of volume exactly 1");
+  }
+  {
+    Mesh m = box.FlipNormals();
+    Check(m.Check().orientation_conflicts == 0 && m.IsClosedManifold(), "a wholly inverted box is still a consistent closed manifold");
+    Check(std::fabs(m.Volume() + 1.0) < 1e-6, "...with volume -1");
+    Check(m.UnifyNormals() == 12, "UnifyNormals() flips all 12 faces of the inverted box");
+    Check(std::fabs(m.Volume() - 1.0) < 1e-6, "...restoring volume +1");
+  }
+}
+
+// Mesh-level CloseNakedEdges(): a duplicated vertex (one face pointing at
+// a second copy of a corner) opens the 4 edges around it and shows up as
+// 2 duplicate vertices; welding at kDistance closes it with the copy
+// removed. The same corner copied 1e-4 away is NOT a duplicate at
+// kDistance (nor welded by it), and IS welded at 2e-4 - a true-distance
+// weld, not a grid snap.
+void TestMeshCloseNakedEdgesWeldsDuplicateAndOffsetVertices() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  namespace tol = dino8::kernel::tolerance;
+  const Mesh box = Brep::Box(1, 1, 1, 2, 2, 2).TessellateToClosedMesh(1, 1);
+  auto split_corner = [&](float dz) {
+    Mesh m = box;
+    ON_MeshFace& f = m.raw().m_F[5];
+    ON_3fPoint copy = m.raw().m_V[f.vi[0]];
+    copy.z += dz;
+    m.raw().m_V.Append(copy);
+    f.vi[0] = m.raw().m_V.Count() - 1;
+    return m;
+  };
+  {
+    Mesh m = split_corner(0.0f);
+    const Mesh::CheckReport r = m.Check();
+    Check(r.naked_edges == 4 && r.duplicate_vertices == 2 && !r.IsClosedManifold(),
+          "a duplicated corner opens 4 naked edges and counts as 2 duplicate vertices");
+    Check(m.CloseNakedEdges(tol::kDistance) == 1, "CloseNakedEdges(kDistance) welds the one copy away");
+    Check(m.VertexCount() == 8 && m.FaceCount() == 12 && m.IsClosedManifold(), "...restoring 8 vertices / 12 faces, closed");
+    Check(std::fabs(m.Volume() - 1.0) < 1e-6 && m.Check().duplicate_vertices == 0, "...with volume 1 and no duplicates left");
+  }
+  {
+    Mesh m = split_corner(1e-4f);
+    const Mesh::CheckReport r = m.Check();
+    Check(r.naked_edges == 4 && r.duplicate_vertices == 0, "a corner copied 1e-4 away opens 4 naked edges but is not a duplicate at 1e-6");
+    Check(m.CloseNakedEdges(tol::kDistance) == 0 && m.Check().naked_edges == 4,
+          "CloseNakedEdges(kDistance) refuses it (1e-4 > 1e-6), leaving the seam open");
+    Check(m.CloseNakedEdges(2e-4) == 1, "CloseNakedEdges(2e-4) welds it");
+    Check(m.IsClosedManifold() && m.VertexCount() == 8 && std::fabs(m.Volume() - 1.0) < 1e-6,
+          "...restoring a closed 8-vertex manifold of volume 1 (the original corner survives at its own position)");
+  }
 }
 
 void TestLoftClosedRingsConcaveEndCapsExactPrismVolume() {
@@ -8927,12 +9361,10 @@ void TestFilletConvexEdgeUnitCubeTopFrontCorner() {
   Check(threw_too_big, "FilletConvexEdge rejects a radius too large to fit on the adjacent faces");
 }
 
-// ============================================================================
-// FilletConvexEdgeTapered (linear-taper rolling-ball fillet -> exact trimmed
+// =====================================================================// FilletConvexEdgeTapered (linear-taper rolling-ball fillet -> exact trimmed
 // right-circular-cone patch) - see fillet.h's own doc comment for the full
 // derivation these tests independently verify.
-// ============================================================================
-
+// =====================================================================
 // Verification item (1): rail-exactness. A FREE box edge (does not reach
 // either x=0 or x=3, so no third/perpendicular end face is anywhere near it
 // - the corner-notch scope-out question is entirely orthogonal to this test,
@@ -9582,8 +10014,7 @@ void TestFilletConvexEdgeTaperedRejectsInvalidInput() {
   // this box's own scale is still correctly rejected above.
 }
 
-// ============================================================================
-// FilletConvexEdgeTapered's N-station overload (piecewise-linear
+// =====================================================================// FilletConvexEdgeTapered's N-station overload (piecewise-linear
 // multi-station taper) - see fillet.h's own N-station doc comment for the
 // full derivation these tests independently verify: each segment is the
 // SAME per-segment cone construction the two-radius overload already
@@ -9592,8 +10023,7 @@ void TestFilletConvexEdgeTaperedRejectsInvalidInput() {
 // segment's own cap0 verbatim (a genuine, non-vanishing approximation on
 // the later segment's own side, honestly bounded via
 // cap0_surface_fit_tolerance).
-// ============================================================================
-
+// =====================================================================
 namespace {
 
 // Hand re-derivation (independent of fillet.cpp's own internals - see
@@ -21209,6 +21639,540 @@ void TestRemoveNakedMicroEdgeRefusesASliverNextToASharedEdge() {
         "RemoveNakedMicroEdge() on a shared (2-trim) edge returns Result::Failed");
 }
 
+// ---- NurbsSurface::RemoveKnotAt / MaxSampledDeviationFrom ----
+
+namespace {
+
+// A deliberately non-flat bicubic control grid (u_count x v_count, degree
+// 3 x 3, clamped uniform knots): z bulges and twists so that no interior
+// knot is exactly removable unless it was inserted after the fact.
+dino8::kernel::NurbsSurface WigglyBicubic(int u_count, int v_count) {
+  using dino8::kernel::Point3d;
+  std::vector<Point3d> grid;
+  for (int j = 0; j < v_count; ++j)
+    for (int i = 0; i < u_count; ++i)
+      grid.push_back(Point3d(i, j, std::sin(1.7 * i) * std::cos(1.3 * j) + 0.3 * i * j));
+  return dino8::kernel::NurbsSurface::FromControlGrid(grid, u_count, v_count, 3, 3);
+}
+
+int KnotIndexOf(const dino8::kernel::NurbsSurface& s, int direction, double value) {
+  for (int k = 0; k < s.KnotCount(direction); ++k)
+    if (std::abs(s.KnotAt(direction, k) - value) < 1e-12) return k;
+  return -1;
+}
+
+}  // namespace
+
+void TestSurfaceRemoveKnotAtIsExactInverseOfInsertKnotAt() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Result;
+  NurbsSurface s = WigglyBicubic(4, 4);
+  const NurbsSurface original = s;
+  Check(s.InsertKnotAt(0, 0.4, 1) == Result::Ok, "RemoveKnotAt setup: InsertKnotAt(U, 0.4) succeeds");
+  Check(s.CVCountU() == 5, "RemoveKnotAt setup: insertion added one U control point");
+  const int idx = KnotIndexOf(s, 0, 0.4);
+  Check(idx >= 0, "RemoveKnotAt setup: the inserted knot is present in the U knot vector");
+
+  double deviation = -1.0;
+  const Result r = s.RemoveKnotAt(0, idx, 1e-9, &deviation);
+  Check(r == Result::Ok, "RemoveKnotAt removes a knot that InsertKnotAt just added");
+  Check(deviation >= 0.0 && deviation < 1e-9,
+        "RemoveKnotAt reports a ~0 deviation bound for an exactly removable knot");
+  Check(s.CVCountU() == 4 && s.CVCountV() == 4, "RemoveKnotAt restores the original 4x4 control net size");
+  Check(s.KnotCount(0) == original.KnotCount(0), "RemoveKnotAt restores the original U knot count");
+  Check(KnotIndexOf(s, 0, 0.4) < 0, "RemoveKnotAt actually removed the 0.4 knot from the U knot vector");
+  double cv_err = 0.0;
+  for (int i = 0; i < 4; ++i)
+    for (int j = 0; j < 4; ++j)
+      cv_err = std::max(cv_err, s.ControlPointAt(i, j).DistanceTo(original.ControlPointAt(i, j)));
+  Check(cv_err < 1e-9, "RemoveKnotAt recovers the original control points (max |dP| < 1e-9)");
+  Check(s.MaxSampledDeviationFrom(original, 33, 33) < 1e-9,
+        "RemoveKnotAt: sampled surface deviation from the original is < 1e-9");
+
+  // V direction too, on a rational surface (a genuine radius-3 sphere):
+  // insertion + removal must give the sphere back exactly, and the
+  // rational bound formula must still read ~0.
+  ON_NurbsSurface sphere_raw;
+  ON_Sphere(ON_3dPoint(1, 2, 3), 3.0).GetNurbForm(sphere_raw);
+  NurbsSurface sphere;
+  sphere.raw() = sphere_raw;
+  Check(sphere.IsRational(), "RemoveKnotAt rational setup: the sphere NURBS form is rational");
+  const NurbsSurface sphere_original = sphere;
+  const double v_mid = sphere.Domain(1).min + 0.37 * (sphere.Domain(1).max - sphere.Domain(1).min);
+  Check(sphere.InsertKnotAt(1, v_mid, 1) == Result::Ok, "RemoveKnotAt rational setup: InsertKnotAt(V) succeeds");
+  const int v_cv_before = sphere_original.CVCountV();
+  Check(sphere.CVCountV() == v_cv_before + 1, "RemoveKnotAt rational setup: insertion added one V control point");
+  deviation = -1.0;
+  Check(sphere.RemoveKnotAt(1, KnotIndexOf(sphere, 1, v_mid), 1e-8, &deviation) == Result::Ok,
+        "RemoveKnotAt removes an inserted knot from a rational sphere");
+  Check(deviation >= 0.0 && deviation < 1e-8, "RemoveKnotAt: rational deviation bound is ~0 for an exact removal");
+  Check(sphere.CVCountV() == v_cv_before, "RemoveKnotAt restores the sphere's V control point count");
+  Check(sphere.MaxSampledDeviationFrom(sphere_original, 33, 33) < 1e-9,
+        "RemoveKnotAt: the sphere is recovered to < 1e-9 on a sampled grid");
+  double radius_err = 0.0;
+  for (int i = 0; i <= 20; ++i)
+    for (int j = 0; j <= 20; ++j) {
+      const double u = sphere.Domain(0).min + (sphere.Domain(0).max - sphere.Domain(0).min) * i / 20.0;
+      const double v = sphere.Domain(1).min + (sphere.Domain(1).max - sphere.Domain(1).min) * j / 20.0;
+      radius_err = std::max(radius_err, std::abs(sphere.PointAt(u, v).DistanceTo(ON_3dPoint(1, 2, 3)) - 3.0));
+    }
+  Check(radius_err < 1e-9, "RemoveKnotAt: every sampled point is still exactly radius 3 from the sphere's center");
+}
+
+void TestSurfaceRemoveKnotAtRefusesNonRemovableKnotWithinTolerance() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Result;
+  // 6 control points, degree 3: FromControlGrid's clamped uniform knots
+  // (0,0,0,1,2,3,3,3 in ON's compressed form, domain [0, 3]) have
+  // genuine interior knots at 1 and 2 that the wiggly net does NOT have
+  // C^3 continuity across.
+  NurbsSurface s = WigglyBicubic(6, 4);
+  const NurbsSurface original = s;
+  const double interior = s.Domain(0).min + (s.Domain(0).max - s.Domain(0).min) / 3.0;
+  const int idx = KnotIndexOf(s, 0, interior);
+  Check(idx >= 0, "RemoveKnotAt non-removable setup: the first interior U knot is present");
+
+  double deviation = -1.0;
+  Check(s.RemoveKnotAt(0, idx, 1e-6, &deviation) == Result::Failed,
+        "RemoveKnotAt refuses a non-removable knot when the bound exceeds the tolerance");
+  Check(deviation > 1e-3, "RemoveKnotAt reports a clearly non-zero deviation bound on refusal");
+  Check(s.CVCountU() == 6 && s.KnotCount(0) == original.KnotCount(0),
+        "RemoveKnotAt leaves the control net and knots untouched on refusal");
+  double cv_err = 0.0;
+  for (int i = 0; i < 6; ++i)
+    for (int j = 0; j < 4; ++j)
+      cv_err = std::max(cv_err, s.ControlPointAt(i, j).DistanceTo(original.ControlPointAt(i, j)));
+  Check(cv_err == 0.0, "RemoveKnotAt leaves every control point bit-identical on refusal");
+
+  // With a permissive tolerance the approximation is committed, and the
+  // reported bound must genuinely bound the sampled deviation.
+  const double refused_bound = deviation;
+  deviation = -1.0;
+  Check(s.RemoveKnotAt(0, idx, 1e9, &deviation) == Result::Ok,
+        "RemoveKnotAt commits the best-fit approximation under a permissive tolerance");
+  Check(deviation == refused_bound, "RemoveKnotAt's bound is the same number whether or not it commits");
+  Check(s.CVCountU() == 5, "RemoveKnotAt approximation removed one U control point");
+  Check(KnotIndexOf(s, 0, interior) < 0, "RemoveKnotAt approximation removed the first interior knot");
+  const double sampled = s.MaxSampledDeviationFrom(original, 129, 33);
+  Check(sampled > 1e-4, "RemoveKnotAt approximation genuinely moved the surface (sampled deviation > 1e-4)");
+  Check(sampled <= deviation, "RemoveKnotAt's rigorous bound is >= the sampled max deviation");
+  Check(sampled > 0.25 * deviation,
+        "RemoveKnotAt's bound is not vacuously loose on a non-rational surface (sampled > 25% of bound)");
+  // The untouched V direction and the surface's corners are preserved
+  // exactly by construction (knot removal only recombines the affected
+  // rows, and a clamped end control point isn't in the affected range).
+  Check(s.CVCountV() == 4 && s.KnotCount(1) == original.KnotCount(1), "RemoveKnotAt leaves the V direction untouched");
+  Check(s.ControlPointAt(0, 0).DistanceTo(original.ControlPointAt(0, 0)) == 0.0 &&
+            s.ControlPointAt(4, 3).DistanceTo(original.ControlPointAt(5, 3)) == 0.0,
+        "RemoveKnotAt keeps the clamped corner control points bit-identical");
+}
+
+void TestSurfaceRemoveKnotAtRationalBoundHoldsOnASphereSeamKnot() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Result;
+  // A sphere's NURBS form has double (multiplicity-2, degree-2) knots at
+  // the quarter points. Removing one multiplicity of one of them is a
+  // genuine approximation; the rational (eq. 5.30) bound must hold
+  // against a dense sampling.
+  ON_NurbsSurface sphere_raw;
+  ON_Sphere(ON_3dPoint(0, 0, 0), 2.0).GetNurbForm(sphere_raw);
+  NurbsSurface s;
+  s.raw() = sphere_raw;
+  const NurbsSurface original = s;
+  int idx = -1;
+  for (int k = 0; k < s.KnotCount(0); ++k) {
+    const double v = s.KnotAt(0, k);
+    if (v > s.Domain(0).min && v < s.Domain(0).max) { idx = k; break; }
+  }
+  Check(idx >= 0, "RemoveKnotAt sphere setup: found an interior U knot");
+  double deviation = -1.0;
+  Check(s.RemoveKnotAt(0, idx, 1e-9, &deviation) == Result::Failed,
+        "RemoveKnotAt refuses to approximate a sphere's quarter-point knot at 1e-9");
+  Check(s.RemoveKnotAt(0, idx, 1e9, &deviation) == Result::Ok, "RemoveKnotAt commits it under a permissive tolerance");
+  Check(s.CVCountU() == original.CVCountU() - 1, "RemoveKnotAt removed one U control point from the sphere");
+  const double sampled = s.MaxSampledDeviationFrom(original, 257, 65);
+  Check(sampled > 1e-3, "RemoveKnotAt on the sphere genuinely changed the shape (sampled > 1e-3)");
+  Check(sampled <= deviation, "RemoveKnotAt's rational bound is >= the sampled max deviation on a sphere");
+  Check(s.IsRational(), "RemoveKnotAt keeps a rational surface rational");
+}
+
+void TestSurfaceRemoveKnotAtArgumentChecks() {
+  using dino8::kernel::NurbsSurface;
+  NurbsSurface s = WigglyBicubic(6, 4);
+  bool threw = false;
+  try { s.RemoveKnotAt(2, 0, 1.0); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "RemoveKnotAt throws on a direction other than 0/1");
+  threw = false;
+  try { s.RemoveKnotAt(0, s.KnotCount(0), 1.0); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "RemoveKnotAt throws on an out-of-range knot index");
+  threw = false;
+  try { s.RemoveKnotAt(0, 0, 1.0); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "RemoveKnotAt throws on a domain-end knot");
+  threw = false;
+  try { s.MaxSampledDeviationFrom(s, 1, 4); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "MaxSampledDeviationFrom throws on a sample count < 2");
+}
+
+// ---- NurbsSurface::SetDomain / Rebuild ----
+
+void TestSurfaceSetDomainRescalesKnotsWithoutMovingTheShape() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Result;
+  NurbsSurface s = WigglyBicubic(6, 4);
+  const NurbsSurface original = s;
+  std::vector<double> old_knots;
+  for (int k = 0; k < s.KnotCount(0); ++k) old_knots.push_back(s.KnotAt(0, k));
+  Check(s.Domain(0).min == 0.0 && s.Domain(0).max == 3.0, "SetDomain setup: FromControlGrid's 6-point U domain is [0, 3]");
+
+  Check(s.SetDomain(0, -1.0, 5.0) == Result::Ok, "SetDomain(U, -1, 5) returns Ok");
+  Check(s.Domain(0).min == -1.0 && s.Domain(0).max == 5.0, "SetDomain makes the U domain exactly [-1, 5]");
+  Check(s.Domain(1).min == 0.0 && s.Domain(1).max == 1.0, "SetDomain leaves the V domain (a single span, [0, 1]) untouched");
+  double knot_err = 0.0;
+  for (int k = 0; k < s.KnotCount(0); ++k)
+    knot_err = std::max(knot_err, std::abs(s.KnotAt(0, k) - (-1.0 + 6.0 * (old_knots[static_cast<size_t>(k)] / 3.0))));
+  Check(knot_err < 1e-12, "SetDomain maps every U knot affinely onto the new domain");
+  double shape_err = 0.0;
+  for (int i = 0; i <= 12; ++i)
+    for (int j = 0; j <= 12; ++j) {
+      const double fu = i / 12.0, fv = j / 12.0;
+      shape_err = std::max(shape_err, s.PointAt(-1.0 + 6.0 * fu, fv).DistanceTo(original.PointAt(3.0 * fu, fv)));
+    }
+  Check(shape_err < 1e-12, "SetDomain: the same normalized (u, v) evaluates to the same 3D point (< 1e-12)");
+  double cv_err = 0.0;
+  for (int i = 0; i < 6; ++i)
+    for (int j = 0; j < 4; ++j) cv_err = std::max(cv_err, s.ControlPointAt(i, j).DistanceTo(original.ControlPointAt(i, j)));
+  Check(cv_err == 0.0, "SetDomain leaves every control point bit-identical");
+  Check(s.SetDomain(0, -1.0, 5.0) == Result::NoOpAlreadySatisfied, "SetDomain on the current domain is a reported no-op");
+  Check(s.SetDomain(1, 2.0, 2.0) == Result::Failed, "SetDomain refuses an empty interval");
+  Check(s.SetDomain(1, 3.0, 1.0) == Result::Failed, "SetDomain refuses a reversed interval");
+  bool threw = false;
+  try { s.SetDomain(2, 0.0, 1.0); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "SetDomain throws on a direction other than 0/1");
+}
+
+void TestSurfaceRebuildIsExactWhenRepresentableAndHonestOtherwise() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Result;
+  const NurbsSurface src = WigglyBicubic(6, 4);  // degree 3x3, knots 0,0,0,1,2,3,3,3 x 0,0,0,1,1,1
+
+  // Same net as the source: the least-squares solution is the source's
+  // own (unique) control net.
+  NurbsSurface same;
+  double dev = -1.0;
+  Check(src.Rebuild(6, 4, 3, 3, same, &dev) == Result::Ok, "Rebuild to the source's own net succeeds");
+  Check(same.CVCountU() == 6 && same.CVCountV() == 4 && same.DegreeU() == 3 && same.DegreeV() == 3,
+        "Rebuild produces exactly the requested 6x4 degree-3x3 net");
+  Check(same.Domain(0).min == 0.0 && same.Domain(0).max == 3.0 && same.Domain(1).min == 0.0 && same.Domain(1).max == 1.0,
+        "Rebuild keeps the source's own domain ([0, 3] x [0, 1])");
+  double cv_err = 0.0;
+  for (int i = 0; i < 6; ++i)
+    for (int j = 0; j < 4; ++j) cv_err = std::max(cv_err, same.ControlPointAt(i, j).DistanceTo(src.ControlPointAt(i, j)));
+  Check(cv_err < 1e-9, "Rebuild to the same net recovers the source's control points (< 1e-9)");
+  Check(dev >= 0.0 && dev < 1e-9, "Rebuild reports ~0 deviation when the source is exactly representable");
+  Check(!same.IsRational(), "Rebuild's output is non-rational");
+
+  // A denser net whose clamped uniform knots are a superset of the
+  // source's (9 in U: spacing 0.5 over [0, 3] contains 1 and 2; 7 in V:
+  // spacing 0.75 over a single-span source) - still exactly representable.
+  NurbsSurface denser;
+  Check(src.Rebuild(9, 7, 3, 3, denser, &dev) == Result::Ok, "Rebuild to a knot-superset net succeeds");
+  Check(dev < 1e-9, "Rebuild to a knot-superset net is exact (< 1e-9)");
+  Check(denser.MaxSampledDeviationFrom(src, 65, 65) < 1e-9, "...confirmed by an independent 65x65 sampling");
+
+  // 5 in U puts the single interior knot at 1.5, which the source's C^2
+  // breaks at 1 and 2 can't be reproduced by: a genuine approximation,
+  // reported as such, with the corners still interpolated exactly.
+  NurbsSurface coarse;
+  Check(src.Rebuild(5, 4, 3, 3, coarse, &dev) == Result::Ok, "Rebuild to a coarser net succeeds");
+  Check(dev > 1e-3, "Rebuild to a coarser net reports a clearly non-zero deviation");
+  const double sampled = coarse.MaxSampledDeviationFrom(src, 129, 65);
+  Check(sampled > 1e-3 && sampled <= dev * 1.05,
+        "Rebuild's reported deviation agrees with an independent dense sampling (within 5%)");
+  double corner_err = 0.0;
+  for (double u : {0.0, 3.0})
+    for (double v : {0.0, 1.0}) corner_err = std::max(corner_err, coarse.PointAt(u, v).DistanceTo(src.PointAt(u, v)));
+  Check(corner_err < 1e-12, "Rebuild interpolates the four corners exactly");
+  // Least squares beats the naive "use sampled points as control points"
+  // construction (what a Rebuild command built on FromControlGrid alone
+  // would do) by a wide margin on the same 5x4 net.
+  std::vector<dino8::kernel::Point3d> naive_grid;
+  for (int j = 0; j < 4; ++j)
+    for (int i = 0; i < 5; ++i) naive_grid.push_back(src.PointAt(3.0 * i / 4.0, j / 3.0));
+  NurbsSurface naive = NurbsSurface::FromControlGrid(naive_grid, 5, 4, 3, 3);
+  naive.SetDomain(0, 0.0, 3.0);
+  naive.SetDomain(1, 0.0, 1.0);
+  const double naive_dev = naive.MaxSampledDeviationFrom(src, 129, 65);
+  Check(naive_dev > 3.0 * sampled, "Rebuild's least-squares fit deviates < 1/3 as much as sampled-points-as-control-points");
+
+  // A rational sphere can't be represented by a non-rational net at all;
+  // the fit is an approximation whose reported deviation must bound the
+  // measured radius error.
+  ON_NurbsSurface sphere_raw;
+  ON_Sphere(ON_3dPoint(0, 0, 0), 2.0).GetNurbForm(sphere_raw);
+  NurbsSurface sphere;
+  sphere.raw() = sphere_raw;
+  NurbsSurface fit;
+  Check(sphere.Rebuild(16, 10, 3, 3, fit, &dev) == Result::Ok, "Rebuild of a rational sphere to a 16x10 cubic net succeeds");
+  Check(dev > 1e-6 && dev < 0.02, "Rebuild of a radius-2 sphere reports a small but non-zero deviation (1e-6 < dev < 0.02)");
+  double radius_err = 0.0;
+  for (int i = 0; i <= 64; ++i)
+    for (int j = 0; j <= 64; ++j) {
+      const double u = fit.Domain(0).min + (fit.Domain(0).max - fit.Domain(0).min) * i / 64.0;
+      const double v = fit.Domain(1).min + (fit.Domain(1).max - fit.Domain(1).min) * j / 64.0;
+      radius_err = std::max(radius_err, std::abs(fit.PointAt(u, v).DistanceTo(ON_3dPoint::Origin) - 2.0));
+    }
+  Check(radius_err <= dev * 1.05, "Rebuild's reported deviation bounds the sampled radius error of the refit sphere (within 5%)");
+
+  bool threw = false;
+  try { src.Rebuild(4, 4, 0, 3, fit); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "Rebuild throws on a degree < 1");
+  threw = false;
+  try { src.Rebuild(3, 4, 3, 3, fit); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "Rebuild throws on a control count <= its degree");
+  threw = false;
+  try { src.Rebuild(6, 4, 3, 3, fit, nullptr, 5, 64); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "Rebuild throws on fewer samples than control points");
+}
+
+// ---- NurbsSurface::MatchEdge ----
+
+namespace {
+
+// Evaluates position + first/second derivatives of `s` at (u, v).
+struct Ev2 {
+  ON_3dPoint p;
+  ON_3dVector du, dv, duu, duv, dvv;
+};
+Ev2 Eval2(const dino8::kernel::NurbsSurface& s, double u, double v) {
+  Ev2 e;
+  s.raw().Ev2Der(u, v, e.p, e.du, e.dv, e.duu, e.duv, e.dvv);
+  return e;
+}
+
+// Checks S's v=min edge against T's v=max edge at `samples` points:
+// returns the max position / tangent / curvature residuals and the max
+// Gaussian-curvature mismatch. T's inward cross direction at its v=max
+// edge is -T_v, so MatchEdge's "S_in = -scale * T_in" reads S_v ==
+// +scale * T_v in raw parametric derivatives here.
+struct MatchResiduals {
+  double position = 0, tangent = 0, curvature = 0, gaussian = 0, normal_cross = 0;
+};
+MatchResiduals MeasureMatch(const dino8::kernel::NurbsSurface& s, const dino8::kernel::NurbsSurface& t, double scale,
+                            bool t_reversed_u, int samples = 41) {
+  MatchResiduals r;
+  for (int k = 0; k <= samples; ++k) {
+    const double f = static_cast<double>(k) / samples;
+    const double su = s.Domain(0).min + (s.Domain(0).max - s.Domain(0).min) * f;
+    const double tu = t.Domain(0).min + (t.Domain(0).max - t.Domain(0).min) * (t_reversed_u ? 1.0 - f : f);
+    const Ev2 a = Eval2(s, su, s.Domain(1).min);
+    const Ev2 b = Eval2(t, tu, t.Domain(1).max);
+    r.position = std::max(r.position, a.p.DistanceTo(b.p));
+    r.tangent = std::max(r.tangent, (a.dv - scale * b.dv).Length());
+    r.curvature = std::max(r.curvature, (a.dvv - scale * scale * b.dvv).Length());
+    const dino8::kernel::SurfaceCurvature ca = s.CurvatureAt(su, s.Domain(1).min);
+    const dino8::kernel::SurfaceCurvature cb = t.CurvatureAt(tu, t.Domain(1).max);
+    r.gaussian = std::max(r.gaussian, std::abs(ca.gaussian - cb.gaussian));
+    ON_3dVector na = ON_CrossProduct(a.du, a.dv), nb = ON_CrossProduct(b.du, b.dv);
+    na.Unitize();
+    nb.Unitize();
+    r.normal_cross = std::max(r.normal_cross, ON_CrossProduct(na, nb).Length());
+  }
+  return r;
+}
+
+// The surface to be matched: a 4x4 bicubic sitting above/behind the
+// target's v=max edge but not touching it, with its own twist.
+dino8::kernel::NurbsSurface MatchCandidate() {
+  using dino8::kernel::Point3d;
+  std::vector<Point3d> grid;
+  for (int j = 0; j < 4; ++j)
+    for (int i = 0; i < 4; ++i)
+      grid.push_back(Point3d(0.2 + 0.9 * i, 4.5 + 1.1 * j, 0.7 + 0.4 * std::sin(1.1 * i + 0.5 * j) - 0.3 * j));
+  return dino8::kernel::NurbsSurface::FromControlGrid(grid, 4, 4, 3, 3);
+}
+
+}  // namespace
+
+void TestSurfaceMatchEdgePositionTangentCurvature() {
+  using dino8::kernel::MatchContinuity;
+  using dino8::kernel::MatchEdgeReport;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Result;
+  const NurbsSurface target = WigglyBicubic(5, 5);  // knots 0,0,0,1,2,2,2 x same; edge v = max = 2
+  const NurbsSurface candidate = MatchCandidate();
+
+  // --- G0 ---
+  {
+    NurbsSurface s = candidate;
+    MatchEdgeReport rep;
+    Check(s.MatchEdge(1, true, target, 1, false, MatchContinuity::Position, &rep) == Result::Ok, "MatchEdge G0 returns Ok");
+    Check(!rep.target_edge_reversed, "MatchEdge G0: target edge orientation already agrees (not reversed)");
+    const MatchResiduals r = MeasureMatch(s, target, rep.scale, false);
+    Check(r.position < 1e-12, "MatchEdge G0: the two boundary curves coincide to 1e-12 at 42 samples");
+    Check(rep.max_position_error < 1e-12, "MatchEdge G0: the report's measured position error agrees");
+    Check(s.CVCountU() == 5 && s.DegreeU() == 3, "MatchEdge G0: this surface's edge direction gained the target's extra knot (4 -> 5 CVs)");
+    Check(s.CVCountV() == 4, "MatchEdge G0: the cross direction is untouched (still 4 rows)");
+    // Far edge (v = max) untouched: identical to the original candidate's.
+    double far = 0.0;
+    for (int k = 0; k <= 20; ++k) {
+      const double u = s.Domain(0).min + (s.Domain(0).max - s.Domain(0).min) * k / 20.0;
+      far = std::max(far, s.PointAt(u, s.Domain(1).max).DistanceTo(candidate.PointAt(u, candidate.Domain(1).max)));
+    }
+    Check(far < 1e-12, "MatchEdge G0 leaves the opposite edge exactly where it was");
+    Check(r.normal_cross > 1e-3, "MatchEdge G0 alone does not align the tangent planes (a genuine crease remains)");
+  }
+  // --- G1 ---
+  {
+    NurbsSurface s = candidate;
+    MatchEdgeReport rep;
+    Check(s.MatchEdge(1, true, target, 1, false, MatchContinuity::Tangent, &rep) == Result::Ok, "MatchEdge G1 returns Ok");
+    const MatchResiduals r = MeasureMatch(s, target, rep.scale, false);
+    Check(r.position < 1e-12, "MatchEdge G1: position still exact");
+    Check(rep.scale > 0.0 && std::abs(rep.scale - 1.0) > 1e-3, "MatchEdge G1: auto scale is a genuine (non-unit) speed ratio here");
+    Check(r.tangent < 1e-12 * std::max(1.0, rep.scale), "MatchEdge G1: S_v(min) == +scale * T_v(max) along the edge to 1e-12 (inward directions opposite)");
+    Check(r.normal_cross < 1e-12, "MatchEdge G1: unit normals of the two surfaces are parallel along the edge (|n_S x n_T| < 1e-12)");
+    Check(r.curvature > 1e-3, "MatchEdge G1 alone does not match the second cross derivative");
+    double far = 0.0;
+    for (int k = 0; k <= 20; ++k) {
+      const double u = s.Domain(0).min + (s.Domain(0).max - s.Domain(0).min) * k / 20.0;
+      far = std::max(far, s.PointAt(u, s.Domain(1).max).DistanceTo(candidate.PointAt(u, candidate.Domain(1).max)));
+    }
+    Check(far < 1e-12, "MatchEdge G1 leaves the opposite edge exactly where it was");
+  }
+  // --- G2 ---
+  {
+    NurbsSurface s = candidate;
+    MatchEdgeReport rep;
+    Check(s.MatchEdge(1, true, target, 1, false, MatchContinuity::Curvature, &rep) == Result::Ok, "MatchEdge G2 returns Ok");
+    const MatchResiduals r = MeasureMatch(s, target, rep.scale, false);
+    Check(r.position < 1e-12, "MatchEdge G2: position exact");
+    Check(r.tangent < 1e-12 * std::max(1.0, rep.scale), "MatchEdge G2: first cross derivative matched");
+    Check(r.curvature < 1e-11 * std::max(1.0, rep.scale * rep.scale), "MatchEdge G2: S_vv == scale^2 * T_vv along the edge to 1e-11");
+    Check(r.gaussian < 1e-9, "MatchEdge G2: Gaussian curvature of both surfaces agrees along the edge (< 1e-9)");
+    Check(rep.max_curvature_error < 1e-11 * std::max(1.0, rep.scale * rep.scale), "MatchEdge G2: the report's measured curvature residual agrees");
+    double far = 0.0;
+    for (int k = 0; k <= 20; ++k) {
+      const double u = s.Domain(0).min + (s.Domain(0).max - s.Domain(0).min) * k / 20.0;
+      far = std::max(far, s.PointAt(u, s.Domain(1).max).DistanceTo(candidate.PointAt(u, candidate.Domain(1).max)));
+    }
+    Check(far < 1e-12, "MatchEdge G2 leaves the opposite edge exactly where it was (4 rows: 3 rewritten, 1 kept)");
+    // Forced unit scale: plain C2 with the target's own speed.
+    NurbsSurface s1 = candidate;
+    Check(s1.MatchEdge(1, true, target, 1, false, MatchContinuity::Curvature, &rep, 1.0) == Result::Ok, "MatchEdge G2 with cross_scale = 1 returns Ok");
+    Check(rep.scale == 1.0, "MatchEdge honors a forced cross_scale");
+    const MatchResiduals r1 = MeasureMatch(s1, target, 1.0, false);
+    Check(r1.tangent < 1e-12 && r1.curvature < 1e-11, "MatchEdge with cross_scale = 1 is exactly C1/C2 with the target's own derivatives");
+  }
+  // --- reversed target edge orientation is detected ---
+  {
+    NurbsSurface flipped = target;
+    flipped.Reverse(0);
+    NurbsSurface s = candidate;
+    MatchEdgeReport rep;
+    Check(s.MatchEdge(1, true, flipped, 1, false, MatchContinuity::Curvature, &rep) == Result::Ok, "MatchEdge G2 against a U-reversed target returns Ok");
+    Check(rep.target_edge_reversed, "MatchEdge detects that the target edge runs the other way");
+    const MatchResiduals r = MeasureMatch(s, flipped, rep.scale, true);
+    Check(r.position < 1e-12 && r.tangent < 1e-12 * std::max(1.0, rep.scale) && r.gaussian < 1e-9,
+          "MatchEdge G2 against a reversed target: position, tangent and Gaussian curvature all match");
+  }
+  // --- this surface's U-max edge (fixed_direction 0, at_min false) ---
+  {
+    NurbsSurface s = candidate;
+    s.Transpose();  // now the old v = min edge is the u = min edge; use the *other* end instead
+    s.Reverse(0);   // ... and flip so it's the u = max edge
+    MatchEdgeReport rep;
+    Check(s.MatchEdge(0, false, target, 1, false, MatchContinuity::Curvature, &rep) == Result::Ok, "MatchEdge G2 on this surface's u = max edge returns Ok");
+    double pos = 0.0, gauss = 0.0, ncross = 0.0;
+    for (int k = 0; k <= 41; ++k) {
+      const double f = k / 41.0;
+      const double sv = s.Domain(1).min + (s.Domain(1).max - s.Domain(1).min) * f;
+      const double tu = target.Domain(0).min + (target.Domain(0).max - target.Domain(0).min) * (rep.target_edge_reversed ? 1.0 - f : f);
+      pos = std::max(pos, s.PointAt(s.Domain(0).max, sv).DistanceTo(target.PointAt(tu, target.Domain(1).max)));
+      gauss = std::max(gauss, std::abs(s.CurvatureAt(s.Domain(0).max, sv).gaussian - target.CurvatureAt(tu, target.Domain(1).max).gaussian));
+      ON_3dVector na = s.NormalAt(s.Domain(0).max, sv), nb = target.NormalAt(tu, target.Domain(1).max);
+      ncross = std::max(ncross, ON_CrossProduct(na, nb).Length());
+    }
+    Check(pos < 1e-12 && ncross < 1e-12 && gauss < 1e-9, "MatchEdge G2 on a u = max edge: position, normals and Gaussian curvature match");
+  }
+}
+
+void TestSurfaceMatchEdgeToRationalSphereAndRefusals() {
+  using dino8::kernel::MatchContinuity;
+  using dino8::kernel::MatchEdgeReport;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Result;
+  // Target: a rational sphere cap - the equator-to-pole half of a
+  // radius-2 sphere's NURBS form, trimmed in V so the matched edge is a
+  // genuine circle (rational) and the target's cross direction is a
+  // clamped rational arc.
+  ON_NurbsSurface sphere_raw;
+  ON_Sphere(ON_3dPoint(0, 0, 0), 2.0).GetNurbForm(sphere_raw);
+  NurbsSurface sphere;
+  sphere.raw() = sphere_raw;
+  const double v_mid = sphere.Domain(1).min + 0.5 * (sphere.Domain(1).max - sphere.Domain(1).min);
+  Check(sphere.Trim(1, v_mid, sphere.Domain(1).max) == Result::Ok, "MatchEdge sphere setup: trimmed to the upper half");
+  // Candidate: a non-rational bicubic sheet roughly around the equator.
+  std::vector<dino8::kernel::Point3d> grid;
+  for (int j = 0; j < 5; ++j)
+    for (int i = 0; i < 6; ++i) {
+      const double a = 2.0 * ON_PI * i / 5.0;
+      grid.push_back(dino8::kernel::Point3d(2.6 * std::cos(a), 2.6 * std::sin(a), -0.5 - 0.8 * j));
+    }
+  NurbsSurface s = NurbsSurface::FromControlGrid(grid, 6, 5, 3, 3);
+  MatchEdgeReport rep;
+  Check(s.MatchEdge(1, true, sphere, 1, true, MatchContinuity::Curvature, &rep) == Result::Ok, "MatchEdge G2 to a rational sphere edge returns Ok");
+  Check(s.IsRational(), "MatchEdge makes the candidate rational to carry the sphere edge's weights");
+  double pos = 0.0, radius = 0.0, gauss = 0.0, ncross = 0.0;
+  for (int k = 0; k <= 64; ++k) {
+    const double f = k / 64.0;
+    const double su = s.Domain(0).min + (s.Domain(0).max - s.Domain(0).min) * f;
+    const double tu = sphere.Domain(0).min + (sphere.Domain(0).max - sphere.Domain(0).min) * (rep.target_edge_reversed ? 1.0 - f : f);
+    const ON_3dPoint sp = s.PointAt(su, s.Domain(1).min);
+    pos = std::max(pos, sp.DistanceTo(sphere.PointAt(tu, sphere.Domain(1).min)));
+    radius = std::max(radius, std::abs(sp.DistanceTo(ON_3dPoint::Origin) - 2.0));
+    gauss = std::max(gauss, std::abs(s.CurvatureAt(su, s.Domain(1).min).gaussian - 0.25));
+    ncross = std::max(ncross, ON_CrossProduct(s.NormalAt(su, s.Domain(1).min), sphere.NormalAt(tu, sphere.Domain(1).min)).Length());
+  }
+  Check(pos < 1e-12, "MatchEdge to a sphere: the candidate's edge lies on the sphere's equator to 1e-12");
+  Check(radius < 1e-12, "MatchEdge to a sphere: every edge sample is exactly radius 2 (the edge is a true circle now)");
+  Check(ncross < 1e-12, "MatchEdge to a sphere: normals agree along the equator");
+  Check(gauss < 1e-9, "MatchEdge to a sphere: the candidate's Gaussian curvature is exactly the sphere's 1/r^2 = 0.25 along the edge");
+  for (int i = 0; i < s.CVCountU(); ++i)
+    for (int j = 0; j < s.CVCountV(); ++j)
+      if (!(s.WeightAt(i, j) > 0.0)) { Check(false, "MatchEdge to a sphere: every weight is positive"); return; }
+  Check(true, "MatchEdge to a sphere: every weight is positive");
+
+  // Refusals / argument checks.
+  NurbsSurface flat = WigglyBicubic(4, 4);
+  const NurbsSurface flat_before = flat;
+  NurbsSurface ruled;
+  {
+    std::vector<dino8::kernel::Point3d> g = {dino8::kernel::Point3d(0, 0, 0), dino8::kernel::Point3d(1, 0, 0), dino8::kernel::Point3d(0, 1, 0), dino8::kernel::Point3d(1, 1, 1)};
+    ruled = NurbsSurface::FromControlGrid(g, 2, 2, 1, 1);
+  }
+  Check(flat.MatchEdge(1, true, ruled, 1, false, MatchContinuity::Curvature) == Result::Failed,
+        "MatchEdge refuses curvature matching to a degree-1 (no curvature) target");
+  Check(flat.MatchEdge(1, true, ruled, 1, false, MatchContinuity::Tangent) == Result::Ok,
+        "MatchEdge tangent-matches to a degree-1 target (its cross derivative exists)");
+  bool threw = false;
+  try { flat.MatchEdge(2, true, ruled, 1, false, MatchContinuity::Position); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "MatchEdge throws on a direction outside 0/1");
+  NurbsSurface periodic = sphere;  // the sphere's U direction is closed but clamped: allowed. Make a periodic one:
+  ON_NurbsSurface per;
+  {
+    ON_Torus torus(ON_Plane::World_xy, 3.0, 1.0);
+    torus.GetNurbForm(per);
+  }
+  periodic.raw() = per;
+  NurbsSurface again = flat_before;
+  if (!periodic.raw().IsClamped(0, 2) || !periodic.raw().IsClamped(1, 2)) {
+    Check(again.MatchEdge(1, true, periodic, 1, true, MatchContinuity::Position) == Result::Failed,
+          "MatchEdge refuses an unclamped (periodic) target direction");
+  } else {
+    Check(true, "MatchEdge periodic-refusal check skipped: ON_Torus::GetNurbForm is clamped in this OpenNURBS build");
+  }
+}
+
 // ---------------------------------------------------------------------------
 // ChamferConvexEdge / ChamferConvexEdgeAngle (fillet.h) - exact planar
 // chamfers. Every face of a chamfered planar solid is itself planar, so
@@ -22884,7 +23848,26 @@ int main() {
   TestRemoveNakedMicroEdgeClosesIsolatedSliverOnAPlate();
   TestRemoveNakedMicroEdgeRefusesASliverNextToASharedEdge();
 
+  TestSurfaceRemoveKnotAtIsExactInverseOfInsertKnotAt();
+  TestSurfaceRemoveKnotAtRefusesNonRemovableKnotWithinTolerance();
+  TestSurfaceRemoveKnotAtRationalBoundHoldsOnASphereSeamKnot();
+  TestSurfaceRemoveKnotAtArgumentChecks();
+
+  TestSurfaceSetDomainRescalesKnotsWithoutMovingTheShape();
+  TestSurfaceRebuildIsExactWhenRepresentableAndHonestOtherwise();
+
+  TestSurfaceMatchEdgePositionTangentCurvature();
+  TestSurfaceMatchEdgeToRationalSphereAndRefusals();
   TestTolerancePolicyValuesAreTheOnesInForce();
+  TestBrepCheckReportsCleanBoxAsClean();
+  TestBrepCheckAndUnifyNormalsOnFlippedFace();
+  TestBrepCheckReportsDroppedFaceAndCapPlanarHolesRestoresIt();
+  TestBrepJoinNakedEdgesRecordsTolerantEdges();
+  TestBrepRemoveSliverAndDegenerateFacesHealHairlineStrip();
+  TestBrepRemoveDegenerateEdgesCollapsesSharedMicroEdge();
+  TestMeshCheckAndFillSmallHolesRestoreDroppedFaces();
+  TestMeshUnifyNormalsFixesFlippedAndInvertedFaces();
+  TestMeshCloseNakedEdgesWeldsDuplicateAndOffsetVertices();
 
   sweep_tests::TestMergeAndWeldDropsCollapsedPoleTriangles();
   sweep_tests::TestExtrudeRectangleIsExactCappedSolid();

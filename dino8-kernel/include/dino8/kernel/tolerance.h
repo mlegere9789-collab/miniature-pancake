@@ -115,5 +115,21 @@ inline double DistanceForSize(double size) {
   return std::max(kDistance, size * kRelative);
 }
 
+// The floor a PURELY relative distance tolerance is clamped to, so a
+// zero-size feature (a zero-length edge, a zero radius) does not get a
+// tolerance of exactly zero and fail every comparison on rounding alone.
+// Deliberately far below kDistance: these sites are relative by design
+// (brep.cpp's radius/edge-length fits), and flooring them at kDistance
+// would silently loosen every small-feature fit to the absolute
+// tolerance.
+constexpr double kTinyDistance = 1e-9;
+
+// `max(kTinyDistance, size * kRelative)` - the purely relative sibling of
+// DistanceForSize(), for the brep.cpp fit tolerances that used to spell
+// `std::max(1e-9, x * 1e-6)` by hand.
+inline double RelativeDistance(double size) {
+  return std::max(kTinyDistance, size * kRelative);
+}
+
 }  // namespace tolerance
 }  // namespace dino8::kernel

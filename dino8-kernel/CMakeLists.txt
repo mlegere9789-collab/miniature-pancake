@@ -46,6 +46,7 @@ endif()
 add_library(dino8_kernel STATIC
   src/curve.cpp
   src/surface.cpp
+  src/surface_edit.cpp
   src/surface_intersect.cpp
   src/brep.cpp
   src/mesh.cpp
