@@ -2559,6 +2559,21 @@ What this repo does instead:
   writing the test (which triangle's flip direction and which wall
   vertex order produce an outward-facing cube), not verified after the
   fact by adjusting signs until a check passed.
+- `Mesh::CheckReport::non_manifold_edge_list`: localizes what
+  `non_manifold_edges` had only ever COUNTED - a real gap `naked_edges`
+  never had, since `naked_edge_list` already existed for it. Undirected
+  (a 3+-face edge has no single walking direction the way a naked or
+  orientation-conflicted edge does), one entry per non-manifold edge as
+  its two vertex indices with the smaller first, in the order first
+  encountered walking the mesh's own face list - the same convention
+  `naked_edge_list` already established. Deliberately NOT wired up as a
+  repair input the way `naked_edge_list` feeds `FillSmallHoles()`: which
+  faces should stay grouped together at a 3+-face edge is a judgment
+  call this class still doesn't make (documented already, unchanged).
+  Verified with the simplest possible non-manifold fixture - a "book" of
+  3 triangles sharing one spine edge, every other edge naked - Check()
+  reports exactly 1 non-manifold edge and the list contains exactly that
+  edge's own two vertices.
 
 ## Blending build log (Parasolid "blend/chamfer" class, chronological)
 
