@@ -45,6 +45,27 @@ struct SubDLimitPoint {
   bool smooth = false;  // ON_SubDVertex::IsSmooth(): interior, not on a crease/corner/dart
 };
 
+// One evaluation of the Catmull-Clark limit surface at an arbitrary
+// (u, v) parameter inside one face, from SubD::EvaluateFace().
+struct SubDSurfacePoint {
+  Point3d position;
+  // Unit limit-surface normal, or the zero vector if the two partial
+  // derivatives below are parallel or zero (mirrors SubDLimitPoint::
+  // limit_normal's degenerate-case convention).
+  Vector3d normal;
+  // The raw (non-unit) partial derivatives d(position)/du,
+  // d(position)/dv - not normalized, same convention as
+  // NurbsSurface::CurvatureAt()'s internal du/dv.
+  Vector3d tangent_u;
+  Vector3d tangent_v;
+  // True if `position`/`normal`/`tangent_u`/`tangent_v` are exact (to
+  // floating-point precision) values of the true Catmull-Clark limit
+  // surface - see EvaluateFace()'s own doc comment for exactly when
+  // that holds. False means they come from EvaluateFace()'s
+  // tolerance-bounded fallback approximation instead.
+  bool exact = false;
+};
+
 // Wraps ON_SubD - OpenNURBS' real, working Catmull-Clark subdivision
 // surface implementation. Unlike ON_Brep::CreateMesh/ON_Surface::CreateMesh
 // (chunk 2) and ON_SubD::BrepForm/GetSurfaceBrep (checked for this chunk),
@@ -310,13 +331,78 @@ class SubD {
   // What this still is NOT: evaluation at an arbitrary (u, v) inside a
   // face - only the vertices' own limit positions. Away from
   // extraordinary vertices `ToNurbsPatches()`'s exact regular patches
-  // already cover the face interiors; the irregular-face interior stays
-  // approximate (see that method).
+  // already cover the face interiors; EvaluateFace() below closes most
+  // of the remaining irregular-face-interior gap.
   //
   // Throws std::runtime_error if OpenNURBS can't evaluate a vertex's
   // limit point (a vertex with no faces, e.g. from a degenerate control
   // mesh) - never silently returns a NaN position.
   std::vector<SubDLimitPoint> LimitPoints() const;
+
+  // Position, unit normal, and raw tangent vectors of the Catmull-Clark
+  // limit surface at parameter (u, v) - (0, 0) at face(face_id)'s own
+  // Vertex(0), (1, 0) at Vertex(1), (1, 1) at Vertex(2), (0, 1) at
+  // Vertex(3) - inside the CURRENT subdivision level's face identified
+  // by `face_id` (ON_SubDFace::m_id, as returned by e.g. ToNurbsPatches()
+  // or a face iterator, NOT an array index). Unlike ToNurbsPatches(),
+  // which only gives the exact limit surface over a REGULAR face (all 4
+  // corners ordinary-interior), this genuinely improves on the
+  // irregular case too - not just "subdivide a lot and hope".
+  //
+  // How: away from any extraordinary vertex/crease/boundary, this is
+  // just ToNurbsPatches()'s own regular-patch construction (same
+  // stencil-gathering, same B-spline-to-Bezier conversion), evaluated
+  // directly at (u, v) via the standard bicubic Bezier position/partial-
+  // derivative formulas - `exact = true`.
+  //
+  // Over an irregular face, one real level of Catmull-Clark refinement
+  // (`ON_SubD::GlobalSubdivide` on an internal working copy - `raw()` is
+  // untouched) always turns 3 of the face's 4 quadrants fully regular
+  // (an ordinary-interior vertex's valence never changes under
+  // subdivision, and every newly-created edge/face-point vertex has
+  // valence exactly 4 - the only quadrant that can stay irregular is the
+  // one touching the original extraordinary/crease/boundary vertex).
+  // The correct child face for (u, v)'s quadrant is found without
+  // guessing at OpenNURBS' internal numbering: `ON_SubDFace::
+  // SubdivisionPoint()`/`ON_SubDEdge::SubdivisionPoint()` (the same real,
+  // non-stub methods `GlobalSubdivide` itself uses - verified by reading
+  // opennurbs_subd.cpp) give the EXACT position the refined face-point/
+  // edge-points will land at, `ON_SubD::FindVertex()` (the same lookup
+  // SetCrease()/SetEdgeSharpness() above already rely on) relocates them
+  // in the refined copy, and the one still-unknown 4th corner of the
+  // face touching all three IS the target child - no assumption that
+  // ids or pointers survive subdivision. This repeats up to
+  // `max_adaptive_levels` times (each level only re-examines whichever
+  // single quadrant remains irregular, but still by globally refining
+  // the WHOLE internal working copy - there's no cheaper "just this
+  // face's neighborhood" primitive plugged in here - so cost is
+  // proportional to the working copy's OWN current size PER LEVEL, and
+  // that size itself grows roughly 4x each level; a working copy already
+  // past 500,000 faces stops refining further and falls back rather
+  // than risk exhausting memory, regardless of `max_adaptive_levels`
+  // left. A query at exactly a face corner's (u, v) - any face, any
+  // level - always resolves immediately via that vertex's own real
+  // `ON_SubDVertex::SurfacePoint()`/`SurfaceNormal()` instead (the same
+  // ones LimitPoints() uses) rather than adaptive refinement at all;
+  // `tangent_u`/`tangent_v` there are the zero vector, since the tangent
+  // PLANE at an extraordinary/crease/boundary vertex needs the full
+  // Catmull-Clark eigenbasis this class doesn't implement.
+  //
+  // If a quadrant is still irregular once `max_adaptive_levels` (or the
+  // working-copy size cap above) is exhausted, this falls back to the
+  // SAME tolerance-bounded corner interpolant ToNurbsPatches() uses for
+  // a whole irregular face - just over that quadrant's own (already
+  // once-or-more shrunk) corners instead of the original face's, which
+  // is never a worse bound - and reports `exact = false`. `tangent_u`/
+  // `tangent_v` from that fallback are the flat interpolant's own (still
+  // well-defined, just not limit-accurate) partial derivatives.
+  //
+  // Throws std::runtime_error if `face_id` doesn't identify a face of
+  // the current subdivision level, or that face isn't a quad (same
+  // "Subdivide(1) first" limitation ToNurbsPatches() already documents
+  // for a level-0 n-gon).
+  SubDSurfacePoint EvaluateFace(unsigned int face_id, double u, double v,
+                                int max_adaptive_levels = 4) const;
 
   const ON_SubD& raw() const { return subd_; }
   ON_SubD& raw() { return subd_; }
