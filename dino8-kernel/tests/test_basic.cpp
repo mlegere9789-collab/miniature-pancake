@@ -6688,6 +6688,64 @@ void TestRevolveProfileFlatEndCaps() {
   }
 }
 
+// RevolveProfile()'s new `angle` parameter (default 2*pi - no behavior
+// change for an existing caller). A partial angle delegates to
+// Brep::Revolve() + TessellateToClosedMesh() instead of this function's
+// own fast exact-shared-vertex ring construction (which has no notion of
+// a partial revolve's two extra pie-slice side caps) - verified against
+// a "spindle" profile (both ends on the axis, the one shape
+// Brep::Revolve() can cap at ANY angle, full or partial - see its own
+// doc comment) by checking that half and quarter revolves give exactly
+// half and a quarter of the full revolve's own volume, a real Pappus-
+// style cross-check independent of any closed form for the spindle's
+// own shape.
+void TestMeshRevolveProfilePartialAngle() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point2d;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  const std::vector<Point2d> spindle = {Point2d(0, 0), Point2d(2, 1.5), Point2d(0, 3)};
+  const Mesh full = Mesh::RevolveProfile(spindle, Point3d(0, 0, 0), Vector3d(0, 0, 1), 96);
+  Check(full.IsClosedManifold(), "full-angle spindle revolve is a closed manifold (unchanged default-angle path)");
+  const double full_volume = full.Volume();
+
+  const Mesh half = Mesh::RevolveProfile(spindle, Point3d(0, 0, 0), Vector3d(0, 0, 1), 96, M_PI);
+  Check(half.IsClosedManifold(), "half-angle (partial) spindle revolve is a closed manifold");
+  Check(std::abs(half.Volume() - 0.5 * full_volume) / full_volume < 1e-3,
+        "half-angle revolve's volume is half the full revolve's, within 0.1% (measured 2.7e-4 in a "
+        "standalone diagnostic, not assumed)");
+
+  const Mesh quarter = Mesh::RevolveProfile(spindle, Point3d(0, 0, 0), Vector3d(0, 0, 1), 192, M_PI / 2.0);
+  Check(quarter.IsClosedManifold(), "quarter-angle (partial) spindle revolve is a closed manifold");
+  Check(std::abs(quarter.Volume() - 0.25 * full_volume) / full_volume < 1e-3,
+        "quarter-angle revolve's volume is a quarter of the full revolve's, within 0.1% (measured "
+        "1.8e-4, not assumed)");
+
+  // Negative controls.
+  auto throws_invalid_argument = [](const std::function<void()>& f) {
+    try {
+      f();
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+    return false;
+  };
+  Check(throws_invalid_argument(
+            [&] { Mesh::RevolveProfile(spindle, Point3d(0, 0, 0), Vector3d(0, 0, 1), 48, 0.0); }),
+        "angle <= 0 throws");
+  Check(throws_invalid_argument(
+            [&] { Mesh::RevolveProfile(spindle, Point3d(0, 0, 0), Vector3d(0, 0, 1), 48, 3.0 * M_PI); }),
+        "angle > 2*pi throws");
+  // An off-axis endpoint can only be capped at a FULL angle (a flat disc
+  // cap); Brep::Revolve()'s own refusal for the partial-angle case
+  // propagates through unchanged.
+  const std::vector<Point2d> off_axis_profile = {Point2d(1, 0), Point2d(2, 3)};
+  Check(throws_invalid_argument(
+            [&] { Mesh::RevolveProfile(off_axis_profile, Point3d(0, 0, 0), Vector3d(0, 0, 1), 48, M_PI); }),
+        "a partial angle with an off-axis profile endpoint throws (propagated from Brep::Revolve())");
+}
+
 void TestLoftClosedRingsSquareFrustumExactVolumeAndBoolean() {
   using dino8::kernel::BooleanCombine;
   using dino8::kernel::BooleanOp;
@@ -30323,6 +30381,7 @@ int main() {
   TestRevolveProfileRejectsTooFewSegments();
   TestRevolveProfileRejectsTooShortProfile();
   TestRevolveProfileFlatEndCaps();
+  TestMeshRevolveProfilePartialAngle();
   TestLoftClosedRingsSquareFrustumExactVolumeAndBoolean();
   TestLoftClosedRingsRejectsTooFewRingsAndMismatchedCounts();
   TestLoftClosedRingsConcaveEndCapsExactPrismVolume();

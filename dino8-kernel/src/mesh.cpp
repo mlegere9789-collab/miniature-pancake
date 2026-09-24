@@ -20,6 +20,8 @@
 #include <vector>
 
 #include "dino8/kernel/boolean.h"
+#include "dino8/kernel/brep.h"
+#include "dino8/kernel/curve.h"
 #include "dino8/kernel/detail/polygon2d.h"
 #include "dino8/kernel/tolerance.h"
 #include "dino8/kernel/detail/segment3d.h"
@@ -2246,7 +2248,7 @@ Mesh Mesh::Cone(Point3d base_center, Vector3d axis, double radius, double height
 }
 
 Mesh Mesh::RevolveProfile(const std::vector<Point2d>& profile, Point3d axis_point, Vector3d axis,
-                          int revolve_segments) {
+                          int revolve_segments, double angle) {
   const int m = static_cast<int>(profile.size());
   if (m < 2) {
     throw std::invalid_argument(
@@ -2257,6 +2259,51 @@ Mesh Mesh::RevolveProfile(const std::vector<Point2d>& profile, Point3d axis_poin
     throw std::invalid_argument(
         "dino8::kernel::Mesh::RevolveProfile: revolve_segments must be at "
         "least 3 (fewer can't form a non-degenerate ring)");
+  }
+  if (!ON_IsValid(angle) || !(angle > 0.0) || angle > 2.0 * ON_PI + 1e-12) {
+    throw std::invalid_argument("dino8::kernel::Mesh::RevolveProfile: angle must be in (0, 2*pi] radians");
+  }
+  if (angle < 2.0 * ON_PI - 1e-12) {
+    // Partial angle: this function's own fast, exact-shared-vertex ring
+    // construction below has no notion of a "start"/"end" pie-slice cap
+    // (only ever the two on-axis-or-disc END caps a FULL revolve needs),
+    // so building one from scratch here would duplicate machinery this
+    // kernel already has and has already verified: Brep::Revolve()'s own
+    // partial-angle support (fan fan caps in the start/end half-planes -
+    // see its own doc comment for exactly which profile shapes it can
+    // and can't cap at a partial angle). Delegate to it instead of
+    // re-deriving cap topology a second, independent way.
+    //
+    // The profile is placed in an ARBITRARY plane containing `axis` (any
+    // unit vector `ex` perpendicular to it will do - Brep::Revolve()
+    // derives its own actual radial reference from the profile's own
+    // farthest-from-axis point, not from whatever plane it happens to be
+    // handed), as a degree-1 (piecewise-linear) 3D curve through the
+    // profile's own (radius, height) points - the same L-shaped-polyline
+    // convention Brep::Revolve()'s own doc comment uses for its cylinder
+    // example.
+    ON_3dVector n = axis;
+    if (!n.Unitize()) {
+      throw std::invalid_argument("dino8::kernel::Mesh::RevolveProfile: axis must be non-zero");
+    }
+    const ON_3dVector reference = (std::abs(n.z) < 0.9) ? ON_3dVector(0, 0, 1) : ON_3dVector(1, 0, 0);
+    ON_3dVector ex = ON_CrossProduct(reference, n);
+    ex.Unitize();
+    std::vector<Point3d> profile_points;
+    profile_points.reserve(static_cast<size_t>(m));
+    for (const Point2d& p : profile) profile_points.push_back(axis_point + ex * p.x + n * p.y);
+    const NurbsCurve profile_curve = NurbsCurve::FromControlPoints(profile_points, 1);
+    const Brep revolved = Brep::Revolve(profile_curve, axis_point, axis, angle, /*cap=*/true);
+    // u (profile) divisions: one per input segment, so a straight run of
+    // the (exactly piecewise-linear) wall between consecutive profile
+    // points is resolved at least at its own two endpoints - coarser
+    // than that would still lie exactly ON the true ruled surface (a
+    // degree-1 NURBS curve/surface is exact everywhere along its own
+    // parameter, not just at its knots) but could visibly round off an
+    // interior profile vertex into a single averaged facet. v (angle)
+    // divisions: `revolve_segments`, the same angular resolution the
+    // full-circle path below uses.
+    return revolved.TessellateToClosedMesh(std::max(1, m - 1), revolve_segments);
   }
   constexpr double kOnAxisEpsilon = tolerance::kZeroVector;
   const bool front_is_apex = std::abs(profile.front().x) <= kOnAxisEpsilon;
