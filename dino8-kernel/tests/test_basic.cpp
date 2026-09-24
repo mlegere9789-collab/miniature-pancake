@@ -63,6 +63,50 @@ void TestCurveDegreeElevation() {
   Check(curve.Degree() == 5, "curve degree increased to 5");
 }
 
+void TestCurveFromControlPointsRejectsDegenerateInput() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+
+  // Regression: ON_NurbsCurve::Create() returns false (allocating nothing)
+  // for cv_count < order or order < 2, and FromControlPoints() used to
+  // ignore that and hand back a silently empty curve - Degree() 0,
+  // ControlPointCount() 0, PointAt() == (0, 0, 0) and Length() == 0 for
+  // every input (confirmed by a debug run against the pre-fix build).
+  // The app's Python AddCurve(pts, degree) forwards a user-typed degree
+  // straight here, so this was reachable from a one-line script.
+  auto throws = [](const std::vector<Point3d>& pts, int degree) {
+    try {
+      (void)NurbsCurve::FromControlPoints(pts, degree);
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+    return false;
+  };
+  const std::vector<Point3d> two = {Point3d(0, 0, 0), Point3d(1, 0, 0)};
+  const std::vector<Point3d> three = {Point3d(0, 0, 0), Point3d(1, 1, 0), Point3d(2, 0, 0)};
+  Check(throws(two, 3),
+        "FromControlPoints throws std::invalid_argument when control_points.size() < degree + 1");
+  Check(throws(three, 3),
+        "...including the off-by-one case (3 control points for a cubic, which needs 4)");
+  Check(throws(three, 0), "FromControlPoints throws std::invalid_argument for degree 0");
+  Check(throws(three, -1), "FromControlPoints throws std::invalid_argument for a negative degree");
+  Check(throws({}, 1), "FromControlPoints throws std::invalid_argument for an empty control point list");
+
+  // The boundary case (exactly degree + 1 points, a single Bezier span)
+  // must keep working exactly as before.
+  const NurbsCurve line = NurbsCurve::FromControlPoints(two, 1);
+  Check(line.Degree() == 1 && line.ControlPointCount() == 2 && line.raw().IsValid(),
+        "exactly degree + 1 control points is still accepted (degree 1, 2 points) and is valid");
+  const NurbsCurve quadratic = NurbsCurve::FromControlPoints(three, 2);
+  Check(quadratic.Degree() == 2 && quadratic.ControlPointCount() == 3 && quadratic.raw().IsValid(),
+        "exactly degree + 1 control points is still accepted (degree 2, 3 points) and is valid");
+  const dino8::kernel::Interval domain = quadratic.Domain();
+  const Point3d mid = quadratic.PointAt(domain.min + 0.5 * (domain.max - domain.min));
+  Check(std::abs(mid.x - 1.0) < 1e-12 && std::abs(mid.y - 0.5) < 1e-12 && std::abs(mid.z) < 1e-12,
+        "the accepted quadratic evaluates to its hand-derived Bezier midpoint (1, 0.5, 0) - "
+        "0.25*P0 + 0.5*P1 + 0.25*P2");
+}
+
 void TestCurveLength() {
   using dino8::kernel::NurbsCurve;
   using dino8::kernel::Point3d;
@@ -1486,6 +1530,55 @@ void TestCurveSuggestedParameterValues() {
         "non-positive chord_tolerance");
 }
 
+void TestSurfaceFromControlGridRejectsDegenerateInput() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+
+  // Regression: the surface-side twin of FromControlPoints()'s own
+  // degenerate-input bug (ON_NurbsSurface::Create() refuses cv_count <
+  // order / order < 2 without allocating, and the setters below it
+  // silently no-op), but with a worse downstream symptom: the empty
+  // surface's PointAt() segfaulted inside ON_NurbsSurface::Evaluate() on
+  // its null knot array (confirmed by a debug run against the pre-fix
+  // build), and a control_grid shorter than u_count * v_count was read
+  // past its end by the SetCV loop.
+  auto throws = [](const std::vector<Point3d>& grid, int u_count, int v_count, int u_degree,
+                   int v_degree) {
+    try {
+      (void)NurbsSurface::FromControlGrid(grid, u_count, v_count, u_degree, v_degree);
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+    return false;
+  };
+  const std::vector<Point3d> four = {Point3d(0, 0, 0), Point3d(0, 1, 0), Point3d(1, 0, 0),
+                                     Point3d(1, 1, 0)};
+  Check(throws(four, 2, 2, 3, 3),
+        "FromControlGrid throws std::invalid_argument when a count is below its degree + 1");
+  Check(throws(four, 2, 2, 1, 2),
+        "...in either direction independently (v_count 2 < v_degree + 1 = 3, u fine)");
+  Check(throws(four, 2, 2, 0, 1), "FromControlGrid throws std::invalid_argument for degree 0");
+  Check(throws(four, 2, 2, 1, -1), "FromControlGrid throws std::invalid_argument for a negative degree");
+  Check(throws({four[0], four[1], four[2]}, 2, 2, 1, 1),
+        "FromControlGrid throws std::invalid_argument when control_grid has fewer than u_count * "
+        "v_count entries (was an out-of-bounds read)");
+  Check(throws({four[0], four[1], four[2], four[3], four[0]}, 2, 2, 1, 1),
+        "...or more than u_count * v_count entries (a silently ignored tail is a caller bug too)");
+  Check(throws({}, 0, 0, 1, 1), "FromControlGrid throws std::invalid_argument for an empty grid");
+
+  // The boundary case (exactly degree + 1 control points per direction)
+  // must keep working exactly as before - this is the bilinear quad every
+  // Brep::Box() face and Mesh::Cylinder() cap is built from.
+  const NurbsSurface bilinear = NurbsSurface::FromControlGrid(four, 2, 2, 1, 1);
+  Check(bilinear.raw().IsValid() && bilinear.CVCountU() == 2 && bilinear.CVCountV() == 2,
+        "exactly degree + 1 control points per direction is still accepted and valid");
+  const dino8::kernel::Interval du = bilinear.Domain(0), dv = bilinear.Domain(1);
+  const Point3d center = bilinear.PointAt(0.5 * (du.min + du.max), 0.5 * (dv.min + dv.max));
+  Check(std::abs(center.x - 0.5) < 1e-12 && std::abs(center.y - 0.5) < 1e-12 &&
+            std::abs(center.z) < 1e-12,
+        "...and evaluates to the unit square's own center (0.5, 0.5, 0) at its domain midpoint");
+}
+
 void TestSurfaceNormalAt() {
   using dino8::kernel::NurbsSurface;
   using dino8::kernel::Point3d;
@@ -1930,6 +2023,89 @@ void TestSurfaceIntersectSphereGreatCircle() {
     Check(std::abs(hits[1].t - expected_t1) < 1e-3,
           "the far hit's curve parameter matches the hand-derived expected value");
   }
+}
+
+void TestIntersectCurvesFindsCrossingsAndRejectsMisses() {
+  using dino8::kernel::CurveCurveHit;
+  using dino8::kernel::IntersectCurves;
+  using dino8::kernel::IntersectOptions;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+
+  // IntersectCurves() (CCX) is the curve/curve counterpart to
+  // IntersectSurfaces() (SSX) and IntersectCurveSurface() (CSX) above -
+  // OpenNURBS' public SDK has none of the three. Case 1: two straight
+  // lines forming an X in the z=0 plane, (0,0,0)->(10,10,0) and
+  // (0,10,0)->(10,0,0), cross at exactly one point, the geometric
+  // midpoint of both (5,5,0) - and since a straight line's own
+  // parametrization is linear in position, that's exactly the domain
+  // midpoint of both (ta = tb = 0.5), a hand-derivable exact value, not
+  // just a plausible-looking one.
+  IntersectOptions opt;
+  opt.tolerance = 1e-8;
+  opt.mesh_tolerance = 0.05;
+
+  const NurbsCurve line_a = NurbsCurve::FromControlPoints(
+      {Point3d(0, 0, 0), Point3d(10, 10, 0)}, /*degree=*/1);
+  const NurbsCurve line_b = NurbsCurve::FromControlPoints(
+      {Point3d(0, 10, 0), Point3d(10, 0, 0)}, /*degree=*/1);
+  const std::vector<CurveCurveHit> x_hits = IntersectCurves(line_a.raw(), line_b.raw(), opt);
+  Check(x_hits.size() == 1, "two crossing lines forming an X intersect at exactly one point");
+  if (x_hits.size() == 1) {
+    Check(x_hits[0].point.DistanceTo(Point3d(5, 5, 0)) < 1e-6,
+          "the crossing point is exactly the geometric midpoint (5, 5, 0)");
+    Check(std::abs(x_hits[0].ta - 0.5) < 1e-6 && std::abs(x_hits[0].tb - 0.5) < 1e-6,
+          "both curve parameters at the crossing are exactly 0.5 (the "
+          "domain midpoint), since a straight line's parametrization is "
+          "linear in position");
+    Check(x_hits[0].error < opt.tolerance * 2,
+          "the refined |A(ta) - B(tb)| residual is within the requested "
+          "tolerance, not just a coarse polyline-seed distance");
+  }
+
+  // Case 2: the identical X shape, but line_b lifted to z = 1 - the two
+  // lines are now skew (never actually meet in 3D), so a genuinely
+  // correct intersector must report zero hits rather than the in-plane
+  // crossing its 2D (x, y) projection would suggest.
+  const NurbsCurve line_b_lifted = NurbsCurve::FromControlPoints(
+      {Point3d(0, 10, 1), Point3d(10, 0, 1)}, /*degree=*/1);
+  const std::vector<CurveCurveHit> skew_hits = IntersectCurves(line_a.raw(), line_b_lifted.raw(), opt);
+  Check(skew_hits.empty(), "two skew (non-coplanar, non-meeting) lines produce no intersection hits");
+
+  // Case 3: a genuinely curved curve, not just lines - a real circle
+  // (ON_Circle::GetNurbForm, the same exact rational-NURBS construction
+  // TestCurveParameterAtArcLength() above already validates) in the z=0
+  // plane, centered at the origin, against a straight line along the
+  // x-axis passing straight through it. The line must hit the circle at
+  // exactly the two points where the x-axis crosses the circle's own
+  // boundary: (radius, 0, 0) and (-radius, 0, 0) - independently
+  // knowable from the circle's definition, not fit to whatever the
+  // intersector happens to produce.
+  const double radius = 4.0;
+  const ON_Circle on_circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), radius);
+  ON_NurbsCurve circle_nurbs_form;
+  Check(on_circle.GetNurbForm(circle_nurbs_form) != 0, "ON_Circle::GetNurbForm succeeds");
+  NurbsCurve circle;
+  circle.raw() = circle_nurbs_form;
+
+  const NurbsCurve axis_line = NurbsCurve::FromControlPoints(
+      {Point3d(-10, 0, 0), Point3d(10, 0, 0)}, /*degree=*/1);
+  const std::vector<CurveCurveHit> circle_hits = IntersectCurves(axis_line.raw(), circle.raw(), opt);
+  Check(circle_hits.size() == 2, "a line straight through a circle's center hits it at exactly two points");
+  if (circle_hits.size() == 2) {
+    // Sorted by ta (the line's own parameter, increasing x), so the
+    // near-side hit at x = -radius comes first.
+    Check(circle_hits[0].point.DistanceTo(Point3d(-radius, 0, 0)) < 1e-6,
+          "the first hit sits at exactly (-radius, 0, 0)");
+    Check(circle_hits[1].point.DistanceTo(Point3d(radius, 0, 0)) < 1e-6,
+          "the second hit sits at exactly (radius, 0, 0)");
+  }
+
+  // A curve intersected with itself throws nothing and is not asserted
+  // here (see the "not intended for coincident curves" caveat on
+  // IntersectCurves() itself) - deliberately not exercised as a pass/fail
+  // case, since there is no single correct finite answer to assert
+  // against for a genuinely coincident pair.
 }
 
 void TestBooleanCombineGeneralBoxBox() {
@@ -4282,6 +4458,79 @@ void TestModelAddMeshRoundTrips() {
   std::remove(path.c_str());
 }
 
+void TestModelLoadRejectsMeshWithOutOfRangeFaceIndex() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Model;
+  using dino8::kernel::Result;
+
+  // Regression: OpenNURBS' ON_Mesh::Read() copies each face's vertex
+  // indices off the disk without checking them against the vertex count,
+  // and Model::Load() used to trust that - so a .3dm mesh with a face
+  // pointing past its own vertex array loaded with Result::Ok (ON_Mesh::
+  // IsValid() false, but nothing looked), after which every kernel Mesh
+  // query indexed m_V out of bounds: a debug run against the pre-fix
+  // build got Area() == 0.5 from garbage memory, no error anywhere.
+  // Built through this class's own Save() (which OpenNURBS doesn't
+  // validate either - the first Check below documents that honestly)
+  // rather than hand-written bytes, since the reader is the boundary
+  // this test is about.
+  const std::string bad_path = "dino8_kernel_model_bad_mesh_index_test.3dm";
+  {
+    Mesh bad;
+    ON_Mesh& raw = bad.raw();
+    raw.m_V.Append(ON_3fPoint(0, 0, 0));
+    raw.m_V.Append(ON_3fPoint(1, 0, 0));
+    raw.m_V.Append(ON_3fPoint(0, 1, 0));
+    ON_MeshFace good;
+    good.vi[0] = 0; good.vi[1] = 1; good.vi[2] = 2; good.vi[3] = 2;
+    ON_MeshFace broken;
+    broken.vi[0] = 0; broken.vi[1] = 1; broken.vi[2] = 7; broken.vi[3] = 7;  // 3 vertices only
+    raw.m_F.Append(good);
+    raw.m_F.Append(broken);
+    Check(!raw.IsValid(), "fixture: OpenNURBS itself agrees the mesh is invalid");
+    Model model;
+    model.AddMesh(bad);
+    Check(model.Save(bad_path) == Result::Ok,
+          "control: a model holding a mesh with an out-of-range face index still SAVES - "
+          "OpenNURBS writes it verbatim, so the READER is the boundary that has to catch it");
+  }
+  Model loaded;
+  Check(Model::Load(bad_path, loaded) == Result::Failed,
+        "Model::Load fails on a .3dm whose mesh face references a vertex index beyond the "
+        "vertex count, instead of returning Result::Ok with a mesh every kernel query would "
+        "then read out of bounds");
+  Check(loaded.ObjectCount() == 0, "...and leaves out_model empty rather than half-trusted");
+  std::remove(bad_path.c_str());
+
+  // Control: the same three vertices with only the in-range face (a
+  // degenerate-but-in-range face too - repeated indices are a legitimate
+  // thing other exporters write and indexing them is safe, so the check
+  // must NOT be as strict as ON_MeshFace::IsValid()) still load fine.
+  const std::string good_path = "dino8_kernel_model_good_mesh_index_test.3dm";
+  {
+    Mesh fine;
+    ON_Mesh& raw = fine.raw();
+    raw.m_V.Append(ON_3fPoint(0, 0, 0));
+    raw.m_V.Append(ON_3fPoint(1, 0, 0));
+    raw.m_V.Append(ON_3fPoint(0, 1, 0));
+    ON_MeshFace good;
+    good.vi[0] = 0; good.vi[1] = 1; good.vi[2] = 2; good.vi[3] = 2;
+    ON_MeshFace degenerate;
+    degenerate.vi[0] = 0; degenerate.vi[1] = 0; degenerate.vi[2] = 1; degenerate.vi[3] = 1;
+    raw.m_F.Append(good);
+    raw.m_F.Append(degenerate);
+    Model model;
+    model.AddMesh(fine);
+    Check(model.Save(good_path) == Result::Ok, "control: the in-range mesh saves");
+  }
+  Model loaded_fine;
+  Check(Model::Load(good_path, loaded_fine) == Result::Ok,
+        "control: a mesh whose every face index is in range - including a degenerate "
+        "repeated-index face - still loads with Result::Ok");
+  Check(loaded_fine.ObjectCount() == 1, "control: ...with its one mesh object intact");
+  std::remove(good_path.c_str());
+}
+
 void TestModelAddSubDRoundTrips() {
   using dino8::kernel::Model;
   using dino8::kernel::Result;
@@ -6169,6 +6418,154 @@ void TestMeshSignedDistance() {
         "just outside the +Z face (z=2.1 of 2.0) is positive");
 }
 
+void TestMeshVolumeMassProperties() {
+  using dino8::kernel::MassProperties;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  // Case 1: a 2 x 3 x 4 box with one corner at the origin, as 6 quad
+  // faces. Every expected value below is the textbook closed form for a
+  // uniform box of extents (a, b, c) = (2, 3, 4), volume V = 24, centroid
+  // (1, 1.5, 2), not a number read off the implementation:
+  //   about the centroid: Ixx = V(b^2 + c^2)/12 = 24*25/12 = 50,
+  //                       Iyy = V(a^2 + c^2)/12 = 24*20/12 = 40,
+  //                       Izz = V(a^2 + b^2)/12 = 24*13/12 = 26,
+  //                       every product of inertia 0 (axis-aligned);
+  //   about the origin (parallel-axis theorem, I_o = I_c + V*d^2):
+  //                       Ixx_o = 50 + 24*(1.5^2 + 2^2) = 200,
+  //                       Iyy_o = 40 + 24*(1^2 + 2^2)   = 160,
+  //                       Izz_o = 26 + 24*(1^2 + 1.5^2) = 104,
+  //                       Pxy_o = V*cx*cy = 36, Pyz_o = 72, Pxz_o = 48.
+  const auto box = MakeQuadBoxMesh(0, 0, 0, 2, 3, 4);
+  const MassProperties mp = box.VolumeMassProperties();
+  Check(std::abs(mp.volume - 24.0) < 1e-9, "VolumeMassProperties volume of the 2x3x4 box is exactly 24");
+  Check(mp.centroid.DistanceTo(Point3d(1, 1.5, 2)) < 1e-9,
+        "VolumeMassProperties centroid of the 2x3x4 box is exactly (1, 1.5, 2)");
+  Check(std::abs(mp.ixx - 50.0) < 1e-9 && std::abs(mp.iyy - 40.0) < 1e-9 && std::abs(mp.izz - 26.0) < 1e-9,
+        "centroidal moments of the 2x3x4 box are exactly the textbook "
+        "V(b^2+c^2)/12 family: (50, 40, 26)");
+  Check(std::abs(mp.ixy) < 1e-9 && std::abs(mp.iyz) < 1e-9 && std::abs(mp.ixz) < 1e-9,
+        "centroidal products of inertia of an axis-aligned box are exactly zero");
+  Check(std::abs(mp.ixx_origin - 200.0) < 1e-9 && std::abs(mp.iyy_origin - 160.0) < 1e-9 &&
+            std::abs(mp.izz_origin - 104.0) < 1e-9,
+        "moments about the world origin are exactly the parallel-axis "
+        "values (200, 160, 104)");
+  Check(std::abs(mp.ixy_origin - 36.0) < 1e-9 && std::abs(mp.iyz_origin - 72.0) < 1e-9 &&
+            std::abs(mp.ixz_origin - 48.0) < 1e-9,
+        "products of inertia about the world origin are exactly V*ci*cj: (36, 72, 48)");
+  Check(std::abs(mp.principal_moments[0] - 26.0) < 1e-9 && std::abs(mp.principal_moments[1] - 40.0) < 1e-9 &&
+            std::abs(mp.principal_moments[2] - 50.0) < 1e-9,
+        "principal moments come back ascending as exactly (26, 40, 50)");
+  Check(std::abs(std::abs(mp.principal_axes[0].z) - 1.0) < 1e-9 &&
+            std::abs(std::abs(mp.principal_axes[1].y) - 1.0) < 1e-9 &&
+            std::abs(std::abs(mp.principal_axes[2].x) - 1.0) < 1e-9,
+        "the principal axes are the box's own z (smallest moment), y, x "
+        "(largest) axes, matching the moment order");
+  Check(std::abs(ON_DotProduct(ON_CrossProduct(mp.principal_axes[0], mp.principal_axes[1]),
+                               mp.principal_axes[2]) -
+                 1.0) < 1e-9,
+        "the principal axes form a right-handed orthonormal frame");
+  Check(std::abs(mp.radii_of_gyration[0] - std::sqrt(26.0 / 24.0)) < 1e-9 &&
+            std::abs(mp.radii_of_gyration[2] - std::sqrt(50.0 / 24.0)) < 1e-9,
+        "radii of gyration are exactly sqrt(I_k / V)");
+
+  // Case 2: the identical box as 12 triangles (MakeBox) rather than 6
+  // quads - the quad path's second triangle (a, c, d) must contribute,
+  // or the quad mesh would come out at exactly half of these values.
+  const MassProperties tri = MakeBox(0, 0, 0, 2, 3, 4).VolumeMassProperties();
+  Check(std::abs(tri.volume - mp.volume) < 1e-9 && std::abs(tri.ixx - mp.ixx) < 1e-9 &&
+            std::abs(tri.iyy - mp.iyy) < 1e-9 && std::abs(tri.izz - mp.izz) < 1e-9 &&
+            std::abs(tri.ixy_origin - mp.ixy_origin) < 1e-9,
+        "the same box as 12 triangles gives identical mass properties to "
+        "the 6-quad version (both quad triangles are counted)");
+
+  // Case 3: the same box rotated by 0.7 rad about a skew axis and then
+  // translated. Principal moments are a rigid-motion invariant, so they
+  // must still be (26, 40, 50); the centroid must be the transformed
+  // original centroid; the principal axes must be the transformed box
+  // axes; and, the check that proves the tensor really rotated rather
+  // than staying diagonal, the world-frame products of inertia must now
+  // be clearly nonzero. Tolerances are loose only to the extent ON_Mesh
+  // stores vertices as floats (~1e-6 absolute position error at these
+  // magnitudes, which enters the moments multiplied by ~2*V*L).
+  Vector3d rotation_axis(0.3, 0.6, 0.74162);
+  rotation_axis.Unitize();
+  ON_Xform rotation;
+  rotation.Rotation(/*angle_radians=*/0.7, rotation_axis, Point3d(0.5, -1.0, 2.0));
+  const ON_Xform motion = ON_Xform::TranslationTransformation(Vector3d(5, -3, 10)) * rotation;
+  const MassProperties moved = box.Transform(motion).VolumeMassProperties();
+  Check(std::abs(moved.volume - 24.0) < 1e-4, "rigidly moved box keeps volume 24");
+  Check(moved.centroid.DistanceTo(motion * Point3d(1, 1.5, 2)) < 1e-5,
+        "rigidly moved box's centroid is the transformed original centroid");
+  Check(std::abs(moved.principal_moments[0] - 26.0) < 1e-3 && std::abs(moved.principal_moments[1] - 40.0) < 1e-3 &&
+            std::abs(moved.principal_moments[2] - 50.0) < 1e-3,
+        "principal moments are a rigid-motion invariant: still (26, 40, 50) "
+        "after rotation + translation");
+  Check(std::abs(moved.ixy) + std::abs(moved.iyz) + std::abs(moved.ixz) > 1.0,
+        "the rotated box's world-frame products of inertia are clearly "
+        "nonzero (the tensor genuinely rotated, it isn't just re-diagonalized)");
+  Check(std::abs(std::abs(ON_DotProduct(moved.principal_axes[2], motion * Vector3d(1, 0, 0))) - 1.0) < 1e-5 &&
+            std::abs(std::abs(ON_DotProduct(moved.principal_axes[1], motion * Vector3d(0, 1, 0))) - 1.0) < 1e-5 &&
+            std::abs(std::abs(ON_DotProduct(moved.principal_axes[0], motion * Vector3d(0, 0, 1))) - 1.0) < 1e-5,
+        "the principal axes are the rotated box's own x/y/z axes");
+
+  // Case 4: a genuinely curved solid with a closed-form inertia tensor -
+  // a torus of major radius R = 3, minor radius r = 1 about z. For a
+  // uniform torus of mass M: I_axis = M(R^2 + 3r^2/4) = 9.75 M and, about
+  // any diameter in its plane, I_diam = M(R^2/2 + 5r^2/8) = 5.125 M. The
+  // polygonal torus is exact for the polyhedron it is and converges to
+  // those as the segment counts grow; at 96 x 48 its per-volume moments
+  // land within 1% of the smooth values (the tolerance below), which a
+  // sampled/approximate integrator at this resolution wouldn't. Two
+  // exact properties hold regardless of tessellation: the 96-fold
+  // rotational symmetry makes the two in-plane moments equal (an n-fold
+  // symmetric body's in-plane tensor is isotropic for n >= 3), and the
+  // largest-moment principal axis is the torus's own axis.
+  const auto torus = Mesh::Torus(Point3d(0, 0, 0), Vector3d(0, 0, 1), 3.0, 1.0, 96, 48);
+  const MassProperties tp = torus.VolumeMassProperties();
+  Check(std::abs(tp.principal_moments[2] / tp.volume - 9.75) < 0.01 * 9.75,
+        "torus moment about its own axis per unit volume is within 1% of "
+        "the closed-form R^2 + 3r^2/4 = 9.75");
+  Check(std::abs(tp.principal_moments[0] / tp.volume - 5.125) < 0.01 * 5.125,
+        "torus moment about an in-plane diameter per unit volume is within "
+        "1% of the closed-form R^2/2 + 5r^2/8 = 5.125");
+  Check(std::abs(tp.principal_moments[0] - tp.principal_moments[1]) < 1e-6 * tp.principal_moments[0],
+        "the torus's two in-plane principal moments are equal (96-fold "
+        "symmetry makes its in-plane tensor exactly isotropic)");
+  Check(std::abs(std::abs(tp.principal_axes[2].z) - 1.0) < 1e-6,
+        "the torus's largest-moment principal axis is its own z axis");
+
+  // The same torus translated far from the origin: its centroidal tensor
+  // must be unchanged (the parallel-axis correction is exact on a curved
+  // body too, not just the box), and its centroid must be the new center.
+  const auto far_torus = Mesh::Torus(Point3d(10, -5, 2), Vector3d(0, 0, 1), 3.0, 1.0, 96, 48);
+  const MassProperties fp = far_torus.VolumeMassProperties();
+  Check(fp.centroid.DistanceTo(Point3d(10, -5, 2)) < 1e-5,
+        "translated torus's centroid is its own center");
+  Check(std::abs(fp.ixx - tp.ixx) < 1e-4 * tp.ixx && std::abs(fp.izz - tp.izz) < 1e-4 * tp.izz &&
+            std::abs(fp.ixy - tp.ixy) < 1e-4 * tp.ixx,
+        "translated torus's centroidal inertia tensor equals the origin-"
+        "centered one's (parallel-axis correction exact on a curved body)");
+
+  // Case 5: an inside-out mesh and an empty mesh both throw rather than
+  // returning negated or divide-by-zero moments.
+  bool threw_flipped = false;
+  try {
+    box.FlipNormals().VolumeMassProperties();
+  } catch (const std::invalid_argument&) {
+    threw_flipped = true;
+  }
+  Check(threw_flipped, "VolumeMassProperties throws on an inside-out (negative-volume) mesh");
+  bool threw_empty = false;
+  try {
+    Mesh().VolumeMassProperties();
+  } catch (const std::invalid_argument&) {
+    threw_empty = true;
+  }
+  Check(threw_empty, "VolumeMassProperties throws on a mesh with no volume");
+}
+
 void TestMeshAreaCountsBothQuadTriangles() {
   using dino8::kernel::Mesh;
 
@@ -6984,6 +7381,80 @@ void TestMeshLoadStlBinary() {
         "recognizable ASCII tokens in the raw header bytes and returns "
         "an empty mesh rather than crashing or misreading");
   std::remove(truncated_path.c_str());
+}
+
+void TestMeshLoadStlBinaryRejectsNonFiniteVertices() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Result;
+
+  // Regression: the binary STL reader copied each 32-bit float straight
+  // into the mesh, so a record carrying a NaN or Inf vertex coordinate
+  // loaded with Result::Ok and the NaN then propagated silently into every
+  // downstream query (confirmed by a debug run against the pre-fix build:
+  // Volume() == NaN, GetCentroid() == (NaN, NaN, NaN) because its own
+  // zero-volume guard fails open on NaN, and MergeAndWeld() could not weld
+  // the poisoned vertex, so IsClosedManifold() went false on an otherwise
+  // closed solid). The ASCII path already refuses "nan"/"inf" tokens
+  // (operator>> sets failbit on them), so only the binary path needed
+  // the check - documented by the last Check() below rather than assumed.
+  auto write_tetrahedron = [](const std::string& path, bool poison, float poison_value) {
+    std::ofstream out(path, std::ios::binary);
+    char header[80] = {0};
+    out.write(header, sizeof(header));
+    const uint32_t triangle_count = 4;
+    out.write(reinterpret_cast<const char*>(&triangle_count), sizeof(triangle_count));
+    // A closed, outward-wound unit tetrahedron (volume exactly 1/6).
+    const float v[4][3] = {{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+    const int tris[4][3] = {{0, 2, 1}, {0, 1, 3}, {0, 3, 2}, {1, 2, 3}};
+    for (int t = 0; t < 4; ++t) {
+      const float normal[3] = {0, 0, 0};
+      out.write(reinterpret_cast<const char*>(normal), sizeof(normal));
+      for (int k = 0; k < 3; ++k) {
+        float p[3] = {v[tris[t][k]][0], v[tris[t][k]][1], v[tris[t][k]][2]};
+        if (poison && t == 3 && k == 0) p[2] = poison_value;
+        out.write(reinterpret_cast<const char*>(p), sizeof(p));
+      }
+      const uint16_t attribute_byte_count = 0;
+      out.write(reinterpret_cast<const char*>(&attribute_byte_count), sizeof(attribute_byte_count));
+    }
+  };
+  const std::string clean_path = "dino8_kernel_mesh_stl_binary_finite_test.stl";
+  const std::string nan_path = "dino8_kernel_mesh_stl_binary_nan_test.stl";
+  const std::string inf_path = "dino8_kernel_mesh_stl_binary_inf_test.stl";
+  write_tetrahedron(clean_path, false, 0.0f);
+  write_tetrahedron(nan_path, true, std::numeric_limits<float>::quiet_NaN());
+  write_tetrahedron(inf_path, true, std::numeric_limits<float>::infinity());
+
+  Mesh clean;
+  Check(Mesh::LoadStl(clean_path, clean) == Result::Ok,
+        "control: the same tetrahedron with all-finite coordinates still loads");
+  const Mesh welded = Mesh::MergeAndWeld({clean});
+  Check(welded.IsClosedManifold() && std::abs(welded.Volume() - 1.0 / 6.0) < 1e-6,
+        "control: ...and welds into a closed solid with the tetrahedron's own volume 1/6");
+
+  Mesh poisoned;
+  Check(Mesh::LoadStl(nan_path, poisoned) == Result::Failed,
+        "LoadStl fails on a binary STL whose vertex carries a NaN coordinate instead of "
+        "loading it");
+  Check(Mesh::LoadStl(inf_path, poisoned) == Result::Failed,
+        "LoadStl fails on a binary STL whose vertex carries an Inf coordinate");
+
+  // The ASCII path's existing behaviour for the same poison, documented
+  // so a future parser change can't silently open this hole from the
+  // other side.
+  const std::string ascii_path = "dino8_kernel_mesh_stl_ascii_nan_test.stl";
+  {
+    std::ofstream out(ascii_path);
+    out << "solid t\nfacet normal 0 0 0\nouter loop\nvertex nan 0 0\nvertex 1 0 0\n"
+           "vertex 0 1 0\nendloop\nendfacet\nendsolid t\n";
+  }
+  Check(Mesh::LoadStl(ascii_path, poisoned) == Result::Failed,
+        "the ASCII path already rejects a 'nan' vertex token (stream parse failure)");
+
+  std::remove(clean_path.c_str());
+  std::remove(nan_path.c_str());
+  std::remove(inf_path.c_str());
+  std::remove(ascii_path.c_str());
 }
 
 void TestMeshSaveStlBinaryRoundTrips() {
@@ -20665,6 +21136,7 @@ int main() {
   ON::Begin();
 
   TestCurveDegreeElevation();
+  TestCurveFromControlPointsRejectsDegenerateInput();
   TestCurveLength();
   TestCurveParameterAtArcLength();
   TestCurveDivideByCount();
@@ -20693,6 +21165,7 @@ int main() {
   TestCurveCurvature();
   TestCurveSuggestedSamples();
   TestCurveSuggestedParameterValues();
+  TestSurfaceFromControlGridRejectsDegenerateInput();
   TestSurfaceNormalAt();
   TestSurfaceDegreeElevation();
   TestSurfaceIsClosed();
@@ -20702,6 +21175,7 @@ int main() {
   TestSurfaceIsCone();
   TestSurfaceIsTorus();
   TestSurfaceIntersectSphereGreatCircle();
+  TestIntersectCurvesFindsCrossingsAndRejectsMisses();
   TestBooleanCombineGeneralBoxBox();
   TestBooleanCombineGeneralCoplanarBoxes();
   TestBooleanCombineGeneralBoxCylinder();
@@ -20741,6 +21215,7 @@ int main() {
   TestFileRoundTrip();
   TestModelAddMeshRoundTrips();
   TestModelAddSubDRoundTrips();
+  TestModelLoadRejectsMeshWithOutOfRangeFaceIndex();
   TestSplitByPlane();
   TestConvexHull();
   TestSimplify();
@@ -20789,6 +21264,7 @@ int main() {
   TestMeshContainsPoint();
   TestMeshClosestPoint();
   TestMeshSignedDistance();
+  TestMeshVolumeMassProperties();
   TestMeshAreaCountsBothQuadTriangles();
   TestSubDFromBoxSubdividesToExactCatmullClarkCounts();
   TestSubDFromControlMeshRejectsEmptyMesh();
@@ -20802,6 +21278,7 @@ int main() {
   TestMeshSaveStlSplitsQuadsAndComputesNormals();
   TestMeshLoadStlRoundTrips();
   TestMeshLoadStlBinary();
+  TestMeshLoadStlBinaryRejectsNonFiniteVertices();
   TestMeshSaveStlBinaryRoundTrips();
   TestExactClippingMatchesAreaButNotCellCounts();
   TestExactClippingHandlesNonConvexTrim();

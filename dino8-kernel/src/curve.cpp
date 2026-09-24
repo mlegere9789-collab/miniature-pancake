@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
+#include <string>
 
 namespace dino8::kernel {
 
@@ -195,9 +196,30 @@ Result NurbsCurve::FitLeastSquares(const std::vector<Point3d>& points, int degre
 
 NurbsCurve NurbsCurve::FromControlPoints(const std::vector<Point3d>& control_points,
                                           int degree) {
-  NurbsCurve result;
+  // ON_NurbsCurve::Create() refuses order < 2 or cv_count < order by
+  // returning false BEFORE it sets m_order/m_cv_count or allocates m_cv,
+  // and the SetCV()/MakeClampedUniformKnotVector() calls below then
+  // silently no-op against that never-allocated curve. Without this
+  // check the result was a completely empty curve that still looked
+  // usable - Degree() 0, ControlPointCount() 0, KnotCount() -2,
+  // Domain() == [ON_UNSET_VALUE, ON_UNSET_VALUE], PointAt() == (0, 0, 0)
+  // and Length() == 0 for every input (confirmed by a debug run, not
+  // assumed) - i.e. a silently wrong result rather than a failure, and
+  // reachable from any caller forwarding a user-supplied degree without
+  // first clamping it to the point count (the app's Python AddCurve does).
+  if (degree < 1) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsCurve::FromControlPoints: degree must be at least 1");
+  }
   const int order = degree + 1;
   const int cv_count = static_cast<int>(control_points.size());
+  if (cv_count < order) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsCurve::FromControlPoints: a degree-" + std::to_string(degree) +
+        " curve needs at least " + std::to_string(order) + " control points, got " +
+        std::to_string(cv_count));
+  }
+  NurbsCurve result;
   result.curve_.Create(/*dimension=*/3, /*is_rational=*/false, order, cv_count);
 
   for (int i = 0; i < cv_count; ++i) {

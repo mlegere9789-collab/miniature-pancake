@@ -85,6 +85,40 @@ struct CurveSurfaceHit {
 };
 std::vector<CurveSurfaceHit> IntersectCurveSurface(const ON_Curve& c, const ON_Surface& s, const IntersectOptions& opt);
 
+struct CurveCurveHit {
+  double ta = 0;    // parameter on curve a
+  double tb = 0;    // parameter on curve b
+  Point3d point;    // Newton-refined point (the midpoint of A(ta) and B(tb), which
+                     // coincide to within opt.tolerance once refinement succeeds)
+  double error = 0; // |A(ta) - B(tb)| after refinement
+};
+
+// All points where two 3D curves meet within opt.tolerance (CCX - the
+// curve/curve counterpart to IntersectSurfaces (SSX) and
+// IntersectCurveSurface (CSX) above; the public OpenNURBS SDK has no
+// curve/curve intersector either, the same gap those two fill). Two
+// general space curves only meet at isolated points (never along a shared
+// span, barring literal geometric coincidence - see the caveat in
+// surface_intersect.cpp), so unlike SSX this returns points, not curves.
+//
+// Seeded the same way as IntersectCurveSurface: both curves are sampled
+// into polylines at a resolution driven by opt.mesh_tolerance (not
+// opt.max_mesh_divisions/min_mesh_divisions - those bound the *surface*
+// mesher's adaptive refinement, which this doesn't use), every polyline
+// segment pair whose padded bounding boxes overlap is checked with an
+// exact closest-point-between-two-segments computation, and every
+// close-approach pair seeds a Newton refinement (via NewtonSolve below)
+// on (ta, tb) minimizing |A(ta) - B(tb)|. Refined hits within
+// opt.tolerance * 4 of an already-accepted one are dropped as duplicates
+// of the same crossing, the same dedup rule IntersectCurveSurface uses.
+//
+// Not intended for two curves that are coincident (or partially
+// coincident) over a real span - that residual stays near zero along the
+// whole overlap, and this seeding/dedup scheme reports whatever handful
+// of isolated points its finite sampling happens to converge to, not the
+// shared span itself.
+std::vector<CurveCurveHit> IntersectCurves(const ON_Curve& a, const ON_Curve& b, const IntersectOptions& opt);
+
 // --- numerical helpers ------------------------------------------------------
 
 // Damped Gauss-Newton on residual(x) (m equations, n unknowns) with box
