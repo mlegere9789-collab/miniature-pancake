@@ -249,7 +249,15 @@ Mesh OffsetSolid(const Mesh& solid, double distance, int sphere_divisions) {
   }
   const Brep sphere_brep = Brep::Sphere(Point3d(0.0, 0.0, 0.0), std::fabs(distance));
   const Mesh sphere = sphere_brep.TessellateToClosedMesh(sphere_divisions, sphere_divisions);
-  return distance > 0.0 ? MinkowskiSum(solid, sphere) : MinkowskiDifference(solid, sphere);
+  if (distance > 0.0) return MinkowskiSum(solid, sphere);
+  const Mesh eroded = MinkowskiDifference(solid, sphere);
+  if (eroded.VertexCount() == 0) {
+    throw std::runtime_error(
+        "dino8::kernel::OffsetSolid: this shrink exceeds the solid's own "
+        "smallest feature size and erodes it away to nothing - not a "
+        "valid offset result");
+  }
+  return eroded;
 }
 
 std::vector<Mesh> Decompose(const Mesh& mesh) {

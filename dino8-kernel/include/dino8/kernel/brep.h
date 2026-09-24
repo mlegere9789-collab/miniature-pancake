@@ -2516,6 +2516,70 @@ class Brep {
   // Returns the number of edges collapsed. Clears the side tables.
   int RemoveDegenerateEdges(double tolerance = tolerance::kDistance);
 
+  // Splits a naked (1-trim) edge into two coincident naked edges meeting
+  // at a new vertex at `point` - the missing primitive behind "tolerant
+  // sewing" (PARITY_MAP.md's own "[missing] Tolerant sewing with edge
+  // splitting": JoinNakedEdges()/the app layer's own JoinNakedEdges both
+  // require two naked edges to match ENDPOINT-TO-ENDPOINT within
+  // tolerance - an edge B that only coincides with PART of a longer
+  // naked edge A (a T-junction: B's own far endpoint lands partway along
+  // A, not at A's own end) can never be joined at all today, since
+  // neither of A's own two ends is anywhere near B's far endpoint. This
+  // is the tool that turns that case into two ordinary matching-endpoint
+  // joins: split A at B's own far endpoint first, then join each half to
+  // B and its own true neighbour.
+  //
+  // `point` is projected onto the edge's own curve (via this kernel's
+  // own NurbsCurve::ClosestPointParameter - the same closest-point
+  // solver ReplaceEdgeCurve() and RemoveNakedMicroEdge() already trust)
+  // to find the split parameter; the projected point (not the caller's
+  // raw `point`) becomes the new vertex, so a `point` that is merely
+  // NEAR the curve still gives an exact new vertex ON it. Restricted to
+  // LINEAR edges (see the implementation's own comment for the two
+  // independent curved-edge fixtures this was tested against and found
+  // wrong on): both the 3D edge curve and the trim's own 2D curve are
+  // split EXACTLY via ON_Curve::Split() (a real curve-domain split,
+  // never a resampled refit) for a straight FromPlanarFaces() boundary,
+  // the one case this is proven correct on.
+  //
+  // Which piece of the exact split (the curve's own "before"/"after" the
+  // split parameter) corresponds to which physical half (old-start-to-
+  // new-vertex vs. new-vertex-to-old-end) is decided by DIRECT 3D
+  // measurement - which piece's own start point is closer to the edge's
+  // existing start vertex - never assumed from the curve's own
+  // parameter direction or the trim's own m_bRev3d flag.
+  //
+  // Returns Result::Failed - not a thrown exception, the same "can't,
+  // but that's not a bug" contract UnjoinEdge()/RemoveNakedMicroEdge()
+  // already have - if `edge_index` refers to an edge that is not
+  // exactly naked (TrimCount() != 1; a shared or non-manifold edge is
+  // out of scope here, same restriction RemoveNakedMicroEdge() places on
+  // its own neighbours), if the edge is not LINEAR (see the
+  // implementation's own comment: tested directly against a clean,
+  // Check()-verified open curved fixture - a partial-angle cylindrical
+  // wedge's own un-capped rim - and found to silently produce real
+  // topology defects (genuine LoopGap/InvalidTrim issues Check() itself
+  // catches) despite this method's own internal checks reporting
+  // Result::Ok; scoped down to the one case proven correct rather than
+  // shipped broken), if `point` does not land within `tolerance` of the
+  // edge's own curve, or if the resulting split
+  // parameter is not strictly interior (within `tolerance` of either
+  // end - nothing meaningful to split). Throws std::out_of_range if
+  // `edge_index` itself is out of range, or std::invalid_argument if it
+  // refers to an already-deleted edge - both genuine caller bugs, not
+  // ordinary outcomes.
+  //
+  // Clears this class's own per-face side tables (the affected face's
+  // trim loop just gained one more segment - see MergeCoplanarFaces()'s
+  // own comment for why every topology-surgery method here must).
+  // DETECTION ONLY beyond the split itself: this does not search for or
+  // orchestrate a T-junction join on its own (that orchestration - find
+  // a naked edge whose endpoint lies strictly inside another naked
+  // edge's own span, split the longer one there, then JoinNakedEdges()
+  // the resulting matching pairs - is a caller-level loop over this
+  // primitive, not built into it here).
+  Result SplitNakedEdgeAt(int edge_index, Point3d point, double tolerance = tolerance::kDistance);
+
   // Caps every planar hole in this Brep's open boundary with a new
   // planar face - Rhino's own Cap for the case Check() reports as a
   // closed chain of NakedEdge issues: each chain of naked (single-trim)

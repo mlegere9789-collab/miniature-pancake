@@ -128,6 +128,29 @@ Mesh MinkowskiDifference(const Mesh& a, const Mesh& b);
 // MinkowskiSum()/MinkowskiDifference() themselves throw for other
 // failures (e.g. `solid` not a valid closed manifold, same requirement
 // as BooleanCombine()).
+//
+// A real, deliberately enforced correctness guard, not an omission: a
+// shrink (`distance < 0`) whose magnitude exceeds `solid`'s own smallest
+// feature size (e.g. shrinking a thin plate by more than half its
+// thickness) mathematically erodes it away to NOTHING - unlike a naive
+// per-vertex offset, morphological erosion by a ball can never produce
+// an invalid or self-intersecting mesh, but it CAN legitimately produce
+// an EMPTY one, and `MinkowskiDifference()` itself returns that empty
+// mesh without complaint (confirmed directly, not assumed: a 10x10x1
+// plate shrunk by 0.6, exceeding its own 0.5 half-thickness, silently
+// comes back with `VertexCount() == 0`). A caller expecting a genuine
+// solid result would otherwise get an empty mesh with no signal
+// distinguishing "this shrink was infeasible" from any other empty-mesh
+// case, so this throws `std::runtime_error` instead when a `distance <
+// 0` call's own result comes back with `VertexCount() == 0` - the direct
+// mesh-level analogue of `OffsetAnalytic()`'s `new_radius <= 0` guard and
+// `OffsetFace()`'s degenerate-clipped-face guard, generalized here to an
+// arbitrary (possibly non-convex, possibly disconnected) solid where no
+// single closed-form "local radius of curvature" exists to check against
+// in advance - the erosion is actually performed and its result is
+// checked, not predicted. Growing (`distance > 0`) is never checked this
+// way: dilation by a ball only ever adds volume, so it cannot collapse a
+// solid to nothing.
 Mesh OffsetSolid(const Mesh& solid, double distance, int sphere_divisions = 24);
 
 // Splits `mesh` into its disconnected pieces - one Mesh per connected

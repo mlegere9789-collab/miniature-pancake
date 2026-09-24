@@ -5493,6 +5493,48 @@ void TestOffsetSolidShrinkStaysExactForConvexSolid() {
         "with no Steiner rounding term at all (a convex shrink stays sharp)");
 }
 
+void TestOffsetSolidExcessiveShrinkErodesToNothingAndThrows() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::OffsetSolid;
+
+  // A thin plate: half-thickness is 0.5. Shrinking by MORE than that
+  // mathematically erodes the whole solid away to nothing - a real
+  // correctness hazard (the standing concern this whole offset/shell/
+  // thicken subsystem was scoped to check for: does the kernel detect an
+  // infeasible offset, or silently hand back something wrong?), not a
+  // hypothetical: confirmed directly (before this guard existed) that
+  // MinkowskiDifference() itself returns a genuinely empty mesh here with
+  // no error at all.
+  const Brep plate_brep = Brep::Box(0, 0, 0, 10, 10, 1);
+  const Mesh plate = plate_brep.TessellateToClosedMesh(4, 4);
+
+  bool threw_excessive = false;
+  try {
+    OffsetSolid(plate, -0.6, 24);
+  } catch (const std::runtime_error&) {
+    threw_excessive = true;
+  }
+  Check(threw_excessive,
+        "OffsetSolid(-0.6) on a plate whose half-thickness is 0.5 throws rather than "
+        "silently returning the empty mesh MinkowskiDifference() itself produces");
+
+  bool threw_way_excessive = false;
+  try {
+    OffsetSolid(plate, -5.0, 24);
+  } catch (const std::runtime_error&) {
+    threw_way_excessive = true;
+  }
+  Check(threw_way_excessive, "OffsetSolid(-5.0), far beyond feasible, also throws");
+
+  // A safe shrink (well within the half-thickness) must still succeed and
+  // produce genuine, non-empty geometry - this guard only catches the
+  // real infeasible case, not every inward offset.
+  const Mesh safe = OffsetSolid(plate, -0.2, 24);
+  Check(safe.VertexCount() > 0 && safe.FaceCount() > 0,
+        "OffsetSolid(-0.2) on the same plate (well within its half-thickness) succeeds normally");
+}
+
 void TestOffsetSolidZeroDistanceIsIdentityAndArgumentChecks() {
   using dino8::kernel::Brep;
   using dino8::kernel::Mesh;
@@ -6993,6 +7035,176 @@ void TestBrepRemoveDegenerateEdgesCollapsesSharedMicroEdge() {
   const dino8::kernel::Mesh mesh = box.TessellateToClosedMeshTolerant(4, 4);
   Check(mesh.IsClosedManifold() && std::fabs(mesh.Volume() - 1.0) < 1e-6,
         "...whose tolerant tessellation is a closed manifold of volume 1");
+}
+
+// SplitNakedEdgeAt on a straight edge: a standalone unit-square plate
+// (FromPlanarFaces with one face, so all 4 boundary edges are genuinely
+// naked - see brep.h's class comment on why Box()/Sphere() have no
+// topology to split at all) has its top edge (y=1, x in [0,1]) split at
+// its own midpoint. Verified against hand-derived exact numbers: the
+// split adds exactly one vertex and one edge, both halves stay naked,
+// land exactly at (0.5, 1, 0), and the plate's own area - the one
+// number a boundary subdivision must NEVER change - stays exactly 1.0.
+void TestBrepSplitNakedEdgeAtStraightEdgeSubdividesBoundaryExactly() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  Brep::PlanarFace bottom = CheckHealFace(
+      {Point3d(0, 1, 0), Point3d(1, 1, 0), Point3d(1, 0, 0), Point3d(0, 0, 0)}, ON_3dVector(0, 0, -1));
+  Brep plate = Brep::FromPlanarFaces({bottom});
+  Check(plate.FaceCount() == 1 && plate.raw().m_E.Count() == 4 && plate.raw().m_V.Count() == 4,
+        "the unit-square plate fixture has 1 face, 4 naked edges, 4 vertices");
+  Check(plate.raw().IsValid(), "the plate fixture is a valid ON_Brep before the split");
+  const double area_before = plate.Tessellate(8, 8)[0].Area();
+  // 1e-6, not 1e-9: TessellateGridClippedExact's own exact-clip polygon
+  // intersection measurably lands at ~1.5e-8 off 1.0 here (checked
+  // directly - the single-precision ON_3fPoint vertex storage this
+  // kernel's own tests elsewhere already document as a real floor, e.g.
+  // TestBooleanIntersectConvexPlanarExactBoxOverlap's own 1e-4 comment).
+  Check(std::fabs(area_before - 1.0) < 1e-6, "the plate's own area is 1.0 (to the kernel's own float-vertex tolerance) before the split");
+
+  // Edge 0 is (0,1,0)-(1,1,0) by FromPlanarFaces' own loop-walk order.
+  Check(plate.raw().m_E[0].PointAtStart().DistanceTo(Point3d(0, 1, 0)) < 1e-9 &&
+            plate.raw().m_E[0].PointAtEnd().DistanceTo(Point3d(1, 1, 0)) < 1e-9,
+        "edge 0 is confirmed to be the top (y=1) boundary edge before splitting it");
+
+  const Result r = plate.SplitNakedEdgeAt(0, Point3d(0.5, 1, 0));
+  Check(r == Result::Ok, "SplitNakedEdgeAt succeeds on the top edge at its own exact midpoint");
+  Check(plate.FaceCount() == 1, "still exactly 1 face - only the boundary loop gained a vertex");
+  Check(plate.raw().m_E.Count() == 5 && plate.raw().m_V.Count() == 5,
+        "the split added exactly 1 edge and 1 vertex (4 -> 5 each)");
+  Check(plate.raw().IsValid(), "the split plate is still a valid ON_Brep");
+
+  int naked_at_half = 0;
+  bool both_halves_naked = true;
+  for (int i = 0; i < plate.raw().m_E.Count(); ++i) {
+    const ON_BrepEdge& e = plate.raw().m_E[i];
+    if (e.m_edge_index < 0) continue;
+    if (e.TrimCount() != 1) both_halves_naked = false;
+    const bool touches_split = e.PointAtStart().DistanceTo(Point3d(0.5, 1, 0)) < 1e-9 ||
+                               e.PointAtEnd().DistanceTo(Point3d(0.5, 1, 0)) < 1e-9;
+    if (touches_split) ++naked_at_half;
+  }
+  Check(both_halves_naked, "every remaining edge (including both new halves) is still naked - splitting a boundary edge cannot create a shared one");
+  Check(naked_at_half == 2, "exactly 2 edges touch the new split point (0.5,1,0) - the two halves, meeting there and nowhere else");
+
+  const double area_after = plate.Tessellate(8, 8)[0].Area();
+  Check(std::fabs(area_after - 1.0) < 1e-6,
+        "the plate's own area is UNCHANGED (still 1.0, to the same float-vertex tolerance) after splitting its "
+        "boundary - a boundary subdivision must never alter the shape it bounds");
+  Check(std::fabs(area_after - area_before) < 1e-9,
+        "...matched MUCH more tightly against area_before itself (both measured through the identical "
+        "tessellation pipeline) - the split changes nothing about the interior at all, not even within the "
+        "float-vertex floor above");
+
+  Check(plate.Check().Count(Brep::CheckIssue::Kind::NakedEdge) == 5,
+        "Check() now reports 5 NakedEdge issues (one per boundary edge) - splitting doubled one issue into two, not lost or gained a defect");
+}
+
+// SplitNakedEdgeAt refuses a genuinely CURVED naked edge, rather than
+// risk the silently-wrong result direct testing found for that case
+// (see the implementation's own doc comment): a lone CylindricalFace
+// wedge (angle = pi, NO caps at all - a fixture independently verified
+// clean via Check() first, so nothing here can be blamed on a
+// pre-existing fixture defect) has its curved rim (the boundary edge
+// that is neither closed nor IsLinear()) left completely untouched by a
+// refused split - checked directly against the exact Brep state before
+// the call, not just "the edge count didn't change."
+void TestBrepSplitNakedEdgeAtRefusesACurvedEdge() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+  using dino8::kernel::Vector3d;
+
+  const ON_Plane frame = FrameFromAxisForGeneralBooleanTest(Point3d(0, 0, 0), Vector3d(0, 0, 1));
+  Brep::CylindricalFace cf;
+  cf.frame = frame;
+  cf.radius = 1.0;
+  cf.angle = ON_PI;  // a half-cylinder wedge - no caps at all
+  cf.length = 2.0;
+  Brep wedge = Brep::FromMixedFaces({}, {cf});
+  Check(wedge.FaceCount() == 1 && wedge.raw().m_E.Count() == 4,
+        "the un-capped wedge fixture has 1 face and 4 naked boundary edges (2 straight sides, 2 curved rims)");
+  const Brep::CheckReport clean = wedge.Check();
+  Check(clean.IsClean() == false && clean.issues.size() == 4 && clean.Count(Brep::CheckIssue::Kind::NakedEdge) == 4,
+        "Check() on the fresh wedge reports EXACTLY the 4 expected NakedEdge issues and nothing else - a clean "
+        "baseline, so nothing found after a refused split below can be blamed on a pre-existing fixture defect");
+
+  int curved_edge = -1;
+  for (int i = 0; i < wedge.raw().m_E.Count(); ++i) {
+    const ON_BrepEdge& e = wedge.raw().m_E[i];
+    if (e.TrimCount() == 1 && !e.IsClosed() && !e.IsLinear(1e-6)) curved_edge = i;
+  }
+  Check(curved_edge >= 0, "the wedge fixture has an open (not closed), non-linear naked rim edge to test the refusal on");
+  const ON_BrepEdge& e = wedge.raw().m_E[curved_edge];
+  const Point3d split_point = e.PointAt(e.Domain().ParameterAt(0.4));
+  const int vertex_count_before = wedge.raw().m_V.Count();
+
+  const Result r = wedge.SplitNakedEdgeAt(curved_edge, split_point);
+  Check(r == Result::Failed, "SplitNakedEdgeAt refuses a curved edge (Result::Failed), never attempting the split");
+  Check(wedge.FaceCount() == 1 && wedge.raw().m_E.Count() == 4 && wedge.raw().m_V.Count() == vertex_count_before,
+        "...and the refusal leaves the wedge's own face/edge/vertex counts exactly as they were");
+  const Brep::CheckReport after = wedge.Check();
+  Check(after.issues.size() == clean.issues.size() && after.Count(Brep::CheckIssue::Kind::NakedEdge) == 4 &&
+            after.Count(Brep::CheckIssue::Kind::LoopGap) == 0 && after.Count(Brep::CheckIssue::Kind::InvalidTrim) == 0,
+        "...and Check() reports EXACTLY the same clean baseline afterward - no LoopGap or InvalidTrim defect was "
+        "introduced by the refused attempt (the specific failure mode direct testing found before this guard existed)");
+}
+
+// SplitNakedEdgeAt's own refusals and thrown-exception contract: a
+// shared (non-naked) edge and a point too far from the curve both return
+// Result::Failed (an ordinary, expected outcome per this method's own
+// doc comment), while an out-of-range or already-deleted edge_index
+// throws - the same two-tier contract UnjoinEdge()/RemoveNakedMicroEdge()
+// already establish, verified here for THIS method specifically rather
+// than assumed to carry over.
+void TestBrepSplitNakedEdgeAtRefusesInvalidInputs() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  Brep box = Brep::FromPlanarFaces(CheckHealBoxFaces());
+  Check(box.raw().IsValid() && box.raw().IsSolid(), "the closed-box fixture is a valid solid to begin with");
+
+  // Every edge of a closed box is shared (2-trim) - not naked.
+  Check(box.SplitNakedEdgeAt(0, box.raw().m_E[0].PointAt(box.raw().m_E[0].Domain().Mid())) == Result::Failed,
+        "SplitNakedEdgeAt returns Result::Failed on a shared (2-trim) edge, not a thrown exception");
+  Check(box.raw().m_E.Count() == 12, "...and leaves the box completely untouched (still 12 edges)");
+
+  Brep::PlanarFace bottom = CheckHealFace(
+      {Point3d(0, 1, 0), Point3d(1, 1, 0), Point3d(1, 0, 0), Point3d(0, 0, 0)}, ON_3dVector(0, 0, -1));
+  Brep plate = Brep::FromPlanarFaces({bottom});
+
+  Check(plate.SplitNakedEdgeAt(0, Point3d(0.5, 5.0, 0)) == Result::Failed,
+        "a point far from the naked edge's own curve (distance 4.0, above the default kDistance tolerance) is refused");
+  Check(plate.SplitNakedEdgeAt(0, Point3d(0.0, 1.0, 0)) == Result::Failed,
+        "a point within tolerance of an EXISTING endpoint - nothing left to split - is refused, not silently "
+        "accepted as a zero-length new edge");
+  Check(plate.raw().m_E.Count() == 4, "every refusal above left the plate's own 4 edges completely untouched");
+
+  bool threw_range = false;
+  try {
+    plate.SplitNakedEdgeAt(plate.raw().m_E.Count() + 100, Point3d(0, 0, 0));
+  } catch (const std::out_of_range&) {
+    threw_range = true;
+  }
+  Check(threw_range, "an out-of-range edge_index throws std::out_of_range, not Result::Failed - a genuine caller bug");
+
+  // A deliberately deleted-but-not-yet-Compact()ed edge (raw() access,
+  // mirroring how a caller mid-way through their own manual DeleteEdge()/
+  // Compact() sequence could reach this exact state) - SplitNakedEdgeAt()
+  // itself always Compact()s before returning, so this state can't be
+  // produced by calling it a second time (Compact() would have already
+  // renumbered edge 0 into a different, live edge).
+  plate.raw().m_E[0].m_edge_index = -1;
+  bool threw_deleted = false;
+  try {
+    plate.SplitNakedEdgeAt(0, Point3d(0, 0, 0));
+  } catch (const std::invalid_argument&) {
+    threw_deleted = true;
+  }
+  Check(threw_deleted, "edge_index 0 marked deleted (m_edge_index < 0) throws std::invalid_argument, not Result::Failed");
 }
 
 // Brep::Check()'s 3D counterpart to its own 2D SelfIntersectingLoop check
@@ -28961,6 +29173,7 @@ int main() {
   TestMinkowskiSum();
   TestOffsetSolidGrowMatchesSteinerFormula();
   TestOffsetSolidShrinkStaysExactForConvexSolid();
+  TestOffsetSolidExcessiveShrinkErodesToNothingAndThrows();
   TestOffsetSolidZeroDistanceIsIdentityAndArgumentChecks();
   TestDecompose();
   TestMinGap();
@@ -29269,6 +29482,9 @@ int main() {
   TestBrepJoinNakedEdgesRecordsTolerantEdges();
   TestBrepRemoveSliverAndDegenerateFacesHealHairlineStrip();
   TestBrepRemoveDegenerateEdgesCollapsesSharedMicroEdge();
+  TestBrepSplitNakedEdgeAtStraightEdgeSubdividesBoundaryExactly();
+  TestBrepSplitNakedEdgeAtRefusesACurvedEdge();
+  TestBrepSplitNakedEdgeAtRefusesInvalidInputs();
   TestBrepCheckDetects3dSelfIntersectingLoopBeyondThe2dTrimCheck();
   TestMeshCheckAndFillSmallHolesRestoreDroppedFaces();
   TestMeshUnifyNormalsFixesFlippedAndInvertedFaces();

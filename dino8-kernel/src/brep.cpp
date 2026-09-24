@@ -6253,6 +6253,170 @@ int Brep::RemoveDegenerateEdges(double tolerance) {
   return collapsed;
 }
 
+Result Brep::SplitNakedEdgeAt(int edge_index, Point3d point, double tolerance) {
+  if (edge_index < 0 || edge_index >= brep_.m_E.Count()) {
+    throw std::out_of_range("dino8::kernel::Brep::SplitNakedEdgeAt: edge_index " +
+                            std::to_string(edge_index) + " is out of range (this Brep has " +
+                            std::to_string(brep_.m_E.Count()) + " edge slot(s))");
+  }
+  ON_Brep& b = brep_;
+  ON_BrepEdge& edge = b.m_E[edge_index];
+  if (edge.m_edge_index < 0) {
+    throw std::invalid_argument("dino8::kernel::Brep::SplitNakedEdgeAt: edge_index " +
+                                std::to_string(edge_index) + " refers to a deleted edge");
+  }
+  if (edge.TrimCount() != 1) return Result::Failed;  // not naked - out of scope
+  const double tol = std::max(tolerance, 0.0);
+  // Restricted to LINEAR edges: found by testing, not assumed. A clean
+  // (Check()-verified baseline) open curved fixture - a partial-angle
+  // cylindrical wedge's own un-capped rim - measurably gained new
+  // LoopGap/InvalidTrim issues (Check()'s own diagnostics) after a
+  // curved split that this method's own internal checks reported as
+  // Result::Ok, i.e. a SILENT wrong result on curved input: a real,
+  // unresolved defect in how the trim's own (u, v) closest-point search
+  // (step 2) interacts with a curved face's surface. Rather than ship
+  // that, this is scoped down to what direct testing actually confirms
+  // correct: linear edges only (the far more common "straight boundary
+  // sewing gap" case) - the same "curved boundary refused, not guessed
+  // at" restriction CapPlanarHoles() already places on itself.
+  if (!edge.IsLinear(tol)) return Result::Failed;
+  const int ti = edge.m_ti[0];
+  if (ti < 0 || ti >= b.m_T.Count()) return Result::Failed;
+  ON_BrepTrim& trim = b.m_T[ti];
+  if (trim.m_li < 0 || trim.m_li >= b.m_L.Count()) return Result::Failed;
+  ON_BrepLoop& loop = b.m_L[trim.m_li];
+  const ON_BrepFace* face = trim.Face();
+  const ON_Surface* srf = face ? face->SurfaceOf() : nullptr;
+  if (!srf) return Result::Failed;
+
+  // 1. Locate the split point ON the edge's own curve, via this kernel's
+  // proven closest-point solver - the projected point (not the caller's
+  // raw `point`) becomes the new vertex.
+  ON_NurbsCurve edge_nc;
+  if (edge.GetNurbForm(edge_nc) <= 0) return Result::Failed;
+  NurbsCurve edge_wrap;
+  edge_wrap.raw() = edge_nc;
+  const double t_split = edge_wrap.ClosestPointParameter(point, 200);
+  const Point3d p_on_edge = edge_wrap.PointAt(t_split);
+  if (p_on_edge.DistanceTo(point) > tol) return Result::Failed;
+  const ON_Interval edom = edge_nc.Domain();
+  if (t_split <= edom.Min() + tol || t_split >= edom.Max() - tol) return Result::Failed;
+
+  ON_Curve *left3d_raw = nullptr, *right3d_raw = nullptr;
+  if (!edge_nc.Split(t_split, left3d_raw, right3d_raw)) return Result::Failed;
+  std::unique_ptr<ON_Curve> left3d(left3d_raw), right3d(right3d_raw);
+
+  // 2. Locate the matching split parameter on the trim's own 2D curve:
+  // project the (already curve-exact) split point through the face's
+  // surface into (u, v), then find the trim's own closest parameter to
+  // that (u, v) point - the same "measure, don't assume" technique used
+  // below to pair the split halves, since a trim's own local
+  // parameterization has no guaranteed relationship to the edge's.
+  NurbsSurface srf_wrap;
+  ON_NurbsSurface ns;
+  if (const auto* cast = ON_NurbsSurface::Cast(srf)) {
+    ns = *cast;
+  } else if (srf->GetNurbForm(ns) <= 0) {
+    return Result::Failed;
+  }
+  srf_wrap.raw() = ns;
+  const Point2d uv = srf_wrap.ClosestPointParameter(p_on_edge, 60, 60);
+
+  const ON_Curve* trim_curve = trim.TrimCurveOf();
+  if (!trim_curve) return Result::Failed;
+  ON_NurbsCurve trim_nc;
+  if (trim_curve->GetNurbForm(trim_nc) <= 0) return Result::Failed;
+  NurbsCurve trim_wrap;
+  trim_wrap.raw() = trim_nc;
+  const double s_split = trim_wrap.ClosestPointParameter(Point3d(uv.x, uv.y, 0.0), 200);
+  const ON_Interval sdom = trim_nc.Domain();
+  if (s_split <= sdom.Min() || s_split >= sdom.Max()) return Result::Failed;
+
+  ON_Curve *left2d_raw = nullptr, *right2d_raw = nullptr;
+  if (!trim_nc.Split(s_split, left2d_raw, right2d_raw)) return Result::Failed;
+  std::unique_ptr<ON_Curve> left2d(left2d_raw), right2d(right2d_raw);
+
+  const int old_start_vi = edge.m_vi[0];
+  const int old_end_vi = edge.m_vi[1];
+  const Point3d old_start = b.m_V[old_start_vi].point;
+
+  // 3. Pair each split's two pieces to "old-start-to-new-vertex" vs.
+  // "new-vertex-to-old-end" by DIRECT measurement (see this method's own
+  // doc comment) - never by trusting the curve's or trim's own
+  // parameter direction.
+  const bool d3_forward = left3d->PointAtStart().DistanceTo(old_start) <=
+                          right3d->PointAtStart().DistanceTo(old_start);
+  ON_Curve* first3d = d3_forward ? left3d.get() : right3d.get();
+  ON_Curve* second3d = d3_forward ? right3d.get() : left3d.get();
+
+  const Point3d left2d_start_3d = srf_wrap.PointAt(left2d->PointAtStart().x, left2d->PointAtStart().y);
+  const Point3d right2d_start_3d = srf_wrap.PointAt(right2d->PointAtStart().x, right2d->PointAtStart().y);
+  const bool d2_forward = left2d_start_3d.DistanceTo(old_start) <= right2d_start_3d.DistanceTo(old_start);
+  ON_Curve* first2d = d2_forward ? left2d.get() : right2d.get();
+  ON_Curve* second2d = d2_forward ? right2d.get() : left2d.get();
+
+  // 4. Commit: a new vertex at the exact split point, two new edges
+  // (old-start -> new, new -> old-end) each with their own exact curve
+  // piece, and two new trims sharing this face's own loop.
+  ON_BrepVertex& new_v = b.NewVertex(p_on_edge, 0.0);
+  const int c3i_first = b.AddEdgeCurve(first3d->Duplicate());
+  const int c3i_second = b.AddEdgeCurve(second3d->Duplicate());
+  ON_BrepEdge& edge_first = b.NewEdge(b.m_V[old_start_vi], new_v, c3i_first);
+  ON_BrepEdge& edge_second = b.NewEdge(new_v, b.m_V[old_end_vi], c3i_second);
+  edge_first.m_tolerance = 0.0;
+  edge_second.m_tolerance = 0.0;
+
+  const int c2i_first = b.AddTrimCurve(first2d->Duplicate());
+  const int c2i_second = b.AddTrimCurve(second2d->Duplicate());
+  ON_BrepTrim& trim_first = b.NewTrim(edge_first, /*bRev3d=*/false, loop, c2i_first);
+  ON_BrepTrim& trim_second = b.NewTrim(edge_second, /*bRev3d=*/false, loop, c2i_second);
+  trim_first.m_tolerance[0] = trim_first.m_tolerance[1] = 0.0;
+  trim_second.m_tolerance[0] = trim_second.m_tolerance[1] = 0.0;
+  const int ti_first = trim_first.m_trim_index;
+  const int ti_second = trim_second.m_trim_index;
+
+  // NewTrim(edge, bRev3d, loop, c2i) APPENDS to loop.m_ti itself
+  // (confirmed empirically, not merely assumed from its own doc
+  // comment). Undo that append, then splice both new trim indices in at
+  // the ORIGINAL trim's own position, preserving the loop's cyclic
+  // order.
+  int pos = -1;
+  for (int k = 0; k < loop.m_ti.Count(); ++k) {
+    if (loop.m_ti[k] == ti) {
+      pos = k;
+      break;
+    }
+  }
+  if (pos < 0) return Result::Failed;  // shouldn't happen - defensive only
+  loop.m_ti.Remove(loop.m_ti.Count() - 1);  // undo append of ti_second
+  loop.m_ti.Remove(loop.m_ti.Count() - 1);  // undo append of ti_first
+  loop.m_ti.Remove(pos);                     // remove the original trim's own slot
+  loop.m_ti.Insert(pos, ti_second);
+  loop.m_ti.Insert(pos, ti_first);
+
+  // 5. Remove the deleted edge's own index from its two (former)
+  // endpoint vertices' m_ei lists - ON_Brep::Compact()/
+  // CullUnusedVertices() never touches m_ei itself (checked directly:
+  // its own remap logic only reads ON_BrepVertex::m_vertex_index, never
+  // m_ei), so a stale reference here would silently survive Compact().
+  auto remove_from_vertex = [&](int vi, int ei) {
+    ON_BrepVertex& v = b.m_V[vi];
+    for (int k = v.m_ei.Count() - 1; k >= 0; --k) {
+      if (v.m_ei[k] == ei) v.m_ei.Remove(k);
+    }
+  };
+  remove_from_vertex(old_start_vi, edge_index);
+  remove_from_vertex(old_end_vi, edge_index);
+  b.m_E[edge_index].m_edge_index = -1;
+  b.m_T[ti].m_trim_index = -1;
+
+  b.Compact();
+  b.SetTolerancesBoxesAndFlags();
+  FixUnsetEdgeTolerances(b);
+  ClearFaceSideTables();
+  return Result::Ok;
+}
+
 Mesh Brep::TessellateToClosedMeshTolerant(int u_divisions, int v_divisions) const {
   Mesh mesh = TessellateToClosedMesh(u_divisions, v_divisions);
   double max_tolerance = 0.0;

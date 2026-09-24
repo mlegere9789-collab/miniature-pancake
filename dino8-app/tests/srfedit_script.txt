@@ -550,3 +550,18 @@ HBarSetDistance
 HBarDragSelfTest
 5,0,0
 BoundingBox
+# --- ExtendSrf Type=Linear on a sphere: measurably different area from the
+# default Type=Smooth (Smooth continues the curvature, Linear is flat) -
+# the flat Plane case earlier in this script can't tell the two modes
+# apart. Appended at the very end of the file, after every SelID-by-number
+# fixture above, so its one extra object never shifts their hardcoded ids.
+SelAll
+Hide
+Sphere 4500,0,0 5
+SelPolysrf
+ExtendSrf
+Type=Linear
+4500,0,4.9
+3
+SelSrf
+Area

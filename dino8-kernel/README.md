@@ -4030,6 +4030,42 @@ honestly out of scope.
   after, as expected (this never touches `boolean_general.cpp`, and
   reuses `MinkowskiSum`/`MinkowskiDifference` exactly as already
   implemented there).
+  **Follow-up fix, same day:** the correctness hazard this whole
+  subsystem was scoped to check for - does an infeasible offset get
+  caught, or silently produce something wrong? - had a real, disclosed-
+  nowhere gap in this exact function. A shrink whose magnitude exceeds
+  the solid's own smallest feature size (e.g. a 10x10x1 plate, half-
+  thickness 0.5, shrunk by 0.6) mathematically erodes the ENTIRE solid
+  away to nothing; `MinkowskiDifference()` itself returns that empty mesh
+  without complaint (confirmed directly: `VertexCount() == 0`, no
+  exception), and `OffsetSolid` was simply returning it as-is - a caller
+  had no way to distinguish "this shrink was infeasible" from any other
+  empty-mesh outcome. Unlike a naive per-vertex offset, morphological
+  erosion by a ball can never produce an INVALID or self-intersecting
+  mesh (it's a mathematically well-defined operation), so this isn't the
+  same self-intersection hazard `OffsetAnalytic()`/`OffsetInPlane()`
+  guard against - it's a narrower, unambiguous one: the result is either
+  a genuine (possibly smaller, possibly disconnected) solid, or it's
+  empty, and empty is never what a caller asking for a body offset
+  wants. Fixed by checking the eroded mesh's own `VertexCount()` after
+  the fact (the erosion is actually performed and its result checked,
+  not predicted from a closed-form local radius the way the analytic
+  surface/curve guards can - no such simple bound exists for an
+  arbitrary, possibly non-convex mesh) and throwing `std::runtime_error`
+  when it comes back empty, rather than handing back a silently-wrong
+  "successful" empty result. Growing is never checked this way -
+  dilation by a ball only ever adds volume.
+  Verified in `tests/test_basic.cpp`
+  (`TestOffsetSolidExcessiveShrinkErodesToNothingAndThrows`): the 0.6
+  shrink on the 0.5-half-thickness plate throws, a far-more-excessive 5.0
+  shrink also throws, and a safe 0.2 shrink on the same plate still
+  succeeds normally with genuine non-empty geometry - so this guard
+  catches the real infeasible case without falsely rejecting a legitimate
+  one. Confirmed via `git stash` on just `boolean.h`/`boolean.cpp`: both
+  new throw-checks genuinely FAIL (a runtime failure, not a compile
+  error, since `OffsetSolid` already existed) against the old code, while
+  every pre-existing `OffsetSolid` test still passes unchanged either
+  way.
   Deliberately out of scope, same as `MinkowskiSum`/`MinkowskiDifference`
   themselves: a NON-uniform (per-face or per-region) body offset, and
   producing an exact B-rep result rather than a tessellated mesh (this
@@ -4086,6 +4122,63 @@ honestly out of scope.
   corner gap. A mutation (dropping the bilinear correction term) makes
   the method's own internal self-check catch the wrong result and fail
   closed, which the corresponding test then observes.
+- `Brep::SplitNakedEdgeAt(edge_index, point, tolerance)` - the missing
+  primitive behind PARITY_MAP.md's own "[missing] Tolerant sewing with
+  edge splitting": `JoinNakedEdges()` (this kernel's own, and the app
+  layer's `cmd_common.h` copy) requires two naked edges to match
+  ENDPOINT-TO-ENDPOINT within tolerance, so a T-junction - one edge only
+  partially overlapping a longer naked edge, its own far endpoint
+  landing partway along the other rather than at either of its ends -
+  can never be joined at all. This splits a naked edge at a projected
+  point into two coincident naked edges sharing a new vertex, the tool
+  that turns a T-junction into two ordinary matching-endpoint joins
+  (finding and orchestrating that join itself is left to the caller -
+  this is the split primitive alone). The new vertex is the split
+  point's own closest-point PROJECTION onto the edge's curve (via
+  `NurbsCurve::ClosestPointParameter`, the same solver `ReplaceEdgeCurve`/
+  `RemoveNakedMicroEdge` already trust), not the caller's raw point; both
+  the 3D edge curve and the trim's own 2D curve are split EXACTLY via
+  `ON_Curve::Split()` (never a resampled refit), and which split piece
+  pairs with which physical half is decided by direct 3D measurement,
+  never assumed from the curve's own parameter direction.
+  Restricted to LINEAR edges, found by testing rather than designed in:
+  a first, more general version split ANY naked edge's curve type, and
+  direct testing against a Check()-verified-clean open curved fixture (a
+  partial-angle cylindrical wedge's own un-capped rim) showed it
+  SILENTLY producing real topology defects - genuine `LoopGap`/
+  `InvalidTrim` issues `Check()` itself catches - while this method's own
+  internal checks still reported `Result::Ok`. Root-caused to the trim's
+  own (u, v) closest-point search against a curved face's surface, not
+  the split mechanics themselves; rather than ship a curved-edge path
+  proven wrong, `IsLinear()` gates it to the one case direct testing
+  actually confirms correct - the same "curved boundary refused, not
+  guessed at" restriction `CapPlanarHoles()` already places on itself.
+  A second, distinct finding during the same investigation: a CLOSED
+  edge (an un-capped full-revolve cylinder's own rim, its own start and
+  end vertex the same point) makes the "which piece is closer to
+  old_start" pairing genuinely degenerate, since BOTH split pieces'
+  outer endpoint sit at that one shared vertex - a second, independent
+  reason a closed curved edge could never have worked even if the (u, v)
+  search issue above were fixed; `IsLinear()` alone already excludes
+  every closed edge too (a closed curve's own two ends can never be
+  farther apart than any finite tolerance), so no separate guard was
+  needed for it.
+  Verified on a standalone `FromPlanarFaces()` unit-square plate (real
+  topology to split, unlike `Box()`/`Sphere()` - see this file's own
+  class-level comment on why): splitting its top edge at its own exact
+  midpoint adds exactly 1 edge and 1 vertex, both halves stay naked, and
+  the plate's own tessellated area is unchanged - checked to the
+  `1e-9`-tight tolerance the codebase already trusts for float-vertex
+  measurements THROUGH THE IDENTICAL PIPELINE (before vs. after,
+  directly against each other), not just independently against the
+  literal 1.0 (which floats to ~1.5e-8 off, a real, separately-documented
+  `ON_3fPoint`-precision floor this kernel's own boolean tests already
+  disclose elsewhere). A refusal test confirms the curved-edge guard
+  leaves a Check()-clean fixture byte-for-byte clean afterward (no
+  LoopGap/InvalidTrim introduced by the refused attempt), and a mutation
+  proof (temporarily deleting the `IsLinear()` guard) reproduced the
+  exact `LoopGap`/`InvalidTrim` failure signature the refusal test is
+  built to catch, then was reverted.
 - `NurbsSurface::ExtendLinear(direction, t0, t1)`: `Extend()`'s "linear"
   sibling (Rhino/Parasolid's ExtendSrf Type=Linear vs. Type=Smooth). The
   existing `Extend()` continues the surface's own polynomial basis
