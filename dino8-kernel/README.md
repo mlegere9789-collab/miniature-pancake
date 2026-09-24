@@ -693,6 +693,41 @@ What this repo does instead:
   SubD control cage, reloaded the file, found the actual `ON_SubD` object
   inside the reloaded model's geometry components, and confirmed its
   vertex and face counts exactly match the original.
+- `Model::AddPointCloud()` closes the same gap for `PointCloud` that
+  `AddMesh()`/`AddSubD()` closed for their own types: `PointCloud`'s own
+  header already documented that its underlying `ON_PointCloud` is "the
+  same one OpenNURBS' own `.3dm` reader/writer already round-trips" - true
+  of the OpenNURBS class, but until this method existed there was no way
+  to get a `dino8::kernel::PointCloud` into a `Model` at all, so that
+  round-trip claim was unreachable from this kernel's own API. Same
+  pattern: copies the cloud's underlying `ON_PointCloud` into a new model
+  geometry component. Verified with a real round trip on all three
+  optional fields at once (a cloud is "all or nothing" per field, so a
+  partial round trip of colors or normals would silently read back as "no
+  colors"/"no normals" rather than an error): saved a 3-point cloud with
+  per-point colors and per-point normals set, reloaded the file, found the
+  actual `ON_PointCloud` object inside the reloaded model's geometry
+  components, and confirmed point count, `HasPointColors()`,
+  `HasPointNormals()`, and every point's exact position/color/normal all
+  survived.
+- `PointCloud::SaveXyz()`/`LoadXyz()` close a real gap: before this,
+  `PointCloud` had no `Save`/`Load` of its own at all - only
+  `Model::AddPointCloud()`'s `.3dm` route existed, with no counterpart to
+  `Mesh::SaveObj()`/`SaveStl()` for the plain-text ASCII XYZ format most
+  external point-cloud tools (CloudCompare, PCL, MeshLab) actually read
+  and write. One point per line: `x y z`, or `x y z nx ny nz` when the
+  cloud has normals (the columns-3-or-6 convention `LoadXyz()` also
+  parses back, rejecting a file that mixes both widths as genuinely
+  ambiguous rather than guessing). Per-point colors are deliberately NOT
+  written: unlike position/normal, ASCII XYZ has no single agreed-on
+  column order, count, or scale for color across the tools that read it,
+  so writing something would be inventing a convention the format doesn't
+  actually have - an honest, documented gap instead of a silent,
+  undocumented one. Verified with a real round trip of exact values (not
+  just point count) for a positions-only cloud and, separately, a cloud
+  with normals set, plus explicit rejection tests for a nonexistent file,
+  a file mixing 3- and 6-column lines, a line with a column count that's
+  neither, a non-numeric token, and a file with zero points.
 - `Brep::GetTightBoundingBox()` closes a real gap: nothing here could
   answer "roughly how big/where is this Brep" without tessellating it
   first, and even then Mesh::GetBoundingBox() only sees a tessellation's
