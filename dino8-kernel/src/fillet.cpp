@@ -2992,6 +2992,208 @@ Brep FilletConcaveEdges(const Brep& solid, const std::vector<std::pair<Point3d, 
 }
 
 
+// ---------------------------------------------------------------------------
+// ChamferConvexVertex / ChamferConcaveVertex: single-facet trihedral vertex
+// chamfer (see fillet.h's own doc comment for both).
+
+namespace {
+
+// Shared topology-finding for ChamferConvexVertex/ChamferConcaveVertex: the
+// same "faces touching a vertex, grouped into the 3 edges of a trihedral
+// corner" combinatorics FilletConvexEdges'/FilletConcaveEdges' own m == 3
+// case already uses (their own VertexUse/faces_touching), generalized here
+// to also report which 2 faces border each edge - needed both for the
+// EdgeConvexity check below and by ChamferVertexCore's own construction.
+struct VertexEdge {
+  Point3d neighbor;
+  int face_a, face_b;
+};
+
+struct TrihedralCorner {
+  std::vector<int> touching;      // exactly 3 face indices
+  std::vector<VertexEdge> edges;  // exactly 3
+};
+
+TrihedralCorner FindTrihedralCorner(const std::vector<Brep::PlanarFace>& faces, const Point3d& vertex, double tol,
+                                    const char* who) {
+  struct Touch {
+    int face_idx;
+    Point3d pred, succ;
+  };
+  std::vector<Touch> touch;
+  for (size_t f = 0; f < faces.size(); ++f) {
+    const std::vector<Point3d>& loop = faces[f].loop;
+    const size_t n = loop.size();
+    for (size_t k = 0; k < n; ++k) {
+      if (PointsEqual(loop[k], vertex, tol)) {
+        touch.push_back({static_cast<int>(f), loop[(k + n - 1) % n], loop[(k + 1) % n]});
+        break;
+      }
+    }
+  }
+  if (touch.size() != 3) {
+    throw std::invalid_argument(std::string("dino8::kernel::") + who + ": `vertex` is touched by " +
+                                std::to_string(touch.size()) +
+                                " face(s), not 3 - only a trihedral (valence-3) corner is supported");
+  }
+  TrihedralCorner tc;
+  for (const Touch& t : touch) tc.touching.push_back(t.face_idx);
+  for (int i = 0; i < 3; ++i) {
+    for (int j = i + 1; j < 3; ++j) {
+      const Point3d cand_i[2] = {touch[static_cast<size_t>(i)].pred, touch[static_cast<size_t>(i)].succ};
+      const Point3d cand_j[2] = {touch[static_cast<size_t>(j)].pred, touch[static_cast<size_t>(j)].succ};
+      for (const Point3d& ci : cand_i) {
+        for (const Point3d& cj : cand_j) {
+          if (PointsEqual(ci, cj, tol)) {
+            tc.edges.push_back({ci, touch[static_cast<size_t>(i)].face_idx, touch[static_cast<size_t>(j)].face_idx});
+          }
+        }
+      }
+    }
+  }
+  if (tc.edges.size() != 3) {
+    throw std::invalid_argument(
+        std::string("dino8::kernel::") + who +
+        ": the 3 faces touching `vertex` do not form a genuine trihedral corner (each pair of faces should share "
+        "exactly one edge at the vertex) - inconsistent topology");
+  }
+  return tc;
+}
+
+// Convexity of the edge (vertex, neighbor), which lies on face_a's own
+// loop - wraps EdgeConvexity (see its own doc comment) with the loop-index
+// lookup a VertexEdge doesn't itself carry.
+bool VertexEdgeConvexity(const std::vector<Brep::PlanarFace>& faces, int face_a, int face_b, const Point3d& vertex,
+                         const Point3d& neighbor, double tol, bool* degenerate_out) {
+  const std::vector<Point3d>& loop_a = faces[static_cast<size_t>(face_a)].loop;
+  const size_t n = loop_a.size();
+  for (size_t k = 0; k < n; ++k) {
+    const size_t k1 = (k + 1) % n;
+    if ((PointsEqual(loop_a[k], vertex, tol) && PointsEqual(loop_a[k1], neighbor, tol)) ||
+        (PointsEqual(loop_a[k], neighbor, tol) && PointsEqual(loop_a[k1], vertex, tol))) {
+      return EdgeConvexity(loop_a, k, k1, faces[static_cast<size_t>(face_b)].plane, tol, degenerate_out);
+    }
+  }
+  throw std::runtime_error(
+      "dino8::kernel::VertexEdgeConvexity: edge not found on face_a's own loop - please report this as a bug");
+}
+
+// Shared construction for ChamferConvexVertex/ChamferConcaveVertex. Takes
+// no stance on convex vs. concave itself - see ChamferConcaveVertex's own
+// doc comment for why that is safe: every sign here (which of the new
+// chamfer plane's two normal directions cuts `vertex`'s own corner sliver
+// away, which winding order makes the new triangular face CCW as seen
+// from outside) is derived directly from the fixture's own geometry.
+Brep ChamferVertexCore(const std::vector<Brep::PlanarFace>& faces, double tol, const TrihedralCorner& tc,
+                        const Point3d& vertex, double distance, const char* who) {
+  std::vector<Point3d> corner(3);
+  for (int k = 0; k < 3; ++k) {
+    Vector3d e = tc.edges[static_cast<size_t>(k)].neighbor - vertex;
+    const double L = e.Length();
+    if (!(distance < L - tol)) {
+      throw std::invalid_argument(std::string("dino8::kernel::") + who +
+                                  ": distance is too large to fit - it reaches or exceeds one of the corner's own "
+                                  "edge lengths");
+    }
+    e.Unitize();
+    corner[static_cast<size_t>(k)] = vertex + distance * e;
+  }
+
+  // Orientation: the new face's own outward normal, checked via a Newell
+  // normal against the sum of the 3 touching faces' own outward normals -
+  // exactly ChamferConvexEdge's own convention (see its doc comment).
+  Vector3d bis(0, 0, 0);
+  for (int f : tc.touching) bis = bis + faces[static_cast<size_t>(f)].plane.zaxis;
+  Vector3d newell(0, 0, 0);
+  for (size_t k = 0; k < corner.size(); ++k) {
+    const Point3d& a = corner[k];
+    const Point3d& b = corner[(k + 1) % corner.size()];
+    newell.x += (a.y - b.y) * (a.z + b.z);
+    newell.y += (a.z - b.z) * (a.x + b.x);
+    newell.z += (a.x - b.x) * (a.y + b.y);
+  }
+  if (newell * bis < 0.0) std::reverse(corner.begin(), corner.end());
+  Vector3d n_c = ON_CrossProduct(corner[1] - corner[0], corner[2] - corner[0]);
+  if (!n_c.Unitize()) {
+    throw std::invalid_argument(std::string("dino8::kernel::") + who +
+                                ": degenerate trihedral corner (the 3 chamfer points are collinear)");
+  }
+  if (n_c * bis <= 0.0) {
+    throw std::runtime_error(std::string("dino8::kernel::") + who +
+                             ": degenerate chamfer triangle orientation - please report this as a bug");
+  }
+
+  // Which of +-n_c cuts `vertex`'s own corner sliver away is checked
+  // directly (not assumed from convexity - see ChamferConcaveVertex's own
+  // doc comment for why the two cases actually need OPPOSITE signs here
+  // even though n_c's own orientation above is convex/concave-agnostic).
+  Vector3d cut_normal = n_c;
+  if (!(ON_Plane(corner[0], cut_normal).DistanceTo(vertex) > tol)) cut_normal = -n_c;
+  const ON_Plane cut_plane(corner[0], cut_normal);
+  if (!(cut_plane.DistanceTo(vertex) > tol)) {
+    throw std::runtime_error(std::string("dino8::kernel::") + who +
+                             ": `vertex` lies on its own chamfer plane - please report this as a bug");
+  }
+
+  std::vector<Brep::PlanarFace> work = faces;
+  for (int f : tc.touching) {
+    Brep::PlanarFace& pf = work[static_cast<size_t>(f)];
+    pf.loop = detail::ClipByHalfspace3d(pf.loop, cut_plane, tol);
+    if (pf.loop.size() < 3) {
+      throw std::invalid_argument(std::string("dino8::kernel::") + who +
+                                  ": re-trimming an adjacent face left fewer than 3 vertices - distance too large "
+                                  "for this solid's geometry");
+    }
+  }
+
+  Brep::PlanarFace chamfer;
+  chamfer.plane = ON_Plane(corner[0], n_c);
+  chamfer.loop = corner;
+  work.push_back(std::move(chamfer));
+  return Brep::FromPlanarFaces(work);
+}
+
+}  // namespace
+
+Brep ChamferConvexVertex(const Brep& solid, Point3d vertex, double distance) {
+  if (!(distance > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::ChamferConvexVertex: distance must be positive");
+  }
+  const std::vector<Brep::PlanarFace> faces = solid.PlanarFaces();
+  const double tol = RelativeTol(faces);
+  const TrihedralCorner tc = FindTrihedralCorner(faces, vertex, tol, "ChamferConvexVertex");
+  for (const VertexEdge& ev : tc.edges) {
+    bool degenerate = false;
+    const bool convex = VertexEdgeConvexity(faces, ev.face_a, ev.face_b, vertex, ev.neighbor, tol, &degenerate);
+    if (!degenerate && !convex) {
+      throw std::invalid_argument(
+          "dino8::kernel::ChamferConvexVertex: an edge at `vertex` is not a convex dihedral edge - "
+          "concave/degenerate corners are out of scope, see ChamferConcaveVertex for the concave mirror");
+    }
+  }
+  return ChamferVertexCore(faces, tol, tc, vertex, distance, "ChamferConvexVertex");
+}
+
+Brep ChamferConcaveVertex(const Brep& solid, Point3d vertex, double distance) {
+  if (!(distance > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::ChamferConcaveVertex: distance must be positive");
+  }
+  const std::vector<Brep::PlanarFace> faces = solid.PlanarFaces();
+  const double tol = RelativeTol(faces);
+  const TrihedralCorner tc = FindTrihedralCorner(faces, vertex, tol, "ChamferConcaveVertex");
+  for (const VertexEdge& ev : tc.edges) {
+    bool degenerate = false;
+    const bool convex = VertexEdgeConvexity(faces, ev.face_a, ev.face_b, vertex, ev.neighbor, tol, &degenerate);
+    if (!degenerate && convex) {
+      throw std::invalid_argument(
+          "dino8::kernel::ChamferConcaveVertex: an edge at `vertex` is a CONVEX dihedral edge, not concave - see "
+          "ChamferConvexVertex instead");
+    }
+  }
+  return ChamferVertexCore(faces, tol, tc, vertex, distance, "ChamferConcaveVertex");
+}
+
+
 namespace {
 
 // Replaces the loop edge whose two consecutive points equal {P, Q} (in
