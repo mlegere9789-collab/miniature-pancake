@@ -2116,6 +2116,83 @@ What this repo does instead:
     outward orientation, so the wall's u may run opposite to the input
     curve (the closed-loft test matches section corners as a set for
     that reason).
+- `SubD::SetEdgeSharpness(p0, p1, sharpness, point_tolerance)`: real
+  Pixar/OpenSubdiv-style semi-sharp (variable-weight) creasing, closing a
+  gap `FromControlMesh()`'s own `crease_at_double_edges` parameter left
+  open since it landed - that flag only ever gives a binary sharp/smooth
+  split (a permanent `ON_SubDEdgeTag::Crease`), with no way to dial in
+  anything between "fully smooth" and "fully creased," and no way to
+  crease an edge at all without the mesh-double-edge topology trick.
+  OpenNURBS' own model for this turned out to already exist and be real,
+  not a stub - found by reading, not assumed: `ON_SubDEdge::m_sharpness`
+  (`ON_SubDEdgeSharpness`, range `[0, MaximumValue=4]`) is genuinely
+  consumed by `ON_SubDimple::GlobalSubdivide()` (it reads
+  `e0->IsSharp()`/`e0->Sharpness(false)` and calls `.Subdivided(0/1)` on
+  each child edge, both read directly in `opennurbs_subd.cpp`) and by the
+  regular-patch evaluator in `opennurbs_subd_limit.cpp` (branches on
+  `ON_SubDEdge::IsSharp()` / `ON_SubDVertex::VertexSharpness()` to blend
+  face/edge/vertex points toward crease behavior) - the same "declared in
+  the public header, actually implemented" pattern this file's SubD
+  entries already document for `LimitPoints()`, as opposed to the
+  `BrepForm()`/`CreaseEdgeCount()` stubs. The convenience wrapper the
+  class comment for those methods once pointed to (`ON_SubD::
+  SetEdgeSharpness()`) turned out to be the *unimplemented* one this
+  time - grepped across the whole v8.34 source tree, it doesn't exist
+  anywhere outside a doc comment - so this method instead calls the same
+  low-level primitive OpenNURBS' own `AddEdge(..., ON_SubDEdgeSharpness)`
+  overloads call on a freshly-built edge
+  (`ON_SubDEdge::SetSharpnessForExperts`), applied here to an edge found
+  via the ordinary const `FindVertex`/`FindEdge` accessors (a `const_cast`
+  is required to call it, since those accessors are const - safe because
+  the call writes exactly one field with no other cached state to
+  invalidate, verified by reading `SetSharpnessForExperts`'s own three-line
+  body, and because `ON_SubD`'s copy constructor deep-copies its
+  `ON_SubDimple` rather than sharing it, so a fresh `SubD::FromControlMesh()`
+  result is never aliased with another live `ON_SubD`). Refuses (returns
+  `false`, no change made) rather than silently no-op'ing for an
+  out-of-range weight, an edge that doesn't exist between the given
+  points, or an edge that's already a hard crease (sharpness is
+  meaningless there in OpenNURBS' own model). Verified three ways, not
+  just read: (1) exact bookkeeping - a 2.5 weight reads back as exactly
+  2.5 via `EndSharpness()`, `Subdivided()` subtracts exactly 1.0, and a
+  real `Subdivide(1)` call leaves exactly the fold's 2 child edges
+  (and no others) reporting `IsSharp()` at exactly the decayed 1.5; (2) a
+  `MaximumValue`-weight edge produces the identical exact straight-fold
+  subdivision point `TestSubDCreaseAtDoubleEdgeKeepsFoldStraight()`
+  already proved for a real hard crease, on the same hinge fixture, while
+  an untouched control SubD still rounds the same fold off; (3) the
+  refusal cases leave the SubD provably unchanged (a hard crease's
+  `CreaseEdgeCount()` unaffected by the refused call). One honestly-
+  scoped limitation: this exposes one constant weight per edge; OpenNURBS
+  also supports a per-end-variable sharpness (linearly interpolated along
+  the edge, decaying differently at each end), which this wrapper doesn't
+  expose - a caller needing that must use `raw()` directly.
+- `SubD::SetCrease(p0, p1, crease, point_tolerance)`: retags an existing
+  edge Crease or back to Smooth after construction - closing PARITY_MAP.md's
+  subd_mesh-category "Crease tagging / un-tagging as a kernel operation"
+  [missing] item directly (kernel::SubD had no `SetCrease`/`ClearCrease`
+  at all; the app's `SubDCrease` command edited `ON_SubDEdge` tags
+  directly, bypassing this wrapper entirely). Unlike `SetEdgeSharpness()`
+  just above - which needs a `const_cast` onto a low-level "for experts"
+  primitive because OpenNURBS' own convenience wrapper for THAT is
+  unimplemented - this delegates to a genuinely public, fully-implemented
+  `ON_SubD::SetEdgeTags()`, verified by reading its body in
+  `opennurbs_subd.cpp` rather than trusting the name: it does real work
+  beyond the one edge's own tag, reclassifying both endpoint vertices
+  (Smooth/Dart/Crease/Corner, recomputed from their new incident-crease
+  count), clearing any leftover `SetEdgeSharpness()` weight on either
+  transition, and invalidating cached evaluation state - bookkeeping a
+  caller hand-editing `raw()` would otherwise have to reproduce itself.
+  Verified geometrically, not just by reading: `SetCrease(true)` on the
+  hinge fixture's smooth fold edge produces the bit-identical straight-
+  line subdivision point at (0.5, 0, 0) that both a construction-time
+  `crease_at_double_edges=true` crease and a `SetEdgeSharpness`-at-
+  `MaximumValue` semi-sharp edge already independently proved above -
+  three different mechanisms, same underlying OpenNURBS crease math, same
+  measured result. Returns `false` (a real no-op, not an error) for a
+  point pair with no matching edge or an edge that already carries the
+  requested tag, matching `ON_SubD::SetEdgeTags`'s own 0-changed
+  convention.
 
 ## Blending build log (Parasolid "blend/chamfer" class, chronological)
 
