@@ -1,5 +1,6 @@
 #pragma once
 
+#include <utility>
 #include <vector>
 
 #include "dino8/kernel/brep.h"
@@ -572,5 +573,118 @@ Brep ChamferConvexEdge(const Brep& solid, Point3d edge_p0, Point3d edge_p1, doub
 // the symmetric chamfer - checked directly by dino8-kernel's own tests.
 Brep ChamferConvexEdgeAngle(const Brep& solid, Point3d edge_p0, Point3d edge_p1, double distance_i,
                              double angle_from_i);
+
+
+// MULTI-EDGE constant-radius rolling-ball fillet with genuine SPHERICAL
+// VERTEX BLENDS - the piece of Parasolid's blend class that turns
+// "round one edge" into "round this solid": every edge in `edges` (each a
+// (p0, p1) endpoint pair identifying a straight, convex edge between two
+// PLANAR faces of `solid`, in either order, exactly as FilletConvexEdge
+// requires) is rounded with the SAME ball radius `radius`, and every
+// vertex where THREE filleted edges of a trihedral corner meet gets the
+// exact spherical corner patch (a Brep::SphericalFace) the rolling ball
+// leaves there - not FilletConvexEdge's flat corner notch, which is only
+// the right shape when the edge fillet runs all the way into a sharp
+// perpendicular end face.
+//
+// THE CONSTRUCTION, per element:
+//   Edges. Each edge k reuses FilletConvexEdge's own step 1-2 geometry
+//   verbatim: n_i, n_j, e, bis, cosb, contact rails rail_i(t) = P(t) +
+//   radius*(n_i - bis/cosb), and one Brep::CylindricalFace with frame
+//   (xaxis n_i, zaxis e), radius, sweep pi - theta. The only new degree
+//   of freedom is that the cylinder no longer necessarily spans the whole
+//   edge: at a spherical corner its end is SET BACK to t_k = (C - V).e,
+//   where C is that corner's own ball center (below), so its cap circle
+//   there is centered at C - i.e. it is a GREAT circle of the corner
+//   sphere, which is exactly why the sphere patch can share it as a
+//   literal ON_BrepEdge.
+//   Faces. Each planar face is re-trimmed by one half-space clip per
+//   filleted edge it carries (the same rail-line cut FilletConvexEdge
+//   makes, applied once per edge): a face with two filleted edges meeting
+//   at a corner is thereby inset at that corner to the single point where
+//   its two rails cross, which is provably C + radius*n_f (the point of
+//   the face at distance `radius` from a point equidistant from all three
+//   planes) - so the planar face's own new corner IS the sphere's rail
+//   corner, with no notch and no extra construction.
+//   Vertices. For each endpoint V of a filleted edge, with m = the number
+//   of filleted edges incident to V and valence = the number of faces of
+//   `solid` touching V:
+//     m == 1: FilletConvexEdge's own corner notch, verbatim (a third face
+//       perpendicular to the edge is notched with the fillet's true cap
+//       arc and shares ONE real edge with it - now also when the same
+//       third face is notched at SEVERAL corners, via PlanarFace::
+//       notch_runs; an oblique or absent third face is left untouched,
+//       the same disclosed limit FilletConvexEdge has).
+//     m == 3 and valence == 3 (all three edges of a trihedral corner are
+//       filleted): the ball center C is the unique point at distance
+//       `radius` inside all three face planes (a 3x3 linear solve, det =
+//       n_a.(n_b x n_c) != 0 for a genuine trihedral corner). C lies on
+//       all three edge fillets' own axes by construction (checked, not
+//       assumed: each axis IS the locus of inside points at distance
+//       `radius` from its two planes); the three cylinders are set back
+//       to the planes through C perpendicular to their own edges, and the
+//       corner is closed by the spherical triangle of the sphere (C,
+//       radius) with vertices C + radius*n_a, C + radius*n_b, C +
+//       radius*n_c, whose three sides are the three great-circle arcs the
+//       three set-back caps trace. Represented as a Brep::SphericalFace
+//       latitude/longitude rectangle with one pole: this REQUIRES one of
+//       the three faces (the "pole" face, n_c) to be perpendicular to the
+//       other two (n_c.n_a == n_c.n_b == 0 within 1e-9), so that the arcs
+//       n_a->n_c and n_b->n_c are meridians and n_a->n_b the equator arc
+//       - true of every box corner and of every corner of a prism whose
+//       caps are perpendicular to its side faces (any polygon cross-
+//       section, any side-face dihedral), false for e.g. a general
+//       tetrahedron corner, which throws std::invalid_argument (a general
+//       spherical triangle needs a non-isocurve boundary, a genuine
+//       future increment, disclosed here rather than approximated). The
+//       sphere's frame is chosen so its equator arc has the IDENTICAL
+//       start direction and orientation as the n_a->n_b cylinder's own
+//       cap (xaxis = that cylinder's frame.xaxis), so the two faces
+//       evaluate the shared arc through the same NURBS parameterization
+//       and Brep::FromMixedFaces' arc-identity check welds them as one
+//       edge; the two meridian arcs are quadrants, symmetric under
+//       reversal, so their identity holds whichever face walks them
+//       first. Whether the pole is the north or the south one follows
+//       from the handedness x cross y vs. n_c.
+//     anything else (m == 2 at a trihedral vertex, m == 3 at a vertex of
+//       valence > 3, m >= 4): throws std::invalid_argument. Two fillets
+//       meeting at a corner whose third edge stays sharp need the two
+//       cylinders' own mutual intersection curve plus a non-spherical
+//       corner patch - a real, harder vertex-blend problem this function
+//       does not attempt, disclosed rather than mis-built.
+//   The set-back caps at a spherical corner are the cylinders' plain
+//   isocurve caps (no notch points anywhere in this construction), so
+//   for an all-edges-filleted convex solid EVERY edge of the result is an
+//   exact curve: straight rails, exact circular arcs, and the topology
+//   is a genuine closed 2-manifold (IsSolid() == true).
+//
+// VALIDATION: `radius` > 0; every edge a genuine shared convex edge (see
+// FilletConvexEdge for the exact topology test and the fit check
+// against each face's own extent); no edge listed twice; and, after all
+// set-backs, every cylinder keeps a strictly positive length (two
+// spherical corners on a short edge would otherwise overlap - thrown,
+// not clipped). A face left with fewer than 3 vertices by its clips
+// also throws.
+//
+// CLOSED FORMS this was checked against (dino8-kernel's own regression
+// tests): for a convex polyhedron with EVERY edge filleted and every
+// vertex a supported trihedral corner, the result is exactly the
+// Minkowski sum of the inner offset body K (the solid with every face
+// pushed in by `radius`) with a ball of radius `radius`, so by Steiner's
+// formula V = V(K) + S(K)*r + r^2 * sum_edges L_e*(pi - theta_e)/2 +
+// (4/3)*pi*r^3; for the unit box with r = 0.2 that is (1-2r)^3 +
+// 6(1-2r)^2 r + 3(1-2r) pi r^2 + (4/3) pi r^3 = 0.907705..., and a
+// regular hexagonal prism with all 18 edges filleted is checked the same
+// way with its 120-degree side dihedrals.
+//
+// SCOPE, stated plainly: straight convex edges between PLANAR faces of a
+// solid PlanarFaces() can describe (an input already carrying a curved
+// face is rejected by PlanarFaces() itself), one radius for all edges
+// (a corner where the three incident fillets have different radii is
+// not a sphere at all), spherical corners only where one face is
+// perpendicular to the other two, and the m == 1 end condition exactly
+// as FilletConvexEdge already has it. Concave edges, curved adjacent
+// faces, and variable radii remain out of scope for this function.
+Brep FilletConvexEdges(const Brep& solid, const std::vector<std::pair<Point3d, Point3d>>& edges, double radius);
 
 }  // namespace dino8::kernel

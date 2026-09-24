@@ -2313,6 +2313,77 @@ honestly out of scope.
   normal per sector there. `subd.h`'s class comment and the "What's
   still not done" bullet are both corrected rather than left stale.
 
+- **`Brep::SphericalFace` + `FilletConvexEdges(solid, edges, radius)`:
+  multi-edge constant-radius fillets with EXACT spherical vertex blends.**
+  Until now the kernel could round one straight edge at a time and only
+  close its ends against a perpendicular face with a flat corner notch;
+  rounding a second edge of the same solid was rejected outright by
+  `PlanarFaces()`, and the corner where three fillets meet - the shape a
+  rolling ball actually leaves, a sphere octant - had no representation.
+  Three additive pieces close that: (1) a fourth `FromMixedFaces` face
+  kind, `SphericalFace` (frame, radius, longitude sweep, latitude range),
+  built from `ON_Sphere::GetNurbForm` and trimmed in the sphere's own
+  (u, v) with the same NURBS-parameter/radian conversion the cylinder
+  path uses for u and the shifted-knot equivalent for v - both CHECKED by
+  evaluating the real surface at every trim corner against the closed
+  form; its pole side (the normal case for a vertex blend) becomes an
+  `ON_Brep` SINGULAR trim, and `BuildFaceLoop` now takes an explicit
+  per-segment table (`FaceTopology::segs`: isocurve direction, constant,
+  parameter range, singular flag) that defaults to the legacy 4-point
+  cylinder/cone rectangle so every existing face is built bit-for-bit
+  as before. `MixedFaces()` hands the record back or, with no record,
+  recovers frame/radius/angle/latitudes from `IsSphere` plus the
+  surface's own quadrant points and the trim bounds. (2)
+  `PlanarFace::notch_runs`: a face notched at several corners (a box end
+  face under two parallel fillets) keeps one collapsed shared edge per
+  notch instead of the second notch silently overwriting the first and
+  leaving ~200 unshared micro-edges - found by checking `IsSolid()` on
+  exactly that case. (3) `FilletConvexEdges`: every listed edge gets
+  `FilletConvexEdge`'s own cylinder and rail re-trim (one half-space clip
+  per filleted edge per face, so a face with two filleted edges meeting
+  at a corner is inset to the single point `C + r*n_f`); at a trihedral
+  vertex with all three edges filleted the ball center `C` is the 3x3
+  solve `n_f.(C - V) = -r`, checked to lie on all three fillet axes, the
+  three cylinders are SET BACK to the planes through `C` so their caps
+  are great circles of the corner sphere, and the octant/spherical
+  triangle is a `SphericalFace` whose equator arc is parameterized
+  IDENTICALLY to the equator cylinder's cap (same xaxis, same
+  orientation) so `FromMixedFaces`' arc-identity check welds them as one
+  edge; the two meridians are quadrants, symmetric under reversal. One
+  face of the corner must be perpendicular to the other two (every box
+  corner, every prism corner with perpendicular caps - any side dihedral);
+  a general tetrahedron corner, two fillets meeting where the third edge
+  stays sharp, and valence > 3 vertices throw with the reason. Also fixed
+  in passing: `Mesh::MergeAndWeld` now drops faces whose corners welded
+  to one vertex (the zero-area triangles every grid tessellation emits
+  along a sphere's pole row), so a welded `Brep::Sphere` finally reports
+  `IsClosedManifold()` - it was watertight but failed the manifold check
+  before, confirmed by reverting only that change. Verified
+  (`TestSphericalFace*`, `TestFilletConvexEdges*`, `TestMergeAndWeld*`):
+  the unit box with ALL 12 edges filleted at r = 0.2 is a 26-face, 48-edge,
+  24-vertex `IsValid()`/`IsManifold()`-closed/`IsSolid()` Brep whose
+  adaptive-tessellated volume converges from below to Steiner's formula
+  `(1-2r)^3 + 6(1-2r)^2 r + 3(1-2r) pi r^2 + 4/3 pi r^3 = 0.907704993`
+  (errors 1.7e-5, 1.8e-6, 1.9e-7 at chord tolerances 1e-5, 1e-6, 1e-7 -
+  linear in the tolerance, i.e. pure chordal deficit); a regular
+  hexagonal prism with all 18 edges filleted (60-degree equator sweeps)
+  matches the same Steiner formula to 3e-7 at 1e-7; one rounded corner
+  matches `1 - 3(1-r) r^2 (1-pi/4) - r^3 (1-pi/6)`; two parallel fillets
+  are a closed solid with both end faces double-notched; a single-edge
+  call reproduces `FilletConvexEdge`'s volume to 1e-12; the record round
+  trip rebuilds the rounded box as a 26-face solid; and every unsupported
+  configuration above is rejected. Honestly still open: a rounded solid's
+  `TessellateToClosedMesh()` is NOT yet a closed manifold mesh - not
+  because of the spheres (their seams with the cylinders coincide sample
+  for sample at u_divisions = 2*v_divisions) but because every exact-clip
+  PLANAR face adds boundary vertices where its own grid lines cross its
+  polygon, T-junctions the adjacent cylinder rail does not share; this
+  pre-dates this entry (a single `FilletConvexEdge` box has the same
+  gap), `TessellateConforming()` does not yet close it either, and it is
+  the next tessellation increment. General spherical-triangle corners,
+  mixed radii, and concave edges remain out of scope as documented in
+  `fillet.h`.
+
 ## What's still not done (as of chunk 2)
 
 - `Brep::Box()`, `Brep::Sphere()`, `Brep::TrimmedPlanarFace()`

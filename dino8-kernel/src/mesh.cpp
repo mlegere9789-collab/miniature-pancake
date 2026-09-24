@@ -1342,9 +1342,12 @@ Mesh Mesh::MergeAndWeld(const std::vector<Mesh>& meshes, double tolerance) {
       // whose edge {a, b} was then counted by THREE faces, so
       // Brep::Sphere().TessellateToClosedMesh() never reported
       // Mesh::IsClosedManifold() even though it was geometrically
-      // watertight - see TestMergeAndWeldDropsCollapsedPoleTriangles.
-      // Volume()/Area() are unchanged by this (a collapsed face
-      // contributes exactly zero to both).
+      // watertight - see TestMergeAndWeldDropsCollapsedPoleTriangles and
+      // TestMergeAndWeldMakesBrepSphereAClosedManifold. Volume()/Area()
+      // are unchanged by this (a collapsed face contributes exactly zero
+      // to both, by the same (a,b,c)+(a,c,d) quad split those methods
+      // already use - the v[0]==v[2]/v[1]==v[3] check below is exactly
+      // that split's own degeneracy condition, not a separate heuristic).
       if (face.IsQuad()) {
         int v[4] = {remapped.vi[0], remapped.vi[1], remapped.vi[2], remapped.vi[3]};
         int distinct[4];
