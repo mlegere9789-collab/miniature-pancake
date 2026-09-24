@@ -6425,6 +6425,96 @@ void TestMeshVolumeMassProperties() {
   Check(threw_empty, "VolumeMassProperties throws on a mesh with no volume");
 }
 
+// GetOrientedBoundingBox() reuses VolumeMassProperties()'s own
+// principal_axes (see its own doc comment for why that's the right frame,
+// not a separate PCA) - this test is built to have a fully hand-derivable
+// exact answer for both an axis-aligned box AND the same box rotated to
+// an arbitrary orientation, since the whole point is that the box's OWN
+// axes are recovered regardless of how it sits in world space.
+void TestMeshGetOrientedBoundingBox() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::OrientedBoundingBox;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  // A box with three DISTINCT dimensions (4, 2, 1) so its principal axes
+  // are unambiguous (no repeated eigenvalue) and hand-derivable: treating
+  // the solid box as uniform density, its centroidal moments are
+  // Ixx = (V/12)(Ly^2+Lz^2), Iyy = (V/12)(Lz^2+Lx^2), Izz = (V/12)(Lx^2+Ly^2)
+  // - algebraically Ixx < Iyy < Izz exactly when Lx > Ly > Lz (each
+  // successive difference is (V/12) times a positive difference of
+  // squares), so VolumeMassProperties()'s ascending-moment order puts the
+  // LONGEST dimension (X, length 4) at principal_axes[0], down to the
+  // SHORTEST (Z, length 1) at principal_axes[2] - which is exactly what
+  // GetOrientedBoundingBox() below is predicted to reproduce as its own
+  // axis order and half-extents (2, 1, 0.5).
+  const Mesh box = MakeQuadBoxMesh(0, 0, 0, 4, 2, 1);
+  const OrientedBoundingBox obb = box.GetOrientedBoundingBox();
+
+  auto parallel_to_axis = [](Vector3d v, Vector3d axis) { return std::fabs(std::fabs(ON_DotProduct(v, axis)) - 1.0) < 1e-4; };
+
+  Check(obb.center.DistanceTo(Point3d(2, 1, 0.5)) < 1e-4,
+        "an axis-aligned box's OBB is centered at its own true center (2, 1, 0.5)");
+  Check(parallel_to_axis(obb.axes[0], Vector3d(1, 0, 0)) && parallel_to_axis(obb.axes[1], Vector3d(0, 1, 0)) &&
+            parallel_to_axis(obb.axes[2], Vector3d(0, 0, 1)),
+        "the axes are exactly world X, Y, Z (up to sign) in longest-to-shortest order - the hand-derived moment "
+        "ordering for Lx=4 > Ly=2 > Lz=1");
+  Check(std::fabs(obb.half_extents[0] - 2.0) < 1e-4 && std::fabs(obb.half_extents[1] - 1.0) < 1e-4 &&
+            std::fabs(obb.half_extents[2] - 0.5) < 1e-4,
+        "the half-extents are exactly (2, 1, 0.5) - half of the box's own true (4, 2, 1) dimensions, matching "
+        "GetBoundingBox()'s own answer here since the box already IS axis-aligned");
+
+  // The same box, rotated 41 degrees about the (1,1,1) axis through its
+  // own center (2, 1, 0.5) - an orientation with no special alignment to
+  // any world axis. GetOrientedBoundingBox() must recover the SAME
+  // center, the SAME half-extents in the SAME order, and axes that are
+  // exactly the world X/Y/Z axes carried through that same rotation
+  // (up to sign) - proving the box's own shape, not its world placement,
+  // determines the answer.
+  ON_3dVector rotation_axis(1, 1, 1);
+  rotation_axis.Unitize();
+  const double angle = 41.0 * ON_PI / 180.0;
+  ON_Xform xf;
+  xf.Rotation(angle, rotation_axis, ON_3dPoint(2, 1, 0.5));
+  const Mesh rotated = box.Transform(xf);
+  const OrientedBoundingBox obb2 = rotated.GetOrientedBoundingBox();
+
+  Check(obb2.center.DistanceTo(Point3d(2, 1, 0.5)) < 1e-4,
+        "the rotated box's OBB is still centered at (2, 1, 0.5) - the rotation's own fixed point");
+  Check(std::fabs(obb2.half_extents[0] - 2.0) < 1e-4 && std::fabs(obb2.half_extents[1] - 1.0) < 1e-4 &&
+            std::fabs(obb2.half_extents[2] - 0.5) < 1e-4,
+        "the rotated box's half-extents are unchanged (2, 1, 0.5) in the same order - rotation cannot change the "
+        "box's own shape");
+  const Vector3d rx = xf * Vector3d(1, 0, 0), ry = xf * Vector3d(0, 1, 0), rz = xf * Vector3d(0, 0, 1);
+  Check(parallel_to_axis(obb2.axes[0], rx) && parallel_to_axis(obb2.axes[1], ry) && parallel_to_axis(obb2.axes[2], rz),
+        "the rotated box's axes are exactly the world X/Y/Z axes carried through the SAME rotation (up to sign) - "
+        "the box's principal axes rotate rigidly with the box");
+
+  // The defining guarantee, checked directly rather than assumed: every
+  // vertex of the ROTATED box lies within the returned OBB along all
+  // three axes simultaneously.
+  bool all_contained = true;
+  for (int i = 0; i < rotated.raw().m_V.Count(); ++i) {
+    const Vector3d d = Point3d(rotated.raw().m_V[i]) - obb2.center;
+    for (int k = 0; k < 3; ++k) {
+      if (std::fabs(ON_DotProduct(d, obb2.axes[k])) > obb2.half_extents[static_cast<size_t>(k)] + 1e-6) {
+        all_contained = false;
+      }
+    }
+  }
+  Check(all_contained, "every vertex of the rotated box lies within the returned OBB along all three axes");
+
+  // Same precondition as VolumeMassProperties() (inherited, not
+  // re-checked): an open/zero-volume mesh throws.
+  bool threw_empty = false;
+  try {
+    Mesh().GetOrientedBoundingBox();
+  } catch (const std::invalid_argument&) {
+    threw_empty = true;
+  }
+  Check(threw_empty, "GetOrientedBoundingBox throws on a mesh with no volume (VolumeMassProperties()'s own precondition)");
+}
+
 // A single-triangle mesh for the surface/surface distance tests below.
 dino8::kernel::Mesh MakeTriangleMesh(dino8::kernel::Point3d a, dino8::kernel::Point3d b,
                                      dino8::kernel::Point3d c) {
@@ -21370,6 +21460,7 @@ int main() {
   TestMeshClosestPoint();
   TestMeshSignedDistance();
   TestMeshVolumeMassProperties();
+  TestMeshGetOrientedBoundingBox();
   TestMeshFireRay();
   TestMeshDistanceTo();
   TestMeshClashWith();

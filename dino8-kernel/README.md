@@ -2069,6 +2069,45 @@ What this repo does instead:
   list. A single-component Brep (the overwhelmingly common case) returns
   a single-element vector holding an exact untouched copy of itself, and
   a Brep with no faces returns an empty vector - both checked directly.
+- `Mesh::GetOrientedBoundingBox()`: a box oriented to the solid's own
+  shape rather than the world's - `GetBoundingBox()`'s axis-aligned box
+  can waste arbitrary volume on a rotated shape (a long thin box at 45
+  degrees gets an AABB nearly twice as wide as it is), which nothing here
+  could tighten before. Deliberately NOT a separate PCA over vertex
+  positions (the common, simpler technique): that's biased by
+  tessellation density (a more finely-meshed region pulls the axes
+  toward it even though the true shape hasn't changed), so this reuses
+  `VolumeMassProperties()`'s own `principal_axes` instead - computed, like
+  `Volume()`/`GetCentroid()`, by the divergence-theorem integral over the
+  solid's actual enclosed volume, so the axes depend only on the real
+  shape. The two are the same frame by construction, not by coincidence:
+  for the standard second-moment convention, inertia tensor `I =
+  trace(covariance) * Identity - covariance`, so `I` and the
+  volume-weighted covariance matrix share eigenvectors - reusing
+  `principal_axes` here IS the volume-weighted PCA frame, mathematically,
+  not an approximation standing in for it. `half_extents[k]` is then the
+  tightest slab along `axes[k]` containing every one of the mesh's own
+  vertices, found by direct search (not estimated), so the box provably
+  contains the whole mesh. Inherits `VolumeMassProperties()`'s own
+  precondition (closed, consistently oriented, positive volume) and its
+  own exceptions, unwrapped. Honest scope: this is the standard
+  principal-axis box, not a search for the global minimum-volume box over
+  every orientation (a materially more expensive, unattempted problem);
+  for a shape whose principal axes already line up with its tightest
+  orientation - any box is the simplest example - the two coincide
+  exactly. Verified with a hand-derivable case built around the fact that
+  a uniform-density box's centroidal moments satisfy `Ixx < Iyy < Izz`
+  exactly when its own dimensions satisfy `Lx > Ly > Lz` (each successive
+  difference is proportional to a positive difference of squares): a
+  4x2x1 box's OBB comes back centered at its own true center with axes
+  exactly world X/Y/Z (longest to shortest) and half-extents exactly
+  `(2, 1, 0.5)`; the SAME box rotated 41 degrees about an arbitrary axis
+  through its own center reproduces the identical center and half-extents
+  in the same order, with axes exactly the world X/Y/Z axes carried
+  through that same rotation (up to the sign ambiguity every eigenvector
+  has) - proving the box's own shape, not its placement in world space,
+  determines the answer; and every vertex of the rotated box is checked
+  directly to lie within the returned box along all three axes.
 
 ## What's still not done (as of chunk 2)
 

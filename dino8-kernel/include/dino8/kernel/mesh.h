@@ -55,6 +55,21 @@ struct MassProperties {
   std::array<double, 3> radii_of_gyration{};
 };
 
+// An oriented bounding box, from Mesh::GetOrientedBoundingBox(): a box
+// exactly `2 * half_extents[k]` long along each `axes[k]` (unit,
+// mutually orthogonal, right-handed - the SAME frame convention
+// MassProperties::principal_axes uses, and in fact the same axes: see
+// GetOrientedBoundingBox()'s own doc comment), centered at `center`.
+// Every vertex of the mesh it was built from lies within the box by
+// construction (`half_extents[k]` is exactly the largest projection onto
+// `axes[k]` found among all of that mesh's vertices), never merely
+// approximately.
+struct OrientedBoundingBox {
+  Point3d center;
+  std::array<Vector3d, 3> axes;
+  std::array<double, 3> half_extents{};
+};
+
 // One crossing of a ray with a mesh, from Mesh::FireRay().
 struct RayHit {
   // Ray parameter: the hit is at `origin + t * direction`, in units of
@@ -135,6 +150,57 @@ class Mesh {
   // returning a degenerate all-zero box that would look like a valid
   // point-sized mesh at the origin.
   BoundingBox GetBoundingBox() const;
+
+  // A tighter box than GetBoundingBox() for anything not already
+  // axis-aligned: oriented to the solid's own principal axes of inertia
+  // rather than the world's. GetBoundingBox()'s own box can waste
+  // arbitrary volume on a rotated shape (a long thin box at 45 degrees
+  // gets an AABB nearly twice as wide as it is), which matters for a
+  // viewport's camera framing or a broad-phase overlap test's own
+  // tightness - nothing here could answer that before.
+  //
+  // The axes are exactly VolumeMassProperties()'s own `principal_axes` -
+  // not a separate PCA computation over vertex POSITIONS (the common,
+  // simpler technique, and a real alternative this deliberately isn't):
+  // a vertex-covariance PCA is biased by tessellation density (a region
+  // meshed more finely pulls the axes toward it even though the true
+  // shape hasn't changed), whereas the inertia tensor's eigenvectors -
+  // computed, like Volume()/GetCentroid(), by the divergence-theorem
+  // integral over the solid's actual enclosed volume - depend only on
+  // the real shape, not how finely any part of it happens to be
+  // triangulated. (The two are related, not unrelated formulas pressed
+  // into service: for the standard second-moment convention, inertia
+  // tensor I = trace(covariance) * Identity - covariance, so I and the
+  // volume-weighted covariance matrix are simultaneously diagonalized -
+  // same eigenVECTORS, just a different, monotonic map from eigenvalue
+  // to eigenvalue - which is exactly why reusing principal_axes here is
+  // mathematically the volume-weighted PCA frame, not an approximation
+  // of it.) Requires the same closed, consistently-oriented (CCW from
+  // outside), positive-volume precondition VolumeMassProperties() has -
+  // this delegates to it directly, so that method's own exceptions (both
+  // std::invalid_argument on a zero/negative volume and std::runtime_error
+  // from its eigensolver) surface here unchanged, not re-wrapped.
+  //
+  // `half_extents[k]` is then the tightest slab along `axes[k]` that
+  // contains every one of this mesh's own vertices - the largest
+  // absolute projection onto that axis, found by direct search over all
+  // vertices, not estimated - so the returned box provably contains the
+  // whole mesh, with `center` at the midpoint of each slab (not
+  // GetCentroid() - the box's own middle, generally a different point
+  // from the volume centroid for a shape that isn't symmetric about it).
+  //
+  // Honest scope: this is the standard, principal-axis-aligned oriented
+  // box, not a search for the GLOBALLY minimum-volume box over every
+  // possible orientation (that problem's practical 3D algorithms - e.g.
+  // an exhaustive rotating-calipers search over every face normal - are
+  // a materially different, much more expensive undertaking this does
+  // not attempt). For a solid whose own principal axes of inertia
+  // already line up with its tightest orientation - an axis-aligned box
+  // itself is the simplest example - the two coincide exactly, verified
+  // below; for a shape whose principal axes genuinely diverge from its
+  // tightest orientation (some non-convex or very asymmetric shapes),
+  // this box can be looser than that unattempted global minimum.
+  OrientedBoundingBox GetOrientedBoundingBox() const;
 
   // Whether `point` lies inside this mesh - a real "is this point part
   // of the solid" query nothing here could answer before (every existing

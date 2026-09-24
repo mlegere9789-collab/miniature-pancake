@@ -586,6 +586,46 @@ MassProperties Mesh::VolumeMassProperties() const {
   return mp;
 }
 
+OrientedBoundingBox Mesh::GetOrientedBoundingBox() const {
+  // VolumeMassProperties()'s own precondition (closed, consistently
+  // oriented, positive volume) and its own exceptions on failure - see
+  // this method's own doc comment for why its principal_axes are exactly
+  // the box's own axes, not a separate PCA.
+  const MassProperties mp = VolumeMassProperties();
+
+  OrientedBoundingBox obb;
+  obb.axes = mp.principal_axes;
+
+  // The tightest slab along each axis that contains every vertex: the
+  // largest and smallest signed distance from the centroid (an arbitrary
+  // but convenient common reference point - any point would do, since
+  // only the difference of extremes and their own midpoint are kept)
+  // found by direct search, not estimated.
+  std::array<double, 3> lo = {0.0, 0.0, 0.0};
+  std::array<double, 3> hi = {0.0, 0.0, 0.0};
+  bool first = true;
+  for (int i = 0; i < mesh_.m_V.Count(); ++i) {
+    const Vector3d d = Point3d(mesh_.m_V[i]) - mp.centroid;
+    for (size_t k = 0; k < 3; ++k) {
+      const double t = ON_DotProduct(d, obb.axes[k]);
+      if (first) {
+        lo[k] = hi[k] = t;
+      } else {
+        lo[k] = std::min(lo[k], t);
+        hi[k] = std::max(hi[k], t);
+      }
+    }
+    first = false;
+  }
+
+  obb.center = mp.centroid;
+  for (size_t k = 0; k < 3; ++k) {
+    obb.center = obb.center + obb.axes[k] * (0.5 * (lo[k] + hi[k]));
+    obb.half_extents[k] = 0.5 * (hi[k] - lo[k]);
+  }
+  return obb;
+}
+
 std::vector<RayHit> Mesh::FireRay(Point3d origin, Vector3d direction) const {
   if (direction.LengthSquared() <= 0.0) {
     throw std::invalid_argument(
