@@ -1250,6 +1250,102 @@ void TestCurveMakePeriodicExact() {
         "rather than rebuilding it");
 }
 
+// NurbsSurface::MakePeriodicExact() - the surface counterpart of
+// NurbsCurve::MakePeriodicExact() above, reusing it directly rather than
+// re-deriving the same knot-vector math a second way. Fixture: a full-
+// circle Brep::Revolve() wall of a straight vertical line - its own U
+// (profile) direction is degree 1 and NOT closed, but its V (revolve
+// angle) direction is the exact rational-quadratic construction
+// RevolvedSurface() (sweep.cpp) builds: closed (a full circle) but only
+// C0-clamped at the seam, not itself ON-periodic - precisely the
+// "closed but not periodic" case this method exists for, on a genuinely
+// rational surface (the same weight-handling case the curve version's
+// own circle fixture already proves this doesn't distort).
+void TestSurfaceMakePeriodicExact() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+  using dino8::kernel::Vector3d;
+
+  const NurbsCurve line = NurbsCurve::FromControlPoints({Point3d(1, 0, 0), Point3d(1, 0, 3)}, 1);
+  const Brep revolved = Brep::Revolve(line, Point3d(0, 0, 0), Vector3d(0, 0, 1));
+  NurbsSurface wall;
+  wall.raw() = *ON_NurbsSurface::Cast(revolved.raw().m_F[0].SurfaceOf());
+
+  Check(!wall.IsClosed(0) && wall.raw().Degree(0) == 1,
+        "fixture: the wall's U (profile) direction is open and degree 1");
+  Check(wall.IsClosed(1) && !wall.IsPeriodic(1) && wall.raw().Degree(1) == 2,
+        "fixture: the wall's V (revolve angle) direction is closed but not periodic, "
+        "degree 2 (rational) - the case MakePeriodicExact exists to handle");
+
+  const ON_Interval du = wall.raw().Domain(0), dv = wall.raw().Domain(1);
+  constexpr int kSamples = 12;
+  std::vector<Point3d> before;
+  for (int i = 0; i <= kSamples; ++i) {
+    for (int j = 0; j <= kSamples; ++j) {
+      const double u = du.ParameterAt(static_cast<double>(i) / kSamples);
+      const double v = dv.ParameterAt(static_cast<double>(j) / kSamples);
+      before.push_back(wall.raw().PointAt(u, v));
+    }
+  }
+
+  const Result result = wall.MakePeriodicExact(1);
+  Check(result == Result::Ok, "MakePeriodicExact(1) returns Ok on the closed-but-not-periodic V direction");
+  Check(wall.IsPeriodic(1), "the result is genuinely ON-periodic in V, not just closed");
+  Check(wall.raw().IsValid(),
+        "the resulting knot vector and control net form a genuinely valid ON_NurbsSurface");
+  Check(!wall.IsPeriodic(0) && wall.raw().Degree(0) == 1,
+        "the U direction (untouched) keeps its own original degree/structure exactly");
+
+  double max_error = 0.0;
+  size_t idx = 0;
+  for (int i = 0; i <= kSamples; ++i) {
+    for (int j = 0; j <= kSamples; ++j) {
+      const double u = du.ParameterAt(static_cast<double>(i) / kSamples);
+      const double v = dv.ParameterAt(static_cast<double>(j) / kSamples);
+      const double error = wall.raw().PointAt(u, v).DistanceTo(before[idx++]);
+      max_error = std::max(max_error, error);
+    }
+  }
+  Check(max_error < 1e-9,
+        "the exact claim, proven numerically over a (u, v) grid spanning the wall's full "
+        "original domain (including both domain ends in v, where the underlying "
+        "construction places its one deliberately-nudged zero-width knot span): every "
+        "sampled point matches the original (pre-conversion) surface's PointAt(u, v) to "
+        "within 1e-9 - not a 'looks similar' tolerance (measured ~2.8e-13 in a standalone "
+        "diagnostic before picking this bound)");
+
+  // Negative controls, mirroring the curve version's own.
+  {
+    NurbsSurface degree1;
+    degree1.raw() = *ON_NurbsSurface::Cast(revolved.raw().m_F[0].SurfaceOf());
+    Check(degree1.MakePeriodicExact(0) == Result::Failed,
+          "MakePeriodicExact() refuses the degree-1 U direction rather than fabricating a "
+          "periodic form ON's own convention says degree-1 directions cannot have");
+  }
+  {
+    NurbsSurface already_periodic;
+    already_periodic.raw() = *ON_NurbsSurface::Cast(revolved.raw().m_F[0].SurfaceOf());
+    Check(already_periodic.MakePeriodicExact(1) == Result::Ok, "fixture: first call succeeds");
+    Check(already_periodic.MakePeriodicExact(1) == Result::NoOpAlreadySatisfied,
+          "a second call reports NoOpAlreadySatisfied rather than rebuilding an already-periodic "
+          "direction");
+  }
+  {
+    NurbsSurface copy;
+    copy.raw() = *ON_NurbsSurface::Cast(revolved.raw().m_F[0].SurfaceOf());
+    bool threw = false;
+    try {
+      copy.MakePeriodicExact(2);
+    } catch (const std::invalid_argument&) {
+      threw = true;
+    }
+    Check(threw, "MakePeriodicExact() throws std::invalid_argument for a direction other than 0 or 1");
+  }
+}
+
 void TestCurveClosestPoint() {
   using dino8::kernel::NurbsCurve;
   using dino8::kernel::Point3d;
@@ -6032,6 +6128,161 @@ void TestBrepSphereBooleanEndToEnd() {
         "sphere-sphere boolean intersection volume is within 3% of the exact lens formula");
 }
 
+void TestBrepTorusIsClosedAndWatertight() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  const double major_radius = 5.0, minor_radius = 1.5;
+  const Brep torus = Brep::Torus(Point3d(0, 0, 0), Vector3d(0, 0, 1), major_radius, minor_radius);
+  Check(torus.FaceCount() == 1, "Brep::Torus is a single curved face");
+
+  // Periodic in BOTH parametric directions - no poles (unlike Sphere()),
+  // but its own major-angle AND minor-angle seams each have to weld shut
+  // against themselves.
+  const int divisions = 32;
+  const auto mesh = torus.TessellateToClosedMesh(divisions, divisions);
+  Check(mesh.IsClosedManifold(), "tessellated torus is a closed manifold");
+  const int raw_vertex_count = (divisions + 1) * (divisions + 1);
+  Check(mesh.VertexCount() < raw_vertex_count,
+        "welding the torus's own major and minor seams reduces its vertex count");
+
+  // The minor-radius tube is a much smaller feature than the major
+  // radius, so its own chordal (inscribed-polygon) volume underestimate
+  // dominates and shrinks more slowly with `divisions` than a sphere's
+  // does at the same division count (measured: 1.3% at 32 divisions,
+  // 0.3% at 64) - a finer mesh for the volume check specifically, not a
+  // loosened tolerance.
+  const auto fine_mesh = torus.TessellateToClosedMesh(64, 64);
+  const double exact_volume = 2.0 * M_PI * M_PI * major_radius * minor_radius * minor_radius;
+  const double relative_error = std::abs(fine_mesh.Volume() - exact_volume) / exact_volume;
+  Check(relative_error < 0.01,
+        "tessellated+welded torus volume (64x64) is within 1% of the exact 2*pi^2*R*r^2");
+  Check(fine_mesh.Volume() > 0.0, "torus volume is positive (outward orientation)");
+
+  // Closed manifold at an asymmetric division pair too - the same "not
+  // only the one division count it happened to be built at" check the
+  // sweep-class caps rely on elsewhere.
+  Check(torus.TessellateToClosedMesh(12, 40).IsClosedManifold(), "closed torus manifold at (12, 40)");
+  Check(torus.TessellateToClosedMesh(40, 12).IsClosedManifold(), "closed torus manifold at (40, 12)");
+
+  // Negative controls.
+  auto throws_invalid_argument = [](const std::function<void()>& f) {
+    try {
+      f();
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+    return false;
+  };
+  Check(throws_invalid_argument([&] { Brep::Torus(Point3d(0, 0, 0), Vector3d(0, 0, 1), 5.0, 0.0); }),
+        "non-positive minor_radius throws");
+  Check(throws_invalid_argument([&] { Brep::Torus(Point3d(0, 0, 0), Vector3d(0, 0, 1), 5.0, -1.0); }),
+        "negative minor_radius throws");
+  Check(throws_invalid_argument([&] { Brep::Torus(Point3d(0, 0, 0), Vector3d(0, 0, 1), 1.0, 1.0); }),
+        "major_radius == minor_radius (degenerate spindle) throws");
+  Check(throws_invalid_argument([&] { Brep::Torus(Point3d(0, 0, 0), Vector3d(0, 0, 1), 1.0, 2.0); }),
+        "major_radius < minor_radius (self-intersecting spindle/horn torus) throws");
+  Check(throws_invalid_argument([&] { Brep::Torus(Point3d(0, 0, 0), Vector3d(0, 0, 0), 5.0, 1.5); }),
+        "zero axis throws");
+}
+
+// Brep::Volume()/Area(): direct NURBS mass-properties integration (5-
+// point-per-span Gauss-Legendre, divergence theorem), not a tessellation
+// approximation. Box()'s six bilinear (non-rational, degree-1) faces
+// make its integrand an exact low-degree polynomial, so both should
+// match their closed forms to machine precision - a real test of
+// quadrature correctness, not just "close enough." Sphere()/Torus() are
+// rational (a NURBS circle's own weight function), so their true
+// integrand isn't a polynomial at all; the quadrature converges rather
+// than landing exactly - measured ~1.8e-6 (sphere) and ~3.0e-7 (torus)
+// relative in a standalone diagnostic before picking these tolerances,
+// so 1e-4 is a real bound with two orders of magnitude of margin, not a
+// loose one.
+void TestBrepVolumeAndAreaMatchClosedForms() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point2d;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  {
+    const Brep box = Brep::Box(0, 0, 0, 2, 3, 4);
+    Check(std::abs(box.Volume() - 24.0) < 1e-9, "Box() volume matches 2*3*4 to machine precision");
+    Check(std::abs(box.Area() - 52.0) < 1e-9, "Box() area matches 2*(2*3+2*4+3*4) to machine precision");
+  }
+  {
+    const double r = 2.0;
+    const Brep sphere = Brep::Sphere(Point3d(0, 0, 0), r);
+    const double exact_vol = (4.0 / 3.0) * M_PI * r * r * r;
+    const double exact_area = 4.0 * M_PI * r * r;
+    Check(std::abs(sphere.Volume() - exact_vol) / exact_vol < 1e-4,
+          "Sphere() volume within 1e-4 relative of the exact 4/3*pi*r^3");
+    Check(std::abs(sphere.Area() - exact_area) / exact_area < 1e-4,
+          "Sphere() area within 1e-4 relative of the exact 4*pi*r^2");
+  }
+  {
+    const double R = 5.0, r = 1.5;
+    const Brep torus = Brep::Torus(Point3d(0, 0, 0), Vector3d(0, 0, 1), R, r);
+    const double exact_vol = 2.0 * M_PI * M_PI * R * r * r;
+    const double exact_area = 4.0 * M_PI * M_PI * R * r;
+    Check(std::abs(torus.Volume() - exact_vol) / exact_vol < 1e-4,
+          "Torus() volume within 1e-4 relative of the exact 2*pi^2*R*r^2");
+    Check(std::abs(torus.Area() - exact_area) / exact_area < 1e-4,
+          "Torus() area within 1e-4 relative of the exact 4*pi^2*R*r");
+  }
+
+  auto throws_invalid_argument = [](const std::function<void()>& f) {
+    try {
+      f();
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+    return false;
+  };
+
+  // Negative controls.
+  {
+    const std::vector<Point3d> grid = {
+        Point3d(0, 0, 0),
+        Point3d(0, 10, 0),
+        Point3d(10, 0, 0),
+        Point3d(10, 10, 0),
+    };
+    const NurbsSurface surface = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+    const std::vector<Point2d> trim_loop = {Point2d(0.15, 0.15), Point2d(0.85, 0.15), Point2d(0.85, 0.85),
+                                             Point2d(0.15, 0.85)};
+    const Brep trimmed = Brep::TrimmedPlanarFace(surface, trim_loop);
+    Check(throws_invalid_argument([&] { trimmed.Area(); }),
+          "Area() throws on a face this kernel's own pseudo-trim side table restricts "
+          "(TrimmedPlanarFace()'s trim_loop_uv, invisible to raw().FaceIsSurface())");
+    Check(throws_invalid_argument([&] { trimmed.Volume(); }),
+          "Volume() throws on the same trimmed face (also fails the closedness check first, "
+          "since a single planar face is never a closed solid anyway)");
+  }
+  {
+    // A genuinely open (uncapped) sweep: no enclosed volume, so Volume()
+    // must refuse. Area() does NOT require closedness, so it succeeds -
+    // an open surface still has a well-defined area, checked directly
+    // against the same swept-square fixture TestSweep1AndPipe() already
+    // uses (rigid transport keeps every cross-section a unit square, so
+    // total area is exactly perimeter-consistent... simplest direct
+    // check here: Area() succeeds and is positive).
+    const NurbsCurve rail =
+        NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(3, 0, 2), Point3d(6, 3, 2), Point3d(9, 3, 5)}, 3);
+    const NurbsCurve square = NurbsCurve::FromControlPoints(
+        {Point3d(-0.5, -0.5, 0), Point3d(0.5, -0.5, 0), Point3d(0.5, 0.5, 0), Point3d(-0.5, 0.5, 0),
+         Point3d(-0.5, -0.5, 0)},
+        1);
+    const Brep open_sweep = Brep::Sweep1(square, rail, 8, /*cap=*/false);
+    Check(throws_invalid_argument([&] { open_sweep.Volume(); }),
+          "Volume() throws on a genuinely open (uncapped) sweep - no well-defined enclosed volume");
+    Check(open_sweep.Area() > 0.0, "Area() succeeds (and is positive) on the same open sweep - an open "
+                                   "surface still has a well-defined area");
+  }
+}
+
 void TestBrepTrimmedPlanarFaceRejectsTooFewPoints() {
   using dino8::kernel::Brep;
   using dino8::kernel::NurbsSurface;
@@ -6531,6 +6782,64 @@ void TestRevolveProfileFlatEndCaps() {
           "flat-double-capped cylinder-shaped revolve matches Mesh::Cylinder()'s "
           "volume to within 0.1%");
   }
+}
+
+// RevolveProfile()'s new `angle` parameter (default 2*pi - no behavior
+// change for an existing caller). A partial angle delegates to
+// Brep::Revolve() + TessellateToClosedMesh() instead of this function's
+// own fast exact-shared-vertex ring construction (which has no notion of
+// a partial revolve's two extra pie-slice side caps) - verified against
+// a "spindle" profile (both ends on the axis, the one shape
+// Brep::Revolve() can cap at ANY angle, full or partial - see its own
+// doc comment) by checking that half and quarter revolves give exactly
+// half and a quarter of the full revolve's own volume, a real Pappus-
+// style cross-check independent of any closed form for the spindle's
+// own shape.
+void TestMeshRevolveProfilePartialAngle() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point2d;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  const std::vector<Point2d> spindle = {Point2d(0, 0), Point2d(2, 1.5), Point2d(0, 3)};
+  const Mesh full = Mesh::RevolveProfile(spindle, Point3d(0, 0, 0), Vector3d(0, 0, 1), 96);
+  Check(full.IsClosedManifold(), "full-angle spindle revolve is a closed manifold (unchanged default-angle path)");
+  const double full_volume = full.Volume();
+
+  const Mesh half = Mesh::RevolveProfile(spindle, Point3d(0, 0, 0), Vector3d(0, 0, 1), 96, M_PI);
+  Check(half.IsClosedManifold(), "half-angle (partial) spindle revolve is a closed manifold");
+  Check(std::abs(half.Volume() - 0.5 * full_volume) / full_volume < 1e-3,
+        "half-angle revolve's volume is half the full revolve's, within 0.1% (measured 2.7e-4 in a "
+        "standalone diagnostic, not assumed)");
+
+  const Mesh quarter = Mesh::RevolveProfile(spindle, Point3d(0, 0, 0), Vector3d(0, 0, 1), 192, M_PI / 2.0);
+  Check(quarter.IsClosedManifold(), "quarter-angle (partial) spindle revolve is a closed manifold");
+  Check(std::abs(quarter.Volume() - 0.25 * full_volume) / full_volume < 1e-3,
+        "quarter-angle revolve's volume is a quarter of the full revolve's, within 0.1% (measured "
+        "1.8e-4, not assumed)");
+
+  // Negative controls.
+  auto throws_invalid_argument = [](const std::function<void()>& f) {
+    try {
+      f();
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+    return false;
+  };
+  Check(throws_invalid_argument(
+            [&] { Mesh::RevolveProfile(spindle, Point3d(0, 0, 0), Vector3d(0, 0, 1), 48, 0.0); }),
+        "angle <= 0 throws");
+  Check(throws_invalid_argument(
+            [&] { Mesh::RevolveProfile(spindle, Point3d(0, 0, 0), Vector3d(0, 0, 1), 48, 3.0 * M_PI); }),
+        "angle > 2*pi throws");
+  // An off-axis endpoint can only be capped at a FULL angle (a flat disc
+  // cap); Brep::Revolve()'s own refusal for the partial-angle case
+  // propagates through unchanged.
+  const std::vector<Point2d> off_axis_profile = {Point2d(1, 0), Point2d(2, 3)};
+  Check(throws_invalid_argument(
+            [&] { Mesh::RevolveProfile(off_axis_profile, Point3d(0, 0, 0), Vector3d(0, 0, 1), 48, M_PI); }),
+        "a partial angle with an off-axis profile endpoint throws (propagated from Brep::Revolve())");
 }
 
 void TestLoftClosedRingsSquareFrustumExactVolumeAndBoolean() {
@@ -7205,6 +7514,107 @@ void TestBrepSplitNakedEdgeAtRefusesInvalidInputs() {
     threw_deleted = true;
   }
   Check(threw_deleted, "edge_index 0 marked deleted (m_edge_index < 0) throws std::invalid_argument, not Result::Failed");
+}
+
+// SewTJunctions() on the classic T-junction: a unit square A (x in
+// [0,1], y in [0,1]) sits beside two smaller squares B (x in [1,2], y in
+// [0,0.5]) and C (x in [1,2], y in [0.5,1]) - built as 3 SEPARATE
+// PlanarFaces via FromMixedFaces(), so A's right boundary is ONE naked
+// edge (1,0,0)-(1,1,0) while B and C's own left boundaries are TWO
+// separate naked edges meeting at (1,0.5,0) - exactly the "one endpoint
+// lands strictly inside another edge's own span" case JoinNakedEdges()
+// alone can never close (hand-verified: A's two ends are 1.0 away from
+// (1,0.5,0), far outside any ordinary tolerance). B and C's own OTHER
+// shared boundary (x=1..2, y=0.5, an ordinary exact endpoint-to-endpoint
+// match) IS welded into one shared edge already at construction time
+// (confirmed directly: FromMixedFaces's builder reuses an existing edge
+// between the same two vertices rather than duplicating it) - an
+// unrelated, already-working case, not what this test is about. Every
+// count below is hand-derived from the fixture's own geometry (confirmed
+// against the actual construction via a standalone print of every edge),
+// not merely "changed by some amount".
+void TestBrepSewTJunctionsClosesActualTJunction() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+
+  Brep::PlanarFace a = CheckHealFace(
+      {Point3d(0, 0, 0), Point3d(1, 0, 0), Point3d(1, 1, 0), Point3d(0, 1, 0)}, ON_3dVector(0, 0, 1));
+  Brep::PlanarFace b = CheckHealFace(
+      {Point3d(1, 0, 0), Point3d(2, 0, 0), Point3d(2, 0.5, 0), Point3d(1, 0.5, 0)}, ON_3dVector(0, 0, 1));
+  Brep::PlanarFace c = CheckHealFace(
+      {Point3d(1, 0.5, 0), Point3d(2, 0.5, 0), Point3d(2, 1, 0), Point3d(1, 1, 0)}, ON_3dVector(0, 0, 1));
+  Brep plate = Brep::FromMixedFaces({a, b, c}, {});
+  Check(plate.FaceCount() == 3, "the T-junction fixture has its 3 separate faces");
+  Check(plate.raw().m_E.Count() == 11,
+        "11 edges total: 4 per face (12) minus 1, since B and C's own exactly-matching shared boundary is welded "
+        "into a single shared edge already at construction time");
+  Check(plate.raw().m_V.Count() == 8, "8 distinct vertices after vertex welding (4 + 3 new from B + 1 new from C)");
+
+  const Brep::CheckReport before = plate.Check();
+  Check(before.Count(Brep::CheckIssue::Kind::NakedEdge) == 10,
+        "10 of the 11 edges are naked before sewing (everything except the already-shared B|C edge) - the "
+        "A/B and A/C T-junction is NOT yet closed");
+
+  double area_before = 0.0;
+  for (const dino8::kernel::Mesh& m : plate.Tessellate(8, 8)) area_before += m.Area();
+  Check(std::fabs(area_before - 2.0) < 1e-6, "the fixture's own combined area is the 2x1 rectangle's 2.0 before sewing");
+
+  const int splits = plate.SewTJunctions();
+  Check(splits == 1, "exactly 1 T-junction split was needed (A's single right edge against B+C's two half edges)");
+  Check(plate.raw().IsValid(), "the sewn plate is still a valid ON_Brep");
+  Check(plate.raw().m_E.Count() == 10,
+        "10 edges survive: A's edge became 2 halves (11-1+2=12 total), then 2 more pairs joined into shared edges "
+        "(12-2=10)");
+  Check(plate.raw().m_V.Count() == 8,
+        "still 8 vertices - the split's own new vertex at (1,0.5,0) duplicated an existing one, and the "
+        "join that followed welded the duplicate back out");
+
+  const Brep::CheckReport after = plate.Check();
+  Check(after.Count(Brep::CheckIssue::Kind::NakedEdge) == 7,
+        "7 boundary edges remain naked - the 2x1 rectangle's own outer boundary, walked hand: "
+        "(0,0)-(1,0)-(2,0)-(2,.5)-(2,1)-(1,1)-(0,1)-(0,0) is 7 segments - now that the 3 interior "
+        "edges (A|B, A|C, B|C) are shared, not naked");
+  Check(after.Count(Brep::CheckIssue::Kind::LoopGap) == 0 && after.Count(Brep::CheckIssue::Kind::InvalidTrim) == 0,
+        "sewing introduced no LoopGap or InvalidTrim defect");
+
+  int shared = 0;
+  for (int ei = 0; ei < plate.raw().m_E.Count(); ++ei) {
+    const ON_BrepEdge& e = plate.raw().m_E[ei];
+    if (e.m_edge_index >= 0 && e.TrimCount() == 2) ++shared;
+  }
+  Check(shared == 3, "exactly 3 edges are now shared (2-trim): the two split A-halves against B and C, plus B|C's "
+                     "own already-matching pair");
+
+  double area_after = 0.0;
+  for (const dino8::kernel::Mesh& m : plate.Tessellate(8, 8)) area_after += m.Area();
+  Check(std::fabs(area_after - area_before) < 1e-9,
+        "sewing is purely topological - the tessellated area is unchanged (to the same float-vertex floor) from "
+        "before the split");
+}
+
+// SewTJunctions() is a genuine no-op (returns 0, leaves the Brep exactly
+// as it was) on inputs that have no T-junction at all: a closed box (no
+// naked edges to begin with) and a lone unit-square plate (naked edges,
+// but no OTHER naked edge for any of them to land inside of).
+void TestBrepSewTJunctionsNoOpOnCleanBreps() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+
+  Brep box = Brep::FromPlanarFaces(CheckHealBoxFaces());
+  const int box_edges_before = box.raw().m_E.Count();
+  const int box_verts_before = box.raw().m_V.Count();
+  Check(box.SewTJunctions() == 0, "a closed box (every edge already shared) has no T-junction to close");
+  Check(box.raw().m_E.Count() == box_edges_before && box.raw().m_V.Count() == box_verts_before,
+        "...and is left completely untouched");
+
+  Brep::PlanarFace bottom = CheckHealFace(
+      {Point3d(0, 1, 0), Point3d(1, 1, 0), Point3d(1, 0, 0), Point3d(0, 0, 0)}, ON_3dVector(0, 0, -1));
+  Brep plate = Brep::FromPlanarFaces({bottom});
+  const int plate_edges_before = plate.raw().m_E.Count();
+  const int plate_verts_before = plate.raw().m_V.Count();
+  Check(plate.SewTJunctions() == 0, "a lone plate's 4 naked edges have no OTHER naked edge to T-junction against");
+  Check(plate.raw().m_E.Count() == plate_edges_before && plate.raw().m_V.Count() == plate_verts_before,
+        "...and is left completely untouched");
 }
 
 // Brep::Check()'s 3D counterpart to its own 2D SelfIntersectingLoop check
@@ -10880,26 +11290,123 @@ void TestMeshSavePlyRoundTrips() {
   std::remove(uv_path.c_str());
 }
 
+// SavePly(binary=true)/LoadPly() close PLY's own remaining disclosed gap
+// (SavePly()'s doc comment used to call binary_little_endian "not
+// attempted"): checks the written header actually says
+// "format binary_little_endian 1.0" (not "ascii"), that the file is
+// genuinely smaller than the ASCII encoding of the same mesh (proving
+// this isn't just ASCII text with a relabeled header line), and that
+// vertex/face counts, volume, and per-vertex UVs all round-trip exactly -
+// the same properties TestMeshSavePlyRoundTrips() already verifies for
+// the ASCII path, applied to the binary one.
+void TestMeshSavePlyBinaryRoundTrips() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Result;
+
+  const auto box = MakeQuadBoxMesh(0, 0, 0, 2, 3, 4);
+  const std::string binary_path = "dino8_kernel_mesh_ply_binary_test.ply";
+  const std::string ascii_path = "dino8_kernel_mesh_ply_binary_ascii_ref_test.ply";
+  Check(box.SavePly(binary_path, /*binary=*/true) == Result::Ok, "Mesh::SavePly(binary=true) succeeds");
+  Check(box.SavePly(ascii_path, /*binary=*/false) == Result::Ok, "fixture: Mesh::SavePly(binary=false) succeeds");
+
+  std::ifstream in(binary_path, std::ios::binary);
+  Check(static_cast<bool>(in), "the binary .ply file can be reopened for reading");
+  std::string first_line, format_line;
+  std::getline(in, first_line);
+  std::getline(in, format_line);
+  Check(first_line == "ply", "the binary file still starts with the required 'ply' magic line");
+  Check(format_line == "format binary_little_endian 1.0",
+        "the header's format line literally says binary_little_endian, not ascii");
+  in.close();
+
+  std::ifstream binary_size_probe(binary_path, std::ios::binary | std::ios::ate);
+  std::ifstream ascii_size_probe(ascii_path, std::ios::binary | std::ios::ate);
+  const auto binary_size = binary_size_probe.tellg();
+  const auto ascii_size = ascii_size_probe.tellg();
+  binary_size_probe.close();
+  ascii_size_probe.close();
+  Check(binary_size > 0 && binary_size < ascii_size,
+        "the binary encoding is smaller than the ASCII encoding of the identical mesh - a real "
+        "binary payload, not ASCII text under a relabeled header");
+
+  Mesh reloaded;
+  Check(Mesh::LoadPly(binary_path, reloaded) == Result::Ok, "Mesh::LoadPly succeeds on SavePly(binary=true)'s own output");
+  Check(reloaded.VertexCount() == box.VertexCount() && reloaded.FaceCount() == box.FaceCount(),
+        "the reloaded binary mesh has the same vertex/face counts as the original");
+  Check(std::abs(reloaded.Volume() - box.Volume()) < 1e-5,
+        "the reloaded binary mesh's volume matches the original within single-precision float "
+        "round-trip error (the binary payload stores 4-byte floats, same as the header declares)");
+  std::remove(binary_path.c_str());
+  std::remove(ascii_path.c_str());
+
+  // Texture coordinates round-trip through the binary payload too.
+  Mesh with_uvs = box;
+  std::vector<dino8::kernel::Point2d> uvs;
+  for (int i = 0; i < with_uvs.VertexCount(); ++i) {
+    uvs.push_back(dino8::kernel::Point2d(static_cast<double>(i) * 0.1, static_cast<double>(i) * 0.2));
+  }
+  Check(with_uvs.SetTextureCoordinates(uvs) == Result::Ok, "fixture: SetTextureCoordinates succeeds");
+  const std::string uv_path = "dino8_kernel_mesh_ply_binary_uv_test.ply";
+  Check(with_uvs.SavePly(uv_path, /*binary=*/true) == Result::Ok, "SavePly(binary=true) succeeds on a mesh with texture coordinates");
+  Mesh reloaded_uv;
+  Check(Mesh::LoadPly(uv_path, reloaded_uv) == Result::Ok, "LoadPly succeeds on a binary .ply file with u/v columns");
+  Check(reloaded_uv.HasTextureCoordinates(), "the reloaded binary mesh reports having texture coordinates");
+  bool uvs_match = true;
+  for (int i = 0; i < reloaded_uv.VertexCount(); ++i) {
+    const auto original_uv = with_uvs.TextureCoordinateAt(i);
+    const auto loaded_uv = reloaded_uv.TextureCoordinateAt(i);
+    if (std::abs(original_uv.x - loaded_uv.x) > 1e-6 || std::abs(original_uv.y - loaded_uv.y) > 1e-6) {
+      uvs_match = false;
+      break;
+    }
+  }
+  Check(uvs_match, "every reloaded vertex's texture coordinate matches the original within "
+                   "single-precision round-trip error, through the binary .ply payload");
+  std::remove(uv_path.c_str());
+}
+
 // Malformed/out-of-scope input is rejected outright, never silently
-// misread. Covers: a binary-format header (disclosed out of scope, see
-// SavePly()'s doc comment), a vertex element missing x/y/z, a face list
-// property with too many/few corners, and an out-of-range face index -
-// then a control case proving those rejections aren't over-broad.
+// misread. Covers: a binary_big_endian header (disclosed out of scope,
+// see SavePly()'s doc comment - binary_little_endian is now supported,
+// see TestMeshSavePlyBinaryRoundTrips()), a truncated binary payload, a
+// vertex element missing x/y/z, a face list property with too many/few
+// corners, and an out-of-range face index - then a control case proving
+// those rejections aren't over-broad.
 void TestMeshLoadPlyRejectsMalformedFiles() {
   using dino8::kernel::Mesh;
   using dino8::kernel::Result;
 
   auto write_file = [](const std::string& path, const std::string& contents) {
-    std::ofstream out(path);
+    std::ofstream out(path, std::ios::binary);
     out << contents;
   };
 
   {
-    const std::string path = "dino8_kernel_mesh_ply_binary_test.ply";
-    write_file(path, "ply\nformat binary_little_endian 1.0\nelement vertex 0\nend_header\n");
+    const std::string path = "dino8_kernel_mesh_ply_binary_big_endian_test.ply";
+    write_file(path, "ply\nformat binary_big_endian 1.0\nelement vertex 0\nend_header\n");
     Mesh loaded;
     Check(Mesh::LoadPly(path, loaded) == Result::Failed,
-          "LoadPly() fails on a binary-format header - disclosed out of scope, not misread as ASCII");
+          "LoadPly() fails on a binary_big_endian header - disclosed out of scope (this kernel "
+          "assumes a little-endian host throughout), not silently byte-swapped or misread");
+    std::remove(path.c_str());
+  }
+
+  {
+    // A well-formed binary_little_endian header whose payload is cut off
+    // partway through the first vertex's own bytes - must fail cleanly
+    // (a short in.read()), not read garbage or crash past the end of file.
+    const std::string path = "dino8_kernel_mesh_ply_binary_truncated_test.ply";
+    std::ofstream out(path, std::ios::binary);
+    out << "ply\nformat binary_little_endian 1.0\nelement vertex 1\nproperty float x\n"
+           "property float y\nproperty float z\nproperty float nx\nproperty float ny\n"
+           "property float nz\nelement face 0\nproperty list uchar int vertex_indices\n"
+           "end_header\n";
+    const float half_a_float = 0.0f;
+    out.write(reinterpret_cast<const char*>(&half_a_float), 2);  // 2 of the first property's 4 bytes
+    out.close();
+    Mesh loaded;
+    Check(Mesh::LoadPly(path, loaded) == Result::Failed,
+          "LoadPly() fails cleanly on a binary payload truncated mid-property");
     std::remove(path.c_str());
   }
 
@@ -27731,6 +28238,122 @@ void TestRemoveBlendLeavesTheOtherConcaveFilletIntactAmongTwo() {
         "the remaining single fillet's own volume matches r^2*(1-pi/4) added, not both");
 }
 
+namespace {
+
+// Box (0,0,0)-(3,3,3) minus the sub-cube (2,3)x(2,3)x(2,3) - a trihedral
+// CONCAVE corner at (2,2,2), hand-built via FromPlanarFaces (not a
+// boolean union/difference, which splits coplanar faces the same way
+// ConcaveLShapedPrism's own comment discloses). Each of the 3 new
+// concave edges has the same 90-degree notch angle as the other fixtures
+// in this file.
+dino8::kernel::Brep NotchedCubeCorner() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+  auto make_face = [](const std::vector<Point3d>& loop, Vector3d normal) {
+    Brep::PlanarFace f;
+    f.loop = loop;
+    f.plane = ON_Plane(loop[0], normal);
+    return f;
+  };
+  std::vector<Brep::PlanarFace> faces;
+  faces.push_back(make_face({Point3d(0, 0, 0), Point3d(0, 0, 3), Point3d(0, 3, 3), Point3d(0, 3, 0)}, Vector3d(-1, 0, 0)));
+  faces.push_back(make_face({Point3d(0, 0, 0), Point3d(3, 0, 0), Point3d(3, 0, 3), Point3d(0, 0, 3)}, Vector3d(0, -1, 0)));
+  faces.push_back(make_face({Point3d(0, 0, 0), Point3d(0, 3, 0), Point3d(3, 3, 0), Point3d(3, 0, 0)}, Vector3d(0, 0, -1)));
+  faces.push_back(make_face({Point3d(3, 0, 0), Point3d(3, 3, 0), Point3d(3, 3, 2), Point3d(3, 2, 2), Point3d(3, 2, 3),
+                             Point3d(3, 0, 3)},
+                            Vector3d(1, 0, 0)));
+  faces.push_back(make_face({Point3d(0, 3, 0), Point3d(0, 3, 3), Point3d(2, 3, 3), Point3d(2, 3, 2), Point3d(3, 3, 2),
+                             Point3d(3, 3, 0)},
+                            Vector3d(0, 1, 0)));
+  faces.push_back(make_face({Point3d(0, 0, 3), Point3d(3, 0, 3), Point3d(3, 2, 3), Point3d(2, 2, 3), Point3d(2, 3, 3),
+                             Point3d(0, 3, 3)},
+                            Vector3d(0, 0, 1)));
+  faces.push_back(
+      make_face({Point3d(2, 2, 2), Point3d(2, 3, 2), Point3d(2, 3, 3), Point3d(2, 2, 3)}, Vector3d(1, 0, 0)));
+  faces.push_back(
+      make_face({Point3d(2, 2, 2), Point3d(2, 2, 3), Point3d(3, 2, 3), Point3d(3, 2, 2)}, Vector3d(0, 1, 0)));
+  faces.push_back(
+      make_face({Point3d(2, 2, 2), Point3d(3, 2, 2), Point3d(3, 3, 2), Point3d(2, 3, 2)}, Vector3d(0, 0, 1)));
+  return Brep::FromPlanarFaces(faces);
+}
+
+}  // namespace
+
+void TestFilletConcaveEdgesTrihedralCornerAddsExactSphericalBlendVolume() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConcaveEdges;
+  using dino8::kernel::Point3d;
+
+  const Brep notched = NotchedCubeCorner();
+  const double base_volume = notched.TessellateToClosedMesh(4, 4).Volume();
+  Check(std::fabs(base_volume - 26.0) < 1e-6, "sanity: the notched-cube-corner fixture's own volume is exactly 26");
+
+  const double r = 0.4;
+  const Point3d e1p0(2, 2, 2), e1p1(2, 2, 3);
+  const Point3d e2p0(2, 2, 2), e2p1(2, 3, 2);
+  const Point3d e3p0(2, 2, 2), e3p1(3, 2, 2);
+  const Brep filleted = FilletConcaveEdges(notched, {{e1p0, e1p1}, {e2p0, e2p1}, {e3p0, e3p1}}, r);
+
+  ON_TextLog log;
+  bool oriented = false, has_boundary = true;
+  Check(filleted.raw().IsValid(&log) && filleted.raw().IsManifold(&oriented, &has_boundary) && oriented &&
+            !has_boundary && filleted.raw().IsSolid(),
+        "the trihedral concave vertex blend gives a valid, closed, manifold solid");
+
+  const Brep::MixedFacesResult mf = filleted.MixedFaces();
+  Check(mf.cylindrical.size() == 3 && mf.spherical.size() == 1,
+        "sanity: three cylindrical patches (one per edge) and one spherical corner patch");
+  Check(mf.spherical[0].outward == false,
+        "the spherical patch is marked outward=false - it bounds material from the concave side");
+
+  // Closed form: the corner ball ADDS radius^3*(1-pi/6) beyond what the 3
+  // edges' own straight quarter-round sections add (radius^2*(1-pi/4) per
+  // unit of edge length remaining after each edge's own radius set-back
+  // near the corner - each edge has physical length 1, set back by
+  // radius at the corner end, free at the far end).
+  const double added_corner = r * r * r * (1.0 - ON_PI / 6.0);
+  const double edge_len_remaining = 1.0 - r;
+  const double added_edges = 3.0 * r * r * (1.0 - ON_PI / 4.0) * edge_len_remaining;
+  const double expected = base_volume + added_corner + added_edges;
+  // Deliberately TessellateToClosedMesh (fixed resolution), not the
+  // Adaptive variant: found directly while developing this test,
+  // TessellateToClosedMeshAdaptive() hangs (unbounded memory growth,
+  // never returning) on this exact solid at one specific radius (0.25,
+  // not this test's own 0.4) - confirmed to be a tessellator robustness
+  // gap, not a defect in this function's own B-rep (IsValid/IsManifold/
+  // IsSolid all report true regardless, and the fixed-resolution volume
+  // below converges to this closed form as resolution increases - 20x20
+  // matches to 4.9e-4, 8x8 only to 2.9e-3), so this test avoids the
+  // adaptive path entirely rather than risk hanging the whole suite -
+  // see FilletConcaveEdges' own doc comment for the full disclosure.
+  Check(std::fabs(filleted.TessellateToClosedMesh(20, 20).Volume() - expected) < 1e-3,
+        "the trihedral corner blend's own volume matches the closed form (corner ball + 3 edge sections)");
+}
+
+void TestFilletConcaveEdgesRejectsMixedVertexConfigurations() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConcaveEdges;
+  using dino8::kernel::Point3d;
+  auto throws = [](const std::function<void()>& fn) {
+    try {
+      fn();
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+    return false;
+  };
+
+  const Brep notched = NotchedCubeCorner();
+  const Point3d e1p0(2, 2, 2), e1p1(2, 2, 3);
+  const Point3d e2p0(2, 2, 2), e2p1(2, 3, 2);
+
+  // Exactly two of the three edges at a trihedral corner (m == 2, not 1
+  // or 3) is not a supported vertex configuration.
+  Check(throws([&] { FilletConcaveEdges(notched, {{e1p0, e1p1}, {e2p0, e2p1}}, 0.3); }),
+        "rejects two (not one, not three) filleted edges meeting at one vertex");
+}
+
 void TestRemoveBlendRoundTripsAConcaveFillet() {
   using dino8::kernel::Brep;
   using dino8::kernel::FilletConcaveEdge;
@@ -29503,6 +30126,7 @@ int main() {
   TestCurveExtend();
   TestCurveJoin();
   TestCurveMakePeriodicExact();
+  TestSurfaceMakePeriodicExact();
   TestCurveClosestPoint();
   TestCurveFitLeastSquares();
   TestCurveFitLeastSquaresConstrainedRefit();
@@ -29592,6 +30216,8 @@ int main() {
   TestBrepBooleanEndToEnd();
   TestBrepSphereIsClosedAndWatertight();
   TestBrepSphereBooleanEndToEnd();
+  TestBrepTorusIsClosedAndWatertight();
+  TestBrepVolumeAndAreaMatchClosedForms();
   TestBrepTrimmedPlanarFaceRejectsTooFewPoints();
   TestBrepTrimmedPlanarFace();
   TestWeldAcrossIndependentlyParameterizedSurfaces();
@@ -29604,6 +30230,7 @@ int main() {
   TestRevolveProfileRejectsTooFewSegments();
   TestRevolveProfileRejectsTooShortProfile();
   TestRevolveProfileFlatEndCaps();
+  TestMeshRevolveProfilePartialAngle();
   TestLoftClosedRingsSquareFrustumExactVolumeAndBoolean();
   TestLoftClosedRingsRejectsTooFewRingsAndMismatchedCounts();
   TestLoftClosedRingsConcaveEndCapsExactPrismVolume();
@@ -29654,6 +30281,7 @@ int main() {
   TestMeshLoadStlBinaryRejectsNonFiniteVertices();
   TestMeshSaveStlBinaryRoundTrips();
   TestMeshSavePlyRoundTrips();
+  TestMeshSavePlyBinaryRoundTrips();
   TestMeshLoadPlyRejectsMalformedFiles();
   TestExactClippingMatchesAreaButNotCellCounts();
   TestExactClippingHandlesNonConvexTrim();
@@ -29722,6 +30350,8 @@ int main() {
   TestFilletConcaveEdgesAddsExactVolumeForTwoIndependentNotches();
   TestFilletConcaveEdgesRejectsUnsupportedConfigurations();
   TestRemoveBlendLeavesTheOtherConcaveFilletIntactAmongTwo();
+  TestFilletConcaveEdgesTrihedralCornerAddsExactSphericalBlendVolume();
+  TestFilletConcaveEdgesRejectsMixedVertexConfigurations();
   TestRemoveBlendRoundTripsAConcaveFillet();
   TestChamferConcaveEdgeAddsExactRightTriangleVolume();
   TestChamferConcaveEdgeAngleMatchesTwoDistanceForm();
@@ -29893,6 +30523,8 @@ int main() {
   TestBrepSplitNakedEdgeAtStraightEdgeSubdividesBoundaryExactly();
   TestBrepSplitNakedEdgeAtRefusesACurvedEdge();
   TestBrepSplitNakedEdgeAtRefusesInvalidInputs();
+  TestBrepSewTJunctionsClosesActualTJunction();
+  TestBrepSewTJunctionsNoOpOnCleanBreps();
   TestBrepCheckDetects3dSelfIntersectingLoopBeyondThe2dTrimCheck();
   TestMeshCheckAndFillSmallHolesRestoreDroppedFaces();
   TestMeshUnifyNormalsFixesFlippedAndInvertedFaces();

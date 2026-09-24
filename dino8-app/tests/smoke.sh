@@ -2047,11 +2047,26 @@ echo "$VW" | grep -q "^smoke:" || { echo "$VW"; echo "FAIL: view script produced
 # commands not already exercised elsewhere (see state_script2.txt).
 mkdir -p "$TMPW/state2"
 sed "s|@TMP@|$TMPW/state2|g" "$HERE/state_script2.txt" > "$TMPW/state_script2.txt"
+# Piped through `tee` rather than plain `S2="$(...)"` command substitution:
+# a command substitution only gets echoed to the CI log once the child
+# process EXITS, so on row L's Windows-only hang here, that older capture
+# style could never have distinguished "hung before printing anything" from
+# "hung after printing, but nothing was echoed to the log yet" - it would
+# show zero output either way. `tee` streams whatever the child does write
+# (including main.cpp's pre-glfwInit() breadcrumbs) to the CI log live, as
+# it happens, so a future recurrence can actually confirm or rule out where
+# the hang sits instead of leaving it ambiguous. See row L.
+STATE2_LOG="$TMPW/state2_live.log"
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
-  S2="$("$BIN" --smoke 200 --script "$TMPW/state_script2.txt" 2>&1)" || { echo "$S2"; echo "FAIL: state2 script exited non-zero"; exit 1; }
+  if "$BIN" --smoke 200 --script "$TMPW/state_script2.txt" 2>&1 | tee "$STATE2_LOG"; then :; else
+    echo "FAIL: state2 script exited non-zero"; exit 1
+  fi
 else
-  S2="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 200 --script "$TMPW/state_script2.txt" 2>&1)" || { echo "$S2"; echo "FAIL: state2 script exited non-zero"; exit 1; }
+  if xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 200 --script "$TMPW/state_script2.txt" 2>&1 | tee "$STATE2_LOG"; then :; else
+    echo "FAIL: state2 script exited non-zero"; exit 1
+  fi
 fi
+S2="$(cat "$STATE2_LOG")"
 echo "$S2" | grep -E "^(ok|FAIL)"
 if echo "$S2" | grep -q "^FAIL"; then fail=1; fi
 echo "$S2" | grep -q "^smoke:" || { echo "$S2"; echo "FAIL: state2 script produced no smoke line"; fail=1; }
