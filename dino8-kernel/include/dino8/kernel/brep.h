@@ -1136,22 +1136,81 @@ class Brep {
   // Bounding box over the Brep's actual curved geometry, not just its
   // control points - a real gap nothing here could answer without
   // tessellating first (Mesh::GetBoundingBox() only sees a tessellation's
-  // sampled vertices, an approximation of the true surface). Delegates to
-  // ON_Brep::GetTightBoundingBox, which despite its name is NOT a
-  // genuine tight/exact bound in the public OpenNURBS build for a face
-  // whose true extremum lies strictly inside its parameter domain (it
-  // only samples each face's boundary/Greville-abscissa isocurves and
-  // control points, never searches the true 2D interior - verified by
-  // testing: a doubly-curved bicubic bulge whose true peak is at its
-  // center comes back overshot, at exactly half the peak control point's
-  // height above its neighbors instead of the analytically exact value).
-  // Still always a valid, safe bound (it can overshoot, never exclude
-  // part of the surface) - exact for Box() (flat faces) and, more subtly,
-  // Sphere() (the extrema of a standard rational-NURBS sphere's meridian
-  // circles coincide exactly with points its isocurve sampling actually
+  // sampled vertices, an approximation of the true surface).
+  //
+  // A real, previously-undocumented gap found (not assumed) while
+  // building SplitDisjointPieces() above, and corrected here rather than
+  // left stale: `ON_Brep::GetTightBoundingBox()` (read in full) computes
+  // each face's box from its UNDERLYING SURFACE alone - vertices, a
+  // Greville-abscissa isocurve refinement, and each face's own bbox are
+  // all unioned in - and NEVER consults that face's own trim boundary at
+  // all, even when a real trim loop exists. For a face whose surface
+  // genuinely extends beyond its own trim (FromMixedFaces() pads a
+  // planar face's underlying surface 5% beyond its trim loop for an
+  // unrelated tessellation reason - see its own "small margin" comment;
+  // TrimmedPlanarFace() lets a caller trim an arbitrarily small polygon
+  // out of an arbitrarily large surface directly), the box this returned
+  // was the UNTRIMMED surface's own box, silently oversized - this
+  // repo's own former doc comment here claiming "exact for Box() (flat
+  // faces)" was true only because Box()'s own faces happen to be
+  // untrimmed (trim == the surface's own full domain), not because flat
+  // faces are handled correctly in general; a real trim on a flat face
+  // was never exact before this fix.
+  //
+  // Now exact for a face whose surface is a genuine, non-rational,
+  // bilinear (degree (1,1), 4 control points) surface with a ZERO
+  // "twist" term (`P00 - P10 - P01 + P11`, checked directly on the
+  // surface's own control points, not assumed from which factory built
+  // it) - i.e. a true AFFINE map, exactly what
+  // FromPlanarFaces()/FromMixedFaces()/TrimmedPlanarFace() build for
+  // every planar face. Zero twist is required, not just flatness: a
+  // merely planar-IMAGE bilinear patch (4 coplanar corners) can still
+  // curve a diagonal (u, v) line WITHIN that same plane if its twist is
+  // nonzero - confirmed with a concrete hand-built counterexample before
+  // this was trusted - which could make a naive corner-or-vertex-only
+  // box UNDERSHOOT the true one; true zero twist rules that out exactly,
+  // since every straight edge of the face's own stored trim polygon
+  // (`face_trim_loops_`, straight-in-UV by that table's own convention)
+  // then maps to a straight edge in 3D too, so the box of its own stored
+  // vertices (or, for an untrimmed such face, its own domain corners) IS
+  // the face's exact real boundary, not an approximation of a curved
+  // one. Only trusted when that side table is genuinely in lockstep with
+  // this Brep's own FaceCount() (the same self-check Compound() and
+  // SplitDisjointPieces() apply) - a raw()-assigned Brep whose tables
+  // don't cover its faces gets the fallback below instead, never a
+  // mismatched lookup.
+  //
+  // Every OTHER face (curved, rational, a twisted bilinear, or this
+  // Brep's side tables not in lockstep) is completely untouched: this
+  // reproduces EXACTLY what `ON_Brep::GetTightBoundingBox()` itself
+  // computes for that one face, by building a throwaway single-face
+  // `ON_Brep` from its own surface and running that SAME whole-Brep
+  // method on it - not the more obvious-looking, directly callable
+  // `ON_BrepFace::GetTightBoundingBox()`, a real pitfall found (via a
+  // direct probe, not assumed) and rejected: that inherited method is a
+  // DIFFERENT, cruder algorithm - it returned a bicubic test surface's
+  // raw control-point extent, completely missing the Greville-abscissa
+  // isocurve refinement the whole-Brep method implements as its own
+  // inline per-face logic - so calling it would have silently LOOSENED
+  // this method's own already-tested behavior for every curved face,
+  // exactly the opposite of "completely untouched." A safe bound that
+  // can overshoot but never excludes part of the surface, same as before
+  // this fix, including its own prior limitation: NOT a genuine
+  // tight/exact bound for a face whose true extremum lies strictly
+  // inside its parameter domain (it only samples boundary/Greville-
+  // abscissa isocurves and control points, never searches the true 2D
+  // interior - verified by testing: a doubly-curved bicubic bulge whose
+  // true peak is at its center comes back overshot, at exactly half the
+  // peak control point's height above its neighbors instead of the
+  // analytically exact value). Exact for Sphere(), more subtly: the
+  // extrema of a standard rational-NURBS sphere's meridian circles
+  // coincide exactly with points its isocurve sampling actually
   // evaluates, not because the underlying algorithm does a real 3D
-  // extremum search). Throws std::runtime_error if OpenNURBS' own call
-  // fails (e.g. a face with an invalid surface).
+  // extremum search.
+  //
+  // Throws std::runtime_error only if no face produced any usable box
+  // (including a genuinely empty Brep) AND OpenNURBS' own whole-Brep
+  // fallback also fails.
   BoundingBox GetTightBoundingBox() const;
 
   // Tessellates each face into a triangle mesh via NurbsSurface's grid

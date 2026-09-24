@@ -2147,12 +2147,153 @@ std::vector<Brep> Brep::SplitDisjointPieces() const {
   return pieces;
 }
 
+namespace {
+// True (and fills the 4 corner control points) iff `srf` is a genuine,
+// non-rational, bilinear (degree (1,1), 2x2 control vertices) NURBS
+// surface whose bilinear "twist" term `P00 - P10 - P01 + P11` is
+// (numerically, to float-level slop) zero - i.e. an AFFINE map from
+// (u, v) to 3D, so a straight line in the surface's own (u, v) domain
+// maps to a straight line in 3D.
+//
+// Checked directly on the surface's own control points, not assumed
+// from which factory built it: a merely PLANAR-IMAGE bilinear patch (all
+// 4 corners lying in one plane) can still have a nonzero twist and
+// genuinely curve a diagonal (u, v) line WITHIN that same plane - a real
+// case, confirmed with a concrete hand-built counterexample (4 coplanar
+// corners with P00 - P10 - P01 + P11 != 0) before this function was
+// trusted for anything: its own diagonal isocurve is measurably not
+// straight (nonzero cross product between its own chord vectors), while
+// the SAME check on a true rectangle grid (exactly how
+// FromMixedFaces()/FromPlanarFaces()/TrimmedPlanarFace() build a planar
+// face's surface) gives exactly zero twist. Every point of a bilinear
+// surface is a convex combination of its 4 corners regardless of twist,
+// so the corners' own bounding box always safely contains the WHOLE
+// surface either way - what specifically needs zero twist is trusting
+// that a straight EDGE of a stored trim polygon (a chord between two
+// arbitrary (u, v) points, not necessarily the domain's own corners)
+// maps to a straight 3D edge too, since a twisted patch can bow that
+// chord's own image outside the straight-line box its two endpoints
+// alone would suggest.
+bool IsExactAffineBilinear(const ON_Surface& srf, ON_NurbsSurface& nurbs_out, ON_3dPoint& p00, ON_3dPoint& p10,
+                            ON_3dPoint& p01, ON_3dPoint& p11) {
+  if (srf.Degree(0) != 1 || srf.Degree(1) != 1) return false;
+  if (0 == srf.GetNurbForm(nurbs_out) || nurbs_out.IsRational()) return false;
+  if (nurbs_out.CVCount(0) != 2 || nurbs_out.CVCount(1) != 2) return false;
+  if (!nurbs_out.GetCV(0, 0, p00) || !nurbs_out.GetCV(1, 0, p10) || !nurbs_out.GetCV(0, 1, p01) ||
+      !nurbs_out.GetCV(1, 1, p11)) {
+    return false;
+  }
+  const double scale = std::max({p00.DistanceTo(p10), p00.DistanceTo(p01), p00.DistanceTo(p11), 1.0});
+  const ON_3dVector twist = (p00 - p10) - (p01 - p11);
+  return twist.Length() < 1e-9 * scale;
+}
+}  // namespace
+
 BoundingBox Brep::GetTightBoundingBox() const {
+  const int face_count = brep_.m_F.Count();
+  // face_trim_loops_'s own "kept in lockstep with brep_.m_F" invariant
+  // (see brep.h) - only trusted when its size actually matches, the same
+  // self-check Compound() and SplitDisjointPieces() apply to this table.
+  const bool trim_table_ok = face_trim_loops_.size() == static_cast<size_t>(face_count);
+
   ON_BoundingBox box;
-  if (!brep_.GetTightBoundingBox(box)) {
-    throw std::runtime_error(
-        "dino8::kernel::Brep::GetTightBoundingBox: ON_Brep::"
-        "GetTightBoundingBox failed");
+  for (int i = 0; i < face_count; ++i) {
+    const ON_BrepFace& face = brep_.m_F[i];
+    const ON_Surface* srf = face.SurfaceOf();
+    if (srf == nullptr) continue;  // a deleted, uncompacted face - nothing to bound
+
+    bool used_exact = false;
+    ON_NurbsSurface nurbs;
+    ON_3dPoint p00, p10, p01, p11;
+    if (trim_table_ok && IsExactAffineBilinear(*srf, nurbs, p00, p10, p01, p11)) {
+      // Exact: this face's surface is a genuine affine map, so its own
+      // trim loop's stored (u, v) vertices (straight edges in UV, by the
+      // same convention every other consumer of face_trim_loops_ already
+      // relies on) map to the EXACT straight-edged 3D polygon that is
+      // this face's own real boundary - not an approximation of a curved
+      // one, since there is no curve here to approximate. An empty
+      // stored loop means "untrimmed" (brep.h's own convention): the
+      // face's real boundary is then exactly its own domain corners,
+      // already computed above.
+      ON_BoundingBox exact;
+      auto add_point = [&](const ON_3dPoint& p) {
+        if (!exact.IsValid()) {
+          exact.m_min = exact.m_max = p;
+        } else {
+          exact.Set(p, true);
+        }
+      };
+      const std::vector<Point2d>& loop = face_trim_loops_[static_cast<size_t>(i)];
+      if (!loop.empty()) {
+        for (const Point2d& uv : loop) add_point(nurbs.PointAt(uv.x, uv.y));
+      } else {
+        add_point(p00);
+        add_point(p10);
+        add_point(p01);
+        add_point(p11);
+      }
+      if (exact.IsValid()) {
+        box.Union(exact);
+        used_exact = true;
+      }
+    }
+
+    if (!used_exact) {
+      // Every other face (curved, twisted-bilinear, rational, or a
+      // Brep whose side tables aren't in lockstep): reproduce EXACTLY
+      // what ON_Brep::GetTightBoundingBox() itself computes for this one
+      // face - a real pitfall found and rejected before landing this,
+      // not the obvious-looking `ON_BrepFace::GetTightBoundingBox()`
+      // (inherited from ON_SurfaceProxy/ON_Surface): a direct probe
+      // proved that call is a DIFFERENT, cruder algorithm (it came back
+      // as the raw control-point extent, completely missing the
+      // Greville-abscissa isocurve refinement ON_Brep::
+      // GetTightBoundingBox() implements as its own inline per-face
+      // logic, not delegated to any per-face virtual at all) - using it
+      // here would have silently LOOSENED this method's own
+      // already-established, tested behavior for every curved face, the
+      // opposite of "completely untouched." Reading that inline logic
+      // confirms each face's own contribution has no cross-face
+      // dependency beyond a pure early-out optimization, so building a
+      // throwaway single-face ON_Brep from this face's own surface and
+      // running the SAME ON_Brep::GetTightBoundingBox() on it reproduces
+      // that exact per-face contribution - confirmed by a direct probe
+      // matching the documented bicubic-bulge overshoot value exactly.
+      ON_Surface* srf_copy = ON_Surface::Cast(srf->Duplicate());
+      bool grown = false;
+      if (srf_copy != nullptr) {
+        ON_Brep single_face_brep;
+        const int si = single_face_brep.AddSurface(srf_copy);
+        single_face_brep.NewFace(si);
+        ON_BoundingBox local;
+        if (single_face_brep.GetTightBoundingBox(local)) {
+          box.Union(local);
+          grown = true;
+        }
+      }
+      if (!grown) {
+        // Should not happen for any valid surface (Duplicate() is a
+        // universally-implemented ON_Surface virtual) - rather than
+        // silently omitting this face's own contribution (a genuine risk
+        // of UNDERSHOOTING the true box), fail loudly.
+        throw std::runtime_error(
+            "dino8::kernel::Brep::GetTightBoundingBox: could not compute "
+            "face " +
+            std::to_string(i) + "'s own bounding box (ON_Surface::Duplicate() or ON_Brep::GetTightBoundingBox() failed)");
+      }
+    }
+  }
+
+  if (!box.IsValid()) {
+    // No faces produced a usable box (including the genuinely-empty
+    // Brep) - fall back to OpenNURBS' own whole-Brep computation, which
+    // also folds in vertices/edges directly; for a Brep with no faces at
+    // all this is exactly its previous (pre-fix) behavior.
+    if (!brep_.GetTightBoundingBox(box)) {
+      throw std::runtime_error(
+          "dino8::kernel::Brep::GetTightBoundingBox: ON_Brep::"
+          "GetTightBoundingBox failed");
+    }
   }
   return BoundingBox{box.Min(), box.Max()};
 }

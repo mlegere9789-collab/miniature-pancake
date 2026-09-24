@@ -5064,6 +5064,94 @@ void TestBrepGetTightBoundingBox() {
         "TestCurveGetTightBoundingBox found for a curve");
 }
 
+// The real, previously-undocumented gap found and fixed alongside
+// SplitDisjointPieces(): ON_Brep::GetTightBoundingBox() measures each
+// face's UNDERLYING SURFACE, never its trim boundary, so a genuinely
+// trimmed face's box came back the size of its (possibly much larger)
+// untrimmed surface. Now exact for a face whose surface is a real,
+// zero-twist affine bilinear map (exactly what
+// FromPlanarFaces()/FromMixedFaces()/TrimmedPlanarFace() build) - proven
+// here on TWO independent constructions, plus a direct regression guard
+// that the general (non-affine) case never undershoots.
+void TestBrepGetTightBoundingBoxExactForTrimmedPlanarFaces() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point2d;
+  using dino8::kernel::Point3d;
+
+  // 1. The original repro, via FromPlanarFaces(): before this fix, this
+  // came back (-0.05,-0.05,-0.05)-(1.05,1.05,1.05) - FromMixedFaces()'s
+  // own 5%-padded underlying surface, not the box's real (0,0,0)-(1,1,1).
+  {
+    const Brep box = Brep::FromPlanarFaces(Brep::Box(0, 0, 0, 1, 1, 1).PlanarFaces());
+    const auto bounds = box.GetTightBoundingBox();
+    Check(bounds.min.DistanceTo(Point3d(0, 0, 0)) < 1e-12 && bounds.max.DistanceTo(Point3d(1, 1, 1)) < 1e-12,
+          "FromPlanarFaces(unit box)'s GetTightBoundingBox is now EXACTLY (0,0,0)-(1,1,1), not the padded "
+          "underlying-surface box");
+  }
+  {
+    const Brep box = Brep::FromPlanarFaces(Brep::Box(0, 0, 0, 2, 3, 4).PlanarFaces());
+    const auto bounds = box.GetTightBoundingBox();
+    Check(bounds.min.DistanceTo(Point3d(0, 0, 0)) < 1e-12 && bounds.max.DistanceTo(Point3d(2, 3, 4)) < 1e-12,
+          "a 2x3x4 FromPlanarFaces() box's GetTightBoundingBox is also exactly its own true corners");
+  }
+
+  // 2. The general, factory-independent root cause, isolated directly:
+  // TrimmedPlanarFace() lets a caller trim an arbitrarily small polygon
+  // out of an arbitrarily large surface - a 100x100 flat surface with
+  // only its [40,60]x[40,60] middle actually trimmed in. Before this
+  // fix, GetTightBoundingBox() returned the WHOLE (0,0,0)-(100,100,0)
+  // surface, ignoring the trim entirely; this proves the fix isn't
+  // specific to FromMixedFaces()'s own padding, but the same OpenNURBS
+  // behavior found in a completely different construction.
+  {
+    const std::vector<Point3d> grid = {Point3d(0, 0, 0), Point3d(100, 0, 0), Point3d(0, 100, 0), Point3d(100, 100, 0)};
+    const NurbsSurface surface = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+    const std::vector<Point2d> trim = {Point2d(0.4, 0.4), Point2d(0.6, 0.4), Point2d(0.6, 0.6), Point2d(0.4, 0.6)};
+    const Brep face = Brep::TrimmedPlanarFace(surface, trim);
+    const auto bounds = face.GetTightBoundingBox();
+    Check(bounds.min.DistanceTo(Point3d(40, 40, 0)) < 1e-9 && bounds.max.DistanceTo(Point3d(60, 60, 0)) < 1e-9,
+          "TrimmedPlanarFace()'s small trim on a much bigger flat surface now gives exactly the trim's own "
+          "(40,40,0)-(60,60,0) box, not the untrimmed surface's (0,0,0)-(100,100,0)");
+  }
+
+  // 3. The safety net: a genuinely CURVED face (a cylinder, degree > 1 -
+  // never eligible for the exact affine-bilinear path) must still come
+  // back as a SAFE bound - a superset of a dense, independent sampling
+  // of that exact same surface, never smaller. This is the regression
+  // guard against ever accidentally undershooting the general case: the
+  // exact-affine fast path must never fire here, and the untouched
+  // OpenNURBS fallback must still cover every sampled point.
+  {
+    ON_NurbsSurface cyl_srf;
+    const ON_Cylinder cyl(ON_Circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 5.0), 10.0);
+    Check(cyl.GetNurbForm(cyl_srf) == 2, "sanity: ON_Cylinder::GetNurbForm succeeds");
+    NurbsSurface cyl_surface;
+    cyl_surface.raw() = cyl_srf;
+    const Brep cyl_brep = Brep::FromSurface(cyl_surface);
+    const auto bounds = cyl_brep.GetTightBoundingBox();
+
+    bool all_inside = true;
+    const ON_Interval du = cyl_srf.Domain(0), dv = cyl_srf.Domain(1);
+    constexpr int kSamples = 97;  // deliberately not a divisor of anything above - no accidental alignment
+    for (int i = 0; i <= kSamples && all_inside; ++i) {
+      for (int j = 0; j <= kSamples && all_inside; ++j) {
+        const double u = du.ParameterAt(static_cast<double>(i) / kSamples);
+        const double v = dv.ParameterAt(static_cast<double>(j) / kSamples);
+        const Point3d p = cyl_surface.PointAt(u, v);
+        if (p.x < bounds.min.x - 1e-9 || p.x > bounds.max.x + 1e-9 || p.y < bounds.min.y - 1e-9 ||
+            p.y > bounds.max.y + 1e-9 || p.z < bounds.min.z - 1e-9 || p.z > bounds.max.z + 1e-9) {
+          all_inside = false;
+        }
+      }
+    }
+    Check(all_inside,
+          "a curved (cylindrical) face's GetTightBoundingBox is still a safe superset: a 98x98 independent "
+          "sampling of the exact same surface all falls within the returned box - never undershoots the general, "
+          "non-affine case");
+  }
+}
+
 void TestBrepBooleanEndToEnd() {
   using dino8::kernel::BooleanCombine;
   using dino8::kernel::BooleanOp;
@@ -21429,6 +21517,7 @@ int main() {
   TestBrepBoxIsClosedAndWatertight();
   TestBrepLacksFullOpenNurbsTopologyButStillUsable();
   TestBrepGetTightBoundingBox();
+  TestBrepGetTightBoundingBoxExactForTrimmedPlanarFaces();
   TestBrepBooleanEndToEnd();
   TestBrepSphereIsClosedAndWatertight();
   TestBrepSphereBooleanEndToEnd();

@@ -702,20 +702,30 @@ What this repo does instead:
   doubly-curved face**: despite its name, this is *not* a real tight/exact
   bound in the public OpenNURBS build. It only samples each face's
   boundary/Greville-abscissa isocurves and control points, never a
-  genuine 2D interior extremum search - exact for `Brep::Box()` (flat
-  faces, hand-derivable exact) and, more subtly, `Brep::Sphere()` (a
-  standard rational-NURBS sphere's meridian circles happen to have their
-  own extrema exactly at points the isocurve sampling evaluates, not
-  because the algorithm does a real search), but a doubly-curved bicubic
-  bulge surface whose true peak sits at its own interior center - proven
-  by evaluating `NurbsSurface::PointAt()` there directly - comes back
-  overshot at exactly double the true height instead. Still always a
-  valid, safe bound (never excludes real geometry, only occasionally
-  overshoots), just not the minimal one its name promises - the same
-  "declared for Rhino, degraded in the public build" pattern this
-  codebase has found before (`ON_Brep::CreateMesh`, `ON_SubD::BrepForm`),
-  found here by testing a case specifically chosen to expose it rather
-  than assumed correct from a name and a non-stub function body.
+  genuine 2D interior extremum search - more subtly, exact for
+  `Brep::Sphere()` (a standard rational-NURBS sphere's meridian circles
+  happen to have their own extrema exactly at points the isocurve
+  sampling evaluates, not because the algorithm does a real search), but
+  a doubly-curved bicubic bulge surface whose true peak sits at its own
+  interior center - proven by evaluating `NurbsSurface::PointAt()` there
+  directly - comes back overshot at exactly double the true height
+  instead. Still always a valid, safe bound (never excludes real
+  geometry, only occasionally overshoots), just not the minimal one its
+  name promises - the same "declared for Rhino, degraded in the public
+  build" pattern this codebase has found before (`ON_Brep::CreateMesh`,
+  `ON_SubD::BrepForm`), found here by testing a case specifically chosen
+  to expose it rather than assumed correct from a name and a non-stub
+  function body. **Second correction, found and fixed two chunks later
+  (see `GetTightBoundingBox()`'s own later, fuller entry below)**: the
+  claim above that this was "exact for `Brep::Box()` (flat faces)" was
+  true only because `Box()`'s own faces are untrimmed (their trim
+  coincides with the surface's own full domain) - the underlying gap this
+  method never consulted a face's actual trim boundary AT ALL, so a
+  genuinely trimmed flat face (e.g. `FromMixedFaces()`'s own planar
+  faces, or `TrimmedPlanarFace()`'s general case) came back sized to its
+  UNTRIMMED surface, not its real trim - a real, silent-overestimate bug,
+  not merely a documentation gap. Now fixed for exactly that provably-safe
+  case; see the later entry for the full story.
 - `NurbsCurve::GetTightBoundingBox()` is the curve-level analog, and hits
   the identical public-build limitation, confirmed by reading OpenNURBS'
   own source directly this time rather than discovering it by accident: `ON_BezierCurve::
@@ -2108,6 +2118,84 @@ What this repo does instead:
   has) - proving the box's own shape, not its placement in world space,
   determines the answer; and every vertex of the rotated box is checked
   directly to lie within the returned box along all three axes.
+- `Brep::GetTightBoundingBox()`: a real, silent-overestimate bug fixed,
+  found while building `SplitDisjointPieces()` above (see this file's own
+  earlier, narrower entry for this method for the history of what was
+  already known before this). Root cause, confirmed by reading
+  `ON_Brep::GetTightBoundingBox()`'s own source in full rather than
+  inferring from behavior: it computes each face's contribution purely
+  from that face's UNDERLYING SURFACE (vertices, a Greville-abscissa
+  isocurve refinement, each face's own surface bbox) and NEVER consults
+  that face's actual trim boundary at all, even when a real trim loop
+  exists. Proven to be a general OpenNURBS behavior, not specific to any
+  one factory here: `TrimmedPlanarFace()` lets a caller trim an
+  arbitrarily small polygon out of an arbitrarily large surface directly,
+  and the box came back sized to the WHOLE untrimmed surface, completely
+  ignoring the trim - independently confirming `FromMixedFaces()`'s own
+  5%-padded planar surfaces weren't a one-off coincidence either.
+  Now exact for a face whose surface is a genuine, non-rational, bilinear
+  (degree (1,1), 4 control points) surface with a ZERO "twist" term
+  (`P00 - P10 - P01 + P11`, checked directly on the surface's own control
+  points) - i.e. a true AFFINE map, exactly what
+  `FromPlanarFaces()`/`FromMixedFaces()`/`TrimmedPlanarFace()` build for
+  every planar face. Zero twist, not just flatness, is what's required:
+  a merely planar-IMAGE bilinear patch (4 coplanar corners) can still
+  curve a diagonal `(u, v)` line WITHIN that same plane if its twist is
+  nonzero - confirmed with a concrete hand-built counterexample (4
+  coplanar corners with nonzero twist; its own diagonal isocurve measured
+  genuinely non-collinear via a cross product) before this was trusted,
+  since using only a trim polygon's own discrete vertices for such a face
+  could UNDERSHOOT the true tight box (a straight UV chord between two
+  polygon vertices bows into a curve in 3D, and that curve's own bulge
+  isn't necessarily bounded by its two endpoints' own straight-line box -
+  though it IS always bounded by the WHOLE surface's 4-corner box, since
+  every bilinear point is a convex combination of its corners regardless
+  of twist; that weaker fact is what still keeps every OTHER face's
+  fallback below always safe). Given zero twist, every straight edge of
+  the face's own stored trim polygon (`face_trim_loops_`, straight-in-UV
+  by that table's own convention) maps to a straight edge in 3D too, so
+  the box of its own stored vertices (or, for an untrimmed such face, its
+  own domain corners) IS the face's exact real boundary. Only trusted
+  when that side table is genuinely in lockstep with this Brep's own
+  `FaceCount()` (the same self-check `Compound()`/`SplitDisjointPieces()`
+  apply). A second, independent pitfall found (via a direct probe, not assumed)
+  and rejected while building this: the obvious-looking
+  `ON_BrepFace::GetTightBoundingBox()` (inherited from
+  `ON_SurfaceProxy`/`ON_Surface`) is a DIFFERENT, cruder algorithm than
+  `ON_Brep::GetTightBoundingBox()`'s own inline per-face logic - probed
+  directly on a doubly-curved bicubic bulge surface, it returned the raw
+  control-point extent (a height of 1.0x the peak, not the documented
+  0.5x overshoot), completely missing the Greville-abscissa isocurve
+  refinement. Using it for every non-affine face's fallback would have
+  silently LOOSENED this method's own already-tested behavior for every
+  curved face - caught only by re-running the FULL existing test suite
+  and finding `TestBrepGetTightBoundingBox`'s own pre-existing bicubic
+  bulge check newly failing. The fix: build a throwaway single-face
+  `ON_Brep` from that face's own surface and run the real
+  `ON_Brep::GetTightBoundingBox()` on it - the SAME algorithm, scoped to
+  one face (its own per-face loop has no cross-face dependency beyond a
+  pure early-out optimization), confirmed by a direct probe to reproduce
+  the documented bicubic-bulge overshoot value exactly, restoring
+  bit-for-bit the same answer as before this fix for every non-affine
+  face. Verified with the original repro (`FromPlanarFaces(Box(0,0,0,1,1,1))`
+  now gives exactly `(0,0,0)`-`(1,1,1)`, not the padded
+  `(-0.05,...)`-`(1.05,...)`), the general factory-independent repro
+  (`TrimmedPlanarFace()`'s small-trim-on-big-surface now gives exactly
+  the trim's own box, not the whole surface's), a direct regression guard
+  (a curved cylindrical face's box is checked to contain a dense 98x98
+  independent sampling of that same surface - never undershoots), and the
+  full pre-existing test suite re-run to confirm `Box()`'s, `Sphere()`'s
+  and the bicubic bulge's own already-established exact/overshoot values
+  are all bit-for-bit unchanged. Verified boolean-adjacent: this Brep
+  method underlies `BooleanCombinePlanar()`/`BooleanCombineMixed()`/
+  `ShellConvexPlanar()`/`FilletConvexEdge()`'s own result construction, so
+  the full 76-case general boolean sweep was also run before/after this
+  change on this same branch (a shared sweep-baseline file across
+  worktrees turned out to reflect a DIFFERENT session's own code, making
+  a naive diff against it meaningless - the valid check is a stash-based
+  before/after on one's own branch) and showed zero differences,
+  confirming this Brep-level bounding-box query has no effect on the
+  Manifold-mesh-based boolean pipeline at all.
 
 ## What's still not done (as of chunk 2)
 
