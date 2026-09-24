@@ -926,8 +926,24 @@ void Document::ApplyObjectDelta(const StateDelta& d, bool undo) {
       objects_.insert(objects_.begin() + static_cast<std::ptrdiff_t>(idx), r->object);
     }
   } else {
-    for (const auto& r : d.removed) {
-      const auto pos = index_of.find(r.object.id);
+    // `d.removed` is recorded in ascending index_before order (built by
+    // walking pending_.objects - a copy of objects_ at BeginChange time -
+    // in vector order). `index_of` is built once, up front, so erasing in
+    // that same ascending order is wrong: erasing the first (lower-index)
+    // entry shifts every later position down by one, leaving the next
+    // entry's recorded position stale - and, if that entry was originally
+    // last, now one-past-the-end, making objects_.erase() undefined
+    // behavior. Erase in descending index order instead (mirroring the
+    // `undo` branch's reverse iteration over `d.added` above), so removing
+    // the highest-index entry first never disturbs the still-to-be-erased,
+    // lower-index entries' positions.
+    std::vector<const StateDelta::RemovedObject*> order;
+    order.reserve(d.removed.size());
+    for (const auto& r : d.removed) order.push_back(&r);
+    std::sort(order.begin(), order.end(),
+              [](const auto* a, const auto* b) { return a->index_before > b->index_before; });
+    for (const auto* r : order) {
+      const auto pos = index_of.find(r->object.id);
       if (pos != index_of.end()) objects_.erase(objects_.begin() + static_cast<std::ptrdiff_t>(pos->second));
     }
     for (const SceneObject& o : d.added) objects_.push_back(o);
