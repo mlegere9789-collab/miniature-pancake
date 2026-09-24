@@ -8797,6 +8797,62 @@ void TestSubDCapBoundaryLoopAddsGenuineNgonAndRetagsSmooth() {
         "CapBoundaryLoop refuses again now that the SubD is fully closed - no naked edge left anywhere");
 }
 
+// SubD::Transform(): a closed quad-box SubD's control cage moved by an
+// exact translation and scaled by an exact uniform factor - both hand-
+// derivable, not approximate - plus the documented mirror caveat (still
+// IsValid() afterward, exactly like a wholly Mesh::FlipNormals()-ed
+// mesh) and the invalid-xform rejection.
+void TestSubDTransformMovesScalesAndStaysValidUnderMirror() {
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SubD;
+  using dino8::kernel::Vector3d;
+
+  const auto subd = SubD::FromControlMesh(MakeQuadBoxMesh(0, 0, 0, 2, 2, 2));
+  Check(subd.IsValid(), "the source box SubD is valid before any transform");
+  const auto before = subd.LimitPoints();
+
+  const ON_Xform translate = ON_Xform::TranslationTransformation(ON_3dVector(5, -1, 2));
+  const auto moved = subd.Transform(translate);
+  Check(moved.VertexCount() == subd.VertexCount() && moved.IsValid(),
+        "Transform() preserves vertex count and validity under a plain translation");
+  const auto after_move = moved.LimitPoints();
+  bool all_translated = before.size() == after_move.size();
+  for (size_t i = 0; all_translated && i < before.size(); ++i) {
+    all_translated = all_translated && ((after_move[i].control_point - before[i].control_point) -
+                                         Vector3d(5, -1, 2))
+                                                .Length() < 1e-12;
+  }
+  Check(all_translated, "every control-net vertex shifts by exactly (5, -1, 2), no more and no less");
+
+  const ON_Xform scale = ON_Xform::ScaleTransformation(ON_3dPoint::Origin, 2.0, 2.0, 2.0);
+  const auto scaled = subd.Transform(scale);
+  const auto after_scale = scaled.LimitPoints();
+  bool all_scaled = before.size() == after_scale.size();
+  for (size_t i = 0; all_scaled && i < before.size(); ++i) {
+    all_scaled = all_scaled && (Point3d(after_scale[i].control_point) -
+                                 Point3d(2.0 * before[i].control_point.x, 2.0 * before[i].control_point.y,
+                                         2.0 * before[i].control_point.z))
+                                        .Length() < 1e-9;
+  }
+  Check(all_scaled, "every control-net vertex scales by exactly 2x about the origin");
+
+  const ON_Xform mirror = ON_Xform::ScaleTransformation(ON_3dPoint::Origin, -1.0, 1.0, 1.0);
+  const auto mirrored = subd.Transform(mirror);
+  Check(mirrored.IsValid(),
+        "a mirrored (negative-determinant) transform still leaves a perfectly VALID SubD - "
+        "coordinate reflection doesn't touch face winding, the documented caveat");
+
+  ON_Xform bad = ON_Xform::IdentityTransformation;
+  bad.m_xform[1][2] = ON_DBL_QNAN;
+  bool threw = false;
+  try {
+    (void)subd.Transform(bad);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "Transform() throws std::invalid_argument for a genuinely invalid (NaN-carrying) xform");
+}
+
 void TestSubDSetEdgeSharpnessCreatesRealSemiSharpCrease() {
   using dino8::kernel::Mesh;
   using dino8::kernel::Point3d;
@@ -27298,6 +27354,7 @@ int main() {
   TestSubDMeshRoundTripIsExactAtLevelZero();
   TestSubDFromNurbsSurfaceExactOnFlatGrid();
   TestSubDCapBoundaryLoopAddsGenuineNgonAndRetagsSmooth();
+  TestSubDTransformMovesScalesAndStaysValidUnderMirror();
   TestSubDSetEdgeSharpnessCreatesRealSemiSharpCrease();
   TestSubDSetCreaseTagsAndUntagsEdges();
   TestSubDFlatQuadGridStaysFlatAndAreaExact();

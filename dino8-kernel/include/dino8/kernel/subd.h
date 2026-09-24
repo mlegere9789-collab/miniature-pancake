@@ -140,6 +140,46 @@ class SubD {
   // Throws std::runtime_error if OpenNURBS' own call fails.
   Mesh ToApproximateMesh() const;
 
+  // Applies `xform` to a copy of this SubD's ENTIRE control cage (every
+  // level it currently holds, not just the active one) and returns it -
+  // the same missing piece `Mesh::Transform()` already closes for
+  // `Mesh`, but this class never had at all: no way to move, rotate,
+  // scale, or mirror a SubD once built, other than baking the transform
+  // into the control mesh BEFORE calling FromControlMesh() (impossible
+  // after Subdivide() has already run, since that discards the original
+  // mesh). Delegates directly to `ON_SubD::Transform` (verified by
+  // reading `ON_SubDimple::Transform`'s own implementation: it
+  // transforms every level's vertices, correctly detects a similarity
+  // transform to preserve cached subdivision/limit points instead of
+  // discarding them, and updates texture/color mapping and symmetry
+  // state - real, thorough work, not a stub).
+  //
+  // One caveat worth being explicit about, since it is genuinely easy to
+  // miss: for a MIRROR (a negative-determinant `xform`), this only moves
+  // vertex positions - it does not touch any face's own vertex winding
+  // order, the same convention `Mesh::Transform()` already follows (see
+  // `ON_Mesh::Transform`'s own handling of `xform.Determinant() < 0`,
+  // which flips stored normal VECTORS but never `ON_MeshFace::vi[]`
+  // order). The result is still a perfectly VALID SubD (`IsValid()`
+  // holds - the topology's internal edge/face winding agreement is
+  // unaffected by a uniform coordinate transform, the same reason a
+  // wholly `Mesh::FlipNormals()`-ed mesh stays a valid closed manifold)
+  // but is now "inside-out" relative to the mirrored geometry, the exact
+  // analog of `Mesh::UnifyNormals()`'s own "a wholly inverted box is
+  // still a consistent closed manifold" case. There is no
+  // `SubD::UnifyNormals()`/`FlipNormals()` counterpart here (a real,
+  // disclosed gap, not attempted in this pass) - a caller mirroring a
+  // SubD should account for this at the `ToApproximateMesh()`/
+  // `ToNurbsPatches()` stage instead, where `Mesh::FlipNormals()` and
+  // NURBS surface reversal already exist.
+  //
+  // Throws std::invalid_argument if `xform` itself is not a valid
+  // transform (e.g. contains a NaN/infinite entry) - `ON_SubD::
+  // Transform`'s own first check, read directly, matching this class's
+  // existing convention of failing loudly rather than silently handing
+  // back an untransformed or partially-transformed copy.
+  SubD Transform(const ON_Xform& xform) const;
+
   // Converts the *current* subdivision level's control net to real NURBS
   // patches, one per face - a genuine Catmull-Clark limit-surface
   // conversion, not the "just subdivide a lot and facet it" approximation
