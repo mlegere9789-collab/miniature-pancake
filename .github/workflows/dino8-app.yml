@@ -121,8 +121,19 @@ jobs:
       # falls through to a direct run whenever xvfb-run isn't on PATH, which
       # is always true here, so no virtual display setup is needed beyond
       # the software-GL swap above.
+      # A genuine hang (not a crash, not a script failure - the process just
+      # never produces another line of output) has been observed here twice,
+      # independently, at the exact same point (right after ScreenCaptureToFile,
+      # launching the next --script child process) on the same commit: with no
+      # step timeout, GitHub's default 6-hour job timeout is what finally ends
+      # it, eating six hours of this shared branch's Windows CI capacity for a
+      # run that was never coming back. A normal full run of this step takes a
+      # few minutes; 20 is generous headroom, not a tight bound - a real hang
+      # still fails fast instead of blocking every other agent's Windows CI on
+      # this branch for hours. See RHINO8_KILLER_AUDIT.md row L.
       - name: Smoke test (headless)
         shell: bash
+        timeout-minutes: 20
         run: dino8-app/tests/smoke.sh dino8-app/build/Dino8.exe
       # Inert until a real certificate exists: skipped entirely (no-op) when
       # the WINDOWS_CERT_BASE64 secret is unset, so this changes nothing
