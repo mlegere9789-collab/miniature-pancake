@@ -118,6 +118,22 @@ class Brep {
   // flagged as unvalidated ("not yet validated against curved surfaces").
   static Brep Sphere(Point3d center, double radius);
 
+  // Builds a genuine closed solid from a single curved face: a ring torus
+  // (the common donut shape - `major_radius` the distance from `center`
+  // to the tube's own centerline, `minor_radius` the tube's own radius),
+  // via OpenNURBS' own exact rational-NURBS conversion (ON_Torus::
+  // GetNurbForm) - the same "delegate to OpenNURBS' own closed form
+  // rather than re-derive it" approach Sphere() already takes. `axis`
+  // need not be unit (only its direction is used). Like Sphere(), this is
+  // one face periodic in BOTH parametric directions (no poles, no seam
+  // vertex to weld) rather than Box()'s six flat faces stitched at seams.
+  // Throws std::invalid_argument for a non-positive `minor_radius`, a
+  // `major_radius` not strictly greater than `minor_radius` (major_radius
+  // <= minor_radius is a self-intersecting spindle/horn torus - ON_Torus
+  // itself is only valid for the ordinary "ring" case, so this is refused
+  // rather than silently building an invalid surface), or a zero `axis`.
+  static Brep Torus(Point3d center, Vector3d axis, double major_radius, double minor_radius);
+
   // Builds a one-face B-rep whose face is `surface`, trimmed to
   // `trim_loop_uv`: a closed polygon in the surface's own (u, v)
   // parameter space. This is real (if simplified) B-rep trimming - the
