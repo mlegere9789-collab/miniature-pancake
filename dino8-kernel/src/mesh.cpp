@@ -2703,6 +2703,23 @@ Mesh::CheckReport Mesh::Check(double tolerance) const {
       });
     }
   }
+  // non_manifold_edge_list: one entry per non-manifold edge, undirected,
+  // in the order first encountered walking the face list.
+  {
+    std::set<std::pair<int, int>> non_manifold;
+    for (const auto& [edge, count] : undirected_count) {
+      if (count > 2) non_manifold.insert(edge);
+    }
+    std::set<std::pair<int, int>> seen_nm;
+    for (int i = 0; i < mesh_.m_F.Count() && seen_nm.size() < non_manifold.size(); ++i) {
+      ForEachDirectedEdge(mesh_.m_F[i], [&](int a, int b) {
+        const std::pair<int, int> key = std::minmax(a, b);
+        if (non_manifold.count(key) != 0 && seen_nm.insert(key).second) {
+          report.non_manifold_edge_list.push_back(key);
+        }
+      });
+    }
+  }
   // Duplicate vertices: every vertex is a candidate.
   std::vector<int> all(static_cast<size_t>(mesh_.m_V.Count()));
   for (int i = 0; i < mesh_.m_V.Count(); ++i) all[static_cast<size_t>(i)] = i;
