@@ -5,6 +5,7 @@
 // code.
 
 #include <algorithm>
+#include <cstdio>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
@@ -32,6 +33,126 @@ ON_4dPoint Sub4(const ON_4dPoint& a, const ON_4dPoint& b) {
   return ON_4dPoint(a.x - b.x, a.y - b.y, a.z - b.z, a.w - b.w);
 }
 double Norm4(const ON_4dPoint& a) { return std::sqrt(a.x * a.x + a.y * a.y + a.z * a.z + a.w * a.w); }
+
+// Extends ON_NurbsSurface `s` in `direction` at one end (at_max: the
+// domain-max end if true, domain-min if false) by world-parameter
+// `delta` (> 0), in place, via the arithmetic-progression construction
+// documented on NurbsSurface::ExtendLinear() - `degree` new control
+// points per cross-index row, homogeneous throughout. Returns false if
+// `s` isn't clamped in `direction` (an unclamped/periodic end has no
+// single well-defined "boundary control point and end derivative" this
+// construction reads from).
+bool ExtendOneEndLinear(ON_NurbsSurface& s, int direction, bool at_max, double delta) {
+  if (!s.IsClamped(direction, 2)) return false;
+  const int p = s.Degree(direction);
+  const int old_count = s.CVCount(direction);
+  const int other_count = s.CVCount(1 - direction);
+  const bool rational = s.IsRational();
+
+  // Textbook (uncompressed) knot vector U[0..m] in `direction`, same
+  // convention RemoveKnotAt() above already uses: ON's compressed
+  // Knot(k) is U[k + 1], with the two clamped-end copies filled in.
+  const int old_knot_count = s.KnotCount(direction);
+  std::vector<double> u_full(static_cast<size_t>(old_knot_count) + 2);
+  for (int k = 0; k < old_knot_count; ++k) u_full[static_cast<size_t>(k + 1)] = s.Knot(direction, k);
+  u_full[0] = u_full[1];
+  u_full[static_cast<size_t>(old_knot_count + 1)] = u_full[static_cast<size_t>(old_knot_count)];
+
+  // Existing end derivative D per row, in homogeneous coordinates - the
+  // same clamped-B-spline end-derivative quantity MatchEdge() computes,
+  // read here rather than chosen: D = p / (U[p+1] - U[1]) * (Pw_1 -
+  // Pw_0) at the min end, or its symmetric counterpart at the max end.
+  std::vector<ON_4dPoint> boundary(static_cast<size_t>(other_count)), deriv(static_cast<size_t>(other_count));
+  for (int row = 0; row < other_count; ++row) {
+    ON_4dPoint p0, p1;
+    if (at_max) {
+      s.GetCV(direction == 0 ? old_count - 1 : row, direction == 0 ? row : old_count - 1, p0);
+      s.GetCV(direction == 0 ? old_count - 2 : row, direction == 0 ? row : old_count - 2, p1);
+    } else {
+      s.GetCV(direction == 0 ? 0 : row, direction == 0 ? row : 0, p0);
+      s.GetCV(direction == 0 ? 1 : row, direction == 0 ? row : 1, p1);
+    }
+    if (!rational) { p0.w = 1.0; p1.w = 1.0; }
+    const double span = at_max ? u_full[static_cast<size_t>(old_knot_count)] - u_full[static_cast<size_t>(old_knot_count - p)]
+                                : u_full[static_cast<size_t>(p + 1)] - u_full[static_cast<size_t>(1)];
+    const double scale = p / span;
+    boundary[static_cast<size_t>(row)] = p0;
+    deriv[static_cast<size_t>(row)] = at_max ? Scale4(Sub4(p0, p1), scale) : Scale4(Sub4(p1, p0), scale);
+  }
+
+  // New knot vector: the join (the *old* boundary value) is left
+  // completely untouched at its existing multiplicity p + 1 (still a
+  // fully clamped end from the "before" side's own perspective) - this
+  // is a genuine independent Bezier-like span glued on, not a knot
+  // refinement of the existing curve, so the "before" shape needs no
+  // adjustment at all. p + 1 new copies of the *new* boundary value are
+  // appended (max end) or prepended (min end), giving that far end the
+  // same clamped multiplicity p + 1 every other end in this codebase
+  // has. Net: p + 1 new control points (indices old_count..old_count+p
+  // at the max end; the new CV at the shared/join index coincides
+  // exactly with the old boundary CV, by construction, not by knot-
+  // vector magic - this file's other constructions duplicate a shared
+  // boundary point the same way, e.g. RuleBetween()'s CV(i, 0)/CV(i, 1)
+  // rows in CoonsPatch above).
+  // OpenNURBS caps a *interior* knot's legal multiplicity at `degree`
+  // (multiplicity degree + 1 is reserved exclusively for the curve's
+  // two true clamped ends - confirmed directly against IsValid()'s own
+  // rejection message on a first attempt that kept the old boundary's
+  // full p + 1 multiplicity unchanged and just appended a new clamped
+  // end after it, which IsValid() correctly refused as an illegal
+  // "degree + 1 run in the interior"). So the join's multiplicity drops
+  // by exactly one, from p + 1 to p, by dropping a single (redundant -
+  // all copies hold the same value) occurrence of the old boundary
+  // value from the textbook vector before appending the new end's own
+  // p + 1 copies - verified in the tests to still reproduce the
+  // original shape on the untouched side exactly (the removed copy
+  // was one of p + 1 *identical* values, not a distinct knot, so no
+  // information about the original curve's own shape is lost).
+  const int new_count = old_count + p;
+  ON_NurbsSurface out;
+  const bool ok = direction == 0 ? out.Create(3, rational, p + 1, s.Order(1), new_count, other_count)
+                                 : out.Create(3, rational, s.Order(0), p + 1, other_count, new_count);
+  if (!ok) return false;
+  const double new_boundary = at_max ? u_full[static_cast<size_t>(old_knot_count)] + delta : u_full[1] - delta;
+  std::vector<double> new_full(u_full);
+  if (at_max) { new_full.pop_back(); new_full.insert(new_full.end(), static_cast<size_t>(p + 1), new_boundary); }
+  else { new_full.erase(new_full.begin()); new_full.insert(new_full.begin(), static_cast<size_t>(p + 1), new_boundary); }
+  for (int k = 0; k < out.KnotCount(direction); ++k) out.SetKnot(direction, k, new_full[static_cast<size_t>(k + 1)]);
+  for (int k = 0; k < s.KnotCount(1 - direction); ++k) out.SetKnot(1 - direction, k, s.Knot(1 - direction, k));
+
+  for (int row = 0; row < other_count; ++row) {
+    const double step = delta / p;
+    for (int i = 0; i < old_count; ++i) {
+      ON_4dPoint cv;
+      s.GetCV(direction == 0 ? i : row, direction == 0 ? row : i, cv);
+      if (!rational) cv.w = 1.0;
+      const int ii = direction == 0 ? (at_max ? i : i + p) : row;
+      const int jj = direction == 0 ? row : (at_max ? i : i + p);
+      if (rational) out.SetCV(ii, jj, cv); else out.SetCV(ii, jj, ON_3dPoint(cv.x, cv.y, cv.z));
+    }
+    for (int k = 1; k <= p; ++k) {
+      const ON_4dPoint cv = Add4(boundary[static_cast<size_t>(row)], Scale4(deriv[static_cast<size_t>(row)], k * step * (at_max ? 1.0 : -1.0)));
+      if (rational && !(cv.w > 0.0)) return false;
+      const int idx = at_max ? old_count - 1 + k : p - k;
+      const int ii = direction == 0 ? idx : row;
+      const int jj = direction == 0 ? row : idx;
+      if (rational) out.SetCV(ii, jj, cv); else out.SetCV(ii, jj, ON_3dPoint(cv.x, cv.y, cv.z));
+    }
+  }
+  {
+    ON_TextLog log(stderr);
+    bool valid = out.IsValid(&log);
+    if (!valid) {
+      std::fprintf(stderr, "DEBUG knots: ");
+      for (int k = 0; k < out.KnotCount(direction); ++k) std::fprintf(stderr, "%g ", out.Knot(direction,k));
+      std::fprintf(stderr, "\ncvcount=%d order=%d\n", out.CVCount(direction), out.Order(direction));
+    }
+  }
+  if (!out.IsValid()) return false;
+  s = out;
+  return true;
+}
+
 
 // Tiller's single knot removal (Piegl & Tiller, "The NURBS Book",
 // Algorithm A5.8 with num = 1) on one textbook-form control row.
@@ -949,6 +1070,28 @@ Result NurbsSurface::CoonsPatch(const NurbsCurve& bottom, const NurbsCurve& top,
   if (!(residual <= 1e-6 * std::max(1.0, p00.DistanceTo(p10)))) return Result::Failed;
 
   out = candidate;
+  return Result::Ok;
+}
+
+Result NurbsSurface::ExtendLinear(int direction, double t0, double t1) {
+  if (direction != 0 && direction != 1) {
+    throw std::invalid_argument("dino8::kernel::NurbsSurface::ExtendLinear: direction must be 0 (U) or 1 (V)");
+  }
+  if (t0 >= t1) return Result::Failed;
+  if (surface_.IsClosed(direction)) return Result::Failed;
+  const ON_Interval current = surface_.Domain(direction);
+  if (t0 >= current.Min() && t1 <= current.Max()) return Result::NoOpAlreadySatisfied;
+
+  const ON_NurbsSurface backup = surface_;
+  if (t0 < current.Min() && !ExtendOneEndLinear(surface_, direction, /*at_max=*/false, current.Min() - t0)) {
+    surface_ = backup;
+    return Result::Failed;
+  }
+  const ON_Interval mid = surface_.Domain(direction);
+  if (t1 > current.Max() && !ExtendOneEndLinear(surface_, direction, /*at_max=*/true, t1 - mid.Max())) {
+    surface_ = backup;
+    return Result::Failed;
+  }
   return Result::Ok;
 }
 

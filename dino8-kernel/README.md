@@ -4102,6 +4102,60 @@ honestly out of scope.
   proof (temporarily deleting the `IsLinear()` guard) reproduced the
   exact `LoopGap`/`InvalidTrim` failure signature the refusal test is
   built to catch, then was reverted.
+- `NurbsSurface::ExtendLinear(direction, t0, t1)`: `Extend()`'s "linear"
+  sibling (Rhino/Parasolid's ExtendSrf Type=Linear vs. Type=Smooth). The
+  existing `Extend()` continues the surface's own polynomial basis
+  beyond its domain (real analytic continuation - confirmed by reading
+  `ON_NurbsCurve::Extend()`'s own source: it re-evaluates the SAME last
+  span's basis functions over a wider interval via De Boor extrapolation,
+  keeping the exact same control-point/knot count), which follows the
+  original curvature. `ExtendLinear()` instead appends a genuinely new,
+  independent, zero-curvature Bezier-like span per isoparametric row,
+  built from a closed-form algebraic identity rather than sampling: the
+  new control points are an arithmetic progression `Q_k = Q_0 + k *
+  (delta / degree) * D` continuing from the existing boundary control
+  point along the curve's own *existing* end-derivative vector `D` (the
+  same clamped-B-spline end-derivative quantity `MatchEdge()` computes
+  elsewhere in this file, read here rather than chosen) - exact, not
+  approximate, because a Bernstein-basis (Bezier) curve with control
+  points in arithmetic progression parametrizes *exactly* linearly in
+  its own parameter (the Bernstein basis functions' first moment is
+  exactly linear in the normalized parameter, a standard algebraic
+  identity), so the new span is a genuine straight line even when the
+  surface is rational (built entirely in homogeneous coordinates; a
+  homogeneous curve linear in its parameter dehomogenizes to a rational-
+  *linear* curve, which is still exactly a straight line in Euclidean
+  space, only non-uniformly paced along it).
+  A real, non-obvious NURBS knot-vector bug found and fixed before
+  finalizing, not guessed at: the first working version kept the old
+  boundary's full clamped multiplicity (degree + 1) unchanged and simply
+  appended a new clamped span after it - `ON_NurbsSurface::IsValid()`
+  correctly rejected this with "knot[cv_count-2] >= knot[cv_count-1]",
+  because OpenNURBS reserves multiplicity degree + 1 exclusively for a
+  curve's two true ends; an *interior* knot's legal multiplicity caps at
+  `degree`. Fixed by dropping exactly one (redundant - all copies hold
+  the same value) occurrence of the old boundary knot before appending
+  the new end's own degree + 1 copies, verified afterward (not assumed)
+  to still reproduce the pre-extension shape exactly.
+  Verified with real per-point geometry: on a genuinely curved (wiggly)
+  bicubic surface, every sampled point in the new region lies exactly on
+  its own row's boundary tangent line (rows have different tangent
+  directions, since the boundary itself isn't ruled) to floating-point
+  precision; the new domain endpoint lands at *exactly*
+  `boundary_pt + (t_new - t_old) * boundary_derivative` (pins down the
+  extrapolation *speed*, not just the direction - a uniformly mis-scaled
+  arithmetic progression would still lie perfectly on the same line,
+  confirmed by a mutation that changes only the scale and is caught by
+  this exact-endpoint check together with the join-derivative check
+  below); the surface's own derivative evaluated exactly at the join
+  parameter matches the pre-extension boundary derivative exactly (G1);
+  the pre-extension region is bit-for-bit unchanged; and `ExtendLinear`
+  measurably diverges from `Extend()` further from the join while
+  agreeing with it exactly at the join itself. Also verified on a
+  genuine rational surface (a sphere) that the extension is still an
+  exact straight line in real 3D space, on both U and V directions, and
+  extending both ends of a direction at once. Refused (matching
+  `Extend()`'s own documented restriction) for a closed direction.
 
 - **`RemoveBlend` extended to `ConicalFace`** - closes the first of the
   two gaps that increment's own README entry disclosed: a

@@ -478,6 +478,38 @@ class NurbsSurface {
   // documented restriction), or OpenNURBS' own call fails.
   Result Extend(int direction, double t0, double t1);
 
+  // `Extend()`'s "linear" sibling (Rhino/Parasolid's ExtendSrf
+  // Type=Linear vs. Type=Smooth): extends the surface the same way -
+  // only whichever end(s) of `[t0, t1]` fall outside the current
+  // domain, the other direction untouched, same `NoOpAlreadySatisfied`/
+  // `Failed` conventions - but the new region is a genuine straight-
+  // line (zero-curvature) continuation instead of `Extend()`'s
+  // curvature-continuing polynomial one. Built from a closed-form
+  // algebraic identity, not sampling: for every isoparametric row
+  // crossing `direction`, the new control points are an arithmetic
+  // progression `Q_k = Q_0 + k * (delta / degree) * D` (k = 0..degree)
+  // continuing from the existing boundary control point `Q_0` along the
+  // curve's own existing end-derivative vector `D` (the same clamped-
+  // B-spline end-derivative quantity `MatchEdge()` computes elsewhere
+  // in this file) - `D` is read from the *existing* curve, not chosen,
+  // so the join is automatically G1 (tangent-continuous), never merely
+  // close to it. This is provably exact, not approximate: a Bernstein-
+  // basis (Bezier) curve whose control points are in arithmetic
+  // progression parametrizes *exactly* linearly in its own parameter
+  // (a standard identity - the Bernstein basis functions' first moment
+  // is exactly linear in the normalized parameter), so the new span is
+  // a true straight line in 3D even when the surface is rational (the
+  // construction is done in homogeneous coordinates throughout; a
+  // homogeneous curve linear in its parameter dehomogenizes to a
+  // rational-linear curve, which still traces a straight line in
+  // Euclidean space, only non-uniformly paced along it) - verified in
+  // the tests by checking every new sample point lies on the boundary
+  // tangent line to floating-point precision, not merely that the
+  // curvature looks small.
+  //
+  // Throws std::invalid_argument if `direction` isn't 0/1.
+  Result ExtendLinear(int direction, double t0, double t1);
+
   // The surface's own parameter domain [min, max] in `direction` (0 for
   // u, 1 for v) - the valid range for that argument to `PointAt(u, v)`
   // and every other by-parameter method below. Not necessarily [0, 1] -
