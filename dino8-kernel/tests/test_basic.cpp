@@ -9361,12 +9361,10 @@ void TestFilletConvexEdgeUnitCubeTopFrontCorner() {
   Check(threw_too_big, "FilletConvexEdge rejects a radius too large to fit on the adjacent faces");
 }
 
-// ============================================================================
-// FilletConvexEdgeTapered (linear-taper rolling-ball fillet -> exact trimmed
+// =====================================================================// FilletConvexEdgeTapered (linear-taper rolling-ball fillet -> exact trimmed
 // right-circular-cone patch) - see fillet.h's own doc comment for the full
 // derivation these tests independently verify.
-// ============================================================================
-
+// =====================================================================
 // Verification item (1): rail-exactness. A FREE box edge (does not reach
 // either x=0 or x=3, so no third/perpendicular end face is anywhere near it
 // - the corner-notch scope-out question is entirely orthogonal to this test,
@@ -10016,8 +10014,7 @@ void TestFilletConvexEdgeTaperedRejectsInvalidInput() {
   // this box's own scale is still correctly rejected above.
 }
 
-// ============================================================================
-// FilletConvexEdgeTapered's N-station overload (piecewise-linear
+// =====================================================================// FilletConvexEdgeTapered's N-station overload (piecewise-linear
 // multi-station taper) - see fillet.h's own N-station doc comment for the
 // full derivation these tests independently verify: each segment is the
 // SAME per-segment cone construction the two-radius overload already
@@ -10026,8 +10023,7 @@ void TestFilletConvexEdgeTaperedRejectsInvalidInput() {
 // segment's own cap0 verbatim (a genuine, non-vanishing approximation on
 // the later segment's own side, honestly bounded via
 // cap0_surface_fit_tolerance).
-// ============================================================================
-
+// =====================================================================
 namespace {
 
 // Hand re-derivation (independent of fillet.cpp's own internals - see
@@ -21643,6 +21639,540 @@ void TestRemoveNakedMicroEdgeRefusesASliverNextToASharedEdge() {
         "RemoveNakedMicroEdge() on a shared (2-trim) edge returns Result::Failed");
 }
 
+// ---- NurbsSurface::RemoveKnotAt / MaxSampledDeviationFrom ----
+
+namespace {
+
+// A deliberately non-flat bicubic control grid (u_count x v_count, degree
+// 3 x 3, clamped uniform knots): z bulges and twists so that no interior
+// knot is exactly removable unless it was inserted after the fact.
+dino8::kernel::NurbsSurface WigglyBicubic(int u_count, int v_count) {
+  using dino8::kernel::Point3d;
+  std::vector<Point3d> grid;
+  for (int j = 0; j < v_count; ++j)
+    for (int i = 0; i < u_count; ++i)
+      grid.push_back(Point3d(i, j, std::sin(1.7 * i) * std::cos(1.3 * j) + 0.3 * i * j));
+  return dino8::kernel::NurbsSurface::FromControlGrid(grid, u_count, v_count, 3, 3);
+}
+
+int KnotIndexOf(const dino8::kernel::NurbsSurface& s, int direction, double value) {
+  for (int k = 0; k < s.KnotCount(direction); ++k)
+    if (std::abs(s.KnotAt(direction, k) - value) < 1e-12) return k;
+  return -1;
+}
+
+}  // namespace
+
+void TestSurfaceRemoveKnotAtIsExactInverseOfInsertKnotAt() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Result;
+  NurbsSurface s = WigglyBicubic(4, 4);
+  const NurbsSurface original = s;
+  Check(s.InsertKnotAt(0, 0.4, 1) == Result::Ok, "RemoveKnotAt setup: InsertKnotAt(U, 0.4) succeeds");
+  Check(s.CVCountU() == 5, "RemoveKnotAt setup: insertion added one U control point");
+  const int idx = KnotIndexOf(s, 0, 0.4);
+  Check(idx >= 0, "RemoveKnotAt setup: the inserted knot is present in the U knot vector");
+
+  double deviation = -1.0;
+  const Result r = s.RemoveKnotAt(0, idx, 1e-9, &deviation);
+  Check(r == Result::Ok, "RemoveKnotAt removes a knot that InsertKnotAt just added");
+  Check(deviation >= 0.0 && deviation < 1e-9,
+        "RemoveKnotAt reports a ~0 deviation bound for an exactly removable knot");
+  Check(s.CVCountU() == 4 && s.CVCountV() == 4, "RemoveKnotAt restores the original 4x4 control net size");
+  Check(s.KnotCount(0) == original.KnotCount(0), "RemoveKnotAt restores the original U knot count");
+  Check(KnotIndexOf(s, 0, 0.4) < 0, "RemoveKnotAt actually removed the 0.4 knot from the U knot vector");
+  double cv_err = 0.0;
+  for (int i = 0; i < 4; ++i)
+    for (int j = 0; j < 4; ++j)
+      cv_err = std::max(cv_err, s.ControlPointAt(i, j).DistanceTo(original.ControlPointAt(i, j)));
+  Check(cv_err < 1e-9, "RemoveKnotAt recovers the original control points (max |dP| < 1e-9)");
+  Check(s.MaxSampledDeviationFrom(original, 33, 33) < 1e-9,
+        "RemoveKnotAt: sampled surface deviation from the original is < 1e-9");
+
+  // V direction too, on a rational surface (a genuine radius-3 sphere):
+  // insertion + removal must give the sphere back exactly, and the
+  // rational bound formula must still read ~0.
+  ON_NurbsSurface sphere_raw;
+  ON_Sphere(ON_3dPoint(1, 2, 3), 3.0).GetNurbForm(sphere_raw);
+  NurbsSurface sphere;
+  sphere.raw() = sphere_raw;
+  Check(sphere.IsRational(), "RemoveKnotAt rational setup: the sphere NURBS form is rational");
+  const NurbsSurface sphere_original = sphere;
+  const double v_mid = sphere.Domain(1).min + 0.37 * (sphere.Domain(1).max - sphere.Domain(1).min);
+  Check(sphere.InsertKnotAt(1, v_mid, 1) == Result::Ok, "RemoveKnotAt rational setup: InsertKnotAt(V) succeeds");
+  const int v_cv_before = sphere_original.CVCountV();
+  Check(sphere.CVCountV() == v_cv_before + 1, "RemoveKnotAt rational setup: insertion added one V control point");
+  deviation = -1.0;
+  Check(sphere.RemoveKnotAt(1, KnotIndexOf(sphere, 1, v_mid), 1e-8, &deviation) == Result::Ok,
+        "RemoveKnotAt removes an inserted knot from a rational sphere");
+  Check(deviation >= 0.0 && deviation < 1e-8, "RemoveKnotAt: rational deviation bound is ~0 for an exact removal");
+  Check(sphere.CVCountV() == v_cv_before, "RemoveKnotAt restores the sphere's V control point count");
+  Check(sphere.MaxSampledDeviationFrom(sphere_original, 33, 33) < 1e-9,
+        "RemoveKnotAt: the sphere is recovered to < 1e-9 on a sampled grid");
+  double radius_err = 0.0;
+  for (int i = 0; i <= 20; ++i)
+    for (int j = 0; j <= 20; ++j) {
+      const double u = sphere.Domain(0).min + (sphere.Domain(0).max - sphere.Domain(0).min) * i / 20.0;
+      const double v = sphere.Domain(1).min + (sphere.Domain(1).max - sphere.Domain(1).min) * j / 20.0;
+      radius_err = std::max(radius_err, std::abs(sphere.PointAt(u, v).DistanceTo(ON_3dPoint(1, 2, 3)) - 3.0));
+    }
+  Check(radius_err < 1e-9, "RemoveKnotAt: every sampled point is still exactly radius 3 from the sphere's center");
+}
+
+void TestSurfaceRemoveKnotAtRefusesNonRemovableKnotWithinTolerance() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Result;
+  // 6 control points, degree 3: FromControlGrid's clamped uniform knots
+  // (0,0,0,1,2,3,3,3 in ON's compressed form, domain [0, 3]) have
+  // genuine interior knots at 1 and 2 that the wiggly net does NOT have
+  // C^3 continuity across.
+  NurbsSurface s = WigglyBicubic(6, 4);
+  const NurbsSurface original = s;
+  const double interior = s.Domain(0).min + (s.Domain(0).max - s.Domain(0).min) / 3.0;
+  const int idx = KnotIndexOf(s, 0, interior);
+  Check(idx >= 0, "RemoveKnotAt non-removable setup: the first interior U knot is present");
+
+  double deviation = -1.0;
+  Check(s.RemoveKnotAt(0, idx, 1e-6, &deviation) == Result::Failed,
+        "RemoveKnotAt refuses a non-removable knot when the bound exceeds the tolerance");
+  Check(deviation > 1e-3, "RemoveKnotAt reports a clearly non-zero deviation bound on refusal");
+  Check(s.CVCountU() == 6 && s.KnotCount(0) == original.KnotCount(0),
+        "RemoveKnotAt leaves the control net and knots untouched on refusal");
+  double cv_err = 0.0;
+  for (int i = 0; i < 6; ++i)
+    for (int j = 0; j < 4; ++j)
+      cv_err = std::max(cv_err, s.ControlPointAt(i, j).DistanceTo(original.ControlPointAt(i, j)));
+  Check(cv_err == 0.0, "RemoveKnotAt leaves every control point bit-identical on refusal");
+
+  // With a permissive tolerance the approximation is committed, and the
+  // reported bound must genuinely bound the sampled deviation.
+  const double refused_bound = deviation;
+  deviation = -1.0;
+  Check(s.RemoveKnotAt(0, idx, 1e9, &deviation) == Result::Ok,
+        "RemoveKnotAt commits the best-fit approximation under a permissive tolerance");
+  Check(deviation == refused_bound, "RemoveKnotAt's bound is the same number whether or not it commits");
+  Check(s.CVCountU() == 5, "RemoveKnotAt approximation removed one U control point");
+  Check(KnotIndexOf(s, 0, interior) < 0, "RemoveKnotAt approximation removed the first interior knot");
+  const double sampled = s.MaxSampledDeviationFrom(original, 129, 33);
+  Check(sampled > 1e-4, "RemoveKnotAt approximation genuinely moved the surface (sampled deviation > 1e-4)");
+  Check(sampled <= deviation, "RemoveKnotAt's rigorous bound is >= the sampled max deviation");
+  Check(sampled > 0.25 * deviation,
+        "RemoveKnotAt's bound is not vacuously loose on a non-rational surface (sampled > 25% of bound)");
+  // The untouched V direction and the surface's corners are preserved
+  // exactly by construction (knot removal only recombines the affected
+  // rows, and a clamped end control point isn't in the affected range).
+  Check(s.CVCountV() == 4 && s.KnotCount(1) == original.KnotCount(1), "RemoveKnotAt leaves the V direction untouched");
+  Check(s.ControlPointAt(0, 0).DistanceTo(original.ControlPointAt(0, 0)) == 0.0 &&
+            s.ControlPointAt(4, 3).DistanceTo(original.ControlPointAt(5, 3)) == 0.0,
+        "RemoveKnotAt keeps the clamped corner control points bit-identical");
+}
+
+void TestSurfaceRemoveKnotAtRationalBoundHoldsOnASphereSeamKnot() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Result;
+  // A sphere's NURBS form has double (multiplicity-2, degree-2) knots at
+  // the quarter points. Removing one multiplicity of one of them is a
+  // genuine approximation; the rational (eq. 5.30) bound must hold
+  // against a dense sampling.
+  ON_NurbsSurface sphere_raw;
+  ON_Sphere(ON_3dPoint(0, 0, 0), 2.0).GetNurbForm(sphere_raw);
+  NurbsSurface s;
+  s.raw() = sphere_raw;
+  const NurbsSurface original = s;
+  int idx = -1;
+  for (int k = 0; k < s.KnotCount(0); ++k) {
+    const double v = s.KnotAt(0, k);
+    if (v > s.Domain(0).min && v < s.Domain(0).max) { idx = k; break; }
+  }
+  Check(idx >= 0, "RemoveKnotAt sphere setup: found an interior U knot");
+  double deviation = -1.0;
+  Check(s.RemoveKnotAt(0, idx, 1e-9, &deviation) == Result::Failed,
+        "RemoveKnotAt refuses to approximate a sphere's quarter-point knot at 1e-9");
+  Check(s.RemoveKnotAt(0, idx, 1e9, &deviation) == Result::Ok, "RemoveKnotAt commits it under a permissive tolerance");
+  Check(s.CVCountU() == original.CVCountU() - 1, "RemoveKnotAt removed one U control point from the sphere");
+  const double sampled = s.MaxSampledDeviationFrom(original, 257, 65);
+  Check(sampled > 1e-3, "RemoveKnotAt on the sphere genuinely changed the shape (sampled > 1e-3)");
+  Check(sampled <= deviation, "RemoveKnotAt's rational bound is >= the sampled max deviation on a sphere");
+  Check(s.IsRational(), "RemoveKnotAt keeps a rational surface rational");
+}
+
+void TestSurfaceRemoveKnotAtArgumentChecks() {
+  using dino8::kernel::NurbsSurface;
+  NurbsSurface s = WigglyBicubic(6, 4);
+  bool threw = false;
+  try { s.RemoveKnotAt(2, 0, 1.0); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "RemoveKnotAt throws on a direction other than 0/1");
+  threw = false;
+  try { s.RemoveKnotAt(0, s.KnotCount(0), 1.0); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "RemoveKnotAt throws on an out-of-range knot index");
+  threw = false;
+  try { s.RemoveKnotAt(0, 0, 1.0); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "RemoveKnotAt throws on a domain-end knot");
+  threw = false;
+  try { s.MaxSampledDeviationFrom(s, 1, 4); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "MaxSampledDeviationFrom throws on a sample count < 2");
+}
+
+// ---- NurbsSurface::SetDomain / Rebuild ----
+
+void TestSurfaceSetDomainRescalesKnotsWithoutMovingTheShape() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Result;
+  NurbsSurface s = WigglyBicubic(6, 4);
+  const NurbsSurface original = s;
+  std::vector<double> old_knots;
+  for (int k = 0; k < s.KnotCount(0); ++k) old_knots.push_back(s.KnotAt(0, k));
+  Check(s.Domain(0).min == 0.0 && s.Domain(0).max == 3.0, "SetDomain setup: FromControlGrid's 6-point U domain is [0, 3]");
+
+  Check(s.SetDomain(0, -1.0, 5.0) == Result::Ok, "SetDomain(U, -1, 5) returns Ok");
+  Check(s.Domain(0).min == -1.0 && s.Domain(0).max == 5.0, "SetDomain makes the U domain exactly [-1, 5]");
+  Check(s.Domain(1).min == 0.0 && s.Domain(1).max == 1.0, "SetDomain leaves the V domain (a single span, [0, 1]) untouched");
+  double knot_err = 0.0;
+  for (int k = 0; k < s.KnotCount(0); ++k)
+    knot_err = std::max(knot_err, std::abs(s.KnotAt(0, k) - (-1.0 + 6.0 * (old_knots[static_cast<size_t>(k)] / 3.0))));
+  Check(knot_err < 1e-12, "SetDomain maps every U knot affinely onto the new domain");
+  double shape_err = 0.0;
+  for (int i = 0; i <= 12; ++i)
+    for (int j = 0; j <= 12; ++j) {
+      const double fu = i / 12.0, fv = j / 12.0;
+      shape_err = std::max(shape_err, s.PointAt(-1.0 + 6.0 * fu, fv).DistanceTo(original.PointAt(3.0 * fu, fv)));
+    }
+  Check(shape_err < 1e-12, "SetDomain: the same normalized (u, v) evaluates to the same 3D point (< 1e-12)");
+  double cv_err = 0.0;
+  for (int i = 0; i < 6; ++i)
+    for (int j = 0; j < 4; ++j) cv_err = std::max(cv_err, s.ControlPointAt(i, j).DistanceTo(original.ControlPointAt(i, j)));
+  Check(cv_err == 0.0, "SetDomain leaves every control point bit-identical");
+  Check(s.SetDomain(0, -1.0, 5.0) == Result::NoOpAlreadySatisfied, "SetDomain on the current domain is a reported no-op");
+  Check(s.SetDomain(1, 2.0, 2.0) == Result::Failed, "SetDomain refuses an empty interval");
+  Check(s.SetDomain(1, 3.0, 1.0) == Result::Failed, "SetDomain refuses a reversed interval");
+  bool threw = false;
+  try { s.SetDomain(2, 0.0, 1.0); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "SetDomain throws on a direction other than 0/1");
+}
+
+void TestSurfaceRebuildIsExactWhenRepresentableAndHonestOtherwise() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Result;
+  const NurbsSurface src = WigglyBicubic(6, 4);  // degree 3x3, knots 0,0,0,1,2,3,3,3 x 0,0,0,1,1,1
+
+  // Same net as the source: the least-squares solution is the source's
+  // own (unique) control net.
+  NurbsSurface same;
+  double dev = -1.0;
+  Check(src.Rebuild(6, 4, 3, 3, same, &dev) == Result::Ok, "Rebuild to the source's own net succeeds");
+  Check(same.CVCountU() == 6 && same.CVCountV() == 4 && same.DegreeU() == 3 && same.DegreeV() == 3,
+        "Rebuild produces exactly the requested 6x4 degree-3x3 net");
+  Check(same.Domain(0).min == 0.0 && same.Domain(0).max == 3.0 && same.Domain(1).min == 0.0 && same.Domain(1).max == 1.0,
+        "Rebuild keeps the source's own domain ([0, 3] x [0, 1])");
+  double cv_err = 0.0;
+  for (int i = 0; i < 6; ++i)
+    for (int j = 0; j < 4; ++j) cv_err = std::max(cv_err, same.ControlPointAt(i, j).DistanceTo(src.ControlPointAt(i, j)));
+  Check(cv_err < 1e-9, "Rebuild to the same net recovers the source's control points (< 1e-9)");
+  Check(dev >= 0.0 && dev < 1e-9, "Rebuild reports ~0 deviation when the source is exactly representable");
+  Check(!same.IsRational(), "Rebuild's output is non-rational");
+
+  // A denser net whose clamped uniform knots are a superset of the
+  // source's (9 in U: spacing 0.5 over [0, 3] contains 1 and 2; 7 in V:
+  // spacing 0.75 over a single-span source) - still exactly representable.
+  NurbsSurface denser;
+  Check(src.Rebuild(9, 7, 3, 3, denser, &dev) == Result::Ok, "Rebuild to a knot-superset net succeeds");
+  Check(dev < 1e-9, "Rebuild to a knot-superset net is exact (< 1e-9)");
+  Check(denser.MaxSampledDeviationFrom(src, 65, 65) < 1e-9, "...confirmed by an independent 65x65 sampling");
+
+  // 5 in U puts the single interior knot at 1.5, which the source's C^2
+  // breaks at 1 and 2 can't be reproduced by: a genuine approximation,
+  // reported as such, with the corners still interpolated exactly.
+  NurbsSurface coarse;
+  Check(src.Rebuild(5, 4, 3, 3, coarse, &dev) == Result::Ok, "Rebuild to a coarser net succeeds");
+  Check(dev > 1e-3, "Rebuild to a coarser net reports a clearly non-zero deviation");
+  const double sampled = coarse.MaxSampledDeviationFrom(src, 129, 65);
+  Check(sampled > 1e-3 && sampled <= dev * 1.05,
+        "Rebuild's reported deviation agrees with an independent dense sampling (within 5%)");
+  double corner_err = 0.0;
+  for (double u : {0.0, 3.0})
+    for (double v : {0.0, 1.0}) corner_err = std::max(corner_err, coarse.PointAt(u, v).DistanceTo(src.PointAt(u, v)));
+  Check(corner_err < 1e-12, "Rebuild interpolates the four corners exactly");
+  // Least squares beats the naive "use sampled points as control points"
+  // construction (what a Rebuild command built on FromControlGrid alone
+  // would do) by a wide margin on the same 5x4 net.
+  std::vector<dino8::kernel::Point3d> naive_grid;
+  for (int j = 0; j < 4; ++j)
+    for (int i = 0; i < 5; ++i) naive_grid.push_back(src.PointAt(3.0 * i / 4.0, j / 3.0));
+  NurbsSurface naive = NurbsSurface::FromControlGrid(naive_grid, 5, 4, 3, 3);
+  naive.SetDomain(0, 0.0, 3.0);
+  naive.SetDomain(1, 0.0, 1.0);
+  const double naive_dev = naive.MaxSampledDeviationFrom(src, 129, 65);
+  Check(naive_dev > 3.0 * sampled, "Rebuild's least-squares fit deviates < 1/3 as much as sampled-points-as-control-points");
+
+  // A rational sphere can't be represented by a non-rational net at all;
+  // the fit is an approximation whose reported deviation must bound the
+  // measured radius error.
+  ON_NurbsSurface sphere_raw;
+  ON_Sphere(ON_3dPoint(0, 0, 0), 2.0).GetNurbForm(sphere_raw);
+  NurbsSurface sphere;
+  sphere.raw() = sphere_raw;
+  NurbsSurface fit;
+  Check(sphere.Rebuild(16, 10, 3, 3, fit, &dev) == Result::Ok, "Rebuild of a rational sphere to a 16x10 cubic net succeeds");
+  Check(dev > 1e-6 && dev < 0.02, "Rebuild of a radius-2 sphere reports a small but non-zero deviation (1e-6 < dev < 0.02)");
+  double radius_err = 0.0;
+  for (int i = 0; i <= 64; ++i)
+    for (int j = 0; j <= 64; ++j) {
+      const double u = fit.Domain(0).min + (fit.Domain(0).max - fit.Domain(0).min) * i / 64.0;
+      const double v = fit.Domain(1).min + (fit.Domain(1).max - fit.Domain(1).min) * j / 64.0;
+      radius_err = std::max(radius_err, std::abs(fit.PointAt(u, v).DistanceTo(ON_3dPoint::Origin) - 2.0));
+    }
+  Check(radius_err <= dev * 1.05, "Rebuild's reported deviation bounds the sampled radius error of the refit sphere (within 5%)");
+
+  bool threw = false;
+  try { src.Rebuild(4, 4, 0, 3, fit); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "Rebuild throws on a degree < 1");
+  threw = false;
+  try { src.Rebuild(3, 4, 3, 3, fit); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "Rebuild throws on a control count <= its degree");
+  threw = false;
+  try { src.Rebuild(6, 4, 3, 3, fit, nullptr, 5, 64); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "Rebuild throws on fewer samples than control points");
+}
+
+// ---- NurbsSurface::MatchEdge ----
+
+namespace {
+
+// Evaluates position + first/second derivatives of `s` at (u, v).
+struct Ev2 {
+  ON_3dPoint p;
+  ON_3dVector du, dv, duu, duv, dvv;
+};
+Ev2 Eval2(const dino8::kernel::NurbsSurface& s, double u, double v) {
+  Ev2 e;
+  s.raw().Ev2Der(u, v, e.p, e.du, e.dv, e.duu, e.duv, e.dvv);
+  return e;
+}
+
+// Checks S's v=min edge against T's v=max edge at `samples` points:
+// returns the max position / tangent / curvature residuals and the max
+// Gaussian-curvature mismatch. T's inward cross direction at its v=max
+// edge is -T_v, so MatchEdge's "S_in = -scale * T_in" reads S_v ==
+// +scale * T_v in raw parametric derivatives here.
+struct MatchResiduals {
+  double position = 0, tangent = 0, curvature = 0, gaussian = 0, normal_cross = 0;
+};
+MatchResiduals MeasureMatch(const dino8::kernel::NurbsSurface& s, const dino8::kernel::NurbsSurface& t, double scale,
+                            bool t_reversed_u, int samples = 41) {
+  MatchResiduals r;
+  for (int k = 0; k <= samples; ++k) {
+    const double f = static_cast<double>(k) / samples;
+    const double su = s.Domain(0).min + (s.Domain(0).max - s.Domain(0).min) * f;
+    const double tu = t.Domain(0).min + (t.Domain(0).max - t.Domain(0).min) * (t_reversed_u ? 1.0 - f : f);
+    const Ev2 a = Eval2(s, su, s.Domain(1).min);
+    const Ev2 b = Eval2(t, tu, t.Domain(1).max);
+    r.position = std::max(r.position, a.p.DistanceTo(b.p));
+    r.tangent = std::max(r.tangent, (a.dv - scale * b.dv).Length());
+    r.curvature = std::max(r.curvature, (a.dvv - scale * scale * b.dvv).Length());
+    const dino8::kernel::SurfaceCurvature ca = s.CurvatureAt(su, s.Domain(1).min);
+    const dino8::kernel::SurfaceCurvature cb = t.CurvatureAt(tu, t.Domain(1).max);
+    r.gaussian = std::max(r.gaussian, std::abs(ca.gaussian - cb.gaussian));
+    ON_3dVector na = ON_CrossProduct(a.du, a.dv), nb = ON_CrossProduct(b.du, b.dv);
+    na.Unitize();
+    nb.Unitize();
+    r.normal_cross = std::max(r.normal_cross, ON_CrossProduct(na, nb).Length());
+  }
+  return r;
+}
+
+// The surface to be matched: a 4x4 bicubic sitting above/behind the
+// target's v=max edge but not touching it, with its own twist.
+dino8::kernel::NurbsSurface MatchCandidate() {
+  using dino8::kernel::Point3d;
+  std::vector<Point3d> grid;
+  for (int j = 0; j < 4; ++j)
+    for (int i = 0; i < 4; ++i)
+      grid.push_back(Point3d(0.2 + 0.9 * i, 4.5 + 1.1 * j, 0.7 + 0.4 * std::sin(1.1 * i + 0.5 * j) - 0.3 * j));
+  return dino8::kernel::NurbsSurface::FromControlGrid(grid, 4, 4, 3, 3);
+}
+
+}  // namespace
+
+void TestSurfaceMatchEdgePositionTangentCurvature() {
+  using dino8::kernel::MatchContinuity;
+  using dino8::kernel::MatchEdgeReport;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Result;
+  const NurbsSurface target = WigglyBicubic(5, 5);  // knots 0,0,0,1,2,2,2 x same; edge v = max = 2
+  const NurbsSurface candidate = MatchCandidate();
+
+  // --- G0 ---
+  {
+    NurbsSurface s = candidate;
+    MatchEdgeReport rep;
+    Check(s.MatchEdge(1, true, target, 1, false, MatchContinuity::Position, &rep) == Result::Ok, "MatchEdge G0 returns Ok");
+    Check(!rep.target_edge_reversed, "MatchEdge G0: target edge orientation already agrees (not reversed)");
+    const MatchResiduals r = MeasureMatch(s, target, rep.scale, false);
+    Check(r.position < 1e-12, "MatchEdge G0: the two boundary curves coincide to 1e-12 at 42 samples");
+    Check(rep.max_position_error < 1e-12, "MatchEdge G0: the report's measured position error agrees");
+    Check(s.CVCountU() == 5 && s.DegreeU() == 3, "MatchEdge G0: this surface's edge direction gained the target's extra knot (4 -> 5 CVs)");
+    Check(s.CVCountV() == 4, "MatchEdge G0: the cross direction is untouched (still 4 rows)");
+    // Far edge (v = max) untouched: identical to the original candidate's.
+    double far = 0.0;
+    for (int k = 0; k <= 20; ++k) {
+      const double u = s.Domain(0).min + (s.Domain(0).max - s.Domain(0).min) * k / 20.0;
+      far = std::max(far, s.PointAt(u, s.Domain(1).max).DistanceTo(candidate.PointAt(u, candidate.Domain(1).max)));
+    }
+    Check(far < 1e-12, "MatchEdge G0 leaves the opposite edge exactly where it was");
+    Check(r.normal_cross > 1e-3, "MatchEdge G0 alone does not align the tangent planes (a genuine crease remains)");
+  }
+  // --- G1 ---
+  {
+    NurbsSurface s = candidate;
+    MatchEdgeReport rep;
+    Check(s.MatchEdge(1, true, target, 1, false, MatchContinuity::Tangent, &rep) == Result::Ok, "MatchEdge G1 returns Ok");
+    const MatchResiduals r = MeasureMatch(s, target, rep.scale, false);
+    Check(r.position < 1e-12, "MatchEdge G1: position still exact");
+    Check(rep.scale > 0.0 && std::abs(rep.scale - 1.0) > 1e-3, "MatchEdge G1: auto scale is a genuine (non-unit) speed ratio here");
+    Check(r.tangent < 1e-12 * std::max(1.0, rep.scale), "MatchEdge G1: S_v(min) == +scale * T_v(max) along the edge to 1e-12 (inward directions opposite)");
+    Check(r.normal_cross < 1e-12, "MatchEdge G1: unit normals of the two surfaces are parallel along the edge (|n_S x n_T| < 1e-12)");
+    Check(r.curvature > 1e-3, "MatchEdge G1 alone does not match the second cross derivative");
+    double far = 0.0;
+    for (int k = 0; k <= 20; ++k) {
+      const double u = s.Domain(0).min + (s.Domain(0).max - s.Domain(0).min) * k / 20.0;
+      far = std::max(far, s.PointAt(u, s.Domain(1).max).DistanceTo(candidate.PointAt(u, candidate.Domain(1).max)));
+    }
+    Check(far < 1e-12, "MatchEdge G1 leaves the opposite edge exactly where it was");
+  }
+  // --- G2 ---
+  {
+    NurbsSurface s = candidate;
+    MatchEdgeReport rep;
+    Check(s.MatchEdge(1, true, target, 1, false, MatchContinuity::Curvature, &rep) == Result::Ok, "MatchEdge G2 returns Ok");
+    const MatchResiduals r = MeasureMatch(s, target, rep.scale, false);
+    Check(r.position < 1e-12, "MatchEdge G2: position exact");
+    Check(r.tangent < 1e-12 * std::max(1.0, rep.scale), "MatchEdge G2: first cross derivative matched");
+    Check(r.curvature < 1e-11 * std::max(1.0, rep.scale * rep.scale), "MatchEdge G2: S_vv == scale^2 * T_vv along the edge to 1e-11");
+    Check(r.gaussian < 1e-9, "MatchEdge G2: Gaussian curvature of both surfaces agrees along the edge (< 1e-9)");
+    Check(rep.max_curvature_error < 1e-11 * std::max(1.0, rep.scale * rep.scale), "MatchEdge G2: the report's measured curvature residual agrees");
+    double far = 0.0;
+    for (int k = 0; k <= 20; ++k) {
+      const double u = s.Domain(0).min + (s.Domain(0).max - s.Domain(0).min) * k / 20.0;
+      far = std::max(far, s.PointAt(u, s.Domain(1).max).DistanceTo(candidate.PointAt(u, candidate.Domain(1).max)));
+    }
+    Check(far < 1e-12, "MatchEdge G2 leaves the opposite edge exactly where it was (4 rows: 3 rewritten, 1 kept)");
+    // Forced unit scale: plain C2 with the target's own speed.
+    NurbsSurface s1 = candidate;
+    Check(s1.MatchEdge(1, true, target, 1, false, MatchContinuity::Curvature, &rep, 1.0) == Result::Ok, "MatchEdge G2 with cross_scale = 1 returns Ok");
+    Check(rep.scale == 1.0, "MatchEdge honors a forced cross_scale");
+    const MatchResiduals r1 = MeasureMatch(s1, target, 1.0, false);
+    Check(r1.tangent < 1e-12 && r1.curvature < 1e-11, "MatchEdge with cross_scale = 1 is exactly C1/C2 with the target's own derivatives");
+  }
+  // --- reversed target edge orientation is detected ---
+  {
+    NurbsSurface flipped = target;
+    flipped.Reverse(0);
+    NurbsSurface s = candidate;
+    MatchEdgeReport rep;
+    Check(s.MatchEdge(1, true, flipped, 1, false, MatchContinuity::Curvature, &rep) == Result::Ok, "MatchEdge G2 against a U-reversed target returns Ok");
+    Check(rep.target_edge_reversed, "MatchEdge detects that the target edge runs the other way");
+    const MatchResiduals r = MeasureMatch(s, flipped, rep.scale, true);
+    Check(r.position < 1e-12 && r.tangent < 1e-12 * std::max(1.0, rep.scale) && r.gaussian < 1e-9,
+          "MatchEdge G2 against a reversed target: position, tangent and Gaussian curvature all match");
+  }
+  // --- this surface's U-max edge (fixed_direction 0, at_min false) ---
+  {
+    NurbsSurface s = candidate;
+    s.Transpose();  // now the old v = min edge is the u = min edge; use the *other* end instead
+    s.Reverse(0);   // ... and flip so it's the u = max edge
+    MatchEdgeReport rep;
+    Check(s.MatchEdge(0, false, target, 1, false, MatchContinuity::Curvature, &rep) == Result::Ok, "MatchEdge G2 on this surface's u = max edge returns Ok");
+    double pos = 0.0, gauss = 0.0, ncross = 0.0;
+    for (int k = 0; k <= 41; ++k) {
+      const double f = k / 41.0;
+      const double sv = s.Domain(1).min + (s.Domain(1).max - s.Domain(1).min) * f;
+      const double tu = target.Domain(0).min + (target.Domain(0).max - target.Domain(0).min) * (rep.target_edge_reversed ? 1.0 - f : f);
+      pos = std::max(pos, s.PointAt(s.Domain(0).max, sv).DistanceTo(target.PointAt(tu, target.Domain(1).max)));
+      gauss = std::max(gauss, std::abs(s.CurvatureAt(s.Domain(0).max, sv).gaussian - target.CurvatureAt(tu, target.Domain(1).max).gaussian));
+      ON_3dVector na = s.NormalAt(s.Domain(0).max, sv), nb = target.NormalAt(tu, target.Domain(1).max);
+      ncross = std::max(ncross, ON_CrossProduct(na, nb).Length());
+    }
+    Check(pos < 1e-12 && ncross < 1e-12 && gauss < 1e-9, "MatchEdge G2 on a u = max edge: position, normals and Gaussian curvature match");
+  }
+}
+
+void TestSurfaceMatchEdgeToRationalSphereAndRefusals() {
+  using dino8::kernel::MatchContinuity;
+  using dino8::kernel::MatchEdgeReport;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Result;
+  // Target: a rational sphere cap - the equator-to-pole half of a
+  // radius-2 sphere's NURBS form, trimmed in V so the matched edge is a
+  // genuine circle (rational) and the target's cross direction is a
+  // clamped rational arc.
+  ON_NurbsSurface sphere_raw;
+  ON_Sphere(ON_3dPoint(0, 0, 0), 2.0).GetNurbForm(sphere_raw);
+  NurbsSurface sphere;
+  sphere.raw() = sphere_raw;
+  const double v_mid = sphere.Domain(1).min + 0.5 * (sphere.Domain(1).max - sphere.Domain(1).min);
+  Check(sphere.Trim(1, v_mid, sphere.Domain(1).max) == Result::Ok, "MatchEdge sphere setup: trimmed to the upper half");
+  // Candidate: a non-rational bicubic sheet roughly around the equator.
+  std::vector<dino8::kernel::Point3d> grid;
+  for (int j = 0; j < 5; ++j)
+    for (int i = 0; i < 6; ++i) {
+      const double a = 2.0 * ON_PI * i / 5.0;
+      grid.push_back(dino8::kernel::Point3d(2.6 * std::cos(a), 2.6 * std::sin(a), -0.5 - 0.8 * j));
+    }
+  NurbsSurface s = NurbsSurface::FromControlGrid(grid, 6, 5, 3, 3);
+  MatchEdgeReport rep;
+  Check(s.MatchEdge(1, true, sphere, 1, true, MatchContinuity::Curvature, &rep) == Result::Ok, "MatchEdge G2 to a rational sphere edge returns Ok");
+  Check(s.IsRational(), "MatchEdge makes the candidate rational to carry the sphere edge's weights");
+  double pos = 0.0, radius = 0.0, gauss = 0.0, ncross = 0.0;
+  for (int k = 0; k <= 64; ++k) {
+    const double f = k / 64.0;
+    const double su = s.Domain(0).min + (s.Domain(0).max - s.Domain(0).min) * f;
+    const double tu = sphere.Domain(0).min + (sphere.Domain(0).max - sphere.Domain(0).min) * (rep.target_edge_reversed ? 1.0 - f : f);
+    const ON_3dPoint sp = s.PointAt(su, s.Domain(1).min);
+    pos = std::max(pos, sp.DistanceTo(sphere.PointAt(tu, sphere.Domain(1).min)));
+    radius = std::max(radius, std::abs(sp.DistanceTo(ON_3dPoint::Origin) - 2.0));
+    gauss = std::max(gauss, std::abs(s.CurvatureAt(su, s.Domain(1).min).gaussian - 0.25));
+    ncross = std::max(ncross, ON_CrossProduct(s.NormalAt(su, s.Domain(1).min), sphere.NormalAt(tu, sphere.Domain(1).min)).Length());
+  }
+  Check(pos < 1e-12, "MatchEdge to a sphere: the candidate's edge lies on the sphere's equator to 1e-12");
+  Check(radius < 1e-12, "MatchEdge to a sphere: every edge sample is exactly radius 2 (the edge is a true circle now)");
+  Check(ncross < 1e-12, "MatchEdge to a sphere: normals agree along the equator");
+  Check(gauss < 1e-9, "MatchEdge to a sphere: the candidate's Gaussian curvature is exactly the sphere's 1/r^2 = 0.25 along the edge");
+  for (int i = 0; i < s.CVCountU(); ++i)
+    for (int j = 0; j < s.CVCountV(); ++j)
+      if (!(s.WeightAt(i, j) > 0.0)) { Check(false, "MatchEdge to a sphere: every weight is positive"); return; }
+  Check(true, "MatchEdge to a sphere: every weight is positive");
+
+  // Refusals / argument checks.
+  NurbsSurface flat = WigglyBicubic(4, 4);
+  const NurbsSurface flat_before = flat;
+  NurbsSurface ruled;
+  {
+    std::vector<dino8::kernel::Point3d> g = {dino8::kernel::Point3d(0, 0, 0), dino8::kernel::Point3d(1, 0, 0), dino8::kernel::Point3d(0, 1, 0), dino8::kernel::Point3d(1, 1, 1)};
+    ruled = NurbsSurface::FromControlGrid(g, 2, 2, 1, 1);
+  }
+  Check(flat.MatchEdge(1, true, ruled, 1, false, MatchContinuity::Curvature) == Result::Failed,
+        "MatchEdge refuses curvature matching to a degree-1 (no curvature) target");
+  Check(flat.MatchEdge(1, true, ruled, 1, false, MatchContinuity::Tangent) == Result::Ok,
+        "MatchEdge tangent-matches to a degree-1 target (its cross derivative exists)");
+  bool threw = false;
+  try { flat.MatchEdge(2, true, ruled, 1, false, MatchContinuity::Position); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "MatchEdge throws on a direction outside 0/1");
+  NurbsSurface periodic = sphere;  // the sphere's U direction is closed but clamped: allowed. Make a periodic one:
+  ON_NurbsSurface per;
+  {
+    ON_Torus torus(ON_Plane::World_xy, 3.0, 1.0);
+    torus.GetNurbForm(per);
+  }
+  periodic.raw() = per;
+  NurbsSurface again = flat_before;
+  if (!periodic.raw().IsClamped(0, 2) || !periodic.raw().IsClamped(1, 2)) {
+    Check(again.MatchEdge(1, true, periodic, 1, true, MatchContinuity::Position) == Result::Failed,
+          "MatchEdge refuses an unclamped (periodic) target direction");
+  } else {
+    Check(true, "MatchEdge periodic-refusal check skipped: ON_Torus::GetNurbForm is clamped in this OpenNURBS build");
+  }
+}
+
 // ---------------------------------------------------------------------------
 // ChamferConvexEdge / ChamferConvexEdgeAngle (fillet.h) - exact planar
 // chamfers. Every face of a chamfered planar solid is itself planar, so
@@ -23129,6 +23659,16 @@ int main() {
   TestRemoveNakedMicroEdgeClosesIsolatedSliverOnAPlate();
   TestRemoveNakedMicroEdgeRefusesASliverNextToASharedEdge();
 
+  TestSurfaceRemoveKnotAtIsExactInverseOfInsertKnotAt();
+  TestSurfaceRemoveKnotAtRefusesNonRemovableKnotWithinTolerance();
+  TestSurfaceRemoveKnotAtRationalBoundHoldsOnASphereSeamKnot();
+  TestSurfaceRemoveKnotAtArgumentChecks();
+
+  TestSurfaceSetDomainRescalesKnotsWithoutMovingTheShape();
+  TestSurfaceRebuildIsExactWhenRepresentableAndHonestOtherwise();
+
+  TestSurfaceMatchEdgePositionTangentCurvature();
+  TestSurfaceMatchEdgeToRationalSphereAndRefusals();
   TestTolerancePolicyValuesAreTheOnesInForce();
   TestBrepCheckReportsCleanBoxAsClean();
   TestBrepCheckAndUnifyNormalsOnFlippedFace();
