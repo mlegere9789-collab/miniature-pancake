@@ -2521,6 +2521,33 @@ What this repo does instead:
   boundary edges read back as Smooth (not Crease) afterward, capping at
   the interior vertex is refused (no naked edge to start from), and
   capping again once the SubD is fully closed is refused too.
+- `SubD::Transform(xform)`: the same missing piece `Mesh::Transform()`
+  already closed for `Mesh`, but this class never had at all - no way to
+  move, rotate, scale, or mirror a SubD once built (baking the transform
+  into the control mesh only works BEFORE `FromControlMesh()`, and is
+  impossible after `Subdivide()` has already discarded the original
+  mesh). Delegates to the real `ON_SubD::Transform` (verified by reading
+  `ON_SubDimple::Transform`'s own implementation: it transforms every
+  level's vertices, detects a similarity transform to preserve cached
+  subdivision/limit points instead of discarding them, and updates
+  texture/color mapping and symmetry state). One caveat documented
+  explicitly because it's genuinely easy to miss: a MIRROR (negative-
+  determinant `xform`) only moves positions - it doesn't touch any
+  face's vertex winding, the same convention `Mesh::Transform()` already
+  follows (`ON_Mesh::Transform` flips stored normal VECTORS on a
+  negative determinant but never reorders `ON_MeshFace::vi[]`). The
+  result stays perfectly `IsValid()` (a uniform coordinate transform
+  can't break the topology's internal edge/face winding agreement - the
+  same reason a wholly `Mesh::FlipNormals()`-ed mesh stays a valid
+  closed manifold), just "inside-out" relative to the mirrored geometry;
+  there's no `SubD`-level `FlipNormals()`/`UnifyNormals()` counterpart
+  here (a real, disclosed gap), so a caller mirroring a SubD should
+  handle that at the `ToApproximateMesh()`/`ToNurbsPatches()` stage
+  instead. Verified on a closed quad-box SubD: every control-net vertex
+  shifts by an exact translation and scales by an exact uniform factor
+  (hand-derived, not approximate), a mirror leaves `IsValid()` true
+  (measured, not just claimed), and a genuinely invalid (NaN-carrying)
+  `xform` throws rather than silently handing back a garbage copy.
 
 ## Blending build log (Parasolid "blend/chamfer" class, chronological)
 
