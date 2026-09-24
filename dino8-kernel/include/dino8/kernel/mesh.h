@@ -1000,40 +1000,60 @@ class Mesh {
                     double height, int circle_segments = 48,
                     int grid_divisions = 48);
 
-  // Revolves a 2D profile fully around `axis` into a closed solid of
-  // revolution (a lathe operation) - the general answer to "no revolve"
-  // that Cylinder()/Cone() don't cover (constant or linearly-tapering
-  // radius only). `profile[i] = (radius, height)`: radius >= 0 measured
-  // from `axis`, height measured along `axis` from `axis_point`.
+  // Revolves a 2D profile around `axis` by `angle` radians (default a
+  // full 2*pi revolution) into a closed solid of revolution (a lathe
+  // operation) - the general answer to "no revolve" that Cylinder()/
+  // Cone() don't cover (constant or linearly-tapering radius only).
+  // `profile[i] = (radius, height)`: radius >= 0 measured from `axis`,
+  // height measured along `axis` from `axis_point`.
   //
-  // An end whose radius is 0 (lies on the axis) is closed with a triangle
-  // fan to a single shared apex vertex, the same way ConeToApex() closes
-  // a cap; an end with nonzero radius instead gets a flat circular disc
-  // cap (a center vertex plus a fan to that end's ring, oriented outward:
-  // -axis at the start, +axis at the end - the same orientation
-  // ExtrudeCappedSolid()'s own caps use). Mixing the two is fine (e.g. an
-  // on-axis start tapering to an off-axis end, closed with a flat disc
-  // there). Throws std::invalid_argument if `profile` has fewer than 2
-  // points (fewer leaves nothing to revolve into a solid). Also throws
-  // std::invalid_argument if `revolve_segments` is less than 3 - a real
-  // gap found by checking whether `profile`'s own validation had a
-  // sibling for this parameter (it didn't): fewer than 3 segments can't
-  // form a non-degenerate ring at all, and a debug run confirmed the old,
-  // unguarded behavior wasn't even a clean crash - `revolve_segments=0`
-  // silently produced a near-empty, faceless mesh (each ring's per-
-  // segment vertex loop simply never running) rather than failing
-  // loudly.
-  //
-  // Every profile point becomes either a single apex vertex (on-axis end)
-  // or a `revolve_segments`-vertex ring (everywhere else, including an
-  // off-axis end). No MergeAndWeld() is needed: each ring's vertices are
-  // shared directly by the band before/after it and by that end's own cap
-  // fan if it has one (an on-axis end's fan reuses the same apex vertex
-  // for every triangle), so the result is already a single closed mesh -
-  // same "exact shared vertices, no welding tolerance" property as
+  // FULL angle (the default, and this function's original contract - no
+  // behavior change for an existing caller who never passes `angle`):
+  // an end whose radius is 0 (lies on the axis) is closed with a
+  // triangle fan to a single shared apex vertex, the same way
+  // ConeToApex() closes a cap; an end with nonzero radius instead gets a
+  // flat circular disc cap (a center vertex plus a fan to that end's
+  // ring, oriented outward: -axis at the start, +axis at the end - the
+  // same orientation ExtrudeCappedSolid()'s own caps use). Mixing the
+  // two is fine (e.g. an on-axis start tapering to an off-axis end,
+  // closed with a flat disc there). Every profile point becomes either a
+  // single apex vertex (on-axis end) or a `revolve_segments`-vertex ring
+  // (everywhere else, including an off-axis end). No MergeAndWeld() is
+  // needed: each ring's vertices are shared directly by the band
+  // before/after it and by that end's own cap fan if it has one (an
+  // on-axis end's fan reuses the same apex vertex for every triangle),
+  // so the result is already a single closed mesh - exact shared
+  // vertices, no welding tolerance, same property as
   // ExtrudeCappedSolid() and ConeToApex().
+  //
+  // PARTIAL angle (< 2*pi): this function's own fast ring construction
+  // above has no notion of the two additional pie-slice side caps a
+  // partial revolve needs, so this delegates to Brep::Revolve() (which
+  // already has that cap logic, fully verified on its own) and
+  // tessellates the result instead - a NURBS-tessellation approximation,
+  // not the exact-shared-vertex construction the full-angle path above
+  // is; `revolve_segments` sets the angular tessellation density, and
+  // the profile's own point density sets its resolution (each straight
+  // run between consecutive profile points lies exactly on the true
+  // ruled wall regardless, but an interior profile vertex can still be
+  // rounded off by a too-coarse tessellation grid missing it - add more
+  // profile points for a sharper corner, the same tradeoff every other
+  // tessellated-from-NURBS mesh here has). Whatever profile-shape/cap
+  // combination Brep::Revolve() itself cannot cap at a partial angle
+  // (see its own doc comment - a partial angle with an off-axis
+  // endpoint, for one) throws exactly the exception it throws,
+  // propagated unchanged rather than reworded.
+  //
+  // Throws std::invalid_argument if `profile` has fewer than 2 points
+  // (fewer leaves nothing to revolve into a solid), if `revolve_segments`
+  // is less than 3 - a real gap found by checking whether `profile`'s
+  // own validation had a sibling for this parameter (it didn't): fewer
+  // than 3 segments can't form a non-degenerate ring at all, and a debug
+  // run confirmed the old, unguarded behavior wasn't even a clean crash
+  // (`revolve_segments=0` silently produced a near-empty, faceless mesh) -
+  // or if `angle` is not finite or not in (0, 2*pi].
   static Mesh RevolveProfile(const std::vector<Point2d>& profile, Point3d axis_point,
-                              Vector3d axis, int revolve_segments = 48);
+                              Vector3d axis, int revolve_segments = 48, double angle = 2.0 * ON_PI);
 
   // Lofts a sequence of closed polygonal cross-sections ("rings") into a
   // closed solid - the general answer to "no loft" that RevolveProfile()
