@@ -381,4 +381,217 @@ Result NurbsSurface::Rebuild(int u_count, int v_count, int u_degree, int v_degre
   return Result::Ok;
 }
 
+namespace {
+
+// Homogeneous control-point row of `s` at index `k` in `fixed_direction`
+// (0 = U: row k = CV(k, *); 1 = V: row k = CV(*, k)), w forced to 1 on
+// a non-rational surface.
+std::vector<ON_4dPoint> HomogeneousRow(const ON_NurbsSurface& s, int fixed_direction, int k) {
+  const int n = s.CVCount(1 - fixed_direction);
+  std::vector<ON_4dPoint> row(static_cast<size_t>(n));
+  for (int i = 0; i < n; ++i) {
+    ON_4dPoint cv;
+    if (fixed_direction == 0) s.GetCV(k, i, cv); else s.GetCV(i, k, cv);
+    if (!s.IsRational()) cv.w = 1.0;
+    row[static_cast<size_t>(i)] = cv;
+  }
+  return row;
+}
+
+void SetHomogeneousRow(ON_NurbsSurface& s, int fixed_direction, int k, const std::vector<ON_4dPoint>& row) {
+  for (int i = 0; i < static_cast<int>(row.size()); ++i) {
+    const ON_4dPoint& cv = row[static_cast<size_t>(i)];
+    const int ii = fixed_direction == 0 ? k : i;
+    const int jj = fixed_direction == 0 ? i : k;
+    if (s.IsRational()) s.SetCV(ii, jj, cv);
+    else s.SetCV(ii, jj, ON_3dPoint(cv.x, cv.y, cv.z));
+  }
+}
+
+// Textbook knot V_k (k >= 1) of `s` in `direction`: ON's compressed
+// Knot(k - 1).
+double TextbookKnot(const ON_NurbsSurface& s, int direction, int k) { return s.Knot(direction, k - 1); }
+
+// Mean magnitude of the cross-boundary first derivative of `s` along
+// its edge at `fixed_direction` == domain min (after any Reverse()).
+double MeanCrossSpeedAtMin(const ON_NurbsSurface& s, int fixed_direction, int samples) {
+  const ON_Interval edge = s.Domain(1 - fixed_direction);
+  const double at = s.Domain(fixed_direction).Min();
+  double sum = 0.0;
+  for (int k = 0; k < samples; ++k) {
+    const double e = edge.ParameterAt((k + 0.5) / samples);
+    ON_3dPoint pt;
+    ON_3dVector du, dv;
+    if (fixed_direction == 0) s.Ev1Der(at, e, pt, du, dv); else s.Ev1Der(e, at, pt, du, dv);
+    sum += (fixed_direction == 0 ? du : dv).Length();
+  }
+  return sum / samples;
+}
+
+}  // namespace
+
+Result NurbsSurface::MatchEdge(int fixed_direction, bool at_min, const NurbsSurface& target, int target_fixed_direction,
+                               bool target_at_min, MatchContinuity continuity, MatchEdgeReport* report,
+                               double cross_scale) {
+  if ((fixed_direction != 0 && fixed_direction != 1) || (target_fixed_direction != 0 && target_fixed_direction != 1)) {
+    throw std::invalid_argument("dino8::kernel::NurbsSurface::MatchEdge: directions must be 0 (U) or 1 (V)");
+  }
+  const int rows_needed = continuity == MatchContinuity::Position ? 1 : continuity == MatchContinuity::Tangent ? 2 : 3;
+  const int edge_dir = 1 - fixed_direction;
+  const int t_edge_dir = 1 - target_fixed_direction;
+  if (!surface_.IsClamped(0, 2) || !surface_.IsClamped(1, 2)) return Result::Failed;
+  if (!target.surface_.IsClamped(t_edge_dir, 2) || !target.surface_.IsClamped(target_fixed_direction, 2)) return Result::Failed;
+  if (target.surface_.Degree(target_fixed_direction) < rows_needed - 1) return Result::Failed;
+
+  const ON_NurbsSurface backup = surface_;
+  ON_NurbsSurface& s = surface_;
+  ON_NurbsSurface t = target.surface_;
+
+  // Normalize both to "edge at the cross direction's min" so one set of
+  // end-derivative formulas applies; Reverse() is shape-preserving.
+  if (!at_min && !s.Reverse(fixed_direction)) { surface_ = backup; return Result::Failed; }
+  if (!target_at_min && !t.Reverse(target_fixed_direction)) { surface_ = backup; return Result::Failed; }
+
+  // Orient the target edge the same way as this edge (corner distances).
+  const ON_Interval s_edge = s.Domain(edge_dir), t_edge = t.Domain(t_edge_dir);
+  auto s_corner = [&](double e) { return fixed_direction == 0 ? s.PointAt(s.Domain(0).Min(), e) : s.PointAt(e, s.Domain(1).Min()); };
+  auto t_corner = [&](double e) { return target_fixed_direction == 0 ? t.PointAt(t.Domain(0).Min(), e) : t.PointAt(e, t.Domain(1).Min()); };
+  const double straight = s_corner(s_edge.Min()).DistanceTo(t_corner(t_edge.Min())) + s_corner(s_edge.Max()).DistanceTo(t_corner(t_edge.Max()));
+  const double crossed = s_corner(s_edge.Min()).DistanceTo(t_corner(t_edge.Max())) + s_corner(s_edge.Max()).DistanceTo(t_corner(t_edge.Min()));
+  const bool reversed = crossed < straight;
+  if (reversed && !t.Reverse(t_edge_dir)) { surface_ = backup; return Result::Failed; }
+  if (!t.SetDomain(t_edge_dir, s_edge.Min(), s_edge.Max())) { surface_ = backup; return Result::Failed; }
+
+  // Scale: this surface's mean cross speed over the target's, measured
+  // before any edit.
+  double scale = cross_scale;
+  if (!(scale > 0.0)) {
+    const double s_speed = MeanCrossSpeedAtMin(s, fixed_direction, 32);
+    const double t_speed = MeanCrossSpeedAtMin(t, target_fixed_direction, 32);
+    scale = (s_speed > 0.0 && t_speed > 0.0) ? s_speed / t_speed : 1.0;
+  }
+
+  // Compatible edge bases: rationality, degree, knots.
+  if (t.IsRational() && !s.IsRational()) s.MakeRational();
+  if (s.IsRational() && !t.IsRational()) t.MakeRational();
+  const int edge_degree = std::max(s.Degree(edge_dir), t.Degree(t_edge_dir));
+  if (s.Degree(edge_dir) < edge_degree && !s.IncreaseDegree(edge_dir, edge_degree)) { surface_ = backup; return Result::Failed; }
+  if (t.Degree(t_edge_dir) < edge_degree && !t.IncreaseDegree(t_edge_dir, edge_degree)) { surface_ = backup; return Result::Failed; }
+  auto merge_knots = [&](ON_NurbsSurface& into, int into_dir, const ON_NurbsSurface& from, int from_dir) {
+    const ON_Interval dom = into.Domain(into_dir);
+    int k = 0;
+    while (k < from.KnotCount(from_dir)) {
+      const double value = from.Knot(from_dir, k);
+      int mult = 1;
+      while (k + mult < from.KnotCount(from_dir) && from.Knot(from_dir, k + mult) == value) ++mult;
+      if (value > dom.Min() && value < dom.Max()) {
+        // Snap to an existing knot within a tiny relative tolerance so a
+        // rounding-different copy of the same knot doesn't get inserted
+        // as a second, nearly-coincident knot.
+        double target_value = value;
+        for (int i = 0; i < into.KnotCount(into_dir); ++i) {
+          if (std::abs(into.Knot(into_dir, i) - value) <= 1e-12 * dom.Length()) { target_value = into.Knot(into_dir, i); break; }
+        }
+        if (!into.InsertKnot(into_dir, target_value, mult)) return false;
+      }
+      k += mult;
+    }
+    return true;
+  };
+  if (!merge_knots(s, edge_dir, t, t_edge_dir) || !merge_knots(t, t_edge_dir, s, edge_dir)) { surface_ = backup; return Result::Failed; }
+  if (s.CVCount(edge_dir) != t.CVCount(t_edge_dir) || s.KnotCount(edge_dir) != t.KnotCount(t_edge_dir)) { surface_ = backup; return Result::Failed; }
+  for (int k = 0; k < s.KnotCount(edge_dir); ++k) {
+    if (std::abs(s.Knot(edge_dir, k) - t.Knot(t_edge_dir, k)) > 1e-12 * s_edge.Length()) { surface_ = backup; return Result::Failed; }
+  }
+
+  // Enough rows in this surface's cross direction to leave the far edge alone.
+  if (s.Degree(fixed_direction) < rows_needed && !s.IncreaseDegree(fixed_direction, rows_needed)) { surface_ = backup; return Result::Failed; }
+  if (s.CVCount(fixed_direction) <= rows_needed && !s.InsertKnot(fixed_direction, s.Domain(fixed_direction).Mid(), 1)) { surface_ = backup; return Result::Failed; }
+  if (s.CVCount(fixed_direction) <= rows_needed) { surface_ = backup; return Result::Failed; }
+
+  // Rows and end-derivative coefficients (textbook knots; both surfaces
+  // are clamped so V_1 is the domain start).
+  const int p = s.Degree(fixed_direction), q = t.Degree(target_fixed_direction);
+  const std::vector<ON_4dPoint> t0 = HomogeneousRow(t, target_fixed_direction, 0);
+  std::vector<ON_4dPoint> r0 = t0, r1, r2;
+  const int n = static_cast<int>(t0.size());
+  if (rows_needed >= 2) {
+    const std::vector<ON_4dPoint> t1 = HomogeneousRow(t, target_fixed_direction, 1);
+    const double dt1 = TextbookKnot(t, target_fixed_direction, q + 1) - TextbookKnot(t, target_fixed_direction, 1);
+    const double ds1 = TextbookKnot(s, fixed_direction, p + 1) - TextbookKnot(s, fixed_direction, 1);
+    // A = q / dt1 * (T1 - T0); R1 = R0 + ds1 / p * (-scale * A).
+    r1.resize(static_cast<size_t>(n));
+    for (int i = 0; i < n; ++i) {
+      const ON_4dPoint a = Scale4(Sub4(t1[static_cast<size_t>(i)], t0[static_cast<size_t>(i)]), q / dt1);
+      r1[static_cast<size_t>(i)] = Add4(r0[static_cast<size_t>(i)], Scale4(a, -scale * ds1 / p));
+    }
+    if (rows_needed >= 3) {
+      const std::vector<ON_4dPoint> t2 = HomogeneousRow(t, target_fixed_direction, 2);
+      const double dt2 = TextbookKnot(t, target_fixed_direction, q + 2) - TextbookKnot(t, target_fixed_direction, 2);
+      const double ds2 = TextbookKnot(s, fixed_direction, p + 2) - TextbookKnot(s, fixed_direction, 2);
+      // B = q (q-1) / dt1 * [ (T2 - T1) / dt2 - (T1 - T0) / dt1 ];
+      // S_vv = p (p-1) / ds1 * [ (R2 - R1) / ds2 - (R1 - R0) / ds1 ] = scale^2 B.
+      r2.resize(static_cast<size_t>(n));
+      for (int i = 0; i < n; ++i) {
+        const ON_4dPoint b = Scale4(Sub4(Scale4(Sub4(t2[static_cast<size_t>(i)], t1[static_cast<size_t>(i)]), 1.0 / dt2),
+                                         Scale4(Sub4(t1[static_cast<size_t>(i)], t0[static_cast<size_t>(i)]), 1.0 / dt1)),
+                                    q * (q - 1.0) / dt1);
+        const ON_4dPoint d1 = Scale4(Sub4(r1[static_cast<size_t>(i)], r0[static_cast<size_t>(i)]), 1.0 / ds1);
+        const ON_4dPoint inner = Add4(Scale4(b, scale * scale * ds1 / (p * (p - 1.0))), d1);
+        r2[static_cast<size_t>(i)] = Add4(r1[static_cast<size_t>(i)], Scale4(inner, ds2));
+      }
+    }
+  }
+  if (s.IsRational()) {
+    for (const auto* row : {&r0, &r1, &r2}) {
+      for (const ON_4dPoint& cv : *row) {
+        if (!(cv.w > 0.0)) { surface_ = backup; return Result::Failed; }
+      }
+    }
+  }
+  SetHomogeneousRow(s, fixed_direction, 0, r0);
+  if (rows_needed >= 2) SetHomogeneousRow(s, fixed_direction, 1, r1);
+  if (rows_needed >= 3) SetHomogeneousRow(s, fixed_direction, 2, r2);
+
+  // Self-check by evaluation along the edge, then undo the normalizing
+  // reversal.
+  MatchEdgeReport local;
+  local.scale = scale;
+  local.target_edge_reversed = reversed;
+  double size = 0.0;
+  {
+    ON_BoundingBox bb;
+    s.GetBoundingBox(bb, false);
+    ON_BoundingBox tb;
+    t.GetBoundingBox(tb, false);
+    size = std::max({1.0, bb.Diagonal().Length(), tb.Diagonal().Length()});
+  }
+  const int samples = 64;
+  for (int k = 0; k <= samples; ++k) {
+    const double e = s_edge.ParameterAt(static_cast<double>(k) / samples);
+    ON_3dPoint sp, tp;
+    ON_3dVector su, sv, suu, suv, svv, tu, tv, tuu, tuv, tvv;
+    if (fixed_direction == 0) s.Ev2Der(s.Domain(0).Min(), e, sp, su, sv, suu, suv, svv);
+    else s.Ev2Der(e, s.Domain(1).Min(), sp, su, sv, suu, suv, svv);
+    if (target_fixed_direction == 0) t.Ev2Der(t.Domain(0).Min(), e, tp, tu, tv, tuu, tuv, tvv);
+    else t.Ev2Der(e, t.Domain(1).Min(), tp, tu, tv, tuu, tuv, tvv);
+    const ON_3dVector s_cross = fixed_direction == 0 ? su : sv;
+    const ON_3dVector t_cross = target_fixed_direction == 0 ? tu : tv;
+    const ON_3dVector s_cc = fixed_direction == 0 ? suu : svv;
+    const ON_3dVector t_cc = target_fixed_direction == 0 ? tuu : tvv;
+    local.max_position_error = std::max(local.max_position_error, sp.DistanceTo(tp));
+    if (rows_needed >= 2) local.max_tangent_error = std::max(local.max_tangent_error, (s_cross + scale * t_cross).Length());
+    if (rows_needed >= 3) local.max_curvature_error = std::max(local.max_curvature_error, (s_cc - scale * scale * t_cc).Length());
+  }
+  if (!at_min && !s.Reverse(fixed_direction)) { surface_ = backup; return Result::Failed; }
+  if (report) *report = local;
+  const double tol = 1e-9 * size;
+  if (!(local.max_position_error <= tol) || !(local.max_tangent_error <= tol * std::max(1.0, scale)) ||
+      !(local.max_curvature_error <= tol * std::max(1.0, scale * scale) * 10.0) || !s.IsValid()) {
+    surface_ = backup;
+    return Result::Failed;
+  }
+  return Result::Ok;
+}
+
 }  // namespace dino8::kernel

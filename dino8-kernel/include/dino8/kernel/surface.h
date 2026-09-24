@@ -49,6 +49,33 @@ struct SurfaceSize {
   double height;  // approximate size in the V direction
 };
 
+// Continuity order NurbsSurface::MatchEdge() enforces along the shared
+// edge: Position (G0), Tangent (G1), Curvature (G2).
+enum class MatchContinuity { Position, Tangent, Curvature };
+
+// What NurbsSurface::MatchEdge() reports about the match it just made,
+// every number measured by evaluating both surfaces after the edit (not
+// inferred from the construction).
+struct MatchEdgeReport {
+  // Max 3D distance between the two surfaces along the shared edge.
+  double max_position_error = 0.0;
+  // Max |S_cross + scale * T_cross| along the edge (0 unless Tangent or
+  // Curvature was requested): how far this surface's cross-boundary
+  // first derivative is from the (scaled, reversed) target's. Both
+  // cross derivatives are taken along the direction pointing *into*
+  // their own surface, i.e. the raw parametric derivative at a
+  // domain-min edge and its negation at a domain-max edge.
+  double max_tangent_error = 0.0;
+  // Max |S_crosscross - scale^2 * T_crosscross| along the edge (0
+  // unless Curvature was requested).
+  double max_curvature_error = 0.0;
+  // The cross-derivative scale factor used (see MatchEdge()).
+  double scale = 1.0;
+  // Whether the target edge was traversed in reverse to line up with
+  // this surface's edge.
+  bool target_edge_reversed = false;
+};
+
 // Wraps ON_NurbsSurface. Same rationale as NurbsCurve: expose raw()
 // rather than mirror the whole OpenNURBS surface API.
 class NurbsSurface {
@@ -697,6 +724,67 @@ class NurbsSurface {
   // (an underdetermined fit).
   Result Rebuild(int u_count, int v_count, int u_degree, int v_degree, NurbsSurface& out,
                  double* out_max_deviation = nullptr, int u_samples = 64, int v_samples = 64) const;
+
+  // MatchSrf: edits this surface in place so its boundary edge where
+  // parameter `fixed_direction` (0 = U, 1 = V) sits at its domain min
+  // (`at_min` true) or max coincides with `target`'s boundary edge
+  // selected the same way (`target_fixed_direction`/`target_at_min`),
+  // with the requested continuity across the join - the Parasolid/Rhino
+  // "match surface" operation, done as exact NURBS algebra rather than
+  // by moving control points onto sampled target points:
+  //
+  //  1. The two edges' bases are made identical along the edge (the
+  //     target edge is oriented to run the same way as this one -
+  //     detected from the corner points, reported in
+  //     `target_edge_reversed` - reparameterized onto this edge's domain
+  //     via SetDomain, then both are degree-elevated to the higher of the
+  //     two edge degrees and knot-refined to the union knot vector; all
+  //     three are shape-preserving, so the target is never altered in
+  //     3D and this surface only gains control points). If either side
+  //     is rational the other is made rational too.
+  //  2. This surface's control-point row on the edge is replaced by the
+  //     target's edge row (homogeneous coordinates, so weights carry
+  //     over) - the two boundary curves become the *same* NURBS curve,
+  //     G0 exactly, not to a tolerance.
+  //  3. Tangent: the next row is set so this surface's cross-boundary
+  //     first derivative equals `-scale` times the target's, both taken
+  //     along the direction pointing into their own surface (the minus
+  //     sign because the two surfaces continue each other across the
+  //     edge, the target's inward direction being this surface's
+  //     outward one; in raw parametric derivatives that is `S_v(min) =
+  //     -scale * T_t(min)` for a min/min pairing and `S_v(min) = +scale
+  //     * T_t(max)` when the target edge sits at its domain max), using
+  //     the clamped-B-spline end-derivative formula
+  //     `p / (V_{p+1} - V_1) * (R_1 - R_0)`. Curvature: the third row is
+  //     set so the second cross derivative equals `scale^2` times the
+  //     target's. With a constant `scale` these are exactly C1/C2 in the
+  //     reparameterization v' = scale * v, hence G1/G2, and the target's
+  //     own Gaussian curvature is reproduced along the edge (checked in
+  //     the tests). `scale` is the ratio of this surface's mean
+  //     cross-derivative magnitude along the edge (before the edit) to
+  //     the target's, so the match keeps this surface's own
+  //     parameterization speed instead of adopting the target's; pass
+  //     `cross_scale > 0` to force a value (1.0 = plain C1/C2 with the
+  //     target's own speed).
+  //
+  // Rows beyond the ones rewritten (1 for Position, 2 for Tangent, 3
+  // for Curvature) are untouched. To guarantee the far edge never moves,
+  // the cross direction is first degree-elevated to at least 2 (Tangent)
+  // / 3 (Curvature) and, if it still has no spare row, knot-refined at
+  // its mid-parameter to add one - both shape-preserving. `report`, if
+  // non-null, receives measured residuals (both surfaces evaluated along
+  // the edge after the edit); the method itself checks them against
+  // 1e-9 times the surfaces' size and returns Result::Failed, restoring
+  // this surface, if they don't hold - a self-check, so a wrong result
+  // can't be shipped silently. Also Result::Failed (surface untouched)
+  // if either surface isn't clamped in the directions involved (a
+  // periodic edge/cross direction isn't supported), if the requested
+  // continuity exceeds the target's cross degree (a degree-1 target has
+  // no curvature to match), or if a resulting rational weight would be
+  // <= 0. Throws std::invalid_argument on a direction outside 0/1.
+  Result MatchEdge(int fixed_direction, bool at_min, const NurbsSurface& target, int target_fixed_direction,
+                   bool target_at_min, MatchContinuity continuity, MatchEdgeReport* report = nullptr,
+                   double cross_scale = 0.0);
 
   const ON_NurbsSurface& raw() const { return surface_; }
   ON_NurbsSurface& raw() { return surface_; }

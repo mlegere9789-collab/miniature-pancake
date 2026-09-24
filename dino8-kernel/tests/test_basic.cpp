@@ -20595,6 +20595,245 @@ void TestSurfaceRebuildIsExactWhenRepresentableAndHonestOtherwise() {
   Check(threw, "Rebuild throws on fewer samples than control points");
 }
 
+// ---- NurbsSurface::MatchEdge ----
+
+namespace {
+
+// Evaluates position + first/second derivatives of `s` at (u, v).
+struct Ev2 {
+  ON_3dPoint p;
+  ON_3dVector du, dv, duu, duv, dvv;
+};
+Ev2 Eval2(const dino8::kernel::NurbsSurface& s, double u, double v) {
+  Ev2 e;
+  s.raw().Ev2Der(u, v, e.p, e.du, e.dv, e.duu, e.duv, e.dvv);
+  return e;
+}
+
+// Checks S's v=min edge against T's v=max edge at `samples` points:
+// returns the max position / tangent / curvature residuals and the max
+// Gaussian-curvature mismatch. T's inward cross direction at its v=max
+// edge is -T_v, so MatchEdge's "S_in = -scale * T_in" reads S_v ==
+// +scale * T_v in raw parametric derivatives here.
+struct MatchResiduals {
+  double position = 0, tangent = 0, curvature = 0, gaussian = 0, normal_cross = 0;
+};
+MatchResiduals MeasureMatch(const dino8::kernel::NurbsSurface& s, const dino8::kernel::NurbsSurface& t, double scale,
+                            bool t_reversed_u, int samples = 41) {
+  MatchResiduals r;
+  for (int k = 0; k <= samples; ++k) {
+    const double f = static_cast<double>(k) / samples;
+    const double su = s.Domain(0).min + (s.Domain(0).max - s.Domain(0).min) * f;
+    const double tu = t.Domain(0).min + (t.Domain(0).max - t.Domain(0).min) * (t_reversed_u ? 1.0 - f : f);
+    const Ev2 a = Eval2(s, su, s.Domain(1).min);
+    const Ev2 b = Eval2(t, tu, t.Domain(1).max);
+    r.position = std::max(r.position, a.p.DistanceTo(b.p));
+    r.tangent = std::max(r.tangent, (a.dv - scale * b.dv).Length());
+    r.curvature = std::max(r.curvature, (a.dvv - scale * scale * b.dvv).Length());
+    const dino8::kernel::SurfaceCurvature ca = s.CurvatureAt(su, s.Domain(1).min);
+    const dino8::kernel::SurfaceCurvature cb = t.CurvatureAt(tu, t.Domain(1).max);
+    r.gaussian = std::max(r.gaussian, std::abs(ca.gaussian - cb.gaussian));
+    ON_3dVector na = ON_CrossProduct(a.du, a.dv), nb = ON_CrossProduct(b.du, b.dv);
+    na.Unitize();
+    nb.Unitize();
+    r.normal_cross = std::max(r.normal_cross, ON_CrossProduct(na, nb).Length());
+  }
+  return r;
+}
+
+// The surface to be matched: a 4x4 bicubic sitting above/behind the
+// target's v=max edge but not touching it, with its own twist.
+dino8::kernel::NurbsSurface MatchCandidate() {
+  using dino8::kernel::Point3d;
+  std::vector<Point3d> grid;
+  for (int j = 0; j < 4; ++j)
+    for (int i = 0; i < 4; ++i)
+      grid.push_back(Point3d(0.2 + 0.9 * i, 4.5 + 1.1 * j, 0.7 + 0.4 * std::sin(1.1 * i + 0.5 * j) - 0.3 * j));
+  return dino8::kernel::NurbsSurface::FromControlGrid(grid, 4, 4, 3, 3);
+}
+
+}  // namespace
+
+void TestSurfaceMatchEdgePositionTangentCurvature() {
+  using dino8::kernel::MatchContinuity;
+  using dino8::kernel::MatchEdgeReport;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Result;
+  const NurbsSurface target = WigglyBicubic(5, 5);  // knots 0,0,0,1,2,2,2 x same; edge v = max = 2
+  const NurbsSurface candidate = MatchCandidate();
+
+  // --- G0 ---
+  {
+    NurbsSurface s = candidate;
+    MatchEdgeReport rep;
+    Check(s.MatchEdge(1, true, target, 1, false, MatchContinuity::Position, &rep) == Result::Ok, "MatchEdge G0 returns Ok");
+    Check(!rep.target_edge_reversed, "MatchEdge G0: target edge orientation already agrees (not reversed)");
+    const MatchResiduals r = MeasureMatch(s, target, rep.scale, false);
+    Check(r.position < 1e-12, "MatchEdge G0: the two boundary curves coincide to 1e-12 at 42 samples");
+    Check(rep.max_position_error < 1e-12, "MatchEdge G0: the report's measured position error agrees");
+    Check(s.CVCountU() == 5 && s.DegreeU() == 3, "MatchEdge G0: this surface's edge direction gained the target's extra knot (4 -> 5 CVs)");
+    Check(s.CVCountV() == 4, "MatchEdge G0: the cross direction is untouched (still 4 rows)");
+    // Far edge (v = max) untouched: identical to the original candidate's.
+    double far = 0.0;
+    for (int k = 0; k <= 20; ++k) {
+      const double u = s.Domain(0).min + (s.Domain(0).max - s.Domain(0).min) * k / 20.0;
+      far = std::max(far, s.PointAt(u, s.Domain(1).max).DistanceTo(candidate.PointAt(u, candidate.Domain(1).max)));
+    }
+    Check(far < 1e-12, "MatchEdge G0 leaves the opposite edge exactly where it was");
+    Check(r.normal_cross > 1e-3, "MatchEdge G0 alone does not align the tangent planes (a genuine crease remains)");
+  }
+  // --- G1 ---
+  {
+    NurbsSurface s = candidate;
+    MatchEdgeReport rep;
+    Check(s.MatchEdge(1, true, target, 1, false, MatchContinuity::Tangent, &rep) == Result::Ok, "MatchEdge G1 returns Ok");
+    const MatchResiduals r = MeasureMatch(s, target, rep.scale, false);
+    Check(r.position < 1e-12, "MatchEdge G1: position still exact");
+    Check(rep.scale > 0.0 && std::abs(rep.scale - 1.0) > 1e-3, "MatchEdge G1: auto scale is a genuine (non-unit) speed ratio here");
+    Check(r.tangent < 1e-12 * std::max(1.0, rep.scale), "MatchEdge G1: S_v(min) == +scale * T_v(max) along the edge to 1e-12 (inward directions opposite)");
+    Check(r.normal_cross < 1e-12, "MatchEdge G1: unit normals of the two surfaces are parallel along the edge (|n_S x n_T| < 1e-12)");
+    Check(r.curvature > 1e-3, "MatchEdge G1 alone does not match the second cross derivative");
+    double far = 0.0;
+    for (int k = 0; k <= 20; ++k) {
+      const double u = s.Domain(0).min + (s.Domain(0).max - s.Domain(0).min) * k / 20.0;
+      far = std::max(far, s.PointAt(u, s.Domain(1).max).DistanceTo(candidate.PointAt(u, candidate.Domain(1).max)));
+    }
+    Check(far < 1e-12, "MatchEdge G1 leaves the opposite edge exactly where it was");
+  }
+  // --- G2 ---
+  {
+    NurbsSurface s = candidate;
+    MatchEdgeReport rep;
+    Check(s.MatchEdge(1, true, target, 1, false, MatchContinuity::Curvature, &rep) == Result::Ok, "MatchEdge G2 returns Ok");
+    const MatchResiduals r = MeasureMatch(s, target, rep.scale, false);
+    Check(r.position < 1e-12, "MatchEdge G2: position exact");
+    Check(r.tangent < 1e-12 * std::max(1.0, rep.scale), "MatchEdge G2: first cross derivative matched");
+    Check(r.curvature < 1e-11 * std::max(1.0, rep.scale * rep.scale), "MatchEdge G2: S_vv == scale^2 * T_vv along the edge to 1e-11");
+    Check(r.gaussian < 1e-9, "MatchEdge G2: Gaussian curvature of both surfaces agrees along the edge (< 1e-9)");
+    Check(rep.max_curvature_error < 1e-11 * std::max(1.0, rep.scale * rep.scale), "MatchEdge G2: the report's measured curvature residual agrees");
+    double far = 0.0;
+    for (int k = 0; k <= 20; ++k) {
+      const double u = s.Domain(0).min + (s.Domain(0).max - s.Domain(0).min) * k / 20.0;
+      far = std::max(far, s.PointAt(u, s.Domain(1).max).DistanceTo(candidate.PointAt(u, candidate.Domain(1).max)));
+    }
+    Check(far < 1e-12, "MatchEdge G2 leaves the opposite edge exactly where it was (4 rows: 3 rewritten, 1 kept)");
+    // Forced unit scale: plain C2 with the target's own speed.
+    NurbsSurface s1 = candidate;
+    Check(s1.MatchEdge(1, true, target, 1, false, MatchContinuity::Curvature, &rep, 1.0) == Result::Ok, "MatchEdge G2 with cross_scale = 1 returns Ok");
+    Check(rep.scale == 1.0, "MatchEdge honors a forced cross_scale");
+    const MatchResiduals r1 = MeasureMatch(s1, target, 1.0, false);
+    Check(r1.tangent < 1e-12 && r1.curvature < 1e-11, "MatchEdge with cross_scale = 1 is exactly C1/C2 with the target's own derivatives");
+  }
+  // --- reversed target edge orientation is detected ---
+  {
+    NurbsSurface flipped = target;
+    flipped.Reverse(0);
+    NurbsSurface s = candidate;
+    MatchEdgeReport rep;
+    Check(s.MatchEdge(1, true, flipped, 1, false, MatchContinuity::Curvature, &rep) == Result::Ok, "MatchEdge G2 against a U-reversed target returns Ok");
+    Check(rep.target_edge_reversed, "MatchEdge detects that the target edge runs the other way");
+    const MatchResiduals r = MeasureMatch(s, flipped, rep.scale, true);
+    Check(r.position < 1e-12 && r.tangent < 1e-12 * std::max(1.0, rep.scale) && r.gaussian < 1e-9,
+          "MatchEdge G2 against a reversed target: position, tangent and Gaussian curvature all match");
+  }
+  // --- this surface's U-max edge (fixed_direction 0, at_min false) ---
+  {
+    NurbsSurface s = candidate;
+    s.Transpose();  // now the old v = min edge is the u = min edge; use the *other* end instead
+    s.Reverse(0);   // ... and flip so it's the u = max edge
+    MatchEdgeReport rep;
+    Check(s.MatchEdge(0, false, target, 1, false, MatchContinuity::Curvature, &rep) == Result::Ok, "MatchEdge G2 on this surface's u = max edge returns Ok");
+    double pos = 0.0, gauss = 0.0, ncross = 0.0;
+    for (int k = 0; k <= 41; ++k) {
+      const double f = k / 41.0;
+      const double sv = s.Domain(1).min + (s.Domain(1).max - s.Domain(1).min) * f;
+      const double tu = target.Domain(0).min + (target.Domain(0).max - target.Domain(0).min) * (rep.target_edge_reversed ? 1.0 - f : f);
+      pos = std::max(pos, s.PointAt(s.Domain(0).max, sv).DistanceTo(target.PointAt(tu, target.Domain(1).max)));
+      gauss = std::max(gauss, std::abs(s.CurvatureAt(s.Domain(0).max, sv).gaussian - target.CurvatureAt(tu, target.Domain(1).max).gaussian));
+      ON_3dVector na = s.NormalAt(s.Domain(0).max, sv), nb = target.NormalAt(tu, target.Domain(1).max);
+      ncross = std::max(ncross, ON_CrossProduct(na, nb).Length());
+    }
+    Check(pos < 1e-12 && ncross < 1e-12 && gauss < 1e-9, "MatchEdge G2 on a u = max edge: position, normals and Gaussian curvature match");
+  }
+}
+
+void TestSurfaceMatchEdgeToRationalSphereAndRefusals() {
+  using dino8::kernel::MatchContinuity;
+  using dino8::kernel::MatchEdgeReport;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Result;
+  // Target: a rational sphere cap - the equator-to-pole half of a
+  // radius-2 sphere's NURBS form, trimmed in V so the matched edge is a
+  // genuine circle (rational) and the target's cross direction is a
+  // clamped rational arc.
+  ON_NurbsSurface sphere_raw;
+  ON_Sphere(ON_3dPoint(0, 0, 0), 2.0).GetNurbForm(sphere_raw);
+  NurbsSurface sphere;
+  sphere.raw() = sphere_raw;
+  const double v_mid = sphere.Domain(1).min + 0.5 * (sphere.Domain(1).max - sphere.Domain(1).min);
+  Check(sphere.Trim(1, v_mid, sphere.Domain(1).max) == Result::Ok, "MatchEdge sphere setup: trimmed to the upper half");
+  // Candidate: a non-rational bicubic sheet roughly around the equator.
+  std::vector<dino8::kernel::Point3d> grid;
+  for (int j = 0; j < 5; ++j)
+    for (int i = 0; i < 6; ++i) {
+      const double a = 2.0 * ON_PI * i / 5.0;
+      grid.push_back(dino8::kernel::Point3d(2.6 * std::cos(a), 2.6 * std::sin(a), -0.5 - 0.8 * j));
+    }
+  NurbsSurface s = NurbsSurface::FromControlGrid(grid, 6, 5, 3, 3);
+  MatchEdgeReport rep;
+  Check(s.MatchEdge(1, true, sphere, 1, true, MatchContinuity::Curvature, &rep) == Result::Ok, "MatchEdge G2 to a rational sphere edge returns Ok");
+  Check(s.IsRational(), "MatchEdge makes the candidate rational to carry the sphere edge's weights");
+  double pos = 0.0, radius = 0.0, gauss = 0.0, ncross = 0.0;
+  for (int k = 0; k <= 64; ++k) {
+    const double f = k / 64.0;
+    const double su = s.Domain(0).min + (s.Domain(0).max - s.Domain(0).min) * f;
+    const double tu = sphere.Domain(0).min + (sphere.Domain(0).max - sphere.Domain(0).min) * (rep.target_edge_reversed ? 1.0 - f : f);
+    const ON_3dPoint sp = s.PointAt(su, s.Domain(1).min);
+    pos = std::max(pos, sp.DistanceTo(sphere.PointAt(tu, sphere.Domain(1).min)));
+    radius = std::max(radius, std::abs(sp.DistanceTo(ON_3dPoint::Origin) - 2.0));
+    gauss = std::max(gauss, std::abs(s.CurvatureAt(su, s.Domain(1).min).gaussian - 0.25));
+    ncross = std::max(ncross, ON_CrossProduct(s.NormalAt(su, s.Domain(1).min), sphere.NormalAt(tu, sphere.Domain(1).min)).Length());
+  }
+  Check(pos < 1e-12, "MatchEdge to a sphere: the candidate's edge lies on the sphere's equator to 1e-12");
+  Check(radius < 1e-12, "MatchEdge to a sphere: every edge sample is exactly radius 2 (the edge is a true circle now)");
+  Check(ncross < 1e-12, "MatchEdge to a sphere: normals agree along the equator");
+  Check(gauss < 1e-9, "MatchEdge to a sphere: the candidate's Gaussian curvature is exactly the sphere's 1/r^2 = 0.25 along the edge");
+  for (int i = 0; i < s.CVCountU(); ++i)
+    for (int j = 0; j < s.CVCountV(); ++j)
+      if (!(s.WeightAt(i, j) > 0.0)) { Check(false, "MatchEdge to a sphere: every weight is positive"); return; }
+  Check(true, "MatchEdge to a sphere: every weight is positive");
+
+  // Refusals / argument checks.
+  NurbsSurface flat = WigglyBicubic(4, 4);
+  const NurbsSurface flat_before = flat;
+  NurbsSurface ruled;
+  {
+    std::vector<dino8::kernel::Point3d> g = {dino8::kernel::Point3d(0, 0, 0), dino8::kernel::Point3d(1, 0, 0), dino8::kernel::Point3d(0, 1, 0), dino8::kernel::Point3d(1, 1, 1)};
+    ruled = NurbsSurface::FromControlGrid(g, 2, 2, 1, 1);
+  }
+  Check(flat.MatchEdge(1, true, ruled, 1, false, MatchContinuity::Curvature) == Result::Failed,
+        "MatchEdge refuses curvature matching to a degree-1 (no curvature) target");
+  Check(flat.MatchEdge(1, true, ruled, 1, false, MatchContinuity::Tangent) == Result::Ok,
+        "MatchEdge tangent-matches to a degree-1 target (its cross derivative exists)");
+  bool threw = false;
+  try { flat.MatchEdge(2, true, ruled, 1, false, MatchContinuity::Position); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "MatchEdge throws on a direction outside 0/1");
+  NurbsSurface periodic = sphere;  // the sphere's U direction is closed but clamped: allowed. Make a periodic one:
+  ON_NurbsSurface per;
+  {
+    ON_Torus torus(ON_Plane::World_xy, 3.0, 1.0);
+    torus.GetNurbForm(per);
+  }
+  periodic.raw() = per;
+  NurbsSurface again = flat_before;
+  if (!periodic.raw().IsClamped(0, 2) || !periodic.raw().IsClamped(1, 2)) {
+    Check(again.MatchEdge(1, true, periodic, 1, true, MatchContinuity::Position) == Result::Failed,
+          "MatchEdge refuses an unclamped (periodic) target direction");
+  } else {
+    Check(true, "MatchEdge periodic-refusal check skipped: ON_Torus::GetNurbForm is clamped in this OpenNURBS build");
+  }
+}
+
 int main() {
   ON::Begin();
 
@@ -20918,6 +21157,9 @@ int main() {
 
   TestSurfaceSetDomainRescalesKnotsWithoutMovingTheShape();
   TestSurfaceRebuildIsExactWhenRepresentableAndHonestOtherwise();
+
+  TestSurfaceMatchEdgePositionTangentCurvature();
+  TestSurfaceMatchEdgeToRationalSphereAndRefusals();
 
   ON::End();
 
