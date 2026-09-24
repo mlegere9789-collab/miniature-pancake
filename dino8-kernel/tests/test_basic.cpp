@@ -10982,6 +10982,82 @@ void TestShellConvexPlanarPerFaceWallThicknessArgumentChecks() {
         "wall_thickness entry, however nonsensical");
 }
 
+void TestShellClosedSphereMatchesExactShellVolume() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::ShellClosedSphere;
+
+  const double R = 5.0, t = 1.0;
+  const Brep shell = ShellClosedSphere(Point3d(1, 2, 3), R, t);
+  Check(shell.FaceCount() == 2, "ShellClosedSphere produces exactly 2 faces (outer + inner)");
+
+  const std::vector<std::pair<int, int>> ranges = shell.LumpFaceRanges();
+  Check(ranges.size() == 2, "ShellClosedSphere's outer and inner spheres are two separate lumps "
+                            "(Brep::Compound() of two genuinely disjoint closed shells, not welded "
+                            "into one shared-topology face pair)");
+
+  const Mesh mesh = shell.TessellateToClosedMesh(60, 60);
+  Check(mesh.IsClosedManifold(),
+        "ShellClosedSphere's tessellation welds into one closed, watertight manifold "
+        "(the outer sphere's own closure plus the inner sphere's own closure, combined)");
+  const double expected_volume = (4.0 / 3.0) * ON_PI * (R * R * R - (R - t) * (R - t) * (R - t));
+  Check(std::fabs(mesh.Volume() - expected_volume) / expected_volume < 1e-2,
+        "ShellClosedSphere's tessellated volume matches the exact closed-form "
+        "4/3*pi*(R^3-(R-t)^3) within the mesh's own tessellation-density tolerance");
+
+  bool threw = false;
+  try { ShellClosedSphere(Point3d(0, 0, 0), R, R); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "ShellClosedSphere(thickness == outer_radius) is refused (inner radius would be exactly 0)");
+
+  threw = false;
+  try { ShellClosedSphere(Point3d(0, 0, 0), R, R + 1.0); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "ShellClosedSphere(thickness > outer_radius) is refused (inner radius would be negative)");
+
+  threw = false;
+  try { ShellClosedSphere(Point3d(0, 0, 0), R, -1.0); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "ShellClosedSphere(negative thickness) is refused");
+
+  threw = false;
+  try { ShellClosedSphere(Point3d(0, 0, 0), -1.0, 1.0); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "ShellClosedSphere(negative outer_radius) is refused");
+}
+
+void TestShellClosedTorusMatchesExactShellVolumeAndRejectsSpindle() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::ShellClosedTorus;
+
+  const double R = 10.0, r = 3.0, t = 1.0;
+  const ON_Plane plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1));
+  const Brep shell = ShellClosedTorus(plane, R, r, t);
+  Check(shell.FaceCount() == 2, "ShellClosedTorus produces exactly 2 faces (outer + inner)");
+  Check(shell.LumpFaceRanges().size() == 2, "ShellClosedTorus's outer and inner tori are two separate lumps");
+
+  const Mesh mesh = shell.TessellateToClosedMesh(80, 40);
+  Check(mesh.IsClosedManifold(), "ShellClosedTorus's tessellation welds into one closed, watertight manifold");
+  // A torus's own enclosed volume is 2*pi^2*R*r^2 (Pappus's theorem: the
+  // tube's own cross-section area pi*r^2, swept a distance 2*pi*R around
+  // the major circle); the shell is the outer solid's volume minus the
+  // inner's, at the SAME major radius (only the tube radius changes -
+  // exactly what NurbsSurface::OffsetAnalytic's own torus case computes).
+  const double expected_volume = 2.0 * ON_PI * ON_PI * R * (r * r - (r - t) * (r - t));
+  Check(std::fabs(mesh.Volume() - expected_volume) / expected_volume < 1e-2,
+        "ShellClosedTorus's tessellated volume matches 2*pi^2*R*(r^2-(r-t)^2) within tessellation tolerance");
+
+  bool threw = false;
+  try { ShellClosedTorus(plane, R, R, t); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "ShellClosedTorus refuses outer_minor_radius >= major_radius (the outer torus would already be a spindle torus)");
+
+  threw = false;
+  try { ShellClosedTorus(plane, R, r, r); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "ShellClosedTorus refuses thickness >= outer_minor_radius (inner torus collapses through its own center circle)");
+
+  threw = false;
+  try { ShellClosedTorus(plane, -1.0, r, t); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "ShellClosedTorus refuses a non-positive major_radius");
+}
+
 }  // namespace
 
 // The spec's own required exact case: fillet the unit cube's top
@@ -27223,6 +27299,8 @@ int main() {
   TestShellConvexPlanarRejectsAdjacentOpenings();
   TestShellConvexPlanarPerFaceWallThicknessMatchesExactCavityFormula();
   TestShellConvexPlanarPerFaceWallThicknessArgumentChecks();
+  TestShellClosedSphereMatchesExactShellVolume();
+  TestShellClosedTorusMatchesExactShellVolumeAndRejectsSpindle();
   TestFilletConvexEdgeUnitCubeTopFrontCorner();
   TestFilletConvexEdgeTaperedRailExactness();
   TestFilletConvexEdgeTaperedClosedFormVolumeMatchesFrustumFormula();
