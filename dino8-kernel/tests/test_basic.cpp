@@ -6032,6 +6032,65 @@ void TestBrepSphereBooleanEndToEnd() {
         "sphere-sphere boolean intersection volume is within 3% of the exact lens formula");
 }
 
+void TestBrepTorusIsClosedAndWatertight() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  const double major_radius = 5.0, minor_radius = 1.5;
+  const Brep torus = Brep::Torus(Point3d(0, 0, 0), Vector3d(0, 0, 1), major_radius, minor_radius);
+  Check(torus.FaceCount() == 1, "Brep::Torus is a single curved face");
+
+  // Periodic in BOTH parametric directions - no poles (unlike Sphere()),
+  // but its own major-angle AND minor-angle seams each have to weld shut
+  // against themselves.
+  const int divisions = 32;
+  const auto mesh = torus.TessellateToClosedMesh(divisions, divisions);
+  Check(mesh.IsClosedManifold(), "tessellated torus is a closed manifold");
+  const int raw_vertex_count = (divisions + 1) * (divisions + 1);
+  Check(mesh.VertexCount() < raw_vertex_count,
+        "welding the torus's own major and minor seams reduces its vertex count");
+
+  // The minor-radius tube is a much smaller feature than the major
+  // radius, so its own chordal (inscribed-polygon) volume underestimate
+  // dominates and shrinks more slowly with `divisions` than a sphere's
+  // does at the same division count (measured: 1.3% at 32 divisions,
+  // 0.3% at 64) - a finer mesh for the volume check specifically, not a
+  // loosened tolerance.
+  const auto fine_mesh = torus.TessellateToClosedMesh(64, 64);
+  const double exact_volume = 2.0 * M_PI * M_PI * major_radius * minor_radius * minor_radius;
+  const double relative_error = std::abs(fine_mesh.Volume() - exact_volume) / exact_volume;
+  Check(relative_error < 0.01,
+        "tessellated+welded torus volume (64x64) is within 1% of the exact 2*pi^2*R*r^2");
+  Check(fine_mesh.Volume() > 0.0, "torus volume is positive (outward orientation)");
+
+  // Closed manifold at an asymmetric division pair too - the same "not
+  // only the one division count it happened to be built at" check the
+  // sweep-class caps rely on elsewhere.
+  Check(torus.TessellateToClosedMesh(12, 40).IsClosedManifold(), "closed torus manifold at (12, 40)");
+  Check(torus.TessellateToClosedMesh(40, 12).IsClosedManifold(), "closed torus manifold at (40, 12)");
+
+  // Negative controls.
+  auto throws_invalid_argument = [](const std::function<void()>& f) {
+    try {
+      f();
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+    return false;
+  };
+  Check(throws_invalid_argument([&] { Brep::Torus(Point3d(0, 0, 0), Vector3d(0, 0, 1), 5.0, 0.0); }),
+        "non-positive minor_radius throws");
+  Check(throws_invalid_argument([&] { Brep::Torus(Point3d(0, 0, 0), Vector3d(0, 0, 1), 5.0, -1.0); }),
+        "negative minor_radius throws");
+  Check(throws_invalid_argument([&] { Brep::Torus(Point3d(0, 0, 0), Vector3d(0, 0, 1), 1.0, 1.0); }),
+        "major_radius == minor_radius (degenerate spindle) throws");
+  Check(throws_invalid_argument([&] { Brep::Torus(Point3d(0, 0, 0), Vector3d(0, 0, 1), 1.0, 2.0); }),
+        "major_radius < minor_radius (self-intersecting spindle/horn torus) throws");
+  Check(throws_invalid_argument([&] { Brep::Torus(Point3d(0, 0, 0), Vector3d(0, 0, 0), 5.0, 1.5); }),
+        "zero axis throws");
+}
+
 void TestBrepTrimmedPlanarFaceRejectsTooFewPoints() {
   using dino8::kernel::Brep;
   using dino8::kernel::NurbsSurface;
@@ -29592,6 +29651,7 @@ int main() {
   TestBrepBooleanEndToEnd();
   TestBrepSphereIsClosedAndWatertight();
   TestBrepSphereBooleanEndToEnd();
+  TestBrepTorusIsClosedAndWatertight();
   TestBrepTrimmedPlanarFaceRejectsTooFewPoints();
   TestBrepTrimmedPlanarFace();
   TestWeldAcrossIndependentlyParameterizedSurfaces();
