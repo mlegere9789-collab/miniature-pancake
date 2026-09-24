@@ -27177,6 +27177,144 @@ void TestRemoveBlendRoundTripsATaperedFillet() {
 // comparison itself, would need a kernel-level "add one more fillet to
 // an already-filleted solid" entry point this codebase does not have yet
 // - honestly left uncovered rather than staged to look tested.
+void TestRemoveChamferRoundTripsASingleChamfer() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::ChamferConvexEdge;
+  using dino8::kernel::Point3d;
+
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+  const Point3d edge_p0(0, 0, 1), edge_p1(1, 0, 1);
+  const double di = 0.3, dj = 0.2;
+  const Brep c = ChamferConvexEdge(box, edge_p0, edge_p1, di, dj);
+
+  // The chamfer face's own midpoint (average of its 4 known corners, from
+  // ChamferConvexEdge's own construction - see that function's doc
+  // comment) is used as `point_on_chamfer`, exactly the way a user would
+  // click a point on the chamfer face in a real UI.
+  const Point3d mid = 0.25 * (Point3d(0, di, 1) + Point3d(1, di, 1) + Point3d(1, 0, 1 - dj) + Point3d(0, 0, 1 - dj));
+  const Brep restored = dino8::kernel::RemoveChamfer(c, mid);
+
+  Check(restored.FaceCount() == 6 && restored.raw().m_E.Count() == 12 && restored.raw().m_V.Count() == 8,
+        "RemoveChamfer restores the exact face/edge/vertex counts of the pre-chamfer box (6 faces, 12 edges, 8 "
+        "vertices)");
+  ON_TextLog log;
+  bool oriented = false, has_boundary = true;
+  Check(restored.raw().IsValid(&log) && restored.raw().IsManifold(&oriented, &has_boundary) && oriented && !has_boundary &&
+            restored.raw().IsSolid(),
+        "the restored solid is itself a valid, closed, manifold solid");
+  Check(std::fabs(restored.TessellateToClosedMesh(4, 4).Volume() - 1.0) < 1e-9,
+        "the restored solid's volume matches the original unit box exactly (both are exact planar polyhedra)");
+  for (const Point3d& v : {Point3d(0, 0, 0), Point3d(1, 0, 0), Point3d(1, 1, 0), Point3d(0, 1, 0), Point3d(0, 0, 1),
+                           Point3d(1, 0, 1), Point3d(1, 1, 1), Point3d(0, 1, 1)}) {
+    Check(ChamferTestBrepHasVertexNear(restored, v, 1e-9), "the restored box has its original sharp corner vertex back");
+  }
+  Check(!ChamferTestBrepHasVertexNear(restored, mid, 1e-9), "the chamfer face's own point is gone from the restored solid");
+}
+
+void TestRemoveChamferLeavesTheOtherChamferIntactAmongTwo() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::ChamferConvexEdge;
+  using dino8::kernel::Point3d;
+
+  // Two chamfers on the box's own parallel top edges (y=0 and y=1) -
+  // removing the FIRST one must correctly locate ITS OWN quad, not the
+  // other chamfer's quad or either chamfer's own neighbouring face. This
+  // is a real regression, not a restatement of the single-chamfer case:
+  // an earlier draft's FindFaceWithEdge search had no way to exclude the
+  // candidate chamfer quad's own array index from its "find the
+  // neighbouring face" scan, so on THIS exact two-chamfer fixture (where
+  // FromMixedFaces's own reconstruction happens to place the first
+  // chamfer's quad at an array index earlier than its genuine top-face
+  // neighbour) the search silently self-matched the quad's own edge
+  // instead of ever reaching the real neighbour, reconstructing a
+  // completely wrong sharp edge (see fillet.cpp's own FindFaceWithEdge
+  // doc comment for the fix: an explicit excluded-index parameter).
+  const double di = 0.3, dj = 0.2;
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+  const Brep first = ChamferConvexEdge(box, Point3d(0, 0, 1), Point3d(1, 0, 1), di, dj);
+  const Brep both = ChamferConvexEdge(first, Point3d(0, 1, 1), Point3d(1, 1, 1), di, dj);
+
+  const Point3d mid_first = 0.25 * (Point3d(0, di, 1) + Point3d(1, di, 1) + Point3d(1, 0, 1 - dj) + Point3d(0, 0, 1 - dj));
+  const Brep one_left = dino8::kernel::RemoveChamfer(both, mid_first);
+
+  ON_TextLog log;
+  bool oriented = false, has_boundary = true;
+  Check(one_left.raw().IsValid(&log) && one_left.raw().IsManifold(&oriented, &has_boundary) && oriented && !has_boundary,
+        "removing one of two chamfers leaves a CLOSED 2-manifold - the OTHER chamfer's own quad is untouched, not "
+        "corrupted by a self-matched rail search");
+  Check(one_left.raw().IsSolid(), "removing one of two chamfers leaves a genuine solid");
+  Check(one_left.FaceCount() == 7, "exactly 7 faces remain: the 6 box faces plus the untouched second chamfer quad");
+  const double expected = 1.0 - 0.5 * di * dj;
+  Check(std::fabs(one_left.TessellateToClosedMeshAdaptive(1e-6).Volume() - expected) < 1e-6,
+        "the remaining single chamfer's own volume matches 1 - di*dj/2 (only the SECOND chamfer's wedge is still cut "
+        "away)");
+}
+
+void TestRemoveChamferRoundTripsADistanceAngleChamfer() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::ChamferConvexEdgeAngle;
+  using dino8::kernel::Point3d;
+
+  // ChamferConvexEdgeAngle dispatches to the same two-distance
+  // construction ChamferConvexEdge uses (see its own doc comment), so
+  // RemoveChamfer - which only ever reads the chamfered solid's own
+  // geometry back out, with no memory of which entry point built it -
+  // must round-trip a distance+angle chamfer exactly as it does a plain
+  // two-distance one.
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+  const Point3d edge_p0(0, 0, 1), edge_p1(1, 0, 1);
+  const double di = 0.25;
+  const double angle = 45.0 * ON_PI / 180.0;  // symmetric chamfer for a right-angle edge
+  const Brep c = ChamferConvexEdgeAngle(box, edge_p0, edge_p1, di, angle);
+
+  const auto faces = c.PlanarFaces();
+  const Brep::PlanarFace* quad = nullptr;
+  for (const auto& f : faces) {
+    if (f.loop.size() == 4 && std::fabs(f.plane.zaxis.z) < 0.9) quad = &f;
+  }
+  Check(quad != nullptr, "sanity: the distance/angle chamfer built exactly one non-axis-aligned quad face");
+  Point3d mid(0, 0, 0);
+  for (const Point3d& p : quad->loop) mid = mid + p;
+  mid = (1.0 / 4.0) * mid;
+
+  const Brep restored = dino8::kernel::RemoveChamfer(c, mid);
+  ON_TextLog log;
+  bool oriented = false, has_boundary = true;
+  Check(restored.raw().IsValid(&log) && restored.raw().IsManifold(&oriented, &has_boundary) && oriented && !has_boundary &&
+            restored.raw().IsSolid(),
+        "a distance/angle chamfer round-trips to a valid, closed, manifold solid");
+  Check(std::fabs(restored.TessellateToClosedMesh(4, 4).Volume() - 1.0) < 1e-9,
+        "the restored solid's volume matches the original unit box exactly");
+  for (const Point3d& v : {Point3d(0, 0, 1), Point3d(1, 0, 1)}) {
+    Check(ChamferTestBrepHasVertexNear(restored, v, 1e-9), "the restored box has its original sharp corner vertex back");
+  }
+}
+
+void TestRemoveChamferRejectsUnsupportedConfigurations() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::ChamferConvexEdge;
+  using dino8::kernel::Point3d;
+  auto throws = [](const std::function<void()>& fn) {
+    try {
+      fn();
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+    return false;
+  };
+
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+  Check(throws([&] { dino8::kernel::RemoveChamfer(box, Point3d(0.5, 0.5, 0.999)); }),
+        "rejects a plain box face - it is a quad, but does not reconstruct as a chamfer");
+  Check(throws([&] { dino8::kernel::RemoveChamfer(box, Point3d(-5, -5, -5)); }),
+        "rejects a point far from every planar face");
+
+  const double di = 0.3, dj = 0.2;
+  const Brep c = ChamferConvexEdge(box, Point3d(0, 0, 1), Point3d(1, 0, 1), di, dj);
+  Check(throws([&] { dino8::kernel::RemoveChamfer(c, Point3d(0.5, 0.5, -0.001)); }),
+        "rejects a point far from every planar face of a chamfered solid too");
+}
+
 // ---- NurbsSurface::UnrollDevelopable ----
 
 namespace {
@@ -28996,6 +29134,10 @@ int main() {
   TestRemoveBlendLeavesTheOtherFilletIntactAmongTwo();
   TestRemoveBlendRejectsUnsupportedConfigurations();
   TestRemoveBlendRoundTripsATaperedFillet();
+  TestRemoveChamferRoundTripsASingleChamfer();
+  TestRemoveChamferLeavesTheOtherChamferIntactAmongTwo();
+  TestRemoveChamferRoundTripsADistanceAngleChamfer();
+  TestRemoveChamferRejectsUnsupportedConfigurations();
   TestBrepFromPlanarFacesBuildsValidOpenNurbsTopology();
   TestBrepAdjacencyQueries();
   TestBooleanCombinePlanarResultHasValidClosedTopology();
