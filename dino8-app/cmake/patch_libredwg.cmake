@@ -33,6 +33,26 @@
 set(_f "${SOURCE_DIR}/src/decode.c")
 file(READ "${_f}" _contents)
 
+# --- Idempotency guard -----------------------------------------------------
+# FetchContent's PATCH_COMMAND re-runs this whole script on every reconfigure
+# that touches the ExternalProject step's dependencies - and a plain edit to
+# this project's own CMakeLists.txt is enough to trigger one, since the
+# generated Makefile/Ninja build reruns cmake automatically whenever it sees
+# CMakeLists.txt is newer than the build system files. The patches below are
+# literal string replacements that leave no "already applied" trace except
+# the replaced text itself, so a second run used to find none of the "_old*"
+# patterns anywhere and abort the ENTIRE configure with a false "LibreDWG
+# source may have changed" FATAL_ERROR - turning "add a CMake target" into a
+# broken build. Detect an already-fully-patched tree by the first
+# replacement's own distinctive new text and skip straight to success. A
+# genuinely different LibreDWG checkout (neither pre- nor post-patch text
+# present) still falls through to the real FATAL_ERROR checks below.
+string(FIND "${_contents}" "size_t total_bits = (size_t)8 * (size_t)obj->size;" _already_patched)
+if(NOT _already_patched EQUAL -1)
+  message(STATUS "patch_libredwg.cmake: LibreDWG source already patched (from a previous configure) - skipping")
+  return()
+endif()
+
 set(_old1 "  size_t pos = bit_position (dat);
   long num_bits = ((8 * obj->size) - pos) & ULONG_MAX;
   if (num_bits < 0)
