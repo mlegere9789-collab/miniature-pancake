@@ -2473,6 +2473,38 @@ What this repo does instead:
   already relies on) converts to a 5x5-vertex, 16-quad-face SubD whose
   level-0 control net reproduces all 25 grid points to within 1e-6 of
   their exact closed-form positions - not merely "close," measured.
+- `SubD::CapBoundaryLoop(start, point_tolerance)`: closes PARITY_MAP.md's
+  subd_mesh "SubD hole/opening capping at kernel level" [missing] item -
+  the SubD-level counterpart to `Mesh::FillSmallHoles()`, but genuinely
+  SubD-native rather than a ported mesh trick: `ON_MeshFace` tops out at
+  4 indices, so `FillSmallHoles()` needs a new centroid vertex and a
+  triangle fan, but `ON_SubDFace` supports any edge count directly, so an
+  n-sided hole becomes exactly ONE new n-gon face - no extra vertex, and
+  (being a real SubD face like any other) immediately a genuine,
+  further-subdividable part of the control net. Identifies the loop by
+  walking from one of its own boundary vertices (every boundary vertex
+  has exactly 2 naked edges, so the walk - follow a naked edge, take the
+  far vertex's OTHER naked edge, repeat - is unambiguous except at a
+  "bowtie" vertex where two loops touch, the same acknowledged ambiguity
+  `Mesh::NakedEdgeLoops()` already documents for its identical case), then
+  hands the collected edges to the real, working
+  `ON_SubD::AddFace(const ON_SimpleArray<ON_SubDEdge*>&)` (verified by
+  reading its implementation: it validates the loop genuinely closes and
+  computes each edge's orientation from shared vertices automatically,
+  not a stub). The one subtlety worth documenting: the loop's own edges
+  are tagged Crease purely because they were a boundary (OpenNURBS' "an
+  open SubD's boundary edges are themselves always creases" convention,
+  not because anyone asked for a sharp seam), so after capping they're
+  retagged Smooth via the same `ON_SubD::SetEdgeTags()` primitive
+  `SetCrease()` already wraps - otherwise the cap would leave a
+  permanent, unintended crease ring exactly where the hole used to be. A
+  caller who DOES want that sharp ring can call `SetCrease()` again
+  afterward. Verified with a flat 2x2 quad grid (9 vertices, 4 faces, one
+  8-edge boundary loop, one fully interior vertex): capping adds exactly
+  1 new 8-sided N-gon face and 0 new vertices/edges, all 8 former-
+  boundary edges read back as Smooth (not Crease) afterward, capping at
+  the interior vertex is refused (no naked edge to start from), and
+  capping again once the SubD is fully closed is refused too.
 
 ## Blending build log (Parasolid "blend/chamfer" class, chronological)
 
