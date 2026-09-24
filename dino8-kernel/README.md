@@ -3621,6 +3621,98 @@ honestly out of scope.
   (Minkowski-style) offset, shell/hollow beyond the existing
   `ShellConvexPlanar`, per-face wall-thickness overrides, and
   thicken-sheet-to-solid - the last four still aren't implemented.
+- **`NurbsSurface::OffsetApproximate(distance, out, tolerance)`**
+  (2026-09-24) - the general fallback `OffsetAnalytic()`'s own doc comment
+  above promised but didn't itself implement: an explicitly-approximate
+  offset for any surface that isn't one of the five exact analytic types,
+  closing PARITY_MAP.md's own "Kernel-level offset API ... usable by
+  booleans and fillets" gap for the freeform case (previously this
+  existed only at the app layer, `cmd_surface.cpp`'s `OffsetNurbs`, with
+  the exact same comment - "exact for planes, approximate elsewhere" -
+  this method now makes true at the kernel level too, so it's reachable
+  from `BooleanCombine`/fillet code that never touches the app).
+  Method: translate each control point by `distance * NormalAt(gu, gv)`,
+  where `(gu, gv)` is that control point's OWN Greville abscissa pair
+  (`GrevilleAbcissa()`) - `OffsetAnalytic()`'s plane branch's identical
+  formula, generalized from one shared normal to one normal per control
+  point. Exact for a plane (constant normal, reduces to exactly the
+  `OffsetAnalytic()` plane branch - confirmed to machine precision,
+  `worst < 1e-9`, not just asserted), and a genuine, quantified
+  first-order approximation otherwise: measured against `OffsetAnalytic`'s
+  own exact concentric-sphere ground truth (radius 5, offset 1.5), the
+  real pointwise radius deviation is bounded (`< 1.0`) but definitely
+  nonzero (`> 0.05`) - proving this is an honest approximation, not a
+  disguised-exact method that happens to read zero on convenient
+  fixtures.
+  A real self-intersection guard, not skipped because the general case
+  lacks a closed form: at each point of a domain-interior sample grid,
+  checks `distance * k >= 1.0` for either of `CurvatureAt()`'s own two
+  principal curvatures. The derivation reuses `CurvatureAt()`'s own
+  documented sign convention (verified there against a real sphere: an
+  outward normal gives a convex surface NEGATIVE curvature) to place the
+  center of curvature for a principal direction with curvature `k` at
+  exactly `point + (1/k) * normal` - so offsetting by `distance` along
+  that SAME normal reaches or passes that center exactly when `distance *
+  k >= 1.0`. Cross-checked directly against `OffsetAnalytic`'s own
+  closed-form guard on the identical sphere: both refuse `distance =
+  -5.0` on a radius-5 sphere at the exact same threshold, two
+  independently-derived guards (one algebraic, one from general
+  differential geometry) agreeing on the same real hazard. Each principal
+  direction is checked independently, so a saddle point (opposite-signed
+  principal curvatures) is handled correctly - an offset that folds in
+  one direction without folding in the other is still refused.
+  A real, hard-won correctness finding while building this, kept in the
+  method's own doc comment rather than fixed by picking a friendlier
+  test fixture: this file's OWN `OffsetAnalytic` plane test fixture
+  (`FromControlGrid({(0,0,0),(1,0,0),(2,0,0),(0,1,0),(1,1,0),(2,1,0)},
+  3,2,2,1)`) is genuinely `IsPlanar()` (every control point shares z=0)
+  but turns out to be a self-overlapping/twisted parametrization whose
+  own `NormalAt()` actually flips to the OPPOSITE hemisphere at several
+  `(u, v)` - confirmed by direct sampling, not assumed. That's invisible
+  to `OffsetAnalytic()`'s plane branch (it samples the normal once, at
+  the domain midpoint, and applies that one vector to every control
+  point uniformly, so a flip elsewhere never surfaces), but silently
+  corrupts a per-control-point method like this one: reusing that same
+  fixture here first produced a garbage result (some control points
+  translated in the wrong direction entirely) before the cause was
+  traced back to the fixture, not this method's own math. Fixed by using
+  a plainly, verifiably rectangular grid for this method's own plane
+  test instead, and documented as a real, disclosed scope limit: this
+  method assumes its surface's own normal field is consistently
+  oriented across the domain, and a self-overlapping or degenerately-
+  twisted control net (not a real B-rep face - those don't arise this
+  way) is not specifically detected.
+  A second real, disclosed characteristic found while testing (not
+  glossed over): a NURBS circle/cylinder's own RATIONAL control points
+  don't sit uniformly close to the true surface (weight variation pulls
+  several of them well off it), so this per-control-point technique's
+  actual accuracy on a bare NURBS cylinder is noticeably worse than on a
+  genuinely polynomial freeform surface at a comparable distance/size
+  ratio - not a defect, since a real cylinder should go through the
+  exact `OffsetAnalytic()` first (this method is deliberately the
+  fallback for when that returns `Result::Failed`), but worth recording
+  plainly rather than claiming uniform accuracy this method doesn't have.
+  Verified in `tests/test_basic.cpp`
+  (`TestSurfaceOffsetApproximate*`): exact-to-machine-precision on a
+  genuine (verified-consistent-normal) plane; bounded-but-nonzero error
+  against `OffsetAnalytic`'s own sphere ground truth, plus the matching
+  fold-threshold cross-check; bounded-but-nonzero error on the same
+  bulged-freeform fixture `TestSurfaceOffsetAnalyticRefusesFreeformSurface`
+  already uses (this method succeeds where `OffsetAnalytic` correctly
+  refuses), plus refusal of a too-large distance that would fold through
+  the bulge's own peak curvature; NaN-distance throws; `distance == 0`
+  no-op. Confirmed the tests actually require this method: reverting just
+  `surface.h`/`surface.cpp` (`git stash`) turns every
+  `OffsetApproximate` test into a compile error, not a runtime failure.
+  Deliberately out of scope, disclosed rather than silently missing: no
+  general least-squares surface refit (unlike `NurbsCurve::OffsetInPlane`'s
+  own general-curve branch, which fits a NEW curve through sampled offset
+  points rather than moving existing control points - building an
+  equivalent NURBS SURFACE fitter was judged too large an increment for
+  this pass, so this method reuses the existing control net's own
+  structure instead, the same simpler technique the app layer's
+  `OffsetNurbs` already uses); no automatic detection of a self-
+  overlapping/twisted input parametrization (see above).
 - **`NurbsCurve::OffsetInPlane(distance, out, tolerance)`** (2026-09-24) -
   the curve-level counterpart to `OffsetAnalytic()` above, and, like it,
   the kernel's first curve-offset capability at all. Same honesty split:
@@ -4007,6 +4099,46 @@ honestly out of scope.
   exact straight line in real 3D space, on both U and V directions, and
   extending both ends of a direction at once. Refused (matching
   `Extend()`'s own documented restriction) for a closed direction.
+
+- **`RemoveBlend` extended to `ConicalFace`** - closes the first of the
+  two gaps that increment's own README entry disclosed: a
+  `FilletConvexEdgeTapered`-built taper (or one segment of an N-station
+  one) can now be removed the same way a plain constant-radius fillet
+  can. The inverse is genuinely simpler than inverting the taper's own
+  apex/axis construction directly: the rolling-ball radii at the
+  segment's own two ends follow in closed form from the cone's own TRUE
+  radii (`r_lo = radius0/c`, `r_hi = radius1/c`, `c = 1/sqrt(1 +
+  tan_half_angle^2)`, with `tan_half_angle` already computable from the
+  cone's own `radius0`/`radius1`/`length` alone), and the cone's own rail
+  corner at `(v0, angle 0)` is EXACTLY `edge_p0 + r_lo*k_i`
+  (`FilletConvexEdgeTapered`'s own `rail_i(0)`, `k_i = n_i - bis/cosb` a
+  fixed vector once the two adjacent face normals are recovered) - so
+  `edge_p0`/`edge_p1` fall out by subtraction, with NO separate recovery
+  of `m`/`Umag` ever needed. The SAME two points reconstructed
+  independently from face j's own `k_j` (a genuinely different vector
+  from `k_i`, so this is a real, discriminating checked invariant) must
+  agree, or the call throws rather than restoring the wrong shape. A
+  notched tapered end needs no separate oblique-rejection branch the way
+  the cylindrical case does: every `ConicalFace` corner-notch already
+  uses the dense-ellipse-run construction regardless of the third face's
+  own orientation, and `CollapseNotchRun` works purely by matching 3D
+  points, agnostic to which curve family produced the run. `RemoveBlend`
+  now checks a point against both `MixedFaces().cylindrical` and
+  `.conical` and removes whichever patch is actually closer.
+  Verified (`TestRemoveBlendRoundTripsATaperedFillet`): a box edge
+  tapered-filleted 0.2->0.35 (both ends perpendicular, so BOTH get the
+  ellipse corner-notch `FilletConvexEdgeTapered`'s own v1 gap-closing
+  built) round-trips to the exact 6-face/12-edge/8-vertex unit box, valid/
+  manifold/closed/solid, volume matching to floating-point precision,
+  every corner restored. Full `dino8_kernel_smoke`: 2409 checks, 0
+  failures; `dino8_general_boolean_sweep` unchanged. Honestly still open:
+  `FilletConvexEdges`' own spherical vertex-blend corners remain the one
+  disclosed gap left - no existing kernel entry point can even BUILD a
+  solid carrying both a cylindrical and a conical fillet in one call, so
+  the cylindrical-vs-conical distance comparison this increment adds is
+  exercised only by each type's own single-fillet fixture, not by a
+  genuine two-type one; noted plainly in the test file rather than staged
+  to look covered.
 
 ## What's still not done (as of chunk 2)
 

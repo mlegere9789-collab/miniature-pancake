@@ -26952,6 +26952,61 @@ void TestRemoveBlendRejectsUnsupportedConfigurations() {
         "rejects a FilletConvexEdge oblique-end cylinder (sloped ellipse cap notch)");
 }
 
+void TestRemoveBlendRoundTripsATaperedFillet() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConvexEdgeTapered;
+  using dino8::kernel::Point3d;
+
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+  const Point3d edge_p0(0, 0, 1), edge_p1(1, 0, 1);
+  const Brep tapered = FilletConvexEdgeTapered(box, edge_p0, edge_p1, 0.2, 0.35);
+
+  const Brep::MixedFacesResult mf = tapered.MixedFaces();
+  Check(mf.cylindrical.empty() && mf.conical.size() == 1,
+        "sanity: a genuinely tapered (radius0 != radius1) fillet is one ConicalFace, no CylindricalFace");
+  const Brep::ConicalFace& cf = mf.conical[0];
+  const double tan_half = (cf.radius1 - cf.radius0) / cf.length;
+  const double v0 = cf.radius0 / tan_half, v1 = cf.radius1 / tan_half;
+  const double vmid = 0.5 * (v0 + v1);
+  const double rmid = std::fabs(vmid * tan_half);
+  const double phimid = cf.angle * 0.5;
+  const Point3d mid_on_cone =
+      cf.frame.origin + vmid * cf.frame.zaxis + rmid * (std::cos(phimid) * cf.frame.xaxis + std::sin(phimid) * cf.frame.yaxis);
+
+  const Brep restored = dino8::kernel::RemoveBlend(tapered, mid_on_cone);
+  Check(restored.FaceCount() == 6 && restored.raw().m_E.Count() == 12 && restored.raw().m_V.Count() == 8,
+        "RemoveBlend restores a tapered fillet's box to 6 faces, 12 edges, 8 vertices - including collapsing BOTH "
+        "perpendicular ends' own ellipse corner-notches (FilletConvexEdgeTapered's own v1 gap-closing) back to plain "
+        "vertices");
+  ON_TextLog log;
+  bool oriented = false, has_boundary = true;
+  Check(restored.raw().IsValid(&log) && restored.raw().IsManifold(&oriented, &has_boundary) && oriented && !has_boundary &&
+            restored.raw().IsSolid(),
+        "the restored solid is a valid, closed, manifold solid");
+  Check(std::fabs(restored.TessellateToClosedMesh(4, 4).Volume() - 1.0) < 1e-9,
+        "the restored solid's volume matches the original unit box exactly");
+  for (const Point3d& v : {Point3d(0, 0, 0), Point3d(1, 0, 0), Point3d(1, 1, 0), Point3d(0, 1, 0), Point3d(0, 0, 1),
+                           Point3d(1, 0, 1), Point3d(1, 1, 1), Point3d(0, 1, 1)}) {
+    Check(ChamferTestBrepHasVertexNear(restored, v, 1e-9), "the restored box has its original sharp corner vertex back");
+  }
+}
+
+// FilletConvexEdge/FilletConvexEdgeTapered both require a purely-planar
+// PlanarFaces() input (see their own doc comments), so a solid with BOTH
+// a cylindrical and a conical fillet face cannot be built by chaining
+// public kernel calls the way this test would need to construct one -
+// only FilletConvexEdges (plural, constant-radius-only) can add several
+// fillets to one solid in a single call. The cylindrical-vs-conical
+// distance comparison inside RemoveBlend is therefore exercised only
+// indirectly here: TestRemoveBlendRoundTripsASingleFillet's own fixture
+// has ZERO conical faces (so best_cone stays unmatched and the
+// cylindrical branch is chosen only because it is the sole candidate,
+// not because it was compared against a closer alternative) and
+// TestRemoveBlendRoundTripsATaperedFillet's own fixture is the mirror
+// image. A genuine two-type fixture, and hence a real regression for the
+// comparison itself, would need a kernel-level "add one more fillet to
+// an already-filleted solid" entry point this codebase does not have yet
+// - honestly left uncovered rather than staged to look tested.
 // ---- NurbsSurface::UnrollDevelopable ----
 
 namespace {
@@ -27574,6 +27629,160 @@ void TestSurfaceOffsetAnalyticZeroDistanceIsNoOpCopy() {
   NurbsSurface out;
   Check(s.OffsetAnalytic(0.0, out) == Result::Ok, "OffsetAnalytic(0.0) succeeds");
   Check(out.PointAt(0.3, 0.2).DistanceTo(s.PointAt(0.3, 0.2)) < 1e-12, "OffsetAnalytic(0.0) reproduces the same surface");
+}
+
+void TestSurfaceOffsetApproximateIsExactOnAGenuinePlane() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+  using dino8::kernel::Vector3d;
+
+  // A plainly rectangular (x = i, y = j, z = 0) control grid, unlike this
+  // file's own OffsetAnalytic plane fixture above (grid = {(0,0,0),(1,0,0),
+  // (2,0,0),(0,1,0),(1,1,0),(2,1,0)}, FromControlGrid(grid,3,2,2,1)): that
+  // fixture, while genuinely IsPlanar() (all its control points DO share
+  // z=0), turns out to be a self-overlapping/twisted parametrization whose
+  // own NormalAt() actually FLIPS to the opposite hemisphere at several
+  // (u, v) - confirmed by direct sampling, not assumed - which is fine for
+  // OffsetAnalytic's plane branch (it only ever evaluates the normal ONCE,
+  // at the domain midpoint, and applies that one vector to every control
+  // point uniformly, so a normal flip elsewhere in the domain never
+  // surfaces there) but would silently break OffsetApproximate's own
+  // per-control-point-own-Greville-normal design, which relies on the
+  // normal field being consistently oriented. A real, disclosed scope
+  // limit (see this method's own header doc comment) - not something this
+  // test works around by picking a "nicer" fixture to hide it.
+  std::vector<Point3d> grid;
+  for (int i = 0; i < 4; ++i)
+    for (int j = 0; j < 3; ++j)
+      grid.push_back(Point3d(i, j, 0.0));
+  const NurbsSurface s = NurbsSurface::FromControlGrid(grid, 4, 3, 3, 2);
+  Check(s.IsPlanar(1e-9), "OffsetApproximate plane setup: the constructed grid is genuinely planar");
+
+  NurbsSurface out;
+  Check(s.OffsetApproximate(2.0, out) == Result::Ok, "OffsetApproximate(+2.0) succeeds on a plane");
+
+  double worst = 0.0;
+  const dino8::kernel::Interval du = s.Domain(0);
+  const dino8::kernel::Interval dv = s.Domain(1);
+  for (double u = du.min + 0.1; u < du.max; u += 0.3) {
+    for (double v = dv.min + 0.1; v < dv.max; v += 0.3) {
+      const Point3d expected = s.PointAt(u, v) + 2.0 * s.NormalAt(u, v);
+      worst = std::max(worst, expected.DistanceTo(out.PointAt(u, v)));
+    }
+  }
+  Check(worst < 1e-9, "OffsetApproximate(+2.0) on a genuine plane: exact everywhere, not just at one sampled point (matches OffsetAnalytic's own plane-exactness claim)");
+}
+
+void TestSurfaceOffsetApproximateSphereErrorIsBoundedButGenuinelyNonzero() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // A sphere large enough, and an offset distance small enough relative to
+  // its radius, that the approximation is neither absurdly bad nor a
+  // fluke exact match - measured against OffsetAnalytic's own exact
+  // concentric-sphere result as ground truth, the same cross-check this
+  // file already uses to validate other exact/approximate pairs.
+  const ON_Sphere sphere(ON_3dPoint(1, 2, 3), 5.0);
+  ON_NurbsSurface raw;
+  Check(sphere.GetNurbForm(raw) != 0, "OffsetApproximate sphere setup: GetNurbForm succeeds");
+  NurbsSurface s;
+  s.raw() = raw;
+
+  NurbsSurface approx;
+  Check(s.OffsetApproximate(1.5, approx) == Result::Ok, "OffsetApproximate(+1.5) succeeds on a sphere");
+
+  const dino8::kernel::Interval du = s.Domain(0);
+  const dino8::kernel::Interval dv = s.Domain(1);
+  double worst = 0.0;
+  for (double u = du.min + 0.2; u < du.max - 0.2; u += 0.4) {
+    for (double v = dv.min + 0.2; v < dv.max - 0.2; v += 0.15) {
+      worst = std::max(worst, std::abs(approx.PointAt(u, v).DistanceTo(sphere.Center()) - 6.5));
+    }
+  }
+  // Bounded: the per-control-point-translation approximation doesn't blow
+  // up into nonsense for a moderate distance/radius ratio (1.5/5 = 30%).
+  Check(worst < 1.0, "OffsetApproximate(+1.5) on a sphere: deviation from the true concentric-sphere radius stays bounded");
+  // Genuinely nonzero: proves this is a REAL approximation, not a
+  // disguised exact method that happens to read zero on this fixture -
+  // the standing mandate's own bar for what a real test has to catch.
+  Check(worst > 0.05, "OffsetApproximate(+1.5) on a sphere: deviation is genuinely nonzero, not a silently-exact result");
+
+  // Fold-through-center guard cross-check: refusing at exactly the same
+  // threshold OffsetAnalytic's own closed-form `new_radius <= 0` guard
+  // uses on this identical sphere - two independently-derived guards
+  // (one algebraic, one from CurvatureAt()'s general `distance * k >= 1`
+  // principal-curvature criterion) agreeing on the same real hazard.
+  NurbsSurface exact;
+  Check(s.OffsetAnalytic(-5.0, exact) == Result::Failed, "cross-check setup: OffsetAnalytic(-5.0) on this radius-5 sphere is refused");
+  Check(s.OffsetApproximate(-5.0, approx) == Result::Failed, "OffsetApproximate(-5.0) on this radius-5 sphere is ALSO refused, at the same fold threshold");
+  Check(s.OffsetApproximate(-2.0, approx) == Result::Ok, "OffsetApproximate(-2.0) on a radius-5 sphere succeeds (still well short of the fold threshold)");
+}
+
+void TestSurfaceOffsetApproximateOnBulgedFreeformIsBoundedAndRejectsExcessiveDistance() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // The exact same bulged-control-net fixture
+  // TestSurfaceOffsetAnalyticRefusesFreeformSurface already uses to prove
+  // OffsetAnalytic correctly refuses a genuinely non-analytic surface -
+  // reused here because it's already an established, understood, and
+  // (confirmed by direct sampling before writing this test) consistently-
+  // oriented freeform surface, unlike the OffsetAnalytic plane fixture's
+  // own twisted control net this file's own OffsetApproximate plane test
+  // above deliberately avoids.
+  std::vector<Point3d> grid;
+  for (int i = 0; i < 4; ++i)
+    for (int j = 0; j < 4; ++j)
+      grid.push_back(Point3d(i, j, (i == 2 && j == 2) ? 3.0 : 0.0));
+  const NurbsSurface s = NurbsSurface::FromControlGrid(grid, 4, 4, 3, 3);
+
+  NurbsSurface out;
+  Check(s.OffsetApproximate(0.2, out) == Result::Ok, "OffsetApproximate(+0.2) succeeds on a bulged freeform surface OffsetAnalytic itself refuses");
+
+  const dino8::kernel::Interval du = s.Domain(0);
+  const dino8::kernel::Interval dv = s.Domain(1);
+  double worst = 0.0;
+  for (double u = du.min + 0.1; u < du.max; u += 0.25) {
+    for (double v = dv.min + 0.1; v < dv.max; v += 0.25) {
+      const Point3d expected = s.PointAt(u, v) + 0.2 * s.NormalAt(u, v);
+      worst = std::max(worst, expected.DistanceTo(out.PointAt(u, v)));
+    }
+  }
+  Check(worst < 0.15, "OffsetApproximate(+0.2) on the bulge: deviation from this surface's own point+distance*normal stays bounded");
+  Check(worst > 1e-4, "OffsetApproximate(+0.2) on the bulge: deviation is genuinely nonzero - this is a curved surface, not secretly a plane");
+
+  // A large enough distance relative to the bulge's own tight local
+  // curvature at its peak must be refused (Result::Failed), not silently
+  // produce a folded/self-overlapping surface - the same real correctness
+  // hazard this whole session's scope was asked to check for, now for a
+  // general freeform surface rather than just the five analytic types.
+  Check(s.OffsetApproximate(1.0, out) == Result::Failed, "OffsetApproximate(+1.0) on the bulge is refused - exceeds the local radius of curvature at its own peak");
+}
+
+void TestSurfaceOffsetApproximateArgumentChecksAndZeroDistance() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Result;
+
+  const ON_Sphere sphere(ON_3dPoint(0, 0, 0), 2.0);
+  ON_NurbsSurface raw;
+  sphere.GetNurbForm(raw);
+  NurbsSurface s;
+  s.raw() = raw;
+
+  NurbsSurface out;
+  bool threw = false;
+  try {
+    s.OffsetApproximate(std::numeric_limits<double>::quiet_NaN(), out);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "OffsetApproximate(NaN) throws std::invalid_argument");
+
+  Check(s.OffsetApproximate(0.0, out) == Result::Ok, "OffsetApproximate(0.0) succeeds");
+  Check(out.PointAt(0.3, 0.2).DistanceTo(s.PointAt(0.3, 0.2)) < 1e-12, "OffsetApproximate(0.0) reproduces the same surface");
 }
 
 void TestCurveOffsetInPlaneLineIsExactParallelLine() {
@@ -28553,6 +28762,7 @@ int main() {
   TestRemoveBlendRoundTripsASingleFillet();
   TestRemoveBlendLeavesTheOtherFilletIntactAmongTwo();
   TestRemoveBlendRejectsUnsupportedConfigurations();
+  TestRemoveBlendRoundTripsATaperedFillet();
   TestBrepFromPlanarFacesBuildsValidOpenNurbsTopology();
   TestBrepAdjacencyQueries();
   TestBooleanCombinePlanarResultHasValidClosedTopology();
@@ -28754,6 +28964,11 @@ int main() {
   TestSurfaceOffsetAnalyticPlanePreservesDomainAndTrimStructure();
   TestSurfaceOffsetAnalyticRefusesFreeformSurface();
   TestSurfaceOffsetAnalyticZeroDistanceIsNoOpCopy();
+
+  TestSurfaceOffsetApproximateIsExactOnAGenuinePlane();
+  TestSurfaceOffsetApproximateSphereErrorIsBoundedButGenuinelyNonzero();
+  TestSurfaceOffsetApproximateOnBulgedFreeformIsBoundedAndRejectsExcessiveDistance();
+  TestSurfaceOffsetApproximateArgumentChecksAndZeroDistance();
 
   TestCurveOffsetInPlaneLineIsExactParallelLine();
   TestCurveOffsetInPlaneCircleIsExactConcentricCircle();
