@@ -2580,7 +2580,44 @@ class Brep {
   // primitive, not built into it here).
   Result SplitNakedEdgeAt(int edge_index, Point3d point, double tolerance = tolerance::kDistance);
 
-  // Caps every planar hole in this Brep's open boundary with a new
+  // The orchestration SplitNakedEdgeAt() itself deliberately leaves to a
+  // caller (see that method's own doc comment): closes PARITY_MAP.md's
+  // "[missing] Tolerant sewing with edge splitting" gap by finding every
+  // T-junction among this Brep's naked (1-trim) edges - a naked edge B
+  // whose endpoint lands strictly INSIDE another naked, LINEAR edge A's
+  // own span, not at either of A's ends (an ordinary endpoint match is
+  // already JoinNakedEdges()'s job, untouched here) - splitting the
+  // longer edge A there via SplitNakedEdgeAt(), and finally calling
+  // JoinNakedEdges(tolerance) once so every newly-matching endpoint pair
+  // (the fresh split halves against B and its own true neighbours) is
+  // actually sewn shut, not merely split.
+  //
+  // "Strictly inside A's span" is measured by projecting B's endpoint
+  // onto the segment between A's own two vertices (the closed-form
+  // point-to-segment distance detail::ClosestSegmentSegment() already
+  // provides elsewhere in this file, degenerate segment against a single
+  // point): within `tolerance` of the line AND at least `tolerance` away
+  // from either of A's own endpoints (otherwise it's an ordinary
+  // coincident-endpoint case, not a T-junction, and splitting there would
+  // just create a near-zero-length sliver edge SplitNakedEdgeAt() itself
+  // already refuses). Only LINEAR naked edges are ever split - the same
+  // restriction SplitNakedEdgeAt() places on itself - so a curved naked
+  // edge is left for a future, curve-aware pass rather than guessed at.
+  //
+  // Iterates (re-scanning after every successful split, since Compact()
+  // inside SplitNakedEdgeAt() renumbers every edge/vertex index) until a
+  // full pass finds nothing left to split, bounded defensively at 4x this
+  // Brep's own edge count so a pathological, never-converging input
+  // cannot loop forever. Returns the number of splits performed (0 if
+  // this Brep has no T-junction among its naked edges - the ordinary,
+  // already-clean case). A T-junction with three or more edges meeting a
+  // single longer edge (not just two) is closed by repeated splits within
+  // the same call, one per iteration. Never throws on its own; clears the
+  // per-face side tables whenever it performs at least one split (see
+  // SplitNakedEdgeAt()'s own comment for why).
+  int SewTJunctions(double tolerance = tolerance::kEdgeJoin);
+
+  // Caps every planar hole in this Brep's
   // planar face - Rhino's own Cap for the case Check() reports as a
   // closed chain of NakedEdge issues: each chain of naked (single-trim)
   // edges is walked head-to-tail through its own vertices (a vertex with

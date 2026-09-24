@@ -20,6 +20,7 @@
 #include "dino8/kernel/detail/arc_schedule3d.h"
 #include "dino8/kernel/detail/ellipse_clip3d.h"
 #include "dino8/kernel/detail/polygon2d.h"
+#include "dino8/kernel/detail/segment3d.h"
 #include "dino8/kernel/mesh.h"
 #include "dino8/kernel/tolerance.h"
 
@@ -6415,6 +6416,65 @@ Result Brep::SplitNakedEdgeAt(int edge_index, Point3d point, double tolerance) {
   FixUnsetEdgeTolerances(b);
   ClearFaceSideTables();
   return Result::Ok;
+}
+
+int Brep::SewTJunctions(double tolerance) {
+  const double tol = std::max(tolerance, 0.0);
+  ON_Brep& b = brep_;
+  int splits = 0;
+  const int kMaxIterations = 4 * std::max(b.m_E.Count(), 1) + 16;
+  for (int iter = 0; iter < kMaxIterations; ++iter) {
+    std::vector<int> naked;
+    for (int ei = 0; ei < b.m_E.Count(); ++ei) {
+      const ON_BrepEdge& e = b.m_E[ei];
+      if (e.m_edge_index >= 0 && e.TrimCount() == 1) naked.push_back(ei);
+    }
+
+    // Find one T-junction this pass: a naked edge B whose endpoint lands
+    // strictly inside another naked, LINEAR edge A's own span. Only one
+    // split is committed per pass, since SplitNakedEdgeAt()'s own
+    // Compact() renumbers every edge/vertex index afterward - trying a
+    // second candidate against stale indices would be wrong.
+    bool found = false;
+    for (const int ai : naked) {
+      const ON_BrepEdge& a = b.m_E[ai];
+      if (!a.IsLinear(tol)) continue;
+      const Point3d a0 = b.m_V[a.m_vi[0]].point;
+      const Point3d a1 = b.m_V[a.m_vi[1]].point;
+      if (a0.DistanceTo(a1) <= tol) continue;  // degenerate - nothing to be inside of
+
+      for (const int bi : naked) {
+        if (bi == ai) continue;
+        const ON_BrepEdge& be = b.m_E[bi];
+        for (int k = 0; k < 2; ++k) {
+          const Point3d v = b.m_V[be.m_vi[k]].point;
+          // Already at (or coincides with) one of A's own endpoints: an
+          // ordinary endpoint match, JoinNakedEdges()'s job, not a
+          // T-junction.
+          if (v.DistanceTo(a0) <= tol || v.DistanceTo(a1) <= tol) continue;
+
+          double s = 0.0, t = 0.0;
+          const double dist2 = detail::ClosestSegmentSegment(a0, a1, v, v, s, t);
+          if (dist2 > tol * tol) continue;   // not on A's line within tolerance
+          if (s <= 0.0 || s >= 1.0) continue;  // clamped to an end - not strictly interior
+
+          const Point3d proj = a0 + (a1 - a0) * s;
+          if (proj.DistanceTo(a0) <= tol || proj.DistanceTo(a1) <= tol) continue;
+
+          if (SplitNakedEdgeAt(ai, v, tol) == Result::Ok) {
+            ++splits;
+            found = true;
+          }
+          break;
+        }
+        if (found) break;
+      }
+      if (found) break;
+    }
+    if (!found) break;
+  }
+  if (splits > 0) JoinNakedEdges(tol);
+  return splits;
 }
 
 Mesh Brep::TessellateToClosedMeshTolerant(int u_divisions, int v_divisions) const {
