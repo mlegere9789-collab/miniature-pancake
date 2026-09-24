@@ -3592,6 +3592,28 @@ std::vector<PlainQuadFace> CollectPlainQuadFaces(const std::vector<FaceGeometry>
       qf.corner[static_cast<size_t>(c)] =
           wrapper.PointAt(corners_uv[static_cast<size_t>(c)].x, corners_uv[static_cast<size_t>(c)].y);
     }
+    // A planar face whose 4 domain corners are not 4 DISTINCT points is
+    // not a quadrilateral at all - a planar fan cap from the sweep-class
+    // factories (Brep::Extrude() et al.: a singular apex side plus a
+    // curved boundary) is planar and untrimmed, so it reaches this point,
+    // and building it as a bilinear patch of its "corners" (apex, apex,
+    // B(b), B(a)) would tessellate it as a zero-width sliver - a silently
+    // wrong result. Such a face takes the ordinary TessellateGrid path.
+    {
+      bool distinct = true;
+      double scale = 0.0;
+      for (int c = 0; c < 4; ++c) scale = std::max(scale, qf.corner[static_cast<size_t>(c)].MaximumCoordinate());
+      const double tol = 1e-9 * (1.0 + scale);
+      for (int c = 0; c < 4 && distinct; ++c) {
+        for (int d = c + 1; d < 4; ++d) {
+          if (qf.corner[static_cast<size_t>(c)].DistanceTo(qf.corner[static_cast<size_t>(d)]) <= tol) {
+            distinct = false;
+            break;
+          }
+        }
+      }
+      if (!distinct) continue;
+    }
     quad_faces.push_back(qf);
   }
   return quad_faces;

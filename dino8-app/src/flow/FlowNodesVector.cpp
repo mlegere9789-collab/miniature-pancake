@@ -12,8 +12,8 @@ PortDef In(std::string name, Kind k, Access acc = Access::Item, Value def = Valu
 }
 PortDef Out(std::string name, Kind k) { PortDef p; p.name = name; p.nick = name; p.kind = k; return p; }
 
-ON_Xform MoveXform(Vector3d v) { ON_Xform x; x.Translation(v); return x; }
-ON_Xform ScaleXform(Point3d c, double s) { ON_Xform x; x.Identity(); x = ON_Xform::ScaleTransformation(c, s); return x; }
+ON_Xform MoveXform(Vector3d v) { return ON_Xform::TranslationTransformation(v); }
+ON_Xform ScaleXform(Point3d c, double s) { return ON_Xform::ScaleTransformation(c, s); }
 ON_Xform RotateXform(double angle_deg, Vector3d axis, Point3d center) { ON_Xform x; x.Rotation(angle_deg * ON_PI / 180.0, axis, center); return x; }
 
 void AddVector() {

@@ -1075,33 +1075,41 @@ Mesh Mesh::MergeAndWeld(const std::vector<Mesh>& meshes, double tolerance) {
       remapped.vi[1] = remap[static_cast<size_t>(face.vi[1])];
       remapped.vi[2] = remap[static_cast<size_t>(face.vi[2])];
       remapped.vi[3] = remap[static_cast<size_t>(face.vi[3])];
-      // A face two (or more) of whose corners welded to the SAME vertex
-      // has zero 3D area and no well-defined edges - the triangles a grid
-      // tessellator emits along a surface's own collapsed side (a
-      // sphere's poles, a SphericalFace vertex blend's pole corner). Such
-      // a face contributes nothing to Volume()/Area() but poisons
-      // IsClosedManifold() (its collapsed edge is walked twice by one
-      // face) and Manifold's own input validation, so it is dropped here
-      // - a quad with exactly one collapsed corner is kept as the
-      // triangle it really is. Faces with four distinct corners, and
-      // triangles (vi[3] == vi[2] by ON_Mesh convention) with three
-      // distinct corners, are appended exactly as before.
-      int distinct[4];
-      int n_distinct = 0;
-      const int n_in = face.IsQuad() ? 4 : 3;
-      for (int c = 0; c < n_in; ++c) {
-        const int v = remapped.vi[c];
-        bool seen = false;
-        for (int d = 0; d < n_distinct; ++d) seen = seen || distinct[d] == v;
-        if (!seen) distinct[n_distinct++] = v;
+      // A face that welding collapsed - two of its corners landed on one
+      // vertex - is dropped (or, for a quad with one repeated corner,
+      // kept as the triangle that remains). Before this, a pole row of a
+      // sphere/cone/fan-cap tessellation (every sample at v=v0 is the
+      // same physical point) survived as zero-area triangles (a, a, b)
+      // whose edge {a, b} was then counted by THREE faces, so
+      // Brep::Sphere().TessellateToClosedMesh() never reported
+      // Mesh::IsClosedManifold() even though it was geometrically
+      // watertight - see TestMergeAndWeldDropsCollapsedPoleTriangles and
+      // TestMergeAndWeldMakesBrepSphereAClosedManifold. Volume()/Area()
+      // are unchanged by this (a collapsed face contributes exactly zero
+      // to both, by the same (a,b,c)+(a,c,d) quad split those methods
+      // already use - the v[0]==v[2]/v[1]==v[3] check below is exactly
+      // that split's own degeneracy condition, not a separate heuristic).
+      if (face.IsQuad()) {
+        int v[4] = {remapped.vi[0], remapped.vi[1], remapped.vi[2], remapped.vi[3]};
+        int distinct[4];
+        int nd = 0;
+        for (int k = 0; k < 4; ++k) {
+          if (v[k] != v[(k + 3) % 4]) distinct[nd++] = v[k];  // drop a corner equal to its predecessor (cyclically)
+        }
+        if (nd == 4) {
+          if (v[0] == v[2] || v[1] == v[3]) continue;  // opposite corners coincide: no area
+          out.m_F.Append(remapped);
+        } else if (nd == 3) {
+          ON_MeshFace tri;
+          tri.vi[0] = distinct[0];
+          tri.vi[1] = distinct[1];
+          tri.vi[2] = distinct[2];
+          tri.vi[3] = distinct[2];
+          out.m_F.Append(tri);
+        }
+        continue;
       }
-      if (n_distinct < 3) continue;
-      if (n_distinct == 3) {
-        remapped.vi[0] = distinct[0];
-        remapped.vi[1] = distinct[1];
-        remapped.vi[2] = distinct[2];
-        remapped.vi[3] = distinct[2];
-      }
+      if (remapped.vi[0] == remapped.vi[1] || remapped.vi[1] == remapped.vi[2] || remapped.vi[2] == remapped.vi[0]) continue;
       out.m_F.Append(remapped);
     }
   }
