@@ -3210,5 +3210,99 @@ hcheck "UpdateHistory: 1 object(s) re-evaluated from their source curve(s)' curr
 hcheck "Bounding box min 20,0,20 max 30,0,25" "UpdateHistory genuinely re-derived the extruded surface's geometry from the source curve's new z=20 position - not the z=0..5 box baked at creation time"
 hcheck "History recording: on. 1 object(s) with live construction history:" "the live report lists exactly one tracked object"
 hcheck "object 4: Extrude <- 3" "the report names the real dependent/source pair (surface 4 built from curve 3)"
+# Undo id-reuse regression (see the last section of history_script.txt):
+# a Box drawn right after undoing a tracked Extrude used to be handed the
+# undone extrusion's own id (6), so its HistoryRecord/Provenance entries -
+# side tables keyed by ObjectId, deliberately outside the undo history -
+# attached to the Box, and UpdateHistory rebuilt the Box into "surface
+# (40,0,0)-(50,0,5)". Document::ApplyDelta now keeps the id counter
+# monotonic across Undo, so the Box gets a fresh id (7) and the stale
+# record resolves to nothing.
+hcheck_absent() { if echo "$HS" | grep -qF "$1"; then echo "FAIL $2"; fail=1; else echo "ok   $2"; fi; }
+hcheck "object 6: Extrude <- 5" "an Undo/Redo round trip keeps the redone extrusion's own id (6) and its HistoryRecord (the record survives Undo+Redo, it is only ever orphaned by a real removal)"
+hcheck "  ID: 7" "a Box drawn after undoing the tracked extrusion (id 6) gets a fresh id (7), not the undone object's id"
+hcheck "UpdateHistory: 1 object(s) re-evaluated from their source curve(s)' current geometry, 1 orphaned entry cleared (object deleted or an Undo passed the construction)" \
+  "UpdateHistory rebuilt only the still-live tracked surface (4) and reported the undone extrusion's record (6) as orphaned - it did NOT treat the new Box as a tracked object"
+hcheck_absent "Bounding box: (40, 0, 0) to (50, 0, 5)" "the Box was never rebuilt into line 5's extrusion (the exact silent wrong result the id reuse produced before)"
+hcheck "Bounding box: (50, 50, 0) to (60, 60, 10)" "the Box's own geometry is untouched after UpdateHistory"
+
+# RemoveLayer must keep every OTHER holder of a layer index consistent, not
+# just live objects (see tests/layer_remap_script.txt): a layout detail's
+# per-detail hidden layers, a block definition's own member objects, and its
+# "in use" check must also look at block definition members, not just live
+# objects.
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  LR="$("$BIN" --smoke 200 --script "$HERE/layer_remap_script.txt" 2>&1)" || { echo "$LR"; echo "FAIL: layer-remap script exited non-zero"; exit 1; }
+else
+  LR="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 200 --script "$HERE/layer_remap_script.txt" 2>&1)" || { echo "$LR"; echo "FAIL: layer-remap script exited non-zero"; exit 1; }
+fi
+echo "$LR" | grep -E "^(ok|FAIL)"
+if echo "$LR" | grep -q "^FAIL"; then fail=1; fi
+echo "$LR" | grep -q "^smoke:" || { echo "$LR"; echo "FAIL: layer-remap script produced no smoke line"; fail=1; }
+lcheck() { if echo "$LR" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+lcheck "ShowLayersInDetail: 1 layer(s) in 1 detail(s)" "the detail's hidden-layer entry followed Walls to its new index (0 before the fix - the stale index resolved to the wrong, or no, layer)"
+lcheck "  Layer index: 1" "a fresh Bk instance lands on Walls (index 1 after Purge removes Spare), not Roof (index 2 before the fix, since block members were never remapped)"
+lcheck "Purge: nothing to remove" "Walls is reported in use (and left alone) once only a block definition's member is on it - the 'in use' check before the fix looked at live objects only"
+
+# New must start a genuinely empty document (see tests/new_doc_script.txt):
+# Document::Clear() used to leave block definitions and the id-keyed
+# HistoryRecord/Provenance/CageBinding side tables from the OLD document in
+# place, so the new document's first objects, handed the same small ids,
+# could silently inherit them.
+sed "s|@TMP@|$TMPW|g" "$HERE/new_doc_script.txt" > "$TMPW/new_doc_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  ND="$("$BIN" --smoke 200 --script "$TMPW/new_doc_script.txt" 2>&1)" || { echo "$ND"; echo "FAIL: new-doc script exited non-zero"; exit 1; }
+else
+  ND="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 200 --script "$TMPW/new_doc_script.txt" 2>&1)" || { echo "$ND"; echo "FAIL: new-doc script exited non-zero"; exit 1; }
+fi
+echo "$ND" | grep -E "^(ok|FAIL)"
+if echo "$ND" | grep -q "^FAIL"; then fail=1; fi
+echo "$ND" | grep -q "^smoke:" || { echo "$ND"; echo "FAIL: new-doc script produced no smoke line"; fail=1; }
+ndcheck() { if echo "$ND" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+ndcheck "History recording: on. 0 object(s) with live construction history" "New starts with an empty HistoryRecord table - the fresh Circle was not silently inherited as document A's tracked Extrude"
+ndcheck "0 object(s) selected" "SelExtrusion finds nothing in the new document (1 before the fix: the fresh Circle wrongly matched the old Provenance/HistoryRecord entry)"
+ndcheck "UpdateHistory: 0 object(s) re-evaluated" "UpdateHistory has nothing to rebuild in the new document"
+ndcheck "history: curve" "SelLast + What still reports the fresh object as the Circle it really is"
+ndcheck_absent() { if echo "$ND" | grep -qF "$1"; then echo "FAIL $2"; fail=1; else echo "ok   $2"; fi; }
+ndcheck_absent "history: surface" "the Circle was never silently rebuilt into a surface (document A's Line-1 extrusion - the exact silent wrong result the leaked HistoryRecord produced before)"
+ndcheck "No block definitions. Use Block to create one." "BlockManager's block table was cleared by New, not left holding document A's block"
+
+# Load3dm must reject a .3dm mesh whose face vertex indices point past its
+# own vertex array (see src/io/File3dm.cpp's MeshFaceIndicesInRange and
+# tests/mesh_fixture_gen.cpp): OpenNURBS' own reader copies such a mesh in
+# verbatim with no check and no diagnostic, after which every mesh query
+# would read memory past the end of the vertex array. Dino 8 has no command
+# of its own that can construct such a mesh, so mesh_fixture_gen builds one
+# directly through ONX_Model/ON_Mesh, independent of Dino 8's own exporter.
+MESHBIN="$(dirname "$BIN")/mesh_fixture_gen"
+if [ -x "$MESHBIN" ]; then
+  "$MESHBIN" "$TMPW/mesh_bad.3dm" bad >/dev/null || { echo "FAIL: mesh_fixture_gen failed to write the bad-mesh fixture"; exit 1; }
+  "$MESHBIN" "$TMPW/mesh_good.3dm" good >/dev/null || { echo "FAIL: mesh_fixture_gen failed to write the good-mesh fixture"; exit 1; }
+  cat > "$TMPW/mesh_bad_script.txt" <<EOS
+Open $TMPW/mesh_bad.3dm
+@expect_objects 0
+EOS
+  cat > "$TMPW/mesh_good_script.txt" <<EOS
+Open $TMPW/mesh_good.3dm
+@expect_objects 1
+EOS
+  if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+    MB="$("$BIN" --smoke 60 --script "$TMPW/mesh_bad_script.txt" 2>&1)" || { echo "$MB"; echo "FAIL: bad-mesh script exited non-zero"; exit 1; }
+    MG="$("$BIN" --smoke 60 --script "$TMPW/mesh_good_script.txt" 2>&1)" || { echo "$MG"; echo "FAIL: good-mesh script exited non-zero"; exit 1; }
+  else
+    MB="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$TMPW/mesh_bad_script.txt" 2>&1)" || { echo "$MB"; echo "FAIL: bad-mesh script exited non-zero"; exit 1; }
+    MG="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$TMPW/mesh_good_script.txt" 2>&1)" || { echo "$MG"; echo "FAIL: good-mesh script exited non-zero"; exit 1; }
+  fi
+  echo "$MB" | grep -E "^(ok|FAIL)"
+  echo "$MG" | grep -E "^(ok|FAIL)"
+  if echo "$MB" | grep -q "^FAIL"; then fail=1; fi
+  if echo "$MG" | grep -q "^FAIL"; then fail=1; fi
+  mcheck() { if echo "$1" | grep -qF "$2"; then echo "ok   $3"; else echo "FAIL $3"; fail=1; fi; }
+  mcheck "$MB" "1 corrupt mesh(es) skipped (face vertex indices outside the mesh's own vertex array)" "the out-of-range mesh is reported and skipped, not silently kept (0 objects before the fix's own diagnostic existed - it silently loaded as 1 object with no error at all)"
+  mcheck "$MG" "Opened $TMPW/mesh_good.3dm (1 objects)" "a mesh with only in-range faces - including a degenerate repeated-index one, which is legitimate - still loads (the check is a range check, not the stricter no-repeated-index rule)"
+else
+  echo "FAIL mesh_fixture_gen was not built next to $BIN (DINO8_BUILD_TESTS off?) - skipping the corrupt-mesh fixture check"
+  fail=1
+fi
 
 exit $fail
