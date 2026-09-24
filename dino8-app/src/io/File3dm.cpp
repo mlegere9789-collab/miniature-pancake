@@ -317,6 +317,20 @@ Animation AnimationFromString(const std::string& text) {
   return a;
 }
 
+// Range check for a mesh read off disk: see the comment at its use in
+// Load3dm(). Same rule as the kernel's own Model::Load() (file_io.cpp):
+// every face index inside [0, VertexCount()), nothing stricter.
+bool MeshFaceIndicesInRange(const ON_Mesh& mesh) {
+  const int vertex_count = mesh.m_V.Count();
+  for (int i = 0; i < mesh.m_F.Count(); ++i) {
+    const ON_MeshFace& face = mesh.m_F[i];
+    for (int k = 0; k < 4; ++k) {
+      if (face.vi[k] < 0 || face.vi[k] >= vertex_count) return false;
+    }
+  }
+  return true;
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -469,6 +483,7 @@ bool Load3dm(Document& doc, const std::string& path, std::string& error) {
   std::map<int, std::vector<ObjectId>> restore_groups;  // file group_id -> new object ids (see Document::CreateGroup below)
 
   int skipped = 0;
+  int corrupt_meshes = 0;  // see the ON_Mesh branch below
   ONX_ModelComponentIterator it(model, ON_ModelComponent::Type::ModelGeometry);
   for (const ON_ModelComponent* c = it.FirstComponent(); c; c = it.NextComponent()) {
     const ON_ModelGeometryComponent* mg = ON_ModelGeometryComponent::Cast(c);
@@ -561,6 +576,23 @@ bool Load3dm(Document& doc, const std::string& path, std::string& error) {
         made = true;
       }
     } else if (const ON_Mesh* m = ON_Mesh::Cast(g)) {
+      // ONX_Model::Read() (ON_Mesh::ReadFaceArray() under it) copies each
+      // face's vertex indices straight off the disk with no check against
+      // the vertex count it read a moment earlier, and never runs
+      // ON_Mesh::IsValid(). A corrupt or hostile file's mesh whose faces
+      // index past its own vertex array therefore used to be copied into
+      // the document verbatim, after which every mesh query (Area, Volume,
+      // tessellation, booleans...) read memory past m_V - silently, no
+      // diagnostic. Skip such a mesh, counted separately below so the
+      // reader summary names the real reason. Range check only, not
+      // ON_MeshFace::IsValid()'s stricter no-repeated-index rule: a
+      // degenerate in-range face is something other exporters legitimately
+      // write, and indexing it is safe (same contract as the kernel's own
+      // Model::Load() and Mesh::LoadObj()).
+      if (!MeshFaceIndicesInRange(*m)) {
+        ++corrupt_meshes;
+        continue;
+      }
       kernel::Mesh k;
       k.raw() = *m;
       obj = SceneObject::MakeMesh(k);
@@ -848,6 +880,10 @@ bool Load3dm(Document& doc, const std::string& path, std::string& error) {
     doc.Settings().absolute_tolerance = model.m_settings.m_ModelUnitsAndTolerances.m_absolute_tolerance;
   }
   if (skipped > 0) error = std::to_string(skipped) + " unsupported object(s) were skipped";
+  if (corrupt_meshes > 0) {
+    if (!error.empty()) error += "; ";
+    error += std::to_string(corrupt_meshes) + " corrupt mesh(es) skipped (face vertex indices outside the mesh's own vertex array)";
+  }
   doc.ClearUndo();
   return true;
 }
