@@ -792,22 +792,22 @@ What this repo does instead:
   exactly match what `AddLayer()` was given, the mesh's reloaded
   `ON_3dmObjectAttributes::m_layer_index` matches the returned index, and
   the brep's stayed at 0.
-- A new `object_color` parameter on every `Model::Add*()`, closing a third
+- A new `render_color` parameter on every `Model::Add*()`, closing a third
   gap from the same PARITY_MAP.md evidence as `name` and `layer_index`
   above: before this, an object's display color always came from its
   layer (`ON::color_from_layer`, `ON_3dmObjectAttributes::ColorSource()`'s
   default), and this kernel had no way to override that per object -
   Rhino's other most basic way to distinguish objects (e.g. color-coding
   boolean operands or results), and just as unreachable from this API as
-  `name`/layers were. A present `object_color` is written to
+  `name`/layers were. A present `render_color` is written to
   `ON_3dmObjectAttributes::m_color` and switches `ColorSource()` to
   `ON::color_from_object`; the default `std::nullopt` leaves
   `ColorSource()` at `color_from_layer`, so the change is additive - no
   existing caller's behavior changes. Verified with a real round trip
   through an actual `.3dm` file: one `Mesh` given an explicit color, a
-  second left uncolored, saved, reloaded, and confirmed the first comes
+  `Brep` left uncolored, saved, reloaded, and confirmed the mesh comes
   back with `ColorSource() == color_from_object` and the exact color
-  given, while the second stayed at `color_from_layer`.
+  given, while the brep stayed at `color_from_layer`.
 - `Brep::GetTightBoundingBox()` closes a real gap: nothing here could
   answer "roughly how big/where is this Brep" without tessellating it
   first, and even then Mesh::GetBoundingBox() only sees a tessellation's

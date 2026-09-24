@@ -74,17 +74,28 @@ class Model {
   // silently dropping the name or failing outright. `layer_index` is
   // written straight to ON_3dmObjectAttributes::m_layer_index; passing an
   // index AddLayer() didn't return is a caller error (as it is for
-  // ONX_Model itself), not something this wrapper detects. A present
-  // `object_color` is written to ON_3dmObjectAttributes::m_color and
-  // switches ColorSource() to ON::color_from_object (Rhino's own "this
-  // object's color overrides its layer's" flag); a `std::nullopt` leaves
-  // ColorSource() at its default, ON::color_from_layer, so the object
-  // keeps displaying whatever color its layer carries, exactly as before
-  // this parameter existed.
+  // ONX_Model itself), not something this wrapper detects.
+  //
+  // Every Add*() below also takes an optional `render_color`. Before this,
+  // an object's displayed color could only ever come from its layer
+  // (ON::color_from_layer, ON_3dmObjectAttributes' own default) - the same
+  // "kernel-level data exchange" gap AddLayer()'s doc comment quotes names
+  // by grep ("write a default ON_3dmObjectAttributes only"), just for the
+  // `m_color`/`ColorSource()` fields instead of `m_layer_index`. A caller
+  // could color a whole layer via AddLayer(), but never override a single
+  // object's own color the way Rhino's own per-object color picker does -
+  // e.g. two Breps sharing a layer that still need to render as different
+  // colors on reload. `std::nullopt` (the default) leaves ColorSource() at
+  // its default ON::color_from_layer - no behavior change for existing
+  // callers, exactly like `name`/`layer_index` before it. A present value
+  // is written to `m_color` with ColorSource() switched to
+  // ON::color_from_object, the same "object, not layer" override Rhino's
+  // own per-object color assignment uses, so it isn't silently shadowed by
+  // whatever color the object's layer happens to carry.
   void AddCurve(const NurbsCurve& curve, const std::string& name = std::string(),
-                int layer_index = 0, std::optional<Color> object_color = std::nullopt);
+                int layer_index = 0, std::optional<Color> render_color = std::nullopt);
   void AddBrep(const Brep& brep, const std::string& name = std::string(), int layer_index = 0,
-               std::optional<Color> object_color = std::nullopt);
+               std::optional<Color> render_color = std::nullopt);
 
   // Adds a mesh (a box, cylinder, boolean result, ...) as its own model
   // object - the missing counterpart to AddCurve()/AddBrep() that closed
@@ -94,7 +105,7 @@ class Model {
   // Mesh::SaveObj()/SaveStl(). Same pattern as the other two: copies
   // `mesh`'s underlying ON_Mesh into a new model geometry component.
   void AddMesh(const Mesh& mesh, const std::string& name = std::string(), int layer_index = 0,
-               std::optional<Color> object_color = std::nullopt);
+               std::optional<Color> render_color = std::nullopt);
 
   // Adds a SubD control cage/subdivision surface as its own model
   // object - the same "no way to put this object type into a .3dm at
@@ -102,7 +113,7 @@ class Model {
   // pattern: copies the SubD's underlying ON_SubD into a new model
   // geometry component.
   void AddSubD(const SubD& subd, const std::string& name = std::string(), int layer_index = 0,
-               std::optional<Color> object_color = std::nullopt);
+               std::optional<Color> render_color = std::nullopt);
 
   // Adds a point cloud as its own model object. PointCloud's own doc
   // comment claims ON_PointCloud is "the same one [OpenNURBS'] .3dm
@@ -115,7 +126,7 @@ class Model {
   // `cloud`'s underlying ON_PointCloud (positions, and per-point colors/
   // normals when present) into a new model geometry component.
   void AddPointCloud(const PointCloud& cloud, const std::string& name = std::string(),
-                     int layer_index = 0, std::optional<Color> object_color = std::nullopt);
+                     int layer_index = 0, std::optional<Color> render_color = std::nullopt);
 
   int ObjectCount() const;
 
