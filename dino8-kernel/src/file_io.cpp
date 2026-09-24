@@ -36,42 +36,49 @@ bool MeshFaceIndicesInRange(const ON_Mesh& mesh) {
   return true;
 }
 
+// Shared by every Add*() below: a fresh UUID, plus `name` set via
+// SetName() when non-empty. See file_io.h's own doc comment on the `name`
+// parameter for why this exists and why an empty name is a no-op.
+ON_3dmObjectAttributes MakeAttributes(const std::string& name) {
+  ON_3dmObjectAttributes attributes;
+  ON_CreateUuid(attributes.m_uuid);
+  if (!name.empty()) {
+    attributes.SetName(ON_wString(name.c_str()), true);
+  }
+  return attributes;
+}
+
 }  // namespace
 
 Model::Model() = default;
 
-void Model::AddCurve(const NurbsCurve& curve) {
+void Model::AddCurve(const NurbsCurve& curve, const std::string& name) {
   auto* geometry = new ON_NurbsCurve(curve.raw());
-  ON_3dmObjectAttributes attributes;
-  ON_CreateUuid(attributes.m_uuid);
+  ON_3dmObjectAttributes attributes = MakeAttributes(name);
   model_.AddModelGeometryComponent(geometry, &attributes);
 }
 
-void Model::AddBrep(const Brep& brep) {
+void Model::AddBrep(const Brep& brep, const std::string& name) {
   auto* geometry = new ON_Brep(brep.raw());
-  ON_3dmObjectAttributes attributes;
-  ON_CreateUuid(attributes.m_uuid);
+  ON_3dmObjectAttributes attributes = MakeAttributes(name);
   model_.AddModelGeometryComponent(geometry, &attributes);
 }
 
-void Model::AddMesh(const Mesh& mesh) {
+void Model::AddMesh(const Mesh& mesh, const std::string& name) {
   auto* geometry = new ON_Mesh(mesh.raw());
-  ON_3dmObjectAttributes attributes;
-  ON_CreateUuid(attributes.m_uuid);
+  ON_3dmObjectAttributes attributes = MakeAttributes(name);
   model_.AddModelGeometryComponent(geometry, &attributes);
 }
 
-void Model::AddSubD(const SubD& subd) {
+void Model::AddSubD(const SubD& subd, const std::string& name) {
   auto* geometry = new ON_SubD(subd.raw());
-  ON_3dmObjectAttributes attributes;
-  ON_CreateUuid(attributes.m_uuid);
+  ON_3dmObjectAttributes attributes = MakeAttributes(name);
   model_.AddModelGeometryComponent(geometry, &attributes);
 }
 
-void Model::AddPointCloud(const PointCloud& cloud) {
+void Model::AddPointCloud(const PointCloud& cloud, const std::string& name) {
   auto* geometry = new ON_PointCloud(cloud.raw());
-  ON_3dmObjectAttributes attributes;
-  ON_CreateUuid(attributes.m_uuid);
+  ON_3dmObjectAttributes attributes = MakeAttributes(name);
   model_.AddModelGeometryComponent(geometry, &attributes);
 }
 
