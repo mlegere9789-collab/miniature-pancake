@@ -15916,6 +15916,91 @@ void TestBrepFromPlanarFacesBuildsValidOpenNurbsTopology() {
   Check(box.raw().IsSolid(), "the rebuilt box's real topology reports IsSolid() true");
 }
 
+// Brep::VertexCount()/EdgeCount()/EdgesOfVertex()/FacesOfEdge()/
+// NeighborFaces() - the reusable public adjacency API this class was
+// missing (PARITY_MAP.md, "kernel: Topology & data structure"). Exercised
+// against FromPlanarFaces(Box().PlanarFaces()) - the same fixture the
+// previous test above already established as a genuine, closed, oriented
+// ON_Brep 2-manifold cube - whose combinatorics are hand-verifiable
+// directly: 8 corner vertices each meeting exactly 3 edges, 12 edges each
+// bordering exactly 2 faces, and 6 quad faces each sharing an edge with
+// exactly 4 of the other 5 (every face but the one directly opposite it,
+// 3 opposite pairs out of C(6,2) = 15 total pairs, 12 adjacent).
+void TestBrepAdjacencyQueries() {
+  using dino8::kernel::Brep;
+
+  auto ThrowsOutOfRange = [](const std::function<void()>& f) {
+    try {
+      f();
+    } catch (const std::out_of_range&) {
+      return true;
+    }
+    return false;
+  };
+
+  const Brep box = Brep::FromPlanarFaces(Brep::Box(0, 0, 0, 2, 3, 4).PlanarFaces());
+  Check(box.VertexCount() == 8, "cube has 8 vertices");
+  Check(box.EdgeCount() == 12, "cube has 12 edges");
+  Check(box.FaceCount() == 6, "cube has 6 faces");
+
+  int total_vertex_edges = 0;
+  for (int vi = 0; vi < box.VertexCount(); ++vi) {
+    const std::vector<int> edges = box.EdgesOfVertex(vi);
+    Check(edges.size() == 3, "every cube vertex is incident to exactly 3 edges");
+    for (int ei : edges) {
+      const ON_BrepEdge& e = box.raw().m_E[ei];
+      Check(e.m_vi[0] == vi || e.m_vi[1] == vi, "EdgesOfVertex only returns edges that actually touch that vertex");
+    }
+    total_vertex_edges += static_cast<int>(edges.size());
+  }
+  Check(total_vertex_edges == 2 * box.EdgeCount(), "handshake lemma: summed vertex degree is twice the edge count");
+
+  int total_edge_faces = 0;
+  for (int ei = 0; ei < box.EdgeCount(); ++ei) {
+    const std::vector<int> faces = box.FacesOfEdge(ei);
+    Check(faces.size() == 2, "every cube edge (a closed manifold) borders exactly 2 faces");
+    const int other = faces[0], self = faces[1];
+    const std::vector<int> neighbors_of_other = box.NeighborFaces(other);
+    Check(std::find(neighbors_of_other.begin(), neighbors_of_other.end(), self) != neighbors_of_other.end(),
+          "FacesOfEdge's two faces are each other's NeighborFaces via this edge");
+    total_edge_faces += static_cast<int>(faces.size());
+  }
+  Check(total_edge_faces == 2 * box.EdgeCount(), "every edge contributes exactly 2 face incidences");
+
+  int total_face_neighbors = 0;
+  for (int fi = 0; fi < box.FaceCount(); ++fi) {
+    const std::vector<int> neighbors = box.NeighborFaces(fi);
+    Check(neighbors.size() == 4, "every cube face shares an edge with exactly 4 of the other 5 faces");
+    Check(std::find(neighbors.begin(), neighbors.end(), fi) == neighbors.end(),
+          "NeighborFaces never includes the face itself");
+    for (int nfi : neighbors) {
+      const std::vector<int> back = box.NeighborFaces(nfi);
+      Check(std::find(back.begin(), back.end(), fi) != back.end(), "face adjacency is symmetric");
+    }
+    total_face_neighbors += static_cast<int>(neighbors.size());
+  }
+  Check(total_face_neighbors == 2 * box.EdgeCount(),
+        "summed face degree (24) equals twice the edge count (12) - a cube has no duplicated face pairs");
+
+  Check(ThrowsOutOfRange([&] { box.EdgesOfVertex(-1); }), "EdgesOfVertex(-1) throws std::out_of_range");
+  Check(ThrowsOutOfRange([&] { box.EdgesOfVertex(box.VertexCount()); }),
+        "EdgesOfVertex(VertexCount()) throws std::out_of_range");
+  Check(ThrowsOutOfRange([&] { box.FacesOfEdge(-1); }), "FacesOfEdge(-1) throws std::out_of_range");
+  Check(ThrowsOutOfRange([&] { box.FacesOfEdge(box.EdgeCount()); }),
+        "FacesOfEdge(EdgeCount()) throws std::out_of_range");
+  Check(ThrowsOutOfRange([&] { box.NeighborFaces(-1); }), "NeighborFaces(-1) throws std::out_of_range");
+  Check(ThrowsOutOfRange([&] { box.NeighborFaces(box.FaceCount()); }),
+        "NeighborFaces(FaceCount()) throws std::out_of_range");
+
+  // A surface-only Brep (Box() itself, per this class's own top comment)
+  // has no ON_Brep vertex/edge topology at all - the counts and adjacency
+  // queries are honest about that instead of guessing at nonexistent
+  // structure.
+  const Brep raw_box = Brep::Box(0, 0, 0, 2, 3, 4);
+  Check(raw_box.VertexCount() == 0 && raw_box.EdgeCount() == 0,
+        "Box()'s own surface-only faces carry no ON_BrepVertex/ON_BrepEdge records");
+}
+
 // BooleanCombinePlanar assembles its result via Brep::FromPlanarFaces
 // (see boolean.cpp) - no change to boolean.cpp itself was needed for this
 // to inherit real topology automatically.
@@ -27796,6 +27881,7 @@ int main() {
   TestRemoveBlendLeavesTheOtherFilletIntactAmongTwo();
   TestRemoveBlendRejectsUnsupportedConfigurations();
   TestBrepFromPlanarFacesBuildsValidOpenNurbsTopology();
+  TestBrepAdjacencyQueries();
   TestBooleanCombinePlanarResultHasValidClosedTopology();
   TestShellConvexPlanarResultHasValidTopology();
   TestFilletConvexEdgeFreeBoundaryCapHasValidOpenTopology();
