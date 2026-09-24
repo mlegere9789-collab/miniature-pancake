@@ -2274,6 +2274,23 @@ What this repo does instead:
   corruption of `raw()` needed - reports `false`, and a real
   `FromControlMesh()` result reports `true` and stays `true` through
   actual `Subdivide()` calls.
+- Verified (not a code change): PARITY_MAP.md's subd_mesh category listed
+  "Mesh <-> SubD round trip fidelity (density-preserving)" as only
+  [partial] - `FromControlMesh()` and `ToApproximateMesh()` both existed,
+  but nothing had ever checked the round trip was actually density-
+  preserving. It is, at level 0 (no `Subdivide()` call - `ToApproximateMesh()`
+  just re-extracts the still-unrefined control net): confirmed directly,
+  with a throwaway `tests/scratch_test.cpp` program before writing the
+  permanent regression test, that a triangulated closed box round-trips
+  through `SubD::FromControlMesh()` -> `ToApproximateMesh()` with its
+  exact 8-vertex/12-face count, every vertex position exactly preserved,
+  identical volume (winding preserved, not just positions), and stays a
+  closed manifold - and that a genuinely QUAD mesh (SubD's natural face
+  type, not something this kernel's other tessellators produce) round-
+  trips with its faces still genuine quads, not silently re-triangulated.
+  Both are now permanent regression tests
+  (`TestSubDMeshRoundTripIsExactAtLevelZero`), so this is a corrected,
+  verified claim rather than an assumed one.
 
 ## Blending build log (Parasolid "blend/chamfer" class, chronological)
 

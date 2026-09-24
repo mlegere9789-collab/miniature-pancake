@@ -8289,6 +8289,76 @@ void TestSubDIsValid() {
   Check(hinge.IsValid(), "...and stays valid after real subdivision");
 }
 
+// PARITY_MAP.md's subd_mesh category lists "Mesh <-> SubD round trip
+// fidelity (density-preserving)" as only [partial]: FromControlMesh()
+// and ToApproximateMesh() both exist, but nothing had ever verified the
+// round trip is actually density-preserving. Verified here directly, not
+// assumed: a mesh -> SubD::FromControlMesh() -> ToApproximateMesh()
+// round trip AT LEVEL 0 (no Subdivide() call - ToApproximateMesh() just
+// re-extracts the still-unrefined control net) must recover exactly the
+// input's own vertex/face count, positions, winding and topology, for
+// both an already-triangulated mesh and a genuinely quad mesh (SubD's
+// natural representation - a real test that ToApproximateMesh() doesn't
+// silently re-triangulate quads it didn't need to).
+void TestSubDMeshRoundTripIsExactAtLevelZero() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SubD;
+
+  // Triangulated closed box.
+  {
+    const Mesh box = Brep::Box(1, 1, 1, 2, 2, 2).TessellateToClosedMesh(1, 1);
+    const Mesh back = SubD::FromControlMesh(box, false).ToApproximateMesh();
+    Check(back.VertexCount() == box.VertexCount() && back.FaceCount() == box.FaceCount(),
+          "a level-0 SubD round trip of a triangulated box recovers the exact "
+          "8-vertex/12-face count, not a re-triangulated or re-tessellated count");
+    Check(back.IsClosedManifold(), "...and the round-tripped mesh is still a closed manifold");
+    Check(std::fabs(back.Volume() - box.Volume()) < 1e-9,
+          "...with the exact same volume (winding preserved, not just vertex positions)");
+    int matched = 0;
+    for (int i = 0; i < box.raw().m_V.Count(); ++i) {
+      const Point3d p(box.raw().m_V[i]);
+      for (int j = 0; j < back.raw().m_V.Count(); ++j) {
+        if (p.DistanceTo(Point3d(back.raw().m_V[j])) < 1e-9) {
+          ++matched;
+          break;
+        }
+      }
+    }
+    Check(matched == box.VertexCount(),
+          "every one of the input box's 8 vertex positions survives the round trip exactly");
+  }
+
+  // A genuine 2x2 quad grid (not triangulated) - SubD's natural face type.
+  {
+    Mesh grid;
+    ON_Mesh& raw = grid.raw();
+    for (int j = 0; j <= 2; ++j) {
+      for (int i = 0; i <= 2; ++i) raw.m_V.Append(ON_3fPoint(static_cast<float>(i), static_cast<float>(j), 0.0f));
+    }
+    const auto idx = [](int i, int j) { return j * 3 + i; };
+    for (int j = 0; j < 2; ++j) {
+      for (int i = 0; i < 2; ++i) {
+        ON_MeshFace f;
+        f.vi[0] = idx(i, j);
+        f.vi[1] = idx(i + 1, j);
+        f.vi[2] = idx(i + 1, j + 1);
+        f.vi[3] = idx(i, j + 1);
+        raw.m_F.Append(f);
+      }
+    }
+    Check(grid.VertexCount() == 9 && grid.FaceCount() == 4, "the quad grid fixture is 9 vertices / 4 quad faces");
+
+    const Mesh back = SubD::FromControlMesh(grid, false).ToApproximateMesh();
+    Check(back.VertexCount() == 9 && back.FaceCount() == 4,
+          "the level-0 round trip of a quad mesh recovers the same 9-vertex/4-face count");
+    bool all_quads = true;
+    for (int i = 0; i < back.raw().m_F.Count(); ++i) all_quads = all_quads && back.raw().m_F[i].IsQuad();
+    Check(all_quads, "...and every round-tripped face is still a genuine quad, not split into triangles");
+  }
+}
+
 void TestSubDSetEdgeSharpnessCreatesRealSemiSharpCrease() {
   using dino8::kernel::Mesh;
   using dino8::kernel::Point3d;
@@ -25500,6 +25570,7 @@ int main() {
   TestSubDFromControlMeshRejectsEmptyMesh();
   TestSubDCreaseAtDoubleEdgeKeepsFoldStraight();
   TestSubDIsValid();
+  TestSubDMeshRoundTripIsExactAtLevelZero();
   TestSubDSetEdgeSharpnessCreatesRealSemiSharpCrease();
   TestSubDSetCreaseTagsAndUntagsEdges();
   TestSubDFlatQuadGridStaysFlatAndAreaExact();
