@@ -1573,7 +1573,7 @@ if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/de
 else
   PS="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 100 --script "$TMPW/python_script.txt" 2>&1)" || { echo "$PS"; echo "FAIL: python script exited non-zero"; exit 1; }
 fi
-if echo "$PS" | grep -q "no Python 3 development install"; then
+if echo "$PS" | grep -q "DINO8_HAVE_PYTHON"; then
   echo "skip Python scripting not available in this build (compiled without Python3 Development.Embed - see CMakeLists.txt)"
 else
   echo "$PS" | grep -E "^(ok|FAIL)"
@@ -1620,7 +1620,7 @@ if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/de
 else
   SER="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 100 --script "$TMPW/scripteditor_run.txt" 2>&1)" || { echo "$SER"; echo "FAIL: Script Editor Run test exited non-zero"; exit 1; }
 fi
-if echo "$SER" | grep -q "no Python 3 development install"; then
+if echo "$SER" | grep -q "DINO8_HAVE_PYTHON"; then
   echo "skip Script Editor Run->Python test not available in this build (compiled without Python3 Development.Embed)"
 else
   echo "$SER" | grep -E "^(ok|FAIL)"
