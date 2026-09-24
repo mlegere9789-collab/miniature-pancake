@@ -128,6 +128,29 @@ Mesh MinkowskiDifference(const Mesh& a, const Mesh& b);
 // MinkowskiSum()/MinkowskiDifference() themselves throw for other
 // failures (e.g. `solid` not a valid closed manifold, same requirement
 // as BooleanCombine()).
+//
+// A real, deliberately enforced correctness guard, not an omission: a
+// shrink (`distance < 0`) whose magnitude exceeds `solid`'s own smallest
+// feature size (e.g. shrinking a thin plate by more than half its
+// thickness) mathematically erodes it away to NOTHING - unlike a naive
+// per-vertex offset, morphological erosion by a ball can never produce
+// an invalid or self-intersecting mesh, but it CAN legitimately produce
+// an EMPTY one, and `MinkowskiDifference()` itself returns that empty
+// mesh without complaint (confirmed directly, not assumed: a 10x10x1
+// plate shrunk by 0.6, exceeding its own 0.5 half-thickness, silently
+// comes back with `VertexCount() == 0`). A caller expecting a genuine
+// solid result would otherwise get an empty mesh with no signal
+// distinguishing "this shrink was infeasible" from any other empty-mesh
+// case, so this throws `std::runtime_error` instead when a `distance <
+// 0` call's own result comes back with `VertexCount() == 0` - the direct
+// mesh-level analogue of `OffsetAnalytic()`'s `new_radius <= 0` guard and
+// `OffsetFace()`'s degenerate-clipped-face guard, generalized here to an
+// arbitrary (possibly non-convex, possibly disconnected) solid where no
+// single closed-form "local radius of curvature" exists to check against
+// in advance - the erosion is actually performed and its result is
+// checked, not predicted. Growing (`distance > 0`) is never checked this
+// way: dilation by a ball only ever adds volume, so it cannot collapse a
+// solid to nothing.
 Mesh OffsetSolid(const Mesh& solid, double distance, int sphere_divisions = 24);
 
 // Splits `mesh` into its disconnected pieces - one Mesh per connected
@@ -426,6 +449,43 @@ Brep ShellClosedSphere(Point3d center, double outer_radius, double thickness);
 // same collapse-through-center hazard ShellClosedSphere() and
 // OffsetAnalytic()'s own torus case both guard against).
 Brep ShellClosedTorus(const ON_Plane& plane, double major_radius, double outer_minor_radius, double thickness);
+
+// Moves ONE face of a convex planar-faced solid along its own outward
+// normal by `distance` (positive grows the solid at that face, negative
+// shrinks it), re-extending or re-trimming every OTHER face so the
+// result is still a valid closed solid - the direct-editing "push/pull"
+// or "move face" operation (Rhino/SolidWorks' own such tool), distinct
+// from ShellConvexPlanar() (which offsets every KEPT face at once to
+// build a hollow shell) and from NurbsSurface::OffsetAnalytic() (which
+// offsets a single bare surface with no neighbours to reconcile at all).
+//
+// The construction: `distance` moves ONLY `face_index`'s own plane
+// (translated by `distance * plane.zaxis`); every other face's plane is
+// UNCHANGED. Every face's own new boundary is then computed the same
+// way, uniformly, whether or not it moved: start from a polygon in that
+// face's own (possibly-moved) plane, generous enough to be guaranteed to
+// contain the true final polytope's face there (a square of side
+// `100 * this solid's own bounding-box diagonal`, centered at that
+// plane's own origin) and clip it (ClipConvexPolygon, above) against
+// every OTHER face's own plane - the standard technique for
+// reconstructing a convex polytope's boundary directly from a set of
+// half-spaces (start from a superset, intersect down to the true
+// bounded result), which is exactly what "one plane moved, the rest
+// fixed" is. No special case is needed for `face_index` itself: it goes
+// through the identical oversized-polygon-clipped-against-every-OTHER-
+// plane construction as any other face.
+//
+// Convex-solid precondition, same check and failure mode as
+// ShellConvexPlanar()/BooleanIntersectConvexPlanar() (a non-convex solid
+// would clip pieces of itself away against its own planes). Throws
+// std::invalid_argument if `face_index` is out of range for
+// `solid.PlanarFaces()`, or if any face's own new boundary collapses to
+// fewer than 3 vertices or ~0 area - `distance` large enough that a face
+// vanishes entirely (the topology itself would need to change - a
+// different face count or adjacency, not just moved boundaries) is
+// genuinely out of scope here, not silently approximated by dropping
+// that face or guessing a replacement.
+Brep OffsetFace(const Brep& solid, int face_index, double distance);
 
 // Exact B-rep boolean between two solids where either (or both) may have
 // a CYLINDRICAL face, not just planar ones - what closes the gap
