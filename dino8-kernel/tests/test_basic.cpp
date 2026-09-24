@@ -25012,6 +25012,113 @@ void TestSweep1AndPipe() {
   Check(Throws([&] { Brep::Sweep1(square, rail, 1); }), "fewer than 2 stations throws");
 }
 
+void TestPipeVariable() {
+  using RP = std::pair<double, double>;
+
+  // Exactly 2 radius points spanning the whole straight rail: the exact
+  // rational cone frustum (Loft()/Sweep1()'s own 2-section ruled
+  // shortcut), the same closed form ExtrudeTapered()'s circular case
+  // already verifies elsewhere in this file.
+  {
+    const double r0 = 2.0, r1 = 1.0, L = 5.0;
+    const NurbsCurve line = Polyline({P(0, 0, 0), P(0, 0, L)});
+    const Brep frustum = Brep::PipeVariable(line, {RP{0.0, r0}, RP{1.0, r1}});
+    CheckSolidTopology(frustum, 3, "variable pipe: straight rail, 2 end points");
+    Check(FaceSurface(frustum, 0).DegreeV() == 1, "straight 2-point taper's wall is ruled (degree 1) along the rail");
+    const double exact = (M_PI * L / 3.0) * (r0 * r0 + r0 * r1 + r1 * r1);
+    CheckClosedMeshVolume(frustum, 64, 4, exact, 0.003, "variable pipe straight 2-point cone frustum");
+    // Every cross-section is exactly circular at radius linearly
+    // interpolated between r0 and r1 - checked at both ends, where the
+    // wall's own domain boundary is exactly the input circle regardless
+    // of any interpolation elsewhere.
+    const NurbsSurface wall = FaceSurface(frustum, 0);
+    const ON_Interval du = wall.raw().Domain(0), dv = wall.raw().Domain(1);
+    double worst0 = 0.0, worst1 = 0.0;
+    for (int j = 0; j <= 16; ++j) {
+      worst0 = std::max(worst0, std::abs(wall.PointAt(du.ParameterAt(j / 16.0), dv.Min()).DistanceTo(P(0, 0, 0)) - r0));
+      worst1 = std::max(worst1, std::abs(wall.PointAt(du.ParameterAt(j / 16.0), dv.Max()).DistanceTo(P(0, 0, L)) - r1));
+    }
+    Check(worst0 < 1e-9 && worst1 < 1e-9, "the 2-point taper's end circles are exactly r0 and r1");
+  }
+
+  // 3 radius points on a straight rail (a symmetric bulge): not exactly
+  // representable by a single ruled surface, so this takes the general
+  // interpolating-skin path. Cross-checked two ways: (1) the wall's own
+  // domain-boundary sections are still exactly r0/r_last (guaranteed by
+  // the skin's own "reproduces every input section exactly" contract,
+  // independent of the interpolation elsewhere), and (2) the tessellated
+  // volume against the closed-form volume of the TRUE piecewise-linear-
+  // radius solid this profile describes (two stacked cone frustums,
+  // (pi/3) sum of L_i (r_i^2 + r_i r_{i+1} + r_{i+1}^2)), which this
+  // interpolates rather than reproduces exactly - measured 0.3% at 96
+  // stations, so 1% is a real bound, not a loose one.
+  {
+    const double r0 = 1.0, rm = 2.5, r1 = 1.0, L = 6.0;
+    const NurbsCurve line = Polyline({P(0, 0, 0), P(0, 0, L)});
+    const Brep bulge = Brep::PipeVariable(line, {RP{0.0, r0}, RP{0.5, rm}, RP{1.0, r1}}, true, 96);
+    CheckSolidTopology(bulge, 3, "variable pipe: straight rail, 3-point bulge");
+    const NurbsSurface wall = FaceSurface(bulge, 0);
+    const ON_Interval du = wall.raw().Domain(0), dv = wall.raw().Domain(1);
+    double worst0 = 0.0, worst1 = 0.0;
+    for (int j = 0; j <= 16; ++j) {
+      worst0 = std::max(worst0, std::abs(wall.PointAt(du.ParameterAt(j / 16.0), dv.Min()).DistanceTo(P(0, 0, 0)) - r0));
+      worst1 = std::max(worst1, std::abs(wall.PointAt(du.ParameterAt(j / 16.0), dv.Max()).DistanceTo(P(0, 0, L)) - r1));
+    }
+    Check(worst0 < 1e-9 && worst1 < 1e-9, "the 3-point bulge's end circles are still exactly r0 and r1");
+    const double half = L / 2.0;
+    const double exact = (M_PI * half / 3.0) * (r0 * r0 + r0 * rm + rm * rm) + (M_PI * half / 3.0) * (rm * rm + rm * r1 + r1 * r1);
+    CheckClosedMeshVolume(bulge, 64, 8, exact, 0.01, "variable pipe straight 3-point bulge vs. stacked-frustum reference");
+  }
+
+  // Open rail with caps: the two flat end discs must have the specified
+  // end radii (r0 at the start, r1 at the end), exactly as Pipe()'s own
+  // capped cylinder does for a constant radius.
+  {
+    const double r0 = 1.5, r1 = 0.5, L = 4.0;
+    const NurbsCurve line = Polyline({P(0, 0, 0), P(0, 0, L)});
+    const Brep capped = Brep::PipeVariable(line, {RP{0.0, r0}, RP{1.0, r1}}, /*cap=*/true);
+    CheckSolidTopology(capped, 3, "variable pipe with caps");
+    const double exact = (M_PI * L / 3.0) * (r0 * r0 + r0 * r1 + r1 * r1);
+    CheckClosedMeshVolume(capped, 64, 4, exact, 0.003, "capped variable pipe volume");
+  }
+
+  // Closed rail: first and last radius must match (the seam), a varying
+  // middle radius is allowed. Volume reference: the exact volume of the
+  // continuum solid this piecewise-linear-in-angle radius profile
+  // describes is the generalized Pappus integral 2 pi^2 R * INT r(f)^2 df
+  // (same derivation Pipe()'s own constant-radius closed-ring test uses,
+  // 2 pi^2 R r^2, generalized to a varying r) - measured 0.6% at 64
+  // stations, so 2% is a real, not a loose, bound.
+  {
+    const double R = 4.0, r0 = 1.0, rm = 2.0;
+    const NurbsCurve ring = Circle(P(0, 0, 0), Vector3d(0, 0, 1), R);
+    const Brep torus = Brep::PipeVariable(ring, {RP{0.0, r0}, RP{0.5, rm}, RP{1.0, r0}}, true, 64);
+    CheckSolidTopology(torus, 1, "variable pipe: closed rail");
+    Check(FaceSurface(torus, 0).IsClosed(0) && FaceSurface(torus, 0).IsClosed(1), "closed-rail variable pipe is closed in both directions");
+    // INT_0^1 r(f)^2 df over 2 symmetric linear segments, each length 0.5.
+    const double seg = 0.5 * (r0 * r0 + r0 * rm + rm * rm) / 3.0;
+    const double exact = 2.0 * M_PI * M_PI * R * (seg + seg);
+    const double measured = torus.TessellateToClosedMesh(48, 96).Volume();
+    Check(std::abs(measured - exact) / exact < 0.02, "closed variable pipe volume within 2% of the generalized-Pappus reference");
+    Check(torus.TessellateToClosedMesh(12, 5).IsClosedManifold(), "closed variable pipe is a closed manifold at (12, 5)");
+  }
+
+  // Negative controls.
+  const NurbsCurve line = Polyline({P(0, 0, 0), P(0, 0, 5)});
+  Check(Throws([&] { Brep::PipeVariable(line, {RP{0.0, 1.0}}); }), "fewer than 2 radius points throws");
+  Check(Throws([&] { Brep::PipeVariable(line, {RP{0.5, 1.0}, RP{0.5, 2.0}}); }), "non-increasing t throws");
+  Check(Throws([&] { Brep::PipeVariable(line, {RP{0.5, 1.0}, RP{0.2, 2.0}}); }), "decreasing t throws");
+  Check(Throws([&] { Brep::PipeVariable(line, {RP{-0.1, 1.0}, RP{1.0, 2.0}}); }), "t below 0 throws");
+  Check(Throws([&] { Brep::PipeVariable(line, {RP{0.0, 1.0}, RP{1.1, 2.0}}); }), "t above 1 throws");
+  Check(Throws([&] { Brep::PipeVariable(line, {RP{0.0, 0.0}, RP{1.0, 1.0}}); }), "non-positive radius throws");
+  Check(Throws([&] { Brep::PipeVariable(line, {RP{0.0, 1.0}, RP{1.0, -1.0}}); }), "negative radius throws");
+  Check(Throws([&] { Brep::PipeVariable(line, {RP{0.0, 1.0}, RP{1.0, 2.0}}, true, 1); }), "fewer than 2 stations throws");
+  Check(Throws([&] {
+          Brep::PipeVariable(Circle(P(0, 0, 0), Vector3d(0, 0, 1), 4.0), {RP{0.0, 1.0}, RP{1.0, 2.0}}, true, 32);
+        }),
+        "closed rail with mismatched seam radii throws");
+}
+
 void TestExtrudeTaperedCircularProfileIsExactConeFrustum() {
   // Shrinking: r0=2 -> r1=1 over height 3, tan(theta) = (r0 - r1) / h.
   const double r0 = 2.0, r1 = 1.0, h = 3.0;
@@ -27049,6 +27156,7 @@ int main() {
   TestCurveParameterAtArcLengthStaysInsideDomain();
   TestSurfaceCurvatureAtIsScaleInvariant();
   TestSurfaceClosestPointNearSpherePoleDoesNotLockAzimuth();
+  sweep_tests::TestPipeVariable();
   ON::End();
 
   if (g_failures > 0) {
