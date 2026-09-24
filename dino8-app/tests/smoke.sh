@@ -3247,4 +3247,42 @@ ndcheck_absent() { if echo "$ND" | grep -qF "$1"; then echo "FAIL $2"; fail=1; e
 ndcheck_absent "history: surface" "the Circle was never silently rebuilt into a surface (document A's Line-1 extrusion - the exact silent wrong result the leaked HistoryRecord produced before)"
 ndcheck "No block definitions. Use Block to create one." "BlockManager's block table was cleared by New, not left holding document A's block"
 
+# Load3dm must reject a .3dm mesh whose face vertex indices point past its
+# own vertex array (see src/io/File3dm.cpp's MeshFaceIndicesInRange and
+# tests/mesh_fixture_gen.cpp): OpenNURBS' own reader copies such a mesh in
+# verbatim with no check and no diagnostic, after which every mesh query
+# would read memory past the end of the vertex array. Dino 8 has no command
+# of its own that can construct such a mesh, so mesh_fixture_gen builds one
+# directly through ONX_Model/ON_Mesh, independent of Dino 8's own exporter.
+MESHBIN="$(dirname "$BIN")/mesh_fixture_gen"
+if [ -x "$MESHBIN" ]; then
+  "$MESHBIN" "$TMPW/mesh_bad.3dm" bad >/dev/null || { echo "FAIL: mesh_fixture_gen failed to write the bad-mesh fixture"; exit 1; }
+  "$MESHBIN" "$TMPW/mesh_good.3dm" good >/dev/null || { echo "FAIL: mesh_fixture_gen failed to write the good-mesh fixture"; exit 1; }
+  cat > "$TMPW/mesh_bad_script.txt" <<EOS
+Open $TMPW/mesh_bad.3dm
+@expect_objects 0
+EOS
+  cat > "$TMPW/mesh_good_script.txt" <<EOS
+Open $TMPW/mesh_good.3dm
+@expect_objects 1
+EOS
+  if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+    MB="$("$BIN" --smoke 60 --script "$TMPW/mesh_bad_script.txt" 2>&1)" || { echo "$MB"; echo "FAIL: bad-mesh script exited non-zero"; exit 1; }
+    MG="$("$BIN" --smoke 60 --script "$TMPW/mesh_good_script.txt" 2>&1)" || { echo "$MG"; echo "FAIL: good-mesh script exited non-zero"; exit 1; }
+  else
+    MB="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$TMPW/mesh_bad_script.txt" 2>&1)" || { echo "$MB"; echo "FAIL: bad-mesh script exited non-zero"; exit 1; }
+    MG="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$TMPW/mesh_good_script.txt" 2>&1)" || { echo "$MG"; echo "FAIL: good-mesh script exited non-zero"; exit 1; }
+  fi
+  echo "$MB" | grep -E "^(ok|FAIL)"
+  echo "$MG" | grep -E "^(ok|FAIL)"
+  if echo "$MB" | grep -q "^FAIL"; then fail=1; fi
+  if echo "$MG" | grep -q "^FAIL"; then fail=1; fi
+  mcheck() { if echo "$1" | grep -qF "$2"; then echo "ok   $3"; else echo "FAIL $3"; fail=1; fi; }
+  mcheck "$MB" "1 corrupt mesh(es) skipped (face vertex indices outside the mesh's own vertex array)" "the out-of-range mesh is reported and skipped, not silently kept (0 objects before the fix's own diagnostic existed - it silently loaded as 1 object with no error at all)"
+  mcheck "$MG" "Opened $TMPW/mesh_good.3dm (1 objects)" "a mesh with only in-range faces - including a degenerate repeated-index one, which is legitimate - still loads (the check is a range check, not the stricter no-repeated-index rule)"
+else
+  echo "FAIL mesh_fixture_gen was not built next to $BIN (DINO8_BUILD_TESTS off?) - skipping the corrupt-mesh fixture check"
+  fail=1
+fi
+
 exit $fail

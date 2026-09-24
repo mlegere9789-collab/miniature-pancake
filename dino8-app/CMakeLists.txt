@@ -544,6 +544,17 @@ if(DINO8_BUILD_TESTS)
     # floor/atan2/sincos/trunc calls.
     target_link_libraries(dwg_fixture_gen PRIVATE m)
   endif()
+
+  # Corrupt-mesh .3dm fixture generator (see tests/mesh_fixture_gen.cpp and
+  # smoke.sh's Load3dm mesh-range-check section): writes a mesh with a face
+  # indexing past its own vertex array directly through OpenNURBS'
+  # ONX_Model/ON_Mesh API, since Dino 8 has no command of its own that can
+  # construct such a mesh to round-trip through Save. Links dino8_kernel
+  # (rather than opennurbsStatic directly) to reuse its existing
+  # link-order workaround for opennurbsStatic/zlib on GNU ld.
+  add_executable(mesh_fixture_gen tests/mesh_fixture_gen.cpp)
+  target_include_directories(mesh_fixture_gen PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(mesh_fixture_gen PRIVATE dino8_kernel)
 endif()
 
 # ---------------------------------------------------------------------------
