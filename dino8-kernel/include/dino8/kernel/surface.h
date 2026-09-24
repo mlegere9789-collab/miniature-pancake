@@ -290,6 +290,41 @@ class NurbsSurface {
   // stub-vs-real verification.
   bool IsPeriodic(int direction) const;
 
+  // Converts a closed (but not periodic) surface into one genuinely
+  // periodic in `direction` (0 = U, 1 = V) WITHOUT refitting or
+  // approximating - the surface analogue of NurbsCurve::
+  // MakePeriodicExact() (Rhino's MakePeriodic Smooth=No), which this
+  // reuses directly rather than re-deriving the same algorithm a second
+  // way: the knot-vector transformation (Bezier-decompose `direction` to
+  // full multiplicity, drop the duplicated closing row/column, re-attach
+  // the first `Degree(direction)` of them at the tail, extending the
+  // knot vector by the curve's own knot spacing one period later, then
+  // nudging the one genuinely zero-width knot span the construction
+  // creates at the new domain's own end apart by a relative 1e-13 of the
+  // period - see NurbsCurve::MakePeriodicExact()'s own doc comment for
+  // why that last step is needed) depends only on `direction`'s own
+  // degree/knot vector, not on control points, so it is IDENTICAL for
+  // every row (direction 0) or column (direction 1) of control points
+  // running the other way - this Bezier-decomposes the surface in
+  // `direction` (`ON_NurbsSurface::InsertKnot`, real Boehm insertion,
+  // affecting every control point uniformly), then runs each cross-line
+  // of control points through a temporary NurbsCurve carrying
+  // `direction`'s own knot vector and calls NurbsCurve::
+  // MakePeriodicExact() on it verbatim, and reassembles the results -
+  // the surface's own degree/knot vector in the OTHER direction, and
+  // every other structural property, is completely untouched.
+  //
+  // Requires `IsClosed(direction)` and `Degree(direction) >= 2` (returns
+  // Result::Failed otherwise - a degree-1 direction has no periodic form
+  // by convention, same as the curve case). A no-op
+  // (Result::NoOpAlreadySatisfied) if already periodic in `direction`.
+  // Reproduces the original surface's PointAt(u, v) for every (u, v) in
+  // the original domain to the same empirically-verified 1e-15-to-a-few-
+  // 1e-11 precision NurbsCurve::MakePeriodicExact() itself achieves (not
+  // re-measured independently here - it is the literal same per-line
+  // computation, just run once per cross-line instead of once).
+  Result MakePeriodicExact(int direction);
+
   // Whether the surface's entire shape lies within `tolerance` of some
   // plane. Delegates to `ON_NurbsSurface::IsPlanar` after verifying it's
   // a real implementation (fits a plane through the surface's own
