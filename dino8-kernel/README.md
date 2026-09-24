@@ -4605,6 +4605,61 @@ honestly out of scope.
   blends at trihedral corners remain the one gap genuinely still open for
   this entire pairing.
 
+- **`FilletConcaveEdges` extended to trihedral (m == 3) concave vertex
+  blends** - closes that last gap: when all three edges of a concave,
+  valence-3 corner are filleted together, this function now closes it
+  with a genuine spherical patch, the exact mirror of `FilletConvexEdges`'
+  own m == 3 case. The topological machinery (pole-face detection -
+  perpendicular to the other two - and equator-edge identification)
+  transfers UNCHANGED, since nothing in it depends on convex vs. concave.
+  What changes, each a direct mirror of `FilletConcaveEdge`'s own two-face
+  derivation: the ball center sits OUTSIDE the material (`n_f . (C - V) =
+  +radius` for all three planes, the SAME 3x3 Cramer's-rule solve with
+  the RHS negated); the sphere's own `xaxis = -eq.n_i` and `outward =
+  false`.
+  A genuinely NEW fix, not just a sign mirror - found and caught by this
+  increment's own regression test, not assumed from the algebra alone:
+  the sphere's own pole sits at `C + radius*(+-zaxis)` via
+  `SphericalFace`'s own fixed position formula; for this to land on the
+  correct CONCAVE tangent point on the pole face (`C - radius*n_pole`,
+  the same sign `FilletConcaveEdge`'s own `contact_i`/`contact_j` already
+  use), the zdot-sign-to-`[lat0, lat1]` branch has to be the OPPOSITE of
+  `FilletConvexEdges`' own. An early draft reused those branches
+  unchanged and left two of the three meridian cylinders' own end caps
+  landing on the WRONG pole of their own great circle - a real topology
+  bug (`IsManifold()` true but `has_boundary` true, i.e. naked edges),
+  caught directly by inspecting the raw `ON_Brep`'s own unshared edges
+  (`ON_BrepEdge::m_ti.Count() == 1`) rather than assumed fixed once the
+  sign flips were applied elsewhere.
+  Verified (`TestFilletConcaveEdgesTrihedralCornerAddsExactSphericalBlendVolume`,
+  `TestFilletConcaveEdgesRejectsMixedVertexConfigurations`) against a
+  cube-shaped notch cut from one corner of a larger box (three mutually-
+  perpendicular concave edges meeting at one vertex): the result is a
+  valid, closed, manifold solid whose added volume matches the closed
+  form `radius^3 * (1 - pi/6)` (the corner ball's own contribution, the
+  concave mirror of the convex trihedral corner's own REMOVED volume)
+  plus each edge's own straight quarter-round section, converging as
+  tessellation resolution increases (4.9e-4 at 20x20, 2.9e-3 at 8x8); two
+  (not one, not three) filleted edges meeting at one vertex is correctly
+  rejected. Full `dino8_kernel_smoke`: 3302 checks, 0 failures;
+  `dino8_general_boolean_sweep` unaffected.
+  Honestly disclosed, found directly while verifying this closed form and
+  NOT a defect in this function's own construction: at one specific
+  radius (0.25, not the 0.4 this increment's own test uses) on this exact
+  fixture, `Brep::TessellateToClosedMeshAdaptive()` was observed to hang
+  (unbounded memory growth, never returning), while `IsValid()`/
+  `IsManifold()`/`IsSolid()` all report true and `TessellateToClosedMesh()`
+  (fixed resolution) succeeds and converges to the correct closed form -
+  a real, separate robustness gap in the adaptive tessellator's own
+  handling of a concave spherical patch (a different subsystem, out of
+  this file's own scope to fix), not something this increment's own
+  regression test relies on (it deliberately uses fixed-resolution
+  tessellation instead, to avoid risking a hang in the wider test suite).
+  With this, concave vertex blending has reached full parity with the
+  convex side for the plain trihedral case; MIXED convex/concave corners
+  remain the one genuinely open gap in this entire fillet/chamfer
+  convex/concave pairing.
+
 ## What's still not done (as of chunk 2)
 
 - `Brep::Box()`, `Brep::Sphere()`, `Brep::TrimmedPlanarFace()`

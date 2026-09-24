@@ -903,31 +903,86 @@ Brep FilletConvexEdges(const Brep& solid, const std::vector<std::pair<Point3d, P
 // just computed once per edge in a loop instead of once - see that
 // function's own doc comment for every derivation this reuses.
 //
+// TRIHEDRAL (m == 3) CONCAVE VERTEX BLEND: when all three edges of a
+// concave, valence-3 corner are filleted with the same radius, this
+// function now closes it with a genuine spherical patch, the exact
+// mirror of FilletConvexEdges' own m == 3 case - see that function's own
+// doc comment for the shared topological machinery (pole-face detection,
+// equator-edge identification), which transfers UNCHANGED (nothing in
+// finding which face is perpendicular to the other two, or which edge's
+// own two faces are the two non-pole ones, depends on convex vs.
+// concave). What DOES change, each a direct mirror of FilletConcaveEdge's
+// own two-face derivation:
+//   - the ball center C sits OUTSIDE the material this time: n_f . (C -
+//     V) = +radius for all three face normals (FilletConvexEdges' own
+//     is -radius), solved by the identical Cramer's-rule 3x3 linear
+//     system with the RHS negated.
+//   - each edge's own set-back projection t = (C - v.p) . e is UNCHANGED
+//     (a directionless measurement along e, indifferent to sign
+//     convention), but the expected perpendicular offset used to CHECK
+//     it is +bis*(radius/cosb) (FilletConcaveEdge's own axis_point sign),
+//     not FilletConvexEdges' own -bis*(radius/cosb).
+//   - the sphere's own xaxis is -eq.n_i (the concave frame convention)
+//     and `outward = false` (the patch bounds material from the concave
+//     side, the SphericalFace sibling of CylindricalFace::outward).
+//   - a genuinely new fix, not just a sign mirror, found and caught by
+//     this function's own regression test, not assumed from the algebra
+//     alone: the sphere's own POLE lies at lat = +-pi/2, i.e. C +
+//     radius*(+-zaxis) via SphericalFace's own fixed position formula -
+//     for this to land on the correct CONCAVE tangent point on the pole
+//     face (C - radius*n_pole, the same sign FilletConcaveEdge's own
+//     contact_i/contact_j already use), the zdot-sign-to-[lat0,lat1]
+//     branch has to be the OPPOSITE of FilletConvexEdges' own (whose own
+//     pole IS at C + radius*n_pole, correct there because its ball sits
+//     INSIDE the material instead). An early draft reused
+//     FilletConvexEdges' own branches unchanged and left two of the
+//     three meridian cylinders' own end caps landing on the WRONG pole
+//     of their own great circle - a real topology bug (naked edges,
+//     IsManifold() true but has_boundary true), caught directly by
+//     inspecting the raw ON_Brep's own unshared edges, not by assumption.
+//
 // SCOPE, stated plainly rather than silently narrowed: every edge must be
 // a genuine shared concave boundary edge (the same EdgeConvexity check
 // FilletConcaveEdge itself uses, applied per edge); one radius for all
-// edges; no edge listed twice; and - the one deliberate limit this first
-// multi-edge increment carries, matching where FilletConvexEdges ITSELF
-// started before its own trihedral spherical-corner support was added -
-// every filleted edge's own two endpoints must have EXACTLY ONE filleted
-// edge incident (m == 1): two or more concave edges meeting at a shared
-// vertex is a genuine vertex-blend problem (and, for concave corners, one
-// this codebase has not attempted at all yet - not even the m == 3
-// trihedral case FilletConvexEdges already closes for the convex side)
-// and throws std::invalid_argument rather than guessing at a shape.
-// Oblique third faces are likewise out of scope here (unlike the single-
-// edge FilletConcaveEdge, which already closes that case) - only a free
-// boundary or a third face exactly PERPENDICULAR to the edge is closed,
-// via the same NotchCornerAtVertex splice FilletConvexEdges' own m == 1
-// case uses. Both gaps are genuine, disclosed future increments for this
-// function specifically.
+// edges; no edge listed twice; every filleted edge's own two endpoints
+// must have either EXACTLY ONE filleted edge incident (m == 1, a plain
+// corner notch) or all THREE edges of a trihedral, valence-3 corner
+// filleted together (m == 3, the spherical blend above) - any other
+// vertex configuration (m == 2, or m == 3 at higher valence) throws
+// std::invalid_argument rather than guessing at a shape, matching
+// FilletConvexEdges' own scope exactly. Oblique third faces are out of
+// scope here (unlike the single-edge FilletConcaveEdge, which already
+// closes that case) - only a free boundary or a third face exactly
+// PERPENDICULAR to the edge is closed at an m == 1 vertex, via the same
+// NotchCornerAtVertex splice FilletConvexEdges' own m == 1 case uses.
+// Mixed convex/concave corners remain out of scope, a genuine, disclosed
+// gap for a genuinely different, harder problem.
 //
 // CLOSED FORM this was checked against (dino8-kernel's own regression
 // tests): two INDEPENDENT 90-degree concave notches (no shared vertex) on
 // the same prism, each filleted with the same radius r, together ADD
 // exactly 2 * r^2 * (1 - pi/4) of volume - the same per-notch closed form
 // FilletConcaveEdge's own single-edge tests check, simply summed, since
-// the two notches share no geometry to interact through.
+// the two notches share no geometry to interact through. For the m == 3
+// trihedral corner (three mutually-perpendicular concave edges meeting at
+// one vertex, e.g. a cube-shaped notch cut from one corner of a larger
+// box): the corner ball ADDS exactly radius^3 * (1 - pi/6) beyond what
+// the three edges' own straight quarter-round sections already add
+// (radius^2 * (1 - pi/4) per unit of REMAINING edge length after each
+// edge's own radius set-back near the corner) - the concave mirror of
+// the convex trihedral corner's own REMOVED volume, added instead of
+// removed, by the same "corner cube minus ball octant" cross-section.
+// Honestly disclosed, found directly while verifying this closed form,
+// not a claim about this function's own correctness: at one specific
+// radius on this exact fixture, `Brep::TessellateToClosedMeshAdaptive()`
+// was observed to hang (unbounded memory growth, never returning) on the
+// resulting solid, while `IsValid()`/`IsManifold()`/`IsSolid()` all
+// report true and `TessellateToClosedMesh()` (fixed resolution) succeeds
+// and converges to this closed form as resolution increases - a real,
+// separate robustness gap in the adaptive tessellator's own handling of
+// a concave spherical patch, not a defect in this function's own B-rep
+// (which the fixed-resolution convergence directly confirms), and out of
+// this file's own scope to fix.
 Brep FilletConcaveEdges(const Brep& solid, const std::vector<std::pair<Point3d, Point3d>>& edges, double radius);
 
 

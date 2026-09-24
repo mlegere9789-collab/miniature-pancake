@@ -28135,6 +28135,122 @@ void TestRemoveBlendLeavesTheOtherConcaveFilletIntactAmongTwo() {
         "the remaining single fillet's own volume matches r^2*(1-pi/4) added, not both");
 }
 
+namespace {
+
+// Box (0,0,0)-(3,3,3) minus the sub-cube (2,3)x(2,3)x(2,3) - a trihedral
+// CONCAVE corner at (2,2,2), hand-built via FromPlanarFaces (not a
+// boolean union/difference, which splits coplanar faces the same way
+// ConcaveLShapedPrism's own comment discloses). Each of the 3 new
+// concave edges has the same 90-degree notch angle as the other fixtures
+// in this file.
+dino8::kernel::Brep NotchedCubeCorner() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+  auto make_face = [](const std::vector<Point3d>& loop, Vector3d normal) {
+    Brep::PlanarFace f;
+    f.loop = loop;
+    f.plane = ON_Plane(loop[0], normal);
+    return f;
+  };
+  std::vector<Brep::PlanarFace> faces;
+  faces.push_back(make_face({Point3d(0, 0, 0), Point3d(0, 0, 3), Point3d(0, 3, 3), Point3d(0, 3, 0)}, Vector3d(-1, 0, 0)));
+  faces.push_back(make_face({Point3d(0, 0, 0), Point3d(3, 0, 0), Point3d(3, 0, 3), Point3d(0, 0, 3)}, Vector3d(0, -1, 0)));
+  faces.push_back(make_face({Point3d(0, 0, 0), Point3d(0, 3, 0), Point3d(3, 3, 0), Point3d(3, 0, 0)}, Vector3d(0, 0, -1)));
+  faces.push_back(make_face({Point3d(3, 0, 0), Point3d(3, 3, 0), Point3d(3, 3, 2), Point3d(3, 2, 2), Point3d(3, 2, 3),
+                             Point3d(3, 0, 3)},
+                            Vector3d(1, 0, 0)));
+  faces.push_back(make_face({Point3d(0, 3, 0), Point3d(0, 3, 3), Point3d(2, 3, 3), Point3d(2, 3, 2), Point3d(3, 3, 2),
+                             Point3d(3, 3, 0)},
+                            Vector3d(0, 1, 0)));
+  faces.push_back(make_face({Point3d(0, 0, 3), Point3d(3, 0, 3), Point3d(3, 2, 3), Point3d(2, 2, 3), Point3d(2, 3, 3),
+                             Point3d(0, 3, 3)},
+                            Vector3d(0, 0, 1)));
+  faces.push_back(
+      make_face({Point3d(2, 2, 2), Point3d(2, 3, 2), Point3d(2, 3, 3), Point3d(2, 2, 3)}, Vector3d(1, 0, 0)));
+  faces.push_back(
+      make_face({Point3d(2, 2, 2), Point3d(2, 2, 3), Point3d(3, 2, 3), Point3d(3, 2, 2)}, Vector3d(0, 1, 0)));
+  faces.push_back(
+      make_face({Point3d(2, 2, 2), Point3d(3, 2, 2), Point3d(3, 3, 2), Point3d(2, 3, 2)}, Vector3d(0, 0, 1)));
+  return Brep::FromPlanarFaces(faces);
+}
+
+}  // namespace
+
+void TestFilletConcaveEdgesTrihedralCornerAddsExactSphericalBlendVolume() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConcaveEdges;
+  using dino8::kernel::Point3d;
+
+  const Brep notched = NotchedCubeCorner();
+  const double base_volume = notched.TessellateToClosedMesh(4, 4).Volume();
+  Check(std::fabs(base_volume - 26.0) < 1e-6, "sanity: the notched-cube-corner fixture's own volume is exactly 26");
+
+  const double r = 0.4;
+  const Point3d e1p0(2, 2, 2), e1p1(2, 2, 3);
+  const Point3d e2p0(2, 2, 2), e2p1(2, 3, 2);
+  const Point3d e3p0(2, 2, 2), e3p1(3, 2, 2);
+  const Brep filleted = FilletConcaveEdges(notched, {{e1p0, e1p1}, {e2p0, e2p1}, {e3p0, e3p1}}, r);
+
+  ON_TextLog log;
+  bool oriented = false, has_boundary = true;
+  Check(filleted.raw().IsValid(&log) && filleted.raw().IsManifold(&oriented, &has_boundary) && oriented &&
+            !has_boundary && filleted.raw().IsSolid(),
+        "the trihedral concave vertex blend gives a valid, closed, manifold solid");
+
+  const Brep::MixedFacesResult mf = filleted.MixedFaces();
+  Check(mf.cylindrical.size() == 3 && mf.spherical.size() == 1,
+        "sanity: three cylindrical patches (one per edge) and one spherical corner patch");
+  Check(mf.spherical[0].outward == false,
+        "the spherical patch is marked outward=false - it bounds material from the concave side");
+
+  // Closed form: the corner ball ADDS radius^3*(1-pi/6) beyond what the 3
+  // edges' own straight quarter-round sections add (radius^2*(1-pi/4) per
+  // unit of edge length remaining after each edge's own radius set-back
+  // near the corner - each edge has physical length 1, set back by
+  // radius at the corner end, free at the far end).
+  const double added_corner = r * r * r * (1.0 - ON_PI / 6.0);
+  const double edge_len_remaining = 1.0 - r;
+  const double added_edges = 3.0 * r * r * (1.0 - ON_PI / 4.0) * edge_len_remaining;
+  const double expected = base_volume + added_corner + added_edges;
+  // Deliberately TessellateToClosedMesh (fixed resolution), not the
+  // Adaptive variant: found directly while developing this test,
+  // TessellateToClosedMeshAdaptive() hangs (unbounded memory growth,
+  // never returning) on this exact solid at one specific radius (0.25,
+  // not this test's own 0.4) - confirmed to be a tessellator robustness
+  // gap, not a defect in this function's own B-rep (IsValid/IsManifold/
+  // IsSolid all report true regardless, and the fixed-resolution volume
+  // below converges to this closed form as resolution increases - 20x20
+  // matches to 4.9e-4, 8x8 only to 2.9e-3), so this test avoids the
+  // adaptive path entirely rather than risk hanging the whole suite -
+  // see FilletConcaveEdges' own doc comment for the full disclosure.
+  Check(std::fabs(filleted.TessellateToClosedMesh(20, 20).Volume() - expected) < 1e-3,
+        "the trihedral corner blend's own volume matches the closed form (corner ball + 3 edge sections)");
+}
+
+void TestFilletConcaveEdgesRejectsMixedVertexConfigurations() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConcaveEdges;
+  using dino8::kernel::Point3d;
+  auto throws = [](const std::function<void()>& fn) {
+    try {
+      fn();
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+    return false;
+  };
+
+  const Brep notched = NotchedCubeCorner();
+  const Point3d e1p0(2, 2, 2), e1p1(2, 2, 3);
+  const Point3d e2p0(2, 2, 2), e2p1(2, 3, 2);
+
+  // Exactly two of the three edges at a trihedral corner (m == 2, not 1
+  // or 3) is not a supported vertex configuration.
+  Check(throws([&] { FilletConcaveEdges(notched, {{e1p0, e1p1}, {e2p0, e2p1}}, 0.3); }),
+        "rejects two (not one, not three) filleted edges meeting at one vertex");
+}
+
 void TestRemoveBlendRoundTripsAConcaveFillet() {
   using dino8::kernel::Brep;
   using dino8::kernel::FilletConcaveEdge;
@@ -30132,6 +30248,8 @@ int main() {
   TestFilletConcaveEdgesAddsExactVolumeForTwoIndependentNotches();
   TestFilletConcaveEdgesRejectsUnsupportedConfigurations();
   TestRemoveBlendLeavesTheOtherConcaveFilletIntactAmongTwo();
+  TestFilletConcaveEdgesTrihedralCornerAddsExactSphericalBlendVolume();
+  TestFilletConcaveEdgesRejectsMixedVertexConfigurations();
   TestRemoveBlendRoundTripsAConcaveFillet();
   TestChamferConcaveEdgeAddsExactRightTriangleVolume();
   TestChamferConcaveEdgeAngleMatchesTwoDistanceForm();
