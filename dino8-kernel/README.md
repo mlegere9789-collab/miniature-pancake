@@ -3994,6 +3994,82 @@ honestly out of scope.
   genuine two-type one; noted plainly in the test file rather than staged
   to look covered.
 
+- **`RemoveChamfer(solid, point_on_chamfer)`** - the chamfer's own
+  counterpart to `RemoveBlend`, restoring the sharp edge a
+  `ChamferConvexEdge`/`ChamferConvexEdgeAngle` chamfer replaced with a
+  flat strip. Unlike a fillet, a chamfer face is an ordinary
+  `Brep::PlanarFace` with no dedicated type `MixedFaces()` can hand back
+  to identify it, so `point_on_chamfer` is matched against
+  `solid.PlanarFaces()` directly and the candidate face must be
+  GEOMETRICALLY verified as a chamfer before anything is touched: it must
+  be a quad, and of the quad's two ways to split its 4 edges into
+  opposite rail/end pairs, EXACTLY ONE must reconstruct a consistent
+  sharp edge (closed-form two-plane intersection `P0 = ((d_a*n_b -
+  d_b*n_a) x e)/|e|^2`, `e = normalize(n_a x n_b)`, both candidate rail
+  corners projecting to the SAME restored endpoints - a genuinely
+  discriminating check, not vacuous). Either end that met a third face is
+  collapsed back from its 2-point splice (`ChamferEndAtVertex`'s own
+  construction) to the single restored vertex via `CollapseNotchRun`,
+  now also handling a plain 2-point run and not only a fillet's dense
+  one.
+  Two real bugs found and fixed while building this, both confirmed by a
+  dedicated two-chamfer regression before assuming a cause, not guessed
+  at: (1) `Vector3d::Unitize()` is not a reliable degeneracy test for two
+  exactly-parallel candidate face normals (the "wrong pairing treats a
+  solid's own parallel side faces as rails" case) - the cross product can
+  carry a tiny nonzero floating-point residual (~1e-17) that `Unitize()`
+  happily normalizes into an arbitrary direction instead of failing;
+  fixed with an explicit length check before unitizing. (2) the
+  candidate-face search originally used plane distance alone
+  (`ON_Plane::DistanceTo`), which is not a reliable nearest-face proxy
+  once a solid has several planar faces whose own infinite planes all
+  pass close to a point while only one actually has that point over its
+  own trimmed extent - on a solid with two chamfers this silently picked
+  an unrelated face and reconstructed garbage rather than throwing; fixed
+  with a genuine point-to-trimmed-polygon distance (`DistanceToPlanarFace`,
+  reusing this codebase's own `PointInPolygon2d`). A THIRD bug surfaced
+  once both of those were fixed and the two-chamfer regression still
+  failed the same way: `FindFaceWithEdge` (shared with `RemoveBlend`) had
+  no way to exclude the candidate chamfer quad's own array index from its
+  "find the neighbouring face sharing this edge" scan - the quad's own
+  loop trivially "matches" each of its own 4 edges, and on this exact
+  two-chamfer fixture `FromMixedFaces`'s own reconstruction happened to
+  place the first chamfer's quad at an array index earlier than its
+  genuine top-face neighbour, so the unguarded scan self-matched the quad
+  against itself before ever reaching the real neighbour, reconstructing
+  a completely wrong sharp edge from the wrong plane pair; fixed by
+  giving `FindFaceWithEdge` an explicit excluded-index parameter, passed
+  as the candidate quad's own index from `RemoveChamfer`. `RemoveBlend`'s
+  own two call sites are unaffected (the default `-1` excludes nothing,
+  and a fillet's curved patch is never itself in the `PlanarFace` list
+  being searched, so no self-match was ever possible there).
+  Verified (`TestRemoveChamferRoundTripsASingleChamfer`,
+  `TestRemoveChamferLeavesTheOtherChamferIntactAmongTwo`,
+  `TestRemoveChamferRoundTripsADistanceAngleChamfer`,
+  `TestRemoveChamferRejectsUnsupportedConfigurations`): a single two-
+  distance chamfer round-trips to the exact 6-face/12-edge/8-vertex unit
+  box, valid/manifold/closed/solid, volume matching to floating-point
+  precision, every corner restored; with TWO chamfers on the box's own
+  parallel top edges, removing the first leaves the second's own quad
+  untouched (7 faces, closed manifold, volume matching `1 - di*dj/2`
+  exactly, not the wrong-plane garbage the third bug above produced); a
+  distance+angle chamfer round-trips the same way; a plain box face and a
+  point far from any face are both correctly rejected. Full
+  `dino8_kernel_smoke`: 3163 checks, 0 failures; `dino8_general_boolean_
+  sweep` unaffected (this file has no dependency on `boolean.cpp`/
+  `mesh.cpp`/`boolean_general.cpp`, the only files that sweep exercises).
+  Honestly still open: the same "no kernel entry point can build a solid
+  carrying two independently-typed blend features in one call" limit
+  `RemoveBlend`'s own cylindrical/conical comparison lives with applies
+  here too in reverse - a chamfer combined with a fillet on the same
+  solid cannot currently be constructed via public API chaining (both
+  `ChamferConvexEdge` and `FilletConvexEdge`/`FilletConvexEdgeTapered`
+  call `PlanarFaces()`, which rejects a solid already carrying any curved
+  face), so `RemoveChamfer`'s own "is the nearest quad face a REAL
+  chamfer" check is exercised only on solids that could contain a
+  chamfer in the first place, never cross-checked against a coexisting
+  fillet; noted plainly rather than staged to look covered.
+
 ## What's still not done (as of chunk 2)
 
 - `Brep::Box()`, `Brep::Sphere()`, `Brep::TrimmedPlanarFace()`

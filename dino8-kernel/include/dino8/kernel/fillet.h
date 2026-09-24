@@ -819,4 +819,81 @@ Brep FilletConvexEdges(const Brep& solid, const std::vector<std::pair<Point3d, P
 // restores the original straight edge.
 Brep RemoveBlend(const Brep& solid, Point3d point_on_fillet);
 
+
+// BLEND REMOVAL for a CHAMFER: the inverse of ChamferConvexEdge, restoring
+// the original sharp edge a two-distance (or distance+angle) chamfer
+// replaced with a flat strip - purely from the chamfered solid's own
+// geometry, the same "read it back out" spirit RemoveBlend's own doc
+// comment describes for the fillet case.
+//
+// UNLIKE a fillet, a chamfer face is an ORDINARY Brep::PlanarFace - there
+// is no dedicated face type MixedFaces() can hand back to identify it, so
+// `point_on_chamfer` is matched against `solid.PlanarFaces()` directly
+// (the closest face, measured by distance to its own trimmed polygon,
+// wins) and this function must GEOMETRICALLY verify the candidate face
+// really is a chamfer before touching anything - never assumed from
+// being merely the nearest quad.
+//
+// The construction:
+//   1. The candidate face must be a quad (exactly 4 loop points) -
+//      throws std::invalid_argument otherwise (a chamfer is always a
+//      quad, by ChamferConvexEdge's own construction).
+//   2. A chamfer quad's own two RAIL edges (shared with the two faces
+//      the chamfer was built between) are a pair of OPPOSITE edges of
+//      the quad - the other opposite pair are the two END conditions.
+//      There are only two ways to split a quad's 4 edges into opposite
+//      pairs; this function tries BOTH and requires EXACTLY ONE to
+//      reconstruct successfully (see step 3), throwing
+//      std::invalid_argument if zero or both do - the discriminating
+//      check is genuine, not a coin flip: for the WRONG pairing, the two
+//      candidate "rail" edges' own neighbouring faces are frequently
+//      PARALLEL to each other (e.g. treating a box chamfer's own two END
+//      edges, bordering the box's own parallel side faces, as if they
+//      were rails), which makes plane_a x plane_b degenerate and fails
+//      immediately; when it does not fail outright, the deeper check in
+//      step 3 (both candidate rail corners projecting to the SAME
+//      restored edge endpoint) still catches it. The neighbouring-face
+//      search itself excludes the candidate quad's OWN index - each of
+//      its 4 edges trivially "matches itself" otherwise (the quad's own
+//      loop obviously contains its own edges), which on a solid with a
+//      second, independently-built chamfer elsewhere can shift the quad
+//      to an array index earlier than its genuine neighbour and produce
+//      a spurious self-match instead of ever reaching the real one;
+//      caught by a two-chamfer regression, not assumed from the single-
+//      chamfer case alone.
+//   3. For a candidate rail pair with neighbouring faces a/b: e =
+//      normalize(n_a x n_b) (throws if degenerate - parallel candidate
+//      faces, an immediate sign the pairing is wrong); a point on the
+//      two planes' own intersection line follows the standard closed
+//      form P0 = ((d_a*n_b - d_b*n_a) x e) / |e|^2 (d_a = n_a . plane_a.
+//      origin, d_b likewise); each of the pair's own two quad corners is
+//      then projected onto that line (P0 + ((corner - P0).e)*e) to
+//      recover a candidate edge_p0/edge_p1 - and the OTHER pair's own
+//      two corners (the ones NOT used for the projection) must
+//      independently project to the SAME two points, within tolerance,
+//      for this pairing to be accepted; a genuinely discriminating cross-
+//      check (not vacuous - the two projections use different starting
+//      corners on different edges of the quad).
+//   4. Face a's and face b's own loops are re-trimmed by replacing their
+//      shared rail edge with the restored sharp edge - the exact inverse
+//      of ChamferConvexEdge's own half-space re-trim.
+//   5. Either END of the chamfer, if it met a third face there (see
+//      ChamferEndAtVertex's own doc comment: a chamfer's own end
+//      condition splices exactly two adjacent points into that face's
+//      loop, never a dense polyline - the flat, purely planar sibling of
+//      a fillet's own arc notch), has that two-point edge collapsed back
+//      to the single restored vertex, via the same CollapseNotchRun this
+//      file's own fillet-removal path uses (now also handling a plain
+//      2-point run, not only a dense one). A free boundary end needs no
+//      change and gets none.
+//   6. The chamfer face itself is dropped; every other face of `solid`
+//      is carried through unchanged via Brep::FromMixedFaces.
+//
+// SCOPE: reverses exactly what ChamferConvexEdge/ChamferConvexEdgeAngle
+// themselves can build (both dispatch to the same two-distance
+// construction, so this one inverse covers both). A solid already
+// carrying a curved face is out of scope, since PlanarFaces() itself
+// rejects it.
+Brep RemoveChamfer(const Brep& solid, Point3d point_on_chamfer);
+
 }  // namespace dino8::kernel
