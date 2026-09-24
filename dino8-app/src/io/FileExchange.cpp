@@ -143,11 +143,18 @@ int RgbToAci(int r, int g, int b) {
   // Black (the usual "draw on white" colour) is ACI 7 by convention.
   if (r < 8 && g < 8 && b < 8) return 7;
   int best = 7;
-  long best_d = 1L << 40;
+  // `long long`, not `long`: on Windows (LLP64) `long` is 32 bits, so the
+  // previous `long best_d = 1L << 40` was undefined behaviour there (MSVC
+  // C4293 "shift count negative or too big") and in practice evaluated to
+  // 0 - making `d < best_d` never true, so every non-black colour silently
+  // exported as ACI 7 on Windows only. The squared RGB distance itself
+  // maxes out at 3 * 255^2 = 195075, which fits any 32-bit int, so the
+  // sentinel just has to be larger than that on every platform.
+  long long best_d = 1LL << 40;
   for (int i = 1; i <= 255; ++i) {
     const std::array<int, 3> c = AciToRgb(i);
-    const long d = static_cast<long>(c[0] - r) * (c[0] - r) + static_cast<long>(c[1] - g) * (c[1] - g) +
-                   static_cast<long>(c[2] - b) * (c[2] - b);
+    const long long d = static_cast<long long>(c[0] - r) * (c[0] - r) + static_cast<long long>(c[1] - g) * (c[1] - g) +
+                        static_cast<long long>(c[2] - b) * (c[2] - b);
     if (d < best_d) { best_d = d; best = i; }
   }
   return best;

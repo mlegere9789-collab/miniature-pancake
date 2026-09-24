@@ -21566,6 +21566,487 @@ void TestChamferConvexEdgeChainsAcrossACornerAndAlongParallelEdges() {
   Check(at_corner == 1, "exactly one vertex sits at (0, 0, 1-dj) - the shared corner was welded, not doubled");
 }
 
+// ---------------------------------------------------------------------------
+// Sweep-class Brep factories (src/sweep.cpp): Extrude / Revolve / Loft /
+// Sweep1 / Pipe, plus the MergeAndWeld collapsed-face fix they exposed.
+// Every check below is against computed geometry - closed-form volumes,
+// exact interpolation at stations, real ON_Brep validity/solidity and
+// Mesh::IsClosedManifold() at asymmetric division pairs - not "didn't
+// crash".
+// ---------------------------------------------------------------------------
+namespace sweep_tests {
+
+using dino8::kernel::Brep;
+using dino8::kernel::Mesh;
+using dino8::kernel::NurbsCurve;
+using dino8::kernel::NurbsSurface;
+using dino8::kernel::Point3d;
+using dino8::kernel::Vector3d;
+
+Point3d P(double x, double y, double z) { return Point3d(x, y, z); }
+
+NurbsCurve Polyline(const std::vector<Point3d>& pts) { return NurbsCurve::FromControlPoints(pts, 1); }
+
+NurbsCurve Circle(Point3d center, Vector3d normal, double radius) {
+  const ON_Circle circle(ON_Plane(center, normal), radius);
+  ON_NurbsCurve nurbs;
+  circle.GetNurbForm(nurbs);
+  NurbsCurve k;
+  k.raw() = nurbs;
+  return k;
+}
+
+NurbsCurve Arc(Point3d center, Vector3d xaxis, Vector3d yaxis, double radius, double a0, double a1) {
+  const ON_Circle circle(ON_Plane(center, xaxis, yaxis), radius);
+  const ON_Arc arc(circle, ON_Interval(a0, a1));
+  ON_NurbsCurve nurbs;
+  arc.GetNurbForm(nurbs);
+  NurbsCurve k;
+  k.raw() = nurbs;
+  return k;
+}
+
+// Real ON_Brep topology checks shared by every solid fixture: valid,
+// solid, and every face still m_bRev == false (the construction rule
+// oriented it outward - the volume cross-check never had to flip it).
+void CheckSolidTopology(const Brep& b, int faces, const char* what) {
+  std::string s(what);
+  Check(b.FaceCount() == faces, (s + ": expected face count").c_str());
+  Check(b.raw().IsValid(), (s + ": raw().IsValid() - real ON_Brep topology, not surface-only faces").c_str());
+  Check(b.raw().IsSolid(), (s + ": raw().IsSolid() - a genuinely closed, oriented manifold").c_str());
+  bool any_rev = false;
+  for (int i = 0; i < b.raw().m_F.Count(); ++i) any_rev = any_rev || b.raw().m_F[i].m_bRev;
+  Check(!any_rev, (s + ": every face is outward by construction (no m_bRev flip was needed)").c_str());
+}
+
+// Tessellate()/TessellateToClosedMesh() must give a closed manifold at
+// ANY division pair, including asymmetric ones (the property the fan
+// caps were designed for) - and the volume must match `exact`.
+void CheckClosedMeshVolume(const Brep& b, int du, int dv, double exact, double rel_tol, const char* what) {
+  std::string s(what);
+  const Mesh m = b.TessellateToClosedMesh(du, dv);
+  Check(m.IsClosedManifold(), (s + ": TessellateToClosedMesh is a closed manifold at the requested divisions").c_str());
+  const Mesh a = b.TessellateToClosedMesh(12, 5);
+  Check(a.IsClosedManifold(), (s + ": ...and at the asymmetric (12, 5) pair").c_str());
+  const Mesh c = b.TessellateToClosedMesh(5, 12);
+  Check(c.IsClosedManifold(), (s + ": ...and at the asymmetric (5, 12) pair").c_str());
+  const double vol = m.Volume();
+  Check(vol > 0.0, (s + ": volume is positive (outward orientation)").c_str());
+  Check(std::abs(vol - exact) <= rel_tol * exact, (s + ": volume matches the closed form").c_str());
+}
+
+// Every face here is untrimmed, so the face's own NURBS surface IS its
+// geometry: wrap it for NurbsSurface's classifiers.
+NurbsSurface FaceSurface(const Brep& b, int face) {
+  NurbsSurface ns;
+  ns.raw() = *ON_NurbsSurface::Cast(b.raw().m_F[face].SurfaceOf());
+  return ns;
+}
+
+bool Throws(const std::function<void()>& f) {
+  try {
+    f();
+  } catch (const std::invalid_argument&) {
+    return true;
+  }
+  return false;
+}
+
+void TestMergeAndWeldDropsCollapsedPoleTriangles() {
+  // Brep::Sphere()'s tessellation has a row of samples at each pole that
+  // all weld to one vertex; before the fix in MergeAndWeld those rows
+  // survived as zero-area (a, a, b) triangles whose edge {a, b} was then
+  // used by three faces, so this never reported a closed manifold even
+  // though it was geometrically watertight. Fails on the pre-fix build
+  // (verified: 512 faces, 32 degenerate, IsClosedManifold false).
+  const Mesh m = Brep::Sphere(Point3d(0, 0, 0), 2.0).TessellateToClosedMesh(16, 16);
+  Check(m.IsClosedManifold(), "Brep::Sphere(...).TessellateToClosedMesh(16, 16) is a closed manifold");
+  int degenerate = 0;
+  for (int i = 0; i < m.raw().m_F.Count(); ++i) {
+    const ON_MeshFace& f = m.raw().m_F[i];
+    if (f.vi[0] == f.vi[1] || f.vi[1] == f.vi[2] || f.vi[2] == f.vi[0]) ++degenerate;
+  }
+  Check(degenerate == 0, "no collapsed (repeated-index) faces survive the weld");
+  // 16x16 grid = 512 triangles, minus the 2 x 16 pole triangles that collapse.
+  Check(m.FaceCount() == 512 - 32, "exactly the 32 pole triangles were dropped (480 remain)");
+  // A 16x16 inscribed sphere is ~3.5% low (chord error in both angular
+  // directions); dropping the zero-area pole faces changes it by exactly 0.
+  const double exact = (4.0 / 3.0) * M_PI * 8.0;
+  Check(m.Volume() < exact && std::abs(m.Volume() - exact) / exact < 0.05,
+        "volume is that of the inscribed 16x16 sphere (from below, within 5%) - dropping zero-area faces did not change it");
+}
+
+void TestExtrudeRectangleIsExactCappedSolid() {
+  const NurbsCurve rect = Polyline({P(0, 0, 0), P(2, 0, 0), P(2, 3, 0), P(0, 3, 0), P(0, 0, 0)});
+  const Brep box = Brep::Extrude(rect, Vector3d(0, 0, 5));
+  CheckSolidTopology(box, 3, "extruded 2x3x5 rectangle");
+  Check(box.raw().m_E.Count() == 5 && box.raw().m_V.Count() == 4,
+        "topology is 1 wall + 2 fan caps: 5 edges (wall seam, 2 shared profile edges, 2 cap seams), 4 vertices");
+  // Every coordinate below is exactly representable in float, so the
+  // welded mesh's volume is exact, not approximate.
+  CheckClosedMeshVolume(box, 8, 8, 30.0, 1e-9, "extruded rectangle");
+  Check(std::abs(box.TessellateToClosedMesh(12, 5).Volume() - 30.0) < 1e-9, "volume is exactly 30 at (12, 5) too");
+  // The wall is the exact degree-(1, 1) tensor product, the caps are planar fans.
+  Check(FaceSurface(box, 0).DegreeU() == 1 && FaceSurface(box, 0).DegreeV() == 1, "wall is degree (1, 1)");
+  Check(FaceSurface(box, 1).IsPlanar() && FaceSurface(box, 2).IsPlanar(), "both caps are planar surfaces");
+  Check(FaceSurface(box, 1).raw().IsSingular(0), "a cap's apex side is a genuine singular side");
+
+  // A clockwise profile is reversed internally: same positive volume.
+  const NurbsCurve rect_cw = Polyline({P(0, 0, 0), P(0, 3, 0), P(2, 3, 0), P(2, 0, 0), P(0, 0, 0)});
+  const Brep box_cw = Brep::Extrude(rect_cw, Vector3d(0, 0, 5));
+  CheckSolidTopology(box_cw, 3, "clockwise rectangle");
+  Check(std::abs(box_cw.TessellateToClosedMesh(8, 8).Volume() - 30.0) < 1e-9, "clockwise profile still gives +30");
+  // Oblique direction: volume is area x (normal component) = 6 x 5.
+  const Brep sheared = Brep::Extrude(rect, Vector3d(1, 1, 5));
+  CheckSolidTopology(sheared, 3, "obliquely extruded rectangle");
+  Check(std::abs(sheared.TessellateToClosedMesh(8, 8).Volume() - 30.0) < 1e-9, "oblique extrusion volume is exactly 30");
+  // Negative direction.
+  Check(std::abs(Brep::Extrude(rect, Vector3d(0, 0, -5)).TessellateToClosedMesh(8, 8).Volume() - 30.0) < 1e-9,
+        "extruding downward gives +30 too");
+
+  // Rational profile: an exact circle stays an exact cylinder (rational
+  // wall); the tessellated volume is an inscribed polygon prism, so it is
+  // below pi r^2 h and converges from below.
+  const Brep cyl = Brep::Extrude(Circle(P(0, 0, 0), Vector3d(0, 0, 1), 1.0), Vector3d(0, 0, 4));
+  CheckSolidTopology(cyl, 3, "extruded circle");
+  Check(FaceSurface(cyl, 0).IsRational() && FaceSurface(cyl, 0).IsCylinder(), "extruded circle's wall is an exact rational cylinder");
+  const double v64 = cyl.TessellateToClosedMesh(64, 4).Volume();
+  Check(v64 < 4.0 * M_PI && std::abs(v64 - 4.0 * M_PI) / (4.0 * M_PI) < 0.003, "cylinder volume within 0.3% of pi r^2 h, from below");
+  Check(cyl.TessellateToClosedMesh(12, 5).IsClosedManifold(), "extruded circle is closed at (12, 5)");
+
+  // An L-shaped profile is star-shaped (its kernel is the inner corner's
+  // quadrant) even though its centroid does not see every edge.
+  const NurbsCurve ell = Polyline({P(0, 0, 0), P(3, 0, 0), P(3, 1, 0), P(1, 1, 0), P(1, 3, 0), P(0, 3, 0), P(0, 0, 0)});
+  const Brep ell_body = Brep::Extrude(ell, Vector3d(0, 0, 2));
+  CheckSolidTopology(ell_body, 3, "L-profile extrusion");
+  // 6 spans: 12 divisions hit every corner, so the volume is exact.
+  Check(std::abs(ell_body.TessellateToClosedMesh(12, 12).Volume() - 10.0) < 1e-9, "L-profile volume is exactly 5 x 2");
+
+  // Open profile: one open face, no caps, not solid.
+  const Brep sheet = Brep::Extrude(Polyline({P(0, 0, 0), P(1, 0, 0), P(1, 1, 0)}), Vector3d(0, 0, 2));
+  Check(sheet.FaceCount() == 1 && sheet.raw().IsValid() && !sheet.raw().IsSolid(), "open profile -> one valid open face");
+  bool oriented = false, has_boundary = false;
+  Check(sheet.raw().IsManifold(&oriented, &has_boundary) && has_boundary, "open extrusion is a manifold with boundary");
+  // Closed profile, cap=false: a tube.
+  const Brep tube = Brep::Extrude(rect, Vector3d(0, 0, 5), /*cap=*/false);
+  Check(tube.FaceCount() == 1 && tube.raw().IsValid() && !tube.raw().IsSolid(), "cap=false -> an open tube");
+
+  // Negative controls.
+  Check(Throws([&] { Brep::Extrude(rect, Vector3d(0, 0, 0)); }), "zero direction throws");
+  Check(Throws([&] { Brep::Extrude(rect, Vector3d(1, 0, 0)); }), "direction in the profile plane throws");
+  const NurbsCurve cee = Polyline({P(0, 0, 0), P(3, 0, 0), P(3, 1, 0), P(1, 1, 0), P(1, 2, 0), P(3, 2, 0), P(3, 3, 0), P(0, 3, 0), P(0, 0, 0)});
+  Check(Throws([&] { Brep::Extrude(cee, Vector3d(0, 0, 1)); }), "a C-shaped (non-star-shaped) profile refuses to cap");
+  Check(Brep::Extrude(cee, Vector3d(0, 0, 1), /*cap=*/false).FaceCount() == 1, "...but extrudes fine as an open tube");
+  const NurbsCurve skew = Polyline({P(0, 0, 0), P(2, 0, 0), P(2, 3, 1), P(0, 3, 0), P(0, 0, 0)});
+  Check(Throws([&] { Brep::Extrude(skew, Vector3d(0, 0, 5)); }), "a closed non-planar profile refuses to cap");
+}
+
+void TestRevolveExactSolidsAndCaps() {
+  const Point3d origin(0, 0, 0);
+  const Vector3d z(0, 0, 1);
+  // Open L profile with both ends on the axis: the cylinder r=2, h=3.
+  const NurbsCurve ell = Polyline({P(0, 0, 0), P(2, 0, 0), P(2, 0, 3), P(0, 0, 3)});
+  const Brep cyl = Brep::Revolve(ell, origin, z);
+  CheckSolidTopology(cyl, 1, "full revolve of the L profile (cylinder)");
+  Check(cyl.raw().m_E.Count() == 1 && cyl.raw().m_V.Count() == 2, "one face, one seam edge, two pole vertices");
+  // The wall is the exact rational surface of revolution: every sample's
+  // distance from the axis equals the profile's radius at that u.
+  {
+    const NurbsSurface wall = FaceSurface(cyl, 0);
+    Check(wall.IsRational() && wall.DegreeV() == 2, "revolved wall is rational quadratic in the angle direction");
+    double worst = 0.0;
+    const ON_Interval du = wall.raw().Domain(0), dv = wall.raw().Domain(1);
+    const ON_Interval dc = ell.raw().Domain();
+    for (int i = 0; i <= 30; ++i) {
+      for (int j = 0; j <= 30; ++j) {
+        const Point3d p = wall.PointAt(du.ParameterAt(i / 30.0), dv.ParameterAt(j / 30.0));
+        // Revolve() may have reversed the profile for outward orientation: compare radii sets by height.
+        const double rho = std::sqrt(p.x * p.x + p.y * p.y);
+        double best = 1e9;
+        for (int k = 0; k <= 300; ++k) {
+          const Point3d q = ell.PointAt(dc.ParameterAt(k / 300.0));
+          best = std::min(best, std::hypot(std::sqrt(q.x * q.x + q.y * q.y) - rho, q.z - p.z));
+        }
+        worst = std::max(worst, best);
+      }
+    }
+    Check(worst < 0.02, "every wall sample lies on the revolved profile (radius, height) within sampling resolution");
+    // Exactness at the quadrant seam: the v=2*pi control points are bit-identical to v=0.
+    Check(wall.IsClosed(1), "full revolve is exactly closed in the angle direction");
+  }
+  // u=12 hits every profile corner (3 spans), v=64 is the angular polygon.
+  CheckClosedMeshVolume(cyl, 12, 64, M_PI * 4.0 * 3.0, 0.003, "cylinder by revolution");
+  Check(cyl.TessellateToClosedMesh(12, 64).Volume() < M_PI * 12.0, "inscribed polygon prism: volume from below");
+
+  // Partial angles of the same profile: two planar caps whose fan apex
+  // sits on the axis segment, shared as literal edges between the caps.
+  const Brep quarter = Brep::Revolve(ell, origin, z, M_PI / 2);
+  CheckSolidTopology(quarter, 3, "quarter revolve of the L profile");
+  Check(quarter.raw().m_E.Count() == 4 && quarter.raw().m_V.Count() == 3,
+        "quarter: wall's 2 profile edges + the 2 axis-segment edges the caps share; 2 poles + 1 apex");
+  CheckClosedMeshVolume(quarter, 12, 16, M_PI * 12.0 / 4.0, 0.003, "quarter cylinder");
+  const Brep wedge200 = Brep::Revolve(ell, origin, z, 200.0 * M_PI / 180.0);
+  CheckSolidTopology(wedge200, 3, "200-degree revolve");
+  CheckClosedMeshVolume(wedge200, 12, 32, M_PI * 12.0 * 200.0 / 360.0, 0.003, "200-degree cylinder wedge");
+
+  // Closed rectangle away from the axis: a square-section ring, Pappus V = 2 pi R_c A.
+  const NurbsCurve ring = Polyline({P(3, 0, 0), P(5, 0, 0), P(5, 0, 2), P(3, 0, 2), P(3, 0, 0)});
+  const Brep torus = Brep::Revolve(ring, origin, z);
+  CheckSolidTopology(torus, 1, "full revolve of an off-axis rectangle (square torus)");
+  Check(torus.raw().m_E.Count() == 2 && torus.raw().m_V.Count() == 1, "torus-like: one face, two seam edges, one vertex");
+  CheckClosedMeshVolume(torus, 8, 64, 2.0 * M_PI * 4.0 * 4.0, 0.003, "square torus");
+  const Brep half_ring = Brep::Revolve(ring, origin, z, M_PI);
+  CheckSolidTopology(half_ring, 3, "half revolve of the off-axis rectangle");
+  CheckClosedMeshVolume(half_ring, 8, 32, M_PI * 4.0 * 4.0, 0.003, "half square torus");
+
+  // Sphere from a semicircular arc (rational profile x rational revolve).
+  const NurbsCurve semi = Arc(origin, Vector3d(1, 0, 0), z, 2.0, -M_PI / 2, M_PI / 2);
+  const Brep sphere = Brep::Revolve(semi, origin, z);
+  CheckSolidTopology(sphere, 1, "sphere by revolving a semicircle");
+  Check(FaceSurface(sphere, 0).IsSphere(1e-9), "the revolved semicircle is an exact NURBS sphere");
+  CheckClosedMeshVolume(sphere, 32, 64, (4.0 / 3.0) * M_PI * 8.0, 0.005, "sphere by revolution");
+
+  // Open profile with one endpoint off the axis: a flat disc cap over
+  // the end circle (transposed fan, so it welds at asymmetric divisions).
+  const Brep cup = Brep::Revolve(Polyline({P(0, 0, 0), P(2, 0, 0), P(2, 0, 3)}), origin, z);
+  CheckSolidTopology(cup, 2, "cup profile with one disc cap");
+  CheckClosedMeshVolume(cup, 12, 64, M_PI * 12.0, 0.003, "disc-capped cylinder");
+  const Brep frustum = Brep::Revolve(Polyline({P(2, 0, 0), P(1, 0, 3)}), origin, z);
+  CheckSolidTopology(frustum, 3, "cone frustum with two disc caps");
+  Check(FaceSurface(frustum, 0).IsCone(1e-9), "the revolved slanted segment is an exact NURBS cone");
+  CheckClosedMeshVolume(frustum, 8, 64, M_PI * 3.0 / 3.0 * (4.0 + 2.0 + 1.0), 0.003, "cone frustum");
+
+  // Negative controls.
+  const NurbsCurve touching = Polyline({P(0, 0, 0), P(2, 0, 0), P(2, 0, 3), P(0, 0, 3), P(0, 0, 0)});
+  Check(Throws([&] { Brep::Revolve(touching, origin, z); }), "a closed profile touching the axis throws (degenerate band)");
+  const NurbsCurve crossing = Polyline({P(-1, 0, 0), P(2, 0, 0), P(2, 0, 3), P(-1, 0, 3)});
+  Check(Throws([&] { Brep::Revolve(crossing, origin, z); }), "a profile crossing the axis throws");
+  // (2,0,0) and (2,1,3) are in DIFFERENT planes through the z axis - a
+  // profile in one plane through the axis, e.g. (0,0,0)-(2,1,0)-(2,1,3)-
+  // (0,0,3), is legitimately revolvable and must NOT be used here.
+  const NurbsCurve off_plane = Polyline({P(0, 0, 0), P(2, 0, 0), P(2, 1, 3), P(0, 0, 3)});
+  Check(Throws([&] { Brep::Revolve(off_plane, origin, z); }), "a profile not in a plane through the axis throws");
+  Check(Throws([&] { Brep::Revolve(ell, origin, z, 0.0); }), "zero angle throws");
+  Check(Throws([&] { Brep::Revolve(Polyline({P(0, 0, 0), P(2, 0, 0), P(2, 0, 3)}), origin, z, M_PI / 2); }),
+        "a partial revolve with an off-axis endpoint refuses to cap");
+  Check(Brep::Revolve(Polyline({P(0, 0, 0), P(2, 0, 0), P(2, 0, 3)}), origin, z, M_PI / 2, /*cap=*/false).FaceCount() == 1,
+        "...but builds the open surface with cap=false");
+}
+
+void TestLoftInterpolatesSectionsExactly() {
+  // Two coaxial circles, degree 1: the exact cone frustum (a real
+  // NURBS cone, not an approximation), volume (pi h / 3)(r0^2 + r0 r1 + r1^2).
+  const std::vector<NurbsCurve> two = {Circle(P(0, 0, 0), Vector3d(0, 0, 1), 2.0), Circle(P(0, 0, 3), Vector3d(0, 0, 1), 1.0)};
+  const Brep frustum = Brep::Loft(two, 1);
+  CheckSolidTopology(frustum, 3, "degree-1 loft between two circles");
+  Check(FaceSurface(frustum, 0).IsCone(1e-9), "the ruled loft between coaxial circles is an exact NURBS cone");
+  const double exact_frustum = M_PI * 3.0 / 3.0 * (4.0 + 2.0 + 1.0);
+  CheckClosedMeshVolume(frustum, 64, 4, exact_frustum, 0.003, "frustum by loft");
+
+  // Three circles with linearly varying radius, degree 2: interpolation
+  // reproduces every section exactly, and (radii linear in z) the
+  // quadratic interpolant is again the exact frustum.
+  const std::vector<NurbsCurve> three = {Circle(P(0, 0, 0), Vector3d(0, 0, 1), 2.0), Circle(P(0, 0, 1.5), Vector3d(0, 0, 1), 1.5),
+                                         Circle(P(0, 0, 3), Vector3d(0, 0, 1), 1.0)};
+  const Brep q2 = Brep::Loft(three, 2);
+  CheckSolidTopology(q2, 3, "degree-2 loft through three circles");
+  Check(FaceSurface(q2, 0).DegreeV() == 2, "loft direction is degree 2");
+  {
+    const NurbsSurface wall = FaceSurface(q2, 0);
+    const ON_Interval du = wall.raw().Domain(0);
+    double worst = 0.0;
+    const double vk[3] = {0.0, 0.5, 1.0};  // equal chord spacing -> station parameters 0, 1/2, 1
+    for (int k = 0; k < 3; ++k) {
+      const ON_Interval dc = three[static_cast<size_t>(k)].raw().Domain();
+      for (int j = 0; j <= 40; ++j) {
+        const Point3d s = wall.PointAt(du.ParameterAt(j / 40.0), vk[k]);
+        const Point3d c = three[static_cast<size_t>(k)].PointAt(dc.ParameterAt(j / 40.0));
+        worst = std::max(worst, s.DistanceTo(c));
+      }
+    }
+    Check(worst < 1e-9, "S(u, v_k) reproduces every circle section to 1e-9 (true interpolation, not a control-point fit)");
+  }
+  Check(std::abs(q2.TessellateToClosedMesh(64, 16).Volume() - exact_frustum) / exact_frustum < 0.003,
+        "three-circle quadratic loft is still the exact frustum (radii linear in z)");
+
+  // Four growing squares, cubic: exact interpolation at every station
+  // (uniform spacing -> station parameters k/3), and a sane volume.
+  std::vector<NurbsCurve> squares;
+  for (int k = 0; k < 4; ++k) {
+    const double z = k, s = 1.0 + 0.2 * k;
+    squares.push_back(Polyline({P(-s, -s, z), P(s, -s, z), P(s, s, z), P(-s, s, z), P(-s, -s, z)}));
+  }
+  const Brep cubic = Brep::Loft(squares, 3);
+  CheckSolidTopology(cubic, 3, "cubic loft through four squares");
+  {
+    const NurbsSurface wall = FaceSurface(cubic, 0);
+    Check(wall.DegreeV() == 3 && wall.CVCountV() == 4, "cubic loft through 4 sections has 4 control rows");
+    const ON_Interval du = wall.raw().Domain(0);
+    double worst = 0.0;
+    for (int k = 0; k < 4; ++k) {
+      const ON_Interval dc = squares[static_cast<size_t>(k)].raw().Domain();
+      for (int j = 0; j <= 40; ++j) {
+        worst = std::max(worst, wall.PointAt(du.ParameterAt(j / 40.0), k / 3.0)
+                                    .DistanceTo(squares[static_cast<size_t>(k)].PointAt(dc.ParameterAt(j / 40.0))));
+      }
+    }
+    Check(worst < 1e-9, "cubic loft passes exactly through all four squares");
+  }
+  // Simpson's rule on the exact cross-section areas of the cubic
+  // interpolant is not closed-form; bracket it instead: between the
+  // smallest and largest section prisms, and above the linear-radius frustum.
+  {
+    const double vol = cubic.TessellateToClosedMesh(16, 16).Volume();
+    Check(vol > 4.0 * 3.0 && vol < 10.24 * 3.0, "cubic loft volume lies between the end-section prisms");
+  }
+
+  // Closed loft: 8 unit squares around a ring of radius 5 -> a square-
+  // section torus (Pappus 2 pi R A = 10 pi) with no ends and no caps.
+  std::vector<NurbsCurve> ring;
+  for (int k = 0; k < 8; ++k) {
+    const double a = 2 * M_PI * k / 8;
+    const Vector3d er(std::cos(a), std::sin(a), 0), ez(0, 0, 1);
+    const Point3d c = Point3d(0, 0, 0) + er * 5;
+    ring.push_back(Polyline({c - er * 0.5 - ez * 0.5, c + er * 0.5 - ez * 0.5, c + er * 0.5 + ez * 0.5, c - er * 0.5 + ez * 0.5,
+                             c - er * 0.5 - ez * 0.5}));
+  }
+  for (int degree : {1, 2, 3}) {
+    const Brep closed = Brep::Loft(ring, degree, /*closed=*/true);
+    const std::string tag = "closed loft of 8 squares, degree " + std::to_string(degree);
+    CheckSolidTopology(closed, 1, tag.c_str());
+    const NurbsSurface wall = FaceSurface(closed, 0);
+    Check(wall.IsClosed(1) && wall.raw().IsClamped(1, 2), (tag + ": closed in the loft direction, clamped representation").c_str());
+    // The surface passes through every section's 4 corners at v = k/8
+    // (the sections may have been reversed as a whole for outward
+    // orientation, so match corners as a set).
+    double worst = 0.0;
+    const ON_Interval du = wall.raw().Domain(0), dv = wall.raw().Domain(1);
+    for (int k = 0; k < 8; ++k) {
+      for (int corner = 0; corner < 4; ++corner) {
+        const Point3d c = ring[static_cast<size_t>(k)].ControlPointAt(corner);
+        double best = 1e9;
+        for (int j = 0; j < 4; ++j) best = std::min(best, wall.PointAt(du.ParameterAt(j / 4.0), dv.ParameterAt(k / 8.0)).DistanceTo(c));
+        worst = std::max(worst, best);
+      }
+    }
+    Check(worst < 1e-9, (tag + ": every section's corners lie on the surface at its station").c_str());
+    const double vol = closed.TessellateToClosedMesh(8, 64).Volume();
+    Check(closed.TessellateToClosedMesh(8, 64).IsClosedManifold() && closed.TessellateToClosedMesh(12, 5).IsClosedManifold(),
+          (tag + ": closed manifold at (8, 64) and (12, 5)").c_str());
+    // Degree 1 is the 8-sided prismatic ring; degrees 2 and 3 round it
+    // toward the true 10 pi.
+    if (degree == 1) {
+      // Exact closed form for the ruled blend between two unit squares in
+      // radial planes an angle d apart: the blended section at v is a
+      // rectangle of sides |e(v)| x 1 (e(v) = (1-v) e_r0 + v e_r1) moving
+      // along the chord c1 - c0, so dV = |(c1 - c0) . (e(v) x z)| dv =
+      // R sin(d) dv - constant in v. Eight segments: 8 R sin(pi/4).
+      // (The centerline-polygon perimeter 8 * 2R sin(pi/8) is NOT the
+      // answer - the first draft of this check used it and failed.)
+      const double exact = 8.0 * 5.0 * std::sin(M_PI / 4);
+      Check(std::abs(vol - exact) / exact < 1e-6, (tag + ": volume is exactly 8 R sin(pi/4), the ruled-blend closed form").c_str());
+    } else {
+      Check(std::abs(vol - 10.0 * M_PI) / (10.0 * M_PI) < 0.01, (tag + ": volume within 1% of the Pappus torus 10 pi").c_str());
+    }
+  }
+
+  // Negative controls.
+  Check(Throws([&] { Brep::Loft({two[0]}, 1); }), "a single section throws");
+  Check(Throws([&] { Brep::Loft({two[0], Polyline({P(0, 0, 5), P(1, 0, 5)})}, 1); }), "mixed closed/open sections throw");
+  Check(Throws([&] { Brep::Loft({ring[0], ring[1], ring[2]}, 3, /*closed=*/true); }), "a closed cubic loft needs at least 4 sections");
+  Check(!Throws([&] { Brep::Loft({ring[0], ring[1], ring[2], ring[3]}, 3, /*closed=*/true); }), "...and 4 sections suffice");
+}
+
+void TestSweep1AndPipe() {
+  // Straight rail: the exact rational cylinder (2 stations, degree 1).
+  const NurbsCurve line = Polyline({P(0, 0, 0), P(10, 0, 0)});
+  const Brep pipe = Brep::Pipe(line, 1.0);
+  CheckSolidTopology(pipe, 3, "pipe along a straight line");
+  Check(FaceSurface(pipe, 0).IsCylinder(1e-9) && FaceSurface(pipe, 0).DegreeV() == 1, "straight pipe's wall is an exact rational cylinder, degree 1 along the rail");
+  CheckClosedMeshVolume(pipe, 64, 4, 10.0 * M_PI, 0.003, "straight pipe");
+  Check(pipe.TessellateToClosedMesh(64, 4).Volume() < 10.0 * M_PI, "inscribed polygon prism: volume from below");
+
+  // Quarter-circle rail of radius 4: Pappus gives pi r^2 * (arc length) =
+  // 2 pi^2 for the true sweep; 16 interpolated stations land within 1%.
+  const NurbsCurve arc = Arc(P(0, 0, 0), Vector3d(1, 0, 0), Vector3d(0, 1, 0), 4.0, 0.0, M_PI / 2);
+  const Brep bent = Brep::Pipe(arc, 1.0, true, 16);
+  CheckSolidTopology(bent, 3, "pipe along a quarter arc");
+  CheckClosedMeshVolume(bent, 32, 32, 2.0 * M_PI * M_PI, 0.01, "quarter-arc pipe");
+  // The section is carried rigidly: every station's cross-section is a
+  // unit circle around the rail point, in the plane normal to the rail.
+  {
+    const NurbsSurface wall = FaceSurface(bent, 0);
+    const ON_Interval du = wall.raw().Domain(0), dv = wall.raw().Domain(1);
+    double worst_r = 0.0;
+    for (int k = 0; k <= 15; ++k) {
+      const double v = dv.ParameterAt(k / 15.0);
+      // Rail point at equal arc-length station k of 15: angle k/15 * pi/2.
+      const double ang = (M_PI / 2) * k / 15.0;
+      const Point3d center(4.0 * std::cos(ang), 4.0 * std::sin(ang), 0.0);
+      for (int j = 0; j <= 16; ++j) {
+        const Point3d p = wall.PointAt(du.ParameterAt(j / 16.0), v);
+        worst_r = std::max(worst_r, std::abs(p.DistanceTo(center) - 1.0));
+      }
+    }
+    Check(worst_r < 1e-9, "at every station the transported circle is exactly the unit circle about the rail point");
+  }
+
+  // Closed rail: a periodic tube (torus) with no ends: 2 pi^2 R r^2.
+  const Brep ring = Brep::Pipe(Circle(P(0, 0, 0), Vector3d(0, 0, 1), 4.0), 1.0, true, 32);
+  CheckSolidTopology(ring, 1, "pipe along a closed circle");
+  Check(FaceSurface(ring, 0).IsClosed(0) && FaceSurface(ring, 0).IsClosed(1), "closed-rail pipe is closed in both directions");
+  const double torus = 2.0 * M_PI * M_PI * 4.0;
+  Check(std::abs(ring.TessellateToClosedMesh(32, 64).Volume() - torus) / torus < 0.01, "closed pipe volume within 1% of the torus");
+  Check(ring.TessellateToClosedMesh(12, 5).IsClosedManifold(), "closed pipe is a closed manifold at (12, 5)");
+
+  // Sweep1 of a unit square along a twisting cubic rail: a valid solid
+  // whose start section is the input square (rigid transport from
+  // station 0). The square sits in the plane normal to the rail's start
+  // tangent, so the rigid sweep's volume is area x rail length.
+  const NurbsCurve rail = NurbsCurve::FromControlPoints({P(0, 0, 0), P(3, 0, 2), P(6, 3, 2), P(9, 3, 5)}, 3);
+  const ON_Plane start_plane(ON_3dPoint(0, 0, 0), rail.raw().TangentAt(rail.Domain().min));
+  const NurbsCurve square = Polyline({start_plane.PointAt(-0.5, -0.5), start_plane.PointAt(0.5, -0.5), start_plane.PointAt(0.5, 0.5),
+                                      start_plane.PointAt(-0.5, 0.5), start_plane.PointAt(-0.5, -0.5)});
+  const Brep swept = Brep::Sweep1(square, rail, 24);
+  CheckSolidTopology(swept, 3, "square swept along a cubic rail");
+  Check(swept.TessellateToClosedMesh(8, 48).IsClosedManifold() && swept.TessellateToClosedMesh(12, 5).IsClosedManifold(),
+        "swept square is a closed manifold at (8, 48) and (12, 5)");
+  {
+    const NurbsSurface wall = FaceSurface(swept, 0);
+    const ON_Interval du = wall.raw().Domain(0);
+    double worst = 0.0;
+    for (int corner = 0; corner < 4; ++corner) {
+      double best = 1e9;
+      for (int j = 0; j < 4; ++j) best = std::min(best, wall.PointAt(du.ParameterAt(j / 4.0), 0.0).DistanceTo(square.ControlPointAt(corner)));
+      worst = std::max(worst, best);
+    }
+    Check(worst < 1e-9, "the sweep's start section is the input square itself");
+    // Rigid transport: the far end is a unit square too (side lengths preserved).
+    const ON_Interval dv = wall.raw().Domain(1);
+    double perimeter = 0.0;
+    Point3d prev = wall.PointAt(du.Min(), dv.Max());
+    for (int j = 1; j <= 4; ++j) {
+      const Point3d p = wall.PointAt(du.ParameterAt(j / 4.0), dv.Max());
+      perimeter += p.DistanceTo(prev);
+      prev = p;
+    }
+    Check(std::abs(perimeter - 4.0) < 1e-9, "the end section is still a unit square (rigid frames, no scaling)");
+  }
+  const double swept_volume = swept.TessellateToClosedMesh(8, 96).Volume();
+  const double rail_length = rail.Length(4000);
+  // A rigid sweep of a unit-area section kept normal to the rail has
+  // volume = rail length (the section's centroid travels the rail);
+  // measured 2.5e-5 relative with 24 stations, so 1e-3 is a real bound
+  // on the interpolant's error, not a loose one.
+  Check(std::abs(swept_volume - rail_length) / rail_length < 1e-3, "swept volume equals section area x rail length within 0.1%");
+
+  // Negative controls.
+  Check(Throws([&] { Brep::Pipe(line, 0.0); }), "non-positive pipe radius throws");
+  Check(Throws([&] { Brep::Sweep1(square, rail, 1); }), "fewer than 2 stations throws");
+}
+
+}  // namespace sweep_tests
+
 int main() {
   ON::Begin();
 
@@ -21903,6 +22384,12 @@ int main() {
   TestMeshCheckAndFillSmallHolesRestoreDroppedFaces();
   TestMeshUnifyNormalsFixesFlippedAndInvertedFaces();
   TestMeshCloseNakedEdgesWeldsDuplicateAndOffsetVertices();
+
+  sweep_tests::TestMergeAndWeldDropsCollapsedPoleTriangles();
+  sweep_tests::TestExtrudeRectangleIsExactCappedSolid();
+  sweep_tests::TestRevolveExactSolidsAndCaps();
+  sweep_tests::TestLoftInterpolatesSectionsExactly();
+  sweep_tests::TestSweep1AndPipe();
 
   ON::End();
 

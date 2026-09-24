@@ -162,6 +162,153 @@ class Brep {
                                  bool exact_clip = false,
                                  std::vector<std::vector<Point2d>> hole_loops_uv = {});
 
+  // ------------------------------------------------------------------
+  // Sweep-class factories (Parasolid "sweep/spin/loft/pipe" class) -
+  // implemented in src/sweep.cpp. Every one of them builds REAL
+  // ON_Brep topology (vertices/edges/trims/loops via ON_Brep::NewFace's
+  // own vid/eid/bRev3d overload, so shared edges are literally shared,
+  // singular sides are singular trims and a closed section's seam is a
+  // seam trim) rather than the surface-only NewFace(int) the older
+  // factories above use - `raw().IsValid()` passes, and a closed result
+  // reports `raw().IsSolid()` true. Common conventions:
+  //
+  //   - The wall surface's u runs along the section/profile and its v
+  //     runs along the sweep (the extrusion vector, the revolve angle in
+  //     radians, the loft/sweep station parameter in [0, 1]).
+  //   - Exact math throughout: an extrusion is the exact degree-(p, 1)
+  //     tensor product of the profile and the direction; a revolution is
+  //     the exact rational quadratic (Piegl & Tiller A8.1, one 90-degree
+  //     rational arc per quadrant, with the full-circle case built from
+  //     an exact quadrant table so its seam control points are
+  //     bit-identical); a loft/sweep INTERPOLATES its sections exactly
+  //     (global B-spline interpolation through compatible sections, not
+  //     the sections-as-control-points fit the app's own Loft command
+  //     used), so `S(u, v_k)` reproduces section k to solver rounding.
+  //     Between sweep stations the surface is an interpolant, not the
+  //     true swept shape - a straight rail collapses to the exact
+  //     2-station degree-1 extrusion, so Pipe() along a line is an exact
+  //     rational cylinder; any other rail is an approximation whose
+  //     accuracy improves with `stations`.
+  //   - Caps. A closed planar end section gets a planar cap face built as
+  //     a "fan": D(u, v) = (1 - v) X + v C(u), degree (p, 1), where X is a
+  //     point in the KERNEL of the section's planar region (the set of
+  //     points that see the whole boundary), found by exact half-plane
+  //     intersection over a dense sampling and then re-verified against
+  //     the true curve (the angle of C(u) - X must be strictly monotone).
+  //     This is a genuine planar NURBS face whose north boundary is the
+  //     wall's own boundary isocurve, so the two faces share their edge
+  //     exactly AND their tessellations weld at ANY (u_divisions,
+  //     v_divisions) - Tessellate()/TessellateToClosedMesh() give a
+  //     closed manifold at every division pair, not only at one the cap
+  //     happened to be sampled at (the reason caps are not
+  //     TrimmedPlanarFace()-style polygon trims, whose fixed sampling can
+  //     only ever match one wall sampling). The honest limit: a closed
+  //     section whose region is NOT star-shaped (empty kernel - a C or a
+  //     spiral) cannot be capped this way and throws
+  //     std::invalid_argument when `cap` is requested; a closed
+  //     non-planar section likewise throws. `cap` is silently irrelevant
+  //     for an OPEN section (nothing to cap - the result is an open
+  //     surface) and for a periodic result (a closed loft/sweep has no
+  //     ends).
+  //   - Orientation: a capped body is built outward-facing by
+  //     construction (the section is reversed if needed so the wall's
+  //     u x v normal points out of the solid), and a closed result is
+  //     additionally cross-checked by the sign of a coarse tessellation's
+  //     volume - a negative sign flips every face - so a closed result's
+  //     Mesh::Volume() is always positive. An open result keeps the
+  //     section's own direction (normal = tangent x sweep direction).
+  //   - Numerical note: shared boundary vertices between a wall and its
+  //     cap (and across a wall's own seam) are the same curve evaluated
+  //     through two different arithmetic paths, equal to a few ULPs, not
+  //     bit-identical - well inside Mesh::MergeAndWeld()'s tolerance,
+  //     the same situation Sphere()'s own seam/poles already rely on.
+  //
+  // Extrude: profile swept along `direction` (length = distance). Any
+  // NURBS profile (rational or not, any degree, open or closed). With
+  // `cap` and a closed planar profile whose plane is not parallel to
+  // `direction`, two fan caps make it a solid (a closed profile is
+  // reversed first if needed so the result faces outward); an open
+  // profile gives one open face. Throws std::invalid_argument for a
+  // zero direction, a cap request on a closed non-planar / non-star-
+  // shaped profile, or a direction lying in the profile plane.
+  static Brep Extrude(const NurbsCurve& profile, Vector3d direction, bool cap = true);
+
+  // Revolve: `profile` spun about the axis through `axis_point` along
+  // `axis_direction` by `angle` radians (0 < angle <= 2*pi; exactly
+  // 2*pi, within 1e-12, is a full revolution). The profile must lie in a
+  // plane containing the axis and on one side of it (checked; throws).
+  // The wall is the exact rational surface of revolution. Which ends are
+  // capped follows from the profile:
+  //   - closed profile: full angle -> a closed torus-like solid with no
+  //     caps; partial angle + `cap` -> two planar fan caps in the start
+  //     and end half-planes.
+  //   - open profile with BOTH endpoints on the axis: full angle -> a
+  //     closed solid with two singular poles (a cylinder from an L-shaped
+  //     profile, a sphere from a semicircle); partial angle + `cap` ->
+  //     two planar caps whose fan apex lies ON the axis segment between
+  //     the endpoints, so the two caps share the axis segment as two
+  //     literal edges and the body is a genuine solid.
+  //   - open profile with an endpoint off the axis: full angle + `cap`
+  //     -> a flat disc cap (a fan over that end's circle) closes it; a
+  //     partial angle with an off-axis endpoint is not cappable here and
+  //     throws when `cap` is requested. Two off-axis endpoints at the
+  //     same axial height (a zero-thickness disc) throw.
+  // A closed profile touching the axis (a rectangle with one side on it)
+  // is NOT supported - the touching side would sweep to a degenerate
+  // zero-area band inside one face - and throws; revolve the open
+  // profile instead (the L-shaped polyline (0,0)->(r,0)->(r,h)->(0,h)
+  // gives the cylinder exactly).
+  static Brep Revolve(const NurbsCurve& profile, Point3d axis_point, Vector3d axis_direction,
+                      double angle = 2.0 * ON_PI, bool cap = true);
+
+  // Loft: a surface interpolating `sections` in order, degree `degree`
+  // (clamped to sections.size() - 1) in the loft direction. Sections are
+  // made compatible first - each is clamped if periodic, made rational
+  // if any is, degree-elevated to the maximum degree, reparameterized to
+  // [0, 1] and refined to the merged knot vector (knots within 1e-12
+  // are treated as one) - all shape-preserving. Then the standard global
+  // interpolation (chord-length station parameters averaged over the
+  // control-point columns, knots by averaging) solves for the control
+  // net, so every section lies exactly on the surface at its own v_k.
+  // `degree == 1` is the exact ruled loft (two circles -> the exact cone
+  // frustum). `closed` lofts back from the last section to the first
+  // (periodic interpolation through a cyclic system, then clamped at the
+  // seam - the surface is C^(degree-1) across the seam and reports
+  // IsClosed(1)); such a result has no ends and takes no caps. Sections
+  // must all be closed or all open, consistently oriented and seam-
+  // aligned (this does not re-orient or re-seam them; a capped loft of
+  // closed planar sections is reversed as a whole if needed so it faces
+  // outward). Throws std::invalid_argument for fewer than 2 sections,
+  // fewer than degree + 1 sections for a closed loft, or mixed open/
+  // closed sections.
+  static Brep Loft(const std::vector<NurbsCurve>& sections, int degree = 3, bool closed = false,
+                   bool cap = true);
+
+  // Sweep1: `section` carried along `rail` by rotation-minimizing
+  // frames (Wang et al. 2008's double-reflection method, evaluated at
+  // `stations` equal-arc-length stations) and skinned through the
+  // transported copies with Loft()'s interpolation (degree min(3,
+  // stations - 1)). The section is moved RIGIDLY with the frame (it need
+  // not sit on the rail; its offset from the rail start is preserved).
+  // A straight open rail uses exactly 2 stations and degree 1 - the
+  // exact extrusion. A closed rail gives a periodic sweep: the frames'
+  // accumulated twist around the loop is spread evenly over the
+  // stations so the last frame meets the first, and the tube has no
+  // ends. Between stations the surface interpolates, it is not the
+  // exact sweep - increase `stations` for a tighter approximation.
+  // Caps as Extrude(). Throws std::invalid_argument for stations < 2 or
+  // a degenerate rail.
+  static Brep Sweep1(const NurbsCurve& section, const NurbsCurve& rail, int stations = 32,
+                     bool cap = true);
+
+  // Pipe: an exact rational circle of `radius`, centered on the rail's
+  // start point in the plane perpendicular to the rail there, swept by
+  // Sweep1(). Along a straight rail this is the exact rational cylinder
+  // (capped: volume pi r^2 L up to tessellation chord error); a closed
+  // rail gives a closed tube. Throws std::invalid_argument for a
+  // non-positive radius.
+  static Brep Pipe(const NurbsCurve& rail, double radius, bool cap = true, int stations = 32);
+
   int FaceCount() const;
 
   // One planar face's boundary as a real 3D polygon plus its plane -
@@ -1994,6 +2141,17 @@ class Brep {
   int RemoveThinFaces(double width, double join_tolerance, bool slivers_too);
 
   ON_Brep brep_;
+  // Appends `count` "untrimmed face" entries to every per-face side
+  // table below, keeping them in lockstep with brep_.m_F for a face
+  // whose trims live entirely in brep_'s own real loop topology (the
+  // sweep-class factories in src/sweep.cpp).
+  void AppendUntrimmedFaceSideTables(int count);
+  // The sweep-class factories' shared assembly step (src/sweep.cpp):
+  // takes ownership of `wall`, adds it and the requested caps as real
+  // ON_Brep topology, appends the side tables and applies the closed-
+  // body outward cross-check described in those factories' doc comment.
+  static Brep AssembleSweptBody(ON_NurbsSurface* wall, bool cap_v0, bool cap_v1, bool cap_u0, bool cap_u1,
+                                const char* caller);
   // Parallel to brep_.m_F: face_trim_loops_[i] is empty for an untrimmed
   // face, or the trim polygon for a face built by TrimmedPlanarFace().
   // Every face-adding factory must keep this in lockstep with brep_.m_F.
