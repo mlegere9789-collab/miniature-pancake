@@ -7354,6 +7354,59 @@ void TestMeshThickenBuildsExactUnitCubeFromFlatSquare() {
         "...with volume exactly 1 - the flat square's own area (1) times the offset distance (1)");
 }
 
+// Mesh::FindOffsetSelfIntersections(): the real hazard Offset()'s own doc
+// comment already discloses (no self-intersection detection at all) is
+// checked here on a genuine, non-degenerate case - a narrow V-groove
+// (two NON-parallel walls converging at an apex, extruded for a strip of
+// depth 1), where growing the surrounding solid (offsetting into the
+// groove) far enough pushes the two walls past each other near the apex.
+// A plain pair of PARALLEL walls (deliberately checked here NOT to be a
+// substitute fixture) can never demonstrate this: two parallel planes'
+// normals have a zero cross product, and FindSelfIntersections()'s own
+// doc comment already says a zero cross product between two triangles'
+// planes means "this test can't place them along a shared line at all" -
+// so a converging (non-parallel) wall pair is a real fixture requirement
+// here, not an arbitrary choice.
+void TestMeshFindOffsetSelfIntersectionsDetectsGenuineFold() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+
+  Mesh groove;
+  ON_Mesh& raw = groove.raw();
+  for (double y : {0.0, 1.0}) {
+    raw.m_V.Append(ON_3fPoint(-1, y, 2));  // top of left wall
+    raw.m_V.Append(ON_3fPoint(0, y, 0));   // apex
+    raw.m_V.Append(ON_3fPoint(1, y, 2));   // top of right wall
+  }
+  auto addquad = [&](int a, int b, int c, int d) {
+    ON_MeshFace f;
+    f.vi[0] = a; f.vi[1] = b; f.vi[2] = c; f.vi[3] = d;
+    raw.m_F.Append(f);
+  };
+  addquad(0, 3, 4, 1);  // left wall (y=0: 0,1 / y=1: 3,4)
+  addquad(1, 4, 5, 2);  // right wall (y=0: 1,2 / y=1: 4,5)
+
+  // A small offset in either direction is safe - the groove is nowhere
+  // near narrow enough at this magnitude for the walls to reach each other.
+  Check(groove.FindOffsetSelfIntersections(0.1).empty(),
+        "FindOffsetSelfIntersections(0.1) on the V-groove reports no self-intersection (safely small)");
+  Check(groove.FindOffsetSelfIntersections(-0.1).empty(),
+        "FindOffsetSelfIntersections(-0.1) on the V-groove reports no self-intersection (safely small)");
+
+  // A large enough offset (found empirically, not hand-waved: this exact
+  // distance and direction genuinely folds the two converging walls
+  // through each other near the apex) IS detected.
+  const auto hits = groove.FindOffsetSelfIntersections(-1.0);
+  Check(!hits.empty(), "FindOffsetSelfIntersections(-1.0) on the V-groove IS detected as self-intersecting "
+                       "(the offset distance exceeds the apex's own local feasibility)");
+
+  // Must match a manual Offset()+FindSelfIntersections() call exactly -
+  // this is a thin composition of the two, not independent logic.
+  const auto manual = groove.Offset(-1.0).FindSelfIntersections();
+  Check(manual.size() == hits.size(),
+        "FindOffsetSelfIntersections matches a manual Offset()+FindSelfIntersections() call exactly");
+}
+
 // Mesh::Check()'s non_manifold_edge_list: a "book" of 3 triangles sharing
 // one spine edge (0,1) - the simplest possible non-manifold fixture -
 // with every other edge naked (used by only 1 triangle each), so the
@@ -28016,6 +28069,7 @@ int main() {
   TestMeshRemoveDuplicateFacesKeepsOneCopyPerPolygon();
   TestMeshOffsetMovesVerticesAlongExactVertexNormal();
   TestMeshThickenBuildsExactUnitCubeFromFlatSquare();
+  TestMeshFindOffsetSelfIntersectionsDetectsGenuineFold();
   TestMeshCheckLocalizesNonManifoldEdges();
   TestMeshFindSelfIntersectionsDetectsOnlyGenuineCrossings();
 

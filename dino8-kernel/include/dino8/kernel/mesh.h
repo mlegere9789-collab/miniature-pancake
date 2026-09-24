@@ -862,6 +862,29 @@ class Mesh {
   // materially different problem this method does not attempt).
   Mesh Thicken(double distance) const;
 
+  // Answers the real hazard Offset()'s own doc comment above already
+  // names but has no way to check on its own: whether Offset(distance)
+  // applied to THIS mesh would fold over itself. Computes Offset(distance)
+  // and runs FindSelfIntersections(tolerance) directly on the result -
+  // an offset distance exceeding the local radius of curvature anywhere
+  // (a sharp concave corner or fold, say) pushes that region's own
+  // offset surface through itself, exactly the "self-intersection when
+  // offset distance exceeds local curvature radius" hazard a plain
+  // per-vertex-normal push has no way to notice by construction. DETECTION
+  // ONLY, the same considered position FindSelfIntersections() itself
+  // takes (see its own doc comment: no single correct repair - split at
+  // the crossing? clamp the distance? re-run at a smaller one? - the way
+  // a duplicate face or a below-tolerance sliver has): this does not
+  // clamp, retry, or choose a safe distance, it only reports the same
+  // (face_index_a, face_index_b) pairs FindSelfIntersections() would,
+  // computed on the OFFSET mesh (whose face indices are in exact 1:1
+  // correspondence with this mesh's own faces, since Offset() moves
+  // vertices only and never changes face topology) - empty means the
+  // offset is safe to use as-is. `tolerance` is forwarded to
+  // FindSelfIntersections() unchanged.
+  std::vector<std::pair<int, int>> FindOffsetSelfIntersections(double distance,
+                                                                double tolerance = tolerance::kDistance) const;
+
   // Concatenates several independently-tessellated meshes into one and
   // welds vertices within `tolerance` of each other into a single shared
   // vertex. Needed because Brep::Tessellate() tessellates each face on
