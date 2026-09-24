@@ -1305,7 +1305,254 @@ Result LoadBinaryStl(const std::string& path, uint32_t triangle_count, Mesh& out
   return Result::Ok;
 }
 
+// One "property <type> <name>" or "property list <count_type> <type>
+// <name>" line from a PLY header.
+struct PlyProperty {
+  bool is_list = false;
+  std::string name;
+};
+
+// One "element <name> <count>" block from a PLY header, plus the
+// property lines that followed it.
+struct PlyElement {
+  std::string name;
+  int count = 0;
+  std::vector<PlyProperty> properties;
+};
+
+// Parses an ASCII PLY header (everything up to and including
+// "end_header") into an ordered list of elements. Returns false on any
+// header line this kernel doesn't recognize, a "property" line before
+// any "element" line, or a "format" line that isn't exactly
+// "format ascii <version>" - PLY's binary_little_endian/
+// binary_big_endian formats are a disclosed, out-of-scope gap (see
+// Mesh::SavePly()'s own doc comment), not silently misread as ASCII.
+bool ParsePlyHeader(std::istream& in, std::vector<PlyElement>& out_elements) {
+  std::string line;
+  if (!std::getline(in, line) || line != "ply") {
+    return false;
+  }
+  if (!std::getline(in, line)) {
+    return false;
+  }
+  {
+    std::istringstream header(line);
+    std::string tag, format;
+    if (!(header >> tag >> format) || tag != "format" || format != "ascii") {
+      return false;
+    }
+  }
+  while (std::getline(in, line)) {
+    std::istringstream stream(line);
+    std::string tag;
+    stream >> tag;
+    if (tag == "comment" || tag.empty()) {
+      continue;
+    }
+    if (tag == "end_header") {
+      return true;
+    }
+    if (tag == "element") {
+      PlyElement element;
+      if (!(stream >> element.name >> element.count) || element.count < 0) {
+        return false;
+      }
+      out_elements.push_back(std::move(element));
+      continue;
+    }
+    if (tag == "property") {
+      if (out_elements.empty()) {
+        return false;  // property line before any element line
+      }
+      std::string type;
+      if (!(stream >> type)) {
+        return false;
+      }
+      PlyProperty property;
+      if (type == "list") {
+        std::string count_type, value_type;
+        if (!(stream >> count_type >> value_type >> property.name)) {
+          return false;
+        }
+        property.is_list = true;
+      } else {
+        if (!(stream >> property.name)) {
+          return false;
+        }
+      }
+      out_elements.back().properties.push_back(std::move(property));
+      continue;
+    }
+    return false;  // unrecognized header line
+  }
+  return false;  // stream ended without "end_header"
+}
+
 }  // namespace
+
+Result Mesh::SavePly(const std::string& path) const {
+  std::ofstream out(path);
+  if (!out) {
+    return Result::Failed;
+  }
+
+  const std::vector<Vector3d> normals = ComputeVertexNormals();
+  const bool has_uvs = HasTextureCoordinates();
+
+  out << "ply\n";
+  out << "format ascii 1.0\n";
+  out << "comment written by dino8-kernel\n";
+  out << "element vertex " << mesh_.m_V.Count() << '\n';
+  out << "property float x\n";
+  out << "property float y\n";
+  out << "property float z\n";
+  out << "property float nx\n";
+  out << "property float ny\n";
+  out << "property float nz\n";
+  if (has_uvs) {
+    out << "property float u\n";
+    out << "property float v\n";
+  }
+  out << "element face " << mesh_.m_F.Count() << '\n';
+  out << "property list uchar int vertex_indices\n";
+  out << "end_header\n";
+
+  for (int i = 0; i < mesh_.m_V.Count(); ++i) {
+    const ON_3fPoint& p = mesh_.m_V[i];
+    const Vector3d& n = normals[static_cast<size_t>(i)];
+    out << p.x << ' ' << p.y << ' ' << p.z << ' ' << n.x << ' ' << n.y << ' ' << n.z;
+    if (has_uvs) {
+      const Point2d uv = TextureCoordinateAt(i);
+      out << ' ' << uv.x << ' ' << uv.y;
+    }
+    out << '\n';
+  }
+  for (int i = 0; i < mesh_.m_F.Count(); ++i) {
+    const ON_MeshFace& f = mesh_.m_F[i];
+    if (f.IsQuad()) {
+      out << "4 " << f.vi[0] << ' ' << f.vi[1] << ' ' << f.vi[2] << ' ' << f.vi[3] << '\n';
+    } else {
+      out << "3 " << f.vi[0] << ' ' << f.vi[1] << ' ' << f.vi[2] << '\n';
+    }
+  }
+
+  return out.good() ? Result::Ok : Result::Failed;
+}
+
+Result Mesh::LoadPly(const std::string& path, Mesh& out_mesh) {
+  std::ifstream in(path);
+  if (!in) {
+    return Result::Failed;
+  }
+
+  std::vector<PlyElement> elements;
+  if (!ParsePlyHeader(in, elements)) {
+    return Result::Failed;
+  }
+
+  Mesh result;
+  ON_Mesh& raw = result.raw();
+  bool found_vertex = false;
+  bool found_face = false;
+  std::vector<Point2d> uvs;
+  bool have_uvs = false;
+
+  for (const PlyElement& element : elements) {
+    if (element.name == "vertex") {
+      found_vertex = true;
+      int idx_x = -1, idx_y = -1, idx_z = -1, idx_u = -1, idx_v = -1;
+      for (size_t i = 0; i < element.properties.size(); ++i) {
+        const PlyProperty& property = element.properties[i];
+        if (property.is_list) {
+          return Result::Failed;  // a list property on a vertex isn't a position/normal/UV
+        }
+        if (property.name == "x") idx_x = static_cast<int>(i);
+        else if (property.name == "y") idx_y = static_cast<int>(i);
+        else if (property.name == "z") idx_z = static_cast<int>(i);
+        else if (property.name == "u") idx_u = static_cast<int>(i);
+        else if (property.name == "v") idx_v = static_cast<int>(i);
+        // nx/ny/nz and any other property (color, ...) are read as plain
+        // columns below but never looked up by name - discarded, same
+        // "always geometry-derived" convention as LoadObj()'s vn.
+      }
+      if (idx_x < 0 || idx_y < 0 || idx_z < 0) {
+        return Result::Failed;
+      }
+      have_uvs = idx_u >= 0 && idx_v >= 0;
+
+      std::string line;
+      for (int row = 0; row < element.count; ++row) {
+        if (!std::getline(in, line)) {
+          return Result::Failed;
+        }
+        std::istringstream stream(line);
+        std::vector<double> values(element.properties.size());
+        for (double& value : values) {
+          if (!(stream >> value)) {
+            return Result::Failed;
+          }
+        }
+        raw.m_V.Append(ON_3fPoint(values[static_cast<size_t>(idx_x)],
+                                   values[static_cast<size_t>(idx_y)],
+                                   values[static_cast<size_t>(idx_z)]));
+        if (have_uvs) {
+          uvs.push_back(Point2d(values[static_cast<size_t>(idx_u)], values[static_cast<size_t>(idx_v)]));
+        }
+      }
+    } else if (element.name == "face") {
+      found_face = true;
+      if (element.properties.size() != 1 || !element.properties[0].is_list) {
+        return Result::Failed;  // this kernel only reads the ordinary "one index list" face shape
+      }
+      std::string line;
+      for (int row = 0; row < element.count; ++row) {
+        if (!std::getline(in, line)) {
+          return Result::Failed;
+        }
+        std::istringstream stream(line);
+        int corner_count = 0;
+        if (!(stream >> corner_count) || corner_count < 3 || corner_count > 4) {
+          return Result::Failed;
+        }
+        int indices[4] = {0, 0, 0, 0};
+        for (int i = 0; i < corner_count; ++i) {
+          if (!(stream >> indices[i]) || indices[i] < 0 || indices[i] >= raw.m_V.Count()) {
+            return Result::Failed;
+          }
+        }
+        ON_MeshFace face;
+        face.vi[0] = indices[0];
+        face.vi[1] = indices[1];
+        face.vi[2] = indices[2];
+        face.vi[3] = (corner_count == 4) ? indices[3] : indices[2];
+        raw.m_F.Append(face);
+      }
+    } else {
+      // An element type this kernel doesn't read (e.g. a color-only
+      // "edge" element) - skip its data lines rather than rejecting the
+      // file over data this kernel was never going to use.
+      std::string line;
+      for (int row = 0; row < element.count; ++row) {
+        if (!std::getline(in, line)) {
+          return Result::Failed;
+        }
+      }
+    }
+  }
+
+  if (!found_vertex || !found_face) {
+    return Result::Failed;
+  }
+  if (have_uvs) {
+    if (static_cast<int>(uvs.size()) != raw.m_V.Count()) {
+      return Result::Failed;  // can only happen if the header lied about the vertex count
+    }
+    result.SetTextureCoordinates(uvs);
+  }
+
+  out_mesh = std::move(result);
+  return Result::Ok;
+}
 
 Result Mesh::LoadStl(const std::string& path, Mesh& out_mesh) {
   // Distinguishes binary from ASCII the same way most real-world STL
