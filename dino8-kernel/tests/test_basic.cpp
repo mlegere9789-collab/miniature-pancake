@@ -25846,6 +25846,45 @@ void TestSurfaceCoonsPatchAutoOrientsReversedBoundaries() {
   Check(diff < 1e-9, "CoonsPatch built from reversed inputs is geometrically identical to the one built from correctly-oriented inputs");
 }
 
+void TestSurfaceCoonsPatchAutoOrientsAllThreeNonReferenceCurves() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  const NurbsCurve bottom = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(2, 0, 0.5), Point3d(4, 0, 0)}, 2);
+  const NurbsCurve top = NurbsCurve::FromControlPoints({Point3d(0, 4, 1), Point3d(2, 4, 1.5), Point3d(4, 4, 1)}, 2);
+  const NurbsCurve left = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(0, 4, 1)}, 1);
+  const NurbsCurve right = NurbsCurve::FromControlPoints({Point3d(4, 0, 0), Point3d(4, 4, 1)}, 1);
+  NurbsSurface reference;
+  Check(NurbsSurface::CoonsPatch(bottom, top, left, right, reference) == Result::Ok,
+        "CoonsPatch left-orientation setup: the correctly-oriented reference patch succeeds");
+
+  // left reversed too (on top of top/right already reversed) - the
+  // scenario a loop-chaining caller like NetworkSrf genuinely produces,
+  // since which of a loop's 4 curves points "forward" depends only on
+  // which curve happened to be chained first.
+  NurbsCurve top_rev = top, left_rev = left, right_rev = right;
+  top_rev.Reverse();
+  left_rev.Reverse();
+  right_rev.Reverse();
+  NurbsSurface reoriented;
+  double gap = -1.0;
+  Check(NurbsSurface::CoonsPatch(bottom, top_rev, left_rev, right_rev, reoriented, 1e-6, &gap) == Result::Ok,
+        "CoonsPatch succeeds when top, left AND right are all handed in reversed");
+  Check(gap < 1e-9, "CoonsPatch's 8-way auto-orientation search still finds an essentially-zero corner gap");
+  double diff = 0.0;
+  for (int i = 0; i <= 10; ++i)
+    for (int j = 0; j <= 10; ++j) {
+      const double u = reference.Domain(0).min + (reference.Domain(0).max - reference.Domain(0).min) * i / 10.0;
+      const double v = reference.Domain(1).min + (reference.Domain(1).max - reference.Domain(1).min) * j / 10.0;
+      const double ru = reoriented.Domain(0).min + (reoriented.Domain(0).max - reoriented.Domain(0).min) * i / 10.0;
+      const double rv = reoriented.Domain(1).min + (reoriented.Domain(1).max - reoriented.Domain(1).min) * j / 10.0;
+      diff = std::max(diff, reference.PointAt(u, v).DistanceTo(reoriented.PointAt(ru, rv)));
+    }
+  Check(diff < 1e-9, "CoonsPatch built with all 3 non-reference curves reversed is geometrically identical to the reference build");
+}
+
 void TestSurfaceCoonsPatchRefusesNonClosingBoundaries() {
   using dino8::kernel::NurbsCurve;
   using dino8::kernel::NurbsSurface;
@@ -26985,6 +27024,7 @@ int main() {
 
   TestSurfaceCoonsPatchReproducesFourCurvedBoundariesExactly();
   TestSurfaceCoonsPatchAutoOrientsReversedBoundaries();
+  TestSurfaceCoonsPatchAutoOrientsAllThreeNonReferenceCurves();
   TestSurfaceCoonsPatchRefusesNonClosingBoundaries();
 
   TestSurfaceOffsetAnalyticSphereIsExactConcentricSphere();
