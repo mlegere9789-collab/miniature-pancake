@@ -740,6 +740,95 @@ bool NurbsSurface::IsClosed(int direction) const { return surface_.IsClosed(dire
 
 bool NurbsSurface::IsPeriodic(int direction) const { return surface_.IsPeriodic(direction); }
 
+Result NurbsSurface::MakePeriodicExact(int direction) {
+  if (direction != 0 && direction != 1) {
+    throw std::invalid_argument("dino8::kernel::NurbsSurface::MakePeriodicExact: direction must be 0 or 1");
+  }
+  if (surface_.IsPeriodic(direction)) {
+    return Result::NoOpAlreadySatisfied;
+  }
+  if (!surface_.IsClosed(direction)) {
+    return Result::Failed;
+  }
+  if (surface_.Degree(direction) < 2) {
+    return Result::Failed;
+  }
+
+  const int other = 1 - direction;
+  const int cv_count_dir = surface_.CVCount(direction);
+  const int cv_count_other = surface_.CVCount(other);
+  const int order_dir = surface_.Order(direction);
+  const int order_other = surface_.Order(other);
+  const bool rational = surface_.IsRational();
+  const int knot_count_dir = surface_.KnotCount(direction);
+
+  // ON_NurbsSurface::IsClosed(direction) (checked above) verifies the
+  // ENTIRE control-point grid closes in `direction` (ON_IsPointGridClosed
+  // over every row/column, not just the 4 corners), so every cross-line
+  // built below independently satisfies NurbsCurve::MakePeriodicExact()'s
+  // own IsClosed() precondition too.
+  auto build_line = [&](int other_index) {
+    ON_NurbsCurve line;
+    line.Create(3, rational, order_dir, cv_count_dir);
+    for (int k = 0; k < knot_count_dir; ++k) line.SetKnot(k, surface_.Knot(direction, k));
+    for (int i = 0; i < cv_count_dir; ++i) {
+      ON_4dPoint cv;
+      if (direction == 0) {
+        surface_.GetCV(i, other_index, cv);
+      } else {
+        surface_.GetCV(other_index, i, cv);
+      }
+      line.SetCV(i, cv);
+    }
+    return line;
+  };
+
+  // The knot-vector transformation NurbsCurve::MakePeriodicExact() builds
+  // depends only on `direction`'s own degree/knot vector - never on
+  // control-point VALUES (see its own doc comment) - so it is identical
+  // for every cross-line; running it once per line (rather than deriving
+  // it once and copying control points by hand) trades a little redundant
+  // recomputation for reusing that already-verified implementation
+  // verbatim instead of transcribing its knot-vector math a second time.
+  std::vector<ON_NurbsCurve> new_lines(static_cast<size_t>(cv_count_other));
+  for (int j = 0; j < cv_count_other; ++j) {
+    NurbsCurve wrapped;
+    wrapped.raw() = build_line(j);
+    if (wrapped.MakePeriodicExact() == Result::Failed) {
+      return Result::Failed;
+    }
+    new_lines[static_cast<size_t>(j)] = wrapped.raw();
+  }
+
+  const int new_cv_count_dir = new_lines[0].CVCount();
+  const int new_knot_count_dir = new_lines[0].KnotCount();
+
+  ON_NurbsSurface ps;
+  const bool created = (direction == 0)
+                            ? ps.Create(3, rational, order_dir, order_other, new_cv_count_dir, cv_count_other)
+                            : ps.Create(3, rational, order_other, order_dir, cv_count_other, new_cv_count_dir);
+  if (!created) {
+    return Result::Failed;
+  }
+  for (int i = 0; i < surface_.KnotCount(other); ++i) ps.SetKnot(other, i, surface_.Knot(other, i));
+  for (int i = 0; i < new_knot_count_dir; ++i) ps.SetKnot(direction, i, new_lines[0].Knot(i));
+
+  for (int j = 0; j < cv_count_other; ++j) {
+    for (int i = 0; i < new_cv_count_dir; ++i) {
+      ON_4dPoint cv;
+      new_lines[static_cast<size_t>(j)].GetCV(i, cv);
+      if (direction == 0) {
+        ps.SetCV(i, j, cv);
+      } else {
+        ps.SetCV(j, i, cv);
+      }
+    }
+  }
+
+  surface_ = ps;
+  return Result::Ok;
+}
+
 bool NurbsSurface::IsPlanar(double tolerance) const { return surface_.IsPlanar(nullptr, tolerance); }
 
 bool NurbsSurface::IsSphere(double tolerance) const { return surface_.IsSphere(nullptr, tolerance); }
