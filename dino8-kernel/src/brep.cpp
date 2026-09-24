@@ -260,6 +260,75 @@ Brep Brep::TrimmedPlanarFace(const NurbsSurface& surface,
 }
 
 int Brep::FaceCount() const { return brep_.m_F.Count(); }
+int Brep::VertexCount() const { return brep_.m_V.Count(); }
+int Brep::EdgeCount() const { return brep_.m_E.Count(); }
+
+std::vector<int> Brep::EdgesOfVertex(int vertex_index) const {
+  if (vertex_index < 0 || vertex_index >= brep_.m_V.Count()) {
+    throw std::out_of_range("dino8::kernel::Brep::EdgesOfVertex: vertex_index " +
+                             std::to_string(vertex_index) + " is out of range (this Brep has " +
+                             std::to_string(brep_.m_V.Count()) + " vertex slot(s))");
+  }
+  const ON_BrepVertex& v = brep_.m_V[vertex_index];
+  std::vector<int> edges;
+  edges.reserve(static_cast<size_t>(std::max(0, v.m_ei.Count())));
+  for (int k = 0; k < v.m_ei.Count(); ++k) edges.push_back(v.m_ei[k]);
+  return edges;
+}
+
+std::vector<int> Brep::FacesOfEdge(int edge_index) const {
+  if (edge_index < 0 || edge_index >= brep_.m_E.Count()) {
+    throw std::out_of_range("dino8::kernel::Brep::FacesOfEdge: edge_index " +
+                             std::to_string(edge_index) + " is out of range (this Brep has " +
+                             std::to_string(brep_.m_E.Count()) + " edge slot(s))");
+  }
+  const ON_BrepEdge& edge = brep_.m_E[edge_index];
+  if (edge.m_edge_index < 0) {
+    throw std::invalid_argument("dino8::kernel::Brep::FacesOfEdge: edge_index " +
+                                 std::to_string(edge_index) + " refers to a deleted edge");
+  }
+  std::vector<int> faces;
+  for (int k = 0; k < edge.m_ti.Count(); ++k) {
+    const int ti = edge.m_ti[k];
+    if (ti < 0 || ti >= brep_.m_T.Count()) continue;
+    const int fi = brep_.m_T[ti].FaceIndexOf();
+    if (fi < 0) continue;
+    if (std::find(faces.begin(), faces.end(), fi) == faces.end()) faces.push_back(fi);
+  }
+  return faces;
+}
+
+std::vector<int> Brep::NeighborFaces(int face_index) const {
+  if (face_index < 0 || face_index >= brep_.m_F.Count()) {
+    throw std::out_of_range("dino8::kernel::Brep::NeighborFaces: face_index " +
+                             std::to_string(face_index) + " is out of range (this Brep has " +
+                             std::to_string(brep_.m_F.Count()) + " face slot(s))");
+  }
+  const ON_BrepFace& face = brep_.m_F[face_index];
+  if (face.m_face_index < 0) {
+    throw std::invalid_argument("dino8::kernel::Brep::NeighborFaces: face_index " +
+                                 std::to_string(face_index) + " refers to a deleted face");
+  }
+  std::vector<int> neighbors;
+  for (int li = 0; li < face.LoopCount(); ++li) {
+    const ON_BrepLoop* loop = face.Loop(li);
+    if (!loop) continue;
+    for (int k = 0; k < loop->TrimCount(); ++k) {
+      const ON_BrepTrim* trim = loop->Trim(k);
+      const ON_BrepEdge* edge = trim ? trim->Edge() : nullptr;
+      if (!edge) continue;
+      for (int q = 0; q < edge->m_ti.Count(); ++q) {
+        const int ti = edge->m_ti[q];
+        if (ti == trim->m_trim_index) continue;
+        if (ti < 0 || ti >= brep_.m_T.Count()) continue;
+        const int fi = brep_.m_T[ti].FaceIndexOf();
+        if (fi < 0 || fi == face_index) continue;
+        if (std::find(neighbors.begin(), neighbors.end(), fi) == neighbors.end()) neighbors.push_back(fi);
+      }
+    }
+  }
+  return neighbors;
+}
 
 namespace {
 

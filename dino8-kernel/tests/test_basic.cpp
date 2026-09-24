@@ -11644,10 +11644,11 @@ void TestFilletConvexEdgeUnitCubeTopFrontCorner() {
   Check(threw_too_big, "FilletConvexEdge rejects a radius too large to fit on the adjacent faces");
 }
 
-// =====================================================================// FilletConvexEdgeTapered (linear-taper rolling-ball fillet -> exact trimmed
+// =====================================================================
+// FilletConvexEdgeTapered (linear-taper rolling-ball fillet -> exact trimmed
 // right-circular-cone patch) - see fillet.h's own doc comment for the full
 // derivation these tests independently verify.
-// =====================================================================
+// ==============================================================
 // Verification item (1): rail-exactness. A FREE box edge (does not reach
 // either x=0 or x=3, so no third/perpendicular end face is anywhere near it
 // - the corner-notch scope-out question is entirely orthogonal to this test,
@@ -12297,7 +12298,8 @@ void TestFilletConvexEdgeTaperedRejectsInvalidInput() {
   // this box's own scale is still correctly rejected above.
 }
 
-// =====================================================================// FilletConvexEdgeTapered's N-station overload (piecewise-linear
+// =====================================================================
+// FilletConvexEdgeTapered's N-station overload (piecewise-linear
 // multi-station taper) - see fillet.h's own N-station doc comment for the
 // full derivation these tests independently verify: each segment is the
 // SAME per-segment cone construction the two-radius overload already
@@ -12306,7 +12308,7 @@ void TestFilletConvexEdgeTaperedRejectsInvalidInput() {
 // segment's own cap0 verbatim (a genuine, non-vanishing approximation on
 // the later segment's own side, honestly bounded via
 // cap0_surface_fit_tolerance).
-// =====================================================================
+// ==============================================================
 namespace {
 
 // Hand re-derivation (independent of fillet.cpp's own internals - see
@@ -15797,6 +15799,91 @@ void TestBrepFromPlanarFacesBuildsValidOpenNurbsTopology() {
   Check(box.raw().IsManifold(&is_oriented, &has_boundary) && is_oriented && !has_boundary,
         "the rebuilt box is a genuinely oriented, closed (no free boundary) 2-manifold");
   Check(box.raw().IsSolid(), "the rebuilt box's real topology reports IsSolid() true");
+}
+
+// Brep::VertexCount()/EdgeCount()/EdgesOfVertex()/FacesOfEdge()/
+// NeighborFaces() - the reusable public adjacency API this class was
+// missing (PARITY_MAP.md, "kernel: Topology & data structure"). Exercised
+// against FromPlanarFaces(Box().PlanarFaces()) - the same fixture the
+// previous test above already established as a genuine, closed, oriented
+// ON_Brep 2-manifold cube - whose combinatorics are hand-verifiable
+// directly: 8 corner vertices each meeting exactly 3 edges, 12 edges each
+// bordering exactly 2 faces, and 6 quad faces each sharing an edge with
+// exactly 4 of the other 5 (every face but the one directly opposite it,
+// 3 opposite pairs out of C(6,2) = 15 total pairs, 12 adjacent).
+void TestBrepAdjacencyQueries() {
+  using dino8::kernel::Brep;
+
+  auto ThrowsOutOfRange = [](const std::function<void()>& f) {
+    try {
+      f();
+    } catch (const std::out_of_range&) {
+      return true;
+    }
+    return false;
+  };
+
+  const Brep box = Brep::FromPlanarFaces(Brep::Box(0, 0, 0, 2, 3, 4).PlanarFaces());
+  Check(box.VertexCount() == 8, "cube has 8 vertices");
+  Check(box.EdgeCount() == 12, "cube has 12 edges");
+  Check(box.FaceCount() == 6, "cube has 6 faces");
+
+  int total_vertex_edges = 0;
+  for (int vi = 0; vi < box.VertexCount(); ++vi) {
+    const std::vector<int> edges = box.EdgesOfVertex(vi);
+    Check(edges.size() == 3, "every cube vertex is incident to exactly 3 edges");
+    for (int ei : edges) {
+      const ON_BrepEdge& e = box.raw().m_E[ei];
+      Check(e.m_vi[0] == vi || e.m_vi[1] == vi, "EdgesOfVertex only returns edges that actually touch that vertex");
+    }
+    total_vertex_edges += static_cast<int>(edges.size());
+  }
+  Check(total_vertex_edges == 2 * box.EdgeCount(), "handshake lemma: summed vertex degree is twice the edge count");
+
+  int total_edge_faces = 0;
+  for (int ei = 0; ei < box.EdgeCount(); ++ei) {
+    const std::vector<int> faces = box.FacesOfEdge(ei);
+    Check(faces.size() == 2, "every cube edge (a closed manifold) borders exactly 2 faces");
+    const int other = faces[0], self = faces[1];
+    const std::vector<int> neighbors_of_other = box.NeighborFaces(other);
+    Check(std::find(neighbors_of_other.begin(), neighbors_of_other.end(), self) != neighbors_of_other.end(),
+          "FacesOfEdge's two faces are each other's NeighborFaces via this edge");
+    total_edge_faces += static_cast<int>(faces.size());
+  }
+  Check(total_edge_faces == 2 * box.EdgeCount(), "every edge contributes exactly 2 face incidences");
+
+  int total_face_neighbors = 0;
+  for (int fi = 0; fi < box.FaceCount(); ++fi) {
+    const std::vector<int> neighbors = box.NeighborFaces(fi);
+    Check(neighbors.size() == 4, "every cube face shares an edge with exactly 4 of the other 5 faces");
+    Check(std::find(neighbors.begin(), neighbors.end(), fi) == neighbors.end(),
+          "NeighborFaces never includes the face itself");
+    for (int nfi : neighbors) {
+      const std::vector<int> back = box.NeighborFaces(nfi);
+      Check(std::find(back.begin(), back.end(), fi) != back.end(), "face adjacency is symmetric");
+    }
+    total_face_neighbors += static_cast<int>(neighbors.size());
+  }
+  Check(total_face_neighbors == 2 * box.EdgeCount(),
+        "summed face degree (24) equals twice the edge count (12) - a cube has no duplicated face pairs");
+
+  Check(ThrowsOutOfRange([&] { box.EdgesOfVertex(-1); }), "EdgesOfVertex(-1) throws std::out_of_range");
+  Check(ThrowsOutOfRange([&] { box.EdgesOfVertex(box.VertexCount()); }),
+        "EdgesOfVertex(VertexCount()) throws std::out_of_range");
+  Check(ThrowsOutOfRange([&] { box.FacesOfEdge(-1); }), "FacesOfEdge(-1) throws std::out_of_range");
+  Check(ThrowsOutOfRange([&] { box.FacesOfEdge(box.EdgeCount()); }),
+        "FacesOfEdge(EdgeCount()) throws std::out_of_range");
+  Check(ThrowsOutOfRange([&] { box.NeighborFaces(-1); }), "NeighborFaces(-1) throws std::out_of_range");
+  Check(ThrowsOutOfRange([&] { box.NeighborFaces(box.FaceCount()); }),
+        "NeighborFaces(FaceCount()) throws std::out_of_range");
+
+  // A surface-only Brep (Box() itself, per this class's own top comment)
+  // has no ON_Brep vertex/edge topology at all - the counts and adjacency
+  // queries are honest about that instead of guessing at nonexistent
+  // structure.
+  const Brep raw_box = Brep::Box(0, 0, 0, 2, 3, 4);
+  Check(raw_box.VertexCount() == 0 && raw_box.EdgeCount() == 0,
+        "Box()'s own surface-only faces carry no ON_BrepVertex/ON_BrepEdge records");
 }
 
 // BooleanCombinePlanar assembles its result via Brep::FromPlanarFaces
@@ -25992,6 +26079,116 @@ void TestExtrudeTaperedConvexPolygonIsExactPlanarFrustum() {
         "direction in the profile's own plane throws");
 }
 
+// Sweep2: two-rail sweep with scaling (brep.h's own doc comment has the
+// full contract). Every closed-form check below was hand-derived and
+// cross-checked against a standalone scratch driver before being written
+// here - see the derivation in this test's own comments.
+void TestSweep2ExactFrustumAndDegenerateCases() {
+  // Two straight rails: rail1 vertical at x=0, rail2 a straight segment
+  // from (D0,0,0) to (D1,0,H). Both rails are straight and open, so
+  // Sweep2 takes its exact 2-station shortcut - every local point's 3D
+  // trajectory is provably affine in the station fraction (origin(f) and
+  // width(f) are both affine, and the frame's x/z axes stay CONSTANT
+  // because x_hat = unit(rail2(f) - rail1(f)) = unit((width(f), 0, 0))
+  // never changes direction, only magnitude, for D0, D1 > 0). The square
+  // section is drawn at HALF-extent D0/2 (i.e. spans the FULL rail
+  // separation D0 at station 0, not half of it - Sweep2's local
+  // coordinates are the station-0 offset divided by the station-0
+  // width, so a profile of half-extent w0/2 occupies exactly the "unit"
+  // local square). With the profile's plane perpendicular to the
+  // travel direction (verified algebraically: for rails confined to the
+  // world XZ plane, x_hat = (1,0,0) exactly and z_hat = unit(x_hat x
+  // avg_tangent) always lands purely on the Y axis, i.e. z_hat =
+  // (0, +/-1, 0) exactly - a genuine consequence of the cross product
+  // with a vector in the XZ plane, not an approximation), each world
+  // cross-section at height z = f*H is a square of side width(f)
+  // centered on the z-axis, so:
+  //   Volume = H * integral_0^1 width(f)^2 df = (H/3)(D0^2 + D0*D1 + D1^2)
+  // - the standard pyramid-frustum formula with "radius" replaced by
+  // full width. Verified to 3e-16 relative in the scratch driver.
+  const double H = 5.0, D0 = 2.0, D1 = 4.0;
+  const NurbsCurve rail1 = Polyline({P(0, 0, 0), P(0, 0, H)});
+  const NurbsCurve rail2 = Polyline({P(D0, 0, 0), P(D1, 0, H)});
+  const NurbsCurve sq = Polyline({P(-D0 / 2, -D0 / 2, 0), P(D0 / 2, -D0 / 2, 0), P(D0 / 2, D0 / 2, 0),
+                                  P(-D0 / 2, D0 / 2, 0), P(-D0 / 2, -D0 / 2, 0)});
+  const Brep frustum = Brep::Sweep2(sq, rail1, rail2, 32);
+  CheckSolidTopology(frustum, 3, "sweep2 pyramid frustum (2-station exact)");
+  const double exact_frustum = H / 3.0 * (D0 * D0 + D0 * D1 + D1 * D1);
+  CheckClosedMeshVolume(frustum, 16, 16, exact_frustum, 1e-9, "sweep2 pyramid frustum");
+  Check(FaceSurface(frustum, 0).DegreeV() == 1, "two straight rails give the exact degree-1 ruled wall");
+
+  // Parallel rails (constant separation D0, no scaling at all): Sweep2
+  // must reduce to a plain extrusion of the D0 x D0 square by height H -
+  // volume D0^2 * H exactly, verified to 4e-15 relative.
+  const NurbsCurve rail2_parallel = Polyline({P(D0, 0, 0), P(D0, 0, H)});
+  const Brep prism = Brep::Sweep2(sq, rail1, rail2_parallel, 32);
+  CheckSolidTopology(prism, 3, "sweep2 parallel rails (degenerates to extrude)");
+  CheckClosedMeshVolume(prism, 16, 16, D0 * D0 * H, 1e-9, "sweep2 parallel-rail prism");
+
+  // General curved rails: two quarter-circle arcs of different radius
+  // and height (rail1 r=5 z=0, rail2 r=8 z=2), a small square section
+  // centered on rail1's own start point and spanned by that station's
+  // own two-rail frame axes (computed once, by hand, from the same
+  // formulas TwoRailFrames() uses, and cross-checked numerically in the
+  // scratch driver before being hardcoded here). No closed form exists
+  // for a general curved two-rail sweep, so this checks real structural
+  // properties instead: a genuine closed solid, positive volume, and
+  // Mesh::IsClosedManifold() at both the requested and an asymmetric
+  // division pair - the fan-cap "shares its own boundary isocurve"
+  // property doesn't care that the wall itself is only an interpolant.
+  {
+    NurbsCurve rail1_full = Circle(P(0, 0, 0), Vector3d(0, 0, 1), 5.0);
+    NurbsCurve rail2_full = Circle(P(0, 0, 2), Vector3d(0, 0, 1), 8.0);
+    ON_NurbsCurve c1 = rail1_full.raw();
+    Check(c1.Trim(ON_Interval(0.0, c1.Domain().Length() / 4.0)), "rail1 quarter-arc trim succeeded");
+    ON_NurbsCurve c2 = rail2_full.raw();
+    Check(c2.Trim(ON_Interval(0.0, c2.Domain().Length() / 4.0)), "rail2 quarter-arc trim succeeded");
+    NurbsCurve rail1_q, rail2_q;
+    rail1_q.raw() = c1;
+    rail2_q.raw() = c2;
+    // Station-0 frame axes for THIS rail pair, hand-derived: x_hat =
+    // unit(rail2(0) - rail1(0)) = unit((3, 0, 2)) = (0.83205, 0, 0.55470);
+    // avg tangent there is (0, 1, 0) (both rails start at angle 0 with a
+    // CCW tangent along +y); z_hat = unit(x_hat x (0,1,0)), which for
+    // x_hat = (a, 0, b) works out to (-b, 0, a) = (-0.55470, 0, 0.83205).
+    const Point3d o0(5, 0, 0);
+    const Vector3d xhat(0.83205, 0, 0.55470), zhat(-0.55470, 0, 0.83205);
+    const double half = 0.3;
+    const NurbsCurve small_sq = Polyline({o0 - xhat * half - zhat * half, o0 + xhat * half - zhat * half,
+                                          o0 + xhat * half + zhat * half, o0 - xhat * half + zhat * half,
+                                          o0 - xhat * half - zhat * half});
+    const Brep curved = Brep::Sweep2(small_sq, rail1_q, rail2_q, 24);
+    CheckSolidTopology(curved, 3, "sweep2 curved (quarter-arc) rails");
+    const Mesh cm = curved.TessellateToClosedMesh(8, 48);
+    Check(cm.IsClosedManifold(), "sweep2 curved rails: closed manifold at (8, 48)");
+    Check(curved.TessellateToClosedMesh(12, 5).IsClosedManifold(), "sweep2 curved rails: closed manifold at (12, 5) too");
+    Check(cm.Volume() > 0.1 && cm.Volume() < 10.0, "sweep2 curved rails: volume is a sane positive number, not a "
+                                                    "self-overlapping near-zero shape");
+  }
+
+  // Closed (wrap) rails: two concentric circles - no caps (a periodic
+  // sweep has no ends), but still a genuine closed manifold.
+  {
+    const NurbsCurve ring1 = Circle(P(0, 0, 0), Vector3d(0, 0, 1), 5.0);
+    const NurbsCurve ring2 = Circle(P(0, 0, 1), Vector3d(0, 0, 1), 7.0);
+    const Point3d o0(5, 0, 0);
+    const double half = 0.3;
+    const NurbsCurve small_sq = Polyline({o0 + P(-half, 0, -half), o0 + P(half, 0, -half), o0 + P(half, 0, half),
+                                          o0 + P(-half, 0, half), o0 + P(-half, 0, -half)});
+    const Brep ring_body = Brep::Sweep2(small_sq, ring1, ring2, 32);
+    Check(ring_body.FaceCount() == 1, "closed-rail sweep2 is a single periodic face, no caps");
+    Check(ring_body.raw().IsSolid(), "closed-rail sweep2 is a genuine closed solid");
+    const Mesh rm = ring_body.TessellateToClosedMesh(8, 64);
+    Check(rm.IsClosedManifold(), "closed-rail sweep2: closed manifold at (8, 64)");
+    Check(ring_body.TessellateToClosedMesh(12, 5).IsClosedManifold(), "closed-rail sweep2: closed manifold at (12, 5) too");
+    Check(rm.Volume() > 0.0, "closed-rail sweep2: positive volume");
+  }
+
+  // Negative controls.
+  Check(Throws([&] { Brep::Sweep2(sq, rail1, rail1, 32); }), "rails that touch (rail2 == rail1) throw");
+  Check(Throws([&] { Brep::Sweep2(sq, rail1, rail2, 1); }), "stations < 2 throws");
+}
+
 }  // namespace sweep_tests
 
 // ---------------------------------------------------------------------------
@@ -27900,6 +28097,7 @@ int main() {
   TestRemoveBlendLeavesTheOtherFilletIntactAmongTwo();
   TestRemoveBlendRejectsUnsupportedConfigurations();
   TestBrepFromPlanarFacesBuildsValidOpenNurbsTopology();
+  TestBrepAdjacencyQueries();
   TestBooleanCombinePlanarResultHasValidClosedTopology();
   TestShellConvexPlanarResultHasValidTopology();
   TestFilletConvexEdgeFreeBoundaryCapHasValidOpenTopology();
@@ -28120,6 +28318,7 @@ int main() {
   TestSurfaceExtendLinearBothEndsBothDirectionsAndRational();
   TestSurfaceExtendLinearNoOpAndRefusalChecks();
 
+  sweep_tests::TestSweep2ExactFrustumAndDegenerateCases();
   ON::End();
 
   if (g_failures > 0) {
