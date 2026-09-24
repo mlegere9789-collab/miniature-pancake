@@ -1832,6 +1832,123 @@ What this repo does instead:
   the "Known gaps" note itself named, plus the weld/join family, so the
   byte-identical sweep claim stays checkable one family at a time.
 
+- `Brep::Extrude()` / `Revolve()` / `Loft()` / `Sweep1()` / `Pipe()`
+  (`src/sweep.cpp`): the first B-rep-level sweep-class operations here
+  (Parasolid's sweep/spin/loft/pipe class). Until now every "solid from
+  a profile" in this kernel was mesh-level (`Mesh::ExtrudeCappedSolid()`,
+  `RevolveProfile()`, `LoftClosedRings()`), and the app's own Extrude/
+  Revolve leaned on OpenNURBS' `ON_BrepExtrudeFace`/`ON_BrepRevSurface`
+  while its Loft fit a surface *through the sections as control points*
+  (so the surface did not actually pass through the sections). These
+  five build real NURBS surfaces and real `ON_Brep` topology:
+  - **Exact math where the shape allows it, verified not asserted.** An
+    extrusion is the degree-(p, 1) tensor product of the profile and the
+    direction (a 2x3x5 rectangle's welded mesh volume is exactly 30 at
+    every division pair tried, to 1e-9); a revolution is Piegl & Tiller
+    A8.1's rational quadratic (one 90-degree arc per quadrant, the full
+    circle from an exact quadrant table so the v=2*pi control points are
+    bit-identical to v=0 and `IsClosed(1)` holds) - a revolved
+    semicircle passes `NurbsSurface::IsSphere()`, a revolved slanted
+    segment `IsCone()`, both at 1e-9; a degree-1 loft between coaxial
+    circles passes `IsCone()`; `Pipe()` along a straight rail passes
+    `IsCylinder()` (two stations, degree 1 - the exact extrusion, not a
+    sampled tube). A loft/sweep INTERPOLATES its sections: global
+    B-spline interpolation (chord-length station parameters averaged
+    over the control-point columns, averaged knots, a dense LU with
+    partial pivoting shared across every column) after making the
+    sections compatible shape-preservingly (clamp if periodic, common
+    rationality, degree elevation to the max, `[0, 1]` domain, merged
+    knot refinement - knots within 1e-12 treated as one). Checked
+    directly: `S(u, v_k)` reproduces three circles / four squares to
+    1e-9, and three circles with linearly varying radius come out as the
+    exact frustum again. Between sweep stations the surface is an
+    interpolant, not the true swept shape (a quarter-arc pipe with 16
+    stations is within 0.7% of Pappus' volume; documented as such).
+  - **Closed lofts/sweeps** solve the periodic interpolation problem
+    over a cyclic system (knots at the station parameters for odd
+    degree, at midpoints for even - Schoenberg-Whitney for the cyclic
+    case), build the ON-periodic surface, then `ClampEnd()` it (and, for
+    even degree, `ChangeSurfaceSeam()` back to section 0) so callers get
+    an ordinary clamped surface with `IsClosed(1)`; a degree-1 closed
+    loft is built on the clamped path through the wrapped list, since
+    `ON_NurbsSurface::IsPeriodic()` is only defined for degree >= 2.
+    Eight unit squares around a radius-5 ring give exactly the 8-gon
+    prismatic ring at degree 1 and within 0.3% of Pappus' 10*pi at
+    degrees 2 and 3; a 32-station closed pipe is within 0.8% of the
+    torus 2*pi^2*R*r^2. Sweep frames are rotation-minimizing (double
+    reflection); on a closed rail the accumulated twist is spread evenly
+    so the last frame meets the first.
+  - **Real topology.** Faces go in through `ON_Brep::NewFace(surface,
+    vid, eid, bRev3d)`, OpenNURBS' own way of stitching untrimmed faces:
+    singular sides become singular trims, a closed section's seam a seam
+    trim, and each cap passes the wall's own boundary edge index so the
+    shared edge is literally shared. `raw().IsValid()` and
+    `raw().IsSolid()` hold for every closed result (the older `Box()`/
+    `Sphere()` factories still fail `IsValid()`, as brep.h has always
+    said), and every closed fixture in the tests also asserts that NO
+    face needed an `m_bRev` flip - the orientation rules (a closed
+    profile counterclockwise about the extrusion direction; a revolve
+    region clockwise in the (rho, z) half-plane, because
+    `S_u x S_v = C' x e_phi` is `-e_rho` for a counterclockwise one - a
+    sign the first draft got backwards and the test caught; a loft's
+    first section counterclockwise about the direction to the second)
+    orient the body outward by construction, with a coarse-tessellation
+    volume sign as a cross-check that flips the whole body if a rule is
+    ever wrong for an input.
+  - **Caps are planar fans to a kernel point**, not `TrimmedPlanarFace()`
+    polygons. D(u, v) = (1 - v) X + v C(u) is a genuine planar NURBS
+    face whose north boundary IS the wall's boundary isocurve, so the
+    cap and the wall sample that edge identically at ANY
+    `(u_divisions, v_divisions)` - `TessellateToClosedMesh()` is a
+    closed manifold at (8, 8), (12, 5) and (5, 12) for every capped
+    fixture, which a fixed polygon trim can never give (it matches one
+    wall sampling only, and its exact-clip boundary adds T-junctions at
+    grid crossings even then). X is found by exact half-plane
+    intersection over a dense sampling of the boundary (the region's
+    kernel), then re-verified against the true curve (the angle of
+    C(u) - X must be strictly monotone). The honest limit: a region with
+    an empty kernel (a C-shape, a spiral) cannot be capped this way and
+    throws when a cap is asked for - an L-shape is fine (its kernel is
+    the inner corner's quadrant). A revolve's end caps for an open
+    profile put X ON the axis segment between the profile's endpoints,
+    so the two caps share that segment as two literal `ON_BrepEdge`s and
+    the quarter-cylinder is a real solid (4 edges, 3 vertices). A full
+    revolve's off-axis end circle gets a disc cap built TRANSPOSED (the
+    boundary along the cap's v, matching the wall's v-direction edge),
+    the fix for the one asymmetric-divisions case the untransposed fan
+    got wrong (found by the (12, 5) check, confirmed closed after).
+  - **Two pre-existing gaps this exposed and fixed.** (1)
+    `Mesh::MergeAndWeld()` kept faces that welding had collapsed - a
+    pole row's (a, a, b) zero-area triangles - so `Brep::Sphere()`'s own
+    `TessellateToClosedMesh()` had NEVER been a `Mesh::IsClosedManifold()`
+    (confirmed on the pre-fix build: 512 faces, 32 degenerate, not
+    closed); it now drops a collapsed triangle and reduces a quad with
+    one repeated corner to a triangle, leaving `Volume()`/`Area()`
+    unchanged (a collapsed face contributes zero to both) - the sphere
+    is now closed with exactly 480 faces, and
+    `TestMergeAndWeldDropsCollapsedPoleTriangles` fails on the pre-fix
+    build. (2) `CollectPlainQuadFaces()` (the asymmetric-divisions seam
+    pass in `Brep::Tessellate()`) took any planar untrimmed face for a
+    bilinear quad; a planar fan cap is planar and untrimmed but its four
+    domain corners are (X, X, C(b), C(a)), and building THAT as a
+    bilinear patch would tessellate the cap as a zero-width sliver. It
+    now requires four distinct corners. This one is defensive: the pass
+    only rebuilds a quad that shares a straight edge with ANOTHER plain
+    quad, and no fixture today puts a fan cap in that position (a cap's
+    only neighbour is its curved wall), so the guard closes a latent
+    path rather than a failing test.
+  - **Limitations stated, not hidden.** A closed profile touching the
+    axis (a rectangle with one side on it) is refused - the touching
+    side would sweep to a degenerate zero-area band inside one face -
+    with the open L-shaped profile named as the exact alternative; a
+    partial revolve of an open profile with an off-axis endpoint is not
+    cappable here; sections are not auto-aligned or re-seamed; no draft
+    angle, no 2-rail sweep with scaling, no variable-radius pipe yet.
+    A capped body reverses its section internally when needed for
+    outward orientation, so the wall's u may run opposite to the input
+    curve (the closed-loft test matches section corners as a set for
+    that reason).
+
 ## Blending build log (Parasolid "blend/chamfer" class, chronological)
 
 Exact edge blends live in `include/dino8/kernel/fillet.h` /
@@ -1960,8 +2077,10 @@ honestly out of scope.
 - `Brep::Box()`, `Brep::Sphere()`, `Brep::TrimmedPlanarFace()`
   (+ `hole_loops_uv`) + `Mesh::ExtrudeCappedSolid()`/`Mesh::Cylinder()`/
   `Mesh::ConeToApex()`/`Mesh::Cone()`/`Mesh::RevolveProfile()`/
-  `Mesh::LoftClosedRings()`/`Mesh::Torus()` are the only shapes/operations
-  here.
+  `Mesh::LoftClosedRings()`/`Mesh::Torus()` were the only shapes/
+  operations here; `Brep::Extrude()`/`Revolve()`/`Loft()`/`Sweep1()`/
+  `Pipe()` (see above) now add the B-rep-level sweep class, with draft
+  angles, 2-rail sweeps and variable-radius pipes still open.
   `RevolveProfile()` now supports a flat end rim too (see below);
   `LoftClosedRings()`'s end caps require each ring to be planar and
   simple (non-self-intersecting) - both are now validated
