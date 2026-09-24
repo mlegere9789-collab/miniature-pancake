@@ -2170,12 +2170,104 @@ What this repo does instead:
     side would sweep to a degenerate zero-area band inside one face -
     with the open L-shaped profile named as the exact alternative; a
     partial revolve of an open profile with an off-axis endpoint is not
-    cappable here; sections are not auto-aligned or re-seamed; no draft
-    angle, no 2-rail sweep with scaling, no variable-radius pipe yet.
+    cappable here; sections are not auto-aligned or re-seamed; no
+    2-rail sweep with scaling, no variable-radius pipe yet (draft-angle
+    extrusion is closed below).
     A capped body reverses its section internally when needed for
     outward orientation, so the wall's u may run opposite to the input
     curve (the closed-loft test matches section corners as a set for
     that reason).
+- `Brep::ExtrudeTapered(profile, direction, draft_angle, cap)`
+  (`src/sweep.cpp`): `Extrude()` with a draft angle - the wall leans
+  instead of running straight, Parasolid/ACIS's TAPER option on a swept
+  protrusion and AutoCAD `EXTRUDE`'s `Taper angle`. The app already had
+  an approximate version (`ExtrudeTaperedCommand`,
+  `dino8-app/src/commands/cmd_surface.cpp:1191`: the top section is the
+  profile SCALED ABOUT ITS CENTROID by `tan(draft) * height` - exact only
+  for a profile centered on its own centroid with uniform radius, i.e. a
+  circle; wrong for anything else, since a real draft wall is supposed to
+  move every boundary point by the same PERPENDICULAR distance, not scale
+  the whole shape toward one interior point). This is the first
+  kernel-native, genuinely-correct one, built on `Loft()`'s own exact
+  degree-1 ruled wall between the profile and an in-plane-offset copy of
+  it translated to the far end, with three honestly different fidelity
+  levels depending on what the profile actually is:
+  - **Circle/arc profiles are exact.** `NurbsCurve::OffsetInPlane()`'s own
+    Arc/Circle case offsets to an exact concentric arc/circle, so a
+    drafted circular boss or hole is a genuine NURBS cone frustum wall
+    (`NurbsSurface::IsCone()` holds), volume verified against the closed
+    form `(pi*L/3)(r0^2 + r0*r1 + r1^2)` to 0.3% (tessellation chord
+    error, same bound the existing frustum tests use) - and the top
+    section's own radius is checked directly against `r0 -
+    L*tan(draft_angle)` to 1e-9, not just the aggregate volume.
+  - **Convex polygon profiles are ALSO exact - a new closed-form
+    algorithm, not a reuse of `OffsetInPlane()`'s general branch.** A
+    multi-segment polyline (a rectangle, a hexagon, any convex profile
+    built as straight `Polyline()` segments) needs `OffsetInPlane()`'s
+    OWN least-squares refit branch, which cannot get a sharp corner right
+    (it blurs it) and, for a CLOSED polygon whose seam sits exactly at a
+    corner, does not even reproduce a closed curve at all (the tangent -
+    and so the offset direction - genuinely differs on the two sides of
+    that corner, so the refit's own forced-equal endpoints split into two
+    different points). `OffsetConvexPolyline()` (`src/sweep.cpp`) instead
+    computes the EXACT planar miter-join point at every vertex in closed
+    form - `V' = V + distance*(n0 + n1) / (1 + n0.n1)`, derived directly
+    from the two edges' half-angle bisector, not fit or iterated - and is
+    proven safe for a convex input by a cheap, exact check applied to
+    every result: each offset edge must stay a POSITIVE multiple of its
+    own original direction (a convex polygon offset uniformly can only
+    self-intersect by inverting an edge first, so checking for that
+    directly is a complete, not heuristic, validity proof). Convexity
+    itself is checked up front (all turns the same sign) and a concave
+    profile is refused rather than risked - the general polygon-offset
+    self-intersection problem this kernel already discloses as open
+    elsewhere (`PARITY_MAP.md`, "Offset self-intersection / invalid-loop
+    removal") is not attempted here. Verified two ways: an isotropically-
+    tapered square's SIDE FACES are themselves planar (a real geometric
+    fact for uniform-scale taper, checked by hand: the four corners of
+    each side quad are coplanar), so unlike the circular case the
+    tessellated volume is EXACT (not merely within tolerance) at any
+    division, `1e-9` against the closed-form frustum-of-pyramid volume
+    `A0*h*(k0^2 + k0*k1 + k1^2)/3`; and the actual top corner positions
+    are checked directly against the hand-computed offset points, not
+    just the volume.
+  - **A general (non-arc, non-polyline) planar profile** falls through to
+    `OffsetInPlane()`'s own general least-squares branch, inheriting its
+    already-documented exactness/approximation split and its own
+    curvature-based self-intersection guard - no new limitation invented
+    for this function.
+  - **Sign is anchored to `direction`, not to whichever way
+    `IsPlanar()`'s fit happened to come out.** `NurbsCurve::
+    OffsetInPlane()`'s own Arc/Circle case self-corrects its sign against
+    the shape's independently-known true radial direction (its own doc
+    comment), but its Line/general case and this function's own convex-
+    polygon path do not - both use "distance > 0 grows along this
+    curve's own fitted plane normal," and that normal's SIGN is an
+    otherwise-arbitrary artifact of `IsPlanar()`'s fit (confirmed by
+    reading `ON_Curve::IsPlanar()`/`ON_NurbsCurve::IsPlanar()`: the plane
+    itself is built from the curve's own control points, independent of
+    the tolerance argument, so the SAME curve always gets the SAME fitted
+    normal, but a mirrored or differently-wound copy of the same shape
+    can fit to the opposite one). `ExtrudeTapered()` canonicalizes once
+    (flips the reference normal, and the delegated `OffsetInPlane()`
+    distance sign with it, whenever the fit came out opposite
+    `direction`) so "positive `draft_angle` shrinks moving along
+    +`direction`" holds for every profile, not just the ones whose fit
+    happened to agree - checked directly: the same circle built with its
+    defining plane's normal flipped gives the exact same frustum for the
+    same `draft_angle`.
+  - **Degenerate cases refused, not guessed.** A non-finite or
+    out-of-`(-pi/2, pi/2)` `draft_angle`; a non-planar profile; a
+    `direction` not parallel to the profile's own plane normal (an
+    oblique draft would need the in-plane offset and the axial
+    translation decomposed separately, not attempted); a non-convex
+    multi-segment profile; a draft/height combination that would fold
+    the offset curve through itself (an arc shrinking past its own
+    radius, a polygon edge inverting past its own inradius, or a general
+    curve's own curvature-based guard) - every one throws
+    `std::invalid_argument` naming which check failed, and `draft_angle
+    == 0` delegates to `Extrude()` itself exactly rather than taking a
+    numerically-noisier path through the offset machinery for no reason.
 - `SubD::SetEdgeSharpness(p0, p1, sharpness, point_tolerance)`: real
   Pixar/OpenSubdiv-style semi-sharp (variable-weight) creasing, closing a
   gap `FromControlMesh()`'s own `crease_at_double_edges` parameter left
@@ -3345,8 +3437,10 @@ honestly out of scope.
   `Mesh::ConeToApex()`/`Mesh::Cone()`/`Mesh::RevolveProfile()`/
   `Mesh::LoftClosedRings()`/`Mesh::Torus()` were the only shapes/
   operations here; `Brep::Extrude()`/`Revolve()`/`Loft()`/`Sweep1()`/
-  `Pipe()` (see above) now add the B-rep-level sweep class, with draft
-  angles, 2-rail sweeps and variable-radius pipes still open.
+  `Pipe()` (see above) now add the B-rep-level sweep class;
+  `ExtrudeTapered()` (see above) closes draft angles for
+  circle/arc/convex-polygon profiles, with 2-rail sweeps and
+  variable-radius pipes still open.
   `RevolveProfile()` now supports a flat end rim too (see below);
   `LoftClosedRings()`'s end caps require each ring to be planar and
   simple (non-self-intersecting) - both are now validated

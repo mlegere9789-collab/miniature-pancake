@@ -233,6 +233,72 @@ class Brep {
   // shaped profile, or a direction lying in the profile plane.
   static Brep Extrude(const NurbsCurve& profile, Vector3d direction, bool cap = true);
 
+  // ExtrudeTapered: Extrude() with a draft angle - the wall leans instead
+  // of running straight along `direction`. `direction` must be parallel
+  // (either sign) to `profile`'s own fitted plane normal, within 1e-9 of
+  // dot-product alignment - an OBLIQUE draft direction would need the
+  // in-plane offset and the extrusion translation decomposed separately,
+  // which this does not attempt and refuses (std::invalid_argument)
+  // instead of guessing. `draft_angle` (radians, strictly in
+  // (-pi/2, pi/2); 0 delegates to Extrude() itself, exactly) is measured
+  // from `direction`: a POSITIVE angle shrinks the profile moving along
+  // +direction (the standard mold-release convention: walls lean in
+  // toward the part as you move away from the parting line - each point
+  // moves laterally by `L * tan(draft_angle)`, L = |direction|, measured
+  // perpendicular to the profile's own boundary there, so the wall
+  // literally makes angle `draft_angle` with `direction`); negative
+  // flares it outward.
+  //
+  // The top section is built by offsetting `profile` in its own plane by
+  // `-L * tan(draft_angle)` (NurbsCurve::OffsetInPlane()'s own sign
+  // convention: positive distance always GROWS there) and translating it
+  // by `direction`, then Loft()-ing the two sections at degree 1 - the
+  // exact ruled wall between them, with Loft()'s own cap/orientation
+  // logic applying unchanged. The offset itself has three honestly
+  // different fidelity levels, matching the shapes it is actually exact
+  // for:
+  //   - A LINE or a CIRCLE/ARC profile: OffsetInPlane()'s own EXACT case
+  //     (a parallel line; a concentric arc/circle of radius
+  //     `radius -/+ L*tan(draft_angle)`) - a drafted circular boss/hole
+  //     is therefore an exact NURBS cone frustum wall, volume
+  //     `(pi*L/3)(r0^2 + r0*r1 + r1^2)` up to tessellation chord error,
+  //     the same closed form Loft()'s own two-circle case already
+  //     verifies.
+  //   - A CONVEX multi-segment polyline profile (degree 1, not reducible
+  //     to a single line or arc): this kernel's own exact planar
+  //     miter-join offset (every vertex moved to the intersection of its
+  //     two adjacent edges' offset copies, in closed form - see
+  //     OffsetConvexPolyline() in sweep.cpp), NOT OffsetInPlane()'s own
+  //     general per-sample least-squares refit, which cannot be exact for
+  //     a sharp corner (it blurs one) and, for a CLOSED polygon whose
+  //     seam sits exactly at a corner, does not even reproduce a closed
+  //     curve (the tangent - and so the offset direction - genuinely
+  //     differs on the two sides of that corner, splitting the fitted
+  //     seam into two different points). Restricted to CONVEX input
+  //     (checked; throws otherwise) because that is exactly the case a
+  //     cheap, EXACT validity check exists for (every offset edge stays a
+  //     positive multiple of its own original direction - proof in
+  //     OffsetConvexPolyline()'s own comment); a concave polygon's offset
+  //     can self-intersect far from any single corner, the general
+  //     polygon-offset self-intersection-removal problem this kernel
+  //     discloses elsewhere as a known gap (PARITY_MAP.md, "Offsetting,
+  //     shelling, thickening" - "Offset self-intersection / invalid-loop
+  //     removal"), and is refused here rather than silently risking a
+  //     folded wall.
+  //   - Any other planar profile: falls through to OffsetInPlane()'s own
+  //     general least-squares branch, with its own documented exactness/
+  //     approximation split and its own curvature-based self-intersection
+  //     guard - the same honesty this kernel already ships for a general
+  //     curve offset, not a new limitation invented for this function.
+  // Throws std::invalid_argument for a non-finite or out-of-range
+  // `draft_angle`, a non-planar profile, an oblique `direction`, a
+  // non-convex multi-segment polyline profile, or a draft/height
+  // combination whose offset would self-intersect or fold through itself
+  // (surfaced by whichever of the three paths above hit it) - propagated
+  // with a message naming which one refused and why, never silently
+  // built anyway.
+  static Brep ExtrudeTapered(const NurbsCurve& profile, Vector3d direction, double draft_angle, bool cap = true);
+
   // Revolve: `profile` spun about the axis through `axis_point` along
   // `axis_direction` by `angle` radians (0 < angle <= 2*pi; exactly
   // 2*pi, within 1e-12, is a full revolution). The profile must lie in a

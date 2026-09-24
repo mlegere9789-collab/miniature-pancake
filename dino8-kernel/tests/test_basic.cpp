@@ -24772,6 +24772,159 @@ void TestSweep1AndPipe() {
   Check(Throws([&] { Brep::Sweep1(square, rail, 1); }), "fewer than 2 stations throws");
 }
 
+void TestExtrudeTaperedCircularProfileIsExactConeFrustum() {
+  // Shrinking: r0=2 -> r1=1 over height 3, tan(theta) = (r0 - r1) / h.
+  const double r0 = 2.0, r1 = 1.0, h = 3.0;
+  const double theta = std::atan((r0 - r1) / h);
+  const Brep frustum = Brep::ExtrudeTapered(Circle(P(0, 0, 0), Vector3d(0, 0, 1), r0), Vector3d(0, 0, h), theta);
+  CheckSolidTopology(frustum, 3, "drafted circle (shrinking)");
+  Check(FaceSurface(frustum, 0).IsCone(1e-9), "a drafted circular extrusion's wall is an exact NURBS cone");
+  const double exact = M_PI * h / 3.0 * (r0 * r0 + r0 * r1 + r1 * r1);
+  CheckClosedMeshVolume(frustum, 64, 4, exact, 0.003, "drafted circle cone frustum (shrinking)");
+  // The top circle's actual radius must be exactly r1 (not just the
+  // overall volume matching by coincidence).
+  {
+    const NurbsSurface wall = FaceSurface(frustum, 0);
+    const ON_Interval du = wall.raw().Domain(0), dv = wall.raw().Domain(1);
+    double worst = 0.0;
+    for (int j = 0; j <= 32; ++j) {
+      const Point3d p = wall.PointAt(du.ParameterAt(j / 32.0), dv.Max());
+      worst = std::max(worst, std::fabs(std::hypot(p.x, p.y) - r1));
+    }
+    Check(worst < 1e-9, "the top section's radius is exactly r1 = r0 - h*tan(draft_angle)");
+  }
+
+  // Flaring: a NEGATIVE draft angle grows the profile - r0=1 -> r1=2 over h=2.
+  const double g0 = 1.0, g1 = 2.0, gh = 2.0;
+  const double gtheta = std::atan((g0 - g1) / gh);
+  Check(gtheta < 0.0, "a growing draft angle is negative under this function's own convention");
+  const Brep flare = Brep::ExtrudeTapered(Circle(P(0, 0, 0), Vector3d(0, 0, 1), g0), Vector3d(0, 0, gh), gtheta);
+  CheckSolidTopology(flare, 3, "drafted circle (flaring)");
+  const double exact_flare = M_PI * gh / 3.0 * (g0 * g0 + g0 * g1 + g1 * g1);
+  CheckClosedMeshVolume(flare, 64, 4, exact_flare, 0.003, "drafted circle cone frustum (flaring)");
+
+  // A draft angle along -direction gives the SAME solid: the sign
+  // convention is anchored to `direction` itself, not to whichever way
+  // IsPlanar() happened to fit the profile's own plane normal.
+  const Brep frustum_neg_dir = Brep::ExtrudeTapered(Circle(P(0, 0, 0), Vector3d(0, 0, -1), r0), Vector3d(0, 0, h), theta);
+  // Compared against the OTHER tessellated mesh (not the analytic
+  // `exact`, whose own ~0.16% chord-error gap swamps a tight tolerance):
+  // both are the same inscribed-polygon approximation of the identical
+  // exact cone, so their volumes are bit-for-bit identical, confirmed
+  // directly (a diagnostic run measured 0.000e+00 difference).
+  Check(std::abs(frustum_neg_dir.TessellateToClosedMesh(64, 4).Volume() - frustum.TessellateToClosedMesh(64, 4).Volume()) < 1e-9,
+        "the same draft_angle gives the same shrinking frustum regardless of the circle's own winding/plane sign");
+
+  // Zero draft angle delegates to Extrude() itself - same volume as the
+  // plain cylinder, exactly.
+  const Brep straight = Brep::ExtrudeTapered(Circle(P(0, 0, 0), Vector3d(0, 0, 1), 1.5), Vector3d(0, 0, 4), 0.0);
+  const Brep plain = Brep::Extrude(Circle(P(0, 0, 0), Vector3d(0, 0, 1), 1.5), Vector3d(0, 0, 4));
+  CheckSolidTopology(straight, 3, "zero draft angle");
+  Check(std::abs(straight.TessellateToClosedMesh(64, 4).Volume() - plain.TessellateToClosedMesh(64, 4).Volume()) < 1e-9,
+        "zero draft angle gives the exact same volume as plain Extrude()");
+
+  // Negative controls.
+  Check(Throws([&] { Brep::ExtrudeTapered(Circle(P(0, 0, 0), Vector3d(0, 0, 1), 1.0), Vector3d(0, 0, 10), std::atan(1.0)); }),
+        "a draft steep enough to shrink the circle to zero radius before the top throws");
+  Check(Throws([&] { Brep::ExtrudeTapered(Circle(P(0, 0, 0), Vector3d(0, 0, 1), 1.0), Vector3d(0, 0, 1), M_PI / 2); }),
+        "draft_angle == pi/2 throws (tan undefined)");
+  Check(Throws([&] { Brep::ExtrudeTapered(Circle(P(0, 0, 0), Vector3d(0, 0, 1), 1.0), Vector3d(0, 0, 1), -M_PI / 2); }),
+        "draft_angle == -pi/2 throws");
+  Check(Throws([&] { Brep::ExtrudeTapered(Circle(P(0, 0, 0), Vector3d(0, 0, 1), 1.0), Vector3d(1, 0, 0), 0.1); }),
+        "direction lying flat in the profile's own plane throws");
+  Check(Throws([&] { Brep::ExtrudeTapered(Circle(P(0, 0, 0), Vector3d(0, 0, 1), 1.0), Vector3d(1, 0, 3), 0.1); }),
+        "a genuinely oblique (non-flat, non-parallel) direction throws too");
+  Check(Throws([&] { Brep::ExtrudeTapered(Circle(P(0, 0, 0), Vector3d(0, 0, 1), 1.0), Vector3d(0, 0, 0), 0.1); }),
+        "zero direction throws");
+}
+
+void TestExtrudeTaperedConvexPolygonIsExactPlanarFrustum() {
+  const NurbsCurve square = Polyline({P(-1, -1, 0), P(1, -1, 0), P(1, 1, 0), P(-1, 1, 0), P(-1, -1, 0)});
+
+  // Shrinking: half-width 1 -> 0.5 over height 1 (in-plane offset 0.5,
+  // tan(theta) = 0.5).
+  {
+    const double theta = std::atan(0.5);
+    const Brep box = Brep::ExtrudeTapered(square, Vector3d(0, 0, 1), theta);
+    CheckSolidTopology(box, 3, "drafted square (shrinking)");
+    Check(FaceSurface(box, 0).DegreeU() == 1 && FaceSurface(box, 0).DegreeV() == 1, "wall is degree (1, 1)");
+    // Isotropic linear taper (both dimensions shrink by the same
+    // fraction) - the exact frustum-of-pyramid closed form:
+    // V = A0 * h * (k0^2 + k0*k1 + k1^2) / 3, A0 = 4, k0 = 1, k1 = 0.5.
+    const double exact = 4.0 * 1.0 * (1.0 + 0.5 + 0.25) / 3.0;  // 7/3
+    // Every side wall is a genuine PLANAR trapezoid here (isotropic
+    // scaling + translation only along the taper axis keeps the 4
+    // corners of each side face coplanar), so - exactly like the plain
+    // rectangular prism test above - the tessellated volume is exact at
+    // any division, not merely a converging approximation.
+    CheckClosedMeshVolume(box, 8, 8, exact, 1e-9, "drafted square (shrinking) is an exact planar frustum");
+    // At (12, 5) too - looser than the (8, 8) check above only because
+    // `theta` itself round-tripped through atan()/tan() in this TEST
+    // (not in ExtrudeTapered() itself), which is not bit-exact; measured
+    // 1.55e-8 directly. A division not a multiple of the profile's own
+    // 4 segments (e.g. (5, 12) - swapped from what's checked here) hits
+    // a real, PRE-EXISTING tessellation quirk shared by plain Extrude()
+    // itself (confirmed directly: TestExtrudeRectangleIsExactCappedSolid's
+    // own untapered 2x3x5 box is ALSO off by exactly -6 of 30, 20%, at
+    // (5, 5)/(5, 12) - a `CollectPlainQuadFaces()`/asymmetric-seam-pass
+    // matter unrelated to ExtrudeTapered, which is why that existing
+    // test - and CheckClosedMeshVolume()'s own asymmetric checks above -
+    // never assert volume at a division the profile's own segment count
+    // doesn't divide evenly; this one deliberately keeps to (12, 5) for
+    // the same reason).
+    Check(std::abs(box.TessellateToClosedMesh(12, 5).Volume() - exact) < 1e-6, "...and at an asymmetric (12, 5) division too");
+    // The top corners are exactly the analytically-offset square corners.
+    const NurbsSurface wall = FaceSurface(box, 0);
+    const ON_Interval du = wall.raw().Domain(0), dv = wall.raw().Domain(1);
+    const std::vector<Point3d> expect_top = {P(-0.5, -0.5, 1), P(0.5, -0.5, 1), P(0.5, 0.5, 1), P(-0.5, 0.5, 1)};
+    for (const Point3d& target : expect_top) {
+      double best = 1e9;
+      for (int j = 0; j <= 4; ++j) best = std::min(best, wall.PointAt(du.ParameterAt(j / 4.0), dv.Max()).DistanceTo(target));
+      Check(best < 1e-9, "a top corner is exactly the analytically-offset square corner");
+    }
+  }
+
+  // Flaring: half-width 1 -> 1.5 over height 1 (negative draft_angle).
+  {
+    const double theta = std::atan(-0.5);
+    const Brep box = Brep::ExtrudeTapered(square, Vector3d(0, 0, 1), theta);
+    CheckSolidTopology(box, 3, "drafted square (flaring)");
+    const double exact = 4.0 * 1.0 * (1.0 + 1.5 + 2.25) / 3.0;  // 19/3
+    CheckClosedMeshVolume(box, 8, 8, exact, 1e-9, "drafted square (flaring) is also an exact planar frustum");
+  }
+
+  // Open convex polyline (a 2-segment chain, no caps): each endpoint
+  // offsets exactly perpendicular to its own single adjacent edge.
+  {
+    const NurbsCurve chain = Polyline({P(0, 0, 0), P(2, 0, 0), P(2, 2, 0)});
+    const double grow = 0.3, L = 1.0;
+    const double theta = std::atan(-grow / L);  // negative draft_angle grows
+    const Brep wall = Brep::ExtrudeTapered(chain, Vector3d(0, 0, L), theta, /*cap=*/false);
+    Check(wall.FaceCount() == 1, "open profile: one wall face, no caps");
+    const NurbsSurface s = FaceSurface(wall, 0);
+    const ON_Interval du = s.raw().Domain(0), dv = s.raw().Domain(1);
+    // edge0 = (0,0,0)->(2,0,0): offset_dir = edge0 x +z = (0,-1,0) (CCW
+    // chain winds counter-clockwise about +z, so its own "grow" side for
+    // this convex corner is -y here); the first vertex only has that one
+    // adjacent edge, so it moves by exactly `grow` along it.
+    const double best0 = std::min(s.PointAt(du.Min(), dv.Max()).DistanceTo(P(0, -grow, L)),
+                                  s.PointAt(du.Max(), dv.Max()).DistanceTo(P(0, -grow, L)));
+    Check(best0 < 1e-9, "the open chain's first endpoint offsets by exactly `grow` perpendicular to its own edge");
+  }
+
+  // Negative controls.
+  const NurbsCurve cee = Polyline({P(0, 0, 0), P(3, 0, 0), P(3, 1, 0), P(1, 1, 0), P(1, 2, 0), P(3, 2, 0), P(3, 3, 0), P(0, 3, 0), P(0, 0, 0)});
+  Check(Throws([&] { Brep::ExtrudeTapered(cee, Vector3d(0, 0, 1), std::atan(0.1)); }),
+        "a non-convex (C-shaped) multi-segment profile throws");
+  Check(Throws([&] { Brep::ExtrudeTapered(square, Vector3d(0, 0, 1), std::atan(2.0)); }),
+        "a draft distance exceeding the square's own inradius throws (an edge would invert)");
+  Check(Throws([&] { Brep::ExtrudeTapered(square, Vector3d(0, 0, 0), std::atan(0.1)); }), "zero direction throws");
+  const NurbsCurve skew = Polyline({P(0, 0, 0), P(2, 0, 0), P(2, 3, 1), P(0, 3, 0), P(0, 0, 0)});
+  Check(Throws([&] { Brep::ExtrudeTapered(skew, Vector3d(0, 0, 5), std::atan(0.1)); }), "a non-planar profile throws");
+  Check(Throws([&] { Brep::ExtrudeTapered(square, Vector3d(1, 0, 0), std::atan(0.1)); }),
+        "direction in the profile's own plane throws");
+}
+
 }  // namespace sweep_tests
 
 // ---------------------------------------------------------------------------
@@ -26577,6 +26730,8 @@ int main() {
   sweep_tests::TestRevolveExactSolidsAndCaps();
   sweep_tests::TestLoftInterpolatesSectionsExactly();
   sweep_tests::TestSweep1AndPipe();
+  sweep_tests::TestExtrudeTaperedCircularProfileIsExactConeFrustum();
+  sweep_tests::TestExtrudeTaperedConvexPolygonIsExactPlanarFrustum();
 
   TestSurfaceUnrollDevelopablePlaneIsExactIsometry();
   TestSurfaceUnrollDevelopableCylinderPreservesHeightAndCircumferenceExactly();
