@@ -2137,4 +2137,258 @@ Brep FilletConvexEdges(const Brep& solid, const std::vector<std::pair<Point3d, P
   return Brep::FromMixedFaces(work, cyls, {}, spheres);
 }
 
+
+namespace {
+
+// Replaces the loop edge whose two consecutive points equal {P, Q} (in
+// EITHER walk order, within tol) with {P2, Q2} in the matching order -
+// the genuine inverse of the half-space clip FilletConvexEdge's own step
+// 2 performs (that step replaced the sharp edge with the rail; this
+// replaces the rail with the restored sharp edge). Throws
+// std::runtime_error if no such edge exists (should not happen for a
+// face this function has already confirmed shares this cylinder's own
+// rail - checked rather than silently doing nothing).
+void ReplaceLoopEdge(std::vector<Point3d>& loop, const Point3d& P, const Point3d& Q, const Point3d& P2,
+                     const Point3d& Q2, double tol) {
+  const size_t n = loop.size();
+  for (size_t k = 0; k < n; ++k) {
+    const size_t k1 = (k + 1) % n;
+    if (PointsEqual(loop[k], P, tol) && PointsEqual(loop[k1], Q, tol)) {
+      loop[k] = P2;
+      loop[k1] = Q2;
+      return;
+    }
+    if (PointsEqual(loop[k], Q, tol) && PointsEqual(loop[k1], P, tol)) {
+      loop[k] = Q2;
+      loop[k1] = P2;
+      return;
+    }
+  }
+  throw std::runtime_error(
+      "dino8::kernel::RemoveBlend: a face expected to share the fillet's own rail edge does not - please report "
+      "this as a bug");
+}
+
+// The genuine inverse of NotchCornerAtVertex's own splice (see its doc
+// comment): finds a run of MORE than 2 consecutive loop points running
+// from a point near `p1` to one near `p2` (in either direction the loop
+// happens to walk it) and collapses the whole run to the single vertex
+// `restored`. A face with no such run (an untouched sharp corner, or a
+// free boundary - NotchCornerAtVertex's own "no matching face, no-op"
+// cases) is left alone, exactly mirroring that function's own silent
+// no-op contract; only the FIRST face where a run is found is touched,
+// matching "a face shouldn't need it twice at the same vertex" elsewhere
+// in this file.
+void CollapseNotchRun(std::vector<Brep::PlanarFace>& other_faces, const Point3d& p1, const Point3d& p2,
+                      const Point3d& restored, double tol) {
+  for (Brep::PlanarFace& f : other_faces) {
+    std::vector<Point3d>& loop = f.loop;
+    const size_t n = loop.size();
+    for (size_t k = 0; k < n; ++k) {
+      const bool at_p1 = PointsEqual(loop[k], p1, tol);
+      const bool at_p2 = PointsEqual(loop[k], p2, tol);
+      if (!at_p1 && !at_p2) continue;
+      const Point3d& target = at_p1 ? p2 : p1;
+      for (size_t len = 2; len < n; ++len) {
+        const size_t idx = (k + len) % n;
+        if (!PointsEqual(loop[idx], target, tol)) continue;
+        if (idx < k) {
+          throw std::runtime_error(
+              "dino8::kernel::RemoveBlend: a notch run wraps around its own face's loop start/end - out of scope, "
+              "please report this as a bug");
+        }
+        // The genuine inverse of RegisterNotchRun's own insertion-time
+        // index bookkeeping (see its own doc comment): removing [k, idx]
+        // (idx - k + 1 points, collapsed to ONE) shifts every OTHER
+        // recorded run's own begin index that sits at or after idx+1 down
+        // by (idx - k) - and this run's own metadata entry (wherever it
+        // is - the legacy pair or a notch_runs entry) is dropped entirely,
+        // since after collapsing it is no longer a notch at all, just an
+        // ordinary vertex. Every entry not on THIS face is untouched by
+        // definition (this loop only ever mutates `f`'s own fields).
+        const int collapse_begin = static_cast<int>(k);
+        const int collapse_count = static_cast<int>(idx - k + 1);
+        std::vector<std::pair<int, int>> remaining;
+        auto consider = [&](int run_begin, int run_count) {
+          if (run_count <= 1) return;
+          if (run_begin == collapse_begin && run_count == collapse_count) return;  // this is the one being collapsed
+          remaining.emplace_back(run_begin, run_count);
+        };
+        consider(f.notch_begin, f.notch_count);
+        for (const std::pair<int, int>& r : f.notch_runs) consider(r.first, r.second);
+        for (std::pair<int, int>& r : remaining) {
+          if (r.first >= collapse_begin + collapse_count) r.first -= (collapse_count - 1);
+        }
+        f.notch_begin = 0;
+        f.notch_count = 0;
+        f.notch_runs.clear();
+        if (!remaining.empty()) {
+          f.notch_begin = remaining.front().first;
+          f.notch_count = remaining.front().second;
+          f.notch_runs.assign(remaining.begin() + 1, remaining.end());
+        }
+
+        // A plain in-place erase-and-insert (loop[0..k-1], restored,
+        // loop[idx+1..n-1]) - NOT a rotation starting at idx+1 - so that
+        // every OTHER recorded run's own shifted begin index (computed
+        // just above, assuming positions before k are untouched and
+        // `restored` lands exactly at k) actually matches this array.
+        std::vector<Point3d> new_loop;
+        new_loop.reserve(n - static_cast<size_t>(collapse_count) + 1);
+        for (size_t m = 0; m < k; ++m) new_loop.push_back(loop[m]);
+        new_loop.push_back(restored);
+        for (size_t m = idx + 1; m < n; ++m) new_loop.push_back(loop[m]);
+        loop = std::move(new_loop);
+        return;
+      }
+      break;  // this vertex didn't lead to a matching run within a full lap - not this fillet's own notch
+    }
+  }
+}
+
+}  // namespace
+
+Brep RemoveBlend(const Brep& solid, Point3d point_on_fillet) {
+  const Brep::MixedFacesResult mf = solid.MixedFaces();
+  if (mf.cylindrical.empty()) {
+    throw std::invalid_argument("dino8::kernel::RemoveBlend: `solid` has no cylindrical face to remove");
+  }
+
+  // Locate the cylindrical face closest to `point_on_fillet`, measured
+  // against its own TRIMMED extent (axial position clamped to [0,
+  // length], angular position clamped to [0, angle]) - not the infinite
+  // cylinder, so a point near a DIFFERENT fillet's own cylinder (sharing
+  // the same axis/radius by coincidence) is never mismatched.
+  int best = -1;
+  double best_d = std::numeric_limits<double>::infinity();
+  for (size_t c = 0; c < mf.cylindrical.size(); ++c) {
+    const Brep::CylindricalFace& cf = mf.cylindrical[c];
+    const Vector3d d = point_on_fillet - cf.frame.origin;
+    const double h = std::max(0.0, std::min(cf.length, d * cf.frame.zaxis));
+    double phi = std::atan2(d * cf.frame.yaxis, d * cf.frame.xaxis);
+    if (phi < 0.0) phi += 2.0 * ON_PI;
+    phi = std::max(0.0, std::min(cf.angle, phi));
+    const Point3d on_surface =
+        cf.frame.origin + h * cf.frame.zaxis + cf.radius * (std::cos(phi) * cf.frame.xaxis + std::sin(phi) * cf.frame.yaxis);
+    const double dist = on_surface.DistanceTo(point_on_fillet);
+    if (dist < best_d) {
+      best_d = dist;
+      best = static_cast<int>(c);
+    }
+  }
+  // Use MixedFaces()' own planar records (NOT PlanarFaces(), which throws
+  // outright on any non-planar face - exactly the cylindrical face this
+  // function exists to remove).
+  const std::vector<Brep::PlanarFace>& faces = mf.planar;
+  const double tol = RelativeTol(faces);
+  if (best < 0 || best_d > std::max(tol * 100.0, 1e-4)) {
+    throw std::invalid_argument(
+        "dino8::kernel::RemoveBlend: `point_on_fillet` is not near any cylindrical face of `solid`");
+  }
+  const Brep::CylindricalFace& cf = mf.cylindrical[static_cast<size_t>(best)];
+  if (!cf.cap0_notch_points.empty() || !cf.cap1_notch_points.empty()) {
+    throw std::invalid_argument(
+        "dino8::kernel::RemoveBlend: this cylindrical face has a sloped (oblique-end) or Steinmetz-style cap notch "
+        "- out of scope, see this function's own doc comment");
+  }
+
+  // Step 1: locate face i (shares the angle-0 rail) and face j (shares
+  // the angle-`angle` rail) among `solid`'s own PlanarFaces() - the exact
+  // rail corner points, read directly off `cf`.
+  const Point3d R0 = cf.frame.origin + cf.radius * cf.frame.xaxis;
+  const Point3d R1 = R0 + cf.length * cf.frame.zaxis;
+  const Point3d S0 = cf.frame.origin + cf.radius * (std::cos(cf.angle) * cf.frame.xaxis + std::sin(cf.angle) * cf.frame.yaxis);
+  const Point3d S1 = S0 + cf.length * cf.frame.zaxis;
+
+  auto find_face_with_edge = [&](const Point3d& A, const Point3d& B) {
+    for (size_t f = 0; f < faces.size(); ++f) {
+      const std::vector<Point3d>& loop = faces[f].loop;
+      const size_t n = loop.size();
+      for (size_t k = 0; k < n; ++k) {
+        const size_t k1 = (k + 1) % n;
+        if ((PointsEqual(loop[k], A, tol) && PointsEqual(loop[k1], B, tol)) ||
+            (PointsEqual(loop[k], B, tol) && PointsEqual(loop[k1], A, tol))) {
+          return static_cast<int>(f);
+        }
+      }
+    }
+    return -1;
+  };
+  const int idx_i = find_face_with_edge(R0, R1);
+  const int idx_j = find_face_with_edge(S0, S1);
+  if (idx_i < 0 || idx_j < 0 || idx_i == idx_j) {
+    throw std::invalid_argument(
+        "dino8::kernel::RemoveBlend: could not find the two planar faces sharing this cylinder's own two straight "
+        "rails - is this really a FilletConvexEdge-built face?");
+  }
+
+  // Step 2: recover n_i/n_j directly, then bis/cosb/offset exactly as
+  // FilletConvexEdge's own construction, and CHECK the round trip (this
+  // rejects a CylindricalFace this function's own inverse does not apply
+  // to, e.g. one of FilletConvexEdges' own spherically-set-back
+  // cylinders, whose R0 is NOT at axis_point(edge_p0) + radius*n_i for
+  // the plain edge_p0 this reconstructs).
+  const Vector3d n_i = faces[static_cast<size_t>(idx_i)].plane.zaxis;
+  const Vector3d n_j = faces[static_cast<size_t>(idx_j)].plane.zaxis;
+  Vector3d bis = n_i + n_j;
+  if (!bis.Unitize()) {
+    throw std::invalid_argument("dino8::kernel::RemoveBlend: degenerate (near-180-degree) adjacent-face dihedral");
+  }
+  const double cosb = bis * n_i;
+  if (cosb < 1e-9) {
+    throw std::invalid_argument("dino8::kernel::RemoveBlend: degenerate bisector geometry (cosb too small)");
+  }
+  const double offset = cf.radius / cosb;
+  const Point3d edge_p0 = cf.frame.origin + bis * offset;
+  const Point3d edge_p1 = edge_p0 + cf.length * cf.frame.zaxis;
+
+  // Reject a FilletConvexEdges-built spherical vertex blend's own corner
+  // cylinder: such a cylinder is set back so its end rail corners are
+  // EXACTLY the two rail corners a SphericalFace shares with it (see
+  // FilletConvexEdges' own doc comment) - i.e. both live on that sphere's
+  // own surface, at that sphere's own radius. A plain m==1 end (whether
+  // built by FilletConvexEdge or by FilletConvexEdges - the two use
+  // IDENTICAL math for that case) has no such sphere and is unaffected.
+  auto end_is_spherical_corner = [&](const Point3d& rail_i_end, const Point3d& rail_j_end) {
+    for (const Brep::SphericalFace& sf : mf.spherical) {
+      if (std::fabs(sf.radius - cf.radius) > std::max(tol, 1e-9)) continue;
+      const double da = rail_i_end.DistanceTo(sf.frame.origin) - sf.radius;
+      const double db = rail_j_end.DistanceTo(sf.frame.origin) - sf.radius;
+      if (std::fabs(da) <= std::max(tol * 10.0, 1e-6) && std::fabs(db) <= std::max(tol * 10.0, 1e-6)) return true;
+    }
+    return false;
+  };
+  if (end_is_spherical_corner(R0, S0) || end_is_spherical_corner(R1, S1)) {
+    throw std::invalid_argument(
+        "dino8::kernel::RemoveBlend: this cylindrical face has a spherical vertex-blend corner at one of its own "
+        "ends (from FilletConvexEdges) - out of scope, see this function's own doc comment");
+  }
+
+  // Step 3-4: re-trim faces i/j back to the restored sharp edge.
+  std::vector<Brep::PlanarFace> mixed_planar = faces;
+  ReplaceLoopEdge(mixed_planar[static_cast<size_t>(idx_i)].loop, R0, R1, edge_p0, edge_p1, tol);
+  ReplaceLoopEdge(mixed_planar[static_cast<size_t>(idx_j)].loop, S0, S1, edge_p0, edge_p1, tol);
+
+  // Step 5: collapse any corner notch at either end on a THIRD face -
+  // scanning every face except i/j (mirroring NotchCornerAtVertex's own
+  // "other_faces" scope).
+  std::vector<Brep::PlanarFace> others;
+  std::vector<size_t> others_idx;
+  for (size_t f = 0; f < mixed_planar.size(); ++f) {
+    if (static_cast<int>(f) == idx_i || static_cast<int>(f) == idx_j) continue;
+    others.push_back(mixed_planar[f]);
+    others_idx.push_back(f);
+  }
+  CollapseNotchRun(others, R0, S0, edge_p0, tol);
+  CollapseNotchRun(others, R1, S1, edge_p1, tol);
+  for (size_t o = 0; o < others.size(); ++o) mixed_planar[others_idx[o]] = std::move(others[o]);
+
+  // Step 6: drop this cylinder, keep every other face untouched.
+  std::vector<Brep::CylindricalFace> remaining_cyl;
+  for (size_t c = 0; c < mf.cylindrical.size(); ++c) {
+    if (static_cast<int>(c) != best) remaining_cyl.push_back(mf.cylindrical[c]);
+  }
+  return Brep::FromMixedFaces(mixed_planar, remaining_cyl, mf.conical, mf.spherical);
+}
+
 }  // namespace dino8::kernel
