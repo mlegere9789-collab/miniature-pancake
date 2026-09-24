@@ -175,6 +175,25 @@ class SubD {
   // before). Delegates to `ON_SubD::EdgeCount`.
   int EdgeCount() const;
 
+  // True if OpenNURBS' own ON_SubD::IsValid() considers the current
+  // control net structurally sound - the SubD-level counterpart to
+  // Mesh::IsClosedManifold(), closing a real gap this class had: no
+  // Check()/IsValid() at all, so a caller could only discover a broken
+  // SubD (e.g. one built by hand-editing raw() rather than through this
+  // class's own methods) the hard way, whatever ON_SubD happened to do
+  // internally when handed one. Delegates to the real, non-stub
+  // ON_SubD::IsValid() (verified by reading its implementation in
+  // opennurbs_subd.cpp: it walks every level's vertices/edges/faces
+  // checking cross-reference and tag consistency, a genuine structural
+  // check, not a placeholder). Passes OpenNURBS' own documented sentinel
+  // (an ON_TextLog* with its low bit set - not a dereferenced pointer;
+  // ON_SubD::IsValid masks that bit off again before ever touching it,
+  // verified the same way) so a "no" answer never has the side effect of
+  // writing to OpenNURBS' global error log - this is a validity CHECK a
+  // caller may reasonably expect to fail sometimes (e.g. mid-edit), not
+  // an assertion that something already went wrong.
+  bool IsValid() const;
+
   // Count of the current subdivision level's own crease edges (the
   // sharp folds `FromControlMesh(mesh, crease_at_double_edges=true)`
   // can create - see that method's own doc comment) - the only direct

@@ -8273,6 +8273,22 @@ void TestSubDCreaseAtDoubleEdgeKeepsFoldStraight() {
         "proving the crease flag does something real, not a no-op");
 }
 
+// SubD::IsValid(): a genuinely built SubD passes, a default-constructed
+// (never built) one - the simplest way to get an ON_SubD OpenNURBS
+// itself calls structurally invalid, no hand-corruption required - does
+// not, and it stays valid through real subdivision.
+void TestSubDIsValid() {
+  using dino8::kernel::SubD;
+
+  SubD empty;
+  Check(!empty.IsValid(), "a default-constructed SubD (no levels at all) is not valid");
+
+  auto hinge = SubD::FromControlMesh(MakeHingedDoubleEdgeMesh(), /*crease_at_double_edges=*/false);
+  Check(hinge.IsValid(), "a SubD built by FromControlMesh() is valid");
+  hinge.Subdivide(2);
+  Check(hinge.IsValid(), "...and stays valid after real subdivision");
+}
+
 void TestSubDSetEdgeSharpnessCreatesRealSemiSharpCrease() {
   using dino8::kernel::Mesh;
   using dino8::kernel::Point3d;
@@ -25312,6 +25328,7 @@ int main() {
   TestSubDFromBoxSubdividesToExactCatmullClarkCounts();
   TestSubDFromControlMeshRejectsEmptyMesh();
   TestSubDCreaseAtDoubleEdgeKeepsFoldStraight();
+  TestSubDIsValid();
   TestSubDSetEdgeSharpnessCreatesRealSemiSharpCrease();
   TestSubDSetCreaseTagsAndUntagsEdges();
   TestSubDFlatQuadGridStaysFlatAndAreaExact();

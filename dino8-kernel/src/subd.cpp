@@ -44,6 +44,15 @@ int SubD::FaceCount() const { return static_cast<int>(subd_.FaceCount()); }
 int SubD::VertexCount() const { return static_cast<int>(subd_.VertexCount()); }
 int SubD::EdgeCount() const { return static_cast<int>(subd_.EdgeCount()); }
 
+bool SubD::IsValid() const {
+  // Low bit set -> ON_SubD::IsValid() suppresses its own ON_Error() call
+  // on failure (masked off again before use - never actually
+  // dereferenced as a real ON_TextLog*, see this method's own header
+  // comment). This is a validity check, not an assertion, so a "no"
+  // answer must never have that side effect.
+  return subd_.IsValid(reinterpret_cast<ON_TextLog*>(1));
+}
+
 int SubD::CreaseEdgeCount() const {
   int count = 0;
   ON_SubDEdgeIterator eit = subd_.EdgeIterator();

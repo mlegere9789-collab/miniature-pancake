@@ -2228,6 +2228,27 @@ What this repo does instead:
   point pair with no matching edge or an edge that already carries the
   requested tag, matching `ON_SubD::SetEdgeTags`'s own 0-changed
   convention.
+- `SubD::IsValid()`: the SubD-level counterpart to `Mesh::
+  IsClosedManifold()`, closing PARITY_MAP.md's subd_mesh "SubD non-
+  manifold / multi-body validity checks" [missing] item (this class had
+  no `Check()`/`IsValid()` at all - a caller could only discover a broken
+  SubD the hard way, whatever `ON_SubD` happened to do internally).
+  Delegates to the real, non-stub `ON_SubD::IsValid()`, verified by
+  reading its implementation: it walks every level's vertices, edges and
+  faces checking cross-reference and tag consistency, a genuine
+  structural check. The one subtlety worth documenting: it's called with
+  OpenNURBS' own sentinel (`(ON_TextLog*)1`, low bit set, never
+  dereferenced - `ON_SubD::IsValid` masks that bit off again before
+  touching it, read directly in `opennurbs_subd.cpp`) rather than
+  `nullptr`, because a bare `nullptr` does NOT suppress `ON_SubD::
+  IsValid()`'s own `ON_Error()` call on failure - only the sentinel does.
+  Skipping that would have meant every legitimate "no" (e.g. checking a
+  SubD mid-edit) spammed OpenNURBS' global error log as a side effect of
+  asking a yes/no question. Verified both ways: a default-constructed
+  (never built) `SubD` - the simplest genuinely-invalid case, no hand-
+  corruption of `raw()` needed - reports `false`, and a real
+  `FromControlMesh()` result reports `true` and stays `true` through
+  actual `Subdivide()` calls.
 
 ## Blending build log (Parasolid "blend/chamfer" class, chronological)
 
