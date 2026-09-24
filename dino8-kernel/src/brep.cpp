@@ -2038,6 +2038,115 @@ std::vector<std::pair<int, int>> Brep::LumpFaceRanges() const {
   return {{0, face_count}};
 }
 
+namespace {
+// Reads back table[old_index] if `table` is genuinely in lockstep with
+// this Brep's ORIGINAL face count (the same self-check discipline
+// Compound() applies to an incoming lump) and `old_index` is in range;
+// otherwise the default-constructed value - the same "lose the fast
+// path, never a wrong shape" fallback MixedFaces() itself already
+// tolerates for a stale or absent side table.
+template <typename Vec>
+typename Vec::value_type PickSideTableEntry(const Vec& table, size_t original_face_count, int old_index) {
+  if (table.size() == original_face_count && old_index >= 0 && static_cast<size_t>(old_index) < table.size()) {
+    return table[static_cast<size_t>(old_index)];
+  }
+  return typename Vec::value_type{};
+}
+}  // namespace
+
+std::vector<Brep> Brep::SplitDisjointPieces() const {
+  const int original_face_count = brep_.m_F.Count();
+  if (original_face_count == 0) return {};
+
+  // LabelConnectedComponents() (below) walks real ON_BrepLoop/ON_BrepTrim/
+  // ON_BrepEdge records - it has nothing to walk at all for a face built
+  // via the "minimal NewFace(surface_index)-only path" this class's own
+  // Box()/Sphere()/FromSurface()/TrimmedPlanarFace() still use (see
+  // brep.h's own class-level doc comment): such a face has zero loops,
+  // so it can never be found connected to anything, however obviously
+  // adjacent it really is. Silently running the search anyway would
+  // report every one of Box()'s 6 faces as its own separate "piece" -
+  // a confident, wrong answer for the single most common Brep shape in
+  // this kernel, not a merely incomplete one - so this refuses outright
+  // whenever more than one face exists and any of them lacks real
+  // topology, rather than ever emitting that wrong split.
+  if (original_face_count > 1) {
+    for (int i = 0; i < original_face_count; ++i) {
+      if (brep_.m_F[i].m_li.Count() == 0) {
+        throw std::invalid_argument(
+            "dino8::kernel::Brep::SplitDisjointPieces: face " + std::to_string(i) +
+            " of " + std::to_string(original_face_count) +
+            " has no real ON_Brep loop/trim/edge topology, so connectivity to its "
+            "neighbors cannot be determined (this Brep was built via Box()/Sphere()/"
+            "FromSurface()/TrimmedPlanarFace(), or a raw()-assigned equivalent - see "
+            "brep.h's own class-level doc comment on which factories skip real "
+            "topology). Rebuild it through FromPlanarFaces()/FromMixedFaces() (or load "
+            "it from a genuine .3dm), which do build real topology, before calling this.");
+      }
+    }
+  }
+
+  // A private copy so LabelConnectedComponents()'s m_face_user.i writes
+  // (real, non-stub OpenNURBS user-data scratch fields - see brep.h)
+  // never touch this Brep's own state.
+  ON_Brep labeled(brep_);
+  const int component_count = labeled.LabelConnectedComponents();
+  if (component_count <= 1) {
+    // Nothing to split (or no valid faces at all, which
+    // original_face_count == 0 already ruled out) - one piece, this
+    // Brep's own exact copy, side tables untouched.
+    return {*this};
+  }
+
+  const size_t n = static_cast<size_t>(original_face_count);
+  std::vector<Brep> pieces;
+  pieces.reserve(static_cast<size_t>(component_count));
+  std::vector<int> face_indices;
+  for (int label = 1; label <= component_count; ++label) {
+    face_indices.clear();
+    for (int fi = 0; fi < original_face_count; ++fi) {
+      if (labeled.m_F[fi].m_face_user.i == label) face_indices.push_back(fi);
+    }
+    if (face_indices.empty()) continue;  // LabelConnectedComponents() never actually leaves a gap; defensive only
+
+    ON_Brep* dup = brep_.DuplicateFaces(static_cast<int>(face_indices.size()), face_indices.data(),
+                                         /*bDuplicateMeshes=*/false);
+    if (dup == nullptr) {
+      throw std::runtime_error(
+          "dino8::kernel::Brep::SplitDisjointPieces: ON_Brep::DuplicateFaces "
+          "failed for a face list this method's own labeling reported as a "
+          "valid connected component");
+    }
+    Brep piece;
+    piece.brep_ = *dup;
+    delete dup;
+
+    // DuplicateFaces() records each duplicated face's ORIGINAL index in
+    // its own m_face_user.i (an OpenNURBS guarantee, not an assumption -
+    // see brep.h) - read back from THAT, not from face_indices[j], so
+    // this is correct even if DuplicateFaces() ever changed its internal
+    // face ordering.
+    const int piece_face_count = piece.brep_.m_F.Count();
+    piece.face_trim_loops_.reserve(static_cast<size_t>(piece_face_count));
+    piece.face_exact_clip_.reserve(static_cast<size_t>(piece_face_count));
+    piece.face_hole_loops_.reserve(static_cast<size_t>(piece_face_count));
+    piece.face_arc_runs_.reserve(static_cast<size_t>(piece_face_count));
+    piece.face_notch_rows_.reserve(static_cast<size_t>(piece_face_count));
+    piece.face_records_.reserve(static_cast<size_t>(piece_face_count));
+    for (int j = 0; j < piece_face_count; ++j) {
+      const int old_index = piece.brep_.m_F[j].m_face_user.i;
+      piece.face_trim_loops_.push_back(PickSideTableEntry(face_trim_loops_, n, old_index));
+      piece.face_exact_clip_.push_back(PickSideTableEntry(face_exact_clip_, n, old_index));
+      piece.face_hole_loops_.push_back(PickSideTableEntry(face_hole_loops_, n, old_index));
+      piece.face_arc_runs_.push_back(PickSideTableEntry(face_arc_runs_, n, old_index));
+      piece.face_notch_rows_.push_back(PickSideTableEntry(face_notch_rows_, n, old_index));
+      piece.face_records_.push_back(PickSideTableEntry(face_records_, n, old_index));
+    }
+    pieces.push_back(std::move(piece));
+  }
+  return pieces;
+}
+
 BoundingBox Brep::GetTightBoundingBox() const {
   ON_BoundingBox box;
   if (!brep_.GetTightBoundingBox(box)) {

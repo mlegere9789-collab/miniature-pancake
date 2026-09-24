@@ -1059,6 +1059,80 @@ class Brep {
   // more than one lump (see boolean.h).
   std::vector<std::pair<int, int>> LumpFaceRanges() const;
 
+  // Splits this Brep into its disjoint pieces: the maximal groups of
+  // faces connected to each other by a shared EDGE (an actual shared
+  // edge record - m_ei on a trim on both faces' loops - not merely
+  // touching in space), each returned as its own independent Brep. The
+  // gap this closes: LumpFaceRanges() above can only replay Compound()'s
+  // OWN bookkeeping, so it says nothing about a Brep loaded from a file,
+  // built by any other factory, or raw()-edited into several actually-
+  // disconnected shells - nothing here could answer "how many separate
+  // bodies is this really, and what are they" for such a Brep before.
+  //
+  // Connectivity is computed by `ON_Brep::LabelConnectedComponents()` on
+  // a private copy of this Brep - a real graph search (verified by
+  // reading its source): it walks, from each face, every trim on every
+  // loop out to that trim's edge and every OTHER face incident to that
+  // same edge, so two faces sharing an edge land in the same component
+  // however many faces are strung between them; it does NOT check for
+  // vertex-only connections (documented on the OpenNURBS method itself),
+  // so two faces meeting only at a single shared vertex - with no shared
+  // edge - count as separate pieces. This is also, deliberately, why two
+  // Compound() lumps that only touch along a curve (the unwelded XOR
+  // case Compound()'s own doc comment describes) come back as separate
+  // pieces here: they were never given a shared edge record to begin
+  // with.
+  //
+  // Each piece is then built by `ON_Brep::DuplicateFaces()` (also
+  // verified by reading its source to be a real deep copy, not a stub) -
+  // it duplicates exactly the referenced surfaces, curves, vertices,
+  // edges, trims and loops for that piece's own faces, nothing shared
+  // with the other pieces or left dangling from the original. This
+  // class's own per-face side tables (the PlanarFace/CylindricalFace
+  // verbatim records FromMixedFaces() attaches, cylinder cap-notch rows,
+  // trim/hole polygons and arc runs) survive the split intact and
+  // correctly reordered: DuplicateFaces() itself records each duplicated
+  // face's ORIGINAL index in its own `m_face_user.i` (an OpenNURBS
+  // guarantee documented on the method), which is exactly the index this
+  // reads each side-table entry from - not a re-derivation or a
+  // best-effort guess. A side table not in lockstep with FaceCount() (a
+  // raw()-assigned Brep - see Compound()'s own such check) is treated as
+  // absent for every piece, the same safe "lose the fast path, never a
+  // wrong shape" fallback MixedFaces() itself already relies on.
+  //
+  // Pieces are returned in the order LabelConnectedComponents() finds
+  // them - the piece containing the lowest original face index first,
+  // and so on - deterministic, not an iteration-order accident. A Brep
+  // with a single connected component (the overwhelmingly common case)
+  // returns a single-element vector holding an exact copy of *this, side
+  // tables and all, untouched - nothing was actually split, so nothing
+  // needed to be recomputed or could be lost. A Brep with no faces
+  // returns an empty vector.
+  //
+  // An honest limitation found WHILE building this, not assumed: since
+  // connectivity is read from real loop/trim/edge records, this throws
+  // std::invalid_argument outright (naming the offending face) rather
+  // than ever running the search, whenever this Brep has more than one
+  // face and ANY of them has none of that topology - which is exactly
+  // every face `Box()`, `Sphere()`, `FromSurface()` and
+  // `TrimmedPlanarFace()` build (see this class's own class-level doc
+  // comment on the "minimal NewFace(surface_index)-only path" those four
+  // factories use). Silently proceeding on such a Brep would not
+  // degrade gracefully - `LabelConnectedComponents()` has nothing at all
+  // to walk from a loop-less face, so it reports EVERY one of them as
+  // its own separate one-face "piece", a confident and wrong answer for
+  // one of the most common Breps in this kernel (a plain `Box()`), not
+  // a merely incomplete one. Callers must first give the Brep real
+  // topology - `FromPlanarFaces()`/`FromMixedFaces()` (whose own results,
+  // and everything assembled from them - `BooleanCombinePlanar()`,
+  // `BooleanCombineMixed()`, `ShellConvexPlanar()`, `FilletConvexEdge()` -
+  // already have it, per this class's own class-level doc comment), or a
+  // Brep loaded from a genuine `.3dm` file. Throws std::runtime_error
+  // only if `DuplicateFaces()` itself fails for a face list this
+  // method's own labeling just reported as valid, which should not
+  // happen.
+  std::vector<Brep> SplitDisjointPieces() const;
+
   // Bounding box over the Brep's actual curved geometry, not just its
   // control points - a real gap nothing here could answer without
   // tessellating first (Mesh::GetBoundingBox() only sees a tessellation's

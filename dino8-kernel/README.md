@@ -2029,6 +2029,46 @@ What this repo does instead:
   answer, so an empty cloud or a too-small radius return an empty result,
   never throwing on cloud state - only on a genuinely malformed request, a
   negative radius).
+- `Brep::SplitDisjointPieces()`: splits a Brep into its actually-disjoint
+  bodies from real topology - the gap `LumpFaceRanges()` cannot close for
+  any Brep not itself built by `Compound()`, since that method only
+  replays `Compound()`'s own bookkeeping and never inspects the Brep's
+  real vertex/edge/trim structure at all (proven in the test itself: a
+  genuinely two-body Brep assembled via `FromPlanarFaces()` - two boxes'
+  own `PlanarFace` lists in one call, never `Compound()` - still reports
+  `LumpFaceRanges() == {{0, 12}}`, one lump, for all 12 faces). Delegates
+  the actual graph search to `ON_Brep::LabelConnectedComponents()`
+  (verified by reading its source to be a real, non-stub implementation:
+  from each unlabeled face it walks every trim on every loop out to that
+  trim's own edge and every OTHER face sharing that edge, so two faces
+  strung together through any chain of shared edges land in one
+  component) and the actual per-piece rebuild to `ON_Brep::
+  DuplicateFaces()` (also verified real: a genuine deep copy of exactly
+  the referenced surfaces/curves/vertices/edges/trims/loops for that
+  piece's own faces). Connectivity is a shared EDGE RECORD, not geometric
+  coincidence - `LabelConnectedComponents()` itself documents that it
+  does not check vertex-only connections - so two Compound() lumps that
+  only touch along a curve (deliberately unwelded - see Compound()'s own
+  doc comment) correctly come back as separate pieces here too.
+  `DuplicateFaces()` records each duplicate's ORIGINAL face index in its
+  own `m_face_user.i` (an OpenNURBS guarantee, not a re-derivation), which
+  is exactly the index this uses to carry this class's own six per-face
+  side tables (the `PlanarFace`/`CylindricalFace` verbatim records,
+  cylinder cap-notch rows, trim/hole polygons, arc runs) over to the
+  correct new face; a side table not in lockstep with the original
+  `FaceCount()` (a `raw()`-assigned Brep) is treated as absent for every
+  piece, the same safe "lose the fast path, never a wrong shape" fallback
+  `MixedFaces()` itself already relies on. Verified with a two-box case
+  built to have a hand-checkable exact answer (a 1x1x1 cube and a
+  1x2x3 box, far enough apart that the vertex welder inside
+  `FromPlanarFaces()` cannot possibly join them): `SplitDisjointPieces()`
+  returns exactly 2 pieces of 6 faces each, in original-face-index order
+  (the lower-indexed body first), each with the source box's own exact
+  tight bounding box and each independently `IsValid()`/`IsManifold()`
+  (oriented, no free boundary)/`IsSolid()` - a real Brep, not just a face
+  list. A single-component Brep (the overwhelmingly common case) returns
+  a single-element vector holding an exact untouched copy of itself, and
+  a Brep with no faces returns an empty vector - both checked directly.
 
 ## What's still not done (as of chunk 2)
 
