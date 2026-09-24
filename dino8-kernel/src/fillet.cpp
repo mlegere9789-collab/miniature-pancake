@@ -7,6 +7,7 @@
 #include <string>
 #include <utility>
 
+#include "dino8/kernel/detail/ellipse_clip3d.h"
 #include "dino8/kernel/detail/halfspace_clip3d.h"
 
 namespace dino8::kernel {
@@ -412,6 +413,208 @@ TaperedConeSegment BuildTaperedConeSegment(const Point3d& seg_p0, double Lseg, d
   return seg;
 }
 
+// Reports where a THIRD face, oblique to the fillet edge (not perpendicular
+// to `e`), crosses the fillet's own two rail lines at `vertex` - the
+// generalization FilletConvexEdge's own doc comment describes for its
+// end condition, needed because an oblique face's true cut through the
+// cylinder is an ELLIPSE (see EllipseNotchCornerAtVertexCylindrical
+// below), not the flat circle NotchCornerAtVertex hardcodes, and its two
+// rail corners generally sit at DIFFERENT heights along `e` (unlike the
+// perpendicular case, where both are at `vertex`'s own height).
+//
+// The two rail lines are contact_i(t) = vertex + t*e + radius*n_i and
+// contact_j(t) = vertex + t*e + radius*n_j (both parametrized from
+// `vertex`, per FilletConvexEdge's own construction); a third face's
+// plane through `vertex` with normal n_f crosses each at the single t
+// solving (t*e + radius*n_i).n_f == 0 (or n_j) - a linear equation in t
+// since e/n_i/n_j are all fixed vectors, giving t_i = -radius*(n_i.n_f) /
+// (e.n_f) and likewise for t_j. Only ever reports a crossing for a face
+// found via the SAME trihedral-corner pattern (one loop neighbour on
+// face i's plane, the other on face j's) every corner-notch in this file
+// already uses; a perpendicular face (e.n_f == +-1) is left to
+// NotchCornerAtVertex's own plain-circle case, and no match/an ambiguous
+// match/a grazing face (e.n_f too close to 0) all report `found = false`
+// - the caller then keeps today's flat, unshifted end exactly as before.
+//
+// Also checked here, not left for a later silent failure: each rail
+// crossing must land strictly between `vertex` and the third face's own
+// matching neighbour vertex (the same "does the cut overrun this face"
+// question ChamferEndAtVertex already asks for the planar chamfer case) -
+// throws std::invalid_argument if not, rather than building a
+// CylindricalFace notch whose own splice point falls off the third
+// face's real boundary.
+struct ObliqueEndCrossing {
+  bool found = false;
+  double t_i = 0.0;
+  double t_j = 0.0;
+};
+
+// `D_i`/`D_j` are contact_i(vertex)-vertex and contact_j(vertex)-vertex -
+// i.e. radius*n_i - bis*offset and radius*n_j - bis*offset in
+// FilletConvexEdge's own notation (the SAME fixed vectors its own
+// contact_i/contact_j lambdas add to a point on the edge; passed in
+// rather than recomputed here so this function never risks drifting from
+// that single source of truth). A rail point at arc-length t from
+// `vertex` is then exactly `vertex + t*e + D_i` (or `D_j`) - genuinely
+// NOT `vertex + t*e + radius*n_i`, which omits the bisector offset and
+// would misplace every crossing computed from it (caught during this
+// function's own development by cross-checking against a direct
+// substitution into the oblique plane's equation, not merely assumed).
+ObliqueEndCrossing FindObliqueThirdFaceCrossing(const std::vector<Brep::PlanarFace>& other_faces,
+                                                const Point3d& vertex, const Vector3d& e, const ON_Plane& plane_i,
+                                                const ON_Plane& plane_j, const Vector3d& D_i, const Vector3d& D_j,
+                                                double tol) {
+  ObliqueEndCrossing result;
+  for (const Brep::PlanarFace& f : other_faces) {
+    if (std::fabs(f.plane.zaxis * e) >= 1.0 - 1e-6) continue;  // perpendicular - NotchCornerAtVertex's own case
+    const std::vector<Point3d>& loop = f.loop;
+    const size_t n = loop.size();
+    for (size_t k = 0; k < n; ++k) {
+      if (loop[k].DistanceTo(vertex) > tol) continue;
+      const Point3d& pred = loop[(k + n - 1) % n];
+      const Point3d& succ = loop[(k + 1) % n];
+      const bool pred_on_i = std::fabs(plane_i.DistanceTo(pred)) <= tol;
+      const bool pred_on_j = std::fabs(plane_j.DistanceTo(pred)) <= tol;
+      const bool succ_on_i = std::fabs(plane_i.DistanceTo(succ)) <= tol;
+      const bool succ_on_j = std::fabs(plane_j.DistanceTo(succ)) <= tol;
+      bool i_to_j;
+      if (pred_on_i && succ_on_j && !pred_on_j && !succ_on_i) {
+        i_to_j = true;
+      } else if (pred_on_j && succ_on_i && !pred_on_i && !succ_on_j) {
+        i_to_j = false;
+      } else {
+        break;  // this face touches the vertex but not in the trihedral pattern - leave it alone, as elsewhere
+      }
+      const Vector3d n_f = f.plane.zaxis;
+      const double e_dot_n = e * n_f;
+      if (std::fabs(e_dot_n) < 1e-9) {
+        break;  // grazing (near-perpendicular-to-e-but-not-quite) - leave this corner untouched, a real limit
+      }
+      result.found = true;
+      result.t_i = -(D_i * n_f) / e_dot_n;
+      result.t_j = -(D_j * n_f) / e_dot_n;
+      const Point3d& nb_i = i_to_j ? pred : succ;
+      const Point3d& nb_j = i_to_j ? succ : pred;
+      auto fraction_along = [&](double t, const Vector3d& D, const Point3d& nb) {
+        const Point3d Q = vertex + t * e + D;
+        const Vector3d w = nb - vertex;
+        const double len2 = w * w;
+        return len2 > 0.0 ? ((Q - vertex) * w) / len2 : -1.0;
+      };
+      const double frac_i = fraction_along(result.t_i, D_i, nb_i);
+      const double frac_j = fraction_along(result.t_j, D_j, nb_j);
+      if (frac_i < 0.0 || frac_i >= 1.0 - 1e-9 || frac_j < 0.0 || frac_j >= 1.0 - 1e-9) {
+        throw std::invalid_argument(
+            "dino8::kernel::FilletConvexEdge: an oblique third face's own cut overruns that face (a fillet rail "
+            "pierces its plane beyond the far end of the face's own edge, or off that edge entirely) - radius too "
+            "large for this solid's geometry");
+      }
+      return result;
+    }
+  }
+  return result;
+}
+
+// Same corner-notch splicing NotchCornerAtVertex performs (see its own
+// doc comment for the shared mechanics this mirrors: locating the vertex
+// in a third face's own loop, telling apart which neighbour is on face
+// i's/j's side, splicing the dense sample in, RegisterNotchRun) but for
+// an OBLIQUE third face at a FilletConvexEdge fillet's own end: the true
+// boundary there is the ELLIPSE where the third face's own plane cuts the
+// fillet's CIRCULAR CYLINDER, not the plain circle NotchCornerAtVertex
+// hardcodes - computed via detail/ellipse_clip3d.h's own
+// ComputeEllipseFrame3d/EllipsePointAt (built for exactly this: an
+// oblique plane's true intersection with a circular cylinder, already
+// exercised by BooleanCombineMixed's own oblique plane+cylinder case),
+// not a bespoke re-derivation. Unlike EllipseNotchCornerAtVertex's own
+// CONE case above (fillet.h's own tapered doc comment), a CONSTANT-
+// radius cylinder's ellipse parametrization has NO phi-dependent
+// denominator at all (C is one fixed scalar, not a function of phi), so
+// ComputeEllipseFrame3d's own single |C| >= min_abs_C check (grazing
+// incidence) is the only degeneracy here - no per-sample scan needed.
+//
+// `cyl` must already reflect whatever origin/length shift
+// FindObliqueThirdFaceCrossing's own t_i led the caller to apply (see
+// FilletConvexEdge's own doc comment: the angle-0/i-side rail corner at
+// an oblique end must be the cylinder's own flat v=0 or v=length corner,
+// matching CylindricalFace::cap0_notch_points' own "the first point is
+// always the flat angle-0 corner" contract) - this function only reads
+// cyl's frame/radius, it never assumes where along the edge it sits.
+void EllipseNotchCornerAtVertexCylindrical(std::vector<Brep::PlanarFace>& other_faces, const Point3d& vertex,
+                                           const Vector3d& e, const ON_Plane& plane_i, const ON_Plane& plane_j,
+                                           const Brep::CylindricalFace& cyl, double sweep_angle, double tol,
+                                           std::vector<Point3d>& cap_notch_points_out,
+                                           double& cap_notch_tolerance_out) {
+  for (Brep::PlanarFace& f : other_faces) {
+    if (std::fabs(f.plane.zaxis * e) >= 1.0 - 1e-6) continue;  // perpendicular - NotchCornerAtVertex's own case
+
+    std::vector<Point3d>& loop = f.loop;
+    const size_t n = loop.size();
+    for (size_t k = 0; k < n; ++k) {
+      if (loop[k].DistanceTo(vertex) > tol) continue;
+      const Point3d& pred = loop[(k + n - 1) % n];
+      const Point3d& succ = loop[(k + 1) % n];
+      const bool pred_on_i = std::fabs(plane_i.DistanceTo(pred)) <= tol;
+      const bool pred_on_j = std::fabs(plane_j.DistanceTo(pred)) <= tol;
+      const bool succ_on_i = std::fabs(plane_i.DistanceTo(succ)) <= tol;
+      const bool succ_on_j = std::fabs(plane_j.DistanceTo(succ)) <= tol;
+      bool i_to_j;
+      if (pred_on_i && succ_on_j) {
+        i_to_j = true;
+      } else if (pred_on_j && succ_on_i) {
+        i_to_j = false;
+      } else {
+        continue;
+      }
+
+      detail::EllipseFrame3d ef;
+      try {
+        ef = detail::ComputeEllipseFrame3d(cyl, f.plane);
+      } catch (const std::runtime_error&) {
+        // Grazing incidence - leave this face's sharp corner untouched,
+        // the same disclosed limit every other notch in this file has
+        // for a degenerate cutting geometry.
+        continue;
+      }
+
+      std::vector<Point3d> canonical = detail::EllipseBoundarySample3d(ef, 0.0, sweep_angle, kNotchSamples);
+
+      // Same genuine sagitta-style tolerance EllipseNotchCornerAtVertex's
+      // own doc comment describes, computed here independently since this
+      // is a different (though related) curve family.
+      double max_sagitta = 0.0;
+      for (int s = 0; s < kNotchSamples; ++s) {
+        const double phi_mid = sweep_angle * (static_cast<double>(s) + 0.5) / kNotchSamples;
+        const Point3d chord_mid =
+            0.5 * (canonical[static_cast<size_t>(s)] + canonical[static_cast<size_t>(s) + 1]);
+        max_sagitta = std::max(max_sagitta, chord_mid.DistanceTo(detail::EllipsePointAt(ef, phi_mid)));
+      }
+
+      std::vector<Point3d> arc = canonical;
+      if (!i_to_j) std::reverse(arc.begin(), arc.end());
+
+      std::vector<Point3d> new_loop;
+      new_loop.reserve(n - 1 + arc.size());
+      for (size_t mm = 0; mm < n; ++mm) {
+        if (mm == k) {
+          new_loop.insert(new_loop.end(), arc.begin(), arc.end());
+        } else {
+          new_loop.push_back(loop[mm]);
+        }
+      }
+      loop = std::move(new_loop);
+
+      RegisterNotchRun(f, static_cast<int>(k), static_cast<int>(arc.size()));
+
+      if (cap_notch_points_out.empty()) {
+        cap_notch_points_out = std::move(canonical);
+        cap_notch_tolerance_out = max_sagitta;
+      }
+      break;
+    }
+  }
+}
+
 }  // namespace
 
 Brep FilletConvexEdge(const Brep& solid, Point3d edge_p0, Point3d edge_p1, double radius) {
@@ -453,6 +656,18 @@ Brep FilletConvexEdge(const Brep& solid, Point3d edge_p0, Point3d edge_p1, doubl
   const ON_Plane& plane_j = faces[static_cast<size_t>(idx_j)].plane;
   const Vector3d n_i = plane_i.zaxis;
   const Vector3d n_j = plane_j.zaxis;
+
+  // Every OTHER face, moved up here (from step (4) below) since the new
+  // oblique-end scan just below needs it before `fillet_face` is even
+  // built - a pure reordering of an existing, unmodified loop, not a
+  // change to what it computes.
+  std::vector<Brep::PlanarFace> others;
+  others.reserve(faces.size() - 2);
+  for (size_t f = 0; f < faces.size(); ++f) {
+    if (static_cast<int>(f) != idx_i && static_cast<int>(f) != idx_j) {
+      others.push_back(faces[f]);
+    }
+  }
 
   Vector3d e = edge_p1 - edge_p0;
   if (!e.Unitize()) {
@@ -570,8 +785,43 @@ Brep FilletConvexEdge(const Brep& solid, Point3d edge_p0, Point3d edge_p1, doubl
   // exactly (vector triple product, using |n_i| = 1 and n_i . e = 0) -
   // i.e. this frame's own zaxis comes out to exactly e, not merely
   // parallel to it.
+  //
+  // OBLIQUE END CONDITION, a genuine generalization of the plain
+  // perpendicular case: if a third face at edge_p0 (or edge_p1) is
+  // OBLIQUE to the edge, FindObliqueThirdFaceCrossing reports where its
+  // plane crosses the fillet's own two rail lines - generally at TWO
+  // DIFFERENT heights along `e`, not both at the vertex's own height as
+  // in the perpendicular case. The i-side (angle-0) crossing becomes this
+  // cylinder's own new v=0 (or v=length) reference - required by
+  // CylindricalFace::cap0_notch_points' own "the first point is always
+  // the flat angle-0 corner" contract - by shifting frame.origin/length
+  // to match; the j-side crossing then becomes that cap's own genuinely
+  // SLOPED back point, exactly the "sloped cut chain" case that field's
+  // own doc comment already anticipates for an unrelated producer. When
+  // neither end has an oblique third face (found == false at both, the
+  // overwhelmingly common case and every input this function was tested
+  // against before this generalization), v0_start == 0 and v1_end == L
+  // exactly, so frame.origin/length come out bit-identical to before.
+  const double L = edge_p0.DistanceTo(edge_p1);
+  // D_i/D_j: contact_i(V)-V and contact_j(V)-V at ANY point V on the edge
+  // (a fixed vector, independent of V, since contact_i/contact_j are each
+  // V plus a constant offset - see FindObliqueThirdFaceCrossing's own doc
+  // comment for why this exact vector, not radius*n_i/radius*n_j, is what
+  // a rail point actually adds to its own arc-length reference point).
+  const Vector3d D_i = radius * n_i - bis * offset;
+  const Vector3d D_j = radius * n_j - bis * offset;
+  const ObliqueEndCrossing cross_p0 = FindObliqueThirdFaceCrossing(others, edge_p0, e, plane_i, plane_j, D_i, D_j, tol);
+  const ObliqueEndCrossing cross_p1 = FindObliqueThirdFaceCrossing(others, edge_p1, e, plane_i, plane_j, D_i, D_j, tol);
+  const double v0_start = cross_p0.found ? cross_p0.t_i : 0.0;
+  const double v1_end = cross_p1.found ? (L + cross_p1.t_i) : L;
+  if (!(v1_end - v0_start > tol)) {
+    throw std::invalid_argument(
+        "dino8::kernel::FilletConvexEdge: the oblique end condition(s) leave no positive cylinder length between "
+        "them - radius too large for this solid's geometry");
+  }
+
   Brep::CylindricalFace fillet_face;
-  fillet_face.frame.origin = axis_point(edge_p0);
+  fillet_face.frame.origin = axis_point(edge_p0) + v0_start * e;
   fillet_face.frame.xaxis = n_i;
   Vector3d frame_yaxis = ON_CrossProduct(e, n_i);
   if (!frame_yaxis.Unitize()) {
@@ -584,30 +834,35 @@ Brep FilletConvexEdge(const Brep& solid, Point3d edge_p0, Point3d edge_p1, doubl
   fillet_face.frame.UpdateEquation();
   fillet_face.radius = radius;
   fillet_face.angle = sweep_angle;  // = pi - theta
-  fillet_face.length = edge_p0.DistanceTo(edge_p1);
+  fillet_face.length = v1_end - v0_start;
 
   // --- (4) assemble: all untouched faces, then the two re-trimmed ones,
   // then the one new CylindricalFace.
-  std::vector<Brep::PlanarFace> others;
-  others.reserve(faces.size() - 2);
-  for (size_t f = 0; f < faces.size(); ++f) {
-    if (static_cast<int>(f) != idx_i && static_cast<int>(f) != idx_j) {
-      others.push_back(faces[f]);
-    }
-  }
 
-  // Close the two ends of the fillet, where it meets a face perpendicular
-  // to the edge at edge_p0/edge_p1 - see NotchCornerAtVertex's own doc
-  // comment for why this is needed for a genuinely watertight,
-  // volume-correct result whenever the filleted edge runs all the way to
-  // such a face (as it always does at both of its own endpoints, unless
-  // some other face there happens to be non-planar or oblique, in which
-  // case NotchCornerAtVertex leaves that corner untouched).
-  NotchCornerAtVertex(others, edge_p0, e, plane_i, plane_j, fillet_face.frame.origin, n_i, frame_yaxis,
-                      radius, sweep_angle, tol);
-  NotchCornerAtVertex(others, edge_p1, e, plane_i, plane_j,
-                      fillet_face.frame.origin + fillet_face.length * e, n_i, frame_yaxis, radius,
-                      sweep_angle, tol);
+  // Close the two ends of the fillet, where it meets a face at edge_p0/
+  // edge_p1 - see NotchCornerAtVertex's own doc comment for the
+  // perpendicular case (a flat corner notch) and
+  // EllipseNotchCornerAtVertexCylindrical's own doc comment for the
+  // oblique one (a splice of the true ellipse the third face's plane
+  // cuts from the cylinder) - genuinely needed either way for a
+  // watertight, volume-correct result whenever the filleted edge runs
+  // all the way to such a face, which each dispatch below applies as
+  // FindObliqueThirdFaceCrossing already determined.
+  if (cross_p0.found) {
+    EllipseNotchCornerAtVertexCylindrical(others, edge_p0, e, plane_i, plane_j, fillet_face, sweep_angle, tol,
+                                          fillet_face.cap0_notch_points, fillet_face.cap0_notch_tolerance);
+  } else {
+    NotchCornerAtVertex(others, edge_p0, e, plane_i, plane_j, fillet_face.frame.origin, n_i, frame_yaxis, radius,
+                        sweep_angle, tol);
+  }
+  if (cross_p1.found) {
+    EllipseNotchCornerAtVertexCylindrical(others, edge_p1, e, plane_i, plane_j, fillet_face, sweep_angle, tol,
+                                          fillet_face.cap1_notch_points, fillet_face.cap1_notch_tolerance);
+  } else {
+    NotchCornerAtVertex(others, edge_p1, e, plane_i, plane_j,
+                        fillet_face.frame.origin + fillet_face.length * e, n_i, frame_yaxis, radius,
+                        sweep_angle, tol);
+  }
 
   std::vector<Brep::PlanarFace> mixed_planar = std::move(others);
   mixed_planar.push_back(std::move(retrimmed_i));

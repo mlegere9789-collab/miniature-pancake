@@ -102,15 +102,44 @@ struct FilletRadiusStation {
 //      - so, unlike the geometry, the TOPOLOGY at this corner is exact:
 //      IsManifold() reports no free boundary there and IsSolid() is true
 //      for a fillet on an otherwise-closed solid, not merely IsValid().
-//      A face at that vertex whose plane is NOT
-//      perpendicular to the edge (an oblique end condition) is left
-//      untouched - a real, narrower-than-general scope for what is, in
-//      full generality, solid modeling's own separate "vertex blend"
-//      problem, not something a two-face edge fillet fully solves here.
+//
+//      A face at that vertex whose plane is OBLIQUE to the edge (NOW
+//      CLOSED, not left untouched): where the perpendicular case's cap is
+//      a plain circular arc, an oblique third face cuts the fillet's own
+//      circular CYLINDER in a true ELLIPSE (fillet.cpp's own
+//      FindObliqueThirdFaceCrossing/EllipseNotchCornerAtVertexCylindrical,
+//      reusing detail/ellipse_clip3d.h's own ComputeEllipseFrame3d -
+//      already exact and tested for exactly this: an oblique plane's true
+//      intersection with a circular cylinder). The construction: each of
+//      the fillet's two straight rail lines (radius offset from the edge
+//      into face i's/face j's own plane) crosses the oblique face's plane
+//      at a single point, generally at TWO DIFFERENT heights along the
+//      edge (a linear solve per rail - see FindObliqueThirdFaceCrossing's
+//      own doc comment); throws std::invalid_argument if either crossing
+//      falls beyond the oblique face's own real extent (the fillet
+//      overruns it) or if the oblique plane is asymptotically parallel to
+//      the edge. The face-i-side crossing becomes the cylinder's own new
+//      end (its frame/length are shifted so this crossing is exactly the
+//      flat v=0 or v=length corner, matching
+//      Brep::CylindricalFace::cap0_notch_points' own "the first point is
+//      always the flat angle-0 corner" contract - inert, a bit-identical
+//      no-op, whenever neither end is oblique); the face-j-side crossing
+//      becomes that cap's own genuinely SLOPED back point, the same
+//      "sloped cut chain" shape that field's own doc comment already
+//      anticipates for an unrelated producer (the unequal-radius
+//      cylinder/cylinder split), just reached here from a different
+//      direction. The dense ellipse sample is spliced into BOTH the
+//      oblique face's own notched corner and the CylindricalFace's own
+//      cap0_notch_points/cap1_notch_points - a literal shared boundary,
+//      not two independently-plausible approximations of the same curve,
+//      mirroring FilletConvexEdgeTapered's own already-established
+//      principle for its cone case. A face with NO matching trihedral
+//      third face at all (a free boundary) is unaffected, exactly as
+//      before.
 //
 // The result is exactly `solid` with those two faces re-trimmed, any
-// perpendicular end faces at edge_p0/edge_p1 corner-notched as described
-// above, and the new CylindricalFace inserted - assembled via
+// perpendicular OR oblique end faces at edge_p0/edge_p1 corner-notched as
+// described above, and the new CylindricalFace inserted - assembled via
 // Brep::FromMixedFaces, so every other face of `solid` comes through
 // unchanged. Also throws std::invalid_argument if `radius` isn't strictly
 // positive.
@@ -118,14 +147,16 @@ struct FilletRadiusStation {
 // SCOPE, stated plainly rather than silently narrowed: a straight edge
 // between exactly two PLANAR faces of a solid already known to be
 // well-formed enough for PlanarFaces() to describe (see that method's own
-// doc comment for what it requires), with any end faces at the edge's own
-// two endpoints either absent, oblique (left as a known, disclosed gap),
-// or exactly perpendicular to the edge (closed exactly per the polygonal
-// approximation above). A curved adjacent face, a non-convex edge, or a
-// variable radius along the edge are all real, out-of-scope future work -
-// matching the same "this is deliberately narrow, and says so" pattern
-// boolean.h's own BooleanIntersectConvexPlanar/BooleanCombinePlanar use
-// for their own convex/non-convex scoping.
+// doc comment for what it requires - in particular, a solid already
+// carrying a curved face from an earlier fillet is out of scope, since
+// PlanarFaces() itself rejects it), with any end faces at the edge's own
+// two endpoints either absent, exactly perpendicular to the edge, or
+// oblique to it (all three closed exactly, as described above). A curved
+// adjacent face, a non-convex edge, or a variable radius along the edge
+// are all real, out-of-scope future work - matching the same "this is
+// deliberately narrow, and says so" pattern boolean.h's own
+// BooleanIntersectConvexPlanar/BooleanCombinePlanar use for their own
+// convex/non-convex scoping.
 Brep FilletConvexEdge(const Brep& solid, Point3d edge_p0, Point3d edge_p1, double radius);
 
 // LINEAR-TAPER generalization of FilletConvexEdge: rolls a ball of

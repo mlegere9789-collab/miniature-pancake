@@ -22356,6 +22356,191 @@ void TestSweep1AndPipe() {
 
 }  // namespace sweep_tests
 
+// ---------------------------------------------------------------------------
+// FilletConvexEdge's OBLIQUE end condition (fillet.h): a third face at
+// edge_p0/edge_p1 that is not perpendicular to the edge, closed via the
+// true ellipse an oblique plane cuts from the fillet's circular cylinder
+// (detail/ellipse_clip3d.h's own ComputeEllipseFrame3d), generalizing the
+// flat corner-notch NotchCornerAtVertex already handles.
+
+dino8::kernel::Brep::PlanarFace FilletObliqueTestPlanarFace(const std::vector<dino8::kernel::Point3d>& loop) {
+  return ChamferTestPlanarFace(loop);
+}
+
+// A hexahedron with one perpendicular end (x=0) and one OBLIQUE end whose
+// plane is x = 1 + `slope`*y - the same family ChamferConvexEdge's own
+// oblique-end test uses, reused here for the fillet's own analogous
+// construction. Volume = int_0^1 int_0^1 (1 + slope*y) dy dz = 1 +
+// slope/2.
+dino8::kernel::Brep FilletObliqueTestHexahedron(double slope) {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  auto X = [&](double y) { return 1.0 + slope * y; };
+  const Point3d A(0, 0, 0), B(0, 1, 0), C(0, 1, 1), D(0, 0, 1);
+  const Point3d A1(X(0), 0, 0), B1(X(1), 1, 0), C1(X(1), 1, 1), D1(X(0), 0, 1);
+  return Brep::FromPlanarFaces({
+      FilletObliqueTestPlanarFace({A, D, C, B}),      // x = 0
+      FilletObliqueTestPlanarFace({A1, B1, C1, D1}),  // oblique end
+      FilletObliqueTestPlanarFace({A, A1, D1, D}),    // y = 0 (front)
+      FilletObliqueTestPlanarFace({B, C, C1, B1}),    // y = 1 (back)
+      FilletObliqueTestPlanarFace({A, B, B1, A1}),    // z = 0
+      FilletObliqueTestPlanarFace({D, D1, C1, C}),    // z = 1 (top)
+  });
+}
+
+void TestFilletConvexEdgeObliqueEndFaceIsExactAndClosed() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConvexEdge;
+  using dino8::kernel::Point3d;
+
+  const double slope = 0.3, r = 0.2;
+  const Brep hex = FilletObliqueTestHexahedron(slope);
+  Check(hex.raw().IsSolid(), "sanity: the oblique-ended hexahedron fixture is a closed solid");
+  Check(std::fabs(hex.TessellateToClosedMesh(8, 8).Volume() - 1.15) < 1e-6, "sanity: the fixture's own volume is 1.15");
+
+  // Top-front edge (0,0,1)->(1,0,1): face i = top (z=1), face j = front
+  // (y=0); at edge_p1, the oblique end face is now closed instead of left
+  // untouched.
+  const Point3d edge_p0(0, 0, 1), edge_p1(1, 0, 1);
+  const Brep c = FilletConvexEdge(hex, edge_p0, edge_p1, r);
+
+  ON_TextLog log;
+  Check(c.raw().IsValid(&log), "the obliquely-ended fillet passes ON_Brep::IsValid()");
+  bool oriented = false, has_boundary = true;
+  Check(c.raw().IsManifold(&oriented, &has_boundary) && oriented && !has_boundary,
+        "the obliquely-ended fillet is a CLOSED 2-manifold - the oblique end's own ellipse notch is a literal shared "
+        "boundary with the cylinder's own cap, not two independently-plausible approximations of it");
+  Check(c.raw().IsSolid(), "the obliquely-ended fillet reports IsSolid() == true");
+  Check(c.FaceCount() == 7, "obliquely-ended fillet: 7 faces (4 untouched/re-cornered + 2 re-trimmed + 1 cylinder)");
+
+  // Hand-derived rail/oblique-plane crossings (see fillet.h's own doc
+  // comment): D_i = radius*n_i - bis*offset, t_i = -(D_i.n_f)/(e.n_f).
+  // For this right-angle (theta = pi/2) edge, contact_i(0) = (1, r, 1)
+  // and the i-side crossing sits at t_i = slope*r along +x, i.e. exactly
+  // (1 + slope*r, r, 1); the j-side crossing has t_j = 0 (n_j is
+  // perpendicular to this particular oblique plane's normal), staying at
+  // the flat (1, 0, 1 - r).
+  const Point3d expect_Qi(1.0 + slope * r, r, 1.0);
+  const Point3d expect_Qj(1.0, 0.0, 1.0 - r);
+  Check(ChamferTestBrepHasVertexNear(c, expect_Qi, 1e-9),
+        "the i-side (top-face) rail crosses the oblique end's plane exactly at (1 + slope*r, r, 1)");
+  Check(ChamferTestBrepHasVertexNear(c, expect_Qj, 1e-9),
+        "the j-side (front-face) rail crosses the oblique end's plane exactly at (1, 0, 1 - r) (t_j = 0 here)");
+  Check(!ChamferTestBrepHasVertexNear(c, edge_p1, 1e-9), "the oblique end's original sharp corner vertex is gone");
+
+  // Closed form: the removed wedge is a constant-cross-section
+  // (area = r^2*(1 - pi/4)) prism cut between T_lo = 0 (flat, perpendicular
+  // end) and the oblique plane, whose height along the edge is affine in
+  // the wedge's own local (x, y) offset - so integrating over the wedge
+  // reduces to evaluating that affine height at the wedge's own centroid
+  // (c, c), c = r/(6*(1 - pi/4)) (the "square minus quarter disk" region's
+  // centroid along either axis).
+  const double area = r * r * (1.0 - ON_PI / 4.0);
+  const double centroid = r / (6.0 * (1.0 - ON_PI / 4.0));
+  // n_i.n_f = 0, n_j.n_f = slope, e.n_f = 1, (bis*offset).n_f = slope*r
+  // for this specific (theta = pi/2, oblique normal (1, -slope, 0)) case.
+  const double t_hi_centroid = 1.0 + (slope * r - centroid * slope) / 1.0;
+  const double removed = area * t_hi_centroid;
+  const double expected = 1.15 - removed;
+  const double measured = c.TessellateToClosedMeshAdaptive(1e-6).Volume();
+  Check(std::fabs(expected - 1.1413009) < 1e-6, "sanity: this test's own closed form evaluates to ~1.1413009");
+  Check(std::fabs(measured - expected) < 5e-6,
+        "obliquely-ended fillet volume matches the closed-form Steiner-style integral (wedge area x affine height "
+        "at the wedge's own centroid) to within 5e-6");
+
+  const Brep::MixedFacesResult mf = c.MixedFaces();
+  Check(mf.cylindrical.size() == 1, "the obliquely-ended fillet still has exactly one cylindrical face");
+  if (mf.cylindrical.size() == 1) {
+    const Brep::CylindricalFace& cf = mf.cylindrical[0];
+    Check(std::fabs(cf.length - (1.0 + slope * r)) < 1e-9,
+          "the cylinder's own length is shifted to end exactly at the oblique i-side crossing (1 + slope*r)");
+    Check(cf.cap0_notch_points.empty(), "cap0 (the perpendicular p0 end) is untouched - no notch points there");
+    Check(cf.cap1_notch_points.size() == 201,
+          "cap1 (the oblique p1 end) carries the dense ellipse sample FromMixedFaces' own cap1_notch_points expects");
+    Check(cf.cap1_notch_points.front().DistanceTo(expect_Qi) < 1e-9 &&
+              cf.cap1_notch_points.back().DistanceTo(expect_Qj) < 1e-9,
+          "cap1's own sample list starts at the i-side crossing and ends at the j-side crossing, matching the "
+          "notched third face's own splice exactly (a literal shared boundary)");
+  }
+}
+
+void TestFilletConvexEdgeObliqueEndMatchesPerpendicularAtZeroSlope() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConvexEdge;
+  using dino8::kernel::Point3d;
+
+  // slope = 0 makes the "oblique" end face's own plane x = 1 exactly -
+  // i.e. genuinely perpendicular to the edge (e.n_f == 1 to floating-point
+  // precision) - so FindObliqueThirdFaceCrossing's own perpendicularity
+  // test routes it straight back to NotchCornerAtVertex's plain-circle
+  // case, with v0_start == 0 and v1_end == L exactly: this hexahedron
+  // fixture and a plain unit box must fillet to BIT-IDENTICAL results.
+  const Brep hex0 = FilletObliqueTestHexahedron(0.0);
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+  const Point3d edge_p0(0, 0, 1), edge_p1(1, 0, 1);
+  const double r = 0.2;
+  const Brep f_hex0 = FilletConvexEdge(hex0, edge_p0, edge_p1, r);
+  const Brep f_box = FilletConvexEdge(box, edge_p0, edge_p1, r);
+  Check(f_hex0.FaceCount() == f_box.FaceCount() && f_hex0.raw().m_E.Count() == f_box.raw().m_E.Count() &&
+            f_hex0.raw().m_V.Count() == f_box.raw().m_V.Count(),
+        "a degenerately-perpendicular 'oblique' end gives the same face/edge/vertex counts as the plain flat-notch "
+        "case (the new code path is a genuine no-op there)");
+  Check(std::fabs(f_hex0.TessellateToClosedMeshAdaptive(1e-7).Volume() -
+                  f_box.TessellateToClosedMeshAdaptive(1e-7).Volume()) < 1e-12,
+        "and the same tessellated volume to within floating-point precision");
+  Check(f_hex0.raw().IsSolid(), "the zero-slope fixture's fillet is still a closed solid");
+}
+
+void TestFilletConvexEdgeObliqueEndClosedFormAtASecondSlope() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConvexEdge;
+  using dino8::kernel::Point3d;
+
+  // A second, steeper slope and a different radius - an independent data
+  // point for the same closed form, catching a construction that happened
+  // to only work for one particular (slope, radius) pair.
+  const double slope = 0.6, r = 0.1;
+  const Brep hex = FilletObliqueTestHexahedron(slope);
+  const double vol_hex = hex.TessellateToClosedMesh(8, 8).Volume();
+  const Brep c = FilletConvexEdge(hex, Point3d(0, 0, 1), Point3d(1, 0, 1), r);
+  ON_TextLog log;
+  bool oriented = false, has_boundary = true;
+  Check(c.raw().IsValid(&log) && c.raw().IsManifold(&oriented, &has_boundary) && oriented && !has_boundary &&
+            c.raw().IsSolid(),
+        "a second (slope, radius) pair also gives a closed, valid, solid Brep");
+  const double area = r * r * (1.0 - ON_PI / 4.0);
+  const double centroid = r / (6.0 * (1.0 - ON_PI / 4.0));
+  const double t_hi_centroid = 1.0 + (slope * r - centroid * slope) / 1.0;
+  const double expected = vol_hex - area * t_hi_centroid;
+  const double measured = c.TessellateToClosedMeshAdaptive(1e-6).Volume();
+  Check(std::fabs(measured - expected) < 5e-6,
+        "the same closed form matches a second, independent (slope, radius) data point to within 5e-6");
+}
+
+void TestFilletConvexEdgeObliqueEndRejectsInvalidInput() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConvexEdge;
+  using dino8::kernel::Point3d;
+  auto throws = [](const std::function<void()>& fn) {
+    try {
+      fn();
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+    return false;
+  };
+  const Brep hex = FilletObliqueTestHexahedron(0.3);
+  // A radius exceeding the ordinary (non-oblique-specific) face extent
+  // check still throws exactly as it always did - the new oblique-end
+  // machinery does not weaken that existing safety net. (A fixture that
+  // isolates the NEW oblique-overrun check specifically, rather than this
+  // pre-existing one, would need a non-quadrilateral face i shape - out
+  // of scope for this regression, honestly noted rather than staged to
+  // look like it tests something it doesn't.)
+  Check(throws([&] { FilletConvexEdge(hex, Point3d(0, 0, 1), Point3d(1, 0, 1), 1.5); }),
+        "an oversized radius on the obliquely-ended fixture is still rejected");
+}
+
 int main() {
   ON::Begin();
 
@@ -22551,6 +22736,10 @@ int main() {
   TestFilletConvexEdgesSingleCornerSphereWithNotchedFarEnds();
   TestFilletConvexEdgesSingleEdgeMatchesFilletConvexEdge();
   TestFilletConvexEdgesRejectsUnsupportedConfigurations();
+  TestFilletConvexEdgeObliqueEndFaceIsExactAndClosed();
+  TestFilletConvexEdgeObliqueEndMatchesPerpendicularAtZeroSlope();
+  TestFilletConvexEdgeObliqueEndClosedFormAtASecondSlope();
+  TestFilletConvexEdgeObliqueEndRejectsInvalidInput();
   TestBrepFromPlanarFacesBuildsValidOpenNurbsTopology();
   TestBooleanCombinePlanarResultHasValidClosedTopology();
   TestShellConvexPlanarResultHasValidTopology();
