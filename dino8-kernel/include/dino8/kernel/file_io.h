@@ -2,6 +2,8 @@
 
 #include <optional>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include <opennurbs.h>
 
@@ -23,6 +25,14 @@ struct Color {
   unsigned char g = 0;
   unsigned char b = 0;
 };
+
+// Key/value pairs for the Add*() methods' `user_strings` parameter below -
+// Rhino's own "user text" mechanism (ON_3dmObjectAttributes::SetUserString()
+// underneath), the free-form attribute data every .3dm object can carry
+// alongside its name/layer/color (a part number, a material spec, a link
+// back to some external database row - anything a plugin or a user wants
+// attached to an object that isn't already a first-class attribute).
+using UserStrings = std::vector<std::pair<std::string, std::string>>;
 
 // Thin wrapper around ONX_Model so .3dm compatibility comes from
 // OpenNURBS directly rather than a reimplementation. This is the
@@ -87,10 +97,22 @@ class Model {
   // ON::color_from_object, the same "object, not layer" override Rhino's
   // own per-object color assignment uses, so it isn't silently shadowed by
   // whatever color the object's layer happens to carry.
+  //
+  // Every Add*() below also takes optional `user_strings`: Rhino's own
+  // "user text" key/value attribute data (see UserStrings' own doc comment
+  // above), the last of the fields PARITY_MAP.md's ".3dm attribute/metadata
+  // fidelity" evidence lists that this kernel had no way to write at all.
+  // An empty (default) list is a no-op - no behavior change for existing
+  // callers, same as every other optional parameter here. Each pair is
+  // written via ON_3dmObjectAttributes::SetUserString(key, value); a
+  // repeated key keeps only the last value for that key, matching
+  // SetUserString()'s own "replace" contract for a key it's already seen.
   void AddCurve(const NurbsCurve& curve, const std::string& name = std::string(),
-                int layer_index = 0, std::optional<Color> render_color = std::nullopt);
+                int layer_index = 0, std::optional<Color> render_color = std::nullopt,
+                const UserStrings& user_strings = UserStrings());
   void AddBrep(const Brep& brep, const std::string& name = std::string(), int layer_index = 0,
-               std::optional<Color> render_color = std::nullopt);
+               std::optional<Color> render_color = std::nullopt,
+               const UserStrings& user_strings = UserStrings());
 
   // Adds a mesh (a box, cylinder, boolean result, ...) as its own model
   // object - the missing counterpart to AddCurve()/AddBrep() that closed
@@ -100,7 +122,8 @@ class Model {
   // Mesh::SaveObj()/SaveStl(). Same pattern as the other two: copies
   // `mesh`'s underlying ON_Mesh into a new model geometry component.
   void AddMesh(const Mesh& mesh, const std::string& name = std::string(), int layer_index = 0,
-               std::optional<Color> render_color = std::nullopt);
+               std::optional<Color> render_color = std::nullopt,
+               const UserStrings& user_strings = UserStrings());
 
   // Adds a SubD control cage/subdivision surface as its own model
   // object - the same "no way to put this object type into a .3dm at
@@ -108,7 +131,8 @@ class Model {
   // pattern: copies the SubD's underlying ON_SubD into a new model
   // geometry component.
   void AddSubD(const SubD& subd, const std::string& name = std::string(), int layer_index = 0,
-               std::optional<Color> render_color = std::nullopt);
+               std::optional<Color> render_color = std::nullopt,
+               const UserStrings& user_strings = UserStrings());
 
   // Adds a point cloud as its own model object. PointCloud's own doc
   // comment claims ON_PointCloud is "the same one [OpenNURBS'] .3dm
@@ -121,7 +145,8 @@ class Model {
   // `cloud`'s underlying ON_PointCloud (positions, and per-point colors/
   // normals when present) into a new model geometry component.
   void AddPointCloud(const PointCloud& cloud, const std::string& name = std::string(),
-                     int layer_index = 0, std::optional<Color> render_color = std::nullopt);
+                     int layer_index = 0, std::optional<Color> render_color = std::nullopt,
+                     const UserStrings& user_strings = UserStrings());
 
   int ObjectCount() const;
 
