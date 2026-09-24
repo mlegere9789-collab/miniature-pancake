@@ -580,6 +580,88 @@ bool CylindricalRecordMatchesFace(const Brep::CylindricalFace& rec, const FaceGe
   return std::fabs(h) <= tol && std::fabs(radial - rec.radius) <= tol;
 }
 
+// The three points a SphericalFace record pins down on its own surface:
+// the (angle 0, lat0) corner, the (angle, lat0) corner and the north pole
+// direction - enough to fix center, radius and frame orientation.
+bool SphericalRecordMatchesFace(const Brep::SphericalFace& rec, const FaceGeometry& fg, bool face_rev) {
+  if (rec.outward == face_rev) return false;
+  auto pt = [&](double phi, double lat) {
+    return rec.frame.origin +
+           rec.radius * (std::cos(lat) * (std::cos(phi) * rec.frame.xaxis + std::sin(phi) * rec.frame.yaxis) +
+                         std::sin(lat) * rec.frame.zaxis);
+  };
+  const Point3d c00 = pt(0.0, rec.lat0), cu0 = pt(rec.angle, rec.lat0), north = rec.frame.origin + rec.radius * rec.frame.zaxis;
+  const double tol = 1e-6 * RecordScale(c00, cu0, north);
+  // ON_Sphere::GetNurbForm's own parameterization: u=0 is frame.xaxis,
+  // v=+pi/2 the north pole; the record's lat0 sits at the trim's lowest v.
+  if (fg.surface.PointAt(0.0, 0.5 * ON_PI).DistanceTo(north) > tol) return false;
+  if (fg.surface.PointAt(0.0, 0.0).DistanceTo(rec.frame.origin + rec.radius * rec.frame.xaxis) > tol) return false;
+  if (fg.surface.PointAt(0.5 * ON_PI, 0.0).DistanceTo(rec.frame.origin + rec.radius * rec.frame.yaxis) > tol) return false;
+  const std::vector<Point2d> uv = FaceOuterUv(fg);
+  if (uv.size() != 4) return false;
+  return fg.surface.PointAt(uv[0].x, uv[0].y).DistanceTo(c00) <= tol && fg.surface.PointAt(uv[1].x, uv[1].y).DistanceTo(cu0) <= tol;
+}
+
+// Geometric recovery of a SphericalFace from a face whose surface
+// ON_Surface::IsSphere accepts and whose trim is FromMixedFaces()'s own
+// 4-corner (u, v) rectangle: the frame is read straight off the surface's
+// own quadrant points (u=0/v=0 -> +xaxis, u=pi/2/v=0 -> +yaxis, v=+pi/2 ->
+// +zaxis - ON_Sphere::GetNurbForm's fixed layout, checked here rather than
+// assumed), and angle/lat0/lat1 are the trim rectangle's own u/v bounds
+// converted back to radians with ON_Circle::GetRadianFromNurbFormParameter
+// (the exact inverse of the conversion FromMixedFaces() applied). Throws
+// std::invalid_argument for a spherical face whose parameterization is
+// not that layout (a foreign sphere surface).
+Brep::SphericalFace ExtractSphericalFace(const ON_Brep& brep, int face_index, const FaceGeometry& fg,
+                                          const ON_Sphere& sph) {
+  Brep::SphericalFace f;
+  f.radius = sph.radius;
+  const Point3d center = sph.Center();
+  Vector3d x = fg.surface.PointAt(0.0, 0.0) - center;
+  Vector3d y = fg.surface.PointAt(0.5 * ON_PI, 0.0) - center;
+  Vector3d z = fg.surface.PointAt(0.0, 0.5 * ON_PI) - center;
+  const double tol = 1e-4 * std::max(1.0, sph.radius);
+  if (std::fabs(x.Length() - sph.radius) > tol || std::fabs(y.Length() - sph.radius) > tol ||
+      std::fabs(z.Length() - sph.radius) > tol || !x.Unitize() || !y.Unitize() || !z.Unitize() ||
+      std::fabs(x * y) > 1e-6 || std::fabs(x * z) > 1e-6 || std::fabs(y * z) > 1e-6 ||
+      (ON_CrossProduct(x, y) - z).Length() > 1e-6) {
+    throw std::invalid_argument(
+        "dino8::kernel::Brep::MixedFaces: face " + std::to_string(face_index) +
+        " is spherical but not in ON_Sphere::GetNurbForm's own parameterization - a foreign sphere "
+        "surface is out of scope here");
+  }
+  f.frame = ON_Plane(center, x, y);
+  f.frame.zaxis = z;
+  f.frame.UpdateEquation();
+  f.outward = !brep.m_F[face_index].m_bRev;
+  const std::vector<Point2d> uv = FaceOuterUv(fg);
+  double u_min = uv[0].x, u_max = uv[0].x, v_min = uv[0].y, v_max = uv[0].y;
+  for (const Point2d& p : uv) {
+    u_min = std::min(u_min, p.x);
+    u_max = std::max(u_max, p.x);
+    v_min = std::min(v_min, p.y);
+    v_max = std::max(v_max, p.y);
+  }
+  if (std::fabs(u_min) > 1e-9) {
+    throw std::invalid_argument(
+        "dino8::kernel::Brep::MixedFaces: face " + std::to_string(face_index) +
+        " is a spherical patch whose trim does not start at u = 0 - not a FromMixedFaces() SphericalFace");
+  }
+  const ON_Circle circle(f.frame, f.radius);
+  double angle = 0.0, t0 = 0.0, t1 = 0.0;
+  if (!circle.GetRadianFromNurbFormParameter(u_max, &angle) ||
+      !circle.GetRadianFromNurbFormParameter(v_min + 0.5 * ON_PI, &t0) ||
+      !circle.GetRadianFromNurbFormParameter(v_max + 0.5 * ON_PI, &t1)) {
+    throw std::runtime_error(
+        "dino8::kernel::Brep::MixedFaces: ON_Circle::GetRadianFromNurbFormParameter failed recovering a "
+        "SphericalFace's own angle/latitude bounds");
+  }
+  f.angle = angle;
+  f.lat0 = t0 - 0.5 * ON_PI;
+  f.lat1 = t1 - 0.5 * ON_PI;
+  return f;
+}
+
 }  // namespace
 
 std::vector<Brep::PlanarFace> Brep::PlanarFaces() const {
@@ -622,6 +704,10 @@ Brep::MixedFacesResult Brep::MixedFaces() const {
         result.cylindrical.push_back(rec.cyl);
         continue;
       }
+      if (rec.kind == FaceRecord::kSpherical && SphericalRecordMatchesFace(rec.sph, fg, brep_.m_F[i].m_bRev)) {
+        result.spherical.push_back(rec.sph);
+        continue;
+      }
     }
     NurbsSurface wrapper;
     wrapper.raw() = fg.surface;
@@ -637,9 +723,16 @@ Brep::MixedFacesResult Brep::MixedFaces() const {
     // not to misclassify a genuinely non-cylindrical face.
     const double cyl_tol = 1e-4;
     if (!fg.surface.IsCylinder(&cyl, cyl_tol)) {
-      // Not a cylinder - try a cone next (see this method's own doc
-      // comment for the ConicalFace recovery this mirrors from
-      // FromMixedFaces()'s own cone-building code below).
+      // Not a cylinder - a sphere next (a SphericalFace vertex blend read
+      // back without its record, e.g. after a .3dm round trip), then a
+      // cone (see this method's own doc comment for the ConicalFace
+      // recovery this mirrors from FromMixedFaces()'s own cone-building
+      // code below).
+      ON_Sphere sph;
+      if (fg.surface.IsSphere(&sph, cyl_tol)) {
+        result.spherical.push_back(ExtractSphericalFace(brep_, i, fg, sph));
+        continue;
+      }
       ExtractConicalFace(brep_, i, fg, result);
       continue;
     }
@@ -756,6 +849,25 @@ struct FaceTopology {
   // two genuinely different notch polylines joining the same two vertices
   // apart. Default-valued at any index whose notch_interior_uv is empty.
   std::vector<Point3d> notch_midpoint_3d;
+
+  // Optional explicit per-segment curve table (same length as vids when
+  // non-empty). Empty (the default) means the legacy 4-point
+  // CylindricalFace/ConicalFace rectangle convention above (segments 0/2
+  // are the two cap isocurves at constant v, 1/3 are straight rails), or
+  // an all-straight PlanarFace loop. A SphericalFace's patch needs the
+  // general form: its segments are isocurves in BOTH directions (the
+  // equator/latitude arc at constant v, the two meridians at constant u)
+  // and its pole side is SINGULAR (a trim with no edge).
+  struct Seg {
+    int iso_dir = -1;       // -1: straight ON_LineCurve; 0: v == iso_const, param u runs par_from -> par_to;
+                            // 1: u == iso_const, param v runs par_from -> par_to
+    double iso_const = 0.0;
+    double par_from = 0.0;
+    double par_to = 0.0;
+    bool singular = false;  // collapsed side (a sphere pole): ON_Brep::NewSingularTrim, no edge
+    ON_Surface::ISO singular_iso = ON_Surface::not_iso;
+  };
+  std::vector<Seg> segs;
 };
 
 // The midpoint of a dense notch sample list, as the average of its two
@@ -912,11 +1024,54 @@ void BuildFaceLoop(ON_Brep& brep, ON_BrepFace& face, const FaceTopology& topo,
     const int vid_from = topo.vids[k];
     const int vid_to = topo.vids[k1];
 
-    const bool is_cap = topo.curved_surface != nullptr && (k == 0 || k == 2);
+    // Per-segment curve description: an explicit table (FaceTopology::segs,
+    // a SphericalFace) or the legacy 4-point cylinder/cone rectangle
+    // (segments 0/2 are the constant-v cap isocurves walked 0 -> u_max and
+    // u_max -> 0 respectively) - the legacy values below are exactly the
+    // ones the pre-table code used, so every existing face's edges, keys
+    // and midpoint hashes are bit-identical.
+    FaceTopology::Seg seg;
+    if (!topo.segs.empty()) {
+      seg = topo.segs[k];
+    } else if (topo.curved_surface != nullptr && (k == 0 || k == 2)) {
+      seg.iso_dir = 0;
+      seg.iso_const = (k == 0) ? topo.curved_v0 : topo.curved_v0 + topo.curved_length;
+      seg.par_from = (k == 0) ? 0.0 : topo.curved_u_max;
+      seg.par_to = (k == 0) ? topo.curved_u_max : 0.0;
+    }
+    const bool is_cap = seg.iso_dir >= 0;  // this segment's own curve is a surface isocurve
     const bool has_notch_interior = k < topo.notch_interior_uv.size() && !topo.notch_interior_uv[k].empty();
-    const bool iso_reversed = is_cap && !has_notch_interior && k == 2;
+    const bool iso_reversed = is_cap && !has_notch_interior && seg.par_from > seg.par_to;
+    // The isocurve's own midpoint (mid-parameter) in 3D - the one datum the
+    // arc-identity checks below key on. For the legacy rectangle this is
+    // literally PointAt(u_max * 0.5, v_const): (0 + u_max) * 0.5 and
+    // (u_max + 0) * 0.5 are both exactly u_max * 0.5 in floating point.
+    auto arc_mid = [&]() {
+      const double mid_par = (seg.par_from + seg.par_to) * 0.5;
+      return seg.iso_dir == 0 ? topo.curved_surface->PointAt(mid_par, seg.iso_const)
+                              : topo.curved_surface->PointAt(seg.iso_const, mid_par);
+    };
 
-    if (topo.curved_surface != nullptr && (k == 1 || k == 3) && vid_from == vid_to) {
+    if (seg.singular) {
+      // A collapsed side of the surface's own domain (a SphericalFace's
+      // pole): every point of this (u, v) segment maps to the single 3D
+      // vertex `vid_from` (== vid_to, checked by the producer), so the
+      // standard B-rep representation is a singular trim - a 2D trim curve
+      // with NO 3D edge (ON_Brep::NewSingularTrim), exactly what a Rhino
+      // sphere carries at its poles.
+      if (vid_from != vid_to) {
+        throw std::runtime_error(
+            "dino8::kernel::Brep::FromMixedFaces: a segment marked singular joins two "
+            "distinct welded vertices - please report this as a bug");
+      }
+      ON_Curve* c2s = new ON_LineCurve(topo.trim_uv[k], topo.trim_uv[k1]);
+      c2s->SetDomain(0.0, 1.0);
+      const int c2si = brep.AddTrimCurve(c2s);
+      brep.NewSingularTrim(brep.m_V[vid_from], loop, seg.singular_iso, c2si);
+      continue;
+    }
+
+    if (topo.curved_surface != nullptr && !is_cap && vid_from == vid_to) {
       continue;  // zero-length rail of a length == 0 eye - see this function's own doc comment
     }
 
@@ -966,8 +1121,7 @@ void BuildFaceLoop(ON_Brep& brep, ON_BrepFace& face, const FaceTopology& topo,
     auto same_cap_arc_midpoint = [&](int existing_edge_index) {
       const auto it2 = cap_arc_midpoint_of_edge.find(existing_edge_index);
       if (it2 == cap_arc_midpoint_of_edge.end()) return false;  // not an is_cap-created edge at all
-      const double v_const_for_check = (k == 0) ? topo.curved_v0 : topo.curved_v0 + topo.curved_length;
-      const Point3d mid = topo.curved_surface->PointAt(topo.curved_u_max * 0.5, v_const_for_check);
+      const Point3d mid = arc_mid();
       return mid.DistanceTo(it2->second) <= kBrepWeldTolerance * 10.0;
     };
     if (is_cap && !has_notch_interior) {
@@ -977,8 +1131,7 @@ void BuildFaceLoop(ON_Brep& brep, ON_BrepFace& face, const FaceTopology& topo,
         // EXISTING is_cap-created edge - salt the key so this arc gets
         // (or finds) its own separate edge instead of colliding with the
         // wrong one.
-        const double v_const_for_hash = (k == 0) ? topo.curved_v0 : topo.curved_v0 + topo.curved_length;
-        const Point3d mid = topo.curved_surface->PointAt(topo.curved_u_max * 0.5, v_const_for_hash);
+        const Point3d mid = arc_mid();
         auto quant = [](double x) { return std::llround(x / kBrepWeldTolerance); };
         uint64_t h = 1469598103934665603ull;  // FNV-1a offset basis
         auto mix = [&](int64_t v) {
@@ -1099,14 +1252,13 @@ void BuildFaceLoop(ON_Brep& brep, ON_BrepFace& face, const FaceTopology& topo,
         c3 = poly;
         edge_tolerance = k < topo.cap_notch_tolerance.size() ? topo.cap_notch_tolerance[k] : 0.0;
       } else if (is_cap) {
-        const double v_const = (k == 0) ? topo.curved_v0 : topo.curved_v0 + topo.curved_length;
-        ON_Curve* iso = topo.curved_surface->IsoCurve(/*dir=*/0, v_const);
+        ON_Curve* iso = topo.curved_surface->IsoCurve(seg.iso_dir, seg.iso_const);
         if (!iso) {
           throw std::runtime_error(
               "dino8::kernel::Brep::FromMixedFaces: ON_Surface::IsoCurve failed "
-              "building a CylindricalFace's/ConicalFace's own cap edge");
+              "building a CylindricalFace's/ConicalFace's/SphericalFace's own arc edge");
         }
-        if (!iso->Trim(ON_Interval(0.0, topo.curved_u_max))) {
+        if (!iso->Trim(ON_Interval(std::min(seg.par_from, seg.par_to), std::max(seg.par_from, seg.par_to)))) {
           delete iso;
           throw std::runtime_error(
               "dino8::kernel::Brep::FromMixedFaces: trimming a "
@@ -1150,9 +1302,7 @@ void BuildFaceLoop(ON_Brep& brep, ON_BrepFace& face, const FaceTopology& topo,
       edge_index = edge.m_edge_index;
       edge_of_vertex_pair.emplace(key, edge_index);
       if (is_cap && !has_notch_interior) {
-        const double v_const_for_record = (k == 0) ? topo.curved_v0 : topo.curved_v0 + topo.curved_length;
-        cap_arc_midpoint_of_edge.emplace(edge_index,
-                                          topo.curved_surface->PointAt(topo.curved_u_max * 0.5, v_const_for_record));
+        cap_arc_midpoint_of_edge.emplace(edge_index, arc_mid());
       } else if (is_cap && has_notch_interior) {
         notched_edges_of_vertex_pair[plain_key].emplace_back(notched_mid, key);
       }
@@ -1223,7 +1373,8 @@ void BuildFaceLoop(ON_Brep& brep, ON_BrepFace& face, const FaceTopology& topo,
 
 Brep Brep::FromMixedFaces(const std::vector<Brep::PlanarFace>& faces,
                            const std::vector<Brep::CylindricalFace>& cylindrical_faces,
-                           const std::vector<Brep::ConicalFace>& conical_faces) {
+                           const std::vector<Brep::ConicalFace>& conical_faces,
+                           const std::vector<Brep::SphericalFace>& spherical_faces) {
   Brep result;
   ON_Brep& brep = result.brep_;
   VertexWelder welder;
@@ -1287,10 +1438,33 @@ Brep Brep::FromMixedFaces(const std::vector<Brep::PlanarFace>& faces,
     // rather than re-deriving either.
     FaceTopology t;
     t.vids.reserve(f.loop.size());
+    // Every notch run on this face - the legacy notch_begin/notch_count
+    // pair plus PlanarFace::notch_runs - as one sorted, non-overlapping
+    // set (see PlanarFace::notch_begin/notch_count's own doc comment for
+    // the collapse each run gets, and notch_runs' for why there can now
+    // be more than one). A single legacy run goes through EXACTLY the
+    // same collapse it always did.
+    std::vector<std::pair<int, int>> runs;
     if (f.notch_count > 1 && f.notch_begin >= 0 &&
         static_cast<size_t>(f.notch_begin + f.notch_count) <= f.loop.size()) {
+      runs.emplace_back(f.notch_begin, f.notch_count);
+    }
+    for (const std::pair<int, int>& r : f.notch_runs) {
+      if (r.second > 1 && r.first >= 0 && static_cast<size_t>(r.first + r.second) <= f.loop.size()) {
+        runs.push_back(r);
+      }
+    }
+    std::sort(runs.begin(), runs.end());
+    for (size_t r = 1; r < runs.size(); ++r) {
+      if (runs[r].first < runs[r - 1].first + runs[r - 1].second - 1) {
+        throw std::invalid_argument(
+            "dino8::kernel::Brep::FromMixedFaces: a PlanarFace's notch runs overlap - see "
+            "PlanarFace::notch_runs' own doc comment");
+      }
+    }
+    if (!runs.empty()) {
       // See PlanarFace::notch_begin/notch_count's own doc comment: collapse
-      // this run's own STRICTLY INTERIOR points out of the topology-only
+      // each run's own STRICTLY INTERIOR points out of the topology-only
       // vids/trim_uv (so the run becomes ONE loop segment, able to share
       // ONE real edge with the adjacent CylindricalFace's own cap - see
       // FromMixedFaces' own reordered Pass 3/4 below), while folding those
@@ -1299,14 +1473,19 @@ Brep Brep::FromMixedFaces(const std::vector<Brep::PlanarFace>& faces,
       // segment's own 2D trim curve as a dense polyline - the visible
       // boundary this face presents (face_trim_loops_ below, and hence
       // this kernel's own Tessellate()) is entirely untouched either way.
-      const int begin = f.notch_begin;
-      const int end = f.notch_begin + f.notch_count - 1;  // last run index, inclusive
+      std::vector<int> run_of(f.loop.size(), -1);
+      for (size_t r = 0; r < runs.size(); ++r) {
+        for (int idx = runs[r].first; idx < runs[r].first + runs[r].second; ++idx) run_of[static_cast<size_t>(idx)] = static_cast<int>(r);
+      }
       for (size_t k = 0; k < f.loop.size(); ++k) {
         const int ik = static_cast<int>(k);
-        if (ik > begin && ik < end) continue;  // strictly-interior notch point
+        const int r = run_of[k];
+        const int begin = r >= 0 ? runs[static_cast<size_t>(r)].first : -1;
+        const int end = r >= 0 ? runs[static_cast<size_t>(r)].first + runs[static_cast<size_t>(r)].second - 1 : -1;  // last run index, inclusive
+        if (r >= 0 && ik > begin && ik < end) continue;  // strictly-interior notch point
         t.vids.push_back(welder.Weld(f.loop[k]));
         t.trim_uv.push_back(trim[k]);
-        if (ik == begin) {
+        if (r >= 0 && ik == begin) {
           t.notch_interior_uv.emplace_back(trim.begin() + begin + 1, trim.begin() + end);
         } else {
           t.notch_interior_uv.emplace_back();
@@ -1904,6 +2083,142 @@ Brep Brep::FromMixedFaces(const std::vector<Brep::PlanarFace>& faces,
     t.notch_midpoint_3d.assign(4, Point3d());
     if (!cf.cap0_notch_points.empty()) t.notch_midpoint_3d[0] = NotchListMidpoint(cf.cap0_notch_points);
     if (!cf.cap1_notch_points.empty()) t.notch_midpoint_3d[2] = NotchListMidpoint(cf.cap1_notch_points);
+    topo.push_back(std::move(t));
+  }
+
+  for (const SphericalFace& sf : spherical_faces) {
+    // See SphericalFace's own doc comment for the exactness argument and
+    // the pole convention this implements.
+    if (!(sf.radius > 0.0)) {
+      throw std::invalid_argument("dino8::kernel::Brep::FromMixedFaces: SphericalFace::radius must be positive");
+    }
+    if (!(sf.angle > 0.0) || sf.angle > 2.0 * ON_PI + 1e-12) {
+      throw std::invalid_argument(
+          "dino8::kernel::Brep::FromMixedFaces: SphericalFace::angle must lie in (0, 2*pi]");
+    }
+    constexpr double kPoleTol = 1e-9;
+    if (!(sf.lat0 >= -0.5 * ON_PI - kPoleTol) || !(sf.lat1 <= 0.5 * ON_PI + kPoleTol) || !(sf.lat1 > sf.lat0 + kPoleTol)) {
+      throw std::invalid_argument(
+          "dino8::kernel::Brep::FromMixedFaces: SphericalFace latitudes must satisfy -pi/2 <= lat0 < lat1 <= pi/2");
+    }
+    const bool pole0 = std::fabs(sf.lat0 + 0.5 * ON_PI) <= kPoleTol;
+    const bool pole1 = std::fabs(sf.lat1 - 0.5 * ON_PI) <= kPoleTol;
+    if (pole0 && pole1) {
+      throw std::invalid_argument(
+          "dino8::kernel::Brep::FromMixedFaces: a SphericalFace spanning BOTH poles (a full meridian lune) is not a "
+          "blend patch this kernel builds - see SphericalFace's own doc comment");
+    }
+
+    ON_Sphere sphere;
+    sphere.plane = sf.frame;
+    sphere.radius = sf.radius;
+    auto* surface = new ON_NurbsSurface();
+    if (sphere.GetNurbForm(*surface) == 0) {
+      delete surface;
+      throw std::runtime_error(
+          "dino8::kernel::Brep::FromMixedFaces: ON_Sphere::GetNurbForm failed (invalid frame/radius)");
+    }
+    // u: ON_Sphere::GetNurbForm's u-knots are literally the base circle's
+    // (0, pi/2, pi, 3pi/2, 2pi - checked against the vendored source), so
+    // the same NURBS<->radian conversion the cylinder path uses is exact
+    // here. v: the meridian is the same 2-span quadrant-arc structure as a
+    // circle's [0, pi] half, with knots shifted by -pi/2 (-pi/2, 0, +pi/2),
+    // so v_nurbs(lat) = circle_param(lat + pi/2) - pi/2 - and both
+    // conversions are CHECKED below by evaluating the real surface at the
+    // resulting (u, v) corners against the closed-form 3D points.
+    const ON_Circle circle(sf.frame, sf.radius);
+    double u_max = 0.0;
+    if (!circle.GetNurbFormParameterFromRadian(sf.angle, &u_max)) {
+      delete surface;
+      throw std::invalid_argument(
+          "dino8::kernel::Brep::FromMixedFaces: SphericalFace::angle is out of ON_Circle's own NURBS domain");
+    }
+    auto v_of_lat = [&](double lat) {
+      const double clamped = std::max(-0.5 * ON_PI, std::min(0.5 * ON_PI, lat));
+      double t = 0.0;
+      if (!circle.GetNurbFormParameterFromRadian(clamped + 0.5 * ON_PI, &t)) {
+        throw std::invalid_argument(
+            "dino8::kernel::Brep::FromMixedFaces: SphericalFace latitude is out of the meridian's NURBS domain");
+      }
+      return t - 0.5 * ON_PI;
+    };
+    const double v0 = pole0 ? -0.5 * ON_PI : v_of_lat(sf.lat0);
+    const double v1 = pole1 ? 0.5 * ON_PI : v_of_lat(sf.lat1);
+    auto closed_form = [&](double phi, double lat) {
+      return sf.frame.origin +
+             sf.radius * (std::cos(lat) * (std::cos(phi) * sf.frame.xaxis + std::sin(phi) * sf.frame.yaxis) +
+                          std::sin(lat) * sf.frame.zaxis);
+    };
+    const int surface_index = brep.AddSurface(surface);
+    ON_BrepFace& face = brep.NewFace(surface_index);
+    // ON_Sphere::GetNurbForm's natural u_dir x v_dir at (0, 0) is
+    // (r*yaxis) x (r*zaxis) ~ +xaxis, the outward radial direction -
+    // so, exactly as for a CylindricalFace, `outward == false` flips it.
+    face.m_bRev = !sf.outward;
+
+    const std::vector<Point2d> trim = {Point2d(0.0, v0), Point2d(u_max, v0), Point2d(u_max, v1), Point2d(0.0, v1)};
+    const Point3d corner00 = surface->PointAt(0.0, v0);
+    const Point3d corner_u0 = surface->PointAt(u_max, v0);
+    const Point3d corner_u1 = surface->PointAt(u_max, v1);
+    const Point3d corner01 = surface->PointAt(0.0, v1);
+    // Checked invariant: the real surface at the converted (u, v) corners
+    // reproduces the closed-form points (proves both conversions above).
+    const double check_tol = std::max(1e-9, sf.radius * 1e-9);
+    if (corner00.DistanceTo(closed_form(0.0, sf.lat0)) > check_tol ||
+        corner_u0.DistanceTo(closed_form(sf.angle, sf.lat0)) > check_tol ||
+        corner_u1.DistanceTo(closed_form(sf.angle, sf.lat1)) > check_tol ||
+        corner01.DistanceTo(closed_form(0.0, sf.lat1)) > check_tol) {
+      throw std::runtime_error(
+          "dino8::kernel::Brep::FromMixedFaces: a SphericalFace's (u, v) corner does not evaluate to its own "
+          "closed-form point - the NURBS<->radian conversion is inconsistent; please report this as a bug");
+    }
+
+    result.face_trim_loops_.push_back(trim);
+    result.face_exact_clip_.push_back(true);
+    result.face_hole_loops_.emplace_back();
+    result.face_arc_runs_.emplace_back();
+    result.face_notch_rows_.emplace_back();
+    result.face_records_.emplace_back();
+    result.face_records_.back().kind = FaceRecord::kSpherical;
+    result.face_records_.back().sph = sf;
+
+    FaceTopology t;
+    t.trim_uv = trim;
+    t.vids = {welder.Weld(corner00), welder.Weld(corner_u0), welder.Weld(corner_u1), welder.Weld(corner01)};
+    t.curved_surface = surface;
+    t.curved_u_max = u_max;
+    t.curved_v0 = v0;
+    t.curved_length = v1 - v0;
+    t.segs.resize(4);
+    // segment 0: latitude arc at v0, u: 0 -> u_max (singular if lat0 is the south pole)
+    t.segs[0].iso_dir = 0;
+    t.segs[0].iso_const = v0;
+    t.segs[0].par_from = 0.0;
+    t.segs[0].par_to = u_max;
+    t.segs[0].singular = pole0;
+    t.segs[0].singular_iso = ON_Surface::S_iso;
+    // segment 1: meridian at u_max, v: v0 -> v1
+    t.segs[1].iso_dir = 1;
+    t.segs[1].iso_const = u_max;
+    t.segs[1].par_from = v0;
+    t.segs[1].par_to = v1;
+    // segment 2: latitude arc at v1, u: u_max -> 0 (singular if lat1 is the north pole)
+    t.segs[2].iso_dir = 0;
+    t.segs[2].iso_const = v1;
+    t.segs[2].par_from = u_max;
+    t.segs[2].par_to = 0.0;
+    t.segs[2].singular = pole1;
+    t.segs[2].singular_iso = ON_Surface::N_iso;
+    // segment 3: meridian at u = 0, v: v1 -> v0
+    t.segs[3].iso_dir = 1;
+    t.segs[3].iso_const = 0.0;
+    t.segs[3].par_from = v1;
+    t.segs[3].par_to = v0;
+    if ((pole0 && t.vids[0] != t.vids[1]) || (pole1 && t.vids[2] != t.vids[3])) {
+      throw std::runtime_error(
+          "dino8::kernel::Brep::FromMixedFaces: a SphericalFace's pole corners did not weld to one vertex - "
+          "please report this as a bug");
+    }
     topo.push_back(std::move(t));
   }
 

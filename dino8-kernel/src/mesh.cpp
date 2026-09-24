@@ -933,6 +933,33 @@ Mesh Mesh::MergeAndWeld(const std::vector<Mesh>& meshes, double tolerance) {
       remapped.vi[1] = remap[static_cast<size_t>(face.vi[1])];
       remapped.vi[2] = remap[static_cast<size_t>(face.vi[2])];
       remapped.vi[3] = remap[static_cast<size_t>(face.vi[3])];
+      // A face two (or more) of whose corners welded to the SAME vertex
+      // has zero 3D area and no well-defined edges - the triangles a grid
+      // tessellator emits along a surface's own collapsed side (a
+      // sphere's poles, a SphericalFace vertex blend's pole corner). Such
+      // a face contributes nothing to Volume()/Area() but poisons
+      // IsClosedManifold() (its collapsed edge is walked twice by one
+      // face) and Manifold's own input validation, so it is dropped here
+      // - a quad with exactly one collapsed corner is kept as the
+      // triangle it really is. Faces with four distinct corners, and
+      // triangles (vi[3] == vi[2] by ON_Mesh convention) with three
+      // distinct corners, are appended exactly as before.
+      int distinct[4];
+      int n_distinct = 0;
+      const int n_in = face.IsQuad() ? 4 : 3;
+      for (int c = 0; c < n_in; ++c) {
+        const int v = remapped.vi[c];
+        bool seen = false;
+        for (int d = 0; d < n_distinct; ++d) seen = seen || distinct[d] == v;
+        if (!seen) distinct[n_distinct++] = v;
+      }
+      if (n_distinct < 3) continue;
+      if (n_distinct == 3) {
+        remapped.vi[0] = distinct[0];
+        remapped.vi[1] = distinct[1];
+        remapped.vi[2] = distinct[2];
+        remapped.vi[3] = distinct[2];
+      }
       out.m_F.Append(remapped);
     }
   }
