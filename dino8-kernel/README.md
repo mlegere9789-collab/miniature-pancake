@@ -728,6 +728,31 @@ What this repo does instead:
   with normals set, plus explicit rejection tests for a nonexistent file,
   a file mixing 3- and 6-column lines, a line with a column count that's
   neither, a non-numeric token, and a file with zero points.
+- `Mesh::SavePly()`/`LoadPly()` close a real gap: this kernel had zero PLY
+  (Stanford Polygon) code at all before this - no export, no import,
+  despite PLY being a real, commonly-used mesh interchange format
+  alongside `.obj`/`.stl`. Writes ASCII PLY only (binary
+  `binary_little_endian`/`binary_big_endian` PLY is a disclosed,
+  out-of-scope gap - `LoadPly()` rejects a binary-format header outright
+  rather than misreading it, the same honest treatment this codebase
+  already gives Parasolid/ACIS licensing). Unlike `.stl`, PLY's face
+  element is a genuine variable-length list, so a quad face is written as
+  one native 4-index face, not split into two triangles. `LoadPly()`
+  parses the header's own declared property list by name rather than
+  assuming a fixed column order - tolerating extra properties this kernel
+  doesn't use (e.g. color) - and reads normals but discards them (same
+  "always geometry-derived" convention `LoadObj()`'s `vn` already has,
+  since this kernel's `Mesh` has nowhere to store an independent
+  per-vertex normal). Verified with a real round trip: reopened
+  `SavePly()`'s own output and checked the header's `element vertex`/
+  `element face` counts, confirmed the face element declares a genuine
+  `property list` (not a fixed-size property), confirmed a quad face
+  survived as a single 4-corner line, then `LoadPly()`'d it back and
+  checked vertex/face counts and volume all exactly match the original -
+  plus a separate round trip with texture coordinates set, and explicit
+  rejection tests for a binary-format header, a vertex element missing
+  `z`, a face line with the wrong corner count, and an out-of-range face
+  index.
 - `Brep::GetTightBoundingBox()` closes a real gap: nothing here could
   answer "roughly how big/where is this Brep" without tessellating it
   first, and even then Mesh::GetBoundingBox() only sees a tessellation's
@@ -2151,6 +2176,146 @@ What this repo does instead:
     outward orientation, so the wall's u may run opposite to the input
     curve (the closed-loft test matches section corners as a set for
     that reason).
+- `SubD::SetEdgeSharpness(p0, p1, sharpness, point_tolerance)`: real
+  Pixar/OpenSubdiv-style semi-sharp (variable-weight) creasing, closing a
+  gap `FromControlMesh()`'s own `crease_at_double_edges` parameter left
+  open since it landed - that flag only ever gives a binary sharp/smooth
+  split (a permanent `ON_SubDEdgeTag::Crease`), with no way to dial in
+  anything between "fully smooth" and "fully creased," and no way to
+  crease an edge at all without the mesh-double-edge topology trick.
+  OpenNURBS' own model for this turned out to already exist and be real,
+  not a stub - found by reading, not assumed: `ON_SubDEdge::m_sharpness`
+  (`ON_SubDEdgeSharpness`, range `[0, MaximumValue=4]`) is genuinely
+  consumed by `ON_SubDimple::GlobalSubdivide()` (it reads
+  `e0->IsSharp()`/`e0->Sharpness(false)` and calls `.Subdivided(0/1)` on
+  each child edge, both read directly in `opennurbs_subd.cpp`) and by the
+  regular-patch evaluator in `opennurbs_subd_limit.cpp` (branches on
+  `ON_SubDEdge::IsSharp()` / `ON_SubDVertex::VertexSharpness()` to blend
+  face/edge/vertex points toward crease behavior) - the same "declared in
+  the public header, actually implemented" pattern this file's SubD
+  entries already document for `LimitPoints()`, as opposed to the
+  `BrepForm()`/`CreaseEdgeCount()` stubs. The convenience wrapper the
+  class comment for those methods once pointed to (`ON_SubD::
+  SetEdgeSharpness()`) turned out to be the *unimplemented* one this
+  time - grepped across the whole v8.34 source tree, it doesn't exist
+  anywhere outside a doc comment - so this method instead calls the same
+  low-level primitive OpenNURBS' own `AddEdge(..., ON_SubDEdgeSharpness)`
+  overloads call on a freshly-built edge
+  (`ON_SubDEdge::SetSharpnessForExperts`), applied here to an edge found
+  via the ordinary const `FindVertex`/`FindEdge` accessors (a `const_cast`
+  is required to call it, since those accessors are const - safe because
+  the call writes exactly one field with no other cached state to
+  invalidate, verified by reading `SetSharpnessForExperts`'s own three-line
+  body, and because `ON_SubD`'s copy constructor deep-copies its
+  `ON_SubDimple` rather than sharing it, so a fresh `SubD::FromControlMesh()`
+  result is never aliased with another live `ON_SubD`). Refuses (returns
+  `false`, no change made) rather than silently no-op'ing for an
+  out-of-range weight, an edge that doesn't exist between the given
+  points, or an edge that's already a hard crease (sharpness is
+  meaningless there in OpenNURBS' own model). Verified three ways, not
+  just read: (1) exact bookkeeping - a 2.5 weight reads back as exactly
+  2.5 via `EndSharpness()`, `Subdivided()` subtracts exactly 1.0, and a
+  real `Subdivide(1)` call leaves exactly the fold's 2 child edges
+  (and no others) reporting `IsSharp()` at exactly the decayed 1.5; (2) a
+  `MaximumValue`-weight edge produces the identical exact straight-fold
+  subdivision point `TestSubDCreaseAtDoubleEdgeKeepsFoldStraight()`
+  already proved for a real hard crease, on the same hinge fixture, while
+  an untouched control SubD still rounds the same fold off; (3) the
+  refusal cases leave the SubD provably unchanged (a hard crease's
+  `CreaseEdgeCount()` unaffected by the refused call). One honestly-
+  scoped limitation: this exposes one constant weight per edge; OpenNURBS
+  also supports a per-end-variable sharpness (linearly interpolated along
+  the edge, decaying differently at each end), which this wrapper doesn't
+  expose - a caller needing that must use `raw()` directly.
+- `SubD::SetCrease(p0, p1, crease, point_tolerance)`: retags an existing
+  edge Crease or back to Smooth after construction - closing PARITY_MAP.md's
+  subd_mesh-category "Crease tagging / un-tagging as a kernel operation"
+  [missing] item directly (kernel::SubD had no `SetCrease`/`ClearCrease`
+  at all; the app's `SubDCrease` command edited `ON_SubDEdge` tags
+  directly, bypassing this wrapper entirely). Unlike `SetEdgeSharpness()`
+  just above - which needs a `const_cast` onto a low-level "for experts"
+  primitive because OpenNURBS' own convenience wrapper for THAT is
+  unimplemented - this delegates to a genuinely public, fully-implemented
+  `ON_SubD::SetEdgeTags()`, verified by reading its body in
+  `opennurbs_subd.cpp` rather than trusting the name: it does real work
+  beyond the one edge's own tag, reclassifying both endpoint vertices
+  (Smooth/Dart/Crease/Corner, recomputed from their new incident-crease
+  count), clearing any leftover `SetEdgeSharpness()` weight on either
+  transition, and invalidating cached evaluation state - bookkeeping a
+  caller hand-editing `raw()` would otherwise have to reproduce itself.
+  Verified geometrically, not just by reading: `SetCrease(true)` on the
+  hinge fixture's smooth fold edge produces the bit-identical straight-
+  line subdivision point at (0.5, 0, 0) that both a construction-time
+  `crease_at_double_edges=true` crease and a `SetEdgeSharpness`-at-
+  `MaximumValue` semi-sharp edge already independently proved above -
+  three different mechanisms, same underlying OpenNURBS crease math, same
+  measured result. Returns `false` (a real no-op, not an error) for a
+  point pair with no matching edge or an edge that already carries the
+  requested tag, matching `ON_SubD::SetEdgeTags`'s own 0-changed
+  convention.
+- `SubD::IsValid()`: the SubD-level counterpart to `Mesh::
+  IsClosedManifold()`, closing PARITY_MAP.md's subd_mesh "SubD non-
+  manifold / multi-body validity checks" [missing] item (this class had
+  no `Check()`/`IsValid()` at all - a caller could only discover a broken
+  SubD the hard way, whatever `ON_SubD` happened to do internally).
+  Delegates to the real, non-stub `ON_SubD::IsValid()`, verified by
+  reading its implementation: it walks every level's vertices, edges and
+  faces checking cross-reference and tag consistency, a genuine
+  structural check. The one subtlety worth documenting: it's called with
+  OpenNURBS' own sentinel (`(ON_TextLog*)1`, low bit set, never
+  dereferenced - `ON_SubD::IsValid` masks that bit off again before
+  touching it, read directly in `opennurbs_subd.cpp`) rather than
+  `nullptr`, because a bare `nullptr` does NOT suppress `ON_SubD::
+  IsValid()`'s own `ON_Error()` call on failure - only the sentinel does.
+  Skipping that would have meant every legitimate "no" (e.g. checking a
+  SubD mid-edit) spammed OpenNURBS' global error log as a side effect of
+  asking a yes/no question. Verified both ways: a default-constructed
+  (never built) `SubD` - the simplest genuinely-invalid case, no hand-
+  corruption of `raw()` needed - reports `false`, and a real
+  `FromControlMesh()` result reports `true` and stays `true` through
+  actual `Subdivide()` calls.
+- Verified (not a code change): PARITY_MAP.md's subd_mesh category listed
+  "Mesh <-> SubD round trip fidelity (density-preserving)" as only
+  [partial] - `FromControlMesh()` and `ToApproximateMesh()` both existed,
+  but nothing had ever checked the round trip was actually density-
+  preserving. It is, at level 0 (no `Subdivide()` call - `ToApproximateMesh()`
+  just re-extracts the still-unrefined control net): confirmed directly,
+  with a throwaway `tests/scratch_test.cpp` program before writing the
+  permanent regression test, that a triangulated closed box round-trips
+  through `SubD::FromControlMesh()` -> `ToApproximateMesh()` with its
+  exact 8-vertex/12-face count, every vertex position exactly preserved,
+  identical volume (winding preserved, not just positions), and stays a
+  closed manifold - and that a genuinely QUAD mesh (SubD's natural face
+  type, not something this kernel's other tessellators produce) round-
+  trips with its faces still genuine quads, not silently re-triangulated.
+  Both are now permanent regression tests
+  (`TestSubDMeshRoundTripIsExactAtLevelZero`), so this is a corrected,
+  verified claim rather than an assumed one.
+- `Mesh::CheckReport::duplicate_faces` + `Mesh::RemoveDuplicateFaces()`:
+  the fifth `Check()`/repair pair, closing a real gap `degenerate_faces`/
+  `RemoveDegenerateFaces()` didn't cover - two perfectly valid, non-
+  degenerate faces sitting exactly on top of each other (the same
+  vertex indices, in the same cyclic order or its exact reverse - a
+  common "import appended the same geometry twice" defect), which a
+  per-face degeneracy test alone can never catch, since each one, taken
+  alone, is a fine triangle. Identity is computed as the lexicographically
+  smallest of a face's 2n rotations (n forward + n reversed, n = 3 or 4)
+  - winding-direction-agnostic and rotation-agnostic, so a triangle, its
+  same-winding rotated repeat, AND its opposite-winding repeat are all
+  correctly recognized as the same polygon, not just an exact index-array
+  match. `RemoveDuplicateFaces()` keeps the first occurrence (in face-array
+  order) and drops every later duplicate, reusing the same
+  `CompactUnusedVertices()` helper the degenerate-face repair already
+  uses. Distinct from `duplicate_vertices`: two faces built from
+  different vertex INDICES that happen to sit at the same 3D position is
+  a `CloseNakedEdges()` problem, not this one - `duplicate_faces` is
+  about index-identical polygons, not merely coincident ones. Verified
+  with a fixture carrying one triangle repeated 3 ways (an index-order
+  repeat, a rotated repeat, an opposite-winding repeat) alongside one
+  genuinely distinct triangle: `Check()` counts exactly 2 duplicates (not
+  3 - the first occurrence is the baseline, not a duplicate of itself),
+  `RemoveDuplicateFaces()` removes exactly those 2, and the survivor is
+  provably the first occurrence, not an arbitrary one.
 
 ## Blending build log (Parasolid "blend/chamfer" class, chronological)
 
@@ -3085,8 +3250,12 @@ honestly out of scope.
   coordinates too (see below) - but still no materials or groups, and
   `LoadObj()` still only reads `v`/`vt`/`f` lines (`vn` is read but
   discarded, since normals here are always geometry-derived). `.stl` now
-  round-trips both ASCII and binary STL (see below). `.obj`/`.stl` are
-  still the only formats here - no glTF, FBX, etc.
+  round-trips both ASCII and binary STL (see below). `.ply` (ASCII only -
+  binary PLY is a disclosed, out-of-scope gap, see below) now round-trips
+  geometry, normals, and texture coordinates too, and - unlike `.stl` -
+  writes a genuine quad face as one native PLY face rather than splitting
+  it into two triangles. `.obj`/`.stl`/`.ply` are still the only formats
+  here - no glTF, FBX, etc.
 - Adaptive/curvature-aware meshing: this gap now has two real layers.
   `NurbsSurface::CurvatureAt()`, `NurbsCurve::SuggestedSamples()`,
   `NurbsSurface::SuggestedDivisions()`, and the uniform-division

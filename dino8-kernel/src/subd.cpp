@@ -44,6 +44,15 @@ int SubD::FaceCount() const { return static_cast<int>(subd_.FaceCount()); }
 int SubD::VertexCount() const { return static_cast<int>(subd_.VertexCount()); }
 int SubD::EdgeCount() const { return static_cast<int>(subd_.EdgeCount()); }
 
+bool SubD::IsValid() const {
+  // Low bit set -> ON_SubD::IsValid() suppresses its own ON_Error() call
+  // on failure (masked off again before use - never actually
+  // dereferenced as a real ON_TextLog*, see this method's own header
+  // comment). This is a validity check, not an assertion, so a "no"
+  // answer must never have that side effect.
+  return subd_.IsValid(reinterpret_cast<ON_TextLog*>(1));
+}
+
 int SubD::CreaseEdgeCount() const {
   int count = 0;
   ON_SubDEdgeIterator eit = subd_.EdgeIterator();
@@ -53,6 +62,46 @@ int SubD::CreaseEdgeCount() const {
     }
   }
   return count;
+}
+
+bool SubD::SetEdgeSharpness(const Point3d& p0, const Point3d& p1, double sharpness,
+                            double point_tolerance) {
+  if (!(sharpness >= 0.0) || sharpness > ON_SubDEdgeSharpness::MaximumValue) {
+    return false;
+  }
+  const ON_SubDVertex* v0 = subd_.FindVertex(&p0.x, point_tolerance);
+  const ON_SubDVertex* v1 = subd_.FindVertex(&p1.x, point_tolerance);
+  if (v0 == nullptr || v1 == nullptr) {
+    return false;
+  }
+  const ON_SubDEdge* e = subd_.FindEdge(v0, v1).Edge();
+  if (e == nullptr || !e->IsSmooth()) {
+    return false;
+  }
+  // SetSharpnessForExperts is the same primitive OpenNURBS' own
+  // ON_SubD::AddEdge(..., ON_SubDEdgeSharpness) overloads call on a
+  // freshly-created edge - here applied to an existing one found via the
+  // const FindVertex/FindEdge accessors, which is why the const_cast: it
+  // just writes one field (ON_SubDEdge::m_sharpness), verified by reading
+  // its implementation, with no other cached state to invalidate.
+  const_cast<ON_SubDEdge*>(e)->SetSharpnessForExperts(ON_SubDEdgeSharpness::FromConstant(sharpness));
+  return true;
+}
+
+bool SubD::SetCrease(const Point3d& p0, const Point3d& p1, bool crease, double point_tolerance) {
+  const ON_SubDVertex* v0 = subd_.FindVertex(&p0.x, point_tolerance);
+  const ON_SubDVertex* v1 = subd_.FindVertex(&p1.x, point_tolerance);
+  if (v0 == nullptr || v1 == nullptr) {
+    return false;
+  }
+  const ON_SubDEdge* e = subd_.FindEdge(v0, v1).Edge();
+  if (e == nullptr) {
+    return false;
+  }
+  const ON_SubDComponentPtr cptr = ON_SubDComponentPtr::Create(e);
+  const unsigned int changed = subd_.SetEdgeTags(
+      &cptr, 1, crease ? ON_SubDEdgeTag::Crease : ON_SubDEdgeTag::Smooth);
+  return changed == 1;
 }
 
 std::vector<SubDLimitPoint> SubD::LimitPoints() const {

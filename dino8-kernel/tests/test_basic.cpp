@@ -6790,6 +6790,120 @@ void TestMeshCloseNakedEdgesWeldsDuplicateAndOffsetVertices() {
   }
 }
 
+// Mesh-level RemoveDegenerateFaces(): three faces, each degenerate for a
+// DIFFERENT one of Check()'s own reasons (repeated vertex index, a
+// zero-length edge between two coincident-but-distinct vertices, and a
+// zero-height collinear triangle), each touching its own private
+// vertices not shared with anything else, alongside one genuinely valid
+// triangle. All hand-derived, not read back: removing the 3 degenerate
+// faces should also drop the 6 vertices only they referenced (3 stay:
+// the valid triangle's own), and leave the valid triangle untouched.
+void TestMeshRemoveDegenerateFacesDropsOnlyDegenerateOnes() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  namespace tol = dino8::kernel::tolerance;
+
+  Mesh clean_box = Brep::Box(1, 1, 1, 2, 2, 2).TessellateToClosedMesh(1, 1);
+  Check(clean_box.RemoveDegenerateFaces(tol::kDistance) == 0 && clean_box.FaceCount() == 12 &&
+            clean_box.VertexCount() == 8,
+        "RemoveDegenerateFaces() on an already-clean mesh removes nothing and leaves it untouched");
+
+  Mesh m;
+  ON_Mesh& raw = m.raw();
+  raw.m_V.Append(ON_3fPoint(0, 0, 0));   // 0: valid triangle
+  raw.m_V.Append(ON_3fPoint(1, 0, 0));   // 1: valid triangle
+  raw.m_V.Append(ON_3fPoint(0, 1, 0));   // 2: valid triangle
+  raw.m_V.Append(ON_3fPoint(5, 5, 5));   // 3: only the repeated-index face
+  raw.m_V.Append(ON_3fPoint(10, 10, 10));  // 4: collinear face
+  raw.m_V.Append(ON_3fPoint(11, 10, 10));  // 5: collinear face
+  raw.m_V.Append(ON_3fPoint(12, 10, 10));  // 6: collinear face
+  raw.m_V.Append(ON_3fPoint(20, 20, 20));  // 7: short-edge face
+  raw.m_V.Append(ON_3fPoint(20, 20, 20));  // 8: short-edge face (coincident with 7, distinct index)
+  raw.m_V.Append(ON_3fPoint(21, 20, 20));  // 9: short-edge face
+  auto add_tri = [&](int a, int b, int c) {
+    ON_MeshFace f;
+    f.vi[0] = a;
+    f.vi[1] = b;
+    f.vi[2] = c;
+    f.vi[3] = c;
+    raw.m_F.Append(f);
+  };
+  add_tri(0, 1, 2);  // valid: a real right triangle
+  add_tri(0, 0, 3);  // degenerate: repeated index (vi[0] == vi[1])
+  add_tri(4, 5, 6);  // degenerate: exactly collinear, zero height
+  add_tri(7, 8, 9);  // degenerate: vertices 7 and 8 coincide, zero-length edge
+
+  const Mesh::CheckReport before = m.Check(tol::kDistance);
+  Check(before.degenerate_faces == 3, "Check() counts all 3 degenerate faces (one per distinct reason)");
+
+  Check(m.RemoveDegenerateFaces(tol::kDistance) == 3, "RemoveDegenerateFaces() removes exactly those 3 faces");
+  Check(m.FaceCount() == 1, "only the one valid triangle survives");
+  Check(m.VertexCount() == 3, "the 6 vertices used only by degenerate faces are dropped along with them");
+  Check(m.Check(tol::kDistance).degenerate_faces == 0, "no degenerate faces remain, by Check()'s own count");
+  Check(m.RemoveDegenerateFaces(tol::kDistance) == 0, "a second call is a no-op - nothing left to remove");
+
+  // The surviving triangle is exactly the original valid one, not some
+  // other combination - its 3 vertices are still at their original
+  // positions.
+  const ON_MeshFace& f = m.raw().m_F[0];
+  Check(ON_3dPoint(m.raw().m_V[f.vi[0]]) == ON_3dPoint(0, 0, 0) &&
+            ON_3dPoint(m.raw().m_V[f.vi[1]]) == ON_3dPoint(1, 0, 0) &&
+            ON_3dPoint(m.raw().m_V[f.vi[2]]) == ON_3dPoint(0, 1, 0),
+        "the surviving face is the original (0,0,0)-(1,0,0)-(0,1,0) triangle, reindexed but not moved");
+}
+
+// Mesh-level RemoveDuplicateFaces(): a triangle repeated 3 ways (an exact
+// index-order repeat, a rotated-index repeat, and an opposite-winding
+// repeat) - all 3 are the SAME polygon and must all count as duplicates
+// of whichever came first - alongside one genuinely distinct triangle
+// that must survive untouched. Also confirms duplicate_faces is
+// independent of degenerate_faces: every face here is individually a
+// perfectly valid, non-degenerate triangle.
+void TestMeshRemoveDuplicateFacesKeepsOneCopyPerPolygon() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+
+  Mesh clean_box = Brep::Box(1, 1, 1, 2, 2, 2).TessellateToClosedMesh(1, 1);
+  Check(clean_box.Check().duplicate_faces == 0 && clean_box.RemoveDuplicateFaces() == 0 &&
+            clean_box.FaceCount() == 12,
+        "a clean mesh has no duplicate faces and RemoveDuplicateFaces() leaves it untouched");
+
+  Mesh m;
+  ON_Mesh& raw = m.raw();
+  raw.m_V.Append(ON_3fPoint(0, 0, 0));  // 0
+  raw.m_V.Append(ON_3fPoint(1, 0, 0));  // 1
+  raw.m_V.Append(ON_3fPoint(0, 1, 0));  // 2
+  raw.m_V.Append(ON_3fPoint(5, 5, 5));  // 3
+  raw.m_V.Append(ON_3fPoint(6, 5, 5));  // 4
+  raw.m_V.Append(ON_3fPoint(5, 6, 5));  // 5
+  auto add_tri = [&](int a, int b, int c) {
+    ON_MeshFace f;
+    f.vi[0] = a;
+    f.vi[1] = b;
+    f.vi[2] = c;
+    f.vi[3] = c;
+    raw.m_F.Append(f);
+  };
+  add_tri(0, 1, 2);  // the original
+  add_tri(3, 4, 5);  // a genuinely distinct triangle
+  add_tri(1, 2, 0);  // duplicate: same winding, rotated start
+  add_tri(2, 1, 0);  // duplicate: exact reverse winding
+
+  const Mesh::CheckReport before = m.Check();
+  Check(before.duplicate_faces == 2, "Check() counts exactly 2 duplicates of the (0,1,2) triangle");
+  Check(before.degenerate_faces == 0, "...and none of the 4 faces are individually degenerate");
+
+  Check(m.RemoveDuplicateFaces() == 2, "RemoveDuplicateFaces() removes exactly those 2 later duplicates");
+  Check(m.FaceCount() == 2, "the original (0,1,2) and the distinct (3,4,5) triangle both survive");
+  Check(m.VertexCount() == 6, "no vertex is dropped - every one is still used by a surviving face");
+  Check(m.Check().duplicate_faces == 0, "no duplicates remain, by Check()'s own count");
+  Check(m.RemoveDuplicateFaces() == 0, "a second call is a no-op");
+
+  const ON_MeshFace& f0 = m.raw().m_F[0];
+  Check(f0.vi[0] == 0 && f0.vi[1] == 1 && f0.vi[2] == 2,
+        "the SURVIVING copy is the first occurrence (0,1,2), not one of the later duplicates");
+}
+
 void TestLoftClosedRingsConcaveEndCapsExactPrismVolume() {
   using dino8::kernel::BooleanCombine;
   using dino8::kernel::BooleanOp;
@@ -8211,6 +8325,260 @@ void TestSubDCreaseAtDoubleEdgeKeepsFoldStraight() {
         "proving the crease flag does something real, not a no-op");
 }
 
+// SubD::IsValid(): a genuinely built SubD passes, a default-constructed
+// (never built) one - the simplest way to get an ON_SubD OpenNURBS
+// itself calls structurally invalid, no hand-corruption required - does
+// not, and it stays valid through real subdivision.
+void TestSubDIsValid() {
+  using dino8::kernel::SubD;
+
+  SubD empty;
+  Check(!empty.IsValid(), "a default-constructed SubD (no levels at all) is not valid");
+
+  auto hinge = SubD::FromControlMesh(MakeHingedDoubleEdgeMesh(), /*crease_at_double_edges=*/false);
+  Check(hinge.IsValid(), "a SubD built by FromControlMesh() is valid");
+  hinge.Subdivide(2);
+  Check(hinge.IsValid(), "...and stays valid after real subdivision");
+}
+
+// PARITY_MAP.md's subd_mesh category lists "Mesh <-> SubD round trip
+// fidelity (density-preserving)" as only [partial]: FromControlMesh()
+// and ToApproximateMesh() both exist, but nothing had ever verified the
+// round trip is actually density-preserving. Verified here directly, not
+// assumed: a mesh -> SubD::FromControlMesh() -> ToApproximateMesh()
+// round trip AT LEVEL 0 (no Subdivide() call - ToApproximateMesh() just
+// re-extracts the still-unrefined control net) must recover exactly the
+// input's own vertex/face count, positions, winding and topology, for
+// both an already-triangulated mesh and a genuinely quad mesh (SubD's
+// natural representation - a real test that ToApproximateMesh() doesn't
+// silently re-triangulate quads it didn't need to).
+void TestSubDMeshRoundTripIsExactAtLevelZero() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SubD;
+
+  // Triangulated closed box.
+  {
+    const Mesh box = Brep::Box(1, 1, 1, 2, 2, 2).TessellateToClosedMesh(1, 1);
+    const Mesh back = SubD::FromControlMesh(box, false).ToApproximateMesh();
+    Check(back.VertexCount() == box.VertexCount() && back.FaceCount() == box.FaceCount(),
+          "a level-0 SubD round trip of a triangulated box recovers the exact "
+          "8-vertex/12-face count, not a re-triangulated or re-tessellated count");
+    Check(back.IsClosedManifold(), "...and the round-tripped mesh is still a closed manifold");
+    Check(std::fabs(back.Volume() - box.Volume()) < 1e-9,
+          "...with the exact same volume (winding preserved, not just vertex positions)");
+    int matched = 0;
+    for (int i = 0; i < box.raw().m_V.Count(); ++i) {
+      const Point3d p(box.raw().m_V[i]);
+      for (int j = 0; j < back.raw().m_V.Count(); ++j) {
+        if (p.DistanceTo(Point3d(back.raw().m_V[j])) < 1e-9) {
+          ++matched;
+          break;
+        }
+      }
+    }
+    Check(matched == box.VertexCount(),
+          "every one of the input box's 8 vertex positions survives the round trip exactly");
+  }
+
+  // A genuine 2x2 quad grid (not triangulated) - SubD's natural face type.
+  {
+    Mesh grid;
+    ON_Mesh& raw = grid.raw();
+    for (int j = 0; j <= 2; ++j) {
+      for (int i = 0; i <= 2; ++i) raw.m_V.Append(ON_3fPoint(static_cast<float>(i), static_cast<float>(j), 0.0f));
+    }
+    const auto idx = [](int i, int j) { return j * 3 + i; };
+    for (int j = 0; j < 2; ++j) {
+      for (int i = 0; i < 2; ++i) {
+        ON_MeshFace f;
+        f.vi[0] = idx(i, j);
+        f.vi[1] = idx(i + 1, j);
+        f.vi[2] = idx(i + 1, j + 1);
+        f.vi[3] = idx(i, j + 1);
+        raw.m_F.Append(f);
+      }
+    }
+    Check(grid.VertexCount() == 9 && grid.FaceCount() == 4, "the quad grid fixture is 9 vertices / 4 quad faces");
+
+    const Mesh back = SubD::FromControlMesh(grid, false).ToApproximateMesh();
+    Check(back.VertexCount() == 9 && back.FaceCount() == 4,
+          "the level-0 round trip of a quad mesh recovers the same 9-vertex/4-face count");
+    bool all_quads = true;
+    for (int i = 0; i < back.raw().m_F.Count(); ++i) all_quads = all_quads && back.raw().m_F[i].IsQuad();
+    Check(all_quads, "...and every round-tripped face is still a genuine quad, not split into triangles");
+  }
+}
+
+void TestSubDSetEdgeSharpnessCreatesRealSemiSharpCrease() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SubD;
+
+  const Point3d fold_a(0, 0, 0);
+  const Point3d fold_b(1, 0, 0);
+  const double kMax = ON_SubDEdgeSharpness::MaximumValue;  // 4.0, per OpenNURBS
+
+  // --- Rejection cases: SetEdgeSharpness must refuse, not silently no-op. ---
+  {
+    auto subd = SubD::FromControlMesh(MakeHingedDoubleEdgeMesh(), /*crease_at_double_edges=*/false);
+    Check(!subd.SetEdgeSharpness(fold_a, fold_b, -0.5, 1e-9),
+          "SetEdgeSharpness refuses a negative sharpness");
+    Check(!subd.SetEdgeSharpness(fold_a, fold_b, kMax + 1.0, 1e-9),
+          "SetEdgeSharpness refuses a sharpness above ON_SubDEdgeSharpness::MaximumValue");
+    Check(!subd.SetEdgeSharpness(Point3d(9, 9, 9), Point3d(9, 9, 8), 2.0, 1e-9),
+          "SetEdgeSharpness refuses when no vertex exists at the given points");
+
+    // A real (double-edge) hard crease can't take a sharpness value -
+    // OpenNURBS' own ON_SubDEdge::SetSharpnessForExperts defines
+    // sharpness as meaningless there, and this wrapper refuses outright
+    // instead of pretending it worked.
+    auto creased = SubD::FromControlMesh(MakeHingedDoubleEdgeMesh(), /*crease_at_double_edges=*/true);
+    Check(!creased.SetEdgeSharpness(fold_a, fold_b, 2.0, 1e-9),
+          "SetEdgeSharpness refuses an edge that is already a hard Crease");
+    Check(creased.CreaseEdgeCount() == 7,
+          "the refused call left the hard-crease SubD's crease count unchanged");
+  }
+
+  // --- Exact bookkeeping: the stored value, decay arithmetic, and tag
+  // stay exactly what OpenNURBS' own primitives compute - read back via
+  // raw(), not inferred. ---
+  {
+    auto subd = SubD::FromControlMesh(MakeHingedDoubleEdgeMesh(), /*crease_at_double_edges=*/false);
+    Check(subd.SetEdgeSharpness(fold_a, fold_b, 2.5, 1e-9),
+          "SetEdgeSharpness accepts a genuinely fractional ('semi-sharp') weight "
+          "on an ordinary smooth edge");
+
+    const ON_SubDVertex* v0 = subd.raw().FindVertex(&fold_a.x, 1e-9);
+    const ON_SubDVertex* v1 = subd.raw().FindVertex(&fold_b.x, 1e-9);
+    const ON_SubDEdge* e = subd.raw().FindEdge(v0, v1).Edge();
+    Check(e != nullptr && e->IsSmooth() && !e->IsCrease(),
+          "the sharp fold edge keeps its Smooth edge TAG - sharpness is a "
+          "distinct property, not a disguised crease tag");
+    Check(e->IsSharp(), "the fold edge now reports IsSharp() true");
+    Check(e->EndSharpness(0u) == 2.5 && e->EndSharpness(1u) == 2.5,
+          "both ends store exactly the constant weight passed in, read back "
+          "via ON_SubDEdge::EndSharpness - not approximated");
+
+    // ON_SubDEdge::Subdivided() is the exact primitive
+    // ON_SubDimple::GlobalSubdivide() itself calls to compute a child
+    // edge's sharpness (verified by reading opennurbs_subd.cpp's
+    // GlobalSubdivide implementation) - subtracting 1.0 per level. Check
+    // its output directly, deterministic and exact for these inputs.
+    const ON_SubDEdgeSharpness subdivided = e->Sharpness(false).Subdivided(0);
+    Check(subdivided.EndSharpness(0) == 1.5 && subdivided.EndSharpness(1) == 1.5,
+          "one level of decay subtracts exactly 1.0 from a 2.5 weight, per "
+          "ON_SubDEdgeSharpness::Subdivided() - real relaxation math, not a "
+          "permanent crease");
+
+    // Exercise the real Subdivide() pipeline (not just the isolated
+    // Subdivided() function) and confirm the decay actually happened:
+    // the fold's two child edges must both still be sharp (2.5 - 1 = 1.5
+    // > 0) but the edge count with IsSharp() must be exactly the fold's
+    // own 2 children - no other edge in this mesh was ever marked sharp.
+    subd.Subdivide(1);
+    int sharp_edge_count = 0;
+    ON_SubDEdgeIterator eit = subd.raw().EdgeIterator();
+    for (const ON_SubDEdge* e1 = eit.FirstEdge(); e1 != nullptr; e1 = eit.NextEdge()) {
+      if (e1->IsSharp()) {
+        Check(e1->EndSharpness(0u) == 1.5 && e1->EndSharpness(1u) == 1.5,
+              "each child edge of the sharp fold decayed by exactly 1.0, "
+              "matching the isolated Subdivided() computation above");
+        ++sharp_edge_count;
+      }
+    }
+    Check(sharp_edge_count == 2,
+          "exactly the fold's 2 child edges (from splitting the 1 sharp "
+          "parent edge) are sharp after one real Subdivide() - decay is "
+          "real, localized, and not silently dropped or duplicated");
+  }
+
+  // --- Geometric proof: a MaximumValue-weight sharp edge produces the
+  // identical straight-fold subdivision point a real hard crease does,
+  // for the level it hasn't decayed past yet - same check
+  // TestSubDCreaseAtDoubleEdgeKeepsFoldStraight() already uses for an
+  // actual Crease-tagged edge, applied here to a Smooth-tagged one whose
+  // sharpness alone does the work. ---
+  {
+    auto sharp = SubD::FromControlMesh(MakeHingedDoubleEdgeMesh(), /*crease_at_double_edges=*/false);
+    Check(sharp.SetEdgeSharpness(fold_a, fold_b, kMax, 1e-9),
+          "SetEdgeSharpness accepts the maximum in-range weight");
+    auto plain = SubD::FromControlMesh(MakeHingedDoubleEdgeMesh(), /*crease_at_double_edges=*/false);
+
+    sharp.Subdivide(1);
+    plain.Subdivide(1);
+
+    auto closest_to_fold_midpoint = [](const Mesh& mesh) {
+      const Point3d target(0.5, 0, 0);
+      double best_dist = 1e30;
+      for (int i = 0; i < mesh.raw().m_V.Count(); ++i) {
+        const double dist = (Point3d(mesh.raw().m_V[i]) - target).Length();
+        best_dist = std::min(best_dist, dist);
+      }
+      return best_dist;
+    };
+
+    Check(closest_to_fold_midpoint(sharp.ToApproximateMesh()) < 1e-6,
+          "a MaximumValue-sharp edge gets a real subdivision point exactly "
+          "at its straight-line midpoint (0.5, 0, 0), just like a real "
+          "hard crease");
+    Check(closest_to_fold_midpoint(plain.ToApproximateMesh()) > 0.05,
+          "the untouched control SubD still rounds the same fold off, "
+          "confirming the difference is SetEdgeSharpness's doing");
+  }
+}
+
+// SubD::SetCrease(): retagging an ordinary shared edge to Crease (and
+// back) after construction, without the mesh-double-edge trick
+// crease_at_double_edges needs. Reuses the same hinge fixture and
+// straight-fold-midpoint check TestSubDCreaseAtDoubleEdgeKeepsFoldStraight()
+// and TestSubDSetEdgeSharpnessCreatesRealSemiSharpCrease() already
+// established, since a genuine retag must produce the identical
+// geometric effect a construction-time crease does.
+void TestSubDSetCreaseTagsAndUntagsEdges() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SubD;
+
+  const Point3d fold_a(0, 0, 0);
+  const Point3d fold_b(1, 0, 0);
+
+  Check(!SubD::FromControlMesh(MakeHingedDoubleEdgeMesh(), false)
+             .SetCrease(Point3d(9, 9, 9), Point3d(9, 9, 8), true, 1e-9),
+        "SetCrease refuses when no vertex exists at the given points");
+
+  auto subd = SubD::FromControlMesh(MakeHingedDoubleEdgeMesh(), /*crease_at_double_edges=*/false);
+  Check(subd.CreaseEdgeCount() == 6, "the untouched hinge starts with only its 6 boundary creases");
+
+  Check(subd.SetCrease(fold_a, fold_b, true, 1e-9), "SetCrease(true) retags the fold edge and reports a real change");
+  Check(subd.CreaseEdgeCount() == 7,
+        "the fold is now creased too - matching crease_at_double_edges=true's own count exactly");
+  Check(!subd.SetCrease(fold_a, fold_b, true, 1e-9),
+        "SetCrease(true) again is a no-op (already a crease) and reports no change");
+
+  // Geometric proof: retagging must produce the identical effect
+  // FromControlMesh(..., crease_at_double_edges=true) does.
+  {
+    auto retagged = subd;  // deep copy (ON_SubD's copy ctor deep-copies)
+    retagged.Subdivide(1);
+    const Mesh approx = retagged.ToApproximateMesh();
+    const Point3d target(0.5, 0, 0);
+    double best_dist = 1e30;
+    for (int i = 0; i < approx.raw().m_V.Count(); ++i) {
+      best_dist = std::min(best_dist, (Point3d(approx.raw().m_V[i]) - target).Length());
+    }
+    Check(best_dist < 1e-6,
+          "the retagged fold gets a real subdivision point exactly at its "
+          "straight-line midpoint (0.5, 0, 0), same as a construction-time crease");
+  }
+
+  Check(subd.SetCrease(fold_a, fold_b, false, 1e-9), "SetCrease(false) un-tags the fold back to smooth");
+  Check(subd.CreaseEdgeCount() == 6, "...restoring the original 6-boundary-crease-only count");
+  Check(!subd.SetCrease(fold_a, fold_b, false, 1e-9),
+        "SetCrease(false) again is a no-op (already smooth) and reports no change");
+}
+
 void TestSubDFlatQuadGridStaysFlatAndAreaExact() {
   using dino8::kernel::Mesh;
   using dino8::kernel::SubD;
@@ -9075,6 +9443,177 @@ void TestMeshSaveStlBinaryRoundTrips() {
   Check(std::abs(loaded.Volume() - box.Volume()) < 1e-6,
         "the loaded binary mesh's volume exactly matches the original");
   std::remove(path.c_str());
+}
+
+// SavePly()/LoadPly() close a real gap: this kernel had zero PLY code at
+// all before this - no export, no import. Checks the written header
+// actually declares the shape it claims (a real "list" face property,
+// not a fixed-size one), that a quad face round-trips as a single
+// 4-index face (unlike SaveStl(), which has no choice but to split it),
+// and that texture coordinates survive when present - mirroring
+// TestMeshSaveObjRoundTrips()'s own "verify actual file content, not
+// just the round trip" approach.
+void TestMeshSavePlyRoundTrips() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Result;
+
+  const auto box = MakeQuadBoxMesh(0, 0, 0, 2, 3, 4);
+  const std::string path = "dino8_kernel_mesh_ply_test.ply";
+  Check(box.SavePly(path) == Result::Ok, "Mesh::SavePly succeeds");
+
+  std::ifstream in(path);
+  Check(static_cast<bool>(in), "the .ply file SavePly wrote can be reopened for reading");
+  std::string first_line;
+  std::getline(in, first_line);
+  Check(first_line == "ply", "the file starts with the required 'ply' magic line");
+
+  int vertex_element_count = -1;
+  int face_element_count = -1;
+  bool saw_list_face_property = false;
+  bool saw_quad_face_line = false;
+  std::string line;
+  while (std::getline(in, line)) {
+    if (line == "end_header") break;
+    std::istringstream stream(line);
+    std::string tag;
+    stream >> tag;
+    if (tag == "element") {
+      std::string name;
+      int count;
+      stream >> name >> count;
+      if (name == "vertex") vertex_element_count = count;
+      if (name == "face") face_element_count = count;
+    } else if (tag == "property") {
+      std::string next;
+      stream >> next;
+      if (next == "list") saw_list_face_property = true;
+    }
+  }
+  while (std::getline(in, line)) {
+    std::istringstream stream(line);
+    int corner_count = 0;
+    if (stream >> corner_count && corner_count == 4) {
+      saw_quad_face_line = true;
+      break;
+    }
+  }
+  Check(vertex_element_count == box.VertexCount(),
+        "the header's 'element vertex' count matches the mesh's vertex count (8)");
+  Check(face_element_count == box.FaceCount(),
+        "the header's 'element face' count matches the mesh's face count (6)");
+  Check(saw_list_face_property, "the face element declares a genuine 'property list', not a fixed-size one");
+  Check(saw_quad_face_line,
+        "at least one face data line has a 4-corner count - a quad face is written as one "
+        "native PLY face, not split into two triangles the way SaveStl() has to");
+
+  Mesh reloaded;
+  Check(Mesh::LoadPly(path, reloaded) == Result::Ok, "Mesh::LoadPly succeeds on SavePly()'s own output");
+  Check(reloaded.VertexCount() == box.VertexCount() && reloaded.FaceCount() == box.FaceCount(),
+        "the reloaded mesh has the same vertex/face counts as the original");
+  Check(std::abs(reloaded.Volume() - box.Volume()) < 1e-9,
+        "the reloaded mesh's volume exactly matches the original (quad faces round-tripped "
+        "as quads, not silently reinterpreted)");
+  std::remove(path.c_str());
+
+  // Texture coordinates: same pattern as TestMeshTextureCoordinates()'s
+  // own .obj check, applied to .ply's u/v columns instead.
+  Mesh with_uvs = box;
+  std::vector<dino8::kernel::Point2d> uvs;
+  for (int i = 0; i < with_uvs.VertexCount(); ++i) {
+    uvs.push_back(dino8::kernel::Point2d(static_cast<double>(i) * 0.1, static_cast<double>(i) * 0.2));
+  }
+  Check(with_uvs.SetTextureCoordinates(uvs) == Result::Ok, "fixture: SetTextureCoordinates succeeds");
+
+  const std::string uv_path = "dino8_kernel_mesh_ply_uv_test.ply";
+  Check(with_uvs.SavePly(uv_path) == Result::Ok, "SavePly succeeds on a mesh with texture coordinates");
+  Mesh reloaded_uv;
+  Check(Mesh::LoadPly(uv_path, reloaded_uv) == Result::Ok, "LoadPly succeeds on a .ply file with u/v columns");
+  Check(reloaded_uv.HasTextureCoordinates(), "the reloaded mesh reports having texture coordinates");
+  bool uvs_match = true;
+  for (int i = 0; i < reloaded_uv.VertexCount(); ++i) {
+    const auto original_uv = with_uvs.TextureCoordinateAt(i);
+    const auto loaded_uv = reloaded_uv.TextureCoordinateAt(i);
+    if (std::abs(original_uv.x - loaded_uv.x) > 1e-9 || std::abs(original_uv.y - loaded_uv.y) > 1e-9) {
+      uvs_match = false;
+      break;
+    }
+  }
+  Check(uvs_match, "every reloaded vertex's texture coordinate exactly matches the original, "
+                   "round-tripped through the .ply file");
+  std::remove(uv_path.c_str());
+}
+
+// Malformed/out-of-scope input is rejected outright, never silently
+// misread. Covers: a binary-format header (disclosed out of scope, see
+// SavePly()'s doc comment), a vertex element missing x/y/z, a face list
+// property with too many/few corners, and an out-of-range face index -
+// then a control case proving those rejections aren't over-broad.
+void TestMeshLoadPlyRejectsMalformedFiles() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Result;
+
+  auto write_file = [](const std::string& path, const std::string& contents) {
+    std::ofstream out(path);
+    out << contents;
+  };
+
+  {
+    const std::string path = "dino8_kernel_mesh_ply_binary_test.ply";
+    write_file(path, "ply\nformat binary_little_endian 1.0\nelement vertex 0\nend_header\n");
+    Mesh loaded;
+    Check(Mesh::LoadPly(path, loaded) == Result::Failed,
+          "LoadPly() fails on a binary-format header - disclosed out of scope, not misread as ASCII");
+    std::remove(path.c_str());
+  }
+
+  {
+    const std::string path = "dino8_kernel_mesh_ply_no_xyz_test.ply";
+    write_file(path,
+               "ply\nformat ascii 1.0\nelement vertex 1\nproperty float x\nproperty float y\n"
+               "element face 0\nproperty list uchar int vertex_indices\nend_header\n0 0\n");
+    Mesh loaded;
+    Check(Mesh::LoadPly(path, loaded) == Result::Failed,
+          "LoadPly() fails when the vertex element is missing a 'z' property");
+    std::remove(path.c_str());
+  }
+
+  {
+    const std::string path = "dino8_kernel_mesh_ply_bad_face_width_test.ply";
+    write_file(path,
+               "ply\nformat ascii 1.0\nelement vertex 3\nproperty float x\nproperty float y\n"
+               "property float z\nelement face 1\nproperty list uchar int vertex_indices\n"
+               "end_header\n0 0 0\n1 0 0\n0 1 0\n2 0 1\n");
+    Mesh loaded;
+    Check(Mesh::LoadPly(path, loaded) == Result::Failed,
+          "LoadPly() fails on a face line with only 2 corners (neither a triangle nor a quad)");
+    std::remove(path.c_str());
+  }
+
+  {
+    const std::string path = "dino8_kernel_mesh_ply_bad_index_test.ply";
+    write_file(path,
+               "ply\nformat ascii 1.0\nelement vertex 3\nproperty float x\nproperty float y\n"
+               "property float z\nelement face 1\nproperty list uchar int vertex_indices\n"
+               "end_header\n0 0 0\n1 0 0\n0 1 0\n3 0 1 7\n");
+    Mesh loaded;
+    Check(Mesh::LoadPly(path, loaded) == Result::Failed,
+          "LoadPly() fails on a face referencing vertex index 7 when only 3 vertices (0-2) exist");
+    std::remove(path.c_str());
+  }
+
+  // Control: a well-formed minimal triangle still loads fine.
+  {
+    const std::string path = "dino8_kernel_mesh_ply_control_test.ply";
+    write_file(path,
+               "ply\nformat ascii 1.0\nelement vertex 3\nproperty float x\nproperty float y\n"
+               "property float z\nelement face 1\nproperty list uchar int vertex_indices\n"
+               "end_header\n0 0 0\n1 0 0\n0 1 0\n3 0 1 2\n");
+    Mesh loaded;
+    Check(Mesh::LoadPly(path, loaded) == Result::Ok, "control: a well-formed minimal triangle loads fine");
+    Check(loaded.VertexCount() == 3 && loaded.FaceCount() == 1,
+          "control: loaded the expected 3 vertices and 1 face");
+    std::remove(path.c_str());
+  }
 }
 
 void TestExactClippingMatchesAreaButNotCellCounts() {
@@ -25121,6 +25660,10 @@ int main() {
   TestSubDFromBoxSubdividesToExactCatmullClarkCounts();
   TestSubDFromControlMeshRejectsEmptyMesh();
   TestSubDCreaseAtDoubleEdgeKeepsFoldStraight();
+  TestSubDIsValid();
+  TestSubDMeshRoundTripIsExactAtLevelZero();
+  TestSubDSetEdgeSharpnessCreatesRealSemiSharpCrease();
+  TestSubDSetCreaseTagsAndUntagsEdges();
   TestSubDFlatQuadGridStaysFlatAndAreaExact();
   TestSubDToNurbsPatchesExactOnRegularFlatGrid();
   TestSubDLimitPointsExactCubeAndFlatGrid();
@@ -25133,6 +25676,8 @@ int main() {
   TestMeshLoadStlBinary();
   TestMeshLoadStlBinaryRejectsNonFiniteVertices();
   TestMeshSaveStlBinaryRoundTrips();
+  TestMeshSavePlyRoundTrips();
+  TestMeshLoadPlyRejectsMalformedFiles();
   TestExactClippingMatchesAreaButNotCellCounts();
   TestExactClippingHandlesNonConvexTrim();
   TestExactClippingHandlesTrimVertexOnGridLine();
@@ -25348,6 +25893,8 @@ int main() {
   TestMeshCheckAndFillSmallHolesRestoreDroppedFaces();
   TestMeshUnifyNormalsFixesFlippedAndInvertedFaces();
   TestMeshCloseNakedEdgesWeldsDuplicateAndOffsetVertices();
+  TestMeshRemoveDegenerateFacesDropsOnlyDegenerateOnes();
+  TestMeshRemoveDuplicateFacesKeepsOneCopyPerPolygon();
 
   sweep_tests::TestMergeAndWeldDropsCollapsedPoleTriangles();
   sweep_tests::TestExtrudeRectangleIsExactCappedSolid();

@@ -569,6 +569,53 @@ class Mesh {
   // silently trusted.
   static Result LoadStl(const std::string& path, Mesh& out_mesh);
 
+  // Writes this mesh as an ASCII PLY (Stanford Polygon) file - the third
+  // "other file format" here, and a genuine gap: this kernel had zero PLY
+  // code at all before this. Unlike `.stl`, PLY's face element is a
+  // genuine variable-length list, so a quad face (`ON_MeshFace::IsQuad()`)
+  // is written as its own native 4-index face, not split into two
+  // triangles the way SaveStl() has to. Every vertex line always carries
+  // a geometry-derived normal (`ComputeVertexNormals()`, same convention
+  // as SaveObj()'s `vn`/SaveStl()'s facet normal - never a stored,
+  // independent one), and a `u`/`v` texture-coordinate pair per vertex
+  // when `HasTextureCoordinates()` is true (PLY has no single standard
+  // UV property name across tools - some use `s`/`t` - `u`/`v` is chosen
+  // here to match this kernel's own OBJ `vt` semantics exactly: one UV
+  // per vertex, not per face corner). Only the ASCII PLY encoding is
+  // written - PLY's binary_little_endian/binary_big_endian formats are a
+  // real, disclosed gap, not attempted here, the same honest treatment
+  // this codebase already gives Parasolid/ACIS licensing. Returns
+  // Result::Failed if the file can't be opened for writing.
+  Result SavePly(const std::string& path) const;
+
+  // Reads an ASCII PLY file into `out_mesh` - written by SavePly() or by
+  // another tool, as long as it's ASCII-encoded (binary PLY is rejected,
+  // see SavePly()'s own doc comment on why) and follows PLY's ordinary
+  // shape: a `vertex` element with `x`/`y`/`z` scalar properties (in any
+  // order, and tolerating extra properties this kernel doesn't use, e.g.
+  // color, by name rather than assuming a fixed column layout - genuinely
+  // parses the header's own property list instead of guessing a position),
+  // optional `nx`/`ny`/`nz` (read but discarded, same "always
+  // geometry-derived" convention LoadObj()'s `vn` and LoadStl()'s facet
+  // normal already have - there's nowhere in this kernel's Mesh to store
+  // an independent per-vertex normal), and optional `u`/`v` (stored via
+  // SetTextureCoordinates() only if present on every vertex, same
+  // all-or-nothing rule LoadObj() already applies); and a `face` element
+  // with exactly one list property (whatever its declared name -
+  // `vertex_indices`/`vertex_index` are both common) giving each face's
+  // 0-based vertex indices, 3 or 4 per face (this kernel's `ON_MeshFace`
+  // holds a triangle or quad only, same limit LoadObj() already has for
+  // `.obj`'s `f` lines - a 5+-gon face is rejected, not silently
+  // fan-triangulated). Any other element name (e.g. a color-only `edge`
+  // element) has its data lines skipped, not rejected - this kernel just
+  // doesn't read it into anything. Returns Result::Failed - `out_mesh`
+  // left unspecified, not partially filled - if the file can't be opened,
+  // isn't `ply`/`format ascii ...`, the vertex element is missing
+  // `x`/`y`/`z`, the face element's list property is missing or isn't a
+  // list, a face has fewer than 3 or more than 4 indices, a face index is
+  // out of range, or any header/data line fails to parse.
+  static Result LoadPly(const std::string& path, Mesh& out_mesh);
+
   const ON_Mesh& raw() const { return mesh_; }
   ON_Mesh& raw() { return mesh_; }
 
@@ -576,8 +623,19 @@ class Mesh {
   //
   // The mesh-level counterpart of Brep::Check() and its repairs: the
   // same questions IsClosedManifold() answers with one bool, as COUNTS
-  // and LOCATIONS a caller can act on, plus the three repairs that turn
-  // the common "almost closed" meshes back into closed manifolds.
+  // and LOCATIONS a caller can act on, plus the five repairs that turn
+  // the common "almost closed" or "almost clean" meshes back into closed,
+  // valid ones (CloseNakedEdges() and FillSmallHoles() for naked_edges,
+  // UnifyNormals() for orientation_conflicts, RemoveDegenerateFaces() for
+  // degenerate_faces, RemoveDuplicateFaces() for duplicate_faces, below).
+  // Two of CheckReport's six conditions still have no repair here:
+  // non_manifold_edges (repairing a 3+-face edge needs a judgment call -
+  // which faces stay grouped together - this class doesn't make for you)
+  // and interior duplicate_vertices away from any naked edge
+  // (CloseNakedEdges() only welds boundary ones, by design - an interior
+  // feature that happens to be `tolerance`-close to another is not the
+  // same bug as a seam left open by construction, and silently welding
+  // it could collapse real geometry).
   struct CheckReport {
     // Undirected edges used by exactly one face (the open boundary).
     int naked_edges = 0;
@@ -595,6 +653,15 @@ class Mesh {
     // twice" MergeAndWeld() exists to prevent, and CloseNakedEdges()
     // repairs when it happened on a boundary.
     int duplicate_vertices = 0;
+    // Faces that are the exact same polygon as another face already
+    // counted (same vertex indices, in the same cyclic order OR its
+    // exact reverse - i.e. the identical shape, winding-direction-
+    // agnostic) - counted per LATER occurrence, so two duplicates of the
+    // same triangle count as 1, not 2. Independent of degenerate_faces:
+    // two perfectly valid, non-degenerate triangles sitting exactly on
+    // top of each other (a common "appended the same geometry twice"
+    // import defect) trip this, not that.
+    int duplicate_faces = 0;
     // Every naked edge as (a, b) in the direction its one face walks it,
     // in face order - the input FillSmallHoles() chains into loops.
     std::vector<std::pair<int, int>> naked_edge_list;
@@ -633,6 +700,41 @@ class Mesh {
   // vertices welded away. Texture coordinates are dropped (a welded
   // vertex has no single UV).
   int CloseNakedEdges(double tolerance);
+
+  // Removes every face Check(tolerance) would count in degenerate_faces -
+  // literally the same test, not a redefinition of it (see Check()'s own
+  // comment: a repeated vertex index, an edge shorter than `tolerance`,
+  // or a height at or below `tolerance`), so a caller can trust that
+  // Check(tolerance).degenerate_faces == 0 after this runs. A vertex left
+  // referenced by no surviving face is then dropped and remaining faces
+  // reindexed, the same compaction CloseNakedEdges() already does. Never
+  // touches a face that ISN'T degenerate, even if removing it would make
+  // a neighboring hole "nicer" - this is strictly subtractive, no
+  // re-triangulation or hole-filling (FillSmallHoles() is the tool for
+  // the hole a removed sliver can leave behind). Texture coordinates are
+  // dropped, same reason as CloseNakedEdges() - a vertex surviving a
+  // removed face may have lost the only UV that referenced it uniquely.
+  // Returns the number of faces removed.
+  int RemoveDegenerateFaces(double tolerance = tolerance::kDistance);
+
+  // Removes every face Check() would count in duplicate_faces - the
+  // LATER occurrence of each repeated polygon is dropped, the first
+  // survives untouched at its original index order (only later indices
+  // shift down). "Duplicate" means the exact same vertex indices in the
+  // same cyclic order or its exact reverse (so a triangle and its
+  // opposite-wound twin both count, along with an ordinary reordered
+  // repeat) - not merely "close in space" the way CloseNakedEdges()'s
+  // vertex welding is; two faces built from entirely different vertex
+  // INDICES that happen to sit at the same 3D positions are a
+  // duplicate_vertices problem for CloseNakedEdges(), not this. Distinct
+  // from RemoveDegenerateFaces(): a duplicate pair can be two perfectly
+  // valid, non-degenerate triangles sitting exactly on top of each
+  // other (e.g. an import that appended the same geometry twice), which
+  // Check()'s degenerate_faces test alone would never catch (each one,
+  // taken alone, is a fine triangle). Compacts now-unused vertices and
+  // drops texture coordinates, same as RemoveDegenerateFaces(). Returns
+  // the number of faces removed.
+  int RemoveDuplicateFaces();
 
   // Fills every boundary loop (NakedEdgeLoops()) whose vertices' axis-
   // aligned bounding-box diagonal is at most `max_extent`: a 3-vertex
