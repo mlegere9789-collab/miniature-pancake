@@ -6032,6 +6032,65 @@ void TestBrepSphereBooleanEndToEnd() {
         "sphere-sphere boolean intersection volume is within 3% of the exact lens formula");
 }
 
+void TestBrepTorusIsClosedAndWatertight() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  const double major_radius = 5.0, minor_radius = 1.5;
+  const Brep torus = Brep::Torus(Point3d(0, 0, 0), Vector3d(0, 0, 1), major_radius, minor_radius);
+  Check(torus.FaceCount() == 1, "Brep::Torus is a single curved face");
+
+  // Periodic in BOTH parametric directions - no poles (unlike Sphere()),
+  // but its own major-angle AND minor-angle seams each have to weld shut
+  // against themselves.
+  const int divisions = 32;
+  const auto mesh = torus.TessellateToClosedMesh(divisions, divisions);
+  Check(mesh.IsClosedManifold(), "tessellated torus is a closed manifold");
+  const int raw_vertex_count = (divisions + 1) * (divisions + 1);
+  Check(mesh.VertexCount() < raw_vertex_count,
+        "welding the torus's own major and minor seams reduces its vertex count");
+
+  // The minor-radius tube is a much smaller feature than the major
+  // radius, so its own chordal (inscribed-polygon) volume underestimate
+  // dominates and shrinks more slowly with `divisions` than a sphere's
+  // does at the same division count (measured: 1.3% at 32 divisions,
+  // 0.3% at 64) - a finer mesh for the volume check specifically, not a
+  // loosened tolerance.
+  const auto fine_mesh = torus.TessellateToClosedMesh(64, 64);
+  const double exact_volume = 2.0 * M_PI * M_PI * major_radius * minor_radius * minor_radius;
+  const double relative_error = std::abs(fine_mesh.Volume() - exact_volume) / exact_volume;
+  Check(relative_error < 0.01,
+        "tessellated+welded torus volume (64x64) is within 1% of the exact 2*pi^2*R*r^2");
+  Check(fine_mesh.Volume() > 0.0, "torus volume is positive (outward orientation)");
+
+  // Closed manifold at an asymmetric division pair too - the same "not
+  // only the one division count it happened to be built at" check the
+  // sweep-class caps rely on elsewhere.
+  Check(torus.TessellateToClosedMesh(12, 40).IsClosedManifold(), "closed torus manifold at (12, 40)");
+  Check(torus.TessellateToClosedMesh(40, 12).IsClosedManifold(), "closed torus manifold at (40, 12)");
+
+  // Negative controls.
+  auto throws_invalid_argument = [](const std::function<void()>& f) {
+    try {
+      f();
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+    return false;
+  };
+  Check(throws_invalid_argument([&] { Brep::Torus(Point3d(0, 0, 0), Vector3d(0, 0, 1), 5.0, 0.0); }),
+        "non-positive minor_radius throws");
+  Check(throws_invalid_argument([&] { Brep::Torus(Point3d(0, 0, 0), Vector3d(0, 0, 1), 5.0, -1.0); }),
+        "negative minor_radius throws");
+  Check(throws_invalid_argument([&] { Brep::Torus(Point3d(0, 0, 0), Vector3d(0, 0, 1), 1.0, 1.0); }),
+        "major_radius == minor_radius (degenerate spindle) throws");
+  Check(throws_invalid_argument([&] { Brep::Torus(Point3d(0, 0, 0), Vector3d(0, 0, 1), 1.0, 2.0); }),
+        "major_radius < minor_radius (self-intersecting spindle/horn torus) throws");
+  Check(throws_invalid_argument([&] { Brep::Torus(Point3d(0, 0, 0), Vector3d(0, 0, 0), 5.0, 1.5); }),
+        "zero axis throws");
+}
+
 void TestBrepTrimmedPlanarFaceRejectsTooFewPoints() {
   using dino8::kernel::Brep;
   using dino8::kernel::NurbsSurface;
@@ -10981,26 +11040,123 @@ void TestMeshSavePlyRoundTrips() {
   std::remove(uv_path.c_str());
 }
 
+// SavePly(binary=true)/LoadPly() close PLY's own remaining disclosed gap
+// (SavePly()'s doc comment used to call binary_little_endian "not
+// attempted"): checks the written header actually says
+// "format binary_little_endian 1.0" (not "ascii"), that the file is
+// genuinely smaller than the ASCII encoding of the same mesh (proving
+// this isn't just ASCII text with a relabeled header line), and that
+// vertex/face counts, volume, and per-vertex UVs all round-trip exactly -
+// the same properties TestMeshSavePlyRoundTrips() already verifies for
+// the ASCII path, applied to the binary one.
+void TestMeshSavePlyBinaryRoundTrips() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Result;
+
+  const auto box = MakeQuadBoxMesh(0, 0, 0, 2, 3, 4);
+  const std::string binary_path = "dino8_kernel_mesh_ply_binary_test.ply";
+  const std::string ascii_path = "dino8_kernel_mesh_ply_binary_ascii_ref_test.ply";
+  Check(box.SavePly(binary_path, /*binary=*/true) == Result::Ok, "Mesh::SavePly(binary=true) succeeds");
+  Check(box.SavePly(ascii_path, /*binary=*/false) == Result::Ok, "fixture: Mesh::SavePly(binary=false) succeeds");
+
+  std::ifstream in(binary_path, std::ios::binary);
+  Check(static_cast<bool>(in), "the binary .ply file can be reopened for reading");
+  std::string first_line, format_line;
+  std::getline(in, first_line);
+  std::getline(in, format_line);
+  Check(first_line == "ply", "the binary file still starts with the required 'ply' magic line");
+  Check(format_line == "format binary_little_endian 1.0",
+        "the header's format line literally says binary_little_endian, not ascii");
+  in.close();
+
+  std::ifstream binary_size_probe(binary_path, std::ios::binary | std::ios::ate);
+  std::ifstream ascii_size_probe(ascii_path, std::ios::binary | std::ios::ate);
+  const auto binary_size = binary_size_probe.tellg();
+  const auto ascii_size = ascii_size_probe.tellg();
+  binary_size_probe.close();
+  ascii_size_probe.close();
+  Check(binary_size > 0 && binary_size < ascii_size,
+        "the binary encoding is smaller than the ASCII encoding of the identical mesh - a real "
+        "binary payload, not ASCII text under a relabeled header");
+
+  Mesh reloaded;
+  Check(Mesh::LoadPly(binary_path, reloaded) == Result::Ok, "Mesh::LoadPly succeeds on SavePly(binary=true)'s own output");
+  Check(reloaded.VertexCount() == box.VertexCount() && reloaded.FaceCount() == box.FaceCount(),
+        "the reloaded binary mesh has the same vertex/face counts as the original");
+  Check(std::abs(reloaded.Volume() - box.Volume()) < 1e-5,
+        "the reloaded binary mesh's volume matches the original within single-precision float "
+        "round-trip error (the binary payload stores 4-byte floats, same as the header declares)");
+  std::remove(binary_path.c_str());
+  std::remove(ascii_path.c_str());
+
+  // Texture coordinates round-trip through the binary payload too.
+  Mesh with_uvs = box;
+  std::vector<dino8::kernel::Point2d> uvs;
+  for (int i = 0; i < with_uvs.VertexCount(); ++i) {
+    uvs.push_back(dino8::kernel::Point2d(static_cast<double>(i) * 0.1, static_cast<double>(i) * 0.2));
+  }
+  Check(with_uvs.SetTextureCoordinates(uvs) == Result::Ok, "fixture: SetTextureCoordinates succeeds");
+  const std::string uv_path = "dino8_kernel_mesh_ply_binary_uv_test.ply";
+  Check(with_uvs.SavePly(uv_path, /*binary=*/true) == Result::Ok, "SavePly(binary=true) succeeds on a mesh with texture coordinates");
+  Mesh reloaded_uv;
+  Check(Mesh::LoadPly(uv_path, reloaded_uv) == Result::Ok, "LoadPly succeeds on a binary .ply file with u/v columns");
+  Check(reloaded_uv.HasTextureCoordinates(), "the reloaded binary mesh reports having texture coordinates");
+  bool uvs_match = true;
+  for (int i = 0; i < reloaded_uv.VertexCount(); ++i) {
+    const auto original_uv = with_uvs.TextureCoordinateAt(i);
+    const auto loaded_uv = reloaded_uv.TextureCoordinateAt(i);
+    if (std::abs(original_uv.x - loaded_uv.x) > 1e-6 || std::abs(original_uv.y - loaded_uv.y) > 1e-6) {
+      uvs_match = false;
+      break;
+    }
+  }
+  Check(uvs_match, "every reloaded vertex's texture coordinate matches the original within "
+                   "single-precision round-trip error, through the binary .ply payload");
+  std::remove(uv_path.c_str());
+}
+
 // Malformed/out-of-scope input is rejected outright, never silently
-// misread. Covers: a binary-format header (disclosed out of scope, see
-// SavePly()'s doc comment), a vertex element missing x/y/z, a face list
-// property with too many/few corners, and an out-of-range face index -
-// then a control case proving those rejections aren't over-broad.
+// misread. Covers: a binary_big_endian header (disclosed out of scope,
+// see SavePly()'s doc comment - binary_little_endian is now supported,
+// see TestMeshSavePlyBinaryRoundTrips()), a truncated binary payload, a
+// vertex element missing x/y/z, a face list property with too many/few
+// corners, and an out-of-range face index - then a control case proving
+// those rejections aren't over-broad.
 void TestMeshLoadPlyRejectsMalformedFiles() {
   using dino8::kernel::Mesh;
   using dino8::kernel::Result;
 
   auto write_file = [](const std::string& path, const std::string& contents) {
-    std::ofstream out(path);
+    std::ofstream out(path, std::ios::binary);
     out << contents;
   };
 
   {
-    const std::string path = "dino8_kernel_mesh_ply_binary_test.ply";
-    write_file(path, "ply\nformat binary_little_endian 1.0\nelement vertex 0\nend_header\n");
+    const std::string path = "dino8_kernel_mesh_ply_binary_big_endian_test.ply";
+    write_file(path, "ply\nformat binary_big_endian 1.0\nelement vertex 0\nend_header\n");
     Mesh loaded;
     Check(Mesh::LoadPly(path, loaded) == Result::Failed,
-          "LoadPly() fails on a binary-format header - disclosed out of scope, not misread as ASCII");
+          "LoadPly() fails on a binary_big_endian header - disclosed out of scope (this kernel "
+          "assumes a little-endian host throughout), not silently byte-swapped or misread");
+    std::remove(path.c_str());
+  }
+
+  {
+    // A well-formed binary_little_endian header whose payload is cut off
+    // partway through the first vertex's own bytes - must fail cleanly
+    // (a short in.read()), not read garbage or crash past the end of file.
+    const std::string path = "dino8_kernel_mesh_ply_binary_truncated_test.ply";
+    std::ofstream out(path, std::ios::binary);
+    out << "ply\nformat binary_little_endian 1.0\nelement vertex 1\nproperty float x\n"
+           "property float y\nproperty float z\nproperty float nx\nproperty float ny\n"
+           "property float nz\nelement face 0\nproperty list uchar int vertex_indices\n"
+           "end_header\n";
+    const float half_a_float = 0.0f;
+    out.write(reinterpret_cast<const char*>(&half_a_float), 2);  // 2 of the first property's 4 bytes
+    out.close();
+    Mesh loaded;
+    Check(Mesh::LoadPly(path, loaded) == Result::Failed,
+          "LoadPly() fails cleanly on a binary payload truncated mid-property");
     std::remove(path.c_str());
   }
 
@@ -29693,6 +29849,7 @@ int main() {
   TestBrepBooleanEndToEnd();
   TestBrepSphereIsClosedAndWatertight();
   TestBrepSphereBooleanEndToEnd();
+  TestBrepTorusIsClosedAndWatertight();
   TestBrepTrimmedPlanarFaceRejectsTooFewPoints();
   TestBrepTrimmedPlanarFace();
   TestWeldAcrossIndependentlyParameterizedSurfaces();
@@ -29755,6 +29912,7 @@ int main() {
   TestMeshLoadStlBinaryRejectsNonFiniteVertices();
   TestMeshSaveStlBinaryRoundTrips();
   TestMeshSavePlyRoundTrips();
+  TestMeshSavePlyBinaryRoundTrips();
   TestMeshLoadPlyRejectsMalformedFiles();
   TestExactClippingMatchesAreaButNotCellCounts();
   TestExactClippingHandlesNonConvexTrim();

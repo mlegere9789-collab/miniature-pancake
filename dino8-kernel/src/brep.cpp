@@ -226,6 +226,47 @@ Brep Brep::Sphere(Point3d center, double radius) {
   return result;
 }
 
+Brep Brep::Torus(Point3d center, Vector3d axis, double major_radius, double minor_radius) {
+  if (!(minor_radius > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::Brep::Torus: minor_radius must be positive");
+  }
+  if (!(major_radius > minor_radius)) {
+    throw std::invalid_argument(
+        "dino8::kernel::Brep::Torus: major_radius must be strictly greater than minor_radius "
+        "(major_radius <= minor_radius is a self-intersecting spindle/horn torus, not supported)");
+  }
+  ON_3dVector normal = axis;
+  if (!normal.Unitize()) {
+    throw std::invalid_argument("dino8::kernel::Brep::Torus: axis must be non-zero");
+  }
+
+  const ON_Plane plane(center, normal);
+  ON_Torus torus(plane, major_radius, minor_radius);
+
+  Brep result;
+  ON_Brep& brep = result.brep_;
+
+  auto* surface = new ON_NurbsSurface();
+  const int rc = torus.GetNurbForm(*surface);
+  if (rc == 0) {
+    delete surface;
+    throw std::runtime_error(
+        "dino8::kernel::Brep::Torus: ON_Torus::GetNurbForm failed");
+  }
+
+  const int surface_index = brep.AddSurface(surface);
+  brep.NewFace(surface_index);
+  result.face_trim_loops_.emplace_back();  // untrimmed
+  result.face_exact_clip_.push_back(false);
+  result.face_hole_loops_.emplace_back();
+  result.face_arc_runs_.emplace_back();
+  result.face_notch_rows_.emplace_back();
+  result.face_records_.emplace_back();
+
+  brep.SetTrimIsoFlags();
+  return result;
+}
+
 Brep Brep::TrimmedPlanarFace(const NurbsSurface& surface,
                               const std::vector<Point2d>& trim_loop_uv,
                               bool exact_clip,
