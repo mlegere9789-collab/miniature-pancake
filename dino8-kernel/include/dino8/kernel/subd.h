@@ -90,6 +90,40 @@ class SubD {
   // (`ON_SubDFromMeshParameters::Smooth`, this class's original behavior).
   static SubD FromControlMesh(const Mesh& control_mesh, bool crease_at_double_edges = false);
 
+  // Builds a SubD control cage from a single UNTRIMMED NURBS surface by
+  // evaluating a u_divisions x v_divisions grid of points across its
+  // parameter domain and taking each grid cell as one genuine QUAD SubD
+  // face - closing PARITY_MAP.md's subd_mesh "SubD from NURBS/B-rep
+  // conversion (reverse of ToNurbsPatches)" [missing] item for the
+  // single-surface case (a full Brep -> SubD conversion, matching faces
+  // and creases across a whole solid or polysurface, is a materially
+  // bigger problem this does not attempt).
+  //
+  // Unlike `NurbsSurface::TessellateGrid()` (built for mesh-boolean work
+  // and always TRIANGULATING each grid cell), this keeps every cell a
+  // genuine quad - the whole point of building a SubD cage: a
+  // triangulated control net starts every face irregular
+  // (`ToNurbsPatches()` only gives an exact limit patch on regular,
+  // all-quad faces), throwing away the surface's own regular parametric
+  // structure before `Subdivide()` even runs once.
+  //
+  // This is deliberately an APPROXIMATION of the input surface, not a
+  // lossless conversion: a Catmull-Clark limit surface over a regular
+  // interior quad reproduces a UNIFORM bicubic B-spline patch (see
+  // `ToNurbsPatches()`'s own doc comment), not an arbitrary NURBS
+  // surface's real shape between grid points (non-uniform knots, a
+  // different degree, rational weights - none of that survives sampling
+  // into flat grid quads); the approximation improves as
+  // u_divisions/v_divisions increase, the same tradeoff
+  // `TessellateGrid()` already documents for its own triangulated
+  // output. A flat/bilinear input surface is the one case this IS exact
+  // for (verified in the tests: every corner of a regular quad's flat
+  // Catmull-Clark limit patch coincides with its own control points).
+  //
+  // Throws std::invalid_argument if u_divisions or v_divisions is less
+  // than 1, the same validation `TessellateGrid()` already applies.
+  static SubD FromNurbsSurface(const NurbsSurface& surface, int u_divisions, int v_divisions);
+
   // Applies `levels` rounds of real Catmull-Clark global subdivision in
   // place. Each round refines every face, edge, and vertex of the
   // current control net into a strictly finer one; the result converges
@@ -284,6 +318,53 @@ class SubD {
   // no-op, same as `ON_SubD::SetEdgeTags` returning a 0 changed-count.
   // Returns true only when the edge's tag genuinely changed.
   bool SetCrease(const Point3d& p0, const Point3d& p1, bool crease, double point_tolerance = 0.0);
+
+  // Caps ONE open boundary loop of the current subdivision level's
+  // control net with a single new N-GON SubD face spanning the whole
+  // loop - the SubD-level counterpart to `Mesh::FillSmallHoles()`,
+  // closing PARITY_MAP.md's subd_mesh "SubD hole/opening capping at
+  // kernel level" [missing] item. Genuinely SubD-native, not a ported
+  // mesh trick: `Mesh::FillSmallHoles()` needs a centroid vertex and a
+  // triangle fan because `ON_MeshFace` tops out at 4 indices, but
+  // `ON_SubDFace` supports any edge count directly - so an n-sided hole
+  // becomes exactly one new n-gon face, no extra vertex, and (being a
+  // real SubD face like any other) a fully genuine, further-subdividable
+  // part of the control net from the moment it's added.
+  //
+  // Identifies the loop from ONE of its own boundary vertices (`start`):
+  // every boundary vertex has exactly 2 naked (single-face) edges, so
+  // the walk from `start` - follow a naked edge to its far end, take
+  // that vertex's OTHER naked edge, repeat - is unambiguous and
+  // terminates by returning to `start`, UNLESS `start` is a "bowtie"
+  // vertex where two different boundary loops touch (more than 2 naked
+  // edges) - there this picks whichever loop its first naked edge
+  // happens to belong to (`ON_SubDVertex::EdgeCount()`'s own iteration
+  // order), the same acknowledged ambiguity `NakedEdgeLoops()` documents
+  // for the identical case on `Mesh`. The collected edges are handed to
+  // the real, working `ON_SubD::AddFace(const ON_SimpleArray<ON_SubDEdge*>&)`
+  // (verified by reading its implementation in opennurbs_subd.cpp: it
+  // validates the loop genuinely closes and computes each edge's
+  // orientation from shared vertices automatically, not a stub).
+  //
+  // After capping, the loop's own edges - tagged Crease purely because
+  // they were a boundary (OpenNURBS' "an open SubD's own boundary edges
+  // are themselves always creases" convention this file's
+  // `crease_at_double_edges` comment already documents, not because
+  // anyone asked for a sharp seam there) - are retagged Smooth via the
+  // same `ON_SubD::SetEdgeTags()` primitive `SetCrease()` above already
+  // wraps, so the cap blends into the surrounding surface instead of
+  // leaving an unintended permanent crease ring where the hole used to
+  // be. A caller who DOES want a sharp ring around the cap can call
+  // `SetCrease()` again afterward - this method's own job is only to
+  // reproduce the "ordinary hole in an otherwise smooth surface" case.
+  //
+  // Returns false, unchanged, if: no vertex is found at `start` within
+  // `point_tolerance`; that vertex has no naked edge (it's fully
+  // interior, or the SubD is already closed); or the boundary doesn't
+  // close back on itself (a dead end / non-manifold boundary chain,
+  // e.g. one `NakedEdgeLoops()` would also refuse to chain) - refuses
+  // rather than adding a wrong or malformed face.
+  bool CapBoundaryLoop(const Point3d& start, double point_tolerance = 0.0);
 
   // The EXACT limit-surface point (and normal) of every vertex of the
   // current subdivision level's control net, in ON_SubD's own vertex

@@ -2447,6 +2447,64 @@ What this repo does instead:
   3 - the first occurrence is the baseline, not a duplicate of itself),
   `RemoveDuplicateFaces()` removes exactly those 2, and the survivor is
   provably the first occurrence, not an arbitrary one.
+- `SubD::FromNurbsSurface(surface, u_divisions, v_divisions)`: closes
+  PARITY_MAP.md's subd_mesh "SubD from NURBS/B-rep conversion (reverse
+  of ToNurbsPatches)" [missing] item for a single untrimmed surface (a
+  full Brep -> SubD conversion - matching faces and creases across a
+  whole solid or polysurface - is a materially bigger problem, not
+  attempted here). Evaluates a `u_divisions x v_divisions` grid of
+  points across the surface's own parameter domain and takes each cell
+  as one genuine QUAD SubD face, then hands that straight to the
+  already-existing `FromControlMesh()`. Deliberately NOT built on
+  `NurbsSurface::TessellateGrid()` despite the obvious temptation to
+  reuse it: that method always TRIANGULATES each cell (it exists for
+  mesh-boolean work), which would start every SubD face irregular before
+  `Subdivide()` even ran once - `ToNurbsPatches()` only gives an exact
+  limit patch on regular, all-quad faces, so triangulating here would
+  quietly defeat the entire point of building a SubD cage in the first
+  place. Honestly scoped as an APPROXIMATION of the input surface, not a
+  lossless conversion: a Catmull-Clark limit surface over a regular quad
+  reproduces a uniform bicubic B-spline (see `ToNurbsPatches()`'s own
+  doc comment), not an arbitrary NURBS surface's true shape between grid
+  points (non-uniform knots, non-cubic degree, rational weights - none
+  of that survives flat-grid sampling); the one case this IS exact for
+  is a flat/bilinear input, verified directly: a hand-derivable
+  `P(u,v) = (u, v, 0)` fixture (the same one `TestSurfaceNormalAt()`
+  already relies on) converts to a 5x5-vertex, 16-quad-face SubD whose
+  level-0 control net reproduces all 25 grid points to within 1e-6 of
+  their exact closed-form positions - not merely "close," measured.
+- `SubD::CapBoundaryLoop(start, point_tolerance)`: closes PARITY_MAP.md's
+  subd_mesh "SubD hole/opening capping at kernel level" [missing] item -
+  the SubD-level counterpart to `Mesh::FillSmallHoles()`, but genuinely
+  SubD-native rather than a ported mesh trick: `ON_MeshFace` tops out at
+  4 indices, so `FillSmallHoles()` needs a new centroid vertex and a
+  triangle fan, but `ON_SubDFace` supports any edge count directly, so an
+  n-sided hole becomes exactly ONE new n-gon face - no extra vertex, and
+  (being a real SubD face like any other) immediately a genuine,
+  further-subdividable part of the control net. Identifies the loop by
+  walking from one of its own boundary vertices (every boundary vertex
+  has exactly 2 naked edges, so the walk - follow a naked edge, take the
+  far vertex's OTHER naked edge, repeat - is unambiguous except at a
+  "bowtie" vertex where two loops touch, the same acknowledged ambiguity
+  `Mesh::NakedEdgeLoops()` already documents for its identical case), then
+  hands the collected edges to the real, working
+  `ON_SubD::AddFace(const ON_SimpleArray<ON_SubDEdge*>&)` (verified by
+  reading its implementation: it validates the loop genuinely closes and
+  computes each edge's orientation from shared vertices automatically,
+  not a stub). The one subtlety worth documenting: the loop's own edges
+  are tagged Crease purely because they were a boundary (OpenNURBS' "an
+  open SubD's boundary edges are themselves always creases" convention,
+  not because anyone asked for a sharp seam), so after capping they're
+  retagged Smooth via the same `ON_SubD::SetEdgeTags()` primitive
+  `SetCrease()` already wraps - otherwise the cap would leave a
+  permanent, unintended crease ring exactly where the hole used to be. A
+  caller who DOES want that sharp ring can call `SetCrease()` again
+  afterward. Verified with a flat 2x2 quad grid (9 vertices, 4 faces, one
+  8-edge boundary loop, one fully interior vertex): capping adds exactly
+  1 new 8-sided N-gon face and 0 new vertices/edges, all 8 former-
+  boundary edges read back as Smooth (not Crease) afterward, capping at
+  the interior vertex is refused (no naked edge to start from), and
+  capping again once the SubD is fully closed is refused too.
 
 ## Blending build log (Parasolid "blend/chamfer" class, chronological)
 
