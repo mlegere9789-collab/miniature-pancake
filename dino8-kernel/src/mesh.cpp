@@ -3103,4 +3103,8 @@ Mesh Mesh::Thicken(double distance) const {
   return result;
 }
 
+std::vector<std::pair<int, int>> Mesh::FindOffsetSelfIntersections(double distance, double tolerance) const {
+  return Offset(distance).FindSelfIntersections(tolerance);
+}
+
 }  // namespace dino8::kernel
