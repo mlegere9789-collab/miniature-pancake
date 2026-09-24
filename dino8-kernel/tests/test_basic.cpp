@@ -28572,6 +28572,117 @@ void TestChamferVertexAsymmetricPerEdgeDistancesMatchGeneralTripleProduct() {
         "rejects a non-positive per-edge distance");
 }
 
+void TestRemoveChamferVertexRoundTripsAConvexBoxCorner() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::ChamferConvexVertex;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::RemoveChamferVertex;
+
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+  const double d = 0.3;
+  const Brep c = ChamferConvexVertex(box, Point3d(0, 0, 0), d);
+  const Point3d centroid = (1.0 / 3.0) * (Point3d(d, 0, 0) + Point3d(0, d, 0) + Point3d(0, 0, d));
+  const Brep restored = RemoveChamferVertex(c, centroid);
+
+  Check(restored.FaceCount() == 6 && restored.raw().m_E.Count() == 12 && restored.raw().m_V.Count() == 8,
+        "RemoveChamferVertex restores the exact face/edge/vertex counts of the pre-chamfer box (6 faces, 12 "
+        "edges, 8 vertices)");
+  ON_TextLog log;
+  bool oriented = false, has_boundary = true;
+  Check(restored.raw().IsValid(&log) && restored.raw().IsManifold(&oriented, &has_boundary) && oriented &&
+            !has_boundary && restored.raw().IsSolid(),
+        "the restored solid is itself a valid, closed, manifold solid");
+  Check(std::fabs(restored.TessellateToClosedMesh(4, 4).Volume() - 1.0) < 1e-9,
+        "the restored solid's volume matches the original unit box exactly");
+  Check(ChamferTestBrepHasVertexNear(restored, Point3d(0, 0, 0), 1e-9),
+        "the restored box has its original sharp corner vertex back");
+  Check(!ChamferTestBrepHasVertexNear(restored, centroid, 1e-9),
+        "the chamfer facet's own centroid point is gone from the restored solid");
+}
+
+void TestRemoveChamferVertexRoundTripsAsymmetricDistancesAndConcaveCorner() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::ChamferConcaveVertex;
+  using dino8::kernel::ChamferConvexVertex;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::RemoveChamferVertex;
+
+  // Asymmetric per-edge distances: the facet is no longer an equilateral
+  // triangle, so this also confirms the reconstruction does not assume
+  // symmetry anywhere.
+  {
+    const double dx = 0.3, dy = 0.2, dz = 0.1;
+    const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+    const Brep c = ChamferConvexVertex(
+        box, Point3d(0, 0, 0), {{Point3d(1, 0, 0), dx}, {Point3d(0, 1, 0), dy}, {Point3d(0, 0, 1), dz}});
+    const Point3d centroid = (1.0 / 3.0) * (Point3d(dx, 0, 0) + Point3d(0, dy, 0) + Point3d(0, 0, dz));
+    const Brep restored = RemoveChamferVertex(c, centroid);
+    Check(restored.FaceCount() == 6, "asymmetric round trip: back to exactly 6 box faces");
+    ON_TextLog log;
+    bool oriented = false, has_boundary = true;
+    Check(restored.raw().IsValid(&log) && restored.raw().IsManifold(&oriented, &has_boundary) && oriented &&
+              !has_boundary && restored.raw().IsSolid(),
+          "the asymmetrically-restored solid is itself a valid, closed, manifold solid");
+    Check(std::fabs(restored.TessellateToClosedMesh(4, 4).Volume() - 1.0) < 1e-9,
+          "the asymmetrically-restored solid's volume matches the original unit box exactly");
+  }
+
+  // Concave mirror, on NotchedCubeCorner's own reflex vertex.
+  {
+    const Brep notched = NotchedCubeCorner();
+    const double base_volume = notched.TessellateToClosedMesh(4, 4).Volume();
+    const double d = 0.3;
+    const Brep c = ChamferConcaveVertex(notched, Point3d(2, 2, 2), d);
+    const Point3d centroid = (1.0 / 3.0) * (Point3d(2 + d, 2, 2) + Point3d(2, 2 + d, 2) + Point3d(2, 2, 2 + d));
+    const Brep restored = RemoveChamferVertex(c, centroid);
+    Check(restored.FaceCount() == 9, "concave round trip: back to exactly 9 NotchedCubeCorner faces");
+    ON_TextLog log;
+    bool oriented = false, has_boundary = true;
+    Check(restored.raw().IsValid(&log) && restored.raw().IsManifold(&oriented, &has_boundary) && oriented &&
+              !has_boundary && restored.raw().IsSolid(),
+          "the concave-restored solid is itself a valid, closed, manifold solid");
+    Check(std::fabs(restored.TessellateToClosedMesh(4, 4).Volume() - base_volume) < 1e-9,
+          "the concave-restored solid's volume matches NotchedCubeCorner's own base volume exactly");
+    Check(ChamferTestBrepHasVertexNear(restored, Point3d(2, 2, 2), 1e-9),
+          "the restored solid has its original reflex corner vertex back");
+  }
+}
+
+void TestRemoveChamferVertexRejectsNonChamferFacesAndOtherBadInputs() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::ChamferConvexVertex;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::RemoveChamferVertex;
+  auto throws = [](const std::function<void()>& fn) {
+    try {
+      fn();
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+    return false;
+  };
+
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+  Check(throws([&] { RemoveChamferVertex(box, Point3d(0.5, 0.5, 0)); }),
+        "rejects a point on an ordinary quad face (not a triangle)");
+  Check(throws([&] { RemoveChamferVertex(box, Point3d(5, 5, 5)); }),
+        "rejects a point far from any face of the solid");
+
+  // A genuinely triangular face that is NOT a vertex-chamfer facet: the
+  // regular tetrahedron fixture (every face is a triangle with 3 distinct
+  // neighbors, but the 3 neighbors' own planes intersect at the OPPOSITE
+  // vertex, not anywhere consistent with this face's own corners lying on
+  // rays from it) - confirmed to be a real risk this function's own
+  // validation must catch, not a hypothetical.
+  const Point3d A(1, 1, 1), B(1, -1, -1), C(-1, 1, -1), D(-1, -1, 1);
+  const std::vector<Brep::PlanarFace> tf = {ChamferTestPlanarFace({A, B, C}), ChamferTestPlanarFace({A, D, B}),
+                                            ChamferTestPlanarFace({A, C, D}), ChamferTestPlanarFace({B, D, C})};
+  const Brep tet = Brep::FromPlanarFaces(tf);
+  const Point3d face_abc_centroid = (1.0 / 3.0) * (A + B + C);
+  Check(throws([&] { RemoveChamferVertex(tet, face_abc_centroid); }),
+        "rejects a genuinely triangular face that does not reconstruct as a vertex-chamfer facet");
+}
+
 void TestRemoveBlendRoundTripsAConcaveFillet() {
   using dino8::kernel::Brep;
   using dino8::kernel::FilletConcaveEdge;
@@ -30575,6 +30686,9 @@ int main() {
   TestChamferConcaveVertexAddsExactTetrahedronVolumeOnNotchedCubeCorner();
   TestChamferVertexRejectsWrongConvexityAndOtherBadInputs();
   TestChamferVertexAsymmetricPerEdgeDistancesMatchGeneralTripleProduct();
+  TestRemoveChamferVertexRoundTripsAConvexBoxCorner();
+  TestRemoveChamferVertexRoundTripsAsymmetricDistancesAndConcaveCorner();
+  TestRemoveChamferVertexRejectsNonChamferFacesAndOtherBadInputs();
   TestRemoveBlendRoundTripsAConcaveFillet();
   TestChamferConcaveEdgeAddsExactRightTriangleVolume();
   TestChamferConcaveEdgeAngleMatchesTwoDistanceForm();
