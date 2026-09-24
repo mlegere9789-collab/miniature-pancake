@@ -6790,6 +6790,68 @@ void TestMeshCloseNakedEdgesWeldsDuplicateAndOffsetVertices() {
   }
 }
 
+// Mesh-level RemoveDegenerateFaces(): three faces, each degenerate for a
+// DIFFERENT one of Check()'s own reasons (repeated vertex index, a
+// zero-length edge between two coincident-but-distinct vertices, and a
+// zero-height collinear triangle), each touching its own private
+// vertices not shared with anything else, alongside one genuinely valid
+// triangle. All hand-derived, not read back: removing the 3 degenerate
+// faces should also drop the 6 vertices only they referenced (3 stay:
+// the valid triangle's own), and leave the valid triangle untouched.
+void TestMeshRemoveDegenerateFacesDropsOnlyDegenerateOnes() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  namespace tol = dino8::kernel::tolerance;
+
+  Mesh clean_box = Brep::Box(1, 1, 1, 2, 2, 2).TessellateToClosedMesh(1, 1);
+  Check(clean_box.RemoveDegenerateFaces(tol::kDistance) == 0 && clean_box.FaceCount() == 12 &&
+            clean_box.VertexCount() == 8,
+        "RemoveDegenerateFaces() on an already-clean mesh removes nothing and leaves it untouched");
+
+  Mesh m;
+  ON_Mesh& raw = m.raw();
+  raw.m_V.Append(ON_3fPoint(0, 0, 0));   // 0: valid triangle
+  raw.m_V.Append(ON_3fPoint(1, 0, 0));   // 1: valid triangle
+  raw.m_V.Append(ON_3fPoint(0, 1, 0));   // 2: valid triangle
+  raw.m_V.Append(ON_3fPoint(5, 5, 5));   // 3: only the repeated-index face
+  raw.m_V.Append(ON_3fPoint(10, 10, 10));  // 4: collinear face
+  raw.m_V.Append(ON_3fPoint(11, 10, 10));  // 5: collinear face
+  raw.m_V.Append(ON_3fPoint(12, 10, 10));  // 6: collinear face
+  raw.m_V.Append(ON_3fPoint(20, 20, 20));  // 7: short-edge face
+  raw.m_V.Append(ON_3fPoint(20, 20, 20));  // 8: short-edge face (coincident with 7, distinct index)
+  raw.m_V.Append(ON_3fPoint(21, 20, 20));  // 9: short-edge face
+  auto add_tri = [&](int a, int b, int c) {
+    ON_MeshFace f;
+    f.vi[0] = a;
+    f.vi[1] = b;
+    f.vi[2] = c;
+    f.vi[3] = c;
+    raw.m_F.Append(f);
+  };
+  add_tri(0, 1, 2);  // valid: a real right triangle
+  add_tri(0, 0, 3);  // degenerate: repeated index (vi[0] == vi[1])
+  add_tri(4, 5, 6);  // degenerate: exactly collinear, zero height
+  add_tri(7, 8, 9);  // degenerate: vertices 7 and 8 coincide, zero-length edge
+
+  const Mesh::CheckReport before = m.Check(tol::kDistance);
+  Check(before.degenerate_faces == 3, "Check() counts all 3 degenerate faces (one per distinct reason)");
+
+  Check(m.RemoveDegenerateFaces(tol::kDistance) == 3, "RemoveDegenerateFaces() removes exactly those 3 faces");
+  Check(m.FaceCount() == 1, "only the one valid triangle survives");
+  Check(m.VertexCount() == 3, "the 6 vertices used only by degenerate faces are dropped along with them");
+  Check(m.Check(tol::kDistance).degenerate_faces == 0, "no degenerate faces remain, by Check()'s own count");
+  Check(m.RemoveDegenerateFaces(tol::kDistance) == 0, "a second call is a no-op - nothing left to remove");
+
+  // The surviving triangle is exactly the original valid one, not some
+  // other combination - its 3 vertices are still at their original
+  // positions.
+  const ON_MeshFace& f = m.raw().m_F[0];
+  Check(ON_3dPoint(m.raw().m_V[f.vi[0]]) == ON_3dPoint(0, 0, 0) &&
+            ON_3dPoint(m.raw().m_V[f.vi[1]]) == ON_3dPoint(1, 0, 0) &&
+            ON_3dPoint(m.raw().m_V[f.vi[2]]) == ON_3dPoint(0, 1, 0),
+        "the surviving face is the original (0,0,0)-(1,0,0)-(0,1,0) triangle, reindexed but not moved");
+}
+
 void TestLoftClosedRingsConcaveEndCapsExactPrismVolume() {
   using dino8::kernel::BooleanCombine;
   using dino8::kernel::BooleanOp;
@@ -8209,6 +8271,174 @@ void TestSubDCreaseAtDoubleEdgeKeepsFoldStraight() {
         "without it, the same edge is treated as smooth and its "
         "subdivision point is measurably pulled off that line instead - "
         "proving the crease flag does something real, not a no-op");
+}
+
+void TestSubDSetEdgeSharpnessCreatesRealSemiSharpCrease() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SubD;
+
+  const Point3d fold_a(0, 0, 0);
+  const Point3d fold_b(1, 0, 0);
+  const double kMax = ON_SubDEdgeSharpness::MaximumValue;  // 4.0, per OpenNURBS
+
+  // --- Rejection cases: SetEdgeSharpness must refuse, not silently no-op. ---
+  {
+    auto subd = SubD::FromControlMesh(MakeHingedDoubleEdgeMesh(), /*crease_at_double_edges=*/false);
+    Check(!subd.SetEdgeSharpness(fold_a, fold_b, -0.5, 1e-9),
+          "SetEdgeSharpness refuses a negative sharpness");
+    Check(!subd.SetEdgeSharpness(fold_a, fold_b, kMax + 1.0, 1e-9),
+          "SetEdgeSharpness refuses a sharpness above ON_SubDEdgeSharpness::MaximumValue");
+    Check(!subd.SetEdgeSharpness(Point3d(9, 9, 9), Point3d(9, 9, 8), 2.0, 1e-9),
+          "SetEdgeSharpness refuses when no vertex exists at the given points");
+
+    // A real (double-edge) hard crease can't take a sharpness value -
+    // OpenNURBS' own ON_SubDEdge::SetSharpnessForExperts defines
+    // sharpness as meaningless there, and this wrapper refuses outright
+    // instead of pretending it worked.
+    auto creased = SubD::FromControlMesh(MakeHingedDoubleEdgeMesh(), /*crease_at_double_edges=*/true);
+    Check(!creased.SetEdgeSharpness(fold_a, fold_b, 2.0, 1e-9),
+          "SetEdgeSharpness refuses an edge that is already a hard Crease");
+    Check(creased.CreaseEdgeCount() == 7,
+          "the refused call left the hard-crease SubD's crease count unchanged");
+  }
+
+  // --- Exact bookkeeping: the stored value, decay arithmetic, and tag
+  // stay exactly what OpenNURBS' own primitives compute - read back via
+  // raw(), not inferred. ---
+  {
+    auto subd = SubD::FromControlMesh(MakeHingedDoubleEdgeMesh(), /*crease_at_double_edges=*/false);
+    Check(subd.SetEdgeSharpness(fold_a, fold_b, 2.5, 1e-9),
+          "SetEdgeSharpness accepts a genuinely fractional ('semi-sharp') weight "
+          "on an ordinary smooth edge");
+
+    const ON_SubDVertex* v0 = subd.raw().FindVertex(&fold_a.x, 1e-9);
+    const ON_SubDVertex* v1 = subd.raw().FindVertex(&fold_b.x, 1e-9);
+    const ON_SubDEdge* e = subd.raw().FindEdge(v0, v1).Edge();
+    Check(e != nullptr && e->IsSmooth() && !e->IsCrease(),
+          "the sharp fold edge keeps its Smooth edge TAG - sharpness is a "
+          "distinct property, not a disguised crease tag");
+    Check(e->IsSharp(), "the fold edge now reports IsSharp() true");
+    Check(e->EndSharpness(0u) == 2.5 && e->EndSharpness(1u) == 2.5,
+          "both ends store exactly the constant weight passed in, read back "
+          "via ON_SubDEdge::EndSharpness - not approximated");
+
+    // ON_SubDEdge::Subdivided() is the exact primitive
+    // ON_SubDimple::GlobalSubdivide() itself calls to compute a child
+    // edge's sharpness (verified by reading opennurbs_subd.cpp's
+    // GlobalSubdivide implementation) - subtracting 1.0 per level. Check
+    // its output directly, deterministic and exact for these inputs.
+    const ON_SubDEdgeSharpness subdivided = e->Sharpness(false).Subdivided(0);
+    Check(subdivided.EndSharpness(0) == 1.5 && subdivided.EndSharpness(1) == 1.5,
+          "one level of decay subtracts exactly 1.0 from a 2.5 weight, per "
+          "ON_SubDEdgeSharpness::Subdivided() - real relaxation math, not a "
+          "permanent crease");
+
+    // Exercise the real Subdivide() pipeline (not just the isolated
+    // Subdivided() function) and confirm the decay actually happened:
+    // the fold's two child edges must both still be sharp (2.5 - 1 = 1.5
+    // > 0) but the edge count with IsSharp() must be exactly the fold's
+    // own 2 children - no other edge in this mesh was ever marked sharp.
+    subd.Subdivide(1);
+    int sharp_edge_count = 0;
+    ON_SubDEdgeIterator eit = subd.raw().EdgeIterator();
+    for (const ON_SubDEdge* e1 = eit.FirstEdge(); e1 != nullptr; e1 = eit.NextEdge()) {
+      if (e1->IsSharp()) {
+        Check(e1->EndSharpness(0u) == 1.5 && e1->EndSharpness(1u) == 1.5,
+              "each child edge of the sharp fold decayed by exactly 1.0, "
+              "matching the isolated Subdivided() computation above");
+        ++sharp_edge_count;
+      }
+    }
+    Check(sharp_edge_count == 2,
+          "exactly the fold's 2 child edges (from splitting the 1 sharp "
+          "parent edge) are sharp after one real Subdivide() - decay is "
+          "real, localized, and not silently dropped or duplicated");
+  }
+
+  // --- Geometric proof: a MaximumValue-weight sharp edge produces the
+  // identical straight-fold subdivision point a real hard crease does,
+  // for the level it hasn't decayed past yet - same check
+  // TestSubDCreaseAtDoubleEdgeKeepsFoldStraight() already uses for an
+  // actual Crease-tagged edge, applied here to a Smooth-tagged one whose
+  // sharpness alone does the work. ---
+  {
+    auto sharp = SubD::FromControlMesh(MakeHingedDoubleEdgeMesh(), /*crease_at_double_edges=*/false);
+    Check(sharp.SetEdgeSharpness(fold_a, fold_b, kMax, 1e-9),
+          "SetEdgeSharpness accepts the maximum in-range weight");
+    auto plain = SubD::FromControlMesh(MakeHingedDoubleEdgeMesh(), /*crease_at_double_edges=*/false);
+
+    sharp.Subdivide(1);
+    plain.Subdivide(1);
+
+    auto closest_to_fold_midpoint = [](const Mesh& mesh) {
+      const Point3d target(0.5, 0, 0);
+      double best_dist = 1e30;
+      for (int i = 0; i < mesh.raw().m_V.Count(); ++i) {
+        const double dist = (Point3d(mesh.raw().m_V[i]) - target).Length();
+        best_dist = std::min(best_dist, dist);
+      }
+      return best_dist;
+    };
+
+    Check(closest_to_fold_midpoint(sharp.ToApproximateMesh()) < 1e-6,
+          "a MaximumValue-sharp edge gets a real subdivision point exactly "
+          "at its straight-line midpoint (0.5, 0, 0), just like a real "
+          "hard crease");
+    Check(closest_to_fold_midpoint(plain.ToApproximateMesh()) > 0.05,
+          "the untouched control SubD still rounds the same fold off, "
+          "confirming the difference is SetEdgeSharpness's doing");
+  }
+}
+
+// SubD::SetCrease(): retagging an ordinary shared edge to Crease (and
+// back) after construction, without the mesh-double-edge trick
+// crease_at_double_edges needs. Reuses the same hinge fixture and
+// straight-fold-midpoint check TestSubDCreaseAtDoubleEdgeKeepsFoldStraight()
+// and TestSubDSetEdgeSharpnessCreatesRealSemiSharpCrease() already
+// established, since a genuine retag must produce the identical
+// geometric effect a construction-time crease does.
+void TestSubDSetCreaseTagsAndUntagsEdges() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SubD;
+
+  const Point3d fold_a(0, 0, 0);
+  const Point3d fold_b(1, 0, 0);
+
+  Check(!SubD::FromControlMesh(MakeHingedDoubleEdgeMesh(), false)
+             .SetCrease(Point3d(9, 9, 9), Point3d(9, 9, 8), true, 1e-9),
+        "SetCrease refuses when no vertex exists at the given points");
+
+  auto subd = SubD::FromControlMesh(MakeHingedDoubleEdgeMesh(), /*crease_at_double_edges=*/false);
+  Check(subd.CreaseEdgeCount() == 6, "the untouched hinge starts with only its 6 boundary creases");
+
+  Check(subd.SetCrease(fold_a, fold_b, true, 1e-9), "SetCrease(true) retags the fold edge and reports a real change");
+  Check(subd.CreaseEdgeCount() == 7,
+        "the fold is now creased too - matching crease_at_double_edges=true's own count exactly");
+  Check(!subd.SetCrease(fold_a, fold_b, true, 1e-9),
+        "SetCrease(true) again is a no-op (already a crease) and reports no change");
+
+  // Geometric proof: retagging must produce the identical effect
+  // FromControlMesh(..., crease_at_double_edges=true) does.
+  {
+    auto retagged = subd;  // deep copy (ON_SubD's copy ctor deep-copies)
+    retagged.Subdivide(1);
+    const Mesh approx = retagged.ToApproximateMesh();
+    const Point3d target(0.5, 0, 0);
+    double best_dist = 1e30;
+    for (int i = 0; i < approx.raw().m_V.Count(); ++i) {
+      best_dist = std::min(best_dist, (Point3d(approx.raw().m_V[i]) - target).Length());
+    }
+    Check(best_dist < 1e-6,
+          "the retagged fold gets a real subdivision point exactly at its "
+          "straight-line midpoint (0.5, 0, 0), same as a construction-time crease");
+  }
+
+  Check(subd.SetCrease(fold_a, fold_b, false, 1e-9), "SetCrease(false) un-tags the fold back to smooth");
+  Check(subd.CreaseEdgeCount() == 6, "...restoring the original 6-boundary-crease-only count");
+  Check(!subd.SetCrease(fold_a, fold_b, false, 1e-9),
+        "SetCrease(false) again is a no-op (already smooth) and reports no change");
 }
 
 void TestSubDFlatQuadGridStaysFlatAndAreaExact() {
@@ -25253,6 +25483,8 @@ int main() {
   TestSubDFromBoxSubdividesToExactCatmullClarkCounts();
   TestSubDFromControlMeshRejectsEmptyMesh();
   TestSubDCreaseAtDoubleEdgeKeepsFoldStraight();
+  TestSubDSetEdgeSharpnessCreatesRealSemiSharpCrease();
+  TestSubDSetCreaseTagsAndUntagsEdges();
   TestSubDFlatQuadGridStaysFlatAndAreaExact();
   TestSubDToNurbsPatchesExactOnRegularFlatGrid();
   TestSubDLimitPointsExactCubeAndFlatGrid();
@@ -25482,6 +25714,7 @@ int main() {
   TestMeshCheckAndFillSmallHolesRestoreDroppedFaces();
   TestMeshUnifyNormalsFixesFlippedAndInvertedFaces();
   TestMeshCloseNakedEdgesWeldsDuplicateAndOffsetVertices();
+  TestMeshRemoveDegenerateFacesDropsOnlyDegenerateOnes();
 
   sweep_tests::TestMergeAndWeldDropsCollapsedPoleTriangles();
   sweep_tests::TestExtrudeRectangleIsExactCappedSolid();

@@ -623,8 +623,18 @@ class Mesh {
   //
   // The mesh-level counterpart of Brep::Check() and its repairs: the
   // same questions IsClosedManifold() answers with one bool, as COUNTS
-  // and LOCATIONS a caller can act on, plus the three repairs that turn
-  // the common "almost closed" meshes back into closed manifolds.
+  // and LOCATIONS a caller can act on, plus the four repairs that turn
+  // the common "almost closed" or "almost clean" meshes back into closed,
+  // valid ones (CloseNakedEdges() and FillSmallHoles() for naked_edges,
+  // UnifyNormals() for orientation_conflicts, RemoveDegenerateFaces() for
+  // degenerate_faces below). Two of CheckReport's five conditions still
+  // have no repair here: non_manifold_edges (repairing a 3+-face edge
+  // needs a judgment call - which faces stay grouped together - this
+  // class doesn't make for you) and interior duplicate_vertices away
+  // from any naked edge (CloseNakedEdges() only welds boundary ones, by
+  // design - an interior feature that happens to be `tolerance`-close to
+  // another is not the same bug as a seam left open by construction, and
+  // silently welding it could collapse real geometry).
   struct CheckReport {
     // Undirected edges used by exactly one face (the open boundary).
     int naked_edges = 0;
@@ -680,6 +690,22 @@ class Mesh {
   // vertices welded away. Texture coordinates are dropped (a welded
   // vertex has no single UV).
   int CloseNakedEdges(double tolerance);
+
+  // Removes every face Check(tolerance) would count in degenerate_faces -
+  // literally the same test, not a redefinition of it (see Check()'s own
+  // comment: a repeated vertex index, an edge shorter than `tolerance`,
+  // or a height at or below `tolerance`), so a caller can trust that
+  // Check(tolerance).degenerate_faces == 0 after this runs. A vertex left
+  // referenced by no surviving face is then dropped and remaining faces
+  // reindexed, the same compaction CloseNakedEdges() already does. Never
+  // touches a face that ISN'T degenerate, even if removing it would make
+  // a neighboring hole "nicer" - this is strictly subtractive, no
+  // re-triangulation or hole-filling (FillSmallHoles() is the tool for
+  // the hole a removed sliver can leave behind). Texture coordinates are
+  // dropped, same reason as CloseNakedEdges() - a vertex surviving a
+  // removed face may have lost the only UV that referenced it uniquely.
+  // Returns the number of faces removed.
+  int RemoveDegenerateFaces(double tolerance = tolerance::kDistance);
 
   // Fills every boundary loop (NakedEdgeLoops()) whose vertices' axis-
   // aligned bounding-box diagonal is at most `max_extent`: a 3-vertex

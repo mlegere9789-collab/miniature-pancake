@@ -2495,6 +2495,52 @@ std::vector<int> WeldGroups(const ON_Mesh& mesh, const std::vector<int>& candida
   return rep;
 }
 
+// Same degeneracy test Mesh::Check() has always used, factored out so
+// Mesh::RemoveDegenerateFaces() removes EXACTLY what Check() counts - a
+// repeated vertex index, an edge shorter than `tolerance`, or a height
+// (2*area / longest edge) at or below `tolerance`.
+bool IsDegenerateFace(const ON_Mesh& mesh, const ON_MeshFace& f, double tolerance) {
+  const int n = f.IsQuad() ? 4 : 3;
+  for (int a = 0; a < n; ++a) {
+    for (int b = a + 1; b < n; ++b) {
+      if (f.vi[a] == f.vi[b]) return true;
+    }
+  }
+  const ON_3dPoint p0(mesh.m_V[f.vi[0]]), p1(mesh.m_V[f.vi[1]]), p2(mesh.m_V[f.vi[2]]);
+  double longest = std::max({p0.DistanceTo(p1), p1.DistanceTo(p2), p2.DistanceTo(p0)});
+  double shortest = std::min({p0.DistanceTo(p1), p1.DistanceTo(p2), p2.DistanceTo(p0)});
+  double area2 = ON_CrossProduct(p1 - p0, p2 - p0).Length();
+  if (f.IsQuad()) {
+    const ON_3dPoint p3(mesh.m_V[f.vi[3]]);
+    longest = std::max({longest, p2.DistanceTo(p3), p3.DistanceTo(p0)});
+    shortest = std::min({shortest, p2.DistanceTo(p3), p3.DistanceTo(p0)});
+    area2 += ON_CrossProduct(p2 - p0, p3 - p0).Length();
+  }
+  const double height = longest > 0.0 ? area2 / longest : 0.0;
+  return shortest <= tolerance || height <= tolerance;
+}
+
+// Drops every vertex no surviving face of `mesh` references and
+// reindexes those faces to match - the exact compaction step
+// CloseNakedEdges() and RemoveDegenerateFaces() both need after removing
+// or remapping faces. Does not touch m_F itself, only m_V and the
+// indices already in m_F.
+void CompactUnusedVertices(ON_Mesh& mesh) {
+  std::vector<int> new_index(static_cast<size_t>(mesh.m_V.Count()), -1);
+  ON_3fPointArray vertices;
+  for (int i = 0; i < mesh.m_F.Count(); ++i) {
+    for (int k = 0; k < 4; ++k) {
+      int& v = mesh.m_F[i].vi[k];
+      if (new_index[static_cast<size_t>(v)] < 0) {
+        new_index[static_cast<size_t>(v)] = vertices.Count();
+        vertices.Append(mesh.m_V[v]);
+      }
+      v = new_index[static_cast<size_t>(v)];
+    }
+  }
+  mesh.m_V = vertices;
+}
+
 }  // namespace
 
 Mesh::CheckReport Mesh::Check(double tolerance) const {
@@ -2509,29 +2555,7 @@ Mesh::CheckReport Mesh::Check(double tolerance) const {
       ++directed_count[std::make_pair(a, b)];
     });
 
-    // Degeneracy: repeated index, a too-short edge, or a too-small height.
-    const int n = f.IsQuad() ? 4 : 3;
-    bool degenerate = false;
-    for (int a = 0; a < n && !degenerate; ++a) {
-      for (int b = a + 1; b < n && !degenerate; ++b) {
-        if (f.vi[a] == f.vi[b]) degenerate = true;
-      }
-    }
-    if (!degenerate) {
-      const ON_3dPoint p0(mesh_.m_V[f.vi[0]]), p1(mesh_.m_V[f.vi[1]]), p2(mesh_.m_V[f.vi[2]]);
-      double longest = std::max({p0.DistanceTo(p1), p1.DistanceTo(p2), p2.DistanceTo(p0)});
-      double area2 = ON_CrossProduct(p1 - p0, p2 - p0).Length();
-      double shortest = std::min({p0.DistanceTo(p1), p1.DistanceTo(p2), p2.DistanceTo(p0)});
-      if (f.IsQuad()) {
-        const ON_3dPoint p3(mesh_.m_V[f.vi[3]]);
-        longest = std::max({longest, p2.DistanceTo(p3), p3.DistanceTo(p0)});
-        shortest = std::min({shortest, p2.DistanceTo(p3), p3.DistanceTo(p0)});
-        area2 += ON_CrossProduct(p2 - p0, p3 - p0).Length();
-      }
-      const double height = longest > 0.0 ? area2 / longest : 0.0;
-      if (shortest <= tol || height <= tol) degenerate = true;
-    }
-    if (degenerate) ++report.degenerate_faces;
+    if (IsDegenerateFace(mesh_, f, tol)) ++report.degenerate_faces;
   }
   for (const auto& [edge, count] : undirected_count) {
     if (count == 1) ++report.naked_edges;
@@ -2630,25 +2654,32 @@ int Mesh::CloseNakedEdges(double tolerance) {
     }
     faces.Append(f);
   }
-  // Compact the vertex list to the ones still referenced.
-  std::vector<int> new_index(static_cast<size_t>(mesh_.m_V.Count()), -1);
-  ON_3fPointArray vertices;
-  for (int i = 0; i < faces.Count(); ++i) {
-    for (int k = 0; k < 4; ++k) {
-      int& v = faces[i].vi[k];
-      if (new_index[static_cast<size_t>(v)] < 0) {
-        new_index[static_cast<size_t>(v)] = vertices.Count();
-        vertices.Append(mesh_.m_V[v]);
-      }
-      v = new_index[static_cast<size_t>(v)];
-    }
-  }
-  mesh_.m_V = vertices;
   mesh_.m_F = faces;
+  CompactUnusedVertices(mesh_);
   mesh_.m_S.Destroy();
   mesh_.m_N.Destroy();
   mesh_.m_FN.Destroy();
   return welded;
+}
+
+int Mesh::RemoveDegenerateFaces(double tolerance) {
+  const double tol = std::max(tolerance, 0.0);
+  ON_SimpleArray<ON_MeshFace> faces;
+  int removed = 0;
+  for (int i = 0; i < mesh_.m_F.Count(); ++i) {
+    if (IsDegenerateFace(mesh_, mesh_.m_F[i], tol)) {
+      ++removed;
+      continue;
+    }
+    faces.Append(mesh_.m_F[i]);
+  }
+  if (removed == 0) return 0;
+  mesh_.m_F = faces;
+  CompactUnusedVertices(mesh_);
+  mesh_.m_S.Destroy();
+  mesh_.m_N.Destroy();
+  mesh_.m_FN.Destroy();
+  return removed;
 }
 
 int Mesh::FillSmallHoles(double max_extent) {
