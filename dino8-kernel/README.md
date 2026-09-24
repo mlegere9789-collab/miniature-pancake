@@ -753,6 +753,22 @@ What this repo does instead:
   rejection tests for a binary-format header, a vertex element missing
   `z`, a face line with the wrong corner count, and an out-of-range face
   index.
+- Every `Model::Add*()` gained an optional `name` parameter, closing a
+  real gap in `.3dm` metadata fidelity: before this, every object placed
+  in a `Model` got a default, empty `ON_3dmObjectAttributes`, so a caller
+  had no way to attach even the most basic .3dm object metadata - the
+  object name Rhino itself relies on for selection-by-name and for
+  round-tripping identity across a save/reload. A non-empty name is set
+  via `ON_3dmObjectAttributes::SetName(..., /*bFixInvalidName=*/true)`,
+  the same call `dino8-app/src/io/File3dm.cpp` already uses for every
+  other named entity it writes; an empty (default) name leaves the
+  attributes exactly as before, so the change is additive - no existing
+  caller's behavior changes. Verified with a real round trip through an
+  actual `.3dm` file: named a `Mesh` and a `Brep` differently, added a
+  third `Curve` with no name at all, saved, reloaded, and confirmed each
+  reloaded object's own `ON_3dmObjectAttributes::Name()` exactly matches
+  what it was given - including the unnamed curve coming back with a
+  genuinely empty name, not some default placeholder.
 - `Brep::GetTightBoundingBox()` closes a real gap: nothing here could
   answer "roughly how big/where is this Brep" without tessellating it
   first, and even then Mesh::GetBoundingBox() only sees a tessellation's
@@ -3285,7 +3301,60 @@ honestly out of scope.
   Still deliberately out of scope: a genuinely non-planar 3D curve
   offset (e.g. sweeping a Frenet frame along the curve), body/solid
   offset, shell/hollow beyond `ShellConvexPlanar`, per-face wall-
-  thickness overrides, and thicken-sheet-to-solid.
+  thickness overrides (closed the same day, see below), and
+  thicken-sheet-to-solid.
+- **`ShellConvexPlanar(solid, removed_faces, wall_thickness)`**
+  (2026-09-24) - the per-face wall-thickness overload (Parasolid
+  `PK_BODY_shell`'s own per-face `thickness` array, as distinct from its
+  single-scalar form) of the existing scalar `ShellConvexPlanar(solid,
+  removed_faces, t)`. Not a second implementation: the scalar form is now
+  a one-line delegation (`wall_thickness` filled uniformly with `t`), so
+  its own already-verified behavior - every existing degeneracy/adjacency
+  check included - is provably unchanged, confirmed directly in the test
+  (the per-face overload with every entry equal reproduces the scalar
+  overload's own exact volume, not just approximately). The actual
+  generalization is small and mechanical: every place the single scalar
+  `t` used to offset a KEPT face's own plane/loop inward, this uses THAT
+  FACE's own `wall_thickness[i]` instead - the surrounding machinery
+  (each face's inner offset independently clipped against every OTHER,
+  possibly differently-offset, face's own constraint plane; the rim/
+  washer construction around each opening) needed no change at all, since
+  it already worked in terms of each face's own already-computed
+  constraint plane `pi[i]`, never the scalar `t` directly, once `pi[]`
+  itself is built from per-face values.
+  Verified against a genuine EXACT closed-form generalization of the
+  existing scalar test's own cube formula, not merely spot-checked: for
+  an open-top cube (removing the one non-axis-paired face), giving each
+  of the five KEPT faces its own distinct thickness gives cavity_volume
+  = `(s - t_left - t_right) * (s - t_front - t_back) * (s - t_bottom)`
+  - the direct per-axis generalization of the scalar case's own
+  `(s-2t)^2*(s-t)` (which is just this formula with every `t_*` equal) -
+  confirmed to match `ShellConvexPlanar`'s own exact
+  (double-precision, untessellated) volume to 1e-9 for five genuinely
+  different thickness values, not a uniform or symmetric case that could
+  hide an indexing bug. Also checked: the result keeps the same 14-face
+  topology and closed/watertight tessellation as the uniform case;
+  `wall_thickness.size()` mismatched against `PlanarFaces().size()`
+  throws; a non-positive entry on a KEPT face throws; and a REMOVED
+  face's own entry (which bounds no wall of its own) is never read, even
+  when set to a nonsensical negative value - confirmed by testing rather
+  than assumed, since a careless implementation could easily validate
+  every entry unconditionally. Confirmed by the same stash-based method
+  the other entries here use: reverting just `boolean.h`/`boolean.cpp`
+  turns every new per-face test into a compile error. The general
+  boolean sweep (`dino8_general_boolean_sweep`) is byte-for-byte
+  identical before and after this change, as expected for a change that
+  never touches `boolean_general.cpp`.
+  Still deliberately out of scope: extending `ShellConvexPlanar` itself
+  to non-convex or curved-face solids (both throw, unchanged - see
+  `ShellConvexPlanar`'s own doc comment for exactly which precondition
+  fires and why: a non-convex solid would clip pieces of itself away
+  against its own offset planes, and this function operates on
+  `PlanarFaces()` alone, so a curved-face Brep isn't representable
+  here at all - a genuine curved-face shell is a substantially larger
+  undertaking, on the order of `BooleanCombineGeneral` itself, not
+  attempted in this pass), thicken-sheet-to-solid, and body/solid
+  offset.
 - `NurbsSurface::CoonsPatch(bottom, top, left, right, out, tolerance,
   &out_corner_gap)`: the exact bilinearly-blended Coons patch through 4
   boundary curves (Parasolid/Rhino's NetworkSrf/EdgeSrf for exactly 4

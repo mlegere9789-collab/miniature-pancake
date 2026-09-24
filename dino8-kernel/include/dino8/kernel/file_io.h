@@ -20,8 +20,24 @@ class Model {
  public:
   Model();
 
-  void AddCurve(const NurbsCurve& curve);
-  void AddBrep(const Brep& brep);
+  // Every Add*() below takes an optional object `name`. Before this, every
+  // object this kernel ever put into a Model got a default, empty
+  // ON_3dmObjectAttributes - a real, disclosed gap in .3dm metadata
+  // fidelity (PARITY_MAP.md's own "kernel-level data exchange" evidence:
+  // "write a default ON_3dmObjectAttributes only"): a caller had no way to
+  // attach even the most basic identifying metadata .3dm consumers
+  // actually rely on (Rhino's own object name, used for selection-by-name,
+  // block/part naming, and round-tripping identity across a save/reload).
+  // An empty (default) `name` leaves the attributes exactly as before -
+  // no behavior change for existing callers. A non-empty `name` is set via
+  // ON_3dmObjectAttributes::SetName(..., /*bFixInvalidName=*/true), the
+  // same call dino8-app/src/io/File3dm.cpp already uses for every other
+  // named entity it writes (layers, views, materials, ...) - `true` fixes
+  // up characters ON_ModelComponent::IsValidComponentName() would
+  // otherwise reject (e.g. a name that's pure whitespace) rather than
+  // silently dropping the name or failing outright.
+  void AddCurve(const NurbsCurve& curve, const std::string& name = std::string());
+  void AddBrep(const Brep& brep, const std::string& name = std::string());
 
   // Adds a mesh (a box, cylinder, boolean result, ...) as its own model
   // object - the missing counterpart to AddCurve()/AddBrep() that closed
@@ -30,14 +46,14 @@ class Model {
   // a .3dm file at all, only to export it separately via
   // Mesh::SaveObj()/SaveStl(). Same pattern as the other two: copies
   // `mesh`'s underlying ON_Mesh into a new model geometry component.
-  void AddMesh(const Mesh& mesh);
+  void AddMesh(const Mesh& mesh, const std::string& name = std::string());
 
   // Adds a SubD control cage/subdivision surface as its own model
   // object - the same "no way to put this object type into a .3dm at
   // all" gap AddMesh() closed, just for SubD instead of Mesh. Same
   // pattern: copies the SubD's underlying ON_SubD into a new model
   // geometry component.
-  void AddSubD(const SubD& subd);
+  void AddSubD(const SubD& subd, const std::string& name = std::string());
 
   // Adds a point cloud as its own model object. PointCloud's own doc
   // comment claims ON_PointCloud is "the same one [OpenNURBS'] .3dm
@@ -49,7 +65,7 @@ class Model {
   // AddMesh()/AddSubD() closed for their own types). Same pattern: copies
   // `cloud`'s underlying ON_PointCloud (positions, and per-point colors/
   // normals when present) into a new model geometry component.
-  void AddPointCloud(const PointCloud& cloud);
+  void AddPointCloud(const PointCloud& cloud, const std::string& name = std::string());
 
   int ObjectCount() const;
 

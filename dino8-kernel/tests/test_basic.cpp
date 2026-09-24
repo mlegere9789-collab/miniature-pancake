@@ -4930,6 +4930,70 @@ void TestModelAddPointCloudRoundTrips() {
   std::remove(path.c_str());
 }
 
+// Every Add*() gained an optional `name` parameter - before this, every
+// object placed in a Model got a default, empty ON_3dmObjectAttributes,
+// so a caller had no way to attach even the most basic .3dm object
+// metadata (the name Rhino itself uses for selection-by-name and
+// round-tripping object identity). Checks a real round trip of a name
+// through an actual .3dm file for two different object types (Mesh,
+// Brep), plus the "no name given" case still leaving the object unnamed
+// (proving the new parameter is additive, not a behavior change for
+// existing callers).
+void TestModelAddObjectNameRoundTrips() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Model;
+  using dino8::kernel::Result;
+
+  const auto box_mesh = MakeQuadBoxMesh(0, 0, 0, 1, 1, 1);
+  const auto box_brep = Brep::Box(0, 0, 0, 1, 1, 1);
+
+  Model model;
+  model.AddMesh(box_mesh, "MyMesh");
+  model.AddBrep(box_brep, "MyBrep");
+  const auto line = dino8::kernel::NurbsCurve::FromControlPoints(
+      {dino8::kernel::Point3d(0, 0, 0), dino8::kernel::Point3d(1, 0, 0)}, /*degree=*/1);
+  model.AddCurve(line);  // no name given
+  Check(model.ObjectCount() == 3, "model has three objects after two named + one unnamed Add*()");
+
+  const std::string path = "dino8_kernel_model_object_name_roundtrip_test.3dm";
+  Check(model.Save(path) == Result::Ok, ".3dm save with named objects succeeded");
+
+  Model loaded;
+  Check(Model::Load(path, loaded) == Result::Ok, ".3dm load succeeded");
+
+  ONX_ModelComponentIterator iterator(loaded.raw(), ON_ModelComponent::Type::ModelGeometry);
+  bool found_named_mesh = false;
+  bool found_named_brep = false;
+  bool found_unnamed_curve = false;
+  for (const ON_ModelComponent* component = iterator.FirstComponent(); component != nullptr;
+       component = iterator.NextComponent()) {
+    const auto* geometry_component = static_cast<const ON_ModelGeometryComponent*>(component);
+    const ON_3dmObjectAttributes* attributes = geometry_component->Attributes(nullptr);
+    Check(attributes != nullptr, "every reloaded geometry object still carries its attributes");
+    const ON_Geometry* geometry = geometry_component->Geometry(nullptr);
+    if (dynamic_cast<const ON_Mesh*>(geometry) != nullptr) {
+      found_named_mesh = true;
+      Check(attributes->Name() == ON_wString("MyMesh"),
+            "the reloaded mesh's object name exactly matches what AddMesh() was given (\"MyMesh\")");
+    } else if (dynamic_cast<const ON_Brep*>(geometry) != nullptr) {
+      found_named_brep = true;
+      Check(attributes->Name() == ON_wString("MyBrep"),
+            "the reloaded brep's object name exactly matches what AddBrep() was given (\"MyBrep\")");
+    } else if (dynamic_cast<const ON_NurbsCurve*>(geometry) != nullptr) {
+      found_unnamed_curve = true;
+      Check(attributes->Name().IsEmpty(),
+            "the reloaded curve - added with no name argument - has no object name, proving "
+            "the new parameter is a no-op when omitted");
+    }
+  }
+  Check(found_named_mesh && found_named_brep && found_unnamed_curve,
+        "all three object types (named mesh, named brep, unnamed curve) were found in the "
+        "reloaded model");
+
+  std::remove(path.c_str());
+}
+
 void TestBoxVolume() {
   const auto box = MakeBox(0, 0, 0, 2, 2, 2);
   Check(std::abs(box.Volume() - 8.0) < 1e-9, "unit-scaled box volume is correct");
@@ -10434,6 +10498,99 @@ void TestShellConvexPlanarRejectsAdjacentOpenings() {
   Check(threw,
         "ShellConvexPlanar refuses two mutually adjacent removed faces (needs a "
         "non-planar multi-facet rim, out of scope here)");
+}
+
+void TestShellConvexPlanarPerFaceWallThicknessMatchesExactCavityFormula() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::ShellConvexPlanar;
+
+  const double s = 10.0;
+  const Brep box = Brep::Box(0, 0, 0, s, s, s);
+  const size_t n = box.PlanarFaces().size();
+
+  // The per-face overload with every entry equal must reproduce the
+  // scalar overload's own result EXACTLY - a thin delegation, not a
+  // second implementation, so this is a direct check that the two paths
+  // agree bit-for-bit, not just approximately.
+  const Brep scalar_shell = ShellConvexPlanar(box, {1}, 1.0);
+  const Brep uniform_vector_shell = ShellConvexPlanar(box, {1}, std::vector<double>(n, 1.0));
+  Check(std::fabs(PlanarBrepVolumeExact(scalar_shell) - PlanarBrepVolumeExact(uniform_vector_shell)) < 1e-12,
+        "ShellConvexPlanar's per-face overload with uniform entries matches the scalar overload's exact volume");
+
+  // Genuinely different per-face thickness on all 5 kept faces (0=bottom
+  // -z, 2=front -y, 3=back -y, 4=left -x, 5=right +x per Brep::Box()'s
+  // own face-order comment; 1=top +z is the removed/open face). Since
+  // only ONE wall bounds the cavity in each axis except where BOTH
+  // opposing faces are kept, the cavity is the exact box
+  //   x in [t4, s-t5], y in [t2, s-t3], z in [t0, s]
+  // - the direct per-axis generalization of the existing uniform test's
+  // own (s-2t)^2*(s-t) formula (there t4=t5=t2=t3=t0=t collapses this to
+  // exactly that expression).
+  const double t0 = 0.5, t2 = 1.0, t3 = 1.5, t4 = 2.0, t5 = 0.8;
+  std::vector<double> mixed(n, 0.0);
+  mixed[0] = t0;
+  mixed[2] = t2;
+  mixed[3] = t3;
+  mixed[4] = t4;
+  mixed[5] = t5;
+  const Brep mixed_shell = ShellConvexPlanar(box, {1}, mixed);
+
+  const double cavity_volume = (s - t4 - t5) * (s - t2 - t3) * (s - t0);
+  const double expected_volume = s * s * s - cavity_volume;
+  Check(std::fabs(expected_volume - 487.0) < 1e-12,
+        "the hand-derived per-face cavity formula itself evaluates to 487 for these five thicknesses");
+  Check(std::fabs(PlanarBrepVolumeExact(mixed_shell) - expected_volume) < 1e-9,
+        "ShellConvexPlanar's per-face wall_thickness exact volume matches the closed-form per-axis cavity formula");
+
+  Check(mixed_shell.FaceCount() == 14,
+        "a per-face-thickness open-top shell still has the same 14-face topology as the uniform case");
+  const auto mesh = mixed_shell.TessellateToClosedMesh(1, 1);
+  Check(mesh.IsClosedManifold(),
+        "the per-face-thickness shell's tessellation also welds into one closed, watertight manifold");
+  Check(std::fabs(mesh.Volume() - expected_volume) < 1e-2,
+        "the per-face-thickness shell's tessellated-mesh volume also matches the closed-form cavity volume");
+}
+
+void TestShellConvexPlanarPerFaceWallThicknessArgumentChecks() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::ShellConvexPlanar;
+
+  const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+  const size_t n = box.PlanarFaces().size();
+
+  bool threw = false;
+  try {
+    ShellConvexPlanar(box, {1}, std::vector<double>(n - 1, 1.0));
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "ShellConvexPlanar's per-face overload throws on a wall_thickness "
+               "vector whose size doesn't match PlanarFaces().size()");
+
+  threw = false;
+  std::vector<double> zero_on_kept(n, 1.0);
+  zero_on_kept[0] = 0.0;  // face 0 (bottom) is kept for removed_faces={1}
+  try {
+    ShellConvexPlanar(box, {1}, zero_on_kept);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "ShellConvexPlanar's per-face overload throws when a KEPT face's "
+               "own wall_thickness entry is non-positive");
+
+  // A REMOVED face's own entry is never read, so a nonsensical value
+  // there (even negative) must not throw.
+  std::vector<double> junk_on_removed(n, 1.0);
+  junk_on_removed[1] = -999.0;  // face 1 is the removed face here
+  bool threw_unexpectedly = false;
+  try {
+    ShellConvexPlanar(box, {1}, junk_on_removed);
+  } catch (...) {
+    threw_unexpectedly = true;
+  }
+  Check(!threw_unexpectedly,
+        "ShellConvexPlanar's per-face overload ignores a removed face's own "
+        "wall_thickness entry, however nonsensical");
 }
 
 }  // namespace
@@ -26313,6 +26470,7 @@ int main() {
   TestModelAddMeshRoundTrips();
   TestModelAddSubDRoundTrips();
   TestModelAddPointCloudRoundTrips();
+  TestModelAddObjectNameRoundTrips();
   TestModelLoadRejectsMeshWithOutOfRangeFaceIndex();
   TestSplitByPlane();
   TestConvexHull();
@@ -26409,6 +26567,8 @@ int main() {
   TestShellConvexPlanarCubeOpenTopExactVolume();
   TestShellConvexPlanarRejectsTooLargeThickness();
   TestShellConvexPlanarRejectsAdjacentOpenings();
+  TestShellConvexPlanarPerFaceWallThicknessMatchesExactCavityFormula();
+  TestShellConvexPlanarPerFaceWallThicknessArgumentChecks();
   TestFilletConvexEdgeUnitCubeTopFrontCorner();
   TestFilletConvexEdgeTaperedRailExactness();
   TestFilletConvexEdgeTaperedClosedFormVolumeMatchesFrustumFormula();
