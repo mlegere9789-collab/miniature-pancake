@@ -351,6 +351,21 @@ class Brep {
     // Tessellate(), not just look right in this kernel's own pipeline.
     int notch_begin = 0;
     int notch_count = 0;
+    // Further notch runs on the SAME face, with exactly the semantics of
+    // notch_begin/notch_count above (begin index, point count, no
+    // wraparound, each run an adjacent CylindricalFace's own true cap
+    // arc). A face meeting several filleted edges - a box end face whose
+    // two top corners are both rounded by FilletConvexEdges (fillet.h),
+    // or two parallel FilletConvexEdge calls in sequence - needs one run
+    // per notched corner; before this field existed a second notch simply
+    // overwrote the first's notch_begin/notch_count, leaving that earlier
+    // corner as ~200 unshared micro-edges (a free boundary in
+    // IsManifold()). FromMixedFaces() treats {notch_begin, notch_count}
+    // (when notch_count > 1) plus every entry here as one set of
+    // non-overlapping runs and collapses each identically. Empty (the
+    // default) for every face this kernel built before the field existed,
+    // so nothing already built changes.
+    std::vector<std::pair<int, int>> notch_runs;
 
     // Optional, narrow extension consumed ONLY by TessellateConforming()
     // (below) - every other producer/consumer of PlanarFace (PlanarFaces(),
@@ -937,6 +952,78 @@ class Brep {
     double cap1_surface_fit_tolerance = 0.0;
   };
 
+  // One spherical blend patch's exact geometry: the piece of the sphere
+  // of radius `radius` centered at `frame.origin` covering longitude
+  // [0, angle] (radians, measured from frame.xaxis toward frame.yaxis
+  // about frame.zaxis - the same angle=0-at-xaxis convention every other
+  // angle on CylindricalFace/ConicalFace uses) and latitude [lat0, lat1]
+  // (radians, from the frame's own equator plane toward +frame.zaxis; the
+  // south pole is -pi/2, the north pole +pi/2). This is exactly the shape
+  // a constant-radius rolling-ball VERTEX blend takes at a convex corner
+  // where the ball is simultaneously tangent to three faces (see
+  // FilletConvexEdges in dino8/kernel/fillet.h, the one producer): the
+  // spherical triangle bounded by the three great-circle arcs along which
+  // the three incident edge fillets' own cylinders end - realized here as
+  // a latitude/longitude rectangle whose `lat1` (or `lat0`) side has
+  // collapsed to a pole, so its three genuine boundary curves are ALL
+  // isocurves of the sphere's own parameterization: the equator arc at
+  // v=lat0 (or lat1) and the two meridians at u=0 and u=`angle`. (A
+  // spherical triangle whose three arcs are NOT two meridians plus one
+  // latitude circle - a corner where fewer than two of the three dihedral
+  // angles are right angles - cannot be written this way; see
+  // FilletConvexEdges' own SCOPE note for that disclosed limit.)
+  //
+  // Exactness argument, the same one CylindricalFace/ConicalFace rely on:
+  // FromMixedFaces() builds the surface via ON_Sphere::GetNurbForm (a
+  // rational quadratic NURBS that is EXACTLY the sphere, the same
+  // conversion Brep::Sphere() already trusts) and trims it to the
+  // sub-rectangle of the sphere's own (u, v) domain given by `angle`,
+  // `lat0`, `lat1` - converted from true radians to NURBS parameter via
+  // ON_Circle::GetNurbFormParameterFromRadian for u (ON_Sphere's u-knots
+  // are literally the base circle's, confirmed against the vendored
+  // source), and via the same conversion on the meridian's own
+  // south-pole-to-north-pole semicircle (knots -pi/2, 0, +pi/2 - a circle
+  // knot vector shifted by -pi/2) for v. At the quadrant knots (0, +-pi/2,
+  // pi, ...) NURBS parameter and radian agree exactly, so a box corner's
+  // own octant is trimmed with no conversion error at all. The patch's
+  // outward normal is the sphere's own radial direction; `outward ==
+  // true` (the default, and the only value the vertex blend ever needs)
+  // keeps it, `false` flips it via ON_BrepFace::m_bRev exactly as
+  // CylindricalFace::outward does.
+  //
+  // A POLE (lat1 == +pi/2 or lat0 == -pi/2, within 1e-9) is legal and is
+  // the normal case for a vertex blend: that side of the (u, v) rectangle
+  // maps to a single 3D point, so FromMixedFaces() gives it an
+  // ON_Brep SINGULAR trim (ON_Brep::NewSingularTrim - a trim with no
+  // edge, the standard B-rep representation of a surface's own
+  // degenerate boundary, exactly what a full Rhino sphere carries at its
+  // two poles) rather than a zero-length edge, and the exact-clip
+  // tessellator's pole-adjacent triangles collapse to zero 3D area and
+  // are dropped by Mesh::MergeAndWeld, so TessellateToClosedMesh() of a
+  // solid carrying such a patch is a genuine closed manifold with no
+  // degenerate faces. Both lat0 and lat1 being poles (a full meridian
+  // lune) is rejected: that is not a blend patch this kernel builds.
+  //
+  // The two rail corners at each latitude end - the points at (angle 0,
+  // lat0), (angle `angle`, lat0), and their lat1 counterparts (which
+  // coincide at a pole) - are exactly the points frame.origin +
+  // radius*(cos(lat)*(cos(phi)*xaxis + sin(phi)*yaxis) + sin(lat)*zaxis)
+  // for the matching (phi, lat), and FromMixedFaces() welds them into the
+  // same global vertex space as every PlanarFace/CylindricalFace loop
+  // point, so an adjacent fillet cylinder's own cap arc (the SAME great
+  // circle, the same two corner points, the same NURBS parameterization
+  // along it - see FilletConvexEdges' own frame convention) becomes ONE
+  // literal shared ON_BrepEdge with this patch's own equator or meridian
+  // edge, with no notch machinery at all.
+  struct SphericalFace {
+    ON_Plane frame;
+    double radius = 0.0;
+    double angle = 0.0;
+    double lat0 = 0.0;
+    double lat1 = 0.0;
+    bool outward = true;
+  };
+
   // The general sibling of PlanarFaces() that also recognizes a
   // cylindrical face rather than throwing on it - the extraction half of
   // what BooleanCombineMixed (see boolean.h) needs to get a
@@ -1085,6 +1172,11 @@ class Brep {
     std::vector<PlanarFace> planar;
     std::vector<CylindricalFace> cylindrical;
     std::vector<ConicalFace> conical;
+    // Every SphericalFace comes back from its verbatim FromMixedFaces()
+    // record (see FaceRecord), or, for a face with no record whose surface
+    // ON_NurbsSurface::IsSphere accepts, from a geometric extraction that
+    // reads the frame straight off the surface's own quadrant points.
+    std::vector<SphericalFace> spherical;
   };
   MixedFacesResult MixedFaces() const;
 
@@ -1154,7 +1246,8 @@ class Brep {
   // FromPlanarFaces(faces) is exactly FromMixedFaces(faces, {}, {}).
   static Brep FromMixedFaces(const std::vector<PlanarFace>& faces,
                               const std::vector<CylindricalFace>& cylindrical_faces,
-                              const std::vector<ConicalFace>& conical_faces = {});
+                              const std::vector<ConicalFace>& conical_faces = {},
+                              const std::vector<SphericalFace>& spherical_faces = {});
 
   // The inverse of PlanarFaces(): builds a new Brep with one
   // TrimmedPlanarFace()-equivalent face per PlanarFace, each an exact
@@ -1973,10 +2066,11 @@ class Brep {
   // in place of the geometric extraction after checking it still matches
   // the face's own surface.
   struct FaceRecord {
-    enum Kind { kNone = 0, kPlanar, kCylindrical };
+    enum Kind { kNone = 0, kPlanar, kCylindrical, kSpherical };
     Kind kind = kNone;
     PlanarFace planar;
     CylindricalFace cyl;
+    SphericalFace sph;
   };
   std::vector<FaceRecord> face_records_;
   // Set only by Compound(): the [begin, end) face-index range of each
