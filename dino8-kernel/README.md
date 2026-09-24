@@ -753,6 +753,22 @@ What this repo does instead:
   rejection tests for a binary-format header, a vertex element missing
   `z`, a face line with the wrong corner count, and an out-of-range face
   index.
+- Every `Model::Add*()` gained an optional `name` parameter, closing a
+  real gap in `.3dm` metadata fidelity: before this, every object placed
+  in a `Model` got a default, empty `ON_3dmObjectAttributes`, so a caller
+  had no way to attach even the most basic .3dm object metadata - the
+  object name Rhino itself relies on for selection-by-name and for
+  round-tripping identity across a save/reload. A non-empty name is set
+  via `ON_3dmObjectAttributes::SetName(..., /*bFixInvalidName=*/true)`,
+  the same call `dino8-app/src/io/File3dm.cpp` already uses for every
+  other named entity it writes; an empty (default) name leaves the
+  attributes exactly as before, so the change is additive - no existing
+  caller's behavior changes. Verified with a real round trip through an
+  actual `.3dm` file: named a `Mesh` and a `Brep` differently, added a
+  third `Curve` with no name at all, saved, reloaded, and confirmed each
+  reloaded object's own `ON_3dmObjectAttributes::Name()` exactly matches
+  what it was given - including the unnamed curve coming back with a
+  genuinely empty name, not some default placeholder.
 - `Brep::GetTightBoundingBox()` closes a real gap: nothing here could
   answer "roughly how big/where is this Brep" without tessellating it
   first, and even then Mesh::GetBoundingBox() only sees a tessellation's

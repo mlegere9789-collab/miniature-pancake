@@ -4930,6 +4930,70 @@ void TestModelAddPointCloudRoundTrips() {
   std::remove(path.c_str());
 }
 
+// Every Add*() gained an optional `name` parameter - before this, every
+// object placed in a Model got a default, empty ON_3dmObjectAttributes,
+// so a caller had no way to attach even the most basic .3dm object
+// metadata (the name Rhino itself uses for selection-by-name and
+// round-tripping object identity). Checks a real round trip of a name
+// through an actual .3dm file for two different object types (Mesh,
+// Brep), plus the "no name given" case still leaving the object unnamed
+// (proving the new parameter is additive, not a behavior change for
+// existing callers).
+void TestModelAddObjectNameRoundTrips() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Model;
+  using dino8::kernel::Result;
+
+  const auto box_mesh = MakeQuadBoxMesh(0, 0, 0, 1, 1, 1);
+  const auto box_brep = Brep::Box(0, 0, 0, 1, 1, 1);
+
+  Model model;
+  model.AddMesh(box_mesh, "MyMesh");
+  model.AddBrep(box_brep, "MyBrep");
+  const auto line = dino8::kernel::NurbsCurve::FromControlPoints(
+      {dino8::kernel::Point3d(0, 0, 0), dino8::kernel::Point3d(1, 0, 0)}, /*degree=*/1);
+  model.AddCurve(line);  // no name given
+  Check(model.ObjectCount() == 3, "model has three objects after two named + one unnamed Add*()");
+
+  const std::string path = "dino8_kernel_model_object_name_roundtrip_test.3dm";
+  Check(model.Save(path) == Result::Ok, ".3dm save with named objects succeeded");
+
+  Model loaded;
+  Check(Model::Load(path, loaded) == Result::Ok, ".3dm load succeeded");
+
+  ONX_ModelComponentIterator iterator(loaded.raw(), ON_ModelComponent::Type::ModelGeometry);
+  bool found_named_mesh = false;
+  bool found_named_brep = false;
+  bool found_unnamed_curve = false;
+  for (const ON_ModelComponent* component = iterator.FirstComponent(); component != nullptr;
+       component = iterator.NextComponent()) {
+    const auto* geometry_component = static_cast<const ON_ModelGeometryComponent*>(component);
+    const ON_3dmObjectAttributes* attributes = geometry_component->Attributes(nullptr);
+    Check(attributes != nullptr, "every reloaded geometry object still carries its attributes");
+    const ON_Geometry* geometry = geometry_component->Geometry(nullptr);
+    if (dynamic_cast<const ON_Mesh*>(geometry) != nullptr) {
+      found_named_mesh = true;
+      Check(attributes->Name() == ON_wString("MyMesh"),
+            "the reloaded mesh's object name exactly matches what AddMesh() was given (\"MyMesh\")");
+    } else if (dynamic_cast<const ON_Brep*>(geometry) != nullptr) {
+      found_named_brep = true;
+      Check(attributes->Name() == ON_wString("MyBrep"),
+            "the reloaded brep's object name exactly matches what AddBrep() was given (\"MyBrep\")");
+    } else if (dynamic_cast<const ON_NurbsCurve*>(geometry) != nullptr) {
+      found_unnamed_curve = true;
+      Check(attributes->Name().IsEmpty(),
+            "the reloaded curve - added with no name argument - has no object name, proving "
+            "the new parameter is a no-op when omitted");
+    }
+  }
+  Check(found_named_mesh && found_named_brep && found_unnamed_curve,
+        "all three object types (named mesh, named brep, unnamed curve) were found in the "
+        "reloaded model");
+
+  std::remove(path.c_str());
+}
+
 void TestBoxVolume() {
   const auto box = MakeBox(0, 0, 0, 2, 2, 2);
   Check(std::abs(box.Volume() - 8.0) < 1e-9, "unit-scaled box volume is correct");
@@ -26450,6 +26514,7 @@ int main() {
   TestModelAddMeshRoundTrips();
   TestModelAddSubDRoundTrips();
   TestModelAddPointCloudRoundTrips();
+  TestModelAddObjectNameRoundTrips();
   TestModelLoadRejectsMeshWithOutOfRangeFaceIndex();
   TestSplitByPlane();
   TestConvexHull();
