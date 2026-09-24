@@ -8904,6 +8904,62 @@ void TestSubDCapBoundaryLoopAddsGenuineNgonAndRetagsSmooth() {
         "CapBoundaryLoop refuses again now that the SubD is fully closed - no naked edge left anywhere");
 }
 
+// SubD::Transform(): a closed quad-box SubD's control cage moved by an
+// exact translation and scaled by an exact uniform factor - both hand-
+// derivable, not approximate - plus the documented mirror caveat (still
+// IsValid() afterward, exactly like a wholly Mesh::FlipNormals()-ed
+// mesh) and the invalid-xform rejection.
+void TestSubDTransformMovesScalesAndStaysValidUnderMirror() {
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SubD;
+  using dino8::kernel::Vector3d;
+
+  const auto subd = SubD::FromControlMesh(MakeQuadBoxMesh(0, 0, 0, 2, 2, 2));
+  Check(subd.IsValid(), "the source box SubD is valid before any transform");
+  const auto before = subd.LimitPoints();
+
+  const ON_Xform translate = ON_Xform::TranslationTransformation(ON_3dVector(5, -1, 2));
+  const auto moved = subd.Transform(translate);
+  Check(moved.VertexCount() == subd.VertexCount() && moved.IsValid(),
+        "Transform() preserves vertex count and validity under a plain translation");
+  const auto after_move = moved.LimitPoints();
+  bool all_translated = before.size() == after_move.size();
+  for (size_t i = 0; all_translated && i < before.size(); ++i) {
+    all_translated = all_translated && ((after_move[i].control_point - before[i].control_point) -
+                                         Vector3d(5, -1, 2))
+                                                .Length() < 1e-12;
+  }
+  Check(all_translated, "every control-net vertex shifts by exactly (5, -1, 2), no more and no less");
+
+  const ON_Xform scale = ON_Xform::ScaleTransformation(ON_3dPoint::Origin, 2.0, 2.0, 2.0);
+  const auto scaled = subd.Transform(scale);
+  const auto after_scale = scaled.LimitPoints();
+  bool all_scaled = before.size() == after_scale.size();
+  for (size_t i = 0; all_scaled && i < before.size(); ++i) {
+    all_scaled = all_scaled && (Point3d(after_scale[i].control_point) -
+                                 Point3d(2.0 * before[i].control_point.x, 2.0 * before[i].control_point.y,
+                                         2.0 * before[i].control_point.z))
+                                        .Length() < 1e-9;
+  }
+  Check(all_scaled, "every control-net vertex scales by exactly 2x about the origin");
+
+  const ON_Xform mirror = ON_Xform::ScaleTransformation(ON_3dPoint::Origin, -1.0, 1.0, 1.0);
+  const auto mirrored = subd.Transform(mirror);
+  Check(mirrored.IsValid(),
+        "a mirrored (negative-determinant) transform still leaves a perfectly VALID SubD - "
+        "coordinate reflection doesn't touch face winding, the documented caveat");
+
+  ON_Xform bad = ON_Xform::IdentityTransformation;
+  bad.m_xform[1][2] = ON_DBL_QNAN;
+  bool threw = false;
+  try {
+    (void)subd.Transform(bad);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "Transform() throws std::invalid_argument for a genuinely invalid (NaN-carrying) xform");
+}
+
 void TestSubDSetEdgeSharpnessCreatesRealSemiSharpCrease() {
   using dino8::kernel::Mesh;
   using dino8::kernel::Point3d;
@@ -11020,6 +11076,82 @@ void TestShellConvexPlanarPerFaceWallThicknessArgumentChecks() {
   Check(!threw_unexpectedly,
         "ShellConvexPlanar's per-face overload ignores a removed face's own "
         "wall_thickness entry, however nonsensical");
+}
+
+void TestShellClosedSphereMatchesExactShellVolume() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::ShellClosedSphere;
+
+  const double R = 5.0, t = 1.0;
+  const Brep shell = ShellClosedSphere(Point3d(1, 2, 3), R, t);
+  Check(shell.FaceCount() == 2, "ShellClosedSphere produces exactly 2 faces (outer + inner)");
+
+  const std::vector<std::pair<int, int>> ranges = shell.LumpFaceRanges();
+  Check(ranges.size() == 2, "ShellClosedSphere's outer and inner spheres are two separate lumps "
+                            "(Brep::Compound() of two genuinely disjoint closed shells, not welded "
+                            "into one shared-topology face pair)");
+
+  const Mesh mesh = shell.TessellateToClosedMesh(60, 60);
+  Check(mesh.IsClosedManifold(),
+        "ShellClosedSphere's tessellation welds into one closed, watertight manifold "
+        "(the outer sphere's own closure plus the inner sphere's own closure, combined)");
+  const double expected_volume = (4.0 / 3.0) * ON_PI * (R * R * R - (R - t) * (R - t) * (R - t));
+  Check(std::fabs(mesh.Volume() - expected_volume) / expected_volume < 1e-2,
+        "ShellClosedSphere's tessellated volume matches the exact closed-form "
+        "4/3*pi*(R^3-(R-t)^3) within the mesh's own tessellation-density tolerance");
+
+  bool threw = false;
+  try { ShellClosedSphere(Point3d(0, 0, 0), R, R); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "ShellClosedSphere(thickness == outer_radius) is refused (inner radius would be exactly 0)");
+
+  threw = false;
+  try { ShellClosedSphere(Point3d(0, 0, 0), R, R + 1.0); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "ShellClosedSphere(thickness > outer_radius) is refused (inner radius would be negative)");
+
+  threw = false;
+  try { ShellClosedSphere(Point3d(0, 0, 0), R, -1.0); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "ShellClosedSphere(negative thickness) is refused");
+
+  threw = false;
+  try { ShellClosedSphere(Point3d(0, 0, 0), -1.0, 1.0); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "ShellClosedSphere(negative outer_radius) is refused");
+}
+
+void TestShellClosedTorusMatchesExactShellVolumeAndRejectsSpindle() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::ShellClosedTorus;
+
+  const double R = 10.0, r = 3.0, t = 1.0;
+  const ON_Plane plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1));
+  const Brep shell = ShellClosedTorus(plane, R, r, t);
+  Check(shell.FaceCount() == 2, "ShellClosedTorus produces exactly 2 faces (outer + inner)");
+  Check(shell.LumpFaceRanges().size() == 2, "ShellClosedTorus's outer and inner tori are two separate lumps");
+
+  const Mesh mesh = shell.TessellateToClosedMesh(80, 40);
+  Check(mesh.IsClosedManifold(), "ShellClosedTorus's tessellation welds into one closed, watertight manifold");
+  // A torus's own enclosed volume is 2*pi^2*R*r^2 (Pappus's theorem: the
+  // tube's own cross-section area pi*r^2, swept a distance 2*pi*R around
+  // the major circle); the shell is the outer solid's volume minus the
+  // inner's, at the SAME major radius (only the tube radius changes -
+  // exactly what NurbsSurface::OffsetAnalytic's own torus case computes).
+  const double expected_volume = 2.0 * ON_PI * ON_PI * R * (r * r - (r - t) * (r - t));
+  Check(std::fabs(mesh.Volume() - expected_volume) / expected_volume < 1e-2,
+        "ShellClosedTorus's tessellated volume matches 2*pi^2*R*(r^2-(r-t)^2) within tessellation tolerance");
+
+  bool threw = false;
+  try { ShellClosedTorus(plane, R, R, t); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "ShellClosedTorus refuses outer_minor_radius >= major_radius (the outer torus would already be a spindle torus)");
+
+  threw = false;
+  try { ShellClosedTorus(plane, R, r, r); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "ShellClosedTorus refuses thickness >= outer_minor_radius (inner torus collapses through its own center circle)");
+
+  threw = false;
+  try { ShellClosedTorus(plane, -1.0, r, t); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "ShellClosedTorus refuses a non-positive major_radius");
 }
 
 }  // namespace
@@ -27228,6 +27360,7 @@ int main() {
   TestSubDMeshRoundTripIsExactAtLevelZero();
   TestSubDFromNurbsSurfaceExactOnFlatGrid();
   TestSubDCapBoundaryLoopAddsGenuineNgonAndRetagsSmooth();
+  TestSubDTransformMovesScalesAndStaysValidUnderMirror();
   TestSubDSetEdgeSharpnessCreatesRealSemiSharpCrease();
   TestSubDSetCreaseTagsAndUntagsEdges();
   TestSubDFlatQuadGridStaysFlatAndAreaExact();
@@ -27262,6 +27395,8 @@ int main() {
   TestShellConvexPlanarRejectsAdjacentOpenings();
   TestShellConvexPlanarPerFaceWallThicknessMatchesExactCavityFormula();
   TestShellConvexPlanarPerFaceWallThicknessArgumentChecks();
+  TestShellClosedSphereMatchesExactShellVolume();
+  TestShellClosedTorusMatchesExactShellVolumeAndRejectsSpindle();
   TestFilletConvexEdgeUnitCubeTopFrontCorner();
   TestFilletConvexEdgeTaperedRailExactness();
   TestFilletConvexEdgeTaperedClosedFormVolumeMatchesFrustumFormula();
