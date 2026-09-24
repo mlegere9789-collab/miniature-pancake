@@ -1303,8 +1303,15 @@ Mesh Mesh::MergeAndWeld(const std::vector<Mesh>& meshes, double tolerance) {
   // Snap each coordinate to a grid of `tolerance` size so two vertices
   // within `tolerance` of each other (in particular, the same seam point
   // computed independently by two adjacent faces) map to the same key.
+  // std::llround, not std::lround: the quotient is coordinate / tolerance,
+  // routinely 1e9..1e11 (a brep mesher welds at diagonal * 1e-8, some
+  // callers at 1e-9), and std::lround returns `long`, which is only 32 bits
+  // on Windows (LLP64). There every coordinate beyond ~2^31 * tolerance
+  // overflowed to the same key, so distinct vertices a few units apart were
+  // welded into one and closed solids came back as open, garbage meshes -
+  // while the 64-bit `long` on Linux/macOS hid it entirely.
   auto snap = [tolerance](float v) {
-    return static_cast<long long>(std::lround(static_cast<double>(v) / tolerance));
+    return std::llround(static_cast<double>(v) / tolerance);
   };
 
   std::map<std::tuple<long long, long long, long long>, int> vertex_by_position;
