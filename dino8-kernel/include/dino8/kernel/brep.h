@@ -368,6 +368,38 @@ class Brep {
   static Brep Sweep1(const NurbsCurve& section, const NurbsCurve& rail, int stations = 32,
                      bool cap = true);
 
+  // Sweep2: `section` carried between `rail1` and `rail2` (Parasolid/
+  // Rhino's two-rail sweep with scaling). At each of `stations` equal-
+  // arc-length stations on each rail (rail2 reversed first if needed so
+  // it runs the same direction as rail1), an orthonormal frame is built:
+  // origin on rail1, x toward rail2 (unit), z = unit(x cross the
+  // averaged rail tangent), y = z cross x; `width` is the rail-to-rail
+  // distance there. `section` is read ONCE, in the station-0 frame,
+  // as local coordinates (dot(p - origin_0, x_0)/width_0, .../width_0,
+  // .../width_0) - a SINGLE uniform scale by width, not an independent
+  // scale per axis, so a profile centered between the rails stays
+  // centered as they converge or diverge, and a circular section stays
+  // circular (only its diameter changes) rather than distorting into an
+  // ellipse. At every other station the same local coordinates are
+  // placed back via that station's own origin/frame/width. Two straight,
+  // non-parallel rails (and an open, non-periodic section) use exactly
+  // 2 stations - the exact ruled surface, since both the frame's origin
+  // and its width are then linear in the station fraction, so every
+  // local point's 3D trajectory is a straight line and Loft()'s own
+  // degree-1 shortcut is exact for it (verified: a unit square between a
+  // vertical rail and a linearly-converging one reproduces the closed-
+  // form pyramid-frustum volume (h/3)(w0^2 + w0*w1 + w1^2) to 1e-9).
+  // Otherwise the wall is Loft()'s own interpolating skin through the
+  // `stations` per-station copies (so it passes through each of them
+  // exactly), same closed-rail/periodic-skin handling as Sweep1(). Caps
+  // as Sweep1() (a closed, non-periodic, planar section only). Throws
+  // std::invalid_argument for stations < 2, either rail invalid, or a
+  // station where the rails touch (zero separation) or a rail's tangent
+  // is parallel to the rail-to-rail direction (the frame is undefined
+  // there) - genuine, disclosed limits, not silently degraded output.
+  static Brep Sweep2(const NurbsCurve& section, const NurbsCurve& rail1, const NurbsCurve& rail2,
+                     int stations = 32, bool cap = true);
+
   // Pipe: an exact rational circle of `radius`, centered on the rail's
   // start point in the plane perpendicular to the rail there, swept by
   // Sweep1(). Along a straight rail this is the exact rational cylinder
