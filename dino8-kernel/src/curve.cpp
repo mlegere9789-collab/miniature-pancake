@@ -7,6 +7,8 @@
 
 #include "dino8/kernel/tolerance.h"
 
+#include "dino8/kernel/detail/degree_elevate.h"
+
 namespace dino8::kernel {
 
 namespace {
@@ -336,8 +338,15 @@ Result NurbsCurve::ElevateDegree(int new_degree) {
   if (new_degree <= Degree()) {
     return Result::NoOpAlreadySatisfied;
   }
-  const bool ok = curve_.IncreaseDegree(new_degree);
-  return ok ? Result::Ok : Result::Failed;
+  // Deliberately NOT `ON_NurbsCurve::IncreaseDegree` - see
+  // detail/degree_elevate.h for the measured, shape-corrupting inaccuracy
+  // that routine has on non-uniform knot vectors.
+  ON_NurbsCurve elevated;
+  if (!detail::DegreeElevateNurbsCurve(curve_, new_degree, elevated)) {
+    return Result::Failed;
+  }
+  curve_ = elevated;
+  return Result::Ok;
 }
 
 Interval NurbsCurve::Domain() const {
@@ -439,19 +448,71 @@ double NurbsCurve::ClosestPointParameter(Point3d point, int samples) const {
   double lo = closed ? (best_t - step) : std::max(domain.Min(), best_t - step);
   double hi = closed ? (best_t + step) : std::min(domain.Max(), best_t + step);
 
-  const double golden_ratio = (std::sqrt(5.0) - 1.0) / 2.0;
-  double c = hi - golden_ratio * (hi - lo);
-  double d = lo + golden_ratio * (hi - lo);
-  for (int iter = 0; iter < 100 && (hi - lo) > 1e-13; ++iter) {
-    if (distance_squared_wrapped(c) < distance_squared_wrapped(d)) {
-      hi = d;
-    } else {
-      lo = c;
+  // Golden-section search assumes the distance function is unimodal on
+  // the window it polishes, and a window that straddles a C0 kink
+  // violates that: a closed-but-not-periodic curve's own seam
+  // (FromControlPoints() with matching first/last points is only C0
+  // there), or any interior knot of full multiplicity, puts two different
+  // polynomial pieces in one window, each with its own local minimum. A
+  // real, reproduced case (TestCurveClosestPointAcrossClampedSeamKink):
+  // with the true nearest point INSIDE the window on the far side of the
+  // seam, a single golden section over the whole window walked to the
+  // near side's own local minimum instead - 2.9x farther away - and a
+  // plain sub-sampling pass did not cure it (both basins' minima sat
+  // within one sub-step of the seam sample). The distance function can
+  // only kink at a knot, so the window is split at every knot inside it
+  // (wrapped copies too, for a closed curve, since the window may extend
+  // past the seam) and each piece is polished on its own; a sub-sampled
+  // scan of the window additionally localizes any smooth wiggle at the
+  // sample scale, and the answer is the best of every polished piece and
+  // every sample seen - so it is never worse than the coarse scan,
+  // instead of "whichever side the golden section happened to pick".
+  auto golden_section = [&](double a, double b) {
+    const double golden_ratio = (std::sqrt(5.0) - 1.0) / 2.0;
+    double c = b - golden_ratio * (b - a);
+    double d = a + golden_ratio * (b - a);
+    for (int iter = 0; iter < 100 && (b - a) > 1e-13; ++iter) {
+      if (distance_squared_wrapped(c) < distance_squared_wrapped(d)) {
+        b = d;
+      } else {
+        a = c;
+      }
+      c = b - golden_ratio * (b - a);
+      d = a + golden_ratio * (b - a);
     }
-    c = hi - golden_ratio * (hi - lo);
-    d = lo + golden_ratio * (hi - lo);
+    return (a + b) / 2.0;
+  };
+  auto consider = [&](double t) {
+    const double d2 = distance_squared_wrapped(t);
+    if (d2 < best_d2) {
+      best_d2 = d2;
+      best_t = t;
+    }
+  };
+
+  constexpr int kSubSamples = 32;
+  for (int i = 0; i <= kSubSamples; ++i) {
+    consider(lo + (hi - lo) * static_cast<double>(i) / kSubSamples);
   }
-  return wrap((lo + hi) / 2.0);
+  const double sub_step = (hi - lo) / kSubSamples;
+  const double sub_lo = closed ? (best_t - sub_step) : std::max(domain.Min(), best_t - sub_step);
+  const double sub_hi = closed ? (best_t + sub_step) : std::min(domain.Max(), best_t + sub_step);
+
+  std::vector<double> breaks = {lo, hi, sub_lo, sub_hi};
+  const double period = domain.Length();
+  for (int i = 0; i < curve_.KnotCount(); ++i) {
+    const double knot = curve_.Knot(i);
+    for (int shift = -1; shift <= 1; ++shift) {
+      if (shift != 0 && !closed) continue;
+      const double shifted = knot + shift * period;
+      if (shifted > lo && shifted < hi) breaks.push_back(shifted);
+    }
+  }
+  std::sort(breaks.begin(), breaks.end());
+  for (size_t i = 0; i + 1 < breaks.size(); ++i) {
+    if (breaks[i + 1] - breaks[i] > 1e-13) consider(golden_section(breaks[i], breaks[i + 1]));
+  }
+  return wrap(best_t);
 }
 
 Point3d NurbsCurve::ClosestPoint(Point3d point, int samples) const {
@@ -498,7 +559,16 @@ double NurbsCurve::ParameterAtArcLength(double target_length, int samples) const
       if (segment_length < 1e-15) {
         return t;
       }
-      const double fraction = (target_length - previous_length) / segment_length;
+      // Clamped to [0, 1]: `cumulative_length` is the ROUNDED sum
+      // `previous_length + segment_length`, so `target_length -
+      // previous_length` can exceed `segment_length` by a rounding ulp of
+      // the (possibly huge) cumulative length. Unclamped, that put the
+      // result past `t` - for `target_length == Length(samples)` exactly,
+      // a few 1e-12 PAST `Domain().max` (reproduced on a curve whose first
+      // polyline segment dwarfs its last; see
+      // TestCurveParameterAtArcLengthStaysInsideDomain), breaking this
+      // method's own "clamps to Domain().Min()/Max()" promise.
+      const double fraction = std::min(1.0, std::max(0.0, (target_length - previous_length) / segment_length));
       return previous_t + fraction * (t - previous_t);
     }
     previous_length = cumulative_length;
