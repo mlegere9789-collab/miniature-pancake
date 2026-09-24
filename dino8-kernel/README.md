@@ -728,6 +728,31 @@ What this repo does instead:
   with normals set, plus explicit rejection tests for a nonexistent file,
   a file mixing 3- and 6-column lines, a line with a column count that's
   neither, a non-numeric token, and a file with zero points.
+- `Mesh::SavePly()`/`LoadPly()` close a real gap: this kernel had zero PLY
+  (Stanford Polygon) code at all before this - no export, no import,
+  despite PLY being a real, commonly-used mesh interchange format
+  alongside `.obj`/`.stl`. Writes ASCII PLY only (binary
+  `binary_little_endian`/`binary_big_endian` PLY is a disclosed,
+  out-of-scope gap - `LoadPly()` rejects a binary-format header outright
+  rather than misreading it, the same honest treatment this codebase
+  already gives Parasolid/ACIS licensing). Unlike `.stl`, PLY's face
+  element is a genuine variable-length list, so a quad face is written as
+  one native 4-index face, not split into two triangles. `LoadPly()`
+  parses the header's own declared property list by name rather than
+  assuming a fixed column order - tolerating extra properties this kernel
+  doesn't use (e.g. color) - and reads normals but discards them (same
+  "always geometry-derived" convention `LoadObj()`'s `vn` already has,
+  since this kernel's `Mesh` has nowhere to store an independent
+  per-vertex normal). Verified with a real round trip: reopened
+  `SavePly()`'s own output and checked the header's `element vertex`/
+  `element face` counts, confirmed the face element declares a genuine
+  `property list` (not a fixed-size property), confirmed a quad face
+  survived as a single 4-corner line, then `LoadPly()`'d it back and
+  checked vertex/face counts and volume all exactly match the original -
+  plus a separate round trip with texture coordinates set, and explicit
+  rejection tests for a binary-format header, a vertex element missing
+  `z`, a face line with the wrong corner count, and an out-of-range face
+  index.
 - `Brep::GetTightBoundingBox()` closes a real gap: nothing here could
   answer "roughly how big/where is this Brep" without tessellating it
   first, and even then Mesh::GetBoundingBox() only sees a tessellation's
@@ -3034,8 +3059,12 @@ honestly out of scope.
   coordinates too (see below) - but still no materials or groups, and
   `LoadObj()` still only reads `v`/`vt`/`f` lines (`vn` is read but
   discarded, since normals here are always geometry-derived). `.stl` now
-  round-trips both ASCII and binary STL (see below). `.obj`/`.stl` are
-  still the only formats here - no glTF, FBX, etc.
+  round-trips both ASCII and binary STL (see below). `.ply` (ASCII only -
+  binary PLY is a disclosed, out-of-scope gap, see below) now round-trips
+  geometry, normals, and texture coordinates too, and - unlike `.stl` -
+  writes a genuine quad face as one native PLY face rather than splitting
+  it into two triangles. `.obj`/`.stl`/`.ply` are still the only formats
+  here - no glTF, FBX, etc.
 - Adaptive/curvature-aware meshing: this gap now has two real layers.
   `NurbsSurface::CurvatureAt()`, `NurbsCurve::SuggestedSamples()`,
   `NurbsSurface::SuggestedDivisions()`, and the uniform-division
