@@ -7,11 +7,13 @@
 #include <cstdlib>
 #include <limits>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 #include "dino8/kernel/curve.h"
 #include "dino8/kernel/detail/polygon2d.h"
 #include "dino8/kernel/mesh.h"
+#include "dino8/kernel/tolerance.h"
 
 namespace dino8::kernel {
 
@@ -577,9 +579,37 @@ using dino8::kernel::detail::EarClipTriangulate;
 NurbsSurface NurbsSurface::FromControlGrid(const std::vector<Point3d>& control_grid,
                                             int u_count, int v_count, int u_degree,
                                             int v_degree) {
-  NurbsSurface result;
+  // Same failure mode NurbsCurve::FromControlPoints() guards against, one
+  // dimension up: ON_NurbsSurface::Create() refuses an order < 2 or a
+  // cv_count < order by returning false before allocating anything, and
+  // the SetCV()/MakeClampedUniformKnotVector() calls below then silently
+  // no-op. The empty surface that came back was worse than the curve
+  // case - its PointAt() segfaulted inside ON_NurbsSurface::Evaluate()
+  // on the never-allocated knot array (confirmed by a debug run). A
+  // `control_grid` shorter than u_count * v_count was, separately, read
+  // past its end by the SetCV loop.
+  if (u_degree < 1 || v_degree < 1) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsSurface::FromControlGrid: u_degree and v_degree must each be at "
+        "least 1");
+  }
   const int u_order = u_degree + 1;
   const int v_order = v_degree + 1;
+  if (u_count < u_order || v_count < v_order) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsSurface::FromControlGrid: a degree-(" + std::to_string(u_degree) +
+        ", " + std::to_string(v_degree) + ") surface needs at least " + std::to_string(u_order) +
+        " x " + std::to_string(v_order) + " control points, got " + std::to_string(u_count) +
+        " x " + std::to_string(v_count));
+  }
+  const size_t expected = static_cast<size_t>(u_count) * static_cast<size_t>(v_count);
+  if (control_grid.size() != expected) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsSurface::FromControlGrid: control_grid must have exactly u_count * "
+        "v_count = " +
+        std::to_string(expected) + " entries, got " + std::to_string(control_grid.size()));
+  }
+  NurbsSurface result;
   result.surface_.Create(/*dimension=*/3, /*is_rational=*/false, u_order, v_order,
                           u_count, v_count);
 
@@ -1538,10 +1568,11 @@ Mesh NurbsSurface::TessellateGridClippedExact(int u_divisions, int v_divisions,
   if (!trim_is_convex) {
     const double u_width = u_domain.Length() / u_divisions;
     const double v_width = v_domain.Length() / v_divisions;
-    // static: MSVC will not let a lambda use a non-static constexpr local
-    // without an explicit capture.
-    static constexpr double kOnGridLineFraction = 1e-6;
-    static constexpr double kNudgeFraction = 1e-6;
+    // Both fractions are the kernel's policy values (tolerance.h), not
+    // literals of this function's own. static: MSVC will not let a
+    // lambda use a non-static constexpr local without an explicit capture.
+    static constexpr double kOnGridLineFraction = tolerance::kOnGridLineFraction;
+    static constexpr double kNudgeFraction = tolerance::kGridNudgeFraction;
     auto nudge_onto_grid_line = [](double coord, double origin, double width) {
       if (width == 0.0) {
         return coord;

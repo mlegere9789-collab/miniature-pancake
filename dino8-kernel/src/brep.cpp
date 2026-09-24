@@ -19,6 +19,7 @@
 #include "dino8/kernel/detail/ellipse_clip3d.h"
 #include "dino8/kernel/detail/polygon2d.h"
 #include "dino8/kernel/mesh.h"
+#include "dino8/kernel/tolerance.h"
 
 namespace dino8::kernel {
 
@@ -750,11 +751,12 @@ namespace {
 // relies on for welding a tessellation's own seams shut, reused here as
 // the identity test that gives PlanarFace/CylindricalFace loop points -
 // which carry no vertex identity of their own - a shared ON_BrepVertex
-// wherever two faces' own loops meet at "the same" 3D point. tol = 1e-6
-// matches Mesh::MergeAndWeld's own proven default exactly, not a newly
-// invented tolerance; see brep.h's FromMixedFaces doc comment for the
-// real, disclosed limit this implies (features smaller than that mis-weld).
-constexpr double kBrepWeldTolerance = 1e-6;
+// wherever two faces' own loops meet at "the same" 3D point. The value
+// is the kernel's own weld distance (tolerance::kWeld, 1e-6 - the same
+// number Mesh::MergeAndWeld's default reads), not a newly invented
+// tolerance; see brep.h's FromMixedFaces doc comment for the real,
+// disclosed limit this implies (features smaller than that mis-weld).
+constexpr double kBrepWeldTolerance = tolerance::kWeld;
 
 struct WeldKey {
   long long x = 0, y = 0, z = 0;
@@ -4857,7 +4859,7 @@ bool TryMergeCoplanarPair(ON_Brep& b, int fa, int fb, int shared_edge_index, con
   b.DeleteFace(b.m_F[lo], true);
   b.Compact();
   b.Append(merged);
-  WeldCoincidentNakedEdges(b, std::max(tol * 20, 1e-4));
+  WeldCoincidentNakedEdges(b, std::max(tol * 20, tolerance::kEdgeJoin));
   b.Compact();
   b.SetTolerancesBoxesAndFlags();
   FixUnsetEdgeTolerances(b);

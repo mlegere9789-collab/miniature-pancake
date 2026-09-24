@@ -1790,6 +1790,47 @@ What this repo does instead:
   at all, not just a slightly-off approximation of one. Only genuinely
   shape-preserving when every weight was already equal (the mirror-image
   condition of `MakeRational()`'s own guarantee).
+- `include/dino8/kernel/tolerance.h` - the kernel's tolerance policy,
+  closing the one "Known gaps" point below that had stayed accurate
+  since chunk 1 ("no tolerance-management policy defined yet"). Three
+  primitives in the same classes Parasolid/ACIS distinguish - an
+  absolute distance (`tolerance::kDistance`, 1e-6 model units), a
+  relative fraction (`kRelative`, 1e-6 of a local size) and an angle
+  expressed as the unit-vector dot-product deficit every existing call
+  site already computes (`kAlignment`, 1e-6, ~0.08 degrees) - plus two
+  degeneracy floors (`kZeroVector` 1e-9, `kZero` 1e-12) and the DERIVED
+  constants specific operations read: `kWeld` (= `kDistance`; `Mesh::
+  MergeAndWeld()`'s default and brep.cpp's `kBrepWeldTolerance`),
+  `kPlanarityRelative` (= `kRelative`; `IsRingPlanar()`'s end-cap test in
+  `LoftClosedRings()`), `kOnGridLineFraction`/`kGridNudgeFraction` (=
+  `kRelative`; `TessellateGridClippedExact()`'s concave-trim grid-line
+  nudge) and `kEdgeJoin` (1e-4; `RemoveNakedMicroEdge()`'s/
+  `ReplaceEdgeCurve()`'s defaults and the floor `MergeCoplanarFaces()`
+  re-welds exposed naked edges with), with `DistanceForSize(size)` =
+  `max(kDistance, size * kRelative)` for the "absolute floor, relative
+  above it" pattern brep.cpp used by hand. Deliberately a NAME-AND-ROUTE
+  pass, not a tuning pass: every constant carries exactly the literal it
+  replaced, and that nothing measurable changed is proven two ways - the
+  BooleanCombineGeneral sweep (`tests/general_boolean_sweep.cpp`) output
+  is byte-for-byte identical (`cmp`) before and after, and the full
+  smoke suite stays green. `TestTolerancePolicyValuesAreTheOnesInForce`
+  pins the routing by BEHAVIOUR at both sides of each threshold, not by
+  re-reading the header: `MergeAndWeld()` with no tolerance argument
+  welds vertices 0.4*`kWeld` apart and leaves 3*`kWeld` distinct, and
+  `LoftClosedRings()` accepts an end ring 0.5*`kPlanarityRelative`*extent
+  out of plane and throws at 3x. Proven to actually watch the routed
+  site: temporarily editing `kPlanarityRelative` to 1e-7 in the header
+  moved `LoftClosedRings()`'s own accept/reject threshold with it (the
+  behavioural checks still passed against the moved value; only the
+  "reads 1e-6" pin failed) - a literal left behind in mesh.cpp would
+  have failed the 3x rejection instead. Honest limits, unchanged from
+  before and now stated in one place: `kDistance` is not scaled by model
+  size, so a 1e-6 gap on a 1e6-unit model is below double precision's
+  own resolution there; and the many OTHER literals still in brep.cpp/
+  boolean.cpp (`scale * 1e-6` planarity checks, `1e-4` cylinder-fit
+  tolerances, `1e-9` axis floors) are not routed yet - only the sites
+  the "Known gaps" note itself named, plus the weld/join family, so the
+  byte-identical sweep claim stays checkable one family at a time.
 
 ## Blending build log (Parasolid "blend/chamfer" class, chronological)
 
@@ -1841,6 +1882,78 @@ honestly out of scope.
   chaining several chamfers on one solid (the second call is rejected by
   `PlanarFaces()` only if the first left a curved face; two chamfers are
   both planar and do chain).
+- `IntersectCurves(a, b, opt)` (CCX, `surface_intersect.h`): the
+  curve/curve counterpart to the existing `IntersectSurfaces()` (SSX)
+  and `IntersectCurveSurface()` (CSX) - the public OpenNURBS SDK ships
+  none of the three. Recovered from a previous session's uncommitted,
+  mid-flight worktree edits (found coherent and nearly finished on
+  inspection - the header, implementation and regression test all
+  present and mutually consistent - rather than re-derived from scratch;
+  credited here honestly). Two general space curves only meet at
+  isolated points, so unlike SSX it returns points (`CurveCurveHit`: both
+  parameters, the refined point, the residual), not curves. Seeded like
+  CSX: both curves are sampled into polylines at a resolution driven by
+  `opt.mesh_tolerance`, every segment pair whose padded boxes overlap is
+  checked with Ericson's exact closed-form closest-points-between-two-
+  segments computation (the same textbook `Mesh::ClosestPoint()` already
+  cites), and every close-approach pair seeds a damped Gauss-Newton on
+  `(ta, tb)` minimizing `|A(ta) - B(tb)|` via the shared `NewtonSolve()`;
+  hits within `4 * opt.tolerance` of an accepted one are dropped as the
+  same crossing. Verified with three hand-derivable exact cases, not
+  plausible-looking ones: two lines forming an X cross at exactly
+  `(5, 5, 0)` with `ta = tb = 0.5` (a line's parametrization is linear in
+  position, so the geometric midpoint IS the domain midpoint); the same X
+  with one line lifted to `z = 1` (skew, never meeting) reports zero hits
+  rather than the in-plane crossing its XY projection suggests; and a
+  genuine rational-NURBS circle (`ON_Circle::GetNurbForm`) against a line
+  through its center hits at exactly `(+/-radius, 0, 0)`, in `ta` order.
+  Honest limitation, stated on the declaration: not intended for curves
+  coincident over a real span (the residual is ~0 along the whole
+  overlap, so the finite seeding/dedup reports a handful of isolated
+  points, not the shared span). Verified against the full 76-case
+  `general_boolean_sweep` too (byte-identical to the baseline - it's a
+  new function nothing else calls yet, but it lives in
+  `surface_intersect.cpp`, so that check is the rule, not optional).
+- `Mesh::VolumeMassProperties()` closes the second-moment half of mass
+  properties that `Volume()`/`GetCentroid()` never covered: the complete
+  inertia tensor about both the world origin and the centroid (products
+  of inertia in the `ixy = integral of x*y dV` convention Rhino and
+  every engineering table use, with the tensor's off-diagonals being
+  their negatives - stated on the `MassProperties` struct so nobody has
+  to guess the sign), principal moments (ascending) with a right-handed
+  orthonormal principal frame, and radii of gyration. The public
+  OpenNURBS SDK has no mesh mass-property implementation at all
+  (grepped: no `ON_Mesh::VolumeMassProperties` anywhere in the source),
+  so this is from scratch. EXACT, not sampled - Eberly's "Polyhedral
+  Mass Properties (Revisited)": each of the ten volume integrals of
+  `{1, x, y, z, x^2, y^2, z^2, xy, yz, zx}` is reduced by the divergence
+  theorem to a closed-form polynomial in every triangle's three vertices
+  (the same principle `Volume()` already uses for the zeroth moment), so
+  a polyhedron's moments are its true moments, and a tessellated curved
+  solid's converge to the smooth shape's exactly as `Volume()`'s does.
+  The principal decomposition delegates to OpenNURBS'
+  `ON_Sym3x3EigenSolver`, read and verified as a real implementation
+  (Jacobi rotation to tridiagonal form plus a closed-form tridiagonal
+  solve) rather than one of its declared-but-unimplemented stubs.
+  Verified against hand-derived closed forms, all confirmed by a debug
+  run before being asserted: a 2x3x4 box (quad faces) gives exactly
+  `V(b^2+c^2)/12 = 50, 40, 26` about its centroid, exactly `200, 160,
+  104` and products `36, 72, 48` about the origin (the parallel-axis
+  theorem by hand), principal moments exactly `(26, 40, 50)` on its own
+  z/y/x axes; the identical box as 12 triangles matches to 1e-9 (the
+  quad path's second triangle is counted); the box rotated 0.7 rad about
+  a skew axis and translated keeps principal moments `(26, 40, 50)` to
+  6e-7 (a rigid-motion invariant) while its world-frame products of
+  inertia become clearly nonzero (the tensor genuinely rotated, it
+  wasn't re-diagonalized); and a real curved body with a closed-form
+  tensor, a torus (`R=3, r=1`, 96x48 segments), lands within 0.1% of
+  `M(R^2 + 3r^2/4)` about its axis and `M(R^2/2 + 5r^2/8)` about a
+  diameter, with its two in-plane moments exactly equal (96-fold
+  symmetry makes the in-plane tensor isotropic) and its centroidal
+  tensor unchanged to 2e-8 relative when the whole torus is built at
+  `(10, -5, 2)` instead of the origin. Throws `std::invalid_argument` on
+  an inside-out (negative-volume) mesh rather than returning negated
+  moments, and on an empty/zero-volume one - both checked.
 
 - **`Brep::SphericalFace` + `FilletConvexEdges(solid, edges, radius)`:
   multi-edge constant-radius fillets with EXACT spherical vertex blends.**
@@ -2061,9 +2174,12 @@ This section is stale as of chunk 2 - "no general solid construction" and
 aren't anymore (see the narrative and "What's still not done" above for
 what's real today). Kept only for its one still-accurate point:
 
-- No tolerance-management policy defined yet; wrapper calls use
-  OpenNURBS defaults or ad-hoc constants (`Mesh::MergeAndWeld`'s default
-  tolerance, `LoftClosedRings()`'s/`IsRingPlanar()`'s relative-tolerance
-  planarity check, `TessellateGridClippedExact()`'s grid-line nudge
-  fraction), which will need revisiting once real modeling tolerances are
-  decided.
+- A tolerance-management policy now exists (`include/dino8/kernel/
+  tolerance.h` - see its own entry above): the ad-hoc constants this
+  point used to list (`Mesh::MergeAndWeld`'s default tolerance,
+  `LoftClosedRings()`'s/`IsRingPlanar()`'s relative-tolerance planarity
+  check, `TessellateGridClippedExact()`'s grid-line nudge fraction) all
+  route through named policy values now. What is still open is the
+  TUNING those values will need once real modeling tolerances are
+  decided (every value is still the literal it replaced), and routing
+  the remaining brep.cpp/boolean.cpp literals the entry above lists.

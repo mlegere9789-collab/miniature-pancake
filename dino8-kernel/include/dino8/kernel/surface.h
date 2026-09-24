@@ -55,6 +55,13 @@ class NurbsSurface {
  public:
   // Builds a bilinear-ish degree-(u_degree, v_degree) NURBS surface from a
   // u_count x v_count grid of control points, row-major (u varies fastest).
+  // Throws std::invalid_argument if either degree is < 1, either count is
+  // below its degree + 1, or `control_grid.size() != u_count * v_count` -
+  // the same contract `NurbsCurve::FromControlPoints()` enforces, for the
+  // same reason (an `ON_NurbsSurface::Create()` refusal used to be
+  // silently ignored, handing back an empty surface whose `PointAt()`
+  // segfaulted on its never-allocated knot array; a too-short grid was
+  // read past its end).
   static NurbsSurface FromControlGrid(const std::vector<Point3d>& control_grid,
                                        int u_count, int v_count, int u_degree,
                                        int v_degree);
