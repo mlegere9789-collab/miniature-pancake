@@ -3901,4 +3901,192 @@ Brep RemoveChamfer(const Brep& solid, Point3d point_on_chamfer) {
 }
 
 
+namespace {
+
+// One step around `loop` from `at`, landing on whichever of `at`'s own 2
+// neighbors is NOT `away_from` - direction-agnostic (works regardless of
+// which of pred/succ happens to be which), used by RemoveChamferVertex to
+// walk past a chamfer facet's own corner to the ORIGINAL corner's own far
+// neighbor along that edge, a point chamfering never touches.
+Point3d StepPast(const std::vector<Point3d>& loop, const Point3d& at, const Point3d& away_from, double tol) {
+  const size_t n = loop.size();
+  for (size_t k = 0; k < n; ++k) {
+    if (!PointsEqual(loop[k], at, tol)) continue;
+    const Point3d& succ = loop[(k + 1) % n];
+    const Point3d& pred = loop[(k + n - 1) % n];
+    if (!PointsEqual(succ, away_from, tol)) return succ;
+    if (!PointsEqual(pred, away_from, tol)) return pred;
+    throw std::runtime_error(
+        "dino8::kernel::RemoveChamferVertex: StepPast found `at` with both neighbors equal to `away_from` - "
+        "degenerate loop, please report this as a bug");
+  }
+  throw std::runtime_error(
+      "dino8::kernel::RemoveChamferVertex: StepPast could not find `at` on the given loop - please report this as "
+      "a bug");
+}
+
+// Replaces the 2 CONSECUTIVE loop points {a, b} (in either walk order,
+// wraparound included) with the single point `restored` - the genuine
+// inverse of ChamferVertexCore's own single-vertex-to-2-point clip.
+// Deliberately NOT CollapseNotchRun (this file's own general "run of N
+// points between two known endpoints" splice, which RemoveBlend/
+// RemoveChamfer already use): that search walks FORWARD from whichever of
+// its two target points it meets first in loop order, and - confirmed
+// directly here, not a hypothetical - mishandles a pair that is adjacent
+// via WRAPAROUND in the order that makes the forward search cross almost
+// the WHOLE rest of the loop before reaching the other point, collapsing
+// far more of the loop than intended instead of just the 2 points. Every
+// pair this function is ever called with is a literal, adjacent 2-point
+// edge (never a longer dense run), so checking direct (k, k+1 mod n)
+// adjacency directly sidesteps that ambiguity entirely rather than fixing
+// it in the shared, more general primitive 3 other established functions
+// already depend on.
+void CollapseChamferVertexEdge(Brep::PlanarFace& f, const Point3d& a, const Point3d& b, const Point3d& restored,
+                               double tol) {
+  std::vector<Point3d>& loop = f.loop;
+  const size_t n = loop.size();
+  for (size_t k = 0; k < n; ++k) {
+    const size_t k1 = (k + 1) % n;
+    const bool fwd = PointsEqual(loop[k], a, tol) && PointsEqual(loop[k1], b, tol);
+    const bool bwd = PointsEqual(loop[k], b, tol) && PointsEqual(loop[k1], a, tol);
+    if (!fwd && !bwd) continue;
+    // Walk the remaining n - 2 points starting right after k1, wrapping
+    // via modulo - correct regardless of whether (k, k1) themselves
+    // wrap around the array end (an earlier version unrolled this as two
+    // plain ranges [k1+1, n) and [0, k), which is only correct when
+    // k1 < k; when the pair itself straddles the wraparound (k1 < k does
+    // NOT hold, e.g. k == n-1, k1 == 0), that unrolling wrongly re-included
+    // one of the two collapsed points itself - caught directly by a
+    // round-trip regression test producing a non-manifold result, not
+    // assumed).
+    std::vector<Point3d> new_loop;
+    new_loop.reserve(n - 1);
+    new_loop.push_back(restored);
+    for (size_t step = 0; step + 2 < n; ++step) new_loop.push_back(loop[(k1 + 1 + step) % n]);
+    loop = std::move(new_loop);
+    return;
+  }
+  throw std::runtime_error(
+      "dino8::kernel::RemoveChamferVertex: CollapseChamferVertexEdge could not find the expected 2-point edge - "
+      "please report this as a bug");
+}
+
+}  // namespace
+
+Brep RemoveChamferVertex(const Brep& solid, Point3d point_on_facet) {
+  const std::vector<Brep::PlanarFace> faces = solid.PlanarFaces();
+  const double tol = RelativeTol(faces);
+
+  int best = -1;
+  double best_d = std::numeric_limits<double>::infinity();
+  for (size_t f = 0; f < faces.size(); ++f) {
+    const double d = DistanceToPlanarFace(faces[f], point_on_facet);
+    if (d < best_d) {
+      best_d = d;
+      best = static_cast<int>(f);
+    }
+  }
+  if (best < 0 || best_d > std::max(tol * 100.0, 1e-4)) {
+    throw std::invalid_argument("dino8::kernel::RemoveChamferVertex: `point_on_facet` is not near any planar face of `solid`");
+  }
+  const std::vector<Point3d>& corner = faces[static_cast<size_t>(best)].loop;
+  if (corner.size() != 3) {
+    throw std::invalid_argument(
+        "dino8::kernel::RemoveChamferVertex: the nearest face to `point_on_facet` is not a triangle - a vertex "
+        "chamfer built by ChamferConvexVertex/ChamferConcaveVertex is always exactly 3 points");
+  }
+  const Point3d P0 = corner[0], P1 = corner[1], P2 = corner[2];
+
+  // The 3 adjacent faces, one per triangle edge, walked OPPOSITELY on
+  // their own loops - the same shared-boundary-edge topology every other
+  // function in this file already relies on.
+  auto find_adjacent = [&](const Point3d& a, const Point3d& b) {
+    for (size_t f = 0; f < faces.size(); ++f) {
+      if (static_cast<int>(f) == best) continue;
+      const std::vector<Point3d>& loop = faces[f].loop;
+      const size_t n = loop.size();
+      for (size_t k = 0; k < n; ++k) {
+        if (PointsEqual(loop[k], b, tol) && PointsEqual(loop[(k + 1) % n], a, tol)) return static_cast<int>(f);
+      }
+    }
+    return -1;
+  };
+  const int adj01 = find_adjacent(P0, P1);
+  const int adj12 = find_adjacent(P1, P2);
+  const int adj20 = find_adjacent(P2, P0);
+  if (adj01 < 0 || adj12 < 0 || adj20 < 0 || adj01 == adj12 || adj12 == adj20 || adj01 == adj20) {
+    throw std::invalid_argument(
+        "dino8::kernel::RemoveChamferVertex: the nearest triangular face does not have 3 distinct adjacent faces - "
+        "not a genuine vertex chamfer facet");
+  }
+
+  // V: the exact intersection of the 3 adjacent faces' own (unclipped)
+  // planes - the standard 3-plane-intersection closed form.
+  const Vector3d na = faces[static_cast<size_t>(adj01)].plane.zaxis;
+  const Vector3d nb = faces[static_cast<size_t>(adj12)].plane.zaxis;
+  const Vector3d nc = faces[static_cast<size_t>(adj20)].plane.zaxis;
+  const double det = na * ON_CrossProduct(nb, nc);
+  if (std::fabs(det) < 1e-9) {
+    throw std::invalid_argument(
+        "dino8::kernel::RemoveChamferVertex: the 3 adjacent faces' own planes are (nearly) parallel/coplanar - not "
+        "a genuine trihedral corner");
+  }
+  const double ra = na * faces[static_cast<size_t>(adj01)].plane.origin;
+  const double rb = nb * faces[static_cast<size_t>(adj12)].plane.origin;
+  const double rc = nc * faces[static_cast<size_t>(adj20)].plane.origin;
+  const Vector3d numer =
+      ON_CrossProduct(nb, nc) * ra + ON_CrossProduct(nc, na) * rb + ON_CrossProduct(na, nb) * rc;
+  const Point3d V(numer.x / det, numer.y / det, numer.z / det);
+  for (const std::pair<Vector3d, double> plane_eq : {std::make_pair(na, ra), {nb, rb}, {nc, rc}}) {
+    if (std::fabs(plane_eq.first * (V - Point3d(0, 0, 0)) - plane_eq.second) > 1e3 * tol) {
+      throw std::runtime_error(
+          "dino8::kernel::RemoveChamferVertex: 3-plane intersection solve failed - please report this as a bug");
+    }
+  }
+
+  // VALIDATION: each triangle corner's own far neighbor, found
+  // independently from both of its adjacent faces, must agree - and the
+  // corner itself must lie exactly on the ray from V through it.
+  const Point3d Na1 = StepPast(faces[static_cast<size_t>(adj01)].loop, P0, P1, tol);
+  const Point3d Na2 = StepPast(faces[static_cast<size_t>(adj20)].loop, P0, P2, tol);
+  const Point3d Nb1 = StepPast(faces[static_cast<size_t>(adj01)].loop, P1, P0, tol);
+  const Point3d Nb2 = StepPast(faces[static_cast<size_t>(adj12)].loop, P1, P2, tol);
+  const Point3d Nc1 = StepPast(faces[static_cast<size_t>(adj12)].loop, P2, P1, tol);
+  const Point3d Nc2 = StepPast(faces[static_cast<size_t>(adj20)].loop, P2, P0, tol);
+  if (!PointsEqual(Na1, Na2, tol) || !PointsEqual(Nb1, Nb2, tol) || !PointsEqual(Nc1, Nc2, tol)) {
+    throw std::invalid_argument(
+        "dino8::kernel::RemoveChamferVertex: the nearest triangular face does not reconstruct as a genuine vertex "
+        "chamfer facet - its own corners' far neighbors disagree between adjacent faces");
+  }
+  auto check_on_ray = [&](const Point3d& P, const Point3d& N) {
+    Vector3d full = N - V;
+    const double L = full.Length();
+    Vector3d dir = P - V;
+    const double d = dir.Length();
+    if (!(L > tol) || !(d > tol) || !(d < L - tol) || !full.Unitize() || !dir.Unitize() ||
+        (dir - full).Length() > 1e3 * tol) {
+      throw std::invalid_argument(
+          "dino8::kernel::RemoveChamferVertex: the nearest triangular face does not reconstruct as a genuine "
+          "vertex chamfer facet - a corner does not lie on the ray from the reconstructed vertex through its own "
+          "far neighbor");
+    }
+  };
+  check_on_ray(P0, Na1);
+  check_on_ray(P1, Nb1);
+  check_on_ray(P2, Nc1);
+
+  std::vector<Brep::PlanarFace> mixed = faces;
+  CollapseChamferVertexEdge(mixed[static_cast<size_t>(adj01)], P0, P1, V, tol);
+  CollapseChamferVertexEdge(mixed[static_cast<size_t>(adj12)], P1, P2, V, tol);
+  CollapseChamferVertexEdge(mixed[static_cast<size_t>(adj20)], P2, P0, V, tol);
+
+  std::vector<Brep::PlanarFace> result;
+  result.reserve(mixed.size() - 1);
+  for (size_t f = 0; f < mixed.size(); ++f) {
+    if (static_cast<int>(f) == best) continue;
+    result.push_back(std::move(mixed[f]));
+  }
+  return Brep::FromPlanarFaces(result);
+}
+
 }  // namespace dino8::kernel

@@ -1323,4 +1323,54 @@ Brep RemoveBlend(const Brep& solid, Point3d point_on_fillet);
 // rejects it.
 Brep RemoveChamfer(const Brep& solid, Point3d point_on_chamfer);
 
+// The inverse of ChamferConvexVertex/ChamferConcaveVertex (and their
+// per-edge-distance overloads): restores the sharp trihedral vertex a
+// single-facet vertex chamfer cut off (or filled in), purely from the
+// chamfered solid's own geometry - no separate provenance is stored
+// anywhere in a Brep, the same "read it back out of the geometry" spirit
+// RemoveBlend/RemoveChamfer already use.
+//
+// `point_on_facet` identifies the chamfer's own triangular facet: the
+// nearest planar face of `solid` by genuine point-to-polygon distance
+// (DistanceToPlanarFace, the same primitive RemoveChamfer's own face
+// search uses) - throws if that face does not have exactly 3 vertices (a
+// vertex chamfer's own facet always does, by construction).
+//
+// The construction:
+//   1. The facet's own 3 ADJACENT faces (one per triangle edge, found via
+//      the same shared-boundary-edge, opposite-walk-direction topology
+//      test every other function in this file already uses) - throws if
+//      the 3 are not distinct.
+//   2. The restored vertex V: the exact intersection of the 3 adjacent
+//      faces' own (UNCLIPPED) planes, solved via the standard 3-plane-
+//      intersection closed form. This is always exactly the original
+//      pre-chamfer vertex, however asymmetric the original `distance`s
+//      were, because chamfering a vertex only ever clips each adjacent
+//      face's own LOOP - it never touches that face's own PLANE.
+//   3. VALIDATION that this really is a genuine vertex-chamfer facet
+//      (not merely a coincidentally-triangular face with 3 neighbours,
+//      e.g. a genuine tetrahedron face - confirmed to be a real risk, not
+//      a hypothetical one, and checked directly rather than assumed): for
+//      each triangle corner P_k, the far neighbour along its own original
+//      edge is found independently from BOTH of P_k's own two adjacent
+//      faces (walking one step past P_k, away from the OTHER triangle
+//      corner sharing that face) and required to agree - then P_k itself
+//      is required to lie EXACTLY on the ray from V through that
+//      neighbour (P_k == V + d_k * unit(neighbour - V) for some 0 < d_k <
+//      the neighbour's own distance from V), the precise geometric
+//      relationship ChamferVertexCore's own construction guarantees.
+//      Throws std::invalid_argument, not silently reconstructing garbage,
+//      if any of this fails.
+//   4. Each of the 3 adjacent faces has its own 2-point edge shared with
+//      the triangle (P_i, P_j) collapsed back to the single restored
+//      vertex V, via the same CollapseNotchRun this file's own fillet-/
+//      chamfer-removal paths already use.
+//   5. The triangular facet itself is dropped; every other face of
+//      `solid` is carried through unchanged.
+//
+// SCOPE: reverses exactly what ChamferConvexVertex/ChamferConcaveVertex
+// (both overloads of each) can build. A solid already carrying a curved
+// face is out of scope, since PlanarFaces() itself rejects it.
+Brep RemoveChamferVertex(const Brep& solid, Point3d point_on_facet);
+
 }  // namespace dino8::kernel

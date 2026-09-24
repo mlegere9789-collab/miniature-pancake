@@ -4742,6 +4742,58 @@ honestly out of scope.
   Full `dino8_kernel_smoke`: 3401 checks, 0 failures; `dino8_general_boolean_sweep`
   unaffected.
 
+- **`RemoveChamferVertex` - the inverse of `ChamferConvexVertex`/
+  `ChamferConcaveVertex`** (`fillet.h`/`fillet.cpp`): restores the sharp
+  trihedral vertex a single-facet vertex chamfer cut off (or filled in),
+  purely from the chamfered solid's own geometry, the same "read it back
+  out of the geometry" spirit `RemoveBlend`/`RemoveChamfer` already use.
+  `point_on_facet` identifies the triangular facet (nearest planar face by
+  `DistanceToPlanarFace`, throwing if it isn't exactly 3 points); the
+  restored vertex V is the exact intersection of the 3 adjacent faces' own
+  UNCLIPPED planes - always exactly the original vertex, however
+  asymmetric the original per-edge distances were, since chamfering a
+  vertex only ever clips a face's own LOOP, never its PLANE.
+  A real risk, confirmed directly rather than assumed: a coincidentally
+  triangular face with 3 distinct neighbors (e.g. any face of a genuine
+  tetrahedron) is not automatically a chamfer facet. This function
+  validates it IS one before touching anything: each triangle corner's own
+  far neighbor along its original edge is found independently from BOTH
+  of that corner's adjacent faces (a new `StepPast` helper, walking one
+  step past the corner away from the OTHER triangle corner sharing that
+  face) and required to agree, and the corner itself must lie EXACTLY on
+  the ray from V through that neighbor - the precise relationship
+  `ChamferVertexCore`'s own construction guarantees. Throws
+  `std::invalid_argument` rather than silently reconstructing garbage when
+  this fails - checked directly against the regular-tetrahedron fixture
+  (every face passes the "3 distinct neighbors" test but fails the
+  on-the-ray check), not merely asserted from the algebra.
+  A genuine, unrelated bug in this file's own EXISTING `CollapseNotchRun`
+  helper (already relied on by `RemoveBlend`/`RemoveChamfer`) was found
+  and fixed along the way: that helper walks FORWARD from whichever of its
+  two target points it meets first in loop order to find the other one,
+  which silently collapses far more of the loop than intended when the two
+  points are adjacent via WRAPAROUND in the order that makes the forward
+  search cross almost the entire rest of the loop first - caught directly
+  by this function's own convex round-trip test initially returning
+  `FaceCount() == 3` instead of 6 (with `IsManifold() == true` but
+  `has_boundary == true`), not assumed. Rather than risk `RemoveBlend`'s/
+  `RemoveChamfer`'s own already-verified behavior by changing that shared
+  primitive, this function uses its own new, simpler, wraparound-safe
+  `CollapseChamferVertexEdge` (every pair it is ever called with is a
+  literal, always-exactly-2-point run, so checking direct `(k, k+1 mod n)`
+  adjacency and rebuilding via plain modular arithmetic sidesteps the
+  ambiguity entirely rather than trying to fix it in the more general
+  primitive).
+  Verified (`TestRemoveChamferVertexRoundTripsAConvexBoxCorner`,
+  `TestRemoveChamferVertexRoundTripsAsymmetricDistancesAndConcaveCorner`,
+  `TestRemoveChamferVertexRejectsNonChamferFacesAndOtherBadInputs`): exact
+  round trips (original face/edge/vertex counts and volume recovered
+  precisely) through the single-distance convex case, the asymmetric-
+  distance convex case, and the concave case, plus rejection of the
+  regular tetrahedron's own genuinely triangular (but not chamfer-built)
+  face. Full `dino8_kernel_smoke`: 3416 checks, 0 failures;
+  `dino8_general_boolean_sweep` unaffected.
+
 ## What's still not done (as of chunk 2)
 
 - `Brep::Box()`, `Brep::Sphere()`, `Brep::TrimmedPlanarFace()`
