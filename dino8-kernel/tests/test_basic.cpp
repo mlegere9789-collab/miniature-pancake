@@ -28493,6 +28493,85 @@ void TestChamferVertexRejectsWrongConvexityAndOtherBadInputs() {
         "rejects a point that is not touched by exactly 3 faces");
 }
 
+void TestChamferVertexAsymmetricPerEdgeDistancesMatchGeneralTripleProduct() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::ChamferConcaveVertex;
+  using dino8::kernel::ChamferConvexVertex;
+  using dino8::kernel::Point3d;
+
+  // Convex: 3 INDEPENDENT distances on the unit box's own mutually-
+  // perpendicular corner - the general triple-product tetrahedron formula
+  // (dx*dy*dz/6 here, since the 3 unit edge directions are orthonormal)
+  // reduces to the simple product, distinct from the single-distance
+  // overload's own d^3/6.
+  {
+    const double dx = 0.3, dy = 0.2, dz = 0.1;
+    const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+    const Brep c = ChamferConvexVertex(
+        box, Point3d(0, 0, 0),
+        {{Point3d(1, 0, 0), dx}, {Point3d(0, 1, 0), dy}, {Point3d(0, 0, 1), dz}});
+    Check(c.FaceCount() == 7, "asymmetric box corner chamfer: 6 box faces (3 re-trimmed) + 1 new facet = 7");
+    ON_TextLog log;
+    bool oriented = false, has_boundary = true;
+    Check(c.raw().IsValid(&log) && c.raw().IsManifold(&oriented, &has_boundary) && oriented && !has_boundary &&
+              c.raw().IsSolid(),
+          "the asymmetrically chamfered box corner is a valid, closed, manifold solid");
+    const double expected = 1.0 - dx * dy * dz / 6.0;
+    Check(std::fabs(c.TessellateToClosedMeshAdaptive(1e-9).Volume() - expected) < 1e-8,
+          "the asymmetric box corner chamfer's volume matches 1 - dx*dy*dz/6");
+  }
+
+  // Concave mirror: same 3 independent distances, on NotchedCubeCorner's
+  // own reflex vertex - ADDS dx*dy*dz/6 instead of removing it.
+  {
+    const double dx = 0.3, dy = 0.2, dz = 0.1;
+    const Brep notched = NotchedCubeCorner();
+    const double base_volume = notched.TessellateToClosedMesh(4, 4).Volume();
+    const Brep c = ChamferConcaveVertex(
+        notched, Point3d(2, 2, 2),
+        {{Point3d(2, 2, 3), dz}, {Point3d(2, 3, 2), dy}, {Point3d(3, 2, 2), dx}});
+    ON_TextLog log;
+    bool oriented = false, has_boundary = true;
+    Check(c.raw().IsValid(&log) && c.raw().IsManifold(&oriented, &has_boundary) && oriented && !has_boundary &&
+              c.raw().IsSolid(),
+          "the asymmetrically chamfered concave corner is a valid, closed, manifold solid");
+    const double expected = base_volume + dx * dy * dz / 6.0;
+    Check(std::fabs(c.TessellateToClosedMesh(20, 20).Volume() - expected) < 1e-3,
+          "the asymmetric concave corner chamfer's volume matches base_volume + dx*dy*dz/6");
+  }
+
+  // Rejections specific to the per-edge-distance overload.
+  auto throws = [](const std::function<void()>& fn) {
+    try {
+      fn();
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+    return false;
+  };
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+  Check(throws([&] {
+          ChamferConvexVertex(box, Point3d(0, 0, 0),
+                              {{Point3d(1, 0, 0), 0.1}, {Point3d(0, 1, 0), 0.1}});
+        }),
+        "rejects edge_distances with fewer than 3 entries");
+  Check(throws([&] {
+          ChamferConvexVertex(box, Point3d(0, 0, 0),
+                              {{Point3d(1, 0, 0), 0.1}, {Point3d(0, 1, 0), 0.1}, {Point3d(5, 5, 5), 0.1}});
+        }),
+        "rejects an edge_distances point that matches none of the corner's own 3 edges");
+  Check(throws([&] {
+          ChamferConvexVertex(box, Point3d(0, 0, 0),
+                              {{Point3d(1, 0, 0), 0.1}, {Point3d(1, 0, 0), 0.1}, {Point3d(0, 0, 1), 0.1}});
+        }),
+        "rejects a duplicated edge_distances point");
+  Check(throws([&] {
+          ChamferConvexVertex(box, Point3d(0, 0, 0),
+                              {{Point3d(1, 0, 0), 0.0}, {Point3d(0, 1, 0), 0.1}, {Point3d(0, 0, 1), 0.1}});
+        }),
+        "rejects a non-positive per-edge distance");
+}
+
 void TestRemoveBlendRoundTripsAConcaveFillet() {
   using dino8::kernel::Brep;
   using dino8::kernel::FilletConcaveEdge;
@@ -30495,6 +30574,7 @@ int main() {
   TestChamferConvexVertexWorksOnObliqueCornerFilletConvexEdgesRejects();
   TestChamferConcaveVertexAddsExactTetrahedronVolumeOnNotchedCubeCorner();
   TestChamferVertexRejectsWrongConvexityAndOtherBadInputs();
+  TestChamferVertexAsymmetricPerEdgeDistancesMatchGeneralTripleProduct();
   TestRemoveBlendRoundTripsAConcaveFillet();
   TestChamferConcaveEdgeAddsExactRightTriangleVolume();
   TestChamferConcaveEdgeAngleMatchesTwoDistanceForm();

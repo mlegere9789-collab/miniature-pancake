@@ -1,6 +1,7 @@
 #include "dino8/kernel/fillet.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
@@ -3085,15 +3086,16 @@ bool VertexEdgeConvexity(const std::vector<Brep::PlanarFace>& faces, int face_a,
 // away, which winding order makes the new triangular face CCW as seen
 // from outside) is derived directly from the fixture's own geometry.
 Brep ChamferVertexCore(const std::vector<Brep::PlanarFace>& faces, double tol, const TrihedralCorner& tc,
-                        const Point3d& vertex, double distance, const char* who) {
+                        const Point3d& vertex, const std::array<double, 3>& distances, const char* who) {
   std::vector<Point3d> corner(3);
   for (int k = 0; k < 3; ++k) {
     Vector3d e = tc.edges[static_cast<size_t>(k)].neighbor - vertex;
     const double L = e.Length();
+    const double distance = distances[static_cast<size_t>(k)];
     if (!(distance < L - tol)) {
       throw std::invalid_argument(std::string("dino8::kernel::") + who +
-                                  ": distance is too large to fit - it reaches or exceeds one of the corner's own "
-                                  "edge lengths");
+                                  ": a chamfer distance is too large to fit - it reaches or exceeds that edge's own "
+                                  "length");
     }
     e.Unitize();
     corner[static_cast<size_t>(k)] = vertex + distance * e;
@@ -3153,6 +3155,66 @@ Brep ChamferVertexCore(const std::vector<Brep::PlanarFace>& faces, double tol, c
   return Brep::FromPlanarFaces(work);
 }
 
+// Shared by all 4 ChamferConvexVertex/ChamferConcaveVertex overloads:
+// finds the trihedral corner at `vertex` and validates every one of its 3
+// edges has the required convexity sense (`require_convex` true for the
+// convex overloads, false for the concave ones) - the two throw messages
+// ChamferConvexVertex/ChamferConcaveVertex used to each have inline,
+// factored here since all 4 overloads need exactly the same check.
+TrihedralCorner FindAndValidateTrihedralCorner(const std::vector<Brep::PlanarFace>& faces, const Point3d& vertex,
+                                               double tol, bool require_convex, const char* who) {
+  const TrihedralCorner tc = FindTrihedralCorner(faces, vertex, tol, who);
+  for (const VertexEdge& ev : tc.edges) {
+    bool degenerate = false;
+    const bool convex = VertexEdgeConvexity(faces, ev.face_a, ev.face_b, vertex, ev.neighbor, tol, &degenerate);
+    if (degenerate) continue;
+    if (require_convex && !convex) {
+      throw std::invalid_argument(std::string("dino8::kernel::") + who +
+                                  ": an edge at `vertex` is not a convex dihedral edge - concave/degenerate corners "
+                                  "are out of scope, see ChamferConcaveVertex for the concave mirror");
+    }
+    if (!require_convex && convex) {
+      throw std::invalid_argument(std::string("dino8::kernel::") + who +
+                                  ": an edge at `vertex` is a CONVEX dihedral edge, not concave - see "
+                                  "ChamferConvexVertex instead");
+    }
+  }
+  return tc;
+}
+
+// Shared by the per-edge-distance overloads: matches each `edge_distances`
+// entry's own point to the one edge of `tc` it identifies (by the same
+// point-identifies-an-edge convention every other function in this file
+// already uses), in any order, and returns the 3 distances re-indexed to
+// `tc.edges`' own order. Throws if the size isn't exactly 3, or an entry's
+// point matches no edge (or one already matched by an earlier entry).
+std::array<double, 3> MatchEdgeDistances(const TrihedralCorner& tc,
+                                         const std::vector<std::pair<Point3d, double>>& edge_distances, double tol,
+                                         const char* who) {
+  if (edge_distances.size() != 3) {
+    throw std::invalid_argument(std::string("dino8::kernel::") + who +
+                                ": edge_distances must have exactly 3 entries, one per edge at `vertex`");
+  }
+  std::array<double, 3> out{};
+  std::array<bool, 3> matched{false, false, false};
+  for (const std::pair<Point3d, double>& ed : edge_distances) {
+    bool found = false;
+    for (int k = 0; k < 3 && !found; ++k) {
+      if (!matched[static_cast<size_t>(k)] && PointsEqual(ed.first, tc.edges[static_cast<size_t>(k)].neighbor, tol)) {
+        out[static_cast<size_t>(k)] = ed.second;
+        matched[static_cast<size_t>(k)] = true;
+        found = true;
+      }
+    }
+    if (!found) {
+      throw std::invalid_argument(std::string("dino8::kernel::") + who +
+                                  ": an edge_distances entry's own point does not match any of `vertex`'s own 3 "
+                                  "edge neighbors (or duplicates an already-matched one)");
+    }
+  }
+  return out;
+}
+
 }  // namespace
 
 Brep ChamferConvexVertex(const Brep& solid, Point3d vertex, double distance) {
@@ -3161,17 +3223,22 @@ Brep ChamferConvexVertex(const Brep& solid, Point3d vertex, double distance) {
   }
   const std::vector<Brep::PlanarFace> faces = solid.PlanarFaces();
   const double tol = RelativeTol(faces);
-  const TrihedralCorner tc = FindTrihedralCorner(faces, vertex, tol, "ChamferConvexVertex");
-  for (const VertexEdge& ev : tc.edges) {
-    bool degenerate = false;
-    const bool convex = VertexEdgeConvexity(faces, ev.face_a, ev.face_b, vertex, ev.neighbor, tol, &degenerate);
-    if (!degenerate && !convex) {
-      throw std::invalid_argument(
-          "dino8::kernel::ChamferConvexVertex: an edge at `vertex` is not a convex dihedral edge - "
-          "concave/degenerate corners are out of scope, see ChamferConcaveVertex for the concave mirror");
+  const TrihedralCorner tc = FindAndValidateTrihedralCorner(faces, vertex, tol, true, "ChamferConvexVertex");
+  return ChamferVertexCore(faces, tol, tc, vertex, {distance, distance, distance}, "ChamferConvexVertex");
+}
+
+Brep ChamferConvexVertex(const Brep& solid, Point3d vertex,
+                          const std::vector<std::pair<Point3d, double>>& edge_distances) {
+  const std::vector<Brep::PlanarFace> faces = solid.PlanarFaces();
+  const double tol = RelativeTol(faces);
+  const TrihedralCorner tc = FindAndValidateTrihedralCorner(faces, vertex, tol, true, "ChamferConvexVertex");
+  const std::array<double, 3> distances = MatchEdgeDistances(tc, edge_distances, tol, "ChamferConvexVertex");
+  for (double d : distances) {
+    if (!(d > 0.0)) {
+      throw std::invalid_argument("dino8::kernel::ChamferConvexVertex: every edge distance must be positive");
     }
   }
-  return ChamferVertexCore(faces, tol, tc, vertex, distance, "ChamferConvexVertex");
+  return ChamferVertexCore(faces, tol, tc, vertex, distances, "ChamferConvexVertex");
 }
 
 Brep ChamferConcaveVertex(const Brep& solid, Point3d vertex, double distance) {
@@ -3180,17 +3247,22 @@ Brep ChamferConcaveVertex(const Brep& solid, Point3d vertex, double distance) {
   }
   const std::vector<Brep::PlanarFace> faces = solid.PlanarFaces();
   const double tol = RelativeTol(faces);
-  const TrihedralCorner tc = FindTrihedralCorner(faces, vertex, tol, "ChamferConcaveVertex");
-  for (const VertexEdge& ev : tc.edges) {
-    bool degenerate = false;
-    const bool convex = VertexEdgeConvexity(faces, ev.face_a, ev.face_b, vertex, ev.neighbor, tol, &degenerate);
-    if (!degenerate && convex) {
-      throw std::invalid_argument(
-          "dino8::kernel::ChamferConcaveVertex: an edge at `vertex` is a CONVEX dihedral edge, not concave - see "
-          "ChamferConvexVertex instead");
+  const TrihedralCorner tc = FindAndValidateTrihedralCorner(faces, vertex, tol, false, "ChamferConcaveVertex");
+  return ChamferVertexCore(faces, tol, tc, vertex, {distance, distance, distance}, "ChamferConcaveVertex");
+}
+
+Brep ChamferConcaveVertex(const Brep& solid, Point3d vertex,
+                           const std::vector<std::pair<Point3d, double>>& edge_distances) {
+  const std::vector<Brep::PlanarFace> faces = solid.PlanarFaces();
+  const double tol = RelativeTol(faces);
+  const TrihedralCorner tc = FindAndValidateTrihedralCorner(faces, vertex, tol, false, "ChamferConcaveVertex");
+  const std::array<double, 3> distances = MatchEdgeDistances(tc, edge_distances, tol, "ChamferConcaveVertex");
+  for (double d : distances) {
+    if (!(d > 0.0)) {
+      throw std::invalid_argument("dino8::kernel::ChamferConcaveVertex: every edge distance must be positive");
     }
   }
-  return ChamferVertexCore(faces, tol, tc, vertex, distance, "ChamferConcaveVertex");
+  return ChamferVertexCore(faces, tol, tc, vertex, distances, "ChamferConcaveVertex");
 }
 
 

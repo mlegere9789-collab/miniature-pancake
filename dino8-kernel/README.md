@@ -4716,6 +4716,32 @@ honestly out of scope.
   `dino8_kernel_smoke`: 3346 checks, 0 failures; `dino8_general_boolean_sweep`
   unaffected (`closedmesh=0` count still 22).
 
+- **`ChamferConvexVertex`/`ChamferConcaveVertex` extended to ASYMMETRIC
+  per-edge distances** (`fillet.h`/`fillet.cpp`): a new overload of each,
+  `(solid, vertex, edge_distances)`, where `edge_distances` is a
+  `vector<pair<Point3d, double>>` giving each of the corner's 3 edges (by
+  the same point-identifies-an-edge convention every other function here
+  already uses) its own independent chamfer distance - the vertex analogue
+  of `ChamferConvexEdge`'s own `distance_i`/`distance_j` asymmetry,
+  closing the "out of scope" note this pair's own previous increment left.
+  Both single-distance overloads are now thin wrappers (build a 3-entry
+  vector with the same distance 3 times) around the shared
+  `ChamferVertexCore`, which now takes an explicit `std::array<double, 3>`
+  instead of one shared `double` - not a second implementation, and
+  `MatchEdgeDistances` (a new small helper) does the point-to-edge
+  matching once, shared by both new overloads, throwing on the wrong
+  count, an unmatched point, or a duplicate.
+  Verified (`TestChamferVertexAsymmetricPerEdgeDistancesMatchGeneralTripleProduct`):
+  the closed form generalizes cleanly to
+  `(d0 * d1 * d2 / 6) * |e0 . (e1 x e2)|` for 3 INDEPENDENT distances (the
+  general scalar-triple-product tetrahedron-from-one-vertex formula, not
+  just the equal-distance `distance^3/6` special case) - checked on both
+  the convex unit-box corner (removed) and `NotchedCubeCorner`'s own
+  reflex vertex (added), plus the 4 new rejection paths (wrong entry
+  count, an unmatched point, a duplicated point, a non-positive distance).
+  Full `dino8_kernel_smoke`: 3401 checks, 0 failures; `dino8_general_boolean_sweep`
+  unaffected.
+
 ## What's still not done (as of chunk 2)
 
 - `Brep::Box()`, `Brep::Sphere()`, `Brep::TrimmedPlanarFace()`
