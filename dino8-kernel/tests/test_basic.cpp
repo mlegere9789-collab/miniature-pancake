@@ -5119,6 +5119,73 @@ void TestModelAddRenderColorRoundTrips() {
   std::remove(path.c_str());
 }
 
+// Every Add*()'s new `user_strings` parameter: Rhino's own "user text"
+// key/value attribute mechanism (UserStrings' own doc comment in file_io.h),
+// the last field PARITY_MAP.md's ".3dm attribute/metadata fidelity"
+// evidence lists that this kernel had no way to write at all. Checks a
+// real round trip: one object given two user strings, including a
+// repeated key (proving SetUserString()'s own "last value wins" contract
+// survives the round trip, not just a single pair); a second object left
+// with no user_strings argument (proving the new parameter is additive,
+// not a behavior change for existing callers - UserStringCount() stays 0,
+// exactly as every object's attributes were before this parameter existed).
+void TestModelAddUserStringsRoundTrips() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Model;
+  using dino8::kernel::Result;
+  using dino8::kernel::UserStrings;
+
+  Model model;
+  const auto box_mesh = MakeQuadBoxMesh(0, 0, 0, 1, 1, 1);
+  const UserStrings user_strings = {
+      {"PartNumber", "PN-1042"}, {"Material", "Aluminum"}, {"PartNumber", "PN-1042-REV-B"}};
+  model.AddMesh(box_mesh, "TaggedMesh", 0, std::nullopt, user_strings);
+  const auto box_brep = Brep::Box(0, 0, 0, 1, 1, 1);
+  model.AddBrep(box_brep);  // no user_strings given: carries none
+
+  const std::string path = "dino8_kernel_model_user_strings_roundtrip_test.3dm";
+  Check(model.Save(path) == Result::Ok, ".3dm save with object user strings succeeded");
+
+  Model loaded;
+  Check(Model::Load(path, loaded) == Result::Ok, ".3dm load succeeded");
+
+  ONX_ModelComponentIterator iterator(loaded.raw(), ON_ModelComponent::Type::ModelGeometry);
+  bool found_tagged_mesh = false;
+  bool found_untagged_brep = false;
+  for (const ON_ModelComponent* component = iterator.FirstComponent(); component != nullptr;
+       component = iterator.NextComponent()) {
+    const auto* geometry_component = static_cast<const ON_ModelGeometryComponent*>(component);
+    const ON_3dmObjectAttributes* attributes = geometry_component->Attributes(nullptr);
+    const ON_Geometry* geometry = geometry_component->Geometry(nullptr);
+    if (dynamic_cast<const ON_Mesh*>(geometry) != nullptr) {
+      found_tagged_mesh = true;
+      Check(attributes->UserStringCount() == 2,
+            "the reloaded mesh carries exactly 2 user strings - the repeated \"PartNumber\" "
+            "key collapsed to its last value, not appended as a third entry");
+      ON_wString part_number;
+      Check(attributes->GetUserString(L"PartNumber", part_number) &&
+                part_number == ON_wString("PN-1042-REV-B"),
+            "the reloaded mesh's \"PartNumber\" user string is the LAST value given for that "
+            "key (\"PN-1042-REV-B\"), matching SetUserString()'s own replace contract");
+      ON_wString material;
+      Check(attributes->GetUserString(L"Material", material) &&
+                material == ON_wString("Aluminum"),
+            "the reloaded mesh's \"Material\" user string exactly matches what AddMesh() was "
+            "given");
+    } else if (dynamic_cast<const ON_Brep*>(geometry) != nullptr) {
+      found_untagged_brep = true;
+      Check(attributes->UserStringCount() == 0,
+            "the reloaded brep - added with no user_strings argument - carries none, proving "
+            "the new parameter is a no-op when omitted");
+    }
+  }
+  Check(found_tagged_mesh && found_untagged_brep,
+        "both object types (tagged mesh, untagged brep) were found in the reloaded model");
+
+  std::remove(path.c_str());
+}
+
 void TestBoxVolume() {
   const auto box = MakeBox(0, 0, 0, 2, 2, 2);
   Check(std::abs(box.Volume() - 8.0) < 1e-9, "unit-scaled box volume is correct");
@@ -27998,6 +28065,7 @@ int main() {
   TestModelAddObjectNameRoundTrips();
   TestModelAddLayerRoundTrips();
   TestModelAddRenderColorRoundTrips();
+  TestModelAddUserStringsRoundTrips();
   TestModelLoadRejectsMeshWithOutOfRangeFaceIndex();
   TestSplitByPlane();
   TestConvexHull();
