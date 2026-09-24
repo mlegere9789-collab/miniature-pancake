@@ -8273,6 +8273,22 @@ void TestSubDCreaseAtDoubleEdgeKeepsFoldStraight() {
         "proving the crease flag does something real, not a no-op");
 }
 
+// SubD::IsValid(): a genuinely built SubD passes, a default-constructed
+// (never built) one - the simplest way to get an ON_SubD OpenNURBS
+// itself calls structurally invalid, no hand-corruption required - does
+// not, and it stays valid through real subdivision.
+void TestSubDIsValid() {
+  using dino8::kernel::SubD;
+
+  SubD empty;
+  Check(!empty.IsValid(), "a default-constructed SubD (no levels at all) is not valid");
+
+  auto hinge = SubD::FromControlMesh(MakeHingedDoubleEdgeMesh(), /*crease_at_double_edges=*/false);
+  Check(hinge.IsValid(), "a SubD built by FromControlMesh() is valid");
+  hinge.Subdivide(2);
+  Check(hinge.IsValid(), "...and stays valid after real subdivision");
+}
+
 void TestSubDSetEdgeSharpnessCreatesRealSemiSharpCrease() {
   using dino8::kernel::Mesh;
   using dino8::kernel::Point3d;
@@ -9305,6 +9321,177 @@ void TestMeshSaveStlBinaryRoundTrips() {
   Check(std::abs(loaded.Volume() - box.Volume()) < 1e-6,
         "the loaded binary mesh's volume exactly matches the original");
   std::remove(path.c_str());
+}
+
+// SavePly()/LoadPly() close a real gap: this kernel had zero PLY code at
+// all before this - no export, no import. Checks the written header
+// actually declares the shape it claims (a real "list" face property,
+// not a fixed-size one), that a quad face round-trips as a single
+// 4-index face (unlike SaveStl(), which has no choice but to split it),
+// and that texture coordinates survive when present - mirroring
+// TestMeshSaveObjRoundTrips()'s own "verify actual file content, not
+// just the round trip" approach.
+void TestMeshSavePlyRoundTrips() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Result;
+
+  const auto box = MakeQuadBoxMesh(0, 0, 0, 2, 3, 4);
+  const std::string path = "dino8_kernel_mesh_ply_test.ply";
+  Check(box.SavePly(path) == Result::Ok, "Mesh::SavePly succeeds");
+
+  std::ifstream in(path);
+  Check(static_cast<bool>(in), "the .ply file SavePly wrote can be reopened for reading");
+  std::string first_line;
+  std::getline(in, first_line);
+  Check(first_line == "ply", "the file starts with the required 'ply' magic line");
+
+  int vertex_element_count = -1;
+  int face_element_count = -1;
+  bool saw_list_face_property = false;
+  bool saw_quad_face_line = false;
+  std::string line;
+  while (std::getline(in, line)) {
+    if (line == "end_header") break;
+    std::istringstream stream(line);
+    std::string tag;
+    stream >> tag;
+    if (tag == "element") {
+      std::string name;
+      int count;
+      stream >> name >> count;
+      if (name == "vertex") vertex_element_count = count;
+      if (name == "face") face_element_count = count;
+    } else if (tag == "property") {
+      std::string next;
+      stream >> next;
+      if (next == "list") saw_list_face_property = true;
+    }
+  }
+  while (std::getline(in, line)) {
+    std::istringstream stream(line);
+    int corner_count = 0;
+    if (stream >> corner_count && corner_count == 4) {
+      saw_quad_face_line = true;
+      break;
+    }
+  }
+  Check(vertex_element_count == box.VertexCount(),
+        "the header's 'element vertex' count matches the mesh's vertex count (8)");
+  Check(face_element_count == box.FaceCount(),
+        "the header's 'element face' count matches the mesh's face count (6)");
+  Check(saw_list_face_property, "the face element declares a genuine 'property list', not a fixed-size one");
+  Check(saw_quad_face_line,
+        "at least one face data line has a 4-corner count - a quad face is written as one "
+        "native PLY face, not split into two triangles the way SaveStl() has to");
+
+  Mesh reloaded;
+  Check(Mesh::LoadPly(path, reloaded) == Result::Ok, "Mesh::LoadPly succeeds on SavePly()'s own output");
+  Check(reloaded.VertexCount() == box.VertexCount() && reloaded.FaceCount() == box.FaceCount(),
+        "the reloaded mesh has the same vertex/face counts as the original");
+  Check(std::abs(reloaded.Volume() - box.Volume()) < 1e-9,
+        "the reloaded mesh's volume exactly matches the original (quad faces round-tripped "
+        "as quads, not silently reinterpreted)");
+  std::remove(path.c_str());
+
+  // Texture coordinates: same pattern as TestMeshTextureCoordinates()'s
+  // own .obj check, applied to .ply's u/v columns instead.
+  Mesh with_uvs = box;
+  std::vector<dino8::kernel::Point2d> uvs;
+  for (int i = 0; i < with_uvs.VertexCount(); ++i) {
+    uvs.push_back(dino8::kernel::Point2d(static_cast<double>(i) * 0.1, static_cast<double>(i) * 0.2));
+  }
+  Check(with_uvs.SetTextureCoordinates(uvs) == Result::Ok, "fixture: SetTextureCoordinates succeeds");
+
+  const std::string uv_path = "dino8_kernel_mesh_ply_uv_test.ply";
+  Check(with_uvs.SavePly(uv_path) == Result::Ok, "SavePly succeeds on a mesh with texture coordinates");
+  Mesh reloaded_uv;
+  Check(Mesh::LoadPly(uv_path, reloaded_uv) == Result::Ok, "LoadPly succeeds on a .ply file with u/v columns");
+  Check(reloaded_uv.HasTextureCoordinates(), "the reloaded mesh reports having texture coordinates");
+  bool uvs_match = true;
+  for (int i = 0; i < reloaded_uv.VertexCount(); ++i) {
+    const auto original_uv = with_uvs.TextureCoordinateAt(i);
+    const auto loaded_uv = reloaded_uv.TextureCoordinateAt(i);
+    if (std::abs(original_uv.x - loaded_uv.x) > 1e-9 || std::abs(original_uv.y - loaded_uv.y) > 1e-9) {
+      uvs_match = false;
+      break;
+    }
+  }
+  Check(uvs_match, "every reloaded vertex's texture coordinate exactly matches the original, "
+                   "round-tripped through the .ply file");
+  std::remove(uv_path.c_str());
+}
+
+// Malformed/out-of-scope input is rejected outright, never silently
+// misread. Covers: a binary-format header (disclosed out of scope, see
+// SavePly()'s doc comment), a vertex element missing x/y/z, a face list
+// property with too many/few corners, and an out-of-range face index -
+// then a control case proving those rejections aren't over-broad.
+void TestMeshLoadPlyRejectsMalformedFiles() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Result;
+
+  auto write_file = [](const std::string& path, const std::string& contents) {
+    std::ofstream out(path);
+    out << contents;
+  };
+
+  {
+    const std::string path = "dino8_kernel_mesh_ply_binary_test.ply";
+    write_file(path, "ply\nformat binary_little_endian 1.0\nelement vertex 0\nend_header\n");
+    Mesh loaded;
+    Check(Mesh::LoadPly(path, loaded) == Result::Failed,
+          "LoadPly() fails on a binary-format header - disclosed out of scope, not misread as ASCII");
+    std::remove(path.c_str());
+  }
+
+  {
+    const std::string path = "dino8_kernel_mesh_ply_no_xyz_test.ply";
+    write_file(path,
+               "ply\nformat ascii 1.0\nelement vertex 1\nproperty float x\nproperty float y\n"
+               "element face 0\nproperty list uchar int vertex_indices\nend_header\n0 0\n");
+    Mesh loaded;
+    Check(Mesh::LoadPly(path, loaded) == Result::Failed,
+          "LoadPly() fails when the vertex element is missing a 'z' property");
+    std::remove(path.c_str());
+  }
+
+  {
+    const std::string path = "dino8_kernel_mesh_ply_bad_face_width_test.ply";
+    write_file(path,
+               "ply\nformat ascii 1.0\nelement vertex 3\nproperty float x\nproperty float y\n"
+               "property float z\nelement face 1\nproperty list uchar int vertex_indices\n"
+               "end_header\n0 0 0\n1 0 0\n0 1 0\n2 0 1\n");
+    Mesh loaded;
+    Check(Mesh::LoadPly(path, loaded) == Result::Failed,
+          "LoadPly() fails on a face line with only 2 corners (neither a triangle nor a quad)");
+    std::remove(path.c_str());
+  }
+
+  {
+    const std::string path = "dino8_kernel_mesh_ply_bad_index_test.ply";
+    write_file(path,
+               "ply\nformat ascii 1.0\nelement vertex 3\nproperty float x\nproperty float y\n"
+               "property float z\nelement face 1\nproperty list uchar int vertex_indices\n"
+               "end_header\n0 0 0\n1 0 0\n0 1 0\n3 0 1 7\n");
+    Mesh loaded;
+    Check(Mesh::LoadPly(path, loaded) == Result::Failed,
+          "LoadPly() fails on a face referencing vertex index 7 when only 3 vertices (0-2) exist");
+    std::remove(path.c_str());
+  }
+
+  // Control: a well-formed minimal triangle still loads fine.
+  {
+    const std::string path = "dino8_kernel_mesh_ply_control_test.ply";
+    write_file(path,
+               "ply\nformat ascii 1.0\nelement vertex 3\nproperty float x\nproperty float y\n"
+               "property float z\nelement face 1\nproperty list uchar int vertex_indices\n"
+               "end_header\n0 0 0\n1 0 0\n0 1 0\n3 0 1 2\n");
+    Mesh loaded;
+    Check(Mesh::LoadPly(path, loaded) == Result::Ok, "control: a well-formed minimal triangle loads fine");
+    Check(loaded.VertexCount() == 3 && loaded.FaceCount() == 1,
+          "control: loaded the expected 3 vertices and 1 face");
+    std::remove(path.c_str());
+  }
 }
 
 void TestExactClippingMatchesAreaButNotCellCounts() {
@@ -25642,6 +25829,7 @@ int main() {
   TestSubDFromBoxSubdividesToExactCatmullClarkCounts();
   TestSubDFromControlMeshRejectsEmptyMesh();
   TestSubDCreaseAtDoubleEdgeKeepsFoldStraight();
+  TestSubDIsValid();
   TestSubDSetEdgeSharpnessCreatesRealSemiSharpCrease();
   TestSubDSetCreaseTagsAndUntagsEdges();
   TestSubDFlatQuadGridStaysFlatAndAreaExact();
@@ -25656,6 +25844,8 @@ int main() {
   TestMeshLoadStlBinary();
   TestMeshLoadStlBinaryRejectsNonFiniteVertices();
   TestMeshSaveStlBinaryRoundTrips();
+  TestMeshSavePlyRoundTrips();
+  TestMeshLoadPlyRejectsMalformedFiles();
   TestExactClippingMatchesAreaButNotCellCounts();
   TestExactClippingHandlesNonConvexTrim();
   TestExactClippingHandlesTrimVertexOnGridLine();
