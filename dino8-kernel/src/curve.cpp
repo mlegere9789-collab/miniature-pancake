@@ -867,12 +867,31 @@ Result NurbsCurve::OffsetInPlane(double distance, NurbsCurve& out, double tolera
     offset_points.push_back(PointAt(t) + distance * offset_dir);
   }
 
+  // Tolerance-driven refit: refuses to hand back a fit whose actual
+  // worst-case deviation from the sampled offset locus exceeds `tol`,
+  // rather than fitting once at this curve's own ControlPointCount() and
+  // trusting it - see this method's own header doc comment for why a
+  // least-squares residual isn't the same guarantee as this per-point
+  // check. `max_cv_count` mirrors FitLeastSquares()'s own documented
+  // ceiling (it isn't defined for more control points than data points).
+  const int max_cv_count = static_cast<int>(offset_points.size());
+  int cv_count = std::min(ControlPointCount(), max_cv_count);
   NurbsCurve fitted;
-  if (NurbsCurve::FitLeastSquares(offset_points, Degree(), ControlPointCount(), fitted) != Result::Ok) {
-    return Result::Failed;
+  for (;;) {
+    if (NurbsCurve::FitLeastSquares(offset_points, Degree(), cv_count, fitted) != Result::Ok) {
+      return Result::Failed;
+    }
+    double worst = 0.0;
+    for (const Point3d& p : offset_points) {
+      worst = std::max(worst, fitted.ClosestPoint(p, 50).DistanceTo(p));
+    }
+    if (worst <= tol) {
+      out = fitted;
+      return Result::Ok;
+    }
+    if (cv_count >= max_cv_count) return Result::Failed;  // tolerance unreachable even at the maximum feasible count
+    cv_count = std::min(cv_count * 2, max_cv_count);
   }
-  out = fitted;
-  return Result::Ok;
 }
 
 }  // namespace dino8::kernel

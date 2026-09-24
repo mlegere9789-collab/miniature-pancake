@@ -27890,6 +27890,69 @@ void TestCurveOffsetInPlaneGeneralCurveApproximatesAndDetectsSelfIntersection() 
         "OffsetInPlane on a general curve: at least one large-magnitude direction is refused as self-intersecting");
 }
 
+void TestCurveOffsetInPlaneGeneralCurveRefinesUntilWithinTolerance() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+  using dino8::kernel::Vector3d;
+
+  // A genuinely wiggly planar curve (unlike the gentle single-bulge
+  // fixture above, deliberately NOT stress-testing worst-case error) -
+  // several full oscillations packed into a short span, so the true
+  // offset curve's own curvature varies enough that fitting at this
+  // curve's own (small) ControlPointCount() alone leaves real,
+  // measurable error - the exact gap this method's own tolerance-driven
+  // refinement loop was added to close, not merely a fit-quality nicety.
+  std::vector<Point3d> cps;
+  for (int i = 0; i <= 10; ++i) cps.push_back(Point3d(i, 2.0 * std::sin(i * 0.9), 0.0));
+  const NurbsCurve c = NurbsCurve::FromControlPoints(cps, 3);
+  Check(c.IsPlanar(1e-9), "OffsetInPlane tolerance-refit setup: curve is planar");
+
+  NurbsCurve out;
+  Check(c.OffsetInPlane(0.5, out) == Result::Ok, "OffsetInPlane(+0.5) succeeds on a genuinely wiggly planar curve");
+  Check(out.ControlPointCount() > c.ControlPointCount(),
+        "OffsetInPlane(+0.5) on a wiggly curve: refinement actually grew the control-point count beyond this curve's own - fitting at the ORIGINAL count alone was not accurate enough");
+
+  ON_Plane plane;
+  c.raw().IsPlanar(&plane, 1e-6);
+  const dino8::kernel::Interval dom = c.Domain();
+  double worst = 0.0;
+  for (int i = 0; i <= 200; ++i) {
+    const double t = dom.min + (dom.max - dom.min) * i / 200.0;
+    Vector3d offset_dir = ON_CrossProduct(c.TangentAt(t), plane.zaxis);
+    offset_dir.Unitize();
+    const Point3d expected = c.PointAt(t) + 0.5 * offset_dir;
+    worst = std::max(worst, out.ClosestPoint(expected, 200).DistanceTo(expected));
+  }
+  const double bbox_diag = (c.GetTightBoundingBox().max - c.GetTightBoundingBox().min).Length();
+  const double expected_tol = dino8::kernel::tolerance::DistanceForSize(bbox_diag);
+  Check(worst <= 2.0 * expected_tol,
+        "OffsetInPlane(+0.5) on a wiggly curve: the REFINED fit's worst-case deviation from the true offset locus is at (or very near) the tolerance this method targets internally, not merely 'reasonable'");
+
+  // Directly proves this is a real fix, not a cosmetic change: fitting at
+  // the OLD fixed ControlPointCount() alone (bypassing the refinement
+  // loop entirely, calling FitLeastSquares directly the way this method
+  // used to) leaves a MUCH larger, previously-unchecked error on this
+  // exact fixture.
+  const int n = std::max(50, 4 * c.ControlPointCount());
+  std::vector<Point3d> offset_points;
+  for (int i = 0; i <= n; ++i) {
+    const double t = dom.min + (dom.max - dom.min) * i / n;
+    Vector3d offset_dir = ON_CrossProduct(c.TangentAt(t), plane.zaxis);
+    offset_dir.Unitize();
+    offset_points.push_back(c.PointAt(t) + 0.5 * offset_dir);
+  }
+  NurbsCurve fitted_at_original_count;
+  Check(NurbsCurve::FitLeastSquares(offset_points, c.Degree(), c.ControlPointCount(), fitted_at_original_count) == Result::Ok,
+        "tolerance-refit regression setup: FitLeastSquares at the original control-point count succeeds");
+  double worst_unrefined = 0.0;
+  for (const Point3d& p : offset_points) {
+    worst_unrefined = std::max(worst_unrefined, fitted_at_original_count.ClosestPoint(p, 100).DistanceTo(p));
+  }
+  Check(worst_unrefined > 50.0 * expected_tol,
+        "OffsetInPlane's OWN tolerance-driven refinement is genuinely necessary here: fitting at the original (unrefined) control-point count alone would have left an error over 50x this method's own target tolerance");
+}
+
 void TestCurveOffsetInPlaneRefusesNonPlanarCurve() {
   using dino8::kernel::NurbsCurve;
   using dino8::kernel::Point3d;
@@ -28749,6 +28812,7 @@ int main() {
   TestCurveOffsetInPlaneCircleIsExactConcentricCircle();
   TestCurveOffsetInPlanePartialArcPreservesAngularSpan();
   TestCurveOffsetInPlaneGeneralCurveApproximatesAndDetectsSelfIntersection();
+  TestCurveOffsetInPlaneGeneralCurveRefinesUntilWithinTolerance();
   TestCurveOffsetInPlaneRefusesNonPlanarCurve();
   TestCurveOffsetInPlaneZeroDistanceIsNoOpCopy();
 
