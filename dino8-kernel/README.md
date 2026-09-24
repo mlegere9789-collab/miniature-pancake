@@ -2548,6 +2548,33 @@ What this repo does instead:
   (hand-derived, not approximate), a mirror leaves `IsValid()` true
   (measured, not just claimed), and a genuinely invalid (NaN-carrying)
   `xform` throws rather than silently handing back a garbage copy.
+- `Mesh::Offset(distance)` / `Mesh::Thicken(distance)`: the mesh-level
+  offset/thicken this class never had at all (distinct from the Brep-
+  level offset/shell another session owns). `Offset()` moves every
+  vertex along its own `ComputeVertexNormals()` direction - built
+  directly on that already-existing, already-documented primitive
+  rather than recomputing normals its own way, so it inherits that
+  method's own area-weighted, per-triangle-contribution correctness (and
+  its own honest "zero vector for an unreferenced vertex" edge case).
+  Honestly NOT topologically robust - a plain per-vertex push with no
+  self-intersection detection or repair, the same disclosed tradeoff
+  every simple normal-offset mesher has. `Thicken()` builds a genuine
+  solid shell from an OPEN mesh: an `Offset()` copy stitched to the
+  original along every naked edge with a new quad wall face, the
+  original layer flipped to face the material correctly. The walls need
+  no separate orientation logic at all - each is built directly from
+  `Check()`'s own `naked_edge_list`, already recorded in the correct
+  outward-walking direction by that field's own long-standing
+  documentation, so getting `Thicken()` right was really just trusting
+  data that already existed. Refuses (`std::invalid_argument`) a zero
+  distance and an already-closed input (closed-mesh hollowing is a
+  materially different, unattempted problem). Verified by hand, not
+  just plausibly: a single flat unit-square face thickened by exactly 1
+  produces an EXACT unit cube - 8 vertices, 6 faces, closed manifold,
+  volume exactly 1.0 - derived corner-by-corner and edge-by-edge before
+  writing the test (which triangle's flip direction and which wall
+  vertex order produce an outward-facing cube), not verified after the
+  fact by adjusting signs until a check passed.
 
 ## Blending build log (Parasolid "blend/chamfer" class, chronological)
 
