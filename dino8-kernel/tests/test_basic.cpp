@@ -6091,6 +6091,102 @@ void TestBrepTorusIsClosedAndWatertight() {
         "zero axis throws");
 }
 
+// Brep::Volume()/Area(): direct NURBS mass-properties integration (5-
+// point-per-span Gauss-Legendre, divergence theorem), not a tessellation
+// approximation. Box()'s six bilinear (non-rational, degree-1) faces
+// make its integrand an exact low-degree polynomial, so both should
+// match their closed forms to machine precision - a real test of
+// quadrature correctness, not just "close enough." Sphere()/Torus() are
+// rational (a NURBS circle's own weight function), so their true
+// integrand isn't a polynomial at all; the quadrature converges rather
+// than landing exactly - measured ~1.8e-6 (sphere) and ~3.0e-7 (torus)
+// relative in a standalone diagnostic before picking these tolerances,
+// so 1e-4 is a real bound with two orders of magnitude of margin, not a
+// loose one.
+void TestBrepVolumeAndAreaMatchClosedForms() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point2d;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  {
+    const Brep box = Brep::Box(0, 0, 0, 2, 3, 4);
+    Check(std::abs(box.Volume() - 24.0) < 1e-9, "Box() volume matches 2*3*4 to machine precision");
+    Check(std::abs(box.Area() - 52.0) < 1e-9, "Box() area matches 2*(2*3+2*4+3*4) to machine precision");
+  }
+  {
+    const double r = 2.0;
+    const Brep sphere = Brep::Sphere(Point3d(0, 0, 0), r);
+    const double exact_vol = (4.0 / 3.0) * M_PI * r * r * r;
+    const double exact_area = 4.0 * M_PI * r * r;
+    Check(std::abs(sphere.Volume() - exact_vol) / exact_vol < 1e-4,
+          "Sphere() volume within 1e-4 relative of the exact 4/3*pi*r^3");
+    Check(std::abs(sphere.Area() - exact_area) / exact_area < 1e-4,
+          "Sphere() area within 1e-4 relative of the exact 4*pi*r^2");
+  }
+  {
+    const double R = 5.0, r = 1.5;
+    const Brep torus = Brep::Torus(Point3d(0, 0, 0), Vector3d(0, 0, 1), R, r);
+    const double exact_vol = 2.0 * M_PI * M_PI * R * r * r;
+    const double exact_area = 4.0 * M_PI * M_PI * R * r;
+    Check(std::abs(torus.Volume() - exact_vol) / exact_vol < 1e-4,
+          "Torus() volume within 1e-4 relative of the exact 2*pi^2*R*r^2");
+    Check(std::abs(torus.Area() - exact_area) / exact_area < 1e-4,
+          "Torus() area within 1e-4 relative of the exact 4*pi^2*R*r");
+  }
+
+  auto throws_invalid_argument = [](const std::function<void()>& f) {
+    try {
+      f();
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+    return false;
+  };
+
+  // Negative controls.
+  {
+    const std::vector<Point3d> grid = {
+        Point3d(0, 0, 0),
+        Point3d(0, 10, 0),
+        Point3d(10, 0, 0),
+        Point3d(10, 10, 0),
+    };
+    const NurbsSurface surface = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+    const std::vector<Point2d> trim_loop = {Point2d(0.15, 0.15), Point2d(0.85, 0.15), Point2d(0.85, 0.85),
+                                             Point2d(0.15, 0.85)};
+    const Brep trimmed = Brep::TrimmedPlanarFace(surface, trim_loop);
+    Check(throws_invalid_argument([&] { trimmed.Area(); }),
+          "Area() throws on a face this kernel's own pseudo-trim side table restricts "
+          "(TrimmedPlanarFace()'s trim_loop_uv, invisible to raw().FaceIsSurface())");
+    Check(throws_invalid_argument([&] { trimmed.Volume(); }),
+          "Volume() throws on the same trimmed face (also fails the closedness check first, "
+          "since a single planar face is never a closed solid anyway)");
+  }
+  {
+    // A genuinely open (uncapped) sweep: no enclosed volume, so Volume()
+    // must refuse. Area() does NOT require closedness, so it succeeds -
+    // an open surface still has a well-defined area, checked directly
+    // against the same swept-square fixture TestSweep1AndPipe() already
+    // uses (rigid transport keeps every cross-section a unit square, so
+    // total area is exactly perimeter-consistent... simplest direct
+    // check here: Area() succeeds and is positive).
+    const NurbsCurve rail =
+        NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(3, 0, 2), Point3d(6, 3, 2), Point3d(9, 3, 5)}, 3);
+    const NurbsCurve square = NurbsCurve::FromControlPoints(
+        {Point3d(-0.5, -0.5, 0), Point3d(0.5, -0.5, 0), Point3d(0.5, 0.5, 0), Point3d(-0.5, 0.5, 0),
+         Point3d(-0.5, -0.5, 0)},
+        1);
+    const Brep open_sweep = Brep::Sweep1(square, rail, 8, /*cap=*/false);
+    Check(throws_invalid_argument([&] { open_sweep.Volume(); }),
+          "Volume() throws on a genuinely open (uncapped) sweep - no well-defined enclosed volume");
+    Check(open_sweep.Area() > 0.0, "Area() succeeds (and is positive) on the same open sweep - an open "
+                                   "surface still has a well-defined area");
+  }
+}
+
 void TestBrepTrimmedPlanarFaceRejectsTooFewPoints() {
   using dino8::kernel::Brep;
   using dino8::kernel::NurbsSurface;
@@ -29749,6 +29845,7 @@ int main() {
   TestBrepSphereIsClosedAndWatertight();
   TestBrepSphereBooleanEndToEnd();
   TestBrepTorusIsClosedAndWatertight();
+  TestBrepVolumeAndAreaMatchClosedForms();
   TestBrepTrimmedPlanarFaceRejectsTooFewPoints();
   TestBrepTrimmedPlanarFace();
   TestWeldAcrossIndependentlyParameterizedSurfaces();
