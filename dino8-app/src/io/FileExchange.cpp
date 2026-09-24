@@ -1,6 +1,7 @@
 #include "io/FileExchange.h"
 
 #include "commands/DimGeometry.h"
+#include "io/AciPalette.h"
 #include "drafting/HatchBuild.h"
 #include "drafting/HatchLibrary.h"
 #include "geom/TextOutline.h"
@@ -41,6 +42,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -105,72 +107,28 @@ double MillimetresPerUnit(const Document& doc) {
 }
 
 // ---- AutoCAD colour index (ACI) palette ------------------------------------
-
-std::array<int, 3> AciToRgb(int aci) {
-  static const std::array<int, 3> base[] = {
-      {0, 0, 0},       {255, 0, 0},     {255, 255, 0},   {0, 255, 0},     {0, 255, 255},
-      {0, 0, 255},     {255, 0, 255},   {0, 0, 0},       {128, 128, 128}, {192, 192, 192},
-  };
-  if (aci >= 0 && aci <= 9) return base[aci];
-  if (aci >= 250 && aci <= 255) {
-    static const int greys[] = {51, 91, 132, 173, 214, 255};
-    const int g = greys[aci - 250];
-    return {g, g, g};
-  }
-  if (aci < 10 || aci > 249) return {0, 0, 0};
-  const int h = (aci - 10) / 10;  // 24 hues, 15 degrees apart
-  const int j = (aci - 10) % 10;
-  static const double levels[] = {1.0, 0.8, 0.6, 0.5, 0.3};
-  const double v = levels[j / 2];
-  const double s = (j % 2) ? 0.5 : 1.0;
-  const double hue = h * 15.0 / 60.0;  // in sextants
-  const int sector = static_cast<int>(std::floor(hue)) % 6;
-  const double f = hue - std::floor(hue);
-  const double p = v * (1 - s), q = v * (1 - s * f), t = v * (1 - s * (1 - f));
-  double r, g, b;
-  switch (sector) {
-    case 0: r = v; g = t; b = p; break;
-    case 1: r = q; g = v; b = p; break;
-    case 2: r = p; g = v; b = t; break;
-    case 3: r = p; g = q; b = v; break;
-    case 4: r = t; g = p; b = v; break;
-    default: r = v; g = p; b = q; break;
-  }
-  return {static_cast<int>(std::lround(r * 255)), static_cast<int>(std::lround(g * 255)), static_cast<int>(std::lround(b * 255))};
-}
-
-int RgbToAci(int r, int g, int b) {
-  // Black (the usual "draw on white" colour) is ACI 7 by convention.
-  if (r < 8 && g < 8 && b < 8) return 7;
-  int best = 7;
-  // `long long`, not `long`: on Windows (LLP64) `long` is 32 bits, so the
-  // previous `long best_d = 1L << 40` was undefined behaviour there (MSVC
-  // C4293 "shift count negative or too big") and in practice evaluated to
-  // 0 - making `d < best_d` never true, so every non-black colour silently
-  // exported as ACI 7 on Windows only. The squared RGB distance itself
-  // maxes out at 3 * 255^2 = 195075, which fits any 32-bit int, so the
-  // sentinel just has to be larger than that on every platform.
-  long long best_d = 1LL << 40;
-  for (int i = 1; i <= 255; ++i) {
-    const std::array<int, 3> c = AciToRgb(i);
-    const long long d = static_cast<long long>(c[0] - r) * (c[0] - r) + static_cast<long long>(c[1] - g) * (c[1] - g) +
-                        static_cast<long long>(c[2] - b) * (c[2] - b);
-    if (d < best_d) { best_d = d; best = i; }
-  }
-  return best;
-}
+// AciToRgb / RgbToAci live in io/AciPalette.cpp (unit-tested on their own).
 
 int ColorToAci(const Color& c) {
   return RgbToAci(static_cast<int>(std::lround(c.r * 255)), static_cast<int>(std::lround(c.g * 255)),
                   static_cast<int>(std::lround(c.b * 255)));
 }
 
-long ColorToTrueColor(const Color& c) {
-  return (static_cast<long>(std::lround(c.r * 255)) << 16) | (static_cast<long>(std::lround(c.g * 255)) << 8) |
-         static_cast<long>(std::lround(c.b * 255));
+// DXF group code 420 is a 24-bit 0x00RRGGBB integer. `long long` rather than
+// `long` so the width is the same on Windows (LLP64, 32-bit long) as
+// elsewhere - the value itself always fits in 32 bits, but keeping every
+// integer in this file that is not a plain `int` at 64 bits leaves nothing
+// to reason about per platform (see RgbToAci in AciPalette.cpp for the case
+// where it actually bit).
+long long ColorToTrueColor(const Color& c) {
+  return (static_cast<long long>(std::lround(c.r * 255)) << 16) |
+         (static_cast<long long>(std::lround(c.g * 255)) << 8) | static_cast<long long>(std::lround(c.b * 255));
 }
 
-Color TrueColorToColor(long v) { return Color::FromBytes((v >> 16) & 255, (v >> 8) & 255, v & 255); }
+Color TrueColorToColor(long long v) {
+  return Color::FromBytes(static_cast<int>((v >> 16) & 255), static_cast<int>((v >> 8) & 255),
+                          static_cast<int>(v & 255));
+}
 
 // ---- Display-cache polylines -----------------------------------------------
 
@@ -261,13 +219,13 @@ class DxfWriter {
   void G(int code, const std::string& v) { os_ << code << "\n" << v << "\n"; }
   void G(int code, double v) { G(code, Num(v, 9)); }
   void G(int code, int v) { G(code, std::to_string(v)); }
-  void G(int code, long v) { G(code, std::to_string(v)); }
+  void G(int code, long long v) { G(code, std::to_string(v)); }
   std::string Handle() {
     char buf[32];
-    std::snprintf(buf, sizeof(buf), "%lX", next_handle_++);
+    std::snprintf(buf, sizeof(buf), "%llX", next_handle_++);
     return buf;
   }
-  long NextHandleValue() const { return next_handle_; }
+  unsigned long long NextHandleValue() const { return next_handle_; }
 
   void Point(int base, Point3d p) { G(base, p.x); G(base + 10, p.y); G(base + 20, p.z); }
 
@@ -284,7 +242,10 @@ class DxfWriter {
 
  private:
   std::ostream& os_;
-  long next_handle_ = 0x100;
+  // DXF handles are hex strings with no fixed width; 64-bit (not `long`,
+  // which is 32-bit on Windows) so the counter's range does not depend on
+  // the platform.
+  unsigned long long next_handle_ = 0x100;
 };
 
 std::string DxfLayerName(std::string name) {
@@ -950,7 +911,7 @@ class DxfImporter {
     if (name.empty()) return;
     const int idx = LayerFor(name);
     Layer& L = doc_.Layers()[static_cast<size_t>(idx)];
-    if (e.Has(420)) L.color = TrueColorToColor(std::atol(e.S(420).c_str()));
+    if (e.Has(420)) L.color = TrueColorToColor(std::strtoll(e.S(420).c_str(), nullptr, 10));
     else if (e.Has(62)) {
       const int aci = std::abs(e.I(62));
       const std::array<int, 3> rgb = AciToRgb(aci);
@@ -966,7 +927,7 @@ class DxfImporter {
     o.layer_index = LayerFor(e.S(8, "0"));
     if (e.Has(420)) {
       o.color_by_layer = false;
-      o.color = TrueColorToColor(std::atol(e.S(420).c_str()));
+      o.color = TrueColorToColor(std::strtoll(e.S(420).c_str(), nullptr, 10));
     } else if (e.Has(62)) {
       const int aci = e.I(62);
       if (aci > 0 && aci < 256) {

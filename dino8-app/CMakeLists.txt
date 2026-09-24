@@ -335,6 +335,7 @@ set(DINO8_SOURCES
   src/commands/cmd_raytrace.cpp
   src/commands/cmd_exchange2.cpp
   src/io/File3dm.cpp
+  src/io/AciPalette.cpp
   src/io/FileExchange.cpp
   src/io/FileIgesStep.cpp
   src/geom/BrepMesher.cpp
@@ -491,6 +492,16 @@ if(DINO8_BUILD_TESTS)
   target_include_directories(dino8_test_brep_mesher PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_link_libraries(dino8_test_brep_mesher PRIVATE dino8_kernel)
   add_test(NAME dino8_brep_mesher COMMAND dino8_test_brep_mesher)
+
+  # AutoCAD Colour Index palette (src/io/AciPalette.cpp): table-driven
+  # RgbToAci/AciToRgb checks. Exists mainly so the Windows ctest step
+  # catches a regression of the LLP64 bug this replaced - a 32-bit `long`
+  # sentinel in the nearest-ACI search that sent every colour more than a
+  # few units from a palette entry to ACI 7 on MSVC only. No kernel or
+  # third-party dependency: the palette code is deliberately standalone.
+  add_executable(dino8_test_aci_palette tests/test_aci_palette.cpp src/io/AciPalette.cpp)
+  target_include_directories(dino8_test_aci_palette PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  add_test(NAME dino8_aci_palette COMMAND dino8_test_aci_palette)
 
   # Property-based/randomized geometry fuzz test: random-but-valid NURBS
   # curves/surfaces, random primitive-mesh boolean pairs, and random
