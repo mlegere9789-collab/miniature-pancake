@@ -4660,6 +4660,88 @@ honestly out of scope.
   remain the one genuinely open gap in this entire fillet/chamfer
   convex/concave pairing.
 
+- **`ChamferConvexVertex`/`ChamferConcaveVertex` - single-facet trihedral
+  vertex chamfer** (`fillet.h`/`fillet.cpp`): a genuinely new operation,
+  not derived from or dependent on any edge chamfer - cuts across (convex)
+  or fills in (concave) a valence-3 corner with ONE new planar facet
+  through 3 points, each offset `distance` along one of the corner's own
+  3 edges from the vertex. Unlike `FilletConvexEdges`'/`FilletConcaveEdges`'
+  own trihedral SPHERE corner (which needs one face perpendicular to the
+  other two, or there is no sphere), a plane always exists through 3
+  non-collinear points, so this has no such restriction - verified
+  directly (`TestChamferConvexVertexWorksOnObliqueCornerFilletConvexEdgesRejects`)
+  against the exact regular-tetrahedron fixture `FilletConvexEdges`'s own
+  test uses to demonstrate that rejection, chamfering it successfully
+  where the sphere construction cannot.
+  Both directions share ONE construction (`ChamferVertexCore`) that takes
+  no stance on convex vs. concave itself - exactly the
+  `ChamferConcaveEdge`/`ChamferConvexEdge` relationship already in this
+  file (validate the edge's own convexity sense, then dispatch straight to
+  the shared construction unchanged). Every sign in that shared
+  construction is derived directly from the fixture's own geometry rather
+  than assumed from convexity: which of the new chamfer plane's two normal
+  directions actually cuts the vertex's own corner sliver away is decided
+  by checking directly which side `vertex` itself lands on. This mattered
+  in practice, not just in theory: the convex and concave cases need
+  OPPOSITE signs there even though the new face's own outward-orientation
+  logic (a Newell normal against the sum of the touching faces' own
+  normals, `ChamferConvexEdge`'s own convention) is identical in both
+  cases - confirmed by running the actual concave fixture through the
+  construction and checking the result is a genuinely closed, naked-edge-
+  free manifold, not just assuming the sign flips correctly.
+  A second real bug surfaced while writing this increment's own
+  oblique-tetrahedron test, unrelated to the new function itself: the
+  existing tetrahedron fixture `TestFilletConvexEdgesRejectsUnsupportedConfigurations`
+  built (`ChamferTestPlanarFace({A, C, B})` etc.) turned out to have
+  INWARD-facing normals (confirmed directly - `dot(normal, vertex -
+  centroid) < 0` for a convex polytope's own outward-normal test) - a fact
+  that test's own two checks (`IsSolid()`, and an unconditional rejection)
+  never exposed, but which fed `ChamferConvexVertex`'s own convexity check
+  backwards data. This function's own test builds the same 4 points with
+  every loop's winding reversed from that existing fixture instead, not by
+  guessing at a fix but by printing each face's own Newell normal and
+  checking it against the tetrahedron's own centroid directly.
+  Verified (`TestChamferConvexVertexRemovesExactTetrahedronVolumeOnBoxCorner`,
+  `TestChamferConvexVertexWorksOnObliqueCornerFilletConvexEdgesRejects`,
+  `TestChamferConcaveVertexAddsExactTetrahedronVolumeOnNotchedCubeCorner`,
+  `TestChamferVertexRejectsWrongConvexityAndOtherBadInputs`): the closed
+  form is exactly the tetrahedron `{vertex, P0, P1, P2}`'s own scalar
+  triple-product volume, `(distance^3 / 6) * |e0 . (e1 x e2)|` for the 3
+  UNIT edge directions - valid for ANY trihedral corner, not just a
+  mutually-perpendicular one, checked against both a unit box corner
+  (removed, triple product 1) AND the oblique tetrahedron corner (removed,
+  general triple product) AND the `NotchedCubeCorner` reflex vertex
+  (ADDED, mirroring `FilletConcaveEdges`' own convex/concave volume
+  relationship) - not one number, three independent geometries. Full
+  `dino8_kernel_smoke`: 3346 checks, 0 failures; `dino8_general_boolean_sweep`
+  unaffected (`closedmesh=0` count still 22).
+
+- **`ChamferConvexVertex`/`ChamferConcaveVertex` extended to ASYMMETRIC
+  per-edge distances** (`fillet.h`/`fillet.cpp`): a new overload of each,
+  `(solid, vertex, edge_distances)`, where `edge_distances` is a
+  `vector<pair<Point3d, double>>` giving each of the corner's 3 edges (by
+  the same point-identifies-an-edge convention every other function here
+  already uses) its own independent chamfer distance - the vertex analogue
+  of `ChamferConvexEdge`'s own `distance_i`/`distance_j` asymmetry,
+  closing the "out of scope" note this pair's own previous increment left.
+  Both single-distance overloads are now thin wrappers (build a 3-entry
+  vector with the same distance 3 times) around the shared
+  `ChamferVertexCore`, which now takes an explicit `std::array<double, 3>`
+  instead of one shared `double` - not a second implementation, and
+  `MatchEdgeDistances` (a new small helper) does the point-to-edge
+  matching once, shared by both new overloads, throwing on the wrong
+  count, an unmatched point, or a duplicate.
+  Verified (`TestChamferVertexAsymmetricPerEdgeDistancesMatchGeneralTripleProduct`):
+  the closed form generalizes cleanly to
+  `(d0 * d1 * d2 / 6) * |e0 . (e1 x e2)|` for 3 INDEPENDENT distances (the
+  general scalar-triple-product tetrahedron-from-one-vertex formula, not
+  just the equal-distance `distance^3/6` special case) - checked on both
+  the convex unit-box corner (removed) and `NotchedCubeCorner`'s own
+  reflex vertex (added), plus the 4 new rejection paths (wrong entry
+  count, an unmatched point, a duplicated point, a non-positive distance).
+  Full `dino8_kernel_smoke`: 3401 checks, 0 failures; `dino8_general_boolean_sweep`
+  unaffected.
+
 ## What's still not done (as of chunk 2)
 
 - `Brep::Box()`, `Brep::Sphere()`, `Brep::TrimmedPlanarFace()`
