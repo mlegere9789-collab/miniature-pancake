@@ -3521,6 +3521,63 @@ honestly out of scope.
   corner gap. A mutation (dropping the bilinear correction term) makes
   the method's own internal self-check catch the wrong result and fail
   closed, which the corresponding test then observes.
+- `Brep::SplitNakedEdgeAt(edge_index, point, tolerance)` - the missing
+  primitive behind PARITY_MAP.md's own "[missing] Tolerant sewing with
+  edge splitting": `JoinNakedEdges()` (this kernel's own, and the app
+  layer's `cmd_common.h` copy) requires two naked edges to match
+  ENDPOINT-TO-ENDPOINT within tolerance, so a T-junction - one edge only
+  partially overlapping a longer naked edge, its own far endpoint
+  landing partway along the other rather than at either of its ends -
+  can never be joined at all. This splits a naked edge at a projected
+  point into two coincident naked edges sharing a new vertex, the tool
+  that turns a T-junction into two ordinary matching-endpoint joins
+  (finding and orchestrating that join itself is left to the caller -
+  this is the split primitive alone). The new vertex is the split
+  point's own closest-point PROJECTION onto the edge's curve (via
+  `NurbsCurve::ClosestPointParameter`, the same solver `ReplaceEdgeCurve`/
+  `RemoveNakedMicroEdge` already trust), not the caller's raw point; both
+  the 3D edge curve and the trim's own 2D curve are split EXACTLY via
+  `ON_Curve::Split()` (never a resampled refit), and which split piece
+  pairs with which physical half is decided by direct 3D measurement,
+  never assumed from the curve's own parameter direction.
+  Restricted to LINEAR edges, found by testing rather than designed in:
+  a first, more general version split ANY naked edge's curve type, and
+  direct testing against a Check()-verified-clean open curved fixture (a
+  partial-angle cylindrical wedge's own un-capped rim) showed it
+  SILENTLY producing real topology defects - genuine `LoopGap`/
+  `InvalidTrim` issues `Check()` itself catches - while this method's own
+  internal checks still reported `Result::Ok`. Root-caused to the trim's
+  own (u, v) closest-point search against a curved face's surface, not
+  the split mechanics themselves; rather than ship a curved-edge path
+  proven wrong, `IsLinear()` gates it to the one case direct testing
+  actually confirms correct - the same "curved boundary refused, not
+  guessed at" restriction `CapPlanarHoles()` already places on itself.
+  A second, distinct finding during the same investigation: a CLOSED
+  edge (an un-capped full-revolve cylinder's own rim, its own start and
+  end vertex the same point) makes the "which piece is closer to
+  old_start" pairing genuinely degenerate, since BOTH split pieces'
+  outer endpoint sit at that one shared vertex - a second, independent
+  reason a closed curved edge could never have worked even if the (u, v)
+  search issue above were fixed; `IsLinear()` alone already excludes
+  every closed edge too (a closed curve's own two ends can never be
+  farther apart than any finite tolerance), so no separate guard was
+  needed for it.
+  Verified on a standalone `FromPlanarFaces()` unit-square plate (real
+  topology to split, unlike `Box()`/`Sphere()` - see this file's own
+  class-level comment on why): splitting its top edge at its own exact
+  midpoint adds exactly 1 edge and 1 vertex, both halves stay naked, and
+  the plate's own tessellated area is unchanged - checked to the
+  `1e-9`-tight tolerance the codebase already trusts for float-vertex
+  measurements THROUGH THE IDENTICAL PIPELINE (before vs. after,
+  directly against each other), not just independently against the
+  literal 1.0 (which floats to ~1.5e-8 off, a real, separately-documented
+  `ON_3fPoint`-precision floor this kernel's own boolean tests already
+  disclose elsewhere). A refusal test confirms the curved-edge guard
+  leaves a Check()-clean fixture byte-for-byte clean afterward (no
+  LoopGap/InvalidTrim introduced by the refused attempt), and a mutation
+  proof (temporarily deleting the `IsLinear()` guard) reproduced the
+  exact `LoopGap`/`InvalidTrim` failure signature the refusal test is
+  built to catch, then was reverted.
 
 ## What's still not done (as of chunk 2)
 
