@@ -7275,6 +7275,41 @@ void TestMeshThickenBuildsExactUnitCubeFromFlatSquare() {
         "...with volume exactly 1 - the flat square's own area (1) times the offset distance (1)");
 }
 
+// Mesh::Check()'s non_manifold_edge_list: a "book" of 3 triangles sharing
+// one spine edge (0,1) - the simplest possible non-manifold fixture -
+// with every other edge naked (used by only 1 triangle each), so the
+// spine is the ONLY non-manifold edge and its exact vertex pair must be
+// localized, not just counted.
+void TestMeshCheckLocalizesNonManifoldEdges() {
+  using dino8::kernel::Mesh;
+
+  Mesh m;
+  ON_Mesh& raw = m.raw();
+  raw.m_V.Append(ON_3fPoint(0, 0, 0));   // 0: spine
+  raw.m_V.Append(ON_3fPoint(1, 0, 0));   // 1: spine
+  raw.m_V.Append(ON_3fPoint(0, 1, 0));   // 2: page A
+  raw.m_V.Append(ON_3fPoint(0, -1, 0));  // 3: page B
+  raw.m_V.Append(ON_3fPoint(0, 0, 1));   // 4: page C
+  auto add_tri = [&](int a, int b, int c) {
+    ON_MeshFace f;
+    f.vi[0] = a;
+    f.vi[1] = b;
+    f.vi[2] = c;
+    f.vi[3] = c;
+    raw.m_F.Append(f);
+  };
+  add_tri(0, 1, 2);
+  add_tri(1, 0, 3);
+  add_tri(0, 1, 4);
+
+  const Mesh::CheckReport r = m.Check();
+  Check(r.non_manifold_edges == 1, "the 3-triangle spine edge is the only non-manifold edge");
+  Check(r.non_manifold_edge_list.size() == 1,
+        "non_manifold_edge_list has exactly 1 entry, matching non_manifold_edges' own count");
+  Check(r.non_manifold_edge_list[0] == std::make_pair(0, 1),
+        "the entry is (0, 1) - the spine's own two vertices, undirected and min-first");
+}
+
 // Mesh::FindSelfIntersections(): the "does this otherwise-closed-manifold
 // mesh actually pass through itself" question Check() cannot answer at all
 // (its own six conditions are every one an edge-adjacency defect - see
@@ -27676,6 +27711,7 @@ int main() {
   TestMeshRemoveDuplicateFacesKeepsOneCopyPerPolygon();
   TestMeshOffsetMovesVerticesAlongExactVertexNormal();
   TestMeshThickenBuildsExactUnitCubeFromFlatSquare();
+  TestMeshCheckLocalizesNonManifoldEdges();
   TestMeshFindSelfIntersectionsDetectsOnlyGenuineCrossings();
 
   sweep_tests::TestMergeAndWeldDropsCollapsedPoleTriangles();
