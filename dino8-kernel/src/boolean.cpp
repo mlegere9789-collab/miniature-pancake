@@ -242,6 +242,16 @@ Mesh MinkowskiDifference(const Mesh& a, const Mesh& b) {
   return FromManifold(result);
 }
 
+Mesh OffsetSolid(const Mesh& solid, double distance, int sphere_divisions) {
+  if (distance == 0.0) return solid;
+  if (sphere_divisions < 3) {
+    throw std::invalid_argument("dino8::kernel::OffsetSolid: sphere_divisions must be >= 3");
+  }
+  const Brep sphere_brep = Brep::Sphere(Point3d(0.0, 0.0, 0.0), std::fabs(distance));
+  const Mesh sphere = sphere_brep.TessellateToClosedMesh(sphere_divisions, sphere_divisions);
+  return distance > 0.0 ? MinkowskiSum(solid, sphere) : MinkowskiDifference(solid, sphere);
+}
+
 std::vector<Mesh> Decompose(const Mesh& mesh) {
   const std::vector<manifold::Manifold> pieces = ToManifold(mesh).Decompose();
   std::vector<Mesh> result;
