@@ -26,6 +26,23 @@ struct Color {
   unsigned char b = 0;
 };
 
+// One dash or gap in a Linetype's repeating pattern, kept independent of
+// ON_LinetypeSegment for the same reason Color above is kept independent
+// of ON_Color. `is_dash = true` draws a line segment `length_mm`
+// millimeters long; `is_dash = false` leaves a gap of the same length. A
+// pattern's first segment must be a dash - the same requirement
+// ON_LinetypeSegment's own header states for a curve to be drawn starting
+// at its own start point.
+struct LinetypeSegment {
+  double length_mm = 0.0;
+  bool is_dash = true;
+};
+
+// A linetype's dash pattern, in on-disk millimeters, for
+// Model::AddLinetype()'s `pattern` parameter below. An empty pattern (the
+// default) matches ON_Linetype's own "no pattern" continuous-line behavior.
+using LinetypePattern = std::vector<LinetypeSegment>;
+
 // Key/value pairs for the Add*() methods' `user_strings` parameter below -
 // Rhino's own "user text" mechanism (ON_3dmObjectAttributes::SetUserString()
 // underneath), the free-form attribute data every .3dm object can carry
@@ -55,7 +72,33 @@ class Model {
   // instead of forwarding to OpenNURBS, whose own contract for that case
   // (an unnamed layer aliasing "Default") is surprising for a caller who
   // asked to add a named layer.
-  int AddLayer(const std::string& name, Color color = Color());
+  // AddLayer()'s own `linetype_index` parameter, along with every Add*()
+  // method's own `linetype_index` parameter below, closes the last field
+  // PARITY_MAP.md's ".3dm attribute/metadata fidelity" evidence names
+  // alongside layers/materials/user-strings: "linetypes". Before this, a
+  // layer (and so every object left on it) could only ever draw as a solid
+  // line - ON_Layer::m_linetype_index's own default of -1 (Continuous) -
+  // even though .3dm's linetype table has always supported Rhino's own
+  // named dash patterns (Dashed, DashDot, Center, Border, Hidden, Dots,
+  // ...). `linetype_index` of -1 (the default) leaves the layer's linetype
+  // untouched at that same -1 (Continuous) default - no behavior change for
+  // existing callers, same reasoning as `color`'s own UnsetColor no-op
+  // above. A non-negative value is a caller error unless it came from this
+  // model's own AddLinetype() (or is one of ON_Linetype's built-in negative-
+  // aliased indices like Dashed/DashDot/... - see opennurbs_linetype.h),
+  // exactly like AddLayer()'s own `layer_index` contract for Add*() below.
+  int AddLayer(const std::string& name, Color color = Color(), int linetype_index = -1);
+
+  // Adds a linetype (named dash pattern) to the model and returns its index
+  // (>= 0) for use as AddLayer()'s `linetype_index` parameter above and
+  // every Add*() method's own `linetype_index` parameter below - see
+  // AddLayer()'s own doc comment for why this exists. `pattern` is empty by
+  // default, matching ON_Linetype's own "no pattern" continuous-line
+  // behavior; a non-empty pattern is written as alternating dash/gap
+  // segments via ON_Linetype::AppendSegment(), in the order given. Returns
+  // -1 for an empty `name`, same contract as AddLayer()'s own -1 return for
+  // an empty name.
+  int AddLinetype(const std::string& name, const LinetypePattern& pattern = LinetypePattern());
 
   // Every Add*() below takes an optional object `name` and `layer_index`.
   // Before `name` existed, every object this kernel ever put into a Model
@@ -107,12 +150,28 @@ class Model {
   // written via ON_3dmObjectAttributes::SetUserString(key, value); a
   // repeated key keeps only the last value for that key, matching
   // SetUserString()'s own "replace" contract for a key it's already seen.
+  //
+  // Every Add*() below also takes an optional `linetype_index`, the same
+  // per-object override AddLayer()'s own `linetype_index` parameter
+  // provides at the layer level (see its doc comment for why this exists
+  // at all). A caller could give a whole layer a dash pattern via
+  // AddLayer(), but never override a single object's own linetype the way
+  // Rhino's own per-object linetype picker does - e.g. two Breps sharing a
+  // layer that still need to draw with different dash patterns on reload.
+  // `std::nullopt` (the default) leaves LinetypeSource() at its default
+  // ON::linetype_from_layer - no behavior change for existing callers,
+  // exactly like `render_color` before it. A present value is written to
+  // `m_linetype_index` with LinetypeSource() switched to
+  // ON::linetype_from_object, the same "object, not layer" override
+  // pattern `render_color` uses for `m_color`/ColorSource().
   void AddCurve(const NurbsCurve& curve, const std::string& name = std::string(),
                 int layer_index = 0, std::optional<Color> render_color = std::nullopt,
-                const UserStrings& user_strings = UserStrings());
+                const UserStrings& user_strings = UserStrings(),
+                std::optional<int> linetype_index = std::nullopt);
   void AddBrep(const Brep& brep, const std::string& name = std::string(), int layer_index = 0,
                std::optional<Color> render_color = std::nullopt,
-               const UserStrings& user_strings = UserStrings());
+               const UserStrings& user_strings = UserStrings(),
+               std::optional<int> linetype_index = std::nullopt);
 
   // Adds a mesh (a box, cylinder, boolean result, ...) as its own model
   // object - the missing counterpart to AddCurve()/AddBrep() that closed
@@ -123,7 +182,8 @@ class Model {
   // `mesh`'s underlying ON_Mesh into a new model geometry component.
   void AddMesh(const Mesh& mesh, const std::string& name = std::string(), int layer_index = 0,
                std::optional<Color> render_color = std::nullopt,
-               const UserStrings& user_strings = UserStrings());
+               const UserStrings& user_strings = UserStrings(),
+               std::optional<int> linetype_index = std::nullopt);
 
   // Adds a SubD control cage/subdivision surface as its own model
   // object - the same "no way to put this object type into a .3dm at
@@ -132,7 +192,8 @@ class Model {
   // geometry component.
   void AddSubD(const SubD& subd, const std::string& name = std::string(), int layer_index = 0,
                std::optional<Color> render_color = std::nullopt,
-               const UserStrings& user_strings = UserStrings());
+               const UserStrings& user_strings = UserStrings(),
+               std::optional<int> linetype_index = std::nullopt);
 
   // Adds a point cloud as its own model object. PointCloud's own doc
   // comment claims ON_PointCloud is "the same one [OpenNURBS'] .3dm
@@ -146,7 +207,8 @@ class Model {
   // normals when present) into a new model geometry component.
   void AddPointCloud(const PointCloud& cloud, const std::string& name = std::string(),
                      int layer_index = 0, std::optional<Color> render_color = std::nullopt,
-                     const UserStrings& user_strings = UserStrings());
+                     const UserStrings& user_strings = UserStrings(),
+                     std::optional<int> linetype_index = std::nullopt);
 
   int ObjectCount() const;
 

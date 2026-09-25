@@ -35,6 +35,31 @@ namespace dino8::kernel {
 
 Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op);
 
+// Face-face imprint (Parasolid PK_BODY_imprint / ACIS imprint): splits
+// `target`'s own faces wherever they cross `tool`'s faces, WITHOUT removing
+// any material - every fragment of every `target` face is kept, unlike
+// BooleanCombineGeneral() above, which ray-casts each fragment in/out of the
+// other operand and drops half of them. `tool` is read-only and untouched -
+// only `target`'s own topology changes (the same overall shape, as more,
+// smaller faces along the same exact boundary). Reuses this file's own
+// SSX-driven face-fragmentation machinery (IntersectFaces() + FragmentFaces()
+// in boolean_general.cpp - the same helpers BooleanCombineGeneral() itself
+// calls before its own classification step), so it inherits that machinery's
+// own disclosed scope limits (see this file's own top-of-file doc comment:
+// at most one "outer" intersection chain per opposing face pair, genus-0
+// operand faces, non-self-crossing chains on one face). Either operand may
+// be open (a sheet) or closed (a solid) - imprint never ray-casts against
+// either one, so it has none of BooleanCombineGeneral()'s own closed-solid
+// requirement.
+//
+// Throws std::invalid_argument if `target` or `tool` has no faces at all -
+// there is nothing to imprint on/with, the same typed-refusal convention
+// BooleanCombineGeneral() itself uses for an out-of-scope call. Returns an
+// empty Brep (not an error) if `target`'s faces all failed to reach a valid
+// (>= 3 point) boundary loop after fragmentation, mirroring
+// BooleanCombineGeneral()'s own "kept.empty()" convention.
+Brep ImprintFaces(const Brep& target, const Brep& tool);
+
 // A purely additive, opt-in sibling of Brep::TessellateToClosedMesh()/
 // TessellateToClosedMeshConforming(), scoped ONLY to BooleanCombineGeneral's
 // own results, that closes the mesh-watertightness gap this file's own

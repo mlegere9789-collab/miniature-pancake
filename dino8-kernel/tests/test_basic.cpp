@@ -3211,6 +3211,148 @@ void TestBooleanCombineGeneralUnequalRadiusPerpendicularCylinders() {
   }
 }
 
+void TestImprintFacesBoxPiercedByCylinder() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::ImprintFaces;
+  using dino8::kernel::Mesh;
+
+  // Face-face imprint (PARITY_MAP.md's "kernel: Boolean operations" gap -
+  // Parasolid PK_BODY_imprint / ACIS imprint: split faces along a mutual
+  // intersection, remove nothing). Reuses TestBooleanCombineGeneralBox
+  // Cylinder's own fixture above (a 4x4x2 box fully pierced by a radius-1
+  // cylinder along z, taller than the box on both ends - both flat caps
+  // get a full closed circular intersection loop), the general engine's
+  // own first proven curved-operand case. Unlike that test's Union/
+  // Intersection/Difference, ImprintFaces() keeps ALL of the box's own
+  // material - the check here is that the imprinted box's own tessellated
+  // volume is UNCHANGED (still exactly 32 = 4*4*2), while its own face
+  // count strictly grows: the pierced top and bottom faces each split into
+  // an annulus-with-bridged-hole fragment plus a separate interior disk
+  // fragment (see boolean_general.cpp's own SplitFaceLoop()/BridgeHoles
+  // IntoOuter() doc comments for why a closed intersection chain produces
+  // exactly those 2 fragments per face), while the 4 untouched side faces
+  // (the cylinder's own radius-1 wall never reaches the box's own
+  // y=+-2/x=+-2 side planes) pass through as exactly 1 fragment each,
+  // unchanged.
+  const Brep box = Brep::Box(-2, -2, -1, 2, 2, 1);
+  const Brep cyl = MakeCylinderZForBoxCylinderTest(0, 0, -2, 2, 1.0);
+
+  {
+    const Brep imprinted = ImprintFaces(box, cyl);
+    Check(imprinted.raw().IsValid(), "box imprinted by a piercing cylinder is a valid ON_Brep");
+    Check(imprinted.FaceCount() == box.FaceCount() + 2,
+          "box imprinted by a piercing cylinder gains exactly 2 faces (top "
+          "and bottom caps each split into an annulus-with-hole fragment "
+          "plus a separate interior disk fragment)");
+    const Mesh m = imprinted.TessellateToClosedMesh(32, 32);
+    Check(std::abs(m.Volume() - 32.0) < 0.5,
+          "imprinting removes no material - the box's own tessellated "
+          "volume is unchanged (32 = 4*4*2) after being imprinted by the "
+          "cylinder");
+  }
+  {
+    // Imprinting the OTHER way (the cylinder imprinted by the box) splits
+    // the cylinder's own wall face instead, along the same 2 physical
+    // circles - its own material is likewise unchanged.
+    const Brep imprinted_cyl = ImprintFaces(cyl, box);
+    Check(imprinted_cyl.raw().IsValid(), "cylinder imprinted by the box is a valid ON_Brep");
+    Check(imprinted_cyl.FaceCount() > cyl.FaceCount(),
+          "cylinder imprinted by the box gains at least one face (its own "
+          "wall face is split along the box's own top/bottom cut circles)");
+    const double expect_vol_cyl = ON_PI * 1.0 * 1.0 * 4.0;  // r=1, height 4 (z in [-2, 2])
+    const Mesh m = imprinted_cyl.TessellateToClosedMesh(32, 128);
+    Check(std::abs(m.Volume() - expect_vol_cyl) < 0.5,
+          "imprinting removes no material - the cylinder's own tessellated "
+          "volume is unchanged after being imprinted by the box");
+  }
+}
+
+void TestImprintFacesOverlappingBoxes() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::ImprintFaces;
+  using dino8::kernel::Mesh;
+
+  // Reuses TestBooleanCombineGeneralBoxBox's own fixture above (planar-
+  // only, one fully-proven case for this engine's own SSX/fragment
+  // machinery): box a = [0,2]^3, box b = [1,3]^3, sharing the open unit
+  // cube [1,2]^3. Three of a's own faces (x=2, y=2, z=2) are each crossed
+  // by an L-shaped OPEN intersection chain (entering/leaving through that
+  // face's own trim boundary at 2 points, from the corresponding pair of
+  // b's own near faces) - imprint splits each of those 3 faces into 2
+  // fragments (both kept), while a's other 3 faces (x=0, y=0, z=0, nowhere
+  // near b) pass through untouched. This exercises the OPEN-chain half of
+  // SplitFaceLoop() (the piercing-cylinder test above only exercises its
+  // CLOSED-chain half).
+  const Brep a = Brep::Box(0, 0, 0, 2, 2, 2);
+  const Brep b = Brep::Box(1, 1, 1, 3, 3, 3);
+
+  {
+    const Brep imprinted_a = ImprintFaces(a, b);
+    Check(imprinted_a.raw().IsValid(), "box a imprinted by overlapping box b is a valid ON_Brep");
+    Check(imprinted_a.FaceCount() == a.FaceCount() + 3,
+          "box a imprinted by overlapping box b gains exactly 3 faces (its "
+          "own x=2/y=2/z=2 faces each split in two by an L-shaped open "
+          "intersection chain; its other 3 faces are untouched)");
+    const Mesh m = imprinted_a.TessellateToClosedMesh(8, 8);
+    Check(std::abs(m.Volume() - 8.0) < 1e-3,
+          "imprinting removes no material - box a's own tessellated volume "
+          "is unchanged (exactly 8 = 2^3) after being imprinted by box b");
+  }
+  {
+    const Brep imprinted_b = ImprintFaces(b, a);
+    Check(imprinted_b.raw().IsValid(), "box b imprinted by overlapping box a is a valid ON_Brep");
+    Check(imprinted_b.FaceCount() == b.FaceCount() + 3,
+          "box b imprinted by overlapping box a gains exactly 3 faces "
+          "(symmetric to a's own case above, on its own x=1/y=1/z=1 faces)");
+    const Mesh m = imprinted_b.TessellateToClosedMesh(8, 8);
+    Check(std::abs(m.Volume() - 8.0) < 1e-3,
+          "imprinting removes no material - box b's own tessellated volume "
+          "is unchanged (exactly 8 = 2^3) after being imprinted by box a");
+  }
+}
+
+void TestImprintFacesDisjointIsNoOp() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::ImprintFaces;
+  using dino8::kernel::Mesh;
+
+  // Two boxes far enough apart that no face pair's own bounding boxes
+  // overlap at all: ImprintFaces() must be a genuine no-op on `target` -
+  // same face count, same volume - not merely "close enough".
+  const Brep a = Brep::Box(0, 0, 0, 1, 1, 1);
+  const Brep b = Brep::Box(10, 10, 10, 11, 11, 11);
+
+  const Brep imprinted = ImprintFaces(a, b);
+  Check(imprinted.raw().IsValid(), "a box imprinted by a disjoint box is a valid ON_Brep");
+  Check(imprinted.FaceCount() == a.FaceCount(), "imprinting by a disjoint tool changes no face count at all");
+  const Mesh m = imprinted.TessellateToClosedMesh(4, 4);
+  Check(std::abs(m.Volume() - 1.0) < 1e-6, "imprinting by a disjoint tool changes no volume at all");
+}
+
+void TestImprintFacesRejectsEmptyOperands() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::ImprintFaces;
+
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+  const Brep empty;
+
+  bool threw_empty_target = false;
+  try {
+    ImprintFaces(empty, box);
+  } catch (const std::invalid_argument&) {
+    threw_empty_target = true;
+  }
+  Check(threw_empty_target, "ImprintFaces throws std::invalid_argument for a faceless target");
+
+  bool threw_empty_tool = false;
+  try {
+    ImprintFaces(box, empty);
+  } catch (const std::invalid_argument&) {
+    threw_empty_tool = true;
+  }
+  Check(threw_empty_tool, "ImprintFaces throws std::invalid_argument for a faceless tool");
+}
+
 void TestSurfaceGetApproximateSize() {
   using dino8::kernel::NurbsSurface;
   using dino8::kernel::Point3d;
@@ -5282,6 +5424,111 @@ void TestModelAddUserStringsRoundTrips() {
   std::remove(path.c_str());
 }
 
+// Model::AddLinetype() plus AddLayer()'s and every Add*()'s new
+// `linetype_index` parameter: PARITY_MAP.md's own ".3dm attribute/metadata
+// fidelity" evidence named linetypes as the last field, alongside layers/
+// materials/user-strings, this kernel had no way to write at all - every
+// layer, and so every object on it, could only ever draw as a solid
+// (Continuous) line. Checks a real round trip through an actual .3dm
+// file: a named dash-dot linetype added via AddLinetype(); a layer that
+// references it via AddLayer()'s own `linetype_index`; one object left on
+// that layer with no per-object override (inheriting the layer's dash
+// pattern, proving the new Add*() parameter is additive); and a second
+// object on the same layer given its own `linetype_index` of 0
+// (Continuous), proving the per-object override actually overrides
+// LinetypeSource() rather than being shadowed by the layer.
+void TestModelAddLinetypeRoundTrips() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Color;
+  using dino8::kernel::LinetypePattern;
+  using dino8::kernel::LinetypeSegment;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Model;
+  using dino8::kernel::Result;
+  using dino8::kernel::UserStrings;
+
+  Model model;
+  const LinetypePattern pattern = {LinetypeSegment{5.0, true}, LinetypeSegment{2.0, false},
+                                    LinetypeSegment{1.0, true}, LinetypeSegment{2.0, false}};
+  const int linetype_index = model.AddLinetype("DashDot2", pattern);
+  Check(linetype_index >= 0, "AddLinetype() with a non-empty name returns a valid (>= 0) index");
+  Check(model.AddLinetype("") == -1,
+        "AddLinetype() with an empty name returns -1, same contract as AddLayer()");
+
+  const int layer_index = model.AddLayer("DashedLayer", Color(), linetype_index);
+  Check(layer_index >= 0, "AddLayer() with a linetype_index argument still returns a valid index");
+
+  const auto box_mesh = MakeQuadBoxMesh(0, 0, 0, 1, 1, 1);
+  model.AddMesh(box_mesh, "InheritsLayerLinetype", layer_index);
+  const auto box_brep = Brep::Box(0, 0, 0, 1, 1, 1);
+  model.AddBrep(box_brep, "OverridesLinetype", layer_index, std::nullopt, UserStrings(),
+                /*linetype_index=*/0);
+
+  const std::string path = "dino8_kernel_model_linetype_roundtrip_test.3dm";
+  Check(model.Save(path) == Result::Ok, ".3dm save with a linetype succeeded");
+
+  Model loaded;
+  Check(Model::Load(path, loaded) == Result::Ok, ".3dm load succeeded");
+
+  const ON_Linetype* linetype = nullptr;
+  {
+    ONX_ModelComponentIterator iterator(loaded.raw(), ON_ModelComponent::Type::LinePattern);
+    for (const ON_ModelComponent* component = iterator.FirstComponent(); component != nullptr;
+         component = iterator.NextComponent()) {
+      const ON_Linetype* candidate = ON_Linetype::Cast(component);
+      if (candidate != nullptr && candidate->Index() == linetype_index) {
+        linetype = candidate;
+        break;
+      }
+    }
+  }
+  Check(linetype != nullptr, "the reloaded model still has a linetype at the returned index");
+  Check(linetype->Name() == ON_wString("DashDot2"),
+        "the reloaded linetype's name exactly matches what AddLinetype() was given");
+  Check(linetype->SegmentCount() == 4,
+        "the reloaded linetype has exactly the 4 segments AddLinetype() was given");
+  Check(linetype->Segment(0).m_length == 5.0 &&
+            linetype->Segment(0).m_seg_type == ON_LinetypeSegment::eSegType::stLine &&
+            linetype->Segment(1).m_length == 2.0 &&
+            linetype->Segment(1).m_seg_type == ON_LinetypeSegment::eSegType::stSpace,
+        "the reloaded linetype's segment lengths and dash/gap types exactly match what "
+        "AddLinetype() was given");
+
+  const ON_ModelComponentReference layer_ref = loaded.raw().LayerFromIndex(layer_index);
+  const ON_Layer* layer = ON_Layer::Cast(layer_ref.ModelComponent());
+  Check(layer != nullptr && layer->LinetypeIndex() == linetype_index,
+        "the reloaded layer's linetype index exactly matches what AddLayer() was given");
+
+  ONX_ModelComponentIterator iterator(loaded.raw(), ON_ModelComponent::Type::ModelGeometry);
+  bool found_inheriting_mesh = false;
+  bool found_overriding_brep = false;
+  for (const ON_ModelComponent* component = iterator.FirstComponent(); component != nullptr;
+       component = iterator.NextComponent()) {
+    const auto* geometry_component = static_cast<const ON_ModelGeometryComponent*>(component);
+    const ON_3dmObjectAttributes* attributes = geometry_component->Attributes(nullptr);
+    const ON_Geometry* geometry = geometry_component->Geometry(nullptr);
+    if (dynamic_cast<const ON_Mesh*>(geometry) != nullptr) {
+      found_inheriting_mesh = true;
+      Check(attributes->LinetypeSource() == ON::linetype_from_layer,
+            "the reloaded mesh - added with no linetype_index argument - kept LinetypeSource() "
+            "at its default ON::linetype_from_layer, proving the new parameter is a no-op when "
+            "omitted");
+    } else if (dynamic_cast<const ON_Brep*>(geometry) != nullptr) {
+      found_overriding_brep = true;
+      Check(attributes->LinetypeSource() == ON::linetype_from_object,
+            "the reloaded brep's LinetypeSource() switched to ON::linetype_from_object");
+      Check(attributes->m_linetype_index == 0,
+            "the reloaded brep's linetype index exactly matches what AddBrep() was given, "
+            "overriding rather than being shadowed by its layer's own linetype");
+    }
+  }
+  Check(found_inheriting_mesh && found_overriding_brep,
+        "both object types (layer-inheriting mesh, linetype-overriding brep) were found in the "
+        "reloaded model");
+
+  std::remove(path.c_str());
+}
+
 void TestBoxVolume() {
   const auto box = MakeBox(0, 0, 0, 2, 2, 2);
   Check(std::abs(box.Volume() - 8.0) < 1e-9, "unit-scaled box volume is correct");
@@ -7104,6 +7351,143 @@ void TestBrepCheckReportsCleanBoxAsClean() {
   Check(r.Count(Brep::CheckIssue::Kind::NakedEdge) == 0 && r.Count(Brep::CheckIssue::Kind::DegenerateFace) == 0 &&
             r.Count(Brep::CheckIssue::Kind::SliverFace) == 0 && r.Count(Brep::CheckIssue::Kind::TrimEdgeGap) == 0,
         "Count() reports zero for every kind on the clean fixture");
+}
+
+// Two squares touching at exactly one point and sharing no edge - the
+// textbook non-manifold vertex (pinch point): FromPlanarFaces() welds
+// their one coincident corner into a single shared ON_BrepVertex (both
+// loops start at the same 3D point), but the two squares run off in
+// unrelated directions from there, so none of either one's edges line up
+// with the other's - every edge stays naked, and NonManifoldEdge (which
+// only fires on an OVER-used edge) has nothing to report. The vertex
+// itself is still broken: its two incident faces are never connected by a
+// shared edge, exactly CheckIssue::Kind::NonManifoldVertex's own case.
+void TestBrepCheckDetectsNonManifoldPinchVertex() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  std::vector<Brep::PlanarFace> faces;
+  faces.push_back(
+      CheckHealFace({Point3d(0, 0, 0), Point3d(1, 0, 0), Point3d(1, 1, 0), Point3d(0, 1, 0)}, ON_3dVector(0, 0, 1)));
+  faces.push_back(CheckHealFace({Point3d(0, 0, 0), Point3d(0, 0, -1), Point3d(-1, 0, -1), Point3d(-1, 0, 0)},
+                                ON_3dVector(0, -1, 0)));
+  const Brep bowtie = Brep::FromPlanarFaces(faces);
+  Check(bowtie.FaceCount() == 2 && bowtie.raw().m_E.Count() == 8,
+        "the two-square pinch fixture has 2 faces and 8 edges - none shared between the squares");
+  Check(bowtie.raw().m_V.Count() == 7, "...and 7 vertices: 8 corners minus the one welded at the shared origin");
+
+  const Brep::CheckReport r = bowtie.Check();
+  Check(r.Count(Brep::CheckIssue::Kind::NonManifoldEdge) == 0,
+        "no edge is over-used - every edge still borders exactly one trim");
+  Check(r.Count(Brep::CheckIssue::Kind::NakedEdge) == 8, "all 8 edges are naked (the squares share no edge at all)");
+  Check(r.Count(Brep::CheckIssue::Kind::NonManifoldVertex) == 1,
+        "exactly the shared-origin vertex is reported non-manifold - the ordinary naked corners are not");
+  const Brep::CheckIssue* pinch = nullptr;
+  for (const Brep::CheckIssue& issue : r.issues) {
+    if (issue.kind == Brep::CheckIssue::Kind::NonManifoldVertex) pinch = &issue;
+  }
+  Check(pinch != nullptr && pinch->other_index == 2 && pinch->location.DistanceTo(Point3d(0, 0, 0)) < 1e-12,
+        "the issue names 2 disjoint face groups (one per square) and the pinch point's own location");
+  Check(!r.is_closed, "the fixture is open regardless of the pinch (is_closed only tracks naked/non-manifold edges)");
+
+  // A single square's own 4 corners are ordinary naked-boundary vertices,
+  // each touching exactly 1 face - no false positive on the common case.
+  const Brep single = Brep::FromPlanarFaces({faces[0]});
+  Check(single.Check().Count(Brep::CheckIssue::Kind::NonManifoldVertex) == 0,
+        "a lone planar face's own corners are not reported non-manifold");
+  // A clean, closed box has 3 faces meeting at every corner, connected
+  // pairwise through 3 shared edges - one group, not three.
+  Check(Brep::FromPlanarFaces(CheckHealBoxFaces()).Check().Count(Brep::CheckIssue::Kind::NonManifoldVertex) == 0,
+        "an ordinary box corner (3 faces, pairwise edge-connected) is a single group, not non-manifold");
+}
+
+// SplitNonManifoldVertex()/SplitNonManifoldVertices() heal exactly the
+// defect Check() reports above: the pinch vertex is disjoined into one
+// copy per face group, at the SAME point, with every incident edge
+// repointed to its own group's copy - a pure topology fix, so the two
+// squares' own shapes (naked-edge count, geometry) are otherwise
+// untouched, and a second call finds nothing left to heal.
+void TestBrepSplitNonManifoldVertexHealsPinchPoint() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  auto make_bowtie = []() {
+    std::vector<Brep::PlanarFace> faces;
+    faces.push_back(
+        CheckHealFace({Point3d(0, 0, 0), Point3d(1, 0, 0), Point3d(1, 1, 0), Point3d(0, 1, 0)}, ON_3dVector(0, 0, 1)));
+    faces.push_back(CheckHealFace({Point3d(0, 0, 0), Point3d(0, 0, -1), Point3d(-1, 0, -1), Point3d(-1, 0, 0)},
+                                  ON_3dVector(0, -1, 0)));
+    return Brep::FromPlanarFaces(faces);
+  };
+
+  Brep bowtie = make_bowtie();
+  const Brep::CheckReport before = bowtie.Check();
+  int pinch_vi = -1;
+  for (const Brep::CheckIssue& issue : before.issues) {
+    if (issue.kind == Brep::CheckIssue::Kind::NonManifoldVertex) pinch_vi = issue.index;
+  }
+  Check(pinch_vi >= 0, "setup: the bowtie fixture's pinch vertex index was found");
+
+  Check(bowtie.SplitNonManifoldVertex(pinch_vi) == Result::Ok, "SplitNonManifoldVertex() succeeds on the pinch vertex");
+  Check(bowtie.raw().m_V.Count() == 8, "one new vertex was added (7 -> 8): the pinch disjoined into two");
+  const Brep::CheckReport after = bowtie.Check();
+  Check(after.Count(Brep::CheckIssue::Kind::NonManifoldVertex) == 0, "no non-manifold vertex remains");
+  Check(after.Count(Brep::CheckIssue::Kind::NakedEdge) == 8 && after.issues.size() == 8,
+        "the 8 naked edges are exactly as before - this is pure topology bookkeeping, not a geometry change");
+
+  // The two faces' own corner vertices at the old pinch point are now
+  // genuinely different vertex records, both still sitting at the origin.
+  auto corner_vertex_of_face = [&](int face_index) -> int {
+    const ON_BrepFace& f = bowtie.raw().m_F[face_index];
+    for (int li = 0; li < f.m_li.Count(); ++li) {
+      const ON_BrepLoop& loop = bowtie.raw().m_L[f.m_li[li]];
+      for (int k = 0; k < loop.m_ti.Count(); ++k) {
+        const ON_BrepTrim& t = bowtie.raw().m_T[loop.m_ti[k]];
+        if (t.m_ei < 0) continue;
+        const ON_BrepEdge& e = bowtie.raw().m_E[t.m_ei];
+        for (int side = 0; side < 2; ++side) {
+          if (bowtie.raw().m_V[e.m_vi[side]].point.DistanceTo(Point3d(0, 0, 0)) < 1e-9) return e.m_vi[side];
+        }
+      }
+    }
+    return -1;
+  };
+  const int v0 = corner_vertex_of_face(0);
+  const int v1 = corner_vertex_of_face(1);
+  Check(v0 >= 0 && v1 >= 0 && v0 != v1, "the two faces' own origin corners are now two distinct vertex records");
+  Check(bowtie.raw().m_V[v0].point.DistanceTo(Point3d(0, 0, 0)) < 1e-12 &&
+            bowtie.raw().m_V[v1].point.DistanceTo(Point3d(0, 0, 0)) < 1e-12,
+        "...both still located exactly at the original pinch point");
+
+  Check(bowtie.SplitNonManifoldVertices() == 0, "a second pass over the healed fixture finds nothing left to split");
+
+  // The orchestrator does the same job end to end, from a fresh fixture.
+  Brep bowtie2 = make_bowtie();
+  Check(bowtie2.SplitNonManifoldVertices() == 1, "SplitNonManifoldVertices() heals the one pinch vertex in a single pass");
+  Check(bowtie2.raw().m_V.Count() == 8 && bowtie2.Check().Count(Brep::CheckIssue::Kind::NonManifoldVertex) == 0,
+        "...with the same result as the manual call above");
+
+  // Refusals: an ordinary (manifold) vertex has nothing to split.
+  Brep box = Brep::FromPlanarFaces(CheckHealBoxFaces());
+  Check(box.SplitNonManifoldVertex(0) == Result::Failed, "an ordinary box corner is not non-manifold - Result::Failed");
+  Check(box.raw().m_V.Count() == 8, "...and the box is left completely untouched");
+
+  bool threw_range = false;
+  try {
+    box.SplitNonManifoldVertex(box.raw().m_V.Count() + 100);
+  } catch (const std::out_of_range&) {
+    threw_range = true;
+  }
+  Check(threw_range, "an out-of-range vertex_index throws std::out_of_range, not Result::Failed - a genuine caller bug");
+
+  box.raw().m_V[0].m_vertex_index = -1;
+  bool threw_deleted = false;
+  try {
+    box.SplitNonManifoldVertex(0);
+  } catch (const std::invalid_argument&) {
+    threw_deleted = true;
+  }
+  Check(threw_deleted, "vertex_index 0 marked deleted (m_vertex_index < 0) throws std::invalid_argument");
 }
 
 // Flip one face: Check() names the flipped face on each of its 4 edges
@@ -26374,6 +26758,252 @@ void TestChamferConvexEdgeChainsAcrossACornerAndAlongParallelEdges() {
 }
 
 // ---------------------------------------------------------------------------
+// FilletConvexEdgeConic (fillet.h) - the conic ("rho") cross-section blend.
+
+// Pure curve-level test of the weight-formula/control-polygon construction
+// FilletConvexEdgeConic's own doc comment derives (step 2/3), independent
+// of any Brep machinery: builds the SAME rational quadratic Bezier
+// (control points P0, O, P2, middle weight w = rho/(1-rho)) this function
+// builds internally, and checks the strongest possible closed-form
+// property - that at the ONE rho value where a symmetric control polygon's
+// weight is the classical w = cos(half-angle), the curve is not merely
+// "close to" but EXACTLY a circular arc: every sampled point sits at the
+// exact same radius from the exact same center, to near machine precision.
+void TestFilletConvexEdgeConicWeightFormulaReducesToExactCircle() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+
+  // Isosceles corner: O = (1, 0, 0), legs along m_i = (-1, 0, 0) and
+  // m_j = (0, 1, 0) (perpendicular, gamma = pi/2 - the same corner
+  // geometry FilletConvexEdgeConic's own free-boundary-tube fixture
+  // uses), both legs length d = 0.4.
+  const double d = 0.4;
+  const Point3d O(1, 0, 0);
+  const Point3d P0(1 - d, 0, 0);
+  const Point3d P2(1, d, 0);
+  const double gamma = ON_PI / 2.0;
+
+  // The standard symmetric-rational-Bezier-circle identity: weight
+  // w = cos(gamma/2) makes an isosceles control polygon (|P1-P0| ==
+  // |P1-P2|) trace an EXACT circular arc. rho = w/(1+w) is the inverse of
+  // FilletConvexEdgeConic's own w = rho/(1-rho).
+  const double w_circle = std::cos(gamma / 2.0);
+  const double rho_circle = w_circle / (1.0 + w_circle);
+  Check(rho_circle > 0.0 && rho_circle < 1.0, "the circle-matching rho is a genuine interior value in (0, 1)");
+
+  // Build exactly what FilletConvexEdgeConic builds internally (see its
+  // own doc comment, step 4): a plain degree-2 Bezier through (P0, O, P2),
+  // then the weight-compensation trick (pre-scale the control point
+  // BEFORE setting its weight, not after).
+  NurbsCurve profile = NurbsCurve::FromControlPoints({P0, O, P2}, 2);
+  const double w = rho_circle / (1.0 - rho_circle);
+  Check(std::fabs(w - w_circle) < 1e-12, "rho -> w round-trips exactly back to w_circle");
+  profile.SetControlPointAt(1, Point3d(O.x * w, O.y * w, O.z * w));
+  profile.SetWeightAt(1, w);
+  Check(profile.ControlPointAt(1).DistanceTo(O) < 1e-12,
+        "the weight-compensation trick leaves control point 1 exactly at O, not at O/w "
+        "(NurbsCurve::SetWeightAt's own documented gotcha, done in the correct order)");
+  Check(profile.IsRational() && std::fabs(profile.WeightAt(1) - w) < 1e-12,
+        "the profile is genuinely rational with the expected middle weight");
+
+  // For d = 0.4, gamma = pi/2: r = d*tan(gamma/2) = d exactly (tan(pi/4) =
+  // 1), and the center sits at O + d*sqrt(2)*bisector = (1-d, d, 0) - both
+  // worked out in closed form in this test's own header comment above,
+  // not fitted from the curve.
+  const double r = d;  // d * tan(pi/4)
+  const Point3d center(1 - d, d, 0);
+  Check(std::fabs(center.DistanceTo(O) - d * std::sqrt(2.0)) < 1e-12,
+        "sanity: the closed-form center sits at distance d*sqrt(2) from the sharp corner O");
+  Check(std::fabs(center.DistanceTo(P0) - r) < 1e-12 && std::fabs(center.DistanceTo(P2) - r) < 1e-12,
+        "sanity: both rail endpoints already sit at exactly radius r from the closed-form center");
+
+  double max_dev = 0.0;
+  for (int k = 0; k <= 200; ++k) {
+    const double t = static_cast<double>(k) / 200.0;
+    ON_3dPoint p;
+    profile.raw().Evaluate(t, 0, 3, &p.x);
+    max_dev = std::max(max_dev, std::fabs(p.DistanceTo(center) - r));
+  }
+  Check(max_dev < 1e-9,
+        "EVERY sampled point of the rho-derived conic (not just its two endpoints) sits at exactly the "
+        "closed-form circle's radius from its closed-form center - the general conic construction reduces "
+        "EXACTLY to FilletConvexEdge's own circular fillet at this one rho, confirmed directly, not assumed");
+}
+
+// Full end-to-end test on a genuine free-boundary fixture (the same "open
+// 4-wall tube" TestFilletConvexEdgeFreeBoundaryCapHasValidOpenTopology
+// already uses for FilletConvexEdge: a vertical edge with NO perpendicular
+// end face at either endpoint, so FilletConvexEdgeConic's own v1 scope -
+// no third face at edge_p0/edge_p1 - is satisfied without needing a real
+// solid).
+void TestFilletConvexEdgeConicFreeBoundaryTangencyRailExactnessAndClosedFormArea() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConvexEdgeConic;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+  namespace tol = dino8::kernel::tolerance;
+
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 2);
+  const std::vector<Brep::PlanarFace> all_faces = box.PlanarFaces();
+  // 2=front(-y), 5=right(+x) (see Brep::Box's own face-order comment).
+  const std::vector<Brep::PlanarFace> walls = {all_faces[2], all_faces[3], all_faces[4], all_faces[5]};
+  const Brep tube = Brep::FromPlanarFaces(walls);
+
+  const double di = 0.3, dj = 0.25, rho = 0.5;  // rho = 0.5: exact parabola
+  const Point3d edge_p0(1, 0, 0), edge_p1(1, 0, 2);
+  const Brep blend = FilletConvexEdgeConic(tube, edge_p0, edge_p1, di, dj, rho);
+
+  Check(blend.FaceCount() == 5,
+        "the conic-blended tube has 5 faces (2 untouched walls + 2 re-trimmed walls + 1 new conic wall)");
+  ON_TextLog log;
+  Check(blend.raw().IsValid(&log), "the conic blend passes ON_Brep::IsValid()");
+  bool is_oriented = false, has_boundary = false;
+  Check(blend.raw().IsManifold(&is_oriented, &has_boundary) && is_oriented && has_boundary,
+        "the result is oriented but genuinely open - free-boundary caps at both ends, exactly as disclosed");
+  Check(!blend.raw().IsSolid(), "the open conic-blended tube correctly reports IsSolid() == false");
+
+  const Point3d P0_0(1 - di, 0, 0), P0_1(1 - di, 0, 2);   // rail_i (face i = front, m_i = (-1,0,0))
+  const Point3d P2_0(1, dj, 0), P2_1(1, dj, 2);           // rail_j (face j = right, m_j = (0,1,0))
+  Check(ChamferTestBrepHasVertexNear(blend, P0_0, 1e-9) && ChamferTestBrepHasVertexNear(blend, P0_1, 1e-9),
+        "the re-trimmed front face's own new rail runs exactly along x = 1 - di");
+  Check(ChamferTestBrepHasVertexNear(blend, P2_0, 1e-9) && ChamferTestBrepHasVertexNear(blend, P2_1, 1e-9),
+        "the re-trimmed right face's own new rail runs exactly along y = dj");
+  Check(!ChamferTestBrepHasVertexNear(blend, edge_p0, 1e-9) && !ChamferTestBrepHasVertexNear(blend, edge_p1, 1e-9),
+        "the original sharp edge's two endpoint vertices no longer exist");
+
+  // Both new rail edges were joined at EXACTLY zero recorded tolerance -
+  // JoinNakedEdges' own "the same exact claim FromPlanarFaces makes" for a
+  // bit-identical pair, confirmed directly rather than assumed from the
+  // construction alone.
+  const ON_Brep& raw = blend.raw();
+  int exact_rail_edges = 0;
+  for (int e = 0; e < raw.m_E.Count(); ++e) {
+    const ON_BrepEdge& E = raw.m_E[e];
+    const Point3d a = E.PointAtStart(), b = E.PointAtEnd();
+    const bool is_rail_i = (a.DistanceTo(P0_0) < 1e-9 && b.DistanceTo(P0_1) < 1e-9) ||
+                            (a.DistanceTo(P0_1) < 1e-9 && b.DistanceTo(P0_0) < 1e-9);
+    const bool is_rail_j = (a.DistanceTo(P2_0) < 1e-9 && b.DistanceTo(P2_1) < 1e-9) ||
+                            (a.DistanceTo(P2_1) < 1e-9 && b.DistanceTo(P2_0) < 1e-9);
+    if (is_rail_i || is_rail_j) {
+      ++exact_rail_edges;
+      Check(E.m_tolerance <= tol::kDistance,
+            "a rail edge shared between the re-trimmed planar face and the new conic wall carries recorded "
+            "tolerance 0 - an EXACT join, not a merely-tolerant one");
+    }
+  }
+  Check(exact_rail_edges == 2, "both rail edges (rail_i and rail_j) were found and are genuine single shared edges");
+
+  // Find the new conic wall face (the one non-planar face) and check
+  // TANGENCY at both of its straight sides: its own surface normal along
+  // u=0 must be face i's own outward normal (0,-1,0), and along u=1 face
+  // j's own outward normal (1,0,0) - this function's own doc comment's
+  // central claim, checked directly rather than assumed from the
+  // tangent-line argument alone.
+  int wall_face = -1;
+  for (int f = 0; f < raw.m_F.Count(); ++f) {
+    ON_Plane pl;
+    if (!raw.m_F[f].SurfaceOf()->IsPlanar(&pl, 1e-9)) {
+      Check(wall_face < 0, "exactly one non-planar face exists in the result");
+      wall_face = f;
+    }
+  }
+  Check(wall_face >= 0, "the new conic wall face was found");
+  const ON_Surface* wall_srf = raw.m_F[wall_face].SurfaceOf();
+  const bool rev = raw.m_F[wall_face].m_bRev;
+  const ON_Interval du = wall_srf->Domain(0), dv = wall_srf->Domain(1);
+  auto normal_at = [&](double u, double v) {
+    ON_3dPoint p;
+    ON_3dVector su, sv;
+    wall_srf->Ev1Der(u, v, p, su, sv);
+    ON_3dVector n = ON_CrossProduct(su, sv);
+    n.Unitize();
+    if (rev) n = -n;
+    return n;
+  };
+  const Vector3d n_at_u0 = normal_at(du.Min(), dv.Mid());
+  const Vector3d n_at_u1 = normal_at(du.Max(), dv.Mid());
+  const Vector3d n_i(0, -1, 0), n_j(1, 0, 0);
+  Check(std::fabs(std::fabs(n_at_u0 * n_i) - 1.0) < 1e-9,
+        "the wall's own surface normal at u=0 is exactly parallel to face i's (front) outward normal - G1 "
+        "tangency, for a genuinely curved (non-circular, rho=0.5) cross-section");
+  Check(std::fabs(std::fabs(n_at_u1 * n_j) - 1.0) < 1e-9,
+        "the wall's own surface normal at u=1 is exactly parallel to face j's (right) outward normal");
+
+  // CLOSED-FORM AREA: sample the wall's own v=0 isocurve (the exact conic
+  // arc itself, at the actual surface this function built - not a
+  // separately recomputed curve) and sum the "fan from O" triangle areas;
+  // this Riemann-sum-style polygon area converges to the true swept-sector
+  // area as sampling gets finer (the same "chordal deficit shrinks with
+  // finer sampling" pattern this kernel's own tests already use elsewhere
+  // - see e.g. TestFilletConvexEdgesRoundedBoxMatchesSteinerFormula's own
+  // convergence checks).
+  auto sector_area = [&](int n) {
+    const Point3d O = edge_p0;
+    double area = 0.0;
+    Point3d prev;
+    wall_srf->EvPoint(du.Min() + (du.Max() - du.Min()) * 0.0, dv.Min(), prev);
+    for (int k = 1; k <= n; ++k) {
+      const double u = du.Min() + (du.Max() - du.Min()) * (static_cast<double>(k) / n);
+      Point3d cur;
+      wall_srf->EvPoint(u, dv.Min(), cur);
+      const Vector3d a = prev - O, b = cur - O;
+      area += 0.5 * std::fabs(a.x * b.y - a.y * b.x);
+      prev = cur;
+    }
+    return area;
+  };
+  const double gamma = ON_PI / 2.0;  // arccos(m_i . m_j), m_i=(-1,0,0), m_j=(0,1,0)
+  const double expected_area = di * dj * std::sin(gamma) / 6.0;  // exact algebraic form at rho = 0.5
+  const double area_coarse = sector_area(8);
+  const double area_fine = sector_area(2000);
+  Check(std::fabs(area_fine - expected_area) < 1e-6,
+        "the conic cross-section's own swept area converges to the closed form di*dj*sin(gamma)/6 at rho=0.5");
+  Check(std::fabs(area_fine - expected_area) < std::fabs(area_coarse - expected_area),
+        "finer sampling of the exact curve gets strictly closer to the closed form (a real convergence, not "
+        "a lucky coincidence at one sample count)");
+}
+
+void TestFilletConvexEdgeConicRejectsInvalidInput() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConvexEdgeConic;
+  using dino8::kernel::Point3d;
+
+  auto expect_throw = [](auto&& fn, const char* what) {
+    bool threw = false;
+    try {
+      fn();
+    } catch (const std::invalid_argument&) {
+      threw = true;
+    }
+    Check(threw, what);
+  };
+
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 2);
+  const std::vector<Brep::PlanarFace> all_faces = box.PlanarFaces();
+  const Brep tube = Brep::FromPlanarFaces({all_faces[2], all_faces[3], all_faces[4], all_faces[5]});
+  const Point3d p0(1, 0, 0), p1(1, 0, 2);
+
+  expect_throw([&] { FilletConvexEdgeConic(tube, p0, p1, 0.0, 0.2, 0.5); },
+               "rejects a non-positive distance_i");
+  expect_throw([&] { FilletConvexEdgeConic(tube, p0, p1, 0.2, -0.1, 0.5); },
+               "rejects a negative distance_j");
+  expect_throw([&] { FilletConvexEdgeConic(tube, p0, p1, 0.2, 0.2, 0.0); }, "rejects rho == 0");
+  expect_throw([&] { FilletConvexEdgeConic(tube, p0, p1, 0.2, 0.2, 1.0); }, "rejects rho == 1");
+  expect_throw([&] { FilletConvexEdgeConic(tube, p0, p1, 0.2, 0.2, -0.3); }, "rejects a negative rho");
+  expect_throw([&] { FilletConvexEdgeConic(tube, p0, p1, 0.2, 0.2, 1.3); }, "rejects rho > 1");
+  expect_throw([&] { FilletConvexEdgeConic(tube, p0, p1, 5.0, 0.2, 0.5); },
+               "rejects a distance_i too large to fit within face i's own extent");
+
+  // A CLOSED box: both edge endpoints DO have a third face touching them
+  // (left/right end caps) - out of scope for this v1 (see this function's
+  // own doc comment).
+  const Brep closed_box = Brep::Box(0, 0, 0, 1, 1, 1);
+  expect_throw([&] { FilletConvexEdgeConic(closed_box, Point3d(0, 0, 1), Point3d(1, 0, 1), 0.2, 0.2, 0.5); },
+               "rejects an edge whose endpoints are touched by a third face (end-condition splicing is out "
+               "of scope for this increment)");
+}
+
+// ---------------------------------------------------------------------------
 // Brep::SphericalFace (brep.h) and FilletConvexEdges (fillet.h) - spherical
 // vertex blends.
 
@@ -27149,6 +27779,104 @@ void TestLoftInterpolatesSectionsExactly() {
   Check(!Throws([&] { Brep::Loft({ring[0], ring[1], ring[2], ring[3]}, 3, /*closed=*/true); }), "...and 4 sections suffice");
 }
 
+void TestLoftTangentConstrainedEndsMatchExactly() {
+  // Four straight 2-point sections (degree 1 in u), stacked at z = 0..3,
+  // all in the y = 0 plane - an ordinary cubic loft through them would
+  // stay flat (dS/dv purely in z). start_tangent/end_tangent instead
+  // prescribe a genuinely out-of-plane derivative at each end, one
+  // vector per u-column (2 columns here, matching the sections' own
+  // 2-CV structure), so a match is not something a flat/trivial case
+  // could satisfy by accident.
+  std::vector<NurbsCurve> sections;
+  for (int k = 0; k < 4; ++k) sections.push_back(Polyline({P(0, 0, k), P(1, 0, k)}));
+  const NurbsCurve start_tangent = Polyline({P(0, 2, 0), P(0, 3, 1)});
+  const NurbsCurve end_tangent = Polyline({P(0, -1, 5), P(0, -2, 4)});
+
+  const Brep loft = Brep::Loft(sections, 3, /*closed=*/false, /*cap=*/true, &start_tangent, &end_tangent);
+  Check(loft.FaceCount() == 1 && loft.raw().IsValid(), "tangent-constrained loft is a single valid open face");
+  Check(!loft.raw().IsSolid(), "...not capped (open sections never are)");
+  const NurbsSurface wall = FaceSurface(loft, 0);
+  Check(wall.DegreeV() == 3 && wall.CVCountV() == 6, "cubic tangent-constrained skin through 4 sections has 1 extra control row per constrained end (4 + 2)");
+
+  // Every original section is still reproduced exactly at its own
+  // station (the extra derivative-only control points at the ends do
+  // not disturb any of the plain position interpolation).
+  {
+    const ON_Interval du = wall.raw().Domain(0);
+    double worst = 0.0;
+    for (int k = 0; k < 4; ++k) {
+      const ON_Interval dc = sections[static_cast<size_t>(k)].raw().Domain();
+      for (int j = 0; j <= 20; ++j) {
+        worst = std::max(worst, wall.PointAt(du.ParameterAt(j / 20.0), k / 3.0)
+                                    .DistanceTo(sections[static_cast<size_t>(k)].PointAt(dc.ParameterAt(j / 20.0))));
+      }
+    }
+    Check(worst < 1e-9, "tangent-constrained loft still passes exactly through all four sections");
+  }
+
+  // dS/dv(u, 0) is EXACTLY the start_tangent curve itself (not just at
+  // its own control points): the constraint was imposed independently
+  // per u-column, so the derivative-in-v curve's own control points
+  // are precisely start_tangent's, making the two curves identical.
+  // Same check mirrored at v = 1 against end_tangent.
+  {
+    const ON_Interval du = wall.raw().Domain(0);
+    const ON_Interval dtu = start_tangent.raw().Domain();
+    const ON_Interval etu = end_tangent.raw().Domain();
+    double worst_start = 0.0, worst_end = 0.0;
+    for (int j = 0; j <= 20; ++j) {
+      const double u = j / 20.0;
+      ON_3dPoint pt;
+      ON_3dVector su, sv;
+      Check(wall.raw().Ev1Der(du.ParameterAt(u), 0.0, pt, su, sv), "Ev1Der succeeds at v = 0");
+      const Point3d expect_start = start_tangent.PointAt(dtu.ParameterAt(u));
+      worst_start = std::max(worst_start, std::hypot(std::hypot(sv.x - expect_start.x, sv.y - expect_start.y), sv.z - expect_start.z));
+      Check(wall.raw().Ev1Der(du.ParameterAt(u), 1.0, pt, su, sv), "Ev1Der succeeds at v = 1");
+      const Point3d expect_end = end_tangent.PointAt(etu.ParameterAt(u));
+      worst_end = std::max(worst_end, std::hypot(std::hypot(sv.x - expect_end.x, sv.y - expect_end.y), sv.z - expect_end.z));
+    }
+    Check(worst_start < 1e-6, "dS/dv(u, 0) matches start_tangent(u) exactly across u");
+    Check(worst_end < 1e-6, "dS/dv(u, 1) matches end_tangent(u) exactly across u");
+  }
+
+  // A one-sided constraint (start only) leaves the other end unconstrained.
+  {
+    const Brep one_sided = Brep::Loft(sections, 3, /*closed=*/false, /*cap=*/true, &start_tangent, nullptr);
+    const NurbsSurface w = FaceSurface(one_sided, 0);
+    Check(w.CVCountV() == 5, "one constrained end adds exactly one control row (4 + 1)");
+    const ON_Interval du = w.raw().Domain(0);
+    const ON_Interval dtu = start_tangent.raw().Domain();
+    double worst = 0.0;
+    for (int j = 0; j <= 20; ++j) {
+      const double u = j / 20.0;
+      ON_3dPoint pt;
+      ON_3dVector su, sv;
+      w.raw().Ev1Der(du.ParameterAt(u), 0.0, pt, su, sv);
+      const Point3d expect = start_tangent.PointAt(dtu.ParameterAt(u));
+      worst = std::max(worst, std::hypot(std::hypot(sv.x - expect.x, sv.y - expect.y), sv.z - expect.z));
+    }
+    Check(worst < 1e-6, "start-only tangent constraint still matches exactly");
+  }
+
+  // Negative controls.
+  Check(Throws([&] { Brep::Loft(sections, 3, /*closed=*/true, /*cap=*/false, &start_tangent, &end_tangent); }),
+        "tangent constraints are refused for a closed (periodic) loft");
+  Check(Throws([&] { Brep::Loft({sections[0], sections[1]}, 3, /*closed=*/false, /*cap=*/true, &start_tangent, &end_tangent); }),
+        "tangent constraints need degree >= 2 realizable with at least 3 sections (2 sections force degree 1)");
+  Check(Throws([&] { Brep::Loft(sections, 1, /*closed=*/false, /*cap=*/true, &start_tangent, &end_tangent); }),
+        "tangent constraints are refused below degree 2");
+  const std::vector<NurbsCurve> closed_sections = {Polyline({P(0, 0, 0), P(1, 0, 0), P(1, 1, 0), P(0, 0, 0)}),
+                                                    Polyline({P(0, 0, 1), P(1, 0, 1), P(1, 1, 1), P(0, 0, 1)}),
+                                                    Polyline({P(0, 0, 2), P(1, 0, 2), P(1, 1, 2), P(0, 0, 2)})};
+  Check(Throws([&] { Brep::Loft(closed_sections, 2, /*closed=*/false, /*cap=*/false, &start_tangent, nullptr); }),
+        "tangent constraints are refused for closed-curve (periodic-loop) sections");
+  const std::vector<NurbsCurve> rational_sections = {Arc(P(0, 0, 0), Vector3d(1, 0, 0), Vector3d(0, 1, 0), 1.0, 0.0, M_PI / 2),
+                                                      Arc(P(0, 0, 1), Vector3d(1, 0, 0), Vector3d(0, 1, 0), 1.5, 0.0, M_PI / 2),
+                                                      Arc(P(0, 0, 2), Vector3d(1, 0, 0), Vector3d(0, 1, 0), 1.0, 0.0, M_PI / 2)};
+  Check(Throws([&] { Brep::Loft(rational_sections, 2, /*closed=*/false, /*cap=*/false, &start_tangent, nullptr); }),
+        "tangent constraints are refused for a rational (open arc) section");
+}
+
 void TestSweep1AndPipe() {
   // Straight rail: the exact rational cylinder (2 stations, degree 1).
   const NurbsCurve line = Polyline({P(0, 0, 0), P(10, 0, 0)});
@@ -27235,6 +27963,57 @@ void TestSweep1AndPipe() {
   // Negative controls.
   Check(Throws([&] { Brep::Pipe(line, 0.0); }), "non-positive pipe radius throws");
   Check(Throws([&] { Brep::Sweep1(square, rail, 1); }), "fewer than 2 stations throws");
+}
+
+void TestSweep1TwistIsExactOnAStraightRailAndRejectsOnClosedRail() {
+  // Straight rail along +z: RmfFrames' own initial-normal rule picks
+  // r0 = (1, 0, 0) for tangent (0, 0, 1) (the world axis least aligned
+  // with the tangent - (1, 0, 0) has zero component along it, and wins
+  // the tie against (0, 1, 0) by the rule's own x-before-y order), so a
+  // unit square built directly in the world xy-plane at the rail's own
+  // start point sits exactly in station 0's own (r, s) plane. That lets
+  // the far end's EXACT position be predicted by hand: twist_total's
+  // rotation is a plain RotateZ of each corner's (x, y), translated to
+  // the rail's end point - no approximation to allow for.
+  const NurbsCurve rail = Polyline({P(0, 0, 0), P(0, 0, 10)});
+  const NurbsCurve square = Polyline({P(-0.5, -0.5, 0), P(0.5, -0.5, 0), P(0.5, 0.5, 0), P(-0.5, 0.5, 0), P(-0.5, -0.5, 0)});
+  const double twist = M_PI / 2;
+  const Brep swept = Brep::Sweep1(square, rail, 32, /*cap=*/true, twist);
+  CheckSolidTopology(swept, 3, "twisted square sweep along a straight rail");
+  const NurbsSurface wall = FaceSurface(swept, 0);
+  Check(wall.DegreeV() == 1 && wall.CVCountV() == 2, "straight rail still takes the exact 2-station ruled shortcut with twist");
+
+  const ON_Interval du = wall.raw().Domain(0);
+  const ON_Interval dv = wall.raw().Domain(1);
+  {
+    double worst = 0.0;
+    for (int corner = 0; corner < 4; ++corner) {
+      const Point3d expect = square.ControlPointAt(corner);
+      double best = 1e9;
+      for (int j = 0; j < 4; ++j) best = std::min(best, wall.PointAt(du.ParameterAt(j / 4.0), dv.Min()).DistanceTo(expect));
+      worst = std::max(worst, best);
+    }
+    Check(worst < 1e-9, "the near end is untouched (zero twist at the start)");
+  }
+  {
+    double worst = 0.0;
+    for (int corner = 0; corner < 4; ++corner) {
+      const Point3d c = square.ControlPointAt(corner);
+      const Point3d expect(c.x * std::cos(twist) - c.y * std::sin(twist), c.x * std::sin(twist) + c.y * std::cos(twist), 10.0);
+      double best = 1e9;
+      for (int j = 0; j < 4; ++j) best = std::min(best, wall.PointAt(du.ParameterAt(j / 4.0), dv.Max()).DistanceTo(expect));
+      worst = std::max(worst, best);
+    }
+    Check(worst < 1e-9, "the far end is the near end's square rotated by exactly twist_total about the rail axis");
+  }
+  Check(swept.TessellateToClosedMesh(8, 96).IsClosedManifold() && swept.TessellateToClosedMesh(5, 12).IsClosedManifold(),
+        "twisted sweep is still a closed manifold at (8, 96) and (5, 12)");
+
+  // Negative controls: twist on a closed rail.
+  const NurbsCurve circle_rail = Circle(P(0, 0, 0), Vector3d(0, 0, 1), 3.0);
+  Check(Throws([&] { Brep::Sweep1(square, circle_rail, 16, /*cap=*/false, M_PI / 4); }),
+        "nonzero twist_total on a closed rail throws");
+  Check(!Throws([&] { Brep::Sweep1(square, circle_rail, 16, /*cap=*/false, 0.0); }), "...but zero twist is fine on a closed rail");
 }
 
 void TestPipeVariable() {
@@ -30729,6 +31508,10 @@ int main() {
   TestBooleanCombineGeneralBoxCone();
   TestBooleanCombineGeneralSphereCylinderThroughCentre();
   TestBooleanCombineGeneralUnequalRadiusPerpendicularCylinders();
+  TestImprintFacesBoxPiercedByCylinder();
+  TestImprintFacesOverlappingBoxes();
+  TestImprintFacesDisjointIsNoOp();
+  TestImprintFacesRejectsEmptyOperands();
   TestSurfaceGetApproximateSize();
   TestSurfaceTessellateGridClippedExactRejectsTooFewPoints();
   TestSurfaceTessellateGridRejectsTooFewTrimPoints();
@@ -30766,6 +31549,7 @@ int main() {
   TestModelAddLayerRoundTrips();
   TestModelAddRenderColorRoundTrips();
   TestModelAddUserStringsRoundTrips();
+  TestModelAddLinetypeRoundTrips();
   TestModelLoadRejectsMeshWithOutOfRangeFaceIndex();
   TestSplitByPlane();
   TestConvexHull();
@@ -30905,6 +31689,9 @@ int main() {
   TestChamferConvexEdgeAngleMatchesTwoDistanceForm();
   TestChamferConvexEdgeRejectsInvalidInput();
   TestChamferConvexEdgeChainsAcrossACornerAndAlongParallelEdges();
+  TestFilletConvexEdgeConicWeightFormulaReducesToExactCircle();
+  TestFilletConvexEdgeConicFreeBoundaryTangencyRailExactnessAndClosedFormArea();
+  TestFilletConvexEdgeConicRejectsInvalidInput();
   TestSphericalFaceOctantIsValidWithSingularPoleTrim();
   TestMergeAndWeldMakesBrepSphereAClosedManifold();
   TestFilletConvexEdgesRoundedBoxMatchesSteinerFormula();
@@ -31104,6 +31891,8 @@ int main() {
   TestSurfaceMatchEdgeToRationalSphereAndRefusals();
   TestTolerancePolicyValuesAreTheOnesInForce();
   TestBrepCheckReportsCleanBoxAsClean();
+  TestBrepCheckDetectsNonManifoldPinchVertex();
+  TestBrepSplitNonManifoldVertexHealsPinchPoint();
   TestBrepCheckAndUnifyNormalsOnFlippedFace();
   TestBrepCheckReportsDroppedFaceAndCapPlanarHolesRestoresIt();
   TestBrepJoinNakedEdgesRecordsTolerantEdges();
@@ -31130,7 +31919,9 @@ int main() {
   sweep_tests::TestExtrudeRectangleIsExactCappedSolid();
   sweep_tests::TestRevolveExactSolidsAndCaps();
   sweep_tests::TestLoftInterpolatesSectionsExactly();
+  sweep_tests::TestLoftTangentConstrainedEndsMatchExactly();
   sweep_tests::TestSweep1AndPipe();
+  sweep_tests::TestSweep1TwistIsExactOnAStraightRailAndRejectsOnClosedRail();
   sweep_tests::TestExtrudeTaperedCircularProfileIsExactConeFrustum();
   sweep_tests::TestExtrudeTaperedConvexPolygonIsExactPlanarFrustum();
 

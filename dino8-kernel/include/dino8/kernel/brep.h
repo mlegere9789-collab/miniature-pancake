@@ -364,8 +364,33 @@ class Brep {
   // outward). Throws std::invalid_argument for fewer than 2 sections,
   // fewer than degree + 1 sections for a closed loft, or mixed open/
   // closed sections.
+  //
+  // `start_tangent`/`end_tangent`, if given, each pin the wall's own
+  // d/dv at v=0 / v=1 to an EXACT prescribed vector field rather than
+  // leaving it to fall out of the plain interpolation above (Rhino/
+  // AutoCAD's loft "start/end tangency" option) - a genuine extra
+  // degree of freedom, not a fit: a clamped B-spline's derivative at a
+  // clamped end depends only on its own first (or last) two control
+  // points, so one extra control column per constrained end is solved
+  // in closed form from the prescribed derivative while every other
+  // column still interpolates every section exactly, unperturbed (same
+  // "exact global interpolation" guarantee as the unconstrained case,
+  // now with one more exactly-met condition at each constrained end).
+  // Each tangent argument is itself a NurbsCurve, made compatible
+  // alongside `sections` (so it shares their control-point count and
+  // u parameterization) whose control points are read as raw XYZ
+  // VECTORS, not positions - column i's vector is the surface's own
+  // dS/dv there, e.g. a copy of the adjacent section scaled and offset
+  // to the desired tangent length/direction. Requires `degree >= 2`
+  // and at least 3 sections (throws otherwise: there is no spare
+  // control point to dedicate to the derivative below that), and is
+  // not supported for `closed` (periodic, no ends) or for closed-curve
+  // (periodic-loop) sections - throws for either. A tangent-constrained
+  // loft is never capped (only closed-curve sections take caps, and
+  // those are refused above).
   static Brep Loft(const std::vector<NurbsCurve>& sections, int degree = 3, bool closed = false,
-                   bool cap = true);
+                   bool cap = true, const NurbsCurve* start_tangent = nullptr,
+                   const NurbsCurve* end_tangent = nullptr);
 
   // Sweep1: `section` carried along `rail` by rotation-minimizing
   // frames (Wang et al. 2008's double-reflection method, evaluated at
@@ -381,8 +406,21 @@ class Brep {
   // exact sweep - increase `stations` for a tighter approximation.
   // Caps as Extrude(). Throws std::invalid_argument for stations < 2 or
   // a degenerate rail.
+  //
+  // `twist_total` (radians) adds a uniform extra rotation about the
+  // rail's own local tangent on top of the rotation-minimizing frame -
+  // AutoCAD SWEEP's Twist option / Rhino's Sweep1 twist history -
+  // distributed linearly by arc-length station fraction (0 at the
+  // start, exactly `twist_total` at the end, k / (stations - 1) at
+  // station k), so a straight rail's 2-station exact-extrusion path
+  // stays exact: the far end is the near end's section rotated by
+  // EXACTLY `twist_total` about the rail direction, nothing else
+  // changed. Not supported on a closed rail (throws if `twist_total`
+  // is nonzero there) - a non-multiple-of-2*pi twist would keep the
+  // tube from closing up smoothly, and this does not attempt the
+  // partial-turn spiral case.
   static Brep Sweep1(const NurbsCurve& section, const NurbsCurve& rail, int stations = 32,
-                     bool cap = true);
+                     bool cap = true, double twist_total = 0.0);
 
   // Sweep2: `section` carried between `rail1` and `rail2` (Parasolid/
   // Rhino's two-rail sweep with scaling). At each of `stations` equal-
@@ -2418,6 +2456,22 @@ class Brep {
       // An edge used by three or more trims. `index` is the edge,
       // `other_index` its trim count.
       NonManifoldEdge,
+      // A vertex whose incident faces do NOT form one connected
+      // neighbourhood through the vertex's own edges - Parasolid/ACIS's
+      // own separate "non-manifold vertex" (pinch point) diagnostic,
+      // distinct from NonManifoldEdge above: an hourglass built from two
+      // shells that touch at a single point and share no edge there has
+      // no over-used edge anywhere (every edge still borders exactly one
+      // or two trims), yet the vertex itself is not a topological disk -
+      // walking from one shell's faces to the other's, through shared
+      // edges, is impossible without passing through the pinch. Detected
+      // by grouping the faces touching this vertex's own incident edges
+      // with union-find (two faces sharing one such edge are one group);
+      // more than one group after considering every incident edge means
+      // the neighbourhood is split. `index` is the vertex, `other_index`
+      // the number of disjoint groups found (>= 2), `location` the
+      // vertex's own point.
+      NonManifoldVertex,
       // Two faces sharing a 2-trim edge both walk it the same way in 3D,
       // so one is wound backwards relative to the other - ON_Brep::
       // IsManifold()'s own "not oriented" condition, per edge. `index`
@@ -2604,6 +2658,46 @@ class Brep {
   // heavier re-trim for a naked sliver that is NOT below tolerance).
   // Returns the number of edges collapsed. Clears the side tables.
   int RemoveDegenerateEdges(double tolerance = tolerance::kDistance);
+
+  // Heals a non-manifold (pinch-point) vertex - see CheckIssue::Kind::
+  // NonManifoldVertex's own doc comment - the standard Parasolid/ACIS
+  // "disjoin" repair: nothing about the GEOMETRY at a pinch point is
+  // wrong (every trim, edge and face on either side is perfectly valid
+  // where it sits), only the TOPOLOGY of one vertex record being shared
+  // between two locally-disconnected neighbourhoods is. Group 0 (in
+  // Check()'s own first-seen order) keeps `vertex_index` itself; every
+  // OTHER disjoint face group found there gets a fresh vertex at the SAME
+  // 3D point and recorded tolerance, and every edge in that group has the
+  // end that was `vertex_index` repointed to it. No edge's 3D curve, no
+  // trim, and no face is touched - pure topology bookkeeping, so this
+  // never needs to clear the side tables (unlike JoinNakedEdges() et al.,
+  // which change what a face's own trim loop IS) and, unlike every other
+  // topology-surgery method in this class, never deletes anything or
+  // calls Compact(): it only APPENDS new vertices, so every existing
+  // vertex/edge/face index - including another NonManifoldVertex issue's
+  // own `index` from the same Check() call - stays valid across repeated
+  // calls (SplitNonManifoldVertices(), below, relies on exactly that).
+  //
+  // Returns Result::Failed - not a thrown exception, the same "can't, but
+  // that's not a bug" contract SplitNakedEdgeAt() shares - if
+  // `vertex_index` is not actually non-manifold (fewer than 2 groups: an
+  // ordinary vertex, or one with no live incident face at all), or if one
+  // of its incident edges is closed on itself at this vertex (its own two
+  // endpoints both `vertex_index` - the one shape ON_BrepVertex::m_ei's
+  // own documented "an edge's index appears twice, positionally" rule
+  // makes ambiguous to assign to a single group; genuinely rare, and not
+  // a shape this method's own fixtures produce). Throws std::out_of_range
+  // if `vertex_index` itself is out of range, or std::invalid_argument if
+  // it refers to an already-deleted vertex - both genuine caller bugs.
+  Result SplitNonManifoldVertex(int vertex_index);
+
+  // Runs Check(tolerance, tolerance) once and calls SplitNonManifoldVertex()
+  // on every NonManifoldVertex issue it reports - safe as a SINGLE pass
+  // over that one report (unlike SewTJunctions()'s own repeated rescans)
+  // precisely because SplitNonManifoldVertex() never deletes or renumbers
+  // anything (see its own doc comment). Returns the number of vertices
+  // actually split.
+  int SplitNonManifoldVertices(double tolerance = tolerance::kDistance);
 
   // Splits a naked (1-trim) edge into two coincident naked edges meeting
   // at a new vertex at `point` - the missing primitive behind "tolerant

@@ -2655,6 +2655,84 @@ void ReconcileFragmentBoundaries(std::vector<KeptFace>& kept) {
   }
 }
 
+// One face, fragmented along whatever chains were gathered for it in `raw`
+// (moved-from) - stitched into maximal chains first via StitchChains(), then
+// split via SplitFaceLoop() exactly as BooleanCombineGeneral()'s own
+// (formerly locally-lambda'd) per-operand loop already did. Factored out,
+// unchanged in behavior, so ImprintFaces() (below) can fragment a target's
+// faces against a tool without duplicating this logic - ImprintFaces()
+// differs from BooleanCombineGeneral() only in what it does with the
+// Fragments this returns (keeps every one, unconditionally, rather than
+// ray-cast classifying and dropping half of them).
+struct FaceFrags {
+  int face_index = 0;
+  ON_Surface* surface = nullptr;
+  bool base_rev = false;
+  std::vector<Fragment> frags;
+};
+
+std::vector<FaceFrags> FragmentFaces(const ON_Brep& brep, int n, std::vector<std::vector<Chain>>& raw,
+                                      double stitch_tol, const IntersectOptions& opt, bool debug) {
+  std::vector<FaceFrags> out;
+  for (int i = 0; i < n; ++i) {
+    std::vector<UVPt> boundary = FaceBoundaryLoop(brep, i);
+    if (boundary.size() < 3) continue;
+    const std::vector<Chain> stitched = StitchChains(std::move(raw[static_cast<size_t>(i)]), stitch_tol);
+    const ON_Surface* face_surface = brep.m_F[i].SurfaceOf();
+    const bool untrimmed = brep.m_F[i].m_li.Count() == 0;
+    std::vector<Chain> closed_chains, open_chains;
+    for (const Chain& c : stitched) {
+      // A chain running along an untrimmed face's own seam/pole side is
+      // cut there first (see CutChainAtDomainBoundary's own doc comment),
+      // BEFORE the 3D-closed test below: in (u, v) it is not a closed
+      // island at all, and it must not be holed out as one. The
+      // on-boundary tolerance is the SSX's own accuracy: a chain point
+      // can't be told apart from the seam it sits on any better than
+      // IntersectFaces() itself resolved it.
+      if (untrimmed && face_surface) {
+        std::vector<Chain> cut;
+        if (CutChainAtDomainBoundary(c, *face_surface, opt.tolerance, boundary, cut)) {
+          if (debug) std::fprintf(stderr, "  face idx=%d: chain n=%zu cut at domain boundary into %zu open chain(s), boundary now %zu\n", i, c.size(), cut.size(), boundary.size());
+          for (Chain& oc : cut) open_chains.push_back(std::move(oc));
+          continue;
+        }
+      }
+      if ((c.front().p - c.back().p).Length() <= stitch_tol) {
+        Chain wrap_open;
+        if (face_surface && SplitPeriodicWrapChain(c, *face_surface, wrap_open)) {
+          open_chains.push_back(std::move(wrap_open));
+        } else {
+          closed_chains.push_back(c);
+        }
+      } else {
+        open_chains.push_back(c);
+      }
+    }
+    if (debug) {
+      std::fprintf(stderr, "  FragmentFaces face idx=%d boundary=%zu stitched=%zu closed=%zu open=%zu\n", i,
+                   boundary.size(), stitched.size(), closed_chains.size(), open_chains.size());
+      for (const Chain& c : open_chains)
+        std::fprintf(stderr, "    open chain: n=%zu front_uv=(%f,%f) back_uv=(%f,%f)\n", c.size(), c.front().uv.x,
+                     c.front().uv.y, c.back().uv.x, c.back().uv.y);
+    }
+    FaceFrags ff;
+    ff.face_index = i;
+    ff.surface = brep.m_F[i].SurfaceOf()->DuplicateSurface();
+    ff.base_rev = brep.m_F[i].m_bRev;
+    ff.frags = SplitFaceLoop(boundary, closed_chains, open_chains);
+    if (std::getenv("DINO8_BOOL_DEBUG_VERBOSE")) {
+      for (size_t fi = 0; fi < ff.frags.size(); ++fi) {
+        std::fprintf(stderr, "  SplitFaceLoop face_index=%d frag[%zu] outer.size()=%zu holes=%zu",
+                     ff.face_index, fi, ff.frags[fi].outer.size(), ff.frags[fi].holes.size());
+        for (const auto& h : ff.frags[fi].holes) std::fprintf(stderr, " hole.size()=%zu", h.size());
+        std::fprintf(stderr, "\n");
+      }
+    }
+    out.push_back(std::move(ff));
+  }
+  return out;
+}
+
 }  // namespace
 
 Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op) {
@@ -2798,75 +2876,10 @@ Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op) {
   for (int i = 0; i < na; ++i) untouched_a[static_cast<size_t>(i)] = raw_a[static_cast<size_t>(i)].empty();
   for (int j = 0; j < nb; ++j) untouched_b[static_cast<size_t>(j)] = raw_b[static_cast<size_t>(j)].empty();
 
-  // Fragment every face of both operands.
-  struct FaceFrags {
-    int face_index = 0;
-    ON_Surface* surface = nullptr;
-    bool base_rev = false;
-    std::vector<Fragment> frags;
-  };
-  auto build_frags = [&](const ON_Brep& brep, int n, std::vector<std::vector<Chain>>& raw) {
-    std::vector<FaceFrags> out;
-    for (int i = 0; i < n; ++i) {
-      std::vector<UVPt> boundary = FaceBoundaryLoop(brep, i);
-      if (boundary.size() < 3) continue;
-      const std::vector<Chain> stitched = StitchChains(std::move(raw[static_cast<size_t>(i)]), stitch_tol);
-      const ON_Surface* face_surface = brep.m_F[i].SurfaceOf();
-      const bool untrimmed = brep.m_F[i].m_li.Count() == 0;
-      std::vector<Chain> closed_chains, open_chains;
-      for (const Chain& c : stitched) {
-        // A chain running along an untrimmed face's own seam/pole side is
-        // cut there first (see CutChainAtDomainBoundary's own doc comment),
-        // BEFORE the 3D-closed test below: in (u, v) it is not a closed
-        // island at all, and it must not be holed out as one. The
-        // on-boundary tolerance is the SSX's own accuracy: a chain point
-        // can't be told apart from the seam it sits on any better than
-        // IntersectFaces() itself resolved it.
-        if (untrimmed && face_surface) {
-          std::vector<Chain> cut;
-          if (CutChainAtDomainBoundary(c, *face_surface, opt.tolerance, boundary, cut)) {
-            if (debug) std::fprintf(stderr, "  face idx=%d: chain n=%zu cut at domain boundary into %zu open chain(s), boundary now %zu\n", i, c.size(), cut.size(), boundary.size());
-            for (Chain& oc : cut) open_chains.push_back(std::move(oc));
-            continue;
-          }
-        }
-        if ((c.front().p - c.back().p).Length() <= stitch_tol) {
-          Chain wrap_open;
-          if (face_surface && SplitPeriodicWrapChain(c, *face_surface, wrap_open)) {
-            open_chains.push_back(std::move(wrap_open));
-          } else {
-            closed_chains.push_back(c);
-          }
-        } else {
-          open_chains.push_back(c);
-        }
-      }
-      if (debug) {
-        std::fprintf(stderr, "  build_frags face idx=%d boundary=%zu stitched=%zu closed=%zu open=%zu\n", i,
-                     boundary.size(), stitched.size(), closed_chains.size(), open_chains.size());
-        for (const Chain& c : open_chains)
-          std::fprintf(stderr, "    open chain: n=%zu front_uv=(%f,%f) back_uv=(%f,%f)\n", c.size(), c.front().uv.x,
-                       c.front().uv.y, c.back().uv.x, c.back().uv.y);
-      }
-      FaceFrags ff;
-      ff.face_index = i;
-      ff.surface = brep.m_F[i].SurfaceOf()->DuplicateSurface();
-      ff.base_rev = brep.m_F[i].m_bRev;
-      ff.frags = SplitFaceLoop(boundary, closed_chains, open_chains);
-      if (std::getenv("DINO8_BOOL_DEBUG_VERBOSE")) {
-        for (size_t fi = 0; fi < ff.frags.size(); ++fi) {
-          std::fprintf(stderr, "  SplitFaceLoop face_index=%d frag[%zu] outer.size()=%zu holes=%zu",
-                       ff.face_index, fi, ff.frags[fi].outer.size(), ff.frags[fi].holes.size());
-          for (const auto& h : ff.frags[fi].holes) std::fprintf(stderr, " hole.size()=%zu", h.size());
-          std::fprintf(stderr, "\n");
-        }
-      }
-      out.push_back(std::move(ff));
-    }
-    return out;
-  };
-  std::vector<FaceFrags> frags_a = build_frags(ba, na, raw_a);
-  std::vector<FaceFrags> frags_b = build_frags(bb, nb, raw_b);
+  // Fragment every face of both operands (FragmentFaces() - shared with
+  // ImprintFaces() below, see its own doc comment).
+  std::vector<FaceFrags> frags_a = FragmentFaces(ba, na, raw_a, stitch_tol, opt, debug);
+  std::vector<FaceFrags> frags_b = FragmentFaces(bb, nb, raw_b, stitch_tol, opt, debug);
 
   // Classify + keep, per operation.
   std::vector<KeptFace> kept;
@@ -3028,6 +3041,147 @@ Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op) {
     if (kf.outer.size() < 3) {
       // Degenerate sliver (collapsed to < 3 unique vertices after
       // welding) - AddSurface() never took ownership, free it here.
+      delete kf.surface;
+      continue;
+    }
+    const int surface_index = brep.AddSurface(kf.surface);
+    ON_BrepFace& face = brep.NewFace(surface_index);
+    face.m_bRev = kf.rev;
+    BuildLoop(brep, face, ON_BrepLoop::outer, kf.outer, welder, edge_of_pair);
+    for (const std::vector<UVPt>& h : kf.holes) {
+      if (h.size() >= 3) BuildLoop(brep, face, ON_BrepLoop::inner, h, welder, edge_of_pair);
+    }
+  }
+
+  brep.SetTrimIsoFlags();
+  brep.SetTolerancesBoxesAndFlags(/*bLazy=*/true);
+  return result;
+}
+
+// ImprintFaces(): face-face imprint - see boolean_general.h's own doc
+// comment for the parity-map context (PK_BODY_imprint / ACIS imprint: split
+// faces along a mutual intersection, remove nothing). This is deliberately
+// the SIMPLEST possible reuse of the machinery above: it runs exactly
+// BooleanCombineGeneral()'s own steps 1-2 (gather SSX curves between every
+// bbox-overlapping (target, tool) face pair via IntersectFaces(), then
+// FragmentFaces() to split each of `target`'s own faces along them) and then
+// stops - every fragment of every target face is kept UNCONDITIONALLY, with
+// no ClassifyPointVsBrep ray-cast, no in/out decision, no flip, and no
+// coincident-face override, since nothing is ever dropped. `tool` itself is
+// never fragmented or modified; only `target`'s own topology changes (more,
+// smaller faces along the same overall boundary/shape). This is why imprint
+// was chosen over the parity map's other kernel-level Boolean gap (sheet/
+// solid trim): trim still needs a real in/out classification (which side of
+// the cutter to keep) plus new logic for an OPEN sheet body's own boundary,
+// while imprint needs neither - it is a strict subset of the classify step
+// BooleanCombineGeneral() already has, with that step simply never called.
+//
+// `target` and `tool` may each be open (a sheet) or closed (a solid) -
+// nothing here depends on either operand enclosing a volume, since no
+// ray-casting against either one ever happens. Throws std::invalid_argument
+// if either operand has no faces at all (nothing to imprint on/with),
+// matching this file's own BooleanCombineGeneral() convention of a clear,
+// typed refusal for an out-of-scope call rather than silently returning
+// something degenerate.
+Brep ImprintFaces(const Brep& target, const Brep& tool) {
+  const ON_Brep& bt = target.raw();
+  const ON_Brep& bl = tool.raw();
+  const int nt = bt.m_F.Count();
+  const int nl = bl.m_F.Count();
+  if (nt == 0) {
+    throw std::invalid_argument("dino8::kernel::ImprintFaces: target has no faces");
+  }
+  if (nl == 0) {
+    throw std::invalid_argument("dino8::kernel::ImprintFaces: tool has no faces");
+  }
+
+  IntersectOptions opt;
+  const double tol = 1e-6;
+  const bool debug = std::getenv("DINO8_BOOL_DEBUG") != nullptr;
+
+  std::vector<ON_BoundingBox> boxes_t(static_cast<size_t>(nt)), boxes_l(static_cast<size_t>(nl));
+  for (int i = 0; i < nt; ++i) boxes_t[static_cast<size_t>(i)] = bt.m_F[i].SurfaceOf()->BoundingBox();
+  for (int j = 0; j < nl; ++j) boxes_l[static_cast<size_t>(j)] = bl.m_F[j].SurfaceOf()->BoundingBox();
+
+  // Same SSX-gathering loop as BooleanCombineGeneral() above, minus the
+  // coincident-plane bookkeeping (irrelevant here: a coincident target/tool
+  // face pair produces no SSX curve either way, and with no classification
+  // step to confuse, that untouched target face is simply kept whole, which
+  // is already the correct imprint result for it) and minus ever building
+  // `raw_l` at all (`tool`'s own faces are never fragmented, so its own
+  // side of each IntersectionCurve's pcurve is never needed).
+  std::vector<std::vector<Chain>> raw_t(static_cast<size_t>(nt));
+  for (int i = 0; i < nt; ++i) {
+    ON_BoundingBox exp_t = boxes_t[static_cast<size_t>(i)];
+    exp_t.m_min -= ON_3dVector(tol, tol, tol);
+    exp_t.m_max += ON_3dVector(tol, tol, tol);
+    for (int j = 0; j < nl; ++j) {
+      if (exp_t.IsDisjoint(boxes_l[static_cast<size_t>(j)])) continue;
+      const ON_BrepFace& ft = bt.m_F[i];
+      const ON_BrepFace& fl = bl.m_F[j];
+      std::vector<IntersectionCurve> curves = IntersectFaces(&ft, *ft.SurfaceOf(), &fl, *fl.SurfaceOf(), opt);
+      for (const IntersectionCurve& ic : curves) {
+        if (ic.points.size() < 2) continue;
+        Chain ct;
+        ct.reserve(ic.points.size() + 1);
+        for (size_t k = 0; k < ic.points.size(); ++k) ct.push_back({ic.points[k], ic.uv_a[k]});
+        // Same closed-loop re-append as BooleanCombineGeneral() above - see
+        // its own comment for why (a curve IntersectFaces() already reports
+        // `closed` stores N distinct points with an implicit wrap, which
+        // this file's own open/closed test needs made explicit).
+        if (ic.closed) ct.push_back(ct.front());
+        raw_t[static_cast<size_t>(i)].push_back(std::move(ct));
+      }
+    }
+  }
+
+  const double stitch_tol = std::max(1e-4, opt.tolerance * 20.0);
+  std::vector<FaceFrags> frags_t = FragmentFaces(bt, nt, raw_t, stitch_tol, opt, debug);
+
+  // Keep EVERY fragment of every target face, unconditionally - the one
+  // real difference from BooleanCombineGeneral()'s own `process()`: no
+  // RepresentativeUV()/ClassifyPointVsBrep() call, no Union/Intersection/
+  // Difference switch, no `flip`. A face untouched by any SSX curve
+  // produces exactly one Fragment (its own original boundary, unchanged)
+  // here, same as it always has - this loop keeps it same as any other.
+  std::vector<KeptFace> kept;
+  for (FaceFrags& ff : frags_t) {
+    for (Fragment& frag : ff.frags) {
+      KeptFace kf;
+      kf.surface = ff.surface->DuplicateSurface();
+      kf.rev = ff.base_rev;
+      kf.outer = frag.outer;
+      kf.holes = frag.holes;
+      if (!kf.holes.empty()) BridgeHolesIntoOuter(kf.outer, kf.holes, ff.surface);
+      kept.push_back(std::move(kf));
+    }
+  }
+  for (FaceFrags& ff : frags_t) delete ff.surface;
+
+  if (kept.empty()) {
+    // Every target face was smaller than a valid loop (< 3 boundary
+    // points) - degenerate input, not this function's own error, so return
+    // the empty Brep rather than throw (mirrors BooleanCombineGeneral()'s
+    // own "kept.empty()" convention above).
+    return Brep();
+  }
+
+  // Same reassembly tail as BooleanCombineGeneral() above: reconcile
+  // untouched-boundary anchors, weld, then rebuild real ON_Brep topology.
+  ReconcileFragmentBoundaries(kept);
+
+  Brep result;
+  ON_Brep& brep = result.raw();
+  VertexWelder welder;
+  for (KeptFace& kf : kept) {
+    CollapseDuplicateVids(kf.outer, welder, kf.surface);
+    for (auto& h : kf.holes) CollapseDuplicateVids(h, welder, kf.surface);
+  }
+  for (const Point3d& p : welder.Points()) brep.NewVertex(p);
+
+  std::unordered_map<uint64_t, int> edge_of_pair;
+  for (KeptFace& kf : kept) {
+    if (kf.outer.size() < 3) {
       delete kf.surface;
       continue;
     }

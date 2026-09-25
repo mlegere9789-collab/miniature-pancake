@@ -29,7 +29,7 @@ trap 'rm -rf "$TMP"' EXIT
 run() {
   # $1: extra env assignments (space-separated VAR=val), or "" for none.
   # $2: screenshot path.
-  if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+  if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
     env $1 "$BIN" --cull-test "$FAR" --cull-screenshot "$2" 2>&1
   else
     env $1 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --cull-test "$FAR" --cull-screenshot "$2" 2>&1
@@ -37,10 +37,20 @@ run() {
 }
 
 echo "Dino 8 frustum-cull test: $FAR far objects"
-ON="$(run "" "$TMP/cull_on.bmp")"
+# `|| true` on each bare assignment: under `set -e`, a plain `VAR="$(cmd)"`
+# assignment whose command substitution fails aborts the script right there,
+# discarding whatever the command printed - it never even reaches the
+# fallback diagnostic two lines below, which exists specifically to report
+# a missing "cull_test:" line (e.g. a crash) instead of dying silently. A
+# Windows-only run (RHINO8_KILLER_AUDIT.md row Q) hit exactly this: the
+# whole job went from "Dino 8 frustum-cull test: ..." straight to the step
+# exiting nonzero, with nothing in between - not even this file's own next
+# line - because $BIN's own output (crash diagnostic or otherwise) for this
+# invocation was captured into $ON and then never printed anywhere.
+ON="$(run "" "$TMP/cull_on.bmp")" || true
 echo "$ON" | grep "^cull_test:" || { echo "$ON"; echo "FAIL: no cull_test line (cull-on run)"; exit 1; }
 echo "$ON" | grep "^cull_test:"
-OFF="$(run "DINO8_DISABLE_FRUSTUM_CULL=1" "$TMP/cull_off.bmp")"
+OFF="$(run "DINO8_DISABLE_FRUSTUM_CULL=1" "$TMP/cull_off.bmp")" || true
 echo "$OFF" | grep "^cull_test:" || { echo "$OFF"; echo "FAIL: no cull_test line (cull-off run)"; exit 1; }
 echo "$OFF" | grep "^cull_test:"
 
