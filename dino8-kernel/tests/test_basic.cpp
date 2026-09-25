@@ -7106,6 +7106,53 @@ void TestBrepCheckReportsCleanBoxAsClean() {
         "Count() reports zero for every kind on the clean fixture");
 }
 
+// Two squares touching at exactly one point and sharing no edge - the
+// textbook non-manifold vertex (pinch point): FromPlanarFaces() welds
+// their one coincident corner into a single shared ON_BrepVertex (both
+// loops start at the same 3D point), but the two squares run off in
+// unrelated directions from there, so none of either one's edges line up
+// with the other's - every edge stays naked, and NonManifoldEdge (which
+// only fires on an OVER-used edge) has nothing to report. The vertex
+// itself is still broken: its two incident faces are never connected by a
+// shared edge, exactly CheckIssue::Kind::NonManifoldVertex's own case.
+void TestBrepCheckDetectsNonManifoldPinchVertex() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  std::vector<Brep::PlanarFace> faces;
+  faces.push_back(
+      CheckHealFace({Point3d(0, 0, 0), Point3d(1, 0, 0), Point3d(1, 1, 0), Point3d(0, 1, 0)}, ON_3dVector(0, 0, 1)));
+  faces.push_back(CheckHealFace({Point3d(0, 0, 0), Point3d(0, 0, -1), Point3d(-1, 0, -1), Point3d(-1, 0, 0)},
+                                ON_3dVector(0, -1, 0)));
+  const Brep bowtie = Brep::FromPlanarFaces(faces);
+  Check(bowtie.FaceCount() == 2 && bowtie.raw().m_E.Count() == 8,
+        "the two-square pinch fixture has 2 faces and 8 edges - none shared between the squares");
+  Check(bowtie.raw().m_V.Count() == 7, "...and 7 vertices: 8 corners minus the one welded at the shared origin");
+
+  const Brep::CheckReport r = bowtie.Check();
+  Check(r.Count(Brep::CheckIssue::Kind::NonManifoldEdge) == 0,
+        "no edge is over-used - every edge still borders exactly one trim");
+  Check(r.Count(Brep::CheckIssue::Kind::NakedEdge) == 8, "all 8 edges are naked (the squares share no edge at all)");
+  Check(r.Count(Brep::CheckIssue::Kind::NonManifoldVertex) == 1,
+        "exactly the shared-origin vertex is reported non-manifold - the ordinary naked corners are not");
+  const Brep::CheckIssue* pinch = nullptr;
+  for (const Brep::CheckIssue& issue : r.issues) {
+    if (issue.kind == Brep::CheckIssue::Kind::NonManifoldVertex) pinch = &issue;
+  }
+  Check(pinch != nullptr && pinch->other_index == 2 && pinch->location.DistanceTo(Point3d(0, 0, 0)) < 1e-12,
+        "the issue names 2 disjoint face groups (one per square) and the pinch point's own location");
+  Check(!r.is_closed, "the fixture is open regardless of the pinch (is_closed only tracks naked/non-manifold edges)");
+
+  // A single square's own 4 corners are ordinary naked-boundary vertices,
+  // each touching exactly 1 face - no false positive on the common case.
+  const Brep single = Brep::FromPlanarFaces({faces[0]});
+  Check(single.Check().Count(Brep::CheckIssue::Kind::NonManifoldVertex) == 0,
+        "a lone planar face's own corners are not reported non-manifold");
+  // A clean, closed box has 3 faces meeting at every corner, connected
+  // pairwise through 3 shared edges - one group, not three.
+  Check(Brep::FromPlanarFaces(CheckHealBoxFaces()).Check().Count(Brep::CheckIssue::Kind::NonManifoldVertex) == 0,
+        "an ordinary box corner (3 faces, pairwise edge-connected) is a single group, not non-manifold");
+}
+
 // Flip one face: Check() names the flipped face on each of its 4 edges
 // (index = the flipped face, other_index = each neighbour), the welded
 // mesh is no longer a closed manifold (an orientation conflict on every
@@ -31104,6 +31151,7 @@ int main() {
   TestSurfaceMatchEdgeToRationalSphereAndRefusals();
   TestTolerancePolicyValuesAreTheOnesInForce();
   TestBrepCheckReportsCleanBoxAsClean();
+  TestBrepCheckDetectsNonManifoldPinchVertex();
   TestBrepCheckAndUnifyNormalsOnFlippedFace();
   TestBrepCheckReportsDroppedFaceAndCapPlanarHolesRestoresIt();
   TestBrepJoinNakedEdgesRecordsTolerantEdges();
