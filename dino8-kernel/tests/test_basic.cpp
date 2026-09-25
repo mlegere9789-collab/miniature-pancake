@@ -27440,6 +27440,57 @@ void TestSweep1AndPipe() {
   Check(Throws([&] { Brep::Sweep1(square, rail, 1); }), "fewer than 2 stations throws");
 }
 
+void TestSweep1TwistIsExactOnAStraightRailAndRejectsOnClosedRail() {
+  // Straight rail along +z: RmfFrames' own initial-normal rule picks
+  // r0 = (1, 0, 0) for tangent (0, 0, 1) (the world axis least aligned
+  // with the tangent - (1, 0, 0) has zero component along it, and wins
+  // the tie against (0, 1, 0) by the rule's own x-before-y order), so a
+  // unit square built directly in the world xy-plane at the rail's own
+  // start point sits exactly in station 0's own (r, s) plane. That lets
+  // the far end's EXACT position be predicted by hand: twist_total's
+  // rotation is a plain RotateZ of each corner's (x, y), translated to
+  // the rail's end point - no approximation to allow for.
+  const NurbsCurve rail = Polyline({P(0, 0, 0), P(0, 0, 10)});
+  const NurbsCurve square = Polyline({P(-0.5, -0.5, 0), P(0.5, -0.5, 0), P(0.5, 0.5, 0), P(-0.5, 0.5, 0), P(-0.5, -0.5, 0)});
+  const double twist = M_PI / 2;
+  const Brep swept = Brep::Sweep1(square, rail, 32, /*cap=*/true, twist);
+  CheckSolidTopology(swept, 3, "twisted square sweep along a straight rail");
+  const NurbsSurface wall = FaceSurface(swept, 0);
+  Check(wall.DegreeV() == 1 && wall.CVCountV() == 2, "straight rail still takes the exact 2-station ruled shortcut with twist");
+
+  const ON_Interval du = wall.raw().Domain(0);
+  const ON_Interval dv = wall.raw().Domain(1);
+  {
+    double worst = 0.0;
+    for (int corner = 0; corner < 4; ++corner) {
+      const Point3d expect = square.ControlPointAt(corner);
+      double best = 1e9;
+      for (int j = 0; j < 4; ++j) best = std::min(best, wall.PointAt(du.ParameterAt(j / 4.0), dv.Min()).DistanceTo(expect));
+      worst = std::max(worst, best);
+    }
+    Check(worst < 1e-9, "the near end is untouched (zero twist at the start)");
+  }
+  {
+    double worst = 0.0;
+    for (int corner = 0; corner < 4; ++corner) {
+      const Point3d c = square.ControlPointAt(corner);
+      const Point3d expect(c.x * std::cos(twist) - c.y * std::sin(twist), c.x * std::sin(twist) + c.y * std::cos(twist), 10.0);
+      double best = 1e9;
+      for (int j = 0; j < 4; ++j) best = std::min(best, wall.PointAt(du.ParameterAt(j / 4.0), dv.Max()).DistanceTo(expect));
+      worst = std::max(worst, best);
+    }
+    Check(worst < 1e-9, "the far end is the near end's square rotated by exactly twist_total about the rail axis");
+  }
+  Check(swept.TessellateToClosedMesh(8, 96).IsClosedManifold() && swept.TessellateToClosedMesh(5, 12).IsClosedManifold(),
+        "twisted sweep is still a closed manifold at (8, 96) and (5, 12)");
+
+  // Negative controls: twist on a closed rail.
+  const NurbsCurve circle_rail = Circle(P(0, 0, 0), Vector3d(0, 0, 1), 3.0);
+  Check(Throws([&] { Brep::Sweep1(square, circle_rail, 16, /*cap=*/false, M_PI / 4); }),
+        "nonzero twist_total on a closed rail throws");
+  Check(!Throws([&] { Brep::Sweep1(square, circle_rail, 16, /*cap=*/false, 0.0); }), "...but zero twist is fine on a closed rail");
+}
+
 void TestPipeVariable() {
   using RP = std::pair<double, double>;
 
@@ -31336,6 +31387,7 @@ int main() {
   sweep_tests::TestLoftInterpolatesSectionsExactly();
   sweep_tests::TestLoftTangentConstrainedEndsMatchExactly();
   sweep_tests::TestSweep1AndPipe();
+  sweep_tests::TestSweep1TwistIsExactOnAStraightRailAndRejectsOnClosedRail();
   sweep_tests::TestExtrudeTaperedCircularProfileIsExactConeFrustum();
   sweep_tests::TestExtrudeTaperedConvexPolygonIsExactPlanarFrustum();
 

@@ -406,8 +406,21 @@ class Brep {
   // exact sweep - increase `stations` for a tighter approximation.
   // Caps as Extrude(). Throws std::invalid_argument for stations < 2 or
   // a degenerate rail.
+  //
+  // `twist_total` (radians) adds a uniform extra rotation about the
+  // rail's own local tangent on top of the rotation-minimizing frame -
+  // AutoCAD SWEEP's Twist option / Rhino's Sweep1 twist history -
+  // distributed linearly by arc-length station fraction (0 at the
+  // start, exactly `twist_total` at the end, k / (stations - 1) at
+  // station k), so a straight rail's 2-station exact-extrusion path
+  // stays exact: the far end is the near end's section rotated by
+  // EXACTLY `twist_total` about the rail direction, nothing else
+  // changed. Not supported on a closed rail (throws if `twist_total`
+  // is nonzero there) - a non-multiple-of-2*pi twist would keep the
+  // tube from closing up smoothly, and this does not attempt the
+  // partial-turn spiral case.
   static Brep Sweep1(const NurbsCurve& section, const NurbsCurve& rail, int stations = 32,
-                     bool cap = true);
+                     bool cap = true, double twist_total = 0.0);
 
   // Sweep2: `section` carried between `rail1` and `rail2` (Parasolid/
   // Rhino's two-rail sweep with scaling). At each of `stations` equal-
