@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!--
+  Application manifest embedded into Dino8.exe (listed as a source of the
+  Dino8 target in CMakeLists.txt; CMake merges .manifest sources into the
+  linker's own manifest with mt.exe on MSVC).
+
+  activeCodePage UTF-8 (Windows 10 1903+): makes the narrow (char*) Win32
+  and CRT entry points this app uses everywhere - argv, fopen, std::ifstream/
+  ofstream, std::filesystem::path(std::string), GetOpenFileNameA-style
+  dialogs - interpret and produce UTF-8 instead of the legacy system ANSI
+  code page. The app treats every std::string path as UTF-8 (that is what
+  ImGui's text input, GLFW's drop-file callback and the .3dm/DXF writers
+  all hand around), so without this a file or folder whose name has any
+  character outside the user's ANSI code page (accents on a US-English
+  system, any CJK name, emoji) could not be opened or saved on Windows,
+  while working fine on Linux/macOS. On Windows versions older than 1903
+  the setting is ignored and the legacy behaviour remains.
+
+  longPathAware: lets those same narrow APIs accept paths longer than
+  MAX_PATH (260) when the OS-side policy is enabled.
+
+  dpiAwareness PerMonitorV2: GLFW already opts the process into per-monitor
+  DPI awareness at runtime (glfwInit), but declaring it in the manifest is
+  the documented, preferred mechanism and takes effect before any window
+  or dialog exists.
+-->
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <assemblyIdentity type="win32" name="Dino8.Dino8" version="0.1.0.0" processorArchitecture="*"/>
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <activeCodePage xmlns="http://schemas.microsoft.com/SMI/2019/WindowsSettings">UTF-8</activeCodePage>
+      <longPathAware xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">true</longPathAware>
+      <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2</dpiAwareness>
+      <dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">true/pm</dpiAware>
+    </windowsSettings>
+  </application>
+  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+    <application>
+      <!-- Windows 10 / 11 -->
+      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"/>
+    </application>
+  </compatibility>
+</assembly>

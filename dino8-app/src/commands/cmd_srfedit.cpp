@@ -523,6 +523,54 @@ void Unroll(CommandContext& ctx, const std::vector<ObjectId>& ids, const char* l
       std::optional<ON_NurbsSurface> s = SurfaceOfObject(like, fi);
       if (!s) continue;
       const int nu = 24, nv = 24;
+      // UnrollSrf/UnrollSrfUV (not Smash/Squish/FlattenSrf, which need
+      // the distortion computation and, for Squish, the texture-
+      // coordinate recording below unconditionally): try the kernel's
+      // exact NurbsSurface::UnrollDevelopable() first - a genuine
+      // isometry for a plane/cylinder/cone, with zero measured
+      // distortion, rather than this function's own distance-
+      // preserving triangulation heuristic below (which reports a
+      // nonzero distortion even on a perfect cylinder). Falls through
+      // to that heuristic unchanged on Result::Failed (a non-
+      // developable face), so this swap can never leave the command
+      // worse off.
+      if (std::string(label) == "UnrollSrf" || std::string(label) == "UnrollSrfUV") {
+        kernel::NurbsSurface ks;
+        ks.raw() = *s;
+        kernel::Mesh exact_flat;
+        double exact_area = 0.0;
+        if (ks.UnrollDevelopable(nu, nv, exact_flat, &exact_area) == kernel::Result::Ok) {
+          double minx = 1e300, miny = 1e300, maxx = -1e300;
+          for (int idx = 0; idx < exact_flat.raw().VertexCount(); ++idx) {
+            const ON_3fPoint& v = exact_flat.raw().m_V[idx];
+            minx = std::min(minx, static_cast<double>(v.x));
+            miny = std::min(miny, static_cast<double>(v.y));
+            maxx = std::max(maxx, static_cast<double>(v.x));
+          }
+          ON_Mesh placed = exact_flat.raw();
+          for (int idx = 0; idx < placed.VertexCount(); ++idx) {
+            const ON_3fPoint v = placed.m_V[idx];
+            placed.SetVertex(idx, pl.PointAt(x_offset + v.x - minx, v.y - miny));
+          }
+          placed.ComputeFaceNormals();
+          kernel::Mesh km;
+          km.raw() = placed;
+          SceneObject n = SceneObject::MakeMesh(km);
+          n.layer_index = like.layer_index;
+          ctx.Doc().Add(std::move(n));
+          std::vector<Point3d> outline;
+          for (int j = 0; j <= nv; ++j) outline.push_back(km.raw().m_V[j]);
+          for (int i = 1; i <= nu; ++i) outline.push_back(km.raw().m_V[i * (nv + 1) + nv]);
+          for (int j = nv - 1; j >= 0; --j) outline.push_back(km.raw().m_V[nu * (nv + 1) + j]);
+          for (int i = nu - 1; i >= 0; --i) outline.push_back(km.raw().m_V[i * (nv + 1)]);
+          AddCurve(ctx, PolylineCurve(outline), label);
+          ctx.Print(std::string(label) + ": face " + std::to_string(fi) + " unrolled exactly (a real plane/cylinder/cone - zero distortion), area " +
+                    FormatNumber(exact_area));
+          x_offset += (maxx - minx) * 1.1;
+          ++made;
+          continue;
+        }
+      }
       std::vector<std::vector<Point3d>> g(nu + 1, std::vector<Point3d>(nv + 1));
       for (int i = 0; i <= nu; ++i) for (int j = 0; j <= nv; ++j) g[i][j] = s->PointAt(s->Domain(0).ParameterAt(static_cast<double>(i) / nu), s->Domain(1).ParameterAt(static_cast<double>(j) / nv));
       std::vector<std::vector<ON_2dPoint>> f(nu + 1, std::vector<ON_2dPoint>(nv + 1));
@@ -625,7 +673,11 @@ void Unroll(CommandContext& ctx, const std::vector<ObjectId>& ids, const char* l
 
 class ExtendSrfCommand : public Command {
  public:
-  void Begin(CommandContext&) override { WantPoint("Click near the surface edge to extend"); }
+  void Begin(CommandContext&) override {
+    options = {{"Type", "Smooth", {"Smooth", "Linear"}, false, false}};
+    WantPoint("Click near the surface edge to extend");
+  }
+  void OnOption(CommandContext&, const std::string& n, const std::string& v) override { if (n == "Type") linear_ = (v == "Linear"); }
   void OnPoint(CommandContext& ctx, Point3d p) override {
     if (!pick_) {
       pick_ = PickFace(ctx, p);
@@ -660,20 +712,33 @@ class ExtendSrfCommand : public Command {
     ON_Interval nd = (side_ % 2 == 0) ? ON_Interval(d.Min() - dt, d.Max()) : ON_Interval(d.Min(), d.Max() + dt);
     ctx.Doc().BeginChange("ExtendSrf");
     ON_NurbsSurface ext = *s;
-    if (!ext.Extend(dir, nd)) { ctx.Warn("ExtendSrf: could not extend"); Finish(); return; }
+    bool ok;
+    if (linear_) {
+      // NurbsSurface::ExtendLinear(): a genuine zero-curvature straight
+      // continuation (Rhino/Parasolid's ExtendSrf Type=Linear), instead
+      // of Type=Smooth's polynomial continuation below.
+      kernel::NurbsSurface ks;
+      ks.raw() = ext;
+      ok = ks.ExtendLinear(dir, nd.Min(), nd.Max()) != kernel::Result::Failed;
+      ext = ks.raw();
+    } else {
+      ok = ext.Extend(dir, nd);
+    }
+    if (!ok) { ctx.Warn("ExtendSrf: could not extend"); Finish(); return; }
     if (o->kind == ObjectKind::Surface) { o->surface->raw() = ext; o->InvalidateDisplay(); }
     else {
       ON_Brep nb; ON_NurbsSurface* nsp = new ON_NurbsSurface(ext); nb.Create(nsp);
       if (o->brep->raw().m_F.Count() <= 1) { o->brep->raw() = nb; o->InvalidateDisplay(); }
       else { SceneObject like = *o; ON_Brep b = o->brep->raw(); b.DeleteFace(b.m_F[pick_->face], true); b.Compact(); o->brep->raw() = b; o->InvalidateDisplay(); AddBrepFrom(ctx, nb, like); }
     }
-    ctx.Print("ExtendSrf: extended by " + FormatNumber(len) + " along " + (dir == 0 ? "U" : "V"));
+    ctx.Print("ExtendSrf: extended by " + FormatNumber(len) + " along " + (dir == 0 ? "U" : "V") + (linear_ ? " (linear)" : " (smooth)"));
     Finish();
   }
   void OnText(CommandContext& ctx, const std::string& t) override { char* e; double v = std::strtod(t.c_str(), &e); if (e && !*e) OnNumber(ctx, v); }
   void OnEnter(CommandContext& ctx) override { if (pick_) OnNumber(ctx, 10); }
   std::optional<FacePick> pick_;
   int side_ = 0;
+  bool linear_ = false;
 };
 
 void MergeSrf(CommandContext& ctx, const std::vector<ObjectId>& ids) {

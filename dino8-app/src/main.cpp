@@ -29,22 +29,11 @@
 //   FILE.3dm      open a model on start-up
 
 #if defined(_MSC_VER)
-// Windows-only forensic diagnostic for the DWG-reopen crash investigation
-// (see src/io/FileExchange.cpp's ImportDwg/DwgReadFileSafe): neither a
-// larger thread stack, a __try/__except wrap with _resetstkoflw(), nor
-// AddressSanitizer instrumentation on the whole build changed the crash's
-// exit-127/zero-output signature or produced any ASan report - real
-// evidence that whatever is killing the process is not an ordinary
-// SEH-dispatchable access violation or a heap/stack-buffer overflow ASan's
-// redzones would catch. SetUnhandledExceptionFilter below is a different,
-// more universal net: it fires for ANY exception left unhandled on ANY
-// thread, printing the real exception code/address before the process
-// dies - and critically, this is one of very few remaining ways to tell
-// apart "still didn't fire" (near-conclusive evidence for an uncatchable
-// Windows __fastfail, e.g. a /GS stack-cookie or heap-corruption check,
-// which by design bypasses all exception dispatch, SEH and this filter
-// alike) from "fires with a real exception code" (an actual, fixable bug
-// this filter finally identifies). WIN32_LEAN_AND_MEAN/NOMINMAX and
+// Windows crash reporting: SetUnhandledExceptionFilter (installed first
+// thing in main()) prints the exception code and faulting address of any
+// exception left unhandled on any thread to stderr before the process dies,
+// so a crash in a --smoke/--script run shows up as a real line in the CI
+// log instead of a silent non-zero exit. WIN32_LEAN_AND_MEAN/NOMINMAX and
 // including windows.h before GLFW's own header is the standard order that
 // avoids APIENTRY/CALLBACK macro redefinition conflicts.
 #ifndef WIN32_LEAN_AND_MEAN
@@ -306,9 +295,9 @@ LONG WINAPI Dino8UnhandledExceptionFilter(EXCEPTION_POINTERS* info) {
 
 int main(int argc, char** argv) {
 #if defined(_MSC_VER)
-  // See the windows.h include comment near the top of this file for why:
-  // this is the most universal remaining diagnostic net for the Windows-
-  // only DWG reopen crash. Installed as the very first thing main() does.
+  // See the windows.h include comment near the top of this file: report any
+  // unhandled exception to stderr before dying. Installed first so it also
+  // covers GLFW/GL init.
   SetUnhandledExceptionFilter(Dino8UnhandledExceptionFilter);
 #endif
   // Unbuffered stdout/stderr: when --smoke/--script is piped (never a TTY),
@@ -350,6 +339,15 @@ int main(int argc, char** argv) {
   const bool stress_only = (stress_count >= 0 || cull_test_far_count >= 0) && smoke_frames < 0;
   if (stress_only) smoke_frames = 4;
 
+  // A real, 100%-reproducible Windows CI hang has been seen starting right
+  // here: a process launched this way produced *zero* further output (not
+  // even a crash message) until the job's own timeout killed it - see
+  // RHINO8_KILLER_AUDIT.md row L. stdout/stderr are already unbuffered
+  // above, so if this line is ever missing from a hung run's log, the hang
+  // is before glfwInit(); if it's present but startup finished (below)
+  // never prints, the hang is inside glfwInit()/glfwCreateWindow()/the GL
+  // context/ImGui setup that follows.
+  if (smoke_frames >= 0 || !script_path.empty()) std::fprintf(stderr, "dino8: starting GLFW init\n");
   glfwSetErrorCallback(GlfwErrorCallback);
   if (!glfwInit()) {
     std::fprintf(stderr, "Could not initialise GLFW\n");
@@ -370,13 +368,25 @@ int main(int argc, char** argv) {
   // rather than fail to even open a window.
   if (smoke_frames < 0) glfwWindowHint(GLFW_SAMPLES, 4);
   if (smoke_frames >= 0) glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
+  // Windows (and X11): size the window in screen pixels scaled by the
+  // monitor's content scale, and let GLFW rescale it when it is dragged to
+  // a monitor with a different DPI. The process is per-monitor-v2 DPI
+  // aware (resources/dino8.manifest), so without this hint the OS would
+  // hand the window the same pixel count on a 200% monitor and the UI
+  // would render at half size there. ImGui's font atlas is still built
+  // once at the startup scale (see ui_scale below); a mid-session DPI
+  // change rescales the framebuffer but not the font - a known remaining
+  // gap. Ignored on platforms without per-monitor scaling (macOS).
+  glfwWindowHint(GLFW_SCALE_TO_MONITOR, GLFW_TRUE);
 
+  if (smoke_frames >= 0 || !script_path.empty()) std::fprintf(stderr, "dino8: GLFW initialised, creating window\n");
   GLFWwindow* window = glfwCreateWindow(1600, 900, "Dino 8", nullptr, nullptr);
   if (!window) {
     std::fprintf(stderr, "Could not create an OpenGL 3.3 window\n");
     glfwTerminate();
     return 1;
   }
+  if (smoke_frames >= 0 || !script_path.empty()) std::fprintf(stderr, "dino8: window created, loading GL\n");
   glfwMakeContextCurrent(window);
   glfwSwapInterval(1);
   if (!dino8::gl::Load()) {

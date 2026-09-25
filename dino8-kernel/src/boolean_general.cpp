@@ -663,6 +663,7 @@
 #include <cstdlib>
 #include <map>
 #include <stdexcept>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -3704,6 +3705,698 @@ void ReconcileEdgeTopology(const ON_Brep& brep, std::vector<MutFace>& faces, dou
   }
 }
 
+// --- TessellateGeneralBooleanClosedMesh(): MESH-level seam repair -------
+// (see boolean_general.h's own "MESH-LEVEL SEAM REPAIR" section for the
+// measured before/after and the full reasoning). Runs on the ONE merged
+// mesh Mesh::MergeAndWeld() returns - after every per-face pass above
+// has already done what it can - and touches ONLY edges whose undirected
+// count is not exactly 2 (naked, or nonmanifold) and the vertices on
+// them. A mesh that is already Mesh::IsClosedManifold() has no such edge,
+// so this pass is a provable no-op on every case that already closes
+// (box+box etc.): it cannot regress a closed case, by construction, not
+// by measurement alone.
+//
+// Why a separate, mesh-level pass at all: every per-face pass above is
+// keyed to a fixed, small fraction of an edge's own length (Stitch-
+// TJunctionsOnce's 5e-3, ReconcileEdgeTopology's walk_tol) and is fed
+// per-face data. Measured directly on box+cylinder Union at the sweep's
+// own 32x128 (a standalone diagnostic re-deriving IsClosedManifold's
+// edge counts on the final merged mesh): 1171 naked edges in 48 chain
+// components of up to 74 vertices each, NOT a handful of stray points -
+// e.g. one closed 6-vertex naked loop along the z=-1 cut arc where one
+// face carries a single 0.07-long chord and the other carries five short
+// edges through four circle points ~6e-4 off that chord (its sagitta,
+// ~0.9% of its length, well past 5e-3 x len). Plus 6 nonmanifold /
+// 7 duplicate-directed edges of one shape: a near-duplicate vertex pair
+// ~1.7e-4 apart (e.g. (0,-1,-1) vs (0,-0.999828,-1)) that BOTH faces
+// fanned into each other, so both now carry both points with two thin
+// slivers ("fins") apiece - the orientation-conflict signature mesh.cpp's
+// IsClosedManifold diagnostic reports. And, at the wall/cap rim (z=+-2),
+// the cap's grid crossings sit up to ~4e-3 radially inside the wall's
+// exact circle points - 25% of the local 0.017 edge length, beyond any
+// sane relative perpendicular tolerance.
+//
+// The repair is five local operations, iterated to a fixed point:
+//   0a. Fold / duplicate removal: two triangles on the same three
+//      vertices - opposite winding is a zero-thickness fold (their signed
+//      volumes and their three directed-edge pairs cancel exactly), same
+//      winding a double cover. A closed manifold contains neither (every
+//      edge of such a pair sits at count >= 4, or at count 2 in ONE
+//      direction), so dropping the pair / the extra copy is safe by
+//      construction. Measured to be the ENTIRE residual on box+cone /
+//      cyl+cyl / box+cyl(blind) Intersection once steps 1-3 had closed
+//      every naked edge: a rim sliver fanned in once by each of the per-
+//      face passes above with opposite winding, at every count-4 edge.
+//   0. Flap flip: a triangle F=(u,v,p) whose apex p is in NO other
+//      triangle, on a base u-v walked u->v by F AND by another face's
+//      triangle (count >= 3): F and its own-face partner A=(v,u,X) tile
+//      the quad (X,v,p,u) with the wrong diagonal; re-diagonalizing to
+//      (X,v,p),(X,p,u) keeps every outer directed edge and drops u-v to a
+//      plain naked T-junction step 2 then closes. Found pre-existing (not
+//      created here) on box+cylinder Intersection/B-A.
+//   1. Merge: two vertices on broken edges, closer than 0.1 x the
+//      LONGEST incident edge at either (the surrounding mesh's own
+//      scale; shortest-incident-edge was tried first and fails on the
+//      pinch below), not joined by a proper count-2 edge, and passing the
+//      edge-collapse link condition (no merged edge may end with count
+//      > 2) are merged at their midpoint. This is what finally closes
+//      BridgeHolesIntoOuter's own kEdgeFraction pinch this file's own
+//      long investigation ends on: c_in/h_j/c_out are pairwise ~1.2e-4
+//      apart - a 3-way tie, which is exactly why a shortest-edge scale
+//      vetoes every pair - and the fins above (1.7e-4 apart).
+//   2. Naked zip: a vertex on a naked edge is fanned into the nearest
+//      NON-incident naked edge that some naked edge at that vertex walks
+//      ANTIPARALLEL to (the other face's side of the same seam; a face's
+//      own next edge is parallel and so never matches), strictly interior
+//      (t in [0.02, 0.98]), within a perpendicular tolerance that is a
+//      fraction of THAT edge's own length - run coarse-to-fine at 0.02,
+//      0.05, 0.1 so tight matches always win first. 0.1 is far past the
+//      per-face passes' 5e-3 and is safe here only because both the point
+//      and the edge are already naked: nothing that is already paired is
+//      ever a candidate.
+//   3. Sub-cell hole fill: a remaining naked loop of <= 8 vertices whose
+//      diameter is at most the longest incident edge at any of its
+//      vertices (a sliver smaller than one mesh cell - the wall/cap rim
+//      residue above) is fanned closed, wound opposite to its own naked
+//      edges so orientation stays consistent.
+// Steps 2 and 3 only ever ADD a fan triangle that passes an admissibility
+// test: it must not duplicate an existing triangle (either winding) and
+// must not push any of its edges past count 2 - the same "never create a
+// nonmanifold edge" discipline step 1's link condition enforces. That
+// guard is not cosmetic: without it the zip itself could manufacture a
+// count-3 edge or a fold (box+cyl Intersection at 32x128 was left with
+// exactly 4 such edges), and adding it alone took the sweep from 33/76
+// to 40/76 closed.
+//
+// Every step either removes triangles (0a), removes vertices (1), adds an
+// existing vertex to an edge (2), re-diagonalizes a quad (0) or fills a
+// bounded hole (3), so it terminates; a hard iteration cap guards it
+// anyway. Geometrically each step moves a vertex by at most the merge
+// radius (1) or bridges a gap already smaller than one cell (2, 3): the
+// volume moves by O(seam length x gap), measured below to move TOWARD the
+// closed-form value on every box+cylinder op. No step ever invents
+// geometry; it only reconciles two faces' own existing boundary samples
+// of the same seam.
+//
+// DINO8_NO_SEAM_REPAIR=1 disables the pass (for A/B measurement);
+// DINO8_SEAM_REPAIR_DEBUG=1 prints per-iteration counts.
+struct SeamRepairStats {
+  int iterations = 0, folds = 0, flips = 0, merges = 0, splits = 0, fills = 0;
+  int naked_before = 0, nonmanifold_before = 0, dup_directed_before = 0;
+  int naked_after = 0, nonmanifold_after = 0, dup_directed_after = 0;
+};
+
+struct GridCellHash {
+  size_t operator()(const std::tuple<long long, long long, long long>& k) const noexcept {
+    return std::hash<long long>()(std::get<0>(k) * 73856093LL ^ std::get<1>(k) * 19349663LL ^
+                                  std::get<2>(k) * 83492791LL);
+  }
+};
+
+double Dist3(const Point3d& a, const Point3d& b) {
+  return std::sqrt((a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y) + (a.z - b.z) * (a.z - b.z));
+}
+
+SeamRepairStats RepairMergedSeams(MutFace& m, double tol) {
+  constexpr double kMergeFrac = 0.1;                       // of the longest incident edge (min over both ends)
+  constexpr double kPerpLevels[] = {0.02, 0.05, 0.1};      // zip tolerance, fraction of the target edge's length
+  constexpr double kTMargin = 0.02;                        // zip target parameter must lie in [kTMargin, 1-kTMargin]
+  constexpr int kMaxFillLoop = 8;                          // longest naked loop the hole fill will close
+  constexpr int kMaxIter = 40;
+  const bool debug = std::getenv("DINO8_SEAM_REPAIR_DEBUG") != nullptr;
+
+  SeamRepairStats st;
+  std::vector<Point3d>& V = m.v;
+  std::vector<std::array<int, 3>>& T = m.f;
+
+  auto drop_degenerate = [&]() {
+    std::vector<std::array<int, 3>> kept;
+    kept.reserve(T.size());
+    for (const std::array<int, 3>& t : T) {
+      if (t[0] == t[1] || t[1] == t[2] || t[2] == t[0]) continue;
+      kept.push_back(t);
+    }
+    T.swap(kept);
+  };
+
+  using Edge = std::pair<int, int>;
+  using Tri = std::tuple<int, int, int>;  // sorted vertex triple
+  auto sorted_tri = [](int a, int b, int c) {
+    if (a > b) std::swap(a, b);
+    if (b > c) std::swap(b, c);
+    if (a > b) std::swap(a, b);
+    return Tri(a, b, c);
+  };
+  size_t level = 0;
+  for (int iter = 0; iter < kMaxIter; ++iter) {
+    const double perp_frac = kPerpLevels[std::min(level, sizeof(kPerpLevels) / sizeof(kPerpLevels[0]) - 1)];
+
+    // Edge maps for this iteration's topology.
+    std::unordered_map<Edge, int, DirectedEdgeHash> und;                     // undirected count
+    std::unordered_map<Edge, int, DirectedEdgeHash> dir_owner;               // directed -> owning tri
+    std::unordered_map<Edge, int, DirectedEdgeHash> dir_count;               // directed count
+    std::unordered_map<Edge, std::vector<int>, DirectedEdgeHash> und_tris;   // undirected -> tris
+    std::unordered_set<Tri, GridCellHash> tri_set;  // every triangle's sorted vertex triple
+    und.reserve(T.size() * 3);
+    dir_owner.reserve(T.size() * 3);
+    dir_count.reserve(T.size() * 3);
+    tri_set.reserve(T.size());
+    for (size_t ti = 0; ti < T.size(); ++ti) {
+      const std::array<int, 3>& t = T[ti];
+      tri_set.insert(sorted_tri(t[0], t[1], t[2]));
+      for (int k = 0; k < 3; ++k) {
+        const int a = t[static_cast<size_t>(k)], b = t[static_cast<size_t>((k + 1) % 3)];
+        ++und[std::minmax(a, b)];
+        dir_owner[{a, b}] = static_cast<int>(ti);
+        ++dir_count[{a, b}];
+        und_tris[std::minmax(a, b)].push_back(static_cast<int>(ti));
+      }
+    }
+    // A fan/fill triangle is admissible only if it is non-degenerate, does
+    // not duplicate an existing triangle (in either winding - a reverse
+    // copy is a zero-volume fold that leaves its edges at count 4), and
+    // pushes none of its NEW edges past count 2. The same "never create a
+    // nonmanifold edge" discipline the merge step's link condition below
+    // enforces; `pending` counts edges added earlier in this same pass.
+    std::unordered_map<Edge, int, DirectedEdgeHash> pending;
+    auto admissible = [&](int a, int b, int c) {
+      if (a == b || b == c || c == a) return false;
+      if (tri_set.count(sorted_tri(a, b, c))) return false;
+      const int ab[3][2] = {{a, b}, {b, c}, {c, a}};
+      for (const auto& e : ab) {
+        const Edge key = std::minmax(e[0], e[1]);
+        int cnt = 0;
+        if (const auto it = und.find(key); it != und.end()) cnt = it->second;
+        if (const auto it = pending.find(key); it != pending.end()) cnt += it->second;
+        if (cnt >= 2) return false;
+      }
+      return true;
+    };
+    auto commit_pending = [&](int a, int b, int c) {
+      ++pending[std::minmax(a, b)];
+      ++pending[std::minmax(b, c)];
+      ++pending[std::minmax(c, a)];
+    };
+    int naked = 0, nonmanifold = 0, dup_directed = 0;
+    for (const auto& [e, c] : und) {
+      if (c == 1) ++naked;
+      else if (c > 2) ++nonmanifold;
+    }
+    for (const auto& [e, c] : dir_count) {
+      if (c > 1) ++dup_directed;
+    }
+    if (iter == 0) {
+      st.naked_before = naked;
+      st.nonmanifold_before = nonmanifold;
+      st.dup_directed_before = dup_directed;
+    }
+    st.naked_after = naked;
+    st.nonmanifold_after = nonmanifold;
+    st.dup_directed_after = dup_directed;
+    st.iterations = iter;
+    if (debug) {
+      std::fprintf(stderr, "  [seam-repair iter %d] naked=%d nonmanifold=%d dup-directed=%d V=%zu T=%zu\n", iter, naked,
+                   nonmanifold, dup_directed, V.size(), T.size());
+    }
+    if (naked == 0 && nonmanifold == 0 && dup_directed == 0) break;  // closed: nothing to do
+
+    // --- 0a. fold / duplicate removal ---
+    // Two triangles on the SAME three vertices: with opposite winding they
+    // are a zero-thickness fold (their signed volumes and their three
+    // directed-edge pairs cancel exactly), with the same winding a double
+    // covering of one triangle. Neither can occur in a closed manifold
+    // (every edge of the pair sits at count >= 4, or count 2 in one
+    // direction), so dropping the fold pair / the extra copy is safe by
+    // construction. Measured on the sweep: the per-face stitch passes
+    // upstream leave exactly this fold (a rim sliver fanned in once by
+    // each side, with opposite winding) at cap rims on box+cone /
+    // cyl+cyl / box+cyl Intersection - the ONLY residual those ops had.
+    {
+      std::unordered_map<Tri, std::vector<int>, GridCellHash> by_tri;
+      for (size_t ti = 0; ti < T.size(); ++ti) by_tri[sorted_tri(T[ti][0], T[ti][1], T[ti][2])].push_back(static_cast<int>(ti));
+      std::vector<char> drop(T.size(), 0);
+      int folds = 0, dups = 0;
+      for (const auto& [key, tris] : by_tri) {
+        if (tris.size() < 2) continue;
+        std::vector<int> even, odd;  // winding parity relative to the sorted triple
+        for (int ti : tris) {
+          const std::array<int, 3>& t = T[static_cast<size_t>(ti)];
+          const int s0 = std::get<0>(key), s1 = std::get<1>(key), s2 = std::get<2>(key);
+          const bool is_even = (t[0] == s0 && t[1] == s1 && t[2] == s2) || (t[0] == s1 && t[1] == s2 && t[2] == s0) ||
+                               (t[0] == s2 && t[1] == s0 && t[2] == s1);
+          (is_even ? even : odd).push_back(ti);
+        }
+        const size_t pairs = std::min(even.size(), odd.size());
+        for (size_t k = 0; k < pairs; ++k) {
+          drop[static_cast<size_t>(even[k])] = drop[static_cast<size_t>(odd[k])] = 1;
+          ++folds;
+        }
+        for (size_t k = pairs + 1; k < even.size(); ++k) {
+          drop[static_cast<size_t>(even[k])] = 1;
+          ++dups;
+        }
+        for (size_t k = pairs + 1; k < odd.size(); ++k) {
+          drop[static_cast<size_t>(odd[k])] = 1;
+          ++dups;
+        }
+      }
+      if (folds + dups > 0) {
+        std::vector<std::array<int, 3>> next;
+        next.reserve(T.size());
+        for (size_t ti = 0; ti < T.size(); ++ti) {
+          if (!drop[ti]) next.push_back(T[ti]);
+        }
+        T.swap(next);
+        st.folds += folds + dups;
+        if (debug) std::fprintf(stderr, "  [seam-repair iter %d] removed %d fold pairs, %d duplicate triangles\n", iter, folds, dups);
+        continue;
+      }
+    }
+
+    // --- 0. flap flip ---
+    {
+      std::vector<int> tri_count(V.size(), 0);
+      for (const std::array<int, 3>& t : T) {
+        for (int k = 0; k < 3; ++k) ++tri_count[static_cast<size_t>(t[static_cast<size_t>(k)])];
+      }
+      std::vector<char> used_tri(T.size(), 0);
+      int flips = 0;
+      for (size_t fi = 0; fi < T.size(); ++fi) {
+        if (used_tri[fi]) continue;
+        const std::array<int, 3> t = T[fi];
+        for (int k = 0; k < 3; ++k) {
+          const int p = t[static_cast<size_t>(k)];
+          if (tri_count[static_cast<size_t>(p)] != 1) continue;
+          const int u = t[static_cast<size_t>((k + 1) % 3)], v = t[static_cast<size_t>((k + 2) % 3)];  // F walks u->v->p
+          const auto uit = und.find(std::minmax(u, v));
+          if (uit == und.end() || uit->second < 3) continue;
+          int a_idx = -1, n_back = 0;
+          for (int ti : und_tris[std::minmax(u, v)]) {
+            if (ti == static_cast<int>(fi) || used_tri[static_cast<size_t>(ti)]) continue;
+            const std::array<int, 3>& a = T[static_cast<size_t>(ti)];
+            for (int j = 0; j < 3; ++j) {
+              if (a[static_cast<size_t>(j)] == v && a[static_cast<size_t>((j + 1) % 3)] == u) {
+                ++n_back;
+                a_idx = ti;
+              }
+            }
+          }
+          if (n_back != 1) continue;
+          int x = -1;
+          for (int j = 0; j < 3; ++j) {
+            const int c = T[static_cast<size_t>(a_idx)][static_cast<size_t>(j)];
+            if (c != u && c != v) x = c;
+          }
+          if (x < 0 || x == p) continue;
+          T[fi] = {x, v, p};
+          T[static_cast<size_t>(a_idx)] = {x, p, u};
+          used_tri[fi] = used_tri[static_cast<size_t>(a_idx)] = 1;
+          ++flips;
+          break;
+        }
+      }
+      if (flips > 0) {
+        st.flips += flips;
+        if (debug) std::fprintf(stderr, "  [seam-repair iter %d] flipped %d flaps\n", iter, flips);
+        continue;
+      }
+    }
+
+    // Adjacency and the broken-vertex set (endpoints of any count != 2 edge).
+    std::vector<std::vector<int>> nbr(V.size());
+    std::vector<char> broken(V.size(), 0);
+    for (const auto& [e, c] : und) {
+      nbr[static_cast<size_t>(e.first)].push_back(e.second);
+      nbr[static_cast<size_t>(e.second)].push_back(e.first);
+      if (c != 2) broken[static_cast<size_t>(e.first)] = broken[static_cast<size_t>(e.second)] = 1;
+    }
+    std::vector<int> broken_v;
+    for (size_t i = 0; i < V.size(); ++i) {
+      if (broken[i]) broken_v.push_back(static_cast<int>(i));
+    }
+    // The surrounding mesh's own scale at v: its longest incident edge,
+    // excluding the edge to `except` (the merge partner) if any.
+    auto local_scale = [&](int v, int except) {
+      double s = 0.0;
+      for (int n : nbr[static_cast<size_t>(v)]) {
+        if (n == except) continue;
+        s = std::max(s, Dist3(V[static_cast<size_t>(v)], V[static_cast<size_t>(n)]));
+      }
+      return s;
+    };
+
+    // --- 1. merge near-duplicate broken vertices ---
+    {
+      struct Cand {
+        double d;
+        int v, w;
+      };
+      std::vector<Cand> cands;
+      std::vector<double> scales;
+      scales.reserve(broken_v.size());
+      for (int v : broken_v) scales.push_back(local_scale(v, -1));
+      double cell = tol * 10.0;
+      if (!scales.empty()) {
+        std::nth_element(scales.begin(), scales.begin() + static_cast<long>(scales.size() / 2), scales.end());
+        cell = std::max(scales[scales.size() / 2], cell);
+      }
+      using Key = std::tuple<long long, long long, long long>;
+      auto key_of = [&](const Point3d& p) {
+        return Key(static_cast<long long>(std::floor(p.x / cell)), static_cast<long long>(std::floor(p.y / cell)),
+                   static_cast<long long>(std::floor(p.z / cell)));
+      };
+      std::unordered_map<Key, std::vector<int>, GridCellHash> grid;
+      for (int v : broken_v) grid[key_of(V[static_cast<size_t>(v)])].push_back(v);
+      for (int v : broken_v) {
+        const Key k = key_of(V[static_cast<size_t>(v)]);
+        for (long long dx = -1; dx <= 1; ++dx) {
+          for (long long dy = -1; dy <= 1; ++dy) {
+            for (long long dz = -1; dz <= 1; ++dz) {
+              const auto it = grid.find(Key(std::get<0>(k) + dx, std::get<1>(k) + dy, std::get<2>(k) + dz));
+              if (it == grid.end()) continue;
+              for (int w : it->second) {
+                if (w <= v) continue;
+                const double d = Dist3(V[static_cast<size_t>(v)], V[static_cast<size_t>(w)]);
+                if (d >= cell) continue;
+                if (d >= kMergeFrac * std::min(local_scale(v, w), local_scale(w, v))) continue;
+                const auto eit = und.find(std::minmax(v, w));
+                if (eit != und.end() && eit->second == 2) continue;  // a proper edge: never collapse it
+                cands.push_back({d, v, w});
+              }
+            }
+          }
+        }
+      }
+      std::sort(cands.begin(), cands.end(), [](const Cand& a, const Cand& b) { return a.d < b.d; });
+      std::vector<int> remap(V.size());
+      for (size_t i = 0; i < V.size(); ++i) remap[i] = static_cast<int>(i);
+      std::vector<char> touched(V.size(), 0);
+      int merges = 0;
+      for (const Cand& c : cands) {
+        if (touched[static_cast<size_t>(c.v)] || touched[static_cast<size_t>(c.w)]) continue;
+        // Link condition: for every common neighbour x, the merged edge
+        // (m, x) must not end up with count > 2. A triangle containing v,
+        // w and x collapses (is dropped) and contributed 1 to both counts.
+        bool ok = true;
+        std::unordered_set<int> nv(nbr[static_cast<size_t>(c.v)].begin(), nbr[static_cast<size_t>(c.v)].end());
+        for (int x : nbr[static_cast<size_t>(c.w)]) {
+          if (x == c.v || !nv.count(x)) continue;
+          int cnt = und[std::minmax(c.v, x)] + und[std::minmax(c.w, x)];
+          const auto sit = und_tris.find(std::minmax(c.v, c.w));
+          if (sit != und_tris.end()) {
+            for (int ti : sit->second) {
+              const std::array<int, 3>& t = T[static_cast<size_t>(ti)];
+              if (t[0] == x || t[1] == x || t[2] == x) cnt -= 2;
+            }
+          }
+          if (cnt > 2) {
+            ok = false;
+            break;
+          }
+        }
+        if (!ok) continue;
+        touched[static_cast<size_t>(c.v)] = touched[static_cast<size_t>(c.w)] = 1;
+        remap[static_cast<size_t>(c.w)] = c.v;
+        Point3d& pv = V[static_cast<size_t>(c.v)];
+        const Point3d& pw = V[static_cast<size_t>(c.w)];
+        pv = Point3d(0.5 * (pv.x + pw.x), 0.5 * (pv.y + pw.y), 0.5 * (pv.z + pw.z));
+        ++merges;
+      }
+      if (merges > 0) {
+        for (std::array<int, 3>& t : T) {
+          for (int k = 0; k < 3; ++k) t[static_cast<size_t>(k)] = remap[static_cast<size_t>(t[static_cast<size_t>(k)])];
+        }
+        drop_degenerate();
+        st.merges += merges;
+        if (debug) std::fprintf(stderr, "  [seam-repair iter %d] merged %d pairs\n", iter, merges);
+        continue;
+      }
+    }
+
+    // --- 2. naked zip ---
+    struct NakedEdge {
+      int a, b, tri;
+    };
+    std::vector<NakedEdge> naked_edges;
+    std::vector<std::vector<int>> naked_at(V.size());
+    for (const auto& [e, c] : dir_count) {
+      if (und[std::minmax(e.first, e.second)] != 1) continue;
+      naked_edges.push_back({e.first, e.second, dir_owner[e]});
+      naked_at[static_cast<size_t>(e.first)].push_back(static_cast<int>(naked_edges.size()) - 1);
+      naked_at[static_cast<size_t>(e.second)].push_back(static_cast<int>(naked_edges.size()) - 1);
+    }
+    {
+      std::vector<std::vector<std::pair<double, int>>> assign(naked_edges.size());
+      for (size_t vi = 0; vi < V.size(); ++vi) {
+        if (naked_at[vi].empty()) continue;
+        const int v = static_cast<int>(vi);
+        const Point3d& p = V[vi];
+        double best_d = 0.0, best_t = 0.0;
+        int best_e = -1;
+        for (size_t ei = 0; ei < naked_edges.size(); ++ei) {
+          const NakedEdge& e = naked_edges[ei];
+          if (e.a == v || e.b == v) continue;
+          const Point3d& a = V[static_cast<size_t>(e.a)];
+          const Point3d& b = V[static_cast<size_t>(e.b)];
+          const double abx = b.x - a.x, aby = b.y - a.y, abz = b.z - a.z;
+          const double len2 = abx * abx + aby * aby + abz * abz;
+          if (len2 < tol * tol) continue;
+          const double apx = p.x - a.x, apy = p.y - a.y, apz = p.z - a.z;
+          if (apx * apx + apy * apy + apz * apz > len2 * 1.21) continue;  // cheap reject
+          const double len = std::sqrt(len2);
+          const double t = (apx * abx + apy * aby + apz * abz) / len2;
+          const double tm = std::max(kTMargin, tol / len);
+          if (t <= tm || t >= 1.0 - tm) continue;
+          const double qx = a.x + abx * t, qy = a.y + aby * t, qz = a.z + abz * t;
+          const double d = std::sqrt((p.x - qx) * (p.x - qx) + (p.y - qy) * (p.y - qy) + (p.z - qz) * (p.z - qz));
+          if (d >= perp_frac * len) continue;
+          bool antiparallel = false;
+          for (int ni : naked_at[vi]) {
+            const NakedEdge& ne = naked_edges[static_cast<size_t>(ni)];
+            const Point3d& na = V[static_cast<size_t>(ne.a)];
+            const Point3d& nb = V[static_cast<size_t>(ne.b)];
+            if ((nb.x - na.x) * abx + (nb.y - na.y) * aby + (nb.z - na.z) * abz < 0.0) {
+              antiparallel = true;
+              break;
+            }
+          }
+          if (!antiparallel) continue;
+          if (best_e < 0 || d < best_d) {
+            best_d = d;
+            best_t = t;
+            best_e = static_cast<int>(ei);
+          }
+        }
+        if (best_e >= 0) assign[static_cast<size_t>(best_e)].emplace_back(best_t, v);
+      }
+      std::vector<char> removed(T.size(), 0);
+      std::vector<std::array<int, 3>> additions;
+      int splits = 0;
+      for (size_t ei = 0; ei < naked_edges.size(); ++ei) {
+        if (assign[ei].empty()) continue;
+        const NakedEdge& e = naked_edges[ei];
+        if (removed[static_cast<size_t>(e.tri)]) continue;
+        const std::array<int, 3>& t = T[static_cast<size_t>(e.tri)];
+        int apex = -1;
+        for (int k = 0; k < 3; ++k) {
+          if (t[static_cast<size_t>(k)] != e.a && t[static_cast<size_t>(k)] != e.b) apex = t[static_cast<size_t>(k)];
+        }
+        if (apex < 0) continue;
+        std::sort(assign[ei].begin(), assign[ei].end());
+        std::vector<int> chain{e.a};
+        for (const auto& [tt, v] : assign[ei]) {
+          if (v != chain.back() && v != apex) chain.push_back(v);
+        }
+        chain.push_back(e.b);
+        if (chain.size() <= 2) continue;
+        // The owning triangle goes away, so its own three edges lose one
+        // count each before the fan's are added: model that by lending
+        // them -1 in `pending` for the admissibility test.
+        --pending[std::minmax(e.a, e.b)];
+        --pending[std::minmax(e.b, apex)];
+        --pending[std::minmax(apex, e.a)];
+        bool ok = true;
+        for (size_t k = 0; k + 1 < chain.size() && ok; ++k) ok = admissible(apex, chain[k], chain[k + 1]);
+        if (!ok) {
+          ++pending[std::minmax(e.a, e.b)];
+          ++pending[std::minmax(e.b, apex)];
+          ++pending[std::minmax(apex, e.a)];
+          continue;
+        }
+        for (size_t k = 0; k + 1 < chain.size(); ++k) {
+          additions.push_back({apex, chain[k], chain[k + 1]});
+          commit_pending(apex, chain[k], chain[k + 1]);
+        }
+        removed[static_cast<size_t>(e.tri)] = 1;
+        ++splits;
+      }
+      if (splits > 0) {
+        std::vector<std::array<int, 3>> next;
+        next.reserve(T.size() + additions.size());
+        for (size_t ti = 0; ti < T.size(); ++ti) {
+          if (!removed[ti]) next.push_back(T[ti]);
+        }
+        for (const std::array<int, 3>& t : additions) next.push_back(t);
+        T.swap(next);
+        drop_degenerate();
+        st.splits += splits;
+        if (debug) std::fprintf(stderr, "  [seam-repair iter %d] zipped %d edges (perp %.3g)\n", iter, splits, perp_frac);
+        continue;
+      }
+    }
+    if (level + 1 < sizeof(kPerpLevels) / sizeof(kPerpLevels[0])) {
+      ++level;  // no zip possible at this tolerance: loosen one step
+      continue;
+    }
+
+    // --- 3. sub-cell hole fill ---
+    {
+      std::unordered_map<int, int> next_of;  // a -> b over naked directed edges (unambiguous starts only)
+      std::unordered_set<int> ambiguous;
+      for (const NakedEdge& e : naked_edges) {
+        if (!next_of.emplace(e.a, e.b).second) ambiguous.insert(e.a);
+      }
+      for (int a : ambiguous) next_of.erase(a);
+      std::unordered_set<int> used;
+      std::vector<std::array<int, 3>> fills;
+      int filled = 0;
+      for (const auto& [start, first_next] : next_of) {
+        if (used.count(start)) continue;
+        std::vector<int> loop{start};
+        int cur = first_next;
+        bool ok = true;
+        while (cur != start) {
+          if (used.count(cur) || static_cast<int>(loop.size()) >= kMaxFillLoop) {
+            ok = false;
+            break;
+          }
+          const auto it = next_of.find(cur);
+          if (it == next_of.end()) {
+            ok = false;
+            break;
+          }
+          loop.push_back(cur);
+          cur = it->second;
+        }
+        if (!ok || loop.size() < 3) continue;
+        double diameter = 0.0, cell_size = 0.0;
+        for (size_t i = 0; i < loop.size(); ++i) {
+          for (size_t j = i + 1; j < loop.size(); ++j) {
+            diameter = std::max(diameter, Dist3(V[static_cast<size_t>(loop[i])], V[static_cast<size_t>(loop[j])]));
+          }
+          cell_size = std::max(cell_size, local_scale(loop[i], -1));
+        }
+        if (diameter > 2.0 * cell_size) continue;  // a real opening, not a sliver: leave it
+        bool fan_ok = true;
+        for (size_t k = 1; k + 1 < loop.size() && fan_ok; ++k) fan_ok = admissible(loop[0], loop[k + 1], loop[k]);
+        if (!fan_ok) continue;
+        for (int v : loop) used.insert(v);
+        for (size_t k = 1; k + 1 < loop.size(); ++k) {
+          fills.push_back({loop[0], loop[k + 1], loop[k]});
+          commit_pending(loop[0], loop[k + 1], loop[k]);
+        }
+        ++filled;
+      }
+      if (!fills.empty()) {
+        for (const std::array<int, 3>& t : fills) T.push_back(t);
+        st.fills += filled;
+        if (debug) std::fprintf(stderr, "  [seam-repair iter %d] filled %d sub-cell loops\n", iter, filled);
+        continue;
+      }
+    }
+    break;  // converged with residue
+  }
+
+  // DINO8_SEAM_REPAIR_DEBUG=2: dump the residual broken edges (count != 2)
+  // with coordinates, per-direction counts and every incident triangle's
+  // apex, so a residual's own shape can be read off directly from any
+  // sweep case without a separate harness. Print-only.
+  if (const char* lvl = std::getenv("DINO8_SEAM_REPAIR_DEBUG"); lvl && std::atoi(lvl) >= 2) {
+    std::map<Edge, std::vector<int>> tris_of;  // undirected -> tris (ordered for stable output)
+    std::map<Edge, int> dcount;
+    for (size_t ti = 0; ti < T.size(); ++ti) {
+      const std::array<int, 3>& t = T[ti];
+      for (int k = 0; k < 3; ++k) {
+        const int a = t[static_cast<size_t>(k)], b = t[static_cast<size_t>((k + 1) % 3)];
+        tris_of[std::minmax(a, b)].push_back(static_cast<int>(ti));
+        ++dcount[{a, b}];
+      }
+    }
+    int printed = 0;
+    for (const auto& [e, tris] : tris_of) {
+      if (tris.size() == 2) continue;
+      if (printed++ >= 60) {
+        std::fprintf(stderr, "  [seam-repair residual] ... (more)\n");
+        break;
+      }
+      // For a NAKED edge, why the zip could not place either endpoint on
+      // the nearest non-incident naked edge: t, perp/len, antiparallel.
+      if (tris.size() == 1) {
+        std::vector<Edge> naked_dir;
+        for (const auto& [d, c] : dcount) {
+          if (tris_of[std::minmax(d.first, d.second)].size() == 1) naked_dir.push_back(d);
+        }
+        for (int u : {e.first, e.second}) {
+          const Point3d& p = V[static_cast<size_t>(u)];
+          double best = 0.0, best_t = 0.0, best_len = 0.0;
+          Edge best_e{-1, -1};
+          for (const Edge& d : naked_dir) {
+            if (d.first == u || d.second == u) continue;
+            const Point3d& a = V[static_cast<size_t>(d.first)];
+            const Point3d& b = V[static_cast<size_t>(d.second)];
+            const double abx = b.x - a.x, aby = b.y - a.y, abz = b.z - a.z;
+            const double len2 = abx * abx + aby * aby + abz * abz;
+            if (len2 <= 0.0) continue;
+            const double t = ((p.x - a.x) * abx + (p.y - a.y) * aby + (p.z - a.z) * abz) / len2;
+            const double tc = std::max(0.0, std::min(1.0, t));
+            const Point3d q(a.x + abx * tc, a.y + aby * tc, a.z + abz * tc);
+            const double dd = Dist3(p, q);
+            if (best_e.first < 0 || dd < best) {
+              best = dd;
+              best_t = t;
+              best_len = std::sqrt(len2);
+              best_e = d;
+            }
+          }
+          if (best_e.first < 0) continue;
+          bool anti = false;
+          const Point3d& a = V[static_cast<size_t>(best_e.first)];
+          const Point3d& b = V[static_cast<size_t>(best_e.second)];
+          for (const Edge& d : naked_dir) {
+            if (d.first != u && d.second != u) continue;
+            const Point3d& na = V[static_cast<size_t>(d.first)];
+            const Point3d& nb = V[static_cast<size_t>(d.second)];
+            if ((nb.x - na.x) * (b.x - a.x) + (nb.y - na.y) * (b.y - a.y) + (nb.z - na.z) * (b.z - a.z) < 0.0) anti = true;
+          }
+          std::fprintf(stderr, "      v%d: nearest other naked edge v%d->v%d dist=%.3g t=%.3f perp/len=%.3f anti=%d\n", u,
+                       best_e.first, best_e.second, best, best_t, best / best_len, (int)anti);
+        }
+      }
+      const Point3d& pa = V[static_cast<size_t>(e.first)];
+      const Point3d& pb = V[static_cast<size_t>(e.second)];
+      std::fprintf(stderr,
+                   "  [seam-repair residual] edge v%d-v%d count=%zu (%d fwd, %d rev) len=%.4g "
+                   "(%.7g,%.7g,%.7g)-(%.7g,%.7g,%.7g)\n",
+                   e.first, e.second, tris.size(), dcount[{e.first, e.second}], dcount[{e.second, e.first}],
+                   Dist3(pa, pb), pa.x, pa.y, pa.z, pb.x, pb.y, pb.z);
+      for (int ti : tris) {
+        const std::array<int, 3>& t = T[static_cast<size_t>(ti)];
+        int apex = -1;
+        for (int k = 0; k < 3; ++k) {
+          if (t[static_cast<size_t>(k)] != e.first && t[static_cast<size_t>(k)] != e.second) apex = t[static_cast<size_t>(k)];
+        }
+        const bool fwd = (t[0] == e.first && t[1] == e.second) || (t[1] == e.first && t[2] == e.second) ||
+                         (t[2] == e.first && t[0] == e.second);
+        const Point3d& ap = V[static_cast<size_t>(apex)];
+        std::fprintf(stderr, "      tri %d (%s) apex v%d (%.7g,%.7g,%.7g) apex-dist=%.4g\n", ti, fwd ? "fwd" : "rev",
+                     apex, ap.x, ap.y, ap.z,
+                     std::min(Dist3(ap, pa), Dist3(ap, pb)));
+      }
+    }
+  }
+  return st;
+}
+
 }  // namespace
 
 Mesh TessellateGeneralBooleanClosedMesh(const Brep& result, int u_divisions, int v_divisions) {
@@ -3876,7 +4569,25 @@ Mesh TessellateGeneralBooleanClosedMesh(const Brep& result, int u_divisions, int
   std::vector<Mesh> patched;
   patched.reserve(faces.size());
   for (MutFace& mf : faces) patched.push_back(FromMutFace(mf));
-  return Mesh::MergeAndWeld(patched, tol);
+  Mesh merged = Mesh::MergeAndWeld(patched, tol);
+
+  // Mesh-level seam repair on the ONE merged mesh (see RepairMergedSeams'
+  // own doc comment above): only edges whose count is not exactly 2, and
+  // the vertices on them, are ever touched, so an already-closed result
+  // passes through untouched.
+  if (!std::getenv("DINO8_NO_SEAM_REPAIR")) {
+    MutFace whole = ToMutFace(merged);
+    const SeamRepairStats st = RepairMergedSeams(whole, tol);
+    if (std::getenv("DINO8_SEAM_REPAIR_DEBUG")) {
+      std::fprintf(stderr,
+                   "  [seam-repair] iterations=%d folds=%d flips=%d merges=%d zips=%d fills=%d | naked %d->%d "
+                   "nonmanifold %d->%d dup-directed %d->%d\n",
+                   st.iterations, st.folds, st.flips, st.merges, st.splits, st.fills, st.naked_before, st.naked_after,
+                   st.nonmanifold_before, st.nonmanifold_after, st.dup_directed_before, st.dup_directed_after);
+    }
+    if (st.folds + st.flips + st.merges + st.splits + st.fills > 0) merged = FromMutFace(whole);
+  }
+  return merged;
 }
 
 }  // namespace dino8::kernel

@@ -88,9 +88,9 @@ static void DiagnoseManifold(const char* label, const Brep& brep, const Mesh& me
 // with that rim - the documented mechanism (see PlanarFace's own doc
 // comment in brep.h) for welding a planar cap to a cylindrical face's edge
 // into one real shared ON_BrepEdge instead of two merely-touching pieces.
-Brep MakeCylinderZ(double cx, double cy, double z0, double z1, double r) {
+Brep MakeCylinderZ(double cx, double cy, double z0, double z1, double r, double xax = 1, double yax = 0) {
   Brep::CylindricalFace cf;
-  cf.frame = ON_Plane(ON_3dPoint(cx, cy, z0), ON_3dVector(1, 0, 0), ON_3dVector(0, 1, 0));
+  cf.frame = ON_Plane(ON_3dPoint(cx, cy, z0), ON_3dVector(xax, yax, 0), ON_3dVector(-yax, xax, 0));
   cf.radius = r;
   cf.angle = 2.0 * ON_PI;
   cf.length = z1 - z0;
@@ -101,7 +101,8 @@ Brep MakeCylinderZ(double cx, double cy, double z0, double z1, double r) {
     pf.plane = ON_Plane(ON_3dPoint(cx, cy, z), ON_3dVector(0, 0, flip ? -1 : 1));
     for (int i = 0; i <= n; ++i) {
       const double a = flip ? -2.0 * ON_PI * i / n : 2.0 * ON_PI * i / n;
-      pf.loop.emplace_back(cx + r * std::cos(a), cy + r * std::sin(a), z);
+      const double cosA = std::cos(a), sinA = std::sin(a);
+      pf.loop.emplace_back(cx + r * (cosA * xax - sinA * yax), cy + r * (cosA * yax + sinA * xax), z);
     }
     pf.loop.pop_back();  // closed polygon: don't repeat the seam point
     pf.notch_begin = 0;
@@ -115,6 +116,61 @@ Brep MakeCylinderZ(double cx, double cy, double z0, double z1, double r) {
 
 int main() {
   ON::Begin();
+  // Reproduce EXACTLY the TestBooleanCombineGeneralBoxCylinder ctest
+  // fixture (test_basic.cpp) at its own (32, 128) resolution, standalone.
+  // CONFIRMED (not flaky, not full-suite-context-dependent - deterministic
+  // across repeated runs): with THIS fixture's own cylinder frame
+  // (xaxis=(1,0,0), i.e. the wall's u=0 periodic seam sitting exactly at
+  // physical angle 0, point (r,0,z)) RepairMergedSeams (boolean_general.
+  // cpp) leaves Union and Difference each with 4 residual naked edges -
+  // Intersection alone closes. The rotated variant below (same geometry,
+  // seam at a different absolute angle) closes on ALL three ops, which is
+  // what tests/general_boolean_sweep.cpp's own case 01 (built via
+  // FrameFromAxis, which picks a DIFFERENT seed/xaxis for a +z axis) has
+  // been measuring - the sweep's own "closedmesh=1" for this geometry
+  // does NOT generalize to every seam orientation. See boolean_general.h's
+  // own "MESH-LEVEL SEAM REPAIR" section for the root cause (traced with
+  // DINO8_SEAM_REPAIR_DEBUG=2 on this exact fixture): the 4 residual edges
+  // form one small quadrilateral hole whose TWO possible triangulating
+  // diagonals are BOTH already saturated (count 2) by the box cap's own
+  // and the wall's own separate, already-closed local tessellation - no
+  // 2-triangle fan using only the hole's own 4 existing corners can close
+  // it without pushing a diagonal to count 3; a genuine fix would need a
+  // new interior (e.g. centroid) point, which no operation in this pass
+  // ever adds. Not attempted this session - see that file's own doc
+  // comment for why a narrow, unverified extension here was judged not
+  // worth the regression risk relative to its payoff (a single seam-angle-
+  // dependent fixture, not a broad case class).
+  {
+    Brep box = Brep::Box(-2, -2, -1, 2, 2, 1);
+    Brep cyl = MakeCylinderZ(0, 0, -2, 2, 1.0);
+    for (BooleanOp op : {BooleanOp::Union, BooleanOp::Intersection, BooleanOp::Difference}) {
+      const char* name = op==BooleanOp::Union?"Union":op==BooleanOp::Intersection?"Intersection":"Difference";
+      Brep r = BooleanCombineGeneral(box, cyl, op);
+      Mesh mf = TessellateGeneralBooleanClosedMesh(r, 32, 128);
+      printf("STANDALONE-REPRO box+cylinder %s @ (32,128): volume=%f closed=%d\n", name, mf.Volume(),
+             (int)mf.IsClosedManifold());
+    }
+  }
+  // Same fixture, cylinder seam rotated 90deg (xaxis=(0,-1,0)) - exactly
+  // the frame convention tests/general_boolean_sweep.cpp's FrameFromAxis
+  // picks for axis (0,0,1) (|axis.z|>=0.9 branch picks seed=(1,0,0), so
+  // x=cross(seed,axis)=(0,-1,0)) - to check whether the sweep's own
+  // "closedmesh=1" for this same box+cylinder geometry depends on which
+  // absolute angle the wall's u=0 seam sits at (both are the SAME
+  // geometry, box is exactly 90deg-symmetric, 32 divisions is an exact
+  // multiple of 4, so real geometry should be congruent either way).
+  {
+    Brep box = Brep::Box(-2, -2, -1, 2, 2, 1);
+    Brep cyl = MakeCylinderZ(0, 0, -2, 2, 1.0, /*xax=*/0, /*yax=*/-1);
+    for (BooleanOp op : {BooleanOp::Union, BooleanOp::Intersection, BooleanOp::Difference}) {
+      const char* name = op==BooleanOp::Union?"Union":op==BooleanOp::Intersection?"Intersection":"Difference";
+      Brep r = BooleanCombineGeneral(box, cyl, op);
+      Mesh mf = TessellateGeneralBooleanClosedMesh(r, 32, 128);
+      printf("STANDALONE-REPRO(seam-rot90) box+cylinder %s @ (32,128): volume=%f closed=%d\n", name, mf.Volume(),
+             (int)mf.IsClosedManifold());
+    }
+  }
   {
     Brep cyl = MakeCylinderZ(0, 0, 0, 5, 1.0);
     Mesh m = cyl.TessellateToClosedMesh(8, 32);

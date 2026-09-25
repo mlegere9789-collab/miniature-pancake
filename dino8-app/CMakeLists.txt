@@ -5,6 +5,27 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 
+# Windows: link the C/C++ runtime statically (/MT) into Dino8.exe and every
+# static library it is built from. The installer and portable zip ship the
+# bare exe plus data files - no vc_redist bootstrapper, no bundled
+# vcruntime140.dll/msvcp140.dll - so with the default /MD the exe depends on
+# the Visual C++ 2015-2022 redistributable being present on the user's
+# machine, which nothing in the install tree guarantees. Everything linked
+# into the exe is built here from source under this same policy (OpenNURBS,
+# GLFW, ImGui, Manifold, LibreDWG, Lua, FreeType), so there is no
+# mixed-runtime object to conflict with. CMP0091 (NEW since 3.15, and this
+# project requires 3.20) makes CMAKE_MSVC_RUNTIME_LIBRARY the single source
+# of truth for every target below, including the FetchContent'd ones; GLFW's
+# own USE_MSVC_RUNTIME_LIBRARY_DLL option is switched off to match rather
+# than be left saying "DLL" while the flag actually in effect is /MT.
+# The "Dependents check" step in .github/workflows/dino8-app.yml verifies the
+# result on every Windows CI run: dumpbin /DEPENDENTS on the installed exe
+# must list only OS-provided DLLs.
+if(MSVC)
+  set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+  set(USE_MSVC_RUNTIME_LIBRARY_DLL OFF CACHE BOOL "" FORCE)
+endif()
+
 # ClipboardMac.mm (src/platform/) is Objective-C++ - the real NSPasteboard
 # shim behind the OS-clipboard image commands (ViewCaptureToClipboard,
 # ScreenCaptureToClipboard, CopyRenderWindowToClipboard) on macOS. The
@@ -24,31 +45,6 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE Release CACHE STRING "" FORCE)
 endif()
 
-# Diagnostic instrumentation for the Windows-only DWG reopen crash (see
-# ImportDwg/DwgReadFileSafe in src/io/FileExchange.cpp): neither a larger
-# thread stack nor a __try/__except wrap with _resetstkoflw() changed the
-# crash's exit-127/zero-output signature at all - real evidence against
-# ordinary stack exhaustion. What remains consistent with every observation
-# (uncatchable by any SEH handler, Windows-only, deterministic, content-
-# dependent) is a Windows __fastfail termination - the mechanism behind an
-# /GS stack-buffer-overrun or heap-corruption check, which deliberately
-# bypasses all exception handling. AddressSanitizer catches the actual
-# out-of-bounds access before /GS's cookie check would even fire, and
-# prints the exact file/line to stdout - real forensic evidence instead of
-# another blind guess.
-#
-# MUST be applied globally (every MSVC target, via add_compile_options here
-# at the top, before any add_subdirectory/FetchContent_MakeAvailable) rather
-# than scoped to just the suspect library: MSVC's linker enforces that every
-# object file linked into one binary agree on ASan instrumentation
-# (LNK2038 "mismatch detected for 'annotate_string'" etc. otherwise) - a
-# first attempt that scoped this to only Dino8's own sources and the
-# LibreDWG library, leaving OpenNURBS/Manifold uninstrumented, hit exactly
-# that mismatch.
-if(MSVC)
-  add_compile_options(/fsanitize=address /Zi)
-  add_link_options(/DEBUG /INCREMENTAL:NO)
-endif()
 
 # ---------------------------------------------------------------------------
 # Geometry kernel (same repo). The app never builds the kernel's own test
@@ -130,7 +126,33 @@ endif()
 # compiles (its embedding code is under #ifdef DINO8_HAVE_PYTHON) and
 # RunPythonScript falls back to its old honest "not available" message, so
 # the build never hard-fails for lack of a Python dev environment.
-find_package(Python3 3.8 COMPONENTS Interpreter Development.Embed)
+#
+# DINO8_ENABLE_PYTHON defaults OFF on Windows: the exe would otherwise import
+# whatever pythonXY.dll find_package located on the BUILD machine (on GitHub's
+# windows-latest runner that is the hosted-toolcache Python 3.14 - see the
+# "Python3 3.14.7 found (C:/hostedtoolcache/...)" line in past CI logs), and
+# neither that DLL nor its standard library is part of the install tree the
+# Inno Setup installer / portable zip are built from - so every shipped
+# Windows build launched on a machine without that exact Python failed at
+# load time with "python314.dll was not found", before main() ever ran.
+# Bundling a CPython runtime properly (pythonXY.dll + a zipped stdlib +
+# PyConfig.home pointing at it) is the real fix for Windows parity; until
+# that lands, the Windows build honestly reports Python as unavailable
+# (RunPythonScript's own fallback message; tests/smoke.sh skips its Python
+# checks on that message) instead of shipping a binary that cannot start.
+# Pass -DDINO8_ENABLE_PYTHON=ON to a Windows build that ships its own
+# python runtime next to the exe.
+if(WIN32)
+  option(DINO8_ENABLE_PYTHON "Embed CPython (RunPythonScript / dino8 module)" OFF)
+else()
+  option(DINO8_ENABLE_PYTHON "Embed CPython (RunPythonScript / dino8 module)" ON)
+endif()
+if(DINO8_ENABLE_PYTHON)
+  find_package(Python3 3.8 COMPONENTS Interpreter Development.Embed)
+else()
+  set(Python3_FOUND OFF)
+  message(STATUS "DINO8_ENABLE_PYTHON is OFF - building without embedded Python scripting (RunPythonScript will report that it is unavailable)")
+endif()
 if(Python3_FOUND)
   message(STATUS "Python3 ${Python3_VERSION} found (${Python3_LIBRARIES}); building embedded Python scripting (dino8 module)")
   FetchContent_Declare(
@@ -139,7 +161,7 @@ if(Python3_FOUND)
     GIT_TAG        v2.13.6
   )
   FetchContent_MakeAvailable(pybind11)
-else()
+elseif(DINO8_ENABLE_PYTHON)
   message(WARNING "Python3 development headers/libs not found (need python3-dev or equivalent) - Dino 8 will build without embedded Python scripting; RunPythonScript will report that it is unavailable")
 endif()
 
@@ -202,9 +224,6 @@ endif()
 if(NOT MSVC)
   target_compile_definitions(${DINO8_LIBREDWG_TARGET} PRIVATE _GNU_SOURCE _DARWIN_C_SOURCE)
 endif()
-# ASan is enabled globally near the top of this file (see that comment) for
-# the Windows-only DWG reopen crash investigation - no extra flag needed
-# here specifically for LibreDWG.
 # LibreDWG's own generated dwg2.spec code intentionally casts BITCODE_TV
 # (char*) to BITCODE_TU (unsigned short*) hundreds of times in its TRACE
 # logging macros - a deliberate, known-safe alignment-widening cast in
@@ -364,7 +383,10 @@ else()
 endif()
 
 if(WIN32)
-  add_executable(Dino8 WIN32 ${DINO8_SOURCES} resources/dino8.rc)
+  # resources/dino8.manifest (UTF-8 active code page, long paths, per-monitor
+  # DPI) is merged into the exe's embedded manifest by CMake's MSVC link step
+  # (mt.exe) because it is listed as a source; see the file's own comment.
+  add_executable(Dino8 WIN32 ${DINO8_SOURCES} resources/dino8.rc resources/dino8.manifest)
 elseif(APPLE)
   add_executable(Dino8 MACOSX_BUNDLE ${DINO8_SOURCES})
   set_target_properties(Dino8 PROPERTIES
@@ -379,11 +401,15 @@ endif()
 # FreeType (bundled with OpenNURBS) for text outlines.
 FetchContent_GetProperties(opennurbs)
 target_include_directories(Dino8 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/include ${opennurbs_SOURCE_DIR}/freetype263/include ${libredwg_SOURCE_DIR}/include)
+# WIN32_LEAN_AND_MEAN is deliberately NOT defined here: OpenNURBS'
+# opennurbs_system.h #defines it unconditionally before its own windows.h
+# include, so a project-wide -D produced 95 "C4005 macro redefinition"
+# warnings per Windows build (one per TU that includes opennurbs.h). Every
+# first-party windows.h include site defines it itself, guarded by #ifndef.
 target_compile_definitions(Dino8 PRIVATE
   DINO8_VERSION="${PROJECT_VERSION}"
   GL_SILENCE_DEPRECATION
   $<$<PLATFORM_ID:Windows>:NOMINMAX>
-  $<$<PLATFORM_ID:Windows>:WIN32_LEAN_AND_MEAN>
   $<$<PLATFORM_ID:Windows>:_CRT_SECURE_NO_WARNINGS>
 )
 # OpenNURBS only builds its bundled FreeType on Linux/Android; build it
@@ -405,7 +431,9 @@ endif()
 # and RegisterClipboardFormatW live there; GlobalAlloc/Lock/Unlock/Free are
 # Kernel32, already linked by default) - no GDI object is created.
 if(WIN32)
-  target_link_libraries(Dino8 PRIVATE user32)
+  # shell32: ShellExecuteA behind OpenURL/WebBrowser/FileExplorer
+  # (commands/cmd_state.cpp).
+  target_link_libraries(Dino8 PRIVATE user32 shell32)
 elseif(APPLE)
   target_link_libraries(Dino8 PRIVATE "-framework AppKit")
 else()
@@ -414,29 +442,14 @@ else()
 endif()
 
 if(MSVC)
-  # ASan (/fsanitize=address /Zi, linker /DEBUG /INCREMENTAL:NO) is enabled
-  # globally near the top of this file - no extra flag needed here.
   target_compile_options(Dino8 PRIVATE /W3 /EHsc /bigobj)
   # WIN32 subsystem still needs a main(): tell the linker to use it.
   target_link_options(Dino8 PRIVATE /ENTRY:mainCRTStartup)
-  # Windows' default thread stack is 1MB (reserve+commit), far smaller than
-  # Linux's typical default (commonly 8MB+). A Windows-only, deterministic,
-  # content-dependent crash decoding a real DWG file via GNU LibreDWG's
-  # vendored decoder (dwg_read_file, called from ImportDwg in
-  # FileExchange.cpp) has resisted every other explanation tried: an SEH
-  # __try/__except wrap around the call did not catch it, which was first
-  # read as ruling out an ordinary access violation in favor of an
-  # uncatchable /GS stack-protector fast-fail - but a genuine stack
-  # overflow ALSO regularly survives a plain __except unrecovered on
-  # Windows, because there is often no stack headroom left to safely run
-  # the handler itself once the guard pages are exhausted; that signature
-  # doesn't distinguish the two theories the way it first appeared to.
-  # DWG's own format is naturally recursive (nested block references,
-  # object handles chained through a table), so a content-dependent
-  # recursion depth that fits comfortably in 8MB+ but not 1MB is a
-  # plausible, platform-explaining, and - unlike a vendored-library memory
-  # bug - directly fixable cause. 16MB reserve+commit gives real headroom
-  # without the eager-commit cost of a much larger reservation.
+  # Windows' default thread stack is 1MB, far smaller than Linux's typical
+  # 8MB. Several kernel/booleans/mesher code paths recurse proportionally to
+  # model complexity and are only ever exercised on Linux's larger stack by
+  # the smoke suite, so give the main thread the same headroom here (16MB
+  # reserve+commit) rather than let a deep model overflow on Windows only.
   target_link_options(Dino8 PRIVATE /STACK:16777216,16777216)
 else()
   target_compile_options(Dino8 PRIVATE -Wall -Wextra)
@@ -544,6 +557,17 @@ if(DINO8_BUILD_TESTS)
     # floor/atan2/sincos/trunc calls.
     target_link_libraries(dwg_fixture_gen PRIVATE m)
   endif()
+
+  # Corrupt-mesh .3dm fixture generator (see tests/mesh_fixture_gen.cpp and
+  # smoke.sh's Load3dm mesh-range-check section): writes a mesh with a face
+  # indexing past its own vertex array directly through OpenNURBS'
+  # ONX_Model/ON_Mesh API, since Dino 8 has no command of its own that can
+  # construct such a mesh to round-trip through Save. Links dino8_kernel
+  # (rather than opennurbsStatic directly) to reuse its existing
+  # link-order workaround for opennurbsStatic/zlib on GNU ld.
+  add_executable(mesh_fixture_gen tests/mesh_fixture_gen.cpp)
+  target_include_directories(mesh_fixture_gen PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(mesh_fixture_gen PRIVATE dino8_kernel)
 endif()
 
 # ---------------------------------------------------------------------------

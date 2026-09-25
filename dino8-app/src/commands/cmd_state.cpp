@@ -4,6 +4,20 @@
 // options import/export, and the "no licences, no accounts" commands.
 #include "commands/cmd_common.h"
 
+#if defined(_WIN32)
+// windows.h before GLFW (GLFW's own documented include order, avoids the
+// APIENTRY redefinition). shellapi.h is not part of WIN32_LEAN_AND_MEAN's
+// subset, so it is pulled in explicitly for ShellExecuteA below.
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <shellapi.h>
+#endif
+
 #include <GLFW/glfw3.h>
 
 #include <algorithm>
@@ -566,13 +580,21 @@ CommandFactory OpenUrl(const char* label) {
     if (ctx.App().headless || ctx.ScriptMode()) return;
     if (url.rfind("http://", 0) != 0 && url.rfind("https://", 0) != 0) { ctx.Warn("Only http(s) URLs are opened"); return; }
 #if defined(_WIN32)
-    const std::string cmd = "start \"\" \"" + url + "\"";
-#elif defined(__APPLE__)
+    // ShellExecute, not std::system("start ..."): Dino8.exe is a WIN32-
+    // subsystem app, so std::system would spawn a visible cmd.exe console
+    // window for every link, and cmd's own parsing would mangle URLs
+    // containing "&" or "^". ShellExecute hands the URL straight to the
+    // registered https handler. Return values <= 32 are error codes.
+    const auto rc = reinterpret_cast<INT_PTR>(ShellExecuteA(nullptr, "open", url.c_str(), nullptr, nullptr, SW_SHOWNORMAL));
+    if (rc <= 32) ctx.Warn("Could not open a browser (ShellExecute error " + std::to_string(static_cast<long long>(rc)) + ")");
+#else
+#if defined(__APPLE__)
     const std::string cmd = "open \"" + url + "\"";
 #else
     const std::string cmd = "xdg-open \"" + url + "\" >/dev/null 2>&1 &";
 #endif
     if (url.find('"') == std::string::npos && std::system(cmd.c_str()) != 0) ctx.Warn("Could not open a browser");
+#endif
   }, std::string("https://github.com/"));
 }
 
@@ -887,13 +909,19 @@ void RegisterStateCommands(CommandEngine& e) {
         if (ctx.App().headless || ctx.ScriptMode()) return;
         if (dir.find('"') != std::string::npos) { ctx.Warn("Could not open the file manager (path contains a quote)"); return; }
 #if defined(_WIN32)
-        const std::string cmd = "explorer \"" + dir + "\"";
-#elif defined(__APPLE__)
+        // ShellExecute "explore" opens Explorer at the folder without the
+        // console window std::system() would flash from a WIN32-subsystem
+        // app (see OpenUrl above).
+        const auto rc = reinterpret_cast<INT_PTR>(ShellExecuteA(nullptr, "explore", dir.c_str(), nullptr, nullptr, SW_SHOWNORMAL));
+        if (rc <= 32) ctx.Warn("Could not open the OS file manager (ShellExecute error " + std::to_string(static_cast<long long>(rc)) + ")");
+#else
+#if defined(__APPLE__)
         const std::string cmd = "open \"" + dir + "\"";
 #else
         const std::string cmd = "xdg-open \"" + dir + "\" >/dev/null 2>&1 &";
 #endif
         if (std::system(cmd.c_str()) != 0) ctx.Warn("Could not open the OS file manager");
+#endif
       }), CommandStatus::Implemented, "Opens the OS file manager (Explorer/Finder/xdg-open) at the working folder, the current document's folder, or the current directory, in that order; only prints the folder in headless/script mode.");
   Reg(e, "OpenURL", OpenUrl("OpenURL"));
   Reg(e, "WebBrowser", OpenUrl("WebBrowser"));

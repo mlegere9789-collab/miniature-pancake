@@ -8,8 +8,10 @@
 #include <cstdlib>
 #include <functional>
 #include <limits>
+#include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <stdexcept>
 #include <unordered_map>
 #include <utility>
@@ -18,7 +20,9 @@
 #include "dino8/kernel/detail/arc_schedule3d.h"
 #include "dino8/kernel/detail/ellipse_clip3d.h"
 #include "dino8/kernel/detail/polygon2d.h"
+#include "dino8/kernel/detail/segment3d.h"
 #include "dino8/kernel/mesh.h"
+#include "dino8/kernel/tolerance.h"
 
 namespace dino8::kernel {
 
@@ -222,6 +226,47 @@ Brep Brep::Sphere(Point3d center, double radius) {
   return result;
 }
 
+Brep Brep::Torus(Point3d center, Vector3d axis, double major_radius, double minor_radius) {
+  if (!(minor_radius > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::Brep::Torus: minor_radius must be positive");
+  }
+  if (!(major_radius > minor_radius)) {
+    throw std::invalid_argument(
+        "dino8::kernel::Brep::Torus: major_radius must be strictly greater than minor_radius "
+        "(major_radius <= minor_radius is a self-intersecting spindle/horn torus, not supported)");
+  }
+  ON_3dVector normal = axis;
+  if (!normal.Unitize()) {
+    throw std::invalid_argument("dino8::kernel::Brep::Torus: axis must be non-zero");
+  }
+
+  const ON_Plane plane(center, normal);
+  ON_Torus torus(plane, major_radius, minor_radius);
+
+  Brep result;
+  ON_Brep& brep = result.brep_;
+
+  auto* surface = new ON_NurbsSurface();
+  const int rc = torus.GetNurbForm(*surface);
+  if (rc == 0) {
+    delete surface;
+    throw std::runtime_error(
+        "dino8::kernel::Brep::Torus: ON_Torus::GetNurbForm failed");
+  }
+
+  const int surface_index = brep.AddSurface(surface);
+  brep.NewFace(surface_index);
+  result.face_trim_loops_.emplace_back();  // untrimmed
+  result.face_exact_clip_.push_back(false);
+  result.face_hole_loops_.emplace_back();
+  result.face_arc_runs_.emplace_back();
+  result.face_notch_rows_.emplace_back();
+  result.face_records_.emplace_back();
+
+  brep.SetTrimIsoFlags();
+  return result;
+}
+
 Brep Brep::TrimmedPlanarFace(const NurbsSurface& surface,
                               const std::vector<Point2d>& trim_loop_uv,
                               bool exact_clip,
@@ -257,6 +302,234 @@ Brep Brep::TrimmedPlanarFace(const NurbsSurface& surface,
 }
 
 int Brep::FaceCount() const { return brep_.m_F.Count(); }
+int Brep::VertexCount() const { return brep_.m_V.Count(); }
+int Brep::EdgeCount() const { return brep_.m_E.Count(); }
+
+namespace {
+
+// 5-point Gauss-Legendre quadrature on [-1, 1] - exact for any
+// polynomial up to degree 9 per span, comfortably covering every degree
+// this kernel's own Brep factories build (degree <= 3 skinned sections,
+// degree-2 rational conics for Sphere()/Torus()/Pipe()'s own circles).
+// Standard published nodes/weights (Abramowitz & Stegun table 25.4),
+// not re-derived here.
+constexpr int kMassPropsGaussPoints = 5;
+constexpr double kMassPropsGaussNodes[kMassPropsGaussPoints] = {
+    -0.9061798459386640, -0.5384693101056831, 0.0, 0.5384693101056831, 0.9061798459386640};
+constexpr double kMassPropsGaussWeights[kMassPropsGaussPoints] = {
+    0.2369268850561891, 0.4786286704993665, 0.5688888888888889, 0.4786286704993665, 0.2369268850561891};
+
+// Distinct knot values (span breakpoints, including both domain
+// endpoints) of `s` in direction `dir` - the sub-intervals a piecewise
+// polynomial/rational NURBS surface must be integrated separately over
+// for Gauss-Legendre quadrature to actually see a smooth (single-span
+// polynomial) integrand, the same knot-merging idea sweep.cpp's own
+// MakeCompatible() already uses for a different purpose.
+std::vector<double> MassPropsSpanBreakpoints(const ON_NurbsSurface& s, int dir) {
+  std::vector<double> breaks;
+  const int kc = s.KnotCount(dir);
+  for (int i = 0; i < kc; ++i) {
+    const double k = s.Knot(dir, i);
+    if (breaks.empty() || k > breaks.back()) breaks.push_back(k);
+  }
+  return breaks;
+}
+
+// Sums `integrand(u, v)` over `s`'s own full parameter domain via 5x5
+// product Gauss-Legendre quadrature per (u-span, v-span) pair -
+// `integrand` returns the pointwise value only; the quadrature weight
+// and the span's own Jacobian (half-width in each direction) are applied
+// here.
+template <typename Integrand>
+double IntegrateOverNurbsSurface(const ON_NurbsSurface& s, Integrand&& integrand) {
+  const std::vector<double> u_breaks = MassPropsSpanBreakpoints(s, 0);
+  const std::vector<double> v_breaks = MassPropsSpanBreakpoints(s, 1);
+  double total = 0.0;
+  for (size_t su = 0; su + 1 < u_breaks.size(); ++su) {
+    const double ua = u_breaks[su], ub = u_breaks[su + 1];
+    if (!(ub > ua)) continue;  // a zero-length span from a repeated knot
+    const double u_mid = 0.5 * (ua + ub), u_half = 0.5 * (ub - ua);
+    for (size_t sv = 0; sv + 1 < v_breaks.size(); ++sv) {
+      const double va = v_breaks[sv], vb = v_breaks[sv + 1];
+      if (!(vb > va)) continue;
+      const double v_mid = 0.5 * (va + vb), v_half = 0.5 * (vb - va);
+      for (int i = 0; i < kMassPropsGaussPoints; ++i) {
+        const double u = u_mid + u_half * kMassPropsGaussNodes[i];
+        for (int j = 0; j < kMassPropsGaussPoints; ++j) {
+          const double v = v_mid + v_half * kMassPropsGaussNodes[j];
+          total += kMassPropsGaussWeights[i] * kMassPropsGaussWeights[j] * u_half * v_half * integrand(u, v);
+        }
+      }
+    }
+  }
+  return total;
+}
+
+}  // namespace
+
+// True iff face `i` covers its ENTIRE underlying surface parameter
+// domain, in either of the two ways this kernel's own factories express
+// that: (a) a real ON_Brep loop that runs along the surface's own
+// boundary (`raw().FaceIsSurface(i)`, used by every factory that builds
+// genuine shared topology - Extrude()/Revolve()/Loft()/Sweep1()/
+// Sweep2()/Pipe()/PipeVariable() via AssembleSweptBody()), or (b) NO
+// ON_Brep loop at all (`face.m_li.Count() == 0`) AND none of this
+// kernel's own pseudo-trim side tables populated for it - the
+// convention Box()/Sphere()/Torus()/an untrimmed TrimmedPlanarFace() all
+// use (`NewFace(int)`'s own plain overload never builds a loop at all,
+// so `FaceIsSurface()` alone would wrongly say "trimmed" for every one
+// of them - confirmed by reading ON_Brep::NewFace(int)'s own source, not
+// assumed). A face with a real interior hole loop, a genuine non-
+// trivial ON_Brep trim, or a populated pseudo-trim side table matches
+// neither (a) nor (b) and is correctly reported as trimmed.
+bool Brep::FaceCoversWholeDomain(int i) const {
+  const ON_BrepFace& face = brep_.m_F[i];
+  if (brep_.FaceIsSurface(i)) return true;
+  return face.m_li.Count() == 0 && face_trim_loops_[static_cast<size_t>(i)].empty() &&
+         face_hole_loops_[static_cast<size_t>(i)].empty() && face_arc_runs_[static_cast<size_t>(i)].empty() &&
+         !face_notch_rows_[static_cast<size_t>(i)].present;
+}
+
+double Brep::Volume() const {
+  // raw().IsSolid() is the WRONG check here: it requires genuine shared
+  // ON_Brep edge/vertex topology between faces, which several of this
+  // kernel's own factories never build (Box()/Sphere()/Torus() each add
+  // their faces via the plain single-surface NewFace(int) overload - see
+  // their own doc comments - so raw().IsSolid() is false for every one
+  // of them despite being genuinely closed solids). What actually makes
+  // the divergence-theorem sum below correct is that the faces'
+  // boundaries geometrically close up into one watertight, consistently
+  // outward-oriented surface - exactly what TessellateToClosedMesh()'s
+  // own weld-then-check already verifies (the same "tessellate a coarse
+  // check mesh and inspect it" approach AssembleSweptBody()'s own
+  // orientation cross-check in sweep.cpp already uses), so that's the
+  // precondition used instead.
+  if (!TessellateToClosedMesh(8, 8).IsClosedManifold()) {
+    throw std::invalid_argument(
+        "dino8::kernel::Brep::Volume: this Brep is not a closed, watertight solid "
+        "(TessellateToClosedMesh(8, 8).IsClosedManifold() is false) - there is no well-defined "
+        "enclosed volume otherwise");
+  }
+  double total = 0.0;
+  for (int i = 0; i < brep_.m_F.Count(); ++i) {
+    if (!FaceCoversWholeDomain(i)) {
+      throw std::invalid_argument("dino8::kernel::Brep::Volume: face " + std::to_string(i) +
+                                   " is trimmed - exact integration over its true trim region is a "
+                                   "materially different problem this does not attempt");
+    }
+    const ON_BrepFace& face = brep_.m_F[i];
+    const ON_NurbsSurface* s = ON_NurbsSurface::Cast(face.SurfaceOf());
+    if (!s) {
+      throw std::runtime_error("dino8::kernel::Brep::Volume: face " + std::to_string(i) +
+                                " is not backed by an ON_NurbsSurface (every face this kernel builds should be)");
+    }
+    const double sign = face.m_bRev ? -1.0 : 1.0;
+    total += sign * IntegrateOverNurbsSurface(*s, [&](double u, double v) {
+               ON_3dPoint p;
+               ON_3dVector su, sv;
+               if (!s->Ev1Der(u, v, p, su, sv)) {
+                 throw std::runtime_error("dino8::kernel::Brep::Volume: Ev1Der failed on face " +
+                                           std::to_string(i));
+               }
+               const ON_3dVector n = ON_CrossProduct(su, sv);
+               return (p.x * n.x + p.y * n.y + p.z * n.z) / 3.0;
+             });
+  }
+  return total;
+}
+
+double Brep::Area() const {
+  double total = 0.0;
+  for (int i = 0; i < brep_.m_F.Count(); ++i) {
+    if (!FaceCoversWholeDomain(i)) {
+      throw std::invalid_argument("dino8::kernel::Brep::Area: face " + std::to_string(i) +
+                                   " is trimmed - exact integration over its true trim region is a "
+                                   "materially different problem this does not attempt");
+    }
+    const ON_BrepFace& face = brep_.m_F[i];
+    const ON_NurbsSurface* s = ON_NurbsSurface::Cast(face.SurfaceOf());
+    if (!s) {
+      throw std::runtime_error("dino8::kernel::Brep::Area: face " + std::to_string(i) +
+                                " is not backed by an ON_NurbsSurface (every face this kernel builds should be)");
+    }
+    total += IntegrateOverNurbsSurface(*s, [&](double u, double v) {
+      ON_3dPoint p;
+      ON_3dVector su, sv;
+      if (!s->Ev1Der(u, v, p, su, sv)) {
+        throw std::runtime_error("dino8::kernel::Brep::Area: Ev1Der failed on face " + std::to_string(i));
+      }
+      return ON_CrossProduct(su, sv).Length();
+    });
+  }
+  return total;
+}
+
+std::vector<int> Brep::EdgesOfVertex(int vertex_index) const {
+  if (vertex_index < 0 || vertex_index >= brep_.m_V.Count()) {
+    throw std::out_of_range("dino8::kernel::Brep::EdgesOfVertex: vertex_index " +
+                             std::to_string(vertex_index) + " is out of range (this Brep has " +
+                             std::to_string(brep_.m_V.Count()) + " vertex slot(s))");
+  }
+  const ON_BrepVertex& v = brep_.m_V[vertex_index];
+  std::vector<int> edges;
+  edges.reserve(static_cast<size_t>(std::max(0, v.m_ei.Count())));
+  for (int k = 0; k < v.m_ei.Count(); ++k) edges.push_back(v.m_ei[k]);
+  return edges;
+}
+
+std::vector<int> Brep::FacesOfEdge(int edge_index) const {
+  if (edge_index < 0 || edge_index >= brep_.m_E.Count()) {
+    throw std::out_of_range("dino8::kernel::Brep::FacesOfEdge: edge_index " +
+                             std::to_string(edge_index) + " is out of range (this Brep has " +
+                             std::to_string(brep_.m_E.Count()) + " edge slot(s))");
+  }
+  const ON_BrepEdge& edge = brep_.m_E[edge_index];
+  if (edge.m_edge_index < 0) {
+    throw std::invalid_argument("dino8::kernel::Brep::FacesOfEdge: edge_index " +
+                                 std::to_string(edge_index) + " refers to a deleted edge");
+  }
+  std::vector<int> faces;
+  for (int k = 0; k < edge.m_ti.Count(); ++k) {
+    const int ti = edge.m_ti[k];
+    if (ti < 0 || ti >= brep_.m_T.Count()) continue;
+    const int fi = brep_.m_T[ti].FaceIndexOf();
+    if (fi < 0) continue;
+    if (std::find(faces.begin(), faces.end(), fi) == faces.end()) faces.push_back(fi);
+  }
+  return faces;
+}
+
+std::vector<int> Brep::NeighborFaces(int face_index) const {
+  if (face_index < 0 || face_index >= brep_.m_F.Count()) {
+    throw std::out_of_range("dino8::kernel::Brep::NeighborFaces: face_index " +
+                             std::to_string(face_index) + " is out of range (this Brep has " +
+                             std::to_string(brep_.m_F.Count()) + " face slot(s))");
+  }
+  const ON_BrepFace& face = brep_.m_F[face_index];
+  if (face.m_face_index < 0) {
+    throw std::invalid_argument("dino8::kernel::Brep::NeighborFaces: face_index " +
+                                 std::to_string(face_index) + " refers to a deleted face");
+  }
+  std::vector<int> neighbors;
+  for (int li = 0; li < face.LoopCount(); ++li) {
+    const ON_BrepLoop* loop = face.Loop(li);
+    if (!loop) continue;
+    for (int k = 0; k < loop->TrimCount(); ++k) {
+      const ON_BrepTrim* trim = loop->Trim(k);
+      const ON_BrepEdge* edge = trim ? trim->Edge() : nullptr;
+      if (!edge) continue;
+      for (int q = 0; q < edge->m_ti.Count(); ++q) {
+        const int ti = edge->m_ti[q];
+        if (ti == trim->m_trim_index) continue;
+        if (ti < 0 || ti >= brep_.m_T.Count()) continue;
+        const int fi = brep_.m_T[ti].FaceIndexOf();
+        if (fi < 0 || fi == face_index) continue;
+        if (std::find(neighbors.begin(), neighbors.end(), fi) == neighbors.end()) neighbors.push_back(fi);
+      }
+    }
+  }
+  return neighbors;
+}
 
 namespace {
 
@@ -494,7 +767,7 @@ Brep::CylindricalFace ExtractCylindricalFace(const ON_Brep& brep, int face_index
 
   Vector3d xaxis = p_corner - frame_origin;
   const double radius = cyl.circle.Radius();
-  const double radius_tol = std::max(1e-9, radius * 1e-6);
+  const double radius_tol = tolerance::RelativeDistance(radius);
   if (std::fabs(xaxis.Length() - radius) > radius_tol || !xaxis.Unitize()) {
     throw std::runtime_error(
         "dino8::kernel::Brep::MixedFaces: face " + std::to_string(face_index) +
@@ -580,6 +853,88 @@ bool CylindricalRecordMatchesFace(const Brep::CylindricalFace& rec, const FaceGe
   return std::fabs(h) <= tol && std::fabs(radial - rec.radius) <= tol;
 }
 
+// The three points a SphericalFace record pins down on its own surface:
+// the (angle 0, lat0) corner, the (angle, lat0) corner and the north pole
+// direction - enough to fix center, radius and frame orientation.
+bool SphericalRecordMatchesFace(const Brep::SphericalFace& rec, const FaceGeometry& fg, bool face_rev) {
+  if (rec.outward == face_rev) return false;
+  auto pt = [&](double phi, double lat) {
+    return rec.frame.origin +
+           rec.radius * (std::cos(lat) * (std::cos(phi) * rec.frame.xaxis + std::sin(phi) * rec.frame.yaxis) +
+                         std::sin(lat) * rec.frame.zaxis);
+  };
+  const Point3d c00 = pt(0.0, rec.lat0), cu0 = pt(rec.angle, rec.lat0), north = rec.frame.origin + rec.radius * rec.frame.zaxis;
+  const double tol = 1e-6 * RecordScale(c00, cu0, north);
+  // ON_Sphere::GetNurbForm's own parameterization: u=0 is frame.xaxis,
+  // v=+pi/2 the north pole; the record's lat0 sits at the trim's lowest v.
+  if (fg.surface.PointAt(0.0, 0.5 * ON_PI).DistanceTo(north) > tol) return false;
+  if (fg.surface.PointAt(0.0, 0.0).DistanceTo(rec.frame.origin + rec.radius * rec.frame.xaxis) > tol) return false;
+  if (fg.surface.PointAt(0.5 * ON_PI, 0.0).DistanceTo(rec.frame.origin + rec.radius * rec.frame.yaxis) > tol) return false;
+  const std::vector<Point2d> uv = FaceOuterUv(fg);
+  if (uv.size() != 4) return false;
+  return fg.surface.PointAt(uv[0].x, uv[0].y).DistanceTo(c00) <= tol && fg.surface.PointAt(uv[1].x, uv[1].y).DistanceTo(cu0) <= tol;
+}
+
+// Geometric recovery of a SphericalFace from a face whose surface
+// ON_Surface::IsSphere accepts and whose trim is FromMixedFaces()'s own
+// 4-corner (u, v) rectangle: the frame is read straight off the surface's
+// own quadrant points (u=0/v=0 -> +xaxis, u=pi/2/v=0 -> +yaxis, v=+pi/2 ->
+// +zaxis - ON_Sphere::GetNurbForm's fixed layout, checked here rather than
+// assumed), and angle/lat0/lat1 are the trim rectangle's own u/v bounds
+// converted back to radians with ON_Circle::GetRadianFromNurbFormParameter
+// (the exact inverse of the conversion FromMixedFaces() applied). Throws
+// std::invalid_argument for a spherical face whose parameterization is
+// not that layout (a foreign sphere surface).
+Brep::SphericalFace ExtractSphericalFace(const ON_Brep& brep, int face_index, const FaceGeometry& fg,
+                                          const ON_Sphere& sph) {
+  Brep::SphericalFace f;
+  f.radius = sph.radius;
+  const Point3d center = sph.Center();
+  Vector3d x = fg.surface.PointAt(0.0, 0.0) - center;
+  Vector3d y = fg.surface.PointAt(0.5 * ON_PI, 0.0) - center;
+  Vector3d z = fg.surface.PointAt(0.0, 0.5 * ON_PI) - center;
+  const double tol = 1e-4 * std::max(1.0, sph.radius);
+  if (std::fabs(x.Length() - sph.radius) > tol || std::fabs(y.Length() - sph.radius) > tol ||
+      std::fabs(z.Length() - sph.radius) > tol || !x.Unitize() || !y.Unitize() || !z.Unitize() ||
+      std::fabs(x * y) > 1e-6 || std::fabs(x * z) > 1e-6 || std::fabs(y * z) > 1e-6 ||
+      (ON_CrossProduct(x, y) - z).Length() > 1e-6) {
+    throw std::invalid_argument(
+        "dino8::kernel::Brep::MixedFaces: face " + std::to_string(face_index) +
+        " is spherical but not in ON_Sphere::GetNurbForm's own parameterization - a foreign sphere "
+        "surface is out of scope here");
+  }
+  f.frame = ON_Plane(center, x, y);
+  f.frame.zaxis = z;
+  f.frame.UpdateEquation();
+  f.outward = !brep.m_F[face_index].m_bRev;
+  const std::vector<Point2d> uv = FaceOuterUv(fg);
+  double u_min = uv[0].x, u_max = uv[0].x, v_min = uv[0].y, v_max = uv[0].y;
+  for (const Point2d& p : uv) {
+    u_min = std::min(u_min, p.x);
+    u_max = std::max(u_max, p.x);
+    v_min = std::min(v_min, p.y);
+    v_max = std::max(v_max, p.y);
+  }
+  if (std::fabs(u_min) > 1e-9) {
+    throw std::invalid_argument(
+        "dino8::kernel::Brep::MixedFaces: face " + std::to_string(face_index) +
+        " is a spherical patch whose trim does not start at u = 0 - not a FromMixedFaces() SphericalFace");
+  }
+  const ON_Circle circle(f.frame, f.radius);
+  double angle = 0.0, t0 = 0.0, t1 = 0.0;
+  if (!circle.GetRadianFromNurbFormParameter(u_max, &angle) ||
+      !circle.GetRadianFromNurbFormParameter(v_min + 0.5 * ON_PI, &t0) ||
+      !circle.GetRadianFromNurbFormParameter(v_max + 0.5 * ON_PI, &t1)) {
+    throw std::runtime_error(
+        "dino8::kernel::Brep::MixedFaces: ON_Circle::GetRadianFromNurbFormParameter failed recovering a "
+        "SphericalFace's own angle/latitude bounds");
+  }
+  f.angle = angle;
+  f.lat0 = t0 - 0.5 * ON_PI;
+  f.lat1 = t1 - 0.5 * ON_PI;
+  return f;
+}
+
 }  // namespace
 
 std::vector<Brep::PlanarFace> Brep::PlanarFaces() const {
@@ -622,6 +977,10 @@ Brep::MixedFacesResult Brep::MixedFaces() const {
         result.cylindrical.push_back(rec.cyl);
         continue;
       }
+      if (rec.kind == FaceRecord::kSpherical && SphericalRecordMatchesFace(rec.sph, fg, brep_.m_F[i].m_bRev)) {
+        result.spherical.push_back(rec.sph);
+        continue;
+      }
     }
     NurbsSurface wrapper;
     wrapper.raw() = fg.surface;
@@ -637,9 +996,16 @@ Brep::MixedFacesResult Brep::MixedFaces() const {
     // not to misclassify a genuinely non-cylindrical face.
     const double cyl_tol = 1e-4;
     if (!fg.surface.IsCylinder(&cyl, cyl_tol)) {
-      // Not a cylinder - try a cone next (see this method's own doc
-      // comment for the ConicalFace recovery this mirrors from
-      // FromMixedFaces()'s own cone-building code below).
+      // Not a cylinder - a sphere next (a SphericalFace vertex blend read
+      // back without its record, e.g. after a .3dm round trip), then a
+      // cone (see this method's own doc comment for the ConicalFace
+      // recovery this mirrors from FromMixedFaces()'s own cone-building
+      // code below).
+      ON_Sphere sph;
+      if (fg.surface.IsSphere(&sph, cyl_tol)) {
+        result.spherical.push_back(ExtractSphericalFace(brep_, i, fg, sph));
+        continue;
+      }
       ExtractConicalFace(brep_, i, fg, result);
       continue;
     }
@@ -657,11 +1023,12 @@ namespace {
 // relies on for welding a tessellation's own seams shut, reused here as
 // the identity test that gives PlanarFace/CylindricalFace loop points -
 // which carry no vertex identity of their own - a shared ON_BrepVertex
-// wherever two faces' own loops meet at "the same" 3D point. tol = 1e-6
-// matches Mesh::MergeAndWeld's own proven default exactly, not a newly
-// invented tolerance; see brep.h's FromMixedFaces doc comment for the
-// real, disclosed limit this implies (features smaller than that mis-weld).
-constexpr double kBrepWeldTolerance = 1e-6;
+// wherever two faces' own loops meet at "the same" 3D point. The value
+// is the kernel's own weld distance (tolerance::kWeld, 1e-6 - the same
+// number Mesh::MergeAndWeld's default reads), not a newly invented
+// tolerance; see brep.h's FromMixedFaces doc comment for the real,
+// disclosed limit this implies (features smaller than that mis-weld).
+constexpr double kBrepWeldTolerance = tolerance::kWeld;
 
 struct WeldKey {
   long long x = 0, y = 0, z = 0;
@@ -756,6 +1123,25 @@ struct FaceTopology {
   // two genuinely different notch polylines joining the same two vertices
   // apart. Default-valued at any index whose notch_interior_uv is empty.
   std::vector<Point3d> notch_midpoint_3d;
+
+  // Optional explicit per-segment curve table (same length as vids when
+  // non-empty). Empty (the default) means the legacy 4-point
+  // CylindricalFace/ConicalFace rectangle convention above (segments 0/2
+  // are the two cap isocurves at constant v, 1/3 are straight rails), or
+  // an all-straight PlanarFace loop. A SphericalFace's patch needs the
+  // general form: its segments are isocurves in BOTH directions (the
+  // equator/latitude arc at constant v, the two meridians at constant u)
+  // and its pole side is SINGULAR (a trim with no edge).
+  struct Seg {
+    int iso_dir = -1;       // -1: straight ON_LineCurve; 0: v == iso_const, param u runs par_from -> par_to;
+                            // 1: u == iso_const, param v runs par_from -> par_to
+    double iso_const = 0.0;
+    double par_from = 0.0;
+    double par_to = 0.0;
+    bool singular = false;  // collapsed side (a sphere pole): ON_Brep::NewSingularTrim, no edge
+    ON_Surface::ISO singular_iso = ON_Surface::not_iso;
+  };
+  std::vector<Seg> segs;
 };
 
 // The midpoint of a dense notch sample list, as the average of its two
@@ -912,11 +1298,54 @@ void BuildFaceLoop(ON_Brep& brep, ON_BrepFace& face, const FaceTopology& topo,
     const int vid_from = topo.vids[k];
     const int vid_to = topo.vids[k1];
 
-    const bool is_cap = topo.curved_surface != nullptr && (k == 0 || k == 2);
+    // Per-segment curve description: an explicit table (FaceTopology::segs,
+    // a SphericalFace) or the legacy 4-point cylinder/cone rectangle
+    // (segments 0/2 are the constant-v cap isocurves walked 0 -> u_max and
+    // u_max -> 0 respectively) - the legacy values below are exactly the
+    // ones the pre-table code used, so every existing face's edges, keys
+    // and midpoint hashes are bit-identical.
+    FaceTopology::Seg seg;
+    if (!topo.segs.empty()) {
+      seg = topo.segs[k];
+    } else if (topo.curved_surface != nullptr && (k == 0 || k == 2)) {
+      seg.iso_dir = 0;
+      seg.iso_const = (k == 0) ? topo.curved_v0 : topo.curved_v0 + topo.curved_length;
+      seg.par_from = (k == 0) ? 0.0 : topo.curved_u_max;
+      seg.par_to = (k == 0) ? topo.curved_u_max : 0.0;
+    }
+    const bool is_cap = seg.iso_dir >= 0;  // this segment's own curve is a surface isocurve
     const bool has_notch_interior = k < topo.notch_interior_uv.size() && !topo.notch_interior_uv[k].empty();
-    const bool iso_reversed = is_cap && !has_notch_interior && k == 2;
+    const bool iso_reversed = is_cap && !has_notch_interior && seg.par_from > seg.par_to;
+    // The isocurve's own midpoint (mid-parameter) in 3D - the one datum the
+    // arc-identity checks below key on. For the legacy rectangle this is
+    // literally PointAt(u_max * 0.5, v_const): (0 + u_max) * 0.5 and
+    // (u_max + 0) * 0.5 are both exactly u_max * 0.5 in floating point.
+    auto arc_mid = [&]() {
+      const double mid_par = (seg.par_from + seg.par_to) * 0.5;
+      return seg.iso_dir == 0 ? topo.curved_surface->PointAt(mid_par, seg.iso_const)
+                              : topo.curved_surface->PointAt(seg.iso_const, mid_par);
+    };
 
-    if (topo.curved_surface != nullptr && (k == 1 || k == 3) && vid_from == vid_to) {
+    if (seg.singular) {
+      // A collapsed side of the surface's own domain (a SphericalFace's
+      // pole): every point of this (u, v) segment maps to the single 3D
+      // vertex `vid_from` (== vid_to, checked by the producer), so the
+      // standard B-rep representation is a singular trim - a 2D trim curve
+      // with NO 3D edge (ON_Brep::NewSingularTrim), exactly what a Rhino
+      // sphere carries at its poles.
+      if (vid_from != vid_to) {
+        throw std::runtime_error(
+            "dino8::kernel::Brep::FromMixedFaces: a segment marked singular joins two "
+            "distinct welded vertices - please report this as a bug");
+      }
+      ON_Curve* c2s = new ON_LineCurve(topo.trim_uv[k], topo.trim_uv[k1]);
+      c2s->SetDomain(0.0, 1.0);
+      const int c2si = brep.AddTrimCurve(c2s);
+      brep.NewSingularTrim(brep.m_V[vid_from], loop, seg.singular_iso, c2si);
+      continue;
+    }
+
+    if (topo.curved_surface != nullptr && !is_cap && vid_from == vid_to) {
       continue;  // zero-length rail of a length == 0 eye - see this function's own doc comment
     }
 
@@ -966,8 +1395,7 @@ void BuildFaceLoop(ON_Brep& brep, ON_BrepFace& face, const FaceTopology& topo,
     auto same_cap_arc_midpoint = [&](int existing_edge_index) {
       const auto it2 = cap_arc_midpoint_of_edge.find(existing_edge_index);
       if (it2 == cap_arc_midpoint_of_edge.end()) return false;  // not an is_cap-created edge at all
-      const double v_const_for_check = (k == 0) ? topo.curved_v0 : topo.curved_v0 + topo.curved_length;
-      const Point3d mid = topo.curved_surface->PointAt(topo.curved_u_max * 0.5, v_const_for_check);
+      const Point3d mid = arc_mid();
       return mid.DistanceTo(it2->second) <= kBrepWeldTolerance * 10.0;
     };
     if (is_cap && !has_notch_interior) {
@@ -977,8 +1405,7 @@ void BuildFaceLoop(ON_Brep& brep, ON_BrepFace& face, const FaceTopology& topo,
         // EXISTING is_cap-created edge - salt the key so this arc gets
         // (or finds) its own separate edge instead of colliding with the
         // wrong one.
-        const double v_const_for_hash = (k == 0) ? topo.curved_v0 : topo.curved_v0 + topo.curved_length;
-        const Point3d mid = topo.curved_surface->PointAt(topo.curved_u_max * 0.5, v_const_for_hash);
+        const Point3d mid = arc_mid();
         auto quant = [](double x) { return std::llround(x / kBrepWeldTolerance); };
         uint64_t h = 1469598103934665603ull;  // FNV-1a offset basis
         auto mix = [&](int64_t v) {
@@ -1099,14 +1526,13 @@ void BuildFaceLoop(ON_Brep& brep, ON_BrepFace& face, const FaceTopology& topo,
         c3 = poly;
         edge_tolerance = k < topo.cap_notch_tolerance.size() ? topo.cap_notch_tolerance[k] : 0.0;
       } else if (is_cap) {
-        const double v_const = (k == 0) ? topo.curved_v0 : topo.curved_v0 + topo.curved_length;
-        ON_Curve* iso = topo.curved_surface->IsoCurve(/*dir=*/0, v_const);
+        ON_Curve* iso = topo.curved_surface->IsoCurve(seg.iso_dir, seg.iso_const);
         if (!iso) {
           throw std::runtime_error(
               "dino8::kernel::Brep::FromMixedFaces: ON_Surface::IsoCurve failed "
-              "building a CylindricalFace's/ConicalFace's own cap edge");
+              "building a CylindricalFace's/ConicalFace's/SphericalFace's own arc edge");
         }
-        if (!iso->Trim(ON_Interval(0.0, topo.curved_u_max))) {
+        if (!iso->Trim(ON_Interval(std::min(seg.par_from, seg.par_to), std::max(seg.par_from, seg.par_to)))) {
           delete iso;
           throw std::runtime_error(
               "dino8::kernel::Brep::FromMixedFaces: trimming a "
@@ -1150,9 +1576,7 @@ void BuildFaceLoop(ON_Brep& brep, ON_BrepFace& face, const FaceTopology& topo,
       edge_index = edge.m_edge_index;
       edge_of_vertex_pair.emplace(key, edge_index);
       if (is_cap && !has_notch_interior) {
-        const double v_const_for_record = (k == 0) ? topo.curved_v0 : topo.curved_v0 + topo.curved_length;
-        cap_arc_midpoint_of_edge.emplace(edge_index,
-                                          topo.curved_surface->PointAt(topo.curved_u_max * 0.5, v_const_for_record));
+        cap_arc_midpoint_of_edge.emplace(edge_index, arc_mid());
       } else if (is_cap && has_notch_interior) {
         notched_edges_of_vertex_pair[plain_key].emplace_back(notched_mid, key);
       }
@@ -1223,7 +1647,8 @@ void BuildFaceLoop(ON_Brep& brep, ON_BrepFace& face, const FaceTopology& topo,
 
 Brep Brep::FromMixedFaces(const std::vector<Brep::PlanarFace>& faces,
                            const std::vector<Brep::CylindricalFace>& cylindrical_faces,
-                           const std::vector<Brep::ConicalFace>& conical_faces) {
+                           const std::vector<Brep::ConicalFace>& conical_faces,
+                           const std::vector<Brep::SphericalFace>& spherical_faces) {
   Brep result;
   ON_Brep& brep = result.brep_;
   VertexWelder welder;
@@ -1287,10 +1712,33 @@ Brep Brep::FromMixedFaces(const std::vector<Brep::PlanarFace>& faces,
     // rather than re-deriving either.
     FaceTopology t;
     t.vids.reserve(f.loop.size());
+    // Every notch run on this face - the legacy notch_begin/notch_count
+    // pair plus PlanarFace::notch_runs - as one sorted, non-overlapping
+    // set (see PlanarFace::notch_begin/notch_count's own doc comment for
+    // the collapse each run gets, and notch_runs' for why there can now
+    // be more than one). A single legacy run goes through EXACTLY the
+    // same collapse it always did.
+    std::vector<std::pair<int, int>> runs;
     if (f.notch_count > 1 && f.notch_begin >= 0 &&
         static_cast<size_t>(f.notch_begin + f.notch_count) <= f.loop.size()) {
+      runs.emplace_back(f.notch_begin, f.notch_count);
+    }
+    for (const std::pair<int, int>& r : f.notch_runs) {
+      if (r.second > 1 && r.first >= 0 && static_cast<size_t>(r.first + r.second) <= f.loop.size()) {
+        runs.push_back(r);
+      }
+    }
+    std::sort(runs.begin(), runs.end());
+    for (size_t r = 1; r < runs.size(); ++r) {
+      if (runs[r].first < runs[r - 1].first + runs[r - 1].second - 1) {
+        throw std::invalid_argument(
+            "dino8::kernel::Brep::FromMixedFaces: a PlanarFace's notch runs overlap - see "
+            "PlanarFace::notch_runs' own doc comment");
+      }
+    }
+    if (!runs.empty()) {
       // See PlanarFace::notch_begin/notch_count's own doc comment: collapse
-      // this run's own STRICTLY INTERIOR points out of the topology-only
+      // each run's own STRICTLY INTERIOR points out of the topology-only
       // vids/trim_uv (so the run becomes ONE loop segment, able to share
       // ONE real edge with the adjacent CylindricalFace's own cap - see
       // FromMixedFaces' own reordered Pass 3/4 below), while folding those
@@ -1299,14 +1747,19 @@ Brep Brep::FromMixedFaces(const std::vector<Brep::PlanarFace>& faces,
       // segment's own 2D trim curve as a dense polyline - the visible
       // boundary this face presents (face_trim_loops_ below, and hence
       // this kernel's own Tessellate()) is entirely untouched either way.
-      const int begin = f.notch_begin;
-      const int end = f.notch_begin + f.notch_count - 1;  // last run index, inclusive
+      std::vector<int> run_of(f.loop.size(), -1);
+      for (size_t r = 0; r < runs.size(); ++r) {
+        for (int idx = runs[r].first; idx < runs[r].first + runs[r].second; ++idx) run_of[static_cast<size_t>(idx)] = static_cast<int>(r);
+      }
       for (size_t k = 0; k < f.loop.size(); ++k) {
         const int ik = static_cast<int>(k);
-        if (ik > begin && ik < end) continue;  // strictly-interior notch point
+        const int r = run_of[k];
+        const int begin = r >= 0 ? runs[static_cast<size_t>(r)].first : -1;
+        const int end = r >= 0 ? runs[static_cast<size_t>(r)].first + runs[static_cast<size_t>(r)].second - 1 : -1;  // last run index, inclusive
+        if (r >= 0 && ik > begin && ik < end) continue;  // strictly-interior notch point
         t.vids.push_back(welder.Weld(f.loop[k]));
         t.trim_uv.push_back(trim[k]);
-        if (ik == begin) {
+        if (r >= 0 && ik == begin) {
           t.notch_interior_uv.emplace_back(trim.begin() + begin + 1, trim.begin() + end);
         } else {
           t.notch_interior_uv.emplace_back();
@@ -1497,7 +1950,7 @@ Brep Brep::FromMixedFaces(const std::vector<Brep::PlanarFace>& faces,
         // evaluated back through the REAL surface, must reproduce the same
         // 3D point this whole notch is built from.
         const Point3d check = surface->PointAt(u, height);
-        const double check_tol = std::max(1e-6, cf.radius * 1e-6);
+        const double check_tol = tolerance::DistanceForSize(cf.radius);
         if (check.DistanceTo(p) > check_tol) {
           throw std::runtime_error(
               "dino8::kernel::Brep::FromMixedFaces: a CylindricalFace's own cap "
@@ -1907,6 +2360,142 @@ Brep Brep::FromMixedFaces(const std::vector<Brep::PlanarFace>& faces,
     topo.push_back(std::move(t));
   }
 
+  for (const SphericalFace& sf : spherical_faces) {
+    // See SphericalFace's own doc comment for the exactness argument and
+    // the pole convention this implements.
+    if (!(sf.radius > 0.0)) {
+      throw std::invalid_argument("dino8::kernel::Brep::FromMixedFaces: SphericalFace::radius must be positive");
+    }
+    if (!(sf.angle > 0.0) || sf.angle > 2.0 * ON_PI + 1e-12) {
+      throw std::invalid_argument(
+          "dino8::kernel::Brep::FromMixedFaces: SphericalFace::angle must lie in (0, 2*pi]");
+    }
+    constexpr double kPoleTol = 1e-9;
+    if (!(sf.lat0 >= -0.5 * ON_PI - kPoleTol) || !(sf.lat1 <= 0.5 * ON_PI + kPoleTol) || !(sf.lat1 > sf.lat0 + kPoleTol)) {
+      throw std::invalid_argument(
+          "dino8::kernel::Brep::FromMixedFaces: SphericalFace latitudes must satisfy -pi/2 <= lat0 < lat1 <= pi/2");
+    }
+    const bool pole0 = std::fabs(sf.lat0 + 0.5 * ON_PI) <= kPoleTol;
+    const bool pole1 = std::fabs(sf.lat1 - 0.5 * ON_PI) <= kPoleTol;
+    if (pole0 && pole1) {
+      throw std::invalid_argument(
+          "dino8::kernel::Brep::FromMixedFaces: a SphericalFace spanning BOTH poles (a full meridian lune) is not a "
+          "blend patch this kernel builds - see SphericalFace's own doc comment");
+    }
+
+    ON_Sphere sphere;
+    sphere.plane = sf.frame;
+    sphere.radius = sf.radius;
+    auto* surface = new ON_NurbsSurface();
+    if (sphere.GetNurbForm(*surface) == 0) {
+      delete surface;
+      throw std::runtime_error(
+          "dino8::kernel::Brep::FromMixedFaces: ON_Sphere::GetNurbForm failed (invalid frame/radius)");
+    }
+    // u: ON_Sphere::GetNurbForm's u-knots are literally the base circle's
+    // (0, pi/2, pi, 3pi/2, 2pi - checked against the vendored source), so
+    // the same NURBS<->radian conversion the cylinder path uses is exact
+    // here. v: the meridian is the same 2-span quadrant-arc structure as a
+    // circle's [0, pi] half, with knots shifted by -pi/2 (-pi/2, 0, +pi/2),
+    // so v_nurbs(lat) = circle_param(lat + pi/2) - pi/2 - and both
+    // conversions are CHECKED below by evaluating the real surface at the
+    // resulting (u, v) corners against the closed-form 3D points.
+    const ON_Circle circle(sf.frame, sf.radius);
+    double u_max = 0.0;
+    if (!circle.GetNurbFormParameterFromRadian(sf.angle, &u_max)) {
+      delete surface;
+      throw std::invalid_argument(
+          "dino8::kernel::Brep::FromMixedFaces: SphericalFace::angle is out of ON_Circle's own NURBS domain");
+    }
+    auto v_of_lat = [&](double lat) {
+      const double clamped = std::max(-0.5 * ON_PI, std::min(0.5 * ON_PI, lat));
+      double t = 0.0;
+      if (!circle.GetNurbFormParameterFromRadian(clamped + 0.5 * ON_PI, &t)) {
+        throw std::invalid_argument(
+            "dino8::kernel::Brep::FromMixedFaces: SphericalFace latitude is out of the meridian's NURBS domain");
+      }
+      return t - 0.5 * ON_PI;
+    };
+    const double v0 = pole0 ? -0.5 * ON_PI : v_of_lat(sf.lat0);
+    const double v1 = pole1 ? 0.5 * ON_PI : v_of_lat(sf.lat1);
+    auto closed_form = [&](double phi, double lat) {
+      return sf.frame.origin +
+             sf.radius * (std::cos(lat) * (std::cos(phi) * sf.frame.xaxis + std::sin(phi) * sf.frame.yaxis) +
+                          std::sin(lat) * sf.frame.zaxis);
+    };
+    const int surface_index = brep.AddSurface(surface);
+    ON_BrepFace& face = brep.NewFace(surface_index);
+    // ON_Sphere::GetNurbForm's natural u_dir x v_dir at (0, 0) is
+    // (r*yaxis) x (r*zaxis) ~ +xaxis, the outward radial direction -
+    // so, exactly as for a CylindricalFace, `outward == false` flips it.
+    face.m_bRev = !sf.outward;
+
+    const std::vector<Point2d> trim = {Point2d(0.0, v0), Point2d(u_max, v0), Point2d(u_max, v1), Point2d(0.0, v1)};
+    const Point3d corner00 = surface->PointAt(0.0, v0);
+    const Point3d corner_u0 = surface->PointAt(u_max, v0);
+    const Point3d corner_u1 = surface->PointAt(u_max, v1);
+    const Point3d corner01 = surface->PointAt(0.0, v1);
+    // Checked invariant: the real surface at the converted (u, v) corners
+    // reproduces the closed-form points (proves both conversions above).
+    const double check_tol = std::max(1e-9, sf.radius * 1e-9);
+    if (corner00.DistanceTo(closed_form(0.0, sf.lat0)) > check_tol ||
+        corner_u0.DistanceTo(closed_form(sf.angle, sf.lat0)) > check_tol ||
+        corner_u1.DistanceTo(closed_form(sf.angle, sf.lat1)) > check_tol ||
+        corner01.DistanceTo(closed_form(0.0, sf.lat1)) > check_tol) {
+      throw std::runtime_error(
+          "dino8::kernel::Brep::FromMixedFaces: a SphericalFace's (u, v) corner does not evaluate to its own "
+          "closed-form point - the NURBS<->radian conversion is inconsistent; please report this as a bug");
+    }
+
+    result.face_trim_loops_.push_back(trim);
+    result.face_exact_clip_.push_back(true);
+    result.face_hole_loops_.emplace_back();
+    result.face_arc_runs_.emplace_back();
+    result.face_notch_rows_.emplace_back();
+    result.face_records_.emplace_back();
+    result.face_records_.back().kind = FaceRecord::kSpherical;
+    result.face_records_.back().sph = sf;
+
+    FaceTopology t;
+    t.trim_uv = trim;
+    t.vids = {welder.Weld(corner00), welder.Weld(corner_u0), welder.Weld(corner_u1), welder.Weld(corner01)};
+    t.curved_surface = surface;
+    t.curved_u_max = u_max;
+    t.curved_v0 = v0;
+    t.curved_length = v1 - v0;
+    t.segs.resize(4);
+    // segment 0: latitude arc at v0, u: 0 -> u_max (singular if lat0 is the south pole)
+    t.segs[0].iso_dir = 0;
+    t.segs[0].iso_const = v0;
+    t.segs[0].par_from = 0.0;
+    t.segs[0].par_to = u_max;
+    t.segs[0].singular = pole0;
+    t.segs[0].singular_iso = ON_Surface::S_iso;
+    // segment 1: meridian at u_max, v: v0 -> v1
+    t.segs[1].iso_dir = 1;
+    t.segs[1].iso_const = u_max;
+    t.segs[1].par_from = v0;
+    t.segs[1].par_to = v1;
+    // segment 2: latitude arc at v1, u: u_max -> 0 (singular if lat1 is the north pole)
+    t.segs[2].iso_dir = 0;
+    t.segs[2].iso_const = v1;
+    t.segs[2].par_from = u_max;
+    t.segs[2].par_to = 0.0;
+    t.segs[2].singular = pole1;
+    t.segs[2].singular_iso = ON_Surface::N_iso;
+    // segment 3: meridian at u = 0, v: v1 -> v0
+    t.segs[3].iso_dir = 1;
+    t.segs[3].iso_const = 0.0;
+    t.segs[3].par_from = v1;
+    t.segs[3].par_to = v0;
+    if ((pole0 && t.vids[0] != t.vids[1]) || (pole1 && t.vids[2] != t.vids[3])) {
+      throw std::runtime_error(
+          "dino8::kernel::Brep::FromMixedFaces: a SphericalFace's pole corners did not weld to one vertex - "
+          "please report this as a bug");
+    }
+    topo.push_back(std::move(t));
+  }
+
   // Pass 2 (see this feature's own spec): materialize one real
   // ON_BrepVertex per canonical welded point, in weld-id order - `brep`
   // starts with an empty m_V, and NewVertex() always appends at the next
@@ -2038,12 +2627,262 @@ std::vector<std::pair<int, int>> Brep::LumpFaceRanges() const {
   return {{0, face_count}};
 }
 
+namespace {
+// Reads back table[old_index] if `table` is genuinely in lockstep with
+// this Brep's ORIGINAL face count (the same self-check discipline
+// Compound() applies to an incoming lump) and `old_index` is in range;
+// otherwise the default-constructed value - the same "lose the fast
+// path, never a wrong shape" fallback MixedFaces() itself already
+// tolerates for a stale or absent side table.
+template <typename Vec>
+typename Vec::value_type PickSideTableEntry(const Vec& table, size_t original_face_count, int old_index) {
+  if (table.size() == original_face_count && old_index >= 0 && static_cast<size_t>(old_index) < table.size()) {
+    return table[static_cast<size_t>(old_index)];
+  }
+  return typename Vec::value_type{};
+}
+}  // namespace
+
+std::vector<Brep> Brep::SplitDisjointPieces() const {
+  const int original_face_count = brep_.m_F.Count();
+  if (original_face_count == 0) return {};
+
+  // LabelConnectedComponents() (below) walks real ON_BrepLoop/ON_BrepTrim/
+  // ON_BrepEdge records - it has nothing to walk at all for a face built
+  // via the "minimal NewFace(surface_index)-only path" this class's own
+  // Box()/Sphere()/FromSurface()/TrimmedPlanarFace() still use (see
+  // brep.h's own class-level doc comment): such a face has zero loops,
+  // so it can never be found connected to anything, however obviously
+  // adjacent it really is. Silently running the search anyway would
+  // report every one of Box()'s 6 faces as its own separate "piece" -
+  // a confident, wrong answer for the single most common Brep shape in
+  // this kernel, not a merely incomplete one - so this refuses outright
+  // whenever more than one face exists and any of them lacks real
+  // topology, rather than ever emitting that wrong split.
+  if (original_face_count > 1) {
+    for (int i = 0; i < original_face_count; ++i) {
+      if (brep_.m_F[i].m_li.Count() == 0) {
+        throw std::invalid_argument(
+            "dino8::kernel::Brep::SplitDisjointPieces: face " + std::to_string(i) +
+            " of " + std::to_string(original_face_count) +
+            " has no real ON_Brep loop/trim/edge topology, so connectivity to its "
+            "neighbors cannot be determined (this Brep was built via Box()/Sphere()/"
+            "FromSurface()/TrimmedPlanarFace(), or a raw()-assigned equivalent - see "
+            "brep.h's own class-level doc comment on which factories skip real "
+            "topology). Rebuild it through FromPlanarFaces()/FromMixedFaces() (or load "
+            "it from a genuine .3dm), which do build real topology, before calling this.");
+      }
+    }
+  }
+
+  // A private copy so LabelConnectedComponents()'s m_face_user.i writes
+  // (real, non-stub OpenNURBS user-data scratch fields - see brep.h)
+  // never touch this Brep's own state.
+  ON_Brep labeled(brep_);
+  const int component_count = labeled.LabelConnectedComponents();
+  if (component_count <= 1) {
+    // Nothing to split (or no valid faces at all, which
+    // original_face_count == 0 already ruled out) - one piece, this
+    // Brep's own exact copy, side tables untouched.
+    return {*this};
+  }
+
+  const size_t n = static_cast<size_t>(original_face_count);
+  std::vector<Brep> pieces;
+  pieces.reserve(static_cast<size_t>(component_count));
+  std::vector<int> face_indices;
+  for (int label = 1; label <= component_count; ++label) {
+    face_indices.clear();
+    for (int fi = 0; fi < original_face_count; ++fi) {
+      if (labeled.m_F[fi].m_face_user.i == label) face_indices.push_back(fi);
+    }
+    if (face_indices.empty()) continue;  // LabelConnectedComponents() never actually leaves a gap; defensive only
+
+    ON_Brep* dup = brep_.DuplicateFaces(static_cast<int>(face_indices.size()), face_indices.data(),
+                                         /*bDuplicateMeshes=*/false);
+    if (dup == nullptr) {
+      throw std::runtime_error(
+          "dino8::kernel::Brep::SplitDisjointPieces: ON_Brep::DuplicateFaces "
+          "failed for a face list this method's own labeling reported as a "
+          "valid connected component");
+    }
+    Brep piece;
+    piece.brep_ = *dup;
+    delete dup;
+
+    // DuplicateFaces() records each duplicated face's ORIGINAL index in
+    // its own m_face_user.i (an OpenNURBS guarantee, not an assumption -
+    // see brep.h) - read back from THAT, not from face_indices[j], so
+    // this is correct even if DuplicateFaces() ever changed its internal
+    // face ordering.
+    const int piece_face_count = piece.brep_.m_F.Count();
+    piece.face_trim_loops_.reserve(static_cast<size_t>(piece_face_count));
+    piece.face_exact_clip_.reserve(static_cast<size_t>(piece_face_count));
+    piece.face_hole_loops_.reserve(static_cast<size_t>(piece_face_count));
+    piece.face_arc_runs_.reserve(static_cast<size_t>(piece_face_count));
+    piece.face_notch_rows_.reserve(static_cast<size_t>(piece_face_count));
+    piece.face_records_.reserve(static_cast<size_t>(piece_face_count));
+    for (int j = 0; j < piece_face_count; ++j) {
+      const int old_index = piece.brep_.m_F[j].m_face_user.i;
+      piece.face_trim_loops_.push_back(PickSideTableEntry(face_trim_loops_, n, old_index));
+      piece.face_exact_clip_.push_back(PickSideTableEntry(face_exact_clip_, n, old_index));
+      piece.face_hole_loops_.push_back(PickSideTableEntry(face_hole_loops_, n, old_index));
+      piece.face_arc_runs_.push_back(PickSideTableEntry(face_arc_runs_, n, old_index));
+      piece.face_notch_rows_.push_back(PickSideTableEntry(face_notch_rows_, n, old_index));
+      piece.face_records_.push_back(PickSideTableEntry(face_records_, n, old_index));
+    }
+    pieces.push_back(std::move(piece));
+  }
+  return pieces;
+}
+
+namespace {
+// True (and fills the 4 corner control points) iff `srf` is a genuine,
+// non-rational, bilinear (degree (1,1), 2x2 control vertices) NURBS
+// surface whose bilinear "twist" term `P00 - P10 - P01 + P11` is
+// (numerically, to float-level slop) zero - i.e. an AFFINE map from
+// (u, v) to 3D, so a straight line in the surface's own (u, v) domain
+// maps to a straight line in 3D.
+//
+// Checked directly on the surface's own control points, not assumed
+// from which factory built it: a merely PLANAR-IMAGE bilinear patch (all
+// 4 corners lying in one plane) can still have a nonzero twist and
+// genuinely curve a diagonal (u, v) line WITHIN that same plane - a real
+// case, confirmed with a concrete hand-built counterexample (4 coplanar
+// corners with P00 - P10 - P01 + P11 != 0) before this function was
+// trusted for anything: its own diagonal isocurve is measurably not
+// straight (nonzero cross product between its own chord vectors), while
+// the SAME check on a true rectangle grid (exactly how
+// FromMixedFaces()/FromPlanarFaces()/TrimmedPlanarFace() build a planar
+// face's surface) gives exactly zero twist. Every point of a bilinear
+// surface is a convex combination of its 4 corners regardless of twist,
+// so the corners' own bounding box always safely contains the WHOLE
+// surface either way - what specifically needs zero twist is trusting
+// that a straight EDGE of a stored trim polygon (a chord between two
+// arbitrary (u, v) points, not necessarily the domain's own corners)
+// maps to a straight 3D edge too, since a twisted patch can bow that
+// chord's own image outside the straight-line box its two endpoints
+// alone would suggest.
+bool IsExactAffineBilinear(const ON_Surface& srf, ON_NurbsSurface& nurbs_out, ON_3dPoint& p00, ON_3dPoint& p10,
+                            ON_3dPoint& p01, ON_3dPoint& p11) {
+  if (srf.Degree(0) != 1 || srf.Degree(1) != 1) return false;
+  if (0 == srf.GetNurbForm(nurbs_out) || nurbs_out.IsRational()) return false;
+  if (nurbs_out.CVCount(0) != 2 || nurbs_out.CVCount(1) != 2) return false;
+  if (!nurbs_out.GetCV(0, 0, p00) || !nurbs_out.GetCV(1, 0, p10) || !nurbs_out.GetCV(0, 1, p01) ||
+      !nurbs_out.GetCV(1, 1, p11)) {
+    return false;
+  }
+  const double scale = std::max({p00.DistanceTo(p10), p00.DistanceTo(p01), p00.DistanceTo(p11), 1.0});
+  const ON_3dVector twist = (p00 - p10) - (p01 - p11);
+  return twist.Length() < 1e-9 * scale;
+}
+}  // namespace
+
 BoundingBox Brep::GetTightBoundingBox() const {
+  const int face_count = brep_.m_F.Count();
+  // face_trim_loops_'s own "kept in lockstep with brep_.m_F" invariant
+  // (see brep.h) - only trusted when its size actually matches, the same
+  // self-check Compound() and SplitDisjointPieces() apply to this table.
+  const bool trim_table_ok = face_trim_loops_.size() == static_cast<size_t>(face_count);
+
   ON_BoundingBox box;
-  if (!brep_.GetTightBoundingBox(box)) {
-    throw std::runtime_error(
-        "dino8::kernel::Brep::GetTightBoundingBox: ON_Brep::"
-        "GetTightBoundingBox failed");
+  for (int i = 0; i < face_count; ++i) {
+    const ON_BrepFace& face = brep_.m_F[i];
+    const ON_Surface* srf = face.SurfaceOf();
+    if (srf == nullptr) continue;  // a deleted, uncompacted face - nothing to bound
+
+    bool used_exact = false;
+    ON_NurbsSurface nurbs;
+    ON_3dPoint p00, p10, p01, p11;
+    if (trim_table_ok && IsExactAffineBilinear(*srf, nurbs, p00, p10, p01, p11)) {
+      // Exact: this face's surface is a genuine affine map, so its own
+      // trim loop's stored (u, v) vertices (straight edges in UV, by the
+      // same convention every other consumer of face_trim_loops_ already
+      // relies on) map to the EXACT straight-edged 3D polygon that is
+      // this face's own real boundary - not an approximation of a curved
+      // one, since there is no curve here to approximate. An empty
+      // stored loop means "untrimmed" (brep.h's own convention): the
+      // face's real boundary is then exactly its own domain corners,
+      // already computed above.
+      ON_BoundingBox exact;
+      auto add_point = [&](const ON_3dPoint& p) {
+        if (!exact.IsValid()) {
+          exact.m_min = exact.m_max = p;
+        } else {
+          exact.Set(p, true);
+        }
+      };
+      const std::vector<Point2d>& loop = face_trim_loops_[static_cast<size_t>(i)];
+      if (!loop.empty()) {
+        for (const Point2d& uv : loop) add_point(nurbs.PointAt(uv.x, uv.y));
+      } else {
+        add_point(p00);
+        add_point(p10);
+        add_point(p01);
+        add_point(p11);
+      }
+      if (exact.IsValid()) {
+        box.Union(exact);
+        used_exact = true;
+      }
+    }
+
+    if (!used_exact) {
+      // Every other face (curved, twisted-bilinear, rational, or a
+      // Brep whose side tables aren't in lockstep): reproduce EXACTLY
+      // what ON_Brep::GetTightBoundingBox() itself computes for this one
+      // face - a real pitfall found and rejected before landing this,
+      // not the obvious-looking `ON_BrepFace::GetTightBoundingBox()`
+      // (inherited from ON_SurfaceProxy/ON_Surface): a direct probe
+      // proved that call is a DIFFERENT, cruder algorithm (it came back
+      // as the raw control-point extent, completely missing the
+      // Greville-abscissa isocurve refinement ON_Brep::
+      // GetTightBoundingBox() implements as its own inline per-face
+      // logic, not delegated to any per-face virtual at all) - using it
+      // here would have silently LOOSENED this method's own
+      // already-established, tested behavior for every curved face, the
+      // opposite of "completely untouched." Reading that inline logic
+      // confirms each face's own contribution has no cross-face
+      // dependency beyond a pure early-out optimization, so building a
+      // throwaway single-face ON_Brep from this face's own surface and
+      // running the SAME ON_Brep::GetTightBoundingBox() on it reproduces
+      // that exact per-face contribution - confirmed by a direct probe
+      // matching the documented bicubic-bulge overshoot value exactly.
+      ON_Surface* srf_copy = ON_Surface::Cast(srf->Duplicate());
+      bool grown = false;
+      if (srf_copy != nullptr) {
+        ON_Brep single_face_brep;
+        const int si = single_face_brep.AddSurface(srf_copy);
+        single_face_brep.NewFace(si);
+        ON_BoundingBox local;
+        if (single_face_brep.GetTightBoundingBox(local)) {
+          box.Union(local);
+          grown = true;
+        }
+      }
+      if (!grown) {
+        // Should not happen for any valid surface (Duplicate() is a
+        // universally-implemented ON_Surface virtual) - rather than
+        // silently omitting this face's own contribution (a genuine risk
+        // of UNDERSHOOTING the true box), fail loudly.
+        throw std::runtime_error(
+            "dino8::kernel::Brep::GetTightBoundingBox: could not compute "
+            "face " +
+            std::to_string(i) + "'s own bounding box (ON_Surface::Duplicate() or ON_Brep::GetTightBoundingBox() failed)");
+      }
+    }
+  }
+
+  if (!box.IsValid()) {
+    // No faces produced a usable box (including the genuinely-empty
+    // Brep) - fall back to OpenNURBS' own whole-Brep computation, which
+    // also folds in vertices/edges directly; for a Brep with no faces at
+    // all this is exactly its previous (pre-fix) behavior.
+    if (!brep_.GetTightBoundingBox(box)) {
+      throw std::runtime_error(
+          "dino8::kernel::Brep::GetTightBoundingBox: ON_Brep::"
+          "GetTightBoundingBox failed");
+    }
   }
   return BoundingBox{box.Min(), box.Max()};
 }
@@ -2150,7 +2989,7 @@ bool SameCircleAsCylinder(const Point3d& center, double radius, const Vector3d& 
   if (center.DistanceTo(axis_point) > rtol) return false;
   if (std::fabs(radius - cf.radius) > rtol) return false;
   const double align = std::fabs(ON_DotProduct(normal, cf.frame.zaxis));
-  if (align < 1.0 - 1e-6) return false;
+  if (align < 1.0 - tolerance::kAlignment) return false;
   return true;
 }
 
@@ -2219,8 +3058,8 @@ bool SameWedgeAsCylinder(const Brep::CylindricalFace& a, const Brep::Cylindrical
   const Point3d axis_point = a.frame.origin + height * a.frame.zaxis;
   if (b.frame.origin.DistanceTo(axis_point) > rtol) return false;
   if (std::fabs(a.radius - b.radius) > rtol) return false;
-  if (ON_DotProduct(a.frame.zaxis, b.frame.zaxis) < 1.0 - 1e-6) return false;
-  if (ON_DotProduct(a.frame.xaxis, b.frame.xaxis) < 1.0 - 1e-6) return false;
+  if (ON_DotProduct(a.frame.zaxis, b.frame.zaxis) < 1.0 - tolerance::kAlignment) return false;
+  if (ON_DotProduct(a.frame.xaxis, b.frame.xaxis) < 1.0 - tolerance::kAlignment) return false;
   if (std::fabs(a.angle - b.angle) > 1e-6) return false;
   return true;
 }
@@ -3275,6 +4114,28 @@ std::vector<PlainQuadFace> CollectPlainQuadFaces(const std::vector<FaceGeometry>
       qf.corner[static_cast<size_t>(c)] =
           wrapper.PointAt(corners_uv[static_cast<size_t>(c)].x, corners_uv[static_cast<size_t>(c)].y);
     }
+    // A planar face whose 4 domain corners are not 4 DISTINCT points is
+    // not a quadrilateral at all - a planar fan cap from the sweep-class
+    // factories (Brep::Extrude() et al.: a singular apex side plus a
+    // curved boundary) is planar and untrimmed, so it reaches this point,
+    // and building it as a bilinear patch of its "corners" (apex, apex,
+    // B(b), B(a)) would tessellate it as a zero-width sliver - a silently
+    // wrong result. Such a face takes the ordinary TessellateGrid path.
+    {
+      bool distinct = true;
+      double scale = 0.0;
+      for (int c = 0; c < 4; ++c) scale = std::max(scale, qf.corner[static_cast<size_t>(c)].MaximumCoordinate());
+      const double tol = 1e-9 * (1.0 + scale);
+      for (int c = 0; c < 4 && distinct; ++c) {
+        for (int d = c + 1; d < 4; ++d) {
+          if (qf.corner[static_cast<size_t>(c)].DistanceTo(qf.corner[static_cast<size_t>(d)]) <= tol) {
+            distinct = false;
+            break;
+          }
+        }
+      }
+      if (!distinct) continue;
+    }
     quad_faces.push_back(qf);
   }
   return quad_faces;
@@ -3414,7 +4275,7 @@ std::unordered_map<int, std::array<std::vector<EdgeForce>, 4>> ComputePlainQuadS
         const Point3d a_to = PlainQuadEdgeTo(qa.corner, ea);
         const double edge_len = a_from.DistanceTo(a_to);
         if (edge_len < 1e-12) continue;  // degenerate - nothing to match
-        const double lin_tol = std::max(1e-9, edge_len * 1e-6);
+        const double lin_tol = tolerance::RelativeDistance(edge_len);
         for (int eb = 0; eb < 4; ++eb) {
           const Point3d b_from = PlainQuadEdgeFrom(qb.corner, eb);
           const Point3d b_to = PlainQuadEdgeTo(qb.corner, eb);
@@ -3980,7 +4841,7 @@ std::vector<Mesh> Brep::TessellateConforming(int u_divisions, int v_divisions, i
           const double edge_len2 = edge_vec.LengthSquared();
           if (edge_len2 < 1e-18) continue;
           const double edge_len = std::sqrt(edge_len2);
-          const double lin_tol = std::max(1e-9, edge_len * 1e-6);
+          const double lin_tol = tolerance::RelativeDistance(edge_len);
 
           auto project = [&](const Point3d& p, double* t_out) {
             const Vector3d d = p - from;
@@ -4542,7 +5403,7 @@ bool TryMergeCoplanarPair(ON_Brep& b, int fa, int fb, int shared_edge_index, con
   b.DeleteFace(b.m_F[lo], true);
   b.Compact();
   b.Append(merged);
-  WeldCoincidentNakedEdges(b, std::max(tol * 20, 1e-4));
+  WeldCoincidentNakedEdges(b, std::max(tol * 20, tolerance::kEdgeJoin));
   b.Compact();
   b.SetTolerancesBoxesAndFlags();
   FixUnsetEdgeTolerances(b);
@@ -4635,7 +5496,7 @@ int Brep::MergeCoplanarFaces(double tolerance) {
 
         // Coplanar AND coincident: same-direction normal, and fb's plane
         // origin lies in fa's own plane.
-        if (ON_DotProduct(pa.plane.zaxis, pb.plane.zaxis) < 1.0 - 1e-6) continue;
+        if (ON_DotProduct(pa.plane.zaxis, pb.plane.zaxis) < 1.0 - tolerance::kAlignment) continue;
         if (std::fabs(ON_DotProduct(pa.plane.zaxis, pb.plane.origin - pa.plane.origin)) > tol) continue;
 
         if (TryMergeCoplanarPair(brep_, fa, fb, edge->m_edge_index, pa.plane, tol)) {
@@ -4999,6 +5860,965 @@ Result Brep::RemoveNakedMicroEdge(int edge_index, double tolerance) {
   face_notch_rows_.clear();
   face_records_.clear();
   return Result::Ok;
+}
+
+// ---------------------------------------------------------------------------
+// Check / heal - see brep.h's own doc comments on each method. Everything
+// here reads or edits this class's own ON_Brep directly, the same way the
+// topology-surgery methods above do.
+
+namespace {
+
+using CheckKind = Brep::CheckIssue::Kind;
+
+// A trim's own 3D point at normalized parameter `s` in [0, 1] of its
+// domain, evaluated THROUGH the proxy (ON_BrepTrim is an ON_CurveProxy,
+// so a reversed or sub-domain proxy of its 2D curve is honoured) and
+// then through its face's surface. False if the trim has no 2D curve or
+// no surface.
+bool TrimPoint3d(const ON_BrepTrim& trim, double s, ON_3dPoint& out) {
+  if (!trim.TrimCurveOf()) return false;
+  const ON_Surface* srf = trim.SurfaceOf();
+  if (!srf) return false;
+  const ON_3dPoint uv = trim.PointAt(trim.Domain().ParameterAt(s));
+  out = srf->PointAt(uv.x, uv.y);
+  return true;
+}
+
+// The largest distance, over the trim's start/middle/end, between the
+// trim's 3D image (TrimPoint3d) and the edge's own 3D curve at the
+// matching parameter (reversed when m_bRev3d says the trim runs against
+// the edge). `where` receives the trim-side point at the worst sample.
+// Returns -1.0 if the trim can't be evaluated.
+double TrimEdgeGapMeasure(const ON_BrepTrim& trim, const ON_BrepEdge& edge, ON_3dPoint* where) {
+  double worst = -1.0;
+  const ON_Interval ed = edge.Domain();
+  for (const double s : {0.0, 0.5, 1.0}) {
+    ON_3dPoint tp;
+    if (!TrimPoint3d(trim, s, tp)) return -1.0;
+    const ON_3dPoint ep = edge.PointAt(ed.ParameterAt(trim.m_bRev3d ? 1.0 - s : s));
+    const double d = tp.DistanceTo(ep);
+    if (d > worst) {
+      worst = d;
+      if (where) *where = tp;
+    }
+  }
+  return worst;
+}
+
+// Polyline-sampled 3D length of an edge's curve, 16 segments - the same
+// kind of measurement NurbsCurve::Length() makes, without requiring a
+// NURBS form first.
+double SampledEdgeLength(const ON_BrepEdge& edge) {
+  constexpr int kSegments = 16;
+  const ON_Interval d = edge.Domain();
+  double length = 0.0;
+  ON_3dPoint prev = edge.PointAt(d.ParameterAt(0.0));
+  for (int i = 1; i <= kSegments; ++i) {
+    const ON_3dPoint p = edge.PointAt(d.ParameterAt(static_cast<double>(i) / kSegments));
+    length += prev.DistanceTo(p);
+    prev = p;
+  }
+  return length;
+}
+
+// The loop's own SampleLoop() samples (the ones Tessellate() derives a
+// trim from when no side table applies), mapped through the face's
+// surface to 3D. Empty if the face has no surface.
+std::vector<ON_3dPoint> LoopSamples3d(const ON_Brep& b, const ON_BrepLoop& loop) {
+  std::vector<ON_3dPoint> out;
+  const ON_Surface* srf = loop.SurfaceOf();
+  if (!srf) return out;
+  for (const Point2d& uv : SampleLoop(b, loop)) out.push_back(srf->PointAt(uv.x, uv.y));
+  return out;
+}
+
+// Whether 3D segments (a1, a2) and (b1, b2) genuinely cross - the 3D
+// counterpart to detail::SegmentsProperlyIntersect's 2D test, needed
+// because a loop's SAMPLED 2D trim polygon can be perfectly simple while
+// the SAME loop's 3D image (through a folded/warped surface) crosses
+// itself: two non-crossing regions of parameter space can still map onto
+// the same physical neighbourhood (CheckIssue::Kind::SelfIntersectingLoop3d's
+// own doc comment has the textbook example - a "bowtie"-wired bilinear
+// patch). Two segments in general position are skew, not intersecting, so
+// "crossing" here means their closest approach is within `tolerance` of
+// an ACTUAL transversal crossing, with the same two honest exclusions
+// Mesh::TrianglesProperlyOverlap already applies one level up (mesh
+// triangles, not loop segments):
+//
+//  1. Nearly PARALLEL segments are never reported. Two reasons, not one:
+//     the closest-point solve below divides by `a*e - b*b` (by the
+//     Lagrange identity, exactly |d1 x d2|^2), a hazard as the segments
+//     approach parallel; and, more fundamentally, a close-but-parallel
+//     pair of segments is the ordinary shape of two sides of a thin but
+//     perfectly legitimate sliver face - Check()'s own SliverFace already
+//     names that, and re-reporting it here under a different Kind would
+//     be noise, not a new finding.
+//  2. The closest-approach point must land in the OPEN interior of BOTH
+//     segments (its parameter strictly between 0 and 1 on each). Adjacent
+//     loop segments share a vertex by construction and are never compared
+//     here (the caller skips them, exactly as detail::IsSimplePolygon
+//     does); a closest point landing exactly at 0 or 1 for a NON-adjacent
+//     pair means one segment's endpoint merely grazes the other's
+//     interior (a T-junction touch), which - the same considered
+//     position Mesh::FindSelfIntersections() takes on a hairline
+//     triangle touch - is not a crossing, only a proper one is.
+//
+// `out_point`/`out_distance` receive the crossing's two-closest-point
+// midpoint and their measured distance (always <= `tolerance`) when this
+// returns true; both are left untouched otherwise.
+bool Segments3dProperlyCross(const ON_3dPoint& a1, const ON_3dPoint& a2, const ON_3dPoint& b1,
+                              const ON_3dPoint& b2, double tolerance, ON_3dPoint* out_point,
+                              double* out_distance) {
+  const ON_3dVector d1 = a2 - a1;
+  const ON_3dVector d2 = b2 - b1;
+  const double a = d1 * d1;
+  const double e = d2 * d2;
+  if (a <= tolerance::kZero || e <= tolerance::kZero) return false;  // a degenerate sample segment
+  ON_3dVector u1 = d1, u2 = d2;
+  u1.Unitize();
+  u2.Unitize();
+  if (ON_CrossProduct(u1, u2).Length() < tolerance::kZeroVector) return false;  // parallel: SliverFace's job
+
+  const ON_3dVector r = a1 - b1;
+  const double b = d1 * d2;
+  const double f = d2 * r;
+  const double c = d1 * r;
+  const double denom = a * e - b * b;
+  double s = (denom > tolerance::kZero) ? std::clamp((b * f - c * e) / denom, 0.0, 1.0) : 0.0;
+  double t = (b * s + f) / e;
+  if (t < 0.0) {
+    t = 0.0;
+    s = std::clamp(-c / a, 0.0, 1.0);
+  } else if (t > 1.0) {
+    t = 1.0;
+    s = std::clamp((b - c) / a, 0.0, 1.0);
+  }
+  constexpr double kOpen = 1e-9;  // parameter-space margin excluding an endpoint touch
+  if (s <= kOpen || s >= 1.0 - kOpen || t <= kOpen || t >= 1.0 - kOpen) return false;
+
+  const ON_3dPoint c1 = a1 + s * d1;
+  const ON_3dPoint c2 = b1 + t * d2;
+  const double dist = c1.DistanceTo(c2);
+  if (dist > tolerance) return false;
+  if (out_point) *out_point = ON_3dPoint(0.5 * (c1.x + c2.x), 0.5 * (c1.y + c2.y), 0.5 * (c1.z + c2.z));
+  if (out_distance) *out_distance = dist;
+  return true;
+}
+
+// Whether the loop's 3D image (LoopSamples3d) crosses itself - every
+// non-adjacent pair of its sampled segments checked with
+// Segments3dProperlyCross(), the same adjacency skip
+// detail::IsSimplePolygon uses (`j == i + 1` or the wraparound pair) so a
+// shared sample vertex is never compared against itself. `where`/`measure`
+// receive the first crossing found.
+bool LoopSelfIntersects3d(const std::vector<ON_3dPoint>& pts, double tolerance, ON_3dPoint* where,
+                           double* measure) {
+  const size_t n = pts.size();
+  for (size_t i = 0; i < n; ++i) {
+    for (size_t j = i + 1; j < n; ++j) {
+      if (j == i + 1 || (j + 1) % n == i) continue;  // adjacent: shares a vertex, not a crossing
+      if (Segments3dProperlyCross(pts[i], pts[(i + 1) % n], pts[j], pts[(j + 1) % n], tolerance, where, measure)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+// Width of a 3D point set about its own longest chord: find the two
+// farthest-apart points (O(n^2), n is a loop's handful of samples), then
+// the largest distance of any point from the line through them. Zero
+// when every point is within `tol` of every other (no chord at all).
+// `centroid` receives the plain average of the points.
+double PointSetWidth(const std::vector<ON_3dPoint>& pts, double tol, ON_3dPoint* centroid) {
+  ON_3dPoint c(0, 0, 0);
+  for (const ON_3dPoint& p : pts) c += p;
+  if (!pts.empty()) c = ON_3dPoint(c.x / pts.size(), c.y / pts.size(), c.z / pts.size());
+  if (centroid) *centroid = c;
+  size_t ia = 0, ib = 0;
+  double best = 0.0;
+  for (size_t i = 0; i < pts.size(); ++i) {
+    for (size_t j = i + 1; j < pts.size(); ++j) {
+      const double d = pts[i].DistanceTo(pts[j]);
+      if (d > best) {
+        best = d;
+        ia = i;
+        ib = j;
+      }
+    }
+  }
+  if (best <= tol) return 0.0;
+  ON_3dVector dir = pts[ib] - pts[ia];
+  dir.Unitize();
+  double width = 0.0;
+  for (const ON_3dPoint& p : pts) {
+    const ON_3dVector v = p - pts[ia];
+    const double along = ON_DotProduct(v, dir);
+    const double off = (v - along * dir).Length();
+    if (off > width) width = off;
+  }
+  return width;
+}
+
+// Whether `trim` walks its edge "material on the left as seen from the
+// face's OUTWARD side": the stored 3D direction (m_bRev3d) XOR the
+// face's own flip (m_bRev) XOR a clockwise-stored loop (ON_Brep::
+// LoopDirection() < 0). Two faces are consistently oriented across a
+// shared edge exactly when their two trims disagree here - ON_Brep::
+// IsManifold()'s own orientation rule (m_bRev3d XOR m_bRev), plus the
+// loop-direction term the app layer's proven OrientBrepFaces
+// (cmd_common.h) already carries for a clockwise-stored outer loop.
+bool TrimWalksMaterialLeft(const ON_Brep& b, const ON_BrepTrim& trim) {
+  bool d = trim.m_bRev3d;
+  const ON_BrepFace* face = trim.Face();
+  if (face && face->m_bRev) d = !d;
+  const ON_BrepLoop* loop = trim.Loop();
+  if (loop && b.LoopDirection(*loop) < 0) d = !d;
+  return d;
+}
+
+// Sets every live edge's and vertex's own recorded tolerance from the
+// gaps ACTUALLY present in the geometry (edge curve vs each trim's 3D
+// image; edge curve endpoints vs the vertex), whenever that gap exceeds
+// `floor` - the tolerant-edge bookkeeping JoinNakedEdges() relies on
+// (see brep.h). Must run AFTER SetTolerancesBoxesAndFlags()/
+// FixUnsetEdgeTolerances(), which would otherwise reset what this sets
+// (see FixUnsetEdgeTolerances' own comment). A gap at or below `floor`
+// leaves the existing value alone (0.0 for an exact edge).
+void RecordMeasuredTolerances(ON_Brep& b, double floor) {
+  for (int ei = 0; ei < b.m_E.Count(); ++ei) {
+    ON_BrepEdge& e = b.m_E[ei];
+    if (e.m_edge_index < 0) continue;
+    double gap = 0.0;
+    for (int k = 0; k < e.m_ti.Count(); ++k) {
+      const int ti = e.m_ti[k];
+      if (ti < 0 || ti >= b.m_T.Count()) continue;
+      const double g = TrimEdgeGapMeasure(b.m_T[ti], e, nullptr);
+      if (g > gap) gap = g;
+    }
+    if (gap > floor && !(e.m_tolerance >= gap)) e.m_tolerance = gap;
+    for (int k = 0; k < 2; ++k) {
+      const int vi = e.m_vi[k];
+      if (vi < 0 || vi >= b.m_V.Count()) continue;
+      ON_BrepVertex& v = b.m_V[vi];
+      const ON_3dPoint p = (k == 0) ? e.PointAtStart() : e.PointAtEnd();
+      const double g = p.DistanceTo(v.point);
+      if (g > floor && !(v.m_tolerance >= g)) v.m_tolerance = g;
+    }
+  }
+}
+
+// Closes, exactly, every consecutive-trim gap in every loop whose 3D image
+// (the two trims' end/start points through the surface) is within `tol`:
+// the next trim's own 2D curve is moved (SetStartPoint(), or
+// SetEndPoint() for a reversed proxy) to the previous trim's exact end.
+// ON_Brep::CollapseEdge() with bCloseTrimGap leaves the loop's other
+// junction open by the collapsed edge's own parameter-space length
+// (checked directly: a 7.3e-7 residual in (u, v) that ON_Brep::
+// IsValidLoop()'s 1e-10-relative match test then rejects), so
+// RemoveDegenerateEdges() runs this before re-validating. A gap wider
+// than `tol` in 3D is NOT touched - that is a real LoopGap for Check()
+// to report, not numerical residue to hide.
+void CloseLoopGapsWithinTolerance(ON_Brep& b, double tol) {
+  for (int li = 0; li < b.m_L.Count(); ++li) {
+    const ON_BrepLoop& loop = b.m_L[li];
+    if (loop.m_loop_index < 0) continue;
+    const int n = loop.m_ti.Count();
+    const ON_Surface* srf = loop.SurfaceOf();
+    if (!srf || n < 2) continue;
+    for (int k = 0; k < n; ++k) {
+      const int ta = loop.m_ti[k], tb = loop.m_ti[(k + 1) % n];
+      if (ta < 0 || ta >= b.m_T.Count() || tb < 0 || tb >= b.m_T.Count() || ta == tb) continue;
+      ON_BrepTrim& t0 = b.m_T[ta];
+      ON_BrepTrim& t1 = b.m_T[tb];
+      if (!t0.TrimCurveOf() || !t1.TrimCurveOf()) continue;
+      const ON_3dPoint e = t0.PointAtEnd();
+      const ON_3dPoint s0 = t1.PointAtStart();
+      if (e.x == s0.x && e.y == s0.y) continue;
+      const ON_3dPoint e3 = srf->PointAt(e.x, e.y), s3 = srf->PointAt(s0.x, s0.y);
+      if (e3.DistanceTo(s3) > tol) continue;
+      if (t1.m_c2i < 0 || t1.m_c2i >= b.m_C2.Count() || !b.m_C2[t1.m_c2i]) continue;
+      ON_Curve* c2 = b.m_C2[t1.m_c2i];
+      const ON_3dPoint target(e.x, e.y, 0.0);
+      if (t1.ProxyCurveIsReversed()) c2->SetEndPoint(target); else c2->SetStartPoint(target);
+    }
+  }
+}
+
+}  // namespace
+
+int Brep::CheckReport::Count(CheckIssue::Kind kind) const {
+  int n = 0;
+  for (const CheckIssue& issue : issues) {
+    if (issue.kind == kind) ++n;
+  }
+  return n;
+}
+
+Brep::CheckReport Brep::Check(double tolerance, double sliver_width) const {
+  const ON_Brep& b = brep_;
+  CheckReport report;
+  const double tol = std::max(tolerance, 0.0);
+  auto add = [&report](CheckKind kind, int index, int other, const ON_3dPoint& where, double measure) {
+    CheckIssue issue;
+    issue.kind = kind;
+    issue.index = index;
+    issue.other_index = other;
+    issue.location = where;
+    issue.measure = measure;
+    report.issues.push_back(issue);
+  };
+
+  // Edges: manifoldness, orientation across the edge, length, and the
+  // curve-vs-vertex gaps.
+  for (int ei = 0; ei < b.m_E.Count(); ++ei) {
+    const ON_BrepEdge& e = b.m_E[ei];
+    if (e.m_edge_index < 0) continue;
+    const int tc = e.m_ti.Count();
+    const ON_3dPoint mid = e.PointAt(e.Domain().Mid());
+    if (tc < 2) {
+      add(CheckKind::NakedEdge, ei, tc, mid, 0.0);
+    } else if (tc > 2) {
+      add(CheckKind::NonManifoldEdge, ei, tc, mid, 0.0);
+    } else {
+      const int t0 = e.m_ti[0], t1 = e.m_ti[1];
+      if (t0 >= 0 && t0 < b.m_T.Count() && t1 >= 0 && t1 < b.m_T.Count()) {
+        const ON_BrepTrim& trim0 = b.m_T[t0];
+        const ON_BrepTrim& trim1 = b.m_T[t1];
+        const int f0 = trim0.FaceIndexOf(), f1 = trim1.FaceIndexOf();
+        if (f0 >= 0 && f1 >= 0 && TrimWalksMaterialLeft(b, trim0) == TrimWalksMaterialLeft(b, trim1)) {
+          add(CheckKind::InconsistentFaceOrientation, f0, f1, mid, 0.0);
+        }
+      }
+    }
+    const double length = SampledEdgeLength(e);
+    if (length <= tol) add(CheckKind::DegenerateEdge, ei, tc, mid, length);
+    for (int k = 0; k < 2; ++k) {
+      const int vi = e.m_vi[k];
+      if (vi < 0 || vi >= b.m_V.Count()) continue;
+      const ON_BrepVertex& v = b.m_V[vi];
+      const ON_3dPoint p = (k == 0) ? e.PointAtStart() : e.PointAtEnd();
+      const double gap = p.DistanceTo(v.point);
+      const double allowed = std::max(tol, v.m_tolerance >= 0.0 ? v.m_tolerance : 0.0);
+      if (gap > allowed) add(CheckKind::EdgeVertexGap, ei, vi, v.point, gap);
+    }
+  }
+
+  // Trims: validity, and each trim's 3D image against its own edge.
+  for (int ti = 0; ti < b.m_T.Count(); ++ti) {
+    const ON_BrepTrim& t = b.m_T[ti];
+    if (t.m_trim_index < 0) continue;
+    if (t.m_type == ON_BrepTrim::singular || t.m_type == ON_BrepTrim::ptonsrf) continue;
+    const ON_Curve* c2 = t.TrimCurveOf();
+    const ON_Surface* srf = t.SurfaceOf();
+    const bool edge_ok = t.m_ei >= 0 && t.m_ei < b.m_E.Count() && b.m_E[t.m_ei].m_edge_index >= 0;
+    ON_3dPoint where(0, 0, 0);
+    if (!edge_ok || !c2 || !srf) {
+      if (c2 && srf) TrimPoint3d(t, 0.0, where);
+      add(CheckKind::InvalidTrim, ti, t.m_li, where, 0.0);
+      continue;
+    }
+    const ON_Interval du = srf->Domain(0), dv = srf->Domain(1);
+    double outside = 0.0;
+    for (const double s : {0.0, 1.0}) {
+      const ON_3dPoint uv = t.PointAt(t.Domain().ParameterAt(s));
+      outside = std::max({outside, du.Min() - uv.x, uv.x - du.Max(), dv.Min() - uv.y, uv.y - dv.Max()});
+    }
+    if (outside > tol) {
+      TrimPoint3d(t, 0.0, where);
+      add(CheckKind::InvalidTrim, ti, t.m_li, where, outside);
+    }
+    const ON_BrepEdge& e = b.m_E[t.m_ei];
+    const double gap = TrimEdgeGapMeasure(t, e, &where);
+    const double allowed = std::max(tol, e.m_tolerance >= 0.0 ? e.m_tolerance : 0.0);
+    if (gap > allowed) add(CheckKind::TrimEdgeGap, ti, t.m_ei, where, gap);
+  }
+
+  // Loops: continuity between consecutive trims, self-intersection of the
+  // sampled 2D polygon, and - a DIFFERENT question the 2D check cannot
+  // answer, see CheckIssue::Kind::SelfIntersectingLoop3d's own doc
+  // comment - self-intersection of that same loop's 3D IMAGE, which a
+  // folded/warped surface can produce even from a perfectly simple 2D
+  // trim polygon.
+  for (int li = 0; li < b.m_L.Count(); ++li) {
+    const ON_BrepLoop& loop = b.m_L[li];
+    if (loop.m_loop_index < 0) continue;
+    const int n = loop.m_ti.Count();
+    for (int k = 0; k < n; ++k) {
+      const int ta = loop.m_ti[k], tb = loop.m_ti[(k + 1) % n];
+      if (ta < 0 || ta >= b.m_T.Count() || tb < 0 || tb >= b.m_T.Count()) continue;
+      ON_3dPoint pa, pb;
+      if (!TrimPoint3d(b.m_T[ta], 1.0, pa) || !TrimPoint3d(b.m_T[tb], 0.0, pb)) continue;
+      const double gap = pa.DistanceTo(pb);
+      if (gap > tol) add(CheckKind::LoopGap, li, ta, pa, gap);
+    }
+    if (loop.m_type == ON_BrepLoop::outer || loop.m_type == ON_BrepLoop::inner) {
+      const std::vector<Point2d> poly = SampleLoop(b, loop);
+      if (poly.size() >= 4 && !dino8::kernel::detail::IsSimplePolygon(poly)) {
+        ON_3dPoint where(0, 0, 0);
+        if (const ON_Surface* srf = loop.SurfaceOf()) where = srf->PointAt(poly[0].x, poly[0].y);
+        add(CheckKind::SelfIntersectingLoop, li, loop.m_fi, where, 0.0);
+      }
+      const std::vector<ON_3dPoint> pts3d = LoopSamples3d(b, loop);
+      if (pts3d.size() >= 4) {
+        ON_3dPoint where(0, 0, 0);
+        double measure = 0.0;
+        if (LoopSelfIntersects3d(pts3d, tol, &where, &measure)) {
+          add(CheckKind::SelfIntersectingLoop3d, li, loop.m_fi, where, measure);
+        }
+      }
+    }
+  }
+
+  // Faces: degenerate (collinear/empty boundary, no loop, no surface) and
+  // sliver, from the outer loop's own 3D samples.
+  for (int fi = 0; fi < b.m_F.Count(); ++fi) {
+    const ON_BrepFace& f = b.m_F[fi];
+    if (f.m_face_index < 0) continue;
+    if (!f.SurfaceOf() || f.m_li.Count() == 0) {
+      add(CheckKind::DegenerateFace, fi, -1, ON_3dPoint(0, 0, 0), 0.0);
+      continue;
+    }
+    int outer_li = f.m_li[0];
+    for (int k = 0; k < f.m_li.Count(); ++k) {
+      const int li = f.m_li[k];
+      if (li >= 0 && li < b.m_L.Count() && b.m_L[li].m_type == ON_BrepLoop::outer) {
+        outer_li = li;
+        break;
+      }
+    }
+    if (outer_li < 0 || outer_li >= b.m_L.Count()) {
+      add(CheckKind::DegenerateFace, fi, outer_li, ON_3dPoint(0, 0, 0), 0.0);
+      continue;
+    }
+    const std::vector<ON_3dPoint> pts = LoopSamples3d(b, b.m_L[outer_li]);
+    ON_3dPoint centroid(0, 0, 0);
+    const double width = PointSetWidth(pts, tol, &centroid);
+    if (pts.size() < 3 || width <= tol) {
+      add(CheckKind::DegenerateFace, fi, outer_li, centroid, width);
+    } else if (width <= sliver_width) {
+      add(CheckKind::SliverFace, fi, outer_li, centroid, width);
+    }
+  }
+
+  report.topology_valid = b.IsValidTopology();
+  int live_faces = 0;
+  for (int fi = 0; fi < b.m_F.Count(); ++fi) {
+    if (b.m_F[fi].m_face_index >= 0) ++live_faces;
+  }
+  report.is_closed = live_faces > 0 && report.Count(CheckKind::NakedEdge) == 0 &&
+                     report.Count(CheckKind::NonManifoldEdge) == 0;
+  report.is_oriented = report.Count(CheckKind::InconsistentFaceOrientation) == 0;
+  return report;
+}
+
+void Brep::ClearFaceSideTables() {
+  face_trim_loops_.clear();
+  face_exact_clip_.clear();
+  face_hole_loops_.clear();
+  face_arc_runs_.clear();
+  face_notch_rows_.clear();
+  face_records_.clear();
+}
+
+int Brep::JoinNakedEdges(double tolerance) {
+  // Same reasoning as MergeCoplanarFaces(): CombineCoincidentEdges()/
+  // Compact() renumber edges and trims, and the surviving face's own trim
+  // loop now references a different edge, so the per-face side tables
+  // can't be trusted afterwards (see MergeCoplanarFaces' own comment).
+  ClearFaceSideTables();
+  const int joined = WeldCoincidentNakedEdges(brep_, std::max(tolerance, 0.0));
+  if (joined == 0) return 0;
+  brep_.Compact();
+  brep_.SetTolerancesBoxesAndFlags();
+  FixUnsetEdgeTolerances(brep_);
+  RecordMeasuredTolerances(brep_, tolerance::kDistance);
+  UnifyNormals();
+  return joined;
+}
+
+int Brep::UnifyNormals() {
+  ON_Brep& b = brep_;
+  std::vector<char> done(static_cast<size_t>(b.m_F.Count()), 0);
+  int flipped = 0;
+  for (int seed = 0; seed < b.m_F.Count(); ++seed) {
+    if (done[static_cast<size_t>(seed)] || b.m_F[seed].m_face_index < 0) continue;
+    std::vector<int> queue = {seed};
+    done[static_cast<size_t>(seed)] = 1;
+    while (!queue.empty()) {
+      const int fi = queue.back();
+      queue.pop_back();
+      const ON_BrepFace& f = b.m_F[fi];
+      for (int li = 0; li < f.m_li.Count(); ++li) {
+        const int loop_index = f.m_li[li];
+        if (loop_index < 0 || loop_index >= b.m_L.Count()) continue;
+        const ON_BrepLoop& loop = b.m_L[loop_index];
+        for (int k = 0; k < loop.m_ti.Count(); ++k) {
+          const int ti = loop.m_ti[k];
+          if (ti < 0 || ti >= b.m_T.Count()) continue;
+          const ON_BrepTrim& t = b.m_T[ti];
+          if (t.m_ei < 0 || t.m_ei >= b.m_E.Count()) continue;
+          const ON_BrepEdge& e = b.m_E[t.m_ei];
+          if (e.m_ti.Count() != 2) continue;  // naked or non-manifold: no neighbour to agree with
+          const int oti = e.m_ti[0] == ti ? e.m_ti[1] : e.m_ti[0];
+          if (oti < 0 || oti >= b.m_T.Count()) continue;
+          const ON_BrepTrim& ot = b.m_T[oti];
+          const int ofi = ot.FaceIndexOf();
+          if (ofi < 0 || ofi >= b.m_F.Count() || done[static_cast<size_t>(ofi)]) continue;
+          if (TrimWalksMaterialLeft(b, t) == TrimWalksMaterialLeft(b, ot)) {
+            b.FlipFace(b.m_F[ofi]);
+            ++flipped;
+          }
+          done[static_cast<size_t>(ofi)] = 1;
+          queue.push_back(ofi);
+        }
+      }
+    }
+  }
+
+  // Outward: only meaningful for a closed shell (every live edge shared
+  // by exactly two trims); decided by the sign of the tessellated
+  // divergence-theorem volume, the same integral Mesh::Volume() reports.
+  bool closed = false;
+  int live_faces = 0;
+  for (int fi = 0; fi < b.m_F.Count(); ++fi) {
+    if (b.m_F[fi].m_face_index >= 0) ++live_faces;
+  }
+  if (live_faces > 0) {
+    closed = true;
+    for (int ei = 0; ei < b.m_E.Count() && closed; ++ei) {
+      const ON_BrepEdge& e = b.m_E[ei];
+      if (e.m_edge_index >= 0 && e.m_ti.Count() != 2) closed = false;
+    }
+  }
+  if (closed && TessellateToClosedMesh(4, 4).Volume() < 0.0) {
+    for (int fi = 0; fi < b.m_F.Count(); ++fi) {
+      if (b.m_F[fi].m_face_index < 0) continue;
+      b.FlipFace(b.m_F[fi]);
+      ++flipped;
+    }
+  }
+  return flipped;
+}
+
+int Brep::RemoveThinFaces(double width, double join_tolerance, bool slivers_too) {
+  const double tol = std::max(width, 0.0);
+  const CheckReport report = slivers_too ? Check(std::min(tolerance::kDistance, tol), tol) : Check(tol, tol);
+  std::vector<int> doomed;
+  for (const CheckIssue& issue : report.issues) {
+    if (issue.kind == CheckKind::DegenerateFace || (slivers_too && issue.kind == CheckKind::SliverFace)) {
+      doomed.push_back(issue.index);
+    }
+  }
+  if (doomed.empty()) return 0;
+  ClearFaceSideTables();
+  int removed = 0;
+  for (const int fi : doomed) {
+    if (fi < 0 || fi >= brep_.m_F.Count() || brep_.m_F[fi].m_face_index < 0) continue;
+    brep_.DeleteFace(brep_.m_F[fi], /*bDeleteFaceEdges=*/true);
+    ++removed;
+  }
+  brep_.Compact();
+  brep_.SetTolerancesBoxesAndFlags();
+  FixUnsetEdgeTolerances(brep_);
+  JoinNakedEdges(join_tolerance);
+  return removed;
+}
+
+int Brep::RemoveDegenerateFaces(double tolerance) {
+  return RemoveThinFaces(tolerance, tolerance, /*slivers_too=*/false);
+}
+
+int Brep::RemoveSliverFaces(double max_width) {
+  return RemoveThinFaces(max_width, max_width, /*slivers_too=*/true);
+}
+
+int Brep::RemoveDegenerateEdges(double tolerance) {
+  const CheckReport report = Check(tolerance, tolerance);
+  std::vector<int> doomed;
+  for (const CheckIssue& issue : report.issues) {
+    if (issue.kind == CheckKind::DegenerateEdge) doomed.push_back(issue.index);
+  }
+  if (doomed.empty()) return 0;
+  ClearFaceSideTables();
+  int collapsed = 0;
+  for (const int ei : doomed) {
+    if (ei < 0 || ei >= brep_.m_E.Count() || brep_.m_E[ei].m_edge_index < 0) continue;
+    if (brep_.CollapseEdge(ei, /*bCloseTrimGap=*/true, /*vertex_index=*/-1)) ++collapsed;
+  }
+  brep_.Compact();
+  CloseLoopGapsWithinTolerance(brep_, std::max(tolerance, 0.0));
+  brep_.SetTolerancesBoxesAndFlags();
+  FixUnsetEdgeTolerances(brep_);
+  return collapsed;
+}
+
+Result Brep::SplitNakedEdgeAt(int edge_index, Point3d point, double tolerance) {
+  if (edge_index < 0 || edge_index >= brep_.m_E.Count()) {
+    throw std::out_of_range("dino8::kernel::Brep::SplitNakedEdgeAt: edge_index " +
+                            std::to_string(edge_index) + " is out of range (this Brep has " +
+                            std::to_string(brep_.m_E.Count()) + " edge slot(s))");
+  }
+  ON_Brep& b = brep_;
+  ON_BrepEdge& edge = b.m_E[edge_index];
+  if (edge.m_edge_index < 0) {
+    throw std::invalid_argument("dino8::kernel::Brep::SplitNakedEdgeAt: edge_index " +
+                                std::to_string(edge_index) + " refers to a deleted edge");
+  }
+  if (edge.TrimCount() != 1) return Result::Failed;  // not naked - out of scope
+  const double tol = std::max(tolerance, 0.0);
+  // Restricted to LINEAR edges: found by testing, not assumed. A clean
+  // (Check()-verified baseline) open curved fixture - a partial-angle
+  // cylindrical wedge's own un-capped rim - measurably gained new
+  // LoopGap/InvalidTrim issues (Check()'s own diagnostics) after a
+  // curved split that this method's own internal checks reported as
+  // Result::Ok, i.e. a SILENT wrong result on curved input: a real,
+  // unresolved defect in how the trim's own (u, v) closest-point search
+  // (step 2) interacts with a curved face's surface. Rather than ship
+  // that, this is scoped down to what direct testing actually confirms
+  // correct: linear edges only (the far more common "straight boundary
+  // sewing gap" case) - the same "curved boundary refused, not guessed
+  // at" restriction CapPlanarHoles() already places on itself.
+  if (!edge.IsLinear(tol)) return Result::Failed;
+  const int ti = edge.m_ti[0];
+  if (ti < 0 || ti >= b.m_T.Count()) return Result::Failed;
+  ON_BrepTrim& trim = b.m_T[ti];
+  if (trim.m_li < 0 || trim.m_li >= b.m_L.Count()) return Result::Failed;
+  ON_BrepLoop& loop = b.m_L[trim.m_li];
+  const ON_BrepFace* face = trim.Face();
+  const ON_Surface* srf = face ? face->SurfaceOf() : nullptr;
+  if (!srf) return Result::Failed;
+
+  // 1. Locate the split point ON the edge's own curve, via this kernel's
+  // proven closest-point solver - the projected point (not the caller's
+  // raw `point`) becomes the new vertex.
+  ON_NurbsCurve edge_nc;
+  if (edge.GetNurbForm(edge_nc) <= 0) return Result::Failed;
+  NurbsCurve edge_wrap;
+  edge_wrap.raw() = edge_nc;
+  const double t_split = edge_wrap.ClosestPointParameter(point, 200);
+  const Point3d p_on_edge = edge_wrap.PointAt(t_split);
+  if (p_on_edge.DistanceTo(point) > tol) return Result::Failed;
+  const ON_Interval edom = edge_nc.Domain();
+  if (t_split <= edom.Min() + tol || t_split >= edom.Max() - tol) return Result::Failed;
+
+  ON_Curve *left3d_raw = nullptr, *right3d_raw = nullptr;
+  if (!edge_nc.Split(t_split, left3d_raw, right3d_raw)) return Result::Failed;
+  std::unique_ptr<ON_Curve> left3d(left3d_raw), right3d(right3d_raw);
+
+  // 2. Locate the matching split parameter on the trim's own 2D curve:
+  // project the (already curve-exact) split point through the face's
+  // surface into (u, v), then find the trim's own closest parameter to
+  // that (u, v) point - the same "measure, don't assume" technique used
+  // below to pair the split halves, since a trim's own local
+  // parameterization has no guaranteed relationship to the edge's.
+  NurbsSurface srf_wrap;
+  ON_NurbsSurface ns;
+  if (const auto* cast = ON_NurbsSurface::Cast(srf)) {
+    ns = *cast;
+  } else if (srf->GetNurbForm(ns) <= 0) {
+    return Result::Failed;
+  }
+  srf_wrap.raw() = ns;
+  const Point2d uv = srf_wrap.ClosestPointParameter(p_on_edge, 60, 60);
+
+  const ON_Curve* trim_curve = trim.TrimCurveOf();
+  if (!trim_curve) return Result::Failed;
+  ON_NurbsCurve trim_nc;
+  if (trim_curve->GetNurbForm(trim_nc) <= 0) return Result::Failed;
+  NurbsCurve trim_wrap;
+  trim_wrap.raw() = trim_nc;
+  const double s_split = trim_wrap.ClosestPointParameter(Point3d(uv.x, uv.y, 0.0), 200);
+  const ON_Interval sdom = trim_nc.Domain();
+  if (s_split <= sdom.Min() || s_split >= sdom.Max()) return Result::Failed;
+
+  ON_Curve *left2d_raw = nullptr, *right2d_raw = nullptr;
+  if (!trim_nc.Split(s_split, left2d_raw, right2d_raw)) return Result::Failed;
+  std::unique_ptr<ON_Curve> left2d(left2d_raw), right2d(right2d_raw);
+
+  const int old_start_vi = edge.m_vi[0];
+  const int old_end_vi = edge.m_vi[1];
+  const Point3d old_start = b.m_V[old_start_vi].point;
+
+  // 3. Pair each split's two pieces to "old-start-to-new-vertex" vs.
+  // "new-vertex-to-old-end" by DIRECT measurement (see this method's own
+  // doc comment) - never by trusting the curve's or trim's own
+  // parameter direction.
+  const bool d3_forward = left3d->PointAtStart().DistanceTo(old_start) <=
+                          right3d->PointAtStart().DistanceTo(old_start);
+  ON_Curve* first3d = d3_forward ? left3d.get() : right3d.get();
+  ON_Curve* second3d = d3_forward ? right3d.get() : left3d.get();
+
+  const Point3d left2d_start_3d = srf_wrap.PointAt(left2d->PointAtStart().x, left2d->PointAtStart().y);
+  const Point3d right2d_start_3d = srf_wrap.PointAt(right2d->PointAtStart().x, right2d->PointAtStart().y);
+  const bool d2_forward = left2d_start_3d.DistanceTo(old_start) <= right2d_start_3d.DistanceTo(old_start);
+  ON_Curve* first2d = d2_forward ? left2d.get() : right2d.get();
+  ON_Curve* second2d = d2_forward ? right2d.get() : left2d.get();
+
+  // 4. Commit: a new vertex at the exact split point, two new edges
+  // (old-start -> new, new -> old-end) each with their own exact curve
+  // piece, and two new trims sharing this face's own loop.
+  ON_BrepVertex& new_v = b.NewVertex(p_on_edge, 0.0);
+  const int c3i_first = b.AddEdgeCurve(first3d->Duplicate());
+  const int c3i_second = b.AddEdgeCurve(second3d->Duplicate());
+  ON_BrepEdge& edge_first = b.NewEdge(b.m_V[old_start_vi], new_v, c3i_first);
+  ON_BrepEdge& edge_second = b.NewEdge(new_v, b.m_V[old_end_vi], c3i_second);
+  edge_first.m_tolerance = 0.0;
+  edge_second.m_tolerance = 0.0;
+
+  const int c2i_first = b.AddTrimCurve(first2d->Duplicate());
+  const int c2i_second = b.AddTrimCurve(second2d->Duplicate());
+  ON_BrepTrim& trim_first = b.NewTrim(edge_first, /*bRev3d=*/false, loop, c2i_first);
+  ON_BrepTrim& trim_second = b.NewTrim(edge_second, /*bRev3d=*/false, loop, c2i_second);
+  trim_first.m_tolerance[0] = trim_first.m_tolerance[1] = 0.0;
+  trim_second.m_tolerance[0] = trim_second.m_tolerance[1] = 0.0;
+  const int ti_first = trim_first.m_trim_index;
+  const int ti_second = trim_second.m_trim_index;
+
+  // NewTrim(edge, bRev3d, loop, c2i) APPENDS to loop.m_ti itself
+  // (confirmed empirically, not merely assumed from its own doc
+  // comment). Undo that append, then splice both new trim indices in at
+  // the ORIGINAL trim's own position, preserving the loop's cyclic
+  // order.
+  int pos = -1;
+  for (int k = 0; k < loop.m_ti.Count(); ++k) {
+    if (loop.m_ti[k] == ti) {
+      pos = k;
+      break;
+    }
+  }
+  if (pos < 0) return Result::Failed;  // shouldn't happen - defensive only
+  loop.m_ti.Remove(loop.m_ti.Count() - 1);  // undo append of ti_second
+  loop.m_ti.Remove(loop.m_ti.Count() - 1);  // undo append of ti_first
+  loop.m_ti.Remove(pos);                     // remove the original trim's own slot
+  loop.m_ti.Insert(pos, ti_second);
+  loop.m_ti.Insert(pos, ti_first);
+
+  // 5. Remove the deleted edge's own index from its two (former)
+  // endpoint vertices' m_ei lists - ON_Brep::Compact()/
+  // CullUnusedVertices() never touches m_ei itself (checked directly:
+  // its own remap logic only reads ON_BrepVertex::m_vertex_index, never
+  // m_ei), so a stale reference here would silently survive Compact().
+  auto remove_from_vertex = [&](int vi, int ei) {
+    ON_BrepVertex& v = b.m_V[vi];
+    for (int k = v.m_ei.Count() - 1; k >= 0; --k) {
+      if (v.m_ei[k] == ei) v.m_ei.Remove(k);
+    }
+  };
+  remove_from_vertex(old_start_vi, edge_index);
+  remove_from_vertex(old_end_vi, edge_index);
+  b.m_E[edge_index].m_edge_index = -1;
+  b.m_T[ti].m_trim_index = -1;
+
+  b.Compact();
+  b.SetTolerancesBoxesAndFlags();
+  FixUnsetEdgeTolerances(b);
+  ClearFaceSideTables();
+  return Result::Ok;
+}
+
+int Brep::SewTJunctions(double tolerance) {
+  const double tol = std::max(tolerance, 0.0);
+  ON_Brep& b = brep_;
+  int splits = 0;
+  const int kMaxIterations = 4 * std::max(b.m_E.Count(), 1) + 16;
+  for (int iter = 0; iter < kMaxIterations; ++iter) {
+    std::vector<int> naked;
+    for (int ei = 0; ei < b.m_E.Count(); ++ei) {
+      const ON_BrepEdge& e = b.m_E[ei];
+      if (e.m_edge_index >= 0 && e.TrimCount() == 1) naked.push_back(ei);
+    }
+
+    // Find one T-junction this pass: a naked edge B whose endpoint lands
+    // strictly inside another naked, LINEAR edge A's own span. Only one
+    // split is committed per pass, since SplitNakedEdgeAt()'s own
+    // Compact() renumbers every edge/vertex index afterward - trying a
+    // second candidate against stale indices would be wrong.
+    bool found = false;
+    for (const int ai : naked) {
+      const ON_BrepEdge& a = b.m_E[ai];
+      if (!a.IsLinear(tol)) continue;
+      const Point3d a0 = b.m_V[a.m_vi[0]].point;
+      const Point3d a1 = b.m_V[a.m_vi[1]].point;
+      if (a0.DistanceTo(a1) <= tol) continue;  // degenerate - nothing to be inside of
+
+      for (const int bi : naked) {
+        if (bi == ai) continue;
+        const ON_BrepEdge& be = b.m_E[bi];
+        for (int k = 0; k < 2; ++k) {
+          const Point3d v = b.m_V[be.m_vi[k]].point;
+          // Already at (or coincides with) one of A's own endpoints: an
+          // ordinary endpoint match, JoinNakedEdges()'s job, not a
+          // T-junction.
+          if (v.DistanceTo(a0) <= tol || v.DistanceTo(a1) <= tol) continue;
+
+          double s = 0.0, t = 0.0;
+          const double dist2 = detail::ClosestSegmentSegment(a0, a1, v, v, s, t);
+          if (dist2 > tol * tol) continue;   // not on A's line within tolerance
+          if (s <= 0.0 || s >= 1.0) continue;  // clamped to an end - not strictly interior
+
+          const Point3d proj = a0 + (a1 - a0) * s;
+          if (proj.DistanceTo(a0) <= tol || proj.DistanceTo(a1) <= tol) continue;
+
+          if (SplitNakedEdgeAt(ai, v, tol) == Result::Ok) {
+            ++splits;
+            found = true;
+          }
+          break;
+        }
+        if (found) break;
+      }
+      if (found) break;
+    }
+    if (!found) break;
+  }
+  if (splits > 0) JoinNakedEdges(tol);
+  return splits;
+}
+
+Mesh Brep::TessellateToClosedMeshTolerant(int u_divisions, int v_divisions) const {
+  Mesh mesh = TessellateToClosedMesh(u_divisions, v_divisions);
+  double max_tolerance = 0.0;
+  for (int ei = 0; ei < brep_.m_E.Count(); ++ei) {
+    const ON_BrepEdge& e = brep_.m_E[ei];
+    if (e.m_edge_index >= 0 && e.m_tolerance > max_tolerance) max_tolerance = e.m_tolerance;
+  }
+  mesh.CloseNakedEdges(std::max(tolerance::kWeld, 2.0 * max_tolerance));
+  return mesh;
+}
+
+int Brep::CapPlanarHoles(double tolerance) {
+  ON_Brep& b = brep_;
+  const double tol = std::max(tolerance, 0.0);
+
+  // Naked edges by vertex, for chaining.
+  std::map<int, std::vector<int>> naked_at_vertex;
+  std::vector<int> naked_edges;
+  for (int ei = 0; ei < b.m_E.Count(); ++ei) {
+    const ON_BrepEdge& e = b.m_E[ei];
+    if (e.m_edge_index < 0 || e.m_ti.Count() != 1) continue;
+    naked_edges.push_back(ei);
+    naked_at_vertex[e.m_vi[0]].push_back(ei);
+    if (e.m_vi[1] != e.m_vi[0]) naked_at_vertex[e.m_vi[1]].push_back(ei);
+  }
+  if (naked_edges.empty()) return 0;
+
+  // Chain each naked edge into a closed loop of vertices, walking each
+  // edge head-to-tail through its own two vertices.
+  std::set<int> used;
+  std::vector<PlanarFace> caps;
+  for (const int start : naked_edges) {
+    if (used.count(start)) continue;
+    std::vector<int> loop_vertices;
+    int ei = start;
+    bool rev = false;
+    const int origin = b.m_E[start].m_vi[0];
+    bool ok = true;
+    while (true) {
+      const ON_BrepEdge& e = b.m_E[ei];
+      if (used.count(ei)) {
+        ok = false;
+        break;
+      }
+      used.insert(ei);
+      // A curved naked edge can't be capped by a straight-edged planar
+      // face without polygonizing it into edges the join could never
+      // match - refused rather than left as a loose, unjoined face.
+      if (!e.IsLinear(tolerance::kDistance)) ok = false;
+      loop_vertices.push_back(rev ? e.m_vi[1] : e.m_vi[0]);
+      const int head = rev ? e.m_vi[0] : e.m_vi[1];
+      if (head == origin) break;
+      const std::vector<int>& next = naked_at_vertex[head];
+      if (next.size() != 2) {
+        ok = false;  // dead end or ambiguous junction
+        break;
+      }
+      const int nei = next[0] == ei ? next[1] : next[0];
+      const ON_BrepEdge& ne = b.m_E[nei];
+      if (ne.m_vi[0] == head) rev = false;
+      else if (ne.m_vi[1] == head) rev = true;
+      else {
+        ok = false;
+        break;
+      }
+      ei = nei;
+    }
+    if (!ok || loop_vertices.size() < 3) continue;
+
+    std::vector<Point3d> loop;
+    for (const int vi : loop_vertices) {
+      if (vi < 0 || vi >= b.m_V.Count()) {
+        ok = false;
+        break;
+      }
+      loop.push_back(b.m_V[vi].point);
+    }
+    if (!ok) continue;
+
+    // Plane through the loop: Newell normal (the normal the loop is CCW
+    // about, which is exactly PlanarFace's own "CCW as seen from
+    // outside" convention - JoinNakedEdges()'s UnifyNormals() fixes the
+    // sign against the neighbours afterwards either way), centroid
+    // origin, every vertex within tolerance of it.
+    ON_3dPoint centroid(0, 0, 0);
+    for (const Point3d& p : loop) centroid += p;
+    centroid = ON_3dPoint(centroid.x / loop.size(), centroid.y / loop.size(), centroid.z / loop.size());
+    ON_3dVector normal(0, 0, 0);
+    double extent = 0.0;
+    for (size_t i = 0; i < loop.size(); ++i) {
+      const Point3d& p = loop[i];
+      const Point3d& q = loop[(i + 1) % loop.size()];
+      normal.x += (p.y - q.y) * (p.z + q.z);
+      normal.y += (p.z - q.z) * (p.x + q.x);
+      normal.z += (p.x - q.x) * (p.y + q.y);
+      extent = std::max(extent, p.DistanceTo(centroid));
+    }
+    if (normal.Length() <= tolerance::kZeroVector) continue;
+    normal.Unitize();
+    const double plane_tol = std::max(tol, tolerance::DistanceForSize(extent));
+    bool planar = true;
+    for (const Point3d& p : loop) {
+      if (std::fabs(ON_DotProduct(p - centroid, normal)) > plane_tol) {
+        planar = false;
+        break;
+      }
+    }
+    if (!planar) continue;
+    PlanarFace cap;
+    cap.plane = ON_Plane(centroid, normal);
+    cap.loop = loop;
+    caps.push_back(cap);
+  }
+  if (caps.empty()) return 0;
+
+  // Built through FromPlanarFaces() - the SAME padded-bilinear-surface +
+  // exact-clip construction every planar face of this class already uses
+  // - rather than ON_BrepTrimmedPlane(), so the cap's own tessellation
+  // grid lands on the same cut lines as its neighbours' and the welded
+  // mesh closes (checked directly: an ON_BrepTrimmedPlane cap over an
+  // unpadded [-0.5, 0.5]^2 domain put its grid rows at 0.25 where the
+  // 5%-padded neighbours' clipped rows sit at 0.225 - a valid, solid
+  // ON_Brep whose mesh nonetheless had 32 T-junction naked edges).
+  ClearFaceSideTables();
+  int added = 0;
+  for (const PlanarFace& cap : caps) {
+    Brep one;
+    try {
+      one = FromPlanarFaces({cap});
+    } catch (const std::exception&) {
+      continue;
+    }
+    if (one.FaceCount() != 1) continue;
+    b.Append(one.brep_);
+    ++added;
+  }
+  if (added == 0) return 0;
+  b.Compact();
+  b.SetTolerancesBoxesAndFlags();
+  FixUnsetEdgeTolerances(b);
+  JoinNakedEdges(tol);
+  return added;
 }
 
 }  // namespace dino8::kernel
