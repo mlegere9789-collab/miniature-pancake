@@ -1,0 +1,92 @@
+# Adversarial fillet QC: radii and geometry chosen to stress BuildFillet's
+# tolerance handling and RoundFaceCorner's vertex-corner detection, not just
+# the clean 10x10x10-box case in fillet_script.txt. Each section deletes
+# its own objects afterward so @expect_objects checks stay per-section
+# (unlike fillet_script.txt's Hide-and-check-at-the-end style). See
+# dino8-app/tests/adversarial_corpus_notes.md for the two genuine
+# kernel-level limitations this corpus found (both confirmed reproducible
+# on the unmodified, pristine code too, not introduced by any fix here).
+SetActiveViewport Top
+# --- Asymmetric box (100 x 5 x 2): the vertical (height) edge at a corner
+# is only 2 units long while the other two edges meeting at that same
+# vertex are 100 and 5 - a vertex where the three adjacent edges have very
+# different lengths, unlike a cube's equal-length corner.
+# --- Tiny radius relative to the shortest adjacent edge (0.02, vs a 2-unit
+# edge): must still build a real, exact fillet, not skip or degrade it.
+Box 0,0,0 100,5,0 2
+FilletEdge
+Radius=0.02
+100,5,1
+Enter
+SelAll
+Volume
+@expect_objects 1
+SelAll
+Delete
+# --- Radius at the geometric limit of the shortest adjacent edge (radius
+# equal to half that edge's own length, 1.0 for a 2-unit-tall edge): the
+# rolling-ball offset surfaces are pushed right to where the face's own
+# extent runs out - must still build a valid closed solid, not garbage.
+Box 100,0,0 200,5,0 2
+FilletEdge
+Radius=1
+200,5,1
+Enter
+SelAll
+List
+@expect_objects 1
+SelAll
+Delete
+# --- Radius larger than the shortest adjacent edge supports (5, vs a
+# 2-unit-tall edge - more than double what the geometry can resolve):
+# expect FilletEdge's own graceful failure message, not a hang, crash, or
+# a self-intersecting/garbage fillet surface silently accepted as "ok" -
+# and the original box must survive untouched, not be left half-modified.
+Box 200,0,0 300,5,0 2
+FilletEdge
+Radius=5
+300,5,1
+Enter
+SelAll
+Volume
+@expect_objects 1
+SelAll
+Delete
+# --- Huge-scale box (1e6-unit coordinates) with an otherwise perfectly
+# ordinary radius (2, on a 10-unit box - identical proportions to
+# fillet_script.txt's own working case, just translated far from the
+# origin). This is KNOWN INFEASIBLE at this coordinate magnitude - see
+# adversarial_corpus_notes.md - because dino8::kernel::Mesh stores vertices
+# as single-precision floats (ON_3fPoint) throughout the kernel, and
+# 1e6 * 2^-23 ~= 0.12 units of unavoidable quantization error swamps a
+# 2-unit fillet feature regardless of any tolerance setting. The fix here
+# is graceful failure: FilletEdge must reject this with a clear diagnostic
+# (both its exact B-rep path and its mesh fallback failing a genuine
+# watertightness check) rather than silently returning a "closed solid"
+# that is not actually closed, which is what it did before this corpus
+# found the gap. The box itself is left untouched.
+Box 1000000,0,0 1000010,10,0 10
+FilletEdge
+Radius=2
+1000010,10,5
+Enter
+SelAll
+@expect_objects 1
+SelAll
+Delete
+# --- FilletSrf on two nearly-flat (shallow bend, not a sharp corner)
+# planes: the offset surfaces diverge rather than converge at this shallow
+# an angle for the requested radius, so BuildFillet reports its own clear
+# "offset surfaces do not meet" diagnostic - expected, not a hang or a
+# garbage self-intersecting surface silently accepted as valid.
+Plane3Pt 1200000,0,0 1200010,0,0 1200010,10,0
+Plane3Pt 1200010,0,0 1200020,0.5,0 1200020,10.5,0
+FilletSrf
+Radius=1
+1200005,5,0
+1200015,5,0.25
+SelAll
+List
+SelAll
+Delete
+@expect_objects 0

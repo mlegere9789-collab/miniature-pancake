@@ -1,0 +1,22 @@
+# Screenshot script: a dashed curve and a dimension in the Top view.
+# Intentionally NOT wired into smoke.sh/CI - this is a manual, one-off
+# documentation-screenshot generator, not an automated test (no
+# @expect_objects-style assertions). Run by hand with
+# `./Dino8 --smoke 60 --screenshot out.ppm --script annotate2_shot.txt`
+# when a fresh screenshot of this scene is needed.
+SetCustomLinetype Name=Foo Pattern=6,3
+Circle 0,0,0 20
+SelLast
+SetLinetype Name=Foo
+SelNone
+Line -30,-30,0 30,-30,0
+SelLast
+SetLinetype Name=Dashed
+SelNone
+DimLinear -20,0,0 20,0,0 0,30,0
+Circle 0,0,0 20
+SelLast
+DimArea
+30,30,0
+SelNone
+ZoomExtentsAll

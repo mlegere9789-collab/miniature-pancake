@@ -1,0 +1,552 @@
+// Drafting helpers: Hatch, Make2D, and Blocks (definitions + instances).
+#include "commands/cmd_common.h"
+
+#include <algorithm>
+
+#include "doc/BlockInstances.h"
+#include "imgui.h"
+#include "ui/Panels.h"
+
+namespace dino8::app {
+
+namespace {
+
+// Moller-Trumbore ray/triangle test; out_t is the ray parameter of the hit.
+bool Make2DRayTriangle(Point3d o, Vector3d d, Point3d t0, Point3d t1, Point3d t2, double& out_t) {
+  const Vector3d e1 = t1 - t0, e2 = t2 - t0;
+  const Vector3d p = ON_CrossProduct(d, e2);
+  const double det = ON_DotProduct(e1, p);
+  if (std::fabs(det) < 1e-12) return false;
+  const double inv = 1 / det;
+  const Vector3d s = o - t0;
+  const double u = ON_DotProduct(s, p) * inv;
+  if (u < 0 || u > 1) return false;
+  const Vector3d q = ON_CrossProduct(s, e1);
+  const double v = ON_DotProduct(d, q) * inv;
+  if (v < 0 || u + v > 1) return false;
+  out_t = ON_DotProduct(e2, q) * inv;
+  return true;
+}
+
+// Make2D: project the selection's display lines through the active view onto
+// the CPlane, splitting each into visible / hidden runs by ray-testing its
+// midpoint (in 3D, before projection) against every visible object's mesh.
+void Make2D(CommandContext& ctx, const std::vector<ObjectId>& ids) {
+  Viewport* vp = ctx.ActiveViewport();
+  if (!vp) return;
+  const ON_Plane pl = ActivePlane(ctx);
+  const CameraState& cam = vp->GetCamera().State();
+  const Vector3d f = vp->GetCamera().Forward();
+  auto project = [&](const Point3d& p) {
+    // Along the view direction onto the CPlane (parallel projection).
+    const double denom = ON_DotProduct(f, pl.zaxis);
+    if (std::fabs(denom) < 1e-9) return pl.ClosestPointTo(p);
+    const double t = ON_DotProduct(pl.origin - p, pl.zaxis) / denom;
+    return p + f * t;
+  };
+
+  // Occluder triangles: every visible object's tessellation.
+  struct Tri3 { Point3d a, b, c; };
+  std::vector<Tri3> occluders;
+  ON_BoundingBox bb;
+  bool have_bb = false;
+  for (const SceneObject& o : ctx.Doc().Objects()) {
+    if (!ctx.Doc().IsObjectVisible(o)) continue;
+    std::optional<kernel::Mesh> m = MeshOf(o, ctx.App().surface_display_tolerance);
+    if (!m) continue;
+    const ON_Mesh& raw = m->raw();
+    for (int i = 0; i < raw.FaceCount(); ++i) {
+      const ON_MeshFace& mf = raw.m_F[i];
+      const Point3d v0 = raw.Vertex(mf.vi[0]), v1 = raw.Vertex(mf.vi[1]), v2 = raw.Vertex(mf.vi[2]);
+      occluders.push_back({v0, v1, v2});
+      if (mf.vi[3] != mf.vi[2]) occluders.push_back({v0, v2, raw.Vertex(mf.vi[3])});
+      bb.Set(v0, true); bb.Set(v1, true); bb.Set(v2, true);
+      have_bb = true;
+    }
+  }
+  const double diag = have_bb ? bb.Diagonal().Length() : 1.0;
+  const double eps = std::max(1e-6, diag * 1e-5);
+  const double back = diag * 10 + 10;
+
+  // True if `p` (a point on some object's own surface/edge) is not blocked
+  // from the camera by any occluder closer than itself.
+  auto Visible = [&](Point3d p) {
+    Point3d origin;
+    Vector3d d;
+    double t_p;
+    if (cam.perspective) {
+      d = p - cam.eye;
+      t_p = d.Length();
+      if (t_p < 1e-12) return true;
+      d /= t_p;
+      origin = cam.eye;
+    } else {
+      d = f;
+      origin = p - f * back;
+      t_p = back;
+    }
+    for (const Tri3& t : occluders) {
+      double tt;
+      if (Make2DRayTriangle(origin, d, t.a, t.b, t.c, tt) && tt < t_p - eps) return false;
+    }
+    return true;
+  };
+
+  std::vector<kernel::NurbsCurve> visible_curves, hidden_curves;
+  int visible_segs = 0, hidden_segs = 0;
+  for (ObjectId id : ids) {
+    const SceneObject* o = ctx.Doc().Find(id);
+    if (!o) continue;
+    o->EnsureDisplay(ctx.App().curve_display_tolerance, ctx.App().surface_display_tolerance);
+    const DisplayCache& d = o->Display();
+    // Chain consecutive same-visibility segments into polylines.
+    std::vector<Point3d> run;
+    bool run_visible = true;
+    auto flush = [&]() {
+      if (run.size() >= 2) {
+        (run_visible ? visible_curves : hidden_curves).push_back(PolylineCurve(run));
+        (run_visible ? visible_segs : hidden_segs) += static_cast<int>(run.size()) - 1;
+      }
+      run.clear();
+    };
+    for (size_t i = 0; i + 5 < d.lines.size(); i += 6) {
+      const Point3d a3(d.lines[i], d.lines[i + 1], d.lines[i + 2]);
+      const Point3d b3(d.lines[i + 3], d.lines[i + 4], d.lines[i + 5]);
+      const bool seg_visible = Visible(Point3d((a3.x + b3.x) / 2, (a3.y + b3.y) / 2, (a3.z + b3.z) / 2));
+      const Point3d a = project(a3), b = project(b3);
+      if (run.empty()) { run_visible = seg_visible; run = {a, b}; continue; }
+      if (seg_visible == run_visible && run.back().DistanceTo(a) <= 1e-9) { run.push_back(b); continue; }
+      flush();
+      run_visible = seg_visible;
+      run = {a, b};
+    }
+    flush();
+  }
+  if (visible_curves.empty() && hidden_curves.empty()) { ctx.Warn("Nothing to project"); return; }
+  ctx.Doc().BeginChange("Make2D");
+  std::vector<ObjectId> out;
+  const int vis_layer = ctx.Doc().AddLayer("Make2D");
+  for (const kernel::NurbsCurve& c : visible_curves) { SceneObject s = SceneObject::MakeCurve(c); s.layer_index = vis_layer; out.push_back(ctx.Doc().Add(std::move(s))); }
+  if (!hidden_curves.empty()) {
+    const int hid_layer = ctx.Doc().AddLayer("Make2D::Hidden");
+    for (const kernel::NurbsCurve& c : hidden_curves) {
+      SceneObject s = SceneObject::MakeCurve(c);
+      s.layer_index = hid_layer;
+      s.linetype = "Dashed";
+      out.push_back(ctx.Doc().Add(std::move(s)));
+    }
+  }
+  ctx.Doc().CreateGroup(out, "Make2D");
+  ctx.Print("Make2D: " + std::to_string(visible_curves.size()) + " visible and " + std::to_string(hidden_curves.size()) +
+            " hidden curve(s) (" + std::to_string(visible_segs + hidden_segs) + " segment(s), " + std::to_string(hidden_segs) +
+            " hidden by occlusion)");
+}
+
+class BlockCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantObjects("Select objects to define a block"); }
+  void OnObjects(CommandContext&, const std::vector<ObjectId>& ids) override { ids_ = ids; WantPoint("Block base point"); }
+  void OnPoint(CommandContext& ctx, Point3d p) override { base_ = p; WantText("Block name", "Block " + std::to_string(ctx.Doc().Blocks().size() + 1)); }
+  void OnText(CommandContext& ctx, const std::string& name) override {
+    ctx.Doc().BeginChange("Block");
+    BlockDefinition def;
+    def.name = name;
+    def.base = base_;
+    for (ObjectId id : ids_) if (const SceneObject* o = ctx.Doc().Find(id)) { SceneObject c = *o; c.selected = false; c.group_id = -1; c.user_text.erase("Block"); c.user_text.erase("BlockInsert"); def.objects.push_back(c); }
+    if (BlockDefinition* existing = ctx.Doc().FindBlock(name)) *existing = def; else ctx.Doc().Blocks().push_back(def);
+    // Replace the source objects by an instance at the same place.
+    for (ObjectId id : ids_) ctx.Doc().Remove(id);
+    Instantiate(ctx, name, base_);
+    ctx.Print("Block '" + name + "' defined with " + std::to_string(def.objects.size()) + " object(s)");
+    Finish();
+  }
+  static int Instantiate(CommandContext& ctx, const std::string& name, Point3d at) { return InstantiateBlock(ctx, name, at); }
+  std::vector<ObjectId> ids_;
+  Point3d base_;
+};
+
+class InsertCommand : public Command {
+ public:
+  void Begin(CommandContext& ctx) override {
+    if (ctx.Doc().Blocks().empty()) {
+      // No block definitions: behave like Import.
+      Finish();
+      ctx.Engine().Execute("Import");
+      return;
+    }
+    std::string names;
+    for (const BlockDefinition& b : ctx.Doc().Blocks()) names += (names.empty() ? "" : ", ") + b.name;
+    ctx.Print("Blocks: " + names);
+    WantText("Block name to insert", ctx.Doc().Blocks().back().name);
+  }
+  void OnText(CommandContext& ctx, const std::string& name) override {
+    if (!ctx.Doc().FindBlock(name)) { ctx.Warn("No block named '" + name + "'"); Finish(); return; }
+    name_ = name;
+    WantPoint("Insertion point");
+  }
+  void OnPoint(CommandContext& ctx, Point3d p) override {
+    ctx.Doc().BeginChange("Insert");
+    BlockCommand::Instantiate(ctx, name_, p);
+    ctx.Print("Inserted '" + name_ + "'. Press Enter to insert another.");
+    WantPoint("Insertion point (Enter to finish)");
+  }
+  void OnEnter(CommandContext&) override { Finish(); }
+  std::string name_;
+};
+
+// BlockRename <old> <new>: the command-line, headlessly-scriptable path
+// for the BlockManager panel's per-row Rename action (ui/Panels.cpp calls
+// the same RenameBlockInDocument helper directly).
+class BlockRenameCommand : public Command {
+ public:
+  void Begin(CommandContext& ctx) override {
+    if (ctx.Doc().Blocks().empty()) { ctx.Warn("No block definitions. Use Block to create one."); Finish(); return; }
+    std::string names;
+    for (const BlockDefinition& b : ctx.Doc().Blocks()) names += (names.empty() ? "" : ", ") + b.name;
+    ctx.Print("Blocks: " + names);
+    WantText("Block to rename");
+  }
+  void OnText(CommandContext& ctx, const std::string& t) override {
+    if (!have_old_) {
+      if (!ctx.Doc().FindBlock(t)) { ctx.Warn("No block named '" + t + "'"); Finish(); return; }
+      old_ = t;
+      have_old_ = true;
+      WantText("New name");
+      return;
+    }
+    ctx.Doc().BeginChange("BlockRename");
+    if (RenameBlockInDocument(ctx.Doc(), old_, t)) ctx.Print("BlockRename: '" + old_ + "' renamed to '" + t + "'");
+    else ctx.Warn("BlockRename: '" + t + "' is already used by another block, or '" + old_ + "' no longer exists");
+    Finish();
+  }
+  bool have_old_ = false;
+  std::string old_;
+};
+
+// SelBlockInstanceOf <name>: the command-line, headlessly-scriptable path
+// for the BlockManager panel's per-row Select Instances action.
+class SelBlockInstanceOfCommand : public Command {
+ public:
+  void Begin(CommandContext& ctx) override {
+    if (ctx.Doc().Blocks().empty()) { ctx.Warn("No block definitions. Use Block to create one."); Finish(); return; }
+    WantText("Block name");
+  }
+  void OnText(CommandContext& ctx, const std::string& name) override {
+    if (!ctx.Doc().FindBlock(name)) { ctx.Warn("No block named '" + name + "'"); Finish(); return; }
+    int n = 0;
+    ctx.Doc().SelectWhere([&](const SceneObject& o) {
+      auto it = o.user_text.find("Block");
+      const bool match = it != o.user_text.end() && it->second == name;
+      if (match) ++n;
+      return match;
+    });
+    ctx.Print("SelBlockInstanceOf: selected " + std::to_string(n) + " object(s) in instances of '" + name + "'");
+    Finish();
+  }
+};
+
+// BlockAddState: names a new Visibility-parameter state on a block
+// definition. A block with at least one state becomes "dynamic":
+// InstantiateBlock/Insert then create a real BlockInstance record for it
+// (see InstantiateBlock below).
+class BlockAddStateCommand : public Command {
+ public:
+  void Begin(CommandContext& ctx) override {
+    if (ctx.Doc().Blocks().empty()) { ctx.Warn("No block definitions. Use Block to create one."); Finish(); return; }
+    std::string names;
+    for (const BlockDefinition& b : ctx.Doc().Blocks()) names += (names.empty() ? "" : ", ") + b.name;
+    ctx.Print("Blocks: " + names);
+    WantText("Block name", ctx.Doc().Blocks().back().name);
+  }
+  void OnText(CommandContext& ctx, const std::string& t) override {
+    if (name_.empty()) {
+      def_ = ctx.Doc().FindBlock(t);
+      if (!def_) { ctx.Warn("No block named '" + t + "'"); Finish(); return; }
+      name_ = t;
+      WantText("New visibility state name (e.g. Open, Closed)");
+      return;
+    }
+    if (std::find(def_->states.begin(), def_->states.end(), t) != def_->states.end()) {
+      ctx.Warn("Block '" + name_ + "' already has a state named '" + t + "'");
+    } else {
+      ctx.Doc().BeginChange("BlockAddState");
+      def_->states.push_back(t);
+      ctx.Print("Block '" + name_ + "': added visibility state '" + t + "' (" + std::to_string(def_->states.size()) + " total)");
+    }
+    Finish();
+  }
+  std::string name_;
+  BlockDefinition* def_ = nullptr;
+};
+
+// BlockSetVisibility: while a block is open for editing (BlockEdit), tags
+// the selected editable copies with the visibility states they should
+// appear in; finishing BlockEdit bakes those tags into the real
+// BlockDefinition::objects (BlockEditCommand::FinishEdit copies user_text
+// verbatim). Comma-separated, e.g. "Open,PartlyOpen"; empty clears the tag
+// (visible in every state).
+class BlockSetVisibilityCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantObjects("Select block-edit objects to tag", 1); }
+  void OnObjects(CommandContext&, const std::vector<ObjectId>& ids) override { ids_ = ids; WantText("Visible-in states (comma-separated, blank = always)", ""); }
+  void OnText(CommandContext& ctx, const std::string& t) override {
+    ctx.Doc().BeginChange("BlockSetVisibility");
+    int n = 0;
+    for (ObjectId id : ids_) {
+      if (SceneObject* o = ctx.Doc().Find(id)) {
+        if (t.empty()) o->user_text.erase(kBlockVisStatesKey); else o->user_text[kBlockVisStatesKey] = t;
+        ++n;
+      }
+    }
+    ctx.Print("BlockSetVisibility: tagged " + std::to_string(n) + " object(s) with '" + t + "'");
+    Finish();
+  }
+  std::vector<ObjectId> ids_;
+};
+
+// BlockSetState: switches one placed dynamic-block instance to a different
+// named visibility state and rebuilds just that instance's objects
+// (RebuildBlockInstance: delete-old/build-new, same pattern as
+// ArchComponent::Rebuild()), fully undoable like any other object add/
+// remove since it only touches Document::Objects() and the
+// dino8.block_instances user text, both part of the normal BeginChange
+// snapshot.
+class BlockSetStateCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantObjects("Select an object in the instance to re-state", 1); }
+  void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
+    group_ = -1;
+    for (ObjectId id : ids) if (const SceneObject* o = ctx.Doc().Find(id)) if (o->group_id >= 0) { group_ = o->group_id; break; }
+    BlockInstance inst;
+    if (group_ < 0 || !FindBlockInstanceByGroup(ctx.Doc(), group_, inst)) {
+      ctx.Warn("Selection isn't a dynamic-block instance (use BlockAddState first)");
+      Finish();
+      return;
+    }
+    const BlockDefinition* def = ctx.Doc().FindBlock(inst.block);
+    std::string states;
+    if (def) for (const std::string& s : def->states) states += (states.empty() ? "" : ", ") + s;
+    ctx.Print("'" + inst.block + "' states: " + states + " (currently '" + inst.state + "')");
+    WantText("New state");
+  }
+  void OnText(CommandContext& ctx, const std::string& t) override {
+    ctx.Doc().BeginChange("BlockSetState");
+    if (!SetBlockInstanceState(ctx.Doc(), group_, t)) ctx.Warn("Could not switch state");
+    else ctx.Print("BlockSetState: instance now showing '" + t + "'");
+    Finish();
+  }
+  int group_ = -1;
+};
+
+}  // namespace
+
+// A block with no named visibility states behaves exactly as before (every
+// object placed, no BlockInstance record - so ordinary/static blocks are
+// completely unaffected). A block that has states delegates to
+// InstantiateDynamicBlock (doc/BlockInstances.h), which places only the
+// objects visible in the initial state and records a BlockInstance so
+// BlockSetState can find and rebuild it later.
+// Document-only overload for callers - such as the BlockManager panel
+// (ui/Panels.cpp) - that don't have a CommandContext to hand. Declared in
+// doc/BlockInstances.h (a Document-only header) so panel code can call it
+// without pulling in the much heavier command-engine headers this file
+// includes. The CommandContext overload below is now a thin wrapper, so
+// there is exactly one copy of the actual instantiation logic.
+int InstantiateBlockInDocument(Document& doc, const std::string& name, Point3d at) {
+  BlockDefinition* def = doc.FindBlock(name);
+  if (!def) return -1;
+  if (!def->states.empty()) return InstantiateDynamicBlock(doc, name, at);
+  const ON_Xform xf = ON_Xform::TranslationTransformation(at - def->base);
+  std::vector<ObjectId> ids;
+  for (const SceneObject& o : def->objects) {
+    SceneObject c = o;
+    c.id = kNoObject;
+    c.selected = false;
+    c.Transform(xf);
+    c.user_text["Block"] = name;
+    // The insertion point travels with the instance (SceneObject::Transform keeps it current).
+    c.user_text["BlockInsert"] = FormatPoint(at);
+    ids.push_back(doc.Add(std::move(c)));
+  }
+  // Real parent/child provenance for this instance: the first object placed
+  // is the instance's anchor, every other object's provenance parent_id
+  // points at it (doc/Document.h's ProvenanceInfo/ProvenanceKind) - so
+  // SelChildren/SelParents (cmd_select2.cpp) can walk a genuine hierarchy
+  // instead of the group-symmetric "other members of the same group"
+  // fallback used before. A single-object block has nothing to tag (no
+  // second object to point at the first).
+  for (size_t i = 1; i < ids.size(); ++i) doc.SetProvenance(ids[i], ids[0], ProvenanceKind::BlockInstanceMember);
+  return doc.CreateGroup(ids, name);
+}
+
+int InstantiateBlock(CommandContext& ctx, const std::string& name, Point3d at) {
+  return InstantiateBlockInDocument(ctx.Doc(), name, at);
+}
+
+bool RenameBlockInDocument(Document& doc, const std::string& old_name, const std::string& new_name) {
+  if (old_name.empty() || new_name.empty()) return false;
+  if (old_name == new_name) return true;
+  BlockDefinition* def = doc.FindBlock(old_name);
+  if (!def) return false;
+  if (doc.FindBlock(new_name)) return false;  // name already used by a different block
+  def->name = new_name;
+  for (SceneObject& o : doc.Objects()) {
+    auto it = o.user_text.find("Block");
+    if (it != o.user_text.end() && it->second == old_name) it->second = new_name;
+  }
+  for (Group& g : doc.Groups()) if (g.name == old_name) g.name = new_name;
+  std::vector<BlockInstance> instances = LoadBlockInstances(doc);
+  bool changed = false;
+  for (BlockInstance& bi : instances) if (bi.block == old_name) { bi.block = new_name; changed = true; }
+  if (changed) SaveBlockInstances(doc, instances);
+  doc.Touch();
+  return true;
+}
+
+int TagExistingAsBlockInstance(CommandContext& ctx, const std::vector<ObjectId>& ids, const std::string& name, Point3d at) {
+  for (ObjectId id : ids) {
+    if (SceneObject* o = ctx.Doc().Find(id)) {
+      o->selected = false;
+      o->user_text["Block"] = name;
+      o->user_text["BlockInsert"] = FormatPoint(at);
+    }
+  }
+  return ctx.Doc().CreateGroup(ids, name);
+}
+
+void RegisterDraftingCommands(CommandEngine& e) {
+  // Hatch: superseded, dead code - RegisterDrafting2Commands re-registers
+  // "Hatch" against the real pattern library (LibraryHatchCommand); a
+  // registration here would only be overwritten.
+  Reg(e, "Make2D", OnSelection("Select objects to draw in 2D", [](CommandContext& ctx, const std::vector<ObjectId>& ids) { Make2D(ctx, ids); }), CommandStatus::Implemented,
+      "Projects visible wire geometry onto the CPlane, ray-testing each segment's midpoint against every visible object's mesh to split it into a Make2D visible curve or a Make2D::Hidden dashed one.");
+  Reg(e, "Block", Make<BlockCommand>(), CommandStatus::Implemented,
+      "Stores the geometry as a named BlockDefinition on the document and replaces the selection with a grouped, "
+      "tagged instance (see InstantiateBlock); each instance is a transformed copy rather than a live GPU reference, "
+      "but redefining the block (BlockEdit, AddObjectsToBlock) reinstantiates every instance of that name from the "
+      "updated definition, so editing the definition does update every instance - real linked instancing, not just independent copies.");
+  Reg(e, "Insert", Make<InsertCommand>(), CommandStatus::Implemented, "Inserts a copy of the named block definition at the given point, or falls back to Import when no blocks are defined.");
+  Reg(e, "ExplodeBlock", OnSelection("Select block instances to explode", [](CommandContext& ctx, const std::vector<ObjectId>& ids) { ctx.Doc().BeginChange("ExplodeBlock"); ctx.Doc().Ungroup(ids); for (ObjectId id : ids) if (SceneObject* o = ctx.Doc().Find(id)) { o->user_text.erase("Block"); o->user_text.erase("BlockInsert"); } }));
+  Reg(e, "BlockManager", Immediate([](CommandContext& ctx) {
+        // Text-based fallback (unchanged, for headless/script use - see
+        // BlockRename/SelBlockInstanceOf below for the rest of the panel's
+        // actions in scriptable form) plus the real thing: a dockable table
+        // panel (DrawBlockManagerPanel, ui/Panels.cpp) with per-row Select
+        // Instances / Rename / Delete (if unused) / Insert New Instance.
+        if (ctx.Doc().Blocks().empty()) { ctx.Print("No block definitions. Use Block to create one."); }
+        for (const BlockDefinition& b : ctx.Doc().Blocks()) {
+          int instances = 0;
+          for (const SceneObject& o : ctx.Doc().Objects()) { auto it = o.user_text.find("Block"); if (it != o.user_text.end() && it->second == b.name) ++instances; }
+          ctx.Print("Block '" + b.name + "': " + std::to_string(b.objects.size()) + " object(s), base " + FormatPoint(b.base) + ", " + std::to_string(instances) + " object(s) in instances");
+        }
+        ctx.App().Panels().command_history = true;
+        ctx.App().Panels().block_manager = true;
+      }), CommandStatus::Implemented,
+      "Lists every block definition and its instance count in the command history (unchanged headless fallback) and opens a "
+      "real dockable table panel (DrawBlockManagerPanel) with, per block, a live instance count and Select Instances / Rename / "
+      "Delete (if unused, reusing Purge's own Document::RemoveBlock) / Insert New Instance buttons. The mouse clicks on those "
+      "buttons are, like every other panel button in this app, not exercised by the headless smoke-test harness, but every "
+      "action they perform is independently scriptable and tested: BlockRename, SelBlockInstanceOf, Purge (delete-if-unused) "
+      "and Insert all reach the identical Document-level code the panel calls.");
+  Reg(e, "BlockRename", Make<BlockRenameCommand>(), CommandStatus::Implemented,
+      "Renames a block definition and every place its name is recorded (instance tags, matching groups, dynamic-block "
+      "instance records) via RenameBlockInDocument - the exact function BlockManager's panel Rename button calls.");
+  Reg(e, "SelBlockInstance", Immediate([](CommandContext& ctx) { ctx.Doc().SelectWhere([](const SceneObject& o) { return o.user_text.count("Block") > 0; }); }));
+  Reg(e, "SelBlockInstanceOf", Make<SelBlockInstanceOfCommand>(), CommandStatus::Implemented,
+      "Selects only the instances of the named block (SelBlockInstance selects every block instance regardless of name); "
+      "the scriptable equivalent of BlockManager's per-row 'Select Instances' button.");
+  Reg(e, "BlockAddState", Make<BlockAddStateCommand>(), CommandStatus::Implemented,
+      "Names a new Visibility-parameter state on a block definition (Visibility-state dynamic blocks, first increment - "
+      "see BlockSetVisibility/BlockSetState); a block with no states behaves exactly as a plain (static) block.");
+  Reg(e, "BlockSetVisibility", Make<BlockSetVisibilityCommand>(), CommandStatus::Implemented,
+      "While a block is open for editing (BlockEdit), tags the selected editable copies with the comma-separated "
+      "visibility states they should appear in; finishing BlockEdit bakes the tags into the block definition.");
+  Reg(e, "BlockSetState", Make<BlockSetStateCommand>(), CommandStatus::Implemented,
+      "Switches one placed dynamic-block instance to a named visibility state and rebuilds just that instance's "
+      "objects (delete old / build new, undoable like any other edit).");
+}
+
+// BlockManager panel: a table of every block definition with the same
+// live instance count the text-based command prints, plus real per-row
+// actions. Every action here calls the exact same Document-level function
+// its headless command-line equivalent does (see the Reg() calls above),
+// so the panel is a mouse-driven front end for logic that is independently
+// scriptable and tested, not a second implementation of it.
+void DrawBlockManagerPanel(Application& app) {
+  Document& doc = app.Doc();
+  ImGui::SetNextWindowSize(ImVec2(520, 320), ImGuiCond_Appearing);
+  if (!ImGui::Begin(PanelTitle("panel.block_manager", "BlockManager").c_str(), &app.Panels().block_manager)) { ImGui::End(); return; }
+  if (doc.Blocks().empty()) {
+    ImGui::TextWrapped("No block definitions. Use Block to create one from the current selection.");
+    ImGui::End();
+    return;
+  }
+  ImGui::TextWrapped("%zu block definition(s). Insert New Instance places a fresh copy at the world origin (0,0,0) - move it into place with the Gumball afterwards, the same as a freshly-drawn object.", doc.Blocks().size());
+  ImGui::Separator();
+  if (ImGui::BeginTable("blocks", 4, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable)) {
+    ImGui::TableSetupScrollFreeze(0, 1);
+    ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthStretch);
+    ImGui::TableSetupColumn("Objects", ImGuiTableColumnFlags_WidthFixed, 60);
+    ImGui::TableSetupColumn("Instances", ImGuiTableColumnFlags_WidthFixed, 70);
+    ImGui::TableSetupColumn("##actions", ImGuiTableColumnFlags_WidthFixed, 300);
+    ImGui::TableHeadersRow();
+    // Iterate by index (not reference) since Delete mutates doc.Blocks() in place.
+    for (size_t i = 0; i < doc.Blocks().size();) {
+      BlockDefinition& b = doc.Blocks()[i];
+      const std::string name = b.name;  // stable copy: renaming below moves b's storage
+      int instances = 0;
+      for (const SceneObject& o : doc.Objects()) { auto it = o.user_text.find("Block"); if (it != o.user_text.end() && it->second == name) ++instances; }
+      ImGui::PushID(static_cast<int>(i));
+      ImGui::TableNextRow();
+      ImGui::TableNextColumn();
+      ImGui::TextUnformatted(name.c_str());
+      ImGui::TableNextColumn();
+      ImGui::Text("%zu", b.objects.size());
+      ImGui::TableNextColumn();
+      ImGui::Text("%d", instances);
+      ImGui::TableNextColumn();
+      if (ImGui::SmallButton("Select")) {
+        int n = 0;
+        doc.SelectWhere([&](const SceneObject& o) { auto it = o.user_text.find("Block"); const bool m = it != o.user_text.end() && it->second == name; if (m) ++n; return m; });
+        app.Notify("Selected " + std::to_string(n) + " object(s) in instances of '" + name + "'");
+      }
+      ImGui::SameLine();
+      if (ImGui::SmallButton("Rename")) ImGui::OpenPopup("block_rename");
+      if (ImGui::BeginPopup("block_rename")) {
+        static char rename_buf[128];
+        if (ImGui::IsWindowAppearing()) std::snprintf(rename_buf, sizeof(rename_buf), "%s", name.c_str());
+        ImGui::SetKeyboardFocusHere();
+        const bool submit = ImGui::InputText("New name", rename_buf, sizeof(rename_buf), ImGuiInputTextFlags_EnterReturnsTrue);
+        if (ImGui::Button("Rename") || submit) {
+          doc.BeginChange("BlockRename");
+          if (!RenameBlockInDocument(doc, name, rename_buf)) app.Notify("Rename failed: name already in use, or block missing");
+          ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+      }
+      ImGui::SameLine();
+      ImGui::BeginDisabled(instances > 0);
+      if (ImGui::SmallButton("Delete")) {
+        doc.BeginChange("Delete block");
+        doc.RemoveBlock(name);
+        ImGui::EndDisabled();
+        ImGui::PopID();
+        continue;  // don't advance i: the next block has shifted into this slot
+      }
+      ImGui::EndDisabled();
+      if (instances > 0 && ImGui::IsItemHovered()) ImGui::SetTooltip("In use by %d instance(s) - Delete is disabled (same used-check as Purge)", instances);
+      ImGui::SameLine();
+      if (ImGui::SmallButton("Insert New Instance")) {
+        doc.BeginChange("Insert");
+        const int group = InstantiateBlockInDocument(doc, name, Point3d(0, 0, 0));
+        if (group >= 0) app.Notify("Inserted a new instance of '" + name + "' at the origin");
+      }
+      ImGui::PopID();
+      ++i;
+    }
+    ImGui::EndTable();
+  }
+  ImGui::End();
+}
+
+}  // namespace dino8::app

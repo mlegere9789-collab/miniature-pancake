@@ -1,0 +1,22 @@
+# ShowZBuffer QC: two boxes at very different camera depths in a Front
+# orthographic view (see AUDIT.md's dated ShowZBuffer note and
+# Viewport::DrawObjects' "ShowZBuffer" pass / GlRenderer::DrawTrianglesDepth).
+# Box A sits at y=[0,2] (near - its own front face defines the frame's
+# near_d) and is offset to negative x (screen left, Front view's Right()
+# is +x). Box B sits at y=[100,140] (far - its own back face defines the
+# frame's far_d) and is offset to positive x (screen right). Both share the
+# same z range so they land in the same vertical band, well apart
+# horizontally so their two viewport captures never overlap on screen.
+# This script only builds the scene and captures the screenshots; smoke.sh
+# does the actual pixel-level verification.
+# @TMP@ is replaced by smoke.sh with a scratch directory.
+Box -30,0,0 -20,2,0 10
+Box 20,100,0 30,140,0 10
+Front
+ZoomExtentsAll
+ViewCaptureToFile @TMP@/zbuffer_off.bmp
+ShowZBuffer
+ViewCaptureToFile @TMP@/zbuffer_on.bmp
+ShowZBuffer
+ViewCaptureToFile @TMP@/zbuffer_off2.bmp
+@expect_objects 2

@@ -1,0 +1,947 @@
+// General boundary-evaluation boolean engine.
+//
+// Unlike boolean.cpp's BooleanCombineMixed (which is hand-solved,
+// closed-form geometry enumerated per surface-TYPE-pair: plane+plane,
+// plane+cylinder, cylinder+cylinder, ...), BooleanCombineGeneral works on
+// ANY pair of ON_Surface-based faces by actually running the general
+// surface/surface intersector (dino8/kernel/surface_intersect.h) between
+// every (bbox-overlapping) face pair, splitting each face's own trim loop
+// along the resulting intersection curves, classifying each fragment
+// in/out of the other solid by ray-casting (via the general curve/surface
+// intersector, not hand-solved ray-vs-plane/ray-vs-cylinder formulas), and
+// reassembling the kept fragments into a genuine ON_Brep (real
+// ON_BrepVertex/ON_BrepEdge/ON_BrepLoop/ON_BrepTrim topology, coincident
+// points welded into shared vertices/edges - the same identity mechanism
+// Brep::FromMixedFaces() already uses, just generalized to an arbitrary
+// ON_Surface instead of only a plane/cylinder/cone).
+//
+// Scope/limitations (see boolean_general.cpp's own top comment for the
+// full disclosure): a face is expected to carry at most one "outer"
+// intersection component per opposing face pair that either (a) closes
+// entirely inside the face's own trim (a closed loop - becomes a hole in
+// the untouched fragment plus a separate interior fragment), or (b) meets
+// the face's own trim boundary at exactly two points (an open arc - splits
+// that trim boundary into two fragments there). Faces are assumed genus-0
+// (no pre-existing holes) two-shell solids. Multiple non-interacting
+// chains on the same face are supported (each is spliced in turn); chains
+// that cross EACH OTHER on the same face are not.
+#pragma once
+
+#include "dino8/kernel/boolean.h"
+#include "dino8/kernel/brep.h"
+#include "dino8/kernel/mesh.h"
+
+namespace dino8::kernel {
+
+Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op);
+
+// Face-face imprint (Parasolid PK_BODY_imprint / ACIS imprint): splits
+// `target`'s own faces wherever they cross `tool`'s faces, WITHOUT removing
+// any material - every fragment of every `target` face is kept, unlike
+// BooleanCombineGeneral() above, which ray-casts each fragment in/out of the
+// other operand and drops half of them. `tool` is read-only and untouched -
+// only `target`'s own topology changes (the same overall shape, as more,
+// smaller faces along the same exact boundary). Reuses this file's own
+// SSX-driven face-fragmentation machinery (IntersectFaces() + FragmentFaces()
+// in boolean_general.cpp - the same helpers BooleanCombineGeneral() itself
+// calls before its own classification step), so it inherits that machinery's
+// own disclosed scope limits (see this file's own top-of-file doc comment:
+// at most one "outer" intersection chain per opposing face pair, genus-0
+// operand faces, non-self-crossing chains on one face). Either operand may
+// be open (a sheet) or closed (a solid) - imprint never ray-casts against
+// either one, so it has none of BooleanCombineGeneral()'s own closed-solid
+// requirement.
+//
+// Throws std::invalid_argument if `target` or `tool` has no faces at all -
+// there is nothing to imprint on/with, the same typed-refusal convention
+// BooleanCombineGeneral() itself uses for an out-of-scope call. Returns an
+// empty Brep (not an error) if `target`'s faces all failed to reach a valid
+// (>= 3 point) boundary loop after fragmentation, mirroring
+// BooleanCombineGeneral()'s own "kept.empty()" convention.
+Brep ImprintFaces(const Brep& target, const Brep& tool);
+
+// A purely additive, opt-in sibling of Brep::TessellateToClosedMesh()/
+// TessellateToClosedMeshConforming(), scoped ONLY to BooleanCombineGeneral's
+// own results, that closes the mesh-watertightness gap this file's own
+// top-of-file doc comment discloses: `result`'s own faces are tessellated
+// via Brep::Tessellate(u_divisions, v_divisions) - the exact same shared,
+// unmodified grid-clip tessellator BooleanCombineMixed also depends on, not
+// touched by this function at all - then, before welding, every boundary
+// edge of one face's own tessellation that another face's tessellation
+// happens to have an extra, un-partnered vertex sitting exactly on (this
+// engine's own dense straight-segment polyline edges - see this file's own
+// top comment - get resampled at different densities by the two adjacent
+// faces' independent (u, v) grids, since neither Tessellate() nor
+// TessellateConforming() has ever matched a general trimmed face's own
+// polyline boundary the way TessellateConforming()'s existing analytic-
+// curve/plain-quad passes match theirs) is re-triangulated as a fan through
+// that extra vertex, so the two sides' boundary vertex sets agree exactly
+// before Mesh::MergeAndWeld() runs. Also drops any resulting zero-area
+// (degenerate, repeated-vertex) triangle - a separate, pre-existing
+// grid-clip artifact (near a surface's own singular point, e.g. a
+// sphere's pole, but also - confirmed directly - at an ordinary planar
+// trim corner where two cut boundaries meet) that otherwise leaves
+// spurious zero-length "edges" behind. This drop runs BOTH before and
+// after the T-junction stitching pass above, not only after: dropping a
+// boundary-line sliver strands its two OTHER edges - which the sliver
+// had "claimed" as internal, so the stitcher never offered them a
+// cross-face partner - as fresh, unmatched boundary edges once the
+// sliver disappears, unless it is gone before the stitcher ever sees it.
+// tests/general_boolean_sweep.cpp's own 76-combination measurement
+// (BooleanCombineGeneral over 19 primitive-pair cases x 4 ops, at
+// u_divisions=32/v_divisions=128) went from 0/76 to 14/76 genuinely
+// Mesh::IsClosedManifold() from this reordering alone - every
+// axis-aligned-planar case (box+box, disjoint/touching/rotated box
+// pairs) now closes at any division count tried (8x8 through 32x128).
+// The other 62 all pair a curved face (cylinder/cone/sphere/torus)
+// against another face along a curved or skew intersection: each side's
+// own grid-clip tessellation approximates that shared curve with its own
+// independently-sampled dense polyline (not shared sample points, unlike
+// a straight box edge, where both sides' clip points genuinely coincide
+// once the sliver above stops hiding them) - a materially larger gap.
+//
+// FOLLOW-UP SESSION: real-edge-topology-conforming reconciliation, the
+// technique TessellateToClosedMeshConforming() already uses for
+// BooleanCombineMixed/Planar, adapted to this engine (see
+// ReconcileEdgeTopology() in boolean_general.cpp's own implementation
+// comments for the full root-cause/fix writeup). Walks `result`'s own
+// genuine ON_BrepEdge topology and, for every interior (two-face) edge,
+// reconciles its two adjacent faces' raw tessellation boundaries to one
+// shared, chord-snapped point set BEFORE the plain point-matching pass
+// above (StitchTJunctionsOnce(), kept unmodified as its fallback). Went
+// from 14/76 to 15/76 - box+box (second box rotated 30deg about z)
+// Intersection newly closes, box+box's own axis-aligned Union/A-B/B-A and
+// every previously-closing case stay closed and volume-correct. The
+// dominant remaining curved-vs-curved gap (box+cylinder etc.) is now
+// root-caused two levels deep, both still open:
+//   (1) NurbsSurface::TessellateGridClippedExact() can silently DROP a
+//       genuine trim-polygon vertex outright under certain grid-alignment
+//       degeneracies (confirmed: a shared cut circle sitting exactly on a
+//       v-grid line loses roughly half its polyline vertices on the
+//       curved side's own raw tessellation, not merely mis-sampling it).
+//       An experimental same-session fix (inserting the missing vertex by
+//       splitting whichever existing boundary edge it lies on) measurably
+//       helped (box+cylinder Union: 1327 -> 808 unmatched boundary edges)
+//       and passed the FULL existing test suite with zero failures, but
+//       added enough runtime cost (an O(this face's own vertex count)
+//       repair scan, worst-case per failed edge) that it was reverted
+//       rather than shipped without a confirmed, complete 76-case
+//       re-measurement and a cheaper repair-lookup - a concrete, laid-out
+//       next increment, not a dead end.
+//
+//       ROOT-CAUSED (a later session, surface.cpp): the drop is
+//       ClipConvex's (Sutherland-Hodgman) own strict `>= 0.0` half-plane
+//       test losing a coin-flip to ordinary floating-point noise, over
+//       and over. A trim_polygon boundary that is genuinely straight in
+//       (u, v) (the common case here: a curved face cut by a planar face,
+//       so the cut is dead straight since v is literally height) still
+//       arrives as MANY near-duplicate collinear vertices, not one clip
+//       edge - BuildLoop() (boolean_general.cpp) resamples every original
+//       chain segment at up to ~samples_per_edge points regardless of
+//       curvature, and each point is only Newton-refined to the
+//       intersecting surfaces' own convergence tolerance (confirmed
+//       directly: up to ~1e-11 (u, v)-unit jitter between neighbors on
+//       this exact case, box+cylinder Union's cylinder-wall trim). A grid
+//       cell corner sitting exactly on that line then gets tested against
+//       dozens of near-duplicate copies of essentially the same infinite
+//       line in a row, each with its own independent jitter; about half
+//       of those redundant tests land the point a hair on the wrong side
+//       by pure noise, and ONE wrong verdict anywhere in the sequence
+//       drops the point for good (Sutherland-Hodgman only ever narrows
+//       the clipped result). Confirmed by direct reproduction: the
+//       cylinder wall's own cut-boundary trim_polygon at u_divisions=8/
+//       v_divisions=32 (box+cylinder Union) carries 104 vertices for what
+//       is geometrically a 4-corner rectangle.
+//
+//       A first fix attempt loosened ClipConvex's own inside test to a
+//       small (u, v)-distance tolerance instead - REJECTED after direct
+//       measurement: it also papers over a genuinely different, and
+//       genuinely degenerate, case (two DIFFERENT real boundaries, e.g. a
+//       cut landing exactly on a face's own UNTOUCHED domain edge, not
+//       redundant copies of the SAME boundary) by manufacturing a
+//       sliver's worth of real extra area there, which showed up as new
+//       NONMANIFOLD (not boundary) mesh edges and broke previously-exact,
+//       purely-planar box+box Intersection/A-B/B-A (15/76 -> 12/76).
+//       Shipped fix instead: SimplifyCollinearRuns(), a single O(trim
+//       size) pass (once per TessellateGridClippedExact call, not per
+//       grid cell) that collapses a run of consecutive trim_polygon
+//       vertices collinear with their own immediate original neighbors
+//       (within this file's existing kDuplicatePointEpsilon-scale (u, v)
+//       floor) down to that run's own two endpoints - removing the
+//       REDUNDANCY that causes the noise-driven coin flip, rather than
+//       loosening the test itself, so it cannot manufacture new area at
+//       an unrelated two-boundary coincidence. Confirmed: collapses that
+//       same 104-vertex trim down to its true 4 corners; full 76-case
+//       sweep and full ctest suite both green, zero regressions anywhere
+//       (including the box+box cases the first attempt broke).
+//
+//       Measured impact is real but SMALL, not the hoped-for large one:
+//       box+cylinder Union/Intersection/Difference's own naked-boundary-
+//       edge count (TessellateGeneralBooleanClosedMesh, DiagnoseManifold
+//       in scratch_test.cpp) each drop by ~1% (380->378, 234->231,
+//       252->249); the sweep's own aggregate closedmesh count does not
+//       move (still 15/76). Root-caused why, not just observed, by
+//       instrumenting ReconcileEdgeTopology (boolean_general.cpp)
+//       directly: every one of the 224 short polyline segments making up
+//       box+cylinder Union's own z=-1 cut circle fails its WALL-side
+//       match (`ok_b=0`) while its box-face side matches fine (`ok_a=1`).
+//       The wall's own GridClippedExact tessellation only ever places
+//       boundary vertices at u_divisions grid-corner resolution along
+//       that straight cut (now, correctly, just as many as the geometry
+//       needs - see the fix above); the box face's own boundary is built
+//       from the ORIGINAL, much finer BuildLoop() polyline. Reconcile-
+//       EdgeTopology processes the shared boundary one ORIGINAL fine
+//       segment (one ON_BrepEdge) at a time and can only RELOCATE an
+//       EXISTING boundary vertex on each side to a shared chord fraction
+//       - it cannot manufacture a wall-side vertex that TessellateGrid-
+//       ClippedExact's own coarser grid never produced in the first
+//       place, so a fine segment whose endpoints fall between two of the
+//       wall's (far sparser) grid corners has no matching run on that
+//       side and is left for StitchTJunctionsOnce()'s coarser fallback,
+//       which the wall's curvature-bowed-off-chord geometry (this file's
+//       own earlier session) already defeats. This is a SEPARATE,
+//       deeper gap than (1) - a resolution mismatch between two
+//       independently-chosen sampling densities, not a vertex being
+//       dropped - one level up from TessellateGridClippedExact, in
+//       either ReconcileEdgeTopology's own per-edge walk (boolean_
+//       general.cpp) or in giving TessellateGridClippedExact a way to
+//       honor a denser trim boundary's own intermediate points along a
+//       straight cut, not just its two endpoints, when the grid is
+//       coarser than the trim. A concrete next-increment target, not
+//       explored further this session.
+//   (2) A SEPARATE, larger structural gap, found while isolating (1)'s
+//       own residual: an "untouched" operand face BooleanCombineGeneral
+//       keeps wholesale (no intersection curve touches it at all, e.g. a
+//       cylinder's own end cap once the cut only touches its wall) did
+//       NOT get welded through the same VertexWelder/BuildLoop() identity
+//       mechanism a freshly-cut NEIGHBORING fragment does - so the two
+//       shared no real ON_BrepEdge at all, even though they meet at
+//       identical 3D points (this file's own "friendless cylindrical
+//       band" notch precedent, brep.cpp/brep.h, is the same shape of gap
+//       one level up).
+//
+//       CLOSED (a later session): root-caused to FaceBoundaryLoop()
+//       (boolean_general.cpp) resampling each face's own trim/edge curve
+//       at a fixed `samples_per_edge` FRACTION of ITS OWN parameter
+//       domain, independently per face - for a boundary two faces
+//       genuinely share (e.g. a solid cylinder's disk cap and its own
+//       wall, built by Brep::FromMixedFaces() from the SAME dense point
+//       ring, confirmed directly), each side's own trim has a DIFFERENT
+//       parameterization (the cap's a dense polyline indexed by vertex
+//       count, the wall's a plain 2D line whose 3D image is the true
+//       isocurve circle indexed by angle), so sampling both at the same
+//       `i / samples_per_edge` fraction lands at a different physical
+//       angle on each side past the shared endpoint. Added
+//       ReconcileFragmentBoundaries(), a NEW pass at fragment-assembly
+//       time (BEFORE the real VertexWelder/BuildLoop() pass, not
+//       ReconcileEdgeTopology's own tessellation-time one): it welds a
+//       throwaway detector over every kept fragment's own loop to find
+//       "anchor" positions already coincident with some OTHER fragment,
+//       splits each loop into anchor-to-anchor runs (including the
+//       degenerate but real "one single anchor, the whole loop is one
+//       run back to itself" and "two DIFFERENT positions on one loop that
+//       share one anchor vertex, because that loop continues past it
+//       toward a completely different neighbor" cases - both measured
+//       directly on box+cylinder's own cap/wall boundary), and whenever
+//       exactly two runs from two DIFFERENT fragments share an anchor
+//       pair AND a multi-probe geometric vote confirms they trace the
+//       SAME physical curve (rejecting a same-corner-only false match,
+//       also measured directly to occur elsewhere in the sweep), reuses
+//       the denser run's own points VERBATIM on the sparser side - so the
+//       real welder below is guaranteed to merge them into one shared
+//       vertex per point, giving BuildLoop() a genuine, TrimCount()==2
+//       ON_BrepEdge to hand ReconcileEdgeTopology afterward, exactly as a
+//       chain-cut edge already gets.
+//
+//       Measured directly on box+cylinder Union (the disclosed fixture
+//       above): the result's own naked (TrimCount()==1) ON_BrepEdge count
+//       dropped from 120 to 20 - the cap/wall boundary itself now fully
+//       shared (0 naked, down from 52 combined) - ON_Brep::IsValid() and
+//       the tessellated volume unaffected (both already correct before
+//       and after, confirmed by direct measurement, not merely inferred
+//       from the edge count). The sweep's own aggregate closedmesh count
+//       did NOT move (still 15/76, identical case set, no reshuffling):
+//       for box+cylinder specifically, ReconcileEdgeTopology's own
+//       DINO8_RECONCILE_DEBUG trace shows it never even walks these now-
+//       real cap/wall edges (their own tessellated boundaries already
+//       agree with no T-junction to insert - the topology fix genuinely
+//       worked), yet DiagnoseManifold's own mesh-boundary count still
+//       shows most of its residual sitting exactly at the rim (z = the
+//       wall's own v=0/v=length grid lines) - consistent with, not a new
+//       instance of, gap (1) above (TessellateGridClippedExact's own
+//       grid-alignment vertex-dropping bug, EXPLICITLY out of scope for
+//       this session, is worst exactly on a v=const grid line, which a
+//       rim by construction always is). This fix stands on its own
+//       (confirmed correct in isolation) but needs (1) fixed too, on some
+//       later session, before its effect can show up in the aggregate
+//       closedmesh count for a curved-vs-curved case like this one.
+//
+//   (1), continued (a LATER session): the resolution-mismatch gap above -
+//       ReconcileEdgeTopology's own per-edge walk cannot manufacture a
+//       wall-side vertex that TessellateGridClippedExact's own coarser
+//       grid never produced - is closed at the SOURCE instead of at
+//       ReconcileEdgeTopology's own layer (the doc comment above laid out
+//       both directions; this session investigated both before choosing).
+//       Approach (1) - extending ReconcileEdgeTopology's own per-edge walk
+//       to INSERT a missing point on the coarser side - turns out not to
+//       be viable AS WRITTEN: it processes ONE original fine ON_BrepEdge
+//       at a time (a short span between two consecutive BuildLoop()
+//       points), and its own walk requires an EXISTING vertex near BOTH
+//       endpoints on BOTH sides before it can even start (NearestBoundary-
+//       Start). For box+cylinder Union's own 224 fine edges along the cut,
+//       the wall's own u_divisions-resolution grid corners are far sparser
+//       than the box's fine edges, so MOST fine edges have NEITHER
+//       endpoint anywhere near an existing wall vertex - the walk fails
+//       to even START, not merely fails to find a clean run. Grouping
+//       consecutive fine edges into one coarser reconciliation instead
+//       would mean approximating a REAL multi-edge span of the true curve
+//       with one much longer chord (a materially worse approximation than
+//       the existing per-fine-edge chord), and - more fundamentally -
+//       would mean this pass genuinely rewriting real ON_BrepEdge
+//       topology mid-tessellation, not just patching a mesh in place.
+//       Approach (2) - TessellateGridClippedExact learning about a denser
+//       neighbor's own intermediate points along a shared straight cut -
+//       turned out to need NO actual cross-face communication at all:
+//       Brep::Tessellate()'s own ResolveFace()/SampleLoop() already builds
+//       `trim_polygon` by walking EVERY real ON_BrepTrim of a face's own
+//       loop and taking one sample per trim (BuildLoop() gives each
+//       original fine polyline segment its own trim, and SampleLoop()
+//       takes `samples=1` for a linear trim) - so `trim_polygon`, BEFORE
+//       SimplifyCollinearRuns() ever runs, ALREADY carries the wall's own
+//       full BuildLoop-fine resolution, matching the box side's exactly
+//       (confirmed directly: box+cylinder Union's wall trim carries 104
+//       points for a 4-corner rectangle, same as 413c0ae's own earlier
+//       measurement). SimplifyCollinearRuns() is precisely what erases
+//       them again, to protect ClipConvex's own inside test (see its own
+//       doc comment above) - the fix is to give TessellateGridClippedExact
+//       a way to remember what it erased and put it back afterward,
+//       without ever handing ClipConvex the redundant, noise-prone
+//       version.
+//
+//       Shipped: SimplifyCollinearRuns() now also returns every point it
+//       dropped, each tagged with the two SURVIVING simplified-trim
+//       vertices its own collapsed run sat between (RemovedTrimPoint,
+//       surface.cpp) - not just its bare (u, v) position. TessellateGrid-
+//       ClippedExact buckets these by which grid cell's own (u, v)
+//       rectangle contains each one (O(1) lookup per cell, not O(cells x
+//       removed points) - the same performance discipline the earlier-
+//       rejected EnsureBoundaryVertex repair was rejected for missing),
+//       then a new InsertForcedPointsIntoTriangulation() fans each
+//       relevant cell's own forced points into whichever triangle
+//       EarClipTriangulate() already gave that boundary span - the SAME
+//       "replace one owning triangle with a fan through its apex"
+//       technique ReconcileChainToChord (boolean_general.cpp) already
+//       uses, just one layer earlier (on a single grid cell's own small
+//       polygon, before mesh assembly, not on the whole assembled mesh
+//       after it). EarClipTriangulate() itself is deliberately never
+//       handed the grown point set - only the cell's own bare
+//       grid-clip boundary, however many forced points get fanned in
+//       afterward - see that function's own doc comment for why (a real,
+//       measured performance regression: feeding EarClipTriangulate() the
+//       augmented polygon directly roughly DOUBLED the 76-case sweep's
+//       own wall-clock time, 63s -> 125s, before this fix; restored to
+//       ~79s with the fan-insertion approach instead - still a real,
+//       bounded ~25% increase over the pre-fix baseline, from genuinely
+//       reinserting ~15,600 real boundary points across the sweep's own
+//       76 cases, not from any remaining algorithmic blowup).
+//
+//       ONE REAL BUG found and fixed before this was safe to ship: a
+//       forced point's bare (u, v) position alone cannot tell "this is
+//       the trim's own cut boundary" apart from "an ordinary interior
+//       grid-line edge that merely happens to run the SAME direction" -
+//       for an AXIS-ALIGNED cut (the common, previously-rock-solid
+//       box+box case), the cut's own direction routinely coincides
+//       exactly with a plain u=const or v=const cell edge direction. An
+//       early version tested only "is this forced point collinear with
+//       the candidate cell edge", which happily matched an ordinary
+//       shared grid-line edge between two cells - fanning a point into
+//       ONE cell's copy of that edge while its untouched neighbor cell
+//       kept the un-subdivided original, opening a small crack. Caught by
+//       this repo's own ctest suite (dino8_kernel_smoke), NOT the sweep:
+//       box+box Union and Difference's own previously-Mesh::IsClosedManifold()
+//       TessellateGeneralBooleanClosedMesh() results broke. Fixed by
+//       requiring BOTH of the candidate cell edge's own endpoints - not
+//       just the forced point itself - to sit on the SAME originating
+//       trim edge's own line (RemovedTrimPoint's own `edge_t0`/`edge_t1`,
+//       carried from SimplifyCollinearRuns() through bucketing to the
+//       fan-insertion check itself): a genuine trim-cut edge segment lies
+//       ON that exact line by construction; an ordinary cell edge that
+//       merely runs parallel to it does not (unless the cut happens to
+//       sit exactly on a grid line, the pre-existing, separately-disclosed
+//       degeneracy above - a narrower, real edge case, not this bug's
+//       broad failure mode). A second, unrelated attempt at raising the
+//       box+cylinder Union nonmanifold-edge count back down (a FOURTH
+//       degenerate-triangle drop pass after the final cross-face weld,
+//       targeting a handful of weld-time near-duplicate-vertex artifacts)
+//       was tried and REVERTED for the same reason as the box+box
+//       regression above: it is the LAST pass with nothing after it to
+//       re-stitch whatever it strands, so it reopened box+box Union/
+//       Difference again (caught the same way, by ctest, not the sweep).
+//       Not shipped; see this file's own next-increment note below.
+//
+//       MEASURED, not assumed: tests/general_boolean_sweep.cpp's own
+//       76-case sweep: 15/76 -> 16/76 (box+box, second box rotated
+//       30deg, Union newly closes - the sweep's OWN case set, no
+//       reshuffling of any previously-closing case). box+cylinder Union's
+//       own naked-boundary-edge count (DiagnoseManifold, scratch_test.cpp,
+//       this file's own disclosed fixture, u_divisions=8/v_divisions=32):
+//       378 -> 334, an honest ~12% reduction, not the full close this
+//       gap's own root cause would suggest - see the next-increment note
+//       below for exactly what's left. Its own non-manifold-edge count
+//       moved 4 -> 10, a real, disclosed, NOT-fixed-this-session side
+//       effect - all 6 new ones sit at an UNRELATED location (near the
+//       cylinder's own z rim/cap seam, not this fix's own target cut
+//       boundary), same general shape (a near-duplicate vertex pair that
+//       StitchTJunctionsOnce's own chain insertion leaves a hair's width
+//       apart) as the 4 that were ALREADY there before this session,
+//       just reshuffled by this fix's own upstream effect on which edges
+//       ReconcileEdgeTopology reconciles first. Full dino8-kernel ctest
+//       suite (dino8_kernel_smoke, 1663 checks): 100% pass, 147.35s wall
+//       clock - matches this suite's normal ~150s+ runtime, no
+//       regression (the sweep's own ~25% slowdown above is confined to
+//       tests/general_boolean_sweep.cpp, which is deliberately NOT
+//       registered with ctest - see its own top comment).
+//
+//       NEXT INCREMENT (CLOSED, a later session): the weld-time near-
+//       duplicate-vertex coincidence above got its real fix at its own
+//       source, in StitchTJunctionsOnce's own chain-insertion (boolean_
+//       general.cpp), not a triangle drop after the fact - see that
+//       function's own doc comment for the full mechanism. DIAGNOSIS
+//       (DINO8_RECONCILE_DEBUG plus direct instrumentation of Stitch-
+//       TJunctionsOnce itself): box+cylinder Union's z rim (where the
+//       cylinder's own wall meets its own cap - a fully PERIODIC boundary)
+//       falls entirely to StitchTJunctionsOnce's own fallback, never
+//       ReconcileEdgeTopology (confirmed: NearestBoundaryStart fails on
+//       the cap side for every one of that rim's real edges - the cap's
+//       own genuinely-curved-in-(u,v) grid-clip boundary lands 0.0003-
+//       0.001 away from the wall's real edge vertices there, a SEPARATE,
+//       not-closed-this-session instance of the resolution-mismatch gap
+//       above, this time on a curved rather than straight trim). Because
+//       StitchTJunctionsOnce is fed EVERY other face's own vertex as a
+//       hit candidate for a boundary edge (not just the true topological
+//       neighbor), the cap's denser sampling there routinely contributes
+//       several genuinely-distinct-but-mutually-adjacent hits (confirmed:
+//       up to 3 within ~0.0003 of each other) that each individually pass
+//       PointStrictlyOnSegment (which is blind to the other hits found
+//       for the same segment) - fanning them all in as separate vertices
+//       produces slivers thin enough that the two faces' boundaries no
+//       longer agree which vertex is "the" corner there: a nonmanifold
+//       edge, not a mere T-junction.
+//
+//       FIX: widen StitchTJunctionsOnce's own existing hit-vs-hit de-dup
+//       (previously a tiny, fixed `tol`) to the SAME scale-aware distance
+//       PointStrictlyOnSegment already uses for its own perpendicular-
+//       distance acceptance (floored at `tol`, else a fraction of the
+//       segment's own length), at 2x that formula's own coefficient -
+//       scoped DELIBERATELY to hit-vs-PRIOR-HIT only, never hit-vs-the-
+//       segment's-own-endpoint: an equivalent endpoint-relative version
+//       was tried FIRST and REJECTED - even a hit genuinely close to a
+//       real endpoint is a normal, often NECESSARY case elsewhere in this
+//       engine (this file's own resolution-mismatch forced-point
+//       mechanism routinely places one there), and rejecting it broke
+//       box+box (second box rotated 30deg about z)'s own previously-
+//       closing B-A case in the 76-case sweep at every coefficient tried,
+//       including ones far too small to help box+cylinder at all. An
+//       equivalent triangle-area-ratio formulation of the same
+//       endpoint-relative idea was also tried and also rejected the same
+//       way - confirmed directly, on this same fixture, that no single
+//       distance or area-ratio threshold cleanly separates "duplicate"
+//       from "legitimate" once endpoints are included, since their own
+//       scales genuinely overlap. Hit-vs-prior-hit alone has no such
+//       conflict and was measured clean up to 20x its own coefficient
+//       with no further benefit and no new regression either.
+//
+//       MEASURED: box+cylinder Union's own nonmanifold-edge count
+//       (DiagnoseManifold, scratch_test.cpp, u_divisions=8/v_divisions=
+//       32): 10 -> 6 (the 965ee6b session's own 4-edge PRE-regression
+//       baseline is not quite reached - of the remaining 6, 4 (at z=-1 and
+//       z=1, the wall/box CUT boundary itself) are the SAME 4 edges
+//       965ee6b's own disclosure already named as pre-existing there -
+//       gap (1)'s own resolution-mismatch residual, not this rim's
+//       periodic-seam defect, and UNCHANGED by this session's fix, as
+//       expected; the other 2 (still at the z rim) are one more
+//       occurrence of this SAME rim defect that hit-vs-prior-hit
+//       clustering alone cannot reach, since it is a single isolated hit
+//       near a segment's own endpoint, not a mutually-close cluster - the
+//       curved-trim resolution-mismatch gap above is this residual's own
+//       real next increment, not a further StitchTJunctionsOnce tweak).
+//       tests/general_boolean_sweep.cpp's own 76-case sweep: unchanged at
+//       16/76, byte-for-byte the same case set (diffed directly) - zero
+//       reshuffling. Full dino8-kernel ctest suite (dino8_kernel_smoke,
+//       1663 checks): 100% pass, 155.26s wall clock, matching this
+//       suite's normal runtime - no regression.
+//
+//   NEW LEAD (a later session, after the 76-case sweep's own boolean-
+//       CORRECTNESS gap - volume/ON_Brep::IsValid()/nonsimple-trim - was
+//       separately closed to 76/76): re-measured the closedmesh gap
+//       itself (now 17/76) and found every prior fix in this file's own
+//       history above targets exactly one failure signature -
+//       Mesh::IsClosedManifold()'s own undirected-edge-count check
+//       (count != 2: a naked or nonmanifold edge) - never its OTHER,
+//       independent check: `orientation_consistent` (a directed edge
+//       walked twice - two triangles both claiming the same edge in the
+//       SAME winding direction). Added a DINO8_MESH_DEBUG diagnostic to
+//       IsClosedManifold() itself (mesh.cpp) and confirmed directly: box+
+//       cylinder Union/Intersection/A-B/B-A ALL report
+//       orientation_consistent=0, while every currently-CLOSED case
+//       (box+box) reports orientation_consistent=1 - this check is
+//       genuinely meaningful here, not a chronic false positive.
+//
+//       Tried the same "insert a bracketing vertex" idea (2) above landed
+//       on conceptually, generalized to ReconcileEdgeTopology's own
+//       vertex-proximity walk (a new FindBracketingBoundaryEdge/
+//       InsertBracketedSpan pair, splitting a coarse boundary edge's own
+//       owning triangle when NEITHER of a finer neighbor's shared edge
+//       endpoints sits near any vertex on the coarse side at all - the
+//       genuinely different case (2)'s own fix above didn't reach, per
+//       (1)'s "next-increment" note earlier in this comment). Measured,
+//       not shipped: it triggered 16 times on box+cylinder Union but the
+//       full 76-case sweep's own output was byte-for-byte UNCHANGED, and
+//       box+cylinder Union's own naked-edge count went UP slightly (1177
+//       -> 1183) rather than down - reverted rather than ship a change
+//       with no verified benefit.
+//
+//       ISOLATED FURTHER: instrumented TessellateGeneralBooleanClosedMesh
+//       itself to merge-and-check `result.Tessellate()`'s own RAW per-face
+//       output BEFORE any of this file's own StitchTJunctionsOnce/
+//       ReconcileEdgeTopology/ReconcileChainToChord passes run at all.
+//       That RAW merge is ALREADY orientation_consistent=0 for box+
+//       cylinder Union (bad-edge-count=2696), and stays orientation_
+//       consistent=0 after every reconciliation pass runs (bad-edge-count
+//       drops to 1177 - real, substantial progress on the naked-edge
+//       axis, exactly matching this file's own long history above - but
+//       the orientation flag itself never moves). This rules out
+//       StitchTJunctionsOnce/ReconcileChainToChord/ReconcileEdgeTopology
+//       as the SOURCE of the orientation conflict (their own fan-
+//       insertion was independently re-checked by hand for winding
+//       preservation and found consistent: every fan triangle is built
+//       as {apex, chain[k], chain[k+1]} in the same cyclic order the
+//       original triangle's own directed edge already carried) - the
+//       true source is upstream, in Brep::Tessellate()'s own per-face
+//       generation (a face-level m_bRev/FlipNormals defect on some
+//       specific face of a BooleanCombineGeneral result?) or in the raw,
+//       topology-blind Mesh::MergeAndWeld() itself. NOT diagnosed further
+//       this session - a genuinely fresh, precisely-scoped next-increment
+//       target, orthogonal to every naked-edge-count fix documented
+//       above.
+//
+//       FURTHER ISOLATED (a still later session): added a DINO8_FACE_
+//       ORIGIN_DEBUG diagnostic directly in TessellateGeneralBooleanClosed
+//       Mesh (before Mesh::MergeAndWeld() discards per-face provenance) -
+//       an independent, weld-by-rounding pass over `faces` (the per-ON_
+//       Brep-face MutFace list) that re-derives the same duplicate-
+//       directed-edge conflict but tags each triangle with its origin
+//       ON_Brep face index, so the two conflicting triangles can be traced
+//       back to which face(s) produced them. On box+cylinder Union, the
+//       FIRST conflict is between ON_Brep face 0 (m_bRev=0 - the box's
+//       bottom cap, which after the boolean carries a hole loop where the
+//       cylinder passes through it) and, at the SAME directed edge
+//       (v1110->v1249, on the box's bottom-cap hole boundary), THREE
+//       different candidate cylinder-wall fragment faces show up across
+//       repeated runs of the same detector (faces 8 and 2, both m_bRev=0,
+//       and face 6, m_bRev=1) - i.e. more than one fragment face's own
+//       triangulation is claiming a triangle incident to this exact
+//       boundary edge. This is NOT simply "one face's m_bRev is flipped
+//       relative to its neighbor" (that would show a single consistent
+//       origin-face pair every time) - it looks instead like the box's
+//       hole-boundary loop and the cylinder-wall fragment(s) that should
+//       meet it are not cleanly 1:1: either the hole loop itself is
+//       duplicated/overlapping in the notch-composition that built face
+//       0's trim, or more than one cylinder-wall KeptFace fragment
+//       independently believes it owns this same seam segment. Confirmed
+//       behavior-preserving: the diagnostic added in mesh.cpp's own
+//       IsClosedManifold() (captures the first duplicate-directed-edge's
+//       two vertex ids/coords and the two ON_MeshFace records involved)
+//       and this file's own DINO8_FACE_ORIGIN_DEBUG block are both
+//       print-only - the 76-case sweep's output is byte-for-byte
+//       unchanged with them compiled in, and the full ctest suite (dino8_
+//       kernel_smoke) is 100% green.
+//
+//       ROOT CAUSE, FIRST PASS (same later session, continued - SEE
+//       CORRECTION FURTHER BELOW, this pass's own "3-claimant" mechanism
+//       was disproven by a closer read of its own debug output): found
+//       that ReconcileFragmentBoundaries() (this file) explicitly skips
+//       reconciling any anchor-vertex-pair whose key has `rs.size() != 2`
+//       ("ambiguous (0, 1, or 3+ claimants) - leave alone", see the
+//       `continue` right after this function's own `total_pairs`/
+//       `two_run_pairs` debug counters), and added a per-pair DINO8_
+//       BOOL_DEBUG dump of every such skipped pair's owning loops/
+//       positions to see which. Originally guessed (WRONG, see below)
+//       that BridgeHolesIntoOuter()'s keyhole notch pushes these pairs to
+//       3 claimants via a same-face double-touch.
+//
+//       CORRECTION (reading the actual dump output, not just the
+//       mechanism it plausibly suggested): of the 444 anchor-pair keys on
+//       box+cylinder Union, only 18 are not cleanly 2-run, and of THOSE,
+//       17 have exactly ONE run total (not 3) - meaning no matching
+//       cross-face partner was found for them at all, a different failure
+//       shape than "ambiguous 3+ claimants". The apparent "three
+//       different candidate faces" in the FACE_ORIGIN_DEBUG finding
+//       above was three separate op EXECUTIONS (Union/A-B/B-A, each its
+//       own independent BooleanCombineGeneral call hitting its own first
+//       conflict) reported together, not three simultaneous claimants of
+//       one physical edge within a single mesh - conflating those was
+//       this pass's own mistake, corrected here rather than left
+//       standing. (The one truly-2-run-but-skipped pair found is a
+//       legitimate same-face self-seam - both runs on the same kf - and
+//       is correctly left alone by the existing same-kf `continue`.)
+//
+//       SECOND CORRECTION (this investigation's own second wrong guess,
+//       also caught before shipping any code - the pattern of "plausible
+//       mechanism, verified wrong on closer inspection" recurred and is
+//       recorded honestly rather than smoothed over): a follow-up attempt
+//       assumed kf0's 73-point span was ENTIRELY foreign to kf8 (a coarse-
+//       vs-fine resolution mismatch across the whole arc) and prototyped a
+//       ReconcileFragmentBoundaries generalization on that basis. Directly
+//       dumping BOTH loops' own anchor lists point-by-point (not just
+//       counts) disproved this immediately: kf8 actually DOES carry 72 of
+//       kf0's 73 intermediate vids as its own individual anchors (walking
+//       the same arc in the opposite direction, exactly as this file's own
+//       "adjacent faces trace their shared boundary in opposite senses"
+//       convention expects) - so essentially all of that span already
+//       reconciles fine-for-fine via the ordinary per-step path, with NO
+//       edit needed (a already-matching single-segment pair is silently
+//       skipped, which is why no "reconciled key=" log line was ever
+//       printed for it - not evidence that reconciliation wasn't
+//       happening). The prototype fix never fired for exactly this
+//       reason, and was reverted rather than left in the tree unused.
+//
+//       CONFIRMED, PRECISELY AND FINALLY (this time by adding a targeted
+//       print directly at BridgeHolesIntoOuter()'s own accepted-candidate
+//       site and matching its EXACT numbers against the (38,111) gap's own
+//       coordinates - no more inference from counts or nearby-but-not-
+//       identical evidence): the (38,111) gap IS BridgeHolesIntoOuter()'s
+//       own kEdgeFraction=1e-3 splice, exactly as this file's own earlier,
+//       already-written "ONE MORE WRINKLE" note below described - an
+//       EARLIER pass through this same investigation (immediately above,
+//       in an intervening commit) incorrectly concluded the two were
+//       "unrelated" from position/count reasoning alone; that conclusion
+//       is retracted here now that the actual numbers are in hand. On box+
+//       cylinder Union's accepted hole attachment: h_j.p = (0, 1, -1)
+//       (the chosen hole-boundary pinch vertex, at the circle's true north
+//       pole); the notch's own c_in = LerpOnSurface(h_j, h_next, 1e-3) =
+//       (-1.20496156e-4, 0.999992714, -1); c_out = LerpOnSurface(h_prev,
+//       h_j, 1-1e-3) = (+1.20496156e-4, 0.999992714, -1). These are BIT-
+//       FOR-BIT the same two points found straddling the north pole in
+//       kf0's own assembled loop (positions 37 and 112) - not merely
+//       similar in magnitude. h_j itself is never copied into kf0's own
+//       loop at all (the hole-walk loop deliberately starts at h_{j+1} and
+//       ends at h_{j-1}, skipping h_j - see the `for (size_t k = (j + 1) %
+//       m; k != j; ...)` loop), while kf8's own boundary DOES carry h_j
+//       verbatim (unaffected by this file's own notch splicing, since kf8
+//       is a plain wall fragment, not a bridged-hole face) - so kf8's own
+//       exact h_j anchor has no counterpart on kf0's side within weld
+//       tolerance of either c_in or c_out, and the pair goes unreconciled.
+//       This is NOT the SplitPeriodicWrapChain/seam-vertex-p family this
+//       session fixed once already (f83d6ea) - that fix and this gap are
+//       unrelated; the actual mechanism is exactly the deliberate,
+//       documented kEdgeFraction perturbation already described below.
+//
+//       NEXT STEP (not yet implemented - the mechanism is now fully
+//       confirmed with matching numbers, but the fix itself still needs
+//       real design + testing before landing, given this investigation's
+//       own history of wrong first guesses in this exact file): the
+//       cleanest fix is likely to preserve h_j's own identity somewhere
+//       recoverable rather than only ever emitting the two offset points
+//       around it - e.g. have BridgeHolesIntoOuter() record, per
+//       attachment, which two ASSEMBLED-array positions (c_in and c_out)
+//       morally correspond to which ORIGINAL hole-loop vertex (h_j), and
+//       teach ReconcileFragmentBoundaries() to treat a cross-face anchor
+//       matching h_j as reconcilable against EITHER of kf0's two straddling
+//       points (snapping both, or the nearer one, to h_j exactly) instead
+//       of requiring an exact weld. Simply splicing h_j itself into kf0's
+//       own array adjacent to c_in or c_out was considered and rejected
+//       without writing code: c_in/c_out are deliberately offset TOWARD
+//       h_j from the h_next/h_prev side respectively, so placing h_j
+//       immediately next to either one would create a short backtracking
+//       zigzag (walk toward h_j, then away again) rather than a clean
+//       insertion - a real risk of a new self-overlap defect, not a free
+//       lunch. Any fix here must be verified against the full 76-case
+//       sweep (watch for the closedmesh count moving, and no volume/
+//       ON_Brep::IsValid()/nonsimple-trim regression) and the full ctest
+//       suite before being considered done - and, given this investigation's
+//       track record, re-verified with fresh point-level data (not just
+//       counts) before being trusted.
+//
+//       TRIED AND REJECTED (measured, not guessed): simply shrinking
+//       kEdgeFraction (so c_in/c_out's offset from h_j falls below
+//       kWeldTol=1e-6, letting them weld to h_j and to the neighbor's own
+//       exact point for free, no data-flow changes needed) was tried at
+//       1e-7 and at 1e-5. BOTH regressed the 76-case sweep - several
+//       previously-OK cases (box+cyl case 01/02/03, cyl+cyl case 07/08,
+//       sphere+box case 09, sphere+sphere case 12, box+cone case 15,
+//       torus+box case 16) turned into TessellateGridClippedExact
+//       exceptions ("trim_polygon must have at least 3 points"), i.e. the
+//       notch corner became numerically collinear/degenerate at that
+//       fraction for at least one geometry scale in the corpus - exactly
+//       the failure mode this constant's own doc comment already warned
+//       about. A single global fraction cannot be shrunk safely without
+//       either a per-attachment absolute-distance floor (scaled to the
+//       LOCAL edge lengths at that specific notch, not the whole model's
+//       diagonal) or reworking the collinearity check itself - out of
+//       scope for a quick constant tweak. Both values were reverted via
+//       `git checkout HEAD` immediately after being measured; neither is
+//       in the tree.
+//
+//       ALSO TRIED AND REJECTED (measured): using h_j directly (no offset
+//       at all) for c_in/c_out, on the hypothesis that the collinearity
+//       risk kEdgeFraction guards against is specific to the OUTER side
+//       (box edges are straight, so o_prev/o_i/o_next are often exactly
+//       collinear) and not the hole side (a circle's consecutive samples
+//       are essentially never exactly collinear, so the hole-side offset
+//       seemed unnecessary for that specific reason) - leaving a_out/a_in
+//       untouched and only replacing c_in/c_out with h_j itself. This did
+//       NOT reproduce the earlier TessellateGridClippedExact regressions
+//       (no collinearity exceptions), but introduced a DIFFERENT, equally
+//       real regression: several cases that previously reported OK now
+//       report WRONG-VOLUME (box+cyl 01/02/03, cyl+cyl 07/08, box+cone 15)
+//       or INVALID (sphere+sphere 12), with volumes off by ~5-10%. Passing
+//       BridgeHolesIntoOuter's own IsSimplePolygon()/area-match acceptance
+//       checks is evidently not sufficient for a zero-width slit (both
+//       ends of the notch at the exact same point) to tessellate/clip
+//       correctly downstream - something in the exact-clip tessellation
+//       or area accounting treats a literal zero-width pinch differently
+//       from a genuinely narrow one, in a way that silently produces the
+//       wrong result rather than failing loudly. This confirms BOTH
+//       kEdgeFraction offsets (outer AND hole side) are load-bearing for
+//       reasons beyond simple collinearity avoidance, not just one of
+//       them - a real fix cannot touch the notch's own geometry at all
+//       and must instead work at the metadata level (the identity-mapping
+//       approach described above). Reverted via `git checkout HEAD`
+//       immediately after being measured; not in the tree.
+//
+//       METADATA-LEVEL FIX IMPLEMENTED AND MEASURED (also not in the
+//       tree - kept out because it doesn't close the gap, see below, not
+//       because it broke anything): built the identity-mapping approach
+//       in full - HoleAttachment gained `skipped_vertex`/`skipped_outer_
+//       vertex` (h_j and o_i, recorded at candidate-acceptance time),
+//       AssembleWithAttachments gained an optional `insert_starts` output
+//       so each attachment's final position in the merged array is known,
+//       BridgeHolesIntoOuter threaded a `pinches_out` vector of (position,
+//       true-vertex) pairs for all four notch corners (c_in, c_out, a_out,
+//       a_in) out to a new `KeptFace::hole_pinches` field, and
+//       ReconcileFragmentBoundaries relabeled each pinch position's own
+//       weld id (via the SAME `detect` welder already in scope) to its
+//       true target's id right after the normal per-point weld pass,
+//       before anchors are computed - touching NO geometry at all, only
+//       the internal id bookkeeping. Measured: the 76-case sweep stayed
+//       byte-for-byte unchanged (no regression, confirmed), and on box+
+//       cylinder Union the anchor-pair bookkeeping genuinely improved (14
+//       unresolved pairs down to 6, cross-checked point-by-point - the 2
+//       new "2-run" pairs that appeared are legitimate same-face self-
+//       seams, correctly left alone by the pre-existing same-kf check).
+//       BUT Mesh::IsClosedManifold()'s own bad-edge-count on that exact
+//       fixture was completely UNCHANGED (1177, identical to before) -
+//       the fix has zero effect on the actual output mesh. Root cause of
+//       THAT: every pair this fix resolves is already a trivial single-
+//       segment span on both sides (`ga.pts.size() <= 2 && gb.pts.size()
+//       <= 2` in the existing reconciliation code), so the fix changes
+//       nothing about which points get inserted where - it only avoids a
+//       wasted/ambiguous-looking match attempt. The two ACTUAL physical
+//       points (c_in/c_out's own real 3D coordinates, still offset from
+//       h_j by kEdgeFraction as always) are never moved or merged by this
+//       fix, and the ACTUAL weld that matters happens much later, in
+//       Mesh::MergeAndWeld() (TessellateGeneralBooleanClosedMesh, this
+//       file), which only ever sees raw 3D coordinates post-tessellation
+//       - it has no visibility into ReconcileFragmentBoundaries's own
+//       (pre-tessellation, 2D-trim-loop-level) weld-id bookkeeping at
+//       all. A fix that actually closes this gap must therefore act at
+//       the MESH level (inside TessellateGeneralBooleanClosedMesh, after
+//       `result.Tessellate()` produces `raw_faces`/`faces`, before the
+//       final `Mesh::MergeAndWeld(patched, tol)` call) rather than at the
+//       2D boundary-reconciliation level this section has been probing -
+//       genuinely new architectural territory (the pinch identity would
+//       need to survive from BridgeHolesIntoOuter's own 2D loop all the
+//       way through BuildLoop -> ON_BrepLoop/ON_BrepTrim -> brep.cpp's
+//       own per-face tessellation, which does not currently preserve any
+//       such provenance) - out of scope for this pass. Reverted via `git
+//       checkout HEAD` after measuring; not in the tree.
+//
+//       ONE MORE WRINKLE (found while scoping the fix above): BridgeHoles
+//       IntoOuter()'s own notch (this file, above) does not even splice in
+//       the hole loop's own EXACT pinch vertex - it inserts the two fresh
+//       LerpOnSurface(..., kEdgeFraction=1e-3) points on both the outer
+//       side (o_i/o_next) and the hole side (h_j/h_prev) described above,
+//       a deliberate near-miss so the notch's own corners are never
+//       exactly collinear/zero-area (this function's own top comment
+//       explains why - IsConvexPolygon()'s 1e-12 collinearity threshold).
+//       This IS the (38,111) gap's own root cause, confirmed above, not a
+//       separate concern layered on top of it.
+//
+//   MESH-LEVEL SEAM REPAIR (a later session - SHIPPED, measured): the
+//       "act at the MESH level" next step above is implemented as
+//       RepairMergedSeams() (boolean_general.cpp, see its own doc comment
+//       for each operation's exact rule), run by TessellateGeneralBoolean-
+//       ClosedMesh on the ONE mesh Mesh::MergeAndWeld() returns, after
+//       every per-face pass above. It touches only edges whose undirected
+//       count is not 2 (naked / nonmanifold) and the vertices on them, so
+//       a mesh that is already IsClosedManifold() passes through untouched
+//       - a no-op on every previously-closing case by construction.
+//       DINO8_NO_SEAM_REPAIR=1 disables it; DINO8_SEAM_REPAIR_DEBUG=1
+//       prints per-iteration counts, =2 also dumps every residual edge.
+//
+//       MEASURED (tests/general_boolean_sweep.cpp, 76 cases, diffed case-
+//       by-case against the pre-change baseline): non-EMPTY closedmesh=0
+//       count 55 -> 19 (36 cases newly closed, verified key-by-key against
+//       the baseline output, not just the aggregate count). ZERO
+//       regressions of any kind (no closedmesh 1->0, no valid 1->0, no
+//       OK -> other verdict, no exception - all 76 cases stay "| OK").
+//       box+cylinder Union (tests/general_boolean_sweep.cpp's own case 01,
+//       built via that file's FrameFromAxis cylinder frame) goes from
+//       IsClosedManifold's `orientation_consistent=0 bad-edge-count=1177`
+//       to `orientation_consistent=1 bad-edge-count=0`, and all four of
+//       its ops close. Volumes moved on 49 ops, 40 of them TOWARD the
+//       closed-form value: every box+cylinder-01 op now sits at err
+//       0.040-0.041, which is exactly the tessellation's own inherent
+//       inscribed-32-gon deficit (0.64% of pi r^2 h) - the previously-open
+//       meshes were off by up to 0.073 - and no op's error grew by more
+//       than 0.011 (all far inside the sweep's own 2% tolerance). Full
+//       ctest suite (dino8_kernel_smoke, 1663+ checks): 100% pass, 241.37s
+//       wall clock. tests/general_boolean_sweep.cpp's own 76-case sweep:
+//       150.70s wall clock (`time` on the standalone binary).
+//
+//       NOT UNIFORM ACROSS SEAM ANGLE (found while wiring up ctest
+//       assertions on this): tests/test_basic.cpp's OWN longstanding
+//       box+cylinder fixture (TestBooleanCombineGeneralBoxCylinder,
+//       MakeCylinderZForBoxCylinderTest - this file's own disclosed
+//       fixture throughout its history, box (-2,-2,-1)-(2,2,1), cylinder
+//       radius 1 z in [-2,2]) is the SAME shape as the sweep's case 01
+//       above, but built with a DIFFERENT cylinder frame convention
+//       (xaxis=(1,0,0), i.e. its wall's own u=0 periodic seam sits at
+//       physical angle 0, point (1,0,z) - the sweep's own FrameFromAxis
+//       picks xaxis=(0,-1,0) for the same +z axis, seam at angle 90deg).
+//       Measured directly (tests/scratch_test.cpp's own STANDALONE-REPRO
+//       block, deterministic across repeated runs - confirmed NOT a
+//       full-ctest-suite-context artifact): at seam angle 0, Union and
+//       Difference EACH retain a 4-edge residual (Intersection alone
+//       closes); the identical shape with the seam rotated 90deg (i.e.
+//       the sweep's own case 01) closes on all four ops, confirming the
+//       shape itself is not the variable - only the seam's absolute
+//       angle is. Root-caused with DINO8_SEAM_REPAIR_DEBUG=2: the 4
+//       residual edges form one small quadrilateral hole (at the wall's
+//       u=0 seam, which the seam-angle-0 fixture places exactly on the
+//       box-cap cut circle's own x-axis crossing) whose TWO possible
+//       triangulating diagonals are BOTH already saturated (undirected
+//       count 2) by the box cap's own and the wall's own separately-
+//       closed local tessellation - no 2-triangle fan using only the
+//       hole's own 4 existing corners can close it without pushing a
+//       diagonal to count 3, and this pass never invents a new interior
+//       vertex to sidestep that (a genuinely different mechanism from
+//       every residual shape (a)-(d) below, none of which involve BOTH
+//       diagonals of a hole already being spoken for). Not pursued this
+//       session: a targeted "collapse a proper edge anyway when both its
+//       endpoints are otherwise-unmatched and small relative to local
+//       scale" rule was considered and rejected without writing code -
+//       this file's own investigation above already measured twice
+//       (kEdgeFraction shrink, then h_j-direct) that loosening exactly
+//       this kind of guard on close-but-real edges reliably regresses
+//       OTHER cases in the sweep, and the payoff here is one seam-angle-
+//       dependent fixture, not a broad case class. tests/test_basic.cpp's
+//       ctest assertions were scoped to match this measurement exactly
+//       (IsClosedManifold() asserted for Intersection only, volume-match
+//       asserted on all three ops' closed-mesh results either way).
+//
+//       WHY THE SUGGESTED "mutually-nearest broken-vertex merge" ALONE
+//       WAS NOT ENOUGH (measured on box+cylinder Union at 32x128 with a
+//       standalone diagnostic re-deriving IsClosedManifold's edge counts
+//       on the final mesh): the residual is NOT mostly near-duplicate
+//       vertex pairs. Of 1122 broken vertices only 359 are mutually-
+//       nearest pairs and only 20 are within 1e-4 of their partner; the
+//       1171 naked edges form 48 chain components of up to 74 vertices,
+//       i.e. long stretches where the two faces sample the SAME seam with
+//       different point sets that never coincide at all - e.g. one face
+//       carrying a single 0.07-long chord across a span the other face
+//       covers with five short edges through four true-circle points ~6e-4
+//       off that chord (its sagitta, ~0.9% of its length, past the per-
+//       face passes' 5e-3-of-length acceptance). A merge-only pass got
+//       1171 -> 1071 naked (53 pairs) and stopped. The kEdgeFraction pinch
+//       this file's investigation ends on IS there (c_in / h_j / c_out,
+//       pairwise ~1.2e-4 apart) and IS what the merge step closes - but
+//       as a 3-WAY tie, which is exactly why "merge if closer than a
+//       fraction of the SHORTEST incident edge" (the first thing tried)
+//       vetoes every one of its pairs: each pair's own third point is an
+//       equally short edge away. Keying the radius to the LONGEST incident
+//       edge (the surrounding mesh's own cell size, 0.1x) fixed that.
+//
+//       The four further operations (all local, all bounded, all only ever
+//       on broken edges) that the residual's own measured shapes demanded:
+//       (a) naked zip - a naked vertex fanned into the nearest non-incident
+//           naked edge that one of ITS OWN naked edges runs antiparallel
+//           to (the other face's copy of the seam; a face's own next edge
+//           is parallel and never matches), within 0.02 / 0.05 / 0.1 of
+//           that edge's length coarse-to-fine, t in [0.02, 0.98]: 1071 ->
+//           198 naked;
+//       (b) sub-cell hole fill - a remaining naked loop of <= 8 vertices
+//           no wider than two local cells, fanned closed wound opposite to
+//           its naked edges: the cap/wall rim, where the cap's grid
+//           crossings sit up to ~4e-3 radially inside the wall's exact
+//           circle points - 25% of the 0.017 local edge length, past any
+//           sane relative tolerance: 198 -> 0 on Union;
+//       (c) flap flip - a triangle whose apex is in no other triangle, on
+//           a base walked in the SAME direction by another face: it and
+//           its own-face partner tile a quad with the wrong diagonal;
+//           re-diagonalizing leaves a plain naked T-junction (a) closes.
+//           Pre-existing (not created here) on box+cyl Intersection/B-A;
+//       (d) fold / duplicate removal - two triangles on the same three
+//           vertices (opposite winding: a zero-thickness fold whose signed
+//           volumes and directed edges cancel exactly; same winding: a
+//           double cover). A closed manifold cannot contain either, so
+//           dropping them is safe by construction. Found - AFTER (a)-(c)
+//           had closed every naked edge - to be the ENTIRE residual on
+//           box+cone / cyl+cyl / box+cyl(blind) Intersection: a rim
+//           sliver fanned in once by each of the per-face passes upstream
+//           with opposite winding, at every count-4 edge those ops had.
+//       An admissibility guard on (a) and (b) - a fan triangle may not
+//       duplicate an existing one nor push any edge past count 2 -
+//       mattered measurably: without it the zip could itself manufacture
+//       a count-3 edge or a fold (box+cyl Intersection at 32x128 was left
+//       with exactly 4 such edges), and adding it took the sweep from
+//       33/76 to 40/76 closed on its own, 7 more cases.
+//
+//       WHAT IS LEFT (final residual: 19 of the sweep's 76 cases, all
+//       still "| OK" on volume - closedmesh=0 on exactly these ops: 05
+//       cyl+cyl parallel axes Union/Intersection; 06 cyl+cyl perpendicular
+//       equal radii Union/B-A; 07 cyl+cyl perpendicular unequal radii
+//       Union/B-A; 08 cyl+cyl SKEW Union/B-A; 09 sphere+box FACE Union/
+//       Intersection/A-B; 10 sphere+box EDGE Union/Intersection/A-B; 12
+//       sphere+sphere unequal radii Union/Intersection/B-A; 13 sphere+cyl
+//       piercing Union/B-A). Four shapes, none of them a near-miss of the
+//       rules above:
+//       (i)  a ZIGZAG boundary at a cylinder cap rim (cyl+cyl Union, the
+//            x=3 cap of A): the cap's naked chain runs BACKWARD along the
+//            rim from a wall vertex, then forward past its own start,
+//            closed by a chord the wall walks in the same direction as a
+//            cap sliver (count 3) - a multi-point version of (c) whose
+//            fix would need to know which of two same-direction triangles
+//            is "the other face's", provenance MergeAndWeld() has already
+//            discarded. Deliberately not guessed at. The same shape is
+//            what keeps box+cyl Intersection open at the coarse 8x8 /
+//            8x32 (it closes at 16x64 and 32x128).
+//       (ii) sphere+sphere Union/Intersection/B-A: the two spheres' own
+//            boundary polylines along the intersection circle sit 0.1-
+//            0.27 of an edge length apart (0.008-0.013 absolute on a
+//            radius-2 sphere) - far beyond a chord's sagitta and beyond
+//            any local tolerance this pass could honestly use. An
+//            upstream sampling defect, not diagnosed further here.
+//       (iii) a handful of near-duplicate vertices the merge step's link
+//            condition correctly refuses (merging would create a count-3
+//            edge), e.g. sphere+sphere Union's v457/v458 pair 1.9e-4 apart.
+//       (iv) a small quadrilateral hole whose TWO possible triangulating
+//            diagonals are BOTH already saturated (count 2) by two
+//            different faces' own separately-closed local tessellation -
+//            not in the sweep's own 76 cases (all of which use this file's
+//            FrameFromAxis cylinder frame), but confirmed on tests/
+//            test_basic.cpp's own longstanding box+cylinder fixture, whose
+//            DIFFERENT cylinder frame convention happens to place the
+//            wall's own periodic seam exactly on the box-cap cut circle's
+//            axis crossing - see the "NOT UNIFORM ACROSS SEAM ANGLE" entry
+//            above for the full mechanism and why it was left open.
+//
+//       DELIBERATELY NOT DONE: widening any tolerance further. The zip's
+//       0.1-of-length ceiling is already 20x the per-face passes' 5e-3 and
+//       is safe only because both the point and the edge are ALREADY naked
+//       - the same reasoning does not extend to (ii), where the honest
+//       statement is that the two boundaries are simply different curves.
+Mesh TessellateGeneralBooleanClosedMesh(const Brep& result, int u_divisions = 8, int v_divisions = 8);
+
+}  // namespace dino8::kernel

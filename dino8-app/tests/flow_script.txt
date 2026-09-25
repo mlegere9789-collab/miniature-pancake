@@ -1,0 +1,18 @@
+# Dino Flow QC: the node editor opens, the plug-in loader finds the HelloDino
+# sample plug-in (command + Dino Flow node), and GrasshopperPlayer solves and
+# bakes a small graph headlessly (see flow_graph.dflow). The document is then
+# saved so flow_update_script.txt can reopen it and test GrasshopperUpdateBakes
+# against a *separate* process (a real edit-the-file-then-reopen workflow, not
+# just an in-memory re-solve) - see smoke.sh.
+Grasshopper
+GrasshopperPluginList
+HelloDino
+TestBadMeshIndex
+@expect_objects 1
+GrasshopperPlayer @FLOWFILE@ Bake=Yes
+@expect_objects 2
+SelAll
+List
+SelLast
+Length
+Save @FLOWSAVE@

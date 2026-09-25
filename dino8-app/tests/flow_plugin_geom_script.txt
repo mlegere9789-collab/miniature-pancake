@@ -1,0 +1,14 @@
+# Dino Flow plug-in geometry value QC: Spiral Curve (a plug-in node output of
+# kind CURVE) wired straight into Plugin Curve Length (a plug-in node INPUT
+# of kind CURVE), proving the plugin ABI's geometry handles round-trip
+# correctly node-to-node without ever going through a baked document object
+# in between (see flow_plugin_geom_graph.dflow). The helix is built with
+# radius=0, so it degenerates to a straight vertical segment of length
+# turns*pitch = 1*10 = 10 - an exact, predictable arc length. Plugin Curve
+# Length's number output is then wired into a Construct Point's X and baked,
+# so the computed length is checkable via the baked point's coordinates.
+Grasshopper
+GrasshopperPlayer @GEOMFILE@ Bake=Yes
+@expect_objects 1
+SelName PluginGeomLenPt
+List

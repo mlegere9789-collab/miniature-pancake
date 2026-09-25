@@ -1,0 +1,306 @@
+#include <cstdio>
+#include <cstdlib>
+#include <cmath>
+#include <algorithm>
+#include <map>
+#include <set>
+#include <string>
+#include <utility>
+#include "dino8/kernel/boolean_general.h"
+#include "dino8/kernel/boolean.h"
+#include "dino8/kernel/brep.h"
+#include "dino8/kernel/mesh.h"
+#include "dino8/kernel/surface.h"
+
+using namespace dino8::kernel;
+
+// Diagnostic: report IsClosedManifold(), boundary-edge count, non-manifold
+// (3+ face) edge count, and print up to a handful of the offending edges'
+// own 3D positions plus which Brep edge (by index, matched via nearest
+// midpoint) they sit closest to - to confirm/refute the "dense polyline
+// edge, adjacent faces sample it differently" T-junction hypothesis.
+static void DiagnoseManifold(const char* label, const Brep& brep, const Mesh& mesh) {
+  const ON_Mesh& m = mesh.raw();
+  std::map<std::pair<int, int>, int> undirected_count;
+  for (int i = 0; i < m.m_F.Count(); ++i) {
+    const ON_MeshFace& f = m.m_F[i];
+    auto visit = [&](int a, int b) { ++undirected_count[std::minmax(a, b)]; };
+    visit(f.vi[0], f.vi[1]);
+    visit(f.vi[1], f.vi[2]);
+    if (f.IsQuad()) {
+      visit(f.vi[2], f.vi[3]);
+      visit(f.vi[3], f.vi[0]);
+    } else {
+      visit(f.vi[2], f.vi[0]);
+    }
+  }
+  int boundary = 0, nonmanifold = 0;
+  int printed_boundary = 0, printed_nonmanifold = 0;
+  int near_rim = 0, near_seam = 0, other = 0;
+  for (const auto& [edge, count] : undirected_count) {
+    if (count == 1) {
+      ++boundary;
+      const ON_3fPoint& a = m.m_V[edge.first];
+      const ON_3fPoint& b = m.m_V[edge.second];
+      const bool rim = (std::fabs(a.z - (-2.0f)) < 0.05f || std::fabs(a.z - 2.0f) < 0.05f) &&
+                        (std::fabs(b.z - (-2.0f)) < 0.05f || std::fabs(b.z - 2.0f) < 0.05f);
+      const bool seam = std::fabs(a.x - 1.0f) < 0.05f && std::fabs(a.y) < 0.05f && std::fabs(b.x - 1.0f) < 0.05f &&
+                         std::fabs(b.y) < 0.05f;
+      if (rim) ++near_rim;
+      else if (seam) ++near_seam;
+      else ++other;
+      if (printed_boundary < 5) {
+        const ON_3fPoint& a = m.m_V[edge.first];
+        const ON_3fPoint& b = m.m_V[edge.second];
+        printf("  [%s] BOUNDARY edge v%d-v%d  (%.6f,%.6f,%.6f)-(%.6f,%.6f,%.6f)\n", label,
+               edge.first, edge.second, a.x, a.y, a.z, b.x, b.y, b.z);
+        ++printed_boundary;
+      }
+    } else if (count > 2) {
+      ++nonmanifold;
+      if (printed_nonmanifold < 5) {
+        const ON_3fPoint& a = m.m_V[edge.first];
+        const ON_3fPoint& b = m.m_V[edge.second];
+        printf("  [%s] NONMANIFOLD(%d) edge v%d-v%d  (%.6f,%.6f,%.6f)-(%.6f,%.6f,%.6f)\n", label,
+               count, edge.first, edge.second, a.x, a.y, a.z, b.x, b.y, b.z);
+        ++printed_nonmanifold;
+      }
+    }
+  }
+  printf("[%s] IsClosedManifold=%d boundary_edges=%d nonmanifold_edges=%d (total undirected edges=%zu) faces=%d verts=%d\n",
+         label, (int)mesh.IsClosedManifold(), boundary, nonmanifold, undirected_count.size(),
+         m.m_F.Count(), m.m_V.Count());
+  printf("[%s] boundary breakdown: near_rim(z=+-2)=%d near_seam(x=1,y=0)=%d other=%d\n", label, near_rim, near_seam,
+         other);
+}
+
+// Closed finite cylinder, axis along +z from z0 to z1, built via the
+// kernel's own proven CylindricalFace + FromMixedFaces() path. A bare
+// CylindricalFace alone (FromMixedFaces({}, {cf})) is DELIBERATELY an open
+// tube with no end caps (see boolean.cpp's RayVsMixedFace/BuildEndCap doc
+// comments: a bare-cylinder boolean *operand* normally gets its end
+// material from the other operand, so caps are synthesized situationally
+// inside boolean.cpp itself, not by FromMixedFaces()). For a genuinely
+// standalone, watertight solid cylinder we instead supply two explicit
+// disk PlanarFace caps alongside the CylindricalFace, each one a fine
+// polygon sampled at the exact same angles as the cylinder's own rim and
+// marked via notch_begin/notch_count as one true circular arc coincident
+// with that rim - the documented mechanism (see PlanarFace's own doc
+// comment in brep.h) for welding a planar cap to a cylindrical face's edge
+// into one real shared ON_BrepEdge instead of two merely-touching pieces.
+Brep MakeCylinderZ(double cx, double cy, double z0, double z1, double r, double xax = 1, double yax = 0) {
+  Brep::CylindricalFace cf;
+  cf.frame = ON_Plane(ON_3dPoint(cx, cy, z0), ON_3dVector(xax, yax, 0), ON_3dVector(-yax, xax, 0));
+  cf.radius = r;
+  cf.angle = 2.0 * ON_PI;
+  cf.length = z1 - z0;
+
+  const int n = 128;
+  auto make_cap = [&](double z, bool flip) {
+    Brep::PlanarFace pf;
+    pf.plane = ON_Plane(ON_3dPoint(cx, cy, z), ON_3dVector(0, 0, flip ? -1 : 1));
+    for (int i = 0; i <= n; ++i) {
+      const double a = flip ? -2.0 * ON_PI * i / n : 2.0 * ON_PI * i / n;
+      const double cosA = std::cos(a), sinA = std::sin(a);
+      pf.loop.emplace_back(cx + r * (cosA * xax - sinA * yax), cy + r * (cosA * yax + sinA * xax), z);
+    }
+    pf.loop.pop_back();  // closed polygon: don't repeat the seam point
+    pf.notch_begin = 0;
+    pf.notch_count = static_cast<int>(pf.loop.size());
+    return pf;
+  };
+  Brep::PlanarFace cap0 = make_cap(z0, /*flip=*/true);   // bottom: outward normal -z
+  Brep::PlanarFace cap1 = make_cap(z1, /*flip=*/false);  // top: outward normal +z
+  return Brep::FromMixedFaces({cap0, cap1}, {cf});
+}
+
+int main() {
+  ON::Begin();
+  // Reproduce EXACTLY the TestBooleanCombineGeneralBoxCylinder ctest
+  // fixture (test_basic.cpp) at its own (32, 128) resolution, standalone.
+  // CONFIRMED (not flaky, not full-suite-context-dependent - deterministic
+  // across repeated runs): with THIS fixture's own cylinder frame
+  // (xaxis=(1,0,0), i.e. the wall's u=0 periodic seam sitting exactly at
+  // physical angle 0, point (r,0,z)) RepairMergedSeams (boolean_general.
+  // cpp) leaves Union and Difference each with 4 residual naked edges -
+  // Intersection alone closes. The rotated variant below (same geometry,
+  // seam at a different absolute angle) closes on ALL three ops, which is
+  // what tests/general_boolean_sweep.cpp's own case 01 (built via
+  // FrameFromAxis, which picks a DIFFERENT seed/xaxis for a +z axis) has
+  // been measuring - the sweep's own "closedmesh=1" for this geometry
+  // does NOT generalize to every seam orientation. See boolean_general.h's
+  // own "MESH-LEVEL SEAM REPAIR" section for the root cause (traced with
+  // DINO8_SEAM_REPAIR_DEBUG=2 on this exact fixture): the 4 residual edges
+  // form one small quadrilateral hole whose TWO possible triangulating
+  // diagonals are BOTH already saturated (count 2) by the box cap's own
+  // and the wall's own separate, already-closed local tessellation - no
+  // 2-triangle fan using only the hole's own 4 existing corners can close
+  // it without pushing a diagonal to count 3; a genuine fix would need a
+  // new interior (e.g. centroid) point, which no operation in this pass
+  // ever adds. Not attempted this session - see that file's own doc
+  // comment for why a narrow, unverified extension here was judged not
+  // worth the regression risk relative to its payoff (a single seam-angle-
+  // dependent fixture, not a broad case class).
+  {
+    Brep box = Brep::Box(-2, -2, -1, 2, 2, 1);
+    Brep cyl = MakeCylinderZ(0, 0, -2, 2, 1.0);
+    for (BooleanOp op : {BooleanOp::Union, BooleanOp::Intersection, BooleanOp::Difference}) {
+      const char* name = op==BooleanOp::Union?"Union":op==BooleanOp::Intersection?"Intersection":"Difference";
+      Brep r = BooleanCombineGeneral(box, cyl, op);
+      Mesh mf = TessellateGeneralBooleanClosedMesh(r, 32, 128);
+      printf("STANDALONE-REPRO box+cylinder %s @ (32,128): volume=%f closed=%d\n", name, mf.Volume(),
+             (int)mf.IsClosedManifold());
+    }
+  }
+  // Same fixture, cylinder seam rotated 90deg (xaxis=(0,-1,0)) - exactly
+  // the frame convention tests/general_boolean_sweep.cpp's FrameFromAxis
+  // picks for axis (0,0,1) (|axis.z|>=0.9 branch picks seed=(1,0,0), so
+  // x=cross(seed,axis)=(0,-1,0)) - to check whether the sweep's own
+  // "closedmesh=1" for this same box+cylinder geometry depends on which
+  // absolute angle the wall's u=0 seam sits at (both are the SAME
+  // geometry, box is exactly 90deg-symmetric, 32 divisions is an exact
+  // multiple of 4, so real geometry should be congruent either way).
+  {
+    Brep box = Brep::Box(-2, -2, -1, 2, 2, 1);
+    Brep cyl = MakeCylinderZ(0, 0, -2, 2, 1.0, /*xax=*/0, /*yax=*/-1);
+    for (BooleanOp op : {BooleanOp::Union, BooleanOp::Intersection, BooleanOp::Difference}) {
+      const char* name = op==BooleanOp::Union?"Union":op==BooleanOp::Intersection?"Intersection":"Difference";
+      Brep r = BooleanCombineGeneral(box, cyl, op);
+      Mesh mf = TessellateGeneralBooleanClosedMesh(r, 32, 128);
+      printf("STANDALONE-REPRO(seam-rot90) box+cylinder %s @ (32,128): volume=%f closed=%d\n", name, mf.Volume(),
+             (int)mf.IsClosedManifold());
+    }
+  }
+  {
+    Brep cyl = MakeCylinderZ(0, 0, 0, 5, 1.0);
+    Mesh m = cyl.TessellateToClosedMesh(8, 32);
+    printf("lone cylinder: faces=%d volume=%f (expect %f) valid=%d\n", cyl.FaceCount(), m.Volume(),
+           ON_PI * 1.0 * 1.0 * 5.0, (int)cyl.raw().IsValid());
+  }
+  Brep a = Brep::Box(0,0,0, 2,2,2);
+  Brep b = Brep::Box(1,1,1, 3,3,3);
+
+  for (BooleanOp op : {BooleanOp::Union, BooleanOp::Intersection, BooleanOp::Difference}) {
+    const char* name = op==BooleanOp::Union?"Union":op==BooleanOp::Intersection?"Intersection":"Difference";
+    try {
+      Brep r = BooleanCombineGeneral(a, b, op);
+      Mesh m = r.TessellateToClosedMesh(8,8);
+      double vol = m.Volume();
+      bool valid = r.raw().IsValid();
+      printf("box+box %s: faces=%d volume=%f valid=%d\n", name, r.FaceCount(), vol, (int)valid);
+      DiagnoseManifold((std::string("box+box ") + name).c_str(), r, m);
+      Mesh mc = r.TessellateToClosedMeshConforming(8, 8);
+      DiagnoseManifold((std::string("box+box(conforming) ") + name).c_str(), r, mc);
+      Mesh mf = TessellateGeneralBooleanClosedMesh(r, 8, 8);
+      printf("box+box %s FIXED volume=%f\n", name, mf.Volume());
+      DiagnoseManifold((std::string("box+box(FIXED) ") + name).c_str(), r, mf);
+    } catch (const std::exception& e) {
+      printf("box+box %s: EXCEPTION %s\n", name, e.what());
+    }
+  }
+
+  // Plane+cylinder validation: a 4x4x2 box (volume 32) fully pierced by a
+  // radius-1 cylinder along its own z-axis, taller than the box on both
+  // ends (so the cylinder passes all the way through). Closed-form:
+  // intersection = pi*r^2*box_height = 2*pi; union = 32 + 4*pi - 2*pi =
+  // 32 + 2*pi; difference (box - cyl) = 32 - 2*pi. This is a case the
+  // existing special-cased BooleanCombineMixed engine already handles
+  // exactly (plane+cylinder) - matching it here is the required proof
+  // the general pipeline reproduces already-known-correct results.
+  {
+    Brep box = Brep::Box(-2, -2, -1, 2, 2, 1);
+    Brep cyl = MakeCylinderZ(0, 0, -2, 2, 1.0);
+    const double box_h = 2.0, r = 1.0;
+    const double expect_i = ON_PI * r * r * box_h;
+    const double expect_u = 32.0 + 4.0 * ON_PI * r * r - expect_i;
+    const double expect_d = 32.0 - expect_i;
+    for (BooleanOp op : {BooleanOp::Union, BooleanOp::Intersection, BooleanOp::Difference}) {
+      const char* name = op==BooleanOp::Union?"Union":op==BooleanOp::Intersection?"Intersection":"Difference";
+      const double expect = op==BooleanOp::Union?expect_u:op==BooleanOp::Intersection?expect_i:expect_d;
+      try {
+        if (std::getenv("DINO8_RECONCILE_DEBUG")) std::fprintf(stderr, "=== box+cylinder %s ===\n", name);
+        Brep r = BooleanCombineGeneral(box, cyl, op);
+        Mesh m = r.TessellateToClosedMesh(8,32);
+        double vol = m.Volume();
+        ON_wString vlog_s;
+        ON_TextLog vlog(vlog_s);
+        bool valid = r.raw().IsValid(&vlog);
+        printf("box+cylinder %s: faces=%d volume=%f (expect %f) valid=%d\n", name, r.FaceCount(), vol, expect, (int)valid);
+        if (!valid) {
+          ON_String vlog_a(vlog_s);
+          printf("  IsValid log:\n%s\n", vlog_a.Array());
+        }
+        if (op == BooleanOp::Union) {
+          const ON_Brep& rb = r.raw();
+          int naked = 0;
+          std::map<int, int> per_face;
+          for (int ei = 0; ei < rb.m_E.Count(); ++ei) {
+            if (rb.m_E[ei].m_ti.Count() == 1) {
+              ++naked;
+              const int fidx = rb.m_T[rb.m_E[ei].m_ti[0]].Face()->m_face_index;
+              ++per_face[fidx];
+              {
+                const ON_3dPoint p0 = rb.m_E[ei].PointAtStart(), p1 = rb.m_E[ei].PointAtEnd();
+                printf("  TOPO-NAKED edge %d face=%d (%.4f,%.4f,%.4f)-(%.4f,%.4f,%.4f)\n", ei, fidx, p0.x, p0.y,
+                       p0.z, p1.x, p1.y, p1.z);
+              }
+            }
+          }
+          printf("  TOPO naked-edge-count=%d / total-edges=%d faces=%d\n", naked, rb.m_E.Count(), rb.m_F.Count());
+          for (auto& [fidx, cnt] : per_face) {
+            const ON_Surface* sf = rb.m_F[fidx].SurfaceOf();
+            const char* kind = sf->IsPlanar() ? "planar" : sf->IsCylinder() ? "cylinder" : "other";
+            printf("    face %d (%s): naked=%d\n", fidx, kind, cnt);
+          }
+        }
+        DiagnoseManifold((std::string("box+cylinder ") + name).c_str(), r, m);
+        Mesh mc = r.TessellateToClosedMeshConforming(8, 32);
+        DiagnoseManifold((std::string("box+cylinder(conforming) ") + name).c_str(), r, mc);
+        Mesh mf = TessellateGeneralBooleanClosedMesh(r, 8, 32);
+        printf("box+cylinder %s FIXED volume=%f\n", name, mf.Volume());
+        DiagnoseManifold((std::string("box+cylinder(FIXED) ") + name).c_str(), r, mf);
+      } catch (const std::exception& e) {
+        printf("box+cylinder %s: EXCEPTION %s\n", name, e.what());
+      }
+    }
+  }
+
+  // General-only case: sphere+box. The existing special-cased engine has
+  // NO sphere support at all - this is the proof the generalization is
+  // real, not just a reproduction of an already-solved case. Sphere
+  // radius 2 at the origin, intersected with a box that fully contains
+  // the positive octant and extends well past the sphere everywhere else:
+  // the intersection is exactly one octant of the sphere, closed form
+  // (4/3*pi*r^3)/8 = (4/3)*pi for r=2.
+  {
+    Brep sphere = Brep::Sphere(Point3d(0, 0, 0), 2.0);
+    Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+    const double r = 2.0;
+    const double expect_i = (4.0 / 3.0) * ON_PI * r * r * r / 8.0;
+    for (BooleanOp op : {BooleanOp::Union, BooleanOp::Intersection, BooleanOp::Difference}) {
+      const char* name = op==BooleanOp::Union?"Union":op==BooleanOp::Intersection?"Intersection":"Difference";
+      try {
+        Brep r2 = BooleanCombineGeneral(sphere, box, op);
+        Mesh m = r2.TessellateToClosedMesh(16,32);
+        double vol = m.Volume();
+        bool valid = r2.raw().IsValid();
+        if (op == BooleanOp::Intersection) {
+          printf("sphere+box %s: faces=%d volume=%f (expect %f) valid=%d\n", name, r2.FaceCount(), vol, expect_i, (int)valid);
+        } else {
+          printf("sphere+box %s: faces=%d volume=%f valid=%d\n", name, r2.FaceCount(), vol, (int)valid);
+        }
+        DiagnoseManifold((std::string("sphere+box ") + name).c_str(), r2, m);
+        {
+          Mesh mc = r2.TessellateToClosedMeshConforming(16, 32);
+          DiagnoseManifold((std::string("sphere+box(conforming) ") + name).c_str(), r2, mc);
+          Mesh mf = TessellateGeneralBooleanClosedMesh(r2, 16, 32);
+          printf("sphere+box %s FIXED volume=%f\n", name, mf.Volume());
+          DiagnoseManifold((std::string("sphere+box(FIXED) ") + name).c_str(), r2, mf);
+        }
+      } catch (const std::exception& e) {
+        printf("sphere+box %s: EXCEPTION %s\n", name, e.what());
+      }
+    }
+  }
+  return 0;
+}

@@ -1,0 +1,20 @@
+# Tutorial 7: Sketch a profile and Revolve it into a vase - verifies the
+# exact command sequence quoted in docs/site/tutorials.html
+# "Sketch and revolve a vase" tutorial.
+#
+# Typed coordinates are always resolved against the ACTIVE viewport's
+# construction plane, not literal world axes -- so this profile is typed
+# in the Top view with y fixed at 0, putting every point in the vertical
+# XZ world plane (x = radius, z = height) exactly as a Front-view sketch
+# would, without depending on Front's own CPlane axis mapping.
+SetActiveViewport Top
+InterpCrv 0,0,0 3,0,4 2,0,8 4,0,12 0,0,14
+Enter
+@expect_objects 1
+SelLast
+Revolve
+0,0,0
+0,0,20
+@expect_objects 2
+SelID 2
+List

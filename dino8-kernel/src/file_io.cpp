@@ -1,0 +1,187 @@
+#include "dino8/kernel/file_io.h"
+
+namespace dino8::kernel {
+
+namespace {
+
+// ONX_Model::Read() (ON_Mesh::Read()/ReadFaceArray() under it) copies each
+// mesh face's four vertex indices straight off the disk with no check
+// against the vertex count it read a moment earlier, and never calls
+// ON_Mesh::IsValid() afterward - so a corrupt (or hostile) .3dm can hand
+// this kernel a Mesh whose faces index past m_V. Every Mesh query here
+// (Area(), Volume(), MergeAndWeld(), the boolean ToManifold() bridge, ...)
+// indexes m_V by those face indices unchecked, exactly as ON_Mesh itself
+// does, so the outcome was a silent out-of-bounds read, not a failure
+// (confirmed by a debug run: a 3-vertex mesh with a face at index 70000 -
+// written by this class's own Save(), which OpenNURBS doesn't validate
+// either, and even silently truncated to 112 by its 1-byte on-disk index
+// encoding - loaded with Result::Ok, ON_Mesh::IsValid() false, and
+// Area() 0.5 from whatever memory sat past the vertex array).
+// LoadObj()/LoadStl() already reject an out-of-range face index at the
+// boundary; this makes the .3dm loader hold the same line. Deliberately
+// only the range check, not ON_MeshFace::IsValid()'s stricter "no
+// repeated indices" rule: a degenerate (repeated-index) face is an
+// in-range face other exporters legitimately write, and indexing it is
+// perfectly safe.
+bool MeshFaceIndicesInRange(const ON_Mesh& mesh) {
+  const int vertex_count = mesh.m_V.Count();
+  for (int i = 0; i < mesh.m_F.Count(); ++i) {
+    const ON_MeshFace& face = mesh.m_F[i];
+    for (int k = 0; k < 4; ++k) {
+      if (face.vi[k] < 0 || face.vi[k] >= vertex_count) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+// Shared by every Add*() below: a fresh UUID, plus `name` set via
+// SetName() when non-empty, `layer_index` written straight through,
+// `render_color` (when present) written to `m_color` with `ColorSource()`
+// switched to ON::color_from_object, every `user_strings` pair written
+// via SetUserString(), and `linetype_index` (when present) written to
+// `m_linetype_index` with `LinetypeSource()` switched to
+// ON::linetype_from_object. See file_io.h's own doc comment on the
+// `name`/`layer_index`/`render_color`/`user_strings`/`linetype_index`
+// parameters for why this exists and why an empty name, a layer_index of
+// 0, std::nullopt, and an empty list are all no-ops.
+ON_3dmObjectAttributes MakeAttributes(const std::string& name, int layer_index,
+                                       std::optional<Color> render_color,
+                                       const UserStrings& user_strings,
+                                       std::optional<int> linetype_index) {
+  ON_3dmObjectAttributes attributes;
+  ON_CreateUuid(attributes.m_uuid);
+  if (!name.empty()) {
+    attributes.SetName(ON_wString(name.c_str()), true);
+  }
+  attributes.m_layer_index = layer_index;
+  if (render_color.has_value()) {
+    attributes.m_color = ON_Color(render_color->r, render_color->g, render_color->b);
+    attributes.SetColorSource(ON::color_from_object);
+  }
+  for (const auto& [key, value] : user_strings) {
+    attributes.SetUserString(ON_wString(key.c_str()), ON_wString(value.c_str()));
+  }
+  if (linetype_index.has_value()) {
+    attributes.m_linetype_index = *linetype_index;
+    attributes.SetLinetypeSource(ON::linetype_from_object);
+  }
+  return attributes;
+}
+
+}  // namespace
+
+Model::Model() = default;
+
+int Model::AddLayer(const std::string& name, Color color, int linetype_index) {
+  if (name.empty()) {
+    return -1;
+  }
+  ON_Layer layer;
+  layer.SetName(ON_wString(name.c_str()));
+  layer.SetColor(ON_Color(color.r, color.g, color.b));
+  if (linetype_index >= 0) {
+    layer.SetLinetypeIndex(linetype_index);
+  }
+  const ON_ModelComponentReference layer_ref = model_.AddModelComponent(layer, true);
+  const ON_Layer* managed_layer = ON_Layer::FromModelComponentRef(layer_ref, nullptr);
+  return managed_layer != nullptr ? managed_layer->Index() : -1;
+}
+
+int Model::AddLinetype(const std::string& name, const LinetypePattern& pattern) {
+  if (name.empty()) {
+    return -1;
+  }
+  ON_Linetype linetype;
+  linetype.SetName(ON_wString(name.c_str()));
+  for (const LinetypeSegment& segment : pattern) {
+    linetype.AppendSegment(ON_LinetypeSegment(
+        segment.length_mm, segment.is_dash ? ON_LinetypeSegment::eSegType::stLine
+                                            : ON_LinetypeSegment::eSegType::stSpace));
+  }
+  const ON_ModelComponentReference linetype_ref = model_.AddModelComponent(linetype, true);
+  const ON_Linetype* managed_linetype = ON_Linetype::FromModelComponentRef(linetype_ref, nullptr);
+  return managed_linetype != nullptr ? managed_linetype->Index() : -1;
+}
+
+void Model::AddCurve(const NurbsCurve& curve, const std::string& name, int layer_index,
+                      std::optional<Color> render_color, const UserStrings& user_strings,
+                      std::optional<int> linetype_index) {
+  auto* geometry = new ON_NurbsCurve(curve.raw());
+  ON_3dmObjectAttributes attributes =
+      MakeAttributes(name, layer_index, render_color, user_strings, linetype_index);
+  model_.AddModelGeometryComponent(geometry, &attributes);
+}
+
+void Model::AddBrep(const Brep& brep, const std::string& name, int layer_index,
+                     std::optional<Color> render_color, const UserStrings& user_strings,
+                     std::optional<int> linetype_index) {
+  auto* geometry = new ON_Brep(brep.raw());
+  ON_3dmObjectAttributes attributes =
+      MakeAttributes(name, layer_index, render_color, user_strings, linetype_index);
+  model_.AddModelGeometryComponent(geometry, &attributes);
+}
+
+void Model::AddMesh(const Mesh& mesh, const std::string& name, int layer_index,
+                     std::optional<Color> render_color, const UserStrings& user_strings,
+                     std::optional<int> linetype_index) {
+  auto* geometry = new ON_Mesh(mesh.raw());
+  ON_3dmObjectAttributes attributes =
+      MakeAttributes(name, layer_index, render_color, user_strings, linetype_index);
+  model_.AddModelGeometryComponent(geometry, &attributes);
+}
+
+void Model::AddSubD(const SubD& subd, const std::string& name, int layer_index,
+                     std::optional<Color> render_color, const UserStrings& user_strings,
+                     std::optional<int> linetype_index) {
+  auto* geometry = new ON_SubD(subd.raw());
+  ON_3dmObjectAttributes attributes =
+      MakeAttributes(name, layer_index, render_color, user_strings, linetype_index);
+  model_.AddModelGeometryComponent(geometry, &attributes);
+}
+
+void Model::AddPointCloud(const PointCloud& cloud, const std::string& name, int layer_index,
+                           std::optional<Color> render_color, const UserStrings& user_strings,
+                           std::optional<int> linetype_index) {
+  auto* geometry = new ON_PointCloud(cloud.raw());
+  ON_3dmObjectAttributes attributes =
+      MakeAttributes(name, layer_index, render_color, user_strings, linetype_index);
+  model_.AddModelGeometryComponent(geometry, &attributes);
+}
+
+int Model::ObjectCount() const {
+  return static_cast<int>(
+      model_.ActiveComponentCount(ON_ModelComponent::Type::ModelGeometry));
+}
+
+Result Model::Save(const std::string& path, int version) const {
+  ON_TextLog error_log;
+  const bool ok = model_.Write(path.c_str(), version, &error_log);
+  return ok ? Result::Ok : Result::Failed;
+}
+
+Result Model::Load(const std::string& path, Model& out_model) {
+  ON_TextLog error_log;
+  const bool ok = out_model.model_.Read(path.c_str(), &error_log);
+  if (!ok) {
+    return Result::Failed;
+  }
+  // See MeshFaceIndicesInRange() above for why this check exists at all.
+  ONX_ModelComponentIterator it(out_model.model_, ON_ModelComponent::Type::ModelGeometry);
+  for (const ON_ModelComponent* component = it.FirstComponent(); component != nullptr;
+       component = it.NextComponent()) {
+    const ON_ModelGeometryComponent* geometry = ON_ModelGeometryComponent::Cast(component);
+    if (geometry == nullptr) {
+      continue;
+    }
+    const ON_Mesh* mesh = ON_Mesh::Cast(geometry->Geometry(nullptr));
+    if (mesh != nullptr && !MeshFaceIndicesInRange(*mesh)) {
+      out_model.model_.Reset();  // never hand back a half-trusted model
+      return Result::Failed;
+    }
+  }
+  return Result::Ok;
+}
+
+}  // namespace dino8::kernel

@@ -1,0 +1,51 @@
+# IGES / STEP round-trip QC.
+# --- A box alone: round-trip and check the reimported solid's volume.
+Box 0,0,0 10,10,0 10
+SelAll
+Export @TMP@/box.igs
+Export @TMP@/box.stp
+Open @TMP@/box.igs
+SelPolysrf
+Volume
+Open @TMP@/box.stp
+SelPolysrf
+Volume
+# --- Everything together: Box, Sphere, Cylinder, a trimmed planar surface
+# (Circle -> PlanarSrf), a free NURBS curve and a point.
+New
+Box 0,0,0 10,10,0 10
+Sphere 30,0,0 5
+Cylinder 50,0,0 5 10
+Circle 70,0,0 5
+SelLast
+PlanarSrf
+Curve 90,0,0 95,5,0 100,0,0
+Enter
+Point 110,0,0
+SelAll
+Export @TMP@/t.igs
+Export @TMP@/t.stp
+Open @TMP@/t.igs
+SelAll
+List
+Open @TMP@/t.stp
+SelAll
+List
+# --- A hand-written STEP file: a PLANE-bounded ADVANCED_FACE square and a
+# free CIRCLE.
+Open @TMP@/step_plane_face.stp
+SelAll
+List
+# --- A hand-crafted malformed IGES file: a type-102 composite curve whose
+# own parameter list references itself (a self-referencing DE), used as a
+# type-122 tabulated cylinder's directrix. Regression for a real crash this
+# session's audit found: unbounded recursion in BuildIgesCurve's composite-
+# curve case, given a crafted/corrupted file, drove a stack overflow
+# (confirmed: reverting the fix reproduces a real segfault on this exact
+# fixture). Must now be rejected cleanly (0 objects, "unsupported entity
+# skipped"), not hang or crash.
+New
+Open @TMP@/iges_recursive_fixture.igs
+@expect_objects 0
+SelAll
+List

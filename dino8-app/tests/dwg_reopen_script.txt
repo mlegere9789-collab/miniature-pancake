@@ -1,0 +1,11 @@
+# Companion to dwg_script.txt, run as a SEPARATE process launch right
+# after it in smoke.sh - see dwg_script.txt's own header comment for why
+# (a Windows-only CI crash bisected to a process reopening, in the same
+# process, a DWG path it had itself just written).
+#
+# smoke.sh substitutes @TMP@ with the same scratch directory dwg_script.txt
+# used, so this opens the exact file that script exported.
+Open @TMP@/dwg_roundtrip.dwg
+SelAll
+List
+Length
