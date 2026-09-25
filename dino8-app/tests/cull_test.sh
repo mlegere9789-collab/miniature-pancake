@@ -29,7 +29,7 @@ trap 'rm -rf "$TMP"' EXIT
 run() {
   # $1: extra env assignments (space-separated VAR=val), or "" for none.
   # $2: screenshot path.
-  if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+  if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
     env $1 "$BIN" --cull-test "$FAR" --cull-screenshot "$2" 2>&1
   else
     env $1 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --cull-test "$FAR" --cull-screenshot "$2" 2>&1
