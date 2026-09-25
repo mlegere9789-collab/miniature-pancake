@@ -463,6 +463,142 @@ std::unique_ptr<ON_NurbsSurface> SkinSections(const std::vector<ON_NurbsCurve>& 
   return s;
 }
 
+// Global interpolating skin through compatible, OPEN (non-closed,
+// non-periodic) `sections`, degree q, additionally pinning the exact
+// v-derivative at v=0 (`start_dirs`, one 3D vector per control-point
+// column) and/or v=1 (`end_dirs`) - empty means unconstrained at that
+// end. Requires q >= 2 whenever either is given: a clamped B-spline's
+// derivative at v=0 depends only on its own first two v-control points
+// (Piegl & Tiller eq. 3.3, specialised to the p+1 repeated knots at a
+// clamped end: C'(0) = q(P_1 - P_0)/(U[q+1] - U[0]), and mirrored at
+// v=1), so one extra control point is added per constrained end and one
+// extra linear equation - involving only that end's own two nearest
+// control points, nothing else - fixes it exactly, leaving every
+// section's own interpolation row (built the same way as the open
+// branch of SkinSections() above) undisturbed. The extra control
+// point(s) need one more interior knot each; `q >= 2` keeps the
+// duplicated end station this introduces (see `vparams` below) out of
+// every averaging window that would otherwise raise the end knot's own
+// multiplicity past q + 1 (an invalid knot vector).
+std::unique_ptr<ON_NurbsSurface> SkinSectionsTangent(const std::vector<ON_NurbsCurve>& sections, int q,
+                                                     const std::vector<double>& params,
+                                                     const std::vector<ON_3dVector>& start_dirs,
+                                                     const std::vector<ON_3dVector>& end_dirs, const char* caller) {
+  const int N = static_cast<int>(sections.size());
+  const int n = sections.front().CVCount();
+  const bool se = !start_dirs.empty();
+  const bool ee = !end_dirs.empty();
+  const int extra = (se ? 1 : 0) + (ee ? 1 : 0);
+  const int n_ctrl = N + extra;
+  if (q < 2) Internal(caller, "tangent-constrained skin needs degree >= 2");
+  if (N < q + 1) Internal(caller, "too few sections for the skin degree");
+
+  // Virtual station sequence: `params` with the constrained end's own
+  // station duplicated once per constrained end. A sliding-window
+  // average over a non-decreasing sequence is itself non-decreasing, so
+  // the interior knots computed from it below stay non-decreasing too.
+  std::vector<double> vparams;
+  vparams.reserve(static_cast<size_t>(n_ctrl));
+  vparams.push_back(params[0]);
+  if (se) vparams.push_back(params[0]);
+  for (int k = 1; k < N - 1; ++k) vparams.push_back(params[static_cast<size_t>(k)]);
+  if (ee) vparams.push_back(params[static_cast<size_t>(N - 1)]);
+  vparams.push_back(params[static_cast<size_t>(N - 1)]);
+  if (static_cast<int>(vparams.size()) != n_ctrl) Internal(caller, "virtual station count mismatch");
+
+  std::vector<double> U(static_cast<size_t>(n_ctrl + q + 1), 0.0);
+  for (int i = 0; i <= q; ++i) {
+    U[static_cast<size_t>(i)] = 0.0;
+    U[static_cast<size_t>(n_ctrl + i)] = 1.0;
+  }
+  for (int j = 1; j <= n_ctrl - q - 1; ++j) {
+    double s = 0.0;
+    for (int i = j; i <= j + q - 1; ++i) s += vparams[static_cast<size_t>(i)];
+    U[static_cast<size_t>(j + q)] = s / q;
+  }
+
+  std::vector<double> A(static_cast<size_t>(n_ctrl) * static_cast<size_t>(n_ctrl), 0.0);
+  auto a = [&](int row, int col) -> double& {
+    return A[static_cast<size_t>(row) * static_cast<size_t>(n_ctrl) + static_cast<size_t>(col)];
+  };
+  // rhs_by_column[i][channel] holds that column/channel's right-hand
+  // side over all n_ctrl rows (position rows first, then the up-to-2
+  // derivative rows) - built once, solved n times (once per LU factor
+  // reuse) below, same layout SkinSections() uses per column/channel.
+  std::vector<std::array<std::vector<double>, 4>> rhs(static_cast<size_t>(n));
+  for (auto& col : rhs)
+    for (auto& ch : col) ch.assign(static_cast<size_t>(n_ctrl), 0.0);
+
+  std::vector<double> Nb;
+  for (int k = 0; k < N; ++k) {
+    const int span = SpanIndex(U, params[static_cast<size_t>(k)], q, n_ctrl);
+    BasisFuns(span, params[static_cast<size_t>(k)], q, U, Nb);
+    for (int r = 0; r <= q; ++r) a(k, span - q + r) += Nb[static_cast<size_t>(r)];
+    for (int i = 0; i < n; ++i) {
+      const ON_4dPoint h = HomogeneousCV(sections[static_cast<size_t>(k)], i);
+      rhs[static_cast<size_t>(i)][0][static_cast<size_t>(k)] = h.x;
+      rhs[static_cast<size_t>(i)][1][static_cast<size_t>(k)] = h.y;
+      rhs[static_cast<size_t>(i)][2][static_cast<size_t>(k)] = h.z;
+      rhs[static_cast<size_t>(i)][3][static_cast<size_t>(k)] = h.w;
+    }
+  }
+  int row = N;
+  if (se) {
+    a(row, 0) = -static_cast<double>(q);
+    a(row, 1) = static_cast<double>(q);
+    const double span0 = U[static_cast<size_t>(q + 1)];  // - U[0], and U[0] == 0
+    for (int i = 0; i < n; ++i) {
+      const ON_3dVector d = start_dirs[static_cast<size_t>(i)] * span0;
+      rhs[static_cast<size_t>(i)][0][static_cast<size_t>(row)] = d.x;
+      rhs[static_cast<size_t>(i)][1][static_cast<size_t>(row)] = d.y;
+      rhs[static_cast<size_t>(i)][2][static_cast<size_t>(row)] = d.z;
+      rhs[static_cast<size_t>(i)][3][static_cast<size_t>(row)] = 0.0;  // non-rational: weight channel stays 1 throughout
+    }
+    ++row;
+  }
+  if (ee) {
+    a(row, n_ctrl - 1) = static_cast<double>(q);
+    a(row, n_ctrl - 2) = -static_cast<double>(q);
+    const double span1 = 1.0 - U[static_cast<size_t>(n_ctrl - 1)];  // U[n_ctrl + q - 1] - U[n_ctrl - 1], and U[n_ctrl + q - 1] == 1
+    for (int i = 0; i < n; ++i) {
+      const ON_3dVector d = end_dirs[static_cast<size_t>(i)] * span1;
+      rhs[static_cast<size_t>(i)][0][static_cast<size_t>(row)] = d.x;
+      rhs[static_cast<size_t>(i)][1][static_cast<size_t>(row)] = d.y;
+      rhs[static_cast<size_t>(i)][2][static_cast<size_t>(row)] = d.z;
+      rhs[static_cast<size_t>(i)][3][static_cast<size_t>(row)] = 0.0;
+    }
+    ++row;
+  }
+  if (row != n_ctrl) Internal(caller, "tangent-constrained skin row count mismatch");
+
+  DenseLU lu(A, n_ctrl);
+  if (!lu.Factor()) Fail(caller, "the tangent-constrained interpolation system is singular (coincident or badly ordered sections)");
+
+  std::vector<std::array<std::vector<double>, 4>> P(static_cast<size_t>(n));
+  for (int i = 0; i < n; ++i) {
+    for (int c = 0; c < 4; ++c) {
+      std::vector<double> b = rhs[static_cast<size_t>(i)][static_cast<size_t>(c)];
+      lu.Solve(b);
+      P[static_cast<size_t>(i)][static_cast<size_t>(c)] = std::move(b);
+    }
+  }
+
+  const bool rational = sections.front().IsRational();
+  auto s = std::make_unique<ON_NurbsSurface>();
+  if (!s->Create(3, rational, sections.front().Order(), q + 1, n, n_ctrl)) Internal(caller, "Create failed");
+  CopyKnots(sections.front(), *s, 0);
+  for (int j = 0; j < n_ctrl + q - 1; ++j) s->SetKnot(1, j, U[static_cast<size_t>(j + 1)]);
+  for (int i = 0; i < n; ++i) {
+    for (int k = 0; k < n_ctrl; ++k) {
+      const auto& col = P[static_cast<size_t>(i)];
+      s->SetCV(i, k, ON_4dPoint(col[0][static_cast<size_t>(k)], col[1][static_cast<size_t>(k)],
+                                col[2][static_cast<size_t>(k)], col[3][static_cast<size_t>(k)]));
+    }
+  }
+  if (!s->IsValid()) Internal(caller, "the tangent-constrained skinned surface is not valid");
+  return s;
+}
+
 // ---------------------------------------------------------------------------
 // Surface of revolution (Piegl & Tiller A8.1). u = profile, v = angle in
 // radians over [0, angle]. Rational quadratic in v with one arc per <= 90
@@ -1457,17 +1593,39 @@ Brep Brep::Revolve(const NurbsCurve& profile, Point3d axis_point, Vector3d axis_
   return AssembleSweptBody(wall.release(), cap_v0, cap_v1, cap_u0, cap_u1, caller);
 }
 
-Brep Brep::Loft(const std::vector<NurbsCurve>& sections_in, int degree, bool closed, bool cap) {
+Brep Brep::Loft(const std::vector<NurbsCurve>& sections_in, int degree, bool closed, bool cap,
+                const NurbsCurve* start_tangent, const NurbsCurve* end_tangent) {
   const char* caller = "Loft";
   const int N = static_cast<int>(sections_in.size());
   if (N < 2) Fail(caller, "at least 2 sections are required");
   if (degree < 1) Fail(caller, "degree must be at least 1");
   int q = std::min(degree, N - 1);
   if (closed && N < degree + 1) Fail(caller, "a closed loft needs at least degree + 1 sections");
+  const bool want_tangent = start_tangent != nullptr || end_tangent != nullptr;
+  if (want_tangent) {
+    if (closed) Fail(caller, "start_tangent/end_tangent are not supported for a closed (periodic) loft - it has no ends");
+    if (sections_in.front().raw().IsClosed()) {
+      Fail(caller, "start_tangent/end_tangent are not supported for closed-curve (periodic-loop) sections");
+    }
+    if (q < 2) Fail(caller, "start_tangent/end_tangent need degree >= 2 and at least 3 sections");
+  }
   std::vector<ON_NurbsCurve> sections;
   sections.reserve(static_cast<size_t>(N));
   for (const NurbsCurve& s : sections_in) sections.push_back(s.raw());
-  MakeCompatible(sections, caller);
+  std::vector<ON_NurbsCurve> compat = sections;
+  if (start_tangent) compat.push_back(start_tangent->raw());
+  if (end_tangent) compat.push_back(end_tangent->raw());
+  if (want_tangent) {
+    for (const ON_NurbsCurve& c : compat) {
+      if (c.IsRational()) Fail(caller, "start_tangent/end_tangent do not support rational sections or tangent curves");
+    }
+  }
+  MakeCompatible(compat, caller);
+  for (int i = 0; i < N; ++i) sections[static_cast<size_t>(i)] = compat[static_cast<size_t>(i)];
+  size_t next_compat = static_cast<size_t>(N);
+  ON_NurbsCurve start_tangent_compat, end_tangent_compat;
+  if (start_tangent) start_tangent_compat = compat[next_compat++];
+  if (end_tangent) end_tangent_compat = compat[next_compat++];
   const bool first_closed = sections.front().IsClosed();
   for (const ON_NurbsCurve& s : sections) {
     if (s.IsClosed() != first_closed) Fail(caller, "sections must be all closed or all open");
@@ -1493,7 +1651,27 @@ Brep Brep::Loft(const std::vector<NurbsCurve>& sections_in, int degree, bool clo
     }
   }
   std::unique_ptr<ON_NurbsSurface> wall;
-  if (closed && q == 1) {
+  if (want_tangent) {
+    const int n = sections.front().CVCount();
+    std::vector<ON_3dVector> start_dirs, end_dirs;
+    if (start_tangent) {
+      start_dirs.resize(static_cast<size_t>(n));
+      for (int i = 0; i < n; ++i) {
+        const ON_3dPoint p = EuclideanCV(start_tangent_compat, i);
+        start_dirs[static_cast<size_t>(i)] = ON_3dVector(p.x, p.y, p.z);
+      }
+    }
+    if (end_tangent) {
+      end_dirs.resize(static_cast<size_t>(n));
+      for (int i = 0; i < n; ++i) {
+        const ON_3dPoint p = EuclideanCV(end_tangent_compat, i);
+        end_dirs[static_cast<size_t>(i)] = ON_3dVector(p.x, p.y, p.z);
+      }
+    }
+    double period = 1.0;
+    const std::vector<double> params = SkinParameters(sections, false, &period, caller);
+    wall = SkinSectionsTangent(sections, q, params, start_dirs, end_dirs, caller);
+  } else if (closed && q == 1) {
     // A degree-1 closed loft is the piecewise-ruled loop back to the
     // first section - built on the clamped path through the wrapped
     // list, since ON_NurbsSurface::IsPeriodic() is defined only for

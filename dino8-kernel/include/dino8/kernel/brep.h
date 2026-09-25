@@ -364,8 +364,33 @@ class Brep {
   // outward). Throws std::invalid_argument for fewer than 2 sections,
   // fewer than degree + 1 sections for a closed loft, or mixed open/
   // closed sections.
+  //
+  // `start_tangent`/`end_tangent`, if given, each pin the wall's own
+  // d/dv at v=0 / v=1 to an EXACT prescribed vector field rather than
+  // leaving it to fall out of the plain interpolation above (Rhino/
+  // AutoCAD's loft "start/end tangency" option) - a genuine extra
+  // degree of freedom, not a fit: a clamped B-spline's derivative at a
+  // clamped end depends only on its own first (or last) two control
+  // points, so one extra control column per constrained end is solved
+  // in closed form from the prescribed derivative while every other
+  // column still interpolates every section exactly, unperturbed (same
+  // "exact global interpolation" guarantee as the unconstrained case,
+  // now with one more exactly-met condition at each constrained end).
+  // Each tangent argument is itself a NurbsCurve, made compatible
+  // alongside `sections` (so it shares their control-point count and
+  // u parameterization) whose control points are read as raw XYZ
+  // VECTORS, not positions - column i's vector is the surface's own
+  // dS/dv there, e.g. a copy of the adjacent section scaled and offset
+  // to the desired tangent length/direction. Requires `degree >= 2`
+  // and at least 3 sections (throws otherwise: there is no spare
+  // control point to dedicate to the derivative below that), and is
+  // not supported for `closed` (periodic, no ends) or for closed-curve
+  // (periodic-loop) sections - throws for either. A tangent-constrained
+  // loft is never capped (only closed-curve sections take caps, and
+  // those are refused above).
   static Brep Loft(const std::vector<NurbsCurve>& sections, int degree = 3, bool closed = false,
-                   bool cap = true);
+                   bool cap = true, const NurbsCurve* start_tangent = nullptr,
+                   const NurbsCurve* end_tangent = nullptr);
 
   // Sweep1: `section` carried along `rail` by rotation-minimizing
   // frames (Wang et al. 2008's double-reflection method, evaluated at
