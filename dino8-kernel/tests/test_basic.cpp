@@ -5282,6 +5282,111 @@ void TestModelAddUserStringsRoundTrips() {
   std::remove(path.c_str());
 }
 
+// Model::AddLinetype() plus AddLayer()'s and every Add*()'s new
+// `linetype_index` parameter: PARITY_MAP.md's own ".3dm attribute/metadata
+// fidelity" evidence named linetypes as the last field, alongside layers/
+// materials/user-strings, this kernel had no way to write at all - every
+// layer, and so every object on it, could only ever draw as a solid
+// (Continuous) line. Checks a real round trip through an actual .3dm
+// file: a named dash-dot linetype added via AddLinetype(); a layer that
+// references it via AddLayer()'s own `linetype_index`; one object left on
+// that layer with no per-object override (inheriting the layer's dash
+// pattern, proving the new Add*() parameter is additive); and a second
+// object on the same layer given its own `linetype_index` of 0
+// (Continuous), proving the per-object override actually overrides
+// LinetypeSource() rather than being shadowed by the layer.
+void TestModelAddLinetypeRoundTrips() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Color;
+  using dino8::kernel::LinetypePattern;
+  using dino8::kernel::LinetypeSegment;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Model;
+  using dino8::kernel::Result;
+  using dino8::kernel::UserStrings;
+
+  Model model;
+  const LinetypePattern pattern = {LinetypeSegment{5.0, true}, LinetypeSegment{2.0, false},
+                                    LinetypeSegment{1.0, true}, LinetypeSegment{2.0, false}};
+  const int linetype_index = model.AddLinetype("DashDot2", pattern);
+  Check(linetype_index >= 0, "AddLinetype() with a non-empty name returns a valid (>= 0) index");
+  Check(model.AddLinetype("") == -1,
+        "AddLinetype() with an empty name returns -1, same contract as AddLayer()");
+
+  const int layer_index = model.AddLayer("DashedLayer", Color(), linetype_index);
+  Check(layer_index >= 0, "AddLayer() with a linetype_index argument still returns a valid index");
+
+  const auto box_mesh = MakeQuadBoxMesh(0, 0, 0, 1, 1, 1);
+  model.AddMesh(box_mesh, "InheritsLayerLinetype", layer_index);
+  const auto box_brep = Brep::Box(0, 0, 0, 1, 1, 1);
+  model.AddBrep(box_brep, "OverridesLinetype", layer_index, std::nullopt, UserStrings(),
+                /*linetype_index=*/0);
+
+  const std::string path = "dino8_kernel_model_linetype_roundtrip_test.3dm";
+  Check(model.Save(path) == Result::Ok, ".3dm save with a linetype succeeded");
+
+  Model loaded;
+  Check(Model::Load(path, loaded) == Result::Ok, ".3dm load succeeded");
+
+  const ON_Linetype* linetype = nullptr;
+  {
+    ONX_ModelComponentIterator iterator(loaded.raw(), ON_ModelComponent::Type::LinePattern);
+    for (const ON_ModelComponent* component = iterator.FirstComponent(); component != nullptr;
+         component = iterator.NextComponent()) {
+      const ON_Linetype* candidate = ON_Linetype::Cast(component);
+      if (candidate != nullptr && candidate->Index() == linetype_index) {
+        linetype = candidate;
+        break;
+      }
+    }
+  }
+  Check(linetype != nullptr, "the reloaded model still has a linetype at the returned index");
+  Check(linetype->Name() == ON_wString("DashDot2"),
+        "the reloaded linetype's name exactly matches what AddLinetype() was given");
+  Check(linetype->SegmentCount() == 4,
+        "the reloaded linetype has exactly the 4 segments AddLinetype() was given");
+  Check(linetype->Segment(0).m_length == 5.0 &&
+            linetype->Segment(0).m_seg_type == ON_LinetypeSegment::eSegType::stLine &&
+            linetype->Segment(1).m_length == 2.0 &&
+            linetype->Segment(1).m_seg_type == ON_LinetypeSegment::eSegType::stSpace,
+        "the reloaded linetype's segment lengths and dash/gap types exactly match what "
+        "AddLinetype() was given");
+
+  const ON_ModelComponentReference layer_ref = loaded.raw().LayerFromIndex(layer_index);
+  const ON_Layer* layer = ON_Layer::Cast(layer_ref.ModelComponent());
+  Check(layer != nullptr && layer->LinetypeIndex() == linetype_index,
+        "the reloaded layer's linetype index exactly matches what AddLayer() was given");
+
+  ONX_ModelComponentIterator iterator(loaded.raw(), ON_ModelComponent::Type::ModelGeometry);
+  bool found_inheriting_mesh = false;
+  bool found_overriding_brep = false;
+  for (const ON_ModelComponent* component = iterator.FirstComponent(); component != nullptr;
+       component = iterator.NextComponent()) {
+    const auto* geometry_component = static_cast<const ON_ModelGeometryComponent*>(component);
+    const ON_3dmObjectAttributes* attributes = geometry_component->Attributes(nullptr);
+    const ON_Geometry* geometry = geometry_component->Geometry(nullptr);
+    if (dynamic_cast<const ON_Mesh*>(geometry) != nullptr) {
+      found_inheriting_mesh = true;
+      Check(attributes->LinetypeSource() == ON::linetype_from_layer,
+            "the reloaded mesh - added with no linetype_index argument - kept LinetypeSource() "
+            "at its default ON::linetype_from_layer, proving the new parameter is a no-op when "
+            "omitted");
+    } else if (dynamic_cast<const ON_Brep*>(geometry) != nullptr) {
+      found_overriding_brep = true;
+      Check(attributes->LinetypeSource() == ON::linetype_from_object,
+            "the reloaded brep's LinetypeSource() switched to ON::linetype_from_object");
+      Check(attributes->m_linetype_index == 0,
+            "the reloaded brep's linetype index exactly matches what AddBrep() was given, "
+            "overriding rather than being shadowed by its layer's own linetype");
+    }
+  }
+  Check(found_inheriting_mesh && found_overriding_brep,
+        "both object types (layer-inheriting mesh, linetype-overriding brep) were found in the "
+        "reloaded model");
+
+  std::remove(path.c_str());
+}
+
 void TestBoxVolume() {
   const auto box = MakeBox(0, 0, 0, 2, 2, 2);
   Check(std::abs(box.Volume() - 8.0) < 1e-9, "unit-scaled box volume is correct");
@@ -27196,6 +27301,104 @@ void TestLoftInterpolatesSectionsExactly() {
   Check(!Throws([&] { Brep::Loft({ring[0], ring[1], ring[2], ring[3]}, 3, /*closed=*/true); }), "...and 4 sections suffice");
 }
 
+void TestLoftTangentConstrainedEndsMatchExactly() {
+  // Four straight 2-point sections (degree 1 in u), stacked at z = 0..3,
+  // all in the y = 0 plane - an ordinary cubic loft through them would
+  // stay flat (dS/dv purely in z). start_tangent/end_tangent instead
+  // prescribe a genuinely out-of-plane derivative at each end, one
+  // vector per u-column (2 columns here, matching the sections' own
+  // 2-CV structure), so a match is not something a flat/trivial case
+  // could satisfy by accident.
+  std::vector<NurbsCurve> sections;
+  for (int k = 0; k < 4; ++k) sections.push_back(Polyline({P(0, 0, k), P(1, 0, k)}));
+  const NurbsCurve start_tangent = Polyline({P(0, 2, 0), P(0, 3, 1)});
+  const NurbsCurve end_tangent = Polyline({P(0, -1, 5), P(0, -2, 4)});
+
+  const Brep loft = Brep::Loft(sections, 3, /*closed=*/false, /*cap=*/true, &start_tangent, &end_tangent);
+  Check(loft.FaceCount() == 1 && loft.raw().IsValid(), "tangent-constrained loft is a single valid open face");
+  Check(!loft.raw().IsSolid(), "...not capped (open sections never are)");
+  const NurbsSurface wall = FaceSurface(loft, 0);
+  Check(wall.DegreeV() == 3 && wall.CVCountV() == 6, "cubic tangent-constrained skin through 4 sections has 1 extra control row per constrained end (4 + 2)");
+
+  // Every original section is still reproduced exactly at its own
+  // station (the extra derivative-only control points at the ends do
+  // not disturb any of the plain position interpolation).
+  {
+    const ON_Interval du = wall.raw().Domain(0);
+    double worst = 0.0;
+    for (int k = 0; k < 4; ++k) {
+      const ON_Interval dc = sections[static_cast<size_t>(k)].raw().Domain();
+      for (int j = 0; j <= 20; ++j) {
+        worst = std::max(worst, wall.PointAt(du.ParameterAt(j / 20.0), k / 3.0)
+                                    .DistanceTo(sections[static_cast<size_t>(k)].PointAt(dc.ParameterAt(j / 20.0))));
+      }
+    }
+    Check(worst < 1e-9, "tangent-constrained loft still passes exactly through all four sections");
+  }
+
+  // dS/dv(u, 0) is EXACTLY the start_tangent curve itself (not just at
+  // its own control points): the constraint was imposed independently
+  // per u-column, so the derivative-in-v curve's own control points
+  // are precisely start_tangent's, making the two curves identical.
+  // Same check mirrored at v = 1 against end_tangent.
+  {
+    const ON_Interval du = wall.raw().Domain(0);
+    const ON_Interval dtu = start_tangent.raw().Domain();
+    const ON_Interval etu = end_tangent.raw().Domain();
+    double worst_start = 0.0, worst_end = 0.0;
+    for (int j = 0; j <= 20; ++j) {
+      const double u = j / 20.0;
+      ON_3dPoint pt;
+      ON_3dVector su, sv;
+      Check(wall.raw().Ev1Der(du.ParameterAt(u), 0.0, pt, su, sv), "Ev1Der succeeds at v = 0");
+      const Point3d expect_start = start_tangent.PointAt(dtu.ParameterAt(u));
+      worst_start = std::max(worst_start, std::hypot(std::hypot(sv.x - expect_start.x, sv.y - expect_start.y), sv.z - expect_start.z));
+      Check(wall.raw().Ev1Der(du.ParameterAt(u), 1.0, pt, su, sv), "Ev1Der succeeds at v = 1");
+      const Point3d expect_end = end_tangent.PointAt(etu.ParameterAt(u));
+      worst_end = std::max(worst_end, std::hypot(std::hypot(sv.x - expect_end.x, sv.y - expect_end.y), sv.z - expect_end.z));
+    }
+    Check(worst_start < 1e-6, "dS/dv(u, 0) matches start_tangent(u) exactly across u");
+    Check(worst_end < 1e-6, "dS/dv(u, 1) matches end_tangent(u) exactly across u");
+  }
+
+  // A one-sided constraint (start only) leaves the other end unconstrained.
+  {
+    const Brep one_sided = Brep::Loft(sections, 3, /*closed=*/false, /*cap=*/true, &start_tangent, nullptr);
+    const NurbsSurface w = FaceSurface(one_sided, 0);
+    Check(w.CVCountV() == 5, "one constrained end adds exactly one control row (4 + 1)");
+    const ON_Interval du = w.raw().Domain(0);
+    const ON_Interval dtu = start_tangent.raw().Domain();
+    double worst = 0.0;
+    for (int j = 0; j <= 20; ++j) {
+      const double u = j / 20.0;
+      ON_3dPoint pt;
+      ON_3dVector su, sv;
+      w.raw().Ev1Der(du.ParameterAt(u), 0.0, pt, su, sv);
+      const Point3d expect = start_tangent.PointAt(dtu.ParameterAt(u));
+      worst = std::max(worst, std::hypot(std::hypot(sv.x - expect.x, sv.y - expect.y), sv.z - expect.z));
+    }
+    Check(worst < 1e-6, "start-only tangent constraint still matches exactly");
+  }
+
+  // Negative controls.
+  Check(Throws([&] { Brep::Loft(sections, 3, /*closed=*/true, /*cap=*/false, &start_tangent, &end_tangent); }),
+        "tangent constraints are refused for a closed (periodic) loft");
+  Check(Throws([&] { Brep::Loft({sections[0], sections[1]}, 3, /*closed=*/false, /*cap=*/true, &start_tangent, &end_tangent); }),
+        "tangent constraints need degree >= 2 realizable with at least 3 sections (2 sections force degree 1)");
+  Check(Throws([&] { Brep::Loft(sections, 1, /*closed=*/false, /*cap=*/true, &start_tangent, &end_tangent); }),
+        "tangent constraints are refused below degree 2");
+  const std::vector<NurbsCurve> closed_sections = {Polyline({P(0, 0, 0), P(1, 0, 0), P(1, 1, 0), P(0, 0, 0)}),
+                                                    Polyline({P(0, 0, 1), P(1, 0, 1), P(1, 1, 1), P(0, 0, 1)}),
+                                                    Polyline({P(0, 0, 2), P(1, 0, 2), P(1, 1, 2), P(0, 0, 2)})};
+  Check(Throws([&] { Brep::Loft(closed_sections, 2, /*closed=*/false, /*cap=*/false, &start_tangent, nullptr); }),
+        "tangent constraints are refused for closed-curve (periodic-loop) sections");
+  const std::vector<NurbsCurve> rational_sections = {Arc(P(0, 0, 0), Vector3d(1, 0, 0), Vector3d(0, 1, 0), 1.0, 0.0, M_PI / 2),
+                                                      Arc(P(0, 0, 1), Vector3d(1, 0, 0), Vector3d(0, 1, 0), 1.5, 0.0, M_PI / 2),
+                                                      Arc(P(0, 0, 2), Vector3d(1, 0, 0), Vector3d(0, 1, 0), 1.0, 0.0, M_PI / 2)};
+  Check(Throws([&] { Brep::Loft(rational_sections, 2, /*closed=*/false, /*cap=*/false, &start_tangent, nullptr); }),
+        "tangent constraints are refused for a rational (open arc) section");
+}
+
 void TestSweep1AndPipe() {
   // Straight rail: the exact rational cylinder (2 stations, degree 1).
   const NurbsCurve line = Polyline({P(0, 0, 0), P(10, 0, 0)});
@@ -30813,6 +31016,7 @@ int main() {
   TestModelAddLayerRoundTrips();
   TestModelAddRenderColorRoundTrips();
   TestModelAddUserStringsRoundTrips();
+  TestModelAddLinetypeRoundTrips();
   TestModelLoadRejectsMeshWithOutOfRangeFaceIndex();
   TestSplitByPlane();
   TestConvexHull();
@@ -31178,6 +31382,7 @@ int main() {
   sweep_tests::TestExtrudeRectangleIsExactCappedSolid();
   sweep_tests::TestRevolveExactSolidsAndCaps();
   sweep_tests::TestLoftInterpolatesSectionsExactly();
+  sweep_tests::TestLoftTangentConstrainedEndsMatchExactly();
   sweep_tests::TestSweep1AndPipe();
   sweep_tests::TestExtrudeTaperedCircularProfileIsExactConeFrustum();
   sweep_tests::TestExtrudeTaperedConvexPolygonIsExactPlanarFrustum();
