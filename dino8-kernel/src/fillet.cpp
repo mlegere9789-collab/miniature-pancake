@@ -8,6 +8,7 @@
 #include <string>
 #include <utility>
 
+#include "dino8/kernel/curve.h"
 #include "dino8/kernel/detail/circle_clip3d.h"
 #include "dino8/kernel/detail/ellipse_clip3d.h"
 #include "dino8/kernel/detail/halfspace_clip3d.h"
@@ -2228,6 +2229,141 @@ Brep ChamferConcaveEdgeAngle(const Brep& solid, Point3d edge_p0, Point3d edge_p1
   }
   const double distance_j = distance_i * std::sin(angle_from_i) / std::sin(theta + angle_from_i);
   return ChamferConcaveEdge(solid, edge_p0, edge_p1, distance_i, distance_j);
+}
+
+
+// ---------------------------------------------------------------------------
+// Exact conic ("rho") cross-section blend (see fillet.h's own
+// FilletConvexEdgeConic doc comment for the full derivation this
+// implements step by step).
+
+Brep FilletConvexEdgeConic(const Brep& solid, Point3d edge_p0, Point3d edge_p1, double distance_i,
+                            double distance_j, double rho) {
+  if (!(distance_i > 0.0) || !(distance_j > 0.0)) {
+    throw std::invalid_argument(
+        "dino8::kernel::FilletConvexEdgeConic: distance_i and distance_j must both be strictly positive");
+  }
+  if (!(rho > 0.0) || !(rho < 1.0)) {
+    throw std::invalid_argument(
+        "dino8::kernel::FilletConvexEdgeConic: rho must lie strictly between 0 and 1 (0.5 is the exact "
+        "parabola; rho -> 0 degenerates onto the flat chord, rho -> 1 onto the untouched sharp edge - see "
+        "this function's own doc comment)");
+  }
+
+  const std::vector<Brep::PlanarFace> faces = solid.PlanarFaces();
+  const double tol = RelativeTol(faces);
+
+  int idx_i = -1, idx_j = -1;
+  FindEdgeFaces(faces, edge_p0, edge_p1, tol, "FilletConvexEdgeConic", idx_i, idx_j);
+  const Brep::PlanarFace& face_i = faces[static_cast<size_t>(idx_i)];
+  const Brep::PlanarFace& face_j = faces[static_cast<size_t>(idx_j)];
+  const ON_Plane& plane_i = face_i.plane;
+  const ON_Plane& plane_j = face_j.plane;
+  const Vector3d n_i = plane_i.zaxis;
+  const Vector3d n_j = plane_j.zaxis;
+
+  Vector3d e = edge_p1 - edge_p0;
+  if (!e.Unitize()) {
+    throw std::invalid_argument("dino8::kernel::FilletConvexEdgeConic: edge_p0 and edge_p1 coincide");
+  }
+
+  const double dot_ij = std::max(-1.0, std::min(1.0, n_i * n_j));
+  const double theta = ON_PI - std::acos(dot_ij);  // interior dihedral angle
+  if (!(theta > 1e-9) || !(theta < ON_PI - 1e-9)) {
+    throw std::invalid_argument(
+        "dino8::kernel::FilletConvexEdgeConic: edge is not a convex dihedral edge (interior angle theta is "
+        "<= 0 or >= pi) - concave/degenerate edges are out of scope, see FilletConvexEdge's own doc comment");
+  }
+
+  // Into-material, in-plane, perpendicular-to-the-edge directions -
+  // verbatim ChamferConvexEdge's own construction (see that function's
+  // own doc comment/body).
+  auto extent_along = [](const std::vector<Point3d>& loop, const Vector3d& m, const Point3d& ref) {
+    double best = -std::numeric_limits<double>::infinity();
+    for (const Point3d& v : loop) best = std::max(best, m * (v - ref));
+    return best;
+  };
+  Vector3d m_i = ON_CrossProduct(n_i, e);
+  Vector3d m_j = ON_CrossProduct(n_j, -e);
+  if (!m_i.Unitize() || !m_j.Unitize()) {
+    throw std::invalid_argument(
+        "dino8::kernel::FilletConvexEdgeConic: degenerate face/edge geometry (a face normal is parallel to "
+        "the edge)");
+  }
+  if (extent_along(face_i.loop, m_i, edge_p0) <= tol) m_i = -m_i;
+  if (extent_along(face_j.loop, m_j, edge_p0) <= tol) m_j = -m_j;
+  const double extent_i = extent_along(face_i.loop, m_i, edge_p0);
+  const double extent_j = extent_along(face_j.loop, m_j, edge_p0);
+  if (!(distance_i < extent_i - tol) || !(distance_j < extent_j - tol)) {
+    throw std::invalid_argument(
+        "dino8::kernel::FilletConvexEdgeConic: a setback distance is too large to fit - it reaches or "
+        "exceeds that face's own extent from the edge");
+  }
+
+  // SCOPE (see this function's own doc comment): no end-condition/vertex
+  // splicing in this increment - both edge_p0 and edge_p1 must be free
+  // boundaries of `solid` outside faces i/j, or this throws rather than
+  // silently building a self-overlapping shape.
+  for (size_t f = 0; f < faces.size(); ++f) {
+    if (static_cast<int>(f) == idx_i || static_cast<int>(f) == idx_j) continue;
+    for (const Point3d& v : faces[f].loop) {
+      if (PointsEqual(v, edge_p0, tol) || PointsEqual(v, edge_p1, tol)) {
+        throw std::invalid_argument(
+            "dino8::kernel::FilletConvexEdgeConic: a third face of `solid` touches edge_p0 or edge_p1 - "
+            "end-condition/vertex splicing for the conic blend is out of scope for this increment (see this "
+            "function's own doc comment); both edge endpoints must be free boundaries outside faces i/j");
+      }
+    }
+  }
+
+  // Re-trim faces i/j by their own rail line - identical to
+  // ChamferConvexEdge's own step 3.
+  const Point3d R_i0 = edge_p0 + distance_i * m_i;
+  const Point3d R_j0 = edge_p0 + distance_j * m_j;
+  Brep::PlanarFace retrimmed_i = face_i;
+  retrimmed_i.loop = detail::ClipByHalfspace3d(retrimmed_i.loop, ON_Plane(R_i0, -m_i), tol);
+  Brep::PlanarFace retrimmed_j = face_j;
+  retrimmed_j.loop = detail::ClipByHalfspace3d(retrimmed_j.loop, ON_Plane(R_j0, -m_j), tol);
+  if (retrimmed_i.loop.size() < 3 || retrimmed_j.loop.size() < 3) {
+    throw std::invalid_argument(
+        "dino8::kernel::FilletConvexEdgeConic: re-trimming an adjacent face left fewer than 3 vertices - "
+        "distances too large for this solid's geometry");
+  }
+
+  std::vector<Brep::PlanarFace> others;
+  others.reserve(faces.size() - 2);
+  for (size_t f = 0; f < faces.size(); ++f) {
+    if (static_cast<int>(f) != idx_i && static_cast<int>(f) != idx_j) others.push_back(faces[f]);
+  }
+  std::vector<Brep::PlanarFace> all = std::move(others);
+  all.push_back(std::move(retrimmed_i));
+  all.push_back(std::move(retrimmed_j));
+  Brep planar_shell = Brep::FromMixedFaces(all, {});
+
+  // The conic cross-section: control polygon (P0, O, P2), O = edge_p0
+  // itself (see this function's own doc comment, step 2, for why the
+  // sharp edge point is exactly the right middle control point), weight
+  // w = rho/(1 - rho) on O (step 3).
+  const Point3d P0 = R_i0;
+  const Point3d P2 = R_j0;
+  const double w = rho / (1.0 - rho);
+  NurbsCurve profile = NurbsCurve::FromControlPoints({P0, edge_p0, P2}, 2);
+  // Weight-compensation order (step 4 of this function's own doc comment,
+  // and NurbsCurve::SetWeightAt's own doc comment): pre-scale the stored
+  // homogeneous numerator by w via a plain (unweighted) move FIRST, then
+  // set the weight - NOT the other order, which would silently move the
+  // control point to edge_p0/w instead of leaving it at edge_p0.
+  profile.SetControlPointAt(1, Point3d(edge_p0.x * w, edge_p0.y * w, edge_p0.z * w));
+  profile.SetWeightAt(1, w);
+
+  // Exact translational sweep (step 5): the wall's own u=0/u=1 rails are,
+  // by construction, the SAME two points/lines the re-trim above already
+  // cut faces i/j along.
+  Brep wall = Brep::Extrude(profile, edge_p1 - edge_p0, /*cap=*/false);
+
+  Brep combined = Brep::Compound({planar_shell, wall});
+  combined.JoinNakedEdges(tol);
+  return combined;
 }
 
 
