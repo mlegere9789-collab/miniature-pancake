@@ -2892,7 +2892,19 @@ a11ycheck "SetTheme: unknown theme 'nope'" "an unrecognised theme name fails wit
 # or frustum culling" item and tests/cull_test.sh for the full A/B/pixel-
 # diff proof): fold its pass/fail lines into this script's own count so a
 # regression here fails smoke.sh, not just a separately-run script.
-CULL="$(bash "$HERE/cull_test.sh" "$BIN" 2>&1)" || true
+# Piped through `tee` rather than plain `CULL="$(...)"` command substitution
+# (same reasoning as row L, one level deeper: cull_test.sh's own $BIN
+# invocation is itself captured via ANOTHER command substitution inside it,
+# so a plain `$(...)` here would echo nothing at all - not even
+# cull_test.sh's own first, unconditional line - until cull_test.sh's whole
+# process exits). A Windows-only run (job 107884974848, commit `2867153`)
+# exited the smoke test step cleanly (no timeout, no orphaned Dino8
+# process) with a nonzero code and *zero* visible output from this section
+# at all, not even that first line - this tee lets a future recurrence show
+# whatever this section does manage to print instead of staying silent.
+CULL_LOG="$TMPW/cull_live.log"
+bash "$HERE/cull_test.sh" "$BIN" 2>&1 | tee "$CULL_LOG" || true
+CULL="$(cat "$CULL_LOG")"
 echo "$CULL" | grep -E "^(ok|FAIL)"
 if echo "$CULL" | grep -q "^FAIL"; then fail=1; fi
 echo "$CULL" | grep -q "^ok   cull-on and cull-off screenshots are pixel-identical" || { echo "FAIL cull_test.sh did not run to completion"; fail=1; }
