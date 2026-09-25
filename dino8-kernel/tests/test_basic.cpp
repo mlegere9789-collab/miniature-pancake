@@ -7258,6 +7258,96 @@ void TestBrepCheckDetectsNonManifoldPinchVertex() {
         "an ordinary box corner (3 faces, pairwise edge-connected) is a single group, not non-manifold");
 }
 
+// SplitNonManifoldVertex()/SplitNonManifoldVertices() heal exactly the
+// defect Check() reports above: the pinch vertex is disjoined into one
+// copy per face group, at the SAME point, with every incident edge
+// repointed to its own group's copy - a pure topology fix, so the two
+// squares' own shapes (naked-edge count, geometry) are otherwise
+// untouched, and a second call finds nothing left to heal.
+void TestBrepSplitNonManifoldVertexHealsPinchPoint() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  auto make_bowtie = []() {
+    std::vector<Brep::PlanarFace> faces;
+    faces.push_back(
+        CheckHealFace({Point3d(0, 0, 0), Point3d(1, 0, 0), Point3d(1, 1, 0), Point3d(0, 1, 0)}, ON_3dVector(0, 0, 1)));
+    faces.push_back(CheckHealFace({Point3d(0, 0, 0), Point3d(0, 0, -1), Point3d(-1, 0, -1), Point3d(-1, 0, 0)},
+                                  ON_3dVector(0, -1, 0)));
+    return Brep::FromPlanarFaces(faces);
+  };
+
+  Brep bowtie = make_bowtie();
+  const Brep::CheckReport before = bowtie.Check();
+  int pinch_vi = -1;
+  for (const Brep::CheckIssue& issue : before.issues) {
+    if (issue.kind == Brep::CheckIssue::Kind::NonManifoldVertex) pinch_vi = issue.index;
+  }
+  Check(pinch_vi >= 0, "setup: the bowtie fixture's pinch vertex index was found");
+
+  Check(bowtie.SplitNonManifoldVertex(pinch_vi) == Result::Ok, "SplitNonManifoldVertex() succeeds on the pinch vertex");
+  Check(bowtie.raw().m_V.Count() == 8, "one new vertex was added (7 -> 8): the pinch disjoined into two");
+  const Brep::CheckReport after = bowtie.Check();
+  Check(after.Count(Brep::CheckIssue::Kind::NonManifoldVertex) == 0, "no non-manifold vertex remains");
+  Check(after.Count(Brep::CheckIssue::Kind::NakedEdge) == 8 && after.issues.size() == 8,
+        "the 8 naked edges are exactly as before - this is pure topology bookkeeping, not a geometry change");
+
+  // The two faces' own corner vertices at the old pinch point are now
+  // genuinely different vertex records, both still sitting at the origin.
+  auto corner_vertex_of_face = [&](int face_index) -> int {
+    const ON_BrepFace& f = bowtie.raw().m_F[face_index];
+    for (int li = 0; li < f.m_li.Count(); ++li) {
+      const ON_BrepLoop& loop = bowtie.raw().m_L[f.m_li[li]];
+      for (int k = 0; k < loop.m_ti.Count(); ++k) {
+        const ON_BrepTrim& t = bowtie.raw().m_T[loop.m_ti[k]];
+        if (t.m_ei < 0) continue;
+        const ON_BrepEdge& e = bowtie.raw().m_E[t.m_ei];
+        for (int side = 0; side < 2; ++side) {
+          if (bowtie.raw().m_V[e.m_vi[side]].point.DistanceTo(Point3d(0, 0, 0)) < 1e-9) return e.m_vi[side];
+        }
+      }
+    }
+    return -1;
+  };
+  const int v0 = corner_vertex_of_face(0);
+  const int v1 = corner_vertex_of_face(1);
+  Check(v0 >= 0 && v1 >= 0 && v0 != v1, "the two faces' own origin corners are now two distinct vertex records");
+  Check(bowtie.raw().m_V[v0].point.DistanceTo(Point3d(0, 0, 0)) < 1e-12 &&
+            bowtie.raw().m_V[v1].point.DistanceTo(Point3d(0, 0, 0)) < 1e-12,
+        "...both still located exactly at the original pinch point");
+
+  Check(bowtie.SplitNonManifoldVertices() == 0, "a second pass over the healed fixture finds nothing left to split");
+
+  // The orchestrator does the same job end to end, from a fresh fixture.
+  Brep bowtie2 = make_bowtie();
+  Check(bowtie2.SplitNonManifoldVertices() == 1, "SplitNonManifoldVertices() heals the one pinch vertex in a single pass");
+  Check(bowtie2.raw().m_V.Count() == 8 && bowtie2.Check().Count(Brep::CheckIssue::Kind::NonManifoldVertex) == 0,
+        "...with the same result as the manual call above");
+
+  // Refusals: an ordinary (manifold) vertex has nothing to split.
+  Brep box = Brep::FromPlanarFaces(CheckHealBoxFaces());
+  Check(box.SplitNonManifoldVertex(0) == Result::Failed, "an ordinary box corner is not non-manifold - Result::Failed");
+  Check(box.raw().m_V.Count() == 8, "...and the box is left completely untouched");
+
+  bool threw_range = false;
+  try {
+    box.SplitNonManifoldVertex(box.raw().m_V.Count() + 100);
+  } catch (const std::out_of_range&) {
+    threw_range = true;
+  }
+  Check(threw_range, "an out-of-range vertex_index throws std::out_of_range, not Result::Failed - a genuine caller bug");
+
+  box.raw().m_V[0].m_vertex_index = -1;
+  bool threw_deleted = false;
+  try {
+    box.SplitNonManifoldVertex(0);
+  } catch (const std::invalid_argument&) {
+    threw_deleted = true;
+  }
+  Check(threw_deleted, "vertex_index 0 marked deleted (m_vertex_index < 0) throws std::invalid_argument");
+}
+
 // Flip one face: Check() names the flipped face on each of its 4 edges
 // (index = the flipped face, other_index = each neighbour), the welded
 // mesh is no longer a closed manifold (an orientation conflict on every
@@ -31356,6 +31446,7 @@ int main() {
   TestTolerancePolicyValuesAreTheOnesInForce();
   TestBrepCheckReportsCleanBoxAsClean();
   TestBrepCheckDetectsNonManifoldPinchVertex();
+  TestBrepSplitNonManifoldVertexHealsPinchPoint();
   TestBrepCheckAndUnifyNormalsOnFlippedFace();
   TestBrepCheckReportsDroppedFaceAndCapPlanarHolesRestoresIt();
   TestBrepJoinNakedEdgesRecordsTolerantEdges();

@@ -2646,6 +2646,46 @@ class Brep {
   // Returns the number of edges collapsed. Clears the side tables.
   int RemoveDegenerateEdges(double tolerance = tolerance::kDistance);
 
+  // Heals a non-manifold (pinch-point) vertex - see CheckIssue::Kind::
+  // NonManifoldVertex's own doc comment - the standard Parasolid/ACIS
+  // "disjoin" repair: nothing about the GEOMETRY at a pinch point is
+  // wrong (every trim, edge and face on either side is perfectly valid
+  // where it sits), only the TOPOLOGY of one vertex record being shared
+  // between two locally-disconnected neighbourhoods is. Group 0 (in
+  // Check()'s own first-seen order) keeps `vertex_index` itself; every
+  // OTHER disjoint face group found there gets a fresh vertex at the SAME
+  // 3D point and recorded tolerance, and every edge in that group has the
+  // end that was `vertex_index` repointed to it. No edge's 3D curve, no
+  // trim, and no face is touched - pure topology bookkeeping, so this
+  // never needs to clear the side tables (unlike JoinNakedEdges() et al.,
+  // which change what a face's own trim loop IS) and, unlike every other
+  // topology-surgery method in this class, never deletes anything or
+  // calls Compact(): it only APPENDS new vertices, so every existing
+  // vertex/edge/face index - including another NonManifoldVertex issue's
+  // own `index` from the same Check() call - stays valid across repeated
+  // calls (SplitNonManifoldVertices(), below, relies on exactly that).
+  //
+  // Returns Result::Failed - not a thrown exception, the same "can't, but
+  // that's not a bug" contract SplitNakedEdgeAt() shares - if
+  // `vertex_index` is not actually non-manifold (fewer than 2 groups: an
+  // ordinary vertex, or one with no live incident face at all), or if one
+  // of its incident edges is closed on itself at this vertex (its own two
+  // endpoints both `vertex_index` - the one shape ON_BrepVertex::m_ei's
+  // own documented "an edge's index appears twice, positionally" rule
+  // makes ambiguous to assign to a single group; genuinely rare, and not
+  // a shape this method's own fixtures produce). Throws std::out_of_range
+  // if `vertex_index` itself is out of range, or std::invalid_argument if
+  // it refers to an already-deleted vertex - both genuine caller bugs.
+  Result SplitNonManifoldVertex(int vertex_index);
+
+  // Runs Check(tolerance, tolerance) once and calls SplitNonManifoldVertex()
+  // on every NonManifoldVertex issue it reports - safe as a SINGLE pass
+  // over that one report (unlike SewTJunctions()'s own repeated rescans)
+  // precisely because SplitNonManifoldVertex() never deletes or renumbers
+  // anything (see its own doc comment). Returns the number of vertices
+  // actually split.
+  int SplitNonManifoldVertices(double tolerance = tolerance::kDistance);
+
   // Splits a naked (1-trim) edge into two coincident naked edges meeting
   // at a new vertex at `point` - the missing primitive behind "tolerant
   // sewing" (PARITY_MAP.md's own "[missing] Tolerant sewing with edge
