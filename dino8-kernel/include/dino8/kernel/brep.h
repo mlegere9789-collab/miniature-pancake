@@ -2456,6 +2456,22 @@ class Brep {
       // An edge used by three or more trims. `index` is the edge,
       // `other_index` its trim count.
       NonManifoldEdge,
+      // A vertex whose incident faces do NOT form one connected
+      // neighbourhood through the vertex's own edges - Parasolid/ACIS's
+      // own separate "non-manifold vertex" (pinch point) diagnostic,
+      // distinct from NonManifoldEdge above: an hourglass built from two
+      // shells that touch at a single point and share no edge there has
+      // no over-used edge anywhere (every edge still borders exactly one
+      // or two trims), yet the vertex itself is not a topological disk -
+      // walking from one shell's faces to the other's, through shared
+      // edges, is impossible without passing through the pinch. Detected
+      // by grouping the faces touching this vertex's own incident edges
+      // with union-find (two faces sharing one such edge are one group);
+      // more than one group after considering every incident edge means
+      // the neighbourhood is split. `index` is the vertex, `other_index`
+      // the number of disjoint groups found (>= 2), `location` the
+      // vertex's own point.
+      NonManifoldVertex,
       // Two faces sharing a 2-trim edge both walk it the same way in 3D,
       // so one is wound backwards relative to the other - ON_Brep::
       // IsManifold()'s own "not oriented" condition, per edge. `index`

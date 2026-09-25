@@ -6146,6 +6146,56 @@ void CloseLoopGapsWithinTolerance(ON_Brep& b, double tol) {
   }
 }
 
+// The number of disjoint groups the faces touching vertex `vi` split into,
+// grouping by union-find over `vi`'s own incident edges (two faces sharing
+// one such edge land in the same group; a face touching `vi` through only
+// one edge starts its own singleton group). 0 if the vertex touches no live
+// face at all, 1 for the ordinary case (every incident face reachable from
+// every other through a chain of shared edges at this vertex), 2+ for a
+// non-manifold (pinch-point) vertex. See CheckIssue::Kind::NonManifoldVertex.
+int VertexFaceGroupCount(const ON_Brep& b, const ON_BrepVertex& v) {
+  std::vector<int> faces;
+  std::vector<int> parent;
+  auto index_of = [&](int fi) {
+    const auto it = std::find(faces.begin(), faces.end(), fi);
+    if (it != faces.end()) return static_cast<int>(it - faces.begin());
+    faces.push_back(fi);
+    parent.push_back(static_cast<int>(faces.size()) - 1);
+    return static_cast<int>(faces.size()) - 1;
+  };
+  std::function<int(int)> root_of = [&](int x) {
+    while (parent[x] != x) {
+      parent[x] = parent[parent[x]];
+      x = parent[x];
+    }
+    return x;
+  };
+  for (int k = 0; k < v.m_ei.Count(); ++k) {
+    const int ei = v.m_ei[k];
+    if (ei < 0 || ei >= b.m_E.Count()) continue;
+    const ON_BrepEdge& e = b.m_E[ei];
+    if (e.m_edge_index < 0) continue;
+    int first = -1;
+    for (int q = 0; q < e.m_ti.Count(); ++q) {
+      const int ti = e.m_ti[q];
+      if (ti < 0 || ti >= b.m_T.Count()) continue;
+      const int fi = b.m_T[ti].FaceIndexOf();
+      if (fi < 0) continue;
+      const int idx = index_of(fi);
+      if (first < 0) {
+        first = idx;
+      } else {
+        const int ra = root_of(first), rb = root_of(idx);
+        if (ra != rb) parent[ra] = rb;
+      }
+    }
+  }
+  if (faces.empty()) return 0;
+  std::set<int> roots;
+  for (size_t k = 0; k < faces.size(); ++k) roots.insert(root_of(static_cast<int>(k)));
+  return static_cast<int>(roots.size());
+}
+
 }  // namespace
 
 int Brep::CheckReport::Count(CheckIssue::Kind kind) const {
@@ -6203,6 +6253,15 @@ Brep::CheckReport Brep::Check(double tolerance, double sliver_width) const {
       const double allowed = std::max(tol, v.m_tolerance >= 0.0 ? v.m_tolerance : 0.0);
       if (gap > allowed) add(CheckKind::EdgeVertexGap, ei, vi, v.point, gap);
     }
+  }
+
+  // Vertices: non-manifold vertex (pinch point) - see
+  // CheckIssue::Kind::NonManifoldVertex's own doc comment.
+  for (int vi = 0; vi < b.m_V.Count(); ++vi) {
+    const ON_BrepVertex& v = b.m_V[vi];
+    if (v.m_vertex_index < 0) continue;
+    const int groups = VertexFaceGroupCount(b, v);
+    if (groups > 1) add(CheckKind::NonManifoldVertex, vi, groups, v.point, 0.0);
   }
 
   // Trims: validity, and each trim's 3D image against its own edge.
