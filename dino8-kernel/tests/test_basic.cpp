@@ -26616,6 +26616,252 @@ void TestChamferConvexEdgeChainsAcrossACornerAndAlongParallelEdges() {
 }
 
 // ---------------------------------------------------------------------------
+// FilletConvexEdgeConic (fillet.h) - the conic ("rho") cross-section blend.
+
+// Pure curve-level test of the weight-formula/control-polygon construction
+// FilletConvexEdgeConic's own doc comment derives (step 2/3), independent
+// of any Brep machinery: builds the SAME rational quadratic Bezier
+// (control points P0, O, P2, middle weight w = rho/(1-rho)) this function
+// builds internally, and checks the strongest possible closed-form
+// property - that at the ONE rho value where a symmetric control polygon's
+// weight is the classical w = cos(half-angle), the curve is not merely
+// "close to" but EXACTLY a circular arc: every sampled point sits at the
+// exact same radius from the exact same center, to near machine precision.
+void TestFilletConvexEdgeConicWeightFormulaReducesToExactCircle() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+
+  // Isosceles corner: O = (1, 0, 0), legs along m_i = (-1, 0, 0) and
+  // m_j = (0, 1, 0) (perpendicular, gamma = pi/2 - the same corner
+  // geometry FilletConvexEdgeConic's own free-boundary-tube fixture
+  // uses), both legs length d = 0.4.
+  const double d = 0.4;
+  const Point3d O(1, 0, 0);
+  const Point3d P0(1 - d, 0, 0);
+  const Point3d P2(1, d, 0);
+  const double gamma = ON_PI / 2.0;
+
+  // The standard symmetric-rational-Bezier-circle identity: weight
+  // w = cos(gamma/2) makes an isosceles control polygon (|P1-P0| ==
+  // |P1-P2|) trace an EXACT circular arc. rho = w/(1+w) is the inverse of
+  // FilletConvexEdgeConic's own w = rho/(1-rho).
+  const double w_circle = std::cos(gamma / 2.0);
+  const double rho_circle = w_circle / (1.0 + w_circle);
+  Check(rho_circle > 0.0 && rho_circle < 1.0, "the circle-matching rho is a genuine interior value in (0, 1)");
+
+  // Build exactly what FilletConvexEdgeConic builds internally (see its
+  // own doc comment, step 4): a plain degree-2 Bezier through (P0, O, P2),
+  // then the weight-compensation trick (pre-scale the control point
+  // BEFORE setting its weight, not after).
+  NurbsCurve profile = NurbsCurve::FromControlPoints({P0, O, P2}, 2);
+  const double w = rho_circle / (1.0 - rho_circle);
+  Check(std::fabs(w - w_circle) < 1e-12, "rho -> w round-trips exactly back to w_circle");
+  profile.SetControlPointAt(1, Point3d(O.x * w, O.y * w, O.z * w));
+  profile.SetWeightAt(1, w);
+  Check(profile.ControlPointAt(1).DistanceTo(O) < 1e-12,
+        "the weight-compensation trick leaves control point 1 exactly at O, not at O/w "
+        "(NurbsCurve::SetWeightAt's own documented gotcha, done in the correct order)");
+  Check(profile.IsRational() && std::fabs(profile.WeightAt(1) - w) < 1e-12,
+        "the profile is genuinely rational with the expected middle weight");
+
+  // For d = 0.4, gamma = pi/2: r = d*tan(gamma/2) = d exactly (tan(pi/4) =
+  // 1), and the center sits at O + d*sqrt(2)*bisector = (1-d, d, 0) - both
+  // worked out in closed form in this test's own header comment above,
+  // not fitted from the curve.
+  const double r = d;  // d * tan(pi/4)
+  const Point3d center(1 - d, d, 0);
+  Check(std::fabs(center.DistanceTo(O) - d * std::sqrt(2.0)) < 1e-12,
+        "sanity: the closed-form center sits at distance d*sqrt(2) from the sharp corner O");
+  Check(std::fabs(center.DistanceTo(P0) - r) < 1e-12 && std::fabs(center.DistanceTo(P2) - r) < 1e-12,
+        "sanity: both rail endpoints already sit at exactly radius r from the closed-form center");
+
+  double max_dev = 0.0;
+  for (int k = 0; k <= 200; ++k) {
+    const double t = static_cast<double>(k) / 200.0;
+    ON_3dPoint p;
+    profile.raw().Evaluate(t, 0, 3, &p.x);
+    max_dev = std::max(max_dev, std::fabs(p.DistanceTo(center) - r));
+  }
+  Check(max_dev < 1e-9,
+        "EVERY sampled point of the rho-derived conic (not just its two endpoints) sits at exactly the "
+        "closed-form circle's radius from its closed-form center - the general conic construction reduces "
+        "EXACTLY to FilletConvexEdge's own circular fillet at this one rho, confirmed directly, not assumed");
+}
+
+// Full end-to-end test on a genuine free-boundary fixture (the same "open
+// 4-wall tube" TestFilletConvexEdgeFreeBoundaryCapHasValidOpenTopology
+// already uses for FilletConvexEdge: a vertical edge with NO perpendicular
+// end face at either endpoint, so FilletConvexEdgeConic's own v1 scope -
+// no third face at edge_p0/edge_p1 - is satisfied without needing a real
+// solid).
+void TestFilletConvexEdgeConicFreeBoundaryTangencyRailExactnessAndClosedFormArea() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConvexEdgeConic;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+  namespace tol = dino8::kernel::tolerance;
+
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 2);
+  const std::vector<Brep::PlanarFace> all_faces = box.PlanarFaces();
+  // 2=front(-y), 5=right(+x) (see Brep::Box's own face-order comment).
+  const std::vector<Brep::PlanarFace> walls = {all_faces[2], all_faces[3], all_faces[4], all_faces[5]};
+  const Brep tube = Brep::FromPlanarFaces(walls);
+
+  const double di = 0.3, dj = 0.25, rho = 0.5;  // rho = 0.5: exact parabola
+  const Point3d edge_p0(1, 0, 0), edge_p1(1, 0, 2);
+  const Brep blend = FilletConvexEdgeConic(tube, edge_p0, edge_p1, di, dj, rho);
+
+  Check(blend.FaceCount() == 5,
+        "the conic-blended tube has 5 faces (2 untouched walls + 2 re-trimmed walls + 1 new conic wall)");
+  ON_TextLog log;
+  Check(blend.raw().IsValid(&log), "the conic blend passes ON_Brep::IsValid()");
+  bool is_oriented = false, has_boundary = false;
+  Check(blend.raw().IsManifold(&is_oriented, &has_boundary) && is_oriented && has_boundary,
+        "the result is oriented but genuinely open - free-boundary caps at both ends, exactly as disclosed");
+  Check(!blend.raw().IsSolid(), "the open conic-blended tube correctly reports IsSolid() == false");
+
+  const Point3d P0_0(1 - di, 0, 0), P0_1(1 - di, 0, 2);   // rail_i (face i = front, m_i = (-1,0,0))
+  const Point3d P2_0(1, dj, 0), P2_1(1, dj, 2);           // rail_j (face j = right, m_j = (0,1,0))
+  Check(ChamferTestBrepHasVertexNear(blend, P0_0, 1e-9) && ChamferTestBrepHasVertexNear(blend, P0_1, 1e-9),
+        "the re-trimmed front face's own new rail runs exactly along x = 1 - di");
+  Check(ChamferTestBrepHasVertexNear(blend, P2_0, 1e-9) && ChamferTestBrepHasVertexNear(blend, P2_1, 1e-9),
+        "the re-trimmed right face's own new rail runs exactly along y = dj");
+  Check(!ChamferTestBrepHasVertexNear(blend, edge_p0, 1e-9) && !ChamferTestBrepHasVertexNear(blend, edge_p1, 1e-9),
+        "the original sharp edge's two endpoint vertices no longer exist");
+
+  // Both new rail edges were joined at EXACTLY zero recorded tolerance -
+  // JoinNakedEdges' own "the same exact claim FromPlanarFaces makes" for a
+  // bit-identical pair, confirmed directly rather than assumed from the
+  // construction alone.
+  const ON_Brep& raw = blend.raw();
+  int exact_rail_edges = 0;
+  for (int e = 0; e < raw.m_E.Count(); ++e) {
+    const ON_BrepEdge& E = raw.m_E[e];
+    const Point3d a = E.PointAtStart(), b = E.PointAtEnd();
+    const bool is_rail_i = (a.DistanceTo(P0_0) < 1e-9 && b.DistanceTo(P0_1) < 1e-9) ||
+                            (a.DistanceTo(P0_1) < 1e-9 && b.DistanceTo(P0_0) < 1e-9);
+    const bool is_rail_j = (a.DistanceTo(P2_0) < 1e-9 && b.DistanceTo(P2_1) < 1e-9) ||
+                            (a.DistanceTo(P2_1) < 1e-9 && b.DistanceTo(P2_0) < 1e-9);
+    if (is_rail_i || is_rail_j) {
+      ++exact_rail_edges;
+      Check(E.m_tolerance <= tol::kDistance,
+            "a rail edge shared between the re-trimmed planar face and the new conic wall carries recorded "
+            "tolerance 0 - an EXACT join, not a merely-tolerant one");
+    }
+  }
+  Check(exact_rail_edges == 2, "both rail edges (rail_i and rail_j) were found and are genuine single shared edges");
+
+  // Find the new conic wall face (the one non-planar face) and check
+  // TANGENCY at both of its straight sides: its own surface normal along
+  // u=0 must be face i's own outward normal (0,-1,0), and along u=1 face
+  // j's own outward normal (1,0,0) - this function's own doc comment's
+  // central claim, checked directly rather than assumed from the
+  // tangent-line argument alone.
+  int wall_face = -1;
+  for (int f = 0; f < raw.m_F.Count(); ++f) {
+    ON_Plane pl;
+    if (!raw.m_F[f].SurfaceOf()->IsPlanar(&pl, 1e-9)) {
+      Check(wall_face < 0, "exactly one non-planar face exists in the result");
+      wall_face = f;
+    }
+  }
+  Check(wall_face >= 0, "the new conic wall face was found");
+  const ON_Surface* wall_srf = raw.m_F[wall_face].SurfaceOf();
+  const bool rev = raw.m_F[wall_face].m_bRev;
+  const ON_Interval du = wall_srf->Domain(0), dv = wall_srf->Domain(1);
+  auto normal_at = [&](double u, double v) {
+    ON_3dPoint p;
+    ON_3dVector su, sv;
+    wall_srf->Ev1Der(u, v, p, su, sv);
+    ON_3dVector n = ON_CrossProduct(su, sv);
+    n.Unitize();
+    if (rev) n = -n;
+    return n;
+  };
+  const Vector3d n_at_u0 = normal_at(du.Min(), dv.Mid());
+  const Vector3d n_at_u1 = normal_at(du.Max(), dv.Mid());
+  const Vector3d n_i(0, -1, 0), n_j(1, 0, 0);
+  Check(std::fabs(std::fabs(n_at_u0 * n_i) - 1.0) < 1e-9,
+        "the wall's own surface normal at u=0 is exactly parallel to face i's (front) outward normal - G1 "
+        "tangency, for a genuinely curved (non-circular, rho=0.5) cross-section");
+  Check(std::fabs(std::fabs(n_at_u1 * n_j) - 1.0) < 1e-9,
+        "the wall's own surface normal at u=1 is exactly parallel to face j's (right) outward normal");
+
+  // CLOSED-FORM AREA: sample the wall's own v=0 isocurve (the exact conic
+  // arc itself, at the actual surface this function built - not a
+  // separately recomputed curve) and sum the "fan from O" triangle areas;
+  // this Riemann-sum-style polygon area converges to the true swept-sector
+  // area as sampling gets finer (the same "chordal deficit shrinks with
+  // finer sampling" pattern this kernel's own tests already use elsewhere
+  // - see e.g. TestFilletConvexEdgesRoundedBoxMatchesSteinerFormula's own
+  // convergence checks).
+  auto sector_area = [&](int n) {
+    const Point3d O = edge_p0;
+    double area = 0.0;
+    Point3d prev;
+    wall_srf->EvPoint(du.Min() + (du.Max() - du.Min()) * 0.0, dv.Min(), prev);
+    for (int k = 1; k <= n; ++k) {
+      const double u = du.Min() + (du.Max() - du.Min()) * (static_cast<double>(k) / n);
+      Point3d cur;
+      wall_srf->EvPoint(u, dv.Min(), cur);
+      const Vector3d a = prev - O, b = cur - O;
+      area += 0.5 * std::fabs(a.x * b.y - a.y * b.x);
+      prev = cur;
+    }
+    return area;
+  };
+  const double gamma = ON_PI / 2.0;  // arccos(m_i . m_j), m_i=(-1,0,0), m_j=(0,1,0)
+  const double expected_area = di * dj * std::sin(gamma) / 6.0;  // exact algebraic form at rho = 0.5
+  const double area_coarse = sector_area(8);
+  const double area_fine = sector_area(2000);
+  Check(std::fabs(area_fine - expected_area) < 1e-6,
+        "the conic cross-section's own swept area converges to the closed form di*dj*sin(gamma)/6 at rho=0.5");
+  Check(std::fabs(area_fine - expected_area) < std::fabs(area_coarse - expected_area),
+        "finer sampling of the exact curve gets strictly closer to the closed form (a real convergence, not "
+        "a lucky coincidence at one sample count)");
+}
+
+void TestFilletConvexEdgeConicRejectsInvalidInput() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConvexEdgeConic;
+  using dino8::kernel::Point3d;
+
+  auto expect_throw = [](auto&& fn, const char* what) {
+    bool threw = false;
+    try {
+      fn();
+    } catch (const std::invalid_argument&) {
+      threw = true;
+    }
+    Check(threw, what);
+  };
+
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 2);
+  const std::vector<Brep::PlanarFace> all_faces = box.PlanarFaces();
+  const Brep tube = Brep::FromPlanarFaces({all_faces[2], all_faces[3], all_faces[4], all_faces[5]});
+  const Point3d p0(1, 0, 0), p1(1, 0, 2);
+
+  expect_throw([&] { FilletConvexEdgeConic(tube, p0, p1, 0.0, 0.2, 0.5); },
+               "rejects a non-positive distance_i");
+  expect_throw([&] { FilletConvexEdgeConic(tube, p0, p1, 0.2, -0.1, 0.5); },
+               "rejects a negative distance_j");
+  expect_throw([&] { FilletConvexEdgeConic(tube, p0, p1, 0.2, 0.2, 0.0); }, "rejects rho == 0");
+  expect_throw([&] { FilletConvexEdgeConic(tube, p0, p1, 0.2, 0.2, 1.0); }, "rejects rho == 1");
+  expect_throw([&] { FilletConvexEdgeConic(tube, p0, p1, 0.2, 0.2, -0.3); }, "rejects a negative rho");
+  expect_throw([&] { FilletConvexEdgeConic(tube, p0, p1, 0.2, 0.2, 1.3); }, "rejects rho > 1");
+  expect_throw([&] { FilletConvexEdgeConic(tube, p0, p1, 5.0, 0.2, 0.5); },
+               "rejects a distance_i too large to fit within face i's own extent");
+
+  // A CLOSED box: both edge endpoints DO have a third face touching them
+  // (left/right end caps) - out of scope for this v1 (see this function's
+  // own doc comment).
+  const Brep closed_box = Brep::Box(0, 0, 0, 1, 1, 1);
+  expect_throw([&] { FilletConvexEdgeConic(closed_box, Point3d(0, 0, 1), Point3d(1, 0, 1), 0.2, 0.2, 0.5); },
+               "rejects an edge whose endpoints are touched by a third face (end-condition splicing is out "
+               "of scope for this increment)");
+}
+
+// ---------------------------------------------------------------------------
 // Brep::SphericalFace (brep.h) and FilletConvexEdges (fillet.h) - spherical
 // vertex blends.
 
@@ -27575,6 +27821,57 @@ void TestSweep1AndPipe() {
   // Negative controls.
   Check(Throws([&] { Brep::Pipe(line, 0.0); }), "non-positive pipe radius throws");
   Check(Throws([&] { Brep::Sweep1(square, rail, 1); }), "fewer than 2 stations throws");
+}
+
+void TestSweep1TwistIsExactOnAStraightRailAndRejectsOnClosedRail() {
+  // Straight rail along +z: RmfFrames' own initial-normal rule picks
+  // r0 = (1, 0, 0) for tangent (0, 0, 1) (the world axis least aligned
+  // with the tangent - (1, 0, 0) has zero component along it, and wins
+  // the tie against (0, 1, 0) by the rule's own x-before-y order), so a
+  // unit square built directly in the world xy-plane at the rail's own
+  // start point sits exactly in station 0's own (r, s) plane. That lets
+  // the far end's EXACT position be predicted by hand: twist_total's
+  // rotation is a plain RotateZ of each corner's (x, y), translated to
+  // the rail's end point - no approximation to allow for.
+  const NurbsCurve rail = Polyline({P(0, 0, 0), P(0, 0, 10)});
+  const NurbsCurve square = Polyline({P(-0.5, -0.5, 0), P(0.5, -0.5, 0), P(0.5, 0.5, 0), P(-0.5, 0.5, 0), P(-0.5, -0.5, 0)});
+  const double twist = M_PI / 2;
+  const Brep swept = Brep::Sweep1(square, rail, 32, /*cap=*/true, twist);
+  CheckSolidTopology(swept, 3, "twisted square sweep along a straight rail");
+  const NurbsSurface wall = FaceSurface(swept, 0);
+  Check(wall.DegreeV() == 1 && wall.CVCountV() == 2, "straight rail still takes the exact 2-station ruled shortcut with twist");
+
+  const ON_Interval du = wall.raw().Domain(0);
+  const ON_Interval dv = wall.raw().Domain(1);
+  {
+    double worst = 0.0;
+    for (int corner = 0; corner < 4; ++corner) {
+      const Point3d expect = square.ControlPointAt(corner);
+      double best = 1e9;
+      for (int j = 0; j < 4; ++j) best = std::min(best, wall.PointAt(du.ParameterAt(j / 4.0), dv.Min()).DistanceTo(expect));
+      worst = std::max(worst, best);
+    }
+    Check(worst < 1e-9, "the near end is untouched (zero twist at the start)");
+  }
+  {
+    double worst = 0.0;
+    for (int corner = 0; corner < 4; ++corner) {
+      const Point3d c = square.ControlPointAt(corner);
+      const Point3d expect(c.x * std::cos(twist) - c.y * std::sin(twist), c.x * std::sin(twist) + c.y * std::cos(twist), 10.0);
+      double best = 1e9;
+      for (int j = 0; j < 4; ++j) best = std::min(best, wall.PointAt(du.ParameterAt(j / 4.0), dv.Max()).DistanceTo(expect));
+      worst = std::max(worst, best);
+    }
+    Check(worst < 1e-9, "the far end is the near end's square rotated by exactly twist_total about the rail axis");
+  }
+  Check(swept.TessellateToClosedMesh(8, 96).IsClosedManifold() && swept.TessellateToClosedMesh(5, 12).IsClosedManifold(),
+        "twisted sweep is still a closed manifold at (8, 96) and (5, 12)");
+
+  // Negative controls: twist on a closed rail.
+  const NurbsCurve circle_rail = Circle(P(0, 0, 0), Vector3d(0, 0, 1), 3.0);
+  Check(Throws([&] { Brep::Sweep1(square, circle_rail, 16, /*cap=*/false, M_PI / 4); }),
+        "nonzero twist_total on a closed rail throws");
+  Check(!Throws([&] { Brep::Sweep1(square, circle_rail, 16, /*cap=*/false, 0.0); }), "...but zero twist is fine on a closed rail");
 }
 
 void TestPipeVariable() {
@@ -31246,6 +31543,9 @@ int main() {
   TestChamferConvexEdgeAngleMatchesTwoDistanceForm();
   TestChamferConvexEdgeRejectsInvalidInput();
   TestChamferConvexEdgeChainsAcrossACornerAndAlongParallelEdges();
+  TestFilletConvexEdgeConicWeightFormulaReducesToExactCircle();
+  TestFilletConvexEdgeConicFreeBoundaryTangencyRailExactnessAndClosedFormArea();
+  TestFilletConvexEdgeConicRejectsInvalidInput();
   TestSphericalFaceOctantIsValidWithSingularPoleTrim();
   TestMergeAndWeldMakesBrepSphereAClosedManifold();
   TestFilletConvexEdgesRoundedBoxMatchesSteinerFormula();
@@ -31475,6 +31775,7 @@ int main() {
   sweep_tests::TestLoftInterpolatesSectionsExactly();
   sweep_tests::TestLoftTangentConstrainedEndsMatchExactly();
   sweep_tests::TestSweep1AndPipe();
+  sweep_tests::TestSweep1TwistIsExactOnAStraightRailAndRejectsOnClosedRail();
   sweep_tests::TestExtrudeTaperedCircularProfileIsExactConeFrustum();
   sweep_tests::TestExtrudeTaperedConvexPolygonIsExactPlanarFrustum();
 
