@@ -5282,6 +5282,111 @@ void TestModelAddUserStringsRoundTrips() {
   std::remove(path.c_str());
 }
 
+// Model::AddLinetype() plus AddLayer()'s and every Add*()'s new
+// `linetype_index` parameter: PARITY_MAP.md's own ".3dm attribute/metadata
+// fidelity" evidence named linetypes as the last field, alongside layers/
+// materials/user-strings, this kernel had no way to write at all - every
+// layer, and so every object on it, could only ever draw as a solid
+// (Continuous) line. Checks a real round trip through an actual .3dm
+// file: a named dash-dot linetype added via AddLinetype(); a layer that
+// references it via AddLayer()'s own `linetype_index`; one object left on
+// that layer with no per-object override (inheriting the layer's dash
+// pattern, proving the new Add*() parameter is additive); and a second
+// object on the same layer given its own `linetype_index` of 0
+// (Continuous), proving the per-object override actually overrides
+// LinetypeSource() rather than being shadowed by the layer.
+void TestModelAddLinetypeRoundTrips() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Color;
+  using dino8::kernel::LinetypePattern;
+  using dino8::kernel::LinetypeSegment;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Model;
+  using dino8::kernel::Result;
+  using dino8::kernel::UserStrings;
+
+  Model model;
+  const LinetypePattern pattern = {LinetypeSegment{5.0, true}, LinetypeSegment{2.0, false},
+                                    LinetypeSegment{1.0, true}, LinetypeSegment{2.0, false}};
+  const int linetype_index = model.AddLinetype("DashDot2", pattern);
+  Check(linetype_index >= 0, "AddLinetype() with a non-empty name returns a valid (>= 0) index");
+  Check(model.AddLinetype("") == -1,
+        "AddLinetype() with an empty name returns -1, same contract as AddLayer()");
+
+  const int layer_index = model.AddLayer("DashedLayer", Color(), linetype_index);
+  Check(layer_index >= 0, "AddLayer() with a linetype_index argument still returns a valid index");
+
+  const auto box_mesh = MakeQuadBoxMesh(0, 0, 0, 1, 1, 1);
+  model.AddMesh(box_mesh, "InheritsLayerLinetype", layer_index);
+  const auto box_brep = Brep::Box(0, 0, 0, 1, 1, 1);
+  model.AddBrep(box_brep, "OverridesLinetype", layer_index, std::nullopt, UserStrings(),
+                /*linetype_index=*/0);
+
+  const std::string path = "dino8_kernel_model_linetype_roundtrip_test.3dm";
+  Check(model.Save(path) == Result::Ok, ".3dm save with a linetype succeeded");
+
+  Model loaded;
+  Check(Model::Load(path, loaded) == Result::Ok, ".3dm load succeeded");
+
+  const ON_Linetype* linetype = nullptr;
+  {
+    ONX_ModelComponentIterator iterator(loaded.raw(), ON_ModelComponent::Type::LinePattern);
+    for (const ON_ModelComponent* component = iterator.FirstComponent(); component != nullptr;
+         component = iterator.NextComponent()) {
+      const ON_Linetype* candidate = ON_Linetype::Cast(component);
+      if (candidate != nullptr && candidate->Index() == linetype_index) {
+        linetype = candidate;
+        break;
+      }
+    }
+  }
+  Check(linetype != nullptr, "the reloaded model still has a linetype at the returned index");
+  Check(linetype->Name() == ON_wString("DashDot2"),
+        "the reloaded linetype's name exactly matches what AddLinetype() was given");
+  Check(linetype->SegmentCount() == 4,
+        "the reloaded linetype has exactly the 4 segments AddLinetype() was given");
+  Check(linetype->Segment(0).m_length == 5.0 &&
+            linetype->Segment(0).m_seg_type == ON_LinetypeSegment::eSegType::stLine &&
+            linetype->Segment(1).m_length == 2.0 &&
+            linetype->Segment(1).m_seg_type == ON_LinetypeSegment::eSegType::stSpace,
+        "the reloaded linetype's segment lengths and dash/gap types exactly match what "
+        "AddLinetype() was given");
+
+  const ON_ModelComponentReference layer_ref = loaded.raw().LayerFromIndex(layer_index);
+  const ON_Layer* layer = ON_Layer::Cast(layer_ref.ModelComponent());
+  Check(layer != nullptr && layer->LinetypeIndex() == linetype_index,
+        "the reloaded layer's linetype index exactly matches what AddLayer() was given");
+
+  ONX_ModelComponentIterator iterator(loaded.raw(), ON_ModelComponent::Type::ModelGeometry);
+  bool found_inheriting_mesh = false;
+  bool found_overriding_brep = false;
+  for (const ON_ModelComponent* component = iterator.FirstComponent(); component != nullptr;
+       component = iterator.NextComponent()) {
+    const auto* geometry_component = static_cast<const ON_ModelGeometryComponent*>(component);
+    const ON_3dmObjectAttributes* attributes = geometry_component->Attributes(nullptr);
+    const ON_Geometry* geometry = geometry_component->Geometry(nullptr);
+    if (dynamic_cast<const ON_Mesh*>(geometry) != nullptr) {
+      found_inheriting_mesh = true;
+      Check(attributes->LinetypeSource() == ON::linetype_from_layer,
+            "the reloaded mesh - added with no linetype_index argument - kept LinetypeSource() "
+            "at its default ON::linetype_from_layer, proving the new parameter is a no-op when "
+            "omitted");
+    } else if (dynamic_cast<const ON_Brep*>(geometry) != nullptr) {
+      found_overriding_brep = true;
+      Check(attributes->LinetypeSource() == ON::linetype_from_object,
+            "the reloaded brep's LinetypeSource() switched to ON::linetype_from_object");
+      Check(attributes->m_linetype_index == 0,
+            "the reloaded brep's linetype index exactly matches what AddBrep() was given, "
+            "overriding rather than being shadowed by its layer's own linetype");
+    }
+  }
+  Check(found_inheriting_mesh && found_overriding_brep,
+        "both object types (layer-inheriting mesh, linetype-overriding brep) were found in the "
+        "reloaded model");
+
+  std::remove(path.c_str());
+}
+
 void TestBoxVolume() {
   const auto box = MakeBox(0, 0, 0, 2, 2, 2);
   Check(std::abs(box.Volume() - 8.0) < 1e-9, "unit-scaled box volume is correct");
@@ -30766,6 +30871,7 @@ int main() {
   TestModelAddLayerRoundTrips();
   TestModelAddRenderColorRoundTrips();
   TestModelAddUserStringsRoundTrips();
+  TestModelAddLinetypeRoundTrips();
   TestModelLoadRejectsMeshWithOutOfRangeFaceIndex();
   TestSplitByPlane();
   TestConvexHull();
