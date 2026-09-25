@@ -75,6 +75,32 @@ MeshBooleanSplit 5,-5,0 5,15,0
 @expect_objects 2
 SelAll
 Delete
+# --- SplitByObject: a closed solid cutter (sphere fully inside the box)
+# splits it into an inside piece and an outside piece; the cutter is
+# consumed, same as a two-set boolean's operands (id 22, id 23 -> 2 pieces)
+Box 0,0,0 10,10,0 10
+Sphere 5,5,5 3
+SelNone
+SelID 22
+SplitByObject
+SelID 23
+Enter
+@expect_objects 2
+SelAll
+Delete
+# --- SplitByObject: an open surface cutter (extended into a solid, since
+# it does not already bound a closed volume) splits the box the same way
+# (id 26, id 27 -> 2 pieces)
+Box 0,0,0 10,10,0 10
+Plane3Pt 5,-5,-5 5,15,-5 5,15,15
+SelNone
+SelID 26
+SplitByObject
+SelID 27
+Enter
+@expect_objects 2
+SelAll
+Delete
 # --- WireCut keeps only one side of the cut, unlike Split which keeps both
 Box 0,0,0 10,10,0 10
 SelLast

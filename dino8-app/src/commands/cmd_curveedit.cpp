@@ -729,7 +729,7 @@ void RegisterCurveEditCommands(CommandEngine& e) {
   Reg(e, "Intersect", OnSelection("Select objects to intersect", IntersectObjects, 1), CommandStatus::Implemented,
       "Curve/curve intersections as point objects (a single curve is self-intersected); two closed solids give the intersection volume.");
   Reg(e, "Split", Make<SplitCommand>(), CommandStatus::Implemented,
-      "Splits curves with curves or points; solids are split with a plane through two points (BooleanSplit).");
+      "Splits curves with curves or points; solids are split with a plane through two points (BooleanSplit), or by an arbitrary cutting solid/surface (SplitByObject).");
   Reg(e, "Trim", Make<TrimCommand>(), CommandStatus::Implemented,
       "Trims curves with curves or points (apparent intersections in the construction plane); surface trimming is planned.");
   Reg(e, "Fillet", Make<FilletChamferCommand>(false), CommandStatus::Implemented,

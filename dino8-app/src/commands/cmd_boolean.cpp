@@ -210,6 +210,156 @@ class WireCutCommand : public Command {
   bool keep_positive_ = true;
 };
 
+// Turns an open cutter mesh (a surface tessellation, an open mesh - one
+// simply-connected patch with a single boundary loop) into a closed
+// half-space-like solid BooleanCombine can use: extrudes it, starting
+// exactly at its own real position, along its own area-weighted average
+// face normal far enough to clear every target in `span` (the targets'
+// combined bounding box) - so BooleanCombine(target, this solid,
+// Intersection)/Difference split the target into the piece on the
+// outward-normal side of the cutter and the piece on the other side,
+// the same halves kernel::SplitByPlane's own exact plane cutter produces
+// for a flat cutter, approximated here for a general (possibly curved)
+// one. Extruding from the cap's OWN position (not shifted back first) is
+// what makes this a half-space rather than a thickened slab centered on
+// the cutter - a slab wide enough to clear the target from both sides
+// would swallow it whole (Intersection = the entire target, Difference =
+// empty) instead of splitting it in two. Only an approximation for a
+// strongly curved cutter (the extrusion direction is one fixed vector,
+// not a per-point normal offset) - the same honest tradeoff RegionSlab/
+// SlabFromTrimmedPlane and OffsetSrf Solid=Yes already accept elsewhere
+// in this codebase (cmd_solidtools.cpp, cmd_surface.cpp) for turning an
+// open cap into a solid. Returns nullopt if `cap` has no faces, is
+// degenerate (zero net normal, e.g. a folded or self-cancelling patch)
+// or ExtrudeCappedSolid rejects it (no clean single boundary loop).
+std::optional<kernel::Mesh> SolidifyOpenCutter(const kernel::Mesh& cap, const kernel::BoundingBox& span) {
+  if (cap.FaceCount() == 0) return std::nullopt;
+  const ON_Mesh& raw = cap.raw();
+  ON_3dVector normal_sum(0, 0, 0);
+  for (int i = 0; i < raw.m_F.Count(); ++i) {
+    const ON_MeshFace& f = raw.m_F[i];
+    const ON_3fPoint& a = raw.m_V[f.vi[0]];
+    const ON_3fPoint& b = raw.m_V[f.vi[1]];
+    const ON_3fPoint& c = raw.m_V[f.vi[2]];
+    normal_sum += ON_CrossProduct(ON_3dVector(b - a), ON_3dVector(c - a));
+    if (f.IsQuad()) {
+      const ON_3fPoint& d = raw.m_V[f.vi[3]];
+      normal_sum += ON_CrossProduct(ON_3dVector(c - a), ON_3dVector(d - a));
+    }
+  }
+  if (normal_sum.Length() <= 0) return std::nullopt;
+  normal_sum.Unitize();
+  const kernel::BoundingBox cap_bb = cap.GetBoundingBox();
+  kernel::BoundingBox combined = span;
+  combined.min.x = std::min(combined.min.x, cap_bb.min.x); combined.min.y = std::min(combined.min.y, cap_bb.min.y); combined.min.z = std::min(combined.min.z, cap_bb.min.z);
+  combined.max.x = std::max(combined.max.x, cap_bb.max.x); combined.max.y = std::max(combined.max.y, cap_bb.max.y); combined.max.z = std::max(combined.max.z, cap_bb.max.z);
+  const double reach = std::max((combined.max - combined.min).Length(), 1.0) * 2.0;
+  try {
+    kernel::Mesh solid = kernel::Mesh::ExtrudeCappedSolid(cap, normal_sum * reach);
+    if (solid.FaceCount() == 0 || !solid.IsClosedManifold()) return std::nullopt;
+    if (solid.Volume() < 0) solid = solid.FlipNormals();
+    return solid;
+  } catch (const std::exception&) {
+    return std::nullopt;
+  }
+}
+
+// SplitByObject: splits solids by one or more arbitrary cutting objects
+// (other solids, or open surfaces/meshes), keeping both resulting pieces -
+// the general cutting-object case that BooleanSplit/MeshSplit/
+// MeshBooleanSplit above don't cover (those only cut by a plane through two
+// picked points; see PARITY_MAP.md kernel:features "Split body with an
+// arbitrary surface / solid cutter"). Every cutting object already a
+// closed solid is used as-is; an open one is solidified first
+// (SolidifyOpenCutter above), then every cutter is unioned into one, the
+// same "merge all cutters into a single rigid tool" approach HoleArray
+// (cmd_solidtools.cpp) uses for multiple hole centres. Each target then
+// gets cut by that one merged tool: BooleanCombine(target, tool,
+// Intersection) is the piece inside the cutter, BooleanCombine(target,
+// tool, Difference) is the piece outside it - either can come back empty
+// (the cutter missing the target entirely, or fully containing it), in
+// which case only the non-empty piece is kept.
+class SplitByObjectCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantObjects("Select solids to split"); }
+  void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
+    if (!have_targets_) {
+      target_ids_ = ids;
+      have_targets_ = true;
+      for (ObjectId id : ids) ctx.Doc().Select(id, false);
+      WantObjects("Select cutting objects (solids or surfaces)");
+      accept_preselection = false;
+      return;
+    }
+    Run(ctx, ids);
+    Finish();
+  }
+  void Run(CommandContext& ctx, const std::vector<ObjectId>& cutter_ids) {
+    std::vector<std::pair<ObjectId, kernel::Mesh>> targets;
+    kernel::BoundingBox span;
+    bool have_span = false;
+    for (ObjectId id : target_ids_) {
+      const SceneObject* o = ctx.Doc().Find(id);
+      if (!o) continue;
+      std::optional<kernel::Mesh> m = MeshOf(*o, AdaptiveMeshTolerance(*o));
+      if (!m || !m->IsClosedManifold()) { ctx.Warn("SplitByObject: object " + std::to_string(id) + " is not a closed solid; skipped"); continue; }
+      const kernel::BoundingBox bb = m->GetBoundingBox();
+      if (!have_span) { span = bb; have_span = true; }
+      else {
+        span.min.x = std::min(span.min.x, bb.min.x); span.min.y = std::min(span.min.y, bb.min.y); span.min.z = std::min(span.min.z, bb.min.z);
+        span.max.x = std::max(span.max.x, bb.max.x); span.max.y = std::max(span.max.y, bb.max.y); span.max.z = std::max(span.max.z, bb.max.z);
+      }
+      targets.push_back({id, *m});
+    }
+    if (targets.empty()) { ctx.Warn("SplitByObject: no closed solids to split"); return; }
+
+    std::optional<kernel::Mesh> tool;
+    std::vector<ObjectId> used_cutter_ids;
+    for (ObjectId id : cutter_ids) {
+      const SceneObject* o = ctx.Doc().Find(id);
+      if (!o) continue;
+      std::optional<kernel::Mesh> cm = MeshOf(*o, AdaptiveMeshTolerance(*o));
+      if (!cm || cm->FaceCount() == 0) continue;
+      std::optional<kernel::Mesh> solidified = cm->IsClosedManifold() ? cm : SolidifyOpenCutter(*cm, span);
+      if (!solidified) { ctx.Warn("SplitByObject: cutting object " + std::to_string(id) + " could not be turned into a cutting solid; skipped"); continue; }
+      used_cutter_ids.push_back(id);
+      if (!tool) { tool = solidified; continue; }
+      try { tool = kernel::BooleanCombine(*tool, *solidified, kernel::BooleanOp::Union); }
+      catch (const std::exception&) { /* keep the previous tool; one bad cutter shouldn't lose the rest */ }
+    }
+    if (!tool) { ctx.Warn("SplitByObject: no usable cutting objects"); return; }
+
+    ctx.Doc().BeginChange("SplitByObject");
+    // The cutting object(s) are consumed into the split, same as
+    // BooleanDifference/BooleanIntersection consume both of their operands
+    // (RunBoolean above) - not left behind as leftover geometry.
+    for (ObjectId id : used_cutter_ids) ctx.Doc().Remove(id);
+    int cut = 0, made = 0;
+    for (auto& [id, mesh] : targets) {
+      const SceneObject* o = ctx.Doc().Find(id);
+      const int layer = o ? o->layer_index : 0;
+      std::optional<kernel::Mesh> inside, outside;
+      try { kernel::Mesh r = kernel::BooleanCombine(mesh, *tool, kernel::BooleanOp::Intersection); if (r.FaceCount() > 0) inside = r; }
+      catch (const std::exception&) {}
+      try { kernel::Mesh r = kernel::BooleanCombine(mesh, *tool, kernel::BooleanOp::Difference); if (r.FaceCount() > 0) outside = r; }
+      catch (const std::exception&) {}
+      if (!inside && !outside) { ctx.Warn("SplitByObject: object " + std::to_string(id) + " does not intersect the cutting object(s)"); continue; }
+      ctx.Doc().Remove(id);
+      for (std::optional<kernel::Mesh>* piece : {&inside, &outside}) {
+        if (!*piece) continue;
+        SceneObject s = SceneObject::MakeMesh(**piece);
+        s.layer_index = layer;
+        ctx.Doc().Add(std::move(s));
+        ++made;
+      }
+      ++cut;
+    }
+    ctx.Print("SplitByObject: " + std::to_string(cut) + " solid(s) split into " + std::to_string(made) + " piece(s) (mesh boolean; results are meshes)");
+  }
+  std::vector<ObjectId> target_ids_;
+  bool have_targets_ = false;
+};
+
 // MeshSmooth: smooths and refines with typed Strength (0-1, softens creases)
 // and MinSharpAngle options and a computed default target edge length,
 // unlike the previous fixed-parameter pass.
@@ -261,6 +411,8 @@ void RegisterBooleanCommands(CommandEngine& e) {
   Reg(e, "BooleanSplit", Make<SplitPlaneCommand>());
   Reg(e, "MeshSplit", Make<SplitPlaneCommand>());
   Reg(e, "MeshBooleanSplit", Make<SplitPlaneCommand>());
+  Reg(e, "SplitByObject", Make<SplitByObjectCommand>(), CommandStatus::Implemented,
+      "Splits solids by one or more cutting solids or open surfaces (extended into a solid), keeping both resulting pieces - the general cutting-object BooleanSplit that BooleanSplit itself (a plane through two points only) does not cover.");
   Reg(e, "WireCut", Make<WireCutCommand>());
   // ReduceMesh: superseded, dead code (RegisterRemeshCommands registers the
   // real target-count-driven ReduceMesh afterwards; see
