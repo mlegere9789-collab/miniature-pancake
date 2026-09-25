@@ -406,8 +406,21 @@ class Brep {
   // exact sweep - increase `stations` for a tighter approximation.
   // Caps as Extrude(). Throws std::invalid_argument for stations < 2 or
   // a degenerate rail.
+  //
+  // `twist_total` (radians) adds a uniform extra rotation about the
+  // rail's own local tangent on top of the rotation-minimizing frame -
+  // AutoCAD SWEEP's Twist option / Rhino's Sweep1 twist history -
+  // distributed linearly by arc-length station fraction (0 at the
+  // start, exactly `twist_total` at the end, k / (stations - 1) at
+  // station k), so a straight rail's 2-station exact-extrusion path
+  // stays exact: the far end is the near end's section rotated by
+  // EXACTLY `twist_total` about the rail direction, nothing else
+  // changed. Not supported on a closed rail (throws if `twist_total`
+  // is nonzero there) - a non-multiple-of-2*pi twist would keep the
+  // tube from closing up smoothly, and this does not attempt the
+  // partial-turn spiral case.
   static Brep Sweep1(const NurbsCurve& section, const NurbsCurve& rail, int stations = 32,
-                     bool cap = true);
+                     bool cap = true, double twist_total = 0.0);
 
   // Sweep2: `section` carried between `rail1` and `rail2` (Parasolid/
   // Rhino's two-rail sweep with scaling). At each of `stations` equal-
@@ -2443,6 +2456,22 @@ class Brep {
       // An edge used by three or more trims. `index` is the edge,
       // `other_index` its trim count.
       NonManifoldEdge,
+      // A vertex whose incident faces do NOT form one connected
+      // neighbourhood through the vertex's own edges - Parasolid/ACIS's
+      // own separate "non-manifold vertex" (pinch point) diagnostic,
+      // distinct from NonManifoldEdge above: an hourglass built from two
+      // shells that touch at a single point and share no edge there has
+      // no over-used edge anywhere (every edge still borders exactly one
+      // or two trims), yet the vertex itself is not a topological disk -
+      // walking from one shell's faces to the other's, through shared
+      // edges, is impossible without passing through the pinch. Detected
+      // by grouping the faces touching this vertex's own incident edges
+      // with union-find (two faces sharing one such edge are one group);
+      // more than one group after considering every incident edge means
+      // the neighbourhood is split. `index` is the vertex, `other_index`
+      // the number of disjoint groups found (>= 2), `location` the
+      // vertex's own point.
+      NonManifoldVertex,
       // Two faces sharing a 2-trim edge both walk it the same way in 3D,
       // so one is wound backwards relative to the other - ON_Brep::
       // IsManifold()'s own "not oriented" condition, per edge. `index`

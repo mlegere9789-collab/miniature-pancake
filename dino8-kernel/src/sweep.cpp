@@ -1694,7 +1694,7 @@ Brep Brep::Loft(const std::vector<NurbsCurve>& sections_in, int degree, bool clo
   return AssembleSweptBody(wall.release(), want_caps, want_caps, false, false, caller);
 }
 
-Brep Brep::Sweep1(const NurbsCurve& section_in, const NurbsCurve& rail_in, int stations, bool cap) {
+Brep Brep::Sweep1(const NurbsCurve& section_in, const NurbsCurve& rail_in, int stations, bool cap, double twist_total) {
   const char* caller = "Sweep1";
   if (stations < 2) Fail(caller, "stations must be at least 2");
   ON_NurbsCurve rail = rail_in.raw();
@@ -1703,6 +1703,10 @@ Brep Brep::Sweep1(const NurbsCurve& section_in, const NurbsCurve& rail_in, int s
   if (!section.IsValid()) Fail(caller, "section is not a valid NURBS curve");
   ClampIfPeriodic(section);
   const bool wrap = rail.IsClosed();
+  if (wrap && twist_total != 0.0) {
+    Fail(caller, "twist_total is not supported for a closed rail - a non-multiple-of-2*pi twist would keep the tube from "
+                 "closing up smoothly, and the multiple-of-2*pi spiral case is not attempted here");
+  }
   const bool straight = !wrap && rail.IsLinear(1e-9 * CurveScale(rail));
   const int m = straight ? 2 : std::max(stations, 3);
 
@@ -1711,7 +1715,23 @@ Brep Brep::Sweep1(const NurbsCurve& section_in, const NurbsCurve& rail_in, int s
   std::vector<double> params = rail_in.DivideByCount(wrap ? m : m - 1);
   if (wrap) params.pop_back();
   if (static_cast<int>(params.size()) != m) Internal(caller, "station count mismatch");
-  const std::vector<Frame> frames = RmfFrames(rail, params, wrap, caller);
+  std::vector<Frame> frames = RmfFrames(rail, params, wrap, caller);
+  if (twist_total != 0.0) {
+    // Extra rotation about each station's own tangent, linear in arc-
+    // length station fraction k / (m - 1): 0 at the start, exactly
+    // twist_total at the end. Same (r, s)-plane rotation the closed-
+    // rail holonomy correction above already uses, so a straight rail's
+    // m == 2 exact-extrusion path stays exact - RuledBetween() below
+    // connects frame 0 (untouched) straight to frame m - 1 (rotated by
+    // exactly twist_total), nothing in between to approximate.
+    for (int k = 0; k < m; ++k) {
+      Frame& f = frames[static_cast<size_t>(k)];
+      const double a = twist_total * static_cast<double>(k) / static_cast<double>(m - 1);
+      const ON_3dVector r0 = f.r, s0 = f.s;
+      f.r = r0 * std::cos(a) + s0 * std::sin(a);
+      f.s = ON_CrossProduct(f.t, f.r);
+    }
+  }
 
   const bool closed_section = section.IsClosed();
   const bool want_caps = cap && closed_section && !wrap;
