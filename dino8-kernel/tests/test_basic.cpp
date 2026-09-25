@@ -3211,6 +3211,148 @@ void TestBooleanCombineGeneralUnequalRadiusPerpendicularCylinders() {
   }
 }
 
+void TestImprintFacesBoxPiercedByCylinder() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::ImprintFaces;
+  using dino8::kernel::Mesh;
+
+  // Face-face imprint (PARITY_MAP.md's "kernel: Boolean operations" gap -
+  // Parasolid PK_BODY_imprint / ACIS imprint: split faces along a mutual
+  // intersection, remove nothing). Reuses TestBooleanCombineGeneralBox
+  // Cylinder's own fixture above (a 4x4x2 box fully pierced by a radius-1
+  // cylinder along z, taller than the box on both ends - both flat caps
+  // get a full closed circular intersection loop), the general engine's
+  // own first proven curved-operand case. Unlike that test's Union/
+  // Intersection/Difference, ImprintFaces() keeps ALL of the box's own
+  // material - the check here is that the imprinted box's own tessellated
+  // volume is UNCHANGED (still exactly 32 = 4*4*2), while its own face
+  // count strictly grows: the pierced top and bottom faces each split into
+  // an annulus-with-bridged-hole fragment plus a separate interior disk
+  // fragment (see boolean_general.cpp's own SplitFaceLoop()/BridgeHoles
+  // IntoOuter() doc comments for why a closed intersection chain produces
+  // exactly those 2 fragments per face), while the 4 untouched side faces
+  // (the cylinder's own radius-1 wall never reaches the box's own
+  // y=+-2/x=+-2 side planes) pass through as exactly 1 fragment each,
+  // unchanged.
+  const Brep box = Brep::Box(-2, -2, -1, 2, 2, 1);
+  const Brep cyl = MakeCylinderZForBoxCylinderTest(0, 0, -2, 2, 1.0);
+
+  {
+    const Brep imprinted = ImprintFaces(box, cyl);
+    Check(imprinted.raw().IsValid(), "box imprinted by a piercing cylinder is a valid ON_Brep");
+    Check(imprinted.FaceCount() == box.FaceCount() + 2,
+          "box imprinted by a piercing cylinder gains exactly 2 faces (top "
+          "and bottom caps each split into an annulus-with-hole fragment "
+          "plus a separate interior disk fragment)");
+    const Mesh m = imprinted.TessellateToClosedMesh(32, 32);
+    Check(std::abs(m.Volume() - 32.0) < 0.5,
+          "imprinting removes no material - the box's own tessellated "
+          "volume is unchanged (32 = 4*4*2) after being imprinted by the "
+          "cylinder");
+  }
+  {
+    // Imprinting the OTHER way (the cylinder imprinted by the box) splits
+    // the cylinder's own wall face instead, along the same 2 physical
+    // circles - its own material is likewise unchanged.
+    const Brep imprinted_cyl = ImprintFaces(cyl, box);
+    Check(imprinted_cyl.raw().IsValid(), "cylinder imprinted by the box is a valid ON_Brep");
+    Check(imprinted_cyl.FaceCount() > cyl.FaceCount(),
+          "cylinder imprinted by the box gains at least one face (its own "
+          "wall face is split along the box's own top/bottom cut circles)");
+    const double expect_vol_cyl = ON_PI * 1.0 * 1.0 * 4.0;  // r=1, height 4 (z in [-2, 2])
+    const Mesh m = imprinted_cyl.TessellateToClosedMesh(32, 128);
+    Check(std::abs(m.Volume() - expect_vol_cyl) < 0.5,
+          "imprinting removes no material - the cylinder's own tessellated "
+          "volume is unchanged after being imprinted by the box");
+  }
+}
+
+void TestImprintFacesOverlappingBoxes() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::ImprintFaces;
+  using dino8::kernel::Mesh;
+
+  // Reuses TestBooleanCombineGeneralBoxBox's own fixture above (planar-
+  // only, one fully-proven case for this engine's own SSX/fragment
+  // machinery): box a = [0,2]^3, box b = [1,3]^3, sharing the open unit
+  // cube [1,2]^3. Three of a's own faces (x=2, y=2, z=2) are each crossed
+  // by an L-shaped OPEN intersection chain (entering/leaving through that
+  // face's own trim boundary at 2 points, from the corresponding pair of
+  // b's own near faces) - imprint splits each of those 3 faces into 2
+  // fragments (both kept), while a's other 3 faces (x=0, y=0, z=0, nowhere
+  // near b) pass through untouched. This exercises the OPEN-chain half of
+  // SplitFaceLoop() (the piercing-cylinder test above only exercises its
+  // CLOSED-chain half).
+  const Brep a = Brep::Box(0, 0, 0, 2, 2, 2);
+  const Brep b = Brep::Box(1, 1, 1, 3, 3, 3);
+
+  {
+    const Brep imprinted_a = ImprintFaces(a, b);
+    Check(imprinted_a.raw().IsValid(), "box a imprinted by overlapping box b is a valid ON_Brep");
+    Check(imprinted_a.FaceCount() == a.FaceCount() + 3,
+          "box a imprinted by overlapping box b gains exactly 3 faces (its "
+          "own x=2/y=2/z=2 faces each split in two by an L-shaped open "
+          "intersection chain; its other 3 faces are untouched)");
+    const Mesh m = imprinted_a.TessellateToClosedMesh(8, 8);
+    Check(std::abs(m.Volume() - 8.0) < 1e-3,
+          "imprinting removes no material - box a's own tessellated volume "
+          "is unchanged (exactly 8 = 2^3) after being imprinted by box b");
+  }
+  {
+    const Brep imprinted_b = ImprintFaces(b, a);
+    Check(imprinted_b.raw().IsValid(), "box b imprinted by overlapping box a is a valid ON_Brep");
+    Check(imprinted_b.FaceCount() == b.FaceCount() + 3,
+          "box b imprinted by overlapping box a gains exactly 3 faces "
+          "(symmetric to a's own case above, on its own x=1/y=1/z=1 faces)");
+    const Mesh m = imprinted_b.TessellateToClosedMesh(8, 8);
+    Check(std::abs(m.Volume() - 8.0) < 1e-3,
+          "imprinting removes no material - box b's own tessellated volume "
+          "is unchanged (exactly 8 = 2^3) after being imprinted by box a");
+  }
+}
+
+void TestImprintFacesDisjointIsNoOp() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::ImprintFaces;
+  using dino8::kernel::Mesh;
+
+  // Two boxes far enough apart that no face pair's own bounding boxes
+  // overlap at all: ImprintFaces() must be a genuine no-op on `target` -
+  // same face count, same volume - not merely "close enough".
+  const Brep a = Brep::Box(0, 0, 0, 1, 1, 1);
+  const Brep b = Brep::Box(10, 10, 10, 11, 11, 11);
+
+  const Brep imprinted = ImprintFaces(a, b);
+  Check(imprinted.raw().IsValid(), "a box imprinted by a disjoint box is a valid ON_Brep");
+  Check(imprinted.FaceCount() == a.FaceCount(), "imprinting by a disjoint tool changes no face count at all");
+  const Mesh m = imprinted.TessellateToClosedMesh(4, 4);
+  Check(std::abs(m.Volume() - 1.0) < 1e-6, "imprinting by a disjoint tool changes no volume at all");
+}
+
+void TestImprintFacesRejectsEmptyOperands() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::ImprintFaces;
+
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+  const Brep empty;
+
+  bool threw_empty_target = false;
+  try {
+    ImprintFaces(empty, box);
+  } catch (const std::invalid_argument&) {
+    threw_empty_target = true;
+  }
+  Check(threw_empty_target, "ImprintFaces throws std::invalid_argument for a faceless target");
+
+  bool threw_empty_tool = false;
+  try {
+    ImprintFaces(box, empty);
+  } catch (const std::invalid_argument&) {
+    threw_empty_tool = true;
+  }
+  Check(threw_empty_tool, "ImprintFaces throws std::invalid_argument for a faceless tool");
+}
+
 void TestSurfaceGetApproximateSize() {
   using dino8::kernel::NurbsSurface;
   using dino8::kernel::Point3d;
@@ -30729,6 +30871,10 @@ int main() {
   TestBooleanCombineGeneralBoxCone();
   TestBooleanCombineGeneralSphereCylinderThroughCentre();
   TestBooleanCombineGeneralUnequalRadiusPerpendicularCylinders();
+  TestImprintFacesBoxPiercedByCylinder();
+  TestImprintFacesOverlappingBoxes();
+  TestImprintFacesDisjointIsNoOp();
+  TestImprintFacesRejectsEmptyOperands();
   TestSurfaceGetApproximateSize();
   TestSurfaceTessellateGridClippedExactRejectsTooFewPoints();
   TestSurfaceTessellateGridRejectsTooFewTrimPoints();
