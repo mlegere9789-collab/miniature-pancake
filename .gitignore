@@ -42,3 +42,6 @@ build/
 build-agent/
 dino8-app/dist/
 dino8-app/build-agent/
+
+# Claude Code session-local state (e.g. background-agent worktrees).
+.claude/
