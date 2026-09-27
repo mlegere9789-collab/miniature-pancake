@@ -345,11 +345,17 @@ void DrawEnvironmentsPanel(Application& app) {
     if (ImGui::RadioButton("Gradient", bg == 1)) { r.background = RenderSettings::Background::Gradient; t = true; }
     ImGui::SameLine();
     if (ImGui::RadioButton("Sky", bg == 2)) { r.background = RenderSettings::Background::Sky; t = true; }
+    ImGui::SameLine();
+    if (ImGui::RadioButton("Image", bg == 3)) { r.background = RenderSettings::Background::Image; t = true; }
     if (r.background == RenderSettings::Background::Solid) t |= ColorEdit("Colour", r.background_color);
     if (r.background == RenderSettings::Background::Gradient) { t |= ColorEdit("Top colour", r.gradient_top); t |= ColorEdit("Bottom colour", r.gradient_bottom); }
     t |= ImGui::Checkbox("Gradient background in modelling views", &r.gradient_view);
     if (InputText("Environment image", r.environment_image, ImGuiInputTextFlags_EnterReturnsTrue)) t = true;
-    ImGui::TextDisabled("Image environments are recorded but not yet drawn (Partial).");
+    if (r.background == RenderSettings::Background::Image) {
+      ImGui::TextDisabled("Drawn as a real equirectangular background by a raytraced Render/RenderPreview/RenderArctic "
+                           "(PathTracer::SkyColor); the interactive Rendered-mode GPU raytraced preview still falls "
+                           "back to a solid colour (GpuRaytracer has no env-map sampling yet).");
+    }
   }
   if (ImGui::CollapsingHeader("Ground plane", ImGuiTreeNodeFlags_DefaultOpen)) {
     t |= ImGui::Checkbox("Show ground plane", &r.ground_plane);

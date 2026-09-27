@@ -126,6 +126,10 @@ class PathTracer {
   struct TexCache { int w = 0, h = 0; std::vector<unsigned char> rgba; };
   mutable std::vector<std::pair<std::string, TexCache>> tex_cache_;
   const TexCache* TextureFor(const std::string& path) const;
+  // Bilinear lookup shared by AlbedoAt (a material's own UV) and SkyColor's
+  // Background=Image branch (an equirectangular direction-derived UV) - the
+  // same wrap-at-the-edges filtering, just fed a different (u, v).
+  static kernel::Vector3d SampleBilinear(const TexCache& tc, float u, float v);
 
   // Progressive accumulation state (RayTracedViewport).
   int accum_w_ = 0, accum_h_ = 0, accum_samples_ = 0;

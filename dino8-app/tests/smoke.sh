@@ -2327,6 +2327,13 @@ d2check "gl_error=0" "drafting2 script ran without OpenGL errors"
 # RenderPreview with Quality=Raytraced (see raytrace_script.txt).
 sed "s|@TMP@|$TMPW/rt|g" "$HERE/raytrace_script.txt" > "$TMPW/raytrace_script.txt"
 mkdir -p "$TMPW/rt"
+# A solid-colour binary PPM (magenta-ish, r=200 g=50 b=220 - distinct from
+# every Sky/Gradient/material colour already in this scene) for the
+# Background=Image env-map test at the end of raytrace_script.txt.
+python3 -c "
+w, h = 4, 4
+open('$TMPW/rt/env_test.ppm', 'wb').write(b'P6\n%d %d\n255\n' % (w, h) + bytes([200, 50, 220]) * (w * h))
+"
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   RT="$(env DINO8_RT_FRAMES=1 "$BIN" --smoke 60 --script "$TMPW/raytrace_script.txt" 2>&1)" || { echo "$RT"; echo "FAIL: raytrace script exited non-zero"; exit 1; }
 else
@@ -2380,6 +2387,40 @@ check_nonflat_bmp "$TMPW/rt/raytrace.bmp" "raytrace.bmp"
 check_nonflat_bmp "$TMPW/rt/arctic.bmp" "arctic.bmp (RenderArctic's own pixel output, not just its printed status line)"
 check_nonflat_bmp "$TMPW/rt/preview.bmp" "preview.bmp (RenderPreview's own pixel output, not just its printed status line)"
 check_nonflat_bmp "$TMPW/rt/blowup.bmp" "blowup.bmp (RenderBlowup's own pixel output, not just its printed status line)"
+
+rtcheck "Environment: background Image ($TMPW/rt/env_test.ppm)" "Environments Image= set the environment path and switched Background to Image"
+rtcheck "Render: rendered Perspective at 24 x 24" "the empty-document env-map Render ran"
+# PathTracer::SkyColor's Background=Image branch (real equirectangular
+# env-map sampling, added alongside this test): every primary ray in the
+# fresh, empty New document misses all geometry (there is none) and hits
+# the environment, so the whole 24x24 frame should come back the solid
+# colour of env_test.ppm (r=200 g=50 b=220) - not the default Sky gradient
+# (blue-ish) SkyColor used to fall back to for Background=Image before this
+# fix, since that branch never existed. The exact byte values are not
+# asserted (the render pipeline's own tonemap/gamma stage, shared with every
+# lit surface, shifts them - see PathTracer.cpp), only that the image is a
+# real, uniform magenta-ish tint distinct from a sky/gradient/solid-white
+# background.
+python3 - "$TMPW/rt/env_bg.bmp" <<'PY' && echo "ok   Background=Image is drawn as a real environment by the raytraced Render, not the Sky/Gradient fallback" || { echo "FAIL Background=Image env-map render"; fail=1; }
+import struct, sys
+d = open(sys.argv[1], 'rb').read()
+assert d[:2] == b'BM', 'signature'
+size, off, hdr, w, h, planes, bpp = struct.unpack('<IxxxxIIiiHH', d[2:30])
+assert hdr == 40 and planes == 1 and bpp == 24, (hdr, planes, bpp)
+row = (w * 3 + 3) & ~3
+px = d[off:]
+def get(x, y):
+    r = h - 1 - y
+    i = r * row + x * 3
+    b, g, rr = px[i], px[i + 1], px[i + 2]
+    return rr, g, b
+samples = [get(x, y) for y in (0, h // 2, h - 1) for x in (0, w // 2, w - 1)]
+r0, g0, b0 = samples[0]
+for (r, g, b) in samples:
+    assert abs(r - r0) <= 2 and abs(g - g0) <= 2 and abs(b - b0) <= 2, f'background is not uniform across the frame: {samples}'
+    assert r > g + 30 and b > g + 30, f'background {(r, g, b)} does not read as the magenta-ish env_test.ppm (r,b >> g)'
+print(f'env background sample: (r,g,b)={samples[0]}')
+PY
 
 # IGES / STEP round-trip: Box, Sphere, Cylinder, a trimmed planar surface,
 # a free NURBS curve, a point, and a hand-written STEP fixture (see
