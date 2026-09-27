@@ -589,7 +589,7 @@ top 40:
 | 27 | kernel | features | Threaded / tapped hole and external thread feature | missing | large | Bolt/Nut are built solid with no thread geometry at all. |
 | 28 | kernel | features | Emboss / deboss a closed region onto a face | missing | large | No Emboss/Deboss/Engrave command or API exists anywhere. |
 | 29 | kernel | features | Draft / taper faces of an existing body about a neutral plane | missing | medium | Only draft analysis/marking exists; OffsetFace translates but does not taper. |
-| 30 | kernel | features | Split body with an arbitrary surface / solid cutter | missing | large | The only solid split is by a plane. |
+| 30 | kernel | features | Split body with an arbitrary surface / solid cutter | partial | large | `SplitByObjectCommand` (dino8-app/src/commands/cmd_boolean.cpp) now closes the general cutting-object case; still a single-normal-direction mesh-boolean approximation, not a true PK_BODY_section-style trim. |
 | 31 | kernel | features | Sheet-metal features (Bend, Unfold, Flange, Hem, Tab) | missing | large | No code; UnrollDevelopable is a single-surface unroll, not sheet metal. |
 | 32 | kernel | features | Lattice / cellular infill structures | missing | large | No code beyond an unrelated deformer hit. |
 | 33 | kernel | exchange | Rhino non-geometry/composite objects in .3dm (blocks, annotations, hatches, text dots) | missing | large | Real Rhino files silently lose all of these on open. |
@@ -880,7 +880,7 @@ top 40:
 - [kernel/features] Threaded / tapped hole and external thread feature (missing)
 - [kernel/features] Emboss / deboss onto a face (missing)
 - [kernel/features] Draft / taper faces of an existing body (missing)
-- [kernel/features] Split body with an arbitrary surface / solid cutter (missing)
+- [kernel/features] Split body with an arbitrary surface / solid cutter (partial)
 - [kernel/features] Sheet-metal features (missing)
 - [kernel/features] Lattice / cellular infill structures (missing)
 - [kernel/subd_mesh] Kernel-native SubD local edit operators (missing)
