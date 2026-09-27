@@ -36,3 +36,15 @@ RenderBlowup Quality=Raytraced Samples=2
 SaveRenderWindowAs @TMP@/blowup.bmp
 Wireframe
 Save @TMP@/raytrace.3dm
+
+# Background=Image in the CPU path tracer (PathTracer::SkyColor's
+# equirectangular env-map lookup): a fresh, empty document (New) so every
+# primary ray misses all geometry and hits the environment for 100% of
+# pixels, then Render at Quality=Raytraced with Environments Image=
+# pointing at @TMP@/env_test.ppm (a solid-colour PPM smoke.sh writes before
+# running this script) - the whole frame should come back that colour.
+New
+Environments Image=@TMP@/env_test.ppm
+Perspective
+Render 24 24 Quality=Raytraced Samples=1 Bounces=1
+SaveRenderWindowAs @TMP@/env_bg.bmp

@@ -582,7 +582,14 @@ void Application::AddRecentFile(const std::string& path) {
 }
 
 void Application::ConfirmDiscard(std::function<void()> then) {
-  if (!doc_.Modified() || doc_.ObjectCount() == 0) {
+  // Headless/scripted runs (--smoke/--script, no user present) can never
+  // click the Yes/No popup below; not skipping it here would leave
+  // New/Quit silently doing nothing forever whenever the document happens
+  // to be modified (e.g. a script's own Save call having failed for an
+  // unrelated reason, such as a bad path) - the same class of "headless
+  // run blocks on UI only a real user could dismiss" bug already fixed for
+  // ShowFileDialog (see its own comment, RHINO8_KILLER_AUDIT.md row L).
+  if (!doc_.Modified() || doc_.ObjectCount() == 0 || headless) {
     if (then) then();
     return;
   }

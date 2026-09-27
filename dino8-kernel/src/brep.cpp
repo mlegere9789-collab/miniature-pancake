@@ -6146,6 +6146,78 @@ void CloseLoopGapsWithinTolerance(ON_Brep& b, double tol) {
   }
 }
 
+// The partition of vertex `v`'s own incident edges (parallel to `v.m_ei`)
+// into disjoint groups by union-find over the faces they touch - two faces
+// sharing one of `v`'s edges land in the same group; a face touching `v`
+// through only one edge starts its own singleton group. `edge_group[k]` is
+// the (dense, first-seen-order) group index of `v.m_ei[k]`, or -1 for an
+// edge that is deleted, out of range, or touches no live face at all (a
+// wire edge). `group_count` is 0 if `v` touches no live face at all, 1 for
+// the ordinary case (every incident face reachable from every other
+// through a chain of shared edges at `v`), 2+ for a non-manifold
+// (pinch-point) vertex - see CheckIssue::Kind::NonManifoldVertex. Shared by
+// Check() (which only needs `group_count`) and SplitNonManifoldVertex()
+// (which needs to know which of `v`'s edges belongs to which group).
+struct VertexFaceGroups {
+  std::vector<int> edge_group;
+  int group_count = 0;
+};
+
+VertexFaceGroups GroupVertexEdgesByFace(const ON_Brep& b, const ON_BrepVertex& v) {
+  VertexFaceGroups result;
+  result.edge_group.assign(static_cast<size_t>(std::max(v.m_ei.Count(), 0)), -1);
+  std::vector<int> faces;
+  std::vector<int> parent;
+  auto index_of = [&](int fi) {
+    const auto it = std::find(faces.begin(), faces.end(), fi);
+    if (it != faces.end()) return static_cast<int>(it - faces.begin());
+    faces.push_back(fi);
+    parent.push_back(static_cast<int>(faces.size()) - 1);
+    return static_cast<int>(faces.size()) - 1;
+  };
+  std::function<int(int)> root_of = [&](int x) {
+    while (parent[x] != x) {
+      parent[x] = parent[parent[x]];
+      x = parent[x];
+    }
+    return x;
+  };
+  // One face per incident edge, to union against - any of the edge's
+  // trims' faces will do, since they are all unioned together below.
+  std::vector<int> edge_any_face(static_cast<size_t>(v.m_ei.Count()), -1);
+  for (int k = 0; k < v.m_ei.Count(); ++k) {
+    const int ei = v.m_ei[k];
+    if (ei < 0 || ei >= b.m_E.Count()) continue;
+    const ON_BrepEdge& e = b.m_E[ei];
+    if (e.m_edge_index < 0) continue;
+    int first = -1;
+    for (int q = 0; q < e.m_ti.Count(); ++q) {
+      const int ti = e.m_ti[q];
+      if (ti < 0 || ti >= b.m_T.Count()) continue;
+      const int fi = b.m_T[ti].FaceIndexOf();
+      if (fi < 0) continue;
+      const int idx = index_of(fi);
+      if (first < 0) {
+        first = idx;
+        edge_any_face[static_cast<size_t>(k)] = fi;
+      } else {
+        const int ra = root_of(first), rb = root_of(idx);
+        if (ra != rb) parent[ra] = rb;
+      }
+    }
+  }
+  std::unordered_map<int, int> root_to_group;
+  for (int k = 0; k < v.m_ei.Count(); ++k) {
+    const int fi = edge_any_face[static_cast<size_t>(k)];
+    if (fi < 0) continue;
+    const int r = root_of(index_of(fi));
+    const auto [it, inserted] = root_to_group.try_emplace(r, static_cast<int>(root_to_group.size()));
+    result.edge_group[static_cast<size_t>(k)] = it->second;
+  }
+  result.group_count = static_cast<int>(root_to_group.size());
+  return result;
+}
+
 }  // namespace
 
 int Brep::CheckReport::Count(CheckIssue::Kind kind) const {
@@ -6203,6 +6275,15 @@ Brep::CheckReport Brep::Check(double tolerance, double sliver_width) const {
       const double allowed = std::max(tol, v.m_tolerance >= 0.0 ? v.m_tolerance : 0.0);
       if (gap > allowed) add(CheckKind::EdgeVertexGap, ei, vi, v.point, gap);
     }
+  }
+
+  // Vertices: non-manifold vertex (pinch point) - see
+  // CheckIssue::Kind::NonManifoldVertex's own doc comment.
+  for (int vi = 0; vi < b.m_V.Count(); ++vi) {
+    const ON_BrepVertex& v = b.m_V[vi];
+    if (v.m_vertex_index < 0) continue;
+    const int groups = GroupVertexEdgesByFace(b, v).group_count;
+    if (groups > 1) add(CheckKind::NonManifoldVertex, vi, groups, v.point, 0.0);
   }
 
   // Trims: validity, and each trim's 3D image against its own edge.
@@ -6452,6 +6533,83 @@ int Brep::RemoveDegenerateEdges(double tolerance) {
   brep_.SetTolerancesBoxesAndFlags();
   FixUnsetEdgeTolerances(brep_);
   return collapsed;
+}
+
+Result Brep::SplitNonManifoldVertex(int vertex_index) {
+  if (vertex_index < 0 || vertex_index >= brep_.m_V.Count()) {
+    throw std::out_of_range("dino8::kernel::Brep::SplitNonManifoldVertex: vertex_index " +
+                            std::to_string(vertex_index) + " is out of range (this Brep has " +
+                            std::to_string(brep_.m_V.Count()) + " vertex slot(s))");
+  }
+  ON_Brep& b = brep_;
+  if (b.m_V[vertex_index].m_vertex_index < 0) {
+    throw std::invalid_argument("dino8::kernel::Brep::SplitNonManifoldVertex: vertex_index " +
+                                std::to_string(vertex_index) + " refers to a deleted vertex");
+  }
+  // An edge closed on itself at this vertex makes m_ei's own "appears
+  // twice, positionally" rule ambiguous to group - see this method's own
+  // doc comment. Checked before grouping, on the ORIGINAL, unmutated
+  // m_ei/m_vi.
+  for (int k = 0; k < b.m_V[vertex_index].m_ei.Count(); ++k) {
+    const int ei = b.m_V[vertex_index].m_ei[k];
+    if (ei < 0 || ei >= b.m_E.Count()) continue;
+    if (b.m_E[ei].m_vi[0] == vertex_index && b.m_E[ei].m_vi[1] == vertex_index) return Result::Failed;
+  }
+
+  const VertexFaceGroups groups = GroupVertexEdgesByFace(b, b.m_V[vertex_index]);
+  if (groups.group_count < 2) return Result::Failed;
+
+  const ON_3dPoint point = b.m_V[vertex_index].point;
+  const double tol = b.m_V[vertex_index].m_tolerance;
+  // Snapshot the incident edge list BEFORE any mutation: b.NewVertex()
+  // below may reallocate b.m_V, invalidating any ON_BrepVertex& held
+  // across the call, so every vertex access after this point is by fresh
+  // index lookup, never a held reference (the same discipline
+  // SplitNakedEdgeAt() follows around its own NewVertex()/NewEdge()/
+  // NewTrim() calls).
+  std::vector<int> incident_edges;
+  incident_edges.reserve(static_cast<size_t>(std::max(b.m_V[vertex_index].m_ei.Count(), 0)));
+  for (int k = 0; k < b.m_V[vertex_index].m_ei.Count(); ++k) incident_edges.push_back(b.m_V[vertex_index].m_ei[k]);
+
+  std::vector<int> vertex_of_group(static_cast<size_t>(groups.group_count), -1);
+  vertex_of_group[0] = vertex_index;
+  for (size_t k = 0; k < incident_edges.size(); ++k) {
+    const int g = groups.edge_group[k];
+    if (g <= 0) continue;  // ungrouped (-1, a wire edge) or the group keeping the original vertex
+    if (vertex_of_group[static_cast<size_t>(g)] < 0) {
+      const ON_BrepVertex& nv = b.NewVertex(point, tol);
+      vertex_of_group[static_cast<size_t>(g)] = nv.m_vertex_index;
+    }
+    const int ei = incident_edges[k];
+    if (ei < 0 || ei >= b.m_E.Count()) continue;
+    ON_BrepEdge& e = b.m_E[ei];
+    if (e.m_edge_index < 0) continue;
+    const int new_vi = vertex_of_group[static_cast<size_t>(g)];
+    for (int side = 0; side < 2; ++side) {
+      if (e.m_vi[side] == vertex_index) e.m_vi[side] = new_vi;
+    }
+    b.m_V[new_vi].m_ei.Append(ei);
+  }
+  // Whatever is left in the original vertex's own m_ei after removing
+  // every moved edge belongs to group 0, exactly as it should - m_ei
+  // itself was never touched above (only OTHER vertices' m_ei/edges'
+  // m_vi were), so it is still in the same order `incident_edges` was
+  // captured in.
+  ON_BrepVertex& v0 = b.m_V[vertex_index];
+  for (int k = static_cast<int>(incident_edges.size()) - 1; k >= 0; --k) {
+    if (groups.edge_group[static_cast<size_t>(k)] > 0) v0.m_ei.Remove(k);
+  }
+  return Result::Ok;
+}
+
+int Brep::SplitNonManifoldVertices(double tolerance) {
+  const CheckReport report = Check(tolerance, tolerance);
+  int split = 0;
+  for (const CheckIssue& issue : report.issues) {
+    if (issue.kind != CheckKind::NonManifoldVertex) continue;
+    if (SplitNonManifoldVertex(issue.index) == Result::Ok) ++split;
+  }
+  return split;
 }
 
 Result Brep::SplitNakedEdgeAt(int edge_index, Point3d point, double tolerance) {

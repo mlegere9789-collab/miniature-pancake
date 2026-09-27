@@ -260,6 +260,57 @@ class SubD {
   // that approximation look exact.
   std::vector<SubDNurbsPatch> ToNurbsPatches() const;
 
+  // Like ToNurbsPatches(), but replaces each IRREGULAR face's single
+  // flat bilinear-corner-interpolant patch with several smaller, more
+  // accurate ones - reusing EvaluateFace()'s own adaptive-refinement
+  // technique (one real level of Catmull-Clark GlobalSubdivide() always
+  // turns every quadrant NOT touching the face's own extraordinary
+  // vertex/crease/boundary corner(s) fully regular) but pursuing all 4
+  // of a subdivision's child quadrants, not just whichever one a single
+  // (u, v) query lands in. A regular face is unaffected (still one exact
+  // patch, same as ToNurbsPatches()); an irregular face with exactly one
+  // bad corner becomes 3 exact regular patches plus 1 still-irregular
+  // patch covering a quadrant 2x smaller (in each parametric direction)
+  // than the original face - which itself splits the same way if
+  // `max_adaptive_levels` allows another level, recursively. A face with
+  // more than one bad corner (e.g. two adjacent extraordinary vertices,
+  // or a boundary face with 2+ naked corners) can leave more than one
+  // child irregular per level; each still recurses independently.
+  //
+  // `max_adaptive_levels` is the same per-face recursion budget
+  // EvaluateFace() takes: 0 makes this identical to ToNurbsPatches()
+  // (every irregular face returned as one flat patch, no splitting).
+  // Throws std::invalid_argument if `max_adaptive_levels` is negative.
+  //
+  // Cost and the large-mesh fallback are the same as EvaluateFace()'s:
+  // each split clones the current subdivision level's WHOLE control net
+  // into an internal working copy (`raw()` is never touched) and
+  // globally refines it, so cost is proportional to the working copy's
+  // OWN size per level, and a working copy already past 500,000 faces
+  // stops splitting further and falls back to the flat patch for
+  // whatever's left, regardless of `max_adaptive_levels` remaining -
+  // this can leave some irregular faces less-split than others on a
+  // very large or very irregular net, never a correctness problem, only
+  // a coarser approximation there.
+  //
+  // Boundary caveat carried over from ToNurbsPatches(), now also
+  // between a face's own split-off patches: two SIBLING patches from the
+  // very same split (e.g. two of the 3 newly-regular quadrants) share a
+  // bit-identical boundary curve, same as two regular patches from
+  // different faces already do - but where one quadrant recurses again
+  // and its neighbor doesn't, the neighbor's one full-length edge faces
+  // TWO half-length edges on the further-split side (a T-junction, the
+  // same well-known artifact adaptive subdivision-surface tessellation
+  // always has without an explicit transition/Gregory-patch construction
+  // this class doesn't attempt) - deliberately left as naked, unjoined
+  // edges there too, for the same reason ToNurbsPatches() already leaves
+  // an irregular patch's boundary naked: no silently making an
+  // approximation look exact. A caller wanting a single watertight Brep
+  // despite this should Subdivide() the whole SubD first (shrinking, not
+  // eliminating, the irregular region) rather than relying on this
+  // method to close every seam.
+  std::vector<SubDNurbsPatch> ToNurbsPatchesAdaptive(int max_adaptive_levels) const;
+
   int FaceCount() const;
   int VertexCount() const;
 

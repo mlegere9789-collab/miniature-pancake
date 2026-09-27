@@ -246,8 +246,26 @@ Vector3d PathTracer::SkyColor(const Vector3d& dir) const {
     const double t = std::clamp(d.z * 0.5 + 0.5, 0.0, 1.0);
     return ToVec(r.gradient_bottom) * (1.0 - t) + ToVec(r.gradient_top) * t;
   }
-  // Sky: physically-plausible gradient (horizon light, zenith blue-ish)
-  // with a bright sun disc when the sun is enabled.
+  if (r.background == RenderSettings::Background::Image && !r.environment_image.empty()) {
+    const TexCache* tc = TextureFor(r.environment_image);
+    if (tc && tc->w > 0 && tc->h > 0) {
+      // Standard equirectangular lat-long mapping, in this app's z-up
+      // convention (the same d.z the Gradient/Sky branches key off of):
+      // theta is the polar angle from the north pole (d.z=+1, theta=0) to
+      // the south pole (d.z=-1, theta=pi), mapped to v=1 (the image's top
+      // row) .. v=0 (its bottom row); u wraps once around the horizon.
+      const double theta = std::acos(std::clamp(d.z, -1.0, 1.0));
+      const double u = std::atan2(d.y, d.x) / (2.0 * ON_PI) + 0.5;
+      const double v = 1.0 - theta / ON_PI;
+      return SampleBilinear(*tc, static_cast<float>(u), static_cast<float>(v));
+    }
+    // Image set but missing/unreadable (Environments already warns about
+    // this when the setting is made): fall through to the Sky gradient
+    // below rather than a jarring flat background.
+  }
+  // Sky (also the fallback above for a Background=Image whose file could
+  // not be loaded): physically-plausible gradient (horizon light, zenith
+  // blue-ish) with a bright sun disc when the sun is enabled.
   const double t = std::clamp(d.z * 0.5 + 0.5, 0.0, 1.0);
   Vector3d zenith(0.30, 0.45, 0.75), horizon(0.75, 0.82, 0.90);
   Vector3d sky = horizon * (1.0 - std::pow(t, 0.7)) + zenith * std::pow(t, 0.7);
@@ -280,24 +298,28 @@ const PathTracer::TexCache* PathTracer::TextureFor(const std::string& path) cons
   return &tex_cache_.back().second;
 }
 
+Vector3d PathTracer::SampleBilinear(const TexCache& tc, float u, float v) {
+  float fu = u - std::floor(u), fv = 1.0f - (v - std::floor(v));  // v flipped to match GL texture convention
+  const float fx = fu * tc.w - 0.5f, fy = fv * tc.h - 0.5f;
+  int x0 = static_cast<int>(std::floor(fx)), y0 = static_cast<int>(std::floor(fy));
+  const float tx = fx - x0, ty = fy - y0;
+  auto wrap = [](int v, int n) { v %= n; return v < 0 ? v + n : v; };
+  auto sample = [&](int x, int y) {
+    x = wrap(x, tc.w); y = wrap(y, tc.h);
+    const unsigned char* p = &tc.rgba[(static_cast<size_t>(y) * tc.w + x) * 4];
+    return Vector3d(p[0] / 255.0, p[1] / 255.0, p[2] / 255.0);
+  };
+  const Vector3d c00 = sample(x0, y0), c10 = sample(x0 + 1, y0), c01 = sample(x0, y0 + 1), c11 = sample(x0 + 1, y0 + 1);
+  const Vector3d top = c00 * (1 - tx) + c10 * tx, bot = c01 * (1 - tx) + c11 * tx;
+  return top * (1 - ty) + bot * ty;
+}
+
 Vector3d PathTracer::AlbedoAt(const Material& mat, float u, float v) const {
   Vector3d base(mat.diffuse.r, mat.diffuse.g, mat.diffuse.b);
   if (mat.texture_path.empty()) return base;
   const TexCache* tc = TextureFor(mat.texture_path);
   if (!tc || tc->w <= 0 || tc->h <= 0) return base;
-  float fu = u - std::floor(u), fv = 1.0f - (v - std::floor(v));  // v flipped to match GL texture convention
-  const float fx = fu * tc->w - 0.5f, fy = fv * tc->h - 0.5f;
-  int x0 = static_cast<int>(std::floor(fx)), y0 = static_cast<int>(std::floor(fy));
-  const float tx = fx - x0, ty = fy - y0;
-  auto wrap = [](int v, int n) { v %= n; return v < 0 ? v + n : v; };
-  auto sample = [&](int x, int y) {
-    x = wrap(x, tc->w); y = wrap(y, tc->h);
-    const unsigned char* p = &tc->rgba[(static_cast<size_t>(y) * tc->w + x) * 4];
-    return Vector3d(p[0] / 255.0, p[1] / 255.0, p[2] / 255.0);
-  };
-  const Vector3d c00 = sample(x0, y0), c10 = sample(x0 + 1, y0), c01 = sample(x0, y0 + 1), c11 = sample(x0 + 1, y0 + 1);
-  const Vector3d top = c00 * (1 - tx) + c10 * tx, bot = c01 * (1 - tx) + c11 * tx;
-  const Vector3d tex = top * (1 - ty) + bot * ty;
+  const Vector3d tex = SampleBilinear(*tc, u, v);
   return Vector3d(base.x * tex.x, base.y * tex.y, base.z * tex.z);
 }
 

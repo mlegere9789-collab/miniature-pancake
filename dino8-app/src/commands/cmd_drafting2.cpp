@@ -230,7 +230,14 @@ std::string CsvField(const std::string& s) {
 }
 
 bool WriteCsvFile(const std::string& path, const TableSpec& spec) {
-  std::ofstream f(path, std::ios::trunc);
+  // Binary mode, matching ReadCsvFile's own choice below: without it, MSVC's
+  // CRT silently translates every '\n' this writes into "\r\n" on Windows,
+  // so the exact same DataLink push produces different on-disk bytes by
+  // platform - ReadCsvFile already tolerates either (it explicitly drops a
+  // '\r' before a '\n'), so this was never a real read/round-trip bug, but
+  // the file this writes should be the same bytes on every OS, not an
+  // incidental artifact of the CRT's text-mode newline translation.
+  std::ofstream f(path, std::ios::trunc | std::ios::binary);
   if (!f) return false;
   for (int r = 0; r < spec.rows; ++r) {
     for (int c = 0; c < spec.cols; ++c) f << (c ? "," : "") << CsvField(spec.Cell(r, c));
@@ -872,7 +879,9 @@ class BillOfMaterialsCommand : public Command {
     if (all) tags["BomAll"] = "1"; else tags["BomRefIds"] = IdsTag(ids);
     BuildTableGroup(ctx, spec, "BillOfMaterials", -1, tags);
     if (!csv_.empty()) {
-      std::ofstream f(csv_);
+      // Binary mode - see WriteCsvFile's own comment above for why (CRT
+      // text-mode newline translation on Windows, not a read-side bug).
+      std::ofstream f(csv_, std::ios::binary);
       f << "Item,Qty,Layer,Material,Length,Area,Volume\n";
       for (const BomRow& r : csv_rows) f << r.key << "," << r.qty << "," << r.layer << "," << r.material << "," << r.length << "," << r.area << "," << r.volume << "\n";
     }

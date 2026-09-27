@@ -777,6 +777,225 @@ Brep ChamferConcaveEdgeAngle(const Brep& solid, Point3d edge_p0, Point3d edge_p1
                              double angle_from_i);
 
 
+// CONIC ("rho") CROSS-SECTION blend of a straight, convex edge shared by
+// two PLANAR faces of `solid`: Parasolid's "conic blend"/Rhino's rho
+// blend, filling the PARITY_MAP.md gap every other blend in this file
+// leaves open ("Conic / rho (chordal, elliptical) blend cross-sections") -
+// every fillet above rolls a CIRCLE (FilletConvexEdge et al.) and every
+// chamfer above cuts a PLANE (ChamferConvexEdge et al.); this is the third
+// classical cross-section family, a genuine CONIC arc (ellipse, parabola,
+// or hyperbola, chosen by one scalar `rho`) tangent to both faces, exactly
+// generalizing both of the others as its two limits (see below).
+//
+// `distance_i`/`distance_j` are the same per-face, in-plane, measured-
+// perpendicular-to-the-edge setbacks ChamferConvexEdge's own doc comment
+// defines (this function reuses that exact rail construction verbatim -
+// see step 1 below); `rho` (strictly between 0 and 1) is the classical
+// CAGD "shoulder" parameter: 0.5 is an exact PARABOLA arc, rho < 0.5 an
+// ELLIPSE arc that hugs the flat chord more tightly as rho -> 0 (a
+// FLATTER blend than a circle would give for the same setbacks - visually
+// closer to ChamferConvexEdge's own flat bevel as rho -> 0), and rho > 0.5
+// a HYPERBOLA arc that bulges further toward the original sharp edge as
+// rho -> 1 (a FULLER blend, visually closer to leaving the corner
+// untouched as rho -> 1). Throws std::invalid_argument unless 0 < rho < 1
+// (both endpoints are genuine degeneracies - see step 2 below) or unless
+// distance_i/distance_j are strictly positive.
+//
+// THE CONSTRUCTION:
+//   1. Topology, dihedral-convexity check, and the two in-plane setback
+//      RAILS R_i(t) = edge_p0 + t*e + distance_i*m_i and R_j(t) likewise
+//      (e = normalize(edge_p1 - edge_p0), m_i/m_j the into-material,
+//      perpendicular-to-the-edge directions) are IDENTICAL to
+//      ChamferConvexEdge's own steps 1-3 - this function calls the exact
+//      same topology/extent-fit checks and the exact same
+//      detail::ClipByHalfspace3d re-trim of faces i and j, at the exact
+//      same cut planes, so the two re-trimmed faces this function
+//      produces are bit-for-bit identical to what ChamferConvexEdge (or a
+//      FilletConvexEdgeConic call with a different `rho`) would produce
+//      for the same `distance_i`/`distance_j` - only the patch FILLING
+//      the gap between the two rails differs.
+//
+//   2. THE CROSS-SECTION, in the plane through `edge_p0` perpendicular to
+//      `e`: let O = edge_p0 (a point ON the original sharp edge),
+//      P0 = O + distance_i*m_i (= R_i(0)), P2 = O + distance_j*m_j
+//      (= R_j(0)). Since m_i is exactly face i's own in-plane direction
+//      and m_j exactly face j's, the tangent LINE to this cross-section at
+//      P0 must run along m_i (for the patch to meet face i tangentially,
+//      not at a crease) and at P2 along m_j - and extending those two
+//      lines BACKWARD from P0/P2 reaches, respectively, O - distance_i*m_i
+//      + distance_i*m_i·(nothing) ... concretely, the line through P0
+//      along direction -m_i passes through O at parameter distance_i, and
+//      the line through P2 along -m_j passes through O at parameter
+//      distance_j: i.e. BOTH tangent lines pass through the SAME point O,
+//      the original sharp corner. A rational quadratic Bezier with
+//      control points (P0, P1, P2) has EXACTLY this tangent-line property
+//      (its tangent direction at t=0 is P1-P0 and at t=1 is P2-P1, for
+//      ANY positive weight on P1 - a standard rational-Bezier fact,
+//      independent of the middle weight) - so setting P1 = O directly
+//      gives a curve tangent to face i at P0 and to face j at P2 FOR ANY
+//      CHOICE of the middle control point's weight w. This is the whole
+//      construction's load-bearing fact: THE SHARP EDGE'S OWN POINT is
+//      the conic's third control point, with no separate apex/offset
+//      computation needed at all (contrast FilletConvexEdge's own
+//      axis_point, which is NOT edge_p0 itself).
+//
+//   3. THE WEIGHT: `rho` is converted to the rational quadratic Bezier's
+//      middle weight w by the classical closed-form shoulder-point
+//      formula, worked out here rather than asserted: the curve's own
+//      midpoint (parameter t = 0.5) is
+//        Q(0.5) = (P0 + 2*w*P1 + P2) / (2 + 2*w) = (M + w*P1) / (1 + w),
+//        M := (P0 + P2)/2,
+//      (substitute t=1/2 into the rational quadratic Bezier formula and
+//      simplify directly - no shortcut taken). The "rho shoulder point" is
+//      DEFINED as S := (1 - rho)*M + rho*P1 (rho=0 is the chord's own
+//      midpoint M, rho=1 is the apex P1, interpolating linearly between
+//      them - CAGD's standard rho parameterization). Setting Q(0.5) = S
+//      and solving the single resulting scalar equation (valid whenever
+//      M != P1, i.e. the edge is not degenerate) gives, by direct
+//      substitution:
+//        w = rho / (1 - rho)
+//      - so rho = 0.5 <=> w = 1 (the parabola, the standard rational-
+//      Bezier fact that w = 1 is always exactly a parabola regardless of
+//      the control polygon's shape); rho < 0.5 <=> w < 1 (an ELLIPSE arc,
+//      the standard w < 1 classification); rho > 0.5 <=> w > 1 (a
+//      HYPERBOLA arc, the standard w > 1 classification) - both
+//      classification facts are pre-existing rational-Bezier-conic theory
+//      (e.g. Farin, "Curves and Surfaces for CAGD"), not derived fresh
+//      here, only applied to this specific control polygon. w -> 0 as
+//      rho -> 0 (the curve degenerates onto the straight chord P0-P2,
+//      i.e. ChamferConvexEdge's OWN flat bevel in the limit - the reason
+//      rho = 0 is rejected outright rather than silently degenerating);
+//      w -> +infinity as rho -> 1 (the curve degenerates onto the two
+//      straight legs O-P0/O-P2, i.e. the ORIGINAL SHARP EDGE with nothing
+//      cut away at all - the reason rho = 1 is rejected too). Both limits
+//      are genuine, checked-directly degeneracies of this SPECIFIC control
+//      polygon (P1 = O, not an arbitrary apex), not a generic disclaimer.
+//
+//   4. THE CURVE OBJECT: built via `NurbsCurve::FromControlPoints({P0, O,
+//      P2}, 2)` (a plain, non-rational degree-2 Bezier, control point 1 at
+//      O with weight 1) and then made rational with EXACTLY the right
+//      Euclidean position preserved - a real, documented gotcha this
+//      function must get right and discloses rather than hides:
+//      `NurbsCurve::SetWeightAt(1, w)` does NOT rescale control point 1's
+//      own stored (x, y, z) to compensate (see that method's own doc
+//      comment and its own regression test, `TestCurveSetWeightAt`'s
+//      "ControlPointAt(1) after SetWeightAt(1, 3.0) is exactly the
+//      original point / 3"); calling it on a control point already sitting
+//      AT O would silently move it to O/w, an entirely different (and
+//      generally off-edge) point. The correct order, used here: first
+//      `SetControlPointAt(1, O*w)` (a plain, unweighted move - this
+//      resets any existing weight to 1.0, per that method's own doc
+//      comment, which is exactly what is wanted at this intermediate step)
+//      to pre-scale the stored homogeneous numerator, THEN
+//      `SetWeightAt(1, w)`, which leaves that already-pre-scaled (x, y, z)
+//      untouched and only changes the denominator - so the actual
+//      represented Euclidean position ends up (O*w)/w = O exactly, to
+//      floating-point precision (verified directly by this function's own
+//      regression test reading `ControlPointAt(1)` back after
+//      construction, not merely assumed from the algebra).
+//
+//   5. THE PATCH: `Brep::Extrude(profile, edge_p1 - edge_p0, /*cap=*/
+//      false)` - profile's own curve parameter u runs 0..1 across the
+//      conic arc (P0 at u=0, P2 at u=1), and the sweep is EXACTLY
+//      translational, so this is a genuine "generalized cylinder" whose
+//      DIRECTRIX is a conic instead of a circle, with no approximation
+//      anywhere: Extrude()'s own doc comment already establishes that any
+//      NURBS profile - rational, any degree - sweeps EXACTLY along a
+//      straight direction. Two of the wall's four boundary isocurves
+//      (u = 0 and u = 1, i.e. P0 and P2 each carried the full length along
+//      e) are, by construction, THE SAME two lines R_i(t)/R_j(t) that step
+//      1's re-trim already cut faces i/j along - bit-identical 3D points,
+//      not merely close ones, because both sides compute
+//      `edge_p0 + t*e + distance_i*m_i` (or the _j sibling) from the exact
+//      same inputs. The wall is assembled as its OWN small Brep (a single
+//      untrimmed NewFace, via Extrude) and then spliced onto the re-
+//      trimmed faces i/j (assembled separately via Brep::FromMixedFaces,
+//      exactly as ChamferConvexEdge assembles its own planar pieces) with
+//      `Brep::Compound()` followed by `JoinNakedEdges()`: because the two
+//      shared rails are bit-identical, JoinNakedEdges's own measured-gap
+//      bookkeeping (see its own doc comment) records EXACTLY 0 tolerance
+//      on both new edges - "the same exact claim FromPlanarFaces makes",
+//      not a merely-tolerant sew - confirmed directly by this function's
+//      own regression test reading the resulting `ON_BrepEdge::m_tolerance`
+//      back, not assumed from the construction alone.
+//
+// TANGENCY, the actual point of a "blend" rather than a chamfer: because
+// step 2's tangent-line fact holds for ANY w > 0, the wall's own surface
+// normal along its u = 0 isocurve is, at every point (not merely
+// verified at one sample), perpendicular to e (the sweep direction, an
+// isoparametric fact of any translational extrusion) AND to m_i (the
+// conic's own in-plane tangent direction there) - i.e. exactly n_i, face
+// i's own outward normal, and likewise n_j along u = 1. So this patch
+// meets both original faces with a genuinely continuous tangent plane
+// (G1), for every rho in (0, 1), the same tangency FilletConvexEdge's own
+// circular case gives (rho's own special value making the arc an exact
+// CIRCLE for equal setbacks is w = cos(gamma/2), gamma = arccos(m_i . m_j)
+// - the standard symmetric-rational-Bezier-circle identity - so
+// FilletConvexEdge is recoverable, for the isosceles case, as one specific
+// rho of this family, though this function does not special-case or
+// dispatch to it).
+//
+// THE EXACT CLOSED FORM this was checked against (this function's own
+// regression tests): the region cut away in cross-section - bounded by
+// O-P0 (straight, along m_i), the conic arc P0-P2, and P2-O (straight,
+// along m_j) - has area, for ANY rho, exactly
+//   Area(rho) = (P0 x P2) * Integral_0^1 [t(1-t) / D(t)^2] dt,
+//   D(t) := 1 + 2*(w-1)*t*(1-t),  w = rho/(1-rho),
+// derived here (not merely quoted) from the general rational-curve
+// identity B(t) x B'(t) = (N(t) x N'(t)) / D(t)^2 (N(t) := (1-t)^2*P0 +
+// t^2*P2, the curve's homogeneous numerator with P1 = O taken as the
+// coordinate origin) applied to the standard "area swept from one apex"
+// line-integral formula Area = (1/2) * Integral (x dy - y dx) - which
+// picks up NO contribution from the two straight legs O-P0/P2-O, because
+// x dy - y dx vanishes identically along any line through the origin.
+// At rho = 0.5 (w = 1, D(t) = 1 identically) this integral is PURELY
+// ALGEBRAIC: Integral_0^1 t(1-t) dt = 1/6, giving the clean closed form
+//   Area(0.5) = distance_i * distance_j * sin(gamma) / 6,
+//   gamma := arccos(m_i . m_j),
+// checked directly (not assumed) against this function's own tessellated-
+// volume regression test on a straight edge of length L: measured volume
+// removed converges to L * Area(0.5) as tessellation chord tolerance
+// tightens, from below (the same "chordal deficit" direction every other
+// tessellated-volume check in this kernel's own test suite already
+// exhibits). For rho != 0.5 the same integral is a genuine closed form
+// too (an elementary arctan for rho < 0.5, artanh for rho > 0.5 - both
+// worked from the same D(t) = 1 + c*t*(1-t) quadratic-in-t(1-t) form by
+// completing the square), just not needed in this doc comment's own
+// worked numeric check, which uses the algebraic rho = 0.5 case as its
+// primary closed-form validation (the same "one concrete worked example,
+// not the fully general integral, is what regression tests actually
+// exercise" precedent FilletConcaveEdge's own doc comment already sets).
+//
+// SCOPE, stated as narrowly and honestly as this file's other blends: this
+// is a v1, deliberately narrower than ChamferConvexEdge/FilletConvexEdge
+// in the one respect that matters most for a first increment - END
+// CONDITIONS. Unlike those two functions' own ChamferEndAtVertex/
+// NotchCornerAtVertex machinery (which re-corners a third face touching
+// edge_p0/edge_p1), this function does NOT attempt any third-face
+// splicing at all: it throws std::invalid_argument if ANY face of `solid`
+// OTHER than faces i/j has a vertex at edge_p0 or edge_p1, rather than
+// silently leaving that third face's own sharp corner unmodified (which
+// would produce a self-overlapping, not merely open, shape - the wall's
+// own curved end cap would pass THROUGH that untouched corner's own
+// material). Both edge_p0 and edge_p1 must therefore be genuine free
+// boundaries of `solid` outside faces i and j; the result then has a
+// correspondingly genuine open naked boundary at each end (the wall's own
+// two conic end-cap curves), exactly as FilletConvexEdge's own free-
+// boundary case leaves an open shell. Splicing a THIRD face's corner onto
+// this patch's own curved cap - the harder problem FilletConvexEdge closed
+// for a circle via NotchCornerAtVertex/EllipseNotchCornerAtVertex - is a
+// real, disclosed future increment for the conic case (it needs a dense-
+// polygon shared boundary the SAME way those two do, since a PlanarFace's
+// own loop is straight-edged only), not attempted here; this is precisely
+// the same "start narrow, close the corner-notch gap in a later
+// increment" history FilletConvexEdge's own doc comment already discloses
+// for itself. Also matches ChamferConvexEdge's own scope otherwise: one
+// straight edge between exactly two PLANAR faces, convex dihedral only,
+// of a solid PlanarFaces() can describe.
+Brep FilletConvexEdgeConic(const Brep& solid, Point3d edge_p0, Point3d edge_p1, double distance_i,
+                            double distance_j, double rho);
+
+
 // MULTI-EDGE constant-radius rolling-ball fillet with genuine SPHERICAL
 // VERTEX BLENDS - the piece of Parasolid's blend class that turns
 // "round one edge" into "round this solid": every edge in `edges` (each a
@@ -985,6 +1204,159 @@ Brep FilletConvexEdges(const Brep& solid, const std::vector<std::pair<Point3d, P
 // this file's own scope to fix.
 Brep FilletConcaveEdges(const Brep& solid, const std::vector<std::pair<Point3d, Point3d>>& edges, double radius);
 
+// VERTEX CHAMFER: cuts off one trihedral (valence-3), CONVEX corner of
+// `solid` with a single new planar facet, offset `distance` from `vertex`
+// along each of the corner's 3 edges - the genuine 3D analogue of a
+// single-edge chamfer (ChamferConvexEdge), for the corner itself rather
+// than an edge, and NOT derived from or dependent on any edge chamfer:
+// a standalone construction that clips each of the 3 touching faces once.
+//
+// Unlike FilletConvexEdges' own trihedral SPHERE corner (which requires
+// one of the 3 faces to be perpendicular to the other two, or the blend
+// isn't a sphere at all), a PLANE always exists through any 3 points not
+// all collinear, so this function has no such restriction: it accepts
+// ANY convex trihedral corner, including ones (e.g. a tetrahedron's own
+// corner) FilletConvexEdges itself rejects - confirmed directly by this
+// function's own regression test against that exact tetrahedron fixture.
+//
+// The construction:
+//   1. The 3 faces touching `vertex` (exactly 3, or this throws - only a
+//      valence-3 corner is supported) and, from their own loops' pred/succ
+//      neighbors of `vertex`, the 3 edges meeting there: each edge is the
+//      one neighbor point shared by exactly one PAIR of the 3 faces (the
+//      standard trihedral-corner combinatorics - 3 faces, 3 edges, each
+//      face bordering 2 of the edges, each edge bordering 2 of the faces).
+//   2. Every edge is checked convex via EdgeConvexity (the same
+//      other-loop-vertex-vs-the-other-face's-plane test FilletConcaveEdge
+//      itself introduced - a plain arccos(n_a . n_b) angle cannot tell a
+//      convex edge from its mirror-concave one, see EdgeConvexity's own
+//      doc comment) - throws otherwise, leaving the concave case to
+//      ChamferConcaveVertex.
+//   3. The 3 chamfer points P_k = vertex + distance * e_k, e_k the unit
+//      direction from `vertex` to edge k's own far neighbor - throws if
+//      `distance` reaches or exceeds that edge's own length.
+//   4. The new chamfer face: the plane through P_0, P_1, P_2, its loop
+//      wound (and, if needed, reversed) so it is CCW as seen from outside,
+//      checked via a Newell normal against the sum of the 3 touching
+//      faces' own outward normals - exactly ChamferConvexEdge's own
+//      orientation convention, not a new one.
+//   5. Each of the 3 touching faces is re-trimmed by clipping its own loop
+//      against that same chamfer plane (detail::ClipByHalfspace3d, the
+//      same primitive FilletConvexEdge/ChamferConvexEdge already use),
+//      oriented so `vertex` itself lands on the clipped-away side
+//      (checked directly, not assumed from convexity - the shared
+//      construction ChamferConcaveVertex's own doc comment explains why
+//      this needs to be checked rather than assumed) - removing exactly
+//      the corner sliver each face contributes, leaving the chamfer
+//      face's own edge as each face's new boundary there.
+//
+// VALIDATION: `distance` > 0; `vertex` touched by exactly 3 faces forming
+// a genuine trihedral corner; every one of its 3 edges convex; `distance`
+// less than every edge's own length; a face left with fewer than 3
+// vertices by its own clip also throws (distance too large for the
+// solid's geometry there).
+//
+// CLOSED FORM this was checked against (dino8-kernel's own regression
+// tests): the removed volume is EXACTLY the tetrahedron {vertex, P_0, P_1,
+// P_2} - the standard scalar triple product volume = (distance^3 / 6) *
+// |e_0 . (e_1 x e_2)| for the 3 UNIT edge directions e_k, valid for ANY
+// (not just mutually-perpendicular) trihedral corner. For the unit box's
+// own corner at the origin (mutually-perpendicular edges, triple product
+// magnitude 1) that is 1 - distance^3/6; for the tetrahedron fixture
+// {(1,1,1),(1,-1,-1),(-1,1,-1),(-1,-1,1)}'s own corner at (1,1,1) (edges
+// NOT mutually perpendicular) the same triple-product formula against
+// that corner's own 3 unit edge directions matches the tessellated volume
+// directly, confirming the construction on a genuinely oblique corner.
+//
+// SCOPE: convex trihedral (valence-3) corners of a solid PlanarFaces() can
+// describe only (an input already carrying a curved face is rejected by
+// PlanarFaces() itself); higher-valence corners (4 or more edges meeting
+// at one vertex) are out of scope, rejected rather than guessed at. See
+// the per-edge-distance overload below for asymmetric distances.
+Brep ChamferConvexVertex(const Brep& solid, Point3d vertex, double distance);
+
+// ASYMMETRIC per-edge-distance overload - the vertex analogue of
+// ChamferConvexEdge's own distance_i/distance_j (as opposed to the single
+// shared `distance` above, the vertex analogue of a single-radius fillet).
+// `edge_distances` must have exactly 3 entries, one per edge at `vertex`,
+// each identified by that edge's own far neighbor point (the same
+// edge_p0/edge_p1 point-identified-edge convention every other function
+// in this file already uses) paired with that edge's own chamfer
+// distance. The single-`distance` overload above is now a thin
+// convenience wrapper around this one (builds a 3-entry vector with the
+// same distance 3 times) - not a second implementation.
+//
+// The construction is otherwise IDENTICAL (same ChamferVertexCore, same
+// per-edge convexity validation, same self-determining clip-plane sign):
+// only the corner points P_k = vertex + distances[k] * e_k change, one
+// independent distance per edge instead of one shared distance.
+//
+// CLOSED FORM this was checked against (dino8-kernel's own regression
+// tests): the removed tetrahedron's own volume generalizes to
+// (d_0 * d_1 * d_2 / 6) * |e_0 . (e_1 x e_2)| for the 3 UNIT edge
+// directions and their own INDEPENDENT distances d_k - the general
+// scalar triple product formula for a tetrahedron whose 3 edges from one
+// vertex have independent lengths, checked on the unit box's own corner
+// with 3 different distances against 1 - d_x*d_y*d_z/6.
+Brep ChamferConvexVertex(const Brep& solid, Point3d vertex,
+                          const std::vector<std::pair<Point3d, double>>& edge_distances);
+
+// The CONCAVE mirror of ChamferConvexVertex: cuts across a trihedral,
+// valence-3 CONCAVE (reflex) corner's own deepest point with a single new
+// planar facet, ADDING the tetrahedron {vertex, P_0, P_1, P_2} of material
+// back into the solid instead of removing it - the vertex analogue of
+// ChamferConcaveEdge's own relationship to ChamferConvexEdge.
+//
+// Exactly like ChamferConcaveEdge itself (fillet.cpp's own
+// RequireConcaveEdge - validate, then dispatch straight to the convex
+// construction unchanged), this function validates that all 3 of
+// `vertex`'s own edges are concave (EdgeConvexity, the opposite sense from
+// ChamferConvexVertex's own check) and then runs the IDENTICAL shared
+// construction (fillet.cpp's own ChamferVertexCore) ChamferConvexVertex
+// uses - not a re-derivation. That construction was written to take no
+// stance on convex vs. concave in the first place: which of the new
+// chamfer plane's two normal directions is "into the corner sliver being
+// cut away" is decided by checking directly which side `vertex` itself
+// lands on (ClipByHalfspace3d's own "outside" convention), not by
+// assuming a sign from convexity - the same self-determining-sign
+// philosophy ChamferConvexEdge's own extent_along() checks already use
+// for its m_i/m_j directions, which is exactly why THAT edge construction
+// already worked, unmodified, for ChamferConcaveEdge's own concave edges.
+// Verified directly here too, not just assumed from the edge-level
+// precedent: this function's own regression test runs it against a
+// genuinely concave (reflex) corner (NotchedCubeCorner's own vertex) and
+// checks the resulting solid's ADDED volume against the closed form
+// below, the same fixed-resolution-tessellation convergence check
+// FilletConcaveEdges' own trihedral sphere test already uses for that
+// fixture.
+//
+// VALIDATION: identical to ChamferConvexVertex's own, with the convexity
+// sense of the per-edge check reversed (throws if an edge is convex, not
+// if it is concave).
+//
+// CLOSED FORM this was checked against (dino8-kernel's own regression
+// tests): on NotchedCubeCorner's own reflex vertex (three mutually-
+// perpendicular concave edges), the ADDED volume is EXACTLY
+// distance^3 / 6 - the same tetrahedron formula ChamferConvexVertex's own
+// doc comment gives (triple-product magnitude 1 for this fixture's
+// mutually-perpendicular edges), added instead of removed.
+//
+// SCOPE: identical to ChamferConvexVertex's own (valence-3 corners only,
+// PlanarFaces()-describable solids only, no mixed convex/concave corner
+// support). See the per-edge-distance overload below for asymmetric
+// distances.
+Brep ChamferConcaveVertex(const Brep& solid, Point3d vertex, double distance);
+
+// ASYMMETRIC per-edge-distance overload - the CONCAVE mirror of
+// ChamferConvexVertex's own per-edge-distance overload above, exactly the
+// same relationship the single-distance overloads already have. See that
+// overload's own doc comment for the full derivation and closed form
+// (added, not removed, here - same tetrahedron, same sign flip
+// ChamferConcaveVertex's own single-distance overload already has
+// relative to ChamferConvexVertex's).
+Brep ChamferConcaveVertex(const Brep& solid, Point3d vertex,
+                           const std::vector<std::pair<Point3d, double>>& edge_distances);
+
 
 // BLEND REMOVAL: the inverse of FilletConvexEdge - restores the original
 // sharp edge a constant-radius, planar/planar fillet rounded off, purely
@@ -1169,5 +1541,55 @@ Brep RemoveBlend(const Brep& solid, Point3d point_on_fillet);
 // carrying a curved face is out of scope, since PlanarFaces() itself
 // rejects it.
 Brep RemoveChamfer(const Brep& solid, Point3d point_on_chamfer);
+
+// The inverse of ChamferConvexVertex/ChamferConcaveVertex (and their
+// per-edge-distance overloads): restores the sharp trihedral vertex a
+// single-facet vertex chamfer cut off (or filled in), purely from the
+// chamfered solid's own geometry - no separate provenance is stored
+// anywhere in a Brep, the same "read it back out of the geometry" spirit
+// RemoveBlend/RemoveChamfer already use.
+//
+// `point_on_facet` identifies the chamfer's own triangular facet: the
+// nearest planar face of `solid` by genuine point-to-polygon distance
+// (DistanceToPlanarFace, the same primitive RemoveChamfer's own face
+// search uses) - throws if that face does not have exactly 3 vertices (a
+// vertex chamfer's own facet always does, by construction).
+//
+// The construction:
+//   1. The facet's own 3 ADJACENT faces (one per triangle edge, found via
+//      the same shared-boundary-edge, opposite-walk-direction topology
+//      test every other function in this file already uses) - throws if
+//      the 3 are not distinct.
+//   2. The restored vertex V: the exact intersection of the 3 adjacent
+//      faces' own (UNCLIPPED) planes, solved via the standard 3-plane-
+//      intersection closed form. This is always exactly the original
+//      pre-chamfer vertex, however asymmetric the original `distance`s
+//      were, because chamfering a vertex only ever clips each adjacent
+//      face's own LOOP - it never touches that face's own PLANE.
+//   3. VALIDATION that this really is a genuine vertex-chamfer facet
+//      (not merely a coincidentally-triangular face with 3 neighbours,
+//      e.g. a genuine tetrahedron face - confirmed to be a real risk, not
+//      a hypothetical one, and checked directly rather than assumed): for
+//      each triangle corner P_k, the far neighbour along its own original
+//      edge is found independently from BOTH of P_k's own two adjacent
+//      faces (walking one step past P_k, away from the OTHER triangle
+//      corner sharing that face) and required to agree - then P_k itself
+//      is required to lie EXACTLY on the ray from V through that
+//      neighbour (P_k == V + d_k * unit(neighbour - V) for some 0 < d_k <
+//      the neighbour's own distance from V), the precise geometric
+//      relationship ChamferVertexCore's own construction guarantees.
+//      Throws std::invalid_argument, not silently reconstructing garbage,
+//      if any of this fails.
+//   4. Each of the 3 adjacent faces has its own 2-point edge shared with
+//      the triangle (P_i, P_j) collapsed back to the single restored
+//      vertex V, via the same CollapseNotchRun this file's own fillet-/
+//      chamfer-removal paths already use.
+//   5. The triangular facet itself is dropped; every other face of
+//      `solid` is carried through unchanged.
+//
+// SCOPE: reverses exactly what ChamferConvexVertex/ChamferConcaveVertex
+// (both overloads of each) can build. A solid already carrying a curved
+// face is out of scope, since PlanarFaces() itself rejects it.
+Brep RemoveChamferVertex(const Brep& solid, Point3d point_on_facet);
 
 }  // namespace dino8::kernel
