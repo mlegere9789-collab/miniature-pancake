@@ -419,8 +419,25 @@ class Brep {
   // is nonzero there) - a non-multiple-of-2*pi twist would keep the
   // tube from closing up smoothly, and this does not attempt the
   // partial-turn spiral case.
+  //
+  // `scale_end` uniformly scales the section about each station's own
+  // rail point, linear in arc-length station fraction from 1.0 at the
+  // start to exactly `scale_end` at the end - AutoCAD SWEEP's Scale
+  // option / Rhino's Sweep1 scale history, and Sweep1's own general-
+  // profile counterpart to `PipeVariable()`'s circular-only radius
+  // schedule. Unlike `twist_total` (a rotation, only exact at the two
+  // endpoints - see above), a uniform scale is AFFINE in the station
+  // fraction, so for a straight rail every local point's 3D trajectory
+  // is a straight line even continuously, not just at the two stations
+  // sampled: the 2-station ruled wall is the exact, whole swept shape,
+  // not merely endpoint-exact. Verified directly - a circular section
+  // scaled this way along a straight rail reproduces
+  // `PipeVariable()`'s own exact 2-point cone frustum bit-for-bit.
+  // Throws std::invalid_argument for a non-positive `scale_end`, or a
+  // nonzero deviation from 1.0 on a closed rail (the same "would not
+  // close up smoothly" reasoning as `twist_total`).
   static Brep Sweep1(const NurbsCurve& section, const NurbsCurve& rail, int stations = 32,
-                     bool cap = true, double twist_total = 0.0);
+                     bool cap = true, double twist_total = 0.0, double scale_end = 1.0);
 
   // Sweep2: `section` carried between `rail1` and `rail2` (Parasolid/
   // Rhino's two-rail sweep with scaling). At each of `stations` equal-

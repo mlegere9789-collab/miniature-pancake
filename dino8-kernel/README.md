@@ -2701,6 +2701,43 @@ What this repo does instead:
   3 triangles sharing one spine edge, every other edge naked - Check()
   reports exactly 1 non-manifold edge and the list contains exactly that
   edge's own two vertices.
+- `Brep::Sweep1()` gained `scale_end` (`src/sweep.cpp`): AutoCAD SWEEP's
+  Scale option / Rhino's Sweep1 scale history - a uniform scale of the
+  section about each station's own rail point, linear in arc-length
+  station fraction from 1.0 at the start to `scale_end` at the end,
+  applied AFTER the existing rotation-minimizing-frame transport (and
+  after `twist_total`'s own extra rotation, when both are given). This
+  is `PARITY_MAP.md`'s last remaining item under "Sweep controls:
+  twist/scale/roadlike alignment" now that `twist_total` had already
+  closed the twist half of that gap.
+  - **A genuinely stronger exactness claim than `twist_total`'s own,
+    and the doc comment says so rather than overstating it.** A
+    rotation is not affine in the station fraction (a rotating point
+    traces a circular arc, not a line), so `twist_total`'s 2-station
+    ruled shortcut for a straight rail is only proven exact AT the two
+    sampled ends - the doc comment there never claims more. A uniform
+    SCALE, by contrast, IS affine: `origin(f) = o0 + f*(o1 - o0)` and
+    `scale(f) = 1 + f*(scale_end - 1)` are each affine in f, so their
+    product with a fixed local point is affine too, meaning the 2-station
+    ruled wall is the exact CONTINUOUS swept shape, not merely
+    endpoint-exact. Verified directly, not just argued: evaluating the
+    wall at an arbitrary intermediate parameter (f = 0.37, not one of
+    the two sampled stations) against the hand-derived affine position
+    formula matches to 1e-9 - a check `twist_total`'s own analogous test
+    correctly never attempts, since it would be false for a rotation.
+  - **Cross-validated against an independent implementation, not just a
+    closed form.** A circular section scaled this way along a straight
+    rail reproduces `PipeVariable()`'s own exact 2-point cone frustum
+    wall (built through an entirely separate code path - fresh circles
+    constructed at each radius, not a scaled copy of one circle) to
+    1e-12 - two different ways of expressing "a scaled circle here"
+    landing on the same surface confirms the scale factor and its
+    center (each station's own rail point, not the world origin or the
+    rail's start) are both right, not merely self-consistent.
+  - A non-positive `scale_end` throws (a zero or negative scale is a
+    genuine degenerate/inverted case, not attempted); a nonzero
+    deviation from 1.0 on a closed rail throws for the same
+    "wouldn't close up smoothly" reason `twist_total` already gives.
 
 ## Blending build log (Parasolid "blend/chamfer" class, chronological)
 

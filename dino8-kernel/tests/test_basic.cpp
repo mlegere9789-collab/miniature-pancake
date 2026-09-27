@@ -28016,6 +28016,86 @@ void TestSweep1TwistIsExactOnAStraightRailAndRejectsOnClosedRail() {
   Check(!Throws([&] { Brep::Sweep1(square, circle_rail, 16, /*cap=*/false, 0.0); }), "...but zero twist is fine on a closed rail");
 }
 
+// scale_end, unlike twist_total, is AFFINE in the station fraction, so the
+// 2-station ruled wall for a straight rail is exact CONTINUOUSLY, not only
+// at the two endpoints - this test checks an intermediate station, which
+// twist_total's own test above (correctly) never claims to need.
+void TestSweep1ScaleIsExactContinuouslyOnAStraightRailAndRejectsOnClosedRail() {
+  // A circular section scaled along a straight rail must be bit-for-bit
+  // identical to PipeVariable()'s own independently-implemented exact
+  // 2-point cone frustum (both ultimately build the same RuledBetween()
+  // wall from the same two end circles, via two different call paths) -
+  // the strongest cross-check available, stronger than a tolerance-bound
+  // closed-form comparison alone.
+  const NurbsCurve rail = Polyline({P(0, 0, 0), P(0, 0, 5)});
+  const double r0 = 2.0, r1 = 1.0;
+  const NurbsCurve circle_r0 = Circle(P(0, 0, 0), Vector3d(0, 0, 1), r0);
+  const Brep scaled = Brep::Sweep1(circle_r0, rail, 32, /*cap=*/true, /*twist_total=*/0.0, /*scale_end=*/r1 / r0);
+  const Brep variable = Brep::PipeVariable(rail, {{0.0, r0}, {1.0, r1}}, /*cap=*/true, 32);
+  CheckSolidTopology(scaled, 3, "circle scaled along a straight rail (cone frustum)");
+  {
+    const NurbsSurface wa = FaceSurface(scaled, 0), wb = FaceSurface(variable, 0);
+    Check(wa.DegreeV() == 1 && wa.CVCountV() == 2, "straight rail still takes the exact 2-station ruled shortcut with scale");
+    double worst = 0.0;
+    const ON_Interval du = wa.raw().Domain(0);
+    for (int i = 0; i <= 32; ++i) {
+      const double u = du.ParameterAt(i / 32.0);
+      worst = std::max(worst, wa.PointAt(u, 0.0).DistanceTo(wb.PointAt(u, 0.0)));
+      worst = std::max(worst, wa.PointAt(u, 1.0).DistanceTo(wb.PointAt(u, 1.0)));
+    }
+    Check(worst < 1e-12, "Sweep1's scale_end wall matches PipeVariable's own 2-point cone frustum wall to numerical precision "
+          "(1e-12) - two independently-built circles at the same radius, not merely close within a mesh's own float-precision loss");
+  }
+  const double exact_cone = M_PI * 5.0 / 3.0 * (r0 * r0 + r0 * r1 + r1 * r1);
+  Check(std::abs(scaled.TessellateToClosedMesh(64, 4).Volume() - exact_cone) / exact_cone < 0.003,
+        "scaled circular sweep volume within 0.3% of the exact cone frustum");
+
+  // A polygonal (chord-exact) section removes the tessellation-chord
+  // error entirely, so the SAME pyramid-frustum closed form used for
+  // Extrude()/Loft()/Sweep2() holds to floating-point precision here too:
+  // Volume = (H/3)(s0^2 + s0*s1 + s1^2) for a square of side s(f) linear
+  // in f from s0 to s1.
+  const double H = 4.0, s0 = 1.0, s1 = 3.0;
+  const NurbsCurve square2 = Polyline({P(-s0 / 2, -s0 / 2, 0), P(s0 / 2, -s0 / 2, 0), P(s0 / 2, s0 / 2, 0), P(-s0 / 2, s0 / 2, 0),
+                                       P(-s0 / 2, -s0 / 2, 0)});
+  const NurbsCurve rail2 = Polyline({P(0, 0, 0), P(0, 0, H)});
+  const Brep box_frustum = Brep::Sweep1(square2, rail2, 32, /*cap=*/true, /*twist_total=*/0.0, /*scale_end=*/s1 / s0);
+  CheckSolidTopology(box_frustum, 3, "square scaled along a straight rail (pyramid frustum)");
+  const double exact_box = H / 3.0 * (s0 * s0 + s0 * s1 + s1 * s1);
+  CheckClosedMeshVolume(box_frustum, 16, 16, exact_box, 1e-9, "scaled square pyramid frustum");
+
+  // Continuous exactness, not merely endpoint exactness: at an
+  // intermediate station fraction f, the true position of a fixed local
+  // point (c.x, c.y, 0) - the frame is untwisted, so it stays in the
+  // rail's own local x/y - is origin(f) + s(f) * (c.x, c.y, 0) with
+  // origin(f) = (0, 0, f*H) and s(f) = s0 + f*(s1 - s0), both affine in
+  // f; verified directly at f = 0.37 (an arbitrary non-station value),
+  // not merely at the two sampled ends.
+  {
+    const NurbsSurface wall = FaceSurface(box_frustum, 0);
+    const ON_Interval du = wall.raw().Domain(0), dv = wall.raw().Domain(1);
+    const double f = 0.37;
+    const double sf = s0 + f * (s1 - s0);
+    double worst = 0.0;
+    for (int corner = 0; corner < 4; ++corner) {
+      const Point3d c = square2.ControlPointAt(corner);
+      const Point3d expect(sf / s0 * c.x, sf / s0 * c.y, f * H);
+      double best = 1e9;
+      for (int j = 0; j < 4; ++j) best = std::min(best, wall.PointAt(du.ParameterAt(j / 4.0), dv.ParameterAt(f)).DistanceTo(expect));
+      worst = std::max(worst, best);
+    }
+    Check(worst < 1e-9, "the wall is exact at an INTERMEDIATE station too, not only at the two sampled ends - the "
+                        "property twist_total's own rotation cannot offer");
+  }
+
+  // Negative controls.
+  Check(Throws([&] { Brep::Sweep1(circle_r0, rail, 32, true, 0.0, 0.0); }), "scale_end == 0 throws");
+  Check(Throws([&] { Brep::Sweep1(circle_r0, rail, 32, true, 0.0, -1.0); }), "negative scale_end throws");
+  const NurbsCurve circle_rail2 = Circle(P(0, 0, 0), Vector3d(0, 0, 1), 3.0);
+  Check(Throws([&] { Brep::Sweep1(circle_r0, circle_rail2, 16, false, 0.0, 2.0); }), "scale_end != 1 on a closed rail throws");
+  Check(!Throws([&] { Brep::Sweep1(circle_r0, circle_rail2, 16, false, 0.0, 1.0); }), "...but scale_end == 1 is fine on a closed rail");
+}
+
 void TestPipeVariable() {
   using RP = std::pair<double, double>;
 
@@ -31922,6 +32002,7 @@ int main() {
   sweep_tests::TestLoftTangentConstrainedEndsMatchExactly();
   sweep_tests::TestSweep1AndPipe();
   sweep_tests::TestSweep1TwistIsExactOnAStraightRailAndRejectsOnClosedRail();
+  sweep_tests::TestSweep1ScaleIsExactContinuouslyOnAStraightRailAndRejectsOnClosedRail();
   sweep_tests::TestExtrudeTaperedCircularProfileIsExactConeFrustum();
   sweep_tests::TestExtrudeTaperedConvexPolygonIsExactPlanarFrustum();
 

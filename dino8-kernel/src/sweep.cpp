@@ -1694,9 +1694,11 @@ Brep Brep::Loft(const std::vector<NurbsCurve>& sections_in, int degree, bool clo
   return AssembleSweptBody(wall.release(), want_caps, want_caps, false, false, caller);
 }
 
-Brep Brep::Sweep1(const NurbsCurve& section_in, const NurbsCurve& rail_in, int stations, bool cap, double twist_total) {
+Brep Brep::Sweep1(const NurbsCurve& section_in, const NurbsCurve& rail_in, int stations, bool cap, double twist_total,
+                  double scale_end) {
   const char* caller = "Sweep1";
   if (stations < 2) Fail(caller, "stations must be at least 2");
+  if (!(scale_end > 0.0)) Fail(caller, "scale_end must be positive");
   ON_NurbsCurve rail = rail_in.raw();
   if (!rail.IsValid()) Fail(caller, "rail is not a valid NURBS curve");
   ON_NurbsCurve section = section_in.raw();
@@ -1706,6 +1708,9 @@ Brep Brep::Sweep1(const NurbsCurve& section_in, const NurbsCurve& rail_in, int s
   if (wrap && twist_total != 0.0) {
     Fail(caller, "twist_total is not supported for a closed rail - a non-multiple-of-2*pi twist would keep the tube from "
                  "closing up smoothly, and the multiple-of-2*pi spiral case is not attempted here");
+  }
+  if (wrap && scale_end != 1.0) {
+    Fail(caller, "scale_end != 1.0 is not supported for a closed rail - the tube would not meet itself at the seam");
   }
   const bool straight = !wrap && rail.IsLinear(1e-9 * CurveScale(rail));
   const int m = straight ? 2 : std::max(stations, 3);
@@ -1749,10 +1754,23 @@ Brep Brep::Sweep1(const NurbsCurve& section_in, const NurbsCurve& rail_in, int s
   copies.reserve(static_cast<size_t>(m));
   for (int k = 0; k < m; ++k) {
     ON_NurbsCurve ck = section;
-    if (k > 0) ck.Transform(FrameToFrame(frames[0], frames[static_cast<size_t>(k)]));
+    if (k > 0) {
+      ON_Xform xf = FrameToFrame(frames[0], frames[static_cast<size_t>(k)]);
+      if (scale_end != 1.0) {
+        // Uniform scale about the station's OWN rail point, applied
+        // AFTER the rigid transport so it scales the already-placed
+        // local geometry rather than the pre-transport section - linear
+        // in station fraction, 1.0 at k = 0 (skipped above; a scale of
+        // 1.0 there is the identity anyway) to exactly `scale_end` at
+        // k = m - 1.
+        const double s = 1.0 + (scale_end - 1.0) * static_cast<double>(k) / static_cast<double>(m - 1);
+        xf = ON_Xform::ScaleTransformation(frames[static_cast<size_t>(k)].origin, s) * xf;
+      }
+      ck.Transform(xf);
+    }
     copies.push_back(std::move(ck));
   }
-  MakeCompatible(copies, caller);  // no-op for rigid copies; keeps one code path
+  MakeCompatible(copies, caller);  // no-op for rigid+scaled copies; keeps one code path
   std::unique_ptr<ON_NurbsSurface> wall;
   if (m == 2) {
     wall = RuledBetween(copies[0], copies[1], 0.0, 1.0, caller);
