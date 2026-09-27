@@ -276,9 +276,17 @@ std::optional<kernel::Mesh> SolidifyOpenCutter(const kernel::Mesh& cap, const ke
 // (cmd_solidtools.cpp) uses for multiple hole centres. Each target then
 // gets cut by that one merged tool: BooleanCombine(target, tool,
 // Intersection) is the piece inside the cutter, BooleanCombine(target,
-// tool, Difference) is the piece outside it - either can come back empty
-// (the cutter missing the target entirely, or fully containing it), in
-// which case only the non-empty piece is kept.
+// tool, Difference) is the piece outside it. A target only actually got
+// split if BOTH pieces come back non-empty (the cutter genuinely crosses
+// its boundary). If the cutter misses the target entirely, Difference
+// alone comes back non-empty (the whole, untouched target - subtracting
+// nothing changes nothing) while Intersection is empty; symmetrically, a
+// cutter that fully encloses the target leaves Intersection non-empty and
+// Difference empty. Only requiring "not both empty" here would treat both
+// of those as a successful split and needlessly re-mesh the target and
+// consume the cutter for zero real effect, so this requires both halves
+// to be non-empty, matching Rhino's own Split (reports "no intersection
+// found" and leaves the target and the cutter alone).
 class SplitByObjectCommand : public Command {
  public:
   void Begin(CommandContext&) override { WantObjects("Select solids to split"); }
@@ -329,12 +337,19 @@ class SplitByObjectCommand : public Command {
     }
     if (!tool) { ctx.Warn("SplitByObject: no usable cutting objects"); return; }
 
-    ctx.Doc().BeginChange("SplitByObject");
-    // The cutting object(s) are consumed into the split, same as
-    // BooleanDifference/BooleanIntersection consume both of their operands
-    // (RunBoolean above) - not left behind as leftover geometry.
-    for (ObjectId id : used_cutter_ids) ctx.Doc().Remove(id);
-    int cut = 0, made = 0;
+    // Compute every target's split result BEFORE touching the document -
+    // if the cutting object(s) don't actually split any target in two, this
+    // command must leave the document exactly as it found it (matching
+    // BooleanDifference/BooleanIntersection's own "no effect" contract on a
+    // non-intersecting pair, and Rhino's own Split). Deleting the cutter
+    // unconditionally up front, and treating "not both empty" as a genuine
+    // split, used to needlessly re-mesh the target and consume the user's
+    // cutting geometry even when the cutter merely missed the target (or
+    // fully enclosed it) - only ONE of Intersection/Difference is ever
+    // empty in those cases, not both, so that used to read as "1 solid(s)
+    // split into 1 piece(s)" for a pair of objects that never touched.
+    struct Result { ObjectId id; int layer; kernel::Mesh inside, outside; };
+    std::vector<Result> results;
     for (auto& [id, mesh] : targets) {
       const SceneObject* o = ctx.Doc().Find(id);
       const int layer = o ? o->layer_index : 0;
@@ -343,18 +358,32 @@ class SplitByObjectCommand : public Command {
       catch (const std::exception&) {}
       try { kernel::Mesh r = kernel::BooleanCombine(mesh, *tool, kernel::BooleanOp::Difference); if (r.FaceCount() > 0) outside = r; }
       catch (const std::exception&) {}
-      if (!inside && !outside) { ctx.Warn("SplitByObject: object " + std::to_string(id) + " does not intersect the cutting object(s)"); continue; }
-      ctx.Doc().Remove(id);
-      for (std::optional<kernel::Mesh>* piece : {&inside, &outside}) {
-        if (!*piece) continue;
-        SceneObject s = SceneObject::MakeMesh(**piece);
-        s.layer_index = layer;
+      // A real split needs BOTH halves to be non-empty - the cutter must
+      // actually cross the target's boundary, not merely miss it (outside
+      // == the whole target, inside empty) or fully enclose it (the
+      // reverse) - see this command's own class-level doc comment above.
+      if (!inside || !outside) { ctx.Warn("SplitByObject: object " + std::to_string(id) + " does not intersect the cutting object(s)"); continue; }
+      results.push_back({id, layer, std::move(*inside), std::move(*outside)});
+    }
+    if (results.empty()) { ctx.Warn("SplitByObject: nothing intersects the cutting object(s); the document is unchanged"); return; }
+
+    ctx.Doc().BeginChange("SplitByObject");
+    // The cutting object(s) are consumed into the split, same as
+    // BooleanDifference/BooleanIntersection consume both of their operands
+    // (RunBoolean above) - not left behind as leftover geometry - but only
+    // now that at least one target actually got split by them.
+    for (ObjectId id : used_cutter_ids) ctx.Doc().Remove(id);
+    int made = 0;
+    for (Result& res : results) {
+      ctx.Doc().Remove(res.id);
+      for (kernel::Mesh* piece : {&res.inside, &res.outside}) {
+        SceneObject s = SceneObject::MakeMesh(*piece);
+        s.layer_index = res.layer;
         ctx.Doc().Add(std::move(s));
         ++made;
       }
-      ++cut;
     }
-    ctx.Print("SplitByObject: " + std::to_string(cut) + " solid(s) split into " + std::to_string(made) + " piece(s) (mesh boolean; results are meshes)");
+    ctx.Print("SplitByObject: " + std::to_string(results.size()) + " solid(s) split into " + std::to_string(made) + " piece(s) (mesh boolean; results are meshes)");
   }
   std::vector<ObjectId> target_ids_;
   bool have_targets_ = false;
