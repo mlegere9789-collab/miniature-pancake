@@ -4541,6 +4541,87 @@ void TestSurfaceClosestPointGlobalReportsConvergenceFailure() {
         "true regardless of the underlying refinement's real outcome");
 }
 
+// Regression test for a real, reproduced NurbsSurface::ClosestPointParameter()
+// bug: single-seed window narrowing could lock onto a genuinely WRONG, worse
+// local minimum on a surface with two separated local-minimum basins of
+// different depth, even though the very same level-0 grid scan also sampled
+// points inside the TRUE (deeper) global minimum's basin.
+//
+// The surface below is a flat-in-v extrusion (v is a trivial degree-1
+// direction, so PointAt(u, v) = (x(u), v, z(u)) exactly) of a u-profile with
+// two notches: a shallow one near u=0.30 - deliberately placed almost exactly
+// on a 20x20 grid node, so its sampled distance to the query is very close to
+// its true minimum - and a deeper one near u=0.675, deliberately placed
+// almost exactly BETWEEN two 20x20 grid nodes (0.65 and 0.70), so every
+// sampled distance near it is well short of its true minimum. Confirmed
+// directly (not assumed) that before the fix, single-seed
+// ClosestPointParameter's one grid-wide best cell landed in the shallow
+// notch (whose near-perfect grid alignment made its raw sample look better)
+// and converged there (dist ~0.353), never exploring the deeper notch's own
+// basin at all even though the SAME level-0 scan had samples inside it -
+// while the true closest point (~0.184 away, verified by dense brute-force
+// sampling) sits in that deeper notch. Trying more than the single
+// grid-wide-best cell as a seed - one seed per distinct local minimum the
+// level-0 scan already found, refined independently, keeping the overall
+// best - fixes it.
+void TestSurfaceClosestPointMultistartFindsGlobalMinimum() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+
+  constexpr int kOrder = 4, kCvCount = 11;
+  const double kKnots[kCvCount + kOrder - 2] = {0,
+                                                 0,
+                                                 0,
+                                                 0.23999999999999999,
+                                                 0.30000000000000004,
+                                                 0.37666666666666665,
+                                                 0.4916666666666667,
+                                                 0.60666666666666669,
+                                                 0.67499999999999993,
+                                                 0.74333333333333329,
+                                                 1,
+                                                 1,
+                                                 1};
+  // (x, z) pairs - a cubic interpolant through a shallow notch near x=0.30
+  // and a deeper one near x=0.675, dumped from the exact surface that
+  // reproduced the bug.
+  const double kCvs[kCvCount][2] = {
+      {0, 5},
+      {0.079999999999999474, -85.092496077419469},
+      {0.18000000000000049, 84.33481447535118},
+      {0.30555555555555536, -27.618877221308598},
+      {0.38944444444444498, 66.353495826834802},
+      {0.49166666666666597, -30.854543071131459},
+      {0.59111111111111236, 58.909966241984613},
+      {0.67499999999999916, -29.390527790264844},
+      {0.80611111111111378, 107.63581955454389},
+      {0.91444444444444162, -94.713128835653691},
+      {1, 5},
+  };
+
+  ON_NurbsSurface raw;
+  Check(raw.Create(3, /*is_rat=*/false, kOrder, 2, kCvCount, 2),
+        "ON_NurbsSurface::Create succeeds for the reproduced bug's degree/CV counts");
+  for (int i = 0; i < kCvCount + kOrder - 2; ++i) raw.SetKnot(0, i, kKnots[i]);
+  raw.MakeClampedUniformKnotVector(1);
+  for (int i = 0; i < kCvCount; ++i) {
+    raw.SetCV(i, 0, ON_3dPoint(kCvs[i][0], 0.0, kCvs[i][1]));
+    raw.SetCV(i, 1, ON_3dPoint(kCvs[i][0], 1.0, kCvs[i][1]));
+  }
+  NurbsSurface surface;
+  surface.raw() = raw;
+
+  const Point3d query(0.4875, 0.5, -5.3);
+  const Point3d closest = surface.ClosestPoint(query);
+  const double dist = (closest - query).Length();
+
+  Check(dist < 0.25,
+        "NurbsSurface::ClosestPoint (default 20x20 divisions) finds the "
+        "true, deeper global minimum (~0.184 away) instead of locking onto "
+        "the shallower decoy notch's own local minimum (~0.353 away) that "
+        "single-seed window narrowing used to converge to");
+}
+
 void TestSurfaceCurvature() {
   using dino8::kernel::NurbsSurface;
   using dino8::kernel::Point3d;
@@ -31535,6 +31616,7 @@ int main() {
   TestSurfaceClosestPoint();
   TestSurfaceClosestPointFinerGridNotWorseThanCoarser();
   TestSurfaceClosestPointGlobalReportsConvergenceFailure();
+  TestSurfaceClosestPointMultistartFindsGlobalMinimum();
   TestSurfaceCurvature();
   TestSurfaceSuggestedDivisions();
   TestSurfaceTessellateGridAdaptive();
