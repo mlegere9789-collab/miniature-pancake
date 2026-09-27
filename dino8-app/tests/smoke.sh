@@ -1924,6 +1924,19 @@ echo "$BO" | grep -E "^(ok|FAIL)"
 if echo "$BO" | grep -q "^FAIL"; then fail=1; fi
 echo "$BO" | grep -q "^smoke:" || { echo "$BO"; echo "FAIL: boolean script produced no smoke line"; fail=1; }
 
+# SplitByObject regression: a non-intersecting cutter must not be consumed
+# (see splitbyobject_regression.txt) - SplitByObject used to delete every
+# selected cutting object unconditionally, even when nothing was actually
+# split, silently destroying the user's cutting geometry.
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  SBO="$("$BIN" --smoke 200 --script "$HERE/splitbyobject_regression.txt" 2>&1)" || { echo "$SBO"; echo "FAIL: splitbyobject-regression script exited non-zero"; exit 1; }
+else
+  SBO="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 200 --script "$HERE/splitbyobject_regression.txt" 2>&1)" || { echo "$SBO"; echo "FAIL: splitbyobject-regression script exited non-zero"; exit 1; }
+fi
+echo "$SBO" | grep -E "^(ok|FAIL)"
+if echo "$SBO" | grep -q "^FAIL"; then fail=1; fi
+echo "$SBO" | grep -q "^smoke:" || { echo "$SBO"; echo "FAIL: splitbyobject-regression script produced no smoke line"; fail=1; }
+
 # Adversarial booleans: near-tangent/barely-overlapping/coincident solids,
 # an extreme-aspect-ratio sliver, a huge-coordinate-scale pair, a 10-deep
 # chained-difference feature, and non-manifold input (see
