@@ -5674,6 +5674,195 @@ int Brep::MergeCoplanarFaces(double tolerance) {
   return merges;
 }
 
+namespace {
+
+// Attempts to merge same-surface faces `fa`/`fb` of `b` (already
+// confirmed by the caller to share the same surface index and the same
+// m_bRev, and to share EXACTLY one edge with EXACTLY two trims) into a
+// single face on that shared surface. On success, deletes both source
+// faces, appends the merged one, and returns true. Returns false
+// (leaving `b` completely untouched) if either loop's own trim order
+// can't be spliced into a simple open boundary path - e.g. a singular/
+// seam trim along the way (out of scope here), or this pair's own stored
+// trim directions don't follow the standard opposite-direction two-
+// manifold-edge convention.
+//
+// Unlike TryMergeCoplanarPair() above, this never rebuilds any geometry:
+// fa and fb already trim the exact same surface, so every surviving
+// trim's own 2D curve is already valid in that shared parameter space
+// and is reused via a plain duplicate (not resampled), and every
+// surviving 3D edge is reused unchanged (not rebuilt) - which is what
+// keeps a curved boundary (a cylinder's own iso-u arc, say) exact rather
+// than approximated by a fresh fit.
+bool TryMergeSameSurfacePair(ON_Brep& b, int fa, int fb, int shared_edge_index) {
+  ON_BrepFace& face_a = b.m_F[fa];
+  ON_BrepFace& face_b = b.m_F[fb];
+  const ON_BrepLoop& loop_a = *face_a.Loop(0);
+  const ON_BrepLoop& loop_b = *face_b.Loop(0);
+
+  // Same splice as TryMergeCoplanarPair()'s own build_path (see its
+  // comment above for the full reasoning): walks the loop's own trim
+  // order starting right after the shared edge's own trim, all the way
+  // around to right before it - but returns the real ON_BrepTrim
+  // pointers themselves, to be reused directly rather than duplicated as
+  // 3D curves.
+  auto build_path = [&](const ON_BrepLoop& loop) -> std::vector<const ON_BrepTrim*> {
+    std::vector<const ON_BrepTrim*> path;
+    const int n = loop.TrimCount();
+    if (n < 2) return path;
+    int pos = -1;
+    for (int k = 0; k < n; ++k) {
+      const ON_BrepTrim* t = loop.Trim(k);
+      if (t && t->m_ei == shared_edge_index) {
+        if (pos >= 0) return {};  // shared edge appears twice in this loop
+        pos = k;
+      }
+    }
+    if (pos < 0) return path;
+    for (int step = 1; step < n; ++step) {
+      const ON_BrepTrim* t = loop.Trim((pos + step) % n);
+      if (!t || !t->Edge()) return {};  // singular/seam trim - out of scope here
+      path.push_back(t);
+    }
+    return path;
+  };
+
+  const std::vector<const ON_BrepTrim*> path_a = build_path(loop_a);
+  const std::vector<const ON_BrepTrim*> path_b = build_path(loop_b);
+  if (path_a.empty() || path_b.empty()) return false;
+
+  // The standard two-manifold-edge invariant (path_a's own end meets
+  // path_b's own start, and vice versa) - checked directly against real
+  // vertex identity (these are actual shared ON_Brep vertices, not
+  // reconstructed geometry, so an exact index match is the right test,
+  // not a distance tolerance).
+  const ON_BrepVertex* a_end = path_a.back()->Vertex(1);
+  const ON_BrepVertex* b_start = path_b.front()->Vertex(0);
+  const ON_BrepVertex* b_end = path_b.back()->Vertex(1);
+  const ON_BrepVertex* a_start = path_a.front()->Vertex(0);
+  if (!a_end || !b_start || !b_end || !a_start) return false;
+  if (a_end->m_vertex_index != b_start->m_vertex_index) return false;
+  if (b_end->m_vertex_index != a_start->m_vertex_index) return false;
+
+  // Pulled out into plain data BEFORE any of NewFace()/NewLoop()/
+  // NewTrim() run below: every one of those may grow b's own dynamic
+  // m_F/m_L/m_T arrays (their own doc comments say so explicitly), which
+  // would silently invalidate path_a/path_b's own raw ON_BrepTrim*
+  // pointers - those point into m_T, the very array NewTrim() itself
+  // grows - if any were read again after the first such call. Reading
+  // every field this function still needs, and duplicating each 2D trim
+  // curve, here and only here, means the loop below never dereferences a
+  // trim pointer again once mutation starts.
+  struct PendingTrim {
+    int edge_index;
+    bool rev3d;
+    double tol0, tol1;
+    std::unique_ptr<ON_Curve> curve2d;
+  };
+  std::vector<PendingTrim> pending;
+  pending.reserve(path_a.size() + path_b.size());
+  for (const ON_BrepTrim* t : path_a) {
+    pending.push_back({t->m_ei, t->m_bRev3d, t->m_tolerance[0], t->m_tolerance[1],
+                        std::unique_ptr<ON_Curve>(t->TrimCurveOf()->Duplicate())});
+  }
+  for (const ON_BrepTrim* t : path_b) {
+    pending.push_back({t->m_ei, t->m_bRev3d, t->m_tolerance[0], t->m_tolerance[1],
+                        std::unique_ptr<ON_Curve>(t->TrimCurveOf()->Duplicate())});
+  }
+  const int new_si = face_a.m_si;
+  const bool new_rev = face_a.m_bRev;
+
+  ON_BrepFace& new_face = b.NewFace(new_si);
+  new_face.m_bRev = new_rev;
+  ON_BrepLoop& new_loop = b.NewLoop(ON_BrepLoop::outer, new_face);
+
+  for (PendingTrim& p : pending) {
+    const int c2i = b.AddTrimCurve(p.curve2d.release());
+    ON_BrepTrim& nt = b.NewTrim(b.m_E[p.edge_index], p.rev3d, new_loop, c2i);
+    nt.m_tolerance[0] = p.tol0;
+    nt.m_tolerance[1] = p.tol1;
+  }
+
+  // Both source faces' own reused edges now carry a second trim (the new
+  // face's own), so DeleteFace()'s "used only by this face" test spares
+  // them; only the now-fully-interior shared edge (and any vertex unique
+  // to it) actually gets removed, once the SECOND of the two DeleteFace()
+  // calls below drops its own last remaining trim.
+  const int hi = std::max(fa, fb), lo = std::min(fa, fb);
+  b.DeleteFace(b.m_F[hi], true);
+  b.DeleteFace(b.m_F[lo], true);
+  b.Compact();
+  b.SetTolerancesBoxesAndFlags();
+  FixUnsetEdgeTolerances(b);
+  return true;
+}
+
+}  // namespace
+
+int Brep::MergeSameSurfaceFaces() {
+  // Same face-side-table invalidation MergeCoplanarFaces() performs - see
+  // that method's own doc comment for why (DeleteFace()/NewFace()/
+  // Compact() below renumber every face index, silently stranding any
+  // stale per-face side-table entry at whatever face now sits at its old
+  // index).
+  face_trim_loops_.clear();
+  face_exact_clip_.clear();
+  face_hole_loops_.clear();
+  face_arc_runs_.clear();
+  face_notch_rows_.clear();
+  face_records_.clear();
+
+  int merges = 0;
+  bool changed = true;
+  while (changed) {
+    changed = false;
+    for (int fa = 0; fa < brep_.m_F.Count() && !changed; ++fa) {
+      const ON_BrepFace& face_a = brep_.m_F[fa];
+      if (face_a.m_face_index < 0 || face_a.LoopCount() != 1) continue;
+      const ON_BrepLoop& loop_a = *face_a.Loop(0);
+
+      for (int k = 0; k < loop_a.TrimCount() && !changed; ++k) {
+        const ON_BrepTrim* trim = loop_a.Trim(k);
+        const ON_BrepEdge* edge = trim ? trim->Edge() : nullptr;
+        if (!edge || edge->TrimCount() != 2) continue;  // not a manifold-safe boundary
+        const int other_ti = edge->m_ti[0] == trim->m_trim_index ? edge->m_ti[1] : edge->m_ti[0];
+        const ON_BrepTrim& other_trim = brep_.m_T[other_ti];
+        const int fb = other_trim.FaceIndexOf();
+        if (fb < 0 || fb == fa) continue;
+        const ON_BrepFace& face_b = brep_.m_F[fb];
+        if (face_b.LoopCount() != 1) continue;
+        // The literal same-surface condition this method is named for,
+        // plus agreement on which side of it is outward - required for
+        // the reused trims to combine into one consistently-oriented
+        // loop.
+        if (face_b.m_si != face_a.m_si || face_b.m_bRev != face_a.m_bRev) continue;
+
+        // fa/fb must share EXACTLY this one edge - same check
+        // MergeCoplanarFaces() applies, for the same reason (a pair also
+        // touching along a second, separate edge would not splice into
+        // one simple polygon below).
+        int shared_edges = 0;
+        for (int m = 0; m < loop_a.TrimCount(); ++m) {
+          const ON_BrepTrim* tm = loop_a.Trim(m);
+          const ON_BrepEdge* em = tm ? tm->Edge() : nullptr;
+          if (!em) continue;
+          for (int q = 0; q < em->TrimCount(); ++q) {
+            if (em->m_ti[q] == tm->m_trim_index) continue;
+            if (brep_.m_T[em->m_ti[q]].FaceIndexOf() == fb) { ++shared_edges; break; }
+          }
+        }
+        if (shared_edges != 1) continue;
+
+        if (TryMergeSameSurfacePair(brep_, fa, fb, edge->m_edge_index)) {
+          ++merges;
+          changed = true;
+        }
+      }
+    }
+  }
+  return merges;
+}
+
 void Brep::ReplaceEdgeCurve(int edge_index, const NurbsCurve& new_curve, double tolerance) {
   if (edge_index < 0 || edge_index >= brep_.m_E.Count()) {
     throw std::invalid_argument(

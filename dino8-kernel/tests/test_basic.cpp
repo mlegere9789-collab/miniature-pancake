@@ -30015,6 +30015,216 @@ void TestMergeCoplanarFacesRestoresBoxAfterSplittingFourFacesAtOnePlane() {
   Check(box.MergeCoplanarFaces() == 0, "a second MergeCoplanarFaces() call on the restored box finds nothing left to merge");
 }
 
+// Brep::MergeSameSurfaceFaces() - the curved-surface sibling of
+// MergeCoplanarFaces() above (PARITY_MAP's own "Merge faces on the same
+// non-planar surface (cylinder/tangent split faces)" gap). Builds two
+// adjacent trimmed patches of the exact SAME real cylindrical
+// ON_NurbsSurface (from ON_Cylinder::GetNurbForm - a genuine analytic
+// cylinder, not a flat approximation), split along one vertical seam at
+// angle `split_angle` out of a total swept angle of `total_angle`, entirely
+// by hand (NewVertex/NewEdge/NewLoop/NewTrim) since there is no existing
+// factory for "two faces sharing one surface" the way FromPlanarFaces() is
+// for coplanar faces. Every boundary edge is the surface's own real
+// ON_Surface::IsoCurve(), trimmed to its own exact sub-range - never a
+// fresh fit - so both the shared seam and the two faces' own naked
+// boundaries are exact.
+dino8::kernel::Brep BuildTwoFaceCylinderFixture(double radius, double height, double total_angle,
+                                                 double split_angle) {
+  using dino8::kernel::Brep;
+
+  const ON_Plane plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1));
+  const ON_Circle circle(plane, radius);
+  ON_Cylinder cyl(circle, height);
+  auto* surface = new ON_NurbsSurface();
+  if (cyl.GetNurbForm(*surface) == 0) {
+    delete surface;
+    throw std::runtime_error("BuildTwoFaceCylinderFixture: ON_Cylinder::GetNurbForm failed");
+  }
+
+  double u0 = 0.0, u_mid = 0.0, u_full = 0.0;
+  if (!circle.GetNurbFormParameterFromRadian(0.0, &u0) ||
+      !circle.GetNurbFormParameterFromRadian(split_angle, &u_mid) ||
+      !circle.GetNurbFormParameterFromRadian(total_angle, &u_full)) {
+    delete surface;
+    throw std::runtime_error("BuildTwoFaceCylinderFixture: GetNurbFormParameterFromRadian failed");
+  }
+  const double v0 = 0.0, v1 = height;
+
+  Brep b;
+  ON_Brep& raw = b.raw();
+  const int si = raw.AddSurface(surface);
+
+  // Captured as plain indices, never as long-lived ON_BrepVertex&/
+  // ON_BrepEdge& references: ON_Brep::NewVertex()/NewEdge()/NewFace()/
+  // NewLoop()/NewTrim() may each grow this Brep's own dynamic m_V/m_E/
+  // m_F/m_L/m_T arrays (their own doc comments say so explicitly), which
+  // would silently invalidate any reference taken from an EARLIER call
+  // once a LATER one reallocates - fetched fresh via raw.m_V[i]/
+  // raw.m_E[i] instead, immediately before each use, exactly the same
+  // discipline Brep::MergeSameSurfaceFaces() itself follows for the same
+  // reason (see its own PendingTrim comment).
+  const int p1 = raw.NewVertex(surface->PointAt(u0, v0), 0.0).m_vertex_index;
+  const int p2 = raw.NewVertex(surface->PointAt(u_mid, v0), 0.0).m_vertex_index;
+  const int p3 = raw.NewVertex(surface->PointAt(u_mid, v1), 0.0).m_vertex_index;
+  const int p4 = raw.NewVertex(surface->PointAt(u0, v1), 0.0).m_vertex_index;
+  const int p5 = raw.NewVertex(surface->PointAt(u_full, v0), 0.0).m_vertex_index;
+  const int p6 = raw.NewVertex(surface->PointAt(u_full, v1), 0.0).m_vertex_index;
+
+  // A single-v (fixed v, u varying) side is the cylinder's own true
+  // circular arc (IsoCurve(0, v)); a single-u (fixed u, v varying) side is
+  // straight (IsoCurve(1, u)) - either way taken directly off the real
+  // surface, then cut down to [lo, hi] via the curve's own exact Trim(),
+  // and reversed if needed so PointAtStart() lands at `va`. Returns the
+  // new edge's own index, not a reference (see the comment above).
+  auto make_edge = [&](int va, double ua, double val_a, int vb, double ub, double val_b) -> int {
+    const bool along_u = (val_a == val_b);
+    ON_Curve* iso = along_u ? surface->IsoCurve(0, val_a) : surface->IsoCurve(1, ua);
+    const double lo = along_u ? std::min(ua, ub) : std::min(val_a, val_b);
+    const double hi = along_u ? std::max(ua, ub) : std::max(val_a, val_b);
+    iso->Trim(ON_Interval(lo, hi));
+    if (along_u ? (ua > ub) : (val_a > val_b)) iso->Reverse();
+    const int c3i = raw.AddEdgeCurve(iso);
+    ON_BrepEdge& edge = raw.NewEdge(raw.m_V[va], raw.m_V[vb], c3i);
+    edge.m_tolerance = 0.0;
+    return edge.m_edge_index;
+  };
+
+  const int e_a_left = make_edge(p1, u0, v0, p4, u0, v1);
+  const int e_a_bottom = make_edge(p1, u0, v0, p2, u_mid, v0);
+  const int e_a_top = make_edge(p4, u0, v1, p3, u_mid, v1);
+  const int e_shared = make_edge(p2, u_mid, v0, p3, u_mid, v1);
+  const int e_b_bottom = make_edge(p2, u_mid, v0, p5, u_full, v0);
+  const int e_b_top = make_edge(p3, u_mid, v1, p6, u_full, v1);
+  const int e_b_right = make_edge(p5, u_full, v0, p6, u_full, v1);
+
+  // A trim's own 2D curve is always a straight line in (u, v) space
+  // regardless of the surface's own curvature (a UV-rectangle side is
+  // straight in UV even when the 3D edge it maps to is a real arc), and
+  // always runs in the LOOP's own walking direction - `rev` says whether
+  // that agrees with (false) or opposes (true) the underlying edge's own
+  // stored 3D direction. `edge` is looked up by index right here, never
+  // held across a call (same reasoning as make_edge above); `loop` is
+  // held across many calls, which IS safe - NewTrim()/AddTrimCurve() grow
+  // m_T/m_C2, never m_L (the same pattern boolean_general.cpp's own
+  // BuildLoop() already relies on throughout this codebase).
+  auto add_trim = [&](ON_BrepLoop& loop, int edge_index, bool rev, double ua, double va, double ub, double vb) {
+    auto* c2 = new ON_LineCurve(ON_2dPoint(ua, va), ON_2dPoint(ub, vb));
+    c2->SetDomain(0.0, 1.0);
+    const int c2i = raw.AddTrimCurve(c2);
+    ON_BrepTrim& trim = raw.NewTrim(raw.m_E[edge_index], rev, loop, c2i);
+    trim.m_tolerance[0] = trim.m_tolerance[1] = 0.0;
+  };
+
+  ON_BrepFace& face_a = raw.NewFace(si);
+  face_a.m_bRev = false;
+  ON_BrepLoop& loop_a = raw.NewLoop(ON_BrepLoop::outer, face_a);
+  // CCW in (u, v): P1->P2 (bottom, fwd) -> P2->P3 (shared, fwd) ->
+  // P3->P4 (top, rev) -> P4->P1 (left, rev).
+  add_trim(loop_a, e_a_bottom, false, u0, v0, u_mid, v0);
+  add_trim(loop_a, e_shared, false, u_mid, v0, u_mid, v1);
+  add_trim(loop_a, e_a_top, true, u_mid, v1, u0, v1);
+  add_trim(loop_a, e_a_left, true, u0, v1, u0, v0);
+
+  ON_BrepFace& face_b = raw.NewFace(si);
+  face_b.m_bRev = false;
+  ON_BrepLoop& loop_b = raw.NewLoop(ON_BrepLoop::outer, face_b);
+  // CCW in (u, v): P2->P5 (bottom, fwd) -> P5->P6 (right, fwd) ->
+  // P6->P3 (top, rev) -> P3->P2 (shared, rev) - the shared edge is
+  // walked in the OPPOSITE 3D direction from face_a's own trim above,
+  // the standard two-manifold-edge convention.
+  add_trim(loop_b, e_b_bottom, false, u_mid, v0, u_full, v0);
+  add_trim(loop_b, e_b_right, false, u_full, v0, u_full, v1);
+  add_trim(loop_b, e_b_top, true, u_full, v1, u_mid, v1);
+  add_trim(loop_b, e_shared, true, u_mid, v1, u_mid, v0);
+
+  raw.SetTrimIsoFlags();
+  raw.SetTolerancesBoxesAndFlags();
+  // SetTolerancesBoxesAndFlags() unconditionally resets every trimmed
+  // edge's own tolerance to ON_UNSET_VALUE (the base ON_Brep behavior
+  // Brep::MergeSameSurfaceFaces()'s own FixUnsetEdgeTolerances() private
+  // helper works around internally - see brep.cpp's own comment on it);
+  // this fixture builds its own topology directly rather than through
+  // that class, so it repeats the same fix here.
+  for (int i = 0; i < raw.m_E.Count(); ++i) {
+    ON_BrepEdge& e = raw.m_E[i];
+    if (e.m_edge_index >= 0 && !(e.m_tolerance >= 0.0)) e.m_tolerance = 0.0;
+  }
+  return b;
+}
+
+void TestMergeSameSurfaceFacesWeldsTwoCylindricalPatchesIntoOne() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+
+  const double radius = 2.0, height = 3.0, total_angle = 2.5, split_angle = 1.0;
+  Brep tube = BuildTwoFaceCylinderFixture(radius, height, total_angle, split_angle);
+  Check(tube.FaceCount() == 2, "the two-patch cylinder fixture starts with 2 faces");
+  ON_TextLog log_before;
+  Check(tube.raw().IsValid(&log_before), "the two-patch cylinder fixture is a valid ON_Brep before merging");
+  Check(!tube.raw().m_F[0].SurfaceOf()->IsPlanar(), "the fixture's shared surface is genuinely non-planar - "
+                                                     "MergeCoplanarFaces() would refuse this pair outright");
+  Check(tube.raw().m_F[0].m_si == tube.raw().m_F[1].m_si,
+        "the fixture's two faces really do share one literal surface index, the exact condition this method "
+        "is named for");
+
+  const double chord_tol = 1e-4;
+  double area_before = 0.0;
+  for (const Mesh& m : tube.TessellateAdaptive(chord_tol)) area_before += m.Area();
+  const double exact_area = radius * total_angle * height;
+  Check(std::abs(area_before - exact_area) < 1e-2,
+        "the two unmerged patches' own summed mesh area already matches the exact cylinder-sector formula "
+        "r*angle*height");
+
+  const int merges = tube.MergeSameSurfaceFaces();
+  Check(merges == 1, "MergeSameSurfaceFaces() performed exactly 1 merge on the two-patch cylinder fixture");
+  Check(tube.FaceCount() == 1, "the two same-surface patches merged into a single face");
+
+  ON_TextLog log_after;
+  Check(tube.raw().IsValid(&log_after), "the merged single face is still a valid ON_Brep");
+  Check(!tube.raw().m_F[0].SurfaceOf()->IsPlanar(), "the merged face's own surface is still the same genuine "
+                                                     "non-planar cylinder, not silently replaced by a flat one");
+
+  double area_after = 0.0;
+  for (const Mesh& m : tube.TessellateAdaptive(chord_tol)) area_after += m.Area();
+  Check(std::abs(area_after - area_before) < 1e-6,
+        "merging the two patches leaves the tessellated area exactly unchanged (same real surface, same "
+        "real boundary - not a re-fit approximation)");
+  Check(std::abs(area_after - exact_area) < 1e-2,
+        "...and still matches the exact closed-form cylinder-sector area after merging");
+
+  Check(tube.MergeSameSurfaceFaces() == 0, "a second call on the merged single face finds nothing left to merge");
+}
+
+// The negative counterpart: two adjacent COPLANAR unit squares from
+// Brep::FromPlanarFaces() (the same fixture TestMergeCoplanarFacesWelds
+// TwoAdjacentSquaresIntoOne() above uses) each get their OWN separate flat
+// NurbsSurface, not the literal same one - so MergeSameSurfaceFaces() must
+// leave them alone even though they're mergeable by MergeCoplanarFaces().
+// Confirms this method is genuinely scoped to same-surface-object pairs,
+// not silently reimplementing (or accidentally subsuming) its coplanar
+// sibling.
+void TestMergeSameSurfaceFacesLeavesDistinctCoplanarSurfacesUntouched() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+
+  Brep::PlanarFace a, b;
+  a.plane = ON_Plane(Point3d(0, 0, 0), ON_3dVector(0, 0, 1));
+  a.loop = {Point3d(0, 0, 0), Point3d(1, 0, 0), Point3d(1, 1, 0), Point3d(0, 1, 0)};
+  b.plane = ON_Plane(Point3d(1, 0, 0), ON_3dVector(0, 0, 1));
+  b.loop = {Point3d(1, 0, 0), Point3d(2, 0, 0), Point3d(2, 1, 0), Point3d(1, 1, 0)};
+
+  Brep flat = Brep::FromPlanarFaces({a, b});
+  Check(flat.FaceCount() == 2, "the two-square fixture starts with 2 faces");
+  Check(flat.raw().m_F[0].m_si != flat.raw().m_F[1].m_si,
+        "FromPlanarFaces() really does give each face its own separate surface, even though they're coplanar");
+
+  Check(flat.MergeSameSurfaceFaces() == 0,
+        "MergeSameSurfaceFaces() performs no merge on a coplanar-but-distinct-surface pair");
+  Check(flat.FaceCount() == 2, "...leaving both faces untouched, exactly as before");
+  Check(flat.MergeCoplanarFaces() == 1, "...while MergeCoplanarFaces() still merges this same fixture, "
+                                        "confirming the two methods are genuinely complementary, not overlapping");
+}
+
 // Brep::ReplaceEdgeCurve() on a single, naked-boundary flat plate: since
 // the substitute curve only has to fit ONE face's own plane (a naked
 // edge, unlike a shared one, is never constrained to lie on a second
@@ -39134,6 +39344,8 @@ int main() {
 
   TestMergeCoplanarFacesWeldsTwoAdjacentSquaresIntoOne();
   TestMergeCoplanarFacesRestoresBoxAfterSplittingFourFacesAtOnePlane();
+  TestMergeSameSurfaceFacesWeldsTwoCylindricalPatchesIntoOne();
+  TestMergeSameSurfaceFacesLeavesDistinctCoplanarSurfacesUntouched();
   TestReplaceEdgeCurveRefitsANakedEdgeToABowedSubstitute();
   TestReplaceEdgeCurveThrowsOnEndpointMismatch();
   TestReplaceEdgeCurveThrowsOnSurfaceMismatch();

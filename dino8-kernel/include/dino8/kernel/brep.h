@@ -2700,6 +2700,60 @@ class Brep {
   // pair is simply left alone, not an error.
   int MergeCoplanarFaces(double tolerance = tolerance::kDistance);
 
+  // Merges adjacent faces that share the exact same underlying surface
+  // (this Brep's own `m_si` index into `raw().m_S[]`, not merely a
+  // surface that happens to be geometrically congruent) into one face,
+  // dropping the shared edge between them - the curved-surface sibling
+  // MergeCoplanarFaces() above explicitly excludes (that method requires
+  // NurbsSurface::IsPlanar(), so a cylinder split by a seam, or any
+  // other non-planar face cut in two, is left untouched by it; PARITY_MAP
+  // names this exact gap under kernel: Local / direct-edit operations,
+  // "Merge faces on the same non-planar surface (cylinder/tangent split
+  // faces)").
+  //
+  // Deliberately narrower than a general "same shape, different surface
+  // object" merge (which would need a real surface-equality test - fit
+  // two different NURBS parameterizations against one another within
+  // tolerance, itself a whole separate capability this kernel doesn't
+  // have) and than MergeCoplanarFaces()'s own ON_BrepTrimmedPlane
+  // reconstruction (which only ever works for a plane): because both
+  // faces already trim the SAME surface, no new surface, no curve
+  // reprojection and no ON_BrepTrimmedPlane-style rebuild is needed at
+  // all - the merged face's own loop is assembled directly from the two
+  // source loops' own EXISTING trims (each trim's own 2D curve is
+  // already valid in the shared surface's own parameter space, so it is
+  // reused via a plain duplicate, not resampled), splicing across the
+  // shared edge exactly the way MergeCoplanarFaces()'s own build_path
+  // does, and its own 3D edges are reused unchanged (not rebuilt), which
+  // is what makes this correct for a non-planar surface: a cylinder's
+  // own iso-u boundary is a genuine circular arc, and reusing it exactly
+  // (rather than resampling/refitting) means the merged face's boundary
+  // stays exact, not approximate.
+  //
+  // A candidate pair (fa, fb) is merged only when:
+  //   - face_a.m_si == face_b.m_si (the literal same-surface condition
+  //     this method is named for) and face_a.m_bRev == face_b.m_bRev
+  //     (both faces already agree on which side of that shared surface
+  //     is outward - required for the reused trims to combine into one
+  //     consistently-oriented loop).
+  //   - both have exactly one loop and no holes (same v1 narrowing
+  //     MergeCoplanarFaces() already applies).
+  //   - they share EXACTLY ONE edge, with EXACTLY TWO trims on it (the
+  //     same non-manifold-safe condition MergeCoplanarFaces() already
+  //     applies - an edge a third face also touches is never removed).
+  //
+  // Every one of those is an exact index/topology comparison (m_si, edge
+  // index, vertex index) rather than a distance or angle measurement, so
+  // unlike MergeCoplanarFaces() (and unlike every convex-planar sibling
+  // in boolean.h) this method takes no tolerance parameter - there is no
+  // continuous quantity here to be within one of.
+  //
+  // Repeats until no more eligible pairs remain. Returns the number of
+  // merges actually performed (each merge reduces FaceCount() by
+  // exactly one) - 0 if none of this Brep's faces qualify. Never throws:
+  // an ineligible face or pair is simply left alone, not an error.
+  int MergeSameSurfaceFaces();
+
   // Re-trims every face that shares edge `edge_index` against a
   // substitute 3D curve, replacing the edge's own geometry in place while
   // leaving the rest of this Brep's topology (every other face, edge,
