@@ -29187,6 +29187,65 @@ void TestSweep1ScaleIsExactContinuouslyOnAStraightRailAndRejectsOnClosedRail() {
   Check(!Throws([&] { Brep::Sweep1(circle_r0, circle_rail2, 16, false, 0.0, 1.0); }), "...but scale_end == 1 is fine on a closed rail");
 }
 
+void TestSweep1RoadlikeAlignmentMatchesExtrudeOnAStraightRailAndRejectsDegenerateUp() {
+  // On a straight rail, EVERY station shares the same tangent, so any
+  // up-vector perpendicular to it projects to the same direction at
+  // every station: road-like alignment gives a frame that never rotates
+  // from station to station (only the origin translates) - exactly the
+  // condition under which Sweep1 already degenerates to a pure
+  // translational sweep. That makes Extrude() itself the strongest
+  // cross-check available here: not a tolerance-bound closed form, but
+  // an independently-built wall that road-like Sweep1 must match
+  // bit-for-bit, for ANY perpendicular up-vector (even a non-unit one,
+  // exercising the "projected, then unitized" step of brep.h's own doc
+  // comment).
+  const double L = 5.0;
+  const NurbsCurve rail = Polyline({P(0, 0, 0), P(0, 0, L)});
+  const NurbsCurve square = Polyline({P(-0.5, -0.5, 0), P(0.5, -0.5, 0), P(0.5, 0.5, 0), P(-0.5, 0.5, 0), P(-0.5, -0.5, 0)});
+  const Vector3d up(0, 3, 0);  // perpendicular to the rail's +Z tangent, deliberately non-unit
+  const Brep swept = Brep::Sweep1(square, rail, 8, /*cap=*/true, /*twist_total=*/0.0, /*scale_end=*/1.0, &up);
+  const Brep extruded = Brep::Extrude(square, Vector3d(0, 0, L));
+  CheckSolidTopology(swept, 3, "road-like sweep along a straight rail");
+  const NurbsSurface wa = FaceSurface(swept, 0), wb = FaceSurface(extruded, 0);
+  Check(wa.DegreeV() == 1 && wa.CVCountV() == 2, "straight rail still takes the exact 2-station ruled shortcut with road-like alignment");
+  {
+    double worst = 0.0;
+    const ON_Interval dua = wa.raw().Domain(0), dva = wa.raw().Domain(1);
+    const ON_Interval dub = wb.raw().Domain(0), dvb = wb.raw().Domain(1);
+    for (int i = 0; i <= 8; ++i) {
+      const double fa = static_cast<double>(i) / 8.0;
+      worst = std::max(worst, wa.PointAt(dua.ParameterAt(fa), dva.Min()).DistanceTo(wb.PointAt(dub.ParameterAt(fa), dvb.Min())));
+      worst = std::max(worst, wa.PointAt(dua.ParameterAt(fa), dva.Max()).DistanceTo(wb.PointAt(dub.ParameterAt(fa), dvb.Max())));
+    }
+    Check(worst < 1e-9, "road-like Sweep1 on a straight rail reproduces Extrude()'s own wall exactly at both ends");
+  }
+  CheckClosedMeshVolume(swept, 8, 8, 1.0 * 1.0 * L, 1e-9, "road-like straight-rail sweep volume equals the exact unit-square extrusion");
+
+  // Negative controls: up parallel to the tangent, and the zero vector.
+  const Vector3d up_parallel(0, 0, 2);
+  Check(Throws([&] { Brep::Sweep1(square, rail, 8, false, 0.0, 1.0, &up_parallel); }),
+        "roadlike_up parallel to the rail tangent throws");
+  const Vector3d up_zero(0, 0, 0);
+  Check(Throws([&] { Brep::Sweep1(square, rail, 8, false, 0.0, 1.0, &up_zero); }), "roadlike_up == zero vector throws");
+  Check(!Throws([&] { Brep::Sweep1(square, rail, 8, false, 0.0, 1.0, nullptr); }), "...but roadlike_up == nullptr (the default) is fine");
+
+  // Road-like alignment also needs no holonomy fix-up on a closed rail
+  // (unlike twist_total/scale_end, which both throw there) - it is
+  // computed independently at every station, so it is simply allowed.
+  // This rail's tangent stays entirely in the XY-plane, so a Z-axis up
+  // vector is perpendicular to it EVERYWHERE around the loop, never
+  // degenerate at any station.
+  const NurbsCurve circle_rail3 = Circle(P(0, 0, 0), Vector3d(0, 0, 1), 3.0);
+  Check(!Throws([&] { Brep::Sweep1(square, circle_rail3, 16, false, 0.0, 1.0, &up_parallel); }),
+        "roadlike_up is fine on a closed rail (no restriction, unlike twist_total/scale_end)");
+  // But an IN-PLANE up vector is parallel to this circle's own tangent
+  // at some point on every full loop (the tangent direction sweeps
+  // through every in-plane angle), so it still throws there.
+  const Vector3d up_in_plane(1, 0, 0);
+  Check(Throws([&] { Brep::Sweep1(square, circle_rail3, 16, false, 0.0, 1.0, &up_in_plane); }),
+        "an in-plane roadlike_up is parallel to a full circular rail's own tangent somewhere on the loop, and still throws");
+}
+
 void TestPipeVariable() {
   using RP = std::pair<double, double>;
 
@@ -33109,6 +33168,7 @@ int main() {
   sweep_tests::TestSweep1AndPipe();
   sweep_tests::TestSweep1TwistIsExactOnAStraightRailAndRejectsOnClosedRail();
   sweep_tests::TestSweep1ScaleIsExactContinuouslyOnAStraightRailAndRejectsOnClosedRail();
+  sweep_tests::TestSweep1RoadlikeAlignmentMatchesExtrudeOnAStraightRailAndRejectsDegenerateUp();
   sweep_tests::TestExtrudeTaperedCircularProfileIsExactConeFrustum();
   sweep_tests::TestExtrudeTaperedConvexPolygonIsExactPlanarFrustum();
 

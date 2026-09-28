@@ -436,8 +436,24 @@ class Brep {
   // Throws std::invalid_argument for a non-positive `scale_end`, or a
   // nonzero deviation from 1.0 on a closed rail (the same "would not
   // close up smoothly" reasoning as `twist_total`).
+  //
+  // `roadlike_up`, when non-null, replaces the rotation-minimizing
+  // frame's own reference direction at EVERY station with `*roadlike_up`
+  // projected into the plane perpendicular to the rail tangent there,
+  // then unitized - AutoCAD SWEEP's Alignment=Roadlike option / Rhino's
+  // "world top" sweep alignment: the section is kept level against a
+  // fixed world direction (typically the up axis) instead of banking
+  // with the rail's own curvature and torsion the way RMF transport
+  // does. Unlike RMF, this is computed independently at each station
+  // (no transport from a starting frame), so it needs no closed-rail
+  // holonomy correction and is fully supported there. `twist_total` and
+  // `scale_end` still apply on top of it exactly as they do on top of
+  // the default RMF frame. Throws std::invalid_argument if `*roadlike_up`
+  // is the zero vector, or if it is parallel (within 1e-6) to the rail
+  // tangent at any station, where the projection is undefined.
   static Brep Sweep1(const NurbsCurve& section, const NurbsCurve& rail, int stations = 32,
-                     bool cap = true, double twist_total = 0.0, double scale_end = 1.0);
+                     bool cap = true, double twist_total = 0.0, double scale_end = 1.0,
+                     const Vector3d* roadlike_up = nullptr);
 
   // Sweep2: `section` carried between `rail1` and `rail2` (Parasolid/
   // Rhino's two-rail sweep with scaling). At each of `stations` equal-
