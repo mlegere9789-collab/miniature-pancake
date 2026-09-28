@@ -389,6 +389,61 @@ class Brep {
   // built anyway.
   static Brep ExtrudeTapered(const NurbsCurve& profile, Vector3d direction, double draft_angle, bool cap = true);
 
+  // Thicken: the direct Brep-level counterpart to Mesh::Thicken() (mesh.h)
+  // - PARITY_MAP.md's "kernel: Feature operations" gap "Thicken a sheet
+  // body into a solid" names Mesh::Thicken as the only thing that already
+  // exists ("walls an offset copy; no B-rep sheet thicken"). Builds a
+  // closed solid from `sheet` (a single-face, UNTRIMMED sheet body - e.g.
+  // one built by FromSurface()) by adding a second surface offset from the
+  // first by `thickness`, plus 4 ruled side-wall faces stitching the two
+  // surfaces' matching boundary isocurves together.
+  //
+  // The offset surface is built via NurbsSurface::OffsetApproximate()
+  // (surface.h), not OffsetAnalytic(): OffsetApproximate() always keeps
+  // the EXACT same control-point grid and knot vectors as its source (it
+  // only moves each control point along that point's own Greville-normal),
+  // so its 4 boundary isocurves are automatically compatible with the
+  // source surface's own 4 boundary isocurves at the SAME parameter values
+  // - exactly what RuledBetween() (sweep.cpp) needs to stitch them, with
+  // no separate reparameterization step. OffsetAnalytic() can't serve this
+  // role here: its own doc comment discloses that a sphere/torus patch
+  // offsets to the FULL primitive and a cylinder patch to a full
+  // 360-degree cylinder, not the matching (u, v) sub-patch this needs.
+  // OffsetApproximate() is exact when `sheet`'s surface is planar (reduces
+  // to OffsetAnalytic()'s own plane branch) and a real, disclosed
+  // first-order approximation otherwise, inherited here unchanged, along
+  // with its own curvature-fold guard (Result::Failed propagated as
+  // std::invalid_argument, not silently built anyway).
+  //
+  // `symmetric=false` (default): the first cap is `sheet`'s own surface,
+  // unmoved; the second is offset by `thickness` (either sign - chooses
+  // which side) along that surface's own NormalAt() direction - mirrors
+  // Mesh::Thicken()'s one-directional convention. `symmetric=true`:
+  // NEITHER cap is `sheet`'s own surface - both are fresh offsets, at
+  // -|thickness|/2 and +|thickness|/2, so the input surface ends up on the
+  // solid's own midplane rather than one of its faces - a capability
+  // Mesh::Thicken() itself does not have (its own doc comment and
+  // PARITY_MAP.md's "Thicken sheet" bullet both call out "no
+  // symmetric/two-sided option" as a gap this closes).
+  //
+  // Scope, checked and refused (std::invalid_argument) rather than
+  // silently misbuilt: `sheet` must be a single-face body (a multi-face
+  // shell thicken - matching neighbouring walls at shared edges - is a
+  // separate, larger gap left open, the same one kernel: Offsetting,
+  // shelling, thickening's own "no general Brep offset/shell for curved or
+  // non-convex bodies" note already discloses); that face must be
+  // UNTRIMMED (checked directly against this Brep's own face_trim_loops_/
+  // face_hole_loops_ side tables, not assumed) - a trimmed sheet's real
+  // boundary is not its surface's 4 domain isocurves, and silently
+  // thickening the full untrimmed rectangle instead would be a
+  // correctness bug, not a disclosed limitation; and that surface must be
+  // open (IsClosed() false) in BOTH parametric directions - a partially or
+  // fully closed sheet (a full cylinder/cone wall, a sphere or torus patch
+  // that wraps back on itself) needs a different, variable side-wall count
+  // (a closed direction has no free boundary to wall at all) this pass
+  // does not attempt. `thickness` must be finite and non-zero.
+  static Brep Thicken(const Brep& sheet, double thickness, bool symmetric = false);
+
   // Revolve: `profile` spun about the axis through `axis_point` along
   // `axis_direction` by `angle` radians (0 < angle <= 2*pi; exactly
   // 2*pi, within 1e-12, is a full revolution). The profile must lie in a

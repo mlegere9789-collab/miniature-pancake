@@ -34,6 +34,7 @@
 #include "dino8/kernel/brep.h"
 #include "dino8/kernel/curve.h"
 #include "dino8/kernel/mesh.h"
+#include "dino8/kernel/surface.h"
 
 namespace dino8::kernel {
 
@@ -1564,6 +1565,137 @@ Brep Brep::ExtrudeTapered(const NurbsCurve& profile, Vector3d direction, double 
   top_translated.raw() = top_raw;
 
   return Loft({profile, top_translated}, 1, /*closed=*/false, cap);
+}
+
+Brep Brep::Thicken(const Brep& sheet, double thickness, bool symmetric) {
+  const char* caller = "Thicken";
+  if (!std::isfinite(thickness) || thickness == 0.0) {
+    Fail(caller, "thickness must be finite and non-zero");
+  }
+  const ON_Brep& src = sheet.raw();
+  if (src.m_F.Count() != 1) {
+    Fail(caller, "sheet must be a single-face body - a multi-face shell thicken is a separate, disclosed gap");
+  }
+  if (!sheet.face_trim_loops_.empty() &&
+      (!sheet.face_trim_loops_[0].empty() || !sheet.face_hole_loops_[0].empty())) {
+    Fail(caller,
+         "sheet's face must be untrimmed (e.g. built by Brep::FromSurface()) - a trimmed sheet's real boundary "
+         "is not its surface's 4 domain isocurves");
+  }
+  const ON_BrepFace& face = src.m_F[0];
+  const ON_Surface* raw_surface = face.SurfaceOf();
+  if (raw_surface == nullptr) Internal(caller, "sheet's face has no surface");
+  ON_NurbsSurface base;
+  if (!raw_surface->GetNurbForm(base)) {
+    Fail(caller, "sheet's surface could not be converted to an exact NURBS form");
+  }
+  if (base.IsClosed(0) || base.IsClosed(1)) {
+    Fail(caller,
+         "the surface must be open (non-periodic) in both parametric directions - a fully or partially closed "
+         "sheet (e.g. a full cylinder, sphere, or torus patch) needs a variable side-wall count this scoped "
+         "version does not attempt");
+  }
+
+  NurbsSurface original;
+  original.raw() = base;
+
+  // `lo`/`hi`: the two caps, always assigned so the solid lies on the +N
+  // side of `lo` and the -N side of `hi`, N = `original`'s own NormalAt()
+  // direction (OffsetApproximate()'s own translation convention) - see
+  // this function's own brep.h doc comment for why OffsetApproximate(),
+  // not OffsetAnalytic(), is what makes `lo`/`hi` boundary-compatible.
+  NurbsSurface lo, hi;
+  if (symmetric) {
+    const double half = std::fabs(thickness) * 0.5;
+    if (original.OffsetApproximate(-half, lo) != Result::Ok || original.OffsetApproximate(half, hi) != Result::Ok) {
+      Fail(caller,
+           "the requested thickness is too large for this surface's own curvature - the offset would fold "
+           "through its own center of curvature (see NurbsSurface::OffsetApproximate's own guard)");
+    }
+  } else {
+    NurbsSurface offset;
+    if (original.OffsetApproximate(thickness, offset) != Result::Ok) {
+      Fail(caller,
+           "the requested thickness is too large for this surface's own curvature - the offset would fold "
+           "through its own center of curvature (see NurbsSurface::OffsetApproximate's own guard)");
+    }
+    if (thickness > 0.0) {
+      lo = original;
+      hi = offset;
+    } else {
+      lo = offset;
+      hi = original;
+    }
+  }
+
+  const ON_NurbsSurface& lo_raw = lo.raw();
+  const ON_NurbsSurface& hi_raw = hi.raw();
+  const ON_Interval du = lo_raw.Domain(0), dv = lo_raw.Domain(1);
+
+  Brep result;
+  ON_Brep& brep = result.raw();
+
+  // Two caps: `lo`'s own natural (Su x Sv) normal points toward `hi` - INTO
+  // the solid - so it needs reversing to face outward; `hi`'s own natural
+  // normal already points away from `lo` - away from the solid - and needs
+  // no reversal. (Verified by hand for a flat XY sheet with N = +Z in this
+  // function's own tests, then trusted for the curved case since
+  // OffsetApproximate()'s own curvature-fold guard is exactly what
+  // prevents the local normal direction from flipping between `lo` and
+  // `hi` - a fold is precisely a normal reversal, and that guard already
+  // refuses any offset that would cause one.)
+  auto add_cap = [&](const ON_NurbsSurface& s, bool brev) {
+    auto* copy = new ON_NurbsSurface(s);
+    const int si = brep.AddSurface(copy);
+    ON_BrepFace& f = brep.NewFace(si);
+    f.m_bRev = brev;
+  };
+  add_cap(lo_raw, /*brev=*/true);
+  add_cap(hi_raw, /*brev=*/false);
+
+  // Four side walls, one per edge of the domain rectangle: the exact
+  // degree-1-in-v ruled surface (RuledBetween()) between that edge's
+  // isocurve on `lo` and the SAME edge's isocurve on `hi` - compatible by
+  // construction (OffsetApproximate() never changes the control-point grid
+  // or knot vectors, only moves the control points, so `lo`/`hi` share
+  // identical knot vectors/CV counts and so do their corresponding
+  // isocurves). Walked CCW as seen from the `hi` (outward, N) side, the
+  // same convention Extrude() itself relies on for why a CCW boundary here
+  // makes Sw_u x Sw_v point outward: v=v_min forward in u, u=u_max forward
+  // in v, v=v_max backward in u, u=u_min backward in v - the standard
+  // positively-oriented parameter-rectangle loop, already used the same
+  // way for a curved-face cap's own rectangle loop elsewhere in this
+  // codebase (see FromMixedFaces' own doc comment in brep.cpp).
+  auto add_wall = [&](int dir, double param, bool reverse_iso) {
+    std::unique_ptr<ON_NurbsCurve> c_lo(IsoCurveOf(lo_raw, dir, param, caller));
+    std::unique_ptr<ON_NurbsCurve> c_hi(IsoCurveOf(hi_raw, dir, param, caller));
+    if (reverse_iso) {
+      ReverseKeepDomain(*c_lo);
+      ReverseKeepDomain(*c_hi);
+    }
+    std::unique_ptr<ON_NurbsSurface> wall = RuledBetween(*c_lo, *c_hi, 0.0, 1.0, caller);
+    const int si = brep.AddSurface(wall.release());
+    brep.NewFace(si);
+  };
+  add_wall(0, dv.Min(), /*reverse_iso=*/false);  // v = v_min, walked +u
+  add_wall(1, du.Max(), /*reverse_iso=*/false);  // u = u_max, walked +v
+  add_wall(0, dv.Max(), /*reverse_iso=*/true);   // v = v_max, walked -u
+  add_wall(1, du.Min(), /*reverse_iso=*/true);   // u = u_min, walked -v
+
+  brep.SetTrimIsoFlags();
+  result.AppendUntrimmedFaceSideTables(6);
+
+  // Outward-orientation safety net, the same one AssembleSweptBody() itself
+  // uses: the construction above orients the result outward already under
+  // the NormalAt() == Su x Sv assumption; a negative tessellated volume
+  // here would mean that assumption didn't hold for this particular
+  // surface, and a single whole-body flip is the correct repair since
+  // every face above was derived from the SAME assumption (never a
+  // per-face-only mistake that a global flip could get wrong).
+  const Mesh check = result.TessellateToClosedMesh(16, 16);
+  if (check.Volume() < 0.0) brep.Flip();
+
+  return result;
 }
 
 Brep Brep::Revolve(const NurbsCurve& profile, Point3d axis_point, Vector3d axis_direction, double angle, bool cap,

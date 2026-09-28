@@ -33594,6 +33594,145 @@ void TestEmbossProfileRejectsInvalidArguments() {
         "EmbossProfile throws (via Brep::Extrude()) when direction lies in the profile's own plane");
 }
 
+void TestThickenFlatSheetProducesExactBoxVolume() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::NurbsSurface;
+
+  // parity-map "kernel: Feature operations" - "Thicken a sheet body into a
+  // solid": previously only Mesh::Thicken (mesh-level) existed; no B-rep
+  // counterpart. A plain bilinear 3x4 flat rectangle in the z=0 plane (u
+  // along x in [0,3], v along y in [0,4], area 12) - by hand: Su x Sv =
+  // (3,0,0) x (0,4,0) = (0,0,12), so this sheet's own outward normal (as
+  // NormalAt()/OffsetApproximate() define it) is +Z.
+  const std::vector<Point3d> grid = {P(0, 0, 0), P(0, 4, 0), P(3, 0, 0), P(3, 4, 0)};
+  const NurbsSurface flat = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+  const Brep sheet = Brep::FromSurface(flat);
+
+  const Brep solid = Brep::Thicken(sheet, 2.0);
+  Check(solid.FaceCount() == 6, "Thicken() on a single-face untrimmed sheet adds exactly 2 caps + 4 side walls");
+  const Mesh m = solid.TessellateToClosedMesh(4, 4);
+  Check(m.IsClosedManifold(), "Thicken() on a flat sheet is a genuine closed 2-manifold");
+  Check(std::fabs(m.Volume() - 24.0) < 1e-6,
+        "Thicken(+2.0) on the flat 3x4 sheet (area 12) gives exactly area * thickness = 24, with outward "
+        "orientation (a positive volume) requiring no correction from this function's own safety-net flip");
+  const auto bbox = solid.GetTightBoundingBox();
+  Check(bbox.min.z > -1e-9 && std::fabs(bbox.max.z - 2.0) < 1e-9,
+        "Thicken(+2.0) (not symmetric) keeps the original surface (z=0) as one face and offsets only upward, to "
+        "z=2 - not split across both sides");
+}
+
+void TestThickenSymmetricPutsOriginalSurfaceOnMidplane() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::NurbsSurface;
+
+  // Same flat sheet as above, moved to z=5, thickened symmetric - a real
+  // capability Mesh::Thicken() itself does not have (PARITY_MAP.md's
+  // "Thicken sheet" bullet calls out "no symmetric/two-sided option").
+  const std::vector<Point3d> grid = {P(0, 0, 5), P(0, 4, 5), P(3, 0, 5), P(3, 4, 5)};
+  const NurbsSurface flat = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+  const Brep sheet = Brep::FromSurface(flat);
+
+  const Brep solid = Brep::Thicken(sheet, 2.0, /*symmetric=*/true);
+  const Mesh m = solid.TessellateToClosedMesh(4, 4);
+  Check(m.IsClosedManifold(), "Thicken(symmetric) is a genuine closed 2-manifold");
+  Check(std::fabs(m.Volume() - 24.0) < 1e-6,
+        "Thicken(symmetric, total thickness 2) on the same 12-area sheet gives the same volume (24) as the "
+        "one-directional case - splitting one total thickness across both sides doesn't change the enclosed "
+        "volume");
+  const auto bbox = solid.GetTightBoundingBox();
+  Check(std::fabs(bbox.min.z - 4.0) < 1e-9 && std::fabs(bbox.max.z - 6.0) < 1e-9,
+        "Thicken(symmetric) puts the ORIGINAL surface's own z=5 exactly on the solid's own midplane - neither "
+        "face is the input surface itself, unlike the one-directional case above");
+}
+
+void TestThickenCurvedSheetProducesGenuineClosedSolid() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::NurbsSurface;
+
+  // The same bulged-freeform fixture this file's own
+  // TestSurfaceOffsetApproximateOnBulgedFreeformIsBoundedAndRejectsExcessiveDistance
+  // uses - a genuinely curved, non-planar, non-analytic surface
+  // OffsetAnalytic() itself refuses, proving Thicken() (built on
+  // OffsetApproximate()) handles a real curved sheet, not just a flat
+  // plate.
+  std::vector<Point3d> grid;
+  for (int i = 0; i < 4; ++i) {
+    for (int j = 0; j < 4; ++j) {
+      grid.push_back(P(i, j, (i == 2 && j == 2) ? 3.0 : 0.0));
+    }
+  }
+  const NurbsSurface bulge = NurbsSurface::FromControlGrid(grid, 4, 4, 3, 3);
+  const Brep sheet = Brep::FromSurface(bulge);
+
+  // The SURFACE's own true peak height is well below its (i=2,j=2) control
+  // point's raw z=3: a degree-3 B-spline doesn't pass through an interior
+  // control point, only blend toward it - so this samples the real
+  // surface peak directly rather than assuming the control net's own
+  // height, the same "measured, not assumed" standard this file's own
+  // OffsetApproximate tests above already hold themselves to.
+  double original_peak_z = 0.0;
+  const dino8::kernel::Interval du = bulge.Domain(0), dv = bulge.Domain(1);
+  for (double u = du.min; u <= du.max; u += 0.02) {
+    for (double v = dv.min; v <= dv.max; v += 0.02) {
+      original_peak_z = std::max(original_peak_z, bulge.PointAt(u, v).z);
+    }
+  }
+  Check(original_peak_z > 0.05 && original_peak_z < 3.0,
+        "Thicken() curved-sheet setup: the surface's own true peak is genuinely bulged but (as expected for a "
+        "cubic B-spline) well short of its interior control point's raw z=3");
+
+  const Brep solid = Brep::Thicken(sheet, 0.2);
+  Check(solid.FaceCount() == 6, "Thicken() on the curved bulge adds exactly 2 caps + 4 side walls");
+  const Mesh m = solid.TessellateToClosedMesh(24, 24);
+  Check(m.IsClosedManifold(),
+        "Thicken() on a genuinely curved sheet is still a real closed 2-manifold, not just the flat-sheet special "
+        "case");
+  Check(m.Volume() > 0.0, "Thicken() on the curved sheet is outward-oriented (a positive volume)");
+  const auto bbox = solid.GetTightBoundingBox();
+  Check(bbox.max.z > original_peak_z,
+        "Thicken() genuinely offsets the curved sheet outward - the solid's own bounding box reaches past the "
+        "original surface's own true peak height, not merely reproducing it");
+
+  // A large enough thickness relative to the bulge's own tight curvature at
+  // its peak must be refused (propagating OffsetApproximate()'s own
+  // curvature-fold guard), not silently build a folded/self-overlapping
+  // solid.
+  Check(Throws([&] { Brep::Thicken(sheet, 1.0); }),
+        "Thicken() propagates OffsetApproximate()'s own curvature-fold guard rather than silently building a "
+        "folded solid");
+}
+
+void TestThickenRejectsInvalidArguments() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point2d;
+
+  const std::vector<Point3d> grid = {P(0, 0, 0), P(0, 1, 0), P(1, 0, 0), P(1, 1, 0)};
+  const NurbsSurface flat = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+  const Brep sheet = Brep::FromSurface(flat);
+
+  Check(Throws([&] { Brep::Thicken(sheet, 0.0); }), "Thicken() throws for a zero thickness");
+  Check(Throws([&] { Brep::Thicken(sheet, std::numeric_limits<double>::quiet_NaN()); }),
+        "Thicken() throws for a non-finite thickness");
+
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+  Check(Throws([&] { Brep::Thicken(box, 1.0); }), "Thicken() throws for a multi-face body (Box() has 6 faces)");
+
+  const Brep sphere = Brep::Sphere(P(0, 0, 0), 1.0);
+  Check(Throws([&] { Brep::Thicken(sphere, 0.1); }),
+        "Thicken() throws for a single-face body that is closed/periodic (a full sphere wraps back on itself in "
+        "u) - a distinct scope check from the multi-face rejection above");
+
+  const std::vector<Point2d> trim = {Point2d(0.2, 0.2), Point2d(0.8, 0.2), Point2d(0.8, 0.8), Point2d(0.2, 0.8)};
+  const Brep trimmed = Brep::TrimmedPlanarFace(flat, trim);
+  Check(Throws([&] { Brep::Thicken(trimmed, 0.1); }),
+        "Thicken() throws for a trimmed sheet - thickening its full untrimmed rectangle instead would be a "
+        "correctness bug, not merely a disclosed limitation");
+}
+
 void TestPipeVariable() {
   using RP = std::pair<double, double>;
 
@@ -38721,6 +38860,10 @@ int main() {
   sweep_tests::TestEmbossProfileDebossBlindPocket();
   sweep_tests::TestEmbossProfileEmbossBoss();
   sweep_tests::TestEmbossProfileRejectsInvalidArguments();
+  sweep_tests::TestThickenFlatSheetProducesExactBoxVolume();
+  sweep_tests::TestThickenSymmetricPutsOriginalSurfaceOnMidplane();
+  sweep_tests::TestThickenCurvedSheetProducesGenuineClosedSolid();
+  sweep_tests::TestThickenRejectsInvalidArguments();
   sweep_tests::TestExtrudeTaperedCircularProfileIsExactConeFrustum();
   sweep_tests::TestExtrudeTaperedConvexPolygonIsExactPlanarFrustum();
   sweep_tests::TestExtrudeToBoundaryTiltedPlaneMatchesExactAffineCapVolume();
