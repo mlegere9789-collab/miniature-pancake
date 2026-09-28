@@ -36796,6 +36796,198 @@ void TestSweep2ExactFrustumAndDegenerateCases() {
   Check(Throws([&] { Brep::Sweep2(sq, rail1, rail2, 1); }), "stations < 2 throws");
 }
 
+// RailRevolve: `profile`'s own radial distance from the axis, additionally
+// scaled at each station by a `rail` curve's own distance from the SAME
+// axis there. Verified two structurally different, both fully exact ways
+// (no sampling-resolution tolerance in either): (1) a RIGID case (a rail
+// held at a CONSTANT distance from the axis, so every station's scale
+// factor is exactly 1.0) reduces to a plain rotation of the profile by
+// EQUAL angle increments - and since a rigid rotation by an identical
+// angle step moves every control point by an IDENTICAL chord distance at
+// every interval (chord = 2*rho*sin(dtheta/2), independent of which
+// interval), SkinParameters()' own chord-length accumulation gives
+// EXACTLY uniform station parameters k/(m-1) - the same "equal spacing ->
+// uniform station parameters" property TestLoftInterpolatesSectionsExactly()'s
+// own four-growing-squares case already relies on - so every intermediate
+// station (not just the two ends) can be checked exactly; (2) a varying-
+// radius case at stations = 2 uses RuledBetween(), whose two end curves
+// are ALWAYS exactly the two given inputs by construction, checking the
+// scale-factor arithmetic itself independent of any skinning question.
+void TestRailRevolveRigidRotationReproducesEveryStationExactly() {
+  const Point3d origin(0, 0, 0);
+  const Vector3d z(0, 0, 1);
+  // Square cross-section in the XZ half-plane, off the axis (rho in [2, 4]).
+  const NurbsCurve profile = Polyline({P(2, 0, -1), P(4, 0, -1), P(4, 0, 1), P(2, 0, 1), P(2, 0, -1)});
+  // Rail held at a CONSTANT distance (5) from the z axis - only its own
+  // height varies, so every station's scale factor is exactly 1.0.
+  const NurbsCurve rail = Polyline({P(5, 0, 0), P(5, 0, 3)});
+  const int m = 6;
+  const double angle = M_PI / 2.0;
+  const Brep body = Brep::RailRevolve(profile, origin, z, rail, angle, m, /*cap=*/true);
+  Check(body.raw().IsValid(), "rigid rail-revolve: real ON_Brep topology");
+  Check(body.raw().IsSolid(), "rigid rail-revolve: genuinely closed manifold solid");
+  // Pappus: partial-angle volume = angle * R_centroid * Area = (pi/2)*3*4.
+  CheckClosedMeshVolume(body, 16, 16, angle * 3.0 * 4.0, 0.02,
+                        "rigid rail-revolve ~ a quarter-turn off-axis-rectangle revolve (approximate: "
+                        "cubic-interpolated skin, not Revolve()'s own analytic wall)");
+
+  const NurbsSurface wall = FaceSurface(body, 0);
+  const ON_Interval du = wall.raw().Domain(0), dv = wall.raw().Domain(1);
+  const ON_Interval dc = profile.raw().Domain();
+  double worst = 0.0;
+  for (int k = 0; k < m; ++k) {
+    const double vf = static_cast<double>(k) / static_cast<double>(m - 1);
+    const double theta = angle * vf;
+    for (int j = 0; j <= 40; ++j) {
+      const double uf = static_cast<double>(j) / 40.0;
+      const Point3d s = wall.PointAt(du.ParameterAt(uf), dv.ParameterAt(vf));
+      // The profile may have been reversed as a whole for outward
+      // orientation (ReverseKeepDomain mirrors the parameter across the
+      // domain, same as Revolve()'s own tests note) - probe both
+      // directions and take whichever the construction actually used.
+      const Point3d p_fwd = profile.PointAt(dc.ParameterAt(uf));
+      const Point3d p_rev = profile.PointAt(dc.ParameterAt(1.0 - uf));
+      auto rotate = [&](Point3d p) { return Point3d(p.x * std::cos(theta), p.x * std::sin(theta), p.z); };
+      const double d_fwd = s.DistanceTo(rotate(p_fwd));
+      const double d_rev = s.DistanceTo(rotate(p_rev));
+      worst = std::max(worst, std::min(d_fwd, d_rev));
+    }
+  }
+  Check(worst < 1e-9, "every station of a rigid (constant-radius-rail) rail-revolve exactly reproduces the rotated "
+                       "profile - true interpolation through the given stations, not merely close to one");
+
+  // Full 2*pi (wrap): no caps, a genuine periodic closed solid, and the
+  // same exact per-station reproduction (the wrap-around interval is ALSO
+  // an equal angle step, so the equal-chord argument above still holds).
+  const int mw = 8;
+  const Brep ring_body = Brep::RailRevolve(profile, origin, z, rail, 2.0 * M_PI, mw, /*cap=*/true);
+  Check(ring_body.FaceCount() == 1, "full-angle rail-revolve is a single periodic face, no caps");
+  Check(ring_body.raw().IsSolid(), "full-angle rail-revolve is a genuine closed solid");
+  {
+    const NurbsSurface rwall = FaceSurface(ring_body, 0);
+    const ON_Interval rdu = rwall.raw().Domain(0), rdv = rwall.raw().Domain(1);
+    double rworst = 0.0;
+    for (int k = 0; k < mw; ++k) {
+      const double vf = static_cast<double>(k) / static_cast<double>(mw);
+      const double theta = 2.0 * M_PI * vf;
+      for (int j = 0; j <= 40; ++j) {
+        const double uf = static_cast<double>(j) / 40.0;
+        const Point3d s = rwall.PointAt(rdu.ParameterAt(uf), rdv.ParameterAt(vf));
+        const Point3d p_fwd = profile.PointAt(dc.ParameterAt(uf));
+        const Point3d p_rev = profile.PointAt(dc.ParameterAt(1.0 - uf));
+        auto rotate = [&](Point3d p) { return Point3d(p.x * std::cos(theta), p.x * std::sin(theta), p.z); };
+        rworst = std::max(rworst, std::min(s.DistanceTo(rotate(p_fwd)), s.DistanceTo(rotate(p_rev))));
+      }
+    }
+    Check(rworst < 1e-9, "full-angle rail-revolve also exactly reproduces every one of its 8 periodic stations");
+  }
+  const Mesh rm = ring_body.TessellateToClosedMesh(12, 64);
+  Check(rm.IsClosedManifold(), "full-angle rail-revolve: closed manifold at (12, 64)");
+  Check(ring_body.TessellateToClosedMesh(5, 12).IsClosedManifold(), "...and at the asymmetric (5, 12) pair too");
+  Check(std::abs(rm.Volume() - 2.0 * M_PI * 3.0 * 4.0) / (2.0 * M_PI * 3.0 * 4.0) < 0.01,
+        "full-angle rigid rail-revolve is within 1% of the exact Pappus torus volume (2*pi*R_c*A)");
+}
+
+void TestRailRevolveVaryingRadiusScalesExactlyAtTheTwoStations() {
+  const Point3d origin(0, 0, 0);
+  const Vector3d z(0, 0, 1);
+  const NurbsCurve profile = Polyline({P(2, 0, -1), P(4, 0, -1), P(4, 0, 1), P(2, 0, 1), P(2, 0, -1)});
+  // Rail radius doubles from 5 (at its own start) to 10 (at its own end).
+  const NurbsCurve rail = Polyline({P(5, 0, 0), P(10, 0, 0)});
+  const double angle = M_PI / 3.0;
+  const Brep body = Brep::RailRevolve(profile, origin, z, rail, angle, /*stations=*/2, /*cap=*/true);
+  Check(body.raw().IsValid(), "2-station rail-revolve: real ON_Brep topology");
+  Check(body.raw().IsSolid(), "2-station rail-revolve: genuinely closed manifold solid");
+  const NurbsSurface wall = FaceSurface(body, 0);
+  Check(wall.DegreeV() == 1, "2-station rail-revolve uses the exact ruled shortcut, degree 1 in the angle direction");
+  const ON_Interval du = wall.raw().Domain(0), dv = wall.raw().Domain(1);
+  const ON_Interval dc = profile.raw().Domain();
+  double worst0 = 0.0, worst1 = 0.0;
+  for (int j = 0; j <= 40; ++j) {
+    const double uf = static_cast<double>(j) / 40.0;
+    const Point3d p_fwd = profile.PointAt(dc.ParameterAt(uf));
+    const Point3d p_rev = profile.PointAt(dc.ParameterAt(1.0 - uf));
+    // Station 0: scale exactly 1.0 (the rail's own radius at its own
+    // start, divided by itself), no rotation.
+    const Point3d s0 = wall.PointAt(du.ParameterAt(uf), dv.Min());
+    worst0 = std::max(worst0, std::min(s0.DistanceTo(p_fwd), s0.DistanceTo(p_rev)));
+    // Station 1: scale exactly 10/5 = 2.0, rotated by the full `angle`.
+    const Point3d s1 = wall.PointAt(du.ParameterAt(uf), dv.Max());
+    auto scale_rotate = [&](Point3d p) {
+      const double rho = p.x * 2.0;
+      return Point3d(rho * std::cos(angle), rho * std::sin(angle), p.z);
+    };
+    worst1 = std::max(worst1, std::min(s1.DistanceTo(scale_rotate(p_fwd)), s1.DistanceTo(scale_rotate(p_rev))));
+  }
+  Check(worst0 < 1e-9, "station 0 keeps the profile's own given size exactly (scale 1.0 relative to itself)");
+  Check(worst1 < 1e-9, "station 1 is exactly rotated by `angle` and radially scaled by the rail's own 10/5 ratio");
+}
+
+// A genuinely bulging rail (radius 1 -> 3 -> 1, a vase-like silhouette)
+// against the two RIGID (constant-scale) extremes: since a uniform radial
+// scale by a constant lambda multiplies a profile's own enclosed (rho, z)
+// area by exactly lambda (a 1-D dilation of a planar region), Pappus'
+// theorem gives an EXACT closed form Volume(lambda) = 2*pi*rho_centroid *
+// (lambda*Area) * lambda = 2*pi*rho_centroid*Area*lambda^2 for the RIGID
+// (non-bulging, RailRevolve-with-a-constant-rail) case - independently
+// confirmed by the test above. The bulging body's own scale factor stays
+// within [1, 3] at every station (both endpoints of the rail measure
+// exactly its own start radius, the belly measures 3x that), so its
+// volume is bracketed between Volume(1) and Volume(3) - not a proof for
+// a general shape, but a real structural cross-check, not just "closed
+// manifold, positive volume".
+void TestRailRevolveBulgingRailProducesABracketedVaseVolume() {
+  const Point3d origin(0, 0, 0);
+  const Vector3d z(0, 0, 1);
+  // Square cross-section: rho in [0.8, 1.2] (area 0.4, centroid rho 1.0),
+  // z in [-0.5, 0.5].
+  const NurbsCurve profile = Polyline({P(0.8, 0, -0.5), P(1.2, 0, -0.5), P(1.2, 0, 0.5), P(0.8, 0, 0.5), P(0.8, 0, -0.5)});
+  const double area0 = 0.4, rho_c0 = 1.0;
+  auto rigid_volume = [&](double lambda) { return 2.0 * M_PI * rho_c0 * area0 * lambda * lambda; };
+  // Radius 1 at both ends, 3 at the middle vertex (straight legs, so
+  // radius is monotonic - linear in x - along each leg).
+  const NurbsCurve bulge_rail = Polyline({P(1, 0, 0), P(3, 0, 1), P(1, 0, 2)});
+  const Brep vase = Brep::RailRevolve(profile, origin, z, bulge_rail, 2.0 * M_PI, 32, /*cap=*/true);
+  Check(vase.raw().IsSolid(), "bulging rail-revolve is a genuine closed solid");
+  const Mesh vm = vase.TessellateToClosedMesh(16, 96);
+  Check(vm.IsClosedManifold(), "bulging rail-revolve: closed manifold at (16, 96)");
+  Check(vase.TessellateToClosedMesh(6, 11).IsClosedManifold(), "...and at the asymmetric (6, 11) pair too");
+  const double vol = vm.Volume();
+  const double vmin = rigid_volume(1.0), vmax = rigid_volume(3.0);
+  Check(vol > 0.9 * vmin && vol < 1.1 * vmax,
+        "bulging vase volume is bracketed by the rigid constant-scale extremes (lambda=1 and lambda=3), with a "
+        "generous margin for the fact the true integral isn't literally one of the two endpoints");
+  Check(vol > 1.3 * vmin, "the bulge genuinely inflates the swept volume well beyond the un-scaled (lambda=1) body "
+                          "- proves the rail is actually being sampled, not silently ignored");
+}
+
+void TestRailRevolveNegativeControls() {
+  const Point3d origin(0, 0, 0);
+  const Vector3d z(0, 0, 1);
+  const NurbsCurve square = Polyline({P(2, 0, -1), P(4, 0, -1), P(4, 0, 1), P(2, 0, 1), P(2, 0, -1)});
+  const NurbsCurve rail = Polyline({P(5, 0, 0), P(10, 0, 3)});
+  Check(Throws([&] { Brep::RailRevolve(square, origin, Vector3d(0, 0, 0), rail); }),
+        "zero axis_direction throws");
+  Check(Throws([&] { Brep::RailRevolve(square, origin, z, rail, 0.0); }), "zero angle throws");
+  Check(Throws([&] { Brep::RailRevolve(square, origin, z, rail, 2.0 * M_PI + 0.1); }), "angle > 2*pi throws");
+  Check(Throws([&] { Brep::RailRevolve(square, origin, z, rail, M_PI, 1); }), "stations < 2 throws");
+  const NurbsCurve open_profile = Polyline({P(2, 0, -1), P(4, 0, -1), P(4, 0, 1)});
+  Check(Throws([&] { Brep::RailRevolve(open_profile, origin, z, rail); }), "an open profile throws");
+  const NurbsCurve touching = Polyline({P(0, 0, 0), P(2, 0, 0), P(2, 0, 3), P(0, 0, 3), P(0, 0, 0)});
+  Check(Throws([&] { Brep::RailRevolve(touching, origin, z, rail); }), "a closed profile touching the axis throws");
+  const NurbsCurve crossing = Polyline({P(-1, 0, 0), P(2, 0, 0), P(2, 0, 3), P(-1, 0, 3), P(-1, 0, 0)});
+  Check(Throws([&] { Brep::RailRevolve(crossing, origin, z, rail); }), "a profile crossing the axis throws");
+  const NurbsCurve off_plane = Polyline({P(0, 0, 0), P(2, 0, 0), P(2, 1, 3), P(0, 1, 3), P(0, 0, 0)});
+  Check(Throws([&] { Brep::RailRevolve(off_plane, origin, z, rail); }),
+        "a profile not in a plane through the axis throws");
+  const NurbsCurve rail_on_axis = Polyline({P(0, 0, 0), P(5, 0, 3)});
+  Check(Throws([&] { Brep::RailRevolve(square, origin, z, rail_on_axis); }),
+        "a rail on the axis at its own start station throws (nothing to scale by)");
+  // cap = false still builds the open shell without throwing.
+  const Brep open = Brep::RailRevolve(square, origin, z, rail, M_PI / 2.0, 6, /*cap=*/false);
+  Check(open.FaceCount() == 1 && !open.raw().IsSolid(), "cap=false gives one open (non-solid) wall face");
+}
+
 }  // namespace sweep_tests
 
 // ---------------------------------------------------------------------------
@@ -41811,6 +42003,10 @@ int main() {
   TestSurfaceExtendLinearNoOpAndRefusalChecks();
 
   sweep_tests::TestSweep2ExactFrustumAndDegenerateCases();
+  sweep_tests::TestRailRevolveRigidRotationReproducesEveryStationExactly();
+  sweep_tests::TestRailRevolveVaryingRadiusScalesExactlyAtTheTwoStations();
+  sweep_tests::TestRailRevolveBulgingRailProducesABracketedVaseVolume();
+  sweep_tests::TestRailRevolveNegativeControls();
 
   TestCounterboreHoleArgumentChecks();
   TestCounterboreHoleAxisAlignedVolumeAndTopology();

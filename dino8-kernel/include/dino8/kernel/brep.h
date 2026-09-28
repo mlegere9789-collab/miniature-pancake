@@ -647,6 +647,54 @@ class Brep {
   static Brep Revolve(const NurbsCurve& profile, Point3d axis_point, Vector3d axis_direction,
                       double angle = 2.0 * ON_PI, bool cap = true, double start_angle = 0.0);
 
+  // RailRevolve: like Revolve(), but `profile`'s own radial distance from
+  // the axis is additionally scaled at each of `stations` equal-angle
+  // positions by `rail`'s own distance from the SAME axis there (Rhino's
+  // RailRevolve: a guide curve controlling how the revolved shape bulges
+  // in and out as it goes around, rather than a constant-radius sweep).
+  // `profile` must be CLOSED, planar, lying in a plane through the axis,
+  // and strictly off the axis (the same on-axis restriction Revolve()
+  // itself imposes on a closed profile - see its own doc comment).
+  // `rail` is sampled once per station, index-for-index, via its own
+  // `DivideByCount()` (NOT reparametrized to arc length against the
+  // angle) - the same "equal count" sample-grid idea the app's own
+  // RailRevolveCommand already uses, just skinned exactly through NURBS
+  // interpolation (SkinSections(), the same machinery Sweep1()/Sweep2()
+  // already share) instead of an approximate curve-through-points fit.
+  // Station k's scale factor is rail's own distance-from-axis there
+  // DIVIDED by its distance-from-axis at station 0, so the profile keeps
+  // its own given size at the sweep's start regardless of the rail's
+  // absolute scale - the same "read once, scale relative to station 0"
+  // convention Sweep2()'s own local-coordinate decoding uses. Only the
+  // radial coordinate is scaled; the axial (along-axis) coordinate of
+  // every profile point is left exactly as given, so the profile's own
+  // height/silhouette shape along the axis never changes, only its
+  // "puffiness" - unlike Sweep2's single uniform 3-axis scale, this is a
+  // 2D (radial-only) scale, the natural revolve counterpart.
+  //
+  // `angle` full (within 1e-12 of 2*pi) gives a periodic, uncapped tube
+  // exactly like Sweep1()'s own closed-rail case (no ends to cap) - the
+  // stations are then `max(stations, 3)` equally spaced around the FULL
+  // circle (no station repeated at both 0 and 2*pi). A partial angle
+  // gives `stations` stations spanning [0, angle] inclusive of both
+  // ends, capped with two planar fans (one per end) when `cap` is true,
+  // exactly as Revolve() caps a closed off-axis profile at a partial
+  // angle. Two straight, non-diverging rails and stations == 2 is not
+  // given a special exact shortcut here (unlike Sweep1()/Sweep2()'s
+  // straight-rail case) since the wall is generally NOT ruled even
+  // between just 2 stations - the profile itself moves along an exact
+  // circular arc between them, not a straight line - but stations == 2
+  // is still accepted and gives the 2-station ruled interpolant (an
+  // approximation of that arc, tightened by more stations).
+  //
+  // Throws std::invalid_argument for a non-unit-normalizable
+  // axis_direction, angle outside (0, 2*pi], stations < 2, an invalid or
+  // open `profile`, a `profile` not planar through the axis or touching/
+  // crossing it, or a `rail` whose own distance from the axis at station
+  // 0 is (numerically) zero, since there is nothing to scale relative to.
+  static Brep RailRevolve(const NurbsCurve& profile, Point3d axis_point, Vector3d axis_direction,
+                          const NurbsCurve& rail, double angle = 2.0 * ON_PI, int stations = 32, bool cap = true);
+
   // Loft: a surface interpolating `sections` in order, degree `degree`
   // (clamped to sections.size() - 1) in the loft direction. Sections are
   // made compatible first - each is clamped if periodic, made rational

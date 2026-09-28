@@ -2140,6 +2140,126 @@ Brep Brep::Revolve(const NurbsCurve& profile, Point3d axis_point, Vector3d axis_
   return AssembleSweptBody(wall.release(), cap_v0, cap_v1, cap_u0, cap_u1, caller);
 }
 
+Brep Brep::RailRevolve(const NurbsCurve& profile_in, Point3d axis_point, Vector3d axis_direction,
+                       const NurbsCurve& rail_in, double angle, int stations, bool cap) {
+  const char* caller = "RailRevolve";
+  ON_3dVector T = axis_direction;
+  if (!T.Unitize()) Fail(caller, "axis_direction must be non-zero");
+  if (!(angle > 0.0) || angle > 2.0 * ON_PI + 1e-12) Fail(caller, "angle must be in (0, 2*pi] radians");
+  if (stations < 2) Fail(caller, "stations must be at least 2");
+  ON_NurbsCurve c = profile_in.raw();
+  if (!c.IsValid()) Fail(caller, "profile is not a valid NURBS curve");
+  ClampIfPeriodic(c);
+  if (!c.IsClosed()) Fail(caller, "profile must be closed - an open-profile rail revolve is not attempted here");
+  ON_NurbsCurve rail = rail_in.raw();
+  if (!rail.IsValid()) Fail(caller, "rail is not a valid NURBS curve");
+
+  const double scale = CurveScale(c) + axis_point.DistanceTo(CvCentroid(c));
+  const double tol = 1e-9 * scale;
+
+  // profile must lie in a plane through the axis, on one side of it - the
+  // same constraint Revolve() itself imposes; e_rho is the radial
+  // direction of the control point farthest from the axis.
+  ON_3dVector e_rho;
+  {
+    double best = -1.0;
+    for (int i = 0; i < c.CVCount(); ++i) {
+      const ON_3dVector d = EuclideanCV(c, i) - axis_point;
+      const ON_3dVector radial = d - T * ON_DotProduct(d, T);
+      if (radial.Length() > best) {
+        best = radial.Length();
+        e_rho = radial;
+      }
+    }
+    if (best <= tol) Fail(caller, "the whole profile lies on the axis - nothing to revolve");
+    e_rho.Unitize();
+  }
+  const ON_3dVector e_phi = ON_CrossProduct(T, e_rho);
+  const ON_Interval dom = c.Domain();
+  const int samples = std::max(256, 32 * c.SpanCount());
+  double min_rho = std::numeric_limits<double>::max();
+  for (int i = 0; i <= samples; ++i) {
+    const ON_3dVector d = c.PointAt(dom.ParameterAt(static_cast<double>(i) / samples)) - axis_point;
+    if (std::fabs(ON_DotProduct(d, e_phi)) > 1e-8 * scale) {
+      Fail(caller, "profile must lie in a plane containing the axis");
+    }
+    min_rho = std::min(min_rho, ON_DotProduct(d, e_rho));
+  }
+  if (min_rho <= tol) {
+    Fail(caller, "profile must stay strictly off the axis - a closed profile touching it is not supported "
+                 "(the touching part would sweep to a degenerate band), the same restriction Revolve() imposes");
+  }
+
+  // Outward orientation: the same (rho, z) half-plane clockwise rule
+  // Revolve() itself uses - see its own doc comment for the derivation.
+  {
+    std::vector<ON_2dPoint> poly;
+    for (int i = 0; i < samples; ++i) {
+      const ON_3dVector d = c.PointAt(dom.ParameterAt(static_cast<double>(i) / samples)) - axis_point;
+      poly.emplace_back(ON_DotProduct(d, e_rho), ON_DotProduct(d, T));
+    }
+    const double area = SignedArea2d(poly);
+    if (std::fabs(area) <= 1e-12 * scale * scale) Fail(caller, "the profile encloses no area with the axis");
+    if (area > 0.0) ReverseKeepDomain(c);
+  }
+
+  // Decode the profile ONCE, into local (rho, z) coordinates about the
+  // axis basis (e_rho, T) - `rail` supplies a per-station radial scale
+  // factor below; the axial coordinate `z` is left untouched at every
+  // station.
+  const int n = c.CVCount();
+  std::vector<double> rho(static_cast<size_t>(n)), z(static_cast<size_t>(n));
+  for (int i = 0; i < n; ++i) {
+    const ON_3dVector d = EuclideanCV(c, i) - axis_point;
+    rho[static_cast<size_t>(i)] = ON_DotProduct(d, e_rho);
+    z[static_cast<size_t>(i)] = ON_DotProduct(d, T);
+  }
+
+  const bool wrap = std::fabs(angle - 2.0 * ON_PI) <= 1e-12;
+  const int m = wrap ? std::max(stations, 3) : stations;
+
+  std::vector<double> rp = rail_in.DivideByCount(wrap ? m : m - 1);
+  if (wrap) rp.pop_back();
+  if (static_cast<int>(rp.size()) != m) Internal(caller, "station count mismatch");
+
+  auto rail_radius = [&](double t) {
+    const ON_3dVector d = rail.PointAt(t) - axis_point;
+    return (d - T * ON_DotProduct(d, T)).Length();
+  };
+  const double r0 = rail_radius(rp[0]);
+  if (r0 <= tol) Fail(caller, "the rail lies on the axis at its own start station - nothing to scale by");
+
+  std::vector<ON_NurbsCurve> copies;
+  copies.reserve(static_cast<size_t>(m));
+  for (int k = 0; k < m; ++k) {
+    const double theta = wrap ? (2.0 * ON_PI * static_cast<double>(k) / static_cast<double>(m))
+                              : (angle * static_cast<double>(k) / static_cast<double>(m - 1));
+    const double s = rail_radius(rp[static_cast<size_t>(k)]) / r0;
+    const ON_3dVector e_rho_k = e_rho * std::cos(theta) + e_phi * std::sin(theta);
+    ON_NurbsCurve ck = c;
+    for (int i = 0; i < n; ++i) {
+      const ON_3dPoint p =
+          axis_point + T * z[static_cast<size_t>(i)] + e_rho_k * (rho[static_cast<size_t>(i)] * s);
+      const double w = c.Weight(i);
+      ck.SetCV(i, ON_4dPoint(p.x * w, p.y * w, p.z * w, w));
+    }
+    copies.push_back(std::move(ck));
+  }
+  MakeCompatible(copies, caller);  // no-op (identical control structure at every station)
+
+  std::unique_ptr<ON_NurbsSurface> wall;
+  if (m == 2) {
+    wall = RuledBetween(copies[0], copies[1], 0.0, 1.0, caller);
+  } else {
+    double period = 1.0;
+    const std::vector<double> params_v = SkinParameters(copies, wrap, &period, caller);
+    wall = SkinSections(copies, std::min(3, m - 1), wrap, params_v, period, caller);
+  }
+
+  const bool want_caps = cap && !wrap;
+  return AssembleSweptBody(wall.release(), want_caps, want_caps, false, false, caller);
+}
+
 Brep Brep::Loft(const std::vector<NurbsCurve>& sections_in, int degree, bool closed, bool cap,
                 const NurbsCurve* start_tangent, const NurbsCurve* end_tangent) {
   const char* caller = "Loft";
