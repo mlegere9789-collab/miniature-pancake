@@ -100,6 +100,19 @@ class Model {
   // an empty name.
   int AddLinetype(const std::string& name, const LinetypePattern& pattern = LinetypePattern());
 
+  // Adds a group to the model and returns its index (>= 0) for use in every
+  // Add*() method's own `group_indices` parameter below - the last field
+  // PARITY_MAP.md's ".3dm attribute/metadata fidelity" evidence names
+  // alongside layers/materials/linetypes/user-strings that this kernel had
+  // no way to write at all: Rhino's own Group/Ungroup commands, which let a
+  // user select every object in a group with one click even though the
+  // objects themselves may span multiple layers - a relationship a .3dm's
+  // layer table cannot express at all. Wraps ON_Group (opennurbs_group.h),
+  // added to the model the same way AddLayer()/AddLinetype() add their own
+  // component types via AddModelComponent(). Returns -1 for an empty
+  // `name`, same contract as AddLayer()/AddLinetype().
+  int AddGroup(const std::string& name);
+
   // Every Add*() below takes an optional object `name` and `layer_index`.
   // Before `name` existed, every object this kernel ever put into a Model
   // got a default, empty ON_3dmObjectAttributes - a real, disclosed gap in
@@ -164,14 +177,26 @@ class Model {
   // `m_linetype_index` with LinetypeSource() switched to
   // ON::linetype_from_object, the same "object, not layer" override
   // pattern `render_color` uses for `m_color`/ColorSource().
+  //
+  // Every Add*() below also takes optional `group_indices`: zero or more
+  // indices returned by AddGroup() above, unlike `layer_index` an object can
+  // belong to any number of groups at once (Rhino's own nested-group model),
+  // so this is a list rather than a single value. An empty (default) list is
+  // a no-op - no behavior change for existing callers, same as every other
+  // optional parameter here. Each index is written via
+  // ON_3dmObjectAttributes::AddToGroup(); passing an index AddGroup() didn't
+  // return is a caller error, same contract `layer_index`/`linetype_index`
+  // already have for AddLayer()/AddLinetype().
   void AddCurve(const NurbsCurve& curve, const std::string& name = std::string(),
                 int layer_index = 0, std::optional<Color> render_color = std::nullopt,
                 const UserStrings& user_strings = UserStrings(),
-                std::optional<int> linetype_index = std::nullopt);
+                std::optional<int> linetype_index = std::nullopt,
+                const std::vector<int>& group_indices = std::vector<int>());
   void AddBrep(const Brep& brep, const std::string& name = std::string(), int layer_index = 0,
                std::optional<Color> render_color = std::nullopt,
                const UserStrings& user_strings = UserStrings(),
-               std::optional<int> linetype_index = std::nullopt);
+               std::optional<int> linetype_index = std::nullopt,
+               const std::vector<int>& group_indices = std::vector<int>());
 
   // Adds a mesh (a box, cylinder, boolean result, ...) as its own model
   // object - the missing counterpart to AddCurve()/AddBrep() that closed
@@ -183,7 +208,8 @@ class Model {
   void AddMesh(const Mesh& mesh, const std::string& name = std::string(), int layer_index = 0,
                std::optional<Color> render_color = std::nullopt,
                const UserStrings& user_strings = UserStrings(),
-               std::optional<int> linetype_index = std::nullopt);
+               std::optional<int> linetype_index = std::nullopt,
+               const std::vector<int>& group_indices = std::vector<int>());
 
   // Adds a SubD control cage/subdivision surface as its own model
   // object - the same "no way to put this object type into a .3dm at
@@ -193,7 +219,8 @@ class Model {
   void AddSubD(const SubD& subd, const std::string& name = std::string(), int layer_index = 0,
                std::optional<Color> render_color = std::nullopt,
                const UserStrings& user_strings = UserStrings(),
-               std::optional<int> linetype_index = std::nullopt);
+               std::optional<int> linetype_index = std::nullopt,
+               const std::vector<int>& group_indices = std::vector<int>());
 
   // Adds a point cloud as its own model object. PointCloud's own doc
   // comment claims ON_PointCloud is "the same one [OpenNURBS'] .3dm
@@ -208,7 +235,8 @@ class Model {
   void AddPointCloud(const PointCloud& cloud, const std::string& name = std::string(),
                      int layer_index = 0, std::optional<Color> render_color = std::nullopt,
                      const UserStrings& user_strings = UserStrings(),
-                     std::optional<int> linetype_index = std::nullopt);
+                     std::optional<int> linetype_index = std::nullopt,
+                     const std::vector<int>& group_indices = std::vector<int>());
 
   int ObjectCount() const;
 
