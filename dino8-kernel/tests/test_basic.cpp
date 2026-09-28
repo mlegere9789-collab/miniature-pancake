@@ -35198,6 +35198,181 @@ void TestThickenRejectsInvalidArguments() {
         "correctness bug, not merely a disclosed limitation");
 }
 
+void TestExtrudeFaceStraightMatchesExactPrismVolume() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::NurbsSurface;
+
+  // parity-map "kernel: Sweeping, lofting, extruding, revolving" -
+  // "Extrude a surface / polysurface face into a solid (ExtrudeSrf)":
+  // previously only Mesh::ExtrudeCappedSolid (mesh-level) existed; no
+  // kernel B-rep face-extrude API. Same flat 3x4 rectangle fixture (area
+  // 12) TestThickenFlatSheetProducesExactBoxVolume uses, straight up +Z
+  // (parallel to the face's own outward normal): volume = area * height.
+  const std::vector<Point3d> grid = {P(0, 0, 0), P(0, 4, 0), P(3, 0, 0), P(3, 4, 0)};
+  const NurbsSurface flat = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+  const Brep sheet = Brep::FromSurface(flat);
+
+  const Brep solid = Brep::ExtrudeFace(sheet, 0, Vector3d(0, 0, 2));
+  Check(solid.FaceCount() == 6, "ExtrudeFace() adds exactly 2 caps + 4 side walls, same face count as Thicken()");
+  const Mesh m = solid.TessellateToClosedMesh(4, 4);
+  Check(m.IsClosedManifold(), "ExtrudeFace() on a flat face is a genuine closed 2-manifold");
+  Check(std::fabs(m.Volume() - 24.0) < 1e-6,
+        "ExtrudeFace(direction=(0,0,2)) on the flat 3x4 face (area 12) gives exactly area * height = 24");
+  const auto bbox = solid.GetTightBoundingBox();
+  Check(bbox.min.z > -1e-9 && std::fabs(bbox.max.z - 2.0) < 1e-9,
+        "ExtrudeFace() keeps the original face (z=0) as one cap and translates only the other, to z=2 - not "
+        "split across both sides, same one-directional convention Extrude()/Thicken() themselves use");
+}
+
+void TestExtrudeFaceObliqueDirectionMatchesCavalieriVolume() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::NurbsSurface;
+
+  // Unlike Thicken() (built on NurbsSurface::OffsetApproximate(), which
+  // moves each control point along its own Greville NORMAL and can fold
+  // for too-large an offset), ExtrudeFace() is a pure translate - no
+  // curvature-dependent self-intersection is possible locally, so an
+  // OBLIQUE direction (not parallel to the face's own normal) is fine,
+  // and Cavalieri's principle applies exactly: shearing every horizontal
+  // cross-section by the same lateral amount never changes the enclosed
+  // volume, which is therefore still area * (the direction's own
+  // component ALONG the face's normal) - the same closed-form cross-check
+  // Brep::ExtrudeToBoundary()'s own oblique-direction test already
+  // relies on (TestExtrudeToBoundaryHandlesReversedWindingAndDirection).
+  const std::vector<Point3d> grid = {P(0, 0, 0), P(0, 4, 0), P(3, 0, 0), P(3, 4, 0)};
+  const NurbsSurface flat = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+  const Brep sheet = Brep::FromSurface(flat);
+
+  const Brep solid = Brep::ExtrudeFace(sheet, 0, Vector3d(1.5, -0.7, 2.0));
+  const Mesh m = solid.TessellateToClosedMesh(4, 4);
+  Check(m.IsClosedManifold(), "ExtrudeFace() with an oblique direction is still a genuine closed 2-manifold");
+  Check(std::fabs(m.Volume() - 24.0) < 1e-6,
+        "ExtrudeFace(direction=(1.5,-0.7,2.0)) on the same area-12 face gives area * z-component = 24 exactly, "
+        "regardless of the lateral (x, y) shear - Cavalieri's principle, not merely the axis-aligned case");
+}
+
+void TestExtrudeFaceOnCurvedFreeformSurfaceExceedsThickenGuard() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::NurbsSurface;
+
+  // The same bulged-freeform fixture TestThickenCurvedSheetProducesGenuineClosedSolid
+  // uses, at the SAME thickness (1.0) that fixture's own final check
+  // confirms Thicken() itself refuses (its own OffsetApproximate()
+  // curvature-fold guard). ExtrudeFace() has no such guard - a straight
+  // translate never folds a surface through its own center of curvature,
+  // however tight - so this must succeed where Thicken() would throw, a
+  // genuine capability difference, not just a restated one.
+  std::vector<Point3d> grid;
+  for (int i = 0; i < 4; ++i) {
+    for (int j = 0; j < 4; ++j) {
+      grid.push_back(P(i, j, (i == 2 && j == 2) ? 3.0 : 0.0));
+    }
+  }
+  const NurbsSurface bulge = NurbsSurface::FromControlGrid(grid, 4, 4, 3, 3);
+  const Brep sheet = Brep::FromSurface(bulge);
+
+  Check(Throws([&] { Brep::Thicken(sheet, 1.0); }),
+        "sanity check: Thicken() itself still refuses this thickness on this surface (unchanged behavior)");
+
+  const Brep solid = Brep::ExtrudeFace(sheet, 0, Vector3d(0, 0, 1.0));
+  Check(solid.FaceCount() == 6, "ExtrudeFace() on the curved bulge adds exactly 2 caps + 4 side walls");
+  const Mesh m = solid.TessellateToClosedMesh(24, 24);
+  Check(m.IsClosedManifold(),
+        "ExtrudeFace() on a genuinely curved face is still a real closed 2-manifold, at a thickness Thicken() "
+        "itself refuses for the identical surface");
+  // Cavalieri's principle, exactly: `far_surf` is `bulge` translated by a
+  // constant (0, 0, 1), so at every (x, y) the wall connects height h(x, y)
+  // (whatever the bulge's own local height is there) straight up to
+  // h(x, y) + 1 - a vertical slab of thickness EXACTLY 1 above every point
+  // of the (bijective, degree-3-Bezier-exact) [0, 3] x [0, 3] xy-footprint,
+  // regardless of how the bulge itself curves - so the enclosed volume is
+  // area * height = 9 * 1 = 9 exactly, the SAME closed form the flat-sheet
+  // case above gives, not a larger one: the bulge changes WHERE the slab
+  // sits, never how much of it there is.
+  Check(std::fabs(m.Volume() - 9.0) < 0.02,
+        "ExtrudeFace()'s enclosed volume matches area * height = 9 * 1 = 9 exactly (Cavalieri's principle: a "
+        "constant-vector translate keeps the slab's thickness uniform regardless of the surface's own curvature), "
+        "not merely bounded below by it");
+}
+
+void TestExtrudeFaceOnMultiFaceBodyExtractsOneFaceIntoANewIndependentSolid() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+
+  // Unlike Thicken() (which requires sheet.raw().m_F.Count() == 1),
+  // ExtrudeFace() takes a face_index into a genuine multi-face polysurface
+  // - Box()'s own top face (index 1, +z, see Brep::Box()'s own
+  // face_grids comment: {v4, v7, v5, v6}) - and builds a fresh,
+  // independent solid from JUST that face, unrelated to the other 5. A
+  // 2 x 3 top face (x in [0,2], y in [0,3], area 6) extruded straight up
+  // by 4 (parallel to its own outward +Z normal) gives an exact prism,
+  // volume = 6 * 4 = 24, same closed form as the single-face fixture
+  // above, now sourced from one face of a multi-face body.
+  const Brep box = Brep::Box(0, 0, 0, 2, 3, 1);
+  Check(Throws([&] { Brep::Thicken(box, 1.0); }), "sanity check: Thicken() itself still refuses this multi-face body");
+
+  const Brep solid = Brep::ExtrudeFace(box, /*face_index=*/1, Vector3d(0, 0, 4));
+  Check(solid.FaceCount() == 6,
+        "ExtrudeFace() on one face of a 6-face Box() gives a fresh 6-face solid (2 caps + 4 walls), not 11 faces "
+        "- the source body's other 5 faces play no part in the result");
+  const Mesh m = solid.TessellateToClosedMesh(4, 4);
+  Check(m.IsClosedManifold(), "ExtrudeFace() on a Box() face is a genuine closed 2-manifold");
+  Check(std::fabs(m.Volume() - 24.0) < 1e-6,
+        "ExtrudeFace(Box() top face, direction=(0,0,4)) gives exactly area * height = 6 * 4 = 24");
+  const auto bbox = solid.GetTightBoundingBox();
+  Check(std::fabs(bbox.min.z - 1.0) < 1e-9 && std::fabs(bbox.max.z - 5.0) < 1e-9,
+        "the new solid starts exactly at the source face's own height (z=1, Box()'s own top) and extends to z=5");
+}
+
+void TestExtrudeFaceUncappedGivesOpenTube() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::NurbsSurface;
+
+  // cap=false: only the 4 ruled side walls, no end caps - an open shell
+  // with two free (naked) boundary loops, the same capped/uncapped
+  // distinction Extrude()/ExtrudeAlongCurve()/Thicken()'s own sibling
+  // factories in this file already draw.
+  const std::vector<Point3d> grid = {P(0, 0, 0), P(0, 1, 0), P(1, 0, 0), P(1, 1, 0)};
+  const NurbsSurface flat = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+  const Brep sheet = Brep::FromSurface(flat);
+
+  const Brep tube = Brep::ExtrudeFace(sheet, 0, Vector3d(0, 0, 1), /*cap=*/false);
+  Check(tube.FaceCount() == 4, "cap=false -> exactly the 4 side walls, no end caps");
+  Check(!tube.TessellateToClosedMesh(4, 4).IsClosedManifold(),
+        "cap=false -> genuinely open (the two missing end caps leave real naked boundary loops), same as "
+        "Extrude()'s/ExtrudeAlongCurve()'s own uncapped case");
+}
+
+void TestExtrudeFaceRejectsInvalidArguments() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point2d;
+
+  const std::vector<Point3d> grid = {P(0, 0, 0), P(0, 1, 0), P(1, 0, 0), P(1, 1, 0)};
+  const NurbsSurface flat = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+  const Brep sheet = Brep::FromSurface(flat);
+
+  Check(Throws([&] { Brep::ExtrudeFace(sheet, 0, Vector3d(0, 0, 0)); }), "ExtrudeFace() throws for a zero direction");
+  Check(Throws([&] { Brep::ExtrudeFace(sheet, -1, Vector3d(0, 0, 1)); }),
+        "ExtrudeFace() throws for a negative face_index");
+  Check(Throws([&] { Brep::ExtrudeFace(sheet, 1, Vector3d(0, 0, 1)); }),
+        "ExtrudeFace() throws for a face_index beyond this Brep's single face slot");
+
+  const Brep sphere = Brep::Sphere(P(0, 0, 0), 1.0);
+  Check(Throws([&] { Brep::ExtrudeFace(sphere, 0, Vector3d(0, 0, 0.1)); }),
+        "ExtrudeFace() throws for a single-face body that is closed/periodic (a full sphere wraps back on "
+        "itself in u), the same scope Thicken() itself carries");
+
+  const std::vector<Point2d> trim = {Point2d(0.2, 0.2), Point2d(0.8, 0.2), Point2d(0.8, 0.8), Point2d(0.2, 0.8)};
+  const Brep trimmed = Brep::TrimmedPlanarFace(flat, trim);
+  Check(Throws([&] { Brep::ExtrudeFace(trimmed, 0, Vector3d(0, 0, 1)); }),
+        "ExtrudeFace() throws for a trimmed face - extruding its full untrimmed rectangle instead would be a "
+        "correctness bug, not merely a disclosed limitation");
+}
+
 void TestPipeVariable() {
   using RP = std::pair<double, double>;
 
@@ -40441,6 +40616,12 @@ int main() {
   sweep_tests::TestThickenSymmetricPutsOriginalSurfaceOnMidplane();
   sweep_tests::TestThickenCurvedSheetProducesGenuineClosedSolid();
   sweep_tests::TestThickenRejectsInvalidArguments();
+  sweep_tests::TestExtrudeFaceStraightMatchesExactPrismVolume();
+  sweep_tests::TestExtrudeFaceObliqueDirectionMatchesCavalieriVolume();
+  sweep_tests::TestExtrudeFaceOnCurvedFreeformSurfaceExceedsThickenGuard();
+  sweep_tests::TestExtrudeFaceOnMultiFaceBodyExtractsOneFaceIntoANewIndependentSolid();
+  sweep_tests::TestExtrudeFaceUncappedGivesOpenTube();
+  sweep_tests::TestExtrudeFaceRejectsInvalidArguments();
   sweep_tests::TestExtrudeTaperedCircularProfileIsExactConeFrustum();
   sweep_tests::TestExtrudeTaperedConvexPolygonIsExactPlanarFrustum();
   sweep_tests::TestExtrudeTaperedObliqueDirectionIsShearedFrustum();

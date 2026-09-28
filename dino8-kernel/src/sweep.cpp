@@ -1583,6 +1583,100 @@ Brep Brep::ExtrudeTapered(const NurbsCurve& profile, Vector3d direction, double 
   return Loft({profile, top_translated}, 1, /*closed=*/false, cap);
 }
 
+Brep Brep::ExtrudeFace(const Brep& body, int face_index, Vector3d direction, bool cap) {
+  const char* caller = "ExtrudeFace";
+  const double L = direction.Length();
+  if (!(L > 0.0)) Fail(caller, "direction must be non-zero (its length is the extrusion distance)");
+  const ON_Brep& src = body.raw();
+  if (face_index < 0 || face_index >= src.m_F.Count()) {
+    Fail(caller, "face_index " + std::to_string(face_index) + " is out of range (this Brep has " +
+                     std::to_string(src.m_F.Count()) + " face slot(s))");
+  }
+  const ON_BrepFace& face = src.m_F[face_index];
+  if (face.m_face_index < 0) {
+    Fail(caller, "face_index " + std::to_string(face_index) + " refers to a deleted face");
+  }
+  const bool trim_table_ok = body.face_trim_loops_.size() == static_cast<size_t>(src.m_F.Count()) &&
+                              body.face_hole_loops_.size() == static_cast<size_t>(src.m_F.Count());
+  if (!trim_table_ok || !body.face_trim_loops_[static_cast<size_t>(face_index)].empty() ||
+      !body.face_hole_loops_[static_cast<size_t>(face_index)].empty()) {
+    Fail(caller,
+         "face_index's face must be untrimmed (e.g. a face built by FromSurface()/Box()/Extrude() itself) - a "
+         "trimmed face's real boundary is not its surface's 4 domain isocurves, and this Brep's own trim side "
+         "tables either are not populated or record a real trim/hole loop for this face");
+  }
+  const ON_Surface* raw_surface = face.SurfaceOf();
+  if (raw_surface == nullptr) Internal(caller, "face has no surface");
+  ON_NurbsSurface near_surf;
+  if (!raw_surface->GetNurbForm(near_surf)) {
+    Fail(caller, "face's surface could not be converted to an exact NURBS form");
+  }
+  if (near_surf.IsClosed(0) || near_surf.IsClosed(1)) {
+    Fail(caller,
+         "the face's surface must be open (non-periodic) in both parametric directions - a fully or partially "
+         "closed face (e.g. a full cylinder, sphere, or torus patch) needs a variable side-wall count this "
+         "scoped version does not attempt");
+  }
+
+  ON_NurbsSurface far_surf = near_surf;
+  far_surf.Translate(direction);
+
+  const ON_Interval du = near_surf.Domain(0), dv = near_surf.Domain(1);
+
+  Brep result;
+  ON_Brep& brep = result.raw();
+  int faces = 0;
+
+  if (cap) {
+    // Same "verify, don't assume" outward convention every sweep factory
+    // in this file ends with: build one cap reversed and the other not,
+    // then let the tessellated-volume sign check below correct a wrong
+    // guess for this particular face's own (arbitrary) parametrization.
+    auto add_cap = [&](const ON_NurbsSurface& s, bool brev) {
+      auto* copy = new ON_NurbsSurface(s);
+      const int si = brep.AddSurface(copy);
+      ON_BrepFace& f = brep.NewFace(si);
+      f.m_bRev = brev;
+    };
+    add_cap(near_surf, /*brev=*/true);
+    add_cap(far_surf, /*brev=*/false);
+    faces += 2;
+  }
+
+  // Four side walls, one per edge of the domain rectangle - identical
+  // construction to Thicken()'s own add_wall lambda (see its own doc
+  // comment for the CCW-as-seen-from-`far`-side walk convention that
+  // makes Sw_u x Sw_v point outward).
+  auto add_wall = [&](int dir, double param, bool reverse_iso) {
+    std::unique_ptr<ON_NurbsCurve> c_near(IsoCurveOf(near_surf, dir, param, caller));
+    std::unique_ptr<ON_NurbsCurve> c_far(IsoCurveOf(far_surf, dir, param, caller));
+    if (reverse_iso) {
+      ReverseKeepDomain(*c_near);
+      ReverseKeepDomain(*c_far);
+    }
+    std::unique_ptr<ON_NurbsSurface> wall = RuledBetween(*c_near, *c_far, 0.0, 1.0, caller);
+    const int si = brep.AddSurface(wall.release());
+    brep.NewFace(si);
+    ++faces;
+  };
+  add_wall(0, dv.Min(), /*reverse_iso=*/false);  // v = v_min, walked +u
+  add_wall(1, du.Max(), /*reverse_iso=*/false);  // u = u_max, walked +v
+  add_wall(0, dv.Max(), /*reverse_iso=*/true);   // v = v_max, walked -u
+  add_wall(1, du.Min(), /*reverse_iso=*/true);   // u = u_min, walked -v
+
+  brep.SetTrimIsoFlags();
+  result.AppendUntrimmedFaceSideTables(faces);
+
+  if (cap && brep.IsSolid()) {
+    // Outward-orientation safety net, the same one Thicken()/
+    // AssembleSweptBody() themselves use.
+    const Mesh check = result.TessellateToClosedMesh(16, 16);
+    if (check.Volume() < 0.0) brep.Flip();
+  }
+
+  return result;
+}
+
 Brep Brep::Thicken(const Brep& sheet, double thickness, bool symmetric) {
   const char* caller = "Thicken";
   if (!std::isfinite(thickness) || thickness == 0.0) {

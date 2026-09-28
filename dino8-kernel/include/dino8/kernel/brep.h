@@ -396,6 +396,52 @@ class Brep {
   // built anyway.
   static Brep ExtrudeTapered(const NurbsCurve& profile, Vector3d direction, double draft_angle, bool cap = true);
 
+  // ExtrudeFace: extrude one existing B-rep FACE (a face of `body`, given
+  // by its global `face_index` - the same index FaceCount()/NeighborFaces()
+  // use) into a new, independent solid - PARITY_MAP.md's "Extrude a
+  // surface / polysurface face into a solid (ExtrudeSrf)" gap, previously
+  // kernel-missing entirely (only Mesh::ExtrudeCappedSolid existed; the app
+  // itself loops ON_BrepExtrudeFace with the direction always the CPlane
+  // normal). Unlike Extrude() (which sweeps a bare NurbsCurve profile),
+  // this sweeps an EXISTING FACE'S OWN SURFACE - so, unlike every profile-
+  // based factory in this file, the swept cross-section need not be
+  // planar, closed, or even star-shaped: a pure translation by `direction`
+  // never folds a surface through itself locally (no curvature-dependent
+  // self-intersection to guard against, unlike Thicken()'s own
+  // NormalAt()-offset, which can), so this is EXACT for any degree, any
+  // shape face, planar or freeform alike.
+  //
+  // Construction mirrors Thicken() (sweep.cpp) with a straight translate
+  // standing in for Thicken()'s own curvature-sensitive
+  // NurbsSurface::OffsetApproximate(): `near` is face_index's own surface,
+  // unmoved; `far` is the SAME control net translated by `direction`
+  // (bit-exact - a translate moves every control point by the same vector,
+  // so `far`'s 4 boundary isocurves are trivially compatible with
+  // `near`'s own, at identical parameter values, for RuledBetween() to
+  // stitch - no separate reparameterization step, the same fact Thicken()
+  // relies on). With `cap` (default true), `near` and `far` become the
+  // solid's own two end faces (one reversed so both point outward,
+  // resolved by the same tessellated-volume sign safety net every sweep
+  // factory in this file ends with, not asserted from the source face's
+  // own possibly-arbitrary parametrization); with `cap = false`, only the
+  // 4 ruled side walls are built, an open tube with two free boundary
+  // edges (matching Extrude()'s own capped/uncapped distinction).
+  //
+  // Scope, checked and refused (std::invalid_argument, or std::out_of_range
+  // for the index itself) rather than silently misbuilt: `face_index`
+  // must name a live face of `body`; that face must be UNTRIMMED (checked
+  // directly against `body`'s own face_trim_loops_/face_hole_loops_ side
+  // tables - the same precondition, and for the same reason, Thicken()
+  // itself checks: a trimmed face's real boundary is not its surface's 4
+  // domain isocurves) and those tables must actually be populated for
+  // `body` (some general operations elsewhere in this file clear them
+  // wholesale rather than update them - see GetTightBoundingBox()'s own
+  // "trim_table_ok" check for the same caveat); the face's surface must be
+  // open (IsClosed() false) in BOTH parametric directions, the same "no
+  // variable side-wall count" scope Thicken() itself carries; and
+  // `direction` must be non-zero.
+  static Brep ExtrudeFace(const Brep& body, int face_index, Vector3d direction, bool cap = true);
+
   // Thicken: the direct Brep-level counterpart to Mesh::Thicken() (mesh.h)
   // - PARITY_MAP.md's "kernel: Feature operations" gap "Thicken a sheet
   // body into a solid" names Mesh::Thicken as the only thing that already
