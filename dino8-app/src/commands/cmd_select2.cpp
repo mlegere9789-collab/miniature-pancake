@@ -66,8 +66,7 @@ std::optional<SubObjectRef> NearestControlPoint(CommandContext& ctx, Point3d p, 
   std::optional<SubObjectRef> best;
   double bd = std::numeric_limits<double>::max();
   for (const SceneObject& o : ctx.Doc().Objects()) {
-    if (!o.selected && !o.show_control_points) continue;
-    if (!o.show_control_points) continue;
+    if (!o.selected || !o.show_control_points) continue;
     const int n = ControlPointCount(o);
     for (int i = 0; i < n; ++i) {
       Point3d cp;

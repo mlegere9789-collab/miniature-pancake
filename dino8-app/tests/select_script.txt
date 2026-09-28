@@ -284,3 +284,21 @@ What
 UngroupAll
 SelectionFilter
 Cancel
+# --- SelU/SelV/SelUV control-point picking (NearestControlPoint in
+# cmd_select2.cpp) must only ever consider the CURRENTLY SELECTED object(s)
+# with PointsOn - never a different, no-longer-selected object that still
+# has stale PointsOn state left over from earlier. A curve is PointsOn'd
+# then deselected (by selecting something else without PointsOff), so its
+# control points stay visible but it is no longer selected; a surface is
+# then PointsOn'd and left selected. Clicking exactly on the curve's own
+# (deselected, but still nearer) control point must resolve to the
+# selected surface instead - not silently reach across into the deselected
+# curve just because it happens to be the closer one.
+Line 500,0,0 510,0,0
+SelLast
+PointsOn
+Plane 700,0,0 710,10,0
+SelLast
+PointsOn
+SelU
+500,0,0
