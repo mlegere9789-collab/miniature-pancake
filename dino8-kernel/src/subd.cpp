@@ -1,6 +1,7 @@
 #include "dino8/kernel/subd.h"
 
 #include <algorithm>
+#include <cmath>
 #include <stdexcept>
 #include <unordered_map>
 
@@ -86,6 +87,81 @@ SubD SubD::Transform(const ON_Xform& xform) const {
   if (!result.subd_.Transform(xform)) {
     throw std::invalid_argument("dino8::kernel::SubD::Transform: ON_SubD::Transform failed (xform is not a valid transform)");
   }
+  return result;
+}
+
+SubD SubD::Symmetrize(Vector3d plane_normal, double plane_offset, double point_tolerance) const {
+  if (!plane_normal.Unitize()) {
+    throw std::invalid_argument(
+        "dino8::kernel::SubD::Symmetrize: plane_normal must be nonzero");
+  }
+
+  const auto signed_distance = [&](const Point3d& p) {
+    return plane_normal.x * p.x + plane_normal.y * p.y + plane_normal.z * p.z - plane_offset;
+  };
+  const auto reflect = [&](const Point3d& p, double signed_dist) {
+    return p - 2.0 * signed_dist * plane_normal;
+  };
+
+  // Snapshot the ORIGINAL faces' corner points before mutating `result` -
+  // once mirrored faces start getting added below, result's own iterators
+  // would otherwise walk those too.
+  struct FaceCorners {
+    std::vector<Point3d> points;
+  };
+  std::vector<FaceCorners> original_faces;
+  ON_SubDFaceIterator fit = subd_.FaceIterator();
+  for (const ON_SubDFace* f = fit.FirstFace(); f != nullptr; f = fit.NextFace()) {
+    const unsigned int count = f->EdgeCount();
+    FaceCorners corners;
+    corners.points.reserve(count);
+    for (unsigned int i = 0; i < count; ++i) {
+      const ON_SubDVertex* v = f->Vertex(i);
+      if (v == nullptr) {
+        throw std::runtime_error(
+            "dino8::kernel::SubD::Symmetrize: a face has a null vertex");
+      }
+      corners.points.push_back(v->ControlNetPoint());
+    }
+    original_faces.push_back(std::move(corners));
+  }
+
+  SubD result = *this;  // keeps the original half exactly as-is
+
+  for (const FaceCorners& face : original_faces) {
+    const unsigned int count = static_cast<unsigned int>(face.points.size());
+    // Reversed order: a reflection always flips orientation, so walking
+    // the original loop backwards is what keeps the mirrored face's
+    // winding consistent with the rest of `result` (see this method's
+    // own "flip" doc comment).
+    std::vector<const ON_SubDVertex*> mirrored_vertices(count);
+    for (unsigned int i = 0; i < count; ++i) {
+      const Point3d& original_point = face.points[count - 1 - i];
+      const double s = signed_distance(original_point);
+      // On-plane: reuse the SAME vertex (found by position in `result`,
+      // which already holds it from the initial copy) instead of adding
+      // a duplicate at its own unchanged position - this is the "weld".
+      const Point3d target = std::abs(s) <= point_tolerance ? original_point : reflect(original_point, s);
+      const ON_SubDVertex* v = result.subd_.FindOrAddVertex(&target.x, point_tolerance);
+      if (v == nullptr) {
+        throw std::runtime_error(
+            "dino8::kernel::SubD::Symmetrize: ON_SubD::FindOrAddVertex failed");
+      }
+      mirrored_vertices[i] = v;
+    }
+    ON_SubDFace* added =
+        result.subd_.FindOrAddFace(ON_SubDEdgeTag::Unset, mirrored_vertices.data(), count);
+    if (added == nullptr) {
+      throw std::runtime_error(
+          "dino8::kernel::SubD::Symmetrize: ON_SubD::FindOrAddFace failed for a mirrored face");
+    }
+  }
+
+  // New vertices/edges above were added with Unset tags on purpose (per
+  // FindOrAddFace's own doc comment) - this is the one call that resolves
+  // all of them from context (an edge with faces on both sides becomes
+  // Smooth, a still-naked one stays a boundary edge, etc).
+  result.subd_.UpdateAllTagsAndSectorCoefficients(/*bUnsetValuesOnly=*/true);
   return result;
 }
 

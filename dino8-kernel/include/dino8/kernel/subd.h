@@ -202,6 +202,42 @@ class SubD {
   // back an untransformed or partially-transformed copy.
   SubD Transform(const ON_Xform& xform) const;
 
+  // Mirrors this SubD's entire control cage across the plane
+  // `{p : p . plane_normal == plane_offset}` (same convention as
+  // `SplitByPlane()` in boolean.h) and combines the original half with
+  // its mirrored copy into a single result - closing the "no
+  // flip/weld" half of PARITY_MAP.md's subd_mesh "SubD symmetry/
+  // mirror-in-place" gap that `Transform()`'s own doc comment above
+  // already flags but does not fix:
+  //
+  //  - flip: each mirrored face's vertex order is reversed before
+  //    being added, undoing the orientation reversal a reflection
+  //    always introduces, so the mirrored half comes out right-side-out
+  //    (not the "inside-out" copy a bare `Transform(mirror_xform)`
+  //    would give, per that method's own documented caveat).
+  //  - weld: any ORIGINAL vertex already within `point_tolerance` of
+  //    the mirror plane is reused as-is for the mirrored face touching
+  //    it, instead of being duplicated at its own (unchanged, since
+  //    it's on the plane) reflected position - so a naked boundary loop
+  //    that already lies in the mirror plane becomes a single shared
+  //    seam between the two halves (each of its edges now has both an
+  //    original-side and a mirrored-side face, so it stops being naked)
+  //    rather than two separate coincident-but-disconnected loops.
+  //
+  // Still partial, deliberately not attempted here: live constrained
+  // symmetric editing (a later edit to one half automatically
+  // re-mirroring into the other) is a distinct, materially larger
+  // feature - this produces one static symmetrized snapshot, with no
+  // ongoing relationship between the two halves afterward. A vertex
+  // that starts strictly off-plane is always duplicated (never welded
+  // to a same-side neighbor), so this only closes gaps that coincide
+  // with the mirror plane itself, not general internal seams.
+  //
+  // Throws std::invalid_argument if `plane_normal` is zero (or too
+  // close to it to unitize), the same failure convention `Transform()`
+  // above uses for a degenerate input.
+  SubD Symmetrize(Vector3d plane_normal, double plane_offset, double point_tolerance = 1e-9) const;
+
   // Converts the *current* subdivision level's control net to real NURBS
   // patches, one per face - a genuine Catmull-Clark limit-surface
   // conversion, not the "just subdivide a lot and facet it" approximation

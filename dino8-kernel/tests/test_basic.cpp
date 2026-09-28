@@ -10823,6 +10823,88 @@ void TestSubDTransformMovesScalesAndStaysValidUnderMirror() {
   Check(threw, "Transform() throws std::invalid_argument for a genuinely invalid (NaN-carrying) xform");
 }
 
+// SubD::Symmetrize(): an OPEN unit box missing its top face (5 quads,
+// naked at z=1) mirrored across the z=1 plane. If the "weld" half works,
+// the 4 top-boundary vertices are reused rather than duplicated (12
+// vertices total, not 16) and the top boundary's 4 naked edges become
+// interior (0 naked edges left anywhere). If the "flip" half works, the
+// mirrored faces come out right-side-out, not inside-out - checked two
+// independent ways: SubD::Check() finds no non-manifold edges/vertices
+// (an inconsistently-wound mirror copy sharing edges with the original
+// half would show up there), and the resulting mesh's signed Volume() is
+// the correct POSITIVE 1x1x2 = 2.0 (a flipped half would corrupt the
+// divergence-theorem sum, not just its sign, since the two halves no
+// longer agree on which side is "outside").
+void TestSubDSymmetrizeWeldsSeamAndFlipsMirroredFaces() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SubD;
+  using dino8::kernel::Vector3d;
+
+  Mesh half;
+  ON_Mesh& raw = half.raw();
+  raw.m_V.Append(ON_3fPoint(0, 0, 0));  // 0
+  raw.m_V.Append(ON_3fPoint(1, 0, 0));  // 1
+  raw.m_V.Append(ON_3fPoint(1, 1, 0));  // 2
+  raw.m_V.Append(ON_3fPoint(0, 1, 0));  // 3
+  raw.m_V.Append(ON_3fPoint(0, 0, 1));  // 4
+  raw.m_V.Append(ON_3fPoint(1, 0, 1));  // 5
+  raw.m_V.Append(ON_3fPoint(1, 1, 1));  // 6
+  raw.m_V.Append(ON_3fPoint(0, 1, 1));  // 7
+  const auto add_quad = [&raw](int a, int b, int c, int d) {
+    ON_MeshFace f;
+    f.vi[0] = a;
+    f.vi[1] = b;
+    f.vi[2] = c;
+    f.vi[3] = d;
+    raw.m_F.Append(f);
+  };
+  add_quad(0, 3, 2, 1);  // bottom (-z)
+  add_quad(0, 1, 5, 4);  // front (-y)
+  add_quad(3, 7, 6, 2);  // back (+y)
+  add_quad(0, 4, 7, 3);  // left (-x)
+  add_quad(1, 2, 6, 5);  // right (+x)
+  // Deliberately no top (+z) face - open at z=1.
+
+  SubD subd = SubD::FromControlMesh(half);
+  Check(subd.FaceCount() == 5 && subd.VertexCount() == 8,
+        "the open half starts as 5 faces / 8 vertices, as built");
+  const SubD::SubDCheckReport before = subd.Check();
+  Check(before.naked_edges == 4 && before.body_count == 1,
+        "the open top is exactly 4 naked edges before symmetrizing");
+
+  const SubD doubled = subd.Symmetrize(Vector3d(0, 0, 1), 1.0, 1e-9);
+
+  Check(doubled.VertexCount() == 12,
+        "8 original vertices + 4 new mirrored ones for the bottom corners - the 4 top corners "
+        "(already on the mirror plane) are WELDED, not duplicated (would be 16 unwelded)");
+  Check(doubled.FaceCount() == 10, "5 original faces + 5 mirrored faces");
+
+  const SubD::SubDCheckReport after = doubled.Check();
+  Check(after.naked_edges == 0,
+        "the former top boundary is now shared between an original-side and a mirrored-side "
+        "face, so it's no longer naked anywhere - the seam is genuinely welded");
+  Check(after.non_manifold_edges == 0 && after.non_manifold_vertices == 0 && after.body_count == 1,
+        "a single closed, still-manifold body - a botched (unflipped) mirror half would tend to "
+        "create non-manifold edges where the two halves meet");
+  Check(doubled.IsValid(), "the symmetrized result is a valid SubD");
+
+  const Mesh mesh = doubled.ToApproximateMesh();
+  Check(mesh.IsClosedManifold(), "the doubled box's control net is itself already a closed manifold mesh");
+  Check(std::abs(mesh.Volume() - 2.0) < 1e-9,
+        "signed Volume() is exactly +2.0 (a 1x1x2 box) - not just closed but correctly, "
+        "consistently wound: an inside-out mirrored half would corrupt this sum, not just "
+        "flip its sign");
+
+  bool threw = false;
+  try {
+    (void)subd.Symmetrize(Vector3d(0, 0, 0), 1.0);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "Symmetrize() throws std::invalid_argument for a zero plane_normal");
+}
+
 void TestSubDSetEdgeSharpnessCreatesRealSemiSharpCrease() {
   using dino8::kernel::Mesh;
   using dino8::kernel::Point3d;
@@ -33032,6 +33114,7 @@ int main() {
   TestSubDFromNurbsSurfaceExactOnFlatGrid();
   TestSubDCapBoundaryLoopAddsGenuineNgonAndRetagsSmooth();
   TestSubDTransformMovesScalesAndStaysValidUnderMirror();
+  TestSubDSymmetrizeWeldsSeamAndFlipsMirroredFaces();
   TestSubDSetEdgeSharpnessCreatesRealSemiSharpCrease();
   TestSubDSetCreaseTagsAndUntagsEdges();
   TestSubDFlatQuadGridStaysFlatAndAreaExact();
