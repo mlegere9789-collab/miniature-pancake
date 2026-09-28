@@ -1497,6 +1497,119 @@ authoritative if it has moved further still by the time this is read.
 This session's only source edits are dino8-kernel/include/dino8/kernel/
 brep.h, dino8-kernel/src/sweep.cpp, and dino8-kernel/tests/test_basic.cpp.
 
+**Sixteenth same-day follow-up:** `git log --oneline -30 -- dino8-kernel/src`
+at the start of this session showed `52de4f8` (`kernel: add SubD::Weld()`)
+as HEAD, with the Fifteenth follow-up's own `Brep::ExtrudeAlongCurve`
+(`d2cfd53`) as the most recent commit touching **kernel: Sweeping, lofting,
+extruding, revolving** specifically - so this session picked the next
+highest-value still-`[partial]` item in that same category rather than
+duplicating either: "Extrude to a point", which this document's own
+evidence already named as a genuine kernel-level hole - there was no B-rep
+(as opposed to mesh) way to cone a curve to a point in this kernel at all,
+only `Mesh::ConeToApex` (mesh-only) and `Brep::Loft`'s own refusal to cap a
+collapsed end section.
+
+`Brep::ExtrudeToPoint(profile, apex, cap)` (brep.h:513; sweep.cpp:1701)
+closes it: the wall is `FanSurface()` (sweep.cpp:927) - the SAME degree-
+(p, 1) fan construction `AddFanCap()` already builds for flat end caps
+throughout this file - reused here as the wall itself, assembled directly
+through `ON_Brep::NewFace`'s own closed-in-u/singular-at-v0 handling
+(confirmed empirically by dumping the built topology's own vertex/edge/
+trim tables via a scratch harness before trusting it: one apex vertex, one
+closed rim edge, one seam edge that appears twice in the wall's own loop -
+deliberately NOT routed through `AssembleSweptBody()`, which explicitly
+refuses any wall singular at v0/v1, sweep.cpp:1084, since it exists for
+non-degenerate rectangular sweeps). A real bug surfaced and was fixed
+building this, caught the same "measure it, don't assume it" way this
+document's own house style expects: the first draft picked the wall's
+outward-orientation direction as pointing FROM the profile's plane TOWARD
+`apex` (mirroring `Extrude()`'s own `direction` variable by name only,
+not by role) - which is backwards, since `Extrude()`'s own `direction`
+points from its wall's v = 0 end to its v = 1 end, while `apex` is this
+wall's v = 0 end (not v = 1). The bug was invisible in `raw().IsValid()`
+and even in a plain positive-looking tessellated volume for ONE sign of
+apex offset, but `raw().IsSolid()` (`IsManifold(&oriented, ...)`) caught it
+directly: `oriented` was false for the capped result (the wall's own rim
+trim and the flat cap's own rim trim referenced their shared edge with the
+SAME `bRev3d`, not opposite, the standard sign of two faces glued the
+wrong way) and the mesh volume for an apex on the AWAY side came out
+negative rather than being caught by the usual flip cross-check (which
+never ran, since it is itself gated on `IsSolid()`). Fixing the sign
+(pointing away from `apex`, toward the plane) fixed both symptoms at once;
+this is now `TestExtrudeToPointConvexTriangleVolumeTwoIndependentWays`'s
+own explicit "apex on the negative side" check (tests/test_basic.cpp),
+so a regression here would be caught, not just fixed once.
+
+The exactness argument is a genuinely more permissive result than every
+other fan-cap-based construction already in this file: `PlanCap()`'s own
+flat caps (the phrase "star-shaped" recurs throughout this document's
+Extrude/Revolve/Sweep1/Loft bullets) require a star-shaped section because
+they are coplanar with their own boundary, so a fan can fold over itself.
+An OFF-PLANE apex cannot fold over ANY simple closed planar profile: two
+rulings `apex -> profile(u1)` and `apex -> profile(u2)`, `u1 != u2`, are
+two distinct lines through the single common point `apex` (distinct
+because `profile(u1)` and `profile(u2)` both lie in a plane `apex` does
+not, so each ruling crosses that plane only at its own endpoint and cannot
+also pass through the other) - and two distinct lines sharing a point meet
+nowhere else. Verified as a genuine claim, not just argued: `Test-
+ExtrudeToPointWallEmbedsEvenForNonStarShapedProfile` cones the SAME
+non-star-shaped C-shaped profile `Extrude()`'s own negative control
+already refuses to flat-cap, confirms the wall alone still builds
+(`FaceCount() == 1`, `IsValid()`) and genuinely embeds - `Mesh::
+FindSelfIntersections()` on an 80x9 tessellation of it reports zero
+genuine crossings, the same real kernel diagnostic
+`TestMeshFindSelfIntersectionsDetectsOnlyGenuineCrossings` already
+exercises elsewhere, deliberately chosen over a hand-rolled point-distance
+heuristic after an early draft of that heuristic false-flagged near the
+apex (where samples from far-apart `u` values are legitimately close
+together purely because `v` is small there, not because of any fold) -
+and confirms the flat BASE cap on that same profile still throws, an
+honest, separate limitation of the shared cap machinery, not of the cone
+wall itself. Pyramid-volume exactness (`(1/3) * area * height`, exact for
+ANY planar base) is checked on two genuinely non-convex profiles - an
+L-shape and a 5-pointed star polygon, both independently confirmed
+star-shaped by ALSO succeeding at the flat base cap - with `base_area`
+computed independently in the test via the shoelace formula, not read
+back from the kernel, cross-checked two separate ways (`Brep::Volume()`'s
+own direct NURBS Gauss-quadrature integration, and `TessellateToClosed-
+Mesh(...).Volume()`), plus a convex triangle cross-checked the same two
+ways and at an apex on either side of the profile's plane, plus a
+RATIONAL profile (a true NURBS circle - unlike `ExtrudeAlongCurve()`,
+which refuses one, `FanSurface()`'s own weight-carrying construction is
+exact for a rational profile too, so a circular cone is exact, not
+approximated, converging from below in its tessellated form exactly like
+`Extrude()`'s own extruded-circle test). Five new tests in all
+(tests/test_basic.cpp): `TestExtrudeToPointPyramidVolumeExactOnNonConvex-
+Profiles`, `TestExtrudeToPointConvexTriangleVolumeTwoIndependentWays`,
+`TestExtrudeToPointSupportsRationalProfileExactCircularCone`, `Test-
+ExtrudeToPointWallEmbedsEvenForNonStarShapedProfile`, and `TestExtrudeTo-
+PointNegativeControls` (apex in the profile's own plane, a non-planar
+profile refused UNCONDITIONALLY - even uncapped, unlike `Extrude()`/
+`ExtrudeAlongCurve()`'s own cap-only planarity requirement - an open
+profile, an invalid curve, and confirming the function is fully usable
+again immediately after a throw). Full `dino8_kernel_tests` suite (via
+`ctest`, and directly): 100% passing (4756 individual `ok:` checks, "all
+checks passed"), 0 regressions.
+
+Precisely what remains, stated narrowly on purpose rather than papered
+over: scoped to CLOSED profiles only (an open profile's fan-to-a-point
+needs different topology this does not attempt); the flat base cap
+inherits `PlanCap()`'s own star-shaped-section requirement unchanged (a
+real, separate limitation, not removed by this work); and no app command
+anywhere calls the new entry point (`RebuildExtrudeToPoint`, cmd_solids.
+cpp:64, still builds a bare `CreateRuledSurface` to a degenerate apex
+curve with no cap). This item stays `[partial]`, not `[present]` - real
+gaps remain - so **kernel: Sweeping, lofting, extruding, revolving**'s own
+present/partial/missing counts are UNCHANGED (6/21/2/29, 56.9%), exactly
+the same "narrowed, not flipped" outcome the Fifteenth follow-up's own
+`ExtrudeAlongCurve` item already established for this category, so no
+table or headline arithmetic changes: the top-of-document headline stays
+at whatever it currently reads (**67.0%/71.4%** as of this paragraph's own
+writing) - treat the top-of-document number as authoritative if it has
+moved further still by the time this is read. This session's only source
+edits are dino8-kernel/include/dino8/kernel/brep.h, dino8-kernel/src/
+sweep.cpp, and dino8-kernel/tests/test_basic.cpp.
+
 ### Kernel category gaps (missing / partial items, with evidence)
 
 **kernel: Topology & data structure** (topology):
@@ -1659,7 +1772,7 @@ unaffected (no bucket moved).*
 - [partial] Extrude a curve along a path curve (translational sweep / sum surface, ExtrudeCrvAlongCrv) — **narrowed from a pure kernel-entry-point gap; still partial.** `Brep::ExtrudeAlongCurve(profile, path, cap)` (dino8-kernel/include/dino8/kernel/brep.h; dino8-kernel/src/sweep.cpp) now exists: an exact tensor-product sum surface `S(u, v) = profile(u) + path(v) - path(v_min)`, built directly as a NURBS control net (`SumSurface()`, sweep.cpp) rather than sampled or fit — exact because a non-rational B-spline basis is a partition of unity, so the additive control net `P_ij = profile_i + path_j` reproduces the sum pointwise for ANY degree or knot vector on either curve. Unlike `Brep::Sweep1` (which rotation-minimally transports the section's own frame along a rail), `profile` never rotates here - pure translation, matching the app's own existing `ON_SumSurface::Create` semantics. `cap` closes a closed planar `profile` into a genuine solid with two fan caps (reusing `AssembleSweptBody`, the same machinery `Extrude()`/`Sweep1()`/`Revolve()` share), auto-reversed for outward orientation the same way `Extrude()` is; a straight-line `path` reproduces `Extrude()` exactly (confirmed sample-for-sample by `TestExtrudeAlongCurveStraightPathMatchesPlainExtrude`, tests/test_basic.cpp), a curved `path` was verified two independent ways — direct per-sample cross-check against `profile(u) + path(v) - path(v_min)` evaluated straight from both input curves (`TestExtrudeAlongCurveWallMatchesSumOfCurvesExactly`), and a piecewise-linear "wobbly" (laterally wandering but monotonic-height) path whose enclosed volume matches area x net height-displacement exactly regardless of the path's own in-plane wander (Cavalieri's principle, the same fact `ExtrudeToBoundary()`'s own oblique-direction case relies on; `TestExtrudeAlongCurveWobblyPathMatchesCavalieriVolume`). Still partial, and does NOT change this category's present/partial/missing counts (real gaps remain, so it stays scored `partial` rather than `present`): both `profile` and `path` must be non-rational NURBS curves (a rational B-spline basis is not a pointwise partition of unity, so the same additive-control-net construction is not exact for one — checked, throws rather than silently approximating), `path` must be open (a closed path has no well-defined net start/end displacement to cap against), there is still no twist/scale/road-like-alignment option the way `Sweep1` now has, and no app command anywhere calls it (a grep for `ExtrudeAlongCurve` in `dino8-app/src` finds nothing but this document). `Brep::Sweep1` remains the separate, rotating operation it always was.
 - [partial] Extrude a surface / polysurface face into a solid (ExtrudeSrf) — app loops `ON_BrepExtrudeFace` over every face independently, direction always the CPlane normal. The kernel only has a mesh equivalent (`Mesh::ExtrudeCappedSolid`); no kernel B-rep face-extrude API.
 - [partial] Extrude with draft / taper angle (ExtrudeCrvTapered, ExtrudeSrfTapered; AutoCAD EXTRUDE Taper) — kernel `Brep::ExtrudeTapered` (brep.h:253-317; sweep.cpp:1430-1482) is exact for a line or circle/arc and for convex polylines via a closed-form miter offset. Still partial: a non-convex polygon throws, an oblique direction throws (confirmed sweep.cpp:1448-1452), a general curved profile falls back to an approximate least-squares offset, no surface/solid taper in the kernel, and the app's own ExtrudeCrvTapered (cmd_surface.cpp:1229) still scales the profile about its centroid (approximate corners) rather than calling the kernel.
-- [partial] Extrude to a point (ExtrudeCrvToPoint / ExtrudeSrfToPoint / kernel ConeToApex) — app `RebuildExtrudeToPoint` (cmd_solids.cpp:64) uses `CreateRuledSurface` to a degenerate apex curve, giving a surface only with no cap even for a closed profile. Kernel `Mesh::ConeToApex` is mesh-only; `Brep::Loft` to a point section cannot be capped (a collapsed end refuses a cap).
+- [partial] Extrude to a point (ExtrudeCrvToPoint / ExtrudeSrfToPoint / kernel ConeToApex) — **narrowed: a genuine B-rep kernel entry point now exists, closing the "no B-rep way to cone to a point at all" half of this gap.** `Brep::ExtrudeToPoint(profile, apex, cap)` (dino8-kernel/include/dino8/kernel/brep.h:513; dino8-kernel/src/sweep.cpp:1701) builds a real cone `ON_Brep` via the existing `FanSurface()` (sweep.cpp:927) - the SAME degree-(p, 1) fan construction `AddFanCap()` already uses for flat end caps - reused here as the WALL itself rather than a cap, assembled directly through `ON_Brep::NewFace`'s own closed-in-u/singular-at-v0 handling (one apex vertex, one closed rim edge, one seam edge doubled as the wall's own east/west trims - deliberately NOT routed through `AssembleSweptBody()`, which explicitly refuses any wall singular at its v0/v1 sides, sweep.cpp:1084, since it was written for non-degenerate rectangular sweeps). The exactness argument is strictly more permissive than `PlanCap()`'s own flat-cap "star-shaped section" requirement (the phrase appears throughout this file, e.g. the Loft/Sweep1 bullets above): for an OFF-PLANE apex, two rulings `apex -> profile(u1)` and `apex -> profile(u2)` are two distinct lines through the single common point `apex` (distinct because `profile(u1)`/`profile(u2)` lie in a plane `apex` does not, so each ruling crosses that plane only at its own endpoint), and two distinct lines sharing a point meet nowhere else - so the cone wall embeds for ANY simple closed planar profile, convex or not, star-shaped or not, unlike a flat fan cap which folds over on a non-star-shaped region. Verified directly, not just argued: `TestExtrudeToPointWallEmbedsEvenForNonStarShapedProfile` (tests/test_basic.cpp:32670) cones the SAME non-star-shaped C-shaped profile `Extrude()`'s own negative control already refuses to flat-cap, confirms the wall alone still builds and embeds (`Mesh::FindSelfIntersections()` on a dense 80x9 tessellation reports zero genuine crossings), and confirms the flat BASE cap on that same profile still throws - a separate, honestly-disclosed limitation of the shared `PlanCap()`/`AddFanCap()` cap machinery, not of the cone wall itself. Pyramid-volume exactness (the general `(1/3) * area * height` formula, exact for ANY planar base) is verified on two genuinely non-convex profiles (an L-shape and a 5-pointed star polygon, both still star-shaped so the flat base cap also succeeds) two independent ways - `Brep::Volume()`'s own direct NURBS quadrature and `TessellateToClosedMesh(...).Volume()` - plus a convex triangle cross-checked the same two ways, an apex on either side of the profile's plane, and a RATIONAL profile (a true NURBS circle, unlike `ExtrudeAlongCurve()` which refuses one): `TestExtrudeToPointPyramidVolumeExactOnNonConvexProfiles`, `TestExtrudeToPointConvexTriangleVolumeTwoIndependentWays`, `TestExtrudeToPointSupportsRationalProfileExactCircularCone` (tests/test_basic.cpp:32531/32615/32647). Still partial, and narrower than it could be: scoped to CLOSED profiles only (an open profile's fan-to-a-point would need different topology this does not attempt - throws `std::invalid_argument`), `profile` must be planar and `apex` strictly off that plane UNCONDITIONALLY (checked even with `cap = false`, not only when a flat cap is requested), the flat base cap inherits `PlanCap()`'s own star-shaped-section requirement (`TestExtrudeToPointNegativeControls`, tests/test_basic.cpp:32706), and the app layer is completely untouched: `RebuildExtrudeToPoint` (cmd_solids.cpp:64) still uses `CreateRuledSurface` to a degenerate apex curve with no cap and does not call the kernel's new entry point. Kernel `Mesh::ConeToApex` remains mesh-only; `Brep::Loft` to a point section still cannot be capped.
 - [partial] Extrude to a boundary surface / body (Rhino ToBoundary, Boss-to-boundary; AutoCAD extrude "to face", PressPull) — **corrected: upgraded from missing.** Kernel `ExtrudeToBoundary(profile, direction, boundary)` (boolean_general.h/boolean_general.cpp) now exists: each of a QUADRILATERAL `profile`'s own 4 corners is swept along `direction` and intersected exactly (closed-form ray/plane, not a resample) with `boundary`'s own plane, then assembled into a genuine 6-quad-face prism via the new `Brep::FromUntrimmedQuadFaces()` (brep.h) - so a TILTED `boundary` gives a genuinely, exactly planar cap, not an approximation. An earlier version instead tried extruding `profile` past `boundary` and cutting with `SplitBySheet()` (this same file); abandoned after being confirmed, via a standalone reproduction, to corrupt SplitBySheet's own output for anything but a plain axis-aligned `Brep::Box()` - that engine's SSX machinery reads each face purely via its raw `ON_Surface`, so both `Brep::Extrude()`'s own periodic wrap-around wall and `Brep::FromPlanarFaces()`'s own padded-domain trimmed faces are silently misread as occupying their own FULL surface domain, a genuine, previously-undocumented scope boundary of that shared machinery now disclosed here rather than papered over. Verified exact against a closed-form cross-check independent of the implementation: cutting a vertical extrusion of a 2x3 rectangle against a TILTED plane `h(x,y) = 0.5x + 0.2y + 4` gives volume = area x height-at-centroid for any affine cap (`TestExtrudeToBoundaryTiltedPlaneMatchesExactAffineCapVolume`, tests/test_basic.cpp); a flat boundary reproduces plain `Extrude()`'s own volume exactly (`TestExtrudeToBoundaryMatchesPlainExtrudeForAFlatBoundary`); a clockwise profile winding, an extrusion direction reversed along the same axis, and an oblique direction against a flat boundary (Cavalieri's principle: area x height exactly, regardless of shear) are all separately verified exact (`TestExtrudeToBoundaryHandlesReversedWindingAndDirection`) - the latter three exist specifically because an earlier version of this same construction got the two caps' own winding right while leaving all 4 side walls inverted for one sign of (profile winding, direction), a bug the single straightforward case alone did not surface (both caps AND all 4 walls were inverted together there, giving a wrong-signed but still-closed volume). Still partial: `profile` must be a genuine quadrilateral (`Brep::FromUntrimmedQuadFaces()`'s own "surface domain IS the whole true shape" contract only holds for a 4-corner face; an N-gon cap for N != 4 would need real trim topology, exactly the thing the abandoned SplitBySheet approach was tried, and found wanting, to avoid needing), `boundary` must resolve to a single planar face (`PlanarFaces()`'s own precondition - a general curved or multi-face boundary is out of scope, a real narrowing from the originally-attempted general-sheet approach), only extrudes forward along the given `direction` and throws rather than guessing the opposite sign if `boundary` lies behind, and there is no app-level command anywhere that calls it (a grep for `ExtrudeToBoundary`/`ToBoundary` in `dino8-app/src` finds nothing but the catalogued option string).
 - [partial] Full 360-degree revolve of a profile about an axis into a capped solid (Revolve, RevolvedHole) — kernel `Brep::Revolve` (sweep.cpp:1483-1595) is exact rational and handles L profiles (poles), closed off-axis profiles (torus-like), a semicircle (exact sphere), and off-axis ends with disc caps. App `RevolvedHole` (cmd_solidtools.cpp:906, "mesh boolean; results are meshes") cuts with a mesh boolean. Still partial: a closed profile touching the axis (e.g. a rectangle with one side on the axis) throws, and `RevolvedHole`'s result is a mesh.
 - [partial] Partial-angle revolve (start angle / revolution angle < 360, with planar side caps) — kernel `Brep::Revolve`'s `angle` parameter in (0, 2pi] gives planar pie-slice fan caps for closed profiles and open profiles with both ends on the axis. `Revolve` now also takes a `start_angle` parameter (brep.h, sweep.cpp:1483): the sweep begins `start_angle` radians around the axis from the profile's own given position instead of always at it (Rhino/AutoCAD Revolve's own start-angle option), implemented as an exact rigid rotation of the profile about the same axis before the existing sweep runs — so every cap/throw rule above is unaffected and the result is exact for any `start_angle`, not a resample; confirmed sample-for-sample against an independently-rotated wall by `TestRevolveStartAngleShiftsSweepExactly` (tests/test_basic.cpp). Still partial: an open profile with an off-axis endpoint still cannot be capped at a partial angle; a closed profile touching the axis still throws; the app still hard-codes 0..2pi with no angle (let alone start-angle) option anywhere, and does not call the kernel's new parameter.
@@ -2289,7 +2402,7 @@ top 40:
 - [kernel/sweeplofts] ~~Extrude a curve along a path curve — solid/cap option~~ **kernel entry point + solid/cap done** (`Brep::ExtrudeAlongCurve`); remaining: rational-curve support, app wiring (partial)
 - [kernel/sweeplofts] Extrude a surface / polysurface face into a solid — kernel B-rep API (partial)
 - [kernel/sweeplofts] Extrude with draft / taper angle — oblique direction, concave polygons (partial)
-- [kernel/sweeplofts] Extrude to a point — cap for closed profiles (partial)
+- [kernel/sweeplofts] ~~Extrude to a point~~ **kernel entry point done** (`Brep::ExtrudeToPoint`, embeds for ANY simple closed planar profile, convex or not); remaining: open profiles, flat-cap still needs a star-shaped section, app wiring (partial)
 - [kernel/sweeplofts] Full 360-degree revolve — closed profile touching the axis (partial)
 - [kernel/sweeplofts] Partial-angle revolve — off-axis endpoint capping (partial)
 - [kernel/sweeplofts] Rail revolve — kernel API (partial)

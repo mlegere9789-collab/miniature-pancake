@@ -1698,6 +1698,98 @@ Brep Brep::Thicken(const Brep& sheet, double thickness, bool symmetric) {
   return result;
 }
 
+Brep Brep::ExtrudeToPoint(const NurbsCurve& profile, Point3d apex, bool cap) {
+  const char* caller = "ExtrudeToPoint";
+  ON_NurbsCurve c = profile.raw();
+  if (!c.IsValid()) Fail(caller, "profile is not a valid NURBS curve");
+  ClampIfPeriodic(c);
+  if (!c.IsClosed()) {
+    Fail(caller,
+         "profile must be closed - the cone topology (one apex vertex, one closed rim edge, one seam edge "
+         "shared by the wall's own east/west trims - see this function's own brep.h doc comment) is only "
+         "built for a closed profile; an open profile's fan to a point would need different topology this "
+         "does not attempt");
+  }
+
+  ON_Plane plane;
+  if (!c.IsPlanar(&plane, 1e-8 * CurveScale(c))) {
+    Fail(caller,
+         "profile is not planar - the embedding proof (any two rulings apex -> profile(u1), "
+         "apex -> profile(u2) are distinct lines through the common point apex, and two distinct lines "
+         "through a common point meet only there) requires profile to lie in a single plane that apex does "
+         "not, so a non-planar profile has no such plane to check apex against");
+  }
+  const double scale = std::max(CurveScale(c), 1.0);
+  const double signed_dist = plane.DistanceTo(apex);
+  if (std::fabs(signed_dist) <= 1e-9 * scale) {
+    Fail(caller,
+         "apex lies in the profile's own plane - every ruling apex -> profile(u) would then lie IN that "
+         "plane too, so the embedding proof (which needs apex OFF the plane, so a ruling meets the plane "
+         "only at its own profile(u)) does not apply and the cone could self-intersect; apex must be "
+         "strictly off the profile's plane");
+  }
+
+  // Outward wall: the same CCW-about-the-sweep-direction convention
+  // Extrude() uses, with the direction from apex (this wall's v = 0 end)
+  // toward the profile's own plane (v = 1, the far/rim end) standing in
+  // for Extrude()'s own `direction` (which likewise points from its
+  // wall's v = 0 end to its v = 1 end) - the negative of (apex - plane
+  // point), i.e. pointing away from apex.
+  const ON_3dVector d_unit = signed_dist >= 0.0 ? -plane.zaxis : plane.zaxis;
+  const ON_Plane about_d(plane.origin, d_unit);
+  if (SignedAreaAbout(c, about_d) < 0.0) ReverseKeepDomain(c);
+
+  std::unique_ptr<ON_NurbsSurface> wall_in = FanSurface(c, apex, caller);
+  const ON_NurbsSurface wall = *wall_in;  // keep an evaluable copy; the brep owns the original
+
+  Brep result;
+  ON_Brep& brep = result.raw();
+  int vid[4] = {-1, -1, -1, -1};
+  int eid[4] = {-1, -1, -1, -1};
+  bool rev[4] = {false, false, false, false};
+  // wall is closed in u (profile closed) and singular at v = 0 (the apex):
+  // ON_Brep::NewFace's own closed/singular handling (see opennurbs_brep_
+  // tools.cpp's NewOuterLoop) gives exactly the cone topology this
+  // function's own brep.h doc comment describes - a singular south trim
+  // at the apex, an auto-shared east/west seam edge (apex -> the rim's
+  // own seam point, appearing twice in the loop), and a genuine closed
+  // rim edge at v = 1. AssembleSweptBody() is deliberately NOT used here:
+  // it explicitly refuses any wall singular at v0/v1 (built for non-
+  // degenerate rectangular sweeps), which this wall is by construction.
+  if (!brep.NewFace(wall_in.release(), vid, eid, rev)) Internal(caller, "ON_Brep::NewFace refused the cone wall");
+  int faces = 1;
+
+  if (cap) {
+    const ON_Interval dv = wall.Domain(1);
+    const double um = wall.Domain(0).Mid();
+    std::unique_ptr<ON_NurbsCurve> rim(IsoCurveOf(wall, 0, dv.Max(), caller));
+    const CapPlan plan = PlanCap(*rim, /*chord_closed=*/false, caller);
+    ON_3dPoint p;
+    ON_3dVector su, sv;
+    if (!wall.Ev1Der(um, dv.Max(), p, su, sv)) Internal(caller, "Ev1Der failed on the cone wall");
+    // Wall's own north (v = v_max, the rim) side: built reversed at
+    // NewFace time (rev[2] left false -> NewOuterLoop's own i >= 2 &&
+    // !bRev3d rule reverses it), the same "isocurve reversed at creation"
+    // fact AssembleSweptBody's own cap_v1 branch documents - so
+    // edge_forward is false here too, and the outward hint is +sv (the
+    // rim is the wall's FAR end from the apex, same as a cap_v1).
+    AddFanCap(brep, *rim, eid[2], /*edge_forward=*/false, sv, plan, nullptr, /*transpose=*/false, caller);
+    ++faces;
+  }
+
+  brep.SetTolerancesBoxesAndFlags(/*bLazy=*/true);
+  result.AppendUntrimmedFaceSideTables(faces);
+
+  // Same outward cross-check AssembleSweptBody() ends with: the
+  // construction rules above orient it outward already, so a negative
+  // tessellated volume here would mean a rule was wrong for this input.
+  if (brep.IsSolid()) {
+    const Mesh m = result.TessellateToClosedMesh(16, 16);
+    if (m.Volume() < 0.0) brep.Flip();
+  }
+  return result;
+}
+
 Brep Brep::Revolve(const NurbsCurve& profile, Point3d axis_point, Vector3d axis_direction, double angle, bool cap,
                    double start_angle) {
   const char* caller = "Revolve";

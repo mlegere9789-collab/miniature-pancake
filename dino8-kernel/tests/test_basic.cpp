@@ -32618,6 +32618,244 @@ void TestExtrudeAlongCurveNegativeControls() {
   Check(Throws([&] { Brep::ExtrudeAlongCurve(skew, straight_path); }), "a closed non-planar profile refuses to cap");
 }
 
+// Shoelace area of a closed polygon given as (x, y) pairs (last == first),
+// computed directly here rather than reused from any kernel code - an
+// independent reference for the pyramid-volume closed form below.
+double ShoelaceArea(const std::vector<std::pair<double, double>>& poly) {
+  double area = 0.0;
+  for (size_t i = 0; i + 1 < poly.size(); ++i) {
+    area += poly[i].first * poly[i + 1].second - poly[i + 1].first * poly[i].second;
+  }
+  return std::abs(area) * 0.5;
+}
+
+// ExtrudeToPoint's whole point: the cone WALL embeds for ANY simple closed
+// planar profile - convex, star-shaped, or neither - because two rulings
+// apex -> profile(u1) and apex -> profile(u2) are distinct lines through
+// the single common point `apex`, and distinct lines sharing a point never
+// cross again (see the exactness argument in brep.h's own doc comment).
+// This is exercised here on TWO genuinely non-convex profiles (an L-shape
+// and a 5-pointed star, both still star-shaped so the FLAT base cap also
+// succeeds) and cross-checked two ways: the tessellated closed mesh's own
+// volume (TessellateToClosedMesh(...).Volume()), and Brep::Volume()'s own
+// completely separate direct NURBS Gauss-quadrature integration - against
+// the general pyramid/cone volume formula (1/3) * base_area * height,
+// exact for ANY planar base regardless of convexity, with `base_area`
+// computed independently here via the shoelace formula, not read back from
+// the kernel.
+void TestExtrudeToPointPyramidVolumeExactOnNonConvexProfiles() {
+  // An L-shaped profile (6 straight spans): star-shaped (kernel is the
+  // inner corner's quadrant), same fixture Extrude()'s own L-profile test
+  // uses, area = 3x3 square minus the 2x2 corner cut = 5.
+  {
+    const NurbsCurve ell = Polyline({P(0, 0, 0), P(3, 0, 0), P(3, 1, 0), P(1, 1, 0), P(1, 3, 0), P(0, 3, 0), P(0, 0, 0)});
+    const double area = ShoelaceArea({{0, 0}, {3, 0}, {3, 1}, {1, 1}, {1, 3}, {0, 3}, {0, 0}});
+    Check(std::abs(area - 5.0) < 1e-12, "independent shoelace area matches the known L-profile area of 5");
+    const double height = 6.0;
+    const Point3d apex(2, 2, height);  // off-plane; lateral (x, y) position is irrelevant to the formula
+    const double expect = area * height / 3.0;
+
+    const Brep cone = Brep::ExtrudeToPoint(ell, apex);
+    Check(cone.FaceCount() == 2, "L-profile cone: 1 cone wall + 1 flat base cap");
+    Check(cone.raw().IsValid() && cone.raw().IsSolid(), "L-profile cone is a genuine closed, oriented solid");
+    Check(!cone.raw().m_F[0].m_bRev && !cone.raw().m_F[1].m_bRev,
+          "both faces outward by construction (no m_bRev flip was needed)");
+    // Apex vertex + rim vertex + the flat cap's own kernel-point vertex;
+    // the wall's own apex-to-rim seam (doubled), the shared rim edge, and
+    // the flat cap's own kernel-point-to-rim seam (doubled).
+    Check(cone.raw().m_V.Count() == 3 && cone.raw().m_E.Count() == 3,
+          "cone topology: apex + rim + cap-apex vertices (3), 3 edges (wall seam, shared rim, cap seam)");
+
+    Check(std::abs(cone.Volume() - expect) < 1e-6,
+          "Brep::Volume()'s own direct NURBS quadrature matches (1/3)*area*height exactly for this "
+          "non-rational (polynomial) profile");
+    // 6 spans: 12 divisions hit every corner of the L-profile exactly (the
+    // ruled/fan v-direction needs no alignment at all - see this
+    // function's own analysis in sweep.cpp's ExtrudeToPoint()), so the
+    // mesh volume is exact too, not merely converging.
+    const Mesh m12 = cone.TessellateToClosedMesh(12, 12);
+    Check(m12.IsClosedManifold(), "L-profile cone tessellates to a closed manifold at (12, 12)");
+    Check(std::abs(m12.Volume() - expect) < 1e-5, "tessellated mesh volume matches (1/3)*area*height at (12, 12)");
+    // An asymmetric v_divisions is still exact (v is the ruled/fan
+    // direction - no chord error there regardless of division count).
+    const Mesh m_asym = cone.TessellateToClosedMesh(12, 5);
+    Check(m_asym.IsClosedManifold() && std::abs(m_asym.Volume() - expect) < 1e-5,
+          "...and at the asymmetric (12, 5) division pair, since only u (following the profile) needs alignment");
+  }
+
+  // A genuinely non-convex, non-trivial 5-pointed star polygon (10 straight
+  // spans, alternating outer/inner radius) - still star-shaped (its kernel
+  // is the small pentagon at the center), so this both cones AND flat-caps
+  // cleanly, unlike the C-shape used in
+  // TestExtrudeToPointWallEmbedsEvenForNonStarShapedProfile below.
+  {
+    std::vector<Point3d> pts3d;
+    std::vector<std::pair<double, double>> pts2d;
+    const int n = 5;
+    const double R = 3.0, r = 1.2;
+    for (int i = 0; i < 2 * n; ++i) {
+      const double rad = (i % 2 == 0) ? R : r;
+      const double ang = 0.5 * M_PI + i * M_PI / n;
+      const double x = rad * std::cos(ang), y = rad * std::sin(ang);
+      pts3d.push_back(P(x, y, 0));
+      pts2d.emplace_back(x, y);
+    }
+    pts3d.push_back(pts3d.front());
+    pts2d.push_back(pts2d.front());
+    const NurbsCurve star = Polyline(pts3d);
+    const double area = ShoelaceArea(pts2d);
+    const double height = 7.0;
+    const Point3d apex(0, 0, height);
+    const double expect = area * height / 3.0;
+
+    const Brep cone = Brep::ExtrudeToPoint(star, apex);
+    Check(cone.FaceCount() == 2 && cone.raw().IsValid() && cone.raw().IsSolid(),
+          "5-pointed star cone is a genuine closed, oriented solid");
+    Check(std::abs(cone.Volume() - expect) < 1e-6,
+          "star profile: Brep::Volume() matches (1/3)*area*height exactly");
+    // 10 spans: 40 divisions hit every corner exactly.
+    const Mesh m = cone.TessellateToClosedMesh(40, 10);
+    Check(m.IsClosedManifold() && std::abs(m.Volume() - expect) < 1e-4,
+          "star profile: tessellated mesh volume matches (1/3)*area*height at (40, 10)");
+  }
+}
+
+// A convex case (a right triangle), cross-checked a DIFFERENT way than the
+// non-convex test above: Brep::Volume()'s own direct NURBS integration
+// (a completely separate code path from mesh tessellation) against BOTH
+// the closed-form pyramid volume AND the tessellated mesh volume, plus an
+// apex on the opposite side of the profile's plane (still +volume, the
+// same "extruding downward still gives +30" sign convention Extrude()
+// itself tests).
+void TestExtrudeToPointConvexTriangleVolumeTwoIndependentWays() {
+  const NurbsCurve tri = Polyline({P(0, 0, 0), P(4, 0, 0), P(0, 3, 0), P(0, 0, 0)});
+  const double area = 6.0;  // right triangle, legs 4 and 3
+  const double height = 5.0;
+  const double expect = area * height / 3.0;  // 10.0
+
+  // The apex sits off-center (1, 1) laterally - the general pyramid volume
+  // formula holds regardless of where the apex sits over the base, only
+  // the PERPENDICULAR height to the base plane matters.
+  const Brep pyr = Brep::ExtrudeToPoint(tri, P(1, 1, height));
+  CheckSolidTopology(pyr, 2, "triangle cone to a point");
+  Check(pyr.raw().m_V.Count() == 3 && pyr.raw().m_E.Count() == 3, "same 3-vertex/3-edge cone+cap topology");
+  Check(std::abs(pyr.Volume() - expect) < 1e-9,
+        "Brep::Volume()'s own direct NURBS quadrature is exact to machine precision for this polynomial solid");
+  Check(std::abs(pyr.TessellateToClosedMesh(12, 12).Volume() - expect) < 1e-5,
+        "TessellateToClosedMesh(...).Volume() independently agrees (12 divisions hits the triangle's 3 corners)");
+  Check(std::abs(pyr.TessellateToClosedMesh(12, 5).Volume() - expect) < 1e-5, "...and at the asymmetric (12, 5) pair");
+
+  // Apex on the OTHER side of the profile's plane: still positive volume.
+  const Brep pyr_neg = Brep::ExtrudeToPoint(tri, P(1, 1, -height));
+  Check(pyr_neg.raw().IsSolid(), "an apex on the negative side is still a genuine solid");
+  Check(std::abs(pyr_neg.TessellateToClosedMesh(12, 12).Volume() - expect) < 1e-5,
+        "...with the same positive volume, the same sign convention Extrude() itself uses");
+}
+
+// Unlike ExtrudeAlongCurve() (refused for a rational curve - its additive
+// sum-surface construction has no rational form), ExtrudeToPoint's own
+// FanSurface() carries the profile's own weights on its v = 1 row, so a
+// RATIONAL profile - a true NURBS circle here - gives an algebraically
+// exact circular cone, not an approximation. The tessellated volume is an
+// inscribed-polygon prism, so (like Extrude()'s own extruded-circle test)
+// it stays below the exact pi*r^2*h/3 and converges to it from below.
+void TestExtrudeToPointSupportsRationalProfileExactCircularCone() {
+  const NurbsCurve circle = Circle(P(0, 0, 0), Vector3d(0, 0, 1), 2.0);
+  const double height = 5.0;
+  const Brep cone = Brep::ExtrudeToPoint(circle, P(0, 0, height));
+  CheckSolidTopology(cone, 2, "circular cone from a rational NURBS circle");
+  Check(FaceSurface(cone, 0).IsRational(), "the cone wall itself is a rational NURBS surface, carrying the circle's own weights");
+  const double expect = M_PI * 4.0 * height / 3.0;
+  const double v64 = cone.TessellateToClosedMesh(64, 8).Volume();
+  Check(v64 < expect && std::abs(v64 - expect) / expect < 0.003,
+        "circular cone volume within 0.3% of pi*r^2*h/3, from below (inscribed polygon), matching Extrude()'s "
+        "own extruded-circle convention");
+}
+
+// The exactness argument's whole point: unlike a flat fan CAP (which needs
+// a star-shaped section, PlanCap()'s own "kernel of a polygon" search), the
+// cone WALL to an off-plane apex embeds for ANY simple closed planar
+// profile, convex or not, star-shaped-from-a-point or not. A C-shaped
+// profile (the same non-star-shaped fixture Extrude()'s own negative
+// control uses, whose flat cap it already refuses) demonstrates this is a
+// GENUINE gain, not just a restatement: the cone wall builds and embeds
+// cleanly with cap = false, while requesting the flat base cap on the same
+// profile still throws - a separate, honestly-disclosed limitation of the
+// flat cap machinery, not of the cone itself.
+void TestExtrudeToPointWallEmbedsEvenForNonStarShapedProfile() {
+  const NurbsCurve cee = Polyline({P(0, 0, 0), P(3, 0, 0), P(3, 1, 0), P(1, 1, 0), P(1, 2, 0), P(3, 2, 0),
+                                    P(3, 3, 0), P(0, 3, 0), P(0, 0, 0)});
+  const Point3d apex(2, 2, 6);
+
+  // Extrude() itself already refuses to flat-cap this exact profile.
+  Check(Throws([&] { Brep::Extrude(cee, Vector3d(0, 0, 1)); }),
+        "sanity check: Extrude() itself refuses to flat-cap this C-shape (PlanCap's kernel is empty)");
+
+  const Brep wall = Brep::ExtrudeToPoint(cee, apex, /*cap=*/false);
+  Check(wall.FaceCount() == 1 && wall.raw().IsValid(), "the cone WALL alone builds fine for a non-star-shaped profile");
+  Check(!wall.raw().IsSolid(), "uncapped: not a solid (the rim is a naked boundary), same as Extrude()'s own tube");
+  // The wall is a genuinely embedded (non-self-intersecting) surface -
+  // directly confirmed by tessellating it densely and running the
+  // kernel's own Mesh::FindSelfIntersections() (the same real diagnostic
+  // TestMeshFindSelfIntersectionsDetectsOnlyGenuineCrossings exercises
+  // elsewhere in this file), which reports ONLY a genuine crossing (any
+  // pair of triangles sharing a vertex - which every pair meeting at the
+  // apex does - is skipped as ordinary connectivity, not a fold). A dense,
+  // asymmetric (u, v) grid is used so a real fold, if one existed, could
+  // not hide between sample rows.
+  {
+    const Mesh m = wall.TessellateToClosedMesh(80, 9);
+    const std::vector<std::pair<int, int>> crossings = m.FindSelfIntersections();
+    Check(crossings.empty(),
+          "Mesh::FindSelfIntersections() finds zero genuine crossings - the cone wall does not fold over "
+          "even though the C-shaped profile is not star-shaped");
+  }
+
+  // Requesting the flat base cap on the SAME profile still throws - a
+  // separate limitation (PlanCap's own star-shaped requirement), not a
+  // regression of the cone wall's own embedding guarantee above.
+  Check(Throws([&] { Brep::ExtrudeToPoint(cee, apex, /*cap=*/true); }),
+        "the flat base cap still refuses a non-star-shaped profile, exactly like Extrude()'s own end caps");
+}
+
+void TestExtrudeToPointNegativeControls() {
+  const NurbsCurve ell = Polyline({P(0, 0, 0), P(3, 0, 0), P(3, 1, 0), P(1, 1, 0), P(1, 3, 0), P(0, 3, 0), P(0, 0, 0)});
+  const Point3d apex(2, 2, 6);
+
+  // apex in the profile's own plane: the embedding proof needs apex OFF
+  // the plane, so this is refused rather than risking a self-intersecting
+  // cone.
+  Check(Throws([&] { Brep::ExtrudeToPoint(ell, Point3d(1, 1, 0)); }), "apex in the profile's own plane throws");
+  // The function is still fully usable right after - no corrupted state
+  // from the throw above (this is a pure static factory: a thrown
+  // exception before construction completes leaves nothing to corrupt,
+  // confirmed directly by a normal call succeeding immediately after).
+  Check(Brep::ExtrudeToPoint(ell, apex).raw().IsSolid(), "...and a valid call right after still succeeds normally");
+
+  // A non-planar profile is refused UNCONDITIONALLY (not only when
+  // capped) - ExtrudeToPoint requires planarity even for the wall alone,
+  // since the embedding proof itself is stated in terms of a single plane
+  // profile lies in; unlike Extrude()/ExtrudeAlongCurve(), which only
+  // require planarity when a flat cap is actually requested.
+  const NurbsCurve skew = Polyline({P(0, 0, 0), P(2, 0, 0), P(2, 3, 1), P(0, 3, 0), P(0, 0, 0)});
+  Check(Throws([&] { Brep::ExtrudeToPoint(skew, apex, /*cap=*/true); }), "a non-planar profile throws when capped");
+  Check(Throws([&] { Brep::ExtrudeToPoint(skew, apex, /*cap=*/false); }),
+        "...and throws uncapped too - planarity is required unconditionally here, not only for the cap");
+
+  // An open profile is scoped out entirely (see this function's own
+  // brep.h doc comment for why): the cone topology this builds (one apex
+  // vertex, one closed rim edge, one doubled seam edge) only exists for a
+  // closed profile.
+  const NurbsCurve openp = Polyline({P(0, 0, 0), P(1, 0, 0), P(1, 1, 0)});
+  Check(Throws([&] { Brep::ExtrudeToPoint(openp, apex, /*cap=*/false); }), "an open profile throws");
+
+  // A degenerate (zero-length) apex offset from a point already off the
+  // curve's own control points, but landing back in-plane, is the same
+  // "apex in plane" case above; a truly invalid curve is refused too.
+  NurbsCurve bad;
+  Check(Throws([&] { Brep::ExtrudeToPoint(bad, apex); }), "an invalid (default-constructed) curve throws");
+}
+
 void TestRevolveExactSolidsAndCaps() {
   const Point3d origin(0, 0, 0);
   const Vector3d z(0, 0, 1);
@@ -38958,6 +39196,11 @@ int main() {
   sweep_tests::TestExtrudeAlongCurveWobblyPathMatchesCavalieriVolume();
   sweep_tests::TestExtrudeAlongCurveWallMatchesSumOfCurvesExactly();
   sweep_tests::TestExtrudeAlongCurveNegativeControls();
+  sweep_tests::TestExtrudeToPointPyramidVolumeExactOnNonConvexProfiles();
+  sweep_tests::TestExtrudeToPointConvexTriangleVolumeTwoIndependentWays();
+  sweep_tests::TestExtrudeToPointSupportsRationalProfileExactCircularCone();
+  sweep_tests::TestExtrudeToPointWallEmbedsEvenForNonStarShapedProfile();
+  sweep_tests::TestExtrudeToPointNegativeControls();
   sweep_tests::TestRevolveExactSolidsAndCaps();
   sweep_tests::TestRevolveStartAngleShiftsSweepExactly();
   sweep_tests::TestLoftInterpolatesSectionsExactly();

@@ -444,6 +444,74 @@ class Brep {
   // does not attempt. `thickness` must be finite and non-zero.
   static Brep Thicken(const Brep& sheet, double thickness, bool symmetric = false);
 
+  // ExtrudeToPoint: `profile` coned to a single apex point (Rhino/AutoCAD
+  // ExtrudeCrvToPoint / ExtrudeSrfToPoint, "kernel ConeToApex") - a genuine
+  // B-rep cone, not the mesh-only `Mesh::ConeToApex` or `Loft()`'s own
+  // refusal to cap a collapsed end section. `profile` must be CLOSED and
+  // PLANAR, and `apex` must NOT lie in `profile`'s own plane (checked;
+  // throws std::invalid_argument otherwise - see the exactness argument
+  // below for why both are load-bearing, not just convenience checks).
+  // Unlike `ExtrudeAlongCurve()`, `profile` MAY be rational (e.g. a true
+  // NURBS circle): the wall is built by `FanSurface()` (sweep.cpp),
+  // D(u, v) = (1 - v) * apex + v * profile(u), degree (profile's own
+  // degree, 1), whose v = 0 row carries `profile`'s own weights - so a
+  // rational profile still gives an algebraically exact cone (a circular
+  // profile gives the exact circular cone, not an approximation), the
+  // same "no rational form" restriction `ExtrudeAlongCurve()` has for a
+  // wholly different reason (there it is the additive sum-surface trick
+  // that fails for a rational basis; here nothing of the kind is used).
+  //
+  // Exactness / embedding argument (why ANY simple closed planar profile
+  // works here, convex or not, unlike a flat fan cap): two rulings
+  // apex -> profile(u1) and apex -> profile(u2), u1 != u2, are two
+  // straight lines through the common point `apex`. Two distinct lines
+  // through a common point meet ONLY at that point, unless they are
+  // literally the same line - which cannot happen here, because
+  // profile(u1) and profile(u2) both lie in `profile`'s own plane while
+  // `apex` does not, so the line apex -> profile(u1) crosses that plane
+  // at the single point profile(u1) and cannot also pass through the
+  // distinct in-plane point profile(u2). So no two rulings cross except
+  // at `apex` itself, for ANY simple closed planar `profile` - convex,
+  // star-shaped-from-some-point, or neither (an L-shape, a 5-pointed
+  // star, even a C-shape with an empty kernel all cone cleanly). This is
+  // strictly more permissive than `Extrude()`'s/`Revolve()`'s own flat
+  // fan CAPS (`PlanCap()`, sweep.cpp), which are coplanar with their own
+  // boundary and so DO require a star-shaped section (a nonempty
+  // "kernel", the set of points seeing the whole boundary) - a fan cap
+  // folds over itself otherwise, but a cone to an OFF-PLANE apex never
+  // can, by the argument above.
+  //
+  // `cap`, when true, additionally closes the rim with a FLAT planar fan
+  // cap in `profile`'s own plane - the SAME `PlanCap()`/`AddFanCap()`
+  // machinery, and so the SAME star-shaped-kernel requirement, every
+  // other end cap in this file already has (throws std::invalid_argument
+  // for a non-star-shaped closed profile, e.g. a C-shape, exactly as
+  // `Extrude()` does). This is a genuinely separate limitation from the
+  // cone wall itself: a C-shaped profile still cones to a point cleanly
+  // with `cap = false` (one open, embedded wall face, no self-
+  // intersection anywhere), it simply cannot get a flat BASE the way an
+  // L-shape or a 5-pointed star (both star-shaped) can. The wall is
+  // reversed first if needed, the same outward-orientation convention
+  // `Extrude()` uses (CCW about the apex-ward direction), so a capped
+  // result is a genuine outward-facing solid with `Mesh::Volume() > 0`,
+  // and a closed profile with known base area gives the exact pyramid/
+  // cone volume `(1/3) * area * height`, `height` = the perpendicular
+  // distance from `apex` to `profile`'s own plane, for ANY simple planar
+  // base regardless of convexity (the general pyramid volume formula).
+  //
+  // Scoped to CLOSED profiles only (an open profile's fan-to-a-point
+  // would need different, not-yet-built topology - see sweep.cpp's own
+  // comment on `ON_Brep::NewFace`'s handling of a closed-in-u, singular-
+  // at-v0 surface for exactly which topology a closed profile gets: one
+  // apex vertex, one closed rim edge, and one seam edge running apex-to-
+  // rim that appears twice in the wall's own loop, the standard "cone
+  // with a pole" B-rep shape, structurally the same device `Revolve()`'s
+  // own singular poles and `Sphere()`'s own seam already use). Throws
+  // std::invalid_argument for an invalid curve, an open profile, a non-
+  // planar profile, `apex` in the profile's own plane, or (with `cap`) a
+  // closed planar profile whose region is not star-shaped.
+  static Brep ExtrudeToPoint(const NurbsCurve& profile, Point3d apex, bool cap = true);
+
   // Revolve: `profile` spun about the axis through `axis_point` along
   // `axis_direction` by `angle` radians (0 < angle <= 2*pi; exactly
   // 2*pi, within 1e-12, is a full revolution). The profile must lie in a
