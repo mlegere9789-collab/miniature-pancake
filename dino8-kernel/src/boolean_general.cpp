@@ -3770,6 +3770,44 @@ Brep MakeCountersinkHole(const Brep& solid, Point3d center, Vector3d axis, doubl
   return BooleanCombineGeneral(solid, tool, BooleanOp::Difference);
 }
 
+Brep EmbossProfile(const Brep& solid, const NurbsCurve& profile, Vector3d direction, double depth, EmbossMode mode) {
+  if (solid.raw().m_F.Count() == 0) {
+    throw std::invalid_argument("dino8::kernel::EmbossProfile: solid has no faces");
+  }
+  if (!profile.raw().IsClosed()) {
+    throw std::invalid_argument("dino8::kernel::EmbossProfile: profile must be a closed curve");
+  }
+  if (!(depth > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::EmbossProfile: depth must be positive");
+  }
+  Vector3d dir = direction;
+  if (!dir.Unitize()) {
+    throw std::invalid_argument("dino8::kernel::EmbossProfile: direction must be non-zero");
+  }
+
+  const BoundingBox tbb = solid.GetTightBoundingBox();
+  const double diagonal = (tbb.max - tbb.min).Length();
+  const double margin = 1e-3 * std::max(diagonal, 1.0);
+
+  // `dir` points INTO the material (MakeHole()'s own `axis` convention).
+  // Deboss's tool starts `margin` in FRONT of `profile`'s own plane
+  // (outside the material, so its entry cap pierces the surface
+  // transversally rather than grazing it tangentially) and reaches
+  // `depth` PAST it, into the material. Emboss's tool starts `margin`
+  // BEHIND the plane instead (embedded in the material, so the Union has
+  // real overlap to fuse onto) and protrudes `depth` past it the other
+  // way, outward.
+  const bool deboss = (mode == EmbossMode::Deboss);
+  ON_NurbsCurve base_raw = profile.raw();
+  base_raw.Translate(dir * (deboss ? -margin : margin));
+  NurbsCurve base;
+  base.raw() = base_raw;
+
+  const Vector3d extrude_vector = deboss ? dir * (margin + depth) : -dir * (margin + depth);
+  const Brep tool = Brep::Extrude(base, extrude_vector, /*cap=*/true);
+  return BooleanCombineGeneral(solid, tool, deboss ? BooleanOp::Difference : BooleanOp::Union);
+}
+
 // --- ExtrudeToBoundary(): extrude a quadrilateral profile until it -----
 // --- meets a planar boundary -------------------------------------------
 //

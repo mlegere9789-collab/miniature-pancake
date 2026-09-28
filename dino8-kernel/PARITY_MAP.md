@@ -1,6 +1,6 @@
 # Fossilith / Dino 8 parity map (2026-09-28)
 
-**Fossilith vs Parasolid/ACIS = 66.8% (weighted, verified); Dino 8 vs Rhino 8 + AutoCAD 2027 = 71.4%.**
+**Fossilith vs Parasolid/ACIS = 66.9% (weighted, verified); Dino 8 vs Rhino 8 + AutoCAD 2027 = 71.4%.**
 
 **2026-09-28 re-verification addendum (same day, later session):** the brief for
 this addendum claimed "roughly 60+" capability-adding commits had landed since
@@ -56,6 +56,19 @@ genuinely exists nearby at the corrected location and the substantive claim
 held up — this is a sourcing-hygiene defect, not a scoring defect. Corrected
 citations are applied inline below, each marked "corrected 2026-09-28" where
 the fix is non-trivial.
+
+**Later still, a third same-day session:** `dino8::kernel::EmbossProfile`
+(dino8-kernel/include/dino8/kernel/boolean_general.h/.cpp) landed after this
+addendum's own 66.8%/71.4% figures were written, closing kernel: Feature
+operations' own "Emboss/deboss" item (`missing`→`partial`). File-disjoint
+from both this addendum's own edits and the concurrent `AddWireCurves` pass
+(see that pass's own follow-up note below) — see kernel: Feature operations'
+own bullet list and "Note on this category's score" below for the full
+construction/test detail, and this document's own "Fourteenth same-day
+follow-up" note (below the Thirteenth, `AddWireCurves`) for the resulting
+headline arithmetic: **66.9%**, kernel-only, on top of this addendum's own
+66.8%. The combined Dino 8 vs Rhino 8 + AutoCAD 2027 headline is left at
+71.4% (kernel-only item, no `dino8-app` command wired to it).
 
 This run recomputes the parity map from scratch against the live repository at
 `/home/user/miniature-pancake` on `claude/pdf-audit-i2bvwm`, superseding the
@@ -621,7 +634,7 @@ below alongside the other change's own headline delta.
 | kernel: Tessellation / faceting | 1 | 25 | 14 | 9 | 2 | 74.0% |
 | kernel: Transformations, patterns, splitting | 0.5 | 22 | 9 | 13 | 0 | 70.5% |
 | kernel: Kernel-level data exchange | 1 | 27 | 8 | 11 | 8 | 50.0% |
-| kernel: Feature operations | 1 | 24 | 6 | 14 | 4 | 54.2% |
+| kernel: Feature operations | 1 | 24 | 6 | 15 | 3 | 56.3% |
 | Fossilith kernel — Curve operations | 1 | 28 | 17 | 11 | 0 | 80.4% |
 | Kernel Surface Operations (Fossilith / Dino 8) | 1 | 29 | 14 | 15 | 0 | 74.1% |
 | Kernel: SubD & mesh kernel support | 0.75 | 22 | 14 | 6 | 2 | 77.3% |
@@ -1245,6 +1258,40 @@ independent claim. This pass's only source edits are
 dino8-kernel/include/dino8/kernel/brep.h, dino8-kernel/src/brep.cpp, and
 dino8-kernel/tests/test_basic.cpp.
 
+**Fourteenth same-day follow-up (a fifth parallel session):**
+`dino8::kernel::EmbossProfile` (dino8-kernel/include/dino8/kernel/
+boolean_general.h, dino8-kernel/src/boolean_general.cpp) landed, closing
+**kernel: Feature operations**' own "Emboss/deboss" item, `missing`→
+`partial` (see that category's own bullet list, and its own "Note on this
+category's score," below for the full construction/test detail and the
+recomputed 6/15/3/24 split). `git log --oneline -30` re-checked first, per
+this branch's own working convention: the three most recent commits at this
+session's own start (`MaterialAt`/`MaterialCount`, `CounterboreHole`,
+`WireBody`) were all already pushed to `origin/claude/pdf-audit-i2bvwm`, and
+`git status`/`git fsck --dangling` turned up no uncommitted or orphaned work
+from an earlier attempt, so this session started clean. By the time this
+paragraph was written, two OTHER same-day sessions had landed first — the
+2026-09-28 re-verification addendum (top of document) and the Thirteenth
+follow-up's own `AddWireCurves` immediately above — so this paragraph builds
+on their own combined **66.8%/71.4%** baseline, not the stale 66.2% this
+session's own commit inventory originally suggested. This row is
+file-disjoint from every other category either of those two touched
+(Topology, and the addendum's own prose/citation fixes across the rest of
+the document), so this paragraph's own isolated delta needs no
+recombination with either's math: Feature operations' own exact score moves
+13/24 (54.16667%) → 13.5/24 (56.25%), a delta of +2.08333pp; at this row's
+own weight of 1 against the 17.75 total kernel weight, that is
++2.08333/17.75 = +0.11737pp against the headline. 66.8% + 0.1174pp →
+**66.9%** — treat the top-of-document number, not this paragraph's own
+isolated arithmetic, as authoritative if it has moved further still by the
+time this is read. The combined Dino 8 vs Rhino 8 + AutoCAD 2027 headline
+was not re-verified this pass (same caveat this document already gives
+after the CounterboreHole follow-up above) and is left at 71.4% rather than
+silently presented as re-checked; it is unlikely to be materially affected
+either way, since `EmbossProfile` is kernel-only with no `dino8-app`
+command wired to it yet (a grep for "emboss"/"deboss"/"engrave" across
+`dino8-app/src` still finds nothing).
+
 ### Kernel category gaps (missing / partial items, with evidence)
 
 **kernel: Topology & data structure** (topology):
@@ -1545,7 +1592,7 @@ unaffected (no bucket moved).*
 - [partial] Countersink (conical) hole — `dino8::kernel::MakeCountersinkHole` (boolean_general.h:206; boolean_general.cpp:3681 — corrected 2026-09-28, was mis-cited h:165; cpp:3560) is the conical sibling of `MakeCounterboreHole` above: the same single-`Brep::Revolve()`-tool, one-`BooleanCombineGeneral()`-call construction, with a genuine conical frustum wall — a straight radius taper from `countersink_diameter/2` at the entry surface down to `bore_radius`, its own depth derived from the standard tool-geometry relationship `depth = (R - r) / tan(angle/2)` for the requested `countersink_angle_degrees` (82/90/100/120deg etc.), not taken as a separate free parameter. Verified by `TestMakeCountersinkHoleBoxStandardAngle`: three points checked on the SAME compound wall face — the wide mouth exactly at the entry surface, a linearly-interpolated radius at exactly half the countersink's own derived depth (proof of a genuine straight taper), and the narrower bore radius well below the cone — plus the pilot bore's own flat bottom at the exact requested depth. Still partial: no app command, one hole per call, `BooleanCombineGeneral()`'s own inherited scope limits (same as `MakeCounterboreHole` above).
 - [missing] Threaded/tapped hole and external thread feature — `Bolt`/`Nut` (dino8-app/src/commands/cmd_arch.cpp:623) explicitly comments "built solid, with no threaded bore"; no thread-geometry code found.
 - [partial] Revolved cut (RevolvedHole) — `RevolvedHole` (cmd_solidtools.cpp:906) still prints "(mesh boolean; results are meshes)"; kernel `Brep::Revolve` exists but is unused by this command.
-- [missing] Emboss/deboss — zero hits for emboss/deboss/engrave anywhere.
+- [partial] Emboss/deboss — **upgraded from missing: previously zero hits for emboss/deboss/engrave anywhere, now a real kernel feature.** `dino8::kernel::EmbossProfile(solid, profile, direction, depth, mode)` (dino8-kernel/include/dino8/kernel/boolean_general.h; boolean_general.cpp) turns any closed, planar, star-shaped curve into a real capped solid tool via the existing `Brep::Extrude()` (brep.h), then fuses it onto `solid` (`EmbossMode::Emboss`, `BooleanCombineGeneral(..., Union)` — raises a boss) or cuts it into `solid` (`EmbossMode::Deboss`, `Difference` — engraves a pocket), exactly one boolean call either way. `direction` follows `MakeHole()`'s own "points INTO the material" convention; the tool is backed off by a small margin to whichever side of the profile's own plane actually needs it (outside, for a Deboss tool's entry cap; embedded, for an Emboss tool's fused base) so it crosses `solid`'s surface transversally rather than grazing it at a numerically degenerate coincident touch — the same trick `MakeHole()` already uses, generalized to a Union as well as a Difference. Verified by 4 new tests (`tests/test_basic.cpp`): `TestEmbossProfileDebossThroughPocket` cuts a 1x1 square pocket clean through a 4x4x4 box and matches the closed-form removed volume (footprint x height) via `TessellateToClosedMesh()`; `TestEmbossProfileDebossBlindPocket` cuts the same square to a blind depth of 1.5 and is verified directly on the B-rep instead (a genuine flat pocket floor whose own plane passes exactly through the requested depth, plus a wall through an exact side point) for the same disclosed reason `TestMakeHoleBlindAndThrough`'s own blind case is — a blind cavity's tessellated `Volume()` is not reliable here; `TestEmbossProfileEmbossBoss` raises a round boss (a genuinely curved, not just polyline, profile) and confirms it via a real cylindrical wall at the requested radius, a flat top cap at the requested height, and the model's own tight bounding box actually reaching past the original surface (not merely a "some face's infinite plane still passes through z=4" false positive, which the box's own remaining top face gives regardless); `TestEmbossProfileRejectsInvalidArguments` covers a faceless solid, a non-closed profile, non-positive depth, a zero-length direction, and a direction lying in the profile's own plane (surfaced via `Brep::Extrude()`'s own validation, not duplicated). **A genuine, confirmed pitfall found and fixed while building this evidence, not merely disclosed after the fact:** a `depth` landing the tool's far cap exactly ON an already-existing solid face (rather than past it) throws `BooleanCombineGeneral`'s own "edge is claimed by 3 or more fragment loops" non-manifold-result error — a coincident-face degeneracy, not a bug in `EmbossProfile` itself; the through-pocket test deliberately uses a `depth` past the box's own height rather than exactly equal to it, the same reason `MakeHole()`'s own `through` flag extends 2x past the solid's bounding-box diagonal rather than stopping flush at it. Still partial: `profile` must satisfy `Brep::Extrude()`'s own "closed, planar, star-shaped" capping requirement (a self-crossing or reflex/non-star outline can't be fanned into a flat cap) — so this does not cover Emboss/deboss of a general (non-simple) shape or lettering with disconnected glyph counters (an "O" or "A"'s own hole); it only supports a flat planar profile against a planar or otherwise unconformed surface, not embossing a shape that conforms to a curved target face; it inherits `BooleanCombineGeneral()`'s own disclosed genus-0/one-intersection-chain scope limits; and no `dino8-app` command wires it in yet — `cmd_annotate.cpp`'s own `TextCommand` (this category's separate "Lettering as solid geometry" item, still partial) does not call it.
 - [partial] Lettering as solid geometry — `TextCommand` (dino8-app/src/commands/cmd_annotate.cpp:48,66) still only takes a bool `surfaces_` flag (Curves/Surfaces), no Solids/Thickness option.
 - [partial] Feature editing/re-execution — `ApplyHoleXform` (cmd_solidtools.cpp:1027) still replays the boolean from a stored pre-cut mesh; no parametric feature tree.
 - [partial] Draft angle on extrusions — `Brep::ExtrudeTapered` (dino8-kernel/src/sweep.cpp:1430) refuses oblique draft directions (lines 1448-1452), exact for line/circle/arc/convex-polyline profiles, approximate otherwise; app's `ExtrudeCrvTapered` (cmd_surface.cpp:1229) still uses its own centroid-scaling path, not the kernel one.
@@ -1570,8 +1617,22 @@ Counterbore crossed into `present` on the strength of the independent,
 scope-limit-free `CounterboreHole` implementation (see its own bullet
 above); Countersink and Blind/through hole stay `partial`, both for
 inheriting `BooleanCombineGeneral()`'s own disclosed scope limits and for
-having no app command wiring. The category's correct split is 6/14/4 (24
-items, 54.2%), matching the table above.*
+having no app command wiring. The category's correct split was 6/14/4 (24
+items, 54.2%), matching the table above as of this note's own 2026-09-28
+correction.
+
+**Later still, a fifth parallel session:** `dino8::kernel::EmbossProfile`
+(boolean_general.h/.cpp) closes the "Emboss/deboss" item, `missing`→
+`partial` (see that bullet above for the full construction and test
+detail) — genuinely new capability (this repository's first emboss/deboss
+code of any kind), not merely a citation fix, but it lands as `partial`
+for the same "real code, still short of `present`" reasons this category's
+other kernel-only feature ops already are: no `dino8-app` command calls
+it, and it inherits `BooleanCombineGeneral()`'s own disclosed scope limits
+on top of `Brep::Extrude()`'s own closed/planar/star-shaped profile
+requirement. **6/15/3/24, 56.25% (rounds to 56.3%)** — Present unchanged
+at 6, Missing 4−1, Partial 24−6−3; matches the table above and this
+document's own "Fourteenth same-day follow-up" note.*
 
 **Fossilith kernel — Curve operations** (curveops):
 - [partial] Curve fairing/smoothing — app-only Laplacian smoothing (dino8-app/src/commands/cmd_meshtools.cpp:740 / cmd_remaining.cpp:866); no kernel fairing.

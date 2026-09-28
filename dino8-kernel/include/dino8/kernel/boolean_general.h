@@ -249,6 +249,41 @@ Brep MakeCounterboreHole(const Brep& solid, Point3d center, Vector3d axis, doubl
 Brep MakeCountersinkHole(const Brep& solid, Point3d center, Vector3d axis, double bore_radius, double bore_depth,
                           bool bore_through, double countersink_diameter, double countersink_angle_degrees);
 
+// Emboss (raise) or deboss (engrave) a closed planar profile onto `solid`
+// (parity-map "kernel: Feature operations" - "Emboss/deboss", previously
+// zero hits for emboss/deboss/engrave anywhere in the codebase). Not a new
+// boolean engine: `profile` is turned into a real capped solid tool via
+// Brep::Extrude() (brep.h - so `profile` inherits that function's own
+// "closed, planar, star-shaped" capping requirement, and throws whatever
+// Extrude() itself throws for a profile that doesn't satisfy it), then
+// combined with `solid` via ONE BooleanCombineGeneral() call - Union for
+// EmbossMode::Emboss (fuses a raised boss onto the surface), Difference for
+// EmbossMode::Deboss (cuts an engraved pocket into it).
+//
+// `direction` points INTO the material - the same convention MakeHole()'s
+// own `axis` uses - and need not be perpendicular to `profile`'s own plane
+// (an oblique emboss/deboss is fine, exactly as Extrude() itself allows),
+// just not lie IN it. `depth` is how far the boss protrudes (Emboss) or the
+// pocket cuts in (Deboss), measured from `profile`'s own plane.
+//
+// Mirrors MakeHole()'s own "back the tool off by a small margin so it
+// crosses the target's surface transversally rather than grazing it at a
+// numerically degenerate coincident touch" convention, applied to whichever
+// side of `profile`'s own plane actually needs it: Deboss's tool starts
+// `margin` in FRONT of the plane (outside the material, so its own entry
+// cap pierces the surface cleanly) and cuts `depth` past it; Emboss's tool
+// starts `margin` BEHIND the plane (embedded `margin` deep in the material,
+// so the Union has real volume to fuse onto rather than a tangent touch)
+// and protrudes `depth` past it the other way.
+//
+// Throws std::invalid_argument if `solid` has no faces, if `profile` is not
+// a closed curve, if `depth` is not strictly positive, or if `direction` is
+// zero-length - plus whatever Brep::Extrude() itself throws for a `profile`
+// that isn't planar, isn't star-shaped (a self-crossing or reflex outline
+// can't be fanned into a flat cap), or whose plane contains `direction`.
+enum class EmbossMode { Emboss, Deboss };
+Brep EmbossProfile(const Brep& solid, const NurbsCurve& profile, Vector3d direction, double depth, EmbossMode mode);
+
 // Extrude a closed planar QUADRILATERAL profile "to a boundary"
 // (PARITY_MAP.md's "kernel: Sweeping, lofting, extruding, revolving" gap
 // - "Extrude to a boundary surface / body (Rhino ToBoundary,

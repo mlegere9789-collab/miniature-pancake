@@ -32648,6 +32648,133 @@ void TestMakeCountersinkHoleRejectsInvalidArguments() {
         "MakeCountersinkHole throws for a zero-length axis");
 }
 
+void TestEmbossProfileDebossThroughPocket() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::EmbossMode;
+  using dino8::kernel::EmbossProfile;
+  using dino8::kernel::Mesh;
+
+  // parity-map "kernel: Feature operations" - "Emboss/deboss": previously
+  // zero hits for emboss/deboss/engrave anywhere. A 1x1 square pocket
+  // punched clean through a 4x4x4 box (volume 64), top face down past the
+  // bottom - a THROUGH cut, so (like MakeHole()'s own through case) both
+  // ends of the cutting tool exit through an already-existing box face
+  // rather than leaving a floating new cap, keeping the tessellated
+  // volume reliable (this engine's own disclosed "blind pocket -> bridged
+  // entry loop" mesh-closure gap - see TestMakeHoleBlindAndThrough above -
+  // does not apply here). `depth` (4.5) is deliberately past the box's own
+  // 4-tall height, not exactly equal to it - landing the tool's own far
+  // cap exactly ON the box's existing bottom face, rather than past it,
+  // is a degenerate coincident-face configuration this engine's SSX
+  // machinery cannot classify (confirmed directly: depth == 4.0 here
+  // throws "an edge is claimed by 3 or more fragment loops"), the same
+  // reason MakeHole()'s own `through` flag extends its tool 2x past the
+  // solid's own bounding-box diagonal rather than stopping flush at it.
+  const Brep box = Brep::Box(0, 0, 0, 4, 4, 4);
+  const NurbsCurve square = Polyline({P(1.5, 1.5, 4), P(2.5, 1.5, 4), P(2.5, 2.5, 4), P(1.5, 2.5, 4), P(1.5, 1.5, 4)});
+  const Vector3d down(0, 0, -1);
+
+  const Brep pocketed = EmbossProfile(box, square, down, /*depth=*/4.5, EmbossMode::Deboss);
+  Check(pocketed.raw().IsValid(), "EmbossProfile (deboss, through) produces a valid ON_Brep");
+  Check(pocketed.FaceCount() == 7,
+        "EmbossProfile (deboss, through) adds exactly one new face (the tool's own periodic wall) to the box's "
+        "own 6 - both ends exit through an already-existing box face, so no new cap survives");
+  const double expect = 64.0 - 1.0 * 4.0;
+  const Mesh m = pocketed.TessellateToClosedMesh(16, 16);
+  Check(std::abs(m.Volume() - expect) < 0.05,
+        "EmbossProfile (deboss, through) removes exactly footprint_area * box_height, leaving the closed-form "
+        "volume (60)");
+}
+
+void TestEmbossProfileDebossBlindPocket() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::EmbossMode;
+  using dino8::kernel::EmbossProfile;
+
+  // Same square, but a BLIND pocket (depth 1.5, well short of the box's
+  // own 4-tall height) - verified directly via the B-rep, the same
+  // trim-independent way TestMakeHoleBlindAndThrough's own blind branch
+  // is (a planar cap's plane equation, a face passing through an exact
+  // side point), since a blind cavity's own tessellated Volume() is not
+  // reliable here for the same disclosed reason that case documents.
+  const Brep box = Brep::Box(0, 0, 0, 4, 4, 4);
+  const NurbsCurve square = Polyline({P(1.5, 1.5, 4), P(2.5, 1.5, 4), P(2.5, 2.5, 4), P(1.5, 2.5, 4), P(1.5, 1.5, 4)});
+  const Vector3d down(0, 0, -1);
+  const double depth = 1.5;
+
+  const Brep pocketed = EmbossProfile(box, square, down, depth, EmbossMode::Deboss);
+  Check(pocketed.raw().IsValid(), "EmbossProfile (deboss, blind) produces a valid ON_Brep");
+  Check(pocketed.FaceCount() == 8,
+        "EmbossProfile (deboss, blind) adds exactly two new faces to the box's own 6: the tool's own periodic "
+        "wall and a new flat bottom cap (the tool's far end never reaches an existing box face)");
+  Check(BrepPassesThroughPoint(pocketed, P(2.5, 2, 3.5)),
+        "EmbossProfile (deboss, blind) leaves a genuine wall passing through the pocket's own side, well above "
+        "its floor");
+  const Point3d expected_bottom = P(2, 2, 4 - depth);
+  Check(HasPlanarFaceThroughPoint(pocketed, expected_bottom),
+        "EmbossProfile (deboss, blind) leaves a genuine flat pocket floor exactly `depth` below the entry "
+        "surface (2, 2, 2.5), not the full box height");
+}
+
+void TestEmbossProfileEmbossBoss() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::EmbossMode;
+  using dino8::kernel::EmbossProfile;
+
+  // The additive sibling: a round boss raised OUT of the top face rather
+  // than cut into it, proving EmbossProfile also accepts a genuinely
+  // curved (not just polyline) closed profile. `direction` still points
+  // INTO the material (MakeHole()'s own convention) even though the boss
+  // itself protrudes the OTHER way - EmbossProfile()'s own job is to back
+  // the tool off to the correct side of that convention, not the caller's.
+  const Brep box = Brep::Box(0, 0, 0, 4, 4, 4);
+  const NurbsCurve circle = Circle(P(2, 2, 4), Vector3d(0, 0, 1), 0.5);
+  const Vector3d down(0, 0, -1);
+  const double depth = 1.0;
+
+  const Brep bossed = EmbossProfile(box, circle, down, depth, EmbossMode::Emboss);
+  Check(bossed.raw().IsValid(), "EmbossProfile (emboss) produces a valid ON_Brep");
+  Check(HasCylinderFaceWithRadius(bossed, 0.5),
+        "EmbossProfile (emboss) leaves a genuine cylindrical boss wall at the requested radius");
+  Check(HasPlanarFaceThroughPoint(bossed, P(2, 2, 4 + depth)),
+        "EmbossProfile (emboss) leaves a genuine flat boss top exactly `depth` above the entry surface (2, 2, 5)");
+  // HasPlanarFaceThroughPoint() checks a face's own INFINITE plane, not
+  // its trim boundary - the box's own (now-holed) top face still passes
+  // that check at z=4 (its plane still contains that z), so it can't
+  // distinguish "flush" from "protruding" on its own. The model's own
+  // tight bounding box can: it only reaches box height (4) if nothing
+  // actually sticks out past the original surface.
+  const auto bbox = bossed.GetTightBoundingBox();
+  Check(bbox.max.z > 4.0 + 0.9 * depth,
+        "the boss actually protrudes past the original surface - the model's own tight bounding box reaches past "
+        "z=4 by close to the requested depth, not stopping flush at it");
+}
+
+void TestEmbossProfileRejectsInvalidArguments() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::EmbossMode;
+  using dino8::kernel::EmbossProfile;
+
+  const Brep box = Brep::Box(0, 0, 0, 4, 4, 4);
+  const Brep empty;
+  const NurbsCurve square = Polyline({P(1.5, 1.5, 4), P(2.5, 1.5, 4), P(2.5, 2.5, 4), P(1.5, 2.5, 4), P(1.5, 1.5, 4)});
+  const NurbsCurve open = Polyline({P(1.5, 1.5, 4), P(2.5, 1.5, 4), P(2.5, 2.5, 4)});
+  const Vector3d down(0, 0, -1);
+
+  Check(Throws([&] { EmbossProfile(empty, square, down, 1.0, EmbossMode::Deboss); }),
+        "EmbossProfile throws for a faceless solid");
+  Check(Throws([&] { EmbossProfile(box, open, down, 1.0, EmbossMode::Deboss); }),
+        "EmbossProfile throws for a profile that isn't closed");
+  Check(Throws([&] { EmbossProfile(box, square, down, 0.0, EmbossMode::Deboss); }),
+        "EmbossProfile throws for a non-positive depth");
+  Check(Throws([&] { EmbossProfile(box, square, down, -1.0, EmbossMode::Emboss); }),
+        "EmbossProfile throws for a negative depth");
+  Check(Throws([&] { EmbossProfile(box, square, Vector3d(0, 0, 0), 1.0, EmbossMode::Deboss); }),
+        "EmbossProfile throws for a zero-length direction");
+  Check(Throws([&] { EmbossProfile(box, square, Vector3d(1, 0, 0), 1.0, EmbossMode::Deboss); }),
+        "EmbossProfile throws (via Brep::Extrude()) when direction lies in the profile's own plane");
+}
+
 void TestPipeVariable() {
   using RP = std::pair<double, double>;
 
@@ -37760,6 +37887,10 @@ int main() {
   sweep_tests::TestMakeCounterboreHoleRejectsInvalidArguments();
   sweep_tests::TestMakeCountersinkHoleBoxStandardAngle();
   sweep_tests::TestMakeCountersinkHoleRejectsInvalidArguments();
+  sweep_tests::TestEmbossProfileDebossThroughPocket();
+  sweep_tests::TestEmbossProfileDebossBlindPocket();
+  sweep_tests::TestEmbossProfileEmbossBoss();
+  sweep_tests::TestEmbossProfileRejectsInvalidArguments();
   sweep_tests::TestExtrudeTaperedCircularProfileIsExactConeFrustum();
   sweep_tests::TestExtrudeTaperedConvexPolygonIsExactPlanarFrustum();
   sweep_tests::TestExtrudeToBoundaryTiltedPlaneMatchesExactAffineCapVolume();
