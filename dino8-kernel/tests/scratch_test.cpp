@@ -302,5 +302,80 @@ int main() {
       }
     }
   }
+
+  // MakeHole blind-hole investigation: the through-hole case matches the
+  // closed-form volume exactly, but the blind case (tool's far cap floats
+  // entirely inside the box, never touching any box face) comes back
+  // WAY under-removed (~0.12 removed vs ~1.18 expected) even through
+  // TessellateGeneralBooleanClosedMesh - inspect face-by-face.
+  {
+    Brep box = Brep::Box(0, 0, 0, 4, 4, 4);
+    Point3d center(2, 2, 4);
+    Vector3d down(0, 0, -1);
+    Brep drilled = MakeHole(box, center, down, 0.5, 1.5, false);
+    printf("MakeHole(blind): faces=%d valid=%d\n", drilled.FaceCount(), (int)drilled.raw().IsValid());
+    const ON_Brep& raw = drilled.raw();
+    for (int i = 0; i < raw.m_F.Count(); ++i) {
+      const ON_Surface* s = raw.m_F[i].SurfaceOf();
+      ON_BoundingBox bb = s->BoundingBox();
+      ON_Cylinder cyl;
+      bool is_cyl = s->IsCylinder(&cyl, 1e-4);
+      ON_Plane pl;
+      bool is_pl = s->IsPlanar(&pl, 1e-4);
+      int loop_count = raw.m_F[i].m_li.Count();
+      printf("  face %d: rev=%d loops=%d bbox=[(%.3f,%.3f,%.3f)-(%.3f,%.3f,%.3f)] is_cyl=%d radius=%.4f is_planar=%d\n",
+             i, (int)raw.m_F[i].m_bRev, loop_count, bb.m_min.x, bb.m_min.y, bb.m_min.z, bb.m_max.x, bb.m_max.y, bb.m_max.z,
+             (int)is_cyl, is_cyl ? cyl.circle.radius : -1.0, (int)is_pl);
+      for (int li = 0; li < loop_count; ++li) {
+        const ON_BrepLoop& loop = raw.m_L[raw.m_F[i].m_li[li]];
+        printf("    loop %d: type=%d trims=%d\n", li, (int)loop.m_type, loop.m_ti.Count());
+      }
+    }
+    Mesh mf = TessellateGeneralBooleanClosedMesh(drilled, 32, 128);
+    printf("MakeHole(blind) FIXED volume=%f closed=%d\n", mf.Volume(), (int)mf.IsClosedManifold());
+    DiagnoseManifold("MakeHole(blind) FIXED", drilled, mf);
+  }
+
+  // MakeCounterboreHole/MakeCountersinkHole face inspection: is the
+  // stepped tool one compound revolve face, or separate primitive faces?
+  {
+    Brep box = Brep::Box(0, 0, 0, 4, 4, 4);
+    Point3d center(2, 2, 4);
+    Vector3d down(0, 0, -1);
+    Brep cb = MakeCounterboreHole(box, center, down, 0.3, 3.0, false, 0.6, 1.0);
+    printf("MakeCounterboreHole: faces=%d valid=%d\n", cb.FaceCount(), (int)cb.raw().IsValid());
+    const ON_Brep& raw_cb = cb.raw();
+    for (int i = 0; i < raw_cb.m_F.Count(); ++i) {
+      const ON_Surface* s = raw_cb.m_F[i].SurfaceOf();
+      ON_BoundingBox bb = s->BoundingBox();
+      ON_Cylinder cyl;
+      bool is_cyl = s->IsCylinder(&cyl, 1e-4);
+      ON_Plane pl;
+      bool is_pl = s->IsPlanar(&pl, 1e-4);
+      printf("  face %d: bbox=[(%.3f,%.3f,%.3f)-(%.3f,%.3f,%.3f)] is_cyl=%d radius=%.4f is_planar=%d\n", i, bb.m_min.x,
+             bb.m_min.y, bb.m_min.z, bb.m_max.x, bb.m_max.y, bb.m_max.z, (int)is_cyl, is_cyl ? cyl.circle.radius : -1.0,
+             (int)is_pl);
+    }
+
+    Brep through = MakeHole(box, center, down, 0.5, 0.0, true);
+    printf("MakeHole(through): faces=%d valid=%d\n", through.FaceCount(), (int)through.raw().IsValid());
+
+    Brep cs = MakeCountersinkHole(box, center, down, 0.3, 3.0, false, 1.6, 90.0);
+    printf("MakeCountersinkHole: faces=%d valid=%d\n", cs.FaceCount(), (int)cs.raw().IsValid());
+    const ON_Brep& raw_cs = cs.raw();
+    for (int i = 0; i < raw_cs.m_F.Count(); ++i) {
+      const ON_Surface* s = raw_cs.m_F[i].SurfaceOf();
+      ON_BoundingBox bb = s->BoundingBox();
+      ON_Cylinder cyl;
+      bool is_cyl = s->IsCylinder(&cyl, 1e-4);
+      ON_Cone cone;
+      bool is_cone = s->IsCone(&cone, 1e-4);
+      ON_Plane pl;
+      bool is_pl = s->IsPlanar(&pl, 1e-4);
+      printf("  face %d: bbox=[(%.3f,%.3f,%.3f)-(%.3f,%.3f,%.3f)] is_cyl=%d radius=%.4f is_cone=%d half_angle_deg=%.4f is_planar=%d\n",
+             i, bb.m_min.x, bb.m_min.y, bb.m_min.z, bb.m_max.x, bb.m_max.y, bb.m_max.z, (int)is_cyl,
+             is_cyl ? cyl.circle.radius : -1.0, (int)is_cone, is_cone ? cone.AngleInDegrees() : -1.0, (int)is_pl);
+    }
+  }
   return 0;
 }

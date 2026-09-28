@@ -30990,6 +30990,315 @@ void TestSweep1RoadlikeAlignmentMatchesExtrudeOnAStraightRailAndRejectsDegenerat
         "an in-plane roadlike_up is parallel to a full circular rail's own tangent somewhere on the loop, and still throws");
 }
 
+// Scans every face of `b` for one whose surface IsCylinder() within
+// `surf_tol`, with a fitted radius within `radius_tol` of `expected_radius`
+// - works directly off ON_Surface::IsCylinder() (unlike this file's own
+// FaceSurface() helper, which ON_NurbsSurface::Cast()s and would crash on
+// a face still carrying its original ON_RevSurface, e.g. one of
+// MakeHole()'s own Pipe()-built tool faces kept verbatim by
+// BooleanCombineGeneral()), so it works whether the tool face survived as
+// a NURBS conversion or not. Only useful for a face that IS a pure
+// cylinder/cone across its own WHOLE domain - MakeHole()'s own Pipe()-
+// built wall qualifies; MakeCounterboreHole()/MakeCountersinkHole()'s own
+// single stepped/tapered Brep::Revolve() wall does NOT (see
+// BrepPassesThroughPoint() below for why those use a different check).
+bool HasCylinderFaceWithRadius(const dino8::kernel::Brep& b, double expected_radius, double radius_tol = 1e-3,
+                                double surf_tol = 1e-4) {
+  const ON_Brep& raw = b.raw();
+  for (int i = 0; i < raw.m_F.Count(); ++i) {
+    ON_Cylinder cyl;
+    const ON_Surface* s = raw.m_F[i].SurfaceOf();
+    if (s && s->IsCylinder(&cyl, surf_tol) && std::abs(cyl.circle.radius - expected_radius) < radius_tol) return true;
+  }
+  return false;
+}
+
+// Whether some face of `b` genuinely passes through 3D point `p` (within
+// `tol`), via SurfaceClosestPointGlobal()/PointAt() (surface_intersect.h,
+// the same general closest-point routine boolean_general.cpp itself
+// already uses) - works regardless of the face's own analytic TYPE, unlike
+// HasCylinderFaceWithRadius() above. MakeCounterboreHole()/
+// MakeCountersinkHole() build their whole stepped/tapered tool wall as
+// ONE Brep::Revolve() surface (confirmed directly: dino8_scratch_test's
+// own face dump shows a single face there, and neither ON_Surface::
+// IsCylinder() nor IsCone() classifies it as a pure primitive, since
+// neither test is true across the WHOLE domain of a profile with more
+// than one straight/conical segment) - so checking specific points
+// actually ON that one compound wall is the only way to confirm it
+// really carries the two different radii (or the radius-vs-cone-taper
+// combination) the profile asked for, rather than some single averaged
+// shape.
+bool BrepPassesThroughPoint(const dino8::kernel::Brep& b, Point3d p, double tol = 1e-4) {
+  const ON_Brep& raw = b.raw();
+  for (int i = 0; i < raw.m_F.Count(); ++i) {
+    const ON_Surface* s = raw.m_F[i].SurfaceOf();
+    double u = 0.0, v = 0.0;
+    if (s && dino8::kernel::SurfaceClosestPointGlobal(*s, p, u, v) && s->PointAt(u, v).DistanceTo(p) < tol) return true;
+  }
+  return false;
+}
+
+// Whether some PLANAR face of `b` passes through 3D point `p` - used to
+// pin down a blind hole/pocket's own exact bottom, via that flat cap's
+// plane equation directly (trim-independent, unlike a face's own
+// SurfaceOf()->BoundingBox(), which - confirmed directly via
+// dino8_scratch_test - reports MakeHole()'s/MakeCounterboreHole()'s own
+// TOOL's full pre-trim construction extent, not the fragment BooleanCombine
+// General() actually kept).
+bool HasPlanarFaceThroughPoint(const dino8::kernel::Brep& b, Point3d p, double tol = 1e-4) {
+  const ON_Brep& raw = b.raw();
+  for (int i = 0; i < raw.m_F.Count(); ++i) {
+    const ON_Surface* s = raw.m_F[i].SurfaceOf();
+    ON_Plane pl;
+    if (s && s->IsPlanar(&pl, 1e-6) && std::abs(pl.DistanceTo(p)) < tol) return true;
+  }
+  return false;
+}
+
+void TestMakeHoleBlindAndThrough() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::MakeHole;
+  using dino8::kernel::Mesh;
+
+  // parity-map "kernel: Feature operations" - "Blind/through hole with
+  // depth/placement": the app's own RoundHole/MakeHole/PlaceHole
+  // (cmd_solidtools.cpp) are all still "mesh boolean; results are
+  // meshes" - this is the first genuine kernel-level (B-rep) hole
+  // feature, backed by BooleanCombineGeneral() rather than a mesh
+  // boolean.
+  //
+  // A 4x4x4 box (volume 64), drilled from the top face's own center
+  // straight down.
+  const Brep box = Brep::Box(0, 0, 0, 4, 4, 4);
+  const Point3d center(2, 2, 4);
+  const Vector3d down(0, 0, -1);
+  const double radius = 0.5;
+
+  {
+    // Through: the tool clears the box on both ends, so the removed
+    // volume is exactly the cylinder's own cross-section times the box's
+    // full height (4) - Pappus/disc integration, same closed-form
+    // TestBooleanCombineGeneralBoxCylinder above already uses. Confirmed
+    // (dino8_scratch_test) this exact fixture's mesh IS reliable here:
+    // TessellateToClosedMesh()'s own volume matches the closed form
+    // tightly.
+    const Brep drilled = MakeHole(box, center, down, radius, /*depth=*/0.0, /*through=*/true);
+    Check(drilled.raw().IsValid(), "MakeHole (through) produces a valid ON_Brep");
+    Check(drilled.FaceCount() == 7,
+          "MakeHole (through) adds exactly one new face (the cylindrical wall) to the box's own 6 - both ends "
+          "exit through an existing box face, so no new cap is needed");
+    const double expect = 64.0 - ON_PI * radius * radius * 4.0;
+    const Mesh m = drilled.TessellateToClosedMesh(32, 128);
+    Check(std::abs(m.Volume() - expect) < 0.5,
+          "MakeHole (through) removes exactly pi*r^2*box_height, leaving the closed-form volume");
+    Check(HasCylinderFaceWithRadius(drilled, radius), "MakeHole (through) leaves a genuine cylindrical wall face at the requested radius");
+  }
+  {
+    // Blind, depth 1.5: a pocket that does NOT reach the box's own
+    // bottom (z=0). CONFIRMED (dino8_scratch_test, direct face-by-face
+    // inspection): the raw B-rep topology here is exactly right (7
+    // faces + 1: the box's own 6, the cylindrical wall at radius 0.5000
+    // spanning z in [2.5, 4.5] - i.e. from the tool's own backed-off
+    // entry cap down to depth 1.5 below the true surface at z=4 - and a
+    // genuine new flat bottom cap at z=2.5). But BooleanCombineGeneral()'s
+    // OWN mesh tessellation is NOT reliably closed for this "tool's far
+    // cap floats entirely inside the target, needing a bridged single-
+    // loop entry face" topology (a real, newly-confirmed gap beyond the
+    // smaller already-disclosed box+cylinder residuals: 77 naked
+    // boundary edges here, all sitting exactly at the hole's own entry
+    // rim, even through TessellateGeneralBooleanClosedMesh()'s own
+    // repair pass) - so TessellateToClosedMesh()'s own Volume() comes
+    // back wildly wrong (~63.9 instead of ~62.8) despite the underlying
+    // geometry being correct, unlike the through-hole case above whose
+    // mesh happens to stay reliable. Verified directly via the B-rep
+    // itself instead: a cylindrical wall of the right radius, and a
+    // planar cap whose own plane passes through the EXACT expected
+    // bottom point (center + depth along axis) - both trim-independent,
+    // neither relying on this disclosed tessellation gap.
+    const double depth = 1.5;
+    const Brep drilled = MakeHole(box, center, down, radius, depth, /*through=*/false);
+    Check(drilled.raw().IsValid(), "MakeHole (blind) produces a valid ON_Brep");
+    Check(drilled.FaceCount() == 8,
+          "MakeHole (blind) adds exactly two new faces to the box's own 6: the cylindrical wall and a new flat "
+          "bottom cap (Pipe()'s own auto-cap, since the tool's far end never reaches an existing box face)");
+    Check(HasCylinderFaceWithRadius(drilled, radius), "MakeHole (blind) leaves a genuine cylindrical wall face at the requested radius");
+    const Point3d expected_bottom = center + down * depth;
+    Check(HasPlanarFaceThroughPoint(drilled, expected_bottom),
+          "MakeHole (blind) leaves a genuine flat bottom cap exactly at center + depth*axis (2, 2, 2.5) - the "
+          "requested depth, not the full box height, confirming this is a true blind pocket rather than a "
+          "through-hole in disguise");
+  }
+}
+
+void TestMakeHoleRejectsInvalidArguments() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::MakeHole;
+
+  const Brep box = Brep::Box(0, 0, 0, 4, 4, 4);
+  const Brep empty;
+  const Point3d center(2, 2, 4);
+  const Vector3d down(0, 0, -1);
+
+  Check(Throws([&] { MakeHole(empty, center, down, 0.5, 1.0, false); }), "MakeHole throws for a faceless solid");
+  Check(Throws([&] { MakeHole(box, center, down, 0.0, 1.0, false); }), "MakeHole throws for a non-positive radius");
+  Check(Throws([&] { MakeHole(box, center, down, -1.0, 1.0, false); }), "MakeHole throws for a negative radius");
+  Check(Throws([&] { MakeHole(box, center, down, 0.5, 0.0, false); }), "MakeHole throws for a non-positive depth on a blind hole");
+  Check(!Throws([&] { MakeHole(box, center, down, 0.5, 0.0, true); }), "MakeHole ignores depth entirely for a through hole, even 0");
+  Check(Throws([&] { MakeHole(box, center, Vector3d(0, 0, 0), 0.5, 1.0, false); }), "MakeHole throws for a zero-length axis");
+}
+
+void TestMakeCounterboreHoleBoxStepped() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::MakeCounterboreHole;
+
+  // parity-map "kernel: Feature operations" - "Counterbore (stepped
+  // coaxial) hole": previously "composable-in-principle only", no
+  // dedicated kernel API. Built as a single stepped-profile Brep::Revolve()
+  // tool - CONFIRMED (dino8_scratch_test face dump) this really is ONE
+  // compound wall face spanning both radii, not two separate cylindrical
+  // faces, so ON_Surface::IsCylinder() never classifies it (that test
+  // requires a straight-line isocurve across the surface's WHOLE domain,
+  // which a two-radius stepped profile doesn't have). Verified instead by
+  // checking specific 3D points that can only lie on the wall if it truly
+  // carries both radii, not some single averaged shape - a stronger,
+  // parameterization-independent check than a named classification would
+  // have been anyway.
+  const Brep box = Brep::Box(0, 0, 0, 4, 4, 4);
+  const Point3d center(2, 2, 4);
+  const Vector3d down(0, 0, -1);
+  const double bore_r = 0.3, bore_depth = 3.0, cb_r = 0.6, cb_depth = 1.0;
+
+  const Brep drilled = MakeCounterboreHole(box, center, down, bore_r, bore_depth, /*bore_through=*/false, cb_r, cb_depth);
+  Check(drilled.raw().IsValid(), "MakeCounterboreHole produces a valid ON_Brep");
+  Check(drilled.FaceCount() == 8,
+        "MakeCounterboreHole adds exactly two new faces to the box's own 6: the single stepped wall and the "
+        "pilot bore's own flat bottom cap");
+
+  // Counterbore's own cylindrical mouth: right at the entry surface
+  // (z=4), the wall must sit at radius cb_r, not bore_r or some
+  // in-between value.
+  Check(BrepPassesThroughPoint(drilled, center + Vector3d(cb_r, 0, 0)),
+        "MakeCounterboreHole's wall passes through the counterbore radius at the entry surface");
+  // Pilot bore, well below the counterbore recess's own floor (z=3): the
+  // SAME wall face must ALSO pass through the narrower bore_r radius
+  // here - proof this is a genuine two-radius stepped profile, not one
+  // cylinder at an averaged radius.
+  const Point3d bore_probe = center + down * 2.0 + Vector3d(bore_r, 0, 0);
+  Check(BrepPassesThroughPoint(drilled, bore_probe),
+        "MakeCounterboreHole's SAME wall also passes through the narrower bore radius, well below the "
+        "counterbore recess's own floor");
+  // The pilot bore's own flat bottom, exactly bore_depth below the entry
+  // surface (not counterbore_depth, and not the full box height).
+  const Point3d expected_bottom = center + down * bore_depth;
+  Check(HasPlanarFaceThroughPoint(drilled, expected_bottom),
+        "MakeCounterboreHole leaves a genuine flat pilot-bore bottom exactly at bore_depth below the surface");
+}
+
+void TestMakeCounterboreHoleRejectsInvalidArguments() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::MakeCounterboreHole;
+
+  const Brep box = Brep::Box(0, 0, 0, 4, 4, 4);
+  const Brep empty;
+  const Point3d center(2, 2, 4);
+  const Vector3d down(0, 0, -1);
+
+  Check(Throws([&] { MakeCounterboreHole(empty, center, down, 0.3, 3.0, false, 0.6, 1.0); }),
+        "MakeCounterboreHole throws for a faceless solid");
+  Check(Throws([&] { MakeCounterboreHole(box, center, down, 0.0, 3.0, false, 0.6, 1.0); }),
+        "MakeCounterboreHole throws for a non-positive bore_radius");
+  Check(Throws([&] { MakeCounterboreHole(box, center, down, 0.6, 3.0, false, 0.6, 1.0); }),
+        "MakeCounterboreHole throws when counterbore_radius does not exceed bore_radius");
+  Check(Throws([&] { MakeCounterboreHole(box, center, down, 0.3, 3.0, false, 0.6, 0.0); }),
+        "MakeCounterboreHole throws for a non-positive counterbore_depth");
+  Check(Throws([&] { MakeCounterboreHole(box, center, down, 0.3, 1.0, false, 0.6, 1.0); }),
+        "MakeCounterboreHole throws when a blind bore_depth doesn't exceed counterbore_depth");
+  Check(!Throws([&] { MakeCounterboreHole(box, center, down, 0.3, 0.0, true, 0.6, 1.0); }),
+        "MakeCounterboreHole ignores bore_depth entirely when bore_through is true, even shallower than counterbore_depth");
+  Check(Throws([&] { MakeCounterboreHole(box, center, Vector3d(0, 0, 0), 0.3, 3.0, false, 0.6, 1.0); }),
+        "MakeCounterboreHole throws for a zero-length axis");
+}
+
+void TestMakeCountersinkHoleBoxStandardAngle() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::MakeCountersinkHole;
+
+  // parity-map "kernel: Feature operations" - "Countersink (conical)
+  // hole": previously no dedicated feature/command at all. A standard
+  // 90-degree countersink (half-angle 45 degrees, tan(45) = 1, so the
+  // countersink's own depth is exactly its own radius gap) atop a pilot
+  // bore.
+  const Brep box = Brep::Box(0, 0, 0, 4, 4, 4);
+  const Point3d center(2, 2, 4);
+  const Vector3d down(0, 0, -1);
+  const double bore_r = 0.3, bore_depth = 3.0;
+  const double cs_diameter = 1.6;  // cs_radius = 0.8
+  const double cs_angle_deg = 90.0;
+  const double cs_radius = 0.5 * cs_diameter;
+  const double cs_depth = (cs_radius - bore_r) / std::tan(cs_angle_deg * ON_PI / 360.0);
+
+  const Brep drilled = MakeCountersinkHole(box, center, down, bore_r, bore_depth, /*bore_through=*/false, cs_diameter, cs_angle_deg);
+  Check(drilled.raw().IsValid(), "MakeCountersinkHole produces a valid ON_Brep");
+  Check(drilled.FaceCount() == 8,
+        "MakeCountersinkHole adds exactly two new faces to the box's own 6: the single conical/cylindrical wall "
+        "and the pilot bore's own flat bottom cap");
+
+  // Same "one compound Brep::Revolve() wall, verify by point rather than
+  // by IsCylinder()/IsCone() classification" reasoning as
+  // TestMakeCounterboreHoleBoxStepped() above - confirmed directly via
+  // dino8_scratch_test that neither classifier fires on this wall either.
+  //
+  // The cone's own wide mouth, exactly at the entry surface (z=4).
+  Check(BrepPassesThroughPoint(drilled, center + Vector3d(cs_radius, 0, 0)),
+        "MakeCountersinkHole's wall passes through the countersink radius at the entry surface");
+  // Halfway down the cone's own taper: a linearly-interpolated radius
+  // partway between cs_radius and bore_r - only true for a genuine
+  // straight-line conical taper (Brep::Revolve()'s own exact ruled-
+  // frustum construction), not some other curve shape between the same
+  // two endpoints.
+  const double half_depth_radius = cs_radius - 0.5 * (cs_radius - bore_r);
+  const Point3d taper_probe = center + down * (0.5 * cs_depth) + Vector3d(half_depth_radius, 0, 0);
+  Check(BrepPassesThroughPoint(drilled, taper_probe),
+        "MakeCountersinkHole's cone wall passes through the linearly-interpolated radius at half the "
+        "countersink's own depth - a genuine straight taper, not some other curve");
+  // The SAME wall's straight bore section, well below the cone.
+  const Point3d bore_probe = center + down * 2.0 + Vector3d(bore_r, 0, 0);
+  Check(BrepPassesThroughPoint(drilled, bore_probe),
+        "MakeCountersinkHole's SAME wall also passes through the narrower bore radius, well below the cone");
+  // The pilot bore's own flat bottom, exactly bore_depth below the entry
+  // surface.
+  const Point3d expected_bottom = center + down * bore_depth;
+  Check(HasPlanarFaceThroughPoint(drilled, expected_bottom),
+        "MakeCountersinkHole leaves a genuine flat pilot-bore bottom exactly at bore_depth below the surface");
+}
+
+void TestMakeCountersinkHoleRejectsInvalidArguments() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::MakeCountersinkHole;
+
+  const Brep box = Brep::Box(0, 0, 0, 4, 4, 4);
+  const Brep empty;
+  const Point3d center(2, 2, 4);
+  const Vector3d down(0, 0, -1);
+
+  Check(Throws([&] { MakeCountersinkHole(empty, center, down, 0.3, 3.0, false, 1.6, 90.0); }),
+        "MakeCountersinkHole throws for a faceless solid");
+  Check(Throws([&] { MakeCountersinkHole(box, center, down, 0.0, 3.0, false, 1.6, 90.0); }),
+        "MakeCountersinkHole throws for a non-positive bore_radius");
+  Check(Throws([&] { MakeCountersinkHole(box, center, down, 0.3, 3.0, false, 0.6, 90.0); }),
+        "MakeCountersinkHole throws when countersink_diameter does not exceed 2*bore_radius");
+  Check(Throws([&] { MakeCountersinkHole(box, center, down, 0.3, 3.0, false, 1.6, 0.0); }),
+        "MakeCountersinkHole throws for a non-positive countersink_angle_degrees");
+  Check(Throws([&] { MakeCountersinkHole(box, center, down, 0.3, 3.0, false, 1.6, 180.0); }),
+        "MakeCountersinkHole throws for a countersink_angle_degrees of 180 (not < 180)");
+  Check(Throws([&] { MakeCountersinkHole(box, center, down, 0.3, 0.5, false, 1.6, 90.0); }),
+        "MakeCountersinkHole throws when a blind bore_depth doesn't exceed the countersink's own derived depth");
+  Check(!Throws([&] { MakeCountersinkHole(box, center, down, 0.3, 0.0, true, 1.6, 90.0); }),
+        "MakeCountersinkHole ignores bore_depth entirely when bore_through is true");
+  Check(Throws([&] { MakeCountersinkHole(box, center, Vector3d(0, 0, 0), 0.3, 3.0, false, 1.6, 90.0); }),
+        "MakeCountersinkHole throws for a zero-length axis");
+}
+
 void TestPipeVariable() {
   using RP = std::pair<double, double>;
 
@@ -35322,6 +35631,12 @@ int main() {
   sweep_tests::TestSweep1TwistIsExactOnAStraightRailAndRejectsOnClosedRail();
   sweep_tests::TestSweep1ScaleIsExactContinuouslyOnAStraightRailAndRejectsOnClosedRail();
   sweep_tests::TestSweep1RoadlikeAlignmentMatchesExtrudeOnAStraightRailAndRejectsDegenerateUp();
+  sweep_tests::TestMakeHoleBlindAndThrough();
+  sweep_tests::TestMakeHoleRejectsInvalidArguments();
+  sweep_tests::TestMakeCounterboreHoleBoxStepped();
+  sweep_tests::TestMakeCounterboreHoleRejectsInvalidArguments();
+  sweep_tests::TestMakeCountersinkHoleBoxStandardAngle();
+  sweep_tests::TestMakeCountersinkHoleRejectsInvalidArguments();
   sweep_tests::TestExtrudeTaperedCircularProfileIsExactConeFrustum();
   sweep_tests::TestExtrudeTaperedConvexPolygonIsExactPlanarFrustum();
 

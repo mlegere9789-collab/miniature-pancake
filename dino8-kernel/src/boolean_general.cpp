@@ -670,6 +670,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include "dino8/kernel/curve.h"
 #include "dino8/kernel/detail/polygon2d.h"
 #include "dino8/kernel/surface_intersect.h"
 
@@ -3457,6 +3458,162 @@ std::pair<Brep, Brep> SplitBySheet(const Brep& solid, const Brep& sheet) {
   Brep positive_side = assemble(kept_pos);
   Brep negative_side = assemble(kept_neg);
   return {std::move(positive_side), std::move(negative_side)};
+}
+
+// --- MakeHole()/MakeCounterboreHole()/MakeCountersinkHole() ------------
+
+namespace {
+
+// Builds a 3D polyline profile from (radius, height-along-axis) pairs, in
+// an arbitrary half-plane containing `axis_point`/`unit_axis` - the same
+// "any perpendicular reference direction will do, Brep::Revolve() derives
+// its own radial reference from the profile itself" convention
+// Mesh::RevolveProfile() (mesh.cpp) already uses to hand a profile to
+// Brep::Revolve(). `unit_axis` must already be unit length.
+NurbsCurve HoleToolProfileCurve(Point3d axis_point, Vector3d unit_axis, const std::vector<Point2d>& profile) {
+  const Vector3d reference = (std::fabs(unit_axis.z) < 0.9) ? Vector3d(0, 0, 1) : Vector3d(1, 0, 0);
+  Vector3d radial = ON_CrossProduct(reference, unit_axis);
+  radial.Unitize();
+  std::vector<Point3d> points;
+  points.reserve(profile.size());
+  for (const Point2d& p : profile) points.push_back(axis_point + radial * p.x + unit_axis * p.y);
+  return NurbsCurve::FromControlPoints(points, 1);
+}
+
+}  // namespace
+
+Brep MakeHole(const Brep& solid, Point3d center, Vector3d axis, double radius, double depth, bool through) {
+  if (solid.raw().m_F.Count() == 0) {
+    throw std::invalid_argument("dino8::kernel::MakeHole: solid has no faces");
+  }
+  if (!(radius > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::MakeHole: radius must be positive");
+  }
+  if (!through && !(depth > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::MakeHole: depth must be positive for a blind hole");
+  }
+  Vector3d dir = axis;
+  if (!dir.Unitize()) {
+    throw std::invalid_argument("dino8::kernel::MakeHole: axis must be non-zero");
+  }
+
+  const BoundingBox bbox = solid.GetTightBoundingBox();
+  const double diagonal = (bbox.max - bbox.min).Length();
+  // Backs the tool's own near cap off `center` by `margin` so it pierces
+  // the entry surface cleanly (a transversal wall/face intersection) -
+  // the cap itself then sits in free space, never coincident with the
+  // solid's own surface - rather than starting the cylinder exactly ON
+  // that surface, a numerically degenerate tangent touch.
+  const double margin = std::max(radius, 1e-3 * std::max(diagonal, 1.0));
+  const double length = margin + (through ? 2.0 * diagonal + margin : depth);
+
+  const Point3d start = center - dir * margin;
+  const NurbsCurve rail = NurbsCurve::FromControlPoints({start, start + dir * length}, 1);
+  const Brep tool = Brep::Pipe(rail, radius, /*cap=*/true, /*stations=*/2);
+  return BooleanCombineGeneral(solid, tool, BooleanOp::Difference);
+}
+
+Brep MakeCounterboreHole(const Brep& solid, Point3d center, Vector3d axis, double bore_radius, double bore_depth,
+                          bool bore_through, double counterbore_radius, double counterbore_depth) {
+  if (solid.raw().m_F.Count() == 0) {
+    throw std::invalid_argument("dino8::kernel::MakeCounterboreHole: solid has no faces");
+  }
+  if (!(bore_radius > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::MakeCounterboreHole: bore_radius must be positive");
+  }
+  if (!(counterbore_radius > bore_radius)) {
+    throw std::invalid_argument("dino8::kernel::MakeCounterboreHole: counterbore_radius must exceed bore_radius");
+  }
+  if (!(counterbore_depth > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::MakeCounterboreHole: counterbore_depth must be positive");
+  }
+  if (!bore_through && !(bore_depth > counterbore_depth)) {
+    throw std::invalid_argument(
+        "dino8::kernel::MakeCounterboreHole: bore_depth must exceed counterbore_depth for a blind bore (the pilot "
+        "bore must reach past the counterbore recess it sits inside)");
+  }
+  Vector3d dir = axis;
+  if (!dir.Unitize()) {
+    throw std::invalid_argument("dino8::kernel::MakeCounterboreHole: axis must be non-zero");
+  }
+
+  const BoundingBox bbox = solid.GetTightBoundingBox();
+  const double diagonal = (bbox.max - bbox.min).Length();
+  const double margin = std::max(counterbore_radius, 1e-3 * std::max(diagonal, 1.0));
+  const double bore_full_depth = bore_through ? (2.0 * diagonal + margin) : bore_depth;
+
+  // Profile heights are measured from the tool's own backed-off origin
+  // (`margin` before `center`), so "the real entry surface" is at
+  // height == margin below - the counterbore recess (radius
+  // `counterbore_radius` throughout) already spans that point at constant
+  // radius, so its own true depth into the material is exactly
+  // `counterbore_depth`, unaffected by the backoff.
+  const std::vector<Point2d> profile = {
+      Point2d(0.0, 0.0),
+      Point2d(counterbore_radius, 0.0),
+      Point2d(counterbore_radius, margin + counterbore_depth),
+      Point2d(bore_radius, margin + counterbore_depth),
+      Point2d(bore_radius, margin + bore_full_depth),
+  };
+  const Point3d tool_origin = center - dir * margin;
+  const NurbsCurve profile_curve = HoleToolProfileCurve(tool_origin, dir, profile);
+  const Brep tool = Brep::Revolve(profile_curve, tool_origin, dir, 2.0 * ON_PI, /*cap=*/true);
+  return BooleanCombineGeneral(solid, tool, BooleanOp::Difference);
+}
+
+Brep MakeCountersinkHole(const Brep& solid, Point3d center, Vector3d axis, double bore_radius, double bore_depth,
+                          bool bore_through, double countersink_diameter, double countersink_angle_degrees) {
+  if (solid.raw().m_F.Count() == 0) {
+    throw std::invalid_argument("dino8::kernel::MakeCountersinkHole: solid has no faces");
+  }
+  if (!(bore_radius > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::MakeCountersinkHole: bore_radius must be positive");
+  }
+  const double countersink_radius = 0.5 * countersink_diameter;
+  if (!(countersink_radius > bore_radius)) {
+    throw std::invalid_argument(
+        "dino8::kernel::MakeCountersinkHole: countersink_diameter must exceed 2*bore_radius");
+  }
+  if (!(countersink_angle_degrees > 0.0) || !(countersink_angle_degrees < 180.0)) {
+    throw std::invalid_argument("dino8::kernel::MakeCountersinkHole: countersink_angle_degrees must be in (0, 180)");
+  }
+  // Standard countersink geometry: a cone of full included angle `theta`
+  // whose radius shrinks from `countersink_radius` to `bore_radius` over
+  // an axial depth of (radius gap) / tan(theta / 2).
+  const double half_angle = countersink_angle_degrees * ON_PI / 360.0;
+  const double countersink_depth = (countersink_radius - bore_radius) / std::tan(half_angle);
+  if (!bore_through && !(bore_depth > countersink_depth)) {
+    throw std::invalid_argument(
+        "dino8::kernel::MakeCountersinkHole: bore_depth must exceed the countersink's own depth (derived from "
+        "countersink_diameter/countersink_angle_degrees) for a blind bore");
+  }
+  Vector3d dir = axis;
+  if (!dir.Unitize()) {
+    throw std::invalid_argument("dino8::kernel::MakeCountersinkHole: axis must be non-zero");
+  }
+
+  const BoundingBox bbox = solid.GetTightBoundingBox();
+  const double diagonal = (bbox.max - bbox.min).Length();
+  const double margin = std::max(countersink_radius, 1e-3 * std::max(diagonal, 1.0));
+  const double bore_full_depth = bore_through ? (2.0 * diagonal + margin) : bore_depth;
+
+  // A constant-radius sleeve from the tool's own backed-off origin to the
+  // real entry surface (height == margin) keeps the cone's wide end
+  // exactly `countersink_radius` AT that surface, then the cone itself
+  // (a straight radius taper - Brep::Revolve()'s own exact ruled-frustum
+  // construction) narrows to `bore_radius` over `countersink_depth`,
+  // where the straight bore takes over down to the tool's own far end.
+  const std::vector<Point2d> profile = {
+      Point2d(0.0, 0.0),
+      Point2d(countersink_radius, 0.0),
+      Point2d(countersink_radius, margin),
+      Point2d(bore_radius, margin + countersink_depth),
+      Point2d(bore_radius, margin + bore_full_depth),
+  };
+  const Point3d tool_origin = center - dir * margin;
+  const NurbsCurve profile_curve = HoleToolProfileCurve(tool_origin, dir, profile);
+  const Brep tool = Brep::Revolve(profile_curve, tool_origin, dir, 2.0 * ON_PI, /*cap=*/true);
+  return BooleanCombineGeneral(solid, tool, BooleanOp::Difference);
 }
 
 // --- TessellateGeneralBooleanClosedMesh(): T-junction stitching --------

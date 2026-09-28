@@ -109,6 +109,76 @@ Brep ImprintFaces(const Brep& target, const Brep& tool);
 // convention rather than treating a clean miss as an error.
 std::pair<Brep, Brep> SplitBySheet(const Brep& solid, const Brep& sheet);
 
+// A blind or through round hole (Rhino/SolidWorks "Hole" feature), cut
+// straight into `solid` via BooleanCombineGeneral() above - so, unlike the
+// app's `RoundHole`/`MakeHole`/`PlaceHole` (dino8-app/src/commands/
+// cmd_solidtools.cpp, all still "mesh boolean; results are meshes"), the
+// result is a genuine ON_Brep. `center` is the hole's entry point (where
+// its axis meets the surface being drilled) and `axis` the drilling
+// direction, pointing INTO the material (need not be unit length -
+// normalized internally). The cutting tool is a plain capped cylinder
+// (Brep::Pipe() over a straight two-point rail - the exact rational
+// cylinder that degree-1/2-station case already gives), backed off
+// `center` by a small margin along `-axis` so it pierces the entry
+// surface cleanly rather than merely grazing it tangentially (the same
+// "extend the cutter past the target's own silhouette" convention
+// dino8-app's own SolidifyOpenCutter already uses for its open-surface
+// cutters).
+//
+// `through`: when true, the tool is extended far enough past `solid`'s
+// own tight bounding box (twice its diagonal) to guarantee it exits the
+// far side regardless of `solid`'s shape, and `depth` is ignored. When
+// false, the hole is blind: the tool's far end sits at
+// `center + unit(axis) * depth` and is capped there, giving the hole a
+// flat bottom (Pipe()'s own auto-cap, not a drill-point taper) - `depth`
+// must then be positive.
+//
+// Throws std::invalid_argument for a non-positive `radius`, a
+// non-positive `depth` on a blind hole, a zero-length `axis`, or a
+// `solid` with no faces at all.
+Brep MakeHole(const Brep& solid, Point3d center, Vector3d axis, double radius, double depth, bool through = false);
+
+// Counterbore hole (Rhino/SolidWorks "Counterbore Hole" feature,
+// parity-map "Counterbore (stepped coaxial) hole"): MakeHole()'s own
+// straight bore, plus a larger-diameter, shallower coaxial recess at the
+// entry surface for a bolt head/nut to sit flush. Built as ONE exact
+// stepped-profile Brep::Revolve() call (the same "profile touches the
+// axis at one end, off-axis at the other -> auto-capped solid of
+// revolution" construction Brep::Revolve()'s own doc comment already
+// establishes for a plain cylinder/cone/frustum, extended here to a
+// two-step profile) rather than two separate cylinders unioned together,
+// so only ONE BooleanCombineGeneral() call is ever made against `solid` -
+// avoiding this engine's own disclosed "faces assumed genus-0, no
+// pre-existing holes" scope limit that a second, chained Difference
+// against an already-holed `solid` would otherwise risk (see this file's
+// own top-of-file doc comment).
+//
+// `counterbore_radius` must exceed `bore_radius`, and `counterbore_depth`
+// must be positive (the counterbore recess is always blind, even when the
+// bore itself is `bore_through`). `bore_depth`/`bore_through` behave
+// exactly as MakeHole()'s own `depth`/`through`.
+Brep MakeCounterboreHole(const Brep& solid, Point3d center, Vector3d axis, double bore_radius, double bore_depth,
+                          bool bore_through, double counterbore_radius, double counterbore_depth);
+
+// Countersink hole (Rhino/SolidWorks "Countersink Hole" feature,
+// parity-map "Countersink (conical) hole"): MakeHole()'s own straight
+// bore, plus a conical flare at the entry surface for a flat-head screw,
+// sized by `countersink_diameter` (the cone's own diameter AT the entry
+// surface - must exceed 2*bore_radius) and `countersink_angle_degrees`
+// (the cone's full included angle, e.g. the standard 82/90/100/120 degree
+// countersinks - must be in (0, 180)). The countersink's own depth (the
+// surface-to-bore-radius transition) is derived from that angle and the
+// radius gap rather than taken as a separate parameter, matching how a
+// real countersink cutting tool is specified. Built as one exact
+// stepped-profile Brep::Revolve() call (a flat mouth disc, then a conical
+// frustum wall down to `bore_radius`, then the straight bore - the exact
+// frustum construction Brep::Revolve()'s own doc comment already
+// establishes) and one BooleanCombineGeneral() Difference call, for the
+// same "avoid a second boolean call against an already-holed operand"
+// reason MakeCounterboreHole() above gives.
+Brep MakeCountersinkHole(const Brep& solid, Point3d center, Vector3d axis, double bore_radius, double bore_depth,
+                          bool bore_through, double countersink_diameter, double countersink_angle_degrees);
+
 // A purely additive, opt-in sibling of Brep::TessellateToClosedMesh()/
 // TessellateToClosedMeshConforming(), scoped ONLY to BooleanCombineGeneral's
 // own results, that closes the mesh-watertightness gap this file's own
