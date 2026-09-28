@@ -11,6 +11,7 @@
 #include <array>
 #include <atomic>
 #include <functional>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -123,7 +124,16 @@ class PathTracer {
   std::array<double, 4> blowup_ = {-1, -1, 1, 1};
 
   // Small local texture cache: proc:// specs and file paths -> decoded RGBA + size.
+  // Render()/Accumulate() shade pixels from hardware_concurrency() worker
+  // threads on the same PathTracer instance, and TextureFor() lazily fills
+  // this cache on first use - e.g. every thread's very first primary ray for
+  // an empty/Background=Image scene calls SkyColor concurrently, all missing
+  // the cache at once. tex_cache_mutex_ guards every access so concurrent
+  // misses can't race on the vector's storage (emplace_back reallocating
+  // while another thread reads/writes it is a real, Windows-reproducible
+  // access violation).
   struct TexCache { int w = 0, h = 0; std::vector<unsigned char> rgba; };
+  mutable std::mutex tex_cache_mutex_;
   mutable std::vector<std::pair<std::string, TexCache>> tex_cache_;
   const TexCache* TextureFor(const std::string& path) const;
   // Bilinear lookup shared by AlbedoAt (a material's own UV) and SkyColor's
