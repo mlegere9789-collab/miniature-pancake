@@ -442,6 +442,48 @@ class Brep {
   // `direction` must be non-zero.
   static Brep ExtrudeFace(const Brep& body, int face_index, Vector3d direction, bool cap = true);
 
+  // ExtrudeWireBody: sweep an existing wire body's own edges (WireBody()/
+  // AddWireCurves() above, brep.h ~3397/3451) into a new, independent
+  // sheet or solid - PARITY_MAP.md's "Wire bodies" item names this
+  // ("wire-to-solid/sheet promotion (sweep/extrude of a wire body's own
+  // edges...)") as the one still-missing piece once WireBody()/
+  // AddWireCurves() themselves already existed. Unlike Extrude() (which
+  // takes a single, already-whole NurbsCurve profile), the input here is
+  // a Brep - `wire_body` must satisfy IsWireBody() (at least one live
+  // edge, zero live faces), the general multi-edge shape WireBody()/
+  // AddWireCurves() actually build (e.g. several open curves chained end
+  // to end through shared vertices, not necessarily one single curve).
+  //
+  // `wire_body`'s own edge/vertex graph must walk as ONE simple chain:
+  // either a single open path (two degree-1 endpoint vertices, every
+  // other vertex degree exactly 2) or a single closed loop (every vertex
+  // degree exactly 2, including the one-edge case of a curve closed on
+  // itself through a single self-referencing vertex - see WireBody()'s
+  // own doc comment). A branch point (any vertex touching 3 or more live
+  // edges - a wire body WireBody()/AddWireCurves() can genuinely produce
+  // by welding more than two curve endpoints onto one vertex) or more
+  // than one disjoint wire component (e.g. two separate closed loops in
+  // the same Brep) is refused rather than guessed at: which of several
+  // branches to follow, or which of several disjoint components to
+  // extrude, has no single correct answer. The walked edges' own 3D
+  // curves are then joined, in walk order, into one continuous profile
+  // via NurbsCurve::Join() (curve.h) - exact, not a re-fit, the same
+  // machinery a caller would use by hand to turn a multi-edge wire body
+  // back into one curve - and the result is handed straight to Extrude()
+  // above, which itself decides (via the joined profile's own IsClosed())
+  // whether to cap: a closed-loop wire body extrudes into a capped solid
+  // exactly as Extrude() would for an equivalent single closed curve; an
+  // open-chain wire body extrudes into an open, uncapped sheet (`cap` is
+  // irrelevant in that case, the same way it already is for an open
+  // profile passed to Extrude() itself).
+  //
+  // Throws std::invalid_argument if `direction` is zero, if `wire_body`
+  // does not satisfy IsWireBody(), or if its edge graph is not a single
+  // simple chain as described above; otherwise throws whatever Extrude()
+  // itself throws for the resulting joined profile (e.g. "cap requested
+  // but the closed profile is not planar").
+  static Brep ExtrudeWireBody(const Brep& wire_body, Vector3d direction, bool cap = true);
+
   // Thicken: the direct Brep-level counterpart to Mesh::Thicken() (mesh.h)
   // - PARITY_MAP.md's "kernel: Feature operations" gap "Thicken a sheet
   // body into a solid" names Mesh::Thicken as the only thing that already

@@ -10243,6 +10243,180 @@ void TestBrepAddWireCurves() {
         "...leaving the Brep untouched even though leg_cd on its own would have been valid");
 }
 
+// ExtrudeWireBody(): the "wire-to-solid/sheet promotion (sweep/extrude of
+// a wire body's own edges...)" gap PARITY_MAP.md's own "Wire bodies" item
+// names as the last still-missing piece now that WireBody()/
+// AddWireCurves() themselves exist.
+void TestBrepExtrudeWireBody() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  // A single open straight edge extrudes into the exact same open,
+  // uncapped ruled sheet Extrude() itself would build from that one
+  // curve directly - `cap = true` is irrelevant since the profile isn't
+  // closed, exactly as it already is for Extrude() on an open curve.
+  const NurbsCurve line = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(1, 0, 0)}, /*degree=*/1);
+  const Brep open_wire = Brep::WireBody({line});
+  const Vector3d up(0, 0, 2);
+  const Brep sheet = Brep::ExtrudeWireBody(open_wire, up, /*cap=*/true);
+  const Brep sheet_direct = Brep::Extrude(line, up, /*cap=*/true);
+  Check(sheet.FaceCount() == 1 && sheet.FaceCount() == sheet_direct.FaceCount(),
+        "a single-edge open wire body extrudes into the same one-face open sheet Extrude() itself builds");
+  Check(std::fabs(sheet.Area() - sheet_direct.Area()) < 1e-9 && std::fabs(sheet.Area() - 2.0) < 1e-9,
+        "...with the exact same area (1 x 2 = 2), matching Extrude() on the identical curve bit-for-bit in shape");
+
+  // A single self-closed circular wire edge extrudes into the exact same
+  // capped solid Extrude() itself would build from that one closed curve.
+  const ON_Circle raw_circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 1.0);
+  ON_NurbsCurve raw_circle_nurbs;
+  raw_circle.GetNurbForm(raw_circle_nurbs);
+  NurbsCurve circle;
+  circle.raw() = raw_circle_nurbs;
+  const Brep closed_wire = Brep::WireBody({circle});
+  const Vector3d axis(0, 0, 3);
+  const Brep cyl = Brep::ExtrudeWireBody(closed_wire, axis, /*cap=*/true);
+  const Brep cyl_direct = Brep::Extrude(circle, axis, /*cap=*/true);
+  Check(cyl.FaceCount() == cyl_direct.FaceCount() && cyl.FaceCount() == 3,
+        "a single self-closed circular wire edge extrudes into the same capped 3-face cylinder Extrude() itself "
+        "builds (2 caps + 1 curved wall)");
+  Check(std::fabs(cyl.Volume() - cyl_direct.Volume()) < 1e-6,
+        "...with the exact same volume as calling Extrude() directly on the identical closed curve");
+  const Brep::CheckReport cyl_report = cyl.Check();
+  Check(cyl_report.is_closed && cyl_report.is_oriented && cyl_report.topology_valid,
+        "the extruded wire-body cylinder is a genuinely closed, oriented, topologically valid solid");
+
+  // A multi-edge OPEN chain (two straight legs welded at a shared vertex,
+  // an L-shape) extrudes into the same open ruled sheet as manually
+  // Join()-ing the two edge curves into one profile and calling Extrude()
+  // directly - proving the wire body's own edges are walked in the right
+  // order and joined correctly, not just handled edge-by-edge. Extrude()
+  // builds ONE ruled wall from the whole joined profile (a real, valid
+  // NURBS surface with a C0 kink at the join, not a per-segment surface),
+  // so this is one face, exactly as calling Extrude() on the equivalent
+  // hand-joined profile directly also gives - not one wall per original
+  // wire edge.
+  const Point3d A(0, 0, 0), B(4, 0, 0), C(4, 3, 0);
+  const NurbsCurve leg_ab = NurbsCurve::FromControlPoints({A, B}, /*degree=*/1);
+  const NurbsCurve leg_bc = NurbsCurve::FromControlPoints({B, C}, /*degree=*/1);
+  const Brep l_wire = Brep::WireBody({leg_ab, leg_bc});
+  Check(l_wire.VertexCount() == 3 && l_wire.EdgeCount() == 2, "setup: a real 3-vertex/2-edge L-shape wire body");
+  const Vector3d out(0, 0, 5);
+  const Brep l_sheet = Brep::ExtrudeWireBody(l_wire, out, /*cap=*/false);
+  NurbsCurve joined_profile = leg_ab;
+  Check(joined_profile.Join(leg_bc) == dino8::kernel::Result::Ok, "setup: the two legs join into one L profile");
+  const Brep l_sheet_direct = Brep::Extrude(joined_profile, out, /*cap=*/false);
+  Check(l_sheet.FaceCount() == 1 && l_sheet.FaceCount() == l_sheet_direct.FaceCount(),
+        "the L-shape wire body extrudes into the same single-face open sheet as the manually-joined profile");
+  Check(std::fabs(l_sheet.Area() - l_sheet_direct.Area()) < 1e-9 && std::fabs(l_sheet.Area() - 35.0) < 1e-9,
+        "...with the same area (4x5 + 3x5 = 35), confirming the edges were walked and joined in the right order");
+
+  // A closed loop built from FOUR separate edges (a rectangle's own 4
+  // corners, welded pairwise via 4 AddWireCurves() calls sharing
+  // endpoints) extrudes into a genuine capped, watertight solid - not just
+  // the single-edge closed-curve case above. Same one-wall shape as the
+  // L-shape above (the 4 segments join into one kinked rectangular
+  // profile), plus 2 planar caps, matching Extrude()'s own established
+  // capped-profile face count exactly.
+  const Point3d R0(0, 0, 0), R1(4, 0, 0), R2(4, 3, 0), R3(0, 3, 0);
+  Brep rect_wire;
+  rect_wire.AddWireCurves({NurbsCurve::FromControlPoints({R0, R1}, 1)});
+  rect_wire.AddWireCurves({NurbsCurve::FromControlPoints({R1, R2}, 1)});
+  rect_wire.AddWireCurves({NurbsCurve::FromControlPoints({R2, R3}, 1)});
+  rect_wire.AddWireCurves({NurbsCurve::FromControlPoints({R3, R0}, 1)});
+  Check(rect_wire.VertexCount() == 4 && rect_wire.EdgeCount() == 4 && rect_wire.IsWireBody(),
+        "setup: a real 4-vertex/4-edge closed rectangular wire body, built across 4 separate calls");
+  const Vector3d height(0, 0, 2);
+  const Brep box_from_wire = Brep::ExtrudeWireBody(rect_wire, height, /*cap=*/true);
+  Check(box_from_wire.FaceCount() == 3,
+        "the 4-edge closed rectangular wire body extrudes into a real 3-face solid (1 kinked wall + 2 caps)");
+  Check(std::fabs(box_from_wire.Volume() - 4.0 * 3.0 * 2.0) < 1e-9,
+        "...with exactly the right volume (4 x 3 x 2 = 24), so the 4 edges were walked around the loop correctly");
+  const Brep::CheckReport box_report = box_from_wire.Check();
+  Check(box_report.is_closed && box_report.is_oriented && box_report.topology_valid && box_report.issues.empty(),
+        "the solid built from the wire body is a genuinely clean, closed, oriented solid - Check() reports nothing");
+
+  // cap = false on that same closed rectangular wire body leaves an open,
+  // uncapped sheet: just the one kinked wall, no caps.
+  const Brep tube_from_wire = Brep::ExtrudeWireBody(rect_wire, height, /*cap=*/false);
+  Check(tube_from_wire.FaceCount() == 1, "cap = false on the same closed wire body builds only the one wall, no caps");
+
+  // Refusal: a zero-length direction.
+  bool threw_zero_dir = false;
+  try {
+    (void)Brep::ExtrudeWireBody(open_wire, Vector3d(0, 0, 0));
+  } catch (const std::invalid_argument&) {
+    threw_zero_dir = true;
+  }
+  Check(threw_zero_dir, "ExtrudeWireBody() with a zero-length direction throws std::invalid_argument");
+
+  // Refusal: `wire_body` is not actually a wire body (a real solid, or a
+  // completely empty Brep).
+  const Brep box = Brep::FromPlanarFaces(CheckHealBoxFaces());
+  bool threw_not_wire = false;
+  try {
+    (void)Brep::ExtrudeWireBody(box, up);
+  } catch (const std::invalid_argument&) {
+    threw_not_wire = true;
+  }
+  Check(threw_not_wire, "ExtrudeWireBody() on a real solid (not a wire body) throws std::invalid_argument");
+  const Brep empty_brep;
+  bool threw_empty = false;
+  try {
+    (void)Brep::ExtrudeWireBody(empty_brep, up);
+  } catch (const std::invalid_argument&) {
+    threw_empty = true;
+  }
+  Check(threw_empty, "ExtrudeWireBody() on a completely empty Brep throws std::invalid_argument");
+
+  // Refusal: a branch point - three edges welded onto the same vertex (A)
+  // has no single correct chain to follow.
+  const NurbsCurve spoke1 = NurbsCurve::FromControlPoints({A, Point3d(1, 1, 0)}, /*degree=*/1);
+  const NurbsCurve spoke2 = NurbsCurve::FromControlPoints({A, Point3d(-1, 1, 0)}, /*degree=*/1);
+  const NurbsCurve spoke3 = NurbsCurve::FromControlPoints({A, Point3d(0, -1, 0)}, /*degree=*/1);
+  const Brep star_wire = Brep::WireBody({spoke1, spoke2, spoke3});
+  Check(static_cast<int>(star_wire.EdgesOfVertex(star_wire.raw().m_E[0].m_vi[0]).size()) == 3,
+        "setup: all three spokes weld onto one real branch-point vertex (degree 3)");
+  bool threw_branch = false;
+  try {
+    (void)Brep::ExtrudeWireBody(star_wire, up);
+  } catch (const std::invalid_argument&) {
+    threw_branch = true;
+  }
+  Check(threw_branch, "ExtrudeWireBody() on a wire body with a branch point throws std::invalid_argument");
+
+  // Refusal: more than one disjoint wire component - two unrelated
+  // straight legs with no shared vertex at all (4 leaves, not 0 or 2).
+  const NurbsCurve far_leg = NurbsCurve::FromControlPoints({Point3d(100, 0, 0), Point3d(101, 0, 0)}, /*degree=*/1);
+  const Brep disjoint_wire = Brep::WireBody({leg_ab, far_leg});
+  bool threw_disjoint = false;
+  try {
+    (void)Brep::ExtrudeWireBody(disjoint_wire, up);
+  } catch (const std::invalid_argument&) {
+    threw_disjoint = true;
+  }
+  Check(threw_disjoint, "ExtrudeWireBody() on two fully disjoint open wires throws std::invalid_argument");
+
+  // Refusal: a subtler disjoint case that a naive leaf-count check alone
+  // would miss - one open chain (2 leaves) PLUS one entirely separate
+  // closed loop (0 leaves) in the SAME wire body still totals exactly 2
+  // leaves, the same count a single genuine open chain has, but the walk
+  // from the open chain's own leaf never reaches the disjoint loop's edge.
+  const Brep mixed_wire = Brep::WireBody({line, circle});
+  Check(mixed_wire.EdgeCount() == 2 && mixed_wire.IsWireBody(),
+        "setup: one open edge plus one disjoint closed loop, 2 edges total, exactly 2 leaves overall");
+  bool threw_mixed = false;
+  try {
+    (void)Brep::ExtrudeWireBody(mixed_wire, up);
+  } catch (const std::invalid_argument&) {
+    threw_mixed = true;
+  }
+  Check(threw_mixed,
+        "ExtrudeWireBody() on an open chain plus a disjoint closed loop (2 leaves total, but 2 components) "
+        "still throws std::invalid_argument - the walk-coverage check catches what leaf-counting alone would miss");
+}
+
 // Flip one face: Check() names the flipped face on each of its 4 edges
 // (index = the flipped face, other_index = each neighbour), the welded
 // mesh is no longer a closed manifold (an orientation conflict on every
@@ -41505,6 +41679,7 @@ int main() {
   TestBrepLoopAndTrimTopologyQueries();
   TestBrepWireBody();
   TestBrepAddWireCurves();
+  TestBrepExtrudeWireBody();
   TestBrepCheckAndUnifyNormalsOnFlippedFace();
   TestBrepCheckReportsDroppedFaceAndCapPlanarHolesRestoresIt();
   TestBrepJoinNakedEdgesRecordsTolerantEdges();
