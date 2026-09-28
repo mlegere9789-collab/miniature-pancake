@@ -7127,6 +7127,83 @@ int Brep::SplitNonManifoldVertices(double tolerance) {
   return split;
 }
 
+Result Brep::SplitNonManifoldEdge(int edge_index) {
+  if (edge_index < 0 || edge_index >= brep_.m_E.Count()) {
+    throw std::out_of_range("dino8::kernel::Brep::SplitNonManifoldEdge: edge_index " +
+                            std::to_string(edge_index) + " is out of range (this Brep has " +
+                            std::to_string(brep_.m_E.Count()) + " edge slot(s))");
+  }
+  ON_Brep& b = brep_;
+  if (b.m_E[edge_index].m_edge_index < 0) {
+    throw std::invalid_argument("dino8::kernel::Brep::SplitNonManifoldEdge: edge_index " +
+                                std::to_string(edge_index) + " refers to an already-deleted edge");
+  }
+  if (b.m_E[edge_index].TrimCount() <= 2) return Result::Failed;
+
+  // Snapshot everything needed from the original edge BEFORE any
+  // mutation: NewEdge() below can reallocate b.m_E, invalidating any
+  // held ON_BrepEdge& into it - the same discipline UnjoinEdge()/
+  // SplitNonManifoldVertex() already follow around their own NewEdge()/
+  // NewVertex() calls.
+  std::vector<int> trims;
+  {
+    const ON_BrepEdge& e = b.m_E[edge_index];
+    for (int k = 0; k < e.m_ti.Count(); ++k) trims.push_back(e.m_ti[k]);
+  }
+  const int v0 = b.m_E[edge_index].m_vi[0];
+  const int v1 = b.m_E[edge_index].m_vi[1];
+  const double tol = b.m_E[edge_index].m_tolerance;
+
+  // Partition the edge's own trims into TrimWalksMaterialLeft()'s two
+  // orientation classes - a well-formed 2-trim manifold edge always has
+  // exactly one trim from EACH class (Check()'s own
+  // InconsistentFaceOrientation test), so pairing one from each class
+  // reproduces that same well-formed shape for every pair this can form.
+  std::vector<int> left, right;
+  for (int ti : trims) {
+    if (ti < 0 || ti >= b.m_T.Count()) continue;
+    if (TrimWalksMaterialLeft(b, b.m_T[ti])) left.push_back(ti); else right.push_back(ti);
+  }
+
+  // Group 0 (kept on the original edge) is the first cross-class pair -
+  // or, if one class is entirely empty, the first leftover trim on its
+  // own; every OTHER group - a further cross-class pair, or a leftover
+  // trim with no opposite-orientation partner left to pair with - moves
+  // onto its own brand-new duplicate edge below.
+  std::vector<std::vector<int>> groups;
+  const size_t paired = std::min(left.size(), right.size());
+  for (size_t i = 0; i < paired; ++i) groups.push_back({left[i], right[i]});
+  for (size_t i = paired; i < left.size(); ++i) groups.push_back({left[i]});
+  for (size_t i = paired; i < right.size(); ++i) groups.push_back({right[i]});
+
+  for (size_t g = 1; g < groups.size(); ++g) {
+    ON_Curve* dup = b.m_E[edge_index].DuplicateCurve();
+    if (!dup) continue;  // leaves this group's trim(s) on the original edge
+    const int c3i = b.AddEdgeCurve(dup);
+    ON_BrepEdge& new_edge = b.NewEdge(b.m_V[v0], b.m_V[v1], c3i);
+    const int new_ei = new_edge.m_edge_index;
+    new_edge.m_tolerance = tol;
+    for (const int ti : groups[g]) {
+      ON_BrepTrim& trim = b.m_T[ti];
+      trim.AttachToEdge(new_ei, trim.m_bRev3d);
+    }
+  }
+
+  b.SetTolerancesBoxesAndFlags();
+  FixUnsetEdgeTolerances(b);
+  return Result::Ok;
+}
+
+int Brep::SplitNonManifoldEdges(double tolerance) {
+  const CheckReport report = Check(tolerance, tolerance);
+  int split = 0;
+  for (const CheckIssue& issue : report.issues) {
+    if (issue.kind != CheckKind::NonManifoldEdge) continue;
+    if (SplitNonManifoldEdge(issue.index) == Result::Ok) ++split;
+  }
+  return split;
+}
+
 Brep::MakeEdgeVertexResult Brep::MakeEdgeVertex(int from_vertex, Point3d to_point, double tolerance) {
   if (from_vertex < 0 || from_vertex >= brep_.m_V.Count()) {
     throw std::out_of_range("dino8::kernel::Brep::MakeEdgeVertex: from_vertex " +

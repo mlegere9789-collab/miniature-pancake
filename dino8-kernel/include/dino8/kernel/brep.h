@@ -3185,6 +3185,49 @@ class Brep {
   // actually split.
   int SplitNonManifoldVertices(double tolerance = tolerance::kDistance);
 
+  // Heals a non-manifold edge (three or more trims sharing one edge) -
+  // see CheckIssue::Kind::NonManifoldEdge's own doc comment - the same
+  // "disjoin" repair SplitNonManifoldVertex() above already applies to a
+  // non-manifold VERTEX, at edge scale: nothing about the GEOMETRY at the
+  // edge is wrong, only the TOPOLOGY of one edge record being shared by
+  // more trims than a manifold edge (well-formed at exactly two) allows.
+  // `edge_index`'s own trims (in their own m_ti order) are partitioned
+  // into TrimWalksMaterialLeft()'s two orientation classes (see that
+  // helper's own doc comment) - the same "one trim from each class" shape
+  // Check()'s own InconsistentFaceOrientation test already requires of an
+  // ordinary 2-trim edge - then paired one-from-each-class at a time: the
+  // first pair stays on `edge_index` itself; every other pair moves onto
+  // its own fresh duplicate edge (the same ON_BrepEdge::DuplicateCurve()/
+  // ON_BrepTrim::AttachToEdge() move UnjoinEdge() above already uses for
+  // exactly two trims, just repeated per pair here, all still sharing
+  // `edge_index`'s own two vertices); a trim left over with no opposite-
+  // orientation partner (an odd class-size split) gets its own fresh edge
+  // alone, becoming a genuine naked edge rather than another non-manifold
+  // one. Every resulting edge is therefore at most 2 trims, and any pair
+  // it keeps together is well-oriented in Check()'s own sense - so this
+  // can leave new NakedEdge issues behind (the odd trim out) but never
+  // another NonManifoldEdge or InconsistentFaceOrientation one. No edge's
+  // 3D curve, no trim's 2D curve, and no face is touched beyond which
+  // ON_BrepEdge record a trim points to - pure topology bookkeeping, so
+  // (like SplitNonManifoldVertex()) this never deletes or renumbers
+  // anything and never needs to clear the side tables.
+  //
+  // Returns Result::Failed - not a thrown exception, the same "can't, but
+  // that's not a bug" contract SplitNonManifoldVertex() shares - if
+  // `edge_index` is not actually non-manifold (two or fewer trims). Throws
+  // std::out_of_range if `edge_index` itself is out of range, or
+  // std::invalid_argument if it refers to an already-deleted edge - both
+  // genuine caller bugs.
+  Result SplitNonManifoldEdge(int edge_index);
+
+  // Runs Check(tolerance, tolerance) once and calls SplitNonManifoldEdge()
+  // on every NonManifoldEdge issue it reports - safe as a single pass for
+  // the same reason SplitNonManifoldVertices() above is: SplitNonManifoldEdge()
+  // never deletes or renumbers anything, so every OTHER issue's own
+  // `index` from that same report stays valid throughout. Returns the
+  // number of edges actually split.
+  int SplitNonManifoldEdges(double tolerance = tolerance::kDistance);
+
   // MEV ("Make Edge, Vertex") and its exact inverse KEV ("Kill Edge,
   // Vertex") below - two of the classic Baumgart/ACIS/Parasolid Euler-
   // operator construction primitives (MEV/MEF/KEV/KEF/KEMR/MEKR -

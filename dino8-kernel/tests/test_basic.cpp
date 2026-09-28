@@ -8916,6 +8916,180 @@ void TestBrepSplitNonManifoldVertexHealsPinchPoint() {
   Check(threw_deleted, "vertex_index 0 marked deleted (m_vertex_index < 0) throws std::invalid_argument");
 }
 
+// Builds a genuine non-manifold edge by hand: three planar "page" faces
+// hinged on ONE common 3D edge (a fan/book shape, like three half-planes
+// meeting along their shared spine), the way BuildPlanarFaceWithHole()
+// (below) hand-builds a real ON_BrepLoop::inner - none of this kernel's
+// own factories can produce this shape (FromMixedFaces() explicitly
+// refuses "an edge is shared by 3 or more faces"). Each page is its own
+// bilinear planar NURBS patch spanning the shared spine (0,0,0)-(0,0,1)
+// out to its own outer edge at 0/120/240 degrees around the z axis; all
+// three trims onto the shared edge use an EXPLICIT bRev3d (false, true,
+// false) rather than one derived from geometry, so the fixture
+// deterministically exercises BOTH of SplitNonManifoldEdge()'s own code
+// paths in a single edge: faces 0 and 1 land in opposite
+// TrimWalksMaterialLeft() classes (a genuine pairable pair), and face 2
+// is the odd one left with no partner.
+struct NonManifoldEdgeFixture {
+  dino8::kernel::Brep brep;
+  int shared_edge_index = -1;
+  std::array<int, 3> face_indices{};
+};
+
+NonManifoldEdgeFixture BuildNonManifoldEdgeBook() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point2d;
+  using dino8::kernel::Point3d;
+
+  NonManifoldEdgeFixture fixture;
+  ON_Brep& b = fixture.brep.raw();
+
+  const int v_bottom = b.NewVertex(Point3d(0, 0, 0), 0.0).m_vertex_index;
+  const int v_top = b.NewVertex(Point3d(0, 0, 1), 0.0).m_vertex_index;
+  const int shared_c3i = b.AddEdgeCurve(new ON_LineCurve(Point3d(0, 0, 0), Point3d(0, 0, 1)));
+  const int shared_edge = b.NewEdge(b.m_V[v_bottom], b.m_V[v_top], shared_c3i).m_edge_index;
+  b.m_E[shared_edge].m_tolerance = 0.0;
+  fixture.shared_edge_index = shared_edge;
+
+  const bool shared_rev[3] = {false, true, false};
+
+  for (int i = 0; i < 3; ++i) {
+    const double theta = i * (2.0 * M_PI / 3.0);
+    const Point3d outer_bottom(std::cos(theta), std::sin(theta), 0.0);
+    const Point3d outer_top(std::cos(theta), std::sin(theta), 1.0);
+    const int vob = b.NewVertex(outer_bottom, 0.0).m_vertex_index;
+    const int vot = b.NewVertex(outer_top, 0.0).m_vertex_index;
+
+    // Bilinear patch: grid[u*2+v] convention (Box()'s own), corners at
+    // (u=0,v=0)=v_bottom, (u=0,v=1)=v_top, (u=1,v=0)=outer_bottom,
+    // (u=1,v=1)=outer_top - planar since both u=const rails are pure
+    // z-direction segments, merely offset from each other in xy.
+    const std::vector<Point3d> grid = {b.m_V[v_bottom].point, b.m_V[v_top].point, outer_bottom, outer_top};
+    const NurbsSurface surface = NurbsSurface::FromControlGrid(grid, /*u_count=*/2, /*v_count=*/2,
+                                                                /*u_degree=*/1, /*v_degree=*/1);
+    auto* surface_copy = new ON_NurbsSurface(surface.raw());
+    const int surface_index = b.AddSurface(surface_copy);
+    const int face_index = b.NewFace(surface_index).m_face_index;
+    fixture.face_indices[static_cast<size_t>(i)] = face_index;
+
+    const int loop_index = b.NewLoop(ON_BrepLoop::outer, b.m_F[face_index]).m_loop_index;
+
+    // Loop order v_bottom(0,0) -> v_top(0,1) -> vot(1,1) -> vob(1,0) ->
+    // v_bottom, matching the grid's own uv corners above.
+    auto add_side = [&](int va, int vb, Point2d uv_a, Point2d uv_b) {
+      const int c3i = b.AddEdgeCurve(new ON_LineCurve(b.m_V[va].point, b.m_V[vb].point));
+      const int edge_index = b.NewEdge(b.m_V[va], b.m_V[vb], c3i).m_edge_index;
+      b.m_E[edge_index].m_tolerance = 0.0;
+      const int c2i = b.AddTrimCurve(new ON_LineCurve(uv_a, uv_b));
+      ON_BrepTrim& trim = b.NewTrim(b.m_E[edge_index], /*bRev3d=*/false, b.m_L[loop_index], c2i);
+      trim.m_tolerance[0] = trim.m_tolerance[1] = 0.0;
+    };
+    // The shared spine side reuses shared_edge itself, with this face's
+    // own explicit bRev3d - the one side NOT built by add_side() above,
+    // since it must attach to the EXISTING edge rather than a new one.
+    {
+      const int c2i = b.AddTrimCurve(new ON_LineCurve(Point2d(0, 0), Point2d(0, 1)));
+      ON_BrepTrim& trim = b.NewTrim(b.m_E[shared_edge], shared_rev[static_cast<size_t>(i)], b.m_L[loop_index], c2i);
+      trim.m_tolerance[0] = trim.m_tolerance[1] = 0.0;
+    }
+    add_side(v_top, vot, Point2d(0, 1), Point2d(1, 1));
+    add_side(vot, vob, Point2d(1, 1), Point2d(1, 0));
+    add_side(vob, v_bottom, Point2d(1, 0), Point2d(0, 0));
+  }
+
+  b.SetTrimIsoFlags();
+  b.SetTolerancesBoxesAndFlags();
+  return fixture;
+}
+
+// Check() detects the fixture's one over-used edge - CheckIssue::Kind::
+// NonManifoldEdge - and SplitNonManifoldEdge()/SplitNonManifoldEdges()
+// heal it exactly as their own doc comments describe: the shared edge's
+// 3 trims split into one genuine 2-trim manifold pair (kept on the
+// original edge) plus one leftover trim on a fresh, naked duplicate edge
+// - pure topology bookkeeping, so vertex count, face count, and every
+// face's own visible boundary are untouched.
+void TestBrepCheckDetectsAndSplitNonManifoldEdgeHeals() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Result;
+
+  {
+    NonManifoldEdgeFixture fixture = BuildNonManifoldEdgeBook();
+    Brep& book = fixture.brep;
+    Check(book.FaceCount() == 3, "the book fixture has its genuine 3 pages");
+    Check(book.raw().m_E.Count() == 10, "10 edges: 1 shared spine + 3 pages * 3 own sides");
+    Check(book.raw().m_E[fixture.shared_edge_index].TrimCount() == 3,
+          "the shared spine edge starts with all 3 pages' own trims on it");
+
+    const Brep::CheckReport before = book.Check();
+    Check(before.Count(Brep::CheckIssue::Kind::NonManifoldEdge) == 1,
+          "exactly the shared spine edge is reported non-manifold");
+    const Brep::CheckIssue* nme = nullptr;
+    for (const Brep::CheckIssue& issue : before.issues) {
+      if (issue.kind == Brep::CheckIssue::Kind::NonManifoldEdge) nme = &issue;
+    }
+    Check(nme != nullptr && nme->index == fixture.shared_edge_index && nme->other_index == 3,
+          "the issue names the shared edge itself and its own trim count (3)");
+    Check(before.Count(Brep::CheckIssue::Kind::NonManifoldVertex) == 0,
+          "neither spine endpoint is itself a pinch vertex - this is an edge-level defect, not a vertex one");
+
+    const int v_count_before = book.raw().m_V.Count();
+    const int f_count_before = book.FaceCount();
+
+    Check(book.SplitNonManifoldEdge(fixture.shared_edge_index) == Result::Ok,
+          "SplitNonManifoldEdge() succeeds on the non-manifold spine");
+    Check(book.raw().m_E.Count() == 11, "one new edge was added (10 -> 11): the odd trim out got its own copy");
+    Check(book.raw().m_V.Count() == v_count_before, "vertex count is untouched - pure edge/trim bookkeeping");
+    Check(book.FaceCount() == f_count_before, "face count is untouched");
+
+    const Brep::CheckReport after = book.Check();
+    Check(after.Count(Brep::CheckIssue::Kind::NonManifoldEdge) == 0, "no non-manifold edge remains");
+    Check(after.Count(Brep::CheckIssue::Kind::NakedEdge) == 10,
+          "the 9 original naked sides (3 pages * 3 own, never-shared sides - none of those was ever shared between "
+          "pages, only the spine was) plus the odd trim's new naked copy");
+    Check(book.raw().m_E[fixture.shared_edge_index].TrimCount() == 2,
+          "the original spine edge now carries exactly the one genuine manifold pair");
+
+    // The pair kept on the original edge is well-oriented in Check()'s
+    // own sense - no new InconsistentFaceOrientation issue appears.
+    Check(after.Count(Brep::CheckIssue::Kind::InconsistentFaceOrientation) == 0,
+          "the surviving 2-trim edge is a well-formed manifold pair, not a same-orientation clash");
+
+    Check(book.SplitNonManifoldEdges() == 0, "a second pass over the healed fixture finds nothing left to split");
+  }
+
+  // The orchestrator does the same job end to end, from a fresh fixture.
+  {
+    NonManifoldEdgeFixture fixture2 = BuildNonManifoldEdgeBook();
+    Check(fixture2.brep.SplitNonManifoldEdges() == 1, "SplitNonManifoldEdges() heals the one non-manifold edge");
+    Check(fixture2.brep.raw().m_E.Count() == 11 &&
+              fixture2.brep.Check().Count(Brep::CheckIssue::Kind::NonManifoldEdge) == 0,
+          "...with the same result as the manual call above");
+  }
+
+  // Refusals: an ordinary (<=2-trim) edge has nothing to split.
+  Brep box = Brep::FromPlanarFaces(CheckHealBoxFaces());
+  Check(box.SplitNonManifoldEdge(0) == Result::Failed, "an ordinary box edge is not non-manifold - Result::Failed");
+  Check(box.raw().m_E.Count() == 12, "...and the box is left completely untouched");
+
+  bool threw_range = false;
+  try {
+    box.SplitNonManifoldEdge(box.raw().m_E.Count() + 100);
+  } catch (const std::out_of_range&) {
+    threw_range = true;
+  }
+  Check(threw_range, "an out-of-range edge_index throws std::out_of_range, not Result::Failed - a genuine caller bug");
+
+  box.raw().m_E[0].m_edge_index = -1;
+  bool threw_deleted = false;
+  try {
+    box.SplitNonManifoldEdge(0);
+  } catch (const std::invalid_argument&) {
+    threw_deleted = true;
+  }
+  Check(threw_deleted, "edge_index 0 marked deleted (m_edge_index < 0) throws std::invalid_argument");
+}
+
 // MakeEdgeVertex()/KillEdgeVertex() - the MEV/KEV Euler-operator pair
 // (PARITY_MAP.md's own "Euler operators" item). MEV attaches a genuine
 // wire edge (TrimCount() == 0, no face uses it) to an existing vertex;
@@ -40201,6 +40375,7 @@ int main() {
   TestBrepRemoveDegenerateOrSliverFacesDoesNotTouchValidSolids();
   TestBrepCheckDetectsNonManifoldPinchVertex();
   TestBrepSplitNonManifoldVertexHealsPinchPoint();
+  TestBrepCheckDetectsAndSplitNonManifoldEdgeHeals();
   TestBrepMakeEdgeVertexAndKillEdgeVertexAreExactInverses();
   TestBrepMakeEdgeFaceAndKillEdgeFaceAreExactInverses();
   TestBrepMakeEdgeKillRingAndKillEdgeMakeRingAreExactInverses();
