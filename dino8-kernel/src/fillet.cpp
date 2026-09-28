@@ -216,6 +216,87 @@ void NotchCornerAtVertex(std::vector<Brep::PlanarFace>& other_faces, const Point
   }
 }
 
+// FilletConvexEdgeConic's own sibling of NotchCornerAtVertex (see that
+// function's doc comment for the shared machinery: the identical
+// perpendicular-face test, the identical pred/succ "which neighbor is on
+// face i's side" orientation logic with its identical "can't tell, leave
+// alone" skip, and the identical splice + RegisterNotchRun bookkeeping).
+// The one difference is WHAT gets sampled: the conic blend's wall is an
+// exactly TRANSLATIONAL sweep of `profile` along e (see fillet.h's own
+// FilletConvexEdgeConic doc comment, step 5), so its end-cap curve at
+// `vertex` is simply `profile` itself translated by `offset` (the zero
+// vector at edge_p0, edge_p1 - edge_p0 at edge_p1) - no closed-form ellipse
+// derivation like EllipseNotchCornerAtVertex's is needed. `profile` runs P0
+// (on face i) -> P2 (on face j) over its own parameter domain, so the
+// kNotchSamples + 1 evenly-spaced-in-parameter samples are spliced in that
+// order when the face's own loop walks from face i's side to face j's
+// (i_to_j), reversed otherwise - exactly the i_to_j convention
+// NotchCornerAtVertex uses for its own angle sweep.
+//
+// Returns how many faces were actually notched, so FilletConvexEdgeConic
+// can refuse (rather than silently mis-build) a perpendicular third face
+// this skipped for its own exotic-topology reason.
+int ConicNotchCornerAtVertex(std::vector<Brep::PlanarFace>& other_faces, const Point3d& vertex,
+                             const Vector3d& e, const ON_Plane& plane_i, const ON_Plane& plane_j,
+                             const NurbsCurve& profile, const Vector3d& offset, double tol) {
+  const ON_NurbsCurve& c = profile.raw();
+  const ON_Interval dom = c.Domain();
+  int notched = 0;
+  for (Brep::PlanarFace& f : other_faces) {
+    if (std::fabs(f.plane.zaxis * e) < 1.0 - 1e-6) continue;
+
+    std::vector<Point3d>& loop = f.loop;
+    const size_t n = loop.size();
+    for (size_t k = 0; k < n; ++k) {
+      if (loop[k].DistanceTo(vertex) > tol) continue;
+      const Point3d& pred = loop[(k + n - 1) % n];
+      const Point3d& succ = loop[(k + 1) % n];
+      const bool pred_on_i = std::fabs(plane_i.DistanceTo(pred)) <= tol;
+      const bool pred_on_j = std::fabs(plane_j.DistanceTo(pred)) <= tol;
+      const bool succ_on_i = std::fabs(plane_i.DistanceTo(succ)) <= tol;
+      const bool succ_on_j = std::fabs(plane_j.DistanceTo(succ)) <= tol;
+      bool i_to_j;
+      if (pred_on_i && succ_on_j) {
+        i_to_j = true;
+      } else if (pred_on_j && succ_on_i) {
+        i_to_j = false;
+      } else {
+        continue;  // see NotchCornerAtVertex: not the simple trihedral corner this handles
+      }
+
+      std::vector<Point3d> run;
+      run.reserve(static_cast<size_t>(kNotchSamples) + 1);
+      for (int s = 0; s <= kNotchSamples; ++s) {
+        const int idx = i_to_j ? s : kNotchSamples - s;
+        // Hit both parameter-domain ends EXACTLY (not via ParameterAt's
+        // own floating-point arithmetic) so the run's two endpoints are
+        // the very same curve-end points the wall's own corners are built
+        // from.
+        const double t = idx == 0 ? dom.Min()
+                                  : (idx == kNotchSamples ? dom.Max()
+                                                          : dom.ParameterAt(static_cast<double>(idx) / kNotchSamples));
+        const ON_3dPoint p = c.PointAt(t);
+        run.push_back(Point3d(p.x, p.y, p.z) + offset);
+      }
+
+      std::vector<Point3d> new_loop;
+      new_loop.reserve(n - 1 + run.size());
+      for (size_t m = 0; m < n; ++m) {
+        if (m == k) {
+          new_loop.insert(new_loop.end(), run.begin(), run.end());
+        } else {
+          new_loop.push_back(loop[m]);
+        }
+      }
+      loop = std::move(new_loop);
+      RegisterNotchRun(f, static_cast<int>(k), static_cast<int>(run.size()));
+      ++notched;
+      break;
+    }
+  }
+  return notched;
+}
+
 // Same corner-notch splicing NotchCornerAtVertex performs (see its own doc
 // comment for the shared machinery this mirrors) but for
 // FilletConvexEdgeTapered's own cone patch: sampling the TRUE ELLIPSE
@@ -2300,20 +2381,31 @@ Brep FilletConvexEdgeConic(const Brep& solid, Point3d edge_p0, Point3d edge_p1, 
         "exceeds that face's own extent from the edge");
   }
 
-  // SCOPE (see this function's own doc comment): no end-condition/vertex
-  // splicing in this increment - both edge_p0 and edge_p1 must be free
-  // boundaries of `solid` outside faces i/j, or this throws rather than
-  // silently building a self-overlapping shape.
+  // SCOPE (see this function's own doc comment): a third face touching
+  // edge_p0/edge_p1 is handled only when its own plane is PERPENDICULAR to
+  // the edge (its corner is then notched by ConicNotchCornerAtVertex,
+  // below). An OBLIQUE third face there is still out of scope and throws
+  // rather than silently building a self-overlapping shape. Counted per
+  // endpoint so the notch step can confirm it actually notched every
+  // perpendicular face it was expected to.
+  int perpendicular_at_p0 = 0, perpendicular_at_p1 = 0;
   for (size_t f = 0; f < faces.size(); ++f) {
     if (static_cast<int>(f) == idx_i || static_cast<int>(f) == idx_j) continue;
+    bool touches_p0 = false, touches_p1 = false;
     for (const Point3d& v : faces[f].loop) {
-      if (PointsEqual(v, edge_p0, tol) || PointsEqual(v, edge_p1, tol)) {
-        throw std::invalid_argument(
-            "dino8::kernel::FilletConvexEdgeConic: a third face of `solid` touches edge_p0 or edge_p1 - "
-            "end-condition/vertex splicing for the conic blend is out of scope for this increment (see this "
-            "function's own doc comment); both edge endpoints must be free boundaries outside faces i/j");
-      }
+      if (PointsEqual(v, edge_p0, tol)) touches_p0 = true;
+      if (PointsEqual(v, edge_p1, tol)) touches_p1 = true;
     }
+    if (!touches_p0 && !touches_p1) continue;
+    if (std::fabs(faces[f].plane.zaxis * e) < 1.0 - 1e-6) {
+      throw std::invalid_argument(
+          "dino8::kernel::FilletConvexEdgeConic: an OBLIQUE third face of `solid` (one whose plane is not "
+          "perpendicular to the edge) touches edge_p0 or edge_p1 - oblique end-condition splicing for the conic "
+          "blend is out of scope for this increment (see this function's own doc comment); only a free "
+          "boundary or a third face perpendicular to the edge is supported at each endpoint");
+    }
+    if (touches_p0) ++perpendicular_at_p0;
+    if (touches_p1) ++perpendicular_at_p1;
   }
 
   // Re-trim faces i/j by their own rail line - identical to
@@ -2330,16 +2422,6 @@ Brep FilletConvexEdgeConic(const Brep& solid, Point3d edge_p0, Point3d edge_p1, 
         "distances too large for this solid's geometry");
   }
 
-  std::vector<Brep::PlanarFace> others;
-  others.reserve(faces.size() - 2);
-  for (size_t f = 0; f < faces.size(); ++f) {
-    if (static_cast<int>(f) != idx_i && static_cast<int>(f) != idx_j) others.push_back(faces[f]);
-  }
-  std::vector<Brep::PlanarFace> all = std::move(others);
-  all.push_back(std::move(retrimmed_i));
-  all.push_back(std::move(retrimmed_j));
-  Brep planar_shell = Brep::FromMixedFaces(all, {});
-
   // The conic cross-section: control polygon (P0, O, P2), O = edge_p0
   // itself (see this function's own doc comment, step 2, for why the
   // sharp edge point is exactly the right middle control point), weight
@@ -2355,11 +2437,100 @@ Brep FilletConvexEdgeConic(const Brep& solid, Point3d edge_p0, Point3d edge_p1, 
   // control point to edge_p0/w instead of leaving it at edge_p0.
   profile.SetControlPointAt(1, Point3d(edge_p0.x * w, edge_p0.y * w, edge_p0.z * w));
   profile.SetWeightAt(1, w);
+  const Vector3d sweep = edge_p1 - edge_p0;
+
+  std::vector<Brep::PlanarFace> others;
+  others.reserve(faces.size() - 2);
+  for (size_t f = 0; f < faces.size(); ++f) {
+    if (static_cast<int>(f) != idx_i && static_cast<int>(f) != idx_j) others.push_back(faces[f]);
+  }
+
+  // End conditions (see this function's own doc comment): a third face
+  // perpendicular to the edge at edge_p0/edge_p1 gets its sharp corner
+  // replaced by a dense polygonal copy of the wall's own end-cap curve -
+  // `profile` itself at edge_p0, `profile` translated by `sweep` at
+  // edge_p1 - exactly where FilletConvexEdge calls NotchCornerAtVertex. No
+  // third face at an endpoint leaves it a free boundary, unchanged.
+  const bool notch_p0 = perpendicular_at_p0 > 0;
+  const bool notch_p1 = perpendicular_at_p1 > 0;
+  if (notch_p0 &&
+      ConicNotchCornerAtVertex(others, edge_p0, e, plane_i, plane_j, profile, Vector3d(0, 0, 0), tol) !=
+          perpendicular_at_p0) {
+    throw std::invalid_argument(
+        "dino8::kernel::FilletConvexEdgeConic: a third face perpendicular to the edge touches edge_p0 but its "
+        "corner there is not a simple trihedral corner between faces i and j - out of scope");
+  }
+  if (notch_p1 &&
+      ConicNotchCornerAtVertex(others, edge_p1, e, plane_i, plane_j, profile, sweep, tol) != perpendicular_at_p1) {
+    throw std::invalid_argument(
+        "dino8::kernel::FilletConvexEdgeConic: a third face perpendicular to the edge touches edge_p1 but its "
+        "corner there is not a simple trihedral corner between faces i and j - out of scope");
+  }
+
+  std::vector<Brep::PlanarFace> all = std::move(others);
+  all.push_back(std::move(retrimmed_i));
+  all.push_back(std::move(retrimmed_j));
+  Brep planar_shell = Brep::FromMixedFaces(all, {});
+
+  // Brep::FromMixedFaces collapses each registered notch run to ONE
+  // topological edge between its two end vertices (see PlanarFace::
+  // notch_begin/notch_count's own doc comment) - normally shared with a
+  // CylindricalFace's own cap arc, but here there is no such curved face in
+  // this sub-Brep (the wall is assembled separately, below), so that edge's
+  // 3D curve is left as the bare straight chord P0-P2 (the planar face's
+  // own 2D trim is still the full dense polyline). Replace that chord with
+  // an exact copy of the wall's own end-cap curve, so JoinNakedEdges (which
+  // matches endpoints AND midpoints) can sew it to the wall's own naked
+  // cap edge, and record the polygon's genuinely measured deviation from
+  // that curve as the edge's own tolerance rather than a false claim of
+  // exactness (the same honesty ConicalFace::cap0_notch_tolerance carries).
+  auto replace_notch_chord = [&](const Vector3d& offset) {
+    ON_NurbsCurve cap = profile.raw();
+    cap.Translate(offset);
+    const ON_3dPoint a = cap.PointAtStart(), b = cap.PointAtEnd();
+    const ON_Interval dom = cap.Domain();
+    double sag = 0.0;
+    for (int s = 0; s < kNotchSamples; ++s) {
+      const ON_3dPoint q0 = cap.PointAt(dom.ParameterAt(static_cast<double>(s) / kNotchSamples));
+      const ON_3dPoint q1 = cap.PointAt(dom.ParameterAt(static_cast<double>(s + 1) / kNotchSamples));
+      const ON_3dPoint mid = cap.PointAt(dom.ParameterAt((s + 0.5) / kNotchSamples));
+      sag = std::max(sag, ON_Line(q0, q1).MinimumDistanceTo(mid));
+    }
+    ON_Brep& b3 = planar_shell.raw();
+    int found = -1;
+    for (int ei = 0; ei < b3.m_E.Count(); ++ei) {
+      const ON_BrepEdge& E = b3.m_E[ei];
+      if (E.m_edge_index < 0 || E.m_ti.Count() != 1) continue;
+      const ON_3dPoint s0 = b3.m_V[E.m_vi[0]].point, s1 = b3.m_V[E.m_vi[1]].point;
+      if ((s0.DistanceTo(a) <= tol && s1.DistanceTo(b) <= tol) ||
+          (s0.DistanceTo(b) <= tol && s1.DistanceTo(a) <= tol)) {
+        found = ei;
+        break;
+      }
+    }
+    if (found < 0) {
+      throw std::runtime_error(
+          "dino8::kernel::FilletConvexEdgeConic: the notched third face's collapsed notch edge was not found in "
+          "the assembled planar shell - please report this as a bug");
+    }
+    ON_BrepEdge& E = b3.m_E[found];
+    if (b3.m_V[E.m_vi[0]].point.DistanceTo(a) > tol) cap.Reverse();
+    const int c3i = b3.AddEdgeCurve(new ON_NurbsCurve(cap));
+    if (!E.ChangeEdgeCurve(c3i)) {
+      throw std::runtime_error(
+          "dino8::kernel::FilletConvexEdgeConic: ON_BrepEdge::ChangeEdgeCurve failed replacing a notch chord - "
+          "please report this as a bug");
+    }
+    for (int k = 0; k < E.m_ti.Count(); ++k) b3.m_T[E.m_ti[k]].UnsetPlineEdgeParameters();
+    E.m_tolerance = sag;
+  };
+  if (notch_p0) replace_notch_chord(Vector3d(0, 0, 0));
+  if (notch_p1) replace_notch_chord(sweep);
 
   // Exact translational sweep (step 5): the wall's own u=0/u=1 rails are,
   // by construction, the SAME two points/lines the re-trim above already
   // cut faces i/j along.
-  Brep wall = Brep::Extrude(profile, edge_p1 - edge_p0, /*cap=*/false);
+  Brep wall = Brep::Extrude(profile, sweep, /*cap=*/false);
 
   Brep combined = Brep::Compound({planar_shell, wall});
   combined.JoinNakedEdges(tol);

@@ -966,32 +966,56 @@ Brep ChamferConcaveEdgeAngle(const Brep& solid, Point3d edge_p0, Point3d edge_p1
 // not the fully general integral, is what regression tests actually
 // exercise" precedent FilletConcaveEdge's own doc comment already sets).
 //
-// SCOPE, stated as narrowly and honestly as this file's other blends: this
-// is a v1, deliberately narrower than ChamferConvexEdge/FilletConvexEdge
-// in the one respect that matters most for a first increment - END
-// CONDITIONS. Unlike those two functions' own ChamferEndAtVertex/
-// NotchCornerAtVertex machinery (which re-corners a third face touching
-// edge_p0/edge_p1), this function does NOT attempt any third-face
-// splicing at all: it throws std::invalid_argument if ANY face of `solid`
-// OTHER than faces i/j has a vertex at edge_p0 or edge_p1, rather than
-// silently leaving that third face's own sharp corner unmodified (which
-// would produce a self-overlapping, not merely open, shape - the wall's
-// own curved end cap would pass THROUGH that untouched corner's own
-// material). Both edge_p0 and edge_p1 must therefore be genuine free
-// boundaries of `solid` outside faces i and j; the result then has a
-// correspondingly genuine open naked boundary at each end (the wall's own
-// two conic end-cap curves), exactly as FilletConvexEdge's own free-
-// boundary case leaves an open shell. Splicing a THIRD face's corner onto
-// this patch's own curved cap - the harder problem FilletConvexEdge closed
-// for a circle via NotchCornerAtVertex/EllipseNotchCornerAtVertex - is a
-// real, disclosed future increment for the conic case (it needs a dense-
-// polygon shared boundary the SAME way those two do, since a PlanarFace's
-// own loop is straight-edged only), not attempted here; this is precisely
-// the same "start narrow, close the corner-notch gap in a later
-// increment" history FilletConvexEdge's own doc comment already discloses
-// for itself. Also matches ChamferConvexEdge's own scope otherwise: one
-// straight edge between exactly two PLANAR faces, convex dihedral only,
-// of a solid PlanarFaces() can describe.
+// END CONDITIONS, handled independently at edge_p0 and at edge_p1:
+//   - NO third face of `solid` (other than faces i/j) has a vertex there:
+//     a genuine free boundary. The result keeps a genuine open naked
+//     boundary at that end (the wall's own conic end-cap curve), exactly
+//     as FilletConvexEdge's own free-boundary case leaves an open shell.
+//   - A third face whose plane is PERPENDICULAR to the edge (its own
+//     normal parallel to e - e.g. a box's own end face when the blended
+//     edge spans a full box edge corner to corner): its sharp corner is
+//     replaced by the wall's own end-cap curve, closing the solid there.
+//     Because step 5's sweep is a pure TRANSLATION, that end-cap curve is
+//     simply `profile` itself at edge_p0 and `profile` translated by
+//     edge_p1 - edge_p0 at edge_p1, lying exactly in that face's plane -
+//     no closed-form ellipse derivation like FilletConvexEdgeTapered's is
+//     needed. The splice follows NotchCornerAtVertex's own mechanics
+//     exactly (the same perpendicular-face test and the same "which loop
+//     neighbor is on face i's side" orientation logic): since a
+//     PlanarFace's own loop is straight-edged only, the curve enters that
+//     face's loop as a dense polygon (the same kNotchSamples = 200
+//     segments, evenly spaced in the conic's own parameter), registered as
+//     a notch run so Brep::FromMixedFaces collapses it to ONE topological
+//     edge. That edge's 3D curve is then set to an exact copy of the
+//     wall's own conic end-cap curve (FromMixedFaces alone would leave it
+//     the bare straight chord P0-P2, there being no curved face in that
+//     planar sub-Brep to share it with), so JoinNakedEdges sews it to the
+//     wall's own naked cap edge; the polygon's measured deviation from the
+//     conic is recorded as that edge's tolerance, not a false claim of
+//     exactness. The result is a closed solid (ON_Brep::IsSolid(),
+//     Brep::Check() closed and issue-free - checked directly on a full
+//     unit-cube edge at rho = 0.3, 0.5 and 0.7 by this function's own
+//     regression test, whose tessellated volume also matches 1 - L*Area(rho)
+//     from the closed form above to within 1e-6). Throws
+//     std::invalid_argument if such a perpendicular face's corner there is
+//     not a simple trihedral corner between faces i and j (the case
+//     NotchCornerAtVertex silently skips), rather than returning an
+//     unclosed shape.
+//   - A third face that is OBLIQUE to the edge (not perpendicular): still
+//     out of scope - throws std::invalid_argument rather than silently
+//     leaving that face's own sharp corner unmodified (which would produce
+//     a self-overlapping, not merely open, shape - the wall's own curved
+//     end cap would pass THROUGH that untouched corner's own material).
+//     Closing it needs the wall's own length adjusted to where each rail
+//     crosses the oblique plane and the true curve that plane cuts from
+//     the translational wall spliced in - the problem FilletConvexEdge
+//     solves for its cylinder via FindObliqueThirdFaceCrossing/
+//     EllipseNotchCornerAtVertexCylindrical - a real, disclosed future
+//     increment for the conic case, as is any general vertex blend where
+//     several blended edges meet.
+// Also matches ChamferConvexEdge's own scope otherwise: one straight edge
+// between exactly two PLANAR faces, convex dihedral only, of a solid
+// PlanarFaces() can describe.
 Brep FilletConvexEdgeConic(const Brep& solid, Point3d edge_p0, Point3d edge_p1, double distance_i,
                             double distance_j, double rho);
 

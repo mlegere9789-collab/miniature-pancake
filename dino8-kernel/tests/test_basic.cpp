@@ -27617,6 +27617,9 @@ void TestFilletConvexEdgeConicFreeBoundaryTangencyRailExactnessAndClosedFormArea
         "a lucky coincidence at one sample count)");
 }
 
+// Defined further down, next to FilletConvexEdge's own oblique-end tests.
+dino8::kernel::Brep FilletObliqueTestHexahedron(double slope);
+
 void TestFilletConvexEdgeConicRejectsInvalidInput() {
   using dino8::kernel::Brep;
   using dino8::kernel::FilletConvexEdgeConic;
@@ -27648,13 +27651,200 @@ void TestFilletConvexEdgeConicRejectsInvalidInput() {
   expect_throw([&] { FilletConvexEdgeConic(tube, p0, p1, 5.0, 0.2, 0.5); },
                "rejects a distance_i too large to fit within face i's own extent");
 
-  // A CLOSED box: both edge endpoints DO have a third face touching them
-  // (left/right end caps) - out of scope for this v1 (see this function's
-  // own doc comment).
-  const Brep closed_box = Brep::Box(0, 0, 0, 1, 1, 1);
-  expect_throw([&] { FilletConvexEdgeConic(closed_box, Point3d(0, 0, 1), Point3d(1, 0, 1), 0.2, 0.2, 0.5); },
-               "rejects an edge whose endpoints are touched by a third face (end-condition splicing is out "
-               "of scope for this increment)");
+  // A closed box's own end faces are PERPENDICULAR to the edge, which this
+  // function now closes (see TestFilletConvexEdgeConicClosesCornerNotchOnUnitCube)
+  // - so the still-out-of-scope case is an OBLIQUE third face. The
+  // oblique-ended hexahedron FilletConvexEdge's own oblique tests use has
+  // a perpendicular x = 0 face at edge_p0 = (0,0,1) but an oblique end face
+  // (x = 1 + slope*y) at edge_p1 = (1,0,1): that one oblique end alone must
+  // still be refused, with a message that names the real reason.
+  const Brep hex = FilletObliqueTestHexahedron(0.3);
+  std::string oblique_message;
+  bool oblique_threw = false;
+  try {
+    FilletConvexEdgeConic(hex, Point3d(0, 0, 1), Point3d(1, 0, 1), 0.2, 0.2, 0.5);
+  } catch (const std::invalid_argument& ex) {
+    oblique_threw = true;
+    oblique_message = ex.what();
+  }
+  Check(oblique_threw,
+        "rejects an edge with an OBLIQUE third face at an endpoint (oblique end-condition splicing is still out "
+        "of scope), even though the other endpoint's third face is perpendicular and would be handled");
+  Check(oblique_message.find("OBLIQUE third face") != std::string::npos,
+        "the oblique-end rejection's own message names the actual reason (an oblique third face), not a generic "
+        "'any third face' refusal");
+  // Same fixture, reversed edge direction: the oblique face is now at
+  // edge_p0 instead - still refused.
+  expect_throw([&] { FilletConvexEdgeConic(hex, Point3d(1, 0, 1), Point3d(0, 0, 1), 0.2, 0.2, 0.5); },
+               "rejects the oblique third face at edge_p0 too (the check is per endpoint, not only at edge_p1)");
+}
+
+// FilletConvexEdgeConic's perpendicular third-face end condition: a full
+// unit-cube edge, corner to corner, whose two box end faces (x = 0, x = 1)
+// are both perpendicular to the edge. Each gets its sharp corner replaced
+// by a dense polygonal copy of the wall's own conic end-cap curve (see
+// fillet.cpp's ConicNotchCornerAtVertex), and the result must be a
+// genuinely closed solid - checked through its B-rep topology, its
+// tessellated volume against an independently-computed area integral, and
+// the notched end faces' own boundary points against an independently
+// re-derived conic.
+void TestFilletConvexEdgeConicClosesCornerNotchOnUnitCube() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConvexEdgeConic;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+  const Point3d edge_p0(0, 0, 1), edge_p1(1, 0, 1);
+  const double da = 0.3, db = 0.2;  // distance_i, distance_j
+  const double L = 1.0;
+
+  for (const double rho : {0.5, 0.3, 0.7}) {
+    const Brep blend = FilletConvexEdgeConic(box, edge_p0, edge_p1, da, db, rho);
+
+    Check(blend.FaceCount() == 7,
+          "conic-blended full cube edge: 7 faces (2 notched end faces + 2 untouched + 2 re-trimmed + 1 conic wall)");
+    ON_TextLog log;
+    Check(blend.raw().IsValid(&log), "the corner-notched conic blend passes ON_Brep::IsValid()");
+    bool oriented = false, has_boundary = true;
+    Check(blend.raw().IsManifold(&oriented, &has_boundary) && oriented && !has_boundary,
+          "the corner-notched conic blend is an oriented, CLOSED 2-manifold (has_boundary == false) - both "
+          "notched end faces are genuinely sewn to the wall's own conic end-cap edges");
+    Check(blend.raw().IsSolid(), "the corner-notched conic blend reports IsSolid() == true");
+    const Brep::CheckReport report = blend.Check();
+    Check(report.is_closed && report.is_oriented && report.issues.empty(),
+          "Brep::Check() reports the corner-notched conic blend closed, oriented and issue-free (no naked edge, "
+          "no trim/edge gap beyond the recorded tolerance)");
+    Check(!ChamferTestBrepHasVertexNear(blend, edge_p0, 1e-9) && !ChamferTestBrepHasVertexNear(blend, edge_p1, 1e-9),
+          "both original sharp corner vertices are gone");
+
+    // Which box face FindEdgeFaces took as face i is not part of the
+    // documented contract, so detect it from the result's own rail
+    // vertices: top (z=1) has in-plane into-material direction (0,1,0),
+    // front (y=0) has (0,0,-1).
+    const Point3d top_rail(0, da, 1), front_rail(0, 0, 1 - db);
+    const Point3d top_rail_b(0, db, 1), front_rail_b(0, 0, 1 - da);
+    const bool top_is_i = ChamferTestBrepHasVertexNear(blend, top_rail, 1e-9) &&
+                          ChamferTestBrepHasVertexNear(blend, front_rail, 1e-9);
+    const bool front_is_i = ChamferTestBrepHasVertexNear(blend, top_rail_b, 1e-9) &&
+                            ChamferTestBrepHasVertexNear(blend, front_rail_b, 1e-9);
+    Check(top_is_i != front_is_i, "exactly one face-i/face-j labeling matches the result's own rail vertices");
+    const Point3d P0 = top_is_i ? top_rail : front_rail_b;  // on face i, distance_i from the edge
+    const Point3d P2 = top_is_i ? front_rail : top_rail_b;  // on face j, distance_j from the edge
+    const Point3d O = edge_p0;
+
+    // Independent re-derivation of the conic end-cap curve (the rational
+    // quadratic Bezier formula written out by hand, not NurbsCurve).
+    const double w = rho / (1.0 - rho);
+    auto conic_pt = [&](const Point3d& at, double t) {
+      const double b0 = (1 - t) * (1 - t), b1 = 2 * w * t * (1 - t), b2 = t * t;
+      const double den = b0 + b1 + b2;
+      const Vector3d shift = at - O;
+      return Point3d((b0 * P0.x + b1 * O.x + b2 * P2.x) / den + shift.x,
+                     (b0 * P0.y + b1 * O.y + b2 * P2.y) / den + shift.y,
+                     (b0 * P0.z + b1 * O.z + b2 * P2.z) / den + shift.z);
+    };
+
+    // Volume: removed cross-section area Area(rho) = |P0-O x P2-O| *
+    // Integral_0^1 t(1-t)/D(t)^2 dt (fillet.h's own derivation), with the
+    // integral evaluated here by composite Simpson - exactly 1/6 at rho =
+    // 0.5 (checked against the closed form di*dj*sin(gamma)/6 too).
+    auto integral = [&](int n) {
+      double s = 0.0;
+      for (int k = 0; k <= n; ++k) {
+        const double t = static_cast<double>(k) / n, u = t * (1 - t), D = 1 + 2 * (w - 1) * u;
+        s += (u / (D * D)) * ((k == 0 || k == n) ? 1.0 : (k % 2 ? 4.0 : 2.0));
+      }
+      return s / (3.0 * n);
+    };
+    const double gamma = ON_PI / 2.0;  // m_i . m_j = 0 on a box edge
+    const double area = da * db * std::sin(gamma) * integral(200000);
+    if (rho == 0.5) {
+      Check(std::fabs(area - da * db * std::sin(gamma) / 6.0) < 1e-14,
+            "rho = 0.5: the Simpson-integrated removed area equals the exact closed form di*dj*sin(gamma)/6");
+    }
+    // Sanity: rho orders the removed area (less material removed as the
+    // blend bulges toward the sharp edge).
+    Check(area > 0.0 && area < 0.5 * da * db, "the removed conic area is strictly inside the chamfer triangle");
+    const double expected_volume = 1.0 - L * area;
+    const double measured_volume = blend.TessellateToClosedMeshAdaptive(1e-7).Volume();
+    // 1e-6: the same bound TestFilletConvexEdgeUnitCubeTopFrontCorner
+    // uses; the residual is the single-precision mesh floor plus the
+    // 200-segment polygonal notch on each end face.
+    Check(std::fabs(measured_volume - expected_volume) < 1e-6,
+          "the corner-notched conic blend's tessellated volume matches 1 - L*Area(rho) to within 1e-6");
+
+    // Notch geometry: the x=0 / x=1 end faces' own tessellations carry
+    // vertices exactly at 21 independently-sampled points of the conic
+    // (t = s/20 lands on the kernel's own s*10/200 sample parameters), and
+    // no longer carry the old sharp corners.
+    const ON_Brep& raw = blend.raw();
+    const std::vector<Mesh> meshes = blend.Tessellate(24, 24);
+    int x0_index = -1, x1_index = -1;
+    for (int f = 0; f < raw.m_F.Count(); ++f) {
+      ON_Plane p;
+      if (!raw.m_F[f].SurfaceOf()->IsPlanar(&p, 1e-6)) continue;
+      if (std::fabs(std::fabs(p.zaxis.x) - 1.0) > 1e-9) continue;
+      if (std::fabs(p.DistanceTo(Point3d(0.0, 0.5, 0.5))) < 1e-9) x0_index = f;
+      if (std::fabs(p.DistanceTo(Point3d(1.0, 0.5, 0.5))) < 1e-9) x1_index = f;
+    }
+    Check(x0_index >= 0 && x1_index >= 0 && meshes.size() == static_cast<size_t>(raw.m_F.Count()),
+          "both box end faces (x=0, x=1) are found among the conic blend's own faces");
+    auto nearest = [](const Mesh& mesh, const Point3d& target) {
+      const ON_Mesh& mm = mesh.raw();
+      double best = std::numeric_limits<double>::infinity();
+      for (int i = 0; i < mm.m_V.Count(); ++i) {
+        const ON_3fPoint& v = mm.m_V[i];
+        best = std::min(best, target.DistanceTo(Point3d(v.x, v.y, v.z)));
+      }
+      return best;
+    };
+    if (x0_index >= 0 && x1_index >= 0) {
+      for (int end = 0; end < 2; ++end) {
+        const Mesh& m = meshes[static_cast<size_t>(end == 0 ? x0_index : x1_index)];
+        const Point3d at = end == 0 ? edge_p0 : edge_p1;
+        Check(nearest(m, at) > 1e-3, "the end face's own original sharp corner is genuinely gone from its tessellation");
+        double worst = 0.0;
+        for (int s = 0; s <= 20; ++s) worst = std::max(worst, nearest(m, conic_pt(at, s / 20.0)));
+        Check(worst < 1e-6,
+              "the end face's own tessellation has vertices at 21 independently-sampled points of the TRUE conic "
+              "end-cap curve (the profile at edge_p0, translated by edge_p1 - edge_p0 at edge_p1)");
+        // Falsifiability: the shoulder point is genuinely rho-dependent -
+        // a circle/parabola from the wrong rho would miss it.
+        const double w_other = rho == 0.5 ? 2.0 : 1.0;
+        const double den = 0.5 + 0.5 * w_other;
+        const Point3d wrong((0.25 * P0.x + 0.5 * w_other * O.x + 0.25 * P2.x) / den + (at - O).x,
+                            (0.25 * P0.y + 0.5 * w_other * O.y + 0.25 * P2.y) / den + (at - O).y,
+                            (0.25 * P0.z + 0.5 * w_other * O.z + 0.25 * P2.z) / den + (at - O).z);
+        Check(nearest(m, wrong) > 1e-3, "a different rho's shoulder point is NOT on the notched boundary");
+      }
+    }
+
+    // The two end-cap edges are genuine shared edges between each notched
+    // end face and the wall, carrying an honestly measured (small,
+    // non-negative) tolerance for the polygon-vs-exact-conic deviation.
+    int cap_edges = 0;
+    for (int ei = 0; ei < raw.m_E.Count(); ++ei) {
+      const ON_BrepEdge& E = raw.m_E[ei];
+      if (E.m_edge_index < 0) continue;
+      const Point3d a = E.PointAtStart(), b = E.PointAtEnd();
+      for (int end = 0; end < 2; ++end) {
+        const Vector3d sh = (end == 0 ? edge_p0 : edge_p1) - edge_p0;
+        const Point3d A = P0 + sh, B = P2 + sh;
+        if ((a.DistanceTo(A) < 1e-9 && b.DistanceTo(B) < 1e-9) || (a.DistanceTo(B) < 1e-9 && b.DistanceTo(A) < 1e-9)) {
+          ++cap_edges;
+          Check(E.m_ti.Count() == 2, "an end-cap edge is shared by exactly two trims (end face + conic wall)");
+          Check(E.m_tolerance >= 0.0 && E.m_tolerance < 1e-4,
+                "an end-cap edge's own recorded tolerance is a small, genuinely set value");
+          const Point3d mid = E.PointAt(E.Domain().Mid());
+          Check(mid.DistanceTo(conic_pt(end == 0 ? edge_p0 : edge_p1, 0.5)) < 1e-9,
+                "the shared end-cap edge's own 3D curve IS the exact conic (its midpoint is the rho shoulder point)");
+        }
+      }
+    }
+    Check(cap_edges == 2, "exactly two conic end-cap edges exist, one per notched end");
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -32436,6 +32626,7 @@ int main() {
   TestFilletConvexEdgeConicWeightFormulaReducesToExactCircle();
   TestFilletConvexEdgeConicFreeBoundaryTangencyRailExactnessAndClosedFormArea();
   TestFilletConvexEdgeConicRejectsInvalidInput();
+  TestFilletConvexEdgeConicClosesCornerNotchOnUnitCube();
   TestSphericalFaceOctantIsValidWithSingularPoleTrim();
   TestMergeAndWeldMakesBrepSphereAClosedManifold();
   TestFilletConvexEdgesRoundedBoxMatchesSteinerFormula();
