@@ -31,10 +31,12 @@ namespace dino8::kernel {
 namespace {
 
 // Parses one '/'-separated field of a .obj face-line token into a
-// positive 1-based index. Empty (both slashes present but nothing
-// between them, e.g. the "v//vn" form's middle field) is treated as
-// "absent", not a parse failure - the caller distinguishes the two via
-// the returned bool.
+// nonzero 1-based index - positive (absolute) or negative (relative to
+// however many `v`/`vt` entries have been declared so far; the caller
+// resolves it to an absolute index once it knows which count applies).
+// Empty (both slashes present but nothing between them, e.g. the
+// "v//vn" form's middle field) is treated as "absent", not a parse
+// failure - the caller distinguishes the two via the returned bool.
 bool ParseObjIndexField(const std::string& field, int& value) {
   if (field.empty()) {
     return false;
@@ -46,26 +48,29 @@ bool ParseObjIndexField(const std::string& field, int& value) {
   } catch (const std::exception&) {
     return false;
   }
-  if (consumed != field.size() || parsed <= 0) {
+  if (consumed != field.size() || parsed == 0) {
     return false;
   }
   value = parsed;
   return true;
 }
 
-// Parses a .obj face-line token into its 1-based vertex index (`v_index`,
-// required) and, if present, its 1-based texture-coordinate index
-// (`vt_index`, `has_vt` set true) - accepting the plain "3" form, the
-// "3/4" (vertex/texture) form, and the "3/4/5" (vertex/texture/normal)
-// and "3//5" (vertex/normal only) forms other tools write. The normal
-// index, when present, is parsed away but discarded - this kernel's
-// ON_Mesh has no per-face-corner normal data to put it in (vertex normals
-// here are always geometry-derived via ComputeVertexNormals(), never
-// stored independently). Rejects a malformed or non-positive vertex
-// index, including a negative (relative) one - documented as unsupported
-// in LoadObj()'s own comment. A malformed (non-empty but unparsable)
-// texture-coordinate field is also rejected, but its true *absence*
-// (the "v//vn" form) is not.
+// Parses a .obj face-line token into its 1-based-or-negative-relative
+// vertex index (`v_index`, required) and, if present, its
+// 1-based-or-negative-relative texture-coordinate index (`vt_index`,
+// `has_vt` set true) - accepting the plain "3" form, the "3/4"
+// (vertex/texture) form, and the "3/4/5" (vertex/texture/normal) and
+// "3//5" (vertex/normal only) forms other tools write, plus the
+// standard .obj negative-index form ("-1" meaning "the last vertex/vt
+// declared so far") in either position. The normal index, when present,
+// is parsed away but discarded - this kernel's ON_Mesh has no
+// per-face-corner normal data to put it in (vertex normals here are
+// always geometry-derived via ComputeVertexNormals(), never stored
+// independently). Rejects a malformed or zero-valued vertex index; the
+// caller (LoadObj) resolves a negative index to absolute and rejects
+// one that resolves out of range. A malformed (non-empty but
+// unparsable) texture-coordinate field is also rejected, but its true
+// *absence* (the "v//vn" form) is not.
 bool ParseObjFaceIndex(const std::string& token, int& v_index, int& vt_index, bool& has_vt) {
   has_vt = false;
   const size_t first_slash = token.find('/');
@@ -1055,7 +1060,10 @@ Result Mesh::LoadObj(const std::string& path, Mesh& out_mesh) {
       texture_coords.push_back(Point2d(u, v));
     } else if (tag == "f") {
       std::vector<int> indices;
-      std::vector<int> vt_indices;  // -1 for a corner with no vt reference
+      std::vector<int> vt_indices;    // meaningful only where has_vt[i] is true
+      std::vector<bool> has_vt_list;  // kept separate from vt_indices so a
+                                       // resolved-negative vt_index can never
+                                       // be confused with a "no vt" sentinel
       std::string token;
       while (stream >> token) {
         int v_index = 0;
@@ -1064,8 +1072,20 @@ Result Mesh::LoadObj(const std::string& path, Mesh& out_mesh) {
         if (!ParseObjFaceIndex(token, v_index, vt_index, has_vt)) {
           return Result::Failed;
         }
+        // Standard .obj negative-index form: -1 means "the last v/vt
+        // declared so far", relative to the count at THIS point in the
+        // file (which is what raw.m_V.Count()/texture_coords.size()
+        // already reflect, since every earlier line has already been
+        // processed).
+        if (v_index < 0) {
+          v_index = raw.m_V.Count() + v_index + 1;
+        }
+        if (has_vt && vt_index < 0) {
+          vt_index = static_cast<int>(texture_coords.size()) + vt_index + 1;
+        }
         indices.push_back(v_index);
-        vt_indices.push_back(has_vt ? vt_index : -1);
+        vt_indices.push_back(vt_index);
+        has_vt_list.push_back(has_vt);
       }
       if (indices.size() < 3 || indices.size() > 4) {
         return Result::Failed;
@@ -1075,13 +1095,14 @@ Result Mesh::LoadObj(const std::string& path, Mesh& out_mesh) {
           return Result::Failed;  // forward/unknown reference, or out of range
         }
       }
-      for (const int vt_index : vt_indices) {
-        if (vt_index != -1 && (vt_index < 1 || vt_index > static_cast<int>(texture_coords.size()))) {
+      for (size_t i = 0; i < vt_indices.size(); ++i) {
+        if (has_vt_list[i] &&
+            (vt_indices[i] < 1 || vt_indices[i] > static_cast<int>(texture_coords.size()))) {
           return Result::Failed;  // forward/unknown vt reference, or out of range
         }
       }
       for (size_t i = 0; i < indices.size(); ++i) {
-        if (vt_indices[i] != -1) {
+        if (has_vt_list[i]) {
           vertex_uv_by_index[indices[i] - 1] =
               texture_coords[static_cast<size_t>(vt_indices[i]) - 1];
         }

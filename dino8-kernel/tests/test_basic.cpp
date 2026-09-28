@@ -15027,24 +15027,133 @@ void TestMeshLoadObjRejectsMalformedFiles() {
         "LoadObj fails on a 5-index face line rather than silently "
         "misinterpreting it (ON_MeshFace only holds a triangle or quad)");
 
-  // Negative (relative) face indices are a legitimate general-.obj
-  // construct this parser doesn't resolve - locks in the actual contract
-  // (Result::Failed for the whole file) against LoadObj()'s own doc
-  // comment, which used to say these are "silently skipped" (grouping
-  // them with truly-ignored line types like `vn`/materials/groups) before
-  // that wording was corrected to match this real behavior.
-  const std::string relative_index_path = "dino8_kernel_mesh_obj_test_relative_index.obj";
+  // A negative (relative) index that resolves before the start of the
+  // file (nothing declared yet to be "3 back" from) is still a real
+  // error, not merely out of LoadObj()'s support - distinguishes "we
+  // don't resolve relative indices at all" (the old, now-fixed
+  // behavior) from "we resolve them and this one is genuinely
+  // out-of-range" (see TestMeshLoadObjResolvesRelativeIndices for the
+  // valid case).
+  const std::string oob_relative_index_path = "dino8_kernel_mesh_obj_test_oob_relative_index.obj";
   {
-    std::ofstream bad(relative_index_path);
-    bad << "v 0 0 0\nv 1 0 0\nv 1 1 0\nf -3 -2 -1\n";
+    std::ofstream bad(oob_relative_index_path);
+    // Only 3 vertices declared; -4 would need a 4th one further back.
+    bad << "v 0 0 0\nv 1 0 0\nv 1 1 0\nf -4 -2 -1\n";
   }
-  Check(Mesh::LoadObj(relative_index_path, out) == Result::Failed,
-        "LoadObj fails on a face line with negative (relative) indices "
-        "rather than silently skipping them");
+  Check(Mesh::LoadObj(oob_relative_index_path, out) == Result::Failed,
+        "LoadObj fails on a negative index that resolves to before the "
+        "start of the file, same as an out-of-range positive index");
 
   std::remove(forward_ref_path.c_str());
   std::remove(pentagon_path.c_str());
-  std::remove(relative_index_path.c_str());
+  std::remove(oob_relative_index_path.c_str());
+}
+
+void TestMeshLoadObjResolvesRelativeIndices() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point2d;
+  using dino8::kernel::Result;
+
+  // Basic case: "-3 -2 -1" right after exactly 3 vertices means the same
+  // thing as the absolute "1 2 3" - the standard .obj negative-index
+  // form real exporters (e.g. streaming/incremental writers that don't
+  // want to track a running absolute vertex count) actually emit.
+  const std::string basic_path = "dino8_kernel_mesh_obj_test_relative_basic.obj";
+  {
+    std::ofstream out(basic_path);
+    out << "v 0 0 0\nv 1 0 0\nv 1 1 0\nf -3 -2 -1\n";
+  }
+  Mesh basic;
+  Check(Mesh::LoadObj(basic_path, basic) == Result::Ok,
+        "LoadObj succeeds on a face line using negative (relative) vertex indices");
+  Check(basic.VertexCount() == 3 && basic.FaceCount() == 1,
+        "the relative-index face produced exactly 3 vertices and 1 face");
+  const ON_MeshFace& basic_face = basic.raw().m_F[0];
+  Check(basic_face.vi[0] == 0 && basic_face.vi[1] == 1 && basic_face.vi[2] == 2,
+        "-3 -2 -1 resolved to the same 0-based corners (0,1,2) as the "
+        "equivalent absolute face '1 2 3' would");
+
+  // Mixing an absolute and a relative reference in the same face corner
+  // list is unusual but spec-legal - "-1" must resolve against the same
+  // count "3" resolves against (both count from the 3 vertices declared
+  // so far), not get confused by the absolute reference alongside it.
+  const std::string mixed_path = "dino8_kernel_mesh_obj_test_relative_mixed.obj";
+  {
+    std::ofstream out(mixed_path);
+    out << "v 0 0 0\nv 1 0 0\nv 1 1 0\nf 1 2 -1\n";
+  }
+  Mesh mixed;
+  Check(Mesh::LoadObj(mixed_path, mixed) == Result::Ok,
+        "LoadObj succeeds on a face line mixing absolute and relative indices");
+  const ON_MeshFace& mixed_face = mixed.raw().m_F[0];
+  Check(mixed_face.vi[0] == 0 && mixed_face.vi[1] == 1 && mixed_face.vi[2] == 2,
+        "'1 2 -1' resolved '-1' to the 3rd (last-declared) vertex, same "
+        "as the all-absolute '1 2 3' form");
+
+  // Incremental/streaming case: each face's relative indices resolve
+  // against the vertex COUNT AT THAT POINT IN THE FILE, not the file's
+  // final total - a second block of vertices/face must not shift the
+  // first face's already-resolved meaning, and the second face must
+  // reference only its own newly-declared vertices, not the first
+  // triangle's.
+  const std::string incremental_path = "dino8_kernel_mesh_obj_test_relative_incremental.obj";
+  {
+    std::ofstream out(incremental_path);
+    out << "v 0 0 0\nv 1 0 0\nv 1 1 0\n";
+    out << "f -3 -2 -1\n";
+    out << "v 2 0 0\nv 2 1 0\nv 3 1 0\n";
+    out << "f -3 -2 -1\n";
+  }
+  Mesh incremental;
+  Check(Mesh::LoadObj(incremental_path, incremental) == Result::Ok,
+        "LoadObj succeeds on an incremental file with two separate "
+        "relative-index face blocks");
+  Check(incremental.VertexCount() == 6 && incremental.FaceCount() == 2,
+        "both vertex blocks and both faces were read (6 vertices, 2 faces)");
+  const ON_MeshFace& first_face = incremental.raw().m_F[0];
+  const ON_MeshFace& second_face = incremental.raw().m_F[1];
+  Check(first_face.vi[0] == 0 && first_face.vi[1] == 1 && first_face.vi[2] == 2,
+        "the first face resolved against the count at its own point in "
+        "the file (the first 3 vertices), unaffected by vertices "
+        "declared later");
+  Check(second_face.vi[0] == 3 && second_face.vi[1] == 4 && second_face.vi[2] == 5,
+        "the second face's relative indices resolved against the count "
+        "at ITS point in the file (all 6 vertices), correctly landing "
+        "on the second triangle rather than re-referencing the first");
+  std::remove(incremental_path.c_str());
+  std::remove(mixed_path.c_str());
+  std::remove(basic_path.c_str());
+
+  // Relative texture-coordinate indices resolve against `vt` count the
+  // same way relative vertex indices resolve against `v` count - a
+  // separate counter, so a file with more `v` than `vt` entries doesn't
+  // let a relative vt reference silently borrow the wrong count.
+  const std::string uv_path = "dino8_kernel_mesh_obj_test_relative_uv.obj";
+  {
+    std::ofstream out(uv_path);
+    out << "v 0 0 0\nv 1 0 0\nv 1 1 0\n";
+    out << "vt 0.25 0.75\n";
+    out << "f 1/-1 2/-1 3/-1\n";
+  }
+  Mesh with_uv;
+  Check(Mesh::LoadObj(uv_path, with_uv) == Result::Ok,
+        "LoadObj succeeds on a face line using a negative (relative) "
+        "texture-coordinate index");
+  Check(with_uv.HasTextureCoordinates(),
+        "the relative vt reference (shared by all 3 corners, so every "
+        "vertex ends up with one) produced texture coordinates");
+  bool all_uv_correct = true;
+  for (int i = 0; i < with_uv.VertexCount(); ++i) {
+    const Point2d uv = with_uv.TextureCoordinateAt(i);
+    if (std::abs(uv.x - 0.25) > 1e-12 || std::abs(uv.y - 0.75) > 1e-12) {
+      all_uv_correct = false;
+      break;
+    }
+  }
+  Check(all_uv_correct,
+        "'-1' resolved to the only (and therefore last) declared 'vt' "
+        "entry (0.25, 0.75) for every vertex");
+  std::remove(uv_path.c_str());
 }
 
 void TestMeshSaveStlSplitsQuadsAndComputesNormals() {
@@ -39252,6 +39361,7 @@ int main() {
   TestMeshSaveObjRoundTrips();
   TestMeshTextureCoordinates();
   TestMeshLoadObjRejectsMalformedFiles();
+  TestMeshLoadObjResolvesRelativeIndices();
   TestMeshSaveStlSplitsQuadsAndComputesNormals();
   TestMeshLoadStlRoundTrips();
   TestMeshLoadStlBinary();
