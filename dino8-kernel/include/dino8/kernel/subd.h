@@ -159,7 +159,17 @@ class SubD {
   // Extracts the current subdivision level's control net as a Mesh
   // (ON_SubD::GetControlNetMesh) - after enough Subdivide() calls, a
   // dense, all-quad mesh that visually approximates the limit surface.
-  // Throws std::runtime_error if OpenNURBS' own call fails.
+  // The raw GetControlNetMesh() output is then deduplicated
+  // (ON_Mesh::CombineIdenticalVertices()) before returning: OpenNURBS'
+  // own routine emits one mesh vertex per face-corner, not one per shared
+  // ON_SubDVertex (confirmed on a Symmetrize()d SubD, whose seam vertices
+  // - genuinely shared at the SubD level - otherwise came out as
+  // duplicate, unwelded mesh vertices at bit-identical positions,
+  // reporting spurious boundary edges on an actually-closed shape); a
+  // control net's own face corners at the exact same 3D point are always
+  // the same conceptual vertex by definition, so this exact-position
+  // merge is always safe here. Throws std::runtime_error if OpenNURBS'
+  // own call fails.
   Mesh ToApproximateMesh() const;
 
   // Applies `xform` to a copy of this SubD's ENTIRE control cage (every
