@@ -2537,6 +2537,32 @@ Brep FilletConvexEdgeConic(const Brep& solid, Point3d edge_p0, Point3d edge_p1, 
   return combined;
 }
 
+// The CONCAVE mirror of FilletConvexEdgeConic - see fillet.h's own doc
+// comment for the full argument (identical to ChamferConcaveEdge's own
+// relationship to ChamferConvexEdge): validate the edge is genuinely
+// concave, then dispatch straight to FilletConvexEdgeConic's own
+// construction unchanged, since its m_i/m_j are already extent-based (not
+// built from a convex-specific contact-point formula) and so already
+// discover the correct "into this face's own material" direction and
+// setback points regardless of which side of the edge is material.
+Brep FilletConcaveEdgeConic(const Brep& solid, Point3d edge_p0, Point3d edge_p1, double distance_i,
+                             double distance_j, double rho) {
+  if (!(distance_i > 0.0) || !(distance_j > 0.0)) {
+    throw std::invalid_argument(
+        "dino8::kernel::FilletConcaveEdgeConic: distance_i and distance_j must both be strictly positive");
+  }
+  if (!(rho > 0.0) || !(rho < 1.0)) {
+    throw std::invalid_argument(
+        "dino8::kernel::FilletConcaveEdgeConic: rho must lie strictly between 0 and 1 (0.5 is the exact "
+        "parabola; rho -> 0 degenerates onto the flat chord, rho -> 1 onto the untouched sharp edge - see "
+        "FilletConvexEdgeConic's own doc comment)");
+  }
+  const std::vector<Brep::PlanarFace> faces = solid.PlanarFaces();
+  const double tol = RelativeTol(faces);
+  RequireConcaveEdge(faces, edge_p0, edge_p1, tol, "FilletConcaveEdgeConic");
+  return FilletConvexEdgeConic(solid, edge_p0, edge_p1, distance_i, distance_j, rho);
+}
+
 
 // ---------------------------------------------------------------------------
 // FilletConvexEdges: multi-edge constant-radius fillet with spherical

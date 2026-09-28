@@ -38495,6 +38495,125 @@ void TestChamferConcaveEdgeRejectsUnsupportedConfigurations() {
   Check(throws([&] { ChamferConcaveEdge(prism, edge_p0, edge_p1, 5.0, 0.1); }), "rejects a distance too large to fit");
 }
 
+void TestFilletConcaveEdgeConicRejectsConvexEdgeAndInvalidInput() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConcaveEdgeConic;
+  using dino8::kernel::Point3d;
+  auto throws = [](const std::function<void()>& fn) {
+    try {
+      fn();
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+    return false;
+  };
+
+  const Brep prism = ConcaveLShapedPrism();
+  const Point3d edge_p0(1, 1, 0), edge_p1(1, 1, 1);
+  Check(throws([&] { FilletConcaveEdgeConic(prism, edge_p0, edge_p1, 0.0, 0.2, 0.5); }),
+        "rejects a non-positive distance_i");
+  Check(throws([&] { FilletConcaveEdgeConic(prism, edge_p0, edge_p1, 0.2, -0.1, 0.5); }),
+        "rejects a negative distance_j");
+  Check(throws([&] { FilletConcaveEdgeConic(prism, edge_p0, edge_p1, 0.2, 0.2, 0.0); }), "rejects rho == 0");
+  Check(throws([&] { FilletConcaveEdgeConic(prism, edge_p0, edge_p1, 0.2, 0.2, 1.0); }), "rejects rho == 1");
+  Check(throws([&] { FilletConcaveEdgeConic(prism, edge_p0, edge_p1, 0.2, 0.2, -0.3); }), "rejects a negative rho");
+  Check(throws([&] { FilletConcaveEdgeConic(prism, edge_p0, edge_p1, 5.0, 0.2, 0.5); }),
+        "rejects a distance_i too large to fit within face i's own extent");
+  Check(throws([&] { FilletConcaveEdgeConic(prism, Point3d(5, 5, 5), Point3d(5, 5, 6), 0.1, 0.1, 0.5); }),
+        "rejects an edge that isn't a shared boundary edge of the solid at all");
+
+  // A plain box's every edge is CONVEX - FilletConcaveEdgeConic must
+  // refuse it, not silently dispatch to FilletConvexEdgeConic's own
+  // construction for the wrong reason (see ChamferConcaveEdge's own
+  // identical negative control above).
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+  Check(throws([&] { FilletConcaveEdgeConic(box, Point3d(0, 0, 1), Point3d(1, 0, 1), 0.1, 0.1, 0.5); }),
+        "rejects a genuinely convex edge");
+}
+
+// FilletConcaveEdgeConic's own closed-corner-notch case, the concave
+// mirror of TestFilletConvexEdgeConicClosesCornerNotchOnUnitCube: both of
+// ConcaveLShapedPrism's own cap faces (z=0, z=1) are PERPENDICULAR to the
+// reflex edge (their normals are exactly +-e), so each gets its sharp
+// reflex corner replaced by the wall's own conic end-cap curve, closing
+// the result into a genuine solid - verified through B-rep topology and
+// tessellated volume against the SAME Area(rho) closed form
+// TestFilletConvexEdgeConicClosesCornerNotchOnUnitCube itself checks
+// (material ADDED here instead of removed), plus a direct, discriminating
+// check that FilletConcaveEdgeConic's own result is bit-for-bit identical
+// to calling FilletConvexEdgeConic on the very same inputs - proving
+// genuine delegation, not an independently-written (and possibly
+// divergent) re-implementation.
+void TestFilletConcaveEdgeConicAddsClosedFormVolumeOnLShapedPrism() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConcaveEdgeConic;
+  using dino8::kernel::FilletConvexEdgeConic;
+  using dino8::kernel::Point3d;
+
+  const Brep prism = ConcaveLShapedPrism();
+  const double footprint_volume = prism.TessellateToClosedMesh(4, 4).Volume();
+  Check(std::fabs(footprint_volume - 3.0) < 1e-6, "sanity: the L-shaped prism's own footprint area is exactly 3");
+
+  const Point3d edge_p0(1, 1, 0), edge_p1(1, 1, 1);
+  const double da = 0.3, db = 0.25;
+  const double L = 1.0;
+
+  for (const double rho : {0.5, 0.3, 0.7}) {
+    const Brep blend = FilletConcaveEdgeConic(prism, edge_p0, edge_p1, da, db, rho);
+
+    // Genuine delegation, not a parallel re-implementation: identical
+    // inputs into FilletConvexEdgeConic directly (bypassing the concavity
+    // check) must produce an IDENTICAL result.
+    const Brep direct = FilletConvexEdgeConic(prism, edge_p0, edge_p1, da, db, rho);
+    Check(blend.FaceCount() == direct.FaceCount(),
+          "FilletConcaveEdgeConic's own face count matches calling FilletConvexEdgeConic directly");
+    Check(std::fabs(blend.TessellateToClosedMeshAdaptive(1e-7).Volume() -
+                    direct.TessellateToClosedMeshAdaptive(1e-7).Volume()) < 1e-12,
+          "FilletConcaveEdgeConic's own tessellated volume is bit-for-bit the same as the direct convex call - "
+          "this is a thin validating wrapper, not a separate construction");
+
+    Check(blend.FaceCount() == 9,
+          "9 faces: original 8 (2 caps + 6 walls) minus the 2 re-trimmed walls plus those 2 back, plus the new "
+          "conic wall (8 - 2 + 2 + 1)");
+    ON_TextLog log;
+    Check(blend.raw().IsValid(&log), "the corner-notched concave conic blend passes ON_Brep::IsValid()");
+    bool oriented = false, has_boundary = true;
+    Check(blend.raw().IsManifold(&oriented, &has_boundary) && oriented && !has_boundary,
+          "the corner-notched concave conic blend is an oriented, CLOSED 2-manifold");
+    Check(blend.raw().IsSolid(), "the corner-notched concave conic blend reports IsSolid() == true");
+    const Brep::CheckReport report = blend.Check();
+    Check(report.is_closed && report.is_oriented && report.issues.empty(),
+          "Brep::Check() reports the corner-notched concave conic blend closed, oriented and issue-free");
+    Check(!ChamferTestBrepHasVertexNear(blend, edge_p0, 1e-9) && !ChamferTestBrepHasVertexNear(blend, edge_p1, 1e-9),
+          "the original sharp reflex corner vertices are gone");
+
+    // Closed form (see TestFilletConvexEdgeConicClosesCornerNotchOnUnitCube's
+    // own derivation and Simpson-integral evaluation of Area(rho), reused
+    // verbatim here): the two in-plane, into-material directions at this
+    // 90-degree reflex edge are mutually perpendicular (gamma = pi/2, the
+    // same box-corner geometry, just concave), so the swept conic
+    // cross-section's own area is da*db*sin(gamma)*integral(...), and this
+    // fillet ADDS that area times the edge length instead of removing it.
+    auto integral = [&](int n) {
+      const double w = rho / (1.0 - rho);
+      double s = 0.0;
+      for (int k = 0; k <= n; ++k) {
+        const double t = static_cast<double>(k) / n, u = t * (1 - t), D = 1 + 2 * (w - 1) * u;
+        s += (u / (D * D)) * ((k == 0 || k == n) ? 1.0 : (k % 2 ? 4.0 : 2.0));
+      }
+      return s / (3.0 * n);
+    };
+    const double gamma = ON_PI / 2.0;
+    const double area = da * db * std::sin(gamma) * integral(200000);
+    Check(area > 0.0 && area < 0.5 * da * db, "the swept conic area is strictly inside the setback triangle");
+    const double expected_volume = footprint_volume + L * area;
+    const double measured_volume = blend.TessellateToClosedMeshAdaptive(1e-7).Volume();
+    Check(std::fabs(measured_volume - expected_volume) < 1e-6,
+          "the corner-notched concave conic blend's tessellated volume matches footprint_volume + L*Area(rho) - "
+          "the concave mirror of a convex corner's own REMOVED volume");
+  }
+}
+
 void TestRemoveChamferRoundTripsAConcaveChamfer() {
   using dino8::kernel::Brep;
   using dino8::kernel::ChamferConcaveEdge;
@@ -40916,6 +41035,8 @@ int main() {
   TestChamferConcaveEdgeAddsExactRightTriangleVolume();
   TestChamferConcaveEdgeAngleMatchesTwoDistanceForm();
   TestChamferConcaveEdgeRejectsUnsupportedConfigurations();
+  TestFilletConcaveEdgeConicRejectsConvexEdgeAndInvalidInput();
+  TestFilletConcaveEdgeConicAddsClosedFormVolumeOnLShapedPrism();
   TestRemoveChamferRoundTripsAConcaveChamfer();
   TestBrepFromPlanarFacesBuildsValidOpenNurbsTopology();
   TestBrepAdjacencyQueries();

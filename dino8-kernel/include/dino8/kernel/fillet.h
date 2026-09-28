@@ -1019,6 +1019,52 @@ Brep ChamferConcaveEdgeAngle(const Brep& solid, Point3d edge_p0, Point3d edge_p1
 Brep FilletConvexEdgeConic(const Brep& solid, Point3d edge_p0, Point3d edge_p1, double distance_i,
                             double distance_j, double rho);
 
+// CONCAVE (reflex) mirror of FilletConvexEdgeConic - the conic/rho blend's
+// counterpart to how ChamferConcaveEdge relates to ChamferConvexEdge (see
+// that pair's own doc comments for the full argument this reuses
+// verbatim): for a concave (interior dihedral > pi) straight edge, FILLS
+// the reflex notch with the same exact conic (ellipse/parabola/hyperbola,
+// by `rho`) cross-section instead of cutting a convex corner's own wedge
+// away.
+//
+// Exactly like ChamferConcaveEdge itself (fillet.cpp's own
+// RequireConcaveEdge - validate, then dispatch straight to the convex
+// construction unchanged), this validates that edge_p0->edge_p1 is
+// genuinely CONCAVE (EdgeConvexity, the opposite sense from
+// FilletConvexEdgeConic's own implicit convex assumption) and then runs
+// the IDENTICAL shared construction FilletConvexEdgeConic uses - not a
+// re-derivation. FilletConvexEdgeConic's own m_i/m_j are already
+// extent-based (picks whichever of the two in-plane, perpendicular-to-
+// the-edge directions actually has POSITIVE extent within that face's own
+// real polygon), not built from a convex-specific contact-point formula
+// the way a rolling-ball fillet's axis_point is - so it already discovers
+// the correct "into this face's own material" direction, and the correct
+// P0/P2 setback points to build the conic's own control polygon from,
+// regardless of which side of the two half-spaces is material. This is
+// the exact same "already-orientation-agnostic construction" fact that
+// lets ChamferConcaveEdge dispatch to ChamferConvexEdge with zero
+// construction changes - checked directly here too, not just assumed from
+// that precedent: dino8-kernel's own regression test runs this against a
+// genuine concave fixture (the same L-shaped prism FilletConcaveEdge's own
+// tests use) and checks the resulting solid's ADDED volume against the
+// identical Area(rho) closed form FilletConvexEdgeConic's own doc comment
+// derives (material added, not removed, here).
+//
+// A failure INSIDE the shared construction (a distance too large to fit,
+// a degenerate vertex, an unsupported third-face pattern) is reported
+// with FilletConvexEdgeConic's own name in the exception message, not
+// this function's - the same disclosed trade-off ChamferConcaveEdge's own
+// doc comment already makes for the identical reason.
+//
+// SCOPE: identical to FilletConvexEdgeConic's own (see that function's
+// own doc comment) with the convexity sense reversed - one straight
+// CONCAVE edge between exactly two PLANAR faces, a third face at either
+// endpoint either a free boundary or exactly PERPENDICULAR to the edge
+// (an OBLIQUE third face, or a multi-edge/vertex-blend form, remain out
+// of scope for the same reasons given there).
+Brep FilletConcaveEdgeConic(const Brep& solid, Point3d edge_p0, Point3d edge_p1, double distance_i,
+                             double distance_j, double rho);
+
 
 // MULTI-EDGE constant-radius rolling-ball fillet with genuine SPHERICAL
 // VERTEX BLENDS - the piece of Parasolid's blend class that turns
