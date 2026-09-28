@@ -255,6 +255,27 @@ else
   echo "FAIL OrthoAngle 45 did not constrain the line to 45 degrees (CV[0] $X0,$Y0 CV[1] $X1,$Y1)"; fail=1
 fi
 
+# Box typed-height regression (see box_hover_regression.txt and commit
+# da0a4eb): a forced mouse hover at the box's own last corner must not
+# corrupt a typed literal height into a near-zero "distance toward the
+# cursor" reinterpretation. Neither the existing ui_script.txt Box scenario
+# above (which also clicks+types a height while the mouse happens to be
+# hovering) nor state_script2.txt's own bare "Box ... 10" line ever checked
+# the resulting box's actual height - both would have silently passed with
+# a height of ~0 before da0a4eb, since they only assert the object count.
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  BH="$("$BIN" --smoke 60 --script "$HERE/box_hover_regression.txt" 2>&1)" || { echo "$BH"; echo "FAIL: box-hover-regression script exited non-zero"; exit 1; }
+else
+  BH="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$HERE/box_hover_regression.txt" 2>&1)" || { echo "$BH"; echo "FAIL: box-hover-regression script exited non-zero"; exit 1; }
+fi
+echo "$BH" | grep -E "^(ok|FAIL)"
+if echo "$BH" | grep -q "^FAIL"; then fail=1; fi
+if echo "$BH" | grep -q "^history: Bounding box min 0,0,0 max 20,20,10$"; then
+  echo "ok   Box's typed height (10) survived a forced same-point mouse hover, not corrupted into a near-zero hover-distance reinterpretation"
+else
+  echo "FAIL Box's typed height did not survive a forced mouse hover (expected 'Bounding box min 0,0,0 max 20,20,10')"; near "$BH" "Bounding box min 0,0,0 max 20,20,10"; fail=1
+fi
+
 # Curve editing: Intersect, Split, Trim, Fillet, Chamfer, FilletCorners (see curveedit_script.txt).
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   CE="$("$BIN" --smoke 150 --script "$HERE/curveedit_script.txt" 2>&1)" || { echo "$CE"; echo "FAIL: curve-edit script exited non-zero"; exit 1; }
@@ -2075,6 +2096,24 @@ if echo "$S2" | grep -q "^FAIL"; then fail=1; fi
 echo "$S2" | grep -q "^smoke:" || { echo "$S2"; echo "FAIL: state2 script produced no smoke line"; fail=1; }
 s2check() { if echo "$S2" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$S2" "$1"; fail=1; fi; }
 s2check "WhatsNew: opened the What's New window" "WhatsNew opens its own real changelog window, not the About box"
+# Regression guard for the "changelog.md never shipped" bug: WhatsNew's
+# confirmation print above only means the *window* opened - Panels.cpp's
+# Changelog()/DrawWhatsNewWindow() silently falls back to "The changelog
+# (data/changelog.md) could not be found next to this build." inside that
+# window when data/changelog.md isn't next to the exe, and nothing printed
+# to stdout/history would tell us that happened (ImGui window contents
+# aren't scriptable headlessly). So check the one thing that actually
+# determines which of those two states the user sees: that CMakeLists.txt's
+# DINO8_DATA_FILES copy step really did put a real, non-trivial
+# changelog.md next to $BIN (see commit 7ebfdc3 - DINO8_DATA_FILES used to
+# list only commands.json/hatchpatterns.pat).
+CHANGELOG_NEXT_TO_BIN="$(dirname "$BIN")/data/changelog.md"
+if [ -s "$CHANGELOG_NEXT_TO_BIN" ] && [ "$(wc -c < "$CHANGELOG_NEXT_TO_BIN")" -gt 200 ] && grep -q "^## " "$CHANGELOG_NEXT_TO_BIN"; then
+  echo "ok   data/changelog.md was actually installed next to the binary (WhatsNew would show real content, not the missing-file fallback)"
+else
+  echo "FAIL data/changelog.md missing/empty next to \$BIN - WhatsNew would silently show its 'could not be found' fallback"
+  fail=1
+fi
 s2check "Echo on" "Echo toggled on"
 s2check "Echo off" "Echo toggled off"
 s2check "Redraw on" "SetRedrawOn"
@@ -2361,7 +2400,7 @@ else
 fi
 rtcheck() { if echo "$RT" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$RT" "$1"; fail=1; fi; }
 rtcheck "Created material ChromeMat from preset Chrome" "RenderAssignMaterialToObjects Preset= created a material from the built-in library"
-rtcheck "Material GoldMat assigned to 1 object(s)" "material from a preset assigned to an object"
+rtcheck "Material CrateMat assigned to 1 object(s)" "material from a preset assigned to an object"
 rtcheck "MaterialLibrary: 48 built-in preset(s)" "MaterialLibrary reports the full preset count"
 rtcheck "Render: rendered Perspective at 96 x 64 .* \[Raytraced Samples=4 Bounces=2 Denoise=Yes\]" "Render honoured Quality=Raytraced Samples= Bounces="
 rtcheck "Saved rendering $TMPW/rt/raytrace.bmp (96 x 64)" "SaveRenderWindowAs wrote the raytraced BMP"

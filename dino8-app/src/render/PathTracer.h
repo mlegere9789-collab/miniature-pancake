@@ -10,6 +10,7 @@
 
 #include <array>
 #include <atomic>
+#include <deque>
 #include <functional>
 #include <mutex>
 #include <string>
@@ -129,12 +130,29 @@ class PathTracer {
   // this cache on first use - e.g. every thread's very first primary ray for
   // an empty/Background=Image scene calls SkyColor concurrently, all missing
   // the cache at once. tex_cache_mutex_ guards every access so concurrent
-  // misses can't race on the vector's storage (emplace_back reallocating
-  // while another thread reads/writes it is a real, Windows-reproducible
-  // access violation).
+  // misses can't race on the container's storage (two threads both missing
+  // the cache and inserting at once is a real, Windows-reproducible access
+  // violation).
+  //
+  // The container is a std::deque, not a std::vector, on purpose: TextureFor
+  // hands back a raw `const TexCache*` into this container and callers
+  // (SkyColor/AlbedoAt) dereference it - via SampleBilinear - AFTER the lock
+  // above has already been released. A vector's push_back/emplace_back can
+  // reallocate its whole backing store, which would silently invalidate
+  // every pointer handed out by an earlier call, including one another
+  // thread is still reading from concurrently (e.g. one worker sampling the
+  // cached environment image while another worker's first hit on a second,
+  // different material texture triggers a fresh insert) - a use-after-free
+  // race the mutex alone does not prevent, since it only serializes the
+  // mutation, not the lifetime of previously-returned pointers. A deque
+  // never invalidates references to existing elements on push_back/
+  // emplace_back (only iterators), so a pointer returned under the lock
+  // stays valid for as long as the PathTracer itself (tex_cache_.clear() in
+  // the ctor/reset is the only thing that invalidates it, and that happens
+  // before any render starts).
   struct TexCache { int w = 0, h = 0; std::vector<unsigned char> rgba; };
   mutable std::mutex tex_cache_mutex_;
-  mutable std::vector<std::pair<std::string, TexCache>> tex_cache_;
+  mutable std::deque<std::pair<std::string, TexCache>> tex_cache_;
   const TexCache* TextureFor(const std::string& path) const;
   // Bilinear lookup shared by AlbedoAt (a material's own UV) and SkyColor's
   // Background=Image branch (an equirectangular direction-derived UV) - the

@@ -24,6 +24,10 @@
 //   @move X Y | @down [button] | @up [button] | @click X Y [button]
 //   @world VIEW X Y Z      move the mouse to a world point in a viewport
 //   @clickworld VIEW X Y Z click a world point in a viewport
+//   @forcehoverfeed X Y Z TOKEN   test-only: force CommandEngine's hover
+//                 point to X,Y,Z and immediately feed TOKEN as typed text,
+//                 bypassing ImGui's own viewport-hover detection (see its
+//                 own comment below for why)
 //   @drag X0 Y0 X1 Y1      left-drag (window/crossing select)
 //   @key NAME | @text STR | @wait N | @expect_selected N | @expect_objects N
 //   FILE.3dm      open a model on start-up
@@ -548,6 +552,31 @@ int main(int argc, char** argv) {
           } else {
             std::fprintf(stderr, "script: viewport %s not found or point off-screen\n", view.c_str());
           }
+        }
+        else if (cmd == "forcehoverfeed") {
+          // Test-only: sets CommandEngine's hover_point_ directly (bypassing
+          // ImGui's own per-frame viewport-hover detection entirely - this
+          // harness's headless Xvfb runs never seem to report a viewport as
+          // "hovered" even with the mouse cursor moved, via @move/@world, to
+          // a pixel geometrically inside its rect, so that route can't
+          // reproduce "a hover point happens to be set" deterministically
+          // here) and immediately feeds one text token to the engine in the
+          // same step - before this frame's own Draw() call has a chance to
+          // recompute and overwrite hover_point_ from the (always-unhovered
+          // here) real mouse state, the way it would if @forcehover-ing and
+          // feeding the token were left as two separate script lines a
+          // frame apart. This is what lets a script deterministically
+          // reproduce "a command mid-Want::Point sees a bare number while
+          // hover_point_ happens to be set" (CommandEngine::FeedText's
+          // "distance toward the cursor" branch, and
+          // Command::NumberIsLiteralValue()'s opt-out of it - see
+          // RHINO8_KILLER_AUDIT.md row K / commit da0a4eb) on any platform
+          // this harness runs on, not only whichever one's incidental
+          // ImGui/GLFW hover state happens to hit it.
+          double x = 0, y = 0, z = 0; std::string tok;
+          ss >> x >> y >> z >> tok;
+          app.Engine().FeedHover(dino8::kernel::Point3d(x, y, z));
+          app.Engine().FeedText(tok);
         }
         else if (cmd == "dragworld") {
           std::string view; double x0, y0, z0, x1, y1, z1; ss >> view >> x0 >> y0 >> z0 >> x1 >> y1 >> z1;

@@ -5,6 +5,18 @@
 # and Render/RenderPreview/RenderArctic/RenderBlowup with Quality=Raytraced
 # (those still use the CPU PathTracer for offline/batch renders).
 # @TMP@ is replaced by smoke.sh with a scratch directory.
+#
+# FloorMat/CrateMat deliberately use two *different* procedurally-textured
+# presets (Stone Granite = proc:stone:1, Wood Oak = proc:wood:1), not two
+# untextured metals - PathTracer::AlbedoAt only calls the lazy TextureFor()
+# cache (see PathTracer.h's tex_cache_) for a material with a non-empty
+# texture_path. Rendering both together, at a resolution/sample count large
+# enough to spread across every hardware_concurrency() worker thread, means
+# several threads can hit two distinct not-yet-cached texture paths in the
+# same first frame - the concurrent-insert scenario PathTracer's texture
+# cache mutex (and the std::deque backing it, so a concurrent insert can't
+# invalidate another thread's already-returned TexCache*) has to survive
+# without a crash or corrupted pixels.
 Box 0,0,0 20,20,0 10
 Sphere 35,10,8 8
 Plane -20,-20,0 20,40,0
@@ -12,10 +24,10 @@ SelID 1
 RenderAssignMaterialToObjects ChromeMat Preset=Chrome
 SelNone
 SelID 2
-RenderAssignMaterialToObjects GoldMat Preset=Gold
+RenderAssignMaterialToObjects CrateMat Preset="Wood Oak"
 SelNone
 SelID 3
-RenderAssignMaterialToObjects FloorMat Preset=Aluminium
+RenderAssignMaterialToObjects FloorMat Preset="Stone Granite"
 SelNone
 PointLight 10,-30,40 Intensity=1.5
 MaterialLibrary
