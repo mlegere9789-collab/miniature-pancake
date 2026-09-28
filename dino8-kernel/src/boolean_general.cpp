@@ -3135,7 +3135,7 @@ Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op, double to
 // matching this file's own BooleanCombineGeneral() convention of a clear,
 // typed refusal for an out-of-scope call rather than silently returning
 // something degenerate.
-Brep ImprintFaces(const Brep& target, const Brep& tool) {
+Brep ImprintFaces(const Brep& target, const Brep& tool, double tolerance) {
   const ON_Brep& bt = target.raw();
   const ON_Brep& bl = tool.raw();
   const int nt = bt.m_F.Count();
@@ -3146,8 +3146,12 @@ Brep ImprintFaces(const Brep& target, const Brep& tool) {
   if (nl == 0) {
     throw std::invalid_argument("dino8::kernel::ImprintFaces: tool has no faces");
   }
+  if (!(tolerance > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::ImprintFaces: tolerance must be positive");
+  }
 
   IntersectOptions opt;
+  opt.tolerance = tolerance;
   const double tol = 1e-6;
   const bool debug = std::getenv("DINO8_BOOL_DEBUG") != nullptr;
 
@@ -3251,6 +3255,31 @@ Brep ImprintFaces(const Brep& target, const Brep& tool) {
   return result;
 }
 
+// MutualImprintFaces(): the two-way sibling ImprintFaces()'s own doc
+// comment (boolean_general.h) already names as this gap's obvious next
+// step - "call it twice, swapped, for a true mutual imprint of both
+// bodies." Checks both operands' preconditions up front (so a bad `b`
+// refuses before `a` is ever touched, rather than leaving `a` imprinted
+// and `b` untouched on a partial failure) and then does exactly that:
+// two independent ImprintFaces() calls, neither one aware of the other -
+// sound because ImprintFaces() itself never mutates its own `tool`, only
+// ever reads it for SSX curves, so imprinting `a` first has no way to
+// change what `ImprintFaces(b, a, ...)` sees of `b`.
+std::pair<Brep, Brep> MutualImprintFaces(const Brep& a, const Brep& b, double tolerance) {
+  if (a.raw().m_F.Count() == 0) {
+    throw std::invalid_argument("dino8::kernel::MutualImprintFaces: a has no faces");
+  }
+  if (b.raw().m_F.Count() == 0) {
+    throw std::invalid_argument("dino8::kernel::MutualImprintFaces: b has no faces");
+  }
+  if (!(tolerance > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::MutualImprintFaces: tolerance must be positive");
+  }
+  Brep a_imprinted = ImprintFaces(a, b, tolerance);
+  Brep b_imprinted = ImprintFaces(b, a, tolerance);
+  return {std::move(a_imprinted), std::move(b_imprinted)};
+}
+
 // SplitBySheet(): sheet/solid trim (parity-map "Sheet/solid trim (open
 // surface as cutter through a solid)"). Splits `solid` (a closed Brep)
 // into the two pieces on either side of `sheet` (an OPEN Brep - one or
@@ -3303,7 +3332,7 @@ Brep ImprintFaces(const Brep& target, const Brep& tool) {
 // cross `solid` at all (entirely on one side) - not an error, mirroring
 // BooleanCombineGeneral()'s/ImprintFaces()'s own "kept.empty()"
 // convention.
-std::pair<Brep, Brep> SplitBySheet(const Brep& solid, const Brep& sheet) {
+std::pair<Brep, Brep> SplitBySheet(const Brep& solid, const Brep& sheet, double tolerance) {
   const ON_Brep& bs = solid.raw();
   const ON_Brep& bh = sheet.raw();
   const int ns = bs.m_F.Count();
@@ -3314,8 +3343,12 @@ std::pair<Brep, Brep> SplitBySheet(const Brep& solid, const Brep& sheet) {
   if (nh == 0) {
     throw std::invalid_argument("dino8::kernel::SplitBySheet: sheet has no faces");
   }
+  if (!(tolerance > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::SplitBySheet: tolerance must be positive");
+  }
 
   IntersectOptions opt;
+  opt.tolerance = tolerance;
   const double tol = 1e-6;
   const bool debug = std::getenv("DINO8_BOOL_DEBUG") != nullptr;
 
@@ -3470,7 +3503,7 @@ std::pair<Brep, Brep> SplitBySheet(const Brep& solid, const Brep& sheet) {
 // returned), classified in/out of `solid` via the same
 // ClassifyPointVsBrep() ray-cast SplitBySheet() itself uses for this exact
 // purpose.
-Brep TrimSheetBySolid(const Brep& sheet, const Brep& solid, bool keep_inside) {
+Brep TrimSheetBySolid(const Brep& sheet, const Brep& solid, bool keep_inside, double tolerance) {
   const ON_Brep& bh = sheet.raw();
   const ON_Brep& bs = solid.raw();
   const int nh = bh.m_F.Count();
@@ -3481,8 +3514,12 @@ Brep TrimSheetBySolid(const Brep& sheet, const Brep& solid, bool keep_inside) {
   if (ns == 0) {
     throw std::invalid_argument("dino8::kernel::TrimSheetBySolid: solid has no faces");
   }
+  if (!(tolerance > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::TrimSheetBySolid: tolerance must be positive");
+  }
 
   IntersectOptions opt;
+  opt.tolerance = tolerance;
   const double tol = 1e-6;
   const bool debug = std::getenv("DINO8_BOOL_DEBUG") != nullptr;
 

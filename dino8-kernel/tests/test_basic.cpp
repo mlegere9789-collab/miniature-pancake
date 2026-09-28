@@ -3447,6 +3447,124 @@ void TestImprintFacesRejectsEmptyOperands() {
   Check(threw_empty_tool, "ImprintFaces throws std::invalid_argument for a faceless tool");
 }
 
+void TestImprintFacesCallerTolerance() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::ImprintFaces;
+  using dino8::kernel::Mesh;
+
+  // Parity-map "Tolerant booleans (caller-specified tolerance)": this
+  // document previously named ImprintFaces() by name as still hardcoding
+  // its own internal tolerance with no caller control at all (alongside
+  // SplitBySheet()/TrimSheetBySolid() below). ImprintFaces() now takes the
+  // same optional `tolerance` BooleanCombineGeneral() already does. Reuses
+  // TestImprintFacesBoxPiercedByCylinder's own fixture, which already
+  // exercises the closed-chain (piercing) case.
+  const Brep box = Brep::Box(-2, -2, -1, 2, 2, 1);
+  const Brep cyl = MakeCylinderZForBoxCylinderTest(0, 0, -2, 2, 1.0);
+
+  // Omitting `tolerance` must reproduce the exact prior behavior
+  // (IntersectOptions's own default of 0.001) bit-for-bit - every existing
+  // caller of ImprintFaces() in this suite calls it with no third argument.
+  const Brep default_arg = ImprintFaces(box, cyl);
+  const Brep explicit_default = ImprintFaces(box, cyl, 0.001);
+  Check(default_arg.FaceCount() == explicit_default.FaceCount() &&
+            default_arg.raw().m_E.Count() == explicit_default.raw().m_E.Count(),
+        "omitting `tolerance` produces the identical topology as passing the explicit prior default "
+        "(0.001) - existing ImprintFaces() callers are unaffected");
+  Check(std::abs(default_arg.TessellateToClosedMesh(16, 64).Volume() -
+                 explicit_default.TessellateToClosedMesh(16, 64).Volume()) < 1e-9,
+        "omitting `tolerance` produces bit-identical geometry to the explicit prior default");
+
+  // A tighter tolerance is still a genuinely wired-through control, not a
+  // decorative no-op: it still produces a valid result on this fixture.
+  const Brep tight = ImprintFaces(box, cyl, 1e-7);
+  Check(tight.raw().IsValid(), "ImprintFaces at a tight caller tolerance (1e-7) is still a valid ON_Brep");
+  Check(std::abs(tight.TessellateToClosedMesh(32, 32).Volume() - 32.0) < 0.5,
+        "ImprintFaces at a tight caller tolerance still removes no material from the box");
+
+  // A non-positive tolerance is a caller error, matching BooleanCombine
+  // General()'s own typed-refusal convention for the same parameter.
+  bool threw = false;
+  try {
+    ImprintFaces(box, cyl, 0.0);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "ImprintFaces throws std::invalid_argument for a non-positive tolerance");
+}
+
+void TestMutualImprintFacesBoxPiercedByCylinder() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::ImprintFaces;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::MutualImprintFaces;
+
+  // MutualImprintFaces(): the parity-map "Face-face imprint" item's own
+  // documented next step - ImprintFaces() only ever splits `target`, so a
+  // TRUE mutual imprint (both bodies split along their shared intersection,
+  // neither losing material) needs one call each way. Proves the combined
+  // entry point is exactly equivalent to the two ImprintFaces() calls a
+  // caller would otherwise have to make by hand, on the same box+cylinder
+  // fixture TestImprintFacesBoxPiercedByCylinder already proves both
+  // individual directions on.
+  const Brep box = Brep::Box(-2, -2, -1, 2, 2, 1);
+  const Brep cyl = MakeCylinderZForBoxCylinderTest(0, 0, -2, 2, 1.0);
+
+  const auto [box_imprinted, cyl_imprinted] = MutualImprintFaces(box, cyl);
+  const Brep box_expected = ImprintFaces(box, cyl);
+  const Brep cyl_expected = ImprintFaces(cyl, box);
+
+  Check(box_imprinted.raw().IsValid(), "MutualImprintFaces's own `a` result (box) is a valid ON_Brep");
+  Check(cyl_imprinted.raw().IsValid(), "MutualImprintFaces's own `b` result (cylinder) is a valid ON_Brep");
+  Check(box_imprinted.FaceCount() == box_expected.FaceCount() &&
+            box_imprinted.raw().m_E.Count() == box_expected.raw().m_E.Count(),
+        "MutualImprintFaces's own box result has identical topology to a standalone ImprintFaces(box, cyl) call");
+  Check(cyl_imprinted.FaceCount() == cyl_expected.FaceCount() &&
+            cyl_imprinted.raw().m_E.Count() == cyl_expected.raw().m_E.Count(),
+        "MutualImprintFaces's own cylinder result has identical topology to a standalone "
+        "ImprintFaces(cyl, box) call");
+
+  const Mesh m_box = box_imprinted.TessellateToClosedMesh(32, 32);
+  Check(std::abs(m_box.Volume() - 32.0) < 0.5,
+        "mutual imprint removes no material from the box - its own tessellated volume is unchanged (32)");
+  const double expect_vol_cyl = ON_PI * 1.0 * 1.0 * 4.0;
+  const Mesh m_cyl = cyl_imprinted.TessellateToClosedMesh(32, 128);
+  Check(std::abs(m_cyl.Volume() - expect_vol_cyl) < 0.5,
+        "mutual imprint removes no material from the cylinder - its own tessellated volume is unchanged");
+}
+
+void TestMutualImprintFacesRejectsEmptyOrNonPositiveTolerance() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::MutualImprintFaces;
+
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+  const Brep empty;
+
+  bool threw_empty_a = false;
+  try {
+    MutualImprintFaces(empty, box);
+  } catch (const std::invalid_argument&) {
+    threw_empty_a = true;
+  }
+  Check(threw_empty_a, "MutualImprintFaces throws std::invalid_argument for a faceless `a`");
+
+  bool threw_empty_b = false;
+  try {
+    MutualImprintFaces(box, empty);
+  } catch (const std::invalid_argument&) {
+    threw_empty_b = true;
+  }
+  Check(threw_empty_b, "MutualImprintFaces throws std::invalid_argument for a faceless `b`");
+
+  bool threw_bad_tolerance = false;
+  try {
+    MutualImprintFaces(box, box, -1.0);
+  } catch (const std::invalid_argument&) {
+    threw_bad_tolerance = true;
+  }
+  Check(threw_bad_tolerance, "MutualImprintFaces throws std::invalid_argument for a non-positive tolerance");
+}
+
 // Builds a single-face, untrimmed, planar rectangular "sheet" Brep spanning
 // x in [x0, x1], y in [y0, y1] at the given z, whose natural (un-flipped)
 // outward normal is +z - the same u_dir x v_dir construction
@@ -3565,6 +3683,43 @@ void TestSplitBySheetRejectsEmptyOperands() {
   Check(threw_empty_sheet, "SplitBySheet throws std::invalid_argument for a faceless sheet");
 }
 
+void TestSplitBySheetCallerTolerance() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SplitBySheet;
+
+  // Parity-map "Tolerant booleans (caller-specified tolerance)": SplitBySheet()
+  // was named alongside ImprintFaces()/TrimSheetBySolid() as still hardcoding
+  // its own tolerance. Reuses TestSplitBySheetBoxCutInHalfByPlane's own fixture.
+  const Brep box = Brep::Box(0, 0, 0, 4, 4, 4);
+  const Brep sheet = MakePlanarSheetZ(-1, -1, 5, 5, 2.0);
+
+  const auto [default_pos, default_neg] = SplitBySheet(box, sheet);
+  const auto [explicit_pos, explicit_neg] = SplitBySheet(box, sheet, 0.001);
+  Check(default_pos.FaceCount() == explicit_pos.FaceCount() && default_neg.FaceCount() == explicit_neg.FaceCount(),
+        "omitting `tolerance` produces the identical face count as passing the explicit prior default (0.001)");
+  const Mesh mp_default = default_pos.TessellateToClosedMesh(16, 16);
+  const Mesh mp_explicit = explicit_pos.TessellateToClosedMesh(16, 16);
+  Check(std::abs(mp_default.Volume() - mp_explicit.Volume()) < 1e-9,
+        "omitting `tolerance` produces bit-identical geometry to the explicit prior default");
+
+  const auto [tight_pos, tight_neg] = SplitBySheet(box, sheet, 1e-7);
+  Check(tight_pos.raw().IsValid() && tight_neg.raw().IsValid(),
+        "SplitBySheet at a tight caller tolerance (1e-7) is still valid");
+  const Mesh mp_tight = tight_pos.TessellateToClosedMesh(16, 16);
+  const Mesh mn_tight = tight_neg.TessellateToClosedMesh(16, 16);
+  Check(std::abs((mp_tight.Volume() + mn_tight.Volume()) - 64.0) < 1e-3,
+        "SplitBySheet at a tight caller tolerance still sums back to the original box's own volume");
+
+  bool threw = false;
+  try {
+    SplitBySheet(box, sheet, 0.0);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "SplitBySheet throws std::invalid_argument for a non-positive tolerance");
+}
+
 void TestTrimSheetBySolidKeepsOnlyInteriorPortion() {
   using dino8::kernel::Brep;
   using dino8::kernel::Mesh;
@@ -3667,6 +3822,40 @@ void TestTrimSheetBySolidRejectsEmptyOperands() {
     threw_empty_solid = true;
   }
   Check(threw_empty_solid, "TrimSheetBySolid throws std::invalid_argument for a faceless solid");
+}
+
+void TestTrimSheetBySolidCallerTolerance() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::TrimSheetBySolid;
+
+  // Parity-map "Tolerant booleans (caller-specified tolerance)": TrimSheet
+  // BySolid() was named alongside ImprintFaces()/SplitBySheet() as still
+  // hardcoding its own tolerance. Reuses TestTrimSheetBySolidKeepsOnly
+  // InteriorPortion's own fixture.
+  const Brep box = Brep::Box(0, 0, 0, 4, 4, 4);
+  const Brep sheet = MakePlanarSheetZ(-1, -1, 5, 5, 2.0);
+
+  const Brep default_arg = TrimSheetBySolid(sheet, box, /*keep_inside=*/true);
+  const Brep explicit_default = TrimSheetBySolid(sheet, box, /*keep_inside=*/true, 0.001);
+  Check(default_arg.FaceCount() == explicit_default.FaceCount(),
+        "omitting `tolerance` produces the identical face count as passing the explicit prior default (0.001)");
+  Check(std::abs(default_arg.TessellateToClosedMesh(16, 16).Area() -
+                 explicit_default.TessellateToClosedMesh(16, 16).Area()) < 1e-9,
+        "omitting `tolerance` produces bit-identical geometry to the explicit prior default");
+
+  const Brep tight = TrimSheetBySolid(sheet, box, /*keep_inside=*/true, 1e-7);
+  Check(tight.raw().IsValid(), "TrimSheetBySolid at a tight caller tolerance (1e-7) is still a valid ON_Brep");
+  Check(std::abs(tight.TessellateToClosedMesh(16, 16).Area() - 16.0) < 0.05,
+        "TrimSheetBySolid at a tight caller tolerance still keeps exactly the box's own 4x4 footprint");
+
+  bool threw = false;
+  try {
+    TrimSheetBySolid(sheet, box, /*keep_inside=*/true, -0.5);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "TrimSheetBySolid throws std::invalid_argument for a non-positive tolerance");
 }
 
 void TestSurfaceGetApproximateSize() {
@@ -36903,12 +37092,17 @@ int main() {
   TestImprintFacesOverlappingBoxes();
   TestImprintFacesDisjointIsNoOp();
   TestImprintFacesRejectsEmptyOperands();
+  TestImprintFacesCallerTolerance();
+  TestMutualImprintFacesBoxPiercedByCylinder();
+  TestMutualImprintFacesRejectsEmptyOrNonPositiveTolerance();
   TestSplitBySheetBoxCutInHalfByPlane();
   TestSplitBySheetDisjointSheetKeepsWholeSolidOnOneSide();
   TestSplitBySheetRejectsEmptyOperands();
+  TestSplitBySheetCallerTolerance();
   TestTrimSheetBySolidKeepsOnlyInteriorPortion();
   TestTrimSheetBySolidDisjointSheetKeepsWholeOrEmpty();
   TestTrimSheetBySolidRejectsEmptyOperands();
+  TestTrimSheetBySolidCallerTolerance();
   TestSurfaceGetApproximateSize();
   TestSurfaceTessellateGridClippedExactRejectsTooFewPoints();
   TestSurfaceTessellateGridRejectsTooFewTrimPoints();

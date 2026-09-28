@@ -68,13 +68,43 @@ Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op, double to
 // either one, so it has none of BooleanCombineGeneral()'s own closed-solid
 // requirement.
 //
+// `tolerance` is the same caller-controlled SSX Newton-refinement accuracy
+// BooleanCombineGeneral() above now takes (dino8/kernel/surface_intersect.h's
+// own IntersectOptions::tolerance) - the parity-map "Tolerant booleans
+// (caller-specified tolerance)" item previously called out this function by
+// name as one of the entry points still hardcoding its own tolerance with no
+// caller control at all. Defaults to IntersectOptions's own default (0.001),
+// reproducing this function's exact prior behavior for every existing
+// caller that doesn't pass one.
+//
 // Throws std::invalid_argument if `target` or `tool` has no faces at all -
 // there is nothing to imprint on/with, the same typed-refusal convention
-// BooleanCombineGeneral() itself uses for an out-of-scope call. Returns an
-// empty Brep (not an error) if `target`'s faces all failed to reach a valid
-// (>= 3 point) boundary loop after fragmentation, mirroring
-// BooleanCombineGeneral()'s own "kept.empty()" convention.
-Brep ImprintFaces(const Brep& target, const Brep& tool);
+// BooleanCombineGeneral() itself uses for an out-of-scope call - or if
+// `tolerance` is not positive. Returns an empty Brep (not an error) if
+// `target`'s faces all failed to reach a valid (>= 3 point) boundary loop
+// after fragmentation, mirroring BooleanCombineGeneral()'s own
+// "kept.empty()" convention.
+Brep ImprintFaces(const Brep& target, const Brep& tool, double tolerance = 0.001);
+
+// Mutual imprint: the natural extension of ImprintFaces() above to BOTH
+// operands at once - splits `a`'s own faces wherever they cross `b`, AND
+// `b`'s own faces wherever they cross `a`, with neither ever losing
+// material, matching Parasolid/ACIS's own two-way imprint (as opposed to
+// ImprintFaces()'s own read-only `tool`). Implemented exactly as the
+// parity map itself already describes this gap's own closing move: call
+// ImprintFaces() twice, with the operands swapped the second time -
+// `ImprintFaces(a, b, tolerance)` for the first half, `ImprintFaces(b, a,
+// tolerance)` for the second - since each call already only ever mutates
+// its own `target` and treats `tool` as read-only, so nothing about
+// running both is unsound; there is no cross-call state to reconcile.
+//
+// Returns {a_imprinted, b_imprinted} - either may equal a copy of the
+// original operand's own shape (more, smaller faces along an unchanged
+// overall boundary) if the OTHER operand alone crosses it; both may if
+// `a`/`b` don't intersect at all. Same throws as ImprintFaces() itself,
+// checked against BOTH operands before either call runs (so a bad `b`
+// refuses before `a` is ever imprinted, not after doing half the work).
+std::pair<Brep, Brep> MutualImprintFaces(const Brep& a, const Brep& b, double tolerance = 0.001);
 
 // Sheet/solid trim (parity-map "Sheet/solid trim (open surface as cutter
 // through a solid)"): splits `solid` (a closed Brep) into the two pieces
@@ -101,13 +131,20 @@ Brep ImprintFaces(const Brep& target, const Brep& tool);
 // past `solid`'s own silhouette) for every one of `solid`'s own fragments
 // to classify; throws std::invalid_argument if either operand has no
 // faces, or if `sheet` is degenerate (no face of it converges a closest
-// point for some fragment of `solid`). Returns {positive_side,
-// negative_side} - `positive_side` is the piece on the side each nearest
-// `sheet` face's own outward normal (m_bRev-corrected) points into;
-// either may come back the empty Brep if `sheet` doesn't actually cross
-// `solid` at all, mirroring ImprintFaces()'s own "kept.empty()"
-// convention rather than treating a clean miss as an error.
-std::pair<Brep, Brep> SplitBySheet(const Brep& solid, const Brep& sheet);
+// point for some fragment of `solid`), or if `tolerance` is not positive.
+// Returns {positive_side, negative_side} - `positive_side` is the piece on
+// the side each nearest `sheet` face's own outward normal (m_bRev-corrected)
+// points into; either may come back the empty Brep if `sheet` doesn't
+// actually cross `solid` at all, mirroring ImprintFaces()'s own
+// "kept.empty()" convention rather than treating a clean miss as an error.
+//
+// `tolerance` is the same caller-controlled SSX Newton-refinement accuracy
+// BooleanCombineGeneral()/ImprintFaces() above take - previously named
+// alongside ImprintFaces() as still hardcoding its own tolerance with no
+// caller control. Defaults to IntersectOptions's own default (0.001),
+// reproducing this function's exact prior behavior for every existing
+// caller.
+std::pair<Brep, Brep> SplitBySheet(const Brep& solid, const Brep& sheet, double tolerance = 0.001);
 
 // The OTHER half of the "Sheet/solid trim" parity-map item SplitBySheet()
 // above leaves undone: trimming a SHEET's own surface down BY a solid,
@@ -128,13 +165,19 @@ std::pair<Brep, Brep> SplitBySheet(const Brep& solid, const Brep& sheet);
 // most one "outer" intersection chain per opposing face pair, genus-0
 // operand faces, non-self-crossing chains on one face).
 //
-// Throws std::invalid_argument if either operand has no faces. Returns the
-// empty Brep (not an error) if none of `sheet`'s own fragments fall on the
-// requested side - either because `sheet` never reaches `solid` at all, or
-// because it lies entirely on the other side - mirroring SplitBySheet()'s
-// own "kept.empty()" convention rather than treating a clean miss as an
+// Throws std::invalid_argument if either operand has no faces, or if
+// `tolerance` is not positive. Returns the empty Brep (not an error) if
+// none of `sheet`'s own fragments fall on the requested side - either
+// because `sheet` never reaches `solid` at all, or because it lies
+// entirely on the other side - mirroring SplitBySheet()'s own
+// "kept.empty()" convention rather than treating a clean miss as an
 // error.
-Brep TrimSheetBySolid(const Brep& sheet, const Brep& solid, bool keep_inside = true);
+//
+// `tolerance` is the same caller-controlled SSX Newton-refinement accuracy
+// BooleanCombineGeneral()/ImprintFaces()/SplitBySheet() above take.
+// Defaults to IntersectOptions's own default (0.001), reproducing this
+// function's exact prior behavior for every existing caller.
+Brep TrimSheetBySolid(const Brep& sheet, const Brep& solid, bool keep_inside = true, double tolerance = 0.001);
 
 // A blind or through round hole (Rhino/SolidWorks "Hole" feature), cut
 // straight into `solid` via BooleanCombineGeneral() above - so, unlike the
