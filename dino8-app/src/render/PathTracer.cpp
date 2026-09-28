@@ -284,6 +284,7 @@ Vector3d PathTracer::SkyColor(const Vector3d& dir) const {
 }
 
 const PathTracer::TexCache* PathTracer::TextureFor(const std::string& path) const {
+  std::lock_guard<std::mutex> lock(tex_cache_mutex_);
   for (auto& [p, c] : tex_cache_) if (p == path) return &c;
   TexCache tc;
   bool ok = false;

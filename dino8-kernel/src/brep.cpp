@@ -6705,6 +6705,94 @@ int Brep::SplitNonManifoldVertices(double tolerance) {
   return split;
 }
 
+Brep::MakeEdgeVertexResult Brep::MakeEdgeVertex(int from_vertex, Point3d to_point, double tolerance) {
+  if (from_vertex < 0 || from_vertex >= brep_.m_V.Count()) {
+    throw std::out_of_range("dino8::kernel::Brep::MakeEdgeVertex: from_vertex " +
+                            std::to_string(from_vertex) + " is out of range (this Brep has " +
+                            std::to_string(brep_.m_V.Count()) + " vertex slot(s))");
+  }
+  ON_Brep& b = brep_;
+  if (b.m_V[from_vertex].m_vertex_index < 0) {
+    throw std::invalid_argument("dino8::kernel::Brep::MakeEdgeVertex: from_vertex " +
+                                std::to_string(from_vertex) + " refers to a deleted vertex");
+  }
+  const Point3d from_point = b.m_V[from_vertex].point;
+  const double tol = std::max(tolerance, 0.0);
+  if (from_point.DistanceTo(to_point) <= tol) return MakeEdgeVertexResult{};  // would be zero-length
+
+  // NewVertex() may reallocate b.m_V, invalidating any reference to
+  // b.m_V[from_vertex] taken before it - the same discipline
+  // SplitNakedEdgeAt()/SplitNonManifoldVertex() follow: `from_point` was
+  // already captured by value above, and `from_vertex` is looked up fresh
+  // by index below, never through a held reference.
+  ON_BrepVertex& new_v = b.NewVertex(to_point, 0.0);
+  ON_Curve* c3 = new ON_LineCurve(from_point, to_point);
+  const int c3i = b.AddEdgeCurve(c3);
+  ON_BrepEdge& new_edge = b.NewEdge(b.m_V[from_vertex], new_v, c3i);
+  new_edge.m_tolerance = 0.0;
+
+  MakeEdgeVertexResult result;
+  result.result = Result::Ok;
+  result.edge_index = new_edge.m_edge_index;
+  result.vertex_index = new_v.m_vertex_index;
+  return result;
+}
+
+Result Brep::KillEdgeVertex(int edge_index) {
+  if (edge_index < 0 || edge_index >= brep_.m_E.Count()) {
+    throw std::out_of_range("dino8::kernel::Brep::KillEdgeVertex: edge_index " +
+                            std::to_string(edge_index) + " is out of range (this Brep has " +
+                            std::to_string(brep_.m_E.Count()) + " edge slot(s))");
+  }
+  ON_Brep& b = brep_;
+  ON_BrepEdge& edge = b.m_E[edge_index];
+  if (edge.m_edge_index < 0) {
+    throw std::invalid_argument("dino8::kernel::Brep::KillEdgeVertex: edge_index " +
+                                std::to_string(edge_index) + " refers to an already-deleted edge");
+  }
+  if (edge.TrimCount() != 0) return Result::Failed;  // borders a face - not a wire edge
+
+  const int v0 = edge.m_vi[0];
+  const int v1 = edge.m_vi[1];
+  // A self-loop edge (v0 == v1) lists itself twice in that one vertex's
+  // own m_ei, so its "degree" here comes out 2, not 1 - correctly refused
+  // below as neither endpoint being a genuine leaf, the same ambiguous-
+  // self-loop shape SplitNonManifoldVertex() already refuses for its own
+  // ei/vi reason.
+  const int degree0 = static_cast<int>(EdgesOfVertex(v0).size());
+  const int degree1 = static_cast<int>(EdgesOfVertex(v1).size());
+  const bool v0_is_leaf = degree0 == 1 && degree1 != 1;
+  const bool v1_is_leaf = degree1 == 1 && degree0 != 1;
+  if (!v0_is_leaf && !v1_is_leaf) {
+    return Result::Failed;  // neither or both endpoints are a leaf - ambiguous, see doc comment
+  }
+
+  // Remove the deleted edge's own index from both (former) endpoint
+  // vertices' m_ei lists (a stale reference here would trip
+  // CullUnusedVertices()'s own "deleted vertex referenced by trim"-style
+  // sanity check if this vertex slot were ever reused). Culling the leaf
+  // vertex itself is NOT automatic from an empty m_ei, though - checked
+  // directly against ON_Brep::CullUnusedVertices()'s own source: it only
+  // culls a vertex whose m_vertex_index is ALREADY -1, never infers
+  // "unused" from an empty m_ei - so the leaf vertex is marked deleted
+  // explicitly here, exactly the same explicit mark every other deleting
+  // method in this class (RemoveNakedMicroEdge's edge/trim, this file's
+  // own m_edge_index = -1 pattern) already applies to what it deletes.
+  const int leaf_vi = v0_is_leaf ? v0 : v1;
+  for (const int vi : {v0, v1}) {
+    ON_BrepVertex& v = b.m_V[vi];
+    for (int k = v.m_ei.Count() - 1; k >= 0; --k) {
+      if (v.m_ei[k] == edge_index) v.m_ei.Remove(k);
+    }
+  }
+  b.m_V[leaf_vi].m_vertex_index = -1;
+  b.m_E[edge_index].m_edge_index = -1;
+  b.Compact();
+  b.SetTolerancesBoxesAndFlags();
+  FixUnsetEdgeTolerances(b);
+  return Result::Ok;
+}
+
 Result Brep::SplitNakedEdgeAt(int edge_index, Point3d point, double tolerance) {
   if (edge_index < 0 || edge_index >= brep_.m_E.Count()) {
     throw std::out_of_range("dino8::kernel::Brep::SplitNakedEdgeAt: edge_index " +

@@ -2760,6 +2760,75 @@ class Brep {
   // actually split.
   int SplitNonManifoldVertices(double tolerance = tolerance::kDistance);
 
+  // MEV ("Make Edge, Vertex") and its exact inverse KEV ("Kill Edge,
+  // Vertex") below - two of the classic Baumgart/ACIS/Parasolid Euler-
+  // operator construction primitives (MEV/MEF/KEV/KEF/KEMR/MEKR -
+  // PARITY_MAP.md's own "Euler operators" item, previously entirely
+  // absent: a re-grep for `MakeEdgeVertex|\bMEV\b|\bKEMR\b|Euler op` found
+  // nothing anywhere in this kernel or the app). Every OTHER operator in
+  // that family (MEF/KEF split or merge a FACE across an existing loop;
+  // MEKR/KEMR move an edge between a loop and a hole ring) needs at least
+  // one pre-existing face/loop to operate on; MEV/KEV do not - they are
+  // the one pair that works on bare vertex/edge topology alone, which is
+  // also exactly the missing piece PARITY_MAP.md's separate "Wire bodies"
+  // item names (edges/vertices with no face at all): the edge MEV creates
+  // has ZERO trims (TrimCount() == 0, the case CheckIssue::Kind::
+  // NakedEdge's own doc comment already calls "a dangling edge no face
+  // uses at all"), so this is genuine shared infrastructure for both
+  // items - though assembling that into a first-class wire-body/Body
+  // concept of its own is still out of scope here.
+
+  // Adds one new vertex at `to_point` and one new straight (ON_LineCurve)
+  // edge connecting it to the EXISTING vertex `from_vertex` - V and E each
+  // grow by exactly one, F unchanged, matching Euler's own topological
+  // invariant for a dangling spur off existing topology. The new edge
+  // borders no face at all (FacesOfEdge() on it returns empty; Check()
+  // reports it NakedEdge with other_index == 0) and needs none to exist.
+  //
+  // Returns Result::Failed - not a thrown exception, the same "can't, but
+  // that's not a bug" contract every other topology-surgery method here
+  // shares - if `to_point` is within `tolerance` of `from_vertex`'s own
+  // point (a zero-length edge would be created); this Brep is left
+  // completely untouched. Throws std::out_of_range if `from_vertex` is
+  // out of range, or std::invalid_argument if it refers to an already-
+  // deleted vertex - both genuine caller bugs.
+  struct MakeEdgeVertexResult {
+    Result result = Result::Failed;
+    int edge_index = -1;    // the new edge, or -1 on Result::Failed
+    int vertex_index = -1;  // the new vertex, or -1 on Result::Failed
+  };
+  MakeEdgeVertexResult MakeEdgeVertex(int from_vertex, Point3d to_point, double tolerance = tolerance::kDistance);
+
+  // The exact inverse of MakeEdgeVertex(): deletes `edge_index` and
+  // whichever of its own two endpoint vertices is a "leaf" (degree 1 -
+  // EdgesOfVertex() on it returns only this one edge), keeping the other
+  // endpoint - undoing precisely the vertex/edge pair a single
+  // MakeEdgeVertex() call added, without the caller needing to say which
+  // of the two vertices is the new one. Compacts afterward (this class's
+  // usual convention for a topology-surgery method that DELETES rather
+  // than only appends - see SplitNonManifoldVertex()'s own doc comment
+  // for why THAT one doesn't need to), so every other vertex/edge/face
+  // index may shift, exactly as after JoinNakedEdges()/
+  // RemoveDegenerateEdges()/etc. Never clears face_trim_loops_ or any
+  // other per-face side table, unlike those: a wire edge borders no face,
+  // so killing one never adds, removes, or resizes any face's own trim
+  // loop, and there is nothing for those tables to go stale about.
+  //
+  // Returns Result::Failed - not a thrown exception - if `edge_index`
+  // borders any face at all (TrimCount() != 0 - this only kills a genuine
+  // wire edge, never one bordering a face; that is what UnjoinEdge() is
+  // for on a shared edge), or if the two endpoints' degrees don't
+  // identify exactly one leaf to remove: NEITHER is degree 1 (both ends
+  // still connect to other edges - nothing marks which one should
+  // survive) or BOTH are degree 1 (a fully isolated two-vertex wire edge
+  // with no other topology at either end - equally ambiguous, and not a
+  // shape a single MakeEdgeVertex() call - which always attaches to an
+  // EXISTING vertex - can itself produce). This Brep is left completely
+  // untouched in either refusal. Throws std::out_of_range if `edge_index`
+  // is out of range, or std::invalid_argument if it refers to an already-
+  // deleted edge.
+  Result KillEdgeVertex(int edge_index);
+
   // Splits a naked (1-trim) edge into two coincident naked edges meeting
   // at a new vertex at `point` - the missing primitive behind "tolerant
   // sewing" (PARITY_MAP.md's own "[missing] Tolerant sewing with edge
