@@ -1792,6 +1792,13 @@ edcheck "Curve [0-9]+: start 0,0,0 tangent 1,0,0" "Dir printed a fresh line's re
 edcheck "Curve [0-9]+: start 10,0,0 tangent -1,0,0" "a plain Flip inverted that same curve's Dir-reported start/tangent exactly"
 edcheck "Surface [0-9]+: centre 5,5,0 normal 0,0,-1" "Dir printed a fresh planar surface's real domain-centre point and unit normal"
 edcheck "Surface [0-9]+: centre 5,5,0 normal -?0,0,1" "a plain Flip inverted that same surface's Dir-reported normal exactly, leaving its centre point unchanged (Reverse(0) reparameterises, it does not move the surface)"
+# SetObjectName regression: used to number from 1, so the first of a
+# multi-object selection was wrongly suffixed "(1)" instead of keeping the
+# bare name (the class's own doc comment and printed message both promise
+# "(2), (3), ..."). List must show the first named object bare.
+edcheck "name 'MyName'$" "SetObjectName kept the first object's name bare, not suffixed '(1)'"
+edcheck "name 'MyName \\(2\\)'" "SetObjectName numbered the second object '(2)', not '(1)'"
+if echo "$ED" | grep -q "name 'MyName (1)'"; then echo "FAIL SetObjectName still off-by-one: an object was suffixed '(1)'"; fail=1; else echo "ok   no object was suffixed 'MyName (1)'"; fi
 
 # Real NURBS algorithm QC: ExtractPipedCurve/MakePeriodic Smooth=No/RefitTrim
 # (see nurbs_algo_script.txt).

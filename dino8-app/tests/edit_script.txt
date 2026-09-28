@@ -118,6 +118,12 @@ Point 20,20,0
 SelAll
 SetObjectName
 MyName
+# Regression: SetObjectName used to number from 1, so the *first* selected
+# object got suffixed "MyName (1)" instead of keeping the bare name - off by
+# one from the documented/printed "(2), (3), ..." scheme. List (in creation
+# order: Line, Line, Point) must show the first object as bare 'MyName' and
+# the rest numbered starting at (2).
+List
 SelNone
 SelPt
 SelName

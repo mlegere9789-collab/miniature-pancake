@@ -202,7 +202,7 @@ class SetObjectNameCommand : public Command {
       SceneObject* o = ctx.Doc().Find(id);
       if (!o) continue;
       ++i;
-      o->name = ids_.size() > 1 ? name + " (" + std::to_string(i) + ")" : name;
+      o->name = (ids_.size() > 1 && i > 1) ? name + " (" + std::to_string(i) + ")" : name;
     }
     ctx.Print("SetObjectName: named " + std::to_string(ids_.size()) + " object(s) '" + name + "'" + (ids_.size() > 1 ? " (2), (3), ..." : ""));
     Finish();
