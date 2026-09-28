@@ -1906,7 +1906,7 @@ slcheck "Location: 300, 200, 0" "B's move is genuinely still on the undo stack a
 slcheck "The most recent change to the selection ('Move') was followed by a later edit ('Move') to the same object, so it can't be safely undone on its own without also affecting that later edit. Use Undo repeatedly instead." \
   "UndoSelected honestly refuses (rather than guessing) when isolating a match would require splitting a later, still-live edit to an object the match's own batch-move also touched"
 slcheck "Location: 405, 200, 0" "the refused UndoSelected left object C exactly where the batch move put it (405,200,0), not reverted, since it could not be safely isolated"
-slcheck "SelU: 2 sub-object(s) added, 2 selected" "SelU's NearestControlPoint ignored a deselected-but-still-PointsOn curve's closer control point and correctly picked the currently-selected surface's control point instead (a stale-selection cross-object pick would have reported 1 sub-object added on the curve)"
+slcheck "SelU: 2 sub-object(s) added," "SelU's NearestControlPoint ignored a deselected-but-still-PointsOn curve's closer control point and correctly picked the currently-selected surface's control point instead (a stale-selection cross-object pick would have reported 1 sub-object added, on the curve's single point, not 2)"
 
 # Provenance-based selection: SelChildren/SelParents/SelExtrusion now walk a
 # real parent/child side table (doc/Document.h's ProvenanceInfo) instead of
