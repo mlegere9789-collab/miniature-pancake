@@ -12723,6 +12723,207 @@ void TestSubDCheckBowtieVertexDetected() {
   Check(!report.IsManifoldSingleBody(), "IsManifoldSingleBody() is false once a bowtie vertex exists");
 }
 
+// SubD::InsertEdge(): a single flat quad face split along its own
+// diagonal - exact, hand-derivable topology counts (1 face/4 vertices/4
+// edges become 2 faces/4 vertices/5 edges), plus the documented refusals
+// (unknown point, already-adjacent corners, a face too small to split).
+void TestSubDInsertEdgeSplitsFaceIntoTwoAlongDiagonal() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SubD;
+
+  Mesh quad;
+  ON_Mesh& raw = quad.raw();
+  raw.m_V.Append(ON_3fPoint(0, 0, 0));
+  raw.m_V.Append(ON_3fPoint(1, 0, 0));
+  raw.m_V.Append(ON_3fPoint(1, 1, 0));
+  raw.m_V.Append(ON_3fPoint(0, 1, 0));
+  ON_MeshFace face;
+  face.vi[0] = 0;
+  face.vi[1] = 1;
+  face.vi[2] = 2;
+  face.vi[3] = 3;
+  raw.m_F.Append(face);
+
+  SubD subd = SubD::FromControlMesh(quad);
+  Check(subd.FaceCount() == 1 && subd.VertexCount() == 4 && subd.EdgeCount() == 4,
+        "the lone flat quad starts as 1 face / 4 vertices / 4 edges");
+
+  Check(!subd.InsertEdge(Point3d(9, 9, 9), Point3d(1, 1, 0), 1e-9),
+        "InsertEdge refuses when p0 doesn't identify a vertex");
+  Check(!subd.InsertEdge(Point3d(0, 0, 0), Point3d(1, 0, 0), 1e-9),
+        "InsertEdge refuses between (0,0,0) and (1,0,0) - they're already adjacent "
+        "(share the bottom edge), nothing to insert");
+
+  Check(subd.InsertEdge(Point3d(0, 0, 0), Point3d(1, 1, 0), 1e-9),
+        "InsertEdge succeeds along the (0,0,0)-(1,1,0) diagonal - the one non-adjacent pair");
+  Check(subd.FaceCount() == 2 && subd.VertexCount() == 4 && subd.EdgeCount() == 5,
+        "the split adds exactly 1 new face and 1 new (diagonal) edge, no new vertices");
+  Check(subd.IsValid(), "the split SubD is still topologically valid");
+
+  bool found_two_triangles = true;
+  ON_SubDFaceIterator fit = subd.raw().FaceIterator();
+  for (const ON_SubDFace* f = fit.FirstFace(); f != nullptr; f = fit.NextFace()) {
+    if (f->EdgeCount() != 3) found_two_triangles = false;
+  }
+  Check(found_two_triangles, "both faces produced by the diagonal split are genuine triangles");
+
+  Check(!subd.InsertEdge(Point3d(0, 0, 0), Point3d(1, 1, 0), 1e-9),
+        "InsertEdge refuses to re-split the same diagonal - the two vertices no longer "
+        "share a common face bigger than a triangle (both incident faces are now triangles)");
+}
+
+// SubD::SpinEdge(): the shared interior edge between two side-by-side
+// flat quads, spun 90 degrees into the opposite diagonal - real topology
+// surgery (the edge's own two endpoints genuinely change), not a no-op,
+// while every count (faces/edges/vertices) and overall validity are
+// preserved exactly as OpenNURBS' own doc comment promises.
+void TestSubDSpinEdgeRotatesSharedInteriorEdge() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SubD;
+
+  // Two quads sharing the vertical edge between (1,0,0) and (1,1,0).
+  Mesh grid;
+  ON_Mesh& raw = grid.raw();
+  raw.m_V.Append(ON_3fPoint(0, 0, 0));  // 0
+  raw.m_V.Append(ON_3fPoint(1, 0, 0));  // 1
+  raw.m_V.Append(ON_3fPoint(2, 0, 0));  // 2
+  raw.m_V.Append(ON_3fPoint(0, 1, 0));  // 3
+  raw.m_V.Append(ON_3fPoint(1, 1, 0));  // 4
+  raw.m_V.Append(ON_3fPoint(2, 1, 0));  // 5
+  ON_MeshFace left;
+  left.vi[0] = 0;
+  left.vi[1] = 1;
+  left.vi[2] = 4;
+  left.vi[3] = 3;
+  raw.m_F.Append(left);
+  ON_MeshFace right;
+  right.vi[0] = 1;
+  right.vi[1] = 2;
+  right.vi[2] = 5;
+  right.vi[3] = 4;
+  raw.m_F.Append(right);
+
+  SubD subd = SubD::FromControlMesh(grid);
+  const int faces_before = subd.FaceCount();
+  const int verts_before = subd.VertexCount();
+  const int edges_before = subd.EdgeCount();
+  Check(faces_before == 2 && verts_before == 6 && edges_before == 7,
+        "the two-quad strip starts as 2 faces / 6 vertices / 7 edges "
+        "(6 outer boundary + 1 shared interior)");
+
+  ON_SubD& raw_subd = subd.raw();
+  const Point3d p_top_mid(1, 1, 0);
+  const Point3d p_bot_mid(1, 0, 0);
+  const ON_SubDVertex* v_top_mid = raw_subd.FindVertex(&p_top_mid.x, 1e-9);
+  const ON_SubDVertex* v_bot_mid = raw_subd.FindVertex(&p_bot_mid.x, 1e-9);
+  Check(v_top_mid != nullptr && v_bot_mid != nullptr, "sanity: both shared-edge endpoints exist");
+  const ON_SubDEdge* shared_before = raw_subd.FindEdge(v_bot_mid, v_top_mid).Edge();
+  Check(shared_before != nullptr && shared_before->HasInteriorEdgeTopology(true),
+        "sanity: the shared edge is a genuine interior edge (exactly 2 faces) before spinning");
+  const unsigned int shared_id = shared_before->m_id;
+
+  Check(!subd.SpinEdge(Point3d(0, 0, 0), Point3d(1, 0, 0), false, 1e-9),
+        "SpinEdge refuses on a naked boundary edge (only 1 face)");
+  Check(!subd.SpinEdge(Point3d(9, 9, 9), Point3d(1, 1, 0), false, 1e-9),
+        "SpinEdge refuses when p0 doesn't identify a vertex");
+
+  Check(subd.SpinEdge(Point3d(1, 0, 0), Point3d(1, 1, 0), false, 1e-9),
+        "SpinEdge succeeds on the genuine shared interior edge");
+
+  Check(subd.FaceCount() == faces_before && subd.VertexCount() == verts_before &&
+            subd.EdgeCount() == edges_before,
+        "spinning changes connectivity only - face/vertex/edge counts are all unchanged");
+  Check(subd.IsValid(), "the spun SubD is still topologically valid");
+
+  const ON_SubDEdge* spun = raw_subd.EdgeFromId(shared_id);
+  Check(spun != nullptr, "the same edge (by id) still exists after spinning");
+  const bool still_bot_top = (spun->Vertex(0) == v_bot_mid && spun->Vertex(1) == v_top_mid) ||
+                              (spun->Vertex(0) == v_top_mid && spun->Vertex(1) == v_bot_mid);
+  Check(!still_bot_top,
+        "the spun edge's own endpoints genuinely changed - it no longer connects the "
+        "original (1,0,0)/(1,1,0) pair, real topology surgery rather than a no-op");
+  Check(!raw_subd.FindEdge(v_bot_mid, v_top_mid).Edge(),
+        "no edge connects the original (1,0,0)/(1,1,0) pair anymore");
+
+  const auto report = subd.Check();
+  Check(report.IsManifoldSingleBody(),
+        "the spun 2-quad strip is still a single clean manifold body - no naked/non-manifold "
+        "edges or vertices introduced by the spin");
+}
+
+// SubD::ExtrudeFace(): a lone flat quad extruded straight up along its
+// own outward control-net normal - the exact topology delta OpenNURBS'
+// own ExtrudeComponents produces for a fully free-standing (all-boundary)
+// face (every one of its 4 edges gets extruded into a new side face), and
+// the exact geometry (the moved face's own 4 corners land at +distance
+// along Z, the 4 brand-new base corners stay exactly where the original
+// footprint was).
+void TestSubDExtrudeFaceAddsProtrusionAlongNormal() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SubD;
+
+  Mesh quad;
+  ON_Mesh& raw = quad.raw();
+  raw.m_V.Append(ON_3fPoint(0, 0, 0));
+  raw.m_V.Append(ON_3fPoint(1, 0, 0));
+  raw.m_V.Append(ON_3fPoint(1, 1, 0));
+  raw.m_V.Append(ON_3fPoint(0, 1, 0));
+  ON_MeshFace face;
+  face.vi[0] = 0;
+  face.vi[1] = 1;
+  face.vi[2] = 2;
+  face.vi[3] = 3;
+  raw.m_F.Append(face);
+
+  SubD subd = SubD::FromControlMesh(quad);
+  Check(subd.FaceCount() == 1 && subd.VertexCount() == 4 && subd.EdgeCount() == 4,
+        "the lone flat quad starts as 1 face / 4 vertices / 4 edges");
+
+  unsigned int face_id = 0;
+  {
+    ON_SubDFaceIterator fit = subd.raw().FaceIterator();
+    const ON_SubDFace* f0 = fit.FirstFace();
+    Check(f0 != nullptr, "sanity: the lone quad's own face exists");
+    face_id = f0->m_id;
+  }
+
+  Check(!subd.ExtrudeFace(999999, 2.0), "ExtrudeFace refuses an unknown face_id");
+  Check(!subd.ExtrudeFace(face_id, 0.0), "ExtrudeFace refuses a zero distance (no-op input)");
+
+  Check(subd.ExtrudeFace(face_id, 2.0), "ExtrudeFace succeeds on the lone quad's own face");
+  Check(subd.FaceCount() == 5 && subd.VertexCount() == 8 && subd.EdgeCount() == 12,
+        "extruding a fully free-standing quad (all 4 edges boundary) adds exactly 4 new "
+        "side faces and 4 new base vertices - the moved original face becomes the cap");
+  Check(subd.IsValid(), "the extruded SubD is still topologically valid");
+
+  const ON_SubDFace* moved = subd.raw().FaceFromId(face_id);
+  Check(moved != nullptr, "the original face (same id) survives the extrude, now relocated");
+  bool all_at_top = true;
+  for (unsigned int i = 0; i < moved->EdgeCount(); ++i) {
+    const ON_SubDVertex* v = moved->Vertex(i);
+    if (v == nullptr || std::abs(v->ControlNetPoint().z - 2.0) > 1e-9) all_at_top = false;
+  }
+  Check(all_at_top, "every corner of the moved (originally lone) face now sits at exactly z=2, "
+                     "+distance along the flat quad's own outward (0,0,1) normal");
+
+  int base_vertex_count = 0;
+  ON_SubDVertexIterator vit = subd.raw().VertexIterator();
+  for (const ON_SubDVertex* v = vit.FirstVertex(); v != nullptr; v = vit.NextVertex()) {
+    if (std::abs(v->ControlNetPoint().z) < 1e-9) ++base_vertex_count;
+  }
+  Check(base_vertex_count == 4,
+        "exactly 4 brand-new vertices were left behind at the original z=0 footprint - "
+        "the new open base of the protrusion, not just 4 relocated originals");
+
+  const auto report = subd.Check();
+  Check(report.naked_edges == 4 && report.non_manifold_edges == 0 && report.non_manifold_vertices == 0,
+        "the result is a genuinely closed side wall with exactly one open end (the new base's "
+        "4 naked edges) - a real protrusion, not a detached floating island or a degenerate mess");
+}
+
 void TestMeshComputeVertexNormals() {
   using dino8::kernel::Mesh;
   using dino8::kernel::Vector3d;
@@ -34625,6 +34826,9 @@ int main() {
   TestSubDCheckDisjointPiecesReportsMultipleBodies();
   TestSubDCheckNonManifoldEdgeDetected();
   TestSubDCheckBowtieVertexDetected();
+  TestSubDInsertEdgeSplitsFaceIntoTwoAlongDiagonal();
+  TestSubDSpinEdgeRotatesSharedInteriorEdge();
+  TestSubDExtrudeFaceAddsProtrusionAlongNormal();
   TestMeshComputeVertexNormals();
   TestMeshSaveObjRoundTrips();
   TestMeshTextureCoordinates();

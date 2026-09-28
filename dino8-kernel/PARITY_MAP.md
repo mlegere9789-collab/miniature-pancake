@@ -1,6 +1,6 @@
 # Fossilith / Dino 8 parity map (2026-09-28)
 
-**Fossilith vs Parasolid/ACIS = 65.4% (weighted, verified); Dino 8 vs Rhino 8 + AutoCAD 2027 = 71.4%.**
+**Fossilith vs Parasolid/ACIS = 65.5% (weighted, verified); Dino 8 vs Rhino 8 + AutoCAD 2027 = 71.4%.**
 
 This run recomputes the parity map from scratch against the live repository at
 `/home/user/miniature-pancake` on `claude/pdf-audit-i2bvwm`, superseding the
@@ -412,7 +412,7 @@ below alongside the other change's own headline delta.
 | kernel: Feature operations | 1 | 24 | 5 | 15 | 4 | 52.1% |
 | Fossilith kernel — Curve operations | 1 | 28 | 17 | 11 | 0 | 80.4% |
 | Kernel Surface Operations (Fossilith / Dino 8) | 1 | 29 | 14 | 15 | 0 | 74.1% |
-| Kernel: SubD & mesh kernel support | 0.75 | 22 | 14 | 5 | 3 | 75.0% |
+| Kernel: SubD & mesh kernel support | 0.75 | 22 | 14 | 6 | 2 | 77.3% |
 
 Two rows changed from the prior measurement: **Local / direct-edit
 operations** (48.2% → 51.8%, `ImprintFaces` cross-reference fix + arithmetic
@@ -604,6 +604,63 @@ operations' own item count is unchanged (8/15/2/25, 62.0%) — this upgrades
 the "Tolerant booleans" bullet's own evidence, not its bucket, since the
 item was already `partial` and stays `partial`. The kernel-only headline
 stays at 65.4%; no other row was touched this pass.
+
+**Sixth same-day follow-up:** three of the five named sub-operators in
+**Kernel: SubD & mesh kernel support**'s own "Kernel-native SubD local
+edit operators (insert edge, extrude face, spin edge, weld, expand)"
+[missing] item now genuinely exist: `SubD::InsertEdge`, `SubD::SpinEdge`,
+and `SubD::ExtrudeFace` (dino8-kernel/src/subd.cpp, dino8-kernel/include/
+dino8/kernel/subd.h). Each is a thin, validated wrapper around a real
+(read directly, not assumed non-stub) OpenNURBS primitive this kernel had
+never called before: `ON_SubD::SplitFace(face, v0, v1)` for InsertEdge
+(divides a face into two along a new edge between two of its own
+non-adjacent corners), `ON_SubD::SpinEdge(edge, spin_clockwise)` for
+SpinEdge (rotates a shared interior edge's endpoints around its two
+adjacent faces' boundaries - the SubD analog of a triangle mesh's
+edge-flip), and `ON_SubD::ExtrudeComponents(xform, cptr_list, 1)` for
+ExtrudeFace (translates one face along its own outward
+`ControlNetCenterNormal()`, genuinely opening a "chimney" through side
+faces rather than detaching a floating island, when the extruded face
+already had neighbors). All three follow this class's existing point-pair
+vertex lookup convention (`FindVertex`/`FindEdge`, matching
+`SetCrease`/`SetEdgeSharpness`/`CapBoundaryLoop`) rather than inventing a
+new one.
+
+Verified with 3 new tests (`TestSubDInsertEdgeSplitsFaceIntoTwoAlongDiagonal`,
+`TestSubDSpinEdgeRotatesSharedInteriorEdge`,
+`TestSubDExtrudeFaceAddsProtrusionAlongNormal`, tests/test_basic.cpp): a
+lone flat quad splits along its diagonal into exactly two genuine
+triangles (1/4/4 → 2/4/5 face/vertex/edge counts) and refuses to re-split
+an already-adjacent pair or a pair no longer sharing a big-enough face;
+the shared interior edge of a two-quad strip genuinely changes which
+vertex pair it connects (checked by id, not just by the boolean return
+value) while every topology count and `Check()`'s manifold-single-body
+verdict stay exactly the same, and a naked boundary edge or an unknown
+point both correctly refuse; and a lone free-standing quad extruded along
+its own normal comes back as 5 faces / 8 vertices / 12 edges with the
+moved face's own 4 corners landing exactly at +distance and 4 brand-new
+vertices left behind at the original (now open, per `Check()`'s
+`naked_edges == 4`) footprint - a real protrusion, not a floating
+disconnected copy. Full `dino8_kernel_tests` suite (via `ctest`): 100%
+passing, 0 regressions.
+
+Still `partial`, not `present`: the other two named sub-operators, weld
+(joining two separate edges/vertices together) and expand (a uniform
+push-apart of a face/region), have no kernel entry point at all still;
+`InsertEdge` only splits a quad-or-larger face along two of ITS OWN
+corners (no new-vertex-on-an-edge-midpoint variant); `SpinEdge` requires
+strict interior topology (`HasInteriorEdgeTopology`) with no
+non-manifold-edge fallback; `ExtrudeFace` is single-face-at-a-time (no
+multi-face/region extrude in one call, unlike the delegate's own
+`ExtrudeComponents` which already accepts a list) and always extrudes
+along the face's own normal (no explicit direction/taper option
+exposed). None of the three is wired to any app command yet. Net effect:
+this item's own category row moves missing → partial (14/5/3/22, 75.0% →
+14/6/2/22, 77.3%); weighted the same marginal-delta way as the follow-ups
+above (this row's own weight of 0.75 against the 17.75 total kernel
+weight, on top of the Fifth follow-up's own 65.4%, unchanged by the
+Boolean-tolerance follow-up directly above since that one stayed
+`partial`→`partial`): 65.4% → **65.5%**.
 
 ### Kernel category gaps (missing / partial items, with evidence)
 
@@ -912,7 +969,7 @@ stays at 65.4%; no other row was touched this pass.
 
 **Kernel: SubD & mesh kernel support** (subd_mesh):
 - [partial] SubD -> NURBS patch conversion — `ToNurbsPatches`/`ToNurbsPatchesAdaptive` (dino8-kernel/src/subd.cpp:590,1006 — line numbers shifted from the prior pass's 443/859 by `Check()`'s own insertion above them, no behavior change); app's ToNURBS (dino8-app/src/commands/cmd_solids.cpp:802,843) still calls only the non-adaptive `ToNurbsPatches`. No dependency on `Brep::Check()`/`RemoveDegenerateFaces` found in subd.cpp — the DegenerateFace false-flag defect does not touch this item.
-- [missing] Kernel-native SubD local edit operators (insert edge, extrude face, spin edge, weld, expand) — zero hits for these operators anywhere in dino8-kernel/src/subd.cpp or its header; still app-only.
+- [partial] Kernel-native SubD local edit operators (insert edge, extrude face, spin edge, weld, expand) — **corrected: upgraded from missing.** `SubD::InsertEdge`/`SubD::SpinEdge`/`SubD::ExtrudeFace` (subd.cpp) now wrap the real OpenNURBS `ON_SubD::SplitFace`/`SpinEdge`/`ExtrudeComponents` primitives - see this pass's own "Sixth same-day follow-up" note above for the full detail and test coverage. Still missing: weld (joining two separate edges/vertices) and expand (uniform push-apart of a region) have no kernel entry point at all; none of the three implemented operators is wired to any app command.
 - [missing] SubD boolean operations — zero "SubD" references in any dino8-kernel/src/boolean*.cpp file.
 - [partial] SubD from NURBS/B-rep conversion — `SubD::FromNurbsSurface` (subd.cpp:23); single-surface, sample-based, unwired from the app.
 - [partial] SubD symmetry/mirror-in-place — `SubD::Transform` (subd.cpp:84) accepts a mirror `ON_Xform`; no flip/weld/live-constraint code found alongside it.
@@ -962,9 +1019,12 @@ detection (two coincident-but-distinct control-net vertices) is not
 attempted, the same condition `Mesh::CheckReport::duplicate_vertices`
 covers for `Mesh` but has no `SubD` counterpart.
 
-*Note on this category's count: 14 present / 5 partial / 3 missing (22
-items) — one upgrade from the prior 13/6/3 (72.7%→75.0%), driven by the
-`SubD::Check()` finding above.*
+*Note on this category's count: 14 present / 6 partial / 2 missing (22
+items) — one further upgrade from 14/5/3 (75.0%→77.3%), driven by the
+"Kernel-native SubD local edit operators" item's missing→partial move
+(InsertEdge/SpinEdge/ExtrudeFace) documented in this pass's own "Sixth
+same-day follow-up" note above; the prior 13/6/3 (72.7%→75.0%) upgrade
+was driven by the `SubD::Check()` finding.*
 
 ## App: Dino 8 vs Rhino 8 + AutoCAD 2027
 
@@ -1140,7 +1200,7 @@ top 40:
 | 36 | kernel | exchange | IFC (BIM) data exchange | missing | large | No code anywhere. |
 | 37 | kernel | exchange | DWF/DWFx export/import | missing | large | No code anywhere. |
 | 38 | kernel | exchange | JT (PLM interchange) | missing | large | No code anywhere. |
-| 39 | kernel | subd_mesh | Kernel-native SubD local edit operators (insert edge, extrude face, spin, weld, expand) | missing | large | All of these remain app-only; no kernel-level SubD edit API. |
+| 39 | kernel | subd_mesh | Kernel-native SubD local edit operators (insert edge, extrude face, spin, weld, expand) | partial | large | `SubD::InsertEdge`/`SpinEdge`/`ExtrudeFace` (subd.cpp) now wrap real `ON_SubD::SplitFace`/`SpinEdge`/`ExtrudeComponents`; weld and expand still have no kernel API, and none of the three is wired to an app command. |
 | 40 | kernel | subd_mesh | Quad-remeshing of an arbitrary mesh into a clean SubD-ready cage | missing | large | No quad-dominant remesher targeting SubD-cage quality exists in the kernel. |
 
 ### Remainder, grouped by effort (281 items)
@@ -1420,7 +1480,7 @@ top 40:
 - [kernel/features] Split body with an arbitrary surface / solid cutter (partial)
 - [kernel/features] Sheet-metal features (missing)
 - [kernel/features] Lattice / cellular infill structures (missing)
-- [kernel/subd_mesh] Kernel-native SubD local edit operators (missing)
+- [kernel/subd_mesh] Kernel-native SubD local edit operators (missing; now partial - `SubD::InsertEdge`/`SpinEdge`/`ExtrudeFace` in subd.cpp wrap real `ON_SubD::SplitFace`/`SpinEdge`/`ExtrudeComponents`; weld and expand remain missing, and none of the three is wired to an app command)
 - [kernel/subd_mesh] SubD boolean operations (missing)
 - [kernel/subd_mesh] Quad-remeshing into a clean SubD-ready cage (missing)
 - [app/app_commands] AutoLISP-equivalent command scripting language (missing)

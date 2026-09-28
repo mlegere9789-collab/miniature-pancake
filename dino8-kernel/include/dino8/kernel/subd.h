@@ -525,6 +525,103 @@ class SubD {
   // rather than adding a wrong or malformed face.
   bool CapBoundaryLoop(const Point3d& start, double point_tolerance = 0.0);
 
+  // Divides the single face touching BOTH the control-net vertices found
+  // at (or within `point_tolerance` of) `p0` and `p1` into two faces, by
+  // inserting a new edge directly between them - the kernel-native
+  // "InsertEdge" local edit operator, one of the five PARITY_MAP.md
+  // subd_mesh "Kernel-native SubD local edit operators" [missing] item
+  // named zero-hit ("insert edge, extrude face, spin edge, weld,
+  // expand") - genuinely present at the kernel level now, not app-only.
+  //
+  // Delegates to the real, non-stub `ON_SubD::SplitFace(face, v0, v1)`
+  // (verified by reading `ON_SubDimple::SplitFace` in
+  // opennurbs_subd.cpp: it validates both sides of the split come out at
+  // least a triangle, rejects an already-adjacent vertex pair - that
+  // would create a degenerate two-sided "face" - and builds the new
+  // edge/face with correctly inferred orientation, not a stub).
+  //
+  // `p0`/`p1` must both be corner vertices of the SAME face (found by
+  // scanning `p0`'s own incident faces for one that also has `p1` as a
+  // corner) - if they touch more than one common face at once (a
+  // degenerate/non-manifold configuration), this refuses rather than
+  // guessing which one the caller meant, the same ambiguity convention
+  // `CapBoundaryLoop()`'s own bowtie handling above already uses.
+  //
+  // Returns false, unchanged, if: no vertex is found at p0 or at p1
+  // within point_tolerance; the two vertices don't share exactly one
+  // common face; that face has fewer than 4 edges (a triangle can't be
+  // split into two faces that are each still at least a triangle); p0
+  // and p1 are already adjacent on that face (nothing to insert - they
+  // already share an edge); or `ON_SubD::SplitFace` itself refuses for
+  // any other reason. Returns true only once the new edge genuinely
+  // exists.
+  bool InsertEdge(const Point3d& p0, const Point3d& p1, double point_tolerance = 0.0);
+
+  // Spins the interior edge between the control-net vertices found at
+  // (or within `point_tolerance` of) `p0` and `p1` around its two
+  // adjacent faces' boundaries - the kernel-native "SpinEdge" local edit
+  // operator named by the same PARITY_MAP.md [missing] item InsertEdge()
+  // above closes part of. Each endpoint moves to the next vertex around
+  // its OWN face's boundary (the face on the right for the start vertex,
+  // the face on the left for the end vertex, in a counter-clockwise
+  // spin - reversed by `spin_clockwise`), the SubD analog of flipping a
+  // triangle mesh's diagonal edge, generalized to whatever polygon each
+  // adjacent face actually is.
+  //
+  // Delegates to the real, non-stub `ON_SubD::SpinEdge(edge,
+  // spin_clockwise)` (verified by reading `ON_SubDimple::SpinEdge` in
+  // opennurbs_subd.cpp: genuine topology surgery - re-parents the edge's
+  // vertex/face arrays on both sides, not a stub).
+  //
+  // Returns false, unchanged, if: no vertex is found at p0 or at p1
+  // within point_tolerance; no edge connects them; that edge is not a
+  // genuine interior edge with exactly one face on each side
+  // (`ON_SubDEdge::HasInteriorEdgeTopology`) - a naked boundary edge or a
+  // non-manifold one (3+ faces) has no well-defined spin; or
+  // `ON_SubD::SpinEdge` itself refuses (e.g. either adjacent face is a
+  // triangle, so there's no "next" vertex distinct from the edge's own
+  // far endpoint to spin onto).
+  bool SpinEdge(const Point3d& p0, const Point3d& p1, bool spin_clockwise = false,
+                double point_tolerance = 0.0);
+
+  // Extrudes the single face identified by `face_id` (ON_SubDFace::m_id,
+  // same convention as EvaluateFace()) straight out along its own
+  // outward `ControlNetCenterNormal()` by `distance`, turning it into a
+  // protrusion - the kernel-native "ExtrudeFace" local edit operator,
+  // the third of the five named PARITY_MAP.md subd_mesh "Kernel-native
+  // SubD local edit operators" [missing] item's operators this pass adds
+  // (with InsertEdge()/SpinEdge() above). The face's own boundary loop
+  // stays exactly where it is - still shared with whatever neighboring
+  // faces already touched it, so extruding one face out of a larger
+  // cage opens a "chimney" rather than detaching a floating island - a
+  // new copy of the loop is added at the offset position (becoming the
+  // new top face), and a ring of new side quad faces connects the two
+  // loops, each tagged Crease exactly where the original boundary
+  // already was naked or already Crease-tagged (so extruding a face out
+  // of a flat interior patch stays smooth at the base, while extruding a
+  // face off an open mesh's own boundary produces a genuinely sharp new
+  // edge there) - real behavior of the delegate itself, not something
+  // this wrapper adds.
+  //
+  // Delegates to the real, substantial (hundreds of lines, not a stub -
+  // verified by reading `ON_SubD::Internal_ExtrudeComponents` in
+  // opennurbs_subd.cpp) `ON_SubD::ExtrudeComponents(xform, cptr_list,
+  // cptr_count)`, called here with exactly one component (this face) and
+  // `xform` a pure translation along the face's own unit normal.
+  //
+  // Returns false, unchanged, if: `face_id` doesn't identify a face of
+  // the current subdivision level; `distance` is 0 (a zero/identity
+  // transform is refused up front by the delegate, matching this
+  // class's existing "no-op on a degenerate input" convention rather
+  // than silently returning an unmodified copy); the face's own control
+  // net is degenerate enough that `ControlNetCenterNormal()` comes back
+  // as the zero vector (cannot be unitized into a direction); or
+  // extruding this face would create a non-manifold edge (3+ side faces
+  // meeting one extruded vertex - refused by the delegate's own
+  // `bPermitNonManifoldEdgeCreation = false` default, same safety this
+  // class's other topology-mutating methods already apply).
+  bool ExtrudeFace(unsigned int face_id, double distance);
+
   // The EXACT limit-surface point (and normal) of every vertex of the
   // current subdivision level's control net, in ON_SubD's own vertex
   // iteration order - one SubDLimitPoint per VertexCount(). This is

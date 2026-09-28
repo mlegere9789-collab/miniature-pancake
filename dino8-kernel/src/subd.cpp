@@ -526,6 +526,81 @@ bool SubD::CapBoundaryLoop(const Point3d& start, double point_tolerance) {
   return false;
 }
 
+namespace {
+
+// The one face incident to both `v0` and `v1` (as one of its own corner
+// vertices each), or nullptr if there isn't exactly one such face -
+// InsertEdge()'s own vertex-pair-to-face lookup, since OpenNURBS'
+// ON_SubD::SplitFace() itself takes a face plus two of its vertices, not
+// a bare vertex pair.
+const ON_SubDFace* FindSharedFace(const ON_SubDVertex* v0, const ON_SubDVertex* v1) {
+  const ON_SubDFace* found = nullptr;
+  for (unsigned int i = 0; i < v0->FaceCount(); ++i) {
+    const ON_SubDFace* f = v0->Face(i);
+    if (f == nullptr) continue;
+    bool has_v1 = false;
+    for (unsigned int j = 0; j < f->EdgeCount(); ++j) {
+      if (f->Vertex(j) == v1) {
+        has_v1 = true;
+        break;
+      }
+    }
+    if (has_v1) {
+      if (found != nullptr) return nullptr;  // ambiguous - shared by 2+ faces
+      found = f;
+    }
+  }
+  return found;
+}
+
+}  // namespace
+
+bool SubD::InsertEdge(const Point3d& p0, const Point3d& p1, double point_tolerance) {
+  const ON_SubDVertex* v0 = subd_.FindVertex(&p0.x, point_tolerance);
+  const ON_SubDVertex* v1 = subd_.FindVertex(&p1.x, point_tolerance);
+  if (v0 == nullptr || v1 == nullptr || v0 == v1) return false;
+
+  const ON_SubDFace* face = FindSharedFace(v0, v1);
+  if (face == nullptr) return false;
+
+  // ON_SubD::SplitFace() takes non-const pointers - the same const_cast
+  // pattern CapBoundaryLoop() above already uses on pointers obtained
+  // from const accessors (FindVertex() here), never on anything actually
+  // declared const by the caller.
+  const ON_SubDEdge* inserted = subd_.SplitFace(const_cast<ON_SubDFace*>(face),
+                                                 const_cast<ON_SubDVertex*>(v0),
+                                                 const_cast<ON_SubDVertex*>(v1));
+  return inserted != nullptr;
+}
+
+bool SubD::SpinEdge(const Point3d& p0, const Point3d& p1, bool spin_clockwise,
+                    double point_tolerance) {
+  const ON_SubDVertex* v0 = subd_.FindVertex(&p0.x, point_tolerance);
+  const ON_SubDVertex* v1 = subd_.FindVertex(&p1.x, point_tolerance);
+  if (v0 == nullptr || v1 == nullptr) return false;
+
+  const ON_SubDEdge* edge = subd_.FindEdge(v0, v1).Edge();
+  if (edge == nullptr || !edge->HasInteriorEdgeTopology(true)) return false;
+
+  const ON_SubDEdge* spun =
+      subd_.SpinEdge(const_cast<ON_SubDEdge*>(edge), spin_clockwise);
+  return spun != nullptr;
+}
+
+bool SubD::ExtrudeFace(unsigned int face_id, double distance) {
+  if (distance == 0.0) return false;
+  const ON_SubDFace* face = subd_.FaceFromId(face_id);
+  if (face == nullptr) return false;
+
+  Vector3d normal = face->ControlNetCenterNormal();
+  if (!normal.Unitize()) return false;
+
+  const ON_Xform xform = ON_Xform::TranslationTransformation(normal * distance);
+  const ON_SubDComponentPtr cptr = ON_SubDComponentPtr::Create(face);
+  const unsigned int changed = subd_.ExtrudeComponents(xform, &cptr, 1);
+  return changed != 0;
+}
+
 std::vector<SubDLimitPoint> SubD::LimitPoints() const {
   std::vector<SubDLimitPoint> out;
   ON_SubDVertexIterator vit = subd_.VertexIterator();
