@@ -16817,6 +16817,119 @@ void TestMoveVertexConvexPlanarRefusesInvalidInput() {
   Check(threw, "MoveVertexConvexPlanar refuses a move that collapses an incident face's own triangle to ~0 area");
 }
 
+// PARITY_MAP's kernel: Local / direct-edit operations "Delete face with
+// heal (remove face, grow neighbours to close the gap)" gap - previously
+// only a flat re-cap (Brep::CapPlanarHoles), never a genuine heal.
+//
+// A unit cube with the corner at (1,1,1) chamfered off by one triangular
+// plane through (0.7,1,1)/(1,0.7,1)/(1,1,0.7): 7 faces total - the 3 box
+// faces untouched by that corner (x=0, y=0, z=0) stay full squares, the
+// 3 that touched it (x=1, y=1, z=1) become pentagons missing that
+// corner, plus the chamfer triangle itself (pushed last, index 6).
+dino8::kernel::Brep MakeChamferedUnitCube() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  const Point3d v000(0, 0, 0), v100(1, 0, 0), v110(1, 1, 0), v010(0, 1, 0);
+  const Point3d v001(0, 0, 1), v101(1, 0, 1), v011(0, 1, 1);
+  const Point3d cx(0.7, 1, 1), cy(1, 0.7, 1), cz(1, 1, 0.7);
+  const Point3d solid_centroid(0.5, 0.5, 0.5);
+
+  std::vector<Brep::PlanarFace> faces;
+  faces.push_back(MakeOutwardTestFace({v000, v100, v110, v010}, solid_centroid));    // bottom, z=0
+  faces.push_back(MakeOutwardTestFace({v001, v101, cy, cx, v011}, solid_centroid));  // top, z=1 (pentagon)
+  faces.push_back(MakeOutwardTestFace({v000, v010, v011, v001}, solid_centroid));    // x=0
+  faces.push_back(MakeOutwardTestFace({v000, v001, v101, v100}, solid_centroid));    // y=0
+  faces.push_back(MakeOutwardTestFace({v100, v110, cz, cy, v101}, solid_centroid));  // x=1 (pentagon)
+  faces.push_back(MakeOutwardTestFace({v010, v011, cx, cz, v110}, solid_centroid));  // y=1 (pentagon)
+  faces.push_back(MakeOutwardTestFace({cx, cy, cz}, solid_centroid));                // chamfer, index 6
+  return Brep::FromPlanarFaces(faces);
+}
+
+// Deleting the chamfer face and healing should re-derive the EXACT
+// original unit cube: with the chamfer's own plane no longer in the
+// half-space set, the three pentagons are no longer constrained at that
+// corner and regrow it exactly, while the three untouched squares are
+// unaffected either way - a genuine geometric heal, not a plausible-
+// looking approximation, verified three independent ways below (face
+// shape, exact volume, and the corner's own exact position).
+void TestDeleteFaceHealConvexPlanarChamferedCubeRecoversExactUnitCube() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::DeleteFaceHealConvexPlanar;
+  using dino8::kernel::Point3d;
+
+  const Brep chamfered = MakeChamferedUnitCube();
+  Check(chamfered.PlanarFaces().size() == 7, "the chamfered fixture itself has 7 faces (6 box-derived + 1 chamfer)");
+
+  const Brep healed = DeleteFaceHealConvexPlanar(chamfered, 6);  // the chamfer triangle
+
+  const std::vector<Brep::PlanarFace> result = healed.PlanarFaces();
+  Check(result.size() == 6, "deleting the chamfer face and healing leaves exactly the original 6 box faces");
+  for (const Brep::PlanarFace& f : result) {
+    Check(f.loop.size() == 4,
+          "every healed face is a plain quad again - the three pentagons regrew their missing corner");
+  }
+
+  const double volume = PlanarBrepVolumeExact(healed);
+  Check(std::fabs(volume - 1.0) < 1e-9,
+        "the healed solid's volume matches the exact unit cube, not merely a plausible-looking number");
+
+  // The corner the chamfer removed is back, exactly, on every face that
+  // used to be a pentagon there.
+  auto loop_contains = [](const std::vector<Point3d>& loop, const Point3d& p) {
+    for (const Point3d& q : loop) {
+      if (q.DistanceTo(p) < 1e-9) return true;
+    }
+    return false;
+  };
+  const Point3d corner(1, 1, 1);
+  int faces_with_corner = 0;
+  for (const Brep::PlanarFace& f : result) {
+    if (loop_contains(f.loop, corner)) ++faces_with_corner;
+  }
+  Check(faces_with_corner == 3, "the deleted corner (1,1,1) reappears exactly on all 3 faces that used to be pentagons there");
+
+  Check(healed.TessellateToClosedMesh(1, 1).IsClosedManifold(),
+        "the healed cube also tessellates to a closed, watertight manifold");
+}
+
+void TestDeleteFaceHealConvexPlanarRefusesInvalidInput() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::DeleteFaceHealConvexPlanar;
+
+  const Brep chamfered = MakeChamferedUnitCube();
+
+  bool threw = false;
+  try {
+    DeleteFaceHealConvexPlanar(chamfered, 99);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "DeleteFaceHealConvexPlanar refuses an out-of-range face_index");
+
+  threw = false;
+  try {
+    DeleteFaceHealConvexPlanar(chamfered, -1);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "DeleteFaceHealConvexPlanar refuses a negative face_index");
+
+  // Deleting the box's own top face (z=1, index 1 - see Box()'s own
+  // face-order comment) leaves the 4 side walls with nothing bounding
+  // them from above: they never converge to close the gap, so this is
+  // genuinely unbounded, not a heal.
+  threw = false;
+  try {
+    const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+    DeleteFaceHealConvexPlanar(box, 1);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw,
+        "DeleteFaceHealConvexPlanar refuses deleting a face whose neighbours never converge (leaves the solid "
+        "unbounded)");
+}
+
 }  // namespace
 
 // The spec's own required exact case: fillet the unit cube's top
@@ -37603,6 +37716,8 @@ int main() {
   TestReplaceFacePlaneConvexPlanarRefusesInvalidInput();
   TestMoveVertexConvexPlanarPyramidApexMatchesExactVolumeAndLeavesBaseUntouched();
   TestMoveVertexConvexPlanarRefusesInvalidInput();
+  TestDeleteFaceHealConvexPlanarChamferedCubeRecoversExactUnitCube();
+  TestDeleteFaceHealConvexPlanarRefusesInvalidInput();
   TestFilletConvexEdgeUnitCubeTopFrontCorner();
   TestFilletConvexEdgeTaperedRailExactness();
   TestFilletConvexEdgeTaperedClosedFormVolumeMatchesFrustumFormula();

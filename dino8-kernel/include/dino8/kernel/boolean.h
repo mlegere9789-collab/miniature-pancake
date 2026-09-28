@@ -778,6 +778,53 @@ Brep ReplaceFacePlaneConvexPlanar(const Brep& solid, int face_index, const ON_Pl
 // vertices or ~0 area, out of scope here exactly as in the siblings above.
 Brep MoveVertexConvexPlanar(const Brep& solid, const Point3d& old_position, const Point3d& new_position);
 
+// PARITY_MAP's kernel: Local / direct-edit operations "Delete face with
+// heal (remove face, grow neighbours to close the gap)" gap - previously
+// only `Brep::CapPlanarHoles`, which re-caps the hole with a flat new
+// face rather than growing the neighbours, the distinct capability this
+// item actually names (Rhino/SolidWorks "DeleteFace" with its own
+// healing option, as opposed to a plain cap).
+//
+// `face_index`'s own face is dropped outright (not replaced or capped):
+// `solid.PlanarFaces()[face_index]`'s plane is removed from the solid's
+// own half-space set entirely, and every OTHER face's boundary is
+// rebuilt from scratch as the intersection of every REMAINING plane -
+// the same "start from an oversized polygon in each face's own
+// (unmoved) plane, clip against every OTHER remaining face's own plane"
+// reconstruction `OffsetSolidConvexPlanar()`/`ReplaceFacePlaneConvexPlanar()`/
+// `MoveVertexConvexPlanar()` already share, just with one fewer
+// half-space in the list every face (including, implicitly, the deleted
+// one's own former neighbours) clips against. This is the literal,
+// geometrically exact meaning of "grow the neighbours until they meet,
+// closing the gap": a face that shared an edge with `face_index` no
+// longer has that half-space constraining it, so it extends past its
+// old boundary until the SOLID'S OWN OTHER planes stop it - which is
+// precisely a heal when the remaining planes still bound a closed
+// region there (e.g. a small notch/tab whose other walls already
+// converge past the removed face), and precisely NOT possible when they
+// don't (e.g. the lone face bounding one side of an otherwise-unbounded
+// slab), which this function tells apart rather than silently emitting
+// a wrong-shaped result - see the unbounded-result throw below.
+//
+// Same convex-solid precondition as `OffsetFace()`/`DraftFacesConvexPlanar()`/
+// `ReplaceFacePlaneConvexPlanar()`/`MoveVertexConvexPlanar()` above (checked
+// against the ORIGINAL `solid`, before `face_index` is dropped - a solid
+// that was only convex BECAUSE of the face being deleted is already an
+// edge case no sibling in this family handles either). Throws
+// std::invalid_argument if `face_index` is out of range for
+// `solid.PlanarFaces()`; if any remaining face's own new boundary
+// collapses to fewer than 3 vertices or ~0 area (the same
+// topology-would-need-to-change refusal `ReplaceFacePlaneConvexPlanar()`
+// already makes); or - the failure mode unique to this function - if
+// dropping `face_index`'s own plane leaves any remaining face
+// GENUINELY UNBOUNDED (no combination of the other remaining planes
+// closes it back up, e.g. deleting one face of a box whose neighbours
+// are mutually perpendicular and never converge): detected directly by
+// checking whether the same oversized starting polygon every sibling in
+// this family clips from survives past half its own oversized extent
+// still unclipped, not by assuming a shape "looks reasonable".
+Brep DeleteFaceHealConvexPlanar(const Brep& solid, int face_index);
+
 // Exact B-rep boolean between two solids where either (or both) may have
 // a CYLINDRICAL face, not just planar ones - what closes the gap
 // BooleanCombinePlanar's own PlanarFaces()-only precondition leaves open:

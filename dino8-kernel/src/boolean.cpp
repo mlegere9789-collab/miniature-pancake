@@ -1861,6 +1861,93 @@ Brep MoveVertexConvexPlanar(const Brep& solid, const Point3d& old_position, cons
   return Brep::FromPlanarFaces(result);
 }
 
+Brep DeleteFaceHealConvexPlanar(const Brep& solid, int face_index) {
+  const std::vector<Brep::PlanarFace> faces = solid.PlanarFaces();
+  const int n = static_cast<int>(faces.size());
+  if (face_index < 0 || face_index >= n) {
+    throw std::invalid_argument(
+        "dino8::kernel::DeleteFaceHealConvexPlanar: face_index is out of range for solid.PlanarFaces()");
+  }
+
+  const double tol = RelativeTol(faces);
+  if (!IsConvex(faces, tol)) {
+    throw std::invalid_argument(
+        "dino8::kernel::DeleteFaceHealConvexPlanar: solid must be convex (a vertex "
+        "of one of its own faces lies outside one of its own other faces' "
+        "half-spaces) - see BooleanIntersectConvexPlanar's own doc comment "
+        "for why non-convex input isn't handled here");
+  }
+
+  // Same generous halfspace-intersection superset OffsetFace()/
+  // OffsetSolidConvexPlanar()/DraftFacesConvexPlanar()/
+  // ReplaceFacePlaneConvexPlanar()/MoveVertexConvexPlanar() use, sized from
+  // the ORIGINAL solid's own extent - face_index's own face still
+  // contributes to how big "oversized" needs to be, even though its own
+  // plane is the one about to be dropped.
+  ON_BoundingBox bbox;
+  for (const Brep::PlanarFace& f : faces) {
+    for (const Point3d& p : f.loop) bbox.Set(p, true);
+  }
+  const double half_size = 50.0 * std::max(tol, bbox.Diagonal().Length());
+
+  std::vector<Brep::PlanarFace> result;
+  result.reserve(static_cast<size_t>(n - 1));
+  for (int i = 0; i < n; ++i) {
+    if (i == face_index) continue;  // dropped outright, never rebuilt
+    const ON_Plane& pl = faces[static_cast<size_t>(i)].plane;
+    const std::vector<Point3d> oversized = {
+        pl.origin + half_size * pl.xaxis + half_size * pl.yaxis,
+        pl.origin - half_size * pl.xaxis + half_size * pl.yaxis,
+        pl.origin - half_size * pl.xaxis - half_size * pl.yaxis,
+        pl.origin + half_size * pl.xaxis - half_size * pl.yaxis,
+    };
+    std::vector<ON_Plane> others;
+    others.reserve(static_cast<size_t>(n - 2));
+    for (int k = 0; k < n; ++k) {
+      if (k == i || k == face_index) continue;
+      others.push_back(faces[static_cast<size_t>(k)].plane);
+    }
+    std::vector<Point3d> clipped = ClipConvexPolygon(oversized, pl, others, tol);
+    const double area = PlanarPolygonArea(clipped, pl.zaxis);
+    const double area_tol = tol * tol;
+    if (clipped.size() < 3 || area <= area_tol) {
+      throw std::invalid_argument(
+          "dino8::kernel::DeleteFaceHealConvexPlanar: deleting face " + std::to_string(face_index) +
+          " collapses face " + std::to_string(i) +
+          "'s own boundary to fewer than 3 vertices or ~0 area - the resulting "
+          "solid's topology would need to change (a face vanishing entirely), "
+          "which is out of scope here");
+    }
+    // Detect a face the remaining planes never actually re-bound: a
+    // corner of the oversized starting polygon surviving clipping past
+    // half its own oversized extent can only mean no remaining
+    // half-space ever cut it down on that side - i.e. deleting
+    // face_index left this face (and so the solid) genuinely unbounded,
+    // not merely large. A real, finite healed result never approaches
+    // this threshold: half_size is 50x the ORIGINAL solid's own bounding
+    // diagonal, so any vertex within even 1x of that diagonal of pl's
+    // own origin is nowhere close to it.
+    const double unbounded_threshold = half_size * 0.5;
+    for (const Point3d& p : clipped) {
+      const double lx = ON_DotProduct(p - pl.origin, pl.xaxis);
+      const double ly = ON_DotProduct(p - pl.origin, pl.yaxis);
+      if (std::fabs(lx) > unbounded_threshold || std::fabs(ly) > unbounded_threshold) {
+        throw std::invalid_argument(
+            "dino8::kernel::DeleteFaceHealConvexPlanar: deleting face " + std::to_string(face_index) +
+            " leaves face " + std::to_string(i) +
+            " genuinely unbounded - the remaining faces never converge to close "
+            "the gap this deletion opens, so there is no valid solid to heal to");
+      }
+    }
+    Brep::PlanarFace new_face;
+    new_face.plane = pl;
+    new_face.loop = std::move(clipped);
+    result.push_back(std::move(new_face));
+  }
+
+  return Brep::FromPlanarFaces(result);
+}
+
 // ---------------------------------------------------------------------
 // BooleanCombineMixed: the axis-perpendicular-only extension of the
 // non-convex planar pipeline above to a solid that may have a
