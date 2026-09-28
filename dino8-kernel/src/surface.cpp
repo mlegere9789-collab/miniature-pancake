@@ -982,18 +982,17 @@ Point2d NurbsSurface::ClosestPointParameter(Point3d point, int u_divisions, int 
   };
   auto distance_squared = [&](double u, double v) { return (PointAt(u, v) - point).LengthSquared(); };
 
-  double u_lo = u_domain.Min();
-  double u_hi = u_domain.Max();
-  double v_lo = v_domain.Min();
-  double v_hi = v_domain.Max();
-  double best_u = u_lo;
-  double best_v = v_lo;
-
   constexpr int kRefinementLevels = 8;
-  std::vector<double> d2_grid(static_cast<size_t>(u_divisions + 1) * static_cast<size_t>(v_divisions + 1));
-  for (int level = 0; level < kRefinementLevels; ++level) {
-    double best_d2 = std::numeric_limits<double>::max();
-    int best_i = 0, best_j = 0;
+  const size_t grid_size = static_cast<size_t>(u_divisions + 1) * static_cast<size_t>(v_divisions + 1);
+
+  struct ScanResult {
+    double u, v, d2;
+    int i, j;
+  };
+  // One level's grid scan of [u_lo, u_hi] x [v_lo, v_hi], filling `grid`
+  // (row-major, `i * (v_divisions + 1) + j`) and returning its best cell.
+  auto scan = [&](double u_lo, double u_hi, double v_lo, double v_hi, std::vector<double>& grid) {
+    ScanResult best{u_lo, v_lo, std::numeric_limits<double>::max(), 0, 0};
     for (int i = 0; i <= u_divisions; ++i) {
       const double u_raw = u_lo + (u_hi - u_lo) * static_cast<double>(i) / u_divisions;
       const double u = u_closed ? wrap(u_raw, u_domain.Min(), u_domain.Max()) : u_raw;
@@ -1001,16 +1000,19 @@ Point2d NurbsSurface::ClosestPointParameter(Point3d point, int u_divisions, int 
         const double v_raw = v_lo + (v_hi - v_lo) * static_cast<double>(j) / v_divisions;
         const double v = v_closed ? wrap(v_raw, v_domain.Min(), v_domain.Max()) : v_raw;
         const double d2 = distance_squared(u, v);
-        d2_grid[static_cast<size_t>(i) * static_cast<size_t>(v_divisions + 1) + static_cast<size_t>(j)] = d2;
-        if (d2 < best_d2) {
-          best_d2 = d2;
-          best_u = u_raw;
-          best_v = v_raw;
-          best_i = i;
-          best_j = j;
-        }
+        grid[static_cast<size_t>(i) * static_cast<size_t>(v_divisions + 1) + static_cast<size_t>(j)] = d2;
+        if (d2 < best.d2) best = ScanResult{u_raw, v_raw, d2, i, j};
       }
     }
+    return best;
+  };
+  // Narrows [u_lo, u_hi] x [v_lo, v_hi] (in place) to a window around
+  // (best.i, best.j) for the NEXT level's scan, from `grid` (the scan
+  // that produced `best`). Same logic/rationale as before this method
+  // grew multiple seeds (see the two bug narratives below) - now shared
+  // by every seed's own refinement, not just the single global-best one.
+  auto narrow = [&](const std::vector<double>& grid, const ScanResult& best, double& u_lo, double& u_hi,
+                     double& v_lo, double& v_hi) {
     // The window for the NEXT level is best +/- one grid cell of THIS
     // level - normally `(u_hi - u_lo) / u_divisions`. But using the
     // caller's own (possibly large) u_divisions/v_divisions here too
@@ -1049,31 +1051,108 @@ Point2d NurbsSurface::ClosestPointParameter(Point3d point, int u_divisions, int 
     constexpr int kMaxNarrowingDivisions = 24;
     double row_min = std::numeric_limits<double>::max(), row_max = 0.0;
     for (int i = 0; i <= u_divisions; ++i) {
-      const double d2 = d2_grid[static_cast<size_t>(i) * static_cast<size_t>(v_divisions + 1) + static_cast<size_t>(best_j)];
+      const double d2 = grid[static_cast<size_t>(i) * static_cast<size_t>(v_divisions + 1) + static_cast<size_t>(best.j)];
       row_min = std::min(row_min, d2);
       row_max = std::max(row_max, d2);
     }
     double col_min = std::numeric_limits<double>::max(), col_max = 0.0;
     for (int j = 0; j <= v_divisions; ++j) {
-      const double d2 = d2_grid[static_cast<size_t>(best_i) * static_cast<size_t>(v_divisions + 1) + static_cast<size_t>(j)];
+      const double d2 = grid[static_cast<size_t>(best.i) * static_cast<size_t>(v_divisions + 1) + static_cast<size_t>(j)];
       col_min = std::min(col_min, d2);
       col_max = std::max(col_max, d2);
     }
-    const bool u_flat = (row_max - row_min) <= 1e-12 * best_d2;
-    const bool v_flat = (col_max - col_min) <= 1e-12 * best_d2;
+    const bool u_flat = (row_max - row_min) <= 1e-12 * best.d2;
+    const bool v_flat = (col_max - col_min) <= 1e-12 * best.d2;
     const double u_step = (u_hi - u_lo) / std::min(u_divisions, kMaxNarrowingDivisions);
     const double v_step = (v_hi - v_lo) / std::min(v_divisions, kMaxNarrowingDivisions);
     if (!u_flat) {
-      u_lo = u_closed ? (best_u - u_step) : std::max(u_domain.Min(), best_u - u_step);
-      u_hi = u_closed ? (best_u + u_step) : std::min(u_domain.Max(), best_u + u_step);
+      u_lo = u_closed ? (best.u - u_step) : std::max(u_domain.Min(), best.u - u_step);
+      u_hi = u_closed ? (best.u + u_step) : std::min(u_domain.Max(), best.u + u_step);
     }
     if (!v_flat) {
-      v_lo = v_closed ? (best_v - v_step) : std::max(v_domain.Min(), best_v - v_step);
-      v_hi = v_closed ? (best_v + v_step) : std::min(v_domain.Max(), best_v + v_step);
+      v_lo = v_closed ? (best.v - v_step) : std::max(v_domain.Min(), best.v - v_step);
+      v_hi = v_closed ? (best.v + v_step) : std::min(v_domain.Max(), best.v + v_step);
+    }
+  };
+  // Level 0 always scans the FULL domain, same as before. But instead of
+  // narrowing around only the single overall-best cell, also pick up to
+  // `kMaxSeeds` OTHER grid cells that are local minima of this same scan
+  // (no immediate neighbor is closer) and well-separated from each other
+  // - each is independently narrowed+refined for the remaining levels,
+  // and the overall best result across all of them wins. A real,
+  // reproduced bug the single-seed version had: on a surface with two
+  // separated dips of different depth, the coarse grid's single closest
+  // RAW sample can land in the SHALLOWER dip's basin purely from grid/
+  // feature alignment luck (its nearest sample happens to fall almost
+  // exactly on its bottom) while the grid's samples nearest the deeper,
+  // TRUE global-minimum dip all sit partway up its walls (off-grid
+  // alignment) - the single best cell alone throws that second basin
+  // away entirely, so single-seed narrowing converges to the shallower,
+  // wrong dip (see TestSurfaceClosestPointMultistartFindsGlobalMinimum:
+  // default 20x20 sampling used to return dist ~0.353 for a query whose
+  // true closest point, ~0.184 away, sits in the other, deeper dip).
+  // Multiple seeds fixes it because the deeper dip's own off-center grid
+  // samples are still each other's local minimum along that dip, so one
+  // of them survives as its own seed and gets its own independent
+  // refinement - never explored at all when only the single global best
+  // seeded the search.
+  std::vector<double> level0_grid(grid_size);
+  const ScanResult global_best = scan(u_domain.Min(), u_domain.Max(), v_domain.Min(), v_domain.Max(), level0_grid);
+
+  constexpr int kMaxSeeds = 4;
+  constexpr int kMinSeedSeparation = 2;  // grid cells, in i or in j
+  std::vector<ScanResult> seeds = {global_best};
+  {
+    std::vector<ScanResult> local_minima;
+    for (int i = 0; i <= u_divisions; ++i) {
+      for (int j = 0; j <= v_divisions; ++j) {
+        const double d2 = level0_grid[static_cast<size_t>(i) * static_cast<size_t>(v_divisions + 1) + static_cast<size_t>(j)];
+        bool is_min = true;
+        for (int di = -1; di <= 1 && is_min; ++di) {
+          for (int dj = -1; dj <= 1 && is_min; ++dj) {
+            if (di == 0 && dj == 0) continue;
+            const int ni = i + di, nj = j + dj;
+            if (ni < 0 || ni > u_divisions || nj < 0 || nj > v_divisions) continue;
+            if (level0_grid[static_cast<size_t>(ni) * static_cast<size_t>(v_divisions + 1) + static_cast<size_t>(nj)] < d2) is_min = false;
+          }
+        }
+        if (is_min) {
+          const double u_raw = u_domain.Min() + (u_domain.Max() - u_domain.Min()) * static_cast<double>(i) / u_divisions;
+          const double v_raw = v_domain.Min() + (v_domain.Max() - v_domain.Min()) * static_cast<double>(j) / v_divisions;
+          local_minima.push_back(ScanResult{u_raw, v_raw, d2, i, j});
+        }
+      }
+    }
+    std::sort(local_minima.begin(), local_minima.end(), [](const ScanResult& a, const ScanResult& b) { return a.d2 < b.d2; });
+    for (const ScanResult& candidate : local_minima) {
+      if (seeds.size() >= static_cast<size_t>(kMaxSeeds)) break;
+      if (candidate.i == global_best.i && candidate.j == global_best.j) continue;
+      bool far_enough = true;
+      for (const ScanResult& s : seeds) {
+        if (std::abs(candidate.i - s.i) < kMinSeedSeparation && std::abs(candidate.j - s.j) < kMinSeedSeparation) {
+          far_enough = false;
+          break;
+        }
+      }
+      if (far_enough) seeds.push_back(candidate);
     }
   }
-  const double final_u = u_closed ? wrap(best_u, u_domain.Min(), u_domain.Max()) : best_u;
-  const double final_v = v_closed ? wrap(best_v, v_domain.Min(), v_domain.Max()) : best_v;
+
+  ScanResult overall_best{0, 0, std::numeric_limits<double>::max(), 0, 0};
+  for (const ScanResult& seed : seeds) {
+    double u_lo = u_domain.Min(), u_hi = u_domain.Max(), v_lo = v_domain.Min(), v_hi = v_domain.Max();
+    ScanResult current = seed;
+    narrow(level0_grid, current, u_lo, u_hi, v_lo, v_hi);
+    std::vector<double> grid(grid_size);
+    for (int level = 1; level < kRefinementLevels; ++level) {
+      current = scan(u_lo, u_hi, v_lo, v_hi, grid);
+      if (level + 1 < kRefinementLevels) narrow(grid, current, u_lo, u_hi, v_lo, v_hi);
+    }
+    if (current.d2 < overall_best.d2) overall_best = current;
+  }
+
+  const double final_u = u_closed ? wrap(overall_best.u, u_domain.Min(), u_domain.Max()) : overall_best.u;
+  const double final_v = v_closed ? wrap(overall_best.v, v_domain.Min(), v_domain.Max()) : overall_best.v;
   return Point2d(final_u, final_v);
 }
 
