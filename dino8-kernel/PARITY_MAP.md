@@ -1,6 +1,6 @@
 # Fossilith / Dino 8 parity map (2026-09-28)
 
-**Fossilith vs Parasolid/ACIS = 66.1% (weighted, verified); Dino 8 vs Rhino 8 + AutoCAD 2027 = 71.5%.**
+**Fossilith vs Parasolid/ACIS = 66.2% (weighted, verified); Dino 8 vs Rhino 8 + AutoCAD 2027 = 71.5%.**
 
 This run recomputes the parity map from scratch against the live repository at
 `/home/user/miniature-pancake` on `claude/pdf-audit-i2bvwm`, superseding the
@@ -529,7 +529,7 @@ below alongside the other change's own headline delta.
 
 | Category | Weight | Items | Present | Partial | Missing | Parity % |
 |---|---|---|---|---|---|---|
-| kernel: Topology & data structure | 1 | 27 | 13 | 12 | 2 | 70.4% |
+| kernel: Topology & data structure | 1 | 27 | 13 | 13 | 1 | 72.2% |
 | kernel: Geometry representation | 1 | 29 | 18 | 11 | 0 | 81.0% |
 | kernel: Boolean operations | 1.5 | 25 | 8 | 15 | 2 | 62.0% |
 | Blending & chamfering | 1.5 | 24 | 5 | 18 | 1 | 58.3% |
@@ -1000,11 +1000,106 @@ this item (a kernel-only category with no app-level command calling it yet
 - a grep for movevertex/dragvertex under `dino8-app/src` finds nothing)
 and stays at 71.5%. No other row was touched this pass.
 
+**Twelfth same-day follow-up (this session, parallel to the Eleventh above):** `Brep::WireBody`/
+`Brep::IsWireBody` (dino8-kernel/src/brep.cpp, dino8-kernel/include/dino8/
+kernel/brep.h) landed, closing the FIRST half of **kernel: Topology & data
+structure**'s own "Wire bodies (edge/vertex-only B-rep body)" item — until
+now this whole kernel's one entirely-missing wire-body gap, re-grepped
+before starting (`wire ?body|WireBody` across `dino8-kernel` and
+`dino8-app/src`) and confirmed still zero matches, exactly as the item's own
+prior evidence text said. `MakeEdgeVertex()`'s own doc comment (added when
+MEV/KEV landed) had already named this as the obvious next step - MEV/KEV
+are "the one pair that works on bare vertex/edge topology alone,... exactly
+the missing piece PARITY_MAP.md's separate 'Wire bodies' item names" - and
+`WireBody()` is genuinely built that way: the same three `ON_Brep`
+primitives `MakeEdgeVertex()` itself uses (`NewVertex`/`AddEdgeCurve`/
+`NewEdge`), just applied to fresh topology instead of extending an existing
+vertex. Every `NurbsCurve` in the input list becomes one real `ON_BrepEdge`
+with `TrimCount() == 0` (`Check()` reports it `NakedEdge` with
+`other_index == 0`, identical in shape to a `MakeEdgeVertex()`-built edge);
+a curve reporting `IsClosed()` gets exactly ONE new vertex with the edge's
+own two endpoint indices both set to it (a genuine self-closed wire edge,
+the vertex's own `m_ei` listing that one edge TWICE — the same self-loop
+shape `SplitNonManifoldVertex()`'s and `KillEdgeVertex()`'s own doc
+comments already name), never two separately-allocated but coincident
+vertices for one point; an endpoint within tolerance of a vertex an
+EARLIER curve in the same call already placed is welded onto it rather
+than duplicated, so curves chained end to end become a real polyline
+through shared vertices — the wire-body analogue of
+`FromMixedFaces()`'s/`FromPlanarFaces()`'s own "coincident loop points
+share one vertex" convention, applied to wire topology instead of face
+loops. `IsWireBody()` is the structural query counterpart (at least one
+live edge, zero live faces). Confirmed by direct measurement, not assumed:
+`Brep::Check()` needed no changes at all to behave correctly on a
+zero-face Brep — `GroupVertexEdgesByFace()`'s own "0 for a vertex that
+touches no live face at all" case (already documented, previously
+exercised only via a wire edge hanging off an otherwise-solid vertex) means
+a wire body's own vertices never trip `NonManifoldVertex`, and the
+face-indexed loops in `Check()` simply iterate zero times.
+
+Real unit-test coverage (`TestBrepWireBody`, tests/test_basic.cpp): a
+single open curve builds a genuine 2-vertex/1-edge/0-face body with each
+endpoint a real leaf; a single closed circle builds a 1-vertex/1-edge
+self-closed loop, NOT 2 coincident vertices, verified both by the edge's
+own `m_vi[0] == m_vi[1]` and by the vertex's own degree reading 2; two open
+curves sharing an endpoint weld into a real 3-vertex/2-edge chain through
+one shared degree-2 vertex (checked by position AND by degree, not just
+vertex count); two curves with no coincident endpoints stay fully
+disjoint (4 vertices); and every refusal (empty curve list, a zero-length
+curve, and — reusing `TestCurveExtend()`'s own already-established fact
+that a 3-point coincident-endpoint polyline reports `IsClosed() == false`,
+below the 4-control-point minimum `ON_NurbsCurve::IsClosed()` requires —
+coincident start/end points on a curve that is NOT `IsClosed()`, genuinely
+ambiguous between one vertex and two) throws `std::invalid_argument`,
+including when the bad curve is the SECOND entry in an otherwise-good list
+(no partial wire body left behind). Full `dino8_kernel_tests` suite (via
+`ctest`): 100% passing, 0 regressions.
+
+Still `partial`, not `present`: no app command constructs or displays a
+wire body at all (`dino8-app` has no concept of a curve-only "body" object,
+only standalone `NurbsCurve` scene objects); `WireBody()` itself has no
+counterpart for EXTENDING an existing wire body with more curves in one
+call (each call builds a fresh `Brep` from scratch; chaining onto a prior
+result needs a separate, not-yet-written merge); there is no wire-to-solid
+or wire-to-sheet promotion (sweep/extrude of a wire body's own edges,
+offsetting a wire body, or using one as a boolean/imprint tool); and
+`WireBody()` welds by brute-force nearest-vertex search, correct but
+`O(curves²)`, an acceptable but real scaling limit this doc's own
+`VertexWelder` comment already flags as the kind of thing that matters at
+face-loop scale, not (yet) exercised at wire-body scale either. Net effect
+on the scores below: kernel: Topology & data structure's own item count
+moves 13/12/2/27 (70.4%) → 13/13/1/27 (72.2%), missing → partial. This
+row is file-disjoint from every other category any concurrent same-day
+session touched (Boolean operations, SubD, Blending, Sweeping/lofting/
+extruding/revolving) - including the Tenth follow-up above (SubD, which
+explicitly leaves its own category row's status unchanged and the
+headline at 66.0%/71.5%) - EXCEPT the Eleventh follow-up immediately
+above (`MoveVertexConvexPlanar`, kernel: Local / direct-edit operations),
+which landed on the SAME 66.0% baseline in parallel rather than
+sequentially on top of it (neither branch had seen the other's commit),
+so - the same "sum both file-disjoint deltas directly against the last
+certain common baseline, don't chain one paragraph's own arithmetic on
+top of another's" method the Fifth/Sixth-and-Seventh/Recombining
+paragraphs above already use for exactly this situation - this paragraph
+computes its OWN isolated delta against that same 66.0% baseline the
+Ninth follow-up originally established: topology's own delta
+((13+6.5)/27 − (13+6)/27) · 100 = 1.851852pp, weight 1, 17.75 total
+kernel weight, contributes +0.104330pp, landing this paragraph's own
+isolated math at 66.0% + 0.1043pp → 66.1%; combined with the Eleventh
+follow-up's own +0.1006pp (localops), the two together land the
+top-of-document headline at 66.0% + 0.1006pp + 0.1043pp → **66.2%** -
+treat the top-of-document number, not this paragraph's own isolated
+66.1%, as authoritative. The combined Dino 8 vs Rhino 8 + AutoCAD 2027
+headline is unaffected by this item (a kernel-only category with no
+app-level command calling it at all - confirmed no `WireBody` reference
+anywhere under `dino8-app/src`) and stays at 71.5%. No other row was
+touched this pass.
+
 ### Kernel category gaps (missing / partial items, with evidence)
 
 **kernel: Topology & data structure** (topology):
 - [partial] Multi-shell / multi-lump bodies (compound of disjoint or touching shells) — `Brep::Compound` (dino8-kernel/src/brep.cpp:2577-2612) calls `ON_Brep::Append` per lump and concatenates the side tables; lumps are deliberately not welded (dino8-kernel/include/dino8/kernel/brep.h:1571-1589, "Lumps are deliberately NOT welded to each other"). XOR uses the two-lump compound (`TestBooleanSymmetricDifferenceBrepBoxesIsTwoLumpCompound`, tests/test_basic.cpp:23235). `BooleanCombinePlanar`/`BooleanCombineMixed` both refuse a multi-lump operand via a shared `RefuseCompoundOperand` helper (boolean.cpp:815-822 — corrected citation; the prior "boolean.h:1321-1323" pointed at unrelated text). New finding: `BooleanCombineGeneral` has **no** compound-operand guard at all (zero references to `RefuseCompoundOperand`/`Compound`/`lump` in boolean_general.cpp) — a compound fed to the general engine is silently accepted and processed per-face with no lump-boundary awareness, an unhandled case rather than a clean refusal like the other two engines give. Still no inner-void (hollow) shell/region concept.
-- [missing] Wire bodies (edge/vertex-only B-rep body) — re-grepped `wire ?body|WireBody` across dino8-kernel and dino8-app/src: no matches. Curves exist only as standalone `NurbsCurve` objects (dino8-app/src/doc/SceneObject.h:188).
+- [partial] Wire bodies (edge/vertex-only B-rep body) — **upgraded from missing.** `Brep::WireBody`/`Brep::IsWireBody` (brep.h/brep.cpp) build a genuine zero-face `ON_Brep` (vertices + edges only) from a list of `NurbsCurve`s, reusing `MakeEdgeVertex()`'s own `NewVertex`/`AddEdgeCurve`/`NewEdge` primitives: a closed curve gets one self-closed edge through a single vertex (not two coincident ones), open curves sharing an endpoint weld onto one shared vertex, and every edge is a genuine wire edge (`TrimCount() == 0`, `Check()` reports `NakedEdge`/`other_index == 0`) — verified in `TestBrepWireBody` (tests/test_basic.cpp). Still partial: no app command constructs or displays a wire body at all (`dino8-app` has no curve-only "body" object, only standalone `NurbsCurve` scene objects, dino8-app/src/doc/SceneObject.h:188); no wire-to-solid/sheet promotion (sweep, extrude, or offset FROM a wire body); no way to extend an existing wire body with more curves in one call; and welding is brute-force nearest-vertex search, fine at this scale but not the bucketed approach `VertexWelder` uses for face loops.
 - [partial] Non-manifold topology (edge shared by 3+ faces, non-manifold vertices) — construction refuses it: `FromMixedFaces` throws "an edge is shared by 3 or more faces" (brep.cpp:1587-1588; test `TestFromMixedFacesRejectsNonManifoldEdge`, tests/test_basic.cpp:17810). `Check()` reports `NonManifoldEdge` (brep.h:2458); `FacesOfEdge` handles 3+ trims (brep.h:605-611). Genuinely new this pass: `Check()` now also detects `NonManifoldVertex` (pinch-point) defects — a vertex whose incident faces don't form one connected neighbourhood through the vertex's own edges, distinct from `NonManifoldEdge` (an hourglass built from two shells touching at one point with no shared edge has no over-used edge anywhere) — via union-find over the faces touching each vertex's incident edges (brep.h:2474; brep.cpp ~6151-6260), verified by `TestBrepCheckDetectsNonManifoldPinchVertex` (test_basic.cpp:7365). A matching heal now exists too: `Brep::SplitNonManifoldVertex`/`SplitNonManifoldVertices` (brep.h:2662-2696; brep.cpp:6538 onward) duplicates the pinch vertex once per disjoint face group, the standard Parasolid/ACIS "disjoin" repair, verified by `TestBrepSplitNonManifoldVertexHealsPinchPoint` (test_basic.cpp:7409). Still partial: `UnjoinEdge` still refuses anything but exactly 2 trims (brep.cpp:5685); booleans still throw rather than producing non-manifold output; the new vertex heal only makes a pinch vertex manifold (splits it in two) rather than letting the kernel construct or preserve non-manifold topology as first-class, and there is still no non-manifold-edge counterpart to this vertex-level diagnostic+heal pair.
 - [present] Euler operators (MEV/MEF/KEV/KEF/KEMR/MEKR etc.) — **upgraded from partial.** `Brep::MakeEdgeVertex`/`Brep::KillEdgeVertex` (brep.h:2739/2769; brep.cpp:6708/6741) are a genuine MEV/KEV pair: MEV appends one new vertex plus one new zero-trim ("wire") edge onto an EXISTING vertex (`FacesOfEdge` on the new edge is empty; `Check()` reports it `NakedEdge` with `other_index == 0` - exactly the case that field's own doc comment already named "a dangling edge no face uses at all"); KEV is its exact inverse, refusing anything that borders a face (`TrimCount() != 0`) or whose two endpoints don't identify exactly one degree-1 leaf to remove (neither, or both, refuse). A real bug surfaced and was fixed building this: `ON_Brep::CullUnusedVertices()`'s own source only culls a vertex whose `m_vertex_index` is already `-1` — it never infers "unused" from an empty `m_ei` — so KEV marks the leaf vertex deleted explicitly before `Compact()`, the same explicit-mark convention this class's other deleting methods already use. Verified round-trip-exact (V/E counts return to their pre-MEV values, `Check()` reports identically) and against every refusal case in `TestBrepMakeEdgeVertexAndKillEdgeVertexAreExactInverses` (tests/test_basic.cpp:7895). `Brep::MakeEdgeFace`/`Brep::KillEdgeFace` (brep.h:2893/2921; brep.cpp:6839/6980) are a real MEF/KEF pair, the next two operators in the family. MEF splits a face's own single outer loop into two by inserting one new straight edge between two of its EXISTING, non-adjacent vertices — no new vertex, unlike MEV (F+1, E+1, V unchanged, Euler's own invariant for splitting a face without adding a vertex) — validating the candidate diagonal the standard simple-polygon way first (no proper crossing with any other loop edge, and its own midpoint inside the loop's boundary, so a diagonal that would step outside a concave loop is rejected too, not just a visibly self-intersecting one). Scoped like `SplitNakedEdgeAt()`'s own "linear edges only" restriction, for the same reason (a fabricated straight 2D trim only stays exact over an affine (u,v)->3D map): the face's surface must report `IsPlanar()` and have exactly one loop (no holes), matching the restriction `MergeCoplanarFaces()`'s own `TryMergeCoplanarPair` already places on itself. KEF is its exact inverse for any two single-loop faces sharing one edge on the exact same surface (`m_si`) — deliberately more general than "undoes MEF" alone, since it only re-splices existing trims rather than fabricating geometry, so it needs no planarity — refusing a slit (both trims on the same loop), mismatched surfaces, or two loops that don't traverse the shared edge in opposite directions (the same well-formed-2-manifold-edge shape `TryMergeCoplanarPair` already checks for). Verified round-trip-exact (splitting a box's own planar top face into two triangles along its diagonal and merging back: V/E/F return exactly to their pre-MEF values, `Check()` reports identically, volume unchanged at 1.0) and against every refusal case (adjacent vertices, `vertex_a == vertex_b`, a vertex not on the target loop, mismatched-surface KEF, a non-2-trim edge, out-of-range/deleted indices) in `TestBrepMakeEdgeFaceAndKillEdgeFaceAreExactInverses` (tests/test_basic.cpp:8047). Genuinely new this pass, and the last operator pair in the family: `Brep::MakeEdgeKillRing`/`Brep::KillEdgeMakeRing` (brep.h:2996-3081; brep.cpp) are a real MEKR/KEMR pair. MEKR takes a face with EXACTLY one outer loop and one inner (hole) loop and welds them into ONE loop via a zero-width bridge edge that appears TWICE in the merged loop's own trim sequence (once each direction, immediately adjacent to itself) — the standard textbook "slit" device for representing a hole with a single loop — killing the ring (F unchanged, E+1, the face's own loop count 2→1). Scoped like MEF (planar surface required), plus one check MEF itself never needs since it only ever has one loop: the outer polygon must actually CONTAIN the inner loop (a single interior-point containment test), refusing two loops that aren't genuinely nested. KEMR is its exact inverse, refusing anything that isn't the exact "slit" shape (two trims on the SAME loop, opposite directions, the shared loop typed `ON_BrepLoop::outer`) and recovering which of the two runs the bridge separates is the genuine hole via the standard outer-CCW/inner-CW Brep signed-area convention (shoelace on each run's own trim-start points), refusing same-sign runs rather than guessing. Verified round-trip-exact on a hand-built single planar face with a real `ON_BrepLoop::inner` hole loop (a fixture no existing kernel factory produces — `TrimmedPlanarFace`'s own `hole_loops_uv` is a pseudo-trim side table for tessellation, not a real `ON_BrepLoop`): V/E/F counts, loop count (2→1→2), trim counts (4+4→10→4+4), and `Check()`'s own `NakedEdge` count (the fixture is a single open shell, so all 8 boundary edges are naked both before and after — confirming in particular that the merged loop's own retraced bridge trims never trip `SelfIntersectingLoop`) all return to their pre-MEKR values, plus every refusal case (not-exactly-2-loops, `vertex_a == vertex_b`, both vertices on the same loop, a vertex on neither loop, different-loops/different-faces KEMR input, a non-2-trim edge, out-of-range/deleted indices) in `TestBrepMakeEdgeKillRingAndKillEdgeMakeRingAreExactInverses` (tests/test_basic.cpp). All six named operators (MEV/KEV, MEF/KEF, MEKR/KEMR) are now real, tested, and round-trip exact against each other. Still scoped, the same way MEF/KEF already are: planar faces only, a straight new edge between vertices/loops already on the boundary, and MEKR limited to exactly one hole per face (a face with two or more holes needs one MEKR call per hole, not yet exercised) — a curved-face Euler op, or a single call bridging more than one ring at once, is out of scope.
 - [partial] Kernel-level topology enumeration API (vertex/edge/loop/face iteration and counts) — `FaceCount`/`VertexCount`/`EdgeCount` (brep.cpp:304-306; brep.h:511-513), tested in `TestBrepAdjacencyQueries` (test_basic.cpp:17616). Still partial: no loop/trim count or iteration API (callers walk `raw().m_F[i].Loop(j)/Trim(k)` by hand); `VertexCount`/`EdgeCount` include deleted slots until `Compact()`; `Box()`/`Sphere()`/`Torus()` report 0 vertices and edges (confirmed `Torus()` also builds via the plain surface-only `NewFace(int)` overload, brep.cpp:229-266, same as Box/Sphere/TrimmedPlanarFace/FromSurface, even though the file's own top-of-file disclosure comment now names only 4 of these 5 factories — a minor staleness in the source's own comment, not in this claim).
@@ -1549,7 +1644,7 @@ top 40:
 | 21 | kernel | sweeplofts | ExtrudeCrv / Revolve producing a SubD object directly | missing | medium | Catalogued option, no implementation. |
 | 22 | kernel | sweeplofts | SubD-result revolve / multi-pipe menu entries are broken references | missing | small | Either implement the two commands or remove the dead menu entries — either is quick. |
 | 23 | kernel | topology | ~~Euler operators (MEV/MEF/KEV/KEF/KEMR/MEKR etc.)~~ **present** | present | medium | Done this pass: `Brep::MakeEdgeKillRing`/`Brep::KillEdgeMakeRing` (brep.h; brep.cpp) are a real MEKR/KEMR pair — the last operator in this family — welding a face's own outer loop and one real inner (hole) loop into a single loop via a zero-width "slit" edge, and its exact inverse splitting it back via the standard outer-CCW/inner-CW signed-area convention. All six named operators (MEV/KEV, MEF/KEF, MEKR/KEMR) are now real, tested, and round-trip exact. Kept in the table for this row's own history; not an active priority. Still scoped to planar faces and straight new edges between vertices/loops already on the boundary - a curved-face Euler op is out of scope. |
-| 24 | kernel | topology | Wire bodies (edge/vertex-only B-rep body) | missing | large | No wire-body concept exists anywhere in the topology model. |
+| 24 | kernel | topology | Wire bodies (edge/vertex-only B-rep body) | partial | medium | `Brep::WireBody`/`Brep::IsWireBody` (dino8-kernel/src/brep.cpp) now build a genuine zero-face vertex/edge-only `ON_Brep` from a list of curves, with real vertex welding across shared endpoints and a genuine self-closed edge for a closed curve. Remaining effort is now medium, not large: app wiring (no curve-only "body" scene object exists), wire-to-solid/sheet promotion, and extending an existing wire body with more curves in one call. |
 | 25 | kernel | topology | Persistent naming / topology identity across edits | missing | large | Every topology edit renumbers via Compact(); this is an architectural change. |
 | 26 | kernel | offsetshell | Inset on raw mesh or polysurface objects (as opposed to SubD) | missing | medium | Inset currently rejects every non-SubD target outright. |
 | 27 | kernel | features | Threaded / tapped hole and external thread feature | missing | large | Bolt/Nut are built solid with no thread geometry at all. |
@@ -1806,7 +1901,7 @@ top 40:
 - [app/app_ux] Breadth of localization — bring existing languages to full key parity (partial)
 
 **Large effort** (85 items):
-- [kernel/topology] Wire bodies (edge/vertex-only B-rep body) (missing)
+- [kernel/topology] Wire bodies (edge/vertex-only B-rep body) (missing; now partial - see `Brep::WireBody`/`Brep::IsWireBody`, brep.h/brep.cpp - remaining effort is medium, not large: app wiring, wire-to-solid/sheet promotion, and extending an existing wire body with more curves)
 - [kernel/topology] Euler operators (missing; MEV/KEV, MEF/KEF and now MEKR/KEMR are all real and tested - present)
 - [kernel/topology] Persistent naming / topology identity across edits (missing)
 - [kernel/booleans] Sheet/solid trim (missing; now partial - see `SplitBySheet`/`TrimSheetBySolid`, boolean_general.cpp, both halves now real code - remaining effort is small, not large: app wiring and a curved-sheet/curved-solid test)

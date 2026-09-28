@@ -2897,8 +2897,11 @@ class Brep {
   // has ZERO trims (TrimCount() == 0, the case CheckIssue::Kind::
   // NakedEdge's own doc comment already calls "a dangling edge no face
   // uses at all"), so this is genuine shared infrastructure for both
-  // items - though assembling that into a first-class wire-body/Body
-  // concept of its own is still out of scope here. MEF ("Make Edge,
+  // items - and WireBody()/IsWireBody(), declared right after
+  // KillEdgeVertex() below, are exactly that first-class wire-body concept,
+  // built from the same three ON_Brep primitives (NewVertex/AddEdgeCurve/
+  // NewEdge) MakeEdgeVertex() itself uses, just applied to fresh topology
+  // instead of an existing vertex. MEF ("Make Edge,
   // Face") and its exact inverse KEF ("Kill Edge, Face"), declared after
   // KillEdgeVertex() below, are the next pair in this same family - see
   // their own doc comments for scope. MEKR/KEMR (moving an edge between a
@@ -2954,6 +2957,60 @@ class Brep {
   // is out of range, or std::invalid_argument if it refers to an already-
   // deleted edge.
   Result KillEdgeVertex(int edge_index);
+
+  // Builds a wire body: a Brep containing only vertices and edges, no
+  // faces at all - the "curves alone, no surface" body Parasolid/ACIS
+  // call a wire body, and PARITY_MAP.md's own previously-entirely-absent
+  // "Wire bodies (edge/vertex-only B-rep body)" item (a re-grep for
+  // `wire ?body|WireBody` across this whole kernel and dino8-app/src
+  // found nothing at all - curves only ever existed as standalone
+  // NurbsCurve objects, dino8-app/src/doc/SceneObject.h). Reuses exactly
+  // the same three ON_Brep primitives MakeEdgeVertex() above already
+  // uses to grow wire topology onto an EXISTING vertex (NewVertex/
+  // AddEdgeCurve/NewEdge) to build a whole one from nothing instead -
+  // every edge this produces is indistinguishable in shape from one
+  // MakeEdgeVertex() itself would have made (TrimCount() == 0; Check()
+  // reports it NakedEdge with other_index == 0, exactly that field's own
+  // doc comment's "a dangling edge no face uses at all").
+  //
+  // One real ON_BrepEdge per entry in `curves`: an open curve gets two
+  // new vertices, one at each end; a curve reporting IsClosed() gets
+  // exactly ONE new vertex, with the edge's own two endpoint indices
+  // both set to it - a genuine self-closed wire edge (the same shape
+  // this class's own SplitNonManifoldVertex()/KillEdgeVertex() doc
+  // comments already call out as "an edge closed on itself at a
+  // vertex"), never two separate, merely-coincident vertices for what is
+  // really one point. An endpoint of one curve within `tolerance` of a
+  // vertex a PRIOR curve in this same call already placed is welded onto
+  // that existing vertex rather than duplicated, so e.g. three open
+  // curves chained end to end become a real 4-vertex/3-edge wire
+  // polyline through shared vertices, not three disjoint 2-vertex edges
+  // - the wire-body analogue of FromMixedFaces()'s/FromPlanarFaces()'s
+  // own "coincident loop points share one vertex" convention. Curves are
+  // processed in `curves`' own order, and welding only ever looks at
+  // vertices already placed by an EARLIER curve (or earlier endpoint of
+  // the same curve) - never a later one - so which vertex two
+  // near-coincident endpoints land on is deterministic, not a race.
+  //
+  // Throws std::invalid_argument if `curves` is empty, if any curve's
+  // own sampled length (NurbsCurve::Length()) is at or below `tolerance`
+  // (a degenerate curve makes a zero-length or directionless edge), or
+  // if a curve's own start and end point are within `tolerance` of each
+  // other WITHOUT IsClosed() reporting true (a shape this kernel doesn't
+  // itself consider closed - e.g. a periodic-domain mismatch - but whose
+  // endpoints are indistinguishable, genuinely ambiguous between one
+  // vertex and two). Every curve is validated before anything is built,
+  // so a single bad curve anywhere in `curves` leaves this call building
+  // nothing at all (no partial wire body).
+  static Brep WireBody(const std::vector<NurbsCurve>& curves, double tolerance = tolerance::kDistance);
+
+  // True if this Brep has at least one live edge and zero live faces -
+  // the structural query counterpart to WireBody() above. Deliberately a
+  // structural test, not a provenance flag: also true for any OTHER Brep
+  // that happens to end up with no faces (e.g. one whose only face was
+  // removed by DeleteFace()), and false for an empty, freshly-constructed
+  // Brep with no edges either (nothing to call a "body" at all).
+  bool IsWireBody() const;
 
   // MEF ("Make Edge, Face"): splits `face_index`'s own single outer loop
   // into two loops by inserting one new straight edge between two of its

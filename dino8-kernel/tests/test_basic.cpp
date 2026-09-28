@@ -9031,6 +9031,154 @@ void TestBrepMakeEdgeKillRingAndKillEdgeMakeRingAreExactInverses() {
   Check(threw_kemr_edge_deleted, "a deleted edge_index throws std::invalid_argument");
 }
 
+// Brep::WireBody()/IsWireBody(): PARITY_MAP.md's own "Wire bodies
+// (edge/vertex-only B-rep body)" item, previously entirely missing (see
+// WireBody()'s own doc comment). Built from the same NewVertex/
+// AddEdgeCurve/NewEdge primitives MakeEdgeVertex() above already uses, so
+// this test leans on that one's already-proven per-edge shape (TrimCount()
+// == 0, Check() reports NakedEdge with other_index == 0) and focuses on
+// what's genuinely NEW here: building topology from nothing (no
+// pre-existing vertex to attach to), a curve that closes on itself through
+// ONE vertex rather than two, welding shared endpoints ACROSS separate
+// curves into one polyline, and every refusal case.
+void TestBrepWireBody() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // A single open straight edge: two new vertices, one new wire edge.
+  const NurbsCurve line = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(1, 0, 0)}, /*degree=*/1);
+  const Brep open_wire = Brep::WireBody({line});
+  Check(open_wire.VertexCount() == 2 && open_wire.EdgeCount() == 1 && open_wire.FaceCount() == 0,
+        "a single open curve builds a real 2-vertex/1-edge/0-face wire body");
+  Check(open_wire.IsWireBody(), "IsWireBody() is true for it");
+  Check(open_wire.raw().m_E[0].TrimCount() == 0, "the new edge borders no face at all - a genuine wire edge");
+  Check(open_wire.FacesOfEdge(0).empty(), "FacesOfEdge() on it is empty");
+  const Point3d p0 = open_wire.raw().m_V[open_wire.raw().m_E[0].m_vi[0]].point;
+  const Point3d p1 = open_wire.raw().m_V[open_wire.raw().m_E[0].m_vi[1]].point;
+  Check((p0.DistanceTo(Point3d(0, 0, 0)) < 1e-9 && p1.DistanceTo(Point3d(1, 0, 0)) < 1e-9),
+        "the two new vertices sit exactly at the curve's own start/end points, in order");
+  Check(static_cast<int>(open_wire.EdgesOfVertex(open_wire.raw().m_E[0].m_vi[0]).size()) == 1 &&
+            static_cast<int>(open_wire.EdgesOfVertex(open_wire.raw().m_E[0].m_vi[1]).size()) == 1,
+        "each endpoint is a genuine leaf (degree 1)");
+  const Brep::CheckReport open_report = open_wire.Check();
+  Check(open_report.issues.size() == 1 && open_report.Count(Brep::CheckIssue::Kind::NakedEdge) == 1,
+        "Check() reports exactly one issue: the wire edge is NakedEdge, and nothing else");
+  Check(open_report.issues[0].other_index == 0,
+        "...with other_index == 0, exactly MakeEdgeVertex()'s own wire-edge NakedEdge shape");
+  Check(!open_report.is_closed, "is_closed is false - there are no faces at all");
+  Check(open_report.is_oriented, "is_oriented is trivially true - no faces to disagree with each other");
+
+  // A single CLOSED curve: exactly ONE new vertex (not two coincident
+  // ones), the edge's own two endpoint indices both set to it.
+  const ON_Circle raw_circle(ON_Plane(ON_3dPoint(2, 3, 0), ON_3dVector(0, 0, 1)), 1.5);
+  ON_NurbsCurve raw_circle_nurbs;
+  raw_circle.GetNurbForm(raw_circle_nurbs);
+  NurbsCurve circle;
+  circle.raw() = raw_circle_nurbs;
+  Check(circle.IsClosed(), "setup: the circle curve genuinely reports IsClosed()");
+  const Brep closed_wire = Brep::WireBody({circle});
+  Check(closed_wire.VertexCount() == 1 && closed_wire.EdgeCount() == 1 && closed_wire.FaceCount() == 0,
+        "a single closed curve builds a real 1-vertex/1-edge/0-face wire body - not 2 coincident vertices");
+  Check(closed_wire.raw().m_E[0].m_vi[0] == closed_wire.raw().m_E[0].m_vi[1],
+        "the edge's own two endpoint indices are both the SAME vertex - a genuine self-closed wire edge");
+  Check(static_cast<int>(closed_wire.EdgesOfVertex(closed_wire.raw().m_E[0].m_vi[0]).size()) == 2,
+        "the vertex's own m_ei lists this one edge TWICE - the same self-loop shape "
+        "SplitNonManifoldVertex()'s own doc comment already names");
+  const Brep::CheckReport closed_report = closed_wire.Check();
+  Check(closed_report.Count(Brep::CheckIssue::Kind::NakedEdge) == 1 &&
+            closed_report.Count(Brep::CheckIssue::Kind::NonManifoldVertex) == 0 &&
+            closed_report.Count(Brep::CheckIssue::Kind::DegenerateEdge) == 0,
+        "Check() reports the closed wire edge as NakedEdge, no NonManifoldVertex (no face touches this vertex "
+        "at all, so GroupVertexEdgesByFace's own group_count is 0, not 2+), and no DegenerateEdge");
+
+  // Two open curves sharing an endpoint weld into ONE shared vertex - a
+  // real 3-vertex/2-edge polyline chain, not two disjoint 2-vertex edges.
+  const Point3d A(0, 0, 0), B(5, 0, 0), C(5, 5, 0);
+  const NurbsCurve leg_ab = NurbsCurve::FromControlPoints({A, B}, /*degree=*/1);
+  const NurbsCurve leg_bc = NurbsCurve::FromControlPoints({B, C}, /*degree=*/1);
+  const Brep chain = Brep::WireBody({leg_ab, leg_bc});
+  Check(chain.VertexCount() == 3 && chain.EdgeCount() == 2 && chain.FaceCount() == 0,
+        "two curves sharing an endpoint weld into a 3-vertex/2-edge chain, not 4 vertices");
+  int shared_vi = -1, leaf_count = 0;
+  for (int vi = 0; vi < chain.raw().m_V.Count(); ++vi) {
+    const int degree = static_cast<int>(chain.EdgesOfVertex(vi).size());
+    if (degree == 2) {
+      shared_vi = vi;
+    } else if (degree == 1) {
+      ++leaf_count;
+    }
+  }
+  Check(shared_vi >= 0 && leaf_count == 2, "exactly one shared (degree-2) vertex and two leaf (degree-1) vertices");
+  Check(chain.raw().m_V[shared_vi].point.DistanceTo(B) < 1e-9, "the shared vertex sits exactly at the join point B");
+  const Brep::CheckReport chain_report = chain.Check();
+  Check(chain_report.Count(Brep::CheckIssue::Kind::NakedEdge) == 2 && chain_report.issues.size() == 2,
+        "Check() reports both chain edges as NakedEdge and nothing else - in particular no NonManifoldVertex "
+        "at the shared, degree-2 vertex B, since it still touches no face at all");
+
+  // Two curves that do NOT touch stay fully disjoint: 4 vertices, 2 edges,
+  // no welding across unrelated endpoints.
+  const NurbsCurve far_leg =
+      NurbsCurve::FromControlPoints({Point3d(100, 0, 0), Point3d(101, 0, 0)}, /*degree=*/1);
+  const Brep disjoint = Brep::WireBody({leg_ab, far_leg});
+  Check(disjoint.VertexCount() == 4 && disjoint.EdgeCount() == 2 && disjoint.FaceCount() == 0,
+        "two curves with no coincident endpoints stay fully disjoint - 4 vertices, not welded");
+
+  // Refusal: empty curve list.
+  bool threw_empty = false;
+  try {
+    (void)Brep::WireBody({});
+  } catch (const std::invalid_argument&) {
+    threw_empty = true;
+  }
+  Check(threw_empty, "WireBody() with an empty curve list throws std::invalid_argument");
+
+  // Refusal: a degenerate (zero-length) curve.
+  const NurbsCurve zero_length = NurbsCurve::FromControlPoints({Point3d(4, 4, 4), Point3d(4, 4, 4)}, /*degree=*/1);
+  bool threw_degenerate = false;
+  try {
+    (void)Brep::WireBody({zero_length});
+  } catch (const std::invalid_argument&) {
+    threw_degenerate = true;
+  }
+  Check(threw_degenerate, "WireBody() with a zero-length curve throws std::invalid_argument");
+
+  // Refusal: coincident start/end points WITHOUT IsClosed() reporting true
+  // - the exact 3-point coincident-endpoint polyline TestCurveExtend()'s
+  // own comment (above) already established reports IsClosed() false
+  // (fewer than the 4 control points ON_NurbsCurve::IsClosed() requires),
+  // genuinely ambiguous between "one vertex" and "two".
+  const NurbsCurve ambiguous =
+      NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(1, 0, 0), Point3d(0, 0, 0)}, /*degree=*/1);
+  Check(!ambiguous.IsClosed(), "setup: the 3-point coincident-endpoint path is NOT IsClosed()");
+  bool threw_ambiguous = false;
+  try {
+    (void)Brep::WireBody({ambiguous});
+  } catch (const std::invalid_argument&) {
+    threw_ambiguous = true;
+  }
+  Check(threw_ambiguous,
+        "WireBody() with coincident-but-not-IsClosed() endpoints throws std::invalid_argument");
+
+  // A bad curve anywhere in the list refuses the WHOLE call - no partial
+  // wire body from the good curve that came before it.
+  bool threw_partial = false;
+  try {
+    (void)Brep::WireBody({line, zero_length});
+  } catch (const std::invalid_argument&) {
+    threw_partial = true;
+  }
+  Check(threw_partial, "a bad curve later in the list still refuses the whole call");
+
+  // IsWireBody() is false for an ordinary solid (it has faces) and for a
+  // completely empty, freshly-constructed Brep (no edges at all either).
+  const Brep box = Brep::FromPlanarFaces(CheckHealBoxFaces());
+  Check(!box.IsWireBody(), "IsWireBody() is false for a real solid with faces");
+  const Brep empty_brep;
+  Check(!empty_brep.IsWireBody(), "IsWireBody() is false for a brand-new, completely empty Brep");
+}
+
 // Flip one face: Check() names the flipped face on each of its 4 edges
 // (index = the flipped face, other_index = each neighbour), the welded
 // mesh is no longer a closed manifold (an orientation conflict on every
@@ -36947,6 +37095,7 @@ int main() {
   TestBrepMakeEdgeVertexAndKillEdgeVertexAreExactInverses();
   TestBrepMakeEdgeFaceAndKillEdgeFaceAreExactInverses();
   TestBrepMakeEdgeKillRingAndKillEdgeMakeRingAreExactInverses();
+  TestBrepWireBody();
   TestBrepCheckAndUnifyNormalsOnFlippedFace();
   TestBrepCheckReportsDroppedFaceAndCapPlanarHolesRestoresIt();
   TestBrepJoinNakedEdgesRecordsTolerantEdges();

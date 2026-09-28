@@ -6907,6 +6907,95 @@ Result Brep::KillEdgeVertex(int edge_index) {
   return Result::Ok;
 }
 
+Brep Brep::WireBody(const std::vector<NurbsCurve>& curves, double tolerance) {
+  if (curves.empty()) {
+    throw std::invalid_argument("dino8::kernel::Brep::WireBody: curves is empty - a wire body needs at least one");
+  }
+  const double tol = std::max(tolerance, 0.0);
+
+  // Validate every curve up front - a bad curve anywhere refuses the
+  // whole call, rather than leaving a caller with a half-built wire body
+  // (see this method's own doc comment).
+  struct Endpoints {
+    Point3d start;
+    Point3d end;
+    bool closed = false;
+  };
+  std::vector<Endpoints> ends;
+  ends.reserve(curves.size());
+  for (size_t k = 0; k < curves.size(); ++k) {
+    const NurbsCurve& c = curves[k];
+    if (c.Length() <= tol) {
+      throw std::invalid_argument("dino8::kernel::Brep::WireBody: curves[" + std::to_string(k) +
+                                  "] is degenerate (its own sampled length is at or below tolerance)");
+    }
+    const Interval d = c.Domain();
+    Endpoints e;
+    e.start = c.PointAt(d.min);
+    e.end = c.PointAt(d.max);
+    e.closed = c.IsClosed();
+    if (!e.closed && e.start.DistanceTo(e.end) <= tol) {
+      throw std::invalid_argument(
+          "dino8::kernel::Brep::WireBody: curves[" + std::to_string(k) +
+          "] has coincident start/end points within tolerance but IsClosed() is false - ambiguous "
+          "between one vertex and two");
+    }
+    ends.push_back(e);
+  }
+
+  Brep result;
+  ON_Brep& b = result.brep_;
+  // Linear nearest-existing-vertex search within `tolerance` - the same
+  // "weld a new endpoint onto an already-placed vertex" question
+  // MakeEdgeVertex()'s own caller answers by hand, just applied here to
+  // every curve endpoint instead of one caller-supplied point. O(n^2) in
+  // the number of DISTINCT wire vertices, which is never large enough for
+  // that to matter (matching this file's own established style for
+  // welding helpers that aren't on a hot path - see VertexWelder's own
+  // comment on why IT is bucketed instead: face-loop welding runs over
+  // far more points per call than a wire body's own endpoints ever will).
+  auto find_or_add_vertex = [&](const Point3d& p) -> int {
+    for (int vi = 0; vi < b.m_V.Count(); ++vi) {
+      if (b.m_V[vi].m_vertex_index < 0) continue;
+      if (b.m_V[vi].point.DistanceTo(p) <= tol) return vi;
+    }
+    return b.NewVertex(p, 0.0).m_vertex_index;
+  };
+
+  for (size_t k = 0; k < curves.size(); ++k) {
+    const Endpoints& e = ends[k];
+    auto* c3 = new ON_NurbsCurve(curves[k].raw());
+    const int c3i = b.AddEdgeCurve(c3);
+    if (e.closed) {
+      const int vi = find_or_add_vertex(e.start);
+      b.NewEdge(b.m_V[vi], b.m_V[vi], c3i);
+    } else {
+      const int v0 = find_or_add_vertex(e.start);
+      // v0 may have just grown b.m_V - re-fetch v1's own home fresh
+      // rather than holding a reference across the second lookup, the
+      // same NewVertex()-may-reallocate discipline MakeEdgeVertex()/
+      // SplitNakedEdgeAt() already follow.
+      const int v1 = find_or_add_vertex(e.end);
+      b.NewEdge(b.m_V[v0], b.m_V[v1], c3i);
+    }
+  }
+  result.brep_.SetTolerancesBoxesAndFlags();
+  FixUnsetEdgeTolerances(result.brep_);
+  return result;
+}
+
+bool Brep::IsWireBody() const {
+  bool any_edge = false;
+  for (int ei = 0; ei < brep_.m_E.Count(); ++ei) {
+    if (brep_.m_E[ei].m_edge_index >= 0) { any_edge = true; break; }
+  }
+  if (!any_edge) return false;
+  for (int fi = 0; fi < brep_.m_F.Count(); ++fi) {
+    if (brep_.m_F[fi].m_face_index >= 0) return false;
+  }
+  return true;
+}
+
 namespace {
 
 // 2D orientation test (twice the signed area of o->p->q) - the standard
