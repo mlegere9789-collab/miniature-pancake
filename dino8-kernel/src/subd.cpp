@@ -601,6 +601,38 @@ bool SubD::ExtrudeFace(unsigned int face_id, double distance) {
   return changed != 0;
 }
 
+bool SubD::ExpandFaces(const std::vector<unsigned int>& face_ids, double distance) {
+  if (distance == 0.0) return false;
+  if (face_ids.empty()) return false;
+
+  std::vector<const ON_SubDFace*> faces;
+  faces.reserve(face_ids.size());
+  for (unsigned int id : face_ids) {
+    const ON_SubDFace* face = subd_.FaceFromId(id);
+    if (face == nullptr) return false;
+    for (const ON_SubDFace* existing : faces) {
+      if (existing == face) return false;  // duplicate id - ambiguous request
+    }
+    faces.push_back(face);
+  }
+
+  Vector3d direction = Vector3d::ZeroVector;
+  for (const ON_SubDFace* face : faces) {
+    Vector3d n = face->ControlNetCenterNormal();
+    if (!n.Unitize()) return false;
+    direction += n;
+  }
+  if (!direction.Unitize()) return false;
+
+  const ON_Xform xform = ON_Xform::TranslationTransformation(direction * distance);
+  std::vector<ON_SubDComponentPtr> cptrs;
+  cptrs.reserve(faces.size());
+  for (const ON_SubDFace* face : faces) cptrs.push_back(ON_SubDComponentPtr::Create(face));
+
+  const unsigned int changed = subd_.ExtrudeComponents(xform, cptrs.data(), cptrs.size());
+  return changed != 0;
+}
+
 std::vector<SubDLimitPoint> SubD::LimitPoints() const {
   std::vector<SubDLimitPoint> out;
   ON_SubDVertexIterator vit = subd_.VertexIterator();

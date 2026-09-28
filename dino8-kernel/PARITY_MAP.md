@@ -854,6 +854,87 @@ calling it yet - a grep for `ExtrudeToBoundary` under `dino8-app/src`
 finds nothing) and stays at 71.5%, per the blending follow-up's own math
 above. No other row was touched this pass.
 
+**Tenth same-day follow-up (a later session):** `git log --oneline -30 --
+dino8-kernel/src/subd.cpp dino8-kernel/src/mesh.cpp` at the start of this
+session showed the Sixth follow-up's `InsertEdge`/`SpinEdge`/`ExtrudeFace`
+trio (above) as the most recent commit touching either file, so this
+session picked the next highest-value still-gap item in the same "Kernel:
+SubD & mesh kernel support" category rather than duplicating that work:
+`SubD::ExpandFaces` (dino8-kernel/src/subd.cpp,
+dino8-kernel/include/dino8/kernel/subd.h) closes the fourth of the five
+named sub-operators in this category's own "Kernel-native SubD local edit
+operators (insert edge, extrude face, spin edge, weld, expand)" item -
+"expand" (the Sixth follow-up's own text: "a uniform push-apart of a
+face/region").
+
+`ExpandFaces(face_ids, distance)` delegates to the exact same real,
+non-stub `ON_SubD::ExtrudeComponents(xform, cptr_list, cptr_count)`
+primitive `ExtrudeFace()` already uses, but calls it with EVERY face in
+`face_ids` as one component list and a single shared translation, instead
+of looping `ExtrudeFace()` once per face. That distinction is the entire
+point of "expand a region" versus "extrude each face separately": reading
+`ON_SubD::Internal_ExtrudeComponents` directly (opennurbs_subd.cpp:23265
+onward, in the fetched `opennurbs-src` build dependency) confirms its own
+component-marking pass extrudes an edge only when it is attached to
+exactly one marked face, or is already a boundary edge - an edge attached
+to TWO marked faces (i.e. shared between two faces both being expanded
+together) is left alone. So a multi-face region moves as one rigid block,
+opening exactly one ring of new side faces around its own outer boundary,
+while every edge interior to the region stays interior and unwalled -
+genuine ON_SubD behavior this wrapper exposes, not something it
+implements itself. The push direction is the unit-vector sum of each
+listed face's own `ControlNetCenterNormal()` (each unitized before
+summing, the sum itself unitized), the natural multi-face generalization
+of `ExtrudeFace()`'s own single-face normal convention, refusing rather
+than guessing when that sum is degenerate (e.g. two faces with exactly
+opposite normals cancel).
+
+Verified with 3 new tests (tests/test_basic.cpp):
+`TestSubDExpandFacesSingleFaceMatchesExtrudeFace` confirms a one-face
+region reproduces `ExtrudeFace()`'s own exact topology delta on the
+identical lone-quad fixture (1/4/4 -> 5/8/12 face/vertex/edge counts, all
+corners moved to the requested distance) bit-for-bit, plus this method's
+own extra argument-refusal cases (empty list, a duplicate face id).
+`TestSubDExpandFacesMovesConnectedRegionAsOneBlockKeepingSharedEdgeInterior`
+expands the two-quad strip fixture `TestSubDSpinEdgeRotatesSharedInteriorEdge`
+already uses (2 faces sharing one interior edge) as a single region and
+checks, by edge id, that the shared edge is STILL `HasInteriorEdgeTopology`
+(exactly 2 faces) afterward, with both its own endpoints moved to the
+requested distance along with the rest of the region - not walled off into
+two independent protrusions - while the resulting face/vertex/edge counts
+(2/6/7 -> 8/12/19) and `Check()`'s naked-edge count (6, exactly the
+region's own new open base) match hand-derived expectations for a single
+combined extrude, not the larger count two independent single-face
+extrudes on the same shared edge would produce.
+`TestSubDExpandFacesRefusesWhenRegionNormalsCancel` builds two disjoint,
+oppositely-wound freestanding quads (unit normals (0,0,1) and (0,0,-1))
+and confirms `ExpandFaces` refuses the pair (their sum is the zero vector,
+no well-defined single push direction) and leaves the SubD completely
+unchanged. Full `dino8_kernel_tests` suite re-run via `ctest`: 100%
+passing, 0 regressions.
+
+Still `partial`, not `present`, for this category's own "Kernel-native
+SubD local edit operators" item: weld (joining two separate edges/vertices
+together) is the one remaining named sub-operator with no kernel entry
+point at all - unlike insert/spin/extrude/expand, OpenNURBS' own
+`ON_SubD` exposes no ready-made primitive for it (re-grepped
+`opennurbs_subd.h`/`opennurbs_subd.cpp` for `Weld|MergeEdge|MergeVertex`:
+no matches), so closing it for real would mean hand-rolling the
+vertex-merge/component-reconnect surgery directly against `ON_SubD`'s own
+lower-level `AddFaceEdgeConnection`/`RemoveFaceEdgeConnection`/
+`RemoveEdgeVertexConnection`/`DeleteComponents` building blocks rather than
+wrapping one existing call, real but substantially larger scope than this
+follow-up's own four calls to `ExtrudeComponents`. `ExpandFaces` is also
+still not wired to any app command, the same gap the other three operators
+already have. Net effect: this item's own category row is unchanged
+(14/6/2/22, 77.3%) - a real narrowing of the item's own remaining gap
+(4 of 5 sub-operators now genuinely present, versus 3 of 5 before), not a
+missing-to-partial or partial-to-present flip, the same "fold new evidence
+into an existing bullet without moving its status" convention the
+Offsetting category's own OffsetSolidConvexPlanar/OffsetRefit follow-ups
+above already use. The top-of-document headline numbers are therefore
+unaffected by this session's work and stay at 66.0% / 71.5%.
+
 ### Kernel category gaps (missing / partial items, with evidence)
 
 **kernel: Topology & data structure** (topology):
@@ -1173,7 +1254,7 @@ citation fix above) rather than a citation error.*
 
 **Kernel: SubD & mesh kernel support** (subd_mesh):
 - [partial] SubD -> NURBS patch conversion — `ToNurbsPatches`/`ToNurbsPatchesAdaptive` (dino8-kernel/src/subd.cpp:590,1006 — line numbers shifted from the prior pass's 443/859 by `Check()`'s own insertion above them, no behavior change); app's ToNURBS (dino8-app/src/commands/cmd_solids.cpp:802,843) still calls only the non-adaptive `ToNurbsPatches`. No dependency on `Brep::Check()`/`RemoveDegenerateFaces` found in subd.cpp — the DegenerateFace false-flag defect does not touch this item.
-- [partial] Kernel-native SubD local edit operators (insert edge, extrude face, spin edge, weld, expand) — **corrected: upgraded from missing.** `SubD::InsertEdge`/`SubD::SpinEdge`/`SubD::ExtrudeFace` (subd.cpp) now wrap the real OpenNURBS `ON_SubD::SplitFace`/`SpinEdge`/`ExtrudeComponents` primitives - see this pass's own "Sixth same-day follow-up" note above for the full detail and test coverage. Still missing: weld (joining two separate edges/vertices) and expand (uniform push-apart of a region) have no kernel entry point at all; none of the three implemented operators is wired to any app command.
+- [partial] Kernel-native SubD local edit operators (insert edge, extrude face, spin edge, weld, expand) — **updated this session: 4 of 5 sub-operators now genuinely exist.** `SubD::InsertEdge`/`SubD::SpinEdge`/`SubD::ExtrudeFace` (subd.cpp) wrap the real OpenNURBS `ON_SubD::SplitFace`/`SpinEdge`/`ExtrudeComponents` primitives (see this pass's own "Sixth same-day follow-up" note above); `SubD::ExpandFaces` (subd.cpp, new this session — see the "Ninth same-day follow-up" note below) closes "expand" for real, moving a whole connected multi-face region as one rigid block via the same `ExtrudeComponents` primitive called with the region's full face list, so edges shared between two faces IN the region stay interior rather than each face opening its own separate chimney. Still missing: weld (joining two separate edges/vertices together) has no kernel entry point at all; none of the four implemented operators is wired to any app command.
 - [missing] SubD boolean operations — zero "SubD" references in any dino8-kernel/src/boolean*.cpp file.
 - [partial] SubD from NURBS/B-rep conversion — `SubD::FromNurbsSurface` (subd.cpp:23); single-surface, sample-based, unwired from the app.
 - [partial] SubD symmetry/mirror-in-place — `SubD::Transform` (subd.cpp:84) accepts a mirror `ON_Xform`; no flip/weld/live-constraint code found alongside it.
@@ -1404,7 +1485,7 @@ top 40:
 | 36 | kernel | exchange | IFC (BIM) data exchange | missing | large | No code anywhere. |
 | 37 | kernel | exchange | DWF/DWFx export/import | missing | large | No code anywhere. |
 | 38 | kernel | exchange | JT (PLM interchange) | missing | large | No code anywhere. |
-| 39 | kernel | subd_mesh | Kernel-native SubD local edit operators (insert edge, extrude face, spin, weld, expand) | partial | large | `SubD::InsertEdge`/`SpinEdge`/`ExtrudeFace` (subd.cpp) now wrap real `ON_SubD::SplitFace`/`SpinEdge`/`ExtrudeComponents`; weld and expand still have no kernel API, and none of the three is wired to an app command. |
+| 39 | kernel | subd_mesh | Kernel-native SubD local edit operators (insert edge, extrude face, spin, weld, expand) | partial | large | `SubD::InsertEdge`/`SpinEdge`/`ExtrudeFace`/`ExpandFaces` (subd.cpp) now wrap real `ON_SubD::SplitFace`/`SpinEdge`/`ExtrudeComponents`; weld alone still has no kernel API (no ready-made OpenNURBS primitive for it), and none of the four is wired to an app command. |
 | 40 | kernel | subd_mesh | Quad-remeshing of an arbitrary mesh into a clean SubD-ready cage | missing | large | No quad-dominant remesher targeting SubD-cage quality exists in the kernel. |
 
 ### Remainder, grouped by effort (281 items)
@@ -1684,7 +1765,7 @@ top 40:
 - [kernel/features] Split body with an arbitrary surface / solid cutter (partial)
 - [kernel/features] Sheet-metal features (missing)
 - [kernel/features] Lattice / cellular infill structures (missing)
-- [kernel/subd_mesh] Kernel-native SubD local edit operators (missing; now partial - `SubD::InsertEdge`/`SpinEdge`/`ExtrudeFace` in subd.cpp wrap real `ON_SubD::SplitFace`/`SpinEdge`/`ExtrudeComponents`; weld and expand remain missing, and none of the three is wired to an app command)
+- [kernel/subd_mesh] Kernel-native SubD local edit operators (missing; now partial - `SubD::InsertEdge`/`SpinEdge`/`ExtrudeFace`/`ExpandFaces` in subd.cpp wrap real `ON_SubD::SplitFace`/`SpinEdge`/`ExtrudeComponents`; weld alone remains missing (no ready-made OpenNURBS primitive), and none of the four is wired to an app command)
 - [kernel/subd_mesh] SubD boolean operations (missing)
 - [kernel/subd_mesh] Quad-remeshing into a clean SubD-ready cage (missing)
 - [app/app_commands] AutoLISP-equivalent command scripting language (missing)

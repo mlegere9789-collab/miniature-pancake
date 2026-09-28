@@ -13179,6 +13179,210 @@ void TestSubDExtrudeFaceAddsProtrusionAlongNormal() {
         "4 naked edges) - a real protrusion, not a detached floating island or a degenerate mess");
 }
 
+// SubD::ExpandFaces() with a single-element region: must reproduce
+// ExtrudeFace()'s own exact topology delta on the same lone quad (it
+// delegates to the identical ON_SubD::ExtrudeComponents primitive with a
+// one-face component list either way), plus the argument-refusal cases
+// specific to ExpandFaces() itself (empty list, duplicate id).
+void TestSubDExpandFacesSingleFaceMatchesExtrudeFace() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SubD;
+
+  Mesh quad;
+  ON_Mesh& raw = quad.raw();
+  raw.m_V.Append(ON_3fPoint(0, 0, 0));
+  raw.m_V.Append(ON_3fPoint(1, 0, 0));
+  raw.m_V.Append(ON_3fPoint(1, 1, 0));
+  raw.m_V.Append(ON_3fPoint(0, 1, 0));
+  ON_MeshFace face;
+  face.vi[0] = 0;
+  face.vi[1] = 1;
+  face.vi[2] = 2;
+  face.vi[3] = 3;
+  raw.m_F.Append(face);
+
+  SubD subd = SubD::FromControlMesh(quad);
+  unsigned int face_id = 0;
+  {
+    ON_SubDFaceIterator fit = subd.raw().FaceIterator();
+    const ON_SubDFace* f0 = fit.FirstFace();
+    Check(f0 != nullptr, "sanity: the lone quad's own face exists");
+    face_id = f0->m_id;
+  }
+
+  Check(!subd.ExpandFaces({}, 2.0), "ExpandFaces refuses an empty face list");
+  Check(!subd.ExpandFaces({face_id, face_id}, 2.0),
+        "ExpandFaces refuses a duplicate face id in the list - ambiguous request");
+  Check(!subd.ExpandFaces({999999}, 2.0), "ExpandFaces refuses an unknown face_id");
+  Check(!subd.ExpandFaces({face_id}, 0.0), "ExpandFaces refuses a zero distance (no-op input)");
+
+  Check(subd.ExpandFaces({face_id}, 2.0),
+        "ExpandFaces succeeds on the lone quad's own face, as a single-face region");
+  Check(subd.FaceCount() == 5 && subd.VertexCount() == 8 && subd.EdgeCount() == 12,
+        "a single-face region produces the exact same topology delta ExtrudeFace() "
+        "produces on the same lone quad - 4 new side faces, 4 new base vertices");
+  Check(subd.IsValid(), "the expanded SubD is still topologically valid");
+
+  const ON_SubDFace* moved = subd.raw().FaceFromId(face_id);
+  Check(moved != nullptr, "the original face (same id) survives, now relocated");
+  bool all_at_top = true;
+  for (unsigned int i = 0; i < moved->EdgeCount(); ++i) {
+    const ON_SubDVertex* v = moved->Vertex(i);
+    if (v == nullptr || std::abs(v->ControlNetPoint().z - 2.0) > 1e-9) all_at_top = false;
+  }
+  Check(all_at_top, "every corner of the moved face sits at exactly z=2, +distance along "
+                     "the flat quad's own outward (0,0,1) normal");
+}
+
+// SubD::ExpandFaces() with a genuine multi-face region: two side-by-side
+// quads expanded TOGETHER must move as one rigid block - the edge they
+// share stays interior (untouched, still connecting the two moved faces),
+// and only the region's own OUTER boundary opens a ring of new side
+// faces. This is the behavior that actually distinguishes "expand a
+// region" from "call ExtrudeFace once per face in it" (which would instead
+// treat the shared edge as a boundary of each face individually and wall
+// it off twice, splitting the region into two separate protrusions).
+void TestSubDExpandFacesMovesConnectedRegionAsOneBlockKeepingSharedEdgeInterior() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SubD;
+
+  // Two quads sharing the vertical edge between (1,0,0) and (1,1,0) - the
+  // same fixture TestSubDSpinEdgeRotatesSharedInteriorEdge() uses.
+  Mesh grid;
+  ON_Mesh& raw = grid.raw();
+  raw.m_V.Append(ON_3fPoint(0, 0, 0));  // 0 = A
+  raw.m_V.Append(ON_3fPoint(1, 0, 0));  // 1 = B
+  raw.m_V.Append(ON_3fPoint(2, 0, 0));  // 2 = C
+  raw.m_V.Append(ON_3fPoint(0, 1, 0));  // 3 = D
+  raw.m_V.Append(ON_3fPoint(1, 1, 0));  // 4 = E
+  raw.m_V.Append(ON_3fPoint(2, 1, 0));  // 5 = F
+  ON_MeshFace left;
+  left.vi[0] = 0;
+  left.vi[1] = 1;
+  left.vi[2] = 4;
+  left.vi[3] = 3;
+  raw.m_F.Append(left);
+  ON_MeshFace right;
+  right.vi[0] = 1;
+  right.vi[1] = 2;
+  right.vi[2] = 5;
+  right.vi[3] = 4;
+  raw.m_F.Append(right);
+
+  SubD subd = SubD::FromControlMesh(grid);
+  Check(subd.FaceCount() == 2 && subd.VertexCount() == 6 && subd.EdgeCount() == 7,
+        "the two-quad strip starts as 2 faces / 6 vertices / 7 edges "
+        "(6 outer boundary + 1 shared interior)");
+
+  std::vector<unsigned int> face_ids;
+  {
+    ON_SubDFaceIterator fit = subd.raw().FaceIterator();
+    for (const ON_SubDFace* f = fit.FirstFace(); f != nullptr; f = fit.NextFace()) {
+      face_ids.push_back(f->m_id);
+    }
+  }
+  Check(face_ids.size() == 2, "sanity: exactly 2 faces to expand together");
+
+  const ON_SubD& raw_subd_before = subd.raw();
+  const Point3d p_top_mid(1, 1, 0);
+  const Point3d p_bot_mid(1, 0, 0);
+  const ON_SubDVertex* v_top_mid = raw_subd_before.FindVertex(&p_top_mid.x, 1e-9);
+  const ON_SubDVertex* v_bot_mid = raw_subd_before.FindVertex(&p_bot_mid.x, 1e-9);
+  Check(v_top_mid != nullptr && v_bot_mid != nullptr, "sanity: both shared-edge endpoints exist");
+  const ON_SubDEdge* shared_before = raw_subd_before.FindEdge(v_bot_mid, v_top_mid).Edge();
+  Check(shared_before != nullptr && shared_before->HasInteriorEdgeTopology(true),
+        "sanity: the shared edge is a genuine interior edge (exactly 2 faces) before expanding");
+  const unsigned int shared_id = shared_before->m_id;
+
+  Check(subd.ExpandFaces(face_ids, 3.0), "ExpandFaces succeeds on the two-quad region");
+
+  // Both faces are coplanar (same +Z normal), so the region's push
+  // direction is unambiguous: straight up by the requested distance.
+  Check(subd.FaceCount() == 8 && subd.VertexCount() == 12 && subd.EdgeCount() == 19,
+        "the two-face region opens exactly one ring of 6 new side faces (one per outer "
+        "boundary edge) and 6 new base vertices - NOT the 8 side faces / 8 new "
+        "vertices two independent single-face extrudes would each produce on the "
+        "shared edge (4 for each of its two copies)");
+  Check(subd.IsValid(), "the expanded SubD is still topologically valid");
+
+  const ON_SubDEdge* shared_after = subd.raw().EdgeFromId(shared_id);
+  Check(shared_after != nullptr, "the shared edge (same id) still exists after expanding");
+  Check(shared_after->HasInteriorEdgeTopology(true),
+        "the shared edge is STILL a genuine interior edge (exactly 2 faces) after expanding - "
+        "it was never treated as a boundary and walled off, unlike calling ExtrudeFace() "
+        "once per face would have done");
+  Check(std::abs(shared_after->Vertex(0)->ControlNetPoint().z - 3.0) < 1e-9 &&
+            std::abs(shared_after->Vertex(1)->ControlNetPoint().z - 3.0) < 1e-9,
+        "the shared edge's own two endpoints moved up to z=3 with the rest of the region - "
+        "a single rigid block, not two independently extruded faces");
+
+  const auto report = subd.Check();
+  Check(report.naked_edges == 6 && report.non_manifold_edges == 0 && report.non_manifold_vertices == 0,
+        "the result has exactly the region's own new open base (6 naked edges) and nothing "
+        "else wrong - a real single-block push-apart, not a degenerate double-walled mess");
+}
+
+// A degenerate region: two disjoint, freestanding quads with exactly
+// opposite outward normals. Their unit normals cancel to the zero vector
+// when summed, so ExpandFaces() has no well-defined single push direction
+// for the region and must refuse rather than silently picking one face's
+// normal (which would be an arbitrary, undocumented tie-break) or moving
+// nothing.
+void TestSubDExpandFacesRefusesWhenRegionNormalsCancel() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SubD;
+
+  Mesh two_quads;
+  ON_Mesh& raw = two_quads.raw();
+  // Quad 1: unit square at the origin, wound to face +Z.
+  raw.m_V.Append(ON_3fPoint(0, 0, 0));
+  raw.m_V.Append(ON_3fPoint(1, 0, 0));
+  raw.m_V.Append(ON_3fPoint(1, 1, 0));
+  raw.m_V.Append(ON_3fPoint(0, 1, 0));
+  // Quad 2: a disjoint unit square 10 units away, wound to face -Z.
+  raw.m_V.Append(ON_3fPoint(10, 0, 0));
+  raw.m_V.Append(ON_3fPoint(10, 1, 0));
+  raw.m_V.Append(ON_3fPoint(11, 1, 0));
+  raw.m_V.Append(ON_3fPoint(11, 0, 0));
+  ON_MeshFace up;
+  up.vi[0] = 0;
+  up.vi[1] = 1;
+  up.vi[2] = 2;
+  up.vi[3] = 3;
+  raw.m_F.Append(up);
+  ON_MeshFace down;
+  down.vi[0] = 4;
+  down.vi[1] = 5;
+  down.vi[2] = 6;
+  down.vi[3] = 7;
+  raw.m_F.Append(down);
+
+  SubD subd = SubD::FromControlMesh(two_quads);
+  Check(subd.FaceCount() == 2, "sanity: two disjoint faces");
+
+  std::vector<unsigned int> face_ids;
+  {
+    ON_SubDFaceIterator fit = subd.raw().FaceIterator();
+    for (const ON_SubDFace* f = fit.FirstFace(); f != nullptr; f = fit.NextFace()) {
+      const dino8::kernel::Vector3d n = f->ControlNetCenterNormal();
+      Check(std::abs(n.z) > 0.99, "sanity: each face's own normal is (0,0,+-1)");
+      face_ids.push_back(f->m_id);
+    }
+  }
+
+  const int faces_before = subd.FaceCount();
+  const int verts_before = subd.VertexCount();
+  const int edges_before = subd.EdgeCount();
+  Check(!subd.ExpandFaces(face_ids, 5.0),
+        "ExpandFaces refuses a region whose faces' own unit normals sum to the zero "
+        "vector - no well-defined single push direction for the region");
+  Check(subd.FaceCount() == faces_before && subd.VertexCount() == verts_before &&
+            subd.EdgeCount() == edges_before,
+        "the refused call left the SubD completely unchanged");
+}
+
 void TestMeshComputeVertexNormals() {
   using dino8::kernel::Mesh;
   using dino8::kernel::Vector3d;
@@ -35975,6 +36179,9 @@ int main() {
   TestSubDInsertEdgeSplitsFaceIntoTwoAlongDiagonal();
   TestSubDSpinEdgeRotatesSharedInteriorEdge();
   TestSubDExtrudeFaceAddsProtrusionAlongNormal();
+  TestSubDExpandFacesSingleFaceMatchesExtrudeFace();
+  TestSubDExpandFacesMovesConnectedRegionAsOneBlockKeepingSharedEdgeInterior();
+  TestSubDExpandFacesRefusesWhenRegionNormalsCancel();
   TestMeshComputeVertexNormals();
   TestMeshSaveObjRoundTrips();
   TestMeshTextureCoordinates();

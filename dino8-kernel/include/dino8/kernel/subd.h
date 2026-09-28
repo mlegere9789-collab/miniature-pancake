@@ -622,6 +622,44 @@ class SubD {
   // class's other topology-mutating methods already apply).
   bool ExtrudeFace(unsigned int face_id, double distance);
 
+  // Moves an entire connected region of faces - `face_ids` - away from the
+  // rest of the control net as one rigid unit, along the region's own
+  // averaged outward normal - the kernel-native "expand" local edit
+  // operator, the fourth of the five named PARITY_MAP.md subd_mesh
+  // "Kernel-native SubD local edit operators" item's operators (with
+  // InsertEdge()/SpinEdge()/ExtrudeFace() above). Unlike calling
+  // ExtrudeFace() once per face in the region, an edge shared by two faces
+  // that are BOTH in `face_ids` stays interior - untouched, no new wall
+  // built along it - so a multi-face region opens exactly one ring of new
+  // side faces around its own outer boundary, the region itself moving as
+  // a single block ("push apart"), not each face growing its own
+  // independent chimney.
+  //
+  // Delegates to the same real, non-stub `ON_SubD::ExtrudeComponents(xform,
+  // cptr_list, cptr_count)` ExtrudeFace() uses, called here with every
+  // requested face as one component list and a single shared translation -
+  // it is `ON_SubD`'s own component-marking pass (marks every listed face;
+  // an edge attached to two marked faces is left alone; an edge attached to
+  // exactly one marked face, or already a boundary edge, is extruded into a
+  // side face) that gives the "interior edges stay put" behavior, not
+  // anything this wrapper adds.
+  //
+  // The push direction is the unit vector sum of each listed face's own
+  // `ControlNetCenterNormal()` (unitized before summing, then the sum
+  // itself unitized), matching ExtrudeFace()'s single-face convention when
+  // `face_ids` has exactly one element, and giving a sensible single
+  // direction for a roughly coplanar/convex region generally.
+  //
+  // Returns false, unchanged, if: `face_ids` is empty or contains a
+  // duplicate id; `distance` is 0; any id doesn't identify a face of the
+  // current subdivision level; any listed face's own
+  // `ControlNetCenterNormal()` is degenerate (cannot be unitized); the
+  // summed direction itself is degenerate (e.g. two faces with opposite
+  // normals exactly cancel); or `ON_SubD::ExtrudeComponents` itself refuses
+  // (e.g. extruding the region would create a non-manifold edge, refused by
+  // the delegate's own `bPermitNonManifoldEdgeCreation = false` default).
+  bool ExpandFaces(const std::vector<unsigned int>& face_ids, double distance);
+
   // The EXACT limit-surface point (and normal) of every vertex of the
   // current subdivision level's control net, in ON_SubD's own vertex
   // iteration order - one SubDLimitPoint per VertexCount(). This is
