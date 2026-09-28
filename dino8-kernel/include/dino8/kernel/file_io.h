@@ -66,6 +66,29 @@ struct LinetypeInfo {
   LinetypePattern pattern;
 };
 
+// The length unit a Model's coordinates are measured in, for
+// Model::SetUnitSystem()/GetUnitSystem() below, kept independent of
+// ON::LengthUnitSystem for the same reason Color/LinetypeSegment above are
+// kept independent of their own OpenNURBS counterparts. Covers the unit
+// systems dino8-app/src/io/File3dm.cpp's own units switch
+// (Inches/Feet/Centimeters/Meters, default Millimeters) already round-trips
+// at the app layer, plus Kilometers/Microns/Yards/Miles/None from
+// ON::LengthUnitSystem's own wider set, on the theory that a caller reaching
+// for a kernel-level unit system wants the same breadth OpenNURBS itself
+// offers, not just the five names the app happens to expose today.
+enum class UnitSystem {
+  Millimeters,
+  Centimeters,
+  Meters,
+  Kilometers,
+  Microns,
+  Inches,
+  Feet,
+  Yards,
+  Miles,
+  None,
+};
+
 // A render material read back from Model::MaterialAt() below - the
 // read-side counterpart to AddMaterial()'s own `diffuse_color` parameter.
 // Only `diffuse_color` is populated, matching AddMaterial()'s own
@@ -387,6 +410,34 @@ class Model {
   // default-constructed MaterialInfo, same contract as LayerAt()/
   // LinetypeAt() above.
   MaterialInfo MaterialAt(int material_index) const;
+
+  // Sets the model's length unit system - closing PARITY_MAP.md's own
+  // "kernel-level data exchange" evidence for "Unit-system conversion":
+  // "Kernel Model never sets units." Before this, a Model's coordinates
+  // carried no unit system at all from this API's point of view (every
+  // .3dm this kernel wrote landed on ONX_Model's own uninspected default,
+  // Millimeters, the same "no behavior change for existing callers"
+  // baseline GetUnitSystem() below reports for a Model that never called
+  // this), the same "app does real unit handling, kernel Model doesn't"
+  // gap the app's own Save3dm()/Load3dm() (dino8-app/src/io/File3dm.cpp,
+  // lines ~873-997) papers over entirely outside this kernel by setting
+  // model.m_settings.m_ModelUnitsAndTolerances.m_unit_system directly on
+  // its own local ONX_Model, unreachable from a caller using this Model
+  // wrapper instead. Writes to
+  // m_settings.m_ModelUnitsAndTolerances.m_unit_system, the same field the
+  // app's own code above sets and Save()/Load() below already carry
+  // through .3dm unmodified as part of the settings chunk ONX_Model::Write/
+  // Read already handles - so no change to Save()/Load() themselves was
+  // needed to make this round-trip.
+  void SetUnitSystem(UnitSystem units);
+
+  // Returns the model's length unit system - the read-side counterpart to
+  // SetUnitSystem() above. A Model that never called SetUnitSystem()
+  // reports UnitSystem::Millimeters, matching
+  // ON_3dmUnitsAndTolerances's own documented default ("The default
+  // constructor set units to millimeters") rather than some other
+  // placeholder.
+  UnitSystem GetUnitSystem() const;
 
   // Writes as a .3dm file. `version` is the OpenNURBS archive version
   // (e.g. 80 for the Rhino-8-generation format); defaults to the newest

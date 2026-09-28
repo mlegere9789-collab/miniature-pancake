@@ -83,6 +83,50 @@ ON_3dmObjectAttributes MakeAttributes(const std::string& name, int layer_index,
   return attributes;
 }
 
+// Maps dino8::kernel::UnitSystem to its ON::LengthUnitSystem counterpart,
+// for Model::SetUnitSystem() below.
+ON::LengthUnitSystem ToLengthUnitSystem(UnitSystem units) {
+  switch (units) {
+    case UnitSystem::Millimeters: return ON::LengthUnitSystem::Millimeters;
+    case UnitSystem::Centimeters: return ON::LengthUnitSystem::Centimeters;
+    case UnitSystem::Meters: return ON::LengthUnitSystem::Meters;
+    case UnitSystem::Kilometers: return ON::LengthUnitSystem::Kilometers;
+    case UnitSystem::Microns: return ON::LengthUnitSystem::Microns;
+    case UnitSystem::Inches: return ON::LengthUnitSystem::Inches;
+    case UnitSystem::Feet: return ON::LengthUnitSystem::Feet;
+    case UnitSystem::Yards: return ON::LengthUnitSystem::Yards;
+    case UnitSystem::Miles: return ON::LengthUnitSystem::Miles;
+    case UnitSystem::None: return ON::LengthUnitSystem::None;
+  }
+  return ON::LengthUnitSystem::Millimeters;
+}
+
+// The read-side counterpart to ToLengthUnitSystem() above, for
+// Model::GetUnitSystem() below. Any ON::LengthUnitSystem this kernel's own
+// UnitSystem enum has no matching entry for (Angstroms, Nanometers,
+// Decimeters, Dekameters, Hectometers, Megameters, Gigameters,
+// Microinches, Mils, PrinterPoints, PrinterPicas, NauticalMiles,
+// AstronomicalUnits, LightYears, Parsecs, CustomUnits, Unset - a wider set
+// than any caller of SetUnitSystem() above could ever have written through
+// this API, reachable only from a .3dm this kernel didn't itself save with
+// that unit system) falls back to Millimeters, the same default
+// ON_3dmUnitsAndTolerances itself documents.
+UnitSystem FromLengthUnitSystem(ON::LengthUnitSystem units) {
+  switch (units) {
+    case ON::LengthUnitSystem::Millimeters: return UnitSystem::Millimeters;
+    case ON::LengthUnitSystem::Centimeters: return UnitSystem::Centimeters;
+    case ON::LengthUnitSystem::Meters: return UnitSystem::Meters;
+    case ON::LengthUnitSystem::Kilometers: return UnitSystem::Kilometers;
+    case ON::LengthUnitSystem::Microns: return UnitSystem::Microns;
+    case ON::LengthUnitSystem::Inches: return UnitSystem::Inches;
+    case ON::LengthUnitSystem::Feet: return UnitSystem::Feet;
+    case ON::LengthUnitSystem::Yards: return UnitSystem::Yards;
+    case ON::LengthUnitSystem::Miles: return UnitSystem::Miles;
+    case ON::LengthUnitSystem::None: return UnitSystem::None;
+    default: return UnitSystem::Millimeters;
+  }
+}
+
 // Converts an OpenNURBS wide string to std::string, the same
 // ON_String(w)-then-cast pattern dino8-app/src/io/File3dm.cpp's own
 // FromWide() already uses for this exact conversion.
@@ -328,6 +372,14 @@ MaterialInfo Model::MaterialAt(int material_index) const {
                                 static_cast<unsigned char>(diffuse.Green()),
                                 static_cast<unsigned char>(diffuse.Blue())};
   return result;
+}
+
+void Model::SetUnitSystem(UnitSystem units) {
+  model_.m_settings.m_ModelUnitsAndTolerances.m_unit_system = ON_UnitSystem(ToLengthUnitSystem(units));
+}
+
+UnitSystem Model::GetUnitSystem() const {
+  return FromLengthUnitSystem(model_.m_settings.m_ModelUnitsAndTolerances.m_unit_system.UnitSystem());
 }
 
 Result Model::Save(const std::string& path, int version) const {

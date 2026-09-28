@@ -6569,6 +6569,56 @@ void TestModelMaterialAccessorsRoundTrip() {
   std::remove(path.c_str());
 }
 
+void TestModelUnitSystemRoundTrips() {
+  using dino8::kernel::Model;
+  using dino8::kernel::Result;
+  using dino8::kernel::UnitSystem;
+
+  // A never-SetUnitSystem() Model reports Millimeters, matching
+  // ON_3dmUnitsAndTolerances' own documented default.
+  Model default_model;
+  Check(default_model.GetUnitSystem() == UnitSystem::Millimeters,
+        "GetUnitSystem() on a Model that never called SetUnitSystem() reports Millimeters, "
+        "the same default ON_3dmUnitsAndTolerances itself documents");
+
+  // In-memory (pre-save) round trip: SetUnitSystem() is readable back
+  // immediately via GetUnitSystem(), without going through a .3dm at all.
+  Model in_memory;
+  in_memory.SetUnitSystem(UnitSystem::Inches);
+  Check(in_memory.GetUnitSystem() == UnitSystem::Inches,
+        "GetUnitSystem() reports SetUnitSystem()'s own value before any save/load round trip");
+
+  // Real .3dm round trip, one file per unit system, covering every value
+  // this kernel's UnitSystem enum has.
+  const std::vector<UnitSystem> units_to_check = {
+      UnitSystem::Millimeters, UnitSystem::Centimeters, UnitSystem::Meters,
+      UnitSystem::Kilometers,  UnitSystem::Microns,      UnitSystem::Inches,
+      UnitSystem::Feet,        UnitSystem::Yards,        UnitSystem::Miles,
+      UnitSystem::None,
+  };
+  int index = 0;
+  for (UnitSystem units : units_to_check) {
+    Model model;
+    model.SetUnitSystem(units);
+    const auto box = MakeBox(0, 0, 0, 1, 1, 1);
+    model.AddMesh(box);  // a model carrying real geometry, not an empty file
+
+    const std::string path =
+        "dino8_kernel_model_unit_system_roundtrip_test_" + std::to_string(index++) + ".3dm";
+    Check(model.Save(path) == Result::Ok, ".3dm save succeeded");
+
+    Model loaded;
+    Check(Model::Load(path, loaded) == Result::Ok, ".3dm load succeeded");
+    Check(loaded.GetUnitSystem() == units,
+          "GetUnitSystem() on a reloaded .3dm reports the exact UnitSystem SetUnitSystem() was "
+          "given before saving");
+    Check(loaded.ObjectCount() == 1,
+          "the model's geometry survives the same round trip its unit system does");
+
+    std::remove(path.c_str());
+  }
+}
+
 void TestBoxVolume() {
   const auto box = MakeBox(0, 0, 0, 2, 2, 2);
   Check(std::abs(box.Volume() - 8.0) < 1e-9, "unit-scaled box volume is correct");
@@ -37146,6 +37196,7 @@ int main() {
   TestModelAddMaterialRoundTrips();
   TestModelReadAccessorsRoundTrip();
   TestModelMaterialAccessorsRoundTrip();
+  TestModelUnitSystemRoundTrips();
   TestModelLoadRejectsMeshWithOutOfRangeFaceIndex();
   TestSplitByPlane();
   TestConvexHull();
