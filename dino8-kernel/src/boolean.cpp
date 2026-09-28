@@ -6812,4 +6812,48 @@ Brep BooleanCombineMixed(const Brep& a, const Brep& b, BooleanOp op) {
   return Brep::FromMixedFaces(out_planar, out_cyl);
 }
 
+Brep BooleanCombineMixedNAry(const std::vector<Brep>& first_group, const std::vector<Brep>& second_group,
+                              BooleanOp op) {
+  if (op == BooleanOp::SymmetricDifference) {
+    throw std::invalid_argument(
+        "dino8::kernel::BooleanCombineMixedNAry: SymmetricDifference has no well-defined N-ary fold - its own "
+        "pairwise result is a Brep::Compound of two lumps that cannot be fed into a further Union (see "
+        "BooleanCombineMixed's own SymmetricDifference doc comment above)");
+  }
+  if (first_group.empty()) {
+    throw std::invalid_argument("dino8::kernel::BooleanCombineMixedNAry: first_group is empty");
+  }
+
+  // Same "union each side sequentially, then combine the two sides" shape
+  // PARITY_MAP.md's own "Multi-body / multi-tool booleans" bullet cites the
+  // app already hand-rolling (cmd_boolean.cpp:15-38) for the mesh-boolean
+  // engine - folded here for the B-rep engine instead. Left-to-right fold
+  // order is an implementation detail, not a caller-visible contract: Union
+  // is mathematically associative/commutative regardless of pairing order
+  // (verified directly by TestBooleanCombineMixedNAryUnionOrderIndependence,
+  // which unions the same three boxes in two different orders and checks
+  // the volumes agree).
+  auto fold_union = [](const std::vector<Brep>& group) {
+    Brep acc = group.front();
+    for (size_t i = 1; i < group.size(); ++i) {
+      acc = BooleanCombineMixed(acc, group[i], BooleanOp::Union);
+    }
+    return acc;
+  };
+
+  const Brep folded_first = fold_union(first_group);
+  if (second_group.empty()) {
+    // Nothing to combine `folded_first` against - the plain
+    // multi-object BooleanUnion case (a single group, no `op` to apply).
+    if (op != BooleanOp::Union) {
+      throw std::invalid_argument(
+          "dino8::kernel::BooleanCombineMixedNAry: second_group is empty but op is not Union - "
+          "Intersection/Difference need a second operand to combine against");
+    }
+    return folded_first;
+  }
+  const Brep folded_second = fold_union(second_group);
+  return BooleanCombineMixed(folded_first, folded_second, op);
+}
+
 }  // namespace dino8::kernel

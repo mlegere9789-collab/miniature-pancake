@@ -1794,4 +1794,51 @@ Brep DeleteFaceHealConvexPlanar(const Brep& solid, int face_index);
 // a cylindrical face's own (angle, height) rectangle boundary.
 Brep BooleanCombineMixed(const Brep& a, const Brep& b, BooleanOp op);
 
+// Combines an arbitrary number of operands into ONE result via repeated
+// BooleanCombineMixed() pairwise calls - closing this category's own
+// disclosed "No kernel N-ary API" gap (PARITY_MAP.md's "Multi-body /
+// multi-tool booleans" bullet): every B-rep boolean in this file is still
+// pairwise-only, so a caller wanting the Rhino-style "union several
+// objects, then Difference/Intersection them against several more" has
+// had to hand-roll it (dino8-app's own cmd_boolean.cpp:15-38 already does
+// exactly this, but only at the mesh-boolean level) - this promotes the
+// same pattern into a single, genuinely N-ary entry point for the exact
+// B-rep engine.
+//
+// `first_group` is folded left-to-right into one solid via repeated
+// BooleanCombineMixed(..., Union). That fold order is an implementation
+// detail, not a caller-visible contract: Union is mathematically
+// associative/commutative regardless of pairing order.
+//
+//  - `second_group` empty: `op` is ignored (there is nothing to combine
+//    `first_group` against) and the folded `first_group` union is
+//    returned directly - the plain multi-object BooleanUnion case.
+//  - `second_group` non-empty: it is folded the same way, then the two
+//    folded solids are combined via exactly ONE
+//    BooleanCombineMixed(..., op) call.
+//
+// `op` may be Union, Intersection or Difference. SymmetricDifference is
+// refused (std::invalid_argument): its own pairwise result is a
+// Brep::Compound of two lumps (see BooleanCombineMixed's own
+// SymmetricDifference branch above), which could never be fed into a
+// further Union fold step even if more than two total operands were
+// supplied - there is no well-defined N-ary extension of XOR the way
+// there is for Union/Intersection/Difference. `first_group` must be
+// non-empty (std::invalid_argument - there is nothing to fold); `op` !=
+// Union with an empty `second_group` is also refused
+// (std::invalid_argument - Intersection/Difference need a second operand
+// to mean anything).
+//
+// Each individual pairwise call inherits BooleanCombineMixed's own
+// requirements and failure mode unchanged - in particular, every operand
+// in either group must itself be a single-lump Brep
+// (RefuseCompoundOperand still applies at each pairwise step this
+// function makes). This function does NOT add support for compound
+// (multi-lump) operands - that stays the real, still-disclosed gap this
+// same PARITY_MAP.md bullet also names ("B-rep XOR returns a two-lump
+// Compound... compound operands are refused by the planar/mixed
+// engines").
+Brep BooleanCombineMixedNAry(const std::vector<Brep>& first_group, const std::vector<Brep>& second_group,
+                              BooleanOp op);
+
 }  // namespace dino8::kernel
