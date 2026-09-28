@@ -2612,6 +2612,98 @@ void TestBooleanCombineGeneralBoxCylinder() {
   }
 }
 
+void TestBooleanCombineGeneralCallerTolerance() {
+  using dino8::kernel::BooleanCombineGeneral;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+
+  // Parity-map "Tolerant booleans (caller-specified tolerance)": until this
+  // session, no boolean API took a tolerance at all - every entry point in
+  // boolean_general.cpp default-constructed its own IntersectOptions
+  // internally. BooleanCombineGeneral() now takes an optional `tolerance`
+  // (the SSX Newton-refinement accuracy every intersection-curve point is
+  // polished to - dino8/kernel/surface_intersect.h's own
+  // IntersectOptions::tolerance). This test proves the parameter is a
+  // genuine, wired-through control, not a decorative no-op: on the
+  // box+cylinder fixture (TestBooleanCombineGeneralBoxCylinder's own
+  // fixture, reused verbatim), Intersection's own result is ENTIRELY the
+  // two z=+-1 circles where the box's top/bottom planes cut the cylinder
+  // wall - every one of the result's own ON_BrepVertex points (BuildLoop()
+  // in this file builds every edge as a plain ON_LineCurve between
+  // consecutive chain/loop points, so the vertices themselves - not a
+  // single dense polyline curve - are where each SSX chain's own
+  // Newton-refined points end up) is a point of the box's own kept
+  // fragments (the cylinder wall clipped to [-1,1], plus the box's own
+  // top/bottom disks) - the box's side walls and the cylinder's own
+  // original caps are both entirely outside this op's kept fragments, so
+  // NO vertex here comes from anywhere but these two freshly-solved SSX
+  // circles. Measuring every vertex's own distance from the cylinder's
+  // axis (exactly `r` on the true analytic circle) directly measures this
+  // engine's own SSX solve accuracy - not tessellation density, which
+  // plays no part here at all.
+  const Brep box = Brep::Box(-2, -2, -1, 2, 2, 1);
+  const Brep cyl = MakeCylinderZForBoxCylinderTest(0, 0, -2, 2, 1.0);
+  const double r = 1.0;
+
+  auto max_axis_deviation = [&](const Brep& result) {
+    double worst = 0.0;
+    const ON_Brep& raw = result.raw();
+    for (int v = 0; v < raw.m_V.Count(); ++v) {
+      const ON_3dPoint& p = raw.m_V[v].point;
+      const double dist = std::sqrt(p.x * p.x + p.y * p.y);
+      worst = std::max(worst, std::abs(dist - r));
+    }
+    Check(raw.m_V.Count() > 0, "box+cylinder Intersection's result carries at least one vertex to "
+                               "measure (fixture sanity check)");
+    return worst;
+  };
+
+  const double tight_tolerance = 1e-7;
+  const double loose_tolerance = 0.05;
+  const Brep tight = BooleanCombineGeneral(box, cyl, BooleanOp::Intersection, tight_tolerance);
+  const Brep loose = BooleanCombineGeneral(box, cyl, BooleanOp::Intersection, loose_tolerance);
+  Check(tight.raw().IsValid(), "box+cylinder Intersection at a tight caller tolerance is still a valid ON_Brep");
+  Check(loose.raw().IsValid(), "box+cylinder Intersection at a loose caller tolerance is still a valid ON_Brep");
+
+  const double tight_dev = max_axis_deviation(tight);
+  const double loose_dev = max_axis_deviation(loose);
+  Check(tight_dev < 1e-4,
+        "a tight caller tolerance (1e-7) leaves every SSX edge point within 1e-4 of the true cylinder "
+        "radius - the Newton refinement genuinely honors the requested precision");
+  Check(loose_dev > 10.0 * tight_dev,
+        "a loose caller tolerance (0.05) measurably degrades SSX accuracy relative to the tight case - "
+        "`tolerance` is wired all the way through to the actual refinement, not a decorative parameter");
+  Check(loose_dev < 0.2,
+        "the loose tolerance's own residual is still bounded roughly by the requested tolerance's own "
+        "order of magnitude, not unboundedly worse");
+
+  // Backward compatibility: omitting `tolerance` must reproduce the exact
+  // prior behavior (IntersectOptions's own default of 0.001) bit-for-bit -
+  // every existing caller in this file (and every other test in this
+  // suite) calls BooleanCombineGeneral() with no fourth argument at all.
+  const Brep default_arg = BooleanCombineGeneral(box, cyl, BooleanOp::Intersection);
+  const Brep explicit_default = BooleanCombineGeneral(box, cyl, BooleanOp::Intersection, 0.001);
+  Check(default_arg.FaceCount() == explicit_default.FaceCount() &&
+            default_arg.raw().m_E.Count() == explicit_default.raw().m_E.Count(),
+        "omitting `tolerance` produces the identical topology as passing the explicit prior default "
+        "(0.001) - existing callers are unaffected");
+  Check(std::abs(default_arg.TessellateToClosedMesh(16, 64).Volume() -
+                 explicit_default.TessellateToClosedMesh(16, 64).Volume()) < 1e-12,
+        "omitting `tolerance` produces bit-identical geometry to the explicit prior default - this is a "
+        "purely additive, opt-in parameter");
+
+  // A non-positive tolerance is a caller error, not a silently-accepted
+  // degenerate case - same typed-refusal convention this file already uses
+  // for SymmetricDifference/faceless operands.
+  bool threw = false;
+  try {
+    BooleanCombineGeneral(box, cyl, BooleanOp::Intersection, 0.0);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "a non-positive tolerance throws std::invalid_argument instead of silently misbehaving");
+}
+
 void TestBooleanCombineGeneralSphereBox() {
   using dino8::kernel::BooleanCombineGeneral;
   using dino8::kernel::BooleanOp;
@@ -34385,6 +34477,7 @@ int main() {
   TestBooleanCombineGeneralBoxBox();
   TestBooleanCombineGeneralCoplanarBoxes();
   TestBooleanCombineGeneralBoxCylinder();
+  TestBooleanCombineGeneralCallerTolerance();
   TestBooleanCombineGeneralSphereBox();
   TestBooleanCombineGeneralObliqueCylinder();
   TestBooleanCombineGeneralBoxCone();

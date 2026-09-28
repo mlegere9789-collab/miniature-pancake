@@ -2781,16 +2781,20 @@ std::vector<FaceFrags> FragmentFaces(const ON_Brep& brep, int n, std::vector<std
 
 }  // namespace
 
-Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op) {
+Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op, double tolerance) {
   if (op == BooleanOp::SymmetricDifference) {
     throw std::invalid_argument(
         "dino8::kernel::BooleanCombineGeneral: SymmetricDifference is not "
         "yet implemented - see boolean_general.h's own disclosed scope");
   }
+  if (!(tolerance > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::BooleanCombineGeneral: tolerance must be positive");
+  }
 
   const ON_Brep& ba = a.raw();
   const ON_Brep& bb = b.raw();
   IntersectOptions opt;
+  opt.tolerance = tolerance;
 
   const BoundingBox tbb_a = a.GetTightBoundingBox();
   const BoundingBox tbb_b = b.GetTightBoundingBox();

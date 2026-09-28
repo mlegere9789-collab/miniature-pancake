@@ -568,6 +568,43 @@ left at 71.4% — consistent with how every same-day follow-up note above
 already only moves the kernel-only headline, never that second one. No
 other row was touched this pass.
 
+**New follow-up (this session):** kernel: Boolean operations' own
+`BooleanCombineGeneral(a, b, op, tolerance)` (boolean_general.h/.cpp) now
+takes an optional caller-specified `tolerance` — until now every entry
+point in that file (`BooleanCombineGeneral`, `ImprintFaces`, `SplitBySheet`)
+default-constructed its own internal `IntersectOptions` with no way for a
+caller to loosen or tighten the SSX Newton-refinement accuracy at all.
+Defaults to the prior implicit 0.001, so every existing caller is
+bit-for-bit unaffected — verified directly (`TestBooleanCombineGeneral
+CallerTolerance`, tests/test_basic.cpp): omitting the parameter reproduces
+identical topology (face/edge counts) and a bit-identical tessellated
+volume to passing the explicit prior default. The parameter is a genuine,
+wired-through control, not a decorative no-op: on the box+cylinder
+Intersection fixture (the same fixture `TestBooleanCombineGeneralBox
+Cylinder` uses), whose result is entirely two SSX-computed circles where
+the box's top/bottom planes cut the cylinder wall, a tight tolerance
+(1e-7) keeps every result vertex within 1e-4 of the true cylinder radius
+while a loose one (0.05) measurably degrades that same measurement by
+more than 10x — a real, direct measurement of the actual Newton-refinement
+solve accuracy, not tessellation density (this engine's edges are built
+one straight `ON_LineCurve` segment at a time between consecutive
+Newton-refined chain/vertex points, so the brep's own vertices are exactly
+where that accuracy shows up). A non-positive tolerance now throws
+`std::invalid_argument`, the same typed-refusal convention this file
+already uses for `SymmetricDifference`/faceless operands. Full
+`dino8_kernel_tests` suite (via `ctest`): 100% passing, 0 regressions.
+
+Still `partial`, not `present`, on the "Tolerant booleans" item (detailed
+in its own bullet below): only `BooleanCombineGeneral` takes this
+parameter — `BooleanCombinePlanar`/`BooleanCombineMixed` and
+`ImprintFaces`/`SplitBySheet` still each hardcode their own internal
+tolerance with no caller control at all, and there is still no gap-healing
+of imprecise operands. Net effect on the scores below: kernel: Boolean
+operations' own item count is unchanged (8/15/2/25, 62.0%) — this upgrades
+the "Tolerant booleans" bullet's own evidence, not its bucket, since the
+item was already `partial` and stays `partial`. The kernel-only headline
+stays at 65.4%; no other row was touched this pass.
+
 ### Kernel category gaps (missing / partial items, with evidence)
 
 **kernel: Topology & data structure** (topology):
@@ -608,7 +645,7 @@ other row was touched this pass.
 - [partial] Tangent / grazing contact handling — the mesh engine retries once with adaptive tolerance on failure (`AdaptiveManifoldTolerance`, boolean.cpp:149-170). The B-rep engines throw at grazing incidence rather than resolving it.
 - [partial] Multi-body / multi-tool booleans (N operands per side, multi-lump results and operands) — the app unions each side sequentially before combining (cmd_boolean.cpp:15-38). B-rep XOR returns a two-lump Compound, but compound operands are refused by the planar/mixed engines (boolean.cpp:815-822) and silently unguarded (not even refused) by the general engine. No kernel N-ary API.
 - [partial] Result validity (closed manifold / ON_Brep IsValid / IsSolid) — the mesh contract is fuzz-checked (IsClosedManifold on every result). Planar results pass IsValid/IsSolid. General-engine results close in 54 of 76 cases (see the corrected figure above), not watertight otherwise.
-- [partial] Tolerant booleans (caller-specified tolerance, gap-healing of imprecise operands) — no boolean API takes a tolerance; the general engine uses a fixed `tol = 1e-6` (boolean_general.cpp:678). The only adaptivity is the mesh-engine retry. Recorded edge tolerances are written (e.g. boolean_general.cpp:2250 sets `edge.m_tolerance = 0.0`) but never read back as an input.
+- [partial] Tolerant booleans (caller-specified tolerance, gap-healing of imprecise operands) — **corrected: `BooleanCombineGeneral(a, b, op, tolerance)` (boolean_general.h/.cpp) now takes an optional caller `tolerance`**, threaded straight into the internal `IntersectOptions::tolerance` every SSX intersection-curve point is Newton-refined to (defaults to the prior implicit 0.001, so every existing caller is unaffected — verified bit-identical, `TestBooleanCombineGeneralCallerTolerance`, tests/test_basic.cpp). Still partial: `BooleanCombinePlanar`/`BooleanCombineMixed` (boolean.cpp) and `ImprintFaces`/`SplitBySheet` (boolean_general.cpp) each still hardcode their own internal tolerance with no caller control at all; there is still no gap-healing of imprecise operands (the other half of this item); the general engine's own separate bbox/coincident-face-detection epsilon (`const double tol = 1e-6`, e.g. boolean_general.cpp:2800) is a different, still-fixed concern from the SSX solve tolerance above; and the only OTHER adaptivity anywhere in this category is the mesh engine's own `AdaptiveManifoldTolerance` retry.
 - [partial] Keep/split options (BooleanSplit solid-by-solid keeping all pieces, DeleteInput/keep tools, side selection) — BooleanSplit/MeshSplit/MeshBooleanSplit (cmd_boolean.cpp:410-415) are all plane-split only (kernel `SplitByPlane`). The new `SplitByObjectCommand` (see kernel: Feature operations and kernel: Transformations) is a general cutting-object split with true KeepAll semantics, but it is app-level mesh-boolean, not this item's B-rep solid-by-solid split.
 - [partial] Sheet/solid trim (open surface as cutter through a solid; trimming a sheet body by a solid) — `dino8::kernel::SplitBySheet(solid, sheet)` (boolean_general.h; boolean_general.cpp) splits a closed `solid` into the two pieces on either side of an OPEN `sheet` (one or more trimmed faces, no closed-solid requirement — unlike every OTHER boolean engine here, which still assumes closed two-shell solids, boolean.cpp:81), each piece capped with the portion of `sheet` inside `solid`. Reuses `BooleanCombineGeneral`'s own SSX-fragmentation machinery: `solid`'s fragments are bucketed by a closest-point-plus-normal-sign test against `sheet` (not ray-cast parity, since `sheet` may have no volume), `sheet`'s own fragments are ray-cast in/out of `solid` as usual and its IN fragments become the new caps. Verified on a box fully severed by a flat open planar sheet larger than the box's own footprint (both halves valid closed B-reps, volumes summing back to the original exactly) and a disjoint-sheet case (the whole untouched solid on one side, the empty Brep on the other) (`TestSplitBySheet*`, tests/test_basic.cpp). Still partial: the app's own `cmd_boolean.cpp` still skips every non-closed operand outright ("not a closed solid; skipped", cmd_boolean.cpp:21,151,193,305) and does not call this; only a flat cutting plane is tested (a genuinely curved `sheet` is unexercised); it inherits `BooleanCombineGeneral`'s own scope limits (one crossing chain per opposing face pair, genus-0 faces); and this item's OTHER half — trimming a sheet body BY a solid (cutting the sheet's own surface down, not splitting a volume) — is not implemented at all.
 - [partial] Non-manifold boolean results (edge/vertex-touching unions, single-body XOR, 3+ faces per edge) — the B-rep engines throw "an edge is shared by 3 or more faces" instead of building non-manifold output; XOR is an unwelded two-lump Compound; the mesh XOR keeps duplicated vertices.

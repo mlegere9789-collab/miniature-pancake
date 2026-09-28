@@ -35,7 +35,21 @@
 
 namespace dino8::kernel {
 
-Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op);
+// `tolerance` is the SSX Newton-refinement accuracy (dino8/kernel/
+// surface_intersect.h's own IntersectOptions::tolerance - the max |S1 - S2|
+// every intersection-curve point is polished to before it becomes a
+// polyline edge in the result) - the parity-map "Tolerant booleans
+// (caller-specified tolerance)" item: previously every entry point in this
+// file default-constructed its own IntersectOptions with no way for a
+// caller to loosen or tighten it. Defaults to IntersectOptions's own
+// default (0.001), reproducing this function's exact prior behavior for
+// every existing caller that doesn't pass one. Tightening it measurably
+// improves how closely a curved result's own edges (dense polylines, see
+// this file's own top comment) sit on the true analytic intersection - it
+// does NOT gap-heal imprecise operands or change this engine's own other
+// disclosed scope limits (one crossing chain per face pair, genus-0
+// faces).
+Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op, double tolerance = 0.001);
 
 // Face-face imprint (Parasolid PK_BODY_imprint / ACIS imprint): splits
 // `target`'s own faces wherever they cross `tool`'s faces, WITHOUT removing
