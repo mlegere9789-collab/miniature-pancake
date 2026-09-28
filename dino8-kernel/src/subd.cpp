@@ -79,6 +79,26 @@ Mesh SubD::ToApproximateMesh() const {
     throw std::runtime_error(
         "dino8::kernel::SubD::ToApproximateMesh: ON_SubD::GetControlNetMesh failed");
   }
+  // GetControlNetMesh() emits one ON_Mesh vertex per FACE-CORNER, not one
+  // per shared ON_SubDVertex - confirmed directly: a SubD built by sharing
+  // an existing vertex across faces added incrementally (e.g. Symmetrize()'s
+  // own FindOrAddVertex/FindOrAddFace welds at the SubD level - VertexCount()
+  // already reports the true, deduplicated count) still comes back from
+  // this call with duplicate ON_Mesh vertices at bit-identical positions
+  // wherever that shared vertex is a corner of more than one face, so the
+  // exported mesh fails IsClosedManifold() even though the SubD itself is a
+  // genuinely closed, manifold body (Check() reports 0 naked/non-manifold
+  // edges). A SubD built directly via FromControlMesh() from an
+  // already-closed mesh doesn't hit this (its own round trip is already
+  // exact - see TestSubDMeshRoundTripIsExactAtLevelZero), so this welds
+  // ONLY when there's something to weld: CombineIdenticalVertices() merges
+  // bit-identical positions (ignoring normals/texture coordinates - this is
+  // a topological "approximate" mesh, not a shaded render output, and
+  // per-face-corner normals are expected to differ at a shared vertex until
+  // an actual smoothing pass runs) and reports whether it changed anything,
+  // so an already-deduplicated export (nothing coincident to merge) is
+  // untouched.
+  result.raw().CombineIdenticalVertices(/*bIgnoreVertexNormals=*/true, /*bIgnoreTextureCoordinates=*/true);
   return result;
 }
 
