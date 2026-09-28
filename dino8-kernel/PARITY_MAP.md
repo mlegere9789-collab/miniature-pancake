@@ -1,6 +1,6 @@
 # Fossilith / Dino 8 parity map (2026-09-28)
 
-**Fossilith vs Parasolid/ACIS = 66.0% (weighted, verified); Dino 8 vs Rhino 8 + AutoCAD 2027 = 71.5%.**
+**Fossilith vs Parasolid/ACIS = 66.1% (weighted, verified); Dino 8 vs Rhino 8 + AutoCAD 2027 = 71.5%.**
 
 This run recomputes the parity map from scratch against the live repository at
 `/home/user/miniature-pancake` on `claude/pdf-audit-i2bvwm`, superseding the
@@ -490,7 +490,7 @@ below alongside the other change's own headline delta.
 | Blending & chamfering | 1.5 | 24 | 5 | 18 | 1 | 58.3% |
 | kernel: Sweeping, lofting, extruding, revolving | 1 | 29 | 6 | 21 | 2 | 56.9% |
 | kernel: Offsetting, shelling, thickening | 1 | 27 | 0 | 26 | 1 | 48.1% |
-| kernel: Local / direct-edit operations | 1 | 28 | 7 | 19 | 2 | 58.9% |
+| kernel: Local / direct-edit operations | 1 | 28 | 7 | 20 | 1 | 60.7% |
 | kernel: Intersections & projections | 1.5 | 29 | 13 | 14 | 2 | 69.0% |
 | kernel: Healing, repair, validation, tolerant modeling | 1 | 30 | 19 | 10 | 1 | 80.0% |
 | kernel: Mass properties & spatial queries | 1 | 30 | 16 | 14 | 0 | 76.7% |
@@ -935,6 +935,26 @@ Offsetting category's own OffsetSolidConvexPlanar/OffsetRefit follow-ups
 above already use. The top-of-document headline numbers are therefore
 unaffected by this session's work and stay at 66.0% / 71.5%.
 
+**Eleventh same-day follow-up (this session):** `MoveVertexConvexPlanar`
+(dino8-kernel/src/boolean.cpp, dino8-kernel/include/dino8/kernel/boolean.h)
+landed, upgrading **kernel: Local / direct-edit operations**'s own "Move a
+single B-rep vertex directly" item from missing to partial (7/19/2/28,
+58.9% → 7/20/1/28, 60.7%) — detailed in that category's own bullet list
+below. Unlike the Eighth/Ninth follow-ups above (which each computed their
+own isolated delta against the original 65.4% baseline because they landed
+concurrently with other same-day sessions), this one lands sequentially on
+top of the branch that already carries every prior follow-up above,
+including the Tenth (SubD::ExpandFaces, which left the headline unchanged
+at 66.0%/71.5%), so its delta is added directly to the CURRENT
+top-of-document headline rather than re-derived from 65.4%: localops' own
+delta ((7+10)/28 − (7+9.5)/28) · 100 = 1.785714pp, weight 1, 17.75 total
+kernel weight, contributes +0.1006pp, landing at 66.0% + 0.1006pp →
+**66.1%**. Full `ctest` suite re-run clean: 100% passing, 0 regressions.
+The combined Dino 8 vs Rhino 8 + AutoCAD 2027 headline is unaffected by
+this item (a kernel-only category with no app-level command calling it yet
+- a grep for movevertex/dragvertex under `dino8-app/src` finds nothing)
+and stays at 71.5%. No other row was touched this pass.
+
 ### Kernel category gaps (missing / partial items, with evidence)
 
 **kernel: Topology & data structure** (topology):
@@ -1084,9 +1104,9 @@ unaffected by this session's work and stay at 66.0% / 71.5%.
 - [partial] Imprint curve / face onto a body face (add edges without changing geometry) — **corrected: upgraded from missing.** Kernel `ImprintFaces(target, tool)` (boolean_general.h:61; boolean_general.cpp:3086) landed before this window and was already reflected under the sibling Boolean-operations category, but this category's own bullet was never updated to match and still claimed "a case-insensitive grep for imprint finds no hits anywhere" — false as of current HEAD. It splits `target`'s own faces wherever they cross a `tool` body's faces while keeping every fragment unconditionally (no ray-cast classification, no material ever removed), verified on a closed-loop fixture (box pierced by a cylinder) and an open-chain fixture (two overlapping boxes), each direction, plus a disjoint-operand no-op and a faceless-operand throw. Still partial: this is face-onto-face imprint only (no curve-onto-face imprint exists anywhere), it inherits `BooleanCombineGeneral`'s own scope limits (one crossing chain per opposing face pair, genus-0 faces, no self-crossing chains), only `target`'s faces are split per call, and no app command exposes it yet.
 - [missing] Merge faces on the same non-planar surface (cylinder/tangent split faces) — `Brep::MergeCoplanarFaces` explicitly leaves a curved or merely-tangent (not coplanar) pair untouched; the app's `MergeFacesInto` returns -1 for non-planar faces.
 - [partial] Push/pull a face (extrude face and merge/cut into its own body) — **corrected: upgraded from missing.** Kernel `PushPullFace(solid, face_index, distance)` (boolean.h/boolean.cpp) landed this session: a push (`distance > 0`) genuinely extrudes new side-wall faces into previously-empty space without touching any other face (unlike `OffsetFace`, which always re-extends/re-trims neighbours in place); a pull (`distance < 0`) retrims every neighbour perpendicular to the pushed face via an exact single half-space clip and adds no new geometry. Direct topological surgery, not a boolean — `Brep::Extrude()`+`BooleanCombinePlanar()` was tried first and found to fail (a swept profile is only piecewise planar; even a hand-built all-planar prism makes `BooleanCombinePlanar()` throw on the flush, zero-overlap coincident face this operation always creates, a disclosed gap in that engine's own coincident-face handling). No convexity precondition on `solid` (verified on a genuinely non-convex L-shaped prism, both directions). Still partial: planar-faced solids only (`PlanarFaces()`'s own precondition), and a pull refuses an oblique (non-perpendicular) neighbour rather than attempting a general re-intersection.
-- [missing] Move a single B-rep vertex directly (drag one topological corner in place; adjacent edges reshape around it) — `TransformSubObjects`'s Brep branch (SubObjectEdit.cpp:547-556) still collects only `Face` and `Edge` refs and returns false otherwise. The kernel has only a query (`Brep::EdgesOfVertex`), no vertex-move op.
+- [partial] Move a single B-rep vertex directly (drag one topological corner in place; adjacent edges reshape around it) — **upgraded from missing.** `MoveVertexConvexPlanar(solid, old_position, new_position)` (dino8-kernel/include/dino8/kernel/boolean.h; dino8-kernel/src/boolean.cpp) now exists: `old_position` identifies the vertex to move by matching it (within tolerance) against every face's own `PlanarFaces()` loop, every incident face's plane is re-derived from its own (now-moved) corners, and every OTHER face — including one merely adjacent to the moved vertex through a shared edge but not itself touching it — is re-clipped against the moved planes via the same `ClipConvexPolygon` half-space-intersection reconstruction `OffsetFace()`/`DraftFacesConvexPlanar()`/`ReplaceFacePlaneConvexPlanar()` already share, which is how "adjacent edges reshape around it" falls out for free. Verified on a square pyramid (apex shared by all 4 triangular side faces, the vertex where the most faces meet at once): moving the apex to a position that is both taller AND shifted off-center (not a pure translate along any one face's own normal) matches the exact closed-form pyramid volume `(1/3)*base_area*height` for an oblique apex — a classical fact independent of the apex's own x/y position — while the (non-incident) base face keeps exactly its original 4 vertices and each side face keeps its own two untouched base corners plus the new apex position exactly (`TestMoveVertexConvexPlanarPyramidApexMatchesExactVolumeAndLeavesBaseUntouched`). Refusal cases are also covered (`TestMoveVertexConvexPlanarRefusesInvalidInput`): an `old_position` matching no vertex, a vertex incident to a non-triangular (e.g. box-corner quad) face, a move that flips an incident triangle's own outward orientation, and a move that collapses an incident triangle to ~0 area. Still partial, and deliberately narrow: convex planar-faced solids only (the same scope every sibling in this family already has), and — unlike those siblings, which only ever move a whole face's plane — every face INCIDENT to the moved vertex must be a triangle, since a triangle's plane is always well-defined with one corner free to move anywhere while a 4+-vertex face isn't guaranteed to stay planar; this covers the common tetrahedron/pyramid-apex/triangulated-corner case but not a box corner (4 vertices per incident face) directly. No app command calls it yet — a grep for movevertex/dragvertex in dino8-app/src still finds nothing.
 
-*Note on this category's counts: the table above shows 7 present / 19 partial / 2 missing (28 items total). This corrects a pre-existing arithmetic slip inherited from the last measurement (the table declared 17 partial against a physically-written bullet list that only ever had 16 gap bullets); combined with the `ImprintFaces` upgrade (missing→partial), the `PushPullFace` upgrade (missing→partial), the `MergeContiguousEdges`/`MergeAllContiguousEdges` upgrade (partial→present, this category's own "Merge contiguous tangent edges" bullet — see the healing category's own bullet for the full detail), the `DraftFacesConvexPlanar` upgrade of the separate "Taper / draft face" item (also missing→partial) — three parallel-session additions, see this document's own same-day session notes for all three — and, this session, the `ReplaceFacePlaneConvexPlanar` upgrade of the separate "Replace face" item (missing→partial, see that bullet above for the full detail) — the internally-consistent result is 7/19/2.*
+*Note on this category's counts: the table above shows 7 present / 20 partial / 1 missing (28 items total). This corrects a pre-existing arithmetic slip inherited from the last measurement (the table declared 17 partial against a physically-written bullet list that only ever had 16 gap bullets); combined with the `ImprintFaces` upgrade (missing→partial), the `PushPullFace` upgrade (missing→partial), the `MergeContiguousEdges`/`MergeAllContiguousEdges` upgrade (partial→present, this category's own "Merge contiguous tangent edges" bullet — see the healing category's own bullet for the full detail), the `DraftFacesConvexPlanar` upgrade of the separate "Taper / draft face" item (also missing→partial) — three parallel-session additions, see this document's own same-day session notes for all three — the `ReplaceFacePlaneConvexPlanar` upgrade of the separate "Replace face" item (missing→partial, see that bullet above for the full detail) — and, this session, the `MoveVertexConvexPlanar` upgrade of this category's own "Move a single B-rep vertex directly" item (missing→partial, see that bullet above for the full detail) — the internally-consistent result is 7/20/1.*
 
 **kernel: Intersections & projections** (intersections):
 - [partial] Analytic/analytic SSX closed forms (plane/plane, plane/cylinder, cylinder/cylinder, plane/sphere, cone, torus) — closed forms still exist only inside `BooleanCombineMixed`'s private splitters (`SplitCylindricalByObliquePlane`, `SplitCylindricalByParallelCylinder`, Steinmetz/unequal-cylinder splitters) and the planar boolean's plane/plane path. No public analytic-SSX API, and no plane/sphere, cone or torus closed form (the only general path is the mesh-seeded `IntersectSurfaces`).

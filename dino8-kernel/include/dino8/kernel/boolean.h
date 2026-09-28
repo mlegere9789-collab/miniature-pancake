@@ -733,6 +733,51 @@ Brep DraftFacesConvexPlanar(const Brep& solid, const std::vector<int>& face_indi
 // faces' own half-spaces), out of scope here exactly as in OffsetFace().
 Brep ReplaceFacePlaneConvexPlanar(const Brep& solid, int face_index, const ON_Plane& new_plane);
 
+// PARITY_MAP's kernel: Local / direct-edit operations "Move a single B-rep
+// vertex directly (drag one topological corner in place; adjacent edges
+// reshape around it)" gap - previously missing entirely (the kernel had
+// only a query, `Brep::EdgesOfVertex`, no vertex-move op at all).
+//
+// `old_position` identifies the vertex to move: every face in
+// `solid.PlanarFaces()` whose own `loop` contains a point within this
+// function's own relative tolerance of `old_position` is treated as
+// incident to it (matched by position, the same way every other function
+// in this family identifies geometry - `solid.PlanarFaces()` carries no
+// separate topological vertex-index concept of its own). Every incident
+// face's own boundary loop has that one matched point replaced by
+// `new_position` and its plane re-derived from its (now-moved) three
+// corners; every other face - including one merely ADJACENT to the moved
+// vertex through a shared edge, but not itself touching it - keeps its
+// own original plane and has its boundary re-clipped against the moved
+// planes exactly as `ReplaceFacePlaneConvexPlanar()` re-clips every face
+// against a single swapped plane, which is how "adjacent edges reshape
+// around it" falls out for free rather than needing separate bookkeeping.
+//
+// Deliberately narrow, honest scope, not a general vertex-move: every face
+// incident to the moved vertex must be a TRIANGLE (exactly 3 vertices).
+// With only one vertex moving, a triangle's other two corners already fix
+// a plane no matter where the third moves - always well-defined - but a
+// face with 4+ vertices would need to stay planar with only 3 (or fewer)
+// of its corners fixed, which isn't guaranteed for an arbitrary
+// `new_position` and would otherwise silently produce a non-planar face
+// this class cannot represent; this throws instead of guessing. This
+// covers the common tetrahedron/pyramid-apex/triangulated-corner case (a
+// vertex where the incident faces already happen to be triangles) without
+// overclaiming a box corner (four vertices per face) move, which stays
+// unsupported here.
+//
+// Same convex-solid precondition and failure mode as
+// `OffsetFace()`/`DraftFacesConvexPlanar()`/`ReplaceFacePlaneConvexPlanar()`
+// above, plus: throws std::invalid_argument if `old_position` doesn't land
+// within tolerance of any vertex of `solid.PlanarFaces()`; if any incident
+// face isn't a triangle; if `new_position` would flip an incident
+// triangle's own outward orientation (its own newly-computed normal
+// disagreeing in sign with its original one - moving the vertex through
+// the plane of its own opposite edge); or if `new_position` collapses any
+// face's own new boundary (including an incident one) to fewer than 3
+// vertices or ~0 area, out of scope here exactly as in the siblings above.
+Brep MoveVertexConvexPlanar(const Brep& solid, const Point3d& old_position, const Point3d& new_position);
+
 // Exact B-rep boolean between two solids where either (or both) may have
 // a CYLINDRICAL face, not just planar ones - what closes the gap
 // BooleanCombinePlanar's own PlanarFaces()-only precondition leaves open:

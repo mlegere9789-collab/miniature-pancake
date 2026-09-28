@@ -15927,6 +15927,186 @@ void TestReplaceFacePlaneConvexPlanarRefusesInvalidInput() {
         "fewer than 3 vertices or ~0 area");
 }
 
+// Builds one PlanarFace from `loop` (already in the right cyclic order),
+// orienting it outward by comparing the raw cross-product normal against
+// the direction from `solid_centroid` to this face's own centroid -
+// avoids having to hand-verify winding order for every face of a
+// hand-built solid below (a mistake there would silently build an
+// inward-facing face IsConvex() would then reject for an unrelated
+// reason).
+dino8::kernel::Brep::PlanarFace MakeOutwardTestFace(std::vector<dino8::kernel::Point3d> loop,
+                                                     dino8::kernel::Point3d solid_centroid) {
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+  Vector3d n = ON_CrossProduct(loop[1] - loop[0], loop[2] - loop[0]);
+  n.Unitize();
+  double cx = 0.0, cy = 0.0, cz = 0.0;
+  for (const Point3d& p : loop) {
+    cx += p.x;
+    cy += p.y;
+    cz += p.z;
+  }
+  const double m = static_cast<double>(loop.size());
+  const Point3d face_centroid(cx / m, cy / m, cz / m);
+  if (ON_DotProduct(n, face_centroid - solid_centroid) < 0.0) {
+    std::reverse(loop.begin(), loop.end());
+    n = -n;
+  }
+  dino8::kernel::Brep::PlanarFace f;
+  f.loop = std::move(loop);
+  f.plane = ON_Plane(f.loop[0], n);
+  return f;
+}
+
+// A right square pyramid: base [0,10]x[0,10] at z=0 (face 0), apex at
+// `apex` (faces 1-4, one triangle per base edge in order (0,1)-(1,2)-
+// (2,3)-(3,0)). Every side face is a triangle, the shape this session's
+// new MoveVertexConvexPlanar() requires of every face incident to the
+// vertex it moves - and the apex is the one vertex where ALL FOUR side
+// faces meet, exercising "every incident face reshapes" at once, not just
+// a single face.
+dino8::kernel::Brep MakeTestPyramid(dino8::kernel::Point3d apex) {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  const std::vector<Point3d> b = {Point3d(0, 0, 0), Point3d(10, 0, 0), Point3d(10, 10, 0), Point3d(0, 10, 0)};
+  const Point3d solid_centroid(5, 5, 1);  // any point genuinely inside the pyramid
+  std::vector<Brep::PlanarFace> faces;
+  faces.push_back(MakeOutwardTestFace({b[0], b[1], b[2], b[3]}, solid_centroid));  // base
+  for (size_t i = 0; i < 4; ++i) {
+    const size_t j = (i + 1) % 4;
+    faces.push_back(MakeOutwardTestFace({b[i], b[j], apex}, solid_centroid));
+  }
+  return Brep::FromPlanarFaces(faces);
+}
+
+// PARITY_MAP's kernel: Local / direct-edit operations "Move a single B-rep
+// vertex directly" gap - previously entirely missing. Moves the pyramid's
+// own apex (shared by all 4 triangular side faces) from directly above
+// the base's own center to a position that is BOTH taller AND off-center
+// - not a pure translate along any one face's own normal, so this is
+// genuinely a 3D vertex move, not something OffsetFace()/
+// ReplaceFacePlaneConvexPlanar() could already express in one call.
+//
+// Volume is an independent closed-form check: a pyramid's volume is
+// (1/3)*base_area*height regardless of how far off-center the apex sits
+// (`height` is the apex's own perpendicular distance to the base plane) -
+// a classical exact fact, not something MoveVertexConvexPlanar's own
+// arithmetic could accidentally satisfy by coincidence.
+void TestMoveVertexConvexPlanarPyramidApexMatchesExactVolumeAndLeavesBaseUntouched() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::MoveVertexConvexPlanar;
+  using dino8::kernel::Point3d;
+
+  const Point3d old_apex(5, 5, 10);
+  const Point3d new_apex(8, 3, 15);  // taller AND shifted off-center
+  const Brep pyramid = MakeTestPyramid(old_apex);
+  const Brep moved = MoveVertexConvexPlanar(pyramid, old_apex, new_apex);
+
+  Check(moved.FaceCount() == 5, "MoveVertexConvexPlanar keeps the pyramid's own 5-face topology (no face vanishes)");
+
+  const double expected_volume = (1.0 / 3.0) * 100.0 * 15.0;  // base_area * height / 3, height = new apex's own z
+  const double measured_volume = PlanarBrepVolumeExact(moved);
+  Check(std::fabs(measured_volume - expected_volume) / expected_volume < 1e-9,
+        "the moved pyramid's volume matches the exact closed-form (1/3)*base_area*height for an off-center apex, "
+        "not merely a plausible-looking number");
+
+  const std::vector<Brep::PlanarFace> original = pyramid.PlanarFaces();
+  const std::vector<Brep::PlanarFace> result = moved.PlanarFaces();
+  Check(result.size() == 5, "same number of faces to compare pointwise");
+
+  // Base (face 0) is not incident to the apex, so it's completely
+  // untouched geometrically - though not necessarily starting at the same
+  // loop INDEX: unlike TestReplaceFacePlaneConvexPlanarMatchesOffsetFaceForPureTranslate's
+  // own pointwise comparison (which compares two results built by the
+  // SAME clip algorithm from the SAME planes, hence genuinely
+  // index-aligned), this compares against the ORIGINAL hand-built fixture
+  // loop from MakeTestPyramid() - a different construction, so only an
+  // order-independent point-SET comparison is a fair test. (Geometrically
+  // guaranteed to be the exact same 4 points regardless: each side plane's
+  // own intersection line with the z=0 base plane runs through its own
+  // fixed pair of base corners, b_i and b_j, neither of which moved - so
+  // that intersection line, and hence the base polygon each side
+  // half-space clips it to, is completely independent of where the apex
+  // that plane also passes through sits.)
+  auto loop_contains = [](const std::vector<Point3d>& loop, const Point3d& p) {
+    for (const Point3d& q : loop) {
+      if (q.DistanceTo(p) < 1e-9) return true;
+    }
+    return false;
+  };
+  Check(result[0].loop.size() == original[0].loop.size(), "the base face keeps the same vertex count");
+  for (const Point3d& p : original[0].loop) {
+    Check(loop_contains(result[0].loop, p),
+          "every original base-face vertex is still present after moving the apex - it isn't incident to the "
+          "moved vertex");
+  }
+
+  // Each side face (1-4) is still a triangle: the two base corners it
+  // started with, unchanged, plus the new apex position exactly.
+  for (size_t i = 1; i <= 4; ++i) {
+    Check(result[i].loop.size() == 3, "each side face is still a triangle after moving its own apex corner");
+    Check(loop_contains(result[i].loop, new_apex), "each side face's own triangle carries the new apex position exactly");
+    for (const Point3d& original_p : original[i].loop) {
+      if (original_p.DistanceTo(old_apex) < 1e-9) continue;  // the corner that moved
+      Check(loop_contains(result[i].loop, original_p),
+            "each side face's own two base corners are untouched by moving the apex they share");
+    }
+  }
+
+  Check(moved.TessellateToClosedMesh(1, 1).IsClosedManifold(),
+        "the moved pyramid also tessellates to a closed, watertight manifold");
+}
+
+void TestMoveVertexConvexPlanarRefusesInvalidInput() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::MoveVertexConvexPlanar;
+  using dino8::kernel::Point3d;
+
+  const Point3d old_apex(5, 5, 10);
+  const Brep pyramid = MakeTestPyramid(old_apex);
+
+  bool threw = false;
+  try {
+    MoveVertexConvexPlanar(pyramid, Point3d(99, 99, 99), Point3d(1, 1, 1));
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "MoveVertexConvexPlanar refuses an old_position that matches no vertex of solid.PlanarFaces()");
+
+  // A box's own corners are each shared by 3 QUAD faces, not triangles -
+  // out of scope by this function's own documented contract.
+  threw = false;
+  try {
+    const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+    MoveVertexConvexPlanar(box, Point3d(0, 0, 0), Point3d(1, 1, 1));
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "MoveVertexConvexPlanar refuses a vertex incident to a non-triangular (quad) face");
+
+  // Moving the apex straight down through the base plane, staying over
+  // the same (x,y), flips every side face's own outward orientation -
+  // refused rather than silently building an inverted/self-intersecting
+  // result.
+  threw = false;
+  try {
+    MoveVertexConvexPlanar(pyramid, old_apex, Point3d(5, 5, -5));
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "MoveVertexConvexPlanar refuses a move that flips an incident triangular face's own orientation");
+
+  // Moving the apex exactly onto one of its own incident triangles' base
+  // corners collapses that triangle to ~0 area.
+  threw = false;
+  try {
+    MoveVertexConvexPlanar(pyramid, old_apex, Point3d(0, 0, 0));
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "MoveVertexConvexPlanar refuses a move that collapses an incident face's own triangle to ~0 area");
+}
+
 }  // namespace
 
 // The spec's own required exact case: fillet the unit cube's top
@@ -36226,6 +36406,8 @@ int main() {
   TestReplaceFacePlaneConvexPlanarMatchesOffsetFaceForPureTranslate();
   TestReplaceFacePlaneConvexPlanarTiltedRoofMatchesExactIntegralAndRetrimsWalls();
   TestReplaceFacePlaneConvexPlanarRefusesInvalidInput();
+  TestMoveVertexConvexPlanarPyramidApexMatchesExactVolumeAndLeavesBaseUntouched();
+  TestMoveVertexConvexPlanarRefusesInvalidInput();
   TestFilletConvexEdgeUnitCubeTopFrontCorner();
   TestFilletConvexEdgeTaperedRailExactness();
   TestFilletConvexEdgeTaperedClosedFormVolumeMatchesFrustumFormula();

@@ -1733,6 +1733,134 @@ Brep ReplaceFacePlaneConvexPlanar(const Brep& solid, int face_index, const ON_Pl
   return Brep::FromPlanarFaces(result);
 }
 
+Brep MoveVertexConvexPlanar(const Brep& solid, const Point3d& old_position, const Point3d& new_position) {
+  const std::vector<Brep::PlanarFace> faces = solid.PlanarFaces();
+  const int n = static_cast<int>(faces.size());
+
+  const double tol = RelativeTol(faces);
+  if (!IsConvex(faces, tol)) {
+    throw std::invalid_argument(
+        "dino8::kernel::MoveVertexConvexPlanar: solid must be convex (a vertex "
+        "of one of its own faces lies outside one of its own other faces' "
+        "half-spaces) - see BooleanIntersectConvexPlanar's own doc comment "
+        "for why non-convex input isn't handled here");
+  }
+
+  // Which faces touch the moved vertex, and at which position in that
+  // face's own loop - matched by position (see this function's own doc
+  // comment for why solid.PlanarFaces() gives no other way to name a
+  // vertex).
+  std::vector<std::pair<int, int>> incident;  // (face_index, loop_index)
+  for (int i = 0; i < n; ++i) {
+    const std::vector<Point3d>& loop = faces[static_cast<size_t>(i)].loop;
+    for (int j = 0; j < static_cast<int>(loop.size()); ++j) {
+      if (loop[static_cast<size_t>(j)].DistanceTo(old_position) <= tol) {
+        incident.emplace_back(i, j);
+        break;  // a valid convex face's own loop never repeats a vertex
+      }
+    }
+  }
+  if (incident.empty()) {
+    throw std::invalid_argument(
+        "dino8::kernel::MoveVertexConvexPlanar: old_position doesn't land "
+        "within tolerance of any vertex of solid.PlanarFaces()");
+  }
+
+  // Every incident face's new plane: its own loop with the matched corner
+  // replaced by new_position, re-derived from the (now three, since every
+  // incident face is required to be a triangle) corners; every other
+  // face's plane unchanged - see this function's own doc comment for why
+  // only a triangle's plane is always well-defined with one corner free to
+  // move anywhere.
+  std::vector<ON_Plane> new_planes(static_cast<size_t>(n));
+  for (int i = 0; i < n; ++i) new_planes[static_cast<size_t>(i)] = faces[static_cast<size_t>(i)].plane;
+
+  for (const auto& [face_index, loop_index] : incident) {
+    const Brep::PlanarFace& f = faces[static_cast<size_t>(face_index)];
+    if (f.loop.size() != 3) {
+      throw std::invalid_argument(
+          "dino8::kernel::MoveVertexConvexPlanar: face " + std::to_string(face_index) +
+          " is incident to old_position but has " + std::to_string(f.loop.size()) +
+          " vertices, not 3 - moving a vertex shared by a non-triangular "
+          "face would need that face to either change topology or become "
+          "non-planar, both out of scope here");
+    }
+    std::vector<Point3d> new_loop = f.loop;
+    new_loop[static_cast<size_t>(loop_index)] = new_position;
+
+    const Vector3d old_normal = f.plane.zaxis;
+    const Vector3d e1 = new_loop[1] - new_loop[0];
+    const Vector3d e2 = new_loop[2] - new_loop[0];
+    Vector3d new_normal = ON_CrossProduct(e1, e2);
+    const double new_normal_len = new_normal.Length();
+    if (new_normal_len <= tol * tol) {
+      throw std::invalid_argument(
+          "dino8::kernel::MoveVertexConvexPlanar: new_position collapses face " +
+          std::to_string(face_index) + "'s own triangle to ~0 area");
+    }
+    new_normal.Unitize();
+    if (ON_DotProduct(new_normal, old_normal) <= 0.0) {
+      throw std::invalid_argument(
+          "dino8::kernel::MoveVertexConvexPlanar: new_position flips face " + std::to_string(face_index) +
+          "'s own outward orientation (moves the vertex through the plane "
+          "of its own opposite edge), out of scope here");
+    }
+
+    ON_Plane new_plane(new_loop[0], new_normal);
+    new_plane.UpdateEquation();
+    new_planes[static_cast<size_t>(face_index)] = new_plane;
+  }
+
+  // Same generous halfspace-intersection superset OffsetFace()/
+  // OffsetSolidConvexPlanar()/DraftFacesConvexPlanar()/
+  // ReplaceFacePlaneConvexPlanar() use, sized from the ORIGINAL solid's own
+  // extent AND new_position (unlike those siblings, a vertex move's own
+  // caller-supplied point isn't bounded by any existing plane in the
+  // solid, so it must be folded into the bounding box directly to
+  // guarantee the oversized-polygon start still contains the true new
+  // polytope's own boundary).
+  ON_BoundingBox bbox;
+  for (const Brep::PlanarFace& f : faces) {
+    for (const Point3d& p : f.loop) bbox.Set(p, true);
+  }
+  bbox.Set(new_position, true);
+  const double half_size = 50.0 * std::max(tol, bbox.Diagonal().Length());
+
+  std::vector<Brep::PlanarFace> result;
+  result.reserve(static_cast<size_t>(n));
+  for (int i = 0; i < n; ++i) {
+    const ON_Plane& pl = new_planes[static_cast<size_t>(i)];
+    const std::vector<Point3d> oversized = {
+        pl.origin + half_size * pl.xaxis + half_size * pl.yaxis,
+        pl.origin - half_size * pl.xaxis + half_size * pl.yaxis,
+        pl.origin - half_size * pl.xaxis - half_size * pl.yaxis,
+        pl.origin + half_size * pl.xaxis - half_size * pl.yaxis,
+    };
+    std::vector<ON_Plane> others;
+    others.reserve(static_cast<size_t>(n - 1));
+    for (int k = 0; k < n; ++k) {
+      if (k == i) continue;
+      others.push_back(new_planes[static_cast<size_t>(k)]);
+    }
+    std::vector<Point3d> clipped = ClipConvexPolygon(oversized, pl, others, tol);
+    const double area = PlanarPolygonArea(clipped, pl.zaxis);
+    const double area_tol = tol * tol;
+    if (clipped.size() < 3 || area <= area_tol) {
+      throw std::invalid_argument(
+          "dino8::kernel::MoveVertexConvexPlanar: new_position collapses face " + std::to_string(i) +
+          "'s own boundary to fewer than 3 vertices or ~0 area - the resulting "
+          "solid's topology would need to change (a face vanishing entirely), "
+          "which is out of scope here");
+    }
+    Brep::PlanarFace new_face;
+    new_face.plane = pl;
+    new_face.loop = std::move(clipped);
+    result.push_back(std::move(new_face));
+  }
+
+  return Brep::FromPlanarFaces(result);
+}
+
 // ---------------------------------------------------------------------
 // BooleanCombineMixed: the axis-perpendicular-only extension of the
 // non-convex planar pipeline above to a solid that may have a
