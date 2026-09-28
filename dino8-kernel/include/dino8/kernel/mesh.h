@@ -587,18 +587,18 @@ class Mesh {
   // a 1-byte unsigned corner count followed by that many 4-byte signed
   // indices - matching the header's own declared `float`/`uchar`/`int`
   // property types exactly, the widths LoadPly() below reads back.
-  // Only `binary_little_endian` is written - `binary_big_endian` remains
-  // a disclosed gap, this kernel assumes a little-endian host throughout
-  // (see LoadStl()'s own LoadBinaryStl() comment for why that's a real,
-  // already-established scope narrowing here, not a new one). Returns
+  // `big_endian` selects `format binary_big_endian` over the default
+  // `binary_little_endian` (both write the exact same values, just with
+  // each multi-byte property's bytes reversed on disk); it's ignored when
+  // `binary` is false, since `ascii` has no byte order. Returns
   // Result::Failed if the file can't be opened for writing.
-  Result SavePly(const std::string& path, bool binary = false) const;
+  Result SavePly(const std::string& path, bool binary = false, bool big_endian = false) const;
 
   // Reads a PLY file into `out_mesh` - written by SavePly() or by another
-  // tool - in either the `ascii` or `binary_little_endian` format
-  // (`binary_big_endian` is rejected outright: this kernel assumes a
-  // little-endian host throughout, see LoadStl()'s own LoadBinaryStl()
-  // comment). Follows PLY's ordinary shape: a `vertex` element with
+  // tool - in the `ascii`, `binary_little_endian`, or `binary_big_endian`
+  // format (the on-disk byte order is read from the file's own header,
+  // never assumed from the host - see ReadPlyBinaryScalar() in mesh.cpp).
+  // Follows PLY's ordinary shape: a `vertex` element with
   // `x`/`y`/`z` scalar properties (in any order, and tolerating extra
   // properties this kernel doesn't use, e.g. color, by name rather than
   // assuming a fixed column layout - genuinely parses the header's own
@@ -625,7 +625,8 @@ class Mesh {
   // `double` positions or `ushort` face-index lists still reads
   // correctly. Returns Result::Failed - `out_mesh` left unspecified, not
   // partially filled - if the file can't be opened, isn't
-  // `ply`/`format ascii ...`/`format binary_little_endian ...`, the
+  // `ply`/`format ascii ...`/`format binary_little_endian ...`/
+  // `format binary_big_endian ...`, the
   // vertex element is missing `x`/`y`/`z`, the face element's list
   // property is missing or isn't a list, a face has fewer than 3 or more
   // than 4 indices, a face index is out of range, a property declares a

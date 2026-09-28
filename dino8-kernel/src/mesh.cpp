@@ -1352,18 +1352,31 @@ PlyTypeInfo LookupPlyType(const std::string& type) {
   return {};  // bytes == 0: unrecognized
 }
 
+// Reverses the byte order of an `n`-byte buffer in place (n <= 8). A
+// no-op for n <= 1, so callers can route every property through this
+// unconditionally without special-casing single-byte types.
+void SwapBytesInPlace(char* buf, int n) {
+  for (int i = 0; i < n / 2; ++i) {
+    std::swap(buf[i], buf[n - 1 - i]);
+  }
+}
+
 // Reads one binary-encoded scalar of `type` from `in`, widened to
-// double, assuming a little-endian host (the same assumption
-// Mesh::LoadStl()'s own LoadBinaryStl() already makes and documents -
-// true for every platform this kernel is actually built on). Returns
+// double. This kernel's own host is little-endian (the same assumption
+// Mesh::LoadStl()'s own LoadBinaryStl() makes and documents), so
+// `big_endian` - read from the file's own `format` header line, see
+// ParsePlyHeader() - controls whether the raw bytes are reversed before
+// being interpreted as the host's native representation; a
+// binary_little_endian file leaves them untouched. Returns
 // false (and leaves `out` untouched) on a short read or an unrecognized
 // type, never on a value out of some expected range - callers validate
 // the widened double themselves (e.g. a face index or corner count).
-bool ReadPlyBinaryScalar(std::istream& in, const std::string& type, double& out) {
+bool ReadPlyBinaryScalar(std::istream& in, const std::string& type, bool big_endian, double& out) {
   const PlyTypeInfo info = LookupPlyType(type);
   if (info.bytes == 0) return false;
   char buf[8];
   if (!in.read(buf, info.bytes)) return false;
+  if (big_endian) SwapBytesInPlace(buf, info.bytes);
   if (info.is_float) {
     if (info.bytes == 4) {
       float v;
@@ -1402,17 +1415,18 @@ std::string TrimTrailingCr(std::string s) {
 }
 
 // Parses a PLY header (everything up to and including "end_header") into
-// an ordered list of elements, and reports via `out_binary` whether the
-// format line was "binary_little_endian" rather than "ascii". Returns
-// false on any header line this kernel doesn't recognize, a "property"
-// line before any "element" line, or a "format" line that isn't exactly
-// "format ascii <version>" or "format binary_little_endian <version>" -
-// "binary_big_endian" is a disclosed, out-of-scope gap (this kernel
-// assumes a little-endian host throughout, see LoadBinaryStl()'s own
-// comment), rejected outright rather than silently byte-swapped or
-// misread.
-bool ParsePlyHeader(std::istream& in, std::vector<PlyElement>& out_elements, bool& out_binary) {
+// an ordered list of elements, and reports via `out_binary`/`out_big_endian`
+// whether the format line was "binary_little_endian" or
+// "binary_big_endian" rather than "ascii" (`out_big_endian` is only
+// meaningful when `out_binary` is true). Returns false on any header line
+// this kernel doesn't recognize, a "property" line before any "element"
+// line, or a "format" line that isn't exactly "format ascii <version>",
+// "format binary_little_endian <version>", or
+// "format binary_big_endian <version>".
+bool ParsePlyHeader(std::istream& in, std::vector<PlyElement>& out_elements, bool& out_binary,
+                     bool& out_big_endian) {
   out_binary = false;
+  out_big_endian = false;
   std::string line;
   if (!std::getline(in, line) || TrimTrailingCr(line) != "ply") {
     return false;
@@ -1431,8 +1445,12 @@ bool ParsePlyHeader(std::istream& in, std::vector<PlyElement>& out_elements, boo
       out_binary = false;
     } else if (format == "binary_little_endian") {
       out_binary = true;
+      out_big_endian = false;
+    } else if (format == "binary_big_endian") {
+      out_binary = true;
+      out_big_endian = true;
     } else {
-      return false;  // binary_big_endian or anything else: out of scope
+      return false;  // anything else: unrecognized format
     }
   }
   while (std::getline(in, line)) {
@@ -1485,9 +1503,22 @@ bool ParsePlyHeader(std::istream& in, std::vector<PlyElement>& out_elements, boo
   return false;  // stream ended without "end_header"
 }
 
+// Writes one binary-encoded scalar to `out`, byte-swapped first when
+// `big_endian` is true - the write-side mirror of ReadPlyBinaryScalar()'s
+// swap-after-read. A no-op-swap for sizeof(T) == 1 (the face corner
+// count's `uchar`), so callers can route every property through this
+// unconditionally.
+template <typename T>
+void WriteBinaryScalar(std::ostream& out, T value, bool big_endian) {
+  char buf[sizeof(T)];
+  std::memcpy(buf, &value, sizeof(T));
+  if (big_endian) SwapBytesInPlace(buf, sizeof(T));
+  out.write(buf, sizeof(T));
+}
+
 }  // namespace
 
-Result Mesh::SavePly(const std::string& path, bool binary) const {
+Result Mesh::SavePly(const std::string& path, bool binary, bool big_endian) const {
   // Binary mode throughout: a no-op difference for the ASCII payload (the
   // '\n' bytes written below are already exactly what text mode would
   // translate to on any platform this kernel builds for), but required
@@ -1501,8 +1532,9 @@ Result Mesh::SavePly(const std::string& path, bool binary) const {
   const std::vector<Vector3d> normals = ComputeVertexNormals();
   const bool has_uvs = HasTextureCoordinates();
 
+  const std::string format = !binary ? "ascii" : (big_endian ? "binary_big_endian" : "binary_little_endian");
   out << "ply\n";
-  out << "format " << (binary ? "binary_little_endian" : "ascii") << " 1.0\n";
+  out << "format " << format << " 1.0\n";
   out << "comment written by dino8-kernel\n";
   out << "element vertex " << mesh_.m_V.Count() << '\n';
   out << "property float x\n";
@@ -1521,7 +1553,7 @@ Result Mesh::SavePly(const std::string& path, bool binary) const {
 
   auto write_f32 = [&](double v) {
     const float f = static_cast<float>(v);
-    out.write(reinterpret_cast<const char*>(&f), sizeof(f));
+    WriteBinaryScalar(out, f, big_endian);
   };
 
   for (int i = 0; i < mesh_.m_V.Count(); ++i) {
@@ -1553,10 +1585,10 @@ Result Mesh::SavePly(const std::string& path, bool binary) const {
     const bool quad = f.IsQuad();
     if (binary) {
       const uint8_t count = quad ? 4 : 3;
-      out.write(reinterpret_cast<const char*>(&count), sizeof(count));
-      int32_t idx[4];
-      for (uint8_t c = 0; c < count; ++c) idx[c] = static_cast<int32_t>(f.vi[c]);
-      out.write(reinterpret_cast<const char*>(idx), sizeof(int32_t) * count);
+      WriteBinaryScalar(out, count, big_endian);
+      for (uint8_t c = 0; c < count; ++c) {
+        WriteBinaryScalar(out, static_cast<int32_t>(f.vi[c]), big_endian);
+      }
     } else if (quad) {
       out << "4 " << f.vi[0] << ' ' << f.vi[1] << ' ' << f.vi[2] << ' ' << f.vi[3] << '\n';
     } else {
@@ -1579,7 +1611,8 @@ Result Mesh::LoadPly(const std::string& path, Mesh& out_mesh) {
 
   std::vector<PlyElement> elements;
   bool is_binary = false;
-  if (!ParsePlyHeader(in, elements, is_binary)) {
+  bool is_big_endian = false;
+  if (!ParsePlyHeader(in, elements, is_binary, is_big_endian)) {
     return Result::Failed;
   }
 
@@ -1598,7 +1631,7 @@ Result Mesh::LoadPly(const std::string& path, Mesh& out_mesh) {
       return true;
     }
     for (size_t i = 0; i < element.properties.size(); ++i) {
-      if (!ReadPlyBinaryScalar(in, element.properties[i].type, values[i])) return false;
+      if (!ReadPlyBinaryScalar(in, element.properties[i].type, is_big_endian, values[i])) return false;
     }
     return true;
   };
@@ -1670,7 +1703,7 @@ Result Mesh::LoadPly(const std::string& path, Mesh& out_mesh) {
           }
         } else {
           double count_value;
-          if (!ReadPlyBinaryScalar(in, list_property.count_type, count_value)) {
+          if (!ReadPlyBinaryScalar(in, list_property.count_type, is_big_endian, count_value)) {
             return Result::Failed;
           }
           corner_count = static_cast<int>(count_value);
@@ -1679,7 +1712,7 @@ Result Mesh::LoadPly(const std::string& path, Mesh& out_mesh) {
           }
           for (int i = 0; i < corner_count; ++i) {
             double index_value;
-            if (!ReadPlyBinaryScalar(in, list_property.value_type, index_value)) {
+            if (!ReadPlyBinaryScalar(in, list_property.value_type, is_big_endian, index_value)) {
               return Result::Failed;
             }
             indices[i] = static_cast<int>(index_value);
@@ -1715,15 +1748,15 @@ Result Mesh::LoadPly(const std::string& path, Mesh& out_mesh) {
         for (const PlyProperty& property : element.properties) {
           if (property.is_list) {
             double count_value;
-            if (!ReadPlyBinaryScalar(in, property.count_type, count_value)) {
+            if (!ReadPlyBinaryScalar(in, property.count_type, is_big_endian, count_value)) {
               return Result::Failed;
             }
             const int count = static_cast<int>(count_value);
             if (count < 0) return Result::Failed;
             for (int i = 0; i < count; ++i) {
-              if (!ReadPlyBinaryScalar(in, property.value_type, scalar)) return Result::Failed;
+              if (!ReadPlyBinaryScalar(in, property.value_type, is_big_endian, scalar)) return Result::Failed;
             }
-          } else if (!ReadPlyBinaryScalar(in, property.type, scalar)) {
+          } else if (!ReadPlyBinaryScalar(in, property.type, is_big_endian, scalar)) {
             return Result::Failed;
           }
         }

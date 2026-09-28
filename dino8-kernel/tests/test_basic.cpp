@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <functional>
 #include <limits>
@@ -15521,13 +15522,174 @@ void TestMeshSavePlyBinaryRoundTrips() {
   std::remove(uv_path.c_str());
 }
 
+// SavePly(binary=true, big_endian=true)/LoadPly() close PLY's remaining
+// disclosed byte-order gap (ParsePlyHeader() used to reject
+// "binary_big_endian" outright as out of scope - see
+// TestMeshLoadPlyRejectsMalformedFiles()'s own comment, corrected
+// alongside this test). Three angles, not just one round trip through
+// this kernel's own writer (which could hide a matched write/read bug
+// that cancels itself out): (1) the header's format line literally says
+// binary_big_endian; (2) the big-endian file's bytes differ from the
+// little-endian file's bytes for the identical mesh (proving a genuine
+// byte swap happened, not a flag silently ignored), while both decode to
+// the same vertex/face counts and volume; (3) a hand-built
+// binary_big_endian payload - encoded independently of SavePly() below,
+// by reversing each float/int's own byte order by hand - is read back by
+// LoadPly() to the exact original values, not just "some self-consistent
+// value".
+void TestMeshSavePlyBigEndianRoundTrips() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Result;
+
+  const auto box = MakeQuadBoxMesh(0, 0, 0, 2, 3, 4);
+  const std::string be_path = "dino8_kernel_mesh_ply_big_endian_test.ply";
+  const std::string le_path = "dino8_kernel_mesh_ply_big_endian_le_ref_test.ply";
+  Check(box.SavePly(be_path, /*binary=*/true, /*big_endian=*/true) == Result::Ok,
+        "Mesh::SavePly(binary=true, big_endian=true) succeeds");
+  Check(box.SavePly(le_path, /*binary=*/true, /*big_endian=*/false) == Result::Ok,
+        "fixture: Mesh::SavePly(binary=true, big_endian=false) succeeds");
+
+  {
+    std::ifstream in(be_path, std::ios::binary);
+    Check(static_cast<bool>(in), "the big-endian .ply file can be reopened for reading");
+    std::string first_line, format_line;
+    std::getline(in, first_line);
+    std::getline(in, format_line);
+    Check(first_line == "ply", "the big-endian file still starts with the required 'ply' magic line");
+    Check(format_line == "format binary_big_endian 1.0",
+          "the header's format line literally says binary_big_endian, not binary_little_endian");
+  }
+
+  {
+    // Compare only the binary payload after "end_header\n", not the whole
+    // file - "binary_big_endian" and "binary_little_endian" are different
+    // lengths as header text, so the raw file sizes legitimately differ
+    // by exactly that many bytes even though the payloads below match.
+    std::ifstream be_in(be_path, std::ios::binary);
+    std::ifstream le_in(le_path, std::ios::binary);
+    std::string be_contents((std::istreambuf_iterator<char>(be_in)), std::istreambuf_iterator<char>());
+    std::string le_contents((std::istreambuf_iterator<char>(le_in)), std::istreambuf_iterator<char>());
+    const std::string marker = "end_header\n";
+    const size_t be_header_end = be_contents.find(marker);
+    const size_t le_header_end = le_contents.find(marker);
+    Check(be_header_end != std::string::npos && le_header_end != std::string::npos,
+          "fixture: both files have an end_header marker");
+    const std::string be_payload = be_contents.substr(be_header_end + marker.size());
+    const std::string le_payload = le_contents.substr(le_header_end + marker.size());
+    Check(be_payload.size() == le_payload.size(),
+          "the big-endian and little-endian binary payloads for the identical mesh are the same length");
+    Check(be_payload != le_payload,
+          "the big-endian payload's bytes differ from the little-endian payload's bytes for the "
+          "identical mesh - a genuine byte swap, not the big_endian flag being silently ignored");
+  }
+
+  Mesh reloaded;
+  Check(Mesh::LoadPly(be_path, reloaded) == Result::Ok, "Mesh::LoadPly succeeds on SavePly(big_endian=true)'s own output");
+  Check(reloaded.VertexCount() == box.VertexCount() && reloaded.FaceCount() == box.FaceCount(),
+        "the reloaded big-endian mesh has the same vertex/face counts as the original");
+  Check(std::abs(reloaded.Volume() - box.Volume()) < 1e-5,
+        "the reloaded big-endian mesh's volume matches the original within single-precision float "
+        "round-trip error");
+  std::remove(be_path.c_str());
+  std::remove(le_path.c_str());
+
+  // Texture coordinates round-trip through the big-endian payload too.
+  Mesh with_uvs = box;
+  std::vector<dino8::kernel::Point2d> uvs;
+  for (int i = 0; i < with_uvs.VertexCount(); ++i) {
+    uvs.push_back(dino8::kernel::Point2d(static_cast<double>(i) * 0.1, static_cast<double>(i) * 0.2));
+  }
+  Check(with_uvs.SetTextureCoordinates(uvs) == Result::Ok, "fixture: SetTextureCoordinates succeeds");
+  const std::string uv_path = "dino8_kernel_mesh_ply_big_endian_uv_test.ply";
+  Check(with_uvs.SavePly(uv_path, /*binary=*/true, /*big_endian=*/true) == Result::Ok,
+        "SavePly(big_endian=true) succeeds on a mesh with texture coordinates");
+  Mesh reloaded_uv;
+  Check(Mesh::LoadPly(uv_path, reloaded_uv) == Result::Ok, "LoadPly succeeds on a big-endian .ply file with u/v columns");
+  Check(reloaded_uv.HasTextureCoordinates(), "the reloaded big-endian mesh reports having texture coordinates");
+  bool uvs_match = true;
+  for (int i = 0; i < reloaded_uv.VertexCount(); ++i) {
+    const auto original_uv = with_uvs.TextureCoordinateAt(i);
+    const auto loaded_uv = reloaded_uv.TextureCoordinateAt(i);
+    if (std::abs(original_uv.x - loaded_uv.x) > 1e-6 || std::abs(original_uv.y - loaded_uv.y) > 1e-6) {
+      uvs_match = false;
+      break;
+    }
+  }
+  Check(uvs_match, "every reloaded vertex's texture coordinate matches the original within "
+                   "single-precision round-trip error, through the big-endian .ply payload");
+  std::remove(uv_path.c_str());
+
+  // Independent cross-check: a minimal big-endian payload built by hand
+  // (each multi-byte value's bytes reversed manually, not via SavePly())
+  // decodes to the exact expected values - rules out a matched
+  // write-side/read-side bug that would otherwise cancel itself out in
+  // the round trips above.
+  {
+    const std::string hand_path = "dino8_kernel_mesh_ply_big_endian_hand_test.ply";
+    std::ofstream out(hand_path, std::ios::binary);
+    out << "ply\nformat binary_big_endian 1.0\n";
+    out << "element vertex 3\n";
+    out << "property float x\nproperty float y\nproperty float z\n";
+    out << "element face 1\n";
+    out << "property list uchar int vertex_indices\n";
+    out << "end_header\n";
+
+    auto write_f32_be = [&](float v) {
+      char buf[4];
+      std::memcpy(buf, &v, 4);
+      std::reverse(buf, buf + 4);
+      out.write(buf, 4);
+    };
+    auto write_i32_be = [&](int32_t v) {
+      char buf[4];
+      std::memcpy(buf, &v, 4);
+      std::reverse(buf, buf + 4);
+      out.write(buf, 4);
+    };
+
+    const float verts[3][3] = {{1.5f, -2.25f, 0.0f}, {10.0f, 0.0f, 0.0f}, {0.0f, 10.0f, 0.0f}};
+    for (const auto& v : verts) {
+      write_f32_be(v[0]);
+      write_f32_be(v[1]);
+      write_f32_be(v[2]);
+    }
+    const uint8_t corner_count = 3;
+    out.write(reinterpret_cast<const char*>(&corner_count), 1);
+    write_i32_be(0);
+    write_i32_be(1);
+    write_i32_be(2);
+    out.close();
+
+    Mesh hand_loaded;
+    Check(Mesh::LoadPly(hand_path, hand_loaded) == Result::Ok,
+          "LoadPly() succeeds on a hand-built binary_big_endian payload");
+    Check(hand_loaded.VertexCount() == 3 && hand_loaded.FaceCount() == 1,
+          "the hand-built big-endian file's vertex/face counts are read correctly");
+    const ON_Mesh& raw = hand_loaded.raw();
+    bool vertices_exact = true;
+    for (int i = 0; i < 3; ++i) {
+      const ON_3fPoint& p = raw.m_V[i];
+      if (std::abs(p.x - verts[i][0]) > 1e-6 || std::abs(p.y - verts[i][1]) > 1e-6 ||
+          std::abs(p.z - verts[i][2]) > 1e-6) {
+        vertices_exact = false;
+        break;
+      }
+    }
+    Check(vertices_exact,
+          "every vertex decoded from the hand-built big-endian payload exactly matches the value "
+          "it was hand-encoded from - proves the byte swap, not a lucky round trip");
+    std::remove(hand_path.c_str());
+  }
+}
+
 // Malformed/out-of-scope input is rejected outright, never silently
-// misread. Covers: a binary_big_endian header (disclosed out of scope,
-// see SavePly()'s doc comment - binary_little_endian is now supported,
-// see TestMeshSavePlyBinaryRoundTrips()), a truncated binary payload, a
-// vertex element missing x/y/z, a face list property with too many/few
-// corners, and an out-of-range face index - then a control case proving
-// those rejections aren't over-broad.
+// misread. Covers: an unrecognized `format` line (binary_little_endian
+// and binary_big_endian are both supported now - see
+// TestMeshSavePlyBinaryRoundTrips()/TestMeshSavePlyBigEndianRoundTrips() -
+// but a third spelling still isn't a real PLY byte order), a truncated
+// binary payload, a vertex element missing x/y/z, a face list property
+// with too many/few corners, and an out-of-range face index - then a
+// control case proving those rejections aren't over-broad.
 void TestMeshLoadPlyRejectsMalformedFiles() {
   using dino8::kernel::Mesh;
   using dino8::kernel::Result;
@@ -15538,12 +15700,15 @@ void TestMeshLoadPlyRejectsMalformedFiles() {
   };
 
   {
-    const std::string path = "dino8_kernel_mesh_ply_binary_big_endian_test.ply";
-    write_file(path, "ply\nformat binary_big_endian 1.0\nelement vertex 0\nend_header\n");
+    // Not a real PLY byte order (only ascii/binary_little_endian/
+    // binary_big_endian are) - must still be rejected outright, not
+    // treated as one of the two supported binary encodings by accident.
+    const std::string path = "dino8_kernel_mesh_ply_unrecognized_format_test.ply";
+    write_file(path, "ply\nformat binary_middle_endian 1.0\nelement vertex 0\nend_header\n");
     Mesh loaded;
     Check(Mesh::LoadPly(path, loaded) == Result::Failed,
-          "LoadPly() fails on a binary_big_endian header - disclosed out of scope (this kernel "
-          "assumes a little-endian host throughout), not silently byte-swapped or misread");
+          "LoadPly() fails on an unrecognized format line (\"binary_middle_endian\" is not a real "
+          "PLY byte order)");
     std::remove(path.c_str());
   }
 
@@ -39094,6 +39259,7 @@ int main() {
   TestMeshSaveStlBinaryRoundTrips();
   TestMeshSavePlyRoundTrips();
   TestMeshSavePlyBinaryRoundTrips();
+  TestMeshSavePlyBigEndianRoundTrips();
   TestMeshLoadPlyRejectsMalformedFiles();
   TestExactClippingMatchesAreaButNotCellCounts();
   TestExactClippingHandlesNonConvexTrim();
