@@ -457,8 +457,13 @@ endif()
 
 # The command catalog (all 1055 Rhino 8 commands with help text) ships next
 # to the binary; the app also looks for it relative to the source tree when
-# run from a build directory.
-set(DINO8_DATA_FILES ${CMAKE_CURRENT_SOURCE_DIR}/data/commands.json ${CMAKE_CURRENT_SOURCE_DIR}/data/hatchpatterns.pat)
+# run from a build directory. changelog.md ships alongside it: Panels.cpp's
+# Changelog()/DrawWhatsNewWindow() reads data/changelog.md next to the exe
+# for the WhatsNew command, using the same search order as commands.json -
+# leaving it out of this list meant it was never copied to the build dir or
+# installed on any platform, so every packaged build (Windows installer,
+# .deb, .dmg) silently showed "The changelog ... could not be found".
+set(DINO8_DATA_FILES ${CMAKE_CURRENT_SOURCE_DIR}/data/commands.json ${CMAKE_CURRENT_SOURCE_DIR}/data/hatchpatterns.pat ${CMAKE_CURRENT_SOURCE_DIR}/data/changelog.md)
 add_custom_command(TARGET Dino8 POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:Dino8>/data
   COMMAND ${CMAKE_COMMAND} -E copy_if_different ${DINO8_DATA_FILES} $<TARGET_FILE_DIR:Dino8>/data/
