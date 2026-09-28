@@ -14846,6 +14846,154 @@ void TestPushPullFaceOnNonConvexLShapeGrowsByExactSlabVolume() {
         "the shrunk non-convex result also tessellates to a closed, watertight manifold");
 }
 
+// The exact B-rep draft/taper-an-existing-body feature - PARITY_MAP's
+// "Draft/taper faces of an existing body about a neutral plane" gap
+// (OffsetFace()/OffsetSolidConvexPlanar() above only translate a face's
+// plane; neither can tilt one). Drafting all 4 side walls of a box about
+// its own bottom face (the neutral plane) turns it into a frustum of a
+// right square pyramid: the classic closed-form frustum volume
+// V = (h/3)(A0 + A1 + sqrt(A0*A1)) is an independent, hand-derivable check
+// that does not merely trust DraftFacesConvexPlanar's own arithmetic.
+void TestDraftFacesConvexPlanarBoxAllWallsMatchesExactFrustumVolume() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::DraftFacesConvexPlanar;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  // Box face order per Brep::Box()'s own comment: 0=bottom(-z) 1=top(+z)
+  // 2=front(-y) 3=back(+y) 4=left(-x) 5=right(+x).
+  const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+  const ON_Plane neutral(Point3d(0, 0, 0), Vector3d(0, 0, 1));
+  const double tan_theta = 0.1;
+  const double theta = std::atan(tan_theta);
+
+  const Brep drafted = DraftFacesConvexPlanar(box, {2, 3, 4, 5}, neutral, theta);
+  Check(drafted.FaceCount() == 6, "DraftFacesConvexPlanar on a box keeps exactly 6 faces (no topology change)");
+
+  const double a0 = 100.0;                                    // bottom, pinned to the neutral plane: untouched
+  const double top_side = 10.0 - 2.0 * 10.0 * tan_theta;       // each of the 4 walls moves in by height*tan(theta)
+  const double a1 = top_side * top_side;
+  const double h = 10.0;
+  const double expected_volume = (h / 3.0) * (a0 + a1 + std::sqrt(a0 * a1));
+  const double measured_volume = PlanarBrepVolumeExact(drafted);
+  Check(std::fabs(measured_volume - expected_volume) / expected_volume < 1e-9,
+        "DraftFacesConvexPlanar on all 4 walls of a box matches the classical frustum-of-a-pyramid volume "
+        "(h/3)(A0+A1+sqrt(A0*A1)) exactly - not merely a plausible-looking number");
+
+  // The bottom cap (pinned to the neutral plane itself) must be completely
+  // untouched, and the top cap must be the exact concentric square of side
+  // `top_side` the hand-derived formula above assumes.
+  const std::vector<Brep::PlanarFace> drafted_faces = drafted.PlanarFaces();
+  const Brep::PlanarFace& bottom = drafted_faces[0];
+  for (const Point3d& p : bottom.loop) {
+    Check(std::fabs(p.z) < 1e-9, "the bottom face (pinned to the neutral plane) stays exactly at z=0");
+  }
+  const Brep::PlanarFace& top = drafted_faces[1];
+  double min_x = top.loop[0].x, max_x = top.loop[0].x, min_y = top.loop[0].y, max_y = top.loop[0].y;
+  for (const Point3d& p : top.loop) {
+    Check(std::fabs(p.z - 10.0) < 1e-9, "every top-face vertex stays exactly at z=10");
+    min_x = std::min(min_x, p.x); max_x = std::max(max_x, p.x);
+    min_y = std::min(min_y, p.y); max_y = std::max(max_y, p.y);
+  }
+  Check(std::fabs(min_x - 1.0) < 1e-9 && std::fabs(max_x - 9.0) < 1e-9 && std::fabs(min_y - 1.0) < 1e-9 &&
+            std::fabs(max_y - 9.0) < 1e-9,
+        "the top face shrinks to the exact concentric [1,9]x[1,9] square (each of the 4 walls moved in by "
+        "10*tan(theta) = 1.0)");
+
+  Check(drafted.TessellateToClosedMesh(1, 1).IsClosedManifold(),
+        "the drafted box also tessellates to a closed, watertight manifold");
+
+  bool threw = false;
+  try {
+    DraftFacesConvexPlanar(box, {2, 3, 4, 5}, neutral, std::atan(1.0));
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw,
+        "DraftFacesConvexPlanar refuses an angle large enough to collapse the top face to zero/negative area "
+        "(tan(theta)=1.0 shrinks each side by the full 10 units)");
+
+  threw = false;
+  try {
+    DraftFacesConvexPlanar(box, {0}, neutral, theta);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "DraftFacesConvexPlanar refuses a face whose plane is parallel to the neutral plane (no hinge line)");
+
+  threw = false;
+  try {
+    DraftFacesConvexPlanar(box, {99}, neutral, theta);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "DraftFacesConvexPlanar refuses an out-of-range face index");
+
+  threw = false;
+  try {
+    DraftFacesConvexPlanar(box, {}, neutral, theta);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "DraftFacesConvexPlanar refuses an empty face_indices list");
+}
+
+// Isolation test in the same spirit as TestOffsetFaceOnBoxMatchesExactLinearVolumeAndPinsOtherFaces's own
+// left/right check: drafting ONLY the right wall must leave the OPPOSITE
+// (left) wall's own boundary exactly where it started (it shares no
+// boundary with the tilted wall, so re-trimming it against the new plane
+// is a no-op), and the resulting volume matches an independent integral
+// of the cross-sectional area along the height (a linear taper in x only,
+// so Volume = integral over z of 10*(10 - tan(theta)*z), a clean closed form).
+void TestDraftFacesConvexPlanarSingleFaceLeavesOppositeFaceExactlyUntouched() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::DraftFacesConvexPlanar;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+  const ON_Plane neutral(Point3d(0, 0, 0), Vector3d(0, 0, 1));
+  const double tan_theta = 0.2;
+  const double theta = std::atan(tan_theta);
+
+  const Brep drafted = DraftFacesConvexPlanar(box, {5}, neutral, theta);  // 5 = right (+x)
+
+  const std::vector<Brep::PlanarFace> box_faces = box.PlanarFaces();
+  const std::vector<Brep::PlanarFace> drafted_faces = drafted.PlanarFaces();
+  const Brep::PlanarFace& original_left = box_faces[4];
+  const Brep::PlanarFace& new_left = drafted_faces[4];
+  Check(original_left.loop.size() == new_left.loop.size(),
+        "the untouched left face keeps the same vertex count");
+  // FromPlanarFaces()'s own re-extraction is free to start the loop at any
+  // cyclic rotation of the same vertex sequence (it does here), so match
+  // the two loops up to a cyclic shift rather than assuming index i of one
+  // is index i of the other.
+  const size_t loop_size = original_left.loop.size();
+  size_t shift = loop_size;
+  for (size_t s = 0; s < loop_size; ++s) {
+    if (original_left.loop[0].DistanceTo(new_left.loop[s]) < 1e-9) {
+      shift = s;
+      break;
+    }
+  }
+  Check(shift < loop_size, "the untouched left face's new loop contains original_left's own first vertex");
+  for (size_t i = 0; i < loop_size; ++i) {
+    Check(original_left.loop[i].DistanceTo(new_left.loop[(i + shift) % loop_size]) < 1e-9,
+          "drafting only the right wall leaves the (non-adjacent-in-any-clipped-way) left wall's own "
+          "boundary exactly where it started - the same isolation OffsetFace's own left/right test checks");
+  }
+
+  // Volume = integral_0^10 of 10*(10 - tan(theta)*z) dz = 1000 - 500*tan(theta).
+  const double expected_volume = 1000.0 - 500.0 * tan_theta;
+  const double measured_volume = PlanarBrepVolumeExact(drafted);
+  Check(std::fabs(measured_volume - expected_volume) / expected_volume < 1e-9,
+        "drafting only the right wall matches the exact closed-form integral of the (linearly narrowing) "
+        "cross-sectional area along the height, not merely a plausible-looking number");
+
+  Check(drafted.TessellateToClosedMesh(1, 1).IsClosedManifold(),
+        "the single-face-drafted box also tessellates to a closed, watertight manifold");
+}
+
 }  // namespace
 
 // The spec's own required exact case: fillet the unit cube's top
@@ -34266,6 +34414,8 @@ int main() {
   TestOffsetSolidConvexPlanarTetrahedronMatchesIndependentVertexRecomputation();
   TestPushPullFaceOnBoxPushOutAddsWallsAndMatchesExactVolume();
   TestPushPullFaceOnNonConvexLShapeGrowsByExactSlabVolume();
+  TestDraftFacesConvexPlanarBoxAllWallsMatchesExactFrustumVolume();
+  TestDraftFacesConvexPlanarSingleFaceLeavesOppositeFaceExactlyUntouched();
   TestFilletConvexEdgeUnitCubeTopFrontCorner();
   TestFilletConvexEdgeTaperedRailExactness();
   TestFilletConvexEdgeTaperedClosedFormVolumeMatchesFrustumFormula();

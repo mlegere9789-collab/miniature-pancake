@@ -629,6 +629,61 @@ Brep OffsetSolidConvexPlanar(const Brep& solid, double distance);
 // vertices (too large a pull for this solid's own local geometry there).
 Brep PushPullFace(const Brep& solid, int face_index, double distance);
 
+// Tilts one or more faces of a convex planar-faced solid about their own
+// intersection line with a caller-supplied "neutral plane" - the
+// Rhino/SolidWorks "Draft" (a.k.a. taper) feature applied to an EXISTING
+// body, and this kernel's own answer to the PARITY_MAP "Draft/taper faces
+// of an existing body about a neutral plane" gap: OffsetFace() and
+// OffsetSolidConvexPlanar() above only TRANSLATE a face's plane; neither
+// can TILT one.
+//
+// `neutral_plane.zaxis` is the draft's pull direction, matching Rhino/
+// SolidWorks' own "Neutral Plane" draft type, where the neutral plane's
+// own normal IS the pull direction (no separately-specified pull vector).
+// Every face named in `face_indices` (indices into `solid.PlanarFaces()`,
+// exactly as OffsetFace() uses them) is rotated about the exact 3D line
+// where ITS OWN plane intersects `neutral_plane` - found directly via the
+// standard two-plane intersection formula (p = neutral_plane.origin +
+// (d2/|u|^2) * (u x n1), u = n1 x n2, n1 = neutral_plane.zaxis, n2 =
+// face.plane.zaxis, d2 = (face.plane.origin - neutral_plane.origin) . n2),
+// NOT that face's own nearest edge: the neutral plane need not pass
+// through the solid at all, or coincide with any of its own faces - a
+// draft about the solid's own bottom face is the common case, but an
+// arbitrary parallel plane through the solid's own middle is equally
+// valid, exactly as it is in Rhino/SolidWorks. Every UNNAMED face's own
+// plane is left untouched, exactly as OffsetFace()'s own "one plane
+// moves, the rest don't" convention.
+//
+// `angle_radians` follows Brep::ExtrudeTapered()'s own sign convention
+// (brep.h) exactly, generalized from "the whole profile" to "one named
+// face at a time": a POSITIVE angle shrinks a face's own footprint moving
+// along +`neutral_plane.zaxis` - the standard mold-release reading (walls
+// lean IN toward the part's own interior as you move away from the
+// parting line) - and negative flares it outward. Concretely, every
+// selected face is rotated by `-angle_radians` (right-hand rule) about
+// the axis `u` above.
+//
+// Reuses OffsetSolidConvexPlanar()'s own "start from an oversized polygon
+// in each face's own (possibly-moved) plane, clip against every OTHER
+// face's own (possibly-moved) plane" reconstruction verbatim - rotating a
+// plane instead of translating it changes nothing about why that
+// half-space-intersection technique is correct (a convex polytope is
+// exactly the intersection of its own face half-spaces, however each one
+// got there), so a rotated face is re-trimmed against its neighbors (and
+// vice versa) through the identical code path.
+//
+// Same convex-solid precondition and failure mode as OffsetFace()/
+// OffsetSolidConvexPlanar() above. Throws std::invalid_argument if
+// `face_indices` is empty, any index is out of range for
+// `solid.PlanarFaces()`, any named face's own plane is parallel to
+// `neutral_plane` (`IsParallelTo(..., 1e-6) != 0` - no defined hinge line
+// to tilt about, exactly the case a genuine cap face of a prismatic solid
+// always is), or the resulting angle collapses any face's own new
+// boundary to fewer than 3 vertices or ~0 area (the topology itself would
+// need to change, out of scope here exactly as in OffsetFace()).
+Brep DraftFacesConvexPlanar(const Brep& solid, const std::vector<int>& face_indices, const ON_Plane& neutral_plane,
+                             double angle_radians);
+
 // Exact B-rep boolean between two solids where either (or both) may have
 // a CYLINDRICAL face, not just planar ones - what closes the gap
 // BooleanCombinePlanar's own PlanarFaces()-only precondition leaves open:
