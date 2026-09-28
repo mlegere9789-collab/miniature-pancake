@@ -111,9 +111,15 @@ def main():
     sync2 = os.path.join(tmp, "sync2")
     script_path = os.path.join(tmp, "script.txt")
     with open(script_path, "w") as f:
-        f.write(f"waitfile {sync1}\n")
+        # `@waitfile` (like the built-in `@wait N` frames directive) needs
+        # its `@` prefix to be recognized as a script directive at all - a
+        # bare `waitfile ...` line is otherwise just fed straight to
+        # CommandEngine::Execute() as an (unknown) command and the script
+        # keeps going immediately, which is exactly the race this
+        # synchronization exists to avoid.
+        f.write(f"@waitfile {sync1}\n")
         f.write("Line 0,0,0 10,10,0\n")
-        f.write(f"waitfile {sync2}\n")
+        f.write(f"@waitfile {sync2}\n")
 
     procs = []
     dino8_proc = None
