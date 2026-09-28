@@ -661,8 +661,10 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <limits>
 #include <map>
 #include <stdexcept>
+#include <utility>
 #include <tuple>
 #include <unordered_map>
 #include <unordered_set>
@@ -2127,6 +2129,50 @@ Cls ClassifyPointVsBrep(const Point3d& p, const ON_Brep& other, double ray_lengt
   return Cls::Out;  // exhausted every direction - default to outside
 }
 
+// --- classification for SplitBySheet() below: which side of an OPEN
+// sheet (not necessarily enclosing any volume, so ClassifyPointVsBrep's
+// own ray-cast parity test doesn't apply) a point sits on. Finds the
+// geometrically closest point on any one face of `sheet` via
+// surface_intersect.h's own Newton-polished global closest-point solver
+// (SurfaceClosestPointGlobal - the same routine NurbsSurface::ClosestPoint
+// wraps), then reads off the sign of (p - closest_point) . (that face's
+// own outward-consistent normal, m_bRev-corrected): positive means p sits
+// on the side that face's normal points into. A point exactly ON the
+// sheet (side_val == 0, e.g. a solid face lying exactly in the cutting
+// surface) is classified Positive - an arbitrary but deterministic
+// tie-break, the same convention BooleanCombineGeneral's own coincident-
+// face override above documents for its analogous "which copy wins" case.
+enum class Side { Positive, Negative };
+
+bool ClassifySideOfSheet(const Point3d& p, const ON_Brep& sheet, Side& out_side) {
+  double best_dist = std::numeric_limits<double>::max();
+  Point3d best_q;
+  Vector3d best_n;
+  bool found = false;
+  for (int fi = 0; fi < sheet.m_F.Count(); ++fi) {
+    const ON_BrepFace& face = sheet.m_F[fi];
+    const ON_Surface* s = face.SurfaceOf();
+    if (!s) continue;
+    double u = 0.5 * (s->Domain(0).Min() + s->Domain(0).Max());
+    double v = 0.5 * (s->Domain(1).Min() + s->Domain(1).Max());
+    if (!SurfaceClosestPointGlobal(*s, p, u, v)) continue;
+    const Point3d q = s->PointAt(u, v);
+    const double dist = p.DistanceTo(q);
+    if (dist < best_dist) {
+      best_dist = dist;
+      best_q = q;
+      Vector3d n = s->NormalAt(u, v);
+      if (face.m_bRev) n = -n;
+      best_n = n;
+      found = true;
+    }
+  }
+  if (!found) return false;
+  const double side_val = ON_DotProduct(p - best_q, best_n);
+  out_side = (side_val >= 0.0) ? Side::Positive : Side::Negative;
+  return true;
+}
+
 struct KeptFace {
   ON_Surface* surface = nullptr;  // owned (caller deletes after adding, or brep takes ownership)
   bool rev = false;
@@ -3197,6 +3243,216 @@ Brep ImprintFaces(const Brep& target, const Brep& tool) {
   brep.SetTrimIsoFlags();
   brep.SetTolerancesBoxesAndFlags(/*bLazy=*/true);
   return result;
+}
+
+// SplitBySheet(): sheet/solid trim (parity-map "Sheet/solid trim (open
+// surface as cutter through a solid)"). Splits `solid` (a closed Brep)
+// into the two pieces on either side of `sheet` (an OPEN Brep - one or
+// more trimmed faces used purely as a cutting tool, the same sense
+// Rhino's Trim/Split commands use a cutting surface, NOT required to
+// enclose a volume the way BooleanCombineGeneral()'s own operands must),
+// each piece capped with the portion of `sheet` that lies inside `solid`.
+//
+// This is deliberately the pair-returning sibling of boolean.cpp's own
+// `SplitByPlane` (mesh half-space split) rather than a single-result
+// "Trim" that silently discards one side: which piece counts as "kept"
+// is a caller/UI decision (Rhino's Trim keeps the piece the user didn't
+// click on), not a geometric one, so this hands back both, exactly as
+// SplitByPlane already does for the mesh/half-space case.
+//
+// Reuses the same SSX-gathering + FragmentFaces() machinery as
+// BooleanCombineGeneral()/ImprintFaces() above for BOTH operands - see
+// this file's own top-of-file doc comment for what that inherits (at
+// most one "outer" intersection chain per opposing face pair, genus-0
+// operand faces, non-self-crossing chains on one face) - but combines
+// the fragments two DIFFERENT ways, since only one of the two operands
+// here is actually closed:
+//   - `solid`'s own fragments are classified which SIDE of `sheet` they
+//     fall on via ClassifySideOfSheet() above (closest-point-plus-normal-
+//     sign, not ray-cast parity - `sheet` may have no volume to be in/out
+//     of at all).
+//   - `sheet`'s own fragments are classified IN/OUT of `solid` via the
+//     ordinary ClassifyPointVsBrep() ray-cast used everywhere else in
+//     this file - valid here because `solid`, unlike `sheet`, really is
+//     closed. Only the IN fragments become new cap faces, one oriented
+//     copy added to EACH output piece (opposite `rev`, so each half gets
+//     an outward-consistent cap on the new cut boundary they share).
+//
+// Reliable only where `sheet` genuinely separates `solid` in the
+// vicinity of every one of `solid`'s own fragments - the documented
+// contract is that `sheet` fully severs `solid` (a cutting plane/surface
+// extending past `solid`'s own silhouette, the same expectation Rhino's
+// Trim/Split have of a cutting object). Throws std::invalid_argument if
+// either operand has no faces, or if any fragment of `solid` can't be
+// classified to a side at all (ClassifySideOfSheet() found no face of
+// `sheet` with a convergent closest point - `sheet` is degenerate, not
+// merely "doesn't reach this fragment", which is a normal, classifiable
+// case handled below).
+//
+// Returns {positive_side, negative_side}: `positive_side` holds the
+// fragments of `solid` on the side each nearest `sheet` face's own
+// outward normal points INTO, plus `sheet`'s matching cap (oriented away
+// from `positive_side`'s own material); `negative_side` is the opposite
+// piece. Either may come back the empty Brep if `sheet` doesn't actually
+// cross `solid` at all (entirely on one side) - not an error, mirroring
+// BooleanCombineGeneral()'s/ImprintFaces()'s own "kept.empty()"
+// convention.
+std::pair<Brep, Brep> SplitBySheet(const Brep& solid, const Brep& sheet) {
+  const ON_Brep& bs = solid.raw();
+  const ON_Brep& bh = sheet.raw();
+  const int ns = bs.m_F.Count();
+  const int nh = bh.m_F.Count();
+  if (ns == 0) {
+    throw std::invalid_argument("dino8::kernel::SplitBySheet: solid has no faces");
+  }
+  if (nh == 0) {
+    throw std::invalid_argument("dino8::kernel::SplitBySheet: sheet has no faces");
+  }
+
+  IntersectOptions opt;
+  const double tol = 1e-6;
+  const bool debug = std::getenv("DINO8_BOOL_DEBUG") != nullptr;
+
+  const BoundingBox tbb_s = solid.GetTightBoundingBox();
+  const BoundingBox tbb_h = sheet.GetTightBoundingBox();
+  const ON_BoundingBox bbox_s(tbb_s.min, tbb_s.max);
+  const ON_BoundingBox bbox_h(tbb_h.min, tbb_h.max);
+  const double ray_length = 4.0 * (bbox_s.Diagonal().Length() + bbox_h.Diagonal().Length() + 1.0);
+
+  std::vector<ON_BoundingBox> boxes_s(static_cast<size_t>(ns)), boxes_h(static_cast<size_t>(nh));
+  for (int i = 0; i < ns; ++i) boxes_s[static_cast<size_t>(i)] = bs.m_F[i].SurfaceOf()->BoundingBox();
+  for (int j = 0; j < nh; ++j) boxes_h[static_cast<size_t>(j)] = bh.m_F[j].SurfaceOf()->BoundingBox();
+
+  // Same SSX-gathering loop as BooleanCombineGeneral() above, minus the
+  // coincident-plane bookkeeping (out of scope here, same as ImprintFaces()
+  // above - a `solid` face lying exactly in `sheet`'s own cutting surface
+  // falls back to ClassifySideOfSheet()'s own documented tie-break).
+  std::vector<std::vector<Chain>> raw_s(static_cast<size_t>(ns)), raw_h(static_cast<size_t>(nh));
+  for (int i = 0; i < ns; ++i) {
+    ON_BoundingBox exp_s = boxes_s[static_cast<size_t>(i)];
+    exp_s.m_min -= ON_3dVector(tol, tol, tol);
+    exp_s.m_max += ON_3dVector(tol, tol, tol);
+    for (int j = 0; j < nh; ++j) {
+      if (exp_s.IsDisjoint(boxes_h[static_cast<size_t>(j)])) continue;
+      const ON_BrepFace& fs = bs.m_F[i];
+      const ON_BrepFace& fh = bh.m_F[j];
+      std::vector<IntersectionCurve> curves = IntersectFaces(&fs, *fs.SurfaceOf(), &fh, *fh.SurfaceOf(), opt);
+      for (const IntersectionCurve& ic : curves) {
+        if (ic.points.size() < 2) continue;
+        Chain cs, ch;
+        cs.reserve(ic.points.size() + 1);
+        ch.reserve(ic.points.size() + 1);
+        for (size_t k = 0; k < ic.points.size(); ++k) {
+          cs.push_back({ic.points[k], ic.uv_a[k]});
+          ch.push_back({ic.points[k], ic.uv_b[k]});
+        }
+        if (ic.closed) {
+          cs.push_back(cs.front());
+          ch.push_back(ch.front());
+        }
+        raw_s[static_cast<size_t>(i)].push_back(std::move(cs));
+        raw_h[static_cast<size_t>(j)].push_back(std::move(ch));
+      }
+    }
+  }
+
+  const double stitch_tol = std::max(1e-4, opt.tolerance * 20.0);
+  std::vector<FaceFrags> frags_s = FragmentFaces(bs, ns, raw_s, stitch_tol, opt, debug);
+  std::vector<FaceFrags> frags_h = FragmentFaces(bh, nh, raw_h, stitch_tol, opt, debug);
+
+  std::vector<KeptFace> kept_pos, kept_neg;
+
+  // `solid`'s fragments: bucket by side of `sheet`.
+  for (FaceFrags& ff : frags_s) {
+    for (Fragment& frag : ff.frags) {
+      Point2d uv;
+      if (!RepresentativeUV(frag, uv)) continue;
+      const Point3d p3 = ff.surface->PointAt(uv.x, uv.y);
+      Side side;
+      if (!ClassifySideOfSheet(p3, bh, side)) {
+        for (FaceFrags& x : frags_s) delete x.surface;
+        for (FaceFrags& x : frags_h) delete x.surface;
+        for (KeptFace& kf : kept_pos) delete kf.surface;
+        for (KeptFace& kf : kept_neg) delete kf.surface;
+        throw std::invalid_argument(
+            "dino8::kernel::SplitBySheet: a fragment of `solid` could not be classified "
+            "to a side of `sheet` - `sheet` is degenerate (every one of its faces failed "
+            "to converge a closest point)");
+      }
+      KeptFace kf;
+      kf.surface = ff.surface->DuplicateSurface();
+      kf.rev = ff.base_rev;
+      kf.outer = frag.outer;
+      kf.holes = frag.holes;
+      if (!kf.holes.empty()) BridgeHolesIntoOuter(kf.outer, kf.holes, ff.surface);
+      (side == Side::Positive ? kept_pos : kept_neg).push_back(std::move(kf));
+    }
+  }
+  for (FaceFrags& ff : frags_s) delete ff.surface;
+
+  // `sheet`'s fragments: keep only the ones inside `solid`, as a capping
+  // face for BOTH output pieces (opposite orientation each).
+  for (FaceFrags& ff : frags_h) {
+    for (Fragment& frag : ff.frags) {
+      Point2d uv;
+      if (!RepresentativeUV(frag, uv)) continue;
+      const Point3d p3 = ff.surface->PointAt(uv.x, uv.y);
+      if (ClassifyPointVsBrep(p3, bs, ray_length, opt, tol) != Cls::In) continue;
+
+      KeptFace kf_pos;
+      kf_pos.surface = ff.surface->DuplicateSurface();
+      kf_pos.rev = !ff.base_rev;
+      kf_pos.outer = frag.outer;
+      kf_pos.holes = frag.holes;
+      if (!kf_pos.holes.empty()) BridgeHolesIntoOuter(kf_pos.outer, kf_pos.holes, ff.surface);
+      kept_pos.push_back(std::move(kf_pos));
+
+      KeptFace kf_neg;
+      kf_neg.surface = ff.surface->DuplicateSurface();
+      kf_neg.rev = ff.base_rev;
+      kf_neg.outer = frag.outer;
+      kf_neg.holes = frag.holes;
+      if (!kf_neg.holes.empty()) BridgeHolesIntoOuter(kf_neg.outer, kf_neg.holes, ff.surface);
+      kept_neg.push_back(std::move(kf_neg));
+    }
+  }
+  for (FaceFrags& ff : frags_h) delete ff.surface;
+
+  auto assemble = [](std::vector<KeptFace>& kept) -> Brep {
+    if (kept.empty()) return Brep();
+    ReconcileFragmentBoundaries(kept);
+    Brep result;
+    ON_Brep& brep = result.raw();
+    VertexWelder welder;
+    for (KeptFace& kf : kept) {
+      CollapseDuplicateVids(kf.outer, welder, kf.surface);
+      for (auto& h : kf.holes) CollapseDuplicateVids(h, welder, kf.surface);
+    }
+    for (const Point3d& p : welder.Points()) brep.NewVertex(p);
+
+    std::unordered_map<uint64_t, int> edge_of_pair;
+    for (KeptFace& kf : kept) {
+      if (kf.outer.size() < 3) {
+        delete kf.surface;
+        continue;
+      }
+      const int surface_index = brep.AddSurface(kf.surface);
+      ON_BrepFace& face = brep.NewFace(surface_index);
+      face.m_bRev = kf.rev;
+      BuildLoop(brep, face, ON_BrepLoop::outer, kf.outer, welder, edge_of_pair);
+      for (const std::vector<UVPt>& h : kf.holes) {
+        if (h.size() >= 3) BuildLoop(brep, face, ON_BrepLoop::inner, h, welder, edge_of_pair);
+      }
+    }
+
+    brep.SetTrimIsoFlags();
+    brep.SetTolerancesBoxesAndFlags(/*bLazy=*/true);
+    return result;
+  };
+
+  Brep positive_side = assemble(kept_pos);
+  Brep negative_side = assemble(kept_neg);
+  return {std::move(positive_side), std::move(negative_side)};
 }
 
 // --- TessellateGeneralBooleanClosedMesh(): T-junction stitching --------

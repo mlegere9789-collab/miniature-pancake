@@ -3353,6 +3353,124 @@ void TestImprintFacesRejectsEmptyOperands() {
   Check(threw_empty_tool, "ImprintFaces throws std::invalid_argument for a faceless tool");
 }
 
+// Builds a single-face, untrimmed, planar rectangular "sheet" Brep spanning
+// x in [x0, x1], y in [y0, y1] at the given z, whose natural (un-flipped)
+// outward normal is +z - the same u_dir x v_dir construction
+// TestExtrudeCappedFace's own flat-square fixture uses (see its own doc
+// comment): u_dir = (x1-x0, 0, 0), v_dir = (0, y1-y0, 0), so u_dir x v_dir
+// = +z.
+dino8::kernel::Brep MakePlanarSheetZ(double x0, double y0, double x1, double y1, double z) {
+  using dino8::kernel::Brep;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  const std::vector<Point3d> grid = {
+      Point3d(x0, y0, z),
+      Point3d(x0, y1, z),
+      Point3d(x1, y0, z),
+      Point3d(x1, y1, z),
+  };
+  const NurbsSurface surface = NurbsSurface::FromControlGrid(grid, 2, 2, /*u_degree=*/1, /*v_degree=*/1);
+  return Brep::FromSurface(surface);
+}
+
+void TestSplitBySheetBoxCutInHalfByPlane() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SplitBySheet;
+
+  // Sheet/solid trim (PARITY_MAP.md's "kernel: Boolean operations" gap -
+  // "Sheet/solid trim (open surface as cutter through a solid)"). A 4x4x4
+  // box (volume 64) cut by a flat, OPEN planar sheet at z=2 that extends a
+  // full unit past the box's own footprint on every side (x, y in
+  // [-1, 5]) - guaranteeing the cut fully severs the box, this function's
+  // own documented contract. The sheet is not itself a closed solid (a
+  // single untrimmed face) - proving this doesn't need
+  // BooleanCombineGeneral()'s own closed-operand requirement.
+  //
+  // The sheet's own natural normal (MakePlanarSheetZ's own doc comment)
+  // points +z, so `positive_side` should be the box's own z in [2, 4] half
+  // and `negative_side` the z in [0, 2] half - each volume 32, each gaining
+  // exactly one new cap face (the sheet's own footprint-sized interior
+  // fragment, the only part of the much bigger sheet rectangle actually
+  // inside the box) plus the 4 side walls each split top/bottom, plus its
+  // own untouched cap (top face for positive_side, bottom for negative_side):
+  // 1 (untouched cap) + 4 (split side halves) + 1 (new sheet cap) = 6 faces
+  // each, same as the original box's own 6.
+  const Brep box = Brep::Box(0, 0, 0, 4, 4, 4);
+  const Brep sheet = MakePlanarSheetZ(-1, -1, 5, 5, 2.0);
+
+  const auto [positive_side, negative_side] = SplitBySheet(box, sheet);
+
+  Check(positive_side.raw().IsValid(), "SplitBySheet's positive_side (box's z>2 half) is a valid ON_Brep");
+  Check(negative_side.raw().IsValid(), "SplitBySheet's negative_side (box's z<2 half) is a valid ON_Brep");
+  Check(positive_side.FaceCount() == box.FaceCount(),
+        "positive_side gains the sheet's own interior fragment as a new cap but loses none - "
+        "same face count as the original box (6): top cap + 4 split side-wall halves + 1 new cap");
+  Check(negative_side.FaceCount() == box.FaceCount(),
+        "negative_side is the same shape (6 faces): bottom cap + 4 split side-wall halves + 1 new cap");
+
+  const Mesh mp = positive_side.TessellateToClosedMesh(16, 16);
+  const Mesh mn = negative_side.TessellateToClosedMesh(16, 16);
+  Check(std::abs(mp.Volume() - 32.0) < 0.5, "positive_side's volume is exactly the box's own top half (4*4*2 = 32)");
+  Check(std::abs(mn.Volume() - 32.0) < 0.5, "negative_side's volume is exactly the box's own bottom half (4*4*2 = 32)");
+  Check(std::abs((mp.Volume() + mn.Volume()) - 64.0) < 1e-3,
+        "the two halves' volumes sum back to the original box's own volume (4^3 = 64) exactly - no "
+        "material gained or lost by the split");
+}
+
+void TestSplitBySheetDisjointSheetKeepsWholeSolidOnOneSide() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SplitBySheet;
+
+  // A sheet that never actually reaches the solid (a plane at z=10, the
+  // box occupies z in [0, 4]) is not an error - ClassifySideOfSheet()'s own
+  // closest-point test still classifies every one of the box's own
+  // (entirely untouched - no SSX curve at all, since the two operands'
+  // bounding boxes are disjoint) fragments to whichever side the box
+  // actually sits on relative to the sheet's own plane. The box sits
+  // entirely below the sheet (z < 10 everywhere), so every fragment lands
+  // on negative_side (the sheet's own normal is +z), leaving positive_side
+  // the empty Brep, mirroring ImprintFaces()'s/BooleanCombineGeneral()'s
+  // own "kept.empty()" convention rather than treating a clean miss as an
+  // error.
+  const Brep box = Brep::Box(0, 0, 0, 4, 4, 4);
+  const Brep sheet = MakePlanarSheetZ(-1, -1, 5, 5, 10.0);
+
+  const auto [positive_side, negative_side] = SplitBySheet(box, sheet);
+
+  Check(positive_side.FaceCount() == 0, "a sheet that never reaches the solid leaves positive_side the empty Brep");
+  Check(negative_side.raw().IsValid(), "negative_side (the whole, untouched box) is a valid ON_Brep");
+  Check(negative_side.FaceCount() == box.FaceCount(),
+        "negative_side keeps every one of the box's own faces unchanged - the sheet touched none of them");
+  const Mesh m = negative_side.TessellateToClosedMesh(8, 8);
+  Check(std::abs(m.Volume() - 64.0) < 1e-3, "negative_side's volume is the box's own, unchanged (4^3 = 64)");
+}
+
+void TestSplitBySheetRejectsEmptyOperands() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::SplitBySheet;
+
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+  const Brep empty;
+
+  bool threw_empty_solid = false;
+  try {
+    SplitBySheet(empty, box);
+  } catch (const std::invalid_argument&) {
+    threw_empty_solid = true;
+  }
+  Check(threw_empty_solid, "SplitBySheet throws std::invalid_argument for a faceless solid");
+
+  bool threw_empty_sheet = false;
+  try {
+    SplitBySheet(box, empty);
+  } catch (const std::invalid_argument&) {
+    threw_empty_sheet = true;
+  }
+  Check(threw_empty_sheet, "SplitBySheet throws std::invalid_argument for a faceless sheet");
+}
+
 void TestSurfaceGetApproximateSize() {
   using dino8::kernel::NurbsSurface;
   using dino8::kernel::Point3d;
@@ -33157,6 +33275,9 @@ int main() {
   TestImprintFacesOverlappingBoxes();
   TestImprintFacesDisjointIsNoOp();
   TestImprintFacesRejectsEmptyOperands();
+  TestSplitBySheetBoxCutInHalfByPlane();
+  TestSplitBySheetDisjointSheetKeepsWholeSolidOnOneSide();
+  TestSplitBySheetRejectsEmptyOperands();
   TestSurfaceGetApproximateSize();
   TestSurfaceTessellateGridClippedExactRejectsTooFewPoints();
   TestSurfaceTessellateGridRejectsTooFewTrimPoints();

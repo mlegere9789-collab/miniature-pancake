@@ -27,6 +27,8 @@
 // that cross EACH OTHER on the same face are not.
 #pragma once
 
+#include <utility>
+
 #include "dino8/kernel/boolean.h"
 #include "dino8/kernel/brep.h"
 #include "dino8/kernel/mesh.h"
@@ -59,6 +61,39 @@ Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op);
 // (>= 3 point) boundary loop after fragmentation, mirroring
 // BooleanCombineGeneral()'s own "kept.empty()" convention.
 Brep ImprintFaces(const Brep& target, const Brep& tool);
+
+// Sheet/solid trim (parity-map "Sheet/solid trim (open surface as cutter
+// through a solid)"): splits `solid` (a closed Brep) into the two pieces
+// on either side of `sheet` (an OPEN Brep - one or more trimmed faces used
+// purely as a cutting tool, NOT required to enclose a volume the way
+// BooleanCombineGeneral()'s own operands must), each piece capped with the
+// portion of `sheet` that lies inside `solid`. The pair-returning sibling
+// of boolean.cpp's own `SplitByPlane` (mesh half-space split), for the
+// same reason: which piece is "kept" is a caller/UI decision, not a
+// geometric one, so both come back rather than one being silently
+// discarded.
+//
+// Reuses this file's own SSX-gathering + FragmentFaces() machinery for
+// BOTH operands (see this file's own top-of-file doc comment for the
+// scope that implies), but classifies them two different ways: `solid`'s
+// own fragments are bucketed by which side of `sheet` they fall on (a
+// closest-point-plus-normal-sign test, not ray-cast parity - `sheet` may
+// have no volume to be in/out of); `sheet`'s own fragments are ray-cast
+// in/out of `solid` as usual (valid because `solid`, unlike `sheet`,
+// really is closed), and only the IN ones become a new cap face, one
+// oriented copy added to each output piece.
+//
+// Requires `sheet` to fully sever `solid` (a cutting surface extending
+// past `solid`'s own silhouette) for every one of `solid`'s own fragments
+// to classify; throws std::invalid_argument if either operand has no
+// faces, or if `sheet` is degenerate (no face of it converges a closest
+// point for some fragment of `solid`). Returns {positive_side,
+// negative_side} - `positive_side` is the piece on the side each nearest
+// `sheet` face's own outward normal (m_bRev-corrected) points into;
+// either may come back the empty Brep if `sheet` doesn't actually cross
+// `solid` at all, mirroring ImprintFaces()'s own "kept.empty()"
+// convention rather than treating a clean miss as an error.
+std::pair<Brep, Brep> SplitBySheet(const Brep& solid, const Brep& sheet);
 
 // A purely additive, opt-in sibling of Brep::TessellateToClosedMesh()/
 // TessellateToClosedMeshConforming(), scoped ONLY to BooleanCombineGeneral's

@@ -1,6 +1,6 @@
 # Fossilith / Dino 8 parity map (2026-09-28)
 
-**Fossilith vs Parasolid/ACIS = 64.6% (weighted, verified); Dino 8 vs Rhino 8 + AutoCAD 2027 = 71.4%.**
+**Fossilith vs Parasolid/ACIS = 64.8% (weighted, verified); Dino 8 vs Rhino 8 + AutoCAD 2027 = 71.4%.**
 
 This run recomputes the parity map from scratch against the live repository at
 `/home/user/miniature-pancake` on `claude/pdf-audit-i2bvwm`, superseding the
@@ -221,7 +221,7 @@ equally reasonable split of the same underlying capabilities.
 |---|---|---|---|---|---|---|
 | kernel: Topology & data structure | 1 | 27 | 11 | 14 | 2 | 66.7% |
 | kernel: Geometry representation | 1 | 29 | 18 | 11 | 0 | 81.0% |
-| kernel: Boolean operations | 1.5 | 25 | 8 | 14 | 3 | 60.0% |
+| kernel: Boolean operations | 1.5 | 25 | 8 | 15 | 2 | 62.0% |
 | Blending & chamfering | 1.5 | 24 | 5 | 17 | 2 | 56.3% |
 | kernel: Sweeping, lofting, extruding, revolving | 1 | 29 | 6 | 20 | 3 | 55.2% |
 | kernel: Offsetting, shelling, thickening | 1 | 27 | 0 | 26 | 1 | 48.1% |
@@ -265,6 +265,46 @@ that category's own bullet list below. Weighted the same way as the
 marginal-delta method (that row's own weight of 1 against the 17.75 total
 kernel weight): 64.5% → 64.6%; no other category was touched.
 
+**Third same-day follow-up (this session):** kernel: Boolean operations
+gained a genuine new kernel entry point, `SplitBySheet(solid, sheet)`
+(boolean_general.h/.cpp) - the parity map's own next-highest-ranked still-
+missing boolean item, "Sheet/solid trim (open surface as cutter through a
+solid)". It reuses `BooleanCombineGeneral`'s/`ImprintFaces`' own SSX-
+gathering and `FragmentFaces()` machinery for both operands, but - unlike
+either of those - only ONE operand (`solid`) is required to be closed:
+`solid`'s own fragments are bucketed by a new closest-point-plus-normal-
+sign test (`ClassifySideOfSheet`, using the existing Newton-polished
+`SurfaceClosestPointGlobal`) against `sheet`, which may be a genuinely open
+cutting surface with no volume to ray-cast in/out of at all; `sheet`'s own
+fragments are ray-cast in/out of `solid` as usual (valid since `solid`
+really is closed) and its IN fragments become a new, correctly-oriented
+cap face added to BOTH output pieces. Modeled on boolean.cpp's own
+`SplitByPlane` (returns both pieces rather than one caller-chosen "kept"
+side, since which piece to keep is a UI decision, not a geometric one).
+Verified (`TestSplitBySheet*`, tests/test_basic.cpp): a 4x4x4 box fully
+severed by a flat open planar sheet larger than the box's own footprint
+comes back as two valid closed B-reps whose volumes are each exactly half
+(32) and sum back to the original (64) exactly; a sheet that never
+reaches the solid at all correctly returns the whole untouched solid on
+one side and the empty Brep on the other, mirroring `ImprintFaces`' own
+"kept.empty()" convention; both faceless-operand cases throw
+`std::invalid_argument`. Full `dino8_kernel_tests` suite (via `ctest`):
+100% passing, 0 regressions.
+
+Still `partial`, not `present`: no app command exposes it yet
+(`cmd_boolean.cpp` still skips every non-closed operand outright); it
+inherits `BooleanCombineGeneral`'s own scope limits (one crossing chain
+per opposing face pair, genus-0 faces); only a flat cutting plane is
+tested (a genuinely curved `sheet` is unexercised); and the item's OTHER
+half - trimming a sheet body BY a solid (cutting the sheet's own surface
+down, not splitting a volume) - is not implemented at all. Net effect on
+the scores below: kernel: Boolean operations' "Sheet/solid trim" bullet
+upgrades missing -> partial: 8/15/2/25 (62.0%, was 8/14/3/25 60.0%);
+weighted the same marginal-delta way as the two follow-ups above (this
+row's own weight of 1.5 against the 17.75 total kernel weight, on top of
+the 64.6% those two already established, not a full re-derivation of
+every other row): 64.6% → 64.8%.
+
 ### Kernel category gaps (missing / partial items, with evidence)
 
 **kernel: Topology & data structure** (topology):
@@ -307,7 +347,7 @@ kernel weight): 64.5% → 64.6%; no other category was touched.
 - [partial] Result validity (closed manifold / ON_Brep IsValid / IsSolid) — the mesh contract is fuzz-checked (IsClosedManifold on every result). Planar results pass IsValid/IsSolid. General-engine results close in 54 of 76 cases (see the corrected figure above), not watertight otherwise.
 - [partial] Tolerant booleans (caller-specified tolerance, gap-healing of imprecise operands) — no boolean API takes a tolerance; the general engine uses a fixed `tol = 1e-6` (boolean_general.cpp:678). The only adaptivity is the mesh-engine retry. Recorded edge tolerances are written (e.g. boolean_general.cpp:2250 sets `edge.m_tolerance = 0.0`) but never read back as an input.
 - [partial] Keep/split options (BooleanSplit solid-by-solid keeping all pieces, DeleteInput/keep tools, side selection) — BooleanSplit/MeshSplit/MeshBooleanSplit (cmd_boolean.cpp:410-415) are all plane-split only (kernel `SplitByPlane`). The new `SplitByObjectCommand` (see kernel: Feature operations and kernel: Transformations) is a general cutting-object split with true KeepAll semantics, but it is app-level mesh-boolean, not this item's B-rep solid-by-solid split.
-- [missing] Sheet/solid trim (open surface as cutter through a solid; trimming a sheet body by a solid) — the app skips non-closed operands ("not a closed solid; skipped", cmd_boolean.cpp:21,151,193,305). Every B-rep engine assumes closed two-shell solids (boolean.cpp:81).
+- [partial] Sheet/solid trim (open surface as cutter through a solid; trimming a sheet body by a solid) — `dino8::kernel::SplitBySheet(solid, sheet)` (boolean_general.h; boolean_general.cpp) splits a closed `solid` into the two pieces on either side of an OPEN `sheet` (one or more trimmed faces, no closed-solid requirement — unlike every OTHER boolean engine here, which still assumes closed two-shell solids, boolean.cpp:81), each piece capped with the portion of `sheet` inside `solid`. Reuses `BooleanCombineGeneral`'s own SSX-fragmentation machinery: `solid`'s fragments are bucketed by a closest-point-plus-normal-sign test against `sheet` (not ray-cast parity, since `sheet` may have no volume), `sheet`'s own fragments are ray-cast in/out of `solid` as usual and its IN fragments become the new caps. Verified on a box fully severed by a flat open planar sheet larger than the box's own footprint (both halves valid closed B-reps, volumes summing back to the original exactly) and a disjoint-sheet case (the whole untouched solid on one side, the empty Brep on the other) (`TestSplitBySheet*`, tests/test_basic.cpp). Still partial: the app's own `cmd_boolean.cpp` still skips every non-closed operand outright ("not a closed solid; skipped", cmd_boolean.cpp:21,151,193,305) and does not call this; only a flat cutting plane is tested (a genuinely curved `sheet` is unexercised); it inherits `BooleanCombineGeneral`'s own scope limits (one crossing chain per opposing face pair, genus-0 faces); and this item's OTHER half — trimming a sheet body BY a solid (cutting the sheet's own surface down, not splitting a volume) — is not implemented at all.
 - [partial] Non-manifold boolean results (edge/vertex-touching unions, single-body XOR, 3+ faces per edge) — the B-rep engines throw "an edge is shared by 3 or more faces" instead of building non-manifold output; XOR is an unwelded two-lump Compound; the mesh XOR keeps duplicated vertices.
 - [partial] Face-face imprint (Parasolid PK_BODY_imprint / ACIS imprint: split faces along mutual intersection without removing material) — `dino8::kernel::ImprintFaces(target, tool)` (boolean_general.h:61; boolean_general.cpp:3086) reuses `BooleanCombineGeneral`'s own SSX-driven face-fragmentation but keeps every fragment of `target` unconditionally — no ray-cast in/out classification, no material ever removed — so `target` keeps its exact original shape/volume with more, smaller faces wherever `tool` crosses it; `tool` itself is read-only. Verified on a closed-loop fixture (box pierced by a cylinder) and an open-chain fixture (two overlapping boxes), each direction, plus a disjoint-operand no-op and a faceless-operand `std::invalid_argument` (`TestImprintFaces*`, tests/test_basic.cpp:3214-3353). Still partial: only `target`'s faces split per call (call it twice, swapped, for a true mutual imprint of both bodies), it inherits `BooleanCombineGeneral`'s own scope limits, and no app command exposes it yet — re-confirmed this pass (`ImprintFaces` has zero hits anywhere in dino8-app/).
 - [partial] 2D region / planar curve booleans (CurveBoolean, AutoCAD REGION union/subtract/intersect) — `RegionBoolean` (dino8-app/src/commands/cmd_solidtools.cpp:1525) runs through thin mesh slabs in Manifold and recovers outlines. No exact 2D curve boolean in the kernel.
@@ -764,7 +804,7 @@ top 40:
 |---|---|---|---|---|---|---|
 | 1 | kernel | intersections | CSX against trimmed faces and curve-on-surface overlap detection | missing | small | `FaceContainsUV` already exists to filter hits — this is wiring, not new algorithm work. |
 | 2 | kernel | booleans | Face-face imprint (Parasolid PK_BODY_imprint / ACIS imprint) | missing | medium | The general boolean engine's internal face-splitting already exists; needs exposing as its own operation. |
-| 3 | kernel | booleans | Sheet/solid trim (open surface as cutter through a solid) | missing | medium | Closes a real, verified gap in kernel Boolean operations. |
+| 3 | kernel | booleans | Sheet/solid trim (open surface as cutter through a solid) | partial | small | `SplitBySheet` (dino8-kernel/src/boolean_general.cpp) now splits a solid into the two pieces on either side of an open cutting sheet, each capped; remaining work is wiring it into an app command, testing a genuinely curved (non-planar) sheet, and the item's other half (trimming a sheet body BY a solid). |
 | 4 | kernel | booleans | AutoCAD-style INTERFERE (real overlap solids, not just Clash report) | partial | small | `ComputeInterference` (dino8-kernel/src/boolean.cpp) now builds the real pairwise overlap solids; remaining work is wiring it into an app `Interfere` command and, optionally, true N-way simultaneous overlap reporting. |
 | 5 | kernel | blending | Conic / rho (chordal, elliptical) blend cross-sections | missing | medium | Closes a real, verified gap in Blending & chamfering. |
 | 6 | kernel | blending | Alternative blend rail types (distance-from-edge, distance-between-rails) | missing | medium | Closes a real, verified gap in Blending & chamfering. |
@@ -1049,7 +1089,7 @@ top 40:
 - [kernel/topology] Wire bodies (edge/vertex-only B-rep body) (missing)
 - [kernel/topology] Euler operators (missing)
 - [kernel/topology] Persistent naming / topology identity across edits (missing)
-- [kernel/booleans] Sheet/solid trim (missing)
+- [kernel/booleans] Sheet/solid trim (missing; now partial - see `SplitBySheet`, boolean_general.cpp - remaining effort is small, not large: app wiring, a curved-sheet test, and the sheet-trimmed-by-solid half)
 - [kernel/booleans] Face-face imprint (missing)
 - [kernel/booleans] B-rep-preserving booleans reachable from the application (missing)
 - [kernel/booleans] Associative/history-enabled Boolean operations (missing)
