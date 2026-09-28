@@ -9355,6 +9355,175 @@ void TestBrepMakeEdgeKillRingAndKillEdgeMakeRingAreExactInverses() {
   Check(threw_kemr_edge_deleted, "a deleted edge_index throws std::invalid_argument");
 }
 
+// Brep::LoopCount/LoopsOfFace/FaceOfLoop/TypeOfLoop/TrimCount/TrimsOfLoop/
+// LoopOfTrim/EdgeOfTrim/NextTrimInLoop/PrevTrimInLoop: PARITY_MAP.md's own
+// "Kernel-level topology enumeration API" and "Loop structure" items'
+// shared "no public loop/trim API exists, callers walk raw().m_F[i].Loop
+// (j)/Trim(k) by hand" gap. Exercises a real multi-loop, multi-trim
+// fixture (BuildPlanarFaceWithHole()'s outer+inner quad loops, the same
+// fixture MakeEdgeKillRing()'s own test above uses) plus a genuine 6-face
+// box (FromPlanarFaces()) for the single-loop case, and every refusal.
+void TestBrepLoopAndTrimTopologyQueries() {
+  using dino8::kernel::Brep;
+
+  PlanarFaceWithHoleFixture fixture = BuildPlanarFaceWithHole();
+  Brep& brep = fixture.brep;
+  const int face_index = fixture.face_index;
+
+  Check(brep.LoopCount(face_index) == 2, "the fixture face has exactly 2 loops (outer + hole)");
+  const std::vector<int> loops = brep.LoopsOfFace(face_index);
+  Check(loops.size() == 2, "LoopsOfFace() returns exactly 2 global loop indices");
+  Check(brep.FaceOfLoop(loops[0]) == face_index && brep.FaceOfLoop(loops[1]) == face_index,
+        "both loops report their owning face back");
+
+  // Exactly one of the two loops is Outer and the other Inner - order
+  // isn't asserted (BuildPlanarFaceWithHole() builds outer first, but
+  // TypeOfLoop(), not position, is the contract).
+  const Brep::LoopKind k0 = brep.TypeOfLoop(loops[0]);
+  const Brep::LoopKind k1 = brep.TypeOfLoop(loops[1]);
+  Check((k0 == Brep::LoopKind::Outer && k1 == Brep::LoopKind::Inner) ||
+            (k0 == Brep::LoopKind::Inner && k1 == Brep::LoopKind::Outer),
+        "one loop is Outer and the other is Inner");
+  const int outer_loop = (k0 == Brep::LoopKind::Outer) ? loops[0] : loops[1];
+  const int inner_loop = (k0 == Brep::LoopKind::Inner) ? loops[0] : loops[1];
+
+  Check(brep.TrimCount(outer_loop) == 4 && brep.TrimCount(inner_loop) == 4,
+        "each loop is a real 4-trim quad, matching raw().m_F[face].Loop(*)->TrimCount()");
+  const std::vector<int> outer_trims = brep.TrimsOfLoop(outer_loop);
+  Check(outer_trims.size() == 4, "TrimsOfLoop() returns exactly 4 global trim indices");
+  for (int ti : outer_trims) {
+    Check(brep.LoopOfTrim(ti) == outer_loop, "each trim reports the outer loop back via LoopOfTrim()");
+    Check(brep.EdgeOfTrim(ti) >= 0, "each of this fixture's own trims rides a real 3d edge (not singular)");
+  }
+
+  // TrimsOfLoop() is in the loop's own m_ti walking order - confirm
+  // NextTrimInLoop()/PrevTrimInLoop() reproduce that exact same order,
+  // cyclically, in both directions.
+  for (size_t k = 0; k < outer_trims.size(); ++k) {
+    const int expected_next = outer_trims[(k + 1) % outer_trims.size()];
+    const int expected_prev = outer_trims[(k + outer_trims.size() - 1) % outer_trims.size()];
+    Check(brep.NextTrimInLoop(outer_trims[k]) == expected_next, "NextTrimInLoop() matches TrimsOfLoop()'s own order");
+    Check(brep.PrevTrimInLoop(outer_trims[k]) == expected_prev,
+          "PrevTrimInLoop() matches TrimsOfLoop()'s own order, reversed");
+  }
+  // Walking all the way around returns to the start.
+  int walked = outer_trims[0];
+  for (size_t k = 0; k < outer_trims.size(); ++k) walked = brep.NextTrimInLoop(walked);
+  Check(walked == outer_trims[0], "NextTrimInLoop() cycles back to the start after a full loop");
+
+  // A real 6-face box: single-loop-per-face case, and cross-checks
+  // against the exact same raw() walk MakeEdgeFace()'s own test uses.
+  Brep box = Brep::FromPlanarFaces(CheckHealBoxFaces());
+  for (int fi = 0; fi < box.FaceCount(); ++fi) {
+    Check(box.LoopCount(fi) == 1, "every face of a genuine-topology box has exactly one loop");
+    const std::vector<int> face_loops = box.LoopsOfFace(fi);
+    Check(face_loops.size() == 1 && box.TypeOfLoop(face_loops[0]) == Brep::LoopKind::Outer,
+          "that one loop is Outer");
+    Check(box.TrimCount(face_loops[0]) == 4, "a box face's own loop is a real 4-trim quad");
+    const std::vector<int> trims = box.TrimsOfLoop(face_loops[0]);
+    const ON_BrepLoop* raw_loop = box.raw().m_F[fi].Loop(0);
+    Check(raw_loop != nullptr && raw_loop->TrimCount() == 4, "setup: raw() agrees on 4 trims");
+    for (int k = 0; k < 4; ++k) {
+      Check(trims[static_cast<size_t>(k)] == raw_loop->Trim(k)->m_trim_index,
+            "TrimsOfLoop()'s own order matches raw().m_L[loop].Trim(k) exactly");
+      Check(box.EdgeOfTrim(trims[static_cast<size_t>(k)]) == raw_loop->Trim(k)->m_ei,
+            "EdgeOfTrim() matches raw()'s own trim.m_ei exactly");
+    }
+  }
+
+  // Refusals: out-of-range and deleted face/loop/trim indices.
+  bool threw = false;
+  try {
+    brep.LoopCount(brep.raw().m_F.Count() + 100);
+  } catch (const std::out_of_range&) {
+    threw = true;
+  }
+  Check(threw, "LoopCount(): an out-of-range face_index throws std::out_of_range");
+
+  threw = false;
+  try {
+    brep.FaceOfLoop(brep.raw().m_L.Count() + 100);
+  } catch (const std::out_of_range&) {
+    threw = true;
+  }
+  Check(threw, "FaceOfLoop(): an out-of-range loop_index throws std::out_of_range");
+
+  threw = false;
+  try {
+    brep.LoopOfTrim(brep.raw().m_T.Count() + 100);
+  } catch (const std::out_of_range&) {
+    threw = true;
+  }
+  Check(threw, "LoopOfTrim(): an out-of-range trim_index throws std::out_of_range");
+
+  // Delete the outer loop's first edge (and its two trims) via
+  // KillEdgeVertex()'s own sibling MakeEdgeVertex()/RemoveNakedMicroEdge
+  // machinery is overkill here - directly mark the raw slots deleted the
+  // same way this file's own KillEdgeVertex()/KillEdgeFace() do, then
+  // confirm every query on that now-deleted slot refuses.
+  const int deleted_trim = outer_trims[0];
+  const int deleted_edge = brep.raw().m_T[deleted_trim].m_ei;
+  const int deleted_loop = outer_loop;
+  brep.raw().m_T[deleted_trim].m_trim_index = -1;
+  threw = false;
+  try {
+    brep.LoopOfTrim(deleted_trim);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "LoopOfTrim() on a deleted trim slot throws std::invalid_argument");
+  threw = false;
+  try {
+    brep.EdgeOfTrim(deleted_trim);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "EdgeOfTrim() on a deleted trim slot throws std::invalid_argument");
+  threw = false;
+  try {
+    brep.NextTrimInLoop(deleted_trim);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "NextTrimInLoop() on a deleted trim slot throws std::invalid_argument");
+  (void)deleted_edge;
+
+  brep.raw().m_T[deleted_trim].m_trim_index = deleted_trim;  // restore, so the fixture stays well-formed
+  brep.raw().m_L[deleted_loop].m_loop_index = -1;
+  threw = false;
+  try {
+    brep.TrimCount(deleted_loop);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "TrimCount() on a deleted loop slot throws std::invalid_argument");
+  threw = false;
+  try {
+    brep.TypeOfLoop(deleted_loop);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "TypeOfLoop() on a deleted loop slot throws std::invalid_argument");
+  brep.raw().m_L[deleted_loop].m_loop_index = deleted_loop;  // restore
+
+  Brep box2 = Brep::FromPlanarFaces(CheckHealBoxFaces());
+  box2.raw().m_F[0].m_face_index = -1;
+  threw = false;
+  try {
+    box2.LoopCount(0);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "LoopCount() on a deleted face slot throws std::invalid_argument");
+  threw = false;
+  try {
+    box2.LoopsOfFace(0);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "LoopsOfFace() on a deleted face slot throws std::invalid_argument");
+}
+
 // Brep::WireBody()/IsWireBody(): PARITY_MAP.md's own "Wire bodies
 // (edge/vertex-only B-rep body)" item, previously entirely missing (see
 // WireBody()'s own doc comment). Built from the same NewVertex/
@@ -38367,6 +38536,7 @@ int main() {
   TestBrepMakeEdgeVertexAndKillEdgeVertexAreExactInverses();
   TestBrepMakeEdgeFaceAndKillEdgeFaceAreExactInverses();
   TestBrepMakeEdgeKillRingAndKillEdgeMakeRingAreExactInverses();
+  TestBrepLoopAndTrimTopologyQueries();
   TestBrepWireBody();
   TestBrepAddWireCurves();
   TestBrepCheckAndUnifyNormalsOnFlippedFace();

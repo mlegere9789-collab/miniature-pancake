@@ -577,6 +577,125 @@ std::vector<int> Brep::NeighborFaces(int face_index) const {
   return neighbors;
 }
 
+int Brep::LoopCount(int face_index) const {
+  if (face_index < 0 || face_index >= brep_.m_F.Count()) {
+    throw std::out_of_range("dino8::kernel::Brep::LoopCount: face_index " + std::to_string(face_index) +
+                             " is out of range (this Brep has " + std::to_string(brep_.m_F.Count()) +
+                             " face slot(s))");
+  }
+  const ON_BrepFace& face = brep_.m_F[face_index];
+  if (face.m_face_index < 0) {
+    throw std::invalid_argument("dino8::kernel::Brep::LoopCount: face_index " + std::to_string(face_index) +
+                                 " refers to a deleted face");
+  }
+  return face.m_li.Count();
+}
+
+std::vector<int> Brep::LoopsOfFace(int face_index) const {
+  if (face_index < 0 || face_index >= brep_.m_F.Count()) {
+    throw std::out_of_range("dino8::kernel::Brep::LoopsOfFace: face_index " + std::to_string(face_index) +
+                             " is out of range (this Brep has " + std::to_string(brep_.m_F.Count()) +
+                             " face slot(s))");
+  }
+  const ON_BrepFace& face = brep_.m_F[face_index];
+  if (face.m_face_index < 0) {
+    throw std::invalid_argument("dino8::kernel::Brep::LoopsOfFace: face_index " + std::to_string(face_index) +
+                                 " refers to a deleted face");
+  }
+  std::vector<int> loops;
+  loops.reserve(static_cast<size_t>(std::max(0, face.m_li.Count())));
+  for (int k = 0; k < face.m_li.Count(); ++k) loops.push_back(face.m_li[k]);
+  return loops;
+}
+
+namespace {
+const ON_BrepLoop& RequireLoop(const ON_Brep& brep, int loop_index, const char* who) {
+  if (loop_index < 0 || loop_index >= brep.m_L.Count()) {
+    throw std::out_of_range(std::string("dino8::kernel::Brep::") + who + ": loop_index " +
+                             std::to_string(loop_index) + " is out of range (this Brep has " +
+                             std::to_string(brep.m_L.Count()) + " loop slot(s))");
+  }
+  const ON_BrepLoop& loop = brep.m_L[loop_index];
+  if (loop.m_loop_index < 0) {
+    throw std::invalid_argument(std::string("dino8::kernel::Brep::") + who + ": loop_index " +
+                                 std::to_string(loop_index) + " refers to a deleted loop");
+  }
+  return loop;
+}
+
+const ON_BrepTrim& RequireTrim(const ON_Brep& brep, int trim_index, const char* who) {
+  if (trim_index < 0 || trim_index >= brep.m_T.Count()) {
+    throw std::out_of_range(std::string("dino8::kernel::Brep::") + who + ": trim_index " +
+                             std::to_string(trim_index) + " is out of range (this Brep has " +
+                             std::to_string(brep.m_T.Count()) + " trim slot(s))");
+  }
+  const ON_BrepTrim& trim = brep.m_T[trim_index];
+  if (trim.m_trim_index < 0) {
+    throw std::invalid_argument(std::string("dino8::kernel::Brep::") + who + ": trim_index " +
+                                 std::to_string(trim_index) + " refers to a deleted trim");
+  }
+  return trim;
+}
+}  // namespace
+
+int Brep::FaceOfLoop(int loop_index) const { return RequireLoop(brep_, loop_index, "FaceOfLoop").m_fi; }
+
+Brep::LoopKind Brep::TypeOfLoop(int loop_index) const {
+  switch (RequireLoop(brep_, loop_index, "TypeOfLoop").m_type) {
+    case ON_BrepLoop::outer:
+      return LoopKind::Outer;
+    case ON_BrepLoop::inner:
+      return LoopKind::Inner;
+    case ON_BrepLoop::slit:
+      return LoopKind::Slit;
+    case ON_BrepLoop::crvonsrf:
+      return LoopKind::CurveOnSurface;
+    case ON_BrepLoop::ptonsrf:
+      return LoopKind::PointOnSurface;
+    default:
+      return LoopKind::Unknown;
+  }
+}
+
+int Brep::TrimCount(int loop_index) const { return RequireLoop(brep_, loop_index, "TrimCount").m_ti.Count(); }
+
+std::vector<int> Brep::TrimsOfLoop(int loop_index) const {
+  const ON_BrepLoop& loop = RequireLoop(brep_, loop_index, "TrimsOfLoop");
+  std::vector<int> trims;
+  trims.reserve(static_cast<size_t>(std::max(0, loop.m_ti.Count())));
+  for (int k = 0; k < loop.m_ti.Count(); ++k) trims.push_back(loop.m_ti[k]);
+  return trims;
+}
+
+int Brep::LoopOfTrim(int trim_index) const { return RequireTrim(brep_, trim_index, "LoopOfTrim").m_li; }
+
+int Brep::EdgeOfTrim(int trim_index) const { return RequireTrim(brep_, trim_index, "EdgeOfTrim").m_ei; }
+
+namespace {
+int WalkTrimInLoop(const ON_Brep& brep, int trim_index, int step, const char* who) {
+  const ON_BrepTrim& trim = RequireTrim(brep, trim_index, who);
+  const ON_BrepLoop& loop = RequireLoop(brep, trim.m_li, who);
+  const int n = loop.m_ti.Count();
+  int pos = -1;
+  for (int k = 0; k < n; ++k) {
+    if (loop.m_ti[k] == trim_index) {
+      pos = k;
+      break;
+    }
+  }
+  if (pos < 0) {
+    throw std::invalid_argument(std::string("dino8::kernel::Brep::") + who + ": trim_index " +
+                                 std::to_string(trim_index) + "'s own loop " + std::to_string(trim.m_li) +
+                                 " does not list it");
+  }
+  return loop.m_ti[(pos + step + n) % n];
+}
+}  // namespace
+
+int Brep::NextTrimInLoop(int trim_index) const { return WalkTrimInLoop(brep_, trim_index, 1, "NextTrimInLoop"); }
+
+int Brep::PrevTrimInLoop(int trim_index) const { return WalkTrimInLoop(brep_, trim_index, -1, "PrevTrimInLoop"); }
+
 namespace {
 
 // Newell's method: robust to a slightly non-planar or noisy polygon

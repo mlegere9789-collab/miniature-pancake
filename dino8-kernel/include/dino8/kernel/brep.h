@@ -781,6 +781,85 @@ class Brep {
   // a deleted face slot.
   std::vector<int> NeighborFaces(int face_index) const;
 
+  // Loop/trim topology & iteration - the public equivalent of the ad-hoc
+  // raw().m_F[i].Loop(j)/Trim(k) walk scattered through this file (e.g.
+  // NeighborFaces()'s own walk above, or MergeCoplanarFaces' own
+  // loop_a.Trim(k)->Edge()->m_ti walk). Every index below is a GLOBAL
+  // index into raw()'s own m_L/m_T tables - the same convention
+  // EdgesOfVertex()/FacesOfEdge() already use for m_V/m_E - not the
+  // face-local/loop-local index ON_BrepFace::Loop(li)/ON_BrepLoop::Trim(k)
+  // take. Safe on any Brep this class produces or that raw() was
+  // assigned a genuine-topology .3dm Brep into; a Brep built by one of
+  // the surface-only factories (Box(), Sphere(), TrimmedPlanarFace(),
+  // FromSurface() - see this class's own top comment) has no
+  // ON_BrepLoop/ON_BrepTrim records at all, so LoopCount(face_index)
+  // reports 0 and LoopsOfFace()/TrimsOfLoop() have nothing to walk.
+
+  // The kind of a loop's own boundary, a lossless mirror of
+  // ON_BrepLoop::TYPE: Outer (2d loop curves form a simple closed CCW
+  // boundary bounding the face's material - what MakeEdgeFace()'s own
+  // split keeps on both sides), Inner (a CW hole boundary - what
+  // MakeEdgeKillRing()'s own bridge welds into the outer loop), Slit
+  // (reserved by OpenNURBS for internal splitting use), CurveOnSurface/
+  // PointOnSurface (the two degenerate single-trim loop kinds no
+  // constructor in this file ever builds). Kept as a complete mirror
+  // rather than folding the last three into Unknown, so a caller can
+  // always tell exactly what raw() itself reports.
+  enum class LoopKind { Unknown, Outer, Inner, Slit, CurveOnSurface, PointOnSurface };
+
+  // Number of loops on face `face_index` (same "raw slot count" convention
+  // FaceCount()/VertexCount()/EdgeCount() already use). Throws
+  // std::out_of_range for an out-of-range face_index, or
+  // std::invalid_argument if face_index names a deleted face slot.
+  int LoopCount(int face_index) const;
+
+  // The global loop indices (into raw().m_L) belonging to face
+  // `face_index`, in the face's own m_li order (loop 0 is the outer loop
+  // for every multi-loop face this kernel itself builds, though nothing
+  // at the OpenNURBS level enforces that position - check TypeOfLoop()
+  // rather than assume it). Same throws as LoopCount().
+  std::vector<int> LoopsOfFace(int face_index) const;
+
+  // The face owning loop `loop_index`. Throws std::out_of_range for an
+  // out-of-range loop_index, or std::invalid_argument if loop_index
+  // names a deleted loop slot.
+  int FaceOfLoop(int loop_index) const;
+
+  // The kind of loop `loop_index`'s own boundary. Same throws as
+  // FaceOfLoop().
+  LoopKind TypeOfLoop(int loop_index) const;
+
+  // Number of trims making up loop `loop_index`. Same throws as
+  // FaceOfLoop().
+  int TrimCount(int loop_index) const;
+
+  // The global trim indices (into raw().m_T) making up loop `loop_index`,
+  // in the loop's own m_ti order - the order a trim's 2d curve traces the
+  // loop's boundary, the same order NextTrimInLoop()/PrevTrimInLoop()
+  // below walk. Same throws as FaceOfLoop().
+  std::vector<int> TrimsOfLoop(int loop_index) const;
+
+  // The loop owning trim `trim_index`. Throws std::out_of_range for an
+  // out-of-range trim_index, or std::invalid_argument if trim_index
+  // names a deleted trim slot.
+  int LoopOfTrim(int trim_index) const;
+
+  // The 3d edge trim `trim_index` rides on, or -1 for a singular trim
+  // (ON_BrepTrim::singular - a trim running along a surface's own
+  // degenerate side, e.g. an untrimmed cone's apex, with no 3d edge at
+  // all). Same throws as LoopOfTrim().
+  int EdgeOfTrim(int trim_index) const;
+
+  // The next/previous trim walking around trim_index's own loop in its
+  // stored m_ti order, wrapping past the last/first entry - the public
+  // equivalent of the loop.m_ti[] walk this file's own Euler operators
+  // (MakeEdgeFace/KillEdgeFace, MakeEdgeKillRing/KillEdgeMakeRing) already
+  // do by hand. A loop with a single trim (e.g. a self-closed wire edge's
+  // own loop) returns that same trim_index for both. Same throws as
+  // LoopOfTrim().
+  int NextTrimInLoop(int trim_index) const;
+  int PrevTrimInLoop(int trim_index) const;
+
   // One planar face's boundary as a real 3D polygon plus its plane -
   // the representation an exact (non-tessellated) planar B-rep boolean
   // needs to work on directly, instead of a mesh approximation.
