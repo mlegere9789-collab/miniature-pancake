@@ -3520,4 +3520,37 @@ else
   fail=1
 fi
 
+# Plug-in Marketplace, end to end through the real in-app command flow (see
+# plugin-index/SCHEMA.md, src/plugins/Marketplace.cpp,
+# src/commands/cmd_flow.cpp's PluginMarketplace* commands): load the real
+# reference index shipped at plugin-index/index.json, list what it found,
+# install HelloDino from it, and prove the install was a real, independent
+# second load (not just a print statement) - GrasshopperPluginList must
+# show exactly one more "HelloDino" entry after the install than before
+# (the first is HelloDino auto-loaded from next to the executable, same as
+# every other sample plug-in; the second is the copy PluginMarketplaceInstall
+# just fetched into <config>/plugins and loaded) - and then that the
+# installed copy's own registered command actually runs (a fresh point
+# object appears, so the final smoke line reports objects=1).
+sed "s|@DINO8ROOT@|$HEREW/..|g" "$HERE/plugin_marketplace_script.txt" > "$TMPW/plugin_marketplace_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  PM="$("$BIN" --smoke 60 --script "$TMPW/plugin_marketplace_script.txt" 2>&1)" || { echo "$PM"; echo "FAIL: plugin marketplace script exited non-zero"; exit 1; }
+else
+  PM="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$TMPW/plugin_marketplace_script.txt" 2>&1)" || { echo "$PM"; echo "FAIL: plugin marketplace script exited non-zero"; exit 1; }
+fi
+pmcheck() { if echo "$PM" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$PM" "$1"; fail=1; fi; }
+pmcheck "PluginMarketplaceIndex: loaded \"Dino 8 Reference Plugin Index\" - 4 plug-in(s)" "PluginMarketplaceIndex loaded the real reference index"
+pmcheck "PluginMarketplaceList: 4 plug-in(s) in the loaded index" "PluginMarketplaceList reports all 4 entries"
+pmcheck "  hellodino: HelloDino 1.0.0 by Dino 8 Project (api v2, compatible)" "PluginMarketplaceList reports HelloDino as compatible"
+pmcheck "PluginMarketplaceInstall: installed hellodino - 1 command(s), 1 flow node(s) registered" "PluginMarketplaceInstall installed HelloDino and reports what it registered"
+pmcheck "HelloDino: hello, MarketplaceTest! (from the sample plug-in)" "the freshly marketplace-installed HelloDino copy's own command actually runs"
+pmcheck "objects=1 " "HelloDino's command added exactly the one point object it always adds"
+PM_BEFORE="$(echo "$PM" | sed -n '1,/PluginMarketplaceInstall:/p' | grep -c '  HelloDino 1.0.0 -' || true)"
+PM_AFTER="$(echo "$PM" | sed -n '/PluginMarketplaceInstall:/,$p' | grep -c '  HelloDino 1.0.0 -' || true)"
+if [ "$PM_BEFORE" = "1" ] && [ "$PM_AFTER" = "2" ]; then
+  echo "ok   PluginMarketplaceInstall added a genuine second, independent load of HelloDino (1 auto-loaded from next to the executable, 2 after installing the marketplace's copy into <config>/plugins) - not just a print statement"
+else
+  echo "FAIL PluginMarketplaceInstall did not produce a second independently-loaded HelloDino (saw $PM_BEFORE before, $PM_AFTER after)"; fail=1
+fi
+
 exit $fail

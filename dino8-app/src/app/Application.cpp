@@ -26,6 +26,7 @@
 #include "app/Settings.h"
 #include "flow/FlowEditor.h"
 #include "plugins/PluginManager.h"
+#include "plugins/MarketplacePanel.h"
 #include "plugins/PluginPanel.h"
 
 #if defined(_WIN32)
@@ -2201,6 +2202,7 @@ void Application::DrawPanels() {
   panels_.dino_flow = flow::Editor::Get().open;
   plugins::DrawPlugInManagerPanel(*this, panels_.plugin_manager);
   plugins::DrawPackageManagerPanel(*this, panels_.package_manager);
+  plugins::DrawPluginMarketplacePanel(*this, panels_.plugin_marketplace);
 }
 
 }  // namespace dino8::app

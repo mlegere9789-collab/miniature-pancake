@@ -344,6 +344,7 @@ set(DINO8_SOURCES
   src/geom/BrepTrimFace.cpp
   src/commands/cmd_fillet.cpp
   src/util/json_mini.cpp
+  src/util/Sha256.cpp
   src/flow/FlowData.cpp
   src/flow/FlowGraph.cpp
   src/flow/FlowNodesCore.cpp
@@ -356,6 +357,9 @@ set(DINO8_SOURCES
   src/flow/FlowPreview.cpp
   src/plugins/PluginManager.cpp
   src/plugins/PluginPanel.cpp
+  src/plugins/MarketplaceIndex.cpp
+  src/plugins/Marketplace.cpp
+  src/plugins/MarketplacePanel.cpp
   src/commands/cmd_flow.cpp
   src/session/Digitizer.cpp
   src/session/Worksession.cpp
@@ -507,6 +511,19 @@ if(DINO8_BUILD_TESTS)
   add_executable(dino8_test_aci_palette tests/test_aci_palette.cpp src/io/AciPalette.cpp)
   target_include_directories(dino8_test_aci_palette PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   add_test(NAME dino8_aci_palette COMMAND dino8_test_aci_palette)
+
+  # Plug-in marketplace index parsing (src/plugins/MarketplaceIndex.cpp) and
+  # its SHA-256 download-integrity check (src/util/Sha256.cpp): schema
+  # validation, error paths, and the real plugin-index/index.json reference
+  # index (passed below as an absolute path, independent of ctest's working
+  # directory). Deliberately standalone, like dino8_test_aci_palette - the
+  # install half (InstallEntry, src/plugins/Marketplace.cpp) needs a live
+  # app::Application and is exercised end to end instead through the real
+  # Dino8 binary by tests/plugin_marketplace_script.txt (see tests/smoke.sh).
+  add_executable(dino8_test_plugin_marketplace tests/test_plugin_marketplace.cpp
+    src/plugins/MarketplaceIndex.cpp src/util/Sha256.cpp src/util/json_mini.cpp)
+  target_include_directories(dino8_test_plugin_marketplace PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  add_test(NAME dino8_plugin_marketplace COMMAND dino8_test_plugin_marketplace ${CMAKE_CURRENT_SOURCE_DIR}/plugin-index/index.json)
 
   # Property-based/randomized geometry fuzz test: random-but-valid NURBS
   # curves/surfaces, random primitive-mesh boolean pairs, and random

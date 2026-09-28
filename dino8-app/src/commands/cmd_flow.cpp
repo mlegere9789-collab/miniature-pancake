@@ -8,6 +8,7 @@
 #include "commands/cmd_common.h"
 #include "flow/FlowEditor.h"
 #include "flow/FlowPreview.h"
+#include "plugins/Marketplace.h"
 #include "plugins/PluginManager.h"
 #include "plugins/PluginPanel.h"
 
@@ -162,6 +163,64 @@ void RegisterFlowCommands(CommandEngine& e) {
   Reg(e, "PlugInManager", Immediate([](CommandContext& ctx) { ctx.App().Panels().plugin_manager = true; ctx.Print("PlugInManager: opened the plug-in manager."); }));
   Reg(e, "PluginManager", Immediate([](CommandContext& ctx) { ctx.App().Panels().plugin_manager = true; ctx.Print("PluginManager: opened the plug-in manager."); }));
   Reg(e, "PackageManager", Immediate([](CommandContext& ctx) { ctx.App().Panels().package_manager = true; ctx.Print("PackageManager: opened the package manager."); }));
+
+  Reg(e, "PluginMarketplace", Immediate([](CommandContext& ctx) {
+        ctx.App().Panels().plugin_marketplace = true;
+        ctx.Print("PluginMarketplace: opened the plug-in marketplace.");
+      }));
+
+  Reg(e, "PluginMarketplaceIndex", Immediate([](CommandContext& ctx) {
+        std::vector<std::string> toks;
+        while (auto tok = ctx.Engine().TakePendingInput()) toks.push_back(*tok);
+        if (toks.empty()) {
+          ctx.Warn("PluginMarketplaceIndex: give a local path or an http(s) URL to a plug-in index (see plugin-index/SCHEMA.md)");
+          return;
+        }
+        std::string error;
+        if (plugins::Marketplace::Get().LoadFrom(toks[0], error)) {
+          const auto& idx = plugins::Marketplace::Get().Index();
+          ctx.Print("PluginMarketplaceIndex: loaded \"" + idx.index_name + "\" - " + std::to_string(idx.plugins.size()) +
+                    " plug-in(s) from " + toks[0]);
+        } else {
+          ctx.Warn("PluginMarketplaceIndex: " + error);
+        }
+      }));
+
+  Reg(e, "PluginMarketplaceList", Immediate([](CommandContext& ctx) {
+        const auto& idx = plugins::Marketplace::Get().Index();
+        ctx.Print("PluginMarketplaceList: " + std::to_string(idx.plugins.size()) + " plug-in(s) in the loaded index");
+        for (const plugins::MarketplaceEntry& p : idx.plugins) {
+          const plugins::Compatibility compat = plugins::CheckCompatibility(p);
+          const std::string compat_label = compat == plugins::Compatibility::Compatible   ? "compatible"
+                                            : compat == plugins::Compatibility::ApiTooNew ? "needs newer Dino 8"
+                                                                                            : "compatibility unknown";
+          ctx.Print("  " + p.id + ": " + p.name + " " + p.version + " by " + p.author + " (api v" +
+                    std::to_string(p.api_version) + ", " + compat_label + ")");
+        }
+      }));
+
+  Reg(e, "PluginMarketplaceInstall", Immediate([](CommandContext& ctx) {
+        std::vector<std::string> toks;
+        while (auto tok = ctx.Engine().TakePendingInput()) toks.push_back(*tok);
+        if (toks.empty()) {
+          ctx.Warn("PluginMarketplaceInstall: give the id of a plug-in from the loaded index (PluginMarketplaceList shows ids)");
+          return;
+        }
+        std::string error;
+        if (plugins::Marketplace::Get().InstallById(ctx.App(), toks[0], error)) {
+          // LoadFile appends the newly loaded plug-in last, and InstallById
+          // only returned true because that load just succeeded - so the
+          // vector's last entry is exactly the one just installed.
+          const auto& list = plugins::Manager::Get().Plugins();
+          const plugins::LoadedPlugin* loaded = list.empty() ? nullptr : &list.back();
+          ctx.Print("PluginMarketplaceInstall: installed " + toks[0] +
+                    (loaded ? " - " + std::to_string(loaded->commands.size()) + " command(s), " +
+                                  std::to_string(loaded->flow_nodes.size()) + " flow node(s) registered"
+                            : ""));
+        } else {
+          ctx.Warn("PluginMarketplaceInstall: " + error);
+        }
+      }));
 
   Reg(e, "MigratePlugins", Immediate([](CommandContext& ctx) {
         std::vector<std::string> toks;

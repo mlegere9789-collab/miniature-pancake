@@ -244,6 +244,7 @@ void DrawMenuBar(Application& app) {
     ImGui::MenuItem(Tr("panel.dino_flow").c_str(), "", &p.dino_flow);
     ImGui::MenuItem(Tr("panel.plugin_manager").c_str(), "", &p.plugin_manager);
     ImGui::MenuItem(Tr("panel.package_manager").c_str(), "", &p.package_manager);
+    ImGui::MenuItem(Tr("panel.plugin_marketplace").c_str(), "", &p.plugin_marketplace);
     ImGui::MenuItem(Tr("panel.hatch_patterns").c_str(), "", &p.hatch_patterns);
     ImGui::MenuItem(Tr("panel.table_editor").c_str(), "", &p.table_editor);
     ImGui::MenuItem(Tr("panel.block_manager").c_str(), "", &p.block_manager);

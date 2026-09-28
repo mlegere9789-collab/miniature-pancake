@@ -1,0 +1,6 @@
+GrasshopperPluginList
+PluginMarketplaceIndex @DINO8ROOT@/plugin-index/index.json
+PluginMarketplaceList
+PluginMarketplaceInstall hellodino
+GrasshopperPluginList
+HelloDino MarketplaceTest

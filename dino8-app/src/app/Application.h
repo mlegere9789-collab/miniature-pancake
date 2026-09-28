@@ -69,6 +69,7 @@ struct PanelState {
   bool dino_flow = false;        // Grasshopper: the Dino Flow node editor
   bool plugin_manager = false;   // PlugInManager / GrasshopperPluginList
   bool package_manager = false;  // PackageManager
+  bool plugin_marketplace = false;  // PluginMarketplace (plugins/MarketplacePanel.h)
   bool hatch_patterns = false;  // Hatch pattern library thumbnails (cmd_drafting2.cpp)
   bool table_editor = false;    // Table / RevisionTable / TitleBlock / BillOfMaterials editor
   bool activity_log = false;    // Activity Log (local Activity Insights analogue; see Document::ActivityLog)

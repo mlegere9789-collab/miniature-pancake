@@ -117,6 +117,7 @@
   "panel.dino_flow": "Dino Flow",
   "panel.plugin_manager": "Plug-in Manager",
   "panel.package_manager": "Package Manager",
+  "panel.plugin_marketplace": "Plug-in Marketplace",
   "panel.hatch_patterns": "Hatch Patterns",
   "panel.table_editor": "Table Editor",
   "panel.block_manager": "Block Manager",

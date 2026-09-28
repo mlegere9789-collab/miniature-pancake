@@ -213,3 +213,23 @@ Copy the resulting `.so`/`.dll`/`.dylib` into `<config>/plugins` or the
 folder next to the `Dino8` executable, or point Dino 8 at another folder
 with `GrasshopperFolders add <path>`. `GrasshopperPluginList` reports what
 loaded and how many commands/nodes each plug-in registered.
+
+## Distributing a plug-in: the Plug-in Marketplace
+
+Copying a library by hand doesn't scale past one machine. `Window > Plug-in
+Marketplace` (or the `PluginMarketplace`/`PluginMarketplaceIndex`/
+`PluginMarketplaceList`/`PluginMarketplaceInstall` commands) loads a JSON
+**plug-in index** - a list of plug-ins with a name, version, author,
+description and where to get the library from - from a local file or an
+`http(s)://` URL, and installs any entry straight into `<config>/plugins`
+through the same `plugins::Manager::LoadFile` path described above.
+
+The index format is documented in
+[`../plugin-index/SCHEMA.md`](../plugin-index/SCHEMA.md), and
+[`../plugin-index/index.json`](../plugin-index/index.json) is a real,
+loadable reference index built from the four sample plug-ins on this page -
+`PluginMarketplaceInstall hellodino` against it installs HelloDino for
+real, no placeholder. Publishing an index is nothing more than hosting that
+JSON file somewhere reachable; there is no registration step and no
+authority this repository controls, matching the plug-in ABI's own "no
+licence, no accounts, no network" starting point.
