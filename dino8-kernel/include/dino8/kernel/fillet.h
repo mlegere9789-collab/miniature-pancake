@@ -1616,4 +1616,87 @@ Brep RemoveChamfer(const Brep& solid, Point3d point_on_chamfer);
 // face is out of scope, since PlanarFaces() itself rejects it.
 Brep RemoveChamferVertex(const Brep& solid, Point3d point_on_facet);
 
+// ---------------------------------------------------------------------------
+// ALTERNATIVE BLEND "RAIL TYPE" specification for a single-edge, constant-
+// radius rolling-ball fillet - PARITY_MAP.md's Blending & chamfering gap
+// "Alternative blend rail types (distance-from-edge, distance-between-
+// rails / disc blend, non-rolling-ball cross-section placement)". Every
+// fillet elsewhere in this file (FilletConvexEdge, FilletConcaveEdge, and
+// everything built on top of them) takes the rolling-ball RADIUS directly
+// as its one free parameter - Rhino 8's own FilletEdge command's default
+// RailType=RollingBall. Rhino 8 also exposes RailType=DistFromEdge and
+// RailType=DistBetweenRails: the exact same rolling-ball fillet SURFACE,
+// just specified by measuring a distance instead of a radius directly.
+// The four functions below add exactly that alternate input (both rail
+// types, for both the convex and the concave single-edge fillet) as a
+// closed-form conversion to the equivalent radius, then DISPATCH to
+// FilletConvexEdge/FilletConcaveEdge verbatim - so every tangency/
+// topology/closed-solid claim either of those two functions' own doc
+// comments already makes continues to hold here bit-for-bit, not merely
+// approximately (the dispatch calls the exact same production code path,
+// not a re-implementation of it).
+//
+// WHY A DISTANCE UNIQUELY DETERMINES THE SAME CIRCULAR ARC, ON THE PLANAR
+// FACES THIS KERNEL'S FILLETS ARE EXACT ON: FilletConvexEdge's/
+// FilletConcaveEdge's OWN `trim_back` line (see either doc comment's
+// construction step) is
+//   trim_back = radius / tan(theta / 2),           theta = interior dihedral angle,
+// the classical inscribed-circle tangent-length identity for a circle of
+// radius `radius` tangent to two lines meeting at angle theta (tangent
+// length from the shared vertex to each tangency point is
+// radius*cot(theta/2) - standard wedge-incircle geometry, not derived
+// fresh here, only INVERTED: given theta and a desired trim_back distance
+// `d`, radius = d * tan(theta / 2)). For a GIVEN edge (theta fixed by the
+// two adjacent faces alone, independent of any radius), this map is a
+// strictly increasing bijection between radius and trim_back distance -
+// so specifying `d` instead of `radius` picks out exactly one circular
+// arc, the same one FilletConvexEdge/FilletConcaveEdge would build for
+// that derived radius, with no separate geometric construction needed.
+//
+// `FilletConvexEdgeByDistanceFromEdge`/`FilletConcaveEdgeByDistanceFromEdge`
+// (RailType=DistFromEdge): `distance` is exactly FilletConvexEdge's own
+// `trim_back` - the perpendicular, in-plane, measured-from-the-edge
+// distance to EACH of the two new rails (both faces get the same
+// distance, since a single circular arc tangent to two lines from a
+// shared vertex always has equal tangent lengths on both sides - there is
+// no independent-per-face form of this rail type, unlike
+// ChamferConvexEdge's distance_i/distance_j, precisely because this is
+// still a circle, not a chamfer plane or a conic). Dispatches to
+// radius = distance * tan(theta / 2).
+Brep FilletConvexEdgeByDistanceFromEdge(const Brep& solid, Point3d edge_p0, Point3d edge_p1, double distance);
+
+// `FilletConvexEdgeByDistanceBetweenRails`/
+// `FilletConcaveEdgeByDistanceBetweenRails` (RailType=DistBetweenRails):
+// `rail_distance` is the straight-line 3D distance BETWEEN the two new
+// rails themselves (|contact_i - contact_j| in FilletConvexEdge's own
+// notation, at the same cross-section), rather than either rail's own
+// distance from the edge - the classical "chord across the fillet"
+// alternative to a tangent-length input. In the same wedge cross-section
+// as above, the two tangent points and the vertex form an isosceles
+// triangle with both legs equal to trim_back and included angle theta,
+// so by the law of cosines rail_distance = 2 * trim_back * sin(theta/2);
+// combined with trim_back = radius / tan(theta/2) above, this simplifies
+// (sin(theta/2)/tan(theta/2) = cos(theta/2)) to the closed form actually
+// used here:
+//   radius = rail_distance / (2 * cos(theta / 2)).
+// Equivalently (worked directly from FilletConvexEdge's own contact_i/
+// contact_j definitions, not merely asserted): contact_i(p) - contact_j(p)
+// = radius*(n_i - n_j), and |n_i - n_j|^2 = 2 - 2*(n_i . n_j) =
+// 2 + 2*cos(theta) = 4*cos^2(theta/2) (using n_i . n_j = cos(pi - theta) =
+// -cos(theta), the same identity FilletConvexEdge's own `sweep_angle =
+// pi - theta` line already relies on) - so |n_i - n_j| = 2*cos(theta/2)
+// exactly (theta in (0, pi) keeps cos(theta/2) > 0), giving the same
+// formula from the surface construction side, independently of the
+// triangle argument above.
+Brep FilletConvexEdgeByDistanceBetweenRails(const Brep& solid, Point3d edge_p0, Point3d edge_p1, double rail_distance);
+
+// CONCAVE mirrors of the two functions above, for FilletConcaveEdge: same
+// two closed-form conversions (FilletConcaveEdge's own `trim_back` line is
+// bit-for-bit the same formula, and its own contact_i/contact_j are the
+// same n_i*radius/n_j*radius offsets, just added instead of subtracted
+// from axis_point - the |n_i - n_j| identity above is unaffected by that
+// sign flip), dispatching to FilletConcaveEdge instead of FilletConvexEdge.
+Brep FilletConcaveEdgeByDistanceFromEdge(const Brep& solid, Point3d edge_p0, Point3d edge_p1, double distance);
+Brep FilletConcaveEdgeByDistanceBetweenRails(const Brep& solid, Point3d edge_p0, Point3d edge_p1, double rail_distance);
+
 }  // namespace dino8::kernel

@@ -1,6 +1,6 @@
 # Fossilith / Dino 8 parity map (2026-09-28)
 
-**Fossilith vs Parasolid/ACIS = 65.6% (weighted, verified); Dino 8 vs Rhino 8 + AutoCAD 2027 = 71.4%.**
+**Fossilith vs Parasolid/ACIS = 65.8% (weighted, verified); Dino 8 vs Rhino 8 + AutoCAD 2027 = 71.5%.**
 
 This run recomputes the parity map from scratch against the live repository at
 `/home/user/miniature-pancake` on `claude/pdf-audit-i2bvwm`, superseding the
@@ -336,6 +336,94 @@ same place the rest of this session's work is. Full `dino8_kernel_tests`
 suite re-run twice after this fix (once directly, once via `ctest`): 100%
 pass, 0 failures.
 
+**Another later same-day session's addition, in Blending & chamfering:**
+closed PARITY_MAP's own "Alternative blend rail types (distance-from-edge,
+distance-between-rails / disc blend, non-rolling-ball cross-section
+placement)" gap - the ONE item this document had previously recorded as
+`missing` in this category (see the "Alternative blend rail types" bullet
+below, and the ranked-backlog row for the same item). Every fillet
+elsewhere in `fillet.h`/`fillet.cpp` (`FilletConvexEdge`, `FilletConcaveEdge`,
+and every function built on top of them) takes the rolling-ball RADIUS
+directly as its one free parameter - Rhino 8's own `FilletEdge` command's
+default `RailType=RollingBall`. Rhino 8 also exposes
+`RailType=DistFromEdge` and `RailType=DistBetweenRails`: the exact same
+rolling-ball fillet surface, specified by measuring a distance instead of a
+radius. Four new functions add exactly that alternate input for the one
+case this kernel's fillets are already exact on (a straight edge shared by
+two PLANAR faces) - `FilletConvexEdgeByDistanceFromEdge`,
+`FilletConvexEdgeByDistanceBetweenRails`, and their `FilletConcaveEdge`
+mirrors (`dino8-kernel/include/dino8/kernel/fillet.h`,
+`dino8-kernel/src/fillet.cpp`) - each a closed-form conversion to the
+already-existing radius parameter, then a verbatim DISPATCH to
+`FilletConvexEdge`/`FilletConcaveEdge`, not a re-implementation: both
+functions' own `trim_back = radius / tan(theta / 2)` line (theta = the
+edge's interior dihedral angle) is the classical wedge-incircle tangent-
+length identity, inverted here (`radius = distance * tan(theta/2)` for
+`DistFromEdge`) to pick out exactly the one circular arc a given rail
+distance implies; `DistBetweenRails`'s own `radius = rail_distance /
+(2*cos(theta/2))` is derived independently two ways in the header doc
+comment (the wedge's own isosceles triangle, and directly from
+`FilletConvexEdge`'s own `contact_i`/`contact_j` via
+`|n_i - n_j| = 2*cos(theta/2)`), both agreeing.
+Verified, not merely derived: five new tests in `tests/test_basic.cpp`
+compare each new function's OUTPUT Brep against `FilletConvexEdge`/
+`FilletConcaveEdge` called directly at an INDEPENDENTLY hand-derived
+equivalent radius (topology, tessellated volume, and - for
+`DistBetweenRails` - the literal 3D contact-point positions), on two
+different dihedral angles: a box's own 90-degree edge (`theta=pi/2`, the
+case where `DistFromEdge`'s own distance and the equivalent radius
+coincide numerically - a necessary but not sufficient check on its own)
+and a regular hexagonal prism's 120-degree side/side edge (`theta=2*pi/3`,
+where `tan(theta/2) = sqrt(3)` genuinely exercises the formula rather than
+hiding behind a `tan(45)=1` coincidence), plus the L-shaped concave prism's
+own 90-degree reflex edge for the `FilletConcaveEdge` mirrors. A sixth new
+test checks input validation: non-positive distances, a radius too large
+to fit (propagated from the underlying `FilletConvexEdge`/
+`FilletConcaveEdge` call, not re-implemented), a non-edge, and - genuinely
+needed, not merely copied for symmetry, since `EdgeConvexity()` alone
+cannot distinguish a convex edge from its concave mirror - feeding a
+concave edge to a convex wrapper (and vice versa) is refused rather than
+silently mis-dispatched. Full `dino8_kernel_tests` suite (4150+ checks) and
+`ctest` both re-run clean afterward: 100% pass, 0 failures, 0 regressions.
+Still partial, not present: only a single straight edge (not
+`FilletConvexEdges`/`FilletConcaveEdges`' multi-edge or vertex-blend
+forms), only the rolling-ball circular cross-section (not the chamfer or
+conic families), and only the planar-adjacent-face case every other fillet
+in this file is already limited to - a curved-face rail type, where the
+distinction from a plain rolling ball actually changes the underlying
+algorithm rather than just its input parameterization, remains real,
+disclosed future work.
+
+This flips the item missing->partial: Blending & chamfering moves from
+5/17/2/24 (56.3%) to 5/18/1/24 (58.3%) - the table row below already
+reflects this. The two headline numbers at the top of this document are
+adjusted by this category's own weighted share of that change
+(weight 1.5, `(58.3333 - 56.25) * 1.5 = 3.125` percentage points of
+"weighted category-percent"), the same incremental-delta convention this
+document already uses elsewhere for a single-category change rather than
+a full ground-up recompute of all 25 categories: Fossilith vs
+Parasolid/ACIS's total kernel-category weight is 17.75, so
+65.4% + 3.125/17.75 = 65.4% + 0.18% ~= 65.6%; Dino 8 vs Rhino 8 +
+AutoCAD 2027's total weight across all 25 categories is 25.5, so
+71.4% + 3.125/25.5 = 71.4% + 0.12% ~= 71.5%. Both deltas are small enough
+that they do not change either headline's displayed first decimal in a way
+that would read as a different overall conclusion.
+
+**Concurrently, several separate same-day session changes** (at least
+kernel: SubD & mesh kernel support's "Kernel-native SubD local edit
+operators" item and other items landed on this same branch while this
+change was in flight, each elsewhere in this document) flipped their own
+items and applied their own weighted deltas to both headlines first. The
+top-of-document headline reflects ALL of those changes stacked, not just
+this one - this paragraph's own before/after numbers (65.4%/71.4% ->
+65.6%/71.5%) are kept as originally written for THIS change's own
+isolated history, the same "paragraph keeps its own isolated math, only
+the actual headline carries the merged total" convention this document
+already used once above for a same-category double-change. Given how many
+sessions were active on this branch concurrently, the top-of-document
+headline may have moved further still by the time this is read; treat it,
+not this paragraph's arithmetic, as authoritative.
+
 The main caveat is the same one every run of this method has: the
 granularity of "one item" is a judgment call made by the mapper (this pass),
 so item counts and percentages would shift somewhat under a different,
@@ -399,7 +487,7 @@ below alongside the other change's own headline delta.
 | kernel: Topology & data structure | 1 | 27 | 12 | 13 | 2 | 68.5% |
 | kernel: Geometry representation | 1 | 29 | 18 | 11 | 0 | 81.0% |
 | kernel: Boolean operations | 1.5 | 25 | 8 | 15 | 2 | 62.0% |
-| Blending & chamfering | 1.5 | 24 | 5 | 17 | 2 | 56.3% |
+| Blending & chamfering | 1.5 | 24 | 5 | 18 | 1 | 58.3% |
 | kernel: Sweeping, lofting, extruding, revolving | 1 | 29 | 6 | 20 | 3 | 55.2% |
 | kernel: Offsetting, shelling, thickening | 1 | 27 | 0 | 26 | 1 | 48.1% |
 | kernel: Local / direct-edit operations | 1 | 28 | 7 | 19 | 2 | 58.9% |
@@ -773,7 +861,7 @@ follow-up above. No other row was touched this session.
 - [missing] Fillet overflow / cliff-edge / notch handling (blend running off a face onto neighbouring faces, over-large radius consuming a face) — every kernel fillet and chamfer throws "radius/distance too large to fit" (`FilletConvexEdge` fillet.cpp:792, `FilletConcaveEdge` :1129, `ChamferConvexEdge` :2039, `FilletConvexEdgeConic` :2380) instead of rolling onto the next face; the app reports the failure rather than handling it.
 - [partial] Blend removal / defeaturing with healing (delete fillet faces and re-extend neighbours to restore the sharp edge) — `RemoveBlend` (fillet.cpp:3768; fillet.h:1466) recovers the sharp edge for cylindrical and conical fillets, convex or concave, and restores corner notches; `RemoveChamfer` (fillet.cpp:3952) and `RemoveChamferVertex` (fillet.cpp:4112) do the chamfer equivalents. Still partial: only reverses this kernel's own constructions on planar-plus-blend solids; spherical vertex-blend corners and oblique-end cylindrical fillets throw; nothing in the app calls any of them.
 - [partial] Fillet surface along a user-supplied rail curve (FilletSrfToRail) — `FilletSrfToRailCommand` (cmd_srfedit.cpp:2137) uses the picked rail directly as the ball-centre spine, with contacts at plain closest points and no trimming.
-- [missing] Alternative blend rail types (distance-from-edge, distance-between-rails / disc blend, non-rolling-ball cross-section placement) — every path places contacts with a rolling ball; a grep for RailType/DistBetweenRails/DistFromEdge finds nothing.
+- [partial] Alternative blend rail types (distance-from-edge, distance-between-rails / disc blend, non-rolling-ball cross-section placement) — **upgraded from missing.** `FilletConvexEdgeByDistanceFromEdge`/`FilletConvexEdgeByDistanceBetweenRails` and their `FilletConcaveEdge` mirrors (fillet.h/fillet.cpp) add Rhino 8 FilletEdge's own `RailType=DistFromEdge`/`DistBetweenRails` alternative to the default `RailType=RollingBall` every other fillet in this file uses: each takes a distance instead of a radius and dispatches to `FilletConvexEdge`/`FilletConcaveEdge` via a closed-form radius conversion (`radius = distance*tan(theta/2)` for DistFromEdge, `radius = rail_distance/(2*cos(theta/2))` for DistBetweenRails, theta = the edge's own interior dihedral angle — both derived directly from `FilletConvexEdge`'s own `trim_back`/`contact_i`/`contact_j` formulas, not asserted), verified against `FilletConvexEdge`/`FilletConcaveEdge` at an independently hand-derived equivalent radius on both a 90-degree box edge and a genuinely non-right 120-degree hexagonal-prism edge. Still partial: single straight edge only (no multi-edge/vertex-blend form), rolling-ball circular cross-section only (no chamfer or conic rail type), and planar-adjacent-face only — same scope every other fillet in this file already has; a curved-face rail type, where the distinction from a plain rolling ball is algorithmic rather than just a different input, remains out of scope.
 - [partial] 2D curve fillet / chamfer / polyline corner rounding (Rhino Fillet, Chamfer, FilletCorners; AutoCAD FILLET/CHAMFER) — app-only (`FilletChamferCommand`/`FilletCornersCommand`, cmd_curveedit.cpp:510/646). No kernel 2D fillet or chamfer API.
 - [partial] Curve-to-curve blend, tangent (G1) and curvature-continuous (G2) Hermite (Blend / BlendCrv command) — app-only `BlendCrvCommand` (cmd_curves2.cpp:1132), G1 cubic or G2 quintic. No G3+ and no kernel API.
 - [partial] Curve-to-curve blend commands: BlendCrv (G1 tangent cubic), Blend (G2 curvature-continuous quintic Hermite matching position/tangent/curvature vector), ArcBlend (two-arc tangent biarc) — same app-only commands as above; kept as a separate item to preserve the category's item count, per the original document's own item split.
@@ -1224,7 +1312,7 @@ top 40:
 | 3 | kernel | booleans | Sheet/solid trim (open surface as cutter through a solid) | partial | small | `SplitBySheet` (dino8-kernel/src/boolean_general.cpp) now splits a solid into the two pieces on either side of an open cutting sheet, each capped; remaining work is wiring it into an app command, testing a genuinely curved (non-planar) sheet, and the item's other half (trimming a sheet body BY a solid). |
 | 4 | kernel | booleans | AutoCAD-style INTERFERE (real overlap solids, not just Clash report) | partial | small | `ComputeInterference` (dino8-kernel/src/boolean.cpp) now builds the real pairwise overlap solids; remaining work is wiring it into an app `Interfere` command and, optionally, true N-way simultaneous overlap reporting. |
 | 5 | kernel | blending | Conic / rho (chordal, elliptical) blend cross-sections | missing | medium | Closes a real, verified gap in Blending & chamfering. |
-| 6 | kernel | blending | Alternative blend rail types (distance-from-edge, distance-between-rails) | missing | medium | Closes a real, verified gap in Blending & chamfering. |
+| 6 | kernel | blending | ~~Alternative blend rail types (distance-from-edge, distance-between-rails)~~ **fixed** | partial | small | `FilletConvexEdgeByDistanceFromEdge`/`FilletConvexEdgeByDistanceBetweenRails` and their `FilletConcaveEdge` mirrors (fillet.h/fillet.cpp) close this for the single-straight-edge, planar-adjacent-face case; remaining work is the multi-edge/vertex-blend form and a curved-face rail type (see the category bullet below for detail). |
 | 7 | kernel | topology | ~~Sliver / degenerate micro-face removal — fix the Check() false-positive first~~ **fixed** | partial | small | Done in `b1ac7c9` (before this pass): `Brep::Check()` no longer auto-flags a loop-less face or under-samples a curved-wall trim; `TestBrepCheckDoesNotFalselyFlagCurvedOrToplessValidFaces` covers Box()/Sphere()/Torus()/Extrude()/Revolve(). Kept in the table (not renumbered away) only so this row's own history is traceable; not an active priority. Still partial for the same non-defect reasons item 207 above gives (delete-and-tolerant-join, not a geometric collapse; T-junction slivers left naked). |
 | 8 | kernel | healing | ~~Degenerate face removal (B-rep) — same Check() false-positive root cause~~ **fixed** | partial | small | Same fix as #7, `b1ac7c9`; now verified end-to-end (not just at the `Check()` level) by `TestBrepRemoveDegenerateOrSliverFacesDoesNotTouchValidSolids`, added this pass — `RemoveDegenerateFaces()` removes 0 faces from Box()/Extrude(circle) while still removing a genuine hairline sliver. |
 | 9 | kernel | healing | ~~Sliver face removal (B-rep) — same Check() false-positive root cause~~ **fixed** | partial | small | Same fix as #7/#8, same new end-to-end test covers `RemoveSliverFaces()` too. |
@@ -1509,7 +1597,7 @@ top 40:
 - [kernel/booleans] AutoCAD-style INTERFERE (partial)
 - [kernel/blending] Conic / rho blend cross-sections (missing)
 - [kernel/blending] Fillet overflow / cliff-edge / notch handling (missing)
-- [kernel/blending] Alternative blend rail types (missing)
+- [kernel/blending] Alternative blend rail types (missing; now partial - see `FilletConvexEdgeByDistanceFromEdge`/`FilletConvexEdgeByDistanceBetweenRails` and their `FilletConcaveEdge` mirrors, fillet.h/fillet.cpp - remaining effort is small, not large: the multi-edge/vertex-blend form and a curved-face rail type)
 - [kernel/sweeplofts] Extrude to a boundary surface / body (missing)
 - [kernel/sweeplofts] Sweep controls: twist/scale/roadlike alignment (missing; twist, scale, and road-like alignment along path are now partial - see Brep::Sweep1()'s twist_total/scale_end/roadlike_up)
 - [kernel/sweeplofts] ExtrudeCrv/Revolve producing SubD directly (missing)

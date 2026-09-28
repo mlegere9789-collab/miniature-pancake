@@ -4457,4 +4457,131 @@ Brep RemoveChamferVertex(const Brep& solid, Point3d point_on_facet) {
   return Brep::FromPlanarFaces(result);
 }
 
+namespace {
+
+// Shared by the four RailType alternative-specification wrappers below:
+// locates the pair of planar faces sharing (edge_p0, edge_p1) as a
+// boundary edge (the exact same lookup FilletConvexEdge's/
+// FilletConcaveEdge's own step (0) already does) and returns its interior
+// dihedral angle theta via the exact same `theta = pi - acos(n_i . n_j)`
+// formula either of those two functions already uses internally. Re-
+// derived here rather than factored out of either of those two already-
+// tested functions (which would require changing their own, unmodified,
+// production code paths for a benefit - avoiding ~15 lines of duplicated
+// lookup - judged not worth the added risk to already-verified code);
+// checked directly, not merely assumed identical, by this pass's own
+// tests (`TestFilletConvexEdgeByDistanceFromEdgeMatchesEquivalentRadius`
+// et al. below compare this dispatch's OUTPUT Brep to FilletConvexEdge's
+// own, at the independently-derived equivalent radius).
+//
+// `want_convex` selects which of FilletConvexEdge's own convexity
+// requirement or FilletConcaveEdge's own mirror (concave) requirement
+// this helper enforces - EdgeConvexity() alone (see its own doc comment
+// above) cannot tell a convex edge from its mirror-image concave edge, so
+// this check is genuinely needed here too, not merely copied for
+// symmetry.
+double EdgeDihedralAngleForRailType(const Brep& solid, Point3d edge_p0, Point3d edge_p1, bool want_convex,
+                                     const char* caller) {
+  const std::vector<Brep::PlanarFace> faces = solid.PlanarFaces();
+  const double tol = RelativeTol(faces);
+
+  int idx_i = -1, idx_j = -1;
+  size_t k_i = 0;
+  for (size_t f = 0; f < faces.size() && (idx_i < 0 || idx_j < 0); ++f) {
+    const std::vector<Point3d>& loop = faces[f].loop;
+    const size_t n = loop.size();
+    for (size_t k = 0; k < n; ++k) {
+      const Point3d& a = loop[k];
+      const Point3d& b = loop[(k + 1) % n];
+      if (idx_i < 0 && PointsEqual(a, edge_p0, tol) && PointsEqual(b, edge_p1, tol)) {
+        idx_i = static_cast<int>(f);
+        k_i = k;
+      }
+      if (idx_j < 0 && PointsEqual(a, edge_p1, tol) && PointsEqual(b, edge_p0, tol)) {
+        idx_j = static_cast<int>(f);
+      }
+    }
+  }
+  if (idx_i < 0 || idx_j < 0 || idx_i == idx_j) {
+    throw std::invalid_argument(
+        std::string("dino8::kernel::") + caller +
+        ": edge_p0->edge_p1 is not a shared boundary edge of two distinct faces of "
+        "`solid`, walked in opposite directions on their own loops - see "
+        "FilletConvexEdge's own doc comment for the required topology");
+  }
+
+  const ON_Plane& plane_j_pre = faces[static_cast<size_t>(idx_j)].plane;
+  const std::vector<Point3d>& loop_i = faces[static_cast<size_t>(idx_i)].loop;
+  const size_t k_i1 = (k_i + 1) % loop_i.size();
+  bool degenerate = false;
+  const bool convex = EdgeConvexity(loop_i, k_i, k_i1, plane_j_pre, tol, &degenerate);
+  if (!degenerate) {
+    if (want_convex && !convex) {
+      throw std::invalid_argument(std::string("dino8::kernel::") + caller +
+                                   ": edge is a CONCAVE dihedral edge, not convex - see the FilletConcaveEdge "
+                                   "RailType variant instead");
+    }
+    if (!want_convex && convex) {
+      throw std::invalid_argument(std::string("dino8::kernel::") + caller +
+                                   ": edge is a CONVEX dihedral edge, not concave - see the FilletConvexEdge "
+                                   "RailType variant instead");
+    }
+  }
+
+  const Vector3d n_i = faces[static_cast<size_t>(idx_i)].plane.zaxis;
+  const Vector3d n_j = faces[static_cast<size_t>(idx_j)].plane.zaxis;
+  const double dot_ij = std::max(-1.0, std::min(1.0, n_i * n_j));
+  const double theta = ON_PI - std::acos(dot_ij);
+  if (!(theta > 0.0) || !(theta < ON_PI)) {
+    throw std::invalid_argument(std::string("dino8::kernel::") + caller +
+                                 ": degenerate edge (interior dihedral angle is <= 0 or >= pi)");
+  }
+  return theta;
+}
+
+}  // namespace
+
+Brep FilletConvexEdgeByDistanceFromEdge(const Brep& solid, Point3d edge_p0, Point3d edge_p1, double distance) {
+  if (!(distance > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::FilletConvexEdgeByDistanceFromEdge: distance must be positive");
+  }
+  const double theta =
+      EdgeDihedralAngleForRailType(solid, edge_p0, edge_p1, /*want_convex=*/true, "FilletConvexEdgeByDistanceFromEdge");
+  const double radius = distance * std::tan(theta / 2.0);
+  return FilletConvexEdge(solid, edge_p0, edge_p1, radius);
+}
+
+Brep FilletConvexEdgeByDistanceBetweenRails(const Brep& solid, Point3d edge_p0, Point3d edge_p1, double rail_distance) {
+  if (!(rail_distance > 0.0)) {
+    throw std::invalid_argument(
+        "dino8::kernel::FilletConvexEdgeByDistanceBetweenRails: rail_distance must be positive");
+  }
+  const double theta = EdgeDihedralAngleForRailType(solid, edge_p0, edge_p1, /*want_convex=*/true,
+                                                     "FilletConvexEdgeByDistanceBetweenRails");
+  const double radius = rail_distance / (2.0 * std::cos(theta / 2.0));
+  return FilletConvexEdge(solid, edge_p0, edge_p1, radius);
+}
+
+Brep FilletConcaveEdgeByDistanceFromEdge(const Brep& solid, Point3d edge_p0, Point3d edge_p1, double distance) {
+  if (!(distance > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::FilletConcaveEdgeByDistanceFromEdge: distance must be positive");
+  }
+  const double theta = EdgeDihedralAngleForRailType(solid, edge_p0, edge_p1, /*want_convex=*/false,
+                                                     "FilletConcaveEdgeByDistanceFromEdge");
+  const double radius = distance * std::tan(theta / 2.0);
+  return FilletConcaveEdge(solid, edge_p0, edge_p1, radius);
+}
+
+Brep FilletConcaveEdgeByDistanceBetweenRails(const Brep& solid, Point3d edge_p0, Point3d edge_p1,
+                                              double rail_distance) {
+  if (!(rail_distance > 0.0)) {
+    throw std::invalid_argument(
+        "dino8::kernel::FilletConcaveEdgeByDistanceBetweenRails: rail_distance must be positive");
+  }
+  const double theta = EdgeDihedralAngleForRailType(solid, edge_p0, edge_p1, /*want_convex=*/false,
+                                                     "FilletConcaveEdgeByDistanceBetweenRails");
+  const double radius = rail_distance / (2.0 * std::cos(theta / 2.0));
+  return FilletConcaveEdge(solid, edge_p0, edge_p1, radius);
+}
+
 }  // namespace dino8::kernel

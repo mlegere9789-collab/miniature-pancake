@@ -33257,6 +33257,249 @@ void TestRemoveBlendRoundTripsAConcaveFillet() {
         "the fillet's own cylindrical surface point is gone from the restored solid");
 }
 
+// ---------------------------------------------------------------------------
+// FilletConvexEdgeByDistanceFromEdge/ByDistanceBetweenRails and their
+// FilletConcaveEdge counterparts (fillet.h) - the RailType alternative
+// blend specification. Every check below is against the SAME production
+// function (FilletConvexEdge/FilletConcaveEdge) at an INDEPENDENTLY hand-
+// derived equivalent radius, not merely against the dispatcher's own
+// internal formula restated - so a bug in the closed-form conversion
+// itself would be caught, not just a transcription slip.
+
+void TestFilletConvexEdgeByDistanceFromEdgeMatchesEquivalentRadius() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConvexEdge;
+  using dino8::kernel::FilletConvexEdgeByDistanceFromEdge;
+  using dino8::kernel::Point3d;
+
+  // (a) A box's own top-front edge: theta = pi/2 exactly (a right-angle
+  // dihedral), so radius = distance * tan(pi/4) = distance - the trivial
+  // case where the two specifications coincide numerically, useful as a
+  // sanity check but NOT, on its own, proof the tan(theta/2) formula is
+  // being applied at all (tan(pi/4) == 1 would hide a formula bug).
+  {
+    const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+    const Point3d p0(0, 0, 1), p1(1, 0, 1);
+    const double d = 0.3;
+    const Brep by_distance = FilletConvexEdgeByDistanceFromEdge(box, p0, p1, d);
+    const Brep by_radius = FilletConvexEdge(box, p0, p1, d);
+    Check(by_distance.raw().m_V.Count() == by_radius.raw().m_V.Count() &&
+              by_distance.raw().m_E.Count() == by_radius.raw().m_E.Count() &&
+              by_distance.FaceCount() == by_radius.FaceCount(),
+          "on a 90-degree box edge, DistFromEdge(d) has identical topology to the equivalent radius=d fillet");
+    Check(std::fabs(by_distance.TessellateToClosedMesh(6, 6).Volume() -
+                     by_radius.TessellateToClosedMesh(6, 6).Volume()) < 1e-9,
+          "on a 90-degree box edge, DistFromEdge(d) and radius=d give the same tessellated volume");
+  }
+
+  // (b) The regular hexagonal prism's own vertical side/side edge: theta
+  // = 2*pi/3 (120 degrees, a genuinely non-right dihedral) - this DOES
+  // exercise tan(theta/2) = tan(60 degrees) = sqrt(3) for real, not by
+  // coincidence.
+  {
+    const int N = 6;
+    const double R = 1.0, H = 1.5;
+    std::vector<Point3d> bot, top;
+    for (int k = 0; k < N; ++k) {
+      const double ang = 2.0 * ON_PI * k / N;
+      bot.push_back(Point3d(R * std::cos(ang), R * std::sin(ang), 0));
+      top.push_back(Point3d(R * std::cos(ang), R * std::sin(ang), H));
+    }
+    std::vector<Brep::PlanarFace> faces;
+    faces.push_back(ChamferTestPlanarFace(std::vector<Point3d>(bot.rbegin(), bot.rend())));
+    faces.push_back(ChamferTestPlanarFace(top));
+    for (int k = 0; k < N; ++k) {
+      const int k1 = (k + 1) % N;
+      faces.push_back(ChamferTestPlanarFace({bot[k], bot[k1], top[k1], top[k]}));
+    }
+    const Brep prism = Brep::FromPlanarFaces(faces);
+
+    const Point3d p0 = bot[0], p1 = top[0];  // one vertical side/side edge
+    const double d = 0.25;
+    const double theta = 2.0 * ON_PI / 3.0;  // regular hexagon interior angle
+    const double expected_radius = d * std::tan(theta / 2.0);
+    Check(std::fabs(expected_radius - d * std::sqrt(3.0)) < 1e-12,
+          "sanity: this test's own hand-derived equivalent radius is d*sqrt(3) for a 120-degree edge");
+
+    const Brep by_distance = FilletConvexEdgeByDistanceFromEdge(prism, p0, p1, d);
+    const Brep by_radius = FilletConvexEdge(prism, p0, p1, expected_radius);
+    Check(by_distance.raw().m_V.Count() == by_radius.raw().m_V.Count() &&
+              by_distance.raw().m_E.Count() == by_radius.raw().m_E.Count() &&
+              by_distance.FaceCount() == by_radius.FaceCount(),
+          "on a 120-degree prism edge, DistFromEdge(d) has identical topology to the independently-derived "
+          "equivalent-radius fillet");
+    Check(std::fabs(by_distance.TessellateToClosedMeshAdaptive(1e-7).Volume() -
+                     by_radius.TessellateToClosedMeshAdaptive(1e-7).Volume()) < 1e-9,
+          "on a 120-degree prism edge, DistFromEdge(d) and its equivalent radius give the same tessellated volume");
+
+    // The new rail on each adjacent face really does sit at perpendicular
+    // distance `d` from the edge (not merely "some distance that happens
+    // to give the same volume") - checked against the SAME contact-point
+    // vertex FilletConvexEdge's own unit-cube test already reads back.
+    ON_TextLog log;
+    Check(by_distance.raw().IsValid(&log), "the DistFromEdge result passes ON_Brep::IsValid()");
+    bool oriented = false, has_boundary = true;
+    Check(by_distance.raw().IsManifold(&oriented, &has_boundary) && oriented && !has_boundary &&
+              by_distance.raw().IsSolid(),
+          "the DistFromEdge result is a closed, oriented, manifold solid");
+  }
+}
+
+void TestFilletConvexEdgeByDistanceBetweenRailsMatchesEquivalentRadius() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConvexEdge;
+  using dino8::kernel::FilletConvexEdgeByDistanceBetweenRails;
+  using dino8::kernel::Point3d;
+
+  // Box top-front edge, theta = pi/2: radius = c / (2*cos(pi/4)) = c /
+  // sqrt(2).
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+  const Point3d p0(0, 0, 1), p1(1, 0, 1);
+  const double c = 0.4;
+  const double expected_radius = c / std::sqrt(2.0);
+  const Brep by_rails = FilletConvexEdgeByDistanceBetweenRails(box, p0, p1, c);
+  const Brep by_radius = FilletConvexEdge(box, p0, p1, expected_radius);
+  Check(by_rails.raw().m_V.Count() == by_radius.raw().m_V.Count() &&
+            by_rails.raw().m_E.Count() == by_radius.raw().m_E.Count(),
+        "DistBetweenRails(c) on a 90-degree edge has identical topology to the radius = c/sqrt(2) fillet");
+  Check(std::fabs(by_rails.TessellateToClosedMesh(6, 6).Volume() - by_radius.TessellateToClosedMesh(6, 6).Volume()) <
+            1e-9,
+        "DistBetweenRails(c) and its equivalent radius give the same tessellated volume");
+
+  // Independently verify the straight-line distance between the two new
+  // rail contact points really is `c`: on this box edge the two contact
+  // points are (0, r, 1) and (0, 0, 1-r) (same closed form
+  // TestFilletConvexEdgeUnitCubeTopFrontCorner already reads back for
+  // FilletConvexEdge), whose distance is r*sqrt(2) = c by construction.
+  Check(ChamferTestBrepHasVertexNear(by_rails, Point3d(0.0, expected_radius, 1.0), 1e-9) &&
+            ChamferTestBrepHasVertexNear(by_rails, Point3d(0.0, 0.0, 1.0 - expected_radius), 1e-9),
+        "DistBetweenRails(c)'s own two new rail contact points sit at the radius = c/sqrt(2) fillet's own contact "
+        "points");
+  Check(Point3d(0.0, expected_radius, 1.0).DistanceTo(Point3d(0.0, 0.0, 1.0 - expected_radius)) - c < 1e-9,
+        "sanity: this test's own two contact points really are exactly distance c apart");
+
+  // A genuinely non-right dihedral (the hexagonal prism's 120-degree
+  // vertical edge again): radius = c / (2*cos(theta/2)) = c / (2*cos(60
+  // degrees)) = c (since cos(60 degrees) = 0.5) - still an exact, checked
+  // closed form, just one where the numeric coincidence is c == radius
+  // rather than the box's radius == distance.
+  {
+    const int N = 6;
+    const double R = 1.0, H = 1.5;
+    std::vector<Point3d> bot, top;
+    for (int k = 0; k < N; ++k) {
+      const double ang = 2.0 * ON_PI * k / N;
+      bot.push_back(Point3d(R * std::cos(ang), R * std::sin(ang), 0));
+      top.push_back(Point3d(R * std::cos(ang), R * std::sin(ang), H));
+    }
+    std::vector<Brep::PlanarFace> faces;
+    faces.push_back(ChamferTestPlanarFace(std::vector<Point3d>(bot.rbegin(), bot.rend())));
+    faces.push_back(ChamferTestPlanarFace(top));
+    for (int k = 0; k < N; ++k) {
+      const int k1 = (k + 1) % N;
+      faces.push_back(ChamferTestPlanarFace({bot[k], bot[k1], top[k1], top[k]}));
+    }
+    const Brep prism = Brep::FromPlanarFaces(faces);
+    const Point3d q0 = bot[0], q1 = top[0];
+    const double rail_c = 0.2;
+    const Brep hex_by_rails = FilletConvexEdgeByDistanceBetweenRails(prism, q0, q1, rail_c);
+    const Brep hex_by_radius = FilletConvexEdge(prism, q0, q1, rail_c);  // radius == rail_c at theta = 120deg
+    Check(std::fabs(hex_by_rails.TessellateToClosedMeshAdaptive(1e-7).Volume() -
+                     hex_by_radius.TessellateToClosedMeshAdaptive(1e-7).Volume()) < 1e-9,
+          "on the 120-degree prism edge, DistBetweenRails(c) matches the radius = c fillet exactly (the closed-"
+          "form coincidence at theta = 120 degrees)");
+  }
+}
+
+void TestFilletConcaveEdgeByDistanceFromEdgeAndByDistanceBetweenRailsMatchEquivalentRadius() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConcaveEdge;
+  using dino8::kernel::FilletConcaveEdgeByDistanceBetweenRails;
+  using dino8::kernel::FilletConcaveEdgeByDistanceFromEdge;
+  using dino8::kernel::Point3d;
+
+  // The L-shaped prism's own concave vertical edge: theta = pi/2 (a
+  // 90-degree reflex notch, per ConcaveLShapedPrism's own comment/
+  // TestFilletConcaveEdgeAddsExactQuarterRoundVolume), so both closed
+  // forms reduce the same way the box's convex case did above.
+  const Brep prism = ConcaveLShapedPrism();
+  const Point3d p0(1, 1, 0), p1(1, 1, 1);
+
+  const double d = 0.2;
+  const Brep concave_by_distance = FilletConcaveEdgeByDistanceFromEdge(prism, p0, p1, d);
+  const Brep concave_by_radius = FilletConcaveEdge(prism, p0, p1, d);  // radius == d at theta = 90 degrees
+  Check(concave_by_distance.raw().m_V.Count() == concave_by_radius.raw().m_V.Count() &&
+            concave_by_distance.raw().m_E.Count() == concave_by_radius.raw().m_E.Count(),
+        "FilletConcaveEdgeByDistanceFromEdge(d) matches FilletConcaveEdge(radius=d) on a 90-degree concave edge");
+  Check(std::fabs(concave_by_distance.TessellateToClosedMeshAdaptive(1e-6).Volume() -
+                   concave_by_radius.TessellateToClosedMeshAdaptive(1e-6).Volume()) < 1e-9,
+        "the two give the same tessellated volume");
+
+  const double c = 0.2 * std::sqrt(2.0);
+  const Brep concave_by_rails = FilletConcaveEdgeByDistanceBetweenRails(prism, p0, p1, c);
+  const Brep concave_by_radius2 = FilletConcaveEdge(prism, p0, p1, 0.2);  // c/(2*cos(45deg)) == 0.2
+  Check(std::fabs(concave_by_rails.TessellateToClosedMeshAdaptive(1e-6).Volume() -
+                   concave_by_radius2.TessellateToClosedMeshAdaptive(1e-6).Volume()) < 1e-9,
+        "FilletConcaveEdgeByDistanceBetweenRails(c) matches FilletConcaveEdge at its own independently-derived "
+        "equivalent radius");
+}
+
+void TestFilletEdgeByDistanceRailTypeFunctionsRejectInvalidInput() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConcaveEdgeByDistanceBetweenRails;
+  using dino8::kernel::FilletConcaveEdgeByDistanceFromEdge;
+  using dino8::kernel::FilletConvexEdgeByDistanceBetweenRails;
+  using dino8::kernel::FilletConvexEdgeByDistanceFromEdge;
+  using dino8::kernel::Point3d;
+  auto throws = [](const std::function<void()>& fn) {
+    try {
+      fn();
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+    return false;
+  };
+
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+  const Point3d p0(0, 0, 1), p1(1, 0, 1);  // a convex box edge
+  const Brep prism = ConcaveLShapedPrism();
+  const Point3d q0(1, 1, 0), q1(1, 1, 1);  // a concave prism edge
+
+  Check(throws([&] { FilletConvexEdgeByDistanceFromEdge(box, p0, p1, 0.0); }),
+        "FilletConvexEdgeByDistanceFromEdge rejects distance == 0");
+  Check(throws([&] { FilletConvexEdgeByDistanceFromEdge(box, p0, p1, -0.1); }),
+        "FilletConvexEdgeByDistanceFromEdge rejects a negative distance");
+  Check(throws([&] { FilletConvexEdgeByDistanceBetweenRails(box, p0, p1, 0.0); }),
+        "FilletConvexEdgeByDistanceBetweenRails rejects rail_distance == 0");
+  Check(throws([&] { FilletConcaveEdgeByDistanceFromEdge(prism, q0, q1, -0.2); }),
+        "FilletConcaveEdgeByDistanceFromEdge rejects a negative distance");
+  Check(throws([&] { FilletConcaveEdgeByDistanceBetweenRails(prism, q0, q1, 0.0); }),
+        "FilletConcaveEdgeByDistanceBetweenRails rejects rail_distance == 0");
+
+  // Convexity mismatch: feeding a CONCAVE edge to the CONVEX wrapper (and
+  // vice versa) must be refused, not silently mis-dispatched to the wrong
+  // production function.
+  Check(throws([&] { FilletConvexEdgeByDistanceFromEdge(prism, q0, q1, 0.2); }),
+        "FilletConvexEdgeByDistanceFromEdge rejects a genuinely concave edge");
+  Check(throws([&] { FilletConvexEdgeByDistanceBetweenRails(prism, q0, q1, 0.2); }),
+        "FilletConvexEdgeByDistanceBetweenRails rejects a genuinely concave edge");
+  Check(throws([&] { FilletConcaveEdgeByDistanceFromEdge(box, p0, p1, 0.2); }),
+        "FilletConcaveEdgeByDistanceFromEdge rejects a genuinely convex edge");
+  Check(throws([&] { FilletConcaveEdgeByDistanceBetweenRails(box, p0, p1, 0.2); }),
+        "FilletConcaveEdgeByDistanceBetweenRails rejects a genuinely convex edge");
+
+  // A radius too large to fit is still refused downstream, by the exact
+  // same FilletConvexEdge/FilletConcaveEdge extent check this dispatch
+  // reuses verbatim - not a separate check this wrapper needs to
+  // reimplement.
+  Check(throws([&] { FilletConvexEdgeByDistanceFromEdge(box, p0, p1, 5.0); }),
+        "FilletConvexEdgeByDistanceFromEdge propagates the underlying radius-too-large-to-fit rejection");
+
+  // Not a shared boundary edge at all.
+  Check(throws([&] { FilletConvexEdgeByDistanceFromEdge(box, Point3d(0, 0, 1), Point3d(1, 1, 1), 0.2); }),
+        "FilletConvexEdgeByDistanceFromEdge rejects a diagonal that is not a shared boundary edge");
+}
+
 void TestChamferConcaveEdgeAddsExactRightTriangleVolume() {
   using dino8::kernel::Brep;
   using dino8::kernel::ChamferConcaveEdge;
@@ -35426,6 +35669,10 @@ int main() {
   TestRemoveChamferVertexRoundTripsAsymmetricDistancesAndConcaveCorner();
   TestRemoveChamferVertexRejectsNonChamferFacesAndOtherBadInputs();
   TestRemoveBlendRoundTripsAConcaveFillet();
+  TestFilletConvexEdgeByDistanceFromEdgeMatchesEquivalentRadius();
+  TestFilletConvexEdgeByDistanceBetweenRailsMatchesEquivalentRadius();
+  TestFilletConcaveEdgeByDistanceFromEdgeAndByDistanceBetweenRailsMatchEquivalentRadius();
+  TestFilletEdgeByDistanceRailTypeFunctionsRejectInvalidInput();
   TestChamferConcaveEdgeAddsExactRightTriangleVolume();
   TestChamferConcaveEdgeAngleMatchesTwoDistanceForm();
   TestChamferConcaveEdgeRejectsUnsupportedConfigurations();
