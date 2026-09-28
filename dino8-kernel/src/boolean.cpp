@@ -171,6 +171,35 @@ Mesh BooleanCombine(const Mesh& a, const Mesh& b, BooleanOp op) {
   return FromManifold(result);
 }
 
+namespace {
+
+bool BoundingBoxesTouch(const BoundingBox& a, const BoundingBox& b, double clearance) {
+  return a.min.x - clearance <= b.max.x && b.min.x - clearance <= a.max.x &&
+         a.min.y - clearance <= b.max.y && b.min.y - clearance <= a.max.y &&
+         a.min.z - clearance <= b.max.z && b.min.z - clearance <= a.max.z;
+}
+
+}  // namespace
+
+std::vector<InterferenceResult> ComputeInterference(const std::vector<Mesh>& bodies,
+                                                      double clearance) {
+  std::vector<BoundingBox> boxes;
+  boxes.reserve(bodies.size());
+  for (const Mesh& body : bodies) boxes.push_back(body.GetBoundingBox());
+
+  std::vector<InterferenceResult> results;
+  for (size_t i = 0; i < bodies.size(); ++i) {
+    for (size_t j = i + 1; j < bodies.size(); ++j) {
+      if (!BoundingBoxesTouch(boxes[i], boxes[j], clearance)) continue;
+      Mesh overlap = BooleanCombine(bodies[i], bodies[j], BooleanOp::Intersection);
+      if (overlap.FaceCount() > 0) {
+        results.push_back(InterferenceResult{i, j, std::move(overlap)});
+      }
+    }
+  }
+  return results;
+}
+
 std::pair<Mesh, Mesh> SplitByPlane(const Mesh& mesh, Vector3d plane_normal, double plane_offset) {
   const manifold::vec3 n(plane_normal.x, plane_normal.y, plane_normal.z);
   const manifold::Manifold m = ToManifold(mesh);

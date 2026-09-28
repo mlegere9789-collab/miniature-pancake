@@ -5671,6 +5671,84 @@ void TestBooleanSymmetricDifference() {
         "(A-B)+(B-A) one");
 }
 
+void TestComputeInterference() {
+  using dino8::kernel::ComputeInterference;
+  using dino8::kernel::Mesh;
+
+  // Three boxes: A=[0,2]^3, B=[1,3]^3 (overlaps A in [1,2]^3, volume 1),
+  // C=[10,12]^3 (disjoint from both, far away). Exactly the A/B pair
+  // should interfere.
+  const auto a = MakeBox(0, 0, 0, 2, 2, 2);
+  const auto b = MakeBox(1, 1, 1, 3, 3, 3);
+  const auto c = MakeBox(10, 10, 10, 12, 12, 12);
+
+  {
+    const auto results = ComputeInterference({a, b, c});
+    Check(results.size() == 1, "disjoint-plus-overlapping triple reports exactly one interference");
+    if (results.size() == 1) {
+      Check(results[0].a_index == 0 && results[0].b_index == 1,
+            "the reported pair is (A, B) by their input indices, not (A, C) or (B, C)");
+      Check(std::abs(results[0].solid.Volume() - 1.0) < 1e-6,
+            "the reported solid is the real 1x1x1 Boolean intersection, not a placeholder");
+    }
+  }
+
+  {
+    const auto none = ComputeInterference({a, c});
+    Check(none.empty(), "two disjoint boxes report zero interferences");
+  }
+
+  // Two boxes sharing an entire face (D=[0,2]^3, G=[2,4]x[0,2]x[0,2]: D's
+  // +x face is exactly G's -x face, same y/z extents) touch at x=2 over a
+  // full 2x2 square - their bounding boxes overlap there, but the true
+  // solids share zero volume, so this must NOT be reported as
+  // interference (distinguishes this from a mere bbox-touch bug).
+  {
+    const auto d = MakeBox(0, 0, 0, 2, 2, 2);
+    const auto g = MakeBox(2, 0, 0, 4, 2, 2);
+    const auto results = ComputeInterference({d, g});
+    Check(results.empty(),
+          "two boxes sharing an entire face (zero-volume contact) report no interference");
+  }
+
+  // A clearance large enough to make two disjoint boxes' bounding boxes
+  // touch must still never fabricate a solid where the true geometry
+  // doesn't overlap at all.
+  {
+    const auto near_miss = ComputeInterference({a, c}, /*clearance=*/20.0);
+    Check(near_miss.empty(),
+          "a generous clearance that makes bounding boxes touch never fabricates an "
+          "interference solid for geometry that doesn't actually overlap");
+  }
+
+  // A non-closed operand in a bbox-overlapping pair must throw, the same
+  // failure mode as BooleanCombine() itself, rather than silently
+  // skipping or returning garbage.
+  {
+    Mesh open_triangle;
+    ON_Mesh& raw = open_triangle.raw();
+    raw.m_V.Append(ON_3fPoint(0.5, 0.5, 0.5));
+    raw.m_V.Append(ON_3fPoint(1.5, 0.5, 0.5));
+    raw.m_V.Append(ON_3fPoint(0.5, 1.5, 0.5));
+    ON_MeshFace face;
+    face.vi[0] = 0;
+    face.vi[1] = 1;
+    face.vi[2] = 2;
+    face.vi[3] = 2;
+    raw.m_F.Append(face);
+
+    bool threw = false;
+    try {
+      ComputeInterference({a, open_triangle});
+    } catch (const std::runtime_error&) {
+      threw = true;
+    }
+    Check(threw,
+          "a bbox-overlapping pair with a non-closed operand throws std::runtime_error, "
+          "same failure mode as BooleanCombine() itself");
+  }
+}
+
 void TestSplitByPlane() {
   using dino8::kernel::Mesh;
   using dino8::kernel::Point3d;
@@ -32018,6 +32096,7 @@ int main() {
   TestBooleanIntersection();
   TestBooleanDifference();
   TestBooleanSymmetricDifference();
+  TestComputeInterference();
   TestBrepBoxIsClosedAndWatertight();
   TestBrepLacksFullOpenNurbsTopologyButStillUsable();
   TestBrepGetTightBoundingBox();

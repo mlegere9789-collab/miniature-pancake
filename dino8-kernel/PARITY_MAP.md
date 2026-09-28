@@ -221,7 +221,7 @@ equally reasonable split of the same underlying capabilities.
 |---|---|---|---|---|---|---|
 | kernel: Topology & data structure | 1 | 27 | 11 | 13 | 3 | 64.8% |
 | kernel: Geometry representation | 1 | 29 | 18 | 11 | 0 | 81.0% |
-| kernel: Boolean operations | 1.5 | 25 | 8 | 13 | 4 | 58.0% |
+| kernel: Boolean operations | 1.5 | 25 | 8 | 14 | 3 | 60.0% |
 | Blending & chamfering | 1.5 | 24 | 5 | 17 | 2 | 56.3% |
 | kernel: Sweeping, lofting, extruding, revolving | 1 | 29 | 6 | 20 | 3 | 55.2% |
 | kernel: Offsetting, shelling, thickening | 1 | 27 | 0 | 26 | 1 | 48.1% |
@@ -297,7 +297,7 @@ the honesty notes above and the bullets below.
 - [partial] Free-form (non-analytic) NURBS surface operands in B-rep booleans — `BooleanCombineGeneral` is written for any `ON_Surface`, but every test/sweep operand is an analytic primitive. No freeform-operand test exists.
 - [missing] B-rep-preserving booleans reachable from the application (polysurface in, polysurface out) — every app boolean tessellates its operands (`MeshOf`) and emits a mesh result; zero references to `BooleanCombinePlanar`/`Mixed`/`General` anywhere in dino8-app/src.
 - [missing] Associative/history-enabled Boolean operations (result auto-updates when source solids move, a la Rhino's History) — `HistoryRecord::command` (dino8-app/src/doc/Document.h:377) covers `"Extrude", "ExtrudeCrvToPoint", "Revolve", "Loft", "SubDLoft"` only, no boolean commands.
-- [missing] AutoCAD-style INTERFERE (interference detection that builds real solid bodies from the overlap regions of many objects) — `Clash` (dino8-app/src/commands/cmd_solidtools.cpp:1210) reports triangle-level clashes only and builds no overlap solids.
+- [partial] AutoCAD-style INTERFERE (interference detection that builds real solid bodies from the overlap regions of many objects) — `dino8::kernel::ComputeInterference(bodies, clearance)` (boolean.h; boolean.cpp) now builds the real overlap solids: for every pair of input bodies whose (optionally clearance-expanded) bounding boxes touch, it runs the actual `BooleanCombine(..., BooleanOp::Intersection)` and keeps only pairs whose overlap has nonzero volume (`FaceCount() > 0` - verified empirically that Manifold returns a genuine zero-face, zero-volume result for two solids that only share a coincident face, not a degenerate sliver, so this is a correct volume test, not just a bbox heuristic). Covers N bodies pairwise, each returned `InterferenceResult` carrying the real closed intersection `Mesh`. Tested (`TestComputeInterference`, tests/test_basic.cpp): a genuine overlap is reported with the correct pair indices and volume, disjoint bodies report nothing, a full-face zero-volume touch is correctly excluded, a generous `clearance` never fabricates a solid for geometry that doesn't truly overlap, and a non-closed operand in a bbox-touching pair throws `std::runtime_error` like `BooleanCombine` itself. Still partial, not present: `Clash` (dino8-app/src/commands/cmd_solidtools.cpp:1210) is not yet wired to call this - no app command exposes real INTERFERE solids to the user yet, and this is pairwise-only, not the fully general N-way simultaneous overlap AutoCAD's INTERFERE can report for 3+ mutually-overlapping bodies at once.
 
 **Blending & chamfering** (blending):
 - [partial] Constant-radius edge fillet on curved adjacent faces (cylinder/plane, cylinder/cylinder, freeform, closed/periodic rims) with B-rep trimming — every kernel fillet still requires both adjacent faces to be planar (fillet.h:147-159), so fillets cannot be chained onto a solid that already carries a curved face. App `FilletEdge` produces a genuine B-rep trim only when both faces are planar (cmd_fillet.cpp:175, "exact for planes; approximate elsewhere").
@@ -702,7 +702,7 @@ top 40:
 | 1 | kernel | intersections | CSX against trimmed faces and curve-on-surface overlap detection | missing | small | `FaceContainsUV` already exists to filter hits — this is wiring, not new algorithm work. |
 | 2 | kernel | booleans | Face-face imprint (Parasolid PK_BODY_imprint / ACIS imprint) | missing | medium | The general boolean engine's internal face-splitting already exists; needs exposing as its own operation. |
 | 3 | kernel | booleans | Sheet/solid trim (open surface as cutter through a solid) | missing | medium | Closes a real, verified gap in kernel Boolean operations. |
-| 4 | kernel | booleans | AutoCAD-style INTERFERE (real overlap solids, not just Clash report) | missing | medium | Clash's triangle-triangle detection already exists; needs solid construction from the overlap. |
+| 4 | kernel | booleans | AutoCAD-style INTERFERE (real overlap solids, not just Clash report) | partial | small | `ComputeInterference` (dino8-kernel/src/boolean.cpp) now builds the real pairwise overlap solids; remaining work is wiring it into an app `Interfere` command and, optionally, true N-way simultaneous overlap reporting. |
 | 5 | kernel | blending | Conic / rho (chordal, elliptical) blend cross-sections | missing | medium | Closes a real, verified gap in Blending & chamfering. |
 | 6 | kernel | blending | Alternative blend rail types (distance-from-edge, distance-between-rails) | missing | medium | Closes a real, verified gap in Blending & chamfering. |
 | 7 | kernel | topology | ~~Sliver / degenerate micro-face removal — fix the Check() false-positive first~~ **fixed** | partial | small | Done in `b1ac7c9` (before this pass): `Brep::Check()` no longer auto-flags a loop-less face or under-samples a curved-wall trim; `TestBrepCheckDoesNotFalselyFlagCurvedOrToplessValidFaces` covers Box()/Sphere()/Torus()/Extrude()/Revolve(). Kept in the table (not renumbered away) only so this row's own history is traceable; not an active priority. Still partial for the same non-defect reasons item 207 above gives (delete-and-tolerant-join, not a geometric collapse; T-junction slivers left naked). |
@@ -991,7 +991,7 @@ top 40:
 - [kernel/booleans] Face-face imprint (missing)
 - [kernel/booleans] B-rep-preserving booleans reachable from the application (missing)
 - [kernel/booleans] Associative/history-enabled Boolean operations (missing)
-- [kernel/booleans] AutoCAD-style INTERFERE (missing)
+- [kernel/booleans] AutoCAD-style INTERFERE (partial)
 - [kernel/blending] Conic / rho blend cross-sections (missing)
 - [kernel/blending] Fillet overflow / cliff-edge / notch handling (missing)
 - [kernel/blending] Alternative blend rail types (missing)

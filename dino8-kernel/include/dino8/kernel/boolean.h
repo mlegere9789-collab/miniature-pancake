@@ -29,6 +29,34 @@ enum class BooleanOp {
 // throws std::runtime_error rather than returning a corrupt Mesh.
 Mesh BooleanCombine(const Mesh& a, const Mesh& b, BooleanOp op);
 
+// One pairwise overlap found by ComputeInterference(): `bodies[a_index]`
+// and `bodies[b_index]` (indices into the caller's own input vector, with
+// `a_index < b_index`) share the nonzero-volume solid `solid`, itself the
+// real Boolean intersection of the two - not a mesh-mesh clash flag.
+struct InterferenceResult {
+  size_t a_index;
+  size_t b_index;
+  Mesh solid;
+};
+
+// AutoCAD-style INTERFERE: for every pair of `bodies` whose axis-aligned
+// bounding boxes overlap (expanded by `clearance` on every side, default
+// 0 - a positive value also reports near-misses within that distance as
+// a genuine touching-solid intersection would, without inflating the
+// geometry actually booleaned), computes the real Boolean intersection
+// solid via BooleanCombine(..., BooleanOp::Intersection) and keeps only
+// the pairs where that solid has nonzero volume (FaceCount() > 0) - the
+// bounding-box test is only a cheap prefilter, never the pass/fail
+// criterion itself, so two bodies with touching but non-overlapping
+// boxes are never reported. This is distinct from a Clash-style
+// triangle-triangle report: the caller gets back an actual closed solid
+// per interfering pair, ready to display or measure, not just a yes/no
+// per pair of triangles. Each body must be IsClosedManifold(); a
+// bbox-overlapping pair that fails that requirement throws
+// std::runtime_error, the same failure mode as BooleanCombine() itself.
+std::vector<InterferenceResult> ComputeInterference(const std::vector<Mesh>& bodies,
+                                                      double clearance = 0.0);
+
 // Splits `mesh` into two closed, watertight halves along the plane
 // `{p : dot(p, plane_normal) == plane_offset}`, backed by Manifold's own
 // `Manifold::SplitByPlane` - the real half-space-intersection primitive
