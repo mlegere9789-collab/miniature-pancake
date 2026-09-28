@@ -660,6 +660,91 @@ class SubD {
   // the delegate's own `bPermitNonManifoldEdgeCreation = false` default).
   bool ExpandFaces(const std::vector<unsigned int>& face_ids, double distance);
 
+  // Merges the two DISTINCT control-net vertices `keep_vertex_id` and
+  // `discard_vertex_id` (both ON_SubDVertex::m_id, the same stable-across-
+  // edits convention ExtrudeFace()/ExpandFaces() already use for faces)
+  // into one - the kernel-native "Weld" local edit operator, the fifth
+  // and last of the five named PARITY_MAP.md subd_mesh "Kernel-native
+  // SubD local edit operators" item's operators (with InsertEdge()/
+  // SpinEdge()/ExtrudeFace()/ExpandFaces() above).
+  //
+  // Deliberately id-based rather than point-based like InsertEdge()/
+  // SpinEdge()/SetCrease() above: this operator's own main reason to
+  // exist is merging two vertices that sit at (or near) the exact SAME
+  // position but were never joined at the SubD level (e.g. two separately
+  // built cages placed edge-to-edge) - `ON_SubD::FindVertex(point,
+  // tolerance)` can only ever resolve to ONE of two such coincident
+  // vertices, so a point-based signature could never even name the
+  // second one to weld it to the first.
+  //
+  // Unlike InsertEdge()/SpinEdge()/ExtrudeFace()/ExpandFaces(), `ON_SubD`
+  // exposes no ready-made primitive for this (re-confirmed against the
+  // v8.34 source: no `Weld`/`MergeEdge`/`MergeVertex` anywhere in
+  // opennurbs_subd.h/.cpp) - this hand-rolls the merge instead, as a
+  // whole-net rebuild rather than local surgery. The obvious-looking
+  // local approach - `ON_SubD::DeleteComponents()` on the discarded
+  // vertex, then `FindOrAddFace()` the affected faces back onto the kept
+  // one, the same technique `Symmetrize()` above uses for its own
+  // plane-seam weld - turns out to be unsafe here: `DeleteComponents()`'s
+  // own "delete isolated edges" pass (always on for the public overload,
+  // verified by reading `ON_SubDimple::DeleteComponents`) also deletes
+  // any OTHER vertex left with zero faces once the discarded vertex's own
+  // faces are gone, even one that still has edges - not just the
+  // discarded vertex itself. A vertex whose only face WAS one of those
+  // (an ordinary case: two quads placed edge-to-edge share no OTHER face)
+  // gets silently swept away too, taking the very corners this method
+  // needs to reconnect with it (confirmed by direct reproduction, not
+  // assumed: welding one coincident corner pair of two disjoint quads
+  // this way dropped the vertex count by 4, not 1, and left the result
+  // invalid).
+  //
+  // So this instead snapshots the CURRENT control net's entire vertex/
+  // face/edge set (ids, positions, corner-id lists, tags, sharpness),
+  // remaps every reference to the discarded vertex's id onto the kept
+  // vertex's id, and rebuilds a fresh `ON_SubD` from that snapshot via
+  // `ON_SubD::AddVertexForExperts()` - explicitly documented for exactly
+  // this "copying portions of an existing SubD to a new SubD" use case -
+  // preserving every ORIGINAL vertex's own id, so a component belonging
+  // to both the old and new net can be found by the same id in either.
+  // Every original edge's tag and sharpness is reapplied by that same id
+  // pair afterward; only the handful of brand-new edges this merge
+  // actually creates (directly between the kept vertex and a former
+  // neighbor of the discarded one) are left `Unset` for the final
+  // `ON_SubD::UpdateAllTagsAndSectorCoefficients(true)` to resolve - no
+  // vertex tag needs any special-case preservation at all, since every
+  // vertex starts `Unset` and is re-derived purely from its (correctly
+  // restored) edges, the same "vertex tags are always DERIVED, never
+  // stored history" fact `Symmetrize()`'s own seam handling above already
+  // relies on. Net effect: wherever the rebuilt net's own edges already
+  // exist elsewhere around the kept vertex, they're reused (gaining a
+  // second face, becoming genuinely interior) rather than duplicated -
+  // exactly what "weld two separate edges/vertices together" means - and
+  // an edge that already had two faces before this call (real interior,
+  // whether smooth or a genuine user-set crease via `SetCrease()`) keeps
+  // its own tag and sharpness exactly as before, untouched by the
+  // rebuild.
+  //
+  // `weld_tolerance` bounds how far apart the two vertices' own
+  // ControlNetPoint()s may be and still be merged (0.0 - the default -
+  // requires them to be bit-identical); the discarded vertex's own
+  // position is simply dropped, every face that used it now meeting at
+  // the kept vertex's unchanged position, so a nonzero tolerance is a
+  // real "snap together" - the two need not be perfectly coincident
+  // first.
+  //
+  // Returns false, unchanged, if: `keep_vertex_id`/`discard_vertex_id`
+  // don't identify two distinct vertices of the current subdivision
+  // level; the distance between them exceeds `weld_tolerance`; the two
+  // vertices are already connected by an edge, or already share a face
+  // as two of its own distinct corners (merging them would collapse that
+  // edge/face to fewer distinct components - refused rather than
+  // guessing, the same ambiguity convention `InsertEdge()`'s own "already
+  // adjacent" refusal above uses); or `ON_SubD::DeleteComponents`/
+  // `FindOrAddFace` themselves refuse for any other reason. Returns true
+  // only once the discarded vertex genuinely no longer exists and every
+  // face that used to touch it is reattached to the kept vertex instead.
+  bool Weld(unsigned int keep_vertex_id, unsigned int discard_vertex_id, double weld_tolerance = 0.0);
+
   // The EXACT limit-surface point (and normal) of every vertex of the
   // current subdivision level's control net, in ON_SubD's own vertex
   // iteration order - one SubDLimitPoint per VertexCount(). This is

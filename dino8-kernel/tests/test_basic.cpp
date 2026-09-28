@@ -14093,6 +14093,269 @@ void TestSubDExpandFacesRefusesWhenRegionNormalsCancel() {
         "the refused call left the SubD completely unchanged");
 }
 
+// SubD::Weld(): two SEPARATELY built quads placed edge-to-edge, sharing no
+// SubD-level vertex at all - each has its own coincident-but-distinct
+// corner vertices along the seam, exactly the "two pieces built
+// independently, stitch them together" scenario this operator exists for
+// (and exactly why it's id-based rather than point-based like every other
+// local-edit operator above: FindVertex() by position can't tell apart
+// two vertices sitting at the very same point). Welding both coincident
+// corner pairs must reproduce EXACTLY the same 2-face/6-vertex/7-edge
+// topology (one genuinely shared interior edge) FromControlMesh() already
+// gives when the two quads share vertex INDICES directly (see
+// TestSubDSpinEdgeRotatesSharedInteriorEdge()'s own fixture) - confirming
+// this is a real, lossless stitch, not just a vertex-count decrement.
+void TestSubDWeldJoinsTwoDisjointQuadsAlongCoincidentSeam() {
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SubD;
+
+  // Built directly against the raw ON_SubD, NOT via SubD::FromControlMesh():
+  // ON_SubD::CreateFromMesh() turns out to auto-weld any two mesh vertices
+  // at bit-identical positions into one SubD vertex regardless of whether
+  // they share a mesh vertex INDEX (confirmed by direct reproduction, not
+  // assumed - a Mesh with 8 distinct vertex slots at only 6 distinct
+  // positions came back from FromControlMesh() with VertexCount()==6, one
+  // single connected body, not the 8-vertex/2-body fixture this test
+  // actually needs), so it can never produce the "two separately-built
+  // pieces whose seam corners merely coincide" scenario Weld() exists to
+  // join. `ON_SubD::AddVertex()` (always adds a genuinely new vertex, no
+  // position-based lookup - confirmed by reading its implementation)
+  // avoids that welding entirely.
+  SubD subd;
+  ON_SubD& raw = subd.raw();
+  const Point3d left_pts[4] = {Point3d(0, 0, 0), Point3d(1, 0, 0), Point3d(1, 1, 0), Point3d(0, 1, 0)};
+  const Point3d right_pts[4] = {Point3d(1, 0, 0), Point3d(2, 0, 0), Point3d(2, 1, 0), Point3d(1, 1, 0)};
+  const ON_SubDVertex* left_v[4];
+  const ON_SubDVertex* right_v[4];
+  for (int i = 0; i < 4; ++i) left_v[i] = raw.AddVertex(&left_pts[i].x);
+  for (int i = 0; i < 4; ++i) right_v[i] = raw.AddVertex(&right_pts[i].x);
+  Check(raw.FindOrAddFace(ON_SubDEdgeTag::Unset, left_v, 4) != nullptr, "sanity: the left face was added");
+  Check(raw.FindOrAddFace(ON_SubDEdgeTag::Unset, right_v, 4) != nullptr, "sanity: the right face was added");
+  raw.UpdateAllTagsAndSectorCoefficients(/*bUnsetValuesOnly=*/true);
+
+  Check(subd.FaceCount() == 2 && subd.VertexCount() == 8 && subd.EdgeCount() == 8,
+        "the two quads start fully disconnected - 2 faces / 8 vertices (4 each, none "
+        "shared) / 8 edges (all naked boundary)");
+  {
+    const auto report = subd.Check();
+    Check(report.body_count == 2 && report.naked_edges == 8,
+          "sanity: two genuinely separate bodies, despite sitting edge-to-edge");
+  }
+
+  // Identify the seam's two coincident vertex PAIRS by walking each face's
+  // own corners - FindVertex() by position can't disambiguate two
+  // vertices at the same point, exactly the ambiguity Weld()'s own
+  // id-based signature exists to sidestep.
+  unsigned int left_bottom_id = 0, left_top_id = 0, right_bottom_id = 0, right_top_id = 0;
+  ON_SubDFaceIterator fit = subd.raw().FaceIterator();
+  for (const ON_SubDFace* f = fit.FirstFace(); f != nullptr; f = fit.NextFace()) {
+    double avg_x = 0.0;
+    for (unsigned int i = 0; i < f->EdgeCount(); ++i) avg_x += f->Vertex(i)->ControlNetPoint().x;
+    avg_x /= f->EdgeCount();
+    for (unsigned int i = 0; i < f->EdgeCount(); ++i) {
+      const ON_SubDVertex* v = f->Vertex(i);
+      const Point3d p = v->ControlNetPoint();
+      if (std::abs(p.x - 1.0) > 1e-9) continue;  // not on the seam
+      const bool is_bottom = std::abs(p.y) < 1e-9;
+      if (avg_x < 1.0) {
+        (is_bottom ? left_bottom_id : left_top_id) = v->m_id;
+      } else {
+        (is_bottom ? right_bottom_id : right_top_id) = v->m_id;
+      }
+    }
+  }
+  Check(left_bottom_id != 0 && left_top_id != 0 && right_bottom_id != 0 && right_top_id != 0,
+        "sanity: all 4 seam corners were found");
+
+  Check(!subd.Weld(left_bottom_id, left_bottom_id, 1e-9),
+        "Weld refuses when both ids name the same vertex");
+  Check(!subd.Weld(999999, right_bottom_id, 1e-9), "Weld refuses an unknown keep_vertex_id");
+  Check(!subd.Weld(left_bottom_id, 999999, 1e-9), "Weld refuses an unknown discard_vertex_id");
+  Check(!subd.Weld(left_bottom_id, right_top_id, 1e-9),
+        "Weld refuses a pair farther apart than weld_tolerance - (1,0,0) vs (1,1,0), "
+        "1.0 apart, tolerance 1e-9");
+
+  Check(subd.Weld(left_bottom_id, right_bottom_id, 1e-9),
+        "Weld succeeds on the bottom seam pair - both at (1,0,0)");
+  Check(subd.FaceCount() == 2 && subd.VertexCount() == 7 && subd.EdgeCount() == 8,
+        "welding one coincident pair: same face count, one fewer vertex, same edge "
+        "count (2 edges removed with the discarded vertex, 2 rebuilt in its place)");
+  Check(subd.IsValid(), "still topologically valid after the first weld");
+
+  Check(subd.Weld(left_top_id, right_top_id, 1e-9),
+        "Weld succeeds on the top seam pair - both at (1,1,0)");
+  Check(subd.FaceCount() == 2 && subd.VertexCount() == 6 && subd.EdgeCount() == 7,
+        "welding both coincident pairs reproduces the exact same 2-face/6-vertex/7-edge "
+        "topology FromControlMesh() gives when the two quads share vertex indices "
+        "directly (TestSubDSpinEdgeRotatesSharedInteriorEdge()'s own fixture) - one "
+        "genuinely shared interior edge, not two coincident naked ones");
+  Check(subd.IsValid(), "still topologically valid after both welds");
+
+  const ON_SubDVertex* kept_bottom = subd.raw().VertexFromId(left_bottom_id);
+  const ON_SubDVertex* kept_top = subd.raw().VertexFromId(left_top_id);
+  Check(kept_bottom != nullptr && kept_top != nullptr, "both kept vertices survive, by id");
+  const ON_SubDEdge* seam = subd.raw().FindEdge(kept_bottom, kept_top).Edge();
+  Check(seam != nullptr && seam->HasInteriorEdgeTopology(true),
+        "the seam between the two kept vertices is now a genuine interior edge (2 "
+        "faces) - the whole point of the weld");
+  Check(seam->m_edge_tag != ON_SubDEdgeTag::Crease,
+        "the newly-closed seam is no longer tagged Crease - the stale boundary-"
+        "convention tag was reset and correctly recomputed to Smooth");
+
+  const auto report = subd.Check();
+  Check(report.IsManifoldSingleBody(),
+        "the welded strip is a single clean manifold body - no naked/non-manifold "
+        "edges or vertices left behind");
+  Check(report.naked_edges == 6,
+        "exactly the strip's own 6 outer boundary edges remain naked - matching the "
+        "shared-index fixture exactly");
+}
+
+// SubD::Weld() must refuse two vertices that are already distinct corners
+// of the SAME face even when they're not directly connected by an edge
+// (e.g. a quad's own two diagonal corners) - merging them would collapse
+// that face to fewer distinct corners than it actually has. And, on a
+// SEPARATE fixture with a genuine pre-existing interior crease (set via
+// SetCrease(), unrelated to any weld), a weld elsewhere must leave that
+// crease completely untouched while the NEW seam it closes comes out
+// Smooth - proving the stale-boundary-tag reset only ever touches edges
+// this specific weld actually closes, never an intentional crease merely
+// incident to the same neighborhood.
+void TestSubDWeldRefusesSameFaceCornersAndPreservesUnrelatedCrease() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SubD;
+
+  Mesh quad;
+  ON_Mesh& qraw = quad.raw();
+  qraw.m_V.Append(ON_3fPoint(0, 0, 0));
+  qraw.m_V.Append(ON_3fPoint(1, 0, 0));
+  qraw.m_V.Append(ON_3fPoint(1, 1, 0));
+  qraw.m_V.Append(ON_3fPoint(0, 1, 0));
+  ON_MeshFace qf;
+  qf.vi[0] = 0;
+  qf.vi[1] = 1;
+  qf.vi[2] = 2;
+  qf.vi[3] = 3;
+  qraw.m_F.Append(qf);
+
+  SubD lone = SubD::FromControlMesh(quad);
+  const Point3d p_corner0(0, 0, 0);
+  const Point3d p_corner2(1, 1, 0);
+  const ON_SubDVertex* corner0 = lone.raw().FindVertex(&p_corner0.x, 1e-9);
+  const ON_SubDVertex* corner2 = lone.raw().FindVertex(&p_corner2.x, 1e-9);
+  Check(corner0 != nullptr && corner2 != nullptr, "sanity: both diagonal corners exist");
+  Check(lone.raw().FindEdge(corner0, corner2).Edge() == nullptr,
+        "sanity: the diagonal corners are NOT directly connected by an edge");
+
+  const int faces_before = lone.FaceCount();
+  const int verts_before = lone.VertexCount();
+  const int edges_before = lone.EdgeCount();
+  Check(!lone.Weld(corner0->m_id, corner2->m_id, 1e-9),
+        "Weld refuses two corners of the same face even though they aren't directly "
+        "connected by an edge - merging them would collapse that face");
+  Check(lone.FaceCount() == faces_before && lone.VertexCount() == verts_before &&
+            lone.EdgeCount() == edges_before,
+        "the refused call left the SubD completely unchanged");
+
+  // A-B-C strip, built directly against the raw ON_SubD (same reason as
+  // TestSubDWeldJoinsTwoDisjointQuadsAlongCoincidentSeam() above -
+  // SubD::FromControlMesh() auto-welds coincident positions regardless of
+  // mesh vertex index, so it can't produce B/C's own genuinely-separate
+  // coincident seam below): A and B share a genuine edge (built by reusing
+  // the SAME two vertex pointers in both faces), soon marked a hard
+  // crease; B and C are two SEPARATELY allocated quads along their own
+  // coincident-but-distinct seam, the same disconnected-duplicate pattern
+  // TestSubDWeldJoinsTwoDisjointQuadsAlongCoincidentSeam() uses.
+  SubD subd;
+  ON_SubD& sraw = subd.raw();
+  const Point3d pA0(0, 0, 0), pA1(1, 0, 0), pA2(1, 1, 0), pA3(0, 1, 0);  // A
+  const Point3d pB4(2, 0, 0), pB5(2, 1, 0);                              // B's own far corners
+  const Point3d pC6(2, 0, 0), pC7(3, 0, 0), pC8(3, 1, 0), pC9(2, 1, 0);  // C (6,9 dup B's 4,5)
+  const ON_SubDVertex* A0 = sraw.AddVertex(&pA0.x);
+  const ON_SubDVertex* A1 = sraw.AddVertex(&pA1.x);
+  const ON_SubDVertex* A2 = sraw.AddVertex(&pA2.x);
+  const ON_SubDVertex* A3 = sraw.AddVertex(&pA3.x);
+  const ON_SubDVertex* B4 = sraw.AddVertex(&pB4.x);
+  const ON_SubDVertex* B5 = sraw.AddVertex(&pB5.x);
+  const ON_SubDVertex* C6 = sraw.AddVertex(&pC6.x);
+  const ON_SubDVertex* C7 = sraw.AddVertex(&pC7.x);
+  const ON_SubDVertex* C8 = sraw.AddVertex(&pC8.x);
+  const ON_SubDVertex* C9 = sraw.AddVertex(&pC9.x);
+  const ON_SubDVertex* fa_v[4] = {A0, A1, A2, A3};
+  const ON_SubDVertex* fb_v[4] = {A1, B4, B5, A2};  // reuses A1/A2 directly - a genuine shared edge
+  const ON_SubDVertex* fc_v[4] = {C6, C7, C8, C9};
+  Check(sraw.FindOrAddFace(ON_SubDEdgeTag::Unset, fa_v, 4) != nullptr, "sanity: face A was added");
+  Check(sraw.FindOrAddFace(ON_SubDEdgeTag::Unset, fb_v, 4) != nullptr, "sanity: face B was added");
+  Check(sraw.FindOrAddFace(ON_SubDEdgeTag::Unset, fc_v, 4) != nullptr, "sanity: face C was added");
+  sraw.UpdateAllTagsAndSectorCoefficients(/*bUnsetValuesOnly=*/true);
+
+  Check(subd.FaceCount() == 3 && subd.VertexCount() == 10 && subd.EdgeCount() == 11,
+        "sanity: A/B already share one genuine interior edge (7 distinct A+B edges, "
+        "one of them interior) plus C's own fully separate 4 boundary edges");
+
+  const Point3d p_ab_v1(1, 0, 0);
+  const Point3d p_ab_v2(1, 1, 0);
+  const ON_SubDVertex* ab_v1 = subd.raw().FindVertex(&p_ab_v1.x, 1e-9);
+  const ON_SubDVertex* ab_v2 = subd.raw().FindVertex(&p_ab_v2.x, 1e-9);
+  Check(ab_v1 != nullptr && ab_v2 != nullptr, "sanity: the A/B seam vertices exist");
+  const ON_SubDEdge* ab_seam_before = subd.raw().FindEdge(ab_v1, ab_v2).Edge();
+  Check(ab_seam_before != nullptr && ab_seam_before->HasInteriorEdgeTopology(true),
+        "sanity: the A/B seam is already a genuine interior edge before any crease "
+        "or weld");
+  Check(subd.SetCrease(Point3d(1, 0, 0), Point3d(1, 1, 0), true, 1e-9),
+        "SetCrease marks the A/B seam a genuine, intentional interior crease - "
+        "unrelated to any weld");
+  const unsigned int ab_seam_id = ab_seam_before->m_id;
+
+  // Identify B's and C's own coincident seam corners the same way
+  // TestSubDWeldJoinsTwoDisjointQuadsAlongCoincidentSeam() does.
+  unsigned int b_bottom_id = 0, b_top_id = 0, c_bottom_id = 0, c_top_id = 0;
+  ON_SubDFaceIterator fit = subd.raw().FaceIterator();
+  for (const ON_SubDFace* f = fit.FirstFace(); f != nullptr; f = fit.NextFace()) {
+    double avg_x = 0.0;
+    for (unsigned int i = 0; i < f->EdgeCount(); ++i) avg_x += f->Vertex(i)->ControlNetPoint().x;
+    avg_x /= f->EdgeCount();
+    if (avg_x < 1.0) continue;  // face A - not part of the B/C seam
+    for (unsigned int i = 0; i < f->EdgeCount(); ++i) {
+      const ON_SubDVertex* v = f->Vertex(i);
+      const Point3d p = v->ControlNetPoint();
+      if (std::abs(p.x - 2.0) > 1e-9) continue;  // not on the B/C seam
+      const bool is_bottom = std::abs(p.y) < 1e-9;
+      if (avg_x < 2.0) {  // face B
+        (is_bottom ? b_bottom_id : b_top_id) = v->m_id;
+      } else {  // face C
+        (is_bottom ? c_bottom_id : c_top_id) = v->m_id;
+      }
+    }
+  }
+  Check(b_bottom_id != 0 && b_top_id != 0 && c_bottom_id != 0 && c_top_id != 0,
+        "sanity: all 4 B/C seam corners were found");
+
+  Check(subd.Weld(b_bottom_id, c_bottom_id, 1e-9) && subd.Weld(b_top_id, c_top_id, 1e-9),
+        "both B/C seam welds succeed");
+  Check(subd.FaceCount() == 3 && subd.VertexCount() == 8 && subd.EdgeCount() == 10,
+        "A/B/C fully joined: 3 faces, 8 distinct vertices (10 minus the 2 discarded "
+        "C duplicates), 10 edges (2 genuinely shared interior seams plus 8 outer "
+        "boundary edges)");
+  Check(subd.IsValid(), "still topologically valid after both B/C welds");
+
+  const ON_SubDEdge* ab_seam_after = subd.raw().EdgeFromId(ab_seam_id);
+  Check(ab_seam_after != nullptr && ab_seam_after->m_edge_tag == ON_SubDEdgeTag::Crease,
+        "the A/B seam's own genuine, intentionally-set crease survives completely "
+        "untouched by the unrelated B/C weld");
+
+  const ON_SubDVertex* bc_bottom = subd.raw().VertexFromId(b_bottom_id);
+  const ON_SubDVertex* bc_top = subd.raw().VertexFromId(b_top_id);
+  Check(bc_bottom != nullptr && bc_top != nullptr, "both kept B/C vertices survive, by id");
+  const ON_SubDEdge* bc_seam = subd.raw().FindEdge(bc_bottom, bc_top).Edge();
+  Check(bc_seam != nullptr && bc_seam->HasInteriorEdgeTopology(true) &&
+            bc_seam->m_edge_tag != ON_SubDEdgeTag::Crease,
+        "the NEW B/C seam this weld actually closed is interior and Smooth (its own "
+        "stale boundary-convention Crease tag was reset), unlike the untouched, "
+        "genuinely-intentional A/B crease above");
+}
+
 void TestMeshComputeVertexNormals() {
   using dino8::kernel::Mesh;
   using dino8::kernel::Vector3d;
@@ -37810,6 +38073,8 @@ int main() {
   TestSubDExpandFacesSingleFaceMatchesExtrudeFace();
   TestSubDExpandFacesMovesConnectedRegionAsOneBlockKeepingSharedEdgeInterior();
   TestSubDExpandFacesRefusesWhenRegionNormalsCancel();
+  TestSubDWeldJoinsTwoDisjointQuadsAlongCoincidentSeam();
+  TestSubDWeldRefusesSameFaceCornersAndPreservesUnrelatedCrease();
   TestMeshComputeVertexNormals();
   TestMeshSaveObjRoundTrips();
   TestMeshTextureCoordinates();

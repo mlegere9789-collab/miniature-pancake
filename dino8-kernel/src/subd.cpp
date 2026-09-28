@@ -633,6 +633,163 @@ bool SubD::ExpandFaces(const std::vector<unsigned int>& face_ids, double distanc
   return changed != 0;
 }
 
+bool SubD::Weld(unsigned int keep_vertex_id, unsigned int discard_vertex_id, double weld_tolerance) {
+  const ON_SubDVertex* v0 = subd_.VertexFromId(keep_vertex_id);
+  const ON_SubDVertex* v1 = subd_.VertexFromId(discard_vertex_id);
+  if (v0 == nullptr || v1 == nullptr || v0 == v1) return false;
+  if (v0->ControlNetPoint().DistanceTo(v1->ControlNetPoint()) > weld_tolerance) return false;
+  if (subd_.FindEdge(v0, v1).Edge() != nullptr) return false;  // already connected - nothing to weld
+
+  // Refuse if v0 and v1 are already two distinct corners of the same
+  // face - merging them would collapse that face to fewer distinct
+  // corners than it actually has, the same "already adjacent" ambiguity
+  // convention InsertEdge() above already refuses rather than guessing.
+  for (unsigned int i = 0; i < v0->FaceCount(); ++i) {
+    const ON_SubDFace* f = v0->Face(i);
+    if (f == nullptr) continue;
+    for (unsigned int j = 0; j < f->EdgeCount(); ++j) {
+      if (f->Vertex(j) == v1) return false;
+    }
+  }
+
+  // NOTE on why this is a whole-net rebuild rather than local surgery: the
+  // obvious approach - ON_SubD::DeleteComponents(v1) to tear down v1 and
+  // everything touching it, then FindOrAddFace() the affected faces back
+  // together onto v0 - turns out to be unsafe. DeleteComponents()'s own
+  // "delete isolated edges" pass (bDeleteIsolatedEdges=true, always on for
+  // the public overload - verified by reading ON_SubDimple::
+  // DeleteComponents in opennurbs_subd.cpp) also deletes any OTHER vertex
+  // left with zero faces once v1's own faces are gone, even if that vertex
+  // still has edges - not just v1 itself. A vertex whose only face WAS one
+  // of v1's former faces (an ordinary, common case - e.g. two quads placed
+  // edge-to-edge share no OTHER face) gets silently swept away too, taking
+  // the very corners this method needs to reconnect with it and leaving
+  // rebuild_faces holding dangling pointers (confirmed by direct
+  // reproduction: welding one coincident corner pair of two disjoint quads
+  // this way dropped the vertex count by 4, not 1, and left the result
+  // IsValid()==false).
+  //
+  // So instead: snapshot the CURRENT control net's entire vertex/face/edge
+  // set (ids, positions, corner-id lists, tags, sharpness), remap every
+  // reference to v1's id onto v0's id, and rebuild a fresh ON_SubD from
+  // that snapshot via ON_SubD::AddVertexForExperts() - explicitly
+  // documented for exactly this "copying portions of an existing SubD to a
+  // new SubD" use case - preserving every ORIGINAL vertex's own id, so a
+  // vertex/edge belonging to both the old and new net can be found by the
+  // very same id in either. Every original edge's tag and sharpness is
+  // reapplied by that same id pair afterward; only a handful of brand-new
+  // edges (directly between v0 and a former neighbor of v1) are left
+  // Unset for the final recompute to resolve, and no vertex's own tag
+  // needs any special-case preservation at all - every vertex starts
+  // Unset and is re-derived purely from its (correctly restored) edges,
+  // the same "vertex tags are always DERIVED, never stored history" fact
+  // Symmetrize()'s own seam handling above already relies on.
+  struct VSnap {
+    unsigned int id;
+    Point3d point;
+  };
+  std::vector<VSnap> vertices_snapshot;
+  {
+    ON_SubDVertexIterator vit = subd_.VertexIterator();
+    for (const ON_SubDVertex* v = vit.FirstVertex(); v != nullptr; v = vit.NextVertex()) {
+      if (v == v1) continue;  // discarded - never re-added
+      vertices_snapshot.push_back({v->m_id, v->ControlNetPoint()});
+    }
+  }
+
+  const auto remap = [&](const ON_SubDVertex* v) { return v == v1 ? keep_vertex_id : v->m_id; };
+
+  struct FSnap {
+    std::vector<unsigned int> corner_ids;
+  };
+  std::vector<FSnap> faces_snapshot;
+  {
+    ON_SubDFaceIterator fit = subd_.FaceIterator();
+    for (const ON_SubDFace* f = fit.FirstFace(); f != nullptr; f = fit.NextFace()) {
+      const unsigned int n = f->EdgeCount();
+      FSnap fs;
+      fs.corner_ids.reserve(n);
+      for (unsigned int j = 0; j < n; ++j) fs.corner_ids.push_back(remap(f->Vertex(j)));
+      faces_snapshot.push_back(std::move(fs));
+    }
+  }
+
+  struct ESnap {
+    unsigned int a, b;
+    ON_SubDEdgeTag tag;
+    ON_SubDEdgeSharpness sharpness;
+  };
+  std::vector<ESnap> edges_snapshot;
+  {
+    ON_SubDEdgeIterator eit = subd_.EdgeIterator();
+    for (const ON_SubDEdge* e = eit.FirstEdge(); e != nullptr; e = eit.NextEdge()) {
+      if (e->m_vertex[0] == nullptr || e->m_vertex[1] == nullptr) {
+        throw std::runtime_error("dino8::kernel::SubD::Weld: an edge has a null vertex");
+      }
+      // Only a genuinely INTERIOR edge's (FaceCount()==2) tag is worth
+      // reapplying verbatim - it can only ever be Smooth or a real,
+      // intentional SetCrease()-set Crease, neither of which this merge
+      // ever has reason to change. A naked (FaceCount()==1) edge's own
+      // Crease tag is never that: it's purely the "an open SubD's own
+      // boundary edges are themselves always creases" construction
+      // convention, stale the instant a weld gives the edge a second
+      // face - so it's deliberately left OUT of the snapshot (never
+      // reapplied), leaving it Unset for UpdateAllTagsAndSectorCoefficients()
+      // below to re-derive fresh from whatever its ACTUAL new face count
+      // turns out to be: Crease again if it's still naked, Smooth if this
+      // weld just closed it into a real interior edge. The same holds for
+      // a pathological non-manifold (3+ face) original edge, which that
+      // recompute forces to Crease regardless, matching its untouched
+      // original state exactly.
+      if (e->FaceCount() != 2) continue;
+      edges_snapshot.push_back(
+          {remap(e->m_vertex[0]), remap(e->m_vertex[1]), e->m_edge_tag, e->Sharpness(/*bUseCreaseSharpness=*/false)});
+    }
+  }
+
+  ON_SubD new_subd;
+  for (const VSnap& vs : vertices_snapshot) {
+    if (new_subd.AddVertexForExperts(vs.id, ON_SubDVertexTag::Unset, &vs.point.x, 0, 0) == nullptr) {
+      throw std::runtime_error("dino8::kernel::SubD::Weld: ON_SubD::AddVertexForExperts failed");
+    }
+  }
+  for (const FSnap& fs : faces_snapshot) {
+    std::vector<const ON_SubDVertex*> corners(fs.corner_ids.size());
+    for (size_t i = 0; i < fs.corner_ids.size(); ++i) {
+      corners[i] = new_subd.VertexFromId(fs.corner_ids[i]);
+      if (corners[i] == nullptr) {
+        throw std::runtime_error("dino8::kernel::SubD::Weld: a rebuilt face corner vertex is missing");
+      }
+    }
+    if (new_subd.FindOrAddFace(ON_SubDEdgeTag::Unset, corners.data(), corners.size()) == nullptr) {
+      throw std::runtime_error(
+          "dino8::kernel::SubD::Weld: ON_SubD::FindOrAddFace failed while rebuilding a face");
+    }
+  }
+  for (const ESnap& es : edges_snapshot) {
+    const ON_SubDVertex* a = new_subd.VertexFromId(es.a);
+    const ON_SubDVertex* b = new_subd.VertexFromId(es.b);
+    if (a == nullptr || b == nullptr) continue;
+    const ON_SubDEdge* e = new_subd.FindEdge(a, b).Edge();
+    // A null result here only ever means a and b were v0 and v1 themselves
+    // (an edge directly between the kept and discarded vertex, already
+    // refused above) or - the double-edge case - two distinct original
+    // edges (v1-X and v0-X) that legitimately collapse onto the SAME
+    // rebuilt edge once v1 merges into v0; either way there is exactly one
+    // rebuilt edge to tag, and skipping a not-found one throws away
+    // nothing new.
+    if (e == nullptr) continue;
+    const_cast<ON_SubDEdge*>(e)->m_edge_tag = es.tag;
+    if (es.tag == ON_SubDEdgeTag::Smooth || es.tag == ON_SubDEdgeTag::SmoothX) {
+      const_cast<ON_SubDEdge*>(e)->SetSharpnessForExperts(es.sharpness);
+    }
+  }
+
+  new_subd.UpdateAllTagsAndSectorCoefficients(/*bUnsetValuesOnly=*/true);
+  subd_ = new_subd;
+  return true;
+}
+
 std::vector<SubDLimitPoint> SubD::LimitPoints() const {
   std::vector<SubDLimitPoint> out;
   ON_SubDVertexIterator vit = subd_.VertexIterator();
