@@ -371,6 +371,24 @@ Brep BooleanIntersectConvexPlanar(const Brep& a, const Brep& b);
 // cutting plane involved only ever crosses that shape's boundary twice.
 Brep BooleanCombinePlanar(const Brep& a, const Brep& b, BooleanOp op);
 
+// N-ary counterpart of BooleanCombinePlanar, identical in shape and
+// contract to BooleanCombineMixedNAry below (see that function's own doc
+// comment for the full rationale - both close the same PARITY_MAP.md
+// "Multi-body / multi-tool booleans" bullet's "No kernel N-ary API" gap,
+// one per B-rep engine): `first_group` is folded left-to-right into one
+// solid via repeated BooleanCombinePlanar(..., Union); if `second_group`
+// is non-empty it is folded the same way and the two folded solids are
+// combined via one further BooleanCombinePlanar(..., op) call, otherwise
+// the folded `first_group` is returned directly (and `op` must be Union).
+// SymmetricDifference is refused for the same reason as the Mixed
+// engine's N-ary wrapper: BooleanCombinePlanar's own XOR result is a
+// Brep::Compound of two lumps, which cannot be fed into a further Union
+// fold. Each pairwise call inherits BooleanCombinePlanar's own
+// RefuseCompoundOperand precondition, so every operand in either group
+// must itself be a single-lump Brep.
+Brep BooleanCombinePlanarNAry(const std::vector<Brep>& first_group, const std::vector<Brep>& second_group,
+                               BooleanOp op);
+
 // The Sutherland-Hodgman half-space clipper shared by
 // BooleanIntersectConvexPlanar (above) and ShellConvexPlanar (below) -
 // extracted here, not rewritten, so both operations run the same verified

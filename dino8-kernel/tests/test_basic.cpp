@@ -29420,6 +29420,283 @@ void TestBooleanCombineMixedNAryNegativeControls() {
   }
 }
 
+// BooleanCombinePlanarNAry: same coverage shape as BooleanCombineMixedNAry
+// above, for the planar engine instead - see that function's own tests for
+// the full rationale of each case. Reuses NAryTestVolume() (defined above)
+// since Box() operands tessellate exactly for either engine.
+
+void TestBooleanCombinePlanarNAryUnionThreeOverlappingBoxesMatchesInclusionExclusion() {
+  using dino8::kernel::BooleanCombinePlanarNAry;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+
+  const Brep a = Brep::Box(0, 0, 0, 2, 2, 2);
+  const Brep b = Brep::Box(1, 0, 0, 3, 2, 2);
+  const Brep c = Brep::Box(2, 0, 0, 4, 2, 2);
+
+  const Brep u = BooleanCombinePlanarNAry({a, b, c}, {}, BooleanOp::Union);
+  Check(Within(NAryTestVolume(u), 16.0, 1e-9),
+        "three overlapping boxes: Planar N-ary Union volume matches the exact 4x2x2 slab");
+  Check(u.raw().IsValid(), "Planar N-ary Union result passes ON_Brep::IsValid()");
+  Check(u.raw().IsSolid(), "Planar N-ary Union result reports IsSolid() true");
+}
+
+void TestBooleanCombinePlanarNAryUnionFoldOrderIndependence() {
+  using dino8::kernel::BooleanCombinePlanarNAry;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+
+  const Brep a = Brep::Box(0, 0, 0, 2, 2, 2);
+  const Brep b = Brep::Box(1, 0, 0, 3, 2, 2);
+  const Brep c = Brep::Box(2, 0, 0, 4, 2, 2);
+
+  const Brep forward = BooleanCombinePlanarNAry({a, b, c}, {}, BooleanOp::Union);
+  const Brep reversed = BooleanCombinePlanarNAry({c, b, a}, {}, BooleanOp::Union);
+  const Brep mixed_order = BooleanCombinePlanarNAry({b, a, c}, {}, BooleanOp::Union);
+  Check(Within(NAryTestVolume(forward), NAryTestVolume(reversed), 1e-9) &&
+            Within(NAryTestVolume(forward), NAryTestVolume(mixed_order), 1e-9),
+        "Planar N-ary Union's left-to-right fold order is not caller-visible: three different orderings of the "
+        "same three boxes all produce the same volume");
+}
+
+void TestBooleanCombinePlanarNAryDifferenceSubtractsEveryToolInSecondGroup() {
+  using dino8::kernel::BooleanCombinePlanar;
+  using dino8::kernel::BooleanCombinePlanarNAry;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+
+  const Brep target = Brep::Box(0, 0, 0, 10, 10, 10);
+  const Brep cutter1 = Brep::Box(1, 1, 1, 3, 3, 3);
+  const Brep cutter2 = Brep::Box(6, 6, 6, 8, 8, 8);
+
+  const Brep result = BooleanCombinePlanarNAry({target}, {cutter1, cutter2}, BooleanOp::Difference);
+  const double expected = 1000.0 - 8.0 - 8.0;
+  Check(Within(NAryTestVolume(result), expected, 1e-9),
+        "Planar N-ary Difference of a target against two disjoint interior cutters: volume is exactly target "
+        "minus both cutters' own volumes");
+
+  const Brep manual = BooleanCombinePlanar(BooleanCombinePlanar(target, cutter1, BooleanOp::Difference), cutter2,
+                                            BooleanOp::Difference);
+  Check(Within(NAryTestVolume(result), NAryTestVolume(manual), 1e-9),
+        "Planar N-ary Difference against a two-tool second_group matches two chained pairwise "
+        "BooleanCombinePlanar Difference calls exactly");
+}
+
+void TestBooleanCombinePlanarNAryIntersectionUnionsEachSideBeforeCombining() {
+  using dino8::kernel::BooleanCombinePlanarNAry;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+
+  const Brep first_a = Brep::Box(0, 0, 0, 4, 2, 2);
+  const Brep first_b = Brep::Box(0, 3, 0, 2, 5, 2);
+  const Brep second = Brep::Box(1, 1, 0, 3, 4, 2);
+
+  const Brep result = BooleanCombinePlanarNAry({first_a, first_b}, {second}, BooleanOp::Intersection);
+  Check(Within(NAryTestVolume(result), 6.0, 1e-9),
+        "Planar N-ary Intersection unions first_group and second_group independently before combining them: "
+        "volume matches the sum of second's own disjoint overlaps with each first_group box");
+}
+
+void TestBooleanCombinePlanarNAryNegativeControls() {
+  using dino8::kernel::BooleanCombinePlanarNAry;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+
+  const Brep box = Brep::Box(0, 0, 0, 2, 2, 2);
+  const Brep other = Brep::Box(1, 1, 1, 3, 3, 3);
+
+  {
+    bool threw = false;
+    std::string message;
+    try {
+      BooleanCombinePlanarNAry({}, {box}, BooleanOp::Union);
+    } catch (const std::invalid_argument& e) {
+      threw = true;
+      message = e.what();
+    }
+    Check(threw && message.find("first_group is empty") != std::string::npos,
+          "an empty first_group is refused, naming the precondition");
+  }
+  {
+    bool threw = false;
+    try {
+      BooleanCombinePlanarNAry({box}, {}, BooleanOp::Intersection);
+    } catch (const std::invalid_argument&) {
+      threw = true;
+    }
+    Check(threw, "Intersection with an empty second_group is refused - there is nothing to intersect against");
+  }
+  {
+    bool threw = false;
+    try {
+      BooleanCombinePlanarNAry({box}, {}, BooleanOp::Difference);
+    } catch (const std::invalid_argument&) {
+      threw = true;
+    }
+    Check(threw, "Difference with an empty second_group is refused - there is nothing to subtract");
+  }
+  {
+    bool threw = false;
+    std::string message;
+    try {
+      BooleanCombinePlanarNAry({box}, {other}, BooleanOp::SymmetricDifference);
+    } catch (const std::invalid_argument& e) {
+      threw = true;
+      message = e.what();
+    }
+    Check(threw && message.find("no well-defined N-ary fold") != std::string::npos,
+          "SymmetricDifference is refused outright with a message explaining why (no well-defined N-ary fold), "
+          "regardless of group sizes");
+  }
+  {
+    const Brep result = BooleanCombinePlanarNAry({box}, {}, BooleanOp::Union);
+    Check(Within(result.Volume(), box.Volume(), 1e-9),
+          "a single-element first_group with an empty second_group and op=Union returns that operand unchanged "
+          "(the trivial N=1 fold)");
+  }
+}
+
+// BooleanCombineGeneralNAry: same shape again, for the general SSX-driven
+// engine. Diagonally-staggered Box() operands (the same shape
+// TestBooleanCombineGeneralBoxBox's own fixture uses) are this engine's
+// fully-proven case - volume checks use the same tessellated-volume
+// tolerance (1e-3) that engine's own existing tests already use, not the
+// tighter 1e-9 the analytic Mixed/Planar engines get, since the general
+// engine's SSX-driven reassembly is Newton-refined rather than exact.
+//
+// Deliberately NOT reused here: the axis-aligned "chain of three boxes,
+// each overlapping the next by exactly one unit along x" fixture
+// BooleanCombineMixedNAry/BooleanCombinePlanarNAry's own tests use. That
+// fixture keeps y/z identical across all three boxes, so adjacent operands
+// share a coplanar face PARTIALLY overlapping in x (not the same finite
+// extent) - confirmed by direct standalone reproduction (not this file's
+// own code) to make even a single plain BooleanCombineGeneral(a, b, Union)
+// call throw "an edge is claimed by 3 or more fragment loops", independent
+// of BooleanCombineGeneralNAry entirely. This is the general engine's own
+// pre-existing, separately-disclosed "No general partially-overlapping
+// coincident curved-face handling" gap (see this category's "Coplanar /
+// coincident face handling" bullet) - not a defect in the N-ary wrapper
+// added this pass. The diagonally-staggered fixture below avoids any
+// coplanar shared face between operands (each pair either has a genuine
+// 3D-volume overlap or, for the first/third box, touches at a single
+// corner POINT with zero shared area) and is confirmed in scope by the
+// same standalone reproduction, chained operand included.
+void TestBooleanCombineGeneralNAryUnionThreeOverlappingBoxesMatchesInclusionExclusion() {
+  using dino8::kernel::BooleanCombineGeneralNAry;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+
+  const Brep a = Brep::Box(0, 0, 0, 2, 2, 2);
+  const Brep b = Brep::Box(1, 1, 1, 3, 3, 3);
+  const Brep c = Brep::Box(2, 2, 2, 4, 4, 4);
+
+  // |A|+|B|+|C| - |A^B| - |B^C| - |A^C| + |A^B^C| = 8+8+8 - 1 - 1 - 0 + 0 = 22
+  // (A^B = A^C = the shared unit cube each consecutive pair overlaps in;
+  // A and C only touch at the single corner point (2,2,2), zero volume;
+  // no point is common to all three).
+  const Brep u = BooleanCombineGeneralNAry({a, b, c}, {}, BooleanOp::Union);
+  Check(u.raw().IsValid(), "General N-ary Union result is a valid ON_Brep");
+  Check(std::abs(NAryTestVolume(u) - 22.0) < 1e-3,
+        "three diagonally-staggered overlapping boxes: General N-ary Union volume matches the inclusion-exclusion "
+        "total 22");
+}
+
+void TestBooleanCombineGeneralNAryDifferenceSubtractsEveryToolInSecondGroup() {
+  using dino8::kernel::BooleanCombineGeneral;
+  using dino8::kernel::BooleanCombineGeneralNAry;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+
+  const Brep target = Brep::Box(0, 0, 0, 10, 10, 10);
+  const Brep cutter1 = Brep::Box(1, 1, 1, 3, 3, 3);
+  const Brep cutter2 = Brep::Box(6, 6, 6, 8, 8, 8);
+
+  const Brep result = BooleanCombineGeneralNAry({target}, {cutter1, cutter2}, BooleanOp::Difference);
+  const double expected = 1000.0 - 8.0 - 8.0;
+  Check(std::abs(NAryTestVolume(result) - expected) < 1e-3,
+        "General N-ary Difference of a target against two disjoint interior cutters: volume is exactly target "
+        "minus both cutters' own volumes");
+
+  const Brep manual = BooleanCombineGeneral(BooleanCombineGeneral(target, cutter1, BooleanOp::Difference), cutter2,
+                                             BooleanOp::Difference);
+  Check(std::abs(NAryTestVolume(result) - NAryTestVolume(manual)) < 1e-3,
+        "General N-ary Difference against a two-tool second_group matches two chained pairwise "
+        "BooleanCombineGeneral Difference calls closely");
+}
+
+void TestBooleanCombineGeneralNAryCallerToleranceForwardedToEveryPairwiseCall() {
+  using dino8::kernel::BooleanCombineGeneral;
+  using dino8::kernel::BooleanCombineGeneralNAry;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+
+  const Brep a = Brep::Box(0, 0, 0, 2, 2, 2);
+  const Brep b = Brep::Box(1, 1, 1, 3, 3, 3);
+  const Brep c = Brep::Box(2, 2, 2, 4, 4, 4);
+
+  // A tightened, non-default tolerance produces bit-identical output
+  // whether it is passed straight to BooleanCombineGeneral for the same
+  // pairwise fold by hand, or threaded through BooleanCombineGeneralNAry -
+  // confirming `tolerance` genuinely reaches every internal pairwise call,
+  // not just the final combine.
+  const double tol = 1e-5;
+  const Brep via_nary = BooleanCombineGeneralNAry({a, b, c}, {}, BooleanOp::Union, tol);
+  const Brep folded_by_hand =
+      BooleanCombineGeneral(BooleanCombineGeneral(a, b, BooleanOp::Union, tol), c, BooleanOp::Union, tol);
+  Check(std::abs(NAryTestVolume(via_nary) - NAryTestVolume(folded_by_hand)) < 1e-9,
+        "a caller-supplied tolerance reaches every pairwise fold step, matching an equivalent hand-folded "
+        "sequence of BooleanCombineGeneral calls at the same tolerance");
+}
+
+void TestBooleanCombineGeneralNAryNegativeControls() {
+  using dino8::kernel::BooleanCombineGeneralNAry;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+
+  const Brep box = Brep::Box(0, 0, 0, 2, 2, 2);
+  const Brep other = Brep::Box(1, 1, 1, 3, 3, 3);
+
+  {
+    bool threw = false;
+    std::string message;
+    try {
+      BooleanCombineGeneralNAry({}, {box}, BooleanOp::Union);
+    } catch (const std::invalid_argument& e) {
+      threw = true;
+      message = e.what();
+    }
+    Check(threw && message.find("first_group is empty") != std::string::npos,
+          "an empty first_group is refused, naming the precondition");
+  }
+  {
+    bool threw = false;
+    try {
+      BooleanCombineGeneralNAry({box}, {}, BooleanOp::Intersection);
+    } catch (const std::invalid_argument&) {
+      threw = true;
+    }
+    Check(threw, "Intersection with an empty second_group is refused - there is nothing to intersect against");
+  }
+  {
+    bool threw = false;
+    std::string message;
+    try {
+      BooleanCombineGeneralNAry({box}, {other}, BooleanOp::SymmetricDifference);
+    } catch (const std::invalid_argument& e) {
+      threw = true;
+      message = e.what();
+    }
+    Check(threw, "SymmetricDifference is refused outright, since BooleanCombineGeneral itself doesn't implement "
+                 "it either");
+  }
+  {
+    const Brep result = BooleanCombineGeneralNAry({box}, {}, BooleanOp::Union);
+    Check(std::abs(NAryTestVolume(result) - box.Volume()) < 1e-6,
+          "a single-element first_group with an empty second_group and op=Union returns that operand unchanged "
+          "(the trivial N=1 fold)");
+  }
+}
+
 // Documents the boundary of THIS increment (notch-aware ClassifyPointVsMixedSolid/
 // RayVsMixedFace/CylinderPlaneNoInteraction, boolean.cpp): the ON-check and
 // ray-cast now consult the notched cap's own true (angle, height) curve
@@ -41162,6 +41439,15 @@ int main() {
   TestBooleanCombineMixedNAryDifferenceSubtractsEveryToolInSecondGroup();
   TestBooleanCombineMixedNAryIntersectionUnionsEachSideBeforeCombining();
   TestBooleanCombineMixedNAryNegativeControls();
+  TestBooleanCombinePlanarNAryUnionThreeOverlappingBoxesMatchesInclusionExclusion();
+  TestBooleanCombinePlanarNAryUnionFoldOrderIndependence();
+  TestBooleanCombinePlanarNAryDifferenceSubtractsEveryToolInSecondGroup();
+  TestBooleanCombinePlanarNAryIntersectionUnionsEachSideBeforeCombining();
+  TestBooleanCombinePlanarNAryNegativeControls();
+  TestBooleanCombineGeneralNAryUnionThreeOverlappingBoxesMatchesInclusionExclusion();
+  TestBooleanCombineGeneralNAryDifferenceSubtractsEveryToolInSecondGroup();
+  TestBooleanCombineGeneralNAryCallerToleranceForwardedToEveryPairwiseCall();
+  TestBooleanCombineGeneralNAryNegativeControls();
   TestBooleanCombineMixedUnequalRadiusGeneralAngleIntersectionAndAllOps();
   TestBooleanCombineMixedUnequalRadiusGeneralAngleArgumentOrderAndSharedArcIsBitIdentical();
   TestBooleanCombineMixedUnequalRadiusGeneralAngleNegativeControls();

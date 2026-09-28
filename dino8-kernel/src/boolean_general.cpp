@@ -3110,6 +3110,43 @@ Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op, double to
   return result;
 }
 
+Brep BooleanCombineGeneralNAry(const std::vector<Brep>& first_group, const std::vector<Brep>& second_group,
+                                BooleanOp op, double tolerance) {
+  if (op == BooleanOp::SymmetricDifference) {
+    throw std::invalid_argument(
+        "dino8::kernel::BooleanCombineGeneralNAry: SymmetricDifference is not yet implemented - "
+        "BooleanCombineGeneral itself refuses it outright, so there is nothing for an N-ary fold to build on");
+  }
+  if (first_group.empty()) {
+    throw std::invalid_argument("dino8::kernel::BooleanCombineGeneralNAry: first_group is empty");
+  }
+
+  // Same left-to-right Union fold as BooleanCombineMixedNAry/
+  // BooleanCombinePlanarNAry (dino8/kernel/boolean.h/.cpp), for the general
+  // SSX-driven engine instead - see BooleanCombineMixedNAry's own doc
+  // comment for the full rationale. `tolerance` is forwarded unchanged to
+  // every pairwise call.
+  auto fold_union = [op_tol = tolerance](const std::vector<Brep>& group) {
+    Brep acc = group.front();
+    for (size_t i = 1; i < group.size(); ++i) {
+      acc = BooleanCombineGeneral(acc, group[i], BooleanOp::Union, op_tol);
+    }
+    return acc;
+  };
+
+  const Brep folded_first = fold_union(first_group);
+  if (second_group.empty()) {
+    if (op != BooleanOp::Union) {
+      throw std::invalid_argument(
+          "dino8::kernel::BooleanCombineGeneralNAry: second_group is empty but op is not Union - "
+          "Intersection/Difference need a second operand to combine against");
+    }
+    return folded_first;
+  }
+  const Brep folded_second = fold_union(second_group);
+  return BooleanCombineGeneral(folded_first, folded_second, op, tolerance);
+}
+
 // ImprintFaces(): face-face imprint - see boolean_general.h's own doc
 // comment for the parity-map context (PK_BODY_imprint / ACIS imprint: split
 // faces along a mutual intersection, remove nothing). This is deliberately

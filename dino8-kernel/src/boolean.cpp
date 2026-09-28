@@ -999,6 +999,42 @@ Brep BooleanCombinePlanar(const Brep& a, const Brep& b, BooleanOp op) {
   return Brep::FromPlanarFaces(result);
 }
 
+Brep BooleanCombinePlanarNAry(const std::vector<Brep>& first_group, const std::vector<Brep>& second_group,
+                               BooleanOp op) {
+  if (op == BooleanOp::SymmetricDifference) {
+    throw std::invalid_argument(
+        "dino8::kernel::BooleanCombinePlanarNAry: SymmetricDifference has no well-defined N-ary fold - its own "
+        "pairwise result is a Brep::Compound of two lumps that cannot be fed into a further Union (see "
+        "BooleanCombinePlanar's own SymmetricDifference branch above)");
+  }
+  if (first_group.empty()) {
+    throw std::invalid_argument("dino8::kernel::BooleanCombinePlanarNAry: first_group is empty");
+  }
+
+  // Same left-to-right Union fold as BooleanCombineMixedNAry, for the
+  // planar engine instead - see that function's own doc comment for the
+  // full rationale.
+  auto fold_union = [](const std::vector<Brep>& group) {
+    Brep acc = group.front();
+    for (size_t i = 1; i < group.size(); ++i) {
+      acc = BooleanCombinePlanar(acc, group[i], BooleanOp::Union);
+    }
+    return acc;
+  };
+
+  const Brep folded_first = fold_union(first_group);
+  if (second_group.empty()) {
+    if (op != BooleanOp::Union) {
+      throw std::invalid_argument(
+          "dino8::kernel::BooleanCombinePlanarNAry: second_group is empty but op is not Union - "
+          "Intersection/Difference need a second operand to combine against");
+    }
+    return folded_first;
+  }
+  const Brep folded_second = fold_union(second_group);
+  return BooleanCombinePlanar(folded_first, folded_second, op);
+}
+
 namespace {
 // Signed area of a planar polygon (known to already lie in one plane,
 // with unit `normal`), via fan triangulation from the polygon's own

@@ -51,6 +51,29 @@ namespace dino8::kernel {
 // faces).
 Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op, double tolerance = 0.001);
 
+// N-ary counterpart of BooleanCombineGeneral - third and last of this
+// category's three B-rep boolean engines to get one (see
+// dino8/kernel/boolean.h's BooleanCombineMixedNAry for the full rationale
+// shared by all three: PARITY_MAP.md's "Multi-body / multi-tool booleans"
+// bullet's "No kernel N-ary API" gap). Same fold shape: `first_group` is
+// folded left-to-right into one solid via repeated
+// BooleanCombineGeneral(..., Union, tolerance) calls; if `second_group` is
+// non-empty it is folded the same way and the two folded solids are
+// combined via one further BooleanCombineGeneral(..., op, tolerance) call,
+// otherwise the folded `first_group` is returned directly (and `op` must
+// be Union). SymmetricDifference is refused - BooleanCombineGeneral()
+// itself does not implement it at all (see that function's own doc
+// comment above), so there is nothing for an N-ary fold to build on.
+// `tolerance` is forwarded unchanged to every pairwise call this function
+// makes. Unlike BooleanCombineMixedNAry/BooleanCombinePlanarNAry, this
+// function does NOT refuse a compound (multi-lump) operand - the general
+// engine has no RefuseCompoundOperand guard of its own to inherit (a
+// pre-existing, separately disclosed gap; see the "Multi-body / multi-tool
+// booleans" bullet's own "silently unguarded... by the general engine"
+// note).
+Brep BooleanCombineGeneralNAry(const std::vector<Brep>& first_group, const std::vector<Brep>& second_group,
+                                BooleanOp op, double tolerance = 0.001);
+
 // Face-face imprint (Parasolid PK_BODY_imprint / ACIS imprint): splits
 // `target`'s own faces wherever they cross `tool`'s faces, WITHOUT removing
 // any material - every fragment of every `target` face is kept, unlike
