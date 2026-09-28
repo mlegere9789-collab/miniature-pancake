@@ -106,6 +106,54 @@ Brep ImprintFaces(const Brep& target, const Brep& tool, double tolerance = 0.001
 // refuses before `a` is ever imprinted, not after doing half the work).
 std::pair<Brep, Brep> MutualImprintFaces(const Brep& a, const Brep& b, double tolerance = 0.001);
 
+// Split a single face along a curve (parity-map "Split face by curve /
+// surface (real trim-loop split in place)" - localops category). Unlike
+// dino8-app's own `SplitFaceCommand` (cmd_fillet.cpp:2057), which only
+// finds where `curve` crosses `target`'s face_index'th face and splits the
+// underlying SURFACE at the iso-parameter MIDPOINT of those hits (an
+// approximation that ignores the curve's actual shape between crossings),
+// this performs a genuine trim-loop split: `curve` is pulled onto the
+// face's own surface (each sample's closest point, via this file's own
+// SurfaceClosestPointGlobal() - the real multistart-Newton solver
+// surface.cpp's NurbsSurface::ClosestPointParameter() already wraps, called
+// here directly on the face's raw ON_Surface), turned into a dense (u, v)
+// polyline chain, and spliced into the face's own trim-loop boundary via
+// this file's own FragmentFaces()/SplitFaceLoop() - the identical machinery
+// ImprintFaces() above uses for a whole tool BODY, just fed one caller-
+// supplied curve chain for one named face instead of a set of SSX curves
+// gathered from a second operand. No new geometry is fit for either half's
+// own trim curve: exactly like every other Fragment this file produces,
+// each new face keeps the ORIGINAL surface, unchanged, with a genuinely
+// new trim boundary running along the real (sampled) curve rather than a
+// straight chord between its two crossing points.
+//
+// `face_index` must be in range (`target` must have that many faces at
+// all) or this throws std::invalid_argument, alongside a non-positive
+// `tolerance` or a `curve` with fewer than 2 control points. An UNTRIMMED
+// face (e.g. one of `Brep::Box()`'s own six faces) is a valid target too -
+// the same FaceBoundaryLoop() this file's other operations already share
+// falls back to the surface's own full parameter-domain rectangle as its
+// boundary when there is no real ON_BrepLoop, so the curve splices against
+// that. Throws std::invalid_argument if
+// `curve`, once pulled onto the face's surface, does not split that face's
+// own trim loop into EXACTLY two fragments - e.g. it never reaches the
+// face's own boundary at both ends (an interior-only touch becomes a hole,
+// not a split), or it crosses the boundary more than twice - since neither
+// case is the "one curve, two resulting faces" operation this function
+// promises; a caller after a partial/best-effort split should reach for
+// ImprintFaces() instead, which keeps every fragment unconditionally.
+// Every OTHER face of `target` is carried through unchanged (its own
+// single, untouched fragment), the same convention ImprintFaces() uses for
+// a `target` face that no SSX curve ever reaches.
+//
+// `samples` controls how finely `curve` is discretized before being pulled
+// onto the surface - the same "polyline stands in for the true curve, to
+// within a caller-tunable resolution" contract `NurbsCurve::Length()` and
+// `ClosestPointParameter()` already use elsewhere in this kernel, not a
+// hidden approximation unique to this function.
+Brep SplitFaceByCurve(const Brep& target, int face_index, const NurbsCurve& curve, double tolerance = 0.001,
+                      int samples = 200);
+
 // Sheet/solid trim (parity-map "Sheet/solid trim (open surface as cutter
 // through a solid)"): splits `solid` (a closed Brep) into the two pieces
 // on either side of `sheet` (an OPEN Brep - one or more trimmed faces used

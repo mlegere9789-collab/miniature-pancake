@@ -3494,6 +3494,153 @@ void TestImprintFacesCallerTolerance() {
   Check(threw, "ImprintFaces throws std::invalid_argument for a non-positive tolerance");
 }
 
+void TestSplitFaceByCurveBoxTopFaceAsymmetricVSplit() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SplitFaceByCurve;
+
+  // Parity-map "Split face by curve / surface (real trim-loop split in
+  // place)" (localops category): unlike dino8-app's own SplitFaceCommand
+  // (cmd_fillet.cpp:2057), which splits the underlying surface at the
+  // straight iso-parameter MIDPOINT chord between the curve's two
+  // crossing points (ignoring the curve's actual shape in between), this
+  // must genuinely follow the curve. Proven with a V-shaped, exactly
+  // piecewise-linear (degree-1, so a NurbsCurve exactly interpolates its
+  // own control points - no fitting/approximation of the curve itself) 3
+  // point curve on the box's own flat top face (z=1, x/y in [-2,2], area
+  // 16): (-2,0,1) up to (0,1.5,1) down to (2,0,1). Both ends land exactly
+  // on the top face's own x=-2/x=2 boundary edges, at their shared y=0
+  // midpoint - a valid boundary-to-boundary crossing, not a mere touch.
+  //
+  // A straight CHORD between those same two endpoints is the y=0 line,
+  // splitting the square into two equal 8/8 halves. The true V-shaped
+  // polyline instead bounds two trapezoids of exact area 5.5 each below
+  // it (toward y=-2: width-2 trapezoids with parallel sides 2 and 3.5) -
+  // 11 total - leaving 16-11=5 above (toward y=+2). These are closed-form
+  // values, not tessellation noise: the curve is exactly piecewise-linear
+  // and the box's own top face is exactly planar, so a genuine trim-loop
+  // split reproduces them (well inside ordinary grid-tessellation slop),
+  // while a straight-chord split would read 8/8 instead - an unambiguous,
+  // large (37.5% vs 50%) difference this test can't confuse with noise.
+  const Brep box = Brep::Box(-2, -2, -1, 2, 2, 1);
+  const std::vector<Point3d> cvs = {Point3d(-2, 0, 1), Point3d(0, 1.5, 1), Point3d(2, 0, 1)};
+  const NurbsCurve curve = NurbsCurve::FromControlPoints(cvs, /*degree=*/1);
+
+  const Brep split = SplitFaceByCurve(box, /*face_index=*/1, curve);
+  Check(split.raw().IsValid(), "SplitFaceByCurve on the box's top face is a valid ON_Brep");
+  Check(split.FaceCount() == box.FaceCount() + 1,
+        "splitting one face along a boundary-to-boundary curve gains exactly 1 face (2 fragments "
+        "replacing the original 1, every other face carried through unchanged)");
+
+  const Mesh closed = split.TessellateToClosedMesh(32, 32);
+  Check(std::abs(closed.Volume() - 32.0) < 0.2,
+        "splitting a face removes no material - the box's own tessellated volume is unchanged "
+        "(32 = 4*4*2) after its top face is split");
+
+  // Identify the 2 fragments of the split top face by their own bounding
+  // box (both flat at z=1, unlike every other face of the box) rather
+  // than assuming a fixed index - robust to SplitFaceByCurve()'s own
+  // internal fragment-ordering detail.
+  const std::vector<Mesh> per_face = split.Tessellate(32, 32);
+  Check(per_face.size() == static_cast<size_t>(split.FaceCount()), "one tessellated Mesh per face");
+  std::vector<double> top_face_areas;
+  for (const Mesh& m : per_face) {
+    if (m.VertexCount() == 0) continue;
+    const auto bb = m.GetBoundingBox();
+    if (std::abs(bb.min.z - 1.0) < 1e-6 && std::abs(bb.max.z - 1.0) < 1e-6) top_face_areas.push_back(m.Area());
+  }
+  Check(top_face_areas.size() == 2, "the split top face produces exactly 2 flat z=1 fragments");
+  if (top_face_areas.size() == 2) {
+    const double lo = std::min(top_face_areas[0], top_face_areas[1]);
+    const double hi = std::max(top_face_areas[0], top_face_areas[1]);
+    Check(std::abs(lo - 5.0) < 0.2 && std::abs(hi - 11.0) < 0.2,
+          "the split face's own 2 fragments have the exact areas the true V-shaped curve bounds "
+          "(5 and 11) - a straight endpoint-to-endpoint chord would instead give 8/8");
+  }
+}
+
+void TestSplitFaceByCurveRejectsInteriorOnlyLoop() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SplitFaceByCurve;
+
+  // A curve that never reaches the face's own trim boundary - a small
+  // closed square loop sitting entirely inside the top face - cannot
+  // produce the "one curve, two resulting faces" split this function
+  // promises: FragmentFaces()'s own closed-chain handling turns it into
+  // an interior hole instead (1 fragment, not 2), which must be refused
+  // rather than silently returned as a degenerate "split".
+  const Brep box = Brep::Box(-2, -2, -1, 2, 2, 1);
+  const std::vector<Point3d> cvs = {Point3d(-0.5, -0.5, 1), Point3d(0.5, -0.5, 1), Point3d(0.5, 0.5, 1),
+                                     Point3d(-0.5, 0.5, 1), Point3d(-0.5, -0.5, 1)};
+  const NurbsCurve loop = NurbsCurve::FromControlPoints(cvs, /*degree=*/1);
+
+  bool threw = false;
+  try {
+    SplitFaceByCurve(box, /*face_index=*/1, loop);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw,
+        "SplitFaceByCurve throws std::invalid_argument for a curve that never reaches the face's own "
+        "trim boundary (an interior-only closed loop becomes a hole, not a two-way split)");
+}
+
+void TestSplitFaceByCurveRejectsInvalidInput() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SplitFaceByCurve;
+
+  const Brep box = Brep::Box(-2, -2, -1, 2, 2, 1);
+  const std::vector<Point3d> cvs = {Point3d(-2, 0, 1), Point3d(0, 1.5, 1), Point3d(2, 0, 1)};
+  const NurbsCurve curve = NurbsCurve::FromControlPoints(cvs, /*degree=*/1);
+  const Brep empty;
+
+  bool threw_empty_target = false;
+  try {
+    SplitFaceByCurve(empty, 0, curve);
+  } catch (const std::invalid_argument&) {
+    threw_empty_target = true;
+  }
+  Check(threw_empty_target, "SplitFaceByCurve throws std::invalid_argument for a faceless target");
+
+  bool threw_bad_index_low = false;
+  try {
+    SplitFaceByCurve(box, -1, curve);
+  } catch (const std::invalid_argument&) {
+    threw_bad_index_low = true;
+  }
+  Check(threw_bad_index_low, "SplitFaceByCurve throws std::invalid_argument for a negative face_index");
+
+  bool threw_bad_index_high = false;
+  try {
+    SplitFaceByCurve(box, box.FaceCount(), curve);
+  } catch (const std::invalid_argument&) {
+    threw_bad_index_high = true;
+  }
+  Check(threw_bad_index_high, "SplitFaceByCurve throws std::invalid_argument for an out-of-range face_index");
+
+  bool threw_bad_tolerance = false;
+  try {
+    SplitFaceByCurve(box, 1, curve, 0.0);
+  } catch (const std::invalid_argument&) {
+    threw_bad_tolerance = true;
+  }
+  Check(threw_bad_tolerance, "SplitFaceByCurve throws std::invalid_argument for a non-positive tolerance");
+
+  bool threw_bad_samples = false;
+  try {
+    SplitFaceByCurve(box, 1, curve, 0.001, 1);
+  } catch (const std::invalid_argument&) {
+    threw_bad_samples = true;
+  }
+  Check(threw_bad_samples, "SplitFaceByCurve throws std::invalid_argument for samples < 2");
+}
+
 void TestMutualImprintFacesBoxPiercedByCylinder() {
   using dino8::kernel::Brep;
   using dino8::kernel::ImprintFaces;
@@ -40093,6 +40240,9 @@ int main() {
   TestImprintFacesDisjointIsNoOp();
   TestImprintFacesRejectsEmptyOperands();
   TestImprintFacesCallerTolerance();
+  TestSplitFaceByCurveBoxTopFaceAsymmetricVSplit();
+  TestSplitFaceByCurveRejectsInteriorOnlyLoop();
+  TestSplitFaceByCurveRejectsInvalidInput();
   TestMutualImprintFacesBoxPiercedByCylinder();
   TestMutualImprintFacesRejectsEmptyOrNonPositiveTolerance();
   TestSplitBySheetBoxCutInHalfByPlane();
