@@ -125,6 +125,34 @@ tries to find real evidence upgrading a missing/partial item, and a
    intersections-style arithmetic fix in that category, kernel:
    Local/direct-edit operations moves from 5/17/6/28 (48.2%) to 6/17/5/28
    (51.8%).
+4. **A same-day follow-up after this pass's own headline was written:**
+   kernel: Offsetting, shelling, thickening gained a new exact B-rep
+   whole-body offset, `OffsetSolidConvexPlanar` (boolean.h/.cpp, right next
+   to `OffsetFace`) — every face of a convex planar-faced solid moved along
+   its own outward normal at once (a single uniform distance, or
+   independently per face via the vector overload), sharp/mitered corners
+   reconstructed by the exact same `ClipConvexPolygon` half-space-clipping
+   technique `OffsetFace`/`ShellConvexPlanar` already use (generalized from
+   "one plane moves" to "every plane moves by its own amount"), not a mesh
+   approximation. Verified against an exact box (uniform growth/shrink
+   matching the closed-form new volume, and per-face distances matching an
+   independently-computed new bounding box) and a hand-built, genuinely
+   non-rectangular tetrahedron whose expected volume is recomputed
+   independently — every new vertex as the intersection of its own three
+   individually-translated original planes via the standard three-plane
+   cross-product formula, not by calling the new function's own internals —
+   plus closed-watertight-manifold tessellation checks and argument-error
+   cases (mismatched distances vector, a shrink that collapses the solid).
+   This is the kernel's first B-rep (not mesh-level) whole-body offset —
+   previously `OffsetSolid` was Manifold-Minkowski dilation/erosion, mesh
+   only. It does **not** flip the "Body offset" item's status: like every
+   other item already landed in this category (`OffsetFace`,
+   `ShellConvexPlanar`, `ShellClosedSphere`/`Torus`), real closure needs the
+   general non-convex/curved-body case, which this still refuses (the same
+   convexity precondition `OffsetFace`/`ShellConvexPlanar` already enforce),
+   so it stays `partial`, folded as new evidence into the existing bullet
+   below rather than a status change — the category's 0/26/1/27 (48.1%)
+   numeric row is unchanged.
 
 A genuine defect from the prior pass remains unresolved and is re-confirmed
 here through both of its mechanisms, neither touched by any commit in this
@@ -290,9 +318,9 @@ the honesty notes above and the bullets below.
 - [partial] Shell with removed/open faces (cup/case), including multi-face openings — kernel `ShellConvexPlanar` (boolean.h:340-387) is exact but convex planar solids only, and mutually-adjacent removed faces are refused. App `ShellCommand` face removal works on a mesh for simple box-like solids only.
 - [partial] Per-face (multi-thickness) shell — kernel `ShellConvexPlanar` per-face overload exists (convex planar solids only). App `OffsetMeshPerFace` remains mesh-level.
 - [partial] Face offset in place (move one face along its normal, neighbours re-intersected, B-rep kept) — kernel `OffsetFace` (boolean.h:453-488) moves one plane and re-clips every other face against it, but limited to convex planar solids with no topology change allowed (a face vanishing throws); not wired to any app command. App `MovePartsCommand` remains approximate.
-- [partial] Body offset (offset an entire closed solid outward/inward as a B-rep) — kernel `OffsetSolid` is a ball dilation/erosion through Manifold Minkowski, mesh-level not B-rep. App `OffsetSrf` non-Surface branch uses a mesh vertex-normal offset.
+- [partial] Body offset (offset an entire closed solid outward/inward as a B-rep) — kernel `OffsetSolid` is a ball dilation/erosion through Manifold Minkowski, mesh-level not B-rep. New this pass: `OffsetSolidConvexPlanar` (boolean.h/.cpp) is an exact B-rep whole-body offset — every face of a convex planar-faced solid moved along its own outward normal at once (uniform or independently per face), sharp/mitered corners reconstructed via the same `ClipConvexPolygon` half-space-clipping `OffsetFace`/`ShellConvexPlanar` already use — verified against an exact box (closed-form volume, both uniform and per-face) and a hand-built tetrahedron (checked against an independent three-plane-intersection recomputation of every new vertex). Still partial: convex planar solids only (the same precondition `OffsetFace`/`ShellConvexPlanar` already enforce), no curved or non-convex body, and not wired to any app command. App `OffsetSrf` non-Surface branch uses a mesh vertex-normal offset.
 - [partial] Untrimmed NURBS surface offset — kernel `NurbsSurface::OffsetAnalytic` is exact for plane/sphere/cylinder/cone/torus; `OffsetApproximate` covers freeform surfaces but is first-order with `tolerance` controlling only guard sampling, not the fit error.
-- [partial] Trimmed-surface / polysurface offset with corner reconstruction (Sharp extend-and-intersect or Round blend) — sharp corners exist only for convex planar solids (`ShellConvexPlanar`, `OffsetFace`); round corners only via mesh-level `OffsetSolid`; app polysurfaces fall to the mesh path. No trimmed curved-face B-rep offset.
+- [partial] Trimmed-surface / polysurface offset with corner reconstruction (Sharp extend-and-intersect or Round blend) — sharp corners exist only for convex planar solids (`ShellConvexPlanar`, `OffsetFace`, and now the whole-body `OffsetSolidConvexPlanar`); round corners only via mesh-level `OffsetSolid`; app polysurfaces fall to the mesh path. No trimmed curved-face B-rep offset.
 - [partial] Tolerance-driven offset refit (fit the offset surface/curve to a tolerance, Loose/Tolerance options) — curves have it: `NurbsCurve::OffsetInPlane` doubles control points until the measured worst-case deviation is within `tolerance`. Surfaces do not: `OffsetApproximate` never refits to a tolerance.
 - [partial] Variable-distance surface offset — app `VariableOffsetSrfCommand` is a per-CV Greville-normal offset with distance varying linearly; app-only, no kernel API.
 - [partial] Thicken sheet (open surface/mesh) into a closed solid — kernel `Mesh::Thicken` (mesh.cpp:3295) works on open meshes only with no fold repair. App `OffsetSrf` Solid=Yes stitches with `ShellBetween`. Mesh output only; no NURBS/B-rep thicken.
@@ -307,7 +335,7 @@ the honesty notes above and the bullets below.
 - [partial] Offset-derived constructions (Ribbon, RibbonOffset, Fin, Slab) — `RibbonCommand`, `FinCommand`, `RibbonOffset`, Slab via `OffsetPolygon`: all sample-and-fit, app-only.
 - [partial] Exact analytic-face offset (plane->plane, cylinder->cylinder, cone->cone, sphere->sphere with shifted radius) — kernel `NurbsSurface::OffsetAnalytic` is exact for plane/sphere/cylinder/cone/torus, but sphere and torus return the full primitive rather than the input patch, a cylinder becomes a full 360-degree cylinder, and a cone is rebuilt from an `IsCone` fit — so a partial analytic patch (e.g. a quarter-cylinder fillet face) does not keep its extent. Only the plane branch keeps the domain and trims. It is also a single-surface operation, not a face within a B-rep.
 - [partial] Offset feasibility / degeneracy detection (thickness beyond inradius, collapsed faces, wrong-way rims) — many guards exist (`ShellConvexPlanar`, `OffsetFace`, `OffsetSolid`, `OffsetAnalytic`, `OffsetInPlane`/`OffsetApproximate` curvature guards, `ExtrudeTapered` inradius check, `FindOffsetSelfIntersections`). Still partial: freeform checks are local-curvature/sampling-based and can miss hazards between samples; no global collision check.
-- [partial] Kernel-level offset API (NurbsCurve::Offset, NurbsSurface::Offset, Brep offset/shell entry points usable by booleans and fillets) — each named family exists (`OffsetInPlane`, `OffsetAnalytic`/`OffsetApproximate`, `ShellConvexPlanar`, `ShellClosedSphere`/`Torus`, `OffsetFace`, `OffsetSolid`, `Mesh::Offset`/`Thicken`). Still partial: no general Brep offset/shell for curved or non-convex bodies, and no app command calls any of these kernel entry points yet.
+- [partial] Kernel-level offset API (NurbsCurve::Offset, NurbsSurface::Offset, Brep offset/shell entry points usable by booleans and fillets) — each named family exists (`OffsetInPlane`, `OffsetAnalytic`/`OffsetApproximate`, `ShellConvexPlanar`, `ShellClosedSphere`/`Torus`, `OffsetFace`, `OffsetSolidConvexPlanar`, `OffsetSolid`, `Mesh::Offset`/`Thicken`). Still partial: no general Brep offset/shell for curved or non-convex bodies, and no app command calls any of these kernel entry points yet.
 - [partial] Solid dilation/erosion via kernel::MinkowskiSum/MinkowskiDifference with a ball (whole-body offset that handles arbitrary curved/concave meshes, not just convex-planar) — wrapped as `OffsetSolid(solid, distance, sphere_divisions)` with a faceted ball and an empty-erosion guard. Still partial: mesh-only, rounding only as smooth as the faceted sphere, every test fixture is convex so the "arbitrary concave" claim is unverified.
 - [partial] OpenNURBS-native mesh offset, ON_Mesh::OffsetMesh(distance, direction) — `ON_Mesh::OffsetMesh` is still never called; the kernel has its own vertex-normal equivalent (`Mesh::Offset`), but the fixed-`direction` variant has no kernel counterpart.
 - [partial] Inset (offset mesh/SubD/polysurface face edges inward toward face center) — app `InsetFaces` (cmd_subd.cpp:544) moves each corner toward the face centroid, not a true in-plane edge-parallel inset. SubD only; no kernel inset.

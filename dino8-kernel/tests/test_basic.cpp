@@ -13359,6 +13359,150 @@ void TestOffsetFaceOnTetrahedronMatchesExactCubicVolumeScaling() {
         "the moved tetrahedron also tessellates to a closed, watertight manifold");
 }
 
+// The exact B-rep whole-body offset (sharp/mitered corners) - PARITY_MAP's
+// "Body offset (offset an entire closed solid outward/inward as a B-rep)"
+// gap, previously only available as a mesh-level Manifold-Minkowski
+// approximation (OffsetSolid). Uniform growth/shrink of a box is the
+// simplest exact case: every pair of opposite faces moves outward by the
+// same distance, so each side length grows by exactly 2*d.
+void TestOffsetSolidConvexPlanarUniformBoxMatchesExactVolume() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::OffsetSolidConvexPlanar;
+  using dino8::kernel::Point3d;
+
+  const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+
+  const Brep grown = OffsetSolidConvexPlanar(box, 1.5);
+  Check(std::fabs(PlanarBrepVolumeExact(grown) - 13.0 * 13.0 * 13.0) < 1e-9,
+        "OffsetSolidConvexPlanar(box, +1.5) gives volume exactly 13^3 (every side grows by 2*1.5)");
+  Check(grown.FaceCount() == 6, "OffsetSolidConvexPlanar on a box keeps exactly 6 faces (no topology change)");
+  Check(grown.TessellateToClosedMesh(1, 1).IsClosedManifold(),
+        "OffsetSolidConvexPlanar's grown result tessellates to a closed, watertight manifold");
+
+  const Brep shrunk = OffsetSolidConvexPlanar(box, -2.0);
+  Check(std::fabs(PlanarBrepVolumeExact(shrunk) - 6.0 * 6.0 * 6.0) < 1e-9,
+        "OffsetSolidConvexPlanar(box, -2.0) gives volume exactly 6^3 (every side shrinks by 2*2.0)");
+
+  bool threw = false;
+  try { OffsetSolidConvexPlanar(box, -6.0); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "OffsetSolidConvexPlanar refuses a shrink that collapses the solid (opposite faces would cross)");
+
+  threw = false;
+  try { OffsetSolidConvexPlanar(box, std::vector<double>{1.0, 2.0, 3.0}); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "OffsetSolidConvexPlanar refuses a distances vector whose size doesn't match PlanarFaces().size()");
+}
+
+// The per-face (vector) overload with DIFFERENT distances per face -
+// independently checked against the box's own new bounding box, the same
+// way OffsetFace's own left/right test isolates one moved face; here every
+// face moves by its own amount at once, so the check must track all six.
+void TestOffsetSolidConvexPlanarPerFaceBoxMatchesExactBoundingBox() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::OffsetSolidConvexPlanar;
+  using dino8::kernel::Point3d;
+
+  // Box face order per Brep::Box()'s own comment: 0=bottom(-z) 1=top(+z)
+  // 2=front(-y) 3=back(+y) 4=left(-x) 5=right(+x).
+  const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+  const std::vector<double> distances = {1.0, 2.0, 0.5, 1.5, 3.0, 0.0};
+  const Brep offset = OffsetSolidConvexPlanar(box, distances);
+
+  // bottom -1, top +2 -> z in [-1, 12]; front -0.5, back +1.5 -> y in
+  // [-0.5, 11.5]; left -3, right +0 -> x in [-3, 10].
+  Point3d min_pt = offset.PlanarFaces()[0].loop[0], max_pt = min_pt;
+  for (const auto& f : offset.PlanarFaces()) {
+    for (const Point3d& p : f.loop) {
+      min_pt.x = std::min(min_pt.x, p.x); max_pt.x = std::max(max_pt.x, p.x);
+      min_pt.y = std::min(min_pt.y, p.y); max_pt.y = std::max(max_pt.y, p.y);
+      min_pt.z = std::min(min_pt.z, p.z); max_pt.z = std::max(max_pt.z, p.z);
+    }
+  }
+  Check(std::fabs(min_pt.x - (-3.0)) < 1e-9 && std::fabs(max_pt.x - 10.0) < 1e-9 &&
+            std::fabs(min_pt.y - (-0.5)) < 1e-9 && std::fabs(max_pt.y - 11.5) < 1e-9 &&
+            std::fabs(min_pt.z - (-1.0)) < 1e-9 && std::fabs(max_pt.z - 12.0) < 1e-9,
+        "OffsetSolidConvexPlanar's per-face distances give the exact bounding box [-3,10]x[-0.5,11.5]x[-1,12] - "
+        "each of the six faces moved independently by its own distance");
+  Check(std::fabs(PlanarBrepVolumeExact(offset) - 13.0 * 12.0 * 13.0) < 1e-9,
+        "...and the exact volume 13x12x13 matches those same six independent moves");
+}
+
+// A right tetrahedron is a genuinely non-axis-aligned, non-rectangular
+// convex solid whose UNIFORM sharp offset has no simple closed-form
+// scaling (unlike the box above) - each new vertex is the intersection
+// of the SAME three planes that met at the old vertex, each translated
+// outward by d along its own normal, an independent recomputation (via
+// the standard three-plane-intersection formula) done here directly from
+// the tetrahedron's own hand-built face planes, NOT by calling
+// OffsetSolidConvexPlanar or any of its own internals.
+void TestOffsetSolidConvexPlanarTetrahedronMatchesIndependentVertexRecomputation() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::OffsetSolidConvexPlanar;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  const double h = 3.0;
+  const Point3d apex(0, 0, 0);
+  const Point3d b0(2, 0, h), b1(-1, 2, h), b2(-1, -2, h);
+  const Point3d centroid((apex.x + b0.x + b1.x + b2.x) / 4.0, (apex.y + b0.y + b1.y + b2.y) / 4.0,
+                          (apex.z + b0.z + b1.z + b2.z) / 4.0);
+
+  auto make_outward = [&](Point3d p0, Point3d p1, Point3d p2) {
+    Brep::PlanarFace f;
+    Vector3d n = ON_CrossProduct(p1 - p0, p2 - p0);
+    n.Unitize();
+    if (ON_DotProduct(n, p0 - centroid) < 0) {
+      std::swap(p1, p2);
+      n = -n;
+    }
+    f.plane = ON_Plane(p0, n);
+    f.loop = {p0, p1, p2};
+    return f;
+  };
+
+  // f0=(apex,b0,b1) f1=(apex,b1,b2) f2=(apex,b2,b0) f3=base(b0,b2,b1) -
+  // same fixture as TestOffsetFaceOnTetrahedronMatchesExactCubicVolumeScaling.
+  const Brep::PlanarFace f0 = make_outward(apex, b0, b1);
+  const Brep::PlanarFace f1 = make_outward(apex, b1, b2);
+  const Brep::PlanarFace f2 = make_outward(apex, b2, b0);
+  const Brep::PlanarFace f3 = make_outward(b0, b2, b1);
+  const Brep tet = Brep::FromPlanarFaces({f0, f1, f2, f3});
+  const double orig_vol = PlanarBrepVolumeExact(tet);
+  Check(orig_vol > 0.0, "the hand-built tetrahedron has positive (correctly outward-oriented) volume");
+
+  // The point where three planes n_i.x = c_i (c_i = dot(origin_i, n_i))
+  // meet - the standard closed-form three-plane intersection via cross
+  // products, independent of anything OffsetSolidConvexPlanar itself does.
+  auto intersect3 = [](const ON_Plane& p0, const ON_Plane& p1, const ON_Plane& p2, double d) {
+    const Vector3d n0 = p0.zaxis, n1 = p1.zaxis, n2 = p2.zaxis;
+    const double c0 = ON_DotProduct(p0.origin, n0) + d;
+    const double c1 = ON_DotProduct(p1.origin, n1) + d;
+    const double c2 = ON_DotProduct(p2.origin, n2) + d;
+    const Vector3d num = c0 * ON_CrossProduct(n1, n2) + c1 * ON_CrossProduct(n2, n0) + c2 * ON_CrossProduct(n0, n1);
+    const double denom = ON_DotProduct(n0, ON_CrossProduct(n1, n2));
+    return Point3d(num.x / denom, num.y / denom, num.z / denom);
+  };
+
+  const double d = 0.4;
+  // apex = f0 n f1 n f2 (not f3); b0 = f0 n f2 n f3 (not f1);
+  // b1 = f0 n f1 n f3 (not f2); b2 = f1 n f2 n f3 (not f0).
+  const Point3d new_apex = intersect3(f0.plane, f1.plane, f2.plane, d);
+  const Point3d new_b0 = intersect3(f0.plane, f2.plane, f3.plane, d);
+  const Point3d new_b1 = intersect3(f0.plane, f1.plane, f3.plane, d);
+  const Point3d new_b2 = intersect3(f1.plane, f2.plane, f3.plane, d);
+  const double expected_vol =
+      std::fabs(ON_DotProduct(new_b0 - new_apex, ON_CrossProduct(new_b1 - new_apex, new_b2 - new_apex))) / 6.0;
+
+  const Brep offset = OffsetSolidConvexPlanar(tet, d);
+  Check(offset.FaceCount() == 4, "OffsetSolidConvexPlanar on the tetrahedron keeps exactly 4 faces");
+  Check(std::fabs(PlanarBrepVolumeExact(offset) - expected_vol) / expected_vol < 1e-9,
+        "OffsetSolidConvexPlanar's tetrahedron volume matches an independent recomputation of every new vertex "
+        "as the intersection of its own three (each individually translated) original planes - not merely a "
+        "plausible-looking number");
+  Check(expected_vol > orig_vol, "growing every face outward by the same positive d increases the volume");
+  Check(offset.TessellateToClosedMesh(1, 1).IsClosedManifold(),
+        "the offset tetrahedron also tessellates to a closed, watertight manifold");
+}
+
 }  // namespace
 
 // The spec's own required exact case: fillet the unit cube's top
@@ -31912,6 +32056,9 @@ int main() {
   TestShellClosedTorusMatchesExactShellVolumeAndRejectsSpindle();
   TestOffsetFaceOnBoxMatchesExactLinearVolumeAndPinsOtherFaces();
   TestOffsetFaceOnTetrahedronMatchesExactCubicVolumeScaling();
+  TestOffsetSolidConvexPlanarUniformBoxMatchesExactVolume();
+  TestOffsetSolidConvexPlanarPerFaceBoxMatchesExactBoundingBox();
+  TestOffsetSolidConvexPlanarTetrahedronMatchesIndependentVertexRecomputation();
   TestFilletConvexEdgeUnitCubeTopFrontCorner();
   TestFilletConvexEdgeTaperedRailExactness();
   TestFilletConvexEdgeTaperedClosedFormVolumeMatchesFrustumFormula();

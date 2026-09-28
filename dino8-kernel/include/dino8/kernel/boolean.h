@@ -487,6 +487,49 @@ Brep ShellClosedTorus(const ON_Plane& plane, double major_radius, double outer_m
 // that face or guessing a replacement.
 Brep OffsetFace(const Brep& solid, int face_index, double distance);
 
+// Offsets EVERY face of a convex planar-faced solid along its own outward
+// normal at once - the whole-BODY counterpart of OffsetFace() above (which
+// moves only one named face) and the exact B-rep analogue of the
+// mesh-level Manifold-Minkowski OffsetSolid() (the PARITY_MAP "Body
+// offset ... kernel OffsetSolid is a ball dilation/erosion through
+// Manifold Minkowski, mesh-level not B-rep" gap): a single positive
+// `distances[i]` grows the solid outward at face i (negative shrinks it),
+// independently per face, with SHARP (mitered, extend-and-intersect)
+// corners - not the ROUNDED corners a true Minkowski sum with a ball
+// would add at edges/vertices, which this deliberately does not attempt.
+//
+// The construction is exactly OffsetFace()'s own "start from an oversized
+// polygon in each face's own (possibly-moved) plane, clip against every
+// OTHER face's own (possibly-moved) plane" technique (ClipConvexPolygon,
+// above), generalized from "one plane moves, the rest are fixed" to
+// "every plane moves by its own distance": face i's own new plane is
+// translated by `distances[i] * plane.zaxis`, then every face's new
+// boundary is reconstructed uniformly by clipping a generous superset
+// against every OTHER face's own new plane - so a face whose own
+// `distances[i]` is 0 still gets correctly re-trimmed against its
+// neighbours if THEY moved. Unlike ShellConvexPlanar() (which keeps the
+// original outer faces untouched and adds new inner ones to build a
+// hollow shell), this REPLACES every face's own boundary in place - no
+// rim/opening bookkeeping, since nothing is removed and the body stays
+// solid (not hollow).
+//
+// Convex-solid precondition, same check and failure mode as
+// OffsetFace()/ShellConvexPlanar() (a non-convex solid would clip pieces
+// of itself away against its own planes). Throws std::invalid_argument if
+// `distances.size()` doesn't equal `solid.PlanarFaces().size()`, or if any
+// face's own new boundary collapses to fewer than 3 vertices or ~0 area -
+// a distance large enough (inward) that a face vanishes entirely would
+// need the topology itself to change, exactly the same out-of-scope case
+// OffsetFace() itself refuses.
+Brep OffsetSolidConvexPlanar(const Brep& solid, const std::vector<double>& distances);
+
+// The uniform-distance overload of OffsetSolidConvexPlanar() above - a
+// thin delegation to `OffsetSolidConvexPlanar(solid, std::vector<double>(
+// solid.PlanarFaces().size(), distance))`, not a second implementation,
+// exactly as ShellConvexPlanar()'s own scalar overload delegates to its
+// per-face one.
+Brep OffsetSolidConvexPlanar(const Brep& solid, double distance);
+
 // Exact B-rep boolean between two solids where either (or both) may have
 // a CYLINDRICAL face, not just planar ones - what closes the gap
 // BooleanCombinePlanar's own PlanarFaces()-only precondition leaves open:

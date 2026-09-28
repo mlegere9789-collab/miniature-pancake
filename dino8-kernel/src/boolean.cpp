@@ -1304,6 +1304,86 @@ Brep OffsetFace(const Brep& solid, int face_index, double distance) {
   return Brep::FromPlanarFaces(result);
 }
 
+Brep OffsetSolidConvexPlanar(const Brep& solid, const std::vector<double>& distances) {
+  const std::vector<Brep::PlanarFace> faces = solid.PlanarFaces();
+  const int n = static_cast<int>(faces.size());
+  if (distances.size() != static_cast<size_t>(n)) {
+    throw std::invalid_argument(
+        "dino8::kernel::OffsetSolidConvexPlanar: distances.size() must equal "
+        "solid.PlanarFaces().size()");
+  }
+
+  const double tol = RelativeTol(faces);
+  if (!IsConvex(faces, tol)) {
+    throw std::invalid_argument(
+        "dino8::kernel::OffsetSolidConvexPlanar: solid must be convex (a vertex "
+        "of one of its own faces lies outside one of its own other faces' "
+        "half-spaces) - see BooleanIntersectConvexPlanar's own doc comment "
+        "for why non-convex input isn't handled here");
+  }
+
+  // Every face's own new plane, translated by that face's own distance -
+  // OffsetFace()'s own "one plane moves" step, generalized to "every
+  // plane moves by its own amount".
+  std::vector<ON_Plane> new_planes(static_cast<size_t>(n));
+  for (int i = 0; i < n; ++i) {
+    new_planes[static_cast<size_t>(i)] = faces[static_cast<size_t>(i)].plane;
+    new_planes[static_cast<size_t>(i)].origin = new_planes[static_cast<size_t>(i)].origin +
+                                                 distances[static_cast<size_t>(i)] *
+                                                     new_planes[static_cast<size_t>(i)].zaxis;
+    new_planes[static_cast<size_t>(i)].UpdateEquation();
+  }
+
+  // Same generous halfspace-intersection superset OffsetFace() uses,
+  // sized from the ORIGINAL solid's own extent (before any plane moved) -
+  // guaranteed to contain the true new polytope's own boundary at every
+  // face regardless of which way any plane moved.
+  ON_BoundingBox bbox;
+  for (const Brep::PlanarFace& f : faces) {
+    for (const Point3d& p : f.loop) bbox.Set(p, true);
+  }
+  const double half_size = 50.0 * std::max(tol, bbox.Diagonal().Length());
+
+  std::vector<Brep::PlanarFace> result;
+  result.reserve(static_cast<size_t>(n));
+  for (int i = 0; i < n; ++i) {
+    const ON_Plane& pl = new_planes[static_cast<size_t>(i)];
+    const std::vector<Point3d> oversized = {
+        pl.origin + half_size * pl.xaxis + half_size * pl.yaxis,
+        pl.origin - half_size * pl.xaxis + half_size * pl.yaxis,
+        pl.origin - half_size * pl.xaxis - half_size * pl.yaxis,
+        pl.origin + half_size * pl.xaxis - half_size * pl.yaxis,
+    };
+    std::vector<ON_Plane> others;
+    others.reserve(static_cast<size_t>(n - 1));
+    for (int k = 0; k < n; ++k) {
+      if (k == i) continue;
+      others.push_back(new_planes[static_cast<size_t>(k)]);
+    }
+    std::vector<Point3d> clipped = ClipConvexPolygon(oversized, pl, others, tol);
+    const double area = PlanarPolygonArea(clipped, pl.zaxis);
+    const double area_tol = tol * tol;
+    if (clipped.size() < 3 || area <= area_tol) {
+      throw std::invalid_argument(
+          "dino8::kernel::OffsetSolidConvexPlanar: distances collapse face " +
+          std::to_string(i) +
+          "'s own boundary to fewer than 3 vertices or ~0 area - the resulting "
+          "solid's topology would need to change (a face vanishing entirely), "
+          "which is out of scope here");
+    }
+    Brep::PlanarFace new_face;
+    new_face.plane = pl;
+    new_face.loop = std::move(clipped);
+    result.push_back(std::move(new_face));
+  }
+
+  return Brep::FromPlanarFaces(result);
+}
+
+Brep OffsetSolidConvexPlanar(const Brep& solid, double distance) {
+  return OffsetSolidConvexPlanar(solid, std::vector<double>(solid.PlanarFaces().size(), distance));
+}
+
 // ---------------------------------------------------------------------
 // BooleanCombineMixed: the axis-perpendicular-only extension of the
 // non-convex planar pipeline above to a solid that may have a
