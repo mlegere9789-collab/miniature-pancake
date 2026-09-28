@@ -1325,22 +1325,44 @@ const ON_SubDFace* FindCommonFace(const ON_SubDVertex* vF, const ON_SubDVertex* 
 // fraction arithmetic (0.5 doubles to 1.0 exactly, etc.) - silently
 // drifting to an unrelated vertex instead of continuing to track the
 // original extraordinary one. Short-circuiting to the vertex's own
-// exact limit position/normal (the same real, non-stub
-// ON_SubDVertex::SurfacePoint()/SurfaceNormal() LimitPoints() already
-// uses) sidesteps that entirely - and is itself exact, not a fallback.
+// exact limit point/tangent-plane/normal sidesteps that entirely.
+//
+// The tangent plane at an extraordinary/crease/boundary vertex needs the
+// full Catmull-Clark eigenbasis, which OpenNURBS itself already computes
+// (and long predates the "not implemented here" comment this replaces):
+// `ON_SubDVertex::GetSurfacePoint(sector_face, ..., limit_point)`
+// (opennurbs_subd_eval.cpp) is the same real, non-stub routine
+// `SurfacePoint()`/`SurfaceNormal()` already call internally (verified by
+// reading it directly, not assumed) - it builds the sector's own point
+// ring and solves for its limit point/tangent/normal via that ring's own
+// eigenstructure (`ON_SubDSectorType`/its subdivision matrix, read in
+// opennurbs_subd_eval.cpp/opennurbs_subd_matrix.cpp), the exact same
+// eigenbasis evaluation Stam's 1998 paper (cited on Symmetrize()'s own
+// doc comment above) is named after, not a hand-rolled approximation of
+// it. `limit_point.Tangent(0)`/`Tangent(1)` (`m_limitT1`/`m_limitT2`) are
+// a genuine orthonormal basis for the exact tangent plane, with
+// `Tangent(0) x Tangent(1)` in the same direction as `Normal()` - but,
+// unlike EvalBicubicBezier()'s regular-patch tangent_u/tangent_v (real
+// dS/du, dS/dv partial derivatives at THIS face's own (u, v)), they are
+// unit vectors in a canonical sector-relative frame, not scaled or
+// oriented to match this specific face's own (u, v) axes. Reporting a
+// real, non-zero tangent-plane basis this way - rather than the zero
+// vector - is what SubDSurfacePoint::exact = true has always promised
+// callers for a corner query; the basis' own u/v-axis alignment was
+// already undocumented for this fallback (the zero vector it replaces
+// had none at all).
 SubDSurfacePoint ExactVertexCorner(const ON_SubDFace* f, int corner_index) {
   const ON_SubDVertex* v = f->Vertex(static_cast<unsigned int>(corner_index));
   SubDSurfacePoint pt;
-  const ON_3dPoint p = v->SurfacePoint();
-  if (p.IsValid()) {
-    pt.position = p;
-    const ON_3dVector n = v->SurfaceNormal(f, /*bUndefinedNormalPossible=*/true);
+  ON_SubDSectorSurfacePoint limit_point;
+  if (v->GetSurfacePoint(f, /*bUndefinedNormalIsPossible=*/true, limit_point)) {
+    pt.position = limit_point.Point();
+    const ON_3dVector n = limit_point.Normal();
     pt.normal = n.IsValid() ? n : ON_3dVector::ZeroVector;
-    // The tangent plane at an extraordinary vertex needs the full
-    // Catmull-Clark eigenbasis (not implemented here - see class
-    // comment); reporting it as undefined is honest, not a bug.
-    pt.tangent_u = ON_3dVector::ZeroVector;
-    pt.tangent_v = ON_3dVector::ZeroVector;
+    const ON_3dVector t1 = limit_point.Tangent(0);
+    const ON_3dVector t2 = limit_point.Tangent(1);
+    pt.tangent_u = t1.IsValid() ? t1 : ON_3dVector::ZeroVector;
+    pt.tangent_v = t2.IsValid() ? t2 : ON_3dVector::ZeroVector;
     pt.exact = true;
   } else {
     pt.position = v->ControlNetPoint();

@@ -2072,7 +2072,7 @@ to the count directly above.*
 - [partial] SubD symmetry/mirror-in-place — `SubD::Transform` (subd.cpp:105 — corrected 2026-09-28, was mis-cited :84) accepts a mirror `ON_Xform`; no flip/weld/live-constraint code found alongside it.
 - [partial] SubD display-level control at kernel level — `EvaluateFace`/`ToNurbsPatchesAdaptive` (subd.cpp:1304,1431 — corrected again this pass, shifted by `SubD::Weld()`'s own insertion, see the ToNurbsPatches bullet above) present; no single tessellate(tolerance)/view-dependent API.
 - [missing] Quad-remeshing into a clean SubD-ready cage — `QuadRemeshAction` (dino8-app/src/commands/cmd_remesh.cpp:249) app-only; no kernel quad-dominant remesher.
-- [partial] SubD extraordinary-vertex limit-tangent quality — `EvaluateFace` (subd.cpp:1304 — corrected again this pass, shifted by `SubD::Weld()`'s own insertion, see the ToNurbsPatches bullet above) exact away from the extraordinary quadrant; zero-vector tangent fallback at the pole itself unchanged (no eigenbasis code found in subd.cpp).
+- [partial] SubD extraordinary-vertex limit-tangent quality — `EvaluateFace` (subd.cpp) exact away from the extraordinary quadrant. **Same-day follow-up:** the zero-vector tangent fallback AT the pole itself (a face-corner query landing exactly on an extraordinary/crease/boundary vertex) is closed — `ExactVertexCorner` (subd.cpp, the corner short-circuit `EvaluateFace`'s own adaptive recursion always resolves to) now calls `ON_SubDVertex::GetSurfacePoint(sector_face, ..., limit_point)`, the same real eigenbasis-based routine `SurfacePoint()`/`SurfaceNormal()` already called internally (verified by reading OpenNURBS v8.34's own `opennurbs_subd_eval.cpp`, not assumed - it builds the sector's point ring and solves it via `ON_SubDSectorType`'s subdivision-matrix eigenstructure, the same Stam-1998-eigenbasis machinery the class's own doc comments already named as "not implemented here"), and reports its real `m_limitT1`/`m_limitT2` unit tangent-plane basis instead of the zero vector. See below for the full detail; still `partial`, not `present` - interior-of-quadrant evaluation near (but not exactly at) an extraordinary vertex still falls back to the tolerance-bounded bilinear-corner approximation, a materially bigger problem (full Stam evaluation at an arbitrary interior parameter) deliberately out of scope here.
 
 **Same-day follow-up, closes the "SubD non-manifold/multi-body validity
 checks" item above (missing→removed from this gap list, present):**
@@ -2140,6 +2140,88 @@ measure, tracked instead under **Dino 8: SubD & mesh modeling toolset
 by InsertEdge/SpinEdge/ExtrudeFace (the Sixth same-day follow-up), and
 the 13/6/3 (72.7%→75.0%) upgrade before that by the `SubD::Check()`
 finding.*
+
+**Seventeenth same-day follow-up:** `git log --oneline -30 -- dino8-kernel/
+src/subd.cpp dino8-kernel/src/mesh.cpp` at the start of this session
+showed `658c095` (`kernel: add SubD::FromBrep`) as the most recent commit
+touching this category specifically (`52de4f8` `SubD::Weld()` and the
+InsertEdge/SpinEdge/ExtrudeFace/ExpandFaces commits before it), so this
+session picked the next highest-value still-`[partial]` item in the same
+category rather than duplicating either: "SubD extraordinary-vertex
+limit-tangent quality", whose own evidence already named a genuine,
+narrowly-scoped hole - `EvaluateFace()`'s corner short-circuit
+(`ExactVertexCorner`, subd.cpp) unconditionally reported `tangent_u`/
+`tangent_v` as the zero vector at any extraordinary/crease/boundary
+vertex, with both the function's own inline comment and the class's
+public header doc comment stating outright that the "full Catmull-Clark
+eigenbasis" needed to do better "is not implemented here"/"this class
+doesn't implement".
+
+That claim was checked against OpenNURBS' own v8.34.26223.11001 source
+(the exact tag this repo's `CMakeLists.txt` pins, cloned fresh and read
+directly, not assumed from memory) rather than taken at face value - and
+turned out to be an opportunity, not a wall: `ON_SubDVertex::
+GetSurfacePoint(sector_face, bUndefinedNormalIsPossible, limit_point)`
+(`opennurbs_subd_eval.cpp`) is a public, non-stub method, and it IS the
+real eigenbasis evaluator - `SurfacePoint()`/`SurfaceNormal()` (the two
+methods this exact function already called) are themselves thin wrappers
+around it. It fills an `ON_SubDSectorSurfacePoint` whose `m_limitP`/
+`m_limitN`/`m_limitT1`/`m_limitT2` fields (`Point()`/`Normal()`/
+`Tangent(0)`/`Tangent(1)` accessors) are computed by building the
+vertex's sector "point ring" and solving it through `ON_SubDSectorType`'s
+own subdivision-matrix eigenstructure (`opennurbs_subd_eval.cpp`/
+`opennurbs_subd_matrix.cpp`) - the same construction Stam's 1998 paper
+(already cited on this class's own `ToNurbsPatches()` doc comment) is
+named for, genuinely present in this pinned OpenNURBS version, not a
+newer feature or a different function entirely.
+
+`ExactVertexCorner` (subd.cpp) now calls this directly instead of
+`SurfacePoint()`/`SurfaceNormal()` separately, and reports `Tangent(0)`/
+`Tangent(1)` as `tangent_u`/`tangent_v` instead of the zero vector - a
+real, non-zero, unit-length tangent-plane basis at any face-corner query,
+extraordinary vertex or not (position/normal are numerically identical to
+the prior code path, since both always went through this same OpenNURBS
+routine internally). Verified by 2 new checks in a dedicated test
+(`TestSubDEvaluateFaceExtraordinaryCornerHasRealTangentPlane`, tests/
+test_basic.cpp), run at both a genuinely extraordinary (valence-3) corner
+and an ordinary (valence-4) corner of the same once-subdivided-cube face
+(the whole face routes every corner through `ExactVertexCorner`, once ANY
+one of its corners is irregular) - deliberately checking the geometric
+properties any correct tangent-plane basis must have, rather than a
+hand-derived closed-form eigenbasis number that would just be re-deriving
+OpenNURBS' own internals from scratch: `tangent_u`/`tangent_v` are unit
+vectors (not the zero-vector fallback), both orthogonal to the reported
+limit normal (`ON_DotProduct` within 1e-9 of zero - genuinely IN the
+tangent plane), linearly independent (a non-degenerate cross product), and
+`tangent_u x tangent_v` points the same direction as the reported normal
+(`ON_DotProduct` of the unitized cross product with `normal` within 1e-9
+of 1) - the same right-handed convention `EvalPatchPoint()`'s regular-face
+bicubic tangents already use. Full `dino8_kernel_tests` suite (via
+`ctest`): 100% passing, 0 regressions.
+
+Still honestly `partial`, not `present`, and this document's own header
+comment for `EvaluateFace()` (subd.h) and `ExactVertexCorner`'s own inline
+comment (subd.cpp) were both updated in place to stop claiming the
+eigenbasis "isn't implemented" and instead describe accurately what these
+tangent vectors are and aren't: OpenNURBS' real unit eigenbasis tangent
+vectors in a canonical sector-relative frame - genuinely spanning the
+exact tangent plane, but NOT the same "raw dS/du, dS/dv partial
+derivative at THIS face's own (u, v)" convention a regular corner's
+`EvalPatchPoint()` tangents use, and not oriented to this specific face's
+own (u, v) axes. The item's real remaining gap is unchanged and squarely
+out of scope here: `EvaluateFaceAdaptive()`'s recursive quadrant-doubling
+fallback for a query NEAR (not exactly at) an extraordinary vertex still
+reports the tolerance-bounded flat bilinear-corner interpolant's own
+tangents, not a limit-accurate value - closing that needs the
+"materially bigger problem" of full Stam evaluation at an arbitrary
+interior parameter, this document's own established phrase for
+deliberately out-of-scope subdivision-surface work (see `SubD::FromBrep`'s
+own bullet above). This category's own present/partial/missing counts are
+therefore UNCHANGED (15/5/2/22, 79.5%) - the item was already `partial`
+and stays `partial` - so no table or headline arithmetic changes. This
+session's only source edits are `dino8-kernel/src/subd.cpp`,
+`dino8-kernel/include/dino8/kernel/subd.h`, and
+`dino8-kernel/tests/test_basic.cpp`.
 
 ## App: Dino 8 vs Rhino 8 + AutoCAD 2027
 

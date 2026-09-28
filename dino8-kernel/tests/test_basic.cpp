@@ -13500,6 +13500,92 @@ void TestSubDEvaluateFaceAdaptiveOnIrregularFace() {
   }
 }
 
+// Regression coverage for PARITY_MAP.md's "SubD extraordinary-vertex
+// limit-tangent quality" item: EvaluateFace() at an extraordinary
+// vertex's own corner used to report tangent_u/tangent_v as the zero
+// vector unconditionally ("the tangent PLANE ... needs the full
+// Catmull-Clark eigenbasis this class doesn't implement"); it now wires
+// through OpenNURBS' own real eigenbasis-based
+// ON_SubDVertex::GetSurfacePoint() instead. This checks the properties
+// that hold for ANY valid tangent-plane basis (unit length, orthogonal
+// to the normal, right-handed with the normal) without hand-deriving
+// the eigenbasis' own closed-form numbers.
+void TestSubDEvaluateFaceExtraordinaryCornerHasRealTangentPlane() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SubD;
+  using dino8::kernel::SubDSurfacePoint;
+
+  // Same once-subdivided cube setup TestSubDEvaluateFaceAdaptiveOnIrregularFace
+  // uses: every original corner is a valence-3 extraordinary vertex after
+  // one level of Catmull-Clark refinement, and a face touching exactly one
+  // of them has exactly one irregular corner (k) and 3 already-regular
+  // (valence-4) ones.
+  const Mesh cube = MakeQuadBoxMesh(-1, -1, -1, 1, 1, 1);
+  SubD subd = SubD::FromControlMesh(cube);
+  subd.Subdivide(1);
+
+  const ON_SubDFace* target = nullptr;
+  int irregular_corner = -1;
+  ON_SubDFaceIterator fit = subd.raw().FaceIterator();
+  for (const ON_SubDFace* f = fit.FirstFace(); f != nullptr && target == nullptr; f = fit.NextFace()) {
+    if (f->EdgeCount() != 4) continue;
+    int irregular_count = 0, irregular_idx = -1;
+    bool all_smooth = true;
+    for (unsigned int i = 0; i < 4; ++i) {
+      const ON_SubDVertex* v = f->Vertex(i);
+      if (!v || !v->IsSmooth()) all_smooth = false;
+      if (!v || v->EdgeCount() != 4) {
+        ++irregular_count;
+        irregular_idx = static_cast<int>(i);
+      }
+    }
+    if (all_smooth && irregular_count == 1) {
+      target = f;
+      irregular_corner = irregular_idx;
+    }
+  }
+  Check(target != nullptr,
+        "found a level-1 cube face with exactly one still-extraordinary (valence-3) corner");
+
+  const unsigned int face_id = target->FaceId();
+  const double corner_u[4] = {0.0, 1.0, 1.0, 0.0};
+  const double corner_v[4] = {0.0, 0.0, 1.0, 1.0};
+
+  // Check both this face's genuinely extraordinary corner (k, valence 3)
+  // and one of its ordinary (valence-4) corners: the whole face is
+  // "irregular" (BuildFaceBezierGrid's `regular` flag) because of corner
+  // k alone, so EvaluateFace() routes EVERY corner of this face through
+  // ExactVertexCorner() - including the regular ones - and both must get
+  // a real tangent-plane basis now, not just the extraordinary one.
+  const int regular_corner = (irregular_corner + 2) % 4;  // diagonally opposite, still valence 4
+  for (const int k : {irregular_corner, regular_corner}) {
+    const SubDSurfacePoint pt = subd.EvaluateFace(face_id, corner_u[k], corner_v[k]);
+    Check(pt.exact, "EvaluateFace() at a face corner is always reported exact");
+
+    const double len_u = pt.tangent_u.Length();
+    const double len_v = pt.tangent_v.Length();
+    Check(std::abs(len_u - 1.0) < 1e-9,
+          "tangent_u at a face corner is a genuine unit vector, not the zero-vector fallback");
+    Check(std::abs(len_v - 1.0) < 1e-9,
+          "tangent_v at a face corner is a genuine unit vector, not the zero-vector fallback");
+
+    Check(std::abs(ON_DotProduct(pt.tangent_u, pt.normal)) < 1e-9,
+          "tangent_u is orthogonal to the reported limit normal (lies in the tangent plane)");
+    Check(std::abs(ON_DotProduct(pt.tangent_v, pt.normal)) < 1e-9,
+          "tangent_v is orthogonal to the reported limit normal (lies in the tangent plane)");
+
+    dino8::kernel::Vector3d cross = ON_CrossProduct(pt.tangent_u, pt.tangent_v);
+    const double cross_len = cross.Length();
+    Check(cross_len > 0.5,
+          "tangent_u and tangent_v are linearly independent (span the tangent plane, not "
+          "degenerate)");
+    cross.Unitize();
+    Check(ON_DotProduct(cross, pt.normal) > 1.0 - 1e-9,
+          "tangent_u x tangent_v points the same direction as the reported limit normal, "
+          "the same right-handed convention EvalPatchPoint() uses for a regular corner");
+  }
+}
+
 void TestSubDEvaluateFaceThrowsOnBadInput() {
   using dino8::kernel::Mesh;
   using dino8::kernel::SubD;
@@ -39337,6 +39423,7 @@ int main() {
   TestSubDLimitPointsExactCubeAndFlatGrid();
   TestSubDEvaluateFaceExactOnRegularFlatGrid();
   TestSubDEvaluateFaceAdaptiveOnIrregularFace();
+  TestSubDEvaluateFaceExtraordinaryCornerHasRealTangentPlane();
   TestSubDEvaluateFaceThrowsOnBadInput();
   TestSubDToNurbsPatchesAdaptiveMatchesNonAdaptiveAtZeroLevels();
   TestSubDToNurbsPatchesAdaptiveSplitsIrregularFace();

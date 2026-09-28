@@ -886,11 +886,16 @@ class SubD {
   // than risk exhausting memory, regardless of `max_adaptive_levels`
   // left. A query at exactly a face corner's (u, v) - any face, any
   // level - always resolves immediately via that vertex's own real
-  // `ON_SubDVertex::SurfacePoint()`/`SurfaceNormal()` instead (the same
-  // ones LimitPoints() uses) rather than adaptive refinement at all;
-  // `tangent_u`/`tangent_v` there are the zero vector, since the tangent
-  // PLANE at an extraordinary/crease/boundary vertex needs the full
-  // Catmull-Clark eigenbasis this class doesn't implement.
+  // `ON_SubDVertex::GetSurfacePoint()` instead (the same eigenbasis-based
+  // routine `SurfacePoint()`/`SurfaceNormal()`/LimitPoints() already call
+  // internally) rather than adaptive refinement at all; at an
+  // extraordinary/crease/boundary vertex, `tangent_u`/`tangent_v` there
+  // are OpenNURBS' own real Catmull-Clark eigenbasis unit tangent
+  // vectors (`ON_SubDSectorSurfacePoint::Tangent(0)`/`Tangent(1)`) -
+  // genuinely spanning the exact tangent plane, with their cross product
+  // in the same direction as `normal` - not the raw, differently-scaled
+  // dS/du, dS/dv partial derivatives a regular face's corner would give,
+  // and not oriented to this specific face's own (u, v) axes.
   //
   // If a quadrant is still irregular once `max_adaptive_levels` (or the
   // working-copy size cap above) is exhausted, this falls back to the
