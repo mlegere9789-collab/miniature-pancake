@@ -1193,13 +1193,17 @@ Brep FilletConvexEdges(const Brep& solid, const std::vector<std::pair<Point3d, P
 // filleted together (m == 3, the spherical blend above) - any other
 // vertex configuration (m == 2, or m == 3 at higher valence) throws
 // std::invalid_argument rather than guessing at a shape, matching
-// FilletConvexEdges' own scope exactly. Oblique third faces are out of
-// scope here (unlike the single-edge FilletConcaveEdge, which already
-// closes that case) - only a free boundary or a third face exactly
-// PERPENDICULAR to the edge is closed at an m == 1 vertex, via the same
-// NotchCornerAtVertex splice FilletConvexEdges' own m == 1 case uses.
-// Mixed convex/concave corners remain out of scope, a genuine, disclosed
-// gap for a genuinely different, harder problem.
+// FilletConvexEdges' own scope exactly. An oblique third face at an
+// m == 1 vertex is now closed too (the same FindObliqueThirdFaceCrossing/
+// EllipseNotchCornerAtVertexCylindrical machinery FilletConvexEdges' own
+// m == 1 case and the single-edge FilletConcaveEdge already use, with the
+// concave D_i/D_j sign flip that construction needs); a free boundary or
+// a third face exactly PERPENDICULAR to the edge still falls back to the
+// plain NotchCornerAtVertex splice FilletConvexEdges' own m == 1 case
+// uses. The m == 3 trihedral corner above has no third, unfilleted face
+// at all, so oblique-end handling does not apply to it. Mixed convex/
+// concave corners remain out of scope, a genuine, disclosed gap for a
+// genuinely different, harder problem.
 //
 // CLOSED FORM this was checked against (dino8-kernel's own regression
 // tests): two INDEPENDENT 90-degree concave notches (no shared vertex) on

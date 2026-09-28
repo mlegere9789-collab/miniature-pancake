@@ -33522,6 +33522,81 @@ void TestFilletConcaveEdgeObliqueEndFaceIsExactAndClosed() {
         "plain perpendicular corner notch, untouched by this generalization");
 }
 
+// ---------------------------------------------------------------------------
+// FilletConcaveEdges' OWN oblique end condition (fillet.h/fillet.cpp): until
+// now, FilletConcaveEdges' m == 1 vertex case called NotchCornerAtVertex
+// unconditionally, silently leaving an oblique third face untouched (see
+// fillet.h's own doc comment, which explicitly disclosed this as a gap the
+// single-edge FilletConcaveEdge itself does NOT have). This closes exactly
+// that gap - the exact concave mirror of the fix FilletConvexEdges' own
+// m == 1 case already has above - verified against the SAME fixture and
+// hand-derived length the single-edge oblique test just above already
+// establishes.
+
+void TestFilletConcaveEdgesSingleEdgeMatchesFilletConcaveEdgeOnObliqueEnd() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConcaveEdge;
+  using dino8::kernel::FilletConcaveEdges;
+  using dino8::kernel::Point3d;
+
+  // Identical fixture/edge/radius to TestFilletConcaveEdgeObliqueEndFaceIsExactAndClosed
+  // above - a single-edge FilletConcaveEdges call must now reproduce
+  // FilletConcaveEdge's own oblique-end result exactly, not the old flat/
+  // untouched notch.
+  const double slope = 0.3, radius = 0.15;
+  const Brep prism = ConcaveLShapedPrismObliqueTop(slope);
+  const Point3d edge_p0(1, 1, 0), edge_p1(1, 1, 1);
+  const Brep one = FilletConcaveEdges(prism, {{edge_p0, edge_p1}}, radius);
+  const Brep ref = FilletConcaveEdge(prism, edge_p0, edge_p1, radius);
+
+  Check(one.FaceCount() == ref.FaceCount() && one.raw().m_E.Count() == ref.raw().m_E.Count() &&
+            one.raw().m_V.Count() == ref.raw().m_V.Count(),
+        "a single-edge FilletConcaveEdges call on an obliquely-ended concave edge has the same face/edge/vertex "
+        "counts as FilletConcaveEdge");
+  Check(std::fabs(one.TessellateToClosedMeshAdaptive(1e-6).Volume() -
+                  ref.TessellateToClosedMeshAdaptive(1e-6).Volume()) < 1e-9,
+        "and tessellates to the same volume (same construction, same oblique-end machinery reused)");
+  Check(one.raw().IsSolid(),
+        "a single-edge FilletConcaveEdges call on an obliquely-ended concave edge is still a closed solid");
+
+  const Brep::MixedFacesResult mf = one.MixedFaces();
+  Check(mf.cylindrical.size() == 1, "sanity: still exactly one cylindrical face");
+  if (mf.cylindrical.size() == 1) {
+    const Brep::CylindricalFace& cf = mf.cylindrical[0];
+    const double expected_length = 1.0 + radius * slope;
+    Check(std::fabs(cf.length - expected_length) < 1e-9,
+          "the cylinder is lengthened to end exactly at the oblique crossing (1 + radius*slope), matching "
+          "FilletConcaveEdge's own result");
+    Check(cf.cap0_notch_points.empty(), "cap0 (perpendicular p0 end) carries no notch points");
+    Check(cf.cap1_notch_points.size() == 201,
+          "cap1 (the oblique p1 end) carries the dense ellipse sample, exactly as FilletConcaveEdge's own result "
+          "does");
+  }
+}
+
+void TestFilletConcaveEdgesRejectsOversizedRadiusAtObliqueEnd() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConcaveEdges;
+  using dino8::kernel::Point3d;
+  auto throws = [](const std::function<void()>& fn) {
+    try {
+      fn();
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+    return false;
+  };
+  // Same fixture and same negative control TestFilletConcaveEdgeObliqueEndFaceIsExactAndClosed's
+  // own sibling tests already use: an oversized radius on the obliquely-
+  // ended fixture is still rejected by the ordinary (non-oblique-specific)
+  // face-extent check through FilletConcaveEdges' new oblique-detection
+  // pass, not weakened by it.
+  const Brep prism = ConcaveLShapedPrismObliqueTop(0.3);
+  Check(throws([&] { FilletConcaveEdges(prism, {{Point3d(1, 1, 0), Point3d(1, 1, 1)}}, 2.0); }),
+        "FilletConcaveEdges rejects an oversized radius on the obliquely-ended concave fixture, exactly as "
+        "FilletConcaveEdge already does");
+}
+
 namespace {
 
 // A big rectangle (1,0)-(6,0)-(6,2)-(5,2)-(5,3)-(0,3)-(0,1)-(1,1) with TWO
@@ -33641,6 +33716,119 @@ void TestFilletConcaveEdgesRejectsUnsupportedConfigurations() {
   // left uncovered by a targeted test rather than exercised through an
   // unrelated failure (a topology mismatch, say) that would only look
   // like it tests the right thing.
+}
+
+namespace {
+
+// A rectangle (0,0)-(10,3) with TWO IDENTICAL unit-square notches removed
+// from the bottom edge, at x in [1,2] and x in [6,7] (both dipping up from
+// y=0 to y=1) - unlike TwoConcaveNotchPrism above (whose two notches sit at
+// diagonally opposite corners, so their own wall normals are NEGATIONS of
+// each other), these two notches are plain TRANSLATED COPIES of each other
+// along x: both concave vertical edges - at (1,1,z) and (6,1,z) - are
+// bordered by a wall of normal (1,0,0) and a wall of normal (0,-1,0) in
+// EXACTLY the same arrangement (confirmed directly by tracing
+// FilletConcaveEdges' own face-matching/swap logic by hand for this
+// fixture, not assumed from the footprint alone: both give idx_i's final
+// normal (0,-1,0) and idx_j's final normal (1,0,0)). That translation
+// symmetry is deliberate: it makes the two edges' own D_i = radius*n_j
+// IDENTICAL vectors, so a single oblique TOP cap tilted purely as a
+// function of x - top_z(x) = 1 + slope*(x - 3.5), pivoting at the
+// footprint's own x-midpoint so neither notch's nominal height collapses
+// to (near) zero - gives both edges the SAME closed-form length
+// correction t_i = radius*slope (see this file's own FilletConcaveEdge
+// oblique-end doc comment for the D_i = bis*offset - n_i*radius formula
+// this reduces from: for a 90-degree corner, bis*offset simplifies to
+// radius*(n_i+n_j), so D_i = radius*n_j exactly; with a plane whose
+// normal is proportional to (-slope, 0, 1) and e = (0,0,1), t_i =
+// -(D_i . n_f)/(e . n_f) reduces to slope * D_i.x = slope*radius*n_j.x -
+// exactly slope*radius here since n_j = (1,0,0) at BOTH corners), letting
+// one hand-derived formula cover both cylinders rather than two separate
+// ones.
+dino8::kernel::Brep TwoIdenticalConcaveNotchPrismObliqueTop(double slope) {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  const std::vector<Point3d> footprint = {
+      Point3d(0, 0, 0), Point3d(1, 0, 0), Point3d(1, 1, 0), Point3d(2, 1, 0), Point3d(2, 0, 0),
+      Point3d(6, 0, 0), Point3d(6, 1, 0), Point3d(7, 1, 0), Point3d(7, 0, 0), Point3d(10, 0, 0),
+      Point3d(10, 3, 0), Point3d(0, 3, 0)};
+  auto top_z = [&](double x) { return 1.0 + slope * (x - 3.5); };
+  auto make_face = [](const std::vector<Point3d>& loop, Vector3d normal) {
+    Brep::PlanarFace f;
+    f.loop = loop;
+    f.plane = ON_Plane(loop[0], normal);
+    return f;
+  };
+
+  std::vector<Point3d> top_loop = footprint;
+  for (Point3d& p : top_loop) p = Point3d(p.x, p.y, top_z(p.x));
+  std::vector<Point3d> bottom_loop = footprint;
+  std::reverse(bottom_loop.begin(), bottom_loop.end());
+
+  std::vector<Brep::PlanarFace> faces;
+  faces.push_back(make_face(bottom_loop, Vector3d(0, 0, -1)));
+  Vector3d top_n(-slope, 0, 1);
+  top_n.Unitize();
+  faces.push_back(make_face(top_loop, top_n));
+
+  const size_t n = footprint.size();
+  for (size_t k = 0; k < n; ++k) {
+    const Point3d& a = footprint[k];
+    const Point3d& b = footprint[(k + 1) % n];
+    const std::vector<Point3d> wall = {a, b, Point3d(b.x, b.y, top_z(b.x)), Point3d(a.x, a.y, top_z(a.x))};
+    Vector3d edge_dir = b - a;
+    edge_dir.Unitize();
+    Vector3d normal = ON_CrossProduct(edge_dir, Vector3d(0, 0, 1));
+    normal.Unitize();
+    faces.push_back(make_face(wall, normal));
+  }
+  return Brep::FromPlanarFaces(faces);
+}
+
+}  // namespace
+
+void TestFilletConcaveEdgesTwoIndependentEdgesWithObliqueEndsMatchHandDerivedLength() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConcaveEdges;
+  using dino8::kernel::Point3d;
+
+  const double slope = 0.1, radius = 0.15;
+  const Brep prism = TwoIdenticalConcaveNotchPrismObliqueTop(slope);
+  ON_TextLog log0;
+  Check(prism.raw().IsValid(&log0) && prism.raw().IsSolid(), "sanity: the two-notch oblique-topped fixture is a "
+                                                              "valid solid");
+
+  const Point3d e1p0(1, 1, 0), e1p1(1, 1, 1.0 + slope * (1.0 - 3.5));
+  const Point3d e2p0(6, 1, 0), e2p1(6, 1, 1.0 + slope * (6.0 - 3.5));
+  const Brep filleted = FilletConcaveEdges(prism, {{e1p0, e1p1}, {e2p0, e2p1}}, radius);
+
+  ON_TextLog log;
+  bool oriented = false, has_boundary = true;
+  Check(filleted.raw().IsValid(&log) && filleted.raw().IsManifold(&oriented, &has_boundary) && oriented &&
+            !has_boundary && filleted.raw().IsSolid(),
+        "two independent concave edges with oblique ends on the SAME tilted top face still give a valid, closed, "
+        "manifold solid");
+  Check(filleted.FaceCount() == 16,
+        "16 faces: 14 original (12 walls + top + bottom) unchanged in count (4 walls re-trimmed in place, top "
+        "notched twice) + 2 new cylindrical patches");
+
+  const Brep::MixedFacesResult mf = filleted.MixedFaces();
+  Check(mf.cylindrical.size() == 2, "exactly two new cylindrical patches, one per independent notch");
+  const double expected_e1_length = e1p1.z + radius * slope;
+  const double expected_e2_length = e2p1.z + radius * slope;
+  int matched_e1 = 0, matched_e2 = 0;
+  for (const Brep::CylindricalFace& cf : mf.cylindrical) {
+    Check(cf.outward == false, "each patch is marked outward=false - both bound material from the concave side");
+    Check(cf.cap0_notch_points.empty(), "each cylinder's flat p0 (bottom) end carries no cap notch");
+    Check(cf.cap1_notch_points.size() == 201,
+          "each cylinder's oblique p1 (top) end carries the dense ellipse cap-notch sample");
+    if (std::fabs(cf.length - expected_e1_length) < 1e-9) ++matched_e1;
+    if (std::fabs(cf.length - expected_e2_length) < 1e-9) ++matched_e2;
+  }
+  Check(matched_e1 == 1, "one cylinder's own length matches edge 1's hand-derived L + radius*slope exactly");
+  Check(matched_e2 == 1, "the other cylinder's own length matches edge 2's hand-derived L + radius*slope exactly");
 }
 
 void TestRemoveBlendLeavesTheOtherConcaveFilletIntactAmongTwo() {
@@ -36564,8 +36752,11 @@ int main() {
   TestFilletConcaveEdgeAddsExactQuarterRoundVolume();
   TestFilletConcaveEdgeRejectsUnsupportedConfigurations();
   TestFilletConcaveEdgeObliqueEndFaceIsExactAndClosed();
+  TestFilletConcaveEdgesSingleEdgeMatchesFilletConcaveEdgeOnObliqueEnd();
+  TestFilletConcaveEdgesRejectsOversizedRadiusAtObliqueEnd();
   TestFilletConcaveEdgesAddsExactVolumeForTwoIndependentNotches();
   TestFilletConcaveEdgesRejectsUnsupportedConfigurations();
+  TestFilletConcaveEdgesTwoIndependentEdgesWithObliqueEndsMatchHandDerivedLength();
   TestRemoveBlendLeavesTheOtherConcaveFilletIntactAmongTwo();
   TestFilletConcaveEdgesTrihedralCornerAddsExactSphericalBlendVolume();
   TestFilletConcaveEdgesRejectsMixedVertexConfigurations();
