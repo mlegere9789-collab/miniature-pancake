@@ -2,6 +2,7 @@
 
 #include <opennurbs.h>
 
+#include <utility>
 #include <vector>
 
 #include "dino8/kernel/mesh.h"
@@ -575,6 +576,70 @@ class SubD {
   // for a level-0 n-gon).
   SubDSurfacePoint EvaluateFace(unsigned int face_id, double u, double v,
                                 int max_adaptive_levels = 4) const;
+
+  // The SubD-level counterpart of Mesh::CheckReport - closing
+  // PARITY_MAP.md's subd_mesh "SubD non-manifold/multi-body validity
+  // checks" [partial] item, whose own PARITY_MAP text calls out that
+  // IsValid() above was "a thin bool wrapper over ON_SubD::IsValid": a
+  // caller could learn a SubD was broken, never how, nor whether it was
+  // actually several disconnected pieces masquerading as one object (the
+  // same "multi-body" question Brep::SplitDisjointPieces()'s own
+  // ON_Brep::LabelConnectedComponents() already answers for Breps - SubD
+  // had no counterpart at all). IsValid() itself is a structural
+  // cross-reference check (do the vertex/edge/face tables agree with each
+  // other); Check() answers a DIFFERENT, complementary question this class
+  // never asked before: is the topology itself well-formed as a single
+  // connected 2-manifold-with-boundary, the same "closed manifold" shape
+  // Mesh::CheckReport::IsClosedManifold() already checks for meshes.
+  struct SubDCheckReport {
+    // Undirected edges used by exactly one face (the open boundary) -
+    // ON_SubDEdge::FaceCount() == 1. Not itself a defect (an intentionally
+    // open patch has these), same convention as Mesh::CheckReport::
+    // naked_edges.
+    int naked_edges = 0;
+    // Undirected edges used by three or more faces -
+    // ON_SubDEdge::FaceCount() >= 3. A SubD can be IsValid() (internally
+    // self-consistent) and still have these; OpenNURBS' own limit
+    // evaluation and GlobalSubdivide() have no defined behavior for them.
+    int non_manifold_edges = 0;
+    // Vertices whose incident faces do NOT form a single fan around the
+    // vertex - a "bowtie"/pinch-point vertex, e.g. two otherwise-unrelated
+    // cones of faces that happen to share only this one vertex. Computed
+    // by union-finding the vertex's own incident faces via the faces they
+    // share an edge with AT that vertex; more than one resulting group
+    // means the faces don't form one fan. This is a genuinely different
+    // condition from non_manifold_edges (a bowtie vertex can exist with
+    // zero non-manifold edges - every edge at it still has only 1 or 2
+    // faces).
+    int non_manifold_vertices = 0;
+    // Number of face-connected pieces the control net's faces fall into -
+    // 1 for an ordinary single connected SubD, 0 if there are no faces at
+    // all, 2+ for a "multi-body" SubD (e.g. two separate box cages built
+    // once and never joined). Two faces are in the same piece if they
+    // share an edge (any ON_SubDEdge with FaceCount() >= 2), transitively.
+    // A caller finding this > 1 knows their SubD is actually several
+    // unrelated pieces, something IsValid() alone never reveals (each
+    // piece can be perfectly well-formed on its own).
+    int body_count = 0;
+    // Every non-manifold edge's two endpoint vertex ids (ON_SubDVertex::
+    // m_id, stable across edits - not an array index), as (a, b) with
+    // a < b - the localization non_manifold_edges' bare count doesn't
+    // give by itself. One entry per such edge, in the order first
+    // encountered walking the SubD's own edge list.
+    std::vector<std::pair<unsigned int, unsigned int>> non_manifold_edge_list;
+    // Every non-manifold (bowtie) vertex's own id (ON_SubDVertex::m_id),
+    // one entry per such vertex, in the order first encountered walking
+    // the SubD's own vertex list.
+    std::vector<unsigned int> non_manifold_vertex_list;
+    // True iff this SubD is a single connected piece with no non-manifold
+    // edge or vertex - the SubD-level analog of Mesh::CheckReport::
+    // IsClosedManifold() (naked_edges is deliberately excluded, same as
+    // there: an intentionally open patch is still "clean").
+    bool IsManifoldSingleBody() const {
+      return non_manifold_edges == 0 && non_manifold_vertices == 0 && body_count <= 1;
+    }
+  };
+  SubDCheckReport Check() const;
 
   const ON_SubD& raw() const { return subd_; }
   ON_SubD& raw() { return subd_; }

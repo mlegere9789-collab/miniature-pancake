@@ -11551,6 +11551,215 @@ void TestSubDToNurbsPatchesAdaptiveThrowsOnNegativeLevels() {
   Check(threw, "ToNurbsPatchesAdaptive throws std::invalid_argument on a negative max_adaptive_levels");
 }
 
+// PARITY_MAP.md's subd_mesh category lists "SubD non-manifold/multi-body
+// validity checks" as only [partial], calling out that SubD::IsValid()
+// was "a thin bool wrapper over ON_SubD::IsValid" with no counts or
+// locations - the same gap Mesh::Check() already closed for Mesh. These
+// five tests verify SubD::Check() actually answers that: a clean closed
+// SubD reports all-zero, an intentionally open one reports naked edges
+// only (not a defect), two disjoint pieces are counted as 2 bodies, a
+// genuinely 3-face edge is found and located by vertex id, and a bowtie
+// vertex (two unrelated face fans touching at one point, zero shared
+// edges between them) is detected even though it trips neither of the
+// other two conditions.
+void TestSubDCheckCleanClosedBoxReportsNoDefects() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SubD;
+
+  const SubD subd = SubD::FromControlMesh(MakeQuadBoxMesh(0, 0, 0, 1, 1, 1));
+  const auto report = subd.Check();
+  Check(report.naked_edges == 0, "a closed box SubD has no naked edges");
+  Check(report.non_manifold_edges == 0, "a closed box SubD has no non-manifold edges");
+  Check(report.non_manifold_vertices == 0, "a closed box SubD has no non-manifold (bowtie) vertices");
+  Check(report.body_count == 1, "a closed box SubD is exactly one body");
+  Check(report.non_manifold_edge_list.empty() && report.non_manifold_vertex_list.empty(),
+        "a clean SubD's non-manifold location lists are both empty");
+  Check(report.IsManifoldSingleBody(), "IsManifoldSingleBody() is true for a clean, single-body closed SubD");
+}
+
+void TestSubDCheckOpenGridReportsNakedEdgesOnly() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SubD;
+
+  // The same flat 2x2 quad grid TestSubDFlatQuadGridStaysFlatAndAreaExact
+  // uses: 9 vertices, 4 faces, open on all 4 sides - 8 boundary edges (2
+  // per side), 4 interior edges, so exactly 8 naked edges and 12 total
+  // edges, with nothing non-manifold anywhere.
+  Mesh grid;
+  ON_Mesh& raw = grid.raw();
+  for (int i = 0; i < 3; ++i) {
+    for (int j = 0; j < 3; ++j) {
+      raw.m_V.Append(ON_3fPoint(static_cast<double>(i), static_cast<double>(j), 0.0));
+    }
+  }
+  auto idx = [](int i, int j) { return i * 3 + j; };
+  for (int i = 0; i < 2; ++i) {
+    for (int j = 0; j < 2; ++j) {
+      ON_MeshFace face;
+      face.vi[0] = idx(i, j);
+      face.vi[1] = idx(i + 1, j);
+      face.vi[2] = idx(i + 1, j + 1);
+      face.vi[3] = idx(i, j + 1);
+      raw.m_F.Append(face);
+    }
+  }
+
+  const SubD subd = SubD::FromControlMesh(grid);
+  const auto report = subd.Check();
+  Check(report.naked_edges == 8, "the open 2x2 quad grid's boundary has exactly 8 naked edges");
+  Check(report.non_manifold_edges == 0, "the open grid has no non-manifold edges");
+  Check(report.non_manifold_vertices == 0, "the open grid has no non-manifold (bowtie) vertices");
+  Check(report.body_count == 1, "the open grid is still exactly one connected body");
+  Check(report.IsManifoldSingleBody(),
+        "IsManifoldSingleBody() is true for an open-but-otherwise-clean single-body SubD "
+        "(naked_edges alone is never a manifold/multi-body defect)");
+}
+
+void TestSubDCheckDisjointPiecesReportsMultipleBodies() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SubD;
+
+  // Two ordinary closed boxes merged into one Mesh with disjoint vertex
+  // index ranges (the second box's faces reference vertices 8-15, never
+  // reusing any of the first box's 0-7) - by construction, no edge or
+  // vertex is shared between them, so Check() must report exactly 2
+  // bodies despite this being a single Mesh/SubD object.
+  const Mesh box_a = MakeQuadBoxMesh(0, 0, 0, 1, 1, 1);
+  const Mesh box_b = MakeQuadBoxMesh(5, 5, 5, 6, 6, 6);
+
+  Mesh combined;
+  ON_Mesh& raw = combined.raw();
+  const int offset = box_a.raw().m_V.Count();
+  for (int i = 0; i < box_a.raw().m_V.Count(); ++i) raw.m_V.Append(box_a.raw().m_V[i]);
+  for (int i = 0; i < box_b.raw().m_V.Count(); ++i) raw.m_V.Append(box_b.raw().m_V[i]);
+  for (int i = 0; i < box_a.raw().m_F.Count(); ++i) raw.m_F.Append(box_a.raw().m_F[i]);
+  for (int i = 0; i < box_b.raw().m_F.Count(); ++i) {
+    ON_MeshFace f = box_b.raw().m_F[i];
+    f.vi[0] += offset;
+    f.vi[1] += offset;
+    f.vi[2] += offset;
+    f.vi[3] += offset;
+    raw.m_F.Append(f);
+  }
+
+  const SubD subd = SubD::FromControlMesh(combined);
+  Check(subd.VertexCount() == 16 && subd.FaceCount() == 12,
+        "sanity: the combined SubD really does hold both boxes' full topology");
+  const auto report = subd.Check();
+  Check(report.body_count == 2, "two disjoint boxes sharing no edge or vertex report as exactly 2 bodies");
+  Check(report.non_manifold_edges == 0 && report.non_manifold_vertices == 0,
+        "two cleanly disjoint boxes trip neither non-manifold condition - only body_count flags them");
+  Check(!report.IsManifoldSingleBody(), "IsManifoldSingleBody() is false once body_count > 1");
+}
+
+void TestSubDCheckNonManifoldEdgeDetected() {
+  using dino8::kernel::SubD;
+
+  // Three quads fanned around one shared edge (v0-v1) - a genuine
+  // 3-face edge, built directly via ON_SubD's own low-level
+  // AddVertex/AddEdge/AddFace (the same primitives SubD::CapBoundaryLoop()
+  // already uses internally) since no ordinary Mesh->SubD conversion path
+  // produces one.
+  SubD subd;
+  ON_SubD& raw = subd.raw();
+  const double p_v0[3] = {0.0, 0.0, 0.0};
+  const double p_v1[3] = {0.0, 0.0, 1.0};
+  ON_SubDVertex* v0 = raw.AddVertex(ON_SubDVertexTag::Unset, p_v0);
+  ON_SubDVertex* v1 = raw.AddVertex(ON_SubDVertexTag::Unset, p_v1);
+
+  auto add_wing = [&](double x, double y) {
+    const double pa[3] = {x, y, 0.0};
+    const double pb[3] = {x, y, 1.0};
+    ON_SubDVertex* va = raw.AddVertex(ON_SubDVertexTag::Unset, pa);
+    ON_SubDVertex* vb = raw.AddVertex(ON_SubDVertexTag::Unset, pb);
+    // FindOrAddEdge, not AddEdge: the whole point of this fixture is that
+    // all 3 wings attach to the SAME v0-v1 edge object - a plain AddEdge()
+    // here would silently create a 3rd/4th distinct edge between the same
+    // two vertices instead, leaving every edge at 1 face and this test
+    // fixture not testing what it claims to.
+    ON_SubDEdge* shared = raw.FindOrAddEdge(v0, v1).Edge();
+    ON_SubDEdge* e1 = raw.AddEdge(ON_SubDEdgeTag::Unset, v1, vb);
+    ON_SubDEdge* e2 = raw.AddEdge(ON_SubDEdgeTag::Unset, vb, va);
+    ON_SubDEdge* e3 = raw.AddEdge(ON_SubDEdgeTag::Unset, va, v0);
+    ON_SimpleArray<ON_SubDEdge*> edges(4);
+    edges.Append(shared);
+    edges.Append(e1);
+    edges.Append(e2);
+    edges.Append(e3);
+    return raw.AddFace(edges);
+  };
+
+  Check(add_wing(1.0, 0.0) != nullptr, "the first wing quad was added");
+  Check(add_wing(0.0, 1.0) != nullptr, "the second wing quad was added");
+  Check(add_wing(-1.0, 0.0) != nullptr, "the third wing quad (making v0-v1 a 3-face edge) was added");
+
+  const auto report = subd.Check();
+  Check(report.non_manifold_edges == 1, "exactly one edge (v0-v1) has 3 incident faces");
+  Check(report.non_manifold_edge_list.size() == 1, "non_manifold_edge_list has exactly the one flagged edge");
+  const unsigned int id0 = v0->m_id;
+  const unsigned int id1 = v1->m_id;
+  const auto expected = id0 < id1 ? std::make_pair(id0, id1) : std::make_pair(id1, id0);
+  Check(report.non_manifold_edge_list[0] == expected,
+        "the flagged edge's reported (a, b) vertex ids are v0/v1's own ids, a < b");
+  Check(report.non_manifold_vertices == 0,
+        "v0 and v1 each have all 3 incident faces sharing edges through each other via the "
+        "flagged edge itself, so they still form one connected group - this is a pure "
+        "edge defect, not a bowtie vertex");
+  Check(report.body_count == 1, "the whole fan is still one connected body");
+  Check(!report.IsManifoldSingleBody(), "IsManifoldSingleBody() is false once a non-manifold edge exists");
+}
+
+void TestSubDCheckBowtieVertexDetected() {
+  using dino8::kernel::SubD;
+
+  // Two single-quad "wings" that share ONLY vertex v0 - no edge in common
+  // at all (quad A: v0,vA1,vA2,vA3; quad B: v0,vB1,vB2,vB3, with none of
+  // A's other 3 vertices equal to any of B's) - the classic bowtie/pinch
+  // point: v0.FaceCount() == 2, but those 2 faces share no edge through
+  // v0, so Check()'s per-vertex fan union-find leaves them in 2 separate
+  // groups even though non_manifold_edges never fires (every edge here
+  // has exactly 1 face - this SubD is entirely boundary).
+  SubD subd;
+  ON_SubD& raw = subd.raw();
+  const double p0[3] = {0.0, 0.0, 0.0};
+  ON_SubDVertex* v0 = raw.AddVertex(ON_SubDVertexTag::Unset, p0);
+
+  auto add_wing_quad = [&](double x0, double y0) {
+    const double pa[3] = {x0, y0, 0.0};
+    const double pb[3] = {x0 + 1.0, y0, 0.0};
+    const double pc[3] = {x0 + 1.0, y0 + 1.0, 0.0};
+    ON_SubDVertex* va = raw.AddVertex(ON_SubDVertexTag::Unset, pa);
+    ON_SubDVertex* vb = raw.AddVertex(ON_SubDVertexTag::Unset, pb);
+    ON_SubDVertex* vc = raw.AddVertex(ON_SubDVertexTag::Unset, pc);
+    ON_SubDEdge* e0 = raw.AddEdge(ON_SubDEdgeTag::Unset, v0, va);
+    ON_SubDEdge* e1 = raw.AddEdge(ON_SubDEdgeTag::Unset, va, vb);
+    ON_SubDEdge* e2 = raw.AddEdge(ON_SubDEdgeTag::Unset, vb, vc);
+    ON_SubDEdge* e3 = raw.AddEdge(ON_SubDEdgeTag::Unset, vc, v0);
+    ON_SimpleArray<ON_SubDEdge*> edges(4);
+    edges.Append(e0);
+    edges.Append(e1);
+    edges.Append(e2);
+    edges.Append(e3);
+    return raw.AddFace(edges);
+  };
+
+  Check(add_wing_quad(1.0, 0.0) != nullptr, "wing A was added");
+  Check(add_wing_quad(-2.0, -1.0) != nullptr, "wing B was added, sharing only v0 with wing A");
+  Check(v0->FaceCount() == 2, "sanity: v0 really does have both wings' faces incident to it");
+
+  const auto report = subd.Check();
+  Check(report.non_manifold_edges == 0,
+        "every edge here (including both of v0's own) still has exactly 1 face - no edge is "
+        "shared between the two wings, so non_manifold_edges alone would miss this defect entirely");
+  Check(report.non_manifold_vertices == 1, "v0 is detected as exactly one non-manifold (bowtie) vertex");
+  Check(report.non_manifold_vertex_list.size() == 1 && report.non_manifold_vertex_list[0] == v0->m_id,
+        "the flagged vertex's reported id is v0's own id");
+  Check(report.body_count == 2,
+        "body_count (edge-adjacency connectivity) still separately counts the two wings as 2 "
+        "bodies, since they share no edge - a vertex-only pinch point is not an edge connection");
+  Check(!report.IsManifoldSingleBody(), "IsManifoldSingleBody() is false once a bowtie vertex exists");
+}
+
 void TestMeshComputeVertexNormals() {
   using dino8::kernel::Mesh;
   using dino8::kernel::Vector3d;
@@ -32163,6 +32372,11 @@ int main() {
   TestSubDToNurbsPatchesAdaptiveSplitsIrregularFace();
   TestSubDToNurbsPatchesAdaptiveRegularFaceUnaffected();
   TestSubDToNurbsPatchesAdaptiveThrowsOnNegativeLevels();
+  TestSubDCheckCleanClosedBoxReportsNoDefects();
+  TestSubDCheckOpenGridReportsNakedEdgesOnly();
+  TestSubDCheckDisjointPiecesReportsMultipleBodies();
+  TestSubDCheckNonManifoldEdgeDetected();
+  TestSubDCheckBowtieVertexDetected();
   TestMeshComputeVertexNormals();
   TestMeshSaveObjRoundTrips();
   TestMeshTextureCoordinates();

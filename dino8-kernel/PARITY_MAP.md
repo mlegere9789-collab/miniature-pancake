@@ -1,6 +1,6 @@
 # Fossilith / Dino 8 parity map (2026-09-28)
 
-**Fossilith vs Parasolid/ACIS = 64.4% (weighted, verified); Dino 8 vs Rhino 8 + AutoCAD 2027 = 71.4%.**
+**Fossilith vs Parasolid/ACIS = 64.5% (weighted, verified); Dino 8 vs Rhino 8 + AutoCAD 2027 = 71.4%.**
 
 This run recomputes the parity map from scratch against the live repository at
 `/home/user/miniature-pancake` on `claude/pdf-audit-i2bvwm`, superseding the
@@ -235,7 +235,7 @@ equally reasonable split of the same underlying capabilities.
 | kernel: Feature operations | 1 | 24 | 5 | 14 | 5 | 50.0% |
 | Fossilith kernel — Curve operations | 1 | 28 | 17 | 11 | 0 | 80.4% |
 | Kernel Surface Operations (Fossilith / Dino 8) | 1 | 29 | 14 | 14 | 1 | 72.4% |
-| Kernel: SubD & mesh kernel support | 0.75 | 22 | 13 | 6 | 3 | 72.7% |
+| Kernel: SubD & mesh kernel support | 0.75 | 22 | 14 | 5 | 3 | 75.0% |
 
 Two rows changed from the prior measurement: **Local / direct-edit
 operations** (48.2% → 51.8%, `ImprintFaces` cross-reference fix + arithmetic
@@ -246,6 +246,14 @@ fix described above — no item's status moved. Every other row is numerically
 identical to the 2026-09-25 map; several (booleans, blending, topology) have
 corrected citations or evidence text behind an unchanged score, detailed in
 the honesty notes above and the bullets below.
+
+**Same-day follow-up after this pass's own measurement:** `SubD::Check()`
+(dino8-kernel/src/subd.cpp) landed, closing the **Kernel: SubD & mesh kernel
+support** row's own "SubD non-manifold/multi-body validity checks" item
+(72.7% → 75.0%, 13/6/3 → 14/5/3 present/partial/missing) — detailed in that
+category's own bullet list below. This is the only row this document's own
+headline number has moved for since the measurement above was taken
+(64.4% → 64.5%, weighted); no other category was touched.
 
 ### Kernel category gaps (missing / partial items, with evidence)
 
@@ -553,15 +561,60 @@ the honesty notes above and the bullets below.
 - [partial] Surface from 2-4 edge curves (EdgeSrf/NetworkSrf) — `CoonsPatch` (surface_edit.cpp:953) exact for the 4-curve case only; 2/3-curve and CoonsPatch-failure cases fall back to sample-and-refit.
 
 **Kernel: SubD & mesh kernel support** (subd_mesh):
-- [partial] SubD -> NURBS patch conversion — `ToNurbsPatches`/`ToNurbsPatchesAdaptive` (dino8-kernel/src/subd.cpp:443,859); app's ToNURBS (dino8-app/src/commands/cmd_solids.cpp:802,843) still calls only the non-adaptive `ToNurbsPatches`. No dependency on `Brep::Check()`/`RemoveDegenerateFaces` found in subd.cpp — the DegenerateFace false-flag defect does not touch this item.
+- [partial] SubD -> NURBS patch conversion — `ToNurbsPatches`/`ToNurbsPatchesAdaptive` (dino8-kernel/src/subd.cpp:590,1006 — line numbers shifted from the prior pass's 443/859 by `Check()`'s own insertion above them, no behavior change); app's ToNURBS (dino8-app/src/commands/cmd_solids.cpp:802,843) still calls only the non-adaptive `ToNurbsPatches`. No dependency on `Brep::Check()`/`RemoveDegenerateFaces` found in subd.cpp — the DegenerateFace false-flag defect does not touch this item.
 - [missing] Kernel-native SubD local edit operators (insert edge, extrude face, spin edge, weld, expand) — zero hits for these operators anywhere in dino8-kernel/src/subd.cpp or its header; still app-only.
 - [missing] SubD boolean operations — zero "SubD" references in any dino8-kernel/src/boolean*.cpp file.
-- [partial] SubD from NURBS/B-rep conversion — `SubD::FromNurbsSurface` (subd.cpp:22); single-surface, sample-based, unwired from the app.
-- [partial] SubD symmetry/mirror-in-place — `SubD::Transform` (subd.cpp:83) accepts a mirror `ON_Xform`; no flip/weld/live-constraint code found alongside it.
-- [partial] SubD non-manifold/multi-body validity checks — `SubD::IsValid` (subd.cpp:95) a thin bool wrapper over `ON_SubD::IsValid`.
-- [partial] SubD display-level control at kernel level — `EvaluateFace`/`ToNurbsPatchesAdaptive` (subd.cpp:732,859) present; no single tessellate(tolerance)/view-dependent API.
+- [partial] SubD from NURBS/B-rep conversion — `SubD::FromNurbsSurface` (subd.cpp:23); single-surface, sample-based, unwired from the app.
+- [partial] SubD symmetry/mirror-in-place — `SubD::Transform` (subd.cpp:84) accepts a mirror `ON_Xform`; no flip/weld/live-constraint code found alongside it.
+- [partial] SubD display-level control at kernel level — `EvaluateFace`/`ToNurbsPatchesAdaptive` (subd.cpp:879,1006) present; no single tessellate(tolerance)/view-dependent API.
 - [missing] Quad-remeshing into a clean SubD-ready cage — `QuadRemeshAction` (dino8-app/src/commands/cmd_remesh.cpp:249) app-only; no kernel quad-dominant remesher.
-- [partial] SubD extraordinary-vertex limit-tangent quality — `EvaluateFace` (subd.cpp:732) exact away from the extraordinary quadrant; zero-vector tangent fallback at the pole itself unchanged (no eigenbasis code found in subd.cpp).
+- [partial] SubD extraordinary-vertex limit-tangent quality — `EvaluateFace` (subd.cpp:879) exact away from the extraordinary quadrant; zero-vector tangent fallback at the pole itself unchanged (no eigenbasis code found in subd.cpp).
+
+**Same-day follow-up, closes the "SubD non-manifold/multi-body validity
+checks" item above (missing→removed from this gap list, present):**
+`SubD::Check()` (subd.cpp:134; `SubDCheckReport`, subd.h) is the genuine,
+counted/located diagnostic `SubD::IsValid()` alone never was — the same gap
+this category's own item text called out ("a thin bool wrapper over
+`ON_SubD::IsValid`"). It reports `naked_edges` (boundary edges,
+`ON_SubDEdge::FaceCount()==1`), `non_manifold_edges` with a
+`non_manifold_edge_list` of each flagged edge's two vertex ids
+(`FaceCount()>=3`), `non_manifold_vertices` with a `non_manifold_vertex_list`
+of each flagged vertex's own id (a "bowtie"/pinch-point vertex whose
+incident faces don't form one fan — detected the same way this pass's
+`kernel: Topology & data structure` category's own new
+`Brep::Check()`/`NonManifoldVertex` finding is: union-find over the faces
+sharing an edge at that vertex, more than one resulting group flagged), and
+`body_count` (union-find over ALL faces sharing an edge, the SubD-level
+"is this actually several disconnected pieces" question
+`Brep::SplitDisjointPieces()`'s own `ON_Brep::LabelConnectedComponents()`
+already answers for Breps but SubD had no counterpart to at all). Verified
+by 5 new tests (tests/test_basic.cpp,
+`TestSubDCheck{CleanClosedBoxReportsNoDefects,
+OpenGridReportsNakedEdgesOnly, DisjointPiecesReportsMultipleBodies,
+NonManifoldEdgeDetected, BowtieVertexDetected}`): a clean closed box reports
+all-zero; an intentionally open flat grid reports 8 naked edges and nothing
+else (not a defect, matching `IsManifoldSingleBody()`'s own
+`Mesh::CheckReport::IsClosedManifold()`-style convention of ignoring naked
+edges); two boxes merged into one Mesh with disjoint vertex-index ranges
+report `body_count==2`; three quads hand-built via `ON_SubD::AddVertex`/
+`FindOrAddEdge`/`AddFace` fanned around one shared edge report exactly that
+edge as non-manifold, located by its own vertex ids; and two single-quad
+"wings" sharing only one vertex (zero shared edges, so `non_manifold_edges`
+alone would miss it) report exactly that vertex as a bowtie AND report
+`body_count==2` — the two conditions are independent and both fire on the
+cases that actually distinguish them. Still partial as a category, and this
+item does not attempt: no repair/split counterpart
+(`Brep::SplitNonManifoldVertex`/`SplitDisjointPieces` have no SubD analog
+here — a caller learns the SubD is broken/multi-body but must still fix it
+by hand); `IsValid()` itself is unchanged (a different, complementary
+structural cross-reference check, not superseded); and duplicate-vertex
+detection (two coincident-but-distinct control-net vertices) is not
+attempted, the same condition `Mesh::CheckReport::duplicate_vertices`
+covers for `Mesh` but has no `SubD` counterpart.
+
+*Note on this category's count: 14 present / 5 partial / 3 missing (22
+items) — one upgrade from the prior 13/6/3 (72.7%→75.0%), driven by the
+`SubD::Check()` finding above.*
 
 ## App: Dino 8 vs Rhino 8 + AutoCAD 2027
 
