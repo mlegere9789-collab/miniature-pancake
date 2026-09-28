@@ -179,6 +179,65 @@ Brep MakeCounterboreHole(const Brep& solid, Point3d center, Vector3d axis, doubl
 Brep MakeCountersinkHole(const Brep& solid, Point3d center, Vector3d axis, double bore_radius, double bore_depth,
                           bool bore_through, double countersink_diameter, double countersink_angle_degrees);
 
+// Extrude a closed planar QUADRILATERAL profile "to a boundary"
+// (PARITY_MAP.md's "kernel: Sweeping, lofting, extruding, revolving" gap
+// - "Extrude to a boundary surface / body (Rhino ToBoundary,
+// Boss-to-boundary; AutoCAD extrude 'to face', PressPull)"): each of
+// `profile`'s own 4 corners is swept along `direction` and intersected
+// exactly with `boundary`'s own plane (a plain ray/plane intersection,
+// closed form - not a resample), giving a genuinely, exactly planar cap
+// even when `boundary` is tilted relative to `direction`; the result is
+// assembled as a real 6-quad-face prism via `Brep::FromUntrimmedQuadFaces()`
+// (brep.h): 2 caps (the original footprint and the new exact cap) plus 4
+// side walls.
+//
+// An earlier version tried to reuse SplitBySheet() above instead (extrude
+// `profile` far past `boundary`, then cut the oversized solid against it,
+// so a general, not-necessarily-planar `boundary` would have been in
+// scope) - abandoned after being confirmed, via a standalone reproduction,
+// to corrupt SplitBySheet's own output for anything but a plain
+// axis-aligned `Brep::Box()`: `boolean_general.cpp`'s SSX machinery reads
+// each operand face purely via its raw `ON_Surface`, with no awareness of
+// this kernel's own separate polygon-trim side table, so both
+// `Brep::Extrude()`'s own periodic wrap-around wall and
+// `Brep::FromPlanarFaces()`'s own genuinely-trimmed-but-padded-domain
+// faces are silently misread as occupying their own FULL surface domain,
+// not their true (smaller) shape. Rather than debug that shared, heavily
+// depended-on machinery under this feature's own scope, this closed-form
+// per-corner construction sidesteps it entirely - at the cost of two real
+// narrowings, both disclosed rather than silently assumed away:
+//   - `profile` must be a quadrilateral (exactly 4 vertices, closed,
+//     planar, degree-1, non-rational) - `Brep::FromUntrimmedQuadFaces()`'s
+//     own "surface domain IS the whole true shape" contract (the same one
+//     `Brep::Box()` itself relies on) only holds for a genuine quad face;
+//     an N-gon cap for N != 4 would need real trim topology to represent
+//     honestly, exactly the thing just ruled out above.
+//   - `boundary` must be a single planar face (checked via
+//     `Brep::PlanarFaces()`, which also hands back the fitted `ON_Plane`
+//     directly) - a general curved or multi-face boundary is out of
+//     scope; unlike the abandoned SplitBySheet approach, this never finds
+//     an intersection CURVE at all, only a plane equation.
+//
+// `boundary`'s own FINITE extent is still respected, not just its
+// infinite plane: each computed cap corner is projected into `boundary`'s
+// own local (x, y) and checked against its real polygon (`PointInPolygon`,
+// surface_intersect.h) - a `boundary` positioned so far to the side that
+// it never actually reaches `profile`'s own swept footprint is refused,
+// not silently capped against empty space.
+//
+// Throws std::invalid_argument if `profile` isn't a closed, planar,
+// degree-1, non-rational quadrilateral; if `direction` is zero, non-finite,
+// or lies in `profile`'s own plane; if `boundary` doesn't resolve to
+// exactly one planar face (`PlanarFaces()`'s own precondition, or this
+// function's own single-face requirement); if `direction` is parallel to
+// `boundary`'s own plane (never reached, at any distance); if `boundary`
+// lies behind `profile` along `direction` for at least one corner (only
+// reachable extruding the other way, which this never guesses); or if at
+// least one corner's exact crossing point falls outside `boundary`'s own
+// finite extent (its plane is reached, but not within the surface that
+// actually occupies it there).
+Brep ExtrudeToBoundary(const NurbsCurve& profile, Vector3d direction, const Brep& boundary);
+
 // A purely additive, opt-in sibling of Brep::TessellateToClosedMesh()/
 // TessellateToClosedMeshConforming(), scoped ONLY to BooleanCombineGeneral's
 // own results, that closes the mesh-watertightness gap this file's own

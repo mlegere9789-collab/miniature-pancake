@@ -200,6 +200,52 @@ Brep Brep::Box(double x0, double y0, double z0, double x1, double y1,
   return result;
 }
 
+Brep Brep::FromUntrimmedQuadFaces(const std::vector<std::vector<Point3d>>& quads) {
+  Brep result;
+  ON_Brep& brep = result.brep_;
+
+  for (const std::vector<Point3d>& q : quads) {
+    if (q.size() != 4) {
+      throw std::invalid_argument("dino8::kernel::Brep::FromUntrimmedQuadFaces: every entry needs exactly 4 points");
+    }
+    const Point3d& q0 = q[0];
+    const Point3d& q1 = q[1];
+    const Point3d& q2 = q[2];
+    const Point3d& q3 = q[3];
+    const Vector3d e01 = q1 - q0;
+    const Vector3d e03 = q3 - q0;
+    Vector3d normal = ON_CrossProduct(e01, e03);
+    if (!normal.Unitize()) {
+      throw std::invalid_argument(
+          "dino8::kernel::Brep::FromUntrimmedQuadFaces: a face is degenerate (repeated or collinear corners)");
+    }
+    const Vector3d e02 = q2 - q0;
+    if (std::fabs(ON_DotProduct(e02, normal)) > 1e-9 * (e01.Length() + e03.Length() + e02.Length())) {
+      throw std::invalid_argument("dino8::kernel::Brep::FromUntrimmedQuadFaces: a face is not planar");
+    }
+    // Box()'s own [P(u=0,v=0), P(u=0,v=1), P(u=1,v=0), P(u=1,v=1)] grid
+    // convention: u_dir = P10-P00, v_dir = P01-P00, and u_dir x v_dir
+    // must equal the outward normal - substituting P00=q0, P01=q3,
+    // P10=q1, P11=q2 gives u_dir x v_dir = (q1-q0) x (q3-q0), exactly the
+    // outward normal just computed above for a CCW-from-outside q0..q3.
+    const std::vector<Point3d> grid = {q0, q3, q1, q2};
+    const NurbsSurface surface = NurbsSurface::FromControlGrid(grid, /*u_count=*/2, /*v_count=*/2,
+                                                                /*u_degree=*/1, /*v_degree=*/1);
+    auto* surface_copy = new ON_NurbsSurface(surface.raw());
+    const int surface_index = brep.AddSurface(surface_copy);
+    brep.NewFace(surface_index);
+    result.face_trim_loops_.emplace_back();  // untrimmed
+    result.face_exact_clip_.push_back(false);
+    result.face_hole_loops_.emplace_back();
+    result.face_arc_runs_.emplace_back();
+    result.face_notch_rows_.emplace_back();
+    result.face_records_.emplace_back();
+  }
+
+  brep.SetTrimIsoFlags();
+  return result;
+}
+
 Brep Brep::Sphere(Point3d center, double radius) {
   Brep result;
   ON_Brep& brep = result.brep_;

@@ -109,6 +109,39 @@ class Brep {
   static Brep Box(double x0, double y0, double z0, double x1, double y1,
                    double z1);
 
+  // The direct generalization of Box()'s own "six flat untrimmed quad
+  // faces, each a bilinear NURBS surface whose own [0,1]x[0,1] domain IS
+  // its whole shape" construction from a fixed axis-aligned box to an
+  // arbitrary list of planar quadrilaterals - same deliberately narrow
+  // scope Box()'s own doc comment discloses (no shared topology between
+  // faces; `raw().IsValid()` is false the same way Box()'s own is), added
+  // specifically because that "untrimmed, domain-equals-shape" property
+  // turns out to be load-bearing, not incidental: `boolean_general.cpp`'s
+  // SSX-based fragmentation machinery (`SplitBySheet`, `BooleanCombineGeneral`,
+  // `ImprintFaces`) reads each operand face purely via its raw
+  // `ON_Surface`, with no awareness of this kernel's own separate
+  // `PlanarFace`/`FromMixedFaces()` polygon-trim side table - so a
+  // genuinely-trimmed `FromMixedFaces()` face (real `ON_BrepLoop`/`ON_BrepTrim`
+  // topology, but only covering a polygon INSET within its own padded
+  // surface domain - see that method's own doc comment) is silently
+  // misread by that machinery as occupying its own FULL surface domain,
+  // corrupting the result (confirmed directly: reproduced via a
+  // standalone driver, the motivating case for `ExtrudeToBoundary()` in
+  // boolean_general.h needing a prism whose every face is genuinely,
+  // exactly quad-shaped with nothing to trim away).
+  //
+  // Each entry of `quads` is one face's boundary as exactly 4 planar
+  // points, CCW as seen from OUTSIDE (the same "CCW as seen from
+  // outside" convention `PlanarFace::loop` already documents) - outward
+  // orientation is derived automatically from that winding (internally
+  // via the standard q1-q0, q3-q0 cross product), the caller never needs
+  // Box()'s own [P(u=0,v=0), P(u=0,v=1), P(u=1,v=0), P(u=1,v=1)] grid
+  // convention directly. Throws std::invalid_argument if any entry does
+  // not have exactly 4 points, is not planar (checked directly, not
+  // assumed), or is degenerate (a repeated point or three collinear
+  // corners - no well-defined outward normal).
+  static Brep FromUntrimmedQuadFaces(const std::vector<std::vector<Point3d>>& quads);
+
   // Builds a genuine closed solid from a single curved face: a sphere,
   // via OpenNURBS' own exact rational-NURBS conversion (ON_Sphere::
   // GetNurbForm) rather than an approximation we'd have to derive

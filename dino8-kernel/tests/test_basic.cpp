@@ -31900,6 +31900,164 @@ void TestExtrudeTaperedConvexPolygonIsExactPlanarFrustum() {
         "direction in the profile's own plane throws");
 }
 
+// Builds a single-face, untrimmed, planar "sheet" Brep spanning x in
+// [x0, x1], y in [y0, y1] whose height is the AFFINE function
+// h(x, y) = a*x + b*y + c - MakePlanarSheetZ's own tilted generalization.
+// A degree-(1, 1) tensor-product patch through 4 corners that all lie on
+// a common affine function reproduces that function exactly everywhere in
+// (u, v) (bilinear interpolation of an affine function over an
+// axis-aligned rectangular domain is exact, the same fact
+// TestExtrudeToBoundary... below leans on for its own closed-form volume),
+// so this is a genuine flat plane, not merely 4 points near one.
+dino8::kernel::Brep MakeTiltedPlanarSheet(double x0, double y0, double x1, double y1, double a, double b, double c) {
+  using dino8::kernel::Brep;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  const auto h = [&](double x, double y) { return a * x + b * y + c; };
+  const std::vector<Point3d> grid = {
+      Point3d(x0, y0, h(x0, y0)),
+      Point3d(x0, y1, h(x0, y1)),
+      Point3d(x1, y0, h(x1, y0)),
+      Point3d(x1, y1, h(x1, y1)),
+  };
+  const NurbsSurface surface = NurbsSurface::FromControlGrid(grid, 2, 2, /*u_degree=*/1, /*v_degree=*/1);
+  return Brep::FromSurface(surface);
+}
+
+void TestExtrudeToBoundaryTiltedPlaneMatchesExactAffineCapVolume() {
+  using dino8::kernel::ExtrudeToBoundary;
+
+  // A 2x3 rectangle (the same fixture TestExtrudeRectangleIsExactCappedSolid
+  // uses) extruded up to a TILTED cutting plane h(x, y) = 0.5x + 0.2y + 4,
+  // extending well past the rectangle's own footprint (x, y in [-1, 5]),
+  // exactly MakePlanarSheetZ's own "fully severs" convention generalized
+  // to a slanted cut. Cutting a Vertical (extruded-along-z) prism with an
+  // AFFINE top h(x, y) gives volume = A * h(x_bar, y_bar) exactly
+  // (integrating a linear function over a region always equals area times
+  // its value at the centroid) - a genuine closed form this cut is exact
+  // against, not merely a converging approximation.
+  const NurbsCurve rect = Polyline({P(0, 0, 0), P(2, 0, 0), P(2, 3, 0), P(0, 3, 0), P(0, 0, 0)});
+  const Brep tilted = MakeTiltedPlanarSheet(-1, -1, 5, 5, 0.5, 0.2, 4.0);
+
+  // Built via Brep::FromUntrimmedQuadFaces() (six separate untrimmed
+  // faces, no shared topology between them - the same deliberately narrow
+  // "surface-only" scope Brep::Box() itself documents), so raw().IsValid()/
+  // IsSolid() are false the same way Box()'s own are (confirmed directly);
+  // TessellateToClosedMesh()'s own welding is the real correctness check,
+  // exactly as it is for every other test built on that same convention.
+  const Brep cut = ExtrudeToBoundary(rect, Vector3d(0, 0, 1), tilted);
+
+  const double area = 2.0 * 3.0;
+  const double h_centroid = 0.5 * 1.0 + 0.2 * 1.5 + 4.0;  // centroid (1, 1.5)
+  const double exact_volume = area * h_centroid;          // 28.8
+  const Mesh mesh = cut.TessellateToClosedMesh(24, 24);
+  Check(mesh.IsClosedManifold(), "the tilted-cap result tessellates to a closed manifold");
+  Check(std::abs(mesh.Volume() - exact_volume) < 1e-6,
+        "volume matches the exact affine-cap closed form (area * height at centroid)");
+
+  // The result's own bounding box tops out at the boundary's own maximum
+  // reach over the profile's footprint (h(2, 3) = 0.5*2 + 0.2*3 + 4 = 5.6)
+  // and bottoms out at the profile's own original z = 0 - the "far" piece
+  // beyond the cutting plane was genuinely discarded, not kept by mistake.
+  const dino8::kernel::BoundingBox bb = cut.GetTightBoundingBox();
+  Check(bb.min.z > -1e-9 && bb.min.z < 1e-6, "the kept piece's own base is still at the profile's original z = 0");
+  Check(std::abs(bb.max.z - 5.6) < 1e-6, "the kept piece's own top reaches exactly the boundary's max height over its footprint");
+}
+
+void TestExtrudeToBoundaryMatchesPlainExtrudeForAFlatBoundary() {
+  using dino8::kernel::ExtrudeToBoundary;
+
+  // A FLAT (non-tilted) boundary plane at z = 5 should give exactly the
+  // same result as a plain Extrude() straight to that height - the
+  // degenerate case where "extrude to a boundary" and "extrude a fixed
+  // distance" coincide, cross-checked against
+  // TestExtrudeRectangleIsExactCappedSolid's own exact volume-30 fixture.
+  const NurbsCurve rect = Polyline({P(0, 0, 0), P(2, 0, 0), P(2, 3, 0), P(0, 3, 0), P(0, 0, 0)});
+  const Brep flat = MakeTiltedPlanarSheet(-1, -1, 5, 5, 0.0, 0.0, 5.0);
+
+  const Brep cut = ExtrudeToBoundary(rect, Vector3d(0, 0, 1), flat);
+  const Mesh mesh = cut.TessellateToClosedMesh(8, 8);
+  Check(mesh.IsClosedManifold(), "flat-boundary result tessellates to a closed manifold");
+  Check(std::abs(mesh.Volume() - 30.0) < 1e-9, "a flat boundary at z=5 gives exactly the same volume (2*3*5=30) as Extrude() straight there");
+}
+
+void TestExtrudeToBoundaryNegativeControls() {
+  using dino8::kernel::ExtrudeToBoundary;
+
+  const NurbsCurve rect = Polyline({P(0, 0, 0), P(2, 0, 0), P(2, 3, 0), P(0, 3, 0), P(0, 0, 0)});
+  const Brep flat_ahead = MakeTiltedPlanarSheet(-1, -1, 5, 5, 0.0, 0.0, 5.0);
+  const Brep empty;
+
+  Check(Throws([&] { ExtrudeToBoundary(rect, Vector3d(0, 0, 0), flat_ahead); }), "zero direction throws");
+  Check(Throws([&] { ExtrudeToBoundary(rect, Vector3d(0, 0, 1), empty); }), "a faceless boundary throws");
+
+  // The boundary sits at z=-5, entirely BEHIND the profile (z=0) along
+  // +z - only reachable extruding the other way, which is never guessed.
+  const Brep flat_behind = MakeTiltedPlanarSheet(-1, -1, 5, 5, 0.0, 0.0, -5.0);
+  Check(Throws([&] { ExtrudeToBoundary(rect, Vector3d(0, 0, 1), flat_behind); }),
+        "a boundary entirely behind the profile along `direction` throws");
+
+  // A small boundary far outside the profile's own (x, y) footprint never
+  // actually crosses the extruded solid, even though it lies ahead along z.
+  const Brep miss = MakeTiltedPlanarSheet(10, 10, 12, 12, 0.0, 0.0, 5.0);
+  Check(Throws([&] { ExtrudeToBoundary(rect, Vector3d(0, 0, 1), miss); }),
+        "a boundary outside the swept footprint that never crosses it throws");
+
+  // `profile` must itself be closed and planar (an open profile has no
+  // base cap to build a genuine solid from).
+  const NurbsCurve open_chain = Polyline({P(0, 0, 0), P(1, 0, 0), P(1, 1, 0)});
+  Check(Throws([&] { ExtrudeToBoundary(open_chain, Vector3d(0, 0, 1), flat_ahead); }), "an open profile throws");
+
+  // `profile` must be a QUADRILATERAL specifically - Brep::FromUntrimmedQuadFaces()'s
+  // own "surface domain IS the whole true shape" contract (this function's
+  // own construction, see boolean_general.h) only holds for a genuine
+  // quad face; a 5-vertex profile is refused, not silently approximated.
+  const NurbsCurve pentagon = Polyline(
+      {P(0, 0, 0), P(2, 0, 0), P(3, 2, 0), P(1, 3, 0), P(-1, 2, 0), P(0, 0, 0)});
+  Check(Throws([&] { ExtrudeToBoundary(pentagon, Vector3d(0, 0, 1), flat_ahead); }),
+        "a non-quadrilateral (5-vertex) profile throws");
+}
+
+// A clockwise profile and/or a `direction` pointing the opposite way along
+// the same axis must still give a positive, outward-oriented, closed
+// result - the same "auto-reverse so the result faces outward"
+// robustness TestExtrudeRectangleIsExactCappedSolid checks for plain
+// Extrude(). This is a real regression test: an earlier implementation
+// got the cap winding right for one sign of (profile winding, direction)
+// but left the 4 side walls inverted for the other, a bug this pair
+// alone did NOT catch (it was masked by both caps AND all 4 walls being
+// inverted together in the very first configuration tried, giving a
+// wrong-signed but still-closed volume) - caught only by exercising both
+// a reversed profile winding and a reversed direction independently.
+void TestExtrudeToBoundaryHandlesReversedWindingAndDirection() {
+  using dino8::kernel::ExtrudeToBoundary;
+
+  const NurbsCurve rect_cw = Polyline({P(0, 0, 0), P(0, 3, 0), P(2, 3, 0), P(2, 0, 0), P(0, 0, 0)});
+  const Brep flat_above = MakeTiltedPlanarSheet(-1, -1, 5, 5, 0.0, 0.0, 5.0);
+  const Brep cut_cw = ExtrudeToBoundary(rect_cw, Vector3d(0, 0, 1), flat_above);
+  const Mesh mesh_cw = cut_cw.TessellateToClosedMesh(8, 8);
+  Check(mesh_cw.IsClosedManifold(), "a clockwise profile still tessellates to a closed manifold");
+  Check(std::abs(mesh_cw.Volume() - 30.0) < 1e-9, "a clockwise profile still gives the exact same volume (30)");
+
+  const NurbsCurve rect_ccw = Polyline({P(0, 0, 0), P(2, 0, 0), P(2, 3, 0), P(0, 3, 0), P(0, 0, 0)});
+  const Brep flat_below = MakeTiltedPlanarSheet(-1, -1, 5, 5, 0.0, 0.0, -5.0);
+  const Brep cut_down = ExtrudeToBoundary(rect_ccw, Vector3d(0, 0, -1), flat_below);
+  const Mesh mesh_down = cut_down.TessellateToClosedMesh(8, 8);
+  Check(mesh_down.IsClosedManifold(), "extruding downward to a boundary below still tessellates to a closed manifold");
+  Check(std::abs(mesh_down.Volume() - 30.0) < 1e-9, "extruding downward still gives the exact same positive volume (30)");
+
+  // An oblique direction against a FLAT boundary perpendicular to z: the
+  // wall shears but Cavalieri's principle keeps the volume exactly
+  // area * height regardless (6 * 4 = 24), a second, independent exact
+  // closed form from the affine-cap one above.
+  const Brep flat_h4 = MakeTiltedPlanarSheet(-3, -3, 6, 6, 0.0, 0.0, 4.0);
+  const Brep cut_oblique = ExtrudeToBoundary(rect_ccw, Vector3d(0.3, 0.1, 1.0), flat_h4);
+  const Mesh mesh_oblique = cut_oblique.TessellateToClosedMesh(8, 8);
+  Check(mesh_oblique.IsClosedManifold(), "an oblique direction still tessellates to a closed manifold");
+  Check(std::abs(mesh_oblique.Volume() - 24.0) < 1e-6,
+        "an oblique direction to a flat boundary still gives area * height exactly (Cavalieri's principle)");
+}
+
 // Sweep2: two-rail sweep with scaling (brep.h's own doc comment has the
 // full contract). Every closed-form check below was hand-derived and
 // cross-checked against a standalone scratch driver before being written
@@ -36142,6 +36300,10 @@ int main() {
   sweep_tests::TestMakeCountersinkHoleRejectsInvalidArguments();
   sweep_tests::TestExtrudeTaperedCircularProfileIsExactConeFrustum();
   sweep_tests::TestExtrudeTaperedConvexPolygonIsExactPlanarFrustum();
+  sweep_tests::TestExtrudeToBoundaryTiltedPlaneMatchesExactAffineCapVolume();
+  sweep_tests::TestExtrudeToBoundaryMatchesPlainExtrudeForAFlatBoundary();
+  sweep_tests::TestExtrudeToBoundaryNegativeControls();
+  sweep_tests::TestExtrudeToBoundaryHandlesReversedWindingAndDirection();
 
   TestSurfaceUnrollDevelopablePlaneIsExactIsometry();
   TestSurfaceUnrollDevelopableCylinderPreservesHeightAndCircumferenceExactly();

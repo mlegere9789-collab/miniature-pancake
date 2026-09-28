@@ -1,6 +1,6 @@
 # Fossilith / Dino 8 parity map (2026-09-28)
 
-**Fossilith vs Parasolid/ACIS = 65.9% (weighted, verified); Dino 8 vs Rhino 8 + AutoCAD 2027 = 71.5%.**
+**Fossilith vs Parasolid/ACIS = 66.0% (weighted, verified); Dino 8 vs Rhino 8 + AutoCAD 2027 = 71.5%.**
 
 This run recomputes the parity map from scratch against the live repository at
 `/home/user/miniature-pancake` on `claude/pdf-audit-i2bvwm`, superseding the
@@ -488,7 +488,7 @@ below alongside the other change's own headline delta.
 | kernel: Geometry representation | 1 | 29 | 18 | 11 | 0 | 81.0% |
 | kernel: Boolean operations | 1.5 | 25 | 8 | 15 | 2 | 62.0% |
 | Blending & chamfering | 1.5 | 24 | 5 | 18 | 1 | 58.3% |
-| kernel: Sweeping, lofting, extruding, revolving | 1 | 29 | 6 | 20 | 3 | 55.2% |
+| kernel: Sweeping, lofting, extruding, revolving | 1 | 29 | 6 | 21 | 2 | 56.9% |
 | kernel: Offsetting, shelling, thickening | 1 | 27 | 0 | 26 | 1 | 48.1% |
 | kernel: Local / direct-edit operations | 1 | 28 | 7 | 19 | 2 | 58.9% |
 | kernel: Intersections & projections | 1.5 | 29 | 13 | 14 | 2 | 69.0% |
@@ -827,6 +827,33 @@ category) and stays at whatever the other concurrent changes left it -
 71.5% at the time of writing, per the blending follow-up's own math above.
 No other row was touched this pass.
 
+**Ninth same-day follow-up (a fourth parallel session):** `ExtrudeToBoundary`
+(dino8-kernel/src/boolean_general.cpp) landed, upgrading **kernel:
+Sweeping, lofting, extruding, revolving**'s own "Extrude to a boundary
+surface / body" item from missing to partial (6/20/3/29, 55.2% →
+6/21/2/29, 56.9%) — detailed in that category's own bullet list below.
+This row is file-disjoint from every other category touched by the
+Sixth/Seventh/Eighth follow-ups above (kernel: Boolean operations, Kernel:
+SubD & mesh kernel support, kernel: Local / direct-edit operations,
+Blending & chamfering, kernel: Topology & data structure), so - the same
+"sum deltas directly against the original shared baseline" method those
+follow-ups already use - this paragraph's own isolated math is computed
+against the original 65.4% baseline directly: sweeplofts' own delta
+((6+10.5)/29 − (6+10)/29) · 100 = 1.724138pp, weight 1, 17.75 total kernel
+weight, contributes +0.0971pp, landing this paragraph's own isolated math
+at 65.4% + 0.0971pp → 65.5%. As with the blending and topology follow-ups'
+own notes above, **the top-of-document headline reflects ALL concurrent
+same-day changes stacked together, not just this one** - by the time this
+was written that was blending (+0.176pp) + SubD (+0.096pp) + localops
+(+0.101pp) + topology (+0.104pp) + sweeplofts (+0.097pp) on the same 65.4%
+starting point, landing at 65.4% + 0.574pp → **66.0%**; treat the
+top-of-document number, not this paragraph's own isolated 65.5%, as
+authoritative. The combined Dino 8 vs Rhino 8 + AutoCAD 2027 headline is
+unaffected by this item (a kernel-only category with no app-level command
+calling it yet - a grep for `ExtrudeToBoundary` under `dino8-app/src`
+finds nothing) and stays at 71.5%, per the blending follow-up's own math
+above. No other row was touched this pass.
+
 ### Kernel category gaps (missing / partial items, with evidence)
 
 **kernel: Topology & data structure** (topology):
@@ -905,7 +932,7 @@ No other row was touched this pass.
 - [partial] Extrude a surface / polysurface face into a solid (ExtrudeSrf) — app loops `ON_BrepExtrudeFace` over every face independently, direction always the CPlane normal. The kernel only has a mesh equivalent (`Mesh::ExtrudeCappedSolid`); no kernel B-rep face-extrude API.
 - [partial] Extrude with draft / taper angle (ExtrudeCrvTapered, ExtrudeSrfTapered; AutoCAD EXTRUDE Taper) — kernel `Brep::ExtrudeTapered` (brep.h:253-317; sweep.cpp:1430-1482) is exact for a line or circle/arc and for convex polylines via a closed-form miter offset. Still partial: a non-convex polygon throws, an oblique direction throws (confirmed sweep.cpp:1448-1452), a general curved profile falls back to an approximate least-squares offset, no surface/solid taper in the kernel, and the app's own ExtrudeCrvTapered (cmd_surface.cpp:1229) still scales the profile about its centroid (approximate corners) rather than calling the kernel.
 - [partial] Extrude to a point (ExtrudeCrvToPoint / ExtrudeSrfToPoint / kernel ConeToApex) — app `RebuildExtrudeToPoint` (cmd_solids.cpp:64) uses `CreateRuledSurface` to a degenerate apex curve, giving a surface only with no cap even for a closed profile. Kernel `Mesh::ConeToApex` is mesh-only; `Brep::Loft` to a point section cannot be capped (a collapsed end refuses a cap).
-- [missing] Extrude to a boundary surface / body (Rhino ToBoundary, Boss-to-boundary; AutoCAD extrude "to face", PressPull) — "ToBoundary" appears only as catalogued option text; no implementation anywhere.
+- [partial] Extrude to a boundary surface / body (Rhino ToBoundary, Boss-to-boundary; AutoCAD extrude "to face", PressPull) — **corrected: upgraded from missing.** Kernel `ExtrudeToBoundary(profile, direction, boundary)` (boolean_general.h/boolean_general.cpp) now exists: each of a QUADRILATERAL `profile`'s own 4 corners is swept along `direction` and intersected exactly (closed-form ray/plane, not a resample) with `boundary`'s own plane, then assembled into a genuine 6-quad-face prism via the new `Brep::FromUntrimmedQuadFaces()` (brep.h) - so a TILTED `boundary` gives a genuinely, exactly planar cap, not an approximation. An earlier version instead tried extruding `profile` past `boundary` and cutting with `SplitBySheet()` (this same file); abandoned after being confirmed, via a standalone reproduction, to corrupt SplitBySheet's own output for anything but a plain axis-aligned `Brep::Box()` - that engine's SSX machinery reads each face purely via its raw `ON_Surface`, so both `Brep::Extrude()`'s own periodic wrap-around wall and `Brep::FromPlanarFaces()`'s own padded-domain trimmed faces are silently misread as occupying their own FULL surface domain, a genuine, previously-undocumented scope boundary of that shared machinery now disclosed here rather than papered over. Verified exact against a closed-form cross-check independent of the implementation: cutting a vertical extrusion of a 2x3 rectangle against a TILTED plane `h(x,y) = 0.5x + 0.2y + 4` gives volume = area x height-at-centroid for any affine cap (`TestExtrudeToBoundaryTiltedPlaneMatchesExactAffineCapVolume`, tests/test_basic.cpp); a flat boundary reproduces plain `Extrude()`'s own volume exactly (`TestExtrudeToBoundaryMatchesPlainExtrudeForAFlatBoundary`); a clockwise profile winding, an extrusion direction reversed along the same axis, and an oblique direction against a flat boundary (Cavalieri's principle: area x height exactly, regardless of shear) are all separately verified exact (`TestExtrudeToBoundaryHandlesReversedWindingAndDirection`) - the latter three exist specifically because an earlier version of this same construction got the two caps' own winding right while leaving all 4 side walls inverted for one sign of (profile winding, direction), a bug the single straightforward case alone did not surface (both caps AND all 4 walls were inverted together there, giving a wrong-signed but still-closed volume). Still partial: `profile` must be a genuine quadrilateral (`Brep::FromUntrimmedQuadFaces()`'s own "surface domain IS the whole true shape" contract only holds for a 4-corner face; an N-gon cap for N != 4 would need real trim topology, exactly the thing the abandoned SplitBySheet approach was tried, and found wanting, to avoid needing), `boundary` must resolve to a single planar face (`PlanarFaces()`'s own precondition - a general curved or multi-face boundary is out of scope, a real narrowing from the originally-attempted general-sheet approach), only extrudes forward along the given `direction` and throws rather than guessing the opposite sign if `boundary` lies behind, and there is no app-level command anywhere that calls it (a grep for `ExtrudeToBoundary`/`ToBoundary` in `dino8-app/src` finds nothing but the catalogued option string).
 - [partial] Full 360-degree revolve of a profile about an axis into a capped solid (Revolve, RevolvedHole) — kernel `Brep::Revolve` (sweep.cpp:1483-1595) is exact rational and handles L profiles (poles), closed off-axis profiles (torus-like), a semicircle (exact sphere), and off-axis ends with disc caps. App `RevolvedHole` (cmd_solidtools.cpp:906, "mesh boolean; results are meshes") cuts with a mesh boolean. Still partial: a closed profile touching the axis (e.g. a rectangle with one side on the axis) throws, and `RevolvedHole`'s result is a mesh.
 - [partial] Partial-angle revolve (start angle / revolution angle < 360, with planar side caps) — kernel `Brep::Revolve`'s `angle` parameter in (0, 2pi] gives planar pie-slice fan caps for closed profiles and open profiles with both ends on the axis. `Revolve` now also takes a `start_angle` parameter (brep.h, sweep.cpp:1483): the sweep begins `start_angle` radians around the axis from the profile's own given position instead of always at it (Rhino/AutoCAD Revolve's own start-angle option), implemented as an exact rigid rotation of the profile about the same axis before the existing sweep runs — so every cap/throw rule above is unaffected and the result is exact for any `start_angle`, not a resample; confirmed sample-for-sample against an independently-rotated wall by `TestRevolveStartAngleShiftsSweepExactly` (tests/test_basic.cpp). Still partial: an open profile with an off-axis endpoint still cannot be capped at a partial angle; a closed profile touching the axis still throws; the app still hard-codes 0..2pi with no angle (let alone start-angle) option anywhere, and does not call the kernel's new parameter.
 - [partial] Rail revolve (profile revolved about an axis while following a rail curve) — app `RailRevolveCommand` (cmd_srfedit.cpp:1019) scales the profile radially by rail distance on a sample grid and fits with `SurfaceThroughRows`. Output is a surface only. No kernel equivalent.
@@ -1357,7 +1384,7 @@ top 40:
 | 16 | kernel | localops | Move a single B-rep vertex directly | missing | medium | The Brep sub-object-edit path currently only handles Face and Edge refs. |
 | 17 | kernel | localops | Taper / draft face (rotate face about a neutral plane) | partial | medium | `DraftFacesConvexPlanar` (dino8-kernel/src/boolean.cpp) now tilts a named face about its own intersection line with a caller-supplied neutral plane, exact for convex planar-faced solids; still no app wiring, non-convex/curved bodies, or per-face angle. |
 | 18 | kernel | localops | Replace face (swap a face's surface, re-trim neighbours) | partial | medium | `ReplaceFacePlaneConvexPlanar` (dino8-kernel/src/boolean.cpp) now swaps a named face's plane for a caller-supplied target plane outright (translate, tilt, or both in one call) and re-trims every other face against it, exact for convex planar-faced solids; still no app wiring, non-convex/curved bodies, or a general (non-planar) target surface. |
-| 19 | kernel | sweeplofts | Extrude to a boundary surface / body (ToBoundary, PressPull) | missing | large | Catalogued as an option string but never implemented. |
+| 19 | kernel | sweeplofts | Extrude to a boundary surface / body (ToBoundary, PressPull) | partial | large | `ExtrudeToBoundary` (dino8-kernel/src/boolean_general.cpp) now exists - exact closed-form per-corner ray/plane cap for a quadrilateral profile against a single planar boundary (verified against a closed-form area-times-centroid-height check, plus reversed-winding/reversed-direction/oblique-direction regression cases). Remaining effort is now small-medium, not large: app wiring, an N-gon (non-quad) profile, and a genuinely curved (non-planar) boundary surface. |
 | 20 | kernel | sweeplofts | Sweep controls: twist along path, scale along path, road-like alignment | partial | large | Kernel `Brep::Sweep1` now has `twist_total`, `scale_end`, and `roadlike_up`, all exact on a straight rail; still linear-endpoint only (no piecewise schedule), and the app's own Sweep1 command still has none of these. |
 | 21 | kernel | sweeplofts | ExtrudeCrv / Revolve producing a SubD object directly | missing | medium | Catalogued option, no implementation. |
 | 22 | kernel | sweeplofts | SubD-result revolve / multi-pipe menu entries are broken references | missing | small | Either implement the two commands or remove the dead menu entries — either is quick. |
@@ -1630,7 +1657,7 @@ top 40:
 - [kernel/blending] Conic / rho blend cross-sections (missing)
 - [kernel/blending] Fillet overflow / cliff-edge / notch handling (missing)
 - [kernel/blending] Alternative blend rail types (missing; now partial - see `FilletConvexEdgeByDistanceFromEdge`/`FilletConvexEdgeByDistanceBetweenRails` and their `FilletConcaveEdge` mirrors, fillet.h/fillet.cpp - remaining effort is small, not large: the multi-edge/vertex-blend form and a curved-face rail type)
-- [kernel/sweeplofts] Extrude to a boundary surface / body (missing)
+- [kernel/sweeplofts] Extrude to a boundary surface / body (missing; now partial - see `ExtrudeToBoundary`, boolean_general.cpp - remaining effort is small-medium, not large: app wiring, an N-gon profile, and a curved-boundary test)
 - [kernel/sweeplofts] Sweep controls: twist/scale/roadlike alignment (missing; twist, scale, and road-like alignment along path are now partial - see Brep::Sweep1()'s twist_total/scale_end/roadlike_up)
 - [kernel/sweeplofts] ExtrudeCrv/Revolve producing SubD directly (missing)
 - [kernel/localops] Taper / draft face (partial)
