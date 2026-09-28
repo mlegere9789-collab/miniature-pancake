@@ -1,11 +1,40 @@
 #include "dino8/kernel/subd.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <stdexcept>
+#include <string>
 #include <unordered_map>
 
+#include "dino8/kernel/brep.h"
+
 namespace dino8::kernel {
+
+namespace {
+
+// True if `uv`'s 4 corners are axis-aligned in their own (u, v) domain -
+// every one of the 4 edges is a constant-u or constant-v isocurve - the
+// same "plain quad" shape check Brep::Tessellate()'s own
+// IsAxisAlignedQuadUv (brep.cpp, anonymous namespace, so not reachable
+// from here) uses for the identical seam-matching purpose. Duplicated
+// rather than shared across the two files: it's a few lines of pure
+// (u, v) arithmetic with no Brep-specific state, and FromBrep() below is
+// this file's only caller.
+bool IsAxisAlignedQuadUvForSubD(const std::array<Point2d, 4>& uv) {
+  for (int e = 0; e < 4; ++e) {
+    const Point2d& from = uv[static_cast<size_t>(e)];
+    const Point2d& to = uv[static_cast<size_t>((e + 1) % 4)];
+    const double tol_u = 1e-9 * (1.0 + std::fabs(from.x) + std::fabs(to.x));
+    const double tol_v = 1e-9 * (1.0 + std::fabs(from.y) + std::fabs(to.y));
+    const bool u_constant = std::fabs(to.x - from.x) <= tol_u;
+    const bool v_constant = std::fabs(to.y - from.y) <= tol_v;
+    if (!u_constant && !v_constant) return false;  // a genuinely oblique edge
+  }
+  return true;
+}
+
+}  // namespace
 
 SubD SubD::FromControlMesh(const Mesh& control_mesh, bool crease_at_double_edges) {
   SubD result;
@@ -58,6 +87,118 @@ SubD SubD::FromNurbsSurface(const NurbsSurface& surface, int u_divisions, int v_
   }
 
   return SubD::FromControlMesh(grid);
+}
+
+SubD SubD::FromBrep(const Brep& brep, int divisions, double weld_tolerance) {
+  if (divisions < 1) {
+    throw std::invalid_argument("dino8::kernel::SubD::FromBrep: divisions must be at least 1");
+  }
+  const int face_count = brep.FaceCount();
+  if (face_count <= 0) {
+    throw std::invalid_argument("dino8::kernel::SubD::FromBrep: brep has no faces");
+  }
+
+  std::vector<Mesh> face_grids;
+  face_grids.reserve(static_cast<size_t>(face_count));
+
+  for (int face_index = 0; face_index < face_count; ++face_index) {
+    if (!brep.FaceCoversWholeDomain(face_index)) {
+      throw std::runtime_error(
+          "dino8::kernel::SubD::FromBrep: face " + std::to_string(face_index) +
+          " is trimmed - FromBrep only accepts a Brep whose faces are all untrimmed planar quads");
+    }
+    const ON_BrepFace& face = brep.raw().m_F[face_index];
+    const ON_Surface* face_surface = face.SurfaceOf();
+    if (face_surface == nullptr) {
+      throw std::runtime_error("dino8::kernel::SubD::FromBrep: face " + std::to_string(face_index) +
+                                " has no surface");
+    }
+    ON_NurbsSurface nurbs_surface;
+    if (const auto* cast = ON_NurbsSurface::Cast(face_surface)) {
+      nurbs_surface = *cast;
+    } else if (face_surface->GetNurbForm(nurbs_surface) <= 0) {
+      throw std::runtime_error("dino8::kernel::SubD::FromBrep: face " + std::to_string(face_index) +
+                                " has no NURBS form");
+    }
+    NurbsSurface surface;
+    surface.raw() = nurbs_surface;
+    if (!surface.IsPlanar()) {
+      throw std::runtime_error(
+          "dino8::kernel::SubD::FromBrep: face " + std::to_string(face_index) +
+          " is not planar - FromBrep only accepts a Brep whose faces are all untrimmed planar quads");
+    }
+
+    const Interval du = surface.Domain(0);
+    const Interval dv = surface.Domain(1);
+    const std::array<Point2d, 4> corner_uv = {Point2d(du.min, dv.min), Point2d(du.max, dv.min),
+                                               Point2d(du.max, dv.max), Point2d(du.min, dv.max)};
+    if (!IsAxisAlignedQuadUvForSubD(corner_uv)) {
+      throw std::runtime_error("dino8::kernel::SubD::FromBrep: face " + std::to_string(face_index) +
+                                " is not an axis-aligned quad in its own (u, v) domain");
+    }
+    std::array<Point3d, 4> corner;
+    for (int c = 0; c < 4; ++c) {
+      corner[static_cast<size_t>(c)] =
+          surface.PointAt(corner_uv[static_cast<size_t>(c)].x, corner_uv[static_cast<size_t>(c)].y);
+    }
+    {
+      double scale = 0.0;
+      for (const Point3d& p : corner) scale = std::max(scale, p.MaximumCoordinate());
+      const double tol = 1e-9 * (1.0 + scale);
+      bool distinct = true;
+      for (int c = 0; c < 4 && distinct; ++c) {
+        for (int d = c + 1; d < 4; ++d) {
+          if (corner[static_cast<size_t>(c)].DistanceTo(corner[static_cast<size_t>(d)]) <= tol) {
+            distinct = false;
+            break;
+          }
+        }
+      }
+      if (!distinct) {
+        throw std::runtime_error("dino8::kernel::SubD::FromBrep: face " + std::to_string(face_index) +
+                                  " does not have 4 distinct corners");
+      }
+    }
+
+    // Bilinear grid over the 4 corner points - see FromBrep()'s own doc
+    // comment (subd.h) for why this, not surface.PointAt(u, v) at
+    // intermediate parameters, is what makes adjacent faces' shared
+    // edges land on literally the same 3D points.
+    auto bilinear = [&](double a, double b) {
+      return (1.0 - a) * (1.0 - b) * corner[0] + a * (1.0 - b) * corner[1] + a * b * corner[2] +
+             (1.0 - a) * b * corner[3];
+    };
+    Mesh grid;
+    ON_Mesh& raw = grid.raw();
+    const int points = divisions + 1;
+    const auto grid_index = [points](int i, int j) { return i * points + j; };
+    raw.m_V.Reserve(points * points);
+    for (int i = 0; i < points; ++i) {
+      const double a = static_cast<double>(i) / divisions;
+      for (int j = 0; j < points; ++j) {
+        const double b = static_cast<double>(j) / divisions;
+        raw.m_V.Append(ON_3fPoint(bilinear(a, b)));
+      }
+    }
+    raw.m_F.Reserve(divisions * divisions);
+    for (int i = 0; i < divisions; ++i) {
+      for (int j = 0; j < divisions; ++j) {
+        ON_MeshFace f;
+        f.vi[0] = grid_index(i, j);
+        f.vi[1] = grid_index(i + 1, j);
+        f.vi[2] = grid_index(i + 1, j + 1);
+        f.vi[3] = grid_index(i, j + 1);
+        raw.m_F.Append(f);
+      }
+    }
+    // Match Brep::Tessellate()'s own per-face orientation convention so
+    // every face of a closed Brep points outward consistently.
+    if (face.m_bRev) grid = grid.FlipNormals();
+    face_grids.push_back(std::move(grid));
+  }
+
+  const Mesh combined = Mesh::MergeAndWeld(face_grids, weld_tolerance);
+  return SubD::FromControlMesh(combined, /*crease_at_double_edges=*/true);
 }
 
 void SubD::Subdivide(int levels) {

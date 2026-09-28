@@ -88,6 +88,27 @@ this session's own 66.9%. The combined Dino 8 vs Rhino 8 + AutoCAD 2027
 headline is left at 71.4% (kernel-only item, no `dino8-app` command wired
 to it).
 
+**Later still, a sixth same-day session:** `dino8::kernel::SubD::FromBrep`
+(dino8-kernel/src/subd.cpp, dino8-kernel/include/dino8/kernel/subd.h) landed
+after the above 67.0%/71.4% figures were written, adding real, tested ground
+to **kernel: SubD & mesh kernel support**'s own "SubD from NURBS/B-rep
+conversion" item (see that category's own bullet list above for the full
+construction/test detail) - but, honestly, WITHOUT changing that item's own
+`partial` status or this category's 15/5/2 (79.5%) count: the item was
+already `partial`, not `missing`, before this session (via
+`SubD::FromNurbsSurface`'s single-surface case), and a general curved/trimmed
+Brep -> SubD conversion remains out of scope, so it stays `partial` rather
+than flipping to `present` the way `SubD::Weld()`'s own fifth-sub-operator
+completion did above. Both headline numbers are therefore unchanged at
+**67.0%** / **71.4%** - this entry exists purely for the same
+construction/test traceability every other same-day follow-up in this
+document gets, not because the arithmetic moved. File-disjoint from every
+other same-day session above: this pass's only source edits are
+`dino8-kernel/src/subd.cpp`, `dino8-kernel/include/dino8/kernel/subd.h`,
+`dino8-kernel/include/dino8/kernel/brep.h` (widening
+`Brep::FaceCoversWholeDomain` from `private` to `public`, no behavior
+change), and `dino8-kernel/tests/test_basic.cpp`.
+
 This run recomputes the parity map from scratch against the live repository at
 `/home/user/miniature-pancake` on `claude/pdf-audit-i2bvwm`, superseding the
 2026-09-25 run (headline 63.3% / 71.5%, commit ba80d25). **Correction to the
@@ -1871,7 +1892,7 @@ document's own "Fourteenth same-day follow-up" note.*
 **Kernel: SubD & mesh kernel support** (subd_mesh):
 - [partial] SubD -> NURBS patch conversion — `ToNurbsPatches`/`ToNurbsPatchesAdaptive` (dino8-kernel/src/subd.cpp:1015,1431 — corrected again this pass: `SubD::Weld()`'s own ~157-line insertion above both functions shifted the prior pass's already-corrected 858/1274 by exactly that amount; no behavior change); app's ToNURBS (dino8-app/src/commands/cmd_solids.cpp:802,843) still calls only the non-adaptive `ToNurbsPatches`. No dependency on `Brep::Check()`/`RemoveDegenerateFaces` found in subd.cpp — the DegenerateFace false-flag defect does not touch this item.
 - [missing] SubD boolean operations — zero "SubD" references in any dino8-kernel/src/boolean*.cpp file.
-- [partial] SubD from NURBS/B-rep conversion — `SubD::FromNurbsSurface` (subd.cpp:23); single-surface, sample-based, unwired from the app.
+- [partial] SubD from NURBS/B-rep conversion — `SubD::FromNurbsSurface` (subd.cpp:53); single-surface, sample-based, unwired from the app. **Same-day follow-up:** `SubD::FromBrep` (subd.cpp:92, subd.h:212) now also closes the multi-face half of this item for the specific shape `Brep::Tessellate()`'s own seam-matching pass already scoped itself to (planar, untrimmed, axis-aligned-in-own-uv quad faces - see `CollectPlainQuadFaces` in brep.cpp): a whole `Brep::Box()` converts to ONE genuinely joined SubD cage (faces sharing an edge in the Brep share a real interior SubD edge, not two disconnected coincident copies), verified by `TestSubDFromBrepBoxProducesWatertightManifoldCage` (tests/test_basic.cpp) - Euler's formula (V-E+F=2), `SubD::Check().IsManifoldSingleBody()`, all 8 true corners present as single vertices, the level-0 mesh's volume matching the box's own 2x2x2=8 exactly, and further `Subdivide()` genuinely rounding it (volume strictly shrinks) rather than being a frozen copy. Rejection of a genuinely trimmed or non-planar face (`std::runtime_error`, naming the face) is covered by `TestSubDFromBrepRejectsBadDivisionsTrimmedAndCurvedFaces`. Still honestly `partial`, not `present`: a curved (cylinder/sphere/fillet) or genuinely trimmed face is still out of scope entirely (the same scope limit `Brep::Tessellate()`'s own asymmetric-division fix already carries, not a new one invented here) - a true general Brep -> SubD conversion (matching faces/creases across curved and trimmed geometry) remains the "materially bigger problem" `FromNurbsSurface()`'s own doc comment always disclosed; and this is still unwired from any `dino8-app` command. `Brep::FaceCoversWholeDomain()` (brep.h) was widened from `private` to `public` to let `SubD::FromBrep` reuse it (the same "is this face genuinely untrimmed" answer `Volume()`/`Area()` already relied on internally) rather than re-deriving it unreliably from public-only state.
 - [partial] SubD symmetry/mirror-in-place — `SubD::Transform` (subd.cpp:105 — corrected 2026-09-28, was mis-cited :84) accepts a mirror `ON_Xform`; no flip/weld/live-constraint code found alongside it.
 - [partial] SubD display-level control at kernel level — `EvaluateFace`/`ToNurbsPatchesAdaptive` (subd.cpp:1304,1431 — corrected again this pass, shifted by `SubD::Weld()`'s own insertion, see the ToNurbsPatches bullet above) present; no single tessellate(tolerance)/view-dependent API.
 - [missing] Quad-remeshing into a clean SubD-ready cage — `QuadRemeshAction` (dino8-app/src/commands/cmd_remesh.cpp:249) app-only; no kernel quad-dominant remesher.
@@ -1919,18 +1940,29 @@ detection (two coincident-but-distinct control-net vertices) is not
 attempted, the same condition `Mesh::CheckReport::duplicate_vertices`
 covers for `Mesh` but has no `SubD` counterpart.
 
-*Note on this category's count: 15 present / 5 partial / 2 missing (22
-items) — one further upgrade from 14/6/2 (77.3%→79.5%), driven by
-`SubD::Weld()`'s partial→present flip of the "Kernel-native SubD local
-edit operators" item (this pass's own "Fifteenth same-day follow-up"
-note above closes the fifth and last named sub-operator - see that note
-for the full detail, including why the item's own still-unaddressed
-"not wired to any app command" caveat doesn't hold it back from
-`present`: that's an App-level concern this row doesn't measure, tracked
-instead under **Dino 8: SubD & mesh modeling toolset (app level)**
-below); the prior 14/5/3 (75.0%→77.3%) upgrade was driven by
-InsertEdge/SpinEdge/ExtrudeFace (the Sixth same-day follow-up), and the
-13/6/3 (72.7%→75.0%) upgrade before that by the `SubD::Check()`
+*Note on this category's count: still 15 present / 5 partial / 2 missing
+(22 items, 79.5%) after this pass's own `SubD::FromBrep` addition (see
+the "SubD from NURBS/B-rep conversion" bullet's own same-day follow-up
+above) - honestly unchanged, not a new upgrade: `FromBrep` closes real,
+tested ground under that item (a whole planar-quad Brep, e.g. `Box()`,
+now converts to one genuinely joined SubD cage, where before only a
+single NURBS surface at a time did), but the item was already `partial`
+(not `missing`) before this pass, and general curved/trimmed Brep
+conversion remains squarely out of scope - the item stays `partial`,
+same as `SubD::Weld()`'s own predecessors (InsertEdge/SpinEdge/
+ExtrudeFace/ExpandFaces) did before `Weld()` itself closed the LAST gap
+in that item's own five-sub-operator checklist. The prior 15/5/2
+(79.5%) count itself was one further upgrade from 14/6/2 (77.3%),
+driven by `SubD::Weld()`'s partial→present flip of the "Kernel-native
+SubD local edit operators" item (this pass's own "Fifteenth same-day
+follow-up" note above closes the fifth and last named sub-operator -
+see that note for the full detail, including why the item's own
+still-unaddressed "not wired to any app command" caveat doesn't hold it
+back from `present`: that's an App-level concern this row doesn't
+measure, tracked instead under **Dino 8: SubD & mesh modeling toolset
+(app level)** below); the prior 14/5/3 (75.0%→77.3%) upgrade was driven
+by InsertEdge/SpinEdge/ExtrudeFace (the Sixth same-day follow-up), and
+the 13/6/3 (72.7%→75.0%) upgrade before that by the `SubD::Check()`
 finding.*
 
 ## App: Dino 8 vs Rhino 8 + AutoCAD 2027

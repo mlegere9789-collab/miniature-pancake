@@ -14525,6 +14525,140 @@ void TestSubDWeldRefusesSameFaceCornersAndPreservesUnrelatedCrease() {
         "genuinely-intentional A/B crease above");
 }
 
+// SubD::FromBrep(): a 2x2x2 Brep::Box() (6 planar, untrimmed, axis-
+// aligned-in-uv quad faces - exactly the shape this method accepts)
+// converted at divisions=3 per face should come out as ONE genuinely
+// joined, watertight SubD cage - not 6 disconnected per-face grids -
+// with every one of the Box's 12 true edges shared by exactly the 2
+// faces that meet there in the real solid, and every one of its 8 true
+// corners a single SubD vertex (not up to 3 separate coincident copies,
+// one per incident face).
+void TestSubDFromBrepBoxProducesWatertightManifoldCage() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SubD;
+
+  const Brep box = Brep::Box(0, 0, 0, 2, 2, 2);
+  const int divisions = 3;
+  const SubD subd = SubD::FromBrep(box, divisions);
+
+  // Euler's formula for a closed genus-0 solid: V - E + F == 2. 6 faces
+  // each split into divisions^2 quads gives F = 6*9 = 54 faces; each
+  // face contributes divisions*(divisions+1) internal-grid edges in
+  // each of its own 2 directions, but shared-edge welding collapses
+  // what would otherwise be 6 disjoint grids' own edges - checking the
+  // Euler identity directly (rather than a hand-derived edge count) is
+  // the same "is this actually one closed, correctly-joined solid, not
+  // 6 separate patches" proof this kernel's own topology checks
+  // elsewhere in this file already lean on.
+  Check(subd.FaceCount() == 6 * divisions * divisions,
+        "6 faces x divisions^2 quads per face are all present");
+  const int v = subd.VertexCount();
+  const int e = subd.EdgeCount();
+  const int f = subd.FaceCount();
+  Check(v - e + f == 2, "Euler's formula (V - E + F == 2) holds for the joined cage - "
+                        "it's genuinely one closed, single-body solid, not 6 disconnected grids");
+
+  const SubD::SubDCheckReport report = subd.Check();
+  Check(report.naked_edges == 0, "a fully closed box has no naked/boundary edges at all");
+  Check(report.IsManifoldSingleBody(), "the joined cage is a single connected 2-manifold body");
+  Check(subd.CreaseEdgeCount() == 0,
+        "FromBrep()'s crease_at_double_edges=true only creases an edge used by exactly one "
+        "face - none exist on a fully closed box, so every edge (including the Box's own 12 "
+        "true edges) stays Smooth");
+  Check(subd.IsValid(), "the resulting SubD passes ON_SubD::IsValid() too");
+
+  // The 8 true corners of the box must each be a SINGLE SubD vertex
+  // (not up to 3 separate coincident ones, one per incident face) -
+  // this is exactly what welding FromBrep()'s per-face grids at shared
+  // positions is supposed to achieve.
+  const Point3d corners[8] = {
+      Point3d(0, 0, 0), Point3d(2, 0, 0), Point3d(2, 2, 0), Point3d(0, 2, 0),
+      Point3d(0, 0, 2), Point3d(2, 0, 2), Point3d(2, 2, 2), Point3d(0, 2, 2),
+  };
+  int found = 0;
+  for (const Point3d& c : corners) {
+    if (subd.raw().FindVertex(&c.x, 1e-9) != nullptr) ++found;
+  }
+  Check(found == 8, "all 8 of the box's true corners exist as exact SubD vertices");
+
+  // The bilinear-from-corners construction is exact for a flat quad, so
+  // the level-0 control net should reproduce the box exactly: same
+  // volume, and a closed manifold mesh.
+  const Mesh mesh = subd.ToApproximateMesh();
+  Check(mesh.IsClosedManifold(), "the level-0 control net mesh is itself already a closed manifold");
+  Check(std::abs(mesh.Volume() - 8.0) < 1e-9, "the level-0 control net's volume is exactly the box's own 2*2*2 = 8");
+
+  // Further subdividing rounds the corners off (real Catmull-Clark
+  // smoothing) - a cheap, falsifiable sanity check that this is a real,
+  // furth-subdividable SubD, not a frozen mesh wearing a SubD's API.
+  SubD smoothed = subd;
+  smoothed.Subdivide(2);
+  const Mesh smooth_mesh = smoothed.ToApproximateMesh();
+  Check(smooth_mesh.Volume() < 8.0 - 1e-6,
+        "subdividing further shrinks the volume below the sharp box's own 8.0 - genuine "
+        "Catmull-Clark corner rounding, not a static copy of the input");
+}
+
+// SubD::FromBrep()'s own documented scope guards: divisions < 1, a
+// genuinely trimmed face, and a genuinely curved (non-planar) face must
+// all be refused rather than silently sampling past a real trim
+// boundary or a domain corner that isn't where the caller thinks it is.
+void TestSubDFromBrepRejectsBadDivisionsTrimmedAndCurvedFaces() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point2d;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SubD;
+
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+
+  bool threw_bad_divisions = false;
+  try {
+    (void)SubD::FromBrep(box, 0);
+  } catch (const std::invalid_argument&) {
+    threw_bad_divisions = true;
+  }
+  Check(threw_bad_divisions, "SubD::FromBrep throws std::invalid_argument when divisions < 1");
+
+  // A genuinely trimmed planar face - a small square trimmed out of a
+  // much bigger flat surface, the same TrimmedPlanarFace() fixture
+  // TestBoundingBoxUsesTrimLoop... (brep.cpp test above) uses - must be
+  // refused, not silently sampled over its surface's full (untrimmed)
+  // domain past the real trim boundary.
+  {
+    const std::vector<Point3d> grid = {Point3d(0, 0, 0), Point3d(100, 0, 0), Point3d(0, 100, 0),
+                                        Point3d(100, 100, 0)};
+    const NurbsSurface surface = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+    const std::vector<Point2d> trim = {Point2d(0.4, 0.4), Point2d(0.6, 0.4), Point2d(0.6, 0.6), Point2d(0.4, 0.6)};
+    const Brep trimmed = Brep::TrimmedPlanarFace(surface, trim);
+    bool threw = false;
+    try {
+      (void)SubD::FromBrep(trimmed, 2);
+    } catch (const std::runtime_error&) {
+      threw = true;
+    }
+    Check(threw, "SubD::FromBrep throws std::runtime_error on a genuinely trimmed planar face");
+  }
+
+  // A genuinely curved (non-planar) untrimmed face - Brep::FromSurface()
+  // on a simple bilinear ramp lifted into a non-planar bump - must also
+  // be refused.
+  {
+    const std::vector<Point3d> bump = {Point3d(0, 0, 0), Point3d(0, 1, 0), Point3d(1, 0, 1), Point3d(1, 1, 0)};
+    const NurbsSurface surface = NurbsSurface::FromControlGrid(bump, 2, 2, 1, 1);
+    const Brep curved = Brep::FromSurface(surface);
+    bool threw = false;
+    try {
+      (void)SubD::FromBrep(curved, 2);
+    } catch (const std::runtime_error&) {
+      threw = true;
+    }
+    Check(threw, "SubD::FromBrep throws std::runtime_error on a non-planar face");
+  }
+}
+
 void TestMeshComputeVertexNormals() {
   using dino8::kernel::Mesh;
   using dino8::kernel::Vector3d;
@@ -38244,6 +38378,8 @@ int main() {
   TestSubDExpandFacesRefusesWhenRegionNormalsCancel();
   TestSubDWeldJoinsTwoDisjointQuadsAlongCoincidentSeam();
   TestSubDWeldRefusesSameFaceCornersAndPreservesUnrelatedCrease();
+  TestSubDFromBrepBoxProducesWatertightManifoldCage();
+  TestSubDFromBrepRejectsBadDivisionsTrimmedAndCurvedFaces();
   TestMeshComputeVertexNormals();
   TestMeshSaveObjRoundTrips();
   TestMeshTextureCoordinates();

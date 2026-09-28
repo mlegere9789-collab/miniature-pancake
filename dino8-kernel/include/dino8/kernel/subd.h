@@ -146,6 +146,71 @@ class SubD {
   // than 1, the same validation `TessellateGrid()` already applies.
   static SubD FromNurbsSurface(const NurbsSurface& surface, int u_divisions, int v_divisions);
 
+  // Builds a SubD control cage from a whole Brep, one quad per face,
+  // faces that share an edge in the Brep sharing that edge (and its
+  // vertices) at the SubD level too - closing PARITY_MAP.md's subd_mesh
+  // "SubD from NURBS/B-rep conversion (reverse of ToNurbsPatches)" gap's
+  // own still-open caveat on FromNurbsSurface() above ("a full Brep ->
+  // SubD conversion, matching faces and creases across a whole solid or
+  // polysurface, is a materially bigger problem this does not attempt")
+  // for exactly the case that caveat names: unlike calling
+  // FromNurbsSurface() once per face and never joining the results (each
+  // face would come out as its own disconnected SubD, coincident seams
+  // and all), this produces ONE control net where an edge shared by two
+  // faces of the Brep is a single genuinely-interior SubD edge.
+  //
+  // Deliberately scoped to the same "plain quad" face shape
+  // Brep::Tessellate()'s own seam-matching pass already defines and
+  // depends on for the identical reason (see CollectPlainQuadFaces in
+  // brep.cpp): every face must be planar (NurbsSurface::IsPlanar()),
+  // must cover its surface's own whole parameter domain
+  // (Brep::FaceCoversWholeDomain() - no real trim, no hole), and its 4
+  // domain corners must form an axis-aligned rectangle in that face's
+  // OWN (u, v) domain (every edge is a constant-u or constant-v
+  // isocurve) - the shape every wall of Brep::Box(), every rectangular
+  // face TrimmedPlanarFace() can produce, and every plain quad
+  // FromPlanarFaces()/FromMixedFaces() builds. A genuinely curved,
+  // trimmed, or non-planar face (a cylinder, a fillet, a disc cap) is
+  // out of scope entirely, honestly - not a new limitation invented
+  // here, the same one Brep::Tessellate()'s own asymmetric-division fix
+  // already carved out for this exact face shape.
+  //
+  // Each accepted face's own 4 domain-corner points are evaluated once
+  // via the real surface, then the interior/boundary grid (`divisions`
+  // cells per side, the same count in both directions on every face) is
+  // filled by BILINEAR interpolation of just those 4 points - exactly
+  // like Brep::Tessellate()'s own BuildConformingPlainQuadMesh() does
+  // for the identical face shape - rather than by resampling the true
+  // surface at intermediate (u, v). This is exact, not an approximation,
+  // for the shape this method accepts (a flat quadrilateral's interior
+  // *is* its own 4 corners' bilinear span - Box()'s own faces are
+  // already built this same way, via NurbsSurface::FromControlGrid with
+  // degree 1 in both directions); what it buys beyond exactness is
+  // robustness: two adjacent faces land on LITERALLY the same 3D points
+  // along their shared edge (both interpolate the SAME pair of corner
+  // points at the SAME fractions), independent of either face's own
+  // internal knot spacing - the exact seam-matching problem
+  // Brep::Tessellate()'s own doc comment discusses at length for this
+  // same face shape, solved here the same way rather than differently.
+  //
+  // The per-face grids are combined via Mesh::MergeAndWeld(...,
+  // weld_tolerance) - shared-edge points from two different faces that
+  // land within `weld_tolerance` of each other become one SubD vertex -
+  // and the result is handed to FromControlMesh(mesh,
+  // /*crease_at_double_edges=*/true), so a boundary edge used by only
+  // ONE face (the Brep's own naked/outer boundary, for an open shell)
+  // comes out a real SubD crease while every internal, two-face-shared
+  // edge stays smooth.
+  //
+  // Throws std::invalid_argument if `divisions` is less than 1 or the
+  // Brep has no faces. Throws std::runtime_error, naming the offending
+  // face index, for the first face that is not exactly this shape
+  // (trimmed/holed, non-planar, not axis-aligned-in-its-own-uv, or
+  // without 4 distinct corners) - rather than silently sampling past a
+  // real trim boundary or a degenerate corner and returning wrong
+  // geometry.
+  static SubD FromBrep(const Brep& brep, int divisions, double weld_tolerance = tolerance::kWeld);
+
   // Applies `levels` rounds of real Catmull-Clark global subdivision in
   // place. Each round refines every face, edge, and vertex of the
   // current control net into a strictly finer one; the result converges

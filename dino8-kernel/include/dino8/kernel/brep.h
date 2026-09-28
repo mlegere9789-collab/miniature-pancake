@@ -3479,6 +3479,20 @@ class Brep {
   const ON_Brep& raw() const { return brep_; }
   ON_Brep& raw() { return brep_; }
 
+  // Volume()/Area()'s own shared "is this face safe to integrate over
+  // its full surface parameter domain" test - see its own doc comment
+  // in brep.cpp for exactly what it checks and why raw().FaceIsSurface()
+  // alone isn't enough. Made public (was private) for SubD::FromBrep()
+  // (subd.h/.cpp), which needs the identical "is this face genuinely
+  // untrimmed" answer from outside this class - `raw().m_F[i].m_li`
+  // alone can't tell (a Brep built via the minimal NewFace(int)-only
+  // path, per this class's own top-of-file comment - Box(), Sphere(),
+  // TrimmedPlanarFace(), FromSurface() - never populates real ON_Brep
+  // loop topology at all, trimmed or not, so an empty m_li says nothing
+  // about whether the face is actually trimmed; the real answer lives in
+  // this class's own private side tables, which only this method can see).
+  bool FaceCoversWholeDomain(int face_index) const;
+
  private:
   // Clears every per-face side table (face_trim_loops_ and its siblings
   // below) - what every topology-surgery method here must do first; see
@@ -3493,11 +3507,6 @@ class Brep {
   // whose trims live entirely in brep_'s own real loop topology (the
   // sweep-class factories in src/sweep.cpp).
   void AppendUntrimmedFaceSideTables(int count);
-  // Volume()/Area()'s own shared "is this face safe to integrate over
-  // its full surface parameter domain" test - see its own doc comment
-  // in brep.cpp for exactly what it checks and why raw().FaceIsSurface()
-  // alone isn't enough.
-  bool FaceCoversWholeDomain(int face_index) const;
   // The sweep-class factories' shared assembly step (src/sweep.cpp):
   // takes ownership of `wall`, adds it and the requested caps as real
   // ON_Brep topology, appends the side tables and applies the closed-
