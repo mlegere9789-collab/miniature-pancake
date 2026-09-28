@@ -5671,6 +5671,84 @@ void TestBooleanSymmetricDifference() {
         "(A-B)+(B-A) one");
 }
 
+void TestComputeInterference() {
+  using dino8::kernel::ComputeInterference;
+  using dino8::kernel::Mesh;
+
+  // Three boxes: A=[0,2]^3, B=[1,3]^3 (overlaps A in [1,2]^3, volume 1),
+  // C=[10,12]^3 (disjoint from both, far away). Exactly the A/B pair
+  // should interfere.
+  const auto a = MakeBox(0, 0, 0, 2, 2, 2);
+  const auto b = MakeBox(1, 1, 1, 3, 3, 3);
+  const auto c = MakeBox(10, 10, 10, 12, 12, 12);
+
+  {
+    const auto results = ComputeInterference({a, b, c});
+    Check(results.size() == 1, "disjoint-plus-overlapping triple reports exactly one interference");
+    if (results.size() == 1) {
+      Check(results[0].a_index == 0 && results[0].b_index == 1,
+            "the reported pair is (A, B) by their input indices, not (A, C) or (B, C)");
+      Check(std::abs(results[0].solid.Volume() - 1.0) < 1e-6,
+            "the reported solid is the real 1x1x1 Boolean intersection, not a placeholder");
+    }
+  }
+
+  {
+    const auto none = ComputeInterference({a, c});
+    Check(none.empty(), "two disjoint boxes report zero interferences");
+  }
+
+  // Two boxes sharing an entire face (D=[0,2]^3, G=[2,4]x[0,2]x[0,2]: D's
+  // +x face is exactly G's -x face, same y/z extents) touch at x=2 over a
+  // full 2x2 square - their bounding boxes overlap there, but the true
+  // solids share zero volume, so this must NOT be reported as
+  // interference (distinguishes this from a mere bbox-touch bug).
+  {
+    const auto d = MakeBox(0, 0, 0, 2, 2, 2);
+    const auto g = MakeBox(2, 0, 0, 4, 2, 2);
+    const auto results = ComputeInterference({d, g});
+    Check(results.empty(),
+          "two boxes sharing an entire face (zero-volume contact) report no interference");
+  }
+
+  // A clearance large enough to make two disjoint boxes' bounding boxes
+  // touch must still never fabricate a solid where the true geometry
+  // doesn't overlap at all.
+  {
+    const auto near_miss = ComputeInterference({a, c}, /*clearance=*/20.0);
+    Check(near_miss.empty(),
+          "a generous clearance that makes bounding boxes touch never fabricates an "
+          "interference solid for geometry that doesn't actually overlap");
+  }
+
+  // A non-closed operand in a bbox-overlapping pair must throw, the same
+  // failure mode as BooleanCombine() itself, rather than silently
+  // skipping or returning garbage.
+  {
+    Mesh open_triangle;
+    ON_Mesh& raw = open_triangle.raw();
+    raw.m_V.Append(ON_3fPoint(0.5, 0.5, 0.5));
+    raw.m_V.Append(ON_3fPoint(1.5, 0.5, 0.5));
+    raw.m_V.Append(ON_3fPoint(0.5, 1.5, 0.5));
+    ON_MeshFace face;
+    face.vi[0] = 0;
+    face.vi[1] = 1;
+    face.vi[2] = 2;
+    face.vi[3] = 2;
+    raw.m_F.Append(face);
+
+    bool threw = false;
+    try {
+      ComputeInterference({a, open_triangle});
+    } catch (const std::runtime_error&) {
+      threw = true;
+    }
+    Check(threw,
+          "a bbox-overlapping pair with a non-closed operand throws std::runtime_error, "
+          "same failure mode as BooleanCombine() itself");
+  }
+}
+
 void TestSplitByPlane() {
   using dino8::kernel::Mesh;
   using dino8::kernel::Point3d;
@@ -7511,6 +7589,68 @@ void TestBrepCheckDoesNotFalselyFlagCurvedOrToplessValidFaces() {
     Check(r.Count(Brep::CheckIssue::Kind::DegenerateFace) == 1,
           "a genuine 1e-8-wide hairline face is still caught (as DegenerateFace) after this fix - not a false "
           "negative traded for the false positives it removes");
+  }
+  {
+    const Brep torus = Brep::Torus(Point3d(0, 0, 0), Vector3d(0, 0, 1), 3.0, 1.0);
+    Check(degenerate_or_sliver_count(torus) == 0,
+          "Torus() - the fifth surface-only NewFace(int) factory alongside Box/Sphere - is not flagged either");
+  }
+}
+
+// PARITY_MAP.md previously documented RemoveDegenerateFaces()/
+// RemoveSliverFaces() as "destructive on the kernel's own valid solids"
+// (probed: 3/3 and 6/6 faces deleted from a valid Extrude(circle) and
+// Box()) because both trust Check()'s DegenerateFace/SliverFace flags.
+// Now that Check() no longer false-flags those faces (see
+// TestBrepCheckDoesNotFalselyFlagCurvedOrToplessValidFaces above), this
+// verifies the fix all the way through to the actual deleting operations,
+// not just the diagnostic they read from.
+void TestBrepRemoveDegenerateOrSliverFacesDoesNotTouchValidSolids() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+  namespace tol = dino8::kernel::tolerance;
+
+  {
+    Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+    Check(box.RemoveDegenerateFaces(tol::kDistance) == 0 && box.FaceCount() == 6,
+          "RemoveDegenerateFaces() removes none of Box()'s 6 valid faces");
+  }
+  {
+    Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+    Check(box.RemoveSliverFaces(1e-4) == 0 && box.FaceCount() == 6,
+          "RemoveSliverFaces() removes none of Box()'s 6 valid faces either");
+  }
+  auto make_circle = [](Point3d center, Vector3d normal, double radius) {
+    const ON_Circle circle(ON_Plane(center, normal), radius);
+    ON_NurbsCurve nurbs;
+    circle.GetNurbForm(nurbs);
+    NurbsCurve k;
+    k.raw() = nurbs;
+    return k;
+  };
+  {
+    Brep cyl = Brep::Extrude(make_circle(Point3d(0, 0, 0), Vector3d(0, 0, 1), 1.0), Vector3d(0, 0, 4));
+    Check(cyl.FaceCount() == 3, "Extrude(circle) fixture starts with its genuine 3 faces (wall + 2 caps)");
+    Check(cyl.RemoveDegenerateFaces(tol::kDistance) == 0 && cyl.FaceCount() == 3,
+          "RemoveDegenerateFaces() removes none of Extrude(circle)'s 3 valid faces");
+  }
+  {
+    Brep cyl = Brep::Extrude(make_circle(Point3d(0, 0, 0), Vector3d(0, 0, 1), 1.0), Vector3d(0, 0, 4));
+    Check(cyl.RemoveSliverFaces(1e-4) == 0 && cyl.FaceCount() == 3,
+          "RemoveSliverFaces() removes none of Extrude(circle)'s 3 valid faces either");
+  }
+  // True-positive control: a genuine hairline sliver must still be deleted
+  // by both operations - this fix closes a false-positive hole, it does
+  // not neuter the check.
+  {
+    Brep::PlanarFace sliver;
+    sliver.loop = {Point3d(0, 0, 0), Point3d(1, 0, 0), Point3d(1, 1e-8, 0), Point3d(0, 1e-8, 0)};
+    sliver.plane = ON_Plane(sliver.loop[0], ON_3dVector(0, 0, -1));
+    Brep one = Brep::FromPlanarFaces({sliver});
+    Check(one.RemoveDegenerateFaces(tol::kDistance) == 1 && one.FaceCount() == 0,
+          "a genuine 1e-8-wide hairline face is still deleted by RemoveDegenerateFaces()");
   }
 }
 
@@ -11411,6 +11551,215 @@ void TestSubDToNurbsPatchesAdaptiveThrowsOnNegativeLevels() {
   Check(threw, "ToNurbsPatchesAdaptive throws std::invalid_argument on a negative max_adaptive_levels");
 }
 
+// PARITY_MAP.md's subd_mesh category lists "SubD non-manifold/multi-body
+// validity checks" as only [partial], calling out that SubD::IsValid()
+// was "a thin bool wrapper over ON_SubD::IsValid" with no counts or
+// locations - the same gap Mesh::Check() already closed for Mesh. These
+// five tests verify SubD::Check() actually answers that: a clean closed
+// SubD reports all-zero, an intentionally open one reports naked edges
+// only (not a defect), two disjoint pieces are counted as 2 bodies, a
+// genuinely 3-face edge is found and located by vertex id, and a bowtie
+// vertex (two unrelated face fans touching at one point, zero shared
+// edges between them) is detected even though it trips neither of the
+// other two conditions.
+void TestSubDCheckCleanClosedBoxReportsNoDefects() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SubD;
+
+  const SubD subd = SubD::FromControlMesh(MakeQuadBoxMesh(0, 0, 0, 1, 1, 1));
+  const auto report = subd.Check();
+  Check(report.naked_edges == 0, "a closed box SubD has no naked edges");
+  Check(report.non_manifold_edges == 0, "a closed box SubD has no non-manifold edges");
+  Check(report.non_manifold_vertices == 0, "a closed box SubD has no non-manifold (bowtie) vertices");
+  Check(report.body_count == 1, "a closed box SubD is exactly one body");
+  Check(report.non_manifold_edge_list.empty() && report.non_manifold_vertex_list.empty(),
+        "a clean SubD's non-manifold location lists are both empty");
+  Check(report.IsManifoldSingleBody(), "IsManifoldSingleBody() is true for a clean, single-body closed SubD");
+}
+
+void TestSubDCheckOpenGridReportsNakedEdgesOnly() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SubD;
+
+  // The same flat 2x2 quad grid TestSubDFlatQuadGridStaysFlatAndAreaExact
+  // uses: 9 vertices, 4 faces, open on all 4 sides - 8 boundary edges (2
+  // per side), 4 interior edges, so exactly 8 naked edges and 12 total
+  // edges, with nothing non-manifold anywhere.
+  Mesh grid;
+  ON_Mesh& raw = grid.raw();
+  for (int i = 0; i < 3; ++i) {
+    for (int j = 0; j < 3; ++j) {
+      raw.m_V.Append(ON_3fPoint(static_cast<double>(i), static_cast<double>(j), 0.0));
+    }
+  }
+  auto idx = [](int i, int j) { return i * 3 + j; };
+  for (int i = 0; i < 2; ++i) {
+    for (int j = 0; j < 2; ++j) {
+      ON_MeshFace face;
+      face.vi[0] = idx(i, j);
+      face.vi[1] = idx(i + 1, j);
+      face.vi[2] = idx(i + 1, j + 1);
+      face.vi[3] = idx(i, j + 1);
+      raw.m_F.Append(face);
+    }
+  }
+
+  const SubD subd = SubD::FromControlMesh(grid);
+  const auto report = subd.Check();
+  Check(report.naked_edges == 8, "the open 2x2 quad grid's boundary has exactly 8 naked edges");
+  Check(report.non_manifold_edges == 0, "the open grid has no non-manifold edges");
+  Check(report.non_manifold_vertices == 0, "the open grid has no non-manifold (bowtie) vertices");
+  Check(report.body_count == 1, "the open grid is still exactly one connected body");
+  Check(report.IsManifoldSingleBody(),
+        "IsManifoldSingleBody() is true for an open-but-otherwise-clean single-body SubD "
+        "(naked_edges alone is never a manifold/multi-body defect)");
+}
+
+void TestSubDCheckDisjointPiecesReportsMultipleBodies() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SubD;
+
+  // Two ordinary closed boxes merged into one Mesh with disjoint vertex
+  // index ranges (the second box's faces reference vertices 8-15, never
+  // reusing any of the first box's 0-7) - by construction, no edge or
+  // vertex is shared between them, so Check() must report exactly 2
+  // bodies despite this being a single Mesh/SubD object.
+  const Mesh box_a = MakeQuadBoxMesh(0, 0, 0, 1, 1, 1);
+  const Mesh box_b = MakeQuadBoxMesh(5, 5, 5, 6, 6, 6);
+
+  Mesh combined;
+  ON_Mesh& raw = combined.raw();
+  const int offset = box_a.raw().m_V.Count();
+  for (int i = 0; i < box_a.raw().m_V.Count(); ++i) raw.m_V.Append(box_a.raw().m_V[i]);
+  for (int i = 0; i < box_b.raw().m_V.Count(); ++i) raw.m_V.Append(box_b.raw().m_V[i]);
+  for (int i = 0; i < box_a.raw().m_F.Count(); ++i) raw.m_F.Append(box_a.raw().m_F[i]);
+  for (int i = 0; i < box_b.raw().m_F.Count(); ++i) {
+    ON_MeshFace f = box_b.raw().m_F[i];
+    f.vi[0] += offset;
+    f.vi[1] += offset;
+    f.vi[2] += offset;
+    f.vi[3] += offset;
+    raw.m_F.Append(f);
+  }
+
+  const SubD subd = SubD::FromControlMesh(combined);
+  Check(subd.VertexCount() == 16 && subd.FaceCount() == 12,
+        "sanity: the combined SubD really does hold both boxes' full topology");
+  const auto report = subd.Check();
+  Check(report.body_count == 2, "two disjoint boxes sharing no edge or vertex report as exactly 2 bodies");
+  Check(report.non_manifold_edges == 0 && report.non_manifold_vertices == 0,
+        "two cleanly disjoint boxes trip neither non-manifold condition - only body_count flags them");
+  Check(!report.IsManifoldSingleBody(), "IsManifoldSingleBody() is false once body_count > 1");
+}
+
+void TestSubDCheckNonManifoldEdgeDetected() {
+  using dino8::kernel::SubD;
+
+  // Three quads fanned around one shared edge (v0-v1) - a genuine
+  // 3-face edge, built directly via ON_SubD's own low-level
+  // AddVertex/AddEdge/AddFace (the same primitives SubD::CapBoundaryLoop()
+  // already uses internally) since no ordinary Mesh->SubD conversion path
+  // produces one.
+  SubD subd;
+  ON_SubD& raw = subd.raw();
+  const double p_v0[3] = {0.0, 0.0, 0.0};
+  const double p_v1[3] = {0.0, 0.0, 1.0};
+  ON_SubDVertex* v0 = raw.AddVertex(ON_SubDVertexTag::Unset, p_v0);
+  ON_SubDVertex* v1 = raw.AddVertex(ON_SubDVertexTag::Unset, p_v1);
+
+  auto add_wing = [&](double x, double y) {
+    const double pa[3] = {x, y, 0.0};
+    const double pb[3] = {x, y, 1.0};
+    ON_SubDVertex* va = raw.AddVertex(ON_SubDVertexTag::Unset, pa);
+    ON_SubDVertex* vb = raw.AddVertex(ON_SubDVertexTag::Unset, pb);
+    // FindOrAddEdge, not AddEdge: the whole point of this fixture is that
+    // all 3 wings attach to the SAME v0-v1 edge object - a plain AddEdge()
+    // here would silently create a 3rd/4th distinct edge between the same
+    // two vertices instead, leaving every edge at 1 face and this test
+    // fixture not testing what it claims to.
+    ON_SubDEdge* shared = raw.FindOrAddEdge(v0, v1).Edge();
+    ON_SubDEdge* e1 = raw.AddEdge(ON_SubDEdgeTag::Unset, v1, vb);
+    ON_SubDEdge* e2 = raw.AddEdge(ON_SubDEdgeTag::Unset, vb, va);
+    ON_SubDEdge* e3 = raw.AddEdge(ON_SubDEdgeTag::Unset, va, v0);
+    ON_SimpleArray<ON_SubDEdge*> edges(4);
+    edges.Append(shared);
+    edges.Append(e1);
+    edges.Append(e2);
+    edges.Append(e3);
+    return raw.AddFace(edges);
+  };
+
+  Check(add_wing(1.0, 0.0) != nullptr, "the first wing quad was added");
+  Check(add_wing(0.0, 1.0) != nullptr, "the second wing quad was added");
+  Check(add_wing(-1.0, 0.0) != nullptr, "the third wing quad (making v0-v1 a 3-face edge) was added");
+
+  const auto report = subd.Check();
+  Check(report.non_manifold_edges == 1, "exactly one edge (v0-v1) has 3 incident faces");
+  Check(report.non_manifold_edge_list.size() == 1, "non_manifold_edge_list has exactly the one flagged edge");
+  const unsigned int id0 = v0->m_id;
+  const unsigned int id1 = v1->m_id;
+  const auto expected = id0 < id1 ? std::make_pair(id0, id1) : std::make_pair(id1, id0);
+  Check(report.non_manifold_edge_list[0] == expected,
+        "the flagged edge's reported (a, b) vertex ids are v0/v1's own ids, a < b");
+  Check(report.non_manifold_vertices == 0,
+        "v0 and v1 each have all 3 incident faces sharing edges through each other via the "
+        "flagged edge itself, so they still form one connected group - this is a pure "
+        "edge defect, not a bowtie vertex");
+  Check(report.body_count == 1, "the whole fan is still one connected body");
+  Check(!report.IsManifoldSingleBody(), "IsManifoldSingleBody() is false once a non-manifold edge exists");
+}
+
+void TestSubDCheckBowtieVertexDetected() {
+  using dino8::kernel::SubD;
+
+  // Two single-quad "wings" that share ONLY vertex v0 - no edge in common
+  // at all (quad A: v0,vA1,vA2,vA3; quad B: v0,vB1,vB2,vB3, with none of
+  // A's other 3 vertices equal to any of B's) - the classic bowtie/pinch
+  // point: v0.FaceCount() == 2, but those 2 faces share no edge through
+  // v0, so Check()'s per-vertex fan union-find leaves them in 2 separate
+  // groups even though non_manifold_edges never fires (every edge here
+  // has exactly 1 face - this SubD is entirely boundary).
+  SubD subd;
+  ON_SubD& raw = subd.raw();
+  const double p0[3] = {0.0, 0.0, 0.0};
+  ON_SubDVertex* v0 = raw.AddVertex(ON_SubDVertexTag::Unset, p0);
+
+  auto add_wing_quad = [&](double x0, double y0) {
+    const double pa[3] = {x0, y0, 0.0};
+    const double pb[3] = {x0 + 1.0, y0, 0.0};
+    const double pc[3] = {x0 + 1.0, y0 + 1.0, 0.0};
+    ON_SubDVertex* va = raw.AddVertex(ON_SubDVertexTag::Unset, pa);
+    ON_SubDVertex* vb = raw.AddVertex(ON_SubDVertexTag::Unset, pb);
+    ON_SubDVertex* vc = raw.AddVertex(ON_SubDVertexTag::Unset, pc);
+    ON_SubDEdge* e0 = raw.AddEdge(ON_SubDEdgeTag::Unset, v0, va);
+    ON_SubDEdge* e1 = raw.AddEdge(ON_SubDEdgeTag::Unset, va, vb);
+    ON_SubDEdge* e2 = raw.AddEdge(ON_SubDEdgeTag::Unset, vb, vc);
+    ON_SubDEdge* e3 = raw.AddEdge(ON_SubDEdgeTag::Unset, vc, v0);
+    ON_SimpleArray<ON_SubDEdge*> edges(4);
+    edges.Append(e0);
+    edges.Append(e1);
+    edges.Append(e2);
+    edges.Append(e3);
+    return raw.AddFace(edges);
+  };
+
+  Check(add_wing_quad(1.0, 0.0) != nullptr, "wing A was added");
+  Check(add_wing_quad(-2.0, -1.0) != nullptr, "wing B was added, sharing only v0 with wing A");
+  Check(v0->FaceCount() == 2, "sanity: v0 really does have both wings' faces incident to it");
+
+  const auto report = subd.Check();
+  Check(report.non_manifold_edges == 0,
+        "every edge here (including both of v0's own) still has exactly 1 face - no edge is "
+        "shared between the two wings, so non_manifold_edges alone would miss this defect entirely");
+  Check(report.non_manifold_vertices == 1, "v0 is detected as exactly one non-manifold (bowtie) vertex");
+  Check(report.non_manifold_vertex_list.size() == 1 && report.non_manifold_vertex_list[0] == v0->m_id,
+        "the flagged vertex's reported id is v0's own id");
+  Check(report.body_count == 2,
+        "body_count (edge-adjacency connectivity) still separately counts the two wings as 2 "
+        "bodies, since they share no edge - a vertex-only pinch point is not an edge connection");
+  Check(!report.IsManifoldSingleBody(), "IsManifoldSingleBody() is false once a bowtie vertex exists");
+}
+
 void TestMeshComputeVertexNormals() {
   using dino8::kernel::Mesh;
   using dino8::kernel::Vector3d;
@@ -13357,6 +13706,150 @@ void TestOffsetFaceOnTetrahedronMatchesExactCubicVolumeScaling() {
         "the classical pyramid-similarity ratio - not merely a plausible number");
   Check(moved.TessellateToClosedMesh(1, 1).IsClosedManifold(),
         "the moved tetrahedron also tessellates to a closed, watertight manifold");
+}
+
+// The exact B-rep whole-body offset (sharp/mitered corners) - PARITY_MAP's
+// "Body offset (offset an entire closed solid outward/inward as a B-rep)"
+// gap, previously only available as a mesh-level Manifold-Minkowski
+// approximation (OffsetSolid). Uniform growth/shrink of a box is the
+// simplest exact case: every pair of opposite faces moves outward by the
+// same distance, so each side length grows by exactly 2*d.
+void TestOffsetSolidConvexPlanarUniformBoxMatchesExactVolume() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::OffsetSolidConvexPlanar;
+  using dino8::kernel::Point3d;
+
+  const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+
+  const Brep grown = OffsetSolidConvexPlanar(box, 1.5);
+  Check(std::fabs(PlanarBrepVolumeExact(grown) - 13.0 * 13.0 * 13.0) < 1e-9,
+        "OffsetSolidConvexPlanar(box, +1.5) gives volume exactly 13^3 (every side grows by 2*1.5)");
+  Check(grown.FaceCount() == 6, "OffsetSolidConvexPlanar on a box keeps exactly 6 faces (no topology change)");
+  Check(grown.TessellateToClosedMesh(1, 1).IsClosedManifold(),
+        "OffsetSolidConvexPlanar's grown result tessellates to a closed, watertight manifold");
+
+  const Brep shrunk = OffsetSolidConvexPlanar(box, -2.0);
+  Check(std::fabs(PlanarBrepVolumeExact(shrunk) - 6.0 * 6.0 * 6.0) < 1e-9,
+        "OffsetSolidConvexPlanar(box, -2.0) gives volume exactly 6^3 (every side shrinks by 2*2.0)");
+
+  bool threw = false;
+  try { OffsetSolidConvexPlanar(box, -6.0); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "OffsetSolidConvexPlanar refuses a shrink that collapses the solid (opposite faces would cross)");
+
+  threw = false;
+  try { OffsetSolidConvexPlanar(box, std::vector<double>{1.0, 2.0, 3.0}); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "OffsetSolidConvexPlanar refuses a distances vector whose size doesn't match PlanarFaces().size()");
+}
+
+// The per-face (vector) overload with DIFFERENT distances per face -
+// independently checked against the box's own new bounding box, the same
+// way OffsetFace's own left/right test isolates one moved face; here every
+// face moves by its own amount at once, so the check must track all six.
+void TestOffsetSolidConvexPlanarPerFaceBoxMatchesExactBoundingBox() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::OffsetSolidConvexPlanar;
+  using dino8::kernel::Point3d;
+
+  // Box face order per Brep::Box()'s own comment: 0=bottom(-z) 1=top(+z)
+  // 2=front(-y) 3=back(+y) 4=left(-x) 5=right(+x).
+  const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+  const std::vector<double> distances = {1.0, 2.0, 0.5, 1.5, 3.0, 0.0};
+  const Brep offset = OffsetSolidConvexPlanar(box, distances);
+
+  // bottom -1, top +2 -> z in [-1, 12]; front -0.5, back +1.5 -> y in
+  // [-0.5, 11.5]; left -3, right +0 -> x in [-3, 10].
+  Point3d min_pt = offset.PlanarFaces()[0].loop[0], max_pt = min_pt;
+  for (const auto& f : offset.PlanarFaces()) {
+    for (const Point3d& p : f.loop) {
+      min_pt.x = std::min(min_pt.x, p.x); max_pt.x = std::max(max_pt.x, p.x);
+      min_pt.y = std::min(min_pt.y, p.y); max_pt.y = std::max(max_pt.y, p.y);
+      min_pt.z = std::min(min_pt.z, p.z); max_pt.z = std::max(max_pt.z, p.z);
+    }
+  }
+  Check(std::fabs(min_pt.x - (-3.0)) < 1e-9 && std::fabs(max_pt.x - 10.0) < 1e-9 &&
+            std::fabs(min_pt.y - (-0.5)) < 1e-9 && std::fabs(max_pt.y - 11.5) < 1e-9 &&
+            std::fabs(min_pt.z - (-1.0)) < 1e-9 && std::fabs(max_pt.z - 12.0) < 1e-9,
+        "OffsetSolidConvexPlanar's per-face distances give the exact bounding box [-3,10]x[-0.5,11.5]x[-1,12] - "
+        "each of the six faces moved independently by its own distance");
+  Check(std::fabs(PlanarBrepVolumeExact(offset) - 13.0 * 12.0 * 13.0) < 1e-9,
+        "...and the exact volume 13x12x13 matches those same six independent moves");
+}
+
+// A right tetrahedron is a genuinely non-axis-aligned, non-rectangular
+// convex solid whose UNIFORM sharp offset has no simple closed-form
+// scaling (unlike the box above) - each new vertex is the intersection
+// of the SAME three planes that met at the old vertex, each translated
+// outward by d along its own normal, an independent recomputation (via
+// the standard three-plane-intersection formula) done here directly from
+// the tetrahedron's own hand-built face planes, NOT by calling
+// OffsetSolidConvexPlanar or any of its own internals.
+void TestOffsetSolidConvexPlanarTetrahedronMatchesIndependentVertexRecomputation() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::OffsetSolidConvexPlanar;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  const double h = 3.0;
+  const Point3d apex(0, 0, 0);
+  const Point3d b0(2, 0, h), b1(-1, 2, h), b2(-1, -2, h);
+  const Point3d centroid((apex.x + b0.x + b1.x + b2.x) / 4.0, (apex.y + b0.y + b1.y + b2.y) / 4.0,
+                          (apex.z + b0.z + b1.z + b2.z) / 4.0);
+
+  auto make_outward = [&](Point3d p0, Point3d p1, Point3d p2) {
+    Brep::PlanarFace f;
+    Vector3d n = ON_CrossProduct(p1 - p0, p2 - p0);
+    n.Unitize();
+    if (ON_DotProduct(n, p0 - centroid) < 0) {
+      std::swap(p1, p2);
+      n = -n;
+    }
+    f.plane = ON_Plane(p0, n);
+    f.loop = {p0, p1, p2};
+    return f;
+  };
+
+  // f0=(apex,b0,b1) f1=(apex,b1,b2) f2=(apex,b2,b0) f3=base(b0,b2,b1) -
+  // same fixture as TestOffsetFaceOnTetrahedronMatchesExactCubicVolumeScaling.
+  const Brep::PlanarFace f0 = make_outward(apex, b0, b1);
+  const Brep::PlanarFace f1 = make_outward(apex, b1, b2);
+  const Brep::PlanarFace f2 = make_outward(apex, b2, b0);
+  const Brep::PlanarFace f3 = make_outward(b0, b2, b1);
+  const Brep tet = Brep::FromPlanarFaces({f0, f1, f2, f3});
+  const double orig_vol = PlanarBrepVolumeExact(tet);
+  Check(orig_vol > 0.0, "the hand-built tetrahedron has positive (correctly outward-oriented) volume");
+
+  // The point where three planes n_i.x = c_i (c_i = dot(origin_i, n_i))
+  // meet - the standard closed-form three-plane intersection via cross
+  // products, independent of anything OffsetSolidConvexPlanar itself does.
+  auto intersect3 = [](const ON_Plane& p0, const ON_Plane& p1, const ON_Plane& p2, double d) {
+    const Vector3d n0 = p0.zaxis, n1 = p1.zaxis, n2 = p2.zaxis;
+    const double c0 = ON_DotProduct(p0.origin, n0) + d;
+    const double c1 = ON_DotProduct(p1.origin, n1) + d;
+    const double c2 = ON_DotProduct(p2.origin, n2) + d;
+    const Vector3d num = c0 * ON_CrossProduct(n1, n2) + c1 * ON_CrossProduct(n2, n0) + c2 * ON_CrossProduct(n0, n1);
+    const double denom = ON_DotProduct(n0, ON_CrossProduct(n1, n2));
+    return Point3d(num.x / denom, num.y / denom, num.z / denom);
+  };
+
+  const double d = 0.4;
+  // apex = f0 n f1 n f2 (not f3); b0 = f0 n f2 n f3 (not f1);
+  // b1 = f0 n f1 n f3 (not f2); b2 = f1 n f2 n f3 (not f0).
+  const Point3d new_apex = intersect3(f0.plane, f1.plane, f2.plane, d);
+  const Point3d new_b0 = intersect3(f0.plane, f2.plane, f3.plane, d);
+  const Point3d new_b1 = intersect3(f0.plane, f1.plane, f3.plane, d);
+  const Point3d new_b2 = intersect3(f1.plane, f2.plane, f3.plane, d);
+  const double expected_vol =
+      std::fabs(ON_DotProduct(new_b0 - new_apex, ON_CrossProduct(new_b1 - new_apex, new_b2 - new_apex))) / 6.0;
+
+  const Brep offset = OffsetSolidConvexPlanar(tet, d);
+  Check(offset.FaceCount() == 4, "OffsetSolidConvexPlanar on the tetrahedron keeps exactly 4 faces");
+  Check(std::fabs(PlanarBrepVolumeExact(offset) - expected_vol) / expected_vol < 1e-9,
+        "OffsetSolidConvexPlanar's tetrahedron volume matches an independent recomputation of every new vertex "
+        "as the intersection of its own three (each individually translated) original planes - not merely a "
+        "plausible-looking number");
+  Check(expected_vol > orig_vol, "growing every face outward by the same positive d increases the volume");
+  Check(offset.TessellateToClosedMesh(1, 1).IsClosedManifold(),
+        "the offset tetrahedron also tessellates to a closed, watertight manifold");
 }
 
 }  // namespace
@@ -31812,6 +32305,7 @@ int main() {
   TestBooleanIntersection();
   TestBooleanDifference();
   TestBooleanSymmetricDifference();
+  TestComputeInterference();
   TestBrepBoxIsClosedAndWatertight();
   TestBrepLacksFullOpenNurbsTopologyButStillUsable();
   TestBrepGetTightBoundingBox();
@@ -31878,6 +32372,11 @@ int main() {
   TestSubDToNurbsPatchesAdaptiveSplitsIrregularFace();
   TestSubDToNurbsPatchesAdaptiveRegularFaceUnaffected();
   TestSubDToNurbsPatchesAdaptiveThrowsOnNegativeLevels();
+  TestSubDCheckCleanClosedBoxReportsNoDefects();
+  TestSubDCheckOpenGridReportsNakedEdgesOnly();
+  TestSubDCheckDisjointPiecesReportsMultipleBodies();
+  TestSubDCheckNonManifoldEdgeDetected();
+  TestSubDCheckBowtieVertexDetected();
   TestMeshComputeVertexNormals();
   TestMeshSaveObjRoundTrips();
   TestMeshTextureCoordinates();
@@ -31912,6 +32411,9 @@ int main() {
   TestShellClosedTorusMatchesExactShellVolumeAndRejectsSpindle();
   TestOffsetFaceOnBoxMatchesExactLinearVolumeAndPinsOtherFaces();
   TestOffsetFaceOnTetrahedronMatchesExactCubicVolumeScaling();
+  TestOffsetSolidConvexPlanarUniformBoxMatchesExactVolume();
+  TestOffsetSolidConvexPlanarPerFaceBoxMatchesExactBoundingBox();
+  TestOffsetSolidConvexPlanarTetrahedronMatchesIndependentVertexRecomputation();
   TestFilletConvexEdgeUnitCubeTopFrontCorner();
   TestFilletConvexEdgeTaperedRailExactness();
   TestFilletConvexEdgeTaperedClosedFormVolumeMatchesFrustumFormula();
@@ -32134,6 +32636,7 @@ int main() {
   TestTolerancePolicyValuesAreTheOnesInForce();
   TestBrepCheckReportsCleanBoxAsClean();
   TestBrepCheckDoesNotFalselyFlagCurvedOrToplessValidFaces();
+  TestBrepRemoveDegenerateOrSliverFacesDoesNotTouchValidSolids();
   TestBrepCheckDetectsNonManifoldPinchVertex();
   TestBrepSplitNonManifoldVertexHealsPinchPoint();
   TestBrepCheckAndUnifyNormalsOnFlippedFace();

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <stdexcept>
+#include <unordered_map>
 
 namespace dino8::kernel {
 
@@ -99,6 +100,152 @@ bool SubD::IsValid() const {
   // comment). This is a validity check, not an assertion, so a "no"
   // answer must never have that side effect.
   return subd_.IsValid(reinterpret_cast<ON_TextLog*>(1));
+}
+
+namespace {
+
+// A tiny union-find over a dense [0, n) index space - shared by Check()'s
+// two independent components-questions (per-vertex fan connectivity, and
+// whole-SubD body connectivity) so neither needs to duplicate the other.
+class UnionFind {
+ public:
+  explicit UnionFind(size_t n) : parent_(n) {
+    for (size_t i = 0; i < n; ++i) parent_[i] = i;
+  }
+  size_t Find(size_t i) {
+    while (parent_[i] != i) {
+      parent_[i] = parent_[parent_[i]];
+      i = parent_[i];
+    }
+    return i;
+  }
+  void Union(size_t a, size_t b) {
+    a = Find(a);
+    b = Find(b);
+    if (a != b) parent_[a] = b;
+  }
+
+ private:
+  std::vector<size_t> parent_;
+};
+
+}  // namespace
+
+SubD::SubDCheckReport SubD::Check() const {
+  SubDCheckReport report;
+
+  ON_SubDEdgeIterator eit = subd_.EdgeIterator();
+  for (const ON_SubDEdge* e = eit.FirstEdge(); e != nullptr; e = eit.NextEdge()) {
+    const unsigned int face_count = e->FaceCount();
+    if (face_count == 1) {
+      ++report.naked_edges;
+    } else if (face_count >= 3) {
+      ++report.non_manifold_edges;
+      const ON_SubDVertex* v0 = e->Vertex(0);
+      const ON_SubDVertex* v1 = e->Vertex(1);
+      unsigned int a = v0 != nullptr ? v0->m_id : 0;
+      unsigned int b = v1 != nullptr ? v1->m_id : 0;
+      if (a > b) std::swap(a, b);
+      report.non_manifold_edge_list.emplace_back(a, b);
+    }
+  }
+
+  // Non-manifold ("bowtie") vertices: for each vertex, union its own
+  // incident faces via whichever of the vertex's incident edges they
+  // share, then check whether that leaves more than one group. A
+  // well-formed vertex's incident faces always form exactly one fan
+  // (open, at a boundary vertex, or closed, at an interior one); more
+  // than one group means two or more otherwise-unconnected cones of
+  // faces meet only at this single point.
+  ON_SubDVertexIterator vit = subd_.VertexIterator();
+  for (const ON_SubDVertex* v = vit.FirstVertex(); v != nullptr; v = vit.NextVertex()) {
+    const unsigned int face_count = v->FaceCount();
+    if (face_count < 2) continue;  // 0 or 1 incident face can't be split into >1 group
+
+    std::vector<const ON_SubDFace*> faces(face_count);
+    for (unsigned int i = 0; i < face_count; ++i) faces[i] = v->Face(i);
+    const auto face_index = [&faces](const ON_SubDFace* f) -> int {
+      for (size_t i = 0; i < faces.size(); ++i) {
+        if (faces[i] == f) return static_cast<int>(i);
+      }
+      return -1;
+    };
+
+    UnionFind uf(faces.size());
+    const unsigned int edge_count = v->EdgeCount();
+    for (unsigned int i = 0; i < edge_count; ++i) {
+      const ON_SubDEdge* e = v->Edge(i);
+      if (e == nullptr) continue;
+      const unsigned int edge_face_count = e->FaceCount();
+      int first = -1;
+      for (unsigned int j = 0; j < edge_face_count; ++j) {
+        const int idx = face_index(e->Face(j));
+        if (idx < 0) continue;  // this edge's face doesn't touch v - can't happen, defensive only
+        if (first < 0) {
+          first = idx;
+        } else {
+          uf.Union(static_cast<size_t>(first), static_cast<size_t>(idx));
+        }
+      }
+    }
+
+    size_t group_count = 0;
+    {
+      std::vector<bool> seen_root(faces.size(), false);
+      for (size_t i = 0; i < faces.size(); ++i) {
+        const size_t root = uf.Find(i);
+        if (!seen_root[root]) {
+          seen_root[root] = true;
+          ++group_count;
+        }
+      }
+    }
+    if (group_count > 1) {
+      ++report.non_manifold_vertices;
+      report.non_manifold_vertex_list.push_back(v->m_id);
+    }
+  }
+
+  // Whole-SubD body count: union every pair of faces that share an edge,
+  // then count the distinct groups among ALL faces (not just one
+  // vertex's) - the same "faces sharing an edge are the same piece"
+  // definition Brep::SplitDisjointPieces()'s own
+  // ON_Brep::LabelConnectedComponents() uses for Breps.
+  std::vector<const ON_SubDFace*> all_faces;
+  ON_SubDFaceIterator fit = subd_.FaceIterator();
+  for (const ON_SubDFace* f = fit.FirstFace(); f != nullptr; f = fit.NextFace()) {
+    all_faces.push_back(f);
+  }
+  if (!all_faces.empty()) {
+    std::unordered_map<const ON_SubDFace*, size_t> all_face_index;
+    all_face_index.reserve(all_faces.size() * 2);
+    for (size_t i = 0; i < all_faces.size(); ++i) all_face_index.emplace(all_faces[i], i);
+
+    UnionFind uf(all_faces.size());
+    ON_SubDEdgeIterator eit2 = subd_.EdgeIterator();
+    for (const ON_SubDEdge* e = eit2.FirstEdge(); e != nullptr; e = eit2.NextEdge()) {
+      const unsigned int face_count = e->FaceCount();
+      if (face_count < 2) continue;
+      const auto first_it = all_face_index.find(e->Face(0));
+      if (first_it == all_face_index.end()) continue;  // defensive only - every edge's faces are in the SubD's own face list
+      for (unsigned int j = 1; j < face_count; ++j) {
+        const auto other_it = all_face_index.find(e->Face(j));
+        if (other_it == all_face_index.end()) continue;
+        uf.Union(first_it->second, other_it->second);
+      }
+    }
+
+    std::vector<bool> seen_root(all_faces.size(), false);
+    for (size_t i = 0; i < all_faces.size(); ++i) {
+      const size_t root = uf.Find(i);
+      if (!seen_root[root]) {
+        seen_root[root] = true;
+        ++report.body_count;
+      }
+    }
+  }
+
+  return report;
 }
 
 int SubD::CreaseEdgeCount() const {
