@@ -341,8 +341,20 @@ class Brep {
   // zero-area band inside one face - and throws; revolve the open
   // profile instead (the L-shaped polyline (0,0)->(r,0)->(r,h)->(0,h)
   // gives the cylinder exactly).
+  //
+  // `start_angle`: the sweep begins `start_angle` radians (any sign,
+  // any magnitude - reduced by the rotation below) around the axis from
+  // the profile's own given position rather than always starting at it,
+  // e.g. Rhino/AutoCAD Revolve's own start-angle option (revolve from
+  // 30 to 270 degrees rather than always 0 to `angle`). This is done by
+  // rigidly rotating the profile about the same axis by `start_angle`
+  // before revolving it through `angle` - exact for any angle (the
+  // surface-of-revolution construction is rotation-equivariant about its
+  // own axis), and every throw/cap rule above is unaffected since a
+  // rotation about the axis preserves the profile's plane, side, and
+  // on-axis/off-axis endpoints exactly.
   static Brep Revolve(const NurbsCurve& profile, Point3d axis_point, Vector3d axis_direction,
-                      double angle = 2.0 * ON_PI, bool cap = true);
+                      double angle = 2.0 * ON_PI, bool cap = true, double start_angle = 0.0);
 
   // Loft: a surface interpolating `sections` in order, degree `degree`
   // (clamped to sections.size() - 1) in the loft direction. Sections are

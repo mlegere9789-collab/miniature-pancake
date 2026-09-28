@@ -29012,6 +29012,69 @@ void TestRevolveExactSolidsAndCaps() {
         "...but builds the open surface with cap=false");
 }
 
+// `start_angle`: revolve begins that many radians around the axis from
+// the profile's own given position rather than always at it (Rhino/
+// AutoCAD Revolve's own start-angle option). Documented as an exact
+// rigid rotation of the whole swept wall - checked directly here by
+// comparing a shifted and unshifted wall sample-for-sample, not just by
+// volume, plus the throw/cap rules being unaffected.
+void TestRevolveStartAngleShiftsSweepExactly() {
+  const Point3d origin(0, 0, 0);
+  const Vector3d z(0, 0, 1);
+  const NurbsCurve ring = Polyline({P(3, 0, 0), P(5, 0, 0), P(5, 0, 2), P(3, 0, 2), P(3, 0, 0)});
+  const double start = M_PI / 3.0;  // 60 degrees - an arbitrary, non-special offset
+  const double angle = M_PI / 2.0;  // quarter revolve
+  const double exact_quarter_torus_volume = 2.0 * M_PI * 4.0 * 4.0 / 4.0;  // Pappus V = 2*pi*R_c*A, R_c=4, A=4
+
+  const Brep base = Brep::Revolve(ring, origin, z, angle);
+  const Brep shifted = Brep::Revolve(ring, origin, z, angle, /*cap=*/true, start);
+  CheckSolidTopology(shifted, 3, "start_angle-shifted quarter revolve of the off-axis rectangle");
+  CheckClosedMeshVolume(shifted, 8, 16, exact_quarter_torus_volume, 0.003,
+                        "start_angle-shifted quarter torus (volume unaffected by the shift)");
+
+  // Sample both walls on the SAME (u, v) grid: at every grid point, the
+  // shifted wall's point must be the base wall's point carried through
+  // the exact same rigid rotation `start_angle` documents - not just a
+  // point set that happens to have the same volume.
+  const NurbsSurface wall_base = FaceSurface(base, 0);
+  const NurbsSurface wall_shifted = FaceSurface(shifted, 0);
+  const ON_Interval du = wall_base.raw().Domain(0), dv = wall_base.raw().Domain(1);
+  Check(wall_shifted.raw().Domain(0) == du && wall_shifted.raw().Domain(1) == dv,
+        "shifted wall has the same parameter domain as the base wall");
+  ON_Xform rot;
+  rot.Rotation(start, z, origin);
+  double worst = 0.0;
+  for (int i = 0; i <= 20; ++i) {
+    for (int j = 0; j <= 20; ++j) {
+      const Point3d p0 = wall_base.PointAt(du.ParameterAt(i / 20.0), dv.ParameterAt(j / 20.0));
+      const Point3d p1 = wall_shifted.PointAt(du.ParameterAt(i / 20.0), dv.ParameterAt(j / 20.0));
+      worst = std::max(worst, (rot * p0).DistanceTo(p1));
+    }
+  }
+  Check(worst < 1e-9, "start_angle rigidly rotates the whole swept wall by exactly that many radians");
+
+  // Full revolve (angle == 2*pi): start_angle can only move the seam,
+  // never change the swept point set - same closed torus, same volume.
+  const Brep full_shifted = Brep::Revolve(ring, origin, z, 2.0 * M_PI, true, M_PI / 5.0);
+  CheckSolidTopology(full_shifted, 1, "start_angle on a full revolve still closes into one face");
+  CheckClosedMeshVolume(full_shifted, 8, 64, 2.0 * M_PI * 4.0 * 4.0, 0.003, "full torus volume unaffected by start_angle");
+
+  // Negative offsets and offsets beyond a full turn both just rotate the
+  // sweep further, not error.
+  Check(Brep::Revolve(ring, origin, z, angle, true, -M_PI / 4.0).FaceCount() == 3, "negative start_angle is accepted");
+  Check(Brep::Revolve(ring, origin, z, angle, true, 5.0 * M_PI).FaceCount() == 3, "start_angle beyond a full turn is accepted");
+  Check(Throws([&] { Brep::Revolve(ring, origin, z, angle, true, std::numeric_limits<double>::quiet_NaN()); }),
+        "a non-finite start_angle throws");
+
+  // The L profile (both endpoints on the axis, pole/apex capping) still
+  // caps into a genuine solid with a nonzero start_angle - the on-axis
+  // logic doesn't care where around the axis the wedge sits.
+  const NurbsCurve ell = Polyline({P(0, 0, 0), P(2, 0, 0), P(2, 0, 3), P(0, 0, 3)});
+  const Brep quarter_shifted = Brep::Revolve(ell, origin, z, M_PI / 2, true, M_PI / 2);
+  CheckSolidTopology(quarter_shifted, 3, "start_angle-shifted quarter revolve of the L profile still caps into a solid");
+  CheckClosedMeshVolume(quarter_shifted, 12, 16, M_PI * 12.0 / 4.0, 0.003, "start_angle-shifted quarter cylinder volume");
+}
+
 void TestLoftInterpolatesSectionsExactly() {
   // Two coaxial circles, degree 1: the exact cone frustum (a real
   // NURBS cone, not an approximation), volume (pi h / 3)(r0^2 + r0 r1 + r1^2).
@@ -33518,6 +33581,7 @@ int main() {
   sweep_tests::TestMergeAndWeldDropsCollapsedPoleTriangles();
   sweep_tests::TestExtrudeRectangleIsExactCappedSolid();
   sweep_tests::TestRevolveExactSolidsAndCaps();
+  sweep_tests::TestRevolveStartAngleShiftsSweepExactly();
   sweep_tests::TestLoftInterpolatesSectionsExactly();
   sweep_tests::TestLoftTangentConstrainedEndsMatchExactly();
   sweep_tests::TestSweep1AndPipe();

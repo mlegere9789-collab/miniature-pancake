@@ -1480,15 +1480,25 @@ Brep Brep::ExtrudeTapered(const NurbsCurve& profile, Vector3d direction, double 
   return Loft({profile, top_translated}, 1, /*closed=*/false, cap);
 }
 
-Brep Brep::Revolve(const NurbsCurve& profile, Point3d axis_point, Vector3d axis_direction, double angle, bool cap) {
+Brep Brep::Revolve(const NurbsCurve& profile, Point3d axis_point, Vector3d axis_direction, double angle, bool cap,
+                   double start_angle) {
   const char* caller = "Revolve";
   ON_3dVector T = axis_direction;
   if (!T.Unitize()) Fail(caller, "axis_direction must be non-zero");
   if (!(angle > 0.0) || angle > 2.0 * ON_PI + 1e-12) Fail(caller, "angle must be in (0, 2*pi] radians");
+  if (!std::isfinite(start_angle)) Fail(caller, "start_angle must be finite");
   const bool full = std::fabs(angle - 2.0 * ON_PI) <= 1e-12;
   ON_NurbsCurve c = profile.raw();
   if (!c.IsValid()) Fail(caller, "profile is not a valid NURBS curve");
   ClampIfPeriodic(c);
+  if (start_angle != 0.0) {
+    // Rotate the profile rigidly about the same axis so the sweep below
+    // (which always starts at the profile's own current position) begins
+    // `start_angle` around from where it was given.
+    ON_Xform rot;
+    rot.Rotation(start_angle, T, axis_point);
+    c.Transform(rot);
+  }
   const double scale = CurveScale(c) + axis_point.DistanceTo(CvCentroid(c));
   const double tol = 1e-9 * scale;
 
