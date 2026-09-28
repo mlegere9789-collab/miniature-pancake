@@ -558,6 +558,77 @@ Brep OffsetSolidConvexPlanar(const Brep& solid, const std::vector<double>& dista
 // per-face one.
 Brep OffsetSolidConvexPlanar(const Brep& solid, double distance);
 
+// The genuine Rhino/SolidWorks "push/pull" (PressPull) direct-edit: unlike
+// OffsetFace() above (which always keeps `solid`'s own face count fixed,
+// re-extending/re-trimming every OTHER face in place to reach the moved
+// one), a PUSH (`distance > 0`) here genuinely EXTRUDES `face_index`'s own
+// boundary into brand-new side-wall faces reaching into previously-empty
+// space, exactly the "extrude...and merge...into its own body" construction
+// PARITY_MAP's "Push/pull a face" gap draws against OffsetFace()'s own
+// doc comment.
+//
+// This does NOT go through Brep::Extrude()+a generic Brep boolean, despite
+// that being the obvious first construction to reach for - two real,
+// disclosed reasons why, confirmed directly by testing rather than
+// assumed: (1) Extrude() sweeps an entire closed profile as ONE
+// NurbsSurface "wall", only PIECEWISE planar (flat per polygon edge, not
+// flat as a whole) for any polygon with more than one distinct edge
+// direction, so `PlanarFaces()`'s own "every face is individually planar"
+// precondition would reject it outright the moment a generic planar
+// boolean tried to read it back; (2) even given a hand-assembled,
+// genuinely all-planar prism (one PlanarFace per polygon edge, exactly
+// MakePrismFromPolygon's own construction in this codebase's own test
+// suite), BooleanCombinePlanar()'s own split/classify/reassemble pipeline
+// cannot actually complete a boolean whose two operands touch along a
+// FULL flush, zero-overlap coincident face and nowhere else (exactly what
+// a prism grown directly off an existing face always is) - it throws
+// deep inside Brep::FromMixedFaces() ("an edge is shared by 3 or more
+// faces"), a genuine, disclosed gap in that engine's own coincident-face
+// handling for this specific configuration, not something safe to paper
+// over here.
+//
+// So this is direct topological surgery instead, no boolean at all:
+// `face_index`'s own boundary translated by `offset = distance *
+// face.plane.zaxis` becomes the new face there (replacing it), and:
+//   - `distance > 0` (PUSH): every OTHER face is left completely
+//     untouched (the new cap sits entirely beyond `solid`'s own existing
+//     extent, so nothing needs retrimming), and one brand-new side-wall
+//     PlanarFace per edge of the pushed face's own loop bridges the OLD
+//     boundary (still exactly where `solid`'s own neighbours meet it) to
+//     the NEW one - real new material, not an existing face moved.
+//   - `distance < 0` (PULL): the slab between the old and new plane is
+//     being genuinely REMOVED, so every neighbour that used to bound it
+//     is retrimmed back to the new (closer) plane via a single half-space
+//     clip (real, exact, and valid for a concave neighbour loop too - see
+//     SplitByHalfspace()'s own doc comment) - no new side walls are
+//     needed, since a retrimmed neighbour's own boundary now meets the
+//     new cap directly with no gap. Only a neighbour whose own plane is
+//     PERPENDICULAR to the pushed face's normal (checked directly, within
+//     1e-6) can be safely retrimmed this way (the shared edge then lies
+//     exactly along the clip plane on both the old and new cap); an
+//     OBLIQUE neighbour would need a genuine re-intersection this
+//     function does not attempt and refuses instead of guessing.
+//
+// Unlike OffsetFace()/ShellConvexPlanar()/OffsetSolidConvexPlanar(), this
+// has NO convexity precondition on `solid` at all - a push never touches
+// another face, and a pull's own perpendicular-neighbour clip needs no
+// global convexity, only that LOCAL condition at each neighbour actually
+// touching the pushed face, so an L-shaped or other genuinely non-convex
+// planar-faced solid is squarely in scope (see this file's own
+// TestPushPullFaceOnNonConvexLShapeGrowsByExactSlabVolume test). It still
+// requires `solid` to be entirely planar-faced (`PlanarFaces()`'s own
+// precondition - a genuine curved-face push/pull is future work, the same
+// NURBS-NURBS re-trimming gap BooleanCombinePlanar()'s own doc comment
+// already discloses).
+//
+// Throws std::invalid_argument if `distance` is zero or non-finite,
+// `face_index` is out of range for `solid.PlanarFaces()`, the named
+// face's own boundary has fewer than 3 vertices, a PULL's own retrim
+// meets a neighbour that isn't perpendicular to the pulled face's normal,
+// or that retrim collapses a neighbour's own boundary to fewer than 3
+// vertices (too large a pull for this solid's own local geometry there).
+Brep PushPullFace(const Brep& solid, int face_index, double distance);
+
 // Exact B-rep boolean between two solids where either (or both) may have
 // a CYLINDRICAL face, not just planar ones - what closes the gap
 // BooleanCombinePlanar's own PlanarFaces()-only precondition leaves open:

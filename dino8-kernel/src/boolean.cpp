@@ -1413,6 +1413,129 @@ Brep OffsetSolidConvexPlanar(const Brep& solid, double distance) {
   return OffsetSolidConvexPlanar(solid, std::vector<double>(solid.PlanarFaces().size(), distance));
 }
 
+namespace {
+
+// Whether `a` and `b` (two independent PlanarFace polygons, not yet
+// linked by any real Brep topology) share a boundary edge - i.e. some
+// consecutive pair in `a.loop` matches, REVERSED, some consecutive pair
+// in `b.loop`, within `tol`. Two adjacent faces of a genuine manifold
+// B-rep always traverse their one shared edge in opposite directions
+// (the same standard 2-manifold-edge invariant TryMergeCoplanarPair's own
+// doc comment in brep.cpp relies on), so this - not merely "any two
+// points coincide" - is what "shares an edge" means here.
+bool FacesShareEdge(const Brep::PlanarFace& a, const Brep::PlanarFace& b, double tol) {
+  const size_t na = a.loop.size(), nb = b.loop.size();
+  for (size_t i = 0; i < na; ++i) {
+    const Point3d& a0 = a.loop[i];
+    const Point3d& a1 = a.loop[(i + 1) % na];
+    for (size_t k = 0; k < nb; ++k) {
+      const Point3d& b0 = b.loop[k];
+      const Point3d& b1 = b.loop[(k + 1) % nb];
+      if (a0.DistanceTo(b1) <= tol && a1.DistanceTo(b0) <= tol) return true;
+    }
+  }
+  return false;
+}
+
+}  // namespace
+
+Brep PushPullFace(const Brep& solid, int face_index, double distance) {
+  if (!ON_IsValid(distance) || distance == 0.0) {
+    throw std::invalid_argument(
+        "dino8::kernel::PushPullFace: distance must be a nonzero, finite value - "
+        "positive pushes face_index outward (extrudes new side walls into "
+        "previously-empty space), negative pulls it inward (retrims every "
+        "perpendicular neighbour back to the new, closer plane)");
+  }
+
+  std::vector<Brep::PlanarFace> faces = solid.PlanarFaces();
+  const int n = static_cast<int>(faces.size());
+  if (face_index < 0 || face_index >= n) {
+    throw std::invalid_argument(
+        "dino8::kernel::PushPullFace: face_index is out of range for solid.PlanarFaces()");
+  }
+  const Brep::PlanarFace face = faces[static_cast<size_t>(face_index)];
+  const size_t m = face.loop.size();
+  if (m < 3) {
+    throw std::invalid_argument(
+        "dino8::kernel::PushPullFace: face_index names a degenerate face (fewer "
+        "than 3 boundary vertices)");
+  }
+  const double tol = RelativeTol(faces);
+
+  // `offset` carries `distance`'s own sign: outward (away from `solid`)
+  // for a push, inward for a pull.
+  const Vector3d offset = face.plane.zaxis * distance;
+  std::vector<Point3d> new_loop(m);
+  for (size_t i = 0; i < m; ++i) new_loop[i] = face.loop[i] + offset;
+  const ON_Plane cut_plane(new_loop[0], face.plane.zaxis);
+
+  std::vector<Brep::PlanarFace> result;
+  result.reserve(static_cast<size_t>(n) + m);
+
+  for (int i = 0; i < n; ++i) {
+    if (i == face_index) continue;
+    Brep::PlanarFace g = faces[static_cast<size_t>(i)];
+    if (distance < 0.0 && FacesShareEdge(g, face, tol)) {
+      // A pull genuinely REMOVES the slab between the old and new plane,
+      // so every neighbour that used to bound that slab must be
+      // retrimmed back to the new (closer) plane - unlike a push, which
+      // only ever adds new geometry into previously-empty space and so
+      // never needs to touch a neighbour at all (see this function's own
+      // doc comment). Only a neighbour whose own plane is PERPENDICULAR
+      // to the pushed face's normal can be safely retrimmed by a single
+      // half-space clip here (the shared edge then lies exactly along the
+      // clip plane on both the old and new cap, so the clip meets the new
+      // cap with no gap or overlap); an oblique neighbour would need a
+      // genuine re-intersection this function does not attempt.
+      if (std::fabs(ON_DotProduct(g.plane.zaxis, face.plane.zaxis)) > 1e-6) {
+        throw std::invalid_argument(
+            "dino8::kernel::PushPullFace: face " + std::to_string(i) +
+            " neighbours the pulled face but isn't perpendicular to its normal - "
+            "retrimming an oblique neighbour needs a genuine re-intersection this "
+            "function does not attempt, see its own doc comment");
+      }
+      std::vector<Point3d> clipped = SplitByHalfspace(g.loop, cut_plane, tol).inside;
+      if (clipped.size() < 3) {
+        throw std::invalid_argument(
+            "dino8::kernel::PushPullFace: distance collapses neighbour face " + std::to_string(i) +
+            "'s own boundary to fewer than 3 vertices - too large a pull for this solid's own "
+            "geometry there");
+      }
+      g.loop = std::move(clipped);
+    }
+    result.push_back(std::move(g));
+  }
+
+  if (distance > 0.0) {
+    // A push never touches a neighbour (every one of them is entirely on
+    // the kept side of `cut_plane` already - the same clip a pull runs
+    // above would be a no-op here, so it's skipped rather than run for
+    // nothing), so the gap it opens between the OLD boundary (still
+    // exactly where `solid`'s own neighbours already meet it) and the NEW
+    // one needs brand new connecting side walls, one per edge of the
+    // pushed face's own loop - genuinely ADDED material, not an existing
+    // face's boundary moved in place (OffsetFace's own construction),
+    // exactly the distinction this function's own doc comment draws.
+    for (size_t i = 0; i < m; ++i) {
+      const size_t j = (i + 1) % m;
+      Brep::PlanarFace side;
+      side.loop = {face.loop[i], face.loop[j], new_loop[j], new_loop[i]};
+      Vector3d normal = ON_CrossProduct(face.loop[j] - face.loop[i], offset);
+      normal.Unitize();
+      side.plane = ON_Plane(side.loop[0], normal);
+      result.push_back(std::move(side));
+    }
+  }
+
+  Brep::PlanarFace new_cap;
+  new_cap.plane = cut_plane;
+  new_cap.loop = new_loop;
+  result.push_back(std::move(new_cap));
+
+  return Brep::FromPlanarFaces(result);
+}
+
 // ---------------------------------------------------------------------
 // BooleanCombineMixed: the axis-perpendicular-only extension of the
 // non-convex planar pipeline above to a solid that may have a

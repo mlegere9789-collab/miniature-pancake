@@ -215,6 +215,46 @@ granularity of "one item" is a judgment call made by the mapper (this pass),
 so item counts and percentages would shift somewhat under a different,
 equally reasonable split of the same underlying capabilities.
 
+**A later same-day session's addition, after this pass's own headline was
+written:** kernel: Local / direct-edit operations gained a real
+`PushPullFace(solid, face_index, distance)` (`boolean.h`/`boolean.cpp`),
+closing PARITY_MAP's own "Push/pull a face (extrude face and merge/cut into
+its own body)" gap — genuinely distinct from `OffsetFace`, which always
+keeps a solid's face count fixed by re-extending/re-trimming every other
+face in place. A **push** (`distance > 0`) leaves every other face
+untouched and adds brand-new side-wall PlanarFaces (one per edge of the
+pushed face's own loop) bridging the old boundary to the new one, plus a
+new cap — genuinely extruded material, not a moved boundary (a box's top
+face pushed out by 2 goes from 6 faces to 10, not OffsetFace's unchanged
+6). A **pull** (`distance < 0`) instead retrims every neighbour face
+whose own plane is perpendicular to the pushed face's normal, via a single
+exact half-space clip (valid for a concave neighbour loop too), and adds no
+new geometry — same net shape as an equivalent `OffsetFace` shrink, from a
+completely different, boolean-free construction. This was **not** built by
+extruding a NURBS profile via `Brep::Extrude()` and handing the result to
+`BooleanCombinePlanar()`, the obvious first construction: that path was
+tried and found to fail on two independent grounds, confirmed by testing,
+not assumed — `Extrude()`'s own swept profile is only piecewise (not
+globally) planar for a straight polygon, and even a hand-assembled
+all-planar prism made `BooleanCombinePlanar()` throw ("an edge is shared by
+3 or more faces") on the flush, zero-overlap coincident face a prism grown
+directly off an existing face always has, a genuine gap in that engine's
+own coincident-face handling. Direct topological surgery avoids both
+problems entirely. Has **no convexity precondition** on `solid` at all
+(unlike every other item already in this category), verified on both a box
+and a genuinely non-convex, reflex-cornered L-shaped prism (push and pull
+both), plus argument-error cases (zero distance, out-of-range face_index,
+an oblique neighbour on a pull, a pull large enough to collapse a
+neighbour) — five new tests in `tests/test_basic.cpp`, and the full
+`dino8_kernel_tests` suite re-run clean (0 failures) after adding them.
+Scoped to a planar-faced `solid` (`PlanarFaces()`'s own precondition, same
+as every sibling in this category) and, for a pull, to neighbours
+perpendicular to the pushed face (an oblique neighbour is refused, not
+guessed at) — a curved-face push/pull and an oblique-neighbour pull remain
+real, disclosed future work. This flips the item missing→partial: kernel:
+Local/direct-edit operations moves from 6/17/5/28 (51.8%) to 6/18/4/28
+(53.6%).
+
 ## Kernel: Fossilith vs Parasolid/ACIS
 
 | Category | Weight | Items | Present | Partial | Missing | Parity % |
@@ -225,7 +265,7 @@ equally reasonable split of the same underlying capabilities.
 | Blending & chamfering | 1.5 | 24 | 5 | 17 | 2 | 56.3% |
 | kernel: Sweeping, lofting, extruding, revolving | 1 | 29 | 6 | 20 | 3 | 55.2% |
 | kernel: Offsetting, shelling, thickening | 1 | 27 | 0 | 26 | 1 | 48.1% |
-| kernel: Local / direct-edit operations | 1 | 28 | 6 | 17 | 5 | 51.8% |
+| kernel: Local / direct-edit operations | 1 | 28 | 6 | 18 | 4 | 53.6% |
 | kernel: Intersections & projections | 1.5 | 29 | 13 | 14 | 2 | 69.0% |
 | kernel: Healing, repair, validation, tolerant modeling | 1 | 30 | 18 | 11 | 1 | 78.3% |
 | kernel: Mass properties & spatial queries | 1 | 30 | 16 | 14 | 0 | 76.7% |
@@ -453,10 +493,10 @@ every other row): 64.6% → 64.8%.
 - [missing] Replace face (swap a face's surface, re-trim it and its neighbours) — a grep finds nothing. Nearest are `Brep::ReplaceEdgeCurve` (an edge, not a face) and `SoftEditSrfCommand`, which writes a new surface into `m_S` directly.
 - [partial] Imprint curve / face onto a body face (add edges without changing geometry) — **corrected: upgraded from missing.** Kernel `ImprintFaces(target, tool)` (boolean_general.h:61; boolean_general.cpp:3086) landed before this window and was already reflected under the sibling Boolean-operations category, but this category's own bullet was never updated to match and still claimed "a case-insensitive grep for imprint finds no hits anywhere" — false as of current HEAD. It splits `target`'s own faces wherever they cross a `tool` body's faces while keeping every fragment unconditionally (no ray-cast classification, no material ever removed), verified on a closed-loop fixture (box pierced by a cylinder) and an open-chain fixture (two overlapping boxes), each direction, plus a disjoint-operand no-op and a faceless-operand throw. Still partial: this is face-onto-face imprint only (no curve-onto-face imprint exists anywhere), it inherits `BooleanCombineGeneral`'s own scope limits (one crossing chain per opposing face pair, genus-0 faces, no self-crossing chains), only `target`'s faces are split per call, and no app command exposes it yet.
 - [missing] Merge faces on the same non-planar surface (cylinder/tangent split faces) — `Brep::MergeCoplanarFaces` explicitly leaves a curved or merely-tangent (not coplanar) pair untouched; the app's `MergeFacesInto` returns -1 for non-planar faces.
-- [missing] Push/pull a face (extrude face and merge/cut into its own body) — grep still finds no PushPull/PressPull command anywhere. Kernel `OffsetFace` calls itself "push/pull" in its own comment, but it re-extends existing neighbour faces rather than extruding new side walls and unioning/cutting them; it is scored under "Offset face" above, not here.
+- [partial] Push/pull a face (extrude face and merge/cut into its own body) — **corrected: upgraded from missing.** Kernel `PushPullFace(solid, face_index, distance)` (boolean.h/boolean.cpp) landed this session: a push (`distance > 0`) genuinely extrudes new side-wall faces into previously-empty space without touching any other face (unlike `OffsetFace`, which always re-extends/re-trims neighbours in place); a pull (`distance < 0`) retrims every neighbour perpendicular to the pushed face via an exact single half-space clip and adds no new geometry. Direct topological surgery, not a boolean — `Brep::Extrude()`+`BooleanCombinePlanar()` was tried first and found to fail (a swept profile is only piecewise planar; even a hand-built all-planar prism makes `BooleanCombinePlanar()` throw on the flush, zero-overlap coincident face this operation always creates, a disclosed gap in that engine's own coincident-face handling). No convexity precondition on `solid` (verified on a genuinely non-convex L-shaped prism, both directions). Still partial: planar-faced solids only (`PlanarFaces()`'s own precondition), and a pull refuses an oblique (non-perpendicular) neighbour rather than attempting a general re-intersection.
 - [missing] Move a single B-rep vertex directly (drag one topological corner in place; adjacent edges reshape around it) — `TransformSubObjects`'s Brep branch (SubObjectEdit.cpp:547-556) still collects only `Face` and `Edge` refs and returns false otherwise. The kernel has only a query (`Brep::EdgesOfVertex`), no vertex-move op.
 
-*Note on this category's counts: the table above shows 6 present / 17 partial / 5 missing (28 items total). This corrects a pre-existing arithmetic slip inherited from the last measurement (the table declared 17 partial against a physically-written bullet list that only ever had 16 gap bullets); combined with the `ImprintFaces` upgrade above (missing→partial), the internally-consistent result is 6/17/5.*
+*Note on this category's counts: the table above shows 6 present / 18 partial / 4 missing (28 items total). This corrects a pre-existing arithmetic slip inherited from the last measurement (the table declared 17 partial against a physically-written bullet list that only ever had 16 gap bullets); combined with the `ImprintFaces` upgrade (missing→partial) and this session's own `PushPullFace` upgrade (missing→partial, see this document's own later same-day session note), the internally-consistent result is 6/18/4.*
 
 **kernel: Intersections & projections** (intersections):
 - [partial] Analytic/analytic SSX closed forms (plane/plane, plane/cylinder, cylinder/cylinder, plane/sphere, cone, torus) — closed forms still exist only inside `BooleanCombineMixed`'s private splitters (`SplitCylindricalByObliquePlane`, `SplitCylindricalByParallelCylinder`, Steinmetz/unequal-cylinder splitters) and the planar boolean's plane/plane path. No public analytic-SSX API, and no plane/sphere, cone or torus closed form (the only general path is the mesh-seeded `IntersectSurfaces`).

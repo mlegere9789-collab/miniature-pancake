@@ -14574,6 +14574,129 @@ void TestOffsetSolidConvexPlanarTetrahedronMatchesIndependentVertexRecomputation
         "the offset tetrahedron also tessellates to a closed, watertight manifold");
 }
 
+// PARITY_MAP's "Push/pull a face" gap: unlike OffsetFace (which moves an
+// existing face's own boundary and re-trims its neighbours in place,
+// keeping the same 6 faces), PushPullFace's PUSH direction genuinely
+// EXTRUDES brand-new side-wall faces reaching into previously-empty
+// space without touching any existing face, so pushing the box's top
+// face out by +2 should leave all 5 untouched faces (bottom + 4 original
+// walls, still exactly where they were) plus 4 brand-new side walls plus
+// 1 new cap: 5 + 4 + 1 = 10 faces, genuinely MORE than OffsetFace's own
+// unchanged 6 - the real, checkable signature of "extrude new material"
+// rather than "move and retrim in place". The PULL direction, by
+// contrast, retrims the 4 (perpendicular) neighbour walls back to the
+// new plane and adds no new walls at all, so it keeps exactly the box's
+// original 6-face topology, same as an equivalent OffsetFace shrink would
+// - only the construction differs (a genuine per-neighbour retrim here,
+// a global convex re-clip there), not the shape.
+void TestPushPullFaceOnBoxPushOutAddsWallsAndMatchesExactVolume() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::PushPullFace;
+
+  // Box face order per Brep::Box()'s own comment: 0=bottom(-z) 1=top(+z)
+  // 2=front(-y) 3=back(+y) 4=left(-x) 5=right(+x).
+  const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+
+  const Brep pushed = PushPullFace(box, 1, 2.0);
+  Check(std::fabs(PlanarBrepVolumeExact(pushed) - 1200.0) < 1e-9,
+        "PushPullFace(box, top, +2.0) gives volume exactly 1200 (10x10x12), same as an "
+        "equivalent OffsetFace, even though the construction is entirely different");
+  Check(pushed.FaceCount() == 10,
+        "PushPullFace on a box's top ADDS 4 new side-wall faces plus 1 new cap while leaving "
+        "all 5 other original faces untouched (5 + 4 + 1 = 10) - genuinely more faces than "
+        "OffsetFace's own unchanged 6, the real signature of extrude-into-empty-space rather "
+        "than move-and-retrim");
+  Check(pushed.TessellateToClosedMesh(1, 1).IsClosedManifold(),
+        "PushPullFace's pushed-out result tessellates to a closed, watertight manifold");
+
+  const Brep pulled = PushPullFace(box, 1, -2.0);
+  Check(std::fabs(PlanarBrepVolumeExact(pulled) - 800.0) < 1e-9,
+        "PushPullFace(box, top, -2.0) gives volume exactly 800 (10x10x8) by retrimming the "
+        "4 perpendicular side walls back to the new, closer cap plane");
+  Check(pulled.FaceCount() == 6,
+        "PushPullFace's pull keeps the box's original 6-face topology - the 4 side walls are "
+        "retrimmed in place and no new wall is needed, unlike the push direction above");
+  Check(pulled.TessellateToClosedMesh(1, 1).IsClosedManifold(),
+        "PushPullFace's pulled-in result also tessellates to a closed, watertight manifold");
+
+  bool threw = false;
+  try { PushPullFace(box, 1, 0.0); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "PushPullFace refuses a zero distance");
+
+  threw = false;
+  try { PushPullFace(box, 99, 1.0); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "PushPullFace refuses an out-of-range face_index");
+}
+
+// The non-convex case, distinguishing PushPullFace from every OTHER
+// direct-edit op in this file (OffsetFace/OffsetSolidConvexPlanar/
+// ShellConvexPlanar), which all REQUIRE a global convexity check: a push
+// never touches any face but the new ones it adds, and a pull's own
+// per-neighbour retrim only ever needs that ONE neighbour's own plane to
+// be perpendicular to the pushed face - a purely LOCAL condition, with no
+// global convexity precondition at all. An L-shaped prism (base per
+// TestBooleanCombinePlanarNonConvexLShapeVsBox's own hand-derived
+// footprint: shoelace area 12, one reflex corner) pushed outward on one of
+// its rectangular side walls must grow by exactly that wall's own area
+// times the push distance - the same "add a slab" volume arithmetic as
+// the box case above, just on a solid OffsetFace could never accept. The
+// same wall pulled inward must shrink by the same exact wall_area*distance
+// arithmetic, exercising the retrim path's own single half-space clip
+// against this L-prism's genuinely CONCAVE top/bottom caps (SplitByHalfspace
+// is documented to handle a concave polygon correctly - this is where that
+// matters).
+void TestPushPullFaceOnNonConvexLShapeGrowsByExactSlabVolume() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point2d;
+  using dino8::kernel::PushPullFace;
+
+  const std::vector<Point2d> l_base = {
+      Point2d(0, 0), Point2d(4, 0), Point2d(4, 2), Point2d(2, 2), Point2d(2, 4), Point2d(0, 4),
+  };
+  const Brep l_prism = MakePrismFromPolygon(l_base, 0.0, 3.0);
+  const double orig_volume = PlanarBrepVolumeExact(l_prism);
+  Check(std::fabs(orig_volume - 36.0) < 1e-9, "the L-shaped prism's own exact volume is 36 (shoelace area 12 x height 3)");
+
+  // Find the outer wall along y=0 (outward normal -y, i.e. zaxis.y < 0),
+  // whose own footprint edge has length 4 (from (0,0,*) to (4,0,*)) - one
+  // of the L's two "long" rectangular walls, unambiguous among this
+  // prism's faces.
+  int wall_idx = -1;
+  const auto pf = l_prism.PlanarFaces();
+  for (size_t i = 0; i < pf.size(); ++i) {
+    if (pf[i].plane.zaxis.y < -0.5 && std::fabs(pf[i].plane.zaxis.z) < 1e-9) {
+      wall_idx = static_cast<int>(i);
+      break;
+    }
+  }
+  Check(wall_idx >= 0, "found the L-prism's own y=0 outer wall among PlanarFaces()' output");
+
+  const double push = 1.5;
+  const double wall_area = 4.0 * 3.0;  // 4 (edge length along x) x 3 (height)
+  const Brep grown = PushPullFace(l_prism, wall_idx, push);
+  Check(std::fabs(PlanarBrepVolumeExact(grown) - (orig_volume + wall_area * push)) < 1e-9,
+        "pushing the L-prism's flat y=0 wall out by 1.5 grows its exact volume by exactly "
+        "wall_area(4x3) * 1.5 = 18 - PushPullFace accepts this genuinely non-convex solid "
+        "directly, unlike OffsetFace/OffsetSolidConvexPlanar/ShellConvexPlanar");
+  Check(grown.FaceCount() == l_prism.FaceCount() + 4,
+        "pushing the L-prism's wall replaces it with 4 new side walls + 1 new cap - net +4 faces "
+        "(8 -> 12), leaving every other face - including its two concave L-shaped caps - untouched");
+  Check(grown.TessellateToClosedMesh(1, 1).IsClosedManifold(),
+        "the grown non-convex result also tessellates to a closed, watertight manifold");
+
+  const double pull = 1.0;
+  const Brep shrunk = PushPullFace(l_prism, wall_idx, -pull);
+  Check(std::fabs(PlanarBrepVolumeExact(shrunk) - (orig_volume - wall_area * pull)) < 1e-9,
+        "pulling the same wall IN by 1.0 shrinks the exact volume by exactly wall_area(4x3) * "
+        "1.0 = 12 - the retrim path's single half-space clip against this L-prism's own "
+        "CONCAVE top/bottom caps (and its two adjacent perpendicular side walls) is exact");
+  Check(shrunk.FaceCount() == l_prism.FaceCount(),
+        "pulling keeps the L-prism's original 8-face topology - the 4 perpendicular neighbours "
+        "(2 caps + 2 side walls) are retrimmed in place and no new wall is added");
+  Check(shrunk.TessellateToClosedMesh(1, 1).IsClosedManifold(),
+        "the shrunk non-convex result also tessellates to a closed, watertight manifold");
+}
+
 }  // namespace
 
 // The spec's own required exact case: fillet the unit cube's top
@@ -33630,6 +33753,8 @@ int main() {
   TestOffsetSolidConvexPlanarUniformBoxMatchesExactVolume();
   TestOffsetSolidConvexPlanarPerFaceBoxMatchesExactBoundingBox();
   TestOffsetSolidConvexPlanarTetrahedronMatchesIndependentVertexRecomputation();
+  TestPushPullFaceOnBoxPushOutAddsWallsAndMatchesExactVolume();
+  TestPushPullFaceOnNonConvexLShapeGrowsByExactSlabVolume();
   TestFilletConvexEdgeUnitCubeTopFrontCorner();
   TestFilletConvexEdgeTaperedRailExactness();
   TestFilletConvexEdgeTaperedClosedFormVolumeMatchesFrustumFormula();
