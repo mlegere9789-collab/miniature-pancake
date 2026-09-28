@@ -1292,6 +1292,52 @@ either way, since `EmbossProfile` is kernel-only with no `dino8-app`
 command wired to it yet (a grep for "emboss"/"deboss"/"engrave" across
 `dino8-app/src` still finds nothing).
 
+**Fifteenth same-day follow-up (a sixth parallel session):** `git log
+--oneline -30 -- dino8-kernel/src` at the start of this session showed
+`Brep::ExtrudeToBoundary` (the Ninth follow-up above) as the most recent
+sweep/loft/extrude/revolve-relevant commit, so this session picked the
+next highest-value still-partial item in **kernel: Sweeping, lofting,
+extruding, revolving** rather than duplicating that work: "Extrude a
+curve along a path curve (translational sweep / sum surface,
+ExtrudeCrvAlongCrv)" - until now a pure kernel-entry-point gap (the app's
+own `ExtrudeAlongCommand` called `ON_SumSurface::Create` directly, with
+no Solid/cap option and nothing in the kernel at all).
+`Brep::ExtrudeAlongCurve(profile, path, cap)` (dino8-kernel/include/
+dino8/kernel/brep.h; dino8-kernel/src/sweep.cpp) closes that: a real
+kernel entry point building the exact tensor-product sum surface via a
+new `SumSurface()` helper (sweep.cpp), with `AssembleSweptBody()`'s own
+shared capping machinery giving it the same closed-solid option
+`Extrude()`/`Sweep1()`/`Revolve()` already have - full detail (the
+partition-of-unity exactness argument, what's verified, what remains) is
+in that item's own bullet below. Verified by 4 new tests
+(tests/test_basic.cpp): a straight-line path reproducing `Extrude()`
+exactly, a curved (non-rational, degree >= 2) path/profile pair verified
+directly against `profile(u) + path(v) - path(v_min)` sample-for-sample,
+a piecewise-linear "wobbly" path whose enclosed volume matches area x
+net height-displacement exactly via Cavalieri's principle, and negative
+controls (rational profile/path, closed path, a flat cap, a non-planar
+closed profile). Full `dino8_kernel_tests` suite re-run via `ctest`:
+100% passing, 0 regressions - including catching and fixing a genuine
+bug in this session's own first draft of the Cavalieri test itself (an
+asserted-exact volume at a division count that did not evenly divide the
+profile's own knot-span count, so a grid cell silently cut a real
+corner - the same class of misaligned-division trap
+`TestExtrudeRectangleIsExactCappedSolid`'s own comments already warn
+about for a kinked profile; fixed by picking an aligned asymmetric pair
+instead of loosening the tolerance). This item stays `partial`, not
+`present` (both curves must be non-rational, `path` must be open, no
+twist/scale/road-like option, no app wiring - see the bullet below for
+the complete list), so this category's own present/partial/missing
+counts are UNCHANGED (6/21/2/29, 56.9%). This row is file-disjoint from
+every category the Thirteenth (Topology) and Fourteenth (Feature
+operations) follow-ups above touched, so it lands on their own combined
+baseline unchanged rather than recombining any delta: the top-of-document
+headline stays at whatever those two give it (**66.9%/71.4%** as of this
+paragraph's own writing) - treat the top-of-document number as
+authoritative if it has moved further still by the time this is read.
+This session's only source edits are dino8-kernel/include/dino8/kernel/
+brep.h, dino8-kernel/src/sweep.cpp, and dino8-kernel/tests/test_basic.cpp.
+
 ### Kernel category gaps (missing / partial items, with evidence)
 
 **kernel: Topology & data structure** (topology):
@@ -1407,7 +1453,7 @@ unaffected (no bucket moved).*
 - [partial] Rolling-ball blend surface accuracy on freeform/curved surfaces (tolerance-controlled blend geometry) — app `BuildFillet` builds circular rows along an SSX spine of offset surfaces; the offset move is approximate on curved surfaces, and the recorded `max_gap` quality signal is never enforced against a tolerance.
 
 **kernel: Sweeping, lofting, extruding, revolving** (sweeplofts):
-- [partial] Extrude a curve along a path curve (translational sweep / sum surface, ExtrudeCrvAlongCrv) — app `ExtrudeAlongCommand` (cmd_surface.cpp:1180) uses `ON_SumSurface::Create(profile, path)`, exact but output is only an open surface (no Solid/cap option, no kernel entry point). `Brep::Sweep1` rotates the section with RMF frames — a different operation.
+- [partial] Extrude a curve along a path curve (translational sweep / sum surface, ExtrudeCrvAlongCrv) — **narrowed from a pure kernel-entry-point gap; still partial.** `Brep::ExtrudeAlongCurve(profile, path, cap)` (dino8-kernel/include/dino8/kernel/brep.h; dino8-kernel/src/sweep.cpp) now exists: an exact tensor-product sum surface `S(u, v) = profile(u) + path(v) - path(v_min)`, built directly as a NURBS control net (`SumSurface()`, sweep.cpp) rather than sampled or fit — exact because a non-rational B-spline basis is a partition of unity, so the additive control net `P_ij = profile_i + path_j` reproduces the sum pointwise for ANY degree or knot vector on either curve. Unlike `Brep::Sweep1` (which rotation-minimally transports the section's own frame along a rail), `profile` never rotates here - pure translation, matching the app's own existing `ON_SumSurface::Create` semantics. `cap` closes a closed planar `profile` into a genuine solid with two fan caps (reusing `AssembleSweptBody`, the same machinery `Extrude()`/`Sweep1()`/`Revolve()` share), auto-reversed for outward orientation the same way `Extrude()` is; a straight-line `path` reproduces `Extrude()` exactly (confirmed sample-for-sample by `TestExtrudeAlongCurveStraightPathMatchesPlainExtrude`, tests/test_basic.cpp), a curved `path` was verified two independent ways — direct per-sample cross-check against `profile(u) + path(v) - path(v_min)` evaluated straight from both input curves (`TestExtrudeAlongCurveWallMatchesSumOfCurvesExactly`), and a piecewise-linear "wobbly" (laterally wandering but monotonic-height) path whose enclosed volume matches area x net height-displacement exactly regardless of the path's own in-plane wander (Cavalieri's principle, the same fact `ExtrudeToBoundary()`'s own oblique-direction case relies on; `TestExtrudeAlongCurveWobblyPathMatchesCavalieriVolume`). Still partial, and does NOT change this category's present/partial/missing counts (real gaps remain, so it stays scored `partial` rather than `present`): both `profile` and `path` must be non-rational NURBS curves (a rational B-spline basis is not a pointwise partition of unity, so the same additive-control-net construction is not exact for one — checked, throws rather than silently approximating), `path` must be open (a closed path has no well-defined net start/end displacement to cap against), there is still no twist/scale/road-like-alignment option the way `Sweep1` now has, and no app command anywhere calls it (a grep for `ExtrudeAlongCurve` in `dino8-app/src` finds nothing but this document). `Brep::Sweep1` remains the separate, rotating operation it always was.
 - [partial] Extrude a surface / polysurface face into a solid (ExtrudeSrf) — app loops `ON_BrepExtrudeFace` over every face independently, direction always the CPlane normal. The kernel only has a mesh equivalent (`Mesh::ExtrudeCappedSolid`); no kernel B-rep face-extrude API.
 - [partial] Extrude with draft / taper angle (ExtrudeCrvTapered, ExtrudeSrfTapered; AutoCAD EXTRUDE Taper) — kernel `Brep::ExtrudeTapered` (brep.h:253-317; sweep.cpp:1430-1482) is exact for a line or circle/arc and for convex polylines via a closed-form miter offset. Still partial: a non-convex polygon throws, an oblique direction throws (confirmed sweep.cpp:1448-1452), a general curved profile falls back to an approximate least-squares offset, no surface/solid taper in the kernel, and the app's own ExtrudeCrvTapered (cmd_surface.cpp:1229) still scales the profile about its centroid (approximate corners) rather than calling the kernel.
 - [partial] Extrude to a point (ExtrudeCrvToPoint / ExtrudeSrfToPoint / kernel ConeToApex) — app `RebuildExtrudeToPoint` (cmd_solids.cpp:64) uses `CreateRuledSurface` to a degenerate apex curve, giving a surface only with no cap even for a closed profile. Kernel `Mesh::ConeToApex` is mesh-only; `Brep::Loft` to a point section cannot be capped (a collapsed end refuses a cap).
@@ -2007,7 +2053,7 @@ top 40:
 - [kernel/blending] Curve-to-curve blend — G3+ (partial)
 - [kernel/blending] Surface-to-surface continuity blend — G3/G4, shape handles (partial)
 - [kernel/blending] Rolling-ball blend surface accuracy on freeform surfaces — enforce max_gap (partial)
-- [kernel/sweeplofts] Extrude a curve along a path curve — solid/cap option (partial)
+- [kernel/sweeplofts] ~~Extrude a curve along a path curve — solid/cap option~~ **kernel entry point + solid/cap done** (`Brep::ExtrudeAlongCurve`); remaining: rational-curve support, app wiring (partial)
 - [kernel/sweeplofts] Extrude a surface / polysurface face into a solid — kernel B-rep API (partial)
 - [kernel/sweeplofts] Extrude with draft / taper angle — oblique direction, concave polygons (partial)
 - [kernel/sweeplofts] Extrude to a point — cap for closed profiles (partial)

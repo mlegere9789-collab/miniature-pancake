@@ -286,6 +286,41 @@ std::unique_ptr<ON_NurbsSurface> RuledBetween(const ON_NurbsCurve& c0, const ON_
   return s;
 }
 
+// Exact tensor-product sum surface S(u, v) = profile(u) + (path(v) -
+// path(v_min)): a translational sweep of `profile` along `path`'s own
+// displacement, with no frame rotation at all (unlike Sweep1's RMF
+// transport). This is exact, not a fit, because a B-spline basis is a
+// partition of unity: writing profile(u) = sum_i A_i N_i(u) and
+// path(v) - path(v_min) = sum_j B_j M_j(v) (B_j already measured from the
+// path's own first control point, which - since `path` is clamped -
+// equals path(v_min) exactly), the tensor-product surface with control
+// net P_ij = A_i + B_j reduces pointwise to
+//   sum_i sum_j (A_i + B_j) N_i(u) M_j(v)
+//     = A(u) * (sum_j M_j(v)) + (path(v) - path(v_min)) * (sum_i N_i(u))
+//     = A(u) + path(v) - path(v_min),
+// using partition of unity (sum_i N_i(u) = 1, sum_j M_j(v) = 1) in the
+// last step - true for ANY B-spline basis regardless of degree or knot
+// vector, but only for a NON-rational one (a rational basis divides by a
+// per-parameter weight sum that does not itself decompose this way, so
+// the same additive control-net trick is not exact for a rational curve
+// in either direction - both `profile` and `path` must be non-rational,
+// checked by the caller).
+std::unique_ptr<ON_NurbsSurface> SumSurface(const ON_NurbsCurve& profile, const ON_NurbsCurve& path,
+                                            const char* caller) {
+  const int nu = profile.CVCount();
+  const int nv = path.CVCount();
+  auto s = std::make_unique<ON_NurbsSurface>();
+  if (!s->Create(3, false, profile.Order(), path.Order(), nu, nv)) Internal(caller, "ON_NurbsSurface::Create failed");
+  CopyKnots(profile, *s, 0);
+  CopyKnots(path, *s, 1);
+  const ON_3dPoint origin = EuclideanCV(path, 0);
+  for (int j = 0; j < nv; ++j) {
+    const ON_3dVector offset = EuclideanCV(path, j) - origin;
+    for (int i = 0; i < nu; ++i) s->SetCV(i, j, EuclideanCV(profile, i) + offset);
+  }
+  return s;
+}
+
 // Chord-length station parameters averaged over the control-point
 // columns (Piegl & Tiller 10.3). Returns N values starting at 0; for a
 // closed skin the wrap-around chord is included and `period` receives
@@ -1424,6 +1459,57 @@ Brep Brep::Extrude(const NurbsCurve& profile, Vector3d direction, bool cap) {
   ON_NurbsCurve c1 = c;
   c1.Translate(direction);
   std::unique_ptr<ON_NurbsSurface> wall = RuledBetween(c, c1, 0.0, L, caller);
+  return AssembleSweptBody(wall.release(), want_caps, want_caps, false, false, caller);
+}
+
+Brep Brep::ExtrudeAlongCurve(const NurbsCurve& profile, const NurbsCurve& path, bool cap) {
+  const char* caller = "ExtrudeAlongCurve";
+  ON_NurbsCurve c = profile.raw();
+  if (!c.IsValid()) Fail(caller, "profile is not a valid NURBS curve");
+  if (c.IsRational()) {
+    Fail(caller, "profile must be a non-rational NURBS curve - the exact tensor-product sum construction has no "
+                 "rational form (see this function's own brep.h doc comment)");
+  }
+  ClampIfPeriodic(c);
+
+  ON_NurbsCurve path_c = path.raw();
+  if (!path_c.IsValid()) Fail(caller, "path is not a valid NURBS curve");
+  if (path_c.IsRational()) {
+    Fail(caller, "path must be a non-rational NURBS curve - the exact tensor-product sum construction has no "
+                 "rational form (see this function's own brep.h doc comment)");
+  }
+  if (path_c.IsClosed()) {
+    Fail(caller, "path must be an open curve - a closed path has no well-defined start/end displacement to "
+                 "translate the profile by, and the resulting wall would need periodic capping this does not attempt");
+  }
+  ClampIfPeriodic(path_c);
+
+  const ON_3dPoint path_start = path_c.PointAtStart();
+  const ON_3dPoint path_end = path_c.PointAtEnd();
+  const double L = path_start.DistanceTo(path_end);
+  if (!(L > 0.0)) Fail(caller, "the path starts and ends at the same point - the extrusion is zero-length");
+
+  const bool closed = c.IsClosed();
+  const bool want_caps = cap && closed;
+  if (want_caps) {
+    ON_Plane plane;
+    if (!c.IsPlanar(&plane, 1e-8 * CurveScale(c))) {
+      Fail(caller, "cap requested but the closed profile is not planar - cannot cap it");
+    }
+    // Same flatness/orientation convention as Extrude(), but against the
+    // path's own NET displacement (start to end) rather than a fixed
+    // direction - the two caps sit in planes parallel to `profile`'s own,
+    // offset by that same net vector, regardless of how the path wanders
+    // in between (this sweep never rotates the profile).
+    const ON_3dVector net_unit = (path_end - path_start) / L;
+    if (std::fabs(ON_DotProduct(plane.zaxis, net_unit)) <= 1e-9) {
+      Fail(caller, "the path's net displacement lies in the profile's plane - the extrusion is flat");
+    }
+    ON_Plane about_net(plane.origin, net_unit);
+    if (SignedAreaAbout(c, about_net) < 0.0) ReverseKeepDomain(c);
+  }
+
+  std::unique_ptr<ON_NurbsSurface> wall = SumSurface(c, path_c, caller);
   return AssembleSweptBody(wall.release(), want_caps, want_caps, false, false, caller);
 }
 

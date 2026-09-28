@@ -283,6 +283,46 @@ class Brep {
   // shaped profile, or a direction lying in the profile plane.
   static Brep Extrude(const NurbsCurve& profile, Vector3d direction, bool cap = true);
 
+  // ExtrudeAlongCurve: `profile` translated along `path` (translational
+  // sweep / "sum surface", Rhino/AutoCAD ExtrudeCrvAlongCrv) - the wall is
+  // the exact tensor-product sum surface S(u, v) = profile(u) + path(v) -
+  // path(v_min), NOT Sweep1() (which rotation-minimally transports the
+  // section's own frame along a rail): `profile` never rotates here, it
+  // is carried by pure translation, so at every station it stays parallel
+  // to its own original plane. Both `profile` and `path` must be
+  // non-rational NURBS curves (any degree, any knot vector) - the
+  // construction is exact because a non-rational B-spline basis is a
+  // partition of unity (see SumSurface() in sweep.cpp for the identity);
+  // a rational curve's basis does not sum to 1 pointwise, so the same
+  // additive control-net trick is not exact for one and is refused
+  // (std::invalid_argument) rather than silently approximated. `path`
+  // must also be an open curve: a closed path has no well-defined net
+  // start/end displacement to cap against.
+  //
+  // With `cap` and a closed, planar `profile` whose plane is not parallel
+  // to the path's own NET displacement (path's end minus its start), two
+  // fan caps make it a solid - both caps sit in planes parallel to
+  // `profile`'s own, offset by that same net vector, regardless of how
+  // `path` bends in between (Cavalieri's principle: since every
+  // intermediate cross-section is a rigid, unscaled translate of
+  // `profile` and never rotates, the enclosed volume depends only on the
+  // net displacement along the profile's own normal, not on the path's
+  // in-plane wander - the same "regardless of shear" fact
+  // ExtrudeToBoundary()'s own oblique-direction case already relies on).
+  // A closed profile is reversed first if needed so the result faces
+  // outward, matching Extrude()'s own convention; an open profile gives
+  // one open face with no caps regardless of `cap`. Throws
+  // std::invalid_argument for a rational profile or path, a closed path,
+  // a zero-length net path displacement, or a cap request on a closed
+  // non-planar profile or one whose plane contains the path's net
+  // displacement (the extrusion would be flat).
+  //
+  // A straight-line `path` (2 control points) reproduces Extrude() with
+  // `direction` = path's end minus its start exactly, since SumSurface()
+  // then reduces to the same construction RuledBetween() gives Extrude()
+  // itself.
+  static Brep ExtrudeAlongCurve(const NurbsCurve& profile, const NurbsCurve& path, bool cap = true);
+
   // ExtrudeTapered: Extrude() with a draft angle - the wall leans instead
   // of running straight along `direction`. `direction` must be parallel
   // (either sign) to `profile`'s own fitted plane normal, within 1e-9 of

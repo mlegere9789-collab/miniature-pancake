@@ -31797,6 +31797,146 @@ void TestExtrudeRectangleIsExactCappedSolid() {
   Check(Throws([&] { Brep::Extrude(skew, Vector3d(0, 0, 5)); }), "a closed non-planar profile refuses to cap");
 }
 
+// ExtrudeAlongCurve: translational sweep along a curved path (no frame
+// rotation, unlike Sweep1), built from the exact tensor-product sum
+// surface S(u, v) = profile(u) + path(v) - path(v_min).
+void TestExtrudeAlongCurveStraightPathMatchesPlainExtrude() {
+  const NurbsCurve rect = Polyline({P(0, 0, 0), P(2, 0, 0), P(2, 3, 0), P(0, 3, 0), P(0, 0, 0)});
+
+  // A straight-line path (2 control points) is the exact special case
+  // where SumSurface() reduces to RuledBetween()'s own construction -
+  // ExtrudeAlongCurve() should reproduce Extrude() exactly.
+  const NurbsCurve straight_path = Polyline({P(0, 0, 0), P(0, 0, 5)});
+  const Brep swept = Brep::ExtrudeAlongCurve(rect, straight_path);
+  const Brep extruded = Brep::Extrude(rect, Vector3d(0, 0, 5));
+  CheckSolidTopology(swept, 3, "ExtrudeAlongCurve along a straight path");
+  Check(FaceSurface(swept, 0).DegreeU() == 1 && FaceSurface(swept, 0).DegreeV() == 1,
+        "wall is degree (1, 1) for a straight path");
+  CheckClosedMeshVolume(swept, 8, 8, 30.0, 1e-9, "straight-path ExtrudeAlongCurve");
+  Check(std::abs(swept.TessellateToClosedMesh(12, 5).Volume() - extruded.TessellateToClosedMesh(12, 5).Volume()) < 1e-9,
+        "matches Extrude()'s own volume exactly");
+  // Every wall sample matches Extrude()'s own wall exactly, not merely the volume.
+  {
+    const NurbsSurface wall_a = FaceSurface(swept, 0);
+    const NurbsSurface wall_b = FaceSurface(extruded, 0);
+    const ON_Interval dua = wall_a.raw().Domain(0), dva = wall_a.raw().Domain(1);
+    const ON_Interval dub = wall_b.raw().Domain(0), dvb = wall_b.raw().Domain(1);
+    double worst = 0.0;
+    for (int i = 0; i <= 8; ++i) {
+      for (int j = 0; j <= 8; ++j) {
+        const Point3d pa = wall_a.PointAt(dua.ParameterAt(i / 8.0), dva.ParameterAt(j / 8.0));
+        const Point3d pb = wall_b.PointAt(dub.ParameterAt(i / 8.0), dvb.ParameterAt(j / 8.0));
+        worst = std::max(worst, pa.DistanceTo(pb));
+      }
+    }
+    Check(worst < 1e-9, "the swept wall's own sample grid matches Extrude()'s own wall exactly");
+  }
+
+  // Oblique straight path: Cavalieri's principle still gives area x height.
+  const NurbsCurve oblique_path = Polyline({P(0, 0, 0), P(1, 1, 5)});
+  const Brep sheared = Brep::ExtrudeAlongCurve(rect, oblique_path);
+  CheckSolidTopology(sheared, 3, "obliquely swept rectangle");
+  Check(std::abs(sheared.TessellateToClosedMesh(8, 8).Volume() - 30.0) < 1e-9, "oblique path volume is exactly 30");
+
+  // Open profile: one open face, no caps, not solid.
+  const Brep sheet = Brep::ExtrudeAlongCurve(Polyline({P(0, 0, 0), P(1, 0, 0), P(1, 1, 0)}), straight_path);
+  Check(sheet.FaceCount() == 1 && sheet.raw().IsValid() && !sheet.raw().IsSolid(), "open profile -> one valid open face");
+  bool oriented = false, has_boundary = false;
+  Check(sheet.raw().IsManifold(&oriented, &has_boundary) && has_boundary, "open sweep is a manifold with boundary");
+
+  // Closed profile, cap=false: an open tube.
+  const Brep tube = Brep::ExtrudeAlongCurve(rect, straight_path, /*cap=*/false);
+  Check(tube.FaceCount() == 1 && tube.raw().IsValid() && !tube.raw().IsSolid(), "cap=false -> an open tube");
+}
+
+void TestExtrudeAlongCurveWobblyPathMatchesCavalieriVolume() {
+  // A rectangle (area 6) swept along a path that wanders sideways (in x)
+  // but is monotonic in z: every intermediate cross-section is a rigid,
+  // unrotated translate of the rectangle, so - regardless of the path's
+  // own lateral wander - the enclosed volume is exactly area x net
+  // z-displacement (Cavalieri's principle: a cross-section at a fixed
+  // height always has the same area, whatever the in-plane shift there -
+  // the same fact ExtrudeToBoundary()'s own oblique-direction test
+  // already relies on, applied here piecewise across 2 linear spans).
+  const NurbsCurve rect = Polyline({P(0, 0, 0), P(2, 0, 0), P(2, 3, 0), P(0, 3, 0), P(0, 0, 0)});
+  // 2 linear spans (open, clamped, domain [0, 2]): a real kink at v=1,
+  // not a smooth curve - so a v_divisions that is a multiple of 2 lands
+  // exactly on it and every sub-quad is genuinely flat, giving an EXACT
+  // volume rather than a converging approximation (the same "N spans, a
+  // matching multiple of divisions" trick TestExtrudeRectangleIsExact-
+  // CappedSolid's own L-profile case uses).
+  const NurbsCurve path = Polyline({P(0, 0, 0), P(1, 0, 1), P(-1, 0, 2)});
+  const Brep swept = Brep::ExtrudeAlongCurve(rect, path);
+  CheckSolidTopology(swept, 3, "wobbly-path ExtrudeAlongCurve");
+  const Mesh mesh = swept.TessellateToClosedMesh(8, 2);
+  Check(mesh.IsClosedManifold(), "wobbly-path sweep tessellates to a closed manifold");
+  Check(std::abs(mesh.Volume() - 12.0) < 1e-9,
+        "volume is exactly area(6) x net z-displacement(2), regardless of the path's own x-wander (Cavalieri)");
+  // (5, 4) would NOT be exact here: the rectangle's own u-domain is
+  // [0, 4] (a corner at every integer) and 5 does not evenly divide 4, so
+  // a u-grid cell would straddle a real corner and cut it off - the same
+  // reason TestExtrudeRectangleIsExactCappedSolid's own asymmetric checks
+  // stick to divisions that evenly divide the profile's own span count.
+  // (8, 4) still exercises an asymmetric pair while staying exact (8 is a
+  // multiple of the profile's 4 corner-spans, 4 of the path's 2 spans).
+  Check(std::abs(swept.TessellateToClosedMesh(8, 4).Volume() - 12.0) < 1e-9, "...and at (8, 4) divisions");
+}
+
+void TestExtrudeAlongCurveWallMatchesSumOfCurvesExactly() {
+  // Both curved (degree >= 2) and neither rational: the tensor-sum wall
+  // S(u, v) = profile(u) + path(v) - path(v_min) must match direct
+  // curve evaluation at every sample, not just reproduce the right
+  // volume - a genuine two-independent-methods cross-check.
+  const NurbsCurve profile = NurbsCurve::FromControlPoints({P(0, 0, 0), P(1, 2, 0), P(2, 0, 0)}, 2);
+  const NurbsCurve path = NurbsCurve::FromControlPoints({P(0, 0, 0), P(0, 1, 1), P(0, -1, 2), P(0, 0, 3)}, 3);
+  const Brep swept = Brep::ExtrudeAlongCurve(profile, path);
+  Check(swept.FaceCount() == 1 && !swept.raw().IsSolid(), "an open profile gives one open wall face, no caps");
+  const NurbsSurface wall = FaceSurface(swept, 0);
+  Check(wall.DegreeU() == 2 && wall.DegreeV() == 3, "wall degree matches (profile degree, path degree)");
+  const ON_Interval du = wall.raw().Domain(0), dv = wall.raw().Domain(1);
+  const Point3d path_start = path.raw().PointAtStart();
+  double worst = 0.0;
+  for (int i = 0; i <= 10; ++i) {
+    for (int j = 0; j <= 10; ++j) {
+      const double u = du.ParameterAt(i / 10.0);
+      const double v = dv.ParameterAt(j / 10.0);
+      const Point3d got = wall.PointAt(u, v);
+      const Point3d want = profile.raw().PointAt(u) + (path.raw().PointAt(v) - path_start);
+      worst = std::max(worst, got.DistanceTo(want));
+    }
+  }
+  Check(worst < 1e-9, "every sample of the wall matches profile(u) + path(v) - path(v_min) exactly");
+}
+
+void TestExtrudeAlongCurveNegativeControls() {
+  const NurbsCurve rect = Polyline({P(0, 0, 0), P(2, 0, 0), P(2, 3, 0), P(0, 3, 0), P(0, 0, 0)});
+  const NurbsCurve straight_path = Polyline({P(0, 0, 0), P(0, 0, 5)});
+
+  // A rational profile or path has no exact tensor-sum form (see
+  // SumSurface()'s own comment in sweep.cpp).
+  Check(Throws([&] { Brep::ExtrudeAlongCurve(Circle(P(0, 0, 0), Vector3d(0, 0, 1), 1.0), straight_path); }),
+        "a rational profile throws");
+  Check(Throws([&] { Brep::ExtrudeAlongCurve(rect, Circle(P(0, 0, 0), Vector3d(1, 0, 0), 1.0)); }),
+        "a rational path throws");
+
+  // A closed path has no well-defined net start/end displacement.
+  const NurbsCurve closed_path = Polyline({P(0, 0, 0), P(1, 0, 0), P(1, 1, 0), P(0, 0, 0)});
+  Check(Throws([&] { Brep::ExtrudeAlongCurve(rect, closed_path); }), "a closed path throws");
+
+  // The path's net displacement lying in the profile's own plane makes a
+  // requested cap flat (undefined), but the same path sweeps fine
+  // uncapped - the same distinction Extrude() itself draws for a
+  // direction lying in the profile plane.
+  const NurbsCurve flat_path = Polyline({P(0, 0, 0), P(1, 0, 0)});
+  Check(Throws([&] { Brep::ExtrudeAlongCurve(rect, flat_path); }),
+        "a path whose net displacement lies in the profile's plane throws when capped");
+  Check(Brep::ExtrudeAlongCurve(rect, flat_path, /*cap=*/false).FaceCount() == 1, "...but sweeps fine uncapped");
+
+  // A closed non-planar profile refuses to cap, same as Extrude().
+  const NurbsCurve skew = Polyline({P(0, 0, 0), P(2, 0, 0), P(2, 3, 1), P(0, 3, 0), P(0, 0, 0)});
+  Check(Throws([&] { Brep::ExtrudeAlongCurve(skew, straight_path); }), "a closed non-planar profile refuses to cap");
+}
+
 void TestRevolveExactSolidsAndCaps() {
   const Point3d origin(0, 0, 0);
   const Vector3d z(0, 0, 1);
@@ -37988,6 +38128,10 @@ int main() {
 
   sweep_tests::TestMergeAndWeldDropsCollapsedPoleTriangles();
   sweep_tests::TestExtrudeRectangleIsExactCappedSolid();
+  sweep_tests::TestExtrudeAlongCurveStraightPathMatchesPlainExtrude();
+  sweep_tests::TestExtrudeAlongCurveWobblyPathMatchesCavalieriVolume();
+  sweep_tests::TestExtrudeAlongCurveWallMatchesSumOfCurvesExactly();
+  sweep_tests::TestExtrudeAlongCurveNegativeControls();
   sweep_tests::TestRevolveExactSolidsAndCaps();
   sweep_tests::TestRevolveStartAngleShiftsSweepExactly();
   sweep_tests::TestLoftInterpolatesSectionsExactly();
