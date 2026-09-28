@@ -3461,6 +3461,122 @@ std::pair<Brep, Brep> SplitBySheet(const Brep& solid, const Brep& sheet) {
   return {std::move(positive_side), std::move(negative_side)};
 }
 
+// TrimSheetBySolid(): the other half of the "Sheet/solid trim" parity-map
+// item SplitBySheet() above leaves undone - trimming a SHEET's own surface
+// down BY a solid, instead of splitting a solid by a sheet. Reuses the
+// identical SSX-gathering + FragmentFaces() machinery as SplitBySheet()
+// above, but only for `sheet`'s own fragments (never `solid`'s - `solid`
+// is purely a ray-cast classification target here, never split or
+// returned), classified in/out of `solid` via the same
+// ClassifyPointVsBrep() ray-cast SplitBySheet() itself uses for this exact
+// purpose.
+Brep TrimSheetBySolid(const Brep& sheet, const Brep& solid, bool keep_inside) {
+  const ON_Brep& bh = sheet.raw();
+  const ON_Brep& bs = solid.raw();
+  const int nh = bh.m_F.Count();
+  const int ns = bs.m_F.Count();
+  if (nh == 0) {
+    throw std::invalid_argument("dino8::kernel::TrimSheetBySolid: sheet has no faces");
+  }
+  if (ns == 0) {
+    throw std::invalid_argument("dino8::kernel::TrimSheetBySolid: solid has no faces");
+  }
+
+  IntersectOptions opt;
+  const double tol = 1e-6;
+  const bool debug = std::getenv("DINO8_BOOL_DEBUG") != nullptr;
+
+  const BoundingBox tbb_h = sheet.GetTightBoundingBox();
+  const BoundingBox tbb_s = solid.GetTightBoundingBox();
+  const ON_BoundingBox bbox_h(tbb_h.min, tbb_h.max);
+  const ON_BoundingBox bbox_s(tbb_s.min, tbb_s.max);
+  const double ray_length = 4.0 * (bbox_h.Diagonal().Length() + bbox_s.Diagonal().Length() + 1.0);
+
+  std::vector<ON_BoundingBox> boxes_h(static_cast<size_t>(nh)), boxes_s(static_cast<size_t>(ns));
+  for (int i = 0; i < nh; ++i) boxes_h[static_cast<size_t>(i)] = bh.m_F[i].SurfaceOf()->BoundingBox();
+  for (int j = 0; j < ns; ++j) boxes_s[static_cast<size_t>(j)] = bs.m_F[j].SurfaceOf()->BoundingBox();
+
+  // Same SSX-gathering loop as SplitBySheet() above, minus its `solid`-side
+  // chain (out of scope here - `solid` is never fragmented, only ray-cast
+  // against).
+  std::vector<std::vector<Chain>> raw_h(static_cast<size_t>(nh));
+  for (int i = 0; i < nh; ++i) {
+    ON_BoundingBox exp_h = boxes_h[static_cast<size_t>(i)];
+    exp_h.m_min -= ON_3dVector(tol, tol, tol);
+    exp_h.m_max += ON_3dVector(tol, tol, tol);
+    for (int j = 0; j < ns; ++j) {
+      if (exp_h.IsDisjoint(boxes_s[static_cast<size_t>(j)])) continue;
+      const ON_BrepFace& fh = bh.m_F[i];
+      const ON_BrepFace& fs = bs.m_F[j];
+      std::vector<IntersectionCurve> curves = IntersectFaces(&fh, *fh.SurfaceOf(), &fs, *fs.SurfaceOf(), opt);
+      for (const IntersectionCurve& ic : curves) {
+        if (ic.points.size() < 2) continue;
+        Chain ch;
+        ch.reserve(ic.points.size() + 1);
+        for (size_t k = 0; k < ic.points.size(); ++k) ch.push_back({ic.points[k], ic.uv_a[k]});
+        if (ic.closed) ch.push_back(ch.front());
+        raw_h[static_cast<size_t>(i)].push_back(std::move(ch));
+      }
+    }
+  }
+
+  const double stitch_tol = std::max(1e-4, opt.tolerance * 20.0);
+  std::vector<FaceFrags> frags_h = FragmentFaces(bh, nh, raw_h, stitch_tol, opt, debug);
+
+  // `sheet`'s own fragments: keep only the ones on the requested side of
+  // `solid`. Unlike SplitBySheet(), no cap faces are added and `solid` is
+  // never touched - this trims `sheet`'s own surface, nothing else.
+  std::vector<KeptFace> kept;
+  for (FaceFrags& ff : frags_h) {
+    for (Fragment& frag : ff.frags) {
+      Point2d uv;
+      if (!RepresentativeUV(frag, uv)) continue;
+      const Point3d p3 = ff.surface->PointAt(uv.x, uv.y);
+      const bool is_in = ClassifyPointVsBrep(p3, bs, ray_length, opt, tol) == Cls::In;
+      if (is_in != keep_inside) continue;
+
+      KeptFace kf;
+      kf.surface = ff.surface->DuplicateSurface();
+      kf.rev = ff.base_rev;
+      kf.outer = frag.outer;
+      kf.holes = frag.holes;
+      if (!kf.holes.empty()) BridgeHolesIntoOuter(kf.outer, kf.holes, ff.surface);
+      kept.push_back(std::move(kf));
+    }
+  }
+  for (FaceFrags& ff : frags_h) delete ff.surface;
+
+  if (kept.empty()) return Brep();
+  ReconcileFragmentBoundaries(kept);
+  Brep result;
+  ON_Brep& brep = result.raw();
+  VertexWelder welder;
+  for (KeptFace& kf : kept) {
+    CollapseDuplicateVids(kf.outer, welder, kf.surface);
+    for (auto& h : kf.holes) CollapseDuplicateVids(h, welder, kf.surface);
+  }
+  for (const Point3d& p : welder.Points()) brep.NewVertex(p);
+
+  std::unordered_map<uint64_t, int> edge_of_pair;
+  for (KeptFace& kf : kept) {
+    if (kf.outer.size() < 3) {
+      delete kf.surface;
+      continue;
+    }
+    const int surface_index = brep.AddSurface(kf.surface);
+    ON_BrepFace& face = brep.NewFace(surface_index);
+    face.m_bRev = kf.rev;
+    BuildLoop(brep, face, ON_BrepLoop::outer, kf.outer, welder, edge_of_pair);
+    for (const std::vector<UVPt>& h : kf.holes) {
+      if (h.size() >= 3) BuildLoop(brep, face, ON_BrepLoop::inner, h, welder, edge_of_pair);
+    }
+  }
+
+  brep.SetTrimIsoFlags();
+  brep.SetTolerancesBoxesAndFlags(/*bLazy=*/true);
+  return result;
+}
+
 // --- MakeHole()/MakeCounterboreHole()/MakeCountersinkHole() ------------
 
 namespace {

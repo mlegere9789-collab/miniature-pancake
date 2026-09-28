@@ -109,6 +109,33 @@ Brep ImprintFaces(const Brep& target, const Brep& tool);
 // convention rather than treating a clean miss as an error.
 std::pair<Brep, Brep> SplitBySheet(const Brep& solid, const Brep& sheet);
 
+// The OTHER half of the "Sheet/solid trim" parity-map item SplitBySheet()
+// above leaves undone: trimming a SHEET's own surface down BY a solid,
+// rather than splitting a solid by a sheet. `sheet` (an open Brep, same
+// sense as SplitBySheet's own `sheet` operand) is never modified or
+// re-capped - `solid` (a closed Brep) is used purely as the ray-cast-
+// classification target for `sheet`'s own SSX fragments, via the same
+// ClassifyPointVsBrep() this file's other operations already use.
+//
+// Returns the portion of `sheet` that lies inside `solid` when
+// `keep_inside` is true (the default - Rhino's Trim/Split convention of
+// discarding the part the user clicked away), or the portion outside when
+// false. `solid` itself is never split, capped, or returned - unlike
+// SplitBySheet(), which hands back both of `solid`'s own halves.
+//
+// Reuses this file's own SSX-gathering + FragmentFaces() machinery (see
+// this file's own top-of-file doc comment for the scope that implies: at
+// most one "outer" intersection chain per opposing face pair, genus-0
+// operand faces, non-self-crossing chains on one face).
+//
+// Throws std::invalid_argument if either operand has no faces. Returns the
+// empty Brep (not an error) if none of `sheet`'s own fragments fall on the
+// requested side - either because `sheet` never reaches `solid` at all, or
+// because it lies entirely on the other side - mirroring SplitBySheet()'s
+// own "kept.empty()" convention rather than treating a clean miss as an
+// error.
+Brep TrimSheetBySolid(const Brep& sheet, const Brep& solid, bool keep_inside = true);
+
 // A blind or through round hole (Rhino/SolidWorks "Hole" feature), cut
 // straight into `solid` via BooleanCombineGeneral() above - so, unlike the
 // app's `RoundHole`/`MakeHole`/`PlaceHole` (dino8-app/src/commands/

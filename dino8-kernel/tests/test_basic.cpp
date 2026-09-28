@@ -3564,6 +3564,110 @@ void TestSplitBySheetRejectsEmptyOperands() {
   Check(threw_empty_sheet, "SplitBySheet throws std::invalid_argument for a faceless sheet");
 }
 
+void TestTrimSheetBySolidKeepsOnlyInteriorPortion() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::TrimSheetBySolid;
+
+  // TrimSheetBySolid() (PARITY_MAP.md's "kernel: Boolean operations" gap -
+  // "Sheet/solid trim", the "trimming a sheet body BY a solid" half
+  // SplitBySheet() above deliberately leaves undone). A flat sheet that
+  // extends a full unit past a 4x4x4 box's own footprint on every side
+  // (same fixture SplitBySheet's own tests use) should, when trimmed by
+  // that box with keep_inside=true, come back as exactly the box's own
+  // 4x4 footprint (area 16) - not the full 6x6 sheet rectangle (area 36).
+  //
+  // Every result here carries a real ON_Brep trim loop (even a fully
+  // untouched fragment is rebuilt via BuildLoop(), see boolean_general.cpp),
+  // so Brep::Area()'s own exact whole-domain-only integration always
+  // refuses it (FaceCoversWholeDomain() is false once a face has any real
+  // loop at all) - area is measured via a tessellated Mesh instead, exactly
+  // as this file's own SplitBySheet tests measure volume on ITS trimmed
+  // output rather than calling Brep::Volume() directly.
+  const Brep box = Brep::Box(0, 0, 0, 4, 4, 4);
+  const Brep sheet = MakePlanarSheetZ(-1, -1, 5, 5, 2.0);
+
+  const Brep inside = TrimSheetBySolid(sheet, box, /*keep_inside=*/true);
+  Check(inside.raw().IsValid(), "TrimSheetBySolid's inside portion is a valid ON_Brep");
+  Check(inside.FaceCount() == 1, "the box's own footprint is a single flat face, same as the untrimmed sheet");
+  const Mesh inside_mesh = inside.TessellateToClosedMesh(16, 16);
+  const double inside_area = inside_mesh.Area();
+  Check(std::abs(inside_area - 16.0) < 0.05,
+        "the kept portion's area is exactly the box's own 4x4 footprint (16), not the sheet's full 6x6 extent (36)");
+
+  // Note: Brep::GetTightBoundingBox() is deliberately NOT used here - its
+  // own exact-loop fast path only fires when the pseudo-trim side tables
+  // (face_trim_loops_ etc.) are populated, which TrimSheetBySolid()'s own
+  // direct-ON_Brep assemble() step (shared with SplitBySheet() above)
+  // never does, so it falls back to the whole UNTRIMMED surface's own
+  // domain - the same reason SplitBySheet()'s own tests never check it
+  // either. The tessellated Mesh's own bounding box, unlike the Brep's,
+  // is built from the actual trimmed triangles and does reflect the real
+  // trim boundary.
+  const dino8::kernel::BoundingBox bb = inside_mesh.GetBoundingBox();
+  Check(std::abs(bb.min.x - 0.0) < 0.05 && std::abs(bb.max.x - 4.0) < 0.05,
+        "the kept portion's own x-extent is trimmed down to the box's own [0, 4], not the sheet's [-1, 5]");
+  Check(std::abs(bb.min.y - 0.0) < 0.05 && std::abs(bb.max.y - 4.0) < 0.05,
+        "the kept portion's own y-extent is trimmed down to the box's own [0, 4], not the sheet's [-1, 5]");
+
+  // The outside portion is the sheet's own full extent (36) minus the same
+  // 16 kept inside - and the two together must reconstruct the original,
+  // untrimmed sheet's own area exactly (no material gained or lost).
+  const Brep outside = TrimSheetBySolid(sheet, box, /*keep_inside=*/false);
+  Check(outside.raw().IsValid(), "TrimSheetBySolid's outside portion is a valid ON_Brep");
+  const double outside_area = outside.TessellateToClosedMesh(16, 16).Area();
+  Check(std::abs(outside_area - 20.0) < 0.05,
+        "the discarded portion's area is the sheet's own full extent (36) minus the kept 16 (= 20)");
+  Check(std::abs((inside_area + outside_area) - sheet.Area()) < 0.05,
+        "the inside and outside portions' areas sum back to the original untrimmed sheet's own area exactly");
+}
+
+void TestTrimSheetBySolidDisjointSheetKeepsWholeOrEmpty() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::TrimSheetBySolid;
+
+  // A sheet that never reaches the solid at all (box occupies z in [0, 4],
+  // sheet sits flat at z=10) has every one of its own fragments classify
+  // Out via the ordinary ray-cast - so keep_inside=true comes back the
+  // empty Brep (mirroring SplitBySheet()'s own "kept.empty()" convention)
+  // and keep_inside=false keeps the sheet completely untouched.
+  const Brep box = Brep::Box(0, 0, 0, 4, 4, 4);
+  const Brep sheet = MakePlanarSheetZ(-1, -1, 5, 5, 10.0);
+
+  const Brep inside = TrimSheetBySolid(sheet, box, /*keep_inside=*/true);
+  Check(inside.FaceCount() == 0, "a sheet that never reaches the solid keeps nothing when keep_inside=true");
+
+  const Brep outside = TrimSheetBySolid(sheet, box, /*keep_inside=*/false);
+  Check(outside.raw().IsValid(), "the untouched outside portion is a valid ON_Brep");
+  Check(outside.FaceCount() == sheet.FaceCount(), "the outside portion keeps every one of the sheet's own faces");
+  const double outside_area = outside.TessellateToClosedMesh(8, 8).Area();
+  Check(std::abs(outside_area - sheet.Area()) < 0.05, "the outside portion's area is the sheet's own, unchanged");
+}
+
+void TestTrimSheetBySolidRejectsEmptyOperands() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::TrimSheetBySolid;
+
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+  const Brep empty;
+
+  bool threw_empty_sheet = false;
+  try {
+    TrimSheetBySolid(empty, box);
+  } catch (const std::invalid_argument&) {
+    threw_empty_sheet = true;
+  }
+  Check(threw_empty_sheet, "TrimSheetBySolid throws std::invalid_argument for a faceless sheet");
+
+  bool threw_empty_solid = false;
+  try {
+    TrimSheetBySolid(box, empty);
+  } catch (const std::invalid_argument&) {
+    threw_empty_solid = true;
+  }
+  Check(threw_empty_solid, "TrimSheetBySolid throws std::invalid_argument for a faceless solid");
+}
+
 void TestSurfaceGetApproximateSize() {
   using dino8::kernel::NurbsSurface;
   using dino8::kernel::Point3d;
@@ -36221,6 +36325,9 @@ int main() {
   TestSplitBySheetBoxCutInHalfByPlane();
   TestSplitBySheetDisjointSheetKeepsWholeSolidOnOneSide();
   TestSplitBySheetRejectsEmptyOperands();
+  TestTrimSheetBySolidKeepsOnlyInteriorPortion();
+  TestTrimSheetBySolidDisjointSheetKeepsWholeOrEmpty();
+  TestTrimSheetBySolidRejectsEmptyOperands();
   TestSurfaceGetApproximateSize();
   TestSurfaceTessellateGridClippedExactRejectsTooFewPoints();
   TestSurfaceTessellateGridRejectsTooFewTrimPoints();
