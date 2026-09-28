@@ -154,29 +154,61 @@ tries to find real evidence upgrading a missing/partial item, and a
    below rather than a status change — the category's 0/26/1/27 (48.1%)
    numeric row is unchanged.
 
-A genuine defect from the prior pass remains unresolved and is re-confirmed
-here through both of its mechanisms, neither touched by any commit in this
-window: **`Brep::Check()` false-flags `DegenerateFace` on the kernel's own
-valid primitives.** (a) `Box()`, `Sphere()` and `Torus()` build every face
-via the surface-only `NewFace(int)` overload with zero loops/trims, so
-`Check()`'s face loop (`dino8-kernel/src/brep.cpp:6357-6384`) flags
-`DegenerateFace` unconditionally whenever `f.m_li.Count() == 0` — before any
-geometric sampling even runs. (Note of precision re-confirmed this pass:
-`ON_Brep::IsSolid()` is actually *false* for these three primitives, since
-they lack genuine shared topology — the "false-flags on valid `IsSolid()`
-primitives" framing below applies to the `Extrude()`/`Revolve()` half of the
-claim, which *does* build genuine shared topology via `AssembleSweptBody()`.)
-(b) For faces that do have real loops — `Extrude()`/`Revolve()` walls and
-caps — `SampleLoop()` (`brep.cpp:44-70`) takes only one sample point for any
-trim curve where `c2->IsLinear()` is true in 2D parameter space (line
-54-57): a cylindrical face's iso-parameter trim (a v=const line sweeping the
-full u range) is straight in UV while its 3D image is a full circle, so it
-is badly under-sampled, starving `PointSetWidth`'s degeneracy-width check.
-`RemoveDegenerateFaces()`/`RemoveSliverFaces()`, which trust `Check()`,
-inherit this hazard and remain destructive on the kernel's own valid
-`Extrude(circle)`/`Box()` results, as previously probed (3 of 3 and 6 of 6
-faces). This is scored into the affected healing/topology items below, not
-hidden.
+**Correction to the prior pass's honesty note, found by this session, not
+this pass:** the defect the prior pass (this document, at HEAD `b2fe0aa`)
+re-confirmed as "unresolved... neither touched by any commit in this
+window" — **`Brep::Check()` false-flagging `DegenerateFace` on the kernel's
+own valid primitives** — was in fact already fixed, by `b1ac7c9`, an
+ancestor of `b2fe0aa` on this same branch. `git log --oneline
+ba80d25..b2fe0aa -- dino8-kernel dino8-app` (the exact window the prior
+pass audited) does not contain `b1ac7c9`: it landed on a parallel
+session's branch and reached `HEAD` only through a later merge
+(`7ce5797`), after the prior pass had already written its "still present"
+note against the pre-merge tree it was reading. Both mechanisms the prior
+note described are confirmed fixed by direct testing, not by trusting the
+merge:
+
+(a) `Box()`/`Sphere()`/`Torus()` faces still build via the surface-only
+`NewFace(int)` overload with zero loops/trims, but `Check()`'s face loop
+(`dino8-kernel/src/brep.cpp:6450-6477`, not the `6357-6384`/`6360` the
+prior note cited — that range is now the trim-check loop above it, shifted
+by `b1ac7c9`'s own insertions) only auto-flags `DegenerateFace` when a face
+has **no surface at all** (line ~6454); a loop-less-but-surfaced face is
+instead sampled against its own domain rectangle
+(`DomainRectanglePolygon()`, `brep.cpp:6005-6009`, called from the same
+loop at line ~6469). (b) `SampleLoop()` (`brep.cpp:44-70`) is untouched and
+still takes only one sample per UV-linear trim curve, exactly as
+before — but `Check()`'s degenerate/sliver face loop no longer feeds
+`SampleLoop()`'s raw output straight into `PointSetWidth`. It now routes
+through `LoopSamples3d()`/`DensifyBoundary3d()` (`brep.cpp:5977-6019`),
+which re-samples any boundary segment whose **3D image** isn't actually
+straight regardless of what `SampleLoop()`'s 2D-linearity heuristic did,
+closing exactly the starved-sampling gap the prior note described (a
+cylindrical iso-parameter trim straight in UV but a full circle in 3D).
+
+Verified this session, on top of `b1ac7c9`'s own
+`TestBrepCheckDoesNotFalselyFlagCurvedOrToplessValidFaces` (which already
+covered Box()/Sphere()/Extrude(circle)/Revolve(line) at the `Check()`
+level, plus a genuine-hairline-sliver negative control): a new
+end-to-end test, `TestBrepRemoveDegenerateOrSliverFacesDoesNotTouchValidSolids`
+(`tests/test_basic.cpp`), calls `RemoveDegenerateFaces()`/
+`RemoveSliverFaces()` themselves — not just `Check()` — on `Box()` and
+`Extrude(circle)` and confirms 0 faces removed from either (previously
+probed destructive: 3 of 3 and 6 of 6), plus a `Torus()` `Check()` case
+(the third loop-less primitive, not previously covered by name) and a
+true-positive control confirming a genuine hairline sliver is still
+deleted by `RemoveDegenerateFaces()`. Full `dino8_kernel_tests` suite:
+all checks pass, 0 failures, 0 regressions (re-run this session).
+
+Net effect on the scores below: **none of the affected items' present/
+partial/missing status changes.** Sliver/degenerate micro-face removal
+(topology item, healing items) stay `partial` — for the *other*, still-real
+reasons already on record (delete-and-tolerant-join rather than a
+geometric collapse; a T-junction sliver leaves naked edges since this
+does not call `SewTJunctions`) — but the specific "destructive on the
+kernel's own valid solids" clause is retracted: it is no longer true, and
+citing it going forward would itself be the same kind of stale claim this
+note is correcting.
 
 The main caveat is the same one every run of this method has: the
 granularity of "one item" is a judgment call made by the mapper (this pass),
@@ -232,7 +264,7 @@ the honesty notes above and the bullets below.
 - [partial] Tolerance model on topological entities (vertex/edge tolerances, tolerant modelling) — `FixUnsetEdgeTolerances` (brep.cpp:5255), `RecordMeasuredTolerances` (brep.cpp:6089, records the measured gap as `ON_BrepEdge`/`ON_BrepVertex m_tolerance`), `Check()` honours those, `TessellateToClosedMeshTolerant` (brep.h:2840). Still partial: booleans and fillets never read edge tolerances (fixed `tol = 1e-6`); global tolerances are fixed constants, not scaled by model size.
 - [missing] Persistent naming / topology identity and attributes across edits (face/edge IDs surviving Compact, boolean, split) — sub-object references are raw `m_E`/`m_F` indices (dino8-app/src/doc/SubObject.h:7-9); every topology edit clears the side tables and renumbers via `Compact`. There is no persistent ID or attribute scheme.
 - [partial] Cap naked loops (close planar holes of an open shell into faces) — `Brep::CapPlanarHoles` (brep.cpp:6849; brep.h:2802-2822) walks naked-edge chains, checks planarity, builds the cap with `ON_BrepTrimmedPlane`, and re-joins. Still partial: a non-planar hole is left open, and chains through a vertex carrying more than two naked edges are skipped.
-- [partial] Sliver / degenerate micro-face removal (as opposed to isolated boundary micro-edges) — `Brep::RemoveSliverFaces`/`RemoveDegenerateFaces` (brep.cpp:6510/6514; brep.h:2641/2651) delete faces `Check()` flags as `SliverFace`/`DegenerateFace` and re-join neighbours as tolerant edges. Still partial: delete-and-tolerant-join, not a geometric collapse; a T-junction sliver leaves naked edges since this does not call `SewTJunctions`; **and, per the `Check()` false-positive defect confirmed unchanged above, this pair remains destructive on the kernel's own valid solids** (probed: 3/3 and 6/6 faces deleted from a valid `Extrude(circle)` and `Box()`).
+- [partial] Sliver / degenerate micro-face removal (as opposed to isolated boundary micro-edges) — `Brep::RemoveSliverFaces`/`RemoveDegenerateFaces` (brep.cpp:6510/6514; brep.h:2641/2651) delete faces `Check()` flags as `SliverFace`/`DegenerateFace` and re-join neighbours as tolerant edges. Still partial: delete-and-tolerant-join, not a geometric collapse; a T-junction sliver leaves naked edges since this does not call `SewTJunctions`. (The `Check()` false-positive this bullet used to cite as making the pair "destructive on the kernel's own valid solids" is fixed — see the top-of-document honesty note; re-verified this session end-to-end via `TestBrepRemoveDegenerateOrSliverFacesDoesNotTouchValidSolids`, which confirms 0 faces removed from `Box()`/`Extrude(circle)`.)
 - [partial] Genuine topology produced by every constructor/primitive — `Box`, `Sphere`, `Torus`, `FromSurface` and `TrimmedPlanarFace` still use the surface-only `NewFace(int)` (brep.cpp:134-302; disclosed brep.h:25-51). Such a Brep has no edges or vertices and `ON_Brep::IsValid()` reports it invalid. Knock-on effects: `SplitDisjointPieces` throws on it, and adjacency queries return nothing. The sweep, boolean and fillet factories do build real topology.
 
 **kernel: Geometry representation** (geometry):
@@ -390,7 +422,7 @@ the honesty notes above and the bullets below.
 
 **kernel: Healing, repair, validation, tolerant modeling** (healing):
 - [partial] Tolerant sewing with edge splitting (partial-overlap edges, T-junctions, mismatched edge subdivision) — `Brep::SewTJunctions` (brep.h:2766-2801; brep.cpp:6779-6836) finds every T-junction among naked edges, splits the longer edge via `SplitNakedEdgeAt`, and finishes with `JoinNakedEdges`. Still partial: refuses every curved naked edge (`if (!a.IsLinear(tol)) continue;`, brep.cpp:6797); the app's own `JoinNakedEdges` does not call it; a latent bug re-confirmed by reading the current source — in the `for (int k = 0; k < 2; ++k)` inner loop (brep.cpp:6798-6821) the `break;` at line 6820 is unconditional, so if edge B's first endpoint (k=0) satisfies the on-line/strictly-interior test but `SplitNakedEdgeAt` then returns anything other than `Result::Ok`, the loop still breaks and B's second endpoint (k=1) is never tried in that pass.
-- [partial] Geometric consistency validation (edge curve lies on adjacent surfaces, 2D trim vs 3D edge agreement, face/face self-intersection check) — `Brep::Check()` reports `EdgeVertexGap`, `TrimEdgeGap`, `LoopGap`, `InvalidTrim`, 2D/3D loop self-intersection, and (new this pass — see honesty note above) `NonManifoldVertex` pinch-point detection via union-find over each vertex's incident-edge face groups (brep.cpp:6279-6286, calling `GroupVertexEdgesByFace`, brep.cpp:6155-6166+). Its heal, `Brep::SplitNonManifoldVertex`/`SplitNonManifoldVertices` (brep.h:2662-2700; brep.cpp:6538-6612), disjoins a pinch point into one vertex per face-group, never deleting or `Compact()`ing; it returns `Result::Failed` (not a crash, but a real refusal) when one of the vertex's incident edges is closed on itself at that same vertex (brep.h:2681-2689's own doc comment calls this genuinely rare but explicitly unhandled), and it is not called anywhere in dino8-app. Neither addition is strong enough to flip this item to present: **the `Brep::Check()` DegenerateFace false-positive defect (see the top-of-document honesty note) is confirmed still present via both of its mechanisms, unchanged by anything in this window** — (a) `Box()`/`Sphere()`/`Torus()` faces are built via the plain `ON_Brep::NewFace(surface_index)` overload with zero loops (brep.cpp:190,217 and Torus's equivalent), confirmed via `FaceCoversWholeDomain`'s own doc comment (brep.cpp:370-384), and `Check()`'s face loop (brep.cpp:6357-6384) flags `DegenerateFace` unconditionally whenever `f.m_li.Count() == 0` (line 6360), before any sampling; note `raw().IsSolid()` is actually false for these three primitives (brep.cpp:394-398), so the "valid IsSolid() primitives" framing applies to the Extrude/Revolve half of the claim, which does build genuine shared topology via `AssembleSweptBody()`. (b) `SampleLoop()` (brep.cpp:44-70) samples just 1 point per trim curve whenever `c2->IsLinear()` is true in 2D UV space (line 54-57), starving `PointSetWidth`'s degeneracy check for a cylindrical isoparameter trim that is straight in UV but a full circle in 3D. Remaining gaps otherwise unchanged: `TrimEdgeGap` compares only 3 samples at matching normalized parameters; no face/face self-intersection check between faces sharing no boundary.
+- [partial] Geometric consistency validation (edge curve lies on adjacent surfaces, 2D trim vs 3D edge agreement, face/face self-intersection check) — `Brep::Check()` reports `EdgeVertexGap`, `TrimEdgeGap`, `LoopGap`, `InvalidTrim`, 2D/3D loop self-intersection, and (new this pass — see honesty note above) `NonManifoldVertex` pinch-point detection via union-find over each vertex's incident-edge face groups (brep.cpp:6279-6286, calling `GroupVertexEdgesByFace`, brep.cpp:6155-6166+). Its heal, `Brep::SplitNonManifoldVertex`/`SplitNonManifoldVertices` (brep.h:2662-2700; brep.cpp:6538-6612), disjoins a pinch point into one vertex per face-group, never deleting or `Compact()`ing; it returns `Result::Failed` (not a crash, but a real refusal) when one of the vertex's incident edges is closed on itself at that same vertex (brep.h:2681-2689's own doc comment calls this genuinely rare but explicitly unhandled), and it is not called anywhere in dino8-app. Neither addition is strong enough to flip this item to present. (The `Brep::Check()` DegenerateFace false-positive this bullet used to describe as "confirmed still present" is fixed, by `b1ac7c9` — see the top-of-document honesty note for why the prior pass's re-confirmation was itself stale, and for where the fix actually lives in the current source.) Remaining gaps: `TrimEdgeGap` compares only 3 samples at matching normalized parameters; no face/face self-intersection check between faces sharing no boundary.
 - [partial] Gap closing by edge re-trim / trim refit (ReplaceEdgeCurve, RefitTrim, ReplaceEdge) — `Brep::ReplaceEdgeCurve` does closest-point re-projection of every trim, throwing when the fit fails; `CloseLoopGapsWithinTolerance` closes residual 2D loop gaps. No `RefitTrim` or general `ReplaceEdge`.
 - [partial] Micro/sliver edge removal (RemoveAllNakedMicroEdges / Brep::RemoveNakedMicroEdge) — `Brep::RemoveNakedMicroEdge` works only on an isolated naked sliver whose neighbours are also naked. `Brep::RemoveDegenerateEdges` (brep.h:2660) collapses shared or naked edges at or below tolerance.
 - [partial] Self-intersection detection (curves, meshes, surfaces/breps) — meshes: `Mesh::FindSelfIntersections`/`FindOffsetSelfIntersections`; breps: only loop boundaries via `Check()`'s `SelfIntersectingLoop`/`SelfIntersectingLoop3d`; curves: app-only sampled. No face-interior or face/face check anywhere.
@@ -399,8 +431,8 @@ the honesty notes above and the bullets below.
 - [partial] Curve/surface simplify and rebuild (Rebuild, FitCrv, SimplifyCrv, RemoveMultiKnot, MakeUniform, RebuildUV, FitSrf, ShrinkTrimmedSrf) — `NurbsSurface::Rebuild`, `RemoveKnotAt`, `NurbsCurve::FitLeastSquares` confirmed present.
 - [partial] Analytic-form recognition / canonical simplification of faces — `IsPlanar`/`IsSphere`/`IsCylinder`/`IsCone`/`IsTorus` confirmed present; nothing replaces a recognized NURBS face with a canonical analytic one.
 - [missing] Kinky / creased surface splitting into G1 faces (SplitKinkyFaces, CreaseSplitting for NURBS) — re-grepped `SplitKinky|CreaseSplit|kink` across kernel and app: only unrelated curve-continuity comments hit.
-- [partial] Degenerate face removal (B-rep) — `Brep::RemoveDegenerateFaces` (brep.cpp:6510) trusts `Check()`'s `DegenerateFace` flag and inherits its false-positive hazard on the kernel's own primitives, per the confirmed-unchanged mechanism above.
-- [partial] Sliver face removal (B-rep) — `Brep::RemoveSliverFaces` shares the same body (`RemoveThinFaces`, brep.cpp:6486) and the same false-positive hazard.
+- [partial] Degenerate face removal (B-rep) — `Brep::RemoveDegenerateFaces` (brep.cpp:6510) trusts `Check()`'s `DegenerateFace` flag; that flag's false-positive hazard on the kernel's own primitives is fixed (`b1ac7c9`, re-verified this session — see the top-of-document honesty note and the topology-category mirror bullet above). Still partial for the same non-defect reason given there: delete-and-tolerant-join, not a geometric collapse.
+- [partial] Sliver face removal (B-rep) — `Brep::RemoveSliverFaces` shares the same body (`RemoveThinFaces`, brep.cpp:6486); same fixed defect, same remaining delete-and-tolerant-join limitation.
 
 **kernel: Mass properties & spatial queries** (massprops):
 - [partial] Exact B-rep / NURBS-face mass properties (tolerance-controlled integration, no tessellation) — `Brep::Volume()`/`Area()` (brep.h:515-586; brep.cpp:308-465) integrate the divergence-theorem form with 5x5 Gauss-Legendre per knot span. The checked-in regression test (`TestBrepVolumeAndAreaMatchClosedForms`, test_basic.cpp:6449) only asserts `< 1e-4` relative for Sphere/Torus Volume and Area (lines 6467-6480) — both the Volume() header comment's "~1e-10 relative" claim and the Area() comment's separate "~1e-9 relative... a real measured bound, not a loose one" claim (brep.h:582-585) overstate the precision beyond what's actually tested; the integration code and quadrature order are unchanged since the last measurement, so this methodological point stands as previously noted. Still partial: fixed quadrature order, no caller tolerance; volume/area only; throws on any trimmed face (brep.cpp:444-448); throws unless tessellation is closed manifold.
@@ -673,9 +705,9 @@ top 40:
 | 4 | kernel | booleans | AutoCAD-style INTERFERE (real overlap solids, not just Clash report) | missing | medium | Clash's triangle-triangle detection already exists; needs solid construction from the overlap. |
 | 5 | kernel | blending | Conic / rho (chordal, elliptical) blend cross-sections | missing | medium | Closes a real, verified gap in Blending & chamfering. |
 | 6 | kernel | blending | Alternative blend rail types (distance-from-edge, distance-between-rails) | missing | medium | Closes a real, verified gap in Blending & chamfering. |
-| 7 | kernel | topology | Sliver / degenerate micro-face removal — fix the Check() false-positive first | partial | small | `Brep::Check()` currently deletes valid faces on the kernel's own primitives; fixing the sampling bug in `SampleLoop` closes both this and the healing-category items below. |
-| 8 | kernel | healing | Degenerate face removal (B-rep) — same Check() false-positive root cause | partial | small | Same underlying fix as #7; currently destructive on Box()/Extrude()/Revolve() results. |
-| 9 | kernel | healing | Sliver face removal (B-rep) — same Check() false-positive root cause | partial | small | Same underlying fix as #7. |
+| 7 | kernel | topology | ~~Sliver / degenerate micro-face removal — fix the Check() false-positive first~~ **fixed** | partial | small | Done in `b1ac7c9` (before this pass): `Brep::Check()` no longer auto-flags a loop-less face or under-samples a curved-wall trim; `TestBrepCheckDoesNotFalselyFlagCurvedOrToplessValidFaces` covers Box()/Sphere()/Torus()/Extrude()/Revolve(). Kept in the table (not renumbered away) only so this row's own history is traceable; not an active priority. Still partial for the same non-defect reasons item 207 above gives (delete-and-tolerant-join, not a geometric collapse; T-junction slivers left naked). |
+| 8 | kernel | healing | ~~Degenerate face removal (B-rep) — same Check() false-positive root cause~~ **fixed** | partial | small | Same fix as #7, `b1ac7c9`; now verified end-to-end (not just at the `Check()` level) by `TestBrepRemoveDegenerateOrSliverFacesDoesNotTouchValidSolids`, added this pass — `RemoveDegenerateFaces()` removes 0 faces from Box()/Extrude(circle) while still removing a genuine hairline sliver. |
+| 9 | kernel | healing | ~~Sliver face removal (B-rep) — same Check() false-positive root cause~~ **fixed** | partial | small | Same fix as #7/#8, same new end-to-end test covers `RemoveSliverFaces()` too. |
 | 10 | kernel | exchange | .3dm layer round-trip default-layer index fix | partial | small | `AddLayer()`'s first call returns manifest index 0 instead of true default (-1); a one-line semantic fix. |
 | 11 | app | app_commands | AutoLISP-equivalent lightweight command-scripting language | missing | large | Closes a real, verified gap in Dino 8 Command system & core commands. |
 | 12 | app | app_commands | ObjectARX-equivalent low-level native app-extension API | missing | large | Closes a real, verified gap in Dino 8 Command system & core commands. |
@@ -1046,7 +1078,7 @@ relative to each other; only same-wave items are guaranteed file-disjoint.)
 
 | Item | Side/Category | Primary file(s) |
 |---|---|---|
-| Fix `Brep::Check()`'s `SampleLoop` false-positive on straight-parameter trims of curved faces (unblocks the two RemoveDegenerateFaces/RemoveSliverFaces items below) | kernel/healing, kernel/topology | `dino8-kernel/src/brep.cpp` (SampleLoop, Check) |
+| ~~Fix `Brep::Check()`'s `SampleLoop` false-positive on straight-parameter trims of curved faces (unblocks the two RemoveDegenerateFaces/RemoveSliverFaces items below)~~ — already done in `b1ac7c9`, predating this wave; kept here only for the wave's own history | kernel/healing, kernel/topology | `dino8-kernel/src/brep.cpp` (SampleLoop, Check) |
 | CSX against trimmed faces — wire `FaceContainsUV` into `IntersectCurveSurface`/`IntersectAny` | kernel/intersections | `dino8-kernel/src/surface_intersect.cpp`, `dino8-app/src/commands/cmd_fillet.cpp` |
 | `.3dm` layer round-trip default-layer index fix (`AddLayer()` returns 0 instead of the true default -1) | kernel/exchange | `dino8-kernel/src/file_io.cpp` |
 | SubD-result revolve / multi-pipe: implement the two commands or remove the dead `MenuBar.cpp` entries | kernel/sweeplofts | `dino8-app/src/commands/cmd_subd.cpp`, `dino8-app/src/ui/MenuBar.cpp` |

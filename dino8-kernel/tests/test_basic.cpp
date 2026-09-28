@@ -7512,6 +7512,68 @@ void TestBrepCheckDoesNotFalselyFlagCurvedOrToplessValidFaces() {
           "a genuine 1e-8-wide hairline face is still caught (as DegenerateFace) after this fix - not a false "
           "negative traded for the false positives it removes");
   }
+  {
+    const Brep torus = Brep::Torus(Point3d(0, 0, 0), Vector3d(0, 0, 1), 3.0, 1.0);
+    Check(degenerate_or_sliver_count(torus) == 0,
+          "Torus() - the fifth surface-only NewFace(int) factory alongside Box/Sphere - is not flagged either");
+  }
+}
+
+// PARITY_MAP.md previously documented RemoveDegenerateFaces()/
+// RemoveSliverFaces() as "destructive on the kernel's own valid solids"
+// (probed: 3/3 and 6/6 faces deleted from a valid Extrude(circle) and
+// Box()) because both trust Check()'s DegenerateFace/SliverFace flags.
+// Now that Check() no longer false-flags those faces (see
+// TestBrepCheckDoesNotFalselyFlagCurvedOrToplessValidFaces above), this
+// verifies the fix all the way through to the actual deleting operations,
+// not just the diagnostic they read from.
+void TestBrepRemoveDegenerateOrSliverFacesDoesNotTouchValidSolids() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+  namespace tol = dino8::kernel::tolerance;
+
+  {
+    Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+    Check(box.RemoveDegenerateFaces(tol::kDistance) == 0 && box.FaceCount() == 6,
+          "RemoveDegenerateFaces() removes none of Box()'s 6 valid faces");
+  }
+  {
+    Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+    Check(box.RemoveSliverFaces(1e-4) == 0 && box.FaceCount() == 6,
+          "RemoveSliverFaces() removes none of Box()'s 6 valid faces either");
+  }
+  auto make_circle = [](Point3d center, Vector3d normal, double radius) {
+    const ON_Circle circle(ON_Plane(center, normal), radius);
+    ON_NurbsCurve nurbs;
+    circle.GetNurbForm(nurbs);
+    NurbsCurve k;
+    k.raw() = nurbs;
+    return k;
+  };
+  {
+    Brep cyl = Brep::Extrude(make_circle(Point3d(0, 0, 0), Vector3d(0, 0, 1), 1.0), Vector3d(0, 0, 4));
+    Check(cyl.FaceCount() == 3, "Extrude(circle) fixture starts with its genuine 3 faces (wall + 2 caps)");
+    Check(cyl.RemoveDegenerateFaces(tol::kDistance) == 0 && cyl.FaceCount() == 3,
+          "RemoveDegenerateFaces() removes none of Extrude(circle)'s 3 valid faces");
+  }
+  {
+    Brep cyl = Brep::Extrude(make_circle(Point3d(0, 0, 0), Vector3d(0, 0, 1), 1.0), Vector3d(0, 0, 4));
+    Check(cyl.RemoveSliverFaces(1e-4) == 0 && cyl.FaceCount() == 3,
+          "RemoveSliverFaces() removes none of Extrude(circle)'s 3 valid faces either");
+  }
+  // True-positive control: a genuine hairline sliver must still be deleted
+  // by both operations - this fix closes a false-positive hole, it does
+  // not neuter the check.
+  {
+    Brep::PlanarFace sliver;
+    sliver.loop = {Point3d(0, 0, 0), Point3d(1, 0, 0), Point3d(1, 1e-8, 0), Point3d(0, 1e-8, 0)};
+    sliver.plane = ON_Plane(sliver.loop[0], ON_3dVector(0, 0, -1));
+    Brep one = Brep::FromPlanarFaces({sliver});
+    Check(one.RemoveDegenerateFaces(tol::kDistance) == 1 && one.FaceCount() == 0,
+          "a genuine 1e-8-wide hairline face is still deleted by RemoveDegenerateFaces()");
+  }
 }
 
 // Two squares touching at exactly one point and sharing no edge - the
@@ -32281,6 +32343,7 @@ int main() {
   TestTolerancePolicyValuesAreTheOnesInForce();
   TestBrepCheckReportsCleanBoxAsClean();
   TestBrepCheckDoesNotFalselyFlagCurvedOrToplessValidFaces();
+  TestBrepRemoveDegenerateOrSliverFacesDoesNotTouchValidSolids();
   TestBrepCheckDetectsNonManifoldPinchVertex();
   TestBrepSplitNonManifoldVertexHealsPinchPoint();
   TestBrepCheckAndUnifyNormalsOnFlippedFace();
