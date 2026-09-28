@@ -233,6 +233,9 @@ ObjectAttributes Model::ObjectAttributesAt(int index) const {
     if (attributes->LinetypeSource() == ON::linetype_from_object) {
       result.linetype_index = attributes->m_linetype_index;
     }
+    if (attributes->MaterialSource() == ON::material_from_object) {
+      result.material_index = attributes->m_material_index;
+    }
     ON_SimpleArray<int> group_indices;
     attributes->GetGroupList(group_indices);
     result.group_indices.assign(group_indices.Array(), group_indices.Array() + group_indices.Count());
@@ -305,6 +308,26 @@ std::string Model::GroupNameAt(int group_index) const {
       model_.ComponentFromIndex(ON_ModelComponent::Type::Group, group_index);
   const ON_Group* group = ON_Group::Cast(group_ref.ModelComponent());
   return group != nullptr ? ToStdString(group->Name()) : std::string();
+}
+
+int Model::MaterialCount() const {
+  return static_cast<int>(model_.ActiveComponentCount(ON_ModelComponent::Type::RenderMaterial));
+}
+
+MaterialInfo Model::MaterialAt(int material_index) const {
+  MaterialInfo result;
+  const ON_ModelComponentReference material_ref =
+      model_.ComponentFromIndex(ON_ModelComponent::Type::RenderMaterial, material_index);
+  const ON_Material* material = ON_Material::Cast(material_ref.ModelComponent());
+  if (material == nullptr) {
+    return result;
+  }
+  result.name = ToStdString(material->Name());
+  const ON_Color diffuse = material->Diffuse();
+  result.diffuse_color = Color{static_cast<unsigned char>(diffuse.Red()),
+                                static_cast<unsigned char>(diffuse.Green()),
+                                static_cast<unsigned char>(diffuse.Blue())};
+  return result;
 }
 
 Result Model::Save(const std::string& path, int version) const {

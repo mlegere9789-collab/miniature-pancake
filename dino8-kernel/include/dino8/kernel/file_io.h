@@ -66,12 +66,22 @@ struct LinetypeInfo {
   LinetypePattern pattern;
 };
 
+// A render material read back from Model::MaterialAt() below - the
+// read-side counterpart to AddMaterial()'s own `diffuse_color` parameter.
+// Only `diffuse_color` is populated, matching AddMaterial()'s own
+// "only Name()/Diffuse() are set" scope (see its doc comment).
+struct MaterialInfo {
+  std::string name;
+  Color diffuse_color;
+};
+
 // One object's attributes, read back from Model::ObjectAttributesAt()
 // below - the read-side counterpart to every Add*() method's own name/
-// layer_index/render_color/user_strings/linetype_index/group_indices
-// parameters. `render_color` and `linetype_index` are std::nullopt when
-// the object inherits that value from its layer (ON::color_from_layer /
-// ON::linetype_from_layer) rather than overriding it at the object level -
+// layer_index/render_color/user_strings/linetype_index/group_indices/
+// material_index parameters. `render_color`/`linetype_index`/
+// `material_index` are std::nullopt when the object inherits that value
+// from its layer (ON::color_from_layer / ON::linetype_from_layer /
+// ON::material_from_layer) rather than overriding it at the object level -
 // the same std::nullopt-means-"inherit from layer" contract those Add*()
 // parameters themselves use on the write side.
 struct ObjectAttributes {
@@ -81,6 +91,7 @@ struct ObjectAttributes {
   std::optional<int> linetype_index;
   std::vector<int> group_indices;
   UserStrings user_strings;
+  std::optional<int> material_index;
 };
 
 // Thin wrapper around ONX_Model so .3dm compatibility comes from
@@ -315,7 +326,11 @@ class Model {
   // ObjectCount()), in the same order ONX_ModelComponentIterator visits
   // ModelGeometry components - the read-side counterpart to every Add*()
   // method's own name/layer_index/render_color/user_strings/
-  // linetype_index/group_indices parameters. Before this, reading back
+  // linetype_index/group_indices/material_index parameters (`material_index`
+  // reads back the same way `linetype_index` does: std::nullopt when the
+  // object inherits its material from its layer rather than overriding it,
+  // ON::material_from_layer being ON_3dmObjectAttributes' own default).
+  // Before this, reading back
   // anything an Add*() call had written meant a caller had to hand-roll
   // an ONX_ModelComponentIterator and cast every ON_ModelGeometryComponent
   // itself, via raw() - exactly what this kernel's own round-trip tests
@@ -357,6 +372,21 @@ class Model {
   // `name` parameter. `group_index` not naming a group this model
   // actually has returns an empty string.
   std::string GroupNameAt(int group_index) const;
+
+  // Returns the number of materials explicitly added via AddMaterial()
+  // above.
+  int MaterialCount() const;
+
+  // Returns the material at `material_index` (as returned by
+  // AddMaterial() above) - the read-side counterpart to AddMaterial()'s
+  // own `diffuse_color` parameter, closing the last read-side gap
+  // ObjectAttributesAt()/LayerAt()/LinetypeAt()/GroupNameAt() left open
+  // (PARITY_MAP.md's own ".3dm attribute/metadata fidelity" evidence
+  // named it: "no MaterialAt()/MaterialCount()"). `material_index` not
+  // naming a material this model actually has returns a
+  // default-constructed MaterialInfo, same contract as LayerAt()/
+  // LinetypeAt() above.
+  MaterialInfo MaterialAt(int material_index) const;
 
   // Writes as a .3dm file. `version` is the OpenNURBS archive version
   // (e.g. 80 for the Rhino-8-generation format); defaults to the newest

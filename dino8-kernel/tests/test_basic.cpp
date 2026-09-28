@@ -6296,6 +6296,90 @@ void TestModelReadAccessorsRoundTrip() {
   std::remove(path.c_str());
 }
 
+// Model::MaterialAt()/MaterialCount(), plus ObjectAttributesAt()'s new
+// material_index field: the read-side counterpart to AddMaterial() and to
+// every Add*() method's own `material_index` parameter - the one read-side
+// gap TestModelReadAccessorsRoundTrip() above left open (PARITY_MAP.md's
+// own ".3dm attribute/metadata fidelity" evidence named it explicitly: "no
+// MaterialAt()/MaterialCount()"). Checks a real round trip through an
+// actual .3dm file: two materials, one object overriding its material and
+// one left at every default (inheriting from its layer), then reads
+// everything back exclusively through the new accessors - no raw()/
+// ONX_ModelComponentIterator at all. Also checks that MaterialAt() and
+// ObjectAttributesAt().material_index handle an index/object that names
+// nothing this model actually has without crashing.
+void TestModelMaterialAccessorsRoundTrip() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Color;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Model;
+  using dino8::kernel::Result;
+  using dino8::kernel::UserStrings;
+
+  Model model;
+
+  const int red_material_index = model.AddMaterial("Anodized Red", Color{200, 20, 20});
+  const int steel_material_index = model.AddMaterial("Brushed Steel", Color{150, 150, 160});
+
+  const auto box_brep = Brep::Box(0, 0, 0, 1, 1, 1);
+  model.AddBrep(box_brep, "MaterialedBrep", 0, std::nullopt, UserStrings(), std::nullopt,
+                std::vector<int>(), red_material_index);
+  const auto box_mesh = MakeQuadBoxMesh(2, 0, 0, 3, 1, 1);
+  model.AddMesh(box_mesh);  // every parameter left at its default
+
+  const std::string path = "dino8_kernel_model_material_accessors_roundtrip_test.3dm";
+  Check(model.Save(path) == Result::Ok, ".3dm save succeeded");
+
+  Model loaded;
+  Check(Model::Load(path, loaded) == Result::Ok, ".3dm load succeeded");
+
+  Check(loaded.MaterialCount() == 2,
+        "MaterialCount() reports exactly the 2 materials AddMaterial() added");
+  const auto red_material = loaded.MaterialAt(red_material_index);
+  Check(red_material.name == "Anodized Red",
+        "MaterialAt() reports the reloaded material's name exactly as AddMaterial() was given");
+  Check(red_material.diffuse_color.r == 200 && red_material.diffuse_color.g == 20 &&
+            red_material.diffuse_color.b == 20,
+        "MaterialAt() reports the reloaded material's diffuse color exactly as AddMaterial() "
+        "was given");
+  const auto steel_material = loaded.MaterialAt(steel_material_index);
+  Check(steel_material.name == "Brushed Steel" && steel_material.diffuse_color.r == 150 &&
+            steel_material.diffuse_color.g == 150 && steel_material.diffuse_color.b == 160,
+        "MaterialAt() also reports a material no object ever referenced - proving the accessor "
+        "reads the material table directly, not just whatever objects happen to point at");
+  const auto missing_material = loaded.MaterialAt(9999);
+  Check(missing_material.name.empty(),
+        "MaterialAt() on an index naming no real material returns a default-constructed "
+        "MaterialInfo rather than crashing");
+
+  Check(loaded.ObjectCount() == 2, "ObjectCount() reports exactly the 2 objects added");
+  bool found_materialed_brep = false;
+  bool found_default_mesh = false;
+  for (int i = 0; i < loaded.ObjectCount(); ++i) {
+    const auto attributes = loaded.ObjectAttributesAt(i);
+    if (attributes.name == "MaterialedBrep") {
+      found_materialed_brep = true;
+      Check(attributes.material_index.has_value() && *attributes.material_index == red_material_index,
+            "ObjectAttributesAt() reports the materialed object's per-object material_index "
+            "override exactly as AddBrep() was given");
+    } else {
+      found_default_mesh = true;
+      Check(!attributes.material_index.has_value(),
+            "ObjectAttributesAt() reports std::nullopt (inherit from layer), not some other "
+            "placeholder, for an object added with no material_index argument");
+    }
+  }
+  Check(found_materialed_brep && found_default_mesh,
+        "both objects (materialed brep, every-default mesh) were found in the reloaded model");
+
+  const auto out_of_range = loaded.ObjectAttributesAt(loaded.ObjectCount());
+  Check(!out_of_range.material_index.has_value(),
+        "ObjectAttributesAt() on an out-of-range index reports std::nullopt for material_index, "
+        "same as every other default-constructed ObjectAttributes field");
+
+  std::remove(path.c_str());
+}
+
 void TestBoxVolume() {
   const auto box = MakeBox(0, 0, 0, 2, 2, 2);
   Check(std::abs(box.Volume() - 8.0) < 1e-9, "unit-scaled box volume is correct");
@@ -36867,6 +36951,7 @@ int main() {
   TestModelAddGroupRoundTrips();
   TestModelAddMaterialRoundTrips();
   TestModelReadAccessorsRoundTrip();
+  TestModelMaterialAccessorsRoundTrip();
   TestModelLoadRejectsMeshWithOutOfRangeFaceIndex();
   TestSplitByPlane();
   TestConvexHull();
