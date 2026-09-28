@@ -735,6 +735,53 @@ class NurbsCurve {
   // primitive tolerates.
   Result OffsetInPlane(double distance, NurbsCurve& out, double tolerance = -1.0) const;
 
+  // Same construction as `OffsetInPlane(double, ...)` above, but the
+  // sweep direction at every parameter is `TangentAt(t) x plane.zaxis`
+  // for a CALLER-SUPPLIED `plane`, not this curve's own `IsPlanar()` fit.
+  // Closes the real gap the other overload's doc comment names as out of
+  // scope: that one refuses (`Result::Failed`) any curve that isn't
+  // planar at all, and even for a planar curve always uses that curve's
+  // OWN fitted plane, never a plane the caller picks (the same
+  // limitation the app's `Offset` command has, per PARITY_MAP.md's
+  // offsetshell category: "kernel `OffsetInPlane` works in the curve's
+  // own fitted plane ... returns Failed for non-planar curves ... The
+  // app Offset command uses only the active CPlane normal. No 3D
+  // offset."). This overload accepts ANY `plane` (its normal need not
+  // relate to the curve's own shape at all) and ANY curve, planar or
+  // genuinely non-planar in 3D - the per-parameter direction
+  // `TangentAt(t) x plane.zaxis` is well-defined regardless, exactly the
+  // "offset using an explicit CPlane" behavior the app command already
+  // wants. The result curve is generally NOT itself planar when this
+  // curve is non-planar or `plane` isn't the curve's own fitted plane -
+  // that's the whole point of a caller-chosen plane, not a defect.
+  //
+  //  - A LINE still offsets exactly (`FromControlPoints()` of the two
+  //    translated endpoints, translated by `distance` along
+  //    `line_direction x plane.zaxis`) - this generalizes for free: a
+  //    line's own offset direction is exact for ANY plane whose normal
+  //    isn't parallel to the line, not only the line's own default
+  //    plane.
+  //  - Every other curve (including a circular arc, and including a
+  //    genuinely non-planar curve) falls to the same sampled,
+  //    tolerance-driven `FitLeastSquares()` refit the other overload's
+  //    "general planar curve" case uses, with `plane.zaxis` in place of
+  //    this curve's own fitted `zaxis` at every sample, and the same
+  //    curvature fold guard (`CurvatureAt(t)` against `distance`) at
+  //    each sample. An arc is not special-cased exactly here: offsetting
+  //    a circle along a foreign plane's normal is not itself a circle
+  //    in general, so it takes the same approximate path as any other
+  //    curve.
+  //
+  // Returns `Result::Failed`, `out` left unchanged, if `TangentAt(t) x
+  // plane.zaxis` is degenerate (zero) at any sample - the curve's own
+  // tangent runs parallel to `plane`'s normal there, so no offset
+  // direction exists - or if the curvature fold guard trips, or if the
+  // tolerance-driven refit can't reach `tolerance` even at its own
+  // maximum feasible control-point count. Throws `std::invalid_argument`
+  // if `distance` isn't finite or `plane` isn't `ON_Plane::IsValid()`.
+  Result OffsetInPlane(const ON_Plane& plane, double distance, NurbsCurve& out,
+                       double tolerance = -1.0) const;
+
   const ON_NurbsCurve& raw() const { return curve_; }
   ON_NurbsCurve& raw() { return curve_; }
 

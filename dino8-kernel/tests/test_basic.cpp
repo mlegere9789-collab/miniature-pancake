@@ -39643,6 +39643,148 @@ void TestCurveOffsetInPlaneRefusesNonPlanarCurve() {
   Check(c.OffsetInPlane(1.0, out) == Result::Failed, "OffsetInPlane refuses a genuinely non-planar curve");
 }
 
+void TestCurveOffsetInPlaneWithExplicitPlaneSucceedsOnNonPlanarCurve() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+  using dino8::kernel::Vector3d;
+
+  // Same fixture as TestCurveOffsetInPlaneRefusesNonPlanarCurve - a
+  // genuinely non-planar cubic. The single-plane overload refuses this
+  // outright; the whole point of the caller-supplied-plane overload is
+  // that it does not.
+  const std::vector<Point3d> cps = {Point3d(0, 0, 0), Point3d(1, 1, 1), Point3d(2, -1, 2), Point3d(3, 2, -1)};
+  const NurbsCurve c = NurbsCurve::FromControlPoints(cps, 3);
+  Check(!c.IsPlanar(1e-6), "OffsetInPlane(plane) non-planar setup: curve is genuinely non-planar");
+
+  NurbsCurve out_noplane;
+  Check(c.OffsetInPlane(1.0, out_noplane) == Result::Failed,
+        "OffsetInPlane(plane) setup: the single-plane overload still refuses this curve");
+
+  const ON_Plane plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1));
+  NurbsCurve out;
+  Check(c.OffsetInPlane(plane, 1.0, out) == Result::Ok,
+        "OffsetInPlane(plane, +1.0) succeeds on a genuinely non-planar curve given an explicit plane");
+
+  const dino8::kernel::Interval dom = c.Domain();
+  double worst = 0.0;
+  for (int i = 0; i <= 40; ++i) {
+    const double t = dom.min + (dom.max - dom.min) * i / 40.0;
+    Vector3d offset_dir = ON_CrossProduct(c.TangentAt(t), plane.zaxis);
+    offset_dir.Unitize();
+    const Point3d expected = c.PointAt(t) + 1.0 * offset_dir;
+    worst = std::max(worst, out.ClosestPoint(expected, 200).DistanceTo(expected));
+  }
+  Check(worst < 0.05,
+        "OffsetInPlane(plane, +1.0) on a non-planar curve: the refit tracks TangentAt(t) x plane.zaxis reasonably well");
+}
+
+void TestCurveOffsetInPlaneWithExplicitPlaneLineIsExactForAnyNonParallelPlane() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+  using dino8::kernel::Vector3d;
+
+  const std::vector<Point3d> cps = {Point3d(0, 0, 0), Point3d(10, 0, 0)};
+  const NurbsCurve line = NurbsCurve::FromControlPoints(cps, 1);
+
+  // A plane whose normal has nothing to do with this line's own natural
+  // (infinitely many) planes - the point is that the exact line-offset
+  // formula generalizes to ANY plane, not only one aligned with a
+  // coordinate axis.
+  const ON_Plane plane(ON_3dPoint(5, 5, 5), ON_3dVector(1, 1, 1));
+  Vector3d expected_dir = ON_CrossProduct(Vector3d(1, 0, 0), plane.zaxis);
+  expected_dir.Unitize();
+
+  NurbsCurve out;
+  Check(line.OffsetInPlane(plane, 3.0, out) == Result::Ok,
+        "OffsetInPlane(plane, +3.0) succeeds on a line for an arbitrary non-parallel plane");
+  const Point3d p0 = out.PointAt(out.Domain().min);
+  const Point3d p1 = out.PointAt(out.Domain().max);
+  Check(p0.DistanceTo(Point3d(0, 0, 0) + 3.0 * expected_dir) < 1e-9,
+        "OffsetInPlane(plane, +3.0) on a line: start endpoint matches the independently-computed exact offset");
+  Check(p1.DistanceTo(Point3d(10, 0, 0) + 3.0 * expected_dir) < 1e-9,
+        "OffsetInPlane(plane, +3.0) on a line: end endpoint matches the independently-computed exact offset");
+}
+
+void TestCurveOffsetInPlaneWithExplicitPlaneRefusesWhenTangentParallelToNormal() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // A line running straight along the SAME direction as the given
+  // plane's normal: TangentAt(t) x plane.zaxis is the zero vector
+  // everywhere, so no offset direction exists.
+  const std::vector<Point3d> cps = {Point3d(0, 0, 0), Point3d(0, 0, 5)};
+  const NurbsCurve line = NurbsCurve::FromControlPoints(cps, 1);
+  const ON_Plane plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1));
+
+  NurbsCurve out;
+  Check(line.OffsetInPlane(plane, 1.0, out) == Result::Failed,
+        "OffsetInPlane(plane) refuses a line running parallel to the plane's own normal");
+}
+
+void TestCurveOffsetInPlaneWithExplicitPlaneMatchesSinglePlaneOverloadWhenPlanesAgree() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // The same genuinely-wiggly planar fixture the tolerance-refit test
+  // above uses. Handing this overload the curve's OWN fitted plane must
+  // reproduce exactly what the single-plane overload already computes -
+  // both funnel into the same shared helper with the same normal.
+  std::vector<Point3d> cps;
+  for (int i = 0; i <= 10; ++i) cps.push_back(Point3d(i, 2.0 * std::sin(i * 0.9), 0.0));
+  const NurbsCurve c = NurbsCurve::FromControlPoints(cps, 3);
+  ON_Plane plane;
+  Check(c.raw().IsPlanar(&plane, 1e-6), "OffsetInPlane(plane) consistency setup: curve is planar");
+
+  NurbsCurve out_old;
+  NurbsCurve out_new;
+  Check(c.OffsetInPlane(0.5, out_old) == Result::Ok, "OffsetInPlane(+0.5) (single-plane overload) succeeds");
+  Check(c.OffsetInPlane(plane, 0.5, out_new) == Result::Ok, "OffsetInPlane(plane, +0.5) (explicit-plane overload) succeeds");
+
+  Check(out_old.ControlPointCount() == out_new.ControlPointCount(),
+        "OffsetInPlane(plane) consistency: both overloads land on the same refined control-point count");
+  const dino8::kernel::Interval dom = out_old.Domain();
+  double worst = 0.0;
+  for (int i = 0; i <= 50; ++i) {
+    const double t = dom.min + (dom.max - dom.min) * i / 50.0;
+    const Point3d p_old = out_old.PointAt(t);
+    worst = std::max(worst, out_new.ClosestPoint(p_old, 200).DistanceTo(p_old));
+  }
+  Check(worst < 1e-9,
+        "OffsetInPlane(plane) consistency: the explicit-plane overload exactly reproduces the single-plane overload when the plane matches the curve's own fit");
+}
+
+void TestCurveOffsetInPlaneWithExplicitPlaneThrowsOnInvalidArguments() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+
+  const std::vector<Point3d> cps = {Point3d(0, 0, 0), Point3d(10, 0, 0)};
+  const NurbsCurve line = NurbsCurve::FromControlPoints(cps, 1);
+  const ON_Plane valid_plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1));
+
+  NurbsCurve out;
+  bool threw_on_nan_distance = false;
+  try {
+    line.OffsetInPlane(valid_plane, std::numeric_limits<double>::quiet_NaN(), out);
+  } catch (const std::invalid_argument&) {
+    threw_on_nan_distance = true;
+  }
+  Check(threw_on_nan_distance, "OffsetInPlane(plane) throws std::invalid_argument on a non-finite distance");
+
+  const ON_Plane invalid_plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 0));
+  Check(!invalid_plane.IsValid(), "OffsetInPlane(plane) invalid-plane setup: a zero-normal plane is indeed invalid");
+  bool threw_on_invalid_plane = false;
+  try {
+    line.OffsetInPlane(invalid_plane, 1.0, out);
+  } catch (const std::invalid_argument&) {
+    threw_on_invalid_plane = true;
+  }
+  Check(threw_on_invalid_plane, "OffsetInPlane(plane) throws std::invalid_argument on an invalid plane");
+}
+
 void TestCurveOffsetInPlaneZeroDistanceIsNoOpCopy() {
   using dino8::kernel::NurbsCurve;
   using dino8::kernel::Result;
@@ -41065,6 +41207,11 @@ int main() {
   TestCurveOffsetInPlaneGeneralCurveApproximatesAndDetectsSelfIntersection();
   TestCurveOffsetInPlaneGeneralCurveRefinesUntilWithinTolerance();
   TestCurveOffsetInPlaneRefusesNonPlanarCurve();
+  TestCurveOffsetInPlaneWithExplicitPlaneSucceedsOnNonPlanarCurve();
+  TestCurveOffsetInPlaneWithExplicitPlaneLineIsExactForAnyNonParallelPlane();
+  TestCurveOffsetInPlaneWithExplicitPlaneRefusesWhenTangentParallelToNormal();
+  TestCurveOffsetInPlaneWithExplicitPlaneMatchesSinglePlaneOverloadWhenPlanesAgree();
+  TestCurveOffsetInPlaneWithExplicitPlaneThrowsOnInvalidArguments();
   TestCurveOffsetInPlaneZeroDistanceIsNoOpCopy();
 
 

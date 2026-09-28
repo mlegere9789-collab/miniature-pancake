@@ -22,6 +22,74 @@ double OffsetSignAlong(const Vector3d& dir, const Vector3d& true_outward) {
   return ON_DotProduct(dir, true_outward) >= 0.0 ? 1.0 : -1.0;
 }
 
+// Shared by both `OffsetInPlane` overloads' exact line case: a line
+// offsets exactly along `line_direction x normal` for ANY `normal` not
+// parallel to the line, whether that normal comes from this curve's own
+// `IsPlanar()` fit or a plane the caller supplied directly.
+Result OffsetLineAlongNormal(const Point3d& p0, const Point3d& p1, const Vector3d& normal,
+                              double distance, NurbsCurve& out) {
+  Vector3d dir = p1 - p0;
+  if (!dir.Unitize()) return Result::Failed;
+  Vector3d offset_dir = ON_CrossProduct(dir, normal);
+  if (!offset_dir.Unitize()) return Result::Failed;
+  out = NurbsCurve::FromControlPoints({p0 + distance * offset_dir, p1 + distance * offset_dir}, 1);
+  return Result::Ok;
+}
+
+// Shared by both `OffsetInPlane` overloads' general (non-exact) case:
+// sample `curve` uniformly, move each sample by `distance` along
+// `TangentAt(t) x normal`, guard against a curvature fold, then
+// tolerance-drive a `FitLeastSquares()` refit against the sampled locus.
+// `normal` is this curve's own fitted-plane zaxis for the single-plane
+// overload, or a caller-supplied plane's zaxis for the other - the loop
+// itself doesn't care which, since it never asks whether `curve` is
+// actually planar in `normal`'s plane at all.
+Result OffsetGeneralAlongNormal(const NurbsCurve& curve, const Vector3d& normal, double distance,
+                                 double tol, NurbsCurve& out) {
+  const Interval dom = curve.Domain();
+  const BoundingBox bbox = curve.GetTightBoundingBox();
+  const double diag = (bbox.max - bbox.min).Length();
+  const double chord_tol = dino8::kernel::tolerance::RelativeDistance(diag);
+  const int n = std::max(curve.SuggestedSamples(chord_tol), 4 * curve.ControlPointCount());
+  std::vector<Point3d> offset_points;
+  offset_points.reserve(static_cast<size_t>(n) + 1);
+  for (int i = 0; i <= n; ++i) {
+    const double t = dom.min + (dom.max - dom.min) * i / n;
+    Vector3d offset_dir = ON_CrossProduct(curve.TangentAt(t), normal);
+    if (!offset_dir.Unitize()) return Result::Failed;  // tangent parallel to normal here
+
+    const Vector3d kappa_vec = curve.CurvatureAt(t);
+    const double kappa = kappa_vec.Length();
+    if (kappa > dino8::kernel::tolerance::kZeroVector) {
+      Vector3d to_center = kappa_vec;
+      to_center.Unitize();
+      const double inward_component = distance * OffsetSignAlong(offset_dir, to_center);
+      if (inward_component >= 1.0 / kappa) return Result::Failed;  // folds through its own center of curvature
+    }
+
+    offset_points.push_back(curve.PointAt(t) + distance * offset_dir);
+  }
+
+  const int max_cv_count = static_cast<int>(offset_points.size());
+  int cv_count = std::min(curve.ControlPointCount(), max_cv_count);
+  NurbsCurve fitted;
+  for (;;) {
+    if (NurbsCurve::FitLeastSquares(offset_points, curve.Degree(), cv_count, fitted) != Result::Ok) {
+      return Result::Failed;
+    }
+    double worst = 0.0;
+    for (const Point3d& p : offset_points) {
+      worst = std::max(worst, fitted.ClosestPoint(p, 50).DistanceTo(p));
+    }
+    if (worst <= tol) {
+      out = fitted;
+      return Result::Ok;
+    }
+    if (cv_count >= max_cv_count) return Result::Failed;  // tolerance unreachable even at the maximum feasible count
+    cv_count = std::min(cv_count * 2, max_cv_count);
+  }
+}
+
 void SubdivideForFlatness(const NurbsCurve& curve, double t0, double t1, double chord_tolerance,
                            int depth, int max_depth, std::vector<double>& out) {
   const Point3d p0 = curve.PointAt(t0);
@@ -815,14 +883,7 @@ Result NurbsCurve::OffsetInPlane(double distance, NurbsCurve& out, double tolera
 
   // --- Line ------------------------------------------------------------
   if (curve_.IsLinear(tol)) {
-    const Point3d p0 = curve_.PointAtStart();
-    const Point3d p1 = curve_.PointAtEnd();
-    Vector3d dir = p1 - p0;
-    if (!dir.Unitize()) return Result::Failed;
-    Vector3d offset_dir = ON_CrossProduct(dir, plane.zaxis);
-    if (!offset_dir.Unitize()) return Result::Failed;
-    out = NurbsCurve::FromControlPoints({p0 + distance * offset_dir, p1 + distance * offset_dir}, 1);
-    return Result::Ok;
+    return OffsetLineAlongNormal(curve_.PointAtStart(), curve_.PointAtEnd(), plane.zaxis, distance, out);
   }
 
   // --- Circular arc / full circle ---------------------------------------
@@ -846,52 +907,39 @@ Result NurbsCurve::OffsetInPlane(double distance, NurbsCurve& out, double tolera
   }
 
   // --- General planar curve: approximate, curvature-checked ---------------
-  const double chord_tol = dino8::kernel::tolerance::RelativeDistance(diag);
-  const int n = std::max(SuggestedSamples(chord_tol), 4 * ControlPointCount());
-  std::vector<Point3d> offset_points;
-  offset_points.reserve(static_cast<size_t>(n) + 1);
-  for (int i = 0; i <= n; ++i) {
-    const double t = dom.min + (dom.max - dom.min) * i / n;
-    Vector3d offset_dir = ON_CrossProduct(TangentAt(t), plane.zaxis);
-    if (!offset_dir.Unitize()) return Result::Failed;  // degenerate (zero) tangent
+  return OffsetGeneralAlongNormal(*this, plane.zaxis, distance, tol, out);
+}
 
-    const Vector3d kappa_vec = CurvatureAt(t);
-    const double kappa = kappa_vec.Length();
-    if (kappa > dino8::kernel::tolerance::kZeroVector) {
-      Vector3d to_center = kappa_vec;
-      to_center.Unitize();
-      const double inward_component = distance * OffsetSignAlong(offset_dir, to_center);
-      if (inward_component >= 1.0 / kappa) return Result::Failed;  // folds through its own center of curvature
-    }
-
-    offset_points.push_back(PointAt(t) + distance * offset_dir);
+Result NurbsCurve::OffsetInPlane(const ON_Plane& plane, double distance, NurbsCurve& out,
+                                  double tolerance) const {
+  if (!ON_IsValid(distance)) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsCurve::OffsetInPlane: distance must be finite");
+  }
+  if (!plane.IsValid()) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsCurve::OffsetInPlane: plane must be valid");
   }
 
-  // Tolerance-driven refit: refuses to hand back a fit whose actual
-  // worst-case deviation from the sampled offset locus exceeds `tol`,
-  // rather than fitting once at this curve's own ControlPointCount() and
-  // trusting it - see this method's own header doc comment for why a
-  // least-squares residual isn't the same guarantee as this per-point
-  // check. `max_cv_count` mirrors FitLeastSquares()'s own documented
-  // ceiling (it isn't defined for more control points than data points).
-  const int max_cv_count = static_cast<int>(offset_points.size());
-  int cv_count = std::min(ControlPointCount(), max_cv_count);
-  NurbsCurve fitted;
-  for (;;) {
-    if (NurbsCurve::FitLeastSquares(offset_points, Degree(), cv_count, fitted) != Result::Ok) {
-      return Result::Failed;
-    }
-    double worst = 0.0;
-    for (const Point3d& p : offset_points) {
-      worst = std::max(worst, fitted.ClosestPoint(p, 50).DistanceTo(p));
-    }
-    if (worst <= tol) {
-      out = fitted;
-      return Result::Ok;
-    }
-    if (cv_count >= max_cv_count) return Result::Failed;  // tolerance unreachable even at the maximum feasible count
-    cv_count = std::min(cv_count * 2, max_cv_count);
+  const BoundingBox bbox = GetTightBoundingBox();
+  const double diag = (bbox.max - bbox.min).Length();
+  const double tol = tolerance > 0.0 ? tolerance : dino8::kernel::tolerance::DistanceForSize(diag);
+
+  if (distance == 0.0) {
+    out.curve_ = curve_;
+    return Result::Ok;
   }
+
+  // --- Line: still exact, for ANY plane not parallel to it -------------
+  if (curve_.IsLinear(tol)) {
+    return OffsetLineAlongNormal(curve_.PointAtStart(), curve_.PointAtEnd(), plane.zaxis, distance, out);
+  }
+
+  // --- Everything else, planar-in-its-own-plane or genuinely 3D --------
+  // No `IsPlanar()` precondition here - the whole point of this overload
+  // is offsetting along a caller-chosen plane's normal even when this
+  // curve doesn't lie in any single plane at all.
+  return OffsetGeneralAlongNormal(*this, plane.zaxis, distance, tol, out);
 }
 
 }  // namespace dino8::kernel
