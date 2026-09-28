@@ -3553,4 +3553,30 @@ else
   echo "FAIL PluginMarketplaceInstall did not produce a second independently-loaded HelloDino (saw $PM_BEFORE before, $PM_AFTER after)"; fail=1
 fi
 
+# Plug-in Marketplace: a crafted index entry cannot use library_filename to
+# escape <config>/plugins (see IsPlainFilename in src/plugins/Marketplace.cpp).
+# Regression for a path-traversal bug: InstallEntry used to copy the plug-in
+# to fs::path(dest_dir) / entry.library_filename with no check at all, so an
+# index entry (loadable from an arbitrary http(s) URL via
+# PluginMarketplaceIndex/the marketplace panel) with library_filename
+# "../../escaped_canary.so" would write that file two directories above
+# <config>/plugins - i.e. straight into <config>, outside the plugins
+# sandbox entirely - rather than being refused.
+CANARY="$XDG_CONFIG_HOME/escaped_canary.so"
+rm -f "$CANARY"
+sed "s|@DINO8ROOT@|$HEREW/..|g" "$HERE/plugin_marketplace_traversal_script.txt" > "$TMPW/plugin_marketplace_traversal_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  PMT="$("$BIN" --smoke 60 --script "$TMPW/plugin_marketplace_traversal_script.txt" 2>&1)" || { echo "$PMT"; echo "FAIL: plugin marketplace traversal script exited non-zero"; exit 1; }
+else
+  PMT="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$TMPW/plugin_marketplace_traversal_script.txt" 2>&1)" || { echo "$PMT"; echo "FAIL: plugin marketplace traversal script exited non-zero"; exit 1; }
+fi
+pmtcheck() { if echo "$PMT" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$PMT" "$1"; fail=1; fi; }
+pmtcheck "PluginMarketplaceIndex: loaded \"Malicious Test Index (path traversal regression fixture)\" - 1 plug-in(s)" "PluginMarketplaceIndex loaded the crafted traversal-attempt index"
+pmtcheck "! PluginMarketplaceInstall: EvilFilename: library_filename \"../../escaped_canary.so\" is not a plain filename - refusing to install outside <config>/plugins" "PluginMarketplaceInstall refuses a library_filename that tries to escape <config>/plugins"
+if [ -e "$CANARY" ]; then
+  echo "FAIL PluginMarketplaceInstall's library_filename check did not stop a path-traversal write - $CANARY was created outside <config>/plugins"; fail=1
+else
+  echo "ok   PluginMarketplaceInstall's crafted library_filename left no file outside <config>/plugins ($CANARY was never created)"
+fi
+
 exit $fail

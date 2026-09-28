@@ -40,6 +40,19 @@ std::string DefaultFilenameFromUrl(const std::string& url) {
   return name.empty() ? ("plugin" + std::string(kLibExt)) : name;
 }
 
+// An index entry's library_filename is meant to be a plain filename (e.g.
+// "hellodino.so"), but it comes straight from the loaded index - which can
+// be an arbitrary http(s) URL via PluginMarketplaceIndex/the marketplace
+// panel. Without this check a malicious index could set library_filename to
+// an absolute path or a "../"-relative one and make InstallEntry's
+// fs::path(dest_dir) / filename land (and overwrite) any file the process
+// can write, entirely outside <config>/plugins.
+bool IsPlainFilename(const std::string& name) {
+  if (name.empty() || name == "." || name == "..") return false;
+  if (name.find('/') != std::string::npos || name.find('\\') != std::string::npos) return false;
+  return fs::path(name).is_relative();
+}
+
 }  // namespace
 
 bool InstallEntry(app::Application& app, const MarketplaceEntry& entry, const std::string& exe_dir, std::string& error) {
@@ -82,6 +95,13 @@ bool InstallEntry(app::Application& app, const MarketplaceEntry& entry, const st
         return false;
       }
     }
+  }
+
+  if (!entry.library_filename.empty() && !IsPlainFilename(entry.library_filename)) {
+    error = entry.name + ": library_filename \"" + entry.library_filename +
+            "\" is not a plain filename - refusing to install outside <config>/plugins";
+    if (source_is_temp) { std::error_code rm_ec; fs::remove(source_path, rm_ec); }
+    return false;
   }
 
   const std::string dest_dir = app::ConfigDirectory() + "/plugins";
