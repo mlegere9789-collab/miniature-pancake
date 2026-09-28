@@ -26,6 +26,7 @@
 #include "dino8/kernel/detail/circle_clip3d.h"
 #include "dino8/kernel/detail/ellipse_clip3d.h"
 #include "dino8/kernel/detail/polygon2d.h"
+#include "dino8/kernel/features.h"
 #include "dino8/kernel/file_io.h"
 #include "dino8/kernel/fillet.h"
 #include "dino8/kernel/mesh.h"
@@ -36599,6 +36600,166 @@ void TestSurfaceExtendLinearNoOpAndRefusalChecks() {
         "ExtendLinear refuses to extend a closed direction");
 }
 
+// dino8::kernel::CounterboreHole - a real kernel-native feature operation
+// (PARITY_MAP.md's "kernel: Feature operations" Counterbore item), composed
+// from two coaxial BooleanCombineMixed(..., BooleanOp::Difference) passes:
+// the narrow drill cylinder first, then the wider, shallower counterbore
+// cylinder, which lands squarely in the already-supported coaxial
+// (radially-nested, axially-overlapping) CYLINDER/CYLINDER Difference case
+// (boolean.h's own BooleanCombineMixed doc comment, "CYLINDER/CYLINDER
+// (PARALLEL AXES)" section).
+void TestCounterboreHoleArgumentChecks() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::CounterboreHole;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+  const Point3d origin(5, 5, 10);
+  const Vector3d axis(0, 0, -1);
+
+  auto throws_invalid_argument = [&](auto&& call) {
+    try {
+      call();
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+    return false;
+  };
+
+  Check(throws_invalid_argument([&] { CounterboreHole(box, origin, Vector3d(0, 0, 0), 1.0, 10.0, 2.0, 3.0); }),
+        "CounterboreHole throws on a zero-length axis");
+  Check(throws_invalid_argument([&] { CounterboreHole(box, origin, axis, 0.0, 10.0, 2.0, 3.0); }),
+        "CounterboreHole throws on a non-positive drill_radius");
+  Check(throws_invalid_argument([&] { CounterboreHole(box, origin, axis, 1.0, 0.0, 2.0, 3.0); }),
+        "CounterboreHole throws on a non-positive drill_depth");
+  Check(throws_invalid_argument([&] { CounterboreHole(box, origin, axis, 1.0, 10.0, 1.0, 3.0); }),
+        "CounterboreHole throws when counterbore_radius does not exceed drill_radius (not a counterbore at all)");
+  Check(throws_invalid_argument([&] { CounterboreHole(box, origin, axis, 1.0, 10.0, 2.0, 0.0); }),
+        "CounterboreHole throws on a non-positive counterbore_depth");
+  Check(throws_invalid_argument([&] { CounterboreHole(box, origin, axis, 1.0, 10.0, 2.0, 10.5); }),
+        "CounterboreHole throws when counterbore_depth exceeds drill_depth");
+
+  // The same call with every argument in range does NOT throw - the
+  // checks above are genuinely rejecting only the bad cases, not
+  // everything.
+  bool ok_call_threw = false;
+  try {
+    CounterboreHole(box, origin, axis, 1.0, 10.0, 2.0, 3.0);
+  } catch (const std::invalid_argument&) {
+    ok_call_threw = true;
+  }
+  Check(!ok_call_threw, "CounterboreHole does not throw on an in-range, well-formed call");
+}
+
+// The main geometric check: drilling a counterbore straight down through
+// the top face of a box, exactly through (drill_depth == box height, the
+// same "coincident cap height" edge case TestBooleanCombineMixedDrilledBoxCoincidentCapHeight
+// already exercises for a plain single-cylinder hole).
+void TestCounterboreHoleAxisAlignedVolumeAndTopology() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::BooleanCombine;
+  using dino8::kernel::CounterboreHole;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+  const double drill_radius = 1.0;
+  const double drill_depth = 10.0;
+  const double counterbore_radius = 2.0;
+  const double counterbore_depth = 3.0;
+
+  const Brep result = CounterboreHole(box, Point3d(5, 5, 10), Vector3d(0, 0, -1), drill_radius, drill_depth,
+                                       counterbore_radius, counterbore_depth);
+
+  Check(result.raw().IsValid(), "CounterboreHole's result is a genuinely valid ON_Brep");
+  Check(result.FaceCount() > box.FaceCount(),
+        "CounterboreHole's result has strictly more faces than the untouched box - real topology was cut, not a "
+        "no-op");
+
+  // Hand-derived exact volume: box (1000) minus the UNION of the drill
+  // cylinder (radius 1, full height 10: pi*1^2*10 = 10*pi) and the
+  // counterbore cylinder (radius 2, depth 3 at the top: pi*2^2*3 = 12*pi),
+  // whose intersection is exactly the drill cylinder's own top 3 units
+  // (pi*1^2*3 = 3*pi) since the counterbore radius strictly contains the
+  // drill radius and sits at the same starting face. Union volume =
+  // 10*pi + 12*pi - 3*pi = 19*pi.
+  const double hand_derived_volume = 1000.0 - ON_PI * 19.0;  // ~= 940.3097
+
+  const Mesh mesh_256 = result.TessellateToClosedMesh(256, 256);
+  const double measured_volume = mesh_256.Volume();
+  Check(std::fabs(measured_volume - hand_derived_volume) < 0.1,
+        "CounterboreHole's tessellated volume (div=256) matches the hand-derived 1000-19*pi to within 0.1 - a real "
+        "bounded arc-sampling/tessellation tolerance across TWO composed drilling passes, not floating-point "
+        "exactness (see TestBooleanCombineMixedDrilledBoxThroughHole's own comment for why a single pass alone "
+        "already carries this kind of bounded error)");
+
+  // Second, fully independent derivation via the mesh-based (Manifold)
+  // boolean path: build both cutters as real closed solid cylinder
+  // meshes, union them, and subtract that union from the box's own mesh -
+  // entirely separate machinery from BooleanCombineMixed's exact B-rep
+  // pipeline.
+  const Mesh mesh_box = box.TessellateToClosedMesh(64, 64);
+  const Mesh mesh_drill = Mesh::Cylinder(Point3d(5, 5, 0), Vector3d(0, 0, 1), drill_radius, drill_depth,
+                                          /*circle_segments=*/200, /*grid_divisions=*/64);
+  const Mesh mesh_counterbore =
+      Mesh::Cylinder(Point3d(5, 5, 10 - counterbore_depth), Vector3d(0, 0, 1), counterbore_radius, counterbore_depth,
+                      /*circle_segments=*/200, /*grid_divisions=*/64);
+  const Mesh mesh_cutters_union = BooleanCombine(mesh_drill, mesh_counterbore, dino8::kernel::BooleanOp::Union);
+  const Mesh mesh_diff = BooleanCombine(mesh_box, mesh_cutters_union, dino8::kernel::BooleanOp::Difference);
+  Check(std::fabs(mesh_diff.Volume() - hand_derived_volume) < 0.5,
+        "the independent mesh-based (Manifold) Difference of the same box against the UNION of both cutters' own "
+        "tessellations also matches the hand-derived volume, within Manifold's own single-precision-mesh tolerance");
+  Check(std::fabs(mesh_diff.Volume() - measured_volume) < 0.5,
+        "CounterboreHole's own exact-B-rep volume and the independent mesh-based Manifold volume agree with each "
+        "other, not just with the hand-derived value separately");
+}
+
+// A blind (non-through) counterbore: confirms a counterbore need not
+// reach all the way through the solid.
+//
+// Not also tested here with an OBLIQUE drilling axis (MakeAxisFrame's own
+// arbitrary-axis frame construction is otherwise exact and axis-agnostic
+// - only this specific downstream call is the issue): confirmed directly
+// that a large-enough combination of radius and axis tilt trips
+// BooleanCombineMixed's own disclosed, out-of-scope "oblique plane's own
+// intersection with a cylindrical face enters/exits across only part of
+// the swept angle" non-monotonic case (boolean.cpp's
+// SplitCylindricalByObliquePlane) regardless of how much margin the
+// cutter is given past the surface - a real, pre-existing kernel
+// limitation on steep-tilt oblique holes in general, not something this
+// feature's own composition could route around, and out of scope to fix
+// in this increment.
+void TestCounterboreHoleBlindAxisAlignedVolume() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::CounterboreHole;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+
+  // A blind hole straight down from the top, not reaching the bottom.
+  const double drill_radius = 1.5;
+  const double drill_depth = 6.0;  // z: 10 -> 4, strictly inside the box.
+  const double counterbore_radius = 2.5;
+  const double counterbore_depth = 2.0;
+
+  const Brep blind = CounterboreHole(box, Point3d(5, 5, 10), Vector3d(0, 0, -1), drill_radius, drill_depth,
+                                      counterbore_radius, counterbore_depth);
+  Check(blind.raw().IsValid(), "a blind (non-through) counterbore's result is a genuinely valid ON_Brep");
+
+  const double hand_derived_blind_volume =
+      1000.0 - (ON_PI * drill_radius * drill_radius * drill_depth +
+                ON_PI * counterbore_radius * counterbore_radius * counterbore_depth -
+                ON_PI * drill_radius * drill_radius * counterbore_depth);
+  const double measured_blind_volume = blind.TessellateToClosedMesh(256, 256).Volume();
+  Check(std::fabs(measured_blind_volume - hand_derived_blind_volume) < 0.1,
+        "a blind counterbore's tessellated volume matches its own hand-derived value (box minus the union of a "
+        "6-unit-deep drill and a 2-unit-deep counterbore, both stopping short of the box's own far side)");
+}
+
 int main() {
   ON::Begin();
 
@@ -37194,6 +37355,11 @@ int main() {
   TestSurfaceExtendLinearNoOpAndRefusalChecks();
 
   sweep_tests::TestSweep2ExactFrustumAndDegenerateCases();
+
+  TestCounterboreHoleArgumentChecks();
+  TestCounterboreHoleAxisAlignedVolumeAndTopology();
+  TestCounterboreHoleBlindAxisAlignedVolume();
+
   ON::End();
 
   if (g_failures > 0) {
