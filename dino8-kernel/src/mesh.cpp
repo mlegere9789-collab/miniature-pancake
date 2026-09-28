@@ -1087,7 +1087,7 @@ Result Mesh::LoadObj(const std::string& path, Mesh& out_mesh) {
         vt_indices.push_back(vt_index);
         has_vt_list.push_back(has_vt);
       }
-      if (indices.size() < 3 || indices.size() > 4) {
+      if (indices.size() < 3) {
         return Result::Failed;
       }
       for (const int index : indices) {
@@ -1107,12 +1107,31 @@ Result Mesh::LoadObj(const std::string& path, Mesh& out_mesh) {
               texture_coords[static_cast<size_t>(vt_indices[i]) - 1];
         }
       }
-      ON_MeshFace face;
-      face.vi[0] = indices[0] - 1;
-      face.vi[1] = indices[1] - 1;
-      face.vi[2] = indices[2] - 1;
-      face.vi[3] = (indices.size() == 4) ? indices[3] - 1 : indices[2] - 1;
-      raw.m_F.Append(face);
+      if (indices.size() <= 4) {
+        ON_MeshFace face;
+        face.vi[0] = indices[0] - 1;
+        face.vi[1] = indices[1] - 1;
+        face.vi[2] = indices[2] - 1;
+        face.vi[3] = (indices.size() == 4) ? indices[3] - 1 : indices[2] - 1;
+        raw.m_F.Append(face);
+      } else {
+        // An n-gon with n > 4 doesn't fit ON_MeshFace (triangle or quad
+        // only) - fan-triangulate from the face's own first corner
+        // instead of rejecting the line outright, the same accommodation
+        // most .obj consumers make for n-gons. This is exact for a convex
+        // polygon; a concave (non-convex) one can produce a triangle
+        // whose interior falls outside the original n-gon; that's a
+        // disclosed limitation of the fan approach, not something this
+        // loader detects or refuses.
+        for (size_t i = 1; i + 1 < indices.size(); ++i) {
+          ON_MeshFace face;
+          face.vi[0] = indices[0] - 1;
+          face.vi[1] = indices[i] - 1;
+          face.vi[2] = indices[i + 1] - 1;
+          face.vi[3] = face.vi[2];
+          raw.m_F.Append(face);
+        }
+      }
     }
     // Every other tag (comments, vn, g/o, mtllib/usemtl, s, ...) is
     // silently skipped - this kernel only round-trips geometry (and, now,

@@ -15616,14 +15616,14 @@ void TestMeshLoadObjRejectsMalformedFiles() {
   Check(Mesh::LoadObj(forward_ref_path, out) == Result::Failed,
         "LoadObj fails on a face referencing a vertex index that doesn't exist");
 
-  const std::string pentagon_path = "dino8_kernel_mesh_obj_test_pentagon.obj";
+  const std::string too_few_path = "dino8_kernel_mesh_obj_test_too_few.obj";
   {
-    std::ofstream bad(pentagon_path);
-    bad << "v 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\nv 0.5 2 0\nf 1 2 3 4 5\n";
+    std::ofstream bad(too_few_path);
+    // A face line needs at least 3 corners; 2 is not a valid polygon.
+    bad << "v 0 0 0\nv 1 0 0\nf 1 2\n";
   }
-  Check(Mesh::LoadObj(pentagon_path, out) == Result::Failed,
-        "LoadObj fails on a 5-index face line rather than silently "
-        "misinterpreting it (ON_MeshFace only holds a triangle or quad)");
+  Check(Mesh::LoadObj(too_few_path, out) == Result::Failed,
+        "LoadObj fails on a face line with fewer than 3 corners");
 
   // A negative (relative) index that resolves before the start of the
   // file (nothing declared yet to be "3 back" from) is still a real
@@ -15643,7 +15643,7 @@ void TestMeshLoadObjRejectsMalformedFiles() {
         "start of the file, same as an out-of-range positive index");
 
   std::remove(forward_ref_path.c_str());
-  std::remove(pentagon_path.c_str());
+  std::remove(too_few_path.c_str());
   std::remove(oob_relative_index_path.c_str());
 }
 
@@ -15752,6 +15752,126 @@ void TestMeshLoadObjResolvesRelativeIndices() {
         "'-1' resolved to the only (and therefore last) declared 'vt' "
         "entry (0.25, 0.75) for every vertex");
   std::remove(uv_path.c_str());
+}
+
+void TestMeshLoadObjFanTriangulatesNgonFaces() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Result;
+
+  // A planar convex polygon's shoelace area, used as the ground truth a
+  // fan triangulation of the same polygon must reproduce exactly (up to
+  // floating-point round-off) - the standard way most .obj consumers
+  // accommodate an n-gon face that ON_MeshFace itself can't hold directly
+  // (triangle or quad only).
+  auto shoelace_area = [](const std::vector<std::pair<double, double>>& pts) {
+    double sum = 0.0;
+    for (size_t i = 0; i < pts.size(); ++i) {
+      const auto& [x0, y0] = pts[i];
+      const auto& [x1, y1] = pts[(i + 1) % pts.size()];
+      sum += x0 * y1 - x1 * y0;
+    }
+    return std::abs(sum) * 0.5;
+  };
+  auto triangle_area_sum = [](const Mesh& mesh) {
+    double total = 0.0;
+    const ON_Mesh& raw = mesh.raw();
+    for (int i = 0; i < raw.m_F.Count(); ++i) {
+      const ON_MeshFace& f = raw.m_F[i];
+      const ON_3fPoint& a = raw.m_V[f.vi[0]];
+      const ON_3fPoint& b = raw.m_V[f.vi[1]];
+      const ON_3fPoint& c = raw.m_V[f.vi[2]];
+      const ON_3dVector cross =
+          ON_3dVector::CrossProduct(ON_3dVector(b - a), ON_3dVector(c - a));
+      total += 0.5 * cross.Length();
+    }
+    return total;
+  };
+
+  // Convex pentagon (5 corners) - the smallest n-gon ON_MeshFace can't
+  // represent directly.
+  const std::vector<std::pair<double, double>> pentagon = {
+      {0, 0}, {2, 0}, {3, 1}, {1, 2}, {-1, 1}};
+  const std::string pentagon_path = "dino8_kernel_mesh_obj_test_pentagon_fan.obj";
+  {
+    std::ofstream out(pentagon_path);
+    for (const auto& [x, y] : pentagon) {
+      out << "v " << x << ' ' << y << " 0\n";
+    }
+    out << "f 1 2 3 4 5\n";
+  }
+  Mesh pentagon_mesh;
+  Check(Mesh::LoadObj(pentagon_path, pentagon_mesh) == Result::Ok,
+        "LoadObj succeeds on a 5-index (pentagon) face line instead of "
+        "rejecting it outright");
+  Check(pentagon_mesh.VertexCount() == 5,
+        "the pentagon's 5 vertices are all preserved, unduplicated");
+  Check(pentagon_mesh.FaceCount() == 3,
+        "a pentagon fan-triangulates into exactly 5-2=3 triangles");
+  const ON_MeshFace& p0 = pentagon_mesh.raw().m_F[0];
+  const ON_MeshFace& p1 = pentagon_mesh.raw().m_F[1];
+  const ON_MeshFace& p2 = pentagon_mesh.raw().m_F[2];
+  Check(p0.vi[0] == 0 && p0.vi[1] == 1 && p0.vi[2] == 2 && p0.vi[3] == 2,
+        "the first fan triangle is corners (0,1,2), stored as a "
+        "degenerate quad (vi[3]==vi[2]) the same way an explicit "
+        "triangle face already is");
+  Check(p1.vi[0] == 0 && p1.vi[1] == 2 && p1.vi[2] == 3,
+        "the second fan triangle is corners (0,2,3)");
+  Check(p2.vi[0] == 0 && p2.vi[1] == 3 && p2.vi[2] == 4,
+        "the third fan triangle is corners (0,3,4), reaching the "
+        "pentagon's last corner");
+  Check(std::abs(triangle_area_sum(pentagon_mesh) - shoelace_area(pentagon)) < 1e-9,
+        "the 3 fan triangles' combined area exactly reproduces the "
+        "convex pentagon's own shoelace area - proof the fan actually "
+        "covers the polygon rather than merely producing 3 non-degenerate "
+        "triangles that happen to pass a face-count check");
+  std::remove(pentagon_path.c_str());
+
+  // A convex hexagon (6 corners) exercises n > 5 too, not just the
+  // smallest unsupported case.
+  const std::vector<std::pair<double, double>> hexagon = {
+      {2, 0}, {1, 2}, {-1, 2}, {-2, 0}, {-1, -2}, {1, -2}};
+  const std::string hexagon_path = "dino8_kernel_mesh_obj_test_hexagon_fan.obj";
+  {
+    std::ofstream out(hexagon_path);
+    for (const auto& [x, y] : hexagon) {
+      out << "v " << x << ' ' << y << " 0\n";
+    }
+    out << "f 1 2 3 4 5 6\n";
+  }
+  Mesh hexagon_mesh;
+  Check(Mesh::LoadObj(hexagon_path, hexagon_mesh) == Result::Ok,
+        "LoadObj succeeds on a 6-index (hexagon) face line");
+  Check(hexagon_mesh.VertexCount() == 6 && hexagon_mesh.FaceCount() == 4,
+        "a hexagon fan-triangulates into exactly 6-2=4 triangles, no "
+        "vertex duplication");
+  Check(std::abs(triangle_area_sum(hexagon_mesh) - shoelace_area(hexagon)) < 1e-9,
+        "the 4 fan triangles' combined area exactly reproduces the "
+        "convex hexagon's own shoelace area");
+  std::remove(hexagon_path.c_str());
+
+  // Fan triangulation must resolve negative (relative) indices before
+  // splitting into triangles, not treat them as a separate code path -
+  // an all-relative pentagon must fan-triangulate identically to the
+  // equivalent all-absolute one above.
+  const std::string relative_path = "dino8_kernel_mesh_obj_test_pentagon_fan_relative.obj";
+  {
+    std::ofstream out(relative_path);
+    for (const auto& [x, y] : pentagon) {
+      out << "v " << x << ' ' << y << " 0\n";
+    }
+    out << "f -5 -4 -3 -2 -1\n";
+  }
+  Mesh relative_mesh;
+  Check(Mesh::LoadObj(relative_path, relative_mesh) == Result::Ok,
+        "LoadObj succeeds on an all-relative-index pentagon face line");
+  Check(relative_mesh.FaceCount() == 3,
+        "the all-relative pentagon fan-triangulates into 3 triangles, "
+        "same as the equivalent all-absolute face");
+  const ON_MeshFace& r0 = relative_mesh.raw().m_F[0];
+  Check(r0.vi[0] == 0 && r0.vi[1] == 1 && r0.vi[2] == 2,
+        "'-5 -4 -3 -2 -1' resolved to the same 0-based corners as the "
+        "equivalent absolute '1 2 3 4 5' would, before fan-triangulating");
+  std::remove(relative_path.c_str());
 }
 
 void TestMeshSaveStlSplitsQuadsAndComputesNormals() {
@@ -40532,6 +40652,7 @@ int main() {
   TestMeshTextureCoordinates();
   TestMeshLoadObjRejectsMalformedFiles();
   TestMeshLoadObjResolvesRelativeIndices();
+  TestMeshLoadObjFanTriangulatesNgonFaces();
   TestMeshSaveStlSplitsQuadsAndComputesNormals();
   TestMeshLoadStlRoundTrips();
   TestMeshLoadStlBinary();
