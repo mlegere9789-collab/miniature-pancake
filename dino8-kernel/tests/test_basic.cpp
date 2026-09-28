@@ -15287,6 +15287,187 @@ void TestDraftFacesConvexPlanarSingleFaceLeavesOppositeFaceExactlyUntouched() {
         "the single-face-drafted box also tessellates to a closed, watertight manifold");
 }
 
+// A pure normal-translate is exactly what OffsetFace() already does, so
+// ReplaceFacePlaneConvexPlanar() fed the SAME translated plane must give
+// bit-for-bit the same result - the cross-check that this is a genuine
+// generalization of OffsetFace(), not a different (and possibly wrong)
+// construction that merely produces plausible-looking numbers on its own.
+void TestReplaceFacePlaneConvexPlanarMatchesOffsetFaceForPureTranslate() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::OffsetFace;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::ReplaceFacePlaneConvexPlanar;
+
+  // Box face order per Brep::Box()'s own comment: 0=bottom(-z) 1=top(+z)
+  // 2=front(-y) 3=back(+y) 4=left(-x) 5=right(+x).
+  const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+  const Brep::PlanarFace top = box.PlanarFaces()[1];
+
+  ON_Plane translated_top = top.plane;
+  translated_top.origin = translated_top.origin + 2.0 * translated_top.zaxis;
+  translated_top.UpdateEquation();
+
+  const Brep via_offset = OffsetFace(box, 1, 2.0);
+  const Brep via_replace = ReplaceFacePlaneConvexPlanar(box, 1, translated_top);
+
+  Check(via_replace.FaceCount() == via_offset.FaceCount(),
+        "ReplaceFacePlaneConvexPlanar keeps the same face count as OffsetFace on the identical move");
+  Check(std::fabs(PlanarBrepVolumeExact(via_replace) - PlanarBrepVolumeExact(via_offset)) < 1e-9,
+        "ReplaceFacePlaneConvexPlanar's volume matches OffsetFace's exactly for a pure normal translate");
+  Check(std::fabs(PlanarBrepVolumeExact(via_replace) - 1200.0) < 1e-9,
+        "...and both match the independently-known 10x10x12 box volume");
+
+  const std::vector<Brep::PlanarFace> offset_faces = via_offset.PlanarFaces();
+  const std::vector<Brep::PlanarFace> replace_faces = via_replace.PlanarFaces();
+  Check(offset_faces.size() == replace_faces.size(), "same number of faces to compare pointwise");
+  for (size_t i = 0; i < offset_faces.size(); ++i) {
+    const std::vector<Point3d>& a = offset_faces[i].loop;
+    const std::vector<Point3d>& b = replace_faces[i].loop;
+    Check(a.size() == b.size(), "each face has the same vertex count in both results");
+    for (size_t j = 0; j < a.size() && j < b.size(); ++j) {
+      Check(a[j].DistanceTo(b[j]) < 1e-9,
+            "every vertex lands in exactly the same place under OffsetFace and ReplaceFacePlaneConvexPlanar");
+    }
+  }
+}
+
+// The genuinely new capability OffsetFace()/DraftFacesConvexPlanar() can't
+// express in a single call without the caller first working out a
+// neutral-plane/hinge-angle pair: swap the box's flat top for a plane
+// tilted along y ONLY (a "roof"), i.e. z = 14 - 0.4*y across the top
+// face's own x in [0,10], y in [0,10] footprint. This simultaneously
+// translates (the height at y=5 is 12, not 10) and rotates the face in
+// one call. Volume is an independent closed-form double integral
+// (average height 12 over the unchanged 10x10 footprint = 1200), and the
+// front/back/left/right walls are checked pointwise against the exact
+// (non-uniform) re-trim this specific tilt implies - not just that the
+// total volume happens to come out right.
+void TestReplaceFacePlaneConvexPlanarTiltedRoofMatchesExactIntegralAndRetrimsWalls() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::ReplaceFacePlaneConvexPlanar;
+  using dino8::kernel::Vector3d;
+
+  const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+
+  // z(y) = 14 - 0.4*y  <=>  0.4*y + z - 14 = 0, outward normal (0,0.4,1)
+  // (unitized) - increasing 0.4*y+z points away from the solid's
+  // interior, matching every other PlanarFace::plane's own outward
+  // convention.
+  Vector3d n(0.0, 0.4, 1.0);
+  n.Unitize();
+  const ON_Plane roof(Point3d(5.0, 5.0, 12.0), n);
+
+  const Brep roofed = ReplaceFacePlaneConvexPlanar(box, 1, roof);
+  Check(roofed.FaceCount() == 6, "ReplaceFacePlaneConvexPlanar on a box keeps exactly 6 faces (no topology change)");
+
+  const double expected_volume = 1200.0;  // 10 (x) * integral_0^10 (14-0.4y) dy = 10 * 120
+  const double measured_volume = PlanarBrepVolumeExact(roofed);
+  Check(std::fabs(measured_volume - expected_volume) / expected_volume < 1e-9,
+        "the tilted-roof replacement matches the exact closed-form double integral of the roof height over the "
+        "unchanged 10x10 footprint, not merely a plausible-looking number");
+
+  auto z_at = [](double a, double b) { return 14.0 - 0.4 * b; };  // roof height, function of y only
+  const std::vector<Brep::PlanarFace> pf = roofed.PlanarFaces();
+
+  // Bottom (index 0) is completely untouched.
+  for (const Point3d& p : pf[0].loop) {
+    Check(std::fabs(p.z) < 1e-9, "the bottom face is completely untouched by replacing the top face's plane");
+  }
+
+  // Top (index 1) must be the exact tilted plane at every one of its own
+  // vertices: z == 14 - 0.4*y there.
+  for (const Point3d& p : pf[1].loop) {
+    Check(std::fabs(p.z - z_at(p.x, p.y)) < 1e-9,
+          "every top-face vertex lies exactly on the replacement plane z = 14 - 0.4*y");
+  }
+
+  // Front wall (index 2, y=0): the roof is constant along a fixed-y line,
+  // so this wall becomes a flat-topped 10x14 rectangle, not a slope.
+  for (const Point3d& p : pf[2].loop) {
+    Check(std::fabs(p.y) < 1e-9, "front wall vertices stay exactly at y=0 (unchanged footprint)");
+    Check(std::fabs(p.z) < 1e-9 || std::fabs(p.z - 14.0) < 1e-9,
+          "front wall (y=0) is retrimmed to a flat-topped rectangle at the roof's own y=0 height of 14, since "
+          "the roof plane doesn't vary with x");
+  }
+
+  // Back wall (index 3, y=10): roof height there is 14-0.4*10=10, exactly
+  // the ORIGINAL flat top height - this wall must come back completely
+  // unchanged from the original box.
+  const Brep::PlanarFace& original_back = box.PlanarFaces()[3];
+  Check(pf[3].loop.size() == original_back.loop.size(), "back wall keeps the same vertex count");
+  for (const Point3d& p : pf[3].loop) {
+    Check(std::fabs(p.y - 10.0) < 1e-9, "back wall vertices stay exactly at y=10 (unchanged footprint)");
+    Check(std::fabs(p.z) < 1e-9 || std::fabs(p.z - 10.0) < 1e-9,
+          "back wall (y=10) is retrimmed to exactly its ORIGINAL height of 10 - the roof plane at y=10 equals "
+          "the original flat top exactly");
+  }
+
+  // Left/right walls (indices 4,5, x=0/x=10): the roof varies linearly
+  // with y only, so these become trapezoids with z ranging from 10 (at
+  // y=10) up to 14 (at y=0) - every vertex must sit exactly on either
+  // z=0 (the untouched bottom edge) or the roof's own z(y).
+  for (int idx : {4, 5}) {
+    for (const Point3d& p : pf[idx].loop) {
+      const double roof_z = z_at(p.x, p.y);
+      Check(std::fabs(p.z) < 1e-9 || std::fabs(p.z - roof_z) < 1e-9,
+            "left/right wall vertices sit exactly on z=0 or on the roof's own z=14-0.4*y - a genuine "
+            "non-uniform (trapezoidal) re-trim, not a uniform translate or a single rigid rotation");
+    }
+  }
+
+  Check(roofed.TessellateToClosedMesh(1, 1).IsClosedManifold(),
+        "the roofed box also tessellates to a closed, watertight manifold");
+}
+
+void TestReplaceFacePlaneConvexPlanarRefusesInvalidInput() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::ReplaceFacePlaneConvexPlanar;
+  using dino8::kernel::Vector3d;
+
+  const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+  const ON_Plane top_plane = box.PlanarFaces()[1].plane;
+
+  bool threw = false;
+  try {
+    ReplaceFacePlaneConvexPlanar(box, 99, top_plane);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "ReplaceFacePlaneConvexPlanar refuses an out-of-range face_index");
+
+  threw = false;
+  try {
+    ReplaceFacePlaneConvexPlanar(box, -1, top_plane);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "ReplaceFacePlaneConvexPlanar refuses a negative face_index");
+
+  threw = false;
+  try {
+    ReplaceFacePlaneConvexPlanar(box, 1, ON_Plane());
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "ReplaceFacePlaneConvexPlanar refuses a default-constructed (not IsValid()) plane");
+
+  // A plane parallel to, and BELOW, the bottom face (z=0) pushed through
+  // the solid entirely collapses the top face's own boundary to nothing
+  // when clipped against the other 5 (unmoved) half-spaces.
+  threw = false;
+  try {
+    ON_Plane collapsing(Point3d(5, 5, -5), Vector3d(0, 0, 1));
+    ReplaceFacePlaneConvexPlanar(box, 1, collapsing);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw,
+        "ReplaceFacePlaneConvexPlanar refuses a new_plane that collapses the replaced face's own boundary to "
+        "fewer than 3 vertices or ~0 area");
+}
+
 }  // namespace
 
 // The spec's own required exact case: fillet the unit cube's top
@@ -34870,6 +35051,9 @@ int main() {
   TestPushPullFaceOnNonConvexLShapeGrowsByExactSlabVolume();
   TestDraftFacesConvexPlanarBoxAllWallsMatchesExactFrustumVolume();
   TestDraftFacesConvexPlanarSingleFaceLeavesOppositeFaceExactlyUntouched();
+  TestReplaceFacePlaneConvexPlanarMatchesOffsetFaceForPureTranslate();
+  TestReplaceFacePlaneConvexPlanarTiltedRoofMatchesExactIntegralAndRetrimsWalls();
+  TestReplaceFacePlaneConvexPlanarRefusesInvalidInput();
   TestFilletConvexEdgeUnitCubeTopFrontCorner();
   TestFilletConvexEdgeTaperedRailExactness();
   TestFilletConvexEdgeTaperedClosedFormVolumeMatchesFrustumFormula();

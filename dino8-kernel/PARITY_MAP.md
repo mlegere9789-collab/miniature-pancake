@@ -1,6 +1,6 @@
 # Fossilith / Dino 8 parity map (2026-09-28)
 
-**Fossilith vs Parasolid/ACIS = 65.5% (weighted, verified); Dino 8 vs Rhino 8 + AutoCAD 2027 = 71.4%.**
+**Fossilith vs Parasolid/ACIS = 65.6% (weighted, verified); Dino 8 vs Rhino 8 + AutoCAD 2027 = 71.4%.**
 
 This run recomputes the parity map from scratch against the live repository at
 `/home/user/miniature-pancake` on `claude/pdf-audit-i2bvwm`, superseding the
@@ -402,7 +402,7 @@ below alongside the other change's own headline delta.
 | Blending & chamfering | 1.5 | 24 | 5 | 17 | 2 | 56.3% |
 | kernel: Sweeping, lofting, extruding, revolving | 1 | 29 | 6 | 20 | 3 | 55.2% |
 | kernel: Offsetting, shelling, thickening | 1 | 27 | 0 | 26 | 1 | 48.1% |
-| kernel: Local / direct-edit operations | 1 | 28 | 7 | 18 | 3 | 57.1% |
+| kernel: Local / direct-edit operations | 1 | 28 | 7 | 19 | 2 | 58.9% |
 | kernel: Intersections & projections | 1.5 | 29 | 13 | 14 | 2 | 69.0% |
 | kernel: Healing, repair, validation, tolerant modeling | 1 | 30 | 19 | 10 | 1 | 80.0% |
 | kernel: Mass properties & spatial queries | 1 | 30 | 16 | 14 | 0 | 76.7% |
@@ -568,7 +568,7 @@ left at 71.4% — consistent with how every same-day follow-up note above
 already only moves the kernel-only headline, never that second one. No
 other row was touched this pass.
 
-**New follow-up (this session):** kernel: Boolean operations' own
+**Sixth same-day follow-up (a parallel session):** kernel: Boolean operations' own
 `BooleanCombineGeneral(a, b, op, tolerance)` (boolean_general.h/.cpp) now
 takes an optional caller-specified `tolerance` — until now every entry
 point in that file (`BooleanCombineGeneral`, `ImprintFaces`, `SplitBySheet`)
@@ -605,7 +605,7 @@ the "Tolerant booleans" bullet's own evidence, not its bucket, since the
 item was already `partial` and stays `partial`. The kernel-only headline
 stays at 65.4%; no other row was touched this pass.
 
-**Sixth same-day follow-up:** three of the five named sub-operators in
+**Sixth same-day follow-up (a parallel session):** three of the five named sub-operators in
 **Kernel: SubD & mesh kernel support**'s own "Kernel-native SubD local
 edit operators (insert edge, extrude face, spin edge, weld, expand)"
 [missing] item now genuinely exist: `SubD::InsertEdge`, `SubD::SpinEdge`,
@@ -660,7 +660,52 @@ this item's own category row moves missing → partial (14/5/3/22, 75.0% →
 above (this row's own weight of 0.75 against the 17.75 total kernel
 weight, on top of the Fifth follow-up's own 65.4%, unchanged by the
 Boolean-tolerance follow-up directly above since that one stayed
-`partial`→`partial`): 65.4% → **65.5%**.
+`partial`→`partial`): 65.4% → 65.5%, this paragraph's own isolated math
+(recombined with the parallel Seventh follow-up below, which lands on the
+same 65.4% baseline independently).
+
+**Seventh same-day follow-up (this session, parallel to the Sixth above):**
+kernel: Local / direct-edit operations gained a real
+`ReplaceFacePlaneConvexPlanar(solid, face_index, new_plane)`
+(dino8-kernel/include/dino8/kernel/boolean.h,
+dino8-kernel/src/boolean.cpp), closing this category's own next-highest-
+value still-`missing` item, "Replace face (swap a face's surface, re-trim
+it and its neighbours)" — before this addition the only entry in this
+whole category with no kernel answer at all, `grep`-confirmed (the nearest
+hits, `Brep::ReplaceEdgeCurve` and the app's `SoftEditSrfCommand`, touch an
+edge or write `m_S` directly, neither re-trims neighbours). Full detail,
+including the two independent correctness proofs (bit-for-bit agreement
+with `OffsetFace()` on a pure translate; an independent closed-form double
+integral plus a pointwise wall-by-wall re-trim check on a combined
+move-and-tilt "roof" plane neither `OffsetFace()` nor
+`DraftFacesConvexPlanar()` alone could produce in one call) and the
+refusal-case coverage, is in that item's own bullet below, not repeated
+here. Three new tests in `tests/test_basic.cpp`
+(`TestReplaceFacePlaneConvexPlanarMatchesOffsetFaceForPureTranslate`,
+`TestReplaceFacePlaneConvexPlanarTiltedRoofMatchesExactIntegralAndRetrimsWalls`,
+`TestReplaceFacePlaneConvexPlanarRefusesInvalidInput`); full
+`dino8_kernel_tests` suite re-run via `ctest` after adding them: 100%
+passing, 0 regressions.
+
+This flips the item missing→partial: kernel: Local/direct-edit operations
+moves from 7/18/3/28 (16/28 = 57.142857%) to 7/19/2/28 (16.5/28 =
+58.928571%), a +1.785714pp category-level move — this paragraph's own
+isolated math, computed (like the Sixth follow-up's own SubD math above)
+against the same 65.4% baseline both parallel sessions started from, not
+chained on top of the other.
+
+**Recombining the Sixth and Seventh follow-ups** (two independent,
+file-disjoint categories — Kernel: SubD & mesh kernel support and kernel:
+Local / direct-edit operations — landed in parallel on the same 65.4%
+baseline, the same "sum both deltas directly, don't chain" method the
+Fifth follow-up's own three-way merge above used): SubD (16.5/22 → 17/22,
+weight 0.75) contributes 0.75 · (2.272727/100) / 17.75 = +0.0960pp;
+localops (16/28 → 16.5/28, weight 1) contributes 1 · (1.785714/100) /
+17.75 = +0.1006pp. Total: 65.4% + 0.1966pp → **65.6%** (17.75 total kernel
+weight throughout, both rows' own table entries above already reflect
+their individual post-change counts). The combined Dino 8 vs Rhino 8 +
+AutoCAD 2027 headline is left at 71.4%, unchanged, same as every prior
+follow-up above. No other row was touched this session.
 
 ### Kernel category gaps (missing / partial items, with evidence)
 
@@ -807,13 +852,13 @@ Boolean-tolerance follow-up directly above since that one stayed
 - [partial] Re-intersect adjacent faces / rebuild edges after an edit (post-tweak edge regeneration) — app `RebuildEdgesReal` (cmd_fillet.cpp:2527) refits every 2-trim edge through the real surface-surface intersection of its faces. Kernel `ReplaceEdgeCurve` re-trims faces against a substitute curve; the new adjacency query API makes neighbour lookup reusable, but there is no automatic kernel-level re-intersection after a tweak.
 - [partial] Extend a face/surface past its current boundary in place (ExtendSrf) — app `ExtendSrfCommand` (cmd_srfedit.cpp:674) offers Type=Smooth|Linear, and Linear calls the kernel `NurbsSurface::ExtendLinear`. On a single-face object the surface is replaced in place, but on a multi-face polysurface the old face is deleted (`DeleteFace`+`Compact`) and the extended surface added as a separate object via `AddBrepFrom` (cmd_srfedit.cpp:728-732), not extended in place with neighbours re-trimmed.
 - [partial] Taper / draft face (rotate face about a neutral plane by draft angle) — kernel `DraftFacesConvexPlanar` (dino8-kernel/include/dino8/kernel/boolean.h, dino8-kernel/src/boolean.cpp) now exists: it tilts one or more named faces of a convex planar-faced solid about the exact 3D line where that face's own plane meets a caller-supplied neutral plane (found via the standard two-plane-intersection formula, not the face's own nearest edge, so the neutral plane need not coincide with any face of the solid), reusing `OffsetSolidConvexPlanar`'s own half-space-intersection reconstruction so every other (untouched) face is correctly re-trimmed against the tilted one. `angle_radians` follows `Brep::ExtrudeTapered`'s own sign convention (positive shrinks moving along +neutral_plane.zaxis). Verified exactly: drafting all 4 walls of a `Brep::Box()` about its own bottom face reproduces the classical frustum-of-a-pyramid volume `(h/3)(A0+A1+sqrt(A0*A1))` and the exact concentric shrunken top-face bounding square (`TestDraftFacesConvexPlanarBoxAllWallsMatchesExactFrustumVolume`); drafting a single wall leaves the non-adjacent opposite wall's own boundary untouched and matches an independent closed-form cross-sectional-area integral (`TestDraftFacesConvexPlanarSingleFaceLeavesOppositeFaceExactlyUntouched`). Still partial (an intentionally narrow first cut, not silently over-claimed): convex planar-faced solids only (the same scope `OffsetFace`/`OffsetSolidConvexPlanar` already have — a curved or non-convex body throws), one shared angle across all named faces (no per-face angle vector), and the app layer does not call it at all yet — a grep for taperface/draftface/rotateface/tiltface in dino8-app/src still finds nothing.
-- [missing] Replace face (swap a face's surface, re-trim it and its neighbours) — a grep finds nothing. Nearest are `Brep::ReplaceEdgeCurve` (an edge, not a face) and `SoftEditSrfCommand`, which writes a new surface into `m_S` directly.
+- [partial] Replace face (swap a face's surface, re-trim it and its neighbours) — **upgraded from missing.** `ReplaceFacePlaneConvexPlanar(solid, face_index, new_plane)` (dino8-kernel/include/dino8/kernel/boolean.h; dino8-kernel/src/boolean.cpp) now exists: it swaps ONE named face's plane for a caller-supplied `new_plane` outright and re-extends/re-trims every OTHER face against it, reusing `OffsetFace()`/`OffsetSolidConvexPlanar()`/`DraftFacesConvexPlanar()`'s own "start from an oversized polygon per face, clip against every other face's own half-space" reconstruction verbatim. Genuinely more general than either sibling: `OffsetFace()` only translates a plane along its own normal, `DraftFacesConvexPlanar()` only rotates one about its exact intersection line with a separate neutral plane, but `ReplaceFacePlaneConvexPlanar()` takes the target plane directly, so a combined translate-and-tilt (or any other single-plane swap) needs no neutral-plane/hinge-angle bookkeeping from the caller. Verified two ways: (1) fed the identical translated plane `OffsetFace()` itself would produce, it reproduces `OffsetFace()`'s own output bit-for-bit, vertex for vertex (`TestReplaceFacePlaneConvexPlanarMatchesOffsetFaceForPureTranslate`) — proof this is a genuine generalization, not a separate and possibly-divergent construction; (2) a combined move-and-tilt ("roof") plane that no single `OffsetFace()`/`DraftFacesConvexPlanar()` call could produce matches an independent closed-form double integral for volume and leaves the four side walls individually re-trimmed exactly as the roof's own linear-in-y height implies — a flat-topped front wall, an UNCHANGED back wall (the roof height there happens to equal the original), and trapezoidal left/right walls (`TestReplaceFacePlaneConvexPlanarTiltedRoofMatchesExactIntegralAndRetrimsWalls`) — not merely a plausible-looking total volume. Refusal cases (out-of-range/negative `face_index`, a default-constructed/`!IsValid()` plane, a `new_plane` that collapses a face to fewer than 3 vertices or ~0 area) are also covered (`TestReplaceFacePlaneConvexPlanarRefusesInvalidInput`). Full `dino8_kernel_tests` suite (via `ctest`) re-run clean: 100% passing, 0 regressions. Still partial: convex planar-faced solids only (the same scope every sibling in this family already has — a curved or non-convex body throws), `new_plane.zaxis` must point outward or the swap fails via the same collapse diagnostic rather than a distinct one, and no app command calls it yet (a grep for replaceface/swapface in dino8-app/src still finds nothing).
 - [partial] Imprint curve / face onto a body face (add edges without changing geometry) — **corrected: upgraded from missing.** Kernel `ImprintFaces(target, tool)` (boolean_general.h:61; boolean_general.cpp:3086) landed before this window and was already reflected under the sibling Boolean-operations category, but this category's own bullet was never updated to match and still claimed "a case-insensitive grep for imprint finds no hits anywhere" — false as of current HEAD. It splits `target`'s own faces wherever they cross a `tool` body's faces while keeping every fragment unconditionally (no ray-cast classification, no material ever removed), verified on a closed-loop fixture (box pierced by a cylinder) and an open-chain fixture (two overlapping boxes), each direction, plus a disjoint-operand no-op and a faceless-operand throw. Still partial: this is face-onto-face imprint only (no curve-onto-face imprint exists anywhere), it inherits `BooleanCombineGeneral`'s own scope limits (one crossing chain per opposing face pair, genus-0 faces, no self-crossing chains), only `target`'s faces are split per call, and no app command exposes it yet.
 - [missing] Merge faces on the same non-planar surface (cylinder/tangent split faces) — `Brep::MergeCoplanarFaces` explicitly leaves a curved or merely-tangent (not coplanar) pair untouched; the app's `MergeFacesInto` returns -1 for non-planar faces.
 - [partial] Push/pull a face (extrude face and merge/cut into its own body) — **corrected: upgraded from missing.** Kernel `PushPullFace(solid, face_index, distance)` (boolean.h/boolean.cpp) landed this session: a push (`distance > 0`) genuinely extrudes new side-wall faces into previously-empty space without touching any other face (unlike `OffsetFace`, which always re-extends/re-trims neighbours in place); a pull (`distance < 0`) retrims every neighbour perpendicular to the pushed face via an exact single half-space clip and adds no new geometry. Direct topological surgery, not a boolean — `Brep::Extrude()`+`BooleanCombinePlanar()` was tried first and found to fail (a swept profile is only piecewise planar; even a hand-built all-planar prism makes `BooleanCombinePlanar()` throw on the flush, zero-overlap coincident face this operation always creates, a disclosed gap in that engine's own coincident-face handling). No convexity precondition on `solid` (verified on a genuinely non-convex L-shaped prism, both directions). Still partial: planar-faced solids only (`PlanarFaces()`'s own precondition), and a pull refuses an oblique (non-perpendicular) neighbour rather than attempting a general re-intersection.
 - [missing] Move a single B-rep vertex directly (drag one topological corner in place; adjacent edges reshape around it) — `TransformSubObjects`'s Brep branch (SubObjectEdit.cpp:547-556) still collects only `Face` and `Edge` refs and returns false otherwise. The kernel has only a query (`Brep::EdgesOfVertex`), no vertex-move op.
 
-*Note on this category's counts: the table above shows 7 present / 18 partial / 3 missing (28 items total). This corrects a pre-existing arithmetic slip inherited from the last measurement (the table declared 17 partial against a physically-written bullet list that only ever had 16 gap bullets); combined with the `ImprintFaces` upgrade (missing→partial), the `PushPullFace` upgrade (missing→partial), the `MergeContiguousEdges`/`MergeAllContiguousEdges` upgrade (partial→present, this category's own "Merge contiguous tangent edges" bullet — see the healing category's own bullet for the full detail), and the `DraftFacesConvexPlanar` upgrade of the separate "Taper / draft face" item (also missing→partial) — three parallel-session additions, see this document's own same-day session notes for all three — the internally-consistent result is 7/18/3.*
+*Note on this category's counts: the table above shows 7 present / 19 partial / 2 missing (28 items total). This corrects a pre-existing arithmetic slip inherited from the last measurement (the table declared 17 partial against a physically-written bullet list that only ever had 16 gap bullets); combined with the `ImprintFaces` upgrade (missing→partial), the `PushPullFace` upgrade (missing→partial), the `MergeContiguousEdges`/`MergeAllContiguousEdges` upgrade (partial→present, this category's own "Merge contiguous tangent edges" bullet — see the healing category's own bullet for the full detail), the `DraftFacesConvexPlanar` upgrade of the separate "Taper / draft face" item (also missing→partial) — three parallel-session additions, see this document's own same-day session notes for all three — and, this session, the `ReplaceFacePlaneConvexPlanar` upgrade of the separate "Replace face" item (missing→partial, see that bullet above for the full detail) — the internally-consistent result is 7/19/2.*
 
 **kernel: Intersections & projections** (intersections):
 - [partial] Analytic/analytic SSX closed forms (plane/plane, plane/cylinder, cylinder/cylinder, plane/sphere, cone, torus) — closed forms still exist only inside `BooleanCombineMixed`'s private splitters (`SplitCylindricalByObliquePlane`, `SplitCylindricalByParallelCylinder`, Steinmetz/unequal-cylinder splitters) and the planar boolean's plane/plane path. No public analytic-SSX API, and no plane/sphere, cone or torus closed form (the only general path is the mesh-seeded `IntersectSurfaces`).
@@ -1179,7 +1224,7 @@ top 40:
 | 15 | kernel | localops | Push/pull a face (extrude face and merge/cut into its own body) | partial | large | `PushPullFace` (dino8-kernel/src/boolean.cpp) now genuinely extrudes new side-wall faces (push) or retrims perpendicular neighbours (pull) via direct topological surgery, no convexity precondition; still planar-faced solids only, no oblique-neighbour pull, no app wiring. |
 | 16 | kernel | localops | Move a single B-rep vertex directly | missing | medium | The Brep sub-object-edit path currently only handles Face and Edge refs. |
 | 17 | kernel | localops | Taper / draft face (rotate face about a neutral plane) | partial | medium | `DraftFacesConvexPlanar` (dino8-kernel/src/boolean.cpp) now tilts a named face about its own intersection line with a caller-supplied neutral plane, exact for convex planar-faced solids; still no app wiring, non-convex/curved bodies, or per-face angle. |
-| 18 | kernel | localops | Replace face (swap a face's surface, re-trim neighbours) | missing | medium | No implementation anywhere. |
+| 18 | kernel | localops | Replace face (swap a face's surface, re-trim neighbours) | partial | medium | `ReplaceFacePlaneConvexPlanar` (dino8-kernel/src/boolean.cpp) now swaps a named face's plane for a caller-supplied target plane outright (translate, tilt, or both in one call) and re-trims every other face against it, exact for convex planar-faced solids; still no app wiring, non-convex/curved bodies, or a general (non-planar) target surface. |
 | 19 | kernel | sweeplofts | Extrude to a boundary surface / body (ToBoundary, PressPull) | missing | large | Catalogued as an option string but never implemented. |
 | 20 | kernel | sweeplofts | Sweep controls: twist along path, scale along path, road-like alignment | partial | large | Kernel `Brep::Sweep1` now has `twist_total`, `scale_end`, and `roadlike_up`, all exact on a straight rail; still linear-endpoint only (no piecewise schedule), and the app's own Sweep1 command still has none of these. |
 | 21 | kernel | sweeplofts | ExtrudeCrv / Revolve producing a SubD object directly | missing | medium | Catalogued option, no implementation. |
@@ -1457,7 +1502,7 @@ top 40:
 - [kernel/sweeplofts] Sweep controls: twist/scale/roadlike alignment (missing; twist, scale, and road-like alignment along path are now partial - see Brep::Sweep1()'s twist_total/scale_end/roadlike_up)
 - [kernel/sweeplofts] ExtrudeCrv/Revolve producing SubD directly (missing)
 - [kernel/localops] Taper / draft face (partial)
-- [kernel/localops] Replace face (missing)
+- [kernel/localops] Replace face (partial; `ReplaceFacePlaneConvexPlanar` now swaps a named face's plane for an arbitrary target plane on a convex planar-faced solid)
 - [kernel/localops] Imprint curve / face onto a body face (missing)
 - [kernel/localops] Merge faces on the same non-planar surface (missing)
 - [kernel/localops] Push/pull a face (partial)

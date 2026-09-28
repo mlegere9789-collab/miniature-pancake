@@ -684,6 +684,55 @@ Brep PushPullFace(const Brep& solid, int face_index, double distance);
 Brep DraftFacesConvexPlanar(const Brep& solid, const std::vector<int>& face_indices, const ON_Plane& neutral_plane,
                              double angle_radians);
 
+// Swaps ONE face of a convex planar-faced solid for a caller-supplied
+// plane, re-extending/re-trimming every OTHER face so the result is still
+// a valid closed solid - the PARITY_MAP "Replace face (swap a face's
+// surface, re-trim it and its neighbours)" gap (localops), the one entry
+// in that family with no existing kernel answer at all (`grep`ping for
+// "replace face"/"ReplaceFace" before this addition found nothing; the
+// nearest hits, `Brep::ReplaceEdgeCurve` and the app's `SoftEditSrfCommand`,
+// touch an edge or write `m_S` directly, neither re-trims neighbours).
+//
+// Unlike OffsetFace() (which only TRANSLATES a face's plane along its own
+// normal) and DraftFacesConvexPlanar() (which only ROTATES a face's plane
+// about its exact intersection line with a separate neutral plane), this
+// takes the target plane directly: `new_plane` can differ from
+// `solid.PlanarFaces()[face_index].plane` by translation, rotation, or
+// both in one call, with no neutral-plane/hinge-angle bookkeeping for the
+// caller to work out. (Any single non-parallel plane swap is already
+// reachable by composing the two - two planes that aren't parallel always
+// meet in a line, and rotating the old plane about that exact line by the
+// dihedral angle between it and `new_plane` reproduces `new_plane`
+// exactly - but this is the direct "swap in this surface" API the gap
+// itself names, not a derived rotation.)
+//
+// `new_plane.zaxis` must point OUTWARD from the solid, the same
+// outward-normal convention every other `Brep::PlanarFace::plane` in this
+// codebase already uses (see IsConvex()'s own doc comment above) - passing
+// a plane with an inward-pointing normal is a caller error that surfaces
+// as the same "collapses to fewer than 3 vertices" failure below, not a
+// distinct diagnostic, exactly as an excessive OffsetFace()/
+// DraftFacesConvexPlanar() distance/angle does.
+//
+// Reuses OffsetSolidConvexPlanar()'s own "start from an oversized polygon
+// in each face's own (possibly-moved) plane, clip against every OTHER
+// face's own (possibly-moved) plane" reconstruction verbatim: only
+// `face_index`'s own plane changes (to `new_plane`), every other face's
+// plane is unchanged, and every face's new boundary - including
+// `face_index`'s own - is rebuilt uniformly by the identical half-space
+// intersection technique OffsetFace()/OffsetSolidConvexPlanar()/
+// DraftFacesConvexPlanar() already share.
+//
+// Same convex-solid precondition and failure mode as OffsetFace()/
+// DraftFacesConvexPlanar() above. Throws std::invalid_argument if
+// `face_index` is out of range for `solid.PlanarFaces()`, if `new_plane`
+// is not `IsValid()`, or if `new_plane` collapses any face's own new
+// boundary (including `face_index`'s own) to fewer than 3 vertices or ~0
+// area - the resulting solid's topology would need to change (a face
+// vanishing entirely, or `new_plane` being redundant against the other
+// faces' own half-spaces), out of scope here exactly as in OffsetFace().
+Brep ReplaceFacePlaneConvexPlanar(const Brep& solid, int face_index, const ON_Plane& new_plane);
+
 // Exact B-rep boolean between two solids where either (or both) may have
 // a CYLINDRICAL face, not just planar ones - what closes the gap
 // BooleanCombinePlanar's own PlanarFaces()-only precondition leaves open:
