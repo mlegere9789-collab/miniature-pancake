@@ -210,6 +210,45 @@ kernel's own valid solids" clause is retracted: it is no longer true, and
 citing it going forward would itself be the same kind of stale claim this
 note is correcting.
 
+**Genuinely new work, this session, in Blending & chamfering:** `FilletConvexEdges`'
+m==1 vertex case (a single filleted edge's own free endpoint, not a
+trihedral spherical corner) previously called `NotchCornerAtVertex`
+unconditionally, which silently skips any third face that isn't exactly
+perpendicular to the edge — so an obliquely-ended edge filleted through
+`FilletConvexEdges` came out with that end's corner simply untouched
+(self-overlapping geometry, not merely an open shell), even though the
+single-edge `FilletConvexEdge` had already closed that same case via
+`FindObliqueThirdFaceCrossing`/`EllipseNotchCornerAtVertexCylindrical`. A new
+detection pass (`dino8-kernel/src/fillet.cpp:2562` onward, inside
+`FilletConvexEdges`) now runs those same two helpers per m==1 endpoint,
+shortening/shifting that edge's own cylinder before it is built exactly as
+the single-edge function does, then dispatches to the ellipse-cap splice
+instead of the old flat notch whenever an oblique crossing is found.
+Verified: a single-edge `FilletConvexEdges` call on the existing
+oblique-end test fixture now reproduces `FilletConvexEdge`'s own result
+bit-for-bit (face/edge/vertex counts, tessellated volume, cylinder length,
+and cap-notch-point counts all match,
+`TestFilletConvexEdgesSingleEdgeMatchesFilletConvexEdgeOnObliqueEnd`); two
+parallel obliquely-ended edges that both terminate at the SAME oblique
+face still sew into one closed, valid, manifold solid whose volume matches
+the doubled single-edge closed form, with both the shared perpendicular
+end face and the shared oblique end face each correctly collapsing their
+two independent notch splices into one shared edge
+(`TestFilletConvexEdgesParallelPairWithObliqueEndsIsClosedAndMatchesClosedForm`);
+and the pre-existing oversized-radius rejection still fires through the new
+code path (`TestFilletConvexEdgesRejectsOversizedRadiusAtObliqueEnd`) —
+all three new tests in `tests/test_basic.cpp`. Full `dino8_kernel_tests`
+suite re-run after this change: all checks pass, 0 failures, 0 regressions.
+
+Net effect on the scores below: the "Fillet end conditions on adjacent end
+faces" bullet's own evidence is updated in place, but its status **stays
+`partial`**, not `present` — `FilletConcaveEdges` still leaves oblique ends
+entirely out of scope and neither multi-edge function handles a non-planar
+end face, so this is a real narrowing of an existing partial item's own gap,
+not a missing-to-partial or partial-to-present flip. Blending & chamfering's
+numeric row (1.5/24/5/17/2/56.3%) is therefore unchanged by this session's
+work, same as the healing-category note just above.
+
 The main caveat is the same one every run of this method has: the
 granularity of "one item" is a judgment call made by the mapper (this pass),
 so item counts and percentages would shift somewhat under a different,
@@ -404,7 +443,7 @@ every other row): 64.6% → 64.8%.
 - [partial] Chamfer with two unequal distances (D1/D2) or distance + angle (AutoCAD CHAMFER Angle method, Rhino ChamferEdge per-handle distances) — the kernel has exact D1/D2 chamfers (`ChamferConvexEdge`) and distance+angle (`ChamferConvexEdgeAngle`), plus concave versions `ChamferConcaveEdge`/`ChamferConcaveEdgeAngle` (fillet.cpp:2194-2210). Still partial: planar faces only; app `ChamferEdge` exposes only one Radius, no D1/D2 or angle; no unequal-distance chamfer on curved faces.
 - [partial] Face-face blend between two independently picked surfaces (FilletSrf / ChamferSrf, non-adjacent faces, with trimming of both inputs) — `FilletTwoSurfacesCommand` (cmd_fillet.cpp:864) trims only through `TrimWholeLoop` (cmd_fillet.cpp:964) when an input is planar; otherwise the input is left untrimmed.
 - [partial] Vertex blend (three or more fillets meeting at a vertex: spherical/setback corner patch) — `FilletConvexEdges` m==3 spherical corner (requires one face perpendicular to the other two); `FilletConcaveEdges` covers the m==3 concave sphere; single-facet vertex chamfers on any convex or concave trihedral corner with asymmetric per-edge distances exist (`ChamferConvexVertex`/`ChamferConcaveVertex`, fillet.cpp:3133 onward). Still partial: m==2, valence >3, and non-perpendicular (e.g. tetrahedron) corners all throw for fillets; corners with mixed radii unsupported; no setback or non-spherical corner patches.
-- [partial] Fillet end conditions on adjacent end faces (corner notch of the third face, shared cap edge) — closed exactly with a shared edge for single-edge `FilletConvexEdge` (perpendicular or oblique third face), `FilletConcaveEdge` (oblique third face), `ChamferConvexEdge` (oblique third face), tapered cones via ellipse notches, and `FilletConvexEdgeConic` (perpendicular third face only). Still partial: `FilletConvexEdges` leaves an oblique third face untouched at m==1, `FilletConcaveEdges` has oblique ends out of scope, no handling on non-planar end faces.
+- [partial] Fillet end conditions on adjacent end faces (corner notch of the third face, shared cap edge) — closed exactly with a shared edge for single-edge `FilletConvexEdge` (perpendicular or oblique third face), `FilletConcaveEdge` (oblique third face), `ChamferConvexEdge` (oblique third face), tapered cones via ellipse notches, and `FilletConvexEdgeConic` (perpendicular third face only). **This pass:** `FilletConvexEdges`' own m==1 vertex case (fillet.cpp:2562) now closes an oblique third face too, not just the perpendicular case — it reuses `FindObliqueThirdFaceCrossing`/`EllipseNotchCornerAtVertexCylindrical` (the same helpers `FilletConvexEdge` itself already calls) in a new detection pass that shortens/shifts each edge's own cylinder before it is built, then dispatches to the ellipse-cap splice instead of the old unconditional flat-notch call; a single-edge `FilletConvexEdges` call on an obliquely-ended edge is now bit-for-bit reproducing `FilletConvexEdge`'s own result (`TestFilletConvexEdgesSingleEdgeMatchesFilletConvexEdgeOnObliqueEnd`), and two parallel obliquely-ended edges notching the SAME oblique end face twice still sew into one closed solid whose volume matches the doubled single-edge closed form (`TestFilletConvexEdgesParallelPairWithObliqueEndsIsClosedAndMatchesClosedForm`, tests/test_basic.cpp). Still partial: `FilletConcaveEdges` still has oblique ends entirely out of scope, and neither multi-edge function handles a non-planar end face — the item stays partial, not present, for those remaining gaps.
 - [partial] Edge blend trimmed and joined into the polysurface (Rhino BlendEdge TrimAndJoin behaviour) — `BlendEdge` registration text (cmd_fillet.cpp:2647, and comment at cmd_fillet.cpp:1388) still reads "Hermite blend surface added between the two faces (not stitched into the polysurface)".
 - [partial] Conic / rho (chordal, elliptical) blend cross-sections — kernel-native conic/rho blend exists, `FilletConvexEdgeConic` (fillet.cpp:2321; fillet.h:1019): an exact rational-quadratic-Bezier cross-section giving a true ellipse (rho<0.5), parabola (rho=0.5) or hyperbola arc (rho>0.5) tangent to both faces, swept translationally and spliced onto the re-trimmed faces. A third face perpendicular to the edge at either endpoint (e.g. a full box edge, corner to corner) is now closed: `ConicNotchCornerAtVertex` (fillet.cpp:239) splices the wall's own end-cap conic into that face's loop as a 200-segment notch, and the collapsed notch edge's 3D curve is set to the exact conic so it sews to the wall. The result is a closed solid (`TestFilletConvexEdgeConicClosesCornerNotchOnUnitCube`: IsSolid, Check() issue-free, tessellated volume within 1e-6 of 1 - L*Area(rho) at rho = 0.3/0.5/0.7). Still partial: an oblique third face at an endpoint still throws, there is no multi-edge/vertex-blend variant, and — re-checked specifically this pass — the app layer does not expose it at all: `cmd_curves2.cpp`'s `ConicWeightThrough`/Rho option is an unrelated 2D-curve-through-3-points construction tool, not this edge-blend feature.
 - [partial] Fillet/blend on tangent edge chains and multi-edge selection in one operation (ChainEdges, FaceEdges, double-click tangent propagation) — corrected evidence: re-grepped `ChainEdges`/`FaceEdges` across all of dino8-app/src, zero matches anywhere; the prior claim that "the command catalogue lists ChainEdges/FaceEdges" was unfounded. The nearest real thing, `SelChain` (cmd_select.cpp:160), is a general curve-chaining selection helper for `ObjectKind::Curve` objects only, unrelated to solid edges or fillet/chamfer commands. Kernel `FilletConvexEdges`/`FilletConcaveEdges` fillet many straight edges in one call, but have no tangent-chain propagation and no curved edges.

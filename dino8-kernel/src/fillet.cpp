@@ -2820,6 +2820,56 @@ Brep FilletConvexEdges(const Brep& solid, const std::vector<std::pair<Point3d, P
     }
   }
 
+  // --- OBLIQUE END DETECTION at m == 1 (non-sphere) endpoints: the exact
+  // generalization FilletConvexEdge's own doc comment already establishes
+  // for a single edge (a third face OBLIQUE to the edge, rather than
+  // perpendicular to it, shortens/shifts the cylinder to the plane
+  // crossing instead of leaving it flush with `vertex`), applied here per
+  // edge of a FilletConvexEdges call so this m == 1 end condition no
+  // longer depends on which of the two entry points the caller used -
+  // closing the "`FilletConvexEdges` leaves an oblique third face
+  // untouched at m == 1" gap PARITY_MAP.md records. A sphere-corner end
+  // (m == 3) is skipped outright: FindObliqueThirdFaceCrossing's own
+  // trihedral-pattern scan is for a genuine THIRD, unfilleted face, which
+  // a trihedral corner where all three edges are filleted does not have.
+  // This must run AFTER the re-trim loop just above (so `others` reflects
+  // every other filleted edge's own cut, exactly as the existing
+  // perpendicular-case notch loop below already relies on) and BEFORE the
+  // cylinders are built just below (since an oblique crossing's own t_i
+  // moves ed.t_start/ed.t_end, which the cylinder's frame.origin/length
+  // read directly).
+  std::vector<ObliqueEndCrossing> cross_p0(me.size()), cross_p1(me.size());
+  for (size_t k = 0; k < me.size(); ++k) {
+    MultiEdge& ed = me[k];
+    if (ed.sphere_at_p0 && ed.sphere_at_p1) continue;
+    const ON_Plane& plane_i = faces[static_cast<size_t>(ed.idx_i)].plane;
+    const ON_Plane& plane_j = faces[static_cast<size_t>(ed.idx_j)].plane;
+    // D_i/D_j: contact_i(V)-V and contact_j(V)-V at ANY point V on the
+    // edge, verbatim FilletConvexEdge's own D_i/D_j derivation.
+    const double offset = radius / ed.cosb;
+    const Vector3d D_i = radius * ed.n_i - ed.bis * offset;
+    const Vector3d D_j = radius * ed.n_j - ed.bis * offset;
+    std::vector<Brep::PlanarFace> others;
+    others.reserve(work.size() - 2);
+    for (size_t f = 0; f < work.size(); ++f) {
+      if (static_cast<int>(f) == ed.idx_i || static_cast<int>(f) == ed.idx_j) continue;
+      others.push_back(work[f]);
+    }
+    if (!ed.sphere_at_p0) {
+      cross_p0[k] = FindObliqueThirdFaceCrossing(others, ed.p0, ed.e, plane_i, plane_j, D_i, D_j, tol);
+      if (cross_p0[k].found) ed.t_start = cross_p0[k].t_i;
+    }
+    if (!ed.sphere_at_p1) {
+      cross_p1[k] = FindObliqueThirdFaceCrossing(others, ed.p1, ed.e, plane_i, plane_j, D_i, D_j, tol);
+      if (cross_p1[k].found) ed.t_end = ed.L + cross_p1[k].t_i;
+    }
+    if (!(ed.t_end - ed.t_start > tol)) {
+      throw std::invalid_argument(
+          "dino8::kernel::FilletConvexEdges: an edge's oblique end condition(s) leave no positive cylinder length "
+          "between them - radius too large for this solid's geometry");
+    }
+  }
+
   // --- cylinders, and the m == 1 corner notches ---
   std::vector<Brep::CylindricalFace> cyls;
   cyls.reserve(me.size());
@@ -2841,9 +2891,10 @@ Brep FilletConvexEdges(const Brep& solid, const std::vector<std::pair<Point3d, P
     const ON_Plane& plane_i = faces[static_cast<size_t>(ed.idx_i)].plane;
     const ON_Plane& plane_j = faces[static_cast<size_t>(ed.idx_j)].plane;
     const Point3d axis_p0 = ed.p0 - ed.bis * (radius / ed.cosb);
-    // NotchCornerAtVertex wants "the other faces" - here every face
-    // except this edge's own i/j; it only touches faces with a loop
-    // vertex AT the endpoint, so passing all others is safe.
+    // NotchCornerAtVertex/EllipseNotchCornerAtVertexCylindrical want "the
+    // other faces" - here every face except this edge's own i/j; each
+    // only touches faces with a loop vertex AT the endpoint, so passing
+    // all others is safe.
     std::vector<Brep::PlanarFace> others;
     std::vector<size_t> others_idx;
     for (size_t f = 0; f < work.size(); ++f) {
@@ -2852,11 +2903,21 @@ Brep FilletConvexEdges(const Brep& solid, const std::vector<std::pair<Point3d, P
       others_idx.push_back(f);
     }
     if (!ed.sphere_at_p0) {
-      NotchCornerAtVertex(others, ed.p0, ed.e, plane_i, plane_j, axis_p0, ed.n_i, ed.frame_y, radius, ed.sweep, tol);
+      if (cross_p0[k].found) {
+        EllipseNotchCornerAtVertexCylindrical(others, ed.p0, ed.e, plane_i, plane_j, cyls[k], ed.sweep, tol,
+                                              cyls[k].cap0_notch_points, cyls[k].cap0_notch_tolerance);
+      } else {
+        NotchCornerAtVertex(others, ed.p0, ed.e, plane_i, plane_j, axis_p0, ed.n_i, ed.frame_y, radius, ed.sweep, tol);
+      }
     }
     if (!ed.sphere_at_p1) {
-      NotchCornerAtVertex(others, ed.p1, ed.e, plane_i, plane_j, axis_p0 + ed.L * ed.e, ed.n_i, ed.frame_y, radius,
-                          ed.sweep, tol);
+      if (cross_p1[k].found) {
+        EllipseNotchCornerAtVertexCylindrical(others, ed.p1, ed.e, plane_i, plane_j, cyls[k], ed.sweep, tol,
+                                              cyls[k].cap1_notch_points, cyls[k].cap1_notch_tolerance);
+      } else {
+        NotchCornerAtVertex(others, ed.p1, ed.e, plane_i, plane_j, axis_p0 + ed.L * ed.e, ed.n_i, ed.frame_y, radius,
+                            ed.sweep, tol);
+      }
     }
     for (size_t o = 0; o < others.size(); ++o) work[others_idx[o]] = std::move(others[o]);
   }

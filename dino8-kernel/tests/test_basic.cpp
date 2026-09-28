@@ -30640,6 +30640,145 @@ void TestFilletConvexEdgeObliqueEndRejectsInvalidInput() {
 }
 
 // ---------------------------------------------------------------------------
+// FilletConvexEdges' OWN oblique end condition (fillet.h/fillet.cpp): until
+// now, FilletConvexEdges' m == 1 vertex case called NotchCornerAtVertex
+// unconditionally, silently leaving an oblique third face untouched (see
+// fillet.h's own doc comment, "the same disclosed limit FilletConvexEdge
+// has" - a claim that stopped being true for the single-edge function once
+// FindObliqueThirdFaceCrossing/EllipseNotchCornerAtVertexCylindrical were
+// added there, but was never carried over to the multi-edge sibling; this
+// closes exactly that gap, verified against the SAME fixture and closed
+// forms the single-edge oblique tests above already establish).
+
+void TestFilletConvexEdgesSingleEdgeMatchesFilletConvexEdgeOnObliqueEnd() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConvexEdge;
+  using dino8::kernel::FilletConvexEdges;
+  using dino8::kernel::Point3d;
+
+  // Identical fixture/edge/radius to TestFilletConvexEdgeObliqueEndFaceIsExactAndClosed
+  // above - a single-edge FilletConvexEdges call must now reproduce
+  // FilletConvexEdge's own oblique-end result exactly, not the old flat/
+  // untouched notch.
+  const double slope = 0.3, r = 0.2;
+  const Brep hex = FilletObliqueTestHexahedron(slope);
+  const Point3d edge_p0(0, 0, 1), edge_p1(1, 0, 1);
+  const Brep one = FilletConvexEdges(hex, {{edge_p0, edge_p1}}, r);
+  const Brep ref = FilletConvexEdge(hex, edge_p0, edge_p1, r);
+
+  Check(one.FaceCount() == ref.FaceCount() && one.raw().m_E.Count() == ref.raw().m_E.Count() &&
+            one.raw().m_V.Count() == ref.raw().m_V.Count(),
+        "a single-edge FilletConvexEdges call on an obliquely-ended edge has the same face/edge/vertex counts as "
+        "FilletConvexEdge");
+  Check(std::fabs(one.TessellateToClosedMeshAdaptive(1e-6).Volume() -
+                  ref.TessellateToClosedMeshAdaptive(1e-6).Volume()) < 1e-9,
+        "and tessellates to the same volume (same construction, same oblique-end machinery reused)");
+  Check(one.raw().IsSolid(), "a single-edge FilletConvexEdges call on an obliquely-ended edge is still a closed solid");
+
+  const Brep::MixedFacesResult mf = one.MixedFaces();
+  Check(mf.cylindrical.size() == 1, "sanity: still exactly one cylindrical face");
+  if (mf.cylindrical.size() == 1) {
+    const Brep::CylindricalFace& cf = mf.cylindrical[0];
+    Check(std::fabs(cf.length - (1.0 + slope * r)) < 1e-9,
+          "the cylinder is shortened to end exactly at the oblique i-side crossing (1 + slope*r), matching "
+          "FilletConvexEdge's own result");
+    Check(cf.cap0_notch_points.empty(), "cap0 (perpendicular p0 end) carries no notch points");
+    Check(cf.cap1_notch_points.size() == 201,
+          "cap1 (the oblique p1 end) carries the dense ellipse sample, exactly as FilletConvexEdge's own result does");
+  }
+}
+
+void TestFilletConvexEdgesParallelPairWithObliqueEndsIsClosedAndMatchesClosedForm() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConvexEdges;
+  using dino8::kernel::Point3d;
+
+  // Two parallel fillet edges on the SAME obliquely-ended hexahedron: the
+  // top-front edge (0,0,1)->(1,0,1) [faces: top z=1, front y=0] and the
+  // bottom-front edge (0,0,0)->(1,0,0) [faces: bottom z=0, front y=0].
+  // Both share face "front" (y=0) as one of their two adjacent faces (re-
+  // trimmed twice, once per edge - already-proven mechanics), both share
+  // the x=0 face as their OTHER (perpendicular) end - notched twice there,
+  // the pre-existing multi-notch case - and, the new case this test
+  // targets, BOTH also terminate at the SAME oblique end face (the
+  // A1,B1,C1,D1 quad), notched twice there via the new
+  // EllipseNotchCornerAtVertexCylindrical dispatch instead of the old
+  // silent no-op.
+  const double slope = 0.3, r = 0.2;
+  const Brep hex = FilletObliqueTestHexahedron(slope);
+  const double vol_hex = hex.TessellateToClosedMesh(8, 8).Volume();
+  const Brep two = FilletConvexEdges(
+      hex, {{Point3d(0, 0, 1), Point3d(1, 0, 1)}, {Point3d(0, 0, 0), Point3d(1, 0, 0)}}, r);
+
+  ON_TextLog log;
+  Check(two.raw().IsValid(&log), "two parallel obliquely-ended fillets pass ON_Brep::IsValid()");
+  bool oriented = false, has_boundary = true;
+  const bool manifold = two.raw().IsManifold(&oriented, &has_boundary);
+  Check(manifold && oriented && !has_boundary && two.raw().IsSolid(),
+        "two parallel obliquely-ended fillets give a CLOSED solid - both notches on the shared oblique end face are "
+        "collapsed to single shared edges, exactly like the pre-existing perpendicular-end double-notch case");
+  Check(two.FaceCount() == 8, "two parallel fillets: 6 unchanged-count planar (front/x=0/oblique re-trimmed or "
+                              "re-notched, back/top/bottom untouched) + 2 cylindrical = 8 faces");
+
+  // By the fixture's own z -> 1-z mirror symmetry (X(y) depends only on y),
+  // the bottom-front edge's own removed wedge is geometrically identical to
+  // the top-front edge's - the SAME closed form
+  // TestFilletConvexEdgeObliqueEndFaceIsExactAndClosed derives, doubled,
+  // since the two wedges sit on opposite ends of the unit-height edge and
+  // do not overlap for r = 0.2.
+  const double area = r * r * (1.0 - ON_PI / 4.0);
+  const double centroid = r / (6.0 * (1.0 - ON_PI / 4.0));
+  const double t_hi_centroid = 1.0 + (slope * r - centroid * slope) / 1.0;
+  const double expected = vol_hex - 2.0 * area * t_hi_centroid;
+  const double measured = two.TessellateToClosedMeshAdaptive(1e-6).Volume();
+  Check(std::fabs(measured - expected) < 1e-5,
+        "two parallel obliquely-ended fillets remove exactly twice the single-edge oblique wedge volume");
+
+  const Brep::MixedFacesResult mf = two.MixedFaces();
+  Check(mf.cylindrical.size() == 2, "two cylindrical fillet faces");
+  int oblique_notched = 0, perpendicular_double_notched = 0;
+  for (const Brep::CylindricalFace& cf : mf.cylindrical) {
+    Check(cf.cap0_notch_points.empty(), "each cylinder's p0 (x=0) end is the plain perpendicular case - no cap notch");
+    if (cf.cap1_notch_points.size() == 201) ++oblique_notched;
+  }
+  Check(oblique_notched == 2, "both cylinders' oblique p1 end carries the dense ellipse cap-notch sample");
+  for (const Brep::PlanarFace& f : mf.planar) {
+    if (f.notch_count > 1 && f.notch_runs.size() == 1) ++perpendicular_double_notched;
+  }
+  Check(perpendicular_double_notched == 2,
+        "exactly two faces (x=0 and the oblique end) carry a legacy notch plus one notch_runs entry - the oblique "
+        "end face collapses two independent EllipseNotchCornerAtVertexCylindrical splices exactly like the "
+        "perpendicular x=0 face already collapses two plain NotchCornerAtVertex splices");
+}
+
+void TestFilletConvexEdgesRejectsOversizedRadiusAtObliqueEnd() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConvexEdges;
+  using dino8::kernel::Point3d;
+  auto throws = [](const std::function<void()>& fn) {
+    try {
+      fn();
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+    return false;
+  };
+  // Same fixture and same negative control TestFilletConvexEdgeObliqueEndRejectsInvalidInput
+  // already uses for the single-edge function: an oversized radius on the
+  // obliquely-ended fixture is still rejected by the ordinary (non-oblique-
+  // specific) face-extent check through FilletConvexEdges' new oblique-
+  // detection pass, not weakened by it. (Isolating the NEW oblique-overrun
+  // check specifically, rather than this pre-existing one, would need a
+  // non-quadrilateral face i shape - out of scope here too, see that
+  // test's own doc comment for why this file does not stage a fixture to
+  // look like it tests something it doesn't.)
+  const Brep hex = FilletObliqueTestHexahedron(0.3);
+  Check(throws([&] { FilletConvexEdges(hex, {{Point3d(0, 0, 1), Point3d(1, 0, 1)}}, 1.5); }),
+        "FilletConvexEdges rejects an oversized radius on the obliquely-ended fixture, exactly as FilletConvexEdge "
+        "already does");
+}
+
+// ---------------------------------------------------------------------------
 // RemoveBlend (fillet.h) - blend removal, the inverse of FilletConvexEdge:
 // restores the original sharp edge purely from the filleted geometry.
 
@@ -33790,6 +33929,9 @@ int main() {
   TestFilletConvexEdgeObliqueEndMatchesPerpendicularAtZeroSlope();
   TestFilletConvexEdgeObliqueEndClosedFormAtASecondSlope();
   TestFilletConvexEdgeObliqueEndRejectsInvalidInput();
+  TestFilletConvexEdgesSingleEdgeMatchesFilletConvexEdgeOnObliqueEnd();
+  TestFilletConvexEdgesParallelPairWithObliqueEndsIsClosedAndMatchesClosedForm();
+  TestFilletConvexEdgesRejectsOversizedRadiusAtObliqueEnd();
   TestRemoveBlendRoundTripsASingleFillet();
   TestRemoveBlendLeavesTheOtherFilletIntactAmongTwo();
   TestRemoveBlendRejectsUnsupportedConfigurations();
