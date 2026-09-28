@@ -4831,6 +4831,59 @@ honestly out of scope.
   face. Full `dino8_kernel_smoke`: 3416 checks, 0 failures;
   `dino8_general_boolean_sweep` unaffected.
 
+- **`Brep::Check()`'s own `DegenerateFace`/`SliverFace` detection was
+  producing false positives on entirely valid geometry** (`brep.cpp`) -
+  found by `PARITY_MAP.md` probing `Check()` against the kernel's own
+  factories, not assumed: it flagged all 6 faces of a plain `Box()` and
+  3 of 3 faces of a valid, `IsSolid()` `Extrude(circle)`/`Revolve(line)`
+  result. Two independent bugs, both real:
+  1. Any face with no loop record (`f.m_li.Count() == 0`) was
+     unconditionally treated as degenerate, even though `Box()`/
+     `Sphere()`/`TrimmedPlanarFace()`/`FromSurface()` are documented (in
+     this class's own header) to legitimately have no loop. Fixed by only
+     auto-flagging a face with no SURFACE at all; a loop-less-but-surfaced
+     face is now checked against its own (u,v) domain rectangle instead,
+     via two new small helpers, `DomainRectanglePolygon()` (the surface's
+     own domain corners as a 4-point polygon) and `DensifyBoundary3d()`
+     (below).
+  2. `SampleLoop()`'s existing sample-density decision - `samples = 1`
+     whenever a trim segment's own 2D (u,v) curve `IsLinear()` - is wrong
+     whenever the trim is straight in (u,v) but the SURFACE curves along
+     that direction: an extrusion/revolve wall is parametrized by angle,
+     so its rectangular UV trim is straight in both directions even
+     though one of them sweeps a full circle in 3D. Traced by direct
+     instrumentation (not guessed) to `Extrude(circle)`'s wall having its
+     "4 corners" collapse to only 2 distinct 3D points, since u=0 and
+     u=2*pi are the same physical angle - a 2-point sample set that
+     `Check()`'s own collinearity/width test can only ever see as
+     degenerate. Rather than change `SampleLoop()` itself (also used by
+     `ResolveFace()`'s production tessellation-fallback path, and
+     deliberately left alone to avoid changing tessellation behavior),
+     a new post-processing pass, `DensifyBoundary3d()`, walks the closed
+     2D polygon `SampleLoop()` already produced and re-samples (16 points)
+     any segment whose own 3D image (via the new `Segment3dIsStraight()`
+     helper, evaluating the segment's OWN midpoint through the surface and
+     checking it against the straight line between the segment's two 3D
+     endpoints) isn't actually straight.
+     A second, more subtle bug surfaced while building the first fix's own
+     test: `Segment3dIsStraight()`'s initial coincident-endpoint shortcut
+     (`if (seg_len <= tol) return true;`) is exactly wrong for a periodic
+     seam - u=0 and u=2*pi ARE the same 3D point, but the segment between
+     them can be a full circle, not a degenerate point. Fixed by checking
+     the segment's own midpoint against that shared endpoint instead of
+     trivially returning true.
+  Verified (`TestBrepCheckDoesNotFalselyFlagCurvedOrToplessValidFaces`):
+  both `Box()` (no loops) and `Extrude(circle)`/`Revolve(line)` (curved
+  walls with straight-in-UV trims) now report zero `DegenerateFace`/
+  `SliverFace` issues, while the existing hairline-sliver fixture this
+  file already covers still correctly reports one - no false negative
+  introduced. Mutation-tested directly: reverting the coincident-endpoint
+  fix back to unconditional `true` makes exactly this test's two new
+  assertions fail, with 0 other regressions - confirmed by actually
+  running it, not assumed. Full `dino8_kernel_tests`: 3601 checks, 0
+  failures; `dino8_general_boolean_sweep` byte-identical to its prior
+  baseline.
+
 ## What's still not done (as of chunk 2)
 
 - `Brep::Box()`, `Brep::Sphere()`, `Brep::TrimmedPlanarFace()`

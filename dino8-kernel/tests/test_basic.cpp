@@ -7434,6 +7434,86 @@ void TestBrepCheckReportsCleanBoxAsClean() {
         "Count() reports zero for every kind on the clean fixture");
 }
 
+// A REAL false positive this kernel's own parity audit found and this
+// test pins shut: Check()'s DegenerateFace/SliverFace detection used to
+// trust a face's outer boundary sampled from only 4 points whenever the
+// EITHER the face had no loop at all (Box()/Sphere() - see this file's
+// own class comment: built via NewFace(surface_index), no real topology,
+// BY DESIGN, not because anything is degenerate) or its 2D trim was
+// straight in (u, v) even though the SURFACE curves along that
+// direction (an Extrude()/Revolve() wall's own rectangular UV trim over
+// a circular profile: u = angle, so u=0 and u=2*pi are literally the
+// SAME physical point, collapsing the "4 corners" to 2 distinct 3D
+// points with nothing sampled between them). Checked directly before
+// this fix: Box() reported 6 of 6 faces DegenerateFace, and a valid,
+// closed, IsSolid() Extrude(circle) reported 3 of 3 - a healing
+// operation trusting that flag (RemoveDegenerateFaces()) would have
+// destructively deleted every face of both. Every fixture below is a
+// genuinely valid, IsSolid() (where topology allows it) solid; every one
+// must report ZERO DegenerateFace/SliverFace issues.
+void TestBrepCheckDoesNotFalselyFlagCurvedOrToplessValidFaces() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  auto degenerate_or_sliver_count = [](const Brep& b) {
+    const Brep::CheckReport r = b.Check();
+    return r.Count(Brep::CheckIssue::Kind::DegenerateFace) + r.Count(Brep::CheckIssue::Kind::SliverFace);
+  };
+
+  {
+    const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+    Check(degenerate_or_sliver_count(box) == 0,
+          "Box() - no real topology at all (0 loops per face) - reports zero DegenerateFace/SliverFace issues, "
+          "not one per face");
+  }
+  {
+    const Brep sph = Brep::Sphere(Point3d(0, 0, 0), 2.0);
+    Check(degenerate_or_sliver_count(sph) == 0,
+          "Sphere() - also topology-poor, AND genuinely curved along both its own domain directions - is not "
+          "flagged either");
+  }
+  auto make_circle = [](Point3d center, Vector3d normal, double radius) {
+    const ON_Circle circle(ON_Plane(center, normal), radius);
+    ON_NurbsCurve nurbs;
+    circle.GetNurbForm(nurbs);
+    NurbsCurve k;
+    k.raw() = nurbs;
+    return k;
+  };
+  {
+    const Brep cyl = Brep::Extrude(make_circle(Point3d(0, 0, 0), Vector3d(0, 0, 1), 1.0), Vector3d(0, 0, 4));
+    Check(cyl.FaceCount() == 3 && cyl.raw().IsSolid(),
+          "the Extrude(circle) fixture is a genuine 3-face (wall + 2 caps) closed solid");
+    Check(degenerate_or_sliver_count(cyl) == 0,
+          "...and Check() reports zero DegenerateFace/SliverFace issues on it - the wall's own straight-in-(u,v) "
+          "rectangular trim over a curved (circular) profile is not mistaken for a degenerate boundary");
+  }
+  {
+    const NurbsCurve line = NurbsCurve::FromControlPoints({Point3d(1, 0, 0), Point3d(1, 0, 3)}, 1);
+    const Brep revolved = Brep::Revolve(line, Point3d(0, 0, 0), Vector3d(0, 0, 1));
+    Check(revolved.raw().IsSolid(), "the Revolve(line) fixture (an open profile, so wall-only, no caps) is a valid solid");
+    Check(degenerate_or_sliver_count(revolved) == 0,
+          "...and is not flagged either - the same closed-but-not-periodic revolve-angle direction as the "
+          "extrusion case above");
+  }
+  // Negative control: a genuine hairline sliver (already covered end-to-
+  // end by TestBrepRemoveSliverAndDegenerateFacesHealHairlineStrip) must
+  // STILL be caught - this fix must not have traded false positives for
+  // false negatives.
+  {
+    Brep::PlanarFace sliver;
+    sliver.loop = {Point3d(0, 0, 0), Point3d(1, 0, 0), Point3d(1, 1e-8, 0), Point3d(0, 1e-8, 0)};
+    sliver.plane = ON_Plane(sliver.loop[0], ON_3dVector(0, 0, -1));
+    const Brep one = Brep::FromPlanarFaces({sliver});
+    const Brep::CheckReport r = one.Check();
+    Check(r.Count(Brep::CheckIssue::Kind::DegenerateFace) == 1,
+          "a genuine 1e-8-wide hairline face is still caught (as DegenerateFace) after this fix - not a false "
+          "negative traded for the false positives it removes");
+  }
+}
+
 // Two squares touching at exactly one point and sharing no edge - the
 // textbook non-manifold vertex (pinch point): FromPlanarFaces() welds
 // their one coincident corner into a single shared ON_BrepVertex (both
@@ -32053,6 +32133,7 @@ int main() {
   TestSurfaceMatchEdgeToRationalSphereAndRefusals();
   TestTolerancePolicyValuesAreTheOnesInForce();
   TestBrepCheckReportsCleanBoxAsClean();
+  TestBrepCheckDoesNotFalselyFlagCurvedOrToplessValidFaces();
   TestBrepCheckDetectsNonManifoldPinchVertex();
   TestBrepSplitNonManifoldVertexHealsPinchPoint();
   TestBrepCheckAndUnifyNormalsOnFlippedFace();

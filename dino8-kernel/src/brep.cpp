@@ -5922,15 +5922,101 @@ double SampledEdgeLength(const ON_BrepEdge& edge) {
   return length;
 }
 
+// Whether the 3D image of the 2D segment (p0, p1), evaluated THROUGH
+// `srf`, is straight: its own midpoint (evaluated through the surface,
+// not interpolated in 3D) lands within `tol` of the straight line
+// between the segment's own two 3D endpoints. `out_a`/`out_b` receive
+// those two endpoints either way.
+bool Segment3dIsStraight(const ON_Surface& srf, const Point2d& p0, const Point2d& p1, double tol,
+                         ON_3dPoint* out_a, ON_3dPoint* out_b) {
+  const ON_3dPoint a = srf.PointAt(p0.x, p0.y);
+  const ON_3dPoint b = srf.PointAt(p1.x, p1.y);
+  if (out_a) *out_a = a;
+  if (out_b) *out_b = b;
+  const double seg_len = a.DistanceTo(b);
+  const ON_3dPoint mid3d = srf.PointAt((p0.x + p1.x) / 2.0, (p0.y + p1.y) / 2.0);
+  if (seg_len <= tol) {
+    // The two ENDPOINTS coincide (a periodic direction's own seam, e.g.
+    // u=0 and u=2*pi on a full-revolve wall - the exact case a naive
+    // "coincident endpoints means degenerate, so trivially straight"
+    // shortcut gets wrong: found by testing, not assumed - the segment
+    // between them can still be a genuine full loop (a circle), not a
+    // point. The real test is whether the MIDPOINT also collapses onto
+    // that same shared point; if it doesn't, this is a loop, not a
+    // straight (degenerate) segment.
+    return mid3d.DistanceTo(a) <= tol;
+  }
+  const ON_3dVector dir = (b - a) / seg_len;
+  const ON_3dVector v = mid3d - a;
+  const double along = ON_DotProduct(v, dir);
+  const double perp = (v - along * dir).Length();
+  return perp <= tol;
+}
+
+// Samples a closed 2D polygon's own 3D image through `srf`, densifying
+// each segment whose 3D image is NOT straight (Segment3dIsStraight,
+// above) - the fix for a real false-positive Check() (DegenerateFace/
+// SliverFace) had: a face's OWN 2D trim curve can be perfectly straight
+// in (u, v) - a rectangular full-domain trim, the shape every one of
+// this class's own topology-building factories gives an untrimmed
+// direction - while its 3D image curves, whenever the surface itself is
+// curved along that direction (an Extrude()/Revolve() wall's own
+// rectangular UV trim over a circular profile, say: u = angle, so the
+// trim's own 4 straight sides are 2 constant-u seams and 2 constant-v
+// isocurves, and u = 0 / u = 2*pi are the SAME physical angle - the
+// wall's own 4 UV "corners" collapse to just 2 distinct 3D points, with
+// nothing sampled between them to reveal the actual circular extent).
+// `SampleLoop()` (used by Tessellate()'s own topology-derived trim
+// fallback, which this deliberately does NOT touch) decides sampling
+// density from exactly that 2D-linearity test, which is precisely wrong
+// here - checked directly: this false positive reported EVERY face of a
+// valid, closed, IsSolid() Extrude(circle) as degenerate. This function
+// instead decides density from the 3D IMAGE's own straightness, so a
+// genuinely flat quad (Box(), a planar cap) still costs only its own 4
+// corners while a curved one gets densified exactly where it curves.
+std::vector<ON_3dPoint> DensifyBoundary3d(const ON_Surface& srf, const std::vector<Point2d>& polygon_2d,
+                                          double tol) {
+  std::vector<ON_3dPoint> out;
+  const size_t n = polygon_2d.size();
+  if (n < 2) return out;
+  constexpr int kDenseSamples = 16;
+  for (size_t i = 0; i < n; ++i) {
+    const Point2d& p0 = polygon_2d[i];
+    const Point2d& p1 = polygon_2d[(i + 1) % n];
+    ON_3dPoint a, b;
+    if (Segment3dIsStraight(srf, p0, p1, tol, &a, &b)) {
+      out.push_back(a);
+    } else {
+      for (int k = 0; k < kDenseSamples; ++k) {
+        const double t = static_cast<double>(k) / kDenseSamples;
+        out.push_back(srf.PointAt(p0.x + t * (p1.x - p0.x), p0.y + t * (p1.y - p0.y)));
+      }
+    }
+  }
+  return out;
+}
+
+// The surface's own (u, v) domain rectangle, in increasing-parameter
+// (CCW-as-seen-from-outside-by-convention, matching this class' own
+// planar-face factories) order - the boundary a face with NO real
+// topology (Box()/Sphere()/TrimmedPlanarFace()/FromSurface() - see this
+// class' own top comment for why) actually has, standing in for the
+// loop it doesn't build.
+std::vector<Point2d> DomainRectanglePolygon(const ON_Surface& srf) {
+  const ON_Interval du = srf.Domain(0), dv = srf.Domain(1);
+  return {Point2d(du.Min(), dv.Min()), Point2d(du.Max(), dv.Min()), Point2d(du.Max(), dv.Max()),
+          Point2d(du.Min(), dv.Max())};
+}
+
 // The loop's own SampleLoop() samples (the ones Tessellate() derives a
 // trim from when no side table applies), mapped through the face's
-// surface to 3D. Empty if the face has no surface.
-std::vector<ON_3dPoint> LoopSamples3d(const ON_Brep& b, const ON_BrepLoop& loop) {
-  std::vector<ON_3dPoint> out;
+// surface to 3D and densified wherever the 3D image actually curves
+// (DensifyBoundary3d, above - see its own doc comment for the real
+// false positive this closes). Empty if the face has no surface.
+std::vector<ON_3dPoint> LoopSamples3d(const ON_Brep& b, const ON_BrepLoop& loop, double tol) {
   const ON_Surface* srf = loop.SurfaceOf();
-  if (!srf) return out;
-  for (const Point2d& uv : SampleLoop(b, loop)) out.push_back(srf->PointAt(uv.x, uv.y));
-  return out;
+  if (!srf) return {};
+  return DensifyBoundary3d(*srf, SampleLoop(b, loop), tol);
 }
 
 // Whether 3D segments (a1, a2) and (b1, b2) genuinely cross - the 3D
@@ -6341,7 +6427,7 @@ Brep::CheckReport Brep::Check(double tolerance, double sliver_width) const {
         if (const ON_Surface* srf = loop.SurfaceOf()) where = srf->PointAt(poly[0].x, poly[0].y);
         add(CheckKind::SelfIntersectingLoop, li, loop.m_fi, where, 0.0);
       }
-      const std::vector<ON_3dPoint> pts3d = LoopSamples3d(b, loop);
+      const std::vector<ON_3dPoint> pts3d = LoopSamples3d(b, loop, tol);
       if (pts3d.size() >= 4) {
         ON_3dPoint where(0, 0, 0);
         double measure = 0.0;
@@ -6352,16 +6438,24 @@ Brep::CheckReport Brep::Check(double tolerance, double sliver_width) const {
     }
   }
 
-  // Faces: degenerate (collinear/empty boundary, no loop, no surface) and
-  // sliver, from the outer loop's own 3D samples.
+  // Faces: degenerate (collinear/empty boundary, no surface) and sliver,
+  // from the outer boundary's own 3D samples - the face's own outer LOOP
+  // when it has real topology, or its surface's own domain rectangle
+  // when it doesn't (see DomainRectanglePolygon's own doc comment: a
+  // Box()/Sphere()/TrimmedPlanarFace()/FromSurface() face has no loop at
+  // all BY DESIGN, not because it is degenerate - auto-flagging every
+  // such face used to report a valid Box() as 6/6 degenerate and a
+  // valid, closed Extrude(circle) as 3/3 degenerate, checked directly,
+  // not a theoretical risk).
   for (int fi = 0; fi < b.m_F.Count(); ++fi) {
     const ON_BrepFace& f = b.m_F[fi];
     if (f.m_face_index < 0) continue;
-    if (!f.SurfaceOf() || f.m_li.Count() == 0) {
+    const ON_Surface* srf = f.SurfaceOf();
+    if (!srf) {
       add(CheckKind::DegenerateFace, fi, -1, ON_3dPoint(0, 0, 0), 0.0);
       continue;
     }
-    int outer_li = f.m_li[0];
+    int outer_li = -1;
     for (int k = 0; k < f.m_li.Count(); ++k) {
       const int li = f.m_li[k];
       if (li >= 0 && li < b.m_L.Count() && b.m_L[li].m_type == ON_BrepLoop::outer) {
@@ -6369,11 +6463,10 @@ Brep::CheckReport Brep::Check(double tolerance, double sliver_width) const {
         break;
       }
     }
-    if (outer_li < 0 || outer_li >= b.m_L.Count()) {
-      add(CheckKind::DegenerateFace, fi, outer_li, ON_3dPoint(0, 0, 0), 0.0);
-      continue;
-    }
-    const std::vector<ON_3dPoint> pts = LoopSamples3d(b, b.m_L[outer_li]);
+    if (outer_li < 0 && f.m_li.Count() > 0) outer_li = f.m_li[0];
+    const std::vector<ON_3dPoint> pts = (outer_li >= 0 && outer_li < b.m_L.Count())
+                                            ? LoopSamples3d(b, b.m_L[outer_li], tol)
+                                            : DensifyBoundary3d(*srf, DomainRectanglePolygon(*srf), tol);
     ON_3dPoint centroid(0, 0, 0);
     const double width = PointSetWidth(pts, tol, &centroid);
     if (pts.size() < 3 || width <= tol) {
