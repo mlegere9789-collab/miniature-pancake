@@ -351,8 +351,12 @@ void RegisterViewCommands(CommandEngine& e) {
   Reg(e, "MonochromeViewport", SetMode(DisplayMode::Monochrome));
   Reg(e, "RayTracedViewport", SetMode(DisplayMode::RayTraced), CommandStatus::Implemented,
       "Progressive CPU path tracer at 1/4 viewport resolution, accumulating while the camera is still.");
-  Reg(e, "Render", SetMode(DisplayMode::Rendered), CommandStatus::Partial, "Switches the viewport to Rendered mode; RegisterRaytraceCommands replaces this with the real offline path tracer.");
-  Reg(e, "RenderPreview", SetMode(DisplayMode::Rendered), CommandStatus::Partial);
+  // Render/RenderPreview used to be registered here as a Rendered-viewport-
+  // mode-only Partial stub. cmd_raytrace.cpp's RegisterRaytraceCommands
+  // registers the real offline path tracer under the same names,
+  // CommandStatus::Implemented, and runs after this file (see
+  // Application.cpp), so it always won here anyway; the stub was dead code
+  // and has been removed rather than kept alongside the real one.
   Reg(e, "RefreshShade", Immediate([](CommandContext& ctx) { for (SceneObject& o : ctx.Doc().Objects()) o.InvalidateDisplay(); }));
   Reg(e, "ClearAllMeshes", Immediate([](CommandContext& ctx) { for (SceneObject& o : ctx.Doc().Objects()) o.InvalidateDisplay(); }));
   Reg(e, "Grid", Immediate([](CommandContext& ctx) { ctx.Settings().show_grid = !ctx.Settings().show_grid; ctx.Print(std::string("Grid ") + (ctx.Settings().show_grid ? "on" : "off")); }));

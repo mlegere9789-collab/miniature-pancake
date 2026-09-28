@@ -3203,7 +3203,14 @@ void RegisterSrfEditCommands(CommandEngine& e) {
       "Real solid: a closed footprint curve extruded along each sample point's own local surface normal (so it follows the surface's curvature), fan-capped and boolean-unioned with the base solid.");
   Reg(e, "Rib", Make<BossRibCommand>(true), CommandStatus::Implemented,
       "Real thin wall (Thickness x Height) following the base surface's local normal along the spine curve, tapering to zero at both ends, boolean-unioned with the base solid.");
-  Reg(e, "Slide", Planned("Slide: planned; use Move. Slide's real feature - keeping an object confined to (sliding along) the surface it started on while dragging - needs a constrained drag the command engine's point tool does not support."), CommandStatus::Partial);
+  // Slide used to be registered here as a Planned/Partial stub ("use
+  // Move instead"). Real Rhino's Slide is SubD-only (moves a picked
+  // control-net vertex towards a target point, confined to its
+  // best-aligned edge) - cmd_subd.cpp's SlideAction is that real
+  // implementation, CommandStatus::Implemented, and RegisterSubDCommands
+  // runs after this file (see Application.cpp), so it always won here
+  // anyway; the stub was dead code and has been removed rather than kept
+  // alongside the real one.
   Reg(e, "Hydrostatics", OnSelection("Select closed objects", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         ON_Plane base_wl = ActivePlane(ctx);
         for (ObjectId id : ids) {

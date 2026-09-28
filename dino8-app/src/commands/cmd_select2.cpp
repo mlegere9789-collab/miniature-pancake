@@ -673,15 +673,6 @@ void RegisterSelect2Commands(CommandEngine& e) {
   Reg(e, "SelClosedSubD", SelWhere([](CommandContext&, const SceneObject& o) { return o.kind == ObjectKind::SubD && o.subd->raw().IsSolid(); }));
   Reg(e, "SelOpenSubD", SelWhere([](CommandContext&, const SceneObject& o) { return o.kind == ObjectKind::SubD && !o.subd->raw().IsSolid(); }));
 
-  auto group_members = [](const char* label) {
-    return Immediate([label](CommandContext& ctx) {
-      std::set<int> groups;
-      for (const SceneObject& o : ctx.Doc().Objects()) if (o.selected && o.group_id >= 0) groups.insert(o.group_id);
-      if (groups.empty()) { ctx.Print(std::string(label) + ": the selection has no groups"); return; }
-      ctx.Doc().SelectWhere([&](const SceneObject& o) { return Selectable(ctx, o) && groups.count(o.group_id) > 0; }, true);
-      Report(ctx);
-    });
-  };
   // SelChildren/SelParents walk the real parent/child provenance graph
   // (doc/Document.h's ProvenanceInfo) instead of the old group-symmetric
   // fallback: a block instance's anchor object's "children" are the rest of
@@ -721,7 +712,14 @@ void RegisterSelect2Commands(CommandEngine& e) {
       }), CommandStatus::Implemented,
       "Selects the recorded parent of the current selection (a block instance's anchor object, or the "
       "curve/surface an extrusion was built from) - nothing if none is tracked or the parent was deleted.");
-  Reg(e, "SelCaptives", group_members("SelCaptives"), CommandStatus::Partial, "Selects the other members of the selected objects' groups.");
+  // SelCaptives used to be registered here as a Partial stub that
+  // (wrongly) selected the rest of the selected objects' groups. The real
+  // SelCaptives - the objects bound into a CageEdit lattice, via
+  // Document::CageBindings()/Captive (doc/Document.h) - is registered for
+  // real in cmd_solidtools.cpp, CommandStatus::Implemented, and
+  // RegisterSolidToolsCommands runs after this file (see Application.cpp),
+  // so it always won here anyway; the stub was dead code and has been
+  // removed rather than kept alongside the real one.
 
   Reg(e, "SelControlPoint", Immediate([](CommandContext& ctx) {
         size_t added = 0;
