@@ -6902,6 +6902,20 @@ bool PointInPolygon2D(const Point2d& p, const std::vector<Point2d>& polygon) {
   return inside;
 }
 
+// Twice the polygon's own signed area (shoelace) - positive for a
+// counter-clockwise vertex sequence, negative for clockwise. Used by
+// MakeEdgeKillRing()'s inverse, KillEdgeMakeRing(), to tell an
+// outer-shaped run from an inner (hole)-shaped one after a bridge is
+// removed - the standard outer-CCW/inner-CW Brep convention.
+double SignedArea2D(const std::vector<Point2d>& polygon) {
+  double sum = 0.0;
+  const size_t n = polygon.size();
+  for (size_t i = 0, j = n - 1; i < n; j = i++) {
+    sum += (polygon[j].x + polygon[i].x) * (polygon[i].y - polygon[j].y);
+  }
+  return sum;
+}
+
 }  // namespace
 
 Brep::MakeEdgeFaceResult Brep::MakeEdgeFace(int face_index, int vertex_a, int vertex_b, double tolerance) {
@@ -7125,6 +7139,302 @@ Result Brep::KillEdgeFace(int edge_index) {
   b.m_E[edge_index].m_edge_index = -1;
   b.m_L[loop1_index].m_loop_index = -1;
   b.m_F[face1_index].m_face_index = -1;
+
+  b.Compact();
+  b.SetTolerancesBoxesAndFlags();
+  FixUnsetEdgeTolerances(b);
+  ClearFaceSideTables();
+  return Result::Ok;
+}
+
+Brep::MakeEdgeKillRingResult Brep::MakeEdgeKillRing(int face_index, int vertex_a, int vertex_b, double tolerance) {
+  ON_Brep& b = brep_;
+  if (face_index < 0 || face_index >= b.m_F.Count()) {
+    throw std::out_of_range("dino8::kernel::Brep::MakeEdgeKillRing: face_index " + std::to_string(face_index) +
+                            " is out of range (this Brep has " + std::to_string(b.m_F.Count()) + " face slot(s))");
+  }
+  if (b.m_F[face_index].m_face_index < 0) {
+    throw std::invalid_argument("dino8::kernel::Brep::MakeEdgeKillRing: face_index " + std::to_string(face_index) +
+                                " refers to a deleted face");
+  }
+  for (const int vi : {vertex_a, vertex_b}) {
+    if (vi < 0 || vi >= b.m_V.Count()) {
+      throw std::out_of_range("dino8::kernel::Brep::MakeEdgeKillRing: vertex index " + std::to_string(vi) +
+                              " is out of range (this Brep has " + std::to_string(b.m_V.Count()) + " vertex slot(s))");
+    }
+    if (b.m_V[vi].m_vertex_index < 0) {
+      throw std::invalid_argument("dino8::kernel::Brep::MakeEdgeKillRing: vertex index " + std::to_string(vi) +
+                                  " refers to an already-deleted vertex");
+    }
+  }
+  if (vertex_a == vertex_b) return MakeEdgeKillRingResult{};  // no bridge to draw
+
+  const ON_BrepFace& face = b.m_F[face_index];
+  if (face.LoopCount() != 2) return MakeEdgeKillRingResult{};  // exactly one outer + one hole, no more, no less
+
+  const ON_BrepLoop* loop_ptrs[2] = {face.Loop(0), face.Loop(1)};
+  int outer_slot = -1, inner_slot = -1;
+  for (int s = 0; s < 2; ++s) {
+    if (!loop_ptrs[s]) return MakeEdgeKillRingResult{};
+    if (loop_ptrs[s]->m_type == ON_BrepLoop::outer) outer_slot = s;
+    else if (loop_ptrs[s]->m_type == ON_BrepLoop::inner) inner_slot = s;
+  }
+  if (outer_slot < 0 || inner_slot < 0) return MakeEdgeKillRingResult{};  // not a real outer + real inner pair
+
+  const ON_Surface* srf = face.SurfaceOf();
+  const double tol = std::max(tolerance, 0.0);
+  if (!srf || !srf->IsPlanar(nullptr, std::max(tol, 1e-9))) return MakeEdgeKillRingResult{};
+
+  const ON_BrepLoop& outer_loop = *loop_ptrs[outer_slot];
+  const ON_BrepLoop& inner_loop = *loop_ptrs[inner_slot];
+
+  // Each loop's own ordered vertex/2D-point sequence, same approach as
+  // MakeEdgeFace() - a trim with no edge at all (a singular trim, e.g. a
+  // sphere pole) refuses the whole call.
+  auto build_polygon = [](const ON_BrepLoop& loop, std::vector<int>& vertex_at, std::vector<Point2d>& poly) -> bool {
+    const int n = loop.TrimCount();
+    if (n < 1) return false;
+    vertex_at.resize(static_cast<size_t>(n));
+    poly.resize(static_cast<size_t>(n));
+    for (int k = 0; k < n; ++k) {
+      const ON_BrepTrim* t = loop.Trim(k);
+      if (!t || t->m_type == ON_BrepTrim::singular || !t->Edge()) return false;
+      vertex_at[static_cast<size_t>(k)] = t->m_vi[0];
+      const ON_3dPoint p0 = t->PointAtStart();
+      poly[static_cast<size_t>(k)] = Point2d(p0.x, p0.y);
+    }
+    return true;
+  };
+
+  std::vector<int> outer_vertex_at, inner_vertex_at;
+  std::vector<Point2d> outer_poly, inner_poly;
+  if (!build_polygon(outer_loop, outer_vertex_at, outer_poly)) return MakeEdgeKillRingResult{};
+  if (!build_polygon(inner_loop, inner_vertex_at, inner_poly)) return MakeEdgeKillRingResult{};
+
+  const int n_o = static_cast<int>(outer_poly.size());
+  const int n_h = static_cast<int>(inner_poly.size());
+
+  // vertex_a and vertex_b must land one on each loop (either order),
+  // each appearing exactly once on its own loop and not at all on the
+  // other - the bridge's own two endpoints.
+  auto find_once = [](const std::vector<int>& vertex_at, int target) -> int {
+    int pos = -1;
+    for (int k = 0; k < static_cast<int>(vertex_at.size()); ++k) {
+      if (vertex_at[static_cast<size_t>(k)] == target) {
+        if (pos >= 0) return -2;  // visited twice - ambiguous
+        pos = k;
+      }
+    }
+    return pos;
+  };
+  const int a_on_outer = find_once(outer_vertex_at, vertex_a);
+  const int a_on_inner = find_once(inner_vertex_at, vertex_a);
+  const int b_on_outer = find_once(outer_vertex_at, vertex_b);
+  const int b_on_inner = find_once(inner_vertex_at, vertex_b);
+
+  int po = -1, pi = -1;  // the outer-loop endpoint's own position, and the inner-loop endpoint's own position
+  if (a_on_outer >= 0 && a_on_inner < 0 && b_on_inner >= 0 && b_on_outer < 0) {
+    po = a_on_outer;
+    pi = b_on_inner;
+  } else if (b_on_outer >= 0 && b_on_inner < 0 && a_on_inner >= 0 && a_on_outer < 0) {
+    po = b_on_outer;
+    pi = a_on_inner;
+    std::swap(vertex_a, vertex_b);  // normalize: vertex_a is now the OUTER loop's own endpoint
+  } else {
+    return MakeEdgeKillRingResult{};  // not exactly one of {vertex_a, vertex_b} on each loop
+  }
+
+  // Nesting sanity check: the outer polygon must actually contain the
+  // inner loop, tested via an inner-loop point other than the bridge's
+  // own endpoint (n_h >= 1 guarantees one exists, even if it coincides
+  // with vertex_b itself when n_h == 1 - a boundary-touching probe in
+  // that single-trim case, the same approximation this whole check
+  // already makes by treating trim start points as a polygon).
+  const Point2d inner_probe = inner_poly[static_cast<size_t>((pi + 1) % n_h)];
+  if (!PointInPolygon2D(inner_probe, outer_poly)) return MakeEdgeKillRingResult{};
+
+  // Validate the candidate bridge (outer_poly[po], inner_poly[pi]): no
+  // proper crossing with any OTHER trim of EITHER loop - an edge sharing
+  // the bridge's own endpoint is not a crossing, same as MakeEdgeFace().
+  const Point2d a_point2d = outer_poly[static_cast<size_t>(po)];
+  const Point2d b_point2d = inner_poly[static_cast<size_t>(pi)];
+  for (int k = 0; k < n_o; ++k) {
+    const int k1 = (k + 1) % n_o;
+    if (k == po || k1 == po) continue;
+    if (SegmentsProperlyIntersect2D(a_point2d, b_point2d, outer_poly[static_cast<size_t>(k)],
+                                     outer_poly[static_cast<size_t>(k1)])) {
+      return MakeEdgeKillRingResult{};
+    }
+  }
+  for (int k = 0; k < n_h; ++k) {
+    const int k1 = (k + 1) % n_h;
+    if (k == pi || k1 == pi) continue;
+    if (SegmentsProperlyIntersect2D(a_point2d, b_point2d, inner_poly[static_cast<size_t>(k)],
+                                     inner_poly[static_cast<size_t>(k1)])) {
+      return MakeEdgeKillRingResult{};
+    }
+  }
+
+  // Capture everything about the two loops' own trim indices, and the
+  // deleted inner loop's own position in face.m_li, before NewEdge()/
+  // NewTrim() below can reallocate b.m_L/b.m_T (the same caution
+  // MakeEdgeFace()'s own comment gives for `loop`).
+  std::vector<int> outer_ti(static_cast<size_t>(n_o));
+  for (int k = 0; k < n_o; ++k) outer_ti[static_cast<size_t>(k)] = outer_loop.Trim(k)->m_trim_index;
+  std::vector<int> inner_ti(static_cast<size_t>(n_h));
+  for (int k = 0; k < n_h; ++k) inner_ti[static_cast<size_t>(k)] = inner_loop.Trim(k)->m_trim_index;
+  const int outer_loop_index = outer_loop.m_loop_index;
+  const int inner_loop_index = inner_loop.m_loop_index;
+  int inner_li_slot = -1;
+  for (int k = 0; k < b.m_F[face_index].m_li.Count(); ++k) {
+    if (b.m_F[face_index].m_li[k] == inner_loop_index) inner_li_slot = k;
+  }
+  if (inner_li_slot < 0) return MakeEdgeKillRingResult{};  // shouldn't happen - defensive only
+
+  // Build the new bridge edge (a straight ON_LineCurve between the two
+  // EXISTING vertices - no NewVertex() call) and its two 2D trim curves.
+  const Point3d a_point = b.m_V[vertex_a].point;
+  const Point3d b_point = b.m_V[vertex_b].point;
+  const int c3i = b.AddEdgeCurve(new ON_LineCurve(a_point, b_point));
+  ON_BrepEdge& new_edge = b.NewEdge(b.m_V[vertex_a], b.m_V[vertex_b], c3i);
+  new_edge.m_tolerance = 0.0;
+  const int new_edge_index = new_edge.m_edge_index;
+
+  const int c2i_a_to_b = b.AddTrimCurve(new ON_LineCurve(a_point2d, b_point2d));
+  const int c2i_b_to_a = b.AddTrimCurve(new ON_LineCurve(b_point2d, a_point2d));
+
+  // Splice: bridge(a->b), the whole inner loop starting at vertex_b,
+  // bridge(b->a), the whole outer loop starting at vertex_a - all
+  // re-homed onto the SURVIVING outer loop object, which keeps its own
+  // loop index and ON_BrepLoop::outer type completely unchanged.
+  std::vector<int> merged;
+  merged.reserve(static_cast<size_t>(n_o + n_h + 2));
+  ON_BrepTrim& trim_ab = b.NewTrim(b.m_E[new_edge_index], /*bRev3d=*/false, b.m_L[outer_loop_index], c2i_a_to_b);
+  trim_ab.m_tolerance[0] = trim_ab.m_tolerance[1] = 0.0;
+  merged.push_back(trim_ab.m_trim_index);
+  for (int s = 0; s < n_h; ++s) merged.push_back(inner_ti[static_cast<size_t>((pi + s) % n_h)]);
+  ON_BrepTrim& trim_ba = b.NewTrim(b.m_E[new_edge_index], /*bRev3d=*/true, b.m_L[outer_loop_index], c2i_b_to_a);
+  trim_ba.m_tolerance[0] = trim_ba.m_tolerance[1] = 0.0;
+  merged.push_back(trim_ba.m_trim_index);
+  for (int s = 0; s < n_o; ++s) merged.push_back(outer_ti[static_cast<size_t>((po + s) % n_o)]);
+
+  for (const int ti : merged) {
+    if (b.m_T[ti].m_li == inner_loop_index) b.m_T[ti].m_li = outer_loop_index;
+  }
+  b.m_L[outer_loop_index].m_ti.SetCount(0);
+  for (const int ti : merged) b.m_L[outer_loop_index].m_ti.Append(ti);
+
+  b.m_F[face_index].m_li.Remove(inner_li_slot);
+  b.m_L[inner_loop_index].m_loop_index = -1;
+
+  b.SetTolerancesBoxesAndFlags();
+  FixUnsetEdgeTolerances(b);
+  ClearFaceSideTables();
+
+  MakeEdgeKillRingResult result;
+  result.result = Result::Ok;
+  result.edge_index = new_edge_index;
+  return result;
+}
+
+Result Brep::KillEdgeMakeRing(int edge_index) {
+  ON_Brep& b = brep_;
+  if (edge_index < 0 || edge_index >= b.m_E.Count()) {
+    throw std::out_of_range("dino8::kernel::Brep::KillEdgeMakeRing: edge_index " + std::to_string(edge_index) +
+                            " is out of range (this Brep has " + std::to_string(b.m_E.Count()) + " edge slot(s))");
+  }
+  const ON_BrepEdge& edge = b.m_E[edge_index];
+  if (edge.m_edge_index < 0) {
+    throw std::invalid_argument("dino8::kernel::Brep::KillEdgeMakeRing: edge_index " + std::to_string(edge_index) +
+                                " refers to an already-deleted edge");
+  }
+  if (edge.TrimCount() != 2) return Result::Failed;
+
+  const int ti0 = edge.m_ti[0];
+  const int ti1 = edge.m_ti[1];
+  const ON_BrepTrim& trim0 = b.m_T[ti0];
+  const ON_BrepTrim& trim1 = b.m_T[ti1];
+  if (trim0.m_li < 0 || trim1.m_li < 0 || trim0.m_li != trim1.m_li) {
+    return Result::Failed;  // different loops - that shape is KillEdgeFace()'s, not this one
+  }
+  // The standard well-formed bridge shape: the two trims traverse the
+  // shared edge in OPPOSITE directions, the same check KillEdgeFace()
+  // uses for its own two-face case.
+  if (trim0.m_vi[0] != trim1.m_vi[1] || trim0.m_vi[1] != trim1.m_vi[0]) return Result::Failed;
+
+  const int loop_index = trim0.m_li;
+  const ON_BrepLoop& loop = b.m_L[loop_index];
+  if (loop.m_type != ON_BrepLoop::outer) return Result::Failed;
+  const int face_index = loop.m_fi;
+  if (face_index < 0) return Result::Failed;
+
+  const int n = loop.TrimCount();
+  if (n < 2) return Result::Failed;
+
+  int pos0 = -1, pos1 = -1;
+  for (int k = 0; k < n; ++k) {
+    if (loop.Trim(k)->m_trim_index == ti0) pos0 = k;
+    if (loop.Trim(k)->m_trim_index == ti1) pos1 = k;
+  }
+  if (pos0 < 0 || pos1 < 0 || pos0 == pos1) return Result::Failed;  // shouldn't happen - defensive only
+
+  // The two runs the bridge separates - each already independently
+  // closed on its own (its first trim's own start vertex is its last
+  // trim's own end vertex), since the shared edge appears exactly once
+  // in each direction.
+  std::vector<int> run_a, run_b;
+  for (int k = (pos0 + 1) % n; k != pos1; k = (k + 1) % n) run_a.push_back(loop.Trim(k)->m_trim_index);
+  for (int k = (pos1 + 1) % n; k != pos0; k = (k + 1) % n) run_b.push_back(loop.Trim(k)->m_trim_index);
+  if (run_a.empty() || run_b.empty()) return Result::Failed;  // no remaining boundary on one side
+
+  const int edge_v0 = edge.m_vi[0];
+  const int edge_v1 = edge.m_vi[1];
+
+  // Which run is outer-shaped vs inner (hole)-shaped: their own signed
+  // 2D areas (shoelace, via each trim's own PointAtStart()) must have
+  // opposite sign - the standard outer-CCW/inner-CW Brep convention.
+  auto run_polygon = [&b](const std::vector<int>& run) {
+    std::vector<Point2d> poly;
+    poly.reserve(run.size());
+    for (const int ti : run) {
+      const ON_3dPoint p0 = b.m_T[ti].PointAtStart();
+      poly.emplace_back(p0.x, p0.y);
+    }
+    return poly;
+  };
+  const double area_a = SignedArea2D(run_polygon(run_a));
+  const double area_b = SignedArea2D(run_polygon(run_b));
+  if ((area_a >= 0.0) == (area_b >= 0.0)) return Result::Failed;  // not a genuine outer+hole bridge
+
+  const std::vector<int>& outer_run = (area_a >= 0.0) ? run_a : run_b;
+  const std::vector<int>& inner_run = (area_a >= 0.0) ? run_b : run_a;
+
+  // The surviving loop object keeps the outer run and its own
+  // ON_BrepLoop::outer type; a brand-new ON_BrepLoop::inner loop (auto-
+  // registered onto the face's own m_li by NewLoop() itself) gets the
+  // inner run.
+  ON_BrepLoop& new_loop = b.NewLoop(ON_BrepLoop::inner, b.m_F[face_index]);
+  const int new_loop_index = new_loop.m_loop_index;
+  for (const int ti : inner_run) b.m_T[ti].m_li = new_loop_index;
+  b.m_L[new_loop_index].m_ti.SetCount(0);
+  for (const int ti : inner_run) b.m_L[new_loop_index].m_ti.Append(ti);
+
+  b.m_L[loop_index].m_ti.SetCount(0);
+  for (const int ti : outer_run) b.m_L[loop_index].m_ti.Append(ti);
+
+  // Remove the bridge's own two trims and its edge; remove its own
+  // index from its two endpoint vertices' m_ei lists (Compact() never
+  // touches m_ei itself - the same cleanup KillEdgeFace()/
+  // KillEdgeVertex() already perform, for the same reason).
+  for (const int vi : {edge_v0, edge_v1}) {
+    ON_BrepVertex& v = b.m_V[vi];
+    for (int k = v.m_ei.Count() - 1; k >= 0; --k) {
+      if (v.m_ei[k] == edge_index) v.m_ei.Remove(k);
+    }
+  }
+  b.m_T[ti0].m_trim_index = -1;
+  b.m_T[ti1].m_trim_index = -1;
+  b.m_E[edge_index].m_edge_index = -1;
 
   b.Compact();
   b.SetTolerancesBoxesAndFlags();

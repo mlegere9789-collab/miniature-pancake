@@ -2,6 +2,7 @@
 // in a test framework dependency for four checks.
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -8670,6 +8671,260 @@ void TestBrepMakeEdgeFaceAndKillEdgeFaceAreExactInverses() {
     threw_kef_edge_deleted = true;
   }
   Check(threw_kef_edge_deleted, "a deleted edge_index throws std::invalid_argument");
+}
+
+// Builds a single planar face with a genuine ON_Brep outer loop AND a
+// genuine ON_Brep inner ("hole") loop, by hand - a shape none of this
+// kernel's own factories produce (TrimmedPlanarFace()'s own
+// hole_loops_uv is a pseudo-trim side table for tessellation only, not
+// a real ON_BrepLoop), needed purely as a MakeEdgeKillRing()/
+// KillEdgeMakeRing() test fixture. The surface is a bilinear NURBS
+// patch (the same NurbsSurface::FromControlGrid() recipe
+// Brep::FromMixedFaces() itself uses for a PlanarFace) sized with a
+// margin around a 4x4 outer square so the trim loops never touch the
+// surface's own domain edge. The outer loop is (0,0)-(4,0)-(4,4)-(0,4)
+// (CCW, positive signed area); the inner loop is (1,1)-(1,3)-(3,3)-(3,1)
+// (CW, negative signed area) - the standard outer-CCW/inner-CW Brep
+// convention KillEdgeMakeRing() itself relies on.
+struct PlanarFaceWithHoleFixture {
+  dino8::kernel::Brep brep;
+  int face_index = -1;
+  std::array<int, 4> outer_vertices{};
+  std::array<int, 4> inner_vertices{};
+};
+
+PlanarFaceWithHoleFixture BuildPlanarFaceWithHole() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point2d;
+  using dino8::kernel::Point3d;
+
+  PlanarFaceWithHoleFixture fixture;
+  ON_Brep& b = fixture.brep.raw();
+
+  const double min_x = -0.5, max_x = 4.5, min_y = -0.5, max_y = 4.5;
+  const std::vector<Point3d> grid = {
+      Point3d(min_x, min_y, 0), Point3d(min_x, max_y, 0),
+      Point3d(max_x, min_y, 0), Point3d(max_x, max_y, 0),
+  };
+  const NurbsSurface surface = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+  auto* surface_copy = new ON_NurbsSurface(surface.raw());
+  const int surface_index = b.AddSurface(surface_copy);
+  const int face_index = b.NewFace(surface_index).m_face_index;
+  fixture.face_index = face_index;
+
+  auto to_uv = [&](double x, double y) {
+    return Point2d((x - min_x) / (max_x - min_x), (y - min_y) / (max_y - min_y));
+  };
+
+  auto build_loop = [&](const std::vector<Point3d>& pts, ON_BrepLoop::TYPE type) {
+    const int n = static_cast<int>(pts.size());
+    std::vector<int> vids(static_cast<size_t>(n));
+    for (int k = 0; k < n; ++k) {
+      vids[static_cast<size_t>(k)] = b.NewVertex(pts[static_cast<size_t>(k)], 0.0).m_vertex_index;
+    }
+    const int loop_index = b.NewLoop(type, b.m_F[face_index]).m_loop_index;
+    for (int k = 0; k < n; ++k) {
+      const int k1 = (k + 1) % n;
+      const int va = vids[static_cast<size_t>(k)];
+      const int vb = vids[static_cast<size_t>(k1)];
+      const int c3i = b.AddEdgeCurve(new ON_LineCurve(b.m_V[va].point, b.m_V[vb].point));
+      const int edge_index = b.NewEdge(b.m_V[va], b.m_V[vb], c3i).m_edge_index;
+      b.m_E[edge_index].m_tolerance = 0.0;
+      const Point2d uv_a = to_uv(pts[static_cast<size_t>(k)].x, pts[static_cast<size_t>(k)].y);
+      const Point2d uv_b = to_uv(pts[static_cast<size_t>(k1)].x, pts[static_cast<size_t>(k1)].y);
+      const int c2i = b.AddTrimCurve(new ON_LineCurve(uv_a, uv_b));
+      ON_BrepTrim& trim = b.NewTrim(b.m_E[edge_index], /*bRev3d=*/false, b.m_L[loop_index], c2i);
+      trim.m_tolerance[0] = trim.m_tolerance[1] = 0.0;
+    }
+    return vids;
+  };
+
+  const std::vector<Point3d> outer_pts = {Point3d(0, 0, 0), Point3d(4, 0, 0), Point3d(4, 4, 0), Point3d(0, 4, 0)};
+  const std::vector<Point3d> inner_pts = {Point3d(1, 1, 0), Point3d(1, 3, 0), Point3d(3, 3, 0), Point3d(3, 1, 0)};
+  const std::vector<int> ov = build_loop(outer_pts, ON_BrepLoop::outer);
+  const std::vector<int> iv = build_loop(inner_pts, ON_BrepLoop::inner);
+  for (int k = 0; k < 4; ++k) fixture.outer_vertices[static_cast<size_t>(k)] = ov[static_cast<size_t>(k)];
+  for (int k = 0; k < 4; ++k) fixture.inner_vertices[static_cast<size_t>(k)] = iv[static_cast<size_t>(k)];
+
+  b.SetTrimIsoFlags();
+  b.SetTolerancesBoxesAndFlags();
+  return fixture;
+}
+
+// MakeEdgeKillRing() bridges the outer loop's own vertex 0 ((0,0,0)) to
+// the inner loop's own vertex 0 ((1,1,0)): welds the two loops into one,
+// verified by V/E/F/loop/trim counts and Check() reporting exactly the
+// same 8 NakedEdge issues as before (this fixture is a single open
+// shell - a flat disk with a hole - so every one of its 8 original
+// boundary edges is naked both before and after; the new bridge edge
+// itself borders two trims, so it is never one of them, and Check()
+// reports no NEW issue kind, in particular no SelfIntersectingLoop
+// despite the merged loop's own trim sequence retracing the bridge
+// edge in both directions). KillEdgeMakeRing() then undoes it exactly,
+// back to two loops and a report identical to the one before
+// MakeEdgeKillRing() ever ran.
+void TestBrepMakeEdgeKillRingAndKillEdgeMakeRingAreExactInverses() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Result;
+
+  PlanarFaceWithHoleFixture fixture = BuildPlanarFaceWithHole();
+  Brep& brep = fixture.brep;
+  const int face_index = fixture.face_index;
+
+  const int v_count_before = brep.raw().m_V.Count();
+  const int e_count_before = brep.raw().m_E.Count();
+  const int f_count_before = brep.FaceCount();
+  Check(brep.raw().m_F[face_index].LoopCount() == 2, "setup: the fixture face has exactly 2 loops (outer + hole)");
+  Check(brep.raw().m_F[face_index].Loop(0)->TrimCount() == 4 && brep.raw().m_F[face_index].Loop(1)->TrimCount() == 4,
+        "setup: each loop is a real 4-trim quad");
+  const Brep::CheckReport before = brep.Check();
+  Check(before.issues.size() == 8 && before.Count(Brep::CheckIssue::Kind::NakedEdge) == 8,
+        "setup: the hand-built face-with-hole's own 8 boundary edges (4 outer + 4 hole) are all naked - "
+        "a single open shell, not a solid - and Check() finds nothing else");
+
+  const int vertex_a = fixture.outer_vertices[0];
+  const int vertex_b = fixture.inner_vertices[0];
+  const auto mekr = brep.MakeEdgeKillRing(face_index, vertex_a, vertex_b);
+  Check(mekr.result == Result::Ok && mekr.edge_index >= 0, "MakeEdgeKillRing() succeeds bridging outer[0] to inner[0]");
+  Check(brep.raw().m_V.Count() == v_count_before, "V is unchanged - MakeEdgeKillRing() never adds a vertex");
+  Check(brep.raw().m_E.Count() == e_count_before + 1, "E grew by exactly 1");
+  Check(brep.FaceCount() == f_count_before, "F is unchanged - MakeEdgeKillRing() never adds or removes a face");
+  Check(brep.raw().m_F[face_index].LoopCount() == 1, "the face's own loop count dropped from 2 to 1 - the ring is killed");
+  Check(brep.raw().m_F[face_index].Loop(0)->TrimCount() == 10,
+        "the surviving loop has all 8 original trims plus the 2 bridge trims");
+  Check(brep.raw().m_F[face_index].Loop(0)->m_type == ON_BrepLoop::outer,
+        "the surviving loop keeps its own ON_BrepLoop::outer type");
+  Check(brep.raw().m_E[mekr.edge_index].TrimCount() == 2, "the new bridge edge borders exactly two trims");
+  const Brep::CheckReport after_mekr = brep.Check();
+  Check(after_mekr.issues.size() == before.issues.size() &&
+            after_mekr.Count(Brep::CheckIssue::Kind::NakedEdge) == before.issues.size(),
+        "Check() reports the exact same 8 NakedEdge issues, and nothing else, after welding the hole into the "
+        "outer loop (in particular no SelfIntersectingLoop from the bridge's own retraced trim pair)");
+
+  // KEMR undoes it exactly: back to two loops with the original 4+4
+  // trim split, and a Check() report identical to before MEKR ever ran.
+  Check(brep.KillEdgeMakeRing(mekr.edge_index) == Result::Ok, "KillEdgeMakeRing() undoes the MakeEdgeKillRing() call");
+  Check(brep.raw().m_V.Count() == v_count_before, "V is still unchanged");
+  Check(brep.raw().m_E.Count() == e_count_before, "E is back to its original count");
+  Check(brep.FaceCount() == f_count_before, "F is still unchanged");
+  Check(brep.raw().m_F[face_index].LoopCount() == 2, "the face has two loops again");
+  const ON_BrepLoop* loop0 = brep.raw().m_F[face_index].Loop(0);
+  const ON_BrepLoop* loop1 = brep.raw().m_F[face_index].Loop(1);
+  Check(loop0 && loop1 && loop0->TrimCount() == 4 && loop1->TrimCount() == 4,
+        "both loops are genuine 4-trim quads again");
+  Check((loop0->m_type == ON_BrepLoop::outer && loop1->m_type == ON_BrepLoop::inner) ||
+            (loop0->m_type == ON_BrepLoop::inner && loop1->m_type == ON_BrepLoop::outer),
+        "one loop is outer and the other is inner");
+  const Brep::CheckReport after_kemr = brep.Check();
+  Check(after_kemr.issues.size() == before.issues.size(), "Check() reports exactly what it did before MEKR ever ran");
+
+  // Refusal: a face that isn't exactly 2 loops (the fixture's face after
+  // MEKR already merged down to 1).
+  PlanarFaceWithHoleFixture fixture2 = BuildPlanarFaceWithHole();
+  Check(fixture2.brep.MakeEdgeKillRing(fixture2.face_index, fixture2.outer_vertices[0], fixture2.inner_vertices[0])
+                .result == Result::Ok,
+        "setup: collapse fixture2 down to a single loop");
+  const auto mekr_already_one_loop = fixture2.brep.MakeEdgeKillRing(fixture2.face_index, fixture2.outer_vertices[1],
+                                                                     fixture2.outer_vertices[2]);
+  Check(mekr_already_one_loop.result == Result::Failed && mekr_already_one_loop.edge_index == -1,
+        "MakeEdgeKillRing() refuses a face that doesn't have exactly 2 loops");
+
+  // Refusal: vertex_a == vertex_b.
+  PlanarFaceWithHoleFixture fixture3 = BuildPlanarFaceWithHole();
+  Check(fixture3.brep.MakeEdgeKillRing(fixture3.face_index, fixture3.outer_vertices[0], fixture3.outer_vertices[0])
+                .result == Result::Failed,
+        "MakeEdgeKillRing() refuses vertex_a == vertex_b");
+
+  // Refusal: both vertices on the SAME loop (the outer loop's own two
+  // opposite corners) - MakeEdgeFace()'s own territory, not this one.
+  Check(fixture3.brep.MakeEdgeKillRing(fixture3.face_index, fixture3.outer_vertices[0], fixture3.outer_vertices[2])
+                .result == Result::Failed,
+        "MakeEdgeKillRing() refuses two vertices on the same loop");
+
+  // Refusal: a vertex that isn't on either of this face's own loops at
+  // all (a fresh wire vertex from MakeEdgeVertex()).
+  const auto mev = fixture3.brep.MakeEdgeVertex(fixture3.outer_vertices[0],
+                                                 fixture3.brep.raw().m_V[fixture3.outer_vertices[0]].point +
+                                                     ON_3dVector(10, 10, 10));
+  Check(mev.result == Result::Ok, "setup: MakeEdgeVertex() succeeded for the unrelated-vertex refusal case");
+  Check(fixture3.brep.MakeEdgeKillRing(fixture3.face_index, mev.vertex_index, fixture3.inner_vertices[0]).result ==
+            Result::Failed,
+        "MakeEdgeKillRing() refuses a vertex that isn't on either of this face's own loops");
+
+  // Refusal: out-of-range / deleted face_index and vertex indices.
+  bool threw_face_range = false;
+  try {
+    fixture3.brep.MakeEdgeKillRing(fixture3.brep.raw().m_F.Count() + 100, fixture3.outer_vertices[0],
+                                    fixture3.inner_vertices[0]);
+  } catch (const std::out_of_range&) {
+    threw_face_range = true;
+  }
+  Check(threw_face_range, "an out-of-range face_index throws std::out_of_range");
+
+  bool threw_vertex_range = false;
+  try {
+    fixture3.brep.MakeEdgeKillRing(fixture3.face_index, fixture3.brep.raw().m_V.Count() + 100,
+                                    fixture3.inner_vertices[0]);
+  } catch (const std::out_of_range&) {
+    threw_vertex_range = true;
+  }
+  Check(threw_vertex_range, "an out-of-range vertex index throws std::out_of_range");
+
+  fixture3.brep.raw().m_F[fixture3.face_index].m_face_index = -1;
+  bool threw_face_deleted = false;
+  try {
+    fixture3.brep.MakeEdgeKillRing(fixture3.face_index, fixture3.outer_vertices[0], fixture3.inner_vertices[0]);
+  } catch (const std::invalid_argument&) {
+    threw_face_deleted = true;
+  }
+  Check(threw_face_deleted, "face_index marked deleted throws std::invalid_argument");
+
+  PlanarFaceWithHoleFixture fixture4 = BuildPlanarFaceWithHole();
+  fixture4.brep.raw().m_V[fixture4.outer_vertices[0]].m_vertex_index = -1;
+  bool threw_vertex_deleted = false;
+  try {
+    fixture4.brep.MakeEdgeKillRing(fixture4.face_index, fixture4.outer_vertices[0], fixture4.inner_vertices[0]);
+  } catch (const std::invalid_argument&) {
+    threw_vertex_deleted = true;
+  }
+  Check(threw_vertex_deleted, "a deleted vertex index throws std::invalid_argument");
+
+  // Refusal: KillEdgeMakeRing() on an edge whose two trims are on
+  // DIFFERENT loops (MakeEdgeFace()'s own diagonal, e.g. from the top
+  // face of a plain box) - KillEdgeFace()'s own territory, not this one.
+  Brep box = Brep::FromPlanarFaces(CheckHealBoxFaces());
+  const ON_BrepLoop* top_loop = box.raw().m_F[1].Loop(0);
+  const int box_va = top_loop->Trim(0)->m_vi[0];
+  const int box_vb = top_loop->Trim(2)->m_vi[0];
+  const auto mef = box.MakeEdgeFace(1, box_va, box_vb);
+  Check(mef.result == Result::Ok, "setup: MakeEdgeFace() succeeded for the different-loops refusal case");
+  Check(box.KillEdgeMakeRing(mef.edge_index) == Result::Failed,
+        "KillEdgeMakeRing() refuses an edge whose two trims are on different loops");
+
+  // Refusal: KillEdgeMakeRing() on an edge that doesn't border exactly
+  // two trims (a bare wire edge from MakeEdgeVertex()).
+  const auto mev2 = box.MakeEdgeVertex(0, box.raw().m_V[0].point + ON_3dVector(2, 2, 2));
+  Check(mev2.result == Result::Ok, "setup: MakeEdgeVertex() succeeded for the wire-edge refusal case");
+  Check(box.KillEdgeMakeRing(mev2.edge_index) == Result::Failed,
+        "KillEdgeMakeRing() refuses an edge that doesn't border exactly two trims");
+
+  // Refusal: out-of-range / deleted edge_index.
+  bool threw_kemr_edge_range = false;
+  try {
+    box.KillEdgeMakeRing(box.raw().m_E.Count() + 100);
+  } catch (const std::out_of_range&) {
+    threw_kemr_edge_range = true;
+  }
+  Check(threw_kemr_edge_range, "an out-of-range edge_index throws std::out_of_range");
+
+  box.raw().m_E[mev2.edge_index].m_edge_index = -1;
+  bool threw_kemr_edge_deleted = false;
+  try {
+    box.KillEdgeMakeRing(mev2.edge_index);
+  } catch (const std::invalid_argument&) {
+    threw_kemr_edge_deleted = true;
+  }
+  Check(threw_kemr_edge_deleted, "a deleted edge_index throws std::invalid_argument");
 }
 
 // Flip one face: Check() names the flipped face on each of its 4 edges
@@ -35846,6 +36101,7 @@ int main() {
   TestBrepSplitNonManifoldVertexHealsPinchPoint();
   TestBrepMakeEdgeVertexAndKillEdgeVertexAreExactInverses();
   TestBrepMakeEdgeFaceAndKillEdgeFaceAreExactInverses();
+  TestBrepMakeEdgeKillRingAndKillEdgeMakeRingAreExactInverses();
   TestBrepCheckAndUnifyNormalsOnFlippedFace();
   TestBrepCheckReportsDroppedFaceAndCapPlanarHolesRestoresIt();
   TestBrepJoinNakedEdgesRecordsTolerantEdges();

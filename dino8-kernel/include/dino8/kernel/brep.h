@@ -2993,6 +2993,94 @@ class Brep {
   // to an already-deleted edge.
   Result KillEdgeFace(int edge_index);
 
+  // MEKR ("Make Edge, Kill Ring") and its exact inverse KEMR ("Kill
+  // Edge, Make Ring") below - the last pair in the classic Baumgart/
+  // ACIS/Parasolid Euler-operator family this class implements (MEV/
+  // KEV and MEF/KEF above; PARITY_MAP.md's own "Euler operators" item
+  // previously named MEKR/KEMR as "remain entirely unimplemented").
+  // Where MakeEdgeFace() splits a face's own SINGLE loop into two
+  // (growing F), MakeEdgeKillRing() does the complementary merge: a
+  // face with EXACTLY TWO loops - one outer, one inner ("hole") ring -
+  // is welded into ONE loop by a zero-width bridge edge that appears
+  // TWICE in the merged loop's own trim sequence (once each direction,
+  // immediately adjacent to itself) - the standard textbook device for
+  // representing a hole with a single loop instead of two. F is
+  // unchanged, E grows by exactly one, and the face's own loop count
+  // drops from 2 to 1 - Euler's invariant for killing a ring (H) while
+  // adding one edge.
+  //
+  // Scoped exactly like MakeEdgeFace(): the face's surface must report
+  // IsPlanar() (a fabricated straight bridge trim is only exact over an
+  // affine (u, v) -> 3D map), and the face must have EXACTLY one outer
+  // loop (ON_BrepLoop::outer) and EXACTLY one inner loop
+  // (ON_BrepLoop::inner) - no hole, more than one hole, or a
+  // slit/degenerate/unknown-type loop is out of scope and refused.
+  // `vertex_a` and `vertex_b` must each appear EXACTLY ONCE among their
+  // own loop's trim start vertices, one on the outer loop and one on
+  // the inner loop (either order) - the bridge's own two endpoints.
+  //
+  // The candidate bridge is validated the same way MakeEdgeFace()
+  // validates its own diagonal - no proper crossing with any trim of
+  // EITHER loop - plus one check MakeEdgeFace() itself never needs,
+  // since it only ever has one loop to worry about: the outer loop's
+  // own 2D polygon must actually CONTAIN the inner loop (tested via a
+  // single interior point of the inner loop's own boundary), refusing
+  // two loops that aren't genuinely nested - a bridge between them
+  // could never represent real trimmed material otherwise.
+  //
+  // Returns Result::Failed - not a thrown exception, the same "can't,
+  // but that's not a bug" contract every other topology-surgery method
+  // here shares - for every refusal above; this Brep is left completely
+  // untouched. Throws std::out_of_range if `face_index`, `vertex_a` or
+  // `vertex_b` is out of range, or std::invalid_argument if any of them
+  // refers to an already-deleted record.
+  struct MakeEdgeKillRingResult {
+    Result result = Result::Failed;
+    int edge_index = -1;  // the new bridge edge, or -1 on Result::Failed
+  };
+  MakeEdgeKillRingResult MakeEdgeKillRing(int face_index, int vertex_a, int vertex_b,
+                                          double tolerance = tolerance::kDistance);
+
+  // The exact inverse of MakeEdgeKillRing(): given `edge_index` shared
+  // by exactly two trims that are BOTH on the SAME loop (the "slit"
+  // shape a single MakeEdgeKillRing() call produces - KillEdgeFace()
+  // itself explicitly refuses this exact shape, calling it "a slit -
+  // ambiguous", since KillEdgeFace() only ever merges two DIFFERENT
+  // faces' own loops; this is the other half of that same shared shape,
+  // confined to one face) - deletes the bridge and its two trims,
+  // splits the remaining trims into the two closed runs the bridge's
+  // own two endpoints separate, and gives one run a brand-new
+  // ON_BrepLoop::inner loop while the other keeps the original loop
+  // object and its ON_BrepLoop::outer type. F is unchanged, E shrinks
+  // by exactly one, and the face's own loop count grows from 1 to 2 -
+  // undoing MakeEdgeKillRing()'s own Euler bookkeeping exactly.
+  //
+  // Which run becomes the new inner loop is not a free choice: in any
+  // well-formed Brep, an outer loop winds counter-clockwise and an
+  // inner (hole) loop winds clockwise in the face's own 2D parameter
+  // space - the standard convention MakeEdgeKillRing()'s own
+  // precondition (one real ON_BrepLoop::outer, one real
+  // ON_BrepLoop::inner) already relies on - so the two runs' own signed
+  // 2D areas (shoelace, via each trim's own PointAtStart()) always have
+  // OPPOSITE sign once they are genuinely the two halves of one such
+  // bridge. The run with POSITIVE area keeps the original loop object
+  // (re-affirmed as ON_BrepLoop::outer); the NEGATIVE-area run becomes
+  // the new ON_BrepLoop::inner loop. Refuses (Result::Failed,
+  // untouched) rather than guessing when both runs come back the same
+  // sign - not a genuine outer+hole bridge.
+  //
+  // Refuses (Result::Failed, untouched) if `edge_index` doesn't border
+  // exactly two trims, if those two trims are on DIFFERENT loops (that
+  // shape is KillEdgeFace()'s, not this one), if the shared loop's own
+  // type isn't ON_BrepLoop::outer, if the two trims don't traverse the
+  // shared edge in opposite directions (trim0.m_vi/trim1.m_vi reversed
+  // of each other - the same well-formed-bridge shape KillEdgeFace()
+  // already checks for its own two-face case), or if either resulting
+  // run would be empty (no remaining boundary on that side). Throws
+  // std::out_of_range if `edge_index` is out of range, or
+  // std::invalid_argument if it refers to an already-deleted edge.
+  Result KillEdgeMakeRing(int edge_index);
+
   // Splits a naked (1-trim) edge into two coincident naked edges meeting
   // at a new vertex at `point` - the missing primitive behind "tolerant
   // sewing" (PARITY_MAP.md's own "[missing] Tolerant sewing with edge
