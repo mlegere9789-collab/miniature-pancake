@@ -7791,6 +7791,158 @@ void TestBrepSplitNonManifoldVertexHealsPinchPoint() {
   Check(threw_deleted, "vertex_index 0 marked deleted (m_vertex_index < 0) throws std::invalid_argument");
 }
 
+// MakeEdgeVertex()/KillEdgeVertex() - the MEV/KEV Euler-operator pair
+// (PARITY_MAP.md's own "Euler operators" item). MEV attaches a genuine
+// wire edge (TrimCount() == 0, no face uses it) to an existing vertex;
+// KEV is its exact inverse. Exercised against a genuinely-topological box
+// (CheckHealBoxFaces()) so "an existing vertex" is a real one with real
+// other edges already on it.
+void TestBrepMakeEdgeVertexAndKillEdgeVertexAreExactInverses() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  Brep box = Brep::FromPlanarFaces(CheckHealBoxFaces());
+  const int v_count_before = box.raw().m_V.Count();
+  const int e_count_before = box.raw().m_E.Count();
+  const int f_count_before = box.FaceCount();
+  const Brep::CheckReport before = box.Check();
+  Check(before.issues.empty(), "setup: the clean box reports nothing before MEV");
+
+  const int attach_vi = 0;
+  const Point3d attach_point = box.raw().m_V[attach_vi].point;
+  const Point3d spur_point = attach_point + ON_3dVector(2, 2, 2);
+  const int degree_before = static_cast<int>(box.EdgesOfVertex(attach_vi).size());
+
+  const auto mev = box.MakeEdgeVertex(attach_vi, spur_point);
+  Check(mev.result == Result::Ok && mev.edge_index >= 0 && mev.vertex_index >= 0,
+        "MakeEdgeVertex() succeeds on an existing box vertex and reports the new edge/vertex indices");
+  Check(box.raw().m_V.Count() == v_count_before + 1, "V grew by exactly 1");
+  Check(box.raw().m_E.Count() == e_count_before + 1, "E grew by exactly 1");
+  Check(box.FaceCount() == f_count_before, "F is unchanged - MEV never touches a face");
+  Check(box.raw().m_V[mev.vertex_index].point.DistanceTo(spur_point) < 1e-12,
+        "the new vertex sits exactly at the requested point");
+  Check(box.raw().m_E[mev.edge_index].TrimCount() == 0,
+        "the new edge borders no face at all - a genuine wire edge");
+  Check(box.FacesOfEdge(mev.edge_index).empty(), "FacesOfEdge() on the new wire edge is empty");
+  Check(static_cast<int>(box.EdgesOfVertex(attach_vi).size()) == degree_before + 1,
+        "the existing vertex's own degree grew by exactly 1");
+  Check(static_cast<int>(box.EdgesOfVertex(mev.vertex_index).size()) == 1,
+        "the new vertex's own degree is exactly 1 - a leaf");
+
+  const Brep::CheckReport after_mev = box.Check();
+  Check(after_mev.Count(Brep::CheckIssue::Kind::NakedEdge) == before.Count(Brep::CheckIssue::Kind::NakedEdge) + 1,
+        "Check() sees exactly one more NakedEdge - the new wire edge");
+  bool found_dangling = false;
+  for (const Brep::CheckIssue& issue : after_mev.issues) {
+    if (issue.kind == Brep::CheckIssue::Kind::NakedEdge && issue.index == mev.edge_index) {
+      Check(issue.other_index == 0, "...reported with other_index == 0 (a dangling edge no face uses at all)");
+      found_dangling = true;
+    }
+  }
+  Check(found_dangling, "the new wire edge's own NakedEdge issue was found");
+
+  // KEV undoes it exactly: back to the original V/E/F counts and a clean
+  // Check() report, the same shape as before MEV ever ran.
+  Check(box.KillEdgeVertex(mev.edge_index) == Result::Ok, "KillEdgeVertex() undoes the MEV call");
+  Check(box.raw().m_V.Count() == v_count_before, "V is back to its original count");
+  Check(box.raw().m_E.Count() == e_count_before, "E is back to its original count");
+  Check(box.FaceCount() == f_count_before, "F is still unchanged");
+  Check(static_cast<int>(box.EdgesOfVertex(attach_vi).size()) == degree_before,
+        "the attach vertex's own degree is back to its original value");
+  const Brep::CheckReport after_kev = box.Check();
+  Check(after_kev.issues.size() == before.issues.size(), "Check() reports exactly what it did before MEV ever ran");
+
+  // Refusal: to_point coincides with from_vertex - a zero-length edge.
+  const int vcb = box.raw().m_V.Count();
+  const int ecb = box.raw().m_E.Count();
+  const auto mev_zero = box.MakeEdgeVertex(attach_vi, attach_point);
+  Check(mev_zero.result == Result::Failed && mev_zero.edge_index == -1 && mev_zero.vertex_index == -1,
+        "MakeEdgeVertex() to the SAME point as from_vertex refuses - Result::Failed");
+  Check(box.raw().m_V.Count() == vcb && box.raw().m_E.Count() == ecb, "...and the box is left completely untouched");
+
+  // Refusal: out-of-range / deleted from_vertex.
+  bool threw_range = false;
+  try {
+    box.MakeEdgeVertex(box.raw().m_V.Count() + 100, spur_point);
+  } catch (const std::out_of_range&) {
+    threw_range = true;
+  }
+  Check(threw_range, "an out-of-range from_vertex throws std::out_of_range");
+
+  Brep box2 = Brep::FromPlanarFaces(CheckHealBoxFaces());
+  box2.raw().m_V[0].m_vertex_index = -1;
+  bool threw_deleted_v = false;
+  try {
+    box2.MakeEdgeVertex(0, spur_point);
+  } catch (const std::invalid_argument&) {
+    threw_deleted_v = true;
+  }
+  Check(threw_deleted_v, "from_vertex 0 marked deleted throws std::invalid_argument");
+
+  // Refusal: KillEdgeVertex() on an edge that borders a face (any of the
+  // box's own original 12 edges) is out of scope - only a wire edge.
+  Brep box3 = Brep::FromPlanarFaces(CheckHealBoxFaces());
+  Check(box3.KillEdgeVertex(0) == Result::Failed,
+        "KillEdgeVertex() refuses an edge that borders a face (TrimCount() != 0)");
+
+  // Refusal: neither endpoint is a leaf. Chain two MEVs (A -> B -> C): B
+  // is no longer a leaf once the second edge attaches to it, and A never
+  // was one (an original box vertex with other edges too) - so the A-B
+  // edge has NEITHER endpoint at degree 1.
+  const auto mev_ab = box3.MakeEdgeVertex(0, spur_point);
+  const Point3d far_point = spur_point + ON_3dVector(1, 0, 0);
+  const auto mev_bc = box3.MakeEdgeVertex(mev_ab.vertex_index, far_point);
+  Check(mev_ab.result == Result::Ok && mev_bc.result == Result::Ok, "setup: both chained MEV calls succeeded");
+  Check(box3.KillEdgeVertex(mev_ab.edge_index) == Result::Failed,
+        "KillEdgeVertex() refuses the A-B edge once B also has a second edge - neither endpoint is a leaf");
+  Check(box3.KillEdgeVertex(mev_bc.edge_index) == Result::Ok,
+        "...but the outer B-C edge (C is still a genuine leaf) kills cleanly");
+  Check(box3.KillEdgeVertex(mev_ab.edge_index) == Result::Ok,
+        "...after which A-B's own far endpoint (B) is a leaf again, and it kills cleanly too");
+
+  // Refusal: both endpoints are a leaf - a fully isolated two-vertex wire
+  // edge touching nothing else, built directly (MakeEdgeVertex() itself
+  // can never produce this shape, since it always attaches to an
+  // EXISTING vertex - this is the one input MEV/KEV cannot round-trip).
+  // Every index below is looked up FRESH after each NewVertex()/NewEdge()
+  // call rather than held as a reference across it - NewVertex() may
+  // reallocate raw4.m_V, invalidating any ON_BrepVertex& taken before it
+  // (the same discipline MakeEdgeVertex()/SplitNakedEdgeAt() themselves
+  // follow, and the exact bug a first version of this fixture had: a
+  // held `ON_BrepVertex&` from the FIRST NewVertex() call read garbage
+  // after the SECOND one reallocated the array, silently building the
+  // wrong edge and cascading into an unrelated later assertion).
+  Brep box4 = Brep::FromPlanarFaces(CheckHealBoxFaces());
+  ON_Brep& raw4 = box4.raw();
+  const int iso_p_vi = raw4.NewVertex(Point3d(9, 9, 9), 0.0).m_vertex_index;
+  const int iso_q_vi = raw4.NewVertex(Point3d(10, 9, 9), 0.0).m_vertex_index;
+  const int iso_c3i = raw4.AddEdgeCurve(new ON_LineCurve(raw4.m_V[iso_p_vi].point, raw4.m_V[iso_q_vi].point));
+  const int iso_ei = raw4.NewEdge(raw4.m_V[iso_p_vi], raw4.m_V[iso_q_vi], iso_c3i).m_edge_index;
+  Check(box4.KillEdgeVertex(iso_ei) == Result::Failed,
+        "KillEdgeVertex() refuses a fully isolated wire edge - both endpoints are leaves, which is ambiguous");
+  Check(box4.raw().m_E[iso_ei].m_edge_index >= 0 && box4.raw().m_E[iso_ei].TrimCount() == 0,
+        "...and the isolated edge is left completely untouched");
+
+  // Refusal: out-of-range / deleted edge_index.
+  bool threw_edge_range = false;
+  try {
+    box4.KillEdgeVertex(box4.raw().m_E.Count() + 100);
+  } catch (const std::out_of_range&) {
+    threw_edge_range = true;
+  }
+  Check(threw_edge_range, "an out-of-range edge_index throws std::out_of_range");
+
+  box4.raw().m_E[iso_ei].m_edge_index = -1;
+  bool threw_edge_deleted = false;
+  try {
+    box4.KillEdgeVertex(iso_ei);
+  } catch (const std::invalid_argument&) {
+    threw_edge_deleted = true;
+  }
+  Check(threw_edge_deleted, "edge_index marked deleted throws std::invalid_argument");
+}
+
 // Flip one face: Check() names the flipped face on each of its 4 edges
 // (index = the flipped face, other_index = each neighbour), the welded
 // mesh is no longer a closed manifold (an orientation conflict on every
@@ -32830,6 +32982,7 @@ int main() {
   TestBrepRemoveDegenerateOrSliverFacesDoesNotTouchValidSolids();
   TestBrepCheckDetectsNonManifoldPinchVertex();
   TestBrepSplitNonManifoldVertexHealsPinchPoint();
+  TestBrepMakeEdgeVertexAndKillEdgeVertexAreExactInverses();
   TestBrepCheckAndUnifyNormalsOnFlippedFace();
   TestBrepCheckReportsDroppedFaceAndCapPlanarHolesRestoresIt();
   TestBrepJoinNakedEdgesRecordsTolerantEdges();
