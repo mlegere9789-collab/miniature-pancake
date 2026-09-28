@@ -123,11 +123,13 @@ SubD SubD::Symmetrize(Vector3d plane_normal, double plane_offset, double point_t
     return p - 2.0 * signed_dist * plane_normal;
   };
 
-  // Snapshot the ORIGINAL faces' corner points before mutating `result` -
-  // once mirrored faces start getting added below, result's own iterators
-  // would otherwise walk those too.
+  // Snapshot the ORIGINAL faces' corner points (and which of them sit ON
+  // the mirror plane) before mutating `result` - once mirrored faces
+  // start getting added below, result's own iterators would otherwise
+  // walk those too.
   struct FaceCorners {
     std::vector<Point3d> points;
+    std::vector<bool> on_plane;
   };
   std::vector<FaceCorners> original_faces;
   ON_SubDFaceIterator fit = subd_.FaceIterator();
@@ -135,18 +137,34 @@ SubD SubD::Symmetrize(Vector3d plane_normal, double plane_offset, double point_t
     const unsigned int count = f->EdgeCount();
     FaceCorners corners;
     corners.points.reserve(count);
+    corners.on_plane.reserve(count);
     for (unsigned int i = 0; i < count; ++i) {
       const ON_SubDVertex* v = f->Vertex(i);
       if (v == nullptr) {
         throw std::runtime_error(
             "dino8::kernel::SubD::Symmetrize: a face has a null vertex");
       }
-      corners.points.push_back(v->ControlNetPoint());
+      const Point3d p = v->ControlNetPoint();
+      corners.points.push_back(p);
+      corners.on_plane.push_back(std::abs(signed_distance(p)) <= point_tolerance);
     }
     original_faces.push_back(std::move(corners));
   }
 
   SubD result = *this;  // keeps the original half exactly as-is
+
+  // A pre-existing edge between two vertices already IN `result` (found by
+  // walking v0's own edge list - `result` has no ON_SubD-level "find edge
+  // by vertex pair" lookup, so this is the direct equivalent). Returns
+  // nullptr if none connects them yet.
+  const auto find_edge_between = [](const ON_SubDVertex* v0, const ON_SubDVertex* v1) -> const ON_SubDEdge* {
+    const unsigned int n = v0->EdgeCount();
+    for (unsigned int i = 0; i < n; ++i) {
+      const ON_SubDEdge* e = v0->Edge(i);
+      if (e != nullptr && e->OtherEndVertex(v0) == v1) return e;
+    }
+    return nullptr;
+  };
 
   for (const FaceCorners& face : original_faces) {
     const unsigned int count = static_cast<unsigned int>(face.points.size());
@@ -155,8 +173,10 @@ SubD SubD::Symmetrize(Vector3d plane_normal, double plane_offset, double point_t
     // winding consistent with the rest of `result` (see this method's
     // own "flip" doc comment).
     std::vector<const ON_SubDVertex*> mirrored_vertices(count);
+    std::vector<bool> mirrored_on_plane(count);
     for (unsigned int i = 0; i < count; ++i) {
-      const Point3d& original_point = face.points[count - 1 - i];
+      const unsigned int src = count - 1 - i;
+      const Point3d& original_point = face.points[src];
       const double s = signed_distance(original_point);
       // On-plane: reuse the SAME vertex (found by position in `result`,
       // which already holds it from the initial copy) instead of adding
@@ -168,7 +188,50 @@ SubD SubD::Symmetrize(Vector3d plane_normal, double plane_offset, double point_t
             "dino8::kernel::SubD::Symmetrize: ON_SubD::FindOrAddVertex failed");
       }
       mirrored_vertices[i] = v;
+      mirrored_on_plane[i] = face.on_plane[src];
     }
+
+    // An edge whose BOTH endpoints are on-plane already existed before
+    // this mirrored face was added - it's exactly one of the naked
+    // boundary edges being welded shut, real by-construction Crease tag
+    // and all (not a user's own intentional sharp edge - that's a
+    // separate per-edge sharpness weight, see SetEdgeSharpness(),
+    // untouched here). FindOrAddFace() below only resolves NEW (Unset)
+    // components, so this edge's own stale Crease survives it unless
+    // reset to Unset here first - a real bug this file's own
+    // TestSubDSymmetrizeWeldsSeamAndFlipsMirroredFaces caught via
+    // ToApproximateMesh().IsClosedManifold() (topology *and* tag
+    // sensitive, unlike SubD::Check()'s own edge/vertex counts, which
+    // stayed clean throughout): GetControlNetMesh() duplicates a mesh
+    // vertex per side of any still-Crease-tagged edge, even one with two
+    // faces, so the "welded" seam rendered as two coincident but UNWELDED
+    // mesh boundaries.
+    // The seam VERTICES themselves need the exact same treatment as their
+    // edges, for the exact same reason: a vertex's own tag is just as
+    // sticky as an edge's under UpdateVertexTags(bUnsetVertexTagsOnly=
+    // true) (both skip anything not already Unset), so a boundary
+    // vertex's stale Crease/Dart tag survives even once every one of its
+    // incident edges above has been correctly reset and re-inferred as
+    // Smooth - confirmed directly: without this, doubled.IsValid() itself
+    // fails (a Crease-tagged vertex with zero Crease edges among its
+    // incident set is an inconsistent SubD, not just a mesh-export
+    // cosmetic issue like the edge-only fix above already caught).
+    for (unsigned int i = 0; i < count; ++i) {
+      if (!mirrored_on_plane[i]) continue;
+      const ON_SubDVertex* v = mirrored_vertices[i];
+      if (v->m_vertex_tag == ON_SubDVertexTag::Crease || v->m_vertex_tag == ON_SubDVertexTag::Dart) {
+        const_cast<ON_SubDVertex*>(v)->m_vertex_tag = ON_SubDVertexTag::Unset;
+      }
+    }
+    for (unsigned int i = 0; i < count; ++i) {
+      const unsigned int i1 = (i + 1) % count;
+      if (!mirrored_on_plane[i] || !mirrored_on_plane[i1]) continue;
+      const ON_SubDEdge* seam = find_edge_between(mirrored_vertices[i], mirrored_vertices[i1]);
+      if (seam != nullptr && seam->m_edge_tag == ON_SubDEdgeTag::Crease) {
+        const_cast<ON_SubDEdge*>(seam)->m_edge_tag = ON_SubDEdgeTag::Unset;
+      }
+    }
+
     ON_SubDFace* added =
         result.subd_.FindOrAddFace(ON_SubDEdgeTag::Unset, mirrored_vertices.data(), count);
     if (added == nullptr) {
@@ -177,10 +240,12 @@ SubD SubD::Symmetrize(Vector3d plane_normal, double plane_offset, double point_t
     }
   }
 
-  // New vertices/edges above were added with Unset tags on purpose (per
-  // FindOrAddFace's own doc comment) - this is the one call that resolves
-  // all of them from context (an edge with faces on both sides becomes
-  // Smooth, a still-naked one stays a boundary edge, etc).
+  // New vertices/edges above (and every seam edge/vertex just reset to
+  // Unset) get resolved from context here - an edge with faces on both
+  // sides becomes Smooth, a still-naked one stays a boundary edge, etc.
+  // Restricted to Unset-only on purpose: anything else in this SubD keeps
+  // whatever tag it already had, including a genuinely intentional sharp
+  // edge unrelated to this mirror plane.
   result.subd_.UpdateAllTagsAndSectorCoefficients(/*bUnsetValuesOnly=*/true);
   return result;
 }
