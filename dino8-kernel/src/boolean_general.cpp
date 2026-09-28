@@ -664,6 +664,7 @@
 #include <limits>
 #include <map>
 #include <stdexcept>
+#include <string>
 #include <utility>
 #include <tuple>
 #include <unordered_map>
@@ -3614,6 +3615,171 @@ Brep MakeCountersinkHole(const Brep& solid, Point3d center, Vector3d axis, doubl
   const NurbsCurve profile_curve = HoleToolProfileCurve(tool_origin, dir, profile);
   const Brep tool = Brep::Revolve(profile_curve, tool_origin, dir, 2.0 * ON_PI, /*cap=*/true);
   return BooleanCombineGeneral(solid, tool, BooleanOp::Difference);
+}
+
+// --- ExtrudeToBoundary(): extrude a quadrilateral profile until it -----
+// --- meets a planar boundary -------------------------------------------
+//
+// An earlier version of this function tried to reuse SplitBySheet() above
+// (extrude `profile` far past `boundary`, then cut the oversized solid
+// against it) - abandoned after being found, via a standalone driver, to
+// corrupt SplitBySheet's own output for anything but a plain axis-aligned
+// `Brep::Box()`: `boolean_general.cpp`'s SSX machinery reads each operand
+// face purely via its raw `ON_Surface`, so both `Brep::Extrude()`'s own
+// periodic wrap-around wall AND `Brep::FromPlanarFaces()`'s own
+// genuinely-trimmed-but-padded-domain faces are silently misread as
+// occupying their own FULL surface domain, not their true (smaller)
+// shape - corrupting the cut. Rather than debug that shared, heavily-
+// depended-on machinery under this feature's own scope, `ExtrudeToBoundary`
+// instead computes the cut directly and exactly, with no SSX
+// intersection-finding at all: for a genuinely PLANAR `boundary`, the
+// exact point where each of `profile`'s own 4 corners, swept along
+// `direction`, crosses `boundary`'s plane is a plain ray/plane
+// intersection - closed form, not an approximation - so the "oversized
+// solid, then cut" idea was solving a harder problem than this one
+// actually needs.
+Brep ExtrudeToBoundary(const NurbsCurve& profile, Vector3d direction, const Brep& boundary) {
+  const char* caller = "dino8::kernel::ExtrudeToBoundary";
+  if (profile.Degree() != 1 || profile.IsRational() || !profile.IsClosed() || !profile.IsPlanar()) {
+    throw std::invalid_argument(std::string(caller) +
+                                 ": `profile` must be a closed, planar, degree-1, non-rational quadrilateral");
+  }
+  const int vcount = profile.ControlPointCount() - 1;  // closed polyline repeats CV[0] as CV[last]
+  if (vcount != 4) {
+    throw std::invalid_argument(std::string(caller) +
+                                 ": `profile` must be a quadrilateral (exactly 4 distinct vertices)");
+  }
+  std::vector<Point3d> v(4);
+  for (int i = 0; i < 4; ++i) v[static_cast<size_t>(i)] = profile.ControlPointAt(i);
+
+  Vector3d dir_n = direction;
+  if (!dir_n.Unitize()) {
+    throw std::invalid_argument(std::string(caller) + ": direction is zero or non-finite");
+  }
+
+  // Newell/shoelace normal (robust for any simple planar quad, convex or
+  // not), used only to pick which of `v`'s own two possible windings is
+  // the OUTWARD-facing base cap - the same auto-reverse convention
+  // `Brep::Extrude()`'s own doc comment documents, generalized from
+  // "parallel to direction" to "any non-perpendicular direction".
+  Vector3d normal(0, 0, 0);
+  for (int i = 0; i < 4; ++i) {
+    const Point3d& a = v[static_cast<size_t>(i)];
+    const Point3d& b = v[static_cast<size_t>((i + 1) % 4)];
+    normal.x += (a.y - b.y) * (a.z + b.z);
+    normal.y += (a.z - b.z) * (a.x + b.x);
+    normal.z += (a.x - b.x) * (a.y + b.y);
+  }
+  if (!normal.Unitize()) {
+    throw std::invalid_argument(std::string(caller) + ": `profile`'s own vertices are degenerate (collinear)");
+  }
+  const double alignment = normal * dir_n;
+  if (std::fabs(alignment) < 1e-9) {
+    throw std::invalid_argument(std::string(caller) + ": `direction` lies in `profile`'s own plane");
+  }
+  // `base` (wall connectivity positions) keeps `v`'s own given order
+  // untouched - only which CAP gets which winding (below) depends on
+  // `alignment`'s sign.
+  const std::vector<Point3d>& base = v;
+
+  // `boundary` must be a single genuine plane - `PlanarFaces()` (brep.h)
+  // already does the real planarity check (throws otherwise) and hands
+  // back the fitted `ON_Plane` directly; reused rather than re-derived.
+  const std::vector<Brep::PlanarFace> boundary_faces = boundary.PlanarFaces();
+  if (boundary_faces.size() != 1) {
+    throw std::invalid_argument(std::string(caller) +
+                                 ": `boundary` must be a single planar face (a general curved or multi-face "
+                                 "boundary is out of scope)");
+  }
+  const ON_Plane& plane = boundary_faces[0].plane;
+  const double denom = dir_n * Vector3d(plane.zaxis);
+  if (std::fabs(denom) < 1e-12) {
+    throw std::invalid_argument(std::string(caller) + ": `direction` is parallel to `boundary`'s own plane");
+  }
+
+  // Exact ray/plane intersection at each of the 4 base corners - `top[i]`
+  // lands exactly ON `boundary`'s plane by construction, so all 4 are
+  // exactly coplanar (a genuine, not approximate, tilted cap) regardless
+  // of how oblique `boundary` is relative to `direction`.
+  std::vector<Point3d> top(4);
+  for (int i = 0; i < 4; ++i) {
+    const double t = ((plane.origin - base[static_cast<size_t>(i)]) * Vector3d(plane.zaxis)) / denom;
+    if (!(t > 1e-9)) {
+      throw std::invalid_argument(
+          std::string(caller) +
+          ": `boundary` lies behind (or exactly at) `profile` along `direction` for at least one corner - it can "
+          "only ever be reached extruding the other way, which this never guesses");
+    }
+    top[static_cast<size_t>(i)] = base[static_cast<size_t>(i)] + dir_n * t;
+  }
+
+  // `plane` is the INFINITE plane through `boundary`'s one face - the ray/
+  // plane intersection above never looked at `boundary`'s own finite
+  // extent (`boundary_faces[0].loop`) at all, so a `boundary` positioned
+  // nowhere near `profile` would otherwise still silently produce a cap
+  // sitting on the correctly-oriented but physically absent plane. Each
+  // `top[i]` is projected into `plane`'s own local (x, y) (the same
+  // `(p - origin) . xaxis/yaxis` convention `Brep::FromMixedFaces()` uses
+  // for its own planar local frame) and checked against `boundary`'s real
+  // polygon via the same `PointInPolygon` (surface_intersect.h) this
+  // kernel's trim-membership tests already use elsewhere.
+  {
+    std::vector<Point2d> poly2d;
+    poly2d.reserve(boundary_faces[0].loop.size());
+    for (const Point3d& p : boundary_faces[0].loop) {
+      const Vector3d d = p - plane.origin;
+      poly2d.emplace_back(d * Vector3d(plane.xaxis), d * Vector3d(plane.yaxis));
+    }
+    for (int i = 0; i < 4; ++i) {
+      const Vector3d d = top[static_cast<size_t>(i)] - plane.origin;
+      const Point2d p2(d * Vector3d(plane.xaxis), d * Vector3d(plane.yaxis));
+      if (!PointInPolygon(poly2d, p2)) {
+        throw std::invalid_argument(std::string(caller) +
+                                     ": `boundary` does not cross `profile`'s own footprint - at least one "
+                                     "corner's crossing point falls outside `boundary`'s own finite extent");
+      }
+    }
+  }
+
+  // `v`'s own given order is CCW as seen from `normal`'s own direction
+  // (Newell's definition). If `normal` points roughly ALONG `direction`
+  // (alignment > 0), that direction is the TOP cap's own outward side, so
+  // `v`/`base`'s order is already correct for the top cap as-is, and the
+  // BOTTOM cap (outward ~ -direction, the opposite side) needs the
+  // reverse; the perpendicular-alignment case is symmetric.
+  std::vector<Point3d> bottom_cap_loop, top_cap_loop;
+  if (alignment > 0.0) {
+    top_cap_loop = top;
+    bottom_cap_loop.assign(base.rbegin(), base.rend());
+  } else {
+    bottom_cap_loop = base;
+    top_cap_loop.assign(top.rbegin(), top.rend());
+  }
+
+  // Each wall spans base[i]->base[j] (j = i+1) up to the matching top
+  // corners - but WHICH of base[i]/base[j] comes first in the quad also
+  // has to flip with `alignment`'s sign, for the identical reason the
+  // caps above do: `top[i] - base[i]` is `direction`-sized, so reversing
+  // `direction` (moving `alignment` from positive to negative for the
+  // SAME profile) flips that vector and, with it, the sign of
+  // `FromUntrimmedQuadFaces()`'s own (q1-q0) x (q3-q0) outward-normal
+  // formula for a wall built from an unchanged (i, j) order (confirmed
+  // directly - the naive fix that reorders only the caps, above, reverses
+  // 2 of a prism's 6 faces but leaves the other 4 inverted, exactly the
+  // "closed manifold, exactly wrong-sign volume" failure this fix
+  // replaces).
+  std::vector<std::vector<Point3d>> quads;
+  quads.reserve(6);
+  quads.push_back(std::move(bottom_cap_loop));
+  quads.push_back(std::move(top_cap_loop));
+  for (int i = 0; i < 4; ++i) {
+    const int j = (i + 1) % 4;
+    const int first = (alignment > 0.0) ? i : j;
+    const int second = (alignment > 0.0) ? j : i;
+    quads.push_back({base[static_cast<size_t>(first)], base[static_cast<size_t>(second)],
+                      top[static_cast<size_t>(second)], top[static_cast<size_t>(first)]});
+  }
+  return Brep::FromUntrimmedQuadFaces(quads);
 }
 
 // --- TessellateGeneralBooleanClosedMesh(): T-junction stitching --------
