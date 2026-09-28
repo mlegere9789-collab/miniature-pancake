@@ -904,6 +904,40 @@ class Mesh {
   std::vector<std::pair<int, int>> FindOffsetSelfIntersections(double distance,
                                                                 double tolerance = tolerance::kDistance) const;
 
+  // Genuine "Inset" of a single mesh face: unlike the app-level
+  // `InsetFaces` (cmd_subd.cpp), which just drags each corner toward the
+  // face centroid, this moves every one of `face_index`'s own edges
+  // INWARD, staying PARALLEL to its original direction, and re-derives
+  // each new corner as the exact mitered intersection of its two
+  // adjacent moved edges - the same "moved edge, re-intersected at the
+  // corner" construction sweep.cpp's own `OffsetConvexPolyline` already
+  // uses for a curve profile, applied here to one mesh face's own
+  // boundary ring instead. The whole construction stays exactly in
+  // `face_index`'s own plane (no extrusion): the original face is
+  // replaced by a ring of `n` new quad "frame" faces (one per original
+  // edge, each spanning that edge and its own inset counterpart) plus
+  // one new inner face at the inset ring, coplanar with, and similar in
+  // shape to, the original - every original vertex keeps its own index
+  // and position; only `n` new vertices are appended. `depth`, if
+  // nonzero, additionally lifts the inner ring (and only the inner ring)
+  // along the face's own outward normal by that amount, so `depth == 0`
+  // is a flat inset and `depth != 0` is the bevelled/pushed variant of
+  // the same tool.
+  //
+  // Deliberately scoped like every other convex-planar-ring construction
+  // in this codebase (`ClipConvexPolygon`'s own callers, `OffsetConvexPolyline`):
+  // `face_index` must name a triangle or quad (an `ON_Mesh` face can be
+  // no larger), whose own ring must be planar, simple, and convex.
+  // Throws std::invalid_argument for an out-of-range `face_index`, a
+  // non-planar or self-intersecting quad, a reflex (concave) quad
+  // corner, or a `distance` that folds a corner back on itself (a
+  // near-180-degree corner) or is not strictly positive - the same
+  // "positive multiple of its own original direction" validity check
+  // `OffsetConvexPolyline` uses to catch an inset distance exceeding the
+  // face's own inradius, applied to a closed ring here. Returns a new
+  // mesh; this one is untouched.
+  Mesh InsetFace(int face_index, double distance, double depth = 0.0) const;
+
   // Concatenates several independently-tessellated meshes into one and
   // welds vertices within `tolerance` of each other into a single shared
   // vertex. Needed because Brep::Tessellate() tessellates each face on

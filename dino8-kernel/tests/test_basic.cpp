@@ -10912,6 +10912,197 @@ void TestMeshFindOffsetSelfIntersectionsDetectsGenuineFold() {
         "FindOffsetSelfIntersections matches a manual Offset()+FindSelfIntersections() call exactly");
 }
 
+// Perpendicular distance from `p` to the infinite line through `a`/`b`, in
+// 3D - a plain, independent geometric primitive (NOT InsetFace's own
+// miter-offset formula) used below to verify an inset corner's actual
+// distance from its adjacent original edges, rather than merely
+// re-deriving the same construction the method under test already uses.
+double PerpDistancePointToLine(const dino8::kernel::Point3d& p, const dino8::kernel::Point3d& a,
+                                const dino8::kernel::Point3d& b) {
+  dino8::kernel::Vector3d dir = b - a;
+  dir.Unitize();
+  const dino8::kernel::Vector3d ap = p - a;
+  const dino8::kernel::Vector3d perp = ap - ON_DotProduct(ap, dir) * dir;
+  return perp.Length();
+}
+
+// Mesh::InsetFace() on the simplest possible fixture: the same flat unit
+// square MakeFlatUnitSquareMesh() already builds for Offset()/Thicken().
+// For an axis-aligned square, a mitered inward inset by `d` on every edge
+// is hand-derivable directly (no need to trust InsetFace's own miter
+// formula): each corner simply moves diagonally inward by (d, d).
+void TestMeshInsetFaceUnitSquareMatchesExactConcentricSquare() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+
+  const auto square = MakeFlatUnitSquareMesh();
+  // 0.25, not an arbitrary "nice-looking" distance: it's exactly
+  // representable in binary floating point (a power-of-two fraction), so
+  // the expected corners below can be compared against the mesh's own
+  // FLOAT-precision vertex storage (ON_3fPoint, see Mesh::raw()'s own
+  // m_V) at a tight tolerance without a spurious float-rounding mismatch
+  // - unlike, say, 0.2, whose nearest float is measurably off from the
+  // double literal used to build `expected`.
+  const double d = 0.25;
+  const Mesh inset = square.InsetFace(0, d);
+
+  Check(inset.VertexCount() == 8, "InsetFace appends exactly 4 new vertices to the unit square's own 4");
+  Check(inset.FaceCount() == 5, "InsetFace replaces the 1 original face with 4 frame quads + 1 inner quad");
+
+  const Point3d expected[4] = {Point3d(d, d, 0), Point3d(1 - d, d, 0), Point3d(1 - d, 1 - d, 0),
+                                Point3d(d, 1 - d, 0)};
+  bool all_exact = true;
+  for (int i = 0; i < 4; ++i) {
+    const Point3d p(inset.raw().m_V[4 + i]);
+    all_exact = all_exact && p.DistanceTo(expected[i]) < 1e-9;
+  }
+  Check(all_exact, "the 4 new vertices are exactly the hand-derived concentric inset square corners");
+
+  // A flat (depth 0) inset only subdivides the same planar region into a
+  // frame ring plus a smaller inner face - it can neither add nor remove
+  // material, so total area must be conserved exactly.
+  Check(std::fabs(inset.Area() - square.Area()) < 1e-9,
+        "InsetFace at depth 0 conserves total area exactly (a pure in-plane subdivision)");
+
+  for (int i = 0; i < 4; ++i) {
+    Check(Point3d(inset.raw().m_V[i]).DistanceTo(Point3d(square.raw().m_V[i])) < 1e-12,
+          "InsetFace leaves every original vertex's own position untouched");
+  }
+}
+
+// Mesh::InsetFace() on a non-axis-aligned 3-4-5 right triangle (incircle
+// radius exactly (3 + 4 - 5) / 2 = 1). Verifies the general geometric
+// CONTRACT of a mitered inset - each new corner sits exactly `distance`
+// from both of its two adjacent original edge LINES - via an independent
+// point-to-line computation, rather than re-checking InsetFace's own
+// formula against itself.
+void TestMeshInsetFaceTriangleMatchesIndependentPerpendicularDistance() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+
+  Mesh tri;
+  ON_Mesh& raw = tri.raw();
+  raw.m_V.Append(ON_3fPoint(0, 0, 0));
+  raw.m_V.Append(ON_3fPoint(4, 0, 0));
+  raw.m_V.Append(ON_3fPoint(0, 3, 0));
+  ON_MeshFace f;
+  f.vi[0] = 0;
+  f.vi[1] = 1;
+  f.vi[2] = 2;
+  f.vi[3] = 2;
+  raw.m_F.Append(f);
+
+  const double d = 0.5;  // comfortably inside the incircle radius of 1.0
+  const Mesh inset = tri.InsetFace(0, d);
+
+  Check(inset.VertexCount() == 6 && inset.FaceCount() == 4,
+        "triangle InsetFace appends 3 vertices and replaces 1 face with 3 frame quads + 1 inner triangle");
+
+  const Point3d ring[3] = {Point3d(raw.m_V[0]), Point3d(raw.m_V[1]), Point3d(raw.m_V[2])};
+  for (int i = 0; i < 3; ++i) {
+    const Point3d p(inset.raw().m_V[3 + i]);
+    const int prev = (i + 2) % 3;  // edge (prev, prev+1) == edge (i-1, i)
+    const double dist_prev = PerpDistancePointToLine(p, ring[prev], ring[(prev + 1) % 3]);
+    const double dist_next = PerpDistancePointToLine(p, ring[i], ring[(i + 1) % 3]);
+    Check(std::fabs(dist_prev - d) < 1e-9 && std::fabs(dist_next - d) < 1e-9,
+          "the new corner is exactly `distance` from both of its two adjacent original edges");
+    Check(std::fabs(p.z) < 1e-9, "the new corner stays exactly in the original face's own z=0 plane");
+  }
+
+  Check(std::fabs(inset.Area() - tri.Area()) < 1e-9,
+        "InsetFace at depth 0 conserves the triangle's total area exactly");
+}
+
+// Refusal cases: out-of-range/invalid arguments, a distance beyond the
+// face's own inradius, a non-planar ("warped") quad, and a concave
+// (reflex-cornered) planar quad each throw std::invalid_argument rather
+// than silently producing a wrong-shaped or self-intersecting result.
+void TestMeshInsetFaceRefusesInvalidInput() {
+  using dino8::kernel::Mesh;
+
+  const auto square = MakeFlatUnitSquareMesh();
+
+  auto Throws = [](const std::function<void()>& f) {
+    try {
+      f();
+      return false;
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+  };
+
+  Check(Throws([&] { (void)square.InsetFace(-1, 0.1); }), "InsetFace throws on a negative face_index");
+  Check(Throws([&] { (void)square.InsetFace(1, 0.1); }), "InsetFace throws on an out-of-range face_index");
+  Check(Throws([&] { (void)square.InsetFace(0, 0.0); }), "InsetFace throws on a zero distance");
+  Check(Throws([&] { (void)square.InsetFace(0, -0.1); }), "InsetFace throws on a negative distance");
+  // The unit square's own inradius is exactly 0.5 (center to any edge) -
+  // a distance at or past that folds a corner past the opposite side.
+  Check(Throws([&] { (void)square.InsetFace(0, 0.5); }),
+        "InsetFace throws when distance reaches the face's own inradius");
+  Check(Throws([&] { (void)square.InsetFace(0, 2.0); }),
+        "InsetFace throws when distance far exceeds the face's own inradius");
+
+  Mesh warped;
+  {
+    ON_Mesh& raw = warped.raw();
+    raw.m_V.Append(ON_3fPoint(0, 0, 0));
+    raw.m_V.Append(ON_3fPoint(1, 0, 0));
+    raw.m_V.Append(ON_3fPoint(1, 1, 0));
+    raw.m_V.Append(ON_3fPoint(0, 1, 0.5));  // lifted out of the other 3's plane
+    ON_MeshFace f;
+    f.vi[0] = 0;
+    f.vi[1] = 1;
+    f.vi[2] = 2;
+    f.vi[3] = 3;
+    raw.m_F.Append(f);
+  }
+  Check(Throws([&] { (void)warped.InsetFace(0, 0.1); }), "InsetFace throws on a non-planar (warped) quad");
+
+  // A simple (non-self-intersecting) but concave planar quad: a dart
+  // shape with a reflex corner at (1, 0.5), not collinear with either
+  // diagonal (so the reflex is detected as concavity, not mistaken for a
+  // degenerate self-touch).
+  Mesh concave;
+  {
+    ON_Mesh& raw = concave.raw();
+    raw.m_V.Append(ON_3fPoint(0, 0, 0));
+    raw.m_V.Append(ON_3fPoint(2, 0, 0));
+    raw.m_V.Append(ON_3fPoint(1, 0.5, 0));
+    raw.m_V.Append(ON_3fPoint(2, 2, 0));
+    ON_MeshFace f;
+    f.vi[0] = 0;
+    f.vi[1] = 1;
+    f.vi[2] = 2;
+    f.vi[3] = 3;
+    raw.m_F.Append(f);
+  }
+  Check(Throws([&] { (void)concave.InsetFace(0, 0.1); }), "InsetFace throws on a concave (reflex-cornered) quad");
+}
+
+// `depth`, when nonzero, must lift ONLY the new inner ring along the
+// face's own outward normal, leaving the original (frame-outer) boundary
+// exactly where it was.
+void TestMeshInsetFaceDepthLiftsInnerRingAlongNormal() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+
+  const auto square = MakeFlatUnitSquareMesh();
+  // 0.25 for the same reason TestMeshInsetFaceUnitSquareMatchesExactConcentricSquare()
+  // picks it over 0.2: an exact power-of-two fraction survives ON_3fPoint's
+  // float storage bit-for-bit, so the check below needs no float-rounding
+  // slack.
+  const Mesh inset = square.InsetFace(0, 0.2, /*depth=*/0.25);
+  for (int i = 0; i < 4; ++i) {
+    const Point3d p(inset.raw().m_V[4 + i]);
+    Check(std::fabs(p.z - 0.25) < 1e-9,
+          "InsetFace with depth != 0 lifts every inner-ring vertex along the face's own outward normal");
+  }
+  for (int i = 0; i < 4; ++i) {
+    Check(std::fabs(Point3d(inset.raw().m_V[i]).z) < 1e-12,
+          "...while the original outer boundary stays exactly at z=0");
+  }
+}
+
 // Mesh::Check()'s non_manifold_edge_list: a "book" of 3 triangles sharing
 // one spine edge (0,1) - the simplest possible non-manifold fixture -
 // with every other edge naked (used by only 1 triangle each), so the
@@ -40035,6 +40226,10 @@ int main() {
   TestMeshOffsetMovesVerticesAlongExactVertexNormal();
   TestMeshThickenBuildsExactUnitCubeFromFlatSquare();
   TestMeshFindOffsetSelfIntersectionsDetectsGenuineFold();
+  TestMeshInsetFaceUnitSquareMatchesExactConcentricSquare();
+  TestMeshInsetFaceTriangleMatchesIndependentPerpendicularDistance();
+  TestMeshInsetFaceRefusesInvalidInput();
+  TestMeshInsetFaceDepthLiftsInnerRingAlongNormal();
   TestMeshCheckLocalizesNonManifoldEdges();
   TestMeshFindSelfIntersectionsDetectsOnlyGenuineCrossings();
 

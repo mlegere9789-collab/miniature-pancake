@@ -3397,4 +3397,142 @@ std::vector<std::pair<int, int>> Mesh::FindOffsetSelfIntersections(double distan
   return Offset(distance).FindSelfIntersections(tolerance);
 }
 
+Mesh Mesh::InsetFace(int face_index, double distance, double depth) const {
+  if (face_index < 0 || face_index >= mesh_.m_F.Count()) {
+    throw std::invalid_argument("dino8::kernel::Mesh::InsetFace: face_index out of range");
+  }
+  if (!(distance > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::Mesh::InsetFace: distance must be strictly positive");
+  }
+
+  const ON_MeshFace& f = mesh_.m_F[face_index];
+  const int n = f.IsQuad() ? 4 : 3;
+  const std::array<int, 4> idx{f.vi[0], f.vi[1], f.vi[2], f.vi[3]};
+  std::vector<Point3d> ring(static_cast<size_t>(n));
+  for (int i = 0; i < n; ++i) ring[static_cast<size_t>(i)] = Point3d(mesh_.m_V[idx[static_cast<size_t>(i)]]);
+
+  // Reuses the same planar/simple ring validation LoftClosedRings()'s own
+  // end-cap fixtures already rely on (see NewellNormal()'s own comment
+  // for why a self-intersecting ring must be rejected BEFORE taking its
+  // Newell normal, not after).
+  if (!IsRingPlanar(ring)) {
+    throw std::invalid_argument("dino8::kernel::Mesh::InsetFace: face is not planar");
+  }
+  if (!IsPlanarRingSimple(ring)) {
+    throw std::invalid_argument("dino8::kernel::Mesh::InsetFace: face boundary self-intersects");
+  }
+
+  Vector3d normal = NewellNormal(ring);
+  if (!normal.Unitize()) {
+    throw std::invalid_argument("dino8::kernel::Mesh::InsetFace: face is degenerate (zero area)");
+  }
+
+  // Per-edge direction and inward (in-plane) normal - the exact
+  // `OffsetConvexPolyline` (sweep.cpp) construction, applied to this
+  // face's own closed boundary ring instead of an open/closed profile
+  // curve.
+  std::vector<Vector3d> edir(static_cast<size_t>(n)), ndir(static_cast<size_t>(n));
+  for (int i = 0; i < n; ++i) {
+    Vector3d d = ring[static_cast<size_t>((i + 1) % n)] - ring[static_cast<size_t>(i)];
+    if (!d.Unitize()) {
+      throw std::invalid_argument("dino8::kernel::Mesh::InsetFace: face has a zero-length edge");
+    }
+    edir[static_cast<size_t>(i)] = d;
+    Vector3d nrm = ON_CrossProduct(normal, d);
+    if (!nrm.Unitize()) {
+      throw std::invalid_argument("dino8::kernel::Mesh::InsetFace: degenerate edge inward direction");
+    }
+    ndir[static_cast<size_t>(i)] = nrm;
+  }
+
+  // Convexity: every turn must agree in sign, the same test
+  // OffsetConvexPolyline() uses (a reflex corner risks a self-
+  // intersecting inset this method does not detect/repair).
+  {
+    double sign = 0.0;
+    for (int i = 0; i < n; ++i) {
+      const Vector3d& a = edir[static_cast<size_t>(i)];
+      const Vector3d& b = edir[static_cast<size_t>((i + 1) % n)];
+      const double cross = ON_DotProduct(ON_CrossProduct(a, b), normal);
+      if (std::fabs(cross) <= 1e-9) continue;
+      const double this_sign = cross > 0.0 ? 1.0 : -1.0;
+      if (sign == 0.0) {
+        sign = this_sign;
+      } else if (this_sign != sign) {
+        throw std::invalid_argument(
+            "dino8::kernel::Mesh::InsetFace: face has a reflex (concave) corner - "
+            "only a convex triangle or quad face can be inset");
+      }
+    }
+  }
+
+  // Mitered inset corner = exact intersection of the two adjacent moved
+  // (parallel-translated inward by `distance`) edges - identical formula
+  // to OffsetConvexPolyline()'s own closed-polygon case.
+  std::vector<Point3d> inset(static_cast<size_t>(n));
+  for (int i = 0; i < n; ++i) {
+    const Vector3d& n0 = ndir[static_cast<size_t>((i - 1 + n) % n)];
+    const Vector3d& n1 = ndir[static_cast<size_t>(i)];
+    const double denom = 1.0 + ON_DotProduct(n0, n1);
+    if (denom <= 1e-9) {
+      throw std::invalid_argument(
+          "dino8::kernel::Mesh::InsetFace: the face folds back on itself at a "
+          "near-180-degree corner - no finite miter inset exists there");
+    }
+    inset[static_cast<size_t>(i)] = ring[static_cast<size_t>(i)] + (distance / denom) * (n0 + n1);
+  }
+
+  // Validity: every inset edge must be a positive multiple of its own
+  // original direction - OffsetConvexPolyline()'s own sufficient
+  // simplicity proof for a convex ring, applied here (see that
+  // function's doc comment in sweep.cpp for the full argument). A
+  // `distance` past the face's own inradius fails this.
+  for (int i = 0; i < n; ++i) {
+    const Vector3d e = inset[static_cast<size_t>((i + 1) % n)] - inset[static_cast<size_t>(i)];
+    if (ON_DotProduct(e, edir[static_cast<size_t>(i)]) <= 0.0) {
+      throw std::invalid_argument(
+          "dino8::kernel::Mesh::InsetFace: distance exceeds the face's own "
+          "inradius - the inset would invert past a corner");
+    }
+  }
+
+  if (depth != 0.0) {
+    for (Point3d& p : inset) p = p + depth * normal;
+  }
+
+  Mesh result = *this;
+  ON_Mesh& raw = result.mesh_;
+  const int base = raw.m_V.Count();
+  for (int i = 0; i < n; ++i) raw.m_V.Append(ON_3fPoint(inset[static_cast<size_t>(i)]));
+
+  // Replace the original face with a ring of `n` frame quads (one per
+  // original edge, spanning that edge and its own inset counterpart,
+  // wound the same way as the original face) plus one new inner face at
+  // the inset ring itself.
+  ON_SimpleArray<ON_MeshFace> faces;
+  faces.Reserve(raw.m_F.Count() + n);
+  for (int i = 0; i < raw.m_F.Count(); ++i) {
+    if (i != face_index) faces.Append(raw.m_F[i]);
+  }
+  for (int i = 0; i < n; ++i) {
+    ON_MeshFace frame;
+    frame.vi[0] = idx[static_cast<size_t>(i)];
+    frame.vi[1] = idx[static_cast<size_t>((i + 1) % n)];
+    frame.vi[2] = base + (i + 1) % n;
+    frame.vi[3] = base + i;
+    faces.Append(frame);
+  }
+  ON_MeshFace inner;
+  inner.vi[0] = base + 0;
+  inner.vi[1] = base + 1;
+  inner.vi[2] = base + 2;
+  inner.vi[3] = (n == 4) ? base + 3 : base + 2;
+  faces.Append(inner);
+  raw.m_F = faces;
+
+  raw.m_N.Destroy();
+  raw.m_FN.Destroy();
+  return result;
+}
+
 }  // namespace dino8::kernel
