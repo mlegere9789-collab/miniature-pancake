@@ -153,6 +153,64 @@ tries to find real evidence upgrading a missing/partial item, and a
    so it stays `partial`, folded as new evidence into the existing bullet
    below rather than a status change — the category's 0/26/1/27 (48.1%)
    numeric row is unchanged.
+5. **A second same-day follow-up, closing this category's own
+   "Tolerance-driven offset refit" gap for surfaces:** `git log --oneline
+   -30 -- dino8-kernel/src` at the start of this session showed
+   `OffsetSolidConvexPlanar` (item 4, above) as the most recent kernel-src
+   commit, so this pass picked the next highest-value still-partial item in
+   this same category rather than duplicating it. `NurbsSurface::OffsetRefit`
+   (surface.h/surface_edit.cpp) is new: the tolerance-driven refit loop this
+   bullet's own text already documents as missing ("Surfaces do not:
+   `OffsetApproximate` never refits to a tolerance"), built the same way
+   `NurbsCurve::OffsetInPlane`'s own curve-level refit already works —
+   sample the TRUE offset locus (`PointAt(u, v) + distance * NormalAt(u,
+   v)`, the same formula `OffsetApproximate` only applies once, per control
+   point) on a grid, globally least-squares-refit a NEW surface to it via
+   `Rebuild()`'s own row-then-column tensor-product machinery
+   (`FitRowLeastSquares`, surface_edit.cpp), measure the fit's worst-case
+   deviation against the true offset formula on an INDEPENDENT, finer,
+   half-step-offset verification grid (never the same points the fit
+   itself saw — `Rebuild()`'s own technique for the identical reason: a
+   fit's own sample points converge toward zero residual as its control
+   count approaches the sample count regardless of true accuracy between
+   samples, which would make a self-measured check meaningless), and double
+   the control-point count independently in each direction until that
+   measured deviation is within `tolerance` or a sample-grid-limited
+   ceiling is reached. Same fold-through-center-of-curvature guard as
+   `OffsetApproximate` (`distance * k >= 1.0`), checked up front.
+   Verified: exact (~1e-15) on a genuine plane; on the same radius-5 sphere
+   fixture `OffsetApproximate` leaves >0.05 worst-case radial error on at
+   distance 1.5, `OffsetRefit` requested at `tolerance=0.01` actually
+   reaches 0.0014 and its own control-point count measurably grows beyond
+   the source sphere's NURBS form to get there (not a fluke fit at the
+   original count); the same real-refinement-needed pattern reproduces on a
+   bulged freeform surface `OffsetAnalytic` itself refuses; the fold guard
+   refuses the same excessive distance `OffsetApproximate` already refuses,
+   on both fixtures; NaN and zero-distance argument checks pass. A real
+   regression caught and fixed before landing, not merely a design
+   footnote: an earlier draft nudged the FIT grid's own boundary
+   parameters inward (dodging a natural-parametrization pole the same way
+   `OffsetApproximate`'s per-control-point Greville nudge already does),
+   which silently broke `FitRowLeastSquares`'s own corner-pinning
+   assumption (it sets the first/last output control point directly equal
+   to the sample it was given, which is only the correct clamped-B-spline
+   corner value when that sample was measured at the domain's own exact
+   t0/t1) and introduced a fixed, resolution-independent bias — caught by
+   `TestSurfaceOffsetRefitIsExactOnAGenuinePlane` never converging below
+   ~2e-6 no matter how far the control count grew, root-caused with a
+   standalone repro (not by inspection alone), and fixed by keeping the fit
+   grid's own parameters exact and nudging only the point passed to
+   `NormalAt()` (position and pole-safety are now independent concerns, as
+   `OffsetApproximate`'s own established pattern already keeps them). Does
+   **not** flip this bullet's status to `present`: the result is always a
+   NEW non-rational surface (an analytic surface's own rational form is
+   never reproduced exactly, only approximated, mirroring `Rebuild()`'s own
+   disclosed scope), the fit shares `OffsetApproximate`'s own first-order
+   offset-formula model rather than any exact geometric construction, and
+   no app command calls it — so it stays `partial`, folded as new evidence
+   into the existing bullet below; the category's 0/26/1/27 (48.1%)
+   numeric row is unchanged (this closes a named sub-gap of an
+   already-partial item, not a fresh item flipping status).
 
 **Correction to the prior pass's honesty note, found by this session, not
 this pass:** the defect the prior pass (this document, at HEAD `b2fe0aa`)
@@ -616,7 +674,7 @@ other row was touched this pass.
 - [partial] Body offset (offset an entire closed solid outward/inward as a B-rep) — kernel `OffsetSolid` is a ball dilation/erosion through Manifold Minkowski, mesh-level not B-rep. New this pass: `OffsetSolidConvexPlanar` (boolean.h/.cpp) is an exact B-rep whole-body offset — every face of a convex planar-faced solid moved along its own outward normal at once (uniform or independently per face), sharp/mitered corners reconstructed via the same `ClipConvexPolygon` half-space-clipping `OffsetFace`/`ShellConvexPlanar` already use — verified against an exact box (closed-form volume, both uniform and per-face) and a hand-built tetrahedron (checked against an independent three-plane-intersection recomputation of every new vertex). Still partial: convex planar solids only (the same precondition `OffsetFace`/`ShellConvexPlanar` already enforce), no curved or non-convex body, and not wired to any app command. App `OffsetSrf` non-Surface branch uses a mesh vertex-normal offset.
 - [partial] Untrimmed NURBS surface offset — kernel `NurbsSurface::OffsetAnalytic` is exact for plane/sphere/cylinder/cone/torus; `OffsetApproximate` covers freeform surfaces but is first-order with `tolerance` controlling only guard sampling, not the fit error.
 - [partial] Trimmed-surface / polysurface offset with corner reconstruction (Sharp extend-and-intersect or Round blend) — sharp corners exist only for convex planar solids (`ShellConvexPlanar`, `OffsetFace`, and now the whole-body `OffsetSolidConvexPlanar`); round corners only via mesh-level `OffsetSolid`; app polysurfaces fall to the mesh path. No trimmed curved-face B-rep offset.
-- [partial] Tolerance-driven offset refit (fit the offset surface/curve to a tolerance, Loose/Tolerance options) — curves have it: `NurbsCurve::OffsetInPlane` doubles control points until the measured worst-case deviation is within `tolerance`. Surfaces do not: `OffsetApproximate` never refits to a tolerance.
+- [partial] Tolerance-driven offset refit (fit the offset surface/curve to a tolerance, Loose/Tolerance options) — curves have it: `NurbsCurve::OffsetInPlane` doubles control points until the measured worst-case deviation is within `tolerance`. Surfaces now do too: `NurbsSurface::OffsetRefit` (surface.h/surface_edit.cpp, new this pass) samples the true offset locus, globally least-squares-refits a new surface to it via `Rebuild()`'s own tensor-product machinery, and doubles the control-point count in each direction until an independently-measured worst-case deviation is within `tolerance` (see the top-of-document honesty note for the verification detail and the real nudge-vs-corner-pinning regression this pass caught and fixed before landing). Still partial: the result is always a new NON-rational surface (never reproduces a rational analytic form exactly, the same disclosed limit `Rebuild()` itself has), it shares `OffsetApproximate`'s own first-order offset-formula model rather than an exact geometric construction, and no app command calls it.
 - [partial] Variable-distance surface offset — app `VariableOffsetSrfCommand` is a per-CV Greville-normal offset with distance varying linearly; app-only, no kernel API.
 - [partial] Thicken sheet (open surface/mesh) into a closed solid — kernel `Mesh::Thicken` (mesh.cpp:3295) works on open meshes only with no fold repair. App `OffsetSrf` Solid=Yes stitches with `ShellBetween`. Mesh output only; no NURBS/B-rep thicken.
 - [partial] Planar curve offset (lines, arcs/circles, freeform NURBS) — kernel `NurbsCurve::OffsetInPlane` is exact for a line or arc/circle, tolerance-driven least-squares refit for other curves. Still partial: a kinked polyline goes through the smooth refit, blurring corners and potentially splitting a closed polygon's seam.
@@ -1048,9 +1106,9 @@ top 40:
 | 39 | kernel | subd_mesh | Kernel-native SubD local edit operators (insert edge, extrude face, spin, weld, expand) | missing | large | All of these remain app-only; no kernel-level SubD edit API. |
 | 40 | kernel | subd_mesh | Quad-remeshing of an arbitrary mesh into a clean SubD-ready cage | missing | large | No quad-dominant remesher targeting SubD-cage quality exists in the kernel. |
 
-### Remainder, grouped by effort (282 items)
+### Remainder, grouped by effort (281 items)
 
-**Small effort** (60 items):
+**Small effort** (59 items):
 - [kernel/topology] Non-manifold topology (edge shared by 3+ faces, non-manifold vertices) (partial)
 - [kernel/topology] Kernel-level topology enumeration API (loop/trim iteration) (partial)
 - [kernel/topology] Cap naked loops — extend to non-planar-hole detection (partial)
@@ -1058,7 +1116,6 @@ top 40:
 - [kernel/geometry] Helix and spiral curves (partial)
 - [kernel/geometry] Rational <-> non-rational conversion (tolerance-bounded) (partial)
 - [kernel/blending] Fillet/blend on tangent edge chains and multi-edge selection (partial)
-- [kernel/offsetshell] Tolerance-driven offset refit (surface) (partial)
 - [kernel/offsetshell] OpenNURBS-native mesh offset with fixed direction (partial)
 - [kernel/localops] Extend a face/surface past its current boundary in place — in-place multi-face case (partial)
 - [kernel/localops] Split an edge at a point — exact trim-parameter mapping (partial)

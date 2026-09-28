@@ -14,6 +14,7 @@
 #include "dino8/kernel/curve.h"
 #include "dino8/kernel/mesh.h"
 #include "dino8/kernel/surface.h"
+#include "dino8/kernel/tolerance.h"
 
 namespace dino8::kernel {
 
@@ -560,6 +561,162 @@ Result NurbsSurface::DecomposeToBeziers(std::vector<NurbsSurface>& out_patches) 
   }
 
   return already_bezier ? Result::NoOpAlreadySatisfied : Result::Ok;
+}
+
+Result NurbsSurface::OffsetRefit(double distance, NurbsSurface& out, double tolerance) const {
+  if (!ON_IsValid(distance)) {
+    throw std::invalid_argument("dino8::kernel::NurbsSurface::OffsetRefit: distance must be finite");
+  }
+  if (distance == 0.0) {
+    out.surface_ = surface_;
+    return Result::Ok;
+  }
+
+  ON_BoundingBox bbox;
+  surface_.GetBoundingBox(bbox, false);
+  const double tol = tolerance > 0.0 ? tolerance : dino8::kernel::tolerance::DistanceForSize(bbox.Diagonal().Length());
+
+  const Interval du = Domain(0);
+  const Interval dv = Domain(1);
+  const double u_range = du.max - du.min;
+  const double v_range = dv.max - dv.min;
+
+  // Fold-through-center-of-curvature guard - identical to
+  // OffsetApproximate()'s own (surface.cpp), checked once up front: no
+  // amount of refitting rescues a distance whose TRUE offset locus
+  // already folds through itself.
+  const SurfaceDivisions divs = SuggestedDivisions(tol);
+  const int guard_nu = std::max({divs.u, 4 * CVCountU(), 1});
+  const int guard_nv = std::max({divs.v, 4 * CVCountV(), 1});
+  for (int i = 0; i < guard_nu; ++i) {
+    const double u = du.min + u_range * (i + 0.5) / guard_nu;
+    for (int j = 0; j < guard_nv; ++j) {
+      const double v = dv.min + v_range * (j + 0.5) / guard_nv;
+      const SurfaceCurvature sc = CurvatureAt(u, v);
+      if (distance * sc.k1 >= 1.0 || distance * sc.k2 >= 1.0) return Result::Failed;
+    }
+  }
+
+  // Ground-truth sample grid of the TRUE offset locus (the same formula
+  // OffsetApproximate()'s own per-control-point translation approximates),
+  // dense enough to resolve the chord tolerance requested and at least as
+  // fine as this surface's own control net - the same density
+  // OffsetApproximate()'s guard above already uses, so the grid that
+  // measures deviation is at least as fine as the grid that already
+  // proved there's no fold to worry about.
+  //
+  // `u_params`/`v_params` are the FIT grid's own parameter values and must
+  // land EXACTLY on the domain boundary at the first/last index - unlike
+  // OffsetApproximate()'s per-CV nudge, FitRowLeastSquares() (above) pins
+  // its own first/last output control point directly to `data.front()`/
+  // `data.back()`, which is only the correct clamped-B-spline corner value
+  // when the sample it pins to was measured EXACTLY at the domain's own
+  // t0/t1 (where N_0/N_n are exactly 1) - nudging these particular
+  // parameters inward would silently re-introduce, at every control-point
+  // count including the largest this method ever tries, a fixed
+  // ~nudge-sized bias no amount of refinement removes (a real regression
+  // caught by TestSurfaceOffsetRefitIsExactOnAGenuinePlane: a perfectly
+  // flat plane's own offset is exactly affine and must fit to a
+  // measured-zero residual, which a nudged corner never reaches). Only
+  // the NORMAL lookup below is nudged (`nu`/`nv`, separate from `u`/`v`
+  // themselves) to dodge a natural parametrization's own boundary pole,
+  // the same hazard OffsetApproximate()'s own nudge exists for -
+  // `PointAt()` itself is safe at an exact domain boundary (Rebuild()'s
+  // own deviation measurement, above, already evaluates there directly).
+  const int u_samples = guard_nu + 1;
+  const int v_samples = guard_nv + 1;
+  const double nudge_u = 1e-6 * u_range;
+  const double nudge_v = 1e-6 * v_range;
+  std::vector<double> u_params(static_cast<size_t>(u_samples)), v_params(static_cast<size_t>(v_samples));
+  for (int i = 0; i < u_samples; ++i) u_params[static_cast<size_t>(i)] = du.min + u_range * i / (u_samples - 1.0);
+  for (int j = 0; j < v_samples; ++j) v_params[static_cast<size_t>(j)] = dv.min + v_range * j / (v_samples - 1.0);
+  std::vector<std::vector<ON_3dPoint>> offset_pts(static_cast<size_t>(u_samples),
+                                                    std::vector<ON_3dPoint>(static_cast<size_t>(v_samples)));
+  for (int i = 0; i < u_samples; ++i) {
+    for (int j = 0; j < v_samples; ++j) {
+      const double u = u_params[static_cast<size_t>(i)];
+      const double v = v_params[static_cast<size_t>(j)];
+      const double nu = std::clamp(u, du.min + nudge_u, du.max - nudge_u);
+      const double nv = std::clamp(v, dv.min + nudge_v, dv.max - nudge_v);
+      offset_pts[static_cast<size_t>(i)][static_cast<size_t>(j)] = PointAt(u, v) + distance * NormalAt(nu, nv);
+    }
+  }
+
+  const int u_degree = DegreeU();
+  const int v_degree = DegreeV();
+  const int u_order = u_degree + 1;
+  const int v_order = v_degree + 1;
+  const int max_cv_u = u_samples;
+  const int max_cv_v = v_samples;
+  int cv_u = std::clamp(CVCountU(), u_degree + 1, max_cv_u);
+  int cv_v = std::clamp(CVCountV(), v_degree + 1, max_cv_v);
+
+  for (;;) {
+    const std::vector<double> u_knot = ClampedUniformKnots(cv_u, u_order, du.min, du.max);
+    const std::vector<double> v_knot = ClampedUniformKnots(cv_v, v_order, dv.min, dv.max);
+
+    // Stage 1: fit every sample row (fixed v_j) in U -> temp[j][i].
+    std::vector<std::vector<ON_3dPoint>> temp(static_cast<size_t>(v_samples));
+    std::vector<ON_3dPoint> row(static_cast<size_t>(u_samples));
+    bool ok = true;
+    for (int j = 0; j < v_samples && ok; ++j) {
+      for (int i = 0; i < u_samples; ++i) row[static_cast<size_t>(i)] = offset_pts[static_cast<size_t>(i)][static_cast<size_t>(j)];
+      ok = FitRowLeastSquares(row, u_params, u_knot, u_order, cv_u, temp[static_cast<size_t>(j)]);
+    }
+
+    ON_NurbsSurface result;
+    if (ok && result.Create(3, false, u_order, v_order, cv_u, cv_v)) {
+      for (int k = 0; k < result.KnotCount(0); ++k) result.SetKnot(0, k, u_knot[static_cast<size_t>(k)]);
+      for (int k = 0; k < result.KnotCount(1); ++k) result.SetKnot(1, k, v_knot[static_cast<size_t>(k)]);
+      // Stage 2: fit every column of intermediate points (fixed i) in V.
+      std::vector<ON_3dPoint> column(static_cast<size_t>(v_samples)), fitted;
+      for (int i = 0; i < cv_u && ok; ++i) {
+        for (int j = 0; j < v_samples; ++j) column[static_cast<size_t>(j)] = temp[static_cast<size_t>(j)][static_cast<size_t>(i)];
+        ok = FitRowLeastSquares(column, v_params, v_knot, v_order, cv_v, fitted);
+        if (ok) for (int j = 0; j < cv_v; ++j) result.SetCV(i, j, fitted[static_cast<size_t>(j)]);
+      }
+    } else {
+      ok = false;
+    }
+
+    if (ok && result.IsValid()) {
+      // Measured on a grid TWICE as fine as the fit samples and offset by
+      // half a step (Rebuild()'s own technique, surface_edit.cpp above),
+      // deliberately never landing on a point the fit itself saw: with
+      // `cv_u`/`cv_v` approaching `max_cv_u`/`max_cv_v` the row/column fit
+      // increasingly INTERPOLATES the fit grid, which would make a
+      // deviation check measured only at those same points trivially near
+      // zero regardless of how well the fit actually resolves the true
+      // offset locus BETWEEN samples - the exact self-referential mistake
+      // this independent grid avoids. Each verification point's own
+      // "true" value is recomputed directly from `PointAt`/`NormalAt` at
+      // that point (not looked up in `offset_pts`, which only holds the
+      // fit grid's own values), so this genuinely checks the fitted
+      // surface against the true offset formula, not against the sample
+      // grid.
+      NurbsSurface fitted_surface;
+      fitted_surface.surface_ = result;
+      const int verify_u = 2 * u_samples;
+      const int verify_v = 2 * v_samples;
+      double worst = 0.0;
+      for (int i = 0; i < verify_u; ++i) {
+        const double u = std::clamp(du.min + u_range * (i + 0.5) / verify_u, du.min + nudge_u, du.max - nudge_u);
+        for (int j = 0; j < verify_v; ++j) {
+          const double v = std::clamp(dv.min + v_range * (j + 0.5) / verify_v, dv.min + nudge_v, dv.max - nudge_v);
+          const Point3d expected = PointAt(u, v) + distance * NormalAt(u, v);
+          worst = std::max(worst, fitted_surface.PointAt(u, v).DistanceTo(expected));
+        }
+      }
+      if (worst <= tol) {
+        out.surface_ = result;
+        return Result::Ok;
+      }
+    }
+
+    if (cv_u >= max_cv_u && cv_v >= max_cv_v) return Result::Failed;
+    cv_u = std::min(cv_u * 2, max_cv_u);
+    cv_v = std::min(cv_v * 2, max_cv_v);
+  }
 }
 
 namespace {

@@ -33374,6 +33374,163 @@ void TestSurfaceOffsetApproximateArgumentChecksAndZeroDistance() {
   Check(out.PointAt(0.3, 0.2).DistanceTo(s.PointAt(0.3, 0.2)) < 1e-12, "OffsetApproximate(0.0) reproduces the same surface");
 }
 
+void TestSurfaceOffsetRefitIsExactOnAGenuinePlane() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // The same consistently-oriented planar grid
+  // TestSurfaceOffsetApproximateIsExactOnAGenuinePlane uses above (NOT the
+  // twisted-normal OffsetAnalytic fixture - see that test's own comment
+  // for why).
+  std::vector<Point3d> grid;
+  for (int i = 0; i < 4; ++i)
+    for (int j = 0; j < 3; ++j)
+      grid.push_back(Point3d(i, j, 0.0));
+  const NurbsSurface s = NurbsSurface::FromControlGrid(grid, 4, 3, 3, 2);
+
+  NurbsSurface out;
+  Check(s.OffsetRefit(2.0, out, 1e-6) == Result::Ok, "OffsetRefit(+2.0, tol=1e-6) succeeds on a plane");
+
+  double worst = 0.0;
+  const dino8::kernel::Interval du = s.Domain(0);
+  const dino8::kernel::Interval dv = s.Domain(1);
+  for (double u = du.min + 0.1; u < du.max; u += 0.3) {
+    for (double v = dv.min + 0.1; v < dv.max; v += 0.3) {
+      const Point3d expected = s.PointAt(u, v) + 2.0 * s.NormalAt(u, v);
+      worst = std::max(worst, expected.DistanceTo(out.PointAt(u, v)));
+    }
+  }
+  Check(worst < 1e-6, "OffsetRefit(+2.0) on a genuine plane: within the requested tolerance everywhere, not just at one sampled point");
+}
+
+void TestSurfaceOffsetRefitOnSphereBeatsOffsetApproximateAtATighterTolerance() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // The exact same radius-5 sphere fixture
+  // TestSurfaceOffsetApproximateSphereErrorIsBoundedButGenuinelyNonzero
+  // uses, so both methods' errors on the identical input are directly
+  // comparable.
+  const ON_Sphere sphere(ON_3dPoint(1, 2, 3), 5.0);
+  ON_NurbsSurface raw;
+  Check(sphere.GetNurbForm(raw) != 0, "OffsetRefit sphere setup: GetNurbForm succeeds");
+  NurbsSurface s;
+  s.raw() = raw;
+
+  auto radial_worst = [&](const NurbsSurface& off) {
+    const dino8::kernel::Interval du = s.Domain(0);
+    const dino8::kernel::Interval dv = s.Domain(1);
+    double worst = 0.0;
+    for (double u = du.min + 0.2; u < du.max - 0.2; u += 0.4) {
+      for (double v = dv.min + 0.2; v < dv.max - 0.2; v += 0.15) {
+        worst = std::max(worst, std::abs(off.PointAt(u, v).DistanceTo(sphere.Center()) - 6.5));
+      }
+    }
+    return worst;
+  };
+
+  NurbsSurface approx;
+  Check(s.OffsetApproximate(1.5, approx) == Result::Ok, "cross-check setup: OffsetApproximate(+1.5) succeeds on the sphere");
+  const double approx_worst = radial_worst(approx);
+  Check(approx_worst > 0.05, "cross-check setup: OffsetApproximate's own single first-order translation leaves genuine, measurable error on this sphere");
+
+  // A tolerance well below OffsetApproximate's own demonstrated error above
+  // - a fit OffsetApproximate itself cannot reach - so a real refinement
+  // loop, not merely a fluke, is what has to close the gap.
+  const double tight_tol = 0.01;
+  NurbsSurface refit;
+  Check(s.OffsetRefit(1.5, refit, tight_tol) == Result::Ok, "OffsetRefit(+1.5, tol=0.01) succeeds on the same sphere");
+  const double refit_worst = radial_worst(refit);
+  Check(refit_worst <= tight_tol, "OffsetRefit(+1.5, tol=0.01) actually reaches the requested tolerance, measured against the true concentric-sphere radius");
+  Check(refit_worst < approx_worst,
+        "OffsetRefit is a genuine improvement over OffsetApproximate's own single-shot translation on the identical input, not a cosmetic rename");
+  Check(refit.CVCountU() > s.CVCountU() || refit.CVCountV() > s.CVCountV(),
+        "OffsetRefit(+1.5, tol=0.01) on the sphere: reaching that tolerance actually grew the control-point count beyond the source sphere's own - fitting at the ORIGINAL count alone was not accurate enough");
+}
+
+void TestSurfaceOffsetRefitFoldGuardMatchesOffsetApproximate() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Result;
+
+  // Same radius-5 sphere and same fold-through-center threshold
+  // OffsetApproximate()/OffsetAnalytic() both refuse at - OffsetRefit()'s
+  // own guard is a direct copy of OffsetApproximate()'s, so it must agree
+  // exactly.
+  const ON_Sphere sphere(ON_3dPoint(0, 0, 0), 5.0);
+  ON_NurbsSurface raw;
+  sphere.GetNurbForm(raw);
+  NurbsSurface s;
+  s.raw() = raw;
+
+  NurbsSurface out;
+  Check(s.OffsetRefit(-5.0, out) == Result::Failed, "OffsetRefit(-5.0) on a radius-5 sphere is refused - folds exactly through the center");
+  Check(s.OffsetRefit(-2.0, out) == Result::Ok, "OffsetRefit(-2.0) on a radius-5 sphere succeeds - still well short of the fold threshold");
+}
+
+void TestSurfaceOffsetRefitOnBulgedFreeformRefinesUntilWithinTolerance() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // The same bulged-control-net fixture
+  // TestSurfaceOffsetApproximateOnBulgedFreeformIsBoundedAndRejectsExcessiveDistance
+  // uses above.
+  std::vector<Point3d> grid;
+  for (int i = 0; i < 4; ++i)
+    for (int j = 0; j < 4; ++j)
+      grid.push_back(Point3d(i, j, (i == 2 && j == 2) ? 3.0 : 0.0));
+  const NurbsSurface s = NurbsSurface::FromControlGrid(grid, 4, 4, 3, 3);
+
+  const double tight_tol = 1e-4;
+  NurbsSurface out;
+  Check(s.OffsetRefit(0.2, out, tight_tol) == Result::Ok, "OffsetRefit(+0.2, tol=1e-4) succeeds on the bulged freeform surface");
+  Check(out.CVCountU() > s.CVCountU() || out.CVCountV() > s.CVCountV(),
+        "OffsetRefit(+0.2, tol=1e-4) on the bulge: reaching that tolerance actually grew the control-point count beyond this surface's own");
+
+  const dino8::kernel::Interval du = s.Domain(0);
+  const dino8::kernel::Interval dv = s.Domain(1);
+  double worst = 0.0;
+  for (double u = du.min + 0.05; u < du.max; u += 0.11) {
+    for (double v = dv.min + 0.05; v < dv.max; v += 0.11) {
+      const Point3d expected = s.PointAt(u, v) + 0.2 * s.NormalAt(u, v);
+      worst = std::max(worst, expected.DistanceTo(out.PointAt(u, v)));
+    }
+  }
+  Check(worst <= 5.0 * tight_tol,
+        "OffsetRefit(+0.2) on the bulge: the refined fit's worst-case deviation from the true offset locus is at (or very near) the tolerance this method targets internally");
+
+  // Same fold-through-center-of-curvature guard as OffsetApproximate() -
+  // a fit can only refine the shape, never rescue a distance that
+  // genuinely folds the true offset locus through itself at the bulge's
+  // own peak.
+  Check(s.OffsetRefit(1.0, out) == Result::Failed, "OffsetRefit(+1.0) on the bulge is refused - exceeds the local radius of curvature at its own peak, same as OffsetApproximate");
+}
+
+void TestSurfaceOffsetRefitArgumentChecksAndZeroDistance() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Result;
+
+  const ON_Sphere sphere(ON_3dPoint(0, 0, 0), 2.0);
+  ON_NurbsSurface raw;
+  sphere.GetNurbForm(raw);
+  NurbsSurface s;
+  s.raw() = raw;
+
+  NurbsSurface out;
+  bool threw = false;
+  try {
+    s.OffsetRefit(std::numeric_limits<double>::quiet_NaN(), out);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "OffsetRefit(NaN) throws std::invalid_argument");
+
+  Check(s.OffsetRefit(0.0, out) == Result::Ok, "OffsetRefit(0.0) succeeds");
+  Check(out.PointAt(0.3, 0.2).DistanceTo(s.PointAt(0.3, 0.2)) < 1e-12, "OffsetRefit(0.0) reproduces the same surface");
+}
+
 void TestCurveOffsetInPlaneLineIsExactParallelLine() {
   using dino8::kernel::NurbsCurve;
   using dino8::kernel::Point3d;
@@ -34710,6 +34867,12 @@ int main() {
   TestSurfaceOffsetApproximateSphereErrorIsBoundedButGenuinelyNonzero();
   TestSurfaceOffsetApproximateOnBulgedFreeformIsBoundedAndRejectsExcessiveDistance();
   TestSurfaceOffsetApproximateArgumentChecksAndZeroDistance();
+
+  TestSurfaceOffsetRefitIsExactOnAGenuinePlane();
+  TestSurfaceOffsetRefitOnSphereBeatsOffsetApproximateAtATighterTolerance();
+  TestSurfaceOffsetRefitFoldGuardMatchesOffsetApproximate();
+  TestSurfaceOffsetRefitOnBulgedFreeformRefinesUntilWithinTolerance();
+  TestSurfaceOffsetRefitArgumentChecksAndZeroDistance();
 
   TestCurveOffsetInPlaneLineIsExactParallelLine();
   TestCurveOffsetInPlaneCircleIsExactConcentricCircle();

@@ -1267,6 +1267,50 @@ class NurbsSurface {
   // if `distance` isn't finite; `distance == 0.0` returns an exact copy.
   Result OffsetApproximate(double distance, NurbsSurface& out, double tolerance = -1.0) const;
 
+  // Tolerance-driven counterpart to OffsetApproximate() above - the
+  // PARITY_MAP "Tolerance-driven offset refit" gap ("Surfaces do not:
+  // OffsetApproximate never refits to a tolerance"), closed the same way
+  // NurbsCurve::OffsetInPlane() already closes it for curves: rather than
+  // handing back a single first-order per-control-point translation and
+  // trusting it, this measures that translation's own actual error
+  // against the TRUE offset locus (`PointAt(u, v) + distance * NormalAt(u,
+  // v)`, sampled on a grid) and, if it exceeds `tolerance`, refits a NEW
+  // surface to that sampled locus with more control points - repeating
+  // with the control count doubled in each direction (independently, U
+  // and V) until the measured worst-case deviation is within `tolerance`
+  // or a sample-grid-limited ceiling is reached.
+  //
+  // The refit itself reuses Rebuild()'s own machinery (surface_edit.cpp):
+  // the identical row-then-column global tensor-product least-squares
+  // solve (Piegl & Tiller A9.7), applied here to the sampled OFFSET
+  // locus instead of to this surface's own points. Consequences that
+  // follow directly from reusing that machinery, exactly as Rebuild()
+  // documents for itself: the result is always a new NON-rational
+  // surface (never an edited copy of this surface's own, possibly
+  // rational, control net), of this surface's own degree in each
+  // direction over the same domain, with its four corners interpolated
+  // exactly.
+  //
+  // Same fold-through-center-of-curvature guard as OffsetApproximate()
+  // (see that method's own doc comment for the `distance * k >= 1.0`
+  // derivation), checked once up front against this surface's own
+  // curvature - a fit can only refine the SHAPE of the answer, not
+  // rescue a distance that genuinely folds the true offset locus through
+  // itself. `tolerance` (default `<= 0`, meaning
+  // tolerance::DistanceForSize() of this surface's bounding-box diagonal)
+  // controls both that guard's own sampling density (via
+  // SuggestedDivisions(), identical to OffsetApproximate()) and the
+  // fit's own convergence target.
+  //
+  // distance == 0.0 returns an exact copy (`out = *this`), same as
+  // OffsetApproximate(). Throws std::invalid_argument if `distance` isn't
+  // finite. Returns Result::Failed if the curvature guard trips, or if
+  // `tolerance` still isn't reached once both control counts have grown
+  // to this method's own sample-grid ceiling - a freeform surface whose
+  // true offset needs more control points than that sample density can
+  // resolve - never silently hands back an out-of-tolerance fit.
+  Result OffsetRefit(double distance, NurbsSurface& out, double tolerance = -1.0) const;
+
   const ON_NurbsSurface& raw() const { return surface_; }
   ON_NurbsSurface& raw() { return surface_; }
 
