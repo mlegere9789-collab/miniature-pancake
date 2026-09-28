@@ -43,6 +43,24 @@ ReferenceModel* FindModel(Document& doc, const std::string& alias_or_path) {
   return nullptr;
 }
 
+// Disambiguates `base` against every already-attached model's alias
+// (case-insensitively, matching FindModel's own comparison) by appending
+// " (2)", " (3)"... - two different files sharing a basename (e.g.
+// "C:\a\assembly.3dm" and "C:\b\assembly.3dm", both attached in the same
+// worksession) would otherwise get the identical alias, which is the key
+// FindModel (so LimitReferenceModel/LoadWorksessionFile's "already
+// attached" check) and DetachWorksession's own "Ref: <alias>" layer
+// lookup both use to pick ONE specific model - a collision there means
+// they silently act on whichever of the two models happens to sort
+// first, not necessarily the one the caller named.
+std::string UniqueAlias(Document& doc, const std::string& base) {
+  if (!FindModel(doc, base)) return base;
+  for (int n = 2;; ++n) {
+    const std::string candidate = base + " (" + std::to_string(n) + ")";
+    if (!FindModel(doc, candidate)) return candidate;
+  }
+}
+
 }  // namespace
 
 int AttachWorksession(Document& doc, const std::string& path, std::string& error, bool has_limit,
@@ -52,7 +70,7 @@ int AttachWorksession(Document& doc, const std::string& path, std::string& error
   const std::string alias = fs::path(path).filename().string();
   ReferenceModel rm;
   rm.path = path;
-  rm.alias = alias.empty() ? path : alias;
+  rm.alias = UniqueAlias(doc, alias.empty() ? path : alias);
   rm.has_limit_box = has_limit;
   rm.limit_min = limit_min;
   rm.limit_max = limit_max;

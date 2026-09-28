@@ -2765,7 +2765,7 @@ if echo "$EL" | grep -q "^FAIL"; then fail=1; fi
 # Session: 3D digitizer (Dig*, Protocol=File test mode), Worksession /
 # LimitReferenceModel, Snapshots, draw order, and real hole features
 # (Move/Copy/Rotate/MirrorHole) (see session_script.txt).
-mkdir -p "$TMPW/sess"
+mkdir -p "$TMPW/sess" "$TMPW/sess/dupA" "$TMPW/sess/dupB"
 cat > "$TMPW/sess/dig_points.txt" <<'EOP'
 # comments and blank lines are ignored
 1, 2, 3
@@ -2785,9 +2785,9 @@ cat > "$TMPW/sess/dig_points2.txt" <<'EOP'
 EOP
 sed "s|@TMP@|$TMPW/sess|g" "$HERE/session_script.txt" > "$TMPW/sess/session_script.txt"
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
-  SS="$("$BIN" --smoke 200 --script "$TMPW/sess/session_script.txt" 2>&1)" || { echo "$SS"; echo "FAIL: session script exited non-zero"; exit 1; }
+  SS="$("$BIN" --smoke 260 --script "$TMPW/sess/session_script.txt" 2>&1)" || { echo "$SS"; echo "FAIL: session script exited non-zero"; exit 1; }
 else
-  SS="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 200 --script "$TMPW/sess/session_script.txt" 2>&1)" || { echo "$SS"; echo "FAIL: session script exited non-zero"; exit 1; }
+  SS="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 260 --script "$TMPW/sess/session_script.txt" 2>&1)" || { echo "$SS"; echo "FAIL: session script exited non-zero"; exit 1; }
 fi
 sscheck() { if echo "$SS" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$SS" "$1"; fail=1; fi; }
 # Diagnostic only (task #141): always print the exact object-count trail
@@ -2821,6 +2821,21 @@ sscheck "LimitReferenceModel: 0 object(s) removed" "LimitReferenceModel kept the
 sscheck "Worksession: saved $TMPW/sess/session.rws" "Worksession Save wrote the .rws file"
 sscheck "Worksession: detached 1 object" "Worksession Detach removed the reference objects"
 sscheck "Worksession: attached 1 model(s) from $TMPW/sess/session.rws" "Worksession Load re-attached from the .rws file"
+sscheck "Worksession: attached $TMPW/sess/dupA/dup.3dm (1 object" "Worksession Attach copied the first same-basename model in"
+sscheck "Worksession: attached $TMPW/sess/dupB/dup.3dm (1 object" "Worksession Attach copied the second same-basename model in"
+sscheck "  dup.3dm (2) ($TMPW/sess/dupB/dup.3dm): 1 object" "the second model got a disambiguated alias instead of colliding with the first"
+sscheck "Worksession: detached 1 object(s)" "Worksession Detach found the second model by its exact path"
+sscheck "  dup.3dm ($TMPW/sess/dupA/dup.3dm): 1 object" "the first model (and its layer) survived detaching the second, same-basenamed one"
+# Purge always finds a handful of unused-by-default linetypes in a fresh
+# document (see the dedicated Purge test elsewhere in this file, "6
+# linetypes: the 6 unused-by-default built-ins") - a real bug signal here
+# is Purge finding an unused *layer* on top of that (the orphaned "Ref:
+# dup.3dm" this section exists to catch), not a totally empty report.
+if echo "$SS" | grep -q "Purge: removed [0-9]* layer"; then
+  echo "FAIL detaching the second same-basename model orphaned a stale 'Ref:' layer for Purge to find"; fail=1
+else
+  echo "ok   detaching the second same-basename model did not orphan a stale 'Ref:' layer for Purge to find"
+fi
 sscheck "Snapshot 'Before' saved" "Snapshots Save captured the sphere-only state"
 sscheck "Snapshot 'Before' restored" "Snapshots Restore reverted the later Box"
 sscheck "^ok   expect_objects 1" "Snapshots Restore actually removed the Box"

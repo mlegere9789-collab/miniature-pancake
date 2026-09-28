@@ -63,6 +63,38 @@ Worksession Load @TMP@/session.rws
 Worksession List
 Save @TMP@/withref.3dm
 
+# --- Worksession: two attached models whose files share the same basename
+# (from different folders) must not collide. AttachWorksession used to
+# alias every model by bare filename alone, so both got the identical
+# alias "dup.3dm" and identical "Ref: dup.3dm" layer name; DetachWorksession
+# finds its layer by that name (first match wins), so detaching the second
+# model removed nothing and orphaned its own now-empty layer forever
+# instead of the model actually named on the command line.
+# (New reliably clears right after a Save - same reasoning as the plain
+# Worksession block above; the leftover locked reference object from that
+# block is why a bare SelAll+Delete here would not, since SelAll skips
+# locked objects and that box was never re-saved since being attached.)
+New
+Box 300,0,0 310,10,0 10
+SelLast
+Save @TMP@/dupA/dup.3dm
+New
+Box 400,0,0 410,10,0 10
+SelLast
+Save @TMP@/dupB/dup.3dm
+New
+Worksession Attach @TMP@/dupA/dup.3dm
+Worksession Attach @TMP@/dupB/dup.3dm
+Worksession List
+Worksession Detach @TMP@/dupB/dup.3dm
+Worksession List
+Purge
+# Leaves no locked reference object behind for the Snapshots section's own
+# New below to have to discard (New only clears when the document isn't
+# modified - see Application::ConfirmDiscard - and Worksession Attach/
+# Detach/Purge above all modify it).
+Worksession Detach All
+
 # --- Snapshots: named, full-document restore points independent of Undo/Redo
 New
 @expect_objects 0
