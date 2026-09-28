@@ -324,14 +324,21 @@ class Brep {
   static Brep ExtrudeAlongCurve(const NurbsCurve& profile, const NurbsCurve& path, bool cap = true);
 
   // ExtrudeTapered: Extrude() with a draft angle - the wall leans instead
-  // of running straight along `direction`. `direction` must be parallel
-  // (either sign) to `profile`'s own fitted plane normal, within 1e-9 of
-  // dot-product alignment - an OBLIQUE draft direction would need the
-  // in-plane offset and the extrusion translation decomposed separately,
-  // which this does not attempt and refuses (std::invalid_argument)
-  // instead of guessing. `draft_angle` (radians, strictly in
-  // (-pi/2, pi/2); 0 delegates to Extrude() itself, exactly) is measured
-  // from `direction`: a POSITIVE angle shrinks the profile moving along
+  // of running straight along `direction`. `direction` may be OBLIQUE to
+  // `profile`'s own fitted plane normal (any direction not lying in the
+  // profile's own plane, i.e. within 1e-9 of a zero dot product with that
+  // normal, which is refused as a flat/degenerate extrusion exactly like
+  // Extrude() itself refuses one) - the in-plane taper offset and the
+  // (possibly sideways) extrusion translation are independent: the offset
+  // always uses the FULL `L = |direction|`, never just its along-normal
+  // component, so an oblique `direction` adds a pure shear on top of the
+  // same taper a parallel one would give, and the result is a genuine
+  // oblique (sheared) frustum - see this function's own sweep.cpp comment
+  // for why that shear cannot change the closed-form frustum volume
+  // (Cavalieri's principle), only which perpendicular height it is
+  // measured against. `draft_angle` (radians, strictly in (-pi/2, pi/2);
+  // 0 delegates to Extrude() itself, exactly) is measured from
+  // `direction`: a POSITIVE angle shrinks the profile moving along
   // +direction (the standard mold-release convention: walls lean in
   // toward the part as you move away from the parting line - each point
   // moves laterally by `L * tan(draft_angle)`, L = |direction|, measured
@@ -381,11 +388,11 @@ class Brep {
   //     guard - the same honesty this kernel already ships for a general
   //     curve offset, not a new limitation invented for this function.
   // Throws std::invalid_argument for a non-finite or out-of-range
-  // `draft_angle`, a non-planar profile, an oblique `direction`, a
-  // non-convex multi-segment polyline profile, or a draft/height
-  // combination whose offset would self-intersect or fold through itself
-  // (surfaced by whichever of the three paths above hit it) - propagated
-  // with a message naming which one refused and why, never silently
+  // `draft_angle`, a non-planar profile, a `direction` lying flat in the
+  // profile's own plane, a non-convex multi-segment polyline profile, or a
+  // draft/height combination whose offset would self-intersect or fold
+  // through itself (surfaced by whichever of the three paths above hit
+  // it) - propagated with a message naming which one refused and why, never silently
   // built anyway.
   static Brep ExtrudeTapered(const NurbsCurve& profile, Vector3d direction, double draft_angle, bool cap = true);
 

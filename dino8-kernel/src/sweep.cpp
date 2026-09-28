@@ -1532,15 +1532,31 @@ Brep Brep::ExtrudeTapered(const NurbsCurve& profile, Vector3d direction, double 
   }
   const ON_3dVector d_unit = direction / L;
   const double along = ON_DotProduct(plane.zaxis, d_unit);
-  if (std::fabs(along) <= 1.0 - 1e-9) {
-    Fail(caller,
-         "direction must be parallel to the profile's own plane normal - an oblique draft direction would need "
-         "the in-plane offset and the extrusion translation decomposed separately, which this does not attempt");
+  if (std::fabs(along) <= 1e-9) {
+    Fail(caller, "direction lies in the profile's own plane - the extrusion is flat, with no well-defined "
+                 "extrusion axis to measure the draft angle against");
   }
 
   // Positive draft_angle SHRINKS the profile moving along +direction (see
   // this function's own brep.h doc comment for the convention and why
-  // the sign here is the negative of L * tan(draft_angle)).
+  // the sign here is the negative of L * tan(draft_angle)). This formula
+  // is unchanged for an OBLIQUE `direction` (one not parallel to the
+  // profile's own fitted plane normal, `along` above anywhere short of
+  // +-1): the in-plane offset magnitude is scaled by the FULL travel
+  // distance L, exactly as it already is in the parallel case, so the
+  // result stays invariant to whichever of the two equally-valid signs
+  // `IsPlanar()` happens to fit the profile's own normal to (see this
+  // function's own "same draft_angle gives the same shrinking frustum
+  // regardless of sign" test) - the oblique component of `direction`
+  // shows up only in the `top_raw.Translate(direction)` below, as a pure
+  // shear the in-plane offset math never sees. The resulting solid is a
+  // genuine oblique (sheared) frustum: by Cavalieri's principle its
+  // cross-sectional area at a given PERPENDICULAR distance from the
+  // profile's own plane depends only on that distance (both end curves
+  // are similarity-scaled, translated copies of the same profile, linearly
+  // interpolated), so the untapered/undrafted closed-form frustum volume
+  // still holds when measured against the along-normal component of
+  // `direction`, not its full oblique length.
   const double offset_distance = -L * std::tan(draft_angle);
 
   NurbsCurve top;

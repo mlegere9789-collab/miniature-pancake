@@ -35086,10 +35086,101 @@ void TestExtrudeTaperedCircularProfileIsExactConeFrustum() {
         "draft_angle == -pi/2 throws");
   Check(Throws([&] { Brep::ExtrudeTapered(Circle(P(0, 0, 0), Vector3d(0, 0, 1), 1.0), Vector3d(1, 0, 0), 0.1); }),
         "direction lying flat in the profile's own plane throws");
-  Check(Throws([&] { Brep::ExtrudeTapered(Circle(P(0, 0, 0), Vector3d(0, 0, 1), 1.0), Vector3d(1, 0, 3), 0.1); }),
-        "a genuinely oblique (non-flat, non-parallel) direction throws too");
+  // A genuinely oblique (non-flat, non-parallel) direction USED TO throw
+  // here - see TestExtrudeTaperedObliqueDirectionIsShearedFrustum() below
+  // for the positive case this restriction was lifted for.
   Check(Throws([&] { Brep::ExtrudeTapered(Circle(P(0, 0, 0), Vector3d(0, 0, 1), 1.0), Vector3d(0, 0, 0), 0.1); }),
         "zero direction throws");
+}
+
+// An OBLIQUE `direction` (neither parallel to the profile's own plane
+// normal, nor lying flat in that plane) used to be refused outright; it is
+// now a genuine sheared/oblique frustum - see this item's own brep.h/
+// sweep.cpp comments for the Cavalieri's-principle argument that the
+// closed-form frustum volume still holds, measured against the ALONG-
+// NORMAL component of `direction` (its z here), not its full length.
+void TestExtrudeTaperedObliqueDirectionIsShearedFrustum() {
+  // Circular profile: r0=2 -> r1=1, full oblique direction (1, 0, 3) - the
+  // taper still uses the FULL length L = sqrt(1+9) in `tan(theta) =
+  // (r0-r1)/L`, but Cavalieri's principle only cares about the
+  // along-normal height (the z-component, 3) for the volume.
+  const double r0 = 2.0, r1 = 1.0;
+  const Vector3d dir(1.0, 0.0, 3.0);
+  const double L = dir.Length();
+  const double theta = std::atan((r0 - r1) / L);
+  const Brep frustum = Brep::ExtrudeTapered(Circle(P(0, 0, 0), Vector3d(0, 0, 1), r0), dir, theta);
+  CheckSolidTopology(frustum, 3, "oblique drafted circle");
+  const double h = dir.z;  // along-normal (perpendicular-plane) height, NOT L.
+  const double exact = M_PI * h / 3.0 * (r0 * r0 + r0 * r1 + r1 * r1);
+  CheckClosedMeshVolume(frustum, 96, 6, exact, 0.003, "oblique drafted circle cone frustum");
+
+  // The top circle's actual center and radius: offset happens in the
+  // profile's own (z=0) plane first (radius shrinks to r1, center stays at
+  // the origin), and ONLY THEN gets translated by the full oblique
+  // `direction` - so the top circle's center is exactly `dir`, and every
+  // point on it is exactly `r1` from that (analytically known, not
+  // estimated) center - checked per-sample directly against it rather than
+  // against a numerically-averaged centroid, since a NURBS circle's own
+  // parameterization is not angle-uniform and an unweighted point average
+  // over it is not itself an exact estimate of the true center.
+  {
+    const NurbsSurface wall = FaceSurface(frustum, 0);
+    const ON_Interval du = wall.raw().Domain(0), dv = wall.raw().Domain(1);
+    const Point3d expected_center(dir.x, dir.y, dir.z);
+    double worst_radius = 0.0;
+    const int n = 64;
+    for (int j = 0; j <= n; ++j) {
+      const Point3d p = wall.PointAt(du.ParameterAt(static_cast<double>(j) / n), dv.Max());
+      worst_radius = std::max(worst_radius, std::fabs(p.DistanceTo(expected_center) - r1));
+    }
+    Check(worst_radius < 1e-9, "every sampled top-edge point is exactly r1 from the full oblique `direction` as center");
+  }
+
+  // Invariance to the fitted plane normal's own sign - same guarantee the
+  // parallel case already has, now confirmed for an oblique direction too.
+  const Brep frustum_neg_normal = Brep::ExtrudeTapered(Circle(P(0, 0, 0), Vector3d(0, 0, -1), r0), dir, theta);
+  Check(std::abs(frustum_neg_normal.TessellateToClosedMesh(96, 6).Volume() - frustum.TessellateToClosedMesh(96, 6).Volume()) < 1e-6,
+        "an oblique direction gives the same sheared frustum regardless of the circle's own winding/plane sign");
+
+  // Flaring (negative draft_angle) along an oblique direction too.
+  const double g0 = 1.0, g1 = 2.0;
+  const Vector3d gdir(-0.6, 0.0, 2.0);
+  const double gL = gdir.Length();
+  const double gtheta = std::atan((g0 - g1) / gL);
+  const Brep flare = Brep::ExtrudeTapered(Circle(P(0, 0, 0), Vector3d(0, 0, 1), g0), gdir, gtheta);
+  CheckSolidTopology(flare, 3, "oblique drafted circle (flaring)");
+  const double gh = gdir.z;
+  const double exact_flare = M_PI * gh / 3.0 * (g0 * g0 + g0 * g1 + g1 * g1);
+  CheckClosedMeshVolume(flare, 96, 6, exact_flare, 0.003, "oblique drafted circle cone frustum (flaring)");
+
+  // Convex polygon profile under an oblique direction: the taper offset is
+  // still exact (OffsetConvexPolyline never looks at `direction`), but the
+  // side walls are no longer planar trapezoids once the shear is oblique
+  // (each wall becomes a genuinely twisted ruled bilinear patch - the same
+  // "straight generators between two similar, laterally-offset polygons"
+  // shape the circular case's oblique cone already is) - so the tessellated
+  // volume converges to the exact closed form rather than matching it bit-
+  // for-bit at a coarse division, unlike the axis-aligned square test above.
+  {
+    const NurbsCurve square = Polyline({P(-1, -1, 0), P(1, -1, 0), P(1, 1, 0), P(-1, 1, 0), P(-1, -1, 0)});
+    const double offset = 0.5;
+    const Vector3d sdir(0.7, 0.0, 2.0);
+    const double sL = sdir.Length();
+    const double stheta = std::atan(offset / sL);
+    const Brep box = Brep::ExtrudeTapered(square, sdir, stheta);
+    CheckSolidTopology(box, 3, "oblique drafted square");
+    const double k0 = 1.0, k1 = 0.5;
+    const double sh = sdir.z;
+    const double exact_box = 4.0 * sh * (k0 * k0 + k0 * k1 + k1 * k1) / 3.0;
+    CheckClosedMeshVolume(box, 200, 6, exact_box, 0.01, "oblique drafted square frustum converges to the exact closed form");
+  }
+
+  // Negative controls specific to the oblique case: the underlying offset
+  // validity guards (self-intersection / inradius collapse) still apply -
+  // they only ever look at `offset_distance` (itself only a function of
+  // draft_angle and L), never at how oblique `direction` is.
+  Check(Throws([&] { Brep::ExtrudeTapered(Circle(P(0, 0, 0), Vector3d(0, 0, 1), 1.0), Vector3d(3, 0, 1), std::atan(2.0)); }),
+        "an oblique direction steep enough in draft to still collapse the circle throws");
 }
 
 void TestExtrudeTaperedConvexPolygonIsExactPlanarFrustum() {
@@ -39982,6 +40073,7 @@ int main() {
   sweep_tests::TestThickenRejectsInvalidArguments();
   sweep_tests::TestExtrudeTaperedCircularProfileIsExactConeFrustum();
   sweep_tests::TestExtrudeTaperedConvexPolygonIsExactPlanarFrustum();
+  sweep_tests::TestExtrudeTaperedObliqueDirectionIsShearedFrustum();
   sweep_tests::TestExtrudeToBoundaryTiltedPlaneMatchesExactAffineCapVolume();
   sweep_tests::TestExtrudeToBoundaryMatchesPlainExtrudeForAFlatBoundary();
   sweep_tests::TestExtrudeToBoundaryNegativeControls();
