@@ -1695,7 +1695,7 @@ Brep Brep::Loft(const std::vector<NurbsCurve>& sections_in, int degree, bool clo
 }
 
 Brep Brep::Sweep1(const NurbsCurve& section_in, const NurbsCurve& rail_in, int stations, bool cap, double twist_total,
-                  double scale_end) {
+                  double scale_end, const Vector3d* roadlike_up) {
   const char* caller = "Sweep1";
   if (stations < 2) Fail(caller, "stations must be at least 2");
   if (!(scale_end > 0.0)) Fail(caller, "scale_end must be positive");
@@ -1712,6 +1712,11 @@ Brep Brep::Sweep1(const NurbsCurve& section_in, const NurbsCurve& rail_in, int s
   if (wrap && scale_end != 1.0) {
     Fail(caller, "scale_end != 1.0 is not supported for a closed rail - the tube would not meet itself at the seam");
   }
+  ON_3dVector up;
+  if (roadlike_up) {
+    up = *roadlike_up;
+    if (!up.Unitize()) Fail(caller, "roadlike_up must be a nonzero vector");
+  }
   const bool straight = !wrap && rail.IsLinear(1e-9 * CurveScale(rail));
   const int m = straight ? 2 : std::max(stations, 3);
 
@@ -1721,6 +1726,23 @@ Brep Brep::Sweep1(const NurbsCurve& section_in, const NurbsCurve& rail_in, int s
   if (wrap) params.pop_back();
   if (static_cast<int>(params.size()) != m) Internal(caller, "station count mismatch");
   std::vector<Frame> frames = RmfFrames(rail, params, wrap, caller);
+  if (roadlike_up) {
+    // Road-like alignment: replace RMF's own transported reference
+    // direction at every station with `up` projected perpendicular to
+    // the tangent there, independent of every other station - see
+    // brep.h's own doc comment for why this needs no holonomy fix-up on
+    // a closed rail the way RMF itself does above.
+    for (int k = 0; k < m; ++k) {
+      Frame& f = frames[static_cast<size_t>(k)];
+      ON_3dVector r = up - f.t * ON_DotProduct(up, f.t);
+      if (r.LengthSquared() <= 1e-12) {
+        Fail(caller, "roadlike_up is parallel to the rail tangent at a station - road-like alignment is undefined there");
+      }
+      r.Unitize();
+      f.r = r;
+      f.s = ON_CrossProduct(f.t, f.r);
+    }
+  }
   if (twist_total != 0.0) {
     // Extra rotation about each station's own tangent, linear in arc-
     // length station fraction k / (m - 1): 0 at the start, exactly
