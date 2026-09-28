@@ -8431,6 +8431,155 @@ void TestBrepMakeEdgeVertexAndKillEdgeVertexAreExactInverses() {
   Check(threw_edge_deleted, "edge_index marked deleted throws std::invalid_argument");
 }
 
+// MEF/KEF's own exact-inverse round trip, the direct sequel to
+// TestBrepMakeEdgeVertexAndKillEdgeVertexAreExactInverses() above: split
+// the box's planar top face (face 1, a real quad loop via
+// CheckHealBoxFaces()/FromPlanarFaces()) into two triangles along one
+// diagonal, then merge them back, checking V/E/F counts and Check()'s own
+// report at every step - the same rigor the MEV/KEV test already applies.
+void TestBrepMakeEdgeFaceAndKillEdgeFaceAreExactInverses() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  Brep box = Brep::FromPlanarFaces(CheckHealBoxFaces());
+  const int v_count_before = box.raw().m_V.Count();
+  const int e_count_before = box.raw().m_E.Count();
+  const int f_count_before = box.FaceCount();
+  const Brep::CheckReport before = box.Check();
+  Check(before.issues.empty(), "setup: the clean box reports nothing before MEF");
+
+  // Face 1 is the top face - a genuine 4-vertex planar loop.
+  const ON_BrepLoop* top_loop = box.raw().m_F[1].Loop(0);
+  Check(top_loop != nullptr && top_loop->TrimCount() == 4, "setup: face 1's own loop is a real 4-trim quad");
+  int quad_v[4];
+  for (int k = 0; k < 4; ++k) quad_v[k] = top_loop->Trim(k)->m_vi[0];
+
+  // The opposite-corner diagonal (positions 0 and 2) - not adjacent.
+  const int va = quad_v[0];
+  const int vb = quad_v[2];
+
+  const auto mef = box.MakeEdgeFace(1, va, vb);
+  Check(mef.result == Result::Ok && mef.edge_index >= 0 && mef.face_index >= 0,
+        "MakeEdgeFace() succeeds on the top face's own opposite-corner diagonal");
+  Check(box.raw().m_V.Count() == v_count_before, "V is unchanged - MEF never adds a vertex");
+  Check(box.raw().m_E.Count() == e_count_before + 1, "E grew by exactly 1");
+  Check(box.FaceCount() == f_count_before + 1, "F grew by exactly 1");
+  Check(box.raw().m_E[mef.edge_index].TrimCount() == 2, "the new diagonal edge borders exactly two faces");
+  Check(box.raw().m_F[1].LoopCount() == 1 && box.raw().m_F[1].Loop(0)->TrimCount() == 3,
+        "the original face is now a triangle");
+  Check(box.raw().m_F[mef.face_index].LoopCount() == 1 && box.raw().m_F[mef.face_index].Loop(0)->TrimCount() == 3,
+        "the new face is also a triangle");
+  Check(box.raw().m_F[mef.face_index].m_si == box.raw().m_F[1].m_si,
+        "both triangles share the exact same underlying surface");
+  Check(box.raw().IsValid() && box.raw().IsSolid(), "the split box is still a valid, closed solid ON_Brep");
+  const Brep::CheckReport after_mef = box.Check();
+  Check(after_mef.IsClean(), "Check() reports nothing new after splitting one face along a real diagonal");
+  Check(std::fabs(box.TessellateToClosedMesh(4, 4).Volume() - 1.0) < 1e-9,
+        "the split box's own volume is still exactly 1");
+
+  // KEF undoes it exactly: back to the original V/E/F counts and a clean
+  // Check() report, the same shape as before MEF ever ran.
+  Check(box.KillEdgeFace(mef.edge_index) == Result::Ok, "KillEdgeFace() undoes the MEF call");
+  Check(box.raw().m_V.Count() == v_count_before, "V is still unchanged");
+  Check(box.raw().m_E.Count() == e_count_before, "E is back to its original count");
+  Check(box.FaceCount() == f_count_before, "F is back to its original count");
+  Check(box.raw().m_F[1].LoopCount() == 1 && box.raw().m_F[1].Loop(0)->TrimCount() == 4,
+        "face 1 is a genuine quad again");
+  const Brep::CheckReport after_kef = box.Check();
+  Check(after_kef.issues.size() == before.issues.size(), "Check() reports exactly what it did before MEF ever ran");
+  Check(std::fabs(box.TessellateToClosedMesh(4, 4).Volume() - 1.0) < 1e-9, "...and the volume is exactly 1 again");
+
+  // Refusal: adjacent vertices would duplicate an existing edge.
+  Brep box2 = Brep::FromPlanarFaces(CheckHealBoxFaces());
+  const int vcb2 = box2.raw().m_V.Count();
+  const int ecb2 = box2.raw().m_E.Count();
+  const int fcb2 = box2.FaceCount();
+  const auto mef_adjacent = box2.MakeEdgeFace(1, va, quad_v[1]);
+  Check(mef_adjacent.result == Result::Failed && mef_adjacent.edge_index == -1 && mef_adjacent.face_index == -1,
+        "MakeEdgeFace() refuses two ADJACENT loop vertices");
+  Check(box2.raw().m_V.Count() == vcb2 && box2.raw().m_E.Count() == ecb2 && box2.FaceCount() == fcb2,
+        "...and the box is left completely untouched");
+
+  // Refusal: the same vertex twice.
+  Check(box2.MakeEdgeFace(1, va, va).result == Result::Failed, "MakeEdgeFace() refuses vertex_a == vertex_b");
+
+  // Refusal: a vertex that isn't on this face's own loop at all (one of
+  // the bottom face's own 4 vertices, welded to a different point).
+  const int bottom_v = box2.raw().m_F[0].Loop(0)->Trim(0)->m_vi[0];
+  Check(box2.MakeEdgeFace(1, va, bottom_v).result == Result::Failed,
+        "MakeEdgeFace() refuses a vertex that isn't on the target face's own loop");
+
+  // Refusal: out-of-range / deleted face_index and vertex indices.
+  bool threw_face_range = false;
+  try {
+    box2.MakeEdgeFace(box2.raw().m_F.Count() + 100, va, vb);
+  } catch (const std::out_of_range&) {
+    threw_face_range = true;
+  }
+  Check(threw_face_range, "an out-of-range face_index throws std::out_of_range");
+
+  bool threw_vertex_range = false;
+  try {
+    box2.MakeEdgeFace(1, box2.raw().m_V.Count() + 100, vb);
+  } catch (const std::out_of_range&) {
+    threw_vertex_range = true;
+  }
+  Check(threw_vertex_range, "an out-of-range vertex index throws std::out_of_range");
+
+  box2.raw().m_F[1].m_face_index = -1;
+  bool threw_face_deleted = false;
+  try {
+    box2.MakeEdgeFace(1, va, vb);
+  } catch (const std::invalid_argument&) {
+    threw_face_deleted = true;
+  }
+  Check(threw_face_deleted, "face_index marked deleted throws std::invalid_argument");
+
+  Brep box3 = Brep::FromPlanarFaces(CheckHealBoxFaces());
+  box3.raw().m_V[va].m_vertex_index = -1;
+  bool threw_vertex_deleted = false;
+  try {
+    box3.MakeEdgeFace(1, va, vb);
+  } catch (const std::invalid_argument&) {
+    threw_vertex_deleted = true;
+  }
+  Check(threw_vertex_deleted, "a deleted vertex index throws std::invalid_argument");
+
+  // Refusal: KillEdgeFace() on an edge between two faces on DIFFERENT
+  // surfaces (any of the box's own original 12 edges - two perpendicular
+  // sides, or a side and the top/bottom, never share one surface).
+  Brep box4 = Brep::FromPlanarFaces(CheckHealBoxFaces());
+  Check(box4.KillEdgeFace(0) == Result::Failed,
+        "KillEdgeFace() refuses an edge whose two faces don't share the same surface");
+
+  // Refusal: KillEdgeFace() on an edge that doesn't border exactly two
+  // faces (a bare wire edge from MakeEdgeVertex, TrimCount() == 0).
+  const Point3d spur_point = box4.raw().m_V[0].point + ON_3dVector(2, 2, 2);
+  const auto mev = box4.MakeEdgeVertex(0, spur_point);
+  Check(mev.result == Result::Ok, "setup: MakeEdgeVertex() succeeded for the wire-edge refusal case");
+  Check(box4.KillEdgeFace(mev.edge_index) == Result::Failed,
+        "KillEdgeFace() refuses an edge that doesn't border exactly two faces");
+
+  // Refusal: out-of-range / deleted edge_index.
+  bool threw_kef_edge_range = false;
+  try {
+    box4.KillEdgeFace(box4.raw().m_E.Count() + 100);
+  } catch (const std::out_of_range&) {
+    threw_kef_edge_range = true;
+  }
+  Check(threw_kef_edge_range, "an out-of-range edge_index throws std::out_of_range");
+
+  box4.raw().m_E[mev.edge_index].m_edge_index = -1;
+  bool threw_kef_edge_deleted = false;
+  try {
+    box4.KillEdgeFace(mev.edge_index);
+  } catch (const std::invalid_argument&) {
+    threw_kef_edge_deleted = true;
+  }
+  Check(threw_kef_edge_deleted, "a deleted edge_index throws std::invalid_argument");
+}
+
 // Flip one face: Check() names the flipped face on each of its 4 edges
 // (index = the flipped face, other_index = each neighbour), the welded
 // mesh is no longer a closed manifold (an orientation conflict on every
@@ -34352,6 +34501,7 @@ int main() {
   TestBrepCheckDetectsNonManifoldPinchVertex();
   TestBrepSplitNonManifoldVertexHealsPinchPoint();
   TestBrepMakeEdgeVertexAndKillEdgeVertexAreExactInverses();
+  TestBrepMakeEdgeFaceAndKillEdgeFaceAreExactInverses();
   TestBrepCheckAndUnifyNormalsOnFlippedFace();
   TestBrepCheckReportsDroppedFaceAndCapPlanarHolesRestoresIt();
   TestBrepJoinNakedEdgesRecordsTolerantEdges();

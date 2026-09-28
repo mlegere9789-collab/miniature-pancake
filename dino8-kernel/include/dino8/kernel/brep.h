@@ -2865,7 +2865,11 @@ class Brep {
   // NakedEdge's own doc comment already calls "a dangling edge no face
   // uses at all"), so this is genuine shared infrastructure for both
   // items - though assembling that into a first-class wire-body/Body
-  // concept of its own is still out of scope here.
+  // concept of its own is still out of scope here. MEF ("Make Edge,
+  // Face") and its exact inverse KEF ("Kill Edge, Face"), declared after
+  // KillEdgeVertex() below, are the next pair in this same family - see
+  // their own doc comments for scope. MEKR/KEMR (moving an edge between a
+  // loop and a hole ring) remain entirely unimplemented.
 
   // Adds one new vertex at `to_point` and one new straight (ON_LineCurve)
   // edge connecting it to the EXISTING vertex `from_vertex` - V and E each
@@ -2917,6 +2921,77 @@ class Brep {
   // is out of range, or std::invalid_argument if it refers to an already-
   // deleted edge.
   Result KillEdgeVertex(int edge_index);
+
+  // MEF ("Make Edge, Face"): splits `face_index`'s own single outer loop
+  // into two loops by inserting one new straight edge between two of its
+  // EXISTING, non-adjacent vertices (a genuine polygon diagonal - no new
+  // vertex, unlike MakeEdgeVertex()), giving each half its own new face on
+  // the SAME underlying surface. F grows by exactly one, E by exactly one,
+  // V is untouched - Euler's invariant for splitting one face into two
+  // without adding a vertex.
+  //
+  // Deliberately scoped like SplitNakedEdgeAt()'s own "linear edges only"
+  // restriction, for the same reason (a fabricated straight 2D trim only
+  // stays exact if the map from (u, v) to 3D is itself affine): the face's
+  // surface must report IsPlanar(), and the face must have exactly one
+  // loop (no inner loops/holes - out of scope, matching the restriction
+  // MergeCoplanarFaces()'s own TryMergeCoplanarPair already places on
+  // itself). `vertex_a`/`vertex_b` must each appear EXACTLY ONCE among
+  // that loop's own trim start vertices (a vertex the loop visits twice,
+  // e.g. a seam, is ambiguous and refused, the same "neither/both leaf"
+  // style ambiguity KillEdgeVertex() already refuses on) and must not be
+  // adjacent in the loop (an adjacent pair would re-draw an edge already
+  // there, producing a degenerate two-sided face).
+  //
+  // The candidate diagonal is validated the standard simple-polygon way
+  // before anything is built: it must not properly cross any other trim
+  // of the loop, and its own midpoint must land inside the loop's 2D
+  // boundary (PointInPolygon) - together these reject a diagonal that
+  // would step outside a concave loop's own boundary, not just ones that
+  // visibly self-intersect. A trim with no edge at all (a singular trim -
+  // e.g. a sphere pole) anywhere in the loop refuses the whole call,
+  // since a diagonal has no defined meaning through a collapsed side.
+  //
+  // Returns Result::Failed - not a thrown exception, the same "can't, but
+  // that's not a bug" contract every other topology-surgery method here
+  // shares - for every refusal above; this Brep is left completely
+  // untouched in every refusal. Throws std::out_of_range if `face_index`,
+  // `vertex_a` or `vertex_b` is out of range, or std::invalid_argument if
+  // any of them refers to an already-deleted record.
+  struct MakeEdgeFaceResult {
+    Result result = Result::Failed;
+    int edge_index = -1;  // the new edge, or -1 on Result::Failed
+    int face_index = -1;  // the new face (the original face_index keeps the other half), or -1 on Result::Failed
+  };
+  MakeEdgeFaceResult MakeEdgeFace(int face_index, int vertex_a, int vertex_b, double tolerance = tolerance::kDistance);
+
+  // The exact inverse of MakeEdgeFace(): given `edge_index` shared by
+  // exactly two faces (TrimCount() == 2), each with exactly one loop, on
+  // the exact SAME surface (m_si) - precisely the shape a single
+  // MakeEdgeFace() call produces - deletes the edge and its two trims,
+  // splices the two loops' remaining trims back into one on the face
+  // bordering `edge_index`'s own first trim, and deletes the other face.
+  // F shrinks by exactly one, E by exactly one, V is untouched, undoing
+  // MakeEdgeFace()'s own Euler bookkeeping exactly.
+  //
+  // Unlike MakeEdgeFace(), this never fabricates new geometry - it only
+  // re-splices trims that already exist - so it does NOT require the
+  // shared surface to be planar, only that both faces genuinely share it
+  // (same m_si): the general "merge two faces across a shared edge on one
+  // common surface" primitive, not limited to undoing a planar split.
+  //
+  // Refuses (Result::Failed, this Brep left completely untouched) if
+  // `edge_index` doesn't border exactly two faces, if those two faces are
+  // actually the same face (a slit - ambiguous), if either face has more
+  // than one loop, if the two faces don't share the same surface index,
+  // or if the two trims don't traverse the shared edge in opposite
+  // directions (trim0.m_vi/trim1.m_vi reversed of each other) - the
+  // standard well-formed-2-manifold-edge shape every genuine MEF result
+  // has, and the one MergeCoplanarFaces()'s own TryMergeCoplanarPair
+  // already checks for the same reason. Throws std::out_of_range if
+  // `edge_index` is out of range, or std::invalid_argument if it refers
+  // to an already-deleted edge.
+  Result KillEdgeFace(int edge_index);
 
   // Splits a naked (1-trim) edge into two coincident naked edges meeting
   // at a new vertex at `point` - the missing primitive behind "tolerant

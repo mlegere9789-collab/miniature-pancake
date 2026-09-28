@@ -6861,6 +6861,278 @@ Result Brep::KillEdgeVertex(int edge_index) {
   return Result::Ok;
 }
 
+namespace {
+
+// 2D orientation test (twice the signed area of o->p->q) - the standard
+// building block for both helpers below.
+double Orient2D(const Point2d& o, const Point2d& p, const Point2d& q) {
+  return (p.x - o.x) * (q.y - o.y) - (p.y - o.y) * (q.x - o.x);
+}
+
+// True if open segments (a0, a1) and (b0, b1) cross at an interior point
+// of both - a shared ENDPOINT is not a "proper" crossing (MakeEdgeFace()'s
+// own candidate diagonal always shares an endpoint with the two loop
+// edges meeting at vertex_a/vertex_b, and that is never itself a reason
+// to refuse it), only two segments that genuinely pass through each
+// other's interior are.
+bool SegmentsProperlyIntersect2D(const Point2d& a0, const Point2d& a1, const Point2d& b0, const Point2d& b1) {
+  const double d1 = Orient2D(b0, b1, a0);
+  const double d2 = Orient2D(b0, b1, a1);
+  const double d3 = Orient2D(a0, a1, b0);
+  const double d4 = Orient2D(a0, a1, b1);
+  return ((d1 > 0.0) != (d2 > 0.0)) && ((d3 > 0.0) != (d4 > 0.0));
+}
+
+// Standard even-odd ray-casting point-in-polygon test in 2D - the same
+// algorithm as boolean.cpp's/surface.cpp's own file-local PointInPolygon,
+// duplicated here rather than shared across translation units for a
+// two-line function (see boolean.cpp's own comment on this).
+bool PointInPolygon2D(const Point2d& p, const std::vector<Point2d>& polygon) {
+  bool inside = false;
+  const size_t n = polygon.size();
+  for (size_t i = 0, j = n - 1; i < n; j = i++) {
+    const Point2d& pi = polygon[i];
+    const Point2d& pj = polygon[j];
+    const bool crosses = (pi.y > p.y) != (pj.y > p.y);
+    if (crosses) {
+      const double x_at_crossing = (pj.x - pi.x) * (p.y - pi.y) / (pj.y - pi.y) + pi.x;
+      if (p.x < x_at_crossing) inside = !inside;
+    }
+  }
+  return inside;
+}
+
+}  // namespace
+
+Brep::MakeEdgeFaceResult Brep::MakeEdgeFace(int face_index, int vertex_a, int vertex_b, double tolerance) {
+  ON_Brep& b = brep_;
+  if (face_index < 0 || face_index >= b.m_F.Count()) {
+    throw std::out_of_range("dino8::kernel::Brep::MakeEdgeFace: face_index " + std::to_string(face_index) +
+                            " is out of range (this Brep has " + std::to_string(b.m_F.Count()) + " face slot(s))");
+  }
+  if (b.m_F[face_index].m_face_index < 0) {
+    throw std::invalid_argument("dino8::kernel::Brep::MakeEdgeFace: face_index " + std::to_string(face_index) +
+                                " refers to a deleted face");
+  }
+  for (const int vi : {vertex_a, vertex_b}) {
+    if (vi < 0 || vi >= b.m_V.Count()) {
+      throw std::out_of_range("dino8::kernel::Brep::MakeEdgeFace: vertex index " + std::to_string(vi) +
+                              " is out of range (this Brep has " + std::to_string(b.m_V.Count()) + " vertex slot(s))");
+    }
+    if (b.m_V[vi].m_vertex_index < 0) {
+      throw std::invalid_argument("dino8::kernel::Brep::MakeEdgeFace: vertex index " + std::to_string(vi) +
+                                  " refers to a deleted vertex");
+    }
+  }
+  if (vertex_a == vertex_b) return MakeEdgeFaceResult{};  // no diagonal to draw
+
+  const ON_BrepFace& face = b.m_F[face_index];
+  if (face.LoopCount() != 1) return MakeEdgeFaceResult{};  // holes/inner loops out of scope
+
+  const ON_Surface* srf = face.SurfaceOf();
+  const double tol = std::max(tolerance, 0.0);
+  if (!srf || !srf->IsPlanar(nullptr, std::max(tol, 1e-9))) return MakeEdgeFaceResult{};
+
+  const ON_BrepLoop& loop = *face.Loop(0);
+  const int n = loop.TrimCount();
+  if (n < 4) return MakeEdgeFaceResult{};  // a triangle has no non-adjacent vertex pair to split on
+
+  // The loop's own ordered vertex/2D-point sequence: trim k starts at
+  // vertex_at[k], at 2D point poly[k]. A trim with no edge at all (a
+  // singular trim, e.g. a sphere pole) has no defined "vertex" here, so
+  // its whole loop is refused outright rather than guessed at.
+  std::vector<int> vertex_at(static_cast<size_t>(n));
+  std::vector<Point2d> poly(static_cast<size_t>(n));
+  for (int k = 0; k < n; ++k) {
+    const ON_BrepTrim* t = loop.Trim(k);
+    if (!t || t->m_type == ON_BrepTrim::singular || !t->Edge()) return MakeEdgeFaceResult{};
+    vertex_at[static_cast<size_t>(k)] = t->m_vi[0];
+    const ON_3dPoint p0 = t->PointAtStart();
+    poly[static_cast<size_t>(k)] = Point2d(p0.x, p0.y);
+  }
+
+  int i = -1, j = -1;
+  for (int k = 0; k < n; ++k) {
+    if (vertex_at[static_cast<size_t>(k)] == vertex_a) {
+      if (i >= 0) return MakeEdgeFaceResult{};  // vertex_a visited twice in this loop - ambiguous
+      i = k;
+    }
+    if (vertex_at[static_cast<size_t>(k)] == vertex_b) {
+      if (j >= 0) return MakeEdgeFaceResult{};  // vertex_b visited twice in this loop - ambiguous
+      j = k;
+    }
+  }
+  if (i < 0 || j < 0) return MakeEdgeFaceResult{};  // not both on this loop
+  if (j == (i + 1) % n || i == (j + 1) % n) return MakeEdgeFaceResult{};  // adjacent - would duplicate an edge
+
+  // Validate (poly[i], poly[j]) as a genuine simple-polygon diagonal:
+  // no proper crossing with any OTHER edge of the loop, and its own
+  // midpoint strictly inside the loop's own boundary.
+  for (int k = 0; k < n; ++k) {
+    const int k1 = (k + 1) % n;
+    if (k == i || k == j || k1 == i || k1 == j) continue;  // shares an endpoint with the diagonal - not a crossing
+    if (SegmentsProperlyIntersect2D(poly[static_cast<size_t>(i)], poly[static_cast<size_t>(j)],
+                                     poly[static_cast<size_t>(k)], poly[static_cast<size_t>(k1)])) {
+      return MakeEdgeFaceResult{};
+    }
+  }
+  const Point2d mid(0.5 * (poly[static_cast<size_t>(i)].x + poly[static_cast<size_t>(j)].x),
+                    0.5 * (poly[static_cast<size_t>(i)].y + poly[static_cast<size_t>(j)].y));
+  if (!PointInPolygon2D(mid, poly)) return MakeEdgeFaceResult{};
+
+  // Partition the loop's own trim indices (captured by value - `loop`
+  // itself is about to be invalidated by NewFace()/NewLoop() below) into
+  // the two halves the new diagonal separates: partition1 runs from
+  // vertex_a's own trim up to (not including) vertex_b's; partition2 is
+  // the complementary run the other way around.
+  std::vector<int> old_ti(static_cast<size_t>(n));
+  for (int k = 0; k < n; ++k) old_ti[static_cast<size_t>(k)] = loop.Trim(k)->m_trim_index;
+  const int loop_index = loop.m_loop_index;
+  const int face_si = face.m_si;
+  const bool face_brev = face.m_bRev;
+
+  const int count1 = (j - i + n) % n;
+  std::vector<int> partition1(static_cast<size_t>(count1));
+  for (int s = 0; s < count1; ++s) partition1[static_cast<size_t>(s)] = old_ti[static_cast<size_t>((i + s) % n)];
+  std::vector<int> partition2(static_cast<size_t>(n - count1));
+  for (int s = 0; s < n - count1; ++s) partition2[static_cast<size_t>(s)] = old_ti[static_cast<size_t>((j + s) % n)];
+
+  // Build the new edge (a straight ON_LineCurve between the two EXISTING
+  // vertices - no NewVertex() call, so b.m_V never reallocates here) and
+  // its two 2D trim curves, one per direction.
+  const Point3d a_point = b.m_V[vertex_a].point;
+  const Point3d b_point = b.m_V[vertex_b].point;
+  const int c3i = b.AddEdgeCurve(new ON_LineCurve(a_point, b_point));
+  ON_BrepEdge& new_edge = b.NewEdge(b.m_V[vertex_a], b.m_V[vertex_b], c3i);
+  new_edge.m_tolerance = 0.0;
+  const int new_edge_index = new_edge.m_edge_index;
+
+  const int c2i_b_to_a = b.AddTrimCurve(new ON_LineCurve(poly[static_cast<size_t>(j)], poly[static_cast<size_t>(i)]));
+  const int c2i_a_to_b = b.AddTrimCurve(new ON_LineCurve(poly[static_cast<size_t>(i)], poly[static_cast<size_t>(j)]));
+
+  // Loop1 (the half from vertex_a to vertex_b) stays on the ORIGINAL loop
+  // object/index, so face_index keeps referencing it - only its own
+  // m_ti content changes, from every one of the old loop's trims to just
+  // partition1 plus the new b->a closing trim.
+  b.m_L[loop_index].m_ti.SetCount(0);
+  for (const int ti : partition1) b.m_L[loop_index].m_ti.Append(ti);
+  ON_BrepTrim& trim_ba = b.NewTrim(b.m_E[new_edge_index], /*bRev3d=*/true, b.m_L[loop_index], c2i_b_to_a);
+  trim_ba.m_tolerance[0] = trim_ba.m_tolerance[1] = 0.0;
+
+  // Loop2 (the other half, vertex_b to vertex_a) gets a brand-new face on
+  // the same surface, and every partition2 trim is re-homed onto its new
+  // loop before the closing a->b trim completes it.
+  ON_BrepFace& face2 = b.NewFace(face_si);
+  face2.m_bRev = face_brev;
+  const int face2_index = face2.m_face_index;
+  ON_BrepLoop& loop2 = b.NewLoop(ON_BrepLoop::outer, b.m_F[face2_index]);
+  const int loop2_index = loop2.m_loop_index;
+  for (const int ti : partition2) {
+    b.m_T[ti].m_li = loop2_index;
+    b.m_L[loop2_index].m_ti.Append(ti);
+  }
+  ON_BrepTrim& trim_ab = b.NewTrim(b.m_E[new_edge_index], /*bRev3d=*/false, b.m_L[loop2_index], c2i_a_to_b);
+  trim_ab.m_tolerance[0] = trim_ab.m_tolerance[1] = 0.0;
+
+  b.SetTolerancesBoxesAndFlags();
+  FixUnsetEdgeTolerances(b);
+  ClearFaceSideTables();
+
+  MakeEdgeFaceResult result;
+  result.result = Result::Ok;
+  result.edge_index = new_edge_index;
+  result.face_index = face2_index;
+  return result;
+}
+
+Result Brep::KillEdgeFace(int edge_index) {
+  ON_Brep& b = brep_;
+  if (edge_index < 0 || edge_index >= b.m_E.Count()) {
+    throw std::out_of_range("dino8::kernel::Brep::KillEdgeFace: edge_index " + std::to_string(edge_index) +
+                            " is out of range (this Brep has " + std::to_string(b.m_E.Count()) + " edge slot(s))");
+  }
+  const ON_BrepEdge& edge = b.m_E[edge_index];
+  if (edge.m_edge_index < 0) {
+    throw std::invalid_argument("dino8::kernel::Brep::KillEdgeFace: edge_index " + std::to_string(edge_index) +
+                                " refers to an already-deleted edge");
+  }
+  if (edge.TrimCount() != 2) return Result::Failed;
+
+  const int ti0 = edge.m_ti[0];
+  const int ti1 = edge.m_ti[1];
+  const ON_BrepTrim& trim0 = b.m_T[ti0];
+  const ON_BrepTrim& trim1 = b.m_T[ti1];
+  if (trim0.m_li < 0 || trim1.m_li < 0 || trim0.m_li == trim1.m_li) return Result::Failed;  // a slit - ambiguous
+
+  const ON_BrepLoop& loop0 = b.m_L[trim0.m_li];
+  const ON_BrepLoop& loop1 = b.m_L[trim1.m_li];
+  const int face0_index = loop0.m_fi;
+  const int face1_index = loop1.m_fi;
+  if (face0_index < 0 || face1_index < 0 || face0_index == face1_index) return Result::Failed;
+
+  const ON_BrepFace& face0 = b.m_F[face0_index];
+  const ON_BrepFace& face1 = b.m_F[face1_index];
+  if (face0.LoopCount() != 1 || face1.LoopCount() != 1) return Result::Failed;  // holes/inner loops out of scope
+  if (face0.m_si != face1.m_si) return Result::Failed;  // not the same underlying surface
+
+  // The standard well-formed-2-manifold-edge shape: the two loops must
+  // traverse the shared edge in OPPOSITE directions, exactly what
+  // MakeEdgeFace() itself always produces (trim_ba: b->a, trim_ab: a->b).
+  if (trim0.m_vi[0] != trim1.m_vi[1] || trim0.m_vi[1] != trim1.m_vi[0]) return Result::Failed;
+
+  const int n0 = loop0.TrimCount();
+  const int n1 = loop1.TrimCount();
+  if (n0 < 2 || n1 < 2) return Result::Failed;  // no remaining boundary without the shared edge
+
+  int pos0 = -1, pos1 = -1;
+  for (int k = 0; k < n0; ++k) {
+    if (loop0.Trim(k)->m_trim_index == ti0) pos0 = k;
+  }
+  for (int k = 0; k < n1; ++k) {
+    if (loop1.Trim(k)->m_trim_index == ti1) pos1 = k;
+  }
+  if (pos0 < 0 || pos1 < 0) return Result::Failed;  // shouldn't happen - defensive only
+
+  // The merged boundary: loop0's own remaining run (starting right after
+  // the shared edge, i.e. from its far endpoint) followed by loop1's own
+  // remaining run the same way - which lands back on loop0's own start
+  // exactly when the opposite-direction check above holds.
+  std::vector<int> merged;
+  merged.reserve(static_cast<size_t>(n0 + n1 - 2));
+  for (int s = 1; s < n0; ++s) merged.push_back(loop0.Trim((pos0 + s) % n0)->m_trim_index);
+  for (int s = 1; s < n1; ++s) merged.push_back(loop1.Trim((pos1 + s) % n1)->m_trim_index);
+
+  const int loop0_index = loop0.m_loop_index;
+  const int loop1_index = loop1.m_loop_index;
+
+  for (const int ti : merged) {
+    if (b.m_T[ti].m_li == loop1_index) b.m_T[ti].m_li = loop0_index;
+  }
+  b.m_L[loop0_index].m_ti.SetCount(0);
+  for (const int ti : merged) b.m_L[loop0_index].m_ti.Append(ti);
+
+  // Remove the deleted edge's own index from its two endpoint vertices'
+  // m_ei lists (the same cleanup KillEdgeVertex() already performs, for
+  // the same reason - Compact() never touches m_ei itself).
+  for (const int vi : {edge.m_vi[0], edge.m_vi[1]}) {
+    ON_BrepVertex& v = b.m_V[vi];
+    for (int k = v.m_ei.Count() - 1; k >= 0; --k) {
+      if (v.m_ei[k] == edge_index) v.m_ei.Remove(k);
+    }
+  }
+  b.m_T[ti0].m_trim_index = -1;
+  b.m_T[ti1].m_trim_index = -1;
+  b.m_E[edge_index].m_edge_index = -1;
+  b.m_L[loop1_index].m_loop_index = -1;
+  b.m_F[face1_index].m_face_index = -1;
+
+  b.Compact();
+  b.SetTolerancesBoxesAndFlags();
+  FixUnsetEdgeTolerances(b);
+  ClearFaceSideTables();
+  return Result::Ok;
+}
+
 Result Brep::SplitNakedEdgeAt(int edge_index, Point3d point, double tolerance) {
   if (edge_index < 0 || edge_index >= brep_.m_E.Count()) {
     throw std::out_of_range("dino8::kernel::Brep::SplitNakedEdgeAt: edge_index " +
