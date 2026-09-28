@@ -177,6 +177,11 @@ class Application {
   // ---- accessors used by commands and panels ----
   Document& Doc() { return doc_; }
   CommandEngine& Engine() { return *engine_; }
+  // Exactly what the command line's InputText widget currently holds (see
+  // DrawCommandLine in Application.cpp) - used by main.cpp to keep the
+  // AT-SPI2 accessibility bridge's "Command Line" text region in sync with
+  // what's actually on screen (see platform/Accessibility.h).
+  const std::string& CommandInput() const { return command_input_; }
   LuaEngine& Lua() { return *lua_; }
   PythonEngine& Python() { return *python_; }
   CommandCatalog& Catalog() { return catalog_; }

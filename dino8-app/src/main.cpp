@@ -58,6 +58,7 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "gl/gl_loader.h"
@@ -70,6 +71,7 @@
 #include "app/Application.h"
 #include "app/Settings.h"
 #include "doc/Document.h"
+#include "platform/Accessibility.h"
 #include "platform/Clipboard.h"
 #include "ui/Theme.h"
 #include "util/ThreadPool.h"
@@ -432,6 +434,13 @@ int main(int argc, char** argv) {
   dino8::app::ApplyDinoTheme(app.ui_scale, static_cast<dino8::app::ThemeMode>(app.theme_mode), app.accent_color);
   if (!error.empty()) std::fprintf(stderr, "warning: %s\n", error.c_str());
 
+  // AT-SPI2 accessibility bridge for the command line (see
+  // platform/Accessibility.h and docs/ACCESSIBILITY.md) - started here,
+  // same as --smoke mode, so a headless run under Xvfb is just as
+  // accessible-tree-queryable as an interactive one; the frame loop below
+  // keeps its published text in sync every frame.
+  dino8::platform::InitAccessibility("Dino8");
+
   // In --smoke mode only (no console for a human to watch, this is what CI
   // reads): flush each history line to stdout the instant CommandEngine
   // records it, not after app.Frame()/Execute() returns. A command's own
@@ -596,6 +605,21 @@ int main(int argc, char** argv) {
         else if (cmd == "keyup") { std::string n; ss >> n; io.AddKeyEvent(key_of(n), false); }
         else if (cmd == "text") { std::string rest; std::getline(ss, rest); if (!rest.empty() && rest[0] == ' ') rest.erase(0, 1); io.AddInputCharactersUTF8(rest.c_str()); }
         else if (cmd == "wait") { ss >> wait_frames; }
+        else if (cmd == "waitfile") {
+          // Blocks the script - not the AT-SPI2 accessibility bridge, which
+          // keeps being pumped below so it keeps answering queries - until
+          // an external process creates a file at this path. Unlike "wait
+          // N frames", this lets an external test deterministically
+          // synchronize against a specific point in a headless run without
+          // racing real wall-clock time against however fast this
+          // machine's frames happen to render (see the only user of this
+          // directive, tests/smoke_accessibility.py).
+          std::string path; ss >> path;
+          while (!std::filesystem::exists(path)) {
+            dino8::platform::PumpAccessibilityEvents();
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+          }
+        }
         else if (cmd == "snap") {
           std::string name; int on = 1; ss >> name >> on;
           dino8::app::SnapSettings& sn = app.Snaps();
@@ -610,6 +634,7 @@ int main(int argc, char** argv) {
     }
     if (wait_frames > 0) --wait_frames;
     app.Frame();
+    dino8::platform::UpdateAccessibility(app.Engine().Prompt(), app.CommandInput(), app.Engine().History());
     // Catch up history_printed to whatever on_print_line already flushed
     // live as each line was recorded (see its own comment on why that has
     // to happen from inside CommandEngine::Print(), not here) - printing
@@ -668,6 +693,10 @@ int main(int argc, char** argv) {
   // on Windows/macOS, where clipboard ownership isn't held by a background
   // thread. See src/platform/Clipboard.h.
   dino8::platform::ShutdownClipboard();
+  // Unregisters from the AT-SPI2 registry and closes its D-Bus connection
+  // (Linux, when built with atspi-2/gio-2.0); a no-op everywhere else. See
+  // src/platform/Accessibility.h.
+  dino8::platform::ShutdownAccessibility();
   ImGui_ImplOpenGL3_Shutdown();
   ImGui_ImplGlfw_Shutdown();
   ImGui::DestroyContext();

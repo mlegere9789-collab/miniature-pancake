@@ -299,6 +299,8 @@ set(DINO8_SOURCES
   src/render/GlRenderer.cpp
   src/render/ImageIO.cpp
   src/platform/Clipboard.cpp
+  src/platform/AccessibilityTree.cpp
+  src/platform/Accessibility.cpp
   src/render/Bvh.cpp
   src/render/MaterialLibrary.cpp
   src/render/PathTracer.cpp
@@ -385,6 +387,25 @@ else()
   # (GLFW_BUILD_X11, above); this just links the same library directly for
   # our own ICCCM CLIPBOARD-selection-owner code.
   find_package(X11 REQUIRED)
+
+  # Real AT-SPI2 accessibility bridge for the command line (see
+  # src/platform/AccessibilityLinux.cpp and docs/ACCESSIBILITY.md) - built
+  # only when its D-Bus client libraries are actually available. Unlike
+  # X11 above, this is NOT a hard build requirement: a build environment
+  # without libatspi2.0-dev/libglib2.0-dev (most CI containers, most
+  # non-desktop Linux boxes) still gets a working Dino8, just without an
+  # AT-SPI-visible command line - Accessibility.cpp's DINO8_HAVE_ATSPI-gated
+  # no-op fallback covers that case identically to any other platform.
+  find_package(PkgConfig)
+  if(PkgConfig_FOUND)
+    pkg_check_modules(DINO8_ATSPI atspi-2 gio-2.0)
+  endif()
+  if(DINO8_ATSPI_FOUND)
+    list(APPEND DINO8_SOURCES src/platform/AccessibilityLinux.cpp)
+  else()
+    message(STATUS "atspi-2/gio-2.0 not found (libatspi2.0-dev, libglib2.0-dev) - building without the AT-SPI2 "
+                    "accessibility bridge; see dino8-app/docs/ACCESSIBILITY.md")
+  endif()
 endif()
 
 if(WIN32)
@@ -444,6 +465,12 @@ elseif(APPLE)
 else()
   target_include_directories(Dino8 PRIVATE ${X11_INCLUDE_DIR})
   target_link_libraries(Dino8 PRIVATE ${X11_LIBRARIES})
+  if(DINO8_ATSPI_FOUND)
+    target_compile_definitions(Dino8 PRIVATE DINO8_HAVE_ATSPI)
+    target_include_directories(Dino8 PRIVATE ${DINO8_ATSPI_INCLUDE_DIRS})
+    target_link_directories(Dino8 PRIVATE ${DINO8_ATSPI_LIBRARY_DIRS})
+    target_link_libraries(Dino8 PRIVATE ${DINO8_ATSPI_LIBRARIES})
+  endif()
 endif()
 
 if(MSVC)
@@ -550,6 +577,18 @@ if(DINO8_BUILD_TESTS)
   target_include_directories(dino8_test_g2_blend PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_link_libraries(dino8_test_g2_blend PRIVATE dino8_kernel)
   add_test(NAME dino8_g2_blend COMMAND dino8_test_g2_blend)
+
+  # Verifies the internal accessibility-tree mirror (see
+  # src/platform/AccessibilityTree.h and docs/ACCESSIBILITY.md) that
+  # AccessibilityLinux.cpp's real AT-SPI2 bridge publishes over D-Bus. Pure
+  # C++, no GLFW/ImGui/D-Bus/dino8_kernel dependency at all, so it runs
+  # identically on every platform and every CI job regardless of whether
+  # AT-SPI2's own client libraries (atspi-2, gio-2.0) were found at
+  # configure time - see tests/smoke_accessibility.py for the end-to-end
+  # AT-SPI2 counterpart, which does need those.
+  add_executable(dino8_test_accessibility_tree tests/test_accessibility_tree.cpp src/platform/AccessibilityTree.cpp)
+  target_include_directories(dino8_test_accessibility_tree PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  add_test(NAME dino8_accessibility_tree COMMAND dino8_test_accessibility_tree)
 
   # Numerically verifies VariableBlendSrf's own claim (cmd_fillet.cpp's
   # VariableBlendSrfCommand): that BuildBlendSurfaceG1/G2's new

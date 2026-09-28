@@ -2,11 +2,13 @@
 
 This document is an honest account of what Dino 8's UI does and does not
 support for users with disabilities, given that the UI is built on
-[Dear ImGui](https://github.com/ocornut/imgui). It covers three areas: a
+[Dear ImGui](https://github.com/ocornut/imgui). It covers four areas: a
 high-contrast theme (shipped), full keyboard operability (audited and
-fixed where it was broken), and screen-reader support (a hard platform
-limitation of ImGui itself - not shipped, and not something a few labels
-can fix).
+fixed where it was broken), screen-reader support for the command line
+specifically (a real, narrow AT-SPI2 bridge, shipped on Linux - see
+section 3), and screen-reader support for the rest of the UI (still a hard
+platform limitation of ImGui itself for the reasons section 3 explains -
+not shipped, and not something a few labels can fix).
 
 ## 1. High Contrast theme - shipped
 
@@ -153,46 +155,150 @@ every one of Dino 8's ~40 panels/dialogs frame by frame; a residual keyboard
 trap in a less-visited dialog is possible and would need to be reported
 and fixed the same way as the toolbar bug above.
 
-## 3. Screen-reader support - not implemented, and honestly can't be with a few labels
+## 3. Screen-reader support
 
-**Dear ImGui has no built-in accessibility-tree integration.** It draws
-every widget as textured triangles into a single OpenGL/Vulkan/DirectX
-framebuffer; there is no retained widget tree, no OS-level control
-handles, and nothing for a screen reader to attach to. This is a
-documented, structural limitation of the library, not a Dino 8-specific
-gap:
+**Dear ImGui has no built-in accessibility-tree integration**, and the
+vendored docking branch this project builds against does not add one
+either - there is no `IMGUI_ENABLE_ACCESSIBILITY`-style macro, no
+platform-backend accessibility hooks anywhere in `third_party/imgui`, and
+no `AtkObject`/`NSAccessibility`/`IAccessible`/AT-SPI callback of any kind
+in the GLFW backend it uses. ImGui draws every widget as textured
+triangles into a single OpenGL/Vulkan/DirectX framebuffer; there is no
+retained widget tree and no OS-level control handle for a screen reader to
+attach to, for *any* widget. That much of the original assessment below
+still holds for the UI as a whole:
 
 - **Windows**: no UI Automation (UIA) or MSAA integration. A screen reader
   like NVDA or Narrator sees an opaque window with no children.
 - **macOS**: no `NSAccessibility` integration. VoiceOver sees the same
   opaque window.
-- **Linux**: no AT-SPI integration. Orca sees the same opaque window.
+- **Linux**: no accessibility-tree bridge for the 3D viewport, panels, or
+  dialogs. Orca sees the same opaque window for those.
 
-Wiring any of the above up is a major, platform-specific undertaking that
-Dear ImGui itself does not attempt and has no supported extension point
-for: it means either (a) maintaining a shadow accessibility tree that
-mirrors every ImGui window/widget per frame and pushing it through each
-platform's native accessibility API, which the ImGui maintainers have
-discussed for years without landing, or (b) replacing ImGui's rendering
-for accessibility-tree purposes with a parallel native-widget layer, which
-would be a different UI toolkit in practice. Neither is a "few labels"
-fix, and claiming screen-reader support without one of those would be
-false.
+Wiring the *entire* UI up this way is still a major, platform-specific
+undertaking with no shortcut: it means maintaining a shadow accessibility
+tree that mirrors every ImGui window/widget per frame and pushing it
+through each platform's native accessibility API - exactly the scope the
+ImGui maintainers have discussed for years without landing project-wide.
+That has not changed and is not what shipped here.
 
-**What Dino 8 does have that is a real, if partial, prerequisite for any
-future screen-reader work**: every interactive control in the UI already
-carries non-empty, descriptive text that ImGui associates with it - either
-as the control's own visible label (menu items, buttons with captions,
-panel titles) or, for icon-only controls (toolbar/sidebar tool buttons),
-as the tooltip text shown on hover *and, as of the keyboard-nav fix above,
-on keyboard focus too* (`RichTooltip` in `src/ui/Toolbars.cpp`, sourced
-from the command catalog's name/description or the button's built-in
-fallback string). There is no silent icon-only button anywhere in the
-audited UI that has no text fallback at all. This is necessary scaffolding
-if ImGui or a Dino 8 fork ever grows real accessibility-tree support (that
-work would consume exactly this text), but it is not sufficient on its own
-and is not "screen reader support" - without an accessibility-tree bridge,
-none of this text reaches any screen reader today.
+### What has shipped: a real AT-SPI2 bridge for the command line (Linux)
+
+The one place in Dino 8 blind command-line-driven use is already the
+primary interaction model - the command line itself
+(`Application::DrawCommandLine`, backed by `command_input_` and
+`CommandEngine::History()`, see section 2) - now has a real, narrow
+accessibility bridge on Linux: `src/platform/AccessibilityLinux.cpp`
+implements the actual AT-SPI2 D-Bus protocol (`org.a11y.atspi.Accessible`,
+`.Application`, `.Text`) by hand, on the app's own D-Bus connection, and
+registers with the real `at-spi2-registryd` via `org.a11y.atspi.Socket.Embed`
+- the same mechanism GNOME's own `atk-bridge-2.0` uses for every GTK app.
+This is not a toy or a simulation: it is the real protocol, verified
+end-to-end against the real registry daemon and the real `pyatspi` client
+library (see "Verifying it yourself" below).
+
+**What it exposes**: exactly one accessible object, named "Command Line"
+(`ATSPI_ROLE_LOG` - "a text widget or container holding log content"),
+under the application root. Its `Text.GetText()` returns the full
+command-history log (`CommandEngine::History()`, one line per entry),
+followed by the current prompt and whatever is live in the input buffer -
+the same three pieces of information the on-screen `##CommandLine` window
+shows, refreshed every frame (`platform::UpdateAccessibility`, called from
+`main.cpp`'s frame loop). A screen reader (or `pyatspi`/`dbus-send`) can
+read this value at any time and see it change the moment a command runs,
+without needing to see the screen at all.
+
+**Why the command line and not the rest of the UI**: it is the one region
+where "expose the text" is both sufficient (there is no meaningful spatial
+layout to convey - it *is* a stream of text) and complete (every command
+in the ~1000+ catalog is already reachable by typing into it, per section
+2, so a screen-reader user who can read and drive this one region already
+has full functional access to the app, not just a fragment of it).
+Mirroring the 3D viewport, panels, and dialogs the same way would need the
+shadow-tree-for-every-widget effort described above; this does not
+extrapolate to "screen reader support" for those in the way a browser or
+native-toolkit app would provide it, and this document does not claim
+otherwise.
+
+**Build-time and platform scope**: `AccessibilityLinux.cpp` is compiled
+only when `libatspi2.0-dev` and `libglib2.0-dev` (`atspi-2`/`gio-2.0` via
+`pkg-config`) are found at CMake configure time (see `CMakeLists.txt`) -
+this is a soft dependency, not a hard build requirement, so a build
+environment without them (most CI containers, most non-desktop Linux
+boxes) still produces a working Dino8, just without an AT-SPI-visible
+command line. `platform/Accessibility.h`'s functions become no-ops in that
+case, on Windows/macOS (no bridge implemented there - AT-SPI2 is
+Linux-specific; UIA/NSAccessibility bridges for this same one region would
+be the natural next step but are not implemented), and if the AT-SPI2 bus
+itself (`org.a11y.Bus`/`at-spi2-registryd`) simply isn't running at
+process start (accessibility turned off, headless server with no a11y
+daemon) - every one of those is a silent, logged no-op, never a crash or a
+hang.
+
+**Known gaps in the bridge itself**, for whoever extends it next:
+
+- `GetState` always returns an empty state set rather than real
+  focus/visible/enabled bits - a deliberate choice (an empty set is
+  honestly "unknown", a wrong bitfield could read as "hidden" to some
+  clients) but a fuller implementation would report real state.
+- No `Component` interface (no bounding-box/extents), so a client that
+  expects to *locate* the region on screen (rather than just read its
+  text) has nothing to query.
+- The region is read-only from AT-SPI's side: `Text.SetCaretOffset`
+  is implemented but always reports failure, since there is no caret to
+  move independently of typing.
+- The live input and the history log are merged into one `Text` value
+  rather than exposed as two separate accessible objects - chosen to
+  match what the on-screen widget itself shows as a single unit, but a
+  screen-reader UX designer might reasonably want them distinguishable.
+- The root's `Parent` property is a null reference rather than the
+  registry's real desktop reference - harmless for the forward traversal
+  (`Desktop -> Application -> Command Line`) this bridge is verified
+  against, but would matter for a client that walks upward from a
+  reference it already holds.
+
+**Internal design, independent of AT-SPI itself**: the accessible tree's
+*shape and text* are built by a small, pure, platform-independent module,
+`src/platform/AccessibilityTree.h`/`.cpp` (`BuildAccessibleTree`,
+`BuildCommandLineText`), with its own unit test
+(`tests/test_accessibility_tree.cpp`, registered as the `dino8_accessibility_tree`
+CTest target) that needs no display, no D-Bus, and no AT-SPI2 build at
+all - it runs on every platform and every CI job. `AccessibilityLinux.cpp`
+is a thin transport on top of that: it only marshals `BuildCommandLineText`'s
+output into AT-SPI2's D-Bus wire format and answers `Text.GetText`/
+`GetChildren`/etc. from it. This split means the one part that's genuinely
+hard to unit-test (a live D-Bus service) is also the one part with the
+least logic in it.
+
+### Verifying it yourself
+
+`tests/smoke_accessibility.py` is a real, automated, end-to-end integration
+test: it spawns the actual built `Dino8` binary under `--smoke`, starts a
+real `dbus-daemon` and the real `at-spi2-registryd`, and uses the real
+`pyatspi` client library to walk the AT-SPI2 desktop and find Dino8's
+"Command Line" accessible - the same object a screen reader would find -
+then asserts its `Text.GetText()` value changes after a real command
+(`Line 0,0,0 10,10,0`) runs. It does not fake, mock, or stub any part of
+the AT-SPI2 stack.
+
+This was run successfully in the environment this feature was built and
+verified in, after installing: `libatspi2.0-dev`, `libglib2.0-dev`,
+`at-spi2-core` (provides `at-spi2-registryd`), `dbus-x11` (provides
+`dbus-daemon`), and `python3-pyatspi` (Ubuntu 24.04/noble package names).
+One environment-specific wrinkle worth knowing about, not specific to this
+project: Debian/Ubuntu's `python3-pyatspi`/`python3-gi` ship a `gi._gi`
+extension compiled for one specific CPython ABI (on the box this was
+verified on, that was `python3.12`, even though the default `python3` on
+`PATH` resolved to a different, incompatible CPython build) - if
+`import pyatspi` fails in whatever interpreter you run the script with,
+find the interpreter whose compiled extension actually matches (the
+module docstring in `tests/smoke_accessibility.py` explains how) and
+re-run with that one explicitly, e.g. `python3.12 tests/smoke_accessibility.py
+build/Dino8`. This is an environment/packaging detail, not a defect in the
+bridge or the test.
+
+`dino8_accessibility_tree` (the internal-tree unit test above) has no such
+requirement and runs as part of the normal CTest suite everywhere.
 
 ## Summary for RHINO8_KILLER_AUDIT.md
 
@@ -200,4 +306,5 @@ none of this text reaches any screen reader today.
 |---|---|
 | High-contrast theme | Shipped: Options > General > Theme > High Contrast |
 | Keyboard-only operability | Audited; one real bug found and fixed (toolbar/sidebar/tab-strip/bell/viewport-title buttons were `InvisibleButton` without `EnableNav`, so Tab skipped them); nav-focus tooltips added for icon-only buttons; free 3D viewport orbit and a few inherently-drag widgets remain mouse-only by design, same as in Rhino |
-| Screen-reader support | Not implemented - hard ImGui platform limitation (no accessibility-tree bridge on any OS). Descriptive text/tooltips exist everywhere as a prerequisite, but that is not screen-reader support |
+| Screen-reader support (command line) | Shipped on Linux: a real AT-SPI2 bridge (`src/platform/AccessibilityLinux.cpp`) exposes the command line's live text and full history log as one queryable, updating accessible text region, verified end-to-end against the real registry daemon and `pyatspi` (`tests/smoke_accessibility.py`). Windows/macOS not implemented. Built only when `atspi-2`/`gio-2.0` are available; a silent no-op otherwise |
+| Screen-reader support (rest of the UI) | Not implemented - hard ImGui platform limitation (no accessibility-tree bridge for the 3D viewport/panels/dialogs on any OS). Descriptive text/tooltips exist everywhere as a prerequisite, but that is not screen-reader support |
