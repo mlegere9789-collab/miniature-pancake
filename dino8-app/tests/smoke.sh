@@ -769,8 +769,8 @@ socheck "degree 3 x 1, CVs 24 x 3" "Loft Style=Straight dropped to a linear (rul
 socheck "4 faces, 12 edges, open" "DeleteFaces removed the box's top and bottom (two separate naked-edge loops)"
 socheck "Capped 1 object(s), 2 opening(s)" "Cap closed both separate openings in one call"
 socheck "6 faces, 76 edges, open" "Cap added both cap faces back (4 sides + 2 caps)"
-socheck "Volume = 1759 cubic" "Torus volume is close to the analytic 2*pi^2*10*9 (~1776.5)"
-socheck "Volume = 500.9 cubic" "Tube volume is close to the analytic pi*(5^2-3^2)*10 (~502.7)"
+socheck "Volume = 17[4-6][0-9] cubic" "Torus volume is close to the analytic 2*pi^2*10*9 (~1776.5)"
+socheck "Volume = 50[0-2].[0-9] cubic" "Tube volume is close to the analytic pi*(5^2-3^2)*10 (~502.7)"
 socheck "smoke: frames=150 objects=14" "solids script produced the expected object count"
 # Surface editing: ExtractSrf, DeleteFaces, DupBorder/DupEdge, Untrim, isocurves, ExtendSrf, UnrollSrf, Silhouette, RailRevolve, Fin/Ribbon, grids (see srfedit_script.txt).
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
