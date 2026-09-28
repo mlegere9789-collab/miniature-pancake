@@ -57,6 +57,37 @@ struct InterferenceResult {
 std::vector<InterferenceResult> ComputeInterference(const std::vector<Mesh>& bodies,
                                                       double clearance = 0.0);
 
+// One mutual overlap of 3 or more bodies at once, found by
+// ComputeMultiWayInterference(): `indices` (into the caller's own input
+// vector, strictly increasing, size >= 3) all share the nonzero-volume
+// `solid` - the real Boolean intersection of every body named in
+// `indices`, not just each pair of them. This is the case
+// ComputeInterference() itself cannot report: three bodies can overlap
+// pairwise (A/B, B/C) with no point common to all three (the classic
+// Venn-diagram "ring" case), and AutoCAD's own INTERFERE distinguishes
+// that from a genuine 3-way (or higher) simultaneous clash.
+struct MultiInterferenceResult {
+  std::vector<size_t> indices;
+  Mesh solid;
+};
+
+// True N-way simultaneous overlap, the other half of AutoCAD-style
+// INTERFERE that ComputeInterference() alone doesn't cover. Builds on
+// exactly the same pairwise overlaps ComputeInterference() computes (same
+// bbox-prefilter-then-real-Boolean-intersection contract, same
+// `clearance` meaning), then keeps intersecting each surviving overlap
+// solid with one more body (bbox-prefiltered against the overlap's own
+// bounding box, then a real BooleanCombine(..., Intersection), kept only
+// if FaceCount() > 0) for as long as bodies remain and the shared volume
+// stays nonzero - so a result for `{0, 1, 2}` means bodies 0, 1 AND 2 all
+// truly share a common volume, not merely that each pair happens to
+// overlap somewhere. Only 3-or-more-way results are returned (the 2-way
+// case is exactly ComputeInterference()'s own job); every body must be
+// IsClosedManifold() like ComputeInterference() requires, with the same
+// std::runtime_error failure mode inherited from BooleanCombine().
+std::vector<MultiInterferenceResult> ComputeMultiWayInterference(const std::vector<Mesh>& bodies,
+                                                                   double clearance = 0.0);
+
 // Splits `mesh` into two closed, watertight halves along the plane
 // `{p : dot(p, plane_normal) == plane_offset}`, backed by Manifold's own
 // `Manifold::SplitByPlane` - the real half-space-intersection primitive

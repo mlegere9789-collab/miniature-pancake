@@ -200,6 +200,66 @@ std::vector<InterferenceResult> ComputeInterference(const std::vector<Mesh>& bod
   return results;
 }
 
+namespace {
+
+// One candidate mutual overlap being extended, level by level, from an
+// initial pairwise overlap: `indices` names which input bodies share
+// `solid` (their real accumulated Boolean intersection so far), and
+// `box` is `solid`'s own bounding box, cached so the next level's
+// bbox-prefilter doesn't recompute it from scratch for every candidate.
+struct MultiOverlapCandidate {
+  std::vector<size_t> indices;
+  Mesh solid;
+  BoundingBox box;
+};
+
+}  // namespace
+
+std::vector<MultiInterferenceResult> ComputeMultiWayInterference(const std::vector<Mesh>& bodies,
+                                                                   double clearance) {
+  std::vector<BoundingBox> boxes;
+  boxes.reserve(bodies.size());
+  for (const Mesh& body : bodies) boxes.push_back(body.GetBoundingBox());
+
+  // Level 2: every pairwise overlap, computed the same way
+  // ComputeInterference() itself does - this is the seed every higher
+  // level extends from, one more body at a time.
+  std::vector<MultiOverlapCandidate> frontier;
+  for (size_t i = 0; i < bodies.size(); ++i) {
+    for (size_t j = i + 1; j < bodies.size(); ++j) {
+      if (!BoundingBoxesTouch(boxes[i], boxes[j], clearance)) continue;
+      Mesh overlap = BooleanCombine(bodies[i], bodies[j], BooleanOp::Intersection);
+      if (overlap.FaceCount() == 0) continue;
+      BoundingBox box = overlap.GetBoundingBox();
+      frontier.push_back(MultiOverlapCandidate{{i, j}, std::move(overlap), box});
+    }
+  }
+
+  std::vector<MultiInterferenceResult> results;
+  while (!frontier.empty()) {
+    std::vector<MultiOverlapCandidate> next_frontier;
+    for (const MultiOverlapCandidate& candidate : frontier) {
+      // Only try bodies with a higher index than every one already in
+      // this candidate - each growing combination is enumerated exactly
+      // once (in increasing order), never once per permutation of the
+      // same set of bodies.
+      for (size_t k = candidate.indices.back() + 1; k < bodies.size(); ++k) {
+        if (!BoundingBoxesTouch(candidate.box, boxes[k], clearance)) continue;
+        Mesh overlap = BooleanCombine(candidate.solid, bodies[k], BooleanOp::Intersection);
+        if (overlap.FaceCount() == 0) continue;
+
+        std::vector<size_t> indices = candidate.indices;
+        indices.push_back(k);
+        BoundingBox box = overlap.GetBoundingBox();
+        results.push_back(MultiInterferenceResult{indices, overlap});
+        next_frontier.push_back(MultiOverlapCandidate{std::move(indices), std::move(overlap), box});
+      }
+    }
+    frontier = std::move(next_frontier);
+  }
+  return results;
+}
+
 std::pair<Mesh, Mesh> SplitByPlane(const Mesh& mesh, Vector3d plane_normal, double plane_offset) {
   const manifold::vec3 n(plane_normal.x, plane_normal.y, plane_normal.z);
   const manifold::Manifold m = ToManifold(mesh);

@@ -6758,6 +6758,121 @@ void TestComputeInterference() {
   }
 }
 
+void TestComputeMultiWayInterference() {
+  using dino8::kernel::ComputeMultiWayInterference;
+  using dino8::kernel::Mesh;
+
+  // Three boxes with a genuine common region shared by all three:
+  // A=[0,2]x[0,2]x[0,2], B=[1,3]x[0,2]x[0,2], C=[0,2]x[1,3]x[0,2].
+  // A/\B narrows x to [1,2]; intersecting that with C narrows y to [1,2]
+  // too, z stays [0,2] throughout - so the true triple-common region is
+  // [1,2]x[1,2]x[0,2], volume 1*1*2 = 2, a closed form independent of the
+  // implementation being tested.
+  {
+    const auto a = MakeBox(0, 0, 0, 2, 2, 2);
+    const auto b = MakeBox(1, 0, 0, 3, 2, 2);
+    const auto c = MakeBox(0, 1, 0, 2, 3, 2);
+
+    const auto results = ComputeMultiWayInterference({a, b, c});
+    Check(results.size() == 1, "three mutually-overlapping boxes report exactly one 3-way interference");
+    if (results.size() == 1) {
+      Check(results[0].indices.size() == 3 && results[0].indices[0] == 0 &&
+                results[0].indices[1] == 1 && results[0].indices[2] == 2,
+            "the reported triple names all three bodies (0, 1, 2), strictly increasing");
+      Check(std::abs(results[0].solid.Volume() - 2.0) < 1e-6,
+            "the reported solid is the real triple-intersection volume (2), matching the "
+            "independent closed-form [1,2]x[1,2]x[0,2] region");
+    }
+  }
+
+  // A "chain" of three boxes along x: A=[-10,-1], B=[-2,2], C=[1,10] (full
+  // y/z range [0,1] each). A/\B and B/\C are each individually nonzero
+  // (overlap in x = [-2,-1] and [1,2] respectively), but A and C's own
+  // bounding boxes don't even touch (A ends at x=-1, C starts at x=1) -
+  // the classic case a merely-pairwise-transitive implementation would
+  // wrongly report as a 3-way clash. No true triple-common point exists,
+  // so this must report nothing.
+  {
+    const auto a = MakeBox(-10, 0, 0, -1, 1, 1);
+    const auto b = MakeBox(-2, 0, 0, 2, 1, 1);
+    const auto c = MakeBox(1, 0, 0, 10, 1, 1);
+
+    const auto results = ComputeMultiWayInterference({a, b, c});
+    Check(results.empty(),
+          "a pairwise-overlapping chain (A/B, B/C) with no true triple-common region "
+          "reports zero 3-way interferences, not a false positive from transitivity");
+  }
+
+  // Four boxes all sharing one common region, extending the triple case
+  // above by one more body: D=[1,2]x[1,2]x[0,1] narrows the same
+  // [1,2]x[1,2]x[0,2] triple region down to z in [0,1], volume 1*1*1 = 1.
+  // The 3-way sub-combinations {0,1,2}, {0,1,3}, {0,2,3}, {1,2,3} are NOT
+  // asserted individually here (their own volumes depend on where D's
+  // face falls relative to each), only that the true 4-way result exists
+  // with the right membership and closed-form volume.
+  {
+    const auto a = MakeBox(0, 0, 0, 2, 2, 2);
+    const auto b = MakeBox(1, 0, 0, 3, 2, 2);
+    const auto c = MakeBox(0, 1, 0, 2, 3, 2);
+    const auto d = MakeBox(1, 1, 0, 2, 2, 1);
+
+    const auto results = ComputeMultiWayInterference({a, b, c, d});
+    bool found_quadruple = false;
+    for (const auto& result : results) {
+      if (result.indices.size() != 4) continue;
+      Check(result.indices[0] == 0 && result.indices[1] == 1 && result.indices[2] == 2 &&
+                result.indices[3] == 3,
+            "the reported quadruple names all four bodies (0, 1, 2, 3), strictly increasing");
+      Check(std::abs(result.solid.Volume() - 1.0) < 1e-6,
+            "the reported 4-way solid matches the independent closed-form [1,2]x[1,2]x[0,1] "
+            "region (volume 1)");
+      found_quadruple = true;
+    }
+    Check(found_quadruple, "four mutually-overlapping boxes report a genuine 4-way interference");
+  }
+
+  // Disjoint bodies (a plain pair, no third body at all) never fabricate
+  // any 3-way result - there's nothing to extend a pair into.
+  {
+    const auto a = MakeBox(0, 0, 0, 2, 2, 2);
+    const auto b = MakeBox(1, 1, 1, 3, 3, 3);
+    const auto results = ComputeMultiWayInterference({a, b});
+    Check(results.empty(), "only two bodies can never produce a 3-or-more-way result");
+  }
+
+  // A non-closed operand reachable by the bbox prefilter throws, the same
+  // failure mode ComputeInterference()/BooleanCombine() themselves use -
+  // whether that operand is hit during the initial pairwise scan or
+  // while extending an already-found pairwise overlap with one more
+  // body, the caller never gets a silently wrong or partial result back.
+  {
+    const auto a = MakeBox(0, 0, 0, 2, 2, 2);
+    const auto b = MakeBox(1, 0, 0, 3, 2, 2);
+
+    Mesh open_triangle;
+    ON_Mesh& raw = open_triangle.raw();
+    raw.m_V.Append(ON_3fPoint(0.5f, 0.5f, 0.5f));
+    raw.m_V.Append(ON_3fPoint(1.5f, 0.5f, 0.5f));
+    raw.m_V.Append(ON_3fPoint(0.5f, 1.5f, 0.5f));
+    ON_MeshFace face;
+    face.vi[0] = 0;
+    face.vi[1] = 1;
+    face.vi[2] = 2;
+    face.vi[3] = 2;
+    raw.m_F.Append(face);
+
+    bool threw = false;
+    try {
+      ComputeMultiWayInterference({a, b, open_triangle});
+    } catch (const std::runtime_error&) {
+      threw = true;
+    }
+    Check(threw,
+          "a non-closed operand reachable while extending a pairwise overlap throws "
+          "std::runtime_error, same failure mode as BooleanCombine() itself");
+  }
+}
+
 void TestSplitByPlane() {
   using dino8::kernel::Mesh;
   using dino8::kernel::Point3d;
@@ -38437,6 +38552,7 @@ int main() {
   TestBooleanDifference();
   TestBooleanSymmetricDifference();
   TestComputeInterference();
+  TestComputeMultiWayInterference();
   TestBrepBoxIsClosedAndWatertight();
   TestBrepLacksFullOpenNurbsTopologyButStillUsable();
   TestBrepGetTightBoundingBox();
