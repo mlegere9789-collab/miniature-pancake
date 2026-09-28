@@ -504,6 +504,64 @@ Result NurbsSurface::Rebuild(int u_count, int v_count, int u_degree, int v_degre
   return Result::Ok;
 }
 
+Result NurbsSurface::DecomposeToBeziers(std::vector<NurbsSurface>& out_patches) const {
+  out_patches.clear();
+
+  ON_NurbsSurface s = surface_;
+  bool already_bezier = true;
+  for (int dir = 0; dir < 2; ++dir) {
+    const int degree = s.Degree(dir);
+    const int span_count = s.SpanCount(dir);
+    if (span_count > 1) already_bezier = false;
+    std::vector<double> span_vector(static_cast<size_t>(span_count) + 1);
+    if (!s.GetSpanVector(dir, span_vector.data())) {
+      return Result::Failed;
+    }
+    // Every interior breakpoint gets raised to full multiplicity
+    // `degree` - InsertKnot()'s multiplicity argument is the *target*
+    // multiplicity at that value (verified against OpenNURBS' own
+    // ON_InsertKnot: `m = knot_multiplicity - <count already there>`),
+    // so this is correct even if the breakpoint already has multiplicity
+    // > 1 (e.g. a G0 kink) - it only ever adds the knots still missing.
+    for (int i = 1; i < span_count; ++i) {
+      if (!s.InsertKnot(dir, span_vector[static_cast<size_t>(i)], degree)) {
+        return Result::Failed;
+      }
+    }
+  }
+
+  const int u_span_count = s.SpanCount(0);
+  const int v_span_count = s.SpanCount(1);
+  std::vector<double> u_span_vector(static_cast<size_t>(u_span_count) + 1);
+  std::vector<double> v_span_vector(static_cast<size_t>(v_span_count) + 1);
+  if (!s.GetSpanVector(0, u_span_vector.data()) || !s.GetSpanVector(1, v_span_vector.data())) {
+    return Result::Failed;
+  }
+
+  out_patches.reserve(static_cast<size_t>(u_span_count) * static_cast<size_t>(v_span_count));
+  for (int vi = 0; vi < v_span_count; ++vi) {
+    for (int ui = 0; ui < u_span_count; ++ui) {
+      ON_NurbsSurface patch = s;
+      // Both cuts land exactly on knot values already present at full
+      // multiplicity from the insertion pass above, so `Trim()` (de Boor
+      // evaluation at an existing knot) reproduces that cell exactly -
+      // the same exact-trim-at-a-knot pattern the app's own
+      // ConvertToBeziers command already relies on for curves.
+      if (!patch.Trim(0, ON_Interval(u_span_vector[static_cast<size_t>(ui)], u_span_vector[static_cast<size_t>(ui) + 1]))) {
+        return Result::Failed;
+      }
+      if (!patch.Trim(1, ON_Interval(v_span_vector[static_cast<size_t>(vi)], v_span_vector[static_cast<size_t>(vi) + 1]))) {
+        return Result::Failed;
+      }
+      NurbsSurface piece;
+      piece.raw() = patch;
+      out_patches.push_back(std::move(piece));
+    }
+  }
+
+  return already_bezier ? Result::NoOpAlreadySatisfied : Result::Ok;
+}
+
 namespace {
 
 // Degree-elevates `a`/`b` to their shared max degree, then inserts each

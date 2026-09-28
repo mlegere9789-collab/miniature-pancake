@@ -928,6 +928,35 @@ class NurbsSurface {
   Result Rebuild(int u_count, int v_count, int u_degree, int v_degree, NurbsSurface& out,
                  double* out_max_deviation = nullptr, int u_samples = 64, int v_samples = 64) const;
 
+  // Splits this surface into an independent tensor-product Bezier patch
+  // for every (u-span, v-span) cell of its knot vectors - the surface
+  // counterpart of the app's curve-only `ConvertToBeziers` command
+  // (dino8-app/src/commands/cmd_curves2.cpp, `ON_NurbsCurve::
+  // MakePiecewiseBezier` + per-span `Trim`), which OpenNURBS has no
+  // direct surface equivalent of (`ON_NurbsSurface` exposes `InsertKnot`
+  // and `Trim` per direction but no `MakePiecewiseBezier`). Exact, not
+  // approximate: every interior knot in both directions is first raised
+  // to full multiplicity (= that direction's degree) via real Boehm
+  // knot insertion (`ON_NurbsSurface::InsertKnot`, which already treats
+  // its multiplicity argument as a target rather than an increment, so
+  // this is safe even if some interior knot already has multiplicity >
+  // 1), then each cell is carved out with two per-direction `Trim`
+  // calls at existing knot values - the same exact-trim-at-a-knot
+  // pattern `ConvertToBeziers` already relies on for curves. Every
+  // output patch keeps this surface's degree, rationality and
+  // dimension, and its own U/V sub-domain of this surface's domain (not
+  // renormalized to [0,1]x[0,1]) - `ConvertToBeziers`'s own convention.
+  // `out_patches` is ordered with U varying fastest (index = v_span *
+  // u_span_count + u_span), row-major like `FromControlGrid`'s own
+  // control_grid convention.
+  //
+  // Returns Result::NoOpAlreadySatisfied (with `out_patches` still
+  // holding that single patch - callers never need to special-case the
+  // return value) if this surface is already one Bezier span in both
+  // directions; Result::Failed if a span vector can't be read or a
+  // knot insertion/trim fails (shouldn't happen for a valid surface).
+  Result DecomposeToBeziers(std::vector<NurbsSurface>& out_patches) const;
+
   // MatchSrf: edits this surface in place so its boundary edge where
   // parameter `fixed_direction` (0 = U, 1 = V) sits at its domain min
   // (`at_min` true) or max coincides with `target`'s boundary edge

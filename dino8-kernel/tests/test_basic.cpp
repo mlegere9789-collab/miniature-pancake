@@ -27138,6 +27138,95 @@ void TestSurfaceRebuildIsExactWhenRepresentableAndHonestOtherwise() {
   Check(threw, "Rebuild throws on fewer samples than control points");
 }
 
+// ---- NurbsSurface::DecomposeToBeziers ----
+
+void TestSurfaceDecomposeToBeziersProducesExactSpanPatches() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Result;
+
+  // 6x4 control points, degree 3x3: U has 3 spans (breaks at 1, 2 over
+  // domain [0, 3]), V is already a single Bezier span ([0, 1]).
+  const NurbsSurface src = WigglyBicubic(6, 4);
+  std::vector<NurbsSurface> patches;
+  Check(src.DecomposeToBeziers(patches) == Result::Ok, "DecomposeToBeziers on a 3-span-U/1-span-V surface returns Ok");
+  Check(patches.size() == 3, "DecomposeToBeziers on a 3-span-U/1-span-V surface produces exactly 3 patches");
+
+  for (int ui = 0; ui < 3; ++ui) {
+    const NurbsSurface& patch = patches[static_cast<size_t>(ui)];
+    Check(patch.DegreeU() == 3 && patch.DegreeV() == 3, "each patch keeps the source's degree 3x3");
+    Check(patch.raw().SpanCount(0) == 1 && patch.raw().SpanCount(1) == 1, "each patch is a single Bezier span in both directions");
+    Check(patch.CVCountU() == 4 && patch.CVCountV() == 4, "each patch has the expected 4x4 (order x order) control net");
+    Check(std::abs(patch.Domain(0).min - ui) < 1e-12 && std::abs(patch.Domain(0).max - (ui + 1)) < 1e-12,
+          "each patch's U sub-domain is exactly [span_index, span_index + 1]");
+    Check(patch.Domain(1).min == 0.0 && patch.Domain(1).max == 1.0, "each patch keeps the source's own untouched V domain");
+    Check(!patch.IsRational(), "each patch stays non-rational, matching the source");
+
+    // Exact reproduction: sampling the patch over its own sub-domain must
+    // match the source surface at the identical (u, v) - this is a real
+    // knot-insertion + exact-trim decomposition, not a resample/refit.
+    double worst = 0.0;
+    for (int i = 0; i <= 8; ++i)
+      for (int j = 0; j <= 8; ++j) {
+        const double u = ui + i / 8.0;
+        const double v = j / 8.0;
+        worst = std::max(worst, patch.PointAt(u, v).DistanceTo(src.PointAt(u, v)));
+      }
+    Check(worst < 1e-9, "each patch reproduces the source surface exactly on its own sub-domain (< 1e-9)");
+  }
+
+  // A surface already a single Bezier span in both directions is a
+  // reported no-op, but still hands back that one patch so callers never
+  // need to special-case the return value.
+  const NurbsSurface already = NurbsSurface::FromControlGrid(
+      {dino8::kernel::Point3d(0, 0, 0), dino8::kernel::Point3d(1, 0, 1), dino8::kernel::Point3d(2, 0, 0),
+       dino8::kernel::Point3d(3, 0, 1), dino8::kernel::Point3d(0, 1, 1), dino8::kernel::Point3d(1, 1, 0),
+       dino8::kernel::Point3d(2, 1, 1), dino8::kernel::Point3d(3, 1, 0), dino8::kernel::Point3d(0, 2, 0),
+       dino8::kernel::Point3d(1, 2, 1), dino8::kernel::Point3d(2, 2, 0), dino8::kernel::Point3d(3, 2, 1),
+       dino8::kernel::Point3d(0, 3, 1), dino8::kernel::Point3d(1, 3, 0), dino8::kernel::Point3d(2, 3, 1),
+       dino8::kernel::Point3d(3, 3, 0)},
+      4, 4, 3, 3);
+  std::vector<NurbsSurface> already_patches;
+  Check(already.DecomposeToBeziers(already_patches) == Result::NoOpAlreadySatisfied,
+        "DecomposeToBeziers on an already-single-Bezier-span surface reports NoOpAlreadySatisfied");
+  Check(already_patches.size() == 1, "...but still returns that one patch");
+  double already_cv_err = 0.0;
+  for (int i = 0; i < 4; ++i)
+    for (int j = 0; j < 4; ++j)
+      already_cv_err = std::max(already_cv_err, already_patches[0].ControlPointAt(i, j).DistanceTo(already.ControlPointAt(i, j)));
+  Check(already_cv_err < 1e-12, "...with control points bit-identical to the source");
+
+  // A rational, multi-span-in-both-directions surface (a sphere): every
+  // patch must stay rational (weights carried through the knot
+  // insertion + trim, not dropped), and the patches must exactly tile
+  // the source's full domain and shape.
+  ON_NurbsSurface sphere_raw;
+  ON_Sphere(ON_3dPoint(1, -2, 0.5), 2.5).GetNurbForm(sphere_raw);
+  NurbsSurface sphere;
+  sphere.raw() = sphere_raw;
+  const int expected_u_spans = sphere.raw().SpanCount(0);
+  const int expected_v_spans = sphere.raw().SpanCount(1);
+  Check(expected_u_spans > 1 || expected_v_spans > 1, "DecomposeToBeziers setup: the sphere's own NURBS form has more than one span somewhere");
+  std::vector<NurbsSurface> sphere_patches;
+  const Result sphere_result = sphere.DecomposeToBeziers(sphere_patches);
+  Check(sphere_result == Result::Ok, "DecomposeToBeziers on the sphere's multi-span rational form returns Ok");
+  Check(sphere_patches.size() == static_cast<size_t>(expected_u_spans) * static_cast<size_t>(expected_v_spans),
+        "DecomposeToBeziers produces exactly u_span_count * v_span_count patches for the sphere");
+  double sphere_worst = 0.0;
+  for (const NurbsSurface& patch : sphere_patches) {
+    Check(patch.IsRational(), "every sphere patch stays rational");
+    Check(patch.raw().SpanCount(0) == 1 && patch.raw().SpanCount(1) == 1, "every sphere patch is a single Bezier span in both directions");
+    const auto d0 = patch.Domain(0);
+    const auto d1 = patch.Domain(1);
+    for (int i = 0; i <= 4; ++i)
+      for (int j = 0; j <= 4; ++j) {
+        const double u = d0.min + (d0.max - d0.min) * i / 4.0;
+        const double v = d1.min + (d1.max - d1.min) * j / 4.0;
+        sphere_worst = std::max(sphere_worst, patch.PointAt(u, v).DistanceTo(sphere.PointAt(u, v)));
+      }
+  }
+  Check(sphere_worst < 1e-9, "every sphere patch reproduces the source sphere exactly on its own sub-domain (< 1e-9)");
+}
+
 // ---- NurbsSurface::MatchEdge ----
 
 namespace {
@@ -33214,6 +33303,7 @@ int main() {
 
   TestSurfaceSetDomainRescalesKnotsWithoutMovingTheShape();
   TestSurfaceRebuildIsExactWhenRepresentableAndHonestOtherwise();
+  TestSurfaceDecomposeToBeziersProducesExactSpanPatches();
 
   TestSurfaceMatchEdgePositionTangentCurvature();
   TestSurfaceMatchEdgeToRationalSphereAndRefusals();

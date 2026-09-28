@@ -1,6 +1,6 @@
 # Fossilith / Dino 8 parity map (2026-09-28)
 
-**Fossilith vs Parasolid/ACIS = 64.5% (weighted, verified); Dino 8 vs Rhino 8 + AutoCAD 2027 = 71.4%.**
+**Fossilith vs Parasolid/ACIS = 64.6% (weighted, verified); Dino 8 vs Rhino 8 + AutoCAD 2027 = 71.4%.**
 
 This run recomputes the parity map from scratch against the live repository at
 `/home/user/miniature-pancake` on `claude/pdf-audit-i2bvwm`, superseding the
@@ -234,7 +234,7 @@ equally reasonable split of the same underlying capabilities.
 | kernel: Kernel-level data exchange | 1 | 27 | 8 | 11 | 8 | 50.0% |
 | kernel: Feature operations | 1 | 24 | 5 | 14 | 5 | 50.0% |
 | Fossilith kernel — Curve operations | 1 | 28 | 17 | 11 | 0 | 80.4% |
-| Kernel Surface Operations (Fossilith / Dino 8) | 1 | 29 | 14 | 14 | 1 | 72.4% |
+| Kernel Surface Operations (Fossilith / Dino 8) | 1 | 29 | 14 | 15 | 0 | 74.1% |
 | Kernel: SubD & mesh kernel support | 0.75 | 22 | 14 | 5 | 3 | 75.0% |
 
 Two rows changed from the prior measurement: **Local / direct-edit
@@ -254,6 +254,16 @@ support** row's own "SubD non-manifold/multi-body validity checks" item
 category's own bullet list below. This is the only row this document's own
 headline number has moved for since the measurement above was taken
 (64.4% → 64.5%, weighted); no other category was touched.
+
+**Second same-day follow-up:** `NurbsSurface::DecomposeToBeziers`
+(dino8-kernel/src/surface_edit.cpp:507; surface.h:958) landed, closing the
+**Kernel Surface Operations (Fossilith / Dino 8)** row's own "Convert to
+Beziers (surface)" item — the category's one remaining `missing` item
+(72.4% → 74.1%, 14/14/1 → 14/15/0 present/partial/missing) — detailed in
+that category's own bullet list below. Weighted the same way as the
+`SubD::Check()` follow-up above, this moves the headline by the same
+marginal-delta method (that row's own weight of 1 against the 17.75 total
+kernel weight): 64.5% → 64.6%; no other category was touched.
 
 ### Kernel category gaps (missing / partial items, with evidence)
 
@@ -551,7 +561,7 @@ headline number has moved for since the measurement above was taken
 - [partial] Degree reduction — `NurbsSurface::Rebuild(u_count, v_count, u_degree, v_degree, ...)` (surface_edit.cpp:441) is a real tensor-product least-squares refit; app's `ChangeDegree` (cmd_edit.cpp:645) still says "never lowers."
 - [partial] Knot removal — `NurbsSurface::RemoveKnotAt` (surface_edit.cpp:314) present; app's `RemoveKnot` handles curves only.
 - [partial] Make uniform — `MakeUniformUV` (dino8-app/src/commands/cmd_srfedit.cpp:1216-1222) calls `ON_NurbsSurface::MakeClampedUniformKnotVector` directly; no kernel wrapper, no deviation report.
-- [missing] Convert to Beziers (surface) — `ConvertToBeziers` (cmd_curves2.cpp:2451-2466) curves-only; no surface decomposition anywhere.
+- [partial] Convert to Beziers (surface) — **upgraded from missing.** Kernel `NurbsSurface::DecomposeToBeziers` (dino8-kernel/src/surface_edit.cpp:507; surface.h:958) now exists: a genuine exact decomposition, not a resample. Every interior knot in both directions is raised to full multiplicity via real Boehm knot insertion (`ON_NurbsSurface::InsertKnot`, whose multiplicity argument is a target, not an increment - verified against OpenNURBS' own `ON_InsertKnot`, so this is safe even at a pre-existing G0 kink), then each (u-span, v-span) cell is carved out with two per-direction `Trim` calls at those now-full-multiplicity knot values - the same exact-trim-at-a-knot pattern the app's own curve-only `ConvertToBeziers` (cmd_curves2.cpp:2451-2466) already relies on. Verified in `tests/test_basic.cpp` (`TestSurfaceDecomposeToBeziersProducesExactSpanPatches`): a 3-span-U/1-span-V bicubic decomposes into exactly 3 patches that reproduce the source to < 1e-9 on their own sub-domains; an already-single-Bezier-span surface reports `NoOpAlreadySatisfied` while still handing back that one patch (bit-identical control points); a rational sphere's multi-span-in-both-directions NURBS form decomposes into exactly `u_span_count * v_span_count` patches, every one still rational and reproducing the sphere to < 1e-9. Still partial: nothing in dino8-app calls it - `ConvertToBeziers` remains registered as a curve-only command, so there is still no user-facing surface Bezier decomposition.
 - [partial] Patch — `Patch`/`BuildCoonsPatch` app helper (cmd_srfedit.cpp:1775) is planar-patch-only; the exact kernel `CoonsPatch` (surface_edit.cpp:953) is wired into `NetworkSrf`/`EdgeSrf` (cmd_surface.cpp:593-602), not `Patch`.
 - [partial] Make periodic (surface) — `NurbsSurface::MakePeriodicExact` (dino8-kernel/src/surface.cpp:743) re-knots via `NurbsCurve::MakePeriodicExact` (curve.cpp:672); app's command still curves-only.
 - [partial] SrfSeam — `SrfSeamCommand` (dino8-app/src/commands/cmd_srfedit.cpp:1382) standalone-surfaces-only.
