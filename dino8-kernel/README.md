@@ -2738,6 +2738,58 @@ What this repo does instead:
     genuine degenerate/inverted case, not attempted); a nonzero
     deviation from 1.0 on a closed rail throws for the same
     "wouldn't close up smoothly" reason `twist_total` already gives.
+- `Brep::PipeThickWalled()` (`src/sweep.cpp`): a genuine hollow tube -
+  Rhino Pipe's own two-radius (wall-thickness) form - closing
+  `PARITY_MAP.md`'s "Pipe variants: thick-walled pipe" gap. Unlike a
+  mesh-boolean approach (outer cylinder minus inner cylinder), this
+  builds the annular solid directly as real B-rep topology: an outer
+  wall and an inner wall (the inner circle traversed OPPOSITE the outer
+  one, so its own normal faces into the bore rather than away from the
+  axis - by construction, not a separate flip), plus two annular end
+  caps that are the exact rational RULED surface between that end's
+  outer and inner circle (degree 1 in the radial direction - no fan, no
+  apex, an annulus has none), sharing their boundaries with the walls
+  LITERALLY, the same "weld at any (u_divisions, v_divisions)" property
+  every other cap in this file already has. A straight rail gives the
+  exact rational annular cylinder; a closed rail gives a closed annular
+  torus with no caps.
+  - **A real, non-obvious bug found while building this, disclosed in
+    brep.h's own doc comment, not glossed over.** The first working
+    version ruled the annular caps between the outer circle and the
+    ALREADY-REVERSED inner circle (the same one the inner wall itself
+    needs) - and its own cap area measured roughly 2.6x the true
+    `pi*(outer^2 - inner^2)`, a self-overlapping "bowtie," not a flat
+    annulus. The reason, found by measuring rather than assumed: a
+    periodic circle's `u = 0` stays at the same physical point after
+    `Reverse()` (the domain's two ends already coincide by periodicity),
+    but every OTHER parameter value lands on the OPPOSITE physical angle
+    from the un-reversed circle - so the outer and inner circle stay
+    angularly aligned only at that one point, not along the whole
+    ruling. The wall itself never notices this (its own two boundary
+    circles - near and far - are reversed the SAME way, so they stay
+    aligned with EACH OTHER), but a cap ruling the un-reversed outer
+    against the reversed inner does. Fixed by keeping a SEPARATE,
+    unreversed copy of the inner circle for the caps (angularly aligned
+    with the outer one) alongside the reversed copy the inner wall
+    needs - verified directly afterward: each cap's own measured area
+    matches `pi*(outer^2 - inner^2)` to within 1%, not merely "looks
+    like an annulus."
+  - The near and far caps also are not mirror images of one formula:
+    since the far circles are plain translates of the near ones (no
+    reversal between them), ruling the SAME way at both ends gives the
+    SAME local outward direction - correct for exactly one end. Verified
+    directly (evaluating the built surface's own `S_u x S_v` against the
+    known straight-rail outward directions, not assumed from symmetry)
+    that the far cap needs its two ruling curves in the opposite order
+    from the near cap's.
+  - Checked: `IsValid()`/`IsSolid()` for a capped straight or curved
+    rail; `IsClosedManifold()` at (64, 4), (12, 5), and (5, 12); the
+    annular-cylinder closed form to 0.3%; the annular-torus volume
+    (Pappus' theorem, generalized to an annular cross-section) to 1%;
+    an uncapped result is a valid but genuinely open (non-solid) pair of
+    walls, matching `Pipe()`'s own `cap = false` behavior. Throws
+    `std::invalid_argument` for a non-positive radius, `inner_radius >=
+    outer_radius`, `stations` < 2, or a degenerate rail.
 
 ## Blending build log (Parasolid "blend/chamfer" class, chronological)
 

@@ -28364,6 +28364,92 @@ void TestPipeVariable() {
         "closed rail with mismatched seam radii throws");
 }
 
+// PipeThickWalled: a genuine hollow tube (annulus between outer_radius and
+// inner_radius, real B-rep topology - not outer cylinder minus inner
+// cylinder via a mesh boolean). This is the item that found the real,
+// disclosed angular-alignment bug described in brep.h's own doc comment:
+// the first working version's annular caps had ~2.6x the true area,
+// caught by measuring the built cap's own area against pi*(R^2 - r^2)
+// rather than trusting the topology to be right just because it compiled.
+void TestPipeThickWalledExactAnnularCylinderAndDegenerateCases() {
+  // Straight rail, capped: the exact rational annular cylinder, volume
+  // pi*(outer^2 - inner^2)*L up to tessellation chord error - the same
+  // bound Pipe()'s own single-wall cylinder test uses.
+  const double outer_r = 3.0, inner_r = 2.0, L = 10.0;
+  const NurbsCurve rail = Polyline({P(0, 0, 0), P(0, 0, L)});
+  const Brep tube = Brep::PipeThickWalled(rail, outer_r, inner_r, /*cap=*/true, 32);
+  CheckSolidTopology(tube, 4, "thick pipe: straight rail, capped (outer wall, inner wall, 2 annular caps)");
+  const double exact = M_PI * (outer_r * outer_r - inner_r * inner_r) * L;
+  CheckClosedMeshVolume(tube, 64, 4, exact, 0.003, "thick pipe straight capped annular cylinder");
+  Check(FaceSurface(tube, 0).IsCylinder(1e-9) && FaceSurface(tube, 1).IsCylinder(1e-9),
+        "both the outer and inner wall are exact rational NURBS cylinders");
+  // The two walls' radii - not just "a cylinder", but the RIGHT ones,
+  // checked by distance from the rail axis at a wall sample.
+  {
+    const NurbsSurface outer_wall = FaceSurface(tube, 0), inner_wall = FaceSurface(tube, 1);
+    const Point3d po = outer_wall.PointAt(outer_wall.raw().Domain(0).Mid(), outer_wall.raw().Domain(1).Mid());
+    const Point3d pi = inner_wall.PointAt(inner_wall.raw().Domain(0).Mid(), inner_wall.raw().Domain(1).Mid());
+    Check(std::abs(std::hypot(po.x, po.y) - outer_r) < 1e-9, "outer wall's radius is exactly outer_radius");
+    Check(std::abs(std::hypot(pi.x, pi.y) - inner_r) < 1e-9, "inner wall's radius is exactly inner_radius");
+  }
+  // Every annular cap's own AREA must be the true pi*(R^2 - r^2), not a
+  // self-overlapping "bowtie" from an angularly-misaligned ruling (the
+  // exact regression this test exists to catch - the pre-fix version
+  // measured roughly 2.6x this value). Sampled via the raw per-face
+  // tessellation (not the welded mesh) so each cap's own area is
+  // isolated from the walls'.
+  {
+    const std::vector<Mesh> faces = tube.Tessellate(48, 8);
+    const double exact_area = M_PI * (outer_r * outer_r - inner_r * inner_r);
+    Check(std::abs(faces[2].Area() - exact_area) / exact_area < 0.01, "near annular cap area matches pi*(R^2 - r^2)");
+    Check(std::abs(faces[3].Area() - exact_area) / exact_area < 0.01, "far annular cap area matches pi*(R^2 - r^2)");
+  }
+  // Closed manifold at the requested AND at asymmetric division pairs -
+  // the annular caps share their boundary edges literally with both
+  // walls, so this holds at any (u_divisions, v_divisions), the same
+  // property established for every other cap in this file.
+  Check(tube.TessellateToClosedMesh(64, 4).IsClosedManifold() && tube.TessellateToClosedMesh(12, 5).IsClosedManifold() &&
+            tube.TessellateToClosedMesh(5, 12).IsClosedManifold(),
+        "thick pipe is a closed manifold at (64, 4), (12, 5), and (5, 12)");
+
+  // Uncapped: two independent open tube walls, correctly NOT solid (an
+  // open shell, same as Pipe()'s own cap=false case).
+  const Brep uncapped = Brep::PipeThickWalled(rail, outer_r, inner_r, /*cap=*/false, 32);
+  Check(uncapped.FaceCount() == 2 && uncapped.raw().IsValid() && !uncapped.raw().IsSolid(),
+        "uncapped thick pipe is 2 valid, open (non-solid) walls");
+
+  // Closed rail: an annular torus, no caps (a periodic sweep has no
+  // ends) - Pappus' theorem for the annular cross section:
+  // Volume = 2*pi*R_major * pi*(outer^2 - inner^2).
+  const double R_major = 8.0;
+  const NurbsCurve ring = Circle(P(0, 0, 0), Vector3d(0, 0, 1), R_major);
+  const Brep torus_tube = Brep::PipeThickWalled(ring, outer_r, inner_r, /*cap=*/true, 32);
+  CheckSolidTopology(torus_tube, 2, "thick pipe: closed rail (annular torus, no caps)");
+  const double exact_torus = 2.0 * M_PI * R_major * M_PI * (outer_r * outer_r - inner_r * inner_r);
+  CheckClosedMeshVolume(torus_tube, 32, 64, exact_torus, 0.01, "annular torus vs. Pappus' theorem");
+
+  // General curved (non-straight) rail: no closed form, so this checks
+  // real structural properties instead - the same discipline Sweep2()'s
+  // own curved-rail test uses.
+  {
+    const NurbsCurve curved_rail = NurbsCurve::FromControlPoints({P(0, 0, 0), P(3, 0, 2), P(6, 3, 2), P(9, 3, 5)}, 3);
+    const Brep curved = Brep::PipeThickWalled(curved_rail, 1.0, 0.6, /*cap=*/true, 24);
+    CheckSolidTopology(curved, 4, "thick pipe along a curved rail");
+    const Mesh cm = curved.TessellateToClosedMesh(32, 24);
+    Check(cm.IsClosedManifold() && curved.TessellateToClosedMesh(12, 5).IsClosedManifold(),
+          "curved-rail thick pipe is closed at (32, 24) and (12, 5)");
+    Check(cm.Volume() > 0.0, "curved-rail thick pipe has positive volume");
+  }
+
+  // Negative controls.
+  Check(Throws([&] { Brep::PipeThickWalled(rail, 0.0, 1.0); }), "non-positive outer_radius throws");
+  Check(Throws([&] { Brep::PipeThickWalled(rail, 3.0, 0.0); }), "non-positive inner_radius throws");
+  Check(Throws([&] { Brep::PipeThickWalled(rail, 3.0, -1.0); }), "negative inner_radius throws");
+  Check(Throws([&] { Brep::PipeThickWalled(rail, 2.0, 3.0); }), "inner_radius >= outer_radius throws");
+  Check(Throws([&] { Brep::PipeThickWalled(rail, 3.0, 3.0); }), "inner_radius == outer_radius throws");
+  Check(Throws([&] { Brep::PipeThickWalled(rail, 3.0, 2.0, true, 1); }), "fewer than 2 stations throws");
+}
+
 void TestExtrudeTaperedCircularProfileIsExactConeFrustum() {
   // Shrinking: r0=2 -> r1=1 over height 3, tan(theta) = (r0 - r1) / h.
   const double r0 = 2.0, r1 = 1.0, h = 3.0;
@@ -32209,6 +32295,7 @@ int main() {
   TestSurfaceCurvatureAtIsScaleInvariant();
   TestSurfaceClosestPointNearSpherePoleDoesNotLockAzimuth();
   sweep_tests::TestPipeVariable();
+  sweep_tests::TestPipeThickWalledExactAnnularCylinderAndDegenerateCases();
   TestSurfaceExtendLinearIsExactlyStraightAndG1AtTheJoin();
   TestSurfaceExtendLinearDiffersFromSmoothExtend();
   TestSurfaceExtendLinearBothEndsBothDirectionsAndRational();

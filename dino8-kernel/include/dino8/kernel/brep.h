@@ -525,6 +525,50 @@ class Brep {
   static Brep PipeVariable(const NurbsCurve& rail, const std::vector<std::pair<double, double>>& radius_points,
                            bool cap = true, int stations = 32);
 
+  // PipeThickWalled: a genuine hollow tube - the annular solid between
+  // an `outer_radius` and `inner_radius` circle swept along `rail` -
+  // Rhino Pipe's own two-radius (wall-thickness) form. Requires
+  // `0 < inner_radius < outer_radius`. Unlike a mesh-boolean approach
+  // (outer cylinder minus inner cylinder), this builds the annulus
+  // directly as real B-rep topology: two independent walls (outer,
+  // built exactly as `Pipe()`'s own; inner, the SAME construction
+  // through a circle of `inner_radius` but traversed in the OPPOSITE
+  // sense, so its outward normal faces INTO the bore rather than away
+  // from the axis - the two walls' facing directions are opposite by
+  // construction, not by a separate flip step), plus - when `cap` and
+  // the rail is open - two annular end caps. Each cap is the EXACT
+  // rational RULED surface between that end's outer and inner circle
+  // (`RuledBetween()`, degree 1 in the radial direction: no fan, no
+  // apex needed since an annulus has none), sharing its outer boundary
+  // with the outer wall's own end and its inner boundary with the inner
+  // wall's own end LITERALLY (the same edge, not a matching approximation)
+  // - so `Tessellate()`/`TessellateToClosedMesh()` weld into a closed
+  // manifold at ANY (u_divisions, v_divisions), the same property every
+  // other cap in this file already has. A straight rail is the exact
+  // rational annular cylinder (volume `pi*(outer_radius^2 -
+  // inner_radius^2)*length` up to tessellation chord error, the same
+  // bound `Pipe()`'s own single-wall cylinder carries); a closed rail
+  // gives a closed annular tube with no caps (an annular torus).
+  //
+  // A real, non-obvious gap found while building this (not assumed): the
+  // caps are ruled between the outer and inner circle at each end
+  // WITHOUT the inner wall's own reversal - a first version reused the
+  // already-reversed inner circle there and its own annulus reported an
+  // area of roughly 2.6x the true `pi*(outer^2 - inner^2)`, a self-
+  // overlapping "bowtie" rather than a flat annulus, caught by measuring
+  // the built cap's own area rather than assumed correct. The reason:
+  // reversing a periodic circle keeps its `u = 0` point fixed (by
+  // periodicity, the domain's two ends already coincide) but reverses
+  // every OTHER parameter's physical angle - so the outer and inner
+  // circle stay angularly aligned at `u = 0` but not anywhere else,
+  // which the wall never notices (its own two boundary circles are
+  // reversed the SAME way, so they stay aligned with EACH OTHER) but a
+  // cap ruling the un-reversed outer against the reversed inner does.
+  // Throws std::invalid_argument for a non-positive radius,
+  // `inner_radius >= outer_radius`, `stations` < 2, or a degenerate rail.
+  static Brep PipeThickWalled(const NurbsCurve& rail, double outer_radius, double inner_radius, bool cap = true,
+                              int stations = 32);
+
   int FaceCount() const;
   int VertexCount() const;
   int EdgeCount() const;

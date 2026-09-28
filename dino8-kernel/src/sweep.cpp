@@ -1994,4 +1994,145 @@ Brep Brep::PipeVariable(const NurbsCurve& rail_in, const std::vector<std::pair<d
   return AssembleSweptBody(wall.release(), want_caps, want_caps, false, false, caller);
 }
 
+Brep Brep::PipeThickWalled(const NurbsCurve& rail_in, double outer_radius, double inner_radius, bool cap,
+                          int stations) {
+  const char* caller = "PipeThickWalled";
+  if (!(outer_radius > 0.0)) Fail(caller, "outer_radius must be positive");
+  if (!(inner_radius > 0.0)) Fail(caller, "inner_radius must be positive");
+  if (!(inner_radius < outer_radius)) Fail(caller, "inner_radius must be less than outer_radius");
+  if (stations < 2) Fail(caller, "stations must be at least 2");
+  ON_NurbsCurve rail = rail_in.raw();
+  if (!rail.IsValid()) Fail(caller, "rail is not a valid NURBS curve");
+
+  const bool wrap = rail.IsClosed();
+  const bool straight = !wrap && rail.IsLinear(1e-9 * CurveScale(rail));
+  const int m = straight ? 2 : std::max(stations, 3);
+
+  std::vector<double> params = rail_in.DivideByCount(wrap ? m : m - 1);
+  if (wrap) params.pop_back();
+  if (static_cast<int>(params.size()) != m) Internal(caller, "station count mismatch");
+  const std::vector<Frame> frames = RmfFrames(rail, params, wrap, caller);
+
+  // Outer and inner circle at every station, both centered on the rail
+  // in the plane perpendicular to it there (Pipe()'s own convention).
+  // The inner circle is built REVERSED so its wall's own u x v normal
+  // faces the opposite way from the outer wall's - into the bore rather
+  // than away from the axis - by construction, the same "traverse the
+  // boundary the other way to flip the face" idea `Extrude()`'s own
+  // orientation logic and `AssembleSweptBody()`'s cap-reversal already
+  // rely on, not a separate flip applied after the fact.
+  //
+  // `inner` (unreversed) is kept SEPARATE from `inner_for_wall`
+  // (reversed): the annular caps below rule directly between `outer[k]`
+  // and `inner[k]` at the SAME parameter u, which is only a flat,
+  // non-self-overlapping annulus when the two circles are ANGULARLY
+  // ALIGNED at every u, not just at u = 0 - true for `outer`/`inner`
+  // (both traversed the same, CCW, way) but false for a reversed inner
+  // circle (u = 0 still lands on the same point by periodicity, but any
+  // OTHER u then lands on the physically OPPOSITE angle from `outer`'s
+  // own u there, twisting the ruled cap into a self-overlapping shape).
+  // Found by measuring, not assumed: an early version built the caps
+  // from the already-reversed inner circle and its own annulus reported
+  // an area of ~41.5 against the true pi*(R^2 - r^2) ~= 15.7 - a clear
+  // sign of self-overlap, not a rounding error.
+  std::vector<ON_NurbsCurve> outer(static_cast<size_t>(m)), inner(static_cast<size_t>(m));
+  for (int k = 0; k < m; ++k) {
+    const ON_Plane plane(frames[static_cast<size_t>(k)].origin, frames[static_cast<size_t>(k)].r, frames[static_cast<size_t>(k)].s);
+    const ON_Circle oc(plane, outer_radius);
+    if (oc.GetNurbForm(outer[static_cast<size_t>(k)]) == 0) Internal(caller, "ON_Circle::GetNurbForm failed (outer)");
+    const ON_Circle ic(plane, inner_radius);
+    if (ic.GetNurbForm(inner[static_cast<size_t>(k)]) == 0) Internal(caller, "ON_Circle::GetNurbForm failed (inner)");
+  }
+  MakeCompatible(outer, caller);
+  MakeCompatible(inner, caller);
+  std::vector<ON_NurbsCurve> inner_for_wall = inner;
+  for (ON_NurbsCurve& c : inner_for_wall) {
+    if (!c.Reverse()) Internal(caller, "reversing the inner circle failed");
+  }
+
+  auto build_wall = [&](std::vector<ON_NurbsCurve>& copies) -> std::unique_ptr<ON_NurbsSurface> {
+    if (m == 2) return RuledBetween(copies[0], copies[1], 0.0, 1.0, caller);
+    double period = 1.0;
+    const std::vector<double> params_v = SkinParameters(copies, wrap, &period, caller);
+    return SkinSections(copies, std::min(3, m - 1), wrap, params_v, period, caller);
+  };
+  std::unique_ptr<ON_NurbsSurface> outer_wall = build_wall(outer);
+  std::unique_ptr<ON_NurbsSurface> inner_wall = build_wall(inner_for_wall);
+
+  // Assembly: two independent walls (each periodic in its own u, so
+  // ON_Brep::NewFace's own bIsClosed(0) handling merges its east/west
+  // sides into one seam edge automatically - the same mechanism every
+  // other circular wall in this file already relies on), sharing edges
+  // with the two annular caps at their own south (v = 0, near) and
+  // north (v = 1, far) sides.
+  Brep result;
+  ON_Brep& brep = result.raw();
+  int vid[4] = {-1, -1, -1, -1}, eid[4] = {-1, -1, -1, -1};
+  bool rev[4] = {false, false, false, false};
+  ON_BrepFace* outer_face = brep.NewFace(outer_wall.release(), vid, eid, rev);
+  if (!outer_face) Internal(caller, "ON_Brep::NewFace refused the outer wall");
+  const int outer_south = eid[0], outer_north = eid[2];
+
+  vid[0] = vid[1] = vid[2] = vid[3] = -1;
+  eid[0] = eid[1] = eid[2] = eid[3] = -1;
+  rev[0] = rev[1] = rev[2] = rev[3] = false;
+  ON_BrepFace* inner_face = brep.NewFace(inner_wall.release(), vid, eid, rev);
+  if (!inner_face) Internal(caller, "ON_Brep::NewFace refused the inner wall");
+  const int inner_south = eid[0], inner_north = eid[2];
+
+  int faces = 2;
+  const bool want_caps = cap && !wrap;
+  if (want_caps) {
+    // Each annular cap rules directly between `outer[si]` and `inner[si]`
+    // (the ANGULARLY ALIGNED, unreversed pair - see the comment above on
+    // why `inner`, not `inner_for_wall`, is used here) and shares its own
+    // outer/inner boundary with the matching wall's already-built edge -
+    // the same "second face reuses the first face's real edge" idea
+    // `AddFanCap()` and every other cap in this file already rely on.
+    for (int end = 0; end < 2; ++end) {
+      const size_t si = static_cast<size_t>(end == 0 ? 0 : m - 1);
+      // The near and far caps are NOT mirror images built from one
+      // formula: since the far circles are plain translates of the near
+      // ones (no reversal between them), RuledBetween(inner, outer)
+      // gives the SAME local outward direction at both ends - correct
+      // for exactly one of them. Verified directly (Ev1Der + cross
+      // product against the known straight-rail outward directions
+      // (0, 0, -1) near / (0, 0, +1) far): RuledBetween(inner, outer)
+      // is the near cap's own correct orientation; the far cap needs
+      // the arguments swapped, RuledBetween(outer, inner).
+      std::unique_ptr<ON_NurbsSurface> annulus =
+          end == 0 ? RuledBetween(inner[si], outer[si], 0.0, 1.0, caller) : RuledBetween(outer[si], inner[si], 0.0, 1.0, caller);
+      vid[0] = vid[1] = vid[2] = vid[3] = -1;
+      eid[0] = end == 0 ? inner_south : outer_north;
+      eid[1] = -1;
+      eid[2] = end == 0 ? outer_south : inner_north;
+      eid[3] = -1;
+      // bRev3d values were derived empirically (sweeping all 4
+      // combinations of {rev[0], rev[2]} on a straight-rail fixture and
+      // keeping the one where raw().IsValid() and raw().IsSolid() both
+      // hold - the same discipline `AddFanCap()`'s own rule was
+      // established with, not assumed from theory alone): both trims
+      // run OPPOSITE to how the matching wall recorded that edge.
+      rev[0] = true;
+      rev[1] = false;
+      rev[2] = true;
+      rev[3] = false;
+      if (!brep.NewFace(annulus.release(), vid, eid, rev)) {
+        Internal(caller, end == 0 ? "ON_Brep::NewFace refused the near annular cap"
+                                  : "ON_Brep::NewFace refused the far annular cap");
+      }
+      ++faces;
+    }
+  }
+
+  brep.SetTolerancesBoxesAndFlags(/*bLazy=*/true);
+  result.AppendUntrimmedFaceSideTables(faces);
+
+  if (brep.IsSolid()) {
+    const Mesh check = result.TessellateToClosedMesh(16, 16);
+    if (check.Volume() < 0.0) brep.Flip();
+  }
+  return result;
+}
+
 }  // namespace dino8::kernel
