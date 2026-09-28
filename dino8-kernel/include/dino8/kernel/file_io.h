@@ -51,6 +51,38 @@ using LinetypePattern = std::vector<LinetypeSegment>;
 // attached to an object that isn't already a first-class attribute).
 using UserStrings = std::vector<std::pair<std::string, std::string>>;
 
+// A layer read back from Model::LayerAt() below - the read-side
+// counterpart to AddLayer()'s own `color`/`linetype_index` parameters.
+struct LayerInfo {
+  std::string name;
+  Color color;
+  int linetype_index = -1;
+};
+
+// A linetype read back from Model::LinetypeAt() below - the read-side
+// counterpart to AddLinetype()'s own `pattern` parameter.
+struct LinetypeInfo {
+  std::string name;
+  LinetypePattern pattern;
+};
+
+// One object's attributes, read back from Model::ObjectAttributesAt()
+// below - the read-side counterpart to every Add*() method's own name/
+// layer_index/render_color/user_strings/linetype_index/group_indices
+// parameters. `render_color` and `linetype_index` are std::nullopt when
+// the object inherits that value from its layer (ON::color_from_layer /
+// ON::linetype_from_layer) rather than overriding it at the object level -
+// the same std::nullopt-means-"inherit from layer" contract those Add*()
+// parameters themselves use on the write side.
+struct ObjectAttributes {
+  std::string name;
+  int layer_index = 0;
+  std::optional<Color> render_color;
+  std::optional<int> linetype_index;
+  std::vector<int> group_indices;
+  UserStrings user_strings;
+};
+
 // Thin wrapper around ONX_Model so .3dm compatibility comes from
 // OpenNURBS directly rather than a reimplementation. This is the
 // "can open/save .3dm" exit criterion for chunk 1 — nothing more.
@@ -278,6 +310,53 @@ class Model {
                      std::optional<int> material_index = std::nullopt);
 
   int ObjectCount() const;
+
+  // Returns the attributes of the `index`-th object (0 <= index <
+  // ObjectCount()), in the same order ONX_ModelComponentIterator visits
+  // ModelGeometry components - the read-side counterpart to every Add*()
+  // method's own name/layer_index/render_color/user_strings/
+  // linetype_index/group_indices parameters. Before this, reading back
+  // anything an Add*() call had written meant a caller had to hand-roll
+  // an ONX_ModelComponentIterator and cast every ON_ModelGeometryComponent
+  // itself, via raw() - exactly what this kernel's own round-trip tests
+  // for AddLayer()/AddLinetype()/AddGroup() each did, one hand-rolled copy
+  // per test, and the only option this API gave any other caller (the gap
+  // PARITY_MAP.md's own ".3dm attribute/metadata fidelity" evidence names:
+  // "no read-side accessor apart from raw()"). `index` out of range
+  // returns a default-constructed ObjectAttributes rather than reading
+  // past the component list.
+  ObjectAttributes ObjectAttributesAt(int index) const;
+
+  // Returns the number of layers explicitly added via AddLayer() above (0
+  // if none have been - see AddLayer()'s own doc comment on the -1 vs. 0
+  // default-layer-index wrinkle this deliberately does not paper over).
+  int LayerCount() const;
+
+  // Returns the layer at `layer_index` (as returned by AddLayer() above) -
+  // the read-side counterpart to AddLayer()'s own `color`/`linetype_index`
+  // parameters, same gap ObjectAttributesAt() above closes for objects.
+  // `layer_index` not naming a layer this model actually has returns a
+  // default-constructed LayerInfo.
+  LayerInfo LayerAt(int layer_index) const;
+
+  // Returns the number of linetypes explicitly added via AddLinetype()
+  // above.
+  int LinetypeCount() const;
+
+  // Returns the linetype at `linetype_index` (as returned by
+  // AddLinetype() above) - the read-side counterpart to AddLinetype()'s
+  // own `pattern` parameter. `linetype_index` not naming a linetype this
+  // model actually has returns a default-constructed LinetypeInfo.
+  LinetypeInfo LinetypeAt(int linetype_index) const;
+
+  // Returns the number of groups explicitly added via AddGroup() above.
+  int GroupCount() const;
+
+  // Returns the name of the group at `group_index` (as returned by
+  // AddGroup() above) - the read-side counterpart to AddGroup()'s own
+  // `name` parameter. `group_index` not naming a group this model
+  // actually has returns an empty string.
+  std::string GroupNameAt(int group_index) const;
 
   // Writes as a .3dm file. `version` is the OpenNURBS archive version
   // (e.g. 80 for the Rhino-8-generation format); defaults to the newest

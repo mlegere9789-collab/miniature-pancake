@@ -5918,6 +5918,186 @@ void TestModelAddMaterialRoundTrips() {
   std::remove(path.c_str());
 }
 
+// Model::ObjectAttributesAt()/LayerAt()/LinetypeAt()/GroupNameAt() (plus
+// their *Count() companions): the read-side counterpart to every Add*()/
+// AddLayer()/AddLinetype()/AddGroup() parameter above. Before this, the
+// only way to read any of that metadata back was raw() plus a hand-rolled
+// ONX_ModelComponentIterator - exactly what every round-trip test above
+// this one does, each with its own copy of that iteration - the gap
+// PARITY_MAP.md's own ".3dm attribute/metadata fidelity" evidence names:
+// "no read-side accessor apart from raw()". Checks a real round trip
+// through an actual .3dm file, then reads everything back exclusively
+// through the new accessors (no raw()/ONX_ModelComponentIterator at all):
+// two layers (one with a non-default color and a linetype override, one
+// left at every default), two linetypes (one referenced by a layer, one
+// standalone and never referenced by anything), two groups, and two
+// objects - one carrying every optional attribute at once (name, a
+// non-default layer, a per-object render color override, two user
+// strings, a per-object linetype override, and membership in both
+// groups) and one added with every parameter left at its default, proving
+// the accessors report "inherit from layer" (std::nullopt) and "no
+// groups/user-strings" (empty) rather than some other placeholder for the
+// untouched case. Also checks that every *At() accessor handles an index
+// that names nothing this model actually has without crashing.
+void TestModelReadAccessorsRoundTrip() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Color;
+  using dino8::kernel::LinetypePattern;
+  using dino8::kernel::LinetypeSegment;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Model;
+  using dino8::kernel::Result;
+  using dino8::kernel::UserStrings;
+
+  Model model;
+
+  const LinetypePattern dashed_pattern = {LinetypeSegment{4.0, true}, LinetypeSegment{1.5, false},
+                                           LinetypeSegment{0.5, true}};
+  const int dashed_linetype_index = model.AddLinetype("Dashed3", dashed_pattern);
+  const LinetypePattern dotted_pattern = {LinetypeSegment{0.25, true}};
+  const int dotted_linetype_index = model.AddLinetype("Dotted", dotted_pattern);
+
+  const int structural_layer_index =
+      model.AddLayer("Structural", Color{10, 20, 30}, dashed_linetype_index);
+  const int auxiliary_layer_index = model.AddLayer("Auxiliary");
+
+  const int fasteners_group_index = model.AddGroup("Fasteners");
+  const int hidden_group_index = model.AddGroup("Hidden");
+
+  const auto box_brep = Brep::Box(0, 0, 0, 1, 1, 1);
+  model.AddBrep(box_brep, "NamedBrep", structural_layer_index, Color{1, 2, 3},
+                UserStrings{{"k1", "v1"}, {"k2", "v2"}}, dashed_linetype_index,
+                {fasteners_group_index, hidden_group_index});
+  const auto box_mesh = MakeQuadBoxMesh(2, 0, 0, 3, 1, 1);
+  model.AddMesh(box_mesh);  // every parameter left at its default
+
+  const std::string path = "dino8_kernel_model_read_accessors_roundtrip_test.3dm";
+  Check(model.Save(path) == Result::Ok, ".3dm save succeeded");
+
+  Model loaded;
+  Check(Model::Load(path, loaded) == Result::Ok, ".3dm load succeeded");
+
+  Check(loaded.LayerCount() == 2, "LayerCount() reports exactly the 2 layers AddLayer() added");
+  const auto structural_layer = loaded.LayerAt(structural_layer_index);
+  Check(structural_layer.name == "Structural",
+        "LayerAt() reports the reloaded layer's name exactly as AddLayer() was given");
+  Check(structural_layer.color.r == 10 && structural_layer.color.g == 20 &&
+            structural_layer.color.b == 30,
+        "LayerAt() reports the reloaded layer's color exactly as AddLayer() was given");
+  Check(structural_layer.linetype_index == dashed_linetype_index,
+        "LayerAt() reports the reloaded layer's linetype_index exactly as AddLayer() was given");
+  const auto auxiliary_layer = loaded.LayerAt(auxiliary_layer_index);
+  Check(auxiliary_layer.name == "Auxiliary" && auxiliary_layer.linetype_index == -1,
+        "LayerAt() reports a layer added with no color/linetype_index argument at every "
+        "OpenNURBS default (Continuous == -1), proving the accessor doesn't invent a value");
+  const auto missing_layer = loaded.LayerAt(9999);
+  Check(missing_layer.name.empty() && missing_layer.linetype_index == -1,
+        "LayerAt() on an index naming no real layer returns a default-constructed LayerInfo "
+        "rather than crashing");
+
+  Check(loaded.LinetypeCount() == 2,
+        "LinetypeCount() reports exactly the 2 linetypes AddLinetype() added");
+  const auto dashed_linetype = loaded.LinetypeAt(dashed_linetype_index);
+  Check(dashed_linetype.name == "Dashed3",
+        "LinetypeAt() reports the reloaded (layer-referenced) linetype's name exactly as "
+        "AddLinetype() was given");
+  Check(dashed_linetype.pattern.size() == 3 && dashed_linetype.pattern[0].length_mm == 4.0 &&
+            dashed_linetype.pattern[0].is_dash && dashed_linetype.pattern[1].length_mm == 1.5 &&
+            !dashed_linetype.pattern[1].is_dash && dashed_linetype.pattern[2].length_mm == 0.5 &&
+            dashed_linetype.pattern[2].is_dash,
+        "LinetypeAt() reports the reloaded linetype's segment lengths and dash/gap types "
+        "exactly as AddLinetype() was given, in order");
+  const auto dotted_linetype = loaded.LinetypeAt(dotted_linetype_index);
+  Check(dotted_linetype.name == "Dotted" && dotted_linetype.pattern.size() == 1 &&
+            dotted_linetype.pattern[0].length_mm == 0.25 && dotted_linetype.pattern[0].is_dash,
+        "LinetypeAt() also reports a linetype no layer or object ever referenced - proving the "
+        "accessor reads the linetype table directly, not just whatever layers happen to point "
+        "at");
+  const auto missing_linetype = loaded.LinetypeAt(9999);
+  Check(missing_linetype.name.empty() && missing_linetype.pattern.empty(),
+        "LinetypeAt() on an index naming no real linetype returns a default-constructed "
+        "LinetypeInfo rather than crashing");
+
+  Check(loaded.GroupCount() == 2, "GroupCount() reports exactly the 2 groups AddGroup() added");
+  Check(loaded.GroupNameAt(fasteners_group_index) == "Fasteners" &&
+            loaded.GroupNameAt(hidden_group_index) == "Hidden",
+        "GroupNameAt() reports each reloaded group's name exactly as AddGroup() was given");
+  Check(loaded.GroupNameAt(9999).empty(),
+        "GroupNameAt() on an index naming no real group returns an empty string rather than "
+        "crashing");
+
+  Check(loaded.ObjectCount() == 2, "ObjectCount() reports exactly the 2 objects added");
+  bool found_named_brep = false;
+  bool found_default_mesh = false;
+  for (int i = 0; i < loaded.ObjectCount(); ++i) {
+    const auto attributes = loaded.ObjectAttributesAt(i);
+    if (attributes.name == "NamedBrep") {
+      found_named_brep = true;
+      Check(attributes.layer_index == structural_layer_index,
+            "ObjectAttributesAt() reports the fully-specified object's layer_index exactly as "
+            "AddBrep() was given");
+      Check(attributes.render_color.has_value() && attributes.render_color->r == 1 &&
+                attributes.render_color->g == 2 && attributes.render_color->b == 3,
+            "ObjectAttributesAt() reports the fully-specified object's per-object render_color "
+            "override exactly as AddBrep() was given");
+      Check(attributes.linetype_index.has_value() &&
+                *attributes.linetype_index == dashed_linetype_index,
+            "ObjectAttributesAt() reports the fully-specified object's per-object "
+            "linetype_index override exactly as AddBrep() was given");
+      Check(attributes.group_indices.size() == 2, "ObjectAttributesAt() reports both groups "
+                                                    "the fully-specified object belongs to");
+      bool in_fasteners = false;
+      bool in_hidden = false;
+      for (int group_index : attributes.group_indices) {
+        if (group_index == fasteners_group_index) in_fasteners = true;
+        if (group_index == hidden_group_index) in_hidden = true;
+      }
+      Check(in_fasteners && in_hidden,
+            "ObjectAttributesAt()'s group_indices names exactly the two groups AddBrep() was "
+            "given, proving it's a list rather than a single value");
+      Check(attributes.user_strings.size() == 2,
+            "ObjectAttributesAt() reports both user strings the fully-specified object was "
+            "given");
+      bool has_k1 = false;
+      bool has_k2 = false;
+      for (const auto& [key, value] : attributes.user_strings) {
+        if (key == "k1" && value == "v1") has_k1 = true;
+        if (key == "k2" && value == "v2") has_k2 = true;
+      }
+      Check(has_k1 && has_k2,
+            "ObjectAttributesAt()'s user_strings exactly match the key/value pairs AddBrep() "
+            "was given");
+    } else {
+      found_default_mesh = true;
+      Check(attributes.name.empty() && attributes.layer_index == 0,
+            "ObjectAttributesAt() reports the default-added object's name/layer_index exactly "
+            "as the (omitted) Add*() defaults");
+      Check(!attributes.render_color.has_value(),
+            "ObjectAttributesAt() reports std::nullopt (inherit from layer), not some other "
+            "placeholder, for an object added with no render_color argument");
+      Check(!attributes.linetype_index.has_value(),
+            "ObjectAttributesAt() reports std::nullopt (inherit from layer), not some other "
+            "placeholder, for an object added with no linetype_index argument");
+      Check(attributes.group_indices.empty(),
+            "ObjectAttributesAt() reports no groups for an object added with no "
+            "group_indices argument");
+      Check(attributes.user_strings.empty(),
+            "ObjectAttributesAt() reports no user strings for an object added with no "
+            "user_strings argument");
+    }
+  }
+  Check(found_named_brep && found_default_mesh,
+        "both objects (fully-specified brep, every-default mesh) were found in the reloaded "
+        "model");
+
+  const auto out_of_range = loaded.ObjectAttributesAt(loaded.ObjectCount());
+  Check(out_of_range.name.empty() && !out_of_range.render_color.has_value(),
+        "ObjectAttributesAt() on an out-of-range index returns a default-constructed "
+        "ObjectAttributes rather than crashing");
+
+  std::remove(path.c_str());
+}
+
 void TestBoxVolume() {
   const auto box = MakeBox(0, 0, 0, 2, 2, 2);
   Check(std::abs(box.Volume() - 8.0) < 1e-9, "unit-scaled box volume is correct");
@@ -33319,6 +33499,7 @@ int main() {
   TestModelAddLinetypeRoundTrips();
   TestModelAddGroupRoundTrips();
   TestModelAddMaterialRoundTrips();
+  TestModelReadAccessorsRoundTrip();
   TestModelLoadRejectsMeshWithOutOfRangeFaceIndex();
   TestSplitByPlane();
   TestConvexHull();

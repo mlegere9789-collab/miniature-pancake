@@ -83,6 +83,14 @@ ON_3dmObjectAttributes MakeAttributes(const std::string& name, int layer_index,
   return attributes;
 }
 
+// Converts an OpenNURBS wide string to std::string, the same
+// ON_String(w)-then-cast pattern dino8-app/src/io/File3dm.cpp's own
+// FromWide() already uses for this exact conversion.
+std::string ToStdString(const ON_wString& wide) {
+  ON_String narrow(wide);
+  return std::string(static_cast<const char*>(narrow));
+}
+
 }  // namespace
 
 Model::Model() = default;
@@ -195,6 +203,108 @@ void Model::AddPointCloud(const PointCloud& cloud, const std::string& name, int 
 int Model::ObjectCount() const {
   return static_cast<int>(
       model_.ActiveComponentCount(ON_ModelComponent::Type::ModelGeometry));
+}
+
+ObjectAttributes Model::ObjectAttributesAt(int index) const {
+  ObjectAttributes result;
+  if (index < 0) {
+    return result;
+  }
+  ONX_ModelComponentIterator iterator(model_, ON_ModelComponent::Type::ModelGeometry);
+  int position = 0;
+  for (const ON_ModelComponent* component = iterator.FirstComponent(); component != nullptr;
+       component = iterator.NextComponent(), ++position) {
+    if (position != index) {
+      continue;
+    }
+    const auto* geometry_component = static_cast<const ON_ModelGeometryComponent*>(component);
+    const ON_3dmObjectAttributes* attributes = geometry_component->Attributes(nullptr);
+    if (attributes == nullptr) {
+      return result;
+    }
+    result.name = ToStdString(attributes->Name());
+    result.layer_index = attributes->m_layer_index;
+    if (attributes->ColorSource() == ON::color_from_object) {
+      result.render_color =
+          Color{static_cast<unsigned char>(attributes->m_color.Red()),
+                static_cast<unsigned char>(attributes->m_color.Green()),
+                static_cast<unsigned char>(attributes->m_color.Blue())};
+    }
+    if (attributes->LinetypeSource() == ON::linetype_from_object) {
+      result.linetype_index = attributes->m_linetype_index;
+    }
+    ON_SimpleArray<int> group_indices;
+    attributes->GetGroupList(group_indices);
+    result.group_indices.assign(group_indices.Array(), group_indices.Array() + group_indices.Count());
+    ON_ClassArray<ON_UserString> user_strings;
+    attributes->GetUserStrings(user_strings);
+    for (int i = 0; i < user_strings.Count(); ++i) {
+      result.user_strings.emplace_back(ToStdString(user_strings[i].m_key),
+                                        ToStdString(user_strings[i].m_string_value));
+    }
+    return result;
+  }
+  return result;
+}
+
+int Model::LayerCount() const {
+  return static_cast<int>(model_.ActiveComponentCount(ON_ModelComponent::Type::Layer));
+}
+
+LayerInfo Model::LayerAt(int layer_index) const {
+  LayerInfo result;
+  // Deliberately ComponentFromIndex(), not the ONX_Model::LayerFromIndex()
+  // convenience wrapper AddLayer() and this file's own round-trip tests
+  // use elsewhere: LayerFromIndex() silently falls back to
+  // ONX_Model::m_default_layer for any index it doesn't recognize (see
+  // its own implementation in opennurbs_extensions.cpp), so it can never
+  // signal "no such layer" the way this method's own contract (a default-
+  // constructed LayerInfo for an unrecognized index) requires.
+  const ON_ModelComponentReference layer_ref =
+      model_.ComponentFromIndex(ON_ModelComponent::Type::Layer, layer_index);
+  const ON_Layer* layer = ON_Layer::Cast(layer_ref.ModelComponent());
+  if (layer == nullptr) {
+    return result;
+  }
+  result.name = ToStdString(layer->Name());
+  const ON_Color color = layer->Color();
+  result.color = Color{static_cast<unsigned char>(color.Red()),
+                        static_cast<unsigned char>(color.Green()),
+                        static_cast<unsigned char>(color.Blue())};
+  result.linetype_index = layer->LinetypeIndex();
+  return result;
+}
+
+int Model::LinetypeCount() const {
+  return static_cast<int>(model_.ActiveComponentCount(ON_ModelComponent::Type::LinePattern));
+}
+
+LinetypeInfo Model::LinetypeAt(int linetype_index) const {
+  LinetypeInfo result;
+  const ON_ModelComponentReference linetype_ref =
+      model_.ComponentFromIndex(ON_ModelComponent::Type::LinePattern, linetype_index);
+  const ON_Linetype* linetype = ON_Linetype::Cast(linetype_ref.ModelComponent());
+  if (linetype == nullptr) {
+    return result;
+  }
+  result.name = ToStdString(linetype->Name());
+  for (int i = 0; i < linetype->SegmentCount(); ++i) {
+    const ON_LinetypeSegment& segment = linetype->Segment(i);
+    result.pattern.push_back(
+        LinetypeSegment{segment.m_length, segment.m_seg_type == ON_LinetypeSegment::eSegType::stLine});
+  }
+  return result;
+}
+
+int Model::GroupCount() const {
+  return static_cast<int>(model_.ActiveComponentCount(ON_ModelComponent::Type::Group));
+}
+
+std::string Model::GroupNameAt(int group_index) const {
+  const ON_ModelComponentReference group_ref =
+      model_.ComponentFromIndex(ON_ModelComponent::Type::Group, group_index);
+  const ON_Group* group = ON_Group::Cast(group_ref.ModelComponent());
+  return group != nullptr ? ToStdString(group->Name()) : std::string();
 }
 
 Result Model::Save(const std::string& path, int version) const {
