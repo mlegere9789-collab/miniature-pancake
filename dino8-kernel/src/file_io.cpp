@@ -40,16 +40,18 @@ bool MeshFaceIndicesInRange(const ON_Mesh& mesh) {
 // SetName() when non-empty, `layer_index` written straight through,
 // `render_color` (when present) written to `m_color` with `ColorSource()`
 // switched to ON::color_from_object, every `user_strings` pair written
-// via SetUserString(), and `linetype_index` (when present) written to
+// via SetUserString(), `linetype_index` (when present) written to
 // `m_linetype_index` with `LinetypeSource()` switched to
-// ON::linetype_from_object. See file_io.h's own doc comment on the
-// `name`/`layer_index`/`render_color`/`user_strings`/`linetype_index`
-// parameters for why this exists and why an empty name, a layer_index of
-// 0, std::nullopt, and an empty list are all no-ops.
+// ON::linetype_from_object, and every `group_indices` entry added via
+// AddToGroup(). See file_io.h's own doc comment on the
+// `name`/`layer_index`/`render_color`/`user_strings`/`linetype_index`/
+// `group_indices` parameters for why this exists and why an empty name, a
+// layer_index of 0, std::nullopt, and an empty list are all no-ops.
 ON_3dmObjectAttributes MakeAttributes(const std::string& name, int layer_index,
                                        std::optional<Color> render_color,
                                        const UserStrings& user_strings,
-                                       std::optional<int> linetype_index) {
+                                       std::optional<int> linetype_index,
+                                       const std::vector<int>& group_indices) {
   ON_3dmObjectAttributes attributes;
   ON_CreateUuid(attributes.m_uuid);
   if (!name.empty()) {
@@ -66,6 +68,9 @@ ON_3dmObjectAttributes MakeAttributes(const std::string& name, int layer_index,
   if (linetype_index.has_value()) {
     attributes.m_linetype_index = *linetype_index;
     attributes.SetLinetypeSource(ON::linetype_from_object);
+  }
+  for (int group_index : group_indices) {
+    attributes.AddToGroup(group_index);
   }
   return attributes;
 }
@@ -105,48 +110,61 @@ int Model::AddLinetype(const std::string& name, const LinetypePattern& pattern) 
   return managed_linetype != nullptr ? managed_linetype->Index() : -1;
 }
 
+int Model::AddGroup(const std::string& name) {
+  if (name.empty()) {
+    return -1;
+  }
+  ON_Group group;
+  group.SetName(ON_wString(name.c_str()));
+  const ON_ModelComponentReference group_ref = model_.AddModelComponent(group, true);
+  const ON_Group* managed_group = ON_Group::FromModelComponentRef(group_ref, nullptr);
+  return managed_group != nullptr ? managed_group->Index() : -1;
+}
+
 void Model::AddCurve(const NurbsCurve& curve, const std::string& name, int layer_index,
                       std::optional<Color> render_color, const UserStrings& user_strings,
-                      std::optional<int> linetype_index) {
+                      std::optional<int> linetype_index,
+                      const std::vector<int>& group_indices) {
   auto* geometry = new ON_NurbsCurve(curve.raw());
-  ON_3dmObjectAttributes attributes =
-      MakeAttributes(name, layer_index, render_color, user_strings, linetype_index);
+  ON_3dmObjectAttributes attributes = MakeAttributes(name, layer_index, render_color,
+                                                      user_strings, linetype_index, group_indices);
   model_.AddModelGeometryComponent(geometry, &attributes);
 }
 
 void Model::AddBrep(const Brep& brep, const std::string& name, int layer_index,
                      std::optional<Color> render_color, const UserStrings& user_strings,
-                     std::optional<int> linetype_index) {
+                     std::optional<int> linetype_index, const std::vector<int>& group_indices) {
   auto* geometry = new ON_Brep(brep.raw());
-  ON_3dmObjectAttributes attributes =
-      MakeAttributes(name, layer_index, render_color, user_strings, linetype_index);
+  ON_3dmObjectAttributes attributes = MakeAttributes(name, layer_index, render_color,
+                                                      user_strings, linetype_index, group_indices);
   model_.AddModelGeometryComponent(geometry, &attributes);
 }
 
 void Model::AddMesh(const Mesh& mesh, const std::string& name, int layer_index,
                      std::optional<Color> render_color, const UserStrings& user_strings,
-                     std::optional<int> linetype_index) {
+                     std::optional<int> linetype_index, const std::vector<int>& group_indices) {
   auto* geometry = new ON_Mesh(mesh.raw());
-  ON_3dmObjectAttributes attributes =
-      MakeAttributes(name, layer_index, render_color, user_strings, linetype_index);
+  ON_3dmObjectAttributes attributes = MakeAttributes(name, layer_index, render_color,
+                                                      user_strings, linetype_index, group_indices);
   model_.AddModelGeometryComponent(geometry, &attributes);
 }
 
 void Model::AddSubD(const SubD& subd, const std::string& name, int layer_index,
                      std::optional<Color> render_color, const UserStrings& user_strings,
-                     std::optional<int> linetype_index) {
+                     std::optional<int> linetype_index, const std::vector<int>& group_indices) {
   auto* geometry = new ON_SubD(subd.raw());
-  ON_3dmObjectAttributes attributes =
-      MakeAttributes(name, layer_index, render_color, user_strings, linetype_index);
+  ON_3dmObjectAttributes attributes = MakeAttributes(name, layer_index, render_color,
+                                                      user_strings, linetype_index, group_indices);
   model_.AddModelGeometryComponent(geometry, &attributes);
 }
 
 void Model::AddPointCloud(const PointCloud& cloud, const std::string& name, int layer_index,
                            std::optional<Color> render_color, const UserStrings& user_strings,
-                           std::optional<int> linetype_index) {
+                           std::optional<int> linetype_index,
+                           const std::vector<int>& group_indices) {
   auto* geometry = new ON_PointCloud(cloud.raw());
-  ON_3dmObjectAttributes attributes =
-      MakeAttributes(name, layer_index, render_color, user_strings, linetype_index);
+  ON_3dmObjectAttributes attributes = MakeAttributes(name, layer_index, render_color,
+                                                      user_strings, linetype_index, group_indices);
   model_.AddModelGeometryComponent(geometry, &attributes);
 }
 

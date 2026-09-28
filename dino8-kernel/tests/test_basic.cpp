@@ -5610,6 +5610,101 @@ void TestModelAddLinetypeRoundTrips() {
   std::remove(path.c_str());
 }
 
+// Model::AddGroup() plus every Add*()'s new `group_indices` parameter:
+// PARITY_MAP.md's ".3dm attribute/metadata fidelity" evidence named groups
+// as a field this kernel had no way to write at all, alongside layers/
+// materials/linetypes/user-strings - Rhino's own Group/Ungroup commands,
+// which let a user select every object in a group with one click even
+// across objects on different layers, a relationship the layer table alone
+// cannot express. Checks a real round trip through an actual .3dm file: a
+// named group added via AddGroup(); two objects placed in that same group
+// (one of them also in a second group, proving `group_indices` is a list,
+// not a single value); and a third object given no group_indices argument
+// (proving the new parameter is additive, not a behavior change for
+// existing callers - GroupCount() stays 0, exactly as every object's
+// attributes were before this parameter existed).
+void TestModelAddGroupRoundTrips() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Model;
+  using dino8::kernel::Result;
+  using dino8::kernel::UserStrings;
+
+  Model model;
+  const int group_index = model.AddGroup("Fasteners");
+  Check(group_index >= 0, "AddGroup() with a non-empty name returns a valid (>= 0) index");
+  Check(model.AddGroup("") == -1,
+        "AddGroup() with an empty name returns -1, same contract as AddLayer()/AddLinetype()");
+  const int second_group_index = model.AddGroup("Hidden");
+  Check(second_group_index >= 0 && second_group_index != group_index,
+        "a second AddGroup() call returns a distinct valid index");
+
+  const auto box_mesh = MakeQuadBoxMesh(0, 0, 0, 1, 1, 1);
+  model.AddMesh(box_mesh, "GroupedMesh", 0, std::nullopt, UserStrings(), std::nullopt,
+                {group_index});
+  const auto box_brep = Brep::Box(0, 0, 0, 1, 1, 1);
+  model.AddBrep(box_brep, "GroupedBrepInTwoGroups", 0, std::nullopt, UserStrings(), std::nullopt,
+                {group_index, second_group_index});
+  const auto ungrouped_mesh = MakeQuadBoxMesh(2, 0, 0, 3, 1, 1);
+  model.AddMesh(ungrouped_mesh);  // no group_indices given: carries none
+
+  const std::string path = "dino8_kernel_model_group_roundtrip_test.3dm";
+  Check(model.Save(path) == Result::Ok, ".3dm save with object groups succeeded");
+
+  Model loaded;
+  Check(Model::Load(path, loaded) == Result::Ok, ".3dm load succeeded");
+
+  const ON_Group* group = nullptr;
+  {
+    ONX_ModelComponentIterator iterator(loaded.raw(), ON_ModelComponent::Type::Group);
+    for (const ON_ModelComponent* component = iterator.FirstComponent(); component != nullptr;
+         component = iterator.NextComponent()) {
+      const ON_Group* candidate = ON_Group::Cast(component);
+      if (candidate != nullptr && candidate->Index() == group_index) {
+        group = candidate;
+        break;
+      }
+    }
+  }
+  Check(group != nullptr, "the reloaded model still has a group at the returned index");
+  Check(group->Name() == ON_wString("Fasteners"),
+        "the reloaded group's name exactly matches what AddGroup() was given");
+
+  ONX_ModelComponentIterator iterator(loaded.raw(), ON_ModelComponent::Type::ModelGeometry);
+  bool found_grouped_mesh = false;
+  bool found_two_group_brep = false;
+  bool found_ungrouped_mesh = false;
+  int ungrouped_mesh_count = 0;
+  for (const ON_ModelComponent* component = iterator.FirstComponent(); component != nullptr;
+       component = iterator.NextComponent()) {
+    const auto* geometry_component = static_cast<const ON_ModelGeometryComponent*>(component);
+    const ON_3dmObjectAttributes* attributes = geometry_component->Attributes(nullptr);
+    if (attributes->Name() == ON_wString("GroupedMesh")) {
+      found_grouped_mesh = true;
+      Check(attributes->GroupCount() == 1 && attributes->IsInGroup(group_index),
+            "the reloaded mesh belongs to exactly the one group AddMesh() was given");
+    } else if (attributes->Name() == ON_wString("GroupedBrepInTwoGroups")) {
+      found_two_group_brep = true;
+      Check(attributes->GroupCount() == 2 && attributes->IsInGroup(group_index) &&
+                attributes->IsInGroup(second_group_index),
+            "the reloaded brep belongs to both groups AddBrep() was given, proving "
+            "group_indices is a list rather than a single value");
+    } else {
+      ++ungrouped_mesh_count;
+      found_ungrouped_mesh = true;
+      Check(attributes->GroupCount() == 0,
+            "the reloaded mesh - added with no group_indices argument - belongs to no groups, "
+            "proving the new parameter is a no-op when omitted");
+    }
+  }
+  Check(found_grouped_mesh && found_two_group_brep && found_ungrouped_mesh &&
+            ungrouped_mesh_count == 1,
+        "all three objects (single-group mesh, two-group brep, ungrouped mesh) were found "
+        "exactly once each in the reloaded model");
+
+  std::remove(path.c_str());
+}
+
 void TestBoxVolume() {
   const auto box = MakeBox(0, 0, 0, 2, 2, 2);
   Check(std::abs(box.Volume() - 8.0) < 1e-9, "unit-scaled box volume is correct");
@@ -32627,6 +32722,7 @@ int main() {
   TestModelAddRenderColorRoundTrips();
   TestModelAddUserStringsRoundTrips();
   TestModelAddLinetypeRoundTrips();
+  TestModelAddGroupRoundTrips();
   TestModelLoadRejectsMeshWithOutOfRangeFaceIndex();
   TestSplitByPlane();
   TestConvexHull();
