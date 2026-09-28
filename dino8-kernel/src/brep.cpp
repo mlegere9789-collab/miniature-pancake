@@ -5862,6 +5862,74 @@ Result Brep::RemoveNakedMicroEdge(int edge_index, double tolerance) {
   return Result::Ok;
 }
 
+Result Brep::MergeContiguousEdges(int edge_index_a, int edge_index_b, double angle_tolerance_radians) {
+  if (edge_index_a < 0 || edge_index_a >= brep_.m_E.Count()) {
+    throw std::out_of_range("dino8::kernel::Brep::MergeContiguousEdges: edge_index_a " +
+                             std::to_string(edge_index_a) + " is out of range (this Brep has " +
+                             std::to_string(brep_.m_E.Count()) + " edge slot(s))");
+  }
+  if (edge_index_b < 0 || edge_index_b >= brep_.m_E.Count()) {
+    throw std::out_of_range("dino8::kernel::Brep::MergeContiguousEdges: edge_index_b " +
+                             std::to_string(edge_index_b) + " is out of range (this Brep has " +
+                             std::to_string(brep_.m_E.Count()) + " edge slot(s))");
+  }
+  if (brep_.m_E[edge_index_a].m_edge_index < 0) {
+    throw std::invalid_argument("dino8::kernel::Brep::MergeContiguousEdges: edge_index_a " +
+                                 std::to_string(edge_index_a) + " refers to a deleted edge");
+  }
+  if (brep_.m_E[edge_index_b].m_edge_index < 0) {
+    throw std::invalid_argument("dino8::kernel::Brep::MergeContiguousEdges: edge_index_b " +
+                                 std::to_string(edge_index_b) + " refers to a deleted edge");
+  }
+  // Not a genuine caller bug (a==b is just never a mergeable pair - one
+  // edge can't be contiguous with itself), so this is an ordinary refusal
+  // rather than a thrown exception.
+  if (edge_index_a == edge_index_b) return Result::Failed;
+
+  // Does the actual work, including every precondition check described in
+  // brep.h's own doc comment (shared vertex valence, matching face/loop
+  // structure, 3D kink angle) - see opennurbs_brep.cpp's own
+  // implementation for the full validation this deliberately does not
+  // reimplement here.
+  ON_BrepEdge* merged = brep_.CombineContiguousEdges(edge_index_a, edge_index_b, angle_tolerance_radians);
+  if (!merged) return Result::Failed;
+
+  brep_.Compact();
+  brep_.SetTolerancesBoxesAndFlags();
+  FixUnsetEdgeTolerances(brep_);
+  // Same reasoning as every other topology-surgery method above: the
+  // affected face(s)' own trim loop just changed shape (one fewer trim,
+  // concatenated into the survivor), so this class's own per-face side
+  // tables would otherwise silently keep describing the pre-merge
+  // boundary at a now-possibly-renumbered face index.
+  ClearFaceSideTables();
+  return Result::Ok;
+}
+
+int Brep::MergeAllContiguousEdges(double angle_tolerance_radians) {
+  int merged = 0;
+  const int kMaxIterations = 4 * std::max(brep_.m_E.Count(), 1) + 16;
+  for (int iter = 0; iter < kMaxIterations; ++iter) {
+    bool found = false;
+    for (int vi = 0; vi < brep_.m_V.Count() && !found; ++vi) {
+      const ON_BrepVertex& v = brep_.m_V[vi];
+      if (v.m_vertex_index < 0 || v.m_ei.Count() != 2) continue;
+      const int ei0 = v.m_ei[0];
+      const int ei1 = v.m_ei[1];
+      // A single edge closed on itself at this vertex (both of its own
+      // ends here) shows up as m_ei listing that same edge index twice -
+      // not two distinct edges to merge.
+      if (ei0 == ei1) continue;
+      if (MergeContiguousEdges(ei0, ei1, angle_tolerance_radians) == Result::Ok) {
+        ++merged;
+        found = true;  // Compact() inside just renumbered everything - rescan.
+      }
+    }
+    if (!found) break;
+  }
+  return merged;
+}
+
 // ---------------------------------------------------------------------------
 // Check / heal - see brep.h's own doc comments on each method. Everything
 // here reads or edits this class's own ON_Brep directly, the same way the

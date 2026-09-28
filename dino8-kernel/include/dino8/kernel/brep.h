@@ -2524,6 +2524,67 @@ class Brep {
   // this returns Result::Failed before touching this Brep at all.
   Result RemoveNakedMicroEdge(int edge_index, double tolerance = tolerance::kEdgeJoin);
 
+  // Kernel wrapper for ON_Brep::CombineContiguousEdges - previously
+  // reachable only from the app layer (cmd_fillet.cpp's MergeEdgeCommand,
+  // which reaches straight into the raw ON_Brep) and absent from this
+  // class entirely, per PARITY_MAP.md's own "Edge merging ... app-only;
+  // no kernel wrapper" gap. Combines the two edges named by
+  // `edge_index_a`/`edge_index_b` into ONE edge, eliminating the vertex
+  // between them, provided:
+  //   - that shared vertex has EXACTLY two incident edges (the two being
+  //     merged) - a vertex a third edge also depends on is refused, the
+  //     same "don't guess at unrelated topology" scoping
+  //     RemoveNakedMicroEdge() above already applies;
+  //   - the two edges border the SAME faces on each side, in matching
+  //     order (an ordinary "one edge after another along one loop" case,
+  //     never two edges of unrelated loops that merely happen to share a
+  //     vertex);
+  //   - the 3D kink angle between the two edges' own tangents at that
+  //     vertex is at most `angle_tolerance_radians` - a real geometric
+  //     check, not just a topological one: two contiguous but sharply
+  //     kinked edges are correctly refused rather than silently smoothed
+  //     over into one edge that no longer represents the original shape.
+  // The merged edge's 3D curve is an ON_PolyCurve concatenation of the
+  // two originals (so the visible shape is bit-identical, never
+  // resampled or refit), and every trim that used to end at the
+  // eliminated vertex is concatenated the same way in 2D - genuine
+  // topology surgery, not a cosmetic relabeling.
+  //
+  // Returns Result::Failed - not a thrown exception, the same "can't, but
+  // that's not a bug" contract every other topology-surgery method here
+  // shares - if the two edges are not a valid contiguous pair by any of
+  // the tests above (this is the OpenNURBS routine's own extensive
+  // validation, not reimplemented here); this Brep is left completely
+  // untouched. Throws std::out_of_range if either edge index is out of
+  // range, or std::invalid_argument if either refers to an already-
+  // deleted edge - both genuine caller bugs, not ordinary outcomes.
+  Result MergeContiguousEdges(int edge_index_a, int edge_index_b,
+                               double angle_tolerance_radians = tolerance::kMergeEdgeAngle);
+
+  // Repeatedly applies MergeContiguousEdges() across this whole Brep -
+  // the kernel counterpart of the app's own MergeEdgeCommand "all"
+  // mode (RunAll(), cmd_fillet.cpp), but over every vertex in the Brep
+  // rather than one picked face. Each pass scans every vertex for one
+  // with exactly two incident edges and tries to merge them; a
+  // successful merge changes this Brep's own vertex/edge numbering (via
+  // Compact(), inside MergeContiguousEdges()), so - exactly like
+  // SewTJunctions()'s own repeated-rescan loop above - at most one merge
+  // is committed per pass before rescanning from scratch, never a stale
+  // list of candidates acted on after the indices underneath it moved.
+  // This is what lets a straight rail built as three or more collinear
+  // micro-segments collapse all the way down to one edge, not just one
+  // pair at a time. Bounded the same way SewTJunctions() bounds its own
+  // loop (a small multiple of the edge count plus a constant), so a
+  // pathological input can never spin forever.
+  //
+  // Returns the number of merges actually performed (0 if none of this
+  // Brep's vertices qualify). Never throws: every candidate pair it finds
+  // already passed the same-edge-count/valence-2 precondition by
+  // construction, so MergeContiguousEdges() only ever returns Ok or
+  // Failed for it, never one of that method's own thrown "genuine caller
+  // bug" cases.
+  int MergeAllContiguousEdges(double angle_tolerance_radians = tolerance::kMergeEdgeAngle);
+
   // --- Check / heal ------------------------------------------------------
   //
   // The Parasolid PK_BODY_check / ACIS api_check_entity class of

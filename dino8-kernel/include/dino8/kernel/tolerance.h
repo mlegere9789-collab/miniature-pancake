@@ -59,6 +59,21 @@ constexpr double kRelative = 1e-6;
 // kernel's ANGLE tolerance.
 constexpr double kAlignment = 1e-6;
 
+// Kink-angle tolerance, in radians, for merging two contiguous edges that
+// meet at a vertex into one (Brep::MergeContiguousEdges/
+// MergeAllContiguousEdges): the maximum angle between the two edges' own
+// 3D tangent directions at that vertex for the merge to still read as one
+// smooth edge rather than a visible kink. A genuinely separate, much
+// coarser notion of "tangent enough" than kAlignment above (which is
+// near-exact parallelism) - this one has to tolerate the ordinary
+// numerical slop two independently-built edges (e.g. two halves of what
+// was meant to be one straight or tangent-arc run) actually show. 5
+// degrees, matching the value the app-only MergeEdgeCommand
+// (cmd_fillet.cpp) already hardcodes for the same ON_Brep::
+// CombineContiguousEdges call - not derived from a primitive above,
+// since 1e-6-scaled tolerances would be far too tight for this use.
+constexpr double kMergeEdgeAngle = 5.0 * 3.14159265358979323846 / 180.0;
+
 // --- Degeneracy floors ------------------------------------------------------
 
 // A vector (cross product, normal, direction) whose length is at or below

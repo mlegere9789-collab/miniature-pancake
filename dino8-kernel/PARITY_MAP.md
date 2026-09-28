@@ -1,6 +1,6 @@
 # Fossilith / Dino 8 parity map (2026-09-28)
 
-**Fossilith vs Parasolid/ACIS = 64.8% (weighted, verified); Dino 8 vs Rhino 8 + AutoCAD 2027 = 71.4%.**
+**Fossilith vs Parasolid/ACIS = 65.2% (weighted, verified); Dino 8 vs Rhino 8 + AutoCAD 2027 = 71.4%.**
 
 This run recomputes the parity map from scratch against the live repository at
 `/home/user/miniature-pancake` on `claude/pdf-audit-i2bvwm`, superseding the
@@ -323,19 +323,30 @@ real, disclosed future work. This flips the item missing→partial: kernel:
 Local/direct-edit operations moves from 6/17/5/28 (51.8%) to 6/18/4/28
 (53.6%).
 
+**Concurrently, a separate same-day session change** (this document's own
+"Merge contiguous tangent edges" follow-up, below) flipped a second item
+in this SAME category from `partial` to `present`. The table row below
+reflects BOTH changes combined, not just this one: 7/17/4/28 (55.4%), not
+the 6/18/4/28 (53.6%) this paragraph's own isolated math gives. This
+paragraph's own before/after numbers are kept as originally written for
+this change's own history; only the table itself carries the merged
+total. This category's own headline contribution was never added to the
+document's headline number by this paragraph's own change — folded in
+below alongside the other change's own headline delta.
+
 ## Kernel: Fossilith vs Parasolid/ACIS
 
 | Category | Weight | Items | Present | Partial | Missing | Parity % |
 |---|---|---|---|---|---|---|
-| kernel: Topology & data structure | 1 | 27 | 11 | 14 | 2 | 66.7% |
+| kernel: Topology & data structure | 1 | 27 | 12 | 13 | 2 | 68.5% |
 | kernel: Geometry representation | 1 | 29 | 18 | 11 | 0 | 81.0% |
 | kernel: Boolean operations | 1.5 | 25 | 8 | 15 | 2 | 62.0% |
 | Blending & chamfering | 1.5 | 24 | 5 | 17 | 2 | 56.3% |
 | kernel: Sweeping, lofting, extruding, revolving | 1 | 29 | 6 | 20 | 3 | 55.2% |
 | kernel: Offsetting, shelling, thickening | 1 | 27 | 0 | 26 | 1 | 48.1% |
-| kernel: Local / direct-edit operations | 1 | 28 | 6 | 18 | 4 | 53.6% |
+| kernel: Local / direct-edit operations | 1 | 28 | 7 | 17 | 4 | 55.4% |
 | kernel: Intersections & projections | 1.5 | 29 | 13 | 14 | 2 | 69.0% |
-| kernel: Healing, repair, validation, tolerant modeling | 1 | 30 | 18 | 11 | 1 | 78.3% |
+| kernel: Healing, repair, validation, tolerant modeling | 1 | 30 | 19 | 10 | 1 | 80.0% |
 | kernel: Mass properties & spatial queries | 1 | 30 | 16 | 14 | 0 | 76.7% |
 | kernel: Tessellation / faceting | 1 | 25 | 12 | 11 | 2 | 70.0% |
 | kernel: Transformations, patterns, splitting | 0.5 | 22 | 9 | 13 | 0 | 70.5% |
@@ -413,6 +424,54 @@ row's own weight of 1.5 against the 17.75 total kernel weight, on top of
 the 64.6% those two already established, not a full re-derivation of
 every other row): 64.6% → 64.8%.
 
+**Fourth same-day follow-up:** `Brep::MergeContiguousEdges`/
+`MergeAllContiguousEdges` (dino8-kernel/src/brep.cpp, dino8-kernel/include/
+dino8/kernel/brep.h) landed, closing the **kernel: Healing, repair,
+validation, tolerant modeling** row's own "Edge merging ... app-only; no
+kernel wrapper" item — a genuine kernel wrapper around `ON_Brep::
+CombineContiguousEdges` (the same OpenNURBS primitive the app-only
+`MergeEdgeCommand`, cmd_fillet.cpp, already called directly), with real
+unit-test coverage the app-only version never had: a same-vertex/matching-
+face-structure/kink-angle contract enforced and verified (two collinear
+naked edges merge; a genuine 90-degree corner is refused at the default
+5-degree tolerance but merges once that tolerance is opened past the
+actual kink; a valence-3 vertex, an edge paired with itself, an
+out-of-range index, and an already-deleted index are all refused or throw
+per this kernel's own established two-tier contract), plus
+`MergeAllContiguousEdges` collapsing a whole chain of collinear edges in
+one call (item promoted `partial` → `present`, 30 items unchanged: 18/11/1
+→ 19/10/1 present/partial/missing, 78.3% → 80.0%) — detailed in that
+category's own bullet list below.
+
+The identical underlying gap was independently listed twice more, under
+this document's own "same capability, different category framing" pattern
+(see the intro's note on judgment-call granularity): **kernel: Topology &
+data structure**'s own "Merge contiguous tangent edges" item (66.7% →
+68.5%, 11/14/2 → 12/13/2) and **kernel: Local / direct-edit operations**'s
+own "Merge contiguous tangent edges (MergeEdge / MergeAllEdges)" item
+(partial → present, one item of that category's 28) both name the exact
+same "app-only, no kernel wrapper" gap this same commit closes, so both
+are promoted `partial` → `present` alongside it rather than left stale
+and contradicting the healing category's own now-updated bullet. This
+moves the document's own headline number again, combining all three
+category deltas by the same incremental method the follow-ups above use,
+applied on top of the prior follow-up's own 64.8% (not an earlier
+headline value, which each follow-up above already moved in turn): 64.8%
+→ 65.1%, weighted; no other category was touched, and the app's own
+`MergeEdgeCommand` still does not call the new kernel method (a separate,
+still-open app-wiring gap, not this item's own scope).
+
+**Fifth same-day follow-up (bookkeeping only, no new code):** the
+`PushPullFace` follow-up above never propagated its own category delta
+into this document's headline number, and its own local/direct-edit
+operations table row conflicted with (and, once merged, sits on top of)
+the Fourth follow-up's own change to that SAME category (see that row's
+own updated note for the merged 7/17/4/28, 55.4% count). Applying that
+missed delta now, on the same marginal basis as every follow-up above
+(this category's own weight of 1 against the 17.75 total kernel weight,
+`PushPullFace`'s own isolated 51.8% → 53.6% move): 65.1% → 65.2%,
+weighted.
+
 ### Kernel category gaps (missing / partial items, with evidence)
 
 **kernel: Topology & data structure** (topology):
@@ -423,7 +482,7 @@ every other row): 64.6% → 64.8%.
 - [partial] Kernel-level topology enumeration API (vertex/edge/loop/face iteration and counts) — `FaceCount`/`VertexCount`/`EdgeCount` (brep.cpp:304-306; brep.h:511-513), tested in `TestBrepAdjacencyQueries` (test_basic.cpp:17616). Still partial: no loop/trim count or iteration API (callers walk `raw().m_F[i].Loop(j)/Trim(k)` by hand); `VertexCount`/`EdgeCount` include deleted slots until `Compact()`; `Box()`/`Sphere()`/`Torus()` report 0 vertices and edges (confirmed `Torus()` also builds via the plain surface-only `NewFace(int)` overload, brep.cpp:229-266, same as Box/Sphere/TrimmedPlanarFace/FromSurface, even though the file's own top-of-file disclosure comment now names only 4 of these 5 factories — a minor staleness in the source's own comment, not in this claim).
 - [partial] Loop structure: inner loops (holes), loop walking (Prev/NextTrim), outer/inner classification — real inner loops come only from the general boolean (boolean_general.cpp:3039 `BuildLoop(..., ON_BrepLoop::inner, ...)`). `TrimmedPlanarFace` holes are side-table polygons, not `ON_BrepLoop`s (brep.h:159-164). `MergeCoplanarFaces` skips any face with holes or more than one loop. No public loop API exists.
 - [partial] Merge coplanar / co-surface adjacent faces (remove interior edge, rebuild one face) — `Brep::MergeCoplanarFaces` (brep.cpp:5415-5510; brep.h:2337) requires planar faces only, the same plane, single-loop faces, and exactly one shared 2-trim edge. App wiring: cmd_solidtools.cpp:1197. Still partial: nothing for co-cylindrical, co-spherical or tangent co-surface faces, or faces with holes.
-- [partial] Merge contiguous tangent edges (combine two edges sharing a vertex into one) — app-only: `MergeEdgeCommand` (dino8-app/src/commands/cmd_fillet.cpp:2303-2320) calls `ON_Brep::CombineContiguousEdges` with a 5deg tangent tolerance. No kernel `Brep` wrapper.
+- [present] Merge contiguous tangent edges (combine two edges sharing a vertex into one) — **upgraded from partial.** `Brep::MergeContiguousEdges`/`MergeAllContiguousEdges` (brep.h/brep.cpp) is a genuine kernel wrapper around `ON_Brep::CombineContiguousEdges` (the same primitive the app-only `MergeEdgeCommand`, dino8-app/src/commands/cmd_fillet.cpp:2303-2320, already called directly with a 5deg tangent tolerance), enforcing the same valence-2/matching-faces/kink-angle contiguity contract and, on success, concatenating the 3D edge curve and every affected 2D trim curve. See the healing category's own bullet below (this is the same underlying capability, credited there in full detail) for the exact tests and remaining app-wiring gap.
 - [partial] Remove edge / collapse micro edge (kill-edge-vertex style healing) — `Brep::RemoveNakedMicroEdge` (brep.cpp:5729) handles only an isolated naked sliver whose neighbours are also naked. `Brep::RemoveDegenerateEdges` (brep.cpp:6518) runs `ON_Brep::CollapseEdge` on shared/naked edges shorter than tolerance. There is no general "remove a shared edge above tolerance / merge its two faces" operation.
 - [partial] Split / imprint a face by a curve while keeping the polysurface topology — app `SplitFace` (cmd_fillet.cpp:2057) splits the underlying surface at an isoline through the CSX hit, not an arbitrary trim loop. The only kernel split, `Brep::SplitNakedEdgeAt` (brep.cpp:6615), splits a linear naked edge; that is not a face imprint (the kernel's real face-face imprint, `ImprintFaces`, is scored under Boolean operations, not here).
 - [partial] Delete / extract face (with or without healing neighbours) — app `ExtractSrf`/`DeleteFaces` (dino8-app/src/commands/cmd_srfedit.cpp:235-259) uses `ON_Brep::DuplicateFace`/`DeleteFace` and leaves an open shell. The kernel has no public delete-face API and nothing re-extends neighbours to heal the gap.
@@ -549,7 +608,7 @@ every other row): 64.6% → 64.8%.
 - [partial] Offset face (translate face along its normal, neighbours re-extended/re-trimmed) — kernel `OffsetFace` (boolean.h:453-488) re-clips every other face into a valid closed B-rep, but convex planar solids only, throws if any face would vanish, and not wired to any app command.
 - [partial] Delete face with heal (remove face, grow neighbours to close the gap) — app `DeleteFaces` (cmd_srfedit.cpp:243-254) only calls `ON_Brep::DeleteFace` + `Compact`, leaving a hole. Kernel `Brep::CapPlanarHoles` can re-cap a planar hole with straight edges, but that is not a heal that extends the neighbours.
 - [partial] Split face by curve / surface (real trim-loop split in place) — app `SplitFaceCommand` (cmd_fillet.cpp:2057) finds crossings and splits the underlying surface at the iso-parameter midpoint of the hits, not a trim-loop split along the actual curve. No kernel face-split-by-curve.
-- [partial] Merge contiguous tangent edges (MergeEdge / MergeAllEdges) — app `MergeEdgeCommand` (cmd_fillet.cpp:2303-2320) calls `ON_Brep::CombineContiguousEdges`. App calls into OpenNURBS directly; no kernel wrapper or test.
+- [present] Merge contiguous tangent edges (MergeEdge / MergeAllEdges) — **upgraded from partial.** `Brep::MergeContiguousEdges`/`MergeAllContiguousEdges` (brep.h/brep.cpp) is a genuine kernel wrapper around the same `ON_Brep::CombineContiguousEdges` the app `MergeEdgeCommand` (cmd_fillet.cpp:2303-2320) calls directly, with real kernel-level test coverage the app-only version never had. See the healing category's own bullet below (this is the same underlying capability, credited there in full detail) for the exact tests and remaining app-wiring gap.
 - [partial] Remove small / sliver edges (naked micro-edge removal with gap closure) — kernel `Brep::RemoveNakedMicroEdge` is limited to isolated naked edges whose neighbours are also naked. Related additions: `RemoveSliverFaces`/`RemoveDegenerateEdges` and `SewTJunctions`. Shared (2-trim) micro edges are still unsupported.
 - [partial] Edge blend removal (remove fillet/chamfer faces and restore the sharp edge) — kernel `RemoveBlend` (fillet.h:1466, covering cylindrical `FilletConvexEdge`/`FilletConcaveEdge` faces and conical `FilletConvexEdgeTapered` faces), plus `RemoveChamfer` (fillet.h:1543) and `RemoveChamferVertex` (fillet.h:1593). Still partial: only inverts this kernel's own constructions on planar-plus-blend solids; throws for oblique-end cylindrical fillets and spherical vertex blends; no app command calls any of them.
 - [partial] Untrim face / remove outer trim / remove hole loops — app `Op::Untrim`/`UntrimBorderOnly`/`UntrimHoles`; multi-face Untrim detaches the face from the polysurface instead of editing it in place. App-only.
@@ -564,7 +623,7 @@ every other row): 64.6% → 64.8%.
 - [partial] Push/pull a face (extrude face and merge/cut into its own body) — **corrected: upgraded from missing.** Kernel `PushPullFace(solid, face_index, distance)` (boolean.h/boolean.cpp) landed this session: a push (`distance > 0`) genuinely extrudes new side-wall faces into previously-empty space without touching any other face (unlike `OffsetFace`, which always re-extends/re-trims neighbours in place); a pull (`distance < 0`) retrims every neighbour perpendicular to the pushed face via an exact single half-space clip and adds no new geometry. Direct topological surgery, not a boolean — `Brep::Extrude()`+`BooleanCombinePlanar()` was tried first and found to fail (a swept profile is only piecewise planar; even a hand-built all-planar prism makes `BooleanCombinePlanar()` throw on the flush, zero-overlap coincident face this operation always creates, a disclosed gap in that engine's own coincident-face handling). No convexity precondition on `solid` (verified on a genuinely non-convex L-shaped prism, both directions). Still partial: planar-faced solids only (`PlanarFaces()`'s own precondition), and a pull refuses an oblique (non-perpendicular) neighbour rather than attempting a general re-intersection.
 - [missing] Move a single B-rep vertex directly (drag one topological corner in place; adjacent edges reshape around it) — `TransformSubObjects`'s Brep branch (SubObjectEdit.cpp:547-556) still collects only `Face` and `Edge` refs and returns false otherwise. The kernel has only a query (`Brep::EdgesOfVertex`), no vertex-move op.
 
-*Note on this category's counts: the table above shows 6 present / 18 partial / 4 missing (28 items total). This corrects a pre-existing arithmetic slip inherited from the last measurement (the table declared 17 partial against a physically-written bullet list that only ever had 16 gap bullets); combined with the `ImprintFaces` upgrade (missing→partial) and this session's own `PushPullFace` upgrade (missing→partial, see this document's own later same-day session note), the internally-consistent result is 6/18/4.*
+*Note on this category's counts: the table above shows 7 present / 17 partial / 4 missing (28 items total). This corrects a pre-existing arithmetic slip inherited from the last measurement (the table declared 17 partial against a physically-written bullet list that only ever had 16 gap bullets); combined with the `ImprintFaces` upgrade (missing→partial), the `PushPullFace` upgrade (missing→partial, see this document's own later same-day session note), and the `MergeContiguousEdges`/`MergeAllContiguousEdges` upgrade (partial→present, this category's own "Merge contiguous tangent edges" bullet — see the healing category's own bullet for the full detail), the internally-consistent result is 7/17/4.*
 
 **kernel: Intersections & projections** (intersections):
 - [partial] Analytic/analytic SSX closed forms (plane/plane, plane/cylinder, cylinder/cylinder, plane/sphere, cone, torus) — closed forms still exist only inside `BooleanCombineMixed`'s private splitters (`SplitCylindricalByObliquePlane`, `SplitCylindricalByParallelCylinder`, Steinmetz/unequal-cylinder splitters) and the planar boolean's plane/plane path. No public analytic-SSX API, and no plane/sphere, cone or torus closed form (the only general path is the mesh-seeded `IntersectSurfaces`).
@@ -592,7 +651,7 @@ every other row): 64.6% → 64.8%.
 - [partial] Gap closing by edge re-trim / trim refit (ReplaceEdgeCurve, RefitTrim, ReplaceEdge) — `Brep::ReplaceEdgeCurve` does closest-point re-projection of every trim, throwing when the fit fails; `CloseLoopGapsWithinTolerance` closes residual 2D loop gaps. No `RefitTrim` or general `ReplaceEdge`.
 - [partial] Micro/sliver edge removal (RemoveAllNakedMicroEdges / Brep::RemoveNakedMicroEdge) — `Brep::RemoveNakedMicroEdge` works only on an isolated naked sliver whose neighbours are also naked. `Brep::RemoveDegenerateEdges` (brep.h:2660) collapses shared or naked edges at or below tolerance.
 - [partial] Self-intersection detection (curves, meshes, surfaces/breps) — meshes: `Mesh::FindSelfIntersections`/`FindOffsetSelfIntersections`; breps: only loop boundaries via `Check()`'s `SelfIntersectingLoop`/`SelfIntersectingLoop3d`; curves: app-only sampled. No face-interior or face/face check anywhere.
-- [partial] Edge merging (MergeEdge / MergeAllEdges via ON_Brep::CombineContiguousEdges) — app-only `MergeEdgeCommand`; no kernel wrapper.
+- [present] Edge merging (MergeEdge / MergeAllEdges via ON_Brep::CombineContiguousEdges) — **upgraded from partial.** `Brep::MergeContiguousEdges(edge_index_a, edge_index_b, angle_tolerance_radians)` (brep.h; brep.cpp) is a genuine kernel wrapper around `ON_Brep::CombineContiguousEdges`, the same OpenNURBS primitive the app-only `MergeEdgeCommand` (cmd_fillet.cpp) already called directly — previously reachable only from that one app command reaching into the raw `ON_Brep`, with zero kernel-level test coverage. Enforces the same contiguity contract OpenNURBS itself does (the shared vertex has exactly 2 incident edges, the two edges border matching faces/loops on each side, the 3D kink angle at the vertex is within `angle_tolerance_radians`, default `tolerance::kMergeEdgeAngle` = 5 degrees) and, on success, concatenates both the 3D edge curve and every affected 2D trim curve (an `ON_PolyCurve` join, not a resample), Compact()s, and clears this class's own per-face side tables the same way every other trim-mutating topology method here does. `Brep::MergeAllContiguousEdges(angle_tolerance_radians)` is the kernel counterpart of `MergeEdgeCommand`'s own "all" mode, but over the whole Brep rather than one picked face — repeatedly rescanning for a fresh valence-2, in-tolerance pair after each merge (the same discipline `SewTJunctions()` uses, since each merge's own `Compact()` renumbers everything), so a whole chain of collinear micro-segments collapses to one edge in a single call. Verified by `TestMergeContiguousEdgesCombinesTwoCollinearNakedEdges`, `TestMergeContiguousEdgesRefusesAKinkedCorner`, `TestMergeContiguousEdgesThrowsOnInvalidIndicesRefusesWrongValence`, and `TestMergeAllContiguousEdgesCollapsesAChainOfCollinearEdges` (tests/test_basic.cpp). Not yet wired into the app: `MergeEdgeCommand` still calls `ON_Brep::CombineContiguousEdges` directly rather than this new kernel method — a separate, still-open app-integration gap, not a limitation of the kernel API itself.
 - [partial] Edge rebuild from adjacent-surface intersection (RebuildEdges) — app-only `RebuildEdgesReal`.
 - [partial] Curve/surface simplify and rebuild (Rebuild, FitCrv, SimplifyCrv, RemoveMultiKnot, MakeUniform, RebuildUV, FitSrf, ShrinkTrimmedSrf) — `NurbsSurface::Rebuild`, `RemoveKnotAt`, `NurbsCurve::FitLeastSquares` confirmed present.
 - [partial] Analytic-form recognition / canonical simplification of faces — `IsPlanar`/`IsSphere`/`IsCylinder`/`IsCone`/`IsTorus` confirmed present; nothing replaces a recognized NURBS face with a canonical analytic one.
@@ -956,7 +1015,6 @@ top 40:
 **Small effort** (60 items):
 - [kernel/topology] Non-manifold topology (edge shared by 3+ faces, non-manifold vertices) (partial)
 - [kernel/topology] Kernel-level topology enumeration API (loop/trim iteration) (partial)
-- [kernel/topology] Merge contiguous tangent edges (partial)
 - [kernel/topology] Cap naked loops — extend to non-planar-hole detection (partial)
 - [kernel/geometry] Knot removal (curve) (partial)
 - [kernel/geometry] Helix and spiral curves (partial)
@@ -969,7 +1027,6 @@ top 40:
 - [kernel/intersections] Curve/plane intersection — dedicated infinite-plane API (partial)
 - [kernel/intersections] Point-cloud contour/section as separate app commands (partial)
 - [kernel/healing] Micro/sliver edge removal — shared-edge case (partial)
-- [kernel/healing] Edge merging — kernel wrapper for CombineContiguousEdges (partial)
 - [kernel/massprops] Curve length / arc-length parametrization — Gaussian quadrature (partial)
 - [kernel/massprops] Signed distance point-to-solid (partial)
 - [kernel/tessellation] Angular (facet-normal deviation) tolerance control (missing)
@@ -1095,7 +1152,6 @@ top 40:
 - [kernel/localops] Move/transform edge — kernel API (partial)
 - [kernel/localops] Offset face — non-convex solids (partial)
 - [kernel/localops] Split face by curve/surface — real trim-loop split (partial)
-- [kernel/localops] Merge contiguous tangent edges — kernel wrapper (partial)
 - [kernel/localops] Remove small / sliver edges — shared-edge case (partial)
 - [kernel/localops] Edge blend removal — spherical vertex blends, oblique cylinders (partial)
 - [kernel/localops] Untrim face / remove outer trim — in-place for multi-face polysurfaces (partial)

@@ -27441,6 +27441,229 @@ void TestRemoveNakedMicroEdgeRefusesASliverNextToASharedEdge() {
         "RemoveNakedMicroEdge() on a shared (2-trim) edge returns Result::Failed");
 }
 
+// Brep::MergeContiguousEdges() - the kernel wrapper for ON_Brep::
+// CombineContiguousEdges(), closing PARITY_MAP.md's "Edge merging ...
+// app-only; no kernel wrapper" gap. Fixture: a unit square whose bottom
+// side is split at its own midpoint into two collinear naked edges - a
+// vertex with valence 2 and a 0-degree kink, the textbook "two edges that
+// should have been one" case MergeEdgeCommand's app-only ON_Brep::
+// CombineContiguousEdges call already handles from the app layer.
+void TestMergeContiguousEdgesCombinesTwoCollinearNakedEdges() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  Brep::PlanarFace f;
+  f.plane = ON_Plane(Point3d(0, 0, 0), ON_3dVector(0, 0, 1));
+  f.loop = {Point3d(0, 0, 0), Point3d(0.5, 0, 0), Point3d(1, 0, 0), Point3d(1, 1, 0), Point3d(0, 1, 0)};
+  Brep plate = Brep::FromPlanarFaces({f});
+  Check(plate.FaceCount() == 1, "the split-bottom-edge fixture has exactly 1 face");
+  Check(plate.raw().IsValid(), "the split-bottom-edge fixture is a valid ON_Brep to begin with");
+  Check(plate.raw().m_E.Count() == 5, "5 naked edges: 3 real sides plus the bottom side's own 2 halves");
+
+  auto find_vertex_near = [&](Point3d p) {
+    for (int i = 0; i < plate.raw().m_V.Count(); ++i) {
+      if (plate.raw().m_V[i].point.DistanceTo(p) < 1e-9) return i;
+    }
+    return -1;
+  };
+  const int vi_mid = find_vertex_near(Point3d(0.5, 0, 0));
+  Check(vi_mid >= 0, "found the midpoint vertex splitting the bottom side");
+  const ON_BrepVertex& v_mid = plate.raw().m_V[vi_mid];
+  Check(v_mid.m_ei.Count() == 2, "the midpoint vertex has exactly 2 incident edges - a genuine merge candidate");
+  const int ei0 = v_mid.m_ei[0];
+  const int ei1 = v_mid.m_ei[1];
+
+  auto plate_area = [&]() {
+    double a = 0;
+    for (const dino8::kernel::Mesh& m : plate.Tessellate(24, 24)) a += m.Area();
+    return a;
+  };
+  const double area_before = plate_area();
+
+  const Result r = plate.MergeContiguousEdges(ei0, ei1);
+  Check(r == Result::Ok, "MergeContiguousEdges() succeeded on the two collinear bottom-edge halves");
+  Check(plate.raw().IsValid(), "the plate is still a valid ON_Brep after the merge");
+  Check(plate.FaceCount() == 1, "still exactly 1 face - only the boundary loop changed");
+  Check(plate.raw().m_E.Count() == 4, "back down to 4 edges - the midpoint vertex and the split it caused are gone");
+  Check(find_vertex_near(Point3d(0.5, 0, 0)) < 0, "the midpoint vertex itself is gone, not just relabeled");
+
+  int merged_index = -1;
+  for (int i = 0; i < plate.raw().m_E.Count(); ++i) {
+    const ON_BrepEdge& e = plate.raw().m_E[i];
+    if (e.m_edge_index < 0) continue;
+    const Point3d p0 = plate.raw().m_V[e.m_vi[0]].point;
+    const Point3d p1 = plate.raw().m_V[e.m_vi[1]].point;
+    if ((p0.DistanceTo(Point3d(0, 0, 0)) < 1e-9 && p1.DistanceTo(Point3d(1, 0, 0)) < 1e-9) ||
+        (p1.DistanceTo(Point3d(0, 0, 0)) < 1e-9 && p0.DistanceTo(Point3d(1, 0, 0)) < 1e-9)) {
+      merged_index = i;
+      break;
+    }
+  }
+  Check(merged_index >= 0, "one edge now runs the whole (0,0,0)-(1,0,0) span");
+  Check(plate.raw().m_E[merged_index].TrimCount() == 1, "the merged edge is still naked (1 trim), not shared");
+
+  const double area_after = plate_area();
+  Check(std::abs(area_after - area_before) < 1e-9, "merging two edges into one changed no geometry at all");
+}
+
+// The 3D kink-angle guard: two edges meeting at an ordinary 90-degree box
+// corner are contiguous (share a valence-2 vertex) but NOT tangent, so
+// MergeContiguousEdges() must refuse them - the same "can't, but that's
+// not a bug" Result::Failed contract every other topology-surgery method
+// here shares - rather than silently smoothing a real corner away.
+void TestMergeContiguousEdgesRefusesAKinkedCorner() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  Brep::PlanarFace f;
+  f.plane = ON_Plane(Point3d(0, 0, 0), ON_3dVector(0, 0, 1));
+  f.loop = {Point3d(0, 0, 0), Point3d(1, 0, 0), Point3d(1, 1, 0), Point3d(0, 1, 0)};
+  Brep square = Brep::FromPlanarFaces({f});
+  Check(square.raw().m_E.Count() == 4, "the plain unit square has 4 edges, one per side");
+
+  const ON_BrepVertex& corner = square.raw().m_V[1];  // (1, 0, 0), a genuine 90-degree corner
+  Check(corner.point.DistanceTo(Point3d(1, 0, 0)) < 1e-9, "vertex 1 is the (1,0,0) corner");
+  Check(corner.m_ei.Count() == 2, "an ordinary square corner also has exactly 2 incident edges");
+  const int ei0 = corner.m_ei[0];
+  const int ei1 = corner.m_ei[1];
+
+  const Result r = square.MergeContiguousEdges(ei0, ei1);
+  Check(r == Result::Failed, "MergeContiguousEdges() refuses a 90-degree kink at the default 5-degree tolerance");
+  Check(square.raw().m_E.Count() == 4, "a refused call leaves the square's own 4 edges completely untouched");
+  Check(square.raw().IsValid(), "the square is still a valid ON_Brep after the refused call");
+
+  // The same physical corner, but with the angle tolerance opened up past
+  // 90 degrees, DOES merge - confirming the refusal above was genuinely
+  // the angle check, not some other precondition silently failing too.
+  const Result r2 = square.MergeContiguousEdges(ei0, ei1, 100.0 * 3.14159265358979323846 / 180.0);
+  Check(r2 == Result::Ok, "the identical pair merges once the angle tolerance is opened past the actual kink");
+  Check(square.raw().m_E.Count() == 3, "one fewer edge once the wide-tolerance merge actually goes through");
+}
+
+// The caller-bug/ordinary-refusal two-tier contract every other topology-
+// surgery method here shares (UnjoinEdge(), RemoveNakedMicroEdge(),
+// SplitNakedEdgeAt()): out-of-range or already-deleted edge_index values
+// throw, since those are genuine caller bugs, while a topologically
+// invalid pair (a vertex with the wrong valence - here, a closed box's
+// shared edges, whose every vertex has 3 incident edges, not 2) is an
+// ordinary Result::Failed.
+void TestMergeContiguousEdgesThrowsOnInvalidIndicesRefusesWrongValence() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Result;
+
+  Brep box = Brep::FromPlanarFaces(CheckHealBoxFaces());
+  Check(box.raw().IsValid() && box.raw().IsSolid(), "the closed-box fixture is a valid solid to begin with");
+  Check(box.raw().m_V[0].m_ei.Count() == 3, "every box corner has 3 incident edges, not the 2 a merge needs");
+
+  const int ei0 = box.raw().m_V[0].m_ei[0];
+  const int ei1 = box.raw().m_V[0].m_ei[1];
+  Check(box.MergeContiguousEdges(ei0, ei1) == Result::Failed,
+        "MergeContiguousEdges() refuses a pair at a valence-3 vertex - an ordinary refusal, not a thrown exception");
+  Check(box.raw().m_E.Count() == 12, "the refused call left the closed box's own 12 edges completely untouched");
+
+  Check(box.MergeContiguousEdges(0, 0) == Result::Failed,
+        "MergeContiguousEdges() on an edge paired with itself returns Result::Failed, not a thrown exception");
+
+  bool threw_range_a = false;
+  try {
+    box.MergeContiguousEdges(box.raw().m_E.Count() + 100, 0);
+  } catch (const std::out_of_range&) {
+    threw_range_a = true;
+  }
+  Check(threw_range_a, "an out-of-range edge_index_a throws std::out_of_range");
+
+  bool threw_range_b = false;
+  try {
+    box.MergeContiguousEdges(0, box.raw().m_E.Count() + 100);
+  } catch (const std::out_of_range&) {
+    threw_range_b = true;
+  }
+  Check(threw_range_b, "an out-of-range edge_index_b throws std::out_of_range");
+
+  // A deliberately deleted-but-not-yet-Compact()ed edge, the same
+  // raw()-access technique TestBrepSplitNakedEdgeAtRefusesInvalidInputs()
+  // above already uses.
+  box.raw().m_E[0].m_edge_index = -1;
+  bool threw_deleted_a = false;
+  try {
+    box.MergeContiguousEdges(0, 1);
+  } catch (const std::invalid_argument&) {
+    threw_deleted_a = true;
+  }
+  Check(threw_deleted_a, "edge_index_a marked deleted throws std::invalid_argument, not Result::Failed");
+
+  bool threw_deleted_b = false;
+  try {
+    box.MergeContiguousEdges(1, 0);
+  } catch (const std::invalid_argument&) {
+    threw_deleted_b = true;
+  }
+  Check(threw_deleted_b, "edge_index_b marked deleted throws std::invalid_argument, not Result::Failed");
+}
+
+// Brep::MergeAllContiguousEdges() - the "merge every eligible pair, not
+// just one" counterpart, exercised on a chain of 4 collinear naked edges
+// (a straight rail built as separate segments, e.g. by repeated
+// SplitNakedEdgeAt() calls) that should collapse all the way down to a
+// single edge, while the square's own genuine 90-degree corners are left
+// completely alone.
+void TestMergeAllContiguousEdgesCollapsesAChainOfCollinearEdges() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  Brep::PlanarFace f;
+  f.plane = ON_Plane(Point3d(0, 0, 0), ON_3dVector(0, 0, 1));
+  // Bottom side split into 4 collinear pieces at x = 0.25, 0.5, 0.75.
+  f.loop = {Point3d(0, 0, 0),    Point3d(0.25, 0, 0), Point3d(0.5, 0, 0), Point3d(0.75, 0, 0),
+            Point3d(1, 0, 0),    Point3d(1, 1, 0),    Point3d(0, 1, 0)};
+  Brep plate = Brep::FromPlanarFaces({f});
+  Check(plate.raw().m_E.Count() == 7, "7 naked edges: the bottom side's own 4 collinear pieces plus 3 real sides");
+
+  auto plate_area = [&]() {
+    double a = 0;
+    for (const dino8::kernel::Mesh& m : plate.Tessellate(24, 24)) a += m.Area();
+    return a;
+  };
+  const double area_before = plate_area();
+
+  const int merges = plate.MergeAllContiguousEdges();
+  Check(merges == 3, "3 merges collapse 4 collinear pieces into 1 edge");
+  Check(plate.raw().IsValid(), "the plate is still a valid ON_Brep after MergeAllContiguousEdges()");
+  Check(plate.FaceCount() == 1, "still exactly 1 face");
+  Check(plate.raw().m_E.Count() == 4, "down to 4 edges total: the merged bottom rail plus the 3 real sides - the "
+                                       "square's own genuine 90-degree corners were never touched");
+
+  int merged_index = -1;
+  for (int i = 0; i < plate.raw().m_E.Count(); ++i) {
+    const ON_BrepEdge& e = plate.raw().m_E[i];
+    if (e.m_edge_index < 0) continue;
+    const Point3d p0 = plate.raw().m_V[e.m_vi[0]].point;
+    const Point3d p1 = plate.raw().m_V[e.m_vi[1]].point;
+    if ((p0.DistanceTo(Point3d(0, 0, 0)) < 1e-9 && p1.DistanceTo(Point3d(1, 0, 0)) < 1e-9) ||
+        (p1.DistanceTo(Point3d(0, 0, 0)) < 1e-9 && p0.DistanceTo(Point3d(1, 0, 0)) < 1e-9)) {
+      merged_index = i;
+      break;
+    }
+  }
+  Check(merged_index >= 0, "one edge now runs the whole original (0,0,0)-(1,0,0) span");
+
+  const double area_after = plate_area();
+  Check(std::abs(area_after - area_before) < 1e-9, "collapsing the chain changed no geometry at all");
+
+  // A brep with nothing to merge (an ordinary, already-minimal square)
+  // returns 0 and leaves everything untouched.
+  Brep::PlanarFace g;
+  g.plane = ON_Plane(Point3d(0, 0, 0), ON_3dVector(0, 0, 1));
+  g.loop = {Point3d(0, 0, 0), Point3d(1, 0, 0), Point3d(1, 1, 0), Point3d(0, 1, 0)};
+  Brep square = Brep::FromPlanarFaces({g});
+  Check(square.MergeAllContiguousEdges() == 0, "MergeAllContiguousEdges() on a plain square (all 90-degree "
+                                                 "corners) performs 0 merges");
+  Check(square.raw().m_E.Count() == 4, "...and leaves its 4 edges completely untouched");
+}
+
 // ---- NurbsSurface::RemoveKnotAt / MaxSampledDeviationFrom ----
 
 namespace {
@@ -34106,6 +34329,10 @@ int main() {
   TestUnjoinEdgeSplitsSharedEdgeIntoTwoNakedCopies();
   TestRemoveNakedMicroEdgeClosesIsolatedSliverOnAPlate();
   TestRemoveNakedMicroEdgeRefusesASliverNextToASharedEdge();
+  TestMergeContiguousEdgesCombinesTwoCollinearNakedEdges();
+  TestMergeContiguousEdgesRefusesAKinkedCorner();
+  TestMergeContiguousEdgesThrowsOnInvalidIndicesRefusesWrongValence();
+  TestMergeAllContiguousEdgesCollapsesAChainOfCollinearEdges();
 
   TestSurfaceRemoveKnotAtIsExactInverseOfInsertKnotAt();
   TestSurfaceRemoveKnotAtRefusesNonRemovableKnotWithinTolerance();
