@@ -769,7 +769,9 @@ socheck "degree 3 x 1, CVs 24 x 3" "Loft Style=Straight dropped to a linear (rul
 socheck "4 faces, 12 edges, open" "DeleteFaces removed the box's top and bottom (two separate naked-edge loops)"
 socheck "Capped 1 object(s), 2 opening(s)" "Cap closed both separate openings in one call"
 socheck "6 faces, 76 edges, open" "Cap added both cap faces back (4 sides + 2 caps)"
-socheck "smoke: frames=150 objects=12" "solids script produced the expected object count"
+socheck "Volume = 1759 cubic" "Torus volume is close to the analytic 2*pi^2*10*9 (~1776.5)"
+socheck "Volume = 500.9 cubic" "Tube volume is close to the analytic pi*(5^2-3^2)*10 (~502.7)"
+socheck "smoke: frames=150 objects=14" "solids script produced the expected object count"
 # Surface editing: ExtractSrf, DeleteFaces, DupBorder/DupEdge, Untrim, isocurves, ExtendSrf, UnrollSrf, Silhouette, RailRevolve, Fin/Ribbon, grids (see srfedit_script.txt).
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   SE="$("$BIN" --smoke 150 --script "$HERE/srfedit_script.txt" 2>&1)" || { echo "$SE"; echo "FAIL: surface-edit script exited non-zero"; exit 1; }
@@ -866,7 +868,10 @@ secheck "HBarDragSelfTest: moved anchor control point 0 by 5,0,0; anchor-handle 
 secheck "Bounding box min 4205,0,0 max 4225,0,0" "BoundingBox independently confirms the curve's own control points actually moved to where the constraint math says they should (anchor 4200+5=4205, handle 4205+20=4225) - not just HBarDragSelfTest's own report"
 secheck "ExtendSrf: extended by 3 along V (linear)" "ExtendSrf Type=Linear ran on a curved sphere - the flat Plane fixture earlier in this script can't tell Type=Linear apart from the default Type=Smooth"
 secheck "Area = 331.8" "ExtendSrf Type=Linear produced a genuinely different area (331.8) than Type=Smooth's 334.6 on the same sphere/pick/distance - the two extension modes are not just differently labelled, they build different geometry"
-secheck "smoke: frames=[0-9]* objects=119" "surface-edit script's final object count includes the ExtendSrf Type=Linear sphere fixture"
+secheck "MergeSrf: merged 2 surfaces into one" "MergeSrf ran on two adjacent planar rectangles"
+secheck "Area = 200 square" "MergeSrf's refit surface has the exact union area (10x20), not an approximation artifact - a flat plane is exactly representable at any degree"
+secheck "Bounding box min 4600,0,0 max 4620,10,0" "MergeSrf's refit surface exactly spans both source rectangles, corner to corner"
+secheck "smoke: frames=[0-9]* objects=123" "surface-edit script's final object count includes the MergeSrf fixture (2 rectangles + 2 planar surfaces, merged down to 1)"
 
 # Mesh tools: deformations, mesh editing and mesh primitives (see meshtools_script.txt).
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then

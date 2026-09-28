@@ -50,3 +50,22 @@ List
 Cap
 SelPolysrf
 List
+# --- Torus: real B-rep torus primitive (major/minor radius), previously in
+# the catalog as Implemented with zero automated regression coverage.
+# Skeptically verified against the real binary before adding this check:
+# Volume is close to the analytic 2*pi^2*major*minor^2 = 2*pi^2*10*9 = 1776.5
+# (the ~1% gap is the same tessellation-facet approximation the Ellipsoid
+# check above already tolerates, not a bug).
+SelAll
+Hide
+Torus 300,0,0 10 3
+SelLast
+Volume
+# --- Tube: a hollow cylinder built by revolving a closed annulus profile
+# (also previously uncovered). Volume close to the analytic
+# pi*(router^2-rinner^2)*h = pi*(5^2-3^2)*10 = 502.7.
+SelAll
+Hide
+Tube 400,0,0 3 5 10
+SelLast
+Volume

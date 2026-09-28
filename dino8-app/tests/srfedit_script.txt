@@ -565,3 +565,26 @@ Type=Linear
 3
 SelSrf
 Area
+# --- MergeSrf: two adjacent planar rectangles sharing a 10-unit edge,
+# refit into one surface. Previously in the catalog as Implemented with
+# zero automated regression coverage; skeptically verified against the
+# real binary before adding this check: for this exact-planar case, Area
+# and BoundingBox must match the union exactly (not just "some surface
+# came out"), since a flat plane is exactly representable at any degree.
+# Appended at the very end (after the ExtendSrf fixture above) so it never
+# shifts any earlier hardcoded SelID reference.
+SelAll
+Hide
+Rectangle 4600,0,0 4610,10,0
+SelLast
+PlanarSrf
+SelNone
+Rectangle 4610,0,0 4620,10,0
+SelLast
+PlanarSrf
+SelNone
+SelPolysrf
+MergeSrf
+SelLast
+Area
+BoundingBox
