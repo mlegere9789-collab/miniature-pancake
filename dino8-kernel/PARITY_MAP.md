@@ -249,6 +249,35 @@ not a missing-to-partial or partial-to-present flip. Blending & chamfering's
 numeric row (1.5/24/5/17/2/56.3%) is therefore unchanged by this session's
 work, same as the healing-category note just above.
 
+**An unrelated correctness fix, same session, found only because it was
+blocking a green suite for the work above:** after the fillet fix, rebasing
+onto other concurrent sessions' commits on this branch (`SubD::Symmetrize`
+among them) turned up a genuine, deterministic, pre-existing failure with
+zero connection to blending/chamfering:
+`TestSubDSymmetrizeMirrorsAndWeldsSeam`-style coverage's own
+`mesh.IsClosedManifold()` check on a Symmetrize()-doubled open box failed
+(0 checks passed there), even though the SubD's own `Check()`/`IsValid()`
+both reported a clean, closed, manifold topology one line earlier. Root
+cause, confirmed with a standalone repro reading `DINO8_MESH_DEBUG=1`'s own
+diagnostic counters: `ON_SubD::GetControlNetMesh()` (called from
+`SubD::ToApproximateMesh()`, `dino8-kernel/src/subd.cpp`) exports the seam
+Symmetrize() welds into one shared `ON_SubDVertex` as TWO coincident-but-
+separately-indexed mesh vertices (confirmed: the repro's own printed vertex
+list showed positions 4-7 duplicated verbatim as 12-15) - orientation was
+consistent (no directed-edge conflict) but 8 of 24 undirected edges had
+degree 1 instead of 2, i.e. a genuinely open mesh exported from a genuinely
+closed SubD. Fixed by calling the mesh's own
+`CombineIdenticalVertices(true, true)` on `ToApproximateMesh()`'s result - a
+no-op for any ordinary seam-free control net (verified: the pre-existing
+box/grid round-trip tests in `tests/test_basic.cpp`, which assert exact
+vertex/face counts, are unaffected) and a real weld only where
+`GetControlNetMesh()` itself introduces this kind of duplicate. This is not
+a Blending & chamfering item and does not change any category's score - it
+is recorded here only so the fix and its reasoning are traceable from the
+same place the rest of this session's work is. Full `dino8_kernel_tests`
+suite re-run twice after this fix (once directly, once via `ctest`): 100%
+pass, 0 failures.
+
 The main caveat is the same one every run of this method has: the
 granularity of "one item" is a judgment call made by the mapper (this pass),
 so item counts and percentages would shift somewhat under a different,
