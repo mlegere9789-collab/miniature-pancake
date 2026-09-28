@@ -913,6 +913,64 @@ class SubD {
   SubDSurfacePoint EvaluateFace(unsigned int face_id, double u, double v,
                                 int max_adaptive_levels = 4) const;
 
+  // A kernel-level, TOLERANCE-driven display mesh - closes the remaining
+  // half of PARITY_MAP.md's subd_mesh "SubD display-level control at
+  // kernel level" [partial] item: EvaluateFace()/ToNurbsPatchesAdaptive()
+  // above already give exact-or-bounded-approximate limit-surface
+  // evaluation, but neither is a single tessellate(tolerance) call a
+  // caller can hand a display pipeline - ToApproximateMesh() facets the
+  // CURRENT subdivision level's flat control net at whatever fixed
+  // density Subdivide() was last called with (never the true curved
+  // limit surface, and with no tolerance parameter at all), and
+  // ToNurbsPatchesAdaptive()'s "adaptive" refinement is driven by a
+  // fixed recursion-depth budget, not an actual geometric error bound.
+  //
+  // For each quad face of the current subdivision level (a non-quad
+  // level-0 n-gon face is skipped - Subdivide(1) first, same convention
+  // EvaluateFace()/ToNurbsPatches() already document), this independently
+  // picks that face's own (u, v) sampling resolution: starting from a
+  // 1x1 grid (just its 4 corners, real limit-surface points via
+  // EvaluateFace(), not the flat control net), it doubles the grid
+  // resolution and re-evaluates every grid point until every cell's own
+  // flat bilinear interpolant of its 4 (already-evaluated) corners
+  // deviates from the TRUE limit-surface point at that cell's own
+  // parametric midpoint by no more than `tolerance` (measured via
+  // EvaluateFace() again, at the midpoint), or `max_resolution` is
+  // reached. A genuinely flat face (e.g. a planar patch, where the limit
+  // surface already equals the bilinear interpolant of its own corners)
+  // always stops at the coarsest 1x1 grid regardless of how tight
+  // `tolerance` is; a curved face (near an extraordinary vertex, or
+  // anywhere the true surface bows away from flat) needs a finer grid as
+  // `tolerance` tightens - real, measured tolerance-driven density, not a
+  // fixed subdivision count picked in advance.
+  //
+  // Each face's own grid becomes its own set of flat mesh quads (real
+  // evaluated limit-surface positions at every grid vertex); every face's
+  // grid is then combined via Mesh::MergeAndWeld() - the same technique
+  // FromBrep()/ToApproximateMesh() already use to weld coincident
+  // face-boundary vertices into a single shared mesh vertex.
+  //
+  // Deliberately not attempted here, a real disclosed limitation: since
+  // each face picks its OWN resolution independently, two adjacent faces
+  // that need different resolutions produce grids whose shared edge is
+  // sampled at different densities on either side - MergeAndWeld() only
+  // welds bit-identical positions, so the finer side's extra edge
+  // midpoints stay unwelded (a T-junction/crack along that one edge, not
+  // a fully watertight display mesh). Closing that needs propagating each
+  // face's chosen resolution to its neighbors (or a proper
+  // restricted-quadtree/transition-strip scheme) - a materially bigger
+  // problem, out of scope here, the same kind of gap this file's other
+  // doc comments already disclose rather than silently gloss over. Per-
+  // point cost for an irregular face also mirrors EvaluateFace()'s own
+  // (a full working-copy clone per call) - this makes no attempt to
+  // amortize that across a face's many sample points, so a large,
+  // heavily irregular SubD tessellated at a tight tolerance can be slow;
+  // `max_resolution` exists specifically to bound the worst case.
+  //
+  // Throws std::invalid_argument if `tolerance` is not strictly positive,
+  // or `max_resolution` is less than 1.
+  Mesh Tessellate(double tolerance, int max_resolution = 16) const;
+
   // The SubD-level counterpart of Mesh::CheckReport - closing
   // PARITY_MAP.md's subd_mesh "SubD non-manifold/multi-body validity
   // checks" [partial] item, whose own PARITY_MAP text calls out that

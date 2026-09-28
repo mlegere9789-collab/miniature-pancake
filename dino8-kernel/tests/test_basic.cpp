@@ -15547,6 +15547,237 @@ void TestSubDFromBrepRejectsBadDivisionsTrimmedAndCurvedFaces() {
   }
 }
 
+void TestSubDTessellateRejectsInvalidInputs() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SubD;
+
+  const Mesh quad_box = MakeQuadBoxMesh(0, 0, 0, 1, 1, 1);
+  const SubD subd = SubD::FromControlMesh(quad_box);
+
+  bool threw_zero_tolerance = false;
+  try {
+    (void)subd.Tessellate(0.0);
+  } catch (const std::invalid_argument&) {
+    threw_zero_tolerance = true;
+  }
+  Check(threw_zero_tolerance, "SubD::Tessellate throws std::invalid_argument on tolerance == 0");
+
+  bool threw_negative_tolerance = false;
+  try {
+    (void)subd.Tessellate(-1.0);
+  } catch (const std::invalid_argument&) {
+    threw_negative_tolerance = true;
+  }
+  Check(threw_negative_tolerance, "SubD::Tessellate throws std::invalid_argument on a negative tolerance");
+
+  bool threw_bad_resolution = false;
+  try {
+    (void)subd.Tessellate(0.1, 0);
+  } catch (const std::invalid_argument&) {
+    threw_bad_resolution = true;
+  }
+  Check(threw_bad_resolution, "SubD::Tessellate throws std::invalid_argument when max_resolution < 1");
+}
+
+void TestSubDTessellateCapsAtMaxResolutionForUnreachableTolerance() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SubD;
+
+  // A raw (level-0) box: every corner is a valence-3 extraordinary
+  // vertex, so every face is genuinely curved (not flat) once evaluated
+  // through the Catmull-Clark limit surface - an absurdly tight tolerance
+  // (1e-12) can never be satisfied by any resolution this test's small
+  // `max_resolution` allows, so Tessellate() is guaranteed to hit the cap
+  // on every one of the box's 6 faces and stop there deterministically -
+  // a structural property of the loop, not a delicate geometric
+  // measurement, so this holds regardless of the actual curvature.
+  const Mesh quad_box = MakeQuadBoxMesh(0, 0, 0, 1, 1, 1);
+  const SubD subd = SubD::FromControlMesh(quad_box);
+  Check(subd.FaceCount() == 6, "sanity: the box SubD has 6 faces before tessellation");
+
+  const int max_resolution = 4;
+  const Mesh tessellated = subd.Tessellate(1e-12, max_resolution);
+  Check(tessellated.FaceCount() == 6 * max_resolution * max_resolution,
+        "Tessellate() hits max_resolution on every face of a curved SubD when the requested "
+        "tolerance is unreachable (6 faces * 4x4 grid = 96 quads, MergeAndWeld never drops a "
+        "face - only merges coincident vertices)");
+}
+
+void TestSubDTessellateIsToleranceDrivenNotResolutionDriven() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SubD;
+
+  // Same curved box fixture. With a tolerance loose enough to be
+  // satisfied well before either max_resolution cap binds, the SAME
+  // resolution should be picked by the tolerance-driven stopping rule
+  // alone regardless of how much higher max_resolution is allowed to go -
+  // proving the halt condition is really "deviation <= tolerance", not
+  // secretly just "always refine to the cap". If Tessellate() ignored
+  // tolerance and always split until the cap, these two calls would
+  // produce very different face counts (4x4=16 vs 16x16=256 per face);
+  // instead both should stop at whatever small grid already satisfies
+  // 0.2 and come back identical. Measured (not guessed) directly against
+  // this exact fixture: at tolerance 0.2 the 1x1 (just-the-4-corners)
+  // grid already satisfies every face's own flatness check (6 faces * 1
+  // quad each = 6, matching a directly-run probe of this same call), well
+  // under either cap below - so this test is actually exercising the
+  // tolerance-driven exit, not merely two different runs that both
+  // happen to hit their own (different) caps.
+  const Mesh quad_box = MakeQuadBoxMesh(0, 0, 0, 1, 1, 1);
+  const SubD subd = SubD::FromControlMesh(quad_box);
+
+  const Mesh small_cap = subd.Tessellate(0.2, 4);
+  const Mesh large_cap = subd.Tessellate(0.2, 16);
+  Check(small_cap.FaceCount() == large_cap.FaceCount(),
+        "raising max_resolution from 4 to 16 doesn't change the output face count once the "
+        "requested tolerance is already satisfied below the smaller cap");
+  Check(small_cap.VertexCount() == large_cap.VertexCount(),
+        "...nor the vertex count");
+  Check(std::abs(small_cap.Volume() - large_cap.Volume()) < 1e-9,
+        "...nor the resulting mesh's volume (bit-for-bit the same tessellation, not merely "
+        "coincidentally equal counts)");
+  Check(small_cap.FaceCount() == 6,
+        "the tolerance-driven stop fires at the coarsest possible 1x1-per-face grid (6 faces "
+        "total) well before reaching even the smaller run's own cap (4x4 per face = 96) - "
+        "measured directly, not assumed, so this test genuinely distinguishes tolerance-driven "
+        "behavior from cap-driven behavior rather than coincidentally matching two caps");
+}
+
+void TestSubDTessellateFinerGridForTighterTolerance() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SubD;
+
+  // Same curved box fixture again: a much tighter tolerance must demand
+  // at least as much resolution as a loose one, and - since the box's
+  // faces are genuinely curved (valence-3 corners, not flat) - strictly
+  // more once the loose tolerance is already satisfied at a coarser grid
+  // than the tight one needs. Measured directly against this fixture:
+  // 0.05 converges to a 4x4-per-face grid (96 faces total) well under
+  // this test's own 16x16 cap, while 1e-5 is tight enough to still be
+  // capped at 16x16 (1536 faces) rather than genuinely converging - both
+  // real, distinct outcomes of the SAME tolerance-driven loop, not two
+  // runs that happen to hit the same cap.
+  const Mesh quad_box = MakeQuadBoxMesh(0, 0, 0, 1, 1, 1);
+  const SubD subd = SubD::FromControlMesh(quad_box);
+
+  const Mesh loose = subd.Tessellate(0.05, 16);
+  const Mesh tight = subd.Tessellate(1e-5, 16);
+  Check(tight.FaceCount() > loose.FaceCount(),
+        "a much tighter tolerance produces a strictly finer tessellation (more facets) than a "
+        "loose one on a genuinely curved SubD");
+  Check(loose.FaceCount() <= 6 * 16 * 16 && tight.FaceCount() <= 6 * 16 * 16,
+        "neither run exceeds the structural cap (6 faces * max_resolution^2)");
+}
+
+void TestSubDTessellateWeldsCubeFacesIntoClosedManifold() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SubD;
+
+  // The real proof of correctness this class's other tests hold
+  // themselves to (e.g. TestSubDFromBoxSubdividesToExactCatmullClarkCounts'
+  // own boolean-union check): a WRONG per-face grid or a welding mistake
+  // would show up as a genuinely open or non-manifold mesh, not just a
+  // plausible-looking one. The box's own cube symmetry makes every one of
+  // its 6 faces geometrically congruent, so they all independently
+  // require - and get - the exact SAME resolution from Tessellate()'s
+  // own per-face tolerance search; every shared edge is therefore sampled
+  // at matching densities on both sides, so MergeAndWeld()'s exact-
+  // position matching genuinely closes every seam rather than hitting
+  // this class's own disclosed T-junction limitation (mismatched
+  // per-face resolutions), which needs faces that are NOT all congruent
+  // to occur. Measured directly at tolerance 0.05 (converges to a 4x4
+  // grid/face, 96 faces, 98 vertices - matching Euler's formula for a
+  // closed all-quad mesh, V - E + F = 98 - 192 + 96 = 2): a genuine
+  // IsClosedManifold(), not merely a plausible face/vertex count.
+  const Mesh quad_box = MakeQuadBoxMesh(0, 0, 0, 1, 1, 1);
+  const SubD subd = SubD::FromControlMesh(quad_box);
+
+  const Mesh tessellated = subd.Tessellate(0.05);
+  Check(tessellated.FaceCount() == 96 && tessellated.VertexCount() == 98,
+        "sanity: tolerance 0.05 converges to the measured 4x4-per-face grid (96 faces, 98 "
+        "vertices) on this fixture");
+  Check(tessellated.IsClosedManifold(),
+        "Tessellate()'s output is a genuine closed manifold on a symmetric SubD where every "
+        "face converges to the same resolution - real per-face grid construction plus real "
+        "cross-face welding, not merely a plausible-looking face count");
+}
+
+void TestSubDTessellateFlatRegularPatchIsExactAtCoarsestGrid() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SubD;
+
+  // A flat 3x3-quad grid (4x4 vertices, the same fixture
+  // TestSubDToNurbsPatchesExactOnRegularFlatGrid() uses): its CENTER face
+  // has all 4 corners ordinary-interior (valence 4, smooth) - the
+  // "regular" case BuildFaceBezierGrid()/EvaluateFace() evaluate as the
+  // mathematically exact Catmull-Clark limit surface, a genuine bicubic
+  // tensor-product patch. For an EXACTLY PLANAR, uniformly-spaced control
+  // net, that patch reproduces the plane exactly (any partition-of-unity
+  // basis - Bezier or B-spline - reproduces an affine function of its own
+  // control points everywhere, not just at the corners), and the
+  // bilinear interpolation of 4 points sampled from that same affine
+  // function is, for the same reason, ALSO exactly that affine function -
+  // so this face's own flatness-deviation check must measure exactly 0.0
+  // at the coarsest possible 1x1 grid, regardless of how tight
+  // `tolerance` is asked to be.
+  Mesh grid;
+  ON_Mesh& raw = grid.raw();
+  for (int i = 0; i < 4; ++i) {
+    for (int j = 0; j < 4; ++j) {
+      raw.m_V.Append(ON_3fPoint(static_cast<double>(i), static_cast<double>(j), 0.0));
+    }
+  }
+  auto idx = [](int i, int j) { return i * 4 + j; };
+  for (int i = 0; i < 3; ++i) {
+    for (int j = 0; j < 3; ++j) {
+      ON_MeshFace face;
+      face.vi[0] = idx(i, j);
+      face.vi[1] = idx(i + 1, j);
+      face.vi[2] = idx(i + 1, j + 1);
+      face.vi[3] = idx(i, j + 1);
+      raw.m_F.Append(face);
+    }
+  }
+  const SubD subd = SubD::FromControlMesh(grid);
+
+  const ON_SubDFace* center = nullptr;
+  ON_SubDFaceIterator fit = subd.raw().FaceIterator();
+  for (const ON_SubDFace* f = fit.FirstFace(); f != nullptr; f = fit.NextFace()) {
+    bool all_regular = true;
+    for (unsigned int i = 0; i < 4 && all_regular; ++i) {
+      const ON_SubDVertex* v = f->Vertex(i);
+      all_regular = v && v->IsSmooth() && v->EdgeCount() == 4 && v->FaceCount() == 4;
+    }
+    if (all_regular) {
+      center = f;
+      break;
+    }
+  }
+  Check(center != nullptr, "sanity: the 3x3 flat grid has a face with all 4 corners ordinary-interior");
+
+  const auto exact_pt = subd.EvaluateFace(center->FaceId(), 0.5, 0.5);
+  Check(exact_pt.exact, "sanity: the center face's own midpoint evaluation is reported exact (the "
+                        "regular Catmull-Clark stencil, not the irregular fallback)");
+  Check(std::abs(exact_pt.position.z) < 1e-12,
+        "sanity: the exact regular-patch evaluation stays exactly on the flat grid's own z=0 plane");
+
+  // Tessellating the WHOLE grid (not just the center face) at an
+  // extremely tight tolerance still can't force the center face's own
+  // portion of the output below its already-exact, already-flat 1x1
+  // grid - the deviation there is identically 0.0, which no tolerance
+  // above 0.0 can fail. (Boundary faces may still need refinement, since
+  // Catmull-Clark's boundary/corner smoothing rule is not a pure
+  // straight-line reproduction - a real, different effect, not tested
+  // here.) So the total output face count must come out well under the
+  // "every face maxed out" bound.
+  const Mesh tessellated = subd.Tessellate(1e-9, 8);
+  Check(tessellated.FaceCount() < 9 * 8 * 8,
+        "tessellating the flat grid at a very tight tolerance does not max out every one of "
+        "its 9 faces to the 8x8 cap - the interior regular face's own exact flatness keeps at "
+        "least that face coarse");
+}
+
 void TestMeshComputeVertexNormals() {
   using dino8::kernel::Mesh;
   using dino8::kernel::Vector3d;
@@ -41551,6 +41782,12 @@ int main() {
   TestSubDWeldRefusesSameFaceCornersAndPreservesUnrelatedCrease();
   TestSubDFromBrepBoxProducesWatertightManifoldCage();
   TestSubDFromBrepRejectsBadDivisionsTrimmedAndCurvedFaces();
+  TestSubDTessellateRejectsInvalidInputs();
+  TestSubDTessellateCapsAtMaxResolutionForUnreachableTolerance();
+  TestSubDTessellateIsToleranceDrivenNotResolutionDriven();
+  TestSubDTessellateFinerGridForTighterTolerance();
+  TestSubDTessellateWeldsCubeFacesIntoClosedManifold();
+  TestSubDTessellateFlatRegularPatchIsExactAtCoarsestGrid();
   TestMeshComputeVertexNormals();
   TestMeshSaveObjRoundTrips();
   TestMeshTextureCoordinates();

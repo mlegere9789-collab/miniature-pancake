@@ -1498,6 +1498,106 @@ SubDSurfacePoint SubD::EvaluateFace(unsigned int face_id, double u, double v,
 
 namespace {
 
+// Bilinear interpolation of a quad's 4 corners at local (s, t) in
+// [0,1]x[0,1] - same corner-ordering convention EvaluateFace() itself
+// uses ((0,0)->p00, (1,0)->p10, (1,1)->p11, (0,1)->p01).
+ON_3dPoint BilinearCorners(const ON_3dPoint& p00, const ON_3dPoint& p10, const ON_3dPoint& p11,
+                           const ON_3dPoint& p01, double s, double t) {
+  return (1.0 - s) * (1.0 - t) * p00 + s * (1.0 - t) * p10 + s * t * p11 + (1.0 - s) * t * p01;
+}
+
+}  // namespace
+
+Mesh SubD::Tessellate(double tolerance, int max_resolution) const {
+  if (!(tolerance > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::SubD::Tessellate: tolerance must be strictly positive");
+  }
+  if (max_resolution < 1) {
+    throw std::invalid_argument("dino8::kernel::SubD::Tessellate: max_resolution must be at least 1");
+  }
+
+  std::vector<unsigned int> face_ids;
+  ON_SubDFaceIterator fit = subd_.FaceIterator();
+  for (const ON_SubDFace* f = fit.FirstFace(); f != nullptr; f = fit.NextFace()) {
+    // Same "quads only" convention as ToNurbsPatchesAdaptive() - a
+    // level-0 n-gon face needs Subdivide(1) first (EvaluateFace()'s own
+    // requirement, which this delegates every sample point to).
+    if (f->EdgeCount() != 4) continue;
+    if (!f->Vertex(0) || !f->Vertex(1) || !f->Vertex(2) || !f->Vertex(3)) continue;
+    face_ids.push_back(f->FaceId());
+  }
+
+  std::vector<Mesh> face_grids;
+  face_grids.reserve(face_ids.size());
+
+  for (unsigned int face_id : face_ids) {
+    const auto sample_grid = [&](int res) {
+      std::vector<std::vector<ON_3dPoint>> grid(static_cast<size_t>(res) + 1,
+                                                 std::vector<ON_3dPoint>(static_cast<size_t>(res) + 1));
+      for (int i = 0; i <= res; ++i) {
+        const double u = static_cast<double>(i) / res;
+        for (int j = 0; j <= res; ++j) {
+          const double v = static_cast<double>(j) / res;
+          grid[static_cast<size_t>(i)][static_cast<size_t>(j)] = EvaluateFace(face_id, u, v).position;
+        }
+      }
+      return grid;
+    };
+
+    int n = 1;
+    std::vector<std::vector<ON_3dPoint>> samples = sample_grid(n);
+    for (;;) {
+      double max_deviation = 0.0;
+      for (int i = 0; i < n; ++i) {
+        const double u_mid = (i + 0.5) / n;
+        for (int j = 0; j < n; ++j) {
+          const double v_mid = (j + 0.5) / n;
+          const ON_3dPoint bilinear = BilinearCorners(
+              samples[static_cast<size_t>(i)][static_cast<size_t>(j)],
+              samples[static_cast<size_t>(i) + 1][static_cast<size_t>(j)],
+              samples[static_cast<size_t>(i) + 1][static_cast<size_t>(j) + 1],
+              samples[static_cast<size_t>(i)][static_cast<size_t>(j) + 1], 0.5, 0.5);
+          const ON_3dPoint truth = EvaluateFace(face_id, u_mid, v_mid).position;
+          max_deviation = std::max(max_deviation, bilinear.DistanceTo(truth));
+        }
+      }
+      if (max_deviation <= tolerance || n >= max_resolution) break;
+      n = std::min(n * 2, max_resolution);
+      samples = sample_grid(n);
+    }
+
+    Mesh grid_mesh;
+    ON_Mesh& raw = grid_mesh.raw();
+    const int points = n + 1;
+    const auto grid_index = [points](int i, int j) { return i * points + j; };
+    raw.m_V.Reserve(points * points);
+    for (int i = 0; i <= n; ++i) {
+      for (int j = 0; j <= n; ++j) {
+        raw.m_V.Append(ON_3fPoint(samples[static_cast<size_t>(i)][static_cast<size_t>(j)]));
+      }
+    }
+    raw.m_F.Reserve(n * n);
+    for (int i = 0; i < n; ++i) {
+      for (int j = 0; j < n; ++j) {
+        ON_MeshFace face;
+        face.vi[0] = grid_index(i, j);
+        face.vi[1] = grid_index(i + 1, j);
+        face.vi[2] = grid_index(i + 1, j + 1);
+        face.vi[3] = grid_index(i, j + 1);
+        raw.m_F.Append(face);
+      }
+    }
+    face_grids.push_back(std::move(grid_mesh));
+  }
+
+  if (face_grids.empty()) {
+    return Mesh();
+  }
+  return Mesh::MergeAndWeld(face_grids);
+}
+
+namespace {
+
 SubDNurbsPatch GridToPatch(const ON_3dPoint grid[4][4], bool exact) {
   std::vector<Point3d> cvs(16);
   for (int u = 0; u < 4; ++u) {
