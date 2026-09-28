@@ -36676,6 +36676,131 @@ void TestRemoveBlendRejectsUnsupportedConfigurations() {
         "rejects a FilletConvexEdge oblique-end cylinder (sloped ellipse cap notch)");
 }
 
+// Evaluates a point on a SphericalFace's own trimmed patch at a given
+// fractional longitude/latitude (0..1 each, mapped onto [0, sf.angle] and
+// [sf.lat0, sf.lat1] respectively) - the same parameterization
+// FilletConvexEdges' own sphere-frame construction uses (see its doc
+// comment), shared by every RemoveBlend spherical-corner test below.
+dino8::kernel::Point3d SpherePointAt(const dino8::kernel::Brep::SphericalFace& sf, double phi_frac, double lat_frac) {
+  const double phi = sf.angle * phi_frac;
+  const double lat = sf.lat0 + (sf.lat1 - sf.lat0) * lat_frac;
+  return sf.frame.origin + sf.radius * (std::cos(lat) * std::cos(phi) * sf.frame.xaxis +
+                                        std::cos(lat) * std::sin(phi) * sf.frame.yaxis + std::sin(lat) * sf.frame.zaxis);
+}
+
+void TestRemoveBlendRoundTripsASphericalVertexCorner() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConvexEdges;
+  using dino8::kernel::Point3d;
+
+  // The same "one rounded corner, three ordinary far-end notches" fixture
+  // TestFilletConvexEdgesSingleCornerSphereWithNotchedFarEnds uses.
+  const double r = 0.2;
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+  const Brep c = FilletConvexEdges(
+      box, {{Point3d(0, 0, 0), Point3d(1, 0, 0)}, {Point3d(0, 0, 0), Point3d(0, 1, 0)}, {Point3d(0, 0, 0), Point3d(0, 0, 1)}},
+      r);
+  const Brep::MixedFacesResult mf = c.MixedFaces();
+  Check(mf.spherical.size() == 1 && mf.cylindrical.size() == 3, "sanity: one rounded corner has one sphere and 3 cylinders");
+  const Point3d on_sphere = SpherePointAt(mf.spherical[0], 0.4, 0.6);
+
+  const Brep restored = dino8::kernel::RemoveBlend(c, on_sphere);
+  Check(restored.FaceCount() == 6 && restored.raw().m_E.Count() == 12 && restored.raw().m_V.Count() == 8,
+        "RemoveBlend on a spherical vertex-blend corner restores the exact face/edge/vertex counts of the pre-fillet "
+        "box (6 faces, 12 edges, 8 vertices) - removing the sphere AND all 3 incident cylinders in one call");
+  ON_TextLog log;
+  bool oriented = false, has_boundary = true;
+  Check(restored.raw().IsValid(&log) && restored.raw().IsManifold(&oriented, &has_boundary) && oriented && !has_boundary &&
+            restored.raw().IsSolid(),
+        "the restored solid is a valid, closed, manifold solid");
+  Check(std::fabs(restored.TessellateToClosedMesh(4, 4).Volume() - 1.0) < 1e-9,
+        "the restored solid's volume matches the original unit box exactly");
+  for (const Point3d& v : {Point3d(0, 0, 0), Point3d(1, 0, 0), Point3d(1, 1, 0), Point3d(0, 1, 0), Point3d(0, 0, 1),
+                           Point3d(1, 0, 1), Point3d(1, 1, 1), Point3d(0, 1, 1)}) {
+    Check(ChamferTestBrepHasVertexNear(restored, v, 1e-9),
+          "the restored box has its original sharp corner vertex back, including the trihedral corner itself");
+  }
+  Check(!ChamferTestBrepHasVertexNear(restored, on_sphere, 1e-9),
+        "the fillet's own spherical surface point is gone from the restored solid");
+}
+
+void TestRemoveBlendOnSphericalCornerLeavesAnIndependentCornerIntact() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConvexEdges;
+  using dino8::kernel::Point3d;
+
+  // Two DIAGONALLY OPPOSITE trihedral corners, (0,0,0) and (1,1,1) - they
+  // share no edge, so each of the 6 filleted edges' own far end is a
+  // plain, untouched box vertex (never the OTHER corner's own sphere).
+  const double r = 0.15;
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+  const Brep two = FilletConvexEdges(box,
+                                     {{Point3d(0, 0, 0), Point3d(1, 0, 0)},
+                                      {Point3d(0, 0, 0), Point3d(0, 1, 0)},
+                                      {Point3d(0, 0, 0), Point3d(0, 0, 1)},
+                                      {Point3d(1, 1, 1), Point3d(0, 1, 1)},
+                                      {Point3d(1, 1, 1), Point3d(1, 0, 1)},
+                                      {Point3d(1, 1, 1), Point3d(1, 1, 0)}},
+                                     r);
+  const Brep::MixedFacesResult mf = two.MixedFaces();
+  Check(mf.spherical.size() == 2 && mf.cylindrical.size() == 6,
+        "sanity: two independent rounded corners give 2 spheres and 6 cylinders");
+  const int origin_idx = mf.spherical[0].frame.origin.DistanceTo(Point3d(r, r, r)) < 1e-9 ? 0 : 1;
+  const Point3d on_origin_sphere = SpherePointAt(mf.spherical[static_cast<size_t>(origin_idx)], 0.5, 0.5);
+
+  const Brep restored = dino8::kernel::RemoveBlend(two, on_origin_sphere);
+  Check(restored.FaceCount() == 10, "removing one of two independent corners leaves 6 planar + 3 cylindrical + 1 "
+                                    "spherical = 10 faces - the OTHER corner's own blend is untouched");
+  ON_TextLog log;
+  bool oriented = false, has_boundary = true;
+  Check(restored.raw().IsValid(&log) && restored.raw().IsManifold(&oriented, &has_boundary) && oriented && !has_boundary &&
+            restored.raw().IsSolid(),
+        "the result (one corner sharp, one corner still rounded) is itself a valid, closed, manifold solid");
+  Check(ChamferTestBrepHasVertexNear(restored, Point3d(0, 0, 0), 1e-9),
+        "the restored corner's own sharp vertex (0,0,0) is back");
+  Check(!ChamferTestBrepHasVertexNear(restored, Point3d(1, 1, 1), 1e-9),
+        "the OTHER corner (1,1,1) is still rounded - RemoveBlend only touched the sphere it was asked to remove");
+  const Brep::MixedFacesResult mf_after = restored.MixedFaces();
+  Check(mf_after.spherical.size() == 1 && mf_after.cylindrical.size() == 3,
+        "exactly the untouched corner's own sphere and 3 cylinders remain");
+  // Removed: the SAME closed-form single-rounded-corner deficit
+  // TestFilletConvexEdgesSingleCornerSphereWithNotchedFarEnds checks -
+  // three (1-r)-long r^2(1-pi/4) prisms plus the corner cube minus the
+  // ball octant, r^3(1-pi/6) - confirming this is a genuine geometric
+  // restoration, not merely a topological one.
+  const double expected = 1.0 - 3.0 * (1.0 - r) * r * r * (1.0 - ON_PI / 4.0) - r * r * r * (1.0 - ON_PI / 6.0);
+  Check(std::fabs(restored.TessellateToClosedMeshAdaptive(1e-6).Volume() - expected) < 3e-6,
+        "the restored solid's volume matches 1 - 3(1-r) r^2(1-pi/4) - r^3(1-pi/6) - the SAME closed form as a "
+        "solid with just that one corner ever rounded, confirming the other corner's own removed volume came back "
+        "out exactly");
+}
+
+void TestRemoveBlendRejectsSphericalCornerSharingACylinderWithAnotherCorner() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConvexEdges;
+  using dino8::kernel::Point3d;
+
+  // Every edge of a FULLY rounded box is set back by a spherical corner at
+  // BOTH ends (see TestFilletConvexEdgesRoundedBoxMatchesSteinerFormula's
+  // own "every edge cylinder is set back by exactly r at both ends"), so
+  // no cylinder here has a plain, untouched far end - out of this
+  // function's own documented scope.
+  const double r = 0.2;
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+  const Brep rounded = FilletConvexEdges(box, AllUnitBoxEdges(), r);
+  const Brep::MixedFacesResult mf = rounded.MixedFaces();
+  const Point3d on_sphere = SpherePointAt(mf.spherical[0], 0.5, 0.5);
+  bool threw = false;
+  try {
+    dino8::kernel::RemoveBlend(rounded, on_sphere);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw,
+        "RemoveBlend rejects a spherical vertex-blend corner whose own cylinders are ALSO set back by a second "
+        "spherical corner at their far end, rather than silently reconstructing the wrong far vertex");
+}
+
 void TestRemoveBlendRoundTripsATaperedFillet() {
   using dino8::kernel::Brep;
   using dino8::kernel::FilletConvexEdgeTapered;
@@ -40493,6 +40618,9 @@ int main() {
   TestRemoveBlendRoundTripsASingleFillet();
   TestRemoveBlendLeavesTheOtherFilletIntactAmongTwo();
   TestRemoveBlendRejectsUnsupportedConfigurations();
+  TestRemoveBlendRoundTripsASphericalVertexCorner();
+  TestRemoveBlendOnSphericalCornerLeavesAnIndependentCornerIntact();
+  TestRemoveBlendRejectsSphericalCornerSharingACylinderWithAnotherCorner();
   TestRemoveBlendRoundTripsATaperedFillet();
   TestRemoveChamferRoundTripsASingleChamfer();
   TestRemoveChamferLeavesTheOtherChamferIntactAmongTwo();

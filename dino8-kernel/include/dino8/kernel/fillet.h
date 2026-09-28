@@ -1471,26 +1471,48 @@ Brep ChamferConcaveVertex(const Brep& solid, Point3d vertex,
 // CollapseNotchRun's own splice works purely by matching 3D points,
 // agnostic to which curve family produced the run.
 //
-// `point_on_fillet` is matched against BOTH `solid.MixedFaces().
-// cylindrical` and `.conical`, and whichever face's own trimmed surface
-// is closer wins - so this one function removes either kind of fillet
-// patch a caller might have clicked on.
+// `point_on_fillet` is matched against `solid.MixedFaces().cylindrical`,
+// `.conical` AND (see below) `.spherical`, and whichever face's own
+// trimmed surface is closer wins - so this one function removes any kind
+// of fillet patch a caller might have clicked on.
 //
-// SCOPE, stated plainly: this reverses exactly what FilletConvexEdge and
-// FilletConvexEdgeTapered themselves can build - a patch whose two ends
-// are each either a free boundary or a plain corner-notch (NOT an
-// oblique-end CYLINDRICAL fillet's own sloped ellipse notch, which is a
-// genuinely different, not-yet-inverted construction - see
-// FilletConvexEdge's own doc comment for why that case's cylinder is
-// shifted/set back in a way this function does not attempt to undo, and
-// NOT a spherical vertex-blend corner from FilletConvexEdges) - throwing
-// std::invalid_argument for any of those harder cases rather than
-// silently restoring the wrong shape. Removing one segment of an
-// N-station tapered profile restores only that segment's own straight
-// span, leaving any adjacent segments' own cones in place with a short
-// straight edge spliced between them - well-defined, if partial,
-// behavior, not a bug; removing every segment of a profile in turn fully
-// restores the original straight edge.
+// A SPHERICAL FACE - FilletConvexEdges' own m == 3 trihedral vertex-blend
+// corner, where 3 independently filleted edges meet at one solid vertex
+// (see FilletConvexEdges' own doc comment for the "Pole face: perpendicular
+// to the other two" ball-center solve this inverts) - is handled too, via
+// RemoveSphericalVertexBlend (fillet.cpp): it finds the 3 CylindricalFace
+// patches whose own near end sits exactly at the sphere's own center,
+// reconstructs the single sharp corner vertex V as the exact intersection
+// of the 3 touching planar faces' own (unclipped) planes - the SAME closed
+// form RemoveChamferVertex already uses for a chamfered trihedral corner,
+// correct regardless of any fillet radius since a fillet never moves a
+// planar face's own supporting plane - and removes the sphere plus all 3
+// cylinders in one call, splicing each cylinder's own FAR (non-sphere) end
+// back onto its own third-face corner notch exactly as the plain
+// single-cylinder case above does. Picking a point on the sphere itself
+// removes the whole corner; picking a point on one of the 3 cylinders' own
+// wall (away from the sphere) still throws (see `end_is_spherical_corner`
+// in fillet.cpp) rather than guessing which whole corner a mid-cylinder
+// pick means. A corner that shares one of its 3 cylinders with a SECOND
+// spherical corner (the shared edge between two filleted trihedral
+// vertices, e.g. every edge of a fully-rounded box) also throws: the far-
+// end reconstruction below relies on that end NOT carrying its own
+// separate setback, which a second corner's own ball radius does.
+//
+// SCOPE, stated plainly: this reverses exactly what FilletConvexEdge,
+// FilletConvexEdgeTapered and FilletConvexEdges' own m == 3 corner
+// themselves can build - a patch whose two ends are each either a free
+// boundary or a plain corner-notch (NOT an oblique-end CYLINDRICAL
+// fillet's own sloped ellipse notch, which is a genuinely different,
+// not-yet-inverted construction - see FilletConvexEdge's own doc comment
+// for why that case's cylinder is shifted/set back in a way this function
+// does not attempt to undo) - throwing std::invalid_argument for any of
+// those harder cases rather than silently restoring the wrong shape.
+// Removing one segment of an N-station tapered profile restores only that
+// segment's own straight span, leaving any adjacent segments' own cones in
+// place with a short straight edge spliced between them - well-defined, if
+// partial, behavior, not a bug; removing every segment of a profile in
+// turn fully restores the original straight edge.
 Brep RemoveBlend(const Brep& solid, Point3d point_on_fillet);
 
 

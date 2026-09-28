@@ -4063,12 +4063,258 @@ Brep RemoveConicalBlend(const Brep::MixedFacesResult& mf, int best, const std::v
   return Brep::FromMixedFaces(mixed_planar, mf.cylindrical, remaining_cone, mf.spherical);
 }
 
+// The genuine inverse of FilletConvexEdges' own trihedral (m == 3)
+// spherical vertex-blend corner construction (see that function's own
+// doc comment, and its "Pole face: perpendicular to the other two" ball-
+// center solve): removes `mf.spherical[sphere_best]` and the 3
+// CylindricalFace patches whose own near end sits exactly at that
+// sphere's own center (frame.origin, within tolerance), restoring the
+// single sharp trihedral vertex all three original edges met at before
+// filleting.
+//
+// Unlike RemoveCylindricalBlend's own single-cylinder inverse (which
+// reconstructs an edge's two endpoints purely from that ONE patch's own
+// frame/radius/bisector, and explicitly REFUSES a cylinder whose own end
+// sits on a sphere - see `end_is_spherical_corner` above - precisely
+// because that per-cylinder formula is off by the corner's own axial
+// setback at the sphere end), this reconstructs the corner vertex V
+// directly as the exact intersection of the SAME 3 planar faces' own
+// (unclipped) planes ChamferVertexCore/RemoveChamferVertex already use
+// for a chamfered trihedral corner - correct regardless of any fillet
+// radius, since a fillet only ever re-trims a planar face's own boundary
+// loop, never moves its supporting plane.
+//
+// The one thing RemoveCylindricalBlend's own per-cylinder formula DOES
+// still get right, even at a sphere-adjacent end, is the OTHER (far, non-
+// sphere) end of each of the 3 cylinders: `edge_far = cf.frame.origin +
+// sign*bis*offset + cf.length*cf.frame.zaxis` is exact there too, because
+// the corner's own axial setback (FilletConvexEdges' own per-edge
+// `t_start`/`t_end`) cancels out of that sum - `cf.frame.origin` is
+// already `axis_p0 + t_start*e`, so adding `cf.length*e = (t_end -
+// t_start)*e` lands back on `axis_p0 + t_end*e`, the same point the
+// ordinary (non-corner) single-edge formula would reach directly. Reused
+// verbatim below (only the SPHERE-adjacent end's own formula is
+// overridden with V) - confirmed by
+// TestRemoveBlendRoundTripsASphericalVertexCorner's own far-end
+// perpendicular notches surviving the round trip unchanged.
+// Replaces every occurrence of the loop vertex `from` with `to`, purely by
+// VALUE (not the consecutive-pair matching ReplaceLoopEdge above does) -
+// needed because a trihedral corner's NEAR (sphere-adjacent) rail point is
+// shared between the TWO cylinders that meet at a given touching face
+// (both equal `sf.frame.origin + sf.radius*n_face`, the same point
+// regardless of which of the corner's 3 edges built it - see
+// RemoveSphericalVertexBlend's own doc comment), so the first of those two
+// cylinders' own edits already overwrites that shared slot with V; the
+// second cylinder's own attempt to find its (now-already-replaced) `from`
+// value must be a harmless no-op, not a bug. Distinguished from a genuine
+// missing-vertex bug by checking whether `to` is ALREADY present instead -
+// idempotent, not merely tolerant of duplicates (a REAL missing vertex,
+// with neither `from` nor `to` present, still throws).
+void ReplaceLoopVertexIdempotent(Brep::PlanarFace& f, const Point3d& from, const Point3d& to, double tol) {
+  for (Point3d& p : f.loop) {
+    if (PointsEqual(p, from, tol)) {
+      p = to;
+      return;
+    }
+  }
+  for (const Point3d& p : f.loop) {
+    if (PointsEqual(p, to, tol)) return;  // already replaced by this corner's other cylinder - idempotent no-op
+  }
+  throw std::runtime_error(
+      "dino8::kernel::RemoveBlend: expected corner rail vertex not found on its own face's loop - please report "
+      "this as a bug");
+}
+
+Brep RemoveSphericalVertexBlend(const Brep::MixedFacesResult& mf, int sphere_best,
+                                const std::vector<Brep::PlanarFace>& faces, double tol) {
+  const Brep::SphericalFace& sf = mf.spherical[static_cast<size_t>(sphere_best)];
+
+  struct Match {
+    int cyl_index;
+    bool sphere_at_h0;  // true: this cylinder's h=0 end is the corner; false: h=length is.
+  };
+  std::vector<Match> matches;
+  const double center_tol = std::max(tol * 10.0, 1e-6);
+  for (size_t c = 0; c < mf.cylindrical.size(); ++c) {
+    const Brep::CylindricalFace& cf = mf.cylindrical[c];
+    if (std::fabs(cf.radius - sf.radius) > std::max(tol, 1e-9)) continue;
+    if (cf.frame.origin.DistanceTo(sf.frame.origin) <= center_tol) {
+      matches.push_back({static_cast<int>(c), true});
+    } else if ((cf.frame.origin + cf.length * cf.frame.zaxis).DistanceTo(sf.frame.origin) <= center_tol) {
+      matches.push_back({static_cast<int>(c), false});
+    }
+  }
+  if (matches.size() != 3) {
+    throw std::invalid_argument(
+        "dino8::kernel::RemoveBlend: this spherical face does not have exactly 3 cylindrical faces meeting at its "
+        "own center - not a FilletConvexEdges-built trihedral vertex-blend corner");
+  }
+
+  struct CylPlan {
+    int cyl_index = -1;
+    bool sphere_at_h0 = true;
+    int idx_i = -1, idx_j = -1;
+    Point3d R0, R1, S0, S1;
+    Point3d edge_p0, edge_p1;
+  };
+  std::vector<CylPlan> plans;
+  std::vector<int> touching;  // the (at most 3) distinct planar face indices this corner touches
+  auto add_touching = [&](int idx) {
+    if (std::find(touching.begin(), touching.end(), idx) == touching.end()) touching.push_back(idx);
+  };
+
+  for (const Match& m : matches) {
+    const Brep::CylindricalFace& cf = mf.cylindrical[static_cast<size_t>(m.cyl_index)];
+    if (!cf.cap0_notch_points.empty() || !cf.cap1_notch_points.empty()) {
+      throw std::invalid_argument(
+          "dino8::kernel::RemoveBlend: a cylinder at this spherical corner has a sloped (oblique-end) or "
+          "Steinmetz-style cap notch at its OTHER end - out of scope, see this function's own doc comment");
+    }
+    CylPlan p;
+    p.cyl_index = m.cyl_index;
+    p.sphere_at_h0 = m.sphere_at_h0;
+    p.R0 = cf.frame.origin + cf.radius * cf.frame.xaxis;
+    p.R1 = p.R0 + cf.length * cf.frame.zaxis;
+    p.S0 = cf.frame.origin + cf.radius * (std::cos(cf.angle) * cf.frame.xaxis + std::sin(cf.angle) * cf.frame.yaxis);
+    p.S1 = p.S0 + cf.length * cf.frame.zaxis;
+
+    // The FAR end's own reconstruction formula below assumes it is a
+    // PLAIN (non-sphere) end - see this function's own doc comment for
+    // why the near/sphere end's setback cancels out of that formula only
+    // when the far end itself carries no OTHER setback of its own. A
+    // cylinder set back by a DIFFERENT spherical corner at both ends (the
+    // shared edge between two filleted trihedral corners) would need that
+    // other corner's own vertex, not this formula - out of scope, checked
+    // directly rather than silently reconstructing the wrong far point.
+    const Point3d& far_end0 = p.sphere_at_h0 ? p.R1 : p.R0;
+    const Point3d& far_end1 = p.sphere_at_h0 ? p.S1 : p.S0;
+    for (const Brep::SphericalFace& other_sf : mf.spherical) {
+      if (std::fabs(other_sf.radius - cf.radius) > std::max(tol, 1e-9)) continue;
+      const double da = far_end0.DistanceTo(other_sf.frame.origin) - other_sf.radius;
+      const double db = far_end1.DistanceTo(other_sf.frame.origin) - other_sf.radius;
+      if (std::fabs(da) <= std::max(tol * 10.0, 1e-6) && std::fabs(db) <= std::max(tol * 10.0, 1e-6)) {
+        throw std::invalid_argument(
+            "dino8::kernel::RemoveBlend: a cylinder at this spherical corner has ANOTHER spherical vertex-blend "
+            "corner at its own far end - removing a corner that shares a cylinder with a second corner is out of "
+            "scope, see this function's own doc comment");
+      }
+    }
+
+    p.idx_i = FindFaceWithEdge(faces, p.R0, p.R1, tol);
+    p.idx_j = FindFaceWithEdge(faces, p.S0, p.S1, tol);
+    if (p.idx_i < 0 || p.idx_j < 0 || p.idx_i == p.idx_j) {
+      throw std::invalid_argument(
+          "dino8::kernel::RemoveBlend: could not find the two planar faces sharing a corner cylinder's own two "
+          "straight rails - is this really a FilletConvexEdges-built corner?");
+    }
+    add_touching(p.idx_i);
+    add_touching(p.idx_j);
+    plans.push_back(p);
+  }
+  if (touching.size() != 3) {
+    throw std::invalid_argument(
+        "dino8::kernel::RemoveBlend: this spherical corner's 3 cylinders do not share exactly 3 distinct planar "
+        "faces (2 each) - not a genuine trihedral vertex-blend corner");
+  }
+
+  // V: the exact intersection of the 3 touching faces' own (unclipped)
+  // planes - the same closed form RemoveChamferVertex already uses.
+  const Vector3d na = faces[static_cast<size_t>(touching[0])].plane.zaxis;
+  const Vector3d nb = faces[static_cast<size_t>(touching[1])].plane.zaxis;
+  const Vector3d nc = faces[static_cast<size_t>(touching[2])].plane.zaxis;
+  const double det = na * ON_CrossProduct(nb, nc);
+  if (std::fabs(det) < 1e-9) {
+    throw std::invalid_argument("dino8::kernel::RemoveBlend: degenerate trihedral corner (coplanar normals)");
+  }
+  const double ra = na * faces[static_cast<size_t>(touching[0])].plane.origin;
+  const double rb = nb * faces[static_cast<size_t>(touching[1])].plane.origin;
+  const double rc = nc * faces[static_cast<size_t>(touching[2])].plane.origin;
+  const Vector3d numer = ON_CrossProduct(nb, nc) * ra + ON_CrossProduct(nc, na) * rb + ON_CrossProduct(na, nb) * rc;
+  const Point3d V(numer.x / det, numer.y / det, numer.z / det);
+
+  // Checked invariant: V is at distance `radius` inside every touching
+  // face's own plane - the exact sphere-center equation FilletConvexEdges'
+  // own ball-center solve used to place `sf.frame.origin` in the first
+  // place (Cramer's rule on n . (C - V) = -radius for all 3 planes).
+  for (const Vector3d& n : {na, nb, nc}) {
+    if (std::fabs(n * (sf.frame.origin - V) + sf.radius) > 1e3 * tol) {
+      throw std::runtime_error(
+          "dino8::kernel::RemoveBlend: reconstructed vertex does not solve the corner ball-center equation - "
+          "please report this as a bug");
+    }
+  }
+
+  std::vector<Brep::PlanarFace> mixed_planar = faces;
+  for (CylPlan& p : plans) {
+    const Brep::CylindricalFace& cf = mf.cylindrical[static_cast<size_t>(p.cyl_index)];
+    const Vector3d n_i = faces[static_cast<size_t>(p.idx_i)].plane.zaxis;
+    const Vector3d n_j = faces[static_cast<size_t>(p.idx_j)].plane.zaxis;
+    Vector3d bis = n_i + n_j;
+    if (!bis.Unitize()) {
+      throw std::invalid_argument("dino8::kernel::RemoveBlend: degenerate (near-180-degree) adjacent-face dihedral");
+    }
+    const double cosb = bis * n_i;
+    if (cosb < 1e-9) {
+      throw std::invalid_argument("dino8::kernel::RemoveBlend: degenerate bisector geometry (cosb too small)");
+    }
+    const double offset = cf.radius / cosb;
+    const double sign = cf.outward ? 1.0 : -1.0;
+    if (p.sphere_at_h0) {
+      p.edge_p0 = V;
+      p.edge_p1 = cf.frame.origin + sign * bis * offset + cf.length * cf.frame.zaxis;
+    } else {
+      p.edge_p0 = cf.frame.origin + sign * bis * offset;
+      p.edge_p1 = V;
+    }
+
+    ReplaceLoopVertexIdempotent(mixed_planar[static_cast<size_t>(p.idx_i)], p.R0, p.edge_p0, tol);
+    ReplaceLoopVertexIdempotent(mixed_planar[static_cast<size_t>(p.idx_i)], p.R1, p.edge_p1, tol);
+    ReplaceLoopVertexIdempotent(mixed_planar[static_cast<size_t>(p.idx_j)], p.S0, p.edge_p0, tol);
+    ReplaceLoopVertexIdempotent(mixed_planar[static_cast<size_t>(p.idx_j)], p.S1, p.edge_p1, tol);
+
+    // Only the FAR (non-sphere) end may carry a "third face" corner notch
+    // (a plain perpendicular/oblique m == 1 end condition) - the sphere
+    // end has no such notch: it is the sphere itself, already removed by
+    // dropping it from `remaining_sph` below, never a dense polyline
+    // spliced into a THIRD planar face's own loop the way an ordinary
+    // fillet corner is.
+    std::vector<Brep::PlanarFace> others;
+    std::vector<size_t> others_idx;
+    for (size_t f = 0; f < mixed_planar.size(); ++f) {
+      if (static_cast<int>(f) == p.idx_i || static_cast<int>(f) == p.idx_j) continue;
+      others.push_back(mixed_planar[f]);
+      others_idx.push_back(f);
+    }
+    if (p.sphere_at_h0) {
+      CollapseNotchRun(others, p.R1, p.S1, p.edge_p1, tol);
+    } else {
+      CollapseNotchRun(others, p.R0, p.S0, p.edge_p0, tol);
+    }
+    for (size_t o = 0; o < others.size(); ++o) mixed_planar[others_idx[o]] = std::move(others[o]);
+  }
+
+  std::vector<Brep::CylindricalFace> remaining_cyl;
+  for (size_t c = 0; c < mf.cylindrical.size(); ++c) {
+    bool removed = false;
+    for (const Match& m : matches) {
+      if (m.cyl_index == static_cast<int>(c)) removed = true;
+    }
+    if (!removed) remaining_cyl.push_back(mf.cylindrical[c]);
+  }
+  std::vector<Brep::SphericalFace> remaining_sph;
+  for (size_t s = 0; s < mf.spherical.size(); ++s) {
+    if (static_cast<int>(s) != sphere_best) remaining_sph.push_back(mf.spherical[s]);
+  }
+  return Brep::FromMixedFaces(mixed_planar, remaining_cyl, mf.conical, remaining_sph);
+}
+
 }  // namespace
 
 Brep RemoveBlend(const Brep& solid, Point3d point_on_fillet) {
   const Brep::MixedFacesResult mf = solid.MixedFaces();
-  if (mf.cylindrical.empty() && mf.conical.empty()) {
-    throw std::invalid_argument("dino8::kernel::RemoveBlend: `solid` has no cylindrical or conical face to remove");
+  if (mf.cylindrical.empty() && mf.conical.empty() && mf.spherical.empty()) {
+    throw std::invalid_argument(
+        "dino8::kernel::RemoveBlend: `solid` has no cylindrical, conical or spherical face to remove");
   }
   // Use MixedFaces()' own planar records (NOT PlanarFaces(), which throws
   // outright on any non-planar face - exactly the fillet face this
@@ -4123,12 +4369,52 @@ Brep RemoveBlend(const Brep& solid, Point3d point_on_fillet) {
     }
   }
 
-  const double accept_tol = std::max(tol * 100.0, 1e-4);
-  if ((best_cyl < 0 || best_cyl_d > accept_tol) && (best_cone < 0 || best_cone_d > accept_tol)) {
-    throw std::invalid_argument(
-        "dino8::kernel::RemoveBlend: `point_on_fillet` is not near any cylindrical or conical face of `solid`");
+  // A spherical face (FilletConvexEdges' own m == 3 trihedral vertex-blend
+  // corner - see RemoveSphericalVertexBlend's own doc comment) is a third
+  // candidate, measured the same "clamp to the patch's own trimmed
+  // domain, then measure" way. Picking a point directly on the corner
+  // sphere itself removes that WHOLE corner (the sphere plus its 3
+  // incident cylinders); picking a point on one of those cylinders'
+  // own wall (away from the sphere) still goes through RemoveCylindricalBlend,
+  // which explicitly refuses a cylinder with a sphere-adjacent end - see
+  // `end_is_spherical_corner` above - so an ambiguous "which whole corner
+  // do you mean" pick from mid-cylinder is never silently guessed at.
+  int best_sph = -1;
+  double best_sph_d = std::numeric_limits<double>::infinity();
+  for (size_t s = 0; s < mf.spherical.size(); ++s) {
+    const Brep::SphericalFace& sf = mf.spherical[s];
+    Vector3d d = point_on_fillet - sf.frame.origin;
+    const double dlen = d.Length();
+    if (!(dlen > 1e-12)) continue;  // point is at the sphere's own center - no well-defined direction
+    d = d / dlen;
+    double lat = std::asin(std::max(-1.0, std::min(1.0, d * sf.frame.zaxis)));
+    double phi = std::atan2(d * sf.frame.yaxis, d * sf.frame.xaxis);
+    if (phi < 0.0) phi += 2.0 * ON_PI;
+    phi = std::max(0.0, std::min(sf.angle, phi));
+    lat = std::max(sf.lat0, std::min(sf.lat1, lat));
+    const Point3d on_surface = sf.frame.origin + sf.radius * (std::cos(lat) * std::cos(phi) * sf.frame.xaxis +
+                                                               std::cos(lat) * std::sin(phi) * sf.frame.yaxis +
+                                                               std::sin(lat) * sf.frame.zaxis);
+    const double dist = on_surface.DistanceTo(point_on_fillet);
+    if (dist < best_sph_d) {
+      best_sph_d = dist;
+      best_sph = static_cast<int>(s);
+    }
   }
-  if (best_cyl >= 0 && (best_cone < 0 || best_cyl_d <= best_cone_d)) {
+
+  const double accept_tol = std::max(tol * 100.0, 1e-4);
+  const bool cyl_ok = best_cyl >= 0 && best_cyl_d <= accept_tol;
+  const bool cone_ok = best_cone >= 0 && best_cone_d <= accept_tol;
+  const bool sph_ok = best_sph >= 0 && best_sph_d <= accept_tol;
+  if (!cyl_ok && !cone_ok && !sph_ok) {
+    throw std::invalid_argument(
+        "dino8::kernel::RemoveBlend: `point_on_fillet` is not near any cylindrical, conical or spherical face of "
+        "`solid`");
+  }
+  if (sph_ok && (!cyl_ok || best_sph_d <= best_cyl_d) && (!cone_ok || best_sph_d <= best_cone_d)) {
+    return RemoveSphericalVertexBlend(mf, best_sph, faces, tol);
+  }
+  if (cyl_ok && (!cone_ok || best_cyl_d <= best_cone_d)) {
     return RemoveCylindricalBlend(mf, best_cyl, faces, tol);
   }
   return RemoveConicalBlend(mf, best_cone, faces, tol);
