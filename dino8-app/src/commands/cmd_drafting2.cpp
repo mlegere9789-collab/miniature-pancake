@@ -1291,11 +1291,20 @@ int BuildSectionGroup(CommandContext& ctx, const ON_Plane& pl, const std::string
   int layer = ctx.Doc().FindLayer("Sections");
   if (layer < 0) layer = ctx.Doc().AddLayer("Sections", Color::FromBytes(200, 60, 60));
   const std::string style = ctx.Settings().annotation_style;
+  // Snapshot the meshes to slice before adding any objects below - Doc().Add()
+  // can reallocate Document::Objects()'s backing vector, which would
+  // invalidate this loop's own reference/iterator into it if it still held
+  // one while calling Add() (as it used to, with the slicing and the Add()
+  // calls interleaved in a single pass over Objects()).
+  std::vector<kernel::Mesh> meshes;
   for (const SceneObject& o : ctx.Doc().Objects()) {
     if (!ctx.Doc().IsObjectVisible(o) || o.user_text.count("Annotation") || o.user_text.count("Hatch")) continue;
     std::optional<kernel::Mesh> m = MeshOf(o, 0.01);
     if (!m) continue;
-    for (std::vector<Point3d> chain : drafting::SliceMeshToChains(m->raw(), pl, tol)) {
+    meshes.push_back(std::move(*m));
+  }
+  for (const kernel::Mesh& m : meshes) {
+    for (std::vector<Point3d> chain : drafting::SliceMeshToChains(m.raw(), pl, tol)) {
       if (chain.size() < 2) continue;
       const bool closed = chain.size() > 2 && chain.front().DistanceTo(chain.back()) <= tol * 10;
       if (closed) chain.back() = chain.front();

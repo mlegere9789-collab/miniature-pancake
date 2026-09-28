@@ -900,18 +900,34 @@ void FillMeshHoles(CommandContext& ctx, const std::vector<ObjectId>& ids, const 
 RawMesh WeldRaw(const RawMesh& r, double tol, double angle, int* merged) {
   const std::vector<Vector3d> vn = VertexNormals(r);
   const double cos_tol = std::cos(std::min(angle, kPi));
+  const double tol2 = tol * tol;
   auto snap = [tol](double v) { return static_cast<long long>(std::llround(v / tol)); };
   std::map<std::tuple<long long, long long, long long>, std::vector<int>> cells;
   std::vector<int> remap(r.v.size());
   std::iota(remap.begin(), remap.end(), 0);
   int count = 0;
   for (size_t i = 0; i < r.v.size(); ++i) {
-    std::vector<int>& reps = cells[{snap(r.v[i].x), snap(r.v[i].y), snap(r.v[i].z)}];
-    bool joined = false;
-    for (int rep : reps) {
-      if (angle >= kPi - 1e-9 || ON_DotProduct(vn[i], vn[rep]) >= cos_tol) { remap[i] = rep; joined = true; ++count; break; }
-    }
-    if (!joined) reps.push_back(static_cast<int>(i));
+    const long long cx = snap(r.v[i].x), cy = snap(r.v[i].y), cz = snap(r.v[i].z);
+    // A same-tolerance vertex can land in any of the 26 cells adjacent to
+    // this one too (rounding each axis independently means two points up to
+    // ~tol apart on an axis can still straddle that axis's cell boundary),
+    // so every neighbour must be searched, not just this exact bucket - and
+    // the actual 3D distance must still be checked, since two points that
+    // round to the very same bucket can be up to sqrt(3)*tol apart, well
+    // outside the real weld tolerance.
+    int rep_found = -1;
+    for (long long dx = -1; dx <= 1 && rep_found < 0; ++dx)
+      for (long long dy = -1; dy <= 1 && rep_found < 0; ++dy)
+        for (long long dz = -1; dz <= 1 && rep_found < 0; ++dz) {
+          auto it = cells.find({cx + dx, cy + dy, cz + dz});
+          if (it == cells.end()) continue;
+          for (int rep : it->second) {
+            if ((r.v[i] - r.v[rep]).LengthSquared() > tol2) continue;
+            if (angle >= kPi - 1e-9 || ON_DotProduct(vn[i], vn[rep]) >= cos_tol) { rep_found = rep; break; }
+          }
+        }
+    if (rep_found >= 0) { remap[i] = rep_found; ++count; }
+    else cells[{cx, cy, cz}].push_back(static_cast<int>(i));
   }
   RawMesh out = r;
   for (Face& f : out.f) for (int& k : f) k = remap[k];

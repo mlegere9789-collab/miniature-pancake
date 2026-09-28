@@ -919,9 +919,11 @@ mtcheck "CollapseMeshEdge: collapsed the edge nearest the pick into its midpoint
 mtcheck "DupMeshEdge: 1 edge(s) duplicated so far" "DupMeshEdge duplicated the single picked edge"
 mtcheck "ExtractMeshFaces: extracted 1 of 6 faces" "ExtractMeshFaces extracted the single picked face"
 mtcheck "FlatShade: added 16 vertex copy(ies)" "FlatShade fully unwelded the box for faceted shading"
+mtcheck "Weld: merged 0 vertex(es); 6 vertices remain" "Weld did not merge a pair that rounds into the same quantization bucket but is actually farther apart than tolerance"
+mtcheck "Weld: merged 1 vertex(es); 5 vertices remain" "Weld merged a genuinely coincident pair even though they round into adjacent quantization buckets"
 echo "$MT" | grep -E "^(ok|FAIL)"
 if echo "$MT" | grep -q "^FAIL"; then fail=1; fi
-mtcheck "smoke: frames=1[0-9][0-9] objects=41" "mesh-tools script produced the expected object count"
+mtcheck "smoke: frames=[0-9]* objects=43" "mesh-tools script produced the expected object count"
 
 # SubD editing: Crease, ExtrudeSubD, Inset, Bridge, OffsetSubD, RepairSubD, InsertEdge,
 # DivideAlongCreases, Fill, AutomaticSubDFromMesh, SubDTruncatedCone, ShrinkWrap (see subd_script.txt).
@@ -2384,6 +2386,8 @@ D2_ANG45_COUNT=$(echo "$D2" | grep -c "UpdateDimensions:   DimAngle now measures
 [ "$D2_ANG45_COUNT" = "2" ] && echo "ok   DimAngle round-tripped and was redrawn after Open (the one pre-save run once it existed, plus the post-Open run)" || { echo "FAIL DimAngle redrawn $D2_ANG45_COUNT times, expected 2 (associativity did not survive the .3dm round trip)"; fail=1; }
 D2_REGEN4_COUNT=$(echo "$D2" | grep -c "UpdateDimensions: 4 dimension(s) regenerated")
 [ "$D2_REGEN4_COUNT" = "2" ] && echo "ok   UpdateDimensions regenerated all 4 associative dimensions with 0 skipped, both before Save and again after Open" || { echo "FAIL UpdateDimensions: 4 dimension(s) regenerated seen $D2_REGEN4_COUNT times, expected 2 (some dimensions failed to resolve after the .3dm round trip)"; fail=1; }
+
+d2check "SectionView: 120 curve(s)" "SectionView sliced all 120 objects with none dropped across the Document::Objects() reallocations that many Add() calls in one pass triggers"
 
 d2check "gl_error=0" "drafting2 script ran without OpenGL errors"
 

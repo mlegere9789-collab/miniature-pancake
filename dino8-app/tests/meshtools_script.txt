@@ -201,5 +201,33 @@ MeshBox 830,0,0 840,10,0 10
 SelLast
 FlatShade
 @expect_objects 41
+# --- Weld tolerance-boundary regression: WeldRaw's per-axis-rounded spatial
+# hash must still check the real 3D distance (not just "same rounded
+# bucket") and must search the neighbouring buckets too (not just the exact
+# one a vertex rounds into), or it both over-merges vertices that are
+# actually farther apart than the tolerance and under-merges genuinely
+# coincident ones that happen to round into different buckets. Each mesh
+# here is two separate, otherwise-unrelated triangles (so collapsing the
+# tested pair only drops one now-unreferenced vertex, rather than
+# degenerating a face the way sharing one triangle between the pair would)
+# and uses the default 0.001 absolute tolerance and Weld's default
+# Angle=180 (so the normal check never gates the merge) - only the tested
+# pair's exact separation differs.
+SelNone
+# The pair (vertices 1 and 4) is sqrt(0.0008^2*2) = 0.001131 apart, just
+# OUTSIDE tolerance, but both round (x and y independently) to the same
+# bucket - must NOT merge, so all 6 vertices stay referenced.
+= rs.AddMesh({{0.0004,0.0004,0},{10,0,0},{0,10,0},{-0.0004,-0.0004,0},{10,20,0},{0,30,0}}, {{1,2,3},{4,5,6}})
+SelLast
+Weld
+180
+# The pair (vertices 1 and 4) is 0.00002 apart, well INSIDE tolerance, but
+# 1000.00049 and 1000.00051 round to adjacent buckets (1000000 vs
+# 1000001) - must merge, dropping one of the 6 vertices to 5.
+= rs.AddMesh({{1000.00049,0,0},{1010,0,0},{1000,10,0},{1000.00051,0,0},{1010,20,0},{1000,30,0}}, {{1,2,3},{4,5,6}})
+SelLast
+Weld
+180
+@expect_objects 43
 Show
 SelAll
