@@ -5705,6 +5705,101 @@ void TestModelAddGroupRoundTrips() {
   std::remove(path.c_str());
 }
 
+// Model::AddMaterial() plus every Add*()'s new `material_index` parameter:
+// PARITY_MAP.md's ".3dm attribute/metadata fidelity" evidence named
+// materials (alongside layers/linetypes/groups/user-strings) as a field
+// this kernel had no way to write at all - "grep ON_Layer/ON_Material in
+// dino8-kernel/src: none". A rendered material is a distinct .3dm component
+// table (ON_ModelComponent::Type::RenderMaterial) from the plain per-object
+// `render_color`/ColorSource() pair TestModelAddRenderColorRoundTrips()
+// already covers - Rhino keeps a render/shaded-viewport material's diffuse
+// color separate from the flat wireframe/object display color, so this is a
+// genuinely different field, not a duplicate of that existing test. Checks
+// a real round trip through an actual .3dm file: a named material with a
+// distinct diffuse color, added via AddMaterial(); one object assigned that
+// material (proving MaterialSource() flips to ON::material_from_object and
+// `m_material_index` survives the round trip); a second object given no
+// material_index argument (proving the new parameter is additive, not a
+// behavior change for existing callers - MaterialSource() stays at its
+// default ON::material_from_layer, exactly as every object's attributes
+// were before this parameter existed).
+void TestModelAddMaterialRoundTrips() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Color;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Model;
+  using dino8::kernel::Result;
+  using dino8::kernel::UserStrings;
+
+  Model model;
+  const int material_index = model.AddMaterial("Anodized Red", Color{200, 20, 20});
+  Check(material_index >= 0, "AddMaterial() with a non-empty name returns a valid (>= 0) index");
+  Check(model.AddMaterial("") == -1,
+        "AddMaterial() with an empty name returns -1, same contract as "
+        "AddLayer()/AddLinetype()/AddGroup()");
+  const int second_material_index = model.AddMaterial("Brushed Steel", Color{150, 150, 160});
+  Check(second_material_index >= 0 && second_material_index != material_index,
+        "a second AddMaterial() call returns a distinct valid index");
+
+  const auto box_brep = Brep::Box(0, 0, 0, 1, 1, 1);
+  model.AddBrep(box_brep, "MaterialedBrep", 0, std::nullopt, UserStrings(), std::nullopt,
+                std::vector<int>(), material_index);
+  const auto box_mesh = MakeQuadBoxMesh(2, 0, 0, 3, 1, 1);
+  model.AddMesh(box_mesh);  // no material_index given: stays layer-materialed
+
+  const std::string path = "dino8_kernel_model_material_roundtrip_test.3dm";
+  Check(model.Save(path) == Result::Ok, ".3dm save with an object material succeeded");
+
+  Model loaded;
+  Check(Model::Load(path, loaded) == Result::Ok, ".3dm load succeeded");
+
+  const ON_Material* material = nullptr;
+  {
+    ONX_ModelComponentIterator iterator(loaded.raw(), ON_ModelComponent::Type::RenderMaterial);
+    for (const ON_ModelComponent* component = iterator.FirstComponent(); component != nullptr;
+         component = iterator.NextComponent()) {
+      const ON_Material* candidate = ON_Material::Cast(component);
+      if (candidate != nullptr && candidate->Index() == material_index) {
+        material = candidate;
+        break;
+      }
+    }
+  }
+  Check(material != nullptr, "the reloaded model still has a material at the returned index");
+  Check(material->Name() == ON_wString("Anodized Red"),
+        "the reloaded material's name exactly matches what AddMaterial() was given");
+  Check(material->Diffuse() == ON_Color(200, 20, 20),
+        "the reloaded material's diffuse color exactly matches what AddMaterial() was given");
+
+  ONX_ModelComponentIterator iterator(loaded.raw(), ON_ModelComponent::Type::ModelGeometry);
+  bool found_materialed_brep = false;
+  bool found_unmaterialed_mesh = false;
+  for (const ON_ModelComponent* component = iterator.FirstComponent(); component != nullptr;
+       component = iterator.NextComponent()) {
+    const auto* geometry_component = static_cast<const ON_ModelGeometryComponent*>(component);
+    const ON_3dmObjectAttributes* attributes = geometry_component->Attributes(nullptr);
+    const ON_Geometry* geometry = geometry_component->Geometry(nullptr);
+    if (dynamic_cast<const ON_Brep*>(geometry) != nullptr) {
+      found_materialed_brep = true;
+      Check(attributes->MaterialSource() == ON::material_from_object,
+            "the reloaded brep's MaterialSource() switched to ON::material_from_object");
+      Check(attributes->m_material_index == material_index,
+            "the reloaded brep's material index exactly matches what AddBrep() was given");
+    } else if (dynamic_cast<const ON_Mesh*>(geometry) != nullptr) {
+      found_unmaterialed_mesh = true;
+      Check(attributes->MaterialSource() == ON::material_from_layer,
+            "the reloaded mesh - added with no material_index argument - kept MaterialSource() "
+            "at its default ON::material_from_layer, proving the new parameter is a no-op when "
+            "omitted");
+    }
+  }
+  Check(found_materialed_brep && found_unmaterialed_mesh,
+        "both object types (materialed brep, unmaterialed mesh) were found in the reloaded "
+        "model");
+
+  std::remove(path.c_str());
+}
+
 void TestBoxVolume() {
   const auto box = MakeBox(0, 0, 0, 2, 2, 2);
   Check(std::abs(box.Volume() - 8.0) < 1e-9, "unit-scaled box volume is correct");
@@ -33039,6 +33134,7 @@ int main() {
   TestModelAddUserStringsRoundTrips();
   TestModelAddLinetypeRoundTrips();
   TestModelAddGroupRoundTrips();
+  TestModelAddMaterialRoundTrips();
   TestModelLoadRejectsMeshWithOutOfRangeFaceIndex();
   TestSplitByPlane();
   TestConvexHull();

@@ -113,6 +113,30 @@ class Model {
   // `name`, same contract as AddLayer()/AddLinetype().
   int AddGroup(const std::string& name);
 
+  // Adds a render material to the model and returns its index (>= 0) for use
+  // as every Add*() method's own `material_index` parameter below - the last
+  // field PARITY_MAP.md's ".3dm attribute/metadata fidelity" evidence names
+  // that this kernel had no way to write at all ("grep ON_Layer/ON_Material
+  // in dino8-kernel/src: none"). Before this, an object's rendered
+  // appearance could only ever be Rhino's generic default material
+  // (ON::material_from_layer, ON_3dmObjectAttributes' own default, resolving
+  // to a layer that itself never carried a material either) - there was no
+  // way for this kernel to give an object its own named material with its
+  // own diffuse color, the same gap `render_color` closed for the simpler
+  // wireframe/shaded-viewport color but not for a real render material
+  // (Rhino keeps the two separate: `render_color`/`ColorSource()` drive the
+  // object's plain display color, while a material's `Diffuse()` drives
+  // rendered/rendered-viewport shading and is a distinct .3dm component
+  // table, `ON_ModelComponent::Type::RenderMaterial`). Wraps `ON_Material`
+  // (opennurbs_material.h), added to the model the same way
+  // AddLayer()/AddLinetype()/AddGroup() add their own component types via
+  // AddModelComponent(). Only `Name()` and `Diffuse()` are set - texture
+  // maps, specular/emission/shine/transparency/reflectivity remain a
+  // disclosed gap, same as PARITY_MAP.md's own evidence already states.
+  // Returns -1 for an empty `name`, same contract as
+  // AddLayer()/AddLinetype()/AddGroup().
+  int AddMaterial(const std::string& name, Color diffuse_color = Color());
+
   // Every Add*() below takes an optional object `name` and `layer_index`.
   // Before `name` existed, every object this kernel ever put into a Model
   // got a default, empty ON_3dmObjectAttributes - a real, disclosed gap in
@@ -187,16 +211,28 @@ class Model {
   // ON_3dmObjectAttributes::AddToGroup(); passing an index AddGroup() didn't
   // return is a caller error, same contract `layer_index`/`linetype_index`
   // already have for AddLayer()/AddLinetype().
+  //
+  // Every Add*() below also takes an optional `material_index`, the
+  // per-object render material assignment AddMaterial() above makes
+  // possible - see its own doc comment for why this exists. `std::nullopt`
+  // (the default) leaves MaterialSource() at its default
+  // ON::material_from_layer - no behavior change for existing callers,
+  // exactly like `render_color`/`linetype_index` before it. A present value
+  // is written to `m_material_index` with MaterialSource() switched to
+  // ON::material_from_object, the same "object, not layer" override pattern
+  // `render_color`/`linetype_index` use for their own fields.
   void AddCurve(const NurbsCurve& curve, const std::string& name = std::string(),
                 int layer_index = 0, std::optional<Color> render_color = std::nullopt,
                 const UserStrings& user_strings = UserStrings(),
                 std::optional<int> linetype_index = std::nullopt,
-                const std::vector<int>& group_indices = std::vector<int>());
+                const std::vector<int>& group_indices = std::vector<int>(),
+                std::optional<int> material_index = std::nullopt);
   void AddBrep(const Brep& brep, const std::string& name = std::string(), int layer_index = 0,
                std::optional<Color> render_color = std::nullopt,
                const UserStrings& user_strings = UserStrings(),
                std::optional<int> linetype_index = std::nullopt,
-               const std::vector<int>& group_indices = std::vector<int>());
+               const std::vector<int>& group_indices = std::vector<int>(),
+               std::optional<int> material_index = std::nullopt);
 
   // Adds a mesh (a box, cylinder, boolean result, ...) as its own model
   // object - the missing counterpart to AddCurve()/AddBrep() that closed
@@ -209,7 +245,8 @@ class Model {
                std::optional<Color> render_color = std::nullopt,
                const UserStrings& user_strings = UserStrings(),
                std::optional<int> linetype_index = std::nullopt,
-               const std::vector<int>& group_indices = std::vector<int>());
+               const std::vector<int>& group_indices = std::vector<int>(),
+               std::optional<int> material_index = std::nullopt);
 
   // Adds a SubD control cage/subdivision surface as its own model
   // object - the same "no way to put this object type into a .3dm at
@@ -220,7 +257,8 @@ class Model {
                std::optional<Color> render_color = std::nullopt,
                const UserStrings& user_strings = UserStrings(),
                std::optional<int> linetype_index = std::nullopt,
-               const std::vector<int>& group_indices = std::vector<int>());
+               const std::vector<int>& group_indices = std::vector<int>(),
+               std::optional<int> material_index = std::nullopt);
 
   // Adds a point cloud as its own model object. PointCloud's own doc
   // comment claims ON_PointCloud is "the same one [OpenNURBS'] .3dm
@@ -236,7 +274,8 @@ class Model {
                      int layer_index = 0, std::optional<Color> render_color = std::nullopt,
                      const UserStrings& user_strings = UserStrings(),
                      std::optional<int> linetype_index = std::nullopt,
-                     const std::vector<int>& group_indices = std::vector<int>());
+                     const std::vector<int>& group_indices = std::vector<int>(),
+                     std::optional<int> material_index = std::nullopt);
 
   int ObjectCount() const;
 
