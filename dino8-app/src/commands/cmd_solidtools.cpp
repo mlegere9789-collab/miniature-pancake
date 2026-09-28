@@ -1096,9 +1096,15 @@ void CutVolume(CommandContext& ctx, const Input& in) {
     if (!o) continue;
     std::optional<ON_Plane> pl = ClosedPlanarCurvePlane(ctx, *o);
     if (!pl) { ctx.Warn("CutVolume: object " + Id(id) + " is not a closed planar curve; skipped"); continue; }
+    // Copy the curve now: `o` is a raw pointer into Document::objects_, and
+    // ctx.Doc().Add() below (once per solid) can reallocate that vector,
+    // leaving `o` dangling for every solid after the first one that
+    // produces a cut. Read everything needed from `o` before the loop that
+    // calls Add(), never re-dereference it inside that loop.
+    const ON_NurbsCurve base_curve = o->curve->raw();
     for (const Solid& s : solids) {
       const double diag = Diagonal(s.mesh) + (pl->origin - s.mesh.GetCentroid()).Length();
-      ON_NurbsCurve c = o->curve->raw();
+      ON_NurbsCurve c = base_curve;
       c.Translate(-pl->zaxis * diag);
       ON_Plane plane = *pl;
       plane.SetOrigin(plane.origin - pl->zaxis * diag);

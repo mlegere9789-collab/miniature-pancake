@@ -49,3 +49,21 @@ Open @TMP@/iges_recursive_fixture.igs
 @expect_objects 0
 SelAll
 List
+# --- A hand-written STEP file: a FACETED_BREP whose one face is a POLY_LOOP
+# with 5 vertices (a pentagon) - well past the 4-vertex cap DXF's 3DFACE/
+# POLYFACE MESH have but STEP's POLY_LOOP does not. Regression:
+# BuildMeshFromFacetedBrep used to always build a single quad from just the
+# loop's first 4 vertices for any POLY_LOOP with more than 4 points,
+# silently discarding vertex 5 onward - a wrong, truncated face, not a
+# crash (see the fix's own comment in FileIgesStep.cpp). Must now
+# fan-triangulate the whole polygon: 5 vertices, 3 triangular faces, not
+# 1 quad missing a corner. ("cancel" first: the List above ran on an empty
+# selection - OnSelection's default min=1 leaves it sitting in its own
+# WantObjects prompt rather than finishing, which would otherwise silently
+# swallow the New/Open lines below as failed picks fed to that prompt.)
+cancel
+New
+Open @TMP@/step_pentagon_fixture.stp
+@expect_objects 1
+SelAll
+List

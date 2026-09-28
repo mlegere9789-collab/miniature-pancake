@@ -1163,9 +1163,9 @@ a2check "gl_error=0" "annotate2 script ran without OpenGL errors"
 # Solid tools: RoundHole, CurveBoolean, Clash, Cage/CageEdit, Flow, ScaleByPlane (see solidtools_script.txt).
 sed "s|@TMP@|$TMPW|g" "$HERE/solidtools_script.txt" > "$TMPW/solidtools_script.txt"
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
-  ST="$("$BIN" --smoke 220 --script "$TMPW/solidtools_script.txt" 2>&1)" || { echo "$ST"; echo "FAIL: solid-tools script exited non-zero"; exit 1; }
+  ST="$("$BIN" --smoke 420 --script "$TMPW/solidtools_script.txt" 2>&1)" || { echo "$ST"; echo "FAIL: solid-tools script exited non-zero"; exit 1; }
 else
-  ST="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 220 --script "$TMPW/solidtools_script.txt" 2>&1)" || { echo "$ST"; echo "FAIL: solid-tools script exited non-zero"; exit 1; }
+  ST="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 420 --script "$TMPW/solidtools_script.txt" 2>&1)" || { echo "$ST"; echo "FAIL: solid-tools script exited non-zero"; exit 1; }
 fi
 stcheck() { if echo "$ST" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$ST" "$1"; fail=1; fi; }
 stcheck "RoundHole: radius 3, through, cut 1 solid(s)" "RoundHole cut the box"
@@ -1197,6 +1197,7 @@ stcheck "CopyHole: copied object [0-9]* to object [0-9]*" "CopyHole cut a second
 stcheck "RotateHole: object [0-9]* re-cut at the new placement" "RotateHole rotated the hole feature and re-cut it"
 stcheck "MirrorHole: copied object [0-9]* to object [0-9]*" "MirrorHole mirrored the hole feature into a copy"
 stcheck "CutVolume: 1 cut volume(s) as meshes, total volume 785.3" "CutVolume measured pi*5^2*10 = 785.4 of the box inside the circle's extrusion"
+stcheck "CutVolume: 30 cut volume(s) as meshes, total volume 2.356e" "CutVolume regression: a curve crossing 30 separate solids processes every one of them without a dangling-pointer read of the curve after an earlier solid's Add() reallocated Document::objects_ (reverting the fix reliably segfaults on this exact scenario)"
 stcheck "Bounce: polyline with 1 bounce(s)" "Bounce traced a ray straight down off the box top and back up"
 stcheck "CreateSolid: 1 surface(s) joined into a closed mesh solid" "CreateSolid welded a single closed Brep's own faces into a closed mesh solid"
 stcheck "Splop: placed 1 copy(ies) at 1 point(s)" "Splop placed a copy at the picked surface point"
@@ -1224,7 +1225,7 @@ stcheck "ExtractOriginalCaptives: 1 original(s) restored as copies" "ExtractOrig
 stcheck "Bounding box min 1800,0,0 max 1810,10,10" "the restored original is the untouched pre-cage box (1800,0,0 to 1810,10,10), the exact geometry Box 1800,0,0 1810,10,0 10 created before it was ever bound to the cage"
 echo "$ST" | grep -E "^(ok|FAIL)"
 if echo "$ST" | grep -q "^FAIL"; then fail=1; fi
-stcheck "smoke: frames=[12][0-9][0-9] objects=54" "solid-tools script produced the expected object count"
+stcheck "smoke: frames=[1-4][0-9][0-9] objects=115" "solid-tools script produced the expected object count"
 
 # Fillet family: FilletEdge/ChamferEdge exact box-corner trims, FilletSrf, BlendEdge,
 # MatchSrf, SplitFace, MergeFaces, ConnectSrf, surface/surface and curve/surface
@@ -2497,10 +2498,11 @@ PY
 sed "s|@TMP@|$TMPW|g" "$HERE/igesstep_script.txt" > "$TMPW/igesstep_script.txt"
 cp "$HERE/step_plane_face.stp" "$TMPW/step_plane_face.stp"
 cp "$HERE/iges_recursive_fixture.igs" "$TMPW/iges_recursive_fixture.igs"
+cp "$HERE/step_pentagon_fixture.stp" "$TMPW/step_pentagon_fixture.stp"
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
-  IS="$("$BIN" --smoke 200 --script "$TMPW/igesstep_script.txt" 2>&1)" || { echo "$IS"; echo "FAIL: iges/step script exited non-zero"; exit 1; }
+  IS="$("$BIN" --smoke 230 --script "$TMPW/igesstep_script.txt" 2>&1)" || { echo "$IS"; echo "FAIL: iges/step script exited non-zero"; exit 1; }
 else
-  IS="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 200 --script "$TMPW/igesstep_script.txt" 2>&1)" || { echo "$IS"; echo "FAIL: iges/step script exited non-zero"; exit 1; }
+  IS="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 230 --script "$TMPW/igesstep_script.txt" 2>&1)" || { echo "$IS"; echo "FAIL: iges/step script exited non-zero"; exit 1; }
 fi
 ischeck() { if echo "$IS" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$IS" "$1"; fail=1; fi; }
 ischeck "Exported $TMPW/box.igs" "IGES export wrote a file"
@@ -2515,6 +2517,8 @@ ischeck "IGES: .*[1-9][0-9]* point" "IGES import read the point back"
 ischeck "STEP: 1 brep (1 trimmed face), 1 curve, 0 points" "the hand-written STEP fixture (PLANE face + CIRCLE) imported as 2 objects"
 ischeck "IGES: 0 curves, 0 points, 0 surfaces, 0 breps (0 trimmed faces); 1 unsupported entity skipped" "a self-referencing IGES composite curve was rejected cleanly, not crashed/hung on (see BuildIgesCurve's recursion-depth guard)"
 ischeck "^ok   expect_objects 0" "the malformed IGES file added nothing to the document"
+ischeck "^ok   expect_objects 1" "the hand-written pentagon FACETED_BREP fixture imported as exactly 1 mesh object"
+ischeck "5 vertices, 3 faces" "a POLY_LOOP pentagon (5 vertices) fan-triangulates into 3 faces, not the old code's single quad built from just its first 4 vertices"
 grep -q "Segmentation fault\|core dumped" <<<"$IS" && { echo "FAIL: iges/step script segfaulted on the recursive-composite-curve fixture"; fail=1; } || echo "ok   no segfault while importing the recursive-composite-curve fixture"
 grep -qE "^ {5}128" "$TMPW/t.igs" && grep -qE "^ {5}144" "$TMPW/t.igs" && echo "ok   t.igs uses 128 (surface) and 144 (trimmed surface) entities" || { echo "FAIL t.igs entity types"; fail=1; }
 grep -q "=ADVANCED_FACE(" "$TMPW/t.stp" && grep -q "B_SPLINE_SURFACE_WITH_KNOTS(" "$TMPW/t.stp" && echo "ok   t.stp uses ADVANCED_FACE and B_SPLINE_SURFACE_WITH_KNOTS entities" || { echo "FAIL t.stp entity types"; fail=1; }

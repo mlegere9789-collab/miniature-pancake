@@ -176,6 +176,86 @@ Enter
 SelLast
 Volume
 @expect_objects 24
+# --- CutVolume (N solids): regression for a dangling Document::objects_
+# pointer. CutVolume captured the curve object as a raw SceneObject* before
+# its inner loop over solids, then dereferenced that same pointer again
+# (o->curve->raw()) for every solid after the first - but ctx.Doc().Add()
+# runs once per solid inside that same loop and can reallocate
+# Document::objects_, leaving the pointer dangling once that reallocation
+# happens. A single curve crossing many separate solids (here 30 - few
+# enough to keep the smoke test fast, many enough that at least one of the
+# per-solid Add() calls inside the loop is virtually certain to grow past
+# Document::objects_'s current capacity - 2 solids reproduced this only
+# intermittently, depending on incidental capacity headroom left over from
+# earlier in this script) is what makes the dangling read land on freed
+# memory reliably rather than by luck: reverting the fix reproduces a real,
+# deterministic segfault on this exact scenario.
+SelNone
+Circle 100,10,0 5
+SelLast
+Box 90,0,0 110,20,0 10
+Box 90,0,0 110,20,0 10
+Box 90,0,0 110,20,0 10
+Box 90,0,0 110,20,0 10
+Box 90,0,0 110,20,0 10
+Box 90,0,0 110,20,0 10
+Box 90,0,0 110,20,0 10
+Box 90,0,0 110,20,0 10
+Box 90,0,0 110,20,0 10
+Box 90,0,0 110,20,0 10
+Box 90,0,0 110,20,0 10
+Box 90,0,0 110,20,0 10
+Box 90,0,0 110,20,0 10
+Box 90,0,0 110,20,0 10
+Box 90,0,0 110,20,0 10
+Box 90,0,0 110,20,0 10
+Box 90,0,0 110,20,0 10
+Box 90,0,0 110,20,0 10
+Box 90,0,0 110,20,0 10
+Box 90,0,0 110,20,0 10
+Box 90,0,0 110,20,0 10
+Box 90,0,0 110,20,0 10
+Box 90,0,0 110,20,0 10
+Box 90,0,0 110,20,0 10
+Box 90,0,0 110,20,0 10
+Box 90,0,0 110,20,0 10
+Box 90,0,0 110,20,0 10
+Box 90,0,0 110,20,0 10
+Box 90,0,0 110,20,0 10
+Box 90,0,0 110,20,0 10
+CutVolume
+SelID 32
+SelID 33
+SelID 34
+SelID 35
+SelID 36
+SelID 37
+SelID 38
+SelID 39
+SelID 40
+SelID 41
+SelID 42
+SelID 43
+SelID 44
+SelID 45
+SelID 46
+SelID 47
+SelID 48
+SelID 49
+SelID 50
+SelID 51
+SelID 52
+SelID 53
+SelID 54
+SelID 55
+SelID 56
+SelID 57
+SelID 58
+SelID 59
+SelID 60
+SelID 61
+Enter
+@expect_objects 85
 # --- Bounce: a ray straight down off a box top bounces straight back up
 SelNone
 Box 0,0,0 20,20,0 5
@@ -183,13 +263,13 @@ Bounce
 10,10,20
 10,10,0
 5
-@expect_objects 26
+@expect_objects 87
 # --- CreateSolid: joins/welds a single closed Brep's own surfaces into a closed mesh solid
 SelNone
 Box 800,0,0 810,10,0 10
 SelLast
 CreateSolid
-@expect_objects 27
+@expect_objects 88
 # --- Splop: places an oriented copy at a picked point on a target surface
 SelNone
 Plane 900,0,0 910,10,0
@@ -202,7 +282,7 @@ SelName SplopSrf
 Enter
 905,5,0
 Enter
-@expect_objects 30
+@expect_objects 91
 # --- Reflect: mirrors the selection across a plane and welds original + mirror into one symmetric mesh
 SelNone
 MeshBox 1000,0,0 1005,10,0 10
@@ -210,7 +290,7 @@ SelLast
 Reflect
 1005,0,0
 1005,10,0
-@expect_objects 31
+@expect_objects 92
 # --- Radiate / RadiateFind: bake vertex colours from the Sun, then find the lights used
 SelNone
 MeshSphere 1100,0,0 5
@@ -218,7 +298,7 @@ SelLast
 Sun On
 Radiate
 RadiateFind
-@expect_objects 32
+@expect_objects 93
 # --- OrientCrvToEdge: orients a copy directly onto a picked polysurface edge, no DupEdge needed
 SelNone
 Box 1200,0,0 1210,10,0 10
@@ -229,7 +309,7 @@ OrientCrvToEdge
 1200,0,5
 1200,0,3
 Enter
-@expect_objects 35
+@expect_objects 96
 # --- NonmanifoldMerge: two coplanar adjacent planes joined into one
 # polysurface via real Brep::MergeCoplanarFaces() B-rep topology surgery
 # (walks the joined ON_Brep's own edge/face adjacency directly - no mesh
@@ -244,7 +324,7 @@ SelAll
 NonmanifoldMerge
 SelLast
 Area
-@expect_objects 36
+@expect_objects 97
 # --- CreateRegions: an open-curve network - 3 open Line segments meeting
 # end-to-end into a closed right triangle (legs 30 and 40), the real fix for
 # "open-curve networks are planned" (AUDIT.md). Verified with an exact area,
@@ -261,7 +341,7 @@ SelLast
 PlanarSrf
 SelLast
 Area
-@expect_objects 41
+@expect_objects 102
 # --- CreateRegions: a mix of an assembled open-curve loop (an Arc + a Line
 # closing its diameter into a semicircle, r=10) and a separate, non-touching
 # closed Circle (r=5) -> 2 distinct regions, the "open curves alongside
@@ -279,7 +359,7 @@ SelLast
 PlanarSrf
 SelLast
 Area
-@expect_objects 47
+@expect_objects 108
 # --- CreateRegions: a branch point (3 open Lines meeting at one shared
 # point, a "Y") admits more than one possible face - ChainOpenCurvesIntoLoops
 # refuses to guess which one was meant, warns, and skips them instead of
@@ -291,7 +371,7 @@ Line 1700,0,0 1710,0,0
 Line 1700,0,0 1690,-5,0
 SelAll
 CreateRegions
-@expect_objects 50
+@expect_objects 111
 # --- ExtractOriginalCaptives survives a Save -> New -> Open round trip (the
 # actual point of CageBinding/Captive now living in Document::CageBindings()
 # and being written to/read back from the .3dm - see io/File3dm.cpp and the
@@ -320,4 +400,4 @@ SelCaptives
 ExtractOriginalCaptives
 SelLast
 BoundingBox
-@expect_objects 54
+@expect_objects 115

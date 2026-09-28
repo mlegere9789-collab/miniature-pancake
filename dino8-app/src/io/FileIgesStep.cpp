@@ -2533,9 +2533,23 @@ bool BuildMeshFromFacetedBrep(StepModel& m, int shell_id, kernel::Mesh& out_mesh
         vid_map[pid] = idx;
         vi.push_back(idx);
       }
-      const int fi = mesh.FaceCount();
-      if (vi.size() == 3) mesh.SetTriangle(fi, vi[0], vi[1], vi[2]);
-      else mesh.SetQuad(fi, vi[0], vi[1], vi[2], vi[static_cast<size_t>(std::min<size_t>(3, vi.size() - 1))]);
+      if (vi.size() == 3) {
+        mesh.SetTriangle(mesh.FaceCount(), vi[0], vi[1], vi[2]);
+      } else if (vi.size() == 4) {
+        mesh.SetQuad(mesh.FaceCount(), vi[0], vi[1], vi[2], vi[3]);
+      } else {
+        // POLY_LOOP has no 4-vertex cap the way DXF's 3DFACE/POLYFACE MESH
+        // does - a faceted-BREP export with pentagon/hexagon (or larger)
+        // facets, common from mesh-to-STEP converters, used to silently
+        // become a single quad built from just vi[0..3], discarding every
+        // vertex from vi[4] onward (a wrong-shaped face, not a crash, so
+        // ImportStep still reported success). Fan-triangulate instead, the
+        // same approach FileExchange.cpp's ImportPly already uses for a PLY
+        // face list beyond 4 indices.
+        for (size_t k = 1; k + 1 < vi.size(); ++k) {
+          mesh.SetTriangle(mesh.FaceCount(), vi[0], vi[k], vi[k + 1]);
+        }
+      }
     }
   }
   if (mesh.FaceCount() == 0) return false;
