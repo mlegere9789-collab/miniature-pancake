@@ -9503,6 +9503,140 @@ void TestBrepWireBody() {
   Check(!empty_brep.IsWireBody(), "IsWireBody() is false for a brand-new, completely empty Brep");
 }
 
+// AddWireCurves(): the "extending an existing wire body with more curves
+// in one call" gap PARITY_MAP.md's own "Wire bodies" item names as the
+// last still-missing piece now that WireBody()/IsWireBody() themselves
+// exist.
+void TestBrepAddWireCurves() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+
+  const Point3d A(0, 0, 0), B(5, 0, 0), C(5, 5, 0), D(5, 5, 5);
+  const NurbsCurve leg_ab = NurbsCurve::FromControlPoints({A, B}, /*degree=*/1);
+  const NurbsCurve leg_bc = NurbsCurve::FromControlPoints({B, C}, /*degree=*/1);
+  const NurbsCurve leg_cd = NurbsCurve::FromControlPoints({C, D}, /*degree=*/1);
+
+  // Calling it on a completely empty Brep behaves exactly like WireBody()
+  // itself - the empty-seed case of "extend an existing wire body".
+  Brep from_empty;
+  Check(from_empty.VertexCount() == 0 && from_empty.EdgeCount() == 0, "setup: a fresh Brep starts with nothing");
+  const Brep::AddWireCurvesResult r0 = from_empty.AddWireCurves({leg_ab});
+  Check(from_empty.VertexCount() == 2 && from_empty.EdgeCount() == 1 && from_empty.FaceCount() == 0,
+        "AddWireCurves() on an empty Brep builds the same 2-vertex/1-edge/0-face shape WireBody() would");
+  Check(from_empty.IsWireBody(), "...and IsWireBody() is now true");
+  Check(r0.edge_indices.size() == 1 && r0.edge_indices[0] == 0, "the result names the one new edge, index 0");
+  Check(r0.new_vertex_indices.size() == 2, "...and both endpoints were brand new");
+
+  // Extending it with a second curve that shares an endpoint (B) welds
+  // onto the EXISTING vertex from the first call, growing a real 3-vertex/
+  // 2-edge chain across two separate AddWireCurves() calls - not a fresh
+  // WireBody() rebuild.
+  const Brep::AddWireCurvesResult r1 = from_empty.AddWireCurves({leg_bc});
+  Check(from_empty.VertexCount() == 3 && from_empty.EdgeCount() == 2 && from_empty.FaceCount() == 0,
+        "a second call welding onto vertex B grows a 3-vertex/2-edge chain, not 4 vertices");
+  Check(r1.edge_indices.size() == 1 && r1.edge_indices[0] == 1, "the second call's new edge is index 1");
+  Check(r1.new_vertex_indices.size() == 1, "only C is brand new - B welded onto the vertex the first call made");
+  int shared_vi = -1, leaf_count = 0;
+  for (int vi = 0; vi < from_empty.raw().m_V.Count(); ++vi) {
+    const int degree = static_cast<int>(from_empty.EdgesOfVertex(vi).size());
+    if (degree == 2) {
+      shared_vi = vi;
+    } else if (degree == 1) {
+      ++leaf_count;
+    }
+  }
+  Check(shared_vi >= 0 && leaf_count == 2, "exactly one shared (degree-2) vertex and two leaf vertices, across both calls");
+  Check(from_empty.raw().m_V[shared_vi].point.DistanceTo(B) < 1e-9, "the shared vertex sits exactly at B");
+  const Brep::CheckReport chain_report = from_empty.Check();
+  Check(chain_report.Count(Brep::CheckIssue::Kind::NakedEdge) == 2 && chain_report.issues.size() == 2,
+        "Check() reports both edges as NakedEdge and nothing else, exactly as if WireBody() had built the whole "
+        "chain in one call");
+
+  // A third call, several curves at once, that neither touches the
+  // existing chain nor shares an endpoint with itself stays fully
+  // disjoint: no spurious welding just because it happens in the same
+  // Brep as an unrelated wire.
+  const NurbsCurve far_leg = NurbsCurve::FromControlPoints({Point3d(100, 0, 0), Point3d(101, 0, 0)}, /*degree=*/1);
+  const Brep::AddWireCurvesResult r2 = from_empty.AddWireCurves({far_leg});
+  Check(from_empty.VertexCount() == 5 && from_empty.EdgeCount() == 3 && from_empty.FaceCount() == 0,
+        "an unrelated curve with no coincident endpoint adds 2 fresh vertices, not welded to the existing chain");
+  Check(r2.new_vertex_indices.size() == 2, "both of the disjoint curve's endpoints are brand new");
+
+  // Several curves in ONE call weld to each other exactly like WireBody()
+  // itself does, on top of the Brep's own pre-existing vertices: leg_cd
+  // welds onto C (already live from the first two calls above) while
+  // still being a single AddWireCurves({leg_bc-ish, leg_cd}) call.
+  const NurbsCurve leg_de = NurbsCurve::FromControlPoints({D, Point3d(9, 9, 9)}, /*degree=*/1);
+  const Brep::AddWireCurvesResult r3 = from_empty.AddWireCurves({leg_cd, leg_de});
+  Check(from_empty.VertexCount() == 7 && from_empty.EdgeCount() == 5 && from_empty.FaceCount() == 0,
+        "one call with two curves welds leg_cd onto the pre-existing C and leg_de onto leg_cd's own new D, "
+        "adding exactly 2 more brand-new vertices (D and the far end of leg_de)");
+  Check(r3.edge_indices.size() == 2 && r3.new_vertex_indices.size() == 2,
+        "two new edges, two new vertices - C and (from the first call above) D's own predecessor already existed");
+
+  // A closed curve extends the SAME way WireBody() itself handles one:
+  // exactly one new self-closed vertex, not two coincident ones.
+  const ON_Circle raw_circle(ON_Plane(ON_3dPoint(50, 50, 0), ON_3dVector(0, 0, 1)), 2.0);
+  ON_NurbsCurve raw_circle_nurbs;
+  raw_circle.GetNurbForm(raw_circle_nurbs);
+  NurbsCurve circle;
+  circle.raw() = raw_circle_nurbs;
+  Brep with_circle;
+  const Brep::AddWireCurvesResult rc = with_circle.AddWireCurves({circle});
+  Check(with_circle.VertexCount() == 1 && with_circle.EdgeCount() == 1,
+        "a closed curve adds exactly one self-closed vertex, not two coincident ones");
+  Check(with_circle.raw().m_E[0].m_vi[0] == with_circle.raw().m_E[0].m_vi[1],
+        "the new edge's own two endpoint indices are both the same vertex");
+  Check(rc.new_vertex_indices.size() == 1, "only one brand-new vertex was created for the closed curve");
+
+  // Generalization beyond wire bodies: welding a wire spur onto an
+  // EXISTING vertex of a Brep that already has faces (nothing requires
+  // IsWireBody() to be true first) - the multi-curve superset of a single
+  // MakeEdgeVertex() call.
+  Brep box = Brep::FromPlanarFaces(CheckHealBoxFaces());
+  const int box_vertex_count_before = box.VertexCount();
+  const int box_edge_count_before = box.EdgeCount();
+  const NurbsCurve spur = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(-1, -1, -1)}, /*degree=*/1);
+  const Brep::AddWireCurvesResult rs = box.AddWireCurves({spur});
+  Check(box.VertexCount() == box_vertex_count_before + 1 && box.EdgeCount() == box_edge_count_before + 1,
+        "welding a spur onto a box's own corner vertex (0,0,0) adds exactly one new vertex and one new edge");
+  Check(!box.IsWireBody(), "the box is still not a wire body - it still has faces");
+  Check(box.raw().m_E[rs.edge_indices[0]].TrimCount() == 0, "the new spur edge borders no face at all");
+  Check(rs.new_vertex_indices.size() == 1, "only the spur's own far endpoint is brand new - it welded onto the box's own corner");
+  const Brep::CheckReport box_report = box.Check();
+  Check(box_report.Count(Brep::CheckIssue::Kind::NakedEdge) == 1,
+        "Check() reports the new spur as exactly one NakedEdge on top of an otherwise still-clean box");
+
+  // Refusal: empty curve list, leaving the Brep completely untouched.
+  Brep untouched = Brep::WireBody({leg_ab});
+  const int untouched_v = untouched.VertexCount();
+  const int untouched_e = untouched.EdgeCount();
+  bool threw_empty = false;
+  try {
+    (void)untouched.AddWireCurves({});
+  } catch (const std::invalid_argument&) {
+    threw_empty = true;
+  }
+  Check(threw_empty, "AddWireCurves() with an empty curve list throws std::invalid_argument");
+  Check(untouched.VertexCount() == untouched_v && untouched.EdgeCount() == untouched_e,
+        "...and leaves the Brep completely untouched");
+
+  // Refusal: a degenerate curve, and a bad curve later in a multi-curve
+  // call still refuses the WHOLE call - no partial edit from the good
+  // curve that came before it.
+  const NurbsCurve zero_length = NurbsCurve::FromControlPoints({Point3d(4, 4, 4), Point3d(4, 4, 4)}, /*degree=*/1);
+  bool threw_partial = false;
+  try {
+    (void)untouched.AddWireCurves({leg_cd, zero_length});
+  } catch (const std::invalid_argument&) {
+    threw_partial = true;
+  }
+  Check(threw_partial, "a bad curve later in the list still refuses the whole call");
+  Check(untouched.VertexCount() == untouched_v && untouched.EdgeCount() == untouched_e,
+        "...leaving the Brep untouched even though leg_cd on its own would have been valid");
+}
+
 // Flip one face: Check() names the flipped face on each of its 4 edges
 // (index = the flipped face, other_index = each neighbour), the welded
 // mesh is no longer a closed manifold (an orientation conflict on every
@@ -37587,6 +37721,7 @@ int main() {
   TestBrepMakeEdgeFaceAndKillEdgeFaceAreExactInverses();
   TestBrepMakeEdgeKillRingAndKillEdgeMakeRingAreExactInverses();
   TestBrepWireBody();
+  TestBrepAddWireCurves();
   TestBrepCheckAndUnifyNormalsOnFlippedFace();
   TestBrepCheckReportsDroppedFaceAndCapPlanarHolesRestoresIt();
   TestBrepJoinNakedEdgesRecordsTolerantEdges();

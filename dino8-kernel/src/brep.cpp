@@ -6907,68 +6907,90 @@ Result Brep::KillEdgeVertex(int edge_index) {
   return Result::Ok;
 }
 
-Brep Brep::WireBody(const std::vector<NurbsCurve>& curves, double tolerance) {
-  if (curves.empty()) {
-    throw std::invalid_argument("dino8::kernel::Brep::WireBody: curves is empty - a wire body needs at least one");
-  }
-  const double tol = std::max(tolerance, 0.0);
+namespace {
 
-  // Validate every curve up front - a bad curve anywhere refuses the
-  // whole call, rather than leaving a caller with a half-built wire body
-  // (see this method's own doc comment).
-  struct Endpoints {
-    Point3d start;
-    Point3d end;
-    bool closed = false;
-  };
-  std::vector<Endpoints> ends;
+// Shared by WireBody() and AddWireCurves() below: validates every curve up
+// front - a bad curve anywhere refuses the whole call, rather than leaving
+// a caller with a half-built wire body (see both methods' own doc
+// comments) - and reports each curve's own start/end point and whether it
+// is closed.
+struct WireCurveEndpoints {
+  Point3d start;
+  Point3d end;
+  bool closed = false;
+};
+
+std::vector<WireCurveEndpoints> ValidateWireCurves(const std::vector<NurbsCurve>& curves, double tol,
+                                                    const char* caller) {
+  if (curves.empty()) {
+    throw std::invalid_argument(std::string("dino8::kernel::Brep::") + caller +
+                                ": curves is empty - at least one curve is required");
+  }
+  std::vector<WireCurveEndpoints> ends;
   ends.reserve(curves.size());
   for (size_t k = 0; k < curves.size(); ++k) {
     const NurbsCurve& c = curves[k];
     if (c.Length() <= tol) {
-      throw std::invalid_argument("dino8::kernel::Brep::WireBody: curves[" + std::to_string(k) +
+      throw std::invalid_argument(std::string("dino8::kernel::Brep::") + caller + ": curves[" + std::to_string(k) +
                                   "] is degenerate (its own sampled length is at or below tolerance)");
     }
     const Interval d = c.Domain();
-    Endpoints e;
+    WireCurveEndpoints e;
     e.start = c.PointAt(d.min);
     e.end = c.PointAt(d.max);
     e.closed = c.IsClosed();
     if (!e.closed && e.start.DistanceTo(e.end) <= tol) {
       throw std::invalid_argument(
-          "dino8::kernel::Brep::WireBody: curves[" + std::to_string(k) +
+          std::string("dino8::kernel::Brep::") + caller + ": curves[" + std::to_string(k) +
           "] has coincident start/end points within tolerance but IsClosed() is false - ambiguous "
           "between one vertex and two");
     }
     ends.push_back(e);
   }
+  return ends;
+}
 
-  Brep result;
-  ON_Brep& b = result.brep_;
-  // Linear nearest-existing-vertex search within `tolerance` - the same
-  // "weld a new endpoint onto an already-placed vertex" question
-  // MakeEdgeVertex()'s own caller answers by hand, just applied here to
-  // every curve endpoint instead of one caller-supplied point. O(n^2) in
-  // the number of DISTINCT wire vertices, which is never large enough for
-  // that to matter (matching this file's own established style for
-  // welding helpers that aren't on a hot path - see VertexWelder's own
-  // comment on why IT is bucketed instead: face-loop welding runs over
-  // far more points per call than a wire body's own endpoints ever will).
+// Shared by WireBody() and AddWireCurves() below: appends one new
+// ON_BrepEdge per entry in `curves` onto `b`, welding a new endpoint onto
+// an already-live vertex within `tol` - seeded with whatever vertices `b`
+// already has, so this is equally correct for building a wire body from
+// nothing (`b` starts empty, as WireBody() itself calls it) or for
+// extending one that already has vertices (as AddWireCurves() calls it) -
+// before falling back to a vertex placed earlier in this same call.
+// Linear nearest-existing-vertex search within `tol` - the same "weld a
+// new endpoint onto an already-placed vertex" question MakeEdgeVertex()'s
+// own caller answers by hand, just applied here to every curve endpoint
+// instead of one caller-supplied point. O(n^2) in the number of DISTINCT
+// wire vertices, which is never large enough for that to matter (matching
+// this file's own established style for welding helpers that aren't on a
+// hot path - see VertexWelder's own comment on why IT is bucketed
+// instead: face-loop welding runs over far more points per call than a
+// wire body's own endpoints ever will). Appends the index of every BRAND
+// NEW vertex (never one welded onto) to `new_vertex_indices` in the order
+// created, and returns the new edge index for each curve, in `curves`'
+// own order.
+std::vector<int> AppendWireEdges(ON_Brep& b, const std::vector<NurbsCurve>& curves,
+                                  const std::vector<WireCurveEndpoints>& ends, double tol,
+                                  std::vector<int>* new_vertex_indices) {
   auto find_or_add_vertex = [&](const Point3d& p) -> int {
     for (int vi = 0; vi < b.m_V.Count(); ++vi) {
       if (b.m_V[vi].m_vertex_index < 0) continue;
       if (b.m_V[vi].point.DistanceTo(p) <= tol) return vi;
     }
-    return b.NewVertex(p, 0.0).m_vertex_index;
+    const int vi = b.NewVertex(p, 0.0).m_vertex_index;
+    if (new_vertex_indices) new_vertex_indices->push_back(vi);
+    return vi;
   };
 
+  std::vector<int> edge_indices;
+  edge_indices.reserve(curves.size());
   for (size_t k = 0; k < curves.size(); ++k) {
-    const Endpoints& e = ends[k];
+    const WireCurveEndpoints& e = ends[k];
     auto* c3 = new ON_NurbsCurve(curves[k].raw());
     const int c3i = b.AddEdgeCurve(c3);
     if (e.closed) {
       const int vi = find_or_add_vertex(e.start);
-      b.NewEdge(b.m_V[vi], b.m_V[vi], c3i);
+      edge_indices.push_back(b.NewEdge(b.m_V[vi], b.m_V[vi], c3i).m_edge_index);
     } else {
       const int v0 = find_or_add_vertex(e.start);
       // v0 may have just grown b.m_V - re-fetch v1's own home fresh
@@ -6976,9 +6998,20 @@ Brep Brep::WireBody(const std::vector<NurbsCurve>& curves, double tolerance) {
       // same NewVertex()-may-reallocate discipline MakeEdgeVertex()/
       // SplitNakedEdgeAt() already follow.
       const int v1 = find_or_add_vertex(e.end);
-      b.NewEdge(b.m_V[v0], b.m_V[v1], c3i);
+      edge_indices.push_back(b.NewEdge(b.m_V[v0], b.m_V[v1], c3i).m_edge_index);
     }
   }
+  return edge_indices;
+}
+
+}  // namespace
+
+Brep Brep::WireBody(const std::vector<NurbsCurve>& curves, double tolerance) {
+  const double tol = std::max(tolerance, 0.0);
+  const std::vector<WireCurveEndpoints> ends = ValidateWireCurves(curves, tol, "WireBody");
+
+  Brep result;
+  AppendWireEdges(result.brep_, curves, ends, tol, /*new_vertex_indices=*/nullptr);
   result.brep_.SetTolerancesBoxesAndFlags();
   FixUnsetEdgeTolerances(result.brep_);
   return result;
@@ -6994,6 +7027,17 @@ bool Brep::IsWireBody() const {
     if (brep_.m_F[fi].m_face_index >= 0) return false;
   }
   return true;
+}
+
+Brep::AddWireCurvesResult Brep::AddWireCurves(const std::vector<NurbsCurve>& curves, double tolerance) {
+  const double tol = std::max(tolerance, 0.0);
+  const std::vector<WireCurveEndpoints> ends = ValidateWireCurves(curves, tol, "AddWireCurves");
+
+  AddWireCurvesResult result;
+  result.edge_indices = AppendWireEdges(brep_, curves, ends, tol, &result.new_vertex_indices);
+  brep_.SetTolerancesBoxesAndFlags();
+  FixUnsetEdgeTolerances(brep_);
+  return result;
 }
 
 namespace {

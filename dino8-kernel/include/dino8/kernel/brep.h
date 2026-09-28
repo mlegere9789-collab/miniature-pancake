@@ -3012,6 +3012,52 @@ class Brep {
   // Brep with no edges either (nothing to call a "body" at all).
   bool IsWireBody() const;
 
+  // Extends THIS Brep with one new ON_BrepEdge per entry in `curves`,
+  // using exactly the same vertex-welding and edge-construction rules
+  // WireBody() above uses to build a wire body from nothing - just
+  // applied on top of this Brep's own EXISTING vertices instead of
+  // starting empty. Closes the "extending an existing wire body with more
+  // curves in one call" gap PARITY_MAP.md's own "Wire bodies" item names
+  // as the last still-missing piece of that item, now that WireBody()/
+  // IsWireBody() themselves exist: without this, growing a wire body
+  // meant either rebuilding it from scratch via one giant WireBody() call
+  // with every curve up front, or bolting curves on one at a time through
+  // repeated MakeEdgeVertex() calls (which only ever attaches to a single
+  // EXISTING vertex the caller already knows the index of - no welding
+  // between several NEW curves' own endpoints in the same call, the exact
+  // thing WireBody() itself already does for a fresh body).
+  //
+  // A new curve endpoint within `tolerance` of an already-live vertex in
+  // this Brep - whether it came from an earlier WireBody()/
+  // AddWireCurves() call, MakeEdgeVertex(), or an ordinary face-bordering
+  // vertex on a completely unrelated solid - welds onto it rather than
+  // duplicating, the same "coincident points share one vertex" rule
+  // WireBody() itself already uses; only after checking every vertex this
+  // Brep already had BEFORE this call does welding fall back to a vertex
+  // placed earlier in this SAME `curves` call, matching WireBody()'s own
+  // left-to-right, deterministic (not a race) processing order. This is a
+  // strict generalization of MakeEdgeVertex() (one new vertex/edge
+  // attached to one caller-named EXISTING vertex) to many curves welded
+  // against each other AND against this Brep's own existing vertices in
+  // one call - so it is equally correct for growing a wire body, or for
+  // attaching a batch of wire spurs onto a Brep that also has faces (nothing
+  // here requires IsWireBody() to already be true).
+  //
+  // Every edge this produces is indistinguishable in shape from one
+  // WireBody() or MakeEdgeVertex() itself would have made (TrimCount() ==
+  // 0; Check() reports it NakedEdge with other_index == 0).
+  //
+  // Throws std::invalid_argument under the exact same conditions
+  // WireBody() does (empty `curves`, a degenerate curve, or an open curve
+  // with coincident-but-not-IsClosed() endpoints) - every curve is
+  // validated before anything is built, so a single bad curve anywhere in
+  // `curves` leaves this Brep completely untouched (no partial edit).
+  struct AddWireCurvesResult {
+    std::vector<int> edge_indices;         // one per entry in `curves`, same order
+    std::vector<int> new_vertex_indices;   // vertices actually created (a weld onto an already-live vertex adds none)
+  };
+  AddWireCurvesResult AddWireCurves(const std::vector<NurbsCurve>& curves, double tolerance = tolerance::kDistance);
+
   // MEF ("Make Edge, Face"): splits `face_index`'s own single outer loop
   // into two loops by inserting one new straight edge between two of its
   // EXISTING, non-adjacent vertices (a genuine polygon diagonal - no new
