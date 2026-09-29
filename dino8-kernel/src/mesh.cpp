@@ -3023,6 +3023,19 @@ bool IsDegenerateFace(const ON_Mesh& mesh, const ON_MeshFace& f, double toleranc
   return shortest <= tolerance || height <= tolerance;
 }
 
+// The one vertex of triangle `f` that is neither `p` nor `q` -
+// TrisToQuads()'s own per-candidate lookup for "this triangle's apex
+// away from the shared edge." Only meaningful when `f` is a genuine
+// triangle (every call site below checks `!IsQuad()` first) and both
+// `p` and `q` are among its 3 distinct vertex indices (both are, since
+// every call site derives `p`/`q` from `f`'s own walked edges).
+int ThirdTriangleVertex(const ON_MeshFace& f, int p, int q) {
+  for (int k = 0; k < 3; ++k) {
+    if (f.vi[k] != p && f.vi[k] != q) return f.vi[k];
+  }
+  return -1;
+}
+
 // A face's identity independent of vertex order or winding direction:
 // the lexicographically smallest of all 2n rotations (n forward + n
 // reversed, n = 3 or 4) of its vertex-index sequence. Two faces are the
@@ -3508,6 +3521,108 @@ int Mesh::UnifyNormals() {
     mesh_.m_FN.Destroy();
   }
   return flipped;
+}
+
+int Mesh::TrisToQuads(double max_dihedral_deg) {
+  const int n = mesh_.m_F.Count();
+  if (n < 2) return 0;
+
+  // Every triangle face's participation in each undirected edge - a
+  // quad's own edges, and any edge already non-manifold, are excluded
+  // up front since they can never be a merge candidate.
+  std::map<std::pair<int, int>, std::vector<int>> tri_faces_of_edge;
+  for (int i = 0; i < n; ++i) {
+    if (mesh_.m_F[i].IsQuad()) continue;
+    ForEachDirectedEdge(mesh_.m_F[i], [&](int a, int b) { tri_faces_of_edge[std::minmax(a, b)].push_back(i); });
+  }
+
+  struct Candidate {
+    int face_a, face_b;
+    int q0, q1, q2, q3;
+    double score;
+  };
+  std::vector<Candidate> candidates;
+  const double max_dihedral_rad = std::max(0.0, max_dihedral_deg) * ON_PI / 180.0;
+
+  for (const auto& [edge, faces] : tri_faces_of_edge) {
+    if (faces.size() != 2) continue;
+    const int fi = faces[0], fj = faces[1];
+    const ON_MeshFace& tri_i = mesh_.m_F[fi];
+    const ON_MeshFace& tri_j = mesh_.m_F[fj];
+
+    // The edge's own walked direction in tri_i; a consistently-wound
+    // manifold pair walks it the opposite way in tri_j.
+    int a = -1, b = -1;
+    ForEachDirectedEdge(tri_i, [&](int x, int y) {
+      if (x == edge.first && y == edge.second) { a = x; b = y; }
+      else if (x == edge.second && y == edge.first) { a = x; b = y; }
+    });
+    bool opposite = false;
+    ForEachDirectedEdge(tri_j, [&](int x, int y) { if (x == b && y == a) opposite = true; });
+    if (a < 0 || !opposite) continue;
+
+    const int c = ThirdTriangleVertex(tri_i, a, b);
+    const int d = ThirdTriangleVertex(tri_j, a, b);
+    if (c < 0 || d < 0 || c == d) continue;
+
+    const Point3d pa(mesh_.m_V[a]), pb(mesh_.m_V[b]), pc(mesh_.m_V[c]), pd(mesh_.m_V[d]);
+    Vector3d ni = ON_CrossProduct(pb - pa, pc - pa);
+    Vector3d nj = ON_CrossProduct(pa - pb, pd - pb);
+    if (!ni.Unitize() || !nj.Unitize()) continue;  // degenerate triangle: no normal
+    const double cos_angle = std::max(-1.0, std::min(1.0, ON_DotProduct(ni, nj)));
+    const double dihedral = std::acos(cos_angle);
+    if (dihedral > max_dihedral_rad) continue;
+
+    // Merged quad boundary, dropping the shared edge as the implicit
+    // diagonal: a -> d -> b -> c -> a (see TrisToQuads()'s own doc
+    // comment in mesh.h for the derivation).
+    const int q[4] = {a, d, b, c};
+    Vector3d qn = ni + nj;
+    if (!qn.Unitize()) continue;
+    bool convex = true;
+    for (int k = 0; k < 4 && convex; ++k) {
+      const Point3d p0(mesh_.m_V[q[(k + 3) % 4]]);
+      const Point3d p1(mesh_.m_V[q[k]]);
+      const Point3d p2(mesh_.m_V[q[(k + 1) % 4]]);
+      const Vector3d cr = ON_CrossProduct(p1 - p0, p2 - p1);
+      if (ON_DotProduct(cr, qn) < -tolerance::kZeroVector) convex = false;
+    }
+    if (!convex) continue;
+
+    candidates.push_back({fi, fj, q[0], q[1], q[2], q[3], dihedral});
+  }
+
+  std::sort(candidates.begin(), candidates.end(), [](const Candidate& x, const Candidate& y) { return x.score < y.score; });
+
+  std::vector<char> consumed(static_cast<size_t>(n), 0);
+  std::vector<char> absorbed(static_cast<size_t>(n), 0);
+  std::map<int, ON_MeshFace> merged_quad;
+  int merged = 0;
+  for (const Candidate& cand : candidates) {
+    if (consumed[static_cast<size_t>(cand.face_a)] || consumed[static_cast<size_t>(cand.face_b)]) continue;
+    consumed[static_cast<size_t>(cand.face_a)] = consumed[static_cast<size_t>(cand.face_b)] = 1;
+    absorbed[static_cast<size_t>(cand.face_b)] = 1;
+    ON_MeshFace qf;
+    qf.vi[0] = cand.q0;
+    qf.vi[1] = cand.q1;
+    qf.vi[2] = cand.q2;
+    qf.vi[3] = cand.q3;
+    merged_quad[cand.face_a] = qf;
+    ++merged;
+  }
+  if (merged == 0) return 0;
+
+  ON_SimpleArray<ON_MeshFace> new_faces;
+  for (int i = 0; i < n; ++i) {
+    if (absorbed[static_cast<size_t>(i)]) continue;
+    const auto it = merged_quad.find(i);
+    new_faces.Append(it != merged_quad.end() ? it->second : mesh_.m_F[i]);
+  }
+  mesh_.m_F = new_faces;
+  mesh_.m_S.Destroy();
+  mesh_.m_N.Destroy();
+  mesh_.m_FN.Destroy();
+  return merged;
 }
 
 Mesh Mesh::Offset(double distance) const {

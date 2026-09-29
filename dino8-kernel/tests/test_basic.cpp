@@ -11865,6 +11865,180 @@ void TestMeshRemoveDuplicateFacesKeepsOneCopyPerPolygon() {
         "the SURVIVING copy is the first occurrence (0,1,2), not one of the later duplicates");
 }
 
+// Mesh-level TrisToQuads(): a tessellated box (12 triangles, 2 per face,
+// each pair coplanar with its own diagonal, adjacent faces meeting at a
+// real 90deg cube edge) is the natural fixture - the 6 diagonal pairs
+// each score a perfect 0deg dihedral, strictly better than any 90deg
+// cross-face pair, so a correct greedy merge recombines each face's own
+// 2 triangles back into exactly the 6 original quads, never crossing a
+// real cube edge, at TrisToQuads()'s own default 20deg threshold.
+void TestMeshTrisToQuadsRecombinesTessellatedBoxFaces() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+
+  Mesh m = Brep::Box(1, 1, 1, 2, 2, 2).TessellateToClosedMesh(1, 1);
+  Check(m.FaceCount() == 12 && m.VertexCount() == 8, "sanity: 1x1 tessellation of a box is 12 triangles over 8 corners");
+
+  const int merged = m.TrisToQuads();
+  Check(merged == 6, "all 6 box faces recombine into quads - the 6 diagonal (0deg) pairs beat every 90deg cube-edge pair");
+  Check(m.FaceCount() == 6, "12 triangles became exactly 6 faces");
+  Check(m.VertexCount() == 8, "TrisToQuads() moves no vertex and adds/removes none - still the 8 original corners");
+
+  int quad_count = 0;
+  for (int i = 0; i < m.FaceCount(); ++i) {
+    if (m.raw().m_F[i].IsQuad()) ++quad_count;
+  }
+  Check(quad_count == 6, "every surviving face is a genuine 4-distinct-vertex quad, not a triangle in quad's clothing");
+
+  Check(m.IsClosedManifold(), "merging away only interior diagonals leaves the box a closed manifold");
+  Check(std::fabs(m.Volume() - 1.0) < 1e-9, "...with its exact original volume 1 (1x1x1 box)");
+  Check(std::fabs(m.Area() - 6.0) < 1e-9, "...and its exact original surface area 6");
+
+  Check(m.TrisToQuads() == 0, "a second call is a no-op - no triangles left to pair");
+}
+
+// Two triangles sharing edge a-b, hinged like a tent by angle theta
+// (apex d on the opposite side from apex c, so the pair is always a
+// SIMPLE, non-self-intersecting quad regardless of theta - only the
+// dihedral-angle gate is under test here, not convexity). A small fold
+// (5deg) merges at TrisToQuads()'s own default 20deg threshold; a right-
+// angle fold (90deg) is refused at that default but accepted once the
+// caller explicitly raises the threshold past 90deg.
+void TestMeshTrisToQuadsGatesOnDihedralAngle() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+
+  auto make_tent = [](double theta_deg) {
+    Mesh m;
+    ON_Mesh& raw = m.raw();
+    const double theta = theta_deg * 3.14159265358979323846 / 180.0;
+    raw.m_V.Append(ON_3fPoint(0, 0, 0));                                             // 0 = a
+    raw.m_V.Append(ON_3fPoint(1, 0, 0));                                             // 1 = b
+    raw.m_V.Append(ON_3fPoint(0.5f, 1.0f, 0.0f));                                    // 2 = c (triangle i apex)
+    raw.m_V.Append(ON_3fPoint(0.5f, static_cast<float>(-std::cos(theta)), static_cast<float>(std::sin(theta))));  // 3 = d
+    ON_MeshFace fi;
+    fi.vi[0] = 0; fi.vi[1] = 1; fi.vi[2] = 2; fi.vi[3] = 2;  // (a, b, c)
+    raw.m_F.Append(fi);
+    ON_MeshFace fj;
+    fj.vi[0] = 1; fj.vi[1] = 0; fj.vi[2] = 3; fj.vi[3] = 3;  // (b, a, d)
+    raw.m_F.Append(fj);
+    return m;
+  };
+
+  {
+    Mesh m = make_tent(5.0);
+    Check(m.TrisToQuads() == 1, "a shallow 5deg fold merges at the default 20deg threshold");
+    Check(m.FaceCount() == 1 && m.raw().m_F[0].IsQuad(), "...into one genuine quad");
+    const ON_MeshFace& q = m.raw().m_F[0];
+    Check(q.vi[0] == 0 && q.vi[1] == 3 && q.vi[2] == 1 && q.vi[3] == 2,
+          "the merged quad walks (a, d, b, c) - the shared edge dropped as the implicit diagonal");
+  }
+  {
+    Mesh m = make_tent(90.0);
+    Check(m.TrisToQuads() == 0, "a 90deg fold is refused at the default 20deg threshold");
+    Check(m.FaceCount() == 2, "...left as the original 2 triangles");
+  }
+  {
+    Mesh m = make_tent(90.0);
+    Check(m.TrisToQuads(100.0) == 1, "the same 90deg fold merges once the caller raises the threshold past 90deg");
+    Check(m.FaceCount() == 1 && m.raw().m_F[0].IsQuad(), "...into one quad");
+  }
+}
+
+// Two coplanar (0deg dihedral) triangles sharing edge a-b whose apexes
+// c and d are BOTH still on opposite sides of ab (a valid, consistently-
+// wound manifold pair - required by TrisToQuads()'s own opposite-
+// direction check), but d sits far enough off to one side that the
+// merged (a, d, b, c) polygon is self-intersecting/non-convex rather
+// than a simple quad - the dihedral gate alone (0deg, the best possible
+// score) would happily accept this pair, so this specifically exercises
+// the separate convexity guard.
+void TestMeshTrisToQuadsRefusesNonConvexMerge() {
+  using dino8::kernel::Mesh;
+
+  Mesh m;
+  ON_Mesh& raw = m.raw();
+  raw.m_V.Append(ON_3fPoint(0, 0, 0));    // 0 = a
+  raw.m_V.Append(ON_3fPoint(4, 0, 0));    // 1 = b
+  raw.m_V.Append(ON_3fPoint(2, 2, 0));    // 2 = c (triangle i apex)
+  raw.m_V.Append(ON_3fPoint(-3, -1, 0));  // 3 = d (triangle j apex, off to one side)
+  ON_MeshFace fi;
+  fi.vi[0] = 0; fi.vi[1] = 1; fi.vi[2] = 2; fi.vi[3] = 2;  // (a, b, c)
+  raw.m_F.Append(fi);
+  ON_MeshFace fj;
+  fj.vi[0] = 1; fj.vi[1] = 0; fj.vi[2] = 3; fj.vi[3] = 3;  // (b, a, d)
+  raw.m_F.Append(fj);
+
+  Check(m.TrisToQuads() == 0, "a perfectly flat (0deg) but non-convex merge is still refused");
+  Check(m.FaceCount() == 2, "...left as the original 2 triangles, untouched");
+}
+
+// 3 spatially disjoint flat unit squares (no shared vertex or edge
+// between any two of them), each split into 2 triangles along its own
+// diagonal - the ONLY shared-edge candidate for each pair is that one
+// diagonal (every other edge of every triangle is naked, count 1), so
+// the merge is forced and unambiguous per square, independent of merge
+// order: this exercises TrisToQuads() finding and applying several
+// independent merges in one call, not just a single isolated pair, with
+// the mesh's own total area, vertex count, and naked-edge boundary all
+// unchanged by the regrouping.
+void TestMeshTrisToQuadsMergesSeveralIndependentSquaresInOneCall() {
+  using dino8::kernel::Mesh;
+
+  Mesh m;
+  ON_Mesh& raw = m.raw();
+  auto add_tri = [&](int a, int b, int c) {
+    ON_MeshFace f;
+    f.vi[0] = a; f.vi[1] = b; f.vi[2] = c; f.vi[3] = c;
+    raw.m_F.Append(f);
+  };
+  for (int s = 0; s < 3; ++s) {
+    const float ox = static_cast<float>(10 * s);
+    const int base = raw.m_V.Count();
+    raw.m_V.Append(ON_3fPoint(ox + 0, 0, 0));
+    raw.m_V.Append(ON_3fPoint(ox + 1, 0, 0));
+    raw.m_V.Append(ON_3fPoint(ox + 1, 1, 0));
+    raw.m_V.Append(ON_3fPoint(ox + 0, 1, 0));
+    add_tri(base + 0, base + 1, base + 2);
+    add_tri(base + 0, base + 2, base + 3);
+  }
+  Check(m.FaceCount() == 6 && m.VertexCount() == 12, "sanity: 3 disjoint unit squares split into 6 triangles over 12 vertices");
+  const double area_before = m.Area();
+  const int naked_before = m.Check().naked_edges;
+
+  const int merged = m.TrisToQuads();
+  Check(merged == 3, "each disjoint square's own diagonal is its only candidate - all 3 merge, unambiguously");
+  Check(m.FaceCount() == 3, "6 triangles became exactly 3 faces");
+  int quad_count = 0;
+  for (int i = 0; i < m.FaceCount(); ++i) if (m.raw().m_F[i].IsQuad()) ++quad_count;
+  Check(quad_count == 3, "...and all 3 are genuine quads");
+  Check(m.VertexCount() == 12, "no vertex added, moved, or removed");
+  Check(std::fabs(m.Area() - area_before) < 1e-9, "total area is exactly unchanged - only interior diagonals disappeared");
+  Check(m.Check().naked_edges == naked_before, "every square's own outer boundary is exactly unchanged");
+}
+
+// Two triangles sharing an edge whose OWN third vertices coincide (the
+// "same triangle twice, one flipped" degenerate case) must be refused,
+// not merged into a fake 3-distinct-vertex quad.
+void TestMeshTrisToQuadsRefusesCoincidentApexes() {
+  using dino8::kernel::Mesh;
+
+  Mesh m;
+  ON_Mesh& raw = m.raw();
+  raw.m_V.Append(ON_3fPoint(0, 0, 0));  // 0 = a
+  raw.m_V.Append(ON_3fPoint(1, 0, 0));  // 1 = b
+  raw.m_V.Append(ON_3fPoint(0, 1, 0));  // 2 = c == d
+  ON_MeshFace fi;
+  fi.vi[0] = 0; fi.vi[1] = 1; fi.vi[2] = 2; fi.vi[3] = 2;  // (a, b, c)
+  raw.m_F.Append(fi);
+  ON_MeshFace fj;
+  fj.vi[0] = 1; fj.vi[1] = 0; fj.vi[2] = 2; fj.vi[3] = 2;  // (b, a, c) - same apex as triangle i
+  raw.m_F.Append(fj);
+
+  Check(m.TrisToQuads() == 0, "two triangles sharing both their edge AND their apex are refused, not merged");
+  Check(m.FaceCount() == 2, "...left as the original 2 (duplicate) triangles");
+}
+
 // Builds a single flat unit-square quad face at z=0, wound CCW when
 // viewed from +Z (vertices (0,0,0),(1,0,0),(1,1,0),(0,1,0)) - the
 // simplest possible fixture with an exact, hand-derivable vertex normal
@@ -44410,6 +44584,11 @@ int main() {
   TestMeshCloseNakedEdgesWeldsDuplicateAndOffsetVertices();
   TestMeshRemoveDegenerateFacesDropsOnlyDegenerateOnes();
   TestMeshRemoveDuplicateFacesKeepsOneCopyPerPolygon();
+  TestMeshTrisToQuadsRecombinesTessellatedBoxFaces();
+  TestMeshTrisToQuadsGatesOnDihedralAngle();
+  TestMeshTrisToQuadsRefusesNonConvexMerge();
+  TestMeshTrisToQuadsMergesSeveralIndependentSquaresInOneCall();
+  TestMeshTrisToQuadsRefusesCoincidentApexes();
   TestMeshOffsetMovesVerticesAlongExactVertexNormal();
   TestMeshThickenBuildsExactUnitCubeFromFlatSquare();
   TestMeshFindOffsetSelfIntersectionsDetectsGenuineFold();

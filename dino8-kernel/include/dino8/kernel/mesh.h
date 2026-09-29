@@ -906,6 +906,53 @@ class Mesh {
   // outward.
   int UnifyNormals();
 
+  // Greedily pairs adjacent triangles across a shared interior edge into
+  // one native ON_Mesh quad face (`vi[2] != vi[3]`), the standard "tris
+  // to quads" local remesh (the same operation Blender's own Tris to
+  // Quads menu item performs) - a real, if deliberately narrow, answer
+  // to this kernel's own "no quad-dominant remesher" gap: nothing here
+  // could turn an all-triangle mesh (the shape every tessellator in this
+  // kernel already produces) into a mostly-quad one before this existed.
+  //
+  // For each undirected edge shared by exactly two TRIANGLE faces (an
+  // edge already bordering an existing quad, a naked edge, or a non-
+  // manifold edge is never a candidate), the merged quad's vertex order
+  // is `(a, d, b, c)` where `a`/`b` are the shared edge's own two
+  // vertices and `c`/`d` are the two triangles' own third vertices -
+  // dropping the shared edge as the quad's implicit diagonal. A
+  // candidate is refused (left as two separate triangles) when: the two
+  // triangles don't walk the shared edge in opposite directions (an
+  // orientation-inconsistent pair - run UnifyNormals() first); either
+  // triangle is degenerate (zero-area, so no normal exists); the
+  // dihedral angle between the two triangles' own normals exceeds
+  // `max_dihedral_deg` (keeps merged quads reasonably flat rather than a
+  // folded bowtie); the resulting quad would be non-convex (a reflex
+  // vertex, checked via consecutive edge cross products against the
+  // pair's own averaged normal); or the two triangles' third vertices
+  // coincide (a degenerate "quad" that is really the same triangle
+  // twice). Every valid candidate is scored by its own dihedral angle
+  // (lower is better - closer to perfectly flat) and applied greedily
+  // best-first, each triangle merged into at most one quad, so a locally
+  // better merge elsewhere doesn't get blocked by a worse one claimed
+  // first.
+  //
+  // Purely a face-list rewrite: no vertex is added, moved, or removed
+  // (every quad's 4 vertices are 4 of the original mesh's own vertices),
+  // so the mesh's naked-edge boundary, volume, and IsClosedManifold()
+  // status are all unaffected - only interior triangle-triangle
+  // diagonals disappear. Returns the number of quads created; 0 means
+  // the mesh is unchanged. Honestly NOT a general quad-dominant
+  // remesher: this only ever merges two EXISTING adjacent triangles as-
+  // is, with no vertex relocation, global flow-field alignment, or
+  // singularity placement - the materially bigger "retopology" problem
+  // dino8-app's own QuadRemesh command solves at the application level
+  // via volumetric dual contouring (geom/Remesh.h), which this does not
+  // attempt to replace or match in quality; a mesh whose triangles are
+  // already irregular (very unequal sizes, sliver-heavy) still produces
+  // an irregular quad mesh, since nothing here retriangulates or moves a
+  // single vertex first.
+  int TrisToQuads(double max_dihedral_deg = 20.0);
+
   // Moves every vertex by `distance` along its own ComputeVertexNormals()
   // direction (the standard area-weighted, per-triangle-contribution
   // vertex normal that method already computes) - the mesh-level
