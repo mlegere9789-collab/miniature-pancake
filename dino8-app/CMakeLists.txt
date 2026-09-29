@@ -590,6 +590,20 @@ if(DINO8_BUILD_TESTS)
   target_include_directories(dino8_test_accessibility_tree PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   add_test(NAME dino8_accessibility_tree COMMAND dino8_test_accessibility_tree)
 
+  # Key-coverage check for the i18n language tables (data/i18n/*.json):
+  # every hand-translated language must define every key en.json defines,
+  # except es.json's one documented deliberate gap (panel.imgui_demo, kept
+  # missing on purpose so I18nSelfTest/smoke.sh has a real fallback case to
+  # exercise). Guards against a language file quietly falling behind as new
+  # UI-chrome keys are added to en.json - exactly the kind of silent drift
+  # that let fr.json/de.json/es.json fall behind before ja.json (Japanese)
+  # was added as the fourth real, hand-translated language. Dependency-free
+  # like dino8_test_aci_palette/dino8_test_plugin_marketplace: no live
+  # app::Application, just json_mini over the real data files.
+  add_executable(dino8_test_i18n_coverage tests/test_i18n_coverage.cpp src/util/json_mini.cpp)
+  target_include_directories(dino8_test_i18n_coverage PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  add_test(NAME dino8_i18n_coverage COMMAND dino8_test_i18n_coverage ${CMAKE_CURRENT_SOURCE_DIR}/data/i18n)
+
   # Numerically verifies VariableBlendSrf's own claim (cmd_fillet.cpp's
   # VariableBlendSrfCommand): that BuildBlendSurfaceG1/G2's new
   # width_frac_at hook makes the blend's cross-section width genuinely

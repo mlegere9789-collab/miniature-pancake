@@ -1,0 +1,144 @@
+// Key-coverage test for the i18n language tables (data/i18n/*.json, loaded
+// by src/i18n/I18n.cpp). English (en.json) is the reference key set: every
+// other hand-translated language must define every key en.json defines, so
+// that Tr()'s English fallback (see I18n.cpp) is only ever exercised by a
+// key nobody has translated yet, not by a language file that quietly fell
+// behind as new UI-chrome keys were added to en.json.
+//
+// es.json is the one documented exception: it deliberately omits
+// "panel.imgui_demo" to give I18nSelfTest (src/commands/cmd_state.cpp) and
+// tests/smoke.sh's i18n section a real missing-key fallback to exercise.
+// Every other language - fr.json, de.json, and ja.json (Japanese) - must
+// have zero missing keys.
+//
+// This is a "did a language quietly drift behind en.json" regression
+// guard: en.json gaining new keys (panel.activity_log, panel.block_manager,
+// panel.mapping_widget, panel.uv_editor, panel.whats_new, and
+// panel.plugin_marketplace) without every *.json file being updated to
+// match is exactly the kind of silent gap this test exists to catch.
+#include <cstdio>
+#include <fstream>
+#include <set>
+#include <sstream>
+#include <string>
+
+#include "util/json_mini.h"
+
+namespace {
+int failures = 0;
+void Check(bool ok, const std::string& what) {
+  std::printf("%s %s\n", ok ? "ok  " : "FAIL", what.c_str());
+  if (!ok) ++failures;
+}
+
+bool LoadObject(const std::string& path, dino8::json::Value& out) {
+  std::ifstream in(path, std::ios::binary);
+  if (!in) return false;
+  std::stringstream buf;
+  buf << in.rdbuf();
+  std::string err;
+  return dino8::json::Parse(buf.str(), out, err) && out.IsObject();
+}
+
+std::set<std::string> StringKeys(const dino8::json::Value& obj) {
+  std::set<std::string> keys;
+  for (const auto& [key, value] : obj.object) {
+    if (key == "_language_name") continue;
+    if (value.IsString()) keys.insert(key);
+  }
+  return keys;
+}
+}  // namespace
+
+int main(int argc, char** argv) {
+  if (argc < 2) {
+    std::fprintf(stderr, "usage: %s <path-to-data/i18n>\n", argv[0]);
+    return 1;
+  }
+  const std::string dir = argv[1];
+
+  dino8::json::Value en_root;
+  Check(LoadObject(dir + "/en.json", en_root), "en.json parses as a JSON object");
+  const std::set<std::string> en_keys = StringKeys(en_root);
+  {
+    char label[128];
+    std::snprintf(label, sizeof(label), "en.json defines a non-trivial key set (%zu keys)", en_keys.size());
+    Check(en_keys.size() > 100, label);
+  }
+
+  struct LangCase {
+    const char* code;
+    // Keys this language is allowed to be missing, on top of the reference
+    // set - empty for every language except the documented es.json gap.
+    std::set<std::string> allowed_missing;
+  };
+  const LangCase cases[] = {
+      {"fr", {}},
+      {"de", {}},
+      {"ja", {}},
+      {"es", {"panel.imgui_demo"}},
+  };
+
+  for (const LangCase& c : cases) {
+    dino8::json::Value root;
+    const std::string path = dir + "/" + c.code + ".json";
+    const bool parsed = LoadObject(path, root);
+    Check(parsed, std::string(c.code) + ".json parses as a JSON object");
+    if (!parsed) continue;
+
+    const std::set<std::string> lang_keys = StringKeys(root);
+
+    std::set<std::string> missing;
+    for (const std::string& key : en_keys)
+      if (!lang_keys.count(key)) missing.insert(key);
+
+    std::set<std::string> unexpectedly_missing;
+    for (const std::string& key : missing)
+      if (!c.allowed_missing.count(key)) unexpectedly_missing.insert(key);
+
+    std::string label = std::string(c.code) + ".json covers every en.json key";
+    if (!c.allowed_missing.empty()) label += " except the documented deliberate gap";
+    label += " (" + std::to_string(unexpectedly_missing.size()) + " unexpected gaps)";
+    Check(unexpectedly_missing.empty(), label);
+
+    for (const std::string& key : c.allowed_missing) {
+      std::string still_missing_label =
+          std::string(c.code) + ".json still deliberately omits '" + key + "' (documented fallback case)";
+      Check(missing.count(key) == 1, still_missing_label);
+    }
+
+    // No language file should carry a stray key en.json doesn't have -
+    // that would mean either a typo (never looked up by Tr()) or a key
+    // that was renamed in en.json but not everywhere else.
+    std::set<std::string> extra;
+    for (const std::string& key : lang_keys)
+      if (!en_keys.count(key)) extra.insert(key);
+    Check(extra.empty(), std::string(c.code) + ".json defines no keys absent from en.json (" +
+                              std::to_string(extra.size()) + " stray keys)");
+
+    const auto& name_value = root["_language_name"];
+    Check(name_value.IsString() && !name_value.AsString().empty(),
+          std::string(c.code) + ".json has a non-empty _language_name");
+  }
+
+  // The headline deliverable: Japanese is a fourth complete, hand-
+  // translated language, matching en.json's key set exactly (not just
+  // "mostly", the way a machine-generated stub might partially cover it).
+  {
+    dino8::json::Value ja_root;
+    Check(LoadObject(dir + "/ja.json", ja_root), "ja.json exists and parses");
+    if (LoadObject(dir + "/ja.json", ja_root)) {
+      const std::set<std::string> ja_keys = StringKeys(ja_root);
+      char label[160];
+      std::snprintf(label, sizeof(label), "ja.json defines exactly en.json's key set (%zu keys, 0 missing, 0 extra)",
+                    ja_keys.size());
+      Check(ja_keys == en_keys, label);
+      Check(ja_root["_language_name"].AsString("") == "\xe6\x97\xa5\xe6\x9c\xac\xe8\xaa\x9e",
+            "ja.json's _language_name is the Japanese word for Japanese (\xe6\x97\xa5\xe6\x9c\xac\xe8\xaa\x9e)");
+    }
+  }
+
+  if (failures) std::printf("%d FAILED\n", failures);
+  else std::printf("all passed\n");
+  return failures ? 1 : 0;
+}
