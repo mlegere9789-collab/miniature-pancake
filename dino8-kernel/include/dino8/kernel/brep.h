@@ -844,7 +844,25 @@ class Brep {
   // (capped: volume pi r^2 L up to tessellation chord error); a closed
   // rail gives a closed tube. Throws std::invalid_argument for a
   // non-positive radius.
-  static Brep Pipe(const NurbsCurve& rail, double radius, bool cap = true, int stations = 32);
+  //
+  // `round_caps` replaces the two flat disc caps `cap` alone would give
+  // with genuine hemispherical dome caps (Rhino Pipe's own "round" cap
+  // style; AutoCAD has no equivalent) - a true capsule for a straight
+  // rail, not a resample: each dome is a real rational NURBS sphere
+  // patch built the SAME way ON_Circle::GetNurbForm()'s own quarter-arc
+  // construction builds a circle (see AddDomeCap()'s own comment in
+  // sweep.cpp for the closed-form derivation and its proof that every
+  // latitude of the resulting surface is an exact circle, not merely
+  // one sampled to tolerance), sharing the tube's own end edge exactly
+  // rather than being welded to it after the fact. Requires `cap` and
+  // throws std::invalid_argument if `cap` is false, if `rail` is closed
+  // (a closed tube has no ends to dome), or if `stations` < 2. Still
+  // partial: does not extend to PipeVariable()/PipeThickWalled(), and a
+  // sharply kinked (C1-discontinuous) rail is not specially handled -
+  // each dome's outward direction comes from the rail's own single end
+  // tangent alone, exactly as the flat-cap case already relies on.
+  static Brep Pipe(const NurbsCurve& rail, double radius, bool cap = true, int stations = 32,
+                   bool round_caps = false);
 
   // PipeVariable: like Pipe(), but the radius varies along the rail per
   // `radius_points` - (t, radius) pairs where `t` is the fraction, in
@@ -3973,6 +3991,20 @@ class Brep {
   // this class's own private side tables, which only this method can see).
   bool FaceCoversWholeDomain(int face_index) const;
 
+  // AssembleSweptBody()'s own round-cap parameter (src/sweep.cpp): the
+  // exact circle center/radius and outward pole direction of a
+  // hemispherical dome cap, already known by the caller (Pipe(), which
+  // built the circular section at that exact center/radius/frame in the
+  // first place) rather than re-derived, approximately or otherwise,
+  // from the wall's own boundary curve. Public only because AddDomeCap()
+  // (an anonymous-namespace free function in sweep.cpp) needs it; there
+  // is no public entry point that takes one directly.
+  struct RoundCapSpec {
+    Point3d center;
+    Vector3d pole;  // unit vector from `center` to the dome's own apex
+    double radius = 0.0;
+  };
+
  private:
   // Clears every per-face side table (face_trim_loops_ and its siblings
   // below) - what every topology-surgery method here must do first; see
@@ -4010,9 +4042,17 @@ class Brep {
   // motion is never periodic in an individual coordinate over the whole
   // sweep), so every other caller passes neither and keeps the original
   // derivative-based behavior exactly.
+  // `round_v0`/`round_v1`, when non-null, replace the flat fan cap that
+  // end would otherwise get with a hemispherical dome (Pipe()'s own
+  // `round_caps` option) - see AddDomeCap()'s doc comment in
+  // sweep.cpp. Only meaningful together with `cap_v0`/`cap_v1` on a
+  // non-chord (section not touching the axis) end; every other caller
+  // passes neither and keeps the existing flat-fan-or-nothing behavior
+  // exactly.
   static Brep AssembleSweptBody(ON_NurbsSurface* wall, bool cap_v0, bool cap_v1, bool cap_u0, bool cap_u1,
                                 const char* caller, const Vector3d* cap_v0_outward_hint = nullptr,
-                                const Vector3d* cap_v1_outward_hint = nullptr);
+                                const Vector3d* cap_v1_outward_hint = nullptr,
+                                const RoundCapSpec* round_v0 = nullptr, const RoundCapSpec* round_v1 = nullptr);
   // Parallel to brep_.m_F: face_trim_loops_[i] is empty for an untrimmed
   // face, or the trim polygon for a face built by TrimmedPlanarFace().
   // Every face-adding factory must keep this in lockstep with brep_.m_F.

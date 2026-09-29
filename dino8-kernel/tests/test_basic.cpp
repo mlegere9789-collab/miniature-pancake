@@ -35989,6 +35989,64 @@ void TestSweep1AndPipe() {
   Check(Throws([&] { Brep::Sweep1(square, rail, 1); }), "fewer than 2 stations throws");
 }
 
+void TestPipeRoundCaps() {
+  const double r = 1.0;
+  // Straight rail: an exact capsule (cylinder + 2 exact hemispheres).
+  const NurbsCurve line = Polyline({P(0, 0, 0), P(10, 0, 0)});
+  const Brep capsule = Brep::Pipe(line, r, /*cap=*/true, 4, /*round_caps=*/true);
+  CheckSolidTopology(capsule, 3, "round-capped pipe along a straight line");
+  const double capsule_volume = M_PI * r * r * 10.0 + (4.0 / 3.0) * M_PI * r * r * r;
+  // dv = 32 (not the flat-cap pipe's own dv = 4): a curved dome's chord-
+  // faceted tessellation needs real latitude resolution to converge on
+  // the closed form the way a flat fan's does at any resolution at all.
+  CheckClosedMeshVolume(capsule, 64, 32, capsule_volume, 0.01, "straight round-capped pipe (capsule)");
+
+  // Every point of both dome faces lies at EXACTLY radius r from its own
+  // end center - the direct check that AddDomeCap() built a true sphere
+  // patch, not merely something shaped roughly like one.
+  {
+    const Point3d center0(0, 0, 0), center1(10, 0, 0);
+    double worst = 0.0;
+    for (int face_index : {1, 2}) {
+      const NurbsSurface dome = FaceSurface(capsule, face_index);
+      const ON_Interval du = dome.raw().Domain(0), dv = dome.raw().Domain(1);
+      const Point3d center = (face_index == 1) ? center0 : center1;
+      for (int i = 0; i <= 16; ++i) {
+        for (int j = 0; j <= 16; ++j) {
+          const Point3d p = dome.PointAt(du.ParameterAt(i / 16.0), dv.ParameterAt(j / 16.0));
+          worst = std::max(worst, std::abs(p.DistanceTo(center) - r));
+        }
+      }
+    }
+    Check(worst < 1e-9, "every sampled dome point lies at exactly radius r from its own end center");
+  }
+
+  // Volume-differencing argument, independent of rail shape: swapping a
+  // flat disc cap for a hemispherical dome adds EXACTLY the hemisphere's
+  // own volume (2/3 pi r^3 per end) on top of the flat-capped body's own
+  // volume, since the dome sits entirely outside the flat cap's own
+  // plane and shares its rim exactly - true for ANY rail, not just a
+  // straight one, since the two bodies are otherwise identical.
+  auto CheckDomeAddsHemisphereVolume = [&](const NurbsCurve& rail, int stations, const char* what) {
+    const Brep flat = Brep::Pipe(rail, r, /*cap=*/true, stations, /*round_caps=*/false);
+    const Brep round = Brep::Pipe(rail, r, /*cap=*/true, stations, /*round_caps=*/true);
+    CheckSolidTopology(round, 3, what);
+    const double v_flat = flat.TessellateToClosedMesh(48, 48).Volume();
+    const double v_round = round.TessellateToClosedMesh(48, 48).Volume();
+    const double expected_delta = 2.0 * (2.0 / 3.0) * M_PI * r * r * r;
+    Check(std::abs((v_round - v_flat) - expected_delta) / expected_delta < 0.01,
+          (std::string(what) + ": round caps add exactly two hemisphere volumes over the flat-capped body").c_str());
+  };
+  CheckDomeAddsHemisphereVolume(line, 4, "straight rail");
+  const NurbsCurve arc = Arc(P(0, 0, 0), Vector3d(1, 0, 0), Vector3d(0, 1, 0), 4.0, 0.0, M_PI / 2);
+  CheckDomeAddsHemisphereVolume(arc, 16, "quarter-arc rail");
+
+  // Negative controls.
+  Check(Throws([&] { Brep::Pipe(line, r, /*cap=*/false, 4, /*round_caps=*/true); }), "round_caps requires cap");
+  Check(Throws([&] { Brep::Pipe(Circle(P(0, 0, 0), Vector3d(0, 0, 1), 4.0), r, true, 32, true); }),
+        "round_caps on a closed rail throws (no ends to dome)");
+}
+
 void TestSweep1TwistIsExactOnAStraightRailAndRejectsOnClosedRail() {
   // Straight rail along +z: RmfFrames' own initial-normal rule picks
   // r0 = (1, 0, 0) for tangent (0, 0, 1) (the world axis least aligned
@@ -42956,6 +43014,7 @@ int main() {
   sweep_tests::TestLoftInterpolatesSectionsExactly();
   sweep_tests::TestLoftTangentConstrainedEndsMatchExactly();
   sweep_tests::TestSweep1AndPipe();
+  sweep_tests::TestPipeRoundCaps();
   sweep_tests::TestSweep1TwistIsExactOnAStraightRailAndRejectsOnClosedRail();
   sweep_tests::TestSweep1ScaleIsExactContinuouslyOnAStraightRailAndRejectsOnClosedRail();
   sweep_tests::TestSweep1RoadlikeAlignmentMatchesExtrudeOnAStraightRailAndRejectsDegenerateUp();

@@ -1047,6 +1047,119 @@ CapEdges AddFanCap(ON_Brep& brep, ON_NurbsCurve boundary, int shared_edge, bool 
   return out;
 }
 
+// A hemispherical dome cap added to `brep`, sharing `shared_edge` -
+// exactly the same "apex-like row at v = 0 (south, singular), boundary
+// row at v = 1 (north, = `boundary` itself)" surface layout
+// FanSurface()/AddFanCap() already use for a flat fan (see AddFanCap()'s
+// own doc comment for the shared eid[2]/rev[2] wiring this reuses
+// verbatim - that wiring is a fact about ON_Brep::NewFace()'s own side-
+// index and reversal convention for a periodic-in-u untrimmed face,
+// confirmed directly against opennurbs_brep_tools.cpp's own
+// ON_Brep::NewOuterLoop(), and does not depend on whether the surface
+// between those two rows is straight (FanSurface) or curved (this one).
+//
+// Unlike a flat fan's single apex, a dome needs its meridian - the curve
+// from each point of `boundary` to the shared pole - to be an EXACT
+// quarter circle of `spec.radius`, not a straight line, for the result
+// to be a true sphere patch rather than a cone. This uses the SAME
+// closed-form 3-control-point rational-quadratic representation of a
+// 90-degree arc that ON_Circle::GetNurbForm() itself already relies on
+// (control points at the arc's two ends plus the intersection of their
+// two tangent lines, weights (1, cos(pi/4), 1)): for boundary CV i
+// (Euclidean point B_i, homogeneous weight w_i), the meridian's three
+// rows are
+//   v=0 (pole):   center + radius*pole,        weight w_i
+//   v=0.5 (corner): B_i + radius*pole,          weight w_i * cos(pi/4)
+//   v=1 (equator): B_i (== boundary's own CV i), weight w_i
+// - the tangent line at the equator point runs along `pole`'s own
+// direction (the meridian there is perpendicular to the radius, in the
+// plane the radius and `pole` span) and the tangent line at the pole
+// runs along the radius direction there, so their intersection is
+// exactly B_i + radius*pole, matching the standard construction.
+//
+// This is an EXACT hemisphere, not merely a fit, because expanding the
+// tensor-product surface algebraically (using corner = equator +
+// radius*pole and pole_cv = a FIXED point for every i, exactly
+// FanSurface()'s own "same apex point, different homogeneous weight per
+// column" trick) shows that for ANY fixed v, S(u, v) is a scaled and
+// pole-translated copy of `boundary`(u) itself - i.e. every latitude
+// line is an exactly scaled copy of the SAME curve `boundary` traces,
+// which is a true circle here since `boundary` is Pipe()'s own
+// ON_Circle::GetNurbForm() output (propagated, not re-derived, through
+// the wall's own v=0/v=1 iso-curve - a NURBS skin's boundary rows
+// reproduce their input section exactly, the same invariant every flat
+// chord cap above already relies on via IsoCurveOf(wall, ...)).
+//
+// `outward_hint` plays the same role as AddFanCap()'s own outward hint,
+// but the check here is numerical rather than closed-form: a flat fan's
+// native normal direction follows analytically from the boundary's
+// signed area about ONE plane, but a curved dome's true outward normal
+// varies over the surface (purely radial at the equator itself, which
+// is exactly why the equator is NOT where this checks - a radial vector
+// is orthogonal to `outward_hint`'s own roughly-axial direction there,
+// giving a useless near-zero dot product). A genuine mid-latitude point
+// (u, v) = (domain midpoint, 0.5) always has a nonzero component along
+// the pole direction (see this function's own git history for the
+// derivation), so checking the sign there and rebuilding from a
+// reversed `boundary` if it disagrees is both safe and sufficient - the
+// same "try it, check the sign, flip if needed" rule AddFanCap() itself
+// already applies, just decided numerically instead of in closed form.
+void AddDomeCap(ON_Brep& brep, ON_NurbsCurve boundary, int shared_edge, bool edge_forward, ON_3dVector outward_hint,
+                const Brep::RoundCapSpec& spec, const char* caller) {
+  const int n = boundary.CVCount();
+  const double corner_weight = std::sqrt(2.0) / 2.0;  // cos(pi/4): the standard 90-degree-arc corner weight
+  const ON_3dPoint pole = spec.center + spec.radius * spec.pole;
+
+  auto build = [&](const ON_NurbsCurve& b) {
+    auto s = std::make_unique<ON_NurbsSurface>();
+    if (!s->Create(3, /*is_rational=*/true, b.Order(), 3, n, 3)) Internal(caller, "Create failed");
+    CopyKnots(b, *s, 0);
+    s->SetKnot(1, 0, 0.0);
+    s->SetKnot(1, 1, 0.0);
+    s->SetKnot(1, 2, 1.0);
+    s->SetKnot(1, 3, 1.0);
+    for (int i = 0; i < n; ++i) {
+      const ON_4dPoint h = HomogeneousCV(b, i);
+      const ON_3dPoint equator = EuclideanCV(b, i);
+      const ON_3dPoint corner = equator + spec.radius * spec.pole;
+      s->SetCV(i, 0, ON_4dPoint(pole.x * h.w, pole.y * h.w, pole.z * h.w, h.w));
+      s->SetCV(i, 1,
+               ON_4dPoint(corner.x * h.w * corner_weight, corner.y * h.w * corner_weight,
+                          corner.z * h.w * corner_weight, h.w * corner_weight));
+      s->SetCV(i, 2, h);
+    }
+    if (!s->IsSingular(0)) Internal(caller, "the dome cap's pole side is not singular");
+    return s;
+  };
+
+  std::unique_ptr<ON_NurbsSurface> cap = build(boundary);
+  bool reversed = false;
+  {
+    ON_3dPoint p;
+    ON_3dVector su, sv;
+    if (!cap->Ev1Der(cap->Domain(0).Mid(), 0.5, p, su, sv)) {
+      Internal(caller, "Ev1Der failed on a tentative dome cap");
+    }
+    const ON_3dVector normal = ON_CrossProduct(su, sv);
+    if (normal.Length() <= 1e-12 * (1.0 + spec.radius)) {
+      Internal(caller, "the dome cap's mid-latitude normal is degenerate");
+    }
+    if (ON_DotProduct(normal, outward_hint) < 0.0) {
+      reversed = true;
+      ReverseKeepDomain(boundary);
+      cap = build(boundary);
+    }
+  }
+
+  int vid[4] = {-1, -1, -1, -1};
+  int eid[4] = {-1, -1, -1, -1};
+  bool rev[4] = {false, false, false, false};
+  eid[2] = shared_edge;
+  rev[2] = edge_forward != reversed;
+  ON_BrepFace* face = brep.NewFace(cap.release(), vid, eid, rev);
+  if (!face) Internal(caller, "ON_Brep::NewFace refused the dome cap face");
+}
+
 }  // namespace
 
 // Assembles the wall plus the requested caps. `cap_v0`/`cap_v1` cap the
@@ -1054,7 +1167,8 @@ CapEdges AddFanCap(ON_Brep& brep, ON_NurbsCurve boundary, int shared_edge, bool 
 // cap the wall's west/east sides (a full revolve's off-axis end circles).
 Brep Brep::AssembleSweptBody(ON_NurbsSurface* wall_raw, bool cap_v0, bool cap_v1, bool cap_u0, bool cap_u1,
                              const char* caller, const Vector3d* cap_v0_outward_hint,
-                             const Vector3d* cap_v1_outward_hint) {
+                             const Vector3d* cap_v1_outward_hint, const RoundCapSpec* round_v0,
+                             const RoundCapSpec* round_v1) {
   std::unique_ptr<ON_NurbsSurface> wall_in(wall_raw);
   Brep result;
   ON_Brep& brep = result.raw();
@@ -1079,6 +1193,9 @@ Brep Brep::AssembleSweptBody(ON_NurbsSurface* wall_raw, bool cap_v0, bool cap_v1
   if (cap_v0 || cap_v1) {
     if (closed_v) Fail(caller, "cap requested on a periodic result, which has no ends");
     const bool chord = !closed_u;
+    if (chord && (round_v0 || round_v1)) {
+      Fail(caller, "a round cap requires a section that does not touch the axis");
+    }
     if (chord && !(sing[1] && sing[3])) {
       Fail(caller, "cap requested but the section is open and its ends do not collapse to the axis");
     }
@@ -1086,8 +1203,9 @@ Brep Brep::AssembleSweptBody(ON_NurbsSurface* wall_raw, bool cap_v0, bool cap_v1
     // Both caps must use ONE apex when they share the chord (axis) edges.
     std::unique_ptr<ON_NurbsCurve> b0(IsoCurveOf(wall, 0, dv.Min(), caller));
     std::unique_ptr<ON_NurbsCurve> b1(IsoCurveOf(wall, 0, dv.Max(), caller));
-    CapPlan plan0 = PlanCap(*b0, chord, caller);
-    CapPlan plan1 = PlanCap(*b1, chord, caller);
+    CapPlan plan0, plan1;
+    if (cap_v0 && !round_v0) plan0 = PlanCap(*b0, chord, caller);
+    if (cap_v1 && !round_v1) plan1 = PlanCap(*b1, chord, caller);
     // Chord caps share the axis-segment edges and therefore the apex
     // vertex: the apex lies on the axis, which the sweep leaves fixed, so
     // plan1's own (independently found, rounding-different) apex is the
@@ -1105,8 +1223,12 @@ Brep Brep::AssembleSweptBody(ON_NurbsSurface* wall_raw, bool cap_v0, bool cap_v1
         hint = -sv;
       }
       // Wall south edge runs +u (bRev3d[0] false): with the boundary.
-      first = AddFanCap(brep, *b0, eid[0], /*edge_forward=*/true, hint, plan0, nullptr, /*transpose=*/false, caller);
-      have_first = true;
+      if (round_v0) {
+        AddDomeCap(brep, *b0, eid[0], /*edge_forward=*/true, hint, *round_v0, caller);
+      } else {
+        first = AddFanCap(brep, *b0, eid[0], /*edge_forward=*/true, hint, plan0, nullptr, /*transpose=*/false, caller);
+        have_first = true;
+      }
       ++faces;
     }
     if (cap_v1) {
@@ -1119,8 +1241,12 @@ Brep Brep::AssembleSweptBody(ON_NurbsSurface* wall_raw, bool cap_v0, bool cap_v1
         hint = sv;
       }
       // Wall north edge: isocurve reversed at creation (i == 2, !bRev3d), so it runs -u: against the boundary.
-      AddFanCap(brep, *b1, eid[2], /*edge_forward=*/false, hint, plan1, (chord && have_first) ? &first : nullptr,
-                /*transpose=*/false, caller);
+      if (round_v1) {
+        AddDomeCap(brep, *b1, eid[2], /*edge_forward=*/false, hint, *round_v1, caller);
+      } else {
+        AddFanCap(brep, *b1, eid[2], /*edge_forward=*/false, hint, plan1, (chord && have_first) ? &first : nullptr,
+                  /*transpose=*/false, caller);
+      }
       ++faces;
     }
   }
@@ -2572,7 +2698,7 @@ Brep Brep::Sweep2(const NurbsCurve& section_in, const NurbsCurve& rail1_in, cons
   return AssembleSweptBody(wall.release(), want_caps, want_caps, false, false, caller);
 }
 
-Brep Brep::Pipe(const NurbsCurve& rail, double radius, bool cap, int stations) {
+Brep Brep::Pipe(const NurbsCurve& rail, double radius, bool cap, int stations, bool round_caps) {
   const char* caller = "Pipe";
   if (!(radius > 0.0)) Fail(caller, "radius must be positive");
   const ON_NurbsCurve& r = rail.raw();
@@ -2585,7 +2711,43 @@ Brep Brep::Pipe(const NurbsCurve& rail, double radius, bool cap, int stations) {
   if (circle.GetNurbForm(nurbs_circle) == 0) Internal(caller, "ON_Circle::GetNurbForm failed");
   NurbsCurve section;
   section.raw() = nurbs_circle;
-  return Sweep1(section, rail, stations, cap);
+  if (!round_caps) return Sweep1(section, rail, stations, cap);
+
+  // Round-cap path: builds the wall directly (rather than delegating to
+  // Sweep1(), which returns a finished Brep with no way to recover the
+  // wall's own rim edge indices) so AssembleSweptBody() can be handed a
+  // RoundCapSpec for each end - see AddDomeCap()'s own doc comment for
+  // why the dome needs the EXACT center/radius/pole this function
+  // already knows, rather than re-deriving them from the wall.
+  if (!cap) Fail(caller, "round_caps requires cap");
+  if (r.IsClosed()) Fail(caller, "round_caps requires an open rail - a closed tube has no ends to dome");
+  if (stations < 2) Fail(caller, "stations must be at least 2");
+  const bool straight = r.IsLinear(1e-9 * CurveScale(r));
+  const int m = straight ? 2 : std::max(stations, 3);
+  std::vector<double> params = rail.DivideByCount(m - 1);
+  if (static_cast<int>(params.size()) != m) Internal(caller, "station count mismatch");
+  const std::vector<Frame> frames = RmfFrames(r, params, /*wrap=*/false, caller);
+
+  std::vector<ON_NurbsCurve> copies;
+  copies.reserve(static_cast<size_t>(m));
+  for (int k = 0; k < m; ++k) {
+    ON_NurbsCurve ck = nurbs_circle;
+    if (k > 0) ck.Transform(FrameToFrame(frames[0], frames[static_cast<size_t>(k)]));
+    copies.push_back(std::move(ck));
+  }
+  MakeCompatible(copies, caller);  // no-op for rigid copies of the same circle; keeps one code path
+  std::unique_ptr<ON_NurbsSurface> wall;
+  if (m == 2) {
+    wall = RuledBetween(copies[0], copies[1], 0.0, 1.0, caller);
+  } else {
+    double period = 1.0;
+    const std::vector<double> params_v = SkinParameters(copies, /*closed=*/false, &period, caller);
+    wall = SkinSections(copies, std::min(3, m - 1), /*closed=*/false, params_v, period, caller);
+  }
+  const RoundCapSpec spec0{frames.front().origin, -frames.front().t, radius};
+  const RoundCapSpec spec1{frames.back().origin, frames.back().t, radius};
+  return AssembleSweptBody(wall.release(), /*cap_v0=*/true, /*cap_v1=*/true, /*cap_u0=*/false, /*cap_u1=*/false,
+                           caller, nullptr, nullptr, &spec0, &spec1);
 }
 
 Brep Brep::PipeVariable(const NurbsCurve& rail_in, const std::vector<std::pair<double, double>>& radius_points,
