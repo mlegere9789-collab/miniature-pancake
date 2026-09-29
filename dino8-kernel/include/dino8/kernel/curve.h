@@ -651,6 +651,17 @@ class NurbsCurve {
   //
   //  - A LINE offsets to an exact parallel line (`FromControlPoints()`
   //    of the two translated endpoints).
+  //  - A POLYLINE (3 or more straight segments, detected via
+  //    `ON_Curve::IsPolyline()`) offsets EXACTLY, corner by corner: each
+  //    edge gets its own offset line, and a shared vertex lands at the
+  //    exact intersection of its two adjacent edges' offset lines (the
+  //    standard angle-bisector miter point, refused - `Result::Failed` -
+  //    only at a genuine near-180-degree fold, a zero-length edge, or an
+  //    edge parallel to `plane.zaxis`). A closed polygon's own seam
+  //    vertex is mitered the same way, wrapping around - it does not
+  //    split. This REPLACES what used to happen here: falling to the
+  //    general sampled-refit case below, which smooths every corner into
+  //    a blurred curve instead of keeping it sharp.
   //  - A CIRCULAR ARC (or full circle) offsets to an exact CONCENTRIC
   //    arc/circle of the SAME plane, center, and angular span
   //    (`DomainRadians()`), radius
@@ -669,7 +680,8 @@ class NurbsCurve {
   //    cylinder self-intersection guard: the offset distance exceeds
   //    this arc's own (constant) radius of curvature and folds it
   //    through its own center.
-  //  - Any other curve is treated as a general planar curve: sampled
+  //  - Any other curve (not a line, polyline, or circular arc) is
+  //    treated as a general planar curve: sampled
   //    uniformly across `Domain()` at `max(SuggestedSamples(chord_tol),
   //    4 * ControlPointCount()) + 1` points (`SuggestedSamples()`'s own
   //    curvature-informed count, floored so `FitLeastSquares()` below
@@ -761,6 +773,16 @@ class NurbsCurve {
   //    line's own offset direction is exact for ANY plane whose normal
   //    isn't parallel to the line, not only the line's own default
   //    plane.
+  //  - A POLYLINE (3 or more straight segments) that is ITSELF coplanar
+  //    in `plane` (every vertex within `tolerance` of `plane`, checked
+  //    explicitly - not assumed) offsets exactly via the same
+  //    corner-by-corner miter the single-plane overload above uses. A
+  //    polyline that is NOT coplanar in `plane` (a genuinely 3D
+  //    polyline, offset along a plane unrelated to its own shape) falls
+  //    to the same general sampled path as any other curve below - the
+  //    exact miter formula only lands on both adjacent offset lines when
+  //    every edge is perpendicular to `plane.zaxis`, which a foreign
+  //    plane doesn't guarantee.
   //  - Every other curve (including a circular arc, and including a
   //    genuinely non-planar curve) falls to the same sampled,
   //    tolerance-driven `FitLeastSquares()` refit the other overload's

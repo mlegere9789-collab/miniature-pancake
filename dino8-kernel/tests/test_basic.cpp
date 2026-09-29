@@ -42128,6 +42128,287 @@ void TestCurveOffsetInPlaneZeroDistanceIsNoOpCopy() {
   Check(out.PointAt(0.5).DistanceTo(c.PointAt(0.5)) < 1e-12, "OffsetInPlane(0.0) reproduces the same curve");
 }
 
+// An open, axis-aligned "U" bracket: 3 straight segments, 4 vertices,
+// planar in z = 0. Exercises the new exact per-corner-miter polyline
+// path `OffsetInPlane` now takes instead of falling to the general
+// sampled least-squares refit (PARITY_MAP.md's offsetshell category,
+// "Planar curve offset": "a kinked polyline goes through the smooth
+// refit, blurring corners").
+void TestCurveOffsetInPlaneOpenPolylineExactSharpCorners() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+  using dino8::kernel::Vector3d;
+
+  const std::vector<Point3d> cps = {
+      Point3d(0, 0, 0), Point3d(10, 0, 0), Point3d(10, 10, 0), Point3d(0, 10, 0)};
+  const NurbsCurve poly = NurbsCurve::FromControlPoints(cps, 1);
+  Check(poly.raw().IsPolyline(), "OffsetInPlane open-polyline setup: this IS recognized as a polyline");
+  Check(!poly.IsClosed(), "OffsetInPlane open-polyline setup: this polyline is open, not closed");
+
+  NurbsCurve out;
+  Check(poly.OffsetInPlane(1.0, out) == Result::Ok, "OffsetInPlane(+1.0) succeeds on an open polyline");
+  Check(out.Degree() == 1 && out.ControlPointCount() == 4,
+        "OffsetInPlane on an open 4-vertex polyline: result is itself a plain 4-vertex polyline, not a "
+        "doubled-up smooth refit - proof the exact per-corner miter path was taken, not the old blurring one");
+
+  // The two open ENDS only ever see their single adjacent edge (no
+  // miter needed there) - checked exactly against this method's own
+  // documented per-point contract (`TangentAt(t) x plane.zaxis`), the
+  // same way the existing general-curve tests above already cross-check
+  // direction, not a re-derivation of the corner-miter formula under
+  // test below.
+  ON_Plane plane;
+  Check(poly.raw().IsPlanar(&plane, 1e-9), "OffsetInPlane open-polyline setup: curve is planar");
+  Vector3d dir0 = ON_CrossProduct(cps[1] - cps[0], plane.zaxis);
+  dir0.Unitize();
+  Vector3d dir_last = ON_CrossProduct(cps[3] - cps[2], plane.zaxis);
+  dir_last.Unitize();
+  Check(out.ControlPointAt(0).DistanceTo(cps[0] + 1.0 * dir0) < 1e-9,
+        "OffsetInPlane open polyline: start endpoint offsets exactly along TangentAt(t) x plane.zaxis");
+  Check(out.ControlPointAt(3).DistanceTo(cps[3] + 1.0 * dir_last) < 1e-9,
+        "OffsetInPlane open polyline: end endpoint offsets exactly along TangentAt(t) x plane.zaxis");
+
+  // The two INTERIOR corners: verified independently (point-to-line
+  // distance, NOT this file's own miter formula) to sit at exactly 1.0
+  // from BOTH adjacent original edges, and on the SAME side as the
+  // already-verified endpoint direction above (rules out a mirrored/
+  // wrong-side corner that would still happen to be equidistant).
+  for (int i = 1; i <= 2; ++i) {
+    const Point3d p = out.ControlPointAt(i);
+    const double d_prev = PerpDistancePointToLine(p, cps[static_cast<size_t>(i - 1)], cps[static_cast<size_t>(i)]);
+    const double d_next = PerpDistancePointToLine(p, cps[static_cast<size_t>(i)], cps[static_cast<size_t>(i + 1)]);
+    Check(std::abs(d_prev - 1.0) < 1e-9 && std::abs(d_next - 1.0) < 1e-9,
+          "OffsetInPlane open polyline: interior corner sits exactly 1.0 from both adjacent original edges");
+  }
+  Check(ON_DotProduct(out.ControlPointAt(1) - cps[1], dir0) > 0.0,
+        "OffsetInPlane open polyline: first interior corner is on the same side as the verified endpoint offset");
+}
+
+// A closed, axis-aligned square: the seam vertex (index 0, shared with
+// the repeated closing point) must miter exactly like any other corner,
+// wrapping around from the LAST edge to the FIRST - not split into two
+// different corner positions the way the old smooth refit risked
+// (PARITY_MAP.md: "potentially splitting a closed polygon's seam").
+void TestCurveOffsetInPlaneClosedPolygonMitersSeamCorner() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  const std::vector<Point3d> verts = {Point3d(0, 0, 0), Point3d(10, 0, 0), Point3d(10, 10, 0), Point3d(0, 10, 0)};
+  std::vector<Point3d> cps = verts;
+  cps.push_back(verts[0]);
+  const NurbsCurve poly = NurbsCurve::FromControlPoints(cps, 1);
+  Check(poly.raw().IsPolyline(), "OffsetInPlane closed-polygon setup: this IS recognized as a polyline");
+  Check(poly.IsClosed(), "OffsetInPlane closed-polygon setup: this polygon is closed");
+
+  NurbsCurve out;
+  Check(poly.OffsetInPlane(1.0, out) == Result::Ok, "OffsetInPlane(+1.0) succeeds on a closed polygon");
+  Check(out.IsClosed(), "OffsetInPlane on a closed polygon: the result is itself closed");
+  Check(out.Degree() == 1 && out.ControlPointCount() == 5,
+        "OffsetInPlane on a closed 4-vertex polygon: result is a plain closed 4-vertex (5-CV) polygon, not a "
+        "smooth refit");
+  Check(out.ControlPointAt(0).DistanceTo(out.ControlPointAt(4)) < 1e-9,
+        "OffsetInPlane on a closed polygon: the seam does not split - start and end CVs coincide exactly");
+
+  // All 4 distinct corners, INCLUDING the seam vertex (index 0, whose two
+  // adjacent edges wrap from D->A to A->B), sit exactly 1.0 from both
+  // adjacent original edges.
+  for (int i = 0; i < 4; ++i) {
+    const Point3d p = out.ControlPointAt(i);
+    const Point3d& prev_vertex = verts[static_cast<size_t>((i - 1 + 4) % 4)];
+    const Point3d& this_vertex = verts[static_cast<size_t>(i)];
+    const Point3d& next_vertex = verts[static_cast<size_t>((i + 1) % 4)];
+    const double d_prev = PerpDistancePointToLine(p, prev_vertex, this_vertex);
+    const double d_next = PerpDistancePointToLine(p, this_vertex, next_vertex);
+    Check(std::abs(d_prev - 1.0) < 1e-9 && std::abs(d_next - 1.0) < 1e-9,
+          "OffsetInPlane closed polygon: every corner (including the wraparound seam) sits exactly 1.0 from "
+          "both adjacent original edges");
+  }
+}
+
+// An L-tromino hexagon: one REFLEX (concave) vertex. `OffsetConvexPolyline`
+// (sweep.cpp) explicitly refuses any non-convex polygon; this exact miter
+// formula needs no such restriction (only a near-180-degree fold is
+// refused), so this closed polygon - genuinely concave, confirmed below
+// via the same turn-sign check `OffsetConvexPolyline` itself uses -
+// exercises real generalization beyond that sibling's convex-only scope.
+void TestCurveOffsetInPlaneConcavePolygonGeneralizesBeyondConvexOnlyMiter() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+  using dino8::kernel::Vector3d;
+
+  const std::vector<Point3d> verts = {Point3d(0, 0, 0),  Point3d(10, 0, 0), Point3d(10, 4, 0),
+                                       Point3d(4, 4, 0),  Point3d(4, 10, 0), Point3d(0, 10, 0)};
+  const int n = static_cast<int>(verts.size());
+
+  // Confirm this really is concave: at least one turn's cross-product
+  // sign disagrees with the rest (the reflex vertex, index 3).
+  double sign = 0.0;
+  bool found_reflex = false;
+  for (int i = 0; i < n; ++i) {
+    Vector3d a = verts[static_cast<size_t>((i + 1) % n)] - verts[static_cast<size_t>(i)];
+    Vector3d b = verts[static_cast<size_t>((i + 2) % n)] - verts[static_cast<size_t>((i + 1) % n)];
+    a.Unitize();
+    b.Unitize();
+    const double cross_z = a.x * b.y - a.y * b.x;
+    if (std::abs(cross_z) < 1e-9) continue;
+    const double this_sign = cross_z > 0.0 ? 1.0 : -1.0;
+    if (sign == 0.0) {
+      sign = this_sign;
+    } else if (this_sign != sign) {
+      found_reflex = true;
+    }
+  }
+  Check(found_reflex, "OffsetInPlane concave-polygon setup: this L-shaped hexagon genuinely has a reflex vertex");
+
+  std::vector<Point3d> cps = verts;
+  cps.push_back(verts[0]);
+  const NurbsCurve poly = NurbsCurve::FromControlPoints(cps, 1);
+
+  NurbsCurve out;
+  Check(poly.OffsetInPlane(1.0, out) == Result::Ok,
+        "OffsetInPlane(+1.0) succeeds on a concave (reflex-vertex) polygon - not refused for lacking convexity");
+  Check(out.ControlPointCount() == n + 1, "OffsetInPlane on a concave polygon: still a plain (n+1)-CV polygon");
+
+  for (int i = 0; i < n; ++i) {
+    const Point3d p = out.ControlPointAt(i);
+    const Point3d& prev_vertex = verts[static_cast<size_t>((i - 1 + n) % n)];
+    const Point3d& this_vertex = verts[static_cast<size_t>(i)];
+    const Point3d& next_vertex = verts[static_cast<size_t>((i + 1) % n)];
+    const double d_prev = PerpDistancePointToLine(p, prev_vertex, this_vertex);
+    const double d_next = PerpDistancePointToLine(p, this_vertex, next_vertex);
+    Check(std::abs(d_prev - 1.0) < 1e-9 && std::abs(d_next - 1.0) < 1e-9,
+          "OffsetInPlane concave polygon: every corner, including the reflex one, sits exactly 1.0 from both "
+          "adjacent original edges");
+  }
+}
+
+// A "spike": the polyline goes forward, then almost straight back on
+// itself at the next vertex - a genuine near-180-degree fold, where no
+// finite miter point exists. Must be REFUSED, not silently blurred (the
+// old general-refit path never refused this at all, since it has no
+// concept of a discrete corner to fold through).
+void TestCurveOffsetInPlanePolylineRefusesNearFullFold() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  const std::vector<Point3d> cps = {Point3d(0, 0, 0), Point3d(10, 0, 0), Point3d(0.001, 0, 0), Point3d(0.001, 10, 0)};
+  const NurbsCurve poly = NurbsCurve::FromControlPoints(cps, 1);
+  Check(poly.raw().IsPolyline(), "OffsetInPlane fold setup: this IS recognized as a polyline");
+
+  NurbsCurve out;
+  Check(poly.OffsetInPlane(1.0, out) == Result::Failed,
+        "OffsetInPlane refuses a polyline with a near-180-degree fold - no finite miter point exists there");
+}
+
+// The explicit-plane overload, handed a plane that agrees with this
+// polyline's own fitted plane, must take the SAME exact miter path (not
+// silently fall back to the approximate general path just because a
+// caller-supplied plane object was used).
+void TestCurveOffsetInPlaneWithExplicitPlanePolylineMatchesSinglePlaneOverload() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  const std::vector<Point3d> cps = {
+      Point3d(0, 0, 0), Point3d(10, 0, 0), Point3d(10, 10, 0), Point3d(0, 10, 0)};
+  const NurbsCurve poly = NurbsCurve::FromControlPoints(cps, 1);
+
+  ON_Plane plane;
+  Check(poly.raw().IsPlanar(&plane, 1e-9), "OffsetInPlane(plane) polyline setup: curve is planar");
+
+  NurbsCurve out_single, out_explicit;
+  Check(poly.OffsetInPlane(1.0, out_single) == Result::Ok, "OffsetInPlane(distance) succeeds on the polyline");
+  Check(poly.OffsetInPlane(plane, 1.0, out_explicit) == Result::Ok,
+        "OffsetInPlane(plane, distance) succeeds on the same polyline with its own fitted plane");
+  Check(out_explicit.ControlPointCount() == out_single.ControlPointCount() && out_explicit.ControlPointCount() == 4,
+        "OffsetInPlane(plane, ...) on a polyline: same exact-miter (4-CV) result shape as the single-plane overload");
+  for (int i = 0; i < 4; ++i) {
+    Check(out_explicit.ControlPointAt(i).DistanceTo(out_single.ControlPointAt(i)) < 1e-9,
+          "OffsetInPlane(plane, ...) on a polyline: matches the single-plane overload's own exact corner, "
+          "control point for control point");
+  }
+}
+
+// A genuinely 3D (non-coplanar-in-the-given-plane) polyline handed to the
+// explicit-plane overload: the exact per-corner miter formula does NOT
+// apply here (it only lands on both offset lines when every edge is
+// perpendicular to the given plane's normal), so this must fall through
+// to the old general sampled path instead of producing a silently wrong
+// "exact" result.
+void TestCurveOffsetInPlaneWithExplicitPlaneNonCoplanarPolylineFallsBackToGeneralPath() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+  using dino8::kernel::Vector3d;
+
+  // NOT coplanar - the 4th point is deliberately off the plane the other
+  // three would otherwise define (verified below via `IsPlanar()`
+  // itself, not assumed from the coordinates alone).
+  const std::vector<Point3d> cps = {
+      Point3d(0, 0, 0), Point3d(10, 0, 0), Point3d(10, 10, 5), Point3d(0, 10, 8)};
+  const NurbsCurve poly = NurbsCurve::FromControlPoints(cps, 1);
+  Check(poly.raw().IsPolyline(), "OffsetInPlane non-coplanar setup: this IS recognized as a polyline");
+  const ON_Plane plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1));
+  Check(!poly.raw().IsPlanar(nullptr, 1e-9),
+        "OffsetInPlane non-coplanar setup: this polyline is NOT planar at all (genuinely 3D), let alone "
+        "coplanar in the z=0 plane below");
+
+  // At the tight DEFAULT tolerance, this is honestly refused: the exact
+  // miter path correctly declined (this polyline isn't coplanar in
+  // `plane`), so it falls to the general sampled path - but that path's
+  // own per-sample offset locus has a genuine jump at each kink here
+  // (each segment's own `tangent x plane.zaxis` is a different constant
+  // direction, and unlike the exact-miter case, nothing here reconciles
+  // them into a shared corner point), which a CONTINUOUS refit curve
+  // cannot close to within a tiny tolerance no matter how many control
+  // points it's given. This is the same honest "Result::Failed rather
+  // than silently returning a wrong-but-plausible result" contract the
+  // general path already enforces for curvature folds - not a defect,
+  // and not this new polyline code's own doing (any non-polyline curve
+  // whose `tangent x plane.zaxis` jumped this much would refuse the same
+  // way, at this curve's own tight default tolerance).
+  NurbsCurve out;
+  Check(poly.OffsetInPlane(plane, 1.0, out) == Result::Failed,
+        "OffsetInPlane(plane, +1.0) on a non-coplanar polyline, at the tight default tolerance: honestly "
+        "refused rather than silently returning a blurred-together corner");
+
+  // With an explicit, looser tolerance the SAME general fallback path
+  // succeeds (proving this was a real tolerance-driven refusal above,
+  // not a hard failure) - and even then, the result is NOT a plain 4-CV
+  // polygon (the exact-miter path's own signature), confirming this
+  // really did take the general refit, not a wrongly-applied miter.
+  Check(poly.OffsetInPlane(plane, 1.0, out, 0.5) == Result::Ok,
+        "OffsetInPlane(plane, +1.0, tolerance=0.5) succeeds on the same non-coplanar polyline via the general "
+        "fallback path");
+  Check(out.ControlPointCount() != 4,
+        "OffsetInPlane(plane, ...) on a non-coplanar polyline: result is NOT a plain 4-CV polygon - proof the "
+        "exact miter path correctly declined and this fell back to the general refit instead of returning a "
+        "wrong 'exact' corner");
+
+  // That looser-tolerance result still starts and ends exactly where the
+  // single-edge (non-miter) endpoint formula says it should - the SAME
+  // documented `TangentAt(t) x plane.zaxis` contract the exact-miter
+  // path's own endpoints use, checked here on the general fallback path
+  // instead (this curve's two ends are each adjacent to only one edge,
+  // so both paths must agree on them exactly regardless of which one
+  // ran in between).
+  const dino8::kernel::Interval dom = poly.Domain();
+  Vector3d start_dir = ON_CrossProduct(poly.TangentAt(dom.min), plane.zaxis);
+  start_dir.Unitize();
+  Vector3d end_dir = ON_CrossProduct(poly.TangentAt(dom.max), plane.zaxis);
+  end_dir.Unitize();
+  Check(out.PointAt(out.Domain().min).DistanceTo(poly.PointAt(dom.min) + 1.0 * start_dir) < 1e-6,
+        "OffsetInPlane(plane, ..., tolerance=0.5) fallback on a non-coplanar polyline: still starts exactly "
+        "at the documented single-edge offset point");
+  Check(out.PointAt(out.Domain().max).DistanceTo(poly.PointAt(dom.max) + 1.0 * end_dir) < 1e-6,
+        "OffsetInPlane(plane, ..., tolerance=0.5) fallback on a non-coplanar polyline: still ends exactly at "
+        "the documented single-edge offset point");
+}
+
 // distance between two curves at 201 matching normalized domain positions.
 double MaxCurveDeviation(const dino8::kernel::NurbsCurve& a, const dino8::kernel::NurbsCurve& b) {
   const auto da = a.Domain();
@@ -43577,6 +43858,12 @@ int main() {
   TestCurveOffsetInPlaneWithExplicitPlaneMatchesSinglePlaneOverloadWhenPlanesAgree();
   TestCurveOffsetInPlaneWithExplicitPlaneThrowsOnInvalidArguments();
   TestCurveOffsetInPlaneZeroDistanceIsNoOpCopy();
+  TestCurveOffsetInPlaneOpenPolylineExactSharpCorners();
+  TestCurveOffsetInPlaneClosedPolygonMitersSeamCorner();
+  TestCurveOffsetInPlaneConcavePolygonGeneralizesBeyondConvexOnlyMiter();
+  TestCurveOffsetInPlanePolylineRefusesNearFullFold();
+  TestCurveOffsetInPlaneWithExplicitPlanePolylineMatchesSinglePlaneOverload();
+  TestCurveOffsetInPlaneWithExplicitPlaneNonCoplanarPolylineFallsBackToGeneralPath();
 
 
   TestCurveElevateDegreePreservesShapeWithNonUniformKnots();

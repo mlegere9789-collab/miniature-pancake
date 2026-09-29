@@ -90,6 +90,115 @@ Result OffsetGeneralAlongNormal(const NurbsCurve& curve, const Vector3d& normal,
   }
 }
 
+// Shared by both `OffsetInPlane` overloads' polyline case: a genuinely
+// piecewise-linear curve (detected via `ON_Curve::IsPolyline()`, which
+// recognizes one whether it happens to be stored as a degree-1 NURBS
+// curve or any other exactly-straight-segment representation) offsets
+// EXACTLY, corner by corner, instead of falling to
+// `OffsetGeneralAlongNormal()`'s sampled least-squares refit - which
+// smooths every kink into a blurred curve and, for a closed polygon, can
+// disagree with itself at the seam (PARITY_MAP.md's offsetshell
+// category, "Planar curve offset": "a kinked polyline goes through the
+// smooth refit, blurring corners and potentially splitting a closed
+// polygon's seam").
+//
+// Each edge gets its own offset line, `distance` away along
+// `edge_direction x normal` (unit, same convention as every other branch
+// in this file); a vertex shared by two edges lands at the EXACT
+// intersection of their two offset lines via the standard angle-bisector
+// miter point `v + (distance / (1 + dot(n0, n1))) * (n0 + n1)` - the
+// same closed-form `OffsetConvexPolyline()` (sweep.cpp) already uses for
+// its own convex-only solid-cap case, reused here algebraically
+// unchanged but WITHOUT that function's convexity restriction: the
+// formula itself needs no convexity, only that no corner is within
+// `1e-9` of a full 180-degree fold, where no finite miter exists at all
+// (`denom <= 1e-9` below). A concave corner offset inward past its own
+// local feature size can still self-intersect - the same
+// honestly-disclosed risk PARITY_MAP.md's own "Offset self-intersection
+// / invalid-loop removal" item already names for every exact offset in
+// this file, inherited here rather than hidden, not newly introduced.
+//
+// The exact per-vertex intersection above is only valid when every edge
+// is perpendicular to `normal` - i.e. the whole polyline is genuinely
+// coplanar in a plane normal to `normal` (n0/n1 are always confined to
+// that plane by construction, but a vertex where the INCOMING edge has a
+// component along `normal` would need its offset "line" reasoned about
+// in 3D, where this planar miter formula no longer lands exactly on
+// both offset edges). The single-plane `OffsetInPlane(double, ...)`
+// overload already guarantees this (`normal` IS this curve's own
+// `IsPlanar()` fit), so the check below is a no-op there; the
+// explicit-plane overload can hand this a genuinely 3D polyline, for
+// which this function returns `false` (not applicable) rather than a
+// silently wrong "exact" corner, letting the caller fall through to the
+// old sampled general path unchanged.
+//
+// Returns `false` if `curve` isn't a polyline, has fewer than 3 distinct
+// vertices (a single segment is already the exact Line case above), or
+// isn't coplanar in a plane normal to `normal` - the caller should fall
+// through to the old behavior in every such case. Returns `true` with
+// `result` set to `Result::Ok` (and `out` populated) or `Result::Failed`
+// (a zero-length edge, an edge parallel to `normal`, or a near-180-degree
+// fold) otherwise.
+bool TryOffsetPolylineAlongNormal(const NurbsCurve& curve, const Vector3d& normal, double distance,
+                                   double tol, NurbsCurve& out, Result& result) {
+  ON_SimpleArray<ON_3dPoint> pline;
+  if (!curve.raw().IsPolyline(&pline)) return false;
+
+  const bool closed = curve.IsClosed();
+  const int total = pline.Count();
+  const int vcount = closed ? total - 1 : total;
+  if (vcount < 3) return false;
+
+  std::vector<Point3d> v(static_cast<size_t>(vcount));
+  for (int i = 0; i < vcount; ++i) v[static_cast<size_t>(i)] = pline[i];
+
+  for (int i = 1; i < vcount; ++i) {
+    if (std::fabs(ON_DotProduct(v[static_cast<size_t>(i)] - v[0], normal)) > tol) return false;
+  }
+
+  const int edge_count = closed ? vcount : vcount - 1;
+  std::vector<Vector3d> ndir(static_cast<size_t>(edge_count));
+  for (int i = 0; i < edge_count; ++i) {
+    Vector3d d = v[static_cast<size_t>((i + 1) % vcount)] - v[static_cast<size_t>(i)];
+    if (!d.Unitize()) {
+      result = Result::Failed;  // zero-length edge
+      return true;
+    }
+    Vector3d n = ON_CrossProduct(d, normal);
+    if (!n.Unitize()) {
+      result = Result::Failed;  // edge parallel to normal - no offset direction exists
+      return true;
+    }
+    ndir[static_cast<size_t>(i)] = n;
+  }
+
+  std::vector<Point3d> offset_v(static_cast<size_t>(vcount));
+  for (int i = 0; i < vcount; ++i) {
+    if (!closed && i == 0) {
+      offset_v[0] = v[0] + distance * ndir[0];
+      continue;
+    }
+    if (!closed && i == vcount - 1) {
+      offset_v[static_cast<size_t>(i)] =
+          v[static_cast<size_t>(i)] + distance * ndir[static_cast<size_t>(edge_count - 1)];
+      continue;
+    }
+    const Vector3d& n0 = ndir[static_cast<size_t>((i - 1 + edge_count) % edge_count)];
+    const Vector3d& n1 = ndir[static_cast<size_t>(i % edge_count)];
+    const double denom = 1.0 + ON_DotProduct(n0, n1);
+    if (denom <= 1e-9) {
+      result = Result::Failed;  // near-180-degree fold: no finite miter point exists
+      return true;
+    }
+    offset_v[static_cast<size_t>(i)] = v[static_cast<size_t>(i)] + (distance / denom) * (n0 + n1);
+  }
+
+  if (closed) offset_v.push_back(offset_v.front());
+  out = NurbsCurve::FromControlPoints(offset_v, 1);
+  result = Result::Ok;
+  return true;
+}
+
 void SubdivideForFlatness(const NurbsCurve& curve, double t0, double t1, double chord_tolerance,
                            int depth, int max_depth, std::vector<double>& out) {
   const Point3d p0 = curve.PointAt(t0);
@@ -886,6 +995,16 @@ Result NurbsCurve::OffsetInPlane(double distance, NurbsCurve& out, double tolera
     return OffsetLineAlongNormal(curve_.PointAtStart(), curve_.PointAtEnd(), plane.zaxis, distance, out);
   }
 
+  // --- Polyline (3+ segments): exact per-corner miter, not a blurred fit -
+  {
+    Result polyline_result;
+    NurbsCurve polyline_out;
+    if (TryOffsetPolylineAlongNormal(*this, plane.zaxis, distance, tol, polyline_out, polyline_result)) {
+      if (polyline_result == Result::Ok) out = polyline_out;
+      return polyline_result;
+    }
+  }
+
   // --- Circular arc / full circle ---------------------------------------
   {
     ON_Arc arc;
@@ -933,6 +1052,20 @@ Result NurbsCurve::OffsetInPlane(const ON_Plane& plane, double distance, NurbsCu
   // --- Line: still exact, for ANY plane not parallel to it -------------
   if (curve_.IsLinear(tol)) {
     return OffsetLineAlongNormal(curve_.PointAtStart(), curve_.PointAtEnd(), plane.zaxis, distance, out);
+  }
+
+  // --- Polyline (3+ segments), coplanar in `plane`: exact per-corner
+  // miter. Falls through (not `false`-returning) to the general sampled
+  // path below for a polyline that ISN'T coplanar in `plane` - see
+  // `TryOffsetPolylineAlongNormal()`'s own doc comment for why that case
+  // can't use the exact miter formula.
+  {
+    Result polyline_result;
+    NurbsCurve polyline_out;
+    if (TryOffsetPolylineAlongNormal(*this, plane.zaxis, distance, tol, polyline_out, polyline_result)) {
+      if (polyline_result == Result::Ok) out = polyline_out;
+      return polyline_result;
+    }
   }
 
   // --- Everything else, planar-in-its-own-plane or genuinely 3D --------
