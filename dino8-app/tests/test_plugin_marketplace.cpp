@@ -95,6 +95,26 @@ int main(int argc, char** argv) {
     Check(idx.plugins[1].sha256 == "deadbeef", "entry 'b' parsed its sha256 field");
   }
 
+  // ---- ParseIndex: dependencies -------------------------------------------
+  MarketplaceIndex dep_idx;
+  std::string dep_error;
+  const std::string with_deps =
+      "{\"schema_version\": 1, \"plugins\": ["
+      "{\"id\":\"a\",\"name\":\"A\",\"version\":\"1.0.0\",\"bundled_path\":\"plugins/a\"},"
+      "{\"id\":\"b\",\"name\":\"B\",\"version\":\"1.0.0\",\"bundled_path\":\"plugins/b\",\"dependencies\":[\"a\"]},"
+      "{\"id\":\"c\",\"name\":\"C\",\"version\":\"1.0.0\",\"bundled_path\":\"plugins/c\",\"dependencies\":[\"a\",\"b\"]}"
+      "]}";
+  Check(ParseIndex(with_deps, dep_idx, dep_error), "ParseIndex accepts an index with \"dependencies\" arrays (" + dep_error + ")");
+  Check(dep_idx.plugins.size() == 3, "ParseIndex reads all 3 entries of the dependency-bearing index");
+  if (dep_idx.plugins.size() == 3) {
+    Check(dep_idx.plugins[0].dependencies.empty(), "entry 'a' has no dependencies (field omitted)");
+    Check(dep_idx.plugins[1].dependencies.size() == 1 && dep_idx.plugins[1].dependencies[0] == "a",
+          "entry 'b' parsed its single dependency on 'a'");
+    Check(dep_idx.plugins[2].dependencies.size() == 2 && dep_idx.plugins[2].dependencies[0] == "a" &&
+              dep_idx.plugins[2].dependencies[1] == "b",
+          "entry 'c' parsed its two dependencies in order");
+  }
+
   // ---- CheckCompatibility ------------------------------------------------
   MarketplaceEntry e;
   e.api_version = 0;

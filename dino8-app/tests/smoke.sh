@@ -3736,4 +3736,54 @@ else
   echo "FAIL $REVIEWS_FILE was not written with hellodino's ratings"; fail=1
 fi
 
+# Plug-in Marketplace: dependency resolution (src/plugins/MarketplaceIndex.h's
+# MarketplaceEntry::dependencies, resolved by Marketplace::InstallByIdChecked
+# in src/plugins/Marketplace.cpp before the requested entry is installed).
+# tests/plugin_marketplace_dependency_index.json's curvetools entry depends
+# on meshtools, which - like every sample plug-in - is already auto-loaded
+# from next to the executable, so installing curvetools must succeed without
+# installing a second copy of meshtools (an already-satisfied dependency);
+# its analysistools entry depends on an id absent from the index, so
+# installing it must fail cleanly and install nothing (a missing
+# dependency).
+mkdir -p "$TMPW/plugindep"
+sed "s|@DINO8ROOT@|$HEREW/..|g" "$HERE/plugin_marketplace_dependency_script.txt" > "$TMPW/plugin_marketplace_dependency_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  PMD="$("$BIN" --smoke 60 --script "$TMPW/plugin_marketplace_dependency_script.txt" 2>&1)" || { echo "$PMD"; echo "FAIL: plugin marketplace dependency script exited non-zero"; exit 1; }
+else
+  PMD="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$TMPW/plugin_marketplace_dependency_script.txt" 2>&1)" || { echo "$PMD"; echo "FAIL: plugin marketplace dependency script exited non-zero"; exit 1; }
+fi
+pmdcheck() { if echo "$PMD" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$PMD" "$1"; fail=1; fi; }
+pmdcheck "PluginMarketplaceIndex: loaded \"Dependency Test Index (plugin dependency resolution fixture)\" - 3 plug-in(s)" "PluginMarketplaceIndex loaded the dependency-fixture index"
+pmdcheck "! PluginMarketplaceInstall: AnalysisTools (analysistools) requires plug-in \"doesnotexist\", which is not in the loaded index" "PluginMarketplaceInstall refuses to install a plug-in whose dependency is missing from the index"
+pmdcheck "PluginMarketplaceInstall: installed curvetools - 1 command(s), 3 flow node(s) registered" "PluginMarketplaceInstall installs a plug-in whose dependency is already satisfied"
+# Split the transcript at each GrasshopperPluginList's own output: PMD_S1 is
+# the baseline (before any marketplace action), PMD_S2 is after the failed
+# analysistools install, PMD_S3 is after the successful curvetools install.
+awk '/^history: GrasshopperPluginList: /{n++} {print > ("'"$TMPW"'/plugindep/sec" n ".txt")}' <<<"$PMD"
+PMD_S1="$(cat "$TMPW/plugindep/sec1.txt" 2>/dev/null)"
+PMD_S2="$(cat "$TMPW/plugindep/sec2.txt" 2>/dev/null)"
+PMD_S3="$(cat "$TMPW/plugindep/sec3.txt" 2>/dev/null)"
+AT1="$(echo "$PMD_S1" | grep -c 'AnalysisTools 1.0.0 -' || true)"
+AT2="$(echo "$PMD_S2" | grep -c 'AnalysisTools 1.0.0 -' || true)"
+if [ "$AT1" = "$AT2" ]; then
+  echo "ok   the missing-dependency install left AnalysisTools's loaded-copy count unchanged ($AT1 -> $AT2) - nothing was installed"
+else
+  echo "FAIL AnalysisTools's loaded-copy count changed on a failed install ($AT1 -> $AT2)"; fail=1
+fi
+MT2="$(echo "$PMD_S2" | grep -c 'MeshTools 1.0.0 -' || true)"
+MT3="$(echo "$PMD_S3" | grep -c 'MeshTools 1.0.0 -' || true)"
+if [ "$MT2" = "$MT3" ]; then
+  echo "ok   installing curvetools left MeshTools's loaded-copy count unchanged ($MT2 -> $MT3) - the already-satisfied dependency was not reinstalled"
+else
+  echo "FAIL installing curvetools changed MeshTools's loaded-copy count ($MT2 -> $MT3) - an already-satisfied dependency was reinstalled"; fail=1
+fi
+CT2="$(echo "$PMD_S2" | grep -c 'CurveTools 1.0.0 -' || true)"
+CT3="$(echo "$PMD_S3" | grep -c 'CurveTools 1.0.0 -' || true)"
+if [ "$CT2" = "1" ] && [ "$CT3" = "2" ]; then
+  echo "ok   installing curvetools added its own genuine second, independent load (1 auto-loaded from next to the executable, 2 after the marketplace install) - not just skipped as already satisfied"
+else
+  echo "FAIL installing curvetools did not add its own independently-loaded copy (saw $CT2 before, $CT3 after)"; fail=1
+fi
+
 exit $fail

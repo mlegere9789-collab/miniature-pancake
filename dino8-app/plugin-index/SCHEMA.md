@@ -41,6 +41,10 @@ misreading it.
   "min_app_version": "0.1.0",   // optional, informational only (not enforced)
   "tags": ["sample", "starter"],// optional
 
+  "dependencies": ["other-id"], // optional, ids of other entries in this
+                                 // same index that must be installed first -
+                                 // see "Dependencies" below
+
   "api_version": 2,             // the DINO8_PLUGIN_API_VERSION this plug-in
                                  // targets (see include/dino8_plugin.h). The
                                  // ABI is additive, so any api_version <=
@@ -93,6 +97,18 @@ into that folder by hand, or installed through the older local-folder
 Package Manager, already takes. A plug-in installed from the marketplace
 shows up in the Plug-in Manager panel and in `GrasshopperPluginList` like
 any other.
+
+## Dependencies
+
+An entry's `dependencies` list names other entries **in the same index** by
+`id`. `PluginMarketplaceInstall`/`Marketplace::InstallById`
+(`src/plugins/Marketplace.cpp`) resolves this list before installing the
+entry itself: each dependency already satisfied by a currently-loaded
+plug-in (matched by name, the same check `PluginMarketplaceCheckUpdates`
+uses) is left alone, and each other is installed first, recursively
+resolving its own dependencies the same way. Installing fails - with
+nothing installed - if a listed id isn't in the loaded index, or if the
+dependency graph cycles back on an id already being resolved.
 
 ## Compatibility
 

@@ -37,7 +37,13 @@ class Marketplace {
   const MarketplaceIndex& Index() const { return index_; }
   const std::string& Source() const { return source_; }
 
-  // Looks `id` up in the currently loaded index and installs it.
+  // Looks `id` up in the currently loaded index and installs it, first
+  // resolving its manifest's `dependencies` (other ids in the same index):
+  // each one already satisfied by a loaded plug-in (FindInstalled) is
+  // skipped, and each other is installed (recursively resolving its own
+  // dependencies) before `id` itself. Fails - installing nothing - if a
+  // dependency id isn't in the loaded index or the dependency graph cycles
+  // back on itself.
   bool InstallById(app::Application& app, const std::string& id, std::string& error);
 
   // Matches `entry.name` (case-insensitively) against the plug-ins
@@ -55,6 +61,12 @@ class Marketplace {
   std::vector<PluginUpdate> CheckForUpdates() const;
 
  private:
+  // `chain` is the sequence of ids currently being resolved (this call's own
+  // id last), so a dependency cycle is caught as soon as it repeats one
+  // instead of recursing forever.
+  bool InstallByIdChecked(app::Application& app, const std::string& id, std::vector<std::string>& chain,
+                           std::string& error);
+
   MarketplaceIndex index_;
   std::string source_;
 };

@@ -1,5 +1,6 @@
 #include "plugins/Marketplace.h"
 
+#include <algorithm>
 #include <cctype>
 #include <filesystem>
 
@@ -51,6 +52,12 @@ bool IsPlainFilename(const std::string& name) {
   if (name.empty() || name == "." || name == "..") return false;
   if (name.find('/') != std::string::npos || name.find('\\') != std::string::npos) return false;
   return fs::path(name).is_relative();
+}
+
+const MarketplaceEntry* FindEntryById(const MarketplaceIndex& index, const std::string& id) {
+  for (const MarketplaceEntry& e : index.plugins)
+    if (e.id == id) return &e;
+  return nullptr;
 }
 
 }  // namespace
@@ -135,11 +142,36 @@ bool Marketplace::LoadFrom(const std::string& source, std::string& error) {
 }
 
 bool Marketplace::InstallById(app::Application& app, const std::string& id, std::string& error) {
-  for (const MarketplaceEntry& e : index_.plugins) {
-    if (e.id == id) return InstallEntry(app, e, app.ExeDir(), error);
+  std::vector<std::string> chain;
+  return InstallByIdChecked(app, id, chain, error);
+}
+
+bool Marketplace::InstallByIdChecked(app::Application& app, const std::string& id, std::vector<std::string>& chain,
+                                      std::string& error) {
+  const MarketplaceEntry* entry = FindEntryById(index_, id);
+  if (!entry) {
+    error = "no plugin with id \"" + id + "\" in the loaded index (" + std::to_string(index_.plugins.size()) + " entries)";
+    return false;
   }
-  error = "no plugin with id \"" + id + "\" in the loaded index (" + std::to_string(index_.plugins.size()) + " entries)";
-  return false;
+  if (std::find(chain.begin(), chain.end(), id) != chain.end()) {
+    error = entry->name + " (" + id + ") is part of a circular dependency chain";
+    return false;
+  }
+  chain.push_back(id);
+
+  for (const std::string& dep_id : entry->dependencies) {
+    const MarketplaceEntry* dep = FindEntryById(index_, dep_id);
+    if (!dep) {
+      error = entry->name + " (" + id + ") requires plug-in \"" + dep_id + "\", which is not in the loaded index";
+      return false;
+    }
+    std::string installed_version;
+    UpdateStatus status;
+    if (FindInstalled(*dep, installed_version, status)) continue;  // already satisfied
+    if (!InstallByIdChecked(app, dep_id, chain, error)) return false;
+  }
+
+  return InstallEntry(app, *entry, app.ExeDir(), error);
 }
 
 bool Marketplace::FindInstalled(const MarketplaceEntry& entry, std::string& installed_version, UpdateStatus& status) const {

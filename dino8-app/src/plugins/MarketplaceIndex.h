@@ -21,6 +21,12 @@ struct MarketplaceEntry {
   std::vector<std::string> tags;
   int api_version = 0;      // the DINO8_PLUGIN_API_VERSION this plug-in targets
 
+  // ids of other entries in the same index that must be installed before
+  // this one - see plugins::Marketplace::InstallById, which resolves and
+  // installs each of these (skipping any already satisfied by a loaded
+  // plug-in) ahead of this entry itself.
+  std::vector<std::string> dependencies;
+
   // Exactly one of these two identifies where the library comes from:
   std::string download_url;  // http:// or https:// - fetched with curl
   std::string bundled_path;  // path relative to the app's own exe directory,

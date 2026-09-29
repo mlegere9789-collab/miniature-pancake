@@ -164,6 +164,10 @@ bool ParseIndex(const std::string& json_text, MarketplaceIndex& out, std::string
     if (tags.IsArray())
       for (const json::Value& t : tags.array)
         if (t.IsString()) e.tags.push_back(t.string);
+    const json::Value& deps = p["dependencies"];
+    if (deps.IsArray())
+      for (const json::Value& d : deps.array)
+        if (d.IsString()) e.dependencies.push_back(d.string);
 
     const std::string tag = "plugins[" + std::to_string(i) + "]" + (e.id.empty() ? "" : " (" + e.id + ")");
     if (e.id.empty() || e.name.empty() || e.version.empty()) {
