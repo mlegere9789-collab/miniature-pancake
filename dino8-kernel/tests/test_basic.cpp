@@ -9792,6 +9792,213 @@ void TestBrepMakeEdgeKillRingAndKillEdgeMakeRingAreExactInverses() {
   Check(threw_kemr_edge_deleted, "a deleted edge_index throws std::invalid_argument");
 }
 
+// Brep::RemoveHoleLoop()/RemoveAllHoleLoops(): PARITY_MAP.md's own "Untrim
+// face / remove outer trim / remove hole loops" item, previously covered
+// only by the app's Op::UntrimHoles, which detaches the face into a
+// separate object instead of editing it in place. Reuses
+// PlanarFaceWithHoleFixture (the exact same hand-built outer 4x4 square
+// with a 2x2 hole MakeEdgeKillRing()'s own tests above use), but this
+// time genuinely DELETES the hole rather than merely re-representing it
+// as a single bridged loop.
+void TestBrepRemoveHoleLoopRestoresSolidFaceExactly() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Result;
+
+  PlanarFaceWithHoleFixture fixture = BuildPlanarFaceWithHole();
+  Brep& brep = fixture.brep;
+  ON_Brep& b = brep.raw();
+  const int face_index = fixture.face_index;
+
+  // Physical area before: the 4x4 outer square (16) minus the 2x2 hole
+  // (4) = 12, verified by tessellating the hand-built with-hole face
+  // (real ON_BrepLoop topology, the same kind ImprintFaces()/general-
+  // boolean results already tessellate correctly elsewhere).
+  const auto meshes_before = brep.Tessellate(20, 20);
+  double area_before = 0.0;
+  for (const auto& m : meshes_before) area_before += m.Area();
+  Check(std::abs(area_before - 12.0) < 1e-6, "setup: with-hole face's physical area is exactly 16 - 4 = 12");
+
+  const int v_count_before = b.m_V.Count();
+  const int e_count_before = b.m_E.Count();
+  Check(b.m_F[face_index].LoopCount() == 2, "setup: the face has 2 loops (outer + hole)");
+
+  const int outer_loop_index = b.m_F[face_index].Loop(0)->m_loop_index;
+  const int inner_loop_index = b.m_F[face_index].Loop(1)->m_loop_index;
+  Check(b.m_L[outer_loop_index].m_type == ON_BrepLoop::outer, "setup: loop 0 is the outer loop");
+  Check(b.m_L[inner_loop_index].m_type == ON_BrepLoop::inner, "setup: loop 1 is the hole loop");
+
+  Check(brep.RemoveHoleLoop(inner_loop_index) == Result::Ok, "RemoveHoleLoop() succeeds on a genuine hole loop");
+
+  Check(brep.FaceCount() == 1, "F is unchanged - RemoveHoleLoop() never adds or removes a face");
+  Check(b.m_F[face_index].LoopCount() == 1, "the face's own loop count dropped from 2 to 1 - the hole is gone");
+  const ON_BrepLoop* remaining = b.m_F[face_index].Loop(0);
+  Check(remaining && remaining->m_type == ON_BrepLoop::outer && remaining->TrimCount() == 4,
+        "the surviving loop is the original 4-trim outer quad, untouched");
+  Check(b.m_V.Count() == v_count_before - 4, "V dropped by exactly 4 - the hole's own 4 private corners are gone");
+  Check(b.m_E.Count() == e_count_before - 4, "E dropped by exactly 4 - the hole's own 4 private edges are gone");
+
+  // The face is now a plain, un-holed 4x4 square: physical area 16.
+  const auto meshes_after = brep.Tessellate(20, 20);
+  double area_after = 0.0;
+  for (const auto& m : meshes_after) area_after += m.Area();
+  Check(std::abs(area_after - 16.0) < 1e-6, "the hole is genuinely filled with material - area is now exactly 16");
+
+  const Brep::CheckReport after = brep.Check();
+  Check(after.Count(Brep::CheckIssue::Kind::NakedEdge) == 4,
+        "Check() reports exactly the 4 outer boundary edges as naked, and nothing else new");
+}
+
+// RemoveAllHoleLoops(): removes every hole on a face in one call. Builds a
+// SECOND, independent hole loop on the same fixture face (reusing
+// PlanarFaceWithHoleFixture's own surface/domain and the identical
+// hand-loop-building recipe BuildPlanarFaceWithHole() uses internally),
+// disjoint from the first hole, then verifies both are gone after one
+// RemoveAllHoleLoops() call and the returned count is exactly 2.
+void TestBrepRemoveAllHoleLoopsRemovesEveryHoleInOneCall() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point2d;
+  using dino8::kernel::Point3d;
+
+  PlanarFaceWithHoleFixture fixture = BuildPlanarFaceWithHole();
+  Brep& brep = fixture.brep;
+  ON_Brep& b = brep.raw();
+  const int face_index = fixture.face_index;
+
+  // A second, disjoint 0.5x0.5 hole near the corner (0.25,0.25)-(0.25,0.75)-
+  // (0.75,0.75)-(0.75,0.25), well clear of the fixture's own central 2x2
+  // hole and the 4x4 outer boundary - same domain (min/max +/-0.5) the
+  // fixture's own to_uv() lambda uses internally.
+  const double min_x = -0.5, max_x = 4.5, min_y = -0.5, max_y = 4.5;
+  auto to_uv = [&](double x, double y) {
+    return Point2d((x - min_x) / (max_x - min_x), (y - min_y) / (max_y - min_y));
+  };
+  const std::vector<Point3d> hole2_pts = {
+      Point3d(0.25, 0.25, 0), Point3d(0.25, 0.75, 0), Point3d(0.75, 0.75, 0), Point3d(0.75, 0.25, 0),
+  };
+  const int n = static_cast<int>(hole2_pts.size());
+  std::vector<int> hole2_vids(static_cast<size_t>(n));
+  for (int k = 0; k < n; ++k) hole2_vids[static_cast<size_t>(k)] = b.NewVertex(hole2_pts[static_cast<size_t>(k)], 0.0).m_vertex_index;
+  const int hole2_loop_index = b.NewLoop(ON_BrepLoop::inner, b.m_F[face_index]).m_loop_index;
+  for (int k = 0; k < n; ++k) {
+    const int k1 = (k + 1) % n;
+    const int va = hole2_vids[static_cast<size_t>(k)];
+    const int vb = hole2_vids[static_cast<size_t>(k1)];
+    const int c3i = b.AddEdgeCurve(new ON_LineCurve(b.m_V[va].point, b.m_V[vb].point));
+    const int edge_index = b.NewEdge(b.m_V[va], b.m_V[vb], c3i).m_edge_index;
+    b.m_E[edge_index].m_tolerance = 0.0;
+    const Point2d uv_a = to_uv(hole2_pts[static_cast<size_t>(k)].x, hole2_pts[static_cast<size_t>(k)].y);
+    const Point2d uv_b = to_uv(hole2_pts[static_cast<size_t>(k1)].x, hole2_pts[static_cast<size_t>(k1)].y);
+    const int c2i = b.AddTrimCurve(new ON_LineCurve(uv_a, uv_b));
+    ON_BrepTrim& trim = b.NewTrim(b.m_E[edge_index], /*bRev3d=*/false, b.m_L[hole2_loop_index], c2i);
+    trim.m_tolerance[0] = trim.m_tolerance[1] = 0.0;
+  }
+  b.SetTrimIsoFlags();
+  b.SetTolerancesBoxesAndFlags();
+
+  Check(b.m_F[face_index].LoopCount() == 3, "setup: the face now has 3 loops (outer + 2 disjoint holes)");
+  // Area: 16 (outer) - 4 (fixture's own central 2x2 hole) - 0.25 (the new 0.5x0.5 hole) = 11.75.
+  const auto meshes_before = brep.Tessellate(40, 40);
+  double area_before = 0.0;
+  for (const auto& m : meshes_before) area_before += m.Area();
+  Check(std::abs(area_before - 11.75) < 1e-4, "setup: physical area with both holes is exactly 16 - 4 - 0.25 = 11.75");
+
+  const int removed = brep.RemoveAllHoleLoops(face_index);
+  Check(removed == 2, "RemoveAllHoleLoops() removes both disjoint holes and reports count 2");
+  Check(b.m_F[face_index].LoopCount() == 1, "only the outer loop survives");
+  const ON_BrepLoop* remaining = b.m_F[face_index].Loop(0);
+  Check(remaining && remaining->m_type == ON_BrepLoop::outer && remaining->TrimCount() == 4,
+        "the surviving loop is the original 4-trim outer quad");
+
+  const auto meshes_after = brep.Tessellate(40, 40);
+  double area_after = 0.0;
+  for (const auto& m : meshes_after) area_after += m.Area();
+  Check(std::abs(area_after - 16.0) < 1e-4, "both holes are genuinely filled - area is now exactly 16");
+
+  // A face with no holes at all: RemoveAllHoleLoops() is a clean no-op.
+  PlanarFaceWithHoleFixture solo = BuildPlanarFaceWithHole();
+  Check(solo.brep.RemoveHoleLoop(solo.brep.raw().m_F[solo.face_index].Loop(1)->m_loop_index) ==
+            dino8::kernel::Result::Ok,
+        "setup: strip solo fixture down to a plain hole-free face");
+  Check(solo.brep.RemoveAllHoleLoops(solo.face_index) == 0, "RemoveAllHoleLoops() on a hole-free face returns 0");
+}
+
+// RemoveHoleLoop() refusal paths: the outer loop itself, out-of-range and
+// already-deleted loop_index, and a hole edge that's also used by a trim
+// OUTSIDE the hole loop (a decoy second face reusing one of the hole's own
+// edges) - every refusal leaves the Brep completely untouched.
+void TestBrepRemoveHoleLoopRefusesOuterLoopSharedEdgeAndInvalidInput() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point2d;
+  using dino8::kernel::Result;
+
+  // Refuses the face's own outer loop.
+  {
+    PlanarFaceWithHoleFixture fixture = BuildPlanarFaceWithHole();
+    Brep& brep = fixture.brep;
+    ON_Brep& b = brep.raw();
+    const int outer_loop_index = b.m_F[fixture.face_index].Loop(0)->m_loop_index;
+    const int v_before = b.m_V.Count();
+    const int e_before = b.m_E.Count();
+    Check(brep.RemoveHoleLoop(outer_loop_index) == Result::Failed,
+          "RemoveHoleLoop() refuses the face's own outer loop");
+    Check(b.m_V.Count() == v_before && b.m_E.Count() == e_before && b.m_F[fixture.face_index].LoopCount() == 2,
+          "refused outer-loop call leaves the Brep completely untouched");
+  }
+
+  // Refuses out-of-range / already-deleted loop_index.
+  {
+    PlanarFaceWithHoleFixture fixture = BuildPlanarFaceWithHole();
+    Brep& brep = fixture.brep;
+    ON_Brep& b = brep.raw();
+
+    bool threw_range = false;
+    try {
+      brep.RemoveHoleLoop(b.m_L.Count() + 100);
+    } catch (const std::out_of_range&) {
+      threw_range = true;
+    }
+    Check(threw_range, "RemoveHoleLoop() throws std::out_of_range on an out-of-range loop_index");
+
+    const int inner_loop_index = b.m_F[fixture.face_index].Loop(1)->m_loop_index;
+    b.m_L[inner_loop_index].m_loop_index = -1;  // simulate an already-deleted loop
+    bool threw_invalid = false;
+    try {
+      brep.RemoveHoleLoop(inner_loop_index);
+    } catch (const std::invalid_argument&) {
+      threw_invalid = true;
+    }
+    Check(threw_invalid, "RemoveHoleLoop() throws std::invalid_argument on an already-deleted loop_index");
+  }
+
+  // Refuses a hole edge shared with a trim OUTSIDE the hole loop.
+  {
+    PlanarFaceWithHoleFixture fixture = BuildPlanarFaceWithHole();
+    Brep& brep = fixture.brep;
+    ON_Brep& b = brep.raw();
+    const int face_index = fixture.face_index;
+    const int inner_loop_index = b.m_F[face_index].Loop(1)->m_loop_index;
+    const int shared_edge_index = b.m_L[inner_loop_index].Trim(0)->m_ei;
+    Check(b.m_E[shared_edge_index].TrimCount() == 1, "setup: the hole's own trim is the edge's only trim so far");
+
+    const int decoy_face_index = b.NewFace(b.m_F[face_index].m_si).m_face_index;
+    const int decoy_loop_index = b.NewLoop(ON_BrepLoop::outer, b.m_F[decoy_face_index]).m_loop_index;
+    const int c2i = b.AddTrimCurve(new ON_LineCurve(Point2d(0.05, 0.05), Point2d(0.15, 0.05)));
+    ON_BrepTrim& decoy_trim = b.NewTrim(b.m_E[shared_edge_index], /*bRev3d=*/true, b.m_L[decoy_loop_index], c2i);
+    decoy_trim.m_tolerance[0] = decoy_trim.m_tolerance[1] = 0.0;
+    Check(b.m_E[shared_edge_index].TrimCount() == 2, "setup: the decoy face now also borders the hole's own edge");
+
+    const int v_before = b.m_V.Count();
+    const int e_before = b.m_E.Count();
+    const int t_before = b.m_T.Count();
+    Check(brep.RemoveHoleLoop(inner_loop_index) == Result::Failed,
+          "RemoveHoleLoop() refuses a hole edge that's also used outside the hole loop");
+    Check(b.m_V.Count() == v_before && b.m_E.Count() == e_before && b.m_T.Count() == t_before,
+          "refused shared-edge call leaves the Brep completely untouched");
+    Check(b.m_T[decoy_trim.m_trim_index].m_trim_index >= 0, "the decoy trim itself is still live");
+  }
+}
+
 // Brep::LoopCount/LoopsOfFace/FaceOfLoop/TypeOfLoop/TrimCount/TrimsOfLoop/
 // LoopOfTrim/EdgeOfTrim/NextTrimInLoop/PrevTrimInLoop: PARITY_MAP.md's own
 // "Kernel-level topology enumeration API" and "Loop structure" items'
@@ -42458,6 +42665,9 @@ int main() {
   TestBrepMakeEdgeVertexAndKillEdgeVertexAreExactInverses();
   TestBrepMakeEdgeFaceAndKillEdgeFaceAreExactInverses();
   TestBrepMakeEdgeKillRingAndKillEdgeMakeRingAreExactInverses();
+  TestBrepRemoveHoleLoopRestoresSolidFaceExactly();
+  TestBrepRemoveAllHoleLoopsRemovesEveryHoleInOneCall();
+  TestBrepRemoveHoleLoopRefusesOuterLoopSharedEdgeAndInvalidInput();
   TestBrepLoopAndTrimTopologyQueries();
   TestBrepWireBody();
   TestBrepAddWireCurves();

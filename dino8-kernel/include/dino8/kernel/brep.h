@@ -3765,6 +3765,57 @@ class Brep {
   // std::invalid_argument if it refers to an already-deleted edge.
   Result KillEdgeMakeRing(int edge_index);
 
+  // Removes a hole ("island") from a face IN PLACE, at the topology
+  // level - the kernel-level "UntrimHoles" this class never had:
+  // PARITY_MAP.md's own "Untrim face / remove outer trim / remove hole
+  // loops" item previously named only the app's `Op::UntrimHoles`, which
+  // detaches the face into a brand-new separate object rather than
+  // editing this Brep's own face in place. Unlike KillEdgeMakeRing()
+  // above (which only RE-REPRESENTS a hole as a single bridged loop -
+  // the hole's own material gap is still there, just drawn differently),
+  // this genuinely deletes the hole: the named `ON_BrepLoop::inner` loop,
+  // every trim on it, and every edge/vertex that loop privately owns are
+  // all removed, so the face becomes exactly as if the hole had never
+  // been cut - real material where the hole used to be, not a
+  // re-drawn boundary.
+  //
+  // `loop_index` must name a live `ON_BrepLoop::inner` loop (an outer
+  // loop can't be "un-holed" this way - removing a face's OWN boundary
+  // is a different operation, still a gap - see the PARITY_MAP.md item
+  // above). Refuses (Result::Failed, this Brep left completely
+  // untouched) rather than guessing whenever removing the hole would
+  // orphan something outside it: any trim with no edge at all (a
+  // singular trim, e.g. a degenerate hole with a pole - no defined
+  // "delete the edge" there), or any edge the hole's own trims touch
+  // that is ALSO used by a trim outside this loop (a shared edge -
+  // deleting it here would leave that other trim dangling). A vertex
+  // left with no remaining incident edge once the hole's own edges are
+  // gone is culled explicitly, the same discipline KillEdgeVertex()'s
+  // own doc comment gives (ON_Brep::CullUnusedVertices() only culls a
+  // vertex whose m_vertex_index is ALREADY -1, never infers "unused"
+  // from an empty m_ei).
+  //
+  // Throws std::out_of_range if `loop_index` is out of range, or
+  // std::invalid_argument if it refers to an already-deleted loop.
+  Result RemoveHoleLoop(int loop_index);
+
+  // Convenience wrapper: removes every hole loop currently on
+  // `face_index` in one call (RemoveHoleLoop() above, repeated) - the
+  // common case ("erase every hole this face has") without the caller
+  // having to enumerate LoopsOfFace() itself and cope with indices
+  // shifting mid-loop. Every hole loop on the face is collected up front
+  // (no Compact() runs between individual removals, so earlier indices
+  // stay valid throughout - the same "defer Compact to one call at the
+  // end" discipline SewTJunctions()/MergeAllContiguousEdges() already
+  // use for their own repeated-removal loops), so a hole that RemoveHoleLoop()
+  // itself would refuse (a shared edge, a singular trim) is simply
+  // skipped rather than aborting the whole call - the face keeps every
+  // hole this method can't safely remove. Returns the number of hole
+  // loops actually removed (0 if the face has none, or none could be
+  // removed). Throws std::out_of_range if `face_index` is out of range,
+  // or std::invalid_argument if it refers to an already-deleted face.
+  int RemoveAllHoleLoops(int face_index);
+
   // Splits a naked (1-trim) edge into two coincident naked edges meeting
   // at a new vertex at `point` - the missing primitive behind "tolerant
   // sewing" (PARITY_MAP.md's own "[missing] Tolerant sewing with edge
@@ -3929,6 +3980,12 @@ class Brep {
   void ClearFaceSideTables();
   // Shared body of RemoveDegenerateFaces()/RemoveSliverFaces().
   int RemoveThinFaces(double width, double join_tolerance, bool slivers_too);
+  // Shared body of RemoveHoleLoop()/RemoveAllHoleLoops(): does the actual
+  // loop/trim/edge/vertex surgery but skips Compact()/
+  // SetTolerancesBoxesAndFlags()/FixUnsetEdgeTolerances()/
+  // ClearFaceSideTables() so RemoveAllHoleLoops() can call it once per
+  // hole and finalize only once at the end.
+  Result RemoveHoleLoopNoFinalize(int loop_index);
 
   ON_Brep brep_;
   // Appends `count` "untrimmed face" entries to every per-face side
