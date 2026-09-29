@@ -31419,6 +31419,106 @@ void TestBooleanCombineGeneralNAryNegativeControls() {
   }
 }
 
+// PARITY_MAP.md's "Multi-body / multi-tool booleans" bullet named this gap
+// explicitly: unlike BooleanCombinePlanar/BooleanCombineMixed (each guarded
+// by boolean.cpp's own RefuseCompoundOperand), a Brep::Compound() of two or
+// more lumps fed to BooleanCombineGeneral was silently processed one face
+// at a time with no lump-boundary awareness at all - an unhandled case
+// rather than a clean refusal. This is now a std::invalid_argument, the
+// same rule (and the same LumpFaceRanges().size() > 1 test) the other two
+// B-rep engines already apply. Uses a REAL SymmetricDifference compound
+// (BooleanCombinePlanar's own two-touching-box fixture,
+// TestBooleanCombinePlanarDifferenceThrowsOnTouchingLumpXorCompound's own
+// shape), not an artificially-assembled one, as this bullet's own most
+// likely real-world source of a compound operand.
+void TestBooleanCombineGeneralRefusesCompoundOperand() {
+  using dino8::kernel::BooleanCombineGeneral;
+  using dino8::kernel::BooleanCombinePlanar;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+
+  const Brep a = Brep::Box(0, 0, 0, 2, 2, 2);
+  const Brep b = Brep::Box(1, 1, 1, 3, 3, 3);
+  const Brep xor_result = BooleanCombinePlanar(a, b, BooleanOp::SymmetricDifference);
+  Check(xor_result.LumpFaceRanges().size() == 2, "the XOR fixture is the known two-lump compound");
+
+  const Brep other = Brep::Box(10, 10, 10, 12, 12, 12);  // disjoint, diagonally-staggered from the compound
+
+  for (const BooleanOp op : {BooleanOp::Union, BooleanOp::Intersection, BooleanOp::Difference}) {
+    bool threw = false;
+    std::string message;
+    try {
+      BooleanCombineGeneral(xor_result, other, op);
+    } catch (const std::invalid_argument& e) {
+      threw = true;
+      message = e.what();
+    }
+    Check(threw && message.find("Brep::Compound") != std::string::npos,
+          "BooleanCombineGeneral refuses a compound first operand for every op, naming the precondition");
+  }
+  for (const BooleanOp op : {BooleanOp::Union, BooleanOp::Intersection, BooleanOp::Difference}) {
+    bool threw = false;
+    try {
+      BooleanCombineGeneral(other, xor_result, op);
+    } catch (const std::invalid_argument&) {
+      threw = true;
+    }
+    Check(threw, "BooleanCombineGeneral refuses a compound second operand too");
+  }
+
+  // Negative control: two genuinely single-lump operands still combine
+  // exactly as before - the new guard does not false-positive on an
+  // ordinary Box().
+  const Brep ok = BooleanCombineGeneral(a, b, BooleanOp::Union);
+  Check(ok.raw().IsValid(), "two single-lump operands are entirely unaffected by the new compound-operand guard");
+}
+
+// BooleanCombineGeneral's own output is never itself compound (it builds
+// one shell of kept fragments, never a Brep::Compound - see
+// BooleanCombineGeneral's own updated doc comment in boolean_general.h),
+// so BooleanCombineGeneralNAry's internal pairwise folding of ordinary
+// (non-compound) operands is unaffected by the new guard - confirmed here
+// directly rather than assumed, reusing the same inclusion-exclusion
+// fixture TestBooleanCombineGeneralNAryUnionThreeOverlappingBoxesMatches
+// InclusionExclusion already proves correct. The guard DOES reach every
+// pairwise fold step when a caller passes a genuinely compound operand
+// into the group, exactly like BooleanCombinePlanarNAry/
+// BooleanCombineMixedNAry already do.
+void TestBooleanCombineGeneralNAryRefusesCompoundOperandAtEveryPairwiseStep() {
+  using dino8::kernel::BooleanCombineGeneralNAry;
+  using dino8::kernel::BooleanCombinePlanar;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+
+  const Brep a = Brep::Box(0, 0, 0, 2, 2, 2);
+  const Brep b = Brep::Box(1, 1, 1, 3, 3, 3);
+  const Brep xor_result = BooleanCombinePlanar(a, b, BooleanOp::SymmetricDifference);
+  const Brep box = Brep::Box(20, 20, 20, 22, 22, 22);
+
+  {
+    // Two elements in first_group forces an actual pairwise
+    // BooleanCombineGeneral(box, xor_result, Union) fold call.
+    bool threw = false;
+    try {
+      BooleanCombineGeneralNAry({box, xor_result}, {}, BooleanOp::Union);
+    } catch (const std::invalid_argument&) {
+      threw = true;
+    }
+    Check(threw, "a compound element anywhere in first_group is refused once folding actually reaches it");
+  }
+  {
+    // A single-element first_group forces the final combine call against
+    // second_group to actually run BooleanCombineGeneral.
+    bool threw = false;
+    try {
+      BooleanCombineGeneralNAry({box}, {xor_result}, BooleanOp::Difference);
+    } catch (const std::invalid_argument&) {
+      threw = true;
+    }
+    Check(threw, "a compound second_group operand is refused at the final combine call");
+  }
+}
+
 // Documents the boundary of THIS increment (notch-aware ClassifyPointVsMixedSolid/
 // RayVsMixedFace/CylinderPlaneNoInteraction, boolean.cpp): the ON-check and
 // ray-cast now consult the notched cap's own true (angle, height) curve
@@ -44163,6 +44263,8 @@ int main() {
   TestBooleanCombineGeneralNAryDifferenceSubtractsEveryToolInSecondGroup();
   TestBooleanCombineGeneralNAryCallerToleranceForwardedToEveryPairwiseCall();
   TestBooleanCombineGeneralNAryNegativeControls();
+  TestBooleanCombineGeneralRefusesCompoundOperand();
+  TestBooleanCombineGeneralNAryRefusesCompoundOperandAtEveryPairwiseStep();
   TestBooleanCombineMixedUnequalRadiusGeneralAngleIntersectionAndAllOps();
   TestBooleanCombineMixedUnequalRadiusGeneralAngleArgumentOrderAndSharedArcIsBitIdentical();
   TestBooleanCombineMixedUnequalRadiusGeneralAngleNegativeControls();

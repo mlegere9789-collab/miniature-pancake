@@ -49,6 +49,16 @@ namespace dino8::kernel {
 // does NOT gap-heal imprecise operands or change this engine's own other
 // disclosed scope limits (one crossing chain per face pair, genus-0
 // faces).
+//
+// Either operand being a `Brep::Compound()` of two or more lumps (e.g. a
+// SymmetricDifference result) is refused with std::invalid_argument -
+// this engine's fragment classification is a per-face ray-cast against the
+// OTHER operand with no lump-boundary awareness at all, so a compound
+// operand was never proven safe (see boolean_general.cpp's own
+// RefuseCompoundOperand doc comment). This engine's own output is never
+// itself compound (it builds one shell of kept fragments, not a
+// Brep::Compound), so chaining two BooleanCombineGeneral calls - including
+// every pairwise step BooleanCombineGeneralNAry makes - is unaffected.
 Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op, double tolerance = 0.001);
 
 // N-ary counterpart of BooleanCombineGeneral - third and last of this
@@ -65,12 +75,12 @@ Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op, double to
 // itself does not implement it at all (see that function's own doc
 // comment above), so there is nothing for an N-ary fold to build on.
 // `tolerance` is forwarded unchanged to every pairwise call this function
-// makes. Unlike BooleanCombineMixedNAry/BooleanCombinePlanarNAry, this
-// function does NOT refuse a compound (multi-lump) operand - the general
-// engine has no RefuseCompoundOperand guard of its own to inherit (a
-// pre-existing, separately disclosed gap; see the "Multi-body / multi-tool
-// booleans" bullet's own "silently unguarded... by the general engine"
-// note).
+// makes. Like BooleanCombineMixedNAry/BooleanCombinePlanarNAry, this
+// function refuses a compound (multi-lump) operand at every pairwise fold
+// step - BooleanCombineGeneral() itself now has its own file-local
+// RefuseCompoundOperand guard (boolean_general.cpp), closing the
+// "silently unguarded... by the general engine" gap the "Multi-body /
+// multi-tool booleans" bullet used to name.
 Brep BooleanCombineGeneralNAry(const std::vector<Brep>& first_group, const std::vector<Brep>& second_group,
                                 BooleanOp op, double tolerance = 0.001);
 

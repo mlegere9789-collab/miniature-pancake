@@ -2781,6 +2781,33 @@ std::vector<FaceFrags> FragmentFaces(const ON_Brep& brep, int n, std::vector<std
   return out;
 }
 
+// PARITY_MAP.md's "Multi-body / multi-tool booleans" bullet named this
+// engine's own gap explicitly: unlike boolean.cpp's BooleanCombinePlanar/
+// BooleanCombineMixed (each guarded by their own file-local
+// RefuseCompoundOperand before this fix), a Brep::Compound() of two or more
+// lumps fed to BooleanCombineGeneral was silently processed one face at a
+// time with no lump-boundary awareness at all - not proven wrong, but never
+// proven right either, since every fragment here is classified purely by a
+// single interior-point ray-cast against the OTHER operand's faces
+// (FragmentFacesOf/its ray-cast classification step below), which never
+// looks at which lump a face belongs to. A caller passing a real
+// SymmetricDifference result (this engine's own most likely source of a
+// compound operand, since BooleanCombineGeneral itself refuses to build one)
+// would get whatever the per-face fragmentation happens to produce, with no
+// way to tell a genuine unsupported-shape refusal from a subtly wrong
+// result. Refused with the same clear message boolean.cpp's own
+// RefuseCompoundOperand uses, rather than left an unhandled case.
+void RefuseCompoundOperand(const Brep& operand, const char* function_name) {
+  if (operand.LumpFaceRanges().size() <= 1) return;
+  throw std::invalid_argument(std::string("dino8::kernel::") + function_name +
+                              ": an operand is a Brep::Compound of several lumps (e.g. a "
+                              "SymmetricDifference result) - this engine classifies fragments "
+                              "purely by a per-face ray-cast against the other operand with no "
+                              "lump-boundary awareness, so a multi-lump operand is refused rather "
+                              "than silently processed; see boolean.cpp's own RefuseCompoundOperand "
+                              "doc comment for the same rule on the other two B-rep engines");
+}
+
 }  // namespace
 
 Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op, double tolerance) {
@@ -2792,6 +2819,8 @@ Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op, double to
   if (!(tolerance > 0.0)) {
     throw std::invalid_argument("dino8::kernel::BooleanCombineGeneral: tolerance must be positive");
   }
+  RefuseCompoundOperand(a, "BooleanCombineGeneral");
+  RefuseCompoundOperand(b, "BooleanCombineGeneral");
 
   const ON_Brep& ba = a.raw();
   const ON_Brep& bb = b.raw();
