@@ -36857,6 +36857,71 @@ void TestPipeRoundCaps() {
         "round_caps on a closed rail throws (no ends to dome)");
 }
 
+// PipeVariable()'s own round_caps option, closing the "does not extend to
+// PipeVariable()" half of Pipe()'s round_caps doc comment: unlike Pipe(),
+// the two domes need not share a radius - each is sized to its own end's
+// local tube radius.
+void TestPipeVariableRoundCaps() {
+  const double r0 = 2.0, r1 = 1.0;
+  const NurbsCurve line = Polyline({P(0, 0, 0), P(10, 0, 0)});
+
+  // Straight rail, equal radii at both ends: bit-for-bit the same capsule
+  // Pipe()'s own round_caps test already verifies, via the independent
+  // PipeVariable() code path - the strongest possible cross-check.
+  {
+    const Brep via_pipe = Brep::Pipe(line, r0, /*cap=*/true, 4, /*round_caps=*/true);
+    const Brep via_variable = Brep::PipeVariable(line, {{0.0, r0}, {1.0, r0}}, /*cap=*/true, 4, /*round_caps=*/true);
+    CheckSolidTopology(via_variable, 3, "round-capped PipeVariable with equal end radii");
+    const double v_pipe = via_pipe.TessellateToClosedMesh(64, 32).Volume();
+    const double v_variable = via_variable.TessellateToClosedMesh(64, 32).Volume();
+    Check(std::abs(v_pipe - v_variable) / v_pipe < 1e-9,
+          "PipeVariable with equal end radii matches Pipe's own round-capped capsule volume exactly");
+  }
+
+  // Straight rail, DIFFERENT radii at each end (a round-capped frustum):
+  // each dome sits at its own end's own radius, so every sampled point on
+  // dome k lies at exactly r_k from that end's own center - the direct
+  // check that each meridian was built from the RIGHT radius, not just
+  // that SOME sphere-like cap exists.
+  {
+    const Brep frustum = Brep::PipeVariable(line, {{0.0, r0}, {1.0, r1}}, /*cap=*/true, 4, /*round_caps=*/true);
+    CheckSolidTopology(frustum, 3, "round-capped PipeVariable frustum with unequal end radii");
+    const Point3d center0(0, 0, 0), center1(10, 0, 0);
+    double worst = 0.0;
+    for (int face_index : {1, 2}) {
+      const NurbsSurface dome = FaceSurface(frustum, face_index);
+      const ON_Interval du = dome.raw().Domain(0), dv = dome.raw().Domain(1);
+      const Point3d center = (face_index == 1) ? center0 : center1;
+      const double radius = (face_index == 1) ? r0 : r1;
+      for (int i = 0; i <= 16; ++i) {
+        for (int j = 0; j <= 16; ++j) {
+          const Point3d p = dome.PointAt(du.ParameterAt(i / 16.0), dv.ParameterAt(j / 16.0));
+          worst = std::max(worst, std::abs(p.DistanceTo(center) - radius));
+        }
+      }
+    }
+    Check(worst < 1e-9, "each dome's sampled points lie at exactly ITS OWN end's radius from its own center");
+
+    // Volume-differencing: swapping the two flat discs for domes adds
+    // exactly the sum of the two (unequal) hemisphere volumes, the same
+    // rail-shape-independent argument Pipe()'s own test already relies
+    // on, generalized to two different radii.
+    const Brep flat = Brep::PipeVariable(line, {{0.0, r0}, {1.0, r1}}, /*cap=*/true, 4, /*round_caps=*/false);
+    const double v_flat = flat.TessellateToClosedMesh(48, 48).Volume();
+    const double v_round = frustum.TessellateToClosedMesh(48, 48).Volume();
+    const double expected_delta = (2.0 / 3.0) * M_PI * (r0 * r0 * r0 + r1 * r1 * r1);
+    Check(std::abs((v_round - v_flat) - expected_delta) / expected_delta < 0.01,
+          "round caps add exactly the sum of both end hemisphere volumes over the flat-capped frustum");
+  }
+
+  // Negative controls.
+  Check(Throws([&] { Brep::PipeVariable(line, {{0.0, r0}, {1.0, r1}}, /*cap=*/false, 4, /*round_caps=*/true); }),
+        "round_caps requires cap");
+  const NurbsCurve circle_rail = Circle(P(0, 0, 0), Vector3d(0, 0, 1), 4.0);
+  Check(Throws([&] { Brep::PipeVariable(circle_rail, {{0.0, r0}, {1.0, r0}}, /*cap=*/true, 32, /*round_caps=*/true); }),
+        "round_caps on a closed rail throws (no ends to dome)");
+}
+
 void TestSweep1TwistIsExactOnAStraightRailAndRejectsOnClosedRail() {
   // Straight rail along +z: RmfFrames' own initial-normal rule picks
   // r0 = (1, 0, 0) for tangent (0, 0, 1) (the world axis least aligned
@@ -44372,6 +44437,7 @@ int main() {
   sweep_tests::TestLoftTangentConstrainedEndsMatchExactly();
   sweep_tests::TestSweep1AndPipe();
   sweep_tests::TestPipeRoundCaps();
+  sweep_tests::TestPipeVariableRoundCaps();
   sweep_tests::TestSweep1TwistIsExactOnAStraightRailAndRejectsOnClosedRail();
   sweep_tests::TestSweep1ScaleIsExactContinuouslyOnAStraightRailAndRejectsOnClosedRail();
   sweep_tests::TestSweep1RoadlikeAlignmentMatchesExtrudeOnAStraightRailAndRejectsDegenerateUp();

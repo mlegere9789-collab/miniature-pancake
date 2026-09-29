@@ -1834,6 +1834,66 @@ this document. This session's only source edits are
 dino8-kernel/include/dino8/kernel/brep.h, dino8-kernel/src/sweep.cpp, and
 dino8-kernel/tests/test_basic.cpp.
 
+**Twentieth same-day follow-up:** `git log --oneline -8 --
+dino8-kernel/src` at the start of this session showed `619a310` (`kernel:
+BooleanCombinePlanar accepts a compound operand for Difference/
+Intersection`, in **kernel: Boolean operations**) as HEAD, with `86155be`
+(`NurbsCurve::OffsetInPlane` exact-mitering polylines, **kernel:
+Offsetting, shelling, thickening**) and `d78d841` (`Brep::OffsetWireBody`,
+**kernel: Topology & data structure**) as HEAD~1/HEAD~2 - none in **kernel:
+Sweeping, lofting, extruding, revolving** - with `91b6a04` (`Brep::Pipe`
+round_caps, the Nineteenth follow-up above) the most recent commit
+actually in this category. Rather than attempt "kinked-rail handling" -
+that bullet's OTHER remaining half, which needs a genuinely different,
+multi-face mitered-joint construction (each straight segment its own
+cylindrical wall, trimmed by the shared bisector plane at every interior
+vertex, welded into one solid) that this document's own prior evidence
+already flagged as "further work", not a same-shape extension - this
+session picked the smaller, still-real half of the SAME bullet the
+Nineteenth follow-up explicitly left open: extending `round_caps` to
+`Brep::PipeVariable`.
+
+`Brep::PipeVariable(rail, radius_points, cap, stations, round_caps)`
+(brep.h; sweep.cpp) adds the identical `round_caps` parameter Pipe()
+already has, reusing the SAME `AddDomeCap()`/`RoundCapSpec` machinery
+`AssembleSweptBody()` already exposes (no new geometry code): each dome
+is sized to THAT end's own local radius - `radius_at()` evaluated at the
+end's own merged arc-length fraction, matching the end section's actual
+built circle bit-for-bit - rather than assuming a single constant radius
+the way Pipe() can, since `PipeVariable`'s two ends need not match. This
+closes a genuine special case Pipe()'s own dome construction could not
+reach at all (a variable-radius tube has no single "the radius" for
+Pipe()'s signature to take).
+
+Verified (`TestPipeVariableRoundCaps`, tests/test_basic.cpp), not just
+argued: with equal radii at both ends, `PipeVariable`'s round-capped
+result matches `Pipe`'s own independently-built round-capped capsule
+volume to 1e-9 relative error - two separate call paths (one delegating
+to `Sweep1()` internally, one building its own skin) landing on the same
+shape; with UNEQUAL end radii (a round-capped frustum), every sampled
+point on EACH dome face lies at exactly (< 1e-9) that end's OWN radius
+from that end's own center - the direct proof each meridian was built
+from the right radius, not merely "a" radius; and the same rail-shape-
+independent volume-differencing argument Pipe()'s own test uses (swapping
+flat discs for domes adds exactly the domes' own volume) generalizes
+correctly to two DIFFERENT hemisphere volumes, matching to within 1%.
+Every refusal case (`round_caps` with `cap` false, `round_caps` on a
+closed rail) throws `std::invalid_argument`, mirroring Pipe()'s own.
+Full `dino8_kernel_tests` suite (via `ctest`) re-run clean: 100% passing,
+0 regressions.
+
+Still partial, and this category's present/partial/missing counts remain
+UNCHANGED (6/21/2/29, 56.9%) - the same "narrowed, not flipped" outcome as
+every prior follow-up: `PipeThickWalled`'s own round-cap gap is untouched
+(an annular rim genuinely needs a different, non-single-circle meridian
+construction, not a copy of this session's work); "kinked-rail handling"
+remains completely untouched, exactly as the Nineteenth follow-up left
+it; and the app's own `PipeCommand`/`PipeVariableCommand` are unchanged -
+a grep for `round_caps`/`RoundCap` in `dino8-app/src` still finds nothing
+but this document. This session's only source edits are
+dino8-kernel/include/dino8/kernel/brep.h, dino8-kernel/src/sweep.cpp, and
+dino8-kernel/tests/test_basic.cpp.
+
 ### Kernel category gaps (missing / partial items, with evidence)
 
 **kernel: Topology & data structure** (topology):
@@ -2262,7 +2322,7 @@ headline is unaffected (no bucket moved).*
 - [partial] Sweep controls: twist along path, scale along path, road-like / fixed-up alignment (AutoCAD SWEEP Twist/Scale/Alignment, Rhino Roadlike/Frame rotate) — all three now exist kernel-native on `Brep::Sweep1` (brep.h): `twist_total` adds an extra rotation about the rail's own tangent, `scale_end` a uniform scale about each station's own frame origin, both linear in arc-length station fraction and EXACT on a straight rail (confirmed by `TestSweep1TwistIsExactOnAStraightRailAndRejectsOnClosedRail` and `TestSweep1ScaleIsExactContinuouslyOnAStraightRailAndRejectsOnClosedRail`, tests/test_basic.cpp); `roadlike_up` replaces the RMF's own reference direction at every station with a fixed world vector projected perpendicular to the tangent there (AutoCAD's Alignment=Roadlike), confirmed exact against `Extrude()` itself on a straight rail and shown to need no closed-rail restriction, unlike the other two (`TestSweep1RoadlikeAlignmentMatchesExtrudeOnAStraightRailAndRejectsDegenerateUp`). Still partial: twist/scale are linear end-to-end only, not a piecewise schedule; no independent per-axis scale; and the app's `Sweep1Command` still has none of these options.
 - [partial] Loft options: Loose/Tight/Uniform styles, Closed loft, start/end tangency matching to surfaces, guide curves, Rebuild/Refit — kernel `Brep::Loft` provides a closed (periodic) loft, a degree choice, and exact start/end tangency: optional `start_tangent`/`end_tangent` `NurbsCurve` arguments (brep.h:391-393) pin the wall's derivative at a constrained end in closed form, confirmed exact across the full u range by directly reading `TestLoftTangentConstrainedEndsMatchExactly` (tests/test_basic.cpp:31593 — corrected 2026-09-28, was mis-cited :27782). Still partial: this is curve-to-vector-field tangency, not surface-to-surface edge tangency matching; requires degree >= 2 and non-rational open sections; not exposed in the app's `LoftCommand` at all; still no Loose/Tight/Uniform styles, no guide curves, no Rebuild/Refit.
 - [partial] Developable loft between two rails (DevLoft) — app `DevLoft` (cmd_remaining.cpp:952) is a monotone twist-minimising ruling search producing an approximately-developable ruled surface. No kernel equivalent (`UnrollDevelopable` unrolls surfaces but does not construct a developable loft).
-- [partial] Pipe: constant-radius tube around a curve with optional caps — kernel `Brep::Pipe` (sweep.cpp:1905 — corrected 2026-09-28, was mis-cited sweep.cpp:1855-1870) is an exact rational circle swept by Sweep1: exact on a straight rail, closed-rail tube. **Narrowed: a `round_caps` option now exists.** `Brep::Pipe`'s new `round_caps` parameter replaces the two flat fan caps with genuine hemispherical NURBS dome caps (Rhino Pipe's own "round" cap style) built by a new `AddDomeCap()` (sweep.cpp) sharing the tube's own rim edge exactly - see this category's own "Pipe — Round cap option" bullet below for the full construction and exactness argument. App `PipeCommand` gives a mesh when Cap=Yes or the rail is closed. Still partial: curved rails are a station-count interpolant, `round_caps` is wired into `Brep::Pipe` only (not `PipeVariable`/`PipeThickWalled`), no kinked-rail handling, and the app never calls it.
+- [partial] Pipe: constant-radius tube around a curve with optional caps — kernel `Brep::Pipe` (sweep.cpp:1905 — corrected 2026-09-28, was mis-cited sweep.cpp:1855-1870) is an exact rational circle swept by Sweep1: exact on a straight rail, closed-rail tube. **Narrowed: a `round_caps` option now exists.** `Brep::Pipe`'s new `round_caps` parameter replaces the two flat fan caps with genuine hemispherical NURBS dome caps (Rhino Pipe's own "round" cap style) built by a new `AddDomeCap()` (sweep.cpp) sharing the tube's own rim edge exactly - see this category's own "Pipe — Round cap option" bullet below for the full construction and exactness argument. App `PipeCommand` gives a mesh when Cap=Yes or the rail is closed. **Further narrowed: `Brep::PipeVariable` now has its own `round_caps` option too**, each dome sized to that end's own local radius (see this category's own "Pipe — Round cap option" bullet below for both). Still partial: curved rails are a station-count interpolant, `round_caps` is wired into `Brep::Pipe`/`PipeVariable` only (not `PipeThickWalled`, whose annular rim needs a different, non-single-circle meridian construction), no kinked-rail handling, and the app never calls it.
 - [partial] Pipe variants: multiple radii along the rail, thick-walled (inner+outer) pipe, MultiPipe per-branch radii — kernel `Brep::PipeVariable` (brep.h:586; sweep.cpp:1921 — corrected 2026-09-28, was mis-cited brep.h:465-509; sweep.cpp:1871-1979) piecewise-linearly interpolates (t, radius) control points, exact for a 2-point taper on a straight rail (`TestPipeVariable`, tests/test_basic.cpp:32278 — corrected 2026-09-28, was mis-cited :28019). **Correction: this bullet previously said "no thick-walled pipe" — stale.** `Brep::PipeThickWalled` (brep.h:589 — corrected 2026-09-28, was mis-cited brep.h:585) already exists (landed in commit `eacfea7`, before this pass): a genuine hollow annular solid (two oppositely-facing walls plus ruled annular end caps sharing literal edges with both), not a mesh-boolean approximation. Still partial: `MultiPipe` is still single-radius capped meshes unioned, and the app `PipeCommand` still has a single radius with no thick-walled option.
 - [partial] Cap planar openings of open polysurfaces (Cap; kernel end-cap synthesis) — app `Cap` samples 8 points per naked edge into a polyline before capping, so a curved hole gets a polygonal cap. Kernel `Brep::CapPlanarHoles` (brep.cpp:7815 — corrected 2026-09-28, was mis-cited brep.cpp:6849) gives a genuinely re-capped closed solid, but refuses any curved naked edge (`if (!e.IsLinear(tolerance::kDistance)) ok = false;`, brep.cpp:7852 — corrected 2026-09-28, was mis-cited brep.cpp:6886). Unaffected by the `Check()` false-DegenerateFace defect — `CapPlanarHoles` doesn't call `Check()`/`RemoveDegenerateFaces`.
 - [partial] Sweep/extrude a surface, polysurface or mesh face along a path, tapered, or to a point into a mesh solid (ExtrudeSrfAlongCrv/ExtrudeSrfTapered/ExtrudeSrfToPoint) — app `ExtrudeSrfCommand` with translation-only station transforms; mesh output only, no B-rep version in the kernel.
@@ -3037,7 +3097,7 @@ top 40:
 - [kernel/sweeplofts] Sweep along two rails — multi-section, independent scaling (partial)
 - [kernel/sweeplofts] Loft options — surface-to-surface edge tangency, guide curves (partial)
 - [kernel/sweeplofts] Developable loft between two rails — kernel API (partial)
-- [kernel/sweeplofts] Pipe — Round cap option (done - `Brep::Pipe`'s new `round_caps` parameter, genuine hemispherical NURBS domes, not a mesh-approximate one; see the "kernel category gaps" bullet above), kinked-rail handling (still partial)
+- [kernel/sweeplofts] Pipe — Round cap option (done for `Brep::Pipe` and `Brep::PipeVariable` - both build genuine hemispherical NURBS domes, not a mesh-approximate one, `PipeVariable`'s sized per-end to that end's own local radius; see the "kernel category gaps" bullet above), still missing on `PipeThickWalled` and kinked-rail handling (still partial)
 - [kernel/sweeplofts] Pipe variants — real MultiPipe (partial; thick-walled pipe is done, see `Brep::PipeThickWalled`)
 - [kernel/sweeplofts] Cap planar openings — curved naked edges (partial)
 - [kernel/sweeplofts] Sweep/extrude surface/polysurface/mesh face — B-rep version (partial)

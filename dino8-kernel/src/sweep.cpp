@@ -2800,7 +2800,7 @@ Brep Brep::Pipe(const NurbsCurve& rail, double radius, bool cap, int stations, b
 }
 
 Brep Brep::PipeVariable(const NurbsCurve& rail_in, const std::vector<std::pair<double, double>>& radius_points,
-                        bool cap, int stations) {
+                        bool cap, int stations, bool round_caps) {
   const char* caller = "PipeVariable";
   if (stations < 2) Fail(caller, "stations must be at least 2");
   if (radius_points.size() < 2) Fail(caller, "at least 2 radius points are required");
@@ -2821,6 +2821,8 @@ Brep Brep::PipeVariable(const NurbsCurve& rail_in, const std::vector<std::pair<d
   if (wrap && std::fabs(radius_points.front().second - radius_points.back().second) > 1e-9 * CurveScale(rail)) {
     Fail(caller, "a closed rail needs equal radius at t = 0 and t = 1 (the tube must meet itself at the seam)");
   }
+  if (round_caps && !cap) Fail(caller, "round_caps requires cap");
+  if (round_caps && wrap) Fail(caller, "round_caps requires an open rail - a closed tube has no ends to dome");
 
   const double total_length = rail_in.Length();
   if (!(total_length > 0.0)) Fail(caller, "the rail has zero length");
@@ -2904,7 +2906,15 @@ Brep Brep::PipeVariable(const NurbsCurve& rail_in, const std::vector<std::pair<d
     const std::vector<double> params_v = SkinParameters(sections, wrap, &period, caller);
     wall = SkinSections(sections, std::min(3, m - 1), wrap, params_v, period, caller);
   }
-  return AssembleSweptBody(wall.release(), want_caps, want_caps, false, false, caller);
+  if (!round_caps) return AssembleSweptBody(wall.release(), want_caps, want_caps, false, false, caller);
+  // Each dome is sized to its OWN end's local radius (radius_at() at that
+  // end's exact merged fraction, matching sections[0]/sections.back()'s
+  // own circle radius bit-for-bit) rather than assuming Pipe()'s single
+  // constant radius - the two ends need not match.
+  const RoundCapSpec spec0{frames.front().origin, -frames.front().t, radius_at(merged.front())};
+  const RoundCapSpec spec1{frames.back().origin, frames.back().t, radius_at(merged.back())};
+  return AssembleSweptBody(wall.release(), /*cap_v0=*/true, /*cap_v1=*/true, /*cap_u0=*/false, /*cap_u1=*/false,
+                           caller, nullptr, nullptr, &spec0, &spec1);
 }
 
 Brep Brep::PipeThickWalled(const NurbsCurve& rail_in, double outer_radius, double inner_radius, bool cap,

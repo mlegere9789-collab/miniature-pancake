@@ -857,10 +857,13 @@ class Brep {
   // rather than being welded to it after the fact. Requires `cap` and
   // throws std::invalid_argument if `cap` is false, if `rail` is closed
   // (a closed tube has no ends to dome), or if `stations` < 2. Still
-  // partial: does not extend to PipeVariable()/PipeThickWalled(), and a
-  // sharply kinked (C1-discontinuous) rail is not specially handled -
-  // each dome's outward direction comes from the rail's own single end
-  // tangent alone, exactly as the flat-cap case already relies on.
+  // partial: does not extend to PipeThickWalled() (an annular rim is not
+  // a single circle a dome's own meridian construction can be built from
+  // without further work), and a sharply kinked (C1-discontinuous) rail
+  // is not specially handled - each dome's outward direction comes from
+  // the rail's own single end tangent alone, exactly as the flat-cap
+  // case already relies on. `PipeVariable()` below now has its own
+  // `round_caps` option, each dome sized to that end's own local radius.
   static Brep Pipe(const NurbsCurve& rail, double radius, bool cap = true, int stations = 32,
                    bool round_caps = false);
 
@@ -904,11 +907,18 @@ class Brep {
   // producing a mismatched step where the tube wraps around.
   //
   // Caps as Pipe() (flat end discs on an open rail when `cap`; a closed
-  // rail has no ends and ignores `cap`). Throws std::invalid_argument
-  // for the `radius_points` violations above, `stations` < 2, or a
-  // degenerate (zero-length or zero-tangent) rail.
+  // rail has no ends and ignores `cap`). `round_caps` is Pipe()'s own
+  // hemispherical-dome option, extended here: each end's dome is sized to
+  // THAT end's own local radius (`radius_at` evaluated at the end's own
+  // arc-length fraction, matching the end section's actual circle exactly
+  // - not necessarily the same radius at both ends, unlike Pipe()'s single
+  // constant radius), built by the same AddDomeCap() meridian construction
+  // Pipe() uses. Requires `cap` and an open rail, same as Pipe(); throws
+  // std::invalid_argument for the `radius_points` violations above,
+  // `stations` < 2, a degenerate (zero-length or zero-tangent) rail, or
+  // `round_caps` with `cap` false or a closed rail.
   static Brep PipeVariable(const NurbsCurve& rail, const std::vector<std::pair<double, double>>& radius_points,
-                           bool cap = true, int stations = 32);
+                           bool cap = true, int stations = 32, bool round_caps = false);
 
   // PipeThickWalled: a genuine hollow tube - the annular solid between
   // an `outer_radius` and `inner_radius` circle swept along `rail` -
