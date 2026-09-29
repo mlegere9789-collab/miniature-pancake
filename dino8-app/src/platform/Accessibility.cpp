@@ -8,14 +8,15 @@ void InitAccessibility(const std::string& app_name) { PlatformInitAccessibility(
 
 void UpdateAccessibility(const std::string& prompt, const std::string& command_input,
                           const std::deque<std::string>& history, const AccessibleNode& menu_bar,
-                          const AccessibleNode& layers_panel, const AccessibleNode& properties_panel) {
+                          const AccessibleNode& command_options, const AccessibleNode& layers_panel,
+                          const AccessibleNode& properties_panel) {
   AccessibleNode command_line;
   command_line.name = "Command Line";
   command_line.role = AccessibleRole::Log;
   command_line.description = "Command line input and the command-history log above it";
   command_line.text = BuildCommandLineText(prompt, command_input, history);
 
-  PlatformSetAccessibleTree({command_line, menu_bar, layers_panel, properties_panel});
+  PlatformSetAccessibleTree({command_line, menu_bar, command_options, layers_panel, properties_panel});
   PlatformPumpAccessibilityEvents();
 }
 

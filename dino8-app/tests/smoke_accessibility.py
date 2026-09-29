@@ -24,6 +24,12 @@ connection, the same way a screen reader would - to prove:
      changes - like the command line's - after a real command creates an
      object (the same before/after pattern as check 3, over a different
      accessible).
+  7. A "Command Options" accessible (role LIST) is discoverable, is empty
+     while no command is running, gains one ListItem per option (e.g.
+     "Diameter", "3Point", "Vertical") the moment a real command that offers
+     some (Circle) starts running, and goes back to empty once that command
+     finishes - mirroring the option chips Application.cpp's DrawCommandLine
+     draws next to the prompt (see Command.h's OptionSpec).
 
 This is a real integration test: at-spi2-registryd is the actual daemon
 GNOME uses, pyatspi is the actual library screen readers use, and Dino8 is
@@ -119,8 +125,10 @@ def main():
     require_tool("Xvfb")
 
     tmp = tempfile.mkdtemp(prefix="dino8_a11y_")
+    sync0 = os.path.join(tmp, "sync0")
     sync1 = os.path.join(tmp, "sync1")
     sync2 = os.path.join(tmp, "sync2")
+    sync3 = os.path.join(tmp, "sync3")
     script_path = os.path.join(tmp, "script.txt")
     with open(script_path, "w") as f:
         # `@waitfile` (like the built-in `@wait N` frames directive) needs
@@ -129,9 +137,23 @@ def main():
         # CommandEngine::Execute() as an (unknown) command and the script
         # keeps going immediately, which is exactly the race this
         # synchronization exists to avoid.
+        #
+        # "Circle 0,0,0" starts Circle and feeds it a center point, leaving
+        # it running and waiting for a radius (Command::options is populated
+        # from Begin() unconditionally - see cmd_create.cpp's CircleCommand -
+        # so the Diameter/3Point/Vertical chips are already live at this
+        # point); "5" then feeds the radius, finishing it. This is what lets
+        # the test observe the Command Options accessible go
+        # empty -> populated -> empty around a real running command, the
+        # same way checks 3/6 already observe the command line/Properties
+        # change around Line.
+        f.write(f"@waitfile {sync0}\n")
+        f.write("Circle 0,0,0\n")
         f.write(f"@waitfile {sync1}\n")
-        f.write("Line 0,0,0 10,10,0\n")
+        f.write("5\n")
         f.write(f"@waitfile {sync2}\n")
+        f.write("Line 0,0,0 10,10,0\n")
+        f.write(f"@waitfile {sync3}\n")
 
     procs = []
     dino8_proc = None
@@ -256,6 +278,49 @@ def main():
             die('"Properties" accessible not found among the application\'s children')
         ok('"Properties" accessible is discoverable via the real AT-SPI2 desktop')
 
+        cmd_options = find_child_by_name(app, "Command Options", 10)
+        if cmd_options is None:
+            die('"Command Options" accessible not found among the application\'s children')
+        ok('"Command Options" accessible is discoverable via the real AT-SPI2 desktop')
+        if cmd_options.childCount != 0:
+            fail(f"Command Options has {cmd_options.childCount} children before any command runs (expected 0)")
+        else:
+            ok("Command Options has no ListItem children while no command is running")
+
+        def option_names(node):
+            names = []
+            for j in range(node.childCount):
+                child = node.getChildAtIndex(j)
+                if child is not None:
+                    names.append(child.name)
+            return names
+
+        open(sync0, "w").close()  # let the script run "Circle 0,0,0" (starts Circle, waits for a radius)
+
+        deadline = time.time() + 10
+        names = []
+        while time.time() < deadline:
+            names = option_names(cmd_options)
+            if names:
+                break
+            time.sleep(0.2)
+        if "Diameter" not in names:
+            fail(f'Command Options does not list "Diameter" while Circle is running (got {names!r})')
+        else:
+            ok(f"Command Options lists Circle's option chips while it is running ({names!r})")
+
+        open(sync1, "w").close()  # let the script run "5" (feeds the radius, finishing Circle)
+
+        deadline = time.time() + 10
+        remaining = option_names(cmd_options)
+        while time.time() < deadline and remaining:
+            remaining = option_names(cmd_options)
+            time.sleep(0.2)
+        if remaining:
+            fail(f"Command Options still lists options after Circle finished within 10s (got {remaining!r})")
+        else:
+            ok("Command Options goes back to empty once the running command finishes")
+
         def find_objects_entry(properties_node):
             try:
                 for j in range(properties_node.childCount):
@@ -280,7 +345,7 @@ def main():
         else:
             ok(f"Properties reports the document's object count before the command runs ({properties_before!r})")
 
-        open(sync1, "w").close()  # let the script run "Line 0,0,0 10,10,0"
+        open(sync2, "w").close()  # let the script run "Line 0,0,0 10,10,0"
 
         deadline = time.time() + 10
         after = before
@@ -311,7 +376,7 @@ def main():
         elif properties_after is not None:
             ok(f"Properties' object count updates after a command runs ({properties_before!r} -> {properties_after!r})")
 
-        open(sync2, "w").close()  # let the app finish its remaining frames/script and exit
+        open(sync3, "w").close()  # let the app finish its remaining frames/script and exit
 
         try:
             out, _ = dino8_proc.communicate(timeout=20)

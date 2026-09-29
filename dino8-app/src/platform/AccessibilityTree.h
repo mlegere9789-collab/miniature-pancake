@@ -7,9 +7,12 @@
 // Scope (see docs/ACCESSIBILITY.md for how this grew): the command line's
 // live typed text and full command-history log, the main menu bar (mirrored
 // live from exactly what ui/MenuBar.cpp draws each frame - see
-// MenuTreeBuilder below), and the Layers and Properties panels' current
-// content. The 3D viewport and the ~40 other panels/dialogs are still not
-// mirrored into this tree.
+// MenuTreeBuilder below), the currently running command's options (the
+// clickable chips Application.cpp's DrawCommandLine draws next to the
+// prompt - see BuildCommandOptionsNode), and the Layers and Properties
+// panels' current content (Properties' editable rows are flagged as such -
+// see PropertyEntry::editable). The 3D viewport and the ~40 other
+// panels/dialogs are still not mirrored into this tree.
 #pragma once
 
 #include <deque>
@@ -105,15 +108,52 @@ AccessibleNode BuildLayersPanelNode(const std::vector<LayerSummary>& layers);
 // One Properties-panel row: a label/value pair, e.g. {"Locked", "No"} or
 // {"Layer", "Default"} - the same facts DrawPropertiesPanel shows (either
 // about the current selection, or about the document/viewport when nothing
-// is selected), reduced to plain text.
+// is selected), reduced to plain text. `editable` is true for a row that
+// mirrors an actual editable widget in DrawPropertiesPanel (a text field,
+// checkbox or combo the user can change - e.g. Name, Locked, Layer) rather
+// than a read-only fact (e.g. Type, or anything shown when nothing is
+// selected) - see BuildPropertiesPanelNode for how that's surfaced.
 struct PropertyEntry {
   std::string label;
   std::string value;
+  bool editable = false;
 };
 
 // Builds the "Properties" List accessible: `heading` names what the
 // properties describe (e.g. "3 objects selected", "No selection"), and one
-// ListItem per entry follows.
+// ListItem per entry follows. An `editable` entry gets a Description noting
+// it can be changed and how (matching the real widget DrawPropertiesPanel
+// draws for it - free text, or a fixed Yes/No choice), so a screen-reader
+// user knows which values are just facts and which are actually editable
+// controls, without yet giving AT-SPI a way to perform that edit itself
+// (see docs/ACCESSIBILITY.md's "known gaps": still a read-only view).
 AccessibleNode BuildPropertiesPanelNode(const std::string& heading, const std::vector<PropertyEntry>& entries);
+
+// One option currently offered by the running command (Command.h's
+// OptionSpec, reduced to plain data and kept here rather than in Command.h,
+// the same way LayerSummary/PropertyEntry above keep this module
+// independent of doc/Document and command state): e.g. {"Radius", "5", {},
+// true, false} for a numeric Radius option, or {"Mode", "Lines",
+// {"Lines","Arcs"}, false, false} for a value cycled through a fixed list.
+struct CommandOptionSummary {
+  std::string name;
+  std::string value;
+  std::vector<std::string> choices;
+  bool numeric = false;
+  bool toggle = false;
+};
+
+// Builds the "Command Options" List accessible: one ListItem per option the
+// currently running command offers (Application.cpp's DrawCommandLine draws
+// these as clickable chips next to the prompt), named the same way the chip
+// is labelled ("Radius=5", or just "Diameter" when it has no value yet) and
+// described with exactly how to change it - the same guidance
+// DrawCommandLine's per-chip tooltip gives a sighted mouse user (click to
+// toggle / click to cycle through its choices / click then type a new value
+// / type the option's name), reduced to plain text. No children (an empty
+// list, not a missing accessible) when no command is running or the running
+// command offers no options right now - honestly matching "nothing to show"
+// rather than omitting the accessible.
+AccessibleNode BuildCommandOptionsNode(const std::vector<CommandOptionSummary>& options);
 
 }  // namespace dino8::platform

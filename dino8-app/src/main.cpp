@@ -637,6 +637,7 @@ int main(int argc, char** argv) {
     app.Frame();
     dino8::platform::UpdateAccessibility(app.Engine().Prompt(), app.CommandInput(), app.Engine().History(),
                                           dino8::app::LastMenuBarAccessibleTree(),
+                                          dino8::app::CommandOptionsAccessibleTree(app),
                                           dino8::app::LayersPanelAccessibleTree(app),
                                           dino8::app::PropertiesPanelAccessibleTree(app));
     // Catch up history_printed to whatever on_print_line already flushed

@@ -461,6 +461,9 @@ dino8::platform::AccessibleNode PropertiesPanelAccessibleTree(Application& app) 
   std::vector<dino8::platform::PropertyEntry> entries;
 
   if (sel.empty()) {
+    // Nothing selected: every row here is a fact about the document/active
+    // viewport (DrawPropertiesPanel shows them as plain text, not a widget),
+    // so none is editable.
     entries.push_back({"Objects", std::to_string(doc.ObjectCount())});
     entries.push_back({"Layers", std::to_string(doc.Layers().size())});
     entries.push_back({"Units", doc.Settings().unit_system});
@@ -479,18 +482,39 @@ dino8::platform::AccessibleNode PropertiesPanelAccessibleTree(Application& app) 
   SceneObject* first = doc.Find(sel[0]);
   if (!first) return dino8::platform::BuildPropertiesPanelNode("No selection", entries);
 
-  entries.push_back({"Name", first->name});
+  // Each `editable=true` row below mirrors a real widget in
+  // DrawPropertiesPanel's "Object" section (an InputString/Checkbox/
+  // BeginCombo the user can actually change); Type and Group are read-only
+  // facts DrawPropertiesPanel only ever prints as text.
+  entries.push_back({"Name", first->name, /*editable=*/true});
   entries.push_back({"Type", ObjectKindName(first->kind)});
-  entries.push_back({"Layer", doc.LayerFullPath(first->layer_index)});
-  entries.push_back({"Color source", first->color_by_layer ? "By layer" : "Object color"});
-  entries.push_back({"Locked", first->locked ? "Yes" : "No"});
+  entries.push_back({"Layer", doc.LayerFullPath(first->layer_index), /*editable=*/true});
+  entries.push_back({"Color source", first->color_by_layer ? "By layer" : "Object color", /*editable=*/true});
+  entries.push_back({"Locked", first->locked ? "Yes" : "No", /*editable=*/true});
   if (first->group_id >= 0) entries.push_back({"Group", std::to_string(first->group_id)});
-  entries.push_back({"Linetype", first->linetype});
-  if (!first->material_name.empty()) entries.push_back({"Material", first->material_name});
+  entries.push_back({"Linetype", first->linetype, /*editable=*/true});
+  if (!first->material_name.empty()) entries.push_back({"Material", first->material_name, /*editable=*/true});
 
   const std::string heading =
       std::to_string(sel.size()) + (sel.size() == 1 ? " object selected" : " objects selected");
   return dino8::platform::BuildPropertiesPanelNode(heading, entries);
+}
+
+// AT-SPI2-queryable snapshot of the option chips DrawCommandLine draws next
+// to the prompt while a command is running (see docs/ACCESSIBILITY.md and
+// Command.h's OptionSpec) - built straight from CommandEngine::CurrentOptions,
+// independent of whether DrawCommandLine itself drew this frame (it doesn't,
+// when the command prompt is hidden - see Application::state_.command_prompt),
+// so a screen reader can always ask what options the running command offers.
+dino8::platform::AccessibleNode CommandOptionsAccessibleTree(Application& app) {
+  std::vector<dino8::platform::CommandOptionSummary> summaries;
+  if (const std::vector<OptionSpec>* opts = app.Engine().CurrentOptions()) {
+    summaries.reserve(opts->size());
+    for (const OptionSpec& o : *opts) {
+      summaries.push_back({o.name, o.value, o.choices, o.numeric, o.toggle});
+    }
+  }
+  return dino8::platform::BuildCommandOptionsNode(summaries);
 }
 
 // ---------------------------------------------------------------------------

@@ -24,6 +24,12 @@ const dino8::platform::AccessibleNode& LastMenuBarAccessibleTree();
 // state, not from what DrawLayersPanel/DrawPropertiesPanel last drew.
 dino8::platform::AccessibleNode LayersPanelAccessibleTree(Application& app);
 dino8::platform::AccessibleNode PropertiesPanelAccessibleTree(Application& app);
+// The AT-SPI2-queryable snapshot of the option chips DrawCommandLine draws
+// next to the prompt for whatever command is currently running (see
+// CommandEngine::CurrentOptions/Command.h's OptionSpec) - an empty list
+// (still a real "Command Options" accessible, just with no children) when
+// no command is running or it currently offers none.
+dino8::platform::AccessibleNode CommandOptionsAccessibleTree(Application& app);
 void DrawToolbars(Application& app);
 void DrawLayersPanel(Application& app);
 void DrawPropertiesPanel(Application& app);

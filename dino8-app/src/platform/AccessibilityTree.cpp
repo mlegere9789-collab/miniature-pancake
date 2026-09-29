@@ -100,6 +100,38 @@ AccessibleNode BuildPropertiesPanelNode(const std::string& heading, const std::v
     AccessibleNode item;
     item.role = AccessibleRole::ListItem;
     item.name = e.label + ": " + e.value;
+    if (e.editable) item.description = "Editable: type a new " + e.label + " to change it";
+    list.children.push_back(std::move(item));
+  }
+  return list;
+}
+
+AccessibleNode BuildCommandOptionsNode(const std::vector<CommandOptionSummary>& options) {
+  AccessibleNode list;
+  list.name = "Command Options";
+  list.role = AccessibleRole::List;
+  char count_buf[32];
+  std::snprintf(count_buf, sizeof(count_buf), "%zu options", options.size());
+  list.description = count_buf;
+
+  for (const CommandOptionSummary& o : options) {
+    AccessibleNode item;
+    item.role = AccessibleRole::ListItem;
+    item.name = o.value.empty() ? o.name : o.name + "=" + o.value;
+    if (o.toggle) {
+      item.description = "Click to toggle (or type " + o.name + ")";
+    } else if (!o.choices.empty()) {
+      std::string choices;
+      for (size_t i = 0; i < o.choices.size(); ++i) {
+        if (i) choices += ", ";
+        choices += o.choices[i];
+      }
+      item.description = "Click to cycle through: " + choices + " (or type " + o.name + ")";
+    } else if (o.numeric) {
+      item.description = "Click, then type a new value (or type " + o.name + ")";
+    } else {
+      item.description = "Option: " + o.name + " (or type its name)";
+    }
     list.children.push_back(std::move(item));
   }
   return list;

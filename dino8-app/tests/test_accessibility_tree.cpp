@@ -5,10 +5,14 @@
 // input - match what the on-screen ##CommandLine window shows (see
 // Application.cpp's DrawCommandLine); the menu-bar mirror MenuTreeBuilder
 // produces (see ui/MenuBar.cpp) matches exactly what its Begin/EndMenu/Item
-// calls were; and the Layers/Properties panel builders produce the plain
-// text a screen reader should hear for a given layer/property list. This
-// needs no display, no D-Bus session, and no AT-SPI2 build at all, so it
-// runs on every platform and every CI job regardless of whether
+// calls were; the Layers/Properties panel builders produce the plain text a
+// screen reader should hear for a given layer/property list, including
+// which Properties rows are flagged as real editable widgets; and the
+// command-options builder produces the same click/type guidance
+// DrawCommandLine's option-chip tooltips give a sighted mouse user, in plain
+// text, for whatever the running command's Command::options currently are.
+// This needs no display, no D-Bus session, and no AT-SPI2 build at all, so
+// it runs on every platform and every CI job regardless of whether
 // AccessibilityLinux.cpp itself was compiled in this build (see
 // docs/ACCESSIBILITY.md).
 #include <cstdio>
@@ -20,8 +24,10 @@
 using dino8::platform::AccessibleRole;
 using dino8::platform::BuildAccessibleTree;
 using dino8::platform::BuildCommandLineText;
+using dino8::platform::BuildCommandOptionsNode;
 using dino8::platform::BuildLayersPanelNode;
 using dino8::platform::BuildPropertiesPanelNode;
+using dino8::platform::CommandOptionSummary;
 using dino8::platform::LayerSummary;
 using dino8::platform::MenuTreeBuilder;
 using dino8::platform::PropertyEntry;
@@ -179,6 +185,64 @@ int main() {
     }
   }
 
+  // Properties panel value editors: a row built with editable=true (Name,
+  // Layer, Locked, ... - the entries that mirror a real widget in
+  // DrawPropertiesPanel's "Object" section) gets a Description explaining
+  // it can be changed; a plain fact (Type, Objects/Layers counts, ...) gets
+  // none, matching PropertiesPanelAccessibleTree's own editable/non-editable
+  // split in ui/Panels.cpp.
+  {
+    std::vector<PropertyEntry> entries = {{"Name", "Box01", /*editable=*/true}, {"Type", "Box"}};
+    const dino8::platform::AccessibleNode list = BuildPropertiesPanelNode("1 object selected", entries);
+    Check(list.children.size() == 2, "two ListItem children");
+    if (list.children.size() == 2) {
+      Check(!list.children[0].description.empty(), "editable entry gets a non-empty Description");
+      Check(list.children[0].description.find("Editable") != std::string::npos,
+            "editable entry's Description says it's editable");
+      Check(list.children[0].description.find("Name") != std::string::npos,
+            "editable entry's Description names the field");
+      Check(list.children[1].description.empty(), "a plain fact entry (Type) gets no Description");
+    }
+  }
+
+  // Command options: while a command runs, Application.cpp's DrawCommandLine
+  // draws each Command::options entry as a clickable chip next to the
+  // prompt; BuildCommandOptionsNode mirrors that as a "Command Options" List,
+  // one ListItem per option, named exactly like the chip's label and
+  // described with the same click/type guidance the chip's tooltip gives a
+  // sighted mouse user - a toggle, a value cycled through fixed choices, a
+  // numeric value, and a bare no-value option each get distinct wording.
+  {
+    std::vector<CommandOptionSummary> options = {
+        {"Diameter", "", {}, /*numeric=*/false, /*toggle=*/true},
+        {"Mode", "Lines", {"Lines", "Arcs"}, /*numeric=*/false, /*toggle=*/false},
+        {"Radius", "5", {}, /*numeric=*/true, /*toggle=*/false},
+        {"3Point", "", {}, /*numeric=*/false, /*toggle=*/false},
+    };
+    const dino8::platform::AccessibleNode list = BuildCommandOptionsNode(options);
+    Check(list.name == "Command Options", "command options list is named \"Command Options\"");
+    Check(list.role == dino8::platform::AccessibleRole::List, "command options list role is List");
+    Check(list.children.size() == 4, "four ListItem children, one per option");
+    if (list.children.size() == 4) {
+      Check(list.children[0].name == "Diameter", "no-value option is named just its name");
+      Check(list.children[0].description.find("toggle") != std::string::npos, "toggle option mentions \"toggle\"");
+      Check(list.children[1].name == "Mode=Lines", "option with a value is named \"Name=Value\"");
+      Check(list.children[1].description.find("Lines, Arcs") != std::string::npos,
+            "choice option's Description lists every choice");
+      Check(list.children[2].name == "Radius=5", "numeric option keeps its current value in the name");
+      Check(list.children[2].description.find("type a new value") != std::string::npos,
+            "numeric option mentions typing a new value");
+      Check(list.children[3].description.find("3Point") != std::string::npos,
+            "plain option's Description still names it so it can be typed");
+      for (const auto& item : list.children) Check(item.role == AccessibleRole::ListItem, "each option row is a ListItem");
+    }
+  }
+  {
+    const dino8::platform::AccessibleNode empty_options = BuildCommandOptionsNode({});
+    Check(empty_options.name == "Command Options", "still named \"Command Options\" with nothing running");
+    Check(empty_options.children.empty(), "no options -> no ListItem children, not a missing accessible");
+  }
+
   // BuildAccessibleTree accepts extra top-level regions (menu bar, panels)
   // alongside the always-present command line - the shape the live bridge
   // (Accessibility.cpp::UpdateAccessibility) assembles every frame.
@@ -186,17 +250,20 @@ int main() {
     dino8::platform::AccessibleNode menu_bar;
     menu_bar.name = "Menu Bar";
     menu_bar.role = dino8::platform::AccessibleRole::MenuBar;
+    dino8::platform::AccessibleNode cmd_options = BuildCommandOptionsNode({});
     dino8::platform::AccessibleNode layers = BuildLayersPanelNode({});
     dino8::platform::AccessibleNode props = BuildPropertiesPanelNode("No selection", {});
 
     const dino8::platform::AccessibleNode root =
-        BuildAccessibleTree("Dino8", "Command: ", "", {}, {menu_bar, layers, props});
-    Check(root.children.size() == 4, "command line + menu bar + layers + properties = 4 top-level children");
-    if (root.children.size() == 4) {
+        BuildAccessibleTree("Dino8", "Command: ", "", {}, {menu_bar, cmd_options, layers, props});
+    Check(root.children.size() == 5,
+          "command line + menu bar + command options + layers + properties = 5 top-level children");
+    if (root.children.size() == 5) {
       Check(root.children[0].role == AccessibleRole::Log, "child 0 is still the command line");
       Check(root.children[1].role == dino8::platform::AccessibleRole::MenuBar, "child 1 is the menu bar");
-      Check(root.children[2].name == "Layers", "child 2 is the layers panel");
-      Check(root.children[3].name == "Properties", "child 3 is the properties panel");
+      Check(root.children[2].name == "Command Options", "child 2 is the command options list");
+      Check(root.children[3].name == "Layers", "child 3 is the layers panel");
+      Check(root.children[4].name == "Properties", "child 4 is the properties panel");
     }
   }
 

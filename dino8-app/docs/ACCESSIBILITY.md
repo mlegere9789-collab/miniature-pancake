@@ -5,11 +5,11 @@ support for users with disabilities, given that the UI is built on
 [Dear ImGui](https://github.com/ocornut/imgui). It covers four areas: a
 high-contrast theme (shipped), full keyboard operability (audited and
 fixed where it was broken), screen-reader support for the command line, the
-main menu bar, and the Layers/Properties panels (a real, still-narrow
-AT-SPI2 bridge, shipped on Linux - see section 3), and screen-reader support
-for the rest of the UI (still a hard platform limitation of ImGui itself for
-the reasons section 3 explains - not shipped, and not something a few labels
-can fix).
+main menu bar, the running command's options, and the Layers/Properties
+panels (a real, still-narrow AT-SPI2 bridge, shipped on Linux - see section
+3), and screen-reader support for the rest of the UI (still a hard platform
+limitation of ImGui itself for the reasons section 3 explains - not shipped,
+and not something a few labels can fix).
 
 ## 1. High Contrast theme - shipped
 
@@ -225,14 +225,42 @@ frame and can never drift out of sync with the real menu - a submenu that
 isn't open just never gets its items recorded, honestly matching what's on
 screen (ImGui itself never runs a closed submenu's drawing code either).
 
+**Command options**: a "Command Options" accessible (`ATSPI_ROLE_LIST`),
+present at all times (empty when no command is running or the running
+command offers none), with one `ATSPI_ROLE_LIST_ITEM` per option the
+currently running command offers - the same chips `DrawCommandLine` draws
+next to the prompt (e.g. running `Circle` shows "Diameter", "3Point",
+"Vertical"; a numeric option in progress shows as `"Radius=5"`). Each
+item's `Description` gives the exact interaction guidance the chip's own
+mouse-hover tooltip gives a sighted user: click to toggle, click to cycle
+through a fixed list of choices (every choice is named), click then type a
+new value, or just type the option's name - so a screen-reader user gets
+the same "how do I change this" answer without needing to see or hover the
+chip. Built from `CommandEngine::CurrentOptions()`
+(`ui::CommandOptionsAccessibleTree`, `src/ui/Panels.cpp`), independent of
+whether the command-line window itself is visible (`Options > ... command
+prompt` can be hidden - see `Application::CommandLineHeight`) - a
+screen-reader user can always ask what the running command offers, the
+same way Layers/Properties don't depend on their panel windows being open.
+
 **Layers and Properties panels**: a "Layers" accessible (`ATSPI_ROLE_LIST`)
 with one `ATSPI_ROLE_LIST_ITEM` per layer (name, current/visible/locked
 state, object count - the same facts the on-screen Layers table's
 Name/Cur/On/Lock/Objects columns show), and a "Properties" accessible
 (also `ATSPI_ROLE_LIST`) with one list item per `"Label: value"` fact about
 the current selection (or the document/active viewport, when nothing is
-selected) - the same facts `DrawPropertiesPanel` shows. Unlike the menu
-bar, these are built directly from `Document`/`Application` state
+selected) - the same facts `DrawPropertiesPanel` shows. A Properties row
+that mirrors a real editable widget in `DrawPropertiesPanel`'s "Object"
+section (Name, Layer, Color source, Locked, Linetype, Material - anything
+the user can actually type into, check or pick from a combo, as opposed to
+a plain fact like Type or Group) carries a `Description` saying so and
+naming the field, so a screen-reader user can tell a value editor apart
+from read-only text (`platform::PropertyEntry::editable`,
+`ui::PropertiesPanelAccessibleTree`) - though, like the rest of this
+bridge, it is still read-only from AT-SPI's own side: making the actual
+change still means driving the real widget or the equivalent command by
+name (see "Known gaps" below). Unlike the menu bar, these are built
+directly from `Document`/`Application` state
 (`ui::LayersPanelAccessibleTree`/`PropertiesPanelAccessibleTree`,
 `src/ui/Panels.cpp`), independent of whether either panel window is
 actually open on screen right now, so a screen-reader user always has
@@ -302,23 +330,30 @@ hang.
   AT-SPI-driven "toggle this layer's visibility" or "rename this object");
   they are read-only views. Making a change still requires driving the
   real widget (mouse) or the equivalent command by name (keyboard/screen
-  reader via the command line).
+  reader via the command line). This now includes Properties rows flagged
+  `editable` (see above): the flag tells a screen-reader user a value
+  editor exists, not a way to drive it over AT-SPI.
+- Command Options has the same gap: no `Action` interface, so a client
+  cannot click a chip over AT-SPI itself - only read its name/value and the
+  plain-text guidance for the equivalent mouse click or typed option name.
 
 **Internal design, independent of AT-SPI itself**: the accessible tree's
 *shape and text* are built by a small, pure, platform-independent module,
 `src/platform/AccessibilityTree.h`/`.cpp` (`BuildAccessibleTree`,
 `BuildCommandLineText`, `MenuTreeBuilder`, `BuildLayersPanelNode`,
-`BuildPropertiesPanelNode`), with its own unit test
-(`tests/test_accessibility_tree.cpp`, registered as the `dino8_accessibility_tree`
-CTest target) that needs no display, no D-Bus, and no AT-SPI2 build at
-all - it runs on every platform and every CI job. The menu bar's mirror is
-recorded live, right alongside the real ImGui menu-drawing calls in
-`src/ui/MenuBar.cpp` (`MenuTreeBuilder`'s `OpenMenu`/`CloseMenu`/`LeafMenu`/
-`Item`, driven by that file's `BeginMenuA`/`EndMenuA`/`MenuItemA`/`Item`
-wrappers), so it can never drift from what was actually drawn. The Layers
-and Properties mirrors (`src/ui/Panels.cpp`'s `LayersPanelAccessibleTree`/
-`PropertiesPanelAccessibleTree`) are built straight from `Document`/
-`Application` state, independent of `DrawLayersPanel`/`DrawPropertiesPanel`.
+`BuildPropertiesPanelNode`, `BuildCommandOptionsNode`), with its own unit
+test (`tests/test_accessibility_tree.cpp`, registered as the
+`dino8_accessibility_tree` CTest target) that needs no display, no D-Bus, and
+no AT-SPI2 build at all - it runs on every platform and every CI job. The
+menu bar's mirror is recorded live, right alongside the real ImGui
+menu-drawing calls in `src/ui/MenuBar.cpp` (`MenuTreeBuilder`'s
+`OpenMenu`/`CloseMenu`/`LeafMenu`/`Item`, driven by that file's
+`BeginMenuA`/`EndMenuA`/`MenuItemA`/`Item` wrappers), so it can never drift
+from what was actually drawn. The Layers, Properties and Command Options
+mirrors (`src/ui/Panels.cpp`'s `LayersPanelAccessibleTree`/
+`PropertiesPanelAccessibleTree`/`CommandOptionsAccessibleTree`) are built
+straight from `Document`/`Application`/`CommandEngine` state, independent of
+`DrawLayersPanel`/`DrawPropertiesPanel`/`DrawCommandLine`.
 `AccessibilityLinux.cpp` is a thin transport on top of all of this: every
 frame it receives the whole tree wholesale
 (`platform::PlatformSetAccessibleTree`) and answers AT-SPI's
@@ -335,25 +370,30 @@ logic in it.
 test: it spawns the actual built `Dino8` binary under `--smoke`, starts a
 real `dbus-daemon` and the real `at-spi2-registryd`, and uses the real
 `pyatspi` client library to walk the AT-SPI2 desktop and find Dino8's
-"Command Line", "Menu Bar" (with its "File" child), "Layers" and
-"Properties" accessibles - the same objects a screen reader would find -
-then asserts the command line's and the Properties list's content each
-change after a real command (`Line 0,0,0 10,10,0`) runs. It does not fake,
-mock, or stub any part of the AT-SPI2 stack.
+"Command Line", "Menu Bar" (with its "File" child), "Layers", "Properties"
+and "Command Options" accessibles - the same objects a screen reader would
+find - then asserts the command line's and the Properties list's content
+each change after a real command (`Line 0,0,0 10,10,0`) runs, and that
+Command Options goes empty -> lists Circle's option chips -> empty again
+around a real running `Circle` command. It does not fake, mock, or stub any
+part of the AT-SPI2 stack.
 
-This was run successfully in the environment this feature was built and
-verified in, after installing: `libatspi2.0-dev`, `libglib2.0-dev`,
-`at-spi2-core` (provides `at-spi2-registryd`), `dbus-x11` (provides
-`dbus-daemon`), and `python3-pyatspi` (Ubuntu 24.04/noble package names).
-One environment-specific wrinkle worth knowing about, not specific to this
-project: Debian/Ubuntu's `python3-pyatspi`/`python3-gi` ship a `gi._gi`
-extension compiled for one specific CPython ABI (on the box this was
-verified on, that was `python3.12`, even though the default `python3` on
-`PATH` resolved to a different, incompatible CPython build) - if
-`import pyatspi` fails in whatever interpreter you run the script with,
-find the interpreter whose compiled extension actually matches (the
-module docstring in `tests/smoke_accessibility.py` explains how) and
-re-run with that one explicitly, e.g. `python3.12 tests/smoke_accessibility.py
+This was run successfully, including the new Command Options checks, in the
+environment this addition was built and verified in, after installing:
+`libatspi2.0-dev`, `libglib2.0-dev`, `at-spi2-core` (provides
+`at-spi2-registryd`), `dbus-x11` (provides `dbus-daemon`), and
+`python3-pyatspi` (Ubuntu 24.04/noble package names) - all seven checks
+above passed against the real registry daemon, including "Command Options
+lists Circle's option chips while it is running (['Diameter', '3Point',
+'Vertical'])". One environment-specific wrinkle worth knowing about, not
+specific to this project: Debian/Ubuntu's `python3-pyatspi`/`python3-gi`
+ship a `gi._gi` extension compiled for one specific CPython ABI (on the box
+this was verified on, that was `python3.12`, even though the default
+`python3` on `PATH` resolved to a different, incompatible CPython build) -
+if `import pyatspi` fails in whatever interpreter you run the script with,
+find the interpreter whose compiled extension actually matches (the module
+docstring in `tests/smoke_accessibility.py` explains how) and re-run with
+that one explicitly, e.g. `python3.12 tests/smoke_accessibility.py
 build/Dino8`. This is an environment/packaging detail, not a defect in the
 bridge or the test.
 
@@ -366,5 +406,5 @@ requirement and runs as part of the normal CTest suite everywhere.
 |---|---|
 | High-contrast theme | Shipped: Options > General > Theme > High Contrast |
 | Keyboard-only operability | Audited; one real bug found and fixed (toolbar/sidebar/tab-strip/bell/viewport-title buttons were `InvisibleButton` without `EnableNav`, so Tab skipped them); nav-focus tooltips added for icon-only buttons; free 3D viewport orbit and a few inherently-drag widgets remain mouse-only by design, same as in Rhino |
-| Screen-reader support (command line, menu bar, Layers/Properties panels) | Shipped on Linux: a real AT-SPI2 bridge (`src/platform/AccessibilityLinux.cpp`) exposes the command line's live text and full history log, the main menu bar (mirroring exactly what's currently open, built live alongside `ui/MenuBar.cpp`'s own drawing calls), and the Layers/Properties panels' current content as queryable, updating accessible objects, verified end-to-end against the real registry daemon and `pyatspi` (`tests/smoke_accessibility.py`). Windows/macOS not implemented. Built only when `atspi-2`/`gio-2.0` are available; a silent no-op otherwise |
+| Screen-reader support (command line, menu bar, command options, Layers/Properties panels) | Shipped on Linux: a real AT-SPI2 bridge (`src/platform/AccessibilityLinux.cpp`) exposes the command line's live text and full history log, the main menu bar (mirroring exactly what's currently open, built live alongside `ui/MenuBar.cpp`'s own drawing calls), the running command's options (with per-option guidance on how to change it), and the Layers/Properties panels' current content (Properties rows note which are real value editors) as queryable, updating accessible objects, verified end-to-end against the real registry daemon and `pyatspi` (`tests/smoke_accessibility.py`), including the new Command Options checks. Windows/macOS not implemented. Built only when `atspi-2`/`gio-2.0` are available; a silent no-op otherwise |
 | Screen-reader support (rest of the UI) | Not implemented - hard ImGui platform limitation (no accessibility-tree bridge for the 3D viewport or the ~40 remaining panels/dialogs on any OS). Descriptive text/tooltips exist everywhere as a prerequisite, but that is not screen-reader support |
