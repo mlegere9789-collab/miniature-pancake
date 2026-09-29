@@ -41753,6 +41753,65 @@ void TestSurfaceOffsetAnalyticCylinderIsExactCoaxialCylinder() {
   Check(s.OffsetAnalytic(-5.0, out) == Result::Failed, "OffsetAnalytic(-5.0) on a radius-4 cylinder is refused (would collapse through the axis)");
 }
 
+void TestSurfaceOffsetAnalyticCylinderPreservesQuarterPatchExtent() {
+  using dino8::kernel::Interval;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  const ON_Circle base(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 4.0);
+  ON_Cylinder cyl(base);
+  cyl.height[0] = 0.0;
+  cyl.height[1] = 10.0;
+  ON_NurbsSurface full_raw;
+  Check(cyl.GetNurbForm(full_raw) != 0, "quarter-cylinder setup: GetNurbForm succeeds");
+
+  // [0, pi/2] is exactly the first knot span of ON_Circle::GetNurbForm()'s
+  // own 4-span construction, so this bound is a true radian value with no
+  // ambiguity about the circle's own nonlinear-in-angle NURBS
+  // parametrization - a clean, unambiguous quarter-turn patch to offset.
+  NurbsSurface quarter;
+  quarter.raw() = full_raw;
+  Check(quarter.Trim(0, 0.0, 0.5 * ON_PI) == Result::Ok, "quarter-cylinder setup: Trim to a quarter-turn succeeds");
+
+  NurbsSurface out;
+  Check(quarter.OffsetAnalytic(1.0, out) == Result::Ok, "OffsetAnalytic(+1.0) succeeds on a quarter-cylinder patch");
+
+  const Interval du = out.Domain(0);
+  const Interval dv = out.Domain(1);
+
+  double worst_radius = 0.0;
+  for (double t = 0.05; t < 0.96; t += 0.1) {
+    const double u = du.min + t * (du.max - du.min);
+    for (double s = 0.1; s < 1.0; s += 0.2) {
+      const double v = dv.min + s * (dv.max - dv.min);
+      const Point3d p = out.PointAt(u, v);
+      worst_radius = std::max(worst_radius, std::abs(std::hypot(p.x, p.y) - 5.0));
+    }
+  }
+  Check(worst_radius < 1e-9,
+        "OffsetAnalytic on a quarter-cylinder patch: every sampled point sits at exactly the offset radius 5.0");
+
+  // The fix under test: the offset patch keeps the ORIGINAL quarter-turn
+  // angular extent instead of GetNurbForm()'s own full 360-degree tube -
+  // its two U-boundary curves sit at true angle 0 and true angle pi/2,
+  // not anywhere else on the circle.
+  const Point3d p_start = out.PointAt(du.min, 0.5 * (dv.min + dv.max));
+  const Point3d p_end = out.PointAt(du.max, 0.5 * (dv.min + dv.max));
+  Check(std::abs(std::atan2(p_start.y, p_start.x) - 0.0) < 1e-6,
+        "offset quarter-cylinder patch: U-min boundary sits at true angle 0");
+  Check(std::abs(std::atan2(p_end.y, p_end.x) - 0.5 * ON_PI) < 1e-6,
+        "offset quarter-cylinder patch: U-max boundary sits at true angle pi/2");
+
+  // And directly proves this isn't secretly a full circle: the trimmed
+  // patch's own U-domain span is a small fraction of the untrimmed
+  // GetNurbForm() cylinder's own full-turn span (whatever units that
+  // nonlinear parametrization uses for a full turn).
+  const double full_span = full_raw.Domain(0)[1] - full_raw.Domain(0)[0];
+  Check((du.max - du.min) < 0.5 * full_span,
+        "offset quarter-cylinder patch: U-domain span is a small fraction of a full turn, not the whole circle");
+}
+
 void TestSurfaceOffsetAnalyticConePreservesHalfAngleAndShiftsApex() {
   using dino8::kernel::NurbsSurface;
   using dino8::kernel::Point3d;
@@ -44255,6 +44314,7 @@ int main() {
 
   TestSurfaceOffsetAnalyticSphereIsExactConcentricSphere();
   TestSurfaceOffsetAnalyticCylinderIsExactCoaxialCylinder();
+  TestSurfaceOffsetAnalyticCylinderPreservesQuarterPatchExtent();
   TestSurfaceOffsetAnalyticConePreservesHalfAngleAndShiftsApex();
   TestSurfaceOffsetAnalyticTorusIsExactCoaxialTorusAndRejectsSpindle();
   TestSurfaceOffsetAnalyticPlanePreservesDomainAndTrimStructure();

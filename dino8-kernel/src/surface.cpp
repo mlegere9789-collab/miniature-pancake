@@ -2094,6 +2094,46 @@ Result NurbsSurface::OffsetAnalytic(double distance, NurbsSurface& out, double t
       new_cyl.height[1] = cyl.height[1];
       ON_NurbsSurface ns;
       if (new_cyl.GetNurbForm(ns) == 0) return Result::Failed;
+
+      // GetNurbForm() always builds a FULL 360-degree cylinder - a real
+      // partial patch (e.g. a quarter-cylinder fillet face) would
+      // otherwise silently balloon into a closed tube. `ON_Circle`'s own
+      // NURBS parameter is NOT linear in angle within a knot span (it's
+      // a rational-quadratic reparametrization; only the 0/pi/2/pi/3pi/2
+      // knot VALUES coincide with true radians), so the fix isn't "trim
+      // to `du` directly" - it's converting this patch's own true
+      // angular span (measured geometrically, via `ClosestPointTo`,
+      // independent of either cylinder's radius since both share the
+      // same `circle.plane`) through `GetNurbFormParameterFromRadian()`,
+      // the OpenNURBS conversion built for exactly this problem.
+      if (du.max - du.min < 2.0 * ON_PI - 1e-9) {
+        const Point3d p_umin = PointAt(du.min, vmid);
+        const Point3d p_umax = PointAt(du.max, vmid);
+        const Point3d p_umid = PointAt(0.5 * (du.min + du.max), vmid);
+        double angle_umin, angle_umax, angle_umid;
+        if (cyl.circle.ClosestPointTo(p_umin, &angle_umin) &&
+            cyl.circle.ClosestPointTo(p_umax, &angle_umax) &&
+            cyl.circle.ClosestPointTo(p_umid, &angle_umid)) {
+          double nurb_umin, nurb_umax, nurb_umid;
+          if (new_cyl.circle.GetNurbFormParameterFromRadian(angle_umin, &nurb_umin) &&
+              new_cyl.circle.GetNurbFormParameterFromRadian(angle_umax, &nurb_umax) &&
+              new_cyl.circle.GetNurbFormParameterFromRadian(angle_umid, &nurb_umid)) {
+            const double t0 = std::min(nurb_umin, nurb_umax);
+            const double t1 = std::max(nurb_umin, nurb_umax);
+            // A patch spanning the seam (its true angular midpoint lying
+            // OUTSIDE the [t0, t1] its own two ends bound) can't be
+            // represented as one contiguous sub-range of a [0, 2*pi]
+            // domain this way - refuse rather than silently trimming to
+            // the wrong (long way around) arc.
+            if (t1 > t0 + 1e-9 && nurb_umid >= t0 - 1e-9 && nurb_umid <= t1 + 1e-9) {
+              out.surface_ = ns;
+              return out.Trim(0, t0, t1) == Result::Ok ? Result::Ok : Result::Failed;
+            }
+          }
+        }
+        return Result::Failed;
+      }
+
       out.surface_ = ns;
       return Result::Ok;
     }
