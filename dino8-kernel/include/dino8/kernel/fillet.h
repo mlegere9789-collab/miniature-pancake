@@ -1065,6 +1065,69 @@ Brep FilletConvexEdgeConic(const Brep& solid, Point3d edge_p0, Point3d edge_p1, 
 Brep FilletConcaveEdgeConic(const Brep& solid, Point3d edge_p0, Point3d edge_p1, double distance_i,
                              double distance_j, double rho);
 
+// One edge of a FilletConvexEdgesConic/FilletConcaveEdgesConic batch call -
+// exactly FilletConvexEdgeConic's own (edge_p0, edge_p1, distance_i,
+// distance_j, rho) arguments, bundled so each edge in the batch can have
+// its own blend size and shape (unlike FilletConvexEdges' single shared
+// `radius`, distance_i/distance_j are already per-face setbacks, not a
+// circular radius trig converts, so there is no natural "one value fits
+// every edge" convention to fall back on here).
+struct ConicEdgeSpec {
+  Point3d p0, p1;
+  double distance_i = 0.0, distance_j = 0.0, rho = 0.5;
+};
+
+// MULTIPLE INDEPENDENT conic/rho edge blends in one call - the multi-edge
+// form FilletConvexEdgeConic's own doc comment discloses as a future
+// increment ("no multi-edge/vertex-blend variant"). Exactly like
+// FilletConcaveEdges' own doc comment explains for the plain circular
+// fillet family, chaining single FilletConvexEdgeConic calls is not
+// possible at all here: the first call's own output already carries a
+// curved (non-planar) conic wall face, and PlanarFaces() - which
+// FilletConvexEdgeConic calls first - rejects any solid already carrying
+// one. So this batches every edge's own geometry (FilletConvexEdgeConic's
+// own steps 1-4, verbatim, just computed once per edge against ONE shared
+// `PlanarFaces()` snapshot) before assembling a single combined result.
+//
+// SCOPE, the genuinely new restriction this function adds on top of
+// FilletConvexEdgeConic's own (planar faces, convex dihedral, a free or
+// PERPENDICULAR-only third face at each endpoint - see that function's own
+// doc comment for those, unchanged): every edge's own "owned" faces - its
+// two adjacent faces i/j, plus any third face notched at either endpoint -
+// must be DISJOINT from every other edge's own owned faces. Two blended
+// edges that share a face (adjacent edges of the same face, or two edges
+// meeting at - or notching - the same corner) throw
+// std::invalid_argument naming the conflict, rather than silently
+// re-trimming or notching the same face's loop twice from two different,
+// unordered call sites - a genuine, disclosed vertex-blend gap for the
+// conic family (call FilletConvexEdgeConic once per shared corner's own
+// edge instead, or wait for a real conic vertex-blend increment). Within
+// that restriction, this is exact and closed for every edge: each one's
+// own retrim, corner notch and conic wall are built exactly as
+// FilletConvexEdgeConic's own doc comment derives, then every edge's own
+// wall and the one shared re-trimmed/notched planar shell are combined via
+// Brep::Compound and sewn with JoinNakedEdges - checked directly by this
+// function's own regression test (two independent full-cube edges,
+// nowhere near each other's own faces, blended in one call), whose
+// combined tessellated volume matches the SUM of each edge's own
+// closed-form 1 - L*Area(rho) removal, and by a negative-control test that
+// two edges sharing a face are rejected.
+Brep FilletConvexEdgesConic(const Brep& solid, const std::vector<ConicEdgeSpec>& edges);
+
+// The CONCAVE mirror of FilletConvexEdgesConic - exactly the same relation
+// FilletConcaveEdgeConic has to FilletConvexEdgeConic (see that pair's own
+// doc comments): validates every edge in `edges` is genuinely concave, then
+// dispatches straight to FilletConvexEdgesConic's own construction
+// unchanged, for the identical reason FilletConcaveEdgeConic's own doc
+// comment gives (FilletConvexEdgeConic's per-edge m_i/m_j are already
+// extent-based, not built from a convex-specific contact-point formula, so
+// the shared construction already discovers the correct "into this face's
+// own material" direction and setback points regardless of which side of
+// each edge is material). A failure inside the shared construction is
+// reported with FilletConvexEdgesConic's own name, the same disclosed
+// trade-off FilletConcaveEdgeConic's own doc comment already makes.
+Brep FilletConcaveEdgesConic(const Brep& solid, const std::vector<ConicEdgeSpec>& edges);
+
 
 // MULTI-EDGE constant-radius rolling-ball fillet with genuine SPHERICAL
 // VERTEX BLENDS - the piece of Parasolid's blend class that turns

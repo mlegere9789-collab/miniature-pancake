@@ -40441,6 +40441,195 @@ void TestFilletConcaveEdgeConicAddsClosedFormVolumeOnLShapedPrism() {
   }
 }
 
+// FilletConvexEdgesConic's own regression: two INDEPENDENT full-cube edges,
+// on two entirely separate unit cubes (assembled into one compound Brep via
+// Brep::Compound, so neither cube's own faces are anywhere near the
+// other's), blended in ONE call with two genuinely DIFFERENT (distance_i,
+// distance_j, rho) specs - proving this is a real per-edge batch, not a
+// uniform-parameter wrapper. Each cube's own corner-notch closure is
+// exactly TestFilletConvexEdgeConicClosesCornerNotchOnUnitCube's own case
+// (both end faces perpendicular to the blended edge), so the combined
+// result's tessellated volume must match the SUM of each cube's own
+// independent closed-form 1 - L*Area(rho) removal - the same Area(rho)
+// Simpson-integral closed form that test derives, evaluated once per edge
+// with its own da/db/rho.
+void TestFilletConvexEdgesConicBlendsTwoIndependentEdgesInOneCall() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::ConicEdgeSpec;
+  using dino8::kernel::FilletConvexEdgesConic;
+  using dino8::kernel::Point3d;
+
+  const Brep cube1 = Brep::Box(0, 0, 0, 1, 1, 1);
+  const Brep cube2 = Brep::Box(5, 0, 0, 6, 1, 1);
+  const Brep solid = Brep::Compound({cube1, cube2});
+
+  ConicEdgeSpec spec1;
+  spec1.p0 = Point3d(0, 0, 1);
+  spec1.p1 = Point3d(1, 0, 1);
+  spec1.distance_i = 0.3;
+  spec1.distance_j = 0.2;
+  spec1.rho = 0.5;
+
+  ConicEdgeSpec spec2;
+  spec2.p0 = Point3d(5, 0, 1);
+  spec2.p1 = Point3d(6, 0, 1);
+  spec2.distance_i = 0.25;
+  spec2.distance_j = 0.15;
+  spec2.rho = 0.3;
+
+  const Brep blend = FilletConvexEdgesConic(solid, {spec1, spec2});
+
+  Check(blend.FaceCount() == 14,
+        "two independent conic-blended full-cube edges: 14 faces (7 per cube, exactly "
+        "TestFilletConvexEdgeConicClosesCornerNotchOnUnitCube's own single-cube count, doubled)");
+  ON_TextLog log;
+  Check(blend.raw().IsValid(&log), "the two-edge conic blend passes ON_Brep::IsValid()");
+  bool oriented = false, has_boundary = true;
+  Check(blend.raw().IsManifold(&oriented, &has_boundary) && oriented && !has_boundary,
+        "the two-edge conic blend is an oriented, CLOSED 2-manifold - both cubes' own walls are genuinely sewn");
+  Check(blend.raw().IsSolid(), "the two-edge conic blend reports IsSolid() == true");
+  const Brep::CheckReport report = blend.Check();
+  Check(report.is_closed && report.is_oriented && report.issues.empty(),
+        "Brep::Check() reports the two-edge conic blend closed, oriented and issue-free");
+  Check(!ChamferTestBrepHasVertexNear(blend, spec1.p0, 1e-9) && !ChamferTestBrepHasVertexNear(blend, spec1.p1, 1e-9),
+        "cube 1's own original sharp corners are gone");
+  Check(!ChamferTestBrepHasVertexNear(blend, spec2.p0, 1e-9) && !ChamferTestBrepHasVertexNear(blend, spec2.p1, 1e-9),
+        "cube 2's own original sharp corners are gone");
+
+  auto area_of = [](double da, double db, double rho) {
+    const double w = rho / (1.0 - rho);
+    auto integral = [&](int n) {
+      double s = 0.0;
+      for (int k = 0; k <= n; ++k) {
+        const double t = static_cast<double>(k) / n, u = t * (1 - t), D = 1 + 2 * (w - 1) * u;
+        s += (u / (D * D)) * ((k == 0 || k == n) ? 1.0 : (k % 2 ? 4.0 : 2.0));
+      }
+      return s / (3.0 * n);
+    };
+    const double gamma = ON_PI / 2.0;  // m_i . m_j = 0 on a box edge
+    return da * db * std::sin(gamma) * integral(200000);
+  };
+  const double L = 1.0;
+  const double expected_volume =
+      (1.0 - L * area_of(spec1.distance_i, spec1.distance_j, spec1.rho)) +
+      (1.0 - L * area_of(spec2.distance_i, spec2.distance_j, spec2.rho));
+  const double measured_volume = blend.TessellateToClosedMeshAdaptive(1e-7).Volume();
+  Check(std::fabs(measured_volume - expected_volume) < 2e-6,
+        "the two-edge conic blend's tessellated volume matches the SUM of each edge's own independent "
+        "closed-form 1 - L*Area(rho) removal");
+}
+
+// Negative controls for FilletConvexEdgesConic's own batch-specific
+// validation (per-edge argument validation is already covered by
+// FilletConcaveEdgeConic's own negative test, reused unchanged by this
+// function's shared construction): an empty edge list, a duplicated edge,
+// and - the genuinely new check this function adds - two edges that share
+// a face (an adjacent face, or a face notched at both edges' own corner)
+// must all throw std::invalid_argument rather than silently mis-building a
+// self-overlapping shape.
+void TestFilletConvexEdgesConicRejectsSharedFacesAndInvalidInput() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::ConicEdgeSpec;
+  using dino8::kernel::FilletConvexEdgesConic;
+  using dino8::kernel::Point3d;
+  auto throws = [](const std::function<void()>& fn) {
+    try {
+      fn();
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+    return false;
+  };
+
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+  Check(throws([&] { FilletConvexEdgesConic(box, {}); }), "rejects an empty edge list");
+
+  ConicEdgeSpec top_front;
+  top_front.p0 = Point3d(0, 0, 1);
+  top_front.p1 = Point3d(1, 0, 1);
+  top_front.distance_i = 0.2;
+  top_front.distance_j = 0.2;
+  top_front.rho = 0.5;
+
+  Check(throws([&] { FilletConvexEdgesConic(box, {top_front, top_front}); }), "rejects an edge listed twice");
+
+  // bottom_front shares the SAME front face (y = 0) with top_front - a
+  // real, disclosed vertex-blend gap this increment does not attempt.
+  ConicEdgeSpec bottom_front;
+  bottom_front.p0 = Point3d(0, 0, 0);
+  bottom_front.p1 = Point3d(1, 0, 0);
+  bottom_front.distance_i = 0.2;
+  bottom_front.distance_j = 0.2;
+  bottom_front.rho = 0.5;
+  Check(throws([&] { FilletConvexEdgesConic(box, {top_front, bottom_front}); }),
+        "rejects two edges that share a face (top_front and bottom_front both touch the y=0 front face)");
+
+  // Two edges on two independent cubes are, by contrast, accepted (see
+  // TestFilletConvexEdgesConicBlendsTwoIndependentEdgesInOneCall) - this is
+  // a genuine face-sharing check, not an overbroad rejection of every
+  // multi-edge call.
+  const Brep cube2 = Brep::Box(5, 0, 0, 6, 1, 1);
+  const Brep two_cubes = Brep::Compound({box, cube2});
+  ConicEdgeSpec other_cube_edge = top_front;
+  other_cube_edge.p0 = Point3d(5, 0, 1);
+  other_cube_edge.p1 = Point3d(6, 0, 1);
+  bool ok = true;
+  try {
+    FilletConvexEdgesConic(two_cubes, {top_front, other_cube_edge});
+  } catch (const std::invalid_argument&) {
+    ok = false;
+  }
+  Check(ok, "accepts two edges that genuinely share no face");
+}
+
+// FilletConcaveEdgesConic's own regression: a single-element batch must be
+// a thin, genuinely delegating wrapper, exactly the relationship
+// TestFilletConcaveEdgeConicAddsClosedFormVolumeOnLShapedPrism already
+// checks for the single-edge FilletConcaveEdgeConic/FilletConvexEdgeConic
+// pair - so calling FilletConcaveEdgesConic with ONE concave edge must
+// reproduce FilletConcaveEdgeConic's own result bit-for-bit, and a batch
+// containing a genuinely convex edge must still be rejected (the
+// concavity check runs before any edge is touched).
+void TestFilletConcaveEdgesConicMatchesFilletConcaveEdgeConicOnSingleEdge() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::ConicEdgeSpec;
+  using dino8::kernel::FilletConcaveEdgeConic;
+  using dino8::kernel::FilletConcaveEdgesConic;
+  using dino8::kernel::Point3d;
+  auto throws = [](const std::function<void()>& fn) {
+    try {
+      fn();
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+    return false;
+  };
+
+  const Brep prism = ConcaveLShapedPrism();
+  ConicEdgeSpec spec;
+  spec.p0 = Point3d(1, 1, 0);
+  spec.p1 = Point3d(1, 1, 1);
+  spec.distance_i = 0.3;
+  spec.distance_j = 0.25;
+  spec.rho = 0.5;
+
+  const Brep via_batch = FilletConcaveEdgesConic(prism, {spec});
+  const Brep direct = FilletConcaveEdgeConic(prism, spec.p0, spec.p1, spec.distance_i, spec.distance_j, spec.rho);
+  Check(via_batch.FaceCount() == direct.FaceCount(),
+        "FilletConcaveEdgesConic's own single-edge face count matches FilletConcaveEdgeConic directly");
+  Check(std::fabs(via_batch.TessellateToClosedMeshAdaptive(1e-7).Volume() -
+                  direct.TessellateToClosedMeshAdaptive(1e-7).Volume()) < 1e-12,
+        "FilletConcaveEdgesConic's own single-edge tessellated volume is bit-for-bit the same as "
+        "FilletConcaveEdgeConic directly");
+
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+  ConicEdgeSpec convex_spec = spec;
+  convex_spec.p0 = Point3d(0, 0, 1);
+  convex_spec.p1 = Point3d(1, 0, 1);
+  Check(throws([&] { FilletConcaveEdgesConic(box, {convex_spec}); }),
+        "rejects a batch containing a genuinely convex edge");
+}
+
 void TestRemoveChamferRoundTripsAConcaveChamfer() {
   using dino8::kernel::Brep;
   using dino8::kernel::ChamferConcaveEdge;
@@ -42879,6 +43068,9 @@ int main() {
   TestChamferConcaveEdgeRejectsUnsupportedConfigurations();
   TestFilletConcaveEdgeConicRejectsConvexEdgeAndInvalidInput();
   TestFilletConcaveEdgeConicAddsClosedFormVolumeOnLShapedPrism();
+  TestFilletConvexEdgesConicBlendsTwoIndependentEdgesInOneCall();
+  TestFilletConvexEdgesConicRejectsSharedFacesAndInvalidInput();
+  TestFilletConcaveEdgesConicMatchesFilletConcaveEdgeConicOnSingleEdge();
   TestRemoveChamferRoundTripsAConcaveChamfer();
   TestBrepFromPlanarFacesBuildsValidOpenNurbsTopology();
   TestBrepAdjacencyQueries();

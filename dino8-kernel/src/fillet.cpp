@@ -2563,6 +2563,279 @@ Brep FilletConcaveEdgeConic(const Brep& solid, Point3d edge_p0, Point3d edge_p1,
   return FilletConvexEdgeConic(solid, edge_p0, edge_p1, distance_i, distance_j, rho);
 }
 
+// ---------------------------------------------------------------------------
+// FilletConvexEdgesConic / FilletConcaveEdgesConic: several INDEPENDENT
+// (face-disjoint) conic/rho edge blends in one call - see fillet.h's own
+// doc comment for the full argument (why chaining single
+// FilletConvexEdgeConic calls cannot work, and the exact disjointness
+// scope this adds).
+
+namespace {
+
+struct ConicMultiEdge {
+  Point3d p0, p1;
+  int idx_i = -1, idx_j = -1;
+  ON_Plane plane_i, plane_j;
+  Vector3d e;
+  Vector3d m_i, m_j;    // into-material, perpendicular-to-edge directions (face i/j)
+  Point3d R_i0, R_j0;   // profile's own two rail points (on face i/j, at the edge's p0 end)
+  Vector3d sweep;
+  NurbsCurve profile;
+  bool notch_p0 = false, notch_p1 = false;
+  int perp_p0 = 0, perp_p1 = 0;
+  std::vector<int> owned;  // idx_i, idx_j, plus every third face touched at p0/p1
+};
+
+}  // namespace
+
+Brep FilletConvexEdgesConic(const Brep& solid, const std::vector<ConicEdgeSpec>& edges) {
+  if (edges.empty()) {
+    throw std::invalid_argument("dino8::kernel::FilletConvexEdgesConic: at least one edge is required");
+  }
+  const std::vector<Brep::PlanarFace> faces = solid.PlanarFaces();
+  const double tol = RelativeTol(faces);
+
+  std::vector<ConicMultiEdge> me;
+  me.reserve(edges.size());
+  for (const ConicEdgeSpec& spec : edges) {
+    if (!(spec.distance_i > 0.0) || !(spec.distance_j > 0.0)) {
+      throw std::invalid_argument(
+          "dino8::kernel::FilletConvexEdgesConic: distance_i and distance_j must both be strictly positive");
+    }
+    if (!(spec.rho > 0.0) || !(spec.rho < 1.0)) {
+      throw std::invalid_argument(
+          "dino8::kernel::FilletConvexEdgesConic: rho must lie strictly between 0 and 1 - see "
+          "FilletConvexEdgeConic's own doc comment");
+    }
+
+    ConicMultiEdge m;
+    m.p0 = spec.p0;
+    m.p1 = spec.p1;
+    for (const ConicMultiEdge& other : me) {
+      if ((PointsEqual(other.p0, m.p0, tol) && PointsEqual(other.p1, m.p1, tol)) ||
+          (PointsEqual(other.p0, m.p1, tol) && PointsEqual(other.p1, m.p0, tol))) {
+        throw std::invalid_argument("dino8::kernel::FilletConvexEdgesConic: an edge is listed twice");
+      }
+    }
+
+    FindEdgeFaces(faces, m.p0, m.p1, tol, "FilletConvexEdgesConic", m.idx_i, m.idx_j);
+    const Brep::PlanarFace& face_i = faces[static_cast<size_t>(m.idx_i)];
+    const Brep::PlanarFace& face_j = faces[static_cast<size_t>(m.idx_j)];
+    m.plane_i = face_i.plane;
+    m.plane_j = face_j.plane;
+    const Vector3d n_i = m.plane_i.zaxis;
+    const Vector3d n_j = m.plane_j.zaxis;
+
+    m.e = m.p1 - m.p0;
+    if (!m.e.Unitize()) {
+      throw std::invalid_argument("dino8::kernel::FilletConvexEdgesConic: an edge's two endpoints coincide");
+    }
+    const double dot_ij = std::max(-1.0, std::min(1.0, n_i * n_j));
+    const double theta = ON_PI - std::acos(dot_ij);
+    if (!(theta > 1e-9) || !(theta < ON_PI - 1e-9)) {
+      throw std::invalid_argument(
+          "dino8::kernel::FilletConvexEdgesConic: an edge is not a convex dihedral edge (interior angle theta "
+          "is <= 0 or >= pi) - concave/degenerate edges are out of scope, see FilletConvexEdge's own doc "
+          "comment");
+    }
+
+    auto extent_along = [](const std::vector<Point3d>& loop, const Vector3d& mm, const Point3d& ref) {
+      double best = -std::numeric_limits<double>::infinity();
+      for (const Point3d& v : loop) best = std::max(best, mm * (v - ref));
+      return best;
+    };
+    Vector3d m_i = ON_CrossProduct(n_i, m.e);
+    Vector3d m_j = ON_CrossProduct(n_j, -m.e);
+    if (!m_i.Unitize() || !m_j.Unitize()) {
+      throw std::invalid_argument(
+          "dino8::kernel::FilletConvexEdgesConic: degenerate face/edge geometry (a face normal is parallel to "
+          "the edge)");
+    }
+    if (extent_along(face_i.loop, m_i, m.p0) <= tol) m_i = -m_i;
+    if (extent_along(face_j.loop, m_j, m.p0) <= tol) m_j = -m_j;
+    const double extent_i = extent_along(face_i.loop, m_i, m.p0);
+    const double extent_j = extent_along(face_j.loop, m_j, m.p0);
+    if (!(spec.distance_i < extent_i - tol) || !(spec.distance_j < extent_j - tol)) {
+      throw std::invalid_argument(
+          "dino8::kernel::FilletConvexEdgesConic: a setback distance is too large to fit - it reaches or "
+          "exceeds that face's own extent from the edge");
+    }
+
+    // Third-face scan at each endpoint - verbatim FilletConvexEdgeConic's
+    // own SCOPE check (perpendicular-only, free boundary otherwise), plus
+    // recording every touched face index so the disjointness check below
+    // can see it.
+    m.owned.push_back(m.idx_i);
+    m.owned.push_back(m.idx_j);
+    for (size_t f = 0; f < faces.size(); ++f) {
+      if (static_cast<int>(f) == m.idx_i || static_cast<int>(f) == m.idx_j) continue;
+      bool touches_p0 = false, touches_p1 = false;
+      for (const Point3d& v : faces[f].loop) {
+        if (PointsEqual(v, m.p0, tol)) touches_p0 = true;
+        if (PointsEqual(v, m.p1, tol)) touches_p1 = true;
+      }
+      if (!touches_p0 && !touches_p1) continue;
+      if (std::fabs(faces[f].plane.zaxis * m.e) < 1.0 - 1e-6) {
+        throw std::invalid_argument(
+            "dino8::kernel::FilletConvexEdgesConic: an OBLIQUE third face of `solid` (one whose plane is not "
+            "perpendicular to the edge) touches an edge endpoint - oblique end-condition splicing for the "
+            "conic blend is out of scope; only a free boundary or a third face perpendicular to the edge is "
+            "supported at each endpoint");
+      }
+      m.owned.push_back(static_cast<int>(f));
+      if (touches_p0) ++m.perp_p0;
+      if (touches_p1) ++m.perp_p1;
+    }
+    m.notch_p0 = m.perp_p0 > 0;
+    m.notch_p1 = m.perp_p1 > 0;
+
+    m.m_i = m_i;
+    m.m_j = m_j;
+    m.R_i0 = m.p0 + spec.distance_i * m_i;
+    m.R_j0 = m.p0 + spec.distance_j * m_j;
+    const double w = spec.rho / (1.0 - spec.rho);
+    NurbsCurve profile = NurbsCurve::FromControlPoints({m.R_i0, m.p0, m.R_j0}, 2);
+    profile.SetControlPointAt(1, Point3d(m.p0.x * w, m.p0.y * w, m.p0.z * w));
+    profile.SetWeightAt(1, w);
+    m.profile = profile;
+    m.sweep = m.p1 - m.p0;
+
+    me.push_back(std::move(m));
+  }
+
+  // Disjointness check: no face may be owned (adjacent to, or notched by)
+  // more than one edge in this batch - see fillet.h's own doc comment for
+  // why (a shared face would need the two edges' own retrims/notches
+  // ordered and reconciled against each other, a real vertex-blend problem
+  // this increment does not attempt).
+  {
+    std::vector<int> all_owned;
+    for (const ConicMultiEdge& m : me) all_owned.insert(all_owned.end(), m.owned.begin(), m.owned.end());
+    std::sort(all_owned.begin(), all_owned.end());
+    for (size_t k = 1; k < all_owned.size(); ++k) {
+      if (all_owned[k] == all_owned[k - 1]) {
+        throw std::invalid_argument(
+            "dino8::kernel::FilletConvexEdgesConic: two edges in this batch share a face (an adjacent face, or "
+            "a third face notched at a shared corner) - not supported in this increment; call "
+            "FilletConvexEdgeConic directly for a shared corner, or split the batch");
+      }
+    }
+  }
+
+  std::vector<int> ij_sorted;
+  for (const ConicMultiEdge& m : me) {
+    ij_sorted.push_back(m.idx_i);
+    ij_sorted.push_back(m.idx_j);
+  }
+  std::sort(ij_sorted.begin(), ij_sorted.end());
+
+  std::vector<Brep::PlanarFace> others;
+  others.reserve(faces.size());
+  for (size_t f = 0; f < faces.size(); ++f) {
+    if (!std::binary_search(ij_sorted.begin(), ij_sorted.end(), static_cast<int>(f))) others.push_back(faces[f]);
+  }
+
+  for (const ConicMultiEdge& m : me) {
+    if (m.notch_p0 &&
+        ConicNotchCornerAtVertex(others, m.p0, m.e, m.plane_i, m.plane_j, m.profile, Vector3d(0, 0, 0), tol) !=
+            m.perp_p0) {
+      throw std::invalid_argument(
+          "dino8::kernel::FilletConvexEdgesConic: a third face perpendicular to an edge touches its endpoint "
+          "but its corner there is not a simple trihedral corner between faces i and j - out of scope");
+    }
+    if (m.notch_p1 &&
+        ConicNotchCornerAtVertex(others, m.p1, m.e, m.plane_i, m.plane_j, m.profile, m.sweep, tol) != m.perp_p1) {
+      throw std::invalid_argument(
+          "dino8::kernel::FilletConvexEdgesConic: a third face perpendicular to an edge touches its endpoint "
+          "but its corner there is not a simple trihedral corner between faces i and j - out of scope");
+    }
+  }
+
+  std::vector<Brep::PlanarFace> all = others;
+  for (const ConicMultiEdge& m : me) {
+    const Brep::PlanarFace& face_i = faces[static_cast<size_t>(m.idx_i)];
+    const Brep::PlanarFace& face_j = faces[static_cast<size_t>(m.idx_j)];
+    Brep::PlanarFace retrimmed_i = face_i;
+    retrimmed_i.loop = detail::ClipByHalfspace3d(retrimmed_i.loop, ON_Plane(m.R_i0, -m.m_i), tol);
+    Brep::PlanarFace retrimmed_j = face_j;
+    retrimmed_j.loop = detail::ClipByHalfspace3d(retrimmed_j.loop, ON_Plane(m.R_j0, -m.m_j), tol);
+    if (retrimmed_i.loop.size() < 3 || retrimmed_j.loop.size() < 3) {
+      throw std::invalid_argument(
+          "dino8::kernel::FilletConvexEdgesConic: re-trimming an adjacent face left fewer than 3 vertices - "
+          "distances too large for this solid's geometry");
+    }
+    all.push_back(std::move(retrimmed_i));
+    all.push_back(std::move(retrimmed_j));
+  }
+
+  Brep planar_shell = Brep::FromMixedFaces(all, {});
+
+  auto replace_notch_chord = [&](const NurbsCurve& profile, const Vector3d& offset) {
+    ON_NurbsCurve cap = profile.raw();
+    cap.Translate(offset);
+    const ON_3dPoint a = cap.PointAtStart(), b = cap.PointAtEnd();
+    const ON_Interval dom = cap.Domain();
+    double sag = 0.0;
+    for (int s = 0; s < kNotchSamples; ++s) {
+      const ON_3dPoint q0 = cap.PointAt(dom.ParameterAt(static_cast<double>(s) / kNotchSamples));
+      const ON_3dPoint q1 = cap.PointAt(dom.ParameterAt(static_cast<double>(s + 1) / kNotchSamples));
+      const ON_3dPoint mid = cap.PointAt(dom.ParameterAt((s + 0.5) / kNotchSamples));
+      sag = std::max(sag, ON_Line(q0, q1).MinimumDistanceTo(mid));
+    }
+    ON_Brep& b3 = planar_shell.raw();
+    int found = -1;
+    for (int ei = 0; ei < b3.m_E.Count(); ++ei) {
+      const ON_BrepEdge& E = b3.m_E[ei];
+      if (E.m_edge_index < 0 || E.m_ti.Count() != 1) continue;
+      const ON_3dPoint s0 = b3.m_V[E.m_vi[0]].point, s1 = b3.m_V[E.m_vi[1]].point;
+      if ((s0.DistanceTo(a) <= tol && s1.DistanceTo(b) <= tol) ||
+          (s0.DistanceTo(b) <= tol && s1.DistanceTo(a) <= tol)) {
+        found = ei;
+        break;
+      }
+    }
+    if (found < 0) {
+      throw std::runtime_error(
+          "dino8::kernel::FilletConvexEdgesConic: a notched third face's collapsed notch edge was not found in "
+          "the assembled planar shell - please report this as a bug");
+    }
+    ON_BrepEdge& E = b3.m_E[found];
+    if (b3.m_V[E.m_vi[0]].point.DistanceTo(a) > tol) cap.Reverse();
+    const int c3i = b3.AddEdgeCurve(new ON_NurbsCurve(cap));
+    if (!E.ChangeEdgeCurve(c3i)) {
+      throw std::runtime_error(
+          "dino8::kernel::FilletConvexEdgesConic: ON_BrepEdge::ChangeEdgeCurve failed replacing a notch chord - "
+          "please report this as a bug");
+    }
+    for (int k = 0; k < E.m_ti.Count(); ++k) b3.m_T[E.m_ti[k]].UnsetPlineEdgeParameters();
+    E.m_tolerance = sag;
+  };
+  for (const ConicMultiEdge& m : me) {
+    if (m.notch_p0) replace_notch_chord(m.profile, Vector3d(0, 0, 0));
+    if (m.notch_p1) replace_notch_chord(m.profile, m.sweep);
+  }
+
+  std::vector<Brep> parts;
+  parts.reserve(me.size() + 1);
+  parts.push_back(std::move(planar_shell));
+  for (const ConicMultiEdge& m : me) parts.push_back(Brep::Extrude(m.profile, m.sweep, /*cap=*/false));
+
+  Brep combined = Brep::Compound(parts);
+  combined.JoinNakedEdges(tol);
+  return combined;
+}
+
+Brep FilletConcaveEdgesConic(const Brep& solid, const std::vector<ConicEdgeSpec>& edges) {
+  if (edges.empty()) {
+    throw std::invalid_argument("dino8::kernel::FilletConcaveEdgesConic: at least one edge is required");
+  }
+  const std::vector<Brep::PlanarFace> faces = solid.PlanarFaces();
+  const double tol = RelativeTol(faces);
+  for (const ConicEdgeSpec& spec : edges) {
+    RequireConcaveEdge(faces, spec.p0, spec.p1, tol, "FilletConcaveEdgesConic");
+  }
+  return FilletConvexEdgesConic(solid, edges);
+}
 
 // ---------------------------------------------------------------------------
 // FilletConvexEdges: multi-edge constant-radius fillet with spherical
