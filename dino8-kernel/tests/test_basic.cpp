@@ -11003,6 +11003,244 @@ void TestBrepOffsetWireBody() {
         "silently building a self-intersecting wire body");
 }
 
+// AddHoleLoop(): punches a closed, straight-edged wire body out of an
+// otherwise plain planar face as a genuine ON_BrepLoop::inner loop - the
+// general "add a hole to this face" constructor PARITY_MAP.md's own
+// "Loop structure" bullet names as still missing even after
+// MakeEdgeKillRing()'s own hand-built slit bridge landed (that method
+// only RE-DRAWS a hole that already exists as two loops; it never
+// creates one from caller-supplied curve data).
+//
+// The fixture below builds the exact same physical square (a 5x5 sheet,
+// domain [-0.5, 4.5] in both x and y, with a 2x2 inner square from
+// (1,1) to (3,3)) BuildPlanarFaceWithHole() builds fully by hand - but
+// with ONLY the outer loop, so AddHoleLoop() itself has to do 100% of
+// the hole-building work. Every assertion below compares the result
+// against BuildPlanarFaceWithHole()'s own already-proven-correct
+// fixture (same V/E growth, same FaceContainsUV() classification, same
+// Check() naked-edge count) rather than against fresh, unverified
+// expectations.
+void TestBrepAddHoleLoop() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FaceContainsUV;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point2d;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // The outer-only sheet: identical surface/domain/outer loop to
+  // BuildPlanarFaceWithHole()'s own setup, just without its inner loop.
+  Brep sheet;
+  ON_Brep& b = sheet.raw();
+  const double min_x = -0.5, max_x = 4.5, min_y = -0.5, max_y = 4.5;
+  const std::vector<Point3d> grid = {
+      Point3d(min_x, min_y, 0), Point3d(min_x, max_y, 0),
+      Point3d(max_x, min_y, 0), Point3d(max_x, max_y, 0),
+  };
+  const NurbsSurface surface = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+  const int surface_index = b.AddSurface(new ON_NurbsSurface(surface.raw()));
+  const int face_index = b.NewFace(surface_index).m_face_index;
+  auto to_uv = [&](double x, double y) {
+    return Point2d((x - min_x) / (max_x - min_x), (y - min_y) / (max_y - min_y));
+  };
+  const std::vector<Point3d> outer_pts = {Point3d(0, 0, 0), Point3d(4, 0, 0), Point3d(4, 4, 0), Point3d(0, 4, 0)};
+  {
+    std::vector<int> vids(4);
+    for (int k = 0; k < 4; ++k) vids[static_cast<size_t>(k)] = b.NewVertex(outer_pts[static_cast<size_t>(k)], 0.0).m_vertex_index;
+    const int loop_index = b.NewLoop(ON_BrepLoop::outer, b.m_F[face_index]).m_loop_index;
+    for (int k = 0; k < 4; ++k) {
+      const int k1 = (k + 1) % 4;
+      const int va = vids[static_cast<size_t>(k)], vb = vids[static_cast<size_t>(k1)];
+      const int c3i = b.AddEdgeCurve(new ON_LineCurve(b.m_V[va].point, b.m_V[vb].point));
+      const int edge_index = b.NewEdge(b.m_V[va], b.m_V[vb], c3i).m_edge_index;
+      b.m_E[edge_index].m_tolerance = 0.0;
+      const Point2d uv_a = to_uv(outer_pts[static_cast<size_t>(k)].x, outer_pts[static_cast<size_t>(k)].y);
+      const Point2d uv_b = to_uv(outer_pts[static_cast<size_t>(k1)].x, outer_pts[static_cast<size_t>(k1)].y);
+      const int c2i = b.AddTrimCurve(new ON_LineCurve(uv_a, uv_b));
+      ON_BrepTrim& trim = b.NewTrim(b.m_E[edge_index], /*bRev3d=*/false, b.m_L[loop_index], c2i);
+      trim.m_tolerance[0] = trim.m_tolerance[1] = 0.0;
+    }
+  }
+  b.SetTrimIsoFlags();
+  b.SetTolerancesBoxesAndFlags();
+
+  Check(FaceContainsUV(b.m_F[face_index], 0.5, 0.5),
+        "setup: the future hole's own centre is inside the plain (not yet holed) face");
+  const int v_count_before = b.m_V.Count();
+  const int e_count_before = b.m_E.Count();
+  const Brep::CheckReport before = sheet.Check();
+  Check(before.Count(Brep::CheckIssue::Kind::NakedEdge) == 4, "setup: only the 4 outer edges are naked so far");
+
+  // The same 2x2 inner square BuildPlanarFaceWithHole() builds by hand,
+  // built instead as a real closed wire body via WireBody() - the
+  // general mechanism this AddHoleLoop() precondition requires.
+  const Point3d I0(1, 1, 0), I1(1, 3, 0), I2(3, 3, 0), I3(3, 1, 0);
+  const NurbsCurve leg01 = NurbsCurve::FromControlPoints({I0, I1}, /*degree=*/1);
+  const NurbsCurve leg12 = NurbsCurve::FromControlPoints({I1, I2}, /*degree=*/1);
+  const NurbsCurve leg23 = NurbsCurve::FromControlPoints({I2, I3}, /*degree=*/1);
+  const NurbsCurve leg30 = NurbsCurve::FromControlPoints({I3, I0}, /*degree=*/1);
+  const Brep hole_wire = Brep::WireBody({leg01, leg12, leg23, leg30});
+  Check(hole_wire.VertexCount() == 4 && hole_wire.EdgeCount() == 4 && hole_wire.IsWireBody(),
+        "setup: a real 4-vertex/4-edge closed wire body");
+
+  const auto added = sheet.AddHoleLoop(face_index, hole_wire);
+  Check(added.result == Result::Ok && added.loop_index >= 0, "AddHoleLoop() succeeds on a genuinely nested wire body");
+  Check(b.m_V.Count() == v_count_before + 4, "V grew by exactly 4 - the hole's own 4 new corners");
+  Check(b.m_E.Count() == e_count_before + 4, "E grew by exactly 4 - the hole's own 4 new edges");
+  Check(sheet.FaceCount() == 1, "F is unchanged - AddHoleLoop() never adds a face");
+  Check(b.m_F[face_index].LoopCount() == 2, "the face now has 2 loops - outer + the new hole");
+  const ON_BrepLoop* new_loop = b.m_F[face_index].Loop(1);
+  Check(new_loop != nullptr && new_loop->m_loop_index == added.loop_index && new_loop->m_type == ON_BrepLoop::inner,
+        "the new loop is a genuine ON_BrepLoop::inner, at the returned loop_index");
+  Check(new_loop->TrimCount() == 4, "the new hole loop has exactly 4 trims, one per wire edge");
+  for (int k = 0; k < 4; ++k) {
+    const ON_BrepTrim* t = new_loop->Trim(k);
+    Check(t != nullptr && t->Edge() != nullptr && t->Edge()->TrimCount() == 1,
+          "each new hole edge is naked (borders only this one trim) - it shares nothing with the outer boundary");
+  }
+
+  // Exactly the same classification BuildPlanarFaceWithHole()'s own
+  // RemoveHoleLoop test uses for this identical physical square: the
+  // hole's centre is now genuinely outside the face, the surrounding
+  // material still inside.
+  Check(!FaceContainsUV(b.m_F[face_index], 0.5, 0.5),
+        "the hole's own centre is now genuinely outside the face - the hole is really honored, not just drawn");
+  Check(FaceContainsUV(b.m_F[face_index], 0.2, 0.2), "the surrounding material is still inside the face");
+  Check(b.IsValid(), "the sheet is still a topologically valid ON_Brep after AddHoleLoop()");
+
+  const Brep::CheckReport after = sheet.Check();
+  Check(after.Count(Brep::CheckIssue::Kind::NakedEdge) == 8,
+        "Check() now reports 8 naked edges - the original 4 outer plus the new hole's own 4, and nothing else new");
+  Check(after.issues.size() == 8, "...exactly 8 issues total, nothing else was disturbed");
+
+  // Refusal: a face that already has a hole (2 loops) is out of scope -
+  // punching a SECOND, independent hole is a narrower follow-up.
+  const Point3d J0(0.1, 0.1, 0), J1(0.1, 0.2, 0), J2(0.2, 0.2, 0);
+  const Brep tiny_wire = Brep::WireBody({NurbsCurve::FromControlPoints({J0, J1}, 1),
+                                         NurbsCurve::FromControlPoints({J1, J2}, 1),
+                                         NurbsCurve::FromControlPoints({J2, J0}, 1)});
+  const auto second_hole = sheet.AddHoleLoop(face_index, tiny_wire);
+  Check(second_hole.result == Result::Failed && second_hole.loop_index == -1,
+        "AddHoleLoop() refuses a face that already has a hole (LoopCount() != 1)");
+  Check(b.m_V.Count() == v_count_before + 4 && b.m_E.Count() == e_count_before + 4,
+        "...and the sheet is left completely untouched");
+
+  // Refusal: wire_body is not actually a wire body (a real solid).
+  const Brep box = Brep::FromPlanarFaces(CheckHealBoxFaces());
+  bool threw_not_wire = false;
+  try {
+    (void)sheet.AddHoleLoop(face_index, box);
+  } catch (const std::invalid_argument&) {
+    threw_not_wire = true;
+  }
+  Check(threw_not_wire, "AddHoleLoop() on a real solid (not a wire body) throws std::invalid_argument");
+
+  // Fresh outer-only sheets for the remaining refusal cases, each left
+  // provably untouched by its own refusal.
+  auto fresh_sheet = [&]() {
+    Brep s;
+    ON_Brep& sb = s.raw();
+    const int si = sb.AddSurface(new ON_NurbsSurface(surface.raw()));
+    const int fi = sb.NewFace(si).m_face_index;
+    std::vector<int> vids(4);
+    for (int k = 0; k < 4; ++k) vids[static_cast<size_t>(k)] = sb.NewVertex(outer_pts[static_cast<size_t>(k)], 0.0).m_vertex_index;
+    const int li = sb.NewLoop(ON_BrepLoop::outer, sb.m_F[fi]).m_loop_index;
+    for (int k = 0; k < 4; ++k) {
+      const int k1 = (k + 1) % 4;
+      const int va = vids[static_cast<size_t>(k)], vb = vids[static_cast<size_t>(k1)];
+      const int c3i = sb.AddEdgeCurve(new ON_LineCurve(sb.m_V[va].point, sb.m_V[vb].point));
+      const int ei = sb.NewEdge(sb.m_V[va], sb.m_V[vb], c3i).m_edge_index;
+      sb.m_E[ei].m_tolerance = 0.0;
+      const Point2d uv_a = to_uv(outer_pts[static_cast<size_t>(k)].x, outer_pts[static_cast<size_t>(k)].y);
+      const Point2d uv_b = to_uv(outer_pts[static_cast<size_t>(k1)].x, outer_pts[static_cast<size_t>(k1)].y);
+      const int c2i = sb.AddTrimCurve(new ON_LineCurve(uv_a, uv_b));
+      ON_BrepTrim& trim = sb.NewTrim(sb.m_E[ei], /*bRev3d=*/false, sb.m_L[li], c2i);
+      trim.m_tolerance[0] = trim.m_tolerance[1] = 0.0;
+    }
+    sb.SetTrimIsoFlags();
+    sb.SetTolerancesBoxesAndFlags();
+    return std::make_pair(s, fi);
+  };
+
+  // Refusal: an OPEN wire chain (3 legs, never closing back) - a hole
+  // boundary must be a single closed loop.
+  {
+    auto [s, fi] = fresh_sheet();
+    const int vb = s.raw().m_V.Count(), eb = s.raw().m_E.Count();
+    const Brep open_wire = Brep::WireBody({leg01, leg12, leg23});
+    const auto r = s.AddHoleLoop(fi, open_wire);
+    Check(r.result == Result::Failed, "AddHoleLoop() refuses an open (non-closed) wire chain");
+    Check(s.raw().m_V.Count() == vb && s.raw().m_E.Count() == eb, "...untouched");
+  }
+
+  // Refusal: a curved wire edge (a circle) - out of scope, refused
+  // rather than silently faceted.
+  {
+    auto [s, fi] = fresh_sheet();
+    const int vb = s.raw().m_V.Count(), eb = s.raw().m_E.Count();
+    const ON_Circle raw_circle(ON_Plane(ON_3dPoint(2, 2, 0), ON_3dVector(0, 0, 1)), 1.0);
+    ON_NurbsCurve raw_circle_nurbs;
+    raw_circle.GetNurbForm(raw_circle_nurbs);
+    NurbsCurve circle;
+    circle.raw() = raw_circle_nurbs;
+    const Brep circle_wire = Brep::WireBody({circle});
+    const auto r = s.AddHoleLoop(fi, circle_wire);
+    Check(r.result == Result::Failed, "AddHoleLoop() refuses a curved (non-IsLinear()) wire edge");
+    Check(s.raw().m_V.Count() == vb && s.raw().m_E.Count() == eb, "...untouched");
+  }
+
+  // Refusal: the wire loop is not fully inside the outer boundary - here,
+  // straddling the outer loop's own edge (crosses it, rather than
+  // sitting cleanly inside or outside).
+  {
+    auto [s, fi] = fresh_sheet();
+    const int vb = s.raw().m_V.Count(), eb = s.raw().m_E.Count();
+    const Point3d K0(-1, 1, 0), K1(-1, 2, 0), K2(1, 2, 0), K3(1, 1, 0);
+    const Brep straddling_wire =
+        Brep::WireBody({NurbsCurve::FromControlPoints({K0, K1}, 1), NurbsCurve::FromControlPoints({K1, K2}, 1),
+                        NurbsCurve::FromControlPoints({K2, K3}, 1), NurbsCurve::FromControlPoints({K3, K0}, 1)});
+    const auto r = s.AddHoleLoop(fi, straddling_wire);
+    Check(r.result == Result::Failed, "AddHoleLoop() refuses a wire loop that crosses the outer boundary");
+    Check(s.raw().m_V.Count() == vb && s.raw().m_E.Count() == eb, "...untouched");
+  }
+
+  // Refusal: the wire loop lies entirely OUTSIDE the outer boundary.
+  {
+    auto [s, fi] = fresh_sheet();
+    const int vb = s.raw().m_V.Count(), eb = s.raw().m_E.Count();
+    const Point3d L0(10, 10, 0), L1(10, 11, 0), L2(11, 11, 0), L3(11, 10, 0);
+    const Brep outside_wire =
+        Brep::WireBody({NurbsCurve::FromControlPoints({L0, L1}, 1), NurbsCurve::FromControlPoints({L1, L2}, 1),
+                        NurbsCurve::FromControlPoints({L2, L3}, 1), NurbsCurve::FromControlPoints({L3, L0}, 1)});
+    const auto r = s.AddHoleLoop(fi, outside_wire);
+    Check(r.result == Result::Failed, "AddHoleLoop() refuses a wire loop entirely outside the outer boundary");
+    Check(s.raw().m_V.Count() == vb && s.raw().m_E.Count() == eb, "...untouched");
+  }
+
+  // Refusal: the wire body's own vertices are not in the face's plane.
+  {
+    auto [s, fi] = fresh_sheet();
+    const int vb = s.raw().m_V.Count(), eb = s.raw().m_E.Count();
+    const Point3d M0(1, 1, 1), M1(1, 3, 1), M2(3, 3, 1), M3(3, 1, 1);
+    const Brep off_plane_wire =
+        Brep::WireBody({NurbsCurve::FromControlPoints({M0, M1}, 1), NurbsCurve::FromControlPoints({M1, M2}, 1),
+                        NurbsCurve::FromControlPoints({M2, M3}, 1), NurbsCurve::FromControlPoints({M3, M0}, 1)});
+    const auto r = s.AddHoleLoop(fi, off_plane_wire);
+    Check(r.result == Result::Failed, "AddHoleLoop() refuses a wire body that is not in the face's own plane");
+    Check(s.raw().m_V.Count() == vb && s.raw().m_E.Count() == eb, "...untouched");
+  }
+
+  // Refusal: out-of-range / deleted face_index.
+  bool threw_face_range = false;
+  try {
+    (void)sheet.AddHoleLoop(sheet.raw().m_F.Count() + 100, hole_wire);
+  } catch (const std::out_of_range&) {
+    threw_face_range = true;
+  }
+  Check(threw_face_range, "an out-of-range face_index throws std::out_of_range");
+}
+
 // Flip one face: Check() names the flipped face on each of its 4 edges
 // (index = the flipped face, other_index = each neighbour), the welded
 // mesh is no longer a closed manifold (an orientation conflict on every
@@ -44568,6 +44806,7 @@ int main() {
   TestBrepAddWireCurves();
   TestBrepExtrudeWireBody();
   TestBrepOffsetWireBody();
+  TestBrepAddHoleLoop();
   TestBrepCheckAndUnifyNormalsOnFlippedFace();
   TestBrepCheckReportsDroppedFaceAndCapPlanarHolesRestoresIt();
   TestBrepJoinNakedEdgesRecordsTolerantEdges();

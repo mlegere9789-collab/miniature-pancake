@@ -3834,6 +3834,71 @@ class Brep {
   // std::invalid_argument if it refers to an already-deleted edge.
   Result KillEdgeMakeRing(int edge_index);
 
+  // AddHoleLoop: the general "add a hole to this face" constructor
+  // PARITY_MAP.md's own "Loop structure" bullet names as still missing -
+  // a genuine ON_BrepLoop::inner hole loop has so far only ever come
+  // from the general boolean engine's own BuildLoop() (boolean_general.cpp)
+  // or from MakeEdgeKillRing()'s own hand-built slit bridge above, never
+  // from a standalone constructor a caller can invoke directly. This is
+  // the counterpart to RemoveHoleLoop() below (which deletes a hole in
+  // place): given `wire_body` - a closed wire body built by WireBody()/
+  // AddWireCurves() above, the general mechanism this kernel already has
+  // for handing in arbitrary caller-authored curve data - punches it out
+  // of `face_index` as a brand-new real ON_BrepLoop::inner loop, with
+  // genuine new vertices and edges of its own (the face's existing outer
+  // boundary is never touched).
+  //
+  // Deliberately scoped exactly like MakeEdgeFace()/MakeEdgeKillRing()
+  // above, for the identical reason (a fabricated straight 2D trim only
+  // stays exact over an affine (u, v) -> 3D map - the same restriction
+  // SplitNakedEdgeAt() places on itself): the face's own surface must
+  // report IsPlanar(), the face must have EXACTLY one loop (an existing
+  // hole is out of scope - punching a second, independent hole is a
+  // narrower follow-up, not this pass), `wire_body` must satisfy
+  // IsWireBody() and its own edge graph must walk (the same walk-
+  // coverage discipline ExtrudeWireBody()/OffsetWireBody() already use
+  // for an open chain, applied here to require a CLOSED one instead) as
+  // a single simple closed loop of at least 3 edges, and every one of
+  // those edges must itself report IsLinear() - a curved wire edge (e.g.
+  // a circular OffsetWireBody() result) is out of scope, refused rather
+  // than silently faceted.
+  //
+  // Every wire vertex must lie within `tolerance` of the face's own
+  // plane (checked directly against the plane IsPlanar() itself reports,
+  // never assumed), and the wire loop's own 2D image in the face's own
+  // (u, v) - computed via an exact affine point-in-plane map (three of
+  // the surface's own domain-corner evaluations give the map's basis;
+  // no Newton iteration, no faceting, the same closed-form exactness
+  // UnrollDevelopable()'s own planar case already relies on) - must sit
+  // strictly INSIDE the face's own outer loop with no proper crossing
+  // against it (validated the same simple-polygon way MakeEdgeFace()'s
+  // own diagonal already is, approximating the outer loop by its own
+  // trim-start points exactly as MakeEdgeFace()/MakeEdgeKillRing()
+  // already do) and must not self-intersect. The new loop's own winding
+  // is normalized to the standard outer-CCW/inner-CW convention
+  // KillEdgeMakeRing() already relies on (reversing the wire's own walk
+  // order first if needed, via the same SignedArea2D() this file already
+  // uses) rather than trusting wire_body's own arbitrary curve order.
+  //
+  // Returns Result::Failed - not a thrown exception, the same "can't,
+  // but that's not a bug" contract every other topology-surgery method
+  // here shares - for every refusal above; this Brep is left completely
+  // untouched. Throws std::out_of_range if `face_index` is out of range,
+  // or std::invalid_argument if it refers to an already-deleted face or
+  // if `wire_body` does not satisfy IsWireBody().
+  //
+  // Still partial even once this lands: only one hole per call (a face
+  // that already has a hole refuses, rather than adding a second,
+  // independent one); `wire_body` must be a single closed loop of
+  // straight edges, not a general curve; and no app command constructs
+  // or drives a wire body at all yet (WireBody()'s own doc comment above
+  // already names this same app-wiring gap).
+  struct AddHoleLoopResult {
+    Result result = Result::Failed;
+    int loop_index = -1;  // the new ON_BrepLoop::inner loop, or -1 on Result::Failed
+  };
+  AddHoleLoopResult AddHoleLoop(int face_index, const Brep& wire_body, double tolerance = tolerance::kDistance);
+
   // Removes a hole ("island") from a face IN PLACE, at the topology
   // level - the kernel-level "UntrimHoles" this class never had:
   // PARITY_MAP.md's own "Untrim face / remove outer trim / remove hole

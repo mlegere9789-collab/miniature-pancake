@@ -8007,6 +8007,229 @@ Result Brep::KillEdgeMakeRing(int edge_index) {
   return Result::Ok;
 }
 
+namespace {
+
+// Walks `wire_body`'s own edge/vertex graph into one ordered, fully-
+// connected CLOSED loop for AddHoleLoop() below - the closed-loop-only
+// counterpart to sweep.cpp's own WalkWireChain() (which also accepts an
+// open chain; a hole boundary must be a single closed loop, so this
+// refuses anything else, including a genuinely open chain). Returns
+// empty vectors to signal refusal (a branch point, a chain end, more
+// than one disjoint wire component, or fewer than 3 edges - too few to
+// bound a real hole).
+//
+// `vertex_indices[k]` is the wire body's own vertex the walk departs
+// FROM on step k; `edge_indices[k]` is the wire edge that step travels,
+// arriving at `vertex_indices[(k + 1) % n]` - so edge k always connects
+// vertex k to vertex k+1 in the SAME order this function returns them,
+// never left for the caller to re-derive.
+struct ClosedWireWalk {
+  std::vector<int> vertex_indices;
+  std::vector<int> edge_indices;
+};
+
+ClosedWireWalk WalkClosedWireLoop(const Brep& wire_body) {
+  const ON_Brep& b = wire_body.raw();
+
+  std::vector<int> live_edges;
+  for (int ei = 0; ei < b.m_E.Count(); ++ei) {
+    if (b.m_E[ei].m_edge_index >= 0) live_edges.push_back(ei);
+  }
+  if (live_edges.size() < 3) return {};
+
+  // Every touched vertex must have degree exactly 2 - a branch point
+  // (3+) or a chain end (1) means this isn't a single closed loop.
+  for (int vi = 0; vi < b.m_V.Count(); ++vi) {
+    if (b.m_V[vi].m_vertex_index < 0) continue;
+    const int degree = static_cast<int>(wire_body.EdgesOfVertex(vi).size());
+    if (degree == 0) continue;  // an unrelated, untouched vertex slot
+    if (degree != 2) return {};
+  }
+
+  const int start_vertex = b.m_E[live_edges.front()].m_vi[0];
+  ClosedWireWalk result;
+  std::vector<bool> visited(static_cast<size_t>(b.m_E.Count()), false);
+  int current = start_vertex;
+  while (result.edge_indices.size() < live_edges.size()) {
+    int next_edge = -1;
+    for (const int ei : wire_body.EdgesOfVertex(current)) {
+      if (!visited[static_cast<size_t>(ei)]) {
+        next_edge = ei;
+        break;
+      }
+    }
+    if (next_edge < 0) break;  // shouldn't happen given the degree check above - defensive only
+    visited[static_cast<size_t>(next_edge)] = true;
+    result.vertex_indices.push_back(current);
+    result.edge_indices.push_back(next_edge);
+    const ON_BrepEdge& e = b.m_E[next_edge];
+    current = (e.m_vi[0] == current) ? e.m_vi[1] : e.m_vi[0];
+  }
+  // A short walk means a second, disjoint component exists (this wire
+  // body has more than one closed loop); not returning to the start
+  // means something is structurally inconsistent - both refused rather
+  // than guessed at.
+  if (result.edge_indices.size() != live_edges.size() || current != start_vertex) return {};
+  return result;
+}
+
+}  // namespace
+
+Brep::AddHoleLoopResult Brep::AddHoleLoop(int face_index, const Brep& wire_body, double tolerance) {
+  ON_Brep& b = brep_;
+  if (face_index < 0 || face_index >= b.m_F.Count()) {
+    throw std::out_of_range("dino8::kernel::Brep::AddHoleLoop: face_index " + std::to_string(face_index) +
+                            " is out of range (this Brep has " + std::to_string(b.m_F.Count()) + " face slot(s))");
+  }
+  if (b.m_F[face_index].m_face_index < 0) {
+    throw std::invalid_argument("dino8::kernel::Brep::AddHoleLoop: face_index " + std::to_string(face_index) +
+                                " refers to a deleted face");
+  }
+  if (!wire_body.IsWireBody()) {
+    throw std::invalid_argument(
+        "dino8::kernel::Brep::AddHoleLoop: wire_body must satisfy IsWireBody() (at least one live edge, zero "
+        "live faces)");
+  }
+
+  const ON_BrepFace& face = b.m_F[face_index];
+  if (face.LoopCount() != 1) return AddHoleLoopResult{};  // no outer loop, or already has a hole - out of scope
+
+  const ON_Surface* srf = face.SurfaceOf();
+  const double tol = std::max(tolerance, 0.0);
+  ON_Plane pl;
+  if (!srf || !srf->IsPlanar(&pl, std::max(tol, 1e-9))) return AddHoleLoopResult{};
+
+  const ClosedWireWalk chain = WalkClosedWireLoop(wire_body);
+  if (chain.edge_indices.empty()) return AddHoleLoopResult{};  // not a single simple closed loop of 3+ edges
+
+  const ON_Brep& wb = wire_body.raw();
+  const double edge_tol = std::max(tol, 1e-9);
+  for (const int ei : chain.edge_indices) {
+    if (!wb.m_E[ei].IsLinear(edge_tol)) return AddHoleLoopResult{};  // a curved wire edge is out of scope
+  }
+
+  const int n = static_cast<int>(chain.vertex_indices.size());
+  std::vector<Point3d> wire_points(static_cast<size_t>(n));
+  for (int k = 0; k < n; ++k) {
+    wire_points[static_cast<size_t>(k)] = wb.m_V[chain.vertex_indices[static_cast<size_t>(k)]].point;
+  }
+  for (const Point3d& p : wire_points) {
+    if (std::fabs((p - pl.origin) * pl.zaxis) > tol) return AddHoleLoopResult{};  // not in the face's own plane
+  }
+
+  // Exact affine (u, v) <-> 3D map for this planar face: every planar
+  // face this kernel builds (FromMixedFaces()'s own degree-(1, 1)
+  // bilinear patch, and every other planar constructor) has an affine
+  // map from (u, v) to 3D, so three of the surface's own domain-corner
+  // evaluations fix that map completely - no Newton iteration, and no
+  // approximation, the same exactness UnrollDevelopable()'s own planar
+  // case already relies on via ON_Plane::ClosestPointTo().
+  const ON_Interval du = srf->Domain(0), dv = srf->Domain(1);
+  const Point3d p00 = srf->PointAt(du.Min(), dv.Min());
+  const Point3d p10 = srf->PointAt(du.Max(), dv.Min());
+  const Point3d p01 = srf->PointAt(du.Min(), dv.Max());
+  const double ax = (p10 - p00) * pl.xaxis, ay = (p10 - p00) * pl.yaxis;
+  const double bx = (p01 - p00) * pl.xaxis, by = (p01 - p00) * pl.yaxis;
+  const double det = ax * by - bx * ay;
+  if (std::fabs(det) < 1e-18) return AddHoleLoopResult{};  // degenerate (zero-area) face - shouldn't happen
+
+  auto to_uv = [&](const Point3d& q) {
+    const double dxp = (q - p00) * pl.xaxis, dyp = (q - p00) * pl.yaxis;
+    const double s = (dxp * by - bx * dyp) / det;
+    const double t = (ax * dyp - dxp * ay) / det;
+    return Point2d(du.Min() + s * (du.Max() - du.Min()), dv.Min() + t * (dv.Max() - dv.Min()));
+  };
+
+  std::vector<Point2d> hole_poly(static_cast<size_t>(n));
+  for (int k = 0; k < n; ++k) hole_poly[static_cast<size_t>(k)] = to_uv(wire_points[static_cast<size_t>(k)]);
+
+  // Outer loop's own 2D polygon, approximated by its trim-start points -
+  // the exact same approximation MakeEdgeFace()/MakeEdgeKillRing() above
+  // already make for this same kind of containment/crossing check.
+  const ON_BrepLoop& outer_loop = *face.Loop(0);
+  const int n_o = outer_loop.TrimCount();
+  if (n_o < 3) return AddHoleLoopResult{};
+  std::vector<Point2d> outer_poly(static_cast<size_t>(n_o));
+  for (int k = 0; k < n_o; ++k) {
+    const ON_BrepTrim* t = outer_loop.Trim(k);
+    if (!t || t->m_type == ON_BrepTrim::singular || !t->Edge()) return AddHoleLoopResult{};
+    const ON_3dPoint p0 = t->PointAtStart();
+    outer_poly[static_cast<size_t>(k)] = Point2d(p0.x, p0.y);
+  }
+
+  for (const Point2d& p : hole_poly) {
+    if (!PointInPolygon2D(p, outer_poly)) return AddHoleLoopResult{};  // not fully inside the outer boundary
+  }
+  for (int k = 0; k < n_o; ++k) {
+    const int k1 = (k + 1) % n_o;
+    for (int h = 0; h < n; ++h) {
+      const int h1 = (h + 1) % n;
+      if (SegmentsProperlyIntersect2D(outer_poly[static_cast<size_t>(k)], outer_poly[static_cast<size_t>(k1)],
+                                       hole_poly[static_cast<size_t>(h)], hole_poly[static_cast<size_t>(h1)])) {
+        return AddHoleLoopResult{};  // crosses the outer boundary
+      }
+    }
+  }
+  for (int h = 0; h < n; ++h) {
+    const int h1 = (h + 1) % n;
+    for (int h2 = h + 1; h2 < n; ++h2) {
+      const int h3 = (h2 + 1) % n;
+      if (h2 == h1 || h3 == h) continue;  // shares an endpoint with edge h - not a crossing
+      if (SegmentsProperlyIntersect2D(hole_poly[static_cast<size_t>(h)], hole_poly[static_cast<size_t>(h1)],
+                                       hole_poly[static_cast<size_t>(h2)], hole_poly[static_cast<size_t>(h3)])) {
+        return AddHoleLoopResult{};  // the wire loop itself self-intersects
+      }
+    }
+  }
+
+  // Normalize winding to the outer-CCW/inner-CW convention
+  // KillEdgeMakeRing() already relies on: a positive-area wire loop is
+  // reversed before anything is built, rather than trusting wire_body's
+  // own arbitrary curve order.
+  if (SignedArea2D(hole_poly) > 0.0) {
+    std::reverse(wire_points.begin(), wire_points.end());
+    std::reverse(hole_poly.begin(), hole_poly.end());
+  }
+  if (SignedArea2D(hole_poly) >= 0.0) return AddHoleLoopResult{};  // degenerate (zero-area) wire loop
+
+  // Build: every vertex and edge is BRAND NEW (this hole never shares
+  // topology with the face's own existing boundary), so - like
+  // MakeEdgeFace()'s/MakeEdgeKillRing()'s own new bridge edges - each
+  // new 3D edge is a plain straight ON_LineCurve between two of these
+  // new vertices, exact because every wire edge was already confirmed
+  // IsLinear() above.
+  ON_BrepLoop& new_loop = b.NewLoop(ON_BrepLoop::inner, b.m_F[face_index]);
+  const int new_loop_index = new_loop.m_loop_index;
+
+  std::vector<int> new_vertex_index(static_cast<size_t>(n));
+  for (int k = 0; k < n; ++k) {
+    new_vertex_index[static_cast<size_t>(k)] = b.NewVertex(wire_points[static_cast<size_t>(k)], 0.0).m_vertex_index;
+  }
+  for (int k = 0; k < n; ++k) {
+    const int k1 = (k + 1) % n;
+    const Point3d& from_point = wire_points[static_cast<size_t>(k)];
+    const Point3d& to_point = wire_points[static_cast<size_t>(k1)];
+    const int c3i = b.AddEdgeCurve(new ON_LineCurve(from_point, to_point));
+    ON_BrepEdge& new_edge = b.NewEdge(b.m_V[new_vertex_index[static_cast<size_t>(k)]],
+                                      b.m_V[new_vertex_index[static_cast<size_t>(k1)]], c3i);
+    new_edge.m_tolerance = 0.0;
+    const int new_edge_index = new_edge.m_edge_index;
+    const int c2i =
+        b.AddTrimCurve(new ON_LineCurve(hole_poly[static_cast<size_t>(k)], hole_poly[static_cast<size_t>(k1)]));
+    ON_BrepTrim& trim = b.NewTrim(b.m_E[new_edge_index], /*bRev3d=*/false, b.m_L[new_loop_index], c2i);
+    trim.m_tolerance[0] = trim.m_tolerance[1] = 0.0;
+  }
+
+  b.SetTolerancesBoxesAndFlags();
+  FixUnsetEdgeTolerances(b);
+  ClearFaceSideTables();
+
+  AddHoleLoopResult result;
+  result.result = Result::Ok;
+  result.loop_index = new_loop_index;
+  return result;
+}
+
 Result Brep::RemoveHoleLoopNoFinalize(int loop_index) {
   ON_Brep& b = brep_;
   if (loop_index < 0 || loop_index >= b.m_L.Count()) {
