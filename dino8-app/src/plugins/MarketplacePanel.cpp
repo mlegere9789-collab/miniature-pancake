@@ -1,12 +1,14 @@
 #include "plugins/MarketplacePanel.h"
 
 #include <cstdio>
+#include <ctime>
 #include <string>
 
 #include "app/Application.h"
 #include "app/Settings.h"
 #include "imgui.h"
 #include "plugins/Marketplace.h"
+#include "plugins/PluginReviews.h"
 
 namespace dino8::plugins {
 
@@ -49,10 +51,29 @@ std::string LoadedStatus(app::Application& app, const Marketplace& market) {
   return status;
 }
 
+std::string CurrentTimestamp() {
+  const std::time_t now = std::time(nullptr);
+  char buf[32];
+  std::strftime(buf, sizeof buf, "%Y-%m-%d %H:%M:%S", std::localtime(&now));
+  return buf;
+}
+
+// "4.3 (3)" for a rated entry, "Not yet rated" for one with no reviews -
+// used both in the plugin list's "Rating" column and the selected entry's
+// detail panel.
+std::string RatingSummary(const std::string& plugin_id) {
+  const auto& reviews = PluginReviewStore::Get().ReviewsFor(plugin_id);
+  if (reviews.empty()) return "Not yet rated";
+  char buf[32];
+  std::snprintf(buf, sizeof buf, "%.1f (%d)", AverageRating(reviews), static_cast<int>(reviews.size()));
+  return buf;
+}
+
 }  // namespace
 
 void DrawPluginMarketplacePanel(app::Application& app, bool& open) {
   if (!open) return;
+  PluginReviewStore::Get().EnsureLoaded(app::ConfigDirectory());
   ImGui::SetNextWindowSize(ImVec2(680, 460), ImGuiCond_FirstUseEver);
   if (!ImGui::Begin("Plug-in Marketplace", &open)) { ImGui::End(); return; }
 
@@ -60,6 +81,9 @@ void DrawPluginMarketplacePanel(app::Application& app, bool& open) {
   static char source[512] = "";
   static std::string selected_id;
   static std::string status;
+  static int review_rating = 5;
+  static char review_reviewer[128] = "";
+  static char review_comment[256] = "";
 
   ImGui::TextWrapped(
       "Browse a plug-in index - a JSON file listing installable plug-ins (schema: plugin-index/SCHEMA.md). "
@@ -102,13 +126,14 @@ void DrawPluginMarketplacePanel(app::Application& app, bool& open) {
   ImGui::TextDisabled("%s%s", market.Index().index_name.c_str(),
                       market.Index().updated.empty() ? "" : (" - updated " + market.Index().updated).c_str());
 
-  if (ImGui::BeginTable("marketplace_plugins", 7,
+  if (ImGui::BeginTable("marketplace_plugins", 8,
                         ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable)) {
     ImGui::TableSetupColumn("Name");
     ImGui::TableSetupColumn("Version");
     ImGui::TableSetupColumn("Installed");
     ImGui::TableSetupColumn("Author");
     ImGui::TableSetupColumn("Compatibility");
+    ImGui::TableSetupColumn("Rating");
     ImGui::TableSetupColumn("Source");
     ImGui::TableSetupColumn("");
     ImGui::TableHeadersRow();
@@ -134,6 +159,10 @@ void DrawPluginMarketplacePanel(app::Application& app, bool& open) {
       ImGui::TableNextColumn(); ImGui::TextUnformatted(e.author.c_str());
       const Compatibility compat = CheckCompatibility(e);
       ImGui::TableNextColumn(); ImGui::TextColored(CompatibilityColor(compat), "%s", CompatibilityLabel(compat));
+      ImGui::TableNextColumn();
+      const std::string rating_summary = RatingSummary(e.id);
+      if (rating_summary == "Not yet rated") ImGui::TextDisabled("%s", rating_summary.c_str());
+      else ImGui::TextUnformatted(rating_summary.c_str());
       ImGui::TableNextColumn(); ImGui::TextUnformatted(e.bundled_path.empty() ? "remote download" : "bundled with this build");
       ImGui::TableNextColumn();
       ImGui::BeginDisabled(compat == Compatibility::ApiTooNew);
@@ -166,6 +195,26 @@ void DrawPluginMarketplacePanel(app::Application& app, bool& open) {
       ImGui::TextDisabled("Tags: %s", tags.c_str());
     }
     ImGui::TextDisabled("Plug-in API v%d - %s", e.api_version, CompatibilityLabel(CheckCompatibility(e)));
+
+    ImGui::Separator();
+    const auto& reviews = PluginReviewStore::Get().ReviewsFor(e.id);
+    ImGui::TextWrapped("Ratings & Reviews: %s", RatingSummary(e.id).c_str());
+    for (const PluginReview& r : reviews) {
+      ImGui::BulletText("%s - %d/5%s", r.reviewer.empty() ? "Anonymous" : r.reviewer.c_str(), r.rating,
+                        r.comment.empty() ? "" : (": " + r.comment).c_str());
+    }
+    ImGui::SliderInt("Your rating", &review_rating, 1, 5);
+    ImGui::InputTextWithHint("##reviewer_name", "Your name (optional)", review_reviewer, sizeof review_reviewer);
+    ImGui::InputTextWithHint("##review_comment", "Comment (optional)", review_comment, sizeof review_comment);
+    if (ImGui::Button("Submit Review")) {
+      std::string error;
+      if (PluginReviewStore::Get().AddReview(e.id, review_rating, review_comment, review_reviewer, CurrentTimestamp(), error)) {
+        status = "Thanks for rating " + e.name + "!";
+        review_comment[0] = '\0';
+      } else {
+        status = "Rating failed: " + error;
+      }
+    }
     break;
   }
 

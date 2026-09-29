@@ -362,6 +362,7 @@ set(DINO8_SOURCES
   src/plugins/MarketplaceIndex.cpp
   src/plugins/Marketplace.cpp
   src/plugins/MarketplacePanel.cpp
+  src/plugins/PluginReviews.cpp
   src/commands/cmd_flow.cpp
   src/session/Digitizer.cpp
   src/session/Worksession.cpp
@@ -551,6 +552,17 @@ if(DINO8_BUILD_TESTS)
     src/plugins/MarketplaceIndex.cpp src/util/Sha256.cpp src/util/json_mini.cpp)
   target_include_directories(dino8_test_plugin_marketplace PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/include)
   add_test(NAME dino8_plugin_marketplace COMMAND dino8_test_plugin_marketplace ${CMAKE_CURRENT_SOURCE_DIR}/plugin-index/index.json)
+
+  # Plug-in ratings/reviews (src/plugins/PluginReviews.cpp): JSON parsing/
+  # serialization of the local reviews store, schema validation, and
+  # PluginReviewStore's add/persist/reload round-trip. Deliberately
+  # standalone, like dino8_test_plugin_marketplace above - it only touches a
+  # plain file path, never app::Application, so the Marketplace panel's
+  # "Rate this plug-in" UI doesn't need to be driven through the real
+  # Dino8 binary to prove the storage layer underneath it is correct.
+  add_executable(dino8_test_plugin_reviews tests/test_plugin_reviews.cpp src/plugins/PluginReviews.cpp src/util/json_mini.cpp)
+  target_include_directories(dino8_test_plugin_reviews PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  add_test(NAME dino8_plugin_reviews COMMAND dino8_test_plugin_reviews)
 
   # Property-based/randomized geometry fuzz test: random-but-valid NURBS
   # curves/surfaces, random primitive-mesh boolean pairs, and random

@@ -1,6 +1,8 @@
 // Dino Flow (Grasshopper-class node editor) and plug-in system commands.
 // Registered last so it can freely reference every other subsystem.
 #include <cctype>
+#include <cstdlib>
+#include <ctime>
 #include <filesystem>
 #include <sstream>
 
@@ -11,6 +13,7 @@
 #include "plugins/Marketplace.h"
 #include "plugins/PluginManager.h"
 #include "plugins/PluginPanel.h"
+#include "plugins/PluginReviews.h"
 
 namespace dino8::app {
 
@@ -29,6 +32,18 @@ bool OptionValue(const std::vector<std::string>& toks, const std::string& key, s
     if (t.size() > prefix.size() && LowerStr(t.substr(0, prefix.size())) == prefix) { out = t.substr(prefix.size()); return true; }
   }
   return false;
+}
+
+bool IsOption(const std::string& tok, const std::string& key) {
+  const std::string prefix = LowerStr(key) + "=";
+  return tok.size() > prefix.size() && LowerStr(tok.substr(0, prefix.size())) == prefix;
+}
+
+std::string CurrentTimestamp() {
+  const std::time_t now = std::time(nullptr);
+  char buf[32];
+  std::strftime(buf, sizeof buf, "%Y-%m-%d %H:%M:%S", std::localtime(&now));
+  return buf;
 }
 
 }  // namespace
@@ -231,6 +246,57 @@ void RegisterFlowCommands(CommandEngine& e) {
         ctx.Print("PluginMarketplaceCheckUpdates: " + std::to_string(updates.size()) + " update(s) available");
         for (const auto& u : updates) {
           ctx.Print("  " + u.id + ": " + u.name + " " + u.installed_version + " -> " + u.available_version);
+        }
+      }));
+
+  Reg(e, "PluginMarketplaceRate", Immediate([](CommandContext& ctx) {
+        std::vector<std::string> toks;
+        while (auto tok = ctx.Engine().TakePendingInput()) toks.push_back(*tok);
+        if (toks.size() < 2) {
+          ctx.Warn("PluginMarketplaceRate: usage PluginMarketplaceRate id rating [comment words...] [Reviewer=Name]");
+          return;
+        }
+        const std::string id = toks[0];
+        char* end = nullptr;
+        const long rating = std::strtol(toks[1].c_str(), &end, 10);
+        if (end == toks[1].c_str() || *end != '\0') {
+          ctx.Warn("PluginMarketplaceRate: rating must be a whole number 1..5, got \"" + toks[1] + "\"");
+          return;
+        }
+        std::string reviewer;
+        OptionValue(toks, "Reviewer", reviewer);
+        std::string comment;
+        for (size_t i = 2; i < toks.size(); ++i) {
+          if (IsOption(toks[i], "Reviewer")) continue;
+          comment += (comment.empty() ? "" : " ") + toks[i];
+        }
+        plugins::PluginReviewStore::Get().EnsureLoaded(ConfigDirectory());
+        std::string error;
+        if (plugins::PluginReviewStore::Get().AddReview(id, static_cast<int>(rating), comment, reviewer, CurrentTimestamp(), error)) {
+          ctx.Print("PluginMarketplaceRate: recorded a " + std::to_string(rating) + "/5 rating for " + id);
+        } else {
+          ctx.Warn("PluginMarketplaceRate: " + error);
+        }
+      }));
+
+  Reg(e, "PluginMarketplaceReviews", Immediate([](CommandContext& ctx) {
+        std::vector<std::string> toks;
+        while (auto tok = ctx.Engine().TakePendingInput()) toks.push_back(*tok);
+        if (toks.empty()) {
+          ctx.Warn("PluginMarketplaceReviews: give the id of a plug-in to list reviews for");
+          return;
+        }
+        plugins::PluginReviewStore::Get().EnsureLoaded(ConfigDirectory());
+        const auto& reviews = plugins::PluginReviewStore::Get().ReviewsFor(toks[0]);
+        if (reviews.empty()) {
+          ctx.Print("PluginMarketplaceReviews: " + toks[0] + " has no reviews yet");
+          return;
+        }
+        ctx.Print("PluginMarketplaceReviews: " + toks[0] + " - " + std::to_string(reviews.size()) + " review(s), average " +
+                  FormatNumber(plugins::AverageRating(reviews)) + "/5");
+        for (const auto& r : reviews) {
+          ctx.Print("  " + std::string(r.reviewer.empty() ? "Anonymous" : r.reviewer) + ": " + std::to_string(r.rating) + "/5" +
+                    (r.comment.empty() ? "" : " - " + r.comment));
         }
       }));
 

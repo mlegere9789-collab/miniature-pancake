@@ -3651,4 +3651,34 @@ pmucheck "PluginMarketplaceCheckUpdates: all installed plug-ins are up to date w
 pmucheck "PluginMarketplaceCheckUpdates: 1 update(s) available" "PluginMarketplaceCheckUpdates finds exactly one update once the bumped-version index is loaded"
 pmucheck "  hellodino: HelloDino 1.0.0 -> 1.1.0" "PluginMarketplaceCheckUpdates reports the installed and available versions for the out-of-date plug-in"
 
+# Plug-in Marketplace: local ratings/reviews (src/plugins/PluginReviews.cpp,
+# PluginMarketplaceRate/PluginMarketplaceReviews in src/commands/cmd_flow.cpp)
+# - stored in <config>/plugin_reviews.json, not fetched from anywhere, so a
+# fresh $XDG_CONFIG_HOME (set once at the top of this script) starts with
+# nothing rated. Two valid ratings for hellodino must average to 4/5, an
+# out-of-range rating (12) must be refused and must not get counted, and the
+# ratings must show up in the Marketplace panel's own "Rating" column data
+# (RatingSummary in MarketplacePanel.cpp) the same way PluginMarketplaceList
+# already proves the table's other columns.
+sed "s|@DINO8ROOT@|$HEREW/..|g" "$HERE/plugin_marketplace_reviews_script.txt" > "$TMPW/plugin_marketplace_reviews_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  PMR="$("$BIN" --smoke 60 --script "$TMPW/plugin_marketplace_reviews_script.txt" 2>&1)" || { echo "$PMR"; echo "FAIL: plugin marketplace reviews script exited non-zero"; exit 1; }
+else
+  PMR="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$TMPW/plugin_marketplace_reviews_script.txt" 2>&1)" || { echo "$PMR"; echo "FAIL: plugin marketplace reviews script exited non-zero"; exit 1; }
+fi
+pmrcheck() { if echo "$PMR" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$PMR" "$1"; fail=1; fi; }
+pmrcheck "PluginMarketplaceReviews: hellodino has no reviews yet" "PluginMarketplaceReviews reports no reviews before any rating is added"
+pmrcheck "PluginMarketplaceRate: recorded a 5/5 rating for hellodino" "PluginMarketplaceRate records Alice's 5/5 rating"
+pmrcheck "PluginMarketplaceRate: recorded a 3/5 rating for hellodino" "PluginMarketplaceRate records the second, anonymous 3/5 rating"
+pmrcheck "! PluginMarketplaceRate: rating must be between 1 and 5, got 12" "PluginMarketplaceRate refuses an out-of-range rating (12)"
+pmrcheck "PluginMarketplaceReviews: hellodino - 2 review(s), average 4" "PluginMarketplaceReviews averages only the 2 valid ratings ((5+3)/2 == 4), not the rejected one"
+pmrcheck "  Alice: 5/5 - Works great" "PluginMarketplaceReviews lists Alice's named review with its comment"
+pmrcheck "  Anonymous: 3/5 - A bit slow on big meshes" "PluginMarketplaceReviews lists the second review as Anonymous (no Reviewer= given)"
+REVIEWS_FILE="$XDG_CONFIG_HOME/dino8/plugin_reviews.json"
+if [ -f "$REVIEWS_FILE" ] && grep -q "hellodino" "$REVIEWS_FILE" && grep -q "Alice" "$REVIEWS_FILE"; then
+  echo "ok   ratings persisted to $REVIEWS_FILE, not just kept in memory"
+else
+  echo "FAIL $REVIEWS_FILE was not written with hellodino's ratings"; fail=1
+fi
+
 exit $fail
