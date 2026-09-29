@@ -464,10 +464,18 @@ GDBusInterfaceInfo** Introspect(GDBusConnection*, const gchar*, const gchar* obj
                                  gpointer) {
   Bridge& b = B();
   std::lock_guard<std::mutex> lock(b.tree_mutex);
+  // Despite the API doc's "object_path: the path registered with
+  // register_subtree()" phrasing, what's actually passed here for a
+  // non-root node is the FULL incoming path (mount + "/" + node) already -
+  // node is redundantly just its last segment. ParseIndices wants exactly
+  // that full path, so `object_path` alone is already what to parse; do
+  // NOT re-append node (that double-counts it, breaking anything past
+  // depth 1 - a doubled "n2" is harmless since ParseIndices' strtoul stops
+  // at the next '/', but a doubled "n2_0" mis-splits on the extra '_').
   const bool is_root = (node == nullptr);
   const AccessibleNode* n = nullptr;
   if (!is_root) {
-    n = ResolveNonRoot(ParseIndices((std::string(object_path) + "/" + node).c_str()));
+    n = ResolveNonRoot(ParseIndices(object_path));
     if (!n) return nullptr;  // no object at this node (e.g. a since-closed submenu) - GDBus reports "unknown"
   }
   const AccessibleRole role = is_root ? AccessibleRole::Application : n->role;
