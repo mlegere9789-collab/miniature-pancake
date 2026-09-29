@@ -1001,6 +1001,291 @@ std::string Utf8Circled(char letter) {
 const char* const kDiameterSign = "\xE2\x8C\x80";  // U+2300
 const char* const kPlusMinus = "\xC2\xB1";          // U+00B1
 
+// Builds (or rebuilds) one FeatureControlFrame group from its resolved
+// feature point / frame location / symbol spec. The feature point (the
+// leader's start, where it touches the toleranced feature) is associative
+// when it sits exactly on a real object (FindPointAnchor, same coincidence
+// rule as Leader/MultiLeader): `has_ref`/`ref`/`which` records that anchor so
+// UpdateGdtSymbols can drag the leader's start to the object's current
+// position later. The frame's own placement (frame_loc) is never anchored -
+// like MultiLeader's landing point, it is a fixed spot the user chose for
+// the frame box, not a measurement of anything - so it always comes back
+// from the GdtFrameLocation fallback tag.
+int BuildFeatureControlFrameGroup(CommandContext& ctx, Point3d feature_pt, Point3d frame_loc, GdtSymbol symbol,
+                                  const std::string& tolerance, const std::string& datums, const std::string& modifier,
+                                  bool diameter, bool has_ref, ObjectId ref, const std::string& which, int layer = -1) {
+  if (layer < 0) layer = DimensionLayer(ctx);
+  const ON_Plane pl = ActivePlane(ctx);
+  const double h = AnnotationTextHeight(ctx);
+  const std::string style = ctx.Settings().annotation_style;
+  std::map<std::string, std::string> tags;
+  tags["GdtSymbol"] = drafting::GdtSymbolName(symbol);
+  tags["GdtTolerance"] = tolerance;
+  tags["GdtDatums"] = datums;
+  tags["GdtModifier"] = modifier;
+  tags["GdtDiameter"] = diameter ? "1" : "0";
+  tags["GdtFeaturePoint"] = PointTag(feature_pt);
+  tags["GdtFrameLocation"] = PointTag(frame_loc);
+  if (has_ref) { tags["DimRefObj1"] = std::to_string(ref); tags["DimRefEnd1"] = which; }
+  std::map<std::string, std::string> glyph_tags = tags;
+  glyph_tags["Annotation"] = "FeatureControlFrame";
+  glyph_tags["Style"] = style;
+
+  std::vector<ObjectId> ids;
+  auto add_curves = [&](const std::vector<kernel::NurbsCurve>& cs) {
+    for (const kernel::NurbsCurve& c : cs) {
+      SceneObject s = SceneObject::MakeCurve(c);
+      s.layer_index = layer;
+      TagAnnotation(s, "FeatureControlFrame", style);
+      for (const auto& [k, v] : tags) s.user_text[k] = v;
+      ids.push_back(ctx.Doc().Add(std::move(s)));
+    }
+  };
+  // Leader from the feature to the frame.
+  std::vector<kernel::NurbsCurve> leader = {PolylineCurve({feature_pt, frame_loc})};
+  AddArrowLocal(leader, feature_pt, feature_pt - frame_loc, h * 0.6, pl);
+  add_curves(leader);
+
+  // Frame: symbol cell, tolerance cell, one cell per datum letter.
+  std::vector<std::string> datum_list;
+  for (const std::string& d : SplitChar(datums, ',')) if (!TrimWs(d).empty()) datum_list.push_back(TrimWs(d));
+  std::string tol_text = (diameter ? std::string(kDiameterSign) : std::string()) + tolerance;
+  if (!modifier.empty()) tol_text += " " + Utf8Circled(modifier[0]);
+  const double cell_h = h * 1.8;
+  std::vector<double> w = {cell_h, std::max(cell_h * 1.5, h * 0.75 * static_cast<double>(tol_text.size()) * 0.55 + cell_h * 0.4)};
+  for (size_t i = 0; i < datum_list.size(); ++i) w.push_back(cell_h);
+  std::vector<double> xs = {0};
+  for (double v : w) xs.push_back(xs.back() + v);
+  const double total_w = xs.back();
+  auto PT = [&](double x, double y) { return frame_loc + pl.xaxis * x - pl.yaxis * y; };
+  std::vector<kernel::NurbsCurve> box;
+  box.push_back(PolylineCurve({PT(0, 0), PT(total_w, 0)}));
+  box.push_back(PolylineCurve({PT(0, cell_h), PT(total_w, cell_h)}));
+  for (double x : xs) box.push_back(PolylineCurve({PT(x, 0), PT(x, cell_h)}));
+  add_curves(box);
+  std::vector<kernel::NurbsCurve> glyph;
+  const double gsz = cell_h * 0.62;
+  drafting::AppendGdtGlyph(symbol, PT(xs[0] + (xs[1] - xs[0] - gsz) * 0.5, cell_h * 0.19 + gsz), pl, gsz, glyph);
+  add_curves(glyph);
+  GlyphSpec tol_g;
+  tol_g.text = tol_text;
+  tol_g.height = cell_h * 0.5;
+  tol_g.plane = pl;
+  tol_g.plane.SetOrigin(PT(xs[1] + cell_h * 0.18, cell_h * 0.68));
+  for (ObjectId id : AddGlyphCurves(ctx, tol_g, layer, -1, glyph_tags)) ids.push_back(id);
+  for (size_t i = 0; i < datum_list.size(); ++i) {
+    GlyphSpec dg;
+    dg.text = datum_list[i];
+    dg.height = cell_h * 0.55;
+    dg.center = true;
+    dg.plane = pl;
+    dg.plane.SetOrigin(PT((xs[2 + i] + xs[3 + i]) * 0.5, cell_h * 0.68));
+    for (ObjectId id : AddGlyphCurves(ctx, dg, layer, -1, glyph_tags)) ids.push_back(id);
+  }
+  if (ids.empty()) return -1;
+  return ctx.Doc().CreateGroup(ids, "FeatureControlFrame");
+}
+
+// Reads a FeatureControlFrame group's spec back, resolving the feature point
+// to its live anchor's current position (ResolveAnchor) when DimRefObj1
+// resolves, else the GdtFeaturePoint fallback recorded at creation. The
+// frame location and symbol/tolerance/datums/modifier/diameter fields always
+// come back from their tags - none of those are anchored. False if the
+// group carries no GdtFrameLocation tag (e.g. pre-associativity data).
+bool ResolveFeatureControlFrameSpec(Document& doc, int group_id, Point3d& feature_pt, Point3d& frame_loc, GdtSymbol& symbol,
+                                    std::string& tolerance, std::string& datums, std::string& modifier, bool& diameter) {
+  bool have_loc = false, have_feat = false, has_ref = false;
+  ObjectId ref = kNoObject;
+  std::string which = "point";
+  for (const SceneObject& o : doc.Objects()) {
+    if (o.group_id != group_id) continue;
+    if (auto it = o.user_text.find("GdtFrameLocation"); it != o.user_text.end() && ParsePointTag(it->second, frame_loc)) have_loc = true;
+    if (auto it = o.user_text.find("GdtFeaturePoint"); it != o.user_text.end() && ParsePointTag(it->second, feature_pt)) have_feat = true;
+    if (auto it = o.user_text.find("GdtSymbol"); it != o.user_text.end()) drafting::ParseGdtSymbol(it->second, symbol);
+    if (auto it = o.user_text.find("GdtTolerance"); it != o.user_text.end()) tolerance = it->second;
+    if (auto it = o.user_text.find("GdtDatums"); it != o.user_text.end()) datums = it->second;
+    if (auto it = o.user_text.find("GdtModifier"); it != o.user_text.end()) modifier = it->second;
+    if (auto it = o.user_text.find("GdtDiameter"); it != o.user_text.end()) diameter = it->second == "1";
+    if (auto it = o.user_text.find("DimRefObj1"); it != o.user_text.end()) { ref = static_cast<ObjectId>(std::strtoull(it->second.c_str(), nullptr, 10)); has_ref = true; }
+    if (auto it = o.user_text.find("DimRefEnd1"); it != o.user_text.end()) which = it->second;
+  }
+  if (!have_loc || !have_feat) return false;
+  if (has_ref) { Point3d p; if (ResolveAnchor(doc, ref, which, p)) feature_pt = p; }
+  return true;
+}
+
+// Builds (or rebuilds) one DatumFeature group from its resolved origin/
+// letter. Associative exactly like FeatureControlFrame's feature point:
+// `has_ref`/`ref`/`which` records a FindPointAnchor coincidence so
+// UpdateGdtSymbols can drag the whole triangle-and-letter glyph to the
+// anchored object's current position later.
+int BuildDatumFeatureGroup(CommandContext& ctx, Point3d origin, const std::string& letter, bool has_ref, ObjectId ref,
+                           const std::string& which, int layer = -1) {
+  if (layer < 0) layer = DimensionLayer(ctx);
+  const ON_Plane pl = ActivePlane(ctx);
+  const double h = AnnotationTextHeight(ctx);
+  const std::string style = ctx.Settings().annotation_style;
+  std::map<std::string, std::string> tags;
+  tags["DatumLetter"] = letter;
+  tags["DatumOrigin"] = PointTag(origin);
+  if (has_ref) { tags["DimRefObj1"] = std::to_string(ref); tags["DimRefEnd1"] = which; }
+  std::vector<kernel::NurbsCurve> curves;
+  drafting::AppendDatumTriangle(origin, pl, h, curves);
+  std::vector<ObjectId> ids;
+  for (const kernel::NurbsCurve& c : curves) {
+    SceneObject s = SceneObject::MakeCurve(c);
+    s.layer_index = layer;
+    TagAnnotation(s, "DatumFeature", style);
+    for (const auto& [k, v] : tags) s.user_text[k] = v;
+    ids.push_back(ctx.Doc().Add(std::move(s)));
+  }
+  GlyphSpec g;
+  g.text = letter;
+  g.height = h * 0.7;
+  g.center = true;
+  g.plane = pl;
+  g.plane.SetOrigin(origin + pl.yaxis * (h * 2.5));
+  std::map<std::string, std::string> glyph_tags = tags;
+  glyph_tags["Annotation"] = "DatumFeature";
+  glyph_tags["Style"] = style;
+  for (ObjectId id : AddGlyphCurves(ctx, g, layer, -1, glyph_tags)) ids.push_back(id);
+  if (ids.empty()) return -1;
+  return ctx.Doc().CreateGroup(ids, "DatumFeature");
+}
+
+// Reads a DatumFeature group's origin/letter back, resolving the origin to
+// its live anchor (ResolveAnchor) when DimRefObj1 resolves, else the
+// DatumOrigin fallback recorded at creation. False if the group carries no
+// DatumOrigin tag at all (pre-associativity data).
+bool ResolveDatumFeatureSpec(Document& doc, int group_id, Point3d& origin, std::string& letter) {
+  bool have_origin = false, has_ref = false;
+  ObjectId ref = kNoObject;
+  std::string which = "point";
+  for (const SceneObject& o : doc.Objects()) {
+    if (o.group_id != group_id) continue;
+    if (auto it = o.user_text.find("DatumOrigin"); it != o.user_text.end() && ParsePointTag(it->second, origin)) have_origin = true;
+    if (auto it = o.user_text.find("DatumLetter"); it != o.user_text.end()) letter = it->second;
+    if (auto it = o.user_text.find("DimRefObj1"); it != o.user_text.end()) { ref = static_cast<ObjectId>(std::strtoull(it->second.c_str(), nullptr, 10)); has_ref = true; }
+    if (auto it = o.user_text.find("DimRefEnd1"); it != o.user_text.end()) which = it->second;
+  }
+  if (!have_origin) return false;
+  if (has_ref) { Point3d p; if (ResolveAnchor(doc, ref, which, p)) origin = p; }
+  return true;
+}
+
+// Builds (or rebuilds) one SurfaceFinish group from its resolved origin/
+// value. Associative exactly like DatumFeature's origin.
+int BuildSurfaceFinishGroup(CommandContext& ctx, Point3d origin, const std::string& value, bool has_ref, ObjectId ref,
+                            const std::string& which, int layer = -1) {
+  if (layer < 0) layer = DimensionLayer(ctx);
+  const ON_Plane pl = ActivePlane(ctx);
+  const double h = AnnotationTextHeight(ctx);
+  const std::string style = ctx.Settings().annotation_style;
+  std::map<std::string, std::string> tags;
+  tags["SurfaceFinishValue"] = value;
+  tags["SurfaceFinishOrigin"] = PointTag(origin);
+  if (has_ref) { tags["DimRefObj1"] = std::to_string(ref); tags["DimRefEnd1"] = which; }
+  std::vector<kernel::NurbsCurve> curves;
+  drafting::AppendSurfaceFinishGlyph(origin, pl, h, curves);
+  std::vector<ObjectId> ids;
+  for (const kernel::NurbsCurve& c : curves) {
+    SceneObject s = SceneObject::MakeCurve(c);
+    s.layer_index = layer;
+    TagAnnotation(s, "SurfaceFinish", style);
+    for (const auto& [k, v] : tags) s.user_text[k] = v;
+    ids.push_back(ctx.Doc().Add(std::move(s)));
+  }
+  if (!value.empty()) {
+    GlyphSpec g;
+    g.text = "Ra " + value;
+    g.height = h * 0.5;
+    g.plane = pl;
+    g.plane.SetOrigin(origin + pl.yaxis * (h * 0.7) + pl.xaxis * (h * 1.1));
+    std::map<std::string, std::string> glyph_tags = tags;
+    glyph_tags["Annotation"] = "SurfaceFinish";
+    glyph_tags["Style"] = style;
+    for (ObjectId id : AddGlyphCurves(ctx, g, layer, -1, glyph_tags)) ids.push_back(id);
+  }
+  if (ids.empty()) return -1;
+  return ctx.Doc().CreateGroup(ids, "SurfaceFinish");
+}
+
+// Reads a SurfaceFinish group's origin/value back, resolving the origin to
+// its live anchor when DimRefObj1 resolves, else the SurfaceFinishOrigin
+// fallback recorded at creation. False if the group carries no
+// SurfaceFinishOrigin tag at all (pre-associativity data).
+bool ResolveSurfaceFinishSpec(Document& doc, int group_id, Point3d& origin, std::string& value) {
+  bool have_origin = false, has_ref = false;
+  ObjectId ref = kNoObject;
+  std::string which = "point";
+  for (const SceneObject& o : doc.Objects()) {
+    if (o.group_id != group_id) continue;
+    if (auto it = o.user_text.find("SurfaceFinishOrigin"); it != o.user_text.end() && ParsePointTag(it->second, origin)) have_origin = true;
+    if (auto it = o.user_text.find("SurfaceFinishValue"); it != o.user_text.end()) value = it->second;
+    if (auto it = o.user_text.find("DimRefObj1"); it != o.user_text.end()) { ref = static_cast<ObjectId>(std::strtoull(it->second.c_str(), nullptr, 10)); has_ref = true; }
+    if (auto it = o.user_text.find("DimRefEnd1"); it != o.user_text.end()) which = it->second;
+  }
+  if (!have_origin) return false;
+  if (has_ref) { Point3d p; if (ResolveAnchor(doc, ref, which, p)) origin = p; }
+  return true;
+}
+
+// Builds (or rebuilds) one WeldSymbol group from its resolved arrow point
+// (on the joint - the associative end, same coincidence rule as the others
+// above) and reference-line end (where the symbol itself sits - never
+// anchored, a fixed placement like FeatureControlFrame's frame location).
+int BuildWeldSymbolGroup(CommandContext& ctx, Point3d arrow_pt, Point3d ref_pt, const std::string& type, const std::string& side,
+                         bool has_ref, ObjectId ref, const std::string& which, int layer = -1) {
+  if (layer < 0) layer = DimensionLayer(ctx);
+  const ON_Plane pl = ActivePlane(ctx);
+  const double h = AnnotationTextHeight(ctx);
+  const std::string style = ctx.Settings().annotation_style;
+  std::map<std::string, std::string> tags;
+  tags["WeldType"] = type;
+  tags["WeldSide"] = side;
+  tags["WeldArrowPoint"] = PointTag(arrow_pt);
+  tags["WeldRefPoint"] = PointTag(ref_pt);
+  if (has_ref) { tags["DimRefObj1"] = std::to_string(ref); tags["DimRefEnd1"] = which; }
+  std::vector<kernel::NurbsCurve> curves = {PolylineCurve({arrow_pt, ref_pt})};
+  AddArrowLocal(curves, arrow_pt, arrow_pt - ref_pt, h * 0.6, pl);
+  drafting::WeldSymbolType wt = drafting::WeldSymbolType::Fillet;
+  drafting::ParseWeldSymbolType(type, wt);
+  drafting::AppendWeldGlyph(ref_pt, pl, h, ToLower(side) != "below", wt, curves);
+  std::vector<ObjectId> ids;
+  for (const kernel::NurbsCurve& c : curves) {
+    SceneObject s = SceneObject::MakeCurve(c);
+    s.layer_index = layer;
+    TagAnnotation(s, "WeldSymbol", style);
+    for (const auto& [k, v] : tags) s.user_text[k] = v;
+    ids.push_back(ctx.Doc().Add(std::move(s)));
+  }
+  if (ids.empty()) return -1;
+  return ctx.Doc().CreateGroup(ids, "WeldSymbol");
+}
+
+// Reads a WeldSymbol group's arrow/reference points and type/side back,
+// resolving the arrow point to its live anchor when DimRefObj1 resolves,
+// else the WeldArrowPoint fallback; the reference point (where the glyph
+// sits) always comes back from WeldRefPoint - it is never anchored. False if
+// the group carries no WeldRefPoint tag at all (pre-associativity data).
+bool ResolveWeldSymbolSpec(Document& doc, int group_id, Point3d& arrow_pt, Point3d& ref_pt, std::string& type, std::string& side) {
+  bool have_arrow = false, have_ref_pt = false, has_ref = false;
+  ObjectId ref = kNoObject;
+  std::string which = "point";
+  for (const SceneObject& o : doc.Objects()) {
+    if (o.group_id != group_id) continue;
+    if (auto it = o.user_text.find("WeldArrowPoint"); it != o.user_text.end() && ParsePointTag(it->second, arrow_pt)) have_arrow = true;
+    if (auto it = o.user_text.find("WeldRefPoint"); it != o.user_text.end() && ParsePointTag(it->second, ref_pt)) have_ref_pt = true;
+    if (auto it = o.user_text.find("WeldType"); it != o.user_text.end()) type = it->second;
+    if (auto it = o.user_text.find("WeldSide"); it != o.user_text.end()) side = it->second;
+    if (auto it = o.user_text.find("DimRefObj1"); it != o.user_text.end()) { ref = static_cast<ObjectId>(std::strtoull(it->second.c_str(), nullptr, 10)); has_ref = true; }
+    if (auto it = o.user_text.find("DimRefEnd1"); it != o.user_text.end()) which = it->second;
+  }
+  if (!have_arrow || !have_ref_pt) return false;
+  if (has_ref) { Point3d p; if (ResolveAnchor(doc, ref, which, p)) arrow_pt = p; }
+  return true;
+}
+
 class FeatureControlFrameCommand : public Command {
  public:
   void Begin(CommandContext& ctx) override {
@@ -1027,59 +1312,15 @@ class FeatureControlFrameCommand : public Command {
   }
   void Build(CommandContext& ctx) {
     ctx.ClearPreview();
-    const ON_Plane pl = ActivePlane(ctx);
-    const double h = AnnotationTextHeight(ctx);
-    const std::string style = ctx.Settings().annotation_style;
-    const int layer = DimensionLayer(ctx);
-    std::vector<ObjectId> ids;
-    auto add_curves = [&](const std::vector<kernel::NurbsCurve>& cs) {
-      for (const kernel::NurbsCurve& c : cs) { SceneObject s = SceneObject::MakeCurve(c); s.layer_index = layer; TagAnnotation(s, "FeatureControlFrame", style); ids.push_back(ctx.Doc().Add(std::move(s))); }
-    };
-    // Leader from the feature to the frame.
-    const Point3d land = pts_[1];
-    std::vector<kernel::NurbsCurve> leader = {PolylineCurve({pts_[0], land})};
-    AddArrowLocal(leader, pts_[0], pts_[0] - land, h * 0.6, pl);
-    add_curves(leader);
-
-    // Frame: symbol cell, tolerance cell, one cell per datum letter.
-    std::vector<std::string> datum_list;
-    for (const std::string& d : SplitChar(datums_, ',')) if (!TrimWs(d).empty()) datum_list.push_back(TrimWs(d));
+    ObjectId ref = kNoObject;
+    std::string which;
+    const bool has_ref = FindPointAnchor(ctx.Doc(), pts_[0], ref, which);
+    ctx.Doc().BeginChange("FeatureControlFrame");
+    BuildFeatureControlFrameGroup(ctx, pts_[0], pts_[1], symbol_, tolerance_, datums_, modifier_, diameter_, has_ref, ref, which);
     std::string tol_text = (diameter_ ? std::string(kDiameterSign) : std::string()) + tolerance_;
     if (!modifier_.empty()) tol_text += " " + Utf8Circled(modifier_[0]);
-    const double cell_h = h * 1.8;
-    std::vector<double> w = {cell_h, std::max(cell_h * 1.5, h * 0.75 * static_cast<double>(tol_text.size()) * 0.55 + cell_h * 0.4)};
-    for (size_t i = 0; i < datum_list.size(); ++i) w.push_back(cell_h);
-    std::vector<double> xs = {0};
-    for (double v : w) xs.push_back(xs.back() + v);
-    const double total_w = xs.back();
-    auto PT = [&](double x, double y) { return land + pl.xaxis * x - pl.yaxis * y; };
-    std::vector<kernel::NurbsCurve> box;
-    box.push_back(PolylineCurve({PT(0, 0), PT(total_w, 0)}));
-    box.push_back(PolylineCurve({PT(0, cell_h), PT(total_w, cell_h)}));
-    for (double x : xs) box.push_back(PolylineCurve({PT(x, 0), PT(x, cell_h)}));
-    add_curves(box);
-    std::vector<kernel::NurbsCurve> glyph;
-    const double gsz = cell_h * 0.62;
-    drafting::AppendGdtGlyph(symbol_, PT(xs[0] + (xs[1] - xs[0] - gsz) * 0.5, cell_h * 0.19 + gsz), pl, gsz, glyph);
-    add_curves(glyph);
-    GlyphSpec tol_g;
-    tol_g.text = tol_text;
-    tol_g.height = cell_h * 0.5;
-    tol_g.plane = pl;
-    tol_g.plane.SetOrigin(PT(xs[1] + cell_h * 0.18, cell_h * 0.68));
-    for (ObjectId id : AddGlyphCurves(ctx, tol_g, layer, -1, {{"Annotation", "FeatureControlFrame"}, {"Style", style}})) ids.push_back(id);
-    for (size_t i = 0; i < datum_list.size(); ++i) {
-      GlyphSpec dg;
-      dg.text = datum_list[i];
-      dg.height = cell_h * 0.55;
-      dg.center = true;
-      dg.plane = pl;
-      dg.plane.SetOrigin(PT((xs[2 + i] + xs[3 + i]) * 0.5, cell_h * 0.68));
-      for (ObjectId id : AddGlyphCurves(ctx, dg, layer, -1, {{"Annotation", "FeatureControlFrame"}, {"Style", style}})) ids.push_back(id);
-    }
-    ctx.Doc().BeginChange("FeatureControlFrame");
-    ctx.Doc().CreateGroup(ids, "FeatureControlFrame");
-    ctx.Print("FeatureControlFrame: " + std::string(drafting::GdtSymbolName(symbol_)) + " " + tol_text + (datum_list.empty() ? "" : " | " + datums_));
+    ctx.Print("FeatureControlFrame: " + std::string(drafting::GdtSymbolName(symbol_)) + " " + tol_text +
+              (datums_.empty() ? "" : " | " + datums_) + (has_ref ? " (associative)" : ""));
     Finish();
   }
   GdtSymbol symbol_ = GdtSymbol::Flatness;
@@ -1102,24 +1343,12 @@ class DatumFeatureCommand : public Command {
   }
   void OnText(CommandContext& ctx, const std::string& t) override { letter_ = t.empty() ? "A" : t.substr(0, 1); Build(ctx); }
   void Build(CommandContext& ctx) {
-    const ON_Plane pl = ActivePlane(ctx);
-    const double h = AnnotationTextHeight(ctx);
-    const std::string style = ctx.Settings().annotation_style;
-    const int layer = DimensionLayer(ctx);
-    std::vector<kernel::NurbsCurve> curves;
-    drafting::AppendDatumTriangle(origin_, pl, h, curves);
+    ObjectId ref = kNoObject;
+    std::string which;
+    const bool has_ref = FindPointAnchor(ctx.Doc(), origin_, ref, which);
     ctx.Doc().BeginChange("DatumFeature");
-    std::vector<ObjectId> ids;
-    for (const kernel::NurbsCurve& c : curves) { SceneObject s = SceneObject::MakeCurve(c); s.layer_index = layer; TagAnnotation(s, "DatumFeature", style); ids.push_back(ctx.Doc().Add(std::move(s))); }
-    GlyphSpec g;
-    g.text = letter_;
-    g.height = h * 0.7;
-    g.center = true;
-    g.plane = pl;
-    g.plane.SetOrigin(origin_ + pl.yaxis * (h * 2.5));
-    for (ObjectId id : AddGlyphCurves(ctx, g, layer, -1, {{"Annotation", "DatumFeature"}, {"Style", style}})) ids.push_back(id);
-    ctx.Doc().CreateGroup(ids, "DatumFeature");
-    ctx.Print("DatumFeature: '" + letter_ + "'");
+    BuildDatumFeatureGroup(ctx, origin_, letter_, has_ref, ref, which);
+    ctx.Print("DatumFeature: '" + letter_ + "'" + (has_ref ? " (associative)" : ""));
     Finish();
   }
   std::string letter_;
@@ -1134,25 +1363,12 @@ class SurfaceFinishCommand : public Command {
     WantPoint("Point on the surface");
   }
   void OnPoint(CommandContext& ctx, Point3d p) override {
-    const ON_Plane pl = ActivePlane(ctx);
-    const double h = AnnotationTextHeight(ctx);
-    const std::string style = ctx.Settings().annotation_style;
-    const int layer = DimensionLayer(ctx);
-    std::vector<kernel::NurbsCurve> curves;
-    drafting::AppendSurfaceFinishGlyph(p, pl, h, curves);
+    ObjectId ref = kNoObject;
+    std::string which;
+    const bool has_ref = FindPointAnchor(ctx.Doc(), p, ref, which);
     ctx.Doc().BeginChange("SurfaceFinish");
-    std::vector<ObjectId> ids;
-    for (const kernel::NurbsCurve& c : curves) { SceneObject s = SceneObject::MakeCurve(c); s.layer_index = layer; TagAnnotation(s, "SurfaceFinish", style); ids.push_back(ctx.Doc().Add(std::move(s))); }
-    if (!value_.empty()) {
-      GlyphSpec g;
-      g.text = "Ra " + value_;
-      g.height = h * 0.5;
-      g.plane = pl;
-      g.plane.SetOrigin(p + pl.yaxis * (h * 0.7) + pl.xaxis * (h * 1.1));
-      for (ObjectId id : AddGlyphCurves(ctx, g, layer, -1, {{"Annotation", "SurfaceFinish"}, {"Style", style}})) ids.push_back(id);
-    }
-    ctx.Doc().CreateGroup(ids, "SurfaceFinish");
-    ctx.Print("SurfaceFinish" + (value_.empty() ? std::string() : ": Ra " + value_));
+    BuildSurfaceFinishGroup(ctx, p, value_, has_ref, ref, which);
+    ctx.Print("SurfaceFinish" + (value_.empty() ? std::string() : ": Ra " + value_) + (has_ref ? " (associative)" : ""));
     Finish();
   }
   std::string value_;
@@ -1178,20 +1394,12 @@ class WeldSymbolCommand : public Command {
     else Build(ctx);
   }
   void Build(CommandContext& ctx) {
-    const ON_Plane pl = ActivePlane(ctx);
-    const double h = AnnotationTextHeight(ctx);
-    const std::string style = ctx.Settings().annotation_style;
-    const int layer = DimensionLayer(ctx);
-    std::vector<kernel::NurbsCurve> curves = {PolylineCurve({pts_[0], pts_[1]})};
-    AddArrowLocal(curves, pts_[0], pts_[0] - pts_[1], h * 0.6, pl);
-    drafting::WeldSymbolType wt = drafting::WeldSymbolType::Fillet;
-    drafting::ParseWeldSymbolType(type_, wt);
-    drafting::AppendWeldGlyph(pts_[1], pl, h, ToLower(side_) != "below", wt, curves);
+    ObjectId ref = kNoObject;
+    std::string which;
+    const bool has_ref = FindPointAnchor(ctx.Doc(), pts_[0], ref, which);
     ctx.Doc().BeginChange("WeldSymbol");
-    std::vector<ObjectId> ids;
-    for (const kernel::NurbsCurve& c : curves) { SceneObject s = SceneObject::MakeCurve(c); s.layer_index = layer; TagAnnotation(s, "WeldSymbol", style); ids.push_back(ctx.Doc().Add(std::move(s))); }
-    ctx.Doc().CreateGroup(ids, "WeldSymbol");
-    ctx.Print("WeldSymbol: " + type_ + " (" + side_ + ")");
+    BuildWeldSymbolGroup(ctx, pts_[0], pts_[1], type_, side_, has_ref, ref, which);
+    ctx.Print("WeldSymbol: " + type_ + " (" + side_ + ")" + (has_ref ? " (associative)" : ""));
     Finish();
   }
   std::string type_, side_;
@@ -1498,11 +1706,76 @@ void RegisterDrafting2Commands(CommandEngine& e) {
       "A real data table (Circuit #/Description/Load VA rows, Circuits=1,Lighting,500;2,Receptacles,900 option syntax) via the same Table/TableSpec/BuildTableGroup mechanism as RevisionTable/BillOfMaterials - NOT a panel-schedule engineering calculation (no breaker sizing, phase load-balancing, or NEC/IEC code-compliance check) and not associative to any electrical component in the drawing.");
 
   Reg(e, "FeatureControlFrame", Make<FeatureControlFrameCommand>(), CommandStatus::Implemented,
-      "Characteristic symbols (flatness, position, etc.) are drawn as vector curves matching the ASME Y14.5 shapes; material-condition modifiers (S)/(L)/(M) use Unicode circled letters as a stand-in, since this build has no dedicated GD&T symbol font to draw the real modifier glyphs from.");
-  Reg(e, "DatumFeature", Make<DatumFeatureCommand>());
-  Reg(e, "SurfaceFinish", Make<SurfaceFinishCommand>());
+      "Characteristic symbols (flatness, position, etc.) are drawn as vector curves matching the ASME Y14.5 shapes; material-condition modifiers (S)/(L)/(M) use Unicode circled letters as a stand-in, since this build has no dedicated GD&T symbol font to draw the real modifier glyphs from. Associative like MultiLeader: when the feature point (the leader's start) sits exactly on a real object (same FindPointAnchor coincidence rule), UpdateGdtSymbols re-evaluates that object's current position and redraws the leader/frame from it, keeping the frame's own location fixed. A feature point that isn't on any object stays a static baked leader.");
+  Reg(e, "DatumFeature", Make<DatumFeatureCommand>(), CommandStatus::Implemented,
+      "Associative when the feature point sits exactly on a real object (same FindPointAnchor coincidence rule as FeatureControlFrame/Leader): UpdateGdtSymbols redraws the whole triangle-and-letter glyph from that object's current position.");
+  Reg(e, "SurfaceFinish", Make<SurfaceFinishCommand>(), CommandStatus::Implemented,
+      "Associative when the surface point sits exactly on a real object, same rule as DatumFeature: UpdateGdtSymbols redraws the glyph from that object's current position.");
   Reg(e, "WeldSymbol", Make<WeldSymbolCommand>(), CommandStatus::Implemented,
-      "Draws the reference line, arrow and a Type-selected glyph (Fillet triangle, square-Groove bars, or Spot circle); the rest of the AWS A2.4 symbol set (bevel/V/U-groove, plug, seam, back, surfacing, ...) is not drawn.");
+      "Draws the reference line, arrow and a Type-selected glyph (Fillet triangle, square-Groove bars, or Spot circle); the rest of the AWS A2.4 symbol set (bevel/V/U-groove, plug, seam, back, surfacing, ...) is not drawn. Associative at the arrow point (on the joint) when it sits exactly on a real object, same rule as FeatureControlFrame: UpdateGdtSymbols redraws the reference line/arrow/glyph from that object's current position, keeping the glyph's own reference-line-end placement fixed.");
+  Reg(e, "UpdateGdtSymbols", Immediate([](CommandContext& ctx) {
+        std::vector<int> groups;
+        std::map<int, std::string> kind_of;
+        for (const SceneObject& o : ctx.Doc().Objects()) {
+          if (o.group_id < 0 || !o.user_text.count("Annotation")) continue;
+          const std::string& kind = o.user_text.at("Annotation");
+          if (kind != "FeatureControlFrame" && kind != "DatumFeature" && kind != "SurfaceFinish" && kind != "WeldSymbol") continue;
+          if (kind_of.count(o.group_id)) continue;
+          kind_of[o.group_id] = kind;
+          groups.push_back(o.group_id);
+        }
+        if (groups.empty()) { ctx.Print("UpdateGdtSymbols: no GD&T symbols in this document"); return; }
+        ctx.Doc().BeginChange("UpdateGdtSymbols");
+        int updated = 0, skipped = 0;
+        for (int g : groups) {
+          int layer = ctx.Doc().CurrentLayer();
+          for (const SceneObject& o : ctx.Doc().Objects()) { if (o.group_id == g) { layer = o.layer_index; break; } }
+          const std::string kind = kind_of[g];
+          int made = -1;
+          if (kind == "FeatureControlFrame") {
+            Point3d feature_pt, frame_loc;
+            GdtSymbol symbol = GdtSymbol::Flatness;
+            std::string tolerance, datums, modifier;
+            bool diameter = false;
+            if (!ResolveFeatureControlFrameSpec(ctx.Doc(), g, feature_pt, frame_loc, symbol, tolerance, datums, modifier, diameter)) { ++skipped; continue; }
+            ObjectId ref = kNoObject;
+            std::string which;
+            const bool has_ref = FindPointAnchor(ctx.Doc(), feature_pt, ref, which);
+            for (ObjectId id : ctx.Doc().GroupMembers(g)) ctx.Doc().Remove(id);
+            made = BuildFeatureControlFrameGroup(ctx, feature_pt, frame_loc, symbol, tolerance, datums, modifier, diameter, has_ref, ref, which, layer);
+          } else if (kind == "DatumFeature") {
+            Point3d origin;
+            std::string letter;
+            if (!ResolveDatumFeatureSpec(ctx.Doc(), g, origin, letter)) { ++skipped; continue; }
+            ObjectId ref = kNoObject;
+            std::string which;
+            const bool has_ref = FindPointAnchor(ctx.Doc(), origin, ref, which);
+            for (ObjectId id : ctx.Doc().GroupMembers(g)) ctx.Doc().Remove(id);
+            made = BuildDatumFeatureGroup(ctx, origin, letter, has_ref, ref, which, layer);
+          } else if (kind == "SurfaceFinish") {
+            Point3d origin;
+            std::string value;
+            if (!ResolveSurfaceFinishSpec(ctx.Doc(), g, origin, value)) { ++skipped; continue; }
+            ObjectId ref = kNoObject;
+            std::string which;
+            const bool has_ref = FindPointAnchor(ctx.Doc(), origin, ref, which);
+            for (ObjectId id : ctx.Doc().GroupMembers(g)) ctx.Doc().Remove(id);
+            made = BuildSurfaceFinishGroup(ctx, origin, value, has_ref, ref, which, layer);
+          } else {  // WeldSymbol
+            Point3d arrow_pt, ref_pt;
+            std::string type, side;
+            if (!ResolveWeldSymbolSpec(ctx.Doc(), g, arrow_pt, ref_pt, type, side)) { ++skipped; continue; }
+            ObjectId ref = kNoObject;
+            std::string which;
+            const bool has_ref = FindPointAnchor(ctx.Doc(), arrow_pt, ref, which);
+            for (ObjectId id : ctx.Doc().GroupMembers(g)) ctx.Doc().Remove(id);
+            made = BuildWeldSymbolGroup(ctx, arrow_pt, ref_pt, type, side, has_ref, ref, which, layer);
+          }
+          if (made >= 0) { ++updated; ctx.Print("UpdateGdtSymbols:   " + kind + " regenerated"); } else ++skipped;
+        }
+        ctx.Print("UpdateGdtSymbols: " + std::to_string(updated) + " symbol(s) regenerated" + (skipped ? ", " + std::to_string(skipped) + " skipped (no resolvable spec)" : ""));
+      }), CommandStatus::Implemented,
+      "Re-evaluates every FeatureControlFrame/DatumFeature/SurfaceFinish/WeldSymbol's feature-point anchor and rebuilds it from the current position, replacing the old baked geometry in place - the associative counterpart to those four commands' static bake, following the same explicit-recompute shape as UpdateMultiLeaders/UpdateDimensions/UpdateSectionViews/UpdateBillOfMaterials rather than an automatic hook on every document edit.");
   Reg(e, "MultiLeader", Make<MultiLeaderCommand>(), CommandStatus::Implemented,
       "Draws several arrows converging on one landing with the shared text; the text is still baked glyph geometry, not something double-click-editable in place the way TextProperties edits a live text field, but each arrow whose point sits exactly on a real object (same FindPointAnchor coincidence rule as Leader - annotate_common.h) is associative: UpdateMultiLeaders re-evaluates that object's current position and redraws just that arrow, keeping the shared landing point and text fixed. An arrow point that isn't on any object stays a static baked arrow, same as before this change.");
   Reg(e, "UpdateMultiLeaders", Immediate([](CommandContext& ctx) {

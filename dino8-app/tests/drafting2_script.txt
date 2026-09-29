@@ -163,19 +163,69 @@ UpdateMultiLeaders
 SelAll
 GetUserText
 SelNone
+# --- Associative GD&T: FeatureControlFrame's feature point, and DatumFeature/
+# SurfaceFinish/WeldSymbol's own anchor point, each coincide with a real
+# Point object (FindPointAnchor, same coincidence rule as Leader/MultiLeader
+# above). Moving each anchor and running UpdateGdtSymbols must drag that
+# symbol's leader/glyph to the anchor's *current* position, not the position
+# baked at creation time.
+SelNone
+Point 900,0,0
+SelLast
+SetObjectName FcfAnchor
+SelNone
+FeatureControlFrame Symbol=Flatness Tolerance=0.1
+900,0,0
+910,10,0
+SelNone
+Point 950,0,0
+SelLast
+SetObjectName DatumAnchor
+SelNone
+DatumFeature Letter=B
+950,0,0
+SelNone
+Point 980,0,0
+SelLast
+SetObjectName FinishAnchor
+SelNone
+SurfaceFinish Value=3.2
+980,0,0
+SelNone
+Point 1010,0,0
+SelLast
+SetObjectName WeldAnchor
+SelNone
+WeldSymbol Type=Fillet Side=Above
+1010,0,0
+1020,10,0
+SelName FcfAnchor
+Move 900,0,0 905,0,0
+SelName DatumAnchor
+Move 950,0,0 955,0,0
+SelName FinishAnchor
+Move 980,0,0 985,0,0
+SelName WeldAnchor
+Move 1010,0,0 1015,0,0
+UpdateGdtSymbols
+SelAll
+GetUserText
+SelNone
 Save @TMP@/drafting2.3dm
 New
 Open @TMP@/drafting2.3dm
-# Prove associative-dimension/multi-leader references (DimRefObj1/2/3,
+# Prove associative-dimension/multi-leader/GD&T references (DimRefObj1/2/3,
 # group_id - see cmd_annotate.cpp/cmd_drafting2.cpp/File3dm.cpp) actually
-# survive a .3dm round trip: rerunning UpdateDimensions/UpdateMultiLeaders
-# here must find the same associative annotations and reproduce the exact
-# same measured values as the pre-save runs above, not report "no
-# associative dimensions"/"no multi-leaders" (what happens if the
-# group_id/object-id references didn't come back resolvable).
+# survive a .3dm round trip: rerunning UpdateDimensions/UpdateMultiLeaders/
+# UpdateGdtSymbols here must find the same associative annotations and
+# reproduce the exact same measured values as the pre-save runs above, not
+# report "no associative dimensions"/"no multi-leaders"/"no GD&T symbols"
+# (what happens if the group_id/object-id references didn't come back
+# resolvable).
 SelNone
 UpdateDimensions
 UpdateMultiLeaders
+UpdateGdtSymbols
 # --- SectionView iterator-invalidation regression: BuildSectionGroup used
 # to slice-and-Add() in a single pass over Document::Objects() itself, so
 # Add()'s vector reallocation could invalidate that very loop's own

@@ -2441,15 +2441,31 @@ d2check "MultiLeader: 2 arrow(s), \"AssocNote\" (associative to 1 point(s))" "Mu
 d2check "UpdateMultiLeaders:   now 2 arrow(s) at landing 720,5,0" "UpdateMultiLeaders redrew the multi-leader after the anchor point moved, keeping the landing point fixed"
 d2check "MLeaderPoints = 705,0,0;710,10,0" "UpdateMultiLeaders dragged arrow 1 to the anchor's new (705,0,0) position, not the (700,0,0) baked at creation, while arrow 2's free point (710,10,0) stayed put"
 
+# Associativity: FeatureControlFrame/DatumFeature/SurfaceFinish/WeldSymbol
+# each anchor their feature/origin/arrow point to a real Point object, same
+# FindPointAnchor coincidence rule as Leader/MultiLeader; UpdateGdtSymbols
+# drags each one to its anchor's *current* position after it moves.
+d2check "FeatureControlFrame: Flatness 0.1 (associative)" "FeatureControlFrame recorded its feature point's coincident Point object as its associative reference"
+d2check "DatumFeature: 'B' (associative)" "DatumFeature recorded its origin's coincident Point object as its associative reference"
+d2check "SurfaceFinish: Ra 3.2 (associative)" "SurfaceFinish recorded its origin's coincident Point object as its associative reference"
+d2check "WeldSymbol: Fillet (Above) (associative)" "WeldSymbol recorded its arrow point's coincident Point object as its associative reference"
+d2check "UpdateGdtSymbols: 10 symbol(s) regenerated" "UpdateGdtSymbols regenerated all 10 GD&T symbols built so far (6 static from the earlier bake test, 4 associative) with 0 skipped"
+d2check "GdtFeaturePoint = 905,0,0" "UpdateGdtSymbols dragged FeatureControlFrame's feature point to the anchor's new (905,0,0) position, not the (900,0,0) baked at creation"
+d2check "DatumOrigin = 955,0,0" "UpdateGdtSymbols dragged DatumFeature's origin to the anchor's new (955,0,0) position, not the (950,0,0) baked at creation"
+d2check "SurfaceFinishOrigin = 985,0,0" "UpdateGdtSymbols dragged SurfaceFinish's origin to the anchor's new (985,0,0) position, not the (980,0,0) baked at creation"
+d2check "WeldArrowPoint = 1015,0,0" "UpdateGdtSymbols dragged WeldSymbol's arrow point to the anchor's new (1015,0,0) position, not the (1010,0,0) baked at creation"
+
 # Associativity survives a .3dm round trip: DimRefObj1/2/3 and group_id (see
 # cmd_annotate.cpp/File3dm.cpp) must still resolve after Save/New/Open, so
-# the post-Open UpdateDimensions re-run above finds and redraws the exact
-# same 4 associative dimensions (the tolerance-anchor DimLinear at 20, the
-# stretched DimLinear at 40, DimRadius at 10, DimAngle at 45 deg) as the
-# last pre-save run did - counting occurrences (not grep -q) so a broken
-# round trip that drops back to "no associative dimensions" or only
-# partially resolves them is actually caught, not masked by the pre-save
-# occurrences already having satisfied a plain substring match.
+# the post-Open UpdateDimensions/UpdateMultiLeaders/UpdateGdtSymbols re-runs
+# above find and redraw the exact same associative annotations (the
+# tolerance-anchor DimLinear at 20, the stretched DimLinear at 40, DimRadius
+# at 10, DimAngle at 45 deg, the associative MultiLeader, and all 10 GD&T
+# symbols) as the last pre-save run did - counting occurrences (not grep -q)
+# so a broken round trip that drops back to "no associative dimensions"/"no
+# multi-leaders"/"no GD&T symbols" or only partially resolves them is
+# actually caught, not masked by the pre-save occurrences already having
+# satisfied a plain substring match.
 D2_LEN20_COUNT=$(echo "$D2" | grep -c "UpdateDimensions:   DimLinear now measures 20")
 [ "$D2_LEN20_COUNT" = "4" ] && echo "ok   the tolerance-anchor DimLinear (=20) round-tripped and was redrawn on every UpdateDimensions call, including after Open" || { echo "FAIL DimLinear=20 redrawn $D2_LEN20_COUNT times, expected 4 (associativity did not survive the .3dm round trip)"; fail=1; }
 D2_LEN40_COUNT=$(echo "$D2" | grep -c "UpdateDimensions:   DimLinear now measures 40")
@@ -2464,6 +2480,8 @@ D2_ML_LANDING_COUNT=$(echo "$D2" | grep -c "UpdateMultiLeaders:   now 2 arrow(s)
 [ "$D2_ML_LANDING_COUNT" = "2" ] && echo "ok   the associative MultiLeader round-tripped and was redrawn on every UpdateMultiLeaders call, including after Open" || { echo "FAIL MultiLeader redrawn $D2_ML_LANDING_COUNT times, expected 2 (associativity did not survive the .3dm round trip)"; fail=1; }
 D2_ML_REGEN_COUNT=$(echo "$D2" | grep -c "UpdateMultiLeaders: 2 multi-leader(s) regenerated")
 [ "$D2_ML_REGEN_COUNT" = "2" ] && echo "ok   UpdateMultiLeaders regenerated both multi-leaders (the static one from the earlier bake test and the associative one) with 0 skipped, both before Save and again after Open" || { echo "FAIL UpdateMultiLeaders: 2 multi-leader(s) regenerated seen $D2_ML_REGEN_COUNT times, expected 2 (the multi-leader failed to resolve after the .3dm round trip)"; fail=1; }
+D2_GDT_REGEN_COUNT=$(echo "$D2" | grep -c "UpdateGdtSymbols: 10 symbol(s) regenerated")
+[ "$D2_GDT_REGEN_COUNT" = "2" ] && echo "ok   UpdateGdtSymbols regenerated all 10 GD&T symbols with 0 skipped, both before Save and again after Open" || { echo "FAIL UpdateGdtSymbols: 10 symbol(s) regenerated seen $D2_GDT_REGEN_COUNT times, expected 2 (some GD&T symbols failed to resolve after the .3dm round trip)"; fail=1; }
 
 d2check "SectionView: 120 curve(s)" "SectionView sliced all 120 objects with none dropped across the Document::Objects() reallocations that many Add() calls in one pass triggers"
 
