@@ -18,24 +18,31 @@ void ApplyXform(CommandContext& ctx, const std::vector<ObjectId>& ids, const ON_
   // path.
   if (copy) {
     ctx.Doc().BeginChange(label);
-  } else {
-    ctx.Doc().BeginChangeForObjects(label, ids);
-  }
-  std::vector<ObjectId> made;
-  for (ObjectId id : ids) {
-    SceneObject* o = ctx.Doc().Find(id);
-    if (!o) continue;
-    if (copy) {
+    std::vector<ObjectId> made;
+    for (ObjectId id : ids) {
+      SceneObject* o = ctx.Doc().Find(id);
+      if (!o) continue;
       SceneObject dup = *o;
       dup.id = kNoObject;
       dup.selected = false;
       dup.Transform(xf);
-      made.push_back(ctx.Doc().Add(std::move(dup)));
-    } else {
-      o->Transform(xf);
+      made.push_back(ctx.Doc().Add(std::move(dup)));  // may reallocate objects_
+    }
+    ctx.Print("Copied " + std::to_string(made.size()) + " object(s)");
+  } else {
+    ctx.Doc().BeginChangeForObjects(label, ids);
+    // FindMany() resolves the whole selection in one O(document size) pass
+    // instead of one O(document size) Find() per id - the fast path above
+    // already makes *recording* this edit O(selection size); this keeps
+    // *applying* it O(document size + selection size) too, instead of
+    // O(selection size * document size). Safe to resolve every pointer
+    // upfront here (unlike the copy branch above): this branch only calls
+    // Transform() in place and never adds/removes objects, so nothing can
+    // reallocate objects_ mid-loop.
+    for (SceneObject* o : ctx.Doc().FindMany(ids)) {
+      if (o) o->Transform(xf);
     }
   }
-  if (copy) ctx.Print("Copied " + std::to_string(made.size()) + " object(s)");
 }
 
 // "Copy=Yes" / "Copy=No" set the flag; a bare "Copy" (or a click) toggles it.
@@ -48,8 +55,11 @@ bool CopyValue(const std::string& v, bool current) {
 
 void PreviewXform(CommandContext& ctx, const std::vector<ObjectId>& ids, const ON_Xform& xf) {
   ctx.ClearPreview();
-  for (ObjectId id : ids) {
-    const SceneObject* o = ctx.Doc().Find(id);
+  // Runs every frame while a Move/Rotate/Scale drag is live, so the same
+  // O(selection size * document size) -> O(document size + selection size)
+  // win from FindMany() matters here at least as much as in ApplyXform -
+  // this is read-only, so precomputing every pointer upfront is always safe.
+  for (const SceneObject* o : ctx.Doc().FindMany(ids)) {
     if (!o) continue;
     o->EnsureDisplay(ctx.App().curve_display_tolerance, ctx.App().surface_display_tolerance);
     const DisplayCache& d = o->Display();

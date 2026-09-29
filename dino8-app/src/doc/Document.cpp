@@ -113,6 +113,47 @@ const SceneObject* Document::Find(ObjectId id) const {
   return nullptr;
 }
 
+// Builds a small (selection-sized, not document-sized) hash map keyed by
+// the *wanted* ids first, then does one single linear pass over objects_
+// filling in the pointers it finds - not "index every object, then look up
+// each id" (that shape, tried first, built an unordered_map with one
+// heap-allocated node per *document* object; even sorting a flat array of
+// document-sized pairs instead of hashing still measured only a modest win
+// - see tests/find_bench.cpp and its comment for both). Inverting it this
+// way keeps the only per-object-in-objects_ work at O(1) with no
+// allocation (a hash lookup into a map that's already built and never
+// grows during the scan), and confines every heap allocation to the
+// selection, which is the part that's actually supposed to be small -
+// O(document size + selection size) with a document-size constant no
+// bigger than a single Find()-style scan's.
+std::vector<SceneObject*> Document::FindMany(const std::vector<ObjectId>& ids) {
+  std::unordered_map<ObjectId, SceneObject*> found;
+  found.reserve(ids.size());
+  for (ObjectId id : ids) found.emplace(id, nullptr);
+  for (SceneObject& o : objects_) {
+    const auto it = found.find(o.id);
+    if (it != found.end()) it->second = &o;
+  }
+  std::vector<SceneObject*> out;
+  out.reserve(ids.size());
+  for (ObjectId id : ids) out.push_back(found[id]);
+  return out;
+}
+
+std::vector<const SceneObject*> Document::FindMany(const std::vector<ObjectId>& ids) const {
+  std::unordered_map<ObjectId, const SceneObject*> found;
+  found.reserve(ids.size());
+  for (ObjectId id : ids) found.emplace(id, nullptr);
+  for (const SceneObject& o : objects_) {
+    const auto it = found.find(o.id);
+    if (it != found.end()) it->second = &o;
+  }
+  std::vector<const SceneObject*> out;
+  out.reserve(ids.size());
+  for (ObjectId id : ids) out.push_back(found[id]);
+  return out;
+}
+
 std::vector<ObjectId> Document::SelectedIds() const {
   std::vector<ObjectId> ids;
   for (const SceneObject& o : objects_) {

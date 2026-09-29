@@ -532,6 +532,16 @@ class Document {
   bool Remove(ObjectId id);
   SceneObject* Find(ObjectId id);
   const SceneObject* Find(ObjectId id) const;
+  // Resolves several ids in one O(document size) pass instead of one
+  // O(document size) linear scan per id (what a Find(id) call in a loop
+  // costs) - turns an O(selection size * document size) lookup loop into
+  // O(document size + selection size). Output is parallel to `ids`
+  // (nullptr for an id not present). Safe to call only where nothing
+  // between the call and using the returned pointers can add/remove
+  // objects - same lifetime contract as Find()'s returned pointer, just for
+  // several pointers at once.
+  std::vector<SceneObject*> FindMany(const std::vector<ObjectId>& ids);
+  std::vector<const SceneObject*> FindMany(const std::vector<ObjectId>& ids) const;
   std::vector<SceneObject>& Objects() { return objects_; }
   const std::vector<SceneObject>& Objects() const { return objects_; }
   size_t ObjectCount() const { return objects_.size(); }

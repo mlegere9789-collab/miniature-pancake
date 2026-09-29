@@ -609,6 +609,17 @@ if(DINO8_BUILD_TESTS)
   target_include_directories(dino8_undo_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_link_libraries(dino8_undo_bench PRIVATE dino8_kernel)
 
+  # Timing benchmark + regression guard for Document::Find() vs
+  # Document::FindMany() on the "select k of N objects, then transform them"
+  # path (see tests/find_bench.cpp) - unlike dino8_undo_bench above, this one
+  # does assert (a same-run relative speedup check, robust to machine load),
+  # so it's wired into ctest as a real pass/fail test, not just numbers.
+  add_executable(dino8_find_bench tests/find_bench.cpp src/doc/Document.cpp src/doc/SceneObject.cpp
+                                   src/doc/SubObjectEdit.cpp src/geom/BrepMesher.cpp)
+  target_include_directories(dino8_find_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(dino8_find_bench PRIVATE dino8_kernel)
+  add_test(NAME dino8_find_bench COMMAND dino8_find_bench)
+
   # DWG round-trip fixture generator (see tests/dwg_fixture_gen.c and
   # smoke.sh's DWG section): builds a small real DWG file directly through
   # LibreDWG's public dwg_add_* API - the same API LibreDWG's own
