@@ -816,6 +816,46 @@ Brep DraftFacesConvexPlanar(const Brep& solid, const std::vector<int>& face_indi
 // faces' own half-spaces), out of scope here exactly as in OffsetFace().
 Brep ReplaceFacePlaneConvexPlanar(const Brep& solid, int face_index, const ON_Plane& new_plane);
 
+// PARITY_MAP's kernel: Local / direct-edit operations "Rotate face about
+// hinge edge (FoldFace / rotate-face tweak)" gap - previously app-only and
+// approximate (`dino8-app`'s `FoldFaceCommand`, cmd_srfedit.cpp, drives
+// `MoveBrepFaces` with a hand-built rotation transform), with no kernel
+// equivalent at all.
+//
+// Unlike `DraftFacesConvexPlanar()` (which tilts a face about its
+// intersection line with a caller-supplied, possibly-external "neutral
+// plane") this hinges the face about one of its OWN edges - the actual
+// "fold a flap along its own boundary" motion the gap names, with no
+// second plane for the caller to construct. `face_index` names the face
+// exactly as every sibling in this family does
+// (`solid.PlanarFaces()[face_index]`); `hinge_loop_index` names the edge
+// from that face's own `loop[hinge_loop_index]` to
+// `loop[(hinge_loop_index + 1) % loop.size()]` - the same "index into a
+// PlanarFace's own loop" convention `MoveVertexConvexPlanar()` already
+// uses for a single vertex, extended here to a pair of consecutive ones.
+//
+// The face's own plane is rotated by `angle_radians` (right-hand rule)
+// about the 3D line through those two hinge points, then handed to
+// `ReplaceFacePlaneConvexPlanar()` unchanged - the fold is nothing more
+// than computing which plane a rotation-about-a-line produces and letting
+// that already-verified sibling do the actual re-trim/reconstruction, the
+// same "compute a plane, delegate" shape `DraftFacesConvexPlanar()` uses
+// internally. `angle_radians == 0` reproduces `solid` itself (a null
+// fold), verified as a direct consequence of that delegation rather than
+// as a special case.
+//
+// Same convex-solid precondition and failure mode as
+// `ReplaceFacePlaneConvexPlanar()` above (checked there, on the resulting
+// plane). Throws std::invalid_argument if `face_index` is out of range
+// for `solid.PlanarFaces()`; if `hinge_loop_index` is out of range for
+// that face's own `loop` (`0 <= hinge_loop_index < loop.size()`); or if
+// the two hinge points coincide (a degenerate, zero-length hinge edge -
+// not expected from a valid `PlanarFace::loop`, but checked rather than
+// assumed). Any failure `ReplaceFacePlaneConvexPlanar()` itself would
+// raise for the computed plane (a collapsed face, non-convex `solid`)
+// propagates unchanged.
+Brep FoldFaceConvexPlanar(const Brep& solid, int face_index, int hinge_loop_index, double angle_radians);
+
 // PARITY_MAP's kernel: Local / direct-edit operations "Move a single B-rep
 // vertex directly (drag one topological corner in place; adjacent edges
 // reshape around it)" gap - previously missing entirely (the kernel had

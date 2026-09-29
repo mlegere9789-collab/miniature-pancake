@@ -20590,6 +20590,126 @@ void TestReplaceFacePlaneConvexPlanarRefusesInvalidInput() {
         "fewer than 3 vertices or ~0 area");
 }
 
+// PARITY_MAP's "Rotate face about hinge edge (FoldFace / rotate-face
+// tweak)" gap: fold the front wall of a box about its own edge shared
+// with the bottom face - the actual "flap hinged along its own boundary"
+// motion no existing sibling (Offset/Draft/Replace, each of which needs
+// either a fixed normal direction or an externally-supplied plane) can
+// express directly. Volume is checked against an independent closed-form
+// integral derived straight from the hinge geometry, with the sign of the
+// tan(theta) term determined from the ACTUAL (loop_index -> loop_index+1)
+// hinge direction FoldFaceConvexPlanar itself uses (read back out of the
+// box's own PlanarFaces()), not assumed - so the test is correct however
+// PlanarFaces() happens to wind that face's own loop.
+void TestFoldFaceConvexPlanarBoxFrontWallHingedAtBottomEdgeMatchesExactIntegral() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FoldFaceConvexPlanar;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  // Box face order per Brep::Box()'s own comment: 0=bottom(-z) 1=top(+z)
+  // 2=front(-y) 3=back(+y) 4=left(-x) 5=right(+x).
+  const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+  const Brep::PlanarFace& front = box.PlanarFaces()[2];
+  const int loop_size = static_cast<int>(front.loop.size());
+
+  int hinge_index = -1;
+  for (int i = 0; i < loop_size; ++i) {
+    const Point3d& a = front.loop[static_cast<size_t>(i)];
+    const Point3d& b = front.loop[static_cast<size_t>((i + 1) % loop_size)];
+    if (std::fabs(a.z) < 1e-9 && std::fabs(b.z) < 1e-9) {
+      hinge_index = i;
+      break;
+    }
+  }
+  Check(hinge_index >= 0, "the front wall's own loop has an edge lying exactly on the bottom (z=0) plane");
+
+  Vector3d axis = front.loop[static_cast<size_t>((hinge_index + 1) % loop_size)] -
+                  front.loop[static_cast<size_t>(hinge_index)];
+  axis.Unitize();
+  Check(std::fabs(std::fabs(axis.x) - 1.0) < 1e-9 && std::fabs(axis.y) < 1e-9 && std::fabs(axis.z) < 1e-9,
+        "the hinge edge runs exactly along the box's own x-axis");
+  const double sign = axis.x;  // +1 or -1, matching whichever way PlanarFaces() happens to wind this loop
+
+  const double tan_theta = 0.3;
+  const double theta = std::atan(tan_theta);
+  const Brep folded = FoldFaceConvexPlanar(box, 2, hinge_index, theta);
+  Check(folded.FaceCount() == 6, "FoldFaceConvexPlanar on a box keeps exactly 6 faces (no topology change)");
+
+  // Volume = 10 (x, untouched by a rotation about the x-axis) times
+  // integral_0^10 of (10 + sign*z*tan(theta)) dz (the front wall's own
+  // y-position as a function of height z, derived from rotating its
+  // plane by theta about the fixed x-axis hinge line at y=z=0) =
+  // 10 * (100 + sign*50*tan(theta)) = 1000 + sign*500*tan(theta).
+  const double expected_volume = 1000.0 + sign * 500.0 * tan_theta;
+  const double measured_volume = PlanarBrepVolumeExact(folded);
+  Check(std::fabs(measured_volume - expected_volume) / expected_volume < 1e-9,
+        "FoldFaceConvexPlanar hinging the front wall at its own bottom edge matches the exact closed-form "
+        "integral of the (linearly changing) cross-sectional width along the height, not merely a "
+        "plausible-looking number");
+
+  // The bottom face - not the folded face, and never touched by this call
+  // at all - must be completely untouched: FoldFaceConvexPlanar only ever
+  // changes face_index's own plane, exactly like every sibling in this
+  // family.
+  const Brep::PlanarFace& bottom = folded.PlanarFaces()[0];
+  for (const Point3d& p : bottom.loop) {
+    Check(std::fabs(p.z) < 1e-9,
+          "the bottom face stays exactly at z=0 - FoldFaceConvexPlanar never touches a neighbour's own plane, "
+          "only face_index's own");
+  }
+
+  Check(folded.TessellateToClosedMesh(1, 1).IsClosedManifold(),
+        "the folded box also tessellates to a closed, watertight manifold");
+
+  // angle_radians == 0 is a null fold: delegating to
+  // ReplaceFacePlaneConvexPlanar with the face's own unchanged plane must
+  // reproduce the original box's volume exactly.
+  const Brep unfolded = FoldFaceConvexPlanar(box, 2, hinge_index, 0.0);
+  Check(std::fabs(PlanarBrepVolumeExact(unfolded) - 1000.0) < 1e-9,
+        "FoldFaceConvexPlanar with angle_radians=0 reproduces the original box's volume exactly (a null fold)");
+}
+
+void TestFoldFaceConvexPlanarRefusesInvalidInput() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FoldFaceConvexPlanar;
+
+  const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+  const int loop_size = static_cast<int>(box.PlanarFaces()[2].loop.size());
+
+  bool threw = false;
+  try {
+    FoldFaceConvexPlanar(box, 99, 0, 0.1);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "FoldFaceConvexPlanar refuses an out-of-range face_index");
+
+  threw = false;
+  try {
+    FoldFaceConvexPlanar(box, -1, 0, 0.1);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "FoldFaceConvexPlanar refuses a negative face_index");
+
+  threw = false;
+  try {
+    FoldFaceConvexPlanar(box, 2, loop_size, 0.1);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "FoldFaceConvexPlanar refuses a hinge_loop_index out of range for the named face's own loop");
+
+  threw = false;
+  try {
+    FoldFaceConvexPlanar(box, 2, -1, 0.1);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "FoldFaceConvexPlanar refuses a negative hinge_loop_index");
+}
+
 // Builds one PlanarFace from `loop` (already in the right cyclic order),
 // orienting it outward by comparing the raw cross-product normal against
 // the direction from `solid_centroid` to this face's own centroid -
@@ -45087,6 +45207,8 @@ int main() {
   TestReplaceFacePlaneConvexPlanarMatchesOffsetFaceForPureTranslate();
   TestReplaceFacePlaneConvexPlanarTiltedRoofMatchesExactIntegralAndRetrimsWalls();
   TestReplaceFacePlaneConvexPlanarRefusesInvalidInput();
+  TestFoldFaceConvexPlanarBoxFrontWallHingedAtBottomEdgeMatchesExactIntegral();
+  TestFoldFaceConvexPlanarRefusesInvalidInput();
   TestMoveVertexConvexPlanarPyramidApexMatchesExactVolumeAndLeavesBaseUntouched();
   TestMoveVertexConvexPlanarRefusesInvalidInput();
   TestDeleteFaceHealConvexPlanarChamferedCubeRecoversExactUnitCube();

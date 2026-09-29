@@ -1893,6 +1893,51 @@ Brep ReplaceFacePlaneConvexPlanar(const Brep& solid, int face_index, const ON_Pl
   return Brep::FromPlanarFaces(result);
 }
 
+Brep FoldFaceConvexPlanar(const Brep& solid, int face_index, int hinge_loop_index, double angle_radians) {
+  const std::vector<Brep::PlanarFace> faces = solid.PlanarFaces();
+  const int n = static_cast<int>(faces.size());
+  if (face_index < 0 || face_index >= n) {
+    throw std::invalid_argument(
+        "dino8::kernel::FoldFaceConvexPlanar: face_index is out of range for solid.PlanarFaces()");
+  }
+
+  const Brep::PlanarFace& face = faces[static_cast<size_t>(face_index)];
+  const int loop_size = static_cast<int>(face.loop.size());
+  if (hinge_loop_index < 0 || hinge_loop_index >= loop_size) {
+    throw std::invalid_argument(
+        "dino8::kernel::FoldFaceConvexPlanar: hinge_loop_index is out of range for face " +
+        std::to_string(face_index) + "'s own loop");
+  }
+
+  const Point3d& p0 = face.loop[static_cast<size_t>(hinge_loop_index)];
+  const Point3d& p1 = face.loop[static_cast<size_t>((hinge_loop_index + 1) % loop_size)];
+  Vector3d axis = p1 - p0;
+  const double axis_len = axis.Length();
+  if (axis_len <= 1e-12) {
+    throw std::invalid_argument(
+        "dino8::kernel::FoldFaceConvexPlanar: hinge_loop_index names a degenerate "
+        "(zero-length) edge on face " +
+        std::to_string(face_index) + "'s own loop");
+  }
+  axis.Unitize();
+
+  const double ca = std::cos(angle_radians);
+  const double sa = std::sin(angle_radians);
+  auto rotate = [&](const Vector3d& v) {
+    return v * ca + ON_CrossProduct(axis, v) * sa + axis * (ON_DotProduct(axis, v) * (1.0 - ca));
+  };
+
+  const ON_Plane& old_plane = face.plane;
+  ON_Plane new_plane;
+  new_plane.origin = p0 + rotate(old_plane.origin - p0);
+  new_plane.xaxis = rotate(old_plane.xaxis);
+  new_plane.yaxis = rotate(old_plane.yaxis);
+  new_plane.zaxis = rotate(old_plane.zaxis);
+  new_plane.UpdateEquation();
+
+  return ReplaceFacePlaneConvexPlanar(solid, face_index, new_plane);
+}
+
 Brep MoveVertexConvexPlanar(const Brep& solid, const Point3d& old_position, const Point3d& new_position) {
   const std::vector<Brep::PlanarFace> faces = solid.PlanarFaces();
   const int n = static_cast<int>(faces.size());
