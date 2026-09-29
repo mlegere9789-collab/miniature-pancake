@@ -3067,6 +3067,8 @@ SetLanguage de
 I18nSelfTest
 SetLanguage ja
 I18nSelfTest
+SetLanguage pt
+I18nSelfTest
 SetLanguage English
 I18nSelfTest
 SetLanguage nope
@@ -3089,6 +3091,9 @@ i18ncheck "I18nSelfTest: menu\.file=Datei" "a translated string (menu.file) read
 i18ncheck "SetLanguage: ja" "SetLanguage switched to Japanese"
 i18ncheck "I18nSelfTest: active=ja" "the active language is now ja"
 i18ncheck "I18nSelfTest: menu\.file=ファイル" "a translated string (menu.file) reads ファイル in Japanese, proving ja.json is a real fourth hand-translated language, not a scaffold-only stub"
+i18ncheck "SetLanguage: pt" "SetLanguage switched to Portuguese"
+i18ncheck "I18nSelfTest: active=pt" "the active language is now pt"
+i18ncheck "I18nSelfTest: menu\.file=Arquivo" "a translated string (menu.file) reads Arquivo in Portuguese, proving pt.json is a real fifth hand-translated language, not a scaffold-only stub"
 i18ncheck "I18nSelfTest: fallback(panel\.imgui_demo)=ImGui Demo (developer)" "a key missing from es.json falls back to the English text, not a blank string or the raw key"
 i18ncheck "I18nSelfTest: unknown_key=this\.key\.does\.not\.exist\.anywhere" "a key present in no language table at all falls back to the key itself rather than crashing or blanking"
 i18ncheck "SetLanguage: en" "SetLanguage switched back to English"

@@ -8,8 +8,8 @@
 // es.json is the one documented exception: it deliberately omits
 // "panel.imgui_demo" to give I18nSelfTest (src/commands/cmd_state.cpp) and
 // tests/smoke.sh's i18n section a real missing-key fallback to exercise.
-// Every other language - fr.json, de.json, and ja.json (Japanese) - must
-// have zero missing keys.
+// Every other language - fr.json, de.json, ja.json (Japanese), and pt.json
+// (Portuguese) - must have zero missing keys.
 //
 // This is a "did a language quietly drift behind en.json" regression
 // guard: en.json gaining new keys (panel.activity_log, panel.block_manager,
@@ -76,6 +76,7 @@ int main(int argc, char** argv) {
       {"fr", {}},
       {"de", {}},
       {"ja", {}},
+      {"pt", {}},
       {"es", {"panel.imgui_demo"}},
   };
 
@@ -135,6 +136,23 @@ int main(int argc, char** argv) {
       Check(ja_keys == en_keys, label);
       Check(ja_root["_language_name"].AsString("") == "\xe6\x97\xa5\xe6\x9c\xac\xe8\xaa\x9e",
             "ja.json's _language_name is the Japanese word for Japanese (\xe6\x97\xa5\xe6\x9c\xac\xe8\xaa\x9e)");
+    }
+  }
+
+  // The headline deliverable: Portuguese is a fifth complete, hand-
+  // translated language, matching en.json's key set exactly (not just
+  // "mostly", the way a machine-generated stub might partially cover it).
+  {
+    dino8::json::Value pt_root;
+    Check(LoadObject(dir + "/pt.json", pt_root), "pt.json exists and parses");
+    if (LoadObject(dir + "/pt.json", pt_root)) {
+      const std::set<std::string> pt_keys = StringKeys(pt_root);
+      char label[160];
+      std::snprintf(label, sizeof(label), "pt.json defines exactly en.json's key set (%zu keys, 0 missing, 0 extra)",
+                    pt_keys.size());
+      Check(pt_keys == en_keys, label);
+      Check(pt_root["_language_name"].AsString("") == "Portugu\xc3\xaas",
+            "pt.json's _language_name is the Portuguese word for Portuguese (Portugu\xc3\xaas)");
     }
   }
 
