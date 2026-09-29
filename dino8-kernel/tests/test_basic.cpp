@@ -10630,6 +10630,200 @@ void TestBrepExtrudeWireBody() {
         "still throws std::invalid_argument - the walk-coverage check catches what leaf-counting alone would miss");
 }
 
+// OffsetWireBody() closes the "wire-body offset" half of PARITY_MAP.md's
+// "Wire bodies" item (the other half, extrude, is TestBrepExtrudeWireBody()
+// above). Every case below checks OffsetWireBody() against the exact same
+// underlying primitives it composes (NurbsCurve::Join()/OffsetInPlane(),
+// Brep::WireBody()) called by hand on the equivalent already-joined
+// profile - the same "compare against manual composition of the proven
+// primitives" strategy TestBrepExtrudeWireBody() itself uses.
+void TestBrepOffsetWireBody() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // A single open straight edge offsets into exactly the same 2-vertex/
+  // 1-edge wire body WireBody() itself builds from the line's own,
+  // already-tested OffsetInPlane() result.
+  const NurbsCurve line = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(4, 0, 0)}, /*degree=*/1);
+  const Brep open_wire = Brep::WireBody({line});
+  const Brep offset_open = Brep::OffsetWireBody(open_wire, 1.0);
+  NurbsCurve expected_line_offset;
+  Check(line.OffsetInPlane(1.0, expected_line_offset) == Result::Ok, "setup: the line offsets directly");
+  const Brep expected_open = Brep::WireBody({expected_line_offset});
+  Check(offset_open.VertexCount() == 2 && offset_open.EdgeCount() == 1 && offset_open.FaceCount() == 0,
+        "a single-edge open wire body offsets into a real 2-vertex/1-edge/0-face wire body");
+  const Point3d got_p0 = offset_open.raw().m_V[offset_open.raw().m_E[0].m_vi[0]].point;
+  const Point3d got_p1 = offset_open.raw().m_V[offset_open.raw().m_E[0].m_vi[1]].point;
+  const Point3d want_p0 = expected_open.raw().m_V[expected_open.raw().m_E[0].m_vi[0]].point;
+  const Point3d want_p1 = expected_open.raw().m_V[expected_open.raw().m_E[0].m_vi[1]].point;
+  Check(got_p0.DistanceTo(want_p0) < 1e-9 && got_p1.DistanceTo(want_p1) < 1e-9,
+        "...whose endpoints sit exactly where WireBody(line.OffsetInPlane(1.0)) itself would place them, "
+        "i.e. a straight line parallel to and 1.0 away from the original");
+  Check(got_p0.z == 0.0 && got_p1.z == 0.0 && std::fabs(got_p0.y) == 1.0 && got_p0.y == got_p1.y,
+        "...concretely: translated by 1.0 perpendicular to the line, staying in its own z=0 plane");
+
+  // A single self-closed circular wire edge offsets into the same
+  // self-closed circular wire edge WireBody() would build from the
+  // circle's own OffsetInPlane() result (an EXACT concentric circle, per
+  // OffsetInPlane()'s own doc comment) - radius grows by the offset
+  // distance.
+  const ON_Circle raw_circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 2.0);
+  ON_NurbsCurve raw_circle_nurbs;
+  raw_circle.GetNurbForm(raw_circle_nurbs);
+  NurbsCurve circle;
+  circle.raw() = raw_circle_nurbs;
+  const Brep closed_wire = Brep::WireBody({circle});
+  const Brep offset_closed = Brep::OffsetWireBody(closed_wire, 0.5);
+  Check(offset_closed.VertexCount() == 1 && offset_closed.EdgeCount() == 1 && offset_closed.IsWireBody(),
+        "a single self-closed circular wire edge offsets into another real self-closed wire edge (1 vertex, 1 edge)");
+  const Point3d center(0, 0, 0);
+  const Point3d offset_point = offset_closed.raw().m_V[0].point;
+  Check(std::fabs(offset_point.DistanceTo(center) - 2.5) < 1e-9,
+        "...whose single vertex sits exactly on the grown circle (radius 2.0 + 0.5 = 2.5) from the original center");
+
+  // A multi-edge OPEN chain (two collinear legs welded at a shared
+  // vertex) offsets into the exact same wire body as manually Join()-ing
+  // the two edge curves into one profile, calling OffsetInPlane() on
+  // THAT, then WireBody() on the result - proving the wire body's own
+  // edges are walked and joined in the right order before offsetting,
+  // not offset edge-by-edge independently. Deliberately collinear (not a
+  // bent corner like ExtrudeWireBody()'s own L-shape test fixture): the
+  // joined profile is still a single straight line even though it is
+  // built from two separate wire edges, landing OffsetInPlane() on its
+  // EXACT line path rather than the general sampled-and-refit path -
+  // OffsetInPlane()'s own approximate path is already exercised
+  // end-to-end by the curve-level Offset tests above (e.g.
+  // TestCurveOffsetInPlaneGeneralCurveApproximatesAndDetectsSelfIntersection);
+  // what THIS test needs to isolate is whether OffsetWireBody() walks and
+  // joins the wire body's own edges correctly before handing the result
+  // to OffsetInPlane(), which a bent chain's approximate-fit tolerance
+  // slop would make harder to assert bit-exactly.
+  const Point3d M0(0, 0, 0), M1(3, 0, 0), M2(7, 0, 0);
+  const NurbsCurve leg_m0m1 = NurbsCurve::FromControlPoints({M0, M1}, /*degree=*/1);
+  const NurbsCurve leg_m1m2 = NurbsCurve::FromControlPoints({M1, M2}, /*degree=*/1);
+  const Brep collinear_wire = Brep::WireBody({leg_m0m1, leg_m1m2});
+  const Brep offset_collinear = Brep::OffsetWireBody(collinear_wire, 0.25);
+  NurbsCurve joined_profile = leg_m0m1;
+  Check(joined_profile.Join(leg_m1m2) == Result::Ok, "setup: the two collinear legs join into one straight profile");
+  NurbsCurve expected_collinear_offset;
+  Check(joined_profile.OffsetInPlane(0.25, expected_collinear_offset) == Result::Ok,
+        "setup: the joined straight profile offsets directly");
+  const Brep expected_collinear = Brep::WireBody({expected_collinear_offset});
+  Check(offset_collinear.VertexCount() == expected_collinear.VertexCount() &&
+            offset_collinear.EdgeCount() == expected_collinear.EdgeCount() && offset_collinear.EdgeCount() == 1,
+        "the two-edge collinear wire body offsets into the same single-edge shape as manually joining then "
+        "offsetting");
+  const Point3d offset_collinear_p0 = offset_collinear.raw().m_V[offset_collinear.raw().m_E[0].m_vi[0]].point;
+  const Point3d expected_collinear_p0 = expected_collinear.raw().m_V[expected_collinear.raw().m_E[0].m_vi[0]].point;
+  Check(offset_collinear_p0.DistanceTo(expected_collinear_p0) < 1e-9,
+        "...starting at exactly the same point as the manually joined-then-offset profile");
+
+  // A 3-edge OPEN chain, still collinear (for the same exact-line reason
+  // as above), welded pairwise across THREE separate AddWireCurves()
+  // calls rather than one WireBody() call with every curve up front,
+  // offsets into the same shape as manually Join()-ing all three legs
+  // into one profile then OffsetInPlane()-ing that - confirming the
+  // walk/join step handles a wire body assembled incrementally, not just
+  // one built in a single call like the two-edge case above.
+  const Point3d R0(0, 0, 0), R1(2, 0, 0), R2(5, 0, 0), R3(9, 0, 0);
+  Brep incremental_wire;
+  incremental_wire.AddWireCurves({NurbsCurve::FromControlPoints({R0, R1}, 1)});
+  incremental_wire.AddWireCurves({NurbsCurve::FromControlPoints({R1, R2}, 1)});
+  incremental_wire.AddWireCurves({NurbsCurve::FromControlPoints({R2, R3}, 1)});
+  Check(incremental_wire.VertexCount() == 4 && incremental_wire.EdgeCount() == 3 && incremental_wire.IsWireBody(),
+        "setup: a real 4-vertex/3-edge open collinear wire body, built across 3 separate calls");
+  const Brep offset_incremental = Brep::OffsetWireBody(incremental_wire, -0.5);
+  NurbsCurve joined_incremental = NurbsCurve::FromControlPoints({R0, R1}, 1);
+  Check(joined_incremental.Join(NurbsCurve::FromControlPoints({R1, R2}, 1)) == Result::Ok &&
+            joined_incremental.Join(NurbsCurve::FromControlPoints({R2, R3}, 1)) == Result::Ok,
+        "setup: the three collinear legs join into one straight profile");
+  NurbsCurve expected_incremental_offset;
+  Check(joined_incremental.OffsetInPlane(-0.5, expected_incremental_offset) == Result::Ok,
+        "setup: the joined straight profile offsets directly");
+  const Brep expected_incremental = Brep::WireBody({expected_incremental_offset});
+  Check(offset_incremental.VertexCount() == expected_incremental.VertexCount() &&
+            offset_incremental.EdgeCount() == expected_incremental.EdgeCount() &&
+            offset_incremental.EdgeCount() == 1,
+        "the incrementally-built collinear wire body offsets into the same single-edge shape as manually joining "
+        "then offsetting");
+  const Point3d offset_incremental_p0 = offset_incremental.raw().m_V[offset_incremental.raw().m_E[0].m_vi[0]].point;
+  const Point3d expected_incremental_p0 =
+      expected_incremental.raw().m_V[expected_incremental.raw().m_E[0].m_vi[0]].point;
+  Check(offset_incremental_p0.DistanceTo(expected_incremental_p0) < 1e-9,
+        "...starting at exactly the same point as the manually joined-then-offset profile");
+
+  // The branch-point and disjoint-component refusal fixtures below reuse
+  // A/B/C/leg_ab - the exact same points and edge ExtrudeWireBody()'s own
+  // refusal tests already use, unrelated to the collinear offset fixtures
+  // above.
+  const Point3d A(0, 0, 0), B(4, 0, 0);
+  const NurbsCurve leg_ab = NurbsCurve::FromControlPoints({A, B}, /*degree=*/1);
+
+  // Refusal: `wire_body` is not actually a wire body (a real solid, or a
+  // completely empty Brep).
+  const Brep box = Brep::FromPlanarFaces(CheckHealBoxFaces());
+  bool threw_not_wire = false;
+  try {
+    (void)Brep::OffsetWireBody(box, 1.0);
+  } catch (const std::invalid_argument&) {
+    threw_not_wire = true;
+  }
+  Check(threw_not_wire, "OffsetWireBody() on a real solid (not a wire body) throws std::invalid_argument");
+  const Brep empty_brep;
+  bool threw_empty = false;
+  try {
+    (void)Brep::OffsetWireBody(empty_brep, 1.0);
+  } catch (const std::invalid_argument&) {
+    threw_empty = true;
+  }
+  Check(threw_empty, "OffsetWireBody() on a completely empty Brep throws std::invalid_argument");
+
+  // Refusal: a branch point - three edges welded onto the same vertex (A)
+  // has no single correct chain to follow, the exact same shape
+  // ExtrudeWireBody() itself refuses.
+  const NurbsCurve spoke1 = NurbsCurve::FromControlPoints({A, Point3d(1, 1, 0)}, /*degree=*/1);
+  const NurbsCurve spoke2 = NurbsCurve::FromControlPoints({A, Point3d(-1, 1, 0)}, /*degree=*/1);
+  const NurbsCurve spoke3 = NurbsCurve::FromControlPoints({A, Point3d(0, -1, 0)}, /*degree=*/1);
+  const Brep star_wire = Brep::WireBody({spoke1, spoke2, spoke3});
+  bool threw_branch = false;
+  try {
+    (void)Brep::OffsetWireBody(star_wire, 1.0);
+  } catch (const std::invalid_argument&) {
+    threw_branch = true;
+  }
+  Check(threw_branch, "OffsetWireBody() on a wire body with a branch point throws std::invalid_argument");
+
+  // Refusal: more than one disjoint wire component - two unrelated
+  // straight legs with no shared vertex at all.
+  const NurbsCurve far_leg = NurbsCurve::FromControlPoints({Point3d(100, 0, 0), Point3d(101, 0, 0)}, /*degree=*/1);
+  const Brep disjoint_wire = Brep::WireBody({leg_ab, far_leg});
+  bool threw_disjoint = false;
+  try {
+    (void)Brep::OffsetWireBody(disjoint_wire, 1.0);
+  } catch (const std::invalid_argument&) {
+    threw_disjoint = true;
+  }
+  Check(threw_disjoint, "OffsetWireBody() on two fully disjoint open wires throws std::invalid_argument");
+
+  // Refusal: OffsetInPlane() itself failing propagates as
+  // std::invalid_argument, not a silent bad result - here, an offset
+  // distance that folds the circle through its own center
+  // (radius 2.0 - 3.0 <= 0), the same self-intersection guard
+  // OffsetInPlane()'s own doc comment names.
+  bool threw_fold = false;
+  try {
+    (void)Brep::OffsetWireBody(closed_wire, -3.0);
+  } catch (const std::invalid_argument&) {
+    threw_fold = true;
+  }
+  Check(threw_fold,
+        "OffsetWireBody() with a distance that folds the profile through its own center of curvature "
+        "throws std::invalid_argument, propagating OffsetInPlane()'s own Result::Failed rather than "
+        "silently building a self-intersecting wire body");
+}
+
 // Flip one face: Check() names the flipped face on each of its 4 edges
 // (index = the flipped face, other_index = each neighbour), the welded
 // mesh is no longer a closed manifold (an orientation conflict on every
@@ -43266,6 +43460,7 @@ int main() {
   TestBrepWireBody();
   TestBrepAddWireCurves();
   TestBrepExtrudeWireBody();
+  TestBrepOffsetWireBody();
   TestBrepCheckAndUnifyNormalsOnFlippedFace();
   TestBrepCheckReportsDroppedFaceAndCapPlanarHolesRestoresIt();
   TestBrepJoinNakedEdgesRecordsTolerantEdges();

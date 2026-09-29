@@ -1933,6 +1933,55 @@ Brep Brep::ExtrudeWireBody(const Brep& wire_body, Vector3d direction, bool cap) 
   return Extrude(profile, direction, cap);
 }
 
+Brep Brep::OffsetWireBody(const Brep& wire_body, double distance, double tolerance) {
+  const char* caller = "OffsetWireBody";
+  if (!wire_body.IsWireBody()) {
+    Fail(caller, "wire_body must satisfy IsWireBody() (at least one live edge, zero live faces)");
+  }
+  const std::vector<int> chain = WalkWireChain(wire_body);
+  if (chain.empty()) {
+    Fail(caller,
+         "wire_body's own edge graph must be a single simple open chain or closed loop - a branch point (a "
+         "vertex touching 3 or more edges) or more than one disjoint wire component is out of scope");
+  }
+
+  const ON_Brep& b = wire_body.raw();
+  auto edge_curve = [&](int edge_index) {
+    ON_NurbsCurve nc;
+    if (b.m_E[edge_index].GetNurbForm(nc) <= 0) {
+      Internal(caller, "a wire edge's own curve could not be converted to an exact NURBS form");
+    }
+    NurbsCurve c;
+    c.raw() = nc;
+    return c;
+  };
+
+  NurbsCurve profile = edge_curve(chain.front());
+  for (size_t k = 1; k < chain.size(); ++k) {
+    NurbsCurve next = edge_curve(chain[k]);
+    // Same actual-gap-driven join tolerance ExtrudeWireBody() uses above,
+    // for the same reason: don't assume Join()'s fixed 1e-6 default
+    // matches whatever caller-chosen weld tolerance WireBody()/
+    // AddWireCurves() built the wire body with.
+    const Point3d end = profile.PointAt(profile.Domain().max);
+    const Interval nd = next.Domain();
+    const double gap = std::min(end.DistanceTo(next.PointAt(nd.min)), end.DistanceTo(next.PointAt(nd.max)));
+    const double join_tolerance = std::max(tolerance::kDistance, 2.0 * gap + tolerance::kDistance);
+    if (profile.Join(next, join_tolerance) != Result::Ok) {
+      Internal(caller, "the wire body's own edge curves failed to join into one continuous profile despite "
+                       "sharing a vertex - a wire-body invariant this function relies on was violated");
+    }
+  }
+
+  NurbsCurve offset;
+  if (profile.OffsetInPlane(distance, offset, tolerance) != Result::Ok) {
+    Fail(caller, "the wire body's own joined profile could not be offset - it is not planar within tolerance, "
+                 "or the requested distance folds it through itself or through its own center of curvature");
+  }
+
+  return WireBody({offset}, tolerance::kDistance);
+}
+
 Brep Brep::Thicken(const Brep& sheet, double thickness, bool symmetric) {
   const char* caller = "Thicken";
   if (!std::isfinite(thickness) || thickness == 0.0) {

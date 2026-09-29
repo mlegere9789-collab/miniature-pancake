@@ -3624,6 +3624,44 @@ class Brep {
   };
   AddWireCurvesResult AddWireCurves(const std::vector<NurbsCurve>& curves, double tolerance = tolerance::kDistance);
 
+  // OffsetWireBody: offset an existing wire body's own edges by `distance`
+  // into a brand-new, independent wire body - PARITY_MAP.md's "Wire
+  // bodies" item names "wire-body offset" as one of the two still-missing
+  // halves of "wire-to-solid/sheet promotion" left once ExtrudeWireBody()
+  // (above) closed the extrude half. Like ExtrudeWireBody(), `wire_body`
+  // must satisfy IsWireBody() and its own edge/vertex graph must walk as
+  // ONE simple chain (a single open path or a single closed loop) - the
+  // exact same WalkWireChain() refusal rules (a branch point, or more
+  // than one disjoint wire component) apply here too, for the same reason:
+  // which branch or which component to offset has no single correct
+  // answer. The walked edges' own 3D curves are joined, in walk order,
+  // into one continuous profile exactly as ExtrudeWireBody() does (via
+  // the existing, already-tested NurbsCurve::Join()), then handed straight
+  // to the existing, already-tested NurbsCurve::OffsetInPlane(distance,
+  // out, tolerance) - so this is, like ExtrudeWireBody(), a thin
+  // composition of two already-proven primitives rather than a new
+  // algorithm: the same EXACT/approximate honesty split OffsetInPlane()
+  // itself documents applies unchanged (exact for a line or circular
+  // arc/circle, an explicitly tolerance-driven least-squares refit for
+  // any other planar curve, refused outright for a curve that is not
+  // planar in its own fitted plane). The offset profile is then rebuilt
+  // into a fresh wire body via WireBody() (above) - a genuinely
+  // independent Brep, not a modification of `wire_body` in place.
+  //
+  // Throws std::invalid_argument if `wire_body` does not satisfy
+  // IsWireBody(), or if its edge graph is not a single simple chain as
+  // described above; throws std::invalid_argument (Result::Failed from
+  // OffsetInPlane()) if the joined profile is not planar within
+  // `tolerance`, or if `distance` folds it through itself or through its
+  // own center of curvature (an arc/circle offset past its own radius).
+  // `tolerance` defaults (`<= 0`) to OffsetInPlane()'s own default (the
+  // joined profile's `GetTightBoundingBox()` diagonal, via
+  // `tolerance::DistanceForSize()`); the resulting wire body's own vertex
+  // weld tolerance is the unrelated, fixed `tolerance::kDistance` -
+  // welding is a topological question (are two endpoints the same point)
+  // wholly separate from how accurately the offset curve itself was fit.
+  static Brep OffsetWireBody(const Brep& wire_body, double distance, double tolerance = -1.0);
+
   // MEF ("Make Edge, Face"): splits `face_index`'s own single outer loop
   // into two loops by inserting one new straight edge between two of its
   // EXISTING, non-adjacent vertices (a genuine polygon diagonal - no new
