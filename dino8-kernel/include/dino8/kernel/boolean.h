@@ -369,6 +369,40 @@ Brep BooleanIntersectConvexPlanar(const Brep& a, const Brep& b);
 // this function's own tests exercise (an L-shaped non-convex prism
 // against an overlapping box) never produces one, since every individual
 // cutting plane involved only ever crosses that shape's boundary twice.
+//
+// `op == Difference` or `op == Intersection` also accepts a `a` and/or `b`
+// that is itself a `Brep::Compound()` of two or more lumps (e.g. a prior
+// SymmetricDifference result, or two disjoint solids joined into one
+// operand) - `op == Union`/`SymmetricDifference` still refuse one (see
+// boolean.cpp's own RefuseCompoundOperand doc comment for why only those
+// two need a lump-merge step this engine doesn't have). The split/classify/
+// reassemble pipeline above needs no change to get this right: every face
+// is already split and ray-cast-classified against the OTHER operand's
+// full face list regardless of how many lumps it spans (ClassifyPointVsSolid
+// is a real point-in-polyhedron ray cast, not a convexity-dependent
+// half-space test, so a multi-lump `other` classifies correctly), and
+// Brep::FromPlanarFaces' edge-matching by real shared vertex pairs already
+// builds several disjoint output shells correctly if the result happens to
+// have more than one (e.g. subtracting a tool from just one lump of a
+// two-lump target, or leaving an untouched interior cavity as its own
+// shell) - this function's own tail re-derives that split's
+// lump_face_ranges_ bookkeeping via SplitDisjointPieces()/Brep::Compound()
+// so a caller's LumpFaceRanges() sees the truth instead of reporting a
+// false single lump.
+//
+// A real, disclosed scope limit: this still throws the pre-existing "an
+// edge is shared by 3 or more faces" refusal if the compound operand's OWN
+// lumps genuinely touch along a shared contact curve (e.g. a corner-overlap
+// SymmetricDifference result - see this function's own SymmetricDifference
+// branch for why two such lumps can never share one manifold shell to begin
+// with) and this op's own face selection carries that entire contact curve
+// through unmodified - not a new limitation, but the exact same one that
+// makes Union/SymmetricDifference refuse a compound operand outright, now
+// reachable (as a controlled thrown exception, never a silently wrong
+// shape) through this op too. A compound operand whose lumps are genuinely
+// disjoint - no shared contact curve at all, the common case this pass
+// targets - reassembles cleanly; see boolean.cpp's own doc comment at this
+// function's tail for the full argument.
 Brep BooleanCombinePlanar(const Brep& a, const Brep& b, BooleanOp op);
 
 // N-ary counterpart of BooleanCombinePlanar, identical in shape and

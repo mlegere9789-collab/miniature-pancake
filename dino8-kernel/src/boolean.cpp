@@ -894,13 +894,20 @@ Brep BooleanIntersectConvexPlanar(const Brep& a, const Brep& b) {
 namespace {
 
 // A Brep::Compound() of two or more lumps (the representation every
-// SymmetricDifference result below has) is refused as an operand of
-// either B-rep boolean: Difference and Intersection would distribute over
-// the lumps exactly ((L1 u L2) - B = (L1 - B) u (L2 - B)), but Union
-// needs a merge step between lumps that touch or overlap, and neither
-// pipeline below has one - the single-shell split/classify/reassemble
-// would hand FromMixedFaces the non-manifold contact edges. Refused with
-// a clear message rather than failing deep inside FromMixedFaces.
+// SymmetricDifference result below has) is refused for Union (and, since
+// it is built from two Difference calls internally, SymmetricDifference
+// itself): Union needs a merge step between lumps that touch or overlap,
+// and neither pipeline has one - the single-shell split/classify/
+// reassemble would hand FromMixedFaces the non-manifold contact edges.
+// Difference and Intersection distribute over the lumps exactly
+// ((L1 u L2) - B = (L1 - B) u (L2 - B); likewise for intersection), so
+// `BooleanCombinePlanar` no longer calls this for those two ops - see its
+// own lump-recomputation step for how the result's true lump structure is
+// recovered. `BooleanCombineMixed` still calls this unconditionally for
+// every op (its own cylinder end-cap synthesis has not been proven safe
+// against a compound operand yet - a real, disclosed, still-open gap).
+// Refused with a clear message rather than failing deep inside
+// FromMixedFaces.
 void RefuseCompoundOperand(const Brep& operand, const char* function_name) {
   if (operand.LumpFaceRanges().size() <= 1) return;
   throw std::invalid_argument(std::string("dino8::kernel::") + function_name +
@@ -913,8 +920,17 @@ void RefuseCompoundOperand(const Brep& operand, const char* function_name) {
 }  // namespace
 
 Brep BooleanCombinePlanar(const Brep& a, const Brep& b, BooleanOp op) {
-  RefuseCompoundOperand(a, "BooleanCombinePlanar");
-  RefuseCompoundOperand(b, "BooleanCombinePlanar");
+  // Union and SymmetricDifference still need the lump-merge step neither
+  // pipeline below has (see RefuseCompoundOperand's own doc comment) and
+  // stay refused. Difference and Intersection do NOT need one - they
+  // distribute over a compound operand's lumps exactly, so a Compound() is
+  // now accepted for those two ops; see the lump-recomputation step at the
+  // bottom of this function for why the algorithm below needs no other
+  // change to already get this right.
+  if (op == BooleanOp::Union || op == BooleanOp::SymmetricDifference) {
+    RefuseCompoundOperand(a, "BooleanCombinePlanar");
+    RefuseCompoundOperand(b, "BooleanCombinePlanar");
+  }
 
   if (op == BooleanOp::SymmetricDifference) {
     // XOR = (A - B) u (B - A), as a Brep::Compound of the two lumps: the
@@ -996,7 +1012,55 @@ Brep BooleanCombinePlanar(const Brep& a, const Brep& b, BooleanOp op) {
     default:
       throw std::invalid_argument("dino8::kernel::BooleanCombinePlanar: unknown BooleanOp");
   }
-  return Brep::FromPlanarFaces(result);
+  // A real, disclosed scope limit found while building this, not assumed:
+  // reassembling ALL of a compound operand's faces through the single
+  // FromPlanarFaces() pass above still throws the pre-existing "an edge is
+  // shared by 3 or more faces" refusal if that operand's own lumps
+  // genuinely TOUCH along a shared contact curve (e.g. a corner-overlap
+  // SymmetricDifference result, whose own doc comment already explains why
+  // its two lumps can never share one manifold shell) and this op's own
+  // face selection carries every face of that contact curve straight
+  // through unmodified - the exact same non-manifold junction
+  // Brep::Compound() exists specifically to avoid ever building. This is
+  // not a new limitation this pass introduces: it is the SAME limitation
+  // that made Union/SymmetricDifference refuse a compound operand outright
+  // in the first place, simply now reachable (as a thrown exception, not a
+  // silent wrong shape) via Difference/Intersection too, for the specific
+  // case where nothing about the op actually separates the touching lumps.
+  // A compound operand whose lumps are genuinely disjoint (no shared
+  // contact curve at all - the common case: two far-apart solids joined
+  // into one Compound(), or a SymmetricDifference of non-corner-overlapping
+  // operands) reassembles cleanly, as the dedicated tests above show.
+  Brep combined = Brep::FromPlanarFaces(result);
+
+  // Difference/Intersection against a genuinely compound operand can leave
+  // the result as two or more physically disjoint solids (e.g. subtracting
+  // a tool from just one lump of a two-lump target, or an untouched
+  // interior cavity from a fully-enclosing operand) - FromPlanarFaces()
+  // above already builds each one correctly (BuildFaceLoop matches edges
+  // by real shared-vertex-pair geometry, not by which lump a face came
+  // from, and ClassifyPointVsSolid's ray-cast parity test is valid against
+  // any planar-faced solid, compound or not - see its own doc comment),
+  // but it has no way to know it was ever fed a compound operand, so it
+  // never records that split in lump_face_ranges_. Recompute it here from
+  // the result's own real topology so a caller's LumpFaceRanges()/a further
+  // Compound() sees the true shape rather than a false single lump - only
+  // worth the extra SplitDisjointPieces() pass when an input actually was
+  // compound (the overwhelmingly common single/single case is untouched).
+  // Note this can also register MORE lumps than either input had: a target
+  // with two untouched interior cavities carved out is one connected body
+  // physically, but the cavity shells share no edge with the outer shell
+  // (or each other) at all, so this correctly reports 3 lumps for it, not
+  // 1 - a real, previously-unexercised distinction between "one connected
+  // body" and "one connected face graph" this recomputation surfaces
+  // honestly rather than hiding; a caller chaining plain (non-compound)
+  // pairwise Difference calls to the same geometry never sees this, since
+  // this recomputation only ever runs when an INPUT was already compound.
+  if (a.LumpFaceRanges().size() > 1 || b.LumpFaceRanges().size() > 1) {
+    std::vector<Brep> pieces = combined.SplitDisjointPieces();
+    if (pieces.size() > 1) return Brep::Compound(pieces);
+  }
+  return combined;
 }
 
 Brep BooleanCombinePlanarNAry(const std::vector<Brep>& first_group, const std::vector<Brep>& second_group,

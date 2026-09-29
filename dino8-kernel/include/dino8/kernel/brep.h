@@ -2195,8 +2195,11 @@ class Brep {
   // must tile [0, FaceCount()) exactly); a stale record - a raw() ON_Brep
   // reassigned behind this class's back - falls back to the single full
   // range, the same self-check discipline MixedFaces()'s face records
-  // use. BooleanCombineMixed/BooleanCombinePlanar refuse an operand with
-  // more than one lump (see boolean.h).
+  // use. BooleanCombineMixed refuses an operand with more than one lump for
+  // every op; BooleanCombinePlanar refuses one only for Union/
+  // SymmetricDifference - Difference/Intersection accept a compound operand
+  // and distribute over its lumps (see boolean.h and boolean.cpp's own
+  // RefuseCompoundOperand doc comment).
   std::vector<std::pair<int, int>> LumpFaceRanges() const;
 
   // Splits this Brep into its disjoint pieces: the maximal groups of
