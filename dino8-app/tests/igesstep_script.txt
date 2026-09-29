@@ -67,3 +67,18 @@ Open @TMP@/step_pentagon_fixture.stp
 @expect_objects 1
 SelAll
 List
+# --- A hand-crafted malformed STEP file: a TRIMMED_CURVE whose own basis-
+# curve reference is itself (#1 = TRIMMED_CURVE(..., #1, ...)), reached via
+# a GEOMETRIC_CURVE_SET. Regression for the STEP analogue of the IGES
+# composite-curve bug above: StepModel::Curve()/BuildCurve() recursed into
+# each other with no depth bound and no cycle check, so a self-referencing
+# (or merely very deeply chained) TRIMMED_CURVE/COMPOSITE_CURVE drove
+# unbounded recursion and a stack overflow on import - confirmed: reverting
+# the depth-guard fix reproduces a real segfault on this exact fixture.
+# Must now be rejected cleanly (0 objects), not hang or crash.
+cancel
+New
+Open @TMP@/step_recursive_fixture.stp
+@expect_objects 0
+SelAll
+List

@@ -2137,11 +2137,21 @@ class StepModel {
     return pl;
   }
 
-  // A curve entity as a full ON_NurbsCurve (own natural domain).
-  bool Curve(int id, ON_NurbsCurve& out) {
+  // A curve entity as a full ON_NurbsCurve (own natural domain). `depth`
+  // bounds the recursion a TRIMMED_CURVE or COMPOSITE_CURVE_SEGMENT can
+  // cause by referencing another curve entity - including, in a corrupted
+  // or crafted STEP file, itself (directly or through a longer cycle),
+  // which would otherwise recurse forever and stack-overflow (the same
+  // untrusted-recursion class BuildIgesCurve already bounds for IGES's
+  // type-102 composite curve, see its `depth` parameter above). A curve
+  // reached only through a chain deeper than the cap is left unresolved
+  // (not cached as permanently invalid), so a shallower path to the same
+  // entity id can still resolve it normally.
+  bool Curve(int id, ON_NurbsCurve& out, int depth = 0) {
     auto it = curve_cache_.find(id);
     if (it != curve_cache_.end()) { out = it->second; return out.IsValid(); }
-    bool ok = BuildCurve(id, out);
+    if (depth > kMaxCurveDepth) return false;
+    bool ok = BuildCurve(id, out, depth);
     curve_cache_[id] = ok ? out : ON_NurbsCurve();
     return ok;
   }
@@ -2216,7 +2226,10 @@ class StepModel {
   std::map<int, Color> item_colour_;  // STYLED_ITEM's target -> resolved colour
 
  private:
-  bool BuildCurve(int id, ON_NurbsCurve& out) {
+  // Recursion cap shared by Curve()/BuildCurve(); see Curve()'s comment.
+  static constexpr int kMaxCurveDepth = 64;
+
+  bool BuildCurve(int id, ON_NurbsCurve& out, int depth) {
     const StepEntity* e = Get(id);
     if (!e) return false;
     if (const StepPart* p = e->Find("LINE")) {
@@ -2263,7 +2276,7 @@ class StepModel {
     if (const StepPart* p = e->Find("TRIMMED_CURVE")) {
       if (p->args.size() < 4 || !IsRef(p->args[1])) return false;
       ON_NurbsCurve base;
-      if (!Curve(StepRef(p->args[1]), base)) return false;
+      if (!Curve(StepRef(p->args[1]), base, depth + 1)) return false;
       auto param_of = [&](const std::string& sel) -> std::optional<double> {
         for (const std::string& t : SplitTop(Unparen(sel), ',')) {
           const std::string s = Trim(t);
@@ -2293,7 +2306,7 @@ class StepModel {
         const StepPart* sp = se ? se->Find("COMPOSITE_CURVE_SEGMENT") : nullptr;
         if (!sp || sp->args.size() < 3 || !IsRef(sp->args[2])) continue;
         ON_NurbsCurve sc;
-        if (!Curve(StepRef(sp->args[2]), sc)) continue;
+        if (!Curve(StepRef(sp->args[2]), sc, depth + 1)) continue;
         const int n = std::max(2, sc.SpanCount() * std::max(2, sc.Degree()) * 6);
         for (int i = (first ? 0 : 1); i <= n; ++i) pl.Append(sc.PointAt(sc.Domain().ParameterAt(static_cast<double>(i) / n)));
         first = false;

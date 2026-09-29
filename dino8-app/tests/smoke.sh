@@ -2499,6 +2499,7 @@ sed "s|@TMP@|$TMPW|g" "$HERE/igesstep_script.txt" > "$TMPW/igesstep_script.txt"
 cp "$HERE/step_plane_face.stp" "$TMPW/step_plane_face.stp"
 cp "$HERE/iges_recursive_fixture.igs" "$TMPW/iges_recursive_fixture.igs"
 cp "$HERE/step_pentagon_fixture.stp" "$TMPW/step_pentagon_fixture.stp"
+cp "$HERE/step_recursive_fixture.stp" "$TMPW/step_recursive_fixture.stp"
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   IS="$("$BIN" --smoke 230 --script "$TMPW/igesstep_script.txt" 2>&1)" || { echo "$IS"; echo "FAIL: iges/step script exited non-zero"; exit 1; }
 else
@@ -2519,6 +2520,7 @@ ischeck "IGES: 0 curves, 0 points, 0 surfaces, 0 breps (0 trimmed faces); 1 unsu
 ischeck "^ok   expect_objects 0" "the malformed IGES file added nothing to the document"
 ischeck "^ok   expect_objects 1" "the hand-written pentagon FACETED_BREP fixture imported as exactly 1 mesh object"
 ischeck "5 vertices, 3 faces" "a POLY_LOOP pentagon (5 vertices) fan-triangulates into 3 faces, not the old code's single quad built from just its first 4 vertices"
+ischeck "No usable geometry found in .*step_recursive_fixture.stp" "a self-referencing STEP TRIMMED_CURVE was rejected cleanly, not crashed/hung on (see StepModel::Curve's recursion-depth guard)"
 grep -q "Segmentation fault\|core dumped" <<<"$IS" && { echo "FAIL: iges/step script segfaulted on the recursive-composite-curve fixture"; fail=1; } || echo "ok   no segfault while importing the recursive-composite-curve fixture"
 grep -qE "^ {5}128" "$TMPW/t.igs" && grep -qE "^ {5}144" "$TMPW/t.igs" && echo "ok   t.igs uses 128 (surface) and 144 (trimmed surface) entities" || { echo "FAIL t.igs entity types"; fail=1; }
 grep -q "=ADVANCED_FACE(" "$TMPW/t.stp" && grep -q "B_SPLINE_SURFACE_WITH_KNOTS(" "$TMPW/t.stp" && echo "ok   t.stp uses ADVANCED_FACE and B_SPLINE_SURFACE_WITH_KNOTS entities" || { echo "FAIL t.stp entity types"; fail=1; }
