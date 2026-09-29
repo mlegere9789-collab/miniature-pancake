@@ -2379,6 +2379,13 @@ d2check "UpdateDimensions:   DimRadius now measures 10" "UpdateDimensions redrew
 d2check "DimAngle 90 deg (associative to 3 point(s))" "DimAngle anchored all three points (vertex + two direction points) to real Point objects"
 d2check "UpdateDimensions:   DimAngle now measures 45 deg" "UpdateDimensions redrew DimAngle from a moved direction point's new position, not the 90 deg baked at creation time"
 
+# Associativity: UpdateMultiLeaders drags just the arrow whose point sits on
+# a real Point object to that object's current position after it moves,
+# while the un-anchored arrow and the shared landing point stay put.
+d2check "MultiLeader: 2 arrow(s), \"AssocNote\" (associative to 1 point(s))" "MultiLeader recorded arrow 1's coincident Point object as its associative reference, leaving arrow 2 (not on any object) a static baked point"
+d2check "UpdateMultiLeaders:   now 2 arrow(s) at landing 720,5,0" "UpdateMultiLeaders redrew the multi-leader after the anchor point moved, keeping the landing point fixed"
+d2check "MLeaderPoints = 705,0,0;710,10,0" "UpdateMultiLeaders dragged arrow 1 to the anchor's new (705,0,0) position, not the (700,0,0) baked at creation, while arrow 2's free point (710,10,0) stayed put"
+
 # Associativity survives a .3dm round trip: DimRefObj1/2/3 and group_id (see
 # cmd_annotate.cpp/File3dm.cpp) must still resolve after Save/New/Open, so
 # the post-Open UpdateDimensions re-run above finds and redraws the exact
@@ -2398,6 +2405,10 @@ D2_ANG45_COUNT=$(echo "$D2" | grep -c "UpdateDimensions:   DimAngle now measures
 [ "$D2_ANG45_COUNT" = "2" ] && echo "ok   DimAngle round-tripped and was redrawn after Open (the one pre-save run once it existed, plus the post-Open run)" || { echo "FAIL DimAngle redrawn $D2_ANG45_COUNT times, expected 2 (associativity did not survive the .3dm round trip)"; fail=1; }
 D2_REGEN4_COUNT=$(echo "$D2" | grep -c "UpdateDimensions: 4 dimension(s) regenerated")
 [ "$D2_REGEN4_COUNT" = "2" ] && echo "ok   UpdateDimensions regenerated all 4 associative dimensions with 0 skipped, both before Save and again after Open" || { echo "FAIL UpdateDimensions: 4 dimension(s) regenerated seen $D2_REGEN4_COUNT times, expected 2 (some dimensions failed to resolve after the .3dm round trip)"; fail=1; }
+D2_ML_LANDING_COUNT=$(echo "$D2" | grep -c "UpdateMultiLeaders:   now 2 arrow(s) at landing 720,5,0")
+[ "$D2_ML_LANDING_COUNT" = "2" ] && echo "ok   the associative MultiLeader round-tripped and was redrawn on every UpdateMultiLeaders call, including after Open" || { echo "FAIL MultiLeader redrawn $D2_ML_LANDING_COUNT times, expected 2 (associativity did not survive the .3dm round trip)"; fail=1; }
+D2_ML_REGEN_COUNT=$(echo "$D2" | grep -c "UpdateMultiLeaders: 1 multi-leader(s) regenerated")
+[ "$D2_ML_REGEN_COUNT" = "2" ] && echo "ok   UpdateMultiLeaders regenerated the associative multi-leader with 0 skipped, both before Save and again after Open" || { echo "FAIL UpdateMultiLeaders: 1 multi-leader(s) regenerated seen $D2_ML_REGEN_COUNT times, expected 2 (the multi-leader failed to resolve after the .3dm round trip)"; fail=1; }
 
 d2check "SectionView: 120 curve(s)" "SectionView sliced all 120 objects with none dropped across the Document::Objects() reallocations that many Add() calls in one pass triggers"
 

@@ -102,6 +102,102 @@ std::string PointsTag(const std::vector<Point3d>& pts) {
   for (const Point3d& p : pts) { if (!s.empty()) s += ";"; s += PointTag(p); }
   return s;
 }
+std::vector<Point3d> ParsePointsTag(const std::string& s) {
+  std::vector<Point3d> out;
+  std::stringstream ss(s);
+  std::string tok;
+  while (std::getline(ss, tok, ';')) {
+    Point3d p;
+    if (!tok.empty() && ParsePointTag(tok, p)) out.push_back(p);
+  }
+  return out;
+}
+
+// Builds (or rebuilds) one MultiLeader group from its arrow points and
+// landing point. Associative per arrow: each arrow point that sits exactly
+// on a real object (FindPointAnchor, same coincidence rule as Leader's
+// single tip - annotate_common.h) gets its own DimRefObj{i+1}/DimRefEnd{i+1}
+// tag, so UpdateMultiLeaders can drag just that one arrow to the object's
+// current position later; an arrow point that isn't on any object keeps the
+// MLeaderPoints fallback for its index. The landing point and text stay
+// fixed - a MultiLeader's whole point is a shared, stationary label several
+// features point at, unlike a single Leader's tip.
+int BuildMultiLeaderGroup(CommandContext& ctx, const std::vector<Point3d>& pts, Point3d landing, const ON_Plane& pl,
+                          double text_h, const std::string& text, int layer = -1) {
+  if (pts.empty()) return -1;
+  if (layer < 0) layer = DimensionLayer(ctx);
+  const std::string style = ctx.Settings().annotation_style;
+  std::map<std::string, std::string> tags;
+  tags["MLeaderPoints"] = PointsTag(pts);
+  tags["MLeaderLanding"] = PointTag(landing);
+  for (size_t i = 0; i < pts.size(); ++i) {
+    ObjectId ref = kNoObject;
+    std::string which;
+    if (FindPointAnchor(ctx.Doc(), pts[i], ref, which)) {
+      tags["DimRefObj" + std::to_string(i + 1)] = std::to_string(ref);
+      tags["DimRefEnd" + std::to_string(i + 1)] = which;
+    }
+  }
+  std::vector<kernel::NurbsCurve> curves;
+  for (const Point3d& pt : pts) curves.push_back(PolylineCurve({pt, landing}));
+  for (const Point3d& pt : pts) AddArrowLocal(curves, pt, pt - landing, text_h * 0.6, pl);
+  std::vector<ObjectId> ids;
+  for (const kernel::NurbsCurve& c : curves) {
+    SceneObject s = SceneObject::MakeCurve(c);
+    s.layer_index = layer;
+    TagAnnotation(s, "MultiLeader", style);
+    for (const auto& [k, v] : tags) s.user_text[k] = v;
+    ids.push_back(ctx.Doc().Add(std::move(s)));
+  }
+  GlyphSpec g;
+  g.text = text;
+  g.height = text_h;
+  g.plane = pl;
+  g.plane.SetOrigin(landing + pl.xaxis * (text_h * 0.3));
+  for (ObjectId id : AddGlyphCurves(ctx, g, layer, -1, {{"Annotation", "MultiLeader"}, {"Style", style}})) ids.push_back(id);
+  if (ids.empty()) return -1;
+  return ctx.Doc().CreateGroup(ids, "MultiLeader");
+}
+
+// Reads a MultiLeader group's arrow points back to their *current* values:
+// each index whose DimRefObj{i+1} resolves (ResolveAnchor) is overridden
+// with that object's live position; every other index, and the landing
+// point, keep the MLeaderPoints/MLeaderLanding fallback recorded at
+// creation. False if the group has no MLeaderPoints tag at all (e.g. not a
+// MultiLeader, or pre-associativity data).
+bool ResolveMultiLeaderPoints(Document& doc, int group_id, std::vector<Point3d>& pts, Point3d& landing) {
+  bool have_pts = false;
+  bool have_landing = false;
+  std::map<int, std::pair<ObjectId, std::string>> refs;
+  for (const SceneObject& o : doc.Objects()) {
+    if (o.group_id != group_id) continue;
+    if (!have_pts) {
+      if (auto it = o.user_text.find("MLeaderPoints"); it != o.user_text.end()) {
+        pts = ParsePointsTag(it->second);
+        have_pts = !pts.empty();
+      }
+    }
+    if (!have_landing) {
+      if (auto it = o.user_text.find("MLeaderLanding"); it != o.user_text.end() && ParsePointTag(it->second, landing)) have_landing = true;
+    }
+    for (const auto& [k, v] : o.user_text) {
+      if (k.rfind("DimRefObj", 0) != 0) continue;
+      const int idx = std::atoi(k.c_str() + 9);
+      if (idx <= 0) continue;
+      const std::string end_key = "DimRefEnd" + std::to_string(idx);
+      const auto eit = o.user_text.find(end_key);
+      refs[idx - 1] = {static_cast<ObjectId>(std::strtoull(v.c_str(), nullptr, 10)), eit != o.user_text.end() ? eit->second : "point"};
+    }
+  }
+  if (!have_pts) return false;
+  for (const auto& [idx, ref] : refs) {
+    if (idx < 0 || static_cast<size_t>(idx) >= pts.size()) continue;
+    Point3d p;
+    if (ResolveAnchor(doc, ref.first, ref.second, p)) pts[idx] = p;
+  }
+  if (!have_landing) landing = pts.front();
+  return true;
+}
 
 std::string UniqueHatchMaterialName(const Document& doc, const std::string& base) {
   if (!doc.FindMaterial(base)) return base;
@@ -1117,28 +1213,16 @@ class MultiLeaderCommand : public Command {
     if (stage_ != 2) return;
     const ON_Plane pl = ActivePlane(ctx);
     const double h = AnnotationTextHeight(ctx);
-    const std::string style = ctx.Settings().annotation_style;
-    const int layer = DimensionLayer(ctx);
-    std::vector<kernel::NurbsCurve> curves;
-    for (const Point3d& pt : pts_) curves.push_back(PolylineCurve({pt, landing_}));
-    for (const Point3d& pt : pts_) AddArrowLocal(curves, pt, pt - landing_, h * 0.6, pl);
-    ctx.Doc().BeginChange("MultiLeader");
-    std::vector<ObjectId> ids;
-    for (const kernel::NurbsCurve& c : curves) {
-      SceneObject s = SceneObject::MakeCurve(c);
-      s.layer_index = layer;
-      TagAnnotation(s, "MultiLeader", style);
-      s.user_text["MLeaderPoints"] = PointsTag(pts_);
-      ids.push_back(ctx.Doc().Add(std::move(s)));
+    int nassoc = 0;
+    for (const Point3d& pt : pts_) {
+      ObjectId ref;
+      std::string which;
+      if (FindPointAnchor(ctx.Doc(), pt, ref, which)) ++nassoc;
     }
-    GlyphSpec g;
-    g.text = t;
-    g.height = h;
-    g.plane = pl;
-    g.plane.SetOrigin(landing_ + pl.xaxis * (h * 0.3));
-    for (ObjectId id : AddGlyphCurves(ctx, g, layer, -1, {{"Annotation", "MultiLeader"}, {"Style", style}})) ids.push_back(id);
-    ctx.Doc().CreateGroup(ids, "MultiLeader");
-    ctx.Print("MultiLeader: " + std::to_string(pts_.size()) + " arrow(s), \"" + t + "\"");
+    ctx.Doc().BeginChange("MultiLeader");
+    BuildMultiLeaderGroup(ctx, pts_, landing_, pl, h, t);
+    ctx.Print("MultiLeader: " + std::to_string(pts_.size()) + " arrow(s), \"" + t + "\"" +
+              (nassoc ? " (associative to " + std::to_string(nassoc) + " point(s))" : ""));
     Finish();
   }
   int stage_ = 0;
@@ -1420,7 +1504,36 @@ void RegisterDrafting2Commands(CommandEngine& e) {
   Reg(e, "WeldSymbol", Make<WeldSymbolCommand>(), CommandStatus::Implemented,
       "Draws the reference line, arrow and a Type-selected glyph (Fillet triangle, square-Groove bars, or Spot circle); the rest of the AWS A2.4 symbol set (bevel/V/U-groove, plug, seam, back, surfacing, ...) is not drawn.");
   Reg(e, "MultiLeader", Make<MultiLeaderCommand>(), CommandStatus::Implemented,
-      "Draws several arrows converging on one landing with the shared text, correctly - but the text is baked glyph geometry like every other annotation here, not something double-click-editable in place the way TextProperties edits a live text field.");
+      "Draws several arrows converging on one landing with the shared text; the text is still baked glyph geometry, not something double-click-editable in place the way TextProperties edits a live text field, but each arrow whose point sits exactly on a real object (same FindPointAnchor coincidence rule as Leader - annotate_common.h) is associative: UpdateMultiLeaders re-evaluates that object's current position and redraws just that arrow, keeping the shared landing point and text fixed. An arrow point that isn't on any object stays a static baked arrow, same as before this change.");
+  Reg(e, "UpdateMultiLeaders", Immediate([](CommandContext& ctx) {
+        std::vector<int> groups;
+        for (const SceneObject& o : ctx.Doc().Objects())
+          if (o.group_id >= 0 && o.user_text.count("Annotation") && o.user_text.at("Annotation") == "MultiLeader" &&
+              std::find(groups.begin(), groups.end(), o.group_id) == groups.end())
+            groups.push_back(o.group_id);
+        if (groups.empty()) { ctx.Print("UpdateMultiLeaders: no multi-leaders in this document"); return; }
+        ctx.Doc().BeginChange("UpdateMultiLeaders");
+        int updated = 0, skipped = 0;
+        for (int g : groups) {
+          std::vector<Point3d> pts;
+          Point3d landing;
+          if (!ResolveMultiLeaderPoints(ctx.Doc(), g, pts, landing)) { ++skipped; continue; }
+          GlyphSpec old_glyph;
+          std::string text = "MultiLeader";
+          ON_Plane pl = ActivePlane(ctx);
+          double h = AnnotationTextHeight(ctx);
+          if (GroupGlyphSpec(ctx, g, old_glyph)) { text = old_glyph.text; h = old_glyph.height; pl = old_glyph.plane; }
+          int layer = ctx.Doc().CurrentLayer();
+          for (const SceneObject& o : ctx.Doc().Objects()) { if (o.group_id == g) { layer = o.layer_index; break; } }
+          for (ObjectId id : ctx.Doc().GroupMembers(g)) ctx.Doc().Remove(id);
+          if (BuildMultiLeaderGroup(ctx, pts, landing, pl, h, text, layer) >= 0) {
+            ++updated;
+            ctx.Print("UpdateMultiLeaders:   now " + std::to_string(pts.size()) + " arrow(s) at landing " + PointTag(landing));
+          } else ++skipped;
+        }
+        ctx.Print("UpdateMultiLeaders: " + std::to_string(updated) + " multi-leader(s) regenerated" + (skipped ? ", " + std::to_string(skipped) + " skipped (no resolvable layout/points)" : ""));
+      }), CommandStatus::Implemented,
+      "Re-evaluates every MultiLeader's per-arrow anchors and rebuilds the arrows/landing/text from their current positions, replacing the old baked geometry in place - the associative counterpart to MultiLeader's static bake, following the same explicit-recompute shape as UpdateDimensions (cmd_annotate.cpp) and UpdateSectionViews/UpdateBillOfMaterials below rather than an automatic hook on every document edit.");
   Reg(e, "DimTolerance", Make<DimToleranceCommand>(), CommandStatus::Implemented,
       "Appends the tolerance to the dimension's baked text and rebuilds the glyph (idempotent - re-running replaces the suffix rather than compounding it), but like every Dim* command the dimension is baked curve geometry, not a live object, so it still doesn't update if the measured geometry moves.");
 

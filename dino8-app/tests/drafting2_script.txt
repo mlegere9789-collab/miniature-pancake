@@ -140,18 +140,42 @@ DimAngle
 SelName AngleDir2
 Move 500,510,0 510,510,0
 UpdateDimensions
+# --- Associative MultiLeader: arrow 1's point coincides with a real Point
+# object (FindPointAnchor, same coincidence rule Leader/DimLinear use);
+# arrow 2's point doesn't. Moving the anchored point and running
+# UpdateMultiLeaders must drag just that one arrow to the point's *current*
+# position - not the (700,0,0) baked at creation - while the free arrow and
+# the shared landing point stay exactly where they were built.
+SelNone
+Point 700,0,0
+SelLast
+SetObjectName MLeaderAnchor
+SelNone
+MultiLeader
+700,0,0
+710,10,0
+Enter
+720,5,0
+AssocNote
+SelName MLeaderAnchor
+Move 700,0,0 705,0,0
+UpdateMultiLeaders
+SelAll
+GetUserText
 SelNone
 Save @TMP@/drafting2.3dm
 New
 Open @TMP@/drafting2.3dm
-# Prove associative-dimension references (DimRefObj1/2/3, group_id - see
-# cmd_annotate.cpp/File3dm.cpp) actually survive a .3dm round trip: rerunning
-# UpdateDimensions here must find the same associative dimensions and
-# reproduce the exact same measured values as the pre-save run above, not
-# report "no associative dimensions" (which is what happens if the group_id/
-# object-id references didn't come back resolvable).
+# Prove associative-dimension/multi-leader references (DimRefObj1/2/3,
+# group_id - see cmd_annotate.cpp/cmd_drafting2.cpp/File3dm.cpp) actually
+# survive a .3dm round trip: rerunning UpdateDimensions/UpdateMultiLeaders
+# here must find the same associative annotations and reproduce the exact
+# same measured values as the pre-save runs above, not report "no
+# associative dimensions"/"no multi-leaders" (what happens if the
+# group_id/object-id references didn't come back resolvable).
 SelNone
 UpdateDimensions
+UpdateMultiLeaders
 # --- SectionView iterator-invalidation regression: BuildSectionGroup used
 # to slice-and-Add() in a single pass over Document::Objects() itself, so
 # Add()'s vector reallocation could invalidate that very loop's own
