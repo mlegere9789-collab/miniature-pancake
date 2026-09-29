@@ -146,6 +146,44 @@ class PointCloud {
   // column that fails to parse as a real number.
   static Result LoadXyz(const std::string& path, PointCloud& out_cloud);
 
+  // Writes this cloud to a plain-text .pts point-cloud file - the common
+  // laser-scan/point-cloud interchange format (Leica Cyclone, CloudCompare,
+  // ...) PARITY_MAP.md's own "Point-cloud/scan formats" evidence names as
+  // still entirely missing from this kernel (only SaveXyz/LoadXyz's own
+  // ASCII XYZ existed before this). Unlike XYZ, a .pts file opens with a
+  // single header line giving the exact point count, then one point per
+  // line: "x y z" if this cloud has no colors, or "x y z r g b" (R/G/B as
+  // 0-255 integers) if it does. Scoped down from the fuller Leica Cyclone
+  // .pts convention some tools write, which also carries a 4th per-point
+  // "intensity" column before R/G/B: this class has no per-point intensity
+  // channel to source that column from (only position/color/normal - see
+  // this class' own top-of-file scope note), so inventing one would be
+  // fabricating data no caller ever supplied, the same reasoning SaveXyz()
+  // already gives for leaving color out of ITS OWN format entirely.
+  // Normals are also not written: unlike position and color, the real .pts
+  // format has no normal column in any variant, so there is no convention
+  // to follow here, honest or otherwise. Returns Result::Failed if the
+  // file can't be opened for writing.
+  Result SavePts(const std::string& path) const;
+
+  // Reads a plain-text .pts point-cloud file written by SavePts() (or a
+  // compatible tool writing the same 3-or-6-column, no-intensity
+  // convention documented on SavePts() above): the first non-blank line
+  // must be a single positive integer point count; every following
+  // non-blank line must carry exactly 3 (position) or exactly 6 (position
+  // then R/G/B, each an integer in [0, 255]) whitespace-separated values,
+  // matching LoadXyz()'s own "one shared column count for the whole file,
+  // never mixed" rule. Unlike LoadXyz(), the header count is itself
+  // checked: a file whose actual point-line count doesn't match what its
+  // own header declared - truncated by a failed write, or hand-edited - is
+  // Result::Failed rather than silently loaded with however many lines
+  // happened to be there. Returns Result::Failed - leaving `out_cloud`
+  // untouched - on a missing/non-positive/non-integer header count, a
+  // point-line count mismatch, a column count other than 3/6, a column
+  // count that disagrees with an earlier line's, an out-of-range or
+  // non-integer R/G/B value, or a column that fails to parse as a number.
+  static Result LoadPts(const std::string& path, PointCloud& out_cloud);
+
   const ON_PointCloud& raw() const { return cloud_; }
   ON_PointCloud& raw() { return cloud_; }
 

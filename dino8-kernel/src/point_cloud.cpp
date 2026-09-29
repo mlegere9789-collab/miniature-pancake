@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
@@ -126,6 +127,83 @@ Result PointCloud::LoadXyz(const std::string& path, PointCloud& out_cloud) {
     for (const auto& n : normals) normal_vectors.push_back(Vector3d(n[0], n[1], n[2]));
     cloud.SetNormals(normal_vectors);
   }
+  out_cloud = std::move(cloud);
+  return Result::Ok;
+}
+
+namespace {
+// Shared by LoadPts()'s header-count and per-point R/G/B parsing - both
+// must be whole numbers (a point count and a 0-255 color channel are never
+// fractional), so a value like "3.5" is a parse failure, not silently
+// truncated to 3.
+bool IsIntegerValued(double value) { return value == std::floor(value); }
+}  // namespace
+
+Result PointCloud::SavePts(const std::string& path) const {
+  std::ofstream out(path);
+  if (!out) return Result::Failed;
+  out.precision(17);
+  const bool has_colors = HasColors();
+  out << PointCount() << '\n';
+  for (int i = 0; i < PointCount(); ++i) {
+    const Point3d p = PointAt(i);
+    out << p.x << ' ' << p.y << ' ' << p.z;
+    if (has_colors) {
+      const ON_Color c = ColorAt(i);
+      out << ' ' << c.Red() << ' ' << c.Green() << ' ' << c.Blue();
+    }
+    out << '\n';
+  }
+  out.flush();
+  return out.good() ? Result::Ok : Result::Failed;
+}
+
+Result PointCloud::LoadPts(const std::string& path, PointCloud& out_cloud) {
+  std::ifstream in(path);
+  if (!in) return Result::Failed;
+
+  std::string line;
+  long long declared_count = -1;
+  while (std::getline(in, line)) {
+    std::istringstream header(line);
+    double value = 0;
+    if (!(header >> value)) continue;  // blank/whitespace-only line
+    if (!header.eof() || !IsIntegerValued(value) || value <= 0) return Result::Failed;
+    declared_count = static_cast<long long>(value);
+    break;
+  }
+  if (declared_count < 0) return Result::Failed;  // no header line found at all
+
+  std::vector<std::array<double, 3>> positions;
+  std::vector<ON_Color> colors;
+  int line_width = -1;  // fixed to 3 or 6 by the first non-blank point line
+  while (std::getline(in, line)) {
+    std::istringstream iss(line);
+    std::vector<double> values;
+    double value = 0;
+    while (iss >> value) values.push_back(value);
+    if (values.empty()) continue;  // blank/whitespace-only line
+    if (!iss.eof()) return Result::Failed;  // stopped on a non-numeric token, not real EOF
+    if (values.size() != 3 && values.size() != 6) return Result::Failed;
+    if (line_width < 0) {
+      line_width = static_cast<int>(values.size());
+    } else if (line_width != static_cast<int>(values.size())) {
+      return Result::Failed;  // mixed 3-/6-column lines in one file: genuinely ambiguous
+    }
+    positions.push_back({values[0], values[1], values[2]});
+    if (values.size() == 6) {
+      for (int k = 3; k < 6; ++k) {
+        if (!IsIntegerValued(values[k]) || values[k] < 0 || values[k] > 255) return Result::Failed;
+      }
+      colors.push_back(ON_Color(static_cast<int>(values[3]), static_cast<int>(values[4]),
+                                 static_cast<int>(values[5])));
+    }
+  }
+  if (static_cast<long long>(positions.size()) != declared_count) return Result::Failed;
+
+  PointCloud cloud;
+  for (const auto& p : positions) cloud.AppendPoint(Point3d(p[0], p[1], p[2]));
+  if (!colors.empty()) cloud.SetColors(colors);
   out_cloud = std::move(cloud);
   return Result::Ok;
 }

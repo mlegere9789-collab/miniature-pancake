@@ -12924,6 +12924,167 @@ void TestPointCloudLoadXyzRejectsMalformedInput() {
   }
 }
 
+// SavePts()/LoadPts() close PARITY_MAP.md's "Point-cloud/scan formats"
+// gap (".pts/.e57/.las" all named missing before this): the common
+// laser-scan .pts interchange format, distinguished from SaveXyz()'s own
+// plain XYZ by a leading point-count header line and by carrying color
+// (RGB) instead of normals in its optional extra columns. Round-trips
+// positions alone, then positions+colors together (SavePts()'s "3 or 6
+// columns" convention, color instead of XYZ's own normal), checking exact
+// values survive, not just point count.
+void TestPointCloudPtsRoundTrips() {
+  using dino8::kernel::Point3d;
+  using dino8::kernel::PointCloud;
+  using dino8::kernel::Result;
+
+  // Positions only.
+  {
+    PointCloud cloud;
+    cloud.AppendPoint(Point3d(0, 0, 0));
+    cloud.AppendPoint(Point3d(1.5, -2.25, 3.125));
+    cloud.AppendPoint(Point3d(-10, 20, -30));
+    Check(!cloud.HasColors(), "fixture: cloud has no colors");
+
+    const std::string path = "dino8_kernel_point_cloud_pts_positions_test.pts";
+    Check(cloud.SavePts(path) == Result::Ok, "SavePts() succeeds for a positions-only cloud");
+
+    PointCloud loaded;
+    Check(PointCloud::LoadPts(path, loaded) == Result::Ok, "LoadPts() succeeds");
+    Check(loaded.PointCount() == cloud.PointCount(), "loaded point count matches (3)");
+    Check(!loaded.HasColors(), "loaded cloud has no colors - the file had no color columns");
+    for (int i = 0; i < cloud.PointCount(); ++i) {
+      Check(loaded.PointAt(i).DistanceTo(cloud.PointAt(i)) < 1e-9,
+            "round-tripped position matches exactly");
+    }
+    std::remove(path.c_str());
+  }
+
+  // Positions + colors.
+  {
+    PointCloud cloud;
+    cloud.AppendPoint(Point3d(0, 0, 0));
+    cloud.AppendPoint(Point3d(1, 2, 3));
+    cloud.SetColors({ON_Color(255, 0, 0), ON_Color(10, 200, 30)});
+    Check(cloud.HasColors(), "fixture: cloud has colors");
+
+    const std::string path = "dino8_kernel_point_cloud_pts_colors_test.pts";
+    Check(cloud.SavePts(path) == Result::Ok, "SavePts() succeeds for a cloud with colors");
+
+    PointCloud loaded;
+    Check(PointCloud::LoadPts(path, loaded) == Result::Ok, "LoadPts() succeeds");
+    Check(loaded.HasColors(), "loaded cloud has colors - the file had 6-column lines");
+    for (int i = 0; i < cloud.PointCount(); ++i) {
+      Check(loaded.PointAt(i).DistanceTo(cloud.PointAt(i)) < 1e-9,
+            "round-tripped position with colors present still matches exactly");
+      Check(loaded.ColorAt(i) == cloud.ColorAt(i), "round-tripped color matches exactly");
+    }
+    std::remove(path.c_str());
+  }
+}
+
+// Malformed/ambiguous input is rejected outright (Result::Failed), never
+// silently misread as something plausible-looking - the same rigor
+// TestPointCloudLoadXyzRejectsMalformedInput() applies to LoadXyz(), plus
+// the header-count check that's unique to .pts (XYZ has no header at all).
+void TestPointCloudLoadPtsRejectsMalformedInput() {
+  using dino8::kernel::PointCloud;
+  using dino8::kernel::Result;
+
+  auto write_file = [](const std::string& path, const std::string& contents) {
+    std::ofstream out(path);
+    out << contents;
+  };
+
+  {
+    PointCloud loaded;
+    Check(PointCloud::LoadPts("dino8_kernel_point_cloud_pts_nonexistent.pts", loaded) == Result::Failed,
+          "LoadPts() fails on a file that doesn't exist");
+  }
+
+  // No header line at all (only point lines) - the header is mandatory.
+  {
+    const std::string path = "dino8_kernel_point_cloud_pts_no_header_test.pts";
+    write_file(path, "0 0 0\n1 2 3\n");
+    PointCloud loaded;
+    Check(PointCloud::LoadPts(path, loaded) == Result::Failed,
+          "LoadPts() fails on a file with no header line (first line isn't a lone integer count)");
+    std::remove(path.c_str());
+  }
+
+  // Header count doesn't match the actual number of point lines - the
+  // check LoadXyz() has no header to perform at all.
+  {
+    const std::string path = "dino8_kernel_point_cloud_pts_count_mismatch_test.pts";
+    write_file(path, "3\n0 0 0\n1 2 3\n");
+    PointCloud loaded;
+    Check(PointCloud::LoadPts(path, loaded) == Result::Failed,
+          "LoadPts() fails when the header count (3) doesn't match the actual point-line count (2)");
+    std::remove(path.c_str());
+  }
+
+  // Mixing a 3-column line and a 6-column line in one file is genuinely
+  // ambiguous - rejected rather than guessed at, same as LoadXyz().
+  {
+    const std::string path = "dino8_kernel_point_cloud_pts_mixed_width_test.pts";
+    write_file(path, "2\n0 0 0\n1 2 3 255 0 0\n");
+    PointCloud loaded;
+    Check(PointCloud::LoadPts(path, loaded) == Result::Failed,
+          "LoadPts() fails on a file mixing 3- and 6-column point lines");
+    std::remove(path.c_str());
+  }
+
+  // An R/G/B value outside [0, 255].
+  {
+    const std::string path = "dino8_kernel_point_cloud_pts_bad_color_range_test.pts";
+    write_file(path, "1\n0 0 0 256 0 0\n");
+    PointCloud loaded;
+    Check(PointCloud::LoadPts(path, loaded) == Result::Failed,
+          "LoadPts() fails on an R/G/B value above 255");
+    std::remove(path.c_str());
+  }
+
+  // A non-integer R/G/B value.
+  {
+    const std::string path = "dino8_kernel_point_cloud_pts_fractional_color_test.pts";
+    write_file(path, "1\n0 0 0 1.5 0 0\n");
+    PointCloud loaded;
+    Check(PointCloud::LoadPts(path, loaded) == Result::Failed,
+          "LoadPts() fails on a fractional R/G/B value");
+    std::remove(path.c_str());
+  }
+
+  // A non-numeric token in a point line.
+  {
+    const std::string path = "dino8_kernel_point_cloud_pts_garbage_test.pts";
+    write_file(path, "1\n0 0 zzz\n");
+    PointCloud loaded;
+    Check(PointCloud::LoadPts(path, loaded) == Result::Failed,
+          "LoadPts() fails on a line with a non-numeric token");
+    std::remove(path.c_str());
+  }
+
+  // A non-positive header count.
+  {
+    const std::string path = "dino8_kernel_point_cloud_pts_zero_header_test.pts";
+    write_file(path, "0\n");
+    PointCloud loaded;
+    Check(PointCloud::LoadPts(path, loaded) == Result::Failed,
+          "LoadPts() fails on a header count of 0");
+    std::remove(path.c_str());
+  }
+
+  // Control: a well-formed file still loads fine after all those
+  // rejections, proving the checks above aren't rejecting everything.
+  {
+    const std::string path = "dino8_kernel_point_cloud_pts_control_test.pts";
+    write_file(path, "2\n1 2 3\n4 5 6\n");
+    PointCloud loaded;
+    Check(PointCloud::LoadPts(path, loaded) == Result::Ok, "control: a well-formed file loads fine");
+    Check(loaded.PointCount() == 2, "control: loaded the expected 2 points");
+    std::remove(path.c_str());
+  }
+}
+
 void TestMeshAreaCountsBothQuadTriangles() {
   using dino8::kernel::Mesh;
 
@@ -41934,6 +42095,8 @@ int main() {
   TestPointCloudSpatialQueries();
   TestPointCloudXyzRoundTrips();
   TestPointCloudLoadXyzRejectsMalformedInput();
+  TestPointCloudPtsRoundTrips();
+  TestPointCloudLoadPtsRejectsMalformedInput();
   TestMeshAreaCountsBothQuadTriangles();
   TestSubDFromBoxSubdividesToExactCatmullClarkCounts();
   TestSubDFromControlMeshRejectsEmptyMesh();
