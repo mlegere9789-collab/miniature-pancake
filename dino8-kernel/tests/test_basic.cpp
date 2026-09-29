@@ -17769,6 +17769,159 @@ void TestMeshLoadOffFanTriangulatesNgonFaces() {
   std::remove(hexagon_path.c_str());
 }
 
+void TestMeshSaveAmfRoundTrips() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Result;
+
+  // Same MakeQuadBoxMesh fixture SaveObj()'s/SaveOff()'s own round-trip
+  // tests use: 8 vertices, 6 quad faces, known exact volume. Unlike STL
+  // (no shared vertex list at all), AMF keeps a real shared <vertices>
+  // list, so a quad's 2 triangles reference the SAME 4 vertex entries
+  // rather than each carrying its own unshared 3 - the reloaded mesh's
+  // vertex count should stay 8, only its face count doubles (6 quads -> 12
+  // triangles, AMF's <volume> having no quad primitive of its own).
+  const auto box = MakeQuadBoxMesh(0, 0, 0, 2, 2, 2);
+  const std::string path = "dino8_kernel_mesh_amf_test.amf";
+  Check(box.SaveAmf(path) == Result::Ok, "Mesh::SaveAmf succeeds");
+
+  std::ifstream in(path);
+  Check(static_cast<bool>(in), "the .amf file SaveAmf wrote can be reopened for reading");
+  std::string file_text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  Check(file_text.find("<amf") != std::string::npos, "the file has an <amf> root element");
+  Check(file_text.find("<vertices>") != std::string::npos, "the file has a <vertices> element");
+  Check(file_text.find("<volume>") != std::string::npos, "the file has a <volume> element");
+
+  size_t triangle_count = 0;
+  for (size_t pos = file_text.find("<triangle>"); pos != std::string::npos;
+       pos = file_text.find("<triangle>", pos + 1)) {
+    ++triangle_count;
+  }
+  Check(triangle_count == 12,
+        "each of the 6 quad faces was split into exactly 2 <triangle> "
+        "entries (12 total), since AMF's <volume> has no quad primitive");
+
+  Mesh reloaded;
+  Check(Mesh::LoadAmf(path, reloaded) == Result::Ok, "Mesh::LoadAmf succeeds on SaveAmf()'s own output");
+  Check(reloaded.VertexCount() == box.VertexCount(),
+        "the reloaded mesh's vertex count matches the original exactly - "
+        "AMF's shared <vertices> list means the split triangles do NOT "
+        "duplicate vertices the way STL's unshared facets would");
+  Check(reloaded.FaceCount() == box.FaceCount() * 2,
+        "the reloaded mesh has 12 triangle faces (2 per original quad), "
+        "matching what SaveAmf() actually wrote");
+  Check(std::abs(reloaded.Volume() - box.Volume()) < 1e-6,
+        "the reloaded mesh's volume exactly matches the original despite "
+        "every quad face being split along a diagonal into 2 triangles");
+  std::remove(path.c_str());
+
+  // A hand-written file exercising attribute tolerance (`unit`/`id`
+  // attributes on <amf>/<object>) and arbitrary whitespace/indentation -
+  // a single triangle whose known area lets LoadAmf()'s geometry be
+  // checked exactly, not just its counts.
+  const std::string hand_written_path = "dino8_kernel_mesh_amf_test_hand_written.amf";
+  {
+    std::ofstream out(hand_written_path);
+    out << "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n";
+    out << "<amf unit=\"millimeter\" version=\"1.1\">\n";
+    out << "<object id=\"7\">\n<mesh>\n<vertices>\n";
+    out << "<vertex><coordinates><x>0</x><y>0</y><z>0</z></coordinates></vertex>\n";
+    out << "<vertex><coordinates>\n<x>  2  </x>\n<y>0</y><z>0</z>\n</coordinates></vertex>\n";
+    out << "<vertex><coordinates><x>0</x><y>2</y><z>0</z></coordinates></vertex>\n";
+    out << "</vertices>\n<volume>\n";
+    out << "<triangle><v1>0</v1><v2>1</v2><v3>2</v3></triangle>\n";
+    out << "</volume>\n</mesh>\n</object>\n</amf>\n";
+  }
+  Mesh hand_written;
+  Check(Mesh::LoadAmf(hand_written_path, hand_written) == Result::Ok,
+        "LoadAmf succeeds on a hand-written file with attributes on <amf>/"
+        "<object> and irregular whitespace around leaf values");
+  Check(hand_written.VertexCount() == 3 && hand_written.FaceCount() == 1,
+        "the hand-written file's 3 vertices and 1 triangle are read correctly");
+  const ON_MeshFace& tri = hand_written.raw().m_F[0];
+  Check(tri.vi[0] == 0 && tri.vi[1] == 1 && tri.vi[2] == 2,
+        "AMF's 0-based triangle indices resolved directly to the same "
+        "0-based corners");
+  Check(std::abs(hand_written.raw().m_V[1].x - 2.0) < 1e-9,
+        "the whitespace-padded '  2  ' <x> value parsed to exactly 2.0, "
+        "not rejected for its surrounding indentation");
+  std::remove(hand_written_path.c_str());
+}
+
+void TestMeshLoadAmfRejectsMalformedFiles() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Result;
+
+  const std::string missing_path = "dino8_kernel_mesh_amf_test_does_not_exist.amf";
+  Mesh out;
+  Check(Mesh::LoadAmf(missing_path, out) == Result::Failed, "LoadAmf fails on a file that doesn't exist");
+
+  const std::string no_vertices_path = "dino8_kernel_mesh_amf_test_no_vertices.amf";
+  {
+    std::ofstream bad(no_vertices_path);
+    bad << "<amf><object><mesh><volume>"
+        << "<triangle><v1>0</v1><v2>1</v2><v3>2</v3></triangle>"
+        << "</volume></mesh></object></amf>";
+  }
+  Check(Mesh::LoadAmf(no_vertices_path, out) == Result::Failed,
+        "LoadAmf fails on a file with no <vertices> element at all");
+
+  const std::string no_volume_path = "dino8_kernel_mesh_amf_test_no_volume.amf";
+  {
+    std::ofstream bad(no_volume_path);
+    bad << "<amf><object><mesh><vertices>"
+        << "<vertex><coordinates><x>0</x><y>0</y><z>0</z></coordinates></vertex>"
+        << "</vertices></mesh></object></amf>";
+  }
+  Check(Mesh::LoadAmf(no_volume_path, out) == Result::Failed,
+        "LoadAmf fails on a file with no <volume> element at all");
+
+  const std::string bad_coordinate_path = "dino8_kernel_mesh_amf_test_bad_coordinate.amf";
+  {
+    std::ofstream bad(bad_coordinate_path);
+    // "abc" is not a valid number for <x>.
+    bad << "<amf><object><mesh><vertices>"
+        << "<vertex><coordinates><x>abc</x><y>0</y><z>0</z></coordinates></vertex>"
+        << "</vertices><volume></volume></mesh></object></amf>";
+  }
+  Check(Mesh::LoadAmf(bad_coordinate_path, out) == Result::Failed,
+        "LoadAmf fails on a <x> value that doesn't parse as a number");
+
+  const std::string missing_v3_path = "dino8_kernel_mesh_amf_test_missing_v3.amf";
+  {
+    std::ofstream bad(missing_v3_path);
+    bad << "<amf><object><mesh><vertices>"
+        << "<vertex><coordinates><x>0</x><y>0</y><z>0</z></coordinates></vertex>"
+        << "<vertex><coordinates><x>1</x><y>0</y><z>0</z></coordinates></vertex>"
+        << "<vertex><coordinates><x>0</x><y>1</y><z>0</z></coordinates></vertex>"
+        << "</vertices><volume>"
+        << "<triangle><v1>0</v1><v2>1</v2></triangle>"
+        << "</volume></mesh></object></amf>";
+  }
+  Check(Mesh::LoadAmf(missing_v3_path, out) == Result::Failed,
+        "LoadAmf fails on a <triangle> missing its <v3> index");
+
+  const std::string oob_index_path = "dino8_kernel_mesh_amf_test_oob_index.amf";
+  {
+    std::ofstream bad(oob_index_path);
+    // Only 3 vertices declared (indices 0-2); index 3 doesn't exist.
+    bad << "<amf><object><mesh><vertices>"
+        << "<vertex><coordinates><x>0</x><y>0</y><z>0</z></coordinates></vertex>"
+        << "<vertex><coordinates><x>1</x><y>0</y><z>0</z></coordinates></vertex>"
+        << "<vertex><coordinates><x>0</x><y>1</y><z>0</z></coordinates></vertex>"
+        << "</vertices><volume>"
+        << "<triangle><v1>0</v1><v2>1</v2><v3>3</v3></triangle>"
+        << "</volume></mesh></object></amf>";
+  }
+  Check(Mesh::LoadAmf(oob_index_path, out) == Result::Failed,
+        "LoadAmf fails on a triangle referencing a vertex index that doesn't exist");
+
+  std::remove(no_vertices_path.c_str());
+  std::remove(no_volume_path.c_str());
+  std::remove(bad_coordinate_path.c_str());
+  std::remove(missing_v3_path.c_str());
+  std::remove(oob_index_path.c_str());
+}
+
 void TestMeshSaveStlSplitsQuadsAndComputesNormals() {
   using dino8::kernel::Result;
 
@@ -44656,6 +44809,8 @@ int main() {
   TestMeshSaveOffRoundTrips();
   TestMeshLoadOffRejectsMalformedFiles();
   TestMeshLoadOffFanTriangulatesNgonFaces();
+  TestMeshSaveAmfRoundTrips();
+  TestMeshLoadAmfRejectsMalformedFiles();
   TestMeshSaveStlSplitsQuadsAndComputesNormals();
   TestMeshLoadStlRoundTrips();
   TestMeshLoadStlBinary();

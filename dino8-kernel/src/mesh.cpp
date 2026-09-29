@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -1968,6 +1969,201 @@ Result Mesh::LoadOff(const std::string& path, Mesh& out_mesh) {
         face.vi[3] = face.vi[2];
         raw.m_F.Append(face);
       }
+    }
+  }
+
+  out_mesh = std::move(result);
+  return Result::Ok;
+}
+
+namespace {
+
+// Trims leading/trailing ASCII whitespace - used when pulling a leaf
+// value's text out of an AMF file, since the text between e.g. `<x>` and
+// `</x>` commonly carries surrounding newlines/indentation that must not
+// be fed to ParseOffDouble()/ParseOffInt() above (which require the WHOLE
+// string to be the number, no surrounding slack).
+std::string TrimAmfWhitespace(const std::string& s) {
+  size_t begin = 0;
+  while (begin < s.size() && std::isspace(static_cast<unsigned char>(s[begin]))) ++begin;
+  size_t end = s.size();
+  while (end > begin && std::isspace(static_cast<unsigned char>(s[end - 1]))) --end;
+  return s.substr(begin, end - begin);
+}
+
+// Finds the next opening tag named exactly `tag_name` (e.g. "vertex") at
+// or after `from`, tolerating attributes and both `<tag>`/`<tag/>` forms -
+// but NOT a longer tag name that merely starts with the same characters
+// (e.g. searching for "vertex" must not match "vertices"): the character
+// immediately following the name must be '>', '/', or whitespace.
+size_t FindAmfOpenTag(const std::string& text, const std::string& tag_name, size_t from) {
+  const std::string needle = "<" + tag_name;
+  size_t pos = from;
+  while (true) {
+    pos = text.find(needle, pos);
+    if (pos == std::string::npos) return std::string::npos;
+    size_t after = pos + needle.size();
+    if (after < text.size()) {
+      char c = text[after];
+      if (c == '>' || c == '/' || std::isspace(static_cast<unsigned char>(c))) {
+        return pos;
+      }
+    }
+    pos = after;
+  }
+}
+
+// Extracts the content between an AMF element's own open and close tags -
+// `<tag_name ...>CONTENT</tag_name>` - searching for the open tag at or
+// after `from`. On success, `content` gets everything between the '>' of
+// the open tag and the start of the matching `</tag_name>`, and
+// `next_from` is set just past that close tag, so a caller can keep
+// scanning for a further sibling of the same name (e.g. a second
+// `<vertex>`). A self-closing `<tag_name/>` yields an empty `content`.
+// Returns false if no (further) open tag of this name exists, or an open
+// tag is never closed (`>` missing, or the matching close tag never
+// appears).
+bool ExtractAmfElement(const std::string& text, const std::string& tag_name, size_t from,
+                        std::string& content, size_t& next_from) {
+  size_t open = FindAmfOpenTag(text, tag_name, from);
+  if (open == std::string::npos) return false;
+  size_t gt = text.find('>', open);
+  if (gt == std::string::npos) return false;
+  if (gt > open && text[gt - 1] == '/') {
+    content.clear();
+    next_from = gt + 1;
+    return true;
+  }
+  const std::string close_tag = "</" + tag_name + ">";
+  size_t close = text.find(close_tag, gt + 1);
+  if (close == std::string::npos) return false;
+  content = text.substr(gt + 1, close - gt - 1);
+  next_from = close + close_tag.size();
+  return true;
+}
+
+// Extracts a leaf element's own trimmed text content (e.g. the "1.5" in
+// "  <x>1.5</x>  ") from within `scope` - a narrower substring the caller
+// has already isolated (one `<coordinates>`'s content, or one
+// `<triangle>`'s content), so the first match found within it IS the
+// right one, not a same-named sibling belonging to a different
+// vertex/triangle.
+bool ExtractAmfLeafText(const std::string& scope, const std::string& tag_name, std::string& out_text) {
+  std::string content;
+  size_t next_from = 0;
+  if (!ExtractAmfElement(scope, tag_name, 0, content, next_from)) return false;
+  out_text = TrimAmfWhitespace(content);
+  return true;
+}
+
+}  // namespace
+
+Result Mesh::SaveAmf(const std::string& path) const {
+  std::ofstream out(path);
+  if (!out) {
+    return Result::Failed;
+  }
+
+  out << "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n";
+  out << "<amf unit=\"millimeter\">\n";
+  out << " <object id=\"0\">\n";
+  out << "  <mesh>\n";
+  out << "   <vertices>\n";
+  for (int i = 0; i < mesh_.m_V.Count(); ++i) {
+    const ON_3fPoint& v = mesh_.m_V[i];
+    out << "    <vertex>\n";
+    out << "     <coordinates>\n";
+    out << "      <x>" << v.x << "</x>\n";
+    out << "      <y>" << v.y << "</y>\n";
+    out << "      <z>" << v.z << "</z>\n";
+    out << "     </coordinates>\n";
+    out << "    </vertex>\n";
+  }
+  out << "   </vertices>\n";
+  out << "   <volume>\n";
+  for (int i = 0; i < mesh_.m_F.Count(); ++i) {
+    const ON_MeshFace& f = mesh_.m_F[i];
+    out << "    <triangle><v1>" << f.vi[0] << "</v1><v2>" << f.vi[1] << "</v2><v3>" << f.vi[2]
+        << "</v3></triangle>\n";
+    if (f.IsQuad()) {
+      // AMF's <volume> is triangle-only - split the quad's second
+      // triangle out, the same accommodation SaveStl() already makes.
+      out << "    <triangle><v1>" << f.vi[0] << "</v1><v2>" << f.vi[2] << "</v2><v3>" << f.vi[3]
+          << "</v3></triangle>\n";
+    }
+  }
+  out << "   </volume>\n";
+  out << "  </mesh>\n";
+  out << " </object>\n";
+  out << "</amf>\n";
+
+  return out.good() ? Result::Ok : Result::Failed;
+}
+
+Result Mesh::LoadAmf(const std::string& path, Mesh& out_mesh) {
+  std::ifstream in(path, std::ios::binary);
+  if (!in) {
+    return Result::Failed;
+  }
+  std::ostringstream buffer;
+  buffer << in.rdbuf();
+  const std::string text = buffer.str();
+
+  std::string vertices_content;
+  size_t after_vertices = 0;
+  if (!ExtractAmfElement(text, "vertices", 0, vertices_content, after_vertices)) {
+    return Result::Failed;
+  }
+
+  Mesh result;
+  ON_Mesh& raw = result.mesh_;
+
+  {
+    size_t pos = 0;
+    std::string vertex_content;
+    size_t next = 0;
+    while (ExtractAmfElement(vertices_content, "vertex", pos, vertex_content, next)) {
+      std::string coords_content;
+      size_t coords_next = 0;
+      if (!ExtractAmfElement(vertex_content, "coordinates", 0, coords_content, coords_next)) {
+        return Result::Failed;
+      }
+      std::string x_text, y_text, z_text;
+      double x = 0, y = 0, z = 0;
+      if (!ExtractAmfLeafText(coords_content, "x", x_text) || !ParseOffDouble(x_text, x)) return Result::Failed;
+      if (!ExtractAmfLeafText(coords_content, "y", y_text) || !ParseOffDouble(y_text, y)) return Result::Failed;
+      if (!ExtractAmfLeafText(coords_content, "z", z_text) || !ParseOffDouble(z_text, z)) return Result::Failed;
+      raw.m_V.Append(ON_3fPoint(x, y, z));
+      pos = next;
+    }
+  }
+
+  std::string volume_content;
+  size_t after_volume = 0;
+  if (!ExtractAmfElement(text, "volume", 0, volume_content, after_volume)) {
+    return Result::Failed;
+  }
+
+  {
+    size_t pos = 0;
+    std::string triangle_content;
+    size_t next = 0;
+    while (ExtractAmfElement(volume_content, "triangle", pos, triangle_content, next)) {
+      std::string v1_text, v2_text, v3_text;
+      int v1 = 0, v2 = 0, v3 = 0;
+      if (!ExtractAmfLeafText(triangle_content, "v1", v1_text) || !ParseOffInt(v1_text, v1)) return Result::Failed;
+      if (!ExtractAmfLeafText(triangle_content, "v2", v2_text) || !ParseOffInt(v2_text, v2)) return Result::Failed;
+      if (!ExtractAmfLeafText(triangle_content, "v3", v3_text) || !ParseOffInt(v3_text, v3)) return Result::Failed;
+      if (v1 < 0 || v1 >= raw.m_V.Count() || v2 < 0 || v2 >= raw.m_V.Count() || v3 < 0 || v3 >= raw.m_V.Count()) {
+        return Result::Failed;
+      }
+      ON_MeshFace face;
+      face.vi[0] = v1;
+      face.vi[1] = v2;
+      face.vi[2] = v3;
+      face.vi[3] = v3;
+      raw.m_F.Append(face);
+      pos = next;
     }
   }
 

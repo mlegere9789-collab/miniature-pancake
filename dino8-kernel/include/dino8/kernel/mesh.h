@@ -699,6 +699,53 @@ class Mesh {
   // partially filled and silently trusted.
   static Result LoadOff(const std::string& path, Mesh& out_mesh);
 
+  // Writes this mesh as a plain-XML Additive Manufacturing File Format
+  // (.amf, ISO/ASTM 52915) file - the fifth "other file format" here, and
+  // a genuine gap this kernel had zero AMF code for at all before this:
+  // one `<amf>` root holding a single `<object><mesh>`, a `<vertices>`
+  // list of `<vertex><coordinates><x>/<y>/<z></coordinates></vertex>`
+  // entries, and a `<volume>` list of `<triangle><v1>/<v2>/<v3></triangle>`
+  // entries with 0-based indices into the vertex list. AMF's own
+  // `<volume>` element is triangle-only (no quad/n-gon primitive the way
+  // OFF/PLY have) - a quad face (`ON_MeshFace::IsQuad()`) is split into
+  // its two triangles on write, the same accommodation `SaveStl()` already
+  // makes for the same reason. The spec's own compressed (.amf inside a
+  // zip) packaging, multiple `<object>`/`<volume>` elements, `<metadata>`,
+  // `<material>`, `<color>`, and `<texture>` are all out of scope - this
+  // only ever writes the single plain-XML structure described above, with
+  // a hardcoded `unit="millimeter"` (this kernel's Mesh carries no unit of
+  // its own to read one from). Returns Result::Failed if the file can't be
+  // opened for writing; does not validate the mesh's own geometry (an
+  // empty mesh writes a valid, empty `<volume>`).
+  Result SaveAmf(const std::string& path) const;
+
+  // Reads a plain-XML `.amf` file written by SaveAmf() (or any other
+  // reasonably well-formed single-object, single-mesh, uncompressed AMF
+  // file) into `out_mesh`. This is a deliberately narrow, hand-rolled scan
+  // for exactly the structure SaveAmf() writes - not a general XML parser
+  // - so it tolerates attributes on any element (e.g. `unit` on
+  // `<amf unit="millimeter">`, `id` on `<object>`) and arbitrary
+  // whitespace/formatting between tags, but reads only the first
+  // `<vertices>` element and the first `<volume>` element found anywhere
+  // in the file (in a well-formed single-object AMF, these are the only
+  // ones) - a second `<object>` or a second `<volume>` (AMF's own
+  // multi-material convention: several `<volume>` elements sharing one
+  // `<mesh>`'s vertex list) is silently ignored, not merged in or
+  // rejected. `<metadata>`, `<material>`, `<color>`, `<texture>`, and the
+  // compressed zip packaging are not understood at all - a compressed
+  // `.amf` (a zip archive, not plain text) fails to parse and returns
+  // Result::Failed the same as any other malformed file. Every
+  // `<triangle>` becomes one `ON_MeshFace` triangle (AMF has no native
+  // quad/n-gon primitive to fan-triangulate here the way
+  // LoadObj()/LoadOff() do for their own formats). Returns Result::Failed
+  // if the file can't be opened, no `<vertices>` or `<volume>` element is
+  // found, a `<vertex>`'s `<coordinates>` is missing an `<x>`/`<y>`/`<z>`
+  // value or one fails to parse as a number, a `<triangle>` is missing a
+  // `<v1>`/`<v2>`/`<v3>` value or one fails to parse as an integer, or any
+  // triangle index falls outside `[0, vertex_count)` - `out_mesh` is left
+  // unspecified in that case, not partially filled and silently trusted.
+  static Result LoadAmf(const std::string& path, Mesh& out_mesh);
+
   const ON_Mesh& raw() const { return mesh_; }
   ON_Mesh& raw() { return mesh_; }
 
