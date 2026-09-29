@@ -9802,6 +9802,7 @@ void TestBrepMakeEdgeKillRingAndKillEdgeMakeRingAreExactInverses() {
 // as a single bridged loop.
 void TestBrepRemoveHoleLoopRestoresSolidFaceExactly() {
   using dino8::kernel::Brep;
+  using dino8::kernel::FaceContainsUV;
   using dino8::kernel::Result;
 
   PlanarFaceWithHoleFixture fixture = BuildPlanarFaceWithHole();
@@ -9809,14 +9810,17 @@ void TestBrepRemoveHoleLoopRestoresSolidFaceExactly() {
   ON_Brep& b = brep.raw();
   const int face_index = fixture.face_index;
 
-  // Physical area before: the 4x4 outer square (16) minus the 2x2 hole
-  // (4) = 12, verified by tessellating the hand-built with-hole face
-  // (real ON_BrepLoop topology, the same kind ImprintFaces()/general-
-  // boolean results already tessellate correctly elsewhere).
-  const auto meshes_before = brep.Tessellate(20, 20);
-  double area_before = 0.0;
-  for (const auto& m : meshes_before) area_before += m.Area();
-  Check(std::abs(area_before - 12.0) < 1e-6, "setup: with-hole face's physical area is exactly 16 - 4 = 12");
+  // Exact point classification (FaceContainsUV walks this face's own real
+  // ON_BrepLoop topology directly - unlike Tessellate()'s grid-cell
+  // approximation, which only keeps a cell when ALL FOUR corners test
+  // inside, undercounting area near any boundary at any finite
+  // resolution): the hole's own centre (physical (2,2), uv (0.5,0.5)) is
+  // genuinely outside the face before removal, while a point in the
+  // surrounding material (physical (0.5,0.5), uv (0.2,0.2)) is inside.
+  Check(!FaceContainsUV(b.m_F[face_index], 0.5, 0.5),
+        "setup: the hole's own centre is genuinely outside the face before removal");
+  Check(FaceContainsUV(b.m_F[face_index], 0.2, 0.2),
+        "setup: a point in the surrounding material is inside the face before removal");
 
   const int v_count_before = b.m_V.Count();
   const int e_count_before = b.m_E.Count();
@@ -9837,11 +9841,11 @@ void TestBrepRemoveHoleLoopRestoresSolidFaceExactly() {
   Check(b.m_V.Count() == v_count_before - 4, "V dropped by exactly 4 - the hole's own 4 private corners are gone");
   Check(b.m_E.Count() == e_count_before - 4, "E dropped by exactly 4 - the hole's own 4 private edges are gone");
 
-  // The face is now a plain, un-holed 4x4 square: physical area 16.
-  const auto meshes_after = brep.Tessellate(20, 20);
-  double area_after = 0.0;
-  for (const auto& m : meshes_after) area_after += m.Area();
-  Check(std::abs(area_after - 16.0) < 1e-6, "the hole is genuinely filled with material - area is now exactly 16");
+  // The face is now a plain, un-holed 4x4 square: the former hole centre
+  // is genuinely inside the face, exactly like the material point beside it.
+  Check(FaceContainsUV(b.m_F[face_index], 0.5, 0.5),
+        "the hole is genuinely filled with material - its former centre is now inside the face");
+  Check(FaceContainsUV(b.m_F[face_index], 0.2, 0.2), "the surrounding material is still inside the face");
 
   const Brep::CheckReport after = brep.Check();
   Check(after.Count(Brep::CheckIssue::Kind::NakedEdge) == 4,
@@ -9856,6 +9860,7 @@ void TestBrepRemoveHoleLoopRestoresSolidFaceExactly() {
 // RemoveAllHoleLoops() call and the returned count is exactly 2.
 void TestBrepRemoveAllHoleLoopsRemovesEveryHoleInOneCall() {
   using dino8::kernel::Brep;
+  using dino8::kernel::FaceContainsUV;
   using dino8::kernel::NurbsSurface;
   using dino8::kernel::Point2d;
   using dino8::kernel::Point3d;
@@ -9897,11 +9902,14 @@ void TestBrepRemoveAllHoleLoopsRemovesEveryHoleInOneCall() {
   b.SetTolerancesBoxesAndFlags();
 
   Check(b.m_F[face_index].LoopCount() == 3, "setup: the face now has 3 loops (outer + 2 disjoint holes)");
-  // Area: 16 (outer) - 4 (fixture's own central 2x2 hole) - 0.25 (the new 0.5x0.5 hole) = 11.75.
-  const auto meshes_before = brep.Tessellate(40, 40);
-  double area_before = 0.0;
-  for (const auto& m : meshes_before) area_before += m.Area();
-  Check(std::abs(area_before - 11.75) < 1e-4, "setup: physical area with both holes is exactly 16 - 4 - 0.25 = 11.75");
+  // Exact point classification (see TestBrepRemoveHoleLoopRestoresSolidFaceExactly's
+  // own comment for why FaceContainsUV, not Tessellate()'s approximate
+  // grid-cell area, is the exact check here): both hole centres are
+  // outside the face, while a point outside both holes but inside the
+  // outer boundary (physical (3.5,0.5), uv (0.8,0.2)) is inside.
+  Check(!FaceContainsUV(b.m_F[face_index], 0.5, 0.5), "setup: the first hole's own centre is outside the face");
+  Check(!FaceContainsUV(b.m_F[face_index], 0.2, 0.2), "setup: the second hole's own centre is outside the face");
+  Check(FaceContainsUV(b.m_F[face_index], 0.8, 0.2), "setup: a point outside both holes is inside the face");
 
   const int removed = brep.RemoveAllHoleLoops(face_index);
   Check(removed == 2, "RemoveAllHoleLoops() removes both disjoint holes and reports count 2");
@@ -9910,10 +9918,8 @@ void TestBrepRemoveAllHoleLoopsRemovesEveryHoleInOneCall() {
   Check(remaining && remaining->m_type == ON_BrepLoop::outer && remaining->TrimCount() == 4,
         "the surviving loop is the original 4-trim outer quad");
 
-  const auto meshes_after = brep.Tessellate(40, 40);
-  double area_after = 0.0;
-  for (const auto& m : meshes_after) area_after += m.Area();
-  Check(std::abs(area_after - 16.0) < 1e-4, "both holes are genuinely filled - area is now exactly 16");
+  Check(FaceContainsUV(b.m_F[face_index], 0.5, 0.5), "the first hole's own centre is now inside the face");
+  Check(FaceContainsUV(b.m_F[face_index], 0.2, 0.2), "the second hole's own centre is now inside the face");
 
   // A face with no holes at all: RemoveAllHoleLoops() is a clean no-op.
   PlanarFaceWithHoleFixture solo = BuildPlanarFaceWithHole();
