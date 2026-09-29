@@ -2176,13 +2176,110 @@ Result NurbsSurface::OffsetAnalytic(double distance, NurbsSurface& out, double t
       ON_Plane new_plane = cone.plane;
       new_plane.origin = apex + apex_shift * axis;
       new_plane.UpdateEquation();
+      const Point3d apex_new = new_plane.origin;
+      const Vector3d axis_new = new_plane.zaxis;
+
+      // GetNurbForm() always builds a FULL 360-degree cone running from
+      // the apex out to whatever height it's given - a real partial patch
+      // (e.g. a quarter-turn fillet face, or one whose v-domain doesn't
+      // reach the apex at all) would otherwise silently balloon in both
+      // directions, the same "always closed/full" defect the cylinder
+      // branch above already fixes for its own single (angular)
+      // direction. Sizing that height has to happen BEFORE building the
+      // NURBS form this time (unlike the cylinder branch, which only
+      // trims down an already-correctly-sized full circle): a cone's
+      // offset shifts axial position as well as radius (the apex itself
+      // moves along the axis by `apex_shift`), so reusing the ORIGINAL
+      // cone's own (height, radius) pair - as this code used to - can
+      // build a substrate patch too short to trim down to the true
+      // offset extent.
+      //
+      // The offset image's axial position (measured from `apex_new`) is
+      // an EXACT affine function, with slope 1, of the original point's
+      // own axial position (measured from `apex`) - independent of
+      // angle - a fact provable directly from the standard cone
+      // parametrization and its offset-along-normal formula. Measured
+      // here at the domain-interior midpoint (never a v-domain boundary,
+      // which can be the apex itself - a singular point with no
+      // well-defined normal to offset along) and then applied to the
+      // ACTUAL v-domain boundaries via plain axial projection (safe even
+      // AT the apex, since that's just a dot product, not a normal
+      // evaluation).
+      const double h_mid = ON_DotProduct(PointAt(umid, vmid) - apex, axis);
+      const Point3d q_mid = PointAt(umid, vmid) + distance * NormalAt(umid, vmid);
+      const double t_mid = ON_DotProduct(q_mid - apex_new, axis_new);
+      const double c_shift = t_mid - h_mid;
+
+      const double h_lo = ON_DotProduct(PointAt(umid, dv.min) - apex, axis);
+      const double h_hi = ON_DotProduct(PointAt(umid, dv.max) - apex, axis);
+      const double t_lo = h_lo + c_shift;
+      const double t_hi = h_hi + c_shift;
+      if (!(std::abs(t_hi - t_lo) > 1e-9)) return Result::Failed;  // degenerate zero-height patch
+      // A single ON_Cone::GetNurbForm() patch always runs from height
+      // parameter 0 (the apex) to one single other value - it can't
+      // represent a patch straddling the apex on both sides at once.
+      if (t_lo * t_hi < 0.0) return Result::Failed;
+
+      const double build_height =
+          (std::abs(t_lo) >= std::abs(t_hi) ? t_lo : t_hi) * (1.0 + 1e-6);
+      if (std::abs(build_height) <= dino8::kernel::tolerance::kZeroVector) return Result::Failed;
+      // `cone.height` is, by construction of IsCone()'s own fit, the exact
+      // height_parameter of whichever of THIS patch's two v-domain
+      // boundaries has the larger radius - so it always shares its sign
+      // with `t_lo`/`t_hi` for any physically ordinary offset. An
+      // extreme-enough `distance` could in principle flip that sign via
+      // `c_shift`; refuse rather than build a cone from a mismatched
+      // (build_height, radius) pair whose validity isn't guaranteed.
+      if (cone.height * build_height < 0.0) return Result::Failed;
+      const double build_radius = cone.radius * (build_height / cone.height);
+
       ON_Cone new_cone;
-      if (!new_cone.Create(new_plane, cone.height, cone.radius) || !new_cone.IsValid()) {
+      if (!new_cone.Create(new_plane, build_height, build_radius) || !new_cone.IsValid()) {
         return Result::Failed;
       }
       ON_NurbsSurface ns;
       if (new_cone.GetNurbForm(ns) == 0) return Result::Failed;
       out.surface_ = ns;
+
+      // Angular (u) extent, the same technique the cylinder branch above
+      // uses. `new_plane` is `cone.plane` with ONLY its origin translated
+      // along the shared `axis` (zaxis) - so a circle built in either
+      // plane has the exact same orientation, and translating a plane's
+      // origin along its own zaxis cannot change any point's projected
+      // angle around that axis (the projection is onto the xaxis/yaxis,
+      // both perpendicular to zaxis) - meaning ONE reference circle, of
+      // any convenient radius, correctly measures/converts angles for
+      // both the old and new cone.
+      const ON_Circle angle_ref(cone.plane, 1.0);
+      if (du.max - du.min < 2.0 * ON_PI - 1e-9) {
+        const Point3d p_umin = PointAt(du.min, vmid);
+        const Point3d p_umax = PointAt(du.max, vmid);
+        const Point3d p_umid = PointAt(0.5 * (du.min + du.max), vmid);
+        double angle_umin, angle_umax, angle_umid;
+        if (!angle_ref.ClosestPointTo(p_umin, &angle_umin) ||
+            !angle_ref.ClosestPointTo(p_umax, &angle_umax) ||
+            !angle_ref.ClosestPointTo(p_umid, &angle_umid)) {
+          return Result::Failed;
+        }
+        double nurb_umin, nurb_umax, nurb_umid;
+        if (!angle_ref.GetNurbFormParameterFromRadian(angle_umin, &nurb_umin) ||
+            !angle_ref.GetNurbFormParameterFromRadian(angle_umax, &nurb_umax) ||
+            !angle_ref.GetNurbFormParameterFromRadian(angle_umid, &nurb_umid)) {
+          return Result::Failed;
+        }
+        const double t0 = std::min(nurb_umin, nurb_umax);
+        const double t1 = std::max(nurb_umin, nurb_umax);
+        // Same seam-straddling refusal the cylinder branch above uses.
+        if (!(t1 > t0 + 1e-9 && nurb_umid >= t0 - 1e-9 && nurb_umid <= t1 + 1e-9)) {
+          return Result::Failed;
+        }
+        if (out.Trim(0, t0, t1) != Result::Ok) return Result::Failed;
+      }
+
+      if (out.Trim(1, std::min(t_lo, t_hi), std::max(t_lo, t_hi)) != Result::Ok) {
+        return Result::Failed;
+      }
+
       return Result::Ok;
     }
   }

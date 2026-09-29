@@ -42923,12 +42923,16 @@ void TestSurfaceOffsetAnalyticConePreservesHalfAngleAndShiftsApex() {
   // Direct pointwise check: this surface's own point + distance*normal at
   // an arbitrary parameter must land exactly on the offset surface
   // (located here via golden-section search along v, since the offset
-  // surface's own v no longer lines up 1:1 with the original's).
+  // surface's own v no longer lines up 1:1 with the original's). The
+  // search bracket is `out`'s own ACTUAL v-domain (not the input's [0,
+  // 10]): this input reaches all the way to the apex, so - per this
+  // method's own new axial-extent fix below - `out`'s own v-domain is
+  // shifted away from 0 by a real, nonzero constant, not left at [0, 10].
   const double u_test = 0.3, v_test = 4.0;
   const Point3d p0 = s.PointAt(u_test, v_test);
   const Vector3d n0 = s.NormalAt(u_test, v_test);
   const Point3d expected = p0 + 1.0 * n0;
-  double lo = 0.0, hi = 12.0;
+  double lo = out.Domain(1).min, hi = out.Domain(1).max;
   for (int it = 0; it < 80; ++it) {
     const double m1 = lo + (hi - lo) / 3.0, m2 = hi - (hi - lo) / 3.0;
     if (out.PointAt(u_test, m1).DistanceTo(expected) < out.PointAt(u_test, m2).DistanceTo(expected)) hi = m2; else lo = m1;
@@ -42941,6 +42945,70 @@ void TestSurfaceOffsetAnalyticConePreservesHalfAngleAndShiftsApex() {
   // through the axis - refused, not silently produced.
   Check(s.OffsetAnalytic(-100.0, out) == Result::Failed,
         "OffsetAnalytic(-100.0) on this cone patch is refused (exceeds the narrow end's own radius)");
+}
+
+void TestSurfaceOffsetAnalyticConePreservesPartialPatchExtent() {
+  using dino8::kernel::Interval;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+  using dino8::kernel::Vector3d;
+
+  const ON_Plane apex_plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1));
+  const ON_Cone cone(apex_plane, /*height=*/10.0, /*radius=*/5.0);
+  ON_NurbsSurface full_raw;
+  Check(cone.GetNurbForm(full_raw) != 0, "partial-cone setup: GetNurbForm succeeds");
+
+  NurbsSurface patch;
+  patch.raw() = full_raw;
+  // [0, pi/2] is exactly the first knot span of ON_Circle::GetNurbForm()'s
+  // own 4-span construction (the same clean radian-exact quarter-turn
+  // bound the cylinder's own quarter-patch test above uses). [3, 7] is a
+  // mid-height band that reaches NEITHER the apex (v=0) NOR the base
+  // (v=10) - the real "fillet face" shape this fix targets.
+  Check(patch.Trim(0, 0.0, 0.5 * ON_PI) == Result::Ok, "partial-cone setup: angular trim succeeds");
+  Check(patch.Trim(1, 3.0, 7.0) == Result::Ok, "partial-cone setup: height trim succeeds");
+  const Interval pdu = patch.Domain(0);
+  const Interval pdv = patch.Domain(1);
+
+  NurbsSurface out;
+  Check(patch.OffsetAnalytic(1.0, out) == Result::Ok, "OffsetAnalytic(+1.0) succeeds on a partial cone patch");
+  const Interval odu = out.Domain(0);
+  const Interval odv = out.Domain(1);
+
+  // Angular extent: same check the cylinder's own quarter-patch test above
+  // uses - the offset patch keeps the ORIGINAL quarter-turn span instead
+  // of GetNurbForm()'s own full 360-degree cone.
+  const Point3d p_u0 = out.PointAt(odu.min, 0.5 * (odv.min + odv.max));
+  const Point3d p_u1 = out.PointAt(odu.max, 0.5 * (odv.min + odv.max));
+  Check(std::abs(std::atan2(p_u0.y, p_u0.x) - 0.0) < 1e-6,
+        "offset partial-cone patch: U-min boundary sits at true angle 0");
+  Check(std::abs(std::atan2(p_u1.y, p_u1.x) - 0.5 * ON_PI) < 1e-6,
+        "offset partial-cone patch: U-max boundary sits at true angle pi/2");
+
+  // Height extent - the fix under test: out's own v-domain boundaries are
+  // exactly the TRUE offset image of the input patch's own v-domain
+  // boundaries, not the full apex-to-base span GetNurbForm() alone would
+  // give. Checked at true angle 0 (odu.min corresponds to the identical
+  // true angle as pdu.min, even though the raw NURBS parameter values
+  // differ nonlinearly between the two surfaces' own domains).
+  const Point3d p_lo = patch.PointAt(pdu.min, pdv.min);
+  const Vector3d n_lo = patch.NormalAt(pdu.min, pdv.min);
+  const Point3d expected_lo = p_lo + 1.0 * n_lo;
+  Check(out.PointAt(odu.min, odv.min).DistanceTo(expected_lo) < 1e-6,
+        "offset partial-cone patch: V-min boundary is the true offset image of the input's own V-min boundary");
+
+  const Point3d p_hi = patch.PointAt(pdu.min, pdv.max);
+  const Vector3d n_hi = patch.NormalAt(pdu.min, pdv.max);
+  const Point3d expected_hi = p_hi + 1.0 * n_hi;
+  Check(out.PointAt(odu.min, odv.max).DistanceTo(expected_hi) < 1e-6,
+        "offset partial-cone patch: V-max boundary is the true offset image of the input's own V-max boundary");
+
+  // Directly proves this isn't secretly the full apex-to-base cone: the
+  // trimmed patch's own height span is a small fraction of the full
+  // cone's own 0-to-10 apex-to-base span.
+  Check((odv.max - odv.min) < 5.0,
+        "offset partial-cone patch: V-domain span is a small fraction of the full apex-to-base height, not the whole cone");
 }
 
 void TestSurfaceOffsetAnalyticTorusIsExactCoaxialTorusAndRejectsSpindle() {
@@ -45596,6 +45664,7 @@ int main() {
   TestSurfaceOffsetAnalyticCylinderIsExactCoaxialCylinder();
   TestSurfaceOffsetAnalyticCylinderPreservesQuarterPatchExtent();
   TestSurfaceOffsetAnalyticConePreservesHalfAngleAndShiftsApex();
+  TestSurfaceOffsetAnalyticConePreservesPartialPatchExtent();
   TestSurfaceOffsetAnalyticTorusIsExactCoaxialTorusAndRejectsSpindle();
   TestSurfaceOffsetAnalyticPlanePreservesDomainAndTrimStructure();
   TestSurfaceOffsetAnalyticRefusesFreeformSurface();
