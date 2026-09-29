@@ -1622,6 +1622,16 @@ print("point plus vector: %.0f,%.0f,%.0f" % (p2.X, p2.Y, p2.Z))
 by_name = [o for o in dino8.doc.Objects.AllObjects() if o.Name == "Widget"]
 print("found by name: %d" % len(by_name))
 
+circle_id = dino8.doc.Objects.AddCircle(dino8.Point3d(0, 0, 0), 3)
+circle = dino8.doc.Objects.Find(circle_id)
+print("circle kind: " + circle.ObjectType)
+print("object count with circle: %d" % len(dino8.doc.Objects.AllObjects()))
+try:
+    dino8.doc.Objects.AddCircle(dino8.Point3d(0, 0, 0), -1)
+    print("bad circle: no error")
+except RuntimeError as e:
+    print("bad circle rejected: " + str(e))
+
 dino8.RunCommand("NewLayer", "Parts")
 PY
 sed "s|@TMP@|$TMPW|g" "$HERE/python_script.txt" > "$TMPW/python_script.txt"
@@ -1666,7 +1676,10 @@ else
   pscheck "history: vector length: 5.00" "Vector3d.Length computed a 3-4-5 triangle"
   pscheck "history: point plus vector: 4,6,3" "Point3d.__add__(Vector3d) matched RhinoCommon's operator+"
   pscheck "history: found by name: 1" "list comprehension over AllObjects() found the renamed box"
-  pscheck "^ok   expect_objects 1" "RunPythonScript left exactly the box (the sphere was deleted from inside the script)"
+  pscheck "history: circle kind: curve" "dino8.doc.Objects.AddCircle built a curve object, matching rs.AddCircle"
+  pscheck "history: object count with circle: 2" "AllObjects sees the box and the new circle"
+  pscheck "history: bad circle rejected:" "AddCircle raised a Python exception for a non-positive radius instead of silently returning"
+  pscheck "^ok   expect_objects 2" "RunPythonScript left the box and the circle (the sphere was deleted from inside the script)"
   grep -q "! Python error" <<<"$PS" && { echo "FAIL python_script.txt printed a Python error"; fail=1; } || echo "ok   no Python script errors"
 fi
 
