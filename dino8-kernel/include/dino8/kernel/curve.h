@@ -49,6 +49,109 @@ class NurbsCurve {
   static Result FitLeastSquares(const std::vector<Point3d>& points, int degree,
                                  int control_point_count, NurbsCurve& out);
 
+  // 2D/3D POLYLINE-CORNER FILLET (Rhino Fillet, AutoCAD FILLET between two
+  // lines; app's own FilletChamferCommand, cmd_curveedit.cpp:510, does
+  // this with mesh-sampled corner geometry - this is the genuine kernel
+  // API the app-only version doesn't have, per PARITY_MAP.md's own
+  // "No kernel 2D fillet or chamfer API" note). Replaces the corner
+  // `corner` between the two straight segments `p0`-`corner` and
+  // `corner`-`p1` with a circular arc of the given `radius`, tangent to
+  // both segments, and returns ONE continuous curve: the trimmed segment
+  // `p0`-T0, the arc T0-T1, and the trimmed segment T1-`p1`, joined via
+  // `Join()` (so `out`'s own domain runs monotonically start to end, C0
+  // throughout with a tangent-continuous, not just position-continuous,
+  // junction at T0 and T1 - see the construction below for why).
+  //
+  // THE CONSTRUCTION (the standard "common tangent circle to two rays"
+  // result, the exact 2D analogue of `ChamferConvexEdge`'s own edge-level
+  // law-of-tangents formula in this codebase, fillet.cpp):
+  //   1. u = normalize(p0 - corner), v = normalize(p1 - corner) - unit
+  //      vectors along the two rays from the corner. theta = the angle
+  //      between them (acos(u . v), in (0, pi) for a genuine corner - see
+  //      VALIDATION below).
+  //   2. The tangent length from `corner` to each tangent point is
+  //      d = radius / tan(theta / 2) (the same relationship
+  //      `FilletConvexEdgeByDistanceFromEdge`'s own doc comment already
+  //      uses in reverse, `radius = distance * tan(theta/2)`, for a 3D
+  //      edge's dihedral half-angle) - so T0 = corner + d*u, T1 =
+  //      corner + d*v.
+  //   3. The circle's center C lies on the internal angle bisector,
+  //      bis = normalize(u + v), at distance L = radius / sin(theta/2)
+  //      from `corner` (C = corner + L*bis) - the standard fact that
+  //      |T0 - C| = |T1 - C| = radius follows directly from the right
+  //      triangle (corner, T0, C) with legs d and radius and hypotenuse
+  //      L, checked directly below rather than merely asserted.
+  //   4. The arc sweeps from T0 to T1 through angle (pi - theta) - built
+  //      as an `ON_Arc` on the plane through C with `xaxis = normalize(T0
+  //      - C)` and whichever of the two candidate `zaxis` directions
+  //      (+/- normalize(u x v)) makes that sweep positive (checked
+  //      directly against T1's own reconstructed position, not assumed
+  //      from a fixed cross-product order - a corner where p0/corner/p1
+  //      wind the opposite way needs the opposite sign).
+  // Because both the incoming segment `p0`-T0 and the arc share the same
+  // tangent direction at T0 (u, by construction - a circle's own radius
+  // to a tangent point is perpendicular to the tangent line, so the
+  // segment direction and the arc's own starting tangent coincide
+  // exactly), and likewise at T1, `Join()`'s own "position-only, tangent
+  // kink allowed" contract in fact produces a genuinely tangent (G1), not
+  // merely positional (G0), junction here - verified directly by
+  // `TestNurbsCurveFilletCornerObtuseAngleAndTangency`, not just argued
+  // from the construction.
+  //
+  // VALIDATION: `radius` must be > 0. `p0`, `corner` and `p1` must be
+  // distinct (checked via `Unitize()` failing on a zero-length ray) and
+  // not collinear (theta within `1e-9` of 0 or pi throws - a straight
+  // "corner" has no tangent circle of finite radius, the same "nothing to
+  // fillet" case Rhino's own Fillet command refuses). Throws
+  // `std::invalid_argument` for any of those. Returns `Result::Failed`,
+  // `out` left unchanged, if `radius` is too large for the two segments -
+  // `d` exceeding either `|p0 - corner|` or `|corner - p1|` would place a
+  // tangent point past the segment's own far endpoint, the same
+  // "radius/distance too large to fit" failure mode every 3D fillet/
+  // chamfer function in fillet.cpp already reports for the analogous
+  // condition - checked directly, not left to `Join()`'s own unrelated
+  // tolerance check to catch incidentally.
+  static Result FilletCorner(Point3d p0, Point3d corner, Point3d p1, double radius, NurbsCurve& out);
+
+  // 2D/3D POLYLINE-CORNER CHAMFER (Rhino Chamfer, AutoCAD CHAMFER between
+  // two lines) - the flat-cut sibling of `FilletCorner` above, the exact
+  // 2D analogue of `ChamferConvexEdge`'s own two-independent-distance
+  // form in this codebase (fillet.cpp/fillet.h): replaces the corner with
+  // a single straight segment T0-T1, where T0 = corner + distance0 *
+  // normalize(p0 - corner) and T1 = corner + distance1 * normalize(p1 -
+  // corner) - two INDEPENDENT distances, not a single shared one (Rhino's
+  // own Chamfer command takes two distances for exactly this reason: a
+  // chamfer, unlike a fillet, has no single "radius" that determines both
+  // setbacks from the corner's own geometry alone).
+  //
+  // Unlike `FilletCorner` (which needs `Join()` to splice an arc between
+  // two straight segments), the whole result - `p0`, T0, T1, `p1` - is
+  // ALREADY one honest 4-point polyline, so this is built directly as a
+  // single degree-1 `FromControlPoints()` curve (the same "a clamped
+  // degree-1 B-spline through N control points IS the polyline connecting
+  // them, exactly" fact this file already relies on for every straight
+  // segment it builds elsewhere) rather than three separately-joined
+  // pieces - simpler, and with no junction-tangent question to raise at
+  // all (a chamfer is deliberately NOT tangent to either original
+  // segment; that flat kink is the whole feature, the same way
+  // `ChamferConvexEdge`'s own 3D chamfer facet is deliberately not
+  // tangent to its two adjacent faces).
+  //
+  // VALIDATION: `distance0`/`distance1` must both be > 0. `p0`, `corner`
+  // and `p1` must be distinct (same check `FilletCorner` uses). Throws
+  // `std::invalid_argument` for either. Returns `Result::Failed`, `out`
+  // left unchanged, if `distance0 >= |p0 - corner|` or `distance1 >=
+  // |corner - p1|` (the chamfer point would reach past, or land exactly
+  // on, the segment's own far endpoint) - the same "too large to fit"
+  // convention `FilletCorner` above uses. Unlike `FilletCorner`, `p0`/
+  // `corner`/`p1` being exactly collinear is NOT an error here (chamfering
+  // a straight "corner" degenerates to trimming a notch out of a straight
+  // line, which is still a well-defined 4-point polyline - just an odd
+  // one to ask for); it is left to the caller to decide whether that
+  // makes sense for their own use case.
+  static Result ChamferCorner(Point3d p0, Point3d corner, Point3d p1, double distance0, double distance1,
+                               NurbsCurve& out);
+
   int Degree() const;
   int ControlPointCount() const;
 

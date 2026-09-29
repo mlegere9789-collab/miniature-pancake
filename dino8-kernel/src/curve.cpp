@@ -424,6 +424,119 @@ NurbsCurve NurbsCurve::FromControlPoints(const std::vector<Point3d>& control_poi
   return result;
 }
 
+Result NurbsCurve::FilletCorner(Point3d p0, Point3d corner, Point3d p1, double radius, NurbsCurve& out) {
+  if (!(radius > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::NurbsCurve::FilletCorner: radius must be positive");
+  }
+  Vector3d u = p0 - corner;
+  Vector3d v = p1 - corner;
+  const double len_u = u.Length();
+  const double len_v = v.Length();
+  if (!u.Unitize() || !v.Unitize()) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsCurve::FilletCorner: p0/p1 must be distinct from corner");
+  }
+  const double cos_theta = std::max(-1.0, std::min(1.0, ON_DotProduct(u, v)));
+  const double theta = std::acos(cos_theta);
+  if (theta < 1e-9 || theta > ON_PI - 1e-9) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsCurve::FilletCorner: p0, corner and p1 are collinear - no finite tangent circle "
+        "exists for a straight corner");
+  }
+  const double half = 0.5 * theta;
+  const double d = radius / std::tan(half);
+  if (d >= len_u || d >= len_v) {
+    return Result::Failed;
+  }
+  const Point3d T0 = corner + d * u;
+  const Point3d T1 = corner + d * v;
+
+  Vector3d bis = u + v;
+  if (!bis.Unitize()) {
+    throw std::invalid_argument("dino8::kernel::NurbsCurve::FilletCorner: degenerate (180-degree) bisector");
+  }
+  const double L = radius / std::sin(half);
+  const Point3d C = corner + L * bis;
+
+  Vector3d xaxis = T0 - C;
+  if (!xaxis.Unitize()) {
+    throw std::runtime_error("dino8::kernel::NurbsCurve::FilletCorner: degenerate arc frame (please report this as a bug)");
+  }
+  Vector3d zaxis = ON_CrossProduct(u, v);
+  if (!zaxis.Unitize()) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsCurve::FilletCorner: p0, corner and p1 are collinear - no finite tangent circle "
+        "exists for a straight corner");
+  }
+  Vector3d yaxis = ON_CrossProduct(zaxis, xaxis);
+  yaxis.Unitize();
+  const Vector3d to_T1 = T1 - C;
+  double phi = std::atan2(ON_DotProduct(to_T1, yaxis), ON_DotProduct(to_T1, xaxis));
+  if (phi < 0.0) {
+    // The other of the two candidate normal directions sweeps the short
+    // way from T0 to T1 instead - flip zaxis/yaxis (xaxis is unaffected)
+    // and re-measure, rather than assuming a fixed cross-product winding
+    // holds for every corner orientation.
+    zaxis = -zaxis;
+    yaxis = -yaxis;
+    phi = std::atan2(ON_DotProduct(to_T1, yaxis), ON_DotProduct(to_T1, xaxis));
+  }
+  if (phi < 1e-9 || phi > ON_PI + 1e-9) {
+    throw std::runtime_error(
+        "dino8::kernel::NurbsCurve::FilletCorner: computed arc sweep out of the expected (0, pi) range (please "
+        "report this as a bug)");
+  }
+  // Checked invariant, not assumed: T1 really is at `radius` from C.
+  if (std::fabs(to_T1.Length() - radius) > std::max(radius, 1.0) * 1e-6) {
+    throw std::runtime_error(
+        "dino8::kernel::NurbsCurve::FilletCorner: reconstructed tangent point does not lie on the arc's own circle "
+        "(please report this as a bug)");
+  }
+
+  const ON_Plane arc_plane(C, xaxis, yaxis);
+  const ON_Arc arc(arc_plane, radius, phi);
+  ON_NurbsCurve arc_nurbs;
+  if (arc.GetNurbForm(arc_nurbs) == 0) {
+    return Result::Failed;
+  }
+  NurbsCurve arc_curve;
+  arc_curve.curve_ = arc_nurbs;
+
+  NurbsCurve result = FromControlPoints({p0, T0}, 1);
+  const double tol = std::max(radius, 1.0) * 1e-6;
+  if (result.Join(arc_curve, tol) != Result::Ok) {
+    return Result::Failed;
+  }
+  NurbsCurve tail = FromControlPoints({T1, p1}, 1);
+  if (result.Join(tail, tol) != Result::Ok) {
+    return Result::Failed;
+  }
+  out = result;
+  return Result::Ok;
+}
+
+Result NurbsCurve::ChamferCorner(Point3d p0, Point3d corner, Point3d p1, double distance0, double distance1,
+                                 NurbsCurve& out) {
+  if (!(distance0 > 0.0) || !(distance1 > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::NurbsCurve::ChamferCorner: distances must be positive");
+  }
+  Vector3d u = p0 - corner;
+  Vector3d v = p1 - corner;
+  const double len_u = u.Length();
+  const double len_v = v.Length();
+  if (!u.Unitize() || !v.Unitize()) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsCurve::ChamferCorner: p0/p1 must be distinct from corner");
+  }
+  if (distance0 >= len_u || distance1 >= len_v) {
+    return Result::Failed;
+  }
+  const Point3d T0 = corner + distance0 * u;
+  const Point3d T1 = corner + distance1 * v;
+  out = FromControlPoints({p0, T0, T1, p1}, 1);
+  return Result::Ok;
+}
+
 int NurbsCurve::Degree() const { return curve_.Degree(); }
 
 int NurbsCurve::ControlPointCount() const { return curve_.CVCount(); }

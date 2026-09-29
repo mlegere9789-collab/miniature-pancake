@@ -43387,6 +43387,188 @@ void TestCurveOffsetInPlaneWithExplicitPlanePolylineMatchesSinglePlaneOverload()
   }
 }
 
+void TestNurbsCurveFilletCornerRightAngle() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // Two legs meeting at a right angle at the origin: legs along +x and
+  // +y, radius 1 - the same fixture shape as this codebase's own
+  // right-angle 3D fillet sanity checks.
+  const Point3d p0(3, 0, 0), corner(0, 0, 0), p1(0, 3, 0);
+  const double radius = 1.0;
+  NurbsCurve out;
+  Check(NurbsCurve::FilletCorner(p0, corner, p1, radius, out) == Result::Ok, "FilletCorner succeeds on a right-angle corner");
+
+  // Closed form for a right-angle corner: tangent length d = r/tan(45) =
+  // r, so T0 = (1, 0, 0), T1 = (0, 1, 0); the fillet is a quarter circle.
+  const Point3d T0(1, 0, 0), T1(0, 1, 0);
+  Check(out.PointAt(out.Domain().min).DistanceTo(p0) < 1e-9, "the joined curve starts exactly at p0");
+  Check(out.PointAt(out.Domain().max).DistanceTo(p1) < 1e-9, "the joined curve ends exactly at p1");
+
+  Check(out.ClosestPoint(T0, 2000).DistanceTo(T0) < 1e-6,
+        "the curve passes through the closed-form tangent point T0 = (1, 0, 0)");
+  Check(out.ClosestPoint(T1, 2000).DistanceTo(T1) < 1e-6,
+        "the curve passes through the closed-form tangent point T1 = (0, 1, 0)");
+
+  // A coarse but discriminating "did the arc actually go the SHORT way,
+  // not loop the long way around a full circle" sanity check: every
+  // sampled point must stay within the two legs' own bounding region.
+  const int n = 2000;
+  bool all_in_bounds = true;
+  for (int i = 0; i <= n; ++i) {
+    const double t = out.Domain().min + (out.Domain().max - out.Domain().min) * i / n;
+    const Point3d pt = out.PointAt(t);
+    if (!(pt.x > -0.01 && pt.x < 3.01 && pt.y > -0.01 && pt.y < 3.01 && std::fabs(pt.z) < 1e-6)) {
+      all_in_bounds = false;
+    }
+  }
+  Check(all_in_bounds, "every point of the filleted corner stays within the two legs' own bounding region - the "
+                        "arc goes the short way, not around a full circle");
+
+  // Closed-form total length: |p0 - T0| + quarter-circle arc length
+  // (radius * pi/2) + |T1 - p1| = 2 + pi/2 + 2.
+  const double expected_length = 2.0 + radius * ON_PI / 2.0 + 2.0;
+  Check(std::fabs(out.Length(2000) - expected_length) < 1e-4,
+        "the filleted corner's total length matches |p0-T0| + quarter-circle arc + |T1-p1| exactly");
+}
+
+void TestNurbsCurveFilletCornerObtuseAngleAndTangency() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+  using dino8::kernel::Vector3d;
+
+  // A genuinely non-right, non-planar-trivial obtuse corner: p0 along
+  // +x, p1 at 120 degrees from p0 around the corner, radius 0.5.
+  const Point3d corner(1, 2, 3);
+  const double theta = 2.0 * ON_PI / 3.0;  // 120 degrees
+  const Point3d p0 = corner + Point3d(5, 0, 0);
+  const Point3d p1 = corner + Point3d(5 * std::cos(theta), 5 * std::sin(theta), 0);
+  const double radius = 0.5;
+  NurbsCurve out;
+  Check(NurbsCurve::FilletCorner(p0, corner, p1, radius, out) == Result::Ok, "FilletCorner succeeds on a 120-degree corner");
+
+  const double d = radius / std::tan(theta / 2.0);
+  const Point3d T0 = corner + d * Point3d(1, 0, 0);
+  const Point3d T1 = corner + d * Point3d(std::cos(theta), std::sin(theta), 0);
+
+  // Tangency check: the curve's own tangent direction just inside the
+  // start must match the straight leg's own direction (p0 - corner,
+  // normalized) - a genuine G1 junction, not just position-continuous.
+  Vector3d leg0_dir = p0 - corner;
+  leg0_dir.Unitize();
+  const Vector3d start_tangent = out.TangentAt(out.Domain().min);
+  Check(std::fabs(ON_DotProduct(start_tangent, leg0_dir)) > 1.0 - 1e-6,
+        "the joined curve's own tangent at p0 matches the incoming leg's direction (G1, not just G0)");
+
+  Vector3d leg1_dir = p1 - corner;
+  leg1_dir.Unitize();
+  const Vector3d end_tangent = out.TangentAt(out.Domain().max);
+  Check(std::fabs(ON_DotProduct(end_tangent, leg1_dir)) > 1.0 - 1e-6,
+        "the joined curve's own tangent at p1 matches the outgoing leg's direction (G1, not just G0)");
+
+  // Every point on the arc-only middle portion must be at exactly
+  // `radius` from the tangent-circle center C = corner + (radius /
+  // sin(theta/2)) * bisector.
+  Vector3d bis = leg0_dir + leg1_dir;
+  bis.Unitize();
+  const Point3d C = corner + (radius / std::sin(theta / 2.0)) * bis;
+  Check(std::fabs(T0.DistanceTo(C) - radius) < 1e-9 && std::fabs(T1.DistanceTo(C) - radius) < 1e-9,
+        "both closed-form tangent points sit at exactly `radius` from the closed-form arc center");
+
+  const double expected_length = T0.DistanceTo(p0) + radius * (ON_PI - theta) + T1.DistanceTo(p1);
+  Check(std::fabs(out.Length(2000) - expected_length) < 1e-3,
+        "the filleted corner's total length matches the closed form |p0-T0| + radius*(pi-theta) + |T1-p1|");
+}
+
+void TestNurbsCurveFilletCornerRejectsInvalidInput() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  auto throws = [](const std::function<void()>& fn) {
+    try {
+      fn();
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+    return false;
+  };
+
+  NurbsCurve out;
+  const Point3d corner(0, 0, 0), p0(1, 0, 0), p1(0, 1, 0);
+  Check(throws([&] { NurbsCurve::FilletCorner(p0, corner, p1, 0.0, out); }), "rejects a non-positive radius");
+  Check(throws([&] { NurbsCurve::FilletCorner(p0, corner, p1, -1.0, out); }), "rejects a negative radius");
+  Check(throws([&] { NurbsCurve::FilletCorner(corner, corner, p1, 1.0, out); }), "rejects p0 == corner");
+  Check(throws([&] { NurbsCurve::FilletCorner(p0, corner, corner, 1.0, out); }), "rejects p1 == corner");
+  Check(throws([&] { NurbsCurve::FilletCorner(Point3d(1, 0, 0), corner, Point3d(2, 0, 0), 1.0, out); }),
+        "rejects a straight (collinear, same-direction) corner");
+  Check(throws([&] { NurbsCurve::FilletCorner(Point3d(-1, 0, 0), corner, Point3d(1, 0, 0), 1.0, out); }),
+        "rejects a straight (collinear, opposite-direction) corner");
+  // A radius too large for the short legs: tangent length d = r/tan(45)
+  // = r for a right-angle corner, so r = 1 needs legs of length > 1 -
+  // legs of length 0.5 can't fit it.
+  Check(NurbsCurve::FilletCorner(Point3d(0.5, 0, 0), corner, Point3d(0, 0.5, 0), 1.0, out) == Result::Failed,
+        "reports Result::Failed (not a throw) when radius is too large for the two legs to fit");
+}
+
+void TestNurbsCurveChamferCornerAsymmetricDistances() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  const Point3d p0(5, 0, 0), corner(0, 0, 0), p1(0, 5, 0);
+  NurbsCurve out;
+  Check(NurbsCurve::ChamferCorner(p0, corner, p1, 1.0, 2.0, out) == Result::Ok,
+        "ChamferCorner succeeds with two independent distances");
+  Check(out.ControlPointCount() == 4, "ChamferCorner's result is the honest 4-point polyline: p0, T0, T1, p1");
+  const Point3d T0(1, 0, 0), T1(0, 2, 0);
+  Check(out.ControlPointAt(0).DistanceTo(p0) < 1e-9, "control point 0 is exactly p0");
+  Check(out.ControlPointAt(1).DistanceTo(T0) < 1e-9, "control point 1 is exactly T0 = corner + distance0 * leg0");
+  Check(out.ControlPointAt(2).DistanceTo(T1) < 1e-9, "control point 2 is exactly T1 = corner + distance1 * leg1");
+  Check(out.ControlPointAt(3).DistanceTo(p1) < 1e-9, "control point 3 is exactly p1");
+
+  // Length() approximates via uniform-parameter chord sampling (see its
+  // own doc comment) - exact for a piecewise-LINEAR curve only when the
+  // samples land exactly on the polyline's own kinks (T0, T1), i.e. when
+  // `samples` is a multiple of the curve's own 3 knot spans (one span per
+  // straight piece, `FromControlPoints()`'s own "cv_count - degree wide
+  // domain" for 4 control points at degree 1). 300 is such a multiple.
+  const double expected_length = T0.DistanceTo(p0) + T0.DistanceTo(T1) + T1.DistanceTo(p1);
+  Check(std::fabs(out.Length(300) - expected_length) < 1e-9,
+        "ChamferCorner's total length matches |p0-T0| + |T0-T1| + |T1-p1| exactly");
+}
+
+void TestNurbsCurveChamferCornerRejectsInvalidInput() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  auto throws = [](const std::function<void()>& fn) {
+    try {
+      fn();
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+    return false;
+  };
+
+  NurbsCurve out;
+  const Point3d corner(0, 0, 0), p0(1, 0, 0), p1(0, 1, 0);
+  Check(throws([&] { NurbsCurve::ChamferCorner(p0, corner, p1, 0.0, 0.5, out); }), "rejects a non-positive distance0");
+  Check(throws([&] { NurbsCurve::ChamferCorner(p0, corner, p1, 0.5, 0.0, out); }), "rejects a non-positive distance1");
+  Check(throws([&] { NurbsCurve::ChamferCorner(corner, corner, p1, 0.5, 0.5, out); }), "rejects p0 == corner");
+  Check(NurbsCurve::ChamferCorner(Point3d(0.5, 0, 0), corner, Point3d(0, 0.5, 0), 1.0, 0.2, out) == Result::Failed,
+        "reports Result::Failed when distance0 exceeds the p0 leg's own length");
+  Check(NurbsCurve::ChamferCorner(Point3d(0.5, 0, 0), corner, Point3d(0, 0.5, 0), 0.2, 1.0, out) == Result::Failed,
+        "reports Result::Failed when distance1 exceeds the p1 leg's own length");
+  // Unlike FilletCorner, a collinear corner is a well-defined (if odd)
+  // chamfer - not rejected.
+  Check(NurbsCurve::ChamferCorner(Point3d(-1, 0, 0), corner, Point3d(1, 0, 0), 0.3, 0.3, out) == Result::Ok,
+        "does NOT reject a collinear corner - a straight-line chamfer is still a well-defined 4-point polyline");
+}
+
 // A genuinely 3D (non-coplanar-in-the-given-plane) polyline handed to the
 // explicit-plane overload: the exact per-corner miter formula does NOT
 // apply here (it only lands on both offset lines when every edge is
@@ -44935,6 +45117,11 @@ int main() {
   TestCurveOffsetInPlaneConcavePolygonGeneralizesBeyondConvexOnlyMiter();
   TestCurveOffsetInPlanePolylineRefusesNearFullFold();
   TestCurveOffsetInPlaneWithExplicitPlanePolylineMatchesSinglePlaneOverload();
+  TestNurbsCurveFilletCornerRightAngle();
+  TestNurbsCurveFilletCornerObtuseAngleAndTangency();
+  TestNurbsCurveFilletCornerRejectsInvalidInput();
+  TestNurbsCurveChamferCornerAsymmetricDistances();
+  TestNurbsCurveChamferCornerRejectsInvalidInput();
   TestCurveOffsetInPlaneWithExplicitPlaneNonCoplanarPolylineFallsBackToGeneralPath();
 
 
