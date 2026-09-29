@@ -1821,6 +1821,25 @@ fscheck "^ok   expect_objects 1" "the solver graph baked exactly one point"
 fscheck "Evolutionary Solver \(#4\) best fitness 0 after 60 generation\(s\)" "the solver ran all 60 generations and converged to fitness 0 for (x-3)^2 with this fixed seed"
 fscheck "  3,0,0" "the baked point (best gene, best fitness) is exactly (3, 0, 0) - the true optimum of (x-3)^2"
 
+# Dino Flow evolutionary solver Population clamp: same graph, but Population
+# is a literal 2000000000 straight from the .dflow's JSON, the same
+# untrusted-file-value hazard RunSolverNode's gene_count already guards
+# against - std::vector<Individual> pop(population) allocated straight from
+# that number before the fix, forcing a multi-GB/crashing allocation just
+# from opening this file (see flow_solver_dos_script.txt /
+# flow_solver_dos_graph.dflow). After the fix, Population is clamped the same
+# way gene_count already was, so this still solves and bakes normally in
+# bounded time instead of crashing or hanging.
+sed "s|@SOLVERDOSFILE@|$HEREW/flow_solver_dos_graph.dflow|g" "$HERE/flow_solver_dos_script.txt" > "$TMPW/flow_solver_dos_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  FD="$("$BIN" --smoke 100 --script "$TMPW/flow_solver_dos_script.txt" 2>&1)" || { echo "$FD"; echo "FAIL: flow solver Population-clamp script exited non-zero (crashed or hung until the job's own timeout)"; exit 1; }
+else
+  FD="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 100 --script "$TMPW/flow_solver_dos_script.txt" 2>&1)" || { echo "$FD"; echo "FAIL: flow solver Population-clamp script exited non-zero (crashed or hung until the job's own timeout)"; exit 1; }
+fi
+fdcheck() { if echo "$FD" | grep -qE "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$FD" "$1"; fail=1; fi; }
+fdcheck "^ok   expect_objects 1" "a Population of 2000000000 still baked exactly one point instead of crashing/hanging"
+fdcheck "Evolutionary Solver \(#4\) best fitness .* after 60 generation\(s\)" "the solver still ran all 60 generations to completion with Population clamped down to a sane size"
+
 # Dino Flow plug-in geometry values: Spiral Curve (a plug-in node output of
 # kind CURVE) wired directly into Plugin Curve Length (a plug-in node INPUT
 # of kind CURVE) - proving the plugin ABI's opaque geometry handles round-

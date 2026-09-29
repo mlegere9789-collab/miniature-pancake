@@ -316,8 +316,17 @@ void RunSolverNode(Graph& g, Node& n, app::Document* doc) {
   };
   bool minimize = true;
   { Tree t; g.GatherPort(n.id, 2, t); const Value* v = t.First(); bool b; if (v && v->AsBool(b)) minimize = b; }
-  const int population = std::max(4, static_cast<int>(std::llround(scalar_num(3, 40))));
-  const int generations = std::max(1, static_cast<int>(std::llround(scalar_num(4, 60))));
+  // Same reasoning as gene_count above, and the same fix: Population directly
+  // sizes the std::vector<Individual> pop(...) allocation below, and
+  // Population*Generations is how many full-graph re-solves the search runs -
+  // an untrusted-file value must be clamped (on the double, before llround,
+  // so an out-of-range magnitude like 1e300 can't hit llround's own undefined
+  // behavior either) before it reaches either, not just floored.
+  auto scalar_int = [&](int port, double fallback, double lo_v, double hi_v) {
+    return static_cast<int>(std::llround(std::clamp(scalar_num(port, fallback), lo_v, hi_v)));
+  };
+  const int population = scalar_int(3, 40, 4, 10000);
+  const int generations = scalar_int(4, 60, 1, 10000);
   const double mutation_rate = std::clamp(scalar_num(5, 0.15), 0.0, 1.0);
   const unsigned seed = static_cast<unsigned>(std::llround(scalar_num(6, 1)));
 
