@@ -530,6 +530,17 @@ class Document {
   // ---- objects ---------------------------------------------------------
   ObjectId Add(SceneObject object);  // assigns id, current layer if unset
   bool Remove(ObjectId id);
+  // Removes several ids in one O(document size) pass instead of one
+  // Remove(id) per id - each Remove() call is a linear find_if() *and* a
+  // vector::erase() shift of every following element, so a loop of k of
+  // them over an N-object document is O(k*N) at best and degrades toward
+  // O(N^2) when the removed ids are spread across a large fraction of the
+  // document (every erase re-shifts most of what's left). This builds one
+  // selection-sized id set, then does a single erase(remove_if(...)) pass
+  // over objects_ - O(document size + selection size) total, with only one
+  // shift of the survivors instead of one shift per removed id. Returns the
+  // number of objects actually removed.
+  size_t RemoveMany(const std::vector<ObjectId>& ids);
   SceneObject* Find(ObjectId id);
   const SceneObject* Find(ObjectId id) const;
   // Resolves several ids in one O(document size) pass instead of one

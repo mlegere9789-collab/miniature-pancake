@@ -99,6 +99,37 @@ bool Document::Remove(ObjectId id) {
   return true;
 }
 
+// See the RemoveMany() comment on Document.h - builds one selection-sized
+// id set up front, then removes every matching object in a single
+// erase(remove_if(...)) pass over objects_ (one shift of the survivors)
+// instead of one find_if()+erase() cycle per id (one shift per removed
+// id, worst-case O(document size) each). The per-id side-table cleanup
+// below stays a loop over the (small) selection - map/set erase is
+// O(log N) or O(1), not the O(document size) cost this fixes.
+size_t Document::RemoveMany(const std::vector<ObjectId>& ids) {
+  if (ids.empty()) return 0;
+  const std::unordered_set<ObjectId> to_remove(ids.begin(), ids.end());
+  const size_t before = objects_.size();
+  objects_.erase(std::remove_if(objects_.begin(), objects_.end(),
+                                 [&to_remove](const SceneObject& o) { return to_remove.count(o.id) != 0; }),
+                 objects_.end());
+  const size_t removed = before - objects_.size();
+  if (removed == 0) return 0;
+  for (ObjectId id : ids) {
+    hole_features_.erase(id);
+    pipe_features_.erase(id);
+    provenance_.erase(id);
+    squish_features_.erase(id);
+    subd_pack_features_.erase(id);
+    symmetry_links_.erase(id);
+  }
+  for (auto it2 = symmetry_links_.begin(); it2 != symmetry_links_.end();) {
+    if (to_remove.count(it2->second.source_id) != 0) it2 = symmetry_links_.erase(it2); else ++it2;
+  }
+  Touch();
+  return removed;
+}
+
 SceneObject* Document::Find(ObjectId id) {
   for (SceneObject& o : objects_) {
     if (o.id == id) return &o;

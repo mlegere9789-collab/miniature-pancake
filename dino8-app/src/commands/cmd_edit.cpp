@@ -473,7 +473,7 @@ class InsertKnotCommand : public Command {
 void RegisterEditCommands(CommandEngine& e) {
   Reg(e, "Delete", OnSelection("Select objects to delete", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         ctx.Doc().BeginChange("Delete");
-        for (ObjectId id : ids) ctx.Doc().Remove(id);
+        ctx.Doc().RemoveMany(ids);
         std::vector<int> lights;
         for (const Light& l : ctx.Doc().Lights()) if (l.selected) lights.push_back(l.id);
         for (int id : lights) ctx.Doc().RemoveLight(id);
