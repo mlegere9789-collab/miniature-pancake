@@ -16152,6 +16152,104 @@ void TestSubDTessellateFlatRegularPatchIsExactAtCoarsestGrid() {
         "least that face coarse");
 }
 
+void TestSubDBooleanUnionOfDisjointBoxesSumsVolumes() {
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SubD;
+
+  // Two level-0 (unsubdivided) box SubDs: ToApproximateMesh() at level 0
+  // is exactly the control-net mesh handed to FromControlMesh() (no
+  // Catmull-Clark curving has happened yet - see this file's own
+  // TestSubDFromBoxSubdividesToExactCatmullClarkCounts, whose level-0
+  // approx mesh matches the input box's exact V/F counts), so both
+  // operand volumes are exactly hand-derivable (2x2x2=8 each), making
+  // this a real, exact arithmetic check rather than a "looks plausible"
+  // one.
+  const SubD a = SubD::FromControlMesh(MakeQuadBoxMesh(0, 0, 0, 2, 2, 2));
+  const SubD b = SubD::FromControlMesh(MakeQuadBoxMesh(5, 0, 0, 7, 2, 2));
+
+  const Mesh result = a.Boolean(b, BooleanOp::Union);
+  Check(result.IsClosedManifold(),
+        "SubD::Boolean(Union) of two disjoint box SubDs produces a genuine closed manifold "
+        "mesh, not just a plausible-looking triangle soup");
+  Check(std::abs(result.Volume() - 16.0) < 1e-9,
+        "union of two disjoint 2x2x2 box SubDs has exactly the summed volume (8+8=16)");
+}
+
+void TestSubDBooleanIntersectionOfOverlappingBoxesMatchesExactOverlap() {
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SubD;
+
+  // a = [0,2]^3 (volume 8), b = [1,3]^3 (volume 8), overlapping in exactly
+  // [1,2]^3 (volume 1) - a hand-derivable exact intersection, same
+  // reasoning as the disjoint-union test above for why level-0 volumes
+  // are exact.
+  const SubD a = SubD::FromControlMesh(MakeQuadBoxMesh(0, 0, 0, 2, 2, 2));
+  const SubD b = SubD::FromControlMesh(MakeQuadBoxMesh(1, 1, 1, 3, 3, 3));
+
+  const Mesh result = a.Boolean(b, BooleanOp::Intersection);
+  Check(result.IsClosedManifold(), "SubD::Boolean(Intersection) result is a closed manifold mesh");
+  Check(std::abs(result.Volume() - 1.0) < 1e-9,
+        "intersection of [0,2]^3 and [1,3]^3 box SubDs has exactly the overlap volume (1x1x1=1)");
+}
+
+void TestSubDBooleanDifferenceSubtractsOnlyTheOverlap() {
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SubD;
+
+  // Same a/b as the intersection test: a minus b removes only the shared
+  // [1,2]^3 unit-volume overlap, leaving 8-1=7.
+  const SubD a = SubD::FromControlMesh(MakeQuadBoxMesh(0, 0, 0, 2, 2, 2));
+  const SubD b = SubD::FromControlMesh(MakeQuadBoxMesh(1, 1, 1, 3, 3, 3));
+
+  const Mesh result = a.Boolean(b, BooleanOp::Difference);
+  Check(result.IsClosedManifold(), "SubD::Boolean(Difference) result is a closed manifold mesh");
+  Check(std::abs(result.Volume() - 7.0) < 1e-9,
+        "[0,2]^3 minus [1,3]^3 box SubDs leaves exactly volume 8-1=7 (only the overlap removed)");
+}
+
+void TestSubDBooleanRejectsOpenNonManifoldOperand() {
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SubD;
+
+  // A flat, open (non-closed) 1x1 grid - the same shape
+  // TestSubDCheckOpenGridReportsNakedEdgesOnly builds - has 4 naked
+  // boundary edges by construction, so its own ToApproximateMesh() is
+  // genuinely open (not closed/manifold), and the underlying
+  // BooleanCombine() must refuse it rather than silently returning a
+  // corrupt result - the same failure mode BooleanCombine() itself
+  // already documents and this wrapper deliberately adds no code to
+  // mask.
+  Mesh grid;
+  ON_Mesh& raw = grid.raw();
+  raw.m_V.Append(ON_3fPoint(0, 0, 0));
+  raw.m_V.Append(ON_3fPoint(1, 0, 0));
+  raw.m_V.Append(ON_3fPoint(1, 1, 0));
+  raw.m_V.Append(ON_3fPoint(0, 1, 0));
+  ON_MeshFace face;
+  face.vi[0] = 0;
+  face.vi[1] = 1;
+  face.vi[2] = 2;
+  face.vi[3] = 3;
+  raw.m_F.Append(face);
+  const SubD open_patch = SubD::FromControlMesh(grid);
+  const SubD box = SubD::FromControlMesh(MakeQuadBoxMesh(0, 0, 0, 2, 2, 2));
+
+  bool threw = false;
+  try {
+    (void)open_patch.Boolean(box, BooleanOp::Union);
+  } catch (const std::runtime_error&) {
+    threw = true;
+  }
+  Check(threw,
+        "SubD::Boolean throws std::runtime_error when an operand's ToApproximateMesh() is open "
+        "(not closed/manifold), inheriting BooleanCombine()'s own precondition rather than "
+        "silently producing a corrupt result");
+}
+
 void TestMeshComputeVertexNormals() {
   using dino8::kernel::Mesh;
   using dino8::kernel::Vector3d;
@@ -42645,6 +42743,10 @@ int main() {
   TestSubDTessellateFinerGridForTighterTolerance();
   TestSubDTessellateWeldsCubeFacesIntoClosedManifold();
   TestSubDTessellateFlatRegularPatchIsExactAtCoarsestGrid();
+  TestSubDBooleanUnionOfDisjointBoxesSumsVolumes();
+  TestSubDBooleanIntersectionOfOverlappingBoxesMatchesExactOverlap();
+  TestSubDBooleanDifferenceSubtractsOnlyTheOverlap();
+  TestSubDBooleanRejectsOpenNonManifoldOperand();
   TestMeshComputeVertexNormals();
   TestMeshSaveObjRoundTrips();
   TestMeshTextureCoordinates();

@@ -5,6 +5,7 @@
 #include <utility>
 #include <vector>
 
+#include "dino8/kernel/boolean.h"
 #include "dino8/kernel/mesh.h"
 #include "dino8/kernel/surface.h"
 
@@ -236,6 +237,29 @@ class SubD {
   // merge is always safe here. Throws std::runtime_error if OpenNURBS'
   // own call fails.
   Mesh ToApproximateMesh() const;
+
+  // Closes PARITY_MAP.md's subd_mesh "SubD boolean operations" [missing]
+  // item's most basic case: Union/Intersection/Difference/
+  // SymmetricDifference between two SubDs. There is no topological
+  // SubD-to-SubD boolean here (a real "boolean two subdivision cages and
+  // get back a new, editable SubD cage with the right creases/valences at
+  // the cut" is a materially bigger problem - re-triangulating a
+  // subdivision surface's control net at an arbitrary cut curve - out of
+  // scope, same as this file's own established scoping convention e.g.
+  // SubD::FromBrep()'s planar/untrimmed-only limitation). Instead this
+  // converts each operand to its `ToApproximateMesh()` and hands both to
+  // the kernel's real mesh-boolean engine (`dino8::kernel::BooleanCombine`,
+  // boolean.h - Manifold-backed, not a stub), returning the resulting
+  // `Mesh` directly - the exact same "solid-modeling result as a mesh"
+  // scope the app's own BooleanUnion/Difference/Intersection commands
+  // already accept for Brep operands (cmd_boolean.cpp, "mesh-based, via
+  // Manifold"), just reached here starting from two SubDs instead of two
+  // Breps or meshes. Both operands must produce a closed/watertight mesh
+  // from `ToApproximateMesh()` (an open SubD, e.g. a naked-boundary patch,
+  // does not) - `BooleanCombine()`'s own requirement and
+  // std::runtime_error failure mode apply unchanged; this wrapper adds no
+  // further precondition of its own.
+  Mesh Boolean(const SubD& other, BooleanOp op) const;
 
   // Applies `xform` to a copy of this SubD's ENTIRE control cage (every
   // level it currently holds, not just the active one) and returns it -

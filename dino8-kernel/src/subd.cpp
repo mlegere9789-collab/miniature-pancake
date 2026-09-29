@@ -7,6 +7,7 @@
 #include <string>
 #include <unordered_map>
 
+#include "dino8/kernel/boolean.h"
 #include "dino8/kernel/brep.h"
 
 namespace dino8::kernel {
@@ -241,6 +242,15 @@ Mesh SubD::ToApproximateMesh() const {
   // untouched.
   result.raw().CombineIdenticalVertices(/*bIgnoreVertexNormals=*/true, /*bIgnoreTextureCoordinates=*/true);
   return result;
+}
+
+Mesh SubD::Boolean(const SubD& other, BooleanOp op) const {
+  // Both ToApproximateMesh() calls, and BooleanCombine() itself, throw
+  // std::runtime_error on their own respective failures (an unbuildable
+  // control-net mesh; a non-closed/non-manifold operand) - none of that is
+  // caught or reinterpreted here, so a caller sees exactly the failing
+  // step's own message.
+  return BooleanCombine(ToApproximateMesh(), other.ToApproximateMesh(), op);
 }
 
 SubD SubD::Transform(const ON_Xform& xform) const {
