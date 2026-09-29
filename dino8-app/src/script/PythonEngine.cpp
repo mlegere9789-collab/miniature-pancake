@@ -200,6 +200,18 @@ struct PyObjectTable {
     return PyObjId(AddBrepObj(ON_BrepCylinder(cyl, cap, cap), "AddCylinder"));
   }
 
+  // Mirrors rs.AddCone(base, height|apex, radius, cap=true) in
+  // LuaEngine.cpp; like AddCylinder above, axis is taken as a vector
+  // rather than Lua's height-or-apex-point overload.
+  py::object AddCone(Point3d base, Vector3d axis, double radius, bool cap) {
+    const double h = axis.Length();
+    if (h <= 0 || radius <= 0) throw std::runtime_error("AddCone: height and radius must be positive");
+    Vector3d dir = axis;
+    dir.Unitize();
+    ON_Cone cone(ON_Plane(base, dir), h, radius);
+    return PyObjId(AddBrepObj(ON_BrepCone(cone, cap), "AddCone"));
+  }
+
   py::object AddMesh(std::vector<Point3d> verts, std::vector<std::vector<int>> faces) {
     kernel::Mesh m;
     ON_Mesh& r = m.raw();
@@ -327,6 +339,7 @@ PYBIND11_EMBEDDED_MODULE(dino8, m) {
       .def("AddBox", &PyObjectTable::AddBox, py::arg("corner"), py::arg("size"))
       .def("AddSphere", &PyObjectTable::AddSphere, py::arg("center"), py::arg("radius"))
       .def("AddCylinder", &PyObjectTable::AddCylinder, py::arg("base"), py::arg("axis"), py::arg("radius"), py::arg("cap") = true)
+      .def("AddCone", &PyObjectTable::AddCone, py::arg("base"), py::arg("axis"), py::arg("radius"), py::arg("cap") = true)
       .def("AddMesh", &PyObjectTable::AddMesh, py::arg("vertices"), py::arg("faces"))
       .def("Find", &PyObjectTable::Find)
       .def("Delete", &PyObjectTable::Delete)
