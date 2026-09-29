@@ -903,10 +903,29 @@ namespace {
 // ((L1 u L2) - B = (L1 - B) u (L2 - B); likewise for intersection), so
 // `BooleanCombinePlanar` no longer calls this for those two ops - see its
 // own lump-recomputation step for how the result's true lump structure is
-// recovered. `BooleanCombineMixed` still calls this unconditionally for
-// every op (its own cylinder end-cap synthesis has not been proven safe
-// against a compound operand yet - a real, disclosed, still-open gap).
-// Refused with a clear message rather than failing deep inside
+// recovered. `BooleanCombineMixed` now takes the identical exemption for
+// the identical reason (see its own lump-recomputation step, right after
+// its switch statement) - its cylinder end-cap synthesis (SynthesizeEndCaps)
+// turns out to need no lump awareness either: every check it makes (a ray
+// probe classified against `other`'s full face list, a parallel-cylinder
+// crossing/lens-cap test against `other`'s cylindrical faces one at a time)
+// already treats `other` as a flat face list with no notion of which lump
+// a face belongs to, so a multi-lump `other` classifies exactly as
+// correctly as a single-lump one - proven by dedicated tests
+// (TestBooleanCombineMixedIntersectionAcceptsCompoundOperandWithEmbeddedCylinders,
+// tests/test_basic.cpp), not merely assumed. That test also surfaces a
+// separate, real limitation this classification-level safety does NOT
+// extend to: `LumpFaceRanges()` bookkeeping for a compound-input result
+// that carries any CylindricalFace, which stays a best-effort single-lump
+// report rather than a recomputed one - see `BooleanCombineMixed`'s own
+// tail comment for why. `BooleanCombineGeneral` still
+// calls this unconditionally for every op (see its own file-local copy in
+// boolean_general.cpp): its per-face ray-cast classification has no notion
+// of which lump a face belongs to either, but unlike the two engines here
+// it has no lump-recomputation tail step of its own yet, so genuine
+// multi-lump SUPPORT (not just the refusal-vs-silent-mis-processing safety
+// fix already applied there) remains a separate, still-open gap for that
+// engine. Refused with a clear message rather than failing deep inside
 // FromMixedFaces.
 void RefuseCompoundOperand(const Brep& operand, const char* function_name) {
   if (operand.LumpFaceRanges().size() <= 1) return;
@@ -6823,8 +6842,16 @@ std::vector<MixedFace> SynthesizeEndCaps(const std::vector<MixedFace>& fragments
 }  // namespace
 
 Brep BooleanCombineMixed(const Brep& a, const Brep& b, BooleanOp op) {
-  RefuseCompoundOperand(a, "BooleanCombineMixed");
-  RefuseCompoundOperand(b, "BooleanCombineMixed");
+  // Union and SymmetricDifference still need the lump-merge step neither
+  // pipeline here has (see RefuseCompoundOperand's own doc comment) and
+  // stay refused. Difference and Intersection do not - see this function's
+  // own lump-recomputation step at the end for why the pipeline below
+  // needs no other change to already get this right, cylindrical fragments
+  // included.
+  if (op == BooleanOp::Union || op == BooleanOp::SymmetricDifference) {
+    RefuseCompoundOperand(a, "BooleanCombineMixed");
+    RefuseCompoundOperand(b, "BooleanCombineMixed");
+  }
 
   if (op == BooleanOp::SymmetricDifference) {
     // XOR = (A - B) u (B - A) as a Brep::Compound of two lumps - see
@@ -6954,7 +6981,53 @@ Brep BooleanCombineMixed(const Brep& a, const Brep& b, BooleanOp op) {
       out_planar.push_back(f.planar);
     }
   }
-  return Brep::FromMixedFaces(out_planar, out_cyl);
+  Brep combined = Brep::FromMixedFaces(out_planar, out_cyl);
+
+  // Same lump-recomputation tail BooleanCombinePlanar's own Difference/
+  // Intersection support already added (see that function's own doc
+  // comment in this file for the full argument): Difference/Intersection
+  // against a genuinely compound operand can leave the result as two or
+  // more physically disjoint solids, which the classification/reassembly
+  // above already builds correctly (every classification step - the planar
+  // ray-cast parity test, the cylindrical ray-vs-cylinder quadratic, and
+  // SynthesizeEndCaps' own per-face probes - already treats `other` as a
+  // flat face list with no notion of lumps, so a multi-lump `other`
+  // classifies exactly as correctly as a single-lump one), but has no way
+  // to know it was ever fed a compound operand, so it never records that
+  // split in lump_face_ranges_.
+  //
+  // A real, previously-undocumented limitation found while building this,
+  // not assumed: unlike BooleanCombinePlanar's purely-planar
+  // FromPlanarFaces() output, a FromMixedFaces() result carrying any
+  // CylindricalFace does NOT have genuine ON_Brep edge/vertex topology
+  // between that wall and its own (real or synthesized) planar end caps -
+  // confirmed directly by a standalone SplitDisjointPieces() probe on a
+  // plain Intersection of a box against a two-boss compound tool: it
+  // wrongly reports SIX pieces (one per end-cap wedge group, plus one per
+  // bare cylindrical wall) for what is geometrically two disjoint,
+  // genuinely closed solids - not because the geometry is wrong (both
+  // fully-embedded bosses tessellate correctly closed, with the correct
+  // combined volume - see
+  // TestBooleanCombineMixedIntersectionAcceptsCompoundOperandWithEmbeddedCylinders'
+  // own checks), but because SplitDisjointPieces() walks REAL loop/trim/
+  // edge records only, and this kernel's own cylindrical-wall/cap-splice
+  // construction never builds one between them (the SAME already-
+  // disclosed "genuine topology" gap PARITY_MAP.md's own kernel: Topology
+  // & data structure category names for Box()/Sphere()/Thicken()/
+  // ExtrudeFace(), now found to affect Mixed-engine end-cap synthesis
+  // too). So the recomputation below only runs when the result is PURELY
+  // planar (out_cyl.empty()) - the one case genuinely proven safe,
+  // matching BooleanCombinePlanar's own proven scope exactly. A result
+  // carrying any cylindrical face keeps the same best-effort single-lump
+  // report every other (non-compound-input) BooleanCombineMixed call
+  // already has, rather than a confidently wrong over-fragmented one -
+  // still correct geometry and volume, just not lump-aware bookkeeping,
+  // for that disclosed case.
+  if (out_cyl.empty() && (a.LumpFaceRanges().size() > 1 || b.LumpFaceRanges().size() > 1)) {
+    std::vector<Brep> pieces = combined.SplitDisjointPieces();
+    if (pieces.size() > 1) return Brep::Compound(pieces);
+  }
+  return combined;
 }
 
 Brep BooleanCombineMixedNAry(const std::vector<Brep>& first_group, const std::vector<Brep>& second_group,

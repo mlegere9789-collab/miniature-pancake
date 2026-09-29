@@ -31605,21 +31605,38 @@ void TestBooleanCombineMixedChainedNegativeControls() {
     }
     Check(built, "the compound-operand refusal's fixture (a two-box SymmetricDifference) builds");
     const Brep other = Brep::Box(5, 5, 5, 7, 7, 7);  // disjoint from both lumps of boxes_sd
-    // BooleanCombineMixed still refuses a compound operand for every op (its own cylinder end-cap synthesis is not
-    // proven safe against one yet - see RefuseCompoundOperand's own doc comment in boolean.cpp). BooleanCombinePlanar
-    // no longer refuses a compound operand outright for Difference/Intersection (a NEW, real capability this pass
-    // adds - see TestBooleanCombinePlanarDifferenceAccepts*Compound* above for the dedicated coverage), but boxes_sd
-    // is specifically the corner-overlap fixture whose own two lumps genuinely TOUCH, so its own Difference call
-    // below still throws - a different, pre-existing error than the outright compound refusal - since nothing about
-    // this particular op ever separates that contact curve; this shared negative-control loop is updated to expect
-    // exactly that, not to lose coverage of the two ops that still (correctly) refuse outright.
+    // BooleanCombineMixed still refuses a compound operand outright for Union/SymmetricDifference, exactly like
+    // BooleanCombinePlanar (unchanged by this pass). For Difference, BooleanCombineMixed now takes the identical
+    // exemption BooleanCombinePlanar already had - a NEW, real capability this pass adds (see
+    // TestBooleanCombineMixed*Compound* above for the dedicated coverage) - but boxes_sd is specifically the
+    // corner-overlap fixture whose own two lumps genuinely TOUCH, so its own Difference call below still throws -
+    // a different, pre-existing error than the outright compound refusal - since nothing about this particular op
+    // ever separates that contact curve; this shared negative-control loop is updated to expect exactly that, not
+    // to lose coverage of the two ops that still (correctly) refuse outright.
     for (const BooleanOp op : {BooleanOp::Union, BooleanOp::Difference, BooleanOp::SymmetricDifference}) {
       if (!built) break;
       const ChainedMeasurement mixed = MeasureChained([&] { return BooleanCombineMixed(boxes_sd, other, op); });
       const ChainedMeasurement mixed_rev = MeasureChained([&] { return BooleanCombineMixed(other, boxes_sd, op); });
-      Check(mixed.threw && mixed.message.find("Brep::Compound of several lumps") != std::string::npos && mixed_rev.threw,
-            "a two-lump compound (a SymmetricDifference result) is refused as EITHER operand of BooleanCombineMixed "
-            "for Union, Difference and SymmetricDifference alike - unchanged by this pass");
+      if (op == BooleanOp::Difference) {
+        // Same asymmetry BooleanCombinePlanar's own Difference branch below already establishes: boxes_sd's own
+        // two lumps genuinely touch, so as the FIRST operand every one of its 48 faces flows straight through into
+        // one FromMixedFaces() reassembly, hitting the pre-existing "edge is shared by 3 or more faces" refusal -
+        // but as the SECOND operand (the tool), none of its faces ever enter the result at all (other is disjoint
+        // from it), so only other's own faces are reassembled and the call succeeds outright.
+        Check(mixed.threw && mixed.message.find("Brep::Compound of several lumps") == std::string::npos &&
+                  mixed.message.find("edge is shared by 3 or more faces") != std::string::npos,
+              "BooleanCombineMixed Difference no longer refuses this compound operand outright, but still throws "
+              "the pre-existing non-manifold reassembly error - boxes_sd's own two lumps genuinely touch, and "
+              "nothing about this op (other is disjoint from both) ever separates them");
+        Check(!mixed_rev.threw && mixed_rev.lumps.size() == 1 && Within(mixed_rev.volume, 8.0, 1e-9),
+              "BooleanCombineMixed Difference DOES accept this compound as its SECOND operand: none of boxes_sd's "
+              "own (touching) faces ever enter the result at all here (other is disjoint from it), so only "
+              "other's own faces are reassembled - other unchanged, a single lump of volume 8");
+      } else {
+        Check(mixed.threw && mixed.message.find("Brep::Compound of several lumps") != std::string::npos && mixed_rev.threw,
+              "a two-lump compound (a SymmetricDifference result) is refused as EITHER operand of BooleanCombineMixed "
+              "for Union/SymmetricDifference - unchanged by this pass");
+      }
       const ChainedMeasurement planar = MeasureChained([&] { return BooleanCombinePlanar(boxes_sd, other, op); });
       if (op == BooleanOp::Difference) {
         // boxes_sd's own two lumps genuinely TOUCH along the overlap cube's boundary (a corner-overlap
@@ -32193,6 +32210,229 @@ void TestBooleanCombinePlanarUnionAndXorStillRefuseCompoundOperand() {
     }
     Check(threw, "Union/SymmetricDifference still refuse a compound second operand too");
   }
+}
+
+// BooleanCombineMixed's own compound-operand support (boolean.cpp): closes
+// the "BooleanCombineMixed still refuses a compound operand for every op"
+// half of the "Multi-body / multi-tool booleans" PARITY_MAP.md bullet's
+// own previously-named gap - Difference and Intersection now accept a
+// Brep::Compound() of two or more lumps as either operand, the identical
+// exemption BooleanCombinePlanar already has (Union/SymmetricDifference
+// still refuse one). Pure-planar fixtures below are the direct Mixed-engine
+// analogue of BooleanCombinePlanar's own compound tests above (same
+// numbers, same shapes) - proof that routing a planar-only operand through
+// the Mixed engine's own MixedFace pipeline (SynthesizeEndCaps included,
+// even though it finds zero cylindrical fragments here) reaches the exact
+// same answer.
+void TestBooleanCombineMixedDifferenceAcceptsCompoundFirstOperand() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+
+  const Brep box1 = Brep::Box(0, 0, 0, 2, 2, 2);        // volume 8
+  const Brep box2 = Brep::Box(10, 10, 10, 12, 12, 12);  // volume 8, far away
+  const Brep compound_a = Brep::Compound({box1, box2});
+  Check(compound_a.LumpFaceRanges().size() == 2, "the fixture itself is a genuine two-lump compound");
+
+  const Brep cutter = Brep::Box(1, 1, 1, 3, 3, 3);  // overlaps box1 by the unit cube [1,2]^3 only
+  const ChainedMeasurement m =
+      MeasureChained([&] { return BooleanCombineMixed(compound_a, cutter, BooleanOp::Difference); });
+  Check(!m.threw, "Difference no longer refuses a compound first operand");
+  if (m.threw) return;
+  Check(m.valid && m.solid, "the result passes ON_Brep::IsValid()/IsSolid() (a compound of two valid solid lumps)");
+  Check(m.lumps.size() == 2,
+        "the result's own LumpFaceRanges() reports the true two-lump split - box2 was never touched by the cutter, "
+        "so it survives as its own separate lump rather than being silently fused with box1's remainder");
+  Check(Within(m.volume, 15.0, 1e-9),
+        "volume is exactly (box1 - cutter) + box2 = 7 + 8 = 15 - the cutter never reaches box2 at all");
+}
+
+void TestBooleanCombineMixedIntersectionAcceptsCompoundOperand() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+
+  const Brep box1 = Brep::Box(0, 0, 0, 2, 2, 2);
+  const Brep box2 = Brep::Box(3, 0, 0, 5, 2, 2);  // disjoint from box1 (a gap from x=2 to x=3)
+  const Brep compound_a = Brep::Compound({box1, box2});
+
+  const Brep tool = Brep::Box(1, 0, 0, 4, 2, 2);  // overlaps box1 in [1,2] and box2 in [3,4], 4 each
+  const ChainedMeasurement m =
+      MeasureChained([&] { return BooleanCombineMixed(compound_a, tool, BooleanOp::Intersection); });
+  Check(!m.threw, "Intersection no longer refuses a compound first operand");
+  if (m.threw) return;
+  Check(m.valid && m.solid, "the result passes ON_Brep::IsValid()/IsSolid()");
+  Check(m.lumps.size() == 2,
+        "box1's overlap with the tool and box2's overlap with the tool are geometrically disjoint from each other "
+        "(the tool never bridges them), so the result is correctly split into two separate lumps");
+  Check(Within(m.volume, 8.0, 1e-9),
+        "volume is exactly (box1 n tool) + (box2 n tool) = 4 + 4 = 8, pairwise-distributed over compound_a's lumps");
+}
+
+// The actual point of this pass: BooleanCombineMixed's own cylinder
+// end-cap synthesis (SynthesizeEndCaps) was the one thing PARITY_MAP.md's
+// own gap named as "not proven safe against a compound operand" - so this
+// fixture specifically stresses it, not just the planar path the two
+// tests above already cover. `b` is a genuinely two-lump compound of TWO
+// disjoint, fully-embedded cylindrical bosses (the identical fixture shape
+// TestBooleanCombineMixedIntersectionFullyEmbeddedBothEndsCapped's own
+// single-cylinder case uses, doubled): NEITHER cylinder ever touches box's
+// own side walls or the other cylinder, so each needs a synthesized cap at
+// BOTH its own ends, checked against `other` = `a`'s own faces (the box) -
+// `other` never depends on which lump of `b` the fragment being capped
+// came from, so a two-lump `b` exercises exactly the same SynthesizeEndCaps
+// code path as two independent single-cylinder calls would.
+void TestBooleanCombineMixedIntersectionAcceptsCompoundOperandWithEmbeddedCylinders() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+
+  auto make_boss = [](double cx, double cy, double z0, double radius, double length) {
+    Brep::CylindricalFace boss;
+    boss.frame.origin = Point3d(cx, cy, z0);
+    boss.frame.xaxis = Vector3d(1, 0, 0);
+    boss.frame.yaxis = Vector3d(0, 1, 0);
+    boss.frame.zaxis = Vector3d(0, 0, 1);
+    boss.frame.UpdateEquation();
+    boss.radius = radius;
+    boss.angle = 2.0 * ON_PI;
+    boss.length = length;
+    return Brep::FromMixedFaces({}, {boss});
+  };
+
+  // Two radially-separated, axially-identical embedded bosses (centers 4
+  // units apart, radius 1 each - closest approach is 2, so they never
+  // touch), each fully inside the box (z in [3,7], far from every wall).
+  const Brep boss1 = make_boss(3.0, 5.0, 3.0, 1.0, 4.0);
+  const Brep boss2 = make_boss(7.0, 5.0, 3.0, 1.0, 4.0);
+  const Brep compound_tool = Brep::Compound({boss1, boss2});
+  Check(compound_tool.LumpFaceRanges().size() == 2, "the fixture itself is a genuine two-lump compound");
+
+  const ChainedMeasurement m =
+      MeasureChained([&] { return BooleanCombineMixed(box, compound_tool, BooleanOp::Intersection); });
+  Check(!m.threw, "Intersection no longer refuses a compound second operand, even one built entirely of "
+                  "cylindrical fragments needing their own end-cap synthesis");
+  if (m.threw) return;
+  // A real, previously-undocumented limitation found while building this,
+  // not assumed: LumpFaceRanges() recomputation (BooleanCombinePlanar's own
+  // SplitDisjointPieces()/Brep::Compound() tail, which BooleanCombineMixed
+  // now shares) only runs for a purely PLANAR result - a result carrying
+  // any CylindricalFace, like this one, does not have genuine ON_Brep
+  // edge/vertex topology between a cylindrical wall and its own end caps
+  // (confirmed directly: a standalone SplitDisjointPieces() probe on this
+  // exact fixture reports SIX pieces - one per end-cap wedge group plus one
+  // per bare wall - not the two genuine physical solids), so
+  // BooleanCombineMixed deliberately skips the recomputation here rather
+  // than emit that confidently wrong over-fragmented split, keeping the
+  // same best-effort single-lump report every other (non-compound-input)
+  // call already has. See BooleanCombineMixed's own tail comment in
+  // boolean.cpp for the full argument - this is a disclosed bookkeeping
+  // gap, not a hint that the geometry itself is wrong: the checks below
+  // confirm the actual combined SHAPE (closure, volume) is exactly right.
+  Check(m.lumps.size() == 1,
+        "LumpFaceRanges() is NOT recomputed for a cylindrical-face-bearing result (the disclosed scope limit above) "
+        "- it keeps the untouched best-effort single-lump report, even though the two bosses are genuinely disjoint "
+        "solids");
+  Check(m.conforming_closed,
+        "the tessellated result is a genuinely CLOSED manifold - both bosses need a synthesized cap at BOTH their "
+        "own ends (box ⊃ each cylinder), exactly like the single-cylinder fixture this test's own fixture doubles");
+
+  const double hand_derived_volume = 2.0 * ON_PI * 1.0 * 1.0 * 4.0;  // 2 * pi*r^2*h, ~= 25.13274
+  Check(std::fabs(m.conforming_volume - hand_derived_volume) < 0.05,
+        "tessellated volume matches the hand-derived sum of both bosses' own pi*r^2*h to within a bounded "
+        "arc-sampling/tessellation tolerance, confirming end-cap synthesis against a compound `other` reaches the "
+        "identical answer two independent single-cylinder Intersection calls would");
+}
+
+// Regression check: Union and SymmetricDifference must still refuse a
+// compound operand exactly as before - this pass narrows the refusal, it
+// does not remove it.
+void TestBooleanCombineMixedUnionAndXorStillRefuseCompoundOperand() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+
+  const Brep box1 = Brep::Box(0, 0, 0, 2, 2, 2);
+  const Brep box2 = Brep::Box(10, 10, 10, 12, 12, 12);
+  const Brep compound_a = Brep::Compound({box1, box2});
+  const Brep other = Brep::Box(1, 1, 1, 3, 3, 3);
+
+  for (const BooleanOp op : {BooleanOp::Union, BooleanOp::SymmetricDifference}) {
+    bool threw = false;
+    std::string message;
+    try {
+      BooleanCombineMixed(compound_a, other, op);
+    } catch (const std::invalid_argument& e) {
+      threw = true;
+      message = e.what();
+    }
+    Check(threw && message.find("Brep::Compound") != std::string::npos,
+          "Union/SymmetricDifference still refuse a compound first operand, naming the precondition");
+  }
+  for (const BooleanOp op : {BooleanOp::Union, BooleanOp::SymmetricDifference}) {
+    bool threw = false;
+    try {
+      BooleanCombineMixed(other, compound_a, op);
+    } catch (const std::invalid_argument&) {
+      threw = true;
+    }
+    Check(threw, "Union/SymmetricDifference still refuse a compound second operand too");
+  }
+}
+
+// The contrasting, still-refused case, mirroring
+// TestBooleanCombinePlanarDifferenceThrowsOnTouchingLumpXorCompound: a
+// CORNER-overlap SymmetricDifference (built via BooleanCombineMixed's own
+// SymmetricDifference branch, on pure-box operands) has its two lumps
+// genuinely TOUCH along the overlap cube's own boundary curve, so
+// subtracting a disjoint `other` still hits the exact pre-existing "edge
+// is shared by 3 or more faces" refusal Union/SymmetricDifference's own
+// compound refusal exists to avoid.
+void TestBooleanCombineMixedDifferenceThrowsOnTouchingLumpXorCompound() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+
+  const Brep a = Brep::Box(0, 0, 0, 2, 2, 2);
+  const Brep b = Brep::Box(1, 1, 1, 3, 3, 3);
+  const Brep xor_result = BooleanCombineMixed(a, b, BooleanOp::SymmetricDifference);
+  Check(xor_result.LumpFaceRanges().size() == 2, "the XOR fixture is the known two-lump, genuinely touching compound");
+
+  const Brep far_away = Brep::Box(100, 100, 100, 102, 102, 102);  // disjoint from both XOR lumps
+  const ChainedMeasurement m =
+      MeasureChained([&] { return BooleanCombineMixed(xor_result, far_away, BooleanOp::Difference); });
+  Check(m.threw && m.message.find("edge is shared by 3 or more faces") != std::string::npos,
+        "Difference against a compound whose own lumps genuinely touch along a contact curve still throws the "
+        "pre-existing non-manifold reassembly refusal, not a silently wrong shape - a real, disclosed scope limit "
+        "of this pass's new compound-operand support, not an outright compound refusal");
+}
+
+// BooleanCombineMixedNAry's own single-element-group edge case named in
+// boolean.h's own doc comment, verified directly rather than assumed: a
+// single-element first_group is never folded via Union at all (fold_union
+// returns group.front() directly), so a compound Brep passed as that one
+// element reaches the final BooleanCombineMixed(folded_first,
+// folded_second, op) call untouched - which, for op == Difference, now
+// accepts it.
+void TestBooleanCombineMixedNArySingleElementCompoundGroupReachesFinalCombine() {
+  using dino8::kernel::BooleanCombineMixedNAry;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+
+  const Brep box1 = Brep::Box(0, 0, 0, 2, 2, 2);        // volume 8
+  const Brep box2 = Brep::Box(10, 10, 10, 12, 12, 12);  // volume 8, far away
+  const Brep compound_a = Brep::Compound({box1, box2});
+  const Brep cutter = Brep::Box(1, 1, 1, 3, 3, 3);  // overlaps box1 by the unit cube [1,2]^3 only
+
+  const Brep result = BooleanCombineMixedNAry({compound_a}, {cutter}, BooleanOp::Difference);
+  Check(Within(NAryTestVolume(result), 15.0, 1e-9),
+        "a single-element first_group that is itself a two-lump compound reaches BooleanCombineMixedNAry's own "
+        "final Difference combine untouched, and is accepted there: (box1 - cutter) + box2 = 7 + 8 = 15");
 }
 
 // BooleanCombineGeneralNAry: same shape again, for the general SSX-driven
@@ -45606,6 +45846,12 @@ int main() {
   TestBooleanCombinePlanarDifferenceAcceptsGapSeparatedXorCompound();
   TestBooleanCombinePlanarDifferenceThrowsOnTouchingLumpXorCompound();
   TestBooleanCombinePlanarUnionAndXorStillRefuseCompoundOperand();
+  TestBooleanCombineMixedDifferenceAcceptsCompoundFirstOperand();
+  TestBooleanCombineMixedIntersectionAcceptsCompoundOperand();
+  TestBooleanCombineMixedIntersectionAcceptsCompoundOperandWithEmbeddedCylinders();
+  TestBooleanCombineMixedUnionAndXorStillRefuseCompoundOperand();
+  TestBooleanCombineMixedDifferenceThrowsOnTouchingLumpXorCompound();
+  TestBooleanCombineMixedNArySingleElementCompoundGroupReachesFinalCombine();
   TestBooleanCombineGeneralNAryUnionThreeOverlappingBoxesMatchesInclusionExclusion();
   TestBooleanCombineGeneralNAryDifferenceSubtractsEveryToolInSecondGroup();
   TestBooleanCombineGeneralNAryCallerToleranceForwardedToEveryPairwiseCall();

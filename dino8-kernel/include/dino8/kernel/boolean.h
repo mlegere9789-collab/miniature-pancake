@@ -1884,6 +1884,50 @@ Brep DeleteFaceHealConvexPlanar(const Brep& solid, int face_index);
 // graze-the-boundary fallback (try the next GenericRayDirections() entry)
 // carries over unchanged in spirit, generalized to also detect a graze on
 // a cylindrical face's own (angle, height) rectangle boundary.
+//
+// `op == Difference` or `op == Intersection` also accepts a `a` and/or `b`
+// that is itself a `Brep::Compound()` of two or more lumps - the same
+// exemption `BooleanCombinePlanar` already has, for the identical reason
+// (`op == Union`/`SymmetricDifference` still refuse one; see
+// RefuseCompoundOperand's own doc comment in boolean.cpp). This was left
+// open the first time `BooleanCombinePlanar` gained it, since this
+// function's own cylindrical end-cap synthesis (SynthesizeEndCaps) was not
+// yet proven safe against a multi-lump `other` - checked directly, not
+// merely assumed: every classification step this function makes (the
+// planar ray-cast parity test, the cylindrical ray-vs-cylinder quadratic,
+// and SynthesizeEndCaps' own per-face probes, including its parallel-
+// cylinder crossing/lens-cap logic) already treats `other` as a flat face
+// list with no notion of which lump a face came from, so a multi-lump
+// `other` classifies exactly as correctly as a single-lump one - the SAME
+// reason `ClassifyPointVsSolid` already made this safe for the planar
+// engine. The result's true lump structure is re-derived the same way
+// `BooleanCombinePlanar` does (via SplitDisjointPieces()/Brep::Compound()
+// at this function's own tail), but ONLY when the result is purely planar
+// (no CylindricalFace at all) - a real, previously-undocumented limitation
+// found while building this, not assumed: a result carrying any
+// CylindricalFace does not have genuine ON_Brep edge/vertex topology
+// between that wall and its own (real or synthesized) planar end caps, so
+// SplitDisjointPieces() (which walks REAL loop/trim/edge records only)
+// wrongly over-fragments it - one piece per end-cap wedge group plus one
+// per bare cylindrical wall, not one piece per genuine physical solid
+// (confirmed directly by a standalone probe, not merely argued - see this
+// function's own .cpp comment for the exact repro). This is the SAME
+// already-disclosed "genuine topology" gap PARITY_MAP.md's own kernel:
+// Topology & data structure category names for Box()/Sphere()/Thicken()/
+// ExtrudeFace(), now found to affect this function's own end-cap
+// synthesis too - not a new defect, and not one this function's own
+// boolean math is wrong about: a cylindrical-face-bearing result from a
+// compound operand is still the CORRECT combined shape (genuinely closed,
+// correct volume - see TestBooleanCombineMixedIntersectionAcceptsCompoundOperandWithEmbeddedCylinders,
+// tests/test_basic.cpp), it simply keeps the same best-effort single-lump
+// `LumpFaceRanges()` report every other (non-compound-input) call to this
+// function already has, rather than a confidently wrong over-fragmented
+// one.
+// Same real, disclosed scope limit as the planar engine, independent of
+// the above: a compound operand whose own lumps genuinely touch along a
+// shared contact curve still throws the pre-existing "an edge is shared by
+// 3 or more faces" refusal, since nothing about Difference/Intersection
+// separates that contact curve on its own.
 Brep BooleanCombineMixed(const Brep& a, const Brep& b, BooleanOp op);
 
 // Combines an arbitrary number of operands into ONE result via repeated
@@ -1922,13 +1966,22 @@ Brep BooleanCombineMixed(const Brep& a, const Brep& b, BooleanOp op);
 // to mean anything).
 //
 // Each individual pairwise call inherits BooleanCombineMixed's own
-// requirements and failure mode unchanged - in particular, every operand
-// in either group must itself be a single-lump Brep
-// (RefuseCompoundOperand still applies at each pairwise step this
-// function makes). This function does NOT add support for compound
-// (multi-lump) operands - that stays the real, still-disclosed gap this
-// same PARITY_MAP.md bullet also names ("B-rep XOR returns a two-lump
-// Compound... compound operands are refused by the planar/mixed
+// requirements and failure mode unchanged. Every fold-union step
+// (`fold_union`'s own internal BooleanCombineMixed(..., Union) calls, for
+// any group with 2+ elements) still refuses a compound element, since
+// `op == Union` never gained the compound-operand exemption the other two
+// ops did (see BooleanCombineMixed's own doc comment above). A
+// SINGLE-element group is never folded at all (its one element is used
+// directly, with no BooleanCombineMixed call in between) - so a one-
+// element `first_group`/`second_group` that is itself compound reaches
+// the final combine step untouched, and for `op == Intersection`/
+// `Difference` that final BooleanCombineMixed(folded_first, folded_second,
+// op) call now inherits its own compound-operand exemption for those two
+// ops, accepting it. This function does NOT add support for a compound
+// operand ANYWHERE inside a multi-element group's own fold chain (still
+// refused there, `op` regardless) - that stays the real, still-disclosed
+// gap this same PARITY_MAP.md bullet also names ("B-rep XOR returns a
+// two-lump Compound... compound operands are refused by the planar/mixed
 // engines").
 Brep BooleanCombineMixedNAry(const std::vector<Brep>& first_group, const std::vector<Brep>& second_group,
                               BooleanOp op);

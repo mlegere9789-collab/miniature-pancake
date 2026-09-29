@@ -2309,6 +2309,68 @@ failure was resolved by an intervening change or was itself intermittent is
 not investigated here (out of this note's own scope). The kernel-only
 headline is unaffected (no bucket moved).*
 
+*Eighth note on this category's score (this pass): `BooleanCombineMixed`
+(boolean.cpp) closes the other half of the "Multi-body / multi-tool
+booleans" bullet's own previously-named gap the Seventh note left open —
+"`BooleanCombineMixed` still refuses a compound operand for every op too."
+`Difference`/`Intersection` now take the identical exemption
+`BooleanCombinePlanar` already has (`Union`/`SymmetricDifference` still
+refuse one; see `RefuseCompoundOperand`'s own doc comment in boolean.cpp),
+closing the last of the three B-rep engines' own outright refusals for
+those two ops. This was left open the first time `BooleanCombinePlanar`
+gained the exemption specifically because this engine's own cylindrical
+end-cap synthesis (`SynthesizeEndCaps`) was not yet proven safe against a
+multi-lump `other` — checked directly this pass, not merely assumed: every
+classification step this function makes (the planar ray-cast parity test,
+the cylindrical ray-vs-cylinder quadratic, and `SynthesizeEndCaps`' own
+per-face probes, including its parallel-cylinder crossing/lens-cap logic)
+already treats `other` as a flat face list with no notion of which lump a
+face came from, so a multi-lump `other` classifies exactly as correctly as
+a single-lump one. Verified
+(`TestBooleanCombineMixedDifferenceAcceptsCompoundFirstOperand`,
+`TestBooleanCombineMixedIntersectionAcceptsCompoundOperand`,
+`TestBooleanCombineMixedIntersectionAcceptsCompoundOperandWithEmbeddedCylinders`,
+`TestBooleanCombineMixedDifferenceThrowsOnTouchingLumpXorCompound`,
+`TestBooleanCombineMixedUnionAndXorStillRefuseCompoundOperand`,
+`TestBooleanCombineMixedNArySingleElementCompoundGroupReachesFinalCombine`,
+tests/test_basic.cpp) against the same shapes of fixture the Planar/General
+NAry notes above already established (a gap-separated two-lump target, a
+disjoint two-lump tool, a corner-overlap XOR compound still hitting the
+pre-existing non-manifold refusal), plus a fixture this pass adds
+specifically to stress the cylindrical concern above: a compound *tool*
+built entirely of two disjoint, fully-embedded cylindrical bosses inside a
+box, each needing its own synthesized end cap at both ends.
+**A real, previously-undocumented limitation found while building this, not
+assumed:** unlike `BooleanCombinePlanar`'s purely-planar output, a
+`BooleanCombineMixed` result carrying any `CylindricalFace` does not have
+genuine `ON_Brep` edge/vertex topology between that wall and its own (real
+or synthesized) planar end caps — confirmed directly by a standalone
+`SplitDisjointPieces()` probe on the embedded-bosses fixture above, which
+wrongly reports SIX pieces (one per end-cap wedge group, plus one per bare
+cylindrical wall) for what is geometrically two disjoint, genuinely closed
+solids. This is the SAME already-disclosed "genuine topology" gap this
+document's own **kernel: Topology & data structure** category names for
+`Box()`/`Sphere()`/`Thicken()`/`ExtrudeFace()`, now found to affect this
+engine's own end-cap synthesis too — not a defect in the actual boolean
+math (the embedded-bosses fixture's own tessellated result is genuinely
+closed with the exactly-correct combined volume), only in
+`LumpFaceRanges()` bookkeeping. So `BooleanCombineMixed`'s own
+lump-recomputation tail (the same `SplitDisjointPieces()`/`Brep::Compound()`
+step `BooleanCombinePlanar` uses) runs ONLY when the result is purely planar
+(no `CylindricalFace` at all); a cylindrical-face-bearing result from a
+compound operand keeps the same best-effort single-lump report every other
+(non-compound-input) call already has, rather than a confidently wrong
+over-fragmented one. Still partial: genuine multi-lump/Compound operand
+SUPPORT for `BooleanCombineGeneral` (the bullet's other, larger named gap)
+remains unimplemented; a compound operand mid-fold in either N-ary wrapper
+still refuses (unchanged); no app command calls any of these engines at
+all; and the newly-found cylindrical lump-bookkeeping gap above is itself a
+real, disclosed scope limit, not a flip to `present`. Same "genuine new
+evidence, unchanged partial score" pattern as the notes above — the
+category's 8/15/2/25 (62.0%) split is unchanged. Full `dino8_kernel_tests`
+suite: 100% passing (5727 checks, 0 failures, exit code 0), 0 regressions.
+The kernel-only headline is unaffected (no bucket moved).*
+
 **Blending & chamfering** (blending):
 - [partial] Constant-radius edge fillet on curved adjacent faces (cylinder/plane, cylinder/cylinder, freeform, closed/periodic rims) with B-rep trimming — every kernel fillet still requires both adjacent faces to be planar (fillet.h:147-159), so fillets cannot be chained onto a solid that already carries a curved face. App `FilletEdge` produces a genuine B-rep trim only when both faces are planar (cmd_fillet.cpp:175, "exact for planes; approximate elsewhere").
 - [partial] Concave (internal) edge fillet — kernel-native and exact: `FilletConcaveEdge` (fillet.cpp:1070 — corrected 2026-09-28, was mis-cited fillet.cpp:989; fillet.h:162-270) builds the mirrored rolling-ball construction with outward=false, closing perpendicular and oblique third faces; `FilletConcaveEdges` (fillet.cpp:2746; fillet.h:1111-1205) fillets several independent edges plus m==3 trihedral concave spherical corners. Still partial: planar faces only, one radius, m>=2 or higher-valence corners throw, oblique third faces out of scope for `FilletConcaveEdges`, a mixed convex+concave solid cannot be fully filleted, nothing in the app calls it.
