@@ -2339,7 +2339,17 @@ if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/de
 else
   D2="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 150 --script "$TMPW/drafting2_script.txt" 2>&1)" || { echo "$D2"; echo "FAIL: drafting2 script exited non-zero"; exit 1; }
 fi
-d2check() { if echo "$D2" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$D2" "$1"; fail=1; fi; }
+# A here-string, not a pipe: with `set -o pipefail`, `echo "$D2" | grep -q`
+# can spuriously report failure even when grep finds its match - grep -q
+# exits as soon as it sees the match, closing its end of the pipe; if $D2
+# is bigger than one pipe buffer (drafting2_script.txt's output comfortably
+# is) and the match is early, the still-writing `echo` gets SIGPIPE on its
+# next write() and pipefail reports *that* exit status (128+SIGPIPE) as the
+# pipeline's, masking grep's real (successful) result. A here-string feeds
+# grep directly with no separate writer process to race, so grep's own exit
+# status is the only one that matters - same BRE matching semantics as
+# echo | grep -q, just not racy under a large enough $D2.
+d2check() { if grep -q -- "$1" <<< "$D2"; then echo "ok   $2"; else echo "FAIL $2"; near "$D2" "$1"; fail=1; fi; }
 d2check "Hatch: 1 boundary(ies) hatched (ANSI31)" "Hatch used the ANSI31 library pattern"
 d2check "Table: 2x2 table created" "Table built a 2x2 grid"
 d2check "TableEdit: table rebuilt (2x2)" "TableEdit rebuilt the table in place"
@@ -2356,7 +2366,7 @@ d2check "MultiLeader: 2 arrow(s), \"Note\"" "MultiLeader built two arrows to one
 D2_DIMTOL_COUNT=$(echo "$D2" | grep -c "DimTolerance: 1 dimension(s) updated")
 if [ "$D2_DIMTOL_COUNT" = "2" ]; then echo "ok   DimTolerance ran twice, each updating the dimension"; else echo "FAIL DimTolerance ran twice, each updating the dimension"; fail=1; fi
 d2check "Text = .*0\.03" "the rebuilt dimension text carries the second (0.03) tolerance"
-if echo "$D2" | grep -q "Text = .*0\.02.*0\.03\|Text = .*0\.03.*0\.02.*0\.02"; then echo "FAIL DimTolerance compounded the suffix on the second run"; fail=1; else echo "ok   DimTolerance did not compound the suffix on the second run"; fi
+if grep -q -- "Text = .*0\.02.*0\.03\|Text = .*0\.03.*0\.02.*0\.02" <<< "$D2"; then echo "FAIL DimTolerance compounded the suffix on the second run"; fail=1; else echo "ok   DimTolerance did not compound the suffix on the second run"; fi
 d2check "BillOfMaterials: " "BillOfMaterials built a table over the scene objects"
 d2check "SectionView: " "SectionView sliced the box"
 d2check "UpdateSectionViews: 1 section view(s) regenerated" "UpdateSectionViews rebuilt the section from its stored plane"
@@ -2407,8 +2417,8 @@ D2_REGEN4_COUNT=$(echo "$D2" | grep -c "UpdateDimensions: 4 dimension(s) regener
 [ "$D2_REGEN4_COUNT" = "2" ] && echo "ok   UpdateDimensions regenerated all 4 associative dimensions with 0 skipped, both before Save and again after Open" || { echo "FAIL UpdateDimensions: 4 dimension(s) regenerated seen $D2_REGEN4_COUNT times, expected 2 (some dimensions failed to resolve after the .3dm round trip)"; fail=1; }
 D2_ML_LANDING_COUNT=$(echo "$D2" | grep -c "UpdateMultiLeaders:   now 2 arrow(s) at landing 720,5,0")
 [ "$D2_ML_LANDING_COUNT" = "2" ] && echo "ok   the associative MultiLeader round-tripped and was redrawn on every UpdateMultiLeaders call, including after Open" || { echo "FAIL MultiLeader redrawn $D2_ML_LANDING_COUNT times, expected 2 (associativity did not survive the .3dm round trip)"; fail=1; }
-D2_ML_REGEN_COUNT=$(echo "$D2" | grep -c "UpdateMultiLeaders: 1 multi-leader(s) regenerated")
-[ "$D2_ML_REGEN_COUNT" = "2" ] && echo "ok   UpdateMultiLeaders regenerated the associative multi-leader with 0 skipped, both before Save and again after Open" || { echo "FAIL UpdateMultiLeaders: 1 multi-leader(s) regenerated seen $D2_ML_REGEN_COUNT times, expected 2 (the multi-leader failed to resolve after the .3dm round trip)"; fail=1; }
+D2_ML_REGEN_COUNT=$(echo "$D2" | grep -c "UpdateMultiLeaders: 2 multi-leader(s) regenerated")
+[ "$D2_ML_REGEN_COUNT" = "2" ] && echo "ok   UpdateMultiLeaders regenerated both multi-leaders (the static one from the earlier bake test and the associative one) with 0 skipped, both before Save and again after Open" || { echo "FAIL UpdateMultiLeaders: 2 multi-leader(s) regenerated seen $D2_ML_REGEN_COUNT times, expected 2 (the multi-leader failed to resolve after the .3dm round trip)"; fail=1; }
 
 d2check "SectionView: 120 curve(s)" "SectionView sliced all 120 objects with none dropped across the Document::Objects() reallocations that many Add() calls in one pass triggers"
 
