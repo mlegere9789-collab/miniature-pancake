@@ -635,6 +635,70 @@ class Mesh {
   // parse (a truncated file included).
   static Result LoadPly(const std::string& path, Mesh& out_mesh);
 
+  // Writes this mesh as a plain-text Geomview `.off` (Object File Format)
+  // file - the fourth "other file format" here, and a genuine gap this
+  // kernel had zero OFF code for at all before this: a simple, widely
+  // supported format (Blender, MeshLab, CGAL, Geomview itself all read
+  // and write it) named explicitly in this project's own parity tracking
+  // as an example of a still-missing mesh interchange format. The file is
+  // `OFF\n`, then one line `<vertex_count> <face_count> 0` (OFF's edge
+  // count is written as 0 - this kernel doesn't track a separate edge
+  // list, and a reader is required to tolerate an inaccurate/placeholder
+  // edge count per the format's own common practice), then one `x y z`
+  // line per vertex, then one face line per face: `<n> i0 i1 ... i(n-1)`
+  // with 0-based indices - unlike SaveObj()'s 1-based `f` lines, OFF
+  // indices are 0-based from the format's own definition. A quad face
+  // (`ON_MeshFace::IsQuad()`) is written as its own native 4-index line,
+  // not split into two triangles - the same "OFF/PLY have a real
+  // variable-length face list, STL doesn't" distinction SavePly() already
+  // draws. This only ever writes the plain `OFF` header - none of the
+  // `NOFF`/`COFF`/`4OFF`/`STOFF` variants (per-vertex normals, color,
+  // homogeneous coordinates, texture coordinates) some tools also accept,
+  // since this kernel's Mesh has no independently-stored per-vertex
+  // normal or color to put there anyway (same reasoning SaveObj()'s `vn`
+  // and SavePly()'s `nx/ny/nz` already give for being geometry-derived,
+  // not stored). Returns Result::Failed if the file can't be opened for
+  // writing; does not validate the mesh's own geometry (an empty mesh
+  // writes a valid, empty .off with vertex_count/face_count both 0).
+  Result SaveOff(const std::string& path) const;
+
+  // Reads a plain-text `.off` file written by SaveOff() (or any other
+  // reasonably well-formed plain-`OFF`-header file) into `out_mesh`. A
+  // `#` starts a comment that runs to the end of its line and may appear
+  // anywhere (a leading file comment before the `OFF` keyword, a trailing
+  // comment on a vertex or face line, or its own standalone line) - this
+  // parser tokenizes past whitespace and newlines uniformly, so it
+  // doesn't depend on the header/count/vertex/face groups matching up
+  // one-per-line the way a hand-written example file usually does, only
+  // on their order. The header keyword must be exactly `OFF` (case
+  // sensitive) - an `NOFF`/`COFF`/`4OFF`/`STOFF` variant file is rejected
+  // rather than silently misparsed, since this parser has no code to skip
+  // those variants' own extra per-vertex fields (a normal/color/homogeneous-w
+  // /texture-coordinate value sitting where this parser expects the next
+  // vertex's `x` would otherwise be silently read as if it were one).
+  // After the `<vertex_count> <face_count> <edge_count>` line (the edge
+  // count is read but never used - nothing here needs it, and OFF itself
+  // doesn't require it to be accurate), exactly `vertex_count` "x y z"
+  // triples are read, then exactly `face_count` face lines, each
+  // `<n> i0 i1 ... i(n-1)` with 0-based indices into the vertex list just
+  // read. A face with fewer than 3 corners, or any index outside
+  // `[0, vertex_count)`, fails the whole load (Result::Failed). A face
+  // with exactly 3 or 4 corners becomes one native `ON_MeshFace` triangle
+  // or quad; a genuine n-gon (5+ corners - OFF, unlike `.obj`, has no
+  // native quad-only ceiling on what a real exporter can emit) is
+  // fan-triangulated from its own first corner into `n-2` triangles, the
+  // same accommodation LoadObj() already makes for a `.obj` n-gon `f`
+  // line, for the same reason (this kernel's `ON_MeshFace` only holds a
+  // triangle or quad) - exact for a convex polygon, not guarded against a
+  // concave one producing a triangle whose interior falls outside the
+  // original face. No independent per-vertex normal/color/UV is read
+  // (plain `OFF` doesn't carry any). Returns Result::Failed if the file
+  // can't be opened, doesn't start with the `OFF` keyword, the counts
+  // line or any vertex/face line is malformed or short, or a face fails
+  // the checks above - `out_mesh` is left unspecified in that case, not
+  // partially filled and silently trusted.
+  static Result LoadOff(const std::string& path, Mesh& out_mesh);
+
   const ON_Mesh& raw() const { return mesh_; }
   ON_Mesh& raw() { return mesh_; }
 

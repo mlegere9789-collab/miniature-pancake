@@ -1818,6 +1818,163 @@ Result Mesh::LoadPly(const std::string& path, Mesh& out_mesh) {
   return Result::Ok;
 }
 
+namespace {
+
+// Reads the next whitespace-delimited token from an OFF file, skipping
+// any `#`-to-end-of-line comment along the way (a comment can start a
+// standalone line or trail after real data - both are handled the same
+// way here: once a token starting with '#' is seen, the rest of ITS line
+// is discarded and reading resumes at the next token). Returns false at
+// end of file.
+bool NextOffToken(std::istream& in, std::string& token) {
+  while (in >> token) {
+    if (token[0] == '#') {
+      std::string rest;
+      std::getline(in, rest);
+      continue;
+    }
+    return true;
+  }
+  return false;
+}
+
+// Strict whole-token int/double parsing - same "must consume the entire
+// field, not just a valid prefix of it" rigor ParseObjIndexField() above
+// already applies to a .obj face index, so an OFF token like "3abc" or
+// "3.5" (where an integer is expected) is rejected rather than silently
+// truncated to "3".
+bool ParseOffInt(const std::string& token, int& value) {
+  if (token.empty()) return false;
+  size_t consumed = 0;
+  int parsed = 0;
+  try {
+    parsed = std::stoi(token, &consumed);
+  } catch (const std::exception&) {
+    return false;
+  }
+  if (consumed != token.size()) return false;
+  value = parsed;
+  return true;
+}
+
+bool ParseOffDouble(const std::string& token, double& value) {
+  if (token.empty()) return false;
+  size_t consumed = 0;
+  double parsed = 0;
+  try {
+    parsed = std::stod(token, &consumed);
+  } catch (const std::exception&) {
+    return false;
+  }
+  if (consumed != token.size()) return false;
+  value = parsed;
+  return true;
+}
+
+}  // namespace
+
+Result Mesh::SaveOff(const std::string& path) const {
+  std::ofstream out(path);
+  if (!out) {
+    return Result::Failed;
+  }
+
+  out << "OFF\n";
+  out << mesh_.m_V.Count() << ' ' << mesh_.m_F.Count() << " 0\n";
+  for (int i = 0; i < mesh_.m_V.Count(); ++i) {
+    const ON_3fPoint& v = mesh_.m_V[i];
+    out << v.x << ' ' << v.y << ' ' << v.z << '\n';
+  }
+  for (int i = 0; i < mesh_.m_F.Count(); ++i) {
+    const ON_MeshFace& f = mesh_.m_F[i];
+    if (f.IsQuad()) {
+      out << "4 " << f.vi[0] << ' ' << f.vi[1] << ' ' << f.vi[2] << ' ' << f.vi[3] << '\n';
+    } else {
+      out << "3 " << f.vi[0] << ' ' << f.vi[1] << ' ' << f.vi[2] << '\n';
+    }
+  }
+
+  return out.good() ? Result::Ok : Result::Failed;
+}
+
+Result Mesh::LoadOff(const std::string& path, Mesh& out_mesh) {
+  std::ifstream in(path);
+  if (!in) {
+    return Result::Failed;
+  }
+
+  std::string token;
+  if (!NextOffToken(in, token) || token != "OFF") {
+    return Result::Failed;  // missing header, or an NOFF/COFF/4OFF/STOFF
+                             // variant this parser doesn't support
+  }
+
+  int vertex_count = 0, face_count = 0, edge_count = 0;
+  if (!NextOffToken(in, token) || !ParseOffInt(token, vertex_count)) return Result::Failed;
+  if (!NextOffToken(in, token) || !ParseOffInt(token, face_count)) return Result::Failed;
+  if (!NextOffToken(in, token) || !ParseOffInt(token, edge_count)) return Result::Failed;
+  (void)edge_count;  // read but unused - see LoadOff()'s own doc comment
+  if (vertex_count < 0 || face_count < 0) {
+    return Result::Failed;
+  }
+
+  Mesh result;
+  ON_Mesh& raw = result.mesh_;
+
+  for (int i = 0; i < vertex_count; ++i) {
+    double x, y, z;
+    if (!NextOffToken(in, token) || !ParseOffDouble(token, x)) return Result::Failed;
+    if (!NextOffToken(in, token) || !ParseOffDouble(token, y)) return Result::Failed;
+    if (!NextOffToken(in, token) || !ParseOffDouble(token, z)) return Result::Failed;
+    raw.m_V.Append(ON_3fPoint(x, y, z));
+  }
+
+  for (int i = 0; i < face_count; ++i) {
+    int n = 0;
+    if (!NextOffToken(in, token) || !ParseOffInt(token, n)) return Result::Failed;
+    if (n < 3) {
+      return Result::Failed;
+    }
+    std::vector<int> indices(static_cast<size_t>(n));
+    for (int c = 0; c < n; ++c) {
+      if (!NextOffToken(in, token)) return Result::Failed;
+      int idx = 0;
+      if (!ParseOffInt(token, idx)) return Result::Failed;
+      if (idx < 0 || idx >= vertex_count) {
+        return Result::Failed;
+      }
+      indices[static_cast<size_t>(c)] = idx;
+    }
+    if (n <= 4) {
+      ON_MeshFace face;
+      face.vi[0] = indices[0];
+      face.vi[1] = indices[1];
+      face.vi[2] = indices[2];
+      face.vi[3] = (n == 4) ? indices[3] : indices[2];
+      raw.m_F.Append(face);
+    } else {
+      // A genuine n-gon (5+ corners) doesn't fit ON_MeshFace (triangle or
+      // quad only) - fan-triangulate from the face's own first corner,
+      // the same accommodation LoadObj() already makes for a `.obj`
+      // n-gon `f` line. Exact for a convex polygon; a concave one can
+      // produce a triangle whose interior falls outside the original
+      // face - a disclosed limitation of the fan approach, not something
+      // this loader detects or refuses.
+      for (int c = 1; c + 1 < n; ++c) {
+        ON_MeshFace face;
+        face.vi[0] = indices[0];
+        face.vi[1] = indices[static_cast<size_t>(c)];
+        face.vi[2] = indices[static_cast<size_t>(c + 1)];
+        face.vi[3] = face.vi[2];
+        raw.m_F.Append(face);
+      }
+    }
+  }
+
+  out_mesh = std::move(result);
+  return Result::Ok;
+}
+
 Result Mesh::LoadStl(const std::string& path, Mesh& out_mesh) {
   // Distinguishes binary from ASCII the same way most real-world STL
   // readers do: an ASCII file's own text can start with "solid" and

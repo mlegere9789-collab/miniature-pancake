@@ -16653,6 +16653,239 @@ void TestMeshLoadObjFanTriangulatesNgonFaces() {
   std::remove(relative_path.c_str());
 }
 
+void TestMeshSaveOffRoundTrips() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Result;
+
+  // Same MakeQuadBoxMesh fixture SaveObj()'s own round-trip test uses: 8
+  // vertices, 6 quad faces, known exact corner coordinates.
+  const auto box = MakeQuadBoxMesh(0, 0, 0, 2, 2, 2);
+  const std::string path = "dino8_kernel_mesh_off_test.off";
+  Check(box.SaveOff(path) == Result::Ok, "Mesh::SaveOff succeeds");
+
+  std::ifstream in(path);
+  Check(static_cast<bool>(in), "the .off file SaveOff wrote can be reopened for reading");
+
+  std::string header_line;
+  std::getline(in, header_line);
+  Check(header_line == "OFF", "the file's first line is exactly the bare 'OFF' header");
+  std::string counts_line;
+  std::getline(in, counts_line);
+  int written_vertex_count = -1, written_face_count = -1, written_edge_count = -1;
+  std::istringstream counts_stream(counts_line);
+  counts_stream >> written_vertex_count >> written_face_count >> written_edge_count;
+  Check(written_vertex_count == box.VertexCount() && written_face_count == box.FaceCount(),
+        "the counts line's vertex/face counts exactly match the mesh (8 vertices, 6 faces)");
+
+  double first_vertex[3] = {0, 0, 0};
+  std::string line;
+  std::getline(in, line);
+  std::sscanf(line.c_str(), "%lf %lf %lf", &first_vertex[0], &first_vertex[1], &first_vertex[2]);
+  Check(first_vertex[0] == 0.0 && first_vertex[1] == 0.0 && first_vertex[2] == 0.0,
+        "the first written vertex line matches MakeQuadBoxMesh's known first corner (0,0,0)");
+
+  bool saw_quad_face = false;
+  while (std::getline(in, line)) {
+    if (!line.empty() && line[0] == '4') {
+      saw_quad_face = true;
+    }
+  }
+  Check(saw_quad_face,
+        "at least one face line starts with the corner count 4 - quad "
+        "faces are written as one native OFF face, not split into two "
+        "triangles");
+
+  // Full round trip: LoadOff() the file SaveOff() just wrote and check the
+  // result is geometrically the same solid (same counts AND the same
+  // exact volume - a quad face silently reinterpreted as a triangle would
+  // break Volume()'s own IsQuad() handling).
+  Mesh reloaded;
+  Check(Mesh::LoadOff(path, reloaded) == Result::Ok, "Mesh::LoadOff succeeds on SaveOff()'s own output");
+  Check(reloaded.VertexCount() == box.VertexCount() && reloaded.FaceCount() == box.FaceCount(),
+        "the reloaded mesh has the same vertex/face counts as the original");
+  Check(std::abs(reloaded.Volume() - box.Volume()) < 1e-9,
+        "the reloaded mesh's volume exactly matches the original (quad "
+        "faces round-tripped as quads, not silently reinterpreted)");
+  std::remove(path.c_str());
+
+  // A hand-written file exercising `#` comments (a standalone leading
+  // comment line, and a trailing one on a data line) and OFF's own
+  // 0-based face indices (unlike .obj's 1-based ones) - a single triangle
+  // whose known area lets LoadOff()'s geometry be checked exactly, not
+  // just its counts.
+  const std::string commented_path = "dino8_kernel_mesh_off_test_comments.off";
+  {
+    std::ofstream out(commented_path);
+    out << "# a leading comment before the header\n";
+    out << "OFF\n";
+    out << "3 1 0 # vertex/face/edge counts\n";
+    out << "0 0 0\n";
+    out << "2 0 0\n";
+    out << "0 2 0\n";
+    out << "3 0 1 2\n";
+  }
+  Mesh commented;
+  Check(Mesh::LoadOff(commented_path, commented) == Result::Ok,
+        "LoadOff succeeds on a file using '#' comments around real data");
+  Check(commented.VertexCount() == 3 && commented.FaceCount() == 1,
+        "the commented file's 3 vertices and 1 triangle are read correctly, "
+        "not confused by the comments around them");
+  const ON_MeshFace& tri = commented.raw().m_F[0];
+  Check(tri.vi[0] == 0 && tri.vi[1] == 1 && tri.vi[2] == 2,
+        "OFF's own 0-based face indices ('0 1 2') resolved directly to "
+        "the same 0-based corners, unlike .obj's 1-based 'f 1 2 3'");
+  std::remove(commented_path.c_str());
+}
+
+void TestMeshLoadOffRejectsMalformedFiles() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Result;
+
+  const std::string missing_path = "dino8_kernel_mesh_off_test_does_not_exist.off";
+  Mesh out;
+  Check(Mesh::LoadOff(missing_path, out) == Result::Failed, "LoadOff fails on a file that doesn't exist");
+
+  const std::string bad_header_path = "dino8_kernel_mesh_off_test_bad_header.off";
+  {
+    std::ofstream bad(bad_header_path);
+    // A real OFF variant header this parser deliberately doesn't support
+    // (per-vertex normals) - must be rejected outright, not silently
+    // misread as if it were a plain OFF file.
+    bad << "NOFF\n3 1 0\n0 0 0\n1 0 0\n0 1 0\n3 0 1 2\n";
+  }
+  Check(Mesh::LoadOff(bad_header_path, out) == Result::Failed,
+        "LoadOff fails on an NOFF-header file rather than misreading its "
+        "extra per-vertex fields as if they were plain OFF data");
+
+  const std::string too_few_path = "dino8_kernel_mesh_off_test_too_few.off";
+  {
+    std::ofstream bad(too_few_path);
+    // A face line needs at least 3 corners; 2 is not a valid polygon.
+    bad << "OFF\n2 1 0\n0 0 0\n1 0 0\n2 0 1\n";
+  }
+  Check(Mesh::LoadOff(too_few_path, out) == Result::Failed,
+        "LoadOff fails on a face line with fewer than 3 corners");
+
+  const std::string oob_index_path = "dino8_kernel_mesh_off_test_oob_index.off";
+  {
+    std::ofstream bad(oob_index_path);
+    // Only 3 vertices declared (indices 0-2); index 3 doesn't exist.
+    bad << "OFF\n3 1 0\n0 0 0\n1 0 0\n0 1 0\n3 0 1 3\n";
+  }
+  Check(Mesh::LoadOff(oob_index_path, out) == Result::Failed,
+        "LoadOff fails on a face referencing a vertex index that doesn't exist");
+
+  const std::string truncated_path = "dino8_kernel_mesh_off_test_truncated.off";
+  {
+    std::ofstream bad(truncated_path);
+    // Header claims 3 vertices but only 2 are actually present.
+    bad << "OFF\n3 1 0\n0 0 0\n1 0 0\n";
+  }
+  Check(Mesh::LoadOff(truncated_path, out) == Result::Failed,
+        "LoadOff fails on a file truncated before all the vertices its "
+        "own header count promised");
+
+  std::remove(bad_header_path.c_str());
+  std::remove(too_few_path.c_str());
+  std::remove(oob_index_path.c_str());
+  std::remove(truncated_path.c_str());
+}
+
+void TestMeshLoadOffFanTriangulatesNgonFaces() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Result;
+
+  // Same shoelace-area ground truth TestMeshLoadObjFanTriangulatesNgonFaces
+  // uses, applied to OFF's own n-gon face lines instead of .obj's.
+  auto shoelace_area = [](const std::vector<std::pair<double, double>>& pts) {
+    double sum = 0.0;
+    for (size_t i = 0; i < pts.size(); ++i) {
+      const auto& [x0, y0] = pts[i];
+      const auto& [x1, y1] = pts[(i + 1) % pts.size()];
+      sum += x0 * y1 - x1 * y0;
+    }
+    return std::abs(sum) * 0.5;
+  };
+  auto triangle_area_sum = [](const Mesh& mesh) {
+    double total = 0.0;
+    const ON_Mesh& raw = mesh.raw();
+    for (int i = 0; i < raw.m_F.Count(); ++i) {
+      const ON_MeshFace& f = raw.m_F[i];
+      const ON_3fPoint& a = raw.m_V[f.vi[0]];
+      const ON_3fPoint& b = raw.m_V[f.vi[1]];
+      const ON_3fPoint& c = raw.m_V[f.vi[2]];
+      const ON_3dVector cross =
+          ON_3dVector::CrossProduct(ON_3dVector(b - a), ON_3dVector(c - a));
+      total += 0.5 * cross.Length();
+    }
+    return total;
+  };
+
+  // Convex pentagon (5 corners) - the smallest n-gon ON_MeshFace can't
+  // represent directly.
+  const std::vector<std::pair<double, double>> pentagon = {
+      {0, 0}, {2, 0}, {3, 1}, {1, 2}, {-1, 1}};
+  const std::string pentagon_path = "dino8_kernel_mesh_off_test_pentagon_fan.off";
+  {
+    std::ofstream out(pentagon_path);
+    out << "OFF\n" << pentagon.size() << " 1 0\n";
+    for (const auto& [x, y] : pentagon) {
+      out << x << ' ' << y << " 0\n";
+    }
+    out << "5 0 1 2 3 4\n";
+  }
+  Mesh pentagon_mesh;
+  Check(Mesh::LoadOff(pentagon_path, pentagon_mesh) == Result::Ok,
+        "LoadOff succeeds on a 5-index (pentagon) face line instead of "
+        "rejecting it outright");
+  Check(pentagon_mesh.VertexCount() == 5,
+        "the pentagon's 5 vertices are all preserved, unduplicated");
+  Check(pentagon_mesh.FaceCount() == 3,
+        "a pentagon fan-triangulates into exactly 5-2=3 triangles");
+  const ON_MeshFace& p0 = pentagon_mesh.raw().m_F[0];
+  const ON_MeshFace& p1 = pentagon_mesh.raw().m_F[1];
+  const ON_MeshFace& p2 = pentagon_mesh.raw().m_F[2];
+  Check(p0.vi[0] == 0 && p0.vi[1] == 1 && p0.vi[2] == 2 && p0.vi[3] == 2,
+        "the first fan triangle is corners (0,1,2), stored as a "
+        "degenerate quad (vi[3]==vi[2]) the same way an explicit "
+        "triangle face already is");
+  Check(p1.vi[0] == 0 && p1.vi[1] == 2 && p1.vi[2] == 3,
+        "the second fan triangle is corners (0,2,3)");
+  Check(p2.vi[0] == 0 && p2.vi[1] == 3 && p2.vi[2] == 4,
+        "the third fan triangle is corners (0,3,4), reaching the "
+        "pentagon's last corner");
+  Check(std::abs(triangle_area_sum(pentagon_mesh) - shoelace_area(pentagon)) < 1e-9,
+        "the 3 fan triangles' combined area exactly reproduces the "
+        "convex pentagon's own shoelace area - proof the fan actually "
+        "covers the polygon rather than merely producing 3 non-degenerate "
+        "triangles that happen to pass a face-count check");
+  std::remove(pentagon_path.c_str());
+
+  // A convex hexagon (6 corners) exercises n > 5 too, not just the
+  // smallest unsupported case.
+  const std::vector<std::pair<double, double>> hexagon = {
+      {2, 0}, {1, 2}, {-1, 2}, {-2, 0}, {-1, -2}, {1, -2}};
+  const std::string hexagon_path = "dino8_kernel_mesh_off_test_hexagon_fan.off";
+  {
+    std::ofstream out(hexagon_path);
+    out << "OFF\n" << hexagon.size() << " 1 0\n";
+    for (const auto& [x, y] : hexagon) {
+      out << x << ' ' << y << " 0\n";
+    }
+    out << "6 0 1 2 3 4 5\n";
+  }
+  Mesh hexagon_mesh;
+  Check(Mesh::LoadOff(hexagon_path, hexagon_mesh) == Result::Ok,
+        "LoadOff succeeds on a 6-index (hexagon) face line");
+  Check(hexagon_mesh.VertexCount() == 6 && hexagon_mesh.FaceCount() == 4,
+        "a hexagon fan-triangulates into exactly 6-2=4 triangles, no "
+        "vertex duplication");
+  Check(std::abs(triangle_area_sum(hexagon_mesh) - shoelace_area(hexagon)) < 1e-9,
+        "the 4 fan triangles' combined area exactly reproduces the "
+        "convex hexagon's own shoelace area");
+  std::remove(hexagon_path.c_str());
+}
+
 void TestMeshSaveStlSplitsQuadsAndComputesNormals() {
   using dino8::kernel::Result;
 
@@ -42360,6 +42593,9 @@ int main() {
   TestMeshLoadObjRejectsMalformedFiles();
   TestMeshLoadObjResolvesRelativeIndices();
   TestMeshLoadObjFanTriangulatesNgonFaces();
+  TestMeshSaveOffRoundTrips();
+  TestMeshLoadOffRejectsMalformedFiles();
+  TestMeshLoadOffFanTriangulatesNgonFaces();
   TestMeshSaveStlSplitsQuadsAndComputesNormals();
   TestMeshLoadStlRoundTrips();
   TestMeshLoadStlBinary();
