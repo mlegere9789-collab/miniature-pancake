@@ -212,6 +212,18 @@ struct PyObjectTable {
     return PyObjId(AddBrepObj(ON_BrepCone(cone, cap), "AddCone"));
   }
 
+  // Mirrors rs.AddTorus(center, majorRadius, minorRadius, normal={0,0,1})
+  // in LuaEngine.cpp.
+  py::object AddTorus(Point3d center, double majorRadius, double minorRadius, py::object normal) {
+    if (majorRadius <= 0 || minorRadius <= 0 || minorRadius >= majorRadius) {
+      throw std::runtime_error("AddTorus: need 0 < minor radius < major radius");
+    }
+    Vector3d n = normal.is_none() ? Vector3d(0, 0, 1) : normal.cast<Vector3d>();
+    if (!n.Unitize()) n = Vector3d(0, 0, 1);
+    ON_Torus torus(ON_Plane(center, n), majorRadius, minorRadius);
+    return PyObjId(AddBrepObj(ON_BrepTorus(torus), "AddTorus"));
+  }
+
   py::object AddMesh(std::vector<Point3d> verts, std::vector<std::vector<int>> faces) {
     kernel::Mesh m;
     ON_Mesh& r = m.raw();
@@ -340,6 +352,7 @@ PYBIND11_EMBEDDED_MODULE(dino8, m) {
       .def("AddSphere", &PyObjectTable::AddSphere, py::arg("center"), py::arg("radius"))
       .def("AddCylinder", &PyObjectTable::AddCylinder, py::arg("base"), py::arg("axis"), py::arg("radius"), py::arg("cap") = true)
       .def("AddCone", &PyObjectTable::AddCone, py::arg("base"), py::arg("axis"), py::arg("radius"), py::arg("cap") = true)
+      .def("AddTorus", &PyObjectTable::AddTorus, py::arg("center"), py::arg("majorRadius"), py::arg("minorRadius"), py::arg("normal") = py::none())
       .def("AddMesh", &PyObjectTable::AddMesh, py::arg("vertices"), py::arg("faces"))
       .def("Find", &PyObjectTable::Find)
       .def("Delete", &PyObjectTable::Delete)

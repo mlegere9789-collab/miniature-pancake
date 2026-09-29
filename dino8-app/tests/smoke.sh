@@ -1642,6 +1642,16 @@ try:
 except RuntimeError as e:
     print("bad cone rejected: " + str(e))
 
+torus_id = dino8.doc.Objects.AddTorus(dino8.Point3d(0, 0, 0), 5, 2)
+torus = dino8.doc.Objects.Find(torus_id)
+print("torus kind: " + torus.ObjectType)
+print("object count with torus: %d" % len(dino8.doc.Objects.AllObjects()))
+try:
+    dino8.doc.Objects.AddTorus(dino8.Point3d(0, 0, 0), 2, 5)
+    print("bad torus: no error")
+except RuntimeError as e:
+    print("bad torus rejected: " + str(e))
+
 dino8.RunCommand("NewLayer", "Parts")
 PY
 sed "s|@TMP@|$TMPW|g" "$HERE/python_script.txt" > "$TMPW/python_script.txt"
@@ -1692,7 +1702,10 @@ else
   pscheck "history: cone kind: polysurface" "dino8.doc.Objects.AddCone built a polysurface object, matching rs.AddCone"
   pscheck "history: object count with cone: 3" "AllObjects sees the box, the circle and the new cone"
   pscheck "history: bad cone rejected:" "AddCone raised a Python exception for a non-positive radius instead of silently returning"
-  pscheck "^ok   expect_objects 3" "RunPythonScript left the box, the circle and the cone (the sphere was deleted from inside the script)"
+  pscheck "history: torus kind: polysurface" "dino8.doc.Objects.AddTorus built a polysurface object, matching rs.AddTorus"
+  pscheck "history: object count with torus: 4" "AllObjects sees the box, the circle, the cone and the new torus"
+  pscheck "history: bad torus rejected:" "AddTorus raised a Python exception for a minor radius that isn't smaller than the major radius, instead of silently returning"
+  pscheck "^ok   expect_objects 4" "RunPythonScript left the box, the circle, the cone and the torus (the sphere was deleted from inside the script)"
   grep -q "! Python error" <<<"$PS" && { echo "FAIL python_script.txt printed a Python error"; fail=1; } || echo "ok   no Python script errors"
 fi
 

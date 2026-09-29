@@ -2,9 +2,11 @@
 # geometry via the dino8 module, exercises object property access
 # (Name/Layer/Color), selection, deletion, dino8.RunCommand,
 # Point3d/Vector3d arithmetic, dino8.doc.Objects.AddCircle (a curve type
-# Lua's rs.AddCircle exposes that the dino8 module lacked until now) and
+# Lua's rs.AddCircle exposes that the dino8 module lacked until now),
 # dino8.doc.Objects.AddCone (a polysurface Lua's rs.AddCone exposes that
-# the dino8 module also lacked until now).
+# the dino8 module also lacked until now) and dino8.doc.Objects.AddTorus
+# (likewise a polysurface Lua's rs.AddTorus exposes that the dino8 module
+# lacked until now).
 # Unlike script_script.txt's Lua test, this never goes interactive
 # mid-script (see PythonEngine.h): Python scripts run start to finish in
 # one call, so there is no trailing point token to feed a GetPoint-style
@@ -12,4 +14,4 @@
 # smoke.sh substitutes @TMP@ with a scratch directory and writes @TMP@/t.py
 # before running this.
 RunPythonScript @TMP@/t.py
-@expect_objects 3
+@expect_objects 4
