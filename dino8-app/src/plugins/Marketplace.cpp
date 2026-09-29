@@ -142,4 +142,26 @@ bool Marketplace::InstallById(app::Application& app, const std::string& id, std:
   return false;
 }
 
+bool Marketplace::FindInstalled(const MarketplaceEntry& entry, std::string& installed_version, UpdateStatus& status) const {
+  for (const LoadedPlugin& p : Manager::Get().Plugins()) {
+    if (!p.loaded_ok || !EqualsIgnoreCase(p.name, entry.name)) continue;
+    installed_version = p.version;
+    status = CheckForUpdate(p.version, entry.version);
+    return true;
+  }
+  return false;
+}
+
+std::vector<Marketplace::PluginUpdate> Marketplace::CheckForUpdates() const {
+  std::vector<PluginUpdate> updates;
+  for (const MarketplaceEntry& e : index_.plugins) {
+    std::string installed_version;
+    UpdateStatus status;
+    if (FindInstalled(e, installed_version, status) && status == UpdateStatus::UpdateAvailable) {
+      updates.push_back({e.id, e.name, installed_version, e.version});
+    }
+  }
+  return updates;
+}
+
 }  // namespace dino8::plugins

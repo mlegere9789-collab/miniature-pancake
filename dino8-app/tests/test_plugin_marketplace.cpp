@@ -20,11 +20,14 @@
 #include "util/Sha256.h"
 
 using dino8::plugins::CheckCompatibility;
+using dino8::plugins::CheckForUpdate;
 using dino8::plugins::Compatibility;
+using dino8::plugins::CompareVersions;
 using dino8::plugins::LoadIndexFromFile;
 using dino8::plugins::MarketplaceEntry;
 using dino8::plugins::MarketplaceIndex;
 using dino8::plugins::ParseIndex;
+using dino8::plugins::UpdateStatus;
 
 namespace {
 int failures = 0;
@@ -103,6 +106,26 @@ int main(int argc, char** argv) {
   Check(CheckCompatibility(e) == Compatibility::Compatible, "an older api_version is still Compatible (the ABI is additive)");
   e.api_version = DINO8_PLUGIN_API_VERSION + 1;
   Check(CheckCompatibility(e) == Compatibility::ApiTooNew, "a newer-than-this-build api_version is ApiTooNew");
+
+  // ---- CompareVersions ----------------------------------------------------
+  Check(CompareVersions("1.0.0", "1.0.0") == 0, "CompareVersions: equal versions compare equal");
+  Check(CompareVersions("1.0.0", "1.0.1") < 0, "CompareVersions: a patch bump compares greater");
+  Check(CompareVersions("1.2.0", "1.10.0") < 0, "CompareVersions: numeric, not lexical (1.2.0 < 1.10.0)");
+  Check(CompareVersions("2.0.0", "1.9.9") > 0, "CompareVersions: a major bump beats any minor/patch");
+  Check(CompareVersions("1.0", "1.0.0") == 0, "CompareVersions: a missing trailing component counts as 0");
+  Check(CompareVersions("1.0.0", "1.0.0-beta") == 0, "CompareVersions: a non-numeric suffix component counts as 0");
+  Check(CompareVersions("", "") == 0, "CompareVersions: two empty strings compare equal");
+
+  // ---- CheckForUpdate ------------------------------------------------------
+  Check(CheckForUpdate("1.0.0", "1.1.0") == UpdateStatus::UpdateAvailable,
+        "CheckForUpdate: a newer index version is UpdateAvailable");
+  Check(CheckForUpdate("1.1.0", "1.1.0") == UpdateStatus::UpToDate, "CheckForUpdate: matching versions are UpToDate");
+  Check(CheckForUpdate("1.2.0", "1.1.0") == UpdateStatus::UpToDate,
+        "CheckForUpdate: an installed version newer than the index is UpToDate, not flagged as an update");
+  Check(CheckForUpdate("", "1.0.0") == UpdateStatus::Unknown, "CheckForUpdate: an empty installed version is Unknown");
+  Check(CheckForUpdate("1.0.0", "") == UpdateStatus::Unknown, "CheckForUpdate: an empty available version is Unknown");
+  Check(CheckForUpdate("1.9.0", "1.10.0") == UpdateStatus::UpdateAvailable,
+        "CheckForUpdate: 1.10.0 is correctly seen as newer than 1.9.0 (numeric, not lexical)");
 
   // ---- The real reference index (plugin-index/index.json) ---------------
   // Path is passed on the command line by CMakeLists.txt (an absolute path

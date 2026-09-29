@@ -30,6 +30,25 @@ ImVec4 CompatibilityColor(Compatibility c) {
   return ImVec4(0.8f, 0.8f, 0.4f, 1);
 }
 
+// Builds the "Loaded ... (N plug-in(s))" status line for a freshly loaded
+// index and, if any already-installed plug-in is older than what the index
+// now offers, appends an update count and raises a Notify() toast - the
+// same notification channel InstallEntry's own success/failure already use
+// below, so an update becoming available is surfaced the same way an
+// install completing is.
+std::string LoadedStatus(app::Application& app, const Marketplace& market) {
+  std::string status = "Loaded \"" + market.Index().index_name + "\" (" +
+                        std::to_string(market.Index().plugins.size()) + " plug-in(s)) from " + market.Source();
+  const auto updates = market.CheckForUpdates();
+  if (!updates.empty()) {
+    status += " - " + std::to_string(updates.size()) + " update(s) available";
+    std::string names;
+    for (const auto& u : updates) names += (names.empty() ? "" : ", ") + u.name + " " + u.installed_version + " -> " + u.available_version;
+    app.Notify("Plug-in Marketplace: update available for " + names);
+  }
+  return status;
+}
+
 }  // namespace
 
 void DrawPluginMarketplacePanel(app::Application& app, bool& open) {
@@ -53,7 +72,7 @@ void DrawPluginMarketplacePanel(app::Application& app, bool& open) {
   if (ImGui::Button("Load")) {
     std::string error;
     if (market.LoadFrom(source, error)) {
-      status = "Loaded \"" + market.Index().index_name + "\" (" + std::to_string(market.Index().plugins.size()) + " plug-in(s)) from " + market.Source();
+      status = LoadedStatus(app, market);
       selected_id.clear();
     } else {
       status = "Load failed: " + error;
@@ -61,12 +80,11 @@ void DrawPluginMarketplacePanel(app::Application& app, bool& open) {
   }
   ImGui::SameLine();
   if (ImGui::Button("Browse Local Index...")) {
-    app.ShowFileDialog("Load Plug-in Index", {".json"}, false, [](const std::string& path) {
+    app.ShowFileDialog("Load Plug-in Index", {".json"}, false, [&app](const std::string& path) {
       std::snprintf(source, sizeof source, "%s", path.c_str());
       std::string error;
       if (Marketplace::Get().LoadFrom(path, error)) {
-        status = "Loaded \"" + Marketplace::Get().Index().index_name + "\" (" +
-                  std::to_string(Marketplace::Get().Index().plugins.size()) + " plug-in(s)) from " + path;
+        status = LoadedStatus(app, Marketplace::Get());
       } else {
         status = "Load failed: " + error;
       }
@@ -84,10 +102,11 @@ void DrawPluginMarketplacePanel(app::Application& app, bool& open) {
   ImGui::TextDisabled("%s%s", market.Index().index_name.c_str(),
                       market.Index().updated.empty() ? "" : (" - updated " + market.Index().updated).c_str());
 
-  if (ImGui::BeginTable("marketplace_plugins", 6,
+  if (ImGui::BeginTable("marketplace_plugins", 7,
                         ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable)) {
     ImGui::TableSetupColumn("Name");
     ImGui::TableSetupColumn("Version");
+    ImGui::TableSetupColumn("Installed");
     ImGui::TableSetupColumn("Author");
     ImGui::TableSetupColumn("Compatibility");
     ImGui::TableSetupColumn("Source");
@@ -99,16 +118,30 @@ void DrawPluginMarketplacePanel(app::Application& app, bool& open) {
       ImGui::TableNextColumn();
       if (ImGui::Selectable(e.name.c_str(), selected_id == e.id, ImGuiSelectableFlags_SpanAllColumns)) selected_id = e.id;
       ImGui::TableNextColumn(); ImGui::TextUnformatted(e.version.c_str());
+
+      std::string installed_version;
+      UpdateStatus update_status = UpdateStatus::Unknown;
+      const bool installed = market.FindInstalled(e, installed_version, update_status);
+      ImGui::TableNextColumn();
+      if (!installed) {
+        ImGui::TextDisabled("not installed");
+      } else if (update_status == UpdateStatus::UpdateAvailable) {
+        ImGui::TextColored(ImVec4(0.95f, 0.65f, 0.2f, 1), "%s (update available)", installed_version.c_str());
+      } else {
+        ImGui::TextUnformatted(installed_version.c_str());
+      }
+
       ImGui::TableNextColumn(); ImGui::TextUnformatted(e.author.c_str());
       const Compatibility compat = CheckCompatibility(e);
       ImGui::TableNextColumn(); ImGui::TextColored(CompatibilityColor(compat), "%s", CompatibilityLabel(compat));
       ImGui::TableNextColumn(); ImGui::TextUnformatted(e.bundled_path.empty() ? "remote download" : "bundled with this build");
       ImGui::TableNextColumn();
       ImGui::BeginDisabled(compat == Compatibility::ApiTooNew);
-      if (ImGui::SmallButton("Install")) {
+      const char* button_label = update_status == UpdateStatus::UpdateAvailable ? "Update" : "Install";
+      if (ImGui::SmallButton(button_label)) {
         std::string error;
         if (InstallEntry(app, e, app.ExeDir(), error)) {
-          status = "Installed " + e.name + " " + e.version + ".";
+          status = std::string(button_label) + "d " + e.name + " " + e.version + ".";
           app.Notify("Plug-in Marketplace: installed " + e.name + " " + e.version);
         } else {
           status = "Install failed: " + error;

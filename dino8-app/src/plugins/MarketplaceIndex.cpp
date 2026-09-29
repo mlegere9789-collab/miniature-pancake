@@ -1,10 +1,13 @@
 #include "plugins/MarketplaceIndex.h"
 
+#include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <vector>
 
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
@@ -75,6 +78,42 @@ bool FetchUrlToTempFile(const std::string& url, std::string& out_path, std::stri
 Compatibility CheckCompatibility(const MarketplaceEntry& entry) {
   if (entry.api_version <= 0) return Compatibility::Unknown;
   return entry.api_version <= DINO8_PLUGIN_API_VERSION ? Compatibility::Compatible : Compatibility::ApiTooNew;
+}
+
+namespace {
+
+std::vector<long> VersionParts(const std::string& v) {
+  std::vector<long> out;
+  size_t i = 0;
+  while (i <= v.size()) {
+    const size_t dot = v.find('.', i);
+    const std::string part = v.substr(i, dot == std::string::npos ? std::string::npos : dot - i);
+    size_t digits = 0;
+    while (digits < part.size() && std::isdigit(static_cast<unsigned char>(part[digits]))) ++digits;
+    out.push_back(digits > 0 ? std::stol(part.substr(0, digits)) : 0);
+    if (dot == std::string::npos) break;
+    i = dot + 1;
+  }
+  return out;
+}
+
+}  // namespace
+
+int CompareVersions(const std::string& a, const std::string& b) {
+  const std::vector<long> pa = VersionParts(a);
+  const std::vector<long> pb = VersionParts(b);
+  const size_t n = std::max(pa.size(), pb.size());
+  for (size_t i = 0; i < n; ++i) {
+    const long va = i < pa.size() ? pa[i] : 0;
+    const long vb = i < pb.size() ? pb[i] : 0;
+    if (va != vb) return va < vb ? -1 : 1;
+  }
+  return 0;
+}
+
+UpdateStatus CheckForUpdate(const std::string& installed_version, const std::string& available_version) {
+  if (installed_version.empty() || available_version.empty()) return UpdateStatus::Unknown;
+  return CompareVersions(available_version, installed_version) > 0 ? UpdateStatus::UpdateAvailable : UpdateStatus::UpToDate;
 }
 
 bool ParseIndex(const std::string& json_text, MarketplaceIndex& out, std::string& error) {

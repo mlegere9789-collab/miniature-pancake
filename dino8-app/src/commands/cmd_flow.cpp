@@ -222,6 +222,18 @@ void RegisterFlowCommands(CommandEngine& e) {
         }
       }));
 
+  Reg(e, "PluginMarketplaceCheckUpdates", Immediate([](CommandContext& ctx) {
+        const auto updates = plugins::Marketplace::Get().CheckForUpdates();
+        if (updates.empty()) {
+          ctx.Print("PluginMarketplaceCheckUpdates: all installed plug-ins are up to date with the loaded index");
+          return;
+        }
+        ctx.Print("PluginMarketplaceCheckUpdates: " + std::to_string(updates.size()) + " update(s) available");
+        for (const auto& u : updates) {
+          ctx.Print("  " + u.id + ": " + u.name + " " + u.installed_version + " -> " + u.available_version);
+        }
+      }));
+
   Reg(e, "MigratePlugins", Immediate([](CommandContext& ctx) {
         std::vector<std::string> toks;
         while (auto tok = ctx.Engine().TakePendingInput()) toks.push_back(*tok);

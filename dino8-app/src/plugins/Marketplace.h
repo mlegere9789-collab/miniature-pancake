@@ -8,6 +8,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 #include "plugins/MarketplaceIndex.h"
 
@@ -38,6 +39,20 @@ class Marketplace {
 
   // Looks `id` up in the currently loaded index and installs it.
   bool InstallById(app::Application& app, const std::string& id, std::string& error);
+
+  // Matches `entry.name` (case-insensitively) against the plug-ins
+  // plugins::Manager::Get() has actually loaded, and reports the loaded
+  // one's version and update status if found. Returns false (out left
+  // untouched) when no loaded plug-in has that name.
+  bool FindInstalled(const MarketplaceEntry& entry, std::string& installed_version, UpdateStatus& status) const;
+
+  // Every entry in the currently loaded index that FindInstalled matches to
+  // a loaded plug-in with UpdateStatus::UpdateAvailable - i.e. what's
+  // actually loaded is older than what the index offers.
+  struct PluginUpdate {
+    std::string id, name, installed_version, available_version;
+  };
+  std::vector<PluginUpdate> CheckForUpdates() const;
 
  private:
   MarketplaceIndex index_;

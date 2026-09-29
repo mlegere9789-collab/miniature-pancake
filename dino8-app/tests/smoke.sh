@@ -3579,4 +3579,24 @@ else
   echo "ok   PluginMarketplaceInstall's crafted library_filename left no file outside <config>/plugins ($CANARY was never created)"
 fi
 
+# Plug-in Marketplace: version checking/update notifications
+# (Marketplace::CheckForUpdates, PluginMarketplaceCheckUpdates - see
+# src/plugins/MarketplaceIndex.cpp's CompareVersions/CheckForUpdate and
+# src/plugins/Marketplace.cpp's FindInstalled/CheckForUpdates). HelloDino is
+# already loaded (auto-loaded from next to the executable at 1.0.0, same as
+# every other sample plug-in - see the marketplace install check above)
+# before any index is loaded, so the first PluginMarketplaceCheckUpdates has
+# nothing to compare against; loading an index whose hellodino entry claims
+# version 1.1.0 must then flag that same installed 1.0.0 copy as out of date.
+sed "s|@DINO8ROOT@|$HEREW/..|g" "$HERE/plugin_marketplace_update_script.txt" > "$TMPW/plugin_marketplace_update_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  PMU="$("$BIN" --smoke 60 --script "$TMPW/plugin_marketplace_update_script.txt" 2>&1)" || { echo "$PMU"; echo "FAIL: plugin marketplace update script exited non-zero"; exit 1; }
+else
+  PMU="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$TMPW/plugin_marketplace_update_script.txt" 2>&1)" || { echo "$PMU"; echo "FAIL: plugin marketplace update script exited non-zero"; exit 1; }
+fi
+pmucheck() { if echo "$PMU" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$PMU" "$1"; fail=1; fi; }
+pmucheck "PluginMarketplaceCheckUpdates: all installed plug-ins are up to date with the loaded index" "PluginMarketplaceCheckUpdates reports no updates before any index is loaded (nothing to compare against)"
+pmucheck "PluginMarketplaceCheckUpdates: 1 update(s) available" "PluginMarketplaceCheckUpdates finds exactly one update once the bumped-version index is loaded"
+pmucheck "  hellodino: HelloDino 1.0.0 -> 1.1.0" "PluginMarketplaceCheckUpdates reports the installed and available versions for the out-of-date plug-in"
+
 exit $fail

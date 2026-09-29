@@ -47,6 +47,22 @@ enum class Compatibility { Compatible, ApiTooNew, Unknown };
 // is too old for it.
 Compatibility CheckCompatibility(const MarketplaceEntry& entry);
 
+// Compares two dotted-numeric version strings ("1.2.3", "1.10.0", ...)
+// component by component as integers - not a lexical string compare, so
+// "1.10.0" correctly orders above "1.2.0". A missing trailing component (or
+// one whose leading characters aren't digits, e.g. a "-beta" suffix) counts
+// as 0. This is a pragmatic dotted-integer comparison, not a full semver
+// parser: pre-release/build-metadata tags are not given any special
+// ordering. Returns <0 if a<b, 0 if a==b, >0 if a>b.
+int CompareVersions(const std::string& a, const std::string& b);
+
+enum class UpdateStatus { UpToDate, UpdateAvailable, Unknown };
+
+// Compares an installed plug-in's version (e.g. LoadedPlugin::version, from
+// PluginManager.h) against a marketplace entry's version. Unknown when
+// either string is empty, since there's nothing meaningful to compare.
+UpdateStatus CheckForUpdate(const std::string& installed_version, const std::string& available_version);
+
 // Parses index JSON already read into memory. Returns false (with `error`
 // set to a human-readable message) on malformed JSON, an unsupported
 // schema_version, or a plugin entry missing a required field.
