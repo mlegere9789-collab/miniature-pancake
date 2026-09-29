@@ -113,6 +113,47 @@ class NurbsCurve {
   // tolerance check to catch incidentally.
   static Result FilletCorner(Point3d p0, Point3d corner, Point3d p1, double radius, NurbsCurve& out);
 
+  // Just the tangent ARC of `FilletCorner` above - T0 to T1, none of its
+  // leg assembly. `FilletCorner` itself is built on top of this (computes
+  // the arc via this function, then joins a `p0`-T0 leg before it and a
+  // T1-`p1` leg after), so the two share one implementation of the actual
+  // hard part (tangent length, bisector center placement, and picking the
+  // sweep direction that actually reaches T1 rather than the long way
+  // round) - the same construction documented on `FilletCorner` above
+  // applies here unchanged.
+  //
+  // This exists for a caller that needs the arc ALONE as its own curve
+  // object rather than fused to fresh straight legs - a two-curve pick-
+  // and-fillet command whose "legs" are pieces already trimmed from two
+  // independently picked input curves (not fresh rays from `FilletCorner`
+  // itself), or a polyline fillet rounding several corners along one
+  // curve, where the straight run between two consecutive rounded corners
+  // is one shared segment built once, not two independent legs glued on
+  // by each corner separately.
+  //
+  // `p0`/`p1` still only fix the two ray DIRECTIONS from `corner` (the
+  // arc's own geometry never depends on their distance, only on
+  // normalize(p0 - corner)/normalize(p1 - corner)); that distance is used
+  // solely for the same "does the radius fit" check `FilletCorner` makes,
+  // so a caller whose own real fit is already bounded elsewhere (e.g. a
+  // polyline corner's own shared-edge availability check, which must
+  // halve the margin `FilletCorner`'s single-corner check does not know
+  // to) may pass a synthetic point along the ray, placed farther out than
+  // the true tangent length, purely to satisfy this check without it
+  // rejecting a fit this function alone can't see is actually fine.
+  //
+  // Returns `Result::Ok` with `arc_out` running from the tangent point on
+  // the `p0` side (`arc_out.PointAt(arc_out.Domain().min)`) to the tangent
+  // point on the `p1` side (`arc_out.PointAt(arc_out.Domain().max)`) -
+  // both readable directly off the returned curve, not recomputed by the
+  // caller from the same radius/angle formula a second time. Same
+  // VALIDATION as `FilletCorner`:
+  // throws `std::invalid_argument` for a non-positive `radius`, `p0`/`p1`
+  // coincident with `corner`, or `p0`/corner/`p1` collinear; returns
+  // `Result::Failed`, `arc_out` left unchanged, if the tangent length
+  // reaches past `p0` or `p1`.
+  static Result FilletCornerArc(Point3d p0, Point3d corner, Point3d p1, double radius, NurbsCurve& arc_out);
+
   // 2D/3D POLYLINE-CORNER CHAMFER (Rhino Chamfer, AutoCAD CHAMFER between
   // two lines) - the flat-cut sibling of `FilletCorner` above, the exact
   // 2D analogue of `ChamferConvexEdge`'s own two-independent-distance

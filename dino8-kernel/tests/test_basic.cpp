@@ -44086,6 +44086,114 @@ void TestNurbsCurveFilletCornerRejectsInvalidInput() {
         "reports Result::Failed (not a throw) when radius is too large for the two legs to fit");
 }
 
+void TestNurbsCurveFilletCornerArcMatchesFilletCornerOnRightAngle() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // Same right-angle fixture `TestNurbsCurveFilletCornerRightAngle` uses:
+  // legs along +x and +y from the origin, radius 1.
+  const Point3d p0(3, 0, 0), corner(0, 0, 0), p1(0, 3, 0);
+  const double radius = 1.0;
+
+  NurbsCurve arc;
+  Check(NurbsCurve::FilletCornerArc(p0, corner, p1, radius, arc) == Result::Ok,
+        "FilletCornerArc succeeds on a right-angle corner");
+
+  const Point3d T0(1, 0, 0), T1(0, 1, 0);
+  Check(arc.PointAt(arc.Domain().min).DistanceTo(T0) < 1e-9, "FilletCornerArc's own curve starts exactly at T0");
+  Check(arc.PointAt(arc.Domain().max).DistanceTo(T1) < 1e-9, "FilletCornerArc's own curve ends exactly at T1");
+
+  // Unlike FilletCorner's own joined result, this is the arc ALONE - no
+  // straight legs back to p0/p1 at all, so its total length is exactly
+  // the quarter-circle arc length, not the legs-plus-arc closed form
+  // `TestNurbsCurveFilletCornerRightAngle` checks.
+  const double expected_arc_length = radius * ON_PI / 2.0;
+  Check(std::fabs(arc.Length(2000) - expected_arc_length) < 1e-4,
+        "FilletCornerArc's own length is exactly the quarter-circle arc, none of FilletCorner's straight legs");
+
+  // FilletCorner is now built ON TOP of FilletCornerArc (same construction,
+  // shared implementation) - so the full joined curve's own arc-only
+  // portion must trace the identical locus FilletCornerArc returns
+  // directly, not just an equivalent one: every point sampled off
+  // FilletCornerArc's own curve must lie ON FilletCorner's joined curve.
+  NurbsCurve joined;
+  Check(NurbsCurve::FilletCorner(p0, corner, p1, radius, joined) == Result::Ok,
+        "FilletCorner still succeeds on the same corner");
+  bool all_on_joined = true;
+  const int n = 50;
+  for (int i = 0; i <= n; ++i) {
+    const double t = arc.Domain().min + (arc.Domain().max - arc.Domain().min) * i / n;
+    const Point3d pt = arc.PointAt(t);
+    if (joined.ClosestPoint(pt, 4000).DistanceTo(pt) > 1e-6) all_on_joined = false;
+  }
+  Check(all_on_joined,
+        "every point FilletCornerArc's own curve visits also lies on FilletCorner's joined curve - genuinely the "
+        "same shared construction, not two independent implementations of the same formula");
+}
+
+void TestNurbsCurveFilletCornerArcAcceptsSyntheticFarRayPoints() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // The documented app-level use case: a caller (a two-curve fillet
+  // command trimming its own legs separately, or a polyline corner whose
+  // shared edges are built elsewhere) doesn't have real leg endpoints at
+  // exactly the tangent length - only the two ray DIRECTIONS from the
+  // corner, plus its own independently-established guarantee that the
+  // radius fits. It passes synthetic points, placed arbitrarily farther
+  // out along each ray than the true tangent length, purely to satisfy
+  // the "does it fit" check - the returned arc must be identical either
+  // way, since the arc's own geometry depends only on direction.
+  const Point3d corner(1, 2, 3);
+  const double theta = 2.0 * ON_PI / 3.0;  // 120 degrees, same as the obtuse FilletCorner fixture
+  const Point3d dir0(1, 0, 0), dir1(std::cos(theta), std::sin(theta), 0);
+  const double radius = 0.5;
+
+  NurbsCurve short_ray, long_ray;
+  Check(NurbsCurve::FilletCornerArc(corner + dir0 * 5.0, corner, corner + dir1 * 5.0, radius, short_ray) ==
+            Result::Ok,
+        "FilletCornerArc succeeds with rays of length 5");
+  Check(NurbsCurve::FilletCornerArc(corner + dir0 * 500.0, corner, corner + dir1 * 500.0, radius, long_ray) ==
+            Result::Ok,
+        "FilletCornerArc succeeds with rays of length 500, far past the true tangent length");
+
+  Check(short_ray.PointAt(short_ray.Domain().min).DistanceTo(long_ray.PointAt(long_ray.Domain().min)) < 1e-9 &&
+            short_ray.PointAt(short_ray.Domain().max).DistanceTo(long_ray.PointAt(long_ray.Domain().max)) < 1e-9,
+        "the returned arc's own tangent points are identical regardless of how far out the ray points were placed");
+  Check(std::fabs(short_ray.Length(2000) - long_ray.Length(2000)) < 1e-9,
+        "the returned arc's own length is identical regardless of how far out the ray points were placed");
+}
+
+void TestNurbsCurveFilletCornerArcRejectsInvalidInput() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  auto throws = [](const std::function<void()>& fn) {
+    try {
+      fn();
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+    return false;
+  };
+
+  NurbsCurve out;
+  const Point3d corner(0, 0, 0), p0(1, 0, 0), p1(0, 1, 0);
+  Check(throws([&] { NurbsCurve::FilletCornerArc(p0, corner, p1, 0.0, out); }), "rejects a non-positive radius");
+  Check(throws([&] { NurbsCurve::FilletCornerArc(p0, corner, p1, -1.0, out); }), "rejects a negative radius");
+  Check(throws([&] { NurbsCurve::FilletCornerArc(corner, corner, p1, 1.0, out); }), "rejects p0 == corner");
+  Check(throws([&] { NurbsCurve::FilletCornerArc(p0, corner, corner, 1.0, out); }), "rejects p1 == corner");
+  Check(throws([&] { NurbsCurve::FilletCornerArc(Point3d(1, 0, 0), corner, Point3d(2, 0, 0), 1.0, out); }),
+        "rejects a straight (collinear, same-direction) corner");
+  Check(throws([&] { NurbsCurve::FilletCornerArc(Point3d(-1, 0, 0), corner, Point3d(1, 0, 0), 1.0, out); }),
+        "rejects a straight (collinear, opposite-direction) corner");
+  Check(NurbsCurve::FilletCornerArc(Point3d(0.5, 0, 0), corner, Point3d(0, 0.5, 0), 1.0, out) == Result::Failed,
+        "reports Result::Failed (not a throw) when radius is too large for the two legs to fit");
+}
+
 void TestNurbsCurveChamferCornerAsymmetricDistances() {
   using dino8::kernel::NurbsCurve;
   using dino8::kernel::Point3d;
@@ -45701,6 +45809,9 @@ int main() {
   TestNurbsCurveFilletCornerRightAngle();
   TestNurbsCurveFilletCornerObtuseAngleAndTangency();
   TestNurbsCurveFilletCornerRejectsInvalidInput();
+  TestNurbsCurveFilletCornerArcMatchesFilletCornerOnRightAngle();
+  TestNurbsCurveFilletCornerArcAcceptsSyntheticFarRayPoints();
+  TestNurbsCurveFilletCornerArcRejectsInvalidInput();
   TestNurbsCurveChamferCornerAsymmetricDistances();
   TestNurbsCurveChamferCornerRejectsInvalidInput();
   TestCurveOffsetInPlaneWithExplicitPlaneNonCoplanarPolylineFallsBackToGeneralPath();

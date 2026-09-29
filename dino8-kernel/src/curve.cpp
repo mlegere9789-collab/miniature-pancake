@@ -424,9 +424,9 @@ NurbsCurve NurbsCurve::FromControlPoints(const std::vector<Point3d>& control_poi
   return result;
 }
 
-Result NurbsCurve::FilletCorner(Point3d p0, Point3d corner, Point3d p1, double radius, NurbsCurve& out) {
+Result NurbsCurve::FilletCornerArc(Point3d p0, Point3d corner, Point3d p1, double radius, NurbsCurve& arc_out) {
   if (!(radius > 0.0)) {
-    throw std::invalid_argument("dino8::kernel::NurbsCurve::FilletCorner: radius must be positive");
+    throw std::invalid_argument("dino8::kernel::NurbsCurve::FilletCornerArc: radius must be positive");
   }
   Vector3d u = p0 - corner;
   Vector3d v = p1 - corner;
@@ -434,13 +434,13 @@ Result NurbsCurve::FilletCorner(Point3d p0, Point3d corner, Point3d p1, double r
   const double len_v = v.Length();
   if (!u.Unitize() || !v.Unitize()) {
     throw std::invalid_argument(
-        "dino8::kernel::NurbsCurve::FilletCorner: p0/p1 must be distinct from corner");
+        "dino8::kernel::NurbsCurve::FilletCornerArc: p0/p1 must be distinct from corner");
   }
   const double cos_theta = std::max(-1.0, std::min(1.0, ON_DotProduct(u, v)));
   const double theta = std::acos(cos_theta);
   if (theta < 1e-9 || theta > ON_PI - 1e-9) {
     throw std::invalid_argument(
-        "dino8::kernel::NurbsCurve::FilletCorner: p0, corner and p1 are collinear - no finite tangent circle "
+        "dino8::kernel::NurbsCurve::FilletCornerArc: p0, corner and p1 are collinear - no finite tangent circle "
         "exists for a straight corner");
   }
   const double half = 0.5 * theta;
@@ -453,19 +453,19 @@ Result NurbsCurve::FilletCorner(Point3d p0, Point3d corner, Point3d p1, double r
 
   Vector3d bis = u + v;
   if (!bis.Unitize()) {
-    throw std::invalid_argument("dino8::kernel::NurbsCurve::FilletCorner: degenerate (180-degree) bisector");
+    throw std::invalid_argument("dino8::kernel::NurbsCurve::FilletCornerArc: degenerate (180-degree) bisector");
   }
   const double L = radius / std::sin(half);
   const Point3d C = corner + L * bis;
 
   Vector3d xaxis = T0 - C;
   if (!xaxis.Unitize()) {
-    throw std::runtime_error("dino8::kernel::NurbsCurve::FilletCorner: degenerate arc frame (please report this as a bug)");
+    throw std::runtime_error("dino8::kernel::NurbsCurve::FilletCornerArc: degenerate arc frame (please report this as a bug)");
   }
   Vector3d zaxis = ON_CrossProduct(u, v);
   if (!zaxis.Unitize()) {
     throw std::invalid_argument(
-        "dino8::kernel::NurbsCurve::FilletCorner: p0, corner and p1 are collinear - no finite tangent circle "
+        "dino8::kernel::NurbsCurve::FilletCornerArc: p0, corner and p1 are collinear - no finite tangent circle "
         "exists for a straight corner");
   }
   Vector3d yaxis = ON_CrossProduct(zaxis, xaxis);
@@ -483,14 +483,14 @@ Result NurbsCurve::FilletCorner(Point3d p0, Point3d corner, Point3d p1, double r
   }
   if (phi < 1e-9 || phi > ON_PI + 1e-9) {
     throw std::runtime_error(
-        "dino8::kernel::NurbsCurve::FilletCorner: computed arc sweep out of the expected (0, pi) range (please "
+        "dino8::kernel::NurbsCurve::FilletCornerArc: computed arc sweep out of the expected (0, pi) range (please "
         "report this as a bug)");
   }
   // Checked invariant, not assumed: T1 really is at `radius` from C.
   if (std::fabs(to_T1.Length() - radius) > std::max(radius, 1.0) * 1e-6) {
     throw std::runtime_error(
-        "dino8::kernel::NurbsCurve::FilletCorner: reconstructed tangent point does not lie on the arc's own circle "
-        "(please report this as a bug)");
+        "dino8::kernel::NurbsCurve::FilletCornerArc: reconstructed tangent point does not lie on the arc's own "
+        "circle (please report this as a bug)");
   }
 
   const ON_Plane arc_plane(C, xaxis, yaxis);
@@ -501,6 +501,19 @@ Result NurbsCurve::FilletCorner(Point3d p0, Point3d corner, Point3d p1, double r
   }
   NurbsCurve arc_curve;
   arc_curve.curve_ = arc_nurbs;
+  arc_out = arc_curve;
+  return Result::Ok;
+}
+
+Result NurbsCurve::FilletCorner(Point3d p0, Point3d corner, Point3d p1, double radius, NurbsCurve& out) {
+  NurbsCurve arc_curve;
+  const Result arc_result = FilletCornerArc(p0, corner, p1, radius, arc_curve);
+  if (arc_result != Result::Ok) {
+    return arc_result;
+  }
+  const Interval arc_dom = arc_curve.Domain();
+  const Point3d T0 = arc_curve.PointAt(arc_dom.min);
+  const Point3d T1 = arc_curve.PointAt(arc_dom.max);
 
   NurbsCurve result = FromControlPoints({p0, T0}, 1);
   const double tol = std::max(radius, 1.0) * 1e-6;

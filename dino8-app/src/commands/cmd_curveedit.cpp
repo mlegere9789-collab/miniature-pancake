@@ -588,20 +588,41 @@ class FilletChamferCommand : public Command {
     const double half = std::acos(cos_full) / 2;  // half the angle between the kept legs
     if (half <= 1e-6 || half >= ON_PI / 2 - 1e-6) { ctx.Warn("Curves are collinear at the picked points"); return; }
     double dist = chamfer_ ? size_ : size_ / std::tan(half);  // corner -> tangent point
-    const Point3d TP_A = corner + dirA * dist, TP_B = corner + dirB * dist;
-    // Middle piece.
+    // Middle piece: delegates the actual corner construction to the
+    // kernel's own NurbsCurve::FilletCornerArc/ChamferCorner (dino8/kernel/
+    // curve.h) instead of re-deriving the tangent length, bisector/arc
+    // center placement (fillet) or two-independent-distance split
+    // (chamfer) inline - the exact math those kernel functions already
+    // have real tests for. `ray_far_A`/`ray_far_B` fix only the two ray
+    // DIRECTIONS (dirA/dirB) the kernel functions need; their distance
+    // from `corner` just has to clear the kernel's own "does the radius/
+    // distance fit" check, which is not the REAL fit check for this
+    // command (CutToTangent below, against the actual picked curves, is) -
+    // doubling `dist` and adding a positive margin guarantees that
+    // regardless of `dist`, including 0.
+    const Point3d ray_far_A = corner + dirA * (dist * 2 + 1), ray_far_B = corner + dirB * (dist * 2 + 1);
+    Point3d TP_A = corner + dirA * dist, TP_B = corner + dirB * dist;
     std::optional<kernel::NurbsCurve> middle;
     if (size_ > 0) {
-      if (chamfer_) middle = PolylineCurve({TP_A, TP_B});
-      else {
-        Vector3d bis = dirA + dirB; bis.Unitize();
-        const Point3d center = corner + bis * (size_ / std::sin(half));
-        Vector3d to_corner = corner - center; to_corner.Unitize();
-        const Point3d mid = center + to_corner * size_;
-        ON_Arc arc(TP_A, mid, TP_B);
-        kernel::NurbsCurve k;
-        if (!arc.IsValid() || !CurveFromON(ON_ArcCurve(arc), k)) { ctx.Warn("Could not build the fillet arc"); return; }
-        middle = k;
+      if (chamfer_) {
+        kernel::NurbsCurve chamfer_curve;
+        if (kernel::NurbsCurve::ChamferCorner(ray_far_A, corner, ray_far_B, dist, dist, chamfer_curve) !=
+            kernel::Result::Ok) {
+          ctx.Warn("Could not build the chamfer segment");
+          return;
+        }
+        TP_A = chamfer_curve.ControlPointAt(1);
+        TP_B = chamfer_curve.ControlPointAt(2);
+        middle = PolylineCurve({TP_A, TP_B});
+      } else {
+        kernel::NurbsCurve arc;
+        if (kernel::NurbsCurve::FilletCornerArc(ray_far_A, corner, ray_far_B, size_, arc) != kernel::Result::Ok) {
+          ctx.Warn("Could not build the fillet arc");
+          return;
+        }
+        TP_A = arc.PointAt(arc.Domain().min);
+        TP_B = arc.PointAt(arc.Domain().max);
+        middle = arc;
       }
     }
     bool approx = false;
@@ -668,7 +689,17 @@ class FilletCornersCommand : public Command {
       if (n < 3) continue;
       const size_t ncorner = closed ? n : n - 2;
       // Tangent points per corner (or nothing when the radius does not fit).
-      struct Corner { bool ok = false; Point3d t0, mid, t1; };
+      // The actual arc geometry (tangent length, bisector/arc-center
+      // placement, sweep direction) comes from the kernel's own
+      // NurbsCurve::FilletCornerArc (dino8/kernel/curve.h) - the same
+      // construction `FilletChamferCommand` above now delegates to -
+      // rather than a second inline copy of that math; `Pp`/`Pn` are the
+      // ACTUAL, full-length neighbouring vertices (not synthetic rays),
+      // which is safe here specifically because `prev_avail`/`next_avail`
+      // below already enforce the stricter, shared-edge-aware bound
+      // `FilletCornerArc`'s own (single-corner, unshared) fit check alone
+      // would miss.
+      struct Corner { bool ok = false; Point3d t0, t1; kernel::NurbsCurve arc; };
       std::vector<Corner> corners(ncorner);
       auto seg_len = [&](size_t i) { return v[i].DistanceTo(v[(i + 1) % n]); };
       for (size_t k = 0; k < ncorner; ++k) {
@@ -683,16 +714,16 @@ class FilletCornersCommand : public Command {
         const bool next_shared = closed || i + 1 < n - 1;
         const double prev_avail = prev_shared ? prev_len / 2 : prev_len, next_avail = next_shared ? next_len / 2 : next_len;
         if (d > prev_avail + 1e-9 || d > next_avail + 1e-9) { ++skipped; continue; }
-        Vector3d bis = u + w; bis.Unitize();
-        const Point3d center = P + bis * (r / std::sin(half));
-        Vector3d to_corner = P - center; to_corner.Unitize();
-        corners[k] = {true, P + u * d, center + to_corner * r, P + w * d};
+        kernel::NurbsCurve arc;
+        if (kernel::NurbsCurve::FilletCornerArc(Pp, P, Pn, r, arc) != kernel::Result::Ok) { ++skipped; continue; }
+        const kernel::Interval dom = arc.Domain();
+        corners[k] = {true, arc.PointAt(dom.min), arc.PointAt(dom.max), arc};
         ++rounded;
       }
       // Assemble: lines between consecutive tangent points, arcs at the rounded corners.
       ON_PolyCurve pc;
       auto add_line = [&](Point3d a, Point3d b) { if (a.DistanceTo(b) > ctx.Settings().absolute_tolerance) pc.Append(new ON_LineCurve(a, b)); };
-      auto add_corner = [&](const Corner& c) { ON_Arc arc(c.t0, c.mid, c.t1); if (arc.IsValid()) pc.Append(new ON_ArcCurve(arc)); };
+      auto add_corner = [&](const Corner& c) { pc.Append(new ON_NurbsCurve(c.arc.raw())); };
       auto corner_of = [&](size_t i) -> const Corner* { if (closed) return &corners[i]; if (i == 0 || i == n - 1) return nullptr; return &corners[i - 1]; };
       auto in_point = [&](size_t i) { const Corner* c = corner_of(i); return (c && c->ok) ? c->t0 : v[i]; };
       auto out_point = [&](size_t i) { const Corner* c = corner_of(i); return (c && c->ok) ? c->t1 : v[i]; };
