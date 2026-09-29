@@ -1,8 +1,9 @@
 // Live accessibility bridge: exposes the command line (prompt, live typed
 // input, and the full command-history log), the main menu bar, the running
-// command's options, and the Layers/Properties panels' current content to
-// assistive technology, so a screen reader can read and be notified of them
-// without a sighted user's help.
+// command's options, the Layers/Properties panels' current content, and
+// every viewport's title/view-menu button state to assistive technology, so
+// a screen reader can read and be notified of them without a sighted user's
+// help.
 //
 // Real implementation: AT-SPI2 over D-Bus on Linux (see
 // AccessibilityLinux.cpp). A no-op everywhere else, and on Linux too if the
@@ -30,15 +31,16 @@ void InitAccessibility(const std::string& app_name);
 // current state, then processes any AT-SPI requests (GetText, GetChildren,
 // ...) queued since the last call. Call once per frame.
 //
-// `menu_bar`, `command_options`, `layers_panel` and `properties_panel` are
-// typically ui::LastMenuBarAccessibleTree(), ui::CommandOptionsAccessibleTree(app),
-// ui::LayersPanelAccessibleTree(app) and ui::PropertiesPanelAccessibleTree(app)
+// `menu_bar`, `command_options`, `layers_panel`, `properties_panel` and
+// `viewports_panel` are typically ui::LastMenuBarAccessibleTree(),
+// ui::CommandOptionsAccessibleTree(app), ui::LayersPanelAccessibleTree(app),
+// ui::PropertiesPanelAccessibleTree(app) and ui::ViewportsAccessibleTree(app)
 // (see src/ui/Panels.h) - passed in rather than computed here so this module
 // stays independent of app::Application/Document.
 void UpdateAccessibility(const std::string& prompt, const std::string& command_input,
                           const std::deque<std::string>& history, const AccessibleNode& menu_bar,
                           const AccessibleNode& command_options, const AccessibleNode& layers_panel,
-                          const AccessibleNode& properties_panel);
+                          const AccessibleNode& properties_panel, const AccessibleNode& viewports_panel);
 
 // Just the request-processing half of UpdateAccessibility, without touching
 // any published content. Used by main.cpp's `waitfile` script directive

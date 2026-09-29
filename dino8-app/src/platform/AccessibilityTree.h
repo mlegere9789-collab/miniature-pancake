@@ -9,10 +9,12 @@
 // live from exactly what ui/MenuBar.cpp draws each frame - see
 // MenuTreeBuilder below), the currently running command's options (the
 // clickable chips Application.cpp's DrawCommandLine draws next to the
-// prompt - see BuildCommandOptionsNode), and the Layers and Properties
-// panels' current content (Properties' editable rows are flagged as such -
-// see PropertyEntry::editable). The 3D viewport and the ~40 other
-// panels/dialogs are still not mirrored into this tree.
+// prompt - see BuildCommandOptionsNode), the Layers and Properties panels'
+// current content (Properties' editable rows are flagged as such - see
+// PropertyEntry::editable), and each viewport's title/view-menu button state
+// (name, active/maximized, current display mode - see BuildViewportsPanelNode).
+// The 3D viewport's own rendered content and the ~40 other panels/dialogs are
+// still not mirrored into this tree.
 #pragma once
 
 #include <deque>
@@ -155,5 +157,28 @@ struct CommandOptionSummary {
 // command offers no options right now - honestly matching "nothing to show"
 // rather than omitting the accessible.
 AccessibleNode BuildCommandOptionsNode(const std::vector<CommandOptionSummary>& options);
+
+// One viewport's title/view-menu button state (Viewport.h's Name/IsActive/
+// Maximized/Mode, the latter already reduced to plain text via
+// DisplayModeName - kept here as plain data, independent of viewport/Viewport.h,
+// the same way LayerSummary/PropertyEntry/CommandOptionSummary above keep
+// this module independent of their own owning subsystem).
+struct ViewportSummary {
+  std::string name;
+  bool active = false;
+  bool maximized = false;
+  std::string display_mode;
+};
+
+// Builds the "Viewports" List accessible: one ListItem per viewport (Top,
+// Front, Right, Perspective, ...), in the same order Application::Viewports()
+// holds them, naming which one currently has input focus, whether it is
+// maximized (the other viewports are hidden while any one is), and its
+// current display mode - the same facts the on-screen title-pill/view-menu
+// button and the display-mode label in each viewport's corner show
+// (Viewport.cpp's title-overlay block), independent of which viewport window
+// happens to be visible right now, the same way the Layers/Properties lists
+// above don't depend on their own panel being open.
+AccessibleNode BuildViewportsPanelNode(const std::vector<ViewportSummary>& viewports);
 
 }  // namespace dino8::platform

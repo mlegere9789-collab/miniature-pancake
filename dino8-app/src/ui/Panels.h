@@ -30,6 +30,11 @@ dino8::platform::AccessibleNode PropertiesPanelAccessibleTree(Application& app);
 // (still a real "Command Options" accessible, just with no children) when
 // no command is running or it currently offers none.
 dino8::platform::AccessibleNode CommandOptionsAccessibleTree(Application& app);
+// The AT-SPI2-queryable snapshot of every viewport's title/view-menu button
+// state (name, active/maximized, current display mode - see Viewport.cpp's
+// title-overlay block), independent of which viewport window happens to be
+// visible right now, built straight from Application::Viewports().
+dino8::platform::AccessibleNode ViewportsAccessibleTree(Application& app);
 void DrawToolbars(Application& app);
 void DrawLayersPanel(Application& app);
 void DrawPropertiesPanel(Application& app);

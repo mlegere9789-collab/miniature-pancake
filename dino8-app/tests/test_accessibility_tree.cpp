@@ -7,10 +7,13 @@
 // produces (see ui/MenuBar.cpp) matches exactly what its Begin/EndMenu/Item
 // calls were; the Layers/Properties panel builders produce the plain text a
 // screen reader should hear for a given layer/property list, including
-// which Properties rows are flagged as real editable widgets; and the
+// which Properties rows are flagged as real editable widgets; the
 // command-options builder produces the same click/type guidance
 // DrawCommandLine's option-chip tooltips give a sighted mouse user, in plain
-// text, for whatever the running command's Command::options currently are.
+// text, for whatever the running command's Command::options currently are;
+// and the viewports builder produces one row per viewport naming which one
+// is active, whether it's maximized, and its current display mode, matching
+// Viewport.cpp's title-overlay pill and corner display-mode label.
 // This needs no display, no D-Bus session, and no AT-SPI2 build at all, so
 // it runs on every platform and every CI job regardless of whether
 // AccessibilityLinux.cpp itself was compiled in this build (see
@@ -27,10 +30,12 @@ using dino8::platform::BuildCommandLineText;
 using dino8::platform::BuildCommandOptionsNode;
 using dino8::platform::BuildLayersPanelNode;
 using dino8::platform::BuildPropertiesPanelNode;
+using dino8::platform::BuildViewportsPanelNode;
 using dino8::platform::CommandOptionSummary;
 using dino8::platform::LayerSummary;
 using dino8::platform::MenuTreeBuilder;
 using dino8::platform::PropertyEntry;
+using dino8::platform::ViewportSummary;
 
 namespace {
 int failures = 0;
@@ -243,6 +248,46 @@ int main() {
     Check(empty_options.children.empty(), "no options -> no ListItem children, not a missing accessible");
   }
 
+  // Viewports: one ListItem per viewport (Viewport.cpp's title-overlay pill
+  // and view-menu button, and the display-mode label in its corner),
+  // independent of which viewport window is actually visible right now -
+  // naming which viewport has input focus, whether it's maximized (the
+  // others are hidden while any one is), and its current display mode.
+  {
+    std::vector<ViewportSummary> viewports;
+    viewports.push_back({"Perspective", /*active=*/true, /*maximized=*/false, "Shaded"});
+    viewports.push_back({"Top", /*active=*/false, /*maximized=*/false, "Wireframe"});
+    const dino8::platform::AccessibleNode list = BuildViewportsPanelNode(viewports);
+    Check(list.name == "Viewports", "viewports list is named \"Viewports\"");
+    Check(list.role == dino8::platform::AccessibleRole::List, "viewports list role is List");
+    Check(list.description == "2 viewports", "viewport count is carried as the list's Description");
+    Check(list.children.size() == 2, "two ListItem children, one per viewport");
+    if (list.children.size() == 2) {
+      Check(list.children[0].role == dino8::platform::AccessibleRole::ListItem, "viewport row role is ListItem");
+      Check(list.children[0].name.find("Perspective") != std::string::npos, "row names the viewport");
+      Check(list.children[0].name.find("active") != std::string::npos, "active viewport is called out");
+      Check(list.children[0].name.find("display mode Shaded") != std::string::npos, "display mode is present");
+      Check(list.children[0].name.find("maximized") == std::string::npos,
+            "non-maximized viewport isn't marked maximized");
+      Check(list.children[1].name.find("active") == std::string::npos, "non-active viewport isn't marked active");
+      Check(list.children[1].name.find("display mode Wireframe") != std::string::npos,
+            "second viewport's own display mode is present");
+    }
+  }
+  {
+    std::vector<ViewportSummary> maximized = {{"Front", /*active=*/true, /*maximized=*/true, "Rendered"}};
+    const dino8::platform::AccessibleNode list = BuildViewportsPanelNode(maximized);
+    Check(list.children.size() == 1, "one ListItem for a single maximized viewport");
+    if (!list.children.empty()) {
+      Check(list.children[0].name.find("maximized") != std::string::npos, "maximized viewport is called out");
+    }
+  }
+  {
+    const dino8::platform::AccessibleNode empty_viewports = BuildViewportsPanelNode({});
+    Check(empty_viewports.name == "Viewports", "still named \"Viewports\" with none given");
+    Check(empty_viewports.children.empty(), "no viewports -> no ListItem children");
+  }
+
   // BuildAccessibleTree accepts extra top-level regions (menu bar, panels)
   // alongside the always-present command line - the shape the live bridge
   // (Accessibility.cpp::UpdateAccessibility) assembles every frame.
@@ -253,17 +298,19 @@ int main() {
     dino8::platform::AccessibleNode cmd_options = BuildCommandOptionsNode({});
     dino8::platform::AccessibleNode layers = BuildLayersPanelNode({});
     dino8::platform::AccessibleNode props = BuildPropertiesPanelNode("No selection", {});
+    dino8::platform::AccessibleNode viewports = BuildViewportsPanelNode({});
 
     const dino8::platform::AccessibleNode root =
-        BuildAccessibleTree("Dino8", "Command: ", "", {}, {menu_bar, cmd_options, layers, props});
-    Check(root.children.size() == 5,
-          "command line + menu bar + command options + layers + properties = 5 top-level children");
-    if (root.children.size() == 5) {
+        BuildAccessibleTree("Dino8", "Command: ", "", {}, {menu_bar, cmd_options, layers, props, viewports});
+    Check(root.children.size() == 6,
+          "command line + menu bar + command options + layers + properties + viewports = 6 top-level children");
+    if (root.children.size() == 6) {
       Check(root.children[0].role == AccessibleRole::Log, "child 0 is still the command line");
       Check(root.children[1].role == dino8::platform::AccessibleRole::MenuBar, "child 1 is the menu bar");
       Check(root.children[2].name == "Command Options", "child 2 is the command options list");
       Check(root.children[3].name == "Layers", "child 3 is the layers panel");
       Check(root.children[4].name == "Properties", "child 4 is the properties panel");
+      Check(root.children[5].name == "Viewports", "child 5 is the viewports panel");
     }
   }
 

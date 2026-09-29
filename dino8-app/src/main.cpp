@@ -639,7 +639,8 @@ int main(int argc, char** argv) {
                                           dino8::app::LastMenuBarAccessibleTree(),
                                           dino8::app::CommandOptionsAccessibleTree(app),
                                           dino8::app::LayersPanelAccessibleTree(app),
-                                          dino8::app::PropertiesPanelAccessibleTree(app));
+                                          dino8::app::PropertiesPanelAccessibleTree(app),
+                                          dino8::app::ViewportsAccessibleTree(app));
     // Catch up history_printed to whatever on_print_line already flushed
     // live as each line was recorded (see its own comment on why that has
     // to happen from inside CommandEngine::Print(), not here) - printing

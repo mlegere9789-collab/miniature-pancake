@@ -517,6 +517,25 @@ dino8::platform::AccessibleNode CommandOptionsAccessibleTree(Application& app) {
   return dino8::platform::BuildCommandOptionsNode(summaries);
 }
 
+// AT-SPI2-queryable snapshot of every viewport's title/view-menu button
+// state (see docs/ACCESSIBILITY.md): the same name/active/maximized/
+// display-mode facts Viewport.cpp's title-overlay block and corner label
+// show, reduced to plain text, independent of which viewport window happens
+// to be visible right now.
+dino8::platform::AccessibleNode ViewportsAccessibleTree(Application& app) {
+  std::vector<dino8::platform::ViewportSummary> summaries;
+  summaries.reserve(app.Viewports().size());
+  for (const auto& vp : app.Viewports()) {
+    dino8::platform::ViewportSummary s;
+    s.name = vp->Name();
+    s.active = vp->IsActive();
+    s.maximized = vp->Maximized();
+    s.display_mode = DisplayModeName(vp->Mode());
+    summaries.push_back(std::move(s));
+  }
+  return dino8::platform::BuildViewportsPanelNode(summaries);
+}
+
 // ---------------------------------------------------------------------------
 // Command history / list / help
 // ---------------------------------------------------------------------------

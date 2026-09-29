@@ -137,4 +137,22 @@ AccessibleNode BuildCommandOptionsNode(const std::vector<CommandOptionSummary>& 
   return list;
 }
 
+AccessibleNode BuildViewportsPanelNode(const std::vector<ViewportSummary>& viewports) {
+  AccessibleNode list;
+  list.name = "Viewports";
+  list.role = AccessibleRole::List;
+  char count_buf[32];
+  std::snprintf(count_buf, sizeof(count_buf), "%zu viewports", viewports.size());
+  list.description = count_buf;
+
+  for (const ViewportSummary& v : viewports) {
+    AccessibleNode item;
+    item.role = AccessibleRole::ListItem;
+    item.name = v.name + (v.active ? ", active" : "") + (v.maximized ? ", maximized" : "") + ", display mode " +
+                v.display_mode;
+    list.children.push_back(std::move(item));
+  }
+  return list;
+}
+
 }  // namespace dino8::platform

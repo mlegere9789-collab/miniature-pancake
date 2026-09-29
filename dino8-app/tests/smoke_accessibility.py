@@ -30,6 +30,11 @@ connection, the same way a screen reader would - to prove:
      some (Circle) starts running, and goes back to empty once that command
      finishes - mirroring the option chips Application.cpp's DrawCommandLine
      draws next to the prompt (see Command.h's OptionSpec).
+  8. A "Viewports" accessible (role LIST) is discoverable, with one ListItem
+     per viewport (including the default "Perspective" view, named "active"
+     since it starts as the focused viewport) - mirroring each viewport's
+     title/view-menu button and corner display-mode label (see
+     Viewport.cpp's title-overlay block).
 
 This is a real integration test: at-spi2-registryd is the actual daemon
 GNOME uses, pyatspi is the actual library screen readers use, and Dino8 is
@@ -277,6 +282,28 @@ def main():
         if properties is None:
             die('"Properties" accessible not found among the application\'s children')
         ok('"Properties" accessible is discoverable via the real AT-SPI2 desktop')
+
+        viewports = find_child_by_name(app, "Viewports", 10)
+        if viewports is None:
+            fail('"Viewports" accessible not found among the application\'s children')
+        else:
+            ok('"Viewports" accessible is discoverable via the real AT-SPI2 desktop')
+            # A viewport row's name is "Perspective, active, display mode X"
+            # (see BuildViewportsPanelNode), not the bare viewport name, so
+            # find it with startswith rather than find_child_by_name's exact
+            # match.
+            perspective = None
+            for j in range(viewports.childCount):
+                child = viewports.getChildAtIndex(j)
+                if child is not None and child.name.startswith("Perspective"):
+                    perspective = child
+                    break
+            if perspective is None:
+                fail(f"Viewports has no row for the default \"Perspective\" viewport (childCount={viewports.childCount})")
+            elif "active" not in perspective.name:
+                fail(f"Perspective viewport row does not report itself active (got {perspective.name!r})")
+            else:
+                ok(f"Viewports\' Perspective row reports itself active ({perspective.name!r})")
 
         cmd_options = find_child_by_name(app, "Command Options", 10)
         if cmd_options is None:
