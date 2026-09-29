@@ -8149,6 +8149,122 @@ int Brep::RemoveAllHoleLoops(int face_index) {
   return removed;
 }
 
+Result Brep::RemoveOuterTrim(int face_index) {
+  ON_Brep& b = brep_;
+  if (face_index < 0 || face_index >= b.m_F.Count()) {
+    throw std::out_of_range("dino8::kernel::Brep::RemoveOuterTrim: face_index " + std::to_string(face_index) +
+                            " is out of range (this Brep has " + std::to_string(b.m_F.Count()) + " face slot(s))");
+  }
+  const ON_BrepFace& face0 = b.m_F[face_index];
+  if (face0.m_face_index < 0) {
+    throw std::invalid_argument("dino8::kernel::Brep::RemoveOuterTrim: face_index " +
+                                std::to_string(face_index) + " refers to an already-deleted face");
+  }
+  if (face0.m_si < 0 || face0.m_si >= b.m_S.Count() || b.m_S[face0.m_si] == nullptr) {
+    return Result::Failed;  // defensive - shouldn't happen for a live face
+  }
+
+  int loop_index = -1;
+  for (int k = 0; k < face0.m_li.Count(); ++k) {
+    const int li = face0.m_li[k];
+    if (li >= 0 && li < b.m_L.Count() && b.m_L[li].m_type == ON_BrepLoop::outer) { loop_index = li; break; }
+  }
+  if (loop_index < 0) return Result::Failed;  // defensive - every valid face has an outer loop
+
+  const ON_BrepLoop& loop = b.m_L[loop_index];
+  const int n = loop.TrimCount();
+  if (n < 1) return Result::Failed;
+
+  std::vector<int> loop_trims(static_cast<size_t>(n));
+  for (int k = 0; k < n; ++k) {
+    const ON_BrepTrim* t = loop.Trim(k);
+    if (!t) return Result::Failed;  // defensive
+    loop_trims[static_cast<size_t>(k)] = t->m_trim_index;
+  }
+
+  // Same singular-trim refusal RemoveHoleLoop() gives (no edge means no
+  // defined "delete the edge" here either): this scopes RemoveOuterTrim()
+  // to an ordinary closed, simple, all-edged outer boundary, the same
+  // narrowness every sibling in this local-edit family already has.
+  std::vector<int> loop_edges;
+  loop_edges.reserve(loop_trims.size());
+  for (const int ti : loop_trims) {
+    const ON_BrepTrim& t = b.m_T[ti];
+    if (t.m_ei < 0 || t.m_ei >= b.m_E.Count()) return Result::Failed;
+    loop_edges.push_back(t.m_ei);
+  }
+  std::sort(loop_edges.begin(), loop_edges.end());
+  loop_edges.erase(std::unique(loop_edges.begin(), loop_edges.end()), loop_edges.end());
+
+  auto trim_in_loop = [&loop_trims](int ti) {
+    return std::find(loop_trims.begin(), loop_trims.end(), ti) != loop_trims.end();
+  };
+  for (const int ei : loop_edges) {
+    const ON_BrepEdge& e = b.m_E[ei];
+    for (int k = 0; k < e.m_ti.Count(); ++k) {
+      if (!trim_in_loop(e.m_ti[k])) return Result::Failed;  // shared with a neighbouring face
+    }
+  }
+
+  // Vertices this loop's own trims touch - captured before anything is
+  // mutated, culled afterward exactly as RemoveHoleLoop does, EXCEPT a
+  // vertex still shared with a surviving (hole) loop on this same face
+  // must not be culled even if none of ITS remaining incident edges are
+  // in `loop_edges` - that can only happen if the vertex is also used by
+  // a trim outside this loop, which is exactly what `v.m_ei` still
+  // reflects after only `loop_edges` are removed from it below, so the
+  // ordinary "m_ei now empty" check already handles this correctly.
+  std::vector<int> loop_vertices;
+  loop_vertices.reserve(loop_trims.size() * 2);
+  for (const int ti : loop_trims) {
+    const ON_BrepTrim& t = b.m_T[ti];
+    if (t.m_vi[0] >= 0) loop_vertices.push_back(t.m_vi[0]);
+    if (t.m_vi[1] >= 0) loop_vertices.push_back(t.m_vi[1]);
+  }
+  std::sort(loop_vertices.begin(), loop_vertices.end());
+  loop_vertices.erase(std::unique(loop_vertices.begin(), loop_vertices.end()), loop_vertices.end());
+
+  ON_BrepFace& face = b.m_F[face_index];
+  int li_slot = -1;
+  for (int k = 0; k < face.m_li.Count(); ++k) {
+    if (face.m_li[k] == loop_index) { li_slot = k; break; }
+  }
+  if (li_slot < 0) return Result::Failed;  // defensive - shouldn't happen
+  face.m_li.Remove(li_slot);
+
+  for (const int ti : loop_trims) b.m_T[ti].m_trim_index = -1;
+  for (const int ei : loop_edges) b.m_E[ei].m_edge_index = -1;
+  b.m_L[loop_index].m_loop_index = -1;
+
+  for (const int vi : loop_vertices) {
+    ON_BrepVertex& v = b.m_V[vi];
+    for (int k = v.m_ei.Count() - 1; k >= 0; --k) {
+      if (std::find(loop_edges.begin(), loop_edges.end(), v.m_ei[k]) != loop_edges.end()) {
+        v.m_ei.Remove(k);
+      }
+    }
+    if (v.m_ei.Count() == 0) v.m_vertex_index = -1;
+  }
+
+  // The old outer loop (and every hole loop it might have neighboured)
+  // is gone from `face`; any hole loops the face still has were never
+  // touched above and survive exactly as-is. Rebuild the outer boundary
+  // as the surface's own natural full-domain rectangle - the same real
+  // OpenNURBS primitive `Op::UntrimBorderOnly` (cmd_srfedit.cpp) already
+  // relies on, just applied to THIS Brep's own face in place rather than
+  // a detached duplicate.
+  if (b.NewOuterLoop(face_index) == nullptr) {
+    throw std::runtime_error("dino8::kernel::Brep::RemoveOuterTrim: ON_Brep::NewOuterLoop failed unexpectedly "
+                              "for face_index " + std::to_string(face_index));
+  }
+
+  b.Compact();
+  b.SetTolerancesBoxesAndFlags();
+  FixUnsetEdgeTolerances(b);
+  ClearFaceSideTables();
+  return Result::Ok;
+}
+
 Result Brep::SplitNakedEdgeAt(int edge_index, Point3d point, double tolerance) {
   if (edge_index < 0 || edge_index >= brep_.m_E.Count()) {
     throw std::out_of_range("dino8::kernel::Brep::SplitNakedEdgeAt: edge_index " +

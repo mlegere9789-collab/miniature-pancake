@@ -3875,6 +3875,45 @@ class Brep {
   // or std::invalid_argument if it refers to an already-deleted face.
   int RemoveAllHoleLoops(int face_index);
 
+  // Removes a face's own OUTER trim IN PLACE and rebuilds it as the
+  // underlying surface's natural full-domain boundary - the other half
+  // of PARITY_MAP.md's "Untrim face / remove outer trim / remove hole
+  // loops" item that RemoveHoleLoop()/RemoveAllHoleLoops() above didn't
+  // close: those two un-hole a face; this un-trims its own outer border,
+  // restoring material a trim had cut away from the surface's own natural
+  // extent (e.g. a rectangular patch cut from an infinite plane, or a
+  // circular disc cut from a larger surface), the kernel-level equivalent
+  // of the app's own `Op::UntrimBorderOnly` (cmd_srfedit.cpp) - which
+  // only ever does this on a DETACHED single-face duplicate (via
+  // `DuplicateFace()`, `ON_Brep::DeleteLoop()`, then
+  // `ON_Brep::NewOuterLoop()`), never editing a multi-face Brep's own
+  // face in place. This method edits THIS Brep's named face directly:
+  // any existing hole (inner) loops on the face are left completely
+  // untouched (matching `Op::UntrimBorderOnly`'s own "holes are kept"
+  // behavior), only the outer loop's own trims/edges/(unused-afterward)
+  // vertices are removed, then the real `ON_Brep::NewOuterLoop()` builds
+  // the fresh natural-boundary loop in their place.
+  //
+  // Refuses (Result::Failed, this Brep left completely untouched) rather
+  // than guessing whenever the face's CURRENT outer loop borders another
+  // face - any edge on it that is also used by a trim OUTSIDE this loop
+  // (the same "shared edge" refusal RemoveHoleLoop() gives, applied to
+  // the outer boundary instead of a hole): resetting a shared edge back
+  // to the surface's own natural extent would leave that neighbouring
+  // face's own trim dangling. This scopes the operation to a face whose
+  // outer boundary is entirely naked in THIS Brep - the standalone-
+  // trimmed-surface case `Op::Untrim`/`Op::UntrimBorderOnly` are actually
+  // used for - not a face's shared boundary inside a closed solid. Also
+  // refuses a singular trim (no edge, e.g. a pole) on the outer loop, the
+  // same degenerate case RemoveHoleLoop() already refuses for a hole -
+  // deliberately narrow: an ordinary closed, simple, all-edged outer
+  // boundary only, not a periodic/pole-touching patch (a trimmed
+  // sphere/cone).
+  //
+  // Throws std::out_of_range if `face_index` is out of range, or
+  // std::invalid_argument if it refers to an already-deleted face.
+  Result RemoveOuterTrim(int face_index);
+
   // Splits a naked (1-trim) edge into two coincident naked edges meeting
   // at a new vertex at `point` - the missing primitive behind "tolerant
   // sewing" (PARITY_MAP.md's own "[missing] Tolerant sewing with edge

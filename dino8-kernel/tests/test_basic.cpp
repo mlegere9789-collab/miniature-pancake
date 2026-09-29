@@ -10005,6 +10005,185 @@ void TestBrepRemoveHoleLoopRefusesOuterLoopSharedEdgeAndInvalidInput() {
   }
 }
 
+// RemoveOuterTrim(): PARITY_MAP.md's own "Untrim face / remove outer trim /
+// remove hole loops" item's other half - RemoveHoleLoop()/RemoveAllHoleLoops()
+// above close the hole-removal third, this closes the outer-border third.
+// Reuses BuildPlanarFaceWithHole()'s own fixture, which is ALREADY the case
+// this operation targets: the underlying surface's own natural domain is the
+// physical square [-0.5,4.5]^2 (the fixture's own 2x2 control grid), but the
+// face's CURRENT outer trim is the smaller [0,4]^2 quad - genuine "material
+// has been trimmed away from the surface's own natural extent" - with an
+// independent inner hole loop [1,3]^2 that must survive completely untouched.
+void TestBrepRemoveOuterTrimRestoresSurfaceNaturalBoundaryAndKeepsHoles() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FaceContainsUV;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  PlanarFaceWithHoleFixture fixture = BuildPlanarFaceWithHole();
+  Brep& brep = fixture.brep;
+  ON_Brep& b = brep.raw();
+  const int face_index = fixture.face_index;
+
+  // Exact point classification (FaceContainsUV walks the real loop
+  // topology directly, unlike Tessellate()'s approximate grid-cell area -
+  // see TestBrepRemoveHoleLoopRestoresSolidFaceExactly's own comment for
+  // why): uv (0.95,0.95) is physical (4.25,4.25) - within the surface's
+  // own natural [-0.5,4.5]^2 domain but OUTSIDE the face's current,
+  // smaller [0,4]^2 outer trim.
+  Check(!FaceContainsUV(b.m_F[face_index], 0.95, 0.95),
+        "setup: a point within the surface's natural domain but outside the current outer trim is outside the face");
+  Check(FaceContainsUV(b.m_F[face_index], 0.2, 0.2),
+        "setup: a point inside the current outer trim is inside the face");
+  Check(!FaceContainsUV(b.m_F[face_index], 0.5, 0.5), "setup: the hole's own centre is outside the face");
+  Check(b.m_F[face_index].LoopCount() == 2, "setup: outer + hole");
+
+  const int v_before = b.m_V.Count();
+  const int e_before = b.m_E.Count();
+
+  Check(brep.RemoveOuterTrim(face_index) == Result::Ok,
+        "RemoveOuterTrim() succeeds on a face whose outer boundary is entirely naked");
+
+  Check(brep.FaceCount() == 1, "F is unchanged - RemoveOuterTrim() never adds or removes a face");
+  Check(b.m_F[face_index].LoopCount() == 2, "still 2 loops: the rebuilt outer loop plus the untouched hole");
+
+  // The rebuilt outer loop now spans the surface's own natural domain:
+  // the point that was outside the old (smaller) trim is now inside, the
+  // old surrounding material is still inside, and the hole - never
+  // touched by this call - is still excluded exactly as before.
+  Check(FaceContainsUV(b.m_F[face_index], 0.95, 0.95),
+        "a point within the surface's own natural domain is now inside the face");
+  Check(FaceContainsUV(b.m_F[face_index], 0.2, 0.2), "the old surrounding material is still inside the face");
+  Check(!FaceContainsUV(b.m_F[face_index], 0.5, 0.5),
+        "the hole is still excluded - RemoveOuterTrim() never touches hole loops");
+
+  int outer_li = -1, inner_li = -1;
+  for (int k = 0; k < b.m_F[face_index].LoopCount(); ++k) {
+    const ON_BrepLoop* l = b.m_F[face_index].Loop(k);
+    if (!l) continue;
+    if (l->m_type == ON_BrepLoop::outer) outer_li = l->m_loop_index;
+    if (l->m_type == ON_BrepLoop::inner) inner_li = l->m_loop_index;
+  }
+  Check(outer_li >= 0 && inner_li >= 0, "both an outer and an inner loop survive, freshly located by type");
+  Check(b.m_L[outer_li].TrimCount() == 4, "the rebuilt outer loop is the surface's own 4-side natural rectangle");
+
+  // The hole loop's own 4 corners are byte-for-byte the original ones -
+  // proof RemoveOuterTrim() never touched the hole loop at all.
+  std::vector<Point3d> hole_corners;
+  for (int k = 0; k < b.m_L[inner_li].TrimCount(); ++k) {
+    const ON_BrepTrim* t = b.m_L[inner_li].Trim(k);
+    hole_corners.push_back(b.m_V[t->m_vi[0]].point);
+  }
+  const std::vector<Point3d> expected_hole = {
+      Point3d(1, 1, 0), Point3d(1, 3, 0), Point3d(3, 3, 0), Point3d(3, 1, 0),
+  };
+  Check(hole_corners.size() == expected_hole.size(), "the hole loop still has its original 4 corners");
+  for (const Point3d& expected : expected_hole) {
+    bool found = false;
+    for (const Point3d& actual : hole_corners) {
+      if (std::fabs(actual.x - expected.x) < 1e-9 && std::fabs(actual.y - expected.y) < 1e-9 &&
+          std::fabs(actual.z - expected.z) < 1e-9) { found = true; break; }
+    }
+    Check(found, "the hole's own corner survives exactly, untouched by RemoveOuterTrim()");
+  }
+
+  // V/E counts are unchanged: the old outer loop's 4 private corners/
+  // edges are gone, replaced one-for-one by the rebuilt outer loop's own
+  // 4 new corners/edges along the surface's natural rectangle.
+  Check(b.m_V.Count() == v_before, "vertex count unchanged - 4 old outer corners removed, 4 new ones added");
+  Check(b.m_E.Count() == e_before, "edge count unchanged - 4 old outer edges removed, 4 new ones added");
+
+  const Brep::CheckReport after = brep.Check();
+  Check(after.Count(Brep::CheckIssue::Kind::NakedEdge) == 8,
+        "Check() reports exactly the 4 new outer + 4 hole edges as naked, and nothing else new");
+}
+
+// RemoveOuterTrim() refusal paths: a singular (pole) trim on the outer loop
+// (SphericalFace's own real octant fixture - the same one
+// TestSphericalFaceOctantIsValidWithSingularPoleTrim uses), an outer edge
+// shared with a trim OUTSIDE the loop (a decoy second face reusing one of the
+// outer boundary's own edges, the same construction
+// TestBrepRemoveHoleLoopRefusesOuterLoopSharedEdgeAndInvalidInput uses for a
+// hole edge), and out-of-range/already-deleted face_index - every refusal
+// leaves the Brep completely untouched.
+void TestBrepRemoveOuterTrimRefusesSingularTrimSharedEdgeAndInvalidInput() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point2d;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+  using dino8::kernel::Vector3d;
+
+  // Refuses a singular (no-edge, pole) trim on the outer loop.
+  {
+    Brep::SphericalFace sf;
+    sf.frame = ON_Plane(Point3d(0, 0, 0), Vector3d(1, 0, 0), Vector3d(0, 1, 0));
+    sf.radius = 1.0;
+    sf.angle = ON_PI / 2.0;
+    sf.lat0 = 0.0;
+    sf.lat1 = ON_PI / 2.0;
+    Brep octant = Brep::FromMixedFaces({}, {}, {}, {sf});
+    ON_Brep& b = octant.raw();
+    const int v_before = b.m_V.Count();
+    const int e_before = b.m_E.Count();
+    const int t_before = b.m_T.Count();
+    Check(octant.RemoveOuterTrim(0) == Result::Failed,
+          "RemoveOuterTrim() refuses an outer loop with a singular (pole) trim");
+    Check(b.m_V.Count() == v_before && b.m_E.Count() == e_before && b.m_T.Count() == t_before,
+          "refused singular-trim call leaves the Brep completely untouched");
+  }
+
+  // Refuses an outer edge shared with a trim OUTSIDE the loop.
+  {
+    PlanarFaceWithHoleFixture fixture = BuildPlanarFaceWithHole();
+    Brep& brep = fixture.brep;
+    ON_Brep& b = brep.raw();
+    const int face_index = fixture.face_index;
+    const int outer_loop_index = b.m_F[face_index].Loop(0)->m_loop_index;
+    const int shared_edge_index = b.m_L[outer_loop_index].Trim(0)->m_ei;
+    Check(b.m_E[shared_edge_index].TrimCount() == 1, "setup: the outer trim is the edge's only trim so far");
+
+    const int decoy_face_index = b.NewFace(b.m_F[face_index].m_si).m_face_index;
+    const int decoy_loop_index = b.NewLoop(ON_BrepLoop::outer, b.m_F[decoy_face_index]).m_loop_index;
+    const int c2i = b.AddTrimCurve(new ON_LineCurve(Point2d(0.05, 0.05), Point2d(0.15, 0.05)));
+    ON_BrepTrim& decoy_trim = b.NewTrim(b.m_E[shared_edge_index], /*bRev3d=*/true, b.m_L[decoy_loop_index], c2i);
+    decoy_trim.m_tolerance[0] = decoy_trim.m_tolerance[1] = 0.0;
+    Check(b.m_E[shared_edge_index].TrimCount() == 2, "setup: the decoy face now also borders the outer boundary's own edge");
+
+    const int v_before = b.m_V.Count();
+    const int e_before = b.m_E.Count();
+    const int t_before = b.m_T.Count();
+    Check(brep.RemoveOuterTrim(face_index) == Result::Failed,
+          "RemoveOuterTrim() refuses an outer edge that's also used outside the outer loop");
+    Check(b.m_V.Count() == v_before && b.m_E.Count() == e_before && b.m_T.Count() == t_before,
+          "refused shared-edge call leaves the Brep completely untouched");
+    Check(b.m_T[decoy_trim.m_trim_index].m_trim_index >= 0, "the decoy trim itself is still live");
+  }
+
+  // Refuses out-of-range / already-deleted face_index.
+  {
+    PlanarFaceWithHoleFixture fixture = BuildPlanarFaceWithHole();
+    Brep& brep = fixture.brep;
+    ON_Brep& b = brep.raw();
+
+    bool threw_range = false;
+    try {
+      brep.RemoveOuterTrim(b.m_F.Count() + 100);
+    } catch (const std::out_of_range&) {
+      threw_range = true;
+    }
+    Check(threw_range, "RemoveOuterTrim() throws std::out_of_range on an out-of-range face_index");
+
+    b.m_F[fixture.face_index].m_face_index = -1;  // simulate an already-deleted face
+    bool threw_invalid = false;
+    try {
+      brep.RemoveOuterTrim(fixture.face_index);
+    } catch (const std::invalid_argument&) {
+      threw_invalid = true;
+    }
+    Check(threw_invalid, "RemoveOuterTrim() throws std::invalid_argument on an already-deleted face_index");
+  }
+}
+
 // Brep::LoopCount/LoopsOfFace/FaceOfLoop/TypeOfLoop/TrimCount/TrimsOfLoop/
 // LoopOfTrim/EdgeOfTrim/NextTrimInLoop/PrevTrimInLoop: PARITY_MAP.md's own
 // "Kernel-level topology enumeration API" and "Loop structure" items'
@@ -43982,6 +44161,8 @@ int main() {
   TestBrepRemoveHoleLoopRestoresSolidFaceExactly();
   TestBrepRemoveAllHoleLoopsRemovesEveryHoleInOneCall();
   TestBrepRemoveHoleLoopRefusesOuterLoopSharedEdgeAndInvalidInput();
+  TestBrepRemoveOuterTrimRestoresSurfaceNaturalBoundaryAndKeepsHoles();
+  TestBrepRemoveOuterTrimRefusesSingularTrimSharedEdgeAndInvalidInput();
   TestBrepLoopAndTrimTopologyQueries();
   TestBrepWireBody();
   TestBrepAddWireCurves();
