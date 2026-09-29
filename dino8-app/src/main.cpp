@@ -73,6 +73,7 @@
 #include "doc/Document.h"
 #include "platform/Accessibility.h"
 #include "platform/Clipboard.h"
+#include "ui/Panels.h"
 #include "ui/Theme.h"
 #include "util/ThreadPool.h"
 #include "viewport/Viewport.h"
@@ -634,7 +635,10 @@ int main(int argc, char** argv) {
     }
     if (wait_frames > 0) --wait_frames;
     app.Frame();
-    dino8::platform::UpdateAccessibility(app.Engine().Prompt(), app.CommandInput(), app.Engine().History());
+    dino8::platform::UpdateAccessibility(app.Engine().Prompt(), app.CommandInput(), app.Engine().History(),
+                                          dino8::app::LastMenuBarAccessibleTree(),
+                                          dino8::app::LayersPanelAccessibleTree(app),
+                                          dino8::app::PropertiesPanelAccessibleTree(app));
     // Catch up history_printed to whatever on_print_line already flushed
     // live as each line was recorded (see its own comment on why that has
     // to happen from inside CommandEngine::Print(), not here) - printing

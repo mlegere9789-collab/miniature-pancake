@@ -6,11 +6,24 @@
 #include <string>
 #include <vector>
 
+#include "platform/AccessibilityTree.h"
+
 namespace dino8::app {
 
 class Application;
 
 void DrawMenuBar(Application& app);
+// The AT-SPI2-queryable accessible tree for exactly what DrawMenuBar drew
+// during its most recently completed call (see MenuBar.cpp's
+// MenuTreeBuilder use and docs/ACCESSIBILITY.md). Empty children for any
+// submenu that wasn't open that frame, mirroring what's really on screen.
+const dino8::platform::AccessibleNode& LastMenuBarAccessibleTree();
+// Plain-data snapshots of the Layers and Properties panels' current
+// content, independent of whether either panel is actually open on screen
+// right now (see docs/ACCESSIBILITY.md) - built straight from Document
+// state, not from what DrawLayersPanel/DrawPropertiesPanel last drew.
+dino8::platform::AccessibleNode LayersPanelAccessibleTree(Application& app);
+dino8::platform::AccessibleNode PropertiesPanelAccessibleTree(Application& app);
 void DrawToolbars(Application& app);
 void DrawLayersPanel(Application& app);
 void DrawPropertiesPanel(Application& app);

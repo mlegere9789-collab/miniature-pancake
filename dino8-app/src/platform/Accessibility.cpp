@@ -1,15 +1,21 @@
 #include "platform/Accessibility.h"
 
 #include "platform/AccessibilityPlatform.h"
-#include "platform/AccessibilityTree.h"
 
 namespace dino8::platform {
 
 void InitAccessibility(const std::string& app_name) { PlatformInitAccessibility(app_name); }
 
 void UpdateAccessibility(const std::string& prompt, const std::string& command_input,
-                          const std::deque<std::string>& history) {
-  PlatformSetAccessibleText(BuildCommandLineText(prompt, command_input, history));
+                          const std::deque<std::string>& history, const AccessibleNode& menu_bar,
+                          const AccessibleNode& layers_panel, const AccessibleNode& properties_panel) {
+  AccessibleNode command_line;
+  command_line.name = "Command Line";
+  command_line.role = AccessibleRole::Log;
+  command_line.description = "Command line input and the command-history log above it";
+  command_line.text = BuildCommandLineText(prompt, command_input, history);
+
+  PlatformSetAccessibleTree({command_line, menu_bar, layers_panel, properties_panel});
   PlatformPumpAccessibilityEvents();
 }
 
@@ -24,7 +30,7 @@ void ShutdownAccessibility() { PlatformShutdownAccessibility(); }
 // Every call below is a deliberate no-op, not a missing feature waiting to
 // crash - the app runs exactly as it always did.
 void PlatformInitAccessibility(const std::string&) {}
-void PlatformSetAccessibleText(const std::string&) {}
+void PlatformSetAccessibleTree(std::vector<AccessibleNode>) {}
 void PlatformPumpAccessibilityEvents() {}
 void PlatformShutdownAccessibility() {}
 #endif

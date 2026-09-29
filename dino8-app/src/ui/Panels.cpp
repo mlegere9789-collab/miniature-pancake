@@ -423,6 +423,76 @@ void DrawPropertiesPanel(Application& app) {
   ImGui::End();
 }
 
+// AT-SPI2-queryable snapshot of the Layers panel's current content (see
+// docs/ACCESSIBILITY.md), built straight from Document state - independent
+// of DrawLayersPanel and of whether that window is even open right now, so
+// a screen reader can always ask what layers exist. Same per-layer object
+// count DrawLayersPanel itself computes, in doc.Layers() index order rather
+// than the tree-by-parent draw order (simpler, and every layer name is
+// still unambiguous).
+dino8::platform::AccessibleNode LayersPanelAccessibleTree(Application& app) {
+  Document& doc = app.Doc();
+  std::vector<int> counts(doc.Layers().size(), 0);
+  for (const SceneObject& o : doc.Objects()) {
+    if (o.layer_index >= 0 && static_cast<size_t>(o.layer_index) < counts.size()) ++counts[static_cast<size_t>(o.layer_index)];
+  }
+  std::vector<dino8::platform::LayerSummary> summaries;
+  summaries.reserve(doc.Layers().size());
+  for (size_t i = 0; i < doc.Layers().size(); ++i) {
+    const Layer& l = doc.Layers()[i];
+    dino8::platform::LayerSummary s;
+    s.name = l.name;
+    s.current = static_cast<int>(i) == doc.CurrentLayer();
+    s.visible = l.visible;
+    s.locked = l.locked;
+    s.object_count = counts[i];
+    summaries.push_back(std::move(s));
+  }
+  return dino8::platform::BuildLayersPanelNode(summaries);
+}
+
+// AT-SPI2-queryable snapshot of the Properties panel's current content (see
+// docs/ACCESSIBILITY.md): the same facts DrawPropertiesPanel shows - either
+// about the current selection, or about the document/active viewport when
+// nothing is selected - reduced to plain label/value text.
+dino8::platform::AccessibleNode PropertiesPanelAccessibleTree(Application& app) {
+  Document& doc = app.Doc();
+  std::vector<ObjectId> sel = doc.SelectedIds();
+  std::vector<dino8::platform::PropertyEntry> entries;
+
+  if (sel.empty()) {
+    entries.push_back({"Objects", std::to_string(doc.ObjectCount())});
+    entries.push_back({"Layers", std::to_string(doc.Layers().size())});
+    entries.push_back({"Units", doc.Settings().unit_system});
+    entries.push_back({"Tolerance", FormatNumber(doc.Settings().absolute_tolerance)});
+    if (Viewport* vp = app.ActiveViewport()) {
+      entries.push_back({"Viewport", vp->Name()});
+      entries.push_back({"Display mode", DisplayModeName(vp->Mode())});
+      const CameraState& c = vp->GetCamera().State();
+      entries.push_back({"Camera position", FormatPoint(c.eye)});
+      entries.push_back({"Camera target", FormatPoint(c.target)});
+      entries.push_back({"Projection", c.perspective ? "Perspective" : "Parallel"});
+    }
+    return dino8::platform::BuildPropertiesPanelNode("No selection", entries);
+  }
+
+  SceneObject* first = doc.Find(sel[0]);
+  if (!first) return dino8::platform::BuildPropertiesPanelNode("No selection", entries);
+
+  entries.push_back({"Name", first->name});
+  entries.push_back({"Type", ObjectKindName(first->kind)});
+  entries.push_back({"Layer", doc.LayerFullPath(first->layer_index)});
+  entries.push_back({"Color source", first->color_by_layer ? "By layer" : "Object color"});
+  entries.push_back({"Locked", first->locked ? "Yes" : "No"});
+  if (first->group_id >= 0) entries.push_back({"Group", std::to_string(first->group_id)});
+  entries.push_back({"Linetype", first->linetype});
+  if (!first->material_name.empty()) entries.push_back({"Material", first->material_name});
+
+  const std::string heading =
+      std::to_string(sel.size()) + (sel.size() == 1 ? " object selected" : " objects selected");
+  return dino8::platform::BuildPropertiesPanelNode(heading, entries);
+}
+
 // ---------------------------------------------------------------------------
 // Command history / list / help
 // ---------------------------------------------------------------------------
