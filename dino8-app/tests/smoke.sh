@@ -302,6 +302,17 @@ else
   C2="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 400 --script "$HERE/curves2_script.txt" 2>&1)" || { echo "$C2"; echo "FAIL: curve-tools script exited non-zero"; exit 1; }
 fi
 c2check() { if echo "$C2" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$C2" "$1"; fail=1; fi; }
+# CurveThroughSrfControlPt/ExtractPt: regression for a dangling
+# Document::objects_ pointer (see curves2_script.txt's own comment on this
+# section) - both re-dereferenced a raw SceneObject* to read layer_index
+# after ctx.Doc().Add() had already run earlier in the same loop and could
+# have reallocated the vector out from under it. On the buggy code every
+# curve/point after the first lands on whatever garbage layer_index that
+# stale read turns up, not CvGridLayer/PtGridLayer.
+c2check "CurveThroughSrfControlPt: 20 curve(s) through the control point rows and columns" "CurveThroughSrfControlPt built a curve for every row and column of the 10x10 grid"
+[ "$(echo "$C2" | grep -c "layer CvGridLayer")" = "21" ] && echo "ok   CurveThroughSrfControlPt: every curve (plus the source surface) landed on the correct layer, not a dangling-pointer read" || { echo "FAIL CurveThroughSrfControlPt put at least one curve on the wrong layer (dangling Document::objects_ pointer)"; fail=1; }
+c2check "ExtractPt: 100 point(s)" "ExtractPt extracted every control point of the 10x10 grid"
+[ "$(echo "$C2" | grep -c "layer PtGridLayer")" = "101" ] && echo "ok   ExtractPt: every point (plus the source surface) landed on the correct layer, not a dangling-pointer read" || { echo "FAIL ExtractPt put at least one point on the wrong layer (dangling Document::objects_ pointer)"; fail=1; }
 c2check "Conic: rho = 0.4" "Conic passed through the shoulder point"
 c2check "Parabola: focal length 5" "Parabola built from vertex and focus"
 c2check "Hyperbola: a = 5" "Hyperbola built from center and vertex"
@@ -346,7 +357,7 @@ if echo "$C2" | grep -q "Bounding box: (30, 0, 9) to (40, 0, 9)"; then
 else
   echo "ok   RemoveSymmetry genuinely broke the live link (copy did NOT follow the source's post-removal move)"
 fi
-c2check "^ok   expect_objects 72" "curve-tools script produced the expected object count"
+c2check "^ok   expect_objects 194" "curve-tools script produced the expected object count"
 # Exchange formats: DXF round-trip, SVG / PDF vector output, PLY round-trip (see exchange_script.txt).
 sed "s|@TMP@|$TMPW|g" "$HERE/exchange_script.txt" > "$TMPW/exchange_script.txt"
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then

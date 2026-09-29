@@ -1,4 +1,45 @@
 # Curve tools QC: conics, catenary, closing, reducing, sub-curves, slicing, arrays, alignment, tweening.
+# --- CurveThroughSrfControlPt / ExtractPt (N x N control grid): regression
+# for a dangling Document::objects_ pointer, the same bug class as
+# CutVolume's own fix (see cmd_solidtools.cpp). Both
+# BuildCurveThroughSrfControlPt and ExtractPt (cmd_curves2.cpp) captured
+# their source object as a raw SceneObject*, then re-dereferenced that same
+# pointer (o->layer_index) once per row/column or once per point, after
+# ctx.Doc().Add() had already run earlier in that same loop. Add() can
+# reallocate Document::objects_, so once one of the many Add() calls below
+# grows past current capacity, `o` dangles for every row/column/point after
+# that - and the very next one's own allocations (its curve, its user_text
+# map) are likely to reuse the freed SceneObject slot, so the stale read
+# lands on already-overwritten memory rather than surviving by luck. Run
+# first, against a still-empty document (Document::objects_ starts at
+# capacity 0, so the very first Add() below already has to grow it) so
+# there's no leftover capacity headroom from later in the script that could
+# mask it - a 10x10 control grid (20 Add() calls for the curve case, 100
+# for the point case) is far more than enough.
+Plane 0,0,0 10,10,0
+SelLast
+ChangeLayer CvGridLayer
+SelLast
+Rebuild
+10
+SelLast
+CurveThroughSrfControlPt
+SelAll
+List
+SelAll
+Hide
+Plane 0,0,0 10,10,0
+SelLast
+ChangeLayer PtGridLayer
+SelLast
+Rebuild
+10
+SelLast
+ExtractPt
+SelAll
+List
+SelAll
+Hide
 Conic 0,0,0 20,0,0 10,10,0 10,4,0
 Parabola 0,0,0 0,5,0 10,5,0
 Hyperbola 0,0,0 5,0,0 10,8,0
@@ -308,4 +349,8 @@ What
 SelAll
 Show
 SelNone
-@expect_objects 72
+# 72 from the rest of this script + 122 (21 + 101) from the
+# CurveThroughSrfControlPt/ExtractPt dangling-pointer regression above,
+# which are hidden rather than deleted so List's layer output stays
+# checkable from the saved smoke-test log if this ever needs re-diagnosing.
+@expect_objects 194

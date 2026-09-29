@@ -1707,15 +1707,24 @@ void BuildCurveThroughSrfControlPt(CommandContext& ctx, const std::vector<Object
     if (!o || o->kind != ObjectKind::Surface || !o->surface) continue;
     const ON_NurbsSurface& s = o->surface->raw();
     const int nu = s.CVCount(0), nv = s.CVCount(1);
+    // `o` is a raw pointer into Document::objects_, and the Add() calls
+    // below (one per row/column) can reallocate that vector, leaving `o`
+    // dangling for every Add() after the first one. Read the layer index
+    // now, before either loop, and use the copy instead of re-dereferencing
+    // `o` - same fix as CutVolume's own dangling-pointer UAF
+    // (cmd_solidtools.cpp). `s` stays safe to keep using: it's a reference
+    // into the heap surface owned by o->surface (a unique_ptr), which
+    // Add()'s reallocation moves but does not invalidate.
+    const int layer_index = o->layer_index;
     for (int i = 0; i < nu; ++i) {
       std::vector<Point3d> row;
       for (int j = 0; j < nv; ++j) { ON_3dPoint p; s.GetCV(i, j, p); row.push_back(p); }
-      if (row.size() >= 2) { SceneObject n = SceneObject::MakeCurve(PolylineCurve(row)); n.layer_index = o->layer_index; ctx.Doc().Add(std::move(n)); ++made; }
+      if (row.size() >= 2) { SceneObject n = SceneObject::MakeCurve(PolylineCurve(row)); n.layer_index = layer_index; ctx.Doc().Add(std::move(n)); ++made; }
     }
     for (int j = 0; j < nv; ++j) {
       std::vector<Point3d> col;
       for (int i = 0; i < nu; ++i) { ON_3dPoint p; s.GetCV(i, j, p); col.push_back(p); }
-      if (col.size() >= 2) { SceneObject n = SceneObject::MakeCurve(PolylineCurve(col)); n.layer_index = o->layer_index; ctx.Doc().Add(std::move(n)); ++made; }
+      if (col.size() >= 2) { SceneObject n = SceneObject::MakeCurve(PolylineCurve(col)); n.layer_index = layer_index; ctx.Doc().Add(std::move(n)); ++made; }
     }
   }
   ctx.Print("CurveThroughSrfControlPt: " + std::to_string(made) + " curve(s) through the control point rows and columns");
@@ -2502,7 +2511,14 @@ void RegisterCurves2Commands(CommandEngine& e) {
           if (o->kind == ObjectKind::Curve && o->curve) pts = ControlPolygon(*o->curve);
           else if (o->kind == ObjectKind::Surface && o->surface) { const ON_NurbsSurface& s = o->surface->raw(); for (int i = 0; i < s.CVCount(0); ++i) for (int j = 0; j < s.CVCount(1); ++j) { ON_3dPoint p; s.GetCV(i, j, p); pts.push_back(p); } }
           else if (o->kind == ObjectKind::Mesh && o->mesh) { for (int i = 0; i < o->mesh->raw().VertexCount(); ++i) pts.push_back(o->mesh->raw().Vertex(i)); }
-          for (const Point3d& p : pts) { SceneObject np = SceneObject::MakePoint(p); np.layer_index = o->layer_index; ctx.Doc().Add(std::move(np)); ++n; }
+          // `o` is a raw pointer into Document::objects_: ctx.Doc().Add()
+          // below runs once per point and can reallocate that vector,
+          // leaving `o` dangling for every point after the first - read the
+          // layer index once, now, rather than re-dereferencing `o` inside
+          // the loop (same dangling-pointer fix as CutVolume,
+          // cmd_solidtools.cpp).
+          const int layer_index = o->layer_index;
+          for (const Point3d& p : pts) { SceneObject np = SceneObject::MakePoint(p); np.layer_index = layer_index; ctx.Doc().Add(std::move(np)); ++n; }
         }
         ctx.Print("ExtractPt: " + std::to_string(n) + " point(s)");
       }));
