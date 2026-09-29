@@ -17922,6 +17922,238 @@ void TestMeshLoadAmfRejectsMalformedFiles() {
   std::remove(oob_index_path.c_str());
 }
 
+void TestMeshSaveVrmlRoundTrips() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Result;
+
+  // Same MakeQuadBoxMesh fixture SaveOff()'s/SaveAmf()'s own round-trip
+  // tests use: 8 vertices, 6 quad faces, known exact volume.
+  const auto box = MakeQuadBoxMesh(0, 0, 0, 2, 2, 2);
+  const std::string path = "dino8_kernel_mesh_vrml_test.wrl";
+  Check(box.SaveVrml(path) == Result::Ok, "Mesh::SaveVrml succeeds");
+
+  std::ifstream in(path);
+  Check(static_cast<bool>(in), "the .wrl file SaveVrml wrote can be reopened for reading");
+  std::string header_line;
+  std::getline(in, header_line);
+  Check(header_line.rfind("#VRML", 0) == 0, "the file's first line starts with the '#VRML' header");
+  std::string file_text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  Check(file_text.find("IndexedFaceSet") != std::string::npos, "the file has an IndexedFaceSet node");
+  Check(file_text.find("coordIndex") != std::string::npos, "the file has a coordIndex array");
+
+  size_t quad_run_count = 0;
+  for (size_t pos = file_text.find(" -1,"); pos != std::string::npos;
+       pos = file_text.find(" -1,", pos + 1)) {
+    ++quad_run_count;
+  }
+  Check(quad_run_count == static_cast<size_t>(box.FaceCount()),
+        "exactly one coordIndex run (ending in -1) per face - 6 for the box");
+
+  // Full round trip: LoadVrml() the file SaveVrml() just wrote and check
+  // the result is geometrically the same solid.
+  Mesh reloaded;
+  Check(Mesh::LoadVrml(path, reloaded) == Result::Ok, "Mesh::LoadVrml succeeds on SaveVrml()'s own output");
+  Check(reloaded.VertexCount() == box.VertexCount() && reloaded.FaceCount() == box.FaceCount(),
+        "the reloaded mesh has the same vertex/face counts as the original - "
+        "quad faces round-tripped as a native 4-index run, not split");
+  Check(std::abs(reloaded.Volume() - box.Volume()) < 1e-9,
+        "the reloaded mesh's volume exactly matches the original");
+  std::remove(path.c_str());
+
+  // A hand-written file exercising commas as separators, '#' comments in
+  // the body (not just the header), and 0-based indices - a single
+  // triangle whose known area lets LoadVrml()'s geometry be checked
+  // exactly, not just its counts.
+  const std::string hand_written_path = "dino8_kernel_mesh_vrml_test_hand_written.wrl";
+  {
+    std::ofstream out(hand_written_path);
+    out << "#VRML V2.0 utf8\n";
+    out << "# a comment line in the body\n";
+    out << "Shape {\n";
+    out << " geometry IndexedFaceSet {\n";
+    out << "  coord Coordinate { point [ 0 0 0, 2 0 0, 0 2 0 ] } # trailing comment\n";
+    out << "  coordIndex [ 0, 1, 2, -1 ]\n";
+    out << " }\n";
+    out << "}\n";
+  }
+  Mesh hand_written;
+  Check(Mesh::LoadVrml(hand_written_path, hand_written) == Result::Ok,
+        "LoadVrml succeeds on a hand-written file using commas and body comments");
+  Check(hand_written.VertexCount() == 3 && hand_written.FaceCount() == 1,
+        "the hand-written file's 3 vertices and 1 triangle are read correctly");
+  const ON_MeshFace& tri = hand_written.raw().m_F[0];
+  Check(tri.vi[0] == 0 && tri.vi[1] == 1 && tri.vi[2] == 2,
+        "VRML's 0-based coordIndex values resolved directly to the same 0-based corners");
+  std::remove(hand_written_path.c_str());
+}
+
+void TestMeshLoadVrmlRejectsMalformedFiles() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Result;
+
+  const std::string missing_path = "dino8_kernel_mesh_vrml_test_does_not_exist.wrl";
+  Mesh out;
+  Check(Mesh::LoadVrml(missing_path, out) == Result::Failed, "LoadVrml fails on a file that doesn't exist");
+
+  const std::string bad_header_path = "dino8_kernel_mesh_vrml_test_bad_header.wrl";
+  {
+    std::ofstream bad(bad_header_path);
+    bad << "OFF\n3 1 0\n0 0 0\n1 0 0\n0 1 0\n3 0 1 2\n";
+  }
+  Check(Mesh::LoadVrml(bad_header_path, out) == Result::Failed,
+        "LoadVrml fails on a file whose first line isn't a '#VRML' header");
+
+  const std::string too_few_path = "dino8_kernel_mesh_vrml_test_too_few.wrl";
+  {
+    std::ofstream bad(too_few_path);
+    // A face run needs at least 3 indices before its -1; 2 is not a
+    // valid polygon.
+    bad << "#VRML V2.0 utf8\nShape { geometry IndexedFaceSet {\n"
+        << "coord Coordinate { point [ 0 0 0, 1 0 0, 0 1 0 ] }\n"
+        << "coordIndex [ 0, 1, -1 ]\n} }\n";
+  }
+  Check(Mesh::LoadVrml(too_few_path, out) == Result::Failed,
+        "LoadVrml fails on a coordIndex run with fewer than 3 indices before its -1");
+
+  const std::string oob_index_path = "dino8_kernel_mesh_vrml_test_oob_index.wrl";
+  {
+    std::ofstream bad(oob_index_path);
+    // Only 3 vertices declared (indices 0-2); index 3 doesn't exist.
+    bad << "#VRML V2.0 utf8\nShape { geometry IndexedFaceSet {\n"
+        << "coord Coordinate { point [ 0 0 0, 1 0 0, 0 1 0 ] }\n"
+        << "coordIndex [ 0, 1, 3, -1 ]\n} }\n";
+  }
+  Check(Mesh::LoadVrml(oob_index_path, out) == Result::Failed,
+        "LoadVrml fails on a coordIndex run referencing a vertex index that doesn't exist");
+
+  const std::string no_point_path = "dino8_kernel_mesh_vrml_test_no_point.wrl";
+  {
+    std::ofstream bad(no_point_path);
+    bad << "#VRML V2.0 utf8\nShape { geometry IndexedFaceSet {\n"
+        << "coordIndex [ 0, 1, 2, -1 ]\n} }\n";
+  }
+  Check(Mesh::LoadVrml(no_point_path, out) == Result::Failed,
+        "LoadVrml fails on a file with no point [...] array at all");
+
+  const std::string no_index_path = "dino8_kernel_mesh_vrml_test_no_index.wrl";
+  {
+    std::ofstream bad(no_index_path);
+    bad << "#VRML V2.0 utf8\nShape { geometry IndexedFaceSet {\n"
+        << "coord Coordinate { point [ 0 0 0, 1 0 0, 0 1 0 ] }\n} }\n";
+  }
+  Check(Mesh::LoadVrml(no_index_path, out) == Result::Failed,
+        "LoadVrml fails on a file with no coordIndex [...] array at all");
+
+  const std::string unterminated_path = "dino8_kernel_mesh_vrml_test_unterminated.wrl";
+  {
+    std::ofstream bad(unterminated_path);
+    bad << "#VRML V2.0 utf8\nShape { geometry IndexedFaceSet {\n"
+        << "coord Coordinate { point [ 0 0 0, 1 0 0, 0 1 0 ] }\n"
+        << "coordIndex [ 0, 1, 2\n} }\n";  // no closing -1 or ]
+  }
+  Check(Mesh::LoadVrml(unterminated_path, out) == Result::Failed,
+        "LoadVrml fails on a coordIndex array truncated before its closing ]");
+
+  std::remove(bad_header_path.c_str());
+  std::remove(too_few_path.c_str());
+  std::remove(oob_index_path.c_str());
+  std::remove(no_point_path.c_str());
+  std::remove(no_index_path.c_str());
+  std::remove(unterminated_path.c_str());
+}
+
+void TestMeshLoadVrmlFanTriangulatesNgonFaces() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Result;
+
+  // Same shoelace-area ground truth TestMeshLoadOffFanTriangulatesNgonFaces
+  // uses, applied to VRML's own coordIndex n-gon runs instead of OFF's
+  // count-prefixed face lines.
+  auto shoelace_area = [](const std::vector<std::pair<double, double>>& pts) {
+    double sum = 0.0;
+    for (size_t i = 0; i < pts.size(); ++i) {
+      const auto& [x0, y0] = pts[i];
+      const auto& [x1, y1] = pts[(i + 1) % pts.size()];
+      sum += x0 * y1 - x1 * y0;
+    }
+    return std::abs(sum) * 0.5;
+  };
+  auto triangle_area_sum = [](const Mesh& mesh) {
+    double total = 0.0;
+    const ON_Mesh& raw = mesh.raw();
+    for (int i = 0; i < raw.m_F.Count(); ++i) {
+      const ON_MeshFace& f = raw.m_F[i];
+      const ON_3fPoint& a = raw.m_V[f.vi[0]];
+      const ON_3fPoint& b = raw.m_V[f.vi[1]];
+      const ON_3fPoint& c = raw.m_V[f.vi[2]];
+      const ON_3dVector cross =
+          ON_3dVector::CrossProduct(ON_3dVector(b - a), ON_3dVector(c - a));
+      total += 0.5 * cross.Length();
+    }
+    return total;
+  };
+
+  // Convex pentagon (5 corners) - the smallest n-gon ON_MeshFace can't
+  // represent directly.
+  const std::vector<std::pair<double, double>> pentagon = {
+      {0, 0}, {2, 0}, {3, 1}, {1, 2}, {-1, 1}};
+  const std::string pentagon_path = "dino8_kernel_mesh_vrml_test_pentagon_fan.wrl";
+  {
+    std::ofstream out(pentagon_path);
+    out << "#VRML V2.0 utf8\nShape { geometry IndexedFaceSet {\n";
+    out << " coord Coordinate { point [\n";
+    for (const auto& [x, y] : pentagon) out << "  " << x << ' ' << y << " 0,\n";
+    out << " ] }\n coordIndex [ 0, 1, 2, 3, 4, -1 ]\n} }\n";
+  }
+  Mesh pentagon_mesh;
+  Check(Mesh::LoadVrml(pentagon_path, pentagon_mesh) == Result::Ok,
+        "LoadVrml succeeds on a 5-index (pentagon) coordIndex run instead of "
+        "rejecting it outright");
+  Check(pentagon_mesh.VertexCount() == 5,
+        "the pentagon's 5 vertices are all preserved, unduplicated");
+  Check(pentagon_mesh.FaceCount() == 3,
+        "a pentagon fan-triangulates into exactly 5-2=3 triangles");
+  const ON_MeshFace& p0 = pentagon_mesh.raw().m_F[0];
+  const ON_MeshFace& p1 = pentagon_mesh.raw().m_F[1];
+  const ON_MeshFace& p2 = pentagon_mesh.raw().m_F[2];
+  Check(p0.vi[0] == 0 && p0.vi[1] == 1 && p0.vi[2] == 2 && p0.vi[3] == 2,
+        "the first fan triangle is corners (0,1,2), stored as a "
+        "degenerate quad (vi[3]==vi[2]) the same way an explicit "
+        "triangle face already is");
+  Check(p1.vi[0] == 0 && p1.vi[1] == 2 && p1.vi[2] == 3,
+        "the second fan triangle is corners (0,2,3)");
+  Check(p2.vi[0] == 0 && p2.vi[1] == 3 && p2.vi[2] == 4,
+        "the third fan triangle is corners (0,3,4), reaching the "
+        "pentagon's last corner");
+  Check(std::abs(triangle_area_sum(pentagon_mesh) - shoelace_area(pentagon)) < 1e-9,
+        "the 3 fan triangles' combined area exactly reproduces the "
+        "convex pentagon's own shoelace area");
+  std::remove(pentagon_path.c_str());
+
+  // A convex hexagon (6 corners) exercises n > 5 too, not just the
+  // smallest unsupported case.
+  const std::vector<std::pair<double, double>> hexagon = {
+      {2, 0}, {1, 2}, {-1, 2}, {-2, 0}, {-1, -2}, {1, -2}};
+  const std::string hexagon_path = "dino8_kernel_mesh_vrml_test_hexagon_fan.wrl";
+  {
+    std::ofstream out(hexagon_path);
+    out << "#VRML V2.0 utf8\nShape { geometry IndexedFaceSet {\n";
+    out << " coord Coordinate { point [\n";
+    for (const auto& [x, y] : hexagon) out << "  " << x << ' ' << y << " 0,\n";
+    out << " ] }\n coordIndex [ 0, 1, 2, 3, 4, 5, -1 ]\n} }\n";
+  }
+  Mesh hexagon_mesh;
+  Check(Mesh::LoadVrml(hexagon_path, hexagon_mesh) == Result::Ok,
+        "LoadVrml succeeds on a 6-index (hexagon) coordIndex run");
+  Check(hexagon_mesh.VertexCount() == 6 && hexagon_mesh.FaceCount() == 4,
+        "a hexagon fan-triangulates into exactly 6-2=4 triangles, no "
+        "vertex duplication");
+  Check(std::abs(triangle_area_sum(hexagon_mesh) - shoelace_area(hexagon)) < 1e-9,
+        "the 4 fan triangles' combined area exactly reproduces the "
+        "convex hexagon's own shoelace area");
+  std::remove(hexagon_path.c_str());
+}
+
 void TestMeshSaveStlSplitsQuadsAndComputesNormals() {
   using dino8::kernel::Result;
 
@@ -44811,6 +45043,9 @@ int main() {
   TestMeshLoadOffFanTriangulatesNgonFaces();
   TestMeshSaveAmfRoundTrips();
   TestMeshLoadAmfRejectsMalformedFiles();
+  TestMeshSaveVrmlRoundTrips();
+  TestMeshLoadVrmlRejectsMalformedFiles();
+  TestMeshLoadVrmlFanTriangulatesNgonFaces();
   TestMeshSaveStlSplitsQuadsAndComputesNormals();
   TestMeshLoadStlRoundTrips();
   TestMeshLoadStlBinary();

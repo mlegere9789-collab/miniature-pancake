@@ -2171,6 +2171,185 @@ Result Mesh::LoadAmf(const std::string& path, Mesh& out_mesh) {
   return Result::Ok;
 }
 
+namespace {
+
+// Tokenizes a VRML97 file body (everything after the `#VRML ...` header
+// line, which is consumed separately - see LoadVrml()) into a flat token
+// stream: `{`, `}`, `[`, `]`, and `,` each become their own single-
+// character token, except `,` which is dropped entirely rather than
+// emitted as its own token (VRML97 itself specifies a comma as
+// insignificant whitespace between values, so the number/index parsing
+// loops below never need to special-case it - it's exactly as if it
+// weren't there, the same as a space or a newline). A `#` starts a
+// comment that runs to end of line (VRML allows a comment anywhere, not
+// just the header), and anything else is split on ASCII whitespace the
+// same way NextOffToken() already does for `.off`.
+std::vector<std::string> TokenizeVrmlBody(const std::string& text) {
+  std::vector<std::string> tokens;
+  size_t i = 0;
+  const size_t n = text.size();
+  while (i < n) {
+    char c = text[i];
+    if (std::isspace(static_cast<unsigned char>(c)) || c == ',') {
+      ++i;
+      continue;
+    }
+    if (c == '#') {
+      while (i < n && text[i] != '\n') ++i;
+      continue;
+    }
+    if (c == '{' || c == '}' || c == '[' || c == ']') {
+      tokens.emplace_back(1, c);
+      ++i;
+      continue;
+    }
+    size_t start = i;
+    while (i < n) {
+      char d = text[i];
+      if (std::isspace(static_cast<unsigned char>(d)) || d == '#' || d == '{' || d == '}' ||
+          d == '[' || d == ']' || d == ',') {
+        break;
+      }
+      ++i;
+    }
+    tokens.push_back(text.substr(start, i - start));
+  }
+  return tokens;
+}
+
+// Finds the index of the next token equal to `word` at or after `from`.
+// Returns tokens.size() if not found.
+size_t FindVrmlToken(const std::vector<std::string>& tokens, const std::string& word, size_t from) {
+  for (size_t i = from; i < tokens.size(); ++i) {
+    if (tokens[i] == word) return i;
+  }
+  return tokens.size();
+}
+
+}  // namespace
+
+Result Mesh::SaveVrml(const std::string& path) const {
+  std::ofstream out(path);
+  if (!out) {
+    return Result::Failed;
+  }
+
+  out << "#VRML V2.0 utf8\n";
+  out << "Shape {\n";
+  out << " geometry IndexedFaceSet {\n";
+  out << "  coord Coordinate {\n";
+  out << "   point [\n";
+  for (int i = 0; i < mesh_.m_V.Count(); ++i) {
+    const ON_3fPoint& v = mesh_.m_V[i];
+    out << "    " << v.x << ' ' << v.y << ' ' << v.z << ",\n";
+  }
+  out << "   ]\n";
+  out << "  }\n";
+  out << "  coordIndex [\n";
+  for (int i = 0; i < mesh_.m_F.Count(); ++i) {
+    const ON_MeshFace& f = mesh_.m_F[i];
+    if (f.IsQuad()) {
+      out << "   " << f.vi[0] << ' ' << f.vi[1] << ' ' << f.vi[2] << ' ' << f.vi[3] << " -1,\n";
+    } else {
+      out << "   " << f.vi[0] << ' ' << f.vi[1] << ' ' << f.vi[2] << " -1,\n";
+    }
+  }
+  out << "  ]\n";
+  out << " }\n";
+  out << "}\n";
+
+  return out.good() ? Result::Ok : Result::Failed;
+}
+
+Result Mesh::LoadVrml(const std::string& path, Mesh& out_mesh) {
+  std::ifstream in(path, std::ios::binary);
+  if (!in) {
+    return Result::Failed;
+  }
+
+  std::string header_line;
+  std::getline(in, header_line);
+  // Tolerate a trailing '\r' from a CRLF file, same as the rest of this
+  // check would otherwise silently fail on one.
+  if (!header_line.empty() && header_line.back() == '\r') header_line.pop_back();
+  if (header_line.rfind("#VRML", 0) != 0) {
+    return Result::Failed;  // not a VRML file at all - never silently misread
+  }
+
+  std::ostringstream buffer;
+  buffer << in.rdbuf();
+  const std::vector<std::string> tokens = TokenizeVrmlBody(buffer.str());
+
+  const size_t point_kw = FindVrmlToken(tokens, "point", 0);
+  if (point_kw == tokens.size() || point_kw + 1 >= tokens.size() || tokens[point_kw + 1] != "[") {
+    return Result::Failed;
+  }
+
+  Mesh result;
+  ON_Mesh& raw = result.mesh_;
+
+  {
+    std::vector<double> numbers;
+    size_t i = point_kw + 2;
+    for (; i < tokens.size() && tokens[i] != "]"; ++i) {
+      double value = 0;
+      if (!ParseOffDouble(tokens[i], value)) return Result::Failed;
+      numbers.push_back(value);
+    }
+    if (i >= tokens.size()) return Result::Failed;  // unterminated point [ ... ]
+    if (numbers.size() % 3 != 0) return Result::Failed;
+    for (size_t v = 0; v + 2 < numbers.size(); v += 3) {
+      raw.m_V.Append(ON_3fPoint(numbers[v], numbers[v + 1], numbers[v + 2]));
+    }
+  }
+
+  const size_t index_kw = FindVrmlToken(tokens, "coordIndex", 0);
+  if (index_kw == tokens.size() || index_kw + 1 >= tokens.size() || tokens[index_kw + 1] != "[") {
+    return Result::Failed;
+  }
+
+  {
+    std::vector<int> current_face;
+    size_t i = index_kw + 2;
+    for (; i < tokens.size() && tokens[i] != "]"; ++i) {
+      int value = 0;
+      if (!ParseOffInt(tokens[i], value)) return Result::Failed;
+      if (value == -1) {
+        if (current_face.size() < 3) return Result::Failed;
+        if (current_face.size() <= 4) {
+          ON_MeshFace face;
+          face.vi[0] = current_face[0];
+          face.vi[1] = current_face[1];
+          face.vi[2] = current_face[2];
+          face.vi[3] = (current_face.size() == 4) ? current_face[3] : current_face[2];
+          raw.m_F.Append(face);
+        } else {
+          // A genuine n-gon (5+ indices) doesn't fit ON_MeshFace -
+          // fan-triangulate from the run's own first index, the same
+          // accommodation LoadObj()/LoadOff() already make.
+          for (size_t c = 1; c + 1 < current_face.size(); ++c) {
+            ON_MeshFace face;
+            face.vi[0] = current_face[0];
+            face.vi[1] = current_face[c];
+            face.vi[2] = current_face[c + 1];
+            face.vi[3] = face.vi[2];
+            raw.m_F.Append(face);
+          }
+        }
+        current_face.clear();
+        continue;
+      }
+      if (value < 0 || value >= raw.m_V.Count()) return Result::Failed;
+      current_face.push_back(value);
+    }
+    if (i >= tokens.size()) return Result::Failed;  // unterminated coordIndex [ ... ]
+    if (!current_face.empty()) return Result::Failed;  // trailing run never closed with -1
+  }
+
+  out_mesh = std::move(result);
+  return Result::Ok;
+}
+
 Result Mesh::LoadStl(const std::string& path, Mesh& out_mesh) {
   // Distinguishes binary from ASCII the same way most real-world STL
   // readers do: an ASCII file's own text can start with "solid" and

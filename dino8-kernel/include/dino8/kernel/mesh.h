@@ -746,6 +746,61 @@ class Mesh {
   // unspecified in that case, not partially filled and silently trusted.
   static Result LoadAmf(const std::string& path, Mesh& out_mesh);
 
+  // Writes this mesh as a plain-text VRML97 (`.wrl`, ISO/IEC 14772) file -
+  // the sixth "other file format" here, and a genuine gap this kernel had
+  // zero VRML/X3D code for at all before this (this bullet's own remaining
+  // two named formats, glTF/GLB and 3MF, are both zip/binary-container
+  // formats out of this narrow scope): the standard header line
+  // `#VRML V2.0 utf8`, then a single `Shape { geometry IndexedFaceSet { ... } }`
+  // node holding a `coord Coordinate { point [ x y z, ... ] }` vertex list
+  // and a `coordIndex [ i0 i1 i2 -1, ... ]` face list - VRML's own
+  // "one flat list of indices per shape, each face terminated by a -1
+  // sentinel" convention, rather than a per-face count prefix the way
+  // `.obj`'s `f` line or `.off`'s face line each use. A quad face
+  // (`ON_MeshFace::IsQuad()`) is written as its own native 4-index run
+  // (`i0 i1 i2 i3 -1`), not split into two triangles - the same
+  // "IndexedFaceSet has a real variable-length face list" reasoning
+  // `SaveOff()`/`SavePly()` already give for their own formats. No
+  // per-vertex normal/color, `Appearance`/`Material`, or any node besides
+  // this single `Shape` is written - this kernel's `Mesh` has nothing to
+  // source those from anyway (same reasoning `SaveOff()`'s own doc comment
+  // gives). Returns Result::Failed if the file can't be opened for
+  // writing; does not validate the mesh's own geometry (an empty mesh
+  // writes a valid `Shape` with empty `point`/`coordIndex` lists).
+  Result SaveVrml(const std::string& path) const;
+
+  // Reads a plain-text VRML97 `.wrl` file written by SaveVrml() (or any
+  // other reasonably well-formed single-`IndexedFaceSet` VRML97 file) into
+  // `out_mesh`. This is a deliberately narrow, hand-rolled scan for
+  // exactly the `point [...]` / `coordIndex [...]` structure SaveVrml()
+  // writes - not a general VRML/X3D scene-graph parser - so it tolerates
+  // arbitrary whitespace/newlines and commas used as separators (VRML
+  // treats a comma as insignificant whitespace between values, same as a
+  // space or newline), but reads only the FIRST `point [...]` array and
+  // the FIRST `coordIndex [...]` array found anywhere in the file (in a
+  // well-formed single-`Shape` file, these are the only ones) - a second
+  // `IndexedFaceSet` (e.g. a second `Shape` sibling) is silently ignored,
+  // not merged in or rejected, the same "first one found wins" convention
+  // `LoadAmf()` already uses for a second `<object>`/`<volume>`. The first
+  // line must literally be `#VRML V...` (case-sensitive on `VRML`) -
+  // anything else is rejected outright, the same "no variant/other-format
+  // file silently misread" stance `LoadOff()` already takes for a
+  // non-`OFF` header. A `coordIndex` run of exactly 3 or 4 indices before
+  // its `-1` becomes one native `ON_MeshFace` triangle or quad; a genuine
+  // n-gon run (5+ indices) is fan-triangulated from its own first index
+  // into `n-2` triangles, the same accommodation `LoadObj()`/`LoadOff()`
+  // already make for their own n-gon faces. `Material`/`Appearance`/
+  // `Normal`/`TextureCoordinate` nodes and any node besides `Coordinate`/
+  // `IndexedFaceSet` are not understood at all - present or absent, they
+  // have no effect on the result. Returns Result::Failed if the file can't
+  // be opened, its first line isn't a `#VRML` header, no `point` or
+  // `coordIndex` array is found, a `point` entry isn't a valid "x y z"
+  // triple, a `coordIndex` run has fewer than 3 indices before its `-1`,
+  // or any index falls outside the vertex list's range - `out_mesh` is
+  // left unspecified in that case, not partially filled and silently
+  // trusted.
+  static Result LoadVrml(const std::string& path, Mesh& out_mesh);
+
   const ON_Mesh& raw() const { return mesh_; }
   ON_Mesh& raw() { return mesh_; }
 
