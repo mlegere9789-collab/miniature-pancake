@@ -1053,7 +1053,8 @@ CapEdges AddFanCap(ON_Brep& brep, ON_NurbsCurve boundary, int shared_edge, bool 
 // sweep's start/end (the wall's south/north sides); `cap_u0`/`cap_u1`
 // cap the wall's west/east sides (a full revolve's off-axis end circles).
 Brep Brep::AssembleSweptBody(ON_NurbsSurface* wall_raw, bool cap_v0, bool cap_v1, bool cap_u0, bool cap_u1,
-                             const char* caller) {
+                             const char* caller, const Vector3d* cap_v0_outward_hint,
+                             const Vector3d* cap_v1_outward_hint) {
   std::unique_ptr<ON_NurbsSurface> wall_in(wall_raw);
   Brep result;
   ON_Brep& brep = result.raw();
@@ -1095,18 +1096,30 @@ Brep Brep::AssembleSweptBody(ON_NurbsSurface* wall_raw, bool cap_v0, bool cap_v1
     CapEdges first;
     bool have_first = false;
     if (cap_v0) {
-      ON_3dVector su, sv;
-      derivs(um, dv.Min(), su, sv);
+      ON_3dVector hint;
+      if (cap_v0_outward_hint) {
+        hint = *cap_v0_outward_hint;
+      } else {
+        ON_3dVector su, sv;
+        derivs(um, dv.Min(), su, sv);
+        hint = -sv;
+      }
       // Wall south edge runs +u (bRev3d[0] false): with the boundary.
-      first = AddFanCap(brep, *b0, eid[0], /*edge_forward=*/true, -sv, plan0, nullptr, /*transpose=*/false, caller);
+      first = AddFanCap(brep, *b0, eid[0], /*edge_forward=*/true, hint, plan0, nullptr, /*transpose=*/false, caller);
       have_first = true;
       ++faces;
     }
     if (cap_v1) {
-      ON_3dVector su, sv;
-      derivs(um, dv.Max(), su, sv);
+      ON_3dVector hint;
+      if (cap_v1_outward_hint) {
+        hint = *cap_v1_outward_hint;
+      } else {
+        ON_3dVector su, sv;
+        derivs(um, dv.Max(), su, sv);
+        hint = sv;
+      }
       // Wall north edge: isocurve reversed at creation (i == 2, !bRev3d), so it runs -u: against the boundary.
-      AddFanCap(brep, *b1, eid[2], /*edge_forward=*/false, sv, plan1, (chord && have_first) ? &first : nullptr,
+      AddFanCap(brep, *b1, eid[2], /*edge_forward=*/false, hint, plan1, (chord && have_first) ? &first : nullptr,
                 /*transpose=*/false, caller);
       ++faces;
     }
@@ -2822,6 +2835,93 @@ Brep Brep::PipeThickWalled(const NurbsCurve& rail_in, double outer_radius, doubl
     if (check.Volume() < 0.0) brep.Flip();
   }
   return result;
+}
+
+Brep Brep::ScrewThread(Point3d axis_point, Vector3d axis_direction, double minor_radius, double major_radius,
+                       double pitch, double turns, bool right_handed, int stations_per_turn) {
+  const char* caller = "ScrewThread";
+  if (!(minor_radius > 0.0)) Fail(caller, "minor_radius must be positive");
+  if (!(major_radius > minor_radius)) Fail(caller, "major_radius must exceed minor_radius");
+  if (!(pitch > 0.0)) Fail(caller, "pitch must be positive");
+  if (!(turns > 0.0)) Fail(caller, "turns must be positive");
+  if (stations_per_turn < 4) Fail(caller, "stations_per_turn must be at least 4");
+  ON_3dVector axis = axis_direction;
+  if (!axis.Unitize()) Fail(caller, "axis_direction must be nonzero");
+
+  // Canonical perpendicular reference at angle 0 - the same point+normal
+  // ON_Plane convention Pipe() itself uses to seed its own start frame.
+  const ON_Plane base(axis_point, axis);
+  const double half_pitch = pitch / 2.0;
+  const double sign = right_handed ? 1.0 : -1.0;
+  const int m = std::max(4, static_cast<int>(std::ceil(turns * stations_per_turn)) + 1);
+
+  std::vector<ON_NurbsCurve> sections;
+  sections.reserve(static_cast<size_t>(m));
+  for (int k = 0; k < m; ++k) {
+    const double frac = static_cast<double>(k) / static_cast<double>(m - 1);
+    const double height = frac * pitch * turns;
+    const double angle = sign * 2.0 * ON_PI * turns * frac;
+    const ON_3dVector radial = base.xaxis * std::cos(angle) + base.yaxis * std::sin(angle);
+    const ON_Plane plane(axis_point + axis * height, radial, axis);
+    const ON_3dPoint p0 = plane.PointAt(minor_radius, -half_pitch);
+    const ON_3dPoint p1 = plane.PointAt(major_radius, 0.0);
+    const ON_3dPoint p2 = plane.PointAt(minor_radius, half_pitch);
+    NurbsCurve tri = NurbsCurve::FromControlPoints({p0, p1, p2, p0}, 1);
+    sections.push_back(tri.raw());
+  }
+  MakeCompatible(sections, caller);
+  double period = 1.0;
+  const std::vector<double> params_v = SkinParameters(sections, /*closed=*/false, &period, caller);
+  std::unique_ptr<ON_NurbsSurface> wall =
+      SkinSections(sections, std::min(3, m - 1), /*closed=*/false, params_v, period, caller);
+
+  // Explicit cap-orientation hints - NOT the wall surface's own `Ev1Der`
+  // boundary derivative AssembleSweptBody() defaults to: every per-u-
+  // column of THIS wall (any fixed radius between minor_radius and
+  // major_radius) traces a full sin/cos period in x/y over the course of
+  // even a single turn, and a global interpolating skin's (SkinSections)
+  // own boundary derivative for that kind of column came out both
+  // numerically oversized and, confirmed directly (disabling each cap in
+  // turn isolated it to the cap/wall join, not the wall itself, which
+  // tests orientation-consistent alone at every turn count tried), wrong
+  // in sign - a case Sweep1()/Pipe()'s existing rails never hit (no
+  // existing rail motion is periodic in an individual coordinate over
+  // its own whole sweep).
+  //
+  // The cap's own plane is, by this construction, always exactly the one
+  // spanned by the radial direction and `axis` itself, so its normal has
+  // no axial component at all - only the TANGENTIAL (circumferential)
+  // direction at that end's own station angle matters, and `phi_hat`
+  // (the derivative of `radial` with respect to angle) gives it exactly,
+  // no spline involved - `angle_last` already carries `sign` (the
+  // handedness), so `phi_hat(angle_last)` alone reflects it; no separate
+  // sign factor on the hint itself. That this is the right pair (and not
+  // one of the other 3 sign combinations) was settled empirically, not
+  // derived: checked directly against a real fixture, BOTH handedness,
+  // at 3 different tessellation divisions each, for both an orientation-
+  // consistent closed manifold and the expected positive volume (see
+  // TestScrewThreadExactHelicalSweepVolumeAndGeometry, test_basic.cpp) -
+  // every other combination tried left a genuine mis-wound cap on at
+  // least one end for at least one handedness (a directed mesh edge
+  // walked the same way by two faces - including, confusingly, one
+  // combination that mis-wound only the LEFT-handed case while the
+  // right-handed one looked fine), confirmed via Mesh::IsClosedManifold()'s
+  // own DINO8_MESH_DEBUG diagnostic, not assumed from a sign argument
+  // that turned out unreliable here. This pair is locally consistent
+  // (no edge conflict either handedness) but, unlike a plain Pipe()'s
+  // own always-natively-outward construction, still lands net-INWARD as
+  // a whole body here - AssembleSweptBody()'s own final tessellated-
+  // volume-sign check (the same safety net every sweep factory in this
+  // file already ends with) is what flips it, setting every face's own
+  // m_bRev in the process; that is why ScrewThread(), alone among this
+  // file's factories, needs its own topology check rather than the
+  // shared `CheckSolidTopology()` helper's stricter "no flip was needed"
+  // assertion (see TestScrewThreadExactHelicalSweepVolumeAndGeometry).
+  auto phi_hat = [&](double angle) { return -base.xaxis * std::sin(angle) + base.yaxis * std::cos(angle); };
+  const double angle_last = sign * 2.0 * ON_PI * turns;
+  const ON_3dVector hint_v0 = phi_hat(0.0);
+  const ON_3dVector hint_v1 = -phi_hat(angle_last);
+  return AssembleSweptBody(wall.release(), /*cap_v0=*/true, /*cap_v1=*/true, false, false, caller, &hint_v0, &hint_v1);
 }
 
 }  // namespace dino8::kernel

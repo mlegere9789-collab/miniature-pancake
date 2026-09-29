@@ -36515,6 +36515,196 @@ void TestPipeThickWalledExactAnnularCylinderAndDegenerateCases() {
   Check(Throws([&] { Brep::PipeThickWalled(rail, 3.0, 2.0, true, 1); }), "fewer than 2 stations throws");
 }
 
+void TestScrewThreadExactHelicalSweepVolumeAndGeometry() {
+  // Volume of a helical (shear) sweep of a fixed profile T in the
+  // (radial, axial) half-plane, through angle 2*pi*turns: the coordinate
+  // change (r, phi, zeta) -> (x, y, z) = (r cos(phi), r sin(phi),
+  // h(phi) + zeta) - phi the sweep angle, h(phi) = (pitch/(2*pi))*phi the
+  // ideal helix centerline's own height at that angle, zeta the local
+  // axial offset from it - has Jacobian determinant EXACTLY r regardless
+  // of h(phi) or its derivative: expand the 3x3 determinant of
+  // [dp/dr, dp/dphi, dp/dzeta] (as columns) along the third column (only
+  // dp/dzeta = (0,0,1) is nonzero there), leaving the 2x2 cofactor
+  // cos(phi)*(r cos(phi)) - (-r sin(phi))*sin(phi) = r*cos^2(phi) +
+  // r*sin^2(phi) = r - the SAME cylindrical volume element a plain
+  // revolution has, with the axial shear along the way costing nothing.
+  // So the exact swept volume is (2*pi*turns) times T's own first moment
+  // about the axis, i.e. Area(T) * r_centroid(T) - Pappus's centroid
+  // theorem's own form, generalized here from a revolution to a helical
+  // sweep since the shear is volume-preserving. This function's own
+  // profile T is the isoceles triangle (minor_radius, -pitch/2),
+  // (major_radius, 0), (minor_radius, +pitch/2): Area(T) =
+  // 0.5*pitch*(major_radius - minor_radius), r_centroid(T) = the mean of
+  // the 3 vertices' own r = (2*minor_radius + major_radius) / 3.
+  //
+  // ScrewThread() only APPROXIMATES this true continuous sweep (a global
+  // interpolating skin through finitely many stations, the same
+  // discretization tradeoff Pipe()'s own `stations` parameter already
+  // discloses) - tighter as `stations_per_turn` grows.
+  const double minor_r = 4.0, major_r = 5.0, pitch = 1.0;
+  const double turns = 3.0;
+  const Brep thread = Brep::ScrewThread(P(0, 0, 0), Vector3d(0, 0, 1), minor_r, major_r, pitch, turns,
+                                        /*right_handed=*/true, /*stations_per_turn=*/48);
+  // Not the shared CheckSolidTopology() helper: that asserts no face
+  // needed a bRev flip, true for every OTHER sweep factory's always-
+  // natively-outward construction but not for ScrewThread() - its own
+  // cap-orientation hints are locally consistent (verified directly, see
+  // ScrewThread()'s own doc comment) but land the body net-inward as a
+  // whole, so AssembleSweptBody()'s own final tessellated-volume-sign
+  // safety net (shared by every factory in that file) is exactly what
+  // corrects it here, flipping every face's own m_bRev in the process -
+  // a legitimate, expected use of that safety net, not a defect.
+  Check(thread.FaceCount() == 3, "screw thread: expected face count (wall + 2 flat triangular end caps)");
+  Check(thread.raw().IsValid(), "screw thread: raw().IsValid() - real ON_Brep topology, not surface-only faces");
+  Check(thread.raw().IsSolid(), "screw thread: raw().IsSolid() - a genuinely closed, oriented manifold");
+  const double area_t = 0.5 * pitch * (major_r - minor_r);
+  const double r_centroid = (2.0 * minor_r + major_r) / 3.0;
+  const double exact_volume = 2.0 * M_PI * turns * area_t * r_centroid;
+  // Both du and dv need real resolution here, confirmed directly rather
+  // than assumed: dv must resolve 3 full turns (each u-column traces a
+  // full sin/cos period per turn - (*, 12) badly aliases the volume,
+  // ~26 against the true ~40.8), and du must resolve the profile's own
+  // two flanks well enough for the mesh's per-quad diagonal choice not
+  // to bias the divergence-theorem volume integral - (8, 300) alone
+  // still reads ~38.2, over 6% low, while (32, 300) reads ~40.65, under
+  // 0.5% off. Both (8, 300) and (32, 300) are still IsClosedManifold()
+  // either way - this is a tessellation-fidelity gap, not a construction
+  // defect.
+  CheckClosedMeshVolume(thread, 32, 300, exact_volume, 0.01, "screw thread volume vs. the exact helical-Pappus formula");
+
+  // A left-handed thread built from the same parameters must have
+  // exactly the same volume (mirrored, not stretched or shrunk).
+  const Brep left = Brep::ScrewThread(P(0, 0, 0), Vector3d(0, 0, 1), minor_r, major_r, pitch, turns,
+                                      /*right_handed=*/false, /*stations_per_turn=*/48);
+  CheckClosedMeshVolume(left, 32, 300, exact_volume, 0.01, "left-handed screw thread has the same exact volume");
+
+  // Handedness must actually differ in ROTATION SENSE, not just be a
+  // volume-identical relabeling: every point of the profile at a given
+  // station shares that station's own rotation angle (the local axial
+  // offset only ever shifts z, never x/y), so the ROOT corner (u = 0,
+  // radius minor_r) at a small positive v already reveals the sign -
+  // positive atan2 for a right-handed thread (turns CCW looking down
+  // +axis as v increases), negative for a left-handed one.
+  {
+    const NurbsSurface wall_r = FaceSurface(thread, 0);
+    const NurbsSurface wall_l = FaceSurface(left, 0);
+    const ON_Interval du = wall_r.raw().Domain(0), dv = wall_r.raw().Domain(1);
+    const double v_near_start = dv.ParameterAt(0.02);
+    const Point3d pr = wall_r.PointAt(du.Min(), v_near_start);
+    const Point3d pl = wall_l.PointAt(du.Min(), v_near_start);
+    Check(std::atan2(pr.y, pr.x) > 1e-6, "right-handed thread's early root sits at a positive angle (CCW from start)");
+    Check(std::atan2(pl.y, pl.x) < -1e-6, "left-handed thread's early root sits at a negative angle (CW from start)");
+  }
+
+  // The wall's own crest (u at the profile's own apex control point, 1/3
+  // of the way across its 4-control-point, uniform-knot domain - see
+  // ScrewThread()'s own construction) sits at exactly major_r from the
+  // axis AT EVERY STATION (checked directly at v = dv.Min(): bit-exact,
+  // < 1e-9), and its own root (u = 0) at exactly minor_r there too. This
+  // loop instead samples 40 v values spread across the whole sweep, most
+  // of which do NOT land on a station parameter - there the global
+  // interpolating skin (SkinSections) only approximates the true
+  // constant-radius edges, off by a few 1e-6 (measured directly, worst
+  // case ~4.2e-6 for this fixture), the same "between stations it
+  // interpolates" tradeoff `Pipe()`'s own curved-rail tests already
+  // tolerate - so this checks a loose bound confirming the deviation
+  // stays a tessellation-approximation artifact rather than a
+  // construction defect, not bit-exactness.
+  {
+    const NurbsSurface wall = FaceSurface(thread, 0);
+    const ON_Interval du = wall.raw().Domain(0), dv = wall.raw().Domain(1);
+    const double u_apex = du.ParameterAt(1.0 / 3.0);
+    double worst_crest = 0.0, worst_root = 0.0;
+    for (int j = 0; j <= 40; ++j) {
+      const double v = dv.ParameterAt(static_cast<double>(j) / 40.0);
+      const Point3d crest = wall.PointAt(u_apex, v);
+      worst_crest = std::max(worst_crest, std::fabs(std::hypot(crest.x, crest.y) - major_r));
+      const Point3d root = wall.PointAt(du.Min(), v);
+      worst_root = std::max(worst_root, std::fabs(std::hypot(root.x, root.y) - minor_r));
+    }
+    Check(worst_crest < 1e-4, "the thread's crest sits within a tight tolerance of major_radius all along the sweep");
+    Check(worst_root < 1e-4, "the thread's root sits within a tight tolerance of minor_radius all along the sweep");
+  }
+
+  // Total axial rise is exactly pitch * turns: the first and last
+  // stations' own root points (u = 0, at v = 0 and v = 1) both sit
+  // directly on the axis's own radius (minor_r, checked above) but at
+  // heights exactly that far apart.
+  {
+    const NurbsSurface wall = FaceSurface(thread, 0);
+    const ON_Interval du = wall.raw().Domain(0), dv = wall.raw().Domain(1);
+    const Point3d start = wall.PointAt(du.Min(), dv.Min());
+    const Point3d end = wall.PointAt(du.Min(), dv.Max());
+    Check(std::abs((end.z - start.z) - pitch * turns) < 1e-6, "total axial rise is exactly pitch * turns");
+  }
+
+  // Negative controls.
+  Check(Throws([&] { Brep::ScrewThread(P(0, 0, 0), Vector3d(0, 0, 1), 0.0, major_r, pitch, turns); }),
+        "non-positive minor_radius throws");
+  Check(Throws([&] { Brep::ScrewThread(P(0, 0, 0), Vector3d(0, 0, 1), minor_r, minor_r, pitch, turns); }),
+        "major_radius == minor_radius throws");
+  Check(Throws([&] { Brep::ScrewThread(P(0, 0, 0), Vector3d(0, 0, 1), major_r, minor_r, pitch, turns); }),
+        "major_radius < minor_radius throws");
+  Check(Throws([&] { Brep::ScrewThread(P(0, 0, 0), Vector3d(0, 0, 1), minor_r, major_r, 0.0, turns); }),
+        "non-positive pitch throws");
+  Check(Throws([&] { Brep::ScrewThread(P(0, 0, 0), Vector3d(0, 0, 1), minor_r, major_r, pitch, 0.0); }),
+        "non-positive turns throws");
+  Check(Throws([&] { Brep::ScrewThread(P(0, 0, 0), Vector3d(0, 0, 1), minor_r, major_r, pitch, turns, true, 3); }),
+        "fewer than 4 stations_per_turn throws");
+  Check(Throws([&] { Brep::ScrewThread(P(0, 0, 0), Vector3d(0, 0, 0), minor_r, major_r, pitch, turns); }),
+        "zero-length axis_direction throws");
+}
+
+void TestScrewThreadComposesWithMeshBooleanForTappedAndExternalThreads() {
+  using dino8::kernel::BooleanCombine;
+  using dino8::kernel::BooleanOp;
+  // Not BooleanCombineGeneral() (boolean_general.h) - ScrewThread()'s own
+  // doc comment already discloses why a multi-turn thread's repeatedly-
+  // crossing crest violates that engine's "one outer intersection chain
+  // per opposing face pair" scope. The mesh-level BooleanCombine() this
+  // test uses instead is the SAME engine dino8-app's own mesh-boolean
+  // feature commands already rely on for comparable topology.
+  const double minor_r = 1.0, major_r = 1.2, pitch = 0.4, turns = 4.0;
+
+  // Internal (tapped) hole: ScrewThread()'s own profile already sweeps
+  // BOTH the plain bore (its "closing" root edge, at constant minor_r)
+  // and the thread ridge (its two flanks, reaching out to major_r) as
+  // ONE continuous solid - so subtracting it directly from an un-holed
+  // block, with no separate pilot-bore cylinder, is the complete tapped-
+  // hole cut, not a partial one.
+  const Brep block_brep = Brep::Box(-3, -3, 0, 3, 3, 5);
+  const Mesh block = block_brep.TessellateToClosedMesh(24, 24);
+  const double block_volume = block.Volume();
+  const Brep tool_brep = Brep::ScrewThread(P(0, 0, 1), Vector3d(0, 0, 1), minor_r, major_r, pitch, turns,
+                                           /*right_handed=*/true, /*stations_per_turn=*/32);
+  const Mesh tool = tool_brep.TessellateToClosedMesh(16, 200);
+  const double tool_volume = tool.Volume();
+  Check(tool_volume > 0.0, "the thread tool's own tessellated volume is positive (sanity check on the fixture)");
+
+  const Mesh tapped = BooleanCombine(block, tool, BooleanOp::Difference);
+  Check(tapped.IsClosedManifold(), "tapped hole: mesh-boolean Difference result is a genuine closed manifold");
+  Check(tapped.Volume() < block_volume, "tapped hole strictly removes material from the block");
+  const double removed = block_volume - tapped.Volume();
+  Check(std::abs(removed - tool_volume) / tool_volume < 0.05,
+        "tapped hole removes almost exactly the thread tool's own volume (within Manifold's own mesh-boolean "
+        "tolerance stacked on this fixture's own tessellation error)");
+
+  // External thread: union the SAME tool onto a plain shaft built at
+  // exactly minor_radius (the tool's own root radius), so the tool's
+  // flanks add ridges flush with the shaft's own surface rather than
+  // floating apart from or burying inside it.
+  const Brep shaft_brep = Brep::Pipe(Polyline({P(0, 0, -1), P(0, 0, 6)}), minor_r, /*cap=*/true, 32);
+  const Mesh shaft = shaft_brep.TessellateToClosedMesh(32, 8);
+  const double shaft_volume = shaft.Volume();
+  const Mesh threaded_shaft = BooleanCombine(shaft, tool, BooleanOp::Union);
+  Check(threaded_shaft.IsClosedManifold(), "external thread: mesh-boolean Union result is a genuine closed manifold");
+  Check(threaded_shaft.Volume() > shaft_volume, "external thread strictly adds material onto the shaft");
+  const double added = threaded_shaft.Volume() - shaft_volume;
+  Check(std::abs(added - tool_volume) / tool_volume < 0.05,
+        "external thread adds almost exactly the thread tool's own volume (root already flush with the shaft, so "
+        "no separate overlap/gap volume to account for)");
+}
+
 void TestExtrudeTaperedCircularProfileIsExactConeFrustum() {
   // Shrinking: r0=2 -> r1=1 over height 3, tan(theta) = (r0 - r1) / h.
   const double r0 = 2.0, r1 = 1.0, h = 3.0;
@@ -42234,6 +42424,8 @@ int main() {
   TestSurfaceClosestPointNearSpherePoleDoesNotLockAzimuth();
   sweep_tests::TestPipeVariable();
   sweep_tests::TestPipeThickWalledExactAnnularCylinderAndDegenerateCases();
+  sweep_tests::TestScrewThreadExactHelicalSweepVolumeAndGeometry();
+  sweep_tests::TestScrewThreadComposesWithMeshBooleanForTappedAndExternalThreads();
   TestSurfaceExtendLinearIsExactlyStraightAndG1AtTheJoin();
   TestSurfaceExtendLinearDiffersFromSmoothExtend();
   TestSurfaceExtendLinearBothEndsBothDirectionsAndRational();

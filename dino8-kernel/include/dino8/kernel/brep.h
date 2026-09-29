@@ -936,6 +936,72 @@ class Brep {
   static Brep PipeThickWalled(const NurbsCurve& rail, double outer_radius, double inner_radius, bool cap = true,
                               int stations = 32);
 
+  // ScrewThread: a real helical V-thread solid (parity-map "kernel:
+  // Feature operations" - "Threaded/tapped hole and external thread
+  // feature", previously zero thread-geometry code anywhere in this
+  // kernel). Not a boolean composition of a cylinder plus a separate
+  // helical rib: ONE swept solid, built the same way `Pipe()`/
+  // `PipeVariable()` sweep a circular section along a rail, except the
+  // per-station cross-section is a closed triangular V-profile - in the
+  // (radial, axial) half-plane at that station's own rotation angle,
+  // vertices at (minor_radius, -pitch/2), (major_radius, 0),
+  // (minor_radius, +pitch/2) - and the frame at each station is NOT a
+  // rotation-minimizing transport of some rail curve (there is no rail
+  // curve here, and RMF along a true helix would orient the section
+  // perpendicular to the helix's own tangent, the "normal section"
+  // convention - not the axial-plane convention a real screw thread's
+  // profile is specified in): the frame is computed directly from the
+  // analytic helix angle `2*pi*turns*fraction` at each of the
+  // `ceil(turns * stations_per_turn) + 1` equally height-spaced
+  // stations, always keeping the section in the plane spanned by the
+  // CURRENT radial direction and `axis_direction` itself.
+  //
+  // The triangular profile's own "closing" edge - straight down from
+  // (minor_radius, +pitch/2) to (minor_radius, -pitch/2) - sits at a
+  // CONSTANT radius at every station, so skinning it across many closely
+  // rotated stations traces out the plain cylindrical bore wall exactly
+  // where the profile's two flanks trace out the helical thread ridge's
+  // faces: one swept surface is both the bore and the thread, with no
+  // separate cylinder to union in (and so none of the coincident-surface
+  // degeneracy a real union of the two would risk). Capped at both ends
+  // (flat triangular caps, `AssembleSweptBody()`'s general closed-planar-
+  // section fan cap, the same machinery `Pipe()`'s own circular end caps
+  // use) exactly like a plain open-rail `Pipe()`.
+  //
+  // `axis_point`/`axis_direction` locate the thread's own axis
+  // (`axis_direction` need not be unit length, must be nonzero);
+  // `minor_radius` is the thread's root radius, `major_radius` its crest
+  // radius (must exceed `minor_radius`); `pitch` is the axial distance
+  // per full turn (must be positive); `turns` the number of full
+  // revolutions to sweep (must be positive, need not be an integer -
+  // e.g. 2.5 sweeps two and a half turns, ending wherever that lands
+  // rather than only at a whole-turn seam); `right_handed` selects the
+  // rotation sense (true: counterclockwise looking down `axis_direction`,
+  // the standard right-handed screw convention) as `turns` increases;
+  // `stations_per_turn` sets the angular sampling density (at least 4;
+  // between stations the surface interpolates, not the exact helical
+  // sweep - increase it for a tighter approximation, the same
+  // discretization tradeoff `Pipe()`'s own `stations` parameter already
+  // discloses).
+  //
+  // Composes with `BooleanCombine()` (dino8/kernel/boolean.h)'s mesh-level
+  // engine for both directions of this parity-map item: subtract a
+  // tessellated `ScrewThread()` from a solid's own tessellation for an
+  // internal (tapped) thread, or union it onto a plain shaft (built at
+  // `minor_radius`) for an external one - not `BooleanCombineGeneral()`
+  // (dino8/kernel/boolean_general.h), whose own disclosed "at most one
+  // outer intersection chain per opposing face pair" scope is violated by
+  // a multi-turn thread's own repeatedly-crossing crest, the same reason
+  // this kernel's other genuinely helical/repeating-topology features
+  // already fall back to the mesh engine rather than the exact one.
+  //
+  // Throws std::invalid_argument for a non-positive `minor_radius`,
+  // `major_radius` not exceeding `minor_radius`, a non-positive `pitch`
+  // or `turns`, `stations_per_turn` < 4, or a zero-length
+  // `axis_direction`.
+  static Brep ScrewThread(Point3d axis_point, Vector3d axis_direction, double minor_radius, double major_radius,
+                          double pitch, double turns, bool right_handed = true, int stations_per_turn = 24);
+
   int FaceCount() const;
   int VertexCount() const;
   int EdgeCount() const;
@@ -3874,8 +3940,22 @@ class Brep {
   // takes ownership of `wall`, adds it and the requested caps as real
   // ON_Brep topology, appends the side tables and applies the closed-
   // body outward cross-check described in those factories' doc comment.
+  // `cap_v0_outward_hint`/`cap_v1_outward_hint`, when non-null, replace
+  // the DEFAULT outward-hint direction this method would otherwise
+  // compute itself from the wall's own analytic `Ev1Der` derivative at
+  // that end - needed for a wall whose per-u-column data oscillates
+  // through a full period along v (a multi-turn helical sweep, whose
+  // x/y both trace a full sin/cos cycle at ANY fixed radius as v runs
+  // the whole sweep), where a global interpolating skin's (SkinSections)
+  // own boundary derivative can come out numerically large and, on at
+  // least one confirmed case (ScrewThread()), with the wrong sign -
+  // `Sweep1()`/`Pipe()`-class callers never hit this (their own rail
+  // motion is never periodic in an individual coordinate over the whole
+  // sweep), so every other caller passes neither and keeps the original
+  // derivative-based behavior exactly.
   static Brep AssembleSweptBody(ON_NurbsSurface* wall, bool cap_v0, bool cap_v1, bool cap_u0, bool cap_u1,
-                                const char* caller);
+                                const char* caller, const Vector3d* cap_v0_outward_hint = nullptr,
+                                const Vector3d* cap_v1_outward_hint = nullptr);
   // Parallel to brep_.m_F: face_trim_loops_[i] is empty for an untrimmed
   // face, or the trim polygon for a face built by TrimmedPlanarFace().
   // Every face-adding factory must keep this in lockstep with brep_.m_F.
