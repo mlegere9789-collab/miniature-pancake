@@ -77,6 +77,34 @@ std::vector<IntersectionCurve> IntersectSurfaces(const ON_Surface& a, const ON_S
 // where it leaves a face). `face_a`/`face_b` may be null (= untrimmed).
 std::vector<IntersectionCurve> IntersectFaces(const ON_BrepFace* face_a, const ON_Surface& a, const ON_BrepFace* face_b, const ON_Surface& b, const IntersectOptions& opt);
 
+// One SSX result between a specific face of `a` and a specific face of
+// `b`, as returned by IntersectBreps() below.
+struct BrepBrepIntersection {
+  int face_a = -1;
+  int face_b = -1;
+  IntersectionCurve curve;
+};
+
+// B-rep/B-rep intersection as a public kernel API - the Brep-level
+// counterpart to IntersectFaces() above, composing it over every
+// bounding-box-overlapping face pair of `a` and `b` (the same pruning
+// BooleanCombineGeneral()'s own face-pair loop uses, boolean_general.cpp).
+// PARITY_MAP.md's own "kernel: Intersections & projections" evidence named
+// this gap directly: "only face-level kernel entry points exist
+// (IntersectFaces, IntersectCurveSurface); the app composes the B-rep loop
+// itself (IntersectAny) ... there is no public Brep-level Intersect." This
+// is that function - general to any two B-reps' faces (not enumerated per
+// surface-type-pair, the same "general building block" scope this file's
+// own top comment states), trimmed to each face's own trim loops exactly
+// as IntersectFaces() already does, and returned un-stitched (one entry
+// per face-pair-and-curve, `face_a`/`face_b` naming which faces produced
+// it) - a caller needing one merged chain per physical intersection would
+// stitch these the same way BooleanCombineGeneral()'s own StitchChains
+// does, which is deliberately NOT duplicated here since this function's
+// job is exposing the raw per-face-pair SSX results, not building a
+// specific boolean engine's own topology.
+std::vector<BrepBrepIntersection> IntersectBreps(const ON_Brep& a, const ON_Brep& b, const IntersectOptions& opt);
+
 struct CurveSurfaceHit {
   double t = 0;           // curve parameter
   ON_2dPoint uv;          // surface parameters
@@ -84,6 +112,39 @@ struct CurveSurfaceHit {
   double error = 0;       // |C(t) - S(u,v)| after refinement
 };
 std::vector<CurveSurfaceHit> IntersectCurveSurface(const ON_Curve& c, const ON_Surface& s, const IntersectOptions& opt);
+
+// One CSX hit between a curve and a specific (trimmed) face of a B-rep, as
+// returned by IntersectCurveBrep() below.
+struct CurveBrepHit {
+  int face_index = -1;
+  CurveSurfaceHit hit;
+};
+
+// Curve/B-rep intersection as a public kernel API - runs IntersectCurveSurface()
+// against every face of `b` whose surface bounding box can plausibly meet
+// `c`, then drops any hit whose (u, v) falls outside that face's own trim
+// loops (FaceContainsUV(), the identical trim test IntersectFaces() already
+// applies to SSX results). Closes the other half of the same PARITY_MAP.md
+// gap IntersectBreps() above closes: "only face-level kernel entry points
+// exist ... the app composes the B-rep loop itself (IntersectAny)."
+std::vector<CurveBrepHit> IntersectCurveBrep(const ON_Curve& c, const ON_Brep& b, const IntersectOptions& opt);
+
+// A curve/plane crossing - the curve-level counterpart to CurveSurfaceHit
+// above, but against a caller-supplied INFINITE ON_Plane rather than a
+// bounded ON_Surface. PARITY_MAP.md's own "Curve/plane intersection" gap:
+// IntersectCurveSurface() can be handed a bounded ON_PlaneSurface, but "no
+// dedicated infinite-plane API" existed (a caller had to first decide how
+// big a rectangle to bound the plane with - and any curve point beyond
+// that rectangle's edge is silently missed, a real correctness hazard an
+// actually-infinite plane doesn't have). This solves the true implicit
+// equation directly (signed distance to the plane), not a bounded-surface
+// stand-in for it.
+struct CurvePlaneHit {
+  double t = 0;      // curve parameter
+  Point3d point;
+  double error = 0;  // |plane.DistanceTo(point)| after refinement
+};
+std::vector<CurvePlaneHit> IntersectCurvePlane(const ON_Curve& c, const ON_Plane& plane, const IntersectOptions& opt);
 
 struct CurveCurveHit {
   double ta = 0;    // parameter on curve a
@@ -118,6 +179,32 @@ struct CurveCurveHit {
 // of isolated points its finite sampling happens to converge to, not the
 // shared span itself.
 std::vector<CurveCurveHit> IntersectCurves(const ON_Curve& a, const ON_Curve& b, const IntersectOptions& opt);
+
+// A single curve's own self-intersections (a figure-eight-style crossing,
+// or any other point where the curve genuinely passes through itself at
+// two distinct parameters) - PARITY_MAP.md's own "Curve self-intersection"
+// gap: "the kernel's own IntersectCurves(c, c) is still not usable for
+// this (spurious self-hits on a plain line)" - IntersectCurves(c, c) is
+// NOT what this delegates to (see its own "not intended for coincident
+// curves" caveat just above: every parameter trivially equals itself,
+// which is exactly the "coincident over a real span" case that caveat
+// warns about, not a bug this function tries to route around). Instead,
+// this is a dedicated self-intersection primitive: seeded the same
+// segment-pair way as IntersectCurves(), but ONLY for sample-index pairs
+// (i, j) separated by at least 2 segments (wrapping for a closed curve) -
+// immediately-adjacent segments always meet at (or near) their shared
+// sample point, which is the curve's own ordinary continuity, not a
+// self-crossing, so they are never seeded at all rather than relying on
+// post-hoc dedup to paper over a flood of trivial adjacent-segment hits.
+// A genuine crossing still gets Newton-refined to full opt.tolerance
+// precision, exactly like IntersectCurves(); a refined (ta, tb) pair that
+// nonetheless converges back within one segment step of the diagonal
+// (ta == tb) is discarded as the same "not a real crossing" case, a
+// second, post-refinement instance of the same check (Newton is free to
+// walk away from its own seed). A straight line, or any other
+// non-self-intersecting curve, correctly returns empty - the concrete
+// "usability" gap PARITY_MAP.md's own evidence names.
+std::vector<CurveCurveHit> IntersectCurveSelfIntersections(const ON_Curve& c, const IntersectOptions& opt);
 
 // --- numerical helpers ------------------------------------------------------
 

@@ -1337,6 +1337,30 @@ std::vector<IntersectionCurve> IntersectFaces(const ON_BrepFace* face_a, const O
   return out;
 }
 
+std::vector<BrepBrepIntersection> IntersectBreps(const ON_Brep& a, const ON_Brep& b, const IntersectOptions& opt) {
+  std::vector<BrepBrepIntersection> out;
+  const int na = a.m_F.Count();
+  const int nb = b.m_F.Count();
+  std::vector<ON_BoundingBox> boxes_a(static_cast<size_t>(na)), boxes_b(static_cast<size_t>(nb));
+  for (int i = 0; i < na; ++i) boxes_a[static_cast<size_t>(i)] = a.m_F[i].SurfaceOf()->BoundingBox();
+  for (int j = 0; j < nb; ++j) boxes_b[static_cast<size_t>(j)] = b.m_F[j].SurfaceOf()->BoundingBox();
+  const double pad = std::max(opt.mesh_tolerance, opt.tolerance * 4);
+  for (int i = 0; i < na; ++i) {
+    ON_BoundingBox exp_a = boxes_a[static_cast<size_t>(i)];
+    exp_a.m_min -= ON_3dVector(pad, pad, pad);
+    exp_a.m_max += ON_3dVector(pad, pad, pad);
+    const ON_BrepFace& fa = a.m_F[i];
+    for (int j = 0; j < nb; ++j) {
+      if (exp_a.IsDisjoint(boxes_b[static_cast<size_t>(j)])) continue;
+      const ON_BrepFace& fb = b.m_F[j];
+      for (IntersectionCurve& ic : IntersectFaces(&fa, *fa.SurfaceOf(), &fb, *fb.SurfaceOf(), opt)) {
+        out.push_back(BrepBrepIntersection{i, j, std::move(ic)});
+      }
+    }
+  }
+  return out;
+}
+
 namespace {
 
 // Segment / triangle intersection (Moller-Trumbore), returns the segment parameter.
@@ -1411,6 +1435,65 @@ std::vector<CurveSurfaceHit> IntersectCurveSurface(const ON_Curve& c, const ON_S
     if (!dup) hits.push_back(h);
   }
   std::sort(hits.begin(), hits.end(), [](const CurveSurfaceHit& a, const CurveSurfaceHit& b) { return a.t < b.t; });
+  return hits;
+}
+
+std::vector<CurveBrepHit> IntersectCurveBrep(const ON_Curve& c, const ON_Brep& b, const IntersectOptions& opt) {
+  std::vector<CurveBrepHit> out;
+  const ON_BoundingBox cb = c.BoundingBox();
+  const double pad = std::max(opt.mesh_tolerance, opt.tolerance * 4);
+  const int nb = b.m_F.Count();
+  for (int j = 0; j < nb; ++j) {
+    const ON_BrepFace& f = b.m_F[j];
+    const ON_Surface* s = f.SurfaceOf();
+    ON_BoundingBox fb = s->BoundingBox();
+    fb.m_min -= ON_3dVector(pad, pad, pad);
+    fb.m_max += ON_3dVector(pad, pad, pad);
+    if (cb.IsValid() && fb.IsValid() && cb.IsDisjoint(fb)) continue;
+    for (const CurveSurfaceHit& h : IntersectCurveSurface(c, *s, opt)) {
+      if (!FaceContainsUV(f, h.uv.x, h.uv.y)) continue;
+      out.push_back(CurveBrepHit{j, h});
+    }
+  }
+  return out;
+}
+
+// Curve/infinite-plane crossings: bisection-seeded, then Newton-refined on
+// the plane's own implicit signed-distance equation (a single scalar
+// residual, unlike IntersectCurveSurface()'s 3-unknown (t, u, v) system -
+// a plane's own equation is already closed-form, no surface evaluation or
+// mesh seed needed at all).
+std::vector<CurvePlaneHit> IntersectCurvePlane(const ON_Curve& c, const ON_Plane& plane, const IntersectOptions& opt) {
+  std::vector<CurvePlaneHit> hits;
+  const ON_Interval d = c.Domain();
+  const ON_BoundingBox cb = c.BoundingBox();
+  const double clen = cb.IsValid() ? cb.Diagonal().Length() : 1;
+  const int n = static_cast<int>(Clamp(std::ceil(clen / std::max(opt.mesh_tolerance, 1e-6)), 64, 2000));
+  std::vector<double> params(static_cast<size_t>(n) + 1), dist(static_cast<size_t>(n) + 1);
+  for (int i = 0; i <= n; ++i) {
+    params[static_cast<size_t>(i)] = d.ParameterAt(static_cast<double>(i) / n);
+    dist[static_cast<size_t>(i)] = plane.DistanceTo(c.PointAt(params[static_cast<size_t>(i)]));
+  }
+  const std::vector<double> lo = {d.Min()}, hi = {d.Max()};
+  for (int i = 0; i < n; ++i) {
+    const double d0 = dist[static_cast<size_t>(i)], d1 = dist[static_cast<size_t>(i) + 1];
+    if ((d0 < 0) == (d1 < 0) && d0 != 0.0 && d1 != 0.0) continue;  // no sign change in this span
+    if (d0 == d1) continue;  // degenerate (flat) span - no isolated crossing to seed
+    const double seed_t = params[static_cast<size_t>(i)] +
+                           (params[static_cast<size_t>(i) + 1] - params[static_cast<size_t>(i)]) * (-d0 / (d1 - d0));
+    std::vector<double> x = {seed_t};
+    Residual res = [&](const std::vector<double>& q) { return std::vector<double>{plane.DistanceTo(c.PointAt(q[0]))}; };
+    double err = 0;
+    if (!NewtonSolve(res, x, lo, hi, opt.tolerance, 40, &err)) continue;
+    CurvePlaneHit h;
+    h.t = x[0];
+    h.point = c.PointAt(h.t);
+    h.error = std::fabs(err);
+    bool dup = false;
+    for (const CurvePlaneHit& o : hits) if (o.point.DistanceTo(h.point) <= opt.tolerance * 4) { dup = true; break; }
+    if (!dup) hits.push_back(h);
+  }
+  std::sort(hits.begin(), hits.end(), [](const CurvePlaneHit& a, const CurvePlaneHit& b) { return a.t < b.t; });
   return hits;
 }
 
@@ -1513,6 +1596,77 @@ std::vector<CurveCurveHit> IntersectCurves(const ON_Curve& a, const ON_Curve& b,
     h.ta = x[0];
     h.tb = x[1];
     const Point3d pa = a.PointAt(h.ta), pb = b.PointAt(h.tb);
+    h.point = Point3d((pa.x + pb.x) / 2, (pa.y + pb.y) / 2, (pa.z + pb.z) / 2);
+    h.error = err;
+    bool dup = false;
+    for (const CurveCurveHit& o : hits) {
+      if (o.point.DistanceTo(h.point) <= opt.tolerance * 4) { dup = true; break; }
+    }
+    if (!dup) hits.push_back(h);
+  }
+  std::sort(hits.begin(), hits.end(), [](const CurveCurveHit& x, const CurveCurveHit& y) { return x.ta < y.ta; });
+  return hits;
+}
+
+std::vector<CurveCurveHit> IntersectCurveSelfIntersections(const ON_Curve& c, const IntersectOptions& opt) {
+  std::vector<CurveCurveHit> hits;
+  const ON_Interval d = c.Domain();
+  const ON_BoundingBox cb = c.BoundingBox();
+  const double len = cb.IsValid() ? cb.Diagonal().Length() : 1;
+  const double step = std::max(opt.mesh_tolerance, 1e-6);
+  const int n = static_cast<int>(Clamp(std::ceil(len / step), 64, 2000));
+
+  std::vector<Point3d> s(static_cast<size_t>(n) + 1);
+  for (int i = 0; i <= n; ++i) s[static_cast<size_t>(i)] = c.PointAt(d.ParameterAt(static_cast<double>(i) / n));
+
+  const bool closed = c.IsClosed();
+  const double pad = std::max(opt.mesh_tolerance * 4, 1e-9);
+  // Minimum separation (in sample-index steps) two segments must have
+  // before they're even considered as a candidate crossing - immediately
+  // adjacent segments share (or nearly share) an endpoint by construction
+  // (ordinary curve continuity), not a self-intersection.
+  const int min_gap = 2;
+
+  struct Seed { double ta, tb; };
+  std::vector<Seed> seeds;
+  for (int i = 0; i < n; ++i) {
+    const Point3d& p0 = s[static_cast<size_t>(i)];
+    const Point3d& p1 = s[static_cast<size_t>(i) + 1];
+    for (int j = i + 1; j < n; ++j) {
+      int gap = j - i;
+      if (closed) gap = std::min(gap, n - gap);
+      if (gap < min_gap) continue;
+      const Point3d& q0 = s[static_cast<size_t>(j)];
+      const Point3d& q1 = s[static_cast<size_t>(j) + 1];
+      if (!SegmentBoxesOverlap(p0, p1, q0, q1, pad)) continue;
+      double ss = 0, tt = 0;
+      if (ClosestSegmentSegment(p0, p1, q0, q1, ss, tt) > pad * pad) continue;
+      seeds.push_back({d.ParameterAt((i + ss) / n), d.ParameterAt((j + tt) / n)});
+    }
+  }
+
+  const std::vector<double> lo = {d.Min(), d.Min()}, hi = {d.Max(), d.Max()};
+  const double domain_len = d.Length();
+  const double min_param_sep = step * min_gap * 0.5;
+  for (const Seed& sd : seeds) {
+    std::vector<double> x = {sd.ta, sd.tb};
+    Residual res = [&](const std::vector<double>& q) {
+      const Point3d pa = c.PointAt(q[0]), pb = c.PointAt(q[1]);
+      return std::vector<double>{pa.x - pb.x, pa.y - pb.y, pa.z - pb.z};
+    };
+    double err = 0;
+    if (!NewtonSolve(res, x, lo, hi, opt.tolerance, 40, &err)) continue;
+    // Re-check the same "not a real crossing" separation post-refinement -
+    // Newton is free to walk its seed back toward the trivial diagonal
+    // (ta == tb), which min_gap's pre-seed filter above cannot catch once
+    // that's happened.
+    double dt = std::fabs(x[0] - x[1]);
+    if (closed) dt = std::min(dt, domain_len - dt);
+    if (dt <= min_param_sep) continue;
+    CurveCurveHit h;
+    h.ta = x[0];
+    h.tb = x[1];
+    const Point3d pa = c.PointAt(h.ta), pb = c.PointAt(h.tb);
     h.point = Point3d((pa.x + pb.x) / 2, (pa.y + pb.y) / 2, (pa.z + pb.z) / 2);
     h.error = err;
     bool dup = false;
