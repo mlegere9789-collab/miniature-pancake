@@ -3637,6 +3637,216 @@ Result Mesh::LoadGlb(const std::string& path, Mesh& out_mesh) {
   return BuildMeshFromGltfJsonAndBuffer(json_text, bin_chunk, out_mesh);
 }
 
+namespace {
+
+// Finds a STEP/IFC entity call `ENTITY_NAME(...)` at or after `from` and
+// returns the balanced-parenthesis text strictly between the call's own
+// outer parentheses - just enough to pull one entity's own argument list
+// out of a `#n=ENTITY_NAME(args);` line, not a general EXPRESS parser. The
+// same "don't false-match a longer name" guard `FindAmfOpenTag()` already
+// applies: the character right before the match must not be an identifier
+// character. Matching is case-sensitive, uppercase only - the exact case
+// `SaveIfc()` itself writes; IFC/STEP keywords are formally case-
+// insensitive, but this reader only ever needs to read its own writer's
+// output plus hand-authored uppercase fixtures, the same narrowing every
+// other reader in this file already takes for its own format.
+bool FindIfcEntityArgs(const std::string& text, const std::string& entity_name, size_t from,
+                       std::string& out_args) {
+  size_t pos = from;
+  while (true) {
+    pos = text.find(entity_name, pos);
+    if (pos == std::string::npos) return false;
+    const bool boundary_before =
+        pos == 0 || !(std::isalnum(static_cast<unsigned char>(text[pos - 1])) || text[pos - 1] == '_');
+    const size_t after = pos + entity_name.size();
+    if (boundary_before && after < text.size() && text[after] == '(') {
+      int depth = 1;
+      size_t i = after + 1;
+      for (; i < text.size() && depth > 0; ++i) {
+        if (text[i] == '(') {
+          ++depth;
+        } else if (text[i] == ')') {
+          --depth;
+        }
+      }
+      if (depth != 0) return false;  // never closed
+      out_args = text.substr(after + 1, (i - 1) - (after + 1));
+      return true;
+    }
+    pos = after;
+  }
+}
+
+// Splits a STEP/IFC entity's own argument list at top-level commas only - a
+// comma inside a nested `(...)` (e.g. within CoordIndex's own list-of-
+// triples) is not a split point. Every other multi-field "record" this file
+// reads is XML- or bracket-delimited, so this depth-tracked split has no
+// precedent to reuse here.
+std::vector<std::string> SplitIfcTopLevelArgs(const std::string& args) {
+  std::vector<std::string> out;
+  int depth = 0;
+  size_t start = 0;
+  for (size_t i = 0; i < args.size(); ++i) {
+    const char c = args[i];
+    if (c == '(') {
+      ++depth;
+    } else if (c == ')') {
+      --depth;
+    } else if (c == ',' && depth == 0) {
+      out.push_back(args.substr(start, i - start));
+      start = i + 1;
+    }
+  }
+  out.push_back(args.substr(start));
+  return out;
+}
+
+// Parses a `LIST [3:3] OF INTEGER` list-of-triples - IfcTriangulatedFaceSet's
+// own `CoordIndex` shape, `((i0,i1,i2),(i0,i1,i2),...)` - into a flat int
+// list, 3 entries per tuple. Returns false if a tuple isn't found, doesn't
+// hold exactly 3 comma-separated integers, or any integer fails to parse -
+// the same strictness `ParseUsdaPointTuples()` already applies to its own
+// 3-number tuples, adapted from real to integer.
+bool ParseIfcIntTriples(const std::string& text, std::vector<int>& out_values) {
+  size_t pos = 0;
+  while (true) {
+    const size_t open = text.find('(', pos);
+    if (open == std::string::npos) break;
+    const size_t close = text.find(')', open);
+    if (close == std::string::npos) return false;
+    std::string inner = text.substr(open + 1, close - open - 1);
+    for (char& c : inner) {
+      if (c == ',') c = ' ';
+    }
+    std::istringstream iss(inner);
+    std::string token;
+    int count = 0;
+    while (iss >> token) {
+      int value = 0;
+      if (!ParseOffInt(token, value)) return false;
+      out_values.push_back(value);
+      ++count;
+    }
+    if (count != 3) return false;
+    pos = close + 1;
+  }
+  return true;
+}
+
+}  // namespace
+
+Result Mesh::SaveIfc(const std::string& path) const {
+  std::ofstream out(path);
+  if (!out) {
+    return Result::Failed;
+  }
+
+  out << "ISO-10303-21;\n";
+  out << "HEADER;\n";
+  out << "FILE_DESCRIPTION((''),'2;1');\n";
+  out << "FILE_NAME('','',(''),(''),'dino8-kernel','dino8-kernel','');\n";
+  out << "FILE_SCHEMA(('IFC4'));\n";
+  out << "ENDSEC;\n";
+  out << "\n";
+  out << "DATA;\n";
+
+  out << "#1=IFCCARTESIANPOINTLIST3D((";
+  for (int i = 0; i < mesh_.m_V.Count(); ++i) {
+    const ON_3fPoint& v = mesh_.m_V[i];
+    if (i > 0) out << ",";
+    out << "(" << v.x << "," << v.y << "," << v.z << ")";
+  }
+  out << "));\n";
+
+  out << "#2=IFCTRIANGULATEDFACESET(#1,$,$,(";
+  bool first_triangle = true;
+  const auto write_triangle = [&](int a, int b, int c) {
+    if (!first_triangle) out << ",";
+    first_triangle = false;
+    // 1-based, per STEP's own IfcPositiveInteger convention.
+    out << "(" << (a + 1) << "," << (b + 1) << "," << (c + 1) << ")";
+  };
+  for (int i = 0; i < mesh_.m_F.Count(); ++i) {
+    const ON_MeshFace& f = mesh_.m_F[i];
+    write_triangle(f.vi[0], f.vi[1], f.vi[2]);
+    if (f.IsQuad()) {
+      write_triangle(f.vi[0], f.vi[2], f.vi[3]);
+    }
+  }
+  out << "),$);\n";
+  out << "ENDSEC;\n";
+  out << "\n";
+  out << "END-ISO-10303-21;\n";
+
+  return out.good() ? Result::Ok : Result::Failed;
+}
+
+Result Mesh::LoadIfc(const std::string& path, Mesh& out_mesh) {
+  std::ifstream in(path, std::ios::binary);
+  if (!in) {
+    return Result::Failed;
+  }
+  std::ostringstream buffer;
+  buffer << in.rdbuf();
+  const std::string text = buffer.str();
+
+  if (text.find("ISO-10303-21;") == std::string::npos) {
+    return Result::Failed;  // not a STEP/IFC physical file at all - never silently misread
+  }
+
+  Mesh result;
+  ON_Mesh& raw = result.mesh_;
+
+  std::string points_args;
+  if (!FindIfcEntityArgs(text, "IFCCARTESIANPOINTLIST3D", 0, points_args)) return Result::Failed;
+  // `points_args` is the CoordList attribute's own value, one extra paren
+  // layer around the tuple list (see SaveIfc()'s own doc comment: the
+  // entity call is `IFCCARTESIANPOINTLIST3D( CoordList )`, and CoordList
+  // itself, being a LIST, is written as `(item, item, ...)`) - stripped
+  // here before reusing ParseUsdaPointTuples()'s own "(x, y, z), ..." tuple
+  // scan, which expects the bare tuple list with no further wrapping.
+  const std::string points_trimmed = TrimAmfWhitespace(points_args);
+  if (points_trimmed.size() < 2 || points_trimmed.front() != '(' || points_trimmed.back() != ')') {
+    return Result::Failed;
+  }
+  const std::string points_inner = points_trimmed.substr(1, points_trimmed.size() - 2);
+  std::vector<double> coords;
+  if (!ParseUsdaPointTuples(points_inner, coords)) return Result::Failed;
+  if (coords.size() % 3 != 0) return Result::Failed;
+  for (size_t v = 0; v + 2 < coords.size(); v += 3) {
+    raw.m_V.Append(ON_3fPoint(coords[v], coords[v + 1], coords[v + 2]));
+  }
+
+  std::string faceset_args;
+  if (!FindIfcEntityArgs(text, "IFCTRIANGULATEDFACESET", 0, faceset_args)) return Result::Failed;
+  const std::vector<std::string> top_level_args = SplitIfcTopLevelArgs(faceset_args);
+  // Coordinates, Normals, Closed, CoordIndex, [PnIndex] - CoordIndex is the
+  // 4th attribute; PnIndex (5th) is written but never read back.
+  if (top_level_args.size() < 4) return Result::Failed;
+  const std::string coord_index_trimmed = TrimAmfWhitespace(top_level_args[3]);
+  if (coord_index_trimmed.size() < 2 || coord_index_trimmed.front() != '(' ||
+      coord_index_trimmed.back() != ')') {
+    return Result::Failed;
+  }
+  const std::string coord_index_inner = coord_index_trimmed.substr(1, coord_index_trimmed.size() - 2);
+  std::vector<int> one_based_indices;
+  if (!ParseIfcIntTriples(coord_index_inner, one_based_indices)) return Result::Failed;
+  if (one_based_indices.size() % 3 != 0) return Result::Failed;
+  for (size_t i = 0; i + 2 < one_based_indices.size(); i += 3) {
+    ON_MeshFace face;
+    for (int c = 0; c < 3; ++c) {
+      const int one_based = one_based_indices[i + c];
+      if (one_based < 1 || one_based > raw.m_V.Count()) return Result::Failed;
+      face.vi[c] = one_based - 1;
+    }
+    face.vi[3] = face.vi[2];
+    raw.m_F.Append(face);
+  }
+
+  out_mesh = std::move(result);
+  return Result::Ok;
+}
+
 Result Mesh::LoadStl(const std::string& path, Mesh& out_mesh) {
   // Distinguishes binary from ASCII the same way most real-world STL
   // readers do: an ASCII file's own text can start with "solid" and
