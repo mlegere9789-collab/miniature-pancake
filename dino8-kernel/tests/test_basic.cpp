@@ -13646,6 +13646,73 @@ void TestMeshThickenBuildsExactUnitCubeFromFlatSquare() {
         "...with volume exactly 1 - the flat square's own area (1) times the offset distance (1)");
 }
 
+// The same self-touching ("bowtie") boundary hazard `Mesh::Shell`'s own
+// removed-face overloads already refuse (see
+// TestMeshShellRemovedFacesRefusesBowtieOpeningBoundary below) applies to
+// `Thicken()` too: its side-wall loop stitches one quad per naked edge
+// with no notion of which lobe an edge belongs to, so a naked-edge vertex
+// of degree > 2 can't be walled up unambiguously. Two triangles sharing
+// exactly one vertex (not an edge) give that shared vertex a naked-edge
+// degree of 4 (2 from each triangle) - contrasted against two entirely
+// DISCONNECTED squares (no shared vertex at all), where every naked-edge
+// vertex still has degree exactly 2, just split across two separate
+// simple loops, which must NOT be refused.
+void TestMeshThickenRefusesBowtieBoundaryButAllowsDisconnectedSheet() {
+  using dino8::kernel::Mesh;
+
+  Mesh bowtie;
+  {
+    ON_Mesh& raw = bowtie.raw();
+    raw.m_V.Append(ON_3fPoint(0, 0, 0));   // 0: shared apex
+    raw.m_V.Append(ON_3fPoint(1, 0, 0));   // 1
+    raw.m_V.Append(ON_3fPoint(0, 1, 0));   // 2
+    raw.m_V.Append(ON_3fPoint(-1, 0, 0));  // 3
+    raw.m_V.Append(ON_3fPoint(0, -1, 0));  // 4
+    auto add_tri = [&raw](int a, int b, int c) {
+      ON_MeshFace f;
+      f.vi[0] = a;
+      f.vi[1] = b;
+      f.vi[2] = c;
+      f.vi[3] = c;
+      raw.m_F.Append(f);
+    };
+    add_tri(0, 1, 2);
+    add_tri(0, 3, 4);
+  }
+  Check(bowtie.Check().naked_edge_list.size() == 6,
+        "setup: the two-triangle bowtie fixture has all 6 edges naked (the triangles share no edge)");
+
+  bool threw = false;
+  try {
+    (void)bowtie.Thicken(0.1);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "Thicken() on the bowtie sheet throws - vertex 0 sits on 4 naked edges (2 per triangle), the same "
+               "self-touching hazard Shell()'s own removed-face overloads already refuse on their opening boundary");
+
+  const Mesh square = MakeFlatUnitSquareMesh();
+  const ON_Mesh& sq = square.raw();
+  Mesh two_squares;
+  {
+    ON_Mesh& raw = two_squares.raw();
+    const int n = sq.m_V.Count();
+    for (int i = 0; i < n; ++i) raw.m_V.Append(sq.m_V[i]);
+    for (int i = 0; i < n; ++i) raw.m_V.Append(ON_3fPoint(sq.m_V[i].x + 5.0f, sq.m_V[i].y, sq.m_V[i].z));
+    raw.m_F.Append(sq.m_F[0]);
+    ON_MeshFace f1 = sq.m_F[0];
+    for (int k = 0; k < 4; ++k) f1.vi[k] += n;
+    raw.m_F.Append(f1);
+  }
+  const Mesh thickened = two_squares.Thicken(1.0);
+  Check(thickened.IsClosedManifold(),
+        "Thicken() on two disconnected (non-touching) unit squares succeeds and gives a genuine closed 2-manifold "
+        "- the bowtie guard is about a SHARED vertex, not about disconnected pieces in general");
+  Check(std::fabs(thickened.Volume() - 2.0) < 1e-9,
+        "...with volume exactly 2 - each unit-area square's own contribution (1) times the offset distance (1), "
+        "summed across both disconnected pieces");
+}
+
 // Mesh::FindOffsetSelfIntersections(): the real hazard Offset()'s own doc
 // comment already discloses (no self-intersection detection at all) is
 // checked here on a genuine, non-degenerate case - a narrow V-groove
@@ -13697,6 +13764,53 @@ void TestMeshFindOffsetSelfIntersectionsDetectsGenuineFold() {
   const auto manual = groove.Offset(-1.0).FindSelfIntersections();
   Check(manual.size() == hits.size(),
         "FindOffsetSelfIntersections matches a manual Offset()+FindSelfIntersections() call exactly");
+}
+
+// `Thicken()` gains the same fold-safety guard `Mesh::Shell(thickness)`
+// already runs on its own inward offset copy (see that overload's own
+// FindSelfIntersections() check) - previously Thicken() ran no such check
+// at all and would have silently built a self-intersecting wall from the
+// SAME V-groove/distance pair the test just above independently proved
+// genuinely folds (`FindOffsetSelfIntersections(-1.0)` on this exact
+// fixture). Reuses that proven-folding fixture directly rather than a new
+// one, so this is verified against an already-established hazard, not an
+// invented one.
+void TestMeshThickenRefusesSelfIntersectingFold() {
+  using dino8::kernel::Mesh;
+
+  Mesh groove;
+  ON_Mesh& raw = groove.raw();
+  for (double y : {0.0, 1.0}) {
+    raw.m_V.Append(ON_3fPoint(-1, y, 2));  // top of left wall
+    raw.m_V.Append(ON_3fPoint(0, y, 0));   // apex
+    raw.m_V.Append(ON_3fPoint(1, y, 2));   // top of right wall
+  }
+  auto addquad = [&](int a, int b, int c, int d) {
+    ON_MeshFace f;
+    f.vi[0] = a; f.vi[1] = b; f.vi[2] = c; f.vi[3] = d;
+    raw.m_F.Append(f);
+  };
+  addquad(0, 3, 4, 1);  // left wall (y=0: 0,1 / y=1: 3,4)
+  addquad(1, 4, 5, 2);  // right wall (y=0: 1,2 / y=1: 4,5)
+
+  Check(!groove.Check().naked_edge_list.empty(),
+        "setup: the V-groove strip is genuinely open (has naked edges), so Thicken() is the applicable call");
+  Check(groove.FindOffsetSelfIntersections(-1.0).size() > 0,
+        "setup: distance -1.0 on this exact groove is the same pairing already proven to fold through itself");
+
+  // Small, safe distances must still succeed - the new guard must not
+  // over-refuse a distance the groove genuinely tolerates.
+  const Mesh safe = groove.Thicken(0.1);
+  Check(safe.IsClosedManifold(), "Thicken(0.1) on the V-groove (safely small) still succeeds and closes");
+
+  bool threw = false;
+  try {
+    (void)groove.Thicken(-1.0);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "Thicken(-1.0) on the V-groove now throws - the offset copy folds through itself near the apex, "
+               "the exact hazard FindOffsetSelfIntersections(-1.0) already proved on this fixture above");
 }
 
 // A closed box mesh built specifically so ComputeVertexNormals() gives
@@ -54878,7 +54992,9 @@ int main() {
   TestMeshOffsetMovesVerticesAlongExactVertexNormal();
   TestMeshOffsetDirectionalMovesEveryVertexByTheSameFixedVector();
   TestMeshThickenBuildsExactUnitCubeFromFlatSquare();
+  TestMeshThickenRefusesBowtieBoundaryButAllowsDisconnectedSheet();
   TestMeshFindOffsetSelfIntersectionsDetectsGenuineFold();
+  TestMeshThickenRefusesSelfIntersectingFold();
   TestMeshShellHollowsClosedBoxWithVolumeIdentityAndFlippedInnerWall();
   TestMeshShellRefusesInvalidInput();
   TestMeshShellWithRemovedFaceProducesClosedManifoldCupWithStitchedWall();
