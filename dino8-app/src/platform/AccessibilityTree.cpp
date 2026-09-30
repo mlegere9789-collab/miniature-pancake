@@ -206,4 +206,22 @@ AccessibleNode BuildNamedCPlanesNode(const std::vector<NamedCPlaneSummary>& cpla
   return list;
 }
 
+AccessibleNode BuildLinetypesNode(const std::vector<LinetypeSummary>& linetypes) {
+  AccessibleNode list;
+  list.name = "Linetypes";
+  list.role = AccessibleRole::List;
+  char count_buf[32];
+  std::snprintf(count_buf, sizeof(count_buf), "%zu linetypes", linetypes.size());
+  list.description = count_buf;
+
+  for (const LinetypeSummary& lt : linetypes) {
+    AccessibleNode item;
+    item.role = AccessibleRole::ListItem;
+    item.name = lt.name;
+    item.description = "Pattern: " + lt.pattern_text;
+    list.children.push_back(std::move(item));
+  }
+  return list;
+}
+
 }  // namespace dino8::platform

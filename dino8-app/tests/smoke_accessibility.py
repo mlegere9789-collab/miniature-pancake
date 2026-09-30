@@ -55,6 +55,14 @@ connection, the same way a screen reader would - to prove:
       real "NamedCPlane Save <name>" command runs - mirroring
       Document::NamedCPlanes(), the same before/after pattern check 10 uses
       for Named Views.
+  12. A "Linetypes" accessible (role LIST) is discoverable, starts with the
+      document's built-in linetypes (at least "Continuous"), and gains one
+      new ListItem named after a custom linetype once a real
+      "SetCustomLinetype Name=<name> Pattern=<pattern>" command runs -
+      mirroring Document::Linetypes(), the same before/after pattern checks
+      10/11 use for Named Views/Named CPlanes (Linetypes just starts
+      non-empty, since unlike named views/cplanes every document ships with
+      built-in linetypes already - see Document::DefaultLinetypes()).
 
 This is a real integration test: at-spi2-registryd is the actual daemon
 GNOME uses, pyatspi is the actual library screen readers use, and Dino8 is
@@ -157,6 +165,7 @@ def main():
     sync3 = os.path.join(tmp, "sync3")
     sync4 = os.path.join(tmp, "sync4")
     sync5 = os.path.join(tmp, "sync5")
+    sync6 = os.path.join(tmp, "sync6")
     script_path = os.path.join(tmp, "script.txt")
     with open(script_path, "w") as f:
         # `@waitfile` (like the built-in `@wait N` frames directive) needs
@@ -205,6 +214,14 @@ def main():
         # enough to observe Named CPlanes go empty -> populated.
         f.write("NamedCPlane Save MyCPlane\n")
         f.write(f"@waitfile {sync5}\n")
+        # Same shape again: SetCustomLinetype is also a plain, single-frame
+        # command (Begin() applies it immediately once both Name= and
+        # Pattern= are given - see cmd_annotate2.cpp's SetCustomLinetypeCommand),
+        # so one more sync point is enough to observe Linetypes gain a new
+        # entry (it starts non-empty, unlike Named Views/CPlanes, since the
+        # document ships with built-in linetypes already).
+        f.write("SetCustomLinetype Name=MyLinetype Pattern=5,2\n")
+        f.write(f"@waitfile {sync6}\n")
 
     procs = []
     dino8_proc = None
@@ -354,6 +371,20 @@ def main():
                 fail(f"Named CPlanes has {named_cplanes.childCount} children before any cplane is saved (expected 0)")
             else:
                 ok("Named CPlanes has no ListItem children before any cplane is saved")
+
+        linetypes = find_child_by_name(app, "Linetypes", 10)
+        if linetypes is None:
+            fail('"Linetypes" accessible not found among the application\'s children')
+        else:
+            ok('"Linetypes" accessible is discoverable via the real AT-SPI2 desktop')
+            if linetypes.childCount < 1:
+                fail("Linetypes has no ListItem children (expected at least the built-in \"Continuous\" linetype)")
+            else:
+                first_linetype = linetypes.getChildAtIndex(0)
+                if first_linetype is None or first_linetype.name != "Continuous":
+                    fail(f"Linetypes' first child is not Continuous (got {first_linetype.name if first_linetype else None!r})")
+                else:
+                    ok('Linetypes\' first ListItem names the built-in "Continuous" linetype')
 
         viewports = find_child_by_name(app, "Viewports", 10)
         if viewports is None:
@@ -553,7 +584,29 @@ def main():
                 ok(f"Named CPlanes gains a new entry naming the saved cplane once \"NamedCPlane Save\" runs "
                    f"({newest_cplane.name!r})")
 
-        open(sync5, "w").close()  # let the app finish its remaining frames/script and exit
+        linetypes_count_before = linetypes.childCount if linetypes is not None else None
+
+        open(sync5, "w").close()  # let the script run "SetCustomLinetype Name=MyLinetype Pattern=5,2"
+
+        if linetypes is not None:
+            deadline = time.time() + 10
+            newest_linetype = None
+            while time.time() < deadline:
+                count = linetypes.childCount
+                if linetypes_count_before is not None and count > linetypes_count_before:
+                    newest_linetype = linetypes.getChildAtIndex(count - 1)
+                    break
+                time.sleep(0.2)
+            if newest_linetype is None:
+                fail(f"Linetypes did not gain a new entry after \"SetCustomLinetype Name=MyLinetype\" ran within "
+                     f"10s (childCount stayed at {linetypes_count_before!r})")
+            elif newest_linetype.name != "MyLinetype":
+                fail(f"Linetypes' newest entry does not name the custom linetype (got {newest_linetype.name!r})")
+            else:
+                ok(f"Linetypes gains a new entry naming the custom linetype once \"SetCustomLinetype\" runs "
+                   f"({newest_linetype.name!r})")
+
+        open(sync6, "w").close()  # let the app finish its remaining frames/script and exit
 
         try:
             out, _ = dino8_proc.communicate(timeout=20)
