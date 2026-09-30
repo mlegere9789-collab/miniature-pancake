@@ -20599,6 +20599,244 @@ void TestMeshLoadGltfRejectsMalformedFiles() {
   std::remove(oob_index_path.c_str());
 }
 
+void TestMeshSaveGlbRoundTrips() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Result;
+
+  // Same MakeQuadBoxMesh fixture SaveGltf()'s own round-trip test uses,
+  // since SaveGlb() shares the same geometry-to-buffer logic - just a
+  // different container.
+  const auto box = MakeQuadBoxMesh(0, 0, 0, 2, 2, 2);
+  const std::string path = "dino8_kernel_mesh_glb_test.glb";
+  Check(box.SaveGlb(path) == Result::Ok, "Mesh::SaveGlb succeeds");
+
+  std::ifstream in(path, std::ios::binary);
+  Check(static_cast<bool>(in), "the .glb file SaveGlb wrote can be reopened for reading");
+  const std::string file_bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  Check(file_bytes.size() >= 12, "the file has at least a 12-byte header");
+  Check(file_bytes.substr(0, 4) == "glTF", "the file starts with the glTF magic bytes");
+  uint32_t version = 0, total_length = 0;
+  std::memcpy(&version, file_bytes.data() + 4, 4);
+  std::memcpy(&total_length, file_bytes.data() + 8, 4);
+  Check(version == 2, "the header declares version 2");
+  Check(static_cast<size_t>(total_length) == file_bytes.size(),
+        "the header's declared total length matches the file's actual size");
+  Check(file_bytes.find("data:application/octet-stream") == std::string::npos,
+        "no base64 data URI anywhere - the binary payload lives in its own BIN chunk, not embedded text");
+  Check(file_bytes.find("\"bufferViews\"") != std::string::npos, "the JSON chunk has a bufferViews array");
+  Check(file_bytes.find("\"POSITION\": 0") != std::string::npos,
+        "the mesh primitive's POSITION attribute names accessor 0");
+
+  Mesh reloaded;
+  Check(Mesh::LoadGlb(path, reloaded) == Result::Ok, "Mesh::LoadGlb succeeds on SaveGlb()'s own output");
+  Check(reloaded.VertexCount() == box.VertexCount(),
+        "the reloaded mesh keeps the same vertex count - no position is split or merged");
+  Check(reloaded.FaceCount() == box.FaceCount() * 2,
+        "each of the box's 6 quads split into 2 triangles on write - glTF has no native quad - "
+        "so the reloaded triangle count is exactly double the original quad count");
+  Check(std::abs(reloaded.Volume() - box.Volume()) < 1e-9,
+        "the reloaded mesh's volume exactly matches the original, proving the quad split "
+        "didn't change the actual geometry");
+  std::remove(path.c_str());
+
+  // A hand-assembled GLB file, not SaveGlb()'s own output - a single
+  // triangle (0,0,0),(2,0,0),(0,2,0), built byte-for-byte per the GLB
+  // container spec (12-byte header, then a JSON chunk, then a BIN chunk),
+  // to check LoadGlb()'s own chunk-walking and binary decoding, not just a
+  // self-round-trip that could hide a matched write/read bug.
+  const std::string hand_written_path = "dino8_kernel_mesh_glb_test_hand_written.glb";
+  {
+    std::string bin_chunk;
+    auto append_float = [&](float v) {
+      char buf[4];
+      std::memcpy(buf, &v, 4);
+      bin_chunk.append(buf, 4);
+    };
+    auto append_index = [&](uint32_t v) {
+      char buf[4];
+      std::memcpy(buf, &v, 4);
+      bin_chunk.append(buf, 4);
+    };
+    append_float(0); append_float(0); append_float(0);
+    append_float(2); append_float(0); append_float(0);
+    append_float(0); append_float(2); append_float(0);
+    append_index(0); append_index(1); append_index(2);
+    Check(bin_chunk.size() == 48 && bin_chunk.size() % 4 == 0,
+          "fixture: the hand-built BIN chunk (3 VEC3 positions + 3 uint32 indices) is already "
+          "4-byte aligned, no padding needed");
+
+    std::string json_text =
+        "{\n"
+        "  \"asset\": { \"version\": \"2.0\" },\n"
+        "  \"buffers\": [ { \"byteLength\": 48 } ],\n"
+        "  \"bufferViews\": [\n"
+        "    { \"buffer\": 0, \"byteOffset\": 0, \"byteLength\": 36, \"target\": 34962 },\n"
+        "    { \"buffer\": 0, \"byteOffset\": 36, \"byteLength\": 12, \"target\": 34963 }\n"
+        "  ],\n"
+        "  \"accessors\": [\n"
+        "    { \"bufferView\": 0, \"componentType\": 5126, \"count\": 3, \"type\": \"VEC3\" },\n"
+        "    { \"bufferView\": 1, \"componentType\": 5125, \"count\": 3, \"type\": \"SCALAR\" }\n"
+        "  ],\n"
+        "  \"meshes\": [ { \"primitives\": [ { \"attributes\": { \"POSITION\": 0 }, \"indices\": 1, "
+        "\"mode\": 4 } ] } ]\n"
+        "}\n";
+    while (json_text.size() % 4 != 0) json_text.push_back(' ');
+
+    std::ofstream out(hand_written_path, std::ios::binary);
+    auto write_u32 = [&](uint32_t v) { out.write(reinterpret_cast<const char*>(&v), 4); };
+    const uint32_t total_length =
+        12 + 8 + static_cast<uint32_t>(json_text.size()) + 8 + static_cast<uint32_t>(bin_chunk.size());
+    out.write("glTF", 4);
+    write_u32(2);
+    write_u32(total_length);
+    write_u32(static_cast<uint32_t>(json_text.size()));
+    out.write("JSON", 4);
+    out.write(json_text.data(), static_cast<std::streamsize>(json_text.size()));
+    write_u32(static_cast<uint32_t>(bin_chunk.size()));
+    out.write("BIN\0", 4);
+    out.write(bin_chunk.data(), static_cast<std::streamsize>(bin_chunk.size()));
+  }
+
+  Mesh hand_written;
+  Check(Mesh::LoadGlb(hand_written_path, hand_written) == Result::Ok,
+        "LoadGlb succeeds on an independently-assembled GLB container, not just SaveGlb()'s own output");
+  Check(hand_written.VertexCount() == 3 && hand_written.FaceCount() == 1,
+        "the hand-written file's 3 vertices and 1 triangle are read correctly");
+  const ON_3fPoint& v0 = hand_written.raw().m_V[0];
+  const ON_3fPoint& v1 = hand_written.raw().m_V[1];
+  const ON_3fPoint& v2 = hand_written.raw().m_V[2];
+  Check(v0.x == 0 && v0.y == 0 && v0.z == 0 && v1.x == 2 && v1.y == 0 && v1.z == 0 && v2.x == 0 &&
+            v2.y == 2 && v2.z == 0,
+        "the decoded float32 little-endian vertex positions exactly match the independently-assembled "
+        "source values");
+  const ON_MeshFace& tri = hand_written.raw().m_F[0];
+  Check(tri.vi[0] == 0 && tri.vi[1] == 1 && tri.vi[2] == 2,
+        "the decoded uint32 little-endian indices resolve to the same 0-based corners");
+  std::remove(hand_written_path.c_str());
+}
+
+void TestMeshLoadGlbRejectsMalformedFiles() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Result;
+
+  const std::string missing_path = "dino8_kernel_mesh_glb_test_does_not_exist.glb";
+  Mesh out;
+  Check(Mesh::LoadGlb(missing_path, out) == Result::Failed, "LoadGlb fails on a file that doesn't exist");
+
+  auto write_u32 = [](std::ofstream& f, uint32_t v) { f.write(reinterpret_cast<const char*>(&v), 4); };
+
+  const std::string too_short_path = "dino8_kernel_mesh_glb_test_too_short.glb";
+  {
+    std::ofstream f(too_short_path, std::ios::binary);
+    f.write("glTF", 4);
+    write_u32(f, 2);
+    // no total-length word and no chunks - fewer than 12 bytes total
+  }
+  Check(Mesh::LoadGlb(too_short_path, out) == Result::Failed,
+        "LoadGlb fails on a file shorter than the 12-byte header");
+
+  const std::string bad_magic_path = "dino8_kernel_mesh_glb_test_bad_magic.glb";
+  {
+    std::ofstream f(bad_magic_path, std::ios::binary);
+    f.write("BAD!", 4);
+    write_u32(f, 2);
+    write_u32(f, 12);
+  }
+  Check(Mesh::LoadGlb(bad_magic_path, out) == Result::Failed,
+        "LoadGlb fails on a header with the wrong magic bytes");
+
+  const std::string bad_version_path = "dino8_kernel_mesh_glb_test_bad_version.glb";
+  {
+    std::ofstream f(bad_version_path, std::ios::binary);
+    f.write("glTF", 4);
+    write_u32(f, 1);  // glTF 1.0's own binary container used a different chunk layout entirely
+    write_u32(f, 12);
+  }
+  Check(Mesh::LoadGlb(bad_version_path, out) == Result::Failed,
+        "LoadGlb fails on a header declaring a version other than 2");
+
+  const std::string declared_too_long_path = "dino8_kernel_mesh_glb_test_declared_too_long.glb";
+  {
+    std::ofstream f(declared_too_long_path, std::ios::binary);
+    f.write("glTF", 4);
+    write_u32(f, 2);
+    write_u32(f, 1000000);  // far longer than the 12 bytes actually written
+  }
+  Check(Mesh::LoadGlb(declared_too_long_path, out) == Result::Failed,
+        "LoadGlb fails when the header's declared total length exceeds the file's actual size");
+
+  const std::string missing_bin_path = "dino8_kernel_mesh_glb_test_missing_bin.glb";
+  {
+    std::string json_text = "{ \"buffers\": [ { \"byteLength\": 0 } ], \"bufferViews\": [] }";
+    while (json_text.size() % 4 != 0) json_text.push_back(' ');
+    std::ofstream f(missing_bin_path, std::ios::binary);
+    const uint32_t total_length = 12 + 8 + static_cast<uint32_t>(json_text.size());
+    f.write("glTF", 4);
+    write_u32(f, 2);
+    write_u32(f, total_length);
+    write_u32(f, static_cast<uint32_t>(json_text.size()));
+    f.write("JSON", 4);
+    f.write(json_text.data(), static_cast<std::streamsize>(json_text.size()));
+  }
+  Check(Mesh::LoadGlb(missing_bin_path, out) == Result::Failed,
+        "LoadGlb fails on a container with a JSON chunk but no BIN chunk at all");
+
+  const std::string missing_json_path = "dino8_kernel_mesh_glb_test_missing_json.glb";
+  {
+    std::string bin_chunk(8, '\0');
+    std::ofstream f(missing_json_path, std::ios::binary);
+    const uint32_t total_length = 12 + 8 + static_cast<uint32_t>(bin_chunk.size());
+    f.write("glTF", 4);
+    write_u32(f, 2);
+    write_u32(f, total_length);
+    write_u32(f, static_cast<uint32_t>(bin_chunk.size()));
+    f.write("BIN\0", 4);
+    f.write(bin_chunk.data(), static_cast<std::streamsize>(bin_chunk.size()));
+  }
+  Check(Mesh::LoadGlb(missing_json_path, out) == Result::Failed,
+        "LoadGlb fails on a container with a BIN chunk but no JSON chunk at all");
+
+  const std::string oob_index_path = "dino8_kernel_mesh_glb_test_oob_index.glb";
+  {
+    // 1 vertex (12 bytes) followed by indices [0, 1, 2] (12 bytes) - only
+    // vertex 0 exists, so indices 1 and 2 are out of range.
+    std::string bin_chunk(24, '\0');
+    const uint32_t one = 1, two = 2;
+    std::memcpy(&bin_chunk[16], &one, 4);
+    std::memcpy(&bin_chunk[20], &two, 4);
+    std::string json_text =
+        "{\n"
+        "  \"buffers\": [ { \"byteLength\": 24 } ],\n"
+        "  \"bufferViews\": [\n"
+        "    { \"buffer\": 0, \"byteOffset\": 0, \"byteLength\": 12, \"target\": 34962 },\n"
+        "    { \"buffer\": 0, \"byteOffset\": 12, \"byteLength\": 12, \"target\": 34963 }\n"
+        "  ]\n}\n";
+    while (json_text.size() % 4 != 0) json_text.push_back(' ');
+    std::ofstream f(oob_index_path, std::ios::binary);
+    const uint32_t total_length =
+        12 + 8 + static_cast<uint32_t>(json_text.size()) + 8 + static_cast<uint32_t>(bin_chunk.size());
+    f.write("glTF", 4);
+    write_u32(f, 2);
+    write_u32(f, total_length);
+    write_u32(f, static_cast<uint32_t>(json_text.size()));
+    f.write("JSON", 4);
+    f.write(json_text.data(), static_cast<std::streamsize>(json_text.size()));
+    write_u32(f, static_cast<uint32_t>(bin_chunk.size()));
+    f.write("BIN\0", 4);
+    f.write(bin_chunk.data(), static_cast<std::streamsize>(bin_chunk.size()));
+  }
+  Check(Mesh::LoadGlb(oob_index_path, out) == Result::Failed,
+        "LoadGlb fails on an index referencing a vertex position that doesn't exist");
+
+  std::remove(too_short_path.c_str());
+  std::remove(bad_magic_path.c_str());
+  std::remove(bad_version_path.c_str());
+  std::remove(declared_too_long_path.c_str());
+  std::remove(missing_bin_path.c_str());
+  std::remove(missing_json_path.c_str());
+  std::remove(oob_index_path.c_str());
+}
+
 void TestMeshSaveStlSplitsQuadsAndComputesNormals() {
   using dino8::kernel::Result;
 
@@ -49826,6 +50064,8 @@ int main() {
   TestMeshLoadUsdaFanTriangulatesNgonFaces();
   TestMeshSaveGltfRoundTrips();
   TestMeshLoadGltfRejectsMalformedFiles();
+  TestMeshSaveGlbRoundTrips();
+  TestMeshLoadGlbRejectsMalformedFiles();
   TestMeshSaveStlSplitsQuadsAndComputesNormals();
   TestMeshLoadStlRoundTrips();
   TestMeshLoadStlBinary();

@@ -3144,79 +3144,89 @@ bool ExtractJsonStringField(const std::string& object_text, const std::string& k
 
 const char kGltfDataUriPrefix[] = "data:application/octet-stream;base64,";
 
-}  // namespace
+// The binary payload SaveGltf()/SaveGlb() both embed - positions first
+// (float32 XYZ, always little-endian per the glTF spec - the same "no
+// swap" WriteBinaryScalar() path SavePly()'s own little-endian mode
+// already uses), then every triangle's indices (uint32) - a quad is split
+// into two triangles here, since glTF's TRIANGLES mode has no native quad,
+// the same accommodation SaveStl()/SaveAmf() already make - plus the
+// bounding box and counts both formats' JSON needs. Shared by the two
+// container formats so their binary payload and JSON stay identical except
+// for how each one stores/points at that payload (a base64 `data:` URI vs.
+// a GLB chunk).
+struct GltfMeshBuffer {
+  std::string bytes;
+  size_t position_bytes = 0;
+  int vertex_count = 0;
+  int triangle_count = 0;
+  double min_x = 0, min_y = 0, min_z = 0, max_x = 0, max_y = 0, max_z = 0;
+};
 
-Result Mesh::SaveGltf(const std::string& path) const {
-  std::ofstream out(path);
-  if (!out) {
-    return Result::Failed;
-  }
-
-  // Build the binary buffer: every position first (float32 XYZ, always
-  // little-endian per the glTF spec - the same "no swap" WriteBinaryScalar()
-  // path SavePly()'s own little-endian mode already uses), then every
-  // triangle's indices (uint32) - a quad is split into two triangles here,
-  // since glTF's TRIANGLES mode has no native quad, the same accommodation
-  // SaveStl()/SaveAmf() already make.
+GltfMeshBuffer BuildGltfMeshBuffer(const ON_Mesh& mesh) {
+  GltfMeshBuffer result;
   std::ostringstream buffer_stream;
-  for (int i = 0; i < mesh_.m_V.Count(); ++i) {
-    const ON_3fPoint& v = mesh_.m_V[i];
+  for (int i = 0; i < mesh.m_V.Count(); ++i) {
+    const ON_3fPoint& v = mesh.m_V[i];
     WriteBinaryScalar(buffer_stream, static_cast<float>(v.x), false);
     WriteBinaryScalar(buffer_stream, static_cast<float>(v.y), false);
     WriteBinaryScalar(buffer_stream, static_cast<float>(v.z), false);
   }
-  const size_t position_bytes = buffer_stream.str().size();
+  result.position_bytes = buffer_stream.str().size();
 
-  int triangle_count = 0;
-  for (int i = 0; i < mesh_.m_F.Count(); ++i) {
-    const ON_MeshFace& f = mesh_.m_F[i];
+  for (int i = 0; i < mesh.m_F.Count(); ++i) {
+    const ON_MeshFace& f = mesh.m_F[i];
     WriteBinaryScalar(buffer_stream, static_cast<uint32_t>(f.vi[0]), false);
     WriteBinaryScalar(buffer_stream, static_cast<uint32_t>(f.vi[1]), false);
     WriteBinaryScalar(buffer_stream, static_cast<uint32_t>(f.vi[2]), false);
-    ++triangle_count;
+    ++result.triangle_count;
     if (f.IsQuad()) {
       WriteBinaryScalar(buffer_stream, static_cast<uint32_t>(f.vi[0]), false);
       WriteBinaryScalar(buffer_stream, static_cast<uint32_t>(f.vi[2]), false);
       WriteBinaryScalar(buffer_stream, static_cast<uint32_t>(f.vi[3]), false);
-      ++triangle_count;
+      ++result.triangle_count;
     }
   }
-  const std::string buffer_bytes = buffer_stream.str();
-  const size_t index_bytes = buffer_bytes.size() - position_bytes;
+  result.bytes = buffer_stream.str();
+  result.vertex_count = mesh.m_V.Count();
 
-  double min_x = 0, min_y = 0, min_z = 0, max_x = 0, max_y = 0, max_z = 0;
-  if (mesh_.m_V.Count() > 0) {
-    min_x = max_x = mesh_.m_V[0].x;
-    min_y = max_y = mesh_.m_V[0].y;
-    min_z = max_z = mesh_.m_V[0].z;
-    for (int i = 1; i < mesh_.m_V.Count(); ++i) {
-      const ON_3fPoint& v = mesh_.m_V[i];
-      min_x = std::min(min_x, static_cast<double>(v.x));
-      min_y = std::min(min_y, static_cast<double>(v.y));
-      min_z = std::min(min_z, static_cast<double>(v.z));
-      max_x = std::max(max_x, static_cast<double>(v.x));
-      max_y = std::max(max_y, static_cast<double>(v.y));
-      max_z = std::max(max_z, static_cast<double>(v.z));
+  if (mesh.m_V.Count() > 0) {
+    result.min_x = result.max_x = mesh.m_V[0].x;
+    result.min_y = result.max_y = mesh.m_V[0].y;
+    result.min_z = result.max_z = mesh.m_V[0].z;
+    for (int i = 1; i < mesh.m_V.Count(); ++i) {
+      const ON_3fPoint& v = mesh.m_V[i];
+      result.min_x = std::min(result.min_x, static_cast<double>(v.x));
+      result.min_y = std::min(result.min_y, static_cast<double>(v.y));
+      result.min_z = std::min(result.min_z, static_cast<double>(v.z));
+      result.max_x = std::max(result.max_x, static_cast<double>(v.x));
+      result.max_y = std::max(result.max_y, static_cast<double>(v.y));
+      result.max_z = std::max(result.max_z, static_cast<double>(v.z));
     }
   }
+  return result;
+}
 
-  const std::string base64 = Base64Encode(buffer_bytes);
-
+// The glTF JSON both container formats write, identical apart from the
+// single `"buffers"` array item the caller supplies - SaveGltf()'s own
+// `{ "uri": "data:...", "byteLength": N }` or SaveGlb()'s bare
+// `{ "byteLength": N }` (a GLB buffer with no `uri` refers to the
+// container's own BIN chunk, per the glTF spec).
+std::string BuildGltfJson(const GltfMeshBuffer& buf, const std::string& buffers_array_item) {
+  std::ostringstream out;
   out << "{\n";
   out << "  \"asset\": { \"version\": \"2.0\", \"generator\": \"dino8-kernel\" },\n";
-  out << "  \"buffers\": [ { \"uri\": \"" << kGltfDataUriPrefix << base64 << "\", \"byteLength\": "
-      << buffer_bytes.size() << " } ],\n";
+  out << "  \"buffers\": [ " << buffers_array_item << " ],\n";
   out << "  \"bufferViews\": [\n";
-  out << "    { \"buffer\": 0, \"byteOffset\": 0, \"byteLength\": " << position_bytes
+  out << "    { \"buffer\": 0, \"byteOffset\": 0, \"byteLength\": " << buf.position_bytes
       << ", \"target\": 34962 },\n";
-  out << "    { \"buffer\": 0, \"byteOffset\": " << position_bytes << ", \"byteLength\": " << index_bytes
-      << ", \"target\": 34963 }\n";
+  out << "    { \"buffer\": 0, \"byteOffset\": " << buf.position_bytes << ", \"byteLength\": "
+      << (buf.bytes.size() - buf.position_bytes) << ", \"target\": 34963 }\n";
   out << "  ],\n";
   out << "  \"accessors\": [\n";
-  out << "    { \"bufferView\": 0, \"componentType\": 5126, \"count\": " << mesh_.m_V.Count()
-      << ", \"type\": \"VEC3\", \"min\": [" << min_x << ", " << min_y << ", " << min_z << "], \"max\": ["
-      << max_x << ", " << max_y << ", " << max_z << "] },\n";
-  out << "    { \"bufferView\": 1, \"componentType\": 5125, \"count\": " << (triangle_count * 3)
+  out << "    { \"bufferView\": 0, \"componentType\": 5126, \"count\": " << buf.vertex_count
+      << ", \"type\": \"VEC3\", \"min\": [" << buf.min_x << ", " << buf.min_y << ", " << buf.min_z << "], \"max\": ["
+      << buf.max_x << ", " << buf.max_y << ", " << buf.max_z << "] },\n";
+  out << "    { \"bufferView\": 1, \"componentType\": 5125, \"count\": " << (buf.triangle_count * 3)
       << ", \"type\": \"SCALAR\" }\n";
   out << "  ],\n";
   out << "  \"meshes\": [ { \"primitives\": [ { \"attributes\": { \"POSITION\": 0 }, \"indices\": 1, "
@@ -3225,33 +3235,20 @@ Result Mesh::SaveGltf(const std::string& path) const {
   out << "  \"scenes\": [ { \"nodes\": [ 0 ] } ],\n";
   out << "  \"scene\": 0\n";
   out << "}\n";
-
-  return out.good() ? Result::Ok : Result::Failed;
+  return out.str();
 }
 
-Result Mesh::LoadGltf(const std::string& path, Mesh& out_mesh) {
-  std::ifstream in(path, std::ios::binary);
-  if (!in) {
-    return Result::Failed;
-  }
-  std::ostringstream stream_buffer;
-  stream_buffer << in.rdbuf();
-  const std::string text = stream_buffer.str();
-
-  std::string buffers_content;
-  if (!FindJsonArrayContent(text, "buffers", buffers_content)) return Result::Failed;
-  std::string buffer_object;
-  if (FindNextJsonObject(buffers_content, 0, buffer_object) == std::string::npos) return Result::Failed;
-  std::string uri;
-  if (!ExtractJsonStringField(buffer_object, "uri", uri)) return Result::Failed;
-  if (uri.rfind(kGltfDataUriPrefix, 0) != 0) {
-    return Result::Failed;  // an external .bin reference - never silently misread
-  }
-  std::string decoded_buffer;
-  if (!Base64Decode(uri.substr(std::strlen(kGltfDataUriPrefix)), decoded_buffer)) return Result::Failed;
-
+// The read side shared by LoadGltf()/LoadGlb(): given the glTF JSON text
+// and the already-resolved binary buffer (base64-decoded for `.gltf`, the
+// GLB's own BIN chunk for `.glb`), extracts the two bufferViews SaveGltf()/
+// SaveGlb() both write (positions, then indices) and rebuilds the mesh -
+// see LoadGltf()'s own doc comment in mesh.h for the exact scope/failure
+// conditions, identical for both formats since they share this one code
+// path.
+Result BuildMeshFromGltfJsonAndBuffer(const std::string& json_text, const std::string& decoded_buffer,
+                                       Mesh& out_mesh) {
   std::string buffer_views_content;
-  if (!FindJsonArrayContent(text, "bufferViews", buffer_views_content)) return Result::Failed;
+  if (!FindJsonArrayContent(json_text, "bufferViews", buffer_views_content)) return Result::Failed;
   std::string position_view, index_view;
   size_t next = FindNextJsonObject(buffer_views_content, 0, position_view);
   if (next == std::string::npos) return Result::Failed;
@@ -3273,7 +3270,7 @@ Result Mesh::LoadGltf(const std::string& path, Mesh& out_mesh) {
   if (static_cast<size_t>(index_offset + index_length) > decoded_buffer.size()) return Result::Failed;
 
   Mesh result;
-  ON_Mesh& raw = result.mesh_;
+  ON_Mesh& raw = result.raw();
 
   const int vertex_count = static_cast<int>(position_length / 12);
   for (int i = 0; i < vertex_count; ++i) {
@@ -3307,6 +3304,136 @@ Result Mesh::LoadGltf(const std::string& path, Mesh& out_mesh) {
 
   out_mesh = std::move(result);
   return Result::Ok;
+}
+
+// GLB chunk-type magic numbers, big-endian-in-the-name-but-always-written-
+// little-endian per the binary glTF spec - "glTF", "JSON" and "BIN\0" read
+// as 4-byte little-endian words.
+constexpr uint32_t kGlbMagic = 0x46546C67;
+constexpr uint32_t kGlbChunkTypeJson = 0x4E4F534A;
+constexpr uint32_t kGlbChunkTypeBin = 0x004E4942;
+
+}  // namespace
+
+Result Mesh::SaveGltf(const std::string& path) const {
+  std::ofstream out(path);
+  if (!out) {
+    return Result::Failed;
+  }
+
+  const GltfMeshBuffer buf = BuildGltfMeshBuffer(mesh_);
+  const std::string base64 = Base64Encode(buf.bytes);
+  std::ostringstream buffers_item;
+  buffers_item << "{ \"uri\": \"" << kGltfDataUriPrefix << base64 << "\", \"byteLength\": " << buf.bytes.size()
+               << " }";
+  out << BuildGltfJson(buf, buffers_item.str());
+
+  return out.good() ? Result::Ok : Result::Failed;
+}
+
+Result Mesh::LoadGltf(const std::string& path, Mesh& out_mesh) {
+  std::ifstream in(path, std::ios::binary);
+  if (!in) {
+    return Result::Failed;
+  }
+  std::ostringstream stream_buffer;
+  stream_buffer << in.rdbuf();
+  const std::string text = stream_buffer.str();
+
+  std::string buffers_content;
+  if (!FindJsonArrayContent(text, "buffers", buffers_content)) return Result::Failed;
+  std::string buffer_object;
+  if (FindNextJsonObject(buffers_content, 0, buffer_object) == std::string::npos) return Result::Failed;
+  std::string uri;
+  if (!ExtractJsonStringField(buffer_object, "uri", uri)) return Result::Failed;
+  if (uri.rfind(kGltfDataUriPrefix, 0) != 0) {
+    return Result::Failed;  // an external .bin reference - never silently misread
+  }
+  std::string decoded_buffer;
+  if (!Base64Decode(uri.substr(std::strlen(kGltfDataUriPrefix)), decoded_buffer)) return Result::Failed;
+
+  return BuildMeshFromGltfJsonAndBuffer(text, decoded_buffer, out_mesh);
+}
+
+Result Mesh::SaveGlb(const std::string& path) const {
+  std::ofstream out(path, std::ios::binary);
+  if (!out) {
+    return Result::Failed;
+  }
+
+  const GltfMeshBuffer buf = BuildGltfMeshBuffer(mesh_);
+  std::ostringstream buffers_item;
+  buffers_item << "{ \"byteLength\": " << buf.bytes.size() << " }";
+  std::string json_text = BuildGltfJson(buf, buffers_item.str());
+  while (json_text.size() % 4 != 0) json_text.push_back(' ');  // JSON chunk padded to 4 bytes with spaces
+
+  std::string bin_chunk = buf.bytes;
+  while (bin_chunk.size() % 4 != 0) bin_chunk.push_back('\0');  // BIN chunk padded to 4 bytes with zeros
+
+  const uint32_t json_chunk_length = static_cast<uint32_t>(json_text.size());
+  const uint32_t bin_chunk_length = static_cast<uint32_t>(bin_chunk.size());
+  const uint32_t total_length =
+      12 + 8 + json_chunk_length + 8 + bin_chunk_length;  // 12-byte header + two 8-byte chunk headers
+
+  WriteBinaryScalar(out, kGlbMagic, false);
+  WriteBinaryScalar(out, static_cast<uint32_t>(2), false);  // version
+  WriteBinaryScalar(out, total_length, false);
+
+  WriteBinaryScalar(out, json_chunk_length, false);
+  WriteBinaryScalar(out, kGlbChunkTypeJson, false);
+  out.write(json_text.data(), static_cast<std::streamsize>(json_text.size()));
+
+  WriteBinaryScalar(out, bin_chunk_length, false);
+  WriteBinaryScalar(out, kGlbChunkTypeBin, false);
+  out.write(bin_chunk.data(), static_cast<std::streamsize>(bin_chunk.size()));
+
+  return out.good() ? Result::Ok : Result::Failed;
+}
+
+Result Mesh::LoadGlb(const std::string& path, Mesh& out_mesh) {
+  std::ifstream in(path, std::ios::binary);
+  if (!in) {
+    return Result::Failed;
+  }
+  std::ostringstream stream_buffer;
+  stream_buffer << in.rdbuf();
+  const std::string data = stream_buffer.str();
+
+  if (data.size() < 12) return Result::Failed;
+  uint32_t magic = 0, version = 0, total_length = 0;
+  std::memcpy(&magic, data.data(), 4);
+  std::memcpy(&version, data.data() + 4, 4);
+  std::memcpy(&total_length, data.data() + 8, 4);
+  if (magic != kGlbMagic) return Result::Failed;
+  if (version != 2) return Result::Failed;
+  if (total_length > data.size()) return Result::Failed;  // truncated file
+
+  // Walk the chunk list looking for the one JSON chunk (always first per
+  // spec, but found by type here rather than assumed) and the one BIN
+  // chunk; any other chunk type (a spec-sanctioned extension this reader
+  // doesn't understand) is skipped rather than rejected outright.
+  std::string json_text;
+  std::string bin_chunk;
+  bool have_json = false, have_bin = false;
+  size_t offset = 12;
+  while (offset + 8 <= static_cast<size_t>(total_length)) {
+    uint32_t chunk_length = 0, chunk_type = 0;
+    std::memcpy(&chunk_length, data.data() + offset, 4);
+    std::memcpy(&chunk_type, data.data() + offset + 4, 4);
+    offset += 8;
+    if (offset + chunk_length > data.size()) return Result::Failed;
+    if (chunk_type == kGlbChunkTypeJson) {
+      json_text = data.substr(offset, chunk_length);
+      have_json = true;
+    } else if (chunk_type == kGlbChunkTypeBin) {
+      bin_chunk = data.substr(offset, chunk_length);
+      have_bin = true;
+    }
+    offset += chunk_length;
+  }
+  if (!have_json || !have_bin) return Result::Failed;
+
+  return BuildMeshFromGltfJsonAndBuffer(json_text, bin_chunk, out_mesh);
 }
 
 Result Mesh::LoadStl(const std::string& path, Mesh& out_mesh) {

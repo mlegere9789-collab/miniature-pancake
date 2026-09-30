@@ -1027,9 +1027,11 @@ class Mesh {
 
   // Reads a glTF 2.0 `.gltf` file written by SaveGltf() into `out_mesh`.
   // This is a deliberately narrow, hand-rolled scan for exactly the
-  // structure SaveGltf() writes - not a general glTF/JSON parser (no
-  // `.glb` binary container, external `.bin` buffer `uri`, sparse
-  // accessors, or multi-primitive/multi-mesh scenes understood at all) -
+  // structure SaveGltf() writes - not a general glTF/JSON parser (an
+  // external `.bin` buffer `uri`, sparse accessors, or multi-primitive/
+  // multi-mesh scenes are still not understood at all; the `.glb` binary
+  // container is its own separate pair, LoadGlb() below, not handled
+  // here) -
   // built on a small brace/bracket-depth JSON object/array scanner
   // (`FindNextJsonObject`/`FindJsonArrayContent`, mesh.cpp, anonymous
   // namespace) that does not need to be string-literal-aware, because
@@ -1063,6 +1065,42 @@ class Mesh {
   // outside the position count's range - `out_mesh` is left unspecified
   // in that case, not partially filled and silently trusted.
   static Result LoadGltf(const std::string& path, Mesh& out_mesh);
+
+  // Writes this mesh as a binary glTF 2.0 `.glb` file - the same geometry
+  // SaveGltf() writes (position/index bufferViews, `POSITION`-only
+  // attribute, no normals/UVs/materials - see its own doc comment for that
+  // shared scope), just packaged per the GLB container spec instead of a
+  // JSON text file with a base64 `data:` URI: a 12-byte header (magic
+  // `glTF`, version 2, total byte length), then a JSON chunk (the same
+  // JSON SaveGltf() builds, but its one `buffers` entry has no `uri` -
+  // per spec, a GLB buffer with no `uri` means "this container's own BIN
+  // chunk"), then the BIN chunk holding the raw position/index bytes
+  // directly - no base64 anywhere, and about 1/3 smaller on disk for it.
+  // Both chunks are padded to a 4-byte boundary as the spec requires (JSON
+  // with trailing spaces, BIN with trailing zero bytes); the header's
+  // total length accounts for that padding. Returns Result::Failed if the
+  // file can't be opened for writing.
+  Result SaveGlb(const std::string& path) const;
+
+  // Reads a binary glTF 2.0 `.glb` file written by SaveGlb() (or any other
+  // reasonably well-formed single-BIN-chunk GLB file whose JSON matches
+  // the structure LoadGltf() already understands) into `out_mesh`. Checks
+  // the 12-byte header's magic (`glTF`) and version (must be exactly 2),
+  // then walks the chunk list by each chunk's own declared length looking
+  // for the one JSON chunk and the one BIN chunk (an unrecognized chunk
+  // type - a spec-sanctioned extension this reader doesn't understand - is
+  // skipped, not rejected); the JSON is then handed to the same
+  // bufferViews-reading logic LoadGltf() itself uses, sourced from the BIN
+  // chunk's own bytes instead of a decoded base64 payload, so it has the
+  // exact same "position/index bufferView 0 and 1" assumption and quad-
+  // preservation limits already documented there. Returns Result::Failed
+  // if the file can't be opened, is shorter than 12 bytes, has the wrong
+  // magic/version, declares a total length longer than the file actually
+  // is, is missing either chunk, or the shared bufferViews-reading logic
+  // itself fails for any of the reasons LoadGltf() already documents -
+  // `out_mesh` is left unspecified in that case, not partially filled and
+  // silently trusted.
+  static Result LoadGlb(const std::string& path, Mesh& out_mesh);
 
   const ON_Mesh& raw() const { return mesh_; }
   ON_Mesh& raw() { return mesh_; }
