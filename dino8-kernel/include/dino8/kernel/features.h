@@ -147,4 +147,169 @@ struct HoleFeature {
 // no such case is known.
 std::vector<HoleFeature> RecognizeHoles(const Brep& solid);
 
+// One boss/pin recognized on an existing solid (parity-map "Feature
+// recognition" - the "boss" half of its own "still no hole/boss/pocket
+// recognition" gap, closed alongside RecognizeHoles() above): the
+// geometric mirror of a HoleFeature - a CONVEX full cylinder, material
+// INSIDE the wall rather than outside it (a rod/peg sticking OUT of
+// `solid`, RecognizeHoles()'s own disclosed negative-control case), the
+// opposite winding RecognizeHoles() itself rejects.
+//
+// `origin` is the point on the axis where the boss meets the body it
+// emerges from (the base, embedded in `solid`'s own bulk) - the point a
+// hypothetical "MakeBoss(solid, origin, axis, radius, height)" call would
+// take as its own starting point. `axis` is a unit vector pointing AWAY
+// from the material, from the base toward the free tip - the opposite
+// sense from HoleFeature's own "into the material" convention, since a
+// boss is additive material growing outward rather than a cut going
+// inward. `height` is the axial distance from `origin` to the boss's own
+// far end - the flat/round tip of an ordinary boss that ends in open air,
+// or (for a `through` boss - see RecognizeBosses()'s own doc comment
+// below for why this is a free-standing-rod case, NOT a peg embedded
+// partway through a wall) the far end of a candidate whose probe points
+// come back open on both sides.
+struct BossFeature {
+  Point3d origin;
+  Vector3d axis;
+  double radius = 0.0;
+  double height = 0.0;
+  bool through = false;
+
+  // Index into `solid.raw().m_F`, same convention as HoleFeature::face_index.
+  int face_index = -1;
+};
+
+// Scans every face of `solid` for a genuine round boss/pin: a face whose
+// underlying surface fits a full (closed, 2*pi) cylinder, same
+// `IsCylinder()`/`IsClosed(0)` gate RecognizeHoles() itself uses, but
+// CONVEX rather than concave - the exact opposite half of the same
+// concavity test (see RecognizeHoles()'s own doc comment for the shared
+// axial-extent-by-loop-point-min/max construction, reused unchanged
+// here: it is immune to loop/trim adjacency and fragmentation by
+// construction, regardless of which winding the face has).
+//
+// Each end of a candidate face is classified the same way RecognizeHoles()
+// classifies a bore's own two ends - tessellate `solid` once
+// (`Brep::TessellateToClosedMesh()`) and ask `Mesh::ContainsPoint()` about
+// a point a small margin PAST that end, on the axis - but the two
+// resulting booleans are read with the boss's own inverted meaning: an
+// end where the point just past it falls OUTSIDE `solid` is this boss's
+// own FREE end (open air - nothing supports it further out); an end
+// where that point falls INSIDE `solid` is an ATTACHED end (the boss is
+// still backed by more of the body's own material beyond it, i.e. this
+// is the base, not the tip). A boss with one free end and one attached
+// end is `through = false`, the ordinary "peg sticking out of one face"
+// case - `origin` sits at the attached end, `axis` points toward the
+// free tip, `height` the axial distance between them. A boss found with
+// BOTH ends free is `through = true`, `origin`/`axis` pinned to one end
+// arbitrarily (face-index order, same convention HoleFeature's own
+// through case already uses) and `height` the full end-to-end span - NOT
+// a peg embedded partway through a thin wall and protruding out both
+// sides (that shape's own wall is not a single candidate face at all:
+// the embedded middle section is interior to `solid`, not boundary, so a
+// real boolean union of a box and such a peg leaves TWO disjoint convex
+// cylindrical faces, one on each protruding side, each independently
+// `through = false` - the true `through = true` case is a candidate not
+// backed by material at EITHER end within the probe margin, e.g. a
+// free-standing rod barely touching `solid` or not attached to it at
+// all). A candidate found with BOTH ends attached (a cylindrical rod
+// entirely embedded in `solid`'s own bulk, exposed nowhere) is not a
+// recognizable boss feature - nothing about it is visibly "sticking out"
+// - and is silently skipped, mirroring RecognizeHoles()'s own "both ends
+// capped" skip for an entirely enclosed cavity.
+//
+// Still partial, not a full "hole/boss/pocket" recognizer, for the same
+// reasons RecognizeHoles() itself discloses: a general (non-cylindrical)
+// pocket or boss shape is out of scope entirely; a counterbore/
+// countersink's own second step (see RecognizeCounterboreHoles() below
+// for the hole-side equivalent) has no boss-side analogue implemented
+// here; and the open/attached classification inherits
+// Mesh::ContainsPoint()'s own disclosed "closed, consistently-oriented
+// mesh" precondition - CONFIRMED, not just hypothetical, for one specific
+// case (dino8_scratch_test): a boss built by BooleanCombineGeneral()
+// Union-ing a separate tool onto an existing solid, with the tool's own
+// base cap backed off entirely inside the target (the natural way to
+// build one - MakeHole()'s own margin trick, mirrored for Union), leaves
+// TessellateToClosedMesh() non-closed and Mesh::ContainsPoint() wrong
+// across the WHOLE embedded span, not merely near the entry rim the way
+// MakeHole()'s own disclosed Difference-side "floating cap" gap is -
+// a real Union-side counterpart to that gap, not yet fixed. A boss built
+// any other way (e.g. as one originally-modeled solid, not composed via
+// this kernel's own general boolean engine) is unaffected.
+std::vector<BossFeature> RecognizeBosses(const Brep& solid);
+
+// One compound counterbore feature recognized on an existing solid
+// (parity-map "Feature recognition" - closes the "no attempt is made
+// here to recognize a COUNTERBORE/COUNTERSINK's own second, wider
+// cylindrical/conical step as part of the SAME feature" gap
+// RecognizeHoles() itself discloses, for the CYLINDRICAL-step case - i.e.
+// a real counterbore, the geometric inverse of CounterboreHole()/
+// MakeCounterboreHole()): two coaxial concave full-cylinder faces over
+// ADJACENT, non-overlapping axial ranges - a wide recess wall immediately
+// followed by a narrower pilot-bore wall sharing the same axis line -
+// reported as ONE feature instead of RecognizeHoles()'s own two
+// independent HoleFeature entries for the same cut.
+//
+// `origin`/`axis` describe the counterbore's own entry point exactly like
+// MakeCounterboreHole()'s own `center`/`axis` parameters (axis pointing
+// INTO the material, matching HoleFeature's convention, not
+// BossFeature's). `counterbore_radius`/`counterbore_depth` describe the
+// wide recess; `drill_radius`/`drill_depth` describe the pilot bore,
+// `drill_depth` measured from `origin` (the counterbore's own entry
+// point), not from the step - the same "total depth from the entry
+// surface" convention MakeCounterboreHole()'s own `bore_depth` parameter
+// already uses, so a round-trip is a straight
+// `MakeCounterboreHole(fresh_solid, origin, axis, drill_radius,
+// drill_depth, through, counterbore_radius, counterbore_depth)` call.
+// `through` reflects the pilot bore's own far end, exactly like
+// HoleFeature::through.
+struct CounterboreFeature {
+  Point3d origin;
+  Vector3d axis;
+  double counterbore_radius = 0.0;
+  double counterbore_depth = 0.0;
+  double drill_radius = 0.0;
+  double drill_depth = 0.0;
+  bool through = false;
+
+  // Face indices of the two walls this feature was merged from - the wide
+  // recess wall and the narrower pilot-bore wall, in that order.
+  int counterbore_face_index = -1;
+  int drill_face_index = -1;
+};
+
+// Scans every face of `solid` the same way RecognizeHoles() does, but
+// instead of reporting every concave full cylinder as its own
+// independent hole, looks specifically for PAIRS that share the same
+// axis LINE (parallel axis directions, and colinear axis reference
+// points - not merely parallel: two holes drilled side by side on
+// parallel axes must not merge) where one face's own far end coincides,
+// in 3D, with the other's own near end (an adjacent, non-overlapping
+// step - CounterboreHole()'s/MakeCounterboreHole()'s own construction,
+// see their doc comments), and the two radii genuinely differ (the wider
+// one first, along the entry direction, then the narrower pilot bore -
+// the counterbore recess CANNOT be the deeper, narrower segment). Only
+// such merged pairs are reported here; a plain single-radius hole
+// (RecognizeHoles()'s own domain) is not repeated in this function's
+// output, and a merged pair's own two constituent faces are NOT also
+// expected to disappear from RecognizeHoles()'s own separate output -
+// this is the same one-capability-two-vocabularies convention the parity
+// map's own SplitByObjectCommand/DraftFacesConvexPlanar entries already
+// use, not a bug.
+//
+// The merged step's own near end (the wide recess's own start, i.e. the
+// entry surface) and far end (the narrow pilot bore's own far end) are
+// classified open/capped with the exact same on-axis
+// `Mesh::ContainsPoint()` test RecognizeHoles() itself uses, tessellating
+// `solid` once and reusing it for every merged candidate.
+//
+// Still partial: only the CYLINDRICAL/CYLINDRICAL step case (a real
+// counterbore) is recognized - a countersink's own conical step
+// (MakeCountersinkHole()'s own frustum wall) is a different surface type
+// entirely and is not merged here; a stepped hole with more than two
+// radii (a counterbore followed by its own further pilot reduction) is
+// not walked past the first pair; and, like RecognizeHoles() itself, a
+// general (non-cylindrical) pocket is out of scope.
+std::vector<CounterboreFeature> RecognizeCounterboreHoles(const Brep& solid);
+
 }  // namespace dino8::kernel

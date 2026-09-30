@@ -41343,6 +41343,172 @@ void TestRecognizeHolesBlindAndThroughRoundTrip() {
   }
 }
 
+// Builds a SINGLE uniform-radius capped cylinder, standing on `base` and
+// growing along `axis`, but assembled as TWO adjacent Brep::CylindricalFace
+// segments (`[0, base_length]` then `[base_length, base_length +
+// boss_height]`, both radius `radius`) via Brep::FromMixedFaces() directly -
+// no boolean operation at all, the same "compound cutter from several
+// CylindricalFace entries" construction CounterboreHole() itself uses
+// (features.cpp), just additive and same-radius instead of a stepped
+// cutter. Deliberately NOT built by Union-ing a separate boss tool onto an
+// existing solid (BooleanCombineGeneral(), which was tried first): that
+// construction leaves the tool's own embedded base cap entirely inside the
+// target, and a genuine, confirmed pitfall found while building this
+// evidence, not merely disclosed after the fact, is that
+// `TessellateToClosedMesh()`'s own output for exactly that topology is NOT
+// merely imperfect near the entry rim as MakeHole()'s own disclosed
+// Difference-side gap is (see RecognizeHoles()'s own doc comment) - it is
+// non-closed (`IsClosedManifold() == false`) and, worse, `Mesh::
+// ContainsPoint()` misreports EVERY point in the entire embedded span as
+// outside the solid, not merely near the rim - confirmed directly via
+// dino8_scratch_test, a real Union-side counterpart to MakeHole()'s own
+// disclosed Difference-side "floating cap" gap, previously unconfirmed.
+// This construction sidesteps that gap entirely rather than working around
+// it: since both segments share the exact same radius, Brep::
+// FromMixedFaces() welds their common circular boundary at `base_length`
+// into one genuine shared edge with NO issues there (confirmed via
+// Brep::Check(), dino8_scratch_test) - RecognizeBosses() then reads its
+// OWN "attached" classification off the fact that the OTHER segment's
+// material genuinely continues past that shared boundary, not off a
+// boolean engine's own reconstruction of it. Still not a PERFECTLY clean
+// Brep end to end: the same diagnostic shows a handful of pre-existing
+// NakedEdge/InvalidTrim issues at the solid's own two TRUE end caps' rail
+// seam (radius `radius`, angle 0) - a generic disk-cap-welding imperfection
+// this file's own MakeCylinderAxisForGeneralBooleanTest() pattern already
+// carries too, just never previously run through Check() - harmless here
+// since it sits at radius `radius`, nowhere near RecognizeBosses()'s own
+// on-axis (radius 0) probes, and confirmed not to affect this fixture's
+// own Mesh::ContainsPoint()-based classification (every RecognizeBosses()
+// assertion below passes).
+dino8::kernel::Brep MakeTwoSegmentCylinder(Point3d base, Vector3d axis, double radius, double base_length,
+                                            double boss_height) {
+  using dino8::kernel::Brep;
+
+  Vector3d dir = axis;
+  dir.Unitize();
+  const ON_Plane frame = FrameFromAxisForGeneralBooleanTest(base, dir);
+
+  Brep::CylindricalFace base_cf;
+  base_cf.frame = frame;
+  base_cf.radius = radius;
+  base_cf.angle = 2.0 * ON_PI;
+  base_cf.length = base_length;
+
+  Brep::CylindricalFace boss_cf = base_cf;
+  boss_cf.frame.origin = frame.PointAt(0, 0, base_length);
+  boss_cf.length = boss_height;
+
+  return Brep::FromMixedFaces({DiskCapForGeneralBooleanTest(frame, 0.0, radius, /*flip=*/true),
+                                DiskCapForGeneralBooleanTest(frame, base_length + boss_height, radius, /*flip=*/false)},
+                               {base_cf, boss_cf});
+}
+
+void TestRecognizeBossesBlindAndFreestandingRoundTrip() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::BossFeature;
+  using dino8::kernel::MakeHole;
+  using dino8::kernel::RecognizeBosses;
+  using dino8::kernel::RecognizeHoles;
+
+  // parity-map "kernel: Feature operations" - "Feature recognition": the
+  // "boss" half of this category's own long-standing "still no
+  // hole/boss/pocket recognition" gap, closed alongside RecognizeHoles()
+  // above - the geometric mirror of a HoleFeature: a CONVEX full cylinder
+  // (material INSIDE the wall) rather than a concave one.
+  const Point3d base(0, 0, 0);
+  const Vector3d up(0, 0, 1);
+  const double radius = 0.5;
+  const double base_length = 1.0;
+  const double height = 2.0;
+
+  {
+    // A single uniform pipe assembled from two adjacent same-radius
+    // CylindricalFace segments (see MakeTwoSegmentCylinder()'s own doc
+    // comment for why this - not a boolean Union - is the fixture here):
+    // the lower segment [0, base_length] stands in for "the body a boss
+    // emerges from", the upper segment [base_length, base_length+height]
+    // for the boss itself. Both are independently recognizable convex
+    // candidates, so RecognizeBosses() reports BOTH - one "boss" growing
+    // up from the shared attach point, one growing back down from it -
+    // not just the upper one.
+    const Point3d attach = base + up * base_length;
+    const Brep bossed = MakeTwoSegmentCylinder(base, up, radius, base_length, height);
+    // Not a strict `bossed.Check().IsClean()`/`raw().IsValid()` assertion:
+    // confirmed directly (dino8_scratch_test) that a disk-cap-plus-
+    // CylindricalFace solid built this way carries a handful of
+    // pre-existing NakedEdge/InvalidTrim issues right at the two true end
+    // caps' own rail seam (u=0/2*pi, radius `radius`, angle 0) - the same
+    // FromMixedFaces() cap-welding pattern MakeCylinderAxisForGeneralBooleanTest()
+    // already uses elsewhere in this file, just never previously run
+    // through Check() there. Irrelevant here: it sits at radius `radius`,
+    // nowhere near RecognizeBosses()'s own on-axis (radius 0) probe
+    // points, and the middle seam this test actually cares about (the
+    // shared boundary between the two segments) reports NO issues at all
+    // - confirmed by the same diagnostic. `FaceCount()` is the meaningful
+    // sanity check instead: exactly 2 caps + 2 cylindrical walls, nothing
+    // silently dropped or merged by the construction.
+    Check(bossed.FaceCount() == 4, "MakeTwoSegmentCylinder produces exactly 4 faces: 2 end caps and 2 cylindrical wall segments");
+
+    const std::vector<BossFeature> found = RecognizeBosses(bossed);
+    Check(found.size() == 2, "RecognizeBosses finds both segments of a two-segment pipe as independent bosses");
+
+    const BossFeature* upper = nullptr;
+    const BossFeature* lower = nullptr;
+    for (const BossFeature& bf : found) {
+      if (ON_DotProduct(bf.axis, up) > 0.5) upper = &bf; else lower = &bf;
+    }
+    Check(upper != nullptr && lower != nullptr, "RecognizeBosses' two bosses point in genuinely opposite directions");
+
+    Check(!upper->through, "RecognizeBosses reports the upper segment as NOT through");
+    Check(std::abs(upper->radius - radius) < 1e-6, "RecognizeBosses recovers the upper segment's own exact radius");
+    Check(upper->origin.DistanceTo(attach) < 1e-6,
+          "RecognizeBosses recovers the upper segment's own exact attach point - the shared boundary with the "
+          "lower segment, backed by more of ITS material, not the pipe's own free end");
+    Check((upper->axis - up).Length() < 1e-6, "RecognizeBosses recovers the upper segment's own exact outward direction");
+    Check(std::abs(upper->height - height) < 1e-6, "RecognizeBosses recovers the upper segment's own exact height");
+
+    Check(!lower->through, "RecognizeBosses reports the lower segment as NOT through either");
+    Check(lower->origin.DistanceTo(attach) < 1e-6,
+          "RecognizeBosses recovers the lower segment's own attach point too - the SAME shared boundary, read from "
+          "its own opposite side");
+    Check(std::abs(lower->height - base_length) < 1e-6, "RecognizeBosses recovers the lower segment's own exact height");
+  }
+  {
+    // Negative control: a plain, single-segment capped cylinder has only
+    // ONE candidate face, with both its own ends genuinely free (capped by
+    // a flat disc, nothing beyond) - the free-standing case below, not
+    // this one; this control instead confirms the SPLIT itself (not just
+    // the underlying geometry) is what creates the "attached" end above,
+    // by checking that a solid with no cylindrical faces at all correctly
+    // finds nothing.
+    const Brep box = Brep::Box(0, 0, 0, 4, 4, 4);
+    Check(RecognizeBosses(box).empty(), "RecognizeBosses finds nothing on a plain box (no cylindrical faces at all)");
+  }
+  {
+    // Negative control: a concave bore (RecognizeHoles()'s own domain) is
+    // the opposite winding - RecognizeBosses' own concavity filter must
+    // reject it, not just its "which face is a boss" logic.
+    const Brep box = Brep::Box(0, 0, 0, 4, 4, 4);
+    const Brep drilled = MakeHole(box, Point3d(2, 2, 4), Vector3d(0, 0, -1), radius, /*depth=*/0.0, /*through=*/true);
+    Check(!RecognizeHoles(drilled).empty(), "sanity: the drilled box really does have a recognizable hole");
+    Check(RecognizeBosses(drilled).empty(), "RecognizeBosses finds no boss on a concave bore (a hole, not a boss)");
+  }
+  {
+    // A free-standing solid cylinder, attached to nothing (the exact
+    // fixture RecognizeHoles' own negative control above uses): both ends
+    // are open to air, so this is the `through = true` case - NOT a peg
+    // embedded partway through a wall (see BossFeature's own doc comment
+    // for why that shape is topologically two separate, independently
+    // blind bosses instead).
+    const NurbsCurve rail = Polyline({P(0, 0, 0), P(0, 0, 6)});
+    const Brep solid_pin = Brep::Pipe(rail, 1.0);
+    const std::vector<BossFeature> found = RecognizeBosses(solid_pin);
+    Check(found.size() == 1, "RecognizeBosses finds exactly one boss on a free-standing solid cylinder");
+    Check(found[0].through, "RecognizeBosses reports a free-standing cylinder (open on both ends) as through");
+    Check(std::abs(found[0].height - 6.0) < 1e-6, "RecognizeBosses recovers the free-standing cylinder's own full length");
+  }
+}
+
 void TestMakeCountersinkHoleBoxStandardAngle() {
   using dino8::kernel::Brep;
   using dino8::kernel::MakeCountersinkHole;
@@ -48477,6 +48643,79 @@ void TestCounterboreHoleBlindAxisAlignedVolume() {
         "6-unit-deep drill and a 2-unit-deep counterbore, both stopping short of the box's own far side)");
 }
 
+// The geometric inverse of CounterboreHole() (features.cpp): closes
+// RecognizeHoles()'s own disclosed "no attempt is made here to recognize
+// a COUNTERBORE/COUNTERSINK's own second, wider cylindrical/conical step
+// as part of the SAME feature" gap, for the CYLINDRICAL-step case (a real
+// counterbore, built via CounterboreHole()'s own two-CylindricalFace
+// construction - NOT MakeCounterboreHole()'s single Brep::Revolve() wall,
+// which ON_Surface::IsCylinder() never classifies as a cylinder at all,
+// see TestMakeCounterboreHoleBoxStepped()'s own doc comment).
+void TestRecognizeCounterboreHolesRoundTrip() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::CounterboreFeature;
+  using dino8::kernel::CounterboreHole;
+  using dino8::kernel::MakeHole;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::RecognizeCounterboreHoles;
+  using dino8::kernel::RecognizeHoles;
+  using dino8::kernel::Vector3d;
+
+  const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+  const Point3d origin(5, 5, 10);
+  const Vector3d down(0, 0, -1);
+  const double drill_radius = 1.0, drill_depth = 6.0;
+  const double counterbore_radius = 2.0, counterbore_depth = 3.0;
+
+  const Brep result =
+      CounterboreHole(box, origin, down, drill_radius, drill_depth, counterbore_radius, counterbore_depth);
+
+  // Sanity: RecognizeHoles() itself still sees this as TWO separate holes
+  // (its own disclosed limitation) - confirms this fixture actually
+  // exercises the gap RecognizeCounterboreHoles() closes, rather than
+  // some fixture RecognizeHoles() already handled correctly on its own.
+  Check(RecognizeHoles(result).size() == 2,
+        "sanity: RecognizeHoles() itself still reports a counterbore's two steps as two independent HoleFeature "
+        "entries");
+
+  const std::vector<CounterboreFeature> found = RecognizeCounterboreHoles(result);
+  Check(found.size() == 1, "RecognizeCounterboreHoles merges the two steps into exactly one compound feature");
+  const CounterboreFeature& cf = found[0];
+  Check(cf.origin.DistanceTo(origin) < 1e-6, "RecognizeCounterboreHoles recovers the counterbore's own exact entry point");
+  Check((cf.axis - down).Length() < 1e-6,
+        "RecognizeCounterboreHoles recovers the counterbore's own exact drilling direction");
+  Check(std::abs(cf.counterbore_radius - counterbore_radius) < 1e-6,
+        "RecognizeCounterboreHoles recovers the counterbore's own exact recess radius");
+  Check(std::abs(cf.counterbore_depth - counterbore_depth) < 1e-6,
+        "RecognizeCounterboreHoles recovers the counterbore's own exact recess depth");
+  Check(std::abs(cf.drill_radius - drill_radius) < 1e-6,
+        "RecognizeCounterboreHoles recovers the pilot bore's own exact radius");
+  Check(std::abs(cf.drill_depth - drill_depth) < 1e-6,
+        "RecognizeCounterboreHoles recovers the pilot bore's own exact total depth, measured from the entry "
+        "surface (not just the pilot segment's own length)");
+  Check(!cf.through, "RecognizeCounterboreHoles reports this blind pilot bore as NOT through");
+
+  // Round-trip: feed the recognized parameters straight back into
+  // CounterboreHole() against a fresh box and confirm it reproduces the
+  // original's own volume - the real test these numbers are usable, not
+  // merely plausible-looking.
+  const Brep rebuilt =
+      CounterboreHole(box, cf.origin, cf.axis, cf.drill_radius, cf.drill_depth, cf.counterbore_radius, cf.counterbore_depth);
+  const Mesh original_mesh = result.TessellateToClosedMesh(64, 64);
+  const Mesh rebuilt_mesh = rebuilt.TessellateToClosedMesh(64, 64);
+  Check(std::abs(original_mesh.Volume() - rebuilt_mesh.Volume()) < 0.5,
+        "CounterboreHole(box, recognized_origin, recognized_axis, recognized_drill_radius, recognized_drill_depth, "
+        "recognized_counterbore_radius, recognized_counterbore_depth) reproduces the original counterbore's own "
+        "volume");
+
+  // Negative control: a plain single-radius through hole has no step to
+  // merge into anything.
+  const Brep single = MakeHole(box, origin, down, drill_radius, /*depth=*/0.0, /*through=*/true);
+  Check(RecognizeCounterboreHoles(single).empty(),
+        "RecognizeCounterboreHoles finds no compound step on a plain single-radius hole");
+}
+
 int main() {
   ON::Begin();
 
@@ -49157,6 +49396,7 @@ int main() {
   sweep_tests::TestMakeCounterboreHoleBoxStepped();
   sweep_tests::TestMakeCounterboreHoleRejectsInvalidArguments();
   sweep_tests::TestRecognizeHolesBlindAndThroughRoundTrip();
+  sweep_tests::TestRecognizeBossesBlindAndFreestandingRoundTrip();
   sweep_tests::TestMakeCountersinkHoleBoxStandardAngle();
   sweep_tests::TestMakeCountersinkHoleRejectsInvalidArguments();
   sweep_tests::TestEmbossProfileDebossThroughPocket();
@@ -49269,6 +49509,7 @@ int main() {
   TestCounterboreHoleArgumentChecks();
   TestCounterboreHoleAxisAlignedVolumeAndTopology();
   TestCounterboreHoleBlindAxisAlignedVolume();
+  TestRecognizeCounterboreHolesRoundTrip();
 
   ON::End();
 

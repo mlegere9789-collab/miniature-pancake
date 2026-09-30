@@ -2964,7 +2964,7 @@ is unaffected (no bucket moved).*
 - [partial] Split body with an arbitrary surface/solid cutter — `SplitByObjectCommand` (dino8-app/src/commands/cmd_boolean.cpp:290-386), `SolidifyOpenCutter` (lines 235-265). This same command is also credited under kernel: Transformations, patterns, splitting's "tool body split / KeepAll" item (Rhino framing of the identical capability), which has the detail on a same-day correctness fix (commit 167baae) to its "no real split" detection. Still partial: single-normal-direction approximation for open cutters, no face-by-face imprinting/healing, mesh boolean via `kernel::BooleanCombine(Mesh, Mesh, ...)` (dino8-kernel/include/dino8/kernel/boolean.h:30).
 - [partial] Body sectioning — `SectionCommand`/`ContourCommand` (dino8-app/src/commands/cmd_curves2.cpp:1038,999) still mesh-slice-based.
 - [partial] Delete face and heal/remove feature — `RemoveBlend`/`RemoveChamfer`/`RemoveChamferVertex` (dino8-kernel/src/fillet.cpp:4313/4538/4698) have zero dependency on `Brep::Check()` or `RemoveDegenerateFaces`, so the Check() DegenerateFace-false-flag defect does not touch this item. `RemoveBlend` now also inverts a spherical vertex-blend corner (`RemoveSphericalVertexBlend`, fillet.cpp:4128 - see the blending category's own bullet). Still partial for the reasons already given (a spherical corner sharing a cylinder with a second one, and oblique-end cylinders, are both refused; app's `DeleteFaces` leaves an open polysurface).
-- [partial] Feature recognition — analytic classification plus `RemoveChamfer`/`RemoveChamferVertex`'s geometric recognition exist. **Upgraded this pass:** `dino8::kernel::RecognizeHoles(solid)` (dino8-kernel/include/dino8/kernel/features.h; src/features.cpp) closes the "hole" half of this item's own "still no hole/boss/pocket recognition" gap - genuinely new capability (zero feature-recognition-from-a-dumb-B-rep code existed anywhere in this kernel before this pass; `RemoveChamfer`/`RemoveChamferVertex` above recognize a SPECIFIC named feature given a point on it, not "scan this solid and list its holes"), not a citation fix. The geometric inverse of `MakeHole()`: scans every face of `solid` for a concave (bore, not boss) full-2*pi cylindrical face and reports `(origin, axis, radius, depth, through)` - the same parameters a caller could feed straight back into `MakeHole()` to reproduce it. Two real, confirmed pitfalls found and fixed while building this, not merely disclosed after the fact: (1) an initial version classified each end by walking its own rim edge to the neighboring face's loop type (inner vs. outer) - this crashed/found nothing on `MakeHole()`'s own real output, because `BooleanCombineGeneral()`'s own fragmentation (see boolean_general.h's top-of-file scope note) leaves a rim as dozens of short polyline trim segments, several of them genuinely NAKED at the entry rim (MakeHole()'s own disclosed "tool's far end floats entirely inside the target" gap - confirmed directly via a standalone diagnostic dump: 6 of 119 rim trims naked on a through hole, 63 of 91 on a blind hole); (2) fixed by dropping loop/trim adjacency entirely - a face's own axial extent is read as a plain global min/max over every point of every edge in every one of its loops (immune to fragmentation by construction), and each end is classified open-vs-capped by tessellating `solid` once and asking `Mesh::ContainsPoint()` (mesh.h) about a point a small margin past that end, ON the axis (radius 0 - nowhere near the entry-rim gap's own radius-==-hole-radius locus, so this sidesteps it rather than working around it). Verified by 5 new checks (`tests/test_basic.cpp`, `TestRecognizeHolesBlindAndThroughRoundTrip`): a genuine round-trip on both a through and a blind `MakeHole()` fixture - not just "found a hole" but `radius`/`axis`/`depth`/`origin` matching the original call's own arguments to 1e-6, AND feeding the recognized parameters straight back into `MakeHole()` against a fresh box reproduces the same volume (through case) or the same flat bottom position (blind case); two independent holes on one box both come back, neither merged nor dropped; an undrilled box and a convex solid cylinder (a boss/pin, the opposite winding) both correctly find nothing. Still partial: a genuinely convex cylindrical boss/pin and a general (non-cylindrical) pocket are both out of scope entirely (the "concave full cylinder only" filter), and a counterbore/countersink's second step comes back as its own separate `HoleFeature` rather than one merged compound feature.
+- [partial] Feature recognition — analytic classification plus `RemoveChamfer`/`RemoveChamferVertex`'s geometric recognition exist. **Upgraded this pass:** `dino8::kernel::RecognizeHoles(solid)` (dino8-kernel/include/dino8/kernel/features.h; src/features.cpp) closes the "hole" half of this item's own "still no hole/boss/pocket recognition" gap - genuinely new capability (zero feature-recognition-from-a-dumb-B-rep code existed anywhere in this kernel before this pass; `RemoveChamfer`/`RemoveChamferVertex` above recognize a SPECIFIC named feature given a point on it, not "scan this solid and list its holes"), not a citation fix. The geometric inverse of `MakeHole()`: scans every face of `solid` for a concave (bore, not boss) full-2*pi cylindrical face and reports `(origin, axis, radius, depth, through)` - the same parameters a caller could feed straight back into `MakeHole()` to reproduce it. Two real, confirmed pitfalls found and fixed while building this, not merely disclosed after the fact: (1) an initial version classified each end by walking its own rim edge to the neighboring face's loop type (inner vs. outer) - this crashed/found nothing on `MakeHole()`'s own real output, because `BooleanCombineGeneral()`'s own fragmentation (see boolean_general.h's top-of-file scope note) leaves a rim as dozens of short polyline trim segments, several of them genuinely NAKED at the entry rim (MakeHole()'s own disclosed "tool's far end floats entirely inside the target" gap - confirmed directly via a standalone diagnostic dump: 6 of 119 rim trims naked on a through hole, 63 of 91 on a blind hole); (2) fixed by dropping loop/trim adjacency entirely - a face's own axial extent is read as a plain global min/max over every point of every edge in every one of its loops (immune to fragmentation by construction), and each end is classified open-vs-capped by tessellating `solid` once and asking `Mesh::ContainsPoint()` (mesh.h) about a point a small margin past that end, ON the axis (radius 0 - nowhere near the entry-rim gap's own radius-==-hole-radius locus, so this sidesteps it rather than working around it). Verified by 5 new checks (`tests/test_basic.cpp`, `TestRecognizeHolesBlindAndThroughRoundTrip`): a genuine round-trip on both a through and a blind `MakeHole()` fixture - not just "found a hole" but `radius`/`axis`/`depth`/`origin` matching the original call's own arguments to 1e-6, AND feeding the recognized parameters straight back into `MakeHole()` against a fresh box reproduces the same volume (through case) or the same flat bottom position (blind case); two independent holes on one box both come back, neither merged nor dropped; an undrilled box and a convex solid cylinder (a boss/pin, the opposite winding) both correctly find nothing. **Boss and compound-counterbore recognition closed in a later pass** (see this item's own "tenth session" note below): `RecognizeBosses()` covers the convex half this note used to disclose as out of scope, and `RecognizeCounterboreHoles()` merges a real counterbore's own two cylindrical steps into one compound feature instead of two independent `HoleFeature` entries. Still partial: a general (non-cylindrical) pocket remains entirely out of scope, and a countersink's own CONICAL second step (as opposed to a counterbore's cylindrical one) is not merged by `RecognizeCounterboreHoles()` - only the cylindrical/cylindrical step case is.
 - [missing] Sheet-metal features — no code; `UnrollDevelopable` (dino8-kernel/src/surface_edit.cpp:817) is single-surface unrolling only.
 - [missing] Lattice/cellular infill — the only "lattice" hits are the unrelated Cage FFD deformer (dino8-app/src/commands/cmd_solidtools.cpp:1591-1780); no gyroid/TPMS/Voronoi infill code.
 - [partial] Blind/through hole with depth/placement — the app's own `RoundHole`/`MakeHole`/`PlaceHole` (cmd_solidtools.cpp:793,833,873) all still print "(mesh boolean; results are meshes)", untouched by this pass. **New this pass:** a genuine kernel-level B-rep equivalent, `dino8::kernel::MakeHole` (boolean_general.h:166; boolean_general.cpp:3602 — corrected 2026-09-28, was mis-cited h:125; cpp:3481), cuts a real cylindrical bore via `BooleanCombineGeneral(solid, tool, Difference)` — the tool is a plain capped `Brep::Pipe()` cylinder, backed off the entry point by a margin so it pierces the surface transversally rather than grazing it tangentially at a numerically degenerate coincident touch; `through=true` extends the tool past the solid's own tight-bounding-box diagonal on both ends (so it exits regardless of the solid's shape), `through=false` caps it at `depth` for a true blind pocket. Verified by `TestMakeHoleBlindAndThrough` two different ways: the through case's `TessellateToClosedMesh()` volume matches the closed-form `box_volume - pi*r^2*box_height` exactly (a case whose mesh happens to stay reliably closed); the blind case is verified directly on the B-rep instead, because it isn't — a genuine `ON_Cylinder`-fitted wall at the requested radius, plus a flat bottom cap whose own plane equation passes exactly through `center + depth*axis`. **A genuinely new, confirmed gap surfaced while building this evidence:** `BooleanCombineGeneral()`'s own mesh tessellation is NOT reliably closed for a "tool's far end floats entirely inside the target, so the entry face needs a bridged single loop rather than a clean annular hole" topology — worse than the already-disclosed box+cylinder residuals (4 naked edges): this blind-hole fixture leaves 77 naked boundary edges, all sitting at the hole's own entry rim, even through `TessellateGeneralBooleanClosedMesh()`'s own repair pass, and the resulting `Volume()` comes back wildly wrong (~63.9 instead of ~62.8) despite the underlying B-rep topology being exactly right (confirmed face-by-face via `dino8_scratch_test`) — a real, previously-undocumented limitation worth folding into `boolean_general.h`'s own disclosure the next time that engine's mesh-closure work resumes. Still partial: no app command calls it, one hole per call, and it inherits `BooleanCombineGeneral()`'s own disclosed scope limits (genus-0 operands, at most one intersection chain per opposing face pair).
@@ -3065,6 +3065,89 @@ counterbore/countersink compound-feature merging remain open, and no
 `dino8-app` command surfaces this either. Still **6/16/2, 58.3%**,
 identical to the count directly above. Full `dino8_kernel_tests` suite
 (via `ctest`): 100% passing, 0 regressions.
+
+**2026-09-30, a tenth session:** two closely-related follow-ups to
+`RecognizeHoles()` above, both in `dino8::kernel::features.h`/`features.cpp`.
+`RecognizeBosses(solid)` closes the "boss" half of this item's own
+long-standing "still no hole/boss/pocket recognition" gap: the geometric
+mirror of `RecognizeHoles()` - scans for a CONVEX (rather than concave)
+full-2*pi cylindrical face and reports `(origin, axis, radius, height,
+through)`, the parameters a hypothetical "MakeBoss()" call could take to
+reproduce it. Shares its entire candidate-scanning geometry (which faces
+are full cylinders, their own axial extent) with `RecognizeHoles()` via a
+newly-extracted common helper (`ScanFullCylinderFaces()`) rather than a
+second copy of that ~50-line loop, and reads the exact same on-axis
+`Mesh::ContainsPoint()` probe `RecognizeHoles()` already uses, just with
+the opposite (attached-vs-free, not capped-vs-open) meaning. `RecognizeCounterboreHoles(solid)`
+closes the OTHER long-disclosed gap in the same item's text - "no attempt
+is made here to recognize a COUNTERBORE/COUNTERSINK's own second, wider
+cylindrical/conical step as part of the SAME feature" - for the
+CYLINDRICAL-step case (a real counterbore, `CounterboreHole()`'s own
+two-`CylindricalFace` construction, NOT `MakeCounterboreHole()`'s single
+`Brep::Revolve()` wall, which `ON_Surface::IsCylinder()` never classifies
+as a cylinder at all): finds pairs of concave candidates sharing the same
+axis line with adjacent, non-overlapping axial ranges and a strictly
+wider entry-side radius, and merges them into one `CounterboreFeature`
+instead of `RecognizeHoles()`'s own two independent `HoleFeature` entries
+for the same cut. A genuine, confirmed pitfall found and fixed while
+building this, not merely disclosed after the fact: an initial version
+picked which of the narrower candidate's own two ends was "the one
+touching the wider face" by comparing the two candidates' own axis
+directions' dot-product sign - this get the projection backwards for the
+anti-parallel case (each candidate's axis direction comes back from its
+own independent `ON_Cylinder` fit with an arbitrary, unrelated sign), so
+it was replaced with a sign-free check: compute both of the narrower
+candidate's own two end points in 3D and pick whichever one actually
+coincides with the wider candidate's own far end, then get the far end's
+own position by a plain dot-product projection onto the wider candidate's
+axis rather than any further sign reasoning. A SECOND genuine, confirmed
+pitfall found while building this evidence, disclosed rather than fixed
+(out of scope for this pass - see RecognizeBosses()'s own doc comment):
+the obvious way to build a boss test fixture - `BooleanCombineGeneral()`
+Union-ing a separate tool onto an existing solid, the tool's own base cap
+backed off entirely inside the target the same way `MakeHole()`'s own
+margin trick works for Difference - leaves `TessellateToClosedMesh()`
+non-closed and `Mesh::ContainsPoint()` wrong across the WHOLE embedded
+span (confirmed directly, `dino8_scratch_test`), not merely near the entry
+rim the way `MakeHole()`'s own disclosed Difference-side "floating cap"
+gap is: a real Union-side counterpart to that gap, previously unconfirmed.
+Sidestepped for testing purposes by building the fixture directly via
+`Brep::FromMixedFaces()` (two adjacent same-radius `CylindricalFace`
+segments, no boolean operation at all - see `MakeTwoSegmentCylinder()`'s
+own doc comment): its own shared middle seam (the boundary this test
+actually exercises) welds with no issues at all, though the same
+diagnostic also surfaced a THIRD, pre-existing, unrelated imperfection -
+this disk-cap-plus-CylindricalFace construction (already used elsewhere
+in this file, e.g. `MakeCylinderAxisForGeneralBooleanTest()`, just never
+previously run through `Brep::Check()`) leaves a handful of naked/invalid-
+trim issues at a solid's own two TRUE end caps' rail seam - harmless here
+(radius `radius`, nowhere near `RecognizeBosses()`'s own on-axis probes)
+and left disclosed rather than fixed, out of scope for this pass.
+`RecognizeBosses()` itself is untouched by the Union-side finding for a
+boss modeled any other way. Verified by 2
+new tests (`tests/test_basic.cpp`): `TestRecognizeBossesBlindAndFreestandingRoundTrip`
+covers a two-segment same-radius pipe (standing in for "a boss on a
+body") where BOTH segments come back as independent bosses pointing in
+opposite directions from their own shared attach point, each with the
+correct radius/origin/height/through; an undrilled box and a concave bore
+both correctly finding nothing; and a free-standing solid cylinder (the
+same fixture `RecognizeHoles()`'s own negative control already uses)
+correctly coming back `through = true`; `TestRecognizeCounterboreHolesRoundTrip` confirms
+`RecognizeHoles()` itself still sees `CounterboreHole()`'s own fixture as
+two separate holes (proving the fixture actually exercises the gap being
+closed), then confirms `RecognizeCounterboreHoles()` merges them into one
+feature whose every field matches the original call's own arguments to
+1e-6, a genuine round-trip back through `CounterboreHole()` reproducing
+the original's own volume, and a plain single-radius hole correctly
+finding no compound step. **No score change**: "Feature recognition" was
+already counted `partial` and stays `partial` here too, for the same
+"real code, still short of `present`" reason this category's other
+kernel-only feature ops already are - a general (non-cylindrical) pocket
+remains entirely unrecognized, a countersink's own CONICAL second step is
+not merged by `RecognizeCounterboreHoles()` (only the cylindrical case
+is), and no `dino8-app` command surfaces any of this. Still **6/16/2,
+58.3%**, identical to the count directly above. Full `dino8_kernel_tests`
+suite (via `ctest`): 100% passing, 0 regressions.
 
 **Fossilith kernel — Curve operations** (curveops):
 - [partial] Curve fairing/smoothing — app-only Laplacian smoothing (dino8-app/src/commands/cmd_meshtools.cpp:740 / cmd_remaining.cpp:866); no kernel fairing.
