@@ -347,6 +347,8 @@ set(DINO8_SOURCES
   src/commands/cmd_fillet.cpp
   src/util/json_mini.cpp
   src/util/Sha256.cpp
+  src/util/Inflate.cpp
+  src/drafting/Xlsx.cpp
   src/flow/FlowData.cpp
   src/flow/FlowGraph.cpp
   src/flow/FlowNodesCore.cpp
@@ -641,9 +643,21 @@ if(DINO8_BUILD_TESTS)
   # PNG/BMP/PPM are stuck at, a real-world-shaped new-style-RLE scanline
   # decoded by hand, and the malformed-input error paths. Standalone like
   # dino8_test_aci_palette - ImageIO.cpp has no dino8_kernel dependency.
-  add_executable(dino8_test_image_hdr tests/test_image_hdr.cpp src/render/ImageIO.cpp)
+  add_executable(dino8_test_image_hdr tests/test_image_hdr.cpp src/render/ImageIO.cpp src/util/Inflate.cpp)
   target_include_directories(dino8_test_image_hdr PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   add_test(NAME dino8_image_hdr COMMAND dino8_test_image_hdr)
+
+  # ZIP + minimal OOXML SpreadsheetML reader/writer (src/drafting/Xlsx.cpp):
+  # a real, valid .xlsx round trip (special characters, empty cells, several
+  # rows/cols), a hand-built "real-world-shaped" entry using zip method 8
+  # (deflate) with shared strings - what an actual Excel/LibreOffice/openpyxl
+  # save produces, not just this app's own store-method writer - and the
+  # malformed/truncated/bad-CRC error paths. Standalone like
+  # dino8_test_image_hdr/dino8_test_aci_palette - Xlsx.cpp depends only on
+  # util/Inflate.cpp, no dino8_kernel/opennurbs.
+  add_executable(dino8_test_xlsx tests/test_xlsx.cpp src/drafting/Xlsx.cpp src/util/Inflate.cpp)
+  target_include_directories(dino8_test_xlsx PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  add_test(NAME dino8_xlsx COMMAND dino8_test_xlsx)
 
   # Numerically verifies VariableBlendSrf's own claim (cmd_fillet.cpp's
   # VariableBlendSrfCommand): that BuildBlendSurfaceG1/G2's new

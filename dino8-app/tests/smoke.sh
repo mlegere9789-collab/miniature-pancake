@@ -4240,6 +4240,87 @@ dlcheck "DataLinkUpdate: pushed 2x2 table to " "the follow-up DataLinkUpdate Dir
 DL4_CSV="$(cat "$TMPW/datalink.csv" 2>/dev/null || true)"
 if [ "$DL4_CSV" = "$(printf 'Q,R\nS,T\n')" ]; then echo "ok   Direction=Push wrote the table's edit (Q,R / S,T) to the file, discarding the file's own outside edit as the caller explicitly chose"; else echo "FAIL Direction=Push wrote the table's edit to the file (got: $DL4_CSV)"; fail=1; fi
 
+# DataLink / DataLinkUpdate to a native .xlsx file (drafting/Xlsx.cpp - see
+# PARITY_MAP.md's "Live external data linking into tables" entry), not just
+# CSV: the same push/external-edit/pull/push shape as the CSV stages above
+# (datalink_script1..4.txt), but round-tripping through a real .xlsx,
+# independently verified at every stage by Python's own zipfile/xml - never
+# this app's own reader - so both directions are checked against a
+# genuinely external tool, not just a round trip through this app's own
+# writer and reader agreeing with each other.
+XDL1="$(run_dl_stage xlsx_datalink_script1.txt "xlsx 1")"
+xdlcheck() { if echo "$XDL1" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$XDL1" "$1"; fail=1; fi; }
+xdlcheck "DataLink: pushed 2x2 table to " "DataLink pushed the new table to the .xlsx file (it didn't exist yet)"
+[ -f "$TMPW/xlsx_datalink.xlsx" ] || { echo "FAIL DataLink actually wrote $TMPW/xlsx_datalink.xlsx"; fail=1; }
+head -c 2 "$TMPW/xlsx_datalink.xlsx" | grep -q "PK" && echo "ok   xlsx_datalink.xlsx starts with a real zip signature (PK)" || { echo "FAIL xlsx_datalink.xlsx is not a real zip"; fail=1; }
+python3 - "$TMPW/xlsx_datalink.xlsx" <<'PY' && echo "ok   the pushed .xlsx's content matches the table's cells (E,F / G,H), read independently by Python's own zipfile/xml" || { echo "FAIL the pushed .xlsx's content does not match the table's cells"; fail=1; }
+import sys, zipfile, xml.etree.ElementTree as ET
+ns = {'m': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
+z = zipfile.ZipFile(sys.argv[1])
+root = ET.fromstring(z.read('xl/worksheets/sheet1.xml'))
+cells = {}
+for c in root.findall('.//m:c', ns):
+    if c.get('t') == 'inlineStr':
+        cells[c.get('r')] = c.find('m:is/m:t', ns).text or ''
+    else:
+        v = c.find('m:v', ns)
+        cells[c.get('r')] = v.text if v is not None else ''
+assert cells.get('A1') == 'E' and cells.get('B1') == 'F', cells
+assert cells.get('A2') == 'G' and cells.get('B2') == 'H', cells
+PY
+
+# Simulate an external spreadsheet edit of the linked .xlsx - written by
+# Python's own zipfile/zlib with real DEFLATE (zip method 8) compression
+# and a proper shared-strings table, the shape an actual Excel/LibreOffice/
+# openpyxl save produces, not just this app's own inlineStr writer - so
+# ReadXlsxCells is proven against a genuinely independent writer, not just
+# a round trip through its own.
+sleep 5
+python3 - "$TMPW/xlsx_datalink.xlsx" <<'PY'
+import sys, zipfile
+path = sys.argv[1]
+content_types = '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/></Types>'
+root_rels = '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>'
+workbook = '<?xml version="1.0"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets></workbook>'
+workbook_rels = '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings" Target="sharedStrings.xml"/></Relationships>'
+shared = '<?xml version="1.0"?><sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="4" uniqueCount="4"><si><t>P</t></si><si><t>Q</t></si><si><t>R</t></si><si><t>S</t></si></sst>'
+sheet = '<?xml version="1.0"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1" t="s"><v>1</v></c></row><row r="2"><c r="A2" t="s"><v>2</v></c><c r="B2" t="s"><v>3</v></c></row></sheetData></worksheet>'
+z = zipfile.ZipFile(path, 'w', zipfile.ZIP_DEFLATED)
+z.writestr('[Content_Types].xml', content_types)
+z.writestr('_rels/.rels', root_rels)
+z.writestr('xl/workbook.xml', workbook)
+z.writestr('xl/_rels/workbook.xml.rels', workbook_rels)
+z.writestr('xl/sharedStrings.xml', shared)
+z.writestr('xl/worksheets/sheet1.xml', sheet)
+z.close()
+PY
+
+XDL2="$(run_dl_stage xlsx_datalink_script2.txt "xlsx 2")"
+xdlcheck() { if echo "$XDL2" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$XDL2" "$1"; fail=1; fi; }
+xdlcheck "DataLinkUpdate: pulled 2x2 table from " "DataLinkUpdate auto-detected the externally-rewritten .xlsx was the only side that changed and pulled it"
+xdlcheck '"cells":\["P","Q","R","S"\]' "the pulled table's own TableData cells (P,Q / R,S) match the real DEFLATE-compressed, shared-string-indexed .xlsx Python wrote - not just this app's own writer's output"
+
+sleep 5
+
+XDL3="$(run_dl_stage xlsx_datalink_script3.txt "xlsx 3")"
+xdlcheck() { if echo "$XDL3" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$XDL3" "$1"; fail=1; fi; }
+xdlcheck "DataLinkUpdate: pushed 2x2 table to " "DataLinkUpdate auto-detected the table (TableEdit) was the only side that changed and pushed it back to the real .xlsx file - the reverse direction from stage 2"
+python3 - "$TMPW/xlsx_datalink.xlsx" <<'PY' && echo "ok   the re-pushed .xlsx's content matches stage 3's TableEdit (U,V / W,X), read independently by Python's own zipfile/xml" || { echo "FAIL the re-pushed .xlsx's content does not match stage 3's TableEdit"; fail=1; }
+import sys, zipfile, xml.etree.ElementTree as ET
+ns = {'m': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
+z = zipfile.ZipFile(sys.argv[1])
+root = ET.fromstring(z.read('xl/worksheets/sheet1.xml'))
+cells = {}
+for c in root.findall('.//m:c', ns):
+    if c.get('t') == 'inlineStr':
+        cells[c.get('r')] = c.find('m:is/m:t', ns).text or ''
+    else:
+        v = c.find('m:v', ns)
+        cells[c.get('r')] = v.text if v is not None else ''
+assert cells.get('A1') == 'U' and cells.get('B1') == 'V', cells
+assert cells.get('A2') == 'W' and cells.get('B2') == 'X', cells
+PY
+
 # Real OS-clipboard image write (ViewCaptureToClipboard/ScreenCaptureToClipboard/
 # CopyRenderWindowToClipboard - see src/platform/Clipboard.h). There is no
 # clipboard reader available in this headless harness, so DINO8_CLIPBOARD_DEBUG_FILE
