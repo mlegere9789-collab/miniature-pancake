@@ -2923,13 +2923,13 @@ d2check "WeldArrowPoint = 1015,0,0" "UpdateGdtSymbols dragged WeldSymbol's arrow
 # actually caught, not masked by the pre-save occurrences already having
 # satisfied a plain substring match.
 D2_LEN20_COUNT=$(echo "$D2" | grep -c "UpdateDimensions:   DimLinear now measures 20")
-[ "$D2_LEN20_COUNT" = "4" ] && echo "ok   the tolerance-anchor DimLinear (=20) round-tripped and was redrawn on every UpdateDimensions call, including after Open" || { echo "FAIL DimLinear=20 redrawn $D2_LEN20_COUNT times, expected 4 (associativity did not survive the .3dm round trip)"; fail=1; }
+[ "$D2_LEN20_COUNT" = "6" ] && echo "ok   the tolerance-anchor DimLinear (=20) round-tripped and was redrawn on every UpdateDimensions call, including after Open and the two later anchor-kind rounds (Mid/Cen/Quad, then Knot/Vertex)" || { echo "FAIL DimLinear=20 redrawn $D2_LEN20_COUNT times, expected 6 (associativity did not survive the .3dm round trip)"; fail=1; }
 D2_LEN40_COUNT=$(echo "$D2" | grep -c "UpdateDimensions:   DimLinear now measures 40")
-[ "$D2_LEN40_COUNT" = "4" ] && echo "ok   the stretched DimLinear (=40) round-tripped and was redrawn on every UpdateDimensions call, including after Open" || { echo "FAIL DimLinear=40 redrawn $D2_LEN40_COUNT times, expected 4 (associativity did not survive the .3dm round trip)"; fail=1; }
+[ "$D2_LEN40_COUNT" = "6" ] && echo "ok   the stretched DimLinear (=40) round-tripped and was redrawn on every UpdateDimensions call, including after Open and the two later anchor-kind rounds (Mid/Cen/Quad, then Knot/Vertex)" || { echo "FAIL DimLinear=40 redrawn $D2_LEN40_COUNT times, expected 6 (associativity did not survive the .3dm round trip)"; fail=1; }
 D2_RAD10_COUNT=$(echo "$D2" | grep -c "UpdateDimensions:   DimRadius now measures 10")
-[ "$D2_RAD10_COUNT" = "3" ] && echo "ok   DimRadius round-tripped and was redrawn after Open (3 calls: the two pre-save runs once it existed, plus the post-Open run)" || { echo "FAIL DimRadius redrawn $D2_RAD10_COUNT times, expected 3 (associativity did not survive the .3dm round trip)"; fail=1; }
+[ "$D2_RAD10_COUNT" = "5" ] && echo "ok   DimRadius round-tripped and was redrawn after Open (5 calls: the two pre-save runs once it existed, the post-Open run, and the two later anchor-kind rounds)" || { echo "FAIL DimRadius redrawn $D2_RAD10_COUNT times, expected 5 (associativity did not survive the .3dm round trip)"; fail=1; }
 D2_ANG45_COUNT=$(echo "$D2" | grep -c "UpdateDimensions:   DimAngle now measures 45 deg")
-[ "$D2_ANG45_COUNT" = "2" ] && echo "ok   DimAngle round-tripped and was redrawn after Open (the one pre-save run once it existed, plus the post-Open run)" || { echo "FAIL DimAngle redrawn $D2_ANG45_COUNT times, expected 2 (associativity did not survive the .3dm round trip)"; fail=1; }
+[ "$D2_ANG45_COUNT" = "4" ] && echo "ok   DimAngle round-tripped and was redrawn after Open (the one pre-save run once it existed, the post-Open run, and the two later anchor-kind rounds)" || { echo "FAIL DimAngle redrawn $D2_ANG45_COUNT times, expected 4 (associativity did not survive the .3dm round trip)"; fail=1; }
 D2_REGEN4_COUNT=$(echo "$D2" | grep -c "UpdateDimensions: 4 dimension(s) regenerated")
 [ "$D2_REGEN4_COUNT" = "2" ] && echo "ok   UpdateDimensions regenerated all 4 associative dimensions with 0 skipped, both before Save and again after Open" || { echo "FAIL UpdateDimensions: 4 dimension(s) regenerated seen $D2_REGEN4_COUNT times, expected 2 (some dimensions failed to resolve after the .3dm round trip)"; fail=1; }
 D2_ML_LANDING_COUNT=$(echo "$D2" | grep -c "UpdateMultiLeaders:   now 2 arrow(s) at landing 720,5,0")
@@ -2956,6 +2956,24 @@ d2check "UpdateDimensions: 7 dimension(s) regenerated" "UpdateDimensions regener
 d2check "UpdateDimensions:   Leader now points at 1210,20,0" "UpdateDimensions dragged the midpoint-anchored Leader to the moved line's new midpoint, not the (1210,0,0) baked at creation"
 d2check "UpdateDimensions:   Leader now points at 1300,30,0" "UpdateDimensions dragged the center-anchored Leader to the moved circle's new center, not the (1300,0,0) baked at creation"
 d2check "UpdateDimensions:   Leader now points at 1400,45,0" "UpdateDimensions dragged the quadrant-anchored Leader to the moved circle's new quadrant point, not the (1400,5,0) baked at creation"
+
+# Associativity, second round: FindPointAnchor/ResolveAnchor now also
+# recognize a curve's interior knot point (any span boundary strictly
+# between its two ends - for a degree-1 polyline this is exactly an
+# interior control point, which the pre-existing exact start/end match
+# above could not see) and a B-rep's vertex - the same candidates the
+# viewport's own Knot/Vertex object snaps compute. A Leader built with its
+# arrowhead on each kind of anchor records it (DimRefEnd1 = knot:<span
+# index> or vertex:<m_V table index>), and UpdateDimensions drags the
+# arrowhead to the anchor's *current* position after the source
+# polyline/box moves.
+d2check "Leader KnotLeader (associative to arrowhead point)" "Leader recorded a polyline's coincident interior knot point as its associative reference"
+d2check "DimRefEnd1 = knot:1" "the knot anchor was tagged with its span index"
+d2check "Leader VertexLeader (associative to arrowhead point)" "Leader recorded a box's coincident vertex as its associative reference"
+d2check "DimRefEnd1 = vertex:" "the vertex anchor was tagged with its B-rep m_V table index"
+d2check "UpdateDimensions: 9 dimension(s) regenerated" "UpdateDimensions regenerated the 7 earlier associative dimensions plus the 2 new knot/vertex-anchor Leaders, with 0 skipped"
+d2check "UpdateDimensions:   Leader now points at 1510,20,0" "UpdateDimensions dragged the knot-anchored Leader to the moved polyline's new interior vertex, not the (1510,0,0) baked at creation"
+d2check "UpdateDimensions:   Leader now points at 1600,30,0" "UpdateDimensions dragged the vertex-anchored Leader to the moved box's new vertex position, not the (1600,0,0) baked at creation"
 
 d2check "SectionView: 120 curve(s)" "SectionView sliced all 120 objects with none dropped across the Document::Objects() reallocations that many Add() calls in one pass triggers"
 

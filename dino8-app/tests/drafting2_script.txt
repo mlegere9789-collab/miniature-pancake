@@ -295,6 +295,43 @@ SelName QuadAnchorCircle
 Move 1400,0,0 1400,40,0
 UpdateDimensions
 SelNone
+# --- Associative FindPointAnchor, second round: an interior knot point (any
+# curve span boundary strictly between its two ends - for a degree-1 curve
+# this is exactly an interior control point, invisible to the pre-existing
+# exact start/end match above) and a B-rep's vertex - the same candidates
+# the viewport's own "Knot"/"Vertex" object snaps compute (Viewport.cpp).
+# A Leader anchored to each must drag its arrowhead to the anchor's
+# *current* position after the source polyline/box moves, same as the
+# Mid/Cen/Quad anchors above.
+SelNone
+Polyline 1500,0,0 1510,0,0 1520,0,0
+Enter
+SelLast
+SetObjectName KnotAnchorPolyline
+SelNone
+Leader
+1510,0,0
+1510,-10,0
+Enter
+KnotLeader
+SelNone
+Box 1600,0,0 1610,10,0 10
+SelLast
+SetObjectName VertexAnchorBox
+SelNone
+Leader
+1600,0,0
+1600,-10,0
+Enter
+VertexLeader
+SelAll
+GetUserText
+SelName KnotAnchorPolyline
+Move 1500,0,0 1500,20,0
+SelName VertexAnchorBox
+Move 1600,0,0 1600,30,0
+UpdateDimensions
+SelNone
 # --- SectionView iterator-invalidation regression: BuildSectionGroup used
 # to slice-and-Add() in a single pass over Document::Objects() itself, so
 # Add()'s vector reallocation could invalidate that very loop's own

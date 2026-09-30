@@ -241,18 +241,27 @@ inline void ReapplyToleranceSuffix(CommandContext& ctx, int group_id, const std:
 
 // Finds a real document object anchored exactly at `p` (a Point object at
 // that location; a curve's start/end, a segment midpoint (degree 1) or
-// arc-length midpoint (higher degree); or an arc/circle's center or, for a
-// full circle, one of its four quadrant points) - the basis for associative
-// dimensions and every other FindPointAnchor consumer (Leader,
-// FeatureControlFrame/DatumFeature/SurfaceFinish/WeldSymbol, MultiLeader).
-// The midpoint/center/quadrant candidates mirror the viewport's own
-// "Mid"/"Cen"/"Quad" osnaps (Viewport.cpp) exactly, so a point picked with
-// one of those object snaps resolves to the same anchor a user would expect
-// from seeing the snap glyph. Skips other annotation output (a dimension
-// should never anchor to another dimension's baked geometry) and returns
-// false when `p` is free-floating - a dimension built from unanchored
-// points stays a static baked measurement, same as today, since there is
-// nothing live to track it back to.
+// arc-length midpoint (higher degree); an interior knot point - any span
+// boundary strictly between the curve's two ends, which for a degree-1
+// curve is exactly its interior control points; an arc/circle's center or,
+// for a full circle, one of its four quadrant points; or a B-rep's vertex)
+// - the basis for associative dimensions and every other FindPointAnchor
+// consumer (Leader, FeatureControlFrame/DatumFeature/SurfaceFinish/
+// WeldSymbol, MultiLeader). The midpoint/knot/center/quadrant/vertex
+// candidates mirror the viewport's own "Mid"/"Knot"/"Cen"/"Quad"/"Vertex"
+// osnaps (Viewport.cpp) exactly, so a point picked with one of those object
+// snaps resolves to the same anchor a user would expect from seeing the
+// snap glyph. A B-rep vertex is tracked by its raw m_V table index, the
+// same index-based identity the rest of this kernel uses for topology (see
+// Persistent naming / topology identity, PARITY_MAP.md) - stable across a
+// simple move/rotate/scale of the solid, but not guaranteed to survive a
+// boolean or other edit that rebuilds the vertex table, same "falls back to
+// the static bake" contract every other anchor kind here has for a shape
+// change it can't track. Skips other annotation output (a dimension should
+// never anchor to another dimension's baked geometry) and returns false
+// when `p` is free-floating - a dimension built from unanchored points
+// stays a static baked measurement, same as today, since there is nothing
+// live to track it back to.
 inline bool FindPointAnchor(Document& doc, Point3d p, ObjectId& obj, std::string& which) {
   const double eps = 1e-7;
   for (const SceneObject& o : doc.Objects()) {
@@ -285,6 +294,25 @@ inline bool FindPointAnchor(Document& doc, Point3d p, ObjectId& obj, std::string
           if (Point3d(arc.Center() - pl.yaxis * r).DistanceTo(p) < eps) { obj = o.id; which = "quad-y"; return true; }
         }
       }
+      // Checked last, after the more specific center/quadrant match above:
+      // a circle's own standard NURBS representation places knots exactly
+      // at its quadrant points, so checking this first would shadow
+      // "quad+x"/"quad+y"/etc with a same-point but less meaningful
+      // "knot:<i>" tag.
+      {
+        std::vector<double> spans(static_cast<size_t>(std::max(o.curve->raw().SpanCount(), 0)) + 1);
+        if (spans.size() > 2 && o.curve->raw().GetSpanVector(spans.data())) {
+          for (size_t i = 1; i + 1 < spans.size(); ++i) {
+            if (o.curve->PointAt(spans[i]).DistanceTo(p) < eps) { obj = o.id; which = "knot:" + std::to_string(i); return true; }
+          }
+        }
+      }
+    } else if (o.kind == ObjectKind::Brep && o.brep) {
+      const ON_Brep& b = o.brep->raw();
+      for (int i = 0; i < b.m_V.Count(); ++i) {
+        if (b.m_V[i].m_vertex_index < 0) continue;  // deleted, not-yet-Compact()ed slot
+        if (Point3d(b.m_V[i].point).DistanceTo(p) < eps) { obj = o.id; which = "vertex:" + std::to_string(i); return true; }
+      }
     }
   }
   return false;
@@ -302,6 +330,14 @@ inline bool ResolveAnchor(Document& doc, ObjectId obj, const std::string& which,
   const SceneObject* o = doc.Find(obj);
   if (!o) return false;
   if (which == "point") { if (o->kind != ObjectKind::Point) return false; out = o->point; return true; }
+  if (which.rfind("vertex:", 0) == 0) {
+    if (o->kind != ObjectKind::Brep || !o->brep) return false;
+    const ON_Brep& b = o->brep->raw();
+    const int i = std::atoi(which.c_str() + 7);
+    if (i < 0 || i >= b.m_V.Count() || b.m_V[i].m_vertex_index < 0) return false;
+    out = Point3d(b.m_V[i].point);
+    return true;
+  }
   if (o->kind != ObjectKind::Curve || !o->curve) return false;
   if (which == "start") { out = Point3d(o->curve->raw().PointAtStart()); return true; }
   if (which == "end") { out = Point3d(o->curve->raw().PointAtEnd()); return true; }
@@ -316,6 +352,14 @@ inline bool ResolveAnchor(Document& doc, ObjectId obj, const std::string& which,
     if (i < 0 || i + 1 >= o->curve->ControlPointCount()) return false;
     const Point3d a = o->curve->ControlPointAt(i), b = o->curve->ControlPointAt(i + 1);
     out = Point3d((a.x + b.x) / 2, (a.y + b.y) / 2, (a.z + b.z) / 2);
+    return true;
+  }
+  if (which.rfind("knot:", 0) == 0) {
+    const size_t i = static_cast<size_t>(std::atoi(which.c_str() + 5));
+    std::vector<double> spans(static_cast<size_t>(std::max(o->curve->raw().SpanCount(), 0)) + 1);
+    if (spans.size() <= 2 || !o->curve->raw().GetSpanVector(spans.data())) return false;
+    if (i + 1 >= spans.size()) return false;
+    out = o->curve->PointAt(spans[i]);
     return true;
   }
   if (which == "center" || which.rfind("quad", 0) == 0) {
