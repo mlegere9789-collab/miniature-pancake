@@ -59,7 +59,7 @@
 # rs.MeshVertices, that the dino8 module also lacked until now),
 # dino8.doc.Objects.ObjectsByName/ObjectsByType/BoundingBox (matching Lua's
 # rs.ObjectsByName/rs.ObjectsByType/rs.BoundingBox, that the dino8 module
-# also lacked until now), and dino8.doc.Layers - a new LayerTable
+# also lacked until now), dino8.doc.Layers - a new LayerTable
 # (Add/Count/Names/IsLayer/CurrentLayer/Visible/Locked/Color/Delete,
 # matching Lua's rs.AddLayer/rs.LayerCount/rs.LayerNames/rs.IsLayer/
 # rs.CurrentLayer/rs.LayerVisible/rs.LayerLocked/rs.LayerColor/
