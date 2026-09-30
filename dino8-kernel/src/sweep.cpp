@@ -1162,6 +1162,37 @@ void AddDomeCap(ON_Brep& brep, ON_NurbsCurve boundary, int shared_edge, bool edg
 
 }  // namespace
 
+// See this method's own brep.h doc comment: a standalone one-face shell
+// capping a single closed planar curve exactly, via the same star-shaped
+// fan-apex search and fan surface (PlanCap()/FanSurface() just above)
+// AssembleSweptBody()'s own end caps already use and verify. `boundary`
+// is used exactly as given - no orientation reasoning is done here,
+// unlike AddFanCap() (which must agree with an existing wall's own
+// outward direction): this result shares no topology with anything else,
+// so whichever of the two consistent fan orientations FanSurface()
+// happens to build from `boundary`'s own parameter direction is fine -
+// CapPlanarHoles() joins the result onto the original edges with
+// JoinNakedEdges(), whose own UnifyNormals() pass fixes the sign against
+// the rest of the shell afterward, the same "narrowing, not correctness,
+// is this function's job" split CapPlanarHoles()'s existing straight-loop
+// path already relies on for its own Newell-normal cap plane.
+Brep Brep::CapClosedCurvedLoop(const ON_NurbsCurve& boundary_in) {
+  const char* caller = "CapPlanarHoles";
+  ON_NurbsCurve boundary = boundary_in;
+  ClampIfPeriodic(boundary);
+  if (!boundary.IsClosed()) Fail(caller, "cap loop curve is not closed");
+  const CapPlan plan = PlanCap(boundary, /*chord_closed=*/false, caller);
+  std::unique_ptr<ON_NurbsSurface> cap = FanSurface(boundary, plan.apex, caller);
+  Brep result;
+  ON_Brep& brep = result.raw();
+  int vid[4] = {-1, -1, -1, -1};
+  int eid[4] = {-1, -1, -1, -1};
+  bool rev[4] = {false, false, false, false};
+  if (!brep.NewFace(cap.release(), vid, eid, rev)) Internal(caller, "ON_Brep::NewFace refused the curved cap");
+  brep.SetTolerancesBoxesAndFlags(/*bLazy=*/true);
+  return result;
+}
+
 // Assembles the wall plus the requested caps. `cap_v0`/`cap_v1` cap the
 // sweep's start/end (the wall's south/north sides); `cap_u0`/`cap_u1`
 // cap the wall's west/east sides (a full revolve's off-axis end circles).

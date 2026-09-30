@@ -1505,6 +1505,18 @@ class Mesh {
   // endpoint, for one) throws exactly the exception it throws,
   // propagated unchanged rather than reworded.
   //
+  // `start_angle`: the sweep begins `start_angle` radians (any sign,
+  // any magnitude - it's just added to every sample angle) around from
+  // the profile's own given position, the same parameter and convention
+  // Brep::Revolve() already has. FULL angle: every ring sample's theta
+  // is simply offset by `start_angle` before its cos/sin - the ring
+  // construction never assumed theta started at 0, so this changes
+  // nothing else (still exact, still the same shared-vertex topology,
+  // and a full 2*pi sweep is unchanged as a SET of points, just
+  // reindexed around the ring). PARTIAL angle: passed straight through
+  // to the Brep::Revolve() delegate, which rigidly rotates the profile
+  // by `start_angle` before sweeping - see its own doc comment.
+  //
   // Throws std::invalid_argument if `profile` has fewer than 2 points
   // (fewer leaves nothing to revolve into a solid), if `revolve_segments`
   // is less than 3 - a real gap found by checking whether `profile`'s
@@ -1512,9 +1524,11 @@ class Mesh {
   // than 3 segments can't form a non-degenerate ring at all, and a debug
   // run confirmed the old, unguarded behavior wasn't even a clean crash
   // (`revolve_segments=0` silently produced a near-empty, faceless mesh) -
-  // or if `angle` is not finite or not in (0, 2*pi].
+  // if `angle` is not finite or not in (0, 2*pi], or if `start_angle` is
+  // not finite.
   static Mesh RevolveProfile(const std::vector<Point2d>& profile, Point3d axis_point,
-                              Vector3d axis, int revolve_segments = 48, double angle = 2.0 * ON_PI);
+                              Vector3d axis, int revolve_segments = 48, double angle = 2.0 * ON_PI,
+                              double start_angle = 0.0);
 
   // Lofts a sequence of closed polygonal cross-sections ("rings") into a
   // closed solid - the general answer to "no loft" that RevolveProfile()

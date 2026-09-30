@@ -8832,8 +8832,34 @@ int Brep::CapPlanarHoles(double tolerance) {
   // edge head-to-tail through its own two vertices.
   std::set<int> used;
   std::vector<PlanarFace> caps;
+  std::vector<Brep> curved_caps;
   for (const int start : naked_edges) {
     if (used.count(start)) continue;
+
+    // A single closed (start == end vertex) naked edge is its own whole
+    // loop - naked_at_vertex[that vertex] has exactly this one entry (see
+    // the table built above), so the general chain walk below would
+    // immediately find head == origin after one edge and discard it for
+    // having fewer than 3 polygon vertices, straight or not. Handled
+    // here instead, genuinely, via CapClosedCurvedLoop() (brep.h/
+    // sweep.cpp) rather than folded into that straight-polygon path -
+    // see CapPlanarHoles()'s own doc comment.
+    const ON_BrepEdge& e0 = b.m_E[start];
+    if (e0.m_vi[0] == e0.m_vi[1]) {
+      used.insert(start);
+      ON_NurbsCurve nc;
+      if (e0.GetNurbForm(nc) > 0) {
+        try {
+          curved_caps.push_back(CapClosedCurvedLoop(nc));
+        } catch (const std::exception&) {
+          // Not planar, no area, or not star-shaped from any point -
+          // leave this hole open, same fallback as a straight loop this
+          // function can't triangulate either.
+        }
+      }
+      continue;
+    }
+
     std::vector<int> loop_vertices;
     int ei = start;
     bool rev = false;
@@ -8914,7 +8940,7 @@ int Brep::CapPlanarHoles(double tolerance) {
     cap.loop = loop;
     caps.push_back(cap);
   }
-  if (caps.empty()) return 0;
+  if (caps.empty() && curved_caps.empty()) return 0;
 
   // Built through FromPlanarFaces() - the SAME padded-bilinear-surface +
   // exact-clip construction every planar face of this class already uses
@@ -8923,7 +8949,10 @@ int Brep::CapPlanarHoles(double tolerance) {
   // mesh closes (checked directly: an ON_BrepTrimmedPlane cap over an
   // unpadded [-0.5, 0.5]^2 domain put its grid rows at 0.25 where the
   // 5%-padded neighbours' clipped rows sit at 0.225 - a valid, solid
-  // ON_Brep whose mesh nonetheless had 32 T-junction naked edges).
+  // ON_Brep whose mesh nonetheless had 32 T-junction naked edges). A
+  // single-closed-curved-edge hole's own cap (curved_caps) was already
+  // built by CapClosedCurvedLoop() above, genuinely - appended the same
+  // way.
   ClearFaceSideTables();
   int added = 0;
   for (const PlanarFace& cap : caps) {
@@ -8933,6 +8962,11 @@ int Brep::CapPlanarHoles(double tolerance) {
     } catch (const std::exception&) {
       continue;
     }
+    if (one.FaceCount() != 1) continue;
+    b.Append(one.brep_);
+    ++added;
+  }
+  for (const Brep& one : curved_caps) {
     if (one.FaceCount() != 1) continue;
     b.Append(one.brep_);
     ++added;

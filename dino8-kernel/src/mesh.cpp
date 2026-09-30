@@ -3272,7 +3272,7 @@ Mesh Mesh::Cone(Point3d base_center, Vector3d axis, double radius, double height
 }
 
 Mesh Mesh::RevolveProfile(const std::vector<Point2d>& profile, Point3d axis_point, Vector3d axis,
-                          int revolve_segments, double angle) {
+                          int revolve_segments, double angle, double start_angle) {
   const int m = static_cast<int>(profile.size());
   if (m < 2) {
     throw std::invalid_argument(
@@ -3286,6 +3286,9 @@ Mesh Mesh::RevolveProfile(const std::vector<Point2d>& profile, Point3d axis_poin
   }
   if (!ON_IsValid(angle) || !(angle > 0.0) || angle > 2.0 * ON_PI + 1e-12) {
     throw std::invalid_argument("dino8::kernel::Mesh::RevolveProfile: angle must be in (0, 2*pi] radians");
+  }
+  if (!ON_IsValid(start_angle)) {
+    throw std::invalid_argument("dino8::kernel::Mesh::RevolveProfile: start_angle must be finite");
   }
   if (angle < 2.0 * ON_PI - 1e-12) {
     // Partial angle: this function's own fast, exact-shared-vertex ring
@@ -3317,7 +3320,7 @@ Mesh Mesh::RevolveProfile(const std::vector<Point2d>& profile, Point3d axis_poin
     profile_points.reserve(static_cast<size_t>(m));
     for (const Point2d& p : profile) profile_points.push_back(axis_point + ex * p.x + n * p.y);
     const NurbsCurve profile_curve = NurbsCurve::FromControlPoints(profile_points, 1);
-    const Brep revolved = Brep::Revolve(profile_curve, axis_point, axis, angle, /*cap=*/true);
+    const Brep revolved = Brep::Revolve(profile_curve, axis_point, axis, angle, /*cap=*/true, start_angle);
     // u (profile) divisions: one per input segment, so a straight run of
     // the (exactly piecewise-linear) wall between consecutive profile
     // points is resolved at least at its own two endpoints - coarser
@@ -3356,7 +3359,7 @@ Mesh Mesh::RevolveProfile(const std::vector<Point2d>& profile, Point3d axis_poin
       out.m_V.Append(ON_3fPoint(axis_point + n * h));
     } else {
       for (int k = 0; k < revolve_segments; ++k) {
-        const double theta = 2.0 * ON_PI * static_cast<double>(k) / revolve_segments;
+        const double theta = 2.0 * ON_PI * static_cast<double>(k) / revolve_segments + start_angle;
         out.m_V.Append(ON_3fPoint(axis_point + n * h + ex * (r * std::cos(theta)) +
                                    ey * (r * std::sin(theta))));
       }

@@ -4157,16 +4157,44 @@ class Brep {
   // that boundary lies within `tolerance` (floored at
   // tolerance::DistanceForSize of the loop's own extent) of one plane
   // (Newell's method through the samples), a trimmed planar face is
-  // built on it with ON_BrepTrimmedPlane() - the same construction
-  // MergeCoplanarFaces() already relies on - and appended. The new
-  // face's naked boundary is then joined onto the chain's own edges
-  // with JoinNakedEdges(tolerance), which also orients it (and, for a
+  // built through FromPlanarFaces() - the same padded-bilinear-surface +
+  // exact-clip construction every planar face of this class already
+  // uses - and appended. A chain that is a SINGLE closed (start == end
+  // vertex) naked edge - the common "an uncapped extrusion's own curved
+  // rim" case, e.g. Extrude()/Pipe() with cap=false on a circle - skips
+  // that straight-loop path entirely instead of refusing it: it is
+  // capped by CapClosedCurvedLoop() below, the exact same star-shaped
+  // fan-apex construction (PlanCap()/FanSurface(), sweep.cpp) the
+  // sweep-class factories' own end caps already use, so the cap's
+  // boundary is the genuine curve, not a polygon approximation of it. A
+  // multi-edge chain with any non-linear edge is still left open (no
+  // polygon approximation is attempted for it, and it isn't a single
+  // edge PlanCap()/FanSurface() could take either). Either kind of new
+  // face's naked boundary is then joined onto the chain's own edges with
+  // JoinNakedEdges(tolerance), which also orients it (and, for a
   // now-closed shell, the whole shell) consistently, so the cap's own
-  // plane-normal sign never has to be guessed. A non-planar hole is left
-  // open (it needs a real surface fit this kernel doesn't have) and
-  // still shows up as NakedEdge in a following Check(). Returns the
-  // number of caps added. Clears the side tables.
+  // plane-normal sign never has to be guessed for either construction. A
+  // non-planar hole, or a single closed curved edge whose region isn't
+  // star-shaped from any point, is left open (it needs a real surface
+  // fit this kernel doesn't have) and still shows up as NakedEdge in a
+  // following Check(). Returns the number of caps added. Clears the side
+  // tables.
   int CapPlanarHoles(double tolerance = tolerance::kEdgeJoin);
+
+  // A standalone, single-face open shell exactly capping `boundary` (a
+  // closed, planar curve) - CapPlanarHoles()'s own genuine-curve cap
+  // (see its own doc comment above), factored out here because it needs
+  // PlanCap()/FanSurface(), which are src/sweep.cpp-internal. Shares no
+  // topology with anything else; the caller appends it and welds it on
+  // with the ordinary tolerance-based JoinNakedEdges(), the same way
+  // CapPlanarHoles() already does for a straight FromPlanarFaces() cap.
+  // Throws std::invalid_argument (propagated from PlanCap()) if
+  // `boundary` is not closed, not planar, encloses no area, or is not
+  // star-shaped from any point in its own plane (see PlanCap()'s own
+  // doc comment) - CapPlanarHoles() catches that and leaves the hole
+  // open, unchanged from its existing behavior for a straight loop it
+  // can't triangulate either.
+  static Brep CapClosedCurvedLoop(const ON_NurbsCurve& boundary);
 
   // TessellateToClosedMesh() for a Brep that carries TOLERANT edges
   // (JoinNakedEdges()/RemoveSliverFaces()/a .3dm with real edge

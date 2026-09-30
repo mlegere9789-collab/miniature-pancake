@@ -8598,6 +8598,74 @@ void TestMeshRevolveProfilePartialAngle() {
         "a partial angle with an off-axis profile endpoint throws (propagated from Brep::Revolve())");
 }
 
+// `start_angle`: mirrors Brep::Revolve()'s own parameter of the same
+// name (see its own TestRevolveStartAngleShiftsSweepExactly) - the
+// sweep begins that many radians around the axis from the profile's own
+// given position. FULL angle: verified as an exact rigid rotation of
+// the whole shared-vertex mesh, vertex for vertex, not just by volume -
+// the ring construction's own theta is simply offset by start_angle
+// before its cos/sin (mesh.cpp), a claim about every vertex, not merely
+// the swept point set as a whole. PARTIAL angle: delegates straight
+// through to Brep::Revolve(), already exhaustively checked there - a
+// lighter volume-invariance check suffices here.
+void TestMeshRevolveProfileStartAngle() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point2d;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  const std::vector<Point2d> profile = {Point2d(1, 0), Point2d(2, 1.5), Point2d(1.5, 3)};
+  const Point3d axis_point(0, 0, 0);
+  const Vector3d axis(0, 0, 1);
+  const int segments = 48;
+  const double start = M_PI / 5.0;  // an arbitrary, non-special offset
+
+  const Mesh base = Mesh::RevolveProfile(profile, axis_point, axis, segments);
+  const Mesh shifted = Mesh::RevolveProfile(profile, axis_point, axis, segments, 2.0 * M_PI, start);
+  Check(base.IsClosedManifold() && shifted.IsClosedManifold(), "both full-angle revolves are closed manifolds");
+  Check(base.raw().m_V.Count() == shifted.raw().m_V.Count(), "start_angle doesn't change the vertex count");
+
+  ON_Xform rot;
+  rot.Rotation(start, ON_3dVector(axis.x, axis.y, axis.z), ON_3dPoint(axis_point.x, axis_point.y, axis_point.z));
+  double worst = 0.0;
+  for (int i = 0; i < base.raw().m_V.Count(); ++i) {
+    const ON_3dPoint p0(base.raw().m_V[i]);
+    const ON_3dPoint p1(shifted.raw().m_V[i]);
+    worst = std::max(worst, (rot * p0).DistanceTo(p1));
+  }
+  Check(worst < 1e-5,
+        "start_angle rigidly rotates every one of the mesh's own shared vertices by exactly that many "
+        "radians (tolerance loosened for the mesh's own single-precision ON_3fPoint storage)");
+  Check(std::fabs(base.Volume() - shifted.Volume()) < 1e-5 * std::fabs(base.Volume()),
+        "volume is unaffected by the rotation - an independent cross-check, not a restatement of the vertex "
+        "check (tolerance loosened for the same single-precision vertex storage feeding it)");
+
+  // Partial angle: delegates straight to Brep::Revolve() (see this
+  // function's own doc comment), so start_angle rotating the profile
+  // first must not change the SHAPE swept, only where its seam sits -
+  // same volume with or without the offset. Brep::Revolve() can only cap
+  // a partial revolve of an OPEN profile when both ends are on the axis
+  // (see its own doc comment) - `profile` above has neither end on the
+  // axis, so a spindle profile is used here instead, the same one
+  // TestMeshRevolveProfilePartialAngle() already relies on for the same
+  // reason.
+  const std::vector<Point2d> spindle = {Point2d(0, 0), Point2d(2, 1.5), Point2d(0, 3)};
+  const Mesh partial_base = Mesh::RevolveProfile(spindle, axis_point, axis, segments, M_PI / 2.0);
+  const Mesh partial_shifted = Mesh::RevolveProfile(spindle, axis_point, axis, segments, M_PI / 2.0, start);
+  Check(partial_base.IsClosedManifold() && partial_shifted.IsClosedManifold(),
+        "both partial-angle (delegated) revolves are closed manifolds");
+  Check(std::fabs(partial_base.Volume() - partial_shifted.Volume()) < 1e-3 * std::fabs(partial_base.Volume()),
+        "start_angle doesn't change a partial revolve's own swept volume either");
+
+  bool threw = false;
+  try {
+    Mesh::RevolveProfile(profile, axis_point, axis, segments, 2.0 * M_PI, std::numeric_limits<double>::quiet_NaN());
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "a non-finite start_angle throws");
+}
+
 void TestLoftClosedRingsSquareFrustumExactVolumeAndBoolean() {
   using dino8::kernel::BooleanCombine;
   using dino8::kernel::BooleanOp;
@@ -11683,6 +11751,57 @@ void TestBrepCheckReportsDroppedFaceAndCapPlanarHolesRestoresIt() {
 
   // A second call has nothing to cap.
   Check(box.CapPlanarHoles() == 0, "a closed box has no hole to cap");
+}
+
+// An open cylinder (Extrude() of a real circle, cap=false) has two naked
+// CURVED rims, each a single closed edge - the case CapPlanarHoles()'s
+// own straight-polygon path could never triangulate (it refused any
+// non-linear naked edge outright) and used to leave open. It's now
+// capped genuinely via CapClosedCurvedLoop() (brep.h/sweep.cpp): the
+// exact circle curve itself, not a polygon approximation of it.
+void TestCapPlanarHolesCapsACurvedCircularRim() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  const double radius = 3.0;
+  const double height = 4.0;
+  const ON_Circle on_circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), radius);
+  ON_NurbsCurve nurbs_form;
+  Check(on_circle.GetNurbForm(nurbs_form) != 0, "ON_Circle::GetNurbForm succeeds");
+  NurbsCurve circle;
+  circle.raw() = nurbs_form;
+
+  Brep cyl = Brep::Extrude(circle, Vector3d(0, 0, height), /*cap=*/false);
+  Check(cyl.FaceCount() == 1 && !cyl.raw().IsSolid(), "the uncapped cylinder is a single open wall");
+  const Brep::CheckReport before = cyl.Check();
+  Check(before.Count(Brep::CheckIssue::Kind::NakedEdge) == 2 && before.issues.size() == 2,
+        "the open cylinder has exactly 2 naked edges (its two circular rims) and nothing else");
+
+  Check(cyl.CapPlanarHoles() == 2, "CapPlanarHoles() adds exactly two curved caps, one per rim");
+  Check(cyl.FaceCount() == 3, "the capped cylinder has 3 faces: wall + 2 circular caps");
+  const Brep::CheckReport after = cyl.Check();
+  Check(after.IsClean() && after.is_closed && after.is_oriented,
+        "the capped cylinder checks clean, closed and oriented");
+  Check(cyl.raw().IsValid() && cyl.raw().IsSolid(), "...and is a valid, genuinely topologically closed solid");
+
+  // Genuine curved caps, not a polygon approximation of them: the
+  // ANALYTIC (quadrature) Volume()/Area() match the closed forms
+  // pi*r^2*h / (2*pi*r*h + 2*pi*r^2) tightly - a polygonal cap could
+  // only ever approach these in the limit of infinitely many sides.
+  const double expected_volume = ON_PI * radius * radius * height;
+  const double expected_area = 2.0 * ON_PI * radius * height + 2.0 * ON_PI * radius * radius;
+  Check(std::fabs(cyl.Volume() - expected_volume) < 1e-4 * expected_volume,
+        "Volume() matches the exact cylinder closed form pi*r^2*h");
+  Check(std::fabs(cyl.Area() - expected_area) < 1e-4 * expected_area,
+        "Area() matches the exact cylinder closed form 2*pi*r*h + 2*pi*r^2");
+
+  const dino8::kernel::Mesh mesh = cyl.TessellateToClosedMesh(64, 8);
+  Check(mesh.IsClosedManifold(), "the capped cylinder's plain welded mesh is a closed manifold");
+
+  // A second call has nothing left to cap.
+  Check(cyl.CapPlanarHoles() == 0, "a closed cylinder has no hole to cap");
 }
 
 // Offset an edge by 1e-4: the top face is built at z = 1 + 1e-4, so none
@@ -47702,6 +47821,7 @@ int main() {
   TestRevolveProfileRejectsTooShortProfile();
   TestRevolveProfileFlatEndCaps();
   TestMeshRevolveProfilePartialAngle();
+  TestMeshRevolveProfileStartAngle();
   TestLoftClosedRingsSquareFrustumExactVolumeAndBoolean();
   TestLoftClosedRingsRejectsTooFewRingsAndMismatchedCounts();
   TestLoftClosedRingsConcaveEndCapsExactPrismVolume();
@@ -48149,6 +48269,7 @@ int main() {
   TestBrepAddHoleLoops();
   TestBrepCheckAndUnifyNormalsOnFlippedFace();
   TestBrepCheckReportsDroppedFaceAndCapPlanarHolesRestoresIt();
+  TestCapPlanarHolesCapsACurvedCircularRim();
   TestBrepJoinNakedEdgesRecordsTolerantEdges();
   TestBrepRemoveSliverAndDegenerateFacesHealHairlineStrip();
   TestBrepRemoveDegenerateEdgesCollapsesSharedMicroEdge();
