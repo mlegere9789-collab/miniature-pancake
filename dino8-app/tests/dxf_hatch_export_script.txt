@@ -11,6 +11,8 @@
 Rectangle 0,0,0 10,10,0
 SelLast
 Hatch Pattern=Solid
+SelNone
+SelHatch
 Export @TMP@/dxf_hatch_export.dxf
 New
 Open @TMP@/dxf_hatch_export.dxf
