@@ -783,15 +783,31 @@ What this repo does instead:
   returns `-1` instead of forwarding to OpenNURBS, whose own contract for
   that case (aliasing the "Default" layer) would be a surprising silent
   success for a caller who asked to add a named layer. `layer_index`
-  defaults to 0 (the model's always-present default layer, the same value
-  every existing object's attributes already carried), so the change is
-  additive - no existing caller's behavior changes. Verified with a real
-  round trip through an actual `.3dm` file: added a named, colored layer,
-  placed a `Mesh` on it by index, left a `Brep` on the default layer,
-  saved, reloaded, and confirmed the reloaded layer's name and color
-  exactly match what `AddLayer()` was given, the mesh's reloaded
-  `ON_3dmObjectAttributes::m_layer_index` matches the returned index, and
-  the brep's stayed at 0.
+  defaults to `-1`, OpenNURBS' own built-in sentinel for "no explicit
+  layer" (`ON_Layer::Default`, index -1, distinct from anything a real
+  layer-table entry can ever be indexed at) - **not** plain `0` as an
+  earlier version of this parameter did, a genuine order-dependent bug
+  fixed 2026-09-30: `AddLayer()`'s first call adds to what starts as a
+  completely *empty* layer table, so it - not any built-in "always there"
+  layer - claims manifest index 0, meaning a plain-0 default silently
+  aliased an object meant to stay on the true default layer onto
+  whichever named layer a caller happened to add, in either order. `-1`
+  can never collide with a real index `AddLayer()` returns, so the change
+  is additive in spirit (an object left on the default layer behaves the
+  same either way) even though the literal on-disk index it carries
+  changed. Verified with a real round trip through an actual `.3dm` file:
+  added a named, colored layer, placed a `Mesh` on it by index, left a
+  `Brep` on the default layer, saved, reloaded, and confirmed the reloaded
+  layer's name and color exactly match what `AddLayer()` was given, the
+  mesh's reloaded `ON_3dmObjectAttributes::m_layer_index` matches the
+  returned index, and the brep's stayed at `-1` - genuinely distinct from
+  the named layer's own index even when that layer is the first one added
+  (and so itself claims index 0) - plus a dedicated regression test
+  (`TestModelDefaultLayerSurvivesLaterAddLayerCall`) reproducing the
+  actual failure order: an object added with no layer at all before any
+  layer exists, followed by a real `AddLayer()` call that still claims
+  index 0, confirming the earlier object keeps its `-1` sentinel rather
+  than being silently reassigned onto the newly added layer.
 - A new `render_color` parameter on every `Model::Add*()`, closing a third
   gap from the same PARITY_MAP.md evidence as `name` and `layer_index`
   above: before this, an object's display color always came from its

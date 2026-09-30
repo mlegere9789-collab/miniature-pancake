@@ -109,7 +109,7 @@ struct MaterialInfo {
 // parameters themselves use on the write side.
 struct ObjectAttributes {
   std::string name;
-  int layer_index = 0;
+  int layer_index = -1;
   std::optional<Color> render_color;
   std::optional<int> linetype_index;
   std::vector<int> group_indices;
@@ -213,19 +213,35 @@ class Model {
   // selection-by-name, block/part naming, and round-tripping identity
   // across a save/reload; and which layer the object lives on, needed for
   // the same reasons AddLayer() itself exists - see its own doc comment
-  // above). An empty (default) `name` and a `layer_index` of 0 (the
-  // model's always-present default layer, `AddLayer()`'s own doc comment
-  // aside) leave the attributes exactly as before - no behavior
-  // change for existing callers. A non-empty `name` is set via
+  // above). An empty (default) `name` leaves the name exactly as before -
+  // no behavior change for existing callers. A non-empty `name` is set via
   // ON_3dmObjectAttributes::SetName(..., /*bFixInvalidName=*/true), the
   // same call dino8-app/src/io/File3dm.cpp already uses for every other
   // named entity it writes (layers, views, materials, ...) - `true` fixes
   // up characters ON_ModelComponent::IsValidComponentName() would
   // otherwise reject (e.g. a name that's pure whitespace) rather than
-  // silently dropping the name or failing outright. `layer_index` is
-  // written straight to ON_3dmObjectAttributes::m_layer_index; passing an
-  // index AddLayer() didn't return is a caller error (as it is for
-  // ONX_Model itself), not something this wrapper detects.
+  // silently dropping the name or failing outright.
+  //
+  // `layer_index` defaults to -1, not 0: -1 is OpenNURBS' own sentinel for
+  // "no explicit layer" (`ON_Layer::Default`, opennurbs_layer.h, is
+  // documented "index = -1, id set, unique and persistent", and
+  // `ONX_Model::LayerFromIndex()` falls back to that same built-in Default
+  // layer for any index its own layer table doesn't recognize - see
+  // `LayerAt()`'s own doc comment below). A real, previously-confirmed
+  // defect lived here: `AddLayer()`'s very first call adds to what starts
+  // as an *empty* layer table, so it - not any built-in "always-present"
+  // layer - claims index 0; an object left at the old default of plain 0
+  // therefore silently ended up aliased onto whatever named layer a caller
+  // happened to add first, rather than staying on a genuine default layer
+  // distinct from every named one (PARITY_MAP.md's own "kernel-level data
+  // exchange" evidence named this precisely: "the true OpenNURBS default
+  // layer index is -1 ... first AddLayer() call takes index 0"). -1 can
+  // never collide with a real index `AddLayer()` returns (always >= 0), so
+  // "no layer given" now stays permanently distinguishable from "layer 0"
+  // no matter how many named layers get added afterward, in any order.
+  // `layer_index` is written straight to ON_3dmObjectAttributes::m_layer_index;
+  // passing a non-negative index AddLayer() didn't return is a caller error
+  // (as it is for ONX_Model itself), not something this wrapper detects.
   //
   // Every Add*() below also takes an optional `render_color`. Before this,
   // an object's displayed color could only ever come from its layer
@@ -288,12 +304,12 @@ class Model {
   // ON::material_from_object, the same "object, not layer" override pattern
   // `render_color`/`linetype_index` use for their own fields.
   void AddCurve(const NurbsCurve& curve, const std::string& name = std::string(),
-                int layer_index = 0, std::optional<Color> render_color = std::nullopt,
+                int layer_index = -1, std::optional<Color> render_color = std::nullopt,
                 const UserStrings& user_strings = UserStrings(),
                 std::optional<int> linetype_index = std::nullopt,
                 const std::vector<int>& group_indices = std::vector<int>(),
                 std::optional<int> material_index = std::nullopt);
-  void AddBrep(const Brep& brep, const std::string& name = std::string(), int layer_index = 0,
+  void AddBrep(const Brep& brep, const std::string& name = std::string(), int layer_index = -1,
                std::optional<Color> render_color = std::nullopt,
                const UserStrings& user_strings = UserStrings(),
                std::optional<int> linetype_index = std::nullopt,
@@ -307,7 +323,7 @@ class Model {
   // a .3dm file at all, only to export it separately via
   // Mesh::SaveObj()/SaveStl(). Same pattern as the other two: copies
   // `mesh`'s underlying ON_Mesh into a new model geometry component.
-  void AddMesh(const Mesh& mesh, const std::string& name = std::string(), int layer_index = 0,
+  void AddMesh(const Mesh& mesh, const std::string& name = std::string(), int layer_index = -1,
                std::optional<Color> render_color = std::nullopt,
                const UserStrings& user_strings = UserStrings(),
                std::optional<int> linetype_index = std::nullopt,
@@ -319,7 +335,7 @@ class Model {
   // all" gap AddMesh() closed, just for SubD instead of Mesh. Same
   // pattern: copies the SubD's underlying ON_SubD into a new model
   // geometry component.
-  void AddSubD(const SubD& subd, const std::string& name = std::string(), int layer_index = 0,
+  void AddSubD(const SubD& subd, const std::string& name = std::string(), int layer_index = -1,
                std::optional<Color> render_color = std::nullopt,
                const UserStrings& user_strings = UserStrings(),
                std::optional<int> linetype_index = std::nullopt,
@@ -337,7 +353,7 @@ class Model {
   // `cloud`'s underlying ON_PointCloud (positions, and per-point colors/
   // normals when present) into a new model geometry component.
   void AddPointCloud(const PointCloud& cloud, const std::string& name = std::string(),
-                     int layer_index = 0, std::optional<Color> render_color = std::nullopt,
+                     int layer_index = -1, std::optional<Color> render_color = std::nullopt,
                      const UserStrings& user_strings = UserStrings(),
                      std::optional<int> linetype_index = std::nullopt,
                      const std::vector<int>& group_indices = std::vector<int>(),
@@ -366,15 +382,20 @@ class Model {
   ObjectAttributes ObjectAttributesAt(int index) const;
 
   // Returns the number of layers explicitly added via AddLayer() above (0
-  // if none have been - see AddLayer()'s own doc comment on the -1 vs. 0
-  // default-layer-index wrinkle this deliberately does not paper over).
+  // if none have been). Every Add*() method's own `layer_index` parameter
+  // defaults to -1, OpenNURBS' own built-in "Default" layer sentinel
+  // (see that parameter's own doc comment above) rather than a real entry
+  // in this table, so an object left on the default layer is never counted
+  // here even when this returns 0.
   int LayerCount() const;
 
   // Returns the layer at `layer_index` (as returned by AddLayer() above) -
   // the read-side counterpart to AddLayer()'s own `color`/`linetype_index`
   // parameters, same gap ObjectAttributesAt() above closes for objects.
-  // `layer_index` not naming a layer this model actually has returns a
-  // default-constructed LayerInfo.
+  // `layer_index` not naming a layer this model actually has - including
+  // -1, the built-in Default layer's own sentinel index, which never
+  // occupies a real slot in this table - returns a default-constructed
+  // LayerInfo.
   LayerInfo LayerAt(int layer_index) const;
 
   // Returns the number of linetypes explicitly added via AddLinetype()

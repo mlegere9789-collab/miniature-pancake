@@ -48,7 +48,7 @@ bool MeshFaceIndicesInRange(const ON_Mesh& mesh) {
 // ON::material_from_object. See file_io.h's own doc comment on the
 // `name`/`layer_index`/`render_color`/`user_strings`/`linetype_index`/
 // `group_indices`/`material_index` parameters for why this exists and why
-// an empty name, a layer_index of 0, std::nullopt, and an empty list are
+// an empty name, a layer_index of -1, std::nullopt, and an empty list are
 // all no-ops.
 ON_3dmObjectAttributes MakeAttributes(const std::string& name, int layer_index,
                                        std::optional<Color> render_color,

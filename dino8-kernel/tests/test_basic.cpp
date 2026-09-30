@@ -6021,13 +6021,85 @@ void TestModelAddLayerRoundTrips() {
             "the reloaded mesh's layer index exactly matches what AddMesh() was given");
     } else if (dynamic_cast<const ON_Brep*>(geometry) != nullptr) {
       found_default_brep = true;
-      Check(attributes->m_layer_index == 0,
-            "the reloaded brep - added with no layer_index argument - stayed on the default "
-            "layer (index 0), proving the new parameter is a no-op when omitted");
+      Check(attributes->m_layer_index == -1,
+            "the reloaded brep - added with no layer_index argument - carries OpenNURBS' own "
+            "-1 Default-layer sentinel, not a real layer-table index");
+      Check(attributes->m_layer_index != layer_index,
+            "the default-layer brep's layer index is genuinely distinct from \"MyLayer\"'s own "
+            "index, even though \"MyLayer\" - the first layer ever added to this model - "
+            "claimed manifest index 0, the same value the old plain-0 default used to collide "
+            "with (the bug this -1 sentinel fixes)");
+      const ON_ModelComponentReference resolved = loaded.raw().LayerFromIndex(-1);
+      const ON_Layer* resolved_layer = ON_Layer::Cast(resolved.ModelComponent());
+      Check(resolved_layer != nullptr && resolved_layer->Name() != ON_wString("MyLayer"),
+            "LayerFromIndex(-1) resolves to OpenNURBS' own built-in Default layer, not the "
+            "named layer that happens to occupy index 0");
     }
   }
   Check(found_layered_mesh && found_default_brep,
         "both object types (layered mesh, default-layer brep) were found in the reloaded model");
+
+  std::remove(path.c_str());
+}
+
+// The specific order-dependent defect PARITY_MAP.md's own "kernel-level data
+// exchange" evidence named: "the true OpenNURBS default layer index is -1
+// ... first AddLayer() call takes index 0". TestModelAddLayerRoundTrips()
+// above always calls AddLayer() BEFORE adding the default-layer object, so
+// even the old, buggy plain-0 default happened to keep that one test
+// passing (both the newly added layer and the default-layer object landed
+// on manifest index 0, and the test only ever checked the mesh/brep against
+// each other, not against a value recorded before any layer existed). This
+// test instead reproduces the actual failure order: an object is added with
+// no layer at all while the model's layer table is still completely empty,
+// and only afterward does a real named layer get added - the exact
+// sequence where a plain-0 default silently reassigns the earlier object
+// onto the newly added layer, since both would resolve to the very first
+// slot (index 0) in an empty table.
+void TestModelDefaultLayerSurvivesLaterAddLayerCall() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Color;
+  using dino8::kernel::Model;
+  using dino8::kernel::Result;
+
+  Model model;
+  Check(model.LayerCount() == 0, "a fresh Model starts with no layers in its own layer table");
+
+  // Added first, with no layer_index argument, while the layer table is
+  // still empty - the exact ordering the old plain-0 default got wrong.
+  const auto early_brep = Brep::Box(0, 0, 0, 1, 1, 1);
+  model.AddBrep(early_brep, "AddedBeforeAnyLayer");
+
+  // Only now does a real named layer get added - it claims manifest index
+  // 0, the model's very first layer-table slot, precisely the slot the old
+  // plain-0 default would have collided with.
+  const int later_layer_index = model.AddLayer("AddedAfterward", Color{9, 8, 7});
+  Check(later_layer_index == 0,
+        "AddLayer()'s first call still claims manifest index 0 (unchanged) - the defect this "
+        "test guards against is the default-layer object silently ending up on THIS layer, not "
+        "a change to what AddLayer() itself returns");
+
+  const std::string path = "dino8_kernel_model_default_layer_survives_addlayer_test.3dm";
+  Check(model.Save(path) == Result::Ok, ".3dm save succeeded");
+
+  Model loaded;
+  Check(Model::Load(path, loaded) == Result::Ok, ".3dm load succeeded");
+
+  const auto attributes = loaded.ObjectAttributesAt(0);
+  Check(attributes.name == "AddedBeforeAnyLayer", "the reloaded object is the one added first");
+  Check(attributes.layer_index == -1,
+        "the object added before any layer existed still carries the -1 Default-layer "
+        "sentinel after a later AddLayer() call claimed manifest index 0 - it was never "
+        "silently reassigned onto \"AddedAfterward\"");
+  Check(attributes.layer_index != later_layer_index,
+        "the object's layer index is genuinely distinct from the later-added layer's own index, "
+        "proving no aliasing occurred");
+
+  const ON_ModelComponentReference resolved = loaded.raw().LayerFromIndex(-1);
+  const ON_Layer* resolved_layer = ON_Layer::Cast(resolved.ModelComponent());
+  Check(resolved_layer != nullptr && resolved_layer->Name() != ON_wString("AddedAfterward"),
+        "LayerFromIndex(-1) resolves to OpenNURBS' own built-in Default layer, never the real "
+        "named layer that happens to occupy manifest index 0");
 
   std::remove(path.c_str());
 }
@@ -6604,9 +6676,15 @@ void TestModelReadAccessorsRoundTrip() {
             "was given");
     } else {
       found_default_mesh = true;
-      Check(attributes.name.empty() && attributes.layer_index == 0,
+      Check(attributes.name.empty() && attributes.layer_index == -1,
             "ObjectAttributesAt() reports the default-added object's name/layer_index exactly "
-            "as the (omitted) Add*() defaults");
+            "as the (omitted) Add*() defaults - -1, OpenNURBS' own Default-layer sentinel, not "
+            "a real layer-table index");
+      Check(attributes.layer_index != structural_layer_index,
+            "the default-added mesh's layer index is genuinely distinct from \"Structural\"'s "
+            "own index, even though \"Structural\" - the first layer added to this model - "
+            "claimed manifest index 0, the same value the old plain-0 default used to collide "
+            "with");
       Check(!attributes.render_color.has_value(),
             "ObjectAttributesAt() reports std::nullopt (inherit from layer), not some other "
             "placeholder, for an object added with no render_color argument");
@@ -45826,6 +45904,7 @@ int main() {
   TestModelAddPointCloudRoundTrips();
   TestModelAddObjectNameRoundTrips();
   TestModelAddLayerRoundTrips();
+  TestModelDefaultLayerSurvivesLaterAddLayerCall();
   TestModelAddRenderColorRoundTrips();
   TestModelAddUserStringsRoundTrips();
   TestModelAddLinetypeRoundTrips();
