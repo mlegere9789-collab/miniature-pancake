@@ -4,6 +4,7 @@
 #include <cmath>
 #include <limits>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 #include "dino8/kernel/boolean.h"
@@ -250,6 +251,124 @@ EndOccupancy ClassifyEndOccupancy(const Mesh& mesh, const CylindricalFaceCandida
   return {mesh.ContainsPoint(p_near), mesh.ContainsPoint(p_far)};
 }
 
+// One matched pair of coaxial, adjacent, non-overlapping full-cylinder
+// candidates - the geometric "stepped" pattern both
+// RecognizeCounterboreHoles() (concave candidates) and
+// RecognizeSteppedBosses() (convex candidates) look for, extracted here
+// so neither duplicates the other's own matching loop (the same "share
+// the scanning geometry, not a second copy of the loop" precedent
+// ScanFullCylinderFaces() itself already set for RecognizeHoles()/
+// RecognizeBosses()/RecognizeCounterboreHoles()). Deliberately agnostic
+// to which candidate is wider: a counterbore's own recess is ALWAYS the
+// shallower, entry-side segment (RecognizeCounterboreHoles() itself
+// checks that), but a stepped BOSS has no such fixed convention - either
+// segment can be the one actually attached to the body (see
+// SteppedBossFeature's own doc comment) - so this helper reports
+// `first`/`second` purely by which end of `first` genuinely touches
+// `second` in 3D, never by radius.
+//
+// `origin` is `first`'s own OUTER (non-touching) end; `axis` is a unit
+// vector from there through the step and on to `second`'s own OUTER end;
+// `first_length`/`second_length` are each segment's own axial length.
+// Each candidate index is consumed by at most one pair; a chain of 3+
+// same-axis steps only ever contributes its first adjacent pair (a
+// disclosed, not-yet-closed limitation - see RecognizeCounterboreHoles()'s
+// and RecognizeSteppedBosses()'s own doc comments).
+struct SteppedPair {
+  size_t first_index = 0;
+  size_t second_index = 0;
+  Point3d origin;
+  Vector3d axis;
+  double first_length = 0.0;
+  double second_length = 0.0;
+};
+
+std::vector<SteppedPair> FindAdjacentSteppedPairs(const std::vector<CylindricalFaceCandidate>& candidates) {
+  std::vector<SteppedPair> pairs;
+  std::vector<bool> consumed(candidates.size(), false);
+  const double kTol = tolerance::kDistance * 100.0;
+
+  for (size_t i = 0; i < candidates.size(); ++i) {
+    if (consumed[i]) continue;
+    for (size_t j = 0; j < candidates.size(); ++j) {
+      if (i == j || consumed[j]) continue;
+      const CylindricalFaceCandidate& a = candidates[i];
+      const CylindricalFaceCandidate& b = candidates[j];
+      if (a.radius == b.radius) continue;  // same radius - not a step at all
+
+      // Same axis LINE: parallel directions (either sign) and `b`'s own
+      // axis reference point sitting ON `a`'s axis line, not merely
+      // parallel to it (two independent features on parallel axes must
+      // not merge).
+      const double align = std::fabs(ON_DotProduct(a.axis_dir, b.axis_dir));
+      if (align < 1.0 - tolerance::kAlignment) continue;
+      const Vector3d to_b = b.axis_ref - a.axis_ref;
+      const Vector3d off_axis = to_b - ON_DotProduct(to_b, a.axis_dir) * a.axis_dir;
+      if (off_axis.Length() > kTol) continue;  // not the same line
+
+      // Each candidate's own two ends, in 3D - deliberately not compared
+      // by sign of axis_dir (each candidate's own independent ON_Cylinder
+      // fit gives it an arbitrary, unrelated sign - a sign-based guess
+      // here was tried and got the projection backwards for the
+      // anti-parallel case). Exactly one of `a`'s own two ends must
+      // coincide with exactly one of `b`'s own two ends for this to be a
+      // genuine adjacent, non-overlapping step; the two OTHER
+      // (non-touching) ends become this pair's own two outer termini.
+      const Point3d a_lo = a.axis_ref + a.t_min * a.axis_dir;
+      const Point3d a_hi = a.axis_ref + a.t_max * a.axis_dir;
+      const Point3d b_lo = b.axis_ref + b.t_min * b.axis_dir;
+      const Point3d b_hi = b.axis_ref + b.t_max * b.axis_dir;
+
+      Point3d touch, a_outer, b_outer;
+      if (a_hi.DistanceTo(b_lo) <= kTol) {
+        touch = a_hi;
+        a_outer = a_lo;
+        b_outer = b_hi;
+      } else if (a_lo.DistanceTo(b_hi) <= kTol) {
+        touch = a_lo;
+        a_outer = a_hi;
+        b_outer = b_lo;
+      } else if (a_hi.DistanceTo(b_hi) <= kTol) {
+        touch = a_hi;
+        a_outer = a_lo;
+        b_outer = b_lo;
+      } else if (a_lo.DistanceTo(b_lo) <= kTol) {
+        touch = a_lo;
+        a_outer = a_hi;
+        b_outer = b_hi;
+      } else {
+        continue;  // no shared endpoint at all - not adjacent
+      }
+
+      const double first_length = a_outer.DistanceTo(touch);
+      const double second_length = b_outer.DistanceTo(touch);
+      if (!(first_length > 0.0) || !(second_length > 0.0)) continue;  // degenerate
+
+      Vector3d axis = touch - a_outer;
+      if (!axis.Unitize()) continue;
+      // `axis` must actually continue straight on to `b_outer` (a genuine
+      // adjacent step, not an overlap or a fold-back) - confirmed
+      // directly here, not assumed from either candidate's own
+      // independently-fitted axis.
+      const Point3d predicted_b_outer = touch + axis * second_length;
+      if (predicted_b_outer.DistanceTo(b_outer) > kTol) continue;
+
+      SteppedPair sp;
+      sp.first_index = i;
+      sp.second_index = j;
+      sp.origin = a_outer;
+      sp.axis = axis;
+      sp.first_length = first_length;
+      sp.second_length = second_length;
+      pairs.push_back(sp);
+      consumed[i] = true;
+      consumed[j] = true;
+      break;
+    }
+  }
+  return pairs;
+}
+
 }  // namespace
 
 std::vector<HoleFeature> RecognizeHoles(const Brep& solid) {
@@ -364,95 +483,130 @@ std::vector<CounterboreFeature> RecognizeCounterboreHoles(const Brep& solid) {
 
   const Mesh solid_mesh = solid.TessellateToClosedMesh(16, 32);
 
-  std::vector<bool> consumed(candidates.size(), false);
-  for (size_t i = 0; i < candidates.size(); ++i) {
-    if (consumed[i]) continue;
-    for (size_t j = 0; j < candidates.size(); ++j) {
-      if (i == j || consumed[j]) continue;
-      const CylindricalFaceCandidate& a = candidates[i];
-      const CylindricalFaceCandidate& b = candidates[j];
-
-      // Same axis LINE: parallel directions (either sign - `b`'s own
-      // direction gets flipped below once we know which of the two
-      // faces is the shallower, entry-side one) and `b`'s own axis
-      // reference point sitting ON `a`'s axis line, not merely parallel
-      // to it (two independent holes drilled on parallel axes must not
-      // merge).
-      const double align = std::fabs(ON_DotProduct(a.axis_dir, b.axis_dir));
-      if (align < 1.0 - tolerance::kAlignment) continue;
-      const Vector3d to_b = b.axis_ref - a.axis_ref;
-      const Vector3d off_axis = to_b - ON_DotProduct(to_b, a.axis_dir) * a.axis_dir;
-      if (off_axis.Length() > tolerance::kDistance * 100.0) continue;  // not the same line
-
-      // The wider face must be the shallower (entry-side) one: its own
-      // far end, projected into `a`'s own coordinate frame, must
-      // coincide with the narrower face's own near end - an adjacent,
-      // non-overlapping step, CounterboreHole()'s/MakeCounterboreHole()'s
-      // own construction, not two overlapping or gapped cylinders.
-      const CylindricalFaceCandidate* wide = nullptr;
-      const CylindricalFaceCandidate* narrow = nullptr;
-      if (a.radius > b.radius) {
-        wide = &a;
-        narrow = &b;
-      } else if (b.radius > a.radius) {
-        wide = &b;
-        narrow = &a;
-      } else {
-        continue;  // same radius - not a counterbore step at all
-      }
-
-      // `narrow`'s own axis may point either way relative to `wide`'s, so
-      // don't assume which of its own two ends (t_min or t_max, in its
-      // own independently-scanned, arbitrary-sign frame) is the one
-      // touching `wide` - compute BOTH of narrow's own end points in 3D
-      // and pick whichever actually sits at `wide`'s own far end, rather
-      // than guessing from the two axes' relative sign (a sign-based
-      // guess here was tried and got the projection backwards for the
-      // anti-parallel case - comparing the two candidate 3D points
-      // directly has no sign to get wrong).
-      const Point3d wide_far = wide->axis_ref + wide->t_max * wide->axis_dir;
-      const Point3d narrow_end_lo = narrow->axis_ref + narrow->t_min * narrow->axis_dir;
-      const Point3d narrow_end_hi = narrow->axis_ref + narrow->t_max * narrow->axis_dir;
-      const bool lo_is_near = wide_far.DistanceTo(narrow_end_lo) <= wide_far.DistanceTo(narrow_end_hi);
-      const Point3d narrow_near_pt = lo_is_near ? narrow_end_lo : narrow_end_hi;
-      const Point3d narrow_far_pt = lo_is_near ? narrow_end_hi : narrow_end_lo;
-      if (wide_far.DistanceTo(narrow_near_pt) > tolerance::kDistance * 100.0) continue;
-
-      // Confirmed: `wide`'s far end is exactly `narrow`'s near end.
-      // Project `narrow`'s own far end onto `wide`'s own axis (a plain
-      // dot product, immune to whichever sign `narrow`'s own axis_dir
-      // happened to come back as) to get its position in `wide`'s own t
-      // coordinate, then build the merged feature in `wide`'s own frame -
-      // `wide`'s near end is the counterbore's own entry point, this
-      // projected value is the pilot bore's own far end.
-      const double wide_span = wide->t_max - wide->t_min;
-      const double far_t = ON_DotProduct(narrow_far_pt - wide->axis_ref, wide->axis_dir);
-      const double narrow_span = far_t - wide->t_max;
-      if (!(narrow_span > 0.0)) continue;  // degenerate: narrow's far end doesn't extend past the step
-
-      CylindricalFaceCandidate merged = *wide;
-      merged.t_max = far_t;
-      const EndOccupancy occ = ClassifyEndOccupancy(solid_mesh, merged);
-      const bool near_open = !occ.near_inside;
-      const bool far_open = !occ.far_inside;
-      if (!near_open) continue;  // a counterbore's own entry must be open to the outside
-
-      CounterboreFeature cf;
-      cf.origin = wide->axis_ref + wide->t_min * wide->axis_dir;
-      cf.axis = wide->axis_dir;
-      cf.counterbore_radius = wide->radius;
-      cf.counterbore_depth = wide_span;
-      cf.drill_radius = narrow->radius;
-      cf.drill_depth = wide_span + narrow_span;
-      cf.through = far_open;
-      cf.counterbore_face_index = wide->face_index;
-      cf.drill_face_index = narrow->face_index;
-      out.push_back(cf);
-
-      consumed[i] = true;
-      consumed[j] = true;
-      break;
+  for (const SteppedPair& pair : FindAdjacentSteppedPairs(candidates)) {
+    // A counterbore's own recess is ALWAYS the shallower, entry-side
+    // segment - unlike a stepped boss (RecognizeSteppedBosses() below),
+    // there is no "narrow first" counterbore. FindAdjacentSteppedPairs()
+    // itself makes no such assumption (`first`/`second` are assigned
+    // purely by which end happens to touch, not by radius), so normalize
+    // here: if `second` is actually the wider one, re-express the SAME
+    // pair with `wide` at `origin` instead of silently rejecting it.
+    const CylindricalFaceCandidate* wide = &candidates[pair.first_index];
+    const CylindricalFaceCandidate* narrow = &candidates[pair.second_index];
+    Point3d entry = pair.origin;
+    Vector3d into_material = pair.axis;
+    double wide_len = pair.first_length, narrow_len = pair.second_length;
+    if (wide->radius < narrow->radius) {
+      std::swap(wide, narrow);
+      entry = pair.origin + pair.axis * (pair.first_length + pair.second_length);
+      into_material = -pair.axis;
+      std::swap(wide_len, narrow_len);
     }
+
+    CylindricalFaceCandidate merged;
+    merged.radius = wide->radius;
+    merged.axis_ref = entry;
+    merged.axis_dir = into_material;
+    merged.t_min = 0.0;
+    merged.t_max = wide_len + narrow_len;
+    const EndOccupancy occ = ClassifyEndOccupancy(solid_mesh, merged);
+    const bool near_open = !occ.near_inside;
+    const bool far_open = !occ.far_inside;
+    if (!near_open) continue;  // a counterbore's own entry must be open to the outside
+
+    CounterboreFeature cf;
+    cf.origin = entry;
+    cf.axis = into_material;
+    cf.counterbore_radius = wide->radius;
+    cf.counterbore_depth = wide_len;
+    cf.drill_radius = narrow->radius;
+    cf.drill_depth = wide_len + narrow_len;
+    cf.through = far_open;
+    cf.counterbore_face_index = wide->face_index;
+    cf.drill_face_index = narrow->face_index;
+    out.push_back(cf);
+  }
+
+  return out;
+}
+
+std::vector<SteppedBossFeature> RecognizeSteppedBosses(const Brep& solid) {
+  std::vector<SteppedBossFeature> out;
+
+  std::vector<CylindricalFaceCandidate> candidates;
+  for (CylindricalFaceCandidate& c : ScanFullCylinderFaces(solid)) {
+    if (!c.concave) candidates.push_back(c);
+  }
+  if (candidates.size() < 2) return out;
+
+  const Mesh solid_mesh = solid.TessellateToClosedMesh(16, 32);
+
+  for (const SteppedPair& pair : FindAdjacentSteppedPairs(candidates)) {
+    const CylindricalFaceCandidate& first = candidates[pair.first_index];
+    const CylindricalFaceCandidate& second = candidates[pair.second_index];
+
+    // Same two on-axis probes RecognizeBosses() uses on a single
+    // candidate, applied here to the MERGED two-segment span -
+    // `near_attached` reads `first`'s own outer end (pair.origin),
+    // `far_attached` reads `second`'s own outer end. Unlike a
+    // counterbore, a stepped boss has no fixed "wide is always first"
+    // convention (see SteppedBossFeature's own doc comment), so this
+    // reads BOTH orientations directly off which end is actually
+    // attached, rather than assuming one from radius.
+    CylindricalFaceCandidate merged;
+    merged.radius = std::max(first.radius, second.radius);
+    merged.axis_ref = pair.origin;
+    merged.axis_dir = pair.axis;
+    merged.t_min = 0.0;
+    merged.t_max = pair.first_length + pair.second_length;
+    const EndOccupancy occ = ClassifyEndOccupancy(solid_mesh, merged);
+    const bool near_attached = occ.near_inside;
+    const bool far_attached = occ.far_inside;
+    if (near_attached && far_attached) continue;  // both ends embedded: not a visible feature
+
+    SteppedBossFeature sf;
+    if (!near_attached && !far_attached) {
+      // Free on both ends - a free-standing stepped rod (see
+      // SteppedBossFeature's own doc comment for why this is NOT a chain
+      // embedded partway through a wall). Pin the origin at `first`'s own
+      // outer end arbitrarily, mirroring BossFeature's own through case.
+      sf.through = true;
+      sf.origin = pair.origin;
+      sf.axis = pair.axis;
+      sf.base_radius = first.radius;
+      sf.base_height = pair.first_length;
+      sf.tip_radius = second.radius;
+      sf.tip_height = pair.second_length;
+      sf.base_face_index = first.face_index;
+      sf.tip_face_index = second.face_index;
+    } else if (far_attached) {
+      // `second`'s own outer end is the base (e.g. a narrow post rising
+      // from a wide pad at the free end) - axis points from there back
+      // toward `first`'s own outer end, the tip.
+      sf.through = false;
+      sf.origin = pair.origin + pair.axis * (pair.first_length + pair.second_length);
+      sf.axis = -pair.axis;
+      sf.base_radius = second.radius;
+      sf.base_height = pair.second_length;
+      sf.tip_radius = first.radius;
+      sf.tip_height = pair.first_length;
+      sf.base_face_index = second.face_index;
+      sf.tip_face_index = first.face_index;
+    } else {
+      // near_attached: `first`'s own outer end is the base - e.g. a wide
+      // shoulder/flange at the base, narrower shaft continuing to the
+      // free tip.
+      sf.through = false;
+      sf.origin = pair.origin;
+      sf.axis = pair.axis;
+      sf.base_radius = first.radius;
+      sf.base_height = pair.first_length;
+      sf.tip_radius = second.radius;
+      sf.tip_height = pair.second_length;
+      sf.base_face_index = first.face_index;
+      sf.tip_face_index = second.face_index;
+    }
+    out.push_back(sf);
   }
 
   return out;

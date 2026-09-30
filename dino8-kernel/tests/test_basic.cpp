@@ -49821,6 +49821,143 @@ void TestRecognizeCounterboreHolesRoundTrip() {
         "RecognizeCounterboreHoles finds no compound step on a plain single-radius hole");
 }
 
+// The boss-side mirror of TestRecognizeCounterboreHolesRoundTrip() above:
+// closes BossFeature's own disclosed "a counterbore/countersink's own
+// second step ... has no boss-side analogue implemented here" gap.
+// Built via BooleanCombineMixed(box, TWO-segment bare tube, Union) - a
+// single compound tool with two adjacent, non-overlapping
+// Brep::CylindricalFace segments of different radii, CounterboreHole()'s
+// own "compound cutter" construction (features.cpp), additive instead of
+// subtractive. Deliberately NOT BooleanCombineGeneral(), whose own
+// disclosed Union-side "floating base cap" gap (see BossFeature's own doc
+// comment, and MakeTwoSegmentCylinder()'s own doc comment above) would
+// leave Mesh::ContainsPoint() wrong across the whole embedded span; a
+// flush-base Union boss built via BooleanCombineMixed is already
+// well-tested elsewhere (TestBooleanCombineMixedUnionBossFlushBaseVolumeAndCapSeamIsClosed) -
+// confirmed directly (dino8_scratch_test) that its own two-segment
+// generalization here produces a genuinely valid ON_Brep with the correct
+// closed-form volume (box + the two cylinders' own volumes) and that
+// RecognizeSteppedBosses() reads it back correctly, in BOTH physical
+// orientations (a wide shoulder at the base narrowing to the tip, and the
+// opposite - a narrow post based in a wide pad) - unlike a counterbore, a
+// stepped boss has no fixed "wide is always first" convention.
+void TestRecognizeSteppedBossesRoundTrip() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::RecognizeBosses;
+  using dino8::kernel::RecognizeSteppedBosses;
+  using dino8::kernel::SteppedBossFeature;
+  using dino8::kernel::Vector3d;
+
+  const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+  const Point3d base(5, 5, 10.0);
+  const Vector3d up(0, 0, 1);
+  const double shoulder_radius = 2.0, shoulder_height = 1.0;
+  const double shaft_radius = 0.8, shaft_height = 3.0;
+  const ON_Plane frame = FrameFromAxisForGeneralBooleanTest(base, up);
+
+  {
+    // The common case: a wide shoulder flush with the box's own top face,
+    // narrowing to a free-standing shaft.
+    Brep::CylindricalFace shoulder_cf;
+    shoulder_cf.frame = frame;
+    shoulder_cf.radius = shoulder_radius;
+    shoulder_cf.angle = 2.0 * ON_PI;
+    shoulder_cf.length = shoulder_height;
+
+    Brep::CylindricalFace shaft_cf;
+    shaft_cf.frame = frame;
+    shaft_cf.frame.origin = frame.PointAt(0, 0, shoulder_height);
+    shaft_cf.radius = shaft_radius;
+    shaft_cf.angle = 2.0 * ON_PI;
+    shaft_cf.length = shaft_height;
+
+    const Brep tool = Brep::FromMixedFaces({}, {shoulder_cf, shaft_cf});
+    const Brep result = BooleanCombineMixed(box, tool, BooleanOp::Union);
+
+    // Sanity: RecognizeBosses() itself still sees this as ONE boss (its
+    // own on-axis probe for the shoulder's own far end lands inside the
+    // shaft, so the shoulder alone reads as "both ends attached" and is
+    // silently skipped - see RecognizeBosses()'s own doc comment) -
+    // confirms this fixture actually exercises a genuine compound step,
+    // not something RecognizeBosses() already handles correctly as two
+    // separate features the way MakeTwoSegmentCylinder()'s own
+    // same-radius fixture does.
+    Check(RecognizeBosses(result).size() == 1,
+          "sanity: RecognizeBosses() itself reports only the shaft as an independent boss (the wider shoulder's "
+          "own far end reads as attached to the shaft above it, not free)");
+
+    const std::vector<SteppedBossFeature> found = RecognizeSteppedBosses(result);
+    Check(found.size() == 1, "RecognizeSteppedBosses merges the two segments into exactly one compound feature");
+    const SteppedBossFeature& sf = found[0];
+    Check(!sf.through, "RecognizeSteppedBosses reports this flush-base boss as NOT through");
+    Check(sf.origin.DistanceTo(base) < 1e-6, "RecognizeSteppedBosses recovers the boss's own exact base/attach point");
+    Check((sf.axis - up).Length() < 1e-6, "RecognizeSteppedBosses recovers the boss's own exact outward direction");
+    Check(std::abs(sf.base_radius - shoulder_radius) < 1e-6,
+          "RecognizeSteppedBosses recovers the shoulder's own exact radius as the base segment");
+    Check(std::abs(sf.base_height - shoulder_height) < 1e-6,
+          "RecognizeSteppedBosses recovers the shoulder's own exact height as the base segment");
+    Check(std::abs(sf.tip_radius - shaft_radius) < 1e-6,
+          "RecognizeSteppedBosses recovers the shaft's own exact radius as the tip segment");
+    Check(std::abs(sf.tip_height - shaft_height) < 1e-6,
+          "RecognizeSteppedBosses recovers the shaft's own exact height as the tip segment");
+  }
+  {
+    // The opposite orientation: a NARROW post based flush with the box's
+    // own top face, flaring out to a WIDE free end - confirms
+    // RecognizeSteppedBosses() doesn't assume the wider segment is always
+    // the one attached (unlike RecognizeCounterboreHoles()'s own fixed
+    // "recess is always the entry side" convention).
+    Brep::CylindricalFace narrow_cf;
+    narrow_cf.frame = frame;
+    narrow_cf.radius = shaft_radius;
+    narrow_cf.angle = 2.0 * ON_PI;
+    narrow_cf.length = shoulder_height;
+
+    Brep::CylindricalFace wide_cf;
+    wide_cf.frame = frame;
+    wide_cf.frame.origin = frame.PointAt(0, 0, shoulder_height);
+    wide_cf.radius = shoulder_radius;
+    wide_cf.angle = 2.0 * ON_PI;
+    wide_cf.length = shaft_height;
+
+    const Brep tool = Brep::FromMixedFaces({}, {narrow_cf, wide_cf});
+    const Brep result = BooleanCombineMixed(box, tool, BooleanOp::Union);
+
+    const std::vector<SteppedBossFeature> found = RecognizeSteppedBosses(result);
+    Check(found.size() == 1, "RecognizeSteppedBosses merges the flared boss's two segments too");
+    const SteppedBossFeature& sf = found[0];
+    Check(!sf.through, "RecognizeSteppedBosses reports the flared boss as NOT through");
+    Check(sf.origin.DistanceTo(base) < 1e-6, "RecognizeSteppedBosses recovers the flared boss's own exact base point");
+    Check((sf.axis - up).Length() < 1e-6, "RecognizeSteppedBosses recovers the flared boss's own exact outward direction");
+    Check(std::abs(sf.base_radius - shaft_radius) < 1e-6,
+          "RecognizeSteppedBosses recovers the NARROW segment's own radius as the base, not the wider one");
+    Check(std::abs(sf.base_height - shoulder_height) < 1e-6,
+          "RecognizeSteppedBosses recovers the narrow base segment's own exact height");
+    Check(std::abs(sf.tip_radius - shoulder_radius) < 1e-6,
+          "RecognizeSteppedBosses recovers the WIDE segment's own radius as the tip");
+    Check(std::abs(sf.tip_height - shaft_height) < 1e-6,
+          "RecognizeSteppedBosses recovers the wide tip segment's own exact height");
+  }
+  {
+    // Negative control: a plain, single-radius boss (both segments welded
+    // at the same radius, MakeTwoSegmentCylinder()'s own construction
+    // reused via a single uniform-radius CylindricalFace here) has no
+    // step to merge into anything.
+    Brep::CylindricalFace plain_cf;
+    plain_cf.frame = frame;
+    plain_cf.radius = shoulder_radius;
+    plain_cf.angle = 2.0 * ON_PI;
+    plain_cf.length = shoulder_height + shaft_height;
+    const Brep plain_tool = Brep::FromMixedFaces({}, {plain_cf});
+    const Brep plain_result = BooleanCombineMixed(box, plain_tool, BooleanOp::Union);
+    Check(RecognizeSteppedBosses(plain_result).empty(),
+          "RecognizeSteppedBosses finds no compound step on a plain single-radius boss");
+  }
+}
+
 int main() {
   ON::Begin();
 
@@ -50630,6 +50767,7 @@ int main() {
   TestCounterboreHoleAxisAlignedVolumeAndTopology();
   TestCounterboreHoleBlindAxisAlignedVolume();
   TestRecognizeCounterboreHolesRoundTrip();
+  TestRecognizeSteppedBossesRoundTrip();
 
   ON::End();
 

@@ -312,4 +312,72 @@ struct CounterboreFeature {
 // general (non-cylindrical) pocket is out of scope.
 std::vector<CounterboreFeature> RecognizeCounterboreHoles(const Brep& solid);
 
+// One compound stepped/shouldered boss recognized on an existing solid
+// (parity-map "Feature recognition" - closes BossFeature's own disclosed
+// "a counterbore/countersink's own second step ... has no boss-side
+// analogue implemented here" gap): the boss-side mirror of
+// CounterboreFeature/RecognizeCounterboreHoles() above - two coaxial
+// CONVEX full-cylinder faces over ADJACENT, non-overlapping axial ranges,
+// with different radii, reported as ONE feature instead of
+// RecognizeBosses()'s own two independent BossFeature entries for the
+// same shape (e.g. a bolt-style boss with a wide shoulder/flange at its
+// own base and a narrower shaft continuing on to the tip, or the
+// less-common opposite - a narrow post rising from a wide pad at its
+// free end).
+//
+// Unlike a counterbore's fixed "wide step always sits at the entry"
+// convention, a stepped boss has no such fixed rule - EITHER of its own
+// two segments can be the one actually attached to the body it emerges
+// from, so `base_radius`/`base_height` always describe whichever segment
+// is genuinely attached (`origin` sits at its own outer, attached end),
+// and `tip_radius`/`tip_height` the other, regardless of which one is
+// wider. `axis` is a unit vector pointing AWAY from the material, from
+// `origin` toward the free tip - BossFeature's own convention, not
+// HoleFeature's. `through` mirrors BossFeature::through: true only when
+// NEITHER segment's own outer end is attached (a free-standing stepped
+// rod, `origin`/`axis` pinned to one end arbitrarily - whichever segment
+// the internal pairing scan happens to visit first, the same "pin one
+// end, no particular meaning to which" convention BossFeature's own
+// through case already uses) - NOT a chain embedded
+// partway through a wall and protruding both sides, for the same reason
+// BossFeature's own doc comment gives.
+struct SteppedBossFeature {
+  Point3d origin;
+  Vector3d axis;
+  double base_radius = 0.0;
+  double base_height = 0.0;
+  double tip_radius = 0.0;
+  double tip_height = 0.0;
+  bool through = false;
+
+  // Face indices of the two walls this feature was merged from - the
+  // segment at `origin` (the base) and the other (the tip), in that
+  // order. Same convention as CounterboreFeature's own
+  // counterbore_face_index/drill_face_index.
+  int base_face_index = -1;
+  int tip_face_index = -1;
+};
+
+// Scans every face of `solid` the same way RecognizeBosses() does
+// (CONVEX full cylinders only), but instead of reporting every one as its
+// own independent boss, looks for PAIRS sharing the same axis LINE with
+// adjacent, non-overlapping axial ranges and genuinely different radii -
+// the exact geometric match RecognizeCounterboreHoles() itself looks for
+// among CONCAVE candidates, shared via this file's own internal
+// FindAdjacentSteppedPairs() helper. A candidate found with BOTH of its
+// own two outer ends attached (the whole two-segment chain entirely
+// embedded in `solid`'s own bulk, exposed nowhere) is not a visible
+// feature and is silently skipped, mirroring RecognizeBosses()'s own
+// "both ends attached" skip for a single segment.
+//
+// Still partial, for the same reasons RecognizeCounterboreHoles() itself
+// discloses: a stepped chain of more than two radii is not walked past
+// the first adjacent pair, and this inherits Mesh::ContainsPoint()'s own
+// disclosed "closed, consistently-oriented mesh" precondition - including
+// RecognizeBosses()'s own CONFIRMED Union-side gap (a boss whose own base
+// cap was left backed off entirely inside the target by
+// BooleanCombineGeneral() misclassifies across its whole embedded span;
+// see BossFeature's own doc comment) for a stepped boss built that way.
+std::vector<SteppedBossFeature> RecognizeSteppedBosses(const Brep& solid);
+
 }  // namespace dino8::kernel
