@@ -2553,7 +2553,7 @@ Brep Brep::RailRevolve(const NurbsCurve& profile_in, Point3d axis_point, Vector3
   ON_NurbsCurve c = profile_in.raw();
   if (!c.IsValid()) Fail(caller, "profile is not a valid NURBS curve");
   ClampIfPeriodic(c);
-  if (!c.IsClosed()) Fail(caller, "profile must be closed - an open-profile rail revolve is not attempted here");
+  const bool closed = c.IsClosed();
   ON_NurbsCurve rail = rail_in.raw();
   if (!rail.IsValid()) Fail(caller, "rail is not a valid NURBS curve");
 
@@ -2588,18 +2588,39 @@ Brep Brep::RailRevolve(const NurbsCurve& profile_in, Point3d axis_point, Vector3
     }
     min_rho = std::min(min_rho, ON_DotProduct(d, e_rho));
   }
-  if (min_rho <= tol) {
+  if (closed && min_rho <= tol) {
     Fail(caller, "profile must stay strictly off the axis - a closed profile touching it is not supported "
                  "(the touching part would sweep to a degenerate band), the same restriction Revolve() imposes");
   }
+  // An open profile may touch the axis only at its own endpoints (the
+  // same "both ends on the axis" pole case Revolve() supports) - touching
+  // it away from them is the same degenerate band as the closed case.
+  if (!closed && min_rho <= tol) {
+    for (int i = 1; i < samples; ++i) {
+      const ON_3dVector d = c.PointAt(dom.ParameterAt(static_cast<double>(i) / samples)) - axis_point;
+      if (ON_DotProduct(d, e_rho) <= tol) {
+        const double t = static_cast<double>(i) / samples;
+        if (t > 0.02 && t < 0.98) Fail(caller, "the profile touches the axis away from its endpoints");
+      }
+    }
+  }
 
   // Outward orientation: the same (rho, z) half-plane clockwise rule
-  // Revolve() itself uses - see its own doc comment for the derivation.
+  // Revolve() itself uses - see its own doc comment for the derivation,
+  // including (for an open profile) closing the polygon through the axis
+  // via the two endpoints' own axis-projected feet, purely to get a
+  // reliable winding sign - not a claim about the wall's real topology.
   {
     std::vector<ON_2dPoint> poly;
     for (int i = 0; i < samples; ++i) {
       const ON_3dVector d = c.PointAt(dom.ParameterAt(static_cast<double>(i) / samples)) - axis_point;
       poly.emplace_back(ON_DotProduct(d, e_rho), ON_DotProduct(d, T));
+    }
+    if (!closed) {
+      const ON_3dVector de = c.PointAtEnd() - axis_point, ds = c.PointAtStart() - axis_point;
+      poly.emplace_back(ON_DotProduct(de, e_rho), ON_DotProduct(de, T));
+      poly.emplace_back(0.0, ON_DotProduct(de, T));
+      poly.emplace_back(0.0, ON_DotProduct(ds, T));
     }
     const double area = SignedArea2d(poly);
     if (std::fabs(area) <= 1e-12 * scale * scale) Fail(caller, "the profile encloses no area with the axis");
@@ -2632,6 +2653,21 @@ Brep Brep::RailRevolve(const NurbsCurve& profile_in, Point3d axis_point, Vector3
   const double r0 = rail_radius(rp[0]);
   if (r0 <= tol) Fail(caller, "the rail lies on the axis at its own start station - nothing to scale by");
 
+  // Any profile control point already ON the axis (rho[i] <= tol - only
+  // possible at the profile's own endpoints, the "both ends on the axis"
+  // open-profile case; already checked above) must land EXACTLY on the
+  // axis at every station, not just approximately: `rho[i] * s` could
+  // still be a tiny nonzero residual (rho[i] itself is only <= tol, not
+  // necessarily bit-exact 0), and multiplying that by a DIFFERENT
+  // rotation direction e_rho_k at every station would scatter it into a
+  // tiny but genuinely DIFFERENT point per station - not coincident
+  // across stations even though each is individually within tolerance of
+  // the axis. That would make AssembleSweptBody()'s own IsSingular()
+  // check (an exact coincidence test, not a tolerance one) correctly
+  // report the column as NOT singular, silently losing the pole capping
+  // this function's own brep.h doc comment promises. Skipping the radial
+  // term entirely for such a CV, rather than trusting it to numerically
+  // cancel, keeps every station's own copy of it bit-identical.
   std::vector<ON_NurbsCurve> copies;
   copies.reserve(static_cast<size_t>(m));
   for (int k = 0; k < m; ++k) {
@@ -2641,8 +2677,10 @@ Brep Brep::RailRevolve(const NurbsCurve& profile_in, Point3d axis_point, Vector3
     const ON_3dVector e_rho_k = e_rho * std::cos(theta) + e_phi * std::sin(theta);
     ON_NurbsCurve ck = c;
     for (int i = 0; i < n; ++i) {
-      const ON_3dPoint p =
-          axis_point + T * z[static_cast<size_t>(i)] + e_rho_k * (rho[static_cast<size_t>(i)] * s);
+      const ON_3dPoint p = rho[static_cast<size_t>(i)] <= tol
+                               ? axis_point + T * z[static_cast<size_t>(i)]
+                               : axis_point + T * z[static_cast<size_t>(i)] +
+                                     e_rho_k * (rho[static_cast<size_t>(i)] * s);
       const double w = c.Weight(i);
       ck.SetCV(i, ON_4dPoint(p.x * w, p.y * w, p.z * w, w));
     }
@@ -2657,6 +2695,32 @@ Brep Brep::RailRevolve(const NurbsCurve& profile_in, Point3d axis_point, Vector3
     double period = 1.0;
     const std::vector<double> params_v = SkinParameters(copies, wrap, &period, caller);
     wall = SkinSections(copies, std::min(3, m - 1), wrap, params_v, period, caller);
+  }
+
+  // Every `copies[k]`'s own CV i was already made bit-identical above
+  // whenever rho[i] <= tol (0.0 for a genuinely on-axis profile CV, the
+  // ordinary case), but a CV only within `tol` of the axis rather than
+  // bit-exact 0 is possible too (a profile built by upstream floating-
+  // point construction rather than typed in by hand) - `rho[i] * s`
+  // would then be a tiny but genuinely nonzero residual, scattered into a
+  // DIFFERENT tiny offset per station by each station's own rotation
+  // e_rho_k, so the m per-station copies of that CV would no longer be
+  // bit-identical even though each is individually within tolerance of
+  // the axis. RuledBetween()'s/SkinSections()'s own arithmetic is not
+  // guaranteed to cancel that back out either. Left uncorrected, this
+  // would make IsSingular()'s own exact-coincidence check (no tolerance)
+  // read a genuinely (to this function's own `tol`) on-axis column as
+  // NOT singular, silently losing the pole `AssembleSweptBody()` needs to
+  // cap it or close a full-wrap tube without extra caps - so every such
+  // column is forced back to the exact axis point directly here,
+  // sidestepping whatever either function's own arithmetic produced.
+  for (int i = 0; i < n; ++i) {
+    if (rho[static_cast<size_t>(i)] > tol) continue;
+    const ON_3dPoint axis_p = axis_point + T * z[static_cast<size_t>(i)];
+    const double w = c.Weight(i);
+    for (int j = 0; j < wall->CVCount(1); ++j) {
+      wall->SetCV(i, j, ON_4dPoint(axis_p.x * w, axis_p.y * w, axis_p.z * w, w));
+    }
   }
 
   const bool want_caps = cap && !wrap;

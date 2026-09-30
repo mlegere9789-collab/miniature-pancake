@@ -669,9 +669,17 @@ class Brep {
   // positions by `rail`'s own distance from the SAME axis there (Rhino's
   // RailRevolve: a guide curve controlling how the revolved shape bulges
   // in and out as it goes around, rather than a constant-radius sweep).
-  // `profile` must be CLOSED, planar, lying in a plane through the axis,
-  // and strictly off the axis (the same on-axis restriction Revolve()
-  // itself imposes on a closed profile - see its own doc comment).
+  // `profile` must be planar, lying in a plane through the axis. A CLOSED
+  // profile must stay strictly off the axis (the same restriction
+  // Revolve() itself imposes on a closed profile). An OPEN profile may
+  // touch the axis at its own endpoints only (Revolve()'s own "both ends
+  // on the axis" pole case) - the wall's own u=0/u=last columns are then
+  // genuinely singular at EVERY station (every station's copy of an
+  // on-axis control point is still exactly on the axis, since scaling and
+  // rotating the zero radial vector leaves it zero), so `AssembleSweptBody()`
+  // caps it exactly like Revolve()'s own open-profile pole case, with the
+  // identical restriction: capping an open profile whose ends do not
+  // BOTH collapse to the axis throws.
   // `rail` is sampled once per station, index-for-index, via its own
   // `DivideByCount()` (NOT reparametrized to arc length against the
   // angle) - the same "equal count" sample-grid idea the app's own
@@ -705,10 +713,11 @@ class Brep {
   // approximation of that arc, tightened by more stations).
   //
   // Throws std::invalid_argument for a non-unit-normalizable
-  // axis_direction, angle outside (0, 2*pi], stations < 2, an invalid or
-  // open `profile`, a `profile` not planar through the axis or touching/
-  // crossing it, or a `rail` whose own distance from the axis at station
-  // 0 is (numerically) zero, since there is nothing to scale relative to.
+  // axis_direction, angle outside (0, 2*pi], stations < 2, an invalid
+  // `profile`, a `profile` not planar through the axis, one crossing it,
+  // a closed one touching it, an open one touching it away from its own
+  // endpoints, or a `rail` whose own distance from the axis at station 0
+  // is (numerically) zero, since there is nothing to scale relative to.
   static Brep RailRevolve(const NurbsCurve& profile, Point3d axis_point, Vector3d axis_direction,
                           const NurbsCurve& rail, double angle = 2.0 * ON_PI, int stations = 32, bool cap = true);
 

@@ -45605,6 +45605,80 @@ void TestRailRevolveBulgingRailProducesABracketedVaseVolume() {
                           "- proves the rail is actually being sampled, not silently ignored");
 }
 
+// An OPEN profile touching the axis only at its own two endpoints (the
+// same "both ends on the axis" pole case Revolve() supports) - closes the
+// "profile must be closed" restriction this function used to have
+// unconditionally. Every station's own copy of an on-axis control point
+// is forced to the exact axis point (sweep.cpp's own defensive fix, right
+// after RuledBetween()/SkinSections() build the wall) before
+// AssembleSweptBody() ever sees it, so the resulting wall's own u=0/
+// u=last columns are genuinely singular - the SAME pole-capping path
+// Revolve()'s own open L-shaped profile (`ell` in
+// TestRevolveExactSolidsAndCaps) already uses, not a new construction.
+void TestRailRevolveOpenProfileBothEndsOnAxis() {
+  const Point3d origin(0, 0, 0);
+  const Vector3d z(0, 0, 1);
+  // The exact same rectangle as Revolve()'s own `ell` cylinder fixture:
+  // rho in [0, 2], z in [0, 3], both endpoints ((0,0,0) and (0,0,3)) on
+  // the axis.
+  const NurbsCurve ell = Polyline({P(0, 0, 0), P(2, 0, 0), P(2, 0, 3), P(0, 0, 3)});
+  // A rail held at a CONSTANT radius: every station's own scale factor is
+  // exactly 1.0, so this should reproduce Revolve()'s own exact cylinder
+  // volume, up to RailRevolve's own station-count-interpolant discretization
+  // (not Revolve()'s exact analytic surface of revolution).
+  const NurbsCurve rigid_rail = Polyline({P(2, 0, 0), P(2, 0, 3)});
+
+  const Brep full = Brep::RailRevolve(ell, origin, z, rigid_rail, 2.0 * M_PI, 32, /*cap=*/true);
+  Check(full.raw().IsSolid(), "full rail-revolve of an open, both-ends-on-axis profile is a genuine closed solid");
+  Check(full.FaceCount() == 1 && full.raw().m_E.Count() == 1 && full.raw().m_V.Count() == 2,
+        "full rail-revolve reduces to the exact same cylinder topology Revolve()'s own open L profile gives - "
+        "one face, one seam edge, two pole vertices");
+  CheckClosedMeshVolume(full, 16, 32, M_PI * 4.0 * 3.0, 0.05,
+                        "rigid full rail-revolve ~ cylinder volume (approximate: a station-count interpolant, "
+                        "not Revolve()'s own exact analytic wall)");
+
+  const Brep quarter = Brep::RailRevolve(ell, origin, z, rigid_rail, M_PI / 2.0, 8, /*cap=*/true);
+  Check(quarter.raw().IsSolid(), "quarter rail-revolve of the same profile is also a genuine closed solid");
+  Check(quarter.FaceCount() == 3 && quarter.raw().m_E.Count() == 4 && quarter.raw().m_V.Count() == 3,
+        "quarter rail-revolve reduces to the exact same wedge topology Revolve()'s own quarter cylinder gives - "
+        "wall's 2 profile edges + the 2 axis-segment edges the caps share; 2 poles + 1 apex");
+  CheckClosedMeshVolume(quarter, 16, 16, M_PI * 12.0 / 4.0, 0.03,
+                        "rigid quarter rail-revolve ~ quarter-cylinder volume");
+
+  // A genuinely bulging rail (radius 2 -> 4 -> 2): the same "bracketed
+  // between the two rigid constant-scale extremes" cross-check
+  // TestRailRevolveBulgingRailProducesABracketedVaseVolume already uses
+  // for a closed profile, confirming the rail is genuinely sampled here
+  // too, not silently ignored just because the profile is open.
+  const NurbsCurve bulge_rail = Polyline({P(2, 0, 0), P(4, 0, 1.5), P(2, 0, 3)});
+  const Brep vase = Brep::RailRevolve(ell, origin, z, bulge_rail, 2.0 * M_PI, 32, /*cap=*/true);
+  Check(vase.raw().IsSolid(), "bulging open-profile rail-revolve is a genuine closed solid");
+  const double vmin = M_PI * 4.0 * 3.0, vmax = M_PI * 16.0 * 3.0;  // lambda=1 and lambda=2 (rail radius 2 -> 4)
+  const double vvol = vase.TessellateToClosedMesh(16, 32).Volume();
+  Check(vvol > 0.9 * vmin && vvol < 1.1 * vmax,
+        "bulging open-profile vase volume is bracketed by the rigid constant-scale extremes");
+  Check(vvol > 1.3 * vmin, "the bulge genuinely inflates the volume - the rail is actually being sampled");
+
+  // An open profile with NEITHER end on the axis still builds fine
+  // uncapped (a genuine open tube, no pole to auto-close it), but still
+  // cannot be capped at a partial angle - the exact same restriction
+  // AssembleSweptBody() already imposes on Revolve()'s own analogous case.
+  const NurbsCurve off_axis_open = Polyline({P(1, 0, 0), P(2, 0, 3)});
+  const NurbsCurve rail2 = Polyline({P(1, 0, 0), P(2, 0, 3)});
+  const Brep open_tube = Brep::RailRevolve(off_axis_open, origin, z, rail2, M_PI / 2.0, 8, /*cap=*/false);
+  Check(open_tube.FaceCount() == 1 && !open_tube.raw().IsSolid(),
+        "an off-axis-both-ends open profile still builds an open (uncapped) tube fine");
+  Check(Throws([&] { Brep::RailRevolve(off_axis_open, origin, z, rail2, M_PI / 2.0, 8, /*cap=*/true); }),
+        "...but still cannot be capped at a partial angle, since neither end collapses to the axis");
+
+  // Touching the axis away from the profile's own endpoints is still the
+  // same degenerate band Revolve() itself refuses.
+  const NurbsCurve interior_touch = Polyline({P(2, 0, 0), P(0, 0, 1.5), P(2, 0, 3)});
+  const NurbsCurve rail3 = Polyline({P(2, 0, 0), P(2, 0, 3)});
+  Check(Throws([&] { Brep::RailRevolve(interior_touch, origin, z, rail3, 2.0 * M_PI, 8, /*cap=*/true); }),
+        "an open profile touching the axis away from its own endpoints still throws");
+}
+
 void TestRailRevolveNegativeControls() {
   const Point3d origin(0, 0, 0);
   const Vector3d z(0, 0, 1);
@@ -45615,8 +45689,8 @@ void TestRailRevolveNegativeControls() {
   Check(Throws([&] { Brep::RailRevolve(square, origin, z, rail, 0.0); }), "zero angle throws");
   Check(Throws([&] { Brep::RailRevolve(square, origin, z, rail, 2.0 * M_PI + 0.1); }), "angle > 2*pi throws");
   Check(Throws([&] { Brep::RailRevolve(square, origin, z, rail, M_PI, 1); }), "stations < 2 throws");
-  const NurbsCurve open_profile = Polyline({P(2, 0, -1), P(4, 0, -1), P(4, 0, 1)});
-  Check(Throws([&] { Brep::RailRevolve(open_profile, origin, z, rail); }), "an open profile throws");
+  // An open profile no longer throws outright - see
+  // TestRailRevolveOpenProfileBothEndsOnAxis above.
   const NurbsCurve touching = Polyline({P(0, 0, 0), P(2, 0, 0), P(2, 0, 3), P(0, 0, 3), P(0, 0, 0)});
   Check(Throws([&] { Brep::RailRevolve(touching, origin, z, rail); }), "a closed profile touching the axis throws");
   const NurbsCurve crossing = Polyline({P(-1, 0, 0), P(2, 0, 0), P(2, 0, 3), P(-1, 0, 3), P(-1, 0, 0)});
@@ -52190,6 +52264,7 @@ int main() {
   sweep_tests::TestRailRevolveRigidRotationReproducesEveryStationExactly();
   sweep_tests::TestRailRevolveVaryingRadiusScalesExactlyAtTheTwoStations();
   sweep_tests::TestRailRevolveBulgingRailProducesABracketedVaseVolume();
+  sweep_tests::TestRailRevolveOpenProfileBothEndsOnAxis();
   sweep_tests::TestRailRevolveNegativeControls();
 
   TestCounterboreHoleArgumentChecks();
