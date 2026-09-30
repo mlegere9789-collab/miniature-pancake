@@ -975,6 +975,17 @@ class PanelScheduleCommand : public Command {
   std::string circuits_, name_;
 };
 
+// Today's date, Y-M-D - the "document-level source" Date binds to when left
+// unset (below), same as CurrentTimestamp (cmd_flow.cpp) but date-only since
+// a title block's Date field is conventionally just a plot date, not a
+// time-stamped log entry.
+std::string CurrentDateString() {
+  const std::time_t now = std::time(nullptr);
+  char buf[16];
+  std::strftime(buf, sizeof buf, "%Y-%m-%d", std::localtime(&now));
+  return buf;
+}
+
 // TitleBlockCommand: Name defaults to the document's own Settings().title
 // (set via the Document Properties panel, cmd_file.cpp's DocumentProperties)
 // - when the user leaves Name= unset, that default is the *live* document
@@ -983,17 +994,22 @@ class PanelScheduleCommand : public Command {
 // the document title changes after the table is placed. An explicit Name=
 // freezes it instead (the group carries no TitleBlockAuto tag), the same
 // "hand-typed input breaks the live link" rule PanelSchedule's Circuits=
-// mode uses. Date/Scale/Sheet have no equivalent live document-level source
-// (Sheet's default is merely which layout happened to be active when the
-// title block was placed, not a property of the table itself) so they stay
-// static baked fields either way, same as before this change.
+// mode uses. Date works the same way now: left unset, it defaults to (and
+// stays associative to) today's date - tagged "TitleBlockDateAuto"="1",
+// independently of Name's own tag, so either field can be frozen with an
+// explicit Name=/Date= while the other stays live. Scale/Sheet still have no
+// equivalent live document-level source (Sheet's default is merely which
+// layout happened to be active when the title block was placed, not a
+// property of the table itself) so they stay static baked fields either way,
+// same as before this change.
 class TitleBlockCommand : public Command {
  public:
   void Begin(CommandContext& ctx) override {
     auto opts = TakeOptionTokens(ctx);
     name_auto_ = opts.count("name") == 0;
     name_ = OptionOr(opts, "name", ctx.Doc().Settings().title.empty() ? "Untitled" : ctx.Doc().Settings().title);
-    date_ = OptionOr(opts, "date", "");
+    date_auto_ = opts.count("date") == 0;
+    date_ = OptionOr(opts, "date", date_auto_ ? CurrentDateString() : "");
     scale_ = OptionOr(opts, "scale", "1:1");
     const Layout* L = ctx.App().ActiveLayout();
     sheet_ = OptionOr(opts, "sheet", L ? L->name : std::string("Model"));
@@ -1010,12 +1026,16 @@ class TitleBlockCommand : public Command {
     ctx.Doc().BeginChange("TitleBlock");
     std::map<std::string, std::string> tags;
     if (name_auto_) tags["TitleBlockAuto"] = "1";
+    if (date_auto_) tags["TitleBlockDateAuto"] = "1";
     BuildTableGroup(ctx, spec, "TitleBlock", -1, tags);
-    ctx.Print("TitleBlock: " + name_ + " (Sheet " + sheet_ + ", Scale " + scale_ + ")" + (name_auto_ ? ", Name associative to document title" : ""));
+    std::string assoc;
+    if (name_auto_) assoc += ", Name associative to document title";
+    if (date_auto_) assoc += ", Date associative to today";
+    ctx.Print("TitleBlock: " + name_ + " (Sheet " + sheet_ + ", Scale " + scale_ + ")" + assoc);
     Finish();
   }
   std::string name_, date_, scale_, sheet_;
-  bool name_auto_ = false;
+  bool name_auto_ = false, date_auto_ = false;
 };
 
 // Aggregates `ids` into a BillOfMaterials TableSpec (rows/cols/cells only -
@@ -1823,31 +1843,44 @@ void RegisterDrafting2Commands(CommandEngine& e) {
   // unique to these five, so they are marked Implemented rather than
   // singled out as Partial for sharing it.
   Reg(e, "TitleBlock", Make<TitleBlockCommand>(), CommandStatus::Implemented,
-      "Builds a simple Name/Date/Scale/Sheet field table, not an instance of a linked block definition - inserting one does not track edits to a shared title-block template, the same live-instancing gap as the Block command (cmd_drafting.cpp) has no fix for. Name defaults to (and, without an explicit Name=, stays associative to) the document's own Settings().title, set via the Document Properties panel: UpdateTitleBlock re-pulls it later if the title changes. An explicit Name= freezes it, same as PanelSchedule's Circuits= freezing that table. Date/Scale/Sheet have no equivalent document-level source and stay static baked fields either way.");
+      "Builds a simple Name/Date/Scale/Sheet field table, not an instance of a linked block definition - inserting one does not track edits to a shared title-block template, the same live-instancing gap as the Block command (cmd_drafting.cpp) has no fix for. Name defaults to (and, without an explicit Name=, stays associative to) the document's own Settings().title, set via the Document Properties panel; Date defaults to (and, without an explicit Date=, stays associative to) today's date - UpdateTitleBlock re-pulls either later, independently, if the title or the date has changed. An explicit Name=/Date= freezes that one field, same as PanelSchedule's Circuits= freezing that table. Scale/Sheet still have no equivalent document-level source and stay static baked fields either way.");
   Reg(e, "UpdateTitleBlock", Immediate([](CommandContext& ctx) {
         std::vector<int> groups;
         for (const SceneObject& o : ctx.Doc().Objects())
           if (o.group_id >= 0 && o.user_text.count("Annotation") && o.user_text.at("Annotation") == "TitleBlock" &&
-              o.user_text.count("TitleBlockAuto") && std::find(groups.begin(), groups.end(), o.group_id) == groups.end())
+              (o.user_text.count("TitleBlockAuto") || o.user_text.count("TitleBlockDateAuto")) &&
+              std::find(groups.begin(), groups.end(), o.group_id) == groups.end())
             groups.push_back(o.group_id);
         if (groups.empty()) { ctx.Print("UpdateTitleBlock: no associative title blocks in this document"); return; }
         ctx.Doc().BeginChange("UpdateTitleBlock");
         const std::string title = ctx.Doc().Settings().title.empty() ? "Untitled" : ctx.Doc().Settings().title;
+        const std::string today = CurrentDateString();
         int updated = 0;
         for (int g : groups) {
           TableSpec spec;
           if (!LoadTableSpec(ctx.Doc(), g, spec)) continue;  // group has no TableData - nothing to rebuild from
-          if (spec.rows < 1 || spec.cols < 2 || static_cast<int>(spec.cells.size()) < 2) continue;
-          spec.cells[1] = title;
+          if (spec.rows < 4 || spec.cols < 2 || static_cast<int>(spec.cells.size()) < 8) continue;
+          bool name_auto = false, date_auto = false;
+          for (const SceneObject& o : ctx.Doc().Objects()) {
+            if (o.group_id != g) continue;
+            if (o.user_text.count("TitleBlockAuto")) name_auto = true;
+            if (o.user_text.count("TitleBlockDateAuto")) date_auto = true;
+          }
+          std::string changed;
+          if (name_auto) { spec.cells[1] = title; changed += "Name now '" + title + "'"; }
+          if (date_auto) { spec.cells[3] = today; changed += (changed.empty() ? "" : ", ") + ("Date now '" + today + "'"); }
           for (ObjectId id : ctx.Doc().GroupMembers(g)) ctx.Doc().Remove(id);
-          if (BuildTableGroup(ctx, spec, "TitleBlock", -1, {{"TitleBlockAuto", "1"}}) >= 0) {
+          std::map<std::string, std::string> tags;
+          if (name_auto) tags["TitleBlockAuto"] = "1";
+          if (date_auto) tags["TitleBlockDateAuto"] = "1";
+          if (BuildTableGroup(ctx, spec, "TitleBlock", -1, tags) >= 0) {
             ++updated;
-            ctx.Print("UpdateTitleBlock:   Name now '" + title + "'");
+            ctx.Print("UpdateTitleBlock:   " + changed);
           }
         }
         ctx.Print("UpdateTitleBlock: " + std::to_string(updated) + " table(s) regenerated");
       }), CommandStatus::Implemented,
-      "Re-derives every associative TitleBlock's Name field from the document's current Settings().title (Document Properties), replacing the old baked value in place - the associative counterpart to TitleBlock's static bake, following the same explicit-recompute shape as UpdatePanelSchedule/UpdateBillOfMaterials above rather than an automatic hook on every document edit. A TitleBlock built with an explicit Name= carries no TitleBlockAuto tag and is left untouched, same as before this change.");
+      "Re-derives every associative TitleBlock's Name field from the document's current Settings().title (Document Properties) and/or Date field from today's date, replacing the old baked value(s) in place - the associative counterpart to TitleBlock's static bake, following the same explicit-recompute shape as UpdatePanelSchedule/UpdateBillOfMaterials above rather than an automatic hook on every document edit. Name and Date are independent: a TitleBlock built with an explicit Name= (no TitleBlockAuto tag) or Date= (no TitleBlockDateAuto tag) leaves that field untouched while the other, if still auto, keeps updating - same as before this change for a TitleBlock with neither tag.");
   Reg(e, "BillOfMaterials", Make<BillOfMaterialsCommand>(), CommandStatus::Implemented,
       "Associative: the table records which objects (or 'every visible object') it was built from and UpdateBillOfMaterials re-derives every row's count/layer/material/length-area-volume from their current state. Built from an explicit selection, it re-checks only those objects (a deleted one drops out; a new object never joins on its own) - only the Enter/'every visible object' mode picks up newcomers, since only it has a re-scan rule instead of a fixed id list.");
   Reg(e, "PanelSchedule", Make<PanelScheduleCommand>(), CommandStatus::Implemented,

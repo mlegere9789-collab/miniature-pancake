@@ -207,7 +207,97 @@ class MeasureDimCommand : public Command {
 
 // ---------------------------------------------------------------------------
 // DimOrdinate: base point, then feature points -> X or Y ordinate leaders.
+//
+// Associative per feature point exactly like DimLinear (FindPointAnchor on
+// the base point and, separately, on each feature point - annotate_common.h):
+// UpdateDimensions re-evaluates whichever matched a real object and rebuilds
+// the leader/text from their current positions. Either point that isn't on
+// any object (free space, or a snap this build doesn't resolve to an anchor)
+// stays a static baked measurement for that endpoint, same as DimLinear. The
+// base point's anchor is found once and shared by every feature point's
+// group, since one DimOrdinate run can place several ordinates off the same
+// base.
 // ---------------------------------------------------------------------------
+
+// Builds (or rebuilds) one DimOrdinate group from its base/feature points and
+// fixed layout (plane, direction, text height), tagging it the same way
+// BuildLinearDimensionGroup tags DimLinear: DimP0/DimP1 as built, DimRefObj1/
+// DimRefEnd1 and DimRefObj2/DimRefEnd2 when FindPointAnchor matched a real
+// object at the base/feature point respectively, plus DimOrdinateDir and the
+// plane (DimPlaneOrigin/DimPlaneX/DimPlaneY, same tags LoadLinearDimLayout
+// reads for DimLinear - the two dimension types never share a group so the
+// key names can't collide).
+int BuildOrdinateDimGroup(CommandContext& ctx, Point3d base, Point3d feature, char dir, const ON_Plane& pl, double h,
+                          bool has_ref_base, ObjectId ref_base, const std::string& end_base,
+                          bool has_ref_feat, ObjectId ref_feat, const std::string& end_feat, double* value_out = nullptr) {
+  double u0, v0, u1, v1;
+  pl.ClosestPointTo(base, &u0, &v0);
+  pl.ClosestPointTo(feature, &u1, &v1);
+  const double value = dir == 'X' ? u1 - u0 : v1 - v0;
+  // The leader runs away from the feature along the other axis.
+  const Vector3d leader = dir == 'X' ? pl.yaxis : pl.xaxis;
+  const Point3d end = feature + leader * (h * 2.5);
+  std::vector<kernel::NurbsCurve> curves = {PolylineCurve({feature, end})};
+  GlyphSpec g;
+  g.text = std::string(1, dir) + " " + FormatNumber(value);
+  g.height = h; g.plane = pl; g.center = dir == 'X';
+  g.plane.SetOrigin(dir == 'X' ? end + pl.yaxis * (h * 0.3) : end + pl.xaxis * (h * 0.3) - pl.yaxis * (h * 0.5));
+  std::map<std::string, std::string> tags = {
+      {"DimOrdinateDir", std::string(1, dir)},
+      {"DimPlaneOrigin", PointTag(pl.origin)},
+      {"DimPlaneX", PointTag(Point3d(pl.xaxis))},
+      {"DimPlaneY", PointTag(Point3d(pl.yaxis))},
+      {"DimP0", PointTag(base)},
+      {"DimP1", PointTag(feature)},
+  };
+  if (has_ref_base) { tags["DimRefObj1"] = std::to_string(ref_base); tags["DimRefEnd1"] = end_base; }
+  if (has_ref_feat) { tags["DimRefObj2"] = std::to_string(ref_feat); tags["DimRefEnd2"] = end_feat; }
+  if (value_out) *value_out = value;
+  return AddAnnotationGroup(ctx, "DimOrdinate", curves, g, -1, tags);
+}
+
+// Reads an ordinate group's fixed layout (plane + direction) back.
+bool LoadOrdinateDimLayout(Document& doc, int group_id, ON_Plane& pl, char& dir) {
+  for (const SceneObject& o : doc.Objects()) {
+    if (o.group_id != group_id) continue;
+    Point3d org, ax, ay;
+    if (!o.user_text.count("DimPlaneOrigin") || !ParsePointTag(o.user_text.at("DimPlaneOrigin"), org)) continue;
+    if (!o.user_text.count("DimPlaneX") || !ParsePointTag(o.user_text.at("DimPlaneX"), ax)) continue;
+    if (!o.user_text.count("DimPlaneY") || !ParsePointTag(o.user_text.at("DimPlaneY"), ay)) continue;
+    pl = ON_Plane(org, Vector3d(ax.x, ax.y, ax.z), Vector3d(ay.x, ay.y, ay.z));
+    dir = o.user_text.count("DimOrdinateDir") && o.user_text.at("DimOrdinateDir") == "Y" ? 'Y' : 'X';
+    return true;
+  }
+  return false;
+}
+
+// Resolves an ordinate group's base/feature points to their *current* value
+// - same "live anchor if present, else the point recorded at creation"
+// contract as ResolveLinearDimPoints.
+bool ResolveOrdinateDimPoints(Document& doc, int group_id, Point3d& base, Point3d& feature) {
+  bool have_base = false, have_feat = false;
+  for (const SceneObject& o : doc.Objects()) {
+    if (o.group_id != group_id) continue;
+    if (!have_base) {
+      if (auto it = o.user_text.find("DimRefObj1"); it != o.user_text.end()) {
+        const ObjectId id = static_cast<ObjectId>(std::strtoull(it->second.c_str(), nullptr, 10));
+        const std::string end = o.user_text.count("DimRefEnd1") ? o.user_text.at("DimRefEnd1") : "point";
+        if (ResolveAnchor(doc, id, end, base)) have_base = true;
+      }
+      if (!have_base && o.user_text.count("DimP0") && ParsePointTag(o.user_text.at("DimP0"), base)) have_base = true;
+    }
+    if (!have_feat) {
+      if (auto it = o.user_text.find("DimRefObj2"); it != o.user_text.end()) {
+        const ObjectId id = static_cast<ObjectId>(std::strtoull(it->second.c_str(), nullptr, 10));
+        const std::string end = o.user_text.count("DimRefEnd2") ? o.user_text.at("DimRefEnd2") : "point";
+        if (ResolveAnchor(doc, id, end, feature)) have_feat = true;
+      }
+      if (!have_feat && o.user_text.count("DimP1") && ParsePointTag(o.user_text.at("DimP1"), feature)) have_feat = true;
+    }
+    if (have_base && have_feat) return true;
+  }
+  return have_base && have_feat;
+}
 
 class DimOrdinateCommand : public Command {
  public:
@@ -222,31 +312,31 @@ class DimOrdinateCommand : public Command {
   }
   void OnPoint(CommandContext& ctx, Point3d p) override {
     ctx.SetLastPoint(p);
-    if (!base_) { base_ = p; WantPoint("Feature point (Enter to finish)"); return; }
+    if (!base_) {
+      base_ = p;
+      has_base_ref_ = FindPointAnchor(ctx.Doc(), p, base_ref_, base_end_);
+      WantPoint("Feature point (Enter to finish)");
+      return;
+    }
     const ON_Plane pl = ActivePlane(ctx);
     const double h = AnnotationTextHeight(ctx);
-    double u0, v0, u1, v1;
-    pl.ClosestPointTo(*base_, &u0, &v0);
-    pl.ClosestPointTo(p, &u1, &v1);
-    const double value = dir_ == 'X' ? u1 - u0 : v1 - v0;
-    // The leader runs away from the feature along the other axis.
-    const Vector3d leader = dir_ == 'X' ? pl.yaxis : pl.xaxis;
-    const Point3d end = p + leader * (h * 2.5);
-    std::vector<kernel::NurbsCurve> curves = {PolylineCurve({p, end})};
-    GlyphSpec g;
-    g.text = std::string(1, dir_) + " " + FormatNumber(value);
-    g.height = h; g.plane = pl; g.center = dir_ == 'X';
-    g.plane.SetOrigin(dir_ == 'X' ? end + pl.yaxis * (h * 0.3) : end + pl.xaxis * (h * 0.3) - pl.yaxis * (h * 0.5));
+    ObjectId feat_ref = kNoObject;
+    std::string feat_end;
+    const bool has_feat_ref = FindPointAnchor(ctx.Doc(), p, feat_ref, feat_end);
     ctx.Doc().BeginChange("DimOrdinate");
-    AddAnnotationGroup(ctx, "DimOrdinate", curves, g);
+    double value = 0;
+    BuildOrdinateDimGroup(ctx, *base_, p, dir_, pl, h, has_base_ref_, base_ref_, base_end_, has_feat_ref, feat_ref, feat_end, &value);
     ++made_;
-    ctx.Print("DimOrdinate: " + g.text);
+    ctx.Print("DimOrdinate: " + std::string(1, dir_) + " " + FormatNumber(value));
     WantPoint("Feature point (Enter to finish)");
   }
   void OnEnter(CommandContext& ctx) override { ctx.ClearPreview(); ctx.Print("DimOrdinate: " + std::to_string(made_) + " ordinate(s)"); Finish(); }
   void OnHover(CommandContext& ctx, Point3d h) override { if (base_) { ctx.ClearPreview(); ctx.AddPreviewLine(*base_, h); } }
   void OnCancel(CommandContext& ctx) override { ctx.ClearPreview(); }
   std::optional<Point3d> base_;
+  bool has_base_ref_ = false;
+  ObjectId base_ref_ = kNoObject;
+  std::string base_end_;
   char dir_ = 'X';
   int made_ = 0;
 };
@@ -1415,13 +1505,16 @@ void RegisterAnnotate2Commands(CommandEngine& e) {
   Reg(e, "DimOrdinate", Make<DimOrdinateCommand>(), CommandStatus::Implemented, curves);
   Reg(e, "DimCreaseAngle", Make<DimCreaseAngleCommand>(), CommandStatus::Implemented, "Angle between two lines or the first planar faces of two objects; no face-level sub-object picking on polysurfaces (nothing in this app has that yet), so a polysurface always measures from its first planar face.");
   Reg(e, "UpdateMeasureDims", Immediate([](CommandContext& ctx) {
-        static const std::vector<std::string> kKinds = {"DimArea", "DimCurveLength", "DimVolume", "DimCreaseAngle"};
+        static const std::vector<std::string> kKinds = {"DimArea", "DimCurveLength", "DimVolume", "DimCreaseAngle", "DimOrdinate"};
         std::vector<int> groups;
         std::map<int, std::string> kind_of;
         for (const SceneObject& o : ctx.Doc().Objects()) {
           auto it = o.user_text.find("Annotation");
           if (it == o.user_text.end() || std::find(kKinds.begin(), kKinds.end(), it->second) == kKinds.end()) continue;
-          if (!o.user_text.count("MeasureRefIds") && !o.user_text.count("DimRefObj1")) continue;
+          // DimOrdinate always carries DimP0 (its base point, recorded even
+          // when unanchored - see BuildOrdinateDimGroup) rather than
+          // MeasureRefIds/DimRefObj1, so it needs its own admission check.
+          if (!o.user_text.count("MeasureRefIds") && !o.user_text.count("DimRefObj1") && !o.user_text.count("DimP0")) continue;
           if (o.group_id >= 0 && !kind_of.count(o.group_id)) { kind_of[o.group_id] = it->second; groups.push_back(o.group_id); }
         }
         if (groups.empty()) { ctx.Print("UpdateMeasureDims: no associative measured dimensions in this document"); return; }
@@ -1436,6 +1529,31 @@ void RegisterAnnotate2Commands(CommandEngine& e) {
             if (auto it = o.user_text.find("MeasureAt"); it != o.user_text.end()) at_tag = it->second;
             if (auto it = o.user_text.find("DimRefObj1"); it != o.user_text.end()) ref1_tag = it->second;
             if (auto it = o.user_text.find("DimRefObj2"); it != o.user_text.end()) ref2_tag = it->second;
+          }
+          if (kind == "DimOrdinate") {
+            ON_Plane pl;
+            char dir = 'X';
+            Point3d base, feature;
+            if (!LoadOrdinateDimLayout(ctx.Doc(), g, pl, dir) || !ResolveOrdinateDimPoints(ctx.Doc(), g, base, feature)) { ++skipped; continue; }
+            GlyphSpec old_glyph;
+            const double h = GroupGlyphSpec(ctx, g, old_glyph) ? old_glyph.height : AnnotationTextHeight(ctx);
+            const bool has1 = !ref1_tag.empty(), has2 = !ref2_tag.empty();
+            const ObjectId r1 = has1 ? static_cast<ObjectId>(std::strtoull(ref1_tag.c_str(), nullptr, 10)) : kNoObject;
+            const ObjectId r2 = has2 ? static_cast<ObjectId>(std::strtoull(ref2_tag.c_str(), nullptr, 10)) : kNoObject;
+            std::string end1, end2;
+            for (const SceneObject& o : ctx.Doc().Objects()) {
+              if (o.group_id != g) continue;
+              if (has1 && o.user_text.count("DimRefEnd1")) end1 = o.user_text.at("DimRefEnd1");
+              if (has2 && o.user_text.count("DimRefEnd2")) end2 = o.user_text.at("DimRefEnd2");
+            }
+            for (ObjectId id : ctx.Doc().GroupMembers(g)) ctx.Doc().Remove(id);
+            double value = 0;
+            if (BuildOrdinateDimGroup(ctx, base, feature, dir, pl, h, has1, r1, end1.empty() ? "point" : end1,
+                                       has2, r2, end2.empty() ? "point" : end2, &value) >= 0) {
+              ++updated;
+              ctx.Print("UpdateMeasureDims:   DimOrdinate now " + std::string(1, dir) + " " + FormatNumber(value));
+            } else ++skipped;
+            continue;
           }
           Point3d at;
           if (!ParsePointTag(at_tag, at)) { ++skipped; continue; }
@@ -1477,7 +1595,7 @@ void RegisterAnnotate2Commands(CommandEngine& e) {
         }
         ctx.Print("UpdateMeasureDims: " + std::to_string(updated) + " updated, " + std::to_string(skipped) + " skipped");
       }), CommandStatus::Implemented,
-      "Re-derives DimArea/DimCurveLength/DimVolume (summed from every recorded source object's current shape, MeasureRefIds) and DimCreaseAngle (from its two recorded objects' current direction, DimRefObj1/DimRefObj2) and rebuilds each leader/text in place - the same explicit-recompute shape as UpdateDimensions (cmd_annotate.cpp) and UpdateTitleBlock/UpdatePanelSchedule/UpdateBillOfMaterials (cmd_drafting2.cpp), not an automatic hook on every document edit. A dimension built before this window (no MeasureRefIds/DimRefObj1 tag), or one whose recorded object(s) no longer measure under their kind (deleted, or a shape edit made a DimArea curve non-closed etc.), is skipped and stays (or reverts to) a static baked measurement; the leader's landing point (MeasureAt) is kept fixed across an update, only the value and arrowhead position change.");
+      "Re-derives DimArea/DimCurveLength/DimVolume (summed from every recorded source object's current shape, MeasureRefIds) and DimCreaseAngle (from its two recorded objects' current direction, DimRefObj1/DimRefObj2) and rebuilds each leader/text in place - the same explicit-recompute shape as UpdateDimensions (cmd_annotate.cpp) and UpdateTitleBlock/UpdatePanelSchedule/UpdateBillOfMaterials (cmd_drafting2.cpp), not an automatic hook on every document edit. A dimension built before this window (no MeasureRefIds/DimRefObj1 tag), or one whose recorded object(s) no longer measure under their kind (deleted, or a shape edit made a DimArea curve non-closed etc.), is skipped and stays (or reverts to) a static baked measurement; the leader's landing point (MeasureAt) is kept fixed across an update, only the value and arrowhead position change. This window adds DimOrdinate, associative per point exactly like DimLinear (FindPointAnchor on the base point and, separately, each feature point - see DimOrdinateCommand/BuildOrdinateDimGroup above): UpdateMeasureDims re-evaluates whichever of the two points matched a real object and rebuilds that ordinate's leader/text from their current positions, same as before if neither point was ever anchored (it still carries its built DimP0/DimP1 points, so it re-lays-out identically rather than being skipped).");
   Reg(e, "DimRecenterText", OnSelection("Select dimensions to recenter text", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         const int n = EditGroups(ctx, ids, "DimRecenterText", [](GlyphSpec&) {});
         ctx.Print("DimRecenterText: " + std::to_string(n) + " annotation(s) rebuilt at their original text position");

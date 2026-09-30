@@ -1182,19 +1182,28 @@ a2check "Centermark: 1 center mark(s) (associative to the selected circle/arc)" 
 a2check "UpdateDimensions:   Centermark now at 720,15,0" "UpdateDimensions redrew the Centermark at the moved circle's new center (720,15,0), not the 700,0,0 it was created at"
 a2check "CenterLine: midline between the two selected lines (associative to both)" "CenterLine recorded both selected lines as associative references"
 a2check "UpdateDimensions:   CenterLine now spans 800,0,0 to 800,10,0" "UpdateDimensions redrew the CenterLine's midline at x=800 after moving one of the two lines from x=800 to x=780 (midline between the moved line and the untouched x=820 line), not the x=810 midline it was created at"
-# --- DimVolume/DimCreaseAngle associativity (UpdateMeasureDims, new this
-# window - see MeasureRefIds/DimRefObj1/DimRefObj2 in cmd_annotate2.cpp):
-# DimVolume tracks the measured box's current volume (Scale1D doubles it
-# from 1000 to 2000), and DimCreaseAngle tracks two measured lines' current
-# directions (Rotate turns one 90 -> 45 degrees), neither by moving the
-# dimension itself but by re-measuring the shape of the object(s) it
-# references, same "an edit propagates, not just a move" contract
-# DimLinear/DimRadius/DimAngle already have via UpdateDimensions.
+# --- DimVolume/DimCreaseAngle/DimOrdinate associativity (UpdateMeasureDims,
+# new this window - see MeasureRefIds/DimRefObj1/DimRefObj2 in
+# cmd_annotate2.cpp): DimVolume tracks the measured box's current volume
+# (Scale1D doubles it from 1000 to 2000), DimCreaseAngle tracks two measured
+# lines' current directions (Rotate turns one 90 -> 45 degrees), and the
+# second DimOrdinate (OrdBase/OrdFeature Point objects) tracks its feature
+# point's current position (Move takes it from x=1150 to x=1220, changing
+# the ordinate from 50 to 120) - none by moving the dimension itself but by
+# re-measuring/re-anchoring to the object(s) it references, same "an edit
+# propagates, not just a move" contract DimLinear/DimRadius/DimAngle already
+# have via UpdateDimensions. The first DimOrdinate (free-floating base/
+# feature points, above) is unaffected by any of these edits and so is
+# expected to redraw at its original value, 50 - proving it is also handled
+# by UpdateMeasureDims (via its DimP0/DimP1 fallback, no live anchor) rather
+# than silently skipped as a still-static dimension.
 a2check "DimVolume: Volume = 1000 cubic" "DimVolume measured the box (10x10x10)"
 a2check "DimCreaseAngle: 90 deg (associative to both measured objects)" "DimCreaseAngle recorded both selected lines as associative references"
 a2check "UpdateMeasureDims:   DimVolume now Volume = 2000 cubic" "UpdateMeasureDims redrew DimVolume from the box's doubled x-extent (Scale1D 900-910 -> 900-920), not the 1000 baked at creation time"
 a2check "UpdateMeasureDims:   DimCreaseAngle now 45 deg" "UpdateMeasureDims redrew DimCreaseAngle from the rotated line's new direction, not the 90 deg baked at creation time"
-a2check "UpdateMeasureDims: 4 updated, 0 skipped" "UpdateMeasureDims re-derived all 4 associative measured dimensions (DimArea, DimCurveLength, DimVolume, DimCreaseAngle) with 0 skipped"
+a2check "UpdateMeasureDims:   DimOrdinate now X 50" "UpdateMeasureDims redrew the free-floating (unanchored) DimOrdinate from its baked DimP0/DimP1 points, unchanged at 50 since neither point was ever anchored or moved"
+a2check "UpdateMeasureDims:   DimOrdinate now X 120" "UpdateMeasureDims redrew the OrdBase/OrdFeature DimOrdinate from the feature Point object's moved position (x=1220), not the 50 (x=1150) baked at creation time"
+a2check "UpdateMeasureDims: 6 updated, 0 skipped" "UpdateMeasureDims re-derived all 6 associative measured dimensions (DimArea, DimCurveLength, DimVolume, DimCreaseAngle, and both DimOrdinates) with 0 skipped"
 a2check "gl_error=0" "annotate2 script ran without OpenGL errors"
 # Solid tools: RoundHole, CurveBoolean, Clash, Cage/CageEdit, Flow, ScaleByPlane (see solidtools_script.txt).
 sed "s|@TMP@|$TMPW|g" "$HERE/solidtools_script.txt" > "$TMPW/solidtools_script.txt"
