@@ -9,8 +9,8 @@
 // "panel.imgui_demo" to give I18nSelfTest (src/commands/cmd_state.cpp) and
 // tests/smoke.sh's i18n section a real missing-key fallback to exercise.
 // Every other language - fr.json, de.json, ja.json (Japanese), pt.json
-// (Portuguese), it.json (Italian), and zh.json (Simplified Chinese) - must
-// have zero missing keys.
+// (Portuguese), it.json (Italian), zh.json (Simplified Chinese), and
+// ko.json (Korean) - must have zero missing keys.
 //
 // This is a "did a language quietly drift behind en.json" regression
 // guard: en.json gaining new keys (panel.activity_log, panel.block_manager,
@@ -80,6 +80,7 @@ int main(int argc, char** argv) {
       {"pt", {}},
       {"it", {}},
       {"zh", {}},
+      {"ko", {}},
       {"es", {"panel.imgui_demo"}},
   };
 
@@ -191,6 +192,23 @@ int main(int argc, char** argv) {
       Check(zh_root["_language_name"].AsString("") == "\xe7\xae\x80\xe4\xbd\x93\xe4\xb8\xad\xe6\x96\x87",
             "zh.json's _language_name is the Chinese phrase for Simplified Chinese "
             "(\xe7\xae\x80\xe4\xbd\x93\xe4\xb8\xad\xe6\x96\x87)");
+    }
+  }
+
+  // The headline deliverable: Korean is an eighth complete, hand-
+  // translated language, matching en.json's key set exactly (not just
+  // "mostly", the way a machine-generated stub might partially cover it).
+  {
+    dino8::json::Value ko_root;
+    Check(LoadObject(dir + "/ko.json", ko_root), "ko.json exists and parses");
+    if (LoadObject(dir + "/ko.json", ko_root)) {
+      const std::set<std::string> ko_keys = StringKeys(ko_root);
+      char label[160];
+      std::snprintf(label, sizeof(label), "ko.json defines exactly en.json's key set (%zu keys, 0 missing, 0 extra)",
+                    ko_keys.size());
+      Check(ko_keys == en_keys, label);
+      Check(ko_root["_language_name"].AsString("") == "\xed\x95\x9c\xea\xb5\xad\xec\x96\xb4",
+            "ko.json's _language_name is the Korean word for Korean (\xed\x95\x9c\xea\xb5\xad\xec\x96\xb4)");
     }
   }
 
