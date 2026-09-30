@@ -258,6 +258,10 @@ void DrawLayersPanel(Application& app) {
           static char desc[512];
           if (ImGui::IsWindowAppearing()) std::snprintf(desc, sizeof(desc), "%s", L.description.c_str());
           if (ImGui::InputTextMultiline("Notes", desc, sizeof(desc), ImVec2(240, 60))) L.description = desc;
+          {
+            float pw = static_cast<float>(L.print_width_mm);
+            if (ImGui::InputFloat("Print width mm (0=default, <0=no print)", &pw, 0, 0, "%.3f")) { doc.BeginChange("Layer print width"); L.print_width_mm = pw; }
+          }
           if (ImGui::MenuItem("Select objects on layer")) {
             doc.SelectWhere([i](const SceneObject& o) { return o.layer_index == i; });
           }

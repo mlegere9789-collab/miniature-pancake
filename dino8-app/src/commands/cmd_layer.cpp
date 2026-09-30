@@ -197,6 +197,35 @@ void RegisterLayerCommands(CommandEngine& e) {
         for (Layer& L : ctx.Doc().Layers()) L.locked = false;
         ctx.Print("All layers unlocked");
       }));
+  // LayerPrintWidth: sets a layer's Print and plot output lineweight
+  // (Layer::print_width_mm, doc/Document.h) - the same real Rhino
+  // ON_Layer::PlotWeight convention io/File3dm.cpp round-trips through:
+  // 0 = document default, > 0 = an explicit width in mm, < 0 = the layer
+  // is skipped entirely by Print/Export (ExportSvg/ExportPdf's CollectPaths,
+  // io/FileExchange.cpp), same as before this command existed for the "layer
+  // does not print" case. Scriptable two-token form "LayerPrintWidth <name>
+  // <width>" (same TakePendingInput pattern as LayerOn/Off/Lock/Unlock
+  // above); with one queued token it is the width for the current layer,
+  // and with none it prompts for the width interactively.
+  Reg(e, "LayerPrintWidth", Immediate([](CommandContext& ctx) {
+        int idx = ctx.Doc().CurrentLayer();
+        auto first = ctx.Engine().TakePendingInput();
+        std::optional<std::string> width_text = ctx.Engine().TakePendingInput();
+        if (first && width_text) {
+          idx = ctx.Doc().FindLayer(*first);
+          if (idx < 0) { ctx.Warn("No layer named '" + *first + "'"); return; }
+        } else if (first) {
+          width_text = first;  // one token: width for the current layer
+        }
+        if (!width_text) { ctx.Warn("Usage: LayerPrintWidth [layer name] width"); return; }
+        char* end = nullptr;
+        const double w = std::strtod(width_text->c_str(), &end);
+        if (end == width_text->c_str()) { ctx.Warn("'" + *width_text + "' is not a number"); return; }
+        ctx.Doc().BeginChange("LayerPrintWidth");
+        ctx.Doc().Layers()[static_cast<size_t>(idx)].print_width_mm = w;
+        const std::string desc = w > 0 ? FormatNumber(w) + " mm" : (w < 0 ? "does not print" : "document default");
+        ctx.Print("Layer '" + ctx.Doc().LayerFullPath(idx) + "' print width: " + desc);
+      }));
   Reg(e, "LayerStateManager", Immediate([](CommandContext& ctx) { ctx.App().Panels().layer_state_manager = true; }));
   Reg(e, "LayerState", Make<LayerStateCommand>());
   Reg(e, "Purge", Immediate([](CommandContext& ctx) {

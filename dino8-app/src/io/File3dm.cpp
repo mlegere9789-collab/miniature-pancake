@@ -457,6 +457,7 @@ bool Load3dm(Document& doc, const std::string& path, std::string& error) {
       auto me = layer_by_id.find(layer->Id());
       auto lt = linetype_by_index.find(layer->LinetypeIndex());
       if (me != layer_by_id.end() && lt != linetype_by_index.end()) doc.Layers()[static_cast<size_t>(me->second)].linetype = lt->second;
+      if (me != layer_by_id.end()) doc.Layers()[static_cast<size_t>(me->second)].print_width_mm = layer->PlotWeight();
     }
   }
   // Viewports and layout pages: model views give clipping planes their
@@ -1072,6 +1073,7 @@ bool Save3dm(const Document& doc, const std::string& path, std::string& error, b
       stored->SetLocked(L.locked);
       if (!L.material.empty() && material_index.count(L.material)) stored->SetRenderMaterialIndex(material_index[L.material]);
       if (linetype_index(L.linetype) >= 0) stored->SetLinetypeIndex(linetype_index(L.linetype));
+      stored->SetPlotWeight(L.print_width_mm);  // real .3dm field, same 0/>0/<0 convention as Layer::print_width_mm
       for (size_t li = 0; li < doc.Layouts().size(); ++li) {
         const Layout& lay = doc.Layouts()[li];
         for (size_t di = 0; di < lay.details.size(); ++di) {
