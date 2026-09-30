@@ -1669,6 +1669,13 @@ print("object count with interp: %d" % len(dino8.doc.Objects.AllObjects()))
 too_few = dino8.doc.Objects.AddInterpCurve([dino8.Point3d(0, 0, 0)])
 print("interp with one point: " + str(too_few))
 
+arc_id = dino8.doc.Objects.AddArc3Pt(dino8.Point3d(0, 0, 0), dino8.Point3d(10, 0, 0), dino8.Point3d(5, 5, 0))
+arc = dino8.doc.Objects.Find(arc_id)
+print("arc kind: " + arc.ObjectType)
+print("object count with arc: %d" % len(dino8.doc.Objects.AllObjects()))
+bad_arc = dino8.doc.Objects.AddArc3Pt(dino8.Point3d(0, 0, 0), dino8.Point3d(10, 0, 0), dino8.Point3d(5, 0, 0))
+print("collinear arc: " + str(bad_arc))
+
 dino8.RunCommand("NewLayer", "Parts")
 PY
 sed "s|@TMP@|$TMPW|g" "$HERE/python_script.txt" > "$TMPW/python_script.txt"
@@ -1725,7 +1732,10 @@ else
   pscheck "history: interp kind: curve" "dino8.doc.Objects.AddInterpCurve built a curve object, matching rs.AddInterpCurve"
   pscheck "history: object count with interp: 5" "AllObjects sees the box, the circle, the cone, the torus and the new interpolated curve"
   pscheck "history: interp with one point: None" "AddInterpCurve returned None for fewer than two points, matching rs.AddInterpCurve pushing nil instead of raising"
-  pscheck "^ok   expect_objects 5" "RunPythonScript left the box, the circle, the cone, the torus and the interpolated curve (the sphere was deleted from inside the script)"
+  pscheck "history: arc kind: curve" "dino8.doc.Objects.AddArc3Pt built a curve object, matching rs.AddArc3Pt"
+  pscheck "history: object count with arc: 6" "AllObjects sees the box, the circle, the cone, the torus, the interpolated curve and the new arc"
+  pscheck "history: collinear arc: None" "AddArc3Pt returned None for three collinear points, matching rs.AddArc3Pt pushing nil instead of raising"
+  pscheck "^ok   expect_objects 6" "RunPythonScript left the box, the circle, the cone, the torus, the interpolated curve and the arc (the sphere was deleted from inside the script)"
   grep -q "! Python error" <<<"$PS" && { echo "FAIL python_script.txt printed a Python error"; fail=1; } || echo "ok   no Python script errors"
 fi
 

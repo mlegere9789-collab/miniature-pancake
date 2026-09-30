@@ -209,6 +209,18 @@ struct PyObjectTable {
     return PyObjId(AddCurveObj(k, "AddCircle"));
   }
 
+  // Mirrors rs.AddArc3Pt(start, end, pointOnArc) in LuaEngine.cpp: an arc
+  // through the two endpoints and a third point on it, or None when the
+  // three points don't make a valid arc (same as rs.AddArc3Pt pushing nil).
+  py::object AddArc3Pt(Point3d start, Point3d end, Point3d on) {
+    ON_Arc arc(start, on, end);
+    if (!arc.IsValid()) return py::none();
+    ON_ArcCurve ac(arc);
+    kernel::NurbsCurve k;
+    if (!CurveFromON(ac, k)) return py::none();
+    return PyObjId(AddCurveObj(k, "AddArc3Pt"));
+  }
+
   py::object AddBox(Point3d corner, Vector3d size) {
     if (size.x == 0 || size.y == 0 || size.z == 0) throw std::runtime_error("AddBox: size must be non-zero");
     ON_3dPoint corners[8];
@@ -383,6 +395,7 @@ PYBIND11_EMBEDDED_MODULE(dino8, m) {
       .def("AddCurve", &PyObjectTable::AddCurve, py::arg("points"), py::arg("degree") = 3)
       .def("AddInterpCurve", &PyObjectTable::AddInterpCurve)
       .def("AddCircle", &PyObjectTable::AddCircle, py::arg("center"), py::arg("radius"), py::arg("normal") = py::none())
+      .def("AddArc3Pt", &PyObjectTable::AddArc3Pt)
       .def("AddBox", &PyObjectTable::AddBox, py::arg("corner"), py::arg("size"))
       .def("AddSphere", &PyObjectTable::AddSphere, py::arg("center"), py::arg("radius"))
       .def("AddCylinder", &PyObjectTable::AddCylinder, py::arg("base"), py::arg("axis"), py::arg("radius"), py::arg("cap") = true)
