@@ -15065,6 +15065,103 @@ void TestSubDSetEdgeSharpnessCreatesRealSemiSharpCrease() {
   }
 }
 
+// SubD::SetEdgeSharpness()'s per-end-variable overload: the gap the
+// constant-weight test above explicitly disclosed as unhandled ("a
+// caller needing that must use raw() directly"). Reuses the same hinge
+// fixture and fold_a/fold_b naming.
+void TestSubDSetEdgeSharpnessSupportsPerEndVariableWeight() {
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SubD;
+
+  const Point3d fold_a(0, 0, 0);
+  const Point3d fold_b(1, 0, 0);
+  const double kMax = ON_SubDEdgeSharpness::MaximumValue;  // 4.0
+
+  // --- Rejection: an out-of-range value on EITHER end refuses the whole
+  // call, and leaves the edge completely untouched (not partially
+  // written). ---
+  {
+    auto subd = SubD::FromControlMesh(MakeHingedDoubleEdgeMesh(), /*crease_at_double_edges=*/false);
+    Check(!subd.SetEdgeSharpness(fold_a, fold_b, -0.5, 1.0, 1e-9),
+          "refuses when sharpness_at_p0 is negative");
+    Check(!subd.SetEdgeSharpness(fold_a, fold_b, 1.0, kMax + 1.0, 1e-9),
+          "refuses when sharpness_at_p1 is above MaximumValue");
+    const ON_SubDVertex* v0 = subd.raw().FindVertex(&fold_a.x, 1e-9);
+    const ON_SubDVertex* v1 = subd.raw().FindVertex(&fold_b.x, 1e-9);
+    const ON_SubDEdge* e = subd.raw().FindEdge(v0, v1).Edge();
+    Check(e != nullptr && !e->IsSharp(),
+          "both refused calls left the edge exactly as they found it - "
+          "smooth and not sharp at all, not half-written");
+  }
+
+  // --- Exact per-end bookkeeping, read back via EndSharpness(vertex),
+  // which resolves OpenNURBS' own internal end ordering directly - so
+  // this checks the METHOD maps (p0, p1) onto the right physical ends,
+  // not just that some interval landed on the edge somehow. ---
+  {
+    auto subd = SubD::FromControlMesh(MakeHingedDoubleEdgeMesh(), /*crease_at_double_edges=*/false);
+    Check(subd.SetEdgeSharpness(fold_a, fold_b, kMax, 0.0, 1e-9),
+          "accepts a genuinely uneven (kMax at p0, 0 at p1) interval");
+
+    const ON_SubDVertex* v0 = subd.raw().FindVertex(&fold_a.x, 1e-9);
+    const ON_SubDVertex* v1 = subd.raw().FindVertex(&fold_b.x, 1e-9);
+    const ON_SubDEdge* e = subd.raw().FindEdge(v0, v1).Edge();
+    Check(e != nullptr && e->IsSmooth() && !e->IsCrease() && e->IsSharp(),
+          "the edge keeps its Smooth tag and reports IsSharp() true, same "
+          "as the constant-weight overload");
+    Check(e->EndSharpness(v0) == kMax, "fold_a's own end reads back kMax");
+    Check(e->EndSharpness(v1) == 0.0, "fold_b's own end reads back 0");
+
+    // Calling again with (p1, p0) reversed and the weights swapped must
+    // land on the exact same physical assignment - confirms the mapping
+    // is keyed to the POINT, not to whichever order OpenNURBS happens to
+    // store m_vertex[0]/m_vertex[1] in internally.
+    Check(subd.SetEdgeSharpness(fold_b, fold_a, 0.0, kMax, 1e-9),
+          "accepts the same interval with points and weights both reversed");
+    Check(e->EndSharpness(v0) == kMax && e->EndSharpness(v1) == 0.0,
+          "the physical per-vertex assignment is unchanged by reversing "
+          "which point argument named which weight");
+  }
+
+  // --- Real decay: Subdivide() must relax each end independently, not
+  // just carry one shared value - the fold's own high end (near fold_a)
+  // must stay sharper than its low end (near fold_b) after subdividing,
+  // matching ON_SubDEdgeSharpness::Subdivided()'s own documented
+  // per-end formula (each end decays by 1.0, the shared midpoint is the
+  // average of the two DECAYED ends). ---
+  {
+    auto subd = SubD::FromControlMesh(MakeHingedDoubleEdgeMesh(), /*crease_at_double_edges=*/false);
+    Check(subd.SetEdgeSharpness(fold_a, fold_b, kMax, 1.0, 1e-9),
+          "accepts a (kMax at p0, 1.0 at p1) interval");
+    subd.Subdivide(1);
+
+    int sharp_edge_count = 0;
+    double min_end = 1e30;
+    double max_end = -1e30;
+    ON_SubDEdgeIterator eit = subd.raw().EdgeIterator();
+    for (const ON_SubDEdge* e1 = eit.FirstEdge(); e1 != nullptr; e1 = eit.NextEdge()) {
+      if (e1->IsSharp()) {
+        ++sharp_edge_count;
+        min_end = std::min({min_end, e1->EndSharpness(0u), e1->EndSharpness(1u)});
+        max_end = std::max({max_end, e1->EndSharpness(0u), e1->EndSharpness(1u)});
+      }
+    }
+    Check(sharp_edge_count == 2,
+          "exactly the fold's 2 child edges are sharp after one Subdivide(), "
+          "same structural count the constant-weight test already confirmed");
+    // Decayed ends: kMax-1=3.0, 1.0-1=0.0, shared midpoint = 0.5*(3.0+0.0)=1.5.
+    // So the two child edges' own end values are {3.0, 1.5} and {1.5, 0.0}.
+    Check(max_end == kMax - 1.0,
+          "the child edge touching fold_a's own high end decayed by "
+          "exactly 1.0 from kMax, not toward the low end's value");
+    Check(min_end == 0.0,
+          "the child edge touching fold_b's own low end (1.0) decayed by "
+          "exactly 1.0 down to 0 - a strictly UNEVEN decay, proving the "
+          "two ends are tracked independently rather than averaged up "
+          "front");
+  }
+}
+
 // SubD::SetCrease(): retagging an ordinary shared edge to Crease (and
 // back) after construction, without the mesh-double-edge trick
 // crease_at_double_edges needs. Reuses the same hinge fixture and
@@ -47274,6 +47371,7 @@ int main() {
   TestSubDTransformMovesScalesAndStaysValidUnderMirror();
   TestSubDSymmetrizeWeldsSeamAndFlipsMirroredFaces();
   TestSubDSetEdgeSharpnessCreatesRealSemiSharpCrease();
+  TestSubDSetEdgeSharpnessSupportsPerEndVariableWeight();
   TestSubDSetCreaseTagsAndUntagsEdges();
   TestSubDFlatQuadGridStaysFlatAndAreaExact();
   TestSubDToNurbsPatchesExactOnRegularFlatGrid();

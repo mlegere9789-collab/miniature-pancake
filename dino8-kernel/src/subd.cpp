@@ -573,7 +573,16 @@ int SubD::CreaseEdgeCount() const {
 
 bool SubD::SetEdgeSharpness(const Point3d& p0, const Point3d& p1, double sharpness,
                             double point_tolerance) {
-  if (!(sharpness >= 0.0) || sharpness > ON_SubDEdgeSharpness::MaximumValue) {
+  return SetEdgeSharpness(p0, p1, sharpness, sharpness, point_tolerance);
+}
+
+bool SubD::SetEdgeSharpness(const Point3d& p0, const Point3d& p1,
+                            double sharpness_at_p0, double sharpness_at_p1,
+                            double point_tolerance) {
+  if (!(sharpness_at_p0 >= 0.0) || sharpness_at_p0 > ON_SubDEdgeSharpness::MaximumValue) {
+    return false;
+  }
+  if (!(sharpness_at_p1 >= 0.0) || sharpness_at_p1 > ON_SubDEdgeSharpness::MaximumValue) {
     return false;
   }
   const ON_SubDVertex* v0 = subd_.FindVertex(&p0.x, point_tolerance);
@@ -585,13 +594,20 @@ bool SubD::SetEdgeSharpness(const Point3d& p0, const Point3d& p1, double sharpne
   if (e == nullptr || !e->IsSmooth()) {
     return false;
   }
+  // ON_SubDEdgeSharpness::FromInterval(s0, s1) is stored positionally
+  // against the edge's OWN m_vertex[0]/m_vertex[1] order, which need not
+  // match the (p0, p1) order the caller passed in - so map the caller's
+  // per-point weights onto the edge's own end indices before writing.
+  const bool p0_is_end0 = (e->Vertex(0u) == v0);
+  const double s_end0 = p0_is_end0 ? sharpness_at_p0 : sharpness_at_p1;
+  const double s_end1 = p0_is_end0 ? sharpness_at_p1 : sharpness_at_p0;
   // SetSharpnessForExperts is the same primitive OpenNURBS' own
   // ON_SubD::AddEdge(..., ON_SubDEdgeSharpness) overloads call on a
   // freshly-created edge - here applied to an existing one found via the
   // const FindVertex/FindEdge accessors, which is why the const_cast: it
   // just writes one field (ON_SubDEdge::m_sharpness), verified by reading
   // its implementation, with no other cached state to invalidate.
-  const_cast<ON_SubDEdge*>(e)->SetSharpnessForExperts(ON_SubDEdgeSharpness::FromConstant(sharpness));
+  const_cast<ON_SubDEdge*>(e)->SetSharpnessForExperts(ON_SubDEdgeSharpness::FromInterval(s_end0, s_end1));
   return true;
 }
 

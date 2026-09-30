@@ -518,11 +518,9 @@ class SubD {
   // most) 1.0 per level via ON_SubDEdge::SubdivideSharpness(). So a
   // semi-sharp edge relaxes into an ordinary smooth edge after
   // ceil(sharpness) further Subdivide() levels; a real Crease-tagged
-  // edge never relaxes. This wrapper exposes one constant weight per
-  // edge (both ends equal); OpenNURBS also supports a per-end-variable
-  // sharpness (linearly interpolated along the edge, decaying
-  // differently at each end) that this method does not expose - a
-  // caller needing that must use raw() directly.
+  // edge never relaxes. This constant-weight overload is a thin
+  // convenience wrapper (`sharpness_at_p0 == sharpness_at_p1`) around
+  // the genuinely per-end-variable overload below.
   //
   // Returns false, unchanged, if: `sharpness` is outside
   // [0, ON_SubDEdgeSharpness::MaximumValue]; no vertex is found at p0 or
@@ -532,6 +530,45 @@ class SubD {
   // than silently no-op'ing and pretending it worked).
   bool SetEdgeSharpness(const Point3d& p0, const Point3d& p1, double sharpness,
                         double point_tolerance = 0.0);
+
+  // The genuinely per-end-variable form the constant-weight overload
+  // above previously disclosed as unavailable ("a caller needing that
+  // must use raw() directly") - real Pixar/OpenSubdiv-style linearly
+  // interpolated semi-sharp creasing, where each end of the edge decays
+  // toward smooth independently rather than moving together. Backed by
+  // the exact same `ON_SubDEdgeSharpness::FromInterval(s0, s1)`
+  // constructor `Subdivided()`'s own two-child split (verified above)
+  // already produces internally when a constant-weight edge happens to
+  // decay unevenly at each end during a real Subdivide() call - so a
+  // caller setting an uneven interval directly here isn't reaching for
+  // an unexercised code path, only setting the initial condition that
+  // path already has to handle.
+  //
+  // `sharpness_at_p0`/`sharpness_at_p1` name the weight at the END OF
+  // THE EDGE nearest `p0`/`p1` respectively - independent of whichever
+  // order OpenNURBS happens to store the edge's own two vertices
+  // internally (`ON_SubDEdge::m_vertex[0]`/`[1]`), which this method
+  // detects and corrects for so the caller never has to reason about
+  // edge orientation. Passing equal values is exactly the constant-
+  // weight overload above (indeed that overload just forwards here).
+  //
+  // Returns false, unchanged, under the same conditions as the
+  // constant-weight overload, applied to EACH of `sharpness_at_p0`/
+  // `sharpness_at_p1` independently (either one out of range refuses
+  // the whole call, before either is written).
+  //
+  // `point_tolerance` has no default here (unlike the constant-weight
+  // overload above): with two same-typed `double` weight parameters,
+  // giving this one a default of its own would make a 4-argument call
+  // like `SetEdgeSharpness(p0, p1, sharpness, tol)` ambiguous between
+  // "constant sharpness, explicit tolerance" (the overload above) and
+  // "sharpness_at_p0=sharpness, sharpness_at_p1=tol, default tolerance"
+  // (this one) - both would be equally viable 4-argument matches of an
+  // otherwise-identical (Point3d, Point3d, double, double) signature.
+  // Requiring all 5 arguments here removes the overlap entirely.
+  bool SetEdgeSharpness(const Point3d& p0, const Point3d& p1,
+                        double sharpness_at_p0, double sharpness_at_p1,
+                        double point_tolerance);
 
   // Retags the interior edge between the control-net vertices found at
   // (or within `point_tolerance` of) `p0` and `p1` as a hard Crease

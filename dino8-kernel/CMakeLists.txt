@@ -9,6 +9,23 @@ option(DINO8_KERNEL_BUILD_EXAMPLES "Build dino8-kernel example programs" ON)
 
 include(FetchContent)
 
+# Force BUILD_TESTING off before either dependency's CMakeLists.txt runs.
+# Manifold's own CMakeLists calls include(CTest), which defines this as a
+# cache variable defaulting ON; once it's ON, OpenNURBS' own CMakeLists
+# appends opennurbs_plus_testheader.h to its precompiled-header list under
+# `if (BUILD_TESTING)` (CMakeLists.txt:409-411/586-588) - a file that does
+# not exist anywhere in the public OpenNURBS source tree (verified: not a
+# clone problem, grepping the whole fetched tree finds zero files named
+# that), so the PCH generation step fails with a hard "No such file or
+# directory" the moment BUILD_TESTING is ON when opennurbs configures.
+# Forcing it off here, before either FetchContent_MakeAvailable call,
+# means neither dependency ever sees it ON, regardless of which one's
+# CMakeLists happens to set it first on a given configure pass. Our own
+# test target (dino8_kernel_tests, tests/CMakeLists.txt) is unaffected -
+# it's gated by DINO8_KERNEL_BUILD_TESTS + enable_testing()/add_test(),
+# never by this variable.
+set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
+
 # Pin to a specific OpenNURBS tag rather than tracking a moving branch, so
 # builds are reproducible. Bump this deliberately when the kernel needs a
 # newer OpenNURBS feature.
