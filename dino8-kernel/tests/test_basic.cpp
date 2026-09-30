@@ -18154,6 +18154,284 @@ void TestMeshLoadVrmlFanTriangulatesNgonFaces() {
   std::remove(hexagon_path.c_str());
 }
 
+void TestMeshSaveColladaRoundTrips() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Result;
+
+  // Same MakeQuadBoxMesh fixture SaveOff()'s/SaveAmf()'s/SaveVrml()'s own
+  // round-trip tests use: 8 vertices, 6 quad faces, known exact volume.
+  const auto box = MakeQuadBoxMesh(0, 0, 0, 2, 2, 2);
+  const std::string path = "dino8_kernel_mesh_collada_test.dae";
+  Check(box.SaveCollada(path) == Result::Ok, "Mesh::SaveCollada succeeds");
+
+  std::ifstream in(path);
+  Check(static_cast<bool>(in), "the .dae file SaveCollada wrote can be reopened for reading");
+  std::string file_text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  Check(file_text.find("<?xml") == 0, "the file starts with an XML declaration");
+  Check(file_text.find("<COLLADA") != std::string::npos, "the file has a COLLADA root element");
+  Check(file_text.find("<polylist") != std::string::npos, "the file has a polylist face list");
+
+  const size_t vcount_open = file_text.find("<vcount>");
+  const size_t vcount_close = file_text.find("</vcount>");
+  Check(vcount_open != std::string::npos && vcount_close != std::string::npos &&
+            vcount_close > vcount_open,
+        "the file has a vcount element");
+  const std::string vcount_text = file_text.substr(vcount_open + 8, vcount_close - (vcount_open + 8));
+  std::istringstream vcount_stream(vcount_text);
+  std::vector<int> vcounts;
+  int vc = 0;
+  while (vcount_stream >> vc) vcounts.push_back(vc);
+  Check(vcounts.size() == static_cast<size_t>(box.FaceCount()),
+        "exactly one vcount entry per face - 6 for the box");
+  bool all_quads = true;
+  for (int v : vcounts) all_quads = all_quads && (v == 4);
+  Check(all_quads, "every vcount entry is 4 - a quad face is written natively, not split");
+
+  // Full round trip: LoadCollada() the file SaveCollada() just wrote and
+  // check the result is geometrically the same solid.
+  Mesh reloaded;
+  Check(Mesh::LoadCollada(path, reloaded) == Result::Ok,
+        "Mesh::LoadCollada succeeds on SaveCollada()'s own output");
+  Check(reloaded.VertexCount() == box.VertexCount() && reloaded.FaceCount() == box.FaceCount(),
+        "the reloaded mesh has the same vertex/face counts as the original - "
+        "quad faces round-tripped as a native 4-count polylist entry, not split");
+  Check(std::abs(reloaded.Volume() - box.Volume()) < 1e-9,
+        "the reloaded mesh's volume exactly matches the original");
+  std::remove(path.c_str());
+
+  // A hand-written file exercising attribute tolerance (an "id" on
+  // <geometry>/<source>/<float_array>), irregular whitespace, and a
+  // <triangles> element instead of <polylist> - a single triangle whose
+  // known corners let LoadCollada()'s geometry be checked exactly, not
+  // just its counts.
+  const std::string hand_written_path = "dino8_kernel_mesh_collada_test_hand_written.dae";
+  {
+    std::ofstream out(hand_written_path);
+    out << "<?xml version=\"1.0\"?>\n";
+    out << "<COLLADA>\n";
+    out << " <library_geometries>\n";
+    out << "  <geometry id=\"g0\">\n";
+    out << "   <mesh>\n";
+    out << "    <source id=\"s0\">\n";
+    out << "     <float_array id=\"a0\" count=\"9\">\n";
+    out << "        0 0 0   2 0 0   0 2 0  \n";
+    out << "     </float_array>\n";
+    out << "    </source>\n";
+    out << "    <triangles count=\"1\">\n";
+    out << "     <input semantic=\"VERTEX\" source=\"#s0\" offset=\"0\"/>\n";
+    out << "     <p>0 1 2</p>\n";
+    out << "    </triangles>\n";
+    out << "   </mesh>\n";
+    out << "  </geometry>\n";
+    out << " </library_geometries>\n";
+    out << "</COLLADA>\n";
+  }
+  Mesh hand_written;
+  Check(Mesh::LoadCollada(hand_written_path, hand_written) == Result::Ok,
+        "LoadCollada succeeds on a hand-written file using a <triangles> "
+        "element and irregular whitespace");
+  Check(hand_written.VertexCount() == 3 && hand_written.FaceCount() == 1,
+        "the hand-written file's 3 vertices and 1 triangle are read correctly");
+  const ON_MeshFace& tri = hand_written.raw().m_F[0];
+  Check(tri.vi[0] == 0 && tri.vi[1] == 1 && tri.vi[2] == 2,
+        "COLLADA's 0-based <p> values resolved directly to the same 0-based corners");
+  std::remove(hand_written_path.c_str());
+}
+
+void TestMeshLoadColladaRejectsMalformedFiles() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Result;
+
+  const std::string missing_path = "dino8_kernel_mesh_collada_test_does_not_exist.dae";
+  Mesh out;
+  Check(Mesh::LoadCollada(missing_path, out) == Result::Failed,
+        "LoadCollada fails on a file that doesn't exist");
+
+  const std::string no_float_array_path = "dino8_kernel_mesh_collada_test_no_float_array.dae";
+  {
+    std::ofstream bad(no_float_array_path);
+    bad << "<COLLADA><library_geometries><geometry><mesh>\n"
+        << "<polylist count=\"1\"><vcount>3</vcount><p>0 1 2</p></polylist>\n"
+        << "</mesh></geometry></library_geometries></COLLADA>\n";
+  }
+  Check(Mesh::LoadCollada(no_float_array_path, out) == Result::Failed,
+        "LoadCollada fails on a file with no <float_array> element at all");
+
+  const std::string bad_count_path = "dino8_kernel_mesh_collada_test_bad_count.dae";
+  {
+    std::ofstream bad(bad_count_path);
+    // 4 numbers isn't a multiple of 3 - can't be x/y/z triples.
+    bad << "<COLLADA><library_geometries><geometry><mesh>\n"
+        << "<float_array count=\"4\">0 0 0 1</float_array>\n"
+        << "<polylist count=\"1\"><vcount>3</vcount><p>0 1 2</p></polylist>\n"
+        << "</mesh></geometry></library_geometries></COLLADA>\n";
+  }
+  Check(Mesh::LoadCollada(bad_count_path, out) == Result::Failed,
+        "LoadCollada fails when the float_array's value count isn't a multiple of 3");
+
+  const std::string no_faces_path = "dino8_kernel_mesh_collada_test_no_faces.dae";
+  {
+    std::ofstream bad(no_faces_path);
+    bad << "<COLLADA><library_geometries><geometry><mesh>\n"
+        << "<float_array count=\"9\">0 0 0 1 0 0 0 1 0</float_array>\n"
+        << "</mesh></geometry></library_geometries></COLLADA>\n";
+  }
+  Check(Mesh::LoadCollada(no_faces_path, out) == Result::Failed,
+        "LoadCollada fails on a file with neither a <polylist> nor a <triangles> element");
+
+  const std::string too_few_path = "dino8_kernel_mesh_collada_test_too_few.dae";
+  {
+    std::ofstream bad(too_few_path);
+    // A polylist face needs at least 3 corners; 2 is not a valid polygon.
+    bad << "<COLLADA><library_geometries><geometry><mesh>\n"
+        << "<float_array count=\"9\">0 0 0 1 0 0 0 1 0</float_array>\n"
+        << "<polylist count=\"1\"><vcount>2</vcount><p>0 1</p></polylist>\n"
+        << "</mesh></geometry></library_geometries></COLLADA>\n";
+  }
+  Check(Mesh::LoadCollada(too_few_path, out) == Result::Failed,
+        "LoadCollada fails on a polylist vcount entry below 3");
+
+  const std::string oob_index_path = "dino8_kernel_mesh_collada_test_oob_index.dae";
+  {
+    std::ofstream bad(oob_index_path);
+    // Only 3 vertices declared (indices 0-2); index 3 doesn't exist.
+    bad << "<COLLADA><library_geometries><geometry><mesh>\n"
+        << "<float_array count=\"9\">0 0 0 1 0 0 0 1 0</float_array>\n"
+        << "<polylist count=\"1\"><vcount>3</vcount><p>0 1 3</p></polylist>\n"
+        << "</mesh></geometry></library_geometries></COLLADA>\n";
+  }
+  Check(Mesh::LoadCollada(oob_index_path, out) == Result::Failed,
+        "LoadCollada fails on a <p> entry referencing a vertex index that doesn't exist");
+
+  const std::string mismatched_path = "dino8_kernel_mesh_collada_test_mismatched.dae";
+  {
+    std::ofstream bad(mismatched_path);
+    // vcount calls for 3+3=6 indices total, but <p> only supplies 5.
+    bad << "<COLLADA><library_geometries><geometry><mesh>\n"
+        << "<float_array count=\"9\">0 0 0 1 0 0 0 1 0</float_array>\n"
+        << "<polylist count=\"2\"><vcount>3 3</vcount><p>0 1 2 0 1</p></polylist>\n"
+        << "</mesh></geometry></library_geometries></COLLADA>\n";
+  }
+  Check(Mesh::LoadCollada(mismatched_path, out) == Result::Failed,
+        "LoadCollada fails when <p> doesn't hold exactly the indices its <vcount> list calls for");
+
+  const std::string bad_triangles_path = "dino8_kernel_mesh_collada_test_bad_triangles.dae";
+  {
+    std::ofstream bad(bad_triangles_path);
+    // <triangles> implies groups of 3; 4 indices isn't a whole number of them.
+    bad << "<COLLADA><library_geometries><geometry><mesh>\n"
+        << "<float_array count=\"9\">0 0 0 1 0 0 0 1 0</float_array>\n"
+        << "<triangles count=\"1\"><p>0 1 2 0</p></triangles>\n"
+        << "</mesh></geometry></library_geometries></COLLADA>\n";
+  }
+  Check(Mesh::LoadCollada(bad_triangles_path, out) == Result::Failed,
+        "LoadCollada fails when a <triangles> element's <p> count isn't a multiple of 3");
+
+  std::remove(no_float_array_path.c_str());
+  std::remove(bad_count_path.c_str());
+  std::remove(no_faces_path.c_str());
+  std::remove(too_few_path.c_str());
+  std::remove(oob_index_path.c_str());
+  std::remove(mismatched_path.c_str());
+  std::remove(bad_triangles_path.c_str());
+}
+
+void TestMeshLoadColladaFanTriangulatesNgonFaces() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Result;
+
+  // Same shoelace-area ground truth TestMeshLoadVrmlFanTriangulatesNgonFaces
+  // uses, applied to COLLADA's own polylist vcount/p n-gon entries instead
+  // of VRML's coordIndex runs.
+  auto shoelace_area = [](const std::vector<std::pair<double, double>>& pts) {
+    double sum = 0.0;
+    for (size_t i = 0; i < pts.size(); ++i) {
+      const auto& [x0, y0] = pts[i];
+      const auto& [x1, y1] = pts[(i + 1) % pts.size()];
+      sum += x0 * y1 - x1 * y0;
+    }
+    return std::abs(sum) * 0.5;
+  };
+  auto triangle_area_sum = [](const Mesh& mesh) {
+    double total = 0.0;
+    const ON_Mesh& raw = mesh.raw();
+    for (int i = 0; i < raw.m_F.Count(); ++i) {
+      const ON_MeshFace& f = raw.m_F[i];
+      const ON_3fPoint& a = raw.m_V[f.vi[0]];
+      const ON_3fPoint& b = raw.m_V[f.vi[1]];
+      const ON_3fPoint& c = raw.m_V[f.vi[2]];
+      const ON_3dVector cross =
+          ON_3dVector::CrossProduct(ON_3dVector(b - a), ON_3dVector(c - a));
+      total += 0.5 * cross.Length();
+    }
+    return total;
+  };
+
+  // Convex pentagon (5 corners) - the smallest n-gon ON_MeshFace can't
+  // represent directly.
+  const std::vector<std::pair<double, double>> pentagon = {
+      {0, 0}, {2, 0}, {3, 1}, {1, 2}, {-1, 1}};
+  const std::string pentagon_path = "dino8_kernel_mesh_collada_test_pentagon_fan.dae";
+  {
+    std::ofstream out(pentagon_path);
+    out << "<COLLADA><library_geometries><geometry><mesh>\n";
+    out << "<float_array count=\"" << (pentagon.size() * 3) << "\">";
+    for (const auto& [x, y] : pentagon) out << x << ' ' << y << " 0 ";
+    out << "</float_array>\n";
+    out << "<polylist count=\"1\"><vcount>5</vcount><p>0 1 2 3 4</p></polylist>\n";
+    out << "</mesh></geometry></library_geometries></COLLADA>\n";
+  }
+  Mesh pentagon_mesh;
+  Check(Mesh::LoadCollada(pentagon_path, pentagon_mesh) == Result::Ok,
+        "LoadCollada succeeds on a 5-corner (pentagon) polylist entry instead "
+        "of rejecting it outright");
+  Check(pentagon_mesh.VertexCount() == 5,
+        "the pentagon's 5 vertices are all preserved, unduplicated");
+  Check(pentagon_mesh.FaceCount() == 3,
+        "a pentagon fan-triangulates into exactly 5-2=3 triangles");
+  const ON_MeshFace& p0 = pentagon_mesh.raw().m_F[0];
+  const ON_MeshFace& p1 = pentagon_mesh.raw().m_F[1];
+  const ON_MeshFace& p2 = pentagon_mesh.raw().m_F[2];
+  Check(p0.vi[0] == 0 && p0.vi[1] == 1 && p0.vi[2] == 2 && p0.vi[3] == 2,
+        "the first fan triangle is corners (0,1,2), stored as a "
+        "degenerate quad (vi[3]==vi[2]) the same way an explicit "
+        "triangle face already is");
+  Check(p1.vi[0] == 0 && p1.vi[1] == 2 && p1.vi[2] == 3,
+        "the second fan triangle is corners (0,2,3)");
+  Check(p2.vi[0] == 0 && p2.vi[1] == 3 && p2.vi[2] == 4,
+        "the third fan triangle is corners (0,3,4), reaching the "
+        "pentagon's last corner");
+  Check(std::abs(triangle_area_sum(pentagon_mesh) - shoelace_area(pentagon)) < 1e-9,
+        "the 3 fan triangles' combined area exactly reproduces the "
+        "convex pentagon's own shoelace area");
+  std::remove(pentagon_path.c_str());
+
+  // A convex hexagon (6 corners) exercises n > 5 too, not just the
+  // smallest unsupported case.
+  const std::vector<std::pair<double, double>> hexagon = {
+      {2, 0}, {1, 2}, {-1, 2}, {-2, 0}, {-1, -2}, {1, -2}};
+  const std::string hexagon_path = "dino8_kernel_mesh_collada_test_hexagon_fan.dae";
+  {
+    std::ofstream out(hexagon_path);
+    out << "<COLLADA><library_geometries><geometry><mesh>\n";
+    out << "<float_array count=\"" << (hexagon.size() * 3) << "\">";
+    for (const auto& [x, y] : hexagon) out << x << ' ' << y << " 0 ";
+    out << "</float_array>\n";
+    out << "<polylist count=\"1\"><vcount>6</vcount><p>0 1 2 3 4 5</p></polylist>\n";
+    out << "</mesh></geometry></library_geometries></COLLADA>\n";
+  }
+  Mesh hexagon_mesh;
+  Check(Mesh::LoadCollada(hexagon_path, hexagon_mesh) == Result::Ok,
+        "LoadCollada succeeds on a 6-corner (hexagon) polylist entry");
+  Check(hexagon_mesh.VertexCount() == 6 && hexagon_mesh.FaceCount() == 4,
+        "a hexagon fan-triangulates into exactly 6-2=4 triangles, no "
+        "vertex duplication");
+  Check(std::abs(triangle_area_sum(hexagon_mesh) - shoelace_area(hexagon)) < 1e-9,
+        "the 4 fan triangles' combined area exactly reproduces the "
+        "convex hexagon's own shoelace area");
+  std::remove(hexagon_path.c_str());
+}
+
 void TestMeshSaveStlSplitsQuadsAndComputesNormals() {
   using dino8::kernel::Result;
 
@@ -45582,6 +45860,9 @@ int main() {
   TestMeshSaveVrmlRoundTrips();
   TestMeshLoadVrmlRejectsMalformedFiles();
   TestMeshLoadVrmlFanTriangulatesNgonFaces();
+  TestMeshSaveColladaRoundTrips();
+  TestMeshLoadColladaRejectsMalformedFiles();
+  TestMeshLoadColladaFanTriangulatesNgonFaces();
   TestMeshSaveStlSplitsQuadsAndComputesNormals();
   TestMeshLoadStlRoundTrips();
   TestMeshLoadStlBinary();

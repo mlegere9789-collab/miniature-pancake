@@ -801,6 +801,59 @@ class Mesh {
   // trusted.
   static Result LoadVrml(const std::string& path, Mesh& out_mesh);
 
+  // Writes this mesh as a plain-XML COLLADA (`.dae`, ISO/IEC 17506) file -
+  // the seventh "other file format" here, and a genuine gap this kernel
+  // had zero COLLADA code for at all before this (this bullet's remaining
+  // named formats - glTF/GLB, 3MF, FBX, SketchUp SKP, USD - are each a
+  // zip/binary-container or much larger schema, out of this narrow scope,
+  // the same reasoning already given for X3D above): a `<COLLADA>` root
+  // holding one `<library_geometries><geometry><mesh>` with a `<source>`
+  // carrying a flat `<float_array>` of "x y z" vertex triples, a
+  // `<vertices>` element pointing at that source, and a `<polylist>`
+  // holding a `<vcount>` list (one entry per face, its corner count) and a
+  // matching flat `<p>` index list - COLLADA's own "one shared vertex
+  // list, faces of any size" convention, the same "a real variable-length
+  // face list" reasoning `SaveOff()`/`SaveVrml()` already give for their
+  // own formats. A quad face (`ON_MeshFace::IsQuad()`) is written as its
+  // own native 4-count `<vcount>` entry, not split into two triangles. No
+  // `<library_visual_scenes>`, `<instance_geometry>`, material/effect
+  // library, per-vertex normal/color, or any element besides this single
+  // `<geometry>` is written - this kernel's `Mesh` has nothing to source
+  // those from anyway (same reasoning `SaveVrml()`'s own doc comment
+  // gives). Returns Result::Failed if the file can't be opened for
+  // writing; does not validate the mesh's own geometry (an empty mesh
+  // writes a valid, empty `<polylist>`).
+  Result SaveCollada(const std::string& path) const;
+
+  // Reads a plain-XML `.dae` file written by SaveCollada() (or any other
+  // reasonably well-formed single-geometry COLLADA file whose mesh uses a
+  // `<polylist>` or `<triangles>` face list) into `out_mesh`. This is a
+  // deliberately narrow, hand-rolled scan for exactly this structure - not
+  // a general COLLADA/XML parser - so it reads only the FIRST
+  // `<float_array>` found anywhere in the file as the vertex position list
+  // (grouped into x/y/z triples), and only the FIRST `<polylist>` or, if
+  // none exists, the FIRST `<triangles>` element as the face list, the
+  // same "first one found wins" convention `LoadAmf()`/`LoadVrml()` already
+  // use for a second sibling element. The `<vertices>`/`<input>` indirection
+  // that lets a real COLLADA file wire an arbitrary source id to an
+  // arbitrary semantic/offset is not resolved at all - a single `VERTEX`
+  // input at offset 0 is assumed, the same "no material/normal/UV wiring
+  // understood" scope `LoadVrml()` already has for its own `Appearance`/
+  // `Material` nodes. A `<polylist>`'s `<vcount>` entry of exactly 3 or 4
+  // becomes one native `ON_MeshFace` triangle or quad; a genuine n-gon
+  // entry (5+) is fan-triangulated from its own first corner into `n-2`
+  // triangles, the same accommodation `LoadObj()`/`LoadOff()`/`LoadVrml()`
+  // already make for their own n-gon faces; a `<triangles>` element (no
+  // `<vcount>` of its own) is read as an implicit run of 3-index groups.
+  // Returns Result::Failed if the file can't be opened, no `<float_array>`
+  // is found or its value count isn't a multiple of 3, neither a
+  // `<polylist>` nor a `<triangles>` element is found, a `<polylist>`'s
+  // `<vcount>` entry is below 3, its `<p>` list doesn't hold exactly the
+  // indices its `<vcount>` list calls for, or any index falls outside
+  // `[0, vertex_count)` - `out_mesh` is left unspecified in that case, not
+  // partially filled and silently trusted.
+  static Result LoadCollada(const std::string& path, Mesh& out_mesh);
+
   const ON_Mesh& raw() const { return mesh_; }
   ON_Mesh& raw() { return mesh_; }
 

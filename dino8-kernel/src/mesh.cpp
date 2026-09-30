@@ -2350,6 +2350,190 @@ Result Mesh::LoadVrml(const std::string& path, Mesh& out_mesh) {
   return Result::Ok;
 }
 
+namespace {
+
+// Splits a COLLADA leaf array's own whitespace-separated numeric content
+// (a `<float_array>`, `<vcount>`, or `<p>` element's text) into values -
+// COLLADA's own convention for these arrays, the same "space is the only
+// separator, newlines/indentation between values don't matter" contract
+// TokenizeVrmlBody() already assumes for VRML's `point`/`coordIndex`.
+// Returns false if any token fails to parse as the requested type.
+bool ParseColladaDoubles(const std::string& text, std::vector<double>& out_values) {
+  std::istringstream iss(text);
+  std::string token;
+  while (iss >> token) {
+    double value = 0;
+    if (!ParseOffDouble(token, value)) return false;
+    out_values.push_back(value);
+  }
+  return true;
+}
+
+bool ParseColladaInts(const std::string& text, std::vector<int>& out_values) {
+  std::istringstream iss(text);
+  std::string token;
+  while (iss >> token) {
+    int value = 0;
+    if (!ParseOffInt(token, value)) return false;
+    out_values.push_back(value);
+  }
+  return true;
+}
+
+}  // namespace
+
+Result Mesh::SaveCollada(const std::string& path) const {
+  std::ofstream out(path);
+  if (!out) {
+    return Result::Failed;
+  }
+
+  out << "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n";
+  out << "<COLLADA xmlns=\"http://www.collada.org/2005/11/COLLADASchema\" version=\"1.4.1\">\n";
+  out << " <library_geometries>\n";
+  out << "  <geometry id=\"mesh0\">\n";
+  out << "   <mesh>\n";
+  out << "    <source id=\"mesh0-positions\">\n";
+  out << "     <float_array id=\"mesh0-positions-array\" count=\"" << (mesh_.m_V.Count() * 3)
+      << "\">";
+  for (int i = 0; i < mesh_.m_V.Count(); ++i) {
+    const ON_3fPoint& v = mesh_.m_V[i];
+    if (i > 0) out << ' ';
+    out << v.x << ' ' << v.y << ' ' << v.z;
+  }
+  out << "</float_array>\n";
+  out << "     <technique_common>\n";
+  out << "      <accessor source=\"#mesh0-positions-array\" count=\"" << mesh_.m_V.Count()
+      << "\" stride=\"3\">\n";
+  out << "       <param name=\"X\" type=\"float\"/>\n";
+  out << "       <param name=\"Y\" type=\"float\"/>\n";
+  out << "       <param name=\"Z\" type=\"float\"/>\n";
+  out << "      </accessor>\n";
+  out << "     </technique_common>\n";
+  out << "    </source>\n";
+  out << "    <vertices id=\"mesh0-vertices\">\n";
+  out << "     <input semantic=\"POSITION\" source=\"#mesh0-positions\"/>\n";
+  out << "    </vertices>\n";
+  out << "    <polylist count=\"" << mesh_.m_F.Count() << "\">\n";
+  out << "     <input semantic=\"VERTEX\" source=\"#mesh0-vertices\" offset=\"0\"/>\n";
+  out << "     <vcount>";
+  for (int i = 0; i < mesh_.m_F.Count(); ++i) {
+    if (i > 0) out << ' ';
+    out << (mesh_.m_F[i].IsQuad() ? 4 : 3);
+  }
+  out << "</vcount>\n";
+  out << "     <p>";
+  bool first_index = true;
+  for (int i = 0; i < mesh_.m_F.Count(); ++i) {
+    const ON_MeshFace& f = mesh_.m_F[i];
+    const int n = f.IsQuad() ? 4 : 3;
+    for (int c = 0; c < n; ++c) {
+      if (!first_index) out << ' ';
+      out << f.vi[c];
+      first_index = false;
+    }
+  }
+  out << "</p>\n";
+  out << "    </polylist>\n";
+  out << "   </mesh>\n";
+  out << "  </geometry>\n";
+  out << " </library_geometries>\n";
+  out << "</COLLADA>\n";
+
+  return out.good() ? Result::Ok : Result::Failed;
+}
+
+Result Mesh::LoadCollada(const std::string& path, Mesh& out_mesh) {
+  std::ifstream in(path, std::ios::binary);
+  if (!in) {
+    return Result::Failed;
+  }
+  std::ostringstream buffer;
+  buffer << in.rdbuf();
+  const std::string text = buffer.str();
+
+  std::string positions_content;
+  size_t after_positions = 0;
+  if (!ExtractAmfElement(text, "float_array", 0, positions_content, after_positions)) {
+    return Result::Failed;
+  }
+  std::vector<double> numbers;
+  if (!ParseColladaDoubles(positions_content, numbers)) return Result::Failed;
+  if (numbers.size() % 3 != 0) return Result::Failed;
+
+  Mesh result;
+  ON_Mesh& raw = result.mesh_;
+  for (size_t v = 0; v + 2 < numbers.size(); v += 3) {
+    raw.m_V.Append(ON_3fPoint(numbers[v], numbers[v + 1], numbers[v + 2]));
+  }
+
+  std::string polylist_content;
+  size_t after_polylist = 0;
+  const bool is_polylist = ExtractAmfElement(text, "polylist", 0, polylist_content, after_polylist);
+  std::string triangles_content;
+  size_t after_triangles = 0;
+  const bool is_triangles =
+      !is_polylist && ExtractAmfElement(text, "triangles", 0, triangles_content, after_triangles);
+  if (!is_polylist && !is_triangles) return Result::Failed;
+  const std::string& faces_content = is_polylist ? polylist_content : triangles_content;
+
+  std::string p_content;
+  size_t p_next = 0;
+  if (!ExtractAmfElement(faces_content, "p", 0, p_content, p_next)) return Result::Failed;
+  std::vector<int> indices;
+  if (!ParseColladaInts(p_content, indices)) return Result::Failed;
+
+  std::vector<int> vcounts;
+  if (is_polylist) {
+    std::string vcount_content;
+    size_t vcount_next = 0;
+    if (!ExtractAmfElement(faces_content, "vcount", 0, vcount_content, vcount_next)) {
+      return Result::Failed;
+    }
+    if (!ParseColladaInts(vcount_content, vcounts)) return Result::Failed;
+  } else {
+    // <triangles> has no <vcount> of its own - COLLADA's own convention is
+    // that every face here is implicitly a 3-index group.
+    if (indices.size() % 3 != 0) return Result::Failed;
+    vcounts.assign(indices.size() / 3, 3);
+  }
+
+  size_t cursor = 0;
+  for (int vcount : vcounts) {
+    if (vcount < 3) return Result::Failed;
+    if (cursor + static_cast<size_t>(vcount) > indices.size()) return Result::Failed;
+    for (int c = 0; c < vcount; ++c) {
+      const int idx = indices[cursor + c];
+      if (idx < 0 || idx >= raw.m_V.Count()) return Result::Failed;
+    }
+    if (vcount <= 4) {
+      ON_MeshFace face;
+      face.vi[0] = indices[cursor];
+      face.vi[1] = indices[cursor + 1];
+      face.vi[2] = indices[cursor + 2];
+      face.vi[3] = (vcount == 4) ? indices[cursor + 3] : indices[cursor + 2];
+      raw.m_F.Append(face);
+    } else {
+      // A genuine n-gon (5+ corners) doesn't fit ON_MeshFace -
+      // fan-triangulate from the face's own first corner, the same
+      // accommodation LoadObj()/LoadOff()/LoadVrml() already make.
+      for (int c = 1; c + 1 < vcount; ++c) {
+        ON_MeshFace face;
+        face.vi[0] = indices[cursor];
+        face.vi[1] = indices[cursor + c];
+        face.vi[2] = indices[cursor + c + 1];
+        face.vi[3] = face.vi[2];
+        raw.m_F.Append(face);
+      }
+    }
+    cursor += static_cast<size_t>(vcount);
+  }
+  if (cursor != indices.size()) return Result::Failed;  // <p> has indices past the last <vcount>
+
+  out_mesh = std::move(result);
+  return Result::Ok;
+}
+
 Result Mesh::LoadStl(const std::string& path, Mesh& out_mesh) {
   // Distinguishes binary from ASCII the same way most real-world STL
   // readers do: an ASCII file's own text can start with "solid" and
