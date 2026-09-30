@@ -335,4 +335,49 @@ AccessibleNode BuildDocumentUserTextNode(const std::vector<DocumentUserTextSumma
   return list;
 }
 
+AccessibleNode BuildLightsPanelNode(const std::vector<LightSummary>& lights) {
+  AccessibleNode list;
+  list.name = "Lights";
+  list.role = AccessibleRole::List;
+  char count_buf[32];
+  std::snprintf(count_buf, sizeof(count_buf), "%zu document lights", lights.size());
+  list.description = count_buf;
+
+  for (const LightSummary& l : lights) {
+    AccessibleNode item;
+    item.role = AccessibleRole::ListItem;
+    item.name = l.name + " (" + l.type_text + "), " + (l.enabled ? "on" : "off");
+    list.children.push_back(std::move(item));
+  }
+  return list;
+}
+
+AccessibleNode BuildAnnotationStylesNode(const std::vector<AnnotationStyleSummary>& styles) {
+  AccessibleNode list;
+  list.name = "Annotation Styles";
+  list.role = AccessibleRole::List;
+  char count_buf[32];
+  std::snprintf(count_buf, sizeof(count_buf), "%zu annotation styles", styles.size());
+  list.description = count_buf;
+
+  for (const AnnotationStyleSummary& s : styles) {
+    AccessibleNode item;
+    item.role = AccessibleRole::ListItem;
+    item.name = s.name + (s.current ? ", current" : "");
+    item.description = "Text height: " + s.text_height_text + "; Arrow size: " + s.arrow_size_text +
+                        "; Font: " + s.font_text;
+    list.children.push_back(std::move(item));
+  }
+  return list;
+}
+
+AccessibleNode BuildDocumentNotesNode(const std::string& notes) {
+  AccessibleNode node;
+  node.name = "Document Notes";
+  node.role = AccessibleRole::Log;
+  node.description = "The document's saved Notes text";
+  node.text = notes;
+  return node;
+}
+
 }  // namespace dino8::platform

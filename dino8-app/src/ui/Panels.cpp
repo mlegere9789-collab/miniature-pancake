@@ -935,6 +935,16 @@ void DrawNotesPanel(Application& app, char* buffer, size_t buffer_size) {
   ImGui::End();
 }
 
+// AT-SPI2-queryable snapshot of Document::Notes() (see
+// docs/ACCESSIBILITY.md): built straight from Document state, independent of
+// whether the Notes panel itself has ever been drawn or is open right now -
+// mirrors the exact text the on-screen ##notes multiline box edits, the same
+// single-Text-value shape as the "Command Line" accessible rather than a
+// List, matching what the on-screen widget itself is.
+dino8::platform::AccessibleNode DocumentNotesAccessibleTree(Application& app) {
+  return dino8::platform::BuildDocumentNotesNode(app.Doc().Notes());
+}
+
 void DrawDocumentUserTextPanel(Application& app) {
   Document& doc = app.Doc();
   if (!ImGui::Begin(PanelTitle("panel.document_user_text", "DocumentUserText").c_str(), &app.Panels().document_user_text)) { ImGui::End(); return; }
@@ -1493,6 +1503,31 @@ void DrawDocumentPropertiesWindow(Application& app) {
   ImGui::Text("Objects: %zu   Layers: %zu   Revision: %llu", app.Doc().ObjectCount(), app.Doc().Layers().size(),
               static_cast<unsigned long long>(app.Doc().Revision()));
   ImGui::End();
+}
+
+// AT-SPI2-queryable snapshot of Document::AnnotationStyles() (see
+// docs/ACCESSIBILITY.md): built straight from Document state, independent of
+// whether DrawDocumentPropertiesWindow itself has ever been drawn or is open
+// right now - names which style is current (DocumentSettings::
+// annotation_style), the fact the on-screen "Current style" combo shows only
+// by which entry is selected, not by text, plus a Description giving text
+// height, arrow size and font, facts that only appear once a style's own
+// TreeNode row is expanded (0 is rendered as its documented "auto" meaning -
+// AnnotationStyle::text_height/arrow_size - rather than the bare number).
+dino8::platform::AccessibleNode AnnotationStylesAccessibleTree(Application& app) {
+  Document& doc = app.Doc();
+  std::vector<dino8::platform::AnnotationStyleSummary> summaries;
+  summaries.reserve(doc.AnnotationStyles().size());
+  for (const AnnotationStyle& st : doc.AnnotationStyles()) {
+    dino8::platform::AnnotationStyleSummary s;
+    s.name = st.name;
+    s.current = st.name == doc.Settings().annotation_style;
+    s.text_height_text = st.text_height > 0 ? FormatNumber(st.text_height) : "Auto (twice the grid spacing)";
+    s.arrow_size_text = st.arrow_size > 0 ? FormatNumber(st.arrow_size) : "Auto (text height)";
+    s.font_text = st.font.empty() ? "Default (first system sans-serif found)" : st.font;
+    summaries.push_back(std::move(s));
+  }
+  return dino8::platform::BuildAnnotationStylesNode(summaries);
 }
 
 void DrawLinetypesPanel(Application& app) {

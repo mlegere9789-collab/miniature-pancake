@@ -85,6 +85,24 @@ dino8::platform::AccessibleNode LayerStateManagerAccessibleTree(Application& app
 // key/value pair per entry the same way the on-screen panel's own "key =
 // value" row does.
 dino8::platform::AccessibleNode DocumentUserTextAccessibleTree(Application& app);
+// The AT-SPI2-queryable snapshot of Document::Lights() (defined alongside
+// DrawLightsPanel in RenderPanels.cpp) - independent of whether the Lights
+// panel window is open, mirroring the name, type and on/off state
+// DrawLightsPanel's own collapsed row shows without needing to expand it.
+dino8::platform::AccessibleNode LightsAccessibleTree(Application& app);
+// The AT-SPI2-queryable snapshot of Document::AnnotationStyles() -
+// independent of whether the Document Properties window is open, naming
+// which style is current (DocumentSettings::annotation_style) the way
+// DrawDocumentPropertiesWindow's own "Current style" combo only shows by
+// selection, with each row's Description giving its text height, arrow size
+// and font - facts that only appear once a style's row is expanded on
+// screen.
+dino8::platform::AccessibleNode AnnotationStylesAccessibleTree(Application& app);
+// The AT-SPI2-queryable snapshot of Document::Notes() - independent of
+// whether the Notes panel window is open, mirroring the exact text
+// DrawNotesPanel's multiline text box edits, the same single-Text-value
+// shape as the "Command Line" accessible.
+dino8::platform::AccessibleNode DocumentNotesAccessibleTree(Application& app);
 void DrawToolbars(Application& app);
 void DrawLayersPanel(Application& app);
 void DrawPropertiesPanel(Application& app);

@@ -32,10 +32,16 @@
 // definition naming it with its object and instance counts as the
 // Description, matching Document::Blocks; the layer state manager builder
 // produces one row per saved layer state naming it with how many layers it
-// snapshots as the Description, matching Document::LayerStates; and the
+// snapshots as the Description, matching Document::LayerStates; the
 // document user text builder produces one row per document user-text key,
 // named after the key with its value as the Description, matching
-// Document::UserText.
+// Document::UserText; the lights builder produces one row per document
+// light with its type and on/off state folded into the name, matching
+// Document::Lights; the annotation styles builder produces one row per
+// style naming it and which one is current, with its text height/arrow
+// size/font as the Description, matching Document::AnnotationStyles; and
+// the document notes builder produces a single Log accessible whose text is
+// exactly Document::Notes(), matching DrawNotesPanel's own text box.
 // This needs no display, no D-Bus session, and no AT-SPI2 build at all, so
 // it runs on every platform and every CI job regardless of whether
 // AccessibilityLinux.cpp itself was compiled in this build (see
@@ -78,6 +84,11 @@ using dino8::platform::NamedCPlaneSummary;
 using dino8::platform::NamedViewSummary;
 using dino8::platform::PropertyEntry;
 using dino8::platform::ViewportSummary;
+using dino8::platform::AnnotationStyleSummary;
+using dino8::platform::BuildAnnotationStylesNode;
+using dino8::platform::BuildDocumentNotesNode;
+using dino8::platform::BuildLightsPanelNode;
+using dino8::platform::LightSummary;
 
 namespace {
 int failures = 0;
@@ -605,6 +616,78 @@ int main() {
     Check(empty_user_text.children.empty(), "no keys -> no ListItem children, not a missing accessible");
   }
 
+  // Lights: one ListItem per document light, with its type and on/off state
+  // folded into the name - the same two facts DrawLightsPanel's own
+  // collapsed row shows without expanding it (see Document::Lights/Light).
+  {
+    std::vector<LightSummary> lights;
+    lights.push_back({"Key Light", "Point", true});
+    lights.push_back({"Fill Light", "Spot", false});
+    const dino8::platform::AccessibleNode list = BuildLightsPanelNode(lights);
+    Check(list.name == "Lights", "lights list is named \"Lights\"");
+    Check(list.role == dino8::platform::AccessibleRole::List, "lights list role is List");
+    Check(list.description == "2 document lights", "light count is carried as the list's Description");
+    Check(list.children.size() == 2, "two ListItem children, one per light");
+    if (list.children.size() == 2) {
+      Check(list.children[0].role == dino8::platform::AccessibleRole::ListItem, "light row role is ListItem");
+      Check(list.children[0].name == "Key Light (Point), on", "first row names, types and states its light as on");
+      Check(list.children[1].name == "Fill Light (Spot), off", "second row's off state is folded into its name");
+    }
+  }
+  {
+    const dino8::platform::AccessibleNode empty_lights = BuildLightsPanelNode({});
+    Check(empty_lights.name == "Lights", "still named \"Lights\" with no lights at all");
+    Check(empty_lights.children.empty(), "no lights -> no ListItem children, not a missing accessible");
+  }
+
+  // Annotation Styles: one ListItem per style, naming which one is current,
+  // with a Description giving its text height, arrow size and font - facts
+  // that only appear once a style's own row is expanded on screen (see
+  // Document::AnnotationStyles/AnnotationStyle).
+  {
+    std::vector<AnnotationStyleSummary> styles;
+    styles.push_back({"Default", true, "Auto (twice the grid spacing)", "Auto (text height)",
+                       "Default (first system sans-serif found)"});
+    styles.push_back({"Detail", false, "2.5", "1", "Arial"});
+    const dino8::platform::AccessibleNode list = BuildAnnotationStylesNode(styles);
+    Check(list.name == "Annotation Styles", "annotation styles list is named \"Annotation Styles\"");
+    Check(list.role == dino8::platform::AccessibleRole::List, "annotation styles list role is List");
+    Check(list.description == "2 annotation styles", "style count is carried as the list's Description");
+    Check(list.children.size() == 2, "two ListItem children, one per style");
+    if (list.children.size() == 2) {
+      Check(list.children[0].role == dino8::platform::AccessibleRole::ListItem, "style row role is ListItem");
+      Check(list.children[0].name == "Default, current", "the document's current style is named as such");
+      Check(list.children[0].description ==
+                "Text height: Auto (twice the grid spacing); Arrow size: Auto (text height); Font: Default "
+                "(first system sans-serif found)",
+            "first row's auto text height/arrow size/font are spelled out, not left as bare numbers");
+      Check(list.children[1].name == "Detail", "a non-current style carries no \", current\" suffix");
+      Check(list.children[1].description == "Text height: 2.5; Arrow size: 1; Font: Arial",
+            "second row's explicit text height/arrow size/font are its Description");
+    }
+  }
+  {
+    const dino8::platform::AccessibleNode empty_styles = BuildAnnotationStylesNode({});
+    Check(empty_styles.name == "Annotation Styles", "still named \"Annotation Styles\" with no styles at all");
+    Check(empty_styles.children.empty(), "no styles -> no ListItem children, not a missing accessible");
+  }
+
+  // Document Notes: a single Log accessible whose text is exactly
+  // Document::Notes(), the same single-Text-value shape as the Command Line
+  // accessible rather than a List (see DrawNotesPanel).
+  {
+    const dino8::platform::AccessibleNode notes = BuildDocumentNotesNode("Client wants the deck 3in higher.");
+    Check(notes.name == "Document Notes", "document notes accessible is named \"Document Notes\"");
+    Check(notes.role == dino8::platform::AccessibleRole::Log, "document notes role is Log, matching Command Line");
+    Check(notes.text == "Client wants the deck 3in higher.", "document notes text is exactly Document::Notes()");
+    Check(notes.children.empty(), "document notes is a single text value, not a list of children");
+  }
+  {
+    const dino8::platform::AccessibleNode empty_notes = BuildDocumentNotesNode("");
+    Check(empty_notes.name == "Document Notes", "still named \"Document Notes\" with empty notes");
+    Check(empty_notes.text.empty(), "empty Document::Notes() reports as empty text, not a missing accessible");
+  }
+
   // BuildAccessibleTree accepts extra top-level regions (menu bar, panels)
   // alongside the always-present command line - the shape the live bridge
   // (Accessibility.cpp::UpdateAccessibility) assembles every frame.
@@ -626,17 +709,21 @@ int main() {
     dino8::platform::AccessibleNode block_manager = BuildBlockManagerNode({});
     dino8::platform::AccessibleNode layer_state_manager = BuildLayerStateManagerNode({});
     dino8::platform::AccessibleNode document_user_text = BuildDocumentUserTextNode({});
+    dino8::platform::AccessibleNode lights = BuildLightsPanelNode({});
+    dino8::platform::AccessibleNode annotation_styles = BuildAnnotationStylesNode({});
+    dino8::platform::AccessibleNode document_notes = BuildDocumentNotesNode("");
 
     const dino8::platform::AccessibleNode root =
         BuildAccessibleTree("Dino8", "Command: ", "", {},
                              {menu_bar, cmd_options, layers, props, viewports, activity_log, named_views,
                               named_cplanes, linetypes, materials, clipping_planes, layouts, block_manager,
-                              layer_state_manager, document_user_text});
-    Check(root.children.size() == 16,
+                              layer_state_manager, document_user_text, lights, annotation_styles, document_notes});
+    Check(root.children.size() == 19,
           "command line + menu bar + command options + layers + properties + viewports + activity log + "
           "named views + named cplanes + linetypes + materials + clipping planes + layouts + block manager + "
-          "layer state manager + document user text = 16 top-level children");
-    if (root.children.size() == 16) {
+          "layer state manager + document user text + lights + annotation styles + document notes = "
+          "19 top-level children");
+    if (root.children.size() == 19) {
       Check(root.children[0].role == AccessibleRole::Log, "child 0 is still the command line");
       Check(root.children[1].role == dino8::platform::AccessibleRole::MenuBar, "child 1 is the menu bar");
       Check(root.children[2].name == "Command Options", "child 2 is the command options list");
@@ -653,6 +740,9 @@ int main() {
       Check(root.children[13].name == "Block Manager", "child 13 is the block manager panel");
       Check(root.children[14].name == "Layer State Manager", "child 14 is the layer state manager panel");
       Check(root.children[15].name == "Document User Text", "child 15 is the document user text panel");
+      Check(root.children[16].name == "Lights", "child 16 is the lights panel");
+      Check(root.children[17].name == "Annotation Styles", "child 17 is the annotation styles panel");
+      Check(root.children[18].role == AccessibleRole::Log, "child 18 is the document notes Log accessible");
     }
   }
 

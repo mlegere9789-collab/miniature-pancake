@@ -100,6 +100,30 @@ connection, the same way a screen reader would - to prove:
       "SetDocumentUserText <key> <value>" command runs (see cmd_state.cpp) -
       mirroring Document::UserText(), the same before/after pattern check
       10 uses for Named Views.
+  19. A "Lights" accessible (role LIST) is discoverable, starts empty, and
+      gains one new ListItem named after a new point light - with its type
+      and "on" state folded into the name - once a real "PointLight
+      Name=<name> <point>" command runs (see cmd_render.cpp's LightCommand)
+      - mirroring Document::Lights(), the same before/after pattern check
+      10 uses for Named Views.
+  20. An "Annotation Styles" accessible (role LIST) is discoverable, starts
+      with the document's single built-in "Default" style already present
+      and named current (unlike Named Views/CPlanes, every document ships
+      with one annotation style already - see Document's own
+      AnnotationStyles() default), and gains one new ListItem naming a new
+      style as current, with its text height/arrow size/font as its
+      Description, once a real "AnnotationStyles Name=<name> Height=<h>
+      Arrow=<a> Font=<f>" command runs (see cmd_annotate2.cpp's
+      AnnotationStylesCommand, which also makes the new style current) -
+      mirroring Document::AnnotationStyles().
+  21. A "Document Notes" accessible (role LOG, the same role as the Command
+      Line accessible) is discoverable and its Text interface reports the
+      empty string in a fresh document - mirroring Document::Notes(). No
+      mutation check here: unlike NamedView/NamedCPlane/SetCustomLinetype,
+      there is no command-line way to set Document::Notes() (only
+      DrawNotesPanel's own multiline text box writes it - see
+      ui/Panels.cpp), the same "discoverable, no mutation check" shape
+      check 13 uses for Materials.
 
 This is a real integration test: at-spi2-registryd is the actual daemon
 GNOME uses, pyatspi is the actual library screen readers use, and Dino8 is
@@ -207,6 +231,8 @@ def main():
     sync8 = os.path.join(tmp, "sync8")
     sync9 = os.path.join(tmp, "sync9")
     sync10 = os.path.join(tmp, "sync10")
+    sync11 = os.path.join(tmp, "sync11")
+    sync12 = os.path.join(tmp, "sync12")
     sync_final = os.path.join(tmp, "sync_final")
     script_path = os.path.join(tmp, "script.txt")
     with open(script_path, "w") as f:
@@ -301,6 +327,23 @@ def main():
         # sync point is enough to observe Document User Text gain a new
         # entry.
         f.write("SetDocumentUserText MyKey MyValue\n")
+        f.write(f"@waitfile {sync11}\n")
+        # Same shape again: PointLight finishes in one line once it has both
+        # its options and its single point (Name= is consumed by
+        # ConsumeOptionTokens before WantPoint even asks - see
+        # cmd_render.cpp's own "PointLight 0,0,10 Intensity=2" comment - the
+        # same mixed option/point-on-one-line shape "ClippingPlane 0,0,0
+        # 5,5,0" already relies on above), so one more sync point is enough
+        # to observe Lights gain a new entry.
+        f.write("PointLight Name=MyLight 0,0,10\n")
+        f.write(f"@waitfile {sync12}\n")
+        # Same shape again: AnnotationStylesCommand is also a plain,
+        # single-frame command (Immediate, see cmd_annotate2.cpp), so one
+        # more sync point is enough to observe Annotation Styles gain a new,
+        # current entry (it starts non-empty, unlike Named Views/CPlanes,
+        # since the document ships with a "Default" annotation style
+        # already - see check 12's own note for Linetypes).
+        f.write("AnnotationStyles Name=MyStyle Height=2.5 Arrow=1 Font=Arial\n")
         f.write(f"@waitfile {sync_final}\n")
 
     procs = []
@@ -525,6 +568,42 @@ def main():
                 fail(f"Document User Text has {document_user_text.childCount} children before any key is set (expected 0)")
             else:
                 ok("Document User Text has no ListItem children before any key is set")
+
+        lights = find_child_by_name(app, "Lights", 10)
+        if lights is None:
+            fail('"Lights" accessible not found among the application\'s children')
+        else:
+            ok('"Lights" accessible is discoverable via the real AT-SPI2 desktop')
+            if lights.childCount != 0:
+                fail(f"Lights has {lights.childCount} children in a fresh document (expected 0)")
+            else:
+                ok("Lights has no ListItem children in a fresh document")
+
+        annotation_styles = find_child_by_name(app, "Annotation Styles", 10)
+        if annotation_styles is None:
+            fail('"Annotation Styles" accessible not found among the application\'s children')
+        else:
+            ok('"Annotation Styles" accessible is discoverable via the real AT-SPI2 desktop')
+            if annotation_styles.childCount < 1:
+                fail("Annotation Styles has no ListItem children (expected at least the built-in \"Default\" style)")
+            else:
+                first_style = annotation_styles.getChildAtIndex(0)
+                if first_style is None or first_style.name != "Default, current":
+                    fail(f"Annotation Styles' first child is not the current \"Default\" style (got {first_style.name if first_style else None!r})")
+                else:
+                    ok('Annotation Styles\' first ListItem names the built-in "Default" style as current')
+
+        document_notes = find_child_by_name(app, "Document Notes", 10)
+        if document_notes is None:
+            fail('"Document Notes" accessible not found among the application\'s children')
+        else:
+            ok('"Document Notes" accessible is discoverable via the real AT-SPI2 desktop')
+            notes_text_iface = document_notes.queryText()
+            notes_text = notes_text_iface.getText(0, -1) if notes_text_iface else None
+            if notes_text != "":
+                fail(f"Document Notes reports {notes_text!r} in a fresh document (expected the empty string)")
+            else:
+                ok("Document Notes reports the empty string in a fresh document")
 
         viewports = find_child_by_name(app, "Viewports", 10)
         if viewports is None:
@@ -856,6 +935,53 @@ def main():
             else:
                 ok(f"Document User Text gains a new entry naming the key with its value as the Description once "
                    f"\"SetDocumentUserText\" runs ({newest_entry.name!r} = {newest_entry.description!r})")
+
+        lights_count_before = lights.childCount if lights is not None else None
+
+        open(sync11, "w").close()  # let the script run "PointLight Name=MyLight 0,0,10"
+
+        if lights is not None:
+            deadline = time.time() + 10
+            newest_light = None
+            while time.time() < deadline:
+                count = lights.childCount
+                if lights_count_before is not None and count > lights_count_before:
+                    newest_light = lights.getChildAtIndex(count - 1)
+                    break
+                time.sleep(0.2)
+            if newest_light is None:
+                fail(f"Lights did not gain a new entry after \"PointLight\" ran within 10s "
+                     f"(childCount stayed at {lights_count_before!r})")
+            elif newest_light.name != "MyLight (Point), on":
+                fail(f"Lights' newest entry does not name/type/state the new light (got {newest_light.name!r})")
+            else:
+                ok(f"Lights gains a new entry naming, typing and stating the new light once \"PointLight\" runs "
+                   f"({newest_light.name!r})")
+
+        annotation_styles_count_before = annotation_styles.childCount if annotation_styles is not None else None
+
+        open(sync12, "w").close()  # let the script run "AnnotationStyles Name=MyStyle Height=2.5 Arrow=1 Font=Arial"
+
+        if annotation_styles is not None:
+            deadline = time.time() + 10
+            newest_style = None
+            while time.time() < deadline:
+                count = annotation_styles.childCount
+                if annotation_styles_count_before is not None and count > annotation_styles_count_before:
+                    newest_style = annotation_styles.getChildAtIndex(count - 1)
+                    break
+                time.sleep(0.2)
+            if newest_style is None:
+                fail(f"Annotation Styles did not gain a new entry after \"AnnotationStyles\" ran within 10s "
+                     f"(childCount stayed at {annotation_styles_count_before!r})")
+            elif newest_style.name != "MyStyle, current":
+                fail(f"Annotation Styles' newest entry does not name the new, current style (got {newest_style.name!r})")
+            elif newest_style.description != "Text height: 2.5; Arrow size: 1; Font: Arial":
+                fail(f"Annotation Styles' newest entry does not describe its text height/arrow size/font "
+                     f"(got {newest_style.description!r})")
+            else:
+                ok(f"Annotation Styles gains a new, current entry with its text height/arrow size/font as its "
+                   f"Description once \"AnnotationStyles\" runs ({newest_style.name!r}, {newest_style.description!r})")
 
         open(sync_final, "w").close()  # let the app finish its remaining frames/script and exit
 

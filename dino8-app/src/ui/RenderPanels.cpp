@@ -304,6 +304,21 @@ void DrawLightsPanel(Application& app) {
   ImGui::End();
 }
 
+// AT-SPI2-queryable snapshot of Document::Lights() (see
+// docs/ACCESSIBILITY.md): built straight from Document state, independent of
+// whether DrawLightsPanel itself has ever been drawn or is open right now -
+// mirrors the same "name (type)" label and on/off checkbox each row shows
+// without needing to expand it (colour, intensity, position and direction
+// stay in the expanded TreeNode only, out of this mirror, the same way
+// Materials' gloss/reflectivity/transparency/texture stay out of its own
+// row mirror).
+dino8::platform::AccessibleNode LightsAccessibleTree(Application& app) {
+  std::vector<dino8::platform::LightSummary> summaries;
+  summaries.reserve(app.Doc().Lights().size());
+  for (const Light& l : app.Doc().Lights()) summaries.push_back({l.name, LightTypeName(l.type), l.enabled});
+  return dino8::platform::BuildLightsPanelNode(summaries);
+}
+
 // ---------------------------------------------------------------------------
 // Rendering options
 // ---------------------------------------------------------------------------

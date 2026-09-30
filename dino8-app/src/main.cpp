@@ -650,7 +650,10 @@ int main(int argc, char** argv) {
                                           dino8::app::LayoutsAccessibleTree(app),
                                           dino8::app::BlockManagerAccessibleTree(app),
                                           dino8::app::LayerStateManagerAccessibleTree(app),
-                                          dino8::app::DocumentUserTextAccessibleTree(app));
+                                          dino8::app::DocumentUserTextAccessibleTree(app),
+                                          dino8::app::LightsAccessibleTree(app),
+                                          dino8::app::AnnotationStylesAccessibleTree(app),
+                                          dino8::app::DocumentNotesAccessibleTree(app));
     // Catch up history_printed to whatever on_print_line already flushed
     // live as each line was recorded (see its own comment on why that has
     // to happen from inside CommandEngine::Print(), not here) - printing

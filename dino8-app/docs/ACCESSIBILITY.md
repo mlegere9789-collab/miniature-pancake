@@ -9,7 +9,8 @@ main menu bar, the running command's options, the Layers/Properties panels,
 each viewport's title/view-menu button, the persisted Activity Log of
 finalized edits, and the document's saved Named Views, Named CPlanes,
 Linetypes, Materials, Clipping Planes, Layouts, Block Manager, Layer State
-Manager and Document User Text (a real, still-narrow AT-SPI2 bridge, shipped
+Manager, Document User Text, Lights, Annotation Styles and Notes (a real,
+still-narrow AT-SPI2 bridge, shipped
 on Linux - see section 3), and screen-reader support
 for the rest of the UI (still a hard platform limitation of ImGui itself for
 the reasons section 3 explains - not shipped, and not something a few
@@ -187,7 +188,7 @@ through each platform's native accessibility API - exactly the scope the
 ImGui maintainers have discussed for years without landing project-wide.
 That has not changed and is not what shipped here.
 
-### What has shipped: a real AT-SPI2 bridge for the command line, the menu bar, the Layers/Properties panels, the viewports, the Activity Log, Named Views, Named CPlanes, Linetypes, Materials, Clipping Planes, Layouts, Block Manager, Layer State Manager, and Document User Text (Linux)
+### What has shipped: a real AT-SPI2 bridge for the command line, the menu bar, the Layers/Properties panels, the viewports, the Activity Log, Named Views, Named CPlanes, Linetypes, Materials, Clipping Planes, Layouts, Block Manager, Layer State Manager, Document User Text, Lights, Annotation Styles, and Notes (Linux)
 
 The one place in Dino 8 blind command-line-driven use is already the
 primary interaction model - the command line itself
@@ -204,7 +205,8 @@ the real registry daemon and the real `pyatspi` client library (see
 menu bar, the Layers/Properties panels' content, each viewport's title/
 view-menu button state, the Activity Log, Named Views, Named CPlanes,
 Linetypes, Materials, Clipping Planes, Layouts, Block Manager, Layer State
-Manager, and Document User Text, described below.
+Manager, Document User Text, Lights, Annotation Styles, and Notes,
+described below.
 
 **Command line**: exactly one accessible object, named "Command Line"
 (`ATSPI_ROLE_LOG` - "a text widget or container holding log content"),
@@ -458,6 +460,61 @@ omitting the value removes the key; `GetDocumentUserText` prints every pair
 - see `cmd_state.cpp`/`cmd_edit.cpp`) and confirm what's stored without
 needing to see the panel at all.
 
+**Lights**: a "Lights" accessible (`ATSPI_ROLE_LIST`) with one
+`ATSPI_ROLE_LIST_ITEM` per document light, its type and on/off state folded
+into the name (e.g. `"Key Light (Point), on"`) - the same two facts
+`DrawLightsPanel`'s own collapsed row shows without needing to expand it (the
+tree-node label reads `"name (type)"`; the checkbox beside it is the on/off
+state - see `RenderPanels.cpp`). Colour, intensity, position and direction
+stay in the expanded editor only, the same way Materials' gloss/
+reflectivity/transparency/texture stay out of its own row mirror. Built from
+`Document::Lights()` (`ui::LightsAccessibleTree`, `src/ui/RenderPanels.cpp`),
+independent of whether the Lights panel window is actually open on screen
+right now, the same way the other panel-backed regions above don't depend on
+their own panel windows being open. A screen-reader user can create a point
+light and confirm it was added entirely from the command line (`PointLight`,
+see `cmd_render.cpp`'s `LightCommand`) without needing to see the panel at
+all.
+
+**Annotation Styles**: an "Annotation Styles" accessible (`ATSPI_ROLE_LIST`)
+with one `ATSPI_ROLE_LIST_ITEM` per style, the document's current style
+(`DocumentSettings::annotation_style`) called out in its name (e.g.
+`"Detail, current"`) - `DrawDocumentPropertiesWindow`'s own "Current style"
+combo distinguishes it only by which entry is selected, not by text, so this
+mirror spells it out the same way `BuildLayoutsPanelNode` spells out which
+layout is active - and a `Description` giving its text height, arrow size
+and font as plain text (0 rendered as its own documented "auto" meaning,
+e.g. `"Auto (twice the grid spacing)"` rather than a bare `"0"`) - facts that
+only appear once a style's own row is expanded on screen, so this mirror
+gives a screen-reader user more than the collapsed on-screen list itself
+shows, the same honest trade Layer State Manager's own row mirror makes.
+Unlike Named Views/Named CPlanes, this list is never empty: every document
+starts with a single `"Default"` style. Built from
+`Document::AnnotationStyles()` (`ui::AnnotationStylesAccessibleTree`,
+`src/ui/Panels.cpp`), independent of whether the Document Properties window
+is actually open on screen right now, the same way the other panel-backed
+regions above don't depend on their own panel windows being open. A
+screen-reader user can create or edit a style and confirm it entirely from
+the command line (`AnnotationStyles Name=<name> Height=<h> Arrow=<a>
+Font=<f>`, see `cmd_annotate2.cpp`'s `AnnotationStylesCommand`, which also
+makes the named style current unless told otherwise) without needing to see
+the panel at all.
+
+**Notes**: a single "Document Notes" accessible (`ATSPI_ROLE_LOG` - the same
+role as the "Command Line" accessible, not a List) whose `Text.GetText()`
+returns exactly `Document::Notes()` - the same plain string
+`DrawNotesPanel`'s `##notes` multiline text box edits, matching what the
+on-screen widget itself is: one editable block of free text, not a
+collection of rows. Built from `Document::Notes()`
+(`ui::DocumentNotesAccessibleTree`, `src/ui/Panels.cpp`), independent of
+whether the Notes panel window is actually open on screen right now, the
+same way the other panel-backed regions above don't depend on their own
+panel windows being open. Unlike every other region added since Command
+Options, there is no command-line way to set this value at all (`Notes`
+just opens the panel - see `cmd_file.cpp`); a screen-reader user can still
+read what's stored, but writing a note still means driving the real
+multiline text box directly.
+
 **Why these regions and not the rest of the UI**: the command line is the
 one region where "expose the text" is both sufficient (there is no
 meaningful spatial layout to convey - it *is* a stream of text) and
@@ -465,7 +522,8 @@ complete on its own (every command in the ~1000+ catalog is already
 reachable by typing into it, per section 2). The menu bar, the
 Layers/Properties panels, the viewports, the Activity Log, Named Views,
 Named CPlanes, Linetypes, Materials, Clipping Planes, Layouts, Block
-Manager, Layer State Manager and Document User Text extend this to the
+Manager, Layer State Manager, Document User Text, Lights, Annotation Styles
+and Notes extend this to the
 next-most load-bearing UI surfaces - discovering what commands exist by
 name, inspecting/editing layer and object state, knowing where you're
 looking, reviewing what actually happened to the document, recalling a
@@ -473,10 +531,13 @@ saved camera bookmark, recalling a saved construction plane, knowing which
 dash patterns and materials are available to apply, knowing which clipping
 planes exist and whether each is on, knowing which layout is currently
 active, knowing which block definitions exist and how many instances of
-each are placed, recalling a saved layer state, and knowing what document
-user-text metadata is stored - without requiring the full
+each are placed, recalling a saved layer state, knowing what document
+user-text metadata is stored, knowing which lights exist and whether each is
+on, knowing which annotation style is current and its text height/arrow
+size/font, and reading the document's free-text Notes - without requiring
+the full
 shadow-tree-for-every-widget effort described above.
-Mirroring the 3D viewport and the ~30 remaining panels/dialogs the same way
+Mirroring the 3D viewport and the ~27 remaining panels/dialogs the same way
 would still need that effort; this does not extrapolate to "screen reader
 support" for those in the way a browser or native-toolkit app would provide
 it, and this document does not claim otherwise.
@@ -623,6 +684,27 @@ hang.
   region above, this one has no cap on value length either - a very long
   value is carried in full as the row's `Description`, same as Activity
   Log's own no-cap note above.
+- Lights has the same read-only gap (no `Action` interface - switching a
+  light on/off, changing its colour/intensity or moving it over AT-SPI
+  itself is not possible; a screen-reader user still drives that through the
+  Lights panel or the equivalent `PointLight`/`SpotLight`/
+  `DirectionalLight`/`RectangularLight`/`LinearLight` command by name), and
+  it exposes only the name, type and on/off state per row - not colour,
+  intensity, position or direction, which stay queryable only via the
+  expanded panel editor.
+- Annotation Styles has the same read-only gap (no `Action` interface -
+  switching the document's current style over AT-SPI itself is not
+  possible; a screen-reader user still drives that through the equivalent
+  `AnnotationStyles Name=<name>` command), and `GetState` aside, it is the
+  one region above where 0 in the underlying data (`text_height`/
+  `arrow_size`) is deliberately *not* surfaced as a bare `"0"` - see
+  `AnnotationStyleSummary`'s own comment for why that would misread as a
+  literal zero rather than "auto".
+- Notes is the one region with no read-only gap to note, because it has no
+  gap the other way either: unlike every other region above, there is no
+  command-line path to *write* this value at all, only to read it (`Notes`
+  just opens the panel - see `cmd_file.cpp`'s registration and this
+  region's own writeup above).
 
 **Internal design, independent of AT-SPI itself**: the accessible tree's
 *shape and text* are built by a small, pure, platform-independent module,
@@ -632,7 +714,8 @@ hang.
 `BuildViewportsPanelNode`, `BuildActivityLogNode`, `BuildNamedViewsNode`,
 `BuildNamedCPlanesNode`, `BuildLinetypesNode`, `BuildMaterialsPanelNode`,
 `BuildClippingPlanesPanelNode`, `BuildLayoutsPanelNode`, `BuildBlockManagerNode`,
-`BuildLayerStateManagerNode`, `BuildDocumentUserTextNode`), with its own unit test
+`BuildLayerStateManagerNode`, `BuildDocumentUserTextNode`, `BuildLightsPanelNode`,
+`BuildAnnotationStylesNode`, `BuildDocumentNotesNode`), with its own unit test
 (`tests/test_accessibility_tree.cpp`, registered as the
 `dino8_accessibility_tree` CTest target) that needs no display, no D-Bus, and
 no AT-SPI2 build at all - it runs on every platform and every CI job. The
@@ -642,15 +725,18 @@ menu-drawing calls in `src/ui/MenuBar.cpp` (`MenuTreeBuilder`'s
 `BeginMenuA`/`EndMenuA`/`MenuItemA`/`Item` wrappers), so it can never drift
 from what was actually drawn. The Layers, Properties, Command Options,
 Viewports, Activity Log, Named Views, Named CPlanes, Linetypes, Materials,
-Clipping Planes, Layouts, Layer State Manager and Document User Text mirrors
+Clipping Planes, Layouts, Layer State Manager, Document User Text and
+Annotation Styles mirrors
 (`src/ui/Panels.cpp`'s `LayersPanelAccessibleTree`/
 `PropertiesPanelAccessibleTree`/`CommandOptionsAccessibleTree`/
 `ViewportsAccessibleTree`/`ActivityLogAccessibleTree`/
 `NamedViewsAccessibleTree`/`NamedCPlanesAccessibleTree`/
 `LinetypesAccessibleTree`/`ClippingPlanesAccessibleTree`/
 `LayoutsAccessibleTree`/`LayerStateManagerAccessibleTree`/
-`DocumentUserTextAccessibleTree`, `src/ui/RenderPanels.cpp`'s
-`MaterialsAccessibleTree`, and `src/commands/cmd_drafting.cpp`'s
+`DocumentUserTextAccessibleTree`/`AnnotationStylesAccessibleTree`, plus the
+single-Text-value `DocumentNotesAccessibleTree`, `src/ui/RenderPanels.cpp`'s
+`MaterialsAccessibleTree` and `LightsAccessibleTree`, and
+`src/commands/cmd_drafting.cpp`'s
 `BlockManagerAccessibleTree`, alongside `DrawBlockManagerPanel` itself) are
 built straight from `Document`/`Application`/`CommandEngine` state,
 independent of
@@ -658,7 +744,8 @@ independent of
 `DrawActivityLogPanel`/`DrawNamedViewsPanel`/`DrawNamedCPlanesPanel`/
 `DrawLinetypesPanel`/`DrawMaterialsPanel`/`DrawClippingPlanesPanel`/
 `DrawLayoutsPanel`/`DrawBlockManagerPanel`/`DrawLayerStateManager`/
-`DrawDocumentUserTextPanel`.
+`DrawDocumentUserTextPanel`/`DrawLightsPanel`/
+`DrawDocumentPropertiesWindow`/`DrawNotesPanel`.
 `AccessibilityLinux.cpp` is a thin transport on top
 of all of this: every frame it receives the whole tree wholesale
 (`platform::PlatformSetAccessibleTree`) and answers AT-SPI's
@@ -679,7 +766,8 @@ real `dbus-daemon` and the real `at-spi2-registryd`, and uses the real
 "Command Options", "Viewports" (with its default "Perspective" row
 reporting itself active), "Activity Log", "Named Views", "Named CPlanes",
 "Linetypes", "Materials", "Clipping Planes", "Layouts", "Block Manager",
-"Layer State Manager" and "Document User Text" accessibles - the
+"Layer State Manager", "Document User Text", "Lights", "Annotation Styles"
+and "Document Notes" accessibles - the
 same objects a screen reader would find - then asserts the command line's
 and the Properties list's content each change
 after a real command (`Line 0,0,0 10,10,0`) runs, that Command Options goes
@@ -701,22 +789,32 @@ named `"MyBlock"` (carrying its object/instance counts as its Description)
 right after the already-created objects are selected (`SelAll`) and turned
 into a block (`Block` / a base point / a name), that Layer State Manager
 starts empty and gains an entry named `"MyLayerState"` right after a real
-`LayerState Save MyLayerState` command runs, and that Document User Text
+`LayerState Save MyLayerState` command runs, that Document User Text
 starts empty and gains an entry named `"MyKey"` with `"MyValue"` as its
 Description right after a real `SetDocumentUserText MyKey MyValue` command
-runs. It does not fake, mock, or stub any part of the AT-SPI2 stack.
+runs, that Lights starts empty and gains an entry named `"MyLight (Point),
+on"` right after a real `PointLight Name=MyLight 0,0,10` command runs, that
+Annotation Styles starts with the built-in "Default" style already present
+and named current and gains an entry named `"MyStyle, current"` (carrying
+its text height/arrow size/font as its Description) right after a real
+`AnnotationStyles Name=MyStyle Height=2.5 Arrow=1 Font=Arial` command runs,
+and that Document Notes reports the empty string in a fresh document (no
+mutation check: there is no command-line way to set it). It does not fake,
+mock, or stub any part of the AT-SPI2 stack.
 
-This was run successfully, including the new Block Manager/Layer State
-Manager/Document User Text checks, in the environment this addition was
-built and verified in, after installing:
+This was run successfully, including the new Lights/Annotation Styles/
+Document Notes checks, in the environment this addition was built and
+verified in, after installing:
 `libatspi2.0-dev`, `libglib2.0-dev`, `at-spi2-core` (provides
-`at-spi2-registryd`), `dbus-x11` (provides `dbus-daemon`), and
+`at-spi2-registryd`), `dbus-x11` (provides `dbus-daemon`), `xvfb`, and
 `python3-pyatspi` (Ubuntu 24.04/noble package names) - all checks
 above passed against the real registry daemon, including "Command Options
 lists Circle's option chips while it is running (['Diameter', '3Point',
-'Vertical'])" and "Block Manager gains a new entry naming the new block,
-with its object/instance counts as its Description, once \"Block\" runs
-('MyBlock', '3 objects, 3 instances')". One environment-specific wrinkle worth knowing about, not
+'Vertical'])", "Lights gains a new entry naming, typing and stating the new
+light once \"PointLight\" runs ('MyLight (Point), on')", and "Annotation
+Styles gains a new, current entry with its text height/arrow size/font as
+its Description once \"AnnotationStyles\" runs ('MyStyle, current', 'Text
+height: 2.5; Arrow size: 1; Font: Arial')". One environment-specific wrinkle worth knowing about, not
 specific to this project: Debian/Ubuntu's `python3-pyatspi`/`python3-gi`
 ship a `gi._gi` extension compiled for one specific CPython ABI (on the box
 this was verified on, that was `python3.12`, even though the default
@@ -737,5 +835,5 @@ requirement and runs as part of the normal CTest suite everywhere.
 |---|---|
 | High-contrast theme | Shipped: Options > General > Theme > High Contrast |
 | Keyboard-only operability | Audited; one real bug found and fixed (toolbar/sidebar/tab-strip/bell/viewport-title buttons were `InvisibleButton` without `EnableNav`, so Tab skipped them); nav-focus tooltips added for icon-only buttons; free 3D viewport orbit and a few inherently-drag widgets remain mouse-only by design, same as in Rhino |
-| Screen-reader support (command line, menu bar, command options, Layers/Properties panels, viewports, Activity Log, Named Views, Named CPlanes, Linetypes, Materials, Clipping Planes, Layouts, Block Manager, Layer State Manager, Document User Text) | Shipped on Linux: a real AT-SPI2 bridge (`src/platform/AccessibilityLinux.cpp`) exposes the command line's live text and full history log, the main menu bar (mirroring exactly what's currently open, built live alongside `ui/MenuBar.cpp`'s own drawing calls), the running command's options (with per-option guidance on how to change it), the Layers/Properties panels' current content (Properties rows note which are real value editors), every viewport's title/view-menu button state (name, active/maximized, current display mode), the persisted Activity Log of finalized edits (timestamp/action/summary per entry, distinct from the command line's own raw text log), the document's saved Named Views (name per saved view), its saved Named CPlanes (name per saved construction plane), its Linetypes (name and dash pattern per linetype), its Materials (name and diffuse colour per material), its Clipping Planes (name, on/off state and viewport scope per plane), its Layouts (name per layout, with the active one called out), its Block Manager (name plus object/instance counts per block definition), its Layer State Manager (name plus layer count per saved state), and its Document User Text (key/value per document user-text entry) as queryable, updating accessible objects, verified end-to-end against the real registry daemon and `pyatspi` (`tests/smoke_accessibility.py`), including the new Block Manager/Layer State Manager/Document User Text checks. Windows/macOS not implemented. Built only when `atspi-2`/`gio-2.0` are available; a silent no-op otherwise |
-| Screen-reader support (rest of the UI) | Not implemented - hard ImGui platform limitation (no accessibility-tree bridge for the 3D viewport's own rendered content or the ~30 remaining panels/dialogs on any OS). Descriptive text/tooltips exist everywhere as a prerequisite, but that is not screen-reader support |
+| Screen-reader support (command line, menu bar, command options, Layers/Properties panels, viewports, Activity Log, Named Views, Named CPlanes, Linetypes, Materials, Clipping Planes, Layouts, Block Manager, Layer State Manager, Document User Text, Lights, Annotation Styles, Notes) | Shipped on Linux: a real AT-SPI2 bridge (`src/platform/AccessibilityLinux.cpp`) exposes the command line's live text and full history log, the main menu bar (mirroring exactly what's currently open, built live alongside `ui/MenuBar.cpp`'s own drawing calls), the running command's options (with per-option guidance on how to change it), the Layers/Properties panels' current content (Properties rows note which are real value editors), every viewport's title/view-menu button state (name, active/maximized, current display mode), the persisted Activity Log of finalized edits (timestamp/action/summary per entry, distinct from the command line's own raw text log), the document's saved Named Views (name per saved view), its saved Named CPlanes (name per saved construction plane), its Linetypes (name and dash pattern per linetype), its Materials (name and diffuse colour per material), its Clipping Planes (name, on/off state and viewport scope per plane), its Layouts (name per layout, with the active one called out), its Block Manager (name plus object/instance counts per block definition), its Layer State Manager (name plus layer count per saved state), its Document User Text (key/value per document user-text entry), its Lights (name, type and on/off state per light), its Annotation Styles (name and current-style flag per style, plus text height/arrow size/font as Description), and its Notes (the document's free-text Notes, as a single Text value) as queryable, updating accessible objects, verified end-to-end against the real registry daemon and `pyatspi` (`tests/smoke_accessibility.py`), including the new Lights/Annotation Styles/Document Notes checks. Windows/macOS not implemented. Built only when `atspi-2`/`gio-2.0` are available; a silent no-op otherwise |
+| Screen-reader support (rest of the UI) | Not implemented - hard ImGui platform limitation (no accessibility-tree bridge for the 3D viewport's own rendered content or the ~27 remaining panels/dialogs on any OS). Descriptive text/tooltips exist everywhere as a prerequisite, but that is not screen-reader support |

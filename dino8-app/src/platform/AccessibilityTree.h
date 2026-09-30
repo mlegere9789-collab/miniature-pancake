@@ -19,9 +19,11 @@
 // BuildLinetypesNode), its Materials (see BuildMaterialsPanelNode), its
 // Clipping Planes (see BuildClippingPlanesPanelNode), its Layouts (see
 // BuildLayoutsPanelNode), its Block Manager (see BuildBlockManagerNode), its
-// Layer State Manager (see BuildLayerStateManagerNode), and its Document
-// User Text (see BuildDocumentUserTextNode).
-// The 3D viewport's own rendered content and the ~30 other panels/dialogs are
+// Layer State Manager (see BuildLayerStateManagerNode), its Document
+// User Text (see BuildDocumentUserTextNode), its Lights (see
+// BuildLightsPanelNode), its Annotation Styles (see
+// BuildAnnotationStylesNode), and its Notes (see BuildDocumentNotesNode).
+// The 3D viewport's own rendered content and the ~27 other panels/dialogs are
 // still not mirrored into this tree.
 #pragma once
 
@@ -385,5 +387,67 @@ struct DocumentUserTextSummary {
 // Text panel window is actually open right now, the same way the other
 // panel-backed regions above don't depend on their own panel window.
 AccessibleNode BuildDocumentUserTextNode(const std::vector<DocumentUserTextSummary>& entries);
+
+// One Lights-panel row (doc/Document.h's Light, reduced to plain data the
+// same way the summaries above keep this module independent of
+// doc/Document): the light's name, its type (Point/Spot/Directional/
+// Rectangular/Linear) and whether it's switched on - the same facts
+// DrawLightsPanel's own collapsed row shows without needing to expand it
+// (the tree-node label reads "name (type)"; the checkbox beside it is the
+// on/off state). Colour, intensity, position and direction stay in the
+// expanded editor only, the same way Materials' gloss/reflectivity/
+// transparency/texture stay out of its own row mirror.
+struct LightSummary {
+  std::string name;
+  std::string type_text;
+  bool enabled = true;
+};
+
+// Builds the "Lights" List accessible: one ListItem per document light, in
+// the same order Document::Lights() holds them, each named after it with
+// its type and on/off state folded into the name (e.g. "Key Light (Point),
+// on") the same way BuildClippingPlanesPanelNode folds on/off into its own
+// item's name - independent of whether the Lights panel window is actually
+// open right now, the same way the other panel-backed regions above don't
+// depend on their own panel window.
+AccessibleNode BuildLightsPanelNode(const std::vector<LightSummary>& lights);
+
+// One Annotation Styles row (doc/Document.h's AnnotationStyle, reduced to
+// plain data the same way the summaries above keep this module independent
+// of doc/Document): the style's name, whether it's the document's current
+// style (DocumentSettings::annotation_style, picked from the "Current
+// style" combo in DrawDocumentPropertiesWindow - shown by selection there,
+// not by text, so spelled out here the same way BuildLayoutsPanelNode
+// spells out which layout is active), and its text height/arrow size/font
+// as plain text - facts that only appear once a style's own TreeNode row is
+// expanded, so this mirror gives a screen-reader user more than the
+// collapsed on-screen list itself shows, the same honest trade
+// BuildLayerStateManagerNode makes for its own row.
+struct AnnotationStyleSummary {
+  std::string name;
+  bool current = false;
+  std::string text_height_text;  // e.g. "2.5" or "Auto (twice the grid spacing)"
+  std::string arrow_size_text;   // e.g. "1" or "Auto (text height)"
+  std::string font_text;         // e.g. "Arial" or "Default (first system sans-serif found)"
+};
+
+// Builds the "Annotation Styles" List accessible: one ListItem per style, in
+// the same order Document::AnnotationStyles() holds them, naming which one
+// is current with a Description giving its text height, arrow size and font
+// - independent of whether the Document Properties window is actually open
+// right now, the same way the other panel-backed regions above don't depend
+// on their own panel window.
+AccessibleNode BuildAnnotationStylesNode(const std::vector<AnnotationStyleSummary>& styles);
+
+// Builds the "Document Notes" accessible: a single Log/Text object (the
+// same role and shape as the "Command Line" accessible - see
+// BuildCommandLineText) whose text is exactly Document::Notes(), the same
+// plain string DrawNotesPanel's multiline text box edits - independent of
+// whether the Notes panel window is actually open right now, the same way
+// the other panel-backed regions above don't depend on their own panel
+// window. Unlike every List region above, this is a single text value with
+// no children, matching what the on-screen widget itself is: one editable
+// block of free text, not a collection of rows.
+AccessibleNode BuildDocumentNotesNode(const std::string& notes);
 
 }  // namespace dino8::platform
