@@ -4535,6 +4535,98 @@ vertex (`MergeDuplicateVertices`) parity already reached. This session's
 only source edits are `dino8-kernel/include/dino8/kernel/mesh.h`,
 `dino8-kernel/src/mesh.cpp`, and `dino8-kernel/tests/test_basic.cpp`.
 
+**2026-09-30 follow-up (the one `SubD::Check()` diagnostic the prior
+`Mesh`-parity follow-up above left standing):** `git log --oneline -3 --
+dino8-kernel/src/subd.cpp dino8-kernel/src/mesh.cpp` at the start of this
+session showed the `Mesh::CheckReport::non_manifold_vertices`/
+`Mesh::SplitNonManifoldVertex` commit above (58e390f) as the most recent
+work in this category - it brought `Mesh::Check()` to vertex-level parity
+with `SubD::Check()` for bowtie detection/repair and general duplicate-
+vertex welding, but left the one remaining `SubD::SubDCheckReport` field
+with no `Mesh::CheckReport` counterpart at all: `body_count` (and its own
+repair, `SplitDisjointPieces()`) - a `Mesh` built from two independently-
+appended, never-welded pieces (e.g. a plain `ON_Mesh::Append()` instead of
+`MergeAndWeld()`) had no way to learn it was actually two unrelated bodies
+short of eyeballing it, the same "is this actually several disconnected
+pieces" question `Brep::SplitDisjointPieces()`'s own
+`ON_Brep::LabelConnectedComponents()` and `SubD::Check()`'s own
+`body_count` already answer for `Brep` and `SubD`.
+
+`Mesh::CheckReport` gains `body_count` (`Check()`, mesh.cpp): the number of
+face-connected pieces this mesh's faces fall into - 1 for an ordinary
+single connected mesh, 0 for an empty one, 2+ for a multi-body mesh - via a
+new file-local `GroupFacesByConnectivity()` helper (mesh.cpp, next to
+`GroupIncidentFacesByVertex()`) that unions every pair of faces sharing an
+edge (any undirected edge used by 2+ faces, so a non-manifold 3+-face edge
+still lands every one of its faces in the same group) and returns both the
+per-face group membership and the group count - the same shared-helper
+shape `GroupIncidentFacesByVertex()` already established (one function,
+called from both `Check()`, which only needs the count, and the new
+`SplitDisjointPieces()` below, which needs the membership), rather than
+computing the grouping twice the way `SubD::Check()`/
+`SubD::SplitDisjointPieces()` deliberately do (that pair's own text already
+gives its reason: a whole-net snapshot-and-rebuild has different
+bookkeeping needs than a plain count; `Mesh` has no such constraint, so
+sharing one helper here is the more direct port, not a divergence from the
+established pattern). Deliberately left OUT of `IsClosedManifold()`, the
+same convention `non_manifold_vertices`/`duplicate_vertices` already get
+there: two cleanly disjoint, individually well-formed pieces are still
+each a clean closed manifold on their own, a materially different question
+from "is this mesh actually one piece."
+
+`Mesh::SplitDisjointPieces()` (mesh.h/mesh.cpp) closes the repair half -
+the `Mesh`-level counterpart of `SubD::SplitDisjointPieces()`/
+`Brep::SplitDisjointPieces()`: splits a multi-body mesh into that many
+single-body meshes, using the identical `GroupFacesByConnectivity()`
+grouping `body_count` itself counts by. Materially simpler than the SubD
+version, the same way `Mesh::SplitNonManifoldVertex()` already was
+simpler than `SubD::SplitNonManifoldVertex()`: a `Mesh` vertex is just an
+array position, not an `ON_SubD`-managed id, so each piece is built by
+copying its own member faces plus the full original vertex array, then
+calling the class's own existing `CompactUnusedVertices()` helper to drop
+every vertex the piece doesn't reference and renumber the rest from 0 - a
+plain per-piece renumbering, not the id-preserving snapshot-and-rebuild
+`SubD::SplitDisjointPieces()` needs for its own `DeleteComponents()`-safety
+reason. Returns `{*this}` (one piece, a copy) for an already-single-body
+mesh, including the empty mesh (`body_count == 0`) - a caller always gets
+back at least one piece, never zero.
+
+Verified by 2 new tests (tests/test_basic.cpp):
+`TestMeshCheckDetectsDisjointPiecesBodyCount` reuses
+`TestSubDCheckDisjointPiecesReportsMultipleBodies`' own two-ordinary-
+closed-boxes-with-disjoint-vertex-ranges fixture: an empty mesh and a
+single box report 0 and 1 bodies respectively; the combined 16-vertex/
+12-face mesh reports exactly `body_count == 2`, with every other
+`CheckReport` condition (`non_manifold_edges`, `non_manifold_vertices`,
+`duplicate_vertices`) still zero - confirming `body_count` is genuinely
+independent of the conditions edge/vertex adjacency alone already catch -
+and `IsClosedManifold()` stays true despite `body_count > 1`, proving that
+exclusion is deliberate, not an oversight. `TestMeshSplitDisjointPieces
+SplitsIntoSeparateMeshes` confirms an empty mesh and a single-body mesh
+both split into exactly 1 piece (an empty copy, and an exact 8-vertex/
+6-face copy, respectively - never zero pieces); the same two-disjoint-
+boxes fixture (this time a unit box and a 2x2x2 box, so their volumes
+differ) splits into exactly 2 pieces, each independently `body_count == 1`
+with exactly one original box's own 8 vertices / 6 faces (not the
+combined 16/12, proving `CompactUnusedVertices()` genuinely renumbered
+each piece rather than merely copying the full vertex array); and each
+piece's own `Volume()` (1 or 8) unambiguously identifies which original
+box it is, confirming no piece is empty or swapped. Full
+`dino8_kernel_tests` suite (via the test binary directly): 100% passing
+(all checks passed), 0 regressions.
+
+This category's own present/partial/missing counts are unchanged at
+15/7/0/22 (84.1%) - `body_count`/`SplitDisjointPieces()` were never among
+the 22 tracked checklist items themselves (the same reason every other
+`Mesh`-side `SubD::Check()`-parity addition above didn't move them
+either); this closes the one remaining gap between `Mesh::Check()`'s own
+diagnostic/repair surface and `SubD::Check()`'s, bringing whole-mesh
+body-count parity to match the vertex-level (bowtie, duplicate) and
+edge-level (non-manifold-edge) parity already reached in the follow-ups
+above. This session's only source edits are `dino8-kernel/include/dino8/
+kernel/mesh.h`, `dino8-kernel/src/mesh.cpp`, and `dino8-kernel/tests/
+test_basic.cpp`.
+
 ## App: Dino 8 vs Rhino 8 + AutoCAD 2027
 
 | Category | Weight | Items | Present | Partial | Missing | Parity % |

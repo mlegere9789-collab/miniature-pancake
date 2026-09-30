@@ -1195,6 +1195,18 @@ class Mesh {
     // over shared edges that also touch that vertex, and more than one
     // resulting group means the vertex is non-manifold.
     int non_manifold_vertices = 0;
+    // Number of face-connected pieces this mesh's faces fall into - 1 for
+    // an ordinary single connected mesh, 0 if there are no faces at all,
+    // 2+ for a "multi-body" mesh (e.g. two separate boxes appended into
+    // one Mesh and never welded together). Two faces are in the same
+    // piece if they share an edge, transitively - the same definition
+    // SubD::SubDCheckReport::body_count already uses for SubD (itself
+    // modeled on Brep::SplitDisjointPieces()'s own
+    // ON_Brep::LabelConnectedComponents()), ported here so Mesh answers
+    // the same "is this actually several unrelated pieces" question
+    // IsClosedManifold() alone never reveals (each piece can be a
+    // perfectly clean closed manifold on its own).
+    int body_count = 0;
     // Directed edges used twice - two faces walking a shared edge the
     // same way, IsClosedManifold()'s own orientation-conflict condition.
     int orientation_conflicts = 0;
@@ -1402,6 +1414,28 @@ class Mesh {
   // other reported vertex's own index shifts out from under a later split
   // in the same batch. Returns the number of vertices actually split.
   int SplitNonManifoldVertices(double tolerance = tolerance::kDistance);
+
+  // The mesh-level counterpart of SubD::SplitDisjointPieces()/
+  // Brep::SplitDisjointPieces(): splits a multi-body mesh (Check()'s own
+  // body_count > 1) into that many separate single-body meshes, using the
+  // exact same face-connectivity-via-shared-edge definition body_count
+  // itself counts (reproduced here rather than shared, since body_count
+  // only needs the group COUNT while this needs the actual membership). A
+  // vertex shared by two otherwise-disconnected pieces only through a
+  // bowtie (see non_manifold_vertices above, zero shared edges) is
+  // duplicated into each piece it touches rather than left bridging them,
+  // consistent with body_count already treating those fans as separate
+  // bodies. Materially simpler than the SubD version: this is a plain
+  // per-piece vertex renumbering (each piece keeps its own member
+  // vertices, reindexed from 0, in original order) rather than a
+  // watermarked id-preserving rebuild - a Mesh vertex is just an array
+  // position, not an ON_SubD-managed id, so there is no stable id for a
+  // caller to look one up by afterward the way SubD::SplitDisjointPieces()
+  // preserves. Texture coordinates and any cached normals are dropped,
+  // same reason as MergeDuplicateVertices() above. Returns {*this} (one
+  // piece, a copy) for an already-single-body mesh, including the empty
+  // mesh (body_count == 0).
+  std::vector<Mesh> SplitDisjointPieces() const;
 
   // Removes every face Check(tolerance) would count in degenerate_faces -
   // literally the same test, not a redefinition of it (see Check()'s own

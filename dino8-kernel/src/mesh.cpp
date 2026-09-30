@@ -4662,6 +4662,65 @@ std::vector<int> GroupIncidentFacesByVertex(const ON_Mesh& mesh, int v, const st
   return group;
 }
 
+// Groups every face in `mesh` by whole-mesh connectivity: two faces land
+// in the same group iff they share an edge (any undirected edge used by
+// 2+ faces), transitively - the same "faces sharing an edge are the same
+// piece" definition SubD::Check()'s own body_count/SplitDisjointPieces()
+// use for SubD (itself modeled on Brep::SplitDisjointPieces()'s own
+// ON_Brep::LabelConnectedComponents()). Shared by Mesh::Check() (which
+// only needs `.second`, the group COUNT) and Mesh::SplitDisjointPieces()
+// (which needs `.first`, the actual per-face membership). Returns a
+// per-face 0-based group id, in first-seen (face-list) order, alongside
+// the total group count - {}/{0} for an empty face list.
+std::pair<std::vector<int>, size_t> GroupFacesByConnectivity(const ON_Mesh& mesh) {
+  const int face_count = mesh.m_F.Count();
+  std::vector<int> group(static_cast<size_t>(face_count), 0);
+  if (face_count == 0) return {group, 0};
+
+  std::vector<int> parent(static_cast<size_t>(face_count));
+  std::iota(parent.begin(), parent.end(), 0);
+  std::function<int(int)> find = [&](int x) {
+    while (parent[static_cast<size_t>(x)] != x) {
+      parent[static_cast<size_t>(x)] = parent[static_cast<size_t>(parent[static_cast<size_t>(x)])];
+      x = parent[static_cast<size_t>(x)];
+    }
+    return x;
+  };
+  auto unite = [&](int a, int b) {
+    a = find(a);
+    b = find(b);
+    if (a != b) parent[static_cast<size_t>(a)] = b;
+  };
+  // Two faces sharing an edge (a, b) are the same piece - unite the first
+  // face seen at that edge with every later one sharing it (handles a
+  // non-manifold 3+-face edge the same way, all landing in one group).
+  std::map<std::pair<int, int>, int> first_face_at_edge;
+  for (int i = 0; i < face_count; ++i) {
+    ForEachDirectedEdge(mesh.m_F[i], [&](int a, int b) {
+      const std::pair<int, int> key = std::minmax(a, b);
+      const auto it = first_face_at_edge.find(key);
+      if (it == first_face_at_edge.end()) {
+        first_face_at_edge.emplace(key, i);
+      } else {
+        unite(it->second, i);
+      }
+    });
+  }
+  std::map<int, int> root_to_group;
+  for (int i = 0; i < face_count; ++i) {
+    const int root = find(i);
+    const auto it = root_to_group.find(root);
+    if (it == root_to_group.end()) {
+      const int gid = static_cast<int>(root_to_group.size());
+      root_to_group.emplace(root, gid);
+      group[static_cast<size_t>(i)] = gid;
+    } else {
+      group[static_cast<size_t>(i)] = it->second;
+    }
+  }
+  return {group, root_to_group.size()};
+}
+
 // Same degeneracy test Mesh::Check() has always used, factored out so
 // Mesh::RemoveDegenerateFaces() removes EXACTLY what Check() counts - a
 // repeated vertex index, an edge shorter than `tolerance`, or a height
@@ -5025,6 +5084,10 @@ Mesh::CheckReport Mesh::Check(double tolerance) const {
       }
     }
   }
+  // Whole-mesh body count: the distinct face-connectivity groups among all
+  // faces - the same "faces sharing an edge are the same piece" definition
+  // SubD::Check()'s own body_count already uses for SubD.
+  report.body_count = static_cast<int>(GroupFacesByConnectivity(mesh_).second);
   return report;
 }
 
@@ -5310,6 +5373,36 @@ int Mesh::SplitNonManifoldVertices(double tolerance) {
     if (SplitNonManifoldVertex(v)) ++count;
   }
   return count;
+}
+
+std::vector<Mesh> Mesh::SplitDisjointPieces() const {
+  const auto [group, group_count] = GroupFacesByConnectivity(mesh_);
+  if (group_count <= 1) return {*this};
+
+  // Group faces by group id, preserving first-encountered order so the
+  // returned pieces come back in a stable, reproducible order rather than
+  // whatever order the underlying union-find roots happen to land on -
+  // GroupFacesByConnectivity() already assigns group ids in that order.
+  std::vector<std::vector<int>> member_faces(group_count);
+  for (int i = 0; i < mesh_.m_F.Count(); ++i) {
+    member_faces[static_cast<size_t>(group[static_cast<size_t>(i)])].push_back(i);
+  }
+
+  std::vector<Mesh> pieces;
+  pieces.reserve(group_count);
+  for (const std::vector<int>& faces : member_faces) {
+    Mesh piece;
+    piece.mesh_.m_V = mesh_.m_V;
+    for (const int idx : faces) piece.mesh_.m_F.Append(mesh_.m_F[idx]);
+    // Drops every vertex not referenced by this piece's own faces and
+    // remaps m_F onto the resulting compact 0-based indices - a plain
+    // per-piece renumbering, not an id-preserving rebuild the way
+    // SubD::SplitDisjointPieces() needs (a Mesh vertex is just an array
+    // position, with no stable id to preserve across pieces).
+    CompactUnusedVertices(piece.mesh_);
+    pieces.push_back(std::move(piece));
+  }
+  return pieces;
 }
 
 int Mesh::RemoveDegenerateFaces(double tolerance) {

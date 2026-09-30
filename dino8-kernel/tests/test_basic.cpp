@@ -13071,6 +13071,107 @@ void TestMeshSplitNonManifoldVertexSplitsBowtie() {
   }
 }
 
+// Mesh::CheckReport::body_count - the Mesh-side mirror of
+// SubD::SubDCheckReport::body_count, mirroring
+// TestSubDCheckDisjointPiecesReportsMultipleBodies' own fixture: two
+// ordinary closed boxes appended into one Mesh with disjoint vertex index
+// ranges (the second box's faces reference vertices 8-15, never reusing
+// any of the first box's 0-7), so no edge or vertex is shared between
+// them by construction.
+void TestMeshCheckDetectsDisjointPiecesBodyCount() {
+  using dino8::kernel::Mesh;
+
+  Check(Mesh().Check().body_count == 0, "an empty mesh (no faces at all) reports zero bodies");
+
+  const Mesh box_a = MakeQuadBoxMesh(0, 0, 0, 1, 1, 1);
+  Check(box_a.Check().body_count == 1, "a single ordinary closed box is one body");
+
+  const Mesh box_b = MakeQuadBoxMesh(5, 5, 5, 6, 6, 6);
+  Mesh combined;
+  ON_Mesh& raw = combined.raw();
+  const int offset = box_a.raw().m_V.Count();
+  for (int i = 0; i < box_a.raw().m_V.Count(); ++i) raw.m_V.Append(box_a.raw().m_V[i]);
+  for (int i = 0; i < box_b.raw().m_V.Count(); ++i) raw.m_V.Append(box_b.raw().m_V[i]);
+  for (int i = 0; i < box_a.raw().m_F.Count(); ++i) raw.m_F.Append(box_a.raw().m_F[i]);
+  for (int i = 0; i < box_b.raw().m_F.Count(); ++i) {
+    ON_MeshFace f = box_b.raw().m_F[i];
+    f.vi[0] += offset;
+    f.vi[1] += offset;
+    f.vi[2] += offset;
+    f.vi[3] += offset;
+    raw.m_F.Append(f);
+  }
+  Check(combined.VertexCount() == 16 && combined.FaceCount() == 12,
+        "sanity: the combined mesh really does hold both boxes' full topology");
+
+  const Mesh::CheckReport report = combined.Check();
+  Check(report.body_count == 2, "two disjoint boxes sharing no edge or vertex report as exactly 2 bodies");
+  Check(report.non_manifold_edges == 0 && report.non_manifold_vertices == 0 && report.duplicate_vertices == 0,
+        "two cleanly disjoint boxes trip none of the other conditions - only body_count flags them");
+  Check(report.IsClosedManifold(),
+        "IsClosedManifold() deliberately ignores body_count, same as it already ignores "
+        "non_manifold_vertices/duplicate_vertices - each piece is independently a clean closed manifold");
+}
+
+// Mesh::SplitDisjointPieces() - the mesh-level counterpart of
+// SubD::SplitDisjointPieces()/Brep::SplitDisjointPieces(), reusing
+// TestMeshCheckDetectsDisjointPiecesBodyCount's own two-disjoint-boxes
+// fixture.
+void TestMeshSplitDisjointPiecesSplitsIntoSeparateMeshes() {
+  using dino8::kernel::Mesh;
+
+  {
+    const std::vector<Mesh> empty_pieces = Mesh().SplitDisjointPieces();
+    Check(empty_pieces.size() == 1 && empty_pieces[0].FaceCount() == 0,
+          "an empty mesh (body_count == 0) splits into exactly 1 piece: an empty copy, not zero pieces");
+  }
+  {
+    const Mesh box = MakeQuadBoxMesh(0, 0, 0, 1, 1, 1);
+    const std::vector<Mesh> single = box.SplitDisjointPieces();
+    Check(single.size() == 1 && single[0].VertexCount() == 8 && single[0].FaceCount() == 6,
+          "a single-body mesh splits into exactly 1 piece, an exact copy");
+  }
+
+  const Mesh box_a = MakeQuadBoxMesh(0, 0, 0, 1, 1, 1);
+  const Mesh box_b = MakeQuadBoxMesh(5, 5, 5, 7, 7, 7);
+  Mesh combined;
+  ON_Mesh& raw = combined.raw();
+  const int offset = box_a.raw().m_V.Count();
+  for (int i = 0; i < box_a.raw().m_V.Count(); ++i) raw.m_V.Append(box_a.raw().m_V[i]);
+  for (int i = 0; i < box_b.raw().m_V.Count(); ++i) raw.m_V.Append(box_b.raw().m_V[i]);
+  for (int i = 0; i < box_a.raw().m_F.Count(); ++i) raw.m_F.Append(box_a.raw().m_F[i]);
+  for (int i = 0; i < box_b.raw().m_F.Count(); ++i) {
+    ON_MeshFace f = box_b.raw().m_F[i];
+    f.vi[0] += offset;
+    f.vi[1] += offset;
+    f.vi[2] += offset;
+    f.vi[3] += offset;
+    raw.m_F.Append(f);
+  }
+  Check(combined.Check().body_count == 2, "sanity: matches TestMeshCheckDetectsDisjointPiecesBodyCount's own count");
+
+  const std::vector<Mesh> pieces = combined.SplitDisjointPieces();
+  Check(pieces.size() == 2, "splits into exactly 2 pieces, matching body_count");
+  for (const Mesh& piece : pieces) {
+    Check(piece.VertexCount() == 8 && piece.FaceCount() == 6,
+          "each piece has exactly one original box's own 8 vertices / 6 faces, not the combined 16/12");
+    Check(piece.Check().body_count == 1, "each returned piece is independently a single body");
+  }
+  // Volumes distinguish which piece is which: box_a is a unit cube
+  // (volume 1), box_b is a 2x2x2 cube (volume 8) - and prove
+  // CompactUnusedVertices() actually renumbered each piece down to its
+  // own 8 vertices rather than merely copying the full 16-vertex array
+  // (a stray unused vertex would leave Volume()'s own divergence-theorem
+  // sum correct regardless, but VertexCount() above already caught that;
+  // this instead confirms no piece is silently empty or swapped).
+  const double vol0 = pieces[0].Volume();
+  const double vol1 = pieces[1].Volume();
+  const double min_vol = std::min(vol0, vol1);
+  const double max_vol = std::max(vol0, vol1);
+  Check(std::abs(min_vol - 1.0) < 1e-9, "the smaller piece is the unit box (volume 1)");
+  Check(std::abs(max_vol - 8.0) < 1e-9, "the larger piece is the 2x2x2 box (volume 8)");
+}
+
 // Mesh-level RemoveDegenerateFaces(): three faces, each degenerate for a
 // DIFFERENT one of Check()'s own reasons (repeated vertex index, a
 // zero-length edge between two coincident-but-distinct vertices, and a
@@ -54553,6 +54654,8 @@ int main() {
   TestMeshMergeDuplicateVerticesWeldsCoincidentPairs();
   TestMeshCheckDetectsNonManifoldVertexAndDuplicateVertexList();
   TestMeshSplitNonManifoldVertexSplitsBowtie();
+  TestMeshCheckDetectsDisjointPiecesBodyCount();
+  TestMeshSplitDisjointPiecesSplitsIntoSeparateMeshes();
   TestMeshRemoveDegenerateFacesDropsOnlyDegenerateOnes();
   TestMeshRemoveDuplicateFacesKeepsOneCopyPerPolygon();
   TestMeshTrisToQuadsRecombinesTessellatedBoxFaces();
