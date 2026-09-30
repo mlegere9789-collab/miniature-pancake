@@ -235,3 +235,32 @@ SelName OrdFeature
 Move 1150,0,0 1220,0,0
 UpdateMeasureDims
 SelNone
+# --- Field text: live text driven by a document/object property (Kind=
+# Filename/FilePath/Date/CurrentLayer/ObjectCount/Length/Area/Volume - see
+# cmd_annotate2.cpp's FieldCommand/ResolveFieldValue). This script Saved
+# then Opened @TMP@/annotate2.3dm above, so Filename is deterministically
+# "annotate2.3dm"; the DimCreaseAngle section further up (`NewLayer
+# CreaseAngleTest`) leaves the current layer at "CreaseAngleTest", not
+# "Default", for the rest of the script - CurrentLayer is deterministically
+# that instead.
+Field Kind=Filename
+2000,0,0
+Field Kind=CurrentLayer
+2000,-10,0
+UpdateFields
+# --- Field Kind=Length, associative to a real curve (MeasureOne, the same
+# math DimCurveLength above uses, via FieldRefIds): UpdateFields must
+# redraw it after the curve is stretched (Scale1D doubling it from 100 to
+# 200 along X from its own start point), not keep the 100 baked at Field's
+# own creation time - the actual proof this is a live recompute, not a
+# static bake with a property-sounding name.
+Line 2000,-30,0 2100,-30,0
+SelLast
+SetObjectName FieldLine
+Field Kind=Length
+2000,-40,0
+SelNone
+SelName FieldLine
+Scale1D 2000,-30,0 2
+UpdateFields
+SelNone

@@ -1205,6 +1205,15 @@ a2check "UpdateMeasureDims:   DimCreaseAngle now 45 deg" "UpdateMeasureDims redr
 a2check "UpdateMeasureDims:   DimOrdinate now X 50" "UpdateMeasureDims redrew the free-floating (unanchored) DimOrdinate from its baked DimP0/DimP1 points, unchanged at 50 since neither point was ever anchored or moved"
 a2check "UpdateMeasureDims:   DimOrdinate now X 120" "UpdateMeasureDims redrew the OrdBase/OrdFeature DimOrdinate from the feature Point object's moved position (x=1220), not the 50 (x=1150) baked at creation time"
 a2check "UpdateMeasureDims: 6 updated, 0 skipped" "UpdateMeasureDims re-derived all 6 associative measured dimensions (DimArea, DimCurveLength, DimVolume, DimCreaseAngle, and both DimOrdinates) with 0 skipped"
+# --- Field text (cmd_annotate2.cpp's FieldCommand/UpdateFields/
+# ResolveFieldValue - see PARITY_MAP.md's "Field text" entry): live text
+# driven by a document/object property, not static baked geometry.
+a2check "Field (Filename): annotate2.3dm" "Field Kind=Filename reads the document's own Save path"
+a2check "Field (CurrentLayer): CreaseAngleTest" "Field Kind=CurrentLayer reads the document's current layer name (CreaseAngleTest, left current by the earlier DimCreaseAngle section's NewLayer)"
+a2check "UpdateFields: 2 field(s) regenerated" "UpdateFields re-evaluated both fields built so far"
+a2check "Field (Length): 100" "Field Kind=Length measures the 100-unit line (MeasureOne, the same math DimCurveLength uses)"
+a2check "UpdateFields:   Length now \"200\"" "UpdateFields redrew Field Kind=Length from the line's doubled length (Scale1D 2000,-30,0 x2: 100 -> 200), not the 100 baked at Field's own creation time - the live-recompute proof, not just a property-sounding name"
+a2check "UpdateFields: 3 field(s) regenerated" "UpdateFields re-evaluated all 3 fields (Filename, CurrentLayer, Length) with 0 skipped"
 a2check "gl_error=0" "annotate2 script ran without OpenGL errors"
 # Solid tools: RoundHole, CurveBoolean, Clash, Cage/CageEdit, Flow, ScaleByPlane (see solidtools_script.txt).
 sed "s|@TMP@|$TMPW|g" "$HERE/solidtools_script.txt" > "$TMPW/solidtools_script.txt"
