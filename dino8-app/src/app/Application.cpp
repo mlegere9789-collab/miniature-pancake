@@ -975,6 +975,18 @@ bool Application::SaveDocument(const std::string& path, std::string& error) {
   } else if (ext == ".stp" || ext == ".step") {
     ok = ExportStep(doc_, path, false, error);
     if (ok) Notify("Exported " + path);
+  } else if (ext == ".ifc") {
+    ok = ExportIfc(doc_, path, false, error);
+    if (ok) Notify("Exported " + path);
+  } else if (ext == ".xyz") {
+    ok = ExportXyz(doc_, path, false, error);
+    if (ok) Notify("Exported " + path);
+  } else if (ext == ".pts") {
+    ok = ExportPts(doc_, path, false, error);
+    if (ok) Notify("Exported " + path);
+  } else if (ext == ".las") {
+    ok = ExportLas(doc_, path, false, error);
+    if (ok) Notify("Exported " + path);
   } else if (ext == ".svg" || ext == ".pdf") {
     ok = ExportDrawing(path, false, 0.0, error);
   } else {
@@ -1008,6 +1020,14 @@ bool Application::ImportFile(const std::string& path, std::string& error) {
     ok = ImportIges(doc_, path, error);
   } else if (ext == ".stp" || ext == ".step") {
     ok = ImportStep(doc_, path, error);
+  } else if (ext == ".ifc") {
+    ok = ImportIfc(doc_, path, error);
+  } else if (ext == ".xyz") {
+    ok = ImportXyz(doc_, path, error);
+  } else if (ext == ".pts") {
+    ok = ImportPts(doc_, path, error);
+  } else if (ext == ".las") {
+    ok = ImportLas(doc_, path, error);
   } else {
     error = "Unsupported file type: " + ext;
   }
@@ -1034,6 +1054,10 @@ bool Application::ExportSelected(const std::string& path, std::string& error) {
   if (ext == ".ply") return ExportPly(doc_, path, true, error);
   if (ext == ".igs" || ext == ".iges") return ExportIges(doc_, path, true, error);
   if (ext == ".stp" || ext == ".step") return ExportStep(doc_, path, true, error);
+  if (ext == ".ifc") return ExportIfc(doc_, path, true, error);
+  if (ext == ".xyz") return ExportXyz(doc_, path, true, error);
+  if (ext == ".pts") return ExportPts(doc_, path, true, error);
+  if (ext == ".las") return ExportLas(doc_, path, true, error);
   if (ext == ".svg" || ext == ".pdf") return ExportDrawing(path, true, 0.0, error);
   return ExportMeshFile(doc_, path, true, error);
 }

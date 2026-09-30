@@ -2710,4 +2710,90 @@ bool ImportPly(Document& doc, const std::string& path, std::string& error) {
   return true;
 }
 
+namespace {
+
+// Merges every PointCloud object in `doc` (or just the selected ones, when
+// `selected_only` is true) into a single kernel::PointCloud, in Objects()
+// order - the same "decide up front which objects are in, in document
+// order" shape ExportPly's own `included` pass above uses. Colors carry
+// over only if every contributing cloud has them (PointCloud::SetColors()'
+// own "all or nothing" convention would otherwise silently drop a partial
+// set down to none anyway; this just avoids assembling `colors` at all in
+// that case). Returns an empty cloud (PointCount() == 0) if nothing
+// qualified, which every Save*() caller below already treats as "nothing to
+// export".
+kernel::PointCloud CollectPointClouds(const Document& doc, bool selected_only) {
+  std::vector<const SceneObject*> included;
+  for (const SceneObject& o : doc.Objects()) {
+    if (selected_only && !o.selected) continue;
+    if (!doc.IsObjectVisible(o)) continue;
+    if (o.kind == ObjectKind::PointCloud && o.point_cloud) included.push_back(&o);
+  }
+  bool all_colored = !included.empty();
+  for (const SceneObject* o : included) if (!o->point_cloud->HasColors()) all_colored = false;
+  kernel::PointCloud merged;
+  std::vector<ON_Color> colors;
+  for (const SceneObject* o : included) {
+    const kernel::PointCloud& pc = *o->point_cloud;
+    for (int i = 0; i < pc.PointCount(); ++i) {
+      merged.AppendPoint(pc.PointAt(i));
+      if (all_colored) colors.push_back(pc.ColorAt(i));
+    }
+  }
+  if (all_colored && !colors.empty()) merged.SetColors(colors);
+  return merged;
+}
+
+// Adds `pc` to `doc` as one new PointCloud object named after `path`'s
+// filename stem, the same naming ImportPly above gives an imported mesh.
+void AddPointCloudObject(Document& doc, const kernel::PointCloud& pc, const std::string& path) {
+  SceneObject o = SceneObject::MakePointCloud(pc);
+  o.name = std::filesystem::path(path).stem().string();
+  doc.Add(std::move(o));
+}
+
+}  // namespace
+
+bool ExportXyz(const Document& doc, const std::string& path, bool selected_only, std::string& error) {
+  kernel::PointCloud pc = CollectPointClouds(doc, selected_only);
+  if (pc.PointCount() == 0) { error = "Nothing to export: select a point cloud"; return false; }
+  if (pc.SaveXyz(path) != kernel::Result::Ok) { error = "Could not write " + path; return false; }
+  return true;
+}
+
+bool ImportXyz(Document& doc, const std::string& path, std::string& error) {
+  kernel::PointCloud pc;
+  if (kernel::PointCloud::LoadXyz(path, pc) != kernel::Result::Ok) { error = "Could not read " + path; return false; }
+  AddPointCloudObject(doc, pc, path);
+  return true;
+}
+
+bool ExportPts(const Document& doc, const std::string& path, bool selected_only, std::string& error) {
+  kernel::PointCloud pc = CollectPointClouds(doc, selected_only);
+  if (pc.PointCount() == 0) { error = "Nothing to export: select a point cloud"; return false; }
+  if (pc.SavePts(path) != kernel::Result::Ok) { error = "Could not write " + path; return false; }
+  return true;
+}
+
+bool ImportPts(Document& doc, const std::string& path, std::string& error) {
+  kernel::PointCloud pc;
+  if (kernel::PointCloud::LoadPts(path, pc) != kernel::Result::Ok) { error = "Could not read " + path; return false; }
+  AddPointCloudObject(doc, pc, path);
+  return true;
+}
+
+bool ExportLas(const Document& doc, const std::string& path, bool selected_only, std::string& error) {
+  kernel::PointCloud pc = CollectPointClouds(doc, selected_only);
+  if (pc.PointCount() == 0) { error = "Nothing to export: select a point cloud"; return false; }
+  if (pc.SaveLas(path) != kernel::Result::Ok) { error = "Could not write " + path; return false; }
+  return true;
+}
+
+bool ImportLas(Document& doc, const std::string& path, std::string& error) {
+  kernel::PointCloud pc;
+  if (kernel::PointCloud::LoadLas(path, pc) != kernel::Result::Ok) { error = "Could not read " + path; return false; }
+  AddPointCloudObject(doc, pc, path);
+  return true;
+}
+
 }  // namespace dino8::app

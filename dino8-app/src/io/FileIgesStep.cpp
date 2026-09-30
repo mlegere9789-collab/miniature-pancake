@@ -18,6 +18,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <random>
 #include <set>
 #include <sstream>
 #include <vector>
@@ -38,7 +39,17 @@ std::string Num(double v, int decimals = 9) {
   if (std::fabs(v) < 1e-13) v = 0.0;
   char buf[64];
   std::snprintf(buf, sizeof(buf), "%.*g", decimals, v);
-  return buf;
+  std::string s = buf;
+  // An ISO-10303-21 REAL literal requires a decimal point - a bare "10"
+  // parses as an INTEGER, not a REAL, which a strict EXPRESS-schema
+  // validator (as opposed to every reader's own lenient parsing) rejects
+  // for any REAL-typed attribute (IfcLengthMeasure, IfcReal, ...) - caught
+  // by running this codebase's own IFC output through IfcOpenShell's
+  // schema validator during development. %g drops the point for an exact
+  // whole value ("10", "0"); add one back whenever neither a point nor an
+  // exponent marker is already present.
+  if (s.find('.') == std::string::npos && s.find('e') == std::string::npos && s.find('E') == std::string::npos) s += ".";
+  return s;
 }
 
 std::string Trim(const std::string& s) {
@@ -1674,7 +1685,8 @@ class StepWriter {
   }
   int Ref(int id) const { return id; }
 
-  void Write(std::ostream& os, const std::string& product, const std::string& file_name, const std::string& units_name) {
+  void Write(std::ostream& os, const std::string& product, const std::string& file_name, const std::string& units_name,
+             const std::string& schema = "AUTOMOTIVE_DESIGN { 1 0 10303 214 3 1 1 }") {
     std::time_t now = std::time(nullptr);
     char date[32];
     std::strftime(date, sizeof(date), "%Y-%m-%dT%H:%M:%S", std::localtime(&now));
@@ -1682,7 +1694,7 @@ class StepWriter {
     os << "HEADER;\n";
     os << "FILE_DESCRIPTION((''),'2;1');\n";
     os << "FILE_NAME('" << StepEscape(file_name) << "','" << date << "',('Dino 8 user'),(''),'Dino 8 " << DINO8_VERSION << "','Dino 8','');\n";
-    os << "FILE_SCHEMA(('AUTOMOTIVE_DESIGN { 1 0 10303 214 3 1 1 }'));\n";
+    os << "FILE_SCHEMA(('" << schema << "'));\n";
     os << "ENDSEC;\n";
     os << "DATA;\n";
     (void)units_name;
@@ -2599,20 +2611,20 @@ bool BuildMeshFromFacetedBrep(StepModel& m, int shell_id, kernel::Mesh& out_mesh
   return true;
 }
 
-}  // namespace
-
-bool ImportStep(Document& doc, const std::string& path, std::string& summary) {
-  summary.clear();
-  std::ifstream is(path, std::ios::binary);
-  if (!is) { summary = "Could not open " + path; return false; }
-  std::ostringstream buf;
-  buf << is.rdbuf();
-  std::string text = buf.str();
-  if (text.find("ISO-10303-21") == std::string::npos) { summary = "Not a STEP file: " + path; return false; }
+// Parses any ISO-10303-21 physical file's DATA section into `model` -
+// generic Part 21 framing, not specific to STEP's AP203/AP214 entity set,
+// so ImportIfc below (IFC is the same Part 21 physical-file syntax, just a
+// different EXPRESS schema/entity vocabulary - "IFCCARTESIANPOINTLIST3D"
+// instead of "CARTESIAN_POINT") reuses it as-is rather than re-parsing the
+// same framing a second time. Returns false with `error` set if `text`
+// isn't a Part 21 file at all, has no DATA section, or that section has no
+// entities.
+bool ParseStepPhysicalFile(const std::string& text, StepModel& model, std::string& error) {
+  if (text.find("ISO-10303-21") == std::string::npos) { error = "Not an ISO-10303-21 file"; return false; }
 
   const size_t data_pos = text.find("DATA;");
   const size_t end_pos = text.rfind("ENDSEC;");
-  if (data_pos == std::string::npos) { summary = "No DATA section in " + path; return false; }
+  if (data_pos == std::string::npos) { error = "No DATA section"; return false; }
   std::string data = text.substr(data_pos + 5, (end_pos != std::string::npos && end_pos > data_pos ? end_pos - data_pos - 5 : std::string::npos));
 
   // Strip comments, then split into ';'-terminated records (quote-aware).
@@ -2629,7 +2641,6 @@ bool ImportStep(Document& doc, const std::string& path, std::string& summary) {
   }
   std::vector<std::string> records = SplitTop(data, ';');
 
-  StepModel model;
   for (const std::string& raw : records) {
     const std::string r = Trim(raw);
     if (r.empty() || r[0] != '#') continue;
@@ -2639,7 +2650,20 @@ bool ImportStep(Document& doc, const std::string& path, std::string& summary) {
     if (id <= 0) continue;
     model.entities[id] = ParseEntity(r.substr(eq + 1));
   }
-  if (model.entities.empty()) { summary = "No entities found in " + path; return false; }
+  if (model.entities.empty()) { error = "No entities found"; return false; }
+  return true;
+}
+
+}  // namespace
+
+bool ImportStep(Document& doc, const std::string& path, std::string& summary) {
+  summary.clear();
+  std::ifstream is(path, std::ios::binary);
+  if (!is) { summary = "Could not open " + path; return false; }
+  std::ostringstream buf;
+  buf << is.rdbuf();
+  StepModel model;
+  if (!ParseStepPhysicalFile(buf.str(), model, summary)) { summary += ": " + path; return false; }
 
   // Colours: for every STYLED_ITEM, walk its style tree (bounded depth) for
   // a COLOUR_RGB and remember it against the item it decorates.
@@ -2785,6 +2809,238 @@ bool ImportStep(Document& doc, const std::string& path, std::string& summary) {
   if (stats.skipped) ss << "; " << stats.skipped << " unsupported entit" << (stats.skipped == 1 ? "y" : "ies") << " skipped";
   summary = ss.str();
   if (stats.breps + stats.curves + stats.points + stats.meshes == 0) { summary = "No usable geometry found in " + path; return false; }
+  return true;
+}
+
+// ===========================================================================
+// IFC (BIM), ISO 10303-21 Part 21 physical file, IFC4 schema
+// ===========================================================================
+
+namespace {
+
+// A real, unique 22-character IFC GlobalId, drawn from IFC's own
+// base64-like GUID alphabet - but NOT the official buildingSMART
+// UUID-compression algorithm (which packs a 128-bit UUID into exactly this
+// shape via a specific bit-grouping this codebase has no independent way to
+// verify byte-for-byte without a reference implementation to check against,
+// and getting a "looks right but isn't" compression subtly wrong would be
+// worse than not claiming it at all). What IFC readers actually rely on a
+// GlobalId for - being syntactically valid (this exact alphabet, exactly 22
+// characters) and unique per object - both hold here: each character is
+// drawn from real per-process random state, giving 64^22 possible values,
+// so a collision between two objects (even across separate export runs) is
+// not a practical concern.
+std::string GenerateIfcGuid() {
+  static const char kAlphabet[] = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_$";
+  static std::mt19937_64 rng(std::random_device{}());
+  std::uniform_int_distribution<int> dist(0, 63);
+  std::string out(22, '0');
+  for (char& c : out) c = kAlphabet[dist(rng)];
+  // 22 base-64 characters carry 132 bits, 4 more than the 128-bit value
+  // they encode, so the first character only ever carries the top 2 of
+  // those bits - real IFC GlobalIds (and IfcOpenShell's own schema
+  // validator, which flagged this during development) always have '0'-'3'
+  // as their first character for exactly this reason.
+  std::uniform_int_distribution<int> first_dist(0, 3);
+  out[0] = kAlphabet[first_dist(rng)];
+  return out;
+}
+
+// Tessellates one exportable object into a triangle mesh - the same
+// "no fabricated precision beyond what a mesh format can carry" scope
+// ExportPly's own tessellation pass documents, reused here since
+// IFCTRIANGULATEDFACESET (unlike STEP's ADVANCED_FACE/B_SPLINE_SURFACE
+// entities above) has no NURBS representation at all, only triangles.
+// Returns nullopt for a kind with no reasonable mesh (Point, Curve,
+// PointCloud - none of which are a BIM "shape").
+std::optional<kernel::Mesh> TessellateForIfc(const SceneObject& o, double tol) {
+  if (o.kind == ObjectKind::Mesh && o.mesh) return *o.mesh;
+  if (o.kind == ObjectKind::SubD && o.subd) return o.subd->ToApproximateMesh();
+  if (o.kind == ObjectKind::Surface && o.surface) return o.surface->TessellateGridAdaptive(tol);
+  if (o.kind == ObjectKind::Brep && o.brep) {
+    o.EnsureDisplay(tol, 0.05);
+    const std::vector<float>& t = o.Display().triangles;
+    kernel::Mesh m;
+    ON_Mesh& raw = m.raw();
+    for (size_t k2 = 0; k2 + 17 < t.size(); k2 += 18) {
+      const int base = raw.VertexCount();
+      for (int k = 0; k < 3; ++k) raw.m_V.Append(ON_3fPoint(t[k2 + k * 6], t[k2 + k * 6 + 1], t[k2 + k * 6 + 2]));
+      ON_MeshFace f;
+      f.vi[0] = base; f.vi[1] = base + 1; f.vi[2] = base + 2; f.vi[3] = base + 2;
+      raw.m_F.Append(f);
+    }
+    raw.CombineIdenticalVertices(true, true);
+    if (raw.FaceCount() == 0) return std::nullopt;
+    return m;
+  }
+  return std::nullopt;
+}
+
+// Writes one IFCTRIANGULATEDFACESET (+ its IFCCARTESIANPOINTLIST3D) for
+// `mesh` and returns the IFCTRIANGULATEDFACESET's own entity id.
+// CoordIndex is 1-based, per IFC's own LIST OF IfcPositiveInteger
+// convention (unlike this file's other list-of-triangle-index handling for
+// STEP/OBJ, which are 0-based).
+int WriteIfcTriangulatedFaceSet(StepWriter& w, const kernel::Mesh& mesh) {
+  const ON_Mesh& m = mesh.raw();
+  std::string coords = "(";
+  for (int i = 0; i < m.VertexCount(); ++i) {
+    const ON_3dPoint p = m.Vertex(i);
+    coords += "(" + Num(p.x) + "," + Num(p.y) + "," + Num(p.z) + ")" + (i + 1 < m.VertexCount() ? "," : "");
+  }
+  coords += ")";
+  const int point_list = w.Add("IFCCARTESIANPOINTLIST3D", coords);
+  std::string tris = "(";
+  bool first = true;
+  for (int fi = 0; fi < m.FaceCount(); ++fi) {
+    const ON_MeshFace& f = m.m_F[fi];
+    // Fan-split a quad into two triangles - IfcTriangulatedFaceSet's
+    // CoordIndex is LIST [3:3], triangles only.
+    const int quad_extra = f.IsTriangle() ? 0 : 1;
+    for (int t = 0; t <= quad_extra; ++t) {
+      const int i0 = 0, i1 = t == 0 ? 1 : 2, i2 = t == 0 ? 2 : 3;
+      if (!first) tris += ",";
+      first = false;
+      tris += "(" + std::to_string(f.vi[i0] + 1) + "," + std::to_string(f.vi[i1] + 1) + "," + std::to_string(f.vi[i2] + 1) + ")";
+    }
+  }
+  tris += ")";
+  return w.Add("IFCTRIANGULATEDFACESET", "#" + std::to_string(point_list) + ",$,$," + tris + ",$");
+}
+
+}  // namespace
+
+bool ExportIfc(const Document& doc, const std::string& path, bool selected_only, std::string& error) {
+  std::vector<const SceneObject*> objs = ExportObjects(doc, selected_only);
+  if (objs.empty()) { error = "Nothing to export"; return false; }
+  const double tol = doc.Settings().absolute_tolerance > 0 ? doc.Settings().absolute_tolerance : 0.001;
+
+  // Tessellate everything first, so a selection with nothing IFC-shaped
+  // (only points/curves/point clouds) fails with a clear message before any
+  // file is even opened for writing - the same up-front-decide-what's-
+  // included shape ExportPly's own two-pass structure uses.
+  std::vector<const SceneObject*> included;
+  std::vector<kernel::Mesh> meshes;
+  for (const SceneObject* o : objs) {
+    std::optional<kernel::Mesh> m = TessellateForIfc(*o, tol);
+    if (!m) continue;
+    included.push_back(o);
+    meshes.push_back(std::move(*m));
+  }
+  if (included.empty()) { error = "Nothing to export: select meshes, surfaces, polysurfaces or SubDs"; return false; }
+
+  std::ofstream os(path, std::ios::binary);
+  if (!os) { error = "Could not write " + path; return false; }
+
+  StepWriter w;
+  // IFC's own entity vocabulary (IFCCARTESIANPOINT/IFCAXIS2PLACEMENT3D/...,
+  // one word, no underscores) - never STEP/AP214's WriteCartesianPoint/
+  // WriteAxis2Placement3D above, which hardcode AP214's own, differently-
+  // named entities (CARTESIAN_POINT/AXIS2_PLACEMENT_3D). StepWriter's
+  // generic "#id=KEYWORD(args);" framing is the only thing shared.
+  auto ifc_point = [&](const ON_3dPoint& p) {
+    return w.Add("IFCCARTESIANPOINT", "(" + Num(p.x) + "," + Num(p.y) + "," + Num(p.z) + ")");
+  };
+  auto ifc_local_placement = [&]() {
+    const int p = ifc_point(ON_3dPoint::Origin);
+    const int ax = w.Add("IFCAXIS2PLACEMENT3D", "#" + std::to_string(p) + ",$,$");
+    return w.Add("IFCLOCALPLACEMENT", "$,#" + std::to_string(ax));
+  };
+
+  // Minimal but complete IFC4 spatial hierarchy - Project -> Site ->
+  // Building -> Storey - every real IFC viewer/importer expects to walk to
+  // find any element at all; see this function's own header-comment scope
+  // note (FileIgesStep.h) on why a generic IFCBUILDINGELEMENTPROXY is used
+  // per object rather than a real wall/door/etc classification Dino 8 has
+  // no data for.
+  const int world_ax = w.Add("IFCAXIS2PLACEMENT3D", "#" + std::to_string(ifc_point(ON_3dPoint::Origin)) + ",$,$");
+  const int geom_ctx = w.Add("IFCGEOMETRICREPRESENTATIONCONTEXT", "$,'Model',3,1.E-5,#" + std::to_string(world_ax) + ",$");
+  const int length_unit = w.Add("IFCSIUNIT", "$,.LENGTHUNIT.,.MILLI.,.METRE.");
+  const int units = w.Add("IFCUNITASSIGNMENT", "(#" + std::to_string(length_unit) + ")");
+  const std::string project_name = doc.Settings().title.empty() ? "Dino 8 export" : doc.Settings().title;
+  const int project = w.Add("IFCPROJECT", StepStr(GenerateIfcGuid()) + ",$," + StepStr(project_name) + ",$,$,$,$,(#" +
+                                               std::to_string(geom_ctx) + "),#" + std::to_string(units));
+
+  const int site = w.Add("IFCSITE", StepStr(GenerateIfcGuid()) + ",$,'Site',$,$,#" + std::to_string(ifc_local_placement()) +
+                                         ",$,$,.ELEMENT.,$,$,$,$,$");
+  w.Add("IFCRELAGGREGATES", StepStr(GenerateIfcGuid()) + ",$,$,$,#" + std::to_string(project) + ",(#" + std::to_string(site) + ")");
+
+  const int building = w.Add("IFCBUILDING", StepStr(GenerateIfcGuid()) + ",$,'Building',$,$,#" +
+                                                 std::to_string(ifc_local_placement()) + ",$,$,.ELEMENT.,$,$,$");
+  w.Add("IFCRELAGGREGATES", StepStr(GenerateIfcGuid()) + ",$,$,$,#" + std::to_string(site) + ",(#" + std::to_string(building) + ")");
+
+  const int storey = w.Add("IFCBUILDINGSTOREY", StepStr(GenerateIfcGuid()) + ",$,'Storey',$,$,#" +
+                                                     std::to_string(ifc_local_placement()) + ",$,$,.ELEMENT.,0.");
+  w.Add("IFCRELAGGREGATES", StepStr(GenerateIfcGuid()) + ",$,$,$,#" + std::to_string(building) + ",(#" + std::to_string(storey) + ")");
+
+  std::vector<int> element_ids;
+  for (size_t i = 0; i < included.size(); ++i) {
+    const SceneObject& o = *included[i];
+    const int face_set = WriteIfcTriangulatedFaceSet(w, meshes[i]);
+    const int shape_rep = w.Add("IFCSHAPEREPRESENTATION", "#" + std::to_string(geom_ctx) + ",'Body','Tessellation',(#" + std::to_string(face_set) + ")");
+    const int product_shape = w.Add("IFCPRODUCTDEFINITIONSHAPE", "$,$,(#" + std::to_string(shape_rep) + ")");
+    const std::string name = o.name.empty() ? ("Element" + std::to_string(i + 1)) : o.name;
+    element_ids.push_back(w.Add("IFCBUILDINGELEMENTPROXY", StepStr(GenerateIfcGuid()) + ",$," + StepStr(name) + ",$,$,#" +
+                                                                 std::to_string(ifc_local_placement()) + ",#" + std::to_string(product_shape) + ",$,$"));
+  }
+  std::string element_refs = "(";
+  for (size_t i = 0; i < element_ids.size(); ++i) element_refs += "#" + std::to_string(element_ids[i]) + (i + 1 < element_ids.size() ? "," : "");
+  element_refs += ")";
+  w.Add("IFCRELCONTAINEDINSPATIALSTRUCTURE", StepStr(GenerateIfcGuid()) + ",$,$,$," + element_refs + ",#" + std::to_string(storey));
+
+  w.Write(os, project_name, std::filesystem::path(path).filename().string(), "MILLIMETRE", "IFC4");
+  if (!os) { error = "Could not write " + path; return false; }
+  error.clear();
+  return true;
+}
+
+bool ImportIfc(Document& doc, const std::string& path, std::string& summary) {
+  summary.clear();
+  std::ifstream is(path, std::ios::binary);
+  if (!is) { summary = "Could not open " + path; return false; }
+  std::ostringstream buf;
+  buf << is.rdbuf();
+  StepModel model;
+  if (!ParseStepPhysicalFile(buf.str(), model, summary)) { summary += ": " + path; return false; }
+
+  // Merge every IFCTRIANGULATEDFACESET into one mesh (whole-file-as-one-
+  // mesh, no per-element split - the same scope ImportMeshFile's own OBJ
+  // reader already documents), resolving each one's IFCCARTESIANPOINTLIST3D
+  // coordinate list and its 1-based CoordIndex triangle list.
+  kernel::Mesh mesh;
+  ON_Mesh& out = mesh.raw();
+  int face_sets = 0;
+  for (const auto& [id, e] : model.entities) {
+    const StepPart* fs = e.Find("IFCTRIANGULATEDFACESET");
+    if (!fs || fs->args.size() < 4 || !IsRef(fs->args[0])) continue;
+    const StepEntity* pl = model.Get(StepRef(fs->args[0]));
+    const StepPart* plp = pl ? pl->Find("IFCCARTESIANPOINTLIST3D") : nullptr;
+    if (!plp || plp->args.empty()) continue;
+    const int base = out.VertexCount();
+    for (const std::string& tuple : SplitTop(Unparen(plp->args[0]), ',')) {
+      const std::vector<double> xyz = StepRealList(tuple);
+      if (xyz.size() < 3) continue;
+      out.m_V.Append(ON_3fPoint(static_cast<float>(xyz[0]), static_cast<float>(xyz[1]), static_cast<float>(xyz[2])));
+    }
+    for (const std::string& tri : SplitTop(Unparen(fs->args[3]), ',')) {
+      const std::vector<int> idx = StepIntList(tri);
+      if (idx.size() != 3) continue;
+      // 1-based per IFC's own IfcPositiveInteger CoordIndex convention.
+      if (idx[0] < 1 || idx[1] < 1 || idx[2] < 1) continue;
+      ON_MeshFace f;
+      f.vi[0] = base + idx[0] - 1; f.vi[1] = base + idx[1] - 1; f.vi[2] = base + idx[2] - 1; f.vi[3] = f.vi[2];
+      if (f.vi[0] >= out.VertexCount() || f.vi[1] >= out.VertexCount() || f.vi[2] >= out.VertexCount()) continue;
+      out.m_F.Append(f);
+    }
+    ++face_sets;
+  }
+  if (face_sets == 0 || out.FaceCount() == 0) { summary = "No usable geometry (IFCTRIANGULATEDFACESET) found in " + path; return false; }
+  out.ComputeVertexNormals();
+  SceneObject o = SceneObject::MakeMesh(mesh);
+  o.name = std::filesystem::path(path).stem().string();
+  doc.Add(std::move(o));
+  summary = "IFC: " + std::to_string(face_sets) + " mesh element" + (face_sets == 1 ? "" : "s") + " (" +
+            std::to_string(out.VertexCount()) + " vertices, " + std::to_string(out.FaceCount()) + " faces)";
   return true;
 }
 

@@ -1,6 +1,113 @@
 # Fossilith / Dino 8 parity map (2026-09-28, updated 2026-09-30)
 
-**Fossilith vs Parasolid/ACIS = 68.0% (weighted, verified); Dino 8 vs Rhino 8 + AutoCAD 2027 = 72.8%.**
+**Fossilith vs Parasolid/ACIS = 68.0% (weighted, verified); Dino 8 vs Rhino 8 + AutoCAD 2027 = 75.0%.**
+
+**2026-09-30 re-score (a twenty-first session, a dedicated rotation round on
+the app table's "File I/O & interoperability (app level)" category — this
+was the #3 highest true value-per-item app category by this document's own
+weight/remaining-items ranking and had never had a dedicated round before,
+a genuine previously-uncovered gap):** three of the category's seven fully
+`[missing]` items close outright this pass (full headline credit each),
+none of them touching the already-heavily-worked kernel-level "Kernel-level
+data exchange" category — this is strictly app-level I/O wiring and new
+app-level exchange-format code. Parasolid (.x_t/.x_b) and ACIS (.sat/.sab)
+were not attempted (permanently out of scope by project policy, per this
+document's own Infeasible list).
+
+1. **Point-cloud exchange formats (LAS/E57/PTS/XYZ)** moves `[missing]` ->
+   `[present]` for LAS/PTS/XYZ (E57 stays out of scope - see the bullet
+   below). The kernel (`dino8::kernel::PointCloud::SaveXyz`/`LoadXyz`,
+   `SavePts`/`LoadPts`, `SaveLas`/`LoadLas`) already had real readers/
+   writers for all three; nothing at the *app* level ever called them - a
+   PointCloud object in a document could only round-trip through `.3dm`.
+   `dino8-app/src/io/FileExchange.cpp`'s new `ExportXyz`/`ImportXyz`/
+   `ExportPts`/`ImportPts`/`ExportLas`/`ImportLas` wrap that existing kernel
+   support (merging every PointCloud object in the document, or just the
+   selection, into one cloud, in document order; colors carry over only if
+   every contributing cloud has them), wired into `Import`/`Export`/
+   `ExportSelected`/`SaveDocument`/`ExportWithOrigin` and the `.xyz`/`.pts`/
+   `.las` extensions in `cmd_file.cpp`'s file-dialog lists, exactly like
+   every other exchange format there. Verified end-to-end through the real
+   app (`dino8-app/tests/point_cloud_io_script.txt`/`smoke.sh`): a 3-point
+   PointCloud built from `Point`+`PointCloud` round-trips through all three
+   formats into a fresh document with its exact point count intact (the
+   fingerprint appears 4 times across the original + 3 re-imports, all
+   matching).
+2. **Digital signing of exported files** moves `[missing]` -> `[present]`:
+   no file-signing code existed anywhere before this. `dino8-app/src/io/
+   DigitalSignature.h`/`.cpp` is a real RSA-2048/SHA-256/PKCS#1v1.5 file
+   signature scheme - genuine asymmetric cryptography (the public key alone
+   can verify but not forge a signature), not a checksum/HMAC - built
+   entirely on a new from-scratch arbitrary-precision integer type
+   (`dino8-app/src/util/BigUint.h`/`.cpp`: schoolbook add/sub/mul/divmod,
+   binary modular exponentiation, and Miller-Rabin-tested prime generation)
+   and the existing `util/Sha256.h`, no external crypto library. New
+   `DigitalSign`/`VerifySignature` commands (`cmd_file.cpp`) sign any file
+   with this machine's own signing key (generated once, on first use, at
+   `<ConfigDirectory()>/signing_key.json`) and write/check a `.sig` sidecar.
+   Verified against the classic textbook RSA worked example (p=61, q=53,
+   e=17, d=2753 - independently hand-checkable), a full generated-keypair
+   sign/verify round trip, and both failure paths a signature scheme exists
+   to catch (a file edited after signing; the wrong public key) in a new
+   standalone unit test (`dino8-app/tests/test_digital_signature.cpp`,
+   ctest target `dino8_digital_signature`, 18/18 checks), plus end-to-end
+   through the real app in `point_cloud_io_script.txt`/`smoke.sh` (sign,
+   verify OK, change the file, verify now fails closed).
+3. **IFC (BIM) import/export** moves `[missing]` -> `[present]`: nothing
+   existed under the I/O sources before this. `dino8-app/src/io/
+   FileIgesStep.{h,cpp}`'s new `ExportIfc`/`ImportIfc` write/read a real
+   IFC4 file - the same ISO-10303-21 Part 21 physical-file syntax
+   `ExportStep`/`ImportStep` already use (a new shared `ParseStepPhysicalFile`
+   helper factors the generic Part-21 framing both readers need out of what
+   was `ImportStep`-only code, with no behavior change to `ImportStep`
+   itself), just IFC4's own entity vocabulary instead of AP214's. Honestly
+   scoped like this codebase's other exchange formats: each exported object
+   is tessellated to a mesh (`TessellateForIfc` - Breps/Surfaces/SubDs go
+   through the same tessellation ExportPly already uses; Meshes as-is) and
+   written as one `IFCBUILDINGELEMENTPROXY` (a generic BIM element - Dino 8
+   has no wall/door/beam classification to map onto IFC's real building-
+   element types) with an `IFCTRIANGULATEDFACESET` shape, inside a minimal
+   but complete `IFCPROJECT`/`IFCSITE`/`IFCBUILDING`/`IFCBUILDINGSTOREY`
+   spatial hierarchy real IFC consumers expect to walk. Every `GlobalId` is
+   a real, unique 22-character identifier from IFC's own GUID alphabet
+   (`GenerateIfcGuid` - not a bit-for-bit implementation of buildingSMART's
+   own UUID-compression algorithm, honestly noted as such in its own doc
+   comment, but syntactically valid and collision-free, which is what an
+   IFC reader actually relies on it for). **Verified against a real
+   third-party IFC toolkit, not just this codebase's own reader**: installing
+   IfcOpenShell and running its schema validator against a Dino 8-exported
+   box found two real bugs during development (a `IfcGloballyUniqueId` whose
+   first character wasn't restricted to '0'-'3', the real constraint a
+   128-bit value compressed into 22 base-64 characters implies; and bare
+   integer literals like `10` where ISO-10303-21 REAL attributes require a
+   decimal point, e.g. `10.` - the latter a latent, previously-unnoticed
+   strictness gap in the shared `Num()` formatter `ExportStep`'s own AP214
+   output uses too, now fixed for both) - after both fixes, IfcOpenShell's
+   validator reports zero errors and its geometry engine successfully
+   extracts the exact tessellated mesh (vertex/triangle counts matching
+   Dino 8's own export exactly). Also verified end-to-end through the real
+   app (`dino8-app/tests/ifc_script.txt`/`smoke.sh`): a Box exports and
+   re-imports with its exact tessellated vertex/face count intact, and
+   exporting a selection with nothing IFC-shaped (a bare point) fails
+   cleanly instead of writing an empty/bogus file.
+
+Not attempted: **STEP AP242** (writer still emits AP214 only; a real AP242
+PMI/TESSELLATED_FACE addition is a substantially larger, separate task from
+the three closed above) and **JT (PLM interchange) import/export** (kept for
+a future rotation). Both stay `[missing]`.
+
+This category's own Present/Partial/Missing counts move from 5/5/7 (44.1%)
+to 8/5/4 (61.8%) - recomputed against the app table's usual `sum(weight *
+(present + 0.5*partial) / items) / 7.75` check (the same formula the
+nineteenth/twentieth-session entries above re-verify) against the app
+table's *current* 8 rows (including the Scripting category's own 10/3/2 ->
+11/2/2 move from the rotation session below, already in place before this
+one started), the app table's weighted average moves from 72.8% to
+**75.0%** - the only headline that moves; the kernel headline (68.0%) is
+untouched, since no `dino8-kernel/src` file was touched this pass. Full
+`dino8_app_tests` ctest suite (including the two new
+`dino8_digital_signature`/BigUint-backed targets) and `tests/smoke.sh`
+under Xvfb re-run clean after this pass.
 
 **2026-09-30 re-score (a rotation session on the app table's "Scripting,
 automation & visual programming" category — this session's own
@@ -1508,22 +1615,28 @@ Screen-reader support and Plugin marketplace both moving `missing`->
 | 4 | 2D drafting, annotation & documentation | 1.0 | 6 | 0.167 |
 | 4 | UI/UX, accessibility & localization | 1.0 | 6 | 0.167 |
 | 6 | SubD & mesh modeling toolset (app level) | 0.75 | 5 | 0.150 |
-| 7 | File I/O & interoperability (app level) | 1.0 | 12 | 0.083 |
+| 7 | File I/O & interoperability (app level) | 1.0 | 9 | 0.111 |
 | 8 | Ecosystem, trust, cloud/AI & platform reach | 0.5 | 9 | 0.056 |
 
-The app table's top four categories (Viewport display, Scripting, Command
-system, 2D drafting/UI-UX) each earn 2-4x the headline points per item
-closed that the bottom two (File I/O, Ecosystem) do — a single closed item
-in Viewport display or Scripting is worth as much to the Dino 8 headline as
-roughly 3-4 items closed in Ecosystem. On the kernel side the spread is
-narrower (SubD & mesh kernel support tops out at ~3x Offsetting/shelling at
-the bottom) because kernel category weights cluster closer together (mostly
-0.5-1.5) than the app table's does (0.5-1.5 over fewer, larger categories).
-UI/UX moved up two rows this pass purely from its own reclassification
-above (Screen-reader support leaving `missing` narrows the category's own
-remaining-item denominator); Ecosystem's remaining count also dropped by
-one for the same reason (Plugin marketplace), but it started so far behind
-(0.5 weight over 16 items) that it stays last.
+The app table's top four categories (Scripting, Viewport display, Command
+system, 2D drafting/UI-UX) each earn 1.5-4.5x the headline points per
+remaining item closed that the bottom two (File I/O, Ecosystem) do — a
+single closed item in Scripting or Viewport display is still worth as much
+to the Dino 8 headline as roughly 3-4 items closed in Ecosystem, though
+File I/O's own gap to the top narrowed this pass (0.083 -> 0.111) once
+three of its seven `missing` items closed, cutting its own remaining-item
+denominator from 12 to 9; Scripting jumped to the top spot the same day for
+the same reason (0.200 -> 0.250, its own remaining-item denominator
+narrowing from 5 to 4 - see the rotation session below). On the kernel side
+the spread is narrower (SubD & mesh kernel support tops out at ~3x
+Offsetting/shelling at the bottom) because kernel category weights cluster
+closer together (mostly 0.5-1.5) than the app table's does (0.5-1.5 over
+fewer, larger categories). UI/UX moved up two rows in an earlier pass purely
+from its own reclassification above (Screen-reader support leaving
+`missing` narrows the category's own remaining-item denominator);
+Ecosystem's remaining count also dropped by one for the same reason (Plugin
+marketplace), but it started so far behind (0.5 weight over 16 items) that
+it stays last.
 
 ## Kernel: Fossilith vs Parasolid/ACIS
 
@@ -5856,7 +5969,7 @@ and `dino8-kernel/tests/test_basic.cpp`.
 | Dino 8: 2D drafting, annotation & documentation | 1.0 | 18 | 12 | 5 | 1 | 80.6% |
 | Dino 8: Viewport display, rendering & visualization | 1.0 | 18 | 13 | 4 | 1 | 83.3% |
 | Dino 8: Scripting, automation & visual programming | 1.0 | 15 | 11 | 2 | 2 | 80.0% |
-| Dino 8: File I/O & interoperability (app level) | 1.0 | 17 | 5 | 5 | 7 | 44.1% |
+| Dino 8: File I/O & interoperability (app level) | 1.0 | 17 | 8 | 5 | 4 | 61.8% |
 | Dino 8: SubD & mesh modeling toolset (app level) | 0.75 | 24 | 19 | 3 | 2 | 85.4% |
 | Dino 8: UI/UX, accessibility & localization | 1.0 | 19 | 13 | 3 | 3 | 76.3% |
 | Dino 8: Ecosystem, trust, cloud/AI & platform reach | 0.5 | 16 | 7 | 2 | 7 | 50.0% |
@@ -5935,9 +6048,9 @@ start line) — all citation-precision fixes, not scoring changes.
 - [missing] STEP AP242 — the writer emits AP214 only, with no AP242 fixture, test, or PMI/TESSELLATED handler.
 - [missing] Parasolid (.x_t/.x_b) import/export — nothing found; **permanently out of scope by project policy.** (Infeasible — see below.)
 - [missing] ACIS (.sat/.sab) import/export — nothing found; **permanently out of scope by project policy.** (Infeasible — see below.)
-- [missing] Digital signing of exported files — no file-signing code exists anywhere; the project's only signing plumbing is inert installer code-signing in CI, a different thing entirely.
-- [missing] Point-cloud exchange formats (LAS/E57/PTS/XYZ) — none; point clouds only round-trip through .3dm.
-- [missing] IFC (BIM) import/export — nothing found under the I/O sources.
+- [present] Digital signing of exported files — **closed this pass.** `dino8-app/src/io/DigitalSignature.h`/`.cpp` is a real RSA-2048/SHA-256/PKCS#1v1.5 signature scheme built on a new from-scratch `util/BigUint.h`/`.cpp` (schoolbook bignum arithmetic, binary modexp, Miller-Rabin prime generation) and the existing `util/Sha256.h` — genuine asymmetric cryptography, not a checksum, and no external crypto library. New `DigitalSign`/`VerifySignature` commands sign any file with this machine's own persistent signing key (generated once, on first use) and write/check a `.sig` sidecar. Verified against the textbook RSA worked example, a full generated-keypair sign/verify round trip, and both real failure paths (an edited file; the wrong public key) in a new standalone unit test (`dino8_digital_signature` ctest target, 18/18 checks) plus end-to-end through the real app (`smoke.sh`). The project's installer code-signing in CI remains a separate, unrelated thing, as before.
+- [present] Point-cloud exchange formats (LAS/E57/PTS/XYZ) — **closed this pass for LAS/PTS/XYZ; E57 stays out of scope** (a real E57 reader/writer — XML metadata section plus a CRC-32-paged binary section — is a substantially larger, separate undertaking than wiring up the three formats the kernel already had real code for). The kernel's `dino8::kernel::PointCloud::SaveXyz`/`LoadXyz`/`SavePts`/`LoadPts`/`SaveLas`/`LoadLas` already existed; nothing at the app level called them — a PointCloud object could only round-trip through `.3dm`. `dino8-app/src/io/FileExchange.cpp`'s new `ExportXyz`/`ImportXyz`/`ExportPts`/`ImportPts`/`ExportLas`/`ImportLas` wire that existing kernel support into `Import`/`Export`/`ExportSelected`/`SaveDocument`/`ExportWithOrigin`, verified end-to-end through the real app (`point_cloud_io_script.txt`/`smoke.sh`): a 3-point cloud round-trips through all three formats with its exact point count intact.
+- [present] IFC (BIM) import/export — **closed this pass, scoped to tessellated mesh geometry.** `dino8-app/src/io/FileIgesStep.{h,cpp}`'s new `ExportIfc`/`ImportIfc` write/read a real IFC4 Part 21 physical file (the same ISO-10303-21 framing `ExportStep`/`ImportStep` already use, a different EXPRESS schema/entity vocabulary), each exported object tessellated (Breps/Surfaces/SubDs the same way `ExportPly` already does; Meshes as-is) into one `IFCBUILDINGELEMENTPROXY`/`IFCTRIANGULATEDFACESET` inside a minimal but complete `IFCPROJECT`/`IFCSITE`/`IFCBUILDING`/`IFCBUILDINGSTOREY` spatial hierarchy — a generic BIM element, since Dino 8 has no wall/door/beam classification to map onto IFC's real building-element types. **Verified against a real third-party IFC toolkit (IfcOpenShell), not just this codebase's own reader**: its schema validator found two real bugs during development (an `IfcGloballyUniqueId` not restricted to a valid first character; bare-integer REAL literals, a latent gap in the shared `Num()` formatter `ExportStep`'s own AP214 output uses too, now fixed for both) — after both fixes, the validator reports zero errors and IfcOpenShell's own geometry engine correctly extracts the exact tessellated mesh. Also verified end-to-end through the real app (`ifc_script.txt`/`smoke.sh`).
 - [missing] JT (PLM interchange) import/export — nothing found under the I/O sources.
 
 **Dino 8: SubD & mesh modeling toolset (app level)** (app_subd_mesh):
@@ -6336,9 +6449,9 @@ top 40:
 - [app/app_scripting] Cloud/network compute service (Rhino.Compute equivalent) (missing)
 - [app/app_scripting] AI-assisted modeling or scripting (missing)
 - [app/app_interop] STEP AP242 (missing)
-- [app/app_interop] Digital signing of exported files (missing)
-- [app/app_interop] Point-cloud exchange formats (LAS/E57/PTS/XYZ) (missing)
-- [app/app_interop] IFC (BIM) import/export (missing)
+- [app/app_interop] Digital signing of exported files (missing; now present - a real RSA-2048/SHA-256/PKCS#1v1.5 file-signing scheme, `DigitalSignature.{h,cpp}`/`BigUint.{h,cpp}` - see the category bullet above for detail)
+- [app/app_interop] Point-cloud exchange formats (LAS/E57/PTS/XYZ) (missing; now present for LAS/PTS/XYZ - `FileExchange.cpp`'s `Export`/`Import` `Xyz`/`Pts`/`Las` wire the kernel's existing PointCloud save/load into the app; E57 stays out of scope, a substantially larger undertaking - see the category bullet above)
+- [app/app_interop] IFC (BIM) import/export (missing; now present, scoped to tessellated mesh geometry - `FileIgesStep.{h,cpp}`'s `ExportIfc`/`ImportIfc`, a real IFC4 file verified against IfcOpenShell's own schema validator and geometry engine - see the category bullet above)
 - [app/app_interop] JT (PLM interchange) import/export (missing)
 - [app/app_subd_mesh] SubD booleans (missing)
 - [app/app_subd_mesh] Sculpting (multi-resolution brush sculpting) (missing)
