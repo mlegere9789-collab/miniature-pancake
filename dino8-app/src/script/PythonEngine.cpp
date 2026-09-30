@@ -80,6 +80,29 @@ ObjectId AddBrepObj(ON_Brep* b, const char* label) {
   return AddObj(SceneObject::MakeBrep(WrapBrep(b)), label);
 }
 
+// Mirrors LuaEngine.cpp's ExtrudeCurveAlong: extrudes `c` along `v`, closed
+// planar curves becoming capped solids and everything else a surface (the
+// ExtrudeCrv rule), used by ExtrudeCurveStraight below the same way
+// rs.ExtrudeCurveStraight uses it. Takes AddObj/AddBrepObj instead of a
+// lua_State to reach the document, since PythonEngine has no registry to
+// thread one through.
+ObjectId ExtrudeCurveAlong(const kernel::NurbsCurve& kc, Vector3d v) {
+  ON_NurbsCurve c = kc.raw();
+  ON_Plane plane;
+  if (c.IsClosed() && c.IsPlanar(&plane, DocOf().Settings().absolute_tolerance)) {
+    if (ON_Brep* b = ON_BrepTrimmedPlane(plane, c)) {
+      ON_LineCurve path(ON_Line(ON_3dPoint::Origin, ON_3dPoint::Origin + v));
+      if (ON_BrepExtrudeFace(*b, 0, path, true) >= 0) return AddBrepObj(b, "ExtrudeCurveStraight");
+      delete b;
+    }
+  }
+  ON_SumSurface ss;
+  if (!ss.Create(c, v)) return kNoObject;
+  kernel::NurbsSurface k;
+  if (!SurfaceFromON(ss, k)) return kNoObject;
+  return AddObj(SceneObject::MakeSurface(k), "ExtrudeCurveStraight");
+}
+
 py::object PyObjId(ObjectId id) {
   if (id == kNoObject) return py::none();
   return py::cast(id);
@@ -174,6 +197,17 @@ struct PyObjectRef {
 struct PyObjectTable {
   py::object AddPoint(double x, double y, double z) { return PyObjId(AddObj(SceneObject::MakePoint(Point3d(x, y, z)), "AddPoint")); }
   py::object AddPoint1(Point3d p) { return AddPoint(p.x, p.y, p.z); }
+
+  // Mirrors rs.AddPoints(points) in LuaEngine.cpp: one point object per
+  // {x,y,z}, returning the ids (an empty list for an empty input, never
+  // None - same as rs.AddPoints always pushing a table).
+  std::vector<ObjectId> AddPoints(std::vector<Point3d> pts) {
+    Document& d = DocOf();
+    d.BeginChange("AddPoints");
+    std::vector<ObjectId> ids;
+    for (const Point3d& p : pts) ids.push_back(d.Add(SceneObject::MakePoint(p)));
+    return ids;
+  }
 
   py::object AddLine(Point3d a, Point3d b) { return PyObjId(AddCurveObj(PolylineCurve({a, b}), "AddLine")); }
 
@@ -300,6 +334,44 @@ struct PyObjectTable {
     return out;
   }
 
+  // Mirrors rs.ExtrudeCurveStraight(curveId, p0, p1) | (curveId, vector) in
+  // LuaEngine.cpp; like AddCylinder/AddCone above, the direction is taken
+  // as a single vector rather than Lua's point-pair-or-vector overload.
+  py::object ExtrudeCurveStraight(ObjectId curveId, Vector3d v) {
+    const SceneObject* o = DocOf().Find(curveId);
+    if (!o || o->kind != ObjectKind::Curve) throw std::runtime_error("ExtrudeCurveStraight: object is not a curve");
+    if (v.Length() <= 0) throw std::runtime_error("ExtrudeCurveStraight: zero-length direction");
+    return PyObjId(ExtrudeCurveAlong(*o->curve, v));
+  }
+
+  // Mirrors rs.BooleanUnion(ids, delete=true) in LuaEngine.cpp: unions the
+  // closed solids among `ids` (meshing each via MeshOf, same as the Lua
+  // RunBoolean helper) into one mesh solid, skipping ids that aren't closed
+  // solids rather than raising; None when nothing qualified.
+  py::object BooleanUnion(std::vector<ObjectId> ids, bool delete_input) {
+    Document& d = DocOf();
+    std::vector<std::pair<ObjectId, kernel::Mesh>> meshes;
+    for (ObjectId id : ids) {
+      const SceneObject* o = d.Find(id);
+      if (!o) continue;
+      std::optional<kernel::Mesh> m = MeshOf(*o, 0.005);
+      if (!m || !m->IsClosedManifold()) continue;
+      meshes.push_back({id, *m});
+    }
+    if (meshes.empty()) return py::none();
+    kernel::Mesh result = meshes[0].second;
+    const int layer = d.Find(meshes[0].first) ? d.Find(meshes[0].first)->layer_index : 0;
+    for (size_t i = 1; i < meshes.size(); ++i) result = kernel::BooleanCombine(result, meshes[i].second, kernel::BooleanOp::Union);
+    d.BeginChange("BooleanUnion");
+    if (delete_input) for (auto& [id, m] : meshes) d.Remove(id);
+    if (result.FaceCount() == 0) return py::none();
+    SceneObject n = SceneObject::MakeMesh(result);
+    n.layer_index = layer;
+    py::list out;
+    out.append(PyObjId(d.Add(std::move(n))));
+    return out;
+  }
+
   py::object AddMesh(std::vector<Point3d> verts, std::vector<std::vector<int>> faces) {
     kernel::Mesh m;
     ON_Mesh& r = m.raw();
@@ -420,6 +492,7 @@ PYBIND11_EMBEDDED_MODULE(dino8, m) {
   py::class_<PyObjectTable>(m, "Dino8ObjectTable")
       .def("AddPoint", py::overload_cast<double, double, double>(&PyObjectTable::AddPoint))
       .def("AddPoint", &PyObjectTable::AddPoint1)
+      .def("AddPoints", &PyObjectTable::AddPoints)
       .def("AddLine", &PyObjectTable::AddLine)
       .def("AddPolyline", &PyObjectTable::AddPolyline)
       .def("AddCurve", &PyObjectTable::AddCurve, py::arg("points"), py::arg("degree") = 3)
@@ -428,6 +501,8 @@ PYBIND11_EMBEDDED_MODULE(dino8, m) {
       .def("AddArc3Pt", &PyObjectTable::AddArc3Pt)
       .def("AddSrfPt", &PyObjectTable::AddSrfPt)
       .def("AddPlanarSrf", &PyObjectTable::AddPlanarSrf)
+      .def("ExtrudeCurveStraight", &PyObjectTable::ExtrudeCurveStraight, py::arg("curveId"), py::arg("vector"))
+      .def("BooleanUnion", &PyObjectTable::BooleanUnion, py::arg("ids"), py::arg("delete") = true)
       .def("AddBox", &PyObjectTable::AddBox, py::arg("corner"), py::arg("size"))
       .def("AddSphere", &PyObjectTable::AddSphere, py::arg("center"), py::arg("radius"))
       .def("AddCylinder", &PyObjectTable::AddCylinder, py::arg("base"), py::arg("axis"), py::arg("radius"), py::arg("cap") = true)

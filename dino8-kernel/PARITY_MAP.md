@@ -68,6 +68,21 @@ the same explicit-recompute-command shape the bullet already named as the
 gap, so it stays `partial`. Full `dino8_app_tests`/`dino8_kernel_tests`
 suites re-run clean after this pass (docs-only change, no source edited).
 
+**2026-09-30 addendum (same day, later session):** four more Python
+object-model bindings landed since the note above, closing gaps against
+Lua's `rs.*` module: `AddPlanarSrf` (trimmed planar surfaces, queued by the
+commit immediately before this session but left undocumented here),
+`AddPoints` (batch point creation), `ExtrudeCurveStraight` (straight
+extrusion, capped for closed planar curves) and `BooleanUnion` (closed
+solids combined into one mesh solid) - each in `PythonEngine.cpp`,
+mirroring its `rs_*` counterpart's logic and skip/throw semantics exactly.
+Python API breadth (**Dino 8: Scripting**'s "Python API breadth" bullet)
+is now **66**, not 62. `dino8_app_tests` re-run clean after this pass
+(new/updated cases in `python_script.txt`/`smoke.sh` cover all four). No
+score effect (same honest-narrowing status as the note above: the gap
+this bullet names - the rest of the object model, and no interactive
+prompts - is unchanged).
+
 **2026-09-28 re-verification addendum (same day, later session):** the brief for
 this addendum claimed "roughly 60+" capability-adding commits had landed since
 the 66.2%/71.5% measurement above. That premise was false: `git log --oneline
@@ -3399,7 +3414,7 @@ start line) — all citation-precision fixes, not scoring changes.
 
 **Dino 8: Scripting, automation & visual programming** (app_scripting):
 - [partial] Embedded Python 3 — `dino8-app/CMakeLists.txt:146` sets `option(DINO8_ENABLE_PYTHON ... OFF)` on Windows specifically, `:148` `ON` elsewhere; shipped Windows builds have no Python at all; mid-script prompts are also missing.
-- [partial] Python API breadth — `RunCommand` reaches every registered command; the real gap is the object model (62 bindings, up from 56, versus Lua's 160 `rs.*` functions — `AddTorus`/`AddInterpCurve`/`AddCircle`/`AddSrfPt`/`AddCone`/`AddArc3Pt` added this window) and no interactive prompts.
+- [partial] Python API breadth — `RunCommand` reaches every registered command; the real gap is the object model (66 bindings, up from 62, versus Lua's 160 `rs.*` functions — `AddPlanarSrf`/`AddPoints`/`ExtrudeCurveStraight`/`BooleanUnion` added this window) and no interactive prompts.
 - [partial] Headless/batch scripting mode — `dino8-app/src/main.cpp:5-7,322-327`: `--smoke N --script FILE [--screenshot]` is real and documented in the file's own header comments; still framed as a QA mode needing a GL context/display server, not a supported batch product.
 - [missing] Cloud/network compute service (Rhino.Compute equivalent) — no server/socket/HTTP code anywhere in the source.
 - [missing] AI-assisted modeling or scripting — no neural/inference code anywhere; the one "smart" feature explicitly documents its own technique as not machine learning.

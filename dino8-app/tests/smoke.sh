@@ -1702,6 +1702,44 @@ print("object count with planar: %d" % len(dino8.doc.Objects.AllObjects()))
 no_planar = dino8.doc.Objects.AddPlanarSrf([box_id])
 print("planar from non-curve: " + str(no_planar))
 
+points_ids = dino8.doc.Objects.AddPoints([dino8.Point3d(0, 0, 0), dino8.Point3d(1, 1, 1), dino8.Point3d(2, 2, 2)])
+print("points count: %d" % len(points_ids))
+point0 = dino8.doc.Objects.Find(points_ids[0])
+print("point kind: " + point0.ObjectType)
+print("object count with points: %d" % len(dino8.doc.Objects.AllObjects()))
+empty_points = dino8.doc.Objects.AddPoints([])
+print("empty points: " + str(empty_points))
+
+extrude_line_id = dino8.doc.Objects.AddLine(dino8.Point3d(0, 0, 0), dino8.Point3d(5, 0, 0))
+extrude_id = dino8.doc.Objects.ExtrudeCurveStraight(extrude_line_id, dino8.Vector3d(0, 0, 3))
+extrude = dino8.doc.Objects.Find(extrude_id)
+print("extrude kind: " + extrude.ObjectType)
+print("object count with extrude: %d" % len(dino8.doc.Objects.AllObjects()))
+extrude_solid_id = dino8.doc.Objects.ExtrudeCurveStraight(circle_id, dino8.Vector3d(0, 0, 4))
+extrude_solid = dino8.doc.Objects.Find(extrude_solid_id)
+print("extrude solid kind: " + extrude_solid.ObjectType)
+try:
+    dino8.doc.Objects.ExtrudeCurveStraight(extrude_line_id, dino8.Vector3d(0, 0, 0))
+    print("bad extrude: no error")
+except RuntimeError as e:
+    print("bad extrude rejected: " + str(e))
+try:
+    dino8.doc.Objects.ExtrudeCurveStraight(box_id, dino8.Vector3d(0, 0, 1))
+    print("extrude non-curve: no error")
+except RuntimeError as e:
+    print("extrude non-curve rejected: " + str(e))
+print("object count with extrude solid: %d" % len(dino8.doc.Objects.AllObjects()))
+
+union_a = dino8.doc.Objects.AddBox(dino8.Point3d(20, 0, 0), dino8.Vector3d(4, 4, 4))
+union_b = dino8.doc.Objects.AddBox(dino8.Point3d(22, 0, 0), dino8.Vector3d(4, 4, 4))
+union_ids = dino8.doc.Objects.BooleanUnion([union_a, union_b])
+union_obj = dino8.doc.Objects.Find(union_ids[0])
+print("union kind: " + union_obj.ObjectType)
+print("union input deleted: " + str(dino8.doc.Objects.Find(union_a) is None))
+print("object count with union: %d" % len(dino8.doc.Objects.AllObjects()))
+no_union = dino8.doc.Objects.BooleanUnion([extrude_line_id])
+print("union from non-solid: " + str(no_union))
+
 dino8.RunCommand("NewLayer", "Parts")
 PY
 sed "s|@TMP@|$TMPW|g" "$HERE/python_script.txt" > "$TMPW/python_script.txt"
@@ -1767,7 +1805,21 @@ else
   pscheck "history: planar kind: polysurface" "dino8.doc.Objects.AddPlanarSrf built a trimmed planar brep from the closed circle, matching rs.AddPlanarSrf (Brep-kind objects report as polysurface regardless of face count, same as AddBox/AddCone/AddTorus)"
   pscheck "history: object count with planar: 8" "AllObjects sees the box, the circle, the cone, the torus, the interpolated curve, the arc, the srf and the new planar surface"
   pscheck "history: planar from non-curve: None" "AddPlanarSrf returned None when none of the ids were closed planar curves, matching rs.AddPlanarSrf pushing nil instead of raising"
-  pscheck "^ok   expect_objects 8" "RunPythonScript left the box, the circle, the cone, the torus, the interpolated curve, the arc, the srf and the planar surface (the sphere was deleted from inside the script)"
+  pscheck "history: points count: 3" "dino8.doc.Objects.AddPoints added one point object per input point, matching rs.AddPoints"
+  pscheck "history: point kind: point" "the first AddPoints id round-trips through Find as a point object"
+  pscheck "history: object count with points: 11" "AllObjects sees the box, the circle, the cone, the torus, the interpolated curve, the arc, the srf, the planar surface and the three new points"
+  pscheck "history: empty points: \[\]" "AddPoints returned an empty list (never None) for an empty input, matching rs.AddPoints always pushing a table"
+  pscheck "history: extrude kind: surface" "dino8.doc.Objects.ExtrudeCurveStraight extruded an open line into a surface, matching rs.ExtrudeCurveStraight"
+  pscheck "history: object count with extrude: 13" "AllObjects gained the new line and its extruded surface"
+  pscheck "history: extrude solid kind: polysurface" "ExtrudeCurveStraight on the closed planar circle built a capped solid, matching rs.ExtrudeCurveStraight's ExtrudeCrv rule"
+  pscheck "history: bad extrude rejected:" "ExtrudeCurveStraight raised a Python exception for a zero-length direction instead of silently returning"
+  pscheck "history: extrude non-curve rejected:" "ExtrudeCurveStraight raised a Python exception for a non-curve object instead of silently returning"
+  pscheck "history: object count with extrude solid: 14" "AllObjects gained the capped solid from the circle extrusion"
+  pscheck "history: union kind: mesh" "dino8.doc.Objects.BooleanUnion combined two overlapping boxes into one mesh solid, matching rs.BooleanUnion"
+  pscheck "history: union input deleted: True" "BooleanUnion deleted its input solids by default, matching rs.BooleanUnion(ids, delete=true)"
+  pscheck "history: object count with union: 15" "AllObjects lost the two input boxes and gained the one union mesh"
+  pscheck "history: union from non-solid: None" "BooleanUnion returned None when the only id given was a curve, not a closed solid, matching rs.BooleanUnion pushing nil instead of raising"
+  pscheck "^ok   expect_objects 15" "RunPythonScript left the box, the circle, the cone, the torus, the interpolated curve, the arc, the srf, the planar surface, three points, the extruded surface, the extruded solid and the union mesh (the sphere and the two union input boxes were removed from inside the script)"
   grep -q "! Python error" <<<"$PS" && { echo "FAIL python_script.txt printed a Python error"; fail=1; } || echo "ok   no Python script errors"
 fi
 

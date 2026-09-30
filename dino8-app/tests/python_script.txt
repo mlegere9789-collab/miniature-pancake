@@ -12,9 +12,16 @@
 # curve through three points, matching Lua's rs.AddArc3Pt, that the dino8
 # module also lacked until now), dino8.doc.Objects.AddSrfPt (a bilinear
 # surface through three or four corner points, matching Lua's rs.AddSrfPt,
-# that the dino8 module also lacked until now) and dino8.doc.Objects.AddPlanarSrf
+# that the dino8 module also lacked until now), dino8.doc.Objects.AddPlanarSrf
 # (trimmed planar surfaces from closed planar curves, matching Lua's
-# rs.AddPlanarSrf, that the dino8 module also lacked until now).
+# rs.AddPlanarSrf, that the dino8 module also lacked until now),
+# dino8.doc.Objects.AddPoints (one point object per input point, matching
+# Lua's rs.AddPoints, that the dino8 module also lacked until now),
+# dino8.doc.Objects.ExtrudeCurveStraight (a curve extruded along a vector,
+# matching Lua's rs.ExtrudeCurveStraight, that the dino8 module also lacked
+# until now) and dino8.doc.Objects.BooleanUnion (closed solids combined
+# into one mesh solid, matching Lua's rs.BooleanUnion, that the dino8
+# module also lacked until now).
 # Unlike script_script.txt's Lua test, this never goes interactive
 # mid-script (see PythonEngine.h): Python scripts run start to finish in
 # one call, so there is no trailing point token to feed a GetPoint-style
@@ -22,4 +29,4 @@
 # smoke.sh substitutes @TMP@ with a scratch directory and writes @TMP@/t.py
 # before running this.
 RunPythonScript @TMP@/t.py
-@expect_objects 8
+@expect_objects 15
