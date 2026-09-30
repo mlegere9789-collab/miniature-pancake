@@ -713,6 +713,20 @@ if(DINO8_BUILD_TESTS)
   target_link_libraries(dino8_properties_bench PRIVATE dino8_kernel)
   add_test(NAME dino8_properties_bench COMMAND dino8_properties_bench)
 
+  # Timing benchmark + regression guard for Document::Ungroup()/
+  # RemoveEmptyGroups() (see tests/group_bench.cpp): pruning empty groups
+  # used to call GroupMembers(id) - an O(document size) scan - once per
+  # *existing* group (O(group count x document size), independent of the
+  # ids passed to Ungroup()) vs a single O(document size + group count)
+  # pass building a membership count map (the shared PruneEmptyGroups()
+  # helper). Same style as dino8_properties_bench/dino8_layer_bench above:
+  # asserts a same-run relative speedup.
+  add_executable(dino8_group_bench tests/group_bench.cpp src/doc/Document.cpp src/doc/SceneObject.cpp
+                                    src/doc/SubObjectEdit.cpp src/geom/BrepMesher.cpp)
+  target_include_directories(dino8_group_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(dino8_group_bench PRIVATE dino8_kernel)
+  add_test(NAME dino8_group_bench COMMAND dino8_group_bench)
+
   # DWG round-trip fixture generator (see tests/dwg_fixture_gen.c and
   # smoke.sh's DWG section): builds a small real DWG file directly through
   # LibreDWG's public dwg_add_* API - the same API LibreDWG's own
