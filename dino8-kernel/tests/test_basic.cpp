@@ -6936,6 +6936,148 @@ void TestModelUnitSystemRoundTrips() {
   }
 }
 
+void TestModelAddNamedViewRoundTrips() {
+  using dino8::kernel::Model;
+  using dino8::kernel::NamedViewInfo;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+  using dino8::kernel::Vector3d;
+
+  Model model;
+  Check(model.NamedViewCount() == 0, "a fresh Model has no named views");
+  Check(model.AddNamedView("", Point3d(0, 0, 0), Point3d(1, 0, 0)) == -1,
+        "AddNamedView() returns -1 for an empty name, same contract as AddLayer() etc.");
+  Check(model.NamedViewCount() == 0, "the empty-name call above added nothing");
+
+  const Point3d camera(0, -10, 5);
+  const Point3d target(0, 0, 0);
+  const Vector3d up(0, 0, 1);
+  const int index = model.AddNamedView("Front", camera, target, up);
+  Check(index == 0, "the first real AddNamedView() call returns index 0");
+  Check(model.NamedViewCount() == 1, "model has one named view after AddNamedView()");
+
+  const NamedViewInfo info = model.NamedViewAt(0);
+  Check(info.name == "Front", "NamedViewAt(0) reports the name AddNamedView() was given");
+  Check(info.camera_location.DistanceTo(camera) < 1e-9,
+        "NamedViewAt(0) reports the exact camera_location AddNamedView() was given");
+  Check(info.target_point.DistanceTo(target) < 1e-9,
+        "NamedViewAt(0) reports the exact target_point AddNamedView() was given");
+  Check((info.camera_up - up).Length() < 1e-9,
+        "NamedViewAt(0) reports the exact camera_up AddNamedView() was given");
+
+  const NamedViewInfo out_of_range = model.NamedViewAt(5);
+  Check(out_of_range.name.empty(),
+        "NamedViewAt() on an index this model doesn't have returns a default-constructed "
+        "NamedViewInfo, same contract as LayerAt()/MaterialAt() etc.");
+
+  // A degenerate view (camera_location == target_point, no direction to
+  // derive) doesn't crash and still leaves the viewport with a valid
+  // camera direction - AddNamedView()'s own documented (0, 0, -1) fallback.
+  model.AddNamedView("Degenerate", Point3d(1, 2, 3), Point3d(1, 2, 3));
+  Check(model.NamedViewCount() == 2, "the degenerate-view call still adds a named view");
+
+  // Real .3dm round trip: ON_3dmSettings::m_named_views is part of the
+  // settings chunk ONX_Model::Write/Read already carries through
+  // unmodified, the same situation SetUnitSystem() found for its own
+  // field - so no Save()/Load() change was needed to make this round-trip.
+  const std::string path = "dino8_kernel_model_named_view_roundtrip_test.3dm";
+  Check(model.Save(path) == Result::Ok, ".3dm save with named views succeeded");
+
+  Model loaded;
+  Check(Model::Load(path, loaded) == Result::Ok, ".3dm load succeeded");
+  Check(loaded.NamedViewCount() == 2, "both named views survive the .3dm round trip");
+  const NamedViewInfo reloaded = loaded.NamedViewAt(0);
+  Check(reloaded.name == "Front", "the reloaded named view's name survives the round trip");
+  Check(reloaded.camera_location.DistanceTo(camera) < 1e-6,
+        "the reloaded named view's camera_location survives the round trip");
+  Check(reloaded.target_point.DistanceTo(target) < 1e-6,
+        "the reloaded named view's target_point survives the round trip");
+  Check((reloaded.camera_up - up).Length() < 1e-6,
+        "the reloaded named view's camera_up survives the round trip");
+
+  std::remove(path.c_str());
+}
+
+void TestModelUnitConversionFactor() {
+  using dino8::kernel::Model;
+  using dino8::kernel::UnitSystem;
+
+  Check(std::abs(Model::UnitConversionFactor(UnitSystem::Meters, UnitSystem::Centimeters) - 100.0) <
+            1e-9,
+        "Meters -> Centimeters is a factor of 100, the exact example OpenNURBS' own "
+        "ON::UnitScale() documents");
+  Check(std::abs(Model::UnitConversionFactor(UnitSystem::Inches, UnitSystem::Centimeters) - 2.54) <
+            1e-9,
+        "Inches -> Centimeters is a factor of 2.54, OpenNURBS' own documented example");
+  Check(std::abs(Model::UnitConversionFactor(UnitSystem::Feet, UnitSystem::Inches) - 12.0) < 1e-9,
+        "Feet -> Inches is a factor of 12, OpenNURBS' own documented example");
+  Check(std::abs(Model::UnitConversionFactor(UnitSystem::Millimeters, UnitSystem::Meters) - 0.001) <
+            1e-12,
+        "Millimeters -> Meters is a factor of 0.001");
+  Check(std::abs(Model::UnitConversionFactor(UnitSystem::Meters, UnitSystem::Meters) - 1.0) < 1e-12,
+        "converting a unit system to itself is a no-op factor of 1.0");
+  Check(std::abs(Model::UnitConversionFactor(UnitSystem::None, UnitSystem::Meters) - 1.0) < 1e-12,
+        "UnitSystem::None on the `from` side returns 1.0, matching ON::UnitScale()'s own "
+        "documented contract for ON::LengthUnitSystem::None");
+  Check(std::abs(Model::UnitConversionFactor(UnitSystem::Meters, UnitSystem::None) - 1.0) < 1e-12,
+        "UnitSystem::None on the `to` side returns 1.0 too");
+}
+
+void TestModelConvertUnitsScalesGeometryAndUpdatesUnitSystem() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Model;
+  using dino8::kernel::Result;
+  using dino8::kernel::UnitSystem;
+
+  // A box whose corners are round numbers in millimeters, so a 0.1 scale
+  // factor (Millimeters -> Centimeters) lands on exact values to check
+  // against, not something that needs a loose tolerance to mask rounding.
+  Model model;
+  model.SetUnitSystem(UnitSystem::Millimeters);
+  const auto box = MakeBox(0, 0, 0, 10, 20, 30);
+  model.AddMesh(box);
+
+  Check(model.ConvertUnits(UnitSystem::Centimeters) == Result::Ok,
+        "ConvertUnits() succeeds converting a real unit system to another real one");
+  Check(model.GetUnitSystem() == UnitSystem::Centimeters,
+        "ConvertUnits() updates GetUnitSystem() to the target system, keeping the declared "
+        "unit and the actual geometry consistent");
+
+  ONX_ModelComponentIterator iterator(model.raw(), ON_ModelComponent::Type::ModelGeometry);
+  const ON_Mesh* mesh_geometry = nullptr;
+  for (const ON_ModelComponent* component = iterator.FirstComponent(); component != nullptr;
+       component = iterator.NextComponent()) {
+    const auto* geometry_component = static_cast<const ON_ModelGeometryComponent*>(component);
+    mesh_geometry = dynamic_cast<const ON_Mesh*>(geometry_component->Geometry(nullptr));
+    if (mesh_geometry != nullptr) {
+      break;
+    }
+  }
+  Check(mesh_geometry != nullptr, "the model still has its mesh object after ConvertUnits()");
+  ON_BoundingBox bbox = mesh_geometry->BoundingBox();
+  Check(std::abs(bbox.Max().x - 1.0) < 1e-9 && std::abs(bbox.Max().y - 2.0) < 1e-9 &&
+            std::abs(bbox.Max().z - 3.0) < 1e-9,
+        "every coordinate is scaled by exactly the Millimeters -> Centimeters factor (0.1): "
+        "(10, 20, 30) mm becomes (1, 2, 3) cm");
+
+  // UnitSystem::None on either side has no meaningful factor to apply -
+  // ConvertUnits() fails outright rather than silently applying a 1.0
+  // no-op scale, and leaves the model untouched.
+  Model none_model;
+  none_model.SetUnitSystem(UnitSystem::None);
+  none_model.AddMesh(box);
+  Check(none_model.ConvertUnits(UnitSystem::Meters) == Result::Failed,
+        "ConvertUnits() fails when the model's current unit system is None");
+  Check(none_model.GetUnitSystem() == UnitSystem::None,
+        "a failed ConvertUnits() call leaves the unit system unchanged");
+
+  Model mm_model;
+  mm_model.SetUnitSystem(UnitSystem::Millimeters);
+  mm_model.AddMesh(box);
+  Check(mm_model.ConvertUnits(UnitSystem::None) == Result::Failed,
+        "ConvertUnits() fails when the target unit system is None");
+}
+
 void TestBoxVolume() {
   const auto box = MakeBox(0, 0, 0, 2, 2, 2);
   Check(std::abs(box.Volume() - 8.0) < 1e-9, "unit-scaled box volume is correct");
@@ -20918,6 +21060,67 @@ void TestMeshTextureCoordinates() {
         "but the reloaded mesh reports no texture coordinates at all, "
         "since not every vertex got one");
   std::remove(partial_path.c_str());
+}
+
+void TestMeshLoadObjPreservesUvSeams() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point2d;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // Two triangles sharing vertex 1's position but wanting different UVs
+  // there (a genuine seam) - vertex 3's position is ALSO shared by both
+  // triangles, but with the SAME `vt` reference both times, so it must
+  // NOT be duplicated. v2 and v4 are each referenced by only one triangle.
+  //   f 1/1 2/2 3/3   - v1 uses vt1 (0,0), v2 uses vt2 (1,0), v3 uses vt3 (0,1)
+  //   f 1/4 3/3 4/1   - v1 uses vt4 (5,5) here instead, v3 uses vt3 again, v4 uses vt1
+  const std::string path = "dino8_kernel_mesh_obj_uv_seam_test.obj";
+  {
+    std::ofstream out(path);
+    out << "v 0 0 0\nv 1 0 0\nv 0 1 0\nv -1 0 0\n";
+    out << "vt 0 0\nvt 1 0\nvt 0 1\nvt 5 5\n";
+    out << "f 1/1 2/2 3/3\n";
+    out << "f 1/4 3/3 4/1\n";
+  }
+
+  Mesh seam;
+  Check(Mesh::LoadObj(path, seam) == Result::Ok, "LoadObj succeeds on a file with a genuine UV seam");
+  Check(seam.HasTextureCoordinates(),
+        "the seam mesh has texture coordinates (every vertex position got at least one)");
+  Check(seam.FaceCount() == 2, "both triangles survive, still 2 faces (no fan-triangulation needed)");
+  Check(seam.VertexCount() == 5,
+        "v1's position gets duplicated once for its 2nd distinct UV (0,0)+(5,5); v2/v3/v4 each "
+        "have only 1 distinct UV and stay single - 4 original + 1 duplicate = 5, not 4 or 8");
+
+  const ON_MeshFace& face_a = seam.raw().m_F[0];
+  const ON_MeshFace& face_b = seam.raw().m_F[1];
+
+  // The two corners of face A/face B that reference v1's position must be
+  // DIFFERENT output vertices (the seam split), each carrying its own
+  // original UV - not one silently overwriting the other.
+  Check(face_a.vi[0] != face_b.vi[0],
+        "v1's two differently-UV'd corners resolved to two DIFFERENT output vertices");
+  const Point3d v1_via_a(seam.raw().m_V[face_a.vi[0]]);
+  const Point3d v1_via_b(seam.raw().m_V[face_b.vi[0]]);
+  Check(v1_via_a.DistanceTo(Point3d(0, 0, 0)) < 1e-9 && v1_via_b.DistanceTo(Point3d(0, 0, 0)) < 1e-9,
+        "both of v1's split output vertices keep its original (0,0,0) position - only the UV "
+        "differs, not the geometry");
+  const Point2d uv_via_a = seam.TextureCoordinateAt(face_a.vi[0]);
+  const Point2d uv_via_b = seam.TextureCoordinateAt(face_b.vi[0]);
+  Check(std::abs(uv_via_a.x - 0.0) < 1e-9 && std::abs(uv_via_a.y - 0.0) < 1e-9,
+        "face A's v1 corner keeps its own original UV (0, 0)");
+  Check(std::abs(uv_via_b.x - 5.0) < 1e-9 && std::abs(uv_via_b.y - 5.0) < 1e-9,
+        "face B's v1 corner keeps its own DIFFERENT original UV (5, 5), not overwritten by "
+        "or overwriting face A's");
+
+  // v3's position is shared by both faces with the SAME UV both times, so
+  // it must NOT be duplicated - both faces' v3 corner resolve to the
+  // exact same output vertex.
+  Check(face_a.vi[2] == face_b.vi[1],
+        "v3, referenced with the SAME UV by both faces, stays a single shared output vertex "
+        "rather than being split unnecessarily");
+
+  std::remove(path.c_str());
 }
 
 void TestMeshLoadObjRejectsMalformedFiles() {
@@ -55716,6 +55919,9 @@ int main() {
   TestModelReadAccessorsRoundTrip();
   TestModelMaterialAccessorsRoundTrip();
   TestModelUnitSystemRoundTrips();
+  TestModelAddNamedViewRoundTrips();
+  TestModelUnitConversionFactor();
+  TestModelConvertUnitsScalesGeometryAndUpdatesUnitSystem();
   TestModelLoadRejectsMeshWithOutOfRangeFaceIndex();
   TestSplitByPlane();
   TestConvexHull();
@@ -55849,6 +56055,7 @@ int main() {
   TestMeshComputeVertexNormals();
   TestMeshSaveObjRoundTrips();
   TestMeshTextureCoordinates();
+  TestMeshLoadObjPreservesUvSeams();
   TestMeshLoadObjRejectsMalformedFiles();
   TestMeshLoadObjResolvesRelativeIndices();
   TestMeshLoadObjFanTriangulatesNgonFaces();

@@ -92,6 +92,16 @@ struct MaterialInfo {
   Color diffuse_color;
 };
 
+// A named view read back from Model::NamedViewAt() below - the read-side
+// counterpart to Model::AddNamedView()'s own camera_location/target_point/
+// camera_up parameters.
+struct NamedViewInfo {
+  std::string name;
+  Point3d camera_location;
+  Point3d target_point;
+  Vector3d camera_up;
+};
+
 // One object's attributes, read back from Model::ObjectAttributesAt()
 // below - the read-side counterpart to every Add*() method's own name/
 // layer_index/render_color/user_strings/linetype_index/group_indices/
@@ -426,6 +436,48 @@ class Model {
   // LinetypeAt() above.
   MaterialInfo MaterialAt(int material_index) const;
 
+  // Adds a named view (Rhino's own "Named Views" panel entry) to the
+  // model and returns its index (>= 0) - the last field PARITY_MAP.md's
+  // own ".3dm attribute/metadata fidelity" evidence still names as open
+  // ("named views, lights, clipping planes, layouts/details" not yet
+  // round-tripped) even after materials/groups/user-strings/linetypes/
+  // units all closed: a genuinely distinct feature from the "current
+  // viewport" state ONX_Model already carries incidentally as part of its
+  // settings chunk - the one a Rhino user explicitly creates (View > Named
+  // Views > New) and later picks back from a named list, not just
+  // whatever the viewport happened to be aimed at on save. Wraps
+  // ON_3dmSettings::m_named_views (an ON_ClassArray<ON_3dmView>), the same
+  // table Rhino itself reads from/writes to for that panel; `Save()`/
+  // `Load()` below already carry this table through a .3dm unmodified as
+  // part of the settings chunk ONX_Model::Write/Read already handles -
+  // the same "no change to Save()/Load() themselves needed" situation
+  // SetUnitSystem() above found for its own settings field - so this is
+  // purely new surface area on top of what already round-trips.
+  // `camera_up` defaults to (0, 0, 1) (world Z), the "not looking at the
+  // ground sideways" convention a caller not supplying one almost
+  // certainly wants. The camera's look direction is derived from
+  // `target_point - camera_location` rather than taken as its own
+  // parameter, since a named view's whole point is "look at this target
+  // from here"; if the two points coincide (a degenerate view with no
+  // direction to derive), the direction falls back to straight down
+  // (0, 0, -1) - an arbitrary but valid, plausible-looking choice, rather
+  // than silently leaving the viewport's own unrelated default direction
+  // in place. Returns -1 for an empty `name`, same contract as
+  // AddLayer()/AddLinetype()/AddGroup()/AddMaterial() above.
+  int AddNamedView(const std::string& name, Point3d camera_location, Point3d target_point,
+                    Vector3d camera_up = Vector3d(0, 0, 1));
+
+  // Returns the number of named views added via AddNamedView() above.
+  int NamedViewCount() const;
+
+  // Returns the named view at `view_index` (as returned by AddNamedView()
+  // above) - the read-side counterpart to AddNamedView()'s own
+  // parameters, the same read-side gap ObjectAttributesAt()/LayerAt()/
+  // LinetypeAt()/GroupNameAt()/MaterialAt() above each closed for their
+  // own component tables. `view_index` not naming a named view this model
+  // actually has returns a default-constructed NamedViewInfo.
+  NamedViewInfo NamedViewAt(int view_index) const;
+
   // Sets the model's length unit system - closing PARITY_MAP.md's own
   // "kernel-level data exchange" evidence for "Unit-system conversion":
   // "Kernel Model never sets units." Before this, a Model's coordinates
@@ -453,6 +505,46 @@ class Model {
   // constructor set units to millimeters") rather than some other
   // placeholder.
   UnitSystem GetUnitSystem() const;
+
+  // Returns the scale factor that converts a length measured in `from`
+  // units into the equivalent length in `to` units - e.g.
+  // UnitConversionFactor(UnitSystem::Meters, UnitSystem::Centimeters) is
+  // 100.0. Wraps ON::UnitScale(ON::LengthUnitSystem, ON::LengthUnitSystem),
+  // the same static utility OpenNURBS itself already exposes for this -
+  // closing PARITY_MAP.md's own remaining "Unit-system conversion" gap:
+  // SetUnitSystem()/GetUnitSystem() above only let a caller declare what a
+  // model's units already ARE, with no way to compute or apply an actual
+  // conversion between two different systems. `UnitSystem::None` on either
+  // side returns 1.0 (no conversion is meaningful when one side has no
+  // unit at all), matching ON::UnitScale()'s own documented contract for
+  // ON::LengthUnitSystem::None.
+  static double UnitConversionFactor(UnitSystem from, UnitSystem to);
+
+  // Scales every object currently in the model in place - the geometric
+  // half of a unit conversion UnitConversionFactor() above only computes
+  // the number for - by UnitConversionFactor(GetUnitSystem(), to), then
+  // calls SetUnitSystem(to) so the declared unit system and the actual
+  // geometry stay consistent (a caller who scaled coordinates but left the
+  // declared unit system at its old value would silently produce a
+  // mismatched file - the model would claim, say, Centimeters while every
+  // coordinate is still sized for Millimeters). Applies a uniform
+  // ON_Xform scale about the world origin to each ModelGeometry
+  // component's own geometry via its ExclusiveGeometry() pointer (the
+  // same "get a pointer that can be used to modify the geometry in place"
+  // primitive OpenNURBS itself provides for exactly this) - not about
+  // each object's own bounding-box center or any other per-object
+  // reference point, since every object shares one common coordinate
+  // origin before and after a length-unit change; unlike a design-intent
+  // scale operation, a unit conversion has no other natural center.
+  // Returns Result::Failed, leaving the model entirely unmodified (checked
+  // up front, before touching anything), if `to` or the model's current
+  // GetUnitSystem() is UnitSystem::None (no meaningful factor exists) or
+  // if either resolves to a non-finite factor; also returns
+  // Result::Failed - potentially after already scaling some earlier
+  // objects, since this is not transactional - if any individual object's
+  // own geometry is shared (ExclusiveGeometry() returning nullptr per its
+  // own documented contract) or its own Transform() call fails outright.
+  Result ConvertUnits(UnitSystem to);
 
   // Writes as a .3dm file. `version` is the OpenNURBS archive version
   // (e.g. 80 for the Rhino-8-generation format); defaults to the newest

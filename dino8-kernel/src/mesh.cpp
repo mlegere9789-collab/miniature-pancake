@@ -1054,16 +1054,20 @@ Result Mesh::LoadObj(const std::string& path, Mesh& out_mesh) {
     return Result::Failed;
   }
 
-  Mesh result;
-  ON_Mesh& raw = result.mesh_;
-
+  std::vector<ON_3fPoint> positions;
   std::vector<Point2d> texture_coords;
-  // Vertex index (0-based) -> texture coordinate, populated only for
-  // vertices actually referenced with a `vt` in some face corner. Last
-  // write wins if two corners sharing a vertex reference different `vt`
-  // entries - see LoadObj()'s own doc comment on why (per-vertex-only
-  // storage can't represent a genuine UV seam).
-  std::map<int, Point2d> vertex_uv_by_index;
+
+  // One parsed face corner: a 0-based vertex index, and, if the corner
+  // carried a `vt` reference, the 0-based texture-coordinate index (else
+  // -1). Kept per-corner (not resolved into a shared per-vertex value
+  // immediately) so a genuine UV seam - two corners sharing a `v` index
+  // but naming different `vt` entries - can be detected and preserved
+  // below, rather than one silently overwriting another.
+  struct Corner {
+    int v_index = 0;
+    int vt_index = -1;
+  };
+  std::vector<std::vector<Corner>> faces;
 
   std::string line;
   while (std::getline(in, line)) {
@@ -1076,7 +1080,7 @@ Result Mesh::LoadObj(const std::string& path, Mesh& out_mesh) {
       if (!(stream >> x >> y >> z)) {
         return Result::Failed;
       }
-      raw.m_V.Append(ON_3fPoint(x, y, z));
+      positions.push_back(ON_3fPoint(x, y, z));
     } else if (tag == "vt") {
       double u, v;
       if (!(stream >> u >> v)) {
@@ -1084,11 +1088,7 @@ Result Mesh::LoadObj(const std::string& path, Mesh& out_mesh) {
       }
       texture_coords.push_back(Point2d(u, v));
     } else if (tag == "f") {
-      std::vector<int> indices;
-      std::vector<int> vt_indices;    // meaningful only where has_vt[i] is true
-      std::vector<bool> has_vt_list;  // kept separate from vt_indices so a
-                                       // resolved-negative vt_index can never
-                                       // be confused with a "no vt" sentinel
+      std::vector<Corner> corners;
       std::string token;
       while (stream >> token) {
         int v_index = 0;
@@ -1099,83 +1099,148 @@ Result Mesh::LoadObj(const std::string& path, Mesh& out_mesh) {
         }
         // Standard .obj negative-index form: -1 means "the last v/vt
         // declared so far", relative to the count at THIS point in the
-        // file (which is what raw.m_V.Count()/texture_coords.size()
+        // file (which is what positions.size()/texture_coords.size()
         // already reflect, since every earlier line has already been
         // processed).
         if (v_index < 0) {
-          v_index = raw.m_V.Count() + v_index + 1;
+          v_index = static_cast<int>(positions.size()) + v_index + 1;
         }
-        if (has_vt && vt_index < 0) {
-          vt_index = static_cast<int>(texture_coords.size()) + vt_index + 1;
-        }
-        indices.push_back(v_index);
-        vt_indices.push_back(vt_index);
-        has_vt_list.push_back(has_vt);
-      }
-      if (indices.size() < 3) {
-        return Result::Failed;
-      }
-      for (const int index : indices) {
-        if (index < 1 || index > raw.m_V.Count()) {
+        if (v_index < 1 || v_index > static_cast<int>(positions.size())) {
           return Result::Failed;  // forward/unknown reference, or out of range
         }
-      }
-      for (size_t i = 0; i < vt_indices.size(); ++i) {
-        if (has_vt_list[i] &&
-            (vt_indices[i] < 1 || vt_indices[i] > static_cast<int>(texture_coords.size()))) {
-          return Result::Failed;  // forward/unknown vt reference, or out of range
+        Corner corner;
+        corner.v_index = v_index - 1;
+        if (has_vt) {
+          if (vt_index < 0) {
+            vt_index = static_cast<int>(texture_coords.size()) + vt_index + 1;
+          }
+          if (vt_index < 1 || vt_index > static_cast<int>(texture_coords.size())) {
+            return Result::Failed;  // forward/unknown vt reference, or out of range
+          }
+          corner.vt_index = vt_index - 1;
         }
+        corners.push_back(corner);
       }
-      for (size_t i = 0; i < indices.size(); ++i) {
-        if (has_vt_list[i]) {
-          vertex_uv_by_index[indices[i] - 1] =
-              texture_coords[static_cast<size_t>(vt_indices[i]) - 1];
-        }
+      if (corners.size() < 3) {
+        return Result::Failed;
       }
-      if (indices.size() <= 4) {
-        ON_MeshFace face;
-        face.vi[0] = indices[0] - 1;
-        face.vi[1] = indices[1] - 1;
-        face.vi[2] = indices[2] - 1;
-        face.vi[3] = (indices.size() == 4) ? indices[3] - 1 : indices[2] - 1;
-        raw.m_F.Append(face);
-      } else {
-        // An n-gon with n > 4 doesn't fit ON_MeshFace (triangle or quad
-        // only) - fan-triangulate from the face's own first corner
-        // instead of rejecting the line outright, the same accommodation
-        // most .obj consumers make for n-gons. This is exact for a convex
-        // polygon; a concave (non-convex) one can produce a triangle
-        // whose interior falls outside the original n-gon; that's a
-        // disclosed limitation of the fan approach, not something this
-        // loader detects or refuses.
-        for (size_t i = 1; i + 1 < indices.size(); ++i) {
-          ON_MeshFace face;
-          face.vi[0] = indices[0] - 1;
-          face.vi[1] = indices[i] - 1;
-          face.vi[2] = indices[i + 1] - 1;
-          face.vi[3] = face.vi[2];
-          raw.m_F.Append(face);
-        }
-      }
+      faces.push_back(std::move(corners));
     }
     // Every other tag (comments, vn, g/o, mtllib/usemtl, s, ...) is
     // silently skipped - this kernel only round-trips geometry (and, now,
     // per-vertex texture coordinates).
   }
 
-  // Only store texture coordinates if every vertex ended up with one -
-  // ON_Mesh's own "m_S.Count() == m_V.Count() or ignore it entirely"
-  // convention (see HasTextureCoordinates()) has no way to represent
-  // "some vertices have a UV, others don't", so a partial set (some
-  // referenced with `vt`, some never referenced at all) is discarded
-  // rather than guessing placeholder values for the rest.
-  if (!vertex_uv_by_index.empty() &&
-      static_cast<int>(vertex_uv_by_index.size()) == raw.m_V.Count()) {
-    std::vector<Point2d> uvs(static_cast<size_t>(raw.m_V.Count()));
-    for (const auto& [index, uv] : vertex_uv_by_index) {
-      uvs[static_cast<size_t>(index)] = uv;
+  // UV coverage is "complete" only if every declared vertex is referenced
+  // by at least one has-vt corner somewhere - ON_Mesh's own "every vertex
+  // or none" convention (see HasTextureCoordinates()) has no way to
+  // represent partial coverage, so a single uncovered vertex (referenced
+  // without a `vt`, or never referenced by any face at all) discards
+  // texture coordinates for the whole mesh, same as before this seam
+  // handling existed.
+  std::vector<std::vector<int>> distinct_uvs_by_vertex(positions.size());
+  for (const std::vector<Corner>& corners : faces) {
+    for (const Corner& corner : corners) {
+      if (corner.vt_index < 0) {
+        continue;
+      }
+      std::vector<int>& seen = distinct_uvs_by_vertex[static_cast<size_t>(corner.v_index)];
+      if (std::find(seen.begin(), seen.end(), corner.vt_index) == seen.end()) {
+        seen.push_back(corner.vt_index);
+      }
     }
-    result.SetTextureCoordinates(uvs);
+  }
+  bool coverage_complete = true;
+  for (const std::vector<int>& seen : distinct_uvs_by_vertex) {
+    if (seen.empty()) {
+      coverage_complete = false;
+      break;
+    }
+  }
+
+  Mesh result;
+  ON_Mesh& raw = result.mesh_;
+
+  auto append_face = [&raw](const std::vector<int>& indices) {
+    if (indices.size() <= 4) {
+      ON_MeshFace face;
+      face.vi[0] = indices[0];
+      face.vi[1] = indices[1];
+      face.vi[2] = indices[2];
+      face.vi[3] = (indices.size() == 4) ? indices[3] : indices[2];
+      raw.m_F.Append(face);
+    } else {
+      // An n-gon with n > 4 doesn't fit ON_MeshFace (triangle or quad
+      // only) - fan-triangulate from the face's own first corner instead
+      // of rejecting the line outright, the same accommodation most .obj
+      // consumers make for n-gons. Exact for a convex polygon; a concave
+      // one can produce a triangle whose interior falls outside the
+      // original n-gon - a disclosed limitation of the fan approach, not
+      // something this loader detects or refuses.
+      for (size_t i = 1; i + 1 < indices.size(); ++i) {
+        ON_MeshFace face;
+        face.vi[0] = indices[0];
+        face.vi[1] = indices[i];
+        face.vi[2] = indices[i + 1];
+        face.vi[3] = face.vi[2];
+        raw.m_F.Append(face);
+      }
+    }
+  };
+
+  if (!coverage_complete) {
+    // No usable UV data (or an uncovered vertex breaks it for everyone) -
+    // emit vertices/faces 1:1 against the file's own `v` indices, exactly
+    // as if this vertex-splitting logic didn't exist at all.
+    for (const ON_3fPoint& position : positions) {
+      raw.m_V.Append(position);
+    }
+    for (const std::vector<Corner>& corners : faces) {
+      std::vector<int> indices;
+      indices.reserve(corners.size());
+      for (const Corner& corner : corners) {
+        indices.push_back(corner.v_index);
+      }
+      append_face(indices);
+    }
+  } else {
+    // Every vertex has at least one distinct UV value. A vertex with
+    // exactly one distinct value needs no duplication (the common,
+    // non-seam case - this reproduces the exact same output, vertex for
+    // vertex, as before this seam handling existed); a vertex with two or
+    // more distinct values gets one output vertex per distinct value, and
+    // each corner maps to its own matching duplicate - a real UV seam,
+    // preserved instead of one value silently overwriting another.
+    // output_vertex[v][k] is the output index for original vertex `v`'s
+    // k-th distinct UV value (distinct_uvs_by_vertex[v][k]).
+    std::vector<std::vector<int>> output_vertex(positions.size());
+    std::vector<Point2d> output_uvs;
+    for (size_t v = 0; v < positions.size(); ++v) {
+      for (const int vt_index : distinct_uvs_by_vertex[v]) {
+        output_vertex[v].push_back(raw.m_V.Count());
+        raw.m_V.Append(positions[v]);
+        output_uvs.push_back(texture_coords[static_cast<size_t>(vt_index)]);
+      }
+    }
+    for (const std::vector<Corner>& corners : faces) {
+      std::vector<int> indices;
+      indices.reserve(corners.size());
+      for (const Corner& corner : corners) {
+        const std::vector<int>& variants = output_vertex[static_cast<size_t>(corner.v_index)];
+        if (corner.vt_index < 0) {
+          // No per-corner UV to disambiguate a seam vertex by - use its
+          // first-seen variant, the same "no correct answer" choice
+          // LoadObj()'s own doc comment discloses.
+          indices.push_back(variants.front());
+        } else {
+          const std::vector<int>& seen = distinct_uvs_by_vertex[static_cast<size_t>(corner.v_index)];
+          const auto it = std::find(seen.begin(), seen.end(), corner.vt_index);
+          indices.push_back(variants[static_cast<size_t>(it - seen.begin())]);
+        }
+      }
+      append_face(indices);
+    }
+    result.SetTextureCoordinates(output_uvs);
   }
 
   out_mesh = std::move(result);

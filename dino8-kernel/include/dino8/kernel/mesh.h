@@ -494,33 +494,48 @@ class Mesh {
 
   // Reads a plain-text Wavefront .obj file written by SaveObj() (or any
   // other reasonably well-formed .obj) into `out_mesh`. `v` (vertex), `f`
-  // (face), and now `vt` (texture coordinate) lines are understood; `vn`
+  // (face), and `vt` (texture coordinate) lines are understood; `vn`
   // (including the ones SaveObj() itself writes - vertex normals here are
   // always geometry-derived via ComputeVertexNormals(), never stored
   // independently), materials, and groups are all silently skipped. A
-  // negative (relative) face index is NOT silently skipped - unlike those
-  // truly-ignored line types, it fails the WHOLE load (Result::Failed,
-  // see below), since resolving it correctly would need real support this
-  // parser doesn't have, and guessing would risk silently loading the
-  // wrong geometry. If any face line carries a `vt` reference
-  // (the `v/vt` or `v/vt/vn` forms), the referenced texture coordinate is
-  // stored for that corner's *vertex* (SetTextureCoordinates()'s own
-  // per-vertex granularity, not per-corner) - if two different face
-  // corners sharing a vertex reference different `vt` entries (a
-  // legitimate general-OBJ construct for a UV seam, which this kernel's
-  // per-vertex-only texture coordinates can't represent), whichever face
-  // is read last silently wins for that vertex, not an error. Loading a
-  // file with no `vt` references at all leaves HasTextureCoordinates()
-  // false on the result, same as a mesh that never had
-  // SetTextureCoordinates() called. A face line with more than 4 indices
-  // is rejected rather than silently fan-triangulated (this kernel's own
-  // ON_MeshFace only holds a triangle or quad, so reading, say, a 5-gon
-  // would need to change its meaning without telling the caller).
+  // negative (relative) `v`/`vt` face index is resolved against the
+  // running vertex/texture-coordinate count at that exact point in the
+  // file (the standard .obj convention some incremental/streaming
+  // exporters use), not rejected. A face line with more than 4 indices
+  // (an n-gon) is fan-triangulated from its own first corner into `n-2`
+  // triangular `ON_MeshFace` entries (this kernel's own `ON_MeshFace` only
+  // ever holds a triangle or quad) - exact for a convex polygon, not
+  // detected/guarded for a concave one. If any face line carries a `vt`
+  // reference (the `v/vt` or `v/vt/vn` forms), the referenced texture
+  // coordinate is stored for that corner's vertex
+  // (SetTextureCoordinates()'s own per-vertex granularity, not per-
+  // corner) - if two or more different face corners sharing an original
+  // `v` index reference GENUINELY DIFFERENT `vt` entries (a legitimate
+  // general-OBJ construct for a real UV seam, e.g. a cube corner where
+  // each adjacent face wants its own UV for the shared position), the
+  // loaded mesh gains one duplicate vertex per distinct `vt` value seen
+  // for that position - same position, different UV - and each face
+  // corner is rewired to its own matching duplicate, rather than one
+  // silently overwriting another the way naive per-vertex-only storage
+  // otherwise would. A corner that references the seam vertex WITHOUT a
+  // `vt` at all uses that vertex's own first-seen `vt` value (there is no
+  // per-corner information to pick a "correct" one from in that case).
+  // When no vertex has more than one distinct `vt` value (the common,
+  // non-seam case, including a file with no `vt` references at all), no
+  // duplication happens and vertex indices/order match the file's own `v`
+  // lines exactly, unchanged from before this seam handling existed.
+  // Loading a file where at least one referenced vertex never gets a `vt`
+  // from any corner at all leaves HasTextureCoordinates() false on the
+  // result entirely (ON_Mesh's own "every vertex or none" convention has
+  // no way to represent partial coverage), same as a mesh that never had
+  // SetTextureCoordinates() called - a vertex never referenced by any
+  // face at all counts as "never gets a `vt`" here too, so an unused
+  // vertex sharing a file with an otherwise fully-UV'd mesh also discards
+  // the whole mesh's texture coordinates, not just its own.
   // Returns Result::Failed if the file can't be opened, a face line
   // references a vertex or texture-coordinate index that doesn't exist
   // yet (must appear before any face referencing it, same requirement any
-  // valid .obj already satisfies), a face has more than 4 or fewer than 3
-  // indices, or any face-line index is negative/relative (see above) -
+  // valid .obj already satisfies), or a face has fewer than 3 indices -
   // `out_mesh` is left unspecified in that case, not partially filled and
   // silently trusted.
   static Result LoadObj(const std::string& path, Mesh& out_mesh);

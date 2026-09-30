@@ -1,5 +1,7 @@
 #include "dino8/kernel/file_io.h"
 
+#include <cmath>
+
 namespace dino8::kernel {
 
 namespace {
@@ -374,12 +376,76 @@ MaterialInfo Model::MaterialAt(int material_index) const {
   return result;
 }
 
+int Model::AddNamedView(const std::string& name, Point3d camera_location, Point3d target_point,
+                         Vector3d camera_up) {
+  if (name.empty()) {
+    return -1;
+  }
+  ON_3dmView view;
+  view.m_name = ON_wString(name.c_str());
+  view.m_vp.SetCameraLocation(camera_location);
+  Vector3d direction = target_point - camera_location;
+  if (!direction.IsValid() || direction.IsZero()) {
+    direction = Vector3d(0, 0, -1);
+  } else {
+    direction.Unitize();
+  }
+  view.m_vp.SetCameraDirection(direction);
+  view.m_vp.SetCameraUp(camera_up);
+  view.SetTargetPoint(target_point);
+  model_.m_settings.m_named_views.Append(view);
+  return model_.m_settings.m_named_views.Count() - 1;
+}
+
+int Model::NamedViewCount() const {
+  return model_.m_settings.m_named_views.Count();
+}
+
+NamedViewInfo Model::NamedViewAt(int view_index) const {
+  NamedViewInfo result;
+  if (view_index < 0 || view_index >= model_.m_settings.m_named_views.Count()) {
+    return result;
+  }
+  const ON_3dmView& view = model_.m_settings.m_named_views[view_index];
+  result.name = ToStdString(view.m_name);
+  result.camera_location = view.m_vp.CameraLocation();
+  result.target_point = view.TargetPoint();
+  result.camera_up = view.m_vp.CameraUp();
+  return result;
+}
+
 void Model::SetUnitSystem(UnitSystem units) {
   model_.m_settings.m_ModelUnitsAndTolerances.m_unit_system = ON_UnitSystem(ToLengthUnitSystem(units));
 }
 
 UnitSystem Model::GetUnitSystem() const {
   return FromLengthUnitSystem(model_.m_settings.m_ModelUnitsAndTolerances.m_unit_system.UnitSystem());
+}
+
+double Model::UnitConversionFactor(UnitSystem from, UnitSystem to) {
+  return ON::UnitScale(ToLengthUnitSystem(from), ToLengthUnitSystem(to));
+}
+
+Result Model::ConvertUnits(UnitSystem to) {
+  if (to == UnitSystem::None || GetUnitSystem() == UnitSystem::None) {
+    return Result::Failed;
+  }
+  const double factor = UnitConversionFactor(GetUnitSystem(), to);
+  if (!std::isfinite(factor)) {
+    return Result::Failed;
+  }
+  const ON_Xform scale = ON_Xform::DiagonalTransformation(factor, factor, factor);
+  ONX_ModelComponentIterator iterator(model_, ON_ModelComponent::Type::ModelGeometry);
+  for (const ON_ModelComponent* component = iterator.FirstComponent(); component != nullptr;
+       component = iterator.NextComponent()) {
+    const auto* geometry_component = static_cast<const ON_ModelGeometryComponent*>(component);
+    ON_Geometry* geometry = geometry_component->ExclusiveGeometry();
+    if (geometry == nullptr || !geometry->Transform(scale)) {
+      return Result::Failed;
+    }
+  }
+  SetUnitSystem(to);
+  return Result::Ok;
 }
 
 Result Model::Save(const std::string& path, int version) const {
