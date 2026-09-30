@@ -2433,7 +2433,7 @@ moved).*
 - [partial] Tolerant booleans (caller-specified tolerance, gap-healing of imprecise operands) — **updated this pass: `ImprintFaces`/`SplitBySheet`/`TrimSheetBySolid` (boolean_general.h/.cpp) now also take an optional caller `tolerance`**, closing the specific gap the prior version of this bullet named by function — every one of `boolean_general.cpp`'s own SSX-driven entry points (`BooleanCombineGeneral`, `ImprintFaces`, `SplitBySheet`, `TrimSheetBySolid`) now threads a caller `tolerance` straight into the same internal `IntersectOptions::tolerance` every SSX intersection-curve point is Newton-refined to, each defaulting to the prior implicit 0.001 so every existing caller (and every other test in this suite) is unaffected — verified bit-identical for each function (`TestImprintFacesCallerTolerance`, `TestSplitBySheetCallerTolerance`, `TestTrimSheetBySolidCallerTolerance`, tests/test_basic.cpp) the same way `TestBooleanCombineGeneralCallerTolerance` already proved for the first one, plus a non-positive-tolerance refusal for each. Still partial: `BooleanCombinePlanar`/`BooleanCombineMixed` (boolean.cpp) — a structurally different, hand-solved-per-surface-pair engine with tolerance scattered across many internal epsilons rather than one `IntersectOptions` — still hardcode their own internal tolerance with no caller control at all; there is still no gap-healing of imprecise operands (the other half of this item); the general engine's own separate bbox/coincident-face-detection epsilon (`const double tol = 1e-6`, e.g. boolean_general.cpp:2800, and the same-named local in each of the other three functions) is a different, still-fixed concern from the SSX solve tolerance above; and the only OTHER adaptivity anywhere in this category is the mesh engine's own `AdaptiveManifoldTolerance` retry.
 - [partial] Keep/split options (BooleanSplit solid-by-solid keeping all pieces, DeleteInput/keep tools, side selection) — BooleanSplit/MeshSplit/MeshBooleanSplit (cmd_boolean.cpp:410-415) are all plane-split only (kernel `SplitByPlane`). The new `SplitByObjectCommand` (see kernel: Feature operations and kernel: Transformations) is a general cutting-object split with true KeepAll semantics, but it is app-level mesh-boolean, not this item's B-rep solid-by-solid split.
 - [partial] Sheet/solid trim (open surface as cutter through a solid; trimming a sheet body by a solid) — `dino8::kernel::SplitBySheet(solid, sheet)` (boolean_general.h; boolean_general.cpp) splits a closed `solid` into the two pieces on either side of an OPEN `sheet` (one or more trimmed faces, no closed-solid requirement — unlike every OTHER boolean engine here, which still assumes closed two-shell solids, boolean.cpp:81), each piece capped with the portion of `sheet` inside `solid`. Reuses `BooleanCombineGeneral`'s own SSX-fragmentation machinery: `solid`'s fragments are bucketed by a closest-point-plus-normal-sign test against `sheet` (not ray-cast parity, since `sheet` may have no volume), `sheet`'s own fragments are ray-cast in/out of `solid` as usual and its IN fragments become the new caps. Verified on a box fully severed by a flat open planar sheet larger than the box's own footprint (both halves valid closed B-reps, volumes summing back to the original exactly) and a disjoint-sheet case (the whole untouched solid on one side, the empty Brep on the other) (`TestSplitBySheet*`, tests/test_basic.cpp). **New this pass: the item's OTHER half — trimming a sheet body BY a solid — is now real code too.** `dino8::kernel::TrimSheetBySolid(sheet, solid, keep_inside)` (boolean_general.h; boolean_general.cpp) trims `sheet`'s own surface down to the portion inside (or, with `keep_inside=false`, outside) `solid`, without ever splitting, capping, or returning `solid` itself — `solid` is used purely as the ray-cast classification target for `sheet`'s own SSX fragments, via the same `ClassifyPointVsBrep` ray-cast `SplitBySheet` itself already uses for this exact purpose. Verified (`TestTrimSheetBySolid*`, tests/test_basic.cpp) on the same box-cut-by-an-oversized-flat-sheet fixture `SplitBySheet`'s own tests use: the kept inside portion is a single valid face whose tessellated area is exactly the box's own 4x4 footprint (16, not the sheet's full 6x6 extent of 36), the discarded outside portion's area is the complementary 20, and the two sum back to the untrimmed sheet's own area exactly; a sheet that never reaches the solid at all correctly keeps nothing for `keep_inside=true` and the whole untouched sheet for `keep_inside=false`; both faceless-operand cases throw `std::invalid_argument`. (Area, not `Brep::Area()`, is measured via a tessellated `Mesh` — every fragment this function's shared `assemble()`-style construction produces carries a real `ON_Brep` trim loop, even an untouched one, so `Brep::Area()`'s own exact whole-domain-only integration always refuses it; the same is already true, silently, of every `SplitBySheet` result — its own tests avoid the issue by never calling `Area()`/`Volume()` on an open piece.) Still partial: the app's own `cmd_boolean.cpp` still skips every non-closed operand outright ("not a closed solid; skipped", cmd_boolean.cpp:21,151,193,305) and calls neither this nor `SplitBySheet`; only a flat cutting plane is tested for either half of this item (a genuinely curved `sheet` or `solid` is unexercised); both inherit `BooleanCombineGeneral`'s own scope limits (one crossing chain per opposing face pair, genus-0 faces); and `Brep::GetTightBoundingBox()` gives the underlying surface's own untrimmed domain box, not the real trim boundary, for any face either function builds (confirmed directly, not assumed — its own exact-loop fast path requires the pseudo-trim side tables neither function's shared raw-`ON_Brep` `assemble()` step populates) — a real, previously-undocumented limitation worth fixing the next time this file's own construction helpers are revisited, and the reason this bullet's own area claims above are measured via a tessellated `Mesh` instead.
-- [partial] Non-manifold boolean results (edge/vertex-touching unions, single-body XOR, 3+ faces per edge) — the B-rep engines throw "an edge is shared by 3 or more faces" instead of building non-manifold output; XOR is an unwelded two-lump Compound; the mesh XOR keeps duplicated vertices.
+- [partial] Non-manifold boolean results (edge/vertex-touching unions, single-body XOR, 3+ faces per edge) — the B-rep engines throw "an edge is shared by 3 or more faces" instead of building non-manifold output; XOR is an unwelded two-lump Compound; the mesh XOR keeps duplicated vertices. **Attempted and reverted, this pass:** see this category's own "Sixteenth note" below — welding the mesh-level `BooleanCombine`'s `SymmetricDifference` result with `Mesh::MergeDuplicateVertices()` measurably turns a valid (if duplicate-vertex) closed manifold into an invalid non-manifold one, at any nonzero tolerance; not shipped.
 - [partial] Face-face imprint (Parasolid PK_BODY_imprint / ACIS imprint: split faces along mutual intersection without removing material) — `dino8::kernel::ImprintFaces(target, tool, tolerance = 0.001)` (boolean_general.h:77; boolean_general.cpp:3138 — corrected 2026-09-28, was mis-cited boolean_general.h:61; boolean_general.cpp:3086) reuses `BooleanCombineGeneral`'s own SSX-driven face-fragmentation but keeps every fragment of `target` unconditionally — no ray-cast in/out classification, no material ever removed — so `target` keeps its exact original shape/volume with more, smaller faces wherever `tool` crosses it; `tool` itself is read-only. Verified on a closed-loop fixture (box pierced by a cylinder) and an open-chain fixture (two overlapping boxes), each direction, plus a disjoint-operand no-op and a faceless-operand `std::invalid_argument` (`TestImprintFaces*`, tests/test_basic.cpp). **New this pass: `dino8::kernel::MutualImprintFaces(a, b, tolerance = 0.001)` (boolean_general.h/.cpp) closes the "call it twice, swapped" gap this bullet previously named as the obvious next step** — it runs exactly `ImprintFaces(a, b, tolerance)` then `ImprintFaces(b, a, tolerance)` (sound because `ImprintFaces` never mutates its own `tool`, only ever reads it for SSX curves, so imprinting `a` first cannot change what the second call sees of `b`), checking both operands' preconditions up front so a bad `b` refuses before `a` is ever touched. Verified (`TestMutualImprintFacesBoxPiercedByCylinder`, `TestMutualImprintFacesRejectsEmptyOrNonPositiveTolerance`, tests/test_basic.cpp) that its own two results are topologically identical to the two standalone `ImprintFaces` calls a caller would otherwise make by hand, and that both operands keep their exact original volume. `ImprintFaces` itself also gained the same caller-`tolerance` parameter `BooleanCombineGeneral` already has (see the "Tolerant booleans" bullet above for the shared detail). Still partial: it inherits `BooleanCombineGeneral`'s own scope limits (one crossing chain per opposing face pair, genus-0 faces), and no app command exposes either function yet — re-confirmed this pass (`ImprintFaces`/`MutualImprintFaces` have zero hits anywhere in dino8-app/).
 - [partial] 2D region / planar curve booleans (CurveBoolean, AutoCAD REGION union/subtract/intersect) — `RegionBoolean` (dino8-app/src/commands/cmd_solidtools.cpp:1525) runs through thin mesh slabs in Manifold and recovers outlines. No exact 2D curve boolean in the kernel.
 - [partial] Boolean failure diagnostics (typed refusals, failure reasons, naked-edge reporting) — the kernel throws `std::invalid_argument` naming the specific precondition; the mesh engine gives a generic Manifold status string. No structured failure-report type exists. **New this pass:** the first typed refusal now exists — `dino8::kernel::BooleanOperationError` (boolean.h), a `std::invalid_argument` subclass carrying a structured `BooleanFailureReason` enum plus the refusing function's own name, thrown by `RefuseCompoundOperand` (one copy each in boolean.cpp/boolean_general.cpp — the single most-cited refusal helper in this category, shared by all three B-rep engines' own Union/SymmetricDifference-on-a-compound-operand refusal) in place of the plain `std::invalid_argument` it used to throw. Still fully backward compatible: every existing caller/test that only ever catches the base `std::invalid_argument` class (e.g. `TestBooleanCombineGeneralRefusesCompoundOperand`) sees identical behavior, including the identical `what()` text; a caller wanting a programmatic reason instead of parsing `what()` can now catch `BooleanOperationError` directly and read `reason()`/`function_name()`. Verified (`TestBooleanOperationErrorStructuredFields`, tests/test_basic.cpp) on all three engines (`BooleanCombinePlanar`, `BooleanCombineMixed`, `BooleanCombineGeneral`): each compound-operand refusal is catchable as `BooleanOperationError` with `reason() == BooleanFailureReason::CompoundOperand` and `function_name()` naming the right engine, AND still separately catchable as plain `std::invalid_argument`. Still partial: this is one typed refusal shape out of this file's own ~160 individual `std::invalid_argument`/`std::runtime_error` throw sites (each still free-text-only); the mesh engine's own generic Manifold-status failure in `BooleanCombine` is untouched; and there is still no structured naked-edge reporting at all — a much larger rewrite this pass does not attempt, disclosed rather than assumed closed.
@@ -3192,6 +3192,88 @@ own; the other 57 predate this pass, from intervening, unrelated commits).
 re-run clean end to end, byte-identical to before this pass, since
 `cmd_boolean.cpp` itself carries no net change. The kernel-only headline is
 unaffected (no bucket moved).*
+
+*Sixteenth note on this category's score (this pass): attempted the mesh-
+level half of the "the mesh XOR keeps duplicated vertices" clause of the
+"Non-manifold boolean results" bullet above, and reverted it - measured,
+not assumed, to be unsafe rather than merely unhelpful. The mesh-level
+`BooleanCombine(a, b, BooleanOp::SymmetricDifference)` (boolean.cpp:149-154)
+builds its result as `Difference(Union(a,b), Intersection(a,b))` - three
+independent `manifold::Manifold::Boolean()` calls - and, per
+`boolean.h`'s own existing "SYMMETRIC DIFFERENCE" comment
+(boolean.h:2109-2132), the result keeps the touching intersection curve's
+vertices duplicated ("Manifold's own mesh XOR keeps the touching curve's
+vertices duplicated for the same reason [as the B-rep engines'
+Compound-of-two-lumps] - its welded result has 4-fold edges"). `Mesh`
+already has a purpose-built repair for exactly this shape of defect
+(`Mesh::MergeDuplicateVertices`, mesh.h:1343/mesh.cpp:5113, added the
+immediately-preceding commit, 784f547), so the natural next step - tried
+here - was calling it on the `SymmetricDifference` branch's own result
+before returning it, using an adaptive tolerance
+(`std::max(AdaptiveManifoldTolerance(a.raw()), AdaptiveManifoldTolerance(
+b.raw()), tolerance::kDistance)`, the same scaling `BooleanCombine`'s own
+fallback retry already uses a few lines above) rather than
+`MergeDuplicateVertices`'s own default `tolerance::kDistance` (1e-6
+absolute - too tight to be scale-correct on a large-magnitude operand, per
+`AdaptiveManifoldTolerance`'s own doc comment, though that turned out not
+to be the deciding factor here).
+
+Measured directly (standalone probe built on `TestBooleanSymmetricDifference`'s
+own fixture, tests/test_basic.cpp:6980-6998 - two overlapping boxes
+`[0,2]^3`/`[1,3]^3`, XOR volume 14): the UNWELDED `BooleanCombine(...,
+SymmetricDifference)` result is 28 vertices, `Check().duplicate_vertices`
+= 12 (6 coincident pairs), volume 14.000000 - AND is already a fully valid
+closed manifold in its own right (`Check().naked_edges` = 0,
+`non_manifold_edges` = 0, `orientation_conflicts` = 0,
+`IsClosedManifold()` = true). A direct O(n^2) distance scan over all 28
+vertices found the 6 duplicate pairs sit at EXACTLY 0.0 distance apart
+(e.g. two separate vertex records both at `(1,1,2)`) - bit-identical, not
+float-rounding noise `AdaptiveManifoldTolerance` could plausibly be
+compensating for. Calling `MergeDuplicateVertices(tol)` (tried at both the
+adaptive tolerance above, ~3.46e-6 for this fixture, and at the bare
+`tolerance::kDistance` = 1e-6) welds exactly those 6 pairs (28 -> 22
+vertices, `duplicate_vertices` 12 -> 0, as intended) but the WELDED result
+is then no longer a valid manifold: `Check().non_manifold_edges` = 6,
+`orientation_conflicts` = 12, `IsClosedManifold()` = false. One example,
+printed directly: the edge between the (now-merged) vertices at
+`(1,1,2)`-`(1,2,2)` is shared by 4 faces after welding, not 2 - exactly the
+"4-fold edges" `boolean.h`'s own comment already predicted for a welded
+mesh XOR, now independently confirmed by direct measurement on the
+Union/Difference/Intersection composition path specifically (not merely
+inferred from Manifold's own dedicated XOR operator, which this codebase
+does not call at all). Root cause: along the intersection curve, the XOR
+boundary genuinely has four incident faces (A's outside, B's outside, and
+the two flipped insides) - the same non-manifold-edge topology the B-rep
+engines' own "an edge is shared by 3 or more faces" throw refuses to build
+at all; the pre-existing duplicated vertices are not a construction defect
+to clean up, they are how a triangle-mesh (which cannot represent a
+4-valence edge) is forced to represent that same non-manifold curve without
+actually building a non-manifold edge - removing the duplication removes
+the only way this mesh format has of staying manifold there.
+
+Because the duplicate pairs are exactly 0.0 apart, no tolerance choice
+changes this outcome: any tolerance above 0 that is large enough to weld
+them (the entire point of calling `MergeDuplicateVertices` at all) breaks
+manifoldness identically, and a tolerance at or below 0 welds nothing,
+which is a pure no-op - not a "conservative but real" middle ground, since
+there is no daylight between "the duplicate" and "the topologically-load-
+bearing point" at this fixture: they are the same points. Per this
+project's own revert-rather-than-ship-half-safe convention, the change was
+reverted in full rather than shipped at a reduced tolerance: `src/
+boolean.cpp`'s `SymmetricDifference` branch is byte-identical to before
+this note (still the plain three-call composition, no
+`MergeDuplicateVertices` call), and no test was added, since there is no
+genuine improvement here to regression-guard - `TestBooleanSymmetricDifference`
+(test_basic.cpp:6980) already covers the unchanged behavior. Net effect on
+the scores below: NONE - the "Non-manifold boolean results" bullet above
+gets a documentation-only addendum (an attempt-and-reject record, not a
+narrowing of scope), this category's own present/partial/missing counts and
+9/15/1/25 (66.0%) split from the Fifteenth note above are unchanged, and no
+kernel behavior differs from before this note. Full `dino8_kernel_tests`
+suite (built via `cmake --build build --parallel 4`, run both directly and
+via `ctest` from `build/`): 6815 checks, 100% passing, 0 regressions - the
+exact same total the Fifteenth note's own baseline already reports, since
+this pass's net code change is zero.*
 
 **Blending & chamfering** (blending):
 - [partial] Constant-radius edge fillet on curved adjacent faces (cylinder/plane, cylinder/cylinder, freeform, closed/periodic rims) with B-rep trimming — every kernel fillet still requires both adjacent faces to be planar (fillet.h:147-159), so fillets cannot be chained onto a solid that already carries a curved face. App `FilletEdge` produces a genuine B-rep trim only when both faces are planar (cmd_fillet.cpp:175, "exact for planes; approximate elsewhere") — historically via the generic offset+SSX `BuildFillet` path, not the closed-form kernel function itself (see the bullet just below for the "nothing in the app calls it" half this pass closes). **This pass:** `FilletEdgeCommand::Run`'s plain-Radius case (default `RailType=RollingBall`, no `Rho`) now tries a new `TryExactFillet` FIRST — `kernel::FilletConvexEdge`/`FilletConcaveEdge` directly, convex then concave — ahead of the unchanged `BuildFillet` path, the identical "exact kernel construction first, fail open to the approximate path on any `PlanarFaces()` rejection" structure `TryExactChamfer` already established for `ChamferEdge`'s own plain-Radius case. Still partial: curved adjacent faces remain fundamentally out of scope (the kernel's own `PlanarFaces()` requirement, unchanged) and `BuildFillet`'s approximate path is still what actually runs there; this closes a representation gap (which construction produces the planar-face result), not a capability gap (the printed message and volume for a planar-face fillet are unchanged, since `BuildFillet` was already numerically exact for planes too). Net effect on the scores below: narrows, does not flip, the SAME already-partial item.
