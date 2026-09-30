@@ -1,0 +1,22 @@
+# RecordMacro: a real action recorder for the Macro Editor's buffer
+# (cmd_misc.cpp's ToggleOrReportMacroRecording; the append itself happens
+# in CommandEngine::Execute, gated on AppState::macro_recording - see its
+# own comment in Application.h). Proves the whole loop for real:
+#  - With no argument, RecordMacro reports the On/Off state and dumps the
+#    buffer's current contents (the default seed text this app ships,
+#    persisted the same way as startup_script).
+#  - While off, typed command lines are NOT appended.
+#  - While on, each top-level typed command line IS appended verbatim, in
+#    order.
+#  - RecordMacro itself is never recorded into its own buffer (so toggling
+#    off doesn't leave a trailing "RecordMacro Off" as the last line), and
+#    a line typed after turning recording back off again is NOT appended.
+
+RecordMacro
+RecordMacro On
+Line 0,0,0 10,0,0
+Box 20,0,0 25,5,5 5
+RecordMacro Off
+Line 50,0,0 60,0,0
+RecordMacro
+@expect_objects 3
