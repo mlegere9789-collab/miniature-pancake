@@ -5894,6 +5894,57 @@ namespace {
 // surviving 3D edge is reused unchanged (not rebuilt) - which is what
 // keeps a curved boundary (a cylinder's own iso-u arc, say) exact rather
 // than approximated by a fresh fit.
+// True when two surfaces' own NURBS forms are numerically identical - same
+// degree, knot vectors, rationality and control points (within `tol`) in
+// both directions - even when they are two SEPARATE ON_Surface objects
+// (e.g. two independent ON_Cylinder::GetNurbForm() calls given the same
+// radius/axis/height, exactly what Brep::FromMixedFaces()'s own
+// CylindricalFace machinery always produces for each face it builds).
+// Genuinely identical parameterisation, not merely congruent 3D shape: two
+// cylinders with the same radius and axis but built with a rotated seam,
+// or evaluated over different u/v domains, are real shapes that coincide
+// in space but do NOT pass this check - reusing one face's 2D trim curves
+// as the other's, the way TryMergeSameSurfacePair() does below, would be
+// wrong for those. This is deliberately a strict identity test, not a
+// general surface-congruence solver.
+bool SurfacesHaveIdenticalNurbsForm(const ON_Surface* sa, const ON_Surface* sb, double tol) {
+  if (!sa || !sb) return false;
+  if (sa == sb) return true;
+  ON_NurbsSurface na, nb;
+  if (const auto* ca = ON_NurbsSurface::Cast(sa)) {
+    na = *ca;
+  } else if (sa->GetNurbForm(na) <= 0) {
+    return false;
+  }
+  if (const auto* cb = ON_NurbsSurface::Cast(sb)) {
+    nb = *cb;
+  } else if (sb->GetNurbForm(nb) <= 0) {
+    return false;
+  }
+  if (na.IsRational() != nb.IsRational()) return false;
+  for (int dir = 0; dir < 2; ++dir) {
+    if (na.Degree(dir) != nb.Degree(dir)) return false;
+    if (na.CVCount(dir) != nb.CVCount(dir)) return false;
+    const int kc = na.KnotCount(dir);
+    if (kc != nb.KnotCount(dir)) return false;
+    for (int i = 0; i < kc; ++i) {
+      if (std::fabs(na.Knot(dir, i) - nb.Knot(dir, i)) > tol) return false;
+    }
+  }
+  for (int i = 0; i < na.CVCount(0); ++i) {
+    for (int j = 0; j < na.CVCount(1); ++j) {
+      ON_4dPoint pa, pb;
+      na.GetCV(i, j, pa);
+      nb.GetCV(i, j, pb);
+      if (std::fabs(pa.x - pb.x) > tol || std::fabs(pa.y - pb.y) > tol || std::fabs(pa.z - pb.z) > tol ||
+          std::fabs(pa.w - pb.w) > tol) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
 bool TryMergeSameSurfacePair(ON_Brep& b, int fa, int fb, int shared_edge_index) {
   ON_BrepFace& face_a = b.m_F[fa];
   ON_BrepFace& face_b = b.m_F[fb];
@@ -6031,11 +6082,18 @@ int Brep::MergeSameSurfaceFaces() {
         if (fb < 0 || fb == fa) continue;
         const ON_BrepFace& face_b = brep_.m_F[fb];
         if (face_b.LoopCount() != 1) continue;
-        // The literal same-surface condition this method is named for,
-        // plus agreement on which side of it is outward - required for
-        // the reused trims to combine into one consistently-oriented
-        // loop.
-        if (face_b.m_si != face_a.m_si || face_b.m_bRev != face_a.m_bRev) continue;
+        // The literal same-surface condition this method is named for -
+        // widened to also accept two SEPARATE surface objects whose own
+        // NURBS forms are numerically identical (same degree, knots and
+        // control points; see SurfacesHaveIdenticalNurbsForm()'s own doc
+        // comment for why that's still safe to splice trims across) -
+        // plus agreement on which side of it is outward, required for the
+        // reused trims to combine into one consistently-oriented loop.
+        if (face_b.m_bRev != face_a.m_bRev) continue;
+        if (face_b.m_si != face_a.m_si &&
+            !SurfacesHaveIdenticalNurbsForm(face_a.SurfaceOf(), face_b.SurfaceOf(), 1e-9)) {
+          continue;
+        }
 
         // fa/fb must share EXACTLY this one edge - same check
         // MergeCoplanarFaces() applies, for the same reason (a pair also

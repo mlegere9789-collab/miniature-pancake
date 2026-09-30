@@ -11140,6 +11140,224 @@ void TestBrepRebuildEdgeCurveRefusesInvalidInput() {
   }
 }
 
+// RebuildEdgeCurve() on a genuine CURVED surface pair, not the planar/
+// planar pair every test above uses: a hand-built cylindrical wall face
+// sharing its own arc boundary with a planar pie-slice cap face, where the
+// wall's own underlying surface is a genuine (non-periodic, single-span)
+// ruled surface built from two copies of a real `ON_Arc` (via
+// `ON_NurbsSurface::CreateRuledSurface`) - not the full 2*pi periodic
+// `ON_Cylinder::GetNurbForm()` representation the other cylinder fixtures
+// in this file use for OTHER purposes (those never feed a periodic
+// surface into `IntersectSurfaces()` on its own full untrimmed domain the
+// way this test does; a full periodic loop's own seam genuinely
+// fragments the mesh-seeded SSX chain into many small pieces rather than
+// one - confirmed directly while building this test - so this fixture
+// deliberately avoids it). The wall spans z in [0, height] and the arc's
+// shared boundary with the cap sits at an INTERIOR z (`cut_v`, strictly
+// between the wall's own two ends), so the two faces' full untrimmed
+// surfaces genuinely CROSS (not merely touch at a domain boundary) -
+// `IntersectSurfaces()` returns one clean open curve. The cap's own
+// surface is a genuine `ON_PlaneSurface` built so its (u, v)
+// parameterisation is exactly (x, y) - origin at the world origin, domain
+// synced to its own extents - so the shared arc's 2D trim curve on the
+// cap is literally the 3D edge curve with z dropped (`ChangeDimension`),
+// no resampling needed.
+void TestBrepRebuildEdgeCurveRecoversExactCylinderPlaneIntersectionAfterPerturbation() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  const double radius = 2.0, height = 3.0, sweep_angle = 1.3;
+  const double cut_v = 1.5;  // strictly interior to [0, height]: a genuine crossing, not a boundary touch
+
+  ON_Arc arc(ON_3dPoint(0, 0, 0), radius, sweep_angle);
+  ON_NurbsCurve arc_curve;
+  Check(arc.GetNurbForm(arc_curve) != 0, "setup: ON_Arc::GetNurbForm succeeds");
+  ON_NurbsCurve arc_curve_top = arc_curve;
+  Check(arc_curve_top.Translate(ON_3dVector(0, 0, height)), "setup: the top arc copy translates");
+
+  auto* wall_srf = new ON_NurbsSurface();
+  Check(wall_srf->CreateRuledSurface(arc_curve, arc_curve_top) != 0,
+        "setup: CreateRuledSurface builds the wall from the two arc copies");
+
+  Brep brep;
+  ON_Brep& raw = brep.raw();
+  const int wall_si = raw.AddSurface(wall_srf);
+
+  const ON_Interval u_dom = wall_srf->Domain(0), v_dom = wall_srf->Domain(1);
+  const double u0 = u_dom.Min(), u1 = u_dom.Max();
+  const double v_lo = v_dom.Min() + v_dom.Length() * (cut_v / height);  // interior cut, not a domain boundary
+  const double v_hi = v_dom.Max();
+
+  const Point3d arc_start = wall_srf->PointAt(u0, v_lo);
+  const Point3d arc_end = wall_srf->PointAt(u1, v_lo);
+  const Point3d center(0, 0, cut_v);
+  Check(std::fabs(arc_start.z - cut_v) < 1e-6 && std::fabs(arc_end.z - cut_v) < 1e-6,
+        "setup: both arc endpoints sit exactly at z=cut_v");
+
+  const int v_start = raw.NewVertex(arc_start, 0.0).m_vertex_index;
+  const int v_end = raw.NewVertex(arc_end, 0.0).m_vertex_index;
+  const int v_center = raw.NewVertex(center, 0.0).m_vertex_index;
+
+  // The shared edge's own 3D curve: the wall's real v=cut_v iso-arc,
+  // taken directly off the surface, exact, never refit.
+  ON_Curve* shared_iso = wall_srf->IsoCurve(0, v_lo);
+  ON_NurbsCurve shared_nurbs;
+  Check(shared_iso->GetNurbForm(shared_nurbs) > 0, "setup: the shared arc has a real NURBS form");
+  const int shared_c3i = raw.AddEdgeCurve(shared_iso);
+  const int shared_edge = raw.NewEdge(raw.m_V[v_start], raw.m_V[v_end], shared_c3i).m_edge_index;
+  raw.m_E[shared_edge].m_tolerance = 0.0;
+
+  // Wall face: u in [u0, u1], v in [v_lo, v_hi] - naked left/right/top,
+  // shared bottom (the arc above, at the wall's own INTERIOR v_lo, not
+  // its domain boundary - the surface itself still extends below it,
+  // unused by any face, exactly what makes the untrimmed SSX a genuine
+  // crossing).
+  {
+    auto make_naked_edge = [&](int va, const Point3d& pa, int vb, const Point3d& pb) -> int {
+      const int c3i = raw.AddEdgeCurve(new ON_LineCurve(pa, pb));
+      const int ei = raw.NewEdge(raw.m_V[va], raw.m_V[vb], c3i).m_edge_index;
+      raw.m_E[ei].m_tolerance = 0.0;
+      return ei;
+    };
+    const Point3d top_start = wall_srf->PointAt(u0, v_hi);
+    const Point3d top_end = wall_srf->PointAt(u1, v_hi);
+    const int v_top_start = raw.NewVertex(top_start, 0.0).m_vertex_index;
+    const int v_top_end = raw.NewVertex(top_end, 0.0).m_vertex_index;
+    const int e_left = make_naked_edge(v_start, arc_start, v_top_start, top_start);
+    const int e_top = make_naked_edge(v_top_start, top_start, v_top_end, top_end);
+    const int e_right = make_naked_edge(v_end, arc_end, v_top_end, top_end);
+
+    const int face_index = raw.NewFace(wall_si).m_face_index;
+    const int loop_index = raw.NewLoop(ON_BrepLoop::outer, raw.m_F[face_index]).m_loop_index;
+    auto add_wall_trim = [&](int edge_index, bool rev, double ua, double va, double ub, double vb) {
+      auto* c2 = new ON_LineCurve(ON_2dPoint(ua, va), ON_2dPoint(ub, vb));
+      const int c2i = raw.AddTrimCurve(c2);
+      ON_BrepTrim& trim = raw.NewTrim(raw.m_E[edge_index], rev, raw.m_L[loop_index], c2i);
+      trim.m_tolerance[0] = trim.m_tolerance[1] = 0.0;
+    };
+    add_wall_trim(shared_edge, false, u0, v_lo, u1, v_lo);
+    add_wall_trim(e_right, false, u1, v_lo, u1, v_hi);
+    add_wall_trim(e_top, true, u1, v_hi, u0, v_hi);
+    add_wall_trim(e_left, true, u0, v_hi, u0, v_lo);
+  }
+
+  // Cap face: a planar pie slice on the z=cut_v plane, built so its own
+  // (u, v) is exactly (x, y) - domain synced to extents, origin at the
+  // world origin - so the shared arc's 2D trim is the 3D curve with z
+  // dropped (ChangeDimension), no resampling.
+  auto* cap_srf =
+      new ON_PlaneSurface(ON_Plane(ON_3dPoint(0, 0, cut_v), ON_3dVector(1, 0, 0), ON_3dVector(0, 1, 0)));
+  Check(cap_srf->SetExtents(0, ON_Interval(-0.5, radius + 0.5), true), "setup: the cap plane's own x extents/domain sync");
+  Check(cap_srf->SetExtents(1, ON_Interval(-0.5, radius + 0.5), true), "setup: the cap plane's own y extents/domain sync");
+  const int cap_si = raw.AddSurface(cap_srf);
+
+  ON_NurbsCurve shared_2d = shared_nurbs;
+  Check(shared_2d.ChangeDimension(2), "setup: the shared arc's own 2D form (z dropped) builds");
+
+  const int e_radial_end_to_center = raw.AddEdgeCurve(new ON_LineCurve(arc_end, center));
+  const int edge_end_center = raw.NewEdge(raw.m_V[v_end], raw.m_V[v_center], e_radial_end_to_center).m_edge_index;
+  raw.m_E[edge_end_center].m_tolerance = 0.0;
+  const int e_radial_center_to_start = raw.AddEdgeCurve(new ON_LineCurve(center, arc_start));
+  const int edge_center_start =
+      raw.NewEdge(raw.m_V[v_center], raw.m_V[v_start], e_radial_center_to_start).m_edge_index;
+  raw.m_E[edge_center_start].m_tolerance = 0.0;
+
+  {
+    const int face_index = raw.NewFace(cap_si).m_face_index;
+    const int loop_index = raw.NewLoop(ON_BrepLoop::outer, raw.m_F[face_index]).m_loop_index;
+    // start -> end (arc) -> center (radial) -> start (radial): every trim
+    // below walks FORWARD in each of its own underlying edges' stored
+    // direction, so every bRev3d is false - a plain continuous loop.
+    auto* shared_2d_fwd = new ON_NurbsCurve(shared_2d);
+    const int shared_c2i = raw.AddTrimCurve(shared_2d_fwd);
+    ON_BrepTrim& t_arc = raw.NewTrim(raw.m_E[shared_edge], /*bRev3d=*/false, raw.m_L[loop_index], shared_c2i);
+    t_arc.m_tolerance[0] = t_arc.m_tolerance[1] = 0.0;
+
+    auto* radial1_2d = new ON_LineCurve(ON_2dPoint(arc_end.x, arc_end.y), ON_2dPoint(0, 0));
+    const int c2i_1 = raw.AddTrimCurve(radial1_2d);
+    ON_BrepTrim& t1 = raw.NewTrim(raw.m_E[edge_end_center], false, raw.m_L[loop_index], c2i_1);
+    t1.m_tolerance[0] = t1.m_tolerance[1] = 0.0;
+
+    auto* radial2_2d = new ON_LineCurve(ON_2dPoint(0, 0), ON_2dPoint(arc_start.x, arc_start.y));
+    const int c2i_2 = raw.AddTrimCurve(radial2_2d);
+    ON_BrepTrim& t2 = raw.NewTrim(raw.m_E[edge_center_start], false, raw.m_L[loop_index], c2i_2);
+    t2.m_tolerance[0] = t2.m_tolerance[1] = 0.0;
+  }
+
+  raw.SetTrimIsoFlags();
+  raw.SetTolerancesBoxesAndFlags();
+  for (int i = 0; i < raw.m_E.Count(); ++i) {
+    ON_BrepEdge& e = raw.m_E[i];
+    if (e.m_edge_index >= 0 && !(e.m_tolerance >= 0.0)) e.m_tolerance = 0.0;
+  }
+  Check(raw.IsValid(), "setup: the hand-built cylinder/plane fixture is a valid ON_Brep");
+
+  Check(raw.m_E[shared_edge].TrimCount() == 2, "setup: the shared arc genuinely borders two trims");
+  const int ti0 = raw.m_E[shared_edge].m_ti[0];
+  const int ti1 = raw.m_E[shared_edge].m_ti[1];
+  Check(raw.m_T[ti0].FaceIndexOf() != raw.m_T[ti1].FaceIndexOf(),
+        "setup: its two trims belong to two DIFFERENT faces");
+  const int wf = raw.m_T[ti0].FaceIndexOf(), cf = raw.m_T[ti1].FaceIndexOf();
+  Check(raw.m_F[wf].SurfaceOf()->IsPlanar() != raw.m_F[cf].SurfaceOf()->IsPlanar(),
+        "setup: exactly one of the two faces is planar - a genuine cylinder/plane pair");
+
+  const Point3d p0 = arc_start;
+  const Point3d p1 = arc_end;
+
+  // Perturb the shared arc's own midpoint radially OUTWARD by 0.01 while
+  // holding z exactly at cut_v - zero residual against the cap's own flat
+  // plane, but genuinely off the true radius-2 cylinder, the same "stress
+  // one face, not the other" construction the planar/planar test above
+  // uses.
+  const Point3d true_mid = raw.m_E[shared_edge].PointAt(raw.m_E[shared_edge].Domain().Mid());
+  ON_3dVector radial(true_mid.x, true_mid.y, 0.0);
+  radial.Unitize();
+  const Point3d bulged_mid = true_mid + radial * 0.01;
+  Check(std::fabs(bulged_mid.z - cut_v) < 1e-12, "setup: the bulge stays exactly at z=cut_v");
+
+  const NurbsCurve bulge = NurbsCurve::FromControlPoints({p0, bulged_mid, p1}, 2);
+  brep.ReplaceEdgeCurve(shared_edge, bulge, 0.02);
+
+  const ON_BrepEdge& perturbed = raw.m_E[shared_edge];
+  const ON_3dPoint perturbed_mid = perturbed.PointAt(perturbed.Domain().Mid());
+  const double perturbed_radius = ON_2dVector(perturbed_mid.x, perturbed_mid.y).Length();
+  Check(std::fabs(perturbed_radius - radius) > 1e-4,
+        "setup: the perturbed edge is genuinely off the true radius-2 circle");
+
+  const Result rebuild_result = brep.RebuildEdgeCurve(shared_edge, 0.02);
+  Check(rebuild_result == Result::Ok, "RebuildEdgeCurve() succeeds on a genuine cylinder/plane shared edge, not "
+                                       "just the planar/planar case every other test above uses");
+
+  ON_NurbsCurve rebuilt_nc;
+  Check(raw.m_E[shared_edge].GetNurbForm(rebuilt_nc) > 0, "the rebuilt edge still has a real NURBS curve");
+  constexpr int kSamples = 12;
+  const ON_Interval dom = rebuilt_nc.Domain();
+  double max_z_off = 0.0, max_radius_off = 0.0;
+  for (int i = 0; i <= kSamples; ++i) {
+    const ON_3dPoint p = rebuilt_nc.PointAt(dom.ParameterAt(static_cast<double>(i) / kSamples));
+    max_z_off = std::max(max_z_off, std::fabs(p.z - cut_v));
+    max_radius_off = std::max(max_radius_off, std::fabs(ON_2dVector(p.x, p.y).Length() - radius));
+  }
+  // A looser bound than the exact-closed-form planar/planar test above:
+  // this is a genuinely curved surface refit through the mesh-seeded SSX
+  // intersector's own Newton-polished sample points, not a closed-form
+  // plane/plane line - still tight enough to prove a real recovery, not
+  // merely "closer than the 0.01 perturbation".
+  Check(max_z_off < 1e-4 && max_radius_off < 1e-4,
+        "RebuildEdgeCurve() recovers the two surfaces' own true intersection - the radius-2 circle at z=cut_v - "
+        "on a genuine curved (cylinder/plane) surface pair, not merely something closer than the perturbed bulge");
+
+  const ON_3dPoint new_start = rebuilt_nc.PointAtStart();
+  const ON_3dPoint new_end = rebuilt_nc.PointAtEnd();
+  const bool endpoints_preserved =
+      (new_start.DistanceTo(p0) < 1e-6 && new_end.DistanceTo(p1) < 1e-6) ||
+      (new_start.DistanceTo(p1) < 1e-6 && new_end.DistanceTo(p0) < 1e-6);
+  Check(endpoints_preserved, "the rebuilt edge still runs between the SAME two vertices");
+}
+
+
 // RemoveHoleLoop() refusal paths: the outer loop itself, out-of-range and
 // already-deleted loop_index, and a hole edge that's also used by a trim
 // OUTSIDE the hole loop (a decoy second face reusing one of the hole's own
@@ -42886,6 +43104,181 @@ dino8::kernel::Brep BuildTwoFaceCylinderFixture(double radius, double height, do
   return b;
 }
 
+// The same two-patch cylinder as BuildTwoFaceCylinderFixture() above, but
+// with each face given its own SEPARATE ON_Cylinder::GetNurbForm() result
+// (same radius/axis/height, so numerically identical CVs/knots) rather
+// than one literal shared surface index - exactly the case
+// Brep::FromMixedFaces()'s own CylindricalFace machinery always produces
+// (every cylindrical face it builds gets its own fresh surface, even when
+// two of them happen to be the same cylinder), and the specific gap
+// SurfacesHaveIdenticalNurbsForm()/MergeSameSurfaceFaces() close: two
+// faces that merely HAPPEN to trim congruent surfaces, not the same
+// object.
+dino8::kernel::Brep BuildTwoFaceCylinderFixtureSeparateSurfaces(double radius, double height, double total_angle,
+                                                                 double split_angle) {
+  using dino8::kernel::Brep;
+
+  const ON_Plane plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1));
+  const ON_Circle circle(plane, radius);
+  ON_Cylinder cyl(circle, height);
+
+  auto make_surface = [&]() -> ON_NurbsSurface* {
+    auto* s = new ON_NurbsSurface();
+    if (cyl.GetNurbForm(*s) == 0) {
+      delete s;
+      throw std::runtime_error("BuildTwoFaceCylinderFixtureSeparateSurfaces: ON_Cylinder::GetNurbForm failed");
+    }
+    return s;
+  };
+  ON_NurbsSurface* surface_a = make_surface();
+  ON_NurbsSurface* surface_b = make_surface();
+
+  double u0 = 0.0, u_mid = 0.0, u_full = 0.0;
+  if (!circle.GetNurbFormParameterFromRadian(0.0, &u0) ||
+      !circle.GetNurbFormParameterFromRadian(split_angle, &u_mid) ||
+      !circle.GetNurbFormParameterFromRadian(total_angle, &u_full)) {
+    delete surface_a;
+    delete surface_b;
+    throw std::runtime_error("BuildTwoFaceCylinderFixtureSeparateSurfaces: GetNurbFormParameterFromRadian failed");
+  }
+  const double v0 = 0.0, v1 = height;
+
+  Brep b;
+  ON_Brep& raw = b.raw();
+  const int si_a = raw.AddSurface(surface_a);
+  const int si_b = raw.AddSurface(surface_b);
+
+  const int p1 = raw.NewVertex(surface_a->PointAt(u0, v0), 0.0).m_vertex_index;
+  const int p2 = raw.NewVertex(surface_a->PointAt(u_mid, v0), 0.0).m_vertex_index;
+  const int p3 = raw.NewVertex(surface_a->PointAt(u_mid, v1), 0.0).m_vertex_index;
+  const int p4 = raw.NewVertex(surface_a->PointAt(u0, v1), 0.0).m_vertex_index;
+  const int p5 = raw.NewVertex(surface_a->PointAt(u_full, v0), 0.0).m_vertex_index;
+  const int p6 = raw.NewVertex(surface_a->PointAt(u_full, v1), 0.0).m_vertex_index;
+
+  // The shared edge's own 3D curve is taken off surface_a - it is
+  // numerically identical to surface_b's own IsoCurve(0, v0) there, so
+  // reusing it for both faces' trims is exact either way.
+  auto make_edge = [&](int va, double ua, double val_a, int vb, double ub, double val_b) -> int {
+    const bool along_u = (val_a == val_b);
+    ON_Curve* iso = along_u ? surface_a->IsoCurve(0, val_a) : surface_a->IsoCurve(1, ua);
+    const double lo = along_u ? std::min(ua, ub) : std::min(val_a, val_b);
+    const double hi = along_u ? std::max(ua, ub) : std::max(val_a, val_b);
+    iso->Trim(ON_Interval(lo, hi));
+    if (along_u ? (ua > ub) : (val_a > val_b)) iso->Reverse();
+    const int c3i = raw.AddEdgeCurve(iso);
+    ON_BrepEdge& edge = raw.NewEdge(raw.m_V[va], raw.m_V[vb], c3i);
+    edge.m_tolerance = 0.0;
+    return edge.m_edge_index;
+  };
+
+  const int e_a_left = make_edge(p1, u0, v0, p4, u0, v1);
+  const int e_a_bottom = make_edge(p1, u0, v0, p2, u_mid, v0);
+  const int e_a_top = make_edge(p4, u0, v1, p3, u_mid, v1);
+  const int e_shared = make_edge(p2, u_mid, v0, p3, u_mid, v1);
+  const int e_b_bottom = make_edge(p2, u_mid, v0, p5, u_full, v0);
+  const int e_b_top = make_edge(p3, u_mid, v1, p6, u_full, v1);
+  const int e_b_right = make_edge(p5, u_full, v0, p6, u_full, v1);
+
+  auto add_trim = [&](ON_BrepLoop& loop, int edge_index, bool rev, double ua, double va, double ub, double vb) {
+    auto* c2 = new ON_LineCurve(ON_2dPoint(ua, va), ON_2dPoint(ub, vb));
+    c2->SetDomain(0.0, 1.0);
+    const int c2i = raw.AddTrimCurve(c2);
+    ON_BrepTrim& trim = raw.NewTrim(raw.m_E[edge_index], rev, loop, c2i);
+    trim.m_tolerance[0] = trim.m_tolerance[1] = 0.0;
+  };
+
+  ON_BrepFace& face_a = raw.NewFace(si_a);
+  face_a.m_bRev = false;
+  ON_BrepLoop& loop_a = raw.NewLoop(ON_BrepLoop::outer, face_a);
+  add_trim(loop_a, e_a_bottom, false, u0, v0, u_mid, v0);
+  add_trim(loop_a, e_shared, false, u_mid, v0, u_mid, v1);
+  add_trim(loop_a, e_a_top, true, u_mid, v1, u0, v1);
+  add_trim(loop_a, e_a_left, true, u0, v1, u0, v0);
+
+  ON_BrepFace& face_b = raw.NewFace(si_b);
+  face_b.m_bRev = false;
+  ON_BrepLoop& loop_b = raw.NewLoop(ON_BrepLoop::outer, face_b);
+  add_trim(loop_b, e_b_bottom, false, u_mid, v0, u_full, v0);
+  add_trim(loop_b, e_b_right, false, u_full, v0, u_full, v1);
+  add_trim(loop_b, e_b_top, true, u_full, v1, u_mid, v1);
+  add_trim(loop_b, e_shared, true, u_mid, v1, u_mid, v0);
+
+  raw.SetTrimIsoFlags();
+  raw.SetTolerancesBoxesAndFlags();
+  for (int i = 0; i < raw.m_E.Count(); ++i) {
+    ON_BrepEdge& e = raw.m_E[i];
+    if (e.m_edge_index >= 0 && !(e.m_tolerance >= 0.0)) e.m_tolerance = 0.0;
+  }
+  return b;
+}
+
+// MergeSameSurfaceFaces() on the SEPARATE-surface-objects fixture above:
+// the exact gap this pass closes - two faces that trim two DIFFERENT
+// ON_Surface objects that merely happen to be numerically identical
+// (same radius/axis, two independent GetNurbForm() calls) - the class of
+// pair Brep::FromMixedFaces()'s own CylindricalFace machinery always
+// produces and the earlier same-object test above deliberately does NOT
+// cover.
+void TestMergeSameSurfaceFacesWeldsCongruentButSeparateCylinderSurfaces() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+
+  const double radius = 2.0, height = 3.0, total_angle = 2.5, split_angle = 1.0;
+  Brep tube = BuildTwoFaceCylinderFixtureSeparateSurfaces(radius, height, total_angle, split_angle);
+  Check(tube.FaceCount() == 2, "the separate-surfaces cylinder fixture starts with 2 faces");
+  Check(tube.raw().IsValid(), "the separate-surfaces cylinder fixture is a valid ON_Brep before merging");
+  Check(tube.raw().m_F[0].m_si != tube.raw().m_F[1].m_si,
+        "setup: the two faces really do trim two DIFFERENT surface objects, not one shared index - the "
+        "opposite of BuildTwoFaceCylinderFixture()'s own setup");
+
+  double area_before = 0.0;
+  for (const Mesh& m : tube.TessellateAdaptive(1e-4)) area_before += m.Area();
+  const double exact_area = radius * total_angle * height;
+  Check(std::abs(area_before - exact_area) < 1e-2, "the two unmerged patches' own summed area matches the exact "
+                                                     "cylinder-sector formula before merging");
+
+  const int merges = tube.MergeSameSurfaceFaces();
+  Check(merges == 1,
+        "MergeSameSurfaceFaces() merges the pair even though they trim two SEPARATE (but numerically identical) "
+        "surface objects");
+  Check(tube.FaceCount() == 1, "the two congruent-surface patches merged into a single face");
+  Check(tube.raw().IsValid(), "the merged single face is still a valid ON_Brep");
+
+  double area_after = 0.0;
+  for (const Mesh& m : tube.TessellateAdaptive(1e-4)) area_after += m.Area();
+  Check(std::abs(area_after - area_before) < 1e-6,
+        "merging leaves the tessellated area exactly unchanged, the same exactness the same-object case gets");
+
+  Check(tube.MergeSameSurfaceFaces() == 0, "a second call on the merged single face finds nothing left to merge");
+}
+
+// Negative counterpart: once the two faces' own surfaces genuinely stop
+// being numerically identical - even by as little as one nudged control
+// point on what started as an exact byte-for-byte congruent pair -
+// MergeSameSurfaceFaces() must refuse them, the same way it already
+// refuses two merely-coplanar-but-distinct flat surfaces. Proof the new
+// congruent-surfaces path above is a real identity check, not a loose
+// "both non-planar" heuristic.
+void TestMergeSameSurfaceFacesLeavesGenuinelyDifferentCylindersUntouched() {
+  using dino8::kernel::Brep;
+
+  const double radius = 2.0, height = 3.0, total_angle = 2.5, split_angle = 1.0;
+  Brep tube = BuildTwoFaceCylinderFixtureSeparateSurfaces(radius, height, total_angle, split_angle);
+  ON_Brep& raw = tube.raw();
+  Check(raw.m_F[0].m_si != raw.m_F[1].m_si, "setup: the two faces trim two separate surface objects");
+
+  ON_NurbsSurface* ns_b = ON_NurbsSurface::Cast(raw.m_S[raw.m_F[1].m_si]);
+  Check(ns_b != nullptr, "setup: face_b's own surface has a real NURBS form to perturb");
+  ON_4dPoint cv;
+  Check(ns_b->GetCV(0, 0, cv), "setup: read face_b's own first control vertex");
+  Check(ns_b->SetCV(0, 0, ON_4dPoint(cv.x + 0.1, cv.y, cv.z, cv.w)),
+        "setup: nudge that one control vertex - no longer the same NURBS form as face_a's surface");
+
+  Check(tube.MergeSameSurfaceFaces() == 0,
+        "MergeSameSurfaceFaces() refuses a pair whose surfaces are no longer numerically identical, even though "
+        "they started out as an exact congruent (same-cylinder) pair");
+}
+
 void TestMergeSameSurfaceFacesWeldsTwoCylindricalPatchesIntoOne() {
   using dino8::kernel::Brep;
   using dino8::kernel::Mesh;
@@ -57288,6 +57681,8 @@ int main() {
   TestMergeCoplanarFacesRefusesPairWhoseHoleHasCurvedEdge();
   TestMergeSameSurfaceFacesWeldsTwoCylindricalPatchesIntoOne();
   TestMergeSameSurfaceFacesLeavesDistinctCoplanarSurfacesUntouched();
+  TestMergeSameSurfaceFacesWeldsCongruentButSeparateCylinderSurfaces();
+  TestMergeSameSurfaceFacesLeavesGenuinelyDifferentCylindersUntouched();
   TestReplaceEdgeCurveRefitsANakedEdgeToABowedSubstitute();
   TestReplaceEdgeCurveThrowsOnEndpointMismatch();
   TestReplaceEdgeCurveThrowsOnSurfaceMismatch();
@@ -57331,6 +57726,7 @@ int main() {
   TestBrepRemoveAllHoleLoopsInBrepStripsHolesAcrossEveryFace();
   TestBrepRebuildEdgeCurveRecoversExactPlaneIntersectionAfterPerturbation();
   TestBrepRebuildEdgeCurveRefusesInvalidInput();
+  TestBrepRebuildEdgeCurveRecoversExactCylinderPlaneIntersectionAfterPerturbation();
   TestBrepRemoveHoleLoopRefusesOuterLoopSharedEdgeAndInvalidInput();
   TestBrepRemoveOuterTrimRestoresSurfaceNaturalBoundaryAndKeepsHoles();
   TestBrepRemoveOuterTrimRefusesSingularTrimSharedEdgeAndInvalidInput();
