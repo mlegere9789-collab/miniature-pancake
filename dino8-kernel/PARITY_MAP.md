@@ -88,6 +88,142 @@ untouched, since no `dino8-kernel/src` file was touched this pass. Full
 lines across the whole suite) re-run clean after this pass, under
 Xvfb+llvmpipe.
 
+**2026-09-30 re-score (a rotation session on the app table's "2D drafting,
+annotation & documentation" category, weight 1.0 over 6 remaining items,
+tied for 4th-highest score-per-fix in the app table's own priority-order
+ranking above): three real, independently verified fixes, each narrowing an
+already-`[partial]` item in place rather than flipping one to `[present]` -
+every named sub-gap these three items list has more than one component, and
+this pass closes exactly one component per item, leaving the rest honestly
+open. The row's own Present/Partial/Missing/Items counts (12/5/1/18, 80.6%)
+and the priority-order table's Remaining count (6) are therefore genuinely
+unchanged by this pass, not merely left unedited - recomputed from scratch
+against the current source per the standard `sum(weight * (present +
+0.5*partial) / items) / 7.75` check, which still lands on the same app
+headline (**72.8%**; kernel headline 68.0% untouched, no `dino8-kernel/src`
+file touched this pass), the same "narrows, does not flip" outcome this
+document already has precedent for (see kernel: SubD & mesh modeling's
+"B-rep-preserving mesh-result SubD booleans" bullet above).
+
+1. **Dynamic blocks** stays `[partial]`: of the item's four named
+   unattempted actions (stretch, flip, array, lookup parameters), Flip is
+   now real. `BlockInstance` (`dino8-app/src/doc/BlockInstances.h`) gains a
+   `flipped` field alongside the pre-existing `state`; `PlaceFiltered`
+   (`BlockInstances.cpp`) mirrors the definition's geometry about a vertical
+   world plane through the block's own base point - via the same
+   `ON_Xform::MirrorTransformation` helper Mirror/cmd_transform.cpp already
+   use elsewhere in this app, not a bespoke matrix - before applying the
+   existing insert-point translation, so a flipped instance's base point
+   still lands exactly where an unflipped one would. `SetBlockInstanceFlip`
+   (mirrors the pre-existing `SetBlockInstanceState`'s shape exactly: look
+   up the record, mutate, rebuild) and a new `BlockToggleFlipCommand`/
+   `"BlockToggleFlip"` registration (`dino8-app/src/commands/cmd_drafting.cpp`)
+   give it the same command-line-only reach `BlockSetState` already has (no
+   BlockManager panel UI either, same as that command). The flag persists
+   through the exact same `dino8.block_instances` document-user-text JSON
+   every other `BlockInstance` field already round-trips through. Still
+   unattempted: stretch, array and lookup parameters/actions, and Flip
+   itself only reaches a block that already has at least one named
+   visibility state (`BlockAddState`) - a plain geometry-only block still
+   instantiates through the untracked static path, same scope limit
+   `BlockSetState` already has, for the same reason (no per-instance record
+   exists to flip without one). Verified by a new standalone test,
+   `dino8-app/tests/test_block_flip.cpp` (`dino8_test_block_flip` in
+   `ctest`): places an instance, checks the unflipped position, flips it and
+   checks the mirrored position lands correctly, checks the flag survives a
+   fresh `LoadBlockInstances()` parse (real persistence, not just an
+   in-memory mutation), un-flips it back and checks the geometry matches the
+   original again, and checks flipping an unknown group id fails cleanly.
+2. **Dimension styles** stays `[partial]`: of the item's named gaps (units/
+   precision, tolerance, extension-line/text-placement control, and the
+   shared text/dimension style table), linear precision is now real.
+   `AnnotationStyle` (`dino8-app/src/doc/Document.h`) gains a
+   `linear_precision` field (-1 "Auto", the legacy `FormatNumber` behaviour,
+   by default; >= 0 means always exactly that many fixed decimal places,
+   e.g. an exact round length no longer silently drops its trailing zeros).
+   `FormatDimensionNumber` (`dino8-app/src/commands/DimGeometry.h`) is the
+   new formatter, threaded as an extra `precision` parameter into
+   `BuildLinearDimensionGeometry`/`BuildRadiusDimensionGeometry` - the
+   shared, dependency-free geometry builders DimLinear/DimAligned/DimRadius/
+   DimDiameter and DXF/DWG DIMENSION import all already funnel through - so
+   it reaches every one of those without a per-command special case; a
+   dimension's internal round-trip tags (`DimOffset`, `DimRadiusVal`, the
+   plane/point tags) are deliberately left on the old unrestricted
+   `FormatNumber`, so `UpdateDimensions` always replays from full-precision
+   stored geometry regardless of a style's display precision. A freshly
+   built dimension picks up the *current* annotation style's precision
+   (`AnnotationLinearPrecision`); `UpdateDimensions` rebuilding an existing
+   one instead looks up the style that dimension was actually tagged with at
+   creation (`GroupLinearPrecision`, `annotate_common.h`) so it keeps
+   tracking that named style - including a precision edited on it since -
+   the same style-linked (not baked-in) behaviour real dimension styles
+   have. Persists through a new `Dino8.AnnotationStylePrecision.<name>`
+   document user-string (`dino8-app/src/io/File3dm.cpp`), deliberately a
+   separate key rather than packed into the existing
+   `Dino8.AnnotationStyle.<name>` `"height;arrow;font"` line, since that
+   line's own trailing `font` field is read with a `%255[^\n]` catch-all
+   that would make any field after it unparseable - and deliberately
+   collected into a `pending_precision` map and applied only after the
+   whole document-user-string loop finishes, since this key can appear
+   before or after its style's own main key in `GetDocumentUserStrings()`'s
+   order. Editable via a new "Linear precision (-1 = auto)" field in the
+   Document Properties > Annotation styles panel (`dino8-app/src/ui/
+   Panels.cpp`). Still unattempted: tolerance, extension-line/text-placement
+   control, and text/dimension styles still share one table. Verified by a
+   new standalone test, `dino8-app/tests/test_dim_precision.cpp`
+   (`dino8_test_dim_precision`): `FormatDimensionNumber` in isolation
+   (round numbers keep trailing zeros at a fixed precision, rounding both
+   directions, a tiny negative value never prints "-0.00", an
+   out-of-range precision is clamped rather than undefined behaviour), then
+   both geometry builders end-to-end on an exact-round measurement (length
+   10 / radius 5) so Auto and a fixed precision produce visibly different
+   label text, proving `precision` actually reaches the built label rather
+   than being silently accepted and ignored - plus a direct check that the
+   internal `DimOffset` tag is untouched by display precision.
+3. **Print and plot output** stays `[partial]`: of the item's named gaps (no
+   lineweights, no print widths, no plot styles/CTB-STB, no printer-device
+   output), lineweights/print widths are now real - genuinely closing two of
+   the four named gaps at once, since they were always the same gap named
+   twice. `Layer` (`dino8-app/src/doc/Document.h`) gains `print_width_mm`,
+   deliberately given the *exact* three-way convention real Rhino's own
+   `ON_Layer::PlotWeight`/`SetPlotWeight` (`opennurbs_layer.h`) already uses
+   - 0 (the default) means the document/export default pen width, a
+   positive value is an explicit width in mm, a negative value means the
+   layer does not print at all (while still displaying on screen) - rather
+   than a Dino8-only encoding, specifically so `io/File3dm.cpp`'s
+   `SetPlotWeight`/`PlotWeight` round-trips it through the real native
+   `.3dm` plot-weight field: a file this app writes carries a plot weight
+   real Rhino itself understands, and one Rhino wrote carries a plot weight
+   this app understands, for free. `io/FileExchange.cpp`'s `CollectPaths`
+   (shared by `ExportSvg`/`ExportPdf`) now skips every object on a
+   non-printing (`print_width_mm < 0`) layer entirely; `ExportSvg` moves its
+   `stroke-width` from one document-wide `<g>` down to each already-existing
+   per-layer `<g>` (paths were already grouped by layer for Illustrator/
+   Inkscape structure, so this is the natural granularity); `ExportPdf`
+   tracks a `last_width` the same way it already tracks `last_color`,
+   emitting a new `w` operator only when a path's layer's effective width
+   actually changes. `EffectivePrintWidthMm`/`LayerPrints`
+   (`doc/Document.h`) are the two small pure helper functions both
+   exporters call, kept header-only and dependency-free specifically so they
+   are unit-testable without FileExchange.cpp's much heavier Viewport/GL
+   dependency chain. A new scriptable `"LayerPrintWidth [name] width"`
+   command (`dino8-app/src/commands/cmd_layer.cpp`, same `TakePendingInput`
+   two-token pattern `LayerOn`/`LayerOff`/`LayerLock`/`LayerUnlock` already
+   use) and a "Print width mm (0=default, <0=no print)" field in the Layers
+   panel's per-layer context menu (`dino8-app/src/ui/Panels.cpp`, next to
+   the pre-existing Notes field) both set it. Still unattempted: plot styles
+   (CTB/STB tables) and real printer-device output - this is a vector
+   PDF/SVG page property, not a Windows/CUPS print-spooler integration.
+   Verified by a new standalone test, `dino8-app/tests/test_print_width.cpp`
+   (`dino8_test_print_width`): a default-constructed `Layer` defers to the
+   document default; an explicit positive width overrides it independent of
+   what that default happens to be; any negative value (not just exactly
+   -1) means does not print.
+
+Full `ctest` suite (23/23 passing, including the three new tests above) and
+`tests/smoke.sh` (0 FAIL lines across the whole suite) re-run clean after
+this pass, under Xvfb+llvmpipe.
+
 **2026-09-30 re-score (a dedicated round on the app table's "Command system
 & core commands" category, this pass's own priority-order arithmetic ranking
 it joint-third-highest score-per-fix in the app table): three real,
@@ -5770,10 +5906,10 @@ start line) — all citation-precision fixes, not scoring changes.
 
 **Dino 8: 2D drafting, annotation & documentation** (app_drafting):
 - [partial] Associative annotation updating (dimensions, leaders, center marks, center lines) — UpdateDimensions rebuilds several dimension/leader/mark types from their anchors, but only on an explicit command run, and a point is anchored only if it coincides exactly with a Point object or curve endpoint. Earlier windows extended the same explicit-recompute shape to MultiLeader arrows (`UpdateMultiLeaders`, commit `0ebdb07`), the four GD&T symbol commands (`UpdateGdtSymbols`, commit `f66cdf9`), for the electrical vertical-market toolset (elec/ElecComponents.h), PanelSchedule's rows when built from a real ElecCircuit-tagged component selection rather than hand-typed Circuits= text (`UpdatePanelSchedule`, commit `bb673bb`) — the same BomAll/BomRefIds-style all-vs-explicit-selection split BillOfMaterials already used — and TitleBlock's Name field (`UpdateTitleBlock`, commit `dfee1cf`), which tracks the document's own Settings().title (Document Properties) unless frozen by an explicit Name=. This window adds a fourth family, the whole-object-reference measured dimensions from cmd_annotate2.cpp: DimArea/DimCurveLength/DimVolume (`MeasureRefIds`, a BomRefIds-style id list, since these can sum several selected objects) and DimCreaseAngle (`DimRefObj1`/`DimRefObj2`, two objects directly, same whole-object-reference shape DimRadius/DimDiameter and CenterLine already use) are now associative via a new `UpdateMeasureDims` command: it re-measures each recorded object's *current* shape (not just its position — an edited curve's new length, a resized solid's new volume, a re-pointed line's new direction all propagate), sums/recombines exactly as the creating command did, and rebuilds the leader in place at its original landing point, dropping a since-deleted or no-longer-measurable object from the result the same way BillOfMaterials's BomRefIds drops a deleted one. A dimension built before this window carries no MeasureRefIds/DimRefObj1 tag and stays a static baked measurement, same as before. This window closes two more of the family's remaining gaps. DimOrdinate (base point + feature points) is now associative per point exactly like DimLinear: `FindPointAnchor` matches the base point once and, separately, each feature point against a real Point object or curve endpoint, and `UpdateMeasureDims` (extended to cover it, same command DimArea/DimCurveLength/DimVolume/DimCreaseAngle use) re-evaluates whichever matched and redraws that ordinate's leader/text from their current positions — a point that was never anchored still redraws from its built DimP0/DimP1 fallback, unchanged, rather than being skipped. TitleBlock's Date field now works the same way its Name field already did: left unset it defaults to (and stays tagged associative to, `TitleBlockDateAuto`) today's date, and `UpdateTitleBlock` re-pulls it independently of Name — an explicit Date= freezes just that field, same as an explicit Name= freezes Name. Scale/Sheet (TitleBlock) still have no associative mechanism — Sheet's default is merely which layout happened to be active when the title block was placed, not a stable property (Layout has no id, only a name) the table could track back to. This window fixes a correctness gap in the associativity machinery itself rather than adding a new family: `DimTolerance` (cmd_drafting2.cpp) appends a tolerance suffix to a dimension's baked text, but `UpdateDimensions`/`UpdateMeasureDims` rebuild that text from scratch (the freshly recomputed measurement alone), so a tolerance added to an otherwise-associative dimension — DimLinear/DimAligned, DimAngle, DimRadius/DimDiameter, DimOrdinate, DimArea/DimCurveLength/DimVolume, DimCreaseAngle — used to vanish silently the next time its anchor moved and the dimension was regenerated. It is now recovered from the `DimTolerance.Base` tag `DimTolerance` itself leaves (diffed against the pre-rebuild text to get the suffix) and re-appended to the freshly rebuilt measurement (`GroupToleranceSuffix`/`ReapplyToleranceSuffix`, annotate_common.h, shared by both Update commands) — re-running Update after moving the measured geometry now keeps the tolerance, not just re-running DimTolerance's own idempotent re-apply. Leader was already unaffected (its text is a static label copied verbatim on rebuild, never recomputed) and Centermark/CenterLine have no text to lose. This window widens the anchor-matching mechanism itself (`FindPointAnchor`/`ResolveAnchor`, annotate_common.h) rather than adding another dimension family: a measured point used to associate only when it coincided exactly with a Point object or a curve's start/end (the literal limit this bullet's opening sentence names); it now also recognizes a curve's segment midpoint (a degree-1/polyline curve — one candidate per segment, so an interior segment's own midpoint anchors, not just the first) or arc-length midpoint (any higher-degree curve), and an arc/circle's center or, for a full circle, one of its four quadrant points (+x/-x/+y/-y around its own plane) — the exact same candidate points the viewport's own Mid/Cen/Quad object snaps already compute (`Viewport.cpp`), so a point picked with one of those snaps now resolves to a live anchor instead of silently staying a static bake. Every `FindPointAnchor`/`ResolveAnchor` consumer gets this for free, with no per-command change needed: DimLinear/DimAligned/DimRotated's two points, DimAngle's vertex and two direction points, DimOrdinate's base and feature points, Leader's and MultiLeader's arrow tips, and FeatureControlFrame/DatumFeature/SurfaceFinish/WeldSymbol's feature points. A point resolved only by a snap this build still has no anchor code for at all (Near, Perp, Tangent, Knot, a brep vertex, ...) stays a static baked measurement, same as before. More annotation/table types now re-associate, an earlier same-day window made DimTolerance correct under rebuild, and this window widens the point-anchor mechanism itself across the whole family, but the underlying gap this bullet names (no automatic recompute hooked into document edits) is unchanged, so it stays partial. A later window widens `FindPointAnchor`/`ResolveAnchor` again, closing two more of the anchor kinds the curve-midpoint/arc-center/quadrant window above explicitly left open: a curve's interior knot point (any span boundary strictly between its two parameter-domain ends, tagged `knot:<span index>` - for a degree-1 polyline this is exactly an interior control point, which the pre-existing exact-coincidence start/end match could not see even though the viewport's own "Knot" object snap already reports it there, the same osnap-parity gap the earlier midpoint/center/quadrant window closed for Mid/Cen/Quad) and a B-rep's vertex (tagged `vertex:<raw m_V table index>`, read via `ON_Brep::m_V[i].point` and skipping a deleted-but-not-yet-`Compact()`ed slot the same `m_vertex_index < 0` way `Brep::LiveVertexCount()` already does) - the same candidates the viewport's own Knot/Vertex object snaps compute. A B-rep vertex anchor is index-based, so (like every other anchor kind here) it survives a simple move/rotate/scale of the solid but falls back to the static bake across an edit that rebuilds the vertex table (a boolean, a fillet, ...) - no different from a curve anchor going stale across a degree- or control-point-count-changing edit. Every `FindPointAnchor`/`ResolveAnchor` consumer gets both for free, again with no per-command change needed. Near/Perp/Tangent osnaps remain unaddressed on principle, not just unimplemented: unlike Point/End/Mid/Knot/Cen/Quad/Vertex, they are relative to wherever the pick happened rather than an intrinsic feature of the snapped object, so there is no single fixed point on the source object for an anchor to track back to.
-- [partial] Print and plot output — Print writes a vector PDF/SVG of the active view with an optional scale, but there are no lineweights, no print widths, and no plot styles (CTB/STB); no printer-device output.
-- [partial] Dynamic blocks — only visibility states exist (BlockAddState/BlockSetVisibility); stretch, flip, array and lookup parameters and actions are not attempted.
+- [partial] Print and plot output — Print writes a vector PDF/SVG of the active view with an optional scale. **Lineweights/print widths are now real** (the two gaps below were always one gap named twice): `Layer::print_width_mm` (`doc/Document.h`) uses the exact same three-way convention real Rhino's own `ON_Layer::PlotWeight` already does (0 = document default, >0 = an explicit mm width, <0 = the layer does not print at all while still displaying on screen), round-tripped through that real native `.3dm` plot-weight field (`io/File3dm.cpp`'s `SetPlotWeight`/`PlotWeight`), and `ExportSvg`/`ExportPdf` (`io/FileExchange.cpp`) now stroke each layer's paths at its own effective width instead of one document-wide default, with a non-printing layer's objects skipped entirely by the shared `CollectPaths`. Set via a new scriptable `LayerPrintWidth` command (`cmd_layer.cpp`) or the Layers panel's per-layer context menu. Still missing: plot styles (CTB/STB) and real printer-device output (this remains a vector page property, not a print-spooler integration) — the item stays `[partial]`.
+- [partial] Dynamic blocks — only visibility states exist (BlockAddState/BlockSetVisibility). **Flip is now real** (one of the four named unattempted parameter/action types): `BlockInstance::flipped` (`doc/BlockInstances.h`) mirrors a placed instance's geometry about a vertical plane through its block's base point before the existing insert-point translation (`PlaceFiltered`), set via `SetBlockInstanceFlip`/the new `BlockToggleFlip` command (same command-line-only reach `BlockSetState` already has, and reachable only on a block that already has a named visibility state, for the same reason). Stretch, array and lookup parameters/actions remain entirely unattempted — the item stays `[partial]`.
 - [partial] Live external data linking into tables — a two-way CSV sync with conflict refusal, not native .xlsx; formula cells come back as their last saved values. Commit 19c14a0 (`cmd_drafting2.cpp:233`) added `std::ios::binary` to `WriteCsvFile`'s and `BillOfMaterials::Run`'s ofstream opens — verified this is purely a Windows CRLF-translation fix (a no-op on Linux/macOS) so CSV bytes match across platforms; it does not touch the CSV-vs-.xlsx or frozen-formula-cell limitations, so the score and reasoning are unchanged.
-- [partial] Dimension styles — named styles do exist (AnnotationStyles etc., persisted in .3dm user strings), but a style has only name, text_height, arrow_size and font — no units/precision, tolerance, extension-line or text-placement control, and text/dimension styles share one table.
+- [partial] Dimension styles — named styles do exist (AnnotationStyles etc., persisted in .3dm user strings). **Units/precision is now real**: `AnnotationStyle::linear_precision` (`doc/Document.h`, -1 = Auto/legacy `FormatNumber` behaviour, >= 0 = always that many fixed decimal places) threads through `commands/DimGeometry.h`'s `FormatDimensionNumber` into the shared `BuildLinearDimensionGeometry`/`BuildRadiusDimensionGeometry` builders every DimLinear/DimAligned/DimRadius/DimDiameter command (and DXF/DWG DIMENSION import) already funnels through, style-linked rather than baked in (`UpdateDimensions` re-reads whichever style a dimension was tagged with, via `GroupLinearPrecision`), persisted via a new `Dino8.AnnotationStylePrecision.<name>` document user-string and editable from the Annotation styles panel. Still no tolerance or extension-line/text-placement control, and text/dimension styles still share one table — the item stays `[partial]`.
 - [missing] Field text (text driven by object properties) — no field or formula text type found anywhere; all text is static baked geometry.
 
 **Dino 8: Viewport display, rendering & visualization** (app_display):
