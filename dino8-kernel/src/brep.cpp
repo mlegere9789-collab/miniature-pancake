@@ -6361,53 +6361,69 @@ Result Brep::UnjoinEdge(int edge_index) {
                              std::to_string(edge_index) + " is out of range (this Brep has " +
                              std::to_string(brep_.m_E.Count()) + " edge slot(s))");
   }
-  ON_BrepEdge& edge = brep_.m_E[edge_index];
-  if (edge.m_edge_index < 0) {
+  const ON_BrepEdge& orig_edge = brep_.m_E[edge_index];
+  if (orig_edge.m_edge_index < 0) {
     throw std::invalid_argument("dino8::kernel::Brep::UnjoinEdge: edge_index " +
                                  std::to_string(edge_index) + " refers to a deleted edge");
   }
-  if (edge.TrimCount() != 2) return Result::Failed;
+  const int trim_count = orig_edge.TrimCount();
+  if (trim_count < 2) return Result::Failed;  // naked already - nothing to unjoin
 
-  ON_Curve* dup = edge.DuplicateCurve();
-  if (!dup) return Result::Failed;
-  const int c3i = brep_.AddEdgeCurve(dup);
-  ON_BrepVertex& v0 = brep_.m_V[edge.m_vi[0]];
-  ON_BrepVertex& v1 = brep_.m_V[edge.m_vi[1]];
-  // Cache what's still needed from `edge` before calling NewEdge: NewEdge
-  // appends to brep_.m_E internally, which can reallocate that array and
-  // invalidate the `edge` reference into it (a real, ASan-caught
-  // heap-use-after-free when the two both continued to be read below).
-  const double edge_tolerance = edge.m_tolerance;
-  const int edge_ti1 = edge.m_ti[1];
-  ON_BrepEdge& new_edge = brep_.NewEdge(v0, v1, c3i);
-  new_edge.m_tolerance = edge_tolerance;
+  // Every trim but the first (orig_edge.m_ti[0], which stays on the
+  // original edge) gets its OWN brand-new duplicate edge - the same move
+  // the original 2-trim-only version of this method made for its single
+  // second trim, just repeated once per EXTRA trim instead of assuming
+  // there is exactly one. Captured up front, before any mutation: the
+  // vertex indices/tolerance never change during this method, but
+  // orig_edge.m_ti itself shrinks by one on every successful
+  // AttachToEdge() below, so reading "everything past index 0" after the
+  // first move would silently skip a trim.
+  std::vector<int> trims_to_move;
+  trims_to_move.reserve(static_cast<size_t>(trim_count - 1));
+  for (int k = 1; k < trim_count; ++k) trims_to_move.push_back(orig_edge.m_ti[k]);
+  const int vi0 = orig_edge.m_vi[0];
+  const int vi1 = orig_edge.m_vi[1];
+  const double edge_tolerance = orig_edge.m_tolerance;
 
-  // Move the SECOND of the original edge's two trims onto the new,
-  // duplicate edge - AttachToEdge() is the OpenNURBS "expert user" API
-  // that correctly updates both edges' own m_ti[] bookkeeping (removing
-  // the trim from the old edge's list, adding it to the new edge's),
-  // rather than hand-editing those arrays. The result: two edges, each
-  // with exactly one trim (a naked edge, by the same TrimCount()==1 test
-  // this kernel's SelNakedEdges-style detection already uses), occupying
-  // the same 3D location - both faces stay in this SAME ON_Brep.
-  const int ti = edge_ti1;
-  ON_BrepTrim& trim = brep_.m_T[ti];
-  const bool rev = trim.m_bRev3d;
-  if (!trim.AttachToEdge(new_edge.m_edge_index, rev)) {
-    new_edge.m_edge_index = -1;  // roll back the unused edge so a failed
-    brep_.Compact();             // attempt leaves this Brep untouched
-    return Result::Failed;
+  // Every mutation happens on a TRIAL copy, never brep_ itself: a 3+-trim
+  // edge needs more than one AttachToEdge() call, and a later one failing
+  // after an earlier one already succeeded must not leave this Brep with
+  // only SOME of its trims moved - the same all-or-nothing discipline
+  // AddHoleLoops()/MergeCoplanarFaces() already use for their own
+  // multi-step batches (see their own doc comments).
+  ON_Brep trial = brep_;
+  bool ok = true;
+  for (const int ti : trims_to_move) {
+    // Duplicate the ORIGINAL edge's own curve fresh each time (rather
+    // than reusing one duplicate for every new edge): trial.m_E[edge_index]
+    // is looked up by index, not held as a reference across iterations,
+    // since NewEdge() below appends to trial.m_E and can reallocate it -
+    // the exact heap-use-after-free this method's own single-trim version
+    // already guards against by caching scalars instead of a reference.
+    ON_Curve* dup = trial.m_E[edge_index].DuplicateCurve();
+    if (!dup) { ok = false; break; }
+    const int c3i = trial.AddEdgeCurve(dup);
+    ON_BrepEdge& new_edge = trial.NewEdge(trial.m_V[vi0], trial.m_V[vi1], c3i);
+    new_edge.m_tolerance = edge_tolerance;
+    ON_BrepTrim& trim = trial.m_T[ti];
+    const bool rev = trim.m_bRev3d;
+    if (!trim.AttachToEdge(new_edge.m_edge_index, rev)) {
+      ok = false;
+      break;
+    }
   }
+  if (!ok) return Result::Failed;  // trial discarded here - brep_ untouched
 
-  brep_.SetTolerancesBoxesAndFlags();
-  FixUnsetEdgeTolerances(brep_);
+  trial.SetTolerancesBoxesAndFlags();
+  FixUnsetEdgeTolerances(trial);
+  brep_ = std::move(trial);
   // Unlike MergeCoplanarFaces()/ReplaceEdgeCurve() (see their own doc
   // comments), this class's own per-face side tables do NOT need
   // invalidating here: no face was added, removed, or renumbered, and
-  // both faces' own VISIBLE boundary is bit-identical to before (the
+  // every face's own VISIBLE boundary is bit-identical to before (each
   // duplicated edge carries the exact same 3D curve content - only which
-  // ON_BrepEdge object underlies each of the two now-separate trims
-  // changed, not the shape either face presents).
+  // ON_BrepEdge object underlies each now-separate trim changed, not the
+  // shape any face presents).
   return Result::Ok;
 }
 
@@ -9508,11 +9524,66 @@ int Brep::CapPlanarHoles(double tolerance) {
       const int head = rev ? e.m_vi[0] : e.m_vi[1];
       if (head == origin) break;
       const std::vector<int>& next = naked_at_vertex[head];
-      if (next.size() != 2) {
-        ok = false;  // dead end or ambiguous junction
+      // Candidates to continue onto from `head`: every OTHER naked edge
+      // there, excluding both the edge just arrived on and anything a
+      // (this or an earlier) chain has already claimed - `next` itself is
+      // the STATIC full degree at `head`, so a vertex already down to one
+      // real choice (the ordinary degree-2 case, or a degree-3+ vertex
+      // whose other branches an earlier chain already consumed) is
+      // resolved here without needing the disambiguation below at all.
+      std::vector<int> candidates;
+      for (const int cand : next) {
+        if (cand != ei && !used.count(cand)) candidates.push_back(cand);
+      }
+      if (candidates.empty()) {
+        ok = false;  // dead end
         break;
       }
-      const int nei = next[0] == ei ? next[1] : next[0];
+      int nei = -1;
+      if (candidates.size() == 1) {
+        nei = candidates.front();
+      } else {
+        // 2+ live candidates remain: a genuine 3-or-more-naked-edge
+        // junction, most commonly two or more otherwise-unrelated
+        // missing-face/hole boundaries that merely touch at one point (a
+        // non-manifold pinch - see CheckIssue::Kind::NonManifoldVertex).
+        // Disambiguated with the SAME proven "which faces are reachable
+        // from each other through this vertex's own OTHER (still-shared,
+        // non-naked) edges" grouping Check()'s own NonManifoldVertex
+        // diagnostic and SplitNonManifoldVertex() already rely on
+        // (GroupVertexEdgesByFace, above) rather than guessed at
+        // geometrically: the naked edge that borders a face in the SAME
+        // group as the edge just arrived on is the one continuing the
+        // SAME local shell's boundary, regardless of how many other,
+        // differently-grouped chains also happen to pass through `head`.
+        // Never guessed when this doesn't cleanly resolve to exactly one
+        // choice - a single connected region whose own naked boundary
+        // genuinely branches at `head` (e.g. a hole loop touching its own
+        // face's outer loop, or two holes of the same face touching each
+        // other) is still refused here, honestly, rather than picked
+        // arbitrarily.
+        const ON_BrepVertex& hv = b.m_V[head];
+        const VertexFaceGroups groups = GroupVertexEdgesByFace(b, hv);
+        auto group_of = [&](int edge_index) -> int {
+          for (int k = 0; k < hv.m_ei.Count(); ++k) {
+            if (hv.m_ei[k] == edge_index) return groups.edge_group[static_cast<size_t>(k)];
+          }
+          return -1;
+        };
+        const int incoming_group = group_of(ei);
+        std::vector<int> same_group;
+        if (incoming_group >= 0) {
+          for (const int cand : candidates) {
+            if (group_of(cand) == incoming_group) same_group.push_back(cand);
+          }
+        }
+        if (same_group.size() == 1) {
+          nei = same_group.front();
+        } else {
+          ok = false;  // still ambiguous even by face-group - never guessed
+          break;
+        }
+      }
       const ON_BrepEdge& ne = b.m_E[nei];
       if (ne.m_vi[0] == head) rev = false;
       else if (ne.m_vi[1] == head) rev = true;

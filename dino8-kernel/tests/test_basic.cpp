@@ -12793,6 +12793,72 @@ void TestCapPlanarHolesCapsACurvedCircularRim() {
   Check(cyl.CapPlanarHoles() == 0, "a closed cylinder has no hole to cap");
 }
 
+// Three independent, mutually unrelated planar squares - one per
+// coordinate plane (z=0, y=0, x=0) - each hand-built as its own single
+// PlanarFace (no shared edge anywhere, exactly TestBrepCheckDetectsNonManifoldPinchVertex's
+// own "bowtie" fixture generalized from two squares to three), touching
+// only at their shared corner, the origin. Check() reports the origin a
+// NonManifoldVertex with 3 face groups - a real degree-6 naked-edge
+// junction CapPlanarHoles() used to refuse outright (any chain reaching
+// it mid-walk was left uncapped, per this bullet's own prior "a vertex
+// with more than two naked edges is skipped" text). Each square's own
+// loop is deliberately started away from the shared vertex (not at it),
+// so every one of the three walks reaches the origin as an INTERMEDIATE
+// head (not as its own starting/closing point) and must actually
+// disambiguate which of the (up to 5) other live candidates continues
+// its own loop - never trivially avoided the way starting the walk AT
+// the shared vertex itself would.
+void TestCapPlanarHolesResolvesAMultiWayNonManifoldPinch() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+
+  const Point3d o(0, 0, 0);
+  const Point3d a1(1, 0, 0), a2(1, 1, 0), a3(0, 1, 0);       // square A: z = 0 plane
+  const Point3d b1(0, 0, -1), b2(-1, 0, -1), b3(-1, 0, 0);   // square B: y = 0 plane
+  const Point3d c1(0, -1, 0), c2(0, -1, 1), c3(0, 0, 1);     // square C: x = 0 plane
+
+  std::vector<Brep::PlanarFace> faces;
+  faces.push_back(CheckHealFace({a1, a2, a3, o}, ON_3dVector(0, 0, 1)));
+  faces.push_back(CheckHealFace({b1, b2, b3, o}, ON_3dVector(0, -1, 0)));
+  faces.push_back(CheckHealFace({c1, c2, c3, o}, ON_3dVector(-1, 0, 0)));
+  Brep pinch = Brep::FromPlanarFaces(faces);
+
+  Check(pinch.FaceCount() == 3 && pinch.raw().m_E.Count() == 12 && pinch.raw().m_V.Count() == 10,
+        "the fixture has 3 faces, 12 edges (none shared), and 10 vertices (12 corners minus the 3 "
+        "duplicates welded onto the one shared origin)");
+  const Brep::CheckReport before = pinch.Check();
+  Check(before.Count(Brep::CheckIssue::Kind::NakedEdge) == 12, "all 12 edges are naked - the three squares share no edge");
+  Check(before.Count(Brep::CheckIssue::Kind::NonManifoldVertex) == 1, "exactly the shared origin is non-manifold");
+  const Brep::CheckIssue* pinch_issue = nullptr;
+  for (const Brep::CheckIssue& issue : before.issues) {
+    if (issue.kind == Brep::CheckIssue::Kind::NonManifoldVertex) pinch_issue = &issue;
+  }
+  Check(pinch_issue != nullptr && pinch_issue->other_index == 3 && pinch_issue->location.DistanceTo(o) < 1e-12,
+        "the issue names all 3 disjoint face groups (one per square) and the pinch point's own location");
+
+  Check(pinch.CapPlanarHoles() == 3, "CapPlanarHoles() adds all 3 caps - it no longer refuses every chain that "
+                                     "merely passes through the shared, degree-6 pinch vertex");
+  Check(pinch.FaceCount() == 6, "3 original faces + 3 new caps");
+  Check(pinch.raw().m_E.Count() == 12, "no new edges - each cap welds onto its own square's existing boundary "
+                                       "via JoinNakedEdges, the same as the single-hole box/cylinder fixtures above");
+  Check(pinch.raw().m_V.Count() == 10, "no new vertices either");
+  const Brep::CheckReport after = pinch.Check();
+  Check(after.Count(Brep::CheckIssue::Kind::NakedEdge) == 0,
+        "every one of the 12 original edges is now shared between its own square and its own new cap");
+  Check(after.Count(Brep::CheckIssue::Kind::NonManifoldVertex) == 1 && [&]() {
+          for (const Brep::CheckIssue& issue : after.issues) {
+            if (issue.kind == Brep::CheckIssue::Kind::NonManifoldVertex) return issue.other_index == 3;
+          }
+          return false;
+        }(),
+        "the origin is still reported as a 3-group non-manifold pinch afterwards, honestly - capping each "
+        "square's own hole does not, and is not claimed to, resolve the pinch itself (still 3 disjoint "
+        "wall+cap pairs meeting at one point, not one closed manifold solid)");
+
+  // A second call has nothing left to cap.
+  Check(pinch.CapPlanarHoles() == 0, "a fully capped pinch fixture has no hole left to cap");
+}
+
 // Offset an edge by 1e-4: the top face is built at z = 1 + 1e-4, so none
 // of its 4 edges weld to the sides' (kWeld is 1e-6) - 8 naked edges.
 // JoinNakedEdges(2e-4) joins the 4 pairs and records the 1e-4 gap as
@@ -43024,6 +43090,84 @@ void TestUnjoinEdgeSplitsSharedEdgeIntoTwoNakedCopies() {
   Check(threw, "UnjoinEdge() throws std::out_of_range for an out-of-range edge_index");
 }
 
+// Brep::UnjoinEdge() on a genuine non-manifold (3-trim) edge - the
+// "Non-manifold topology" bullet's own previously-named remaining gap
+// ("UnjoinEdge itself still refuses anything but exactly 2 trims").
+// Reuses the exact same hand-built "book" fixture (three planar pages
+// hinged on one common 3D spine edge, TrimCount() == 3) the
+// SplitNonManifoldEdge() test above already exercises, since no existing
+// factory produces a genuine 3-trim edge. Unlike SplitNonManifoldEdge()
+// (which keeps one manifold pair together and splits off only the odd
+// trim), UnjoinEdge() on the SAME edge fully separates all three pages,
+// matching Rhino's own UnjoinEdge command regardless of trim count.
+void TestUnjoinEdgeGeneralizesToThreeOrMoreTrims() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Result;
+
+  NonManifoldEdgeFixture fixture = BuildNonManifoldEdgeBook();
+  Brep& book = fixture.brep;
+  Check(book.raw().m_E[fixture.shared_edge_index].TrimCount() == 3,
+        "setup: the book fixture's spine starts with all 3 pages' own trims on it");
+  const Brep::CheckReport before = book.Check();
+  Check(before.Count(Brep::CheckIssue::Kind::NonManifoldEdge) == 1 &&
+            before.Count(Brep::CheckIssue::Kind::NakedEdge) == 9,
+        "before: the spine is the lone non-manifold edge, and the 9 never-shared page sides are naked");
+
+  const int e_count_before = book.raw().m_E.Count();
+  const int v_count_before = book.raw().m_V.Count();
+  const int f_count_before = book.FaceCount();
+
+  const Result r = book.UnjoinEdge(fixture.shared_edge_index);
+  Check(r == Result::Ok, "UnjoinEdge() now succeeds on a 3-trim edge too, not just an ordinary 2-trim one");
+  Check(book.raw().m_E.Count() == e_count_before + 2,
+        "2 new edges: one extra coincident naked copy per trim beyond the first (2 of the spine's 3 trims move)");
+  Check(book.raw().m_V.Count() == v_count_before, "vertex count untouched - pure trim/edge bookkeeping");
+  Check(book.FaceCount() == f_count_before, "face count untouched - all 3 pages stay in this same Brep");
+  Check(book.raw().m_E[fixture.shared_edge_index].TrimCount() == 1,
+        "the original spine edge now carries only its own first trim - itself naked, not just non-manifold-free");
+
+  // Every one of the 3 resulting coincident copies - not just the
+  // original edge slot - is genuinely its own separate, single-trim
+  // edge at the spine's own location, confirmed by position rather than
+  // by index (a stronger, more direct check than the aggregate Check()
+  // counts below give alone): this book fixture is a deliberately
+  // minimal, hand-built scaffold (its own "no existing factory produces
+  // this shape" doc comment above) that was never built to also satisfy
+  // ON_Brep::IsValid()'s own full geometric rigor (real, pre-existing
+  // trim/edge gaps on more than one of its own sides, confirmed present
+  // even before this method ever touches it) - checked directly, not
+  // assumed - so this checks UnjoinEdge()'s own actual contract (trim/
+  // edge topology bookkeeping) instead of a strength the fixture itself
+  // was never designed to have.
+  {
+    int spine_copies = 0;
+    for (int ei = 0; ei < book.raw().m_E.Count(); ++ei) {
+      const ON_BrepEdge& e = book.raw().m_E[ei];
+      if (e.m_edge_index < 0) continue;
+      const bool at_spine = e.PointAtStart().DistanceTo(ON_3dPoint(0, 0, 0)) < 1e-9 &&
+                            e.PointAtEnd().DistanceTo(ON_3dPoint(0, 0, 1)) < 1e-9;
+      if (at_spine) {
+        Check(e.TrimCount() == 1, "each coincident spine copy carries exactly its own one trim");
+        ++spine_copies;
+      }
+    }
+    Check(spine_copies == 3, "all 3 pages now sit on 3 genuinely separate coincident edges at the spine's own "
+                             "location, not merged back onto fewer");
+  }
+
+  const Brep::CheckReport after = book.Check();
+  Check(after.Count(Brep::CheckIssue::Kind::NonManifoldEdge) == 0, "no non-manifold edge remains");
+  Check(after.Count(Brep::CheckIssue::Kind::NakedEdge) == 12,
+        "the 9 original always-naked sides plus all 3 now-separate copies at the spine's own location "
+        "(as opposed to SplitNonManifoldEdge()'s own 10: that method keeps one manifold pair together)");
+  Check(after.Count(Brep::CheckIssue::Kind::InconsistentFaceOrientation) == 0,
+        "fully separating every trim can never itself create a same-orientation clash");
+
+  // A now-naked edge has nothing left to unjoin.
+  Check(book.UnjoinEdge(fixture.shared_edge_index) == Result::Failed,
+        "a second call on the now-1-trim former spine returns Result::Failed, not a thrown exception");
+}
+
 // Brep::RemoveNakedMicroEdge() on a single flat plate whose own boundary
 // loop has one hairline sliver edge (a near-duplicate point inserted
 // along one side, exactly the "bad trim left a tiny gap" shape
@@ -57067,6 +57211,7 @@ int main() {
   TestReplaceEdgeCurveThrowsOnEndpointMismatch();
   TestReplaceEdgeCurveThrowsOnSurfaceMismatch();
   TestUnjoinEdgeSplitsSharedEdgeIntoTwoNakedCopies();
+  TestUnjoinEdgeGeneralizesToThreeOrMoreTrims();
   TestRemoveNakedMicroEdgeClosesIsolatedSliverOnAPlate();
   TestRemoveNakedMicroEdgeRefusesASliverNextToASharedEdge();
   TestRemoveSharedMicroEdgeClosesIsolatedSeamBetweenTwoFaces();
@@ -57118,6 +57263,7 @@ int main() {
   TestBrepCheckAndUnifyNormalsOnFlippedFace();
   TestBrepCheckReportsDroppedFaceAndCapPlanarHolesRestoresIt();
   TestCapPlanarHolesCapsACurvedCircularRim();
+  TestCapPlanarHolesResolvesAMultiWayNonManifoldPinch();
   TestBrepJoinNakedEdgesRecordsTolerantEdges();
   TestBrepRemoveSliverAndDegenerateFacesHealHairlineStrip();
   TestBrepRemoveDegenerateEdgesCollapsesSharedMicroEdge();

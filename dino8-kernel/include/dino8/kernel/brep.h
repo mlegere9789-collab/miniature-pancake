@@ -3207,31 +3207,42 @@ class Brep {
   // contract `RemoveAllSharedMicroEdges()` already has.
   int RebuildAllEdgeCurves(double tolerance = tolerance::kEdgeJoin);
 
-  // Splits a shared (exactly two trims) edge into two coincident but
-  // topologically distinct naked edges, in place, while leaving both
-  // faces in THIS SAME Brep - Rhino's own UnjoinEdge semantics exactly
-  // (as opposed to ExtractSrf, which pulls one of the two faces out into
-  // a separate object entirely; see cmd_srfedit.cpp's own prior history
-  // for the gap this closes). The edge's own 3D curve is duplicated into
-  // a brand-new ON_BrepEdge sharing the same two vertices; the SECOND of
-  // the original edge's two trims (edge.m_ti[1]) is then moved onto that
-  // new edge via ON_BrepTrim::AttachToEdge() - the OpenNURBS "expert
-  // user" API that correctly updates both edges' own m_ti[] bookkeeping,
-  // rather than hand-editing it. The result: two edges, each with exactly
-  // one trim - i.e. two naked edges where SelNakedEdges-style detection
+  // Splits a shared edge (two OR MORE trims) into that many coincident
+  // but topologically distinct naked edges, in place, while leaving
+  // every face in THIS SAME Brep - Rhino's own UnjoinEdge semantics
+  // exactly (as opposed to ExtractSrf, which pulls one of the faces out
+  // into a separate object entirely; see cmd_srfedit.cpp's own prior
+  // history for the gap this closes). The edge's own 3D curve is
+  // duplicated once per trim BEYOND the first, into its own brand-new
+  // ON_BrepEdge sharing the same two vertices; that trim is then moved
+  // onto its own new edge via ON_BrepTrim::AttachToEdge() - the
+  // OpenNURBS "expert user" API that correctly updates both edges' own
+  // m_ti[] bookkeeping, rather than hand-editing it. The FIRST trim
+  // (edge.m_ti[0]) always stays on the original edge. The result, for an
+  // ordinary 2-trim edge: two edges, each with exactly one trim - i.e.
+  // two naked edges where SelNakedEdges-style detection
   // (edge.TrimCount() == 1) previously found none, occupying the same
-  // 3D location.
+  // 3D location; for a non-manifold 3+-trim edge (see
+  // CheckIssue::Kind::NonManifoldEdge), the SAME "each trim gets its own
+  // copy" rule applied N-1 times over, fully separating every face that
+  // shared the edge - unlike SplitNonManifoldEdge() (above), which keeps
+  // ONE genuine manifold pair together and only splits off the odd
+  // trim(s), this always splits ALL of them apart, matching Rhino's own
+  // UnjoinEdge command exactly regardless of trim count. Every trim is
+  // moved on a private trial copy of this Brep first, committed only if
+  // every move succeeds, so a failure partway through a 3+-trim edge
+  // (unusual, but see AttachToEdge's own doc comment) leaves this Brep
+  // completely untouched rather than half-unjoined.
   //
   // Returns Result::Failed (not a thrown exception - this is an
   // ordinary, expected outcome, the same "can't, but that's not a bug"
   // contract MergeEdge's own ON_Brep::CombineContiguousEdges failure
-  // already has in cmd_fillet.cpp) if `edge_index` refers to an edge that
-  // is not shared by EXACTLY two trims (a naked edge has nothing to
-  // unjoin; a non-manifold 3+-trim edge is out of scope for v1) or whose
-  // curve could not be duplicated. Throws std::out_of_range if
-  // `edge_index` itself is out of range, or std::invalid_argument if it
-  // refers to an already-deleted edge - both genuine caller bugs, not
-  // ordinary outcomes.
+  // already has in cmd_fillet.cpp) if `edge_index` refers to an edge with
+  // fewer than 2 trims (a naked edge has nothing to unjoin) or whose
+  // curve could not be duplicated for any of its trims. Throws
+  // std::out_of_range if `edge_index` itself is out of range, or
+  // std::invalid_argument if it refers to an already-deleted edge - both
+  // genuine caller bugs, not ordinary outcomes.
   Result UnjoinEdge(int edge_index);
 
   // Closes RemoveAllNakedMicroEdges' own real gap (cmd_srfedit.cpp used to
@@ -4464,9 +4475,23 @@ class Brep {
   // Caps every planar hole in this Brep's
   // planar face - Rhino's own Cap for the case Check() reports as a
   // closed chain of NakedEdge issues: each chain of naked (single-trim)
-  // edges is walked head-to-tail through its own vertices (a vertex with
-  // more than two naked edges is ambiguous and its chains are skipped,
-  // never guessed), its edge curves are duplicated and reversed as
+  // edges is walked head-to-tail through its own vertices. A vertex
+  // carrying more than two naked edges (most commonly two or more
+  // otherwise-unrelated missing-face/hole boundaries that merely touch
+  // at one point - a non-manifold pinch, see
+  // CheckIssue::Kind::NonManifoldVertex) is disambiguated by which
+  // faces are reachable from each other through that vertex's OWN other
+  // (still-shared) edges - the same grouping Check()'s own
+  // NonManifoldVertex diagnostic and SplitNonManifoldVertex() already
+  // use (GroupVertexEdgesByFace, brep.cpp) - rather than guessed at
+  // geometrically: the naked edge sharing the arriving edge's own group
+  // is the one continuing the SAME chain, so two or more chains that
+  // merely touch at one vertex each cap correctly and independently.
+  // Never guessed when that still leaves more than one candidate (a
+  // single connected region whose own naked boundary genuinely branches
+  // at that vertex, e.g. a hole loop touching its own face's outer loop
+  // or another hole) - such a chain is still skipped, honestly, exactly
+  // like a plain dead end. Its edge curves are duplicated and reversed as
   // needed into one closed boundary, and, if every point sampled on
   // that boundary lies within `tolerance` (floored at
   // tolerance::DistanceForSize of the loop's own extent) of one plane
