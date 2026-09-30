@@ -272,3 +272,17 @@ Volume
 SelAll
 Delete
 @expect_objects 0
+# --- FilletVertex: radius too large for the 3 edges meeting at a picked
+# vertex (a fresh 2x2x2 box's own corner can't take radius=5) - expect a
+# clean diagnostic from both the convex and concave kernel attempts, not a
+# crash or garbage geometry, and the box left completely untouched.
+Box 1300200,0,0 1300202,2,0 2
+FilletVertex
+Radius=5
+1300200,0,0
+SelAll
+Volume
+@expect_objects 1
+SelAll
+Delete
+@expect_objects 0

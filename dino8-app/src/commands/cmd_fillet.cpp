@@ -151,6 +151,27 @@ std::optional<EdgePick> PickEdge(CommandContext& ctx, Point3d p) {
   return best;
 }
 
+struct VertexPick { ObjectId id = kNoObject; int vertex = -1; double dist = 0; };
+
+// Nearest ON_BrepVertex to `p` across every visible, unlocked B-rep object
+// in the scene - the vertex-level sibling of PickFace/PickEdge above, for
+// FilletVertexCommand's own "pick a solid corner" entry point.
+std::optional<VertexPick> PickVertex(CommandContext& ctx, Point3d p) {
+  std::optional<VertexPick> best;
+  for (const SceneObject& o : ctx.Doc().Objects()) {
+    if (!ctx.Doc().IsObjectVisible(o) || ctx.Doc().IsObjectLocked(o)) continue;
+    std::optional<ON_Brep> b = BrepOfObject(o);
+    if (!b) continue;
+    for (int i = 0; i < b->m_V.Count(); ++i) {
+      const ON_BrepVertex& v = b->m_V[i];
+      if (v.m_vertex_index < 0) continue;
+      const double d = v.point.DistanceTo(p);
+      if (!best || d < best->dist) best = VertexPick{o.id, i, d};
+    }
+  }
+  return best;
+}
+
 ObjectId AddCurveFrom(CommandContext& ctx, const ON_Curve& c, const SceneObject& like) {
   kernel::NurbsCurve k;
   if (!CurveFromON(c, k)) return kNoObject;
@@ -1385,6 +1406,42 @@ class FilletEdgeCommand : public Command {
       // existed; unlike Rho/RailType, the plain-Radius case has always had
       // a working approximate equivalent, so there is nothing to warn about.
     }
+    // Exact TAPERED fillet, tried FIRST for a variable-radius (Radii=) run:
+    // kernel::FilletConvexEdgeTapered builds the SAME piecewise-linear
+    // rolling-ball taper BuildPlanarVariableFillet below already claims is
+    // exact for two planar faces (see its own "exact by construction"
+    // comment), but as the genuine closed-form kernel construction (real
+    // ConicalFace segments, corner-notch splicing included) rather than
+    // the app's own separate arc-lofting reimplementation of the same
+    // math - the same "try the exact kernel construction first" pattern
+    // TryExactFillet above already established for the constant-radius
+    // case. Convex edges only: no FilletConcaveEdgeTapered exists in the
+    // kernel yet, so a concave edge always falls through unchanged.
+    // Fails open exactly like TryExactFillet: a concave edge, a curved
+    // adjacent face, or any other rejection falls through to the existing
+    // BuildPlanarVariableFillet/BuildPlaneCylinderVariableFillet/
+    // BuildFillet cascade below, unchanged.
+    if (mode_ == Mode::Fillet && !rho_.has_value() && rail_type_ == RailType::RollingBall && !radii_.empty() && !preview_) {
+      ON_Brep exact;
+      std::string detail;
+      if (TryExactTaperedFillet(*b, edge.PointAtStart(), edge.PointAtEnd(), exact, detail)) {
+        ctx.Doc().BeginChange(label);
+        if (SceneObject* orig = ctx.Doc().Find(pick.id)) {
+          orig->kind = ObjectKind::Brep;
+          if (!orig->brep) orig->brep = std::make_unique<kernel::Brep>();
+          orig->brep->raw() = exact;
+          orig->surface.reset();
+          orig->InvalidateDisplay();
+        }
+        variable_engine_used_ = true;
+        ctx.Print(label + ": edge " + std::to_string(pick.edge) + " of object " + std::to_string(pick.id) +
+                   " replaced with an exact fillet (" + RadiusDescription() + ")");
+        return;
+      }
+      // Exact path unavailable here (a concave edge, a curved adjacent
+      // face, etc.) - fall through to the existing approximate cascade
+      // below exactly as before this wiring existed.
+    }
     ON_NurbsSurface built;
     std::vector<Point3d> spine;
     std::vector<Point3d> contact_pts_a, contact_pts_b;  // one contact point per spine sample, for the mesh-fallback wedge cutter
@@ -1827,6 +1884,55 @@ class FilletEdgeCommand : public Command {
     return false;
   }
 
+  // Builds the piecewise-linear radius profile from radii_ (RadiusAt's own
+  // held-constant-past-the-ends, t-fraction-in-[0,1] convention, the same
+  // one BuildPlanarVariableFillet's radius_at(t) callback already uses) as
+  // arc-length stations for kernel::FilletConvexEdgeTapered's N-station
+  // overload: `stations.front().t == 0` and `stations.back().t == length`
+  // are required by that overload, so the first and last stations are
+  // always anchored there (via RadiusAt(0)/RadiusAt(1), matching whatever
+  // handle - if any - already sits at that end), with every interior
+  // handle converted from its t-fraction to an arc-length t = fraction *
+  // length and included in between; a handle that already falls on (or
+  // within a small tolerance of) t=0 or t=length is skipped to avoid
+  // feeding the kernel two stations at the same t.
+  std::vector<kernel::FilletRadiusStation> TaperedStations(double length) const {
+    std::vector<kernel::FilletRadiusStation> stations;
+    stations.push_back({0.0, RadiusAt(0.0)});
+    for (const auto& h : radii_) {
+      const double t = h.first * length;
+      if (t <= 1e-9 || t >= length - 1e-9) continue;
+      stations.push_back({t, h.second});
+    }
+    stations.push_back({length, RadiusAt(1.0)});
+    return stations;
+  }
+
+  // Tries the exact kernel N-station tapered fillet (kernel::
+  // FilletConvexEdgeTapered) for a variable-radius (Radii=) run between
+  // p0/p1 on `solid`'s own two adjacent PLANAR faces - the real closed-form
+  // construction PARITY_MAP.md's Blending & chamfering entry documents as
+  // still never called from here, the same gap TryExactFillet's own
+  // plain-Radius case already closed. Convex only: no
+  // FilletConcaveEdgeTapered exists yet in the kernel, so unlike
+  // TryExactFillet/TryExactChamfer/etc. above there is no concave attempt
+  // to cascade to here - a concave edge simply throws inside
+  // FilletConvexEdgeTapered's own convexity check and this returns false,
+  // exactly as any other rejection does.
+  bool TryExactTaperedFillet(const ON_Brep& solid, Point3d p0, Point3d p1, ON_Brep& out, std::string& detail) const {
+    kernel::Brep kb;
+    kb.raw() = solid;
+    const double length = p0.DistanceTo(p1);
+    if (!(length > 1e-9)) { detail = "degenerate edge"; return false; }
+    try {
+      out = kernel::FilletConvexEdgeTapered(kb, p0, p1, TaperedStations(length)).raw();
+      return true;
+    } catch (const std::exception& ex) {
+      detail = ex.what();
+      return false;
+    }
+  }
+
   Mode mode_;
   double radius_ = 2;
   std::vector<std::pair<double, double>> radii_;  // (t in [0,1], radius) handles; empty = constant radius_
@@ -1836,7 +1942,7 @@ class FilletEdgeCommand : public Command {
   RailType rail_type_ = RailType::RollingBall;  // Fillet only: alternate distance-based input for the same circular rolling-ball fillet; RollingBall = plain Radius (default)
   bool curvature_ = false;
   bool preview_ = false;
-  bool variable_engine_used_ = false;  // set by Run(): true when BuildPlanarVariableFillet (the exact closed form) built the last variable-radius result
+  bool variable_engine_used_ = false;  // set by Run(): true when TryExactTaperedFillet (kernel::FilletConvexEdgeTapered) or BuildPlanarVariableFillet/BuildPlaneCylinderVariableFillet (the app's own exact closed forms) built the last variable-radius result
 };
 
 // ---------------------------------------------------------------------------
@@ -3053,6 +3159,94 @@ void IntersectAny(CommandContext& ctx, const std::vector<ObjectId>& ids) {
 }
 
 // ---------------------------------------------------------------------------
+// Vertex blend (Rhino's FilletEdge extended to a whole solid corner):
+// PARITY_MAP.md's Blending & chamfering "Vertex blend" entry already
+// documents genuinely exact kernel constructions for the m==3 trihedral
+// corner - kernel::FilletConvexEdges/FilletConcaveEdges's own spherical-
+// corner dispatch (see fillet.h's own doc comment on FilletConvexEdges for
+// the full derivation: the ball center is the unique point equidistant
+// from all three face planes, requiring one of the three faces to be
+// perpendicular to the other two) - but neither function had ANY app
+// caller before this (zero references anywhere in dino8-app/src). This
+// command picks a single VERTEX (PickVertex above, the vertex-level
+// sibling of PickFace/PickEdge) rather than an edge: at a genuine
+// trihedral corner exactly 3 edges meet there, which is exactly the m==3
+// case both kernel functions require, so no separate edge-chain selection
+// UI (still absent from the app entirely - PARITY_MAP.md's own "tangent
+// edge chains" entry) is needed for this one specific, common corner
+// shape. Tries FilletConvexEdges first, then FilletConcaveEdges, the same
+// convex-then-concave cascade every other command in this file uses,
+// since the picked vertex's own convexity isn't known in advance.
+class FilletVertexCommand : public Command {
+ public:
+  void Begin(CommandContext&) override {
+    options = {{"Radius", FormatNumber(radius_), {}, true, false}};
+    WantPoint("Click a solid's vertex to fillet (rounds the 3 edges meeting there into one spherical corner)");
+  }
+  void OnOption(CommandContext&, const std::string& n, const std::string& v) override {
+    if (n == "Radius") radius_ = std::atof(v.c_str());
+  }
+  void OnPoint(CommandContext& ctx, Point3d p) override {
+    Run(ctx, p);
+    Finish();
+  }
+  void Run(CommandContext& ctx, Point3d p) {
+    std::optional<VertexPick> pick = PickVertex(ctx, p);
+    if (!pick) { ctx.Warn("FilletVertex: no vertex near that point"); return; }
+    const SceneObject* o = ctx.Doc().Find(pick->id);
+    if (!o) return;
+    std::optional<ON_Brep> b = BrepOfObject(*o);
+    if (!b) { ctx.Warn("FilletVertex: picked object has no B-rep"); return; }
+    const ON_BrepVertex& v = b->m_V[pick->vertex];
+    if (v.m_ei.Count() != 3) {
+      ctx.Warn("FilletVertex: needs a vertex where exactly 3 edges meet (found " + std::to_string(v.m_ei.Count()) +
+                "); higher-valence and non-trihedral corners have no exact spherical-blend construction yet");
+      return;
+    }
+    std::vector<std::pair<Point3d, Point3d>> edges;
+    for (int k = 0; k < 3; ++k) {
+      const ON_BrepEdge& e = b->m_E[v.m_ei[k]];
+      edges.emplace_back(e.PointAtStart(), e.PointAtEnd());
+    }
+    kernel::Brep kb;
+    kb.raw() = *b;
+    std::string convex_err, concave_err;
+    ON_Brep result;
+    const char* kind = nullptr;
+    try {
+      result = kernel::FilletConvexEdges(kb, edges, radius_).raw();
+      kind = "convex";
+    } catch (const std::exception& ex1) {
+      convex_err = ex1.what();
+      try {
+        result = kernel::FilletConcaveEdges(kb, edges, radius_).raw();
+        kind = "concave";
+      } catch (const std::exception& ex2) {
+        concave_err = ex2.what();
+      }
+    }
+    if (!kind) {
+      ctx.Warn("FilletVertex: not a supported trihedral corner (needs one of the 3 faces perpendicular to the other "
+                "two; convex attempt: " + convex_err + "; concave attempt: " + concave_err + ")");
+      return;
+    }
+    ctx.Doc().BeginChange("FilletVertex");
+    if (SceneObject* orig = ctx.Doc().Find(pick->id)) {
+      orig->kind = ObjectKind::Brep;
+      if (!orig->brep) orig->brep = std::make_unique<kernel::Brep>();
+      orig->brep->raw() = result;
+      orig->surface.reset();
+      orig->InvalidateDisplay();
+    }
+    ctx.Print("FilletVertex: " + std::string(kind) + " spherical corner at vertex " + std::to_string(pick->vertex) +
+               " of object " + std::to_string(pick->id) + " filleted (radius " + FormatNumber(radius_) + ")");
+  }
+
+ private:
+  double radius_ = 2;
+};
+
+// ---------------------------------------------------------------------------
 // Blend/chamfer removal (Rhino's RemoveFillet): PARITY_MAP.md's Blending &
 // chamfering "Blend removal / defeaturing with healing" entry already
 // documents genuinely exact kernel inverses - RemoveBlend (fillets, plain
@@ -3174,6 +3368,8 @@ void RegisterFilletCommands(CommandEngine& e) {
       "Refits each shared edge's 3D curve through the real SSX of its two adjacent faces.");
   Reg(e, "RemoveFillet", Make<RemoveFilletCommand>(), CommandStatus::Implemented,
       "Exact kernel::RemoveBlend/RemoveChamfer/RemoveChamferVertex inverse of FilletEdge/ChamferEdge/vertex-chamfer, tried in that order from a single picked face - restores the sharp edge or vertex purely from the solid's own geometry, no separate provenance needed.");
+  Reg(e, "FilletVertex", Make<FilletVertexCommand>(), CommandStatus::Implemented,
+      "Exact kernel::FilletConvexEdges/FilletConcaveEdges spherical-corner blend of the 3 edges meeting at a picked trihedral vertex (needs one of the 3 faces perpendicular to the other two, e.g. any box corner) - tried convex then concave.");
 }
 
 }  // namespace dino8::app
