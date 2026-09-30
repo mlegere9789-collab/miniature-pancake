@@ -9,7 +9,8 @@
 // "panel.imgui_demo" to give I18nSelfTest (src/commands/cmd_state.cpp) and
 // tests/smoke.sh's i18n section a real missing-key fallback to exercise.
 // Every other language - fr.json, de.json, ja.json (Japanese), pt.json
-// (Portuguese), and it.json (Italian) - must have zero missing keys.
+// (Portuguese), it.json (Italian), and zh.json (Simplified Chinese) - must
+// have zero missing keys.
 //
 // This is a "did a language quietly drift behind en.json" regression
 // guard: en.json gaining new keys (panel.activity_log, panel.block_manager,
@@ -78,6 +79,7 @@ int main(int argc, char** argv) {
       {"ja", {}},
       {"pt", {}},
       {"it", {}},
+      {"zh", {}},
       {"es", {"panel.imgui_demo"}},
   };
 
@@ -171,6 +173,24 @@ int main(int argc, char** argv) {
       Check(it_keys == en_keys, label);
       Check(it_root["_language_name"].AsString("") == "Italiano",
             "it.json's _language_name is the Italian word for Italian (Italiano)");
+    }
+  }
+
+  // The headline deliverable: Simplified Chinese is a seventh complete,
+  // hand-translated language, matching en.json's key set exactly (not just
+  // "mostly", the way a machine-generated stub might partially cover it).
+  {
+    dino8::json::Value zh_root;
+    Check(LoadObject(dir + "/zh.json", zh_root), "zh.json exists and parses");
+    if (LoadObject(dir + "/zh.json", zh_root)) {
+      const std::set<std::string> zh_keys = StringKeys(zh_root);
+      char label[160];
+      std::snprintf(label, sizeof(label), "zh.json defines exactly en.json's key set (%zu keys, 0 missing, 0 extra)",
+                    zh_keys.size());
+      Check(zh_keys == en_keys, label);
+      Check(zh_root["_language_name"].AsString("") == "\xe7\xae\x80\xe4\xbd\x93\xe4\xb8\xad\xe6\x96\x87",
+            "zh.json's _language_name is the Chinese phrase for Simplified Chinese "
+            "(\xe7\xae\x80\xe4\xbd\x93\xe4\xb8\xad\xe6\x96\x87)");
     }
   }
 

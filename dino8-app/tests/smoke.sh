@@ -3159,6 +3159,8 @@ SetLanguage pt
 I18nSelfTest
 SetLanguage it
 I18nSelfTest
+SetLanguage zh
+I18nSelfTest
 SetLanguage English
 I18nSelfTest
 SetLanguage nope
@@ -3191,6 +3193,9 @@ i18ncheck "I18nSelfTest: active=it" "the active language is now it"
 # real translated content - it.json's non-trivial coverage is proven by
 # tests/test_i18n_coverage.cpp's exact-key-set check instead.
 i18ncheck "I18nSelfTest: menu\.file=File\$" "a translated string (menu.file) reads File in Italian (a genuine borrowed word, unlike the other languages), proving SetLanguage it actually loaded it.json rather than failing with an unknown-language warning"
+i18ncheck "SetLanguage: zh" "SetLanguage switched to Simplified Chinese"
+i18ncheck "I18nSelfTest: active=zh" "the active language is now zh"
+i18ncheck "I18nSelfTest: menu\.file=文件" "a translated string (menu.file) reads 文件 in Simplified Chinese, proving zh.json is a real seventh hand-translated language, not a scaffold-only stub"
 i18ncheck "I18nSelfTest: fallback(panel\.imgui_demo)=ImGui Demo (developer)" "a key missing from es.json falls back to the English text, not a blank string or the raw key"
 i18ncheck "I18nSelfTest: unknown_key=this\.key\.does\.not\.exist\.anywhere" "a key present in no language table at all falls back to the key itself rather than crashing or blanking"
 i18ncheck "SetLanguage: en" "SetLanguage switched back to English"
