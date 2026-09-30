@@ -328,3 +328,36 @@ RailType=DistBetweenRails
 Enter
 SelAll
 Volume
+# --- RemoveFillet: exact kernel::RemoveBlend inverse of FilletEdge, round-
+# tripping a plain box-corner fillet back to its own original 1000 volume -
+# PARITY_MAP.md's Blending & chamfering "Blend removal / defeaturing with
+# healing" entry's own remaining app-layer gap ("nothing in the app calls
+# any of these"). The pick point sits on the fillet's own quarter-cylinder
+# wall at 45 degrees between the two trimmed faces (axis at
+# (1458,8), radius 2).
+SelAll
+Hide
+Box 1450,0,0 1460,10,0 10
+FilletEdge
+Radius=2
+1460,10,5
+Enter
+RemoveFillet
+1459.41421,9.41421,5
+SelAll
+Volume
+# --- RemoveFillet: exact kernel::RemoveChamfer inverse of ChamferEdge, same
+# round trip for a flat-bevel chamfer instead of a rolling-ball fillet. The
+# pick point sits at the midpoint of the chamfer's own flat quad face,
+# between its two rail corners (1507,10,5) and (1510,7,5).
+SelAll
+Hide
+Box 1500,0,0 1510,10,0 10
+ChamferEdge
+Radius=3
+1510,10,5
+Enter
+RemoveFillet
+1508.5,8.5,5
+SelAll
+Volume

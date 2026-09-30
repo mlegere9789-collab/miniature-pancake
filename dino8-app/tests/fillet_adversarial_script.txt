@@ -55,22 +55,34 @@ Delete
 # --- Huge-scale box (1e6-unit coordinates) with an otherwise perfectly
 # ordinary radius (2, on a 10-unit box - identical proportions to
 # fillet_script.txt's own working case, just translated far from the
-# origin). This is KNOWN INFEASIBLE at this coordinate magnitude - see
-# adversarial_corpus_notes.md - because dino8::kernel::Mesh stores vertices
-# as single-precision floats (ON_3fPoint) throughout the kernel, and
-# 1e6 * 2^-23 ~= 0.12 units of unavoidable quantization error swamps a
-# 2-unit fillet feature regardless of any tolerance setting. The fix here
-# is graceful failure: FilletEdge must reject this with a clear diagnostic
-# (both its exact B-rep path and its mesh fallback failing a genuine
-# watertightness check) rather than silently returning a "closed solid"
-# that is not actually closed, which is what it did before this corpus
-# found the gap. The box itself is left untouched.
+# origin). This USED TO BE known infeasible at this coordinate magnitude
+# for the reason adversarial_corpus_notes.md still documents in full
+# (dino8::kernel::Mesh stores vertices as single-precision ON_3fPoint
+# floats, and 1e6 * 2^-23 ~= 0.12 units of quantization swamps a 2-unit
+# fillet feature once the result is tessellated), and the old generic
+# BuildFillet path - built from independently numerically-intersected
+# spine samples, then validated by tessellating and checking closure -
+# still hits exactly that gap and still fails gracefully the same way.
+# **This pass:** the new TryExactFillet path (see cmd_fillet.cpp) reaches
+# this case FIRST now, and it does not fail - kernel::FilletConvexEdge
+# builds the whole result as ONE coherent double-precision Brep sharing
+# literal vertex positions across every trim, rather than stitching
+# together independently-computed offset-surface-intersection samples, so
+# a later float-mesh tessellation for Volume quantizes every shared vertex
+# the SAME way instead of drifting the two sides of a seam apart - no gap
+# ever opens. Verified, not assumed: Volume below comes back 991.4, the
+# same exact closed-form value fillet_script.txt's own origin-scale
+# Radius=2 box case already verifies, not 0/"not closed". Still
+# genuinely infeasible for whatever falls through to the old approximate
+# path (a curved adjacent face, Radii=, or any other PlanarFaces()
+# rejection) - see adversarial_corpus_notes.md's own updated note.
 Box 1000000,0,0 1000010,10,0 10
 FilletEdge
 Radius=2
 1000010,10,5
 Enter
 SelAll
+Volume
 @expect_objects 1
 SelAll
 Delete
@@ -234,6 +246,29 @@ Trim=No
 SelAll
 List
 @expect_objects 2
+SelAll
+Delete
+# --- RemoveFillet on a plain flat face (not a fillet, chamfer, or vertex-
+# chamfer facet at all): kernel::RemoveBlend's own MixedFaces() search
+# finds no cylindrical/conical/spherical patch near the pick at all.
+# kernel::RemoveChamfer's own quad check does accept a box face (it is a
+# quad too), but its discriminating rail-pairing check does not: a box
+# face's two opposite-neighbour pairs (left/right, top/bottom) are each
+# mutually PARALLEL, not meeting at a finite edge the way a real chamfer's
+# two original faces do, so n_a x n_b is degenerate for BOTH candidate
+# pairings - zero succeed, and RemoveChamfer requires exactly one to,
+# throwing rather than guessing. kernel::RemoveChamferVertex's own
+# triangular-facet check rejects a 4-point loop outright. So all three
+# must decline with a clear diagnostic naming every attempt, not crash or
+# silently "succeed" by returning the object unchanged under a misleading
+# label. The box itself must survive completely untouched.
+Box 1300150,0,0 1300160,10,0 10
+RemoveFillet
+1300150,5,5
+SelAll
+List
+Volume
+@expect_objects 1
 SelAll
 Delete
 @expect_objects 0

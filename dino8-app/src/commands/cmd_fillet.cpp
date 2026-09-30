@@ -1348,6 +1348,43 @@ class FilletEdgeCommand : public Command {
                 "); RailType has no approximate rolling-ball-by-radius equivalent, so this cannot silently fall back");
       return;
     }
+    // Exact rolling-ball fillet, tried FIRST for the ordinary case (default
+    // RailType=RollingBall, no Rho, a constant Radius): kernel::
+    // FilletConvexEdge/FilletConcaveEdge build the SAME circular-arc
+    // rolling-ball surface BuildFillet's own generic offset+SSX path below
+    // already reaches for two planar faces, but as the genuine closed-form
+    // B-rep construction PARITY_MAP.md's Blending & chamfering entry
+    // documents as still never called from here - the same "try the exact
+    // kernel construction first" pattern TryExactChamfer above already
+    // established for ChamferEdge's own plain-Radius case (which now goes
+    // through kernel::ChamferConvexEdge/ChamferConcaveEdge unconditionally,
+    // not just for Distance2/Angle). Unlike Rho/RailType, this fails open:
+    // a curved adjacent face (or any other PlanarFaces() rejection) falls
+    // through to the unchanged approximate BuildFillet path below exactly
+    // as before this wiring existed, since that path already covers the
+    // curved case this exact construction cannot.
+    if (mode_ == Mode::Fillet && !rho_.has_value() && rail_type_ == RailType::RollingBall && radii_.empty() && !preview_) {
+      ON_Brep exact;
+      std::string detail;
+      if (TryExactFillet(*b, edge.PointAtStart(), edge.PointAtEnd(), exact, detail)) {
+        ctx.Doc().BeginChange(label);
+        if (SceneObject* orig = ctx.Doc().Find(pick.id)) {
+          orig->kind = ObjectKind::Brep;
+          if (!orig->brep) orig->brep = std::make_unique<kernel::Brep>();
+          orig->brep->raw() = exact;
+          orig->surface.reset();
+          orig->InvalidateDisplay();
+        }
+        ctx.Print(label + ": edge " + std::to_string(pick.edge) + " of object " + std::to_string(pick.id) +
+                   " replaced with an exact fillet (" + RadiusDescription() + ")");
+        return;
+      }
+      // Exact path unavailable here (a curved adjacent face, a non-planar
+      // third face at an end, etc.) - fall through to the approximate
+      // rolling-ball-derived path below exactly as before this wiring
+      // existed; unlike Rho/RailType, the plain-Radius case has always had
+      // a working approximate equivalent, so there is nothing to warn about.
+    }
     ON_NurbsSurface built;
     std::vector<Point3d> spine;
     std::vector<Point3d> contact_pts_a, contact_pts_b;  // one contact point per spine sample, for the mesh-fallback wedge cutter
@@ -1748,6 +1785,35 @@ class FilletEdgeCommand : public Command {
                                                     : kernel::FilletConcaveEdgeByDistanceFromEdge(kb, p0, p1, d))
                                          : (convex ? kernel::FilletConvexEdgeByDistanceBetweenRails(kb, p0, p1, d)
                                                     : kernel::FilletConcaveEdgeByDistanceBetweenRails(kb, p0, p1, d));
+        out = result.raw();
+        return true;
+      } catch (const std::exception& ex) {
+        err = ex.what();
+        return false;
+      }
+    };
+    if (attempt(true, convex_err)) return true;
+    if (attempt(false, concave_err)) return true;
+    detail = "convex attempt: " + convex_err + "; concave attempt: " + concave_err;
+    return false;
+  }
+
+  // Tries the exact kernel rolling-ball fillet (convex, then concave)
+  // between p0/p1 on `solid`'s own two adjacent faces, using radius_ for
+  // both faces (a plain rolling-ball fillet has one shared radius, unlike
+  // Chamfer's independent d_i/d_j). Same convex-then-concave/detail-joining
+  // structure as TryExactChamfer/TryExactConicFillet/TryExactRailFillet
+  // above, for the identical reason: the caller doesn't know the edge's own
+  // convexity in advance, and both kernel functions already reject the
+  // wrong one cleanly via EdgeConvexity/RequireConcaveEdge.
+  bool TryExactFillet(const ON_Brep& solid, Point3d p0, Point3d p1, ON_Brep& out, std::string& detail) const {
+    kernel::Brep kb;
+    kb.raw() = solid;
+    const double r = radius_;
+    std::string convex_err, concave_err;
+    auto attempt = [&](bool convex, std::string& err) -> bool {
+      try {
+        kernel::Brep result = convex ? kernel::FilletConvexEdge(kb, p0, p1, r) : kernel::FilletConcaveEdge(kb, p0, p1, r);
         out = result.raw();
         return true;
       } catch (const std::exception& ex) {
@@ -2987,6 +3053,82 @@ void IntersectAny(CommandContext& ctx, const std::vector<ObjectId>& ids) {
 }
 
 // ---------------------------------------------------------------------------
+// Blend/chamfer removal (Rhino's RemoveFillet): PARITY_MAP.md's Blending &
+// chamfering "Blend removal / defeaturing with healing" entry already
+// documents genuinely exact kernel inverses - RemoveBlend (fillets, plain
+// cylindrical/conical and the m==3 spherical vertex-blend corner),
+// RemoveChamfer (two-distance/angle edge chamfers) and RemoveChamferVertex
+// (single-facet vertex chamfers) - but "nothing in the app calls any of
+// these" was the entry's own remaining app-layer gap. Each kernel function
+// already does its own geometric identification purely from a point on the
+// candidate face (RemoveBlend/RemoveChamfer search solid.MixedFaces()/
+// PlanarFaces() for the closest match and geometrically verify it really is
+// one of their own constructions before touching anything; RemoveChamferVertex
+// likewise verifies the picked triangular facet's own 3-plane vertex
+// reconstruction), so this command needs no separate face-type detection of
+// its own: it just tries all three, in the same "narrowest construction
+// first" order RemoveChamfer's own doc comment implies (a chamfer quad is a
+// PlanarFace RemoveBlend's own MixedFaces() search never considers, and a
+// vertex-chamfer facet is a strict subset of RemoveChamfer's own quad check
+// that only accepts on a 4-point loop), joining every failure's own
+// exception text into one diagnostic if all three decline.
+class RemoveFilletCommand : public Command {
+ public:
+  void Begin(CommandContext&) override {
+    WantPoint("Click a fillet, chamfer, or vertex-chamfer face to remove (restores the sharp edge/vertex)");
+  }
+  void OnPoint(CommandContext& ctx, Point3d p) override {
+    Run(ctx, p);
+    Finish();
+  }
+  void Run(CommandContext& ctx, Point3d p) {
+    std::optional<FacePick> pick = PickFace(ctx, p);
+    if (!pick) { ctx.Warn("RemoveFillet: no face near that point"); return; }
+    const SceneObject* o = ctx.Doc().Find(pick->id);
+    if (!o) return;
+    std::optional<ON_Brep> b = BrepOfObject(*o);
+    if (!b) { ctx.Warn("RemoveFillet: picked object has no B-rep"); return; }
+    kernel::Brep kb;
+    kb.raw() = *b;
+    std::string fillet_err, chamfer_err, vertex_err;
+    ON_Brep result;
+    const char* kind = nullptr;
+    try {
+      result = kernel::RemoveBlend(kb, p).raw();
+      kind = "fillet";
+    } catch (const std::exception& ex1) {
+      fillet_err = ex1.what();
+      try {
+        result = kernel::RemoveChamfer(kb, p).raw();
+        kind = "chamfer";
+      } catch (const std::exception& ex2) {
+        chamfer_err = ex2.what();
+        try {
+          result = kernel::RemoveChamferVertex(kb, p).raw();
+          kind = "vertex chamfer";
+        } catch (const std::exception& ex3) {
+          vertex_err = ex3.what();
+        }
+      }
+    }
+    if (!kind) {
+      ctx.Warn("RemoveFillet: the picked face is not a recognized fillet, chamfer, or vertex-chamfer facet (fillet attempt: " + fillet_err +
+                "; chamfer attempt: " + chamfer_err + "; vertex-chamfer attempt: " + vertex_err + ")");
+      return;
+    }
+    ctx.Doc().BeginChange("RemoveFillet");
+    if (SceneObject* orig = ctx.Doc().Find(pick->id)) {
+      orig->kind = ObjectKind::Brep;
+      if (!orig->brep) orig->brep = std::make_unique<kernel::Brep>();
+      orig->brep->raw() = result;
+      orig->surface.reset();
+      orig->InvalidateDisplay();
+    }
+    ctx.Print(std::string("RemoveFillet: ") + kind + " on object " + std::to_string(pick->id) + " removed, sharp edge/vertex restored");
+  }
+};
+
+// ---------------------------------------------------------------------------
 
 void RegisterFilletCommands(CommandEngine& e) {
   Reg(e, "Intersect", OnSelection("Select objects to intersect", IntersectAny, 1), CommandStatus::Implemented,
@@ -3030,6 +3172,8 @@ void RegisterFilletCommands(CommandEngine& e) {
   Reg(e, "MergeCoplanarFace", Make<MergeCoplanarCommand>(false), CommandStatus::Implemented, "Same as MergeFaces (pick 2+ coplanar faces, Enter).");
   Reg(e, "RebuildEdges", OnSelection("Select polysurfaces", RebuildEdgesReal), CommandStatus::Implemented,
       "Refits each shared edge's 3D curve through the real SSX of its two adjacent faces.");
+  Reg(e, "RemoveFillet", Make<RemoveFilletCommand>(), CommandStatus::Implemented,
+      "Exact kernel::RemoveBlend/RemoveChamfer/RemoveChamferVertex inverse of FilletEdge/ChamferEdge/vertex-chamfer, tried in that order from a single picked face - restores the sharp edge or vertex purely from the solid's own geometry, no separate provenance needed.");
 }
 
 }  // namespace dino8::app

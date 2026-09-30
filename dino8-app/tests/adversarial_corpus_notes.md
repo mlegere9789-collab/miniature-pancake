@@ -9,7 +9,13 @@ result) rather than faking success. Both limitations below were confirmed
 reproducible on the unmodified, pre-existing code as well - they are not
 regressions introduced while building this corpus, and no further attempt to
 fix them is recommended within this kernel; the section headers say what
-would actually be required.
+would actually be required. (Section 1's own "Update" paragraph is a later
+exception: a *different* code path - a new exact app-layer construction
+that happens to route around the mesh pipeline entirely for one specific
+case - narrowed that one limitation without touching the kernel-level
+single-precision storage root cause itself, which remains exactly as
+infeasible to fix as described for every other path that still goes
+through it.)
 
 ## 3. Curve self-intersection corpus (`curve_adversarial_script.txt`) - fixed, not a limitation
 
@@ -108,6 +114,37 @@ the comment beside `TrimPlanarFace` in the same file about
 `ON_UNSET_VALUE`. A tessellate-and-check-closure test was used instead
 because it matches what `Volume`/`Check` actually measure, without that
 false-positive.)
+
+**Update - partially fixed, this pass:** `fillet_adversarial_script.txt`'s
+own huge-scale `FilletEdge Radius=2` case (no `Rho`, no `RailType`, a
+constant radius - the ordinary case) no longer hits this limitation at
+all. `FilletEdgeCommand::Run` gained a `TryExactFillet` path (see
+`cmd_fillet.cpp`) that tries `kernel::FilletConvexEdge`/`FilletConcaveEdge`
+directly, ahead of the generic `BuildFillet` path this section describes.
+The root cause above is specifically about *mesh* vertex storage; a
+`FilletConvexEdge` result is never built by intersecting independently-
+computed offset surfaces and lofting samples between them the way
+`BuildFillet`'s spine is - it constructs the whole trimmed B-rep as one
+coherent double-precision object whose shared edges are, by construction,
+the literal same points, not points that merely need to end up close
+together. So when `Volume` later tessellates it into the same
+single-precision `ON_Mesh` this section's root cause describes, both
+sides of every seam quantize to the identical float value instead of
+drifting apart - there is no gap to open in the first place, regardless
+of how large the absolute coordinates are. Verified, not assumed:
+`fillet_adversarial_script.txt`'s huge-scale case now prints
+`"FilletEdge: edge 10 of object N replaced with an exact fillet (radius
+2)"` and `Volume` returns the exact closed-form `991.4` - the identical
+value `fillet_script.txt`'s own origin-scale case verifies - not `0`/"not
+closed". This is a genuine narrowing of the limitation, not a full fix:
+`BuildFillet`'s own generic path (curved adjacent faces, `Radii=` variable
+radius, or anything else `PlanarFaces()` rejects) still goes through the
+mesh pipeline this section describes and is still subject to the exact
+same quantization at this coordinate scale, still failing gracefully via
+the unchanged `"could not build a watertight result"` diagnostic. The
+underlying `dino8::kernel::Mesh` single-precision storage itself is
+unchanged; this narrows which code paths ever need to route through it
+for a fillet at all.
 
 ## 2. Fillet radius comparable to the document's absolute tolerance setting
 
