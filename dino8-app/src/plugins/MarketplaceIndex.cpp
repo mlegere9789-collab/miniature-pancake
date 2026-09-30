@@ -95,6 +95,21 @@ Compatibility CheckCompatibility(const MarketplaceEntry& entry, const std::strin
   return entry.api_version <= 0 ? Compatibility::Unknown : Compatibility::Compatible;
 }
 
+std::string CompatibilityReason(const MarketplaceEntry& entry, const std::string& running_app_version) {
+  switch (CheckCompatibility(entry, running_app_version)) {
+    case Compatibility::ApiTooNew:
+      return "needs plug-in API v" + std::to_string(entry.api_version) + ", this build only supports up to v" +
+             std::to_string(DINO8_PLUGIN_API_VERSION);
+    case Compatibility::AppTooOld:
+      return "needs Dino 8 " + entry.min_app_version + " or newer" +
+             (running_app_version.empty() ? "" : ", this build is " + running_app_version);
+    case Compatibility::Compatible:
+    case Compatibility::Unknown:
+      return "";
+  }
+  return "";
+}
+
 namespace {
 
 std::vector<long> VersionParts(const std::string& v) {

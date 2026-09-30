@@ -189,6 +189,16 @@ this build's own version (numerically, via the same comparison
 it. `api_version` is checked first, so an entry that fails both checks is
 reported for its `api_version` mismatch.
 
+That "Needs newer Dino 8" panel badge is deliberately
+generic (it has to fit a table cell); `CompatibilityReason` (`MarketplaceIndex.h`/
+`.cpp`) spells out exactly what's missing - e.g. "needs plug-in API v3, this
+build only supports up to v2", or "needs Dino 8 2.0.0 or newer, this build is
+1.4.0" - the same wording `InstallEntry`'s own refusal already used, just
+available before ever attempting (and failing) an install. `PluginMarketplaceList`
+prints it in place of the old generic label for an incompatible entry; the
+panel shows it as a tooltip on the compatibility badge and on a disabled
+Install/Update button, and inline in the selected entry's detail view.
+
 ## Updating everything at once
 
 `PluginMarketplaceCheckUpdates`/`Marketplace::CheckForUpdates` only reports
@@ -215,6 +225,28 @@ out; it reports "no hash to check" (not a failure) for a `bundled_path` entry
 or one whose index simply doesn't supply a `sha256`, since there's nothing to
 compare in that case. The panel's detail view offers a "Verify" button next
 to Requires:, enabled once the selected entry is installed.
+
+`PluginMarketplaceVerifyAll`/`Marketplace::VerifyAll` runs that same check
+once for every entry currently installed via the marketplace, in one call -
+the batch counterpart to a single `PluginMarketplaceVerify <id>`, the same
+way `PluginMarketplaceUpdateAll` batches a single entry's Update. An entry
+never installed via the marketplace is simply left out of the result, not
+reported as "not installed" - there is nothing installed there to check. The
+panel's "Verify All" button sits next to "Update All", disabled when nothing
+is currently installed (a cheap check - it does not itself hash anything, so
+it is safe to evaluate every frame the panel is open).
+
+## Uninstalling everything at once
+
+`PluginMarketplaceUninstallAll`/`Marketplace::UninstallAll` uninstalls every
+entry in the loaded index currently installed via the marketplace, one at a
+time through the same `UninstallById` a single row's Uninstall button already
+uses - so each target cascades its own now-unneeded dependencies exactly like
+uninstalling it by hand would. An id an earlier target's own cascade already
+removed is skipped rather than reattempted (which would otherwise surface as
+a spurious failure, since by its own turn it is no longer installed at all).
+The panel's "Uninstall All" button sits next to "Verify All", disabled under
+the same "nothing installed" condition.
 
 ## Writing your own index
 

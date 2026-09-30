@@ -4123,7 +4123,7 @@ else
 fi
 pmvcheck() { if echo "$PMV" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$PMV" "$1"; fail=1; fi; }
 pmvcheck "PluginMarketplaceIndex: loaded \"App Version Test Index (min_app_version enforcement fixture)\" - 1 plug-in(s)" "PluginMarketplaceIndex loaded the app-version-fixture index"
-pmvcheck "  futureplugin: FuturePlugin 1.0.0 by Dino 8 Project (api v1, needs newer Dino 8)" "PluginMarketplaceList labels a too-high min_app_version entry as needing a newer Dino 8"
+pmvcheck "  futureplugin: FuturePlugin 1.0.0 by Dino 8 Project (api v1, needs Dino 8 99.0.0 or newer, this build is" "PluginMarketplaceList shows the specific min_app_version a too-high entry requires (CompatibilityReason), not just a generic \"needs newer Dino 8\""
 pmvcheck "! PluginMarketplaceInstall: FuturePlugin needs Dino 8 99.0.0 or newer, this build is" "PluginMarketplaceInstall refuses to install an entry whose min_app_version exceeds this build's own version"
 
 # Plug-in Marketplace: version checking/update notifications
@@ -4230,6 +4230,37 @@ pmvercheck "! PluginMarketplaceVerify: MeshTools (meshtools) is not currently in
 pmvercheck "PluginMarketplaceVerify: HelloDino (hellodino) has no sha256 in the loaded index to verify against (bundled_path entries aren't hash-checked)" "PluginMarketplaceVerify reports NoHashToCheck (not a failure) for the real reference index's hellodino entry, once installed"
 pmvercheck "! PluginMarketplaceVerify: HelloDino (hellodino): sha256 mismatch - index says 0000000000000000000000000000000000000000000000000000000000000000, installed file at" "PluginMarketplaceVerify catches a deliberately wrong sha256 against the real installed file"
 pmvercheck "(corrupted, tampered with, or replaced outside the marketplace)" "PluginMarketplaceVerify's mismatch message explains what a mismatch could mean"
+
+# Plug-in Marketplace: PluginMarketplaceVerifyAll/Marketplace::VerifyAll -
+# VerifyInstalled run once for every entry actually installed via the
+# marketplace, the batch counterpart to the single-id PluginMarketplaceVerify
+# tested just above (and to PluginMarketplaceUpdateAll's own batching of
+# per-id Update). tests/plugin_marketplace_verifyall_index.json has three
+# entries: hellodino (no sha256 - NoHashToCheck once installed), meshtools (a
+# deliberately wrong sha256 - Mismatch once installed), and curvetools (never
+# installed by this script - proving VerifyAll only reports on what's
+# actually installed, not every entry in the loaded index).
+sed "s|@DINO8ROOT@|$HEREW/..|g" "$HERE/plugin_marketplace_verifyall_script.txt" > "$TMPW/plugin_marketplace_verifyall_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  PMVA="$("$BIN" --smoke 60 --script "$TMPW/plugin_marketplace_verifyall_script.txt" 2>&1)" || { echo "$PMVA"; echo "FAIL: plugin marketplace verify-all script exited non-zero"; exit 1; }
+else
+  PMVA="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$TMPW/plugin_marketplace_verifyall_script.txt" 2>&1)" || { echo "$PMVA"; echo "FAIL: plugin marketplace verify-all script exited non-zero"; exit 1; }
+fi
+pmvacheck() { if echo "$PMVA" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$PMVA" "$1"; fail=1; fi; }
+pmvacheck "PluginMarketplaceVerifyAll: nothing installed via the marketplace to verify" "PluginMarketplaceVerifyAll reports nothing to check before any index is loaded"
+pmvacheck "PluginMarketplaceIndex: loaded \"Verify-All Test Index (batch sha256 integrity-check fixture)\" - 3 plug-in(s)" "PluginMarketplaceIndex loaded the verify-all fixture"
+# Not asserted here: that VerifyAll still reports "nothing installed" right
+# after loading the index but before this script's own two installs below.
+# hellodino is this same shared XDG_CONFIG_HOME's very first marketplace
+# test's own leftover install (never uninstalled since, by design - see that
+# section's own comments) and this fixture also names a "hellodino" entry,
+# so that intermediate call may legitimately already see it as installed -
+# which this script's own explicit PluginMarketplaceInstall hellodino below
+# then simply reinstalls in place either way, so the final assertions below
+# hold regardless of that leftover state.
+pmvacheck "PluginMarketplaceVerifyAll: HelloDino (hellodino) has no sha256 in the loaded index to verify against (bundled_path entries aren't hash-checked)" "PluginMarketplaceVerifyAll reports NoHashToCheck for hellodino once installed, in the same batch as meshtools' mismatch"
+pmvacheck "! PluginMarketplaceVerifyAll: MeshTools (meshtools): sha256 mismatch - index says 1111111111111111111111111111111111111111111111111111111111111111, installed file at" "PluginMarketplaceVerifyAll catches meshtools' deliberately wrong sha256 in the same batch"
+pmvacheck "PluginMarketplaceVerifyAll: checked 2 installed plug-in(s) - 1 mismatch(es)" "PluginMarketplaceVerifyAll's summary line counts exactly the 2 installed entries (not curvetools, never installed) and the 1 mismatch among them"
 
 # Plug-in Marketplace: local ratings/reviews (src/plugins/PluginReviews.cpp,
 # PluginMarketplaceRate/PluginMarketplaceReviews in src/commands/cmd_flow.cpp)
@@ -4406,6 +4437,56 @@ pmuncheck "PluginMarketplaceUninstall: uninstalled shareddeps" "shareddeps genui
 # moment shareddeps is uninstalled directly above, so that warning must
 # name it.
 pmuncheck "! PluginMarketplaceUninstall: OtherSuite still lists shareddeps as a dependency and may now be broken" "PluginMarketplaceUninstall warns that OtherSuite still depends on the plug-in just uninstalled directly"
+
+# Plug-in Marketplace: PluginMarketplaceUninstallAll/Marketplace::UninstallAll -
+# the batch counterpart to the single-id PluginMarketplaceUninstall tested
+# just above (and to PluginMarketplaceUpdateAll's own batching of Install).
+# Reuses the same tests/plugin_marketplace_uninstall_index.json fixture and
+# its othersuite/toolboxpro/shareddeps/orphanlib dependency graph: installing
+# both othersuite and toolboxpro leaves all four entries installed (shareddeps
+# and orphanlib pulled in as dependencies), and a single UninstallAll must
+# remove all four in one call - proving it dedupes an id an earlier target's
+# own cascade already removed (shareddeps/orphanlib) rather than reattempting
+# it and reporting a spurious failure.
+sed "s|@DINO8ROOT@|$HEREW/..|g" "$HERE/plugin_marketplace_uninstallall_script.txt" > "$TMPW/plugin_marketplace_uninstallall_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  PMUNA="$("$BIN" --smoke 60 --script "$TMPW/plugin_marketplace_uninstallall_script.txt" 2>&1)" || { echo "$PMUNA"; echo "FAIL: plugin marketplace uninstall-all script exited non-zero"; exit 1; }
+else
+  PMUNA="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$TMPW/plugin_marketplace_uninstallall_script.txt" 2>&1)" || { echo "$PMUNA"; echo "FAIL: plugin marketplace uninstall-all script exited non-zero"; exit 1; }
+fi
+pmunacheck() { if echo "$PMUNA" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$PMUNA" "$1"; fail=1; fi; }
+pmunacheck "PluginMarketplaceUninstallAll: nothing installed via the marketplace to uninstall" "PluginMarketplaceUninstallAll reports nothing to do before any index is loaded"
+pmunacheck "PluginMarketplaceIndex: loaded \"Uninstall Test Index (plugin dependency resolution fixture)\" - 4 plug-in(s)" "PluginMarketplaceIndex loaded the uninstall-fixture index for the uninstall-all script"
+pmunacheck "PluginMarketplaceInstall: installed othersuite" "PluginMarketplaceUninstallAll script installs othersuite (and shareddeps) first"
+pmunacheck "PluginMarketplaceInstall: installed toolboxpro" "PluginMarketplaceUninstallAll script installs toolboxpro (and orphanlib) too"
+# The script's own two installs above leave exactly othersuite/shareddeps/
+# orphanlib/toolboxpro installed, regardless of whatever this same shared
+# XDG_CONFIG_HOME's earlier smoke.sh sections left lying around (e.g. this
+# same fixture's own "existing Uninstall test" section, just above, leaves
+# othersuite installed and never removes it - the very first UninstallAll
+# call below, before either install, may itself report cleaning that up
+# rather than "nothing installed"; either way, state is clean again before
+# the two installs run). The LAST "uninstalled ..." report in the whole
+# transcript is therefore always this script's own final, full-removal
+# call - the one right before the closing idempotency check - never an
+# earlier, possibly-partial cleanup call.
+UNINSTALLALL_LINE="$(echo "$PMUNA" | grep -F 'PluginMarketplaceUninstallAll: uninstalled' | tail -n1)"
+if echo "$UNINSTALLALL_LINE" | grep -qF "uninstalled 4 plug-in(s)"; then
+  echo "ok   PluginMarketplaceUninstallAll removed all 4 installed entries (targets + cascaded dependencies) in one call"
+else
+  echo "FAIL PluginMarketplaceUninstallAll did not report removing exactly 4 plug-ins: $UNINSTALLALL_LINE"; fail=1
+fi
+for id in shareddeps orphanlib toolboxpro othersuite; do
+  if echo "$UNINSTALLALL_LINE" | grep -qF "$id"; then
+    echo "ok   PluginMarketplaceUninstallAll's report names $id"
+  else
+    echo "FAIL PluginMarketplaceUninstallAll's report is missing $id: $UNINSTALLALL_LINE"; fail=1
+  fi
+done
+echo "$PMUNA" | grep -qF "! PluginMarketplaceUninstallAll:" \
+  && { echo "FAIL PluginMarketplaceUninstallAll reported a failure - the cascade dedupe should leave none"; fail=1; } \
+  || echo "ok   PluginMarketplaceUninstallAll reported no failures - the cascade dedupe left nothing to reattempt"
+pmunacheck "PluginMarketplaceUninstallAll: nothing installed via the marketplace to uninstall" "a second PluginMarketplaceUninstallAll right after the first reports nothing left to do - everything genuinely uninstalled, not just claimed"
 
 # Plug-in Marketplace: version-constrained dependencies ("id@min_version" in
 # MarketplaceEntry::dependencies, split by SplitDependencySpec and resolved

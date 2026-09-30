@@ -219,7 +219,8 @@ loaded and how many commands/nodes each plug-in registered.
 Copying a library by hand doesn't scale past one machine. `Window > Plug-in
 Marketplace` (or the `PluginMarketplace`/`PluginMarketplaceIndex`/
 `PluginMarketplaceList`/`PluginMarketplaceInstall`/`PluginMarketplaceUninstall`/
-`PluginMarketplaceUpdateAll`/`PluginMarketplaceVerify` commands) loads a JSON
+`PluginMarketplaceUpdateAll`/`PluginMarketplaceUninstallAll`/`PluginMarketplaceVerify`/
+`PluginMarketplaceVerifyAll` commands) loads a JSON
 **plug-in index** - a list of plug-ins with a name, version, author,
 description and where to get the library from - from a local file or an
 `http(s)://` URL, and installs any entry straight into `<config>/plugins`
@@ -244,8 +245,10 @@ would report as out of date, in one call, instead of updating each one by
 hand. `PluginMarketplaceVerify <id>` re-hashes the file actually installed
 at that id's own destination and compares it to the index's `sha256` on
 demand, catching a copy that was corrupted or tampered with after install
-without requiring a reinstall to find out - see SCHEMA.md's "Updating
-everything at once" and "Verifying an installed copy" sections.
+without requiring a reinstall to find out; `PluginMarketplaceVerifyAll` runs
+that same check for every entry currently installed via the marketplace in
+one call - see SCHEMA.md's "Updating everything at once" and "Verifying an
+installed copy" sections.
 
 `PluginMarketplaceUninstall <id>` removes the exact `<config>/plugins` copy
 a matching `PluginMarketplaceInstall <id>` put there - never a plug-in only
@@ -254,4 +257,11 @@ auto-loaded from next to the executable, and never one dropped into
 any one of them that no other still-installed entry in the loaded index
 still needs is uninstalled too, recursively, so removing the top of a
 dependency chain can clear the whole chain down to whatever's still shared
-by something else.
+by something else. `PluginMarketplaceUninstallAll` does this for every
+entry currently installed via the marketplace in one call - see SCHEMA.md's
+"Uninstalling everything at once" section.
+
+`PluginMarketplaceList`'s compatibility label for an incompatible entry names
+the exact requirement (e.g. "needs Dino 8 2.0.0 or newer, this build is
+1.4.0") instead of a generic "needs newer Dino 8" - see SCHEMA.md's
+"Compatibility" section.

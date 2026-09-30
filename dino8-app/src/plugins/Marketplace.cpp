@@ -356,4 +356,49 @@ Marketplace::VerifyStatus Marketplace::VerifyInstalled(const std::string& id, st
   return VerifyStatus::Verified;
 }
 
+std::vector<Marketplace::VerifyResult> Marketplace::VerifyAll() const {
+  std::vector<VerifyResult> results;
+  for (const MarketplaceEntry& e : index_.plugins) {
+    if (!IsLoadedAt(DestPath(e))) continue;
+    VerifyResult r;
+    r.id = e.id;
+    r.name = e.name;
+    r.status = VerifyInstalled(e.id, r.detail);
+    results.push_back(std::move(r));
+  }
+  return results;
+}
+
+bool Marketplace::AnyInstalled() const {
+  for (const MarketplaceEntry& e : index_.plugins)
+    if (IsLoadedAt(DestPath(e))) return true;
+  return false;
+}
+
+bool Marketplace::UninstallAll(std::vector<std::string>& removed, std::vector<std::string>& failed) {
+  // Snapshotted up front, the same reason UpdateAll snapshots CheckForUpdates():
+  // an id later in this list can already be gone by the time the loop
+  // reaches it, removed as an earlier target's own cascaded dependency, and
+  // re-querying installed-ness mid-loop would just make that look like this
+  // call's own failure.
+  std::vector<std::string> targets;
+  for (const MarketplaceEntry& e : index_.plugins)
+    if (IsLoadedAt(DestPath(e))) targets.push_back(e.id);
+
+  for (const std::string& id : targets) {
+    if (std::find(removed.begin(), removed.end(), id) != removed.end()) continue;
+    const MarketplaceEntry* entry = FindEntryById(index_, id);
+    if (!entry || !IsLoadedAt(DestPath(*entry))) continue;  // an earlier target's cascade already took this one
+    std::vector<std::string> chain;
+    std::vector<std::string> removed_here;
+    std::string error;
+    if (UninstallByIdChecked(id, chain, removed_here, error)) {
+      removed.insert(removed.end(), removed_here.begin(), removed_here.end());
+    } else {
+      failed.push_back(id + ": " + error);
+    }
+  }
+  return failed.empty();
+}
+
 }  // namespace dino8::plugins

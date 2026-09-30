@@ -23,6 +23,7 @@ using dino8::plugins::CheckCompatibility;
 using dino8::plugins::CheckForUpdate;
 using dino8::plugins::Compatibility;
 using dino8::plugins::CompareVersions;
+using dino8::plugins::CompatibilityReason;
 using dino8::plugins::LoadIndexFromFile;
 using dino8::plugins::MarketplaceEntry;
 using dino8::plugins::MarketplaceIndex;
@@ -193,6 +194,32 @@ int main(int argc, char** argv) {
   both_too_new.min_app_version = "1.0.0";
   Check(CheckCompatibility(both_too_new, "0.5.0") == Compatibility::ApiTooNew,
         "ApiTooNew takes priority over AppTooOld when an entry fails both checks");
+
+  // ---- CompatibilityReason: the specific text behind each non-Compatible
+  // label (PluginMarketplaceList/the panel show this instead of a generic
+  // "needs newer Dino 8", so the exact required version is visible without
+  // attempting - and failing - an install first) -----------------------------
+  MarketplaceEntry compatible_entry;
+  compatible_entry.api_version = DINO8_PLUGIN_API_VERSION;
+  Check(CompatibilityReason(compatible_entry) == "", "CompatibilityReason: empty for a Compatible entry (nothing to explain)");
+  MarketplaceEntry unknown_compat;
+  unknown_compat.api_version = 0;
+  Check(CheckCompatibility(unknown_compat) == Compatibility::Unknown,
+        "sanity: an absent api_version is still Unknown, not Compatible, ahead of the next check");
+  Check(CompatibilityReason(unknown_compat) == "",
+        "CompatibilityReason: empty for Unknown too - api_version is simply absent, not actually refused");
+  MarketplaceEntry api_too_new;
+  api_too_new.api_version = DINO8_PLUGIN_API_VERSION + 1;
+  const std::string api_reason = CompatibilityReason(api_too_new);
+  Check(api_reason.find("API v" + std::to_string(DINO8_PLUGIN_API_VERSION + 1)) != std::string::npos,
+        "CompatibilityReason: names the entry's own too-new api_version (" + api_reason + ")");
+  Check(api_reason.find("v" + std::to_string(DINO8_PLUGIN_API_VERSION)) != std::string::npos,
+        "CompatibilityReason: names this build's own supported api_version too (" + api_reason + ")");
+  Check(CompatibilityReason(old_app, "0.5.0") == "needs Dino 8 1.0.0 or newer, this build is 0.5.0",
+        "CompatibilityReason: an AppTooOld entry names both the required and running version exactly");
+  Check(CompatibilityReason(both_too_new, "0.5.0").find("API v") != std::string::npos,
+        "CompatibilityReason: reports the ApiTooNew reason (not AppTooOld's) when an entry fails both checks, "
+        "matching CheckCompatibility's own ApiTooNew-first priority");
 
   // ---- CompareVersions ----------------------------------------------------
   Check(CompareVersions("1.0.0", "1.0.0") == 0, "CompareVersions: equal versions compare equal");
