@@ -5,6 +5,7 @@
 
 #include <filesystem>
 #include <limits>
+#include <unordered_set>
 
 namespace dino8::app {
 
@@ -16,7 +17,17 @@ void HideShow(CommandContext& ctx, const std::vector<ObjectId>& ids, bool visibl
   // objects or touches other document state - qualifies for the object-
   // scoped fast path (see Document::BeginChangeForObjects).
   ctx.Doc().BeginChangeForObjects(label, ids);
-  for (ObjectId id : ids) if (SceneObject* o = ctx.Doc().Find(id)) { o->visible = visible; if (!visible) o->selected = false; }
+  // FindMany() resolves the whole selection in one O(document size) pass
+  // instead of one O(document size) Find() per id, the same O(selection
+  // size * document size) -> O(document size + selection size) win as
+  // ApplyXform/PreviewXform (cmd_transform.cpp) and RemoveMany (Delete,
+  // cmd_edit.cpp) - Hide on a large selection was still doing the old
+  // per-id Find() loop.
+  for (SceneObject* o : ctx.Doc().FindMany(ids)) {
+    if (!o) continue;
+    o->visible = visible;
+    if (!visible) o->selected = false;
+  }
 }
 
 
@@ -512,14 +523,26 @@ void RegisterEditCommands(CommandEngine& e) {
   Reg(e, "HideSwap", Immediate([](CommandContext& ctx) { ctx.Doc().BeginChange("HideSwap"); for (SceneObject& o : ctx.Doc().Objects()) { o.visible = !o.visible; o.selected = false; } }));
   Reg(e, "Isolate", OnSelection("Select objects to isolate", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         ctx.Doc().BeginChange("Isolate");
-        for (SceneObject& o : ctx.Doc().Objects()) o.visible = std::find(ids.begin(), ids.end(), o.id) != ids.end();
+        // Testing membership with std::find(ids...) inside a loop over
+        // every document object is an O(document size * selection size)
+        // nested scan - each of N objects re-scans the whole selection.
+        // Hashing the selection once first turns the per-object test into
+        // O(1), for O(document size + selection size) total - the same win
+        // FindMany() gives Find()-per-id loops (see HideShow above).
+        const std::unordered_set<ObjectId> sel(ids.begin(), ids.end());
+        for (SceneObject& o : ctx.Doc().Objects()) o.visible = sel.count(o.id) != 0;
       }));
   Reg(e, "Unisolate", Immediate([](CommandContext& ctx) { ctx.Doc().BeginChange("Unisolate"); for (SceneObject& o : ctx.Doc().Objects()) o.visible = true; }));
   // Lock: a fixed, known selection, only locked/selected are set on those
   // existing objects - fast path candidate (unlike Unlock/LockSwap/
   // UnlockSelected below, which iterate the whole document to find their
   // ids and gain nothing from narrowing it).
-  Reg(e, "Lock", OnSelection("Select objects to lock", [](CommandContext& ctx, const std::vector<ObjectId>& ids) { ctx.Doc().BeginChangeForObjects("Lock", ids); for (ObjectId id : ids) if (SceneObject* o = ctx.Doc().Find(id)) { o->locked = true; o->selected = false; } }));
+  Reg(e, "Lock", OnSelection("Select objects to lock", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
+        ctx.Doc().BeginChangeForObjects("Lock", ids);
+        // Same FindMany() win as HideShow above - a Find() per id in this
+        // loop is O(selection size * document size).
+        for (SceneObject* o : ctx.Doc().FindMany(ids)) if (o) { o->locked = true; o->selected = false; }
+      }));
   Reg(e, "Unlock", Immediate([](CommandContext& ctx) { ctx.Doc().BeginChange("Unlock"); for (SceneObject& o : ctx.Doc().Objects()) o.locked = false; }));
   Reg(e, "UnlockSelected", Immediate([](CommandContext& ctx) { ctx.Doc().BeginChange("UnlockSelected"); for (SceneObject& o : ctx.Doc().Objects()) if (o.locked) { o.locked = false; o.selected = true; } }));
   Reg(e, "LockSwap", Immediate([](CommandContext& ctx) { ctx.Doc().BeginChange("LockSwap"); for (SceneObject& o : ctx.Doc().Objects()) { o.locked = !o.locked; o.selected = false; } }));
