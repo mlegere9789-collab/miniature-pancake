@@ -41390,9 +41390,33 @@ void TestRevolveExactSolidsAndCaps() {
   Check(FaceSurface(frustum, 0).IsCone(1e-9), "the revolved slanted segment is an exact NURBS cone");
   CheckClosedMeshVolume(frustum, 8, 64, M_PI * 3.0 / 3.0 * (4.0 + 2.0 + 1.0), 0.003, "cone frustum");
 
-  // Negative controls.
+  // A closed profile touching the axis along one whole side (the same
+  // rectangle as the L profile `ell` above, but with its 4th, on-axis
+  // side given explicitly rather than left implicit): SplitTouchingAxisArc
+  // (sweep.cpp) finds and removes that side internally, so this gives the
+  // EXACT SAME solid as `ell` - same topology, same volume, not just a
+  // similar one.
   const NurbsCurve touching = Polyline({P(0, 0, 0), P(2, 0, 0), P(2, 0, 3), P(0, 0, 3), P(0, 0, 0)});
-  Check(Throws([&] { Brep::Revolve(touching, origin, z); }), "a closed profile touching the axis throws (degenerate band)");
+  const Brep touching_full = Brep::Revolve(touching, origin, z);
+  CheckSolidTopology(touching_full, 1, "full revolve of the rectangle touching the axis");
+  Check(touching_full.raw().m_E.Count() == 1 && touching_full.raw().m_V.Count() == 2,
+        "touching rectangle reduces to the exact same cylinder topology as the open L profile");
+  CheckClosedMeshVolume(touching_full, 12, 64, M_PI * 4.0 * 3.0, 0.003, "cylinder via a closed touching profile");
+  const Brep touching_quarter = Brep::Revolve(touching, origin, z, M_PI / 2);
+  CheckSolidTopology(touching_quarter, 3, "quarter revolve of the rectangle touching the axis");
+  Check(touching_quarter.raw().m_E.Count() == 4 && touching_quarter.raw().m_V.Count() == 3,
+        "touching rectangle at partial angle reduces to the same wedge topology as the open L profile");
+  CheckClosedMeshVolume(touching_quarter, 12, 16, M_PI * 12.0 / 4.0, 0.003, "quarter cylinder via a closed touching profile");
+  Check(Brep::Revolve(touching, origin, z, M_PI / 2, /*cap=*/false).FaceCount() == 1,
+        "...and builds the open surface with cap=false");
+
+  // Negative controls.
+  const NurbsCurve two_touches = Polyline({P(0, 0, 0), P(2, 0, 1), P(0, 0, 2), P(2, 0, 3), P(0, 0, 0)});
+  Check(Throws([&] { Brep::Revolve(two_touches, origin, z); }),
+        "a closed profile touching the axis at two separate places throws");
+  const NurbsCurve kiss = Polyline({P(0, 0, 1), P(2, 0, 0), P(3, 0, 1), P(2, 0, 2), P(0, 0, 1)});
+  Check(Throws([&] { Brep::Revolve(kiss, origin, z); }),
+        "a closed profile touching the axis at a single point (not a sub-arc) still throws");
   const NurbsCurve crossing = Polyline({P(-1, 0, 0), P(2, 0, 0), P(2, 0, 3), P(-1, 0, 3)});
   Check(Throws([&] { Brep::Revolve(crossing, origin, z); }), "a profile crossing the axis throws");
   // (2,0,0) and (2,1,3) are in DIFFERENT planes through the z axis - a

@@ -627,11 +627,17 @@ class Brep {
   //     partial angle with an off-axis endpoint is not cappable here and
   //     throws when `cap` is requested. Two off-axis endpoints at the
   //     same axial height (a zero-thickness disc) throw.
-  // A closed profile touching the axis (a rectangle with one side on it)
-  // is NOT supported - the touching side would sweep to a degenerate
-  // zero-area band inside one face - and throws; revolve the open
-  // profile instead (the L-shaped polyline (0,0)->(r,0)->(r,h)->(0,h)
-  // gives the cylinder exactly).
+  // A closed profile touching the axis along a single sub-arc (e.g. a
+  // rectangle with one side on it) is handled by internally revolving
+  // its away-from-axis remainder instead - the same solid the open
+  // L-shaped profile (0,0)->(r,0)->(r,h)->(0,h) already gives for that
+  // rectangle, found and split off automatically (SplitTouchingAxisArc,
+  // sweep.cpp) rather than requiring the caller to build it by hand.
+  // Still throws for a profile touching the axis at more than one
+  // separate place, or at a single point rather than along a genuine
+  // sub-arc (a true point tangency, e.g. a circle tangent to the axis) -
+  // both out of scope here, same restriction an open profile touching
+  // the axis away from its own endpoints already has below.
   //
   // `start_angle`: the sweep begins `start_angle` radians (any sign,
   // any magnitude - reduced by the rotation below) around the axis from

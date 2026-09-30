@@ -2236,6 +2236,155 @@ Brep Brep::ExtrudeToPoint(const NurbsCurve& profile, Point3d apex, bool cap) {
   return result;
 }
 
+namespace {
+
+// A CLOSED profile with a sub-arc running exactly along the revolve axis
+// (e.g. a rectangle with one side on it) would sweep that sub-arc to a
+// degenerate zero-area band, not a real surface region - Revolve() cannot
+// use it as given. But the exact same solid is what revolving the
+// profile's own AWAY-from-axis remainder gives, as an OPEN profile with
+// both new endpoints (where the touching arc began/ended) sitting ON the
+// axis - Revolve()'s own already-supported "open profile, both ends on
+// the axis" pole construction (the doc comment's own cylinder example,
+// (0,0)->(r,0)->(r,h)->(0,h), IS that remainder for a rectangle touching
+// along its 4th side). This finds that single touching sub-arc (sampled
+// circularly) and splits it off, returning the remainder - so callers
+// needing this need not build the open profile by hand.
+//
+// Reseams the curve (ChangeClosedCurveSeam) to the touching run's OWN
+// midpoint first - a point guaranteed strictly interior to the touching
+// arc, never at an existing knot or domain boundary the way a point
+// picked at the run's own edge can land (that was tried first: it makes
+// `ON_NurbsCurve::Split` refuse whenever the touching arc happens to
+// already sit at the profile's own authored seam, e.g. this function's
+// own canonical rectangle example, since the "boundary" there IS the
+// existing domain edge) - so both splits below are always comfortably
+// interior and never hit that refusal. Throws (via Fail/Internal) for
+// more than one separate touching region, or a single-point kiss rather
+// than a genuine sub-arc - both out of scope here, same as this
+// function's own callers' existing "touches the axis away from its
+// endpoints" restriction for an open profile.
+ON_NurbsCurve SplitTouchingAxisArc(const ON_NurbsCurve& profile, ON_3dPoint axis_point, ON_3dVector T,
+                                   ON_3dVector e_rho, double tol, const char* caller) {
+  auto rho_at = [&](const ON_NurbsCurve& curve, double t) {
+    const ON_3dVector d = curve.PointAt(t) - axis_point;
+    return ON_DotProduct(d - T * ON_DotProduct(d, T), e_rho);
+  };
+  // Bisects (t_away, t_touch) - opposite rho-vs-tol classifications
+  // guaranteed by every call site below - to the true crossing, to
+  // double precision, regardless of the initial bracket width.
+  auto refine = [&](const ON_NurbsCurve& curve, double t_away, double t_touch) {
+    for (int iter = 0; iter < 80; ++iter) {
+      const double mid = 0.5 * (t_away + t_touch);
+      if (rho_at(curve, mid) > tol) {
+        t_away = mid;
+      } else {
+        t_touch = mid;
+      }
+    }
+    return t_touch;
+  };
+
+  const ON_NurbsCurve c = profile;
+  const ON_Interval dom = c.Domain();
+  const int n = std::max(256, 32 * c.SpanCount());
+  std::vector<double> t(static_cast<size_t>(n));
+  std::vector<bool> touching(static_cast<size_t>(n));
+  for (int i = 0; i < n; ++i) {
+    t[static_cast<size_t>(i)] = dom.ParameterAt(static_cast<double>(i) / n);
+    touching[static_cast<size_t>(i)] = rho_at(c, t[static_cast<size_t>(i)]) <= tol;
+  }
+  int start = -1;
+  for (int i = 0; i < n; ++i) {
+    if (!touching[static_cast<size_t>(i)]) {
+      start = i;
+      break;
+    }
+  }
+  if (start < 0) Internal(caller, "SplitTouchingAxisArc: the whole profile touches the axis");
+
+  // Walk once around from a non-touching sample, recording the single
+  // away -> touching transition (enter) and touching -> away one (leave).
+  int enter = -1, leave = -1;
+  for (int k = 0; k < n; ++k) {
+    const int i = (start + k) % n;
+    const int i_next = (start + k + 1) % n;
+    if (!touching[static_cast<size_t>(i)] && touching[static_cast<size_t>(i_next)]) {
+      if (enter >= 0) {
+        Fail(caller,
+             "a closed profile touching the axis at more than one place is not supported - revolve the away "
+             "portion(s) as separate open profiles instead");
+      }
+      enter = i_next;
+    }
+    if (touching[static_cast<size_t>(i)] && !touching[static_cast<size_t>(i_next)]) leave = i_next;
+  }
+  if (enter < 0 || leave < 0) Internal(caller, "SplitTouchingAxisArc: no touching run found");
+  const int run_len = (leave - enter + n) % n;
+  if (run_len < 2) {
+    // A touching run this close to the sample grid's own resolution is a
+    // single-point kiss (true tangency, e.g. a circle tangent to the
+    // axis), not a genuine sub-arc - the original degenerate-band refusal
+    // still applies; there is no "away remainder" to find here.
+    Fail(caller,
+         "a closed profile touching the axis is not supported (the touching part would sweep to a degenerate "
+         "band) - revolve the open profile instead, e.g. (0,0)->(r,0)->(r,h)->(0,h) for a cylinder");
+  }
+  const int mid_index = (enter + run_len / 2) % n;
+  const double t_seam = t[static_cast<size_t>(mid_index)];
+
+  ON_NurbsCurve c2 = c;
+  if (!c2.ChangeClosedCurveSeam(t_seam)) {
+    Internal(caller, "SplitTouchingAxisArc: could not reseam the closed profile inside its own touching arc");
+  }
+
+  // Re-locate the two transitions in the reseamed parametrization:
+  // dom2.Min() sits inside the touching run by construction, so walking
+  // forward first LEAVES it (u_leave) and later RE-ENTERS it (u_enter) -
+  // both strictly interior to (dom2.Min(), dom2.Max()).
+  const ON_Interval dom2 = c2.Domain();
+  const int n2 = std::max(256, 32 * c2.SpanCount());
+  double u_leave = -1.0, u_enter = -1.0;
+  {
+    bool prev_touching = true;  // dom2.Min() is inside the touching run
+    double prev_t = dom2.Min();
+    for (int i = 1; i <= n2 && u_enter < 0.0; ++i) {
+      const double u = dom2.ParameterAt(static_cast<double>(i) / n2);
+      const bool now = rho_at(c2, u) <= tol;
+      if (prev_touching && !now && u_leave < 0.0) u_leave = refine(c2, u, prev_t);
+      if (!prev_touching && now && u_leave >= 0.0) u_enter = refine(c2, prev_t, u);
+      prev_touching = now;
+      prev_t = u;
+    }
+  }
+  if (u_leave < 0.0 || u_enter < 0.0) {
+    Internal(caller, "SplitTouchingAxisArc: could not re-locate the touching arc after reseaming");
+  }
+
+  ON_Curve *l1 = nullptr, *r1 = nullptr;
+  if (!c2.Split(u_leave, l1, r1)) {
+    delete l1;
+    delete r1;
+    Internal(caller, "SplitTouchingAxisArc: first split failed");
+  }
+  std::unique_ptr<ON_Curve> left1(l1), right1(r1);
+  ON_NurbsCurve* remainder = ON_NurbsCurve::Cast(right1.get());
+  if (!remainder) Internal(caller, "SplitTouchingAxisArc: first split did not return a NURBS curve");
+
+  ON_Curve *l2 = nullptr, *r2 = nullptr;
+  if (!remainder->Split(u_enter, l2, r2)) {
+    delete l2;
+    delete r2;
+    Internal(caller, "SplitTouchingAxisArc: second split failed");
+  }
+  std::unique_ptr<ON_Curve> left2(l2), right2(r2);
+  ON_NurbsCurve* away = ON_NurbsCurve::Cast(left2.get());
+  if (!away) Internal(caller, "SplitTouchingAxisArc: second split did not return a NURBS curve");
+  return *away;
+}
+
+}  // namespace
+
 Brep Brep::Revolve(const NurbsCurve& profile, Point3d axis_point, Vector3d axis_direction, double angle, bool cap,
                    double start_angle) {
   const char* caller = "Revolve";
@@ -2275,18 +2424,37 @@ Brep Brep::Revolve(const NurbsCurve& profile, Point3d axis_point, Vector3d axis_
     e_rho.Unitize();
   }
   const ON_3dVector e_phi = ON_CrossProduct(T, e_rho);
+  // Scans `curve` against the axis: throws if any sample leaves its own
+  // plane through the axis or crosses to the axis' other side, else
+  // returns the minimum e_rho-coordinate seen (<= tol means some point -
+  // possibly a whole sub-arc - sits ON the axis).
+  auto scan = [&](const ON_NurbsCurve& curve) {
+    const ON_Interval d = curve.Domain();
+    const int n = std::max(256, 32 * curve.SpanCount());
+    double lo = std::numeric_limits<double>::max();
+    for (int i = 0; i <= n; ++i) {
+      const ON_3dVector v = curve.PointAt(d.ParameterAt(static_cast<double>(i) / n)) - axis_point;
+      if (std::fabs(ON_DotProduct(v, e_phi)) > 1e-8 * scale) {
+        Fail(caller, "profile must lie in a plane containing the axis");
+      }
+      lo = std::min(lo, ON_DotProduct(v, e_rho));
+    }
+    if (lo < -1e-8 * scale) Fail(caller, "profile must stay on one side of the axis (it crosses it)");
+    return lo;
+  };
+  double min_rho = scan(c);
+
+  if (c.IsClosed() && min_rho <= tol) {
+    // A closed profile touching the axis along a sub-arc: revolve its
+    // away-from-axis remainder instead (see SplitTouchingAxisArc's own
+    // doc comment) - the exact same solid, and every rule below already
+    // supports it as the "open profile, both ends on the axis" case.
+    c = SplitTouchingAxisArc(c, axis_point, T, e_rho, tol, caller);
+    min_rho = scan(c);
+  }
+
   const ON_Interval dom = c.Domain();
   const int samples = std::max(256, 32 * c.SpanCount());
-  double min_rho = std::numeric_limits<double>::max();
-  for (int i = 0; i <= samples; ++i) {
-    const ON_3dVector d = c.PointAt(dom.ParameterAt(static_cast<double>(i) / samples)) - axis_point;
-    if (std::fabs(ON_DotProduct(d, e_phi)) > 1e-8 * scale) {
-      Fail(caller, "profile must lie in a plane containing the axis");
-    }
-    min_rho = std::min(min_rho, ON_DotProduct(d, e_rho));
-  }
-  if (min_rho < -1e-8 * scale) Fail(caller, "profile must stay on one side of the axis (it crosses it)");
-
   const bool closed = c.IsClosed();
   const ON_3dPoint p_start = c.PointAtStart(), p_end = c.PointAtEnd();
   auto radius_of = [&](ON_3dPoint p) {
