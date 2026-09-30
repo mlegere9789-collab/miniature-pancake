@@ -19,6 +19,14 @@ Enter
 # --- TitleBlock
 TitleBlock Name=Widget Date=2026-09-06 Scale=1:2 Sheet=A1
 120,0,0
+# --- TitleBlock associativity: without Name=, the Name field defaults to
+# (and stays associative to) the document's current Settings().title
+# ("Untitled" here, since it was never set) rather than a one-time
+# snapshot - UpdateTitleBlock re-derives it later. The Name=Widget block
+# above is a frozen override (no Name= omitted) and must be left untouched.
+TitleBlock Sheet=A2
+160,0,0
+UpdateTitleBlock
 # --- GD&T: FeatureControlFrame, DatumFeature, SurfaceFinish, WeldSymbol
 FeatureControlFrame Symbol=Position Tolerance=0.1 Datums=A,B
 0,20,0
