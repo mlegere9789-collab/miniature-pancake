@@ -25364,6 +25364,257 @@ void TestMoveEdgesConvexPlanarRefusesInvalidInput() {
   Check(threw, "MoveEdgesConvexPlanar refuses an edge whose incident faces are non-triangular (a box's own quads)");
 }
 
+// The genuinely new capability neither ReplaceFacePlaneConvexPlanar() nor
+// two sequential calls to it can express: two faces whose own new planes
+// are only jointly consistent, each one only valid once the OTHER has also
+// moved. Push the box's own front wall (index 2, y=0) OUTWARD past the
+// back wall's own OLD position (y=10) to y=15 - alone, with the back wall
+// still at y=10, this is a flat contradiction (no y satisfies both y>=15
+// and y<=10), so ReplaceFacePlaneConvexPlanar() on the front wall alone
+// must refuse; only replacing BOTH walls together (front to y=15, back to
+// y=20) in one ReplaceFacePlanesConvexPlanar() call is ever consistent,
+// and the result is an exact 10x10x5 box (x,z unchanged, y in [15,20]).
+void TestReplaceFacePlanesConvexPlanarSucceedsWhereSequentialSingleReplaceWouldRefuse() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::ReplaceFacePlaneConvexPlanar;
+  using dino8::kernel::ReplaceFacePlanesConvexPlanar;
+
+  // Box face order per Brep::Box()'s own comment: 0=bottom(-z) 1=top(+z)
+  // 2=front(-y) 3=back(+y) 4=left(-x) 5=right(+x).
+  const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+  const std::vector<Brep::PlanarFace> box_pf = box.PlanarFaces();
+  const ON_Plane& front_plane = box_pf[2].plane;
+  const ON_Plane& back_plane = box_pf[3].plane;
+
+  ON_Plane new_front = front_plane;
+  new_front.origin = Point3d(5.0, 15.0, 5.0);
+  new_front.UpdateEquation();
+
+  ON_Plane new_back = back_plane;
+  new_back.origin = Point3d(5.0, 20.0, 5.0);
+  new_back.UpdateEquation();
+
+  bool threw = false;
+  try {
+    ReplaceFacePlaneConvexPlanar(box, 2, new_front);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw,
+        "replacing only the front wall's own plane (pushed past the back wall's own OLD position) is refused - "
+        "the intermediate state a sequential caller would have to pass through is genuinely invalid, not just "
+        "momentarily unusual");
+
+  const Brep result = ReplaceFacePlanesConvexPlanar(box, {{2, new_front}, {3, new_back}});
+  Check(result.FaceCount() == 6, "ReplaceFacePlanesConvexPlanar on a box keeps exactly 6 faces (no topology change)");
+
+  const double expected_volume = 10.0 * 10.0 * 5.0;
+  const double measured_volume = PlanarBrepVolumeExact(result);
+  Check(std::fabs(measured_volume - expected_volume) / expected_volume < 1e-9,
+        "replacing both walls together in one call matches the exact 10x10x5 box volume (y now spans [15,20]) - "
+        "a combination no single ReplaceFacePlaneConvexPlanar() call could ever reach on its own");
+
+  const std::vector<Brep::PlanarFace> pf = result.PlanarFaces();
+  for (const Point3d& p : pf[2].loop) {
+    Check(std::fabs(p.y - 15.0) < 1e-9, "the replaced front wall sits exactly at its own new y=15 plane");
+  }
+  for (const Point3d& p : pf[3].loop) {
+    Check(std::fabs(p.y - 20.0) < 1e-9, "the replaced back wall sits exactly at its own new y=20 plane");
+  }
+  for (const Point3d& p : pf[0].loop) {
+    Check(std::fabs(p.z) < 1e-9, "the untouched bottom face keeps its own original z=0 plane");
+  }
+}
+
+void TestReplaceFacePlanesConvexPlanarRefusesInvalidInput() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::ReplaceFacePlanesConvexPlanar;
+  using dino8::kernel::Vector3d;
+
+  const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+  const ON_Plane top_plane = box.PlanarFaces()[1].plane;
+
+  bool threw = false;
+  try {
+    ReplaceFacePlanesConvexPlanar(box, {});
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "ReplaceFacePlanesConvexPlanar refuses an empty face_planes list");
+
+  threw = false;
+  try {
+    ReplaceFacePlanesConvexPlanar(box, {{99, top_plane}});
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "ReplaceFacePlanesConvexPlanar refuses an out-of-range face_index");
+
+  // Two entries naming the SAME face_index, even with two different
+  // planes, are ambiguous - which one should apply is undefined.
+  threw = false;
+  try {
+    ON_Plane other_plane = top_plane;
+    other_plane.origin = other_plane.origin + Point3d(0, 0, 1);
+    other_plane.UpdateEquation();
+    ReplaceFacePlanesConvexPlanar(box, {{1, top_plane}, {1, other_plane}});
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "ReplaceFacePlanesConvexPlanar refuses two entries naming the same face_index");
+
+  threw = false;
+  try {
+    ReplaceFacePlanesConvexPlanar(box, {{1, ON_Plane()}});
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "ReplaceFacePlanesConvexPlanar refuses a default-constructed (not IsValid()) plane");
+
+  threw = false;
+  try {
+    ON_Plane collapsing(Point3d(5, 5, -5), Vector3d(0, 0, 1));
+    ReplaceFacePlanesConvexPlanar(box, {{1, collapsing}});
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw,
+        "ReplaceFacePlanesConvexPlanar refuses a new_plane that collapses a face's own boundary to fewer than 3 "
+        "vertices or ~0 area");
+}
+
+// The batch generalization's own genuine capability, this time reached
+// through rigid transforms rather than direct planes: MoveFaceConvexPlanar()
+// alone (front wall translated to y=15, back wall still at its own old
+// y=10) is refused for the identical reason ReplaceFacePlaneConvexPlanar()
+// alone is above; MoveFacesConvexPlanar() moving both walls together
+// succeeds and matches the same exact 10x10x5 volume.
+void TestMoveFacesConvexPlanarSucceedsWhereSequentialSingleMoveWouldRefuse() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::MoveFaceConvexPlanar;
+  using dino8::kernel::MoveFacesConvexPlanar;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  // Box face order per Brep::Box()'s own comment: 0=bottom(-z) 1=top(+z)
+  // 2=front(-y) 3=back(+y) 4=left(-x) 5=right(+x).
+  const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+
+  const ON_Xform move_front = ON_Xform::TranslationTransformation(Vector3d(0.0, 15.0, 0.0));
+  const ON_Xform move_back = ON_Xform::TranslationTransformation(Vector3d(0.0, 10.0, 0.0));
+
+  bool threw = false;
+  try {
+    MoveFaceConvexPlanar(box, 2, move_front);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw,
+        "moving only the front wall past the back wall's own OLD position is refused - the same invalid "
+        "intermediate state ReplaceFacePlaneConvexPlanar() alone hits above");
+
+  const Brep result = MoveFacesConvexPlanar(box, {{2, move_front}, {3, move_back}});
+  Check(result.FaceCount() == 6, "MoveFacesConvexPlanar on a box keeps exactly 6 faces (no topology change)");
+
+  const double expected_volume = 10.0 * 10.0 * 5.0;
+  const double measured_volume = PlanarBrepVolumeExact(result);
+  Check(std::fabs(measured_volume - expected_volume) / expected_volume < 1e-9,
+        "moving both walls together in one call matches the exact 10x10x5 box volume - a combination no single "
+        "MoveFaceConvexPlanar() call could ever reach on its own");
+}
+
+// Correctness check against an independent sibling: two INDEPENDENT
+// (non-conflicting) faces each translated along their own normal by
+// MoveFacesConvexPlanar() must match OffsetSolidConvexPlanar() fed the
+// identical two nonzero distances (zero everywhere else) vertex for
+// vertex - proof this is a genuine generalization of per-face normal
+// translation to an arbitrary named subset, not a separate and possibly-
+// divergent construction.
+void TestMoveFacesConvexPlanarMatchesOffsetSolidForTwoIndependentNormalTranslates() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::MoveFacesConvexPlanar;
+  using dino8::kernel::OffsetSolidConvexPlanar;
+  using dino8::kernel::Point3d;
+
+  // Box face order per Brep::Box()'s own comment: 0=bottom(-z) 1=top(+z)
+  // 2=front(-y) 3=back(+y) 4=left(-x) 5=right(+x).
+  const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+  const std::vector<Brep::PlanarFace> box_pf = box.PlanarFaces();
+
+  std::vector<double> distances(box_pf.size(), 0.0);
+  distances[2] = 2.0;  // front wall, offset outward along its own normal
+  distances[4] = 3.0;  // left wall, offset outward along its own normal
+  const Brep via_offset = OffsetSolidConvexPlanar(box, distances);
+
+  const ON_Xform move_front = ON_Xform::TranslationTransformation(2.0 * box_pf[2].plane.zaxis);
+  const ON_Xform move_left = ON_Xform::TranslationTransformation(3.0 * box_pf[4].plane.zaxis);
+  const Brep via_move = MoveFacesConvexPlanar(box, {{2, move_front}, {4, move_left}});
+
+  Check(via_move.FaceCount() == via_offset.FaceCount(),
+        "MoveFacesConvexPlanar keeps the same face count as OffsetSolidConvexPlanar on the identical two moves");
+  Check(std::fabs(PlanarBrepVolumeExact(via_move) - PlanarBrepVolumeExact(via_offset)) < 1e-9,
+        "MoveFacesConvexPlanar's volume matches OffsetSolidConvexPlanar's exactly for two independent "
+        "pure-normal-translate xforms");
+
+  const std::vector<Brep::PlanarFace> offset_faces = via_offset.PlanarFaces();
+  const std::vector<Brep::PlanarFace> move_faces = via_move.PlanarFaces();
+  Check(offset_faces.size() == move_faces.size(), "same number of faces to compare pointwise");
+  for (size_t i = 0; i < offset_faces.size(); ++i) {
+    const std::vector<Point3d>& a = offset_faces[i].loop;
+    const std::vector<Point3d>& b = move_faces[i].loop;
+    Check(a.size() == b.size(), "each face has the same vertex count in both results");
+    for (size_t j = 0; j < a.size() && j < b.size(); ++j) {
+      Check(a[j].DistanceTo(b[j]) < 1e-9,
+            "every vertex lands in exactly the same place under OffsetSolidConvexPlanar and "
+            "MoveFacesConvexPlanar for two independent named faces");
+    }
+  }
+}
+
+void TestMoveFacesConvexPlanarRefusesInvalidInput() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::MoveFacesConvexPlanar;
+  using dino8::kernel::Vector3d;
+
+  const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+
+  bool threw = false;
+  try {
+    MoveFacesConvexPlanar(box, {});
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "MoveFacesConvexPlanar refuses an empty face_moves list");
+
+  threw = false;
+  try {
+    MoveFacesConvexPlanar(box, {{99, ON_Xform::IdentityTransformation}});
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "MoveFacesConvexPlanar refuses an out-of-range face_index");
+
+  threw = false;
+  try {
+    MoveFacesConvexPlanar(
+        box, {{1, ON_Xform::IdentityTransformation}, {1, ON_Xform::TranslationTransformation(Vector3d(0, 0, 1))}});
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "MoveFacesConvexPlanar refuses two entries naming the same face_index");
+
+  threw = false;
+  try {
+    MoveFacesConvexPlanar(box, {{1, ON_Xform::ZeroTransformation}});
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw,
+        "MoveFacesConvexPlanar refuses a singular xform that collapses a face's own frame to an invalid plane");
+}
+
 // PARITY_MAP's kernel: Local / direct-edit operations "Delete face with
 // heal (remove face, grow neighbours to close the gap)" gap - previously
 // only a flat re-cap (Brep::CapPlanarHoles), never a genuine heal.
@@ -52129,6 +52380,11 @@ int main() {
   TestMoveVerticesConvexPlanarRefusesInvalidInput();
   TestMoveEdgesConvexPlanarMovesTwoAdjacentEdgesSharingAVertexMatchesExactVolume();
   TestMoveEdgesConvexPlanarRefusesInvalidInput();
+  TestReplaceFacePlanesConvexPlanarSucceedsWhereSequentialSingleReplaceWouldRefuse();
+  TestReplaceFacePlanesConvexPlanarRefusesInvalidInput();
+  TestMoveFacesConvexPlanarSucceedsWhereSequentialSingleMoveWouldRefuse();
+  TestMoveFacesConvexPlanarMatchesOffsetSolidForTwoIndependentNormalTranslates();
+  TestMoveFacesConvexPlanarRefusesInvalidInput();
   TestDeleteFaceHealConvexPlanarChamferedCubeRecoversExactUnitCube();
   TestDeleteFaceHealConvexPlanarRefusesInvalidInput();
   TestFilletConvexEdgeUnitCubeTopFrontCorner();

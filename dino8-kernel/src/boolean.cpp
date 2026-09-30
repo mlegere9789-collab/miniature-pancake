@@ -2359,6 +2359,147 @@ Brep DeleteFaceHealConvexPlanar(const Brep& solid, int face_index) {
   return Brep::FromPlanarFaces(result);
 }
 
+Brep ReplaceFacePlanesConvexPlanar(const Brep& solid, const std::vector<std::pair<int, ON_Plane>>& face_planes) {
+  const std::vector<Brep::PlanarFace> faces = solid.PlanarFaces();
+  const int n = static_cast<int>(faces.size());
+  if (face_planes.empty()) {
+    throw std::invalid_argument("dino8::kernel::ReplaceFacePlanesConvexPlanar: face_planes must not be empty");
+  }
+  std::vector<bool> named(static_cast<size_t>(n), false);
+  for (const auto& [face_index, new_plane] : face_planes) {
+    if (face_index < 0 || face_index >= n) {
+      throw std::invalid_argument(
+          "dino8::kernel::ReplaceFacePlanesConvexPlanar: face_planes contains a face_index "
+          "out of range for solid.PlanarFaces()");
+    }
+    if (named[static_cast<size_t>(face_index)]) {
+      throw std::invalid_argument(
+          "dino8::kernel::ReplaceFacePlanesConvexPlanar: two entries in face_planes name the "
+          "same face_index - ambiguous which entry's own new_plane should apply");
+    }
+    named[static_cast<size_t>(face_index)] = true;
+    if (!new_plane.IsValid()) {
+      throw std::invalid_argument(
+          "dino8::kernel::ReplaceFacePlanesConvexPlanar: face_planes contains a new_plane "
+          "that is not IsValid()");
+    }
+  }
+
+  const double tol = RelativeTol(faces);
+  if (!IsConvex(faces, tol)) {
+    throw std::invalid_argument(
+        "dino8::kernel::ReplaceFacePlanesConvexPlanar: solid must be convex (a vertex "
+        "of one of its own faces lies outside one of its own other faces' "
+        "half-spaces) - see BooleanIntersectConvexPlanar's own doc comment "
+        "for why non-convex input isn't handled here");
+  }
+
+  // Every face's new plane: each named face's own replaced outright by its
+  // own entry in face_planes, every other face's plane unchanged - the
+  // identical "one call, many named faces" generalization of
+  // ReplaceFacePlaneConvexPlanar()'s own "one call, one named face" that
+  // MoveVerticesConvexPlanar()/MoveEdgesConvexPlanar() are of
+  // MoveVertexConvexPlanar()/MoveEdgeConvexPlanar() above.
+  std::vector<ON_Plane> new_planes(static_cast<size_t>(n));
+  for (int i = 0; i < n; ++i) new_planes[static_cast<size_t>(i)] = faces[static_cast<size_t>(i)].plane;
+  for (const auto& [face_index, new_plane] : face_planes) {
+    new_planes[static_cast<size_t>(face_index)] = new_plane;
+    new_planes[static_cast<size_t>(face_index)].UpdateEquation();
+  }
+
+  // Same generous halfspace-intersection superset OffsetFace()/
+  // OffsetSolidConvexPlanar()/DraftFacesConvexPlanar()/
+  // ReplaceFacePlaneConvexPlanar() use, sized from the ORIGINAL solid's own
+  // extent - guaranteed to contain the true new polytope's own boundary at
+  // every face regardless of how many faces' own planes moved at once.
+  ON_BoundingBox bbox;
+  for (const Brep::PlanarFace& f : faces) {
+    for (const Point3d& p : f.loop) bbox.Set(p, true);
+  }
+  const double half_size = 50.0 * std::max(tol, bbox.Diagonal().Length());
+
+  std::vector<Brep::PlanarFace> result;
+  result.reserve(static_cast<size_t>(n));
+  for (int i = 0; i < n; ++i) {
+    const ON_Plane& pl = new_planes[static_cast<size_t>(i)];
+    const std::vector<Point3d> oversized = {
+        pl.origin + half_size * pl.xaxis + half_size * pl.yaxis,
+        pl.origin - half_size * pl.xaxis + half_size * pl.yaxis,
+        pl.origin - half_size * pl.xaxis - half_size * pl.yaxis,
+        pl.origin + half_size * pl.xaxis - half_size * pl.yaxis,
+    };
+    std::vector<ON_Plane> others;
+    others.reserve(static_cast<size_t>(n - 1));
+    for (int k = 0; k < n; ++k) {
+      if (k == i) continue;
+      others.push_back(new_planes[static_cast<size_t>(k)]);
+    }
+    std::vector<Point3d> clipped = ClipConvexPolygon(oversized, pl, others, tol);
+    const double area = PlanarPolygonArea(clipped, pl.zaxis);
+    const double area_tol = tol * tol;
+    if (clipped.size() < 3 || area <= area_tol) {
+      throw std::invalid_argument(
+          "dino8::kernel::ReplaceFacePlanesConvexPlanar: the given new_plane(s) collapse face " +
+          std::to_string(i) +
+          "'s own boundary to fewer than 3 vertices or ~0 area - the resulting "
+          "solid's topology would need to change (a face vanishing entirely), "
+          "which is out of scope here");
+    }
+    Brep::PlanarFace new_face;
+    new_face.plane = pl;
+    new_face.loop = std::move(clipped);
+    result.push_back(std::move(new_face));
+  }
+
+  return Brep::FromPlanarFaces(result);
+}
+
+Brep MoveFacesConvexPlanar(const Brep& solid, const std::vector<std::pair<int, ON_Xform>>& face_moves) {
+  if (face_moves.empty()) {
+    throw std::invalid_argument("dino8::kernel::MoveFacesConvexPlanar: face_moves must not be empty");
+  }
+  const std::vector<Brep::PlanarFace> faces = solid.PlanarFaces();
+  const int n = static_cast<int>(faces.size());
+  std::vector<bool> named(static_cast<size_t>(n), false);
+  std::vector<std::pair<int, ON_Plane>> face_planes;
+  face_planes.reserve(face_moves.size());
+  for (const auto& [face_index, xform] : face_moves) {
+    if (face_index < 0 || face_index >= n) {
+      throw std::invalid_argument(
+          "dino8::kernel::MoveFacesConvexPlanar: face_moves contains a face_index out of "
+          "range for solid.PlanarFaces()");
+    }
+    if (named[static_cast<size_t>(face_index)]) {
+      throw std::invalid_argument(
+          "dino8::kernel::MoveFacesConvexPlanar: two entries in face_moves name the same "
+          "face_index - ambiguous which entry's own xform should apply");
+    }
+    named[static_cast<size_t>(face_index)] = true;
+
+    // The face's own current plane, rotated and/or translated by its own
+    // xform - the identical per-face transform MoveFaceConvexPlanar()
+    // applies to its one named face, see that function's own doc comment
+    // for why a rigid transform (which can rotate the frame) is a genuine
+    // generalization of OffsetFace() where a plain translation vector
+    // would not be.
+    ON_Plane new_plane = faces[static_cast<size_t>(face_index)].plane;
+    if (!new_plane.Transform(xform) || !new_plane.IsValid()) {
+      throw std::invalid_argument(
+          "dino8::kernel::MoveFacesConvexPlanar: an entry's xform produces an invalid plane "
+          "for face " +
+          std::to_string(face_index) +
+          " (e.g. a singular/non-invertible transform collapsing that face's own frame)");
+    }
+    face_planes.emplace_back(face_index, new_plane);
+  }
+
+  // Every named face's own transformed plane is applied in a SINGLE
+  // ReplaceFacePlanesConvexPlanar() call - a thin flatten-and-delegate, not
+  // a second reconstruction, exactly as MoveFaceConvexPlanar() itself is a
+  // thin delegation to ReplaceFacePlaneConvexPlanar().
+  return ReplaceFacePlanesConvexPlanar(solid, face_planes);
+}
+
 // ---------------------------------------------------------------------
 // BooleanCombineMixed: the axis-perpendicular-only extension of the
 // non-convex planar pipeline above to a solid that may have a

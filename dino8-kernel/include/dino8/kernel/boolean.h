@@ -1180,6 +1180,73 @@ Brep MoveEdgesConvexPlanar(const Brep& solid, const std::vector<EdgeMove>& edge_
 // still unclipped, not by assuming a shape "looks reasonable".
 Brep DeleteFaceHealConvexPlanar(const Brep& solid, int face_index);
 
+// The batch generalization of `ReplaceFacePlaneConvexPlanar()` above that
+// `MoveVerticesConvexPlanar()`/`MoveEdgesConvexPlanar()` are of
+// `MoveVertexConvexPlanar()`/`MoveEdgeConvexPlanar()`: swap a caller-chosen
+// SET of independent faces for their own caller-supplied planes in one
+// call, one shared re-trim pass, rather than N sequential
+// `ReplaceFacePlaneConvexPlanar()` calls each separately re-deriving and
+// validating every OTHER face's boundary from its own intermediate (and
+// possibly momentarily invalid) plane set. Reuses
+// `ReplaceFacePlaneConvexPlanar()`'s own "every face's new plane: a named
+// face's own replaced outright, every other face's plane unchanged, then
+// clip every face against every OTHER face's own new plane" reconstruction
+// verbatim, generalized from "exactly one named face" to "every face named
+// in `face_planes`" - the identical "start from an oversized polygon per
+// face, clip against every other face's own half-space" technique this
+// whole family already shares.
+//
+// This is load-bearing, not merely a convenience wrapper: two faces whose
+// own new planes are only jointly consistent (e.g. two opposite walls
+// pushed past each other's OLD position, each one only valid once the
+// OTHER has also moved) can be replaced together in one call even though
+// replacing either one alone first - with the other still at its own old
+// plane - would be refused as collapsing a face's own boundary to nothing.
+//
+// Each entry of `face_planes` is a `(face_index, new_plane)` pair, the same
+// two positional arguments `ReplaceFacePlaneConvexPlanar()` above takes for
+// one face at a time. Two entries naming the same `face_index` are refused
+// as ambiguous (which entry's own `new_plane` should apply is undefined),
+// the same "no silent first-in-list tie-break" discipline
+// `MoveVerticesConvexPlanar()` already enforces for a duplicate vertex.
+// `face_planes` must be non-empty.
+//
+// Same convex-solid precondition and every other per-face failure mode
+// (out-of-range `face_index`, a `new_plane` that isn't `IsValid()`, a
+// `new_plane` that collapses any face's own new boundary to fewer than 3
+// vertices or ~0 area) as `ReplaceFacePlaneConvexPlanar()` above - throws
+// std::invalid_argument in each case.
+Brep ReplaceFacePlanesConvexPlanar(const Brep& solid, const std::vector<std::pair<int, ON_Plane>>& face_planes);
+
+// The batch generalization of `MoveFaceConvexPlanar()` above that
+// `ReplaceFacePlanesConvexPlanar()` immediately above is of
+// `ReplaceFacePlaneConvexPlanar()`: apply a caller-chosen SET of
+// independent rigid transforms, one per named face, in a single call. Each
+// entry of `face_moves` is a `(face_index, xform)` pair, the same two
+// positional arguments `MoveFaceConvexPlanar()` above takes for one face at
+// a time; each named face's own current plane is transformed by its own
+// `xform` exactly as `MoveFaceConvexPlanar()` transforms one, and the
+// resulting list of `(face_index, new_plane)` pairs is applied in a
+// SINGLE `ReplaceFacePlanesConvexPlanar()` call - a thin flatten-and-
+// delegate, not a second reconstruction, exactly as `MoveFaceConvexPlanar()`
+// itself is a thin delegation to `ReplaceFacePlaneConvexPlanar()`.
+//
+// Same genuine batch value as `ReplaceFacePlanesConvexPlanar()` documents:
+// two faces whose own moves are only jointly consistent (each one only
+// valid once the OTHER has also moved) succeed together in one call even
+// though applying either `MoveFaceConvexPlanar()` alone first would be
+// refused. Two entries naming the same `face_index` are refused as
+// ambiguous, the same discipline `ReplaceFacePlanesConvexPlanar()` already
+// enforces. `face_moves` must be non-empty.
+//
+// Same convex-solid precondition and every other per-face failure mode
+// (out-of-range `face_index`, an `xform` that produces an invalid plane, a
+// transformed plane that collapses any face's own new boundary to fewer
+// than 3 vertices or ~0 area) as `MoveFaceConvexPlanar()`/
+// `ReplaceFacePlanesConvexPlanar()` above - throws std::invalid_argument in
+// each case.
+Brep MoveFacesConvexPlanar(const Brep& solid, const std::vector<std::pair<int, ON_Xform>>& face_moves);
+
 // Exact B-rep boolean between two solids where either (or both) may have
 // a CYLINDRICAL face, not just planar ones - what closes the gap
 // BooleanCombinePlanar's own PlanarFaces()-only precondition leaves open:
