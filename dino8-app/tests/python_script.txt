@@ -49,7 +49,21 @@
 # until now), and dino8.doc.Objects.ObjectsByLayer (ids of the objects on
 # a named layer, optionally selecting them, raising for a layer that
 # doesn't exist, matching Lua's rs.ObjectsByLayer, that the dino8 module
-# also lacked until now).
+# also lacked until now), dino8.doc.Objects.CurveLength/CurveDomain/
+# EvaluateCurve/CurveClosestPoint/DivideCurve (curve query, matching Lua's
+# rs.CurveLength/rs.CurveDomain/rs.EvaluateCurve/rs.CurveClosestPoint/
+# rs.DivideCurve, that the dino8 module also lacked until now),
+# dino8.doc.Objects.SurfaceArea/SurfaceVolume/IsObjectSolid/
+# SurfaceClosestPoint/MeshVertices (surface/mesh query, matching Lua's
+# rs.SurfaceArea/rs.SurfaceVolume/rs.IsObjectSolid/rs.SurfaceClosestPoint/
+# rs.MeshVertices, that the dino8 module also lacked until now),
+# dino8.doc.Objects.ObjectsByName/ObjectsByType/BoundingBox (matching Lua's
+# rs.ObjectsByName/rs.ObjectsByType/rs.BoundingBox, that the dino8 module
+# also lacked until now), and dino8.doc.Layers - a new LayerTable
+# (Add/Count/Names/IsLayer/CurrentLayer/Visible/Locked/Color/Delete,
+# matching Lua's rs.AddLayer/rs.LayerCount/rs.LayerNames/rs.IsLayer/
+# rs.CurrentLayer/rs.LayerVisible/rs.LayerLocked/rs.LayerColor/
+# rs.DeleteLayer, that the dino8 module lacked entirely until now).
 # Unlike script_script.txt's Lua test, this never goes interactive
 # mid-script (see PythonEngine.h): Python scripts run start to finish in
 # one call, so there is no trailing point token to feed a GetPoint-style
@@ -57,4 +71,4 @@
 # smoke.sh substitutes @TMP@ with a scratch directory and writes @TMP@/t.py
 # before running this.
 RunPythonScript @TMP@/t.py
-@expect_objects 27
+@expect_objects 36
