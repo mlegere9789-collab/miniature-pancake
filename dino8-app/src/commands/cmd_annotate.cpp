@@ -177,11 +177,11 @@ bool ResolveLinearDimPoints(Document& doc, int group_id, Point3d& p0, Point3d& p
 
 // Linear / aligned: first point, second point, dimension line location.
 // Associative when a measured point coincides with a real object (a Point
-// object, or a curve endpoint): see BuildLinearDimensionGroup/
-// UpdateDimensions. A point that isn't on any object (e.g. picked in free
-// space, or an object snap this build doesn't resolve to an anchor, like a
-// curve's interior or a brep vertex) still dimensions correctly, it just
-// stays a static baked measurement, same as before this change.
+// object; a curve's start/end/midpoint; or an arc/circle's center/quadrant):
+// see BuildLinearDimensionGroup/UpdateDimensions. A point that isn't on any
+// object (e.g. picked in free space, or an object snap this build doesn't
+// resolve to an anchor, like a brep vertex) still dimensions correctly, it
+// just stays a static baked measurement, same as before this change.
 class DimLinearCommand : public Command {
  public:
   explicit DimLinearCommand(bool aligned) : aligned_(aligned) {}
@@ -599,13 +599,13 @@ void RegisterAnnotateCommands(CommandEngine& e) {
   // cross-cutting change far beyond this file, so it is not attempted here.
   const char* text_note = "Bakes the text as font-outline curve/surface geometry rather than a live TextEntity: it does not re-flow if the annotation style or text height changes later (TextObject is the same geometry, which matches its own intended meaning in Rhino).";
   const char* linear_dim_note =
-      "Bakes curve/arrow geometry like every dimension here, but is associative when a measured point sits exactly on a real object (a Point object, or a curve endpoint - see FindPointAnchor, annotate_common.h): the dimension records which object and end it measured, and UpdateDimensions re-evaluates that object's current position and redraws the dimension line/text from it. A point that isn't on any object (free space, or a snap this build doesn't resolve to an anchor - a curve's interior, a brep vertex, ...) still dimensions correctly but stays a static baked measurement for that endpoint, same as before this change. DimRotated builds the identical dimension as DimAligned (same command, same tagging), so it shares this associativity too.";
+      "Bakes curve/arrow geometry like every dimension here, but is associative when a measured point sits exactly on a real object - a Point object; a curve's start/end, segment midpoint or arc-length midpoint; or an arc/circle's center or quadrant point (see FindPointAnchor, annotate_common.h, matching the viewport's own End/Mid/Cen/Quad osnaps) - the dimension records which object and anchor it measured, and UpdateDimensions re-evaluates that object's current position and redraws the dimension line/text from it. A point that isn't on any object (free space, a brep vertex, or a snap this build doesn't resolve to an anchor) still dimensions correctly but stays a static baked measurement for that endpoint, same as before this change. DimRotated builds the identical dimension as DimAligned (same command, same tagging), so it shares this associativity too.";
   const char* angle_dim_note =
       "Bakes curve/arrow geometry, associative per point exactly like DimLinear (FindPointAnchor on the vertex and each of the two direction points - see annotate_common.h): UpdateDimensions re-evaluates whichever of the three points matched a real object and rebuilds the arc/extension-lines/text from their current positions. A point that isn't on any object stays a static baked measurement for that vertex, same as before this change.";
   const char* radius_dim_note =
       "Bakes curve/arrow geometry, but is always associative: DimRadius/DimDiameter require selecting a real arc/circle curve to measure, so that curve's id is recorded directly (not by coincident-point matching) and UpdateDimensions re-evaluates its current center/radius (ResolveArcAnchor, annotate_common.h) and rebuilds the leader/text from it - the dimension-line direction and stand-off distance chosen at creation are kept fixed as the circle/arc moves or resizes.";
   const char* leader_dim_note =
-      "Bakes curve/arrow geometry, associative when the arrowhead point sits exactly on a real object (FindPointAnchor, same coincidence rule as DimLinear): UpdateDimensions re-evaluates that object's current position and redraws the whole leader (bend points and text keep their built offsets from the tip, so the shape translates with it) - a leader whose arrowhead isn't on any object stays a static baked leader, same as before this change.";
+      "Bakes curve/arrow geometry, associative when the arrowhead point sits exactly on a real object (FindPointAnchor, same coincidence rule as DimLinear, including its curve-midpoint/arc-center/quadrant anchors): UpdateDimensions re-evaluates that object's current position and redraws the whole leader (bend points and text keep their built offsets from the tip, so the shape translates with it) - a leader whose arrowhead isn't on any object stays a static baked leader, same as before this change.";
   // Baked-curve annotation is the established, accepted shape for this
   // whole app (see e.g. cmd_annotate2.cpp's DimArea/DimCurveLength/
   // DimVolume/DimOrdinate/DimCreaseAngle, all Implemented with the same

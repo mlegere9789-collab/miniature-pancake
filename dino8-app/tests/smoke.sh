@@ -2899,6 +2899,24 @@ D2_ML_REGEN_COUNT=$(echo "$D2" | grep -c "UpdateMultiLeaders: 2 multi-leader(s) 
 D2_GDT_REGEN_COUNT=$(echo "$D2" | grep -c "UpdateGdtSymbols: 10 symbol(s) regenerated")
 [ "$D2_GDT_REGEN_COUNT" = "2" ] && echo "ok   UpdateGdtSymbols regenerated all 10 GD&T symbols with 0 skipped, both before Save and again after Open" || { echo "FAIL UpdateGdtSymbols: 10 symbol(s) regenerated seen $D2_GDT_REGEN_COUNT times, expected 2 (some GD&T symbols failed to resolve after the .3dm round trip)"; fail=1; }
 
+# Associativity: FindPointAnchor/ResolveAnchor now also recognize a curve's
+# midpoint and an arc/circle's center/quadrant point, not just a Point object
+# or a curve's start/end - the same candidates the viewport's own Mid/Cen/
+# Quad object snaps compute. A Leader built with its arrowhead on each kind
+# of anchor records it (DimRefEnd1 = mid:<segment index>, center, or
+# quad+x), and UpdateDimensions drags the arrowhead to the anchor's *current*
+# position after the source line/circle moves.
+d2check "Leader MidLeader (associative to arrowhead point)" "Leader recorded a line's coincident midpoint as its associative reference"
+d2check "DimRefEnd1 = mid:0" "the midpoint anchor was tagged with its segment index"
+d2check "Leader CenterLeader (associative to arrowhead point)" "Leader recorded a circle's coincident center as its associative reference"
+d2check "DimRefEnd1 = center" "the center anchor was tagged 'center'"
+d2check "Leader QuadLeader (associative to arrowhead point)" "Leader recorded a circle's coincident quadrant point as its associative reference"
+d2check "DimRefEnd1 = quad+y" "the quadrant anchor was tagged 'quad+y' (not 'start' - a circle's own start/end parameter point sits at its +x quadrant by OpenNURBS convention, so this test deliberately anchors at +y instead to prove the dedicated quadrant-matching code path, not the pre-existing start/end one, is what resolved it)"
+d2check "UpdateDimensions: 7 dimension(s) regenerated" "UpdateDimensions regenerated the 4 earlier associative dimensions plus the 3 new anchor-kind Leaders, with 0 skipped"
+d2check "UpdateDimensions:   Leader now points at 1210,20,0" "UpdateDimensions dragged the midpoint-anchored Leader to the moved line's new midpoint, not the (1210,0,0) baked at creation"
+d2check "UpdateDimensions:   Leader now points at 1300,30,0" "UpdateDimensions dragged the center-anchored Leader to the moved circle's new center, not the (1300,0,0) baked at creation"
+d2check "UpdateDimensions:   Leader now points at 1400,45,0" "UpdateDimensions dragged the quadrant-anchored Leader to the moved circle's new quadrant point, not the (1400,5,0) baked at creation"
+
 d2check "SectionView: 120 curve(s)" "SectionView sliced all 120 objects with none dropped across the Document::Objects() reallocations that many Add() calls in one pass triggers"
 
 d2check "gl_error=0" "drafting2 script ran without OpenGL errors"

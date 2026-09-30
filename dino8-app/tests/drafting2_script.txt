@@ -247,6 +247,54 @@ SelNone
 UpdateDimensions
 UpdateMultiLeaders
 UpdateGdtSymbols
+# --- Associative FindPointAnchor: a curve's midpoint, and an arc/circle's
+# center or quadrant point - the same candidate points the viewport's own
+# Mid/Cen/Quad object snaps compute (Viewport.cpp), now recognized by
+# FindPointAnchor/ResolveAnchor (annotate_common.h) alongside a Point object
+# or a curve's start/end. A Leader anchored to each of the three must drag
+# its arrowhead to the anchor's *current* position after the source curve
+# moves, exactly like the Point-object-anchored Leader/MultiLeader/GD&T tests
+# above.
+SelNone
+Line 1200,0,0 1220,0,0
+SelLast
+SetObjectName MidAnchorLine
+SelNone
+Leader
+1210,0,0
+1210,-10,0
+Enter
+MidLeader
+SelNone
+Circle 1300,0,0 5
+SelLast
+SetObjectName CenterAnchorCircle
+SelNone
+Leader
+1300,0,0
+1300,-10,0
+Enter
+CenterLeader
+SelNone
+Circle 1400,0,0 5
+SelLast
+SetObjectName QuadAnchorCircle
+SelNone
+Leader
+1400,5,0
+1410,5,0
+Enter
+QuadLeader
+SelAll
+GetUserText
+SelName MidAnchorLine
+Move 1200,0,0 1200,20,0
+SelName CenterAnchorCircle
+Move 1300,0,0 1300,30,0
+SelName QuadAnchorCircle
+Move 1400,0,0 1400,40,0
+UpdateDimensions
+SelNone
 # --- SectionView iterator-invalidation regression: BuildSectionGroup used
 # to slice-and-Add() in a single pass over Document::Objects() itself, so
 # Add()'s vector reallocation could invalidate that very loop's own

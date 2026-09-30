@@ -240,12 +240,19 @@ inline void ReapplyToleranceSuffix(CommandContext& ctx, int group_id, const std:
 }
 
 // Finds a real document object anchored exactly at `p` (a Point object at
-// that location, or a curve's start/end): the basis for associative
-// dimensions (DimLinear/DimAligned - cmd_annotate.cpp). Skips other
-// annotation output (a dimension should never anchor to another dimension's
-// baked geometry) and returns false when `p` is free-floating - a dimension
-// built from unanchored points stays a static baked measurement, same as
-// today, since there is nothing live to track it back to.
+// that location; a curve's start/end, a segment midpoint (degree 1) or
+// arc-length midpoint (higher degree); or an arc/circle's center or, for a
+// full circle, one of its four quadrant points) - the basis for associative
+// dimensions and every other FindPointAnchor consumer (Leader,
+// FeatureControlFrame/DatumFeature/SurfaceFinish/WeldSymbol, MultiLeader).
+// The midpoint/center/quadrant candidates mirror the viewport's own
+// "Mid"/"Cen"/"Quad" osnaps (Viewport.cpp) exactly, so a point picked with
+// one of those object snaps resolves to the same anchor a user would expect
+// from seeing the snap glyph. Skips other annotation output (a dimension
+// should never anchor to another dimension's baked geometry) and returns
+// false when `p` is free-floating - a dimension built from unanchored
+// points stays a static baked measurement, same as today, since there is
+// nothing live to track it back to.
 inline bool FindPointAnchor(Document& doc, Point3d p, ObjectId& obj, std::string& which) {
   const double eps = 1e-7;
   for (const SceneObject& o : doc.Objects()) {
@@ -255,6 +262,29 @@ inline bool FindPointAnchor(Document& doc, Point3d p, ObjectId& obj, std::string
     } else if (o.kind == ObjectKind::Curve && o.curve) {
       if (o.curve->raw().PointAtStart().DistanceTo(p) < eps) { obj = o.id; which = "start"; return true; }
       if (o.curve->raw().PointAtEnd().DistanceTo(p) < eps) { obj = o.id; which = "end"; return true; }
+      if (o.curve->Degree() == 1) {
+        const int n = o.curve->ControlPointCount();
+        for (int i = 0; i + 1 < n; ++i) {
+          const Point3d a = o.curve->ControlPointAt(i), b = o.curve->ControlPointAt(i + 1);
+          if (Point3d((a.x + b.x) / 2, (a.y + b.y) / 2, (a.z + b.z) / 2).DistanceTo(p) < eps) {
+            obj = o.id; which = "mid:" + std::to_string(i); return true;
+          }
+        }
+      } else if (o.curve->PointAt(o.curve->ParameterAtArcLength(o.curve->Length() / 2.0)).DistanceTo(p) < eps) {
+        obj = o.id; which = "mid"; return true;
+      }
+      ON_Arc arc;
+      if (o.curve->raw().IsArc(nullptr, &arc)) {
+        if (Point3d(arc.Center()).DistanceTo(p) < eps) { obj = o.id; which = "center"; return true; }
+        if (arc.IsCircle()) {
+          const ON_Plane pl = arc.Plane();
+          const double r = arc.Radius();
+          if (Point3d(arc.Center() + pl.xaxis * r).DistanceTo(p) < eps) { obj = o.id; which = "quad+x"; return true; }
+          if (Point3d(arc.Center() - pl.xaxis * r).DistanceTo(p) < eps) { obj = o.id; which = "quad-x"; return true; }
+          if (Point3d(arc.Center() + pl.yaxis * r).DistanceTo(p) < eps) { obj = o.id; which = "quad+y"; return true; }
+          if (Point3d(arc.Center() - pl.yaxis * r).DistanceTo(p) < eps) { obj = o.id; which = "quad-y"; return true; }
+        }
+      }
     }
   }
   return false;
@@ -263,15 +293,46 @@ inline bool FindPointAnchor(Document& doc, Point3d p, ObjectId& obj, std::string
 // Resolves an anchor made by FindPointAnchor back to a current point -
 // the object's *current* location, which is how a moved/edited source
 // object propagates into a dimension update. False if the object is gone
-// or no longer the kind the anchor expects (e.g. a curve turned into
-// something else by a boolean/edit that replaced it).
+// or no longer the kind/shape the anchor expects (e.g. a curve turned into
+// something else by a boolean/edit that replaced it, an arc anchor whose
+// curve is no longer arc-shaped, or a "mid:<i>" segment anchor whose curve
+// is no longer degree 1 or has fewer control points than the recorded
+// segment index needs).
 inline bool ResolveAnchor(Document& doc, ObjectId obj, const std::string& which, Point3d& out) {
   const SceneObject* o = doc.Find(obj);
   if (!o) return false;
   if (which == "point") { if (o->kind != ObjectKind::Point) return false; out = o->point; return true; }
   if (o->kind != ObjectKind::Curve || !o->curve) return false;
-  out = which == "start" ? Point3d(o->curve->raw().PointAtStart()) : Point3d(o->curve->raw().PointAtEnd());
-  return true;
+  if (which == "start") { out = Point3d(o->curve->raw().PointAtStart()); return true; }
+  if (which == "end") { out = Point3d(o->curve->raw().PointAtEnd()); return true; }
+  if (which == "mid") {
+    if (o->curve->Degree() == 1) return false;
+    out = o->curve->PointAt(o->curve->ParameterAtArcLength(o->curve->Length() / 2.0));
+    return true;
+  }
+  if (which.rfind("mid:", 0) == 0) {
+    if (o->curve->Degree() != 1) return false;
+    const int i = std::atoi(which.c_str() + 4);
+    if (i < 0 || i + 1 >= o->curve->ControlPointCount()) return false;
+    const Point3d a = o->curve->ControlPointAt(i), b = o->curve->ControlPointAt(i + 1);
+    out = Point3d((a.x + b.x) / 2, (a.y + b.y) / 2, (a.z + b.z) / 2);
+    return true;
+  }
+  if (which == "center" || which.rfind("quad", 0) == 0) {
+    ON_Arc arc;
+    if (!o->curve->raw().IsArc(nullptr, &arc)) return false;
+    if (which == "center") { out = Point3d(arc.Center()); return true; }
+    if (!arc.IsCircle()) return false;
+    const ON_Plane pl = arc.Plane();
+    const double r = arc.Radius();
+    if (which == "quad+x") out = Point3d(arc.Center() + pl.xaxis * r);
+    else if (which == "quad-x") out = Point3d(arc.Center() - pl.xaxis * r);
+    else if (which == "quad+y") out = Point3d(arc.Center() + pl.yaxis * r);
+    else if (which == "quad-y") out = Point3d(arc.Center() - pl.yaxis * r);
+    else return false;
+    return true;
+  }
+  return false;
 }
 
 // Resolves a whole-object anchor (DimRadius/DimDiameter's measured circle or
