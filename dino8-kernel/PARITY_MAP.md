@@ -4246,6 +4246,115 @@ the tables above and in "Priority order for maximum score-per-fix" remain
 accurate as they stand (16 remaining items, 0.094 weight/remaining) and need
 no edit.*
 
+*Nineteenth note on this category's score (this pass): four genuine,
+independently-tested additions land across three bullets, none a bucket
+move. **(1) "2D region / planar curve booleans":** `dino8::kernel::
+PolygonBooleanPlanar(a, b, plane, op, tolerance)` (boolean.h/.cpp) is a new,
+real, EXACT (non-tessellated) 2D closed-polygon boolean - the specific gap
+this bullet names ("No exact 2D curve boolean in the kernel" - the app's own
+`RegionBoolean` still goes through thin mesh slabs in Manifold). Not a new
+algorithm: `a`/`b` (each a simple CCW polygon in `plane`) are extruded into
+right prisms sharing a common height (the operands' own combined
+bounding-box diagonal), `BooleanCombinePlanar(prism_a, prism_b, op,
+tolerance)` is run, and the result's own base-plane faces are read back -
+the prism identity `Prism(2D_op(a, b)) == BooleanCombinePlanar(Prism(a),
+Prism(b), op)` holds for ANY simple planar polygon, convex or not (a
+vertical extrusion's cross-section at every height equals its footprint),
+not just the convex case `BooleanIntersectConvexPlanar`/`ShellConvexPlanar`
+are restricted to. A real, previously-undocumented wrinkle found and fixed
+while building this, not assumed: `BooleanCombinePlanar`'s own raw
+per-fragment faces are NOT re-merged into one simple polygon per connected
+region (confirmed directly - two overlapping unit squares' own Union first
+came back as 7 separate unit-ish quads tiling the true 7-area region, not 1
+loop) - closed by a new `DissolveCoplanarFragments` helper (boolean.cpp)
+that cancels each edge shared by two adjacent fragments in opposite
+directions (the same property `Brep::FromPlanarFaces`'s own `BuildFaceLoop`
+edge-matching already relies on) and walks the survivors into simple closed
+loops, which - found as a genuine capability, not merely a fix - also
+recovers a result region's own interior hole as a second, oppositely-wound
+loop for free (e.g. a Difference leaving a ring). Verified
+(`TestPolygonBooleanPlanarUnionOfTwoOverlappingSquares`,
+`...IntersectionOfTwoOverlappingSquares`, `...DifferenceOfTwoOverlappingSquares`,
+`...NonConvexLShapeIntersection`, `...DisjointOperands`,
+`...DifferenceLeavesARingWithHoleLoop`, `...NegativeControls`,
+tests/test_basic.cpp) against exact closed-form areas for Union/Intersection/
+Difference of two overlapping squares, a non-convex L-shaped operand (the
+case `IsConvex()`-gated `BooleanIntersectConvexPlanar`/`ShellConvexPlanar`
+would refuse outright), two disjoint squares (Union returns two loops,
+Intersection returns empty), and the ring/hole case above. Still partial,
+not present: `a`/`b` may each only be a single simple loop (no hole on the
+INPUT side - nowhere in the `std::vector<Point3d>` signature to put one),
+self-intersecting input is unchecked, and nothing in the app calls this yet
+(`RegionBoolean`, cmd_solidtools.cpp, is untouched).
+**(2) "Keep/split options":** `dino8::kernel::SplitBrepBySolid(target,
+cutter, tolerance)` (boolean_general.h/.cpp) is a real B-rep solid-by-solid
+split with true KeepAll semantics against a genuinely CLOSED-SOLID cutter -
+this bullet's own previously-named gap ("BooleanSplit solid-by-solid keeping
+all pieces... is all plane-split only" - `SplitByObjectCommand`'s own
+general-cutter KeepAll split is app-level mesh, not B-rep). Deliberately not
+a new algorithm: `{target - cutter, target intersect cutter}` via two
+independent `BooleanCombineGeneral` calls, inheriting that function's own
+proven correctness and scope limits wholesale. Verified
+(`TestSplitBrepBySolidOverlappingBoxesSumBackToOriginalVolume`,
+`...DisjointCutterKeepsWholeTargetOutside`, `...CutterFullyContainsTarget`,
+`...RejectsEmptyOperandsAndNonPositiveTolerance`, tests/test_basic.cpp) that
+both pieces are valid `ON_Brep`s and their volumes always sum back exactly
+to `target`'s own, including the disjoint-cutter and cutter-fully-contains-
+target degenerate cases (mirroring `SplitBySheet`'s/`TrimSheetBySolid`'s own
+"kept.empty()" convention rather than treating either as an error).
+**`dino8::kernel::SplitBrepByManySolids(target, cutters, tolerance)`** (same
+files) extends this to several cutters at once - folds `cutters` into one
+solid via the existing `BooleanCombineGeneralNAry(cutters, {}, Union,
+tolerance)` left-to-right fold, then one `SplitBrepBySolid` call - closing
+the N-ary half of the same gap (also touches "Multi-body / multi-tool
+booleans": a cutting-tool group, not just a two-object combine, now has a
+real split entry point). Verified
+(`TestSplitBrepByManySolidsTwoDisjointCuttersSumBackToOriginalVolume`,
+`...RejectsEmptyCutterGroup`) against two disjoint interior cutters (volume
+conservation, and a cross-check against two chained single-cutter
+`SplitBrepBySolid` calls matching bit-for-bit). Still partial, not present:
+both inherit `BooleanCombineGeneral`'s own scope limits unchanged, no app
+command calls either yet (`BooleanSplit`/`MeshSplit`/`MeshBooleanSplit`,
+cmd_boolean.cpp, are untouched), and compound-operand support is whatever
+`BooleanCombineGeneral` itself already has (no new lump-merge step added).
+**(3) "Boolean failure diagnostics":** the three plain
+`std::invalid_argument` throws inside `BooleanCombineMixed`'s own
+`SynthesizeEndCaps` (the "more than one genuinely-crossing parallel-axis
+cylinder reaches one end at once" refusal, and the two `at_v0`=true/false
+`ParallelCylinderCapNeedsNoTrim` cap-trim refusals) and `SplitBySheet`'s own
+"sheet is degenerate, no face converges a closest point" throw
+(boolean_general.cpp) are retyped to `BooleanOperationError`, closing the
+exact four sites this file's own class-level doc comment (boolean.h) left
+uncatalogued after the Seventeenth/Eighteenth notes' own typed-refusal
+passes. A new `BooleanFailureReason::UnsupportedGeometry` value covers all
+four - distinct from `UnsupportedOperation` (about the requested `BooleanOp`
+itself, not the operand geometry). Fully backward compatible, the same way
+every earlier typed-refusal pass already was: identical `what()` text,
+still catchable as plain `std::invalid_argument` by every existing caller.
+Verified (`TestBooleanCombineMixedParallelCylinderCapTrimNeededIsTypedUnsupportedGeometry`,
+tests/test_basic.cpp, reusing `TestBooleanCombineMixedParallelCylinderCapTrimNeededThrows`'s
+own fixture) that the refusal is catchable as `BooleanOperationError` with
+`reason() == UnsupportedGeometry` and the right `function_name()`, and that
+the pre-existing plain-`std::invalid_argument` test alongside it still
+passes unchanged. Still partial: this covers four more sites out of this
+file's own much larger untyped-throw catalogue, not a systematic rewrite;
+`Brep::PlanarFaces()`/`Brep::MixedFaces()`'s own extraction throws and the
+non-manifold reassembly refusal remain deliberately untyped for the same
+cross-layer reason prior notes already give, and there is still no
+structured naked-edge reporting. Same "genuine new evidence, unchanged
+partial score" pattern as every note above - the category's 9/15/1/25
+(66.0%) split is unchanged: none of the three bullets touched crosses into
+`present` (each still has a real, disclosed scope limit named above). Full
+`dino8_kernel_tests` suite (built via `cmake --build build --parallel
+$(nproc)`, run directly, measured before and after this pass's own changes
+rather than trusting the Eighteenth note's own recorded figure, which no
+longer matches this repo's current head): 7686 checks before this pass,
+7724 after - 38 new checks, matching this pass's own new test coverage
+above - 100% passing both times, 0 regressions. The kernel-only headline is
+unaffected (no bucket moved); this category's own row counts in the tables
+above and in "Priority order for maximum score-per-fix" remain accurate as
+they stand and need no edit.*
+
 **Blending & chamfering** (blending):
 - [partial] Constant-radius edge fillet on curved adjacent faces (cylinder/plane, cylinder/cylinder, freeform, closed/periodic rims) with B-rep trimming — every kernel fillet still requires both adjacent faces to be planar (fillet.h:147-159), so fillets cannot be chained onto a solid that already carries a curved face. App `FilletEdge` produces a genuine B-rep trim only when both faces are planar (cmd_fillet.cpp:175, "exact for planes; approximate elsewhere") — historically via the generic offset+SSX `BuildFillet` path, not the closed-form kernel function itself (see the bullet just below for the "nothing in the app calls it" half this pass closes). **This pass:** `FilletEdgeCommand::Run`'s plain-Radius case (default `RailType=RollingBall`, no `Rho`) now tries a new `TryExactFillet` FIRST — `kernel::FilletConvexEdge`/`FilletConcaveEdge` directly, convex then concave — ahead of the unchanged `BuildFillet` path, the identical "exact kernel construction first, fail open to the approximate path on any `PlanarFaces()` rejection" structure `TryExactChamfer` already established for `ChamferEdge`'s own plain-Radius case. Still partial: curved adjacent faces remain fundamentally out of scope (the kernel's own `PlanarFaces()` requirement, unchanged) and `BuildFillet`'s approximate path is still what actually runs there; this closes a representation gap (which construction produces the planar-face result), not a capability gap (the printed message and volume for a planar-face fillet are unchanged, since `BuildFillet` was already numerically exact for planes too). Net effect on the scores below: narrows, does not flip, the SAME already-partial item.
 - [partial] Concave (internal) edge fillet — kernel-native and exact: `FilletConcaveEdge` (fillet.cpp:1070 — corrected 2026-09-28, was mis-cited fillet.cpp:989; fillet.h:162-270) builds the mirrored rolling-ball construction with outward=false, closing perpendicular and oblique third faces; `FilletConcaveEdges` (fillet.cpp:2746; fillet.h:1111-1205) fillets several independent edges plus m==3 trihedral concave spherical corners. **This pass:** closes the single-edge half of "nothing in the app calls it" — `FilletEdgeCommand`'s new `TryExactFillet` (see the bullet just above) tries `kernel::FilletConvexEdge` FIRST and `FilletConcaveEdge` SECOND on any planar-faced solid, the same convex-then-concave cascade `TryExactChamfer`/`TryExactConicFillet`/`TryExactRailFillet` already use elsewhere in this file for the identical reason (the command doesn't know the edge's own convexity in advance). Verified structurally and via the convex branch end-to-end (`fillet_script.txt`'s own existing plain-`Radius=2` box-corner case now goes through this exact dispatch, unchanged volume); the concave branch is NOT independently verified through the app in script form — building an app-level fixture with a genuinely planar-faced concave (reflex) edge turned out to be blocked by a separate, disclosed app-layer limitation: `ExtrudeCrv`'s own `ON_BrepTrimmedPlane`/`ON_BrepExtrudeFace` construction builds ONE ruled side-wall face per whole closed boundary loop, not one flat quad per polygon edge (confirmed directly: extruding a plain 4-sided rectangle profile also yields only 3 faces/3 edges total, the single ruled wall genuinely non-planar end-to-end, not just at the concave corner) — so no closed polygon profile extruded this way, convex or concave, can reach `PlanarFaces()`'s own exact-planar requirement at all, and the app has no other command that builds a multi-facet polygonal solid. Still partial, same remaining gaps as before: planar faces only, one radius, m>=2 or higher-valence corners throw, oblique third faces out of scope for `FilletConcaveEdges`, a mixed convex+concave solid cannot be fully filleted, and the multi-edge `FilletConcaveEdges` batch form remains entirely unreachable from the app. Net effect on the scores below: narrows, does not flip, the SAME already-partial item.
@@ -6277,7 +6386,7 @@ start line) — all citation-precision fixes, not scoring changes.
 
 **Dino 8: Scripting, automation & visual programming** (app_scripting):
 - [partial] Embedded Python 3 — `dino8-app/CMakeLists.txt:146` sets `option(DINO8_ENABLE_PYTHON ... OFF)` on Windows specifically, `:148` `ON` elsewhere; shipped Windows builds have no Python at all; mid-script prompts are also missing.
-- [partial] Python API breadth — `RunCommand` reaches every registered command; the real gap is the object model and interactive prompts. `PythonEngine.cpp`'s object-model surface gained 12 methods this pass — `ObjectsByName`/`ObjectsByType`/`BoundingBox` (object query), `CurveLength`/`CurveDomain`/`EvaluateCurve`/`CurveClosestPoint`/`DivideCurve` (curve query, previously absent entirely), `SurfaceArea`/`SurfaceVolume`/`IsObjectSolid`/`SurfaceClosestPoint`/`MeshVertices` (surface/mesh query, likewise previously absent) — plus an entirely new `dino8.doc.Layers` table (`Add`/`Count`/`Names`/`IsLayer`/`CurrentLayer`/`Visible`/`SetVisible`/`Locked`/`SetLocked`/`Color`/`SetColor`/`Delete`, mirroring `rs.AddLayer`/`rs.LayerCount`/`rs.LayerNames`/`rs.IsLayer`/`rs.CurrentLayer`/`rs.LayerVisible`/`rs.LayerLocked`/`rs.LayerColor`/`rs.DeleteLayer` — layer management as a whole category, absent before this pass). Still genuinely partial: interactive prompts (`GetPoint`/`GetObject`/`GetString`/etc.) and undo/document-state functions (`Undo`/`Redo`/`UnitSystem`/etc.) remain entirely unported — Python scripts still run start-to-finish in one call with no coroutine-style suspend/resume the way Lua's `rs.GetPoint` has, so porting those needs a real architecture change, not a mechanical port like this pass's additions.
+- [partial] Python API breadth — `RunCommand` reaches every registered command; the real gap is the object model and interactive prompts. `PythonEngine.cpp`'s object-model surface gained 12 methods in an earlier pass (`ObjectsByName`/`ObjectsByType`/`BoundingBox`, `CurveLength`/`CurveDomain`/`EvaluateCurve`/`CurveClosestPoint`/`DivideCurve`, `SurfaceArea`/`SurfaceVolume`/`IsObjectSolid`/`SurfaceClosestPoint`/`MeshVertices`) plus the `dino8.doc.Layers` table. **This pass ports the undo/document-state functions that same note listed as entirely unported**: `dino8.doc.Undo`/`Redo`/`BeginUndo` (mirroring `rs.Undo`/`rs.Redo`/`rs.BeginUndo`, verified through a real add-point/`Undo`/`Redo`/`Undo` round trip, not just called and ignored), `dino8.doc.UnitSystem`/`UnitSystemName` (get by Rhino's own numeric code, set by either name or code, mirroring `rs.UnitSystem`/`rs.UnitSystemName`), `dino8.doc.Name`/`Path`/`Modified` (mirroring `rs.DocumentName`/`rs.DocumentPath`/`rs.DocumentModified`), and the module-level `dino8.CommandHistory`/`ClearCommandHistory`/`Version`/`LastCommandName` (mirroring `rs.CommandHistory`/`rs.ClearCommandHistory`/`rs.Version`/`rs.LastCommandName`) — 12 more previously-absent bindings, all a mechanical port of existing `Document`/`CommandEngine` methods the Lua engine already reaches, with 19 new `tests/smoke.sh` checks against a real build (`RunPythonScript`'s own test script, `python_script.txt`). Still genuinely partial: interactive prompts (`GetPoint`/`GetObject`/`GetString`/etc.) remain entirely unported — Python scripts still run start-to-finish in one call with no coroutine-style suspend/resume the way Lua's `rs.GetPoint` has, so porting those needs a real architecture change, not a mechanical port like every addition so far.
 - [present] Headless/batch scripting mode — **upgraded from partial.** `--script FILE` given WITHOUT `--smoke` (`dino8-app/src/main.cpp`) is now a real, standalone, documented batch/automation mode: the window is created hidden, the process is treated as headless (skipping `ShowFileDialog`'s blocking OS picker and the unsaved-changes-confirm prompt, either of which would otherwise hang a batch job), and it exits on its own the instant the script finishes (exit 0, or 2 on a failed `@expect_*` check) instead of falling into the interactive loop forever, which is what it did before this pass (main.cpp's own script-finished exit check only ever fired when `--smoke` was also given). Documented in the new `dino8-app/docs/BATCH_SCRIPTING.md` and a new README section; still genuinely needs a real or virtual display (Xvfb+llvmpipe on headless Linux, this project's own already-accepted headless story elsewhere) — this pass closes "framed as a QA mode, not a supported batch product," not the underlying GL-context requirement, which no claim here pretends is gone. Three new `tests/smoke.sh` checks across two script runs cover the fixed hang (a 30s `timeout` is the actual regression guard) and the exit-code-2 failure path.
 - [missing] Cloud/network compute service (Rhino.Compute equivalent) — no server/socket/HTTP code anywhere in the source.
 - [missing] AI-assisted modeling or scripting — no neural/inference code anywhere; the one "smart" feature explicitly documents its own technique as not machine learning.

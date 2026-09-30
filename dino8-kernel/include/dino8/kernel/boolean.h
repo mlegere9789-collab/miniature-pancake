@@ -72,6 +72,20 @@ enum class BooleanFailureReason {
   // "just fold first_group"). Distinct from EmptyOperand above, which is
   // about a single Brep with no faces, not an empty vector of operands.
   EmptyOperandGroup,
+  // The operands are individually well-formed (right arity, right
+  // tolerance, right face count) but their GEOMETRY hits one of this
+  // engine's own disclosed scope limits - distinct from UnsupportedOperation
+  // above, which is about the requested BooleanOp itself, not what the
+  // operands look like. First given to BooleanCombineMixed()'s own
+  // SynthesizeEndCaps() refusals (boolean.cpp): a synthesized end cap
+  // whose own footprint may need trimming against an interacting
+  // parallel-axis cylinder (ParallelCylinderCapNeedsNoTrim's own doc
+  // comment), and the "more than one genuinely-crossing parallel-axis
+  // cylinder reaches the same end at once" three-cylinder refusal right
+  // above it - both previously plain std::invalid_argument, naming their
+  // precondition only as free text like every other untyped throw this
+  // file's own class-level doc comment above still catalogues.
+  UnsupportedGeometry,
 };
 
 // Thrown by RefuseCompoundOperand (boolean.cpp, boolean_general.cpp) in
@@ -560,6 +574,50 @@ Brep BooleanCombinePlanar(const Brep& a, const Brep& b, BooleanOp op, double tol
 // convention.
 Brep BooleanCombinePlanarNAry(const std::vector<Brep>& first_group, const std::vector<Brep>& second_group,
                                BooleanOp op, double tolerance = -1.0);
+
+// Exact (non-tessellated) 2D closed-polygon boolean - closes a slice of
+// PARITY_MAP.md's "2D region / planar curve booleans" bullet's own
+// previously-named gap ("No exact 2D curve boolean in the kernel" - the
+// app's own RegionBoolean, cmd_solidtools.cpp, goes through thin mesh
+// slabs in Manifold instead).
+//
+// `a`/`b` are each a simple (non-self-intersecting), closed polygon lying
+// exactly in `plane`, vertices in counterclockwise order as seen from
+// `plane.zaxis` - the same convention every other PlanarFace::loop in
+// this file already uses. Built on BooleanCombinePlanar, not a new
+// algorithm: both polygons are extruded into right prisms sharing
+// `plane` as their base and a common height (the two operands' own
+// combined bounding-box diagonal, so the prism is never a degenerate
+// sliver relative to the footprint), BooleanCombinePlanar(prism_a,
+// prism_b, op, tolerance) is run, and the result's own base-plane
+// face(s) are read back as the 2D answer - the prism identity
+// Prism(2D_op(a, b)) == BooleanCombinePlanar(Prism(a), Prism(b), op)
+// holds for ANY simple planar polygon, convex or not (a vertical
+// extrusion's cross-section at every height equals its footprint), not
+// just the convex case BooleanIntersectConvexPlanar/ShellConvexPlanar
+// above are restricted to - see boolean.cpp's own doc comment on this
+// function for the worked argument. BooleanCombinePlanar's own raw
+// per-fragment faces are dissolved back into simple loops (boolean.cpp's
+// own DissolveCoplanarFragments) before returning, so a result region
+// with a genuine hole (e.g. a Difference where `b` sits fully inside `a`)
+// comes back as two loops - the outer boundary, CCW, and the hole's own
+// boundary, CW (the opposite winding) - rather than either being silently
+// dropped or forced into one self-intersecting loop.
+//
+// Returns one CCW outer-boundary loop per disjoint piece of the result at
+// its base plane, plus one CW loop per hole any piece has (e.g. two CCW
+// entries for a Union of two disjoint footprints, or one CCW + one CW
+// entry for a Difference that leaves a ring); an empty vector if the op
+// result is empty (e.g. Intersection of disjoint operands). `a`/`b`
+// themselves may each only be a single simple loop - this function's one
+// disclosed input-side scope limit is that neither operand may itself
+// already have a hole (there is nowhere in the `std::vector<Point3d>`
+// signature to put one). `tolerance`, if non-negative, is forwarded as-is
+// to the underlying BooleanCombinePlanar call (see that function's own
+// doc comment for the negative-sentinel "auto" convention).
+std::vector<std::vector<Point3d>> PolygonBooleanPlanar(const std::vector<Point3d>& a,
+                                                         const std::vector<Point3d>& b, const ON_Plane& plane,
+                                                         BooleanOp op, double tolerance = -1.0);
 
 // The Sutherland-Hodgman half-space clipper shared by
 // BooleanIntersectConvexPlanar (above) and ShellConvexPlanar (below) -
