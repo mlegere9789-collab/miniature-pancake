@@ -946,7 +946,7 @@ void RefuseCompoundOperand(const Brep& operand, const char* function_name) {
 
 }  // namespace
 
-Brep BooleanCombinePlanar(const Brep& a, const Brep& b, BooleanOp op) {
+Brep BooleanCombinePlanar(const Brep& a, const Brep& b, BooleanOp op, double tolerance) {
   // Union and SymmetricDifference still need the lump-merge step neither
   // pipeline below has (see RefuseCompoundOperand's own doc comment) and
   // stay refused. Difference and Intersection do NOT need one - they
@@ -970,13 +970,13 @@ Brep BooleanCombinePlanar(const Brep& a, const Brep& b, BooleanOp op) {
     // correct given Difference is correct in both argument orders (each
     // lump IS one verified Difference result); no coincident-face rule
     // beyond Difference's own is involved.
-    return Brep::Compound({BooleanCombinePlanar(a, b, BooleanOp::Difference),
-                           BooleanCombinePlanar(b, a, BooleanOp::Difference)});
+    return Brep::Compound({BooleanCombinePlanar(a, b, BooleanOp::Difference, tolerance),
+                           BooleanCombinePlanar(b, a, BooleanOp::Difference, tolerance)});
   }
 
   const std::vector<Brep::PlanarFace> fa = a.PlanarFaces();
   const std::vector<Brep::PlanarFace> fb = b.PlanarFaces();
-  const double tol = std::max(RelativeTol(fa), RelativeTol(fb));
+  const double tol = tolerance >= 0.0 ? tolerance : std::max(RelativeTol(fa), RelativeTol(fb));
 
   // Split every face of A against every plane of B, classify each
   // survivor against B; then the same the other way around.
@@ -1091,7 +1091,7 @@ Brep BooleanCombinePlanar(const Brep& a, const Brep& b, BooleanOp op) {
 }
 
 Brep BooleanCombinePlanarNAry(const std::vector<Brep>& first_group, const std::vector<Brep>& second_group,
-                               BooleanOp op) {
+                               BooleanOp op, double tolerance) {
   if (op == BooleanOp::SymmetricDifference) {
     throw std::invalid_argument(
         "dino8::kernel::BooleanCombinePlanarNAry: SymmetricDifference has no well-defined N-ary fold - its own "
@@ -1105,10 +1105,10 @@ Brep BooleanCombinePlanarNAry(const std::vector<Brep>& first_group, const std::v
   // Same left-to-right Union fold as BooleanCombineMixedNAry, for the
   // planar engine instead - see that function's own doc comment for the
   // full rationale.
-  auto fold_union = [](const std::vector<Brep>& group) {
+  auto fold_union = [tolerance](const std::vector<Brep>& group) {
     Brep acc = group.front();
     for (size_t i = 1; i < group.size(); ++i) {
-      acc = BooleanCombinePlanar(acc, group[i], BooleanOp::Union);
+      acc = BooleanCombinePlanar(acc, group[i], BooleanOp::Union, tolerance);
     }
     return acc;
   };
@@ -1123,7 +1123,7 @@ Brep BooleanCombinePlanarNAry(const std::vector<Brep>& first_group, const std::v
     return folded_first;
   }
   const Brep folded_second = fold_union(second_group);
-  return BooleanCombinePlanar(folded_first, folded_second, op);
+  return BooleanCombinePlanar(folded_first, folded_second, op, tolerance);
 }
 
 namespace {
@@ -6849,7 +6849,7 @@ std::vector<MixedFace> SynthesizeEndCaps(const std::vector<MixedFace>& fragments
 
 }  // namespace
 
-Brep BooleanCombineMixed(const Brep& a, const Brep& b, BooleanOp op) {
+Brep BooleanCombineMixed(const Brep& a, const Brep& b, BooleanOp op, double tolerance) {
   // Union and SymmetricDifference still need the lump-merge step neither
   // pipeline here has (see RefuseCompoundOperand's own doc comment) and
   // stay refused. Difference and Intersection do not - see this function's
@@ -6868,13 +6868,13 @@ Brep BooleanCombineMixed(const Brep& a, const Brep& b, BooleanOp op) {
     // intersection-curve edge) and boolean.h's own doc comment for the
     // measured closed forms. Each lump is one verified Difference; no
     // round trip through a prior result is involved at all.
-    return Brep::Compound({BooleanCombineMixed(a, b, BooleanOp::Difference),
-                           BooleanCombineMixed(b, a, BooleanOp::Difference)});
+    return Brep::Compound({BooleanCombineMixed(a, b, BooleanOp::Difference, tolerance),
+                           BooleanCombineMixed(b, a, BooleanOp::Difference, tolerance)});
   }
 
   std::vector<MixedFace> fa = ToMixed(a.MixedFaces());
   std::vector<MixedFace> fb = ToMixed(b.MixedFaces());
-  const double tol = std::max(RelativeTolMixed(fa), RelativeTolMixed(fb));
+  const double tol = tolerance >= 0.0 ? tolerance : std::max(RelativeTolMixed(fa), RelativeTolMixed(fb));
 
   const ClassifiedBucketsMixed from_a = SplitAndBucketMixed(fa, fb, tol);
   const ClassifiedBucketsMixed from_b = SplitAndBucketMixed(fb, fa, tol);
@@ -7039,7 +7039,7 @@ Brep BooleanCombineMixed(const Brep& a, const Brep& b, BooleanOp op) {
 }
 
 Brep BooleanCombineMixedNAry(const std::vector<Brep>& first_group, const std::vector<Brep>& second_group,
-                              BooleanOp op) {
+                              BooleanOp op, double tolerance) {
   if (op == BooleanOp::SymmetricDifference) {
     throw std::invalid_argument(
         "dino8::kernel::BooleanCombineMixedNAry: SymmetricDifference has no well-defined N-ary fold - its own "
@@ -7059,10 +7059,10 @@ Brep BooleanCombineMixedNAry(const std::vector<Brep>& first_group, const std::ve
   // (verified directly by TestBooleanCombineMixedNAryUnionOrderIndependence,
   // which unions the same three boxes in two different orders and checks
   // the volumes agree).
-  auto fold_union = [](const std::vector<Brep>& group) {
+  auto fold_union = [tolerance](const std::vector<Brep>& group) {
     Brep acc = group.front();
     for (size_t i = 1; i < group.size(); ++i) {
-      acc = BooleanCombineMixed(acc, group[i], BooleanOp::Union);
+      acc = BooleanCombineMixed(acc, group[i], BooleanOp::Union, tolerance);
     }
     return acc;
   };
@@ -7079,7 +7079,7 @@ Brep BooleanCombineMixedNAry(const std::vector<Brep>& first_group, const std::ve
     return folded_first;
   }
   const Brep folded_second = fold_union(second_group);
-  return BooleanCombineMixed(folded_first, folded_second, op);
+  return BooleanCombineMixed(folded_first, folded_second, op, tolerance);
 }
 
 }  // namespace dino8::kernel

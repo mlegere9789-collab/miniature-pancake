@@ -33471,6 +33471,187 @@ void TestBooleanCombineGeneralNAryRefusesCompoundOperandAtEveryPairwiseStep() {
   }
 }
 
+// Parity-map "Tolerant booleans (caller-specified tolerance)": until this
+// pass, only BooleanCombineGeneral (and ImprintFaces/SplitBySheet/
+// TrimSheetBySolid, which share its SSX engine) took a caller tolerance -
+// BooleanCombinePlanar/BooleanCombineMixed still hardcoded their own
+// internal RelativeTol()/RelativeTolMixed() with no caller control at all.
+// Both now take an optional `tolerance` (negative/omitted = the same
+// auto-derived relative default as before this parameter existed; see
+// ClipConvexPolygon's own identical negative-sentinel convention in
+// boolean.h). This test proves the parameter is a genuine, wired-through
+// control, not a decorative no-op, on a fixture built specifically to make
+// its effect unambiguous: two boxes sharing the same 10x10 footprint,
+// stacked along z with a real but tiny (1e-5) overlap - far bigger than the
+// auto-derived default tolerance (~1e-8 for this fixture's own ~20-unit
+// extent) but far smaller than a deliberately loose caller override.
+void TestBooleanCombinePlanarCallerTolerance() {
+  using dino8::kernel::BooleanCombinePlanar;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+
+  const double g = 1e-5;
+  const Brep a = Brep::Box(0, 0, 0, 10, 10, 10);
+  const Brep b = Brep::Box(0, 0, 10 - g, 10, 10, 20 - g);
+
+  // Default (omitted) and an explicit tight tolerance (1e-8, still well
+  // under the real 1e-5 overlap) both take the classification path that
+  // correctly recognizes the overlap as genuine - a valid closed manifold
+  // whose volume is (up to a small, disclosed reassembly wobble from this
+  // fixture's own coincident side walls - see the Difference-branch same_plane
+  // dedup boolean.cpp's own doc comment describes) close to the exact
+  // 2000 - 1000*g = 1999.999.
+  const Brep default_arg = BooleanCombinePlanar(a, b, BooleanOp::Union);
+  const Brep tight = BooleanCombinePlanar(a, b, BooleanOp::Union, 1e-8);
+  const Mesh default_mesh = default_arg.TessellateToClosedMesh(4, 4);
+  const Mesh tight_mesh = tight.TessellateToClosedMesh(4, 4);
+  Check(default_arg.FaceCount() == tight.FaceCount(),
+        "omitting `tolerance` reproduces the exact same face count as an explicit tight tolerance well under the "
+        "fixture's own real overlap - backward compatibility with every pre-existing caller");
+  Check(std::abs(default_mesh.Volume() - tight_mesh.Volume()) < 1e-9,
+        "omitting `tolerance` reproduces the exact same tessellated volume as an explicit tight tolerance");
+  Check(default_mesh.IsClosedManifold(), "the default-tolerance Union is a genuinely closed, watertight manifold");
+  Check(std::abs(default_mesh.Volume() - (2000.0 - 1000.0 * g)) < 1e-2,
+        "the default-tolerance Union's volume matches the two boxes' true combined volume (double-counting the "
+        "tiny real overlap correctly excluded), within this fixture's own small reassembly wobble");
+
+  // A caller tolerance (1e-3) far looser than the fixture's own real 1e-5
+  // overlap is a genuine, disclosed footgun, not merely a theoretical one:
+  // it makes the classification step treat A's and B's near-coincident
+  // faces as if they were exactly flush, which this specific fixture's own
+  // face-count change (14 -> 11) and loss of manifold closure (verified
+  // directly here, not assumed) demonstrate concretely - proving `tolerance`
+  // reaches the real per-fragment classification decisions inside
+  // SplitAndBucket/ClassifyPointVsSolid, not just a cosmetic default value.
+  const Brep loose = BooleanCombinePlanar(a, b, BooleanOp::Union, 1e-3);
+  const Mesh loose_mesh = loose.TessellateToClosedMesh(4, 4);
+  Check(loose.FaceCount() != default_arg.FaceCount(),
+        "a caller tolerance far looser than the fixture's own real overlap measurably changes the result's face "
+        "count relative to the default/tight case - `tolerance` is genuinely wired through, not decorative");
+  Check(!loose_mesh.IsClosedManifold(),
+        "a real, disclosed scope limit found while building this, not assumed: a caller tolerance far looser than "
+        "the operands' true separation can misclassify a genuinely-overlapping (not just flush-touching) pair of "
+        "faces as coincident, dropping one side's boundary face with nothing compensating for it - degrading a "
+        "valid closed result into a non-manifold one for this exact fixture shape (matching footprints, stacked "
+        "along one axis). Choosing a tolerance appropriately smaller than the real feature size being modeled "
+        "remains the caller's own responsibility, exactly as for every other tolerance parameter in this kernel");
+}
+
+void TestBooleanCombineMixedCallerTolerance() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+
+  // Identical fixture and reasoning to TestBooleanCombinePlanarCallerTolerance
+  // above - BooleanCombineMixed shares the same SplitAndBucketMixed/
+  // RelativeTolMixed shape, just for the mixed planar+cylindrical engine (no
+  // cylindrical face appears in this fixture at all, so it exercises the
+  // exact same planar classification code path as the Planar engine's own
+  // SplitAndBucket/ClassifyPointVsSolid).
+  const double g = 1e-5;
+  const Brep a = Brep::Box(0, 0, 0, 10, 10, 10);
+  const Brep b = Brep::Box(0, 0, 10 - g, 10, 10, 20 - g);
+
+  const Brep default_arg = BooleanCombineMixed(a, b, BooleanOp::Union);
+  const Brep tight = BooleanCombineMixed(a, b, BooleanOp::Union, 1e-8);
+  const Mesh default_mesh = default_arg.TessellateToClosedMesh(4, 4);
+  const Mesh tight_mesh = tight.TessellateToClosedMesh(4, 4);
+  Check(default_arg.FaceCount() == tight.FaceCount(),
+        "omitting `tolerance` reproduces the exact same face count as an explicit tight tolerance well under the "
+        "fixture's own real overlap - backward compatibility with every pre-existing caller");
+  Check(std::abs(default_mesh.Volume() - tight_mesh.Volume()) < 1e-9,
+        "omitting `tolerance` reproduces the exact same tessellated volume as an explicit tight tolerance");
+  Check(default_mesh.IsClosedManifold(), "the default-tolerance Union is a genuinely closed, watertight manifold");
+  Check(std::abs(default_mesh.Volume() - (2000.0 - 1000.0 * g)) < 1e-2,
+        "the default-tolerance Union's volume matches the two boxes' true combined volume, within this fixture's "
+        "own small reassembly wobble");
+
+  const Brep loose = BooleanCombineMixed(a, b, BooleanOp::Union, 1e-3);
+  const Mesh loose_mesh = loose.TessellateToClosedMesh(4, 4);
+  Check(loose.FaceCount() != default_arg.FaceCount(),
+        "a caller tolerance far looser than the fixture's own real overlap measurably changes the result's face "
+        "count relative to the default/tight case - `tolerance` is genuinely wired through, not decorative");
+  Check(!loose_mesh.IsClosedManifold(),
+        "same real, disclosed scope limit as BooleanCombinePlanar's own identical fixture: a caller tolerance far "
+        "looser than the operands' true separation can degrade a valid closed result into a non-manifold one");
+}
+
+// Mirrors TestBooleanCombineGeneralNAryCallerToleranceForwardedToEveryPairwiseCall
+// for the other two B-rep engines: a caller-supplied tolerance reaches every
+// pairwise fold step BooleanCombinePlanarNAry/BooleanCombineMixedNAry make,
+// not just a final combine - proven by matching an equivalent hand-folded
+// sequence of pairwise calls at the identical tolerance, bit-for-bit.
+void TestBooleanCombinePlanarNAryCallerToleranceForwardedToEveryPairwiseCall() {
+  using dino8::kernel::BooleanCombinePlanar;
+  using dino8::kernel::BooleanCombinePlanarNAry;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+
+  // Same axis-aligned "chain of three boxes overlapping by one unit along
+  // x" fixture TestBooleanCombinePlanarNAryUnionThreeOverlappingBoxesMatchesInclusionExclusion
+  // above already uses successfully for this engine - NOT the diagonally-
+  // staggered fixture BooleanCombineGeneralNAry's own equivalent test uses,
+  // which this category's own trailing notes explain is specifically
+  // avoided for that engine's tests because a shared coplanar,
+  // partially-overlapping side face runs into a real, disclosed scope
+  // limit there.
+  const Brep a = Brep::Box(0, 0, 0, 2, 2, 2);
+  const Brep b = Brep::Box(1, 0, 0, 3, 2, 2);
+  const Brep c = Brep::Box(2, 0, 0, 4, 2, 2);
+
+  // 1e-6, not 1e-5: this fixture's own second fold step (acc, c) reclassifies
+  // acc's freshly-computed geometry against c, and a caller tolerance loose
+  // enough to reach whatever small representation error that first fold
+  // introduces risks the exact same real, disclosed "loose tolerance can
+  // misclassify a near-but-not-exactly coincident feature" scope limit
+  // TestBooleanCombinePlanarCallerTolerance/TestBooleanCombineMixedCallerTolerance
+  // above document directly - confirmed empirically for this exact fixture
+  // (1e-6 is safe, 1e-5 is not, for BooleanCombineMixedNAry's own equivalent
+  // test below). 1e-6 is still a real, non-default, explicitly-caller-chosen
+  // value - the point of this test - just a safe one for this fixture.
+  const double tol = 1e-6;
+  const Brep via_nary = BooleanCombinePlanarNAry({a, b, c}, {}, BooleanOp::Union, tol);
+  const Brep folded_by_hand =
+      BooleanCombinePlanar(BooleanCombinePlanar(a, b, BooleanOp::Union, tol), c, BooleanOp::Union, tol);
+  Check(std::abs(NAryTestVolume(via_nary) - NAryTestVolume(folded_by_hand)) < 1e-9,
+        "a caller-supplied tolerance reaches every pairwise fold step, matching an equivalent hand-folded sequence "
+        "of BooleanCombinePlanar calls at the same tolerance");
+}
+
+void TestBooleanCombineMixedNAryCallerToleranceForwardedToEveryPairwiseCall() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanCombineMixedNAry;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+
+  // Same fixture as TestBooleanCombinePlanarNAryCallerToleranceForwardedToEveryPairwiseCall
+  // above, for the same reason - the axis-aligned x-chain every other
+  // Mixed-engine NAry test in this file already uses successfully.
+  const Brep a = Brep::Box(0, 0, 0, 2, 2, 2);
+  const Brep b = Brep::Box(1, 0, 0, 3, 2, 2);
+  const Brep c = Brep::Box(2, 0, 0, 4, 2, 2);
+
+  // A real, disclosed limit found while building this test, not assumed:
+  // this exact fixture's second fold step throws `FromMixedFaces`' own "an
+  // edge is shared by 3 or more faces" at tol=1e-5 (confirmed directly by a
+  // standalone probe sweeping tol from 1e-12 to 1e-5) - the same "loose
+  // tolerance can misclassify a near-but-not-exactly coincident feature"
+  // risk TestBooleanCombineMixedCallerTolerance above documents on a
+  // different fixture, here triggered by the first fold's own freshly
+  // computed geometry rather than a deliberately tiny built-in overlap.
+  // 1e-6 stays well clear of that threshold while still being a real,
+  // explicitly-caller-chosen, non-default value - the point of this test.
+  const double tol = 1e-6;
+  const Brep via_nary = BooleanCombineMixedNAry({a, b, c}, {}, BooleanOp::Union, tol);
+  const Brep folded_by_hand =
+      BooleanCombineMixed(BooleanCombineMixed(a, b, BooleanOp::Union, tol), c, BooleanOp::Union, tol);
+  Check(std::abs(NAryTestVolume(via_nary) - NAryTestVolume(folded_by_hand)) < 1e-9,
+        "a caller-supplied tolerance reaches every pairwise fold step, matching an equivalent hand-folded sequence "
+        "of BooleanCombineMixed calls at the same tolerance");
+}
+
 // Documents the boundary of THIS increment (notch-aware ClassifyPointVsMixedSolid/
 // RayVsMixedFace/CylinderPlaneNoInteraction, boolean.cpp): the ON-check and
 // ray-cast now consult the notched cap's own true (angle, height) curve
@@ -46959,6 +47140,10 @@ int main() {
   TestBooleanCombineGeneralIntersectionAcceptsCompoundOperand();
   TestBooleanCombineGeneralDifferenceThrowsOnTouchingLumpXorCompound();
   TestBooleanCombineGeneralNAryRefusesCompoundOperandAtEveryPairwiseStep();
+  TestBooleanCombinePlanarCallerTolerance();
+  TestBooleanCombineMixedCallerTolerance();
+  TestBooleanCombinePlanarNAryCallerToleranceForwardedToEveryPairwiseCall();
+  TestBooleanCombineMixedNAryCallerToleranceForwardedToEveryPairwiseCall();
   TestBooleanCombineMixedUnequalRadiusGeneralAngleIntersectionAndAllOps();
   TestBooleanCombineMixedUnequalRadiusGeneralAngleArgumentOrderAndSharedArcIsBitIdentical();
   TestBooleanCombineMixedUnequalRadiusGeneralAngleNegativeControls();

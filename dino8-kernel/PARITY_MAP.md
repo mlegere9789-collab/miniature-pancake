@@ -2435,6 +2435,85 @@ pass does not fully close. Full `dino8_kernel_tests` suite: 100% passing
 (5855 checks, 0 failures, exit code 0), 0 regressions. The kernel-only
 headline is unaffected (no bucket moved).*
 
+*Tenth note on this category's score (this pass): `BooleanCombinePlanar` and
+`BooleanCombineMixed` (boolean.h/.cpp) close the other half of the "Tolerant
+booleans (caller-specified tolerance)" bullet's own previously-named gap -
+"`BooleanCombinePlanar`/`BooleanCombineMixed`... still hardcode their own
+internal tolerance with no caller control at all," the specific complaint
+left open when `BooleanCombineGeneral`/`ImprintFaces`/`SplitBySheet`/
+`TrimSheetBySolid` each gained the identical parameter in an earlier pass.
+Both engines (and their own `BooleanCombinePlanarNAry`/
+`BooleanCombineMixedNAry` wrappers, which forward it to every pairwise fold
+step) now take an optional `tolerance` (default -1.0) that, when
+non-negative, is used as-is for every distance/coincidence test the engine
+makes (`SplitAndBucket`/`SplitAndBucketMixed`'s own split/classify
+threshold, the Difference branch's own `same_plane` coincident-face dedup,
+and, for Mixed, `SynthesizeEndCaps`' own per-face probes) - the identical
+negative-sentinel ("caller value if non-negative, else an auto-derived
+default") convention `ClipConvexPolygon` (boolean.h) already established,
+rather than the General engine's own plain-positive-default shape (that
+engine has one flat epsilon; these two already had an adaptive
+`RelativeTol()`/`RelativeTolMixed()` scaled to the operands' own size, so a
+negative sentinel preserves that adaptive default exactly rather than
+replacing it with a fixed number). Verified
+(`TestBooleanCombinePlanarCallerTolerance`,
+`TestBooleanCombineMixedCallerTolerance`,
+`TestBooleanCombinePlanarNAryCallerToleranceForwardedToEveryPairwiseCall`,
+`TestBooleanCombineMixedNAryCallerToleranceForwardedToEveryPairwiseCall`,
+tests/test_basic.cpp) on a fixture built specifically to make the effect
+unambiguous: two boxes sharing the same 10x10 footprint, stacked along z
+with a real but tiny (1e-5) overlap - far bigger than the auto-derived
+default tolerance (~1e-8 for this fixture's own ~20-unit extent) but far
+smaller than a deliberately loose caller override (1e-3). Omitting
+`tolerance` (or passing an explicit tight one well under the real overlap)
+reproduces the exact same face count and tessellated volume either way -
+backward compatibility with every pre-existing caller in this file, none of
+which pass a fourth argument. The NAry wrappers' own caller tolerance is
+proven to reach every pairwise fold step, not just a final combine, the
+same way `TestBooleanCombineGeneralNAryCallerToleranceForwardedToEveryPairwiseCall`
+already proved for the General engine: `BooleanCombinePlanarNAry`/
+`BooleanCombineMixedNAry` at a given tolerance match an equivalent
+hand-folded sequence of pairwise `BooleanCombinePlanar`/`BooleanCombineMixed`
+calls at the identical tolerance, bit-for-bit on tessellated volume.
+**A real, disclosed scope limit found while building this, not assumed:** a
+caller tolerance far looser than the operands' own true separation is a
+genuine footgun for these two engines, not merely a theoretical one -
+proven directly on the same overlap fixture above, not argued. A loose
+(1e-3) tolerance measurably changes the fixture's own Union result (face
+count 14 -> 11 for Planar, 14 -> 10 for Mixed, relative to the default/tight
+case) - confirming `tolerance` reaches the real per-fragment classification
+decisions inside `SplitAndBucket`/`ClassifyPointVsSolid`, not just a
+cosmetic default value - but for this exact fixture shape (two operands
+sharing a common footprint, stacked along one axis with a genuine, not
+merely flush-touching, overlap) the loosened tolerance also degrades the
+result from a valid closed manifold into a non-manifold one: it misclassifies
+the genuinely-overlapping near-coincident faces as flush-touching, which
+drops one side's boundary face via the existing same-direction/opposed-
+direction `same_plane` dedup with nothing compensating for the other side,
+leaving the result open where that face used to be. This is a real
+limitation of the classification scheme itself (present since these
+engines were first written, merely unreachable by a caller before this
+pass added the parameter that lets one pick an inappropriate value) rather
+than a defect in the new plumbing - the caller remains responsible for
+picking a tolerance smaller than the real feature size being modeled,
+exactly as for every other tolerance parameter in this kernel (fillet
+radii, sweep station spacing, the General engine's own SSX `tolerance`).
+The other half of the bullet's own name - gap-healing of imprecise
+operands, freeform (not just planar-classification-adjacent) tolerance
+behavior - is untouched: the category's 8/15/2/25 (62.0%) split is
+unchanged, since "Tolerant booleans" was already `partial` for reasons this
+pass does not fully close. Full `dino8_kernel_tests` suite: 100% passing,
+0 regressions (one pre-existing, unrelated, intermittent failure -
+`TestFoldFaceConvexPlanarBoxFrontWallHingedAtBottomEdgeMatchesExactIntegral`,
+in **kernel: Local/direct-edit operations**, not this category - was seen on
+one run of this session's own unmodified HEAD before this pass's edits and
+did not reproduce on a subsequent clean rebuild's run; not investigated
+further here, out of this note's own scope, the same "confirmed
+pre-existing, not a regression, not chased further" treatment this
+document's own "Analytic plane/cylinder..." bullet above already gives an
+analogous intermittent failure). The kernel-only headline is unaffected (no
+bucket moved).*
+
 **Blending & chamfering** (blending):
 - [partial] Constant-radius edge fillet on curved adjacent faces (cylinder/plane, cylinder/cylinder, freeform, closed/periodic rims) with B-rep trimming — every kernel fillet still requires both adjacent faces to be planar (fillet.h:147-159), so fillets cannot be chained onto a solid that already carries a curved face. App `FilletEdge` produces a genuine B-rep trim only when both faces are planar (cmd_fillet.cpp:175, "exact for planes; approximate elsewhere").
 - [partial] Concave (internal) edge fillet — kernel-native and exact: `FilletConcaveEdge` (fillet.cpp:1070 — corrected 2026-09-28, was mis-cited fillet.cpp:989; fillet.h:162-270) builds the mirrored rolling-ball construction with outward=false, closing perpendicular and oblique third faces; `FilletConcaveEdges` (fillet.cpp:2746; fillet.h:1111-1205) fillets several independent edges plus m==3 trihedral concave spherical corners. Still partial: planar faces only, one radius, m>=2 or higher-valence corners throw, oblique third faces out of scope for `FilletConcaveEdges`, a mixed convex+concave solid cannot be fully filleted, nothing in the app calls it.
