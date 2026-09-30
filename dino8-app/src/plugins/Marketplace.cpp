@@ -118,6 +118,12 @@ bool InstallEntry(app::Application& app, const MarketplaceEntry& entry, const st
                                 : !entry.bundled_path.empty()  ? fs::path(source_path).filename().string()
                                                                 : DefaultFilenameFromUrl(entry.download_url);
   const std::string dest_path = (fs::path(dest_dir) / filename).string();
+  // dest_path can already be dlopen'd by this same process - e.g. auto-loaded
+  // from <config>/plugins at startup, or installed earlier this session - in
+  // which case overwriting its backing file out from under the still-mapped
+  // library corrupts the running process (observed as a crash on the very
+  // next plug-in load). Unload it first so the file is safe to replace.
+  Manager::Get().Unload(dest_path);
   fs::copy_file(source_path, dest_path, fs::copy_options::overwrite_existing, ec);
   if (source_is_temp) fs::remove(source_path, ec);
   if (ec) {
