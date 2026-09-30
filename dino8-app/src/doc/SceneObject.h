@@ -230,7 +230,11 @@ class SceneObject {
   // called from Viewport.cpp; every other existing EnsureDisplay call site
   // is unchanged.
   void EnsureAdaptiveDisplay(double curve_tolerance, double surface_tolerance) const;
-  void InvalidateDisplay() { cache_.dirty = true; cache_.colors_valid = false; }
+  // const: only ever touches the mutable display cache, and marking it so
+  // lets EnsureAdaptiveDisplay (itself const, like EnsureDisplay) call it
+  // directly - every existing non-const caller is unaffected, since a
+  // const method can still be called on a non-const object.
+  void InvalidateDisplay() const { cache_.dirty = true; cache_.colors_valid = false; }
   // Dash pattern (dash, gap... in model units, already scaled) the display
   // polylines of a curve are split with; empty draws continuous. Set by the
   // viewport from Document::EffectiveDashes before EnsureDisplay; a change
