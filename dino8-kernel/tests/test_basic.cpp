@@ -2313,6 +2313,212 @@ void TestIntersectCurvesFindsCrossingsAndRejectsMisses() {
   // against for a genuinely coincident pair.
 }
 
+void TestIntersectCurvePlaneFindsCrossingsAndRejectsMisses() {
+  using dino8::kernel::CurvePlaneHit;
+  using dino8::kernel::IntersectCurvePlane;
+  using dino8::kernel::IntersectOptions;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+
+  // PARITY_MAP.md's "Curve/plane intersection" gap: IntersectCurveSurface()
+  // can only be handed a BOUNDED ON_PlaneSurface - "no dedicated
+  // infinite-plane API". IntersectCurvePlane() is that dedicated API,
+  // solving the plane's own true implicit (signed-distance) equation
+  // directly, with no bounded surface standing in for it at all.
+  IntersectOptions opt;
+  opt.tolerance = 1e-8;
+  opt.mesh_tolerance = 0.05;
+
+  // Case 1: a line straight along z crosses a horizontal plane (z = 3) at
+  // exactly one hand-derivable point.
+  const NurbsCurve vertical_line = NurbsCurve::FromControlPoints(
+      {Point3d(1, 2, -10), Point3d(1, 2, 10)}, /*degree=*/1);
+  const ON_Plane z3_plane(ON_3dPoint(0, 0, 3), ON_3dVector(0, 0, 1));
+  const std::vector<CurvePlaneHit> one_hit = IntersectCurvePlane(vertical_line.raw(), z3_plane, opt);
+  Check(one_hit.size() == 1, "a vertical line crosses a horizontal plane at exactly one point");
+  if (one_hit.size() == 1) {
+    Check(one_hit[0].point.DistanceTo(Point3d(1, 2, 3)) < 1e-6, "the crossing point is exactly (1, 2, 3)");
+    Check(one_hit[0].error < opt.tolerance * 2,
+          "the refined residual is within the requested tolerance, not just a coarse bisection estimate");
+  }
+
+  // Case 2: the SAME line against a plane it never reaches (z = 100, far
+  // past either endpoint of the line's own finite domain) - a genuinely
+  // correct intersector reports zero hits, not a spurious crossing from
+  // extrapolating past the curve's own domain.
+  const ON_Plane far_plane(ON_3dPoint(0, 0, 100), ON_3dVector(0, 0, 1));
+  const std::vector<CurvePlaneHit> no_hits = IntersectCurvePlane(vertical_line.raw(), far_plane, opt);
+  Check(no_hits.empty(), "a plane the curve never reaches produces no crossings");
+
+  // Case 3: a circle in the z = 0 plane, radius 4, against the INFINITE
+  // plane x = 0 - crosses at exactly (0, +-4, 0), the two points
+  // independently knowable from the circle's own definition (the plane
+  // counterpart to TestIntersectCurvesFindsCrossingsAndRejectsMisses()'s
+  // own line-through-a-circle case above).
+  const double radius = 4.0;
+  const ON_Circle on_circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), radius);
+  ON_NurbsCurve circle_nurbs_form;
+  Check(on_circle.GetNurbForm(circle_nurbs_form) != 0, "ON_Circle::GetNurbForm succeeds (curve/plane case)");
+  NurbsCurve circle;
+  circle.raw() = circle_nurbs_form;
+  const ON_Plane x0_plane(ON_3dPoint(0, 0, 0), ON_3dVector(1, 0, 0));
+  const std::vector<CurvePlaneHit> circle_hits = IntersectCurvePlane(circle.raw(), x0_plane, opt);
+  Check(circle_hits.size() == 2, "a circle crosses the plane through its own center at exactly two points");
+  if (circle_hits.size() == 2) {
+    const bool has_pos = std::any_of(circle_hits.begin(), circle_hits.end(), [&](const CurvePlaneHit& h) {
+      return h.point.DistanceTo(Point3d(0, radius, 0)) < 1e-6;
+    });
+    const bool has_neg = std::any_of(circle_hits.begin(), circle_hits.end(), [&](const CurvePlaneHit& h) {
+      return h.point.DistanceTo(Point3d(0, -radius, 0)) < 1e-6;
+    });
+    Check(has_pos && has_neg, "the two crossings sit at exactly (0, +radius, 0) and (0, -radius, 0)");
+  }
+}
+
+void TestIntersectCurveSelfIntersectionsFindsBowtieAndRejectsSimpleCurves() {
+  using dino8::kernel::CurveCurveHit;
+  using dino8::kernel::IntersectCurveSelfIntersections;
+  using dino8::kernel::IntersectOptions;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+
+  // PARITY_MAP.md's "Curve self-intersection" gap: "the kernel's own
+  // IntersectCurves(c, c) is still not usable for this (spurious self-hits
+  // on a plain line)". IntersectCurveSelfIntersections() is a dedicated
+  // primitive instead - see its own doc comment for why this is
+  // deliberately NOT built on IntersectCurves(c, c).
+  IntersectOptions opt;
+  opt.tolerance = 1e-8;
+  opt.mesh_tolerance = 0.05;
+
+  // Case 1 (the exact regression case PARITY_MAP.md itself names): a
+  // PLAIN straight line has no self-intersections at all - this must come
+  // back completely empty, not flooded with trivial every-point-equals
+  // -itself "hits" along the whole line.
+  const NurbsCurve plain_line = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(10, 10, 0)}, /*degree=*/1);
+  const std::vector<CurveCurveHit> line_hits = IntersectCurveSelfIntersections(plain_line.raw(), opt);
+  Check(line_hits.empty(), "a plain straight line has zero self-intersections (no spurious diagonal hits)");
+
+  // Case 2: a plain circle (closed, but never crosses itself) - exercises
+  // the closed-curve wraparound-adjacency path specifically (the curve's
+  // own start/end samples are adjacent, not a crossing).
+  const ON_Circle on_circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 4.0);
+  ON_NurbsCurve circle_nurbs_form;
+  Check(on_circle.GetNurbForm(circle_nurbs_form) != 0, "ON_Circle::GetNurbForm succeeds (self-intersection case)");
+  NurbsCurve circle;
+  circle.raw() = circle_nurbs_form;
+  const std::vector<CurveCurveHit> circle_hits = IntersectCurveSelfIntersections(circle.raw(), opt);
+  Check(circle_hits.empty(), "a plain circle has zero self-intersections");
+
+  // Case 3: a genuine bowtie - a CLOSED 4-segment polyline
+  // (0,0)->(10,10)->(10,0)->(0,10)->back to (0,0) - whose two diagonals
+  // ((0,0)-(10,10) and (10,0)-(0,10)) cross at the hand-derivable point
+  // (5, 5, 0), the same "X" shape TestIntersectCurvesFindsCrossingsAnd
+  // RejectsMisses() above uses for two SEPARATE lines, but built here as
+  // ONE closed curve that must find that crossing within itself.
+  const NurbsCurve bowtie = NurbsCurve::FromControlPoints(
+      {Point3d(0, 0, 0), Point3d(10, 10, 0), Point3d(10, 0, 0), Point3d(0, 10, 0), Point3d(0, 0, 0)},
+      /*degree=*/1);
+  Check(bowtie.IsClosed(), "the bowtie fixture's own first/last control points coincide, so it reports closed");
+  const std::vector<CurveCurveHit> bowtie_hits = IntersectCurveSelfIntersections(bowtie.raw(), opt);
+  Check(bowtie_hits.size() == 1, "the bowtie curve has exactly one genuine self-intersection");
+  if (bowtie_hits.size() == 1) {
+    Check(bowtie_hits[0].point.DistanceTo(Point3d(5, 5, 0)) < 1e-6,
+          "the self-intersection sits at exactly the geometric midpoint (5, 5, 0)");
+    Check(bowtie_hits[0].error < opt.tolerance * 2,
+          "the refined residual is within the requested tolerance");
+  }
+}
+
+void TestIntersectBrepsAndCurveBrep() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::BrepBrepIntersection;
+  using dino8::kernel::CurveBrepHit;
+  using dino8::kernel::IntersectBreps;
+  using dino8::kernel::IntersectCurveBrep;
+  using dino8::kernel::IntersectOptions;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+
+  // PARITY_MAP.md's "B-rep/B-rep and curve/B-rep intersection as a kernel
+  // API" gap: "only face-level kernel entry points exist (IntersectFaces,
+  // IntersectCurveSurface); the app composes the B-rep loop itself
+  // (IntersectAny) ... there is no public Brep-level Intersect."
+  // IntersectBreps()/IntersectCurveBrep() are that public API.
+  IntersectOptions opt;
+  opt.tolerance = 1e-6;
+  opt.mesh_tolerance = 0.05;
+
+  // Case 1: the identical two-overlapping-boxes fixture
+  // TestBooleanCombineGeneralBoxBox() below uses, A = [0,2]^3,
+  // B = [1,3]^3 - their shared region is the exact unit cube [1,2]^3, so
+  // A's own x=2 face must meet B's own y=1 face along the straight line
+  // segment x=2, y=1, z in [1, 2] (trimmed to both faces' own finite
+  // extent) - a hand-derivable exact edge of that shared cube, not merely
+  // "some curve came back".
+  // IntersectBreps() is deliberately un-stitched (see its own doc comment):
+  // one physical edge can come back as more than one IntersectionCurve
+  // piece for the SAME face pair (confirmed directly - the mesh-seeded
+  // chainer IntersectFaces() itself already builds on can split an exactly
+  // axis-aligned, exactly-integer-coordinate straight edge like this
+  // fixture's own at a mesh-grid seam), so this checks the aggregate,
+  // honest property instead of assuming a single continuous curve: the
+  // true edge's own two endpoints both appear SOMEWHERE among every
+  // returned point, and every point anywhere near that edge's line
+  // (x=2, y=1) has z within the edge's own true [1, 2] span - not that
+  // one particular curve object happens to run start-to-end.
+  const Brep box_a = Brep::Box(0, 0, 0, 2, 2, 2);
+  const Brep box_b = Brep::Box(1, 1, 1, 3, 3, 3);
+  const std::vector<BrepBrepIntersection> box_hits = IntersectBreps(box_a.raw(), box_b.raw(), opt);
+  Check(!box_hits.empty(), "two overlapping boxes produce at least one SSX curve between their faces");
+  bool has_low_end = false, has_high_end = false, any_point_out_of_span = false;
+  const Point3d expect_lo(2, 1, 1), expect_hi(2, 1, 2);
+  for (const BrepBrepIntersection& bi : box_hits) {
+    for (const Point3d& p : bi.curve.points) {
+      if (p.DistanceTo(expect_lo) < 1e-3) has_low_end = true;
+      if (p.DistanceTo(expect_hi) < 1e-3) has_high_end = true;
+      const bool on_the_edge_line = std::abs(p.x - 2.0) < 1e-3 && std::abs(p.y - 1.0) < 1e-3;
+      if (on_the_edge_line && (p.z < 1.0 - 1e-3 || p.z > 2.0 + 1e-3)) any_point_out_of_span = true;
+    }
+  }
+  Check(has_low_end && has_high_end,
+        "the shared cube's own x=2,y=1 edge's two exact endpoints, (2,1,1) and (2,1,2), both appear among the "
+        "returned face-pair curves' points");
+  Check(!any_point_out_of_span, "no point on that edge's own line strays outside its true [1, 2] z-span");
+
+  // Case 2: two disjoint boxes, bounding boxes nowhere near each other -
+  // the bbox-pruning loop must correctly skip every face pair and return
+  // genuinely empty, not merely "small".
+  const Brep far_a = Brep::Box(0, 0, 0, 1, 1, 1);
+  const Brep far_b = Brep::Box(10, 10, 10, 11, 11, 11);
+  const std::vector<BrepBrepIntersection> disjoint_hits = IntersectBreps(far_a.raw(), far_b.raw(), opt);
+  Check(disjoint_hits.empty(), "two disjoint boxes produce zero SSX curves");
+
+  // IntersectCurveBrep(): a vertical line straight through box_a
+  // (x=1, y=1, spanning z=-5..5) must hit exactly its bottom (z=0) and top
+  // (z=2) faces, at the hand-derivable points (1,1,0) and (1,1,2) - the
+  // curve/B-rep counterpart to IntersectCurveSurface()'s own
+  // line-through-a-sphere case above.
+  const NurbsCurve vertical_line = NurbsCurve::FromControlPoints({Point3d(1, 1, -5), Point3d(1, 1, 5)}, /*degree=*/1);
+  const std::vector<CurveBrepHit> curve_brep_hits = IntersectCurveBrep(vertical_line.raw(), box_a.raw(), opt);
+  Check(curve_brep_hits.size() == 2, "a line through a box hits exactly its two pierced (bottom/top) faces");
+  if (curve_brep_hits.size() == 2) {
+    const bool has_bottom = std::any_of(curve_brep_hits.begin(), curve_brep_hits.end(), [](const CurveBrepHit& h) {
+      return h.hit.point.DistanceTo(Point3d(1, 1, 0)) < 1e-4;
+    });
+    const bool has_top = std::any_of(curve_brep_hits.begin(), curve_brep_hits.end(), [](const CurveBrepHit& h) {
+      return h.hit.point.DistanceTo(Point3d(1, 1, 2)) < 1e-4;
+    });
+    Check(has_bottom && has_top, "the two hits sit at exactly (1,1,0) and (1,1,2), the box's bottom/top faces");
+  }
+
+  // A curve whose bounding box never comes near the B-rep at all must be
+  // pruned out entirely, not merely evaluated per-face and found empty.
+  const NurbsCurve far_line = NurbsCurve::FromControlPoints({Point3d(100, 100, -5), Point3d(100, 100, 5)}, /*degree=*/1);
+  const std::vector<CurveBrepHit> far_hits = IntersectCurveBrep(far_line.raw(), box_a.raw(), opt);
+  Check(far_hits.empty(), "a curve nowhere near the B-rep produces no curve/B-rep hits");
+}
+
 void TestBooleanCombineGeneralBoxBox() {
   using dino8::kernel::BooleanCombineGeneral;
   using dino8::kernel::BooleanOp;
@@ -57586,6 +57792,9 @@ int main() {
   TestSurfaceIsTorus();
   TestSurfaceIntersectSphereGreatCircle();
   TestIntersectCurvesFindsCrossingsAndRejectsMisses();
+  TestIntersectCurvePlaneFindsCrossingsAndRejectsMisses();
+  TestIntersectCurveSelfIntersectionsFindsBowtieAndRejectsSimpleCurves();
+  TestIntersectBrepsAndCurveBrep();
   TestBooleanCombineGeneralBoxBox();
   TestBooleanCombineGeneralFreeformSurfaceOperand();
   TestBooleanCombineGeneralCoplanarBoxes();
