@@ -39792,6 +39792,108 @@ void TestMakeCounterboreHoleRejectsInvalidArguments() {
         "MakeCounterboreHole throws for a zero-length axis");
 }
 
+void TestRecognizeHolesBlindAndThroughRoundTrip() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::HoleFeature;
+  using dino8::kernel::MakeHole;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::RecognizeHoles;
+
+  // parity-map "kernel: Feature operations" - "Feature recognition": this
+  // category's own item text said "analytic classification plus
+  // RemoveChamfer/RemoveChamferVertex's geometric recognition exist; still
+  // no hole/boss/pocket recognition" - RecognizeHoles() is the first
+  // dedicated hole recognizer this kernel has ever had, the geometric
+  // inverse of MakeHole(): given a Brep that already HAS a cylindrical
+  // bore in it, read back the (origin, axis, radius, depth, through)
+  // parameters that would reproduce it.
+  const Brep box = Brep::Box(0, 0, 0, 4, 4, 4);
+  const Point3d center(2, 2, 4);
+  const Vector3d down(0, 0, -1);
+  const double radius = 0.5;
+
+  {
+    // A through hole: MakeHole()'s own well-tested fixture
+    // (TestMakeHoleBlindAndThrough above) - straight down through the
+    // whole box, exiting both the top (z=4) and bottom (z=0) faces.
+    const Brep drilled = MakeHole(box, center, down, radius, /*depth=*/0.0, /*through=*/true);
+    const std::vector<HoleFeature> found = RecognizeHoles(drilled);
+    Check(found.size() == 1, "RecognizeHoles finds exactly one hole in a once-drilled through box");
+    const HoleFeature& hf = found[0];
+    Check(hf.through, "RecognizeHoles reports the through hole as through");
+    Check(std::abs(hf.radius - radius) < 1e-6, "RecognizeHoles recovers the through hole's own exact radius");
+    Check(std::abs(hf.depth - 4.0) < 1e-6, "RecognizeHoles recovers the through hole's own exact axial extent (the box's full height)");
+    // The recognized origin sits on the axis at ONE of the hole's two open
+    // ends (RecognizeHoles doesn't know which physical end MakeHole()
+    // itself called "the entry" - both are equally "open" for a through
+    // hole) - so it's either (2, 2, 0) or (2, 2, 4), with `axis` pointing
+    // from there to the other end.
+    const bool at_bottom = hf.origin.DistanceTo(Point3d(2, 2, 0)) < 1e-6;
+    const bool at_top = hf.origin.DistanceTo(Point3d(2, 2, 4)) < 1e-6;
+    Check(at_bottom || at_top, "RecognizeHoles' through-hole origin sits exactly at one of the box's own two pierced faces");
+    const Point3d far_end = hf.origin + hf.axis * hf.depth;
+    Check(far_end.DistanceTo(at_bottom ? Point3d(2, 2, 4) : Point3d(2, 2, 0)) < 1e-6,
+          "RecognizeHoles' through-hole origin + axis*depth lands exactly on the OTHER pierced face");
+
+    // Round-trip: feed the recognized parameters straight back into
+    // MakeHole() against a fresh, undrilled box and confirm it reproduces
+    // the identical result MakeHole(box, center, down, ...) itself gave -
+    // the real test that these recognized numbers are actually usable,
+    // not merely plausible-looking.
+    const Brep rebuilt = MakeHole(box, hf.origin, hf.axis, hf.radius, /*depth=*/0.0, /*through=*/true);
+    const Mesh original_mesh = drilled.TessellateToClosedMesh(32, 128);
+    const Mesh rebuilt_mesh = rebuilt.TessellateToClosedMesh(32, 128);
+    Check(std::abs(original_mesh.Volume() - rebuilt_mesh.Volume()) < 1e-6,
+          "MakeHole(box, recognized_origin, recognized_axis, recognized_radius, through=true) reproduces the "
+          "original through hole's own exact volume");
+  }
+  {
+    // A blind hole: MakeHole()'s own blind fixture, depth 1.5 (does not
+    // reach the box's own bottom face).
+    const double depth = 1.5;
+    const Brep drilled = MakeHole(box, center, down, radius, depth, /*through=*/false);
+    const std::vector<HoleFeature> found = RecognizeHoles(drilled);
+    Check(found.size() == 1, "RecognizeHoles finds exactly one hole in a once-drilled blind box");
+    const HoleFeature& hf = found[0];
+    Check(!hf.through, "RecognizeHoles reports the blind hole as NOT through");
+    Check(std::abs(hf.radius - radius) < 1e-6, "RecognizeHoles recovers the blind hole's own exact radius");
+    Check(hf.origin.DistanceTo(center) < 1e-6, "RecognizeHoles recovers the blind hole's own exact entry point");
+    Check((hf.axis - down).Length() < 1e-6, "RecognizeHoles recovers the blind hole's own exact drilling direction");
+    Check(std::abs(hf.depth - depth) < 1e-6, "RecognizeHoles recovers the blind hole's own exact depth");
+
+    // Round-trip against a fresh box.
+    const Brep rebuilt = MakeHole(box, hf.origin, hf.axis, hf.radius, hf.depth, /*through=*/false);
+    Check(HasPlanarFaceThroughPoint(rebuilt, center + down * depth),
+          "MakeHole(box, recognized_origin, recognized_axis, recognized_radius, recognized_depth, through=false) "
+          "reproduces a blind hole with its flat bottom in exactly the same place as the original");
+  }
+  {
+    // Two independent holes on the same box: both come back, neither
+    // merged nor dropped.
+    const Brep one_hole = MakeHole(box, center, down, radius, 0.0, true);
+    const Brep two_holes = MakeHole(one_hole, Point3d(1, 1, 4), down, 0.3, 1.0, false);
+    const std::vector<HoleFeature> found = RecognizeHoles(two_holes);
+    Check(found.size() == 2, "RecognizeHoles finds both holes on a twice-drilled box");
+    const bool has_through = (found[0].through || found[1].through) && !(found[0].through && found[1].through);
+    Check(has_through, "RecognizeHoles reports exactly one of the two holes as through and the other as blind");
+  }
+  {
+    // Negative control: an undrilled box has no cylindrical faces at all,
+    // so nothing is found.
+    Check(RecognizeHoles(box).empty(), "RecognizeHoles finds nothing on a plain, undrilled box");
+  }
+  {
+    // Negative control: a convex full cylinder (a standalone solid pipe,
+    // not cut INTO anything) is a boss/pin shape, not a hole - its own
+    // cylindrical wall's outward normal points AWAY from the axis, the
+    // opposite of a real bore's. RecognizeHoles' own concavity filter
+    // must reject it, not just its "which face is a hole" logic.
+    const NurbsCurve rail = Polyline({P(0, 0, 0), P(0, 0, 6)});
+    const Brep solid_pin = Brep::Pipe(rail, 1.0);
+    Check(RecognizeHoles(solid_pin).empty(), "RecognizeHoles finds no hole on a convex solid cylinder (a boss/pin, not a bore)");
+  }
+}
+
 void TestMakeCountersinkHoleBoxStandardAngle() {
   using dino8::kernel::Brep;
   using dino8::kernel::MakeCountersinkHole;
@@ -47588,6 +47690,7 @@ int main() {
   sweep_tests::TestMakeHoleRejectsInvalidArguments();
   sweep_tests::TestMakeCounterboreHoleBoxStepped();
   sweep_tests::TestMakeCounterboreHoleRejectsInvalidArguments();
+  sweep_tests::TestRecognizeHolesBlindAndThroughRoundTrip();
   sweep_tests::TestMakeCountersinkHoleBoxStandardAngle();
   sweep_tests::TestMakeCountersinkHoleRejectsInvalidArguments();
   sweep_tests::TestEmbossProfileDebossThroughPocket();
