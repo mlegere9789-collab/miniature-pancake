@@ -489,6 +489,36 @@ struct PyObjectTable {
     return TransformIds(ids, xf, copy, "ScaleObject");
   }
 
+  // Mirrors rs.MirrorObject(ids, start, end, copy=false) in LuaEngine.cpp:
+  // mirrors each of `ids` across the vertical plane through the line
+  // start-end, in place or onto copies. Throws when the line is degenerate
+  // or vertical, same as rs.MirrorObject raising a Lua error in that case.
+  std::vector<ObjectId> MirrorObject(std::vector<ObjectId> ids, Point3d start, Point3d end, bool copy) {
+    Vector3d n = ON_CrossProduct(end - start, Vector3d(0, 0, 1));
+    if (!n.Unitize()) throw std::runtime_error("MirrorObject: mirror line is degenerate or vertical");
+    const ON_Xform xf = ON_Xform::MirrorTransformation(ON_PlaneEquation(n.x, n.y, n.z, -ON_DotProduct(n, Vector3d(start))));
+    return TransformIds(ids, xf, copy, "MirrorObject");
+  }
+
+  // Mirrors rs.SelectObject(ids) in LuaEngine.cpp: selects each of `ids`
+  // (Document::Select is a silent no-op for a missing, locked or hidden
+  // object), returning how many ended up selected.
+  int SelectObject(std::vector<ObjectId> ids) {
+    Document& d = DocOf();
+    int n = 0;
+    for (ObjectId id : ids) { d.Select(id, true); if (const SceneObject* o = d.Find(id)) n += o->selected ? 1 : 0; }
+    return n;
+  }
+
+  // Mirrors rs.UnselectObject(ids) in LuaEngine.cpp: deselects each of
+  // `ids` (a silent no-op for a missing object, same as Document::Select),
+  // returning how many ids were given.
+  size_t UnselectObject(std::vector<ObjectId> ids) {
+    Document& d = DocOf();
+    for (ObjectId id : ids) d.Select(id, false);
+    return ids.size();
+  }
+
   py::object AddMesh(std::vector<Point3d> verts, std::vector<std::vector<int>> faces) {
     kernel::Mesh m;
     ON_Mesh& r = m.raw();
@@ -626,6 +656,9 @@ PYBIND11_EMBEDDED_MODULE(dino8, m) {
       .def("CopyObject", &PyObjectTable::CopyObject, py::arg("ids"), py::arg("vector") = py::none())
       .def("RotateObject", &PyObjectTable::RotateObject, py::arg("ids"), py::arg("center"), py::arg("angleDeg"), py::arg("axis") = py::none(), py::arg("copy") = false)
       .def("ScaleObject", &PyObjectTable::ScaleObject, py::arg("ids"), py::arg("origin"), py::arg("scale"), py::arg("copy") = false)
+      .def("MirrorObject", &PyObjectTable::MirrorObject, py::arg("ids"), py::arg("start"), py::arg("end"), py::arg("copy") = false)
+      .def("SelectObject", &PyObjectTable::SelectObject, py::arg("ids"))
+      .def("UnselectObject", &PyObjectTable::UnselectObject, py::arg("ids"))
       .def("AddBox", &PyObjectTable::AddBox, py::arg("corner"), py::arg("size"))
       .def("AddSphere", &PyObjectTable::AddSphere, py::arg("center"), py::arg("radius"))
       .def("AddCylinder", &PyObjectTable::AddCylinder, py::arg("base"), py::arg("axis"), py::arg("radius"), py::arg("cap") = true)

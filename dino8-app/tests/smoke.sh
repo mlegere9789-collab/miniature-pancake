@@ -1851,6 +1851,27 @@ print("scale copy is new id: " + str(len(scale_copy_ids) == 1 and scale_copy_ids
 print("object count with scale copy: %d" % len(dino8.doc.Objects.AllObjects()))
 print("scale missing skipped: " + str(dino8.doc.Objects.ScaleObject([999999], dino8.Point3d(0, 0, 0), dino8.Vector3d(2, 2, 2))))
 
+mirror_line_id = dino8.doc.Objects.AddLine(dino8.Point3d(60, 0, 0), dino8.Point3d(61, 0, 0))
+mirror_ids = dino8.doc.Objects.MirrorObject([mirror_line_id], dino8.Point3d(0, 0, 0), dino8.Point3d(0, 1, 0))
+print("mirror returned same id: " + str(mirror_ids == [mirror_line_id]))
+print("object count with mirror: %d" % len(dino8.doc.Objects.AllObjects()))
+mirror_copy_ids = dino8.doc.Objects.MirrorObject([mirror_line_id], dino8.Point3d(0, 0, 0), dino8.Point3d(0, 1, 0), True)
+print("mirror copy is new id: " + str(len(mirror_copy_ids) == 1 and mirror_copy_ids[0] != mirror_line_id))
+print("object count with mirror copy: %d" % len(dino8.doc.Objects.AllObjects()))
+print("mirror missing skipped: " + str(dino8.doc.Objects.MirrorObject([999999], dino8.Point3d(0, 0, 0), dino8.Point3d(0, 1, 0))))
+try:
+    dino8.doc.Objects.MirrorObject([mirror_line_id], dino8.Point3d(0, 0, 0), dino8.Point3d(0, 0, 1))
+    print("bad mirror: no error")
+except RuntimeError as e:
+    print("bad mirror rejected: " + str(e))
+
+select_count = dino8.doc.Objects.SelectObject([mirror_line_id, circle_id])
+print("select count: %d" % select_count)
+print("selected after select: %d" % len(dino8.doc.Objects.GetSelectedObjects()))
+unselect_count = dino8.doc.Objects.UnselectObject([mirror_line_id, circle_id])
+print("unselect returned count: %d" % unselect_count)
+print("selected after unselect: %d" % len(dino8.doc.Objects.GetSelectedObjects()))
+
 dino8.RunCommand("NewLayer", "Parts")
 PY
 sed "s|@TMP@|$TMPW|g" "$HERE/python_script.txt" > "$TMPW/python_script.txt"
@@ -1956,7 +1977,17 @@ else
   pscheck "history: scale copy is new id: True" "ScaleObject with copy=True left the box in place and added a scaled duplicate under a fresh id, matching rs.ScaleObject(id, origin, scale, copy=true)"
   pscheck "history: object count with scale copy: 23" "AllObjects gained the scaled copy of the box"
   pscheck "history: scale missing skipped: \[\]" "ScaleObject returned an empty list for an id that no longer exists, matching LuaEngine.cpp's TransformIds skip-missing loop instead of raising"
-  pscheck "^ok   expect_objects 23" "RunPythonScript left the box, the circle, the cone, the torus, the interpolated curve, the arc, the srf, the planar surface, three points, the extruded surface, the extruded solid, the union mesh, the difference mesh, the intersection mesh, the two circle copies, the rotate line and its rotated copy, and the scale box and its scaled copy (the sphere, the two union input boxes, the two difference input boxes and the two intersection input boxes were removed from inside the script)"
+  pscheck "history: mirror returned same id: True" "dino8.doc.Objects.MirrorObject mirrored the line in place and returned its own id back, matching rs.MirrorObject(id, start, end, copy=false)"
+  pscheck "history: object count with mirror: 24" "MirrorObject without copy=True transforms in place, so AllObjects only gained the new line"
+  pscheck "history: mirror copy is new id: True" "MirrorObject with copy=True left the line in place and added a mirrored duplicate under a fresh id, matching rs.MirrorObject(id, start, end, copy=true)"
+  pscheck "history: object count with mirror copy: 25" "AllObjects gained the mirrored copy of the line"
+  pscheck "history: mirror missing skipped: \[\]" "MirrorObject returned an empty list for an id that no longer exists, matching LuaEngine.cpp's TransformIds skip-missing loop instead of raising"
+  pscheck "history: bad mirror rejected:" "MirrorObject raised a Python exception for a vertical mirror line instead of silently returning, matching rs.MirrorObject raising a Lua error"
+  pscheck "history: select count: 2" "dino8.doc.Objects.SelectObject selected both requested objects and returned that count, matching rs.SelectObject"
+  pscheck "history: selected after select: 3" "GetSelectedObjects sees the already-selected box plus the two objects SelectObject just selected"
+  pscheck "history: unselect returned count: 2" "dino8.doc.Objects.UnselectObject returned the number of ids given, matching rs.UnselectObject"
+  pscheck "history: selected after unselect: 1" "UnselectObject deselected both objects, leaving only the box selected"
+  pscheck "^ok   expect_objects 25" "RunPythonScript left the box, the circle, the cone, the torus, the interpolated curve, the arc, the srf, the planar surface, three points, the extruded surface, the extruded solid, the union mesh, the difference mesh, the intersection mesh, the two circle copies, the rotate line and its rotated copy, the scale box and its scaled copy, and the mirror line and its mirrored copy (the sphere, the two union input boxes, the two difference input boxes and the two intersection input boxes were removed from inside the script)"
   grep -q "! Python error" <<<"$PS" && { echo "FAIL python_script.txt printed a Python error"; fail=1; } || echo "ok   no Python script errors"
 fi
 

@@ -34,7 +34,12 @@
 # Lua's rs.RotateObject, that the dino8 module also lacked until now) and
 # dino8.doc.Objects.ScaleObject (scales objects about an origin, in place
 # or onto copies, matching Lua's rs.ScaleObject, that the dino8 module also
-# lacked until now).
+# lacked until now), dino8.doc.Objects.MirrorObject (mirrors objects across
+# the vertical plane through a line, in place or onto copies, matching
+# Lua's rs.MirrorObject, that the dino8 module also lacked until now), and
+# dino8.doc.Objects.SelectObject/UnselectObject (select/deselect objects,
+# matching Lua's rs.SelectObject/rs.UnselectObject, that the dino8 module
+# also lacked until now).
 # Unlike script_script.txt's Lua test, this never goes interactive
 # mid-script (see PythonEngine.h): Python scripts run start to finish in
 # one call, so there is no trailing point token to feed a GetPoint-style
@@ -42,4 +47,4 @@
 # smoke.sh substitutes @TMP@ with a scratch directory and writes @TMP@/t.py
 # before running this.
 RunPythonScript @TMP@/t.py
-@expect_objects 23
+@expect_objects 25
