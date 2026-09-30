@@ -19256,6 +19256,134 @@ void TestMeshSavePlyBigEndianRoundTrips() {
   }
 }
 
+// SavePly()/LoadPly() close the "kernel SavePly/LoadPly still only handle
+// position/normal/UV, no per-vertex color" gap this format's own PARITY_MAP
+// bullet used to name: Mesh::SetVertexColors() (mesh.h) stores one RGB
+// triple per vertex in ON_Mesh's own `m_C` array - the same array
+// dino8-app's ComputeVertexColors command already writes directly
+// (cmd_meshtools.cpp) - and SavePly()/LoadPly() now read/write it as PLY's
+// ordinary `red`/`green`/`blue` uchar vertex-color convention. Checks the
+// written header actually declares genuine `uchar` color properties (not
+// silently upgraded to `float` the way position/normal/UV are), that the
+// ASCII and binary payloads both round-trip every channel byte-exact (no
+// precision loss - unlike position/UV, which only round-trip within
+// single-precision float error), that a mesh with no colors set keeps
+// writing exactly the same header SavePly() always has (no colors columns
+// at all, not a set-but-empty one), and that a color property declared
+// under a non-`uchar` type (e.g. `float`, as some other tools do write)
+// still reads correctly by value, not by assumed byte width.
+void TestMeshSavePlyVertexColorsRoundTrips() {
+  using dino8::kernel::Color;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Result;
+
+  const auto box = MakeQuadBoxMesh(0, 0, 0, 2, 3, 4);
+
+  // No colors set: the header must have no red/green/blue properties at
+  // all - HasVertexColors() is false, so SavePly() must not write an
+  // "everyone gets black" fallback column.
+  {
+    const std::string path = "dino8_kernel_mesh_ply_no_colors_test.ply";
+    Check(box.SavePly(path) == Result::Ok, "fixture: SavePly succeeds on a mesh with no vertex colors");
+    std::ifstream in(path);
+    std::string line;
+    bool saw_color_property = false;
+    while (std::getline(in, line)) {
+      if (line == "end_header") break;
+      if (line.find("red") != std::string::npos || line.find("green") != std::string::npos ||
+          line.find("blue") != std::string::npos) {
+        saw_color_property = true;
+      }
+    }
+    Check(!saw_color_property,
+          "a mesh with HasVertexColors() == false writes no red/green/blue property lines at all");
+    std::remove(path.c_str());
+  }
+
+  std::vector<Color> colors;
+  for (int i = 0; i < box.VertexCount(); ++i) {
+    colors.push_back(Color{static_cast<unsigned char>((i * 37) % 256), static_cast<unsigned char>((i * 91) % 256),
+                            static_cast<unsigned char>((i * 173) % 256)});
+  }
+
+  auto check_round_trip = [&](bool binary, const std::string& path) {
+    Mesh with_colors = box;
+    Check(with_colors.SetVertexColors(colors) == Result::Ok, "fixture: SetVertexColors succeeds");
+    Check(with_colors.HasVertexColors(), "HasVertexColors() is true once SetVertexColors() was called "
+                                          "with exactly VertexCount() many entries");
+
+    Check(with_colors.SavePly(path, binary) == Result::Ok,
+          binary ? "SavePly(binary=true) succeeds on a mesh with vertex colors"
+                 : "SavePly succeeds on a mesh with vertex colors");
+
+    if (!binary) {
+      std::ifstream in(path);
+      std::string line;
+      bool saw_uchar_red = false, saw_uchar_green = false, saw_uchar_blue = false;
+      while (std::getline(in, line)) {
+        if (line == "end_header") break;
+        if (line == "property uchar red") saw_uchar_red = true;
+        if (line == "property uchar green") saw_uchar_green = true;
+        if (line == "property uchar blue") saw_uchar_blue = true;
+      }
+      Check(saw_uchar_red && saw_uchar_green && saw_uchar_blue,
+            "the header declares genuine 'property uchar red/green/blue' lines, matching PLY's "
+            "ordinary vertex-color convention by name");
+    }
+
+    Mesh reloaded;
+    Check(Mesh::LoadPly(path, reloaded) == Result::Ok, "LoadPly succeeds on a .ply file with vertex colors");
+    Check(reloaded.HasVertexColors(), "the reloaded mesh reports having vertex colors");
+    bool colors_match = true;
+    for (int i = 0; i < reloaded.VertexCount(); ++i) {
+      const Color original = colors[static_cast<size_t>(i)];
+      const Color loaded = reloaded.VertexColorAt(i);
+      if (original.r != loaded.r || original.g != loaded.g || original.b != loaded.b) {
+        colors_match = false;
+        break;
+      }
+    }
+    Check(colors_match, binary
+                             ? "every reloaded vertex's color exactly matches the original, byte-for-byte, "
+                               "through the binary .ply payload (uchar has no precision to lose)"
+                             : "every reloaded vertex's color exactly matches the original, byte-for-byte, "
+                               "through the ASCII .ply payload");
+    std::remove(path.c_str());
+  };
+
+  check_round_trip(/*binary=*/false, "dino8_kernel_mesh_ply_colors_ascii_test.ply");
+  check_round_trip(/*binary=*/true, "dino8_kernel_mesh_ply_colors_binary_test.ply");
+
+  // A color property declared under a non-uchar type (e.g. a hypothetical
+  // other tool that writes 0-255 values as plain floats) still reads
+  // correctly by value, not by an assumed uchar byte width - LoadPly()
+  // already reads every property at its own declared type for position/
+  // normal/UV; this proves the same is true for red/green/blue.
+  {
+    const std::string path = "dino8_kernel_mesh_ply_float_colors_test.ply";
+    std::ofstream out(path, std::ios::binary);
+    out << "ply\nformat ascii 1.0\nelement vertex 3\n";
+    out << "property float x\nproperty float y\nproperty float z\n";
+    out << "property float red\nproperty float green\nproperty float blue\n";
+    out << "element face 1\nproperty list uchar int vertex_indices\nend_header\n";
+    out << "0 0 0 12 34 56\n1 0 0 78 90 123\n0 1 0 200 210 220\n";
+    out << "3 0 1 2\n";
+    out.close();
+
+    Mesh loaded;
+    Check(Mesh::LoadPly(path, loaded) == Result::Ok, "LoadPly() succeeds on a color property declared as 'float'");
+    Check(loaded.HasVertexColors(), "the reloaded mesh reports having vertex colors from the float-typed columns");
+    const Color c0 = loaded.VertexColorAt(0);
+    const Color c1 = loaded.VertexColorAt(1);
+    const Color c2 = loaded.VertexColorAt(2);
+    Check(c0.r == 12 && c0.g == 34 && c0.b == 56 && c1.r == 78 && c1.g == 90 && c1.b == 123 && c2.r == 200 &&
+              c2.g == 210 && c2.b == 220,
+          "every color channel declared as 'float' is read at its own declared type and rounded to the "
+          "correct 0-255 byte, not misread at an assumed uchar width");
+    std::remove(path.c_str());
+  }
+}
+
 // Malformed/out-of-scope input is rejected outright, never silently
 // misread. Covers: an unrecognized `format` line (binary_little_endian
 // and binary_big_endian are both supported now - see
@@ -19337,6 +19465,23 @@ void TestMeshLoadPlyRejectsMalformedFiles() {
     Mesh loaded;
     Check(Mesh::LoadPly(path, loaded) == Result::Failed,
           "LoadPly() fails on a face referencing vertex index 7 when only 3 vertices (0-2) exist");
+    std::remove(path.c_str());
+  }
+
+  {
+    // A vertex element declaring its "red" property as a list (a genuinely
+    // malformed PLY - no real tool emits a per-vertex color as a
+    // variable-length list) must still be rejected, the same "a list
+    // property on a vertex isn't a position/normal/UV/color" rule LoadPly()
+    // already applies to every other vertex property.
+    const std::string path = "dino8_kernel_mesh_ply_list_color_test.ply";
+    write_file(path,
+               "ply\nformat ascii 1.0\nelement vertex 1\nproperty float x\nproperty float y\n"
+               "property float z\nproperty list uchar uchar red\nelement face 0\n"
+               "property list uchar int vertex_indices\nend_header\n0 0 0 1 255\n");
+    Mesh loaded;
+    Check(Mesh::LoadPly(path, loaded) == Result::Failed,
+          "LoadPly() fails when a vertex element declares its 'red' property as a list");
     std::remove(path.c_str());
   }
 
@@ -46542,6 +46687,7 @@ int main() {
   TestMeshSavePlyRoundTrips();
   TestMeshSavePlyBinaryRoundTrips();
   TestMeshSavePlyBigEndianRoundTrips();
+  TestMeshSavePlyVertexColorsRoundTrips();
   TestMeshLoadPlyRejectsMalformedFiles();
   TestExactClippingMatchesAreaButNotCellCounts();
   TestExactClippingHandlesNonConvexTrim();

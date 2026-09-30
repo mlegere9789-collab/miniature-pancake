@@ -404,6 +404,33 @@ class Mesh {
   // if it doesn't (out-of-range access), not a checked exception.
   Point2d TextureCoordinateAt(int vertex_index) const;
 
+  // Sets one RGB color per vertex, stored in ON_Mesh's own `m_C` array -
+  // the same array dino8-app's `ComputeVertexColors` command already
+  // writes directly via raw() (cmd_meshtools.cpp) and the viewport already
+  // reads for display (SceneObject.cpp's `mesh_vertex_colors`); this just
+  // gives the kernel itself a typed accessor, same "one per vertex, no
+  // per-face-corner storage" granularity SetTextureCoordinates() already
+  // has. Returns Result::Failed if `colors.size()` doesn't exactly equal
+  // `VertexCount()`, same all-or-nothing rule SetTextureCoordinates()
+  // already applies (and the same convention ON_Mesh itself uses to decide
+  // whether `m_C` counts as "present" - see HasVertexColors()).
+  Result SetVertexColors(const std::vector<Color>& colors);
+
+  // Whether this mesh currently has a color for every vertex - true only
+  // if SetVertexColors() was called with exactly VertexCount() many
+  // entries, or another path (e.g. dino8-app's ComputeVertexColors, or a
+  // loaded file) filled `m_C` to that same count directly. Mirrors
+  // HasTextureCoordinates()'s own "count matches VertexCount(), anything
+  // else means ignore it" rule.
+  bool HasVertexColors() const;
+
+  // The color at `vertex_index`, previously set via SetVertexColors() (or
+  // another path that filled `m_C`). Caller must check HasVertexColors()
+  // first; behavior is whatever ON_Mesh's own `m_C[]` array indexing does
+  // if it doesn't (out-of-range access), not a checked exception - same
+  // contract as TextureCoordinateAt().
+  Color VertexColorAt(int vertex_index) const;
+
   // Returns a copy of this mesh with every face's winding reversed (each
   // face's own vertex loop reversed in place, not the vertex list
   // reordered) - flipping which side is "outward" without moving a single
@@ -582,13 +609,20 @@ class Mesh {
   // when `HasTextureCoordinates()` is true (PLY has no single standard UV
   // property name across tools - some use `s`/`t` - `u`/`v` is chosen
   // here to match this kernel's own OBJ `vt` semantics exactly: one UV
-  // per vertex, not per face corner). The binary payload writes every
-  // vertex property as a genuine 4-byte IEEE-754 float and every face as
-  // a 1-byte unsigned corner count followed by that many 4-byte signed
-  // indices - matching the header's own declared `float`/`uchar`/`int`
-  // property types exactly, the widths LoadPly() below reads back.
-  // `big_endian` selects `format binary_big_endian` over the default
-  // `binary_little_endian` (both write the exact same values, just with
+  // per vertex, not per face corner), and a `red`/`green`/`blue` uchar
+  // triple per vertex when `HasVertexColors()` is true - the ordinary PLY
+  // vertex-color convention most tools (MeshLab, CloudCompare, Blender's
+  // importer) read by exactly these property names; no alpha (PLY's own
+  // `alpha` is a separate, less universal convention, and this kernel's
+  // `Color` has no alpha channel to write - out of scope, disclosed).
+  // The binary payload writes every vertex position/normal/UV property as
+  // a genuine 4-byte IEEE-754 float, each color channel as its own 1-byte
+  // uchar, and every face as a 1-byte unsigned corner count followed by
+  // that many 4-byte signed indices - matching the header's own declared
+  // `float`/`uchar`/`int` property types exactly, the widths LoadPly()
+  // below reads back. `big_endian` selects `format binary_big_endian`
+  // over the default `binary_little_endian` (both write the exact same
+  // values, just with
   // each multi-byte property's bytes reversed on disk); it's ignored when
   // `binary` is false, since `ascii` has no byte order. Returns
   // Result::Failed if the file can't be opened for writing.
@@ -600,15 +634,22 @@ class Mesh {
   // never assumed from the host - see ReadPlyBinaryScalar() in mesh.cpp).
   // Follows PLY's ordinary shape: a `vertex` element with
   // `x`/`y`/`z` scalar properties (in any order, and tolerating extra
-  // properties this kernel doesn't use, e.g. color, by name rather than
-  // assuming a fixed column layout - genuinely parses the header's own
-  // property list instead of guessing a position), optional `nx`/`ny`/`nz`
-  // (read but discarded, same "always geometry-derived" convention
-  // LoadObj()'s `vn` and LoadStl()'s facet normal already have - there's
-  // nowhere in this kernel's Mesh to store an independent per-vertex
-  // normal), and optional `u`/`v` (stored via SetTextureCoordinates()
-  // only if present on every vertex, same all-or-nothing rule LoadObj()
-  // already applies); and a `face` element with exactly one list property
+  // properties this kernel doesn't use, by name rather than assuming a
+  // fixed column layout - genuinely parses the header's own property list
+  // instead of guessing a position), optional `nx`/`ny`/`nz` (read but
+  // discarded, same "always geometry-derived" convention LoadObj()'s `vn`
+  // and LoadStl()'s facet normal already have - there's nowhere in this
+  // kernel's Mesh to store an independent per-vertex normal), optional
+  // `u`/`v` (stored via SetTextureCoordinates() only if present on every
+  // vertex, same all-or-nothing rule LoadObj() already applies), and
+  // optional `red`/`green`/`blue` (stored via SetVertexColors() under the
+  // same all-or-nothing rule, each channel read at its own declared type
+  // - `uchar` as SavePly() itself writes, but also `float`/`double` etc.
+  // from another tool - and clamped/rounded to the 0-255 byte `Color`
+  // holds; an `alpha` property, if present, is read as an ordinary
+  // ignored extra property, same as any other name this kernel doesn't
+  // recognize - out of scope, disclosed above at SavePly()); and a `face`
+  // element with exactly one list property
   // (whatever its declared name - `vertex_indices`/`vertex_index` are
   // both common) giving each face's 0-based vertex indices, 3 or 4 per
   // face (this kernel's `ON_MeshFace` holds a triangle or quad only, same

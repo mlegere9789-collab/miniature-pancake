@@ -16,15 +16,9 @@
 
 namespace dino8::kernel {
 
-// A plain 0-255 RGB triple for Model::AddLayer()'s `color` parameter, kept
-// independent of ON_Color so a caller naming a layer color doesn't need to
-// know the OpenNURBS type underneath (the same reasoning file_io.h's other
-// wrapper types follow throughout this header).
-struct Color {
-  unsigned char r = 0;
-  unsigned char g = 0;
-  unsigned char b = 0;
-};
+// Color (a plain 0-255 RGB triple, used by Model::AddLayer()'s `color`
+// parameter below) now lives in types.h, so mesh.h can use it too for
+// Mesh::SetVertexColors() - see that struct's own comment there.
 
 // One dash or gap in a Linetype's repeating pattern, kept independent of
 // ON_LinetypeSegment for the same reason Color above is kept independent
