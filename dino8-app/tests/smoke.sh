@@ -3287,6 +3287,8 @@ SetLanguage zh
 I18nSelfTest
 SetLanguage ko
 I18nSelfTest
+SetLanguage ru
+I18nSelfTest
 SetLanguage English
 I18nSelfTest
 SetLanguage nope
@@ -3325,6 +3327,9 @@ i18ncheck "I18nSelfTest: menu\.file=文件" "a translated string (menu.file) rea
 i18ncheck "SetLanguage: ko" "SetLanguage switched to Korean"
 i18ncheck "I18nSelfTest: active=ko" "the active language is now ko"
 i18ncheck "I18nSelfTest: menu\.file=파일" "a translated string (menu.file) reads 파일 in Korean, proving ko.json is a real eighth hand-translated language, not a scaffold-only stub"
+i18ncheck "SetLanguage: ru" "SetLanguage switched to Russian"
+i18ncheck "I18nSelfTest: active=ru" "the active language is now ru"
+i18ncheck "I18nSelfTest: menu\.file=Файл" "a translated string (menu.file) reads Файл in Russian, proving ru.json is a real ninth hand-translated language, not a scaffold-only stub"
 i18ncheck "I18nSelfTest: fallback(panel\.imgui_demo)=ImGui Demo (developer)" "a key missing from es.json falls back to the English text, not a blank string or the raw key"
 i18ncheck "I18nSelfTest: unknown_key=this\.key\.does\.not\.exist\.anywhere" "a key present in no language table at all falls back to the key itself rather than crashing or blanking"
 i18ncheck "SetLanguage: en" "SetLanguage switched back to English"

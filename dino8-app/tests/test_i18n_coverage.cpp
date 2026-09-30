@@ -9,8 +9,8 @@
 // "panel.imgui_demo" to give I18nSelfTest (src/commands/cmd_state.cpp) and
 // tests/smoke.sh's i18n section a real missing-key fallback to exercise.
 // Every other language - fr.json, de.json, ja.json (Japanese), pt.json
-// (Portuguese), it.json (Italian), zh.json (Simplified Chinese), and
-// ko.json (Korean) - must have zero missing keys.
+// (Portuguese), it.json (Italian), zh.json (Simplified Chinese),
+// ko.json (Korean), and ru.json (Russian) - must have zero missing keys.
 //
 // This is a "did a language quietly drift behind en.json" regression
 // guard: en.json gaining new keys (panel.activity_log, panel.block_manager,
@@ -81,6 +81,7 @@ int main(int argc, char** argv) {
       {"it", {}},
       {"zh", {}},
       {"ko", {}},
+      {"ru", {}},
       {"es", {"panel.imgui_demo"}},
   };
 
@@ -209,6 +210,25 @@ int main(int argc, char** argv) {
       Check(ko_keys == en_keys, label);
       Check(ko_root["_language_name"].AsString("") == "\xed\x95\x9c\xea\xb5\xad\xec\x96\xb4",
             "ko.json's _language_name is the Korean word for Korean (\xed\x95\x9c\xea\xb5\xad\xec\x96\xb4)");
+    }
+  }
+
+  // The headline deliverable: Russian is a ninth complete, hand-
+  // translated language, matching en.json's key set exactly (not just
+  // "mostly", the way a machine-generated stub might partially cover it).
+  {
+    dino8::json::Value ru_root;
+    Check(LoadObject(dir + "/ru.json", ru_root), "ru.json exists and parses");
+    if (LoadObject(dir + "/ru.json", ru_root)) {
+      const std::set<std::string> ru_keys = StringKeys(ru_root);
+      char label[160];
+      std::snprintf(label, sizeof(label), "ru.json defines exactly en.json's key set (%zu keys, 0 missing, 0 extra)",
+                    ru_keys.size());
+      Check(ru_keys == en_keys, label);
+      Check(ru_root["_language_name"].AsString("") ==
+                "\xd0\xa0\xd1\x83\xd1\x81\xd1\x81\xd0\xba\xd0\xb8\xd0\xb9",
+            "ru.json's _language_name is the Russian word for Russian "
+            "(\xd0\xa0\xd1\x83\xd1\x81\xd1\x81\xd0\xba\xd0\xb8\xd0\xb9)");
     }
   }
 
