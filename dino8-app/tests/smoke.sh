@@ -2856,8 +2856,13 @@ s2check "Named position 'Pos1' restored: 1 of 1 object" "NamedPosition Restore r
 s2check "Bounding box: (60, 0, 0) to (70, 10, 10)" "NamedPosition Restore put the box back exactly"
 s2check "Named position 'Pos1' deleted" "NamedPosition Delete"
 s2check "[0-9]* snapshot(s)" "Snapshots (cmd_session.cpp's real implementation, no longer shadowed)"
-s2check "HistoryPurge: no construction history is recorded; nothing to purge" "HistoryPurge"
-s2check "HistoryUpdate: no construction history is recorded; nothing to update" "HistoryUpdate"
+# HistoryPurge/HistoryUpdate are real now (cmd_history.cpp's HistoryRecord
+# mechanism, replacing the old dead cmd_state.cpp stubs that always claimed
+# no history was recorded); the document is empty at this point in the
+# script (SelAll/Delete ran earlier), so both correctly report 0 objects -
+# see history_purge_script.txt below for the real-history, non-zero case.
+s2check "HistoryPurge: 0 object(s) had their recorded construction history removed (nothing to purge)" "HistoryPurge reports 0 with no recorded history in the (now empty) document"
+s2check "HistoryUpdate: 0 object(s) re-evaluated from their source curve(s)' current geometry" "HistoryUpdate (Rhino's alternate name for UpdateHistory) reports 0 the same way"
 s2check "[0-9]* attached reference model" "Worksession (cmd_session.cpp's real implementation, no longer shadowed)"
 s2check "LimitReferenceModel: 0 object(s) removed from 'nonexistent.3dm'" "LimitReferenceModel (cmd_session.cpp's real implementation, no longer shadowed)"
 s2check "ContentFilter: 'Wood' (Materials and Textures panels; ContentFilter Clear to remove)" "ContentFilter set a name filter"
@@ -3718,6 +3723,50 @@ fzcheck "^history: Command: Box$" "plain prefix 'Box' still autocompletes to its
 fzcheck "^history: Command: ZoomNonManifold$" "fuzzy subsequence 'zmanif' (not a prefix/substring of any command) autocompleted to the unique match ZoomNonManifold"
 fzcheck "gl_error=0" "fuzzy-autocomplete script ran without OpenGL errors"
 
+# Command-line autocomplete: aliases (the user's own, or Rhino's shipped
+# defaults - InstallDefaultAliases) must show up in the popup too, not just
+# catalog command names (see alias_autocomplete_script.txt's own header
+# comment for the full before/after explanation).
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  ALC="$("$BIN" --smoke 60 --script "$HERE/alias_autocomplete_script.txt" 2>&1)" || { echo "$ALC"; echo "FAIL: alias-autocomplete script exited non-zero"; exit 1; }
+else
+  ALC="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$HERE/alias_autocomplete_script.txt" 2>&1)" || { echo "$ALC"; echo "FAIL: alias-autocomplete script exited non-zero"; exit 1; }
+fi
+alccheck() { if echo "$ALC" | grep -qE "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$ALC" "$1"; fail=1; fi; }
+alccheck "^history: Command: b$" "typing the default alias 'b' and picking the first popup row (Down, Enter) runs the alias text itself, not a catalog fallback like Box"
+alccheck "gl_error=0" "alias-autocomplete script ran without OpenGL errors"
+
+# Command-line ambiguous prefixes: ResolveName only resolves a prefix that
+# matches exactly one registered command; typing one that matches several
+# (and isn't an alias) used to fall through to a flat "Unknown command",
+# leaving the user to guess or retype. It now reports what the prefix could
+# mean instead. "Pla" deliberately avoids the "pl"->Planar default alias
+# (InstallDefaultAliases) so this exercises the prefix-ambiguity path, not
+# alias resolution; its 12 matches are the 11 catalog commands starting with
+# "Pla" plus Plane3Pt (cmd_create.cpp), which is registered but, unlike
+# every other command here, has no data/commands.json catalog entry of its
+# own - PrefixMatches reports every *registered* command, catalog-backed or
+# not, so it correctly appears too. "ZoomNonM" (a real, unambiguous prefix
+# of the single catalog command ZoomNonManifold) is the regression check
+# that a genuinely unique prefix still resolves and runs for real;
+# "Zzzznotacommand" (no registered command starts with it at all) checks
+# the true-unknown case still reports plainly, not as a spurious
+# "ambiguous" match against nothing.
+cat > "$TMPW/ambiguous_script.txt" <<'EOS'
+Pla
+ZoomNonM
+Zzzznotacommand
+EOS
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  AMB="$("$BIN" --smoke 30 --script "$TMPW/ambiguous_script.txt" 2>&1)" || { echo "$AMB"; echo "FAIL: ambiguous-command script exited non-zero"; exit 1; }
+else
+  AMB="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/ambiguous_script.txt" 2>&1)" || { echo "$AMB"; echo "FAIL: ambiguous-command script exited non-zero"; exit 1; }
+fi
+ambcheck() { if echo "$AMB" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$AMB" "$1"; fail=1; fi; }
+ambcheck "Pla: ambiguous command name, could be: PlaceHole, Plan, Planar, PlanarDifference, PlanarIntersection, PlanarMesh, PlanarSrf, PlanarUnion, Plane, Plane3Pt, PlaneThroughPt, PlayAnimation" "an ambiguous prefix ('Pla', matching 12 registered commands) reports every command it could mean"
+ambcheck "ZoomNonManifold: no non-manifold meshes found" "a genuinely unique prefix ('ZoomNonM') still resolves and actually runs ZoomNonManifold (no regression from adding ambiguity detection)"
+ambcheck "Unknown command: Zzzznotacommand" "a prefix matching nothing at all is still reported as Unknown, not a spurious ambiguous match"
+
 # i18n: SetLanguage actually swaps the active string table, a key missing
 # from a language's table (panel.imgui_demo is deliberately absent from
 # es.json - see cmd_state.cpp's I18nSelfTest) falls back to English instead
@@ -4244,6 +4293,29 @@ hcheck "UpdateHistory: 1 object(s) re-evaluated from their source curve(s)' curr
   "UpdateHistory rebuilt only the still-live tracked surface (4) and reported the undone extrusion's record (6) as orphaned - it did NOT treat the new Box as a tracked object"
 hcheck_absent "Bounding box: (40, 0, 0) to (50, 0, 5)" "the Box was never rebuilt into line 5's extrusion (the exact silent wrong result the id reuse produced before)"
 hcheck "Bounding box: (50, 50, 0) to (60, 60, 10)" "the Box's own geometry is untouched after UpdateHistory"
+
+# HistoryPurge/HistoryUpdate/SelObjectsWithHistory against REAL recorded
+# history (see history_purge_script.txt's own header comment): before this
+# fix all three were dead - HistoryPurge/HistoryUpdate (cmd_state.cpp) always
+# claimed no history was recorded, and SelObjectsWithHistory (cmd_select2.cpp)
+# always selected 0 objects and claimed Dino 8 keeps no construction history
+# at all - regardless of what cmd_history.cpp's real mechanism, right next to
+# all three, actually had tracked.
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  HP="$("$BIN" --smoke 100 --script "$HERE/history_purge_script.txt" 2>&1)" || { echo "$HP"; echo "FAIL: history-purge script exited non-zero"; exit 1; }
+else
+  HP="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 100 --script "$HERE/history_purge_script.txt" 2>&1)" || { echo "$HP"; echo "FAIL: history-purge script exited non-zero"; exit 1; }
+fi
+echo "$HP" | grep -E "^(ok|FAIL)"
+if echo "$HP" | grep -q "^FAIL"; then fail=1; fi
+echo "$HP" | grep -q "^smoke:" || { echo "$HP"; echo "FAIL: history-purge script produced no smoke line"; fail=1; }
+hpcheck() { if echo "$HP" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$HP" "$1"; fail=1; fi; }
+hpcheck "2 object(s) selected" "SelObjectsWithHistory finds both tracked extrusions (objects 2 and 4) - real selection, not the old hardcoded 0"
+hpcheck "HistoryPurge: 1 object(s) had their recorded construction history removed; HistoryPurge will no longer rebuild it from a source curve" "HistoryPurge, with object 2 selected, purges only that one object's recorded history"
+hpcheck "1 object(s) selected" "SelObjectsWithHistory now finds only object 4 - object 2's history was really dropped, not just reported as dropped"
+hpcheck "HistoryUpdate: 1 object(s) re-evaluated from their source curve(s)' current geometry" "HistoryUpdate (the catalog's real name - see cmd_history.cpp) still finds and rebuilds the surviving tracked object"
+hpcheck "0 object(s) selected" "after a second HistoryPurge with nothing selected (whole-document purge), SelObjectsWithHistory finds nothing left"
+hpcheck "HistoryUpdate: 0 object(s) re-evaluated from their source curve(s)' current geometry" "HistoryUpdate confirms no recorded history remains anywhere in the document"
 
 # RemoveLayer must keep every OTHER holder of a layer index consistent, not
 # just live objects (see tests/layer_remap_script.txt): a layout detail's
