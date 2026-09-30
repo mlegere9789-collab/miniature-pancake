@@ -636,6 +636,33 @@ dino8::platform::AccessibleNode LayoutsAccessibleTree(Application& app) {
   return dino8::platform::BuildLayoutsPanelNode(summaries);
 }
 
+// AT-SPI2-queryable snapshot of Document::LayerStates() (see
+// docs/ACCESSIBILITY.md): built straight from Document state, independent
+// of whether DrawLayerStateManager itself has ever been drawn or is open
+// right now - mirrors the saved state's name plus how many layers it
+// records a visible/locked snapshot for, a fact the on-screen row (a bare
+// Selectable naming the state) doesn't itself show.
+dino8::platform::AccessibleNode LayerStateManagerAccessibleTree(Application& app) {
+  std::vector<dino8::platform::LayerStateSummary> summaries;
+  summaries.reserve(app.Doc().LayerStates().size());
+  for (const auto& s : app.Doc().LayerStates()) {
+    summaries.push_back({s.name, static_cast<int>(s.layers.size())});
+  }
+  return dino8::platform::BuildLayerStateManagerNode(summaries);
+}
+
+// AT-SPI2-queryable snapshot of Document::UserText() (see
+// docs/ACCESSIBILITY.md): built straight from Document state, independent
+// of whether DrawDocumentUserTextPanel itself has ever been drawn or is
+// open right now - mirrors the same "key = value" pair its own row shows
+// per entry, in Document::UserText()'s std::map key order.
+dino8::platform::AccessibleNode DocumentUserTextAccessibleTree(Application& app) {
+  std::vector<dino8::platform::DocumentUserTextSummary> summaries;
+  summaries.reserve(app.Doc().UserText().size());
+  for (const auto& [k, v] : app.Doc().UserText()) summaries.push_back({k, v});
+  return dino8::platform::BuildDocumentUserTextNode(summaries);
+}
+
 // ---------------------------------------------------------------------------
 // Command history / list / help
 // ---------------------------------------------------------------------------

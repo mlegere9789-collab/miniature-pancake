@@ -466,6 +466,28 @@ void RegisterDraftingCommands(CommandEngine& e) {
       "objects (delete old / build new, undoable like any other edit).");
 }
 
+// AT-SPI2-queryable snapshot of Document::Blocks() (see
+// docs/ACCESSIBILITY.md): built straight from Document state, independent
+// of whether DrawBlockManagerPanel itself has ever been drawn or is open
+// right now - mirrors the same object count each row's Objects column
+// shows plus the same live instance count DrawBlockManagerPanel's own
+// Instances column computes (objects tagged user_text["Block"] == the
+// block's name), the two facts a sighted user gets from the panel's table.
+dino8::platform::AccessibleNode BlockManagerAccessibleTree(Application& app) {
+  Document& doc = app.Doc();
+  std::vector<dino8::platform::BlockSummary> summaries;
+  summaries.reserve(doc.Blocks().size());
+  for (const BlockDefinition& b : doc.Blocks()) {
+    int instances = 0;
+    for (const SceneObject& o : doc.Objects()) {
+      auto it = o.user_text.find("Block");
+      if (it != o.user_text.end() && it->second == b.name) ++instances;
+    }
+    summaries.push_back({b.name, static_cast<int>(b.objects.size()), instances});
+  }
+  return dino8::platform::BuildBlockManagerNode(summaries);
+}
+
 // BlockManager panel: a table of every block definition with the same
 // live instance count the text-based command prints, plus real per-row
 // actions. Every action here calls the exact same Document-level function

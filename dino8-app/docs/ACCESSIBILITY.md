@@ -8,8 +8,9 @@ fixed where it was broken), screen-reader support for the command line, the
 main menu bar, the running command's options, the Layers/Properties panels,
 each viewport's title/view-menu button, the persisted Activity Log of
 finalized edits, and the document's saved Named Views, Named CPlanes,
-Linetypes, Materials, Clipping Planes and Layouts (a real, still-narrow
-AT-SPI2 bridge, shipped on Linux - see section 3), and screen-reader support
+Linetypes, Materials, Clipping Planes, Layouts, Block Manager, Layer State
+Manager and Document User Text (a real, still-narrow AT-SPI2 bridge, shipped
+on Linux - see section 3), and screen-reader support
 for the rest of the UI (still a hard platform limitation of ImGui itself for
 the reasons section 3 explains - not shipped, and not something a few
 labels can fix).
@@ -186,7 +187,7 @@ through each platform's native accessibility API - exactly the scope the
 ImGui maintainers have discussed for years without landing project-wide.
 That has not changed and is not what shipped here.
 
-### What has shipped: a real AT-SPI2 bridge for the command line, the menu bar, the Layers/Properties panels, the viewports, the Activity Log, Named Views, Named CPlanes, Linetypes, Materials, Clipping Planes, and Layouts (Linux)
+### What has shipped: a real AT-SPI2 bridge for the command line, the menu bar, the Layers/Properties panels, the viewports, the Activity Log, Named Views, Named CPlanes, Linetypes, Materials, Clipping Planes, Layouts, Block Manager, Layer State Manager, and Document User Text (Linux)
 
 The one place in Dino 8 blind command-line-driven use is already the
 primary interaction model - the command line itself
@@ -202,7 +203,8 @@ the real registry daemon and the real `pyatspi` client library (see
 "Verifying it yourself" below). The same bridge also publishes the main
 menu bar, the Layers/Properties panels' content, each viewport's title/
 view-menu button state, the Activity Log, Named Views, Named CPlanes,
-Linetypes, Materials, Clipping Planes, and Layouts, described below.
+Linetypes, Materials, Clipping Planes, Layouts, Block Manager, Layer State
+Manager, and Document User Text, described below.
 
 **Command line**: exactly one accessible object, named "Command Line"
 (`ATSPI_ROLE_LOG` - "a text widget or container holding log content"),
@@ -407,22 +409,74 @@ screen-reader user can create a new layout and see it added entirely from
 the command line (`Layout`, see `cmd_viewtools.cpp`'s `LayoutCommand`)
 without needing to see the panel at all.
 
+**Block Manager**: a "Block Manager" accessible (`ATSPI_ROLE_LIST`) with one
+`ATSPI_ROLE_LIST_ITEM` per block definition, named after it, each carrying a
+`Description` giving its object and instance counts as plain text (e.g.
+`"2 objects, 5 instances"`) - the same two facts the on-screen Block
+Manager panel's Objects/Instances columns show per row (see
+`DrawBlockManagerPanel`, `cmd_drafting.cpp`); the instance count is computed
+the same live way the panel itself does, by counting objects tagged
+`user_text["Block"]` with that block's name, not cached. Built from
+`Document::Blocks()` (`ui::BlockManagerAccessibleTree`,
+`src/commands/cmd_drafting.cpp`, alongside `DrawBlockManagerPanel` itself),
+independent of whether the Block Manager panel window is actually open on
+screen right now, the same way the other panel-backed regions above don't
+depend on their own panel windows being open. A screen-reader user can
+define a block from the current selection (`Block`), insert an instance
+(`Insert`), or rename one (`BlockRename`) entirely from the command line
+(see `cmd_drafting.cpp`) and confirm which blocks exist and how many
+instances each has without needing to see the panel at all.
+
+**Layer State Manager**: a "Layer State Manager" accessible
+(`ATSPI_ROLE_LIST`) with one `ATSPI_ROLE_LIST_ITEM` per saved layer state,
+named after it, each carrying a `Description` giving how many layers it
+records a visible/locked snapshot for (e.g. `"3 layers"`) - a fact the
+on-screen `DrawLayerStateManager` row (a bare `Selectable` naming the state)
+does not itself show, so this mirror gives a screen-reader user more than a
+sighted user gets from the row alone, not less. Built from
+`Document::LayerStates()` (`ui::LayerStateManagerAccessibleTree`,
+`src/ui/Panels.cpp`), independent of whether the Layer State Manager panel
+window is actually open on screen right now, the same way the other
+panel-backed regions above don't depend on their own panel windows being
+open. A screen-reader user can save and restore a named layer state entirely
+from the command line (`LayerState Save <name>` / `Restore <name>` /
+`Delete <name>`, see `cmd_drafting.cpp`'s `LayerStateCommand`) and confirm
+what got saved without needing to see the panel at all.
+
+**Document User Text**: a "Document User Text" accessible
+(`ATSPI_ROLE_LIST`) with one `ATSPI_ROLE_LIST_ITEM` per document user-text
+key, named after the key, each carrying its value as its `Description` -
+the same `"key = value"` fact `DrawDocumentUserTextPanel`'s own row shows
+per entry, in `Document::UserText()`'s `std::map` key order. Built from
+`Document::UserText()` (`ui::DocumentUserTextAccessibleTree`,
+`src/ui/Panels.cpp`), independent of whether the Document User Text panel
+window is actually open on screen right now, the same way the other
+panel-backed regions above don't depend on their own panel windows being
+open. A screen-reader user can set, read or clear a document user-text pair
+entirely from the command line (`SetDocumentUserText <key> [value]` -
+omitting the value removes the key; `GetDocumentUserText` prints every pair
+- see `cmd_state.cpp`/`cmd_edit.cpp`) and confirm what's stored without
+needing to see the panel at all.
+
 **Why these regions and not the rest of the UI**: the command line is the
 one region where "expose the text" is both sufficient (there is no
 meaningful spatial layout to convey - it *is* a stream of text) and
 complete on its own (every command in the ~1000+ catalog is already
 reachable by typing into it, per section 2). The menu bar, the
 Layers/Properties panels, the viewports, the Activity Log, Named Views,
-Named CPlanes, Linetypes, Materials, Clipping Planes and Layouts extend this
-to the next-most load-bearing UI surfaces - discovering what commands exist
-by name, inspecting/editing layer and object state, knowing where you're
+Named CPlanes, Linetypes, Materials, Clipping Planes, Layouts, Block
+Manager, Layer State Manager and Document User Text extend this to the
+next-most load-bearing UI surfaces - discovering what commands exist by
+name, inspecting/editing layer and object state, knowing where you're
 looking, reviewing what actually happened to the document, recalling a
 saved camera bookmark, recalling a saved construction plane, knowing which
 dash patterns and materials are available to apply, knowing which clipping
-planes exist and whether each is on, and knowing which layout is currently
-active - without requiring the full shadow-tree-for-every-widget effort
-described above.
-Mirroring the 3D viewport and the ~33 remaining panels/dialogs the same way
+planes exist and whether each is on, knowing which layout is currently
+active, knowing which block definitions exist and how many instances of
+each are placed, recalling a saved layer state, and knowing what document
+user-text metadata is stored - without requiring the full
+shadow-tree-for-every-widget effort described above.
+Mirroring the 3D viewport and the ~30 remaining panels/dialogs the same way
 would still need that effort; this does not extrapolate to "screen reader
 support" for those in the way a browser or native-toolkit app would provide
 it, and this document does not claim otherwise.
@@ -547,6 +601,28 @@ hang.
   state shown only once a row is expanded, which stay queryable only via
   `LayoutProperties` or `Layouts` (with no name, to print every layout's
   size and detail count) on the command line.
+- Block Manager has the same read-only gap (no `Action` interface -
+  selecting a block's instances, renaming it, deleting it or inserting a
+  new instance over AT-SPI itself is not possible; a screen-reader user
+  still drives that through the equivalent `SelBlockInstanceOf`/
+  `BlockRename`/`Purge`/`Insert` commands by name), and it exposes only the
+  object/instance counts per row - not each object's own geometry, which
+  stays queryable only by selecting the instance and reading Properties.
+- Layer State Manager has the same read-only gap (no `Action` interface -
+  restoring or deleting a saved state over AT-SPI itself is not possible; a
+  screen-reader user still drives that through the equivalent `LayerState
+  Restore <name>`/`Delete <name>` command by name), and it exposes only the
+  state's name and how many layers it snapshots - not which layers or what
+  their saved visible/locked values are, which stay queryable only via
+  `LayerState` (with no name, to list every saved state) on the command
+  line.
+- Document User Text has the same read-only gap (no `Action` interface -
+  setting or clearing a key over AT-SPI itself is not possible; a
+  screen-reader user still drives that through the equivalent
+  `SetDocumentUserText <key> [value]` command), and, unlike every other
+  region above, this one has no cap on value length either - a very long
+  value is carried in full as the row's `Description`, same as Activity
+  Log's own no-cap note above.
 
 **Internal design, independent of AT-SPI itself**: the accessible tree's
 *shape and text* are built by a small, pure, platform-independent module,
@@ -555,7 +631,8 @@ hang.
 `BuildPropertiesPanelNode`, `BuildCommandOptionsNode`,
 `BuildViewportsPanelNode`, `BuildActivityLogNode`, `BuildNamedViewsNode`,
 `BuildNamedCPlanesNode`, `BuildLinetypesNode`, `BuildMaterialsPanelNode`,
-`BuildClippingPlanesPanelNode`, `BuildLayoutsPanelNode`), with its own unit test
+`BuildClippingPlanesPanelNode`, `BuildLayoutsPanelNode`, `BuildBlockManagerNode`,
+`BuildLayerStateManagerNode`, `BuildDocumentUserTextNode`), with its own unit test
 (`tests/test_accessibility_tree.cpp`, registered as the
 `dino8_accessibility_tree` CTest target) that needs no display, no D-Bus, and
 no AT-SPI2 build at all - it runs on every platform and every CI job. The
@@ -565,19 +642,23 @@ menu-drawing calls in `src/ui/MenuBar.cpp` (`MenuTreeBuilder`'s
 `BeginMenuA`/`EndMenuA`/`MenuItemA`/`Item` wrappers), so it can never drift
 from what was actually drawn. The Layers, Properties, Command Options,
 Viewports, Activity Log, Named Views, Named CPlanes, Linetypes, Materials,
-Clipping Planes and Layouts mirrors
+Clipping Planes, Layouts, Layer State Manager and Document User Text mirrors
 (`src/ui/Panels.cpp`'s `LayersPanelAccessibleTree`/
 `PropertiesPanelAccessibleTree`/`CommandOptionsAccessibleTree`/
 `ViewportsAccessibleTree`/`ActivityLogAccessibleTree`/
 `NamedViewsAccessibleTree`/`NamedCPlanesAccessibleTree`/
 `LinetypesAccessibleTree`/`ClippingPlanesAccessibleTree`/
-`LayoutsAccessibleTree`, and `src/ui/RenderPanels.cpp`'s
-`MaterialsAccessibleTree`) are built straight
-from `Document`/`Application`/`CommandEngine` state, independent of
+`LayoutsAccessibleTree`/`LayerStateManagerAccessibleTree`/
+`DocumentUserTextAccessibleTree`, `src/ui/RenderPanels.cpp`'s
+`MaterialsAccessibleTree`, and `src/commands/cmd_drafting.cpp`'s
+`BlockManagerAccessibleTree`, alongside `DrawBlockManagerPanel` itself) are
+built straight from `Document`/`Application`/`CommandEngine` state,
+independent of
 `DrawLayersPanel`/`DrawPropertiesPanel`/`DrawCommandLine`/`Viewport::DrawUI`/
 `DrawActivityLogPanel`/`DrawNamedViewsPanel`/`DrawNamedCPlanesPanel`/
 `DrawLinetypesPanel`/`DrawMaterialsPanel`/`DrawClippingPlanesPanel`/
-`DrawLayoutsPanel`.
+`DrawLayoutsPanel`/`DrawBlockManagerPanel`/`DrawLayerStateManager`/
+`DrawDocumentUserTextPanel`.
 `AccessibilityLinux.cpp` is a thin transport on top
 of all of this: every frame it receives the whole tree wholesale
 (`platform::PlatformSetAccessibleTree`) and answers AT-SPI's
@@ -597,7 +678,8 @@ real `dbus-daemon` and the real `at-spi2-registryd`, and uses the real
 "Command Line", "Menu Bar" (with its "File" child), "Layers", "Properties",
 "Command Options", "Viewports" (with its default "Perspective" row
 reporting itself active), "Activity Log", "Named Views", "Named CPlanes",
-"Linetypes", "Materials", "Clipping Planes" and "Layouts" accessibles - the
+"Linetypes", "Materials", "Clipping Planes", "Layouts", "Block Manager",
+"Layer State Manager" and "Document User Text" accessibles - the
 same objects a screen reader would find - then asserts the command line's
 and the Properties list's content each change
 after a real command (`Line 0,0,0 10,10,0`) runs, that Command Options goes
@@ -612,21 +694,29 @@ present and gains an entry named `"MyLinetype"` right after a real
 `SetCustomLinetype Name=MyLinetype Pattern=5,2` command runs, that Materials
 starts empty (a fresh document has no built-in materials), that Clipping
 Planes starts empty and gains an entry reporting itself "on" right after a
-real `ClippingPlane 0,0,0 5,5,0` command runs, and that Layouts starts empty
+real `ClippingPlane 0,0,0 5,5,0` command runs, that Layouts starts empty
 and gains an entry named `"MyLayout, active"` right after a real `Layout
-MyLayout` command runs. It does not fake, mock, or stub any part of the
-AT-SPI2 stack.
+MyLayout` command runs, that Block Manager starts empty and gains an entry
+named `"MyBlock"` (carrying its object/instance counts as its Description)
+right after the already-created objects are selected (`SelAll`) and turned
+into a block (`Block` / a base point / a name), that Layer State Manager
+starts empty and gains an entry named `"MyLayerState"` right after a real
+`LayerState Save MyLayerState` command runs, and that Document User Text
+starts empty and gains an entry named `"MyKey"` with `"MyValue"` as its
+Description right after a real `SetDocumentUserText MyKey MyValue` command
+runs. It does not fake, mock, or stub any part of the AT-SPI2 stack.
 
-This was run successfully, including the new Materials/Clipping
-Planes/Layouts checks, in the environment this addition was built and
-verified in, after installing:
+This was run successfully, including the new Block Manager/Layer State
+Manager/Document User Text checks, in the environment this addition was
+built and verified in, after installing:
 `libatspi2.0-dev`, `libglib2.0-dev`, `at-spi2-core` (provides
 `at-spi2-registryd`), `dbus-x11` (provides `dbus-daemon`), and
 `python3-pyatspi` (Ubuntu 24.04/noble package names) - all checks
 above passed against the real registry daemon, including "Command Options
 lists Circle's option chips while it is running (['Diameter', '3Point',
-'Vertical'])" and "Layouts gains a new, active entry naming the new layout
-once \"Layout\" runs ('MyLayout, active')". One environment-specific wrinkle worth knowing about, not
+'Vertical'])" and "Block Manager gains a new entry naming the new block,
+with its object/instance counts as its Description, once \"Block\" runs
+('MyBlock', '3 objects, 3 instances')". One environment-specific wrinkle worth knowing about, not
 specific to this project: Debian/Ubuntu's `python3-pyatspi`/`python3-gi`
 ship a `gi._gi` extension compiled for one specific CPython ABI (on the box
 this was verified on, that was `python3.12`, even though the default
@@ -647,5 +737,5 @@ requirement and runs as part of the normal CTest suite everywhere.
 |---|---|
 | High-contrast theme | Shipped: Options > General > Theme > High Contrast |
 | Keyboard-only operability | Audited; one real bug found and fixed (toolbar/sidebar/tab-strip/bell/viewport-title buttons were `InvisibleButton` without `EnableNav`, so Tab skipped them); nav-focus tooltips added for icon-only buttons; free 3D viewport orbit and a few inherently-drag widgets remain mouse-only by design, same as in Rhino |
-| Screen-reader support (command line, menu bar, command options, Layers/Properties panels, viewports, Activity Log, Named Views, Named CPlanes, Linetypes, Materials, Clipping Planes, Layouts) | Shipped on Linux: a real AT-SPI2 bridge (`src/platform/AccessibilityLinux.cpp`) exposes the command line's live text and full history log, the main menu bar (mirroring exactly what's currently open, built live alongside `ui/MenuBar.cpp`'s own drawing calls), the running command's options (with per-option guidance on how to change it), the Layers/Properties panels' current content (Properties rows note which are real value editors), every viewport's title/view-menu button state (name, active/maximized, current display mode), the persisted Activity Log of finalized edits (timestamp/action/summary per entry, distinct from the command line's own raw text log), the document's saved Named Views (name per saved view), its saved Named CPlanes (name per saved construction plane), its Linetypes (name and dash pattern per linetype), its Materials (name and diffuse colour per material), its Clipping Planes (name, on/off state and viewport scope per plane), and its Layouts (name per layout, with the active one called out) as queryable, updating accessible objects, verified end-to-end against the real registry daemon and `pyatspi` (`tests/smoke_accessibility.py`), including the new Materials/Clipping Planes/Layouts checks. Windows/macOS not implemented. Built only when `atspi-2`/`gio-2.0` are available; a silent no-op otherwise |
-| Screen-reader support (rest of the UI) | Not implemented - hard ImGui platform limitation (no accessibility-tree bridge for the 3D viewport's own rendered content or the ~33 remaining panels/dialogs on any OS). Descriptive text/tooltips exist everywhere as a prerequisite, but that is not screen-reader support |
+| Screen-reader support (command line, menu bar, command options, Layers/Properties panels, viewports, Activity Log, Named Views, Named CPlanes, Linetypes, Materials, Clipping Planes, Layouts, Block Manager, Layer State Manager, Document User Text) | Shipped on Linux: a real AT-SPI2 bridge (`src/platform/AccessibilityLinux.cpp`) exposes the command line's live text and full history log, the main menu bar (mirroring exactly what's currently open, built live alongside `ui/MenuBar.cpp`'s own drawing calls), the running command's options (with per-option guidance on how to change it), the Layers/Properties panels' current content (Properties rows note which are real value editors), every viewport's title/view-menu button state (name, active/maximized, current display mode), the persisted Activity Log of finalized edits (timestamp/action/summary per entry, distinct from the command line's own raw text log), the document's saved Named Views (name per saved view), its saved Named CPlanes (name per saved construction plane), its Linetypes (name and dash pattern per linetype), its Materials (name and diffuse colour per material), its Clipping Planes (name, on/off state and viewport scope per plane), its Layouts (name per layout, with the active one called out), its Block Manager (name plus object/instance counts per block definition), its Layer State Manager (name plus layer count per saved state), and its Document User Text (key/value per document user-text entry) as queryable, updating accessible objects, verified end-to-end against the real registry daemon and `pyatspi` (`tests/smoke_accessibility.py`), including the new Block Manager/Layer State Manager/Document User Text checks. Windows/macOS not implemented. Built only when `atspi-2`/`gio-2.0` are available; a silent no-op otherwise |
+| Screen-reader support (rest of the UI) | Not implemented - hard ImGui platform limitation (no accessibility-tree bridge for the 3D viewport's own rendered content or the ~30 remaining panels/dialogs on any OS). Descriptive text/tooltips exist everywhere as a prerequisite, but that is not screen-reader support |

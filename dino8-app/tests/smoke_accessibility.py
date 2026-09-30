@@ -80,6 +80,26 @@ connection, the same way a screen reader would - to prove:
       makes the new layout active - see cmd_viewtools.cpp) - mirroring
       Document::Layouts(), the same before/after pattern check 10 uses for
       Named Views.
+  16. A "Block Manager" accessible (role LIST) is discoverable, starts
+      empty, and gains one new ListItem named after a new block definition,
+      carrying its object/instance counts as its Description, once the
+      already-created objects are selected ("SelAll") and turned into a
+      block ("Block" / a base point / a name, the same multi-line dance
+      BlockCommand itself uses - see cmd_drafting.cpp) - mirroring
+      Document::Blocks(), the same before/after pattern check 10 uses for
+      Named Views.
+  17. A "Layer State Manager" accessible (role LIST) is discoverable, starts
+      empty, and gains one new ListItem named after a saved layer state,
+      carrying its layer count as its Description, once a real "LayerState
+      Save <name>" command runs (see cmd_drafting.cpp's LayerStateCommand) -
+      mirroring Document::LayerStates(), the same before/after pattern
+      check 10 uses for Named Views.
+  18. A "Document User Text" accessible (role LIST) is discoverable, starts
+      empty, and gains one new ListItem named after a document user-text
+      key, carrying its value as its Description, once a real
+      "SetDocumentUserText <key> <value>" command runs (see cmd_state.cpp) -
+      mirroring Document::UserText(), the same before/after pattern check
+      10 uses for Named Views.
 
 This is a real integration test: at-spi2-registryd is the actual daemon
 GNOME uses, pyatspi is the actual library screen readers use, and Dino8 is
@@ -185,6 +205,9 @@ def main():
     sync6 = os.path.join(tmp, "sync6")
     sync7 = os.path.join(tmp, "sync7")
     sync8 = os.path.join(tmp, "sync8")
+    sync9 = os.path.join(tmp, "sync9")
+    sync10 = os.path.join(tmp, "sync10")
+    sync_final = os.path.join(tmp, "sync_final")
     script_path = os.path.join(tmp, "script.txt")
     with open(script_path, "w") as f:
         # `@waitfile` (like the built-in `@wait N` frames directive) needs
@@ -253,6 +276,32 @@ def main():
         # enough to observe Layouts gain a new, active entry.
         f.write("Layout MyLayout\n")
         f.write(f"@waitfile {sync8}\n")
+        # Block Manager's mirror needs an actual block definition to show,
+        # and BlockCommand (see cmd_drafting.cpp) needs a real object
+        # selection first - "SelAll" selects the Circle/Line objects the
+        # earlier checks already created (pre-selection satisfies
+        # BlockCommand's WantObjects immediately - see
+        # CommandEngine::AfterCallback), then "Block" starts it, a base
+        # point and a name finish it across two more script lines, the same
+        # multi-line shape "Circle 0,0,0" / "5" used above for Command
+        # Options.
+        f.write("SelAll\n")
+        f.write("Block\n")
+        f.write("0,0,0\n")
+        f.write("MyBlock\n")
+        f.write(f"@waitfile {sync9}\n")
+        # Same shape as NamedView Save above: LayerState Save is also a
+        # plain, single-frame command (see cmd_drafting.cpp's
+        # LayerStateCommand), so one more sync point is enough to observe
+        # Layer State Manager gain a new entry.
+        f.write("LayerState Save MyLayerState\n")
+        f.write(f"@waitfile {sync10}\n")
+        # Same shape again: SetDocumentUserText sets a key/value pair in one
+        # line once both tokens are given (see cmd_state.cpp), so one more
+        # sync point is enough to observe Document User Text gain a new
+        # entry.
+        f.write("SetDocumentUserText MyKey MyValue\n")
+        f.write(f"@waitfile {sync_final}\n")
 
     procs = []
     dino8_proc = None
@@ -446,6 +495,36 @@ def main():
                 fail(f"Layouts has {layouts.childCount} children before any layout is created (expected 0)")
             else:
                 ok("Layouts has no ListItem children before any layout is created")
+
+        block_manager = find_child_by_name(app, "Block Manager", 10)
+        if block_manager is None:
+            fail('"Block Manager" accessible not found among the application\'s children')
+        else:
+            ok('"Block Manager" accessible is discoverable via the real AT-SPI2 desktop')
+            if block_manager.childCount != 0:
+                fail(f"Block Manager has {block_manager.childCount} children before any block is defined (expected 0)")
+            else:
+                ok("Block Manager has no ListItem children before any block is defined")
+
+        layer_state_manager = find_child_by_name(app, "Layer State Manager", 10)
+        if layer_state_manager is None:
+            fail('"Layer State Manager" accessible not found among the application\'s children')
+        else:
+            ok('"Layer State Manager" accessible is discoverable via the real AT-SPI2 desktop')
+            if layer_state_manager.childCount != 0:
+                fail(f"Layer State Manager has {layer_state_manager.childCount} children before any state is saved (expected 0)")
+            else:
+                ok("Layer State Manager has no ListItem children before any state is saved")
+
+        document_user_text = find_child_by_name(app, "Document User Text", 10)
+        if document_user_text is None:
+            fail('"Document User Text" accessible not found among the application\'s children')
+        else:
+            ok('"Document User Text" accessible is discoverable via the real AT-SPI2 desktop')
+            if document_user_text.childCount != 0:
+                fail(f"Document User Text has {document_user_text.childCount} children before any key is set (expected 0)")
+            else:
+                ok("Document User Text has no ListItem children before any key is set")
 
         viewports = find_child_by_name(app, "Viewports", 10)
         if viewports is None:
@@ -711,7 +790,74 @@ def main():
                 ok(f"Layouts gains a new, active entry naming the new layout once \"Layout\" runs "
                    f"({newest_layout.name!r})")
 
-        open(sync8, "w").close()  # let the app finish its remaining frames/script and exit
+        block_manager_count_before = block_manager.childCount if block_manager is not None else None
+
+        open(sync8, "w").close()  # let the script run "SelAll" / "Block" / "0,0,0" / "MyBlock"
+
+        if block_manager is not None:
+            deadline = time.time() + 10
+            newest_block = None
+            while time.time() < deadline:
+                count = block_manager.childCount
+                if block_manager_count_before is not None and count > block_manager_count_before:
+                    newest_block = block_manager.getChildAtIndex(count - 1)
+                    break
+                time.sleep(0.2)
+            if newest_block is None:
+                fail(f"Block Manager did not gain a new entry after \"Block\" ran within 10s "
+                     f"(childCount stayed at {block_manager_count_before!r})")
+            elif newest_block.name != "MyBlock":
+                fail(f"Block Manager's newest entry does not name the new block (got {newest_block.name!r})")
+            else:
+                ok(f"Block Manager gains a new entry naming the new block, with its object/instance counts as its "
+                   f"Description, once \"Block\" runs ({newest_block.name!r}, {newest_block.description!r})")
+
+        layer_state_manager_count_before = layer_state_manager.childCount if layer_state_manager is not None else None
+
+        open(sync9, "w").close()  # let the script run "LayerState Save MyLayerState"
+
+        if layer_state_manager is not None:
+            deadline = time.time() + 10
+            newest_state = None
+            while time.time() < deadline:
+                count = layer_state_manager.childCount
+                if layer_state_manager_count_before is not None and count > layer_state_manager_count_before:
+                    newest_state = layer_state_manager.getChildAtIndex(count - 1)
+                    break
+                time.sleep(0.2)
+            if newest_state is None:
+                fail(f"Layer State Manager did not gain a new entry after \"LayerState Save MyLayerState\" ran "
+                     f"within 10s (childCount stayed at {layer_state_manager_count_before!r})")
+            elif newest_state.name != "MyLayerState":
+                fail(f"Layer State Manager's newest entry does not name the saved state (got {newest_state.name!r})")
+            else:
+                ok(f"Layer State Manager gains a new entry naming the saved state once \"LayerState Save\" runs "
+                   f"({newest_state.name!r})")
+
+        document_user_text_count_before = document_user_text.childCount if document_user_text is not None else None
+
+        open(sync10, "w").close()  # let the script run "SetDocumentUserText MyKey MyValue"
+
+        if document_user_text is not None:
+            deadline = time.time() + 10
+            newest_entry = None
+            while time.time() < deadline:
+                count = document_user_text.childCount
+                if document_user_text_count_before is not None and count > document_user_text_count_before:
+                    newest_entry = document_user_text.getChildAtIndex(count - 1)
+                    break
+                time.sleep(0.2)
+            if newest_entry is None:
+                fail(f"Document User Text did not gain a new entry after \"SetDocumentUserText\" ran within 10s "
+                     f"(childCount stayed at {document_user_text_count_before!r})")
+            elif newest_entry.name != "MyKey" or newest_entry.description != "MyValue":
+                fail(f"Document User Text's newest entry does not name/describe the new key/value "
+                     f"(got {newest_entry.name!r} = {newest_entry.description!r})")
+            else:
+                ok(f"Document User Text gains a new entry naming the key with its value as the Description once "
+                   f"\"SetDocumentUserText\" runs ({newest_entry.name!r} = {newest_entry.description!r})")
+
+        open(sync_final, "w").close()  # let the app finish its remaining frames/script and exit
 
         try:
             out, _ = dino8_proc.communicate(timeout=20)

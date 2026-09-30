@@ -26,9 +26,16 @@
 // material naming it with its diffuse colour as the Description, matching
 // Document::Materials; the clipping-planes builder produces one row per
 // clipping plane naming it with its on/off state and viewport scope,
-// matching Document::ClippingPlanes; and the layouts builder produces one
+// matching Document::ClippingPlanes; the layouts builder produces one
 // row per layout naming it and which one is active, matching
-// Document::Layouts.
+// Document::Layouts; the block manager builder produces one row per block
+// definition naming it with its object and instance counts as the
+// Description, matching Document::Blocks; the layer state manager builder
+// produces one row per saved layer state naming it with how many layers it
+// snapshots as the Description, matching Document::LayerStates; and the
+// document user text builder produces one row per document user-text key,
+// named after the key with its value as the Description, matching
+// Document::UserText.
 // This needs no display, no D-Bus session, and no AT-SPI2 build at all, so
 // it runs on every platform and every CI job regardless of whether
 // AccessibilityLinux.cpp itself was compiled in this build (see
@@ -41,10 +48,14 @@
 
 using dino8::platform::AccessibleRole;
 using dino8::platform::ActivityLogSummary;
+using dino8::platform::BlockSummary;
 using dino8::platform::BuildAccessibleTree;
 using dino8::platform::BuildActivityLogNode;
+using dino8::platform::BuildBlockManagerNode;
 using dino8::platform::BuildCommandLineText;
 using dino8::platform::BuildCommandOptionsNode;
+using dino8::platform::BuildDocumentUserTextNode;
+using dino8::platform::BuildLayerStateManagerNode;
 using dino8::platform::BuildLayersPanelNode;
 using dino8::platform::BuildPropertiesPanelNode;
 using dino8::platform::BuildViewportsPanelNode;
@@ -56,6 +67,8 @@ using dino8::platform::BuildMaterialsPanelNode;
 using dino8::platform::BuildClippingPlanesPanelNode;
 using dino8::platform::BuildLayoutsPanelNode;
 using dino8::platform::ClippingPlaneSummary;
+using dino8::platform::DocumentUserTextSummary;
+using dino8::platform::LayerStateSummary;
 using dino8::platform::LayerSummary;
 using dino8::platform::LayoutSummary;
 using dino8::platform::LinetypeSummary;
@@ -511,6 +524,87 @@ int main() {
     Check(empty_layouts.children.empty(), "no layouts -> no ListItem children, not a missing accessible");
   }
 
+  // Block Manager: one ListItem per block definition, naming it, with a
+  // Description giving its object and instance counts - the same two facts
+  // DrawBlockManagerPanel's Objects/Instances columns show per row (see
+  // Document::Blocks/BlockDefinition).
+  {
+    std::vector<BlockSummary> blocks;
+    blocks.push_back({"Widget", 2, 5});
+    blocks.push_back({"Gadget", 1, 1});
+    const dino8::platform::AccessibleNode list = BuildBlockManagerNode(blocks);
+    Check(list.name == "Block Manager", "block manager list is named \"Block Manager\"");
+    Check(list.role == dino8::platform::AccessibleRole::List, "block manager list role is List");
+    Check(list.description == "2 block definitions", "block count is carried as the list's Description");
+    Check(list.children.size() == 2, "two ListItem children, one per block definition");
+    if (list.children.size() == 2) {
+      Check(list.children[0].role == dino8::platform::AccessibleRole::ListItem, "block row role is ListItem");
+      Check(list.children[0].name == "Widget", "first row names its block");
+      Check(list.children[0].description == "2 objects, 5 instances", "first row's object/instance counts are its Description");
+      Check(list.children[1].name == "Gadget", "second row names its own block");
+      Check(list.children[1].description == "1 object, 1 instance", "singular object/instance counts aren't pluralized");
+    }
+  }
+  {
+    const dino8::platform::AccessibleNode empty_blocks = BuildBlockManagerNode({});
+    Check(empty_blocks.name == "Block Manager", "still named \"Block Manager\" with no blocks at all");
+    Check(empty_blocks.children.empty(), "no blocks -> no ListItem children, not a missing accessible");
+  }
+
+  // Layer State Manager: one ListItem per saved layer state, naming it,
+  // with a Description giving how many layers it snapshots - a fact the
+  // on-screen row (a bare Selectable naming the state) doesn't itself show
+  // (see Document::LayerStates/LayerState).
+  {
+    std::vector<LayerStateSummary> states;
+    states.push_back({"Plan View", 3});
+    states.push_back({"Solo Roof", 1});
+    const dino8::platform::AccessibleNode list = BuildLayerStateManagerNode(states);
+    Check(list.name == "Layer State Manager", "layer state manager list is named \"Layer State Manager\"");
+    Check(list.role == dino8::platform::AccessibleRole::List, "layer state manager list role is List");
+    Check(list.description == "2 layer states", "state count is carried as the list's Description");
+    Check(list.children.size() == 2, "two ListItem children, one per saved state");
+    if (list.children.size() == 2) {
+      Check(list.children[0].role == dino8::platform::AccessibleRole::ListItem, "layer state row role is ListItem");
+      Check(list.children[0].name == "Plan View", "first row names its saved state");
+      Check(list.children[0].description == "3 layers", "first row's layer count is its Description");
+      Check(list.children[1].name == "Solo Roof", "second row names its own saved state");
+      Check(list.children[1].description == "1 layer", "a single-layer state is singular, not \"1 layers\"");
+    }
+  }
+  {
+    const dino8::platform::AccessibleNode empty_states = BuildLayerStateManagerNode({});
+    Check(empty_states.name == "Layer State Manager", "still named \"Layer State Manager\" with no states at all");
+    Check(empty_states.children.empty(), "no saved states -> no ListItem children, not a missing accessible");
+  }
+
+  // Document User Text: one ListItem per document user-text key, named
+  // after the key, with its value as the Description - the same "key =
+  // value" fact DrawDocumentUserTextPanel's own row shows per entry (see
+  // Document::UserText).
+  {
+    std::vector<DocumentUserTextSummary> entries;
+    entries.push_back({"Project", "Lakeside Cabin"});
+    entries.push_back({"Revision", "3"});
+    const dino8::platform::AccessibleNode list = BuildDocumentUserTextNode(entries);
+    Check(list.name == "Document User Text", "document user text list is named \"Document User Text\"");
+    Check(list.role == dino8::platform::AccessibleRole::List, "document user text list role is List");
+    Check(list.description == "2 document user text entries", "entry count is carried as the list's Description");
+    Check(list.children.size() == 2, "two ListItem children, one per key");
+    if (list.children.size() == 2) {
+      Check(list.children[0].role == dino8::platform::AccessibleRole::ListItem, "user text row role is ListItem");
+      Check(list.children[0].name == "Project", "first row is named after its key");
+      Check(list.children[0].description == "Lakeside Cabin", "first row's value is its Description");
+      Check(list.children[1].name == "Revision", "second row is named after its own key");
+      Check(list.children[1].description == "3", "second row's value is present");
+    }
+  }
+  {
+    const dino8::platform::AccessibleNode empty_user_text = BuildDocumentUserTextNode({});
+    Check(empty_user_text.name == "Document User Text", "still named \"Document User Text\" with no keys at all");
+    Check(empty_user_text.children.empty(), "no keys -> no ListItem children, not a missing accessible");
+  }
+
   // BuildAccessibleTree accepts extra top-level regions (menu bar, panels)
   // alongside the always-present command line - the shape the live bridge
   // (Accessibility.cpp::UpdateAccessibility) assembles every frame.
@@ -529,15 +623,20 @@ int main() {
     dino8::platform::AccessibleNode materials = BuildMaterialsPanelNode({});
     dino8::platform::AccessibleNode clipping_planes = BuildClippingPlanesPanelNode({});
     dino8::platform::AccessibleNode layouts = BuildLayoutsPanelNode({});
+    dino8::platform::AccessibleNode block_manager = BuildBlockManagerNode({});
+    dino8::platform::AccessibleNode layer_state_manager = BuildLayerStateManagerNode({});
+    dino8::platform::AccessibleNode document_user_text = BuildDocumentUserTextNode({});
 
     const dino8::platform::AccessibleNode root =
         BuildAccessibleTree("Dino8", "Command: ", "", {},
                              {menu_bar, cmd_options, layers, props, viewports, activity_log, named_views,
-                              named_cplanes, linetypes, materials, clipping_planes, layouts});
-    Check(root.children.size() == 13,
+                              named_cplanes, linetypes, materials, clipping_planes, layouts, block_manager,
+                              layer_state_manager, document_user_text});
+    Check(root.children.size() == 16,
           "command line + menu bar + command options + layers + properties + viewports + activity log + "
-          "named views + named cplanes + linetypes + materials + clipping planes + layouts = 13 top-level children");
-    if (root.children.size() == 13) {
+          "named views + named cplanes + linetypes + materials + clipping planes + layouts + block manager + "
+          "layer state manager + document user text = 16 top-level children");
+    if (root.children.size() == 16) {
       Check(root.children[0].role == AccessibleRole::Log, "child 0 is still the command line");
       Check(root.children[1].role == dino8::platform::AccessibleRole::MenuBar, "child 1 is the menu bar");
       Check(root.children[2].name == "Command Options", "child 2 is the command options list");
@@ -551,6 +650,9 @@ int main() {
       Check(root.children[10].name == "Materials", "child 10 is the materials panel");
       Check(root.children[11].name == "Clipping Planes", "child 11 is the clipping planes panel");
       Check(root.children[12].name == "Layouts", "child 12 is the layouts panel");
+      Check(root.children[13].name == "Block Manager", "child 13 is the block manager panel");
+      Check(root.children[14].name == "Layer State Manager", "child 14 is the layer state manager panel");
+      Check(root.children[15].name == "Document User Text", "child 15 is the document user text panel");
     }
   }
 

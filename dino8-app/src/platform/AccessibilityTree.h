@@ -17,9 +17,11 @@
 // the document's saved Named Views (see BuildNamedViewsNode), its saved
 // Named CPlanes (see BuildNamedCPlanesNode), its Linetypes (see
 // BuildLinetypesNode), its Materials (see BuildMaterialsPanelNode), its
-// Clipping Planes (see BuildClippingPlanesPanelNode), and its Layouts (see
-// BuildLayoutsPanelNode).
-// The 3D viewport's own rendered content and the ~33 other panels/dialogs are
+// Clipping Planes (see BuildClippingPlanesPanelNode), its Layouts (see
+// BuildLayoutsPanelNode), its Block Manager (see BuildBlockManagerNode), its
+// Layer State Manager (see BuildLayerStateManagerNode), and its Document
+// User Text (see BuildDocumentUserTextNode).
+// The 3D viewport's own rendered content and the ~30 other panels/dialogs are
 // still not mirrored into this tree.
 #pragma once
 
@@ -325,5 +327,63 @@ struct LayoutSummary {
 // Document::Layouts() entry - see Application::ActiveLayoutIndex()'s own -1
 // "Model" convention.
 AccessibleNode BuildLayoutsPanelNode(const std::vector<LayoutSummary>& layouts);
+
+// One Block Manager row (doc/Document.h's BlockDefinition, reduced to plain
+// data the same way the summaries above keep this module independent of
+// doc/Document): the block's name, how many objects its own definition
+// holds, and how many placed instances currently reference it - the same
+// three facts DrawBlockManagerPanel's Name/Objects/Instances columns show
+// (see cmd_drafting.cpp), independent of the objects/instances themselves.
+struct BlockSummary {
+  std::string name;
+  int object_count = 0;
+  int instance_count = 0;
+};
+
+// Builds the "Block Manager" List accessible: one ListItem per block
+// definition, in the same order Document::Blocks() holds them, each named
+// after it with a Description giving its object and instance counts -
+// independent of whether the Block Manager panel window is actually open
+// right now, the same way the other panel-backed regions above don't
+// depend on their own panel window.
+AccessibleNode BuildBlockManagerNode(const std::vector<BlockSummary>& blocks);
+
+// One Layer State Manager row (doc/Document.h's LayerState, reduced to
+// plain data the same way the summaries above keep this module independent
+// of doc/Document): the saved state's name and how many layers it records
+// a visible/locked snapshot for - a fact DrawLayerStateManager's own row (a
+// bare Selectable naming the state) doesn't show at all, so this mirror
+// gives a screen-reader user more than a sighted user gets from the row
+// itself, not less.
+struct LayerStateSummary {
+  std::string name;
+  int layer_count = 0;
+};
+
+// Builds the "Layer State Manager" List accessible: one ListItem per saved
+// layer state, in the same order Document::LayerStates() holds them, each
+// named after it with a Description giving how many layers it snapshots -
+// independent of whether the Layer State Manager panel window is actually
+// open right now, the same way the other panel-backed regions above don't
+// depend on their own panel window.
+AccessibleNode BuildLayerStateManagerNode(const std::vector<LayerStateSummary>& states);
+
+// One Document User Text row (Document::UserText(), a
+// std::map<std::string, std::string> reduced to plain data the same way the
+// summaries above keep this module independent of doc/Document): a key and
+// its value, the same two facts DrawDocumentUserTextPanel's own "key =
+// value" row shows per entry.
+struct DocumentUserTextSummary {
+  std::string key;
+  std::string value;
+};
+
+// Builds the "Document User Text" List accessible: one ListItem per
+// document user-text key, in the same order Document::UserText() (a
+// std::map, so already key-sorted) holds them, named after its key with a
+// Description giving its value - independent of whether the Document User
+// Text panel window is actually open right now, the same way the other
+// panel-backed regions above don't depend on their own panel window.
+AccessibleNode BuildDocumentUserTextNode(const std::vector<DocumentUserTextSummary>& entries);
 
 }  // namespace dino8::platform

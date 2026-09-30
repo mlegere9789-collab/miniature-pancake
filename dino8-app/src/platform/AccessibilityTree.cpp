@@ -280,4 +280,59 @@ AccessibleNode BuildLayoutsPanelNode(const std::vector<LayoutSummary>& layouts) 
   return list;
 }
 
+AccessibleNode BuildBlockManagerNode(const std::vector<BlockSummary>& blocks) {
+  AccessibleNode list;
+  list.name = "Block Manager";
+  list.role = AccessibleRole::List;
+  char count_buf[32];
+  std::snprintf(count_buf, sizeof(count_buf), "%zu block definitions", blocks.size());
+  list.description = count_buf;
+
+  for (const BlockSummary& b : blocks) {
+    AccessibleNode item;
+    item.role = AccessibleRole::ListItem;
+    item.name = b.name;
+    item.description = std::to_string(b.object_count) + (b.object_count == 1 ? " object, " : " objects, ") +
+                        std::to_string(b.instance_count) + (b.instance_count == 1 ? " instance" : " instances");
+    list.children.push_back(std::move(item));
+  }
+  return list;
+}
+
+AccessibleNode BuildLayerStateManagerNode(const std::vector<LayerStateSummary>& states) {
+  AccessibleNode list;
+  list.name = "Layer State Manager";
+  list.role = AccessibleRole::List;
+  char count_buf[32];
+  std::snprintf(count_buf, sizeof(count_buf), "%zu layer states", states.size());
+  list.description = count_buf;
+
+  for (const LayerStateSummary& s : states) {
+    AccessibleNode item;
+    item.role = AccessibleRole::ListItem;
+    item.name = s.name;
+    item.description = std::to_string(s.layer_count) + (s.layer_count == 1 ? " layer" : " layers");
+    list.children.push_back(std::move(item));
+  }
+  return list;
+}
+
+AccessibleNode BuildDocumentUserTextNode(const std::vector<DocumentUserTextSummary>& entries) {
+  AccessibleNode list;
+  list.name = "Document User Text";
+  list.role = AccessibleRole::List;
+  char count_buf[32];
+  std::snprintf(count_buf, sizeof(count_buf), "%zu document user text entries", entries.size());
+  list.description = count_buf;
+
+  for (const DocumentUserTextSummary& e : entries) {
+    AccessibleNode item;
+    item.role = AccessibleRole::ListItem;
+    item.name = e.key;
+    item.description = e.value;
+    list.children.push_back(std::move(item));
+  }
+  return list;
+}
+
 }  // namespace dino8::platform

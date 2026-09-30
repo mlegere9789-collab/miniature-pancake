@@ -70,6 +70,21 @@ dino8::platform::AccessibleNode ClippingPlanesAccessibleTree(Application& app);
 // DrawLayoutsPanel itself only distinguishes the active row by selection
 // highlight.
 dino8::platform::AccessibleNode LayoutsAccessibleTree(Application& app);
+// The AT-SPI2-queryable snapshot of Document::Blocks() (defined alongside
+// DrawBlockManagerPanel in cmd_drafting.cpp, since that's where the panel
+// itself and its Document-level helpers live) - independent of whether the
+// Block Manager panel window is open, mirroring the object and instance
+// counts DrawBlockManagerPanel's own Objects/Instances columns show.
+dino8::platform::AccessibleNode BlockManagerAccessibleTree(Application& app);
+// The AT-SPI2-queryable snapshot of Document::LayerStates() - independent
+// of whether DrawLayerStateManager's window is open, mirroring the name per
+// saved state plus how many layers it snapshots.
+dino8::platform::AccessibleNode LayerStateManagerAccessibleTree(Application& app);
+// The AT-SPI2-queryable snapshot of Document::UserText() - independent of
+// whether DrawDocumentUserTextPanel's window is open, mirroring the
+// key/value pair per entry the same way the on-screen panel's own "key =
+// value" row does.
+dino8::platform::AccessibleNode DocumentUserTextAccessibleTree(Application& app);
 void DrawToolbars(Application& app);
 void DrawLayersPanel(Application& app);
 void DrawPropertiesPanel(Application& app);
