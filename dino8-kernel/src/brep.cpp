@@ -52,8 +52,19 @@ std::vector<Point2d> SampleLoop(const ON_Brep& brep, const ON_BrepLoop& loop) {
     const ON_Interval d = trim.Domain();
     int samples = 1;
     if (!c2->IsLinear()) {
-      // Curved trims (circle seams, fillets): sample by span count.
-      samples = std::max(8, 4 * c2->SpanCount());
+      // Curved trims (circle seams, fillets): sample by span count, floored
+      // high enough that a record-less circular trim (e.g. a bare
+      // ON_BrepCylinder's own cap boundary - no dino8 FaceRecord, so this is
+      // the ONLY path that ever builds its polygon) resolves densely enough
+      // to actually agree with an analytically-exact circle of the same
+      // radius. The previous floor of 8 gave a 4-span circle's own single
+      // trim curve just 16 vertices - a coarse chord polygon that sits
+      // measurably INSIDE the true circle - so a record-less cylinder's cap
+      // boundary and its own wall's exact circular cross-section no longer
+      // matched, breaking BooleanCombineMixed's stitch/closure (see
+      // TestBrepMixedFacesRecoversFullCylinderWallWithoutFaceRecordAtNonUnitRadius's
+      // own doc comment in tests/test_basic.cpp for the full diagnosis).
+      samples = std::max(128, 4 * c2->SpanCount());
     }
     for (int i = 0; i < samples; ++i) {
       const ON_3dPoint p = c2->PointAt(d.ParameterAt(static_cast<double>(i) / samples));

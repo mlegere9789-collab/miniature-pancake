@@ -37406,34 +37406,35 @@ void TestBooleanCombineMixedIntersectionAcceptsCompoundOperandWithEmbeddedCylind
 // with the point at u_min, the same test a closed curve's own start/end
 // would pass) - unit-convention-agnostic, so it works at any radius.
 //
-// A SEPARATE, previously-undocumented limitation was found (not fixed)
-// while building this test, and is disclosed rather than silently worked
-// around: BooleanCombineMixed(box, cyl, Difference) itself now runs
-// without throwing (the fix above), but its tessellated result is NOT a
-// closed manifold and its volume is measurably wrong. Root-caused, not
-// merely observed: ExtractPlanarFace's own FaceOuterUv sampling of a
-// record-less circular cap face's trim loop takes whatever polyline
-// vertices the RAW ON_Brep's own trim curve happens to carry (16 points
-// for ON_BrepCylinder's own cap, confirmed by direct comparison) rather
-// than densely resampling the true circular boundary the way
-// Brep::FromMixedFaces()'s own construction does (128 points, for the
-// identical circle) - a coarse-chord polygon approximating a circle sits
-// measurably inside the true circle, so the cap's own boundary and the
-// cylindrical wall's own exact circular cross-section no longer agree,
-// which is what breaks the boolean's stitch/closure. Confirmed directly by
+// A SEPARATE, previously-undocumented limitation was found (and is now
+// fixed by a later pass, not left disclosed): BooleanCombineMixed(box, cyl,
+// Difference) ran without throwing once the angle-recovery bug above was
+// fixed, but its tessellated result was not a closed manifold and its
+// volume was measurably wrong. Root-caused, not merely observed:
+// SampleLoop's own trim-curve sampling (brep.cpp, feeding ResolveFace's
+// record-less "derive trims from the brep's own loops" path - the ONLY
+// path a record-less circular cap face's polygon ever takes) gave a 4-span
+// circle's own single trim curve just 16 vertices - a coarse-chord polygon
+// sitting measurably INSIDE the true circle - so the cap's own boundary and
+// the cylindrical wall's own exact circular cross-section no longer agreed,
+// which is what broke the boolean's stitch/closure. Confirmed directly by
 // swapping only the cylinder operand between a Brep::FromMixedFaces()-built
-// one (closes correctly) and this test's own record-less one (does not),
+// one (closed correctly) and this test's own record-less one (did not),
 // with every field of the extracted CylindricalFace itself bit-identical
-// between the two (frame/radius/length/angle/outward all match to 17
+// between the two (frame/radius/length/angle/outward all matched to 17
 // significant digits) - ruling out this test's own angle fix as the cause
-// of the closure failure. This is a PlanarFaces()/MixedFaces()-wide gap
-// (any curved trim loop on a record-less face, not just a cylinder cap),
-// materially larger than the angle-recovery bug this test targets, and is
-// left for a future pass - not attempted here.
+// of the closure failure. Fixed by raising SampleLoop's own floor from 8 to
+// 128 samples for any non-linear trim curve, closing this PlanarFaces()/
+// MixedFaces()-wide gap (any curved trim loop on a record-less face, not
+// just a cylinder cap) rather than a narrower cylinder-only special case.
+// Verified below, not just argued: the Difference result now IS a genuine
+// closed manifold whose volume matches the same hand-derived 1000-40*pi
+// closed form this file's own FaceRecord-backed drilled-box fixtures use.
 void TestBrepMixedFacesRecoversFullCylinderWallWithoutFaceRecordAtNonUnitRadius() {
   using dino8::kernel::BooleanCombineMixed;
   using dino8::kernel::BooleanOp;
   using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
 
   // A plain box and a plain radius-2 cylinder, built the exact way
   // dino8-app's own Box/Cylinder commands do - through the bare OpenNURBS
@@ -37471,17 +37472,30 @@ void TestBrepMixedFacesRecoversFullCylinderWallWithoutFaceRecordAtNonUnitRadius(
 
   bool threw = false;
   std::string message;
+  Brep drilled;
   try {
-    BooleanCombineMixed(box, cyl, BooleanOp::Difference);
+    drilled = BooleanCombineMixed(box, cyl, BooleanOp::Difference);
   } catch (const std::exception& e) {
     threw = true;
     message = e.what();
   }
   Check(!threw, (std::string("BooleanCombineMixed(box, radius-2 through-hole cylinder, Difference) must not throw "
-                              "on the angle-recovery bug this test targets (a separate cap-loop-sampling gap, "
-                              "disclosed in this test's own doc comment, can still leave the result's closure/volume "
-                              "wrong - not asserted here) - ") + message)
+                              "on the angle-recovery bug this test targets - ") + message)
                     .c_str());
+  if (threw) return;
+
+  // The record-less operand's own cap-loop-sampling gap (this test's own
+  // doc comment above): now fixed, so the result must close correctly, not
+  // merely avoid throwing.
+  const double hand_derived_volume = 1000.0 - 4.0 * ON_PI * 10.0;  // 10x10x10 box minus a radius-2, height-10 bore
+  const Mesh mesh = drilled.TessellateToClosedMeshConforming(64, 64);
+  Check(mesh.IsClosedManifold(),
+        "the record-less through-hole Difference result is now a genuine closed manifold - the cap-loop-sampling "
+        "gap this test's own doc comment diagnoses (a coarse 16-point cap boundary disagreeing with the wall's "
+        "exact circular cross-section) is fixed, not merely non-throwing");
+  Check(std::fabs(mesh.Volume() - hand_derived_volume) < 0.05,
+        "and its volume matches the same hand-derived 1000-40*pi closed form this file's own FaceRecord-backed "
+        "drilled-box fixtures use, to the same tolerance");
 }
 
 // Regression check: Union and SymmetricDifference must still refuse a

@@ -2997,6 +2997,64 @@ regressions, including the new `ExtractCylindricalFace` regression test;
 `dino8-app/tests/smoke.sh` (including the new compound-operand script
 above) run clean end to end.*
 
+*Fourteenth note on this category's score (this pass): closes the specific
+coarse-trim-sampling defect the Thirteenth note's own "A later pass" account
+left disclosed rather than fixed - the "further, separate defect" found
+while investigating why `BooleanCombineMixed` couldn't be wired into the app
+for a record-less (no dino8 `FaceRecord`) cylindrical operand.
+Root-caused, not just re-described: `SampleLoop` (brep.cpp), the only
+function that ever builds a record-less face's own trim polygon
+(`ResolveFace`'s "derive trims from the brep's own loops" fallback -
+side-table-backed faces, i.e. every face this kernel's own constructors
+build, never reach it), floored any non-linear trim curve's own sampling at
+just 8 points (16 for a typical 4-span full-circle NURBS curve, the shape
+`ON_BrepCylinder`'s own cap boundary takes) - a coarse-chord polygon sitting
+measurably INSIDE the true circle, so a record-less cylinder's own planar
+cap boundary and its cylindrical wall's own exact circular cross-section no
+longer agreed, which is what broke `BooleanCombineMixed`'s stitch/closure
+even after the angle-recovery fix above let it run without throwing. Fixed
+by raising that floor from 8 to 128 samples - closing this as the general
+`PlanarFaces()`/`MixedFaces()`-wide gap it actually is (any curved trim loop
+on a record-less face, not just a cylinder cap), not a narrower
+cylinder-only special case. Verified
+(`TestBrepMixedFacesRecoversFullCylinderWallWithoutFaceRecordAtNonUnitRadius`,
+tests/test_basic.cpp, upgraded from its own prior "not asserted here"
+disclosure): the same record-less box-minus-radius-2-cylinder
+`BooleanCombineMixed(..., Difference)` fixture that bug already exercises
+now tessellates (`TessellateToClosedMeshConforming(64, 64)`) to a genuine
+`IsClosedManifold()` whose volume matches the hand-derived `1000 - 40*pi`
+closed form this file's own FaceRecord-backed drilled-box fixtures already
+use, to the same tolerance - not merely "does not throw" as before. **Also
+corrected this pass, not a code change:** the "Multi-body / multi-tool
+booleans" bullet's own Fourth/Fifth notes above, written before
+`TryExactBrepBoolean` existed, said "no app command calls any of the three
+N-ary functions" - true when written, but stale for one of the three as of
+the Twelfth note: `TryExactBrepBoolean` (dino8-app/src/commands/cmd_boolean.cpp)
+has called `BooleanCombinePlanarNAry` for every `Boolean2Objects`/`BooleanUnion`/
+`BooleanDifference`/`BooleanIntersection` with 3+ eligible operands per side
+since that note landed - re-verified directly this pass (`git grep
+BooleanCombine.*NAry dino8-app/src`: `BooleanCombinePlanarNAry` at
+cmd_boolean.cpp:62/67, `BooleanCombineMixedNAry`/`BooleanCombineGeneralNAry`
+genuinely zero hits, confirming which two of the three are still actually
+unwired). Given this pass's own kernel-level fix removes ONE of the two
+disclosed blockers on wiring `BooleanCombineMixed` in the same way
+(the other - `RelativeTolMixed` silently accepting adversarial geometry
+`BooleanCombinePlanar` correctly refuses - is untouched, kernel-level, and
+was reproduced only against operands with NO cylindrical face at all, so a
+future attempt gated strictly on "a genuine `CylindricalFace` is present"
+may avoid it entirely, but that gating and the adversarial-script
+re-verification it would need are not attempted here), re-wiring
+`BooleanCombineMixed` into `TryExactBrepBoolean` remains a real, disclosed
+next step, not re-attempted this pass. Net effect on the scores below: both
+findings narrow, but do not flip, already-`partial` items ("B-rep-preserving
+booleans reachable from the application" and "Multi-body / multi-tool
+booleans") - this category's own present/partial/missing counts and
+9/15/1/25 (66.0%) split are unchanged, the same "genuine new evidence,
+unchanged partial score" pattern as the notes above. Full
+`dino8_kernel_tests` suite (via the built `dino8_kernel_tests` binary
+directly): 6754 checks, 100% passing, 0 regressions. The kernel-only headline is
+unaffected (no bucket moved).*
+
 **Blending & chamfering** (blending):
 - [partial] Constant-radius edge fillet on curved adjacent faces (cylinder/plane, cylinder/cylinder, freeform, closed/periodic rims) with B-rep trimming — every kernel fillet still requires both adjacent faces to be planar (fillet.h:147-159), so fillets cannot be chained onto a solid that already carries a curved face. App `FilletEdge` produces a genuine B-rep trim only when both faces are planar (cmd_fillet.cpp:175, "exact for planes; approximate elsewhere") — historically via the generic offset+SSX `BuildFillet` path, not the closed-form kernel function itself (see the bullet just below for the "nothing in the app calls it" half this pass closes). **This pass:** `FilletEdgeCommand::Run`'s plain-Radius case (default `RailType=RollingBall`, no `Rho`) now tries a new `TryExactFillet` FIRST — `kernel::FilletConvexEdge`/`FilletConcaveEdge` directly, convex then concave — ahead of the unchanged `BuildFillet` path, the identical "exact kernel construction first, fail open to the approximate path on any `PlanarFaces()` rejection" structure `TryExactChamfer` already established for `ChamferEdge`'s own plain-Radius case. Still partial: curved adjacent faces remain fundamentally out of scope (the kernel's own `PlanarFaces()` requirement, unchanged) and `BuildFillet`'s approximate path is still what actually runs there; this closes a representation gap (which construction produces the planar-face result), not a capability gap (the printed message and volume for a planar-face fillet are unchanged, since `BuildFillet` was already numerically exact for planes too). Net effect on the scores below: narrows, does not flip, the SAME already-partial item.
 - [partial] Concave (internal) edge fillet — kernel-native and exact: `FilletConcaveEdge` (fillet.cpp:1070 — corrected 2026-09-28, was mis-cited fillet.cpp:989; fillet.h:162-270) builds the mirrored rolling-ball construction with outward=false, closing perpendicular and oblique third faces; `FilletConcaveEdges` (fillet.cpp:2746; fillet.h:1111-1205) fillets several independent edges plus m==3 trihedral concave spherical corners. **This pass:** closes the single-edge half of "nothing in the app calls it" — `FilletEdgeCommand`'s new `TryExactFillet` (see the bullet just above) tries `kernel::FilletConvexEdge` FIRST and `FilletConcaveEdge` SECOND on any planar-faced solid, the same convex-then-concave cascade `TryExactChamfer`/`TryExactConicFillet`/`TryExactRailFillet` already use elsewhere in this file for the identical reason (the command doesn't know the edge's own convexity in advance). Verified structurally and via the convex branch end-to-end (`fillet_script.txt`'s own existing plain-`Radius=2` box-corner case now goes through this exact dispatch, unchanged volume); the concave branch is NOT independently verified through the app in script form — building an app-level fixture with a genuinely planar-faced concave (reflex) edge turned out to be blocked by a separate, disclosed app-layer limitation: `ExtrudeCrv`'s own `ON_BrepTrimmedPlane`/`ON_BrepExtrudeFace` construction builds ONE ruled side-wall face per whole closed boundary loop, not one flat quad per polygon edge (confirmed directly: extruding a plain 4-sided rectangle profile also yields only 3 faces/3 edges total, the single ruled wall genuinely non-planar end-to-end, not just at the concave corner) — so no closed polygon profile extruded this way, convex or concave, can reach `PlanarFaces()`'s own exact-planar requirement at all, and the app has no other command that builds a multi-facet polygonal solid. Still partial, same remaining gaps as before: planar faces only, one radius, m>=2 or higher-valence corners throw, oblique third faces out of scope for `FilletConcaveEdges`, a mixed convex+concave solid cannot be fully filleted, and the multi-edge `FilletConcaveEdges` batch form remains entirely unreachable from the app. Net effect on the scores below: narrows, does not flip, the SAME already-partial item.
@@ -4625,7 +4683,7 @@ top 40:
 - [kernel/topology] Persistent naming / topology identity across edits (missing)
 - [kernel/booleans] Sheet/solid trim (missing; now partial - see `SplitBySheet`/`TrimSheetBySolid`, boolean_general.cpp, both halves now real code - remaining effort is small, not large: app wiring and a curved-sheet/curved-solid test)
 - [kernel/booleans] Face-face imprint (missing)
-- [kernel/booleans] B-rep-preserving booleans reachable from the application (missing; now partial - see `BooleanUnion`/`BooleanDifference`/`BooleanIntersection`/`Boolean2Objects`'s `TryExactBrepBoolean` path, dino8-app/src/commands/cmd_boolean.cpp, and its own compound-operand support now verified end-to-end - remaining effort is small-medium: wiring `BooleanCombineMixed`/`BooleanCombineGeneral` the same way for a curved (cylindrical or general) face was attempted and reverted this pass - a record-less operand's own result doesn't tessellate closed via the app's generic `MeshOf` path, a separate coarse-trim-sampling gap in `MixedFaces()`/`PlanarFaces()` that would need fixing first - and wiring the Split/WireCut family)
+- [kernel/booleans] B-rep-preserving booleans reachable from the application (missing; now partial - see `BooleanUnion`/`BooleanDifference`/`BooleanIntersection`/`Boolean2Objects`'s `TryExactBrepBoolean` path, dino8-app/src/commands/cmd_boolean.cpp, and its own compound-operand support now verified end-to-end - remaining effort is small-medium: wiring `BooleanCombineMixed`/`BooleanCombineGeneral` the same way for a curved (cylindrical or general) face was attempted and reverted this pass, for two reasons - a record-less operand's own result didn't tessellate closed via the app's generic `MeshOf` path (the coarse-trim-sampling gap in `MixedFaces()`/`PlanarFaces()` this row once named; **a later pass fixes this at the kernel level** - `SampleLoop`'s own floor raised 8→128 samples, brep.cpp - see this category's own "Fourteenth note"), and `BooleanCombineMixed`'s own auto-derived tolerance silently accepting adversarial geometry the planar engine correctly refuses (still open, kernel-level, unchanged) - and wiring the Split/WireCut family)
 - [kernel/booleans] Associative/history-enabled Boolean operations (missing)
 - [kernel/booleans] AutoCAD-style INTERFERE (partial; now present - see `Clash`'s new `CreateSolids` option, dino8-app/src/commands/cmd_solidtools.cpp, wiring `ComputeAllInterference` into the app)
 - [kernel/blending] Conic / rho blend cross-sections (missing; was already stale when written - `FilletConvexEdgeConic` existed - now `FilletConcaveEdgeConic` closes the concave mirror too, and `FilletConvexEdgesConic`/`FilletConcaveEdgesConic` add a face-disjoint multi-edge batch form; app wiring for the single-edge form is now done too (`FilletEdge`'s `Rho`/`Distance2` options, cmd_fillet.cpp); still partial, remaining effort small, not large: oblique third face, a genuine vertex-blend/shared-corner form, and a command for the multi-edge batch form)
