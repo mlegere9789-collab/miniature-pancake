@@ -157,6 +157,18 @@ struct AnnotationStyle {
   double text_height = 0;   // 0: twice the grid spacing (the legacy default)
   double arrow_size = 0;    // 0: the text height
   std::string font;         // empty: the first system sans-serif font found
+  // Decimal places shown on a linear/radius/diameter dimension's measured
+  // value built or rebuilt with this style (DimLinear/DimAligned/DimRadius/
+  // DimDiameter - commands/DimGeometry.h's FormatDimensionNumber). -1 (the
+  // legacy default): unchanged, adaptive FormatNumber() formatting ("Auto").
+  // >= 0: always exactly that many decimals, fixed notation, e.g. precision
+  // 2 shows "10.00" for an exact round number rather than rounding it away -
+  // Rhino's own dimension-style Linear precision, still missing here before
+  // this field. Does not affect any other number in the app (coordinates,
+  // options, the Properties panel, ...), only a built dimension's own label
+  // text, and still shares this one AnnotationStyle table with text styles
+  // (no tolerance or extension-line control) - see PARITY_MAP.md.
+  int linear_precision = -1;
 };
 
 // A Layer State: a named snapshot of every layer's visible/locked flags

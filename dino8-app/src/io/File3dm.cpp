@@ -814,10 +814,27 @@ bool Load3dm(Document& doc, const std::string& path, std::string& error) {
     ON_ClassArray<ON_UserString> strings;
     model.GetDocumentUserStrings(strings);
     std::map<std::string, std::string> render_strings;
+    // Deferred, not applied inline: "Dino8.AnnotationStylePrecision.<name>"
+    // (see below) can appear before its style's own "Dino8.AnnotationStyle.
+    // <name>" entry in model.GetDocumentUserStrings()'s order, which is
+    // whatever order OpenNURBS happened to store them in, not necessarily
+    // write order - so every precision override is collected here and
+    // applied only after the loop below has finished loading every style.
+    std::map<std::string, int> pending_precision;
     for (int i = 0; i < strings.Count(); ++i) {
       const std::string key = FromWide(strings[i].m_key);
       if (key.compare(0, 13, "Dino8.Render.") == 0) { render_strings[key] = FromWide(strings[i].m_string_value); continue; }
       const std::string value = FromWide(strings[i].m_string_value);
+      // Checked before the plain style_prefix below: without the distinct
+      // "...StylePrecision." spelling (no "." right after "AnnotationStyle"
+      // in style_prefix, so the prefixes cannot collide either way) this
+      // would itself match style_prefix and get loaded as a bogus style
+      // literally named "Precision.<name>".
+      const std::string precision_prefix = "Dino8.AnnotationStylePrecision.";
+      if (key.compare(0, precision_prefix.size(), precision_prefix) == 0) {
+        pending_precision[key.substr(precision_prefix.size())] = std::atoi(value.c_str());
+        continue;
+      }
       const std::string style_prefix = "Dino8.AnnotationStyle.";
       if (key.compare(0, style_prefix.size(), style_prefix) == 0) {
         // "height;arrow;font"
@@ -852,6 +869,9 @@ bool Load3dm(Document& doc, const std::string& path, std::string& error) {
       }
       if (key.compare(0, 6, "Dino8.") == 0) continue;  // settings, handled above
       doc.UserText()[key] = value;
+    }
+    for (const auto& [style_name, precision] : pending_precision) {
+      if (AnnotationStyle* st = doc.FindAnnotationStyle(style_name)) st->linear_precision = precision;
     }
     ReadRenderSettings(render_strings, doc.Render());
   }
@@ -916,6 +936,15 @@ bool Save3dm(const Document& doc, const std::string& path, std::string& error, b
     for (const AnnotationStyle& st : doc.AnnotationStyles()) {
       std::snprintf(buf, sizeof(buf), "%g;%g;%s", st.text_height, st.arrow_size, st.font.c_str());
       model.SetDocumentUserString(ON_wString(("Dino8.AnnotationStyle." + st.name).c_str()), ON_wString(buf));
+      // Separate key, not packed into the line above: st.font's "%255[^\n]"
+      // read captures every remaining character, so a field after it could
+      // never be parsed back out again. Omitted entirely for the common
+      // Auto (-1) case, so a style nobody touched this on round-trips with
+      // no extra key at all.
+      if (st.linear_precision >= 0) {
+        std::snprintf(buf, sizeof(buf), "%d", st.linear_precision);
+        model.SetDocumentUserString(ON_wString(("Dino8.AnnotationStylePrecision." + st.name).c_str()), ON_wString(buf));
+      }
     }
     for (const LayerState& ls : doc.LayerStates()) {
       std::string packed;

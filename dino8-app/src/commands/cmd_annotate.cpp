@@ -115,11 +115,12 @@ std::string Fmt(double v) { return FormatNumber(v); }
 // dimension - same failure Rhino's own Dim has for a zero-length pick).
 int BuildLinearDimensionGroup(CommandContext& ctx, Point3d p0, Point3d p1, const LinearDimLayout& L, double text_h,
                               bool has_ref1, ObjectId ref1, const std::string& end1,
-                              bool has_ref2, ObjectId ref2, const std::string& end2, double* len_out = nullptr) {
+                              bool has_ref2, ObjectId ref2, const std::string& end2, double* len_out = nullptr,
+                              int precision = -1) {
   std::vector<kernel::NurbsCurve> curves;
   DimGlyphSpec dg;
   std::map<std::string, std::string> tags;
-  if (!BuildLinearDimensionGeometry(p0, p1, L, text_h, curves, dg, tags, len_out)) return -1;
+  if (!BuildLinearDimensionGeometry(p0, p1, L, text_h, curves, dg, tags, len_out, precision)) return -1;
   if (has_ref1) { tags["DimRefObj1"] = std::to_string(ref1); tags["DimRefEnd1"] = end1; }
   if (has_ref2) { tags["DimRefObj2"] = std::to_string(ref2); tags["DimRefEnd2"] = end2; }
   GlyphSpec g;
@@ -228,7 +229,8 @@ class DimLinearCommand : public Command {
     const bool has2 = FindPointAnchor(ctx.Doc(), pts_[1], ref2, end2);
     ctx.Doc().BeginChange(aligned_ ? "DimAligned" : "DimLinear");
     double len = 0;
-    const int g = BuildLinearDimensionGroup(ctx, pts_[0], pts_[1], L, h, has1, ref1, end1, has2, ref2, end2, &len);
+    const int g = BuildLinearDimensionGroup(ctx, pts_[0], pts_[1], L, h, has1, ref1, end1, has2, ref2, end2, &len,
+                                             AnnotationLinearPrecision(ctx));
     if (g < 0) { Finish(); return; }
     const std::string assoc = (has1 || has2) ? (has1 && has2 ? " (associative to both endpoints)" : " (associative to one endpoint)") : "";
     ctx.Print(std::string(aligned_ ? "DimAligned " : "DimLinear ") + Fmt(len) + assoc);
@@ -397,11 +399,11 @@ class DimAngleCommand : public Command {
 // ResolveRadiusDimGeom re-evaluates it via ResolveArcAnchor instead of the
 // fallback tags when it still resolves to an arc/circle.
 int BuildRadiusDimensionGroup(CommandContext& ctx, Point3d center, double radius, const RadiusDimLayout& L, double text_h,
-                              bool has_ref, ObjectId ref, double* val_out = nullptr) {
+                              bool has_ref, ObjectId ref, double* val_out = nullptr, int precision = -1) {
   std::vector<kernel::NurbsCurve> curves;
   DimGlyphSpec dg;
   std::map<std::string, std::string> tags;
-  if (!BuildRadiusDimensionGeometry(center, radius, L, text_h, curves, dg, tags, val_out)) return -1;
+  if (!BuildRadiusDimensionGeometry(center, radius, L, text_h, curves, dg, tags, val_out, precision)) return -1;
   if (has_ref) tags["DimRefObj1"] = std::to_string(ref);
   GlyphSpec g;
   g.text = dg.text; g.height = dg.height; g.plane = dg.plane; g.center = dg.center;
@@ -476,7 +478,8 @@ class DimRadiusCommand : public Command {
     const double h = Height(ctx);
     ctx.Doc().BeginChange(diameter_ ? "DimDiameter" : "DimRadius");
     double val = 0;
-    const int g = BuildRadiusDimensionGroup(ctx, arc_.Center(), arc_.Radius(), L, h, true, obj_, &val);
+    const int g = BuildRadiusDimensionGroup(ctx, arc_.Center(), arc_.Radius(), L, h, true, obj_, &val,
+                                             AnnotationLinearPrecision(ctx));
     if (g < 0) { Finish(); return; }
     ctx.Print(std::string(diameter_ ? "DimDiameter " : "DimRadius ") + Fmt(val) + " (associative to selected arc/circle)");
     Finish();
@@ -655,9 +658,10 @@ void RegisterAnnotateCommands(CommandEngine& e) {
               if (auto it = o.user_text.find("DimRefObj2"); it != o.user_text.end()) { ref2 = static_cast<ObjectId>(std::strtoull(it->second.c_str(), nullptr, 10)); end2 = o.user_text.count("DimRefEnd2") ? o.user_text.at("DimRefEnd2") : "point"; has2 = true; }
             }
             const std::string tol = GroupToleranceSuffix(ctx, g, old_glyph);
+            const int precision = GroupLinearPrecision(ctx, g);
             for (ObjectId id : ctx.Doc().GroupMembers(g)) ctx.Doc().Remove(id);
             double len = 0;
-            const int new_g = BuildLinearDimensionGroup(ctx, p0, p1, L, h, has1, ref1, end1, has2, ref2, end2, &len);
+            const int new_g = BuildLinearDimensionGroup(ctx, p0, p1, L, h, has1, ref1, end1, has2, ref2, end2, &len, precision);
             if (new_g >= 0) {
               ReapplyToleranceSuffix(ctx, new_g, tol);
               ++updated;
@@ -700,9 +704,10 @@ void RegisterAnnotateCommands(CommandEngine& e) {
               if (auto it = o.user_text.find("DimRefObj1"); it != o.user_text.end()) { ref1 = static_cast<ObjectId>(std::strtoull(it->second.c_str(), nullptr, 10)); has1 = true; }
             }
             const std::string tol = GroupToleranceSuffix(ctx, g, old_glyph);
+            const int precision = GroupLinearPrecision(ctx, g);
             for (ObjectId id : ctx.Doc().GroupMembers(g)) ctx.Doc().Remove(id);
             double val = 0;
-            const int new_g = BuildRadiusDimensionGroup(ctx, center, radius, L, h, has1, ref1, &val);
+            const int new_g = BuildRadiusDimensionGroup(ctx, center, radius, L, h, has1, ref1, &val, precision);
             if (new_g >= 0) {
               ReapplyToleranceSuffix(ctx, new_g, tol);
               ++updated;

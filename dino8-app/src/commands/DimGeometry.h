@@ -23,8 +23,10 @@
 // decoupled), so this header is safe to include from io/FileExchange.cpp.
 #pragma once
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <map>
 #include <string>
 #include <vector>
@@ -49,6 +51,25 @@ std::string FormatNumber(double v);
 // with) - named distinctly (Dim-prefixed) so this header can be included
 // alongside annotate_common.h in the same translation unit without a
 // redefinition clash.
+// Formats a dimension's own displayed measurement value: precision < 0
+// keeps today's adaptive FormatNumber() ("Auto" - integers unrounded,
+// otherwise ~4 significant digits), precision >= 0 always shows exactly
+// that many decimal places in fixed notation (so an exact round number
+// still shows its trailing zeros, e.g. precision 2 -> "10.00") - the
+// AnnotationStyle::linear_precision field this threads through from.
+// Internal round-trip tags (DimOffset, DimExtra, DimRadiusVal, the plane/
+// point tags) are deliberately NOT routed through this - only the
+// human-facing label text - so UpdateDimensions always replays a dimension
+// from full-precision stored geometry regardless of its display precision.
+inline std::string FormatDimensionNumber(double v, int precision) {
+  if (precision < 0) return FormatNumber(v);
+  char buf[64];
+  std::snprintf(buf, sizeof(buf), "%.*f", std::min(precision, 15), v);
+  // Never "-0.00": see FormatNumber's own comment on the same sign-of-zero issue.
+  if (std::strtod(buf, nullptr) == 0) std::snprintf(buf, sizeof(buf), "%.*f", std::min(precision, 15), 0.0);
+  return buf;
+}
+
 inline std::string DimPointTag(Point3d p) {
   char buf[128];
   std::snprintf(buf, sizeof(buf), "%.10g,%.10g,%.10g", p.x, p.y, p.z);
@@ -124,7 +145,8 @@ inline void AddArrow(std::vector<kernel::NurbsCurve>& out, Point3d tip, Vector3d
 // as the live command's zero-length pick.
 inline bool BuildLinearDimensionGeometry(Point3d p0, Point3d p1, const LinearDimLayout& L, double text_h,
                                          std::vector<kernel::NurbsCurve>& curves, DimGlyphSpec& text,
-                                         std::map<std::string, std::string>& tags, double* len_out = nullptr) {
+                                         std::map<std::string, std::string>& tags, double* len_out = nullptr,
+                                         int precision = -1) {
   using namespace dim_geom_detail;
   const ON_Plane& pl = L.plane;
   Point3d a = p0, b = p1;
@@ -152,7 +174,7 @@ inline bool BuildLinearDimensionGeometry(Point3d p0, Point3d p1, const LinearDim
   Vector3d up = ON_CrossProduct(pl.zaxis, dir);
   up.Unitize();
   if (ON_DotProduct(up, pl.yaxis) < 0) up = -up;
-  text.text = FormatNumber(len);
+  text.text = FormatDimensionNumber(len, precision);
   text.height = text_h;
   text.plane = pl;
   text.plane.SetOrigin((a + b) / 2.0 + up * (text_h * 0.6));
@@ -178,7 +200,8 @@ inline bool BuildLinearDimensionGeometry(Point3d p0, Point3d p1, const LinearDim
 // silently producing a zero-length dimension).
 inline bool BuildRadiusDimensionGeometry(Point3d center, double radius, const RadiusDimLayout& L, double text_h,
                                          std::vector<kernel::NurbsCurve>& curves, DimGlyphSpec& text,
-                                         std::map<std::string, std::string>& tags, double* val_out = nullptr) {
+                                         std::map<std::string, std::string>& tags, double* val_out = nullptr,
+                                         int precision = -1) {
   using namespace dim_geom_detail;
   if (radius <= 0) return false;
   const ON_Plane& pl = L.plane;
@@ -201,7 +224,7 @@ inline bool BuildRadiusDimensionGeometry(Point3d center, double radius, const Ra
   tags["DimExtra"] = FormatNumber(L.extra);
   tags["DimCenter"] = DimPointTag(center);
   tags["DimRadiusVal"] = FormatNumber(radius);
-  text.text = std::string(L.diameter ? "D " : "R ") + FormatNumber(val);
+  text.text = std::string(L.diameter ? "D " : "R ") + FormatDimensionNumber(val, precision);
   text.height = text_h;
   text.plane = pl;
   text.plane.SetOrigin(p + d * text_h);

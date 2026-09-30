@@ -1577,6 +1577,8 @@ void DrawDocumentPropertiesWindow(Application& app) {
         if (ImGui::InputDouble("Text height (0 = auto)", &h)) { st.text_height = std::max(0.0, h); doc.Touch(); }
         if (ImGui::InputDouble("Arrow size (0 = text height)", &a)) { st.arrow_size = std::max(0.0, a); doc.Touch(); }
         if (InputString("Font", st.font)) doc.Touch();
+        int prec = st.linear_precision;
+        if (ImGui::InputInt("Linear precision (-1 = auto)", &prec)) { st.linear_precision = std::max(-1, std::min(prec, 15)); doc.Touch(); }
         if (ImGui::SmallButton("Duplicate")) { AnnotationStyle copy = st; copy.name = st.name + " copy"; styles.push_back(copy); doc.Touch(); ImGui::TreePop(); ImGui::PopID(); break; }
         if (styles.size() > 1 && st.name != s.annotation_style) { ImGui::SameLine(); if (ImGui::SmallButton("Delete")) { styles.erase(styles.begin() + static_cast<long>(i)); doc.Touch(); ImGui::TreePop(); ImGui::PopID(); break; } }
         ImGui::TreePop();

@@ -62,6 +62,27 @@ inline double AnnotationArrowSize(CommandContext& ctx) {
   return st.arrow_size > 0 ? st.arrow_size : AnnotationTextHeight(ctx);
 }
 
+// Decimal-place precision for a newly built dimension: the current
+// annotation style's (see AnnotationStyle::linear_precision; -1 is Auto).
+inline int AnnotationLinearPrecision(CommandContext& ctx) { return ctx.Doc().CurrentAnnotationStyle().linear_precision; }
+
+// Same, but for rebuilding an *existing* dimension group: looks up the
+// style it was actually tagged with (any member's "Style" user-text, set by
+// TagAnnotation at creation) rather than whatever style happens to be
+// current now, so UpdateDimensions keeps using each dimension's own style -
+// including picking up a precision edited on that style since - the same
+// style-name binding real dimension styles have, not a value baked in at
+// creation. Falls back to Auto (-1) if the style was since renamed/deleted.
+inline int GroupLinearPrecision(CommandContext& ctx, int group_id) {
+  for (const SceneObject& o : ctx.Doc().Objects()) {
+    if (o.group_id != group_id) continue;
+    auto it = o.user_text.find("Style");
+    if (it == o.user_text.end()) continue;
+    if (const AnnotationStyle* st = ctx.Doc().FindAnnotationStyle(it->second)) return st->linear_precision;
+  }
+  return -1;
+}
+
 inline std::string PointTag(Point3d p) {
   char buf[128];
   std::snprintf(buf, sizeof(buf), "%.10g,%.10g,%.10g", p.x, p.y, p.z);
