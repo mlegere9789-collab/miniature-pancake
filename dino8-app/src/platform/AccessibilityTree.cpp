@@ -155,4 +155,21 @@ AccessibleNode BuildViewportsPanelNode(const std::vector<ViewportSummary>& viewp
   return list;
 }
 
+AccessibleNode BuildActivityLogNode(const std::vector<ActivityLogSummary>& entries) {
+  AccessibleNode list;
+  list.name = "Activity Log";
+  list.role = AccessibleRole::List;
+  char count_buf[32];
+  std::snprintf(count_buf, sizeof(count_buf), "%zu entries", entries.size());
+  list.description = count_buf;
+
+  for (const ActivityLogSummary& e : entries) {
+    AccessibleNode item;
+    item.role = AccessibleRole::ListItem;
+    item.name = e.timestamp_utc + " " + e.label + ": " + e.summary;
+    list.children.push_back(std::move(item));
+  }
+  return list;
+}
+
 }  // namespace dino8::platform

@@ -11,9 +11,10 @@
 // clickable chips Application.cpp's DrawCommandLine draws next to the
 // prompt - see BuildCommandOptionsNode), the Layers and Properties panels'
 // current content (Properties' editable rows are flagged as such - see
-// PropertyEntry::editable), and each viewport's title/view-menu button state
-// (name, active/maximized, current display mode - see BuildViewportsPanelNode).
-// The 3D viewport's own rendered content and the ~40 other panels/dialogs are
+// PropertyEntry::editable), each viewport's title/view-menu button state
+// (name, active/maximized, current display mode - see BuildViewportsPanelNode),
+// and the persisted Activity Log of finalized edits (see BuildActivityLogNode).
+// The 3D viewport's own rendered content and the ~39 other panels/dialogs are
 // still not mirrored into this tree.
 #pragma once
 
@@ -180,5 +181,28 @@ struct ViewportSummary {
 // happens to be visible right now, the same way the Layers/Properties lists
 // above don't depend on their own panel being open.
 AccessibleNode BuildViewportsPanelNode(const std::vector<ViewportSummary>& viewports);
+
+// One Activity Log row (doc/Document.h's ActivityLogEntry, reduced to plain
+// data the same way LayerSummary/PropertyEntry/CommandOptionSummary/
+// ViewportSummary above keep this module independent of doc/Document): the
+// wall-clock UTC time a finalized edit's FinalizePending ran, the
+// BeginChange/BeginChangeForObjects label (e.g. "Move", "Delete"), and the
+// object-count summary (e.g. "+2 -0 ~3 object(s) [ids 12,13,14,...]") -
+// exactly the three facts the on-screen Activity Log panel's Time/Action/
+// Detail columns show for that row.
+struct ActivityLogSummary {
+  std::string timestamp_utc;
+  std::string label;
+  std::string summary;
+};
+
+// Builds the "Activity Log" List accessible: one ListItem per recorded edit,
+// in the same order Document::ActivityLog() holds them (oldest first), each
+// naming its timestamp, action label and summary as one line of plain text -
+// the persisted, structured record of every finalized edit, independent of
+// the command line's raw text-history log (which mirrors CommandEngine
+// output, not Document::ActivityLog) and of whether the Activity Log panel
+// window is actually open right now.
+AccessibleNode BuildActivityLogNode(const std::vector<ActivityLogSummary>& entries);
 
 }  // namespace dino8::platform

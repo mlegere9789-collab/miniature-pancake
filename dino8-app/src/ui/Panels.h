@@ -35,6 +35,11 @@ dino8::platform::AccessibleNode CommandOptionsAccessibleTree(Application& app);
 // title-overlay block), independent of which viewport window happens to be
 // visible right now, built straight from Application::Viewports().
 dino8::platform::AccessibleNode ViewportsAccessibleTree(Application& app);
+// The AT-SPI2-queryable snapshot of Document::ActivityLog() - the persisted,
+// structured record of every finalized edit (see Document.h's
+// ActivityLogEntry) - independent of whether DrawActivityLogPanel's window
+// is open, and distinct from the command line's raw text log.
+dino8::platform::AccessibleNode ActivityLogAccessibleTree(Application& app);
 void DrawToolbars(Application& app);
 void DrawLayersPanel(Application& app);
 void DrawPropertiesPanel(Application& app);

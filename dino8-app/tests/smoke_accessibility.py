@@ -35,6 +35,11 @@ connection, the same way a screen reader would - to prove:
      since it starts as the focused viewport) - mirroring each viewport's
      title/view-menu button and corner display-mode label (see
      Viewport.cpp's title-overlay block).
+  9. An "Activity Log" accessible (role LIST) is discoverable, and gains one
+     new ListItem naming the "Line" command right after that command
+     finishes - mirroring Document::ActivityLog(), the persisted, structured
+     record of every finalized edit (see Document::RecordActivityLogEntry),
+     which is distinct from the command line's own raw text log.
 
 This is a real integration test: at-spi2-registryd is the actual daemon
 GNOME uses, pyatspi is the actual library screen readers use, and Dino8 is
@@ -283,6 +288,12 @@ def main():
             die('"Properties" accessible not found among the application\'s children')
         ok('"Properties" accessible is discoverable via the real AT-SPI2 desktop')
 
+        activity_log = find_child_by_name(app, "Activity Log", 10)
+        if activity_log is None:
+            fail('"Activity Log" accessible not found among the application\'s children')
+        else:
+            ok('"Activity Log" accessible is discoverable via the real AT-SPI2 desktop')
+
         viewports = find_child_by_name(app, "Viewports", 10)
         if viewports is None:
             fail('"Viewports" accessible not found among the application\'s children')
@@ -372,6 +383,8 @@ def main():
         else:
             ok(f"Properties reports the document's object count before the command runs ({properties_before!r})")
 
+        activity_log_count_before = activity_log.childCount if activity_log is not None else None
+
         open(sync2, "w").close()  # let the script run "Line 0,0,0 10,10,0"
 
         deadline = time.time() + 10
@@ -402,6 +415,23 @@ def main():
                  f"(still {properties_after!r})")
         elif properties_after is not None:
             ok(f"Properties' object count updates after a command runs ({properties_before!r} -> {properties_after!r})")
+
+        if activity_log is not None:
+            deadline = time.time() + 10
+            newest = None
+            while time.time() < deadline:
+                count = activity_log.childCount
+                if activity_log_count_before is not None and count > activity_log_count_before:
+                    newest = activity_log.getChildAtIndex(count - 1)
+                    break
+                time.sleep(0.2)
+            if newest is None:
+                fail(f"Activity Log did not gain a new entry after the Line command ran within 10s "
+                     f"(childCount stayed at {activity_log_count_before!r})")
+            elif "Line" not in newest.name:
+                fail(f"Activity Log's newest entry does not name the finalized Line command (got {newest.name!r})")
+            else:
+                ok(f"Activity Log gains a new entry naming the finalized command after it runs ({newest.name!r})")
 
         open(sync3, "w").close()  # let the app finish its remaining frames/script and exit
 

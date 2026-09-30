@@ -11,9 +11,13 @@
 // command-options builder produces the same click/type guidance
 // DrawCommandLine's option-chip tooltips give a sighted mouse user, in plain
 // text, for whatever the running command's Command::options currently are;
-// and the viewports builder produces one row per viewport naming which one
-// is active, whether it's maximized, and its current display mode, matching
-// Viewport.cpp's title-overlay pill and corner display-mode label.
+// the viewports builder produces one row per viewport naming which one is
+// active, whether it's maximized, and its current display mode, matching
+// Viewport.cpp's title-overlay pill and corner display-mode label; and the
+// activity-log builder produces one row per recorded edit naming its
+// timestamp, action label and object-count summary, matching
+// Document::ActivityLog's persisted, structured edit history (distinct from
+// the command line's own raw text log).
 // This needs no display, no D-Bus session, and no AT-SPI2 build at all, so
 // it runs on every platform and every CI job regardless of whether
 // AccessibilityLinux.cpp itself was compiled in this build (see
@@ -25,7 +29,9 @@
 #include "platform/AccessibilityTree.h"
 
 using dino8::platform::AccessibleRole;
+using dino8::platform::ActivityLogSummary;
 using dino8::platform::BuildAccessibleTree;
+using dino8::platform::BuildActivityLogNode;
 using dino8::platform::BuildCommandLineText;
 using dino8::platform::BuildCommandOptionsNode;
 using dino8::platform::BuildLayersPanelNode;
@@ -288,6 +294,36 @@ int main() {
     Check(empty_viewports.children.empty(), "no viewports -> no ListItem children");
   }
 
+  // Activity Log: one ListItem per recorded edit, in the order given, each
+  // naming its timestamp, action label and object-count summary as one
+  // line of plain text - the same three facts the on-screen Activity Log
+  // panel's Time/Action/Detail columns show for that row (see
+  // Document::ActivityLog/ActivityLogEntry). This is a genuinely separate
+  // record from the command line's raw text log: it mirrors Document's
+  // persisted, structured edit history, not CommandEngine output.
+  {
+    std::vector<ActivityLogSummary> entries;
+    entries.push_back({"2024-01-01 12:00:00", "Move", "+0 -0 ~2 object(s) [ids 1,2]"});
+    entries.push_back({"2024-01-01 12:00:05", "Delete", "+0 -1 ~0 object(s) [ids 3]"});
+    const dino8::platform::AccessibleNode list = BuildActivityLogNode(entries);
+    Check(list.name == "Activity Log", "activity log list is named \"Activity Log\"");
+    Check(list.role == dino8::platform::AccessibleRole::List, "activity log list role is List");
+    Check(list.description == "2 entries", "entry count is carried as the list's Description");
+    Check(list.children.size() == 2, "two ListItem children, one per recorded edit");
+    if (list.children.size() == 2) {
+      Check(list.children[0].role == dino8::platform::AccessibleRole::ListItem, "activity row role is ListItem");
+      Check(list.children[0].name.find("2024-01-01 12:00:00") != std::string::npos, "row carries its timestamp");
+      Check(list.children[0].name.find("Move") != std::string::npos, "row names its action label");
+      Check(list.children[0].name.find("ids 1,2") != std::string::npos, "row carries its object-count summary");
+      Check(list.children[1].name.find("Delete") != std::string::npos, "second row names its own action label");
+    }
+  }
+  {
+    const dino8::platform::AccessibleNode empty_log = BuildActivityLogNode({});
+    Check(empty_log.name == "Activity Log", "still named \"Activity Log\" with no entries yet");
+    Check(empty_log.children.empty(), "no entries -> no ListItem children, not a missing accessible");
+  }
+
   // BuildAccessibleTree accepts extra top-level regions (menu bar, panels)
   // alongside the always-present command line - the shape the live bridge
   // (Accessibility.cpp::UpdateAccessibility) assembles every frame.
@@ -299,18 +335,21 @@ int main() {
     dino8::platform::AccessibleNode layers = BuildLayersPanelNode({});
     dino8::platform::AccessibleNode props = BuildPropertiesPanelNode("No selection", {});
     dino8::platform::AccessibleNode viewports = BuildViewportsPanelNode({});
+    dino8::platform::AccessibleNode activity_log = BuildActivityLogNode({});
 
-    const dino8::platform::AccessibleNode root =
-        BuildAccessibleTree("Dino8", "Command: ", "", {}, {menu_bar, cmd_options, layers, props, viewports});
-    Check(root.children.size() == 6,
-          "command line + menu bar + command options + layers + properties + viewports = 6 top-level children");
-    if (root.children.size() == 6) {
+    const dino8::platform::AccessibleNode root = BuildAccessibleTree(
+        "Dino8", "Command: ", "", {}, {menu_bar, cmd_options, layers, props, viewports, activity_log});
+    Check(root.children.size() == 7,
+          "command line + menu bar + command options + layers + properties + viewports + activity log = "
+          "7 top-level children");
+    if (root.children.size() == 7) {
       Check(root.children[0].role == AccessibleRole::Log, "child 0 is still the command line");
       Check(root.children[1].role == dino8::platform::AccessibleRole::MenuBar, "child 1 is the menu bar");
       Check(root.children[2].name == "Command Options", "child 2 is the command options list");
       Check(root.children[3].name == "Layers", "child 3 is the layers panel");
       Check(root.children[4].name == "Properties", "child 4 is the properties panel");
       Check(root.children[5].name == "Viewports", "child 5 is the viewports panel");
+      Check(root.children[6].name == "Activity Log", "child 6 is the activity log");
     }
   }
 

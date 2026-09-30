@@ -536,6 +536,21 @@ dino8::platform::AccessibleNode ViewportsAccessibleTree(Application& app) {
   return dino8::platform::BuildViewportsPanelNode(summaries);
 }
 
+// AT-SPI2-queryable snapshot of Document::ActivityLog() (see
+// docs/ACCESSIBILITY.md): the persisted, structured record of every
+// finalized edit, built straight from Document state, independent of
+// whether DrawActivityLogPanel itself has ever been drawn or is open right
+// now - distinct from the "Command Line" accessible's raw text log, which
+// mirrors CommandEngine::History() rather than Document::ActivityLog().
+dino8::platform::AccessibleNode ActivityLogAccessibleTree(Application& app) {
+  std::vector<dino8::platform::ActivityLogSummary> summaries;
+  summaries.reserve(app.Doc().ActivityLog().size());
+  for (const auto& e : app.Doc().ActivityLog()) {
+    summaries.push_back({e.timestamp_utc, e.label, e.summary});
+  }
+  return dino8::platform::BuildActivityLogNode(summaries);
+}
+
 // ---------------------------------------------------------------------------
 // Command history / list / help
 // ---------------------------------------------------------------------------

@@ -6,11 +6,11 @@ support for users with disabilities, given that the UI is built on
 high-contrast theme (shipped), full keyboard operability (audited and
 fixed where it was broken), screen-reader support for the command line, the
 main menu bar, the running command's options, the Layers/Properties panels,
-and each viewport's title/view-menu button (a real, still-narrow AT-SPI2
-bridge, shipped on Linux - see section 3), and screen-reader support for the
-rest of the UI (still a hard platform limitation of ImGui itself for the
-reasons section 3 explains - not shipped, and not something a few labels can
-fix).
+each viewport's title/view-menu button, and the persisted Activity Log of
+finalized edits (a real, still-narrow AT-SPI2 bridge, shipped on Linux - see
+section 3), and screen-reader support for the rest of the UI (still a hard
+platform limitation of ImGui itself for the reasons section 3 explains - not
+shipped, and not something a few labels can fix).
 
 ## 1. High Contrast theme - shipped
 
@@ -184,7 +184,7 @@ through each platform's native accessibility API - exactly the scope the
 ImGui maintainers have discussed for years without landing project-wide.
 That has not changed and is not what shipped here.
 
-### What has shipped: a real AT-SPI2 bridge for the command line, the menu bar, the Layers/Properties panels, and the viewports (Linux)
+### What has shipped: a real AT-SPI2 bridge for the command line, the menu bar, the Layers/Properties panels, the viewports, and the Activity Log (Linux)
 
 The one place in Dino 8 blind command-line-driven use is already the
 primary interaction model - the command line itself
@@ -198,8 +198,8 @@ mechanism GNOME's own `atk-bridge-2.0` uses for every GTK app. This is not
 a toy or a simulation: it is the real protocol, verified end-to-end against
 the real registry daemon and the real `pyatspi` client library (see
 "Verifying it yourself" below). The same bridge also publishes the main
-menu bar, the Layers/Properties panels' content, and each viewport's title/
-view-menu button state, described below.
+menu bar, the Layers/Properties panels' content, each viewport's title/
+view-menu button state, and the Activity Log, described below.
 
 **Command line**: exactly one accessible object, named "Command Line"
 (`ATSPI_ROLE_LOG` - "a text widget or container holding log content"),
@@ -285,19 +285,40 @@ does not expose the viewport's actual 3D content (see "Why these regions and
 not the rest of the UI" below) - only the state of its title/view-menu
 control, the same load-bearing-but-narrow scope as the other regions here.
 
+**Activity Log**: an "Activity Log" accessible (`ATSPI_ROLE_LIST`) with one
+`ATSPI_ROLE_LIST_ITEM` per recorded edit, naming its timestamp, action label
+and object-count summary (e.g. `"2024-01-01 12:00:00 Line: +1 -0 ~0
+object(s) [ids 12]"`) - the same three facts the on-screen Activity Log
+panel's Time/Action/Detail columns show for that row. Built from
+`Document::ActivityLog()` (`ui::ActivityLogAccessibleTree`,
+`src/ui/Panels.cpp`), independent of whether the Activity Log panel window is
+actually open on screen right now, the same way Layers/Properties/Viewports
+don't depend on their own panel windows being open. This is a genuinely
+separate record from the "Command Line" accessible's text: the command line
+mirrors `CommandEngine::History()` (every line printed, including notices
+and errors that never produce a persisted edit), while the Activity Log
+mirrors `Document::ActivityLog()` - the persisted, structured record of only
+the edits that actually finalized (`Document::RecordActivityLogEntry`,
+labels/ids/counts only, no geometry - see that function's own comment for
+why), which also survives past the current session in a sidecar file next
+to the document (`Document::LoadActivityLog`/`FlushActivityLogToDisk`). A
+screen-reader user can review what happened to the document - not just what
+was typed - without needing to see the on-screen table at all.
+
 **Why these regions and not the rest of the UI**: the command line is the
 one region where "expose the text" is both sufficient (there is no
 meaningful spatial layout to convey - it *is* a stream of text) and
 complete on its own (every command in the ~1000+ catalog is already
-reachable by typing into it, per section 2). The menu bar and the
-Layers/Properties panels extend this to the next-most load-bearing UI
-surfaces - discovering what commands exist by name, and inspecting/editing
-layer and object state - without requiring the full shadow-tree-for-every-
-widget effort described above. Mirroring the 3D viewport and the ~40
-remaining panels/dialogs the same way would still need that effort; this
-does not extrapolate to "screen reader support" for those in the way a
-browser or native-toolkit app would provide it, and this document does not
-claim otherwise.
+reachable by typing into it, per section 2). The menu bar, the
+Layers/Properties panels, the viewports and the Activity Log extend this to
+the next-most load-bearing UI surfaces - discovering what commands exist by
+name, inspecting/editing layer and object state, knowing where you're
+looking, and reviewing what actually happened to the document - without
+requiring the full shadow-tree-for-every-widget effort described above.
+Mirroring the 3D viewport and the ~39 remaining panels/dialogs the same way
+would still need that effort; this does not extrapolate to "screen reader
+support" for those in the way a browser or native-toolkit app would provide
+it, and this document does not claim otherwise.
 
 **Build-time and platform scope**: `AccessibilityLinux.cpp` is compiled
 only when `libatspi2.0-dev` and `libglib2.0-dev` (`atspi-2`/`gio-2.0` via
@@ -363,13 +384,24 @@ hang.
   currently drawn, unlike the menu bar's "only what's open" rule above; a
   screen-reader user reading "Top" while Perspective is maximized should
   understand it as "exists but hidden", not "visible right now".
+- Activity Log has the same read-only gap (no `Action` interface - there is
+  nothing to click here anyway, since a row is a historical fact rather than
+  a live control, but there is also no AT-SPI-driven equivalent of the
+  on-screen panel's Export CSV button or its filter/date-range fields; a
+  screen-reader user gets the full unfiltered log as plain text and would
+  filter it themselves, or use `ActivityExport`/the command line, the same
+  workaround Command Options and Layers/Properties already need for their
+  own missing `Action` interface). It also has no cap: a very long editing
+  session's full Activity Log is walked and re-published every frame, same
+  as every other list here - fine at the sizes this was verified with, but
+  worth knowing about for a document with an unusually large edit history.
 
 **Internal design, independent of AT-SPI itself**: the accessible tree's
 *shape and text* are built by a small, pure, platform-independent module,
 `src/platform/AccessibilityTree.h`/`.cpp` (`BuildAccessibleTree`,
 `BuildCommandLineText`, `MenuTreeBuilder`, `BuildLayersPanelNode`,
 `BuildPropertiesPanelNode`, `BuildCommandOptionsNode`,
-`BuildViewportsPanelNode`), with its own unit test
+`BuildViewportsPanelNode`, `BuildActivityLogNode`), with its own unit test
 (`tests/test_accessibility_tree.cpp`, registered as the
 `dino8_accessibility_tree` CTest target) that needs no display, no D-Bus, and
 no AT-SPI2 build at all - it runs on every platform and every CI job. The
@@ -377,14 +409,15 @@ menu bar's mirror is recorded live, right alongside the real ImGui
 menu-drawing calls in `src/ui/MenuBar.cpp` (`MenuTreeBuilder`'s
 `OpenMenu`/`CloseMenu`/`LeafMenu`/`Item`, driven by that file's
 `BeginMenuA`/`EndMenuA`/`MenuItemA`/`Item` wrappers), so it can never drift
-from what was actually drawn. The Layers, Properties, Command Options and
-Viewports mirrors (`src/ui/Panels.cpp`'s `LayersPanelAccessibleTree`/
-`PropertiesPanelAccessibleTree`/`CommandOptionsAccessibleTree`/
-`ViewportsAccessibleTree`) are built straight from
+from what was actually drawn. The Layers, Properties, Command Options,
+Viewports and Activity Log mirrors (`src/ui/Panels.cpp`'s
+`LayersPanelAccessibleTree`/`PropertiesPanelAccessibleTree`/
+`CommandOptionsAccessibleTree`/`ViewportsAccessibleTree`/
+`ActivityLogAccessibleTree`) are built straight from
 `Document`/`Application`/`CommandEngine` state, independent of
-`DrawLayersPanel`/`DrawPropertiesPanel`/`DrawCommandLine`/`Viewport::DrawUI`.
-`AccessibilityLinux.cpp` is a thin transport on top of all of this: every
-frame it receives the whole tree wholesale
+`DrawLayersPanel`/`DrawPropertiesPanel`/`DrawCommandLine`/`Viewport::DrawUI`/
+`DrawActivityLogPanel`. `AccessibilityLinux.cpp` is a thin transport on top
+of all of this: every frame it receives the whole tree wholesale
 (`platform::PlatformSetAccessibleTree`) and answers AT-SPI's
 `Text.GetText`/`Accessible.GetChildren`/etc. by walking it - one
 `g_dbus_connection_register_subtree()` handler covers the whole tree since
@@ -400,23 +433,24 @@ test: it spawns the actual built `Dino8` binary under `--smoke`, starts a
 real `dbus-daemon` and the real `at-spi2-registryd`, and uses the real
 `pyatspi` client library to walk the AT-SPI2 desktop and find Dino8's
 "Command Line", "Menu Bar" (with its "File" child), "Layers", "Properties",
-"Command Options" and "Viewports" (with its default "Perspective" row
-reporting itself active) accessibles - the same objects a screen reader
-would find - then asserts the command line's and the Properties list's
-content each change after a real command (`Line 0,0,0 10,10,0`) runs, and
-that Command Options goes empty -> lists Circle's option chips -> empty
-again around a real running `Circle` command. It does not fake, mock, or
-stub any part of the AT-SPI2 stack.
+"Command Options", "Viewports" (with its default "Perspective" row
+reporting itself active) and "Activity Log" accessibles - the same objects a
+screen reader would find - then asserts the command line's and the
+Properties list's content each change after a real command (`Line 0,0,0
+10,10,0`) runs, that Command Options goes empty -> lists Circle's option
+chips -> empty again around a real running `Circle` command, and that the
+Activity Log gains a new entry naming `Line` right after that same command
+finishes. It does not fake, mock, or stub any part of the AT-SPI2 stack.
 
-This was run successfully, including the new Viewports checks, in the
+This was run successfully, including the new Activity Log checks, in the
 environment this addition was built and verified in, after installing:
 `libatspi2.0-dev`, `libglib2.0-dev`, `at-spi2-core` (provides
 `at-spi2-registryd`), `dbus-x11` (provides `dbus-daemon`), and
-`python3-pyatspi` (Ubuntu 24.04/noble package names) - all eight checks
+`python3-pyatspi` (Ubuntu 24.04/noble package names) - all nine checks
 above passed against the real registry daemon, including "Command Options
 lists Circle's option chips while it is running (['Diameter', '3Point',
-'Vertical'])" and "Viewports' Perspective row reports itself active". One
-environment-specific wrinkle worth knowing about, not
+'Vertical'])" and "Activity Log gains a new entry naming the finalized
+command after it runs". One environment-specific wrinkle worth knowing about, not
 specific to this project: Debian/Ubuntu's `python3-pyatspi`/`python3-gi`
 ship a `gi._gi` extension compiled for one specific CPython ABI (on the box
 this was verified on, that was `python3.12`, even though the default
@@ -437,5 +471,5 @@ requirement and runs as part of the normal CTest suite everywhere.
 |---|---|
 | High-contrast theme | Shipped: Options > General > Theme > High Contrast |
 | Keyboard-only operability | Audited; one real bug found and fixed (toolbar/sidebar/tab-strip/bell/viewport-title buttons were `InvisibleButton` without `EnableNav`, so Tab skipped them); nav-focus tooltips added for icon-only buttons; free 3D viewport orbit and a few inherently-drag widgets remain mouse-only by design, same as in Rhino |
-| Screen-reader support (command line, menu bar, command options, Layers/Properties panels, viewports) | Shipped on Linux: a real AT-SPI2 bridge (`src/platform/AccessibilityLinux.cpp`) exposes the command line's live text and full history log, the main menu bar (mirroring exactly what's currently open, built live alongside `ui/MenuBar.cpp`'s own drawing calls), the running command's options (with per-option guidance on how to change it), the Layers/Properties panels' current content (Properties rows note which are real value editors), and every viewport's title/view-menu button state (name, active/maximized, current display mode) as queryable, updating accessible objects, verified end-to-end against the real registry daemon and `pyatspi` (`tests/smoke_accessibility.py`), including the new Viewports checks. Windows/macOS not implemented. Built only when `atspi-2`/`gio-2.0` are available; a silent no-op otherwise |
-| Screen-reader support (rest of the UI) | Not implemented - hard ImGui platform limitation (no accessibility-tree bridge for the 3D viewport's own rendered content or the ~40 remaining panels/dialogs on any OS). Descriptive text/tooltips exist everywhere as a prerequisite, but that is not screen-reader support |
+| Screen-reader support (command line, menu bar, command options, Layers/Properties panels, viewports, Activity Log) | Shipped on Linux: a real AT-SPI2 bridge (`src/platform/AccessibilityLinux.cpp`) exposes the command line's live text and full history log, the main menu bar (mirroring exactly what's currently open, built live alongside `ui/MenuBar.cpp`'s own drawing calls), the running command's options (with per-option guidance on how to change it), the Layers/Properties panels' current content (Properties rows note which are real value editors), every viewport's title/view-menu button state (name, active/maximized, current display mode), and the persisted Activity Log of finalized edits (timestamp/action/summary per entry, distinct from the command line's own raw text log) as queryable, updating accessible objects, verified end-to-end against the real registry daemon and `pyatspi` (`tests/smoke_accessibility.py`), including the new Activity Log checks. Windows/macOS not implemented. Built only when `atspi-2`/`gio-2.0` are available; a silent no-op otherwise |
+| Screen-reader support (rest of the UI) | Not implemented - hard ImGui platform limitation (no accessibility-tree bridge for the 3D viewport's own rendered content or the ~39 remaining panels/dialogs on any OS). Descriptive text/tooltips exist everywhere as a prerequisite, but that is not screen-reader support |
