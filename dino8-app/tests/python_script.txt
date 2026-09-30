@@ -39,6 +39,16 @@
 # Lua's rs.MirrorObject, that the dino8 module also lacked until now), and
 # dino8.doc.Objects.SelectObject/UnselectObject (select/deselect objects,
 # matching Lua's rs.SelectObject/rs.UnselectObject, that the dino8 module
+# also lacked until now), dino8.doc.Objects.TransformObject (applies an
+# arbitrary 4x4 transform, given as four rows of four numbers, sharing
+# TransformIds with MoveObject/CopyObject/RotateObject/ScaleObject/
+# MirrorObject above, matching Lua's rs.TransformObject, that the dino8
+# module also lacked until now), dino8.doc.Objects.UnselectAllObjects
+# (deselects every object and returns how many were selected beforehand,
+# matching Lua's rs.UnselectAllObjects, that the dino8 module also lacked
+# until now), and dino8.doc.Objects.ObjectsByLayer (ids of the objects on
+# a named layer, optionally selecting them, raising for a layer that
+# doesn't exist, matching Lua's rs.ObjectsByLayer, that the dino8 module
 # also lacked until now).
 # Unlike script_script.txt's Lua test, this never goes interactive
 # mid-script (see PythonEngine.h): Python scripts run start to finish in
@@ -47,4 +57,4 @@
 # smoke.sh substitutes @TMP@ with a scratch directory and writes @TMP@/t.py
 # before running this.
 RunPythonScript @TMP@/t.py
-@expect_objects 25
+@expect_objects 27

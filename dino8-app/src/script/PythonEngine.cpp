@@ -500,6 +500,28 @@ struct PyObjectTable {
     return TransformIds(ids, xf, copy, "MirrorObject");
   }
 
+  // Mirrors LuaEngine.cpp's ToXform: reads a 4x4 transform given as four
+  // rows of four numbers each (the same shape LuaEngine.cpp's PushXform
+  // hands back from XformIdentity/XformTranslation/etc.), used by
+  // TransformObject below the same way rs.TransformObject uses ToXform.
+  static ON_Xform ToXform(const std::vector<std::vector<double>>& rows) {
+    if (rows.size() != 4) throw std::runtime_error("TransformObject: expected a 4x4 transform");
+    ON_Xform x = ON_Xform::IdentityTransformation;
+    for (int r = 0; r < 4; ++r) {
+      if (rows[static_cast<size_t>(r)].size() != 4) throw std::runtime_error("TransformObject: expected a 4x4 transform");
+      for (int c = 0; c < 4; ++c) x.m_xform[r][c] = rows[static_cast<size_t>(r)][static_cast<size_t>(c)];
+    }
+    return x;
+  }
+
+  // Mirrors rs.TransformObject(ids, xform, copy=false) in LuaEngine.cpp:
+  // applies an arbitrary 4x4 transform to each of `ids`, in place or onto
+  // copies, sharing TransformIds with MoveObject/CopyObject/RotateObject/
+  // ScaleObject/MirrorObject above.
+  std::vector<ObjectId> TransformObject(std::vector<ObjectId> ids, std::vector<std::vector<double>> xform, bool copy) {
+    return TransformIds(ids, ToXform(xform), copy, "TransformObject");
+  }
+
   // Mirrors rs.SelectObject(ids) in LuaEngine.cpp: selects each of `ids`
   // (Document::Select is a silent no-op for a missing, locked or hidden
   // object), returning how many ended up selected.
@@ -517,6 +539,32 @@ struct PyObjectTable {
     Document& d = DocOf();
     for (ObjectId id : ids) d.Select(id, false);
     return ids.size();
+  }
+
+  // Mirrors rs.UnselectAllObjects() in LuaEngine.cpp: deselects every
+  // object in the document, returning how many were selected beforehand.
+  size_t UnselectAllObjects() {
+    Document& d = DocOf();
+    const size_t n = d.SelectedCount();
+    d.SelectNone();
+    return n;
+  }
+
+  // Mirrors rs.ObjectsByLayer(layerName, select=false) in LuaEngine.cpp:
+  // ids of the objects on a layer (by name or index, via LayerIndexArg -
+  // the same lookup PyObjectRef::SetLayer uses), raising for a layer that
+  // doesn't exist exactly as rs.ObjectsByLayer's NeedLayer does, and
+  // optionally selecting the objects found.
+  std::vector<PyObjectRef> ObjectsByLayer(py::object layer, bool select) {
+    Document& d = DocOf();
+    const int idx = LayerIndexArg(layer);
+    if (idx < 0) throw std::runtime_error("ObjectsByLayer: layer not found");
+    std::vector<ObjectId> ids;
+    for (const SceneObject& o : d.Objects()) if (o.layer_index == idx) ids.push_back(o.id);
+    if (select) for (ObjectId id : ids) d.Select(id, true);
+    std::vector<PyObjectRef> out;
+    for (ObjectId id : ids) out.emplace_back(id);
+    return out;
   }
 
   py::object AddMesh(std::vector<Point3d> verts, std::vector<std::vector<int>> faces) {
@@ -657,8 +705,11 @@ PYBIND11_EMBEDDED_MODULE(dino8, m) {
       .def("RotateObject", &PyObjectTable::RotateObject, py::arg("ids"), py::arg("center"), py::arg("angleDeg"), py::arg("axis") = py::none(), py::arg("copy") = false)
       .def("ScaleObject", &PyObjectTable::ScaleObject, py::arg("ids"), py::arg("origin"), py::arg("scale"), py::arg("copy") = false)
       .def("MirrorObject", &PyObjectTable::MirrorObject, py::arg("ids"), py::arg("start"), py::arg("end"), py::arg("copy") = false)
+      .def("TransformObject", &PyObjectTable::TransformObject, py::arg("ids"), py::arg("xform"), py::arg("copy") = false)
       .def("SelectObject", &PyObjectTable::SelectObject, py::arg("ids"))
       .def("UnselectObject", &PyObjectTable::UnselectObject, py::arg("ids"))
+      .def("UnselectAllObjects", &PyObjectTable::UnselectAllObjects)
+      .def("ObjectsByLayer", &PyObjectTable::ObjectsByLayer, py::arg("layer"), py::arg("select") = false)
       .def("AddBox", &PyObjectTable::AddBox, py::arg("corner"), py::arg("size"))
       .def("AddSphere", &PyObjectTable::AddSphere, py::arg("center"), py::arg("radius"))
       .def("AddCylinder", &PyObjectTable::AddCylinder, py::arg("base"), py::arg("axis"), py::arg("radius"), py::arg("cap") = true)

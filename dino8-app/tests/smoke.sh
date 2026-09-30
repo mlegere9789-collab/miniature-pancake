@@ -1871,12 +1871,41 @@ try:
 except RuntimeError as e:
     print("bad mirror rejected: " + str(e))
 
+transform_line_id = dino8.doc.Objects.AddLine(dino8.Point3d(70, 0, 0), dino8.Point3d(71, 0, 0))
+print("object count with transform line: %d" % len(dino8.doc.Objects.AllObjects()))
+translate_xf = [[1, 0, 0, 5], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]
+transform_ids = dino8.doc.Objects.TransformObject([transform_line_id], translate_xf)
+print("transform returned same id: " + str(transform_ids == [transform_line_id]))
+print("object count with transform: %d" % len(dino8.doc.Objects.AllObjects()))
+transform_copy_ids = dino8.doc.Objects.TransformObject([transform_line_id], translate_xf, True)
+print("transform copy is new id: " + str(len(transform_copy_ids) == 1 and transform_copy_ids[0] != transform_line_id))
+print("object count with transform copy: %d" % len(dino8.doc.Objects.AllObjects()))
+print("transform missing skipped: " + str(dino8.doc.Objects.TransformObject([999999], translate_xf)))
+try:
+    dino8.doc.Objects.TransformObject([transform_line_id], [[1, 0, 0], [0, 1, 0]])
+    print("bad transform: no error")
+except RuntimeError as e:
+    print("bad transform rejected: " + str(e))
+
+by_layer = dino8.doc.Objects.ObjectsByLayer("Default")
+print("objects by layer matches all: " + str(len(by_layer) == len(dino8.doc.Objects.AllObjects())))
+try:
+    dino8.doc.Objects.ObjectsByLayer("NoSuchLayer")
+    print("bad layer: no error")
+except RuntimeError as e:
+    print("bad layer rejected: " + str(e))
+
 select_count = dino8.doc.Objects.SelectObject([mirror_line_id, circle_id])
 print("select count: %d" % select_count)
 print("selected after select: %d" % len(dino8.doc.Objects.GetSelectedObjects()))
 unselect_count = dino8.doc.Objects.UnselectObject([mirror_line_id, circle_id])
 print("unselect returned count: %d" % unselect_count)
 print("selected after unselect: %d" % len(dino8.doc.Objects.GetSelectedObjects()))
+
+dino8.doc.Objects.SelectObject([transform_line_id])
+unselect_all_count = dino8.doc.Objects.UnselectAllObjects()
+print("unselect all count: %d" % unselect_all_count)
+print("selected after unselect all: %d" % len(dino8.doc.Objects.GetSelectedObjects()))
 
 dino8.RunCommand("NewLayer", "Parts")
 PY
@@ -1989,11 +2018,22 @@ else
   pscheck "history: object count with mirror copy: 25" "AllObjects gained the mirrored copy of the line"
   pscheck "history: mirror missing skipped: \[\]" "MirrorObject returned an empty list for an id that no longer exists, matching LuaEngine.cpp's TransformIds skip-missing loop instead of raising"
   pscheck "history: bad mirror rejected:" "MirrorObject raised a Python exception for a vertical mirror line instead of silently returning, matching rs.MirrorObject raising a Lua error"
+  pscheck "history: object count with transform line: 26" "AllObjects gained the new transform line"
+  pscheck "history: transform returned same id: True" "dino8.doc.Objects.TransformObject applied the 4x4 transform in place and returned its own id back, matching rs.TransformObject(id, xform, copy=false)"
+  pscheck "history: object count with transform: 26" "TransformObject without copy=True transforms in place, so AllObjects is unchanged by it"
+  pscheck "history: transform copy is new id: True" "TransformObject with copy=True left the line in place and added a transformed duplicate under a fresh id, matching rs.TransformObject(id, xform, copy=true)"
+  pscheck "history: object count with transform copy: 27" "AllObjects gained the transformed copy of the line"
+  pscheck "history: transform missing skipped: \[\]" "TransformObject returned an empty list for an id that no longer exists, matching LuaEngine.cpp's TransformIds skip-missing loop instead of raising"
+  pscheck "history: bad transform rejected:" "TransformObject raised a Python exception for a malformed (non-4x4) transform instead of silently returning, matching rs.TransformObject's ToXform validation"
+  pscheck "history: objects by layer matches all: True" "dino8.doc.Objects.ObjectsByLayer(\"Default\") found every object built so far, matching rs.ObjectsByLayer (everything is still on the Default layer - NewLayer's effect is deferred, see the comment above this script)"
+  pscheck "history: bad layer rejected:" "ObjectsByLayer raised a Python exception for a layer name that doesn't exist, matching rs.ObjectsByLayer's NeedLayer"
   pscheck "history: select count: 2" "dino8.doc.Objects.SelectObject selected both requested objects and returned that count, matching rs.SelectObject"
   pscheck "history: selected after select: 3" "GetSelectedObjects sees the already-selected box plus the two objects SelectObject just selected"
   pscheck "history: unselect returned count: 2" "dino8.doc.Objects.UnselectObject returned the number of ids given, matching rs.UnselectObject"
   pscheck "history: selected after unselect: 1" "UnselectObject deselected both objects, leaving only the box selected"
-  pscheck "^ok   expect_objects 25" "RunPythonScript left the box, the circle, the cone, the torus, the interpolated curve, the arc, the srf, the planar surface, three points, the extruded surface, the extruded solid, the union mesh, the difference mesh, the intersection mesh, the two circle copies, the rotate line and its rotated copy, the scale box and its scaled copy, and the mirror line and its mirrored copy (the sphere, the two union input boxes, the two difference input boxes and the two intersection input boxes were removed from inside the script)"
+  pscheck "history: unselect all count: 2" "dino8.doc.Objects.UnselectAllObjects returned how many objects were selected beforehand (the box plus the transform line just selected for this check), matching rs.UnselectAllObjects"
+  pscheck "history: selected after unselect all: 0" "UnselectAllObjects deselected everything"
+  pscheck "^ok   expect_objects 27" "RunPythonScript left the box, the circle, the cone, the torus, the interpolated curve, the arc, the srf, the planar surface, three points, the extruded surface, the extruded solid, the union mesh, the difference mesh, the intersection mesh, the two circle copies, the rotate line and its rotated copy, the scale box and its scaled copy, the mirror line and its mirrored copy, and the transform line and its transformed copy (the sphere, the two union input boxes, the two difference input boxes and the two intersection input boxes were removed from inside the script)"
   grep -q "! Python error" <<<"$PS" && { echo "FAIL python_script.txt printed a Python error"; fail=1; } || echo "ok   no Python script errors"
 fi
 
