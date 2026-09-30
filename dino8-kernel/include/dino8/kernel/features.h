@@ -312,6 +312,86 @@ struct CounterboreFeature {
 // general (non-cylindrical) pocket is out of scope.
 std::vector<CounterboreFeature> RecognizeCounterboreHoles(const Brep& solid);
 
+// One segment of a multi-step chain recognized by
+// RecognizeSteppedHoleChains() below - a single cylindrical wall's own
+// radius/length/face_index, in entry-to-far order within the enclosing
+// SteppedHoleChain (see that struct's own doc comment for what "length"
+// is measured from for a step other than the first).
+struct SteppedHoleStep {
+  double radius = 0.0;
+  double length = 0.0;
+  int face_index = -1;
+};
+
+// A compound hole with THREE OR MORE coaxial cylindrical steps - the
+// generalization of CounterboreFeature above (exactly two steps: a
+// counterbore recess plus its own pilot bore) to an arbitrary chain
+// length, closing RecognizeCounterboreHoles()'s own disclosed "a stepped
+// hole with more than two radii (a counterbore followed by its own
+// further pilot reduction) is not walked past the first pair" gap - e.g.
+// a spot-face, then a counterbore recess, then a narrower pilot drill, or
+// any other chain of adjacent same-axis cylindrical steps.
+//
+// `origin`/`axis` describe the chain's own entry point and into-material
+// direction exactly like CounterboreFeature's/HoleFeature's own fields
+// (axis pointing INTO the material). `steps` lists each segment's own
+// radius/length/face_index in entry-to-far order: `steps[0].length` is
+// measured from `origin` itself, and each subsequent step's own `length`
+// is measured from where the PREVIOUS step ends, not as a running total
+// from `origin` - there is no fixed "two steps" bound here to give a
+// single obvious second running-total field a name the way
+// CounterboreFeature's own `drill_depth` (a total-from-entry convention)
+// has, so a caller wanting a running total sums the steps up to and
+// including the one it wants. `through` reflects the chain's own far end,
+// exactly like HoleFeature::through/CounterboreFeature::through.
+//
+// Unlike RecognizeCounterboreHoles() itself, this does NOT require the
+// chain's own radii to trend in any particular direction (narrowing
+// monotonically toward the far end, the way a real counterbore's own
+// wide-then-narrow convention always does) - any sequence of adjacent,
+// non-overlapping, pairwise-different-radius cylindrical segments on the
+// same axis line merges into one chain here, including one that widens
+// then narrows again (a spot-face recess wider than the counterbore
+// beneath it, say) - a deliberately more general match than
+// CounterboreFeature's own fixed convention, verified directly for a
+// non-monotonic case (see this function's own test).
+struct SteppedHoleChain {
+  Point3d origin;
+  Vector3d axis;
+  std::vector<SteppedHoleStep> steps;
+  bool through = false;
+};
+
+// Scans every face of `solid` the same way RecognizeCounterboreHoles()
+// does (CONCAVE candidates only), but instead of matching only the
+// first-found adjacent pair, walks each candidate's own chain of
+// adjacent, non-overlapping, same-axis-line, pairwise-different-radius
+// neighbors as far as it goes via this file's own internal
+// FindSteppedChains() helper (the generalization of
+// FindAdjacentSteppedPairs() from exactly two segments to an arbitrary
+// chain), then reports every chain of THREE OR MORE segments as one
+// SteppedHoleChain - a plain single-radius hole (RecognizeHoles()'s own
+// domain) and an exactly-two-segment counterbore (RecognizeCounterboreHoles()'s
+// own domain) are both left alone here, not repeated: this function's
+// own output is disjoint from both of theirs, the same one-capability-
+// several-vocabularies convention this file's other Recognize* functions
+// already follow (see e.g. CounterboreFeature's own doc comment).
+//
+// The chain's own two outer ends are classified open/capped with the
+// exact same on-axis Mesh::ContainsPoint() test RecognizeHoles()/
+// RecognizeCounterboreHoles() themselves use, tessellating `solid` once
+// and reusing it for every candidate chain; a chain with neither end open
+// (entirely enclosed) is silently skipped, mirroring RecognizeHoles()'s
+// own "both ends capped" skip.
+//
+// Still partial: only the CYLINDRICAL-step case is recognized, same as
+// RecognizeCounterboreHoles() itself - a countersink's own conical step
+// is a different surface type and never joins a chain here; a general
+// (non-cylindrical) pocket remains out of scope; and, like every other
+// Recognize* function in this file, this inherits Mesh::ContainsPoint()'s
+// own disclosed "closed, consistently-oriented mesh" precondition.
+std::vector<SteppedHoleChain> RecognizeSteppedHoleChains(const Brep& solid);
+
 // One compound stepped/shouldered boss recognized on an existing solid
 // (parity-map "Feature recognition" - closes BossFeature's own disclosed
 // "a counterbore/countersink's own second step ... has no boss-side
@@ -379,5 +459,74 @@ struct SteppedBossFeature {
 // BooleanCombineGeneral() misclassifies across its whole embedded span;
 // see BossFeature's own doc comment) for a stepped boss built that way.
 std::vector<SteppedBossFeature> RecognizeSteppedBosses(const Brep& solid);
+
+// One segment of a multi-step chain recognized by
+// RecognizeSteppedBossChains() below - the boss-side mirror of
+// SteppedHoleStep, in base-to-tip order within the enclosing
+// SteppedBossChain.
+struct SteppedBossStep {
+  double radius = 0.0;
+  double height = 0.0;
+  int face_index = -1;
+};
+
+// A compound boss with THREE OR MORE coaxial cylindrical steps - the
+// boss-side mirror of SteppedHoleChain above, closing
+// RecognizeSteppedBosses()'s own disclosed "a stepped chain of more than
+// two radii ... is not walked past the first adjacent pair" gap for a
+// convex chain (e.g. a flanged boss whose shaft itself steps down to a
+// narrower threaded stub, or any other chain of adjacent same-axis convex
+// cylindrical steps).
+//
+// `origin`/`axis` describe the chain's own base (attached) end and
+// outward direction exactly like SteppedBossFeature's/BossFeature's own
+// fields (axis pointing AWAY from the material, base toward the free
+// tip). `steps` lists each segment's own radius/height/face_index in
+// base-to-tip order - the same "each entry measured from where the
+// previous one ends, not a running total from origin" convention
+// SteppedHoleChain's own `steps` field uses. Like a stepped boss's own
+// two-segment case (SteppedBossFeature), and unlike a counterbore's fixed
+// "wide is always the entry side" rule, a chain here has NO fixed
+// "widest/narrowest segment is always the base" convention either - EITHER
+// end of the chain can be the one genuinely attached, and this reports
+// whichever one actually is (via the same on-axis Mesh::ContainsPoint()
+// attached/free probe SteppedBossFeature's own construction already
+// uses), regardless of that end's own radius. `through` mirrors
+// SteppedBossFeature::through: true only when NEITHER outer end is
+// attached (a free-standing multi-step rod).
+struct SteppedBossChain {
+  Point3d origin;
+  Vector3d axis;
+  std::vector<SteppedBossStep> steps;
+  bool through = false;
+};
+
+// Scans every face of `solid` the same way RecognizeSteppedBosses() does
+// (CONVEX candidates only), but instead of matching only the first-found
+// adjacent pair, walks each candidate's own chain of adjacent,
+// non-overlapping, same-axis-line, pairwise-different-radius neighbors as
+// far as it goes via FindSteppedChains() (shared with
+// RecognizeSteppedHoleChains() above - the same "share the chain-walking
+// geometry, not a second copy of the loop" precedent
+// FindAdjacentSteppedPairs() itself already set for
+// RecognizeCounterboreHoles()/RecognizeSteppedBosses()), then reports
+// every chain of THREE OR MORE segments as one SteppedBossChain - a plain
+// single-radius boss and an exactly-two-segment stepped boss
+// (RecognizeSteppedBosses()'s own domain) are both left alone here, not
+// repeated.
+//
+// A candidate chain found with BOTH of its own two outer ends attached
+// (the whole chain entirely embedded in `solid`'s own bulk, exposed
+// nowhere) is not a visible feature and is silently skipped, mirroring
+// RecognizeSteppedBosses()'s own "both ends attached" skip for a
+// two-segment pair.
+//
+// Still partial, for the same reasons RecognizeSteppedBosses() itself
+// discloses: this inherits Mesh::ContainsPoint()'s own disclosed "closed,
+// consistently-oriented mesh" precondition, including RecognizeBosses()'s
+// own CONFIRMED Union-side gap (see BossFeature's own doc comment) for a
+// stepped-boss chain built via BooleanCombineGeneral()'s own Union path
+// specifically; and no `dino8-app` command surfaces any of this.
+std::vector<SteppedBossChain> RecognizeSteppedBossChains(const Brep& solid);
 
 }  // namespace dino8::kernel

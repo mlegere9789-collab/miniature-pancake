@@ -52048,6 +52048,348 @@ void TestRecognizeSteppedBossesRoundTrip() {
   }
 }
 
+// Builds a compound TOOL Brep with N adjacent, non-overlapping
+// Brep::CylindricalFace segments - NO caps at all, the same bare-tube
+// convention TestRecognizeSteppedBossesRoundTrip's own two-segment tool
+// above already uses - starting at `origin` and growing along `axis`.
+// `steps` gives each segment's own (radius, length) pair in the order
+// they're laid out from `origin` outward; shared by
+// TestRecognizeSteppedHoleChainsRoundTrip (subtracted via Difference
+// below) and TestRecognizeSteppedBossChainsRoundTrip (added via Union
+// below) - the same CylindricalFace-chain compound-cutter construction
+// CounterboreHole() itself uses (features.cpp), generalized here from
+// exactly two segments to an arbitrary N for these tests' own multi-step
+// fixtures.
+dino8::kernel::Brep BuildSteppedCylinderTool(dino8::kernel::Point3d origin, dino8::kernel::Vector3d axis,
+                                              const std::vector<std::pair<double, double>>& steps) {
+  using dino8::kernel::Brep;
+
+  dino8::kernel::Vector3d dir = axis;
+  dir.Unitize();
+  const ON_Plane frame = FrameFromAxisForGeneralBooleanTest(origin, dir);
+
+  std::vector<Brep::CylindricalFace> faces;
+  double running = 0.0;
+  for (const auto& step : steps) {
+    Brep::CylindricalFace cf;
+    cf.frame = frame;
+    cf.frame.origin = frame.PointAt(0, 0, running);
+    cf.radius = step.first;
+    cf.angle = 2.0 * ON_PI;
+    cf.length = step.second;
+    faces.push_back(cf);
+    running += step.second;
+  }
+  return Brep::FromMixedFaces({}, faces);
+}
+
+// Subtracts a BuildSteppedCylinderTool() chain from `solid` via ONE
+// BooleanCombineMixed(..., Difference) call - CounterboreHole()'s own
+// two-segment construction (features.cpp), generalized to N segments,
+// for a real, tested multi-step bore (not a mock).
+dino8::kernel::Brep BuildSteppedHoleFixture(const dino8::kernel::Brep& solid, dino8::kernel::Point3d origin,
+                                             dino8::kernel::Vector3d axis,
+                                             const std::vector<std::pair<double, double>>& steps) {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  const dino8::kernel::Brep tool = BuildSteppedCylinderTool(origin, axis, steps);
+  return BooleanCombineMixed(solid, tool, BooleanOp::Difference);
+}
+
+// Adds a BuildSteppedCylinderTool() chain onto `solid` via ONE
+// BooleanCombineMixed(..., Union) call - the additive mirror of
+// BuildSteppedHoleFixture() above, and TestRecognizeSteppedBossesRoundTrip's
+// own two-segment Union tool construction, generalized to N segments.
+dino8::kernel::Brep BuildSteppedBossFixture(const dino8::kernel::Brep& solid, dino8::kernel::Point3d origin,
+                                             dino8::kernel::Vector3d axis,
+                                             const std::vector<std::pair<double, double>>& steps) {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  const dino8::kernel::Brep tool = BuildSteppedCylinderTool(origin, axis, steps);
+  return BooleanCombineMixed(solid, tool, BooleanOp::Union);
+}
+
+// parity-map "kernel: Feature operations" - "Feature recognition": closes
+// RecognizeCounterboreHoles()'s own disclosed "a stepped hole with more
+// than two radii (a counterbore followed by its own further pilot
+// reduction) is not walked past the first pair" gap.
+// RecognizeSteppedHoleChains() walks the FULL chain via features.cpp's
+// own internal FindSteppedChains() helper, not just its first adjacent
+// pair.
+void TestRecognizeSteppedHoleChainsRoundTrip() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::RecognizeCounterboreHoles;
+  using dino8::kernel::RecognizeSteppedHoleChains;
+  using dino8::kernel::SteppedHoleChain;
+  using dino8::kernel::Vector3d;
+
+  const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+  const Point3d origin(5, 5, 10);
+  const Vector3d down(0, 0, -1);
+
+  {
+    // A THROUGH three-step bore, radii strictly narrowing toward the far
+    // end (a spot-face, then a counterbore recess, then a pilot drill) -
+    // the "counterbore followed by its own further pilot reduction" case
+    // this item's own doc comment names. l1+l2+l3 == 10: exits the box's
+    // own bottom face.
+    const double r1 = 2.0, l1 = 2.0;
+    const double r2 = 1.2, l2 = 3.0;
+    const double r3 = 0.6, l3 = 5.0;
+    const Brep result = BuildSteppedHoleFixture(box, origin, down, {{r1, l1}, {r2, l2}, {r3, l3}});
+
+    // Sanity: RecognizeCounterboreHoles() itself only ever merges the
+    // FIRST adjacent pair of this 3-step bore (its own disclosed
+    // limitation), leaving the third segment out entirely - confirms this
+    // fixture actually exercises the "not walked past the first pair"
+    // gap, rather than something RecognizeCounterboreHoles() already
+    // handles in full on its own.
+    Check(RecognizeCounterboreHoles(result).size() == 1,
+          "sanity: RecognizeCounterboreHoles() merges only the FIRST adjacent pair of this 3-step bore, not the "
+          "whole chain");
+
+    const std::vector<SteppedHoleChain> found = RecognizeSteppedHoleChains(result);
+    Check(found.size() == 1, "RecognizeSteppedHoleChains merges all three steps into exactly one compound feature");
+    const SteppedHoleChain& chain = found[0];
+    Check(chain.origin.DistanceTo(origin) < 1e-6, "RecognizeSteppedHoleChains recovers the chain's own exact entry point");
+    Check((chain.axis - down).Length() < 1e-6, "RecognizeSteppedHoleChains recovers the chain's own exact drilling direction");
+    Check(chain.through, "RecognizeSteppedHoleChains reports this through bore as through");
+    Check(chain.steps.size() == 3, "RecognizeSteppedHoleChains recovers all three steps, not just the first pair");
+    Check(std::abs(chain.steps[0].radius - r1) < 1e-6 && std::abs(chain.steps[0].length - l1) < 1e-6,
+          "RecognizeSteppedHoleChains recovers step 1's own exact radius/length");
+    Check(std::abs(chain.steps[1].radius - r2) < 1e-6 && std::abs(chain.steps[1].length - l2) < 1e-6,
+          "RecognizeSteppedHoleChains recovers step 2's own exact radius/length");
+    Check(std::abs(chain.steps[2].radius - r3) < 1e-6 && std::abs(chain.steps[2].length - l3) < 1e-6,
+          "RecognizeSteppedHoleChains recovers step 3's own exact radius/length");
+
+    // Hand-derived closed-form volume: the box minus each step's own
+    // cylindrical volume (all coaxial, non-overlapping, axis-aligned with
+    // the box's own extrusion direction).
+    const double expected_volume = 1000.0 - (ON_PI * r1 * r1 * l1 + ON_PI * r2 * r2 * l2 + ON_PI * r3 * r3 * l3);
+    const Mesh result_mesh = result.TessellateToClosedMesh(64, 64);
+    Check(std::abs(result_mesh.Volume() - expected_volume) < 0.5,
+          "the 3-step through bore's own tessellated volume matches the hand-derived closed form (box minus three "
+          "coaxial cylinders)");
+
+    // Round-trip: feed the recognized steps straight back into the same
+    // construction against a fresh box and confirm it reproduces the
+    // original's own volume - the real test these recognized numbers are
+    // usable, not merely plausible-looking.
+    const Brep rebuilt = BuildSteppedHoleFixture(
+        box, chain.origin, chain.axis,
+        {{chain.steps[0].radius, chain.steps[0].length},
+         {chain.steps[1].radius, chain.steps[1].length},
+         {chain.steps[2].radius, chain.steps[2].length}});
+    const Mesh rebuilt_mesh = rebuilt.TessellateToClosedMesh(64, 64);
+    Check(std::abs(result_mesh.Volume() - rebuilt_mesh.Volume()) < 1e-6,
+          "rebuilding from RecognizeSteppedHoleChains()'s own recognized origin/axis/steps reproduces the original "
+          "3-step bore's own exact volume");
+  }
+  {
+    // A BLIND three-step bore whose radii do NOT trend monotonically (a
+    // spot-face WIDER than the counterbore recess beneath it) - confirms
+    // RecognizeSteppedHoleChains() doesn't assume any fixed radius trend,
+    // unlike RecognizeCounterboreHoles()'s own fixed "wide is always the
+    // entry side" rule.
+    const double r1 = 1.0, l1 = 1.5;
+    const double r2 = 2.0, l2 = 1.5;
+    const double r3 = 1.2, l3 = 2.0;  // total 5.0, well short of the box's own 10 height: blind
+    const Brep result = BuildSteppedHoleFixture(box, origin, down, {{r1, l1}, {r2, l2}, {r3, l3}});
+
+    const std::vector<SteppedHoleChain> found = RecognizeSteppedHoleChains(result);
+    Check(found.size() == 1, "RecognizeSteppedHoleChains merges a non-monotonic-radius 3-step blind bore too");
+    const SteppedHoleChain& chain = found[0];
+    Check(!chain.through, "RecognizeSteppedHoleChains reports this blind bore as NOT through");
+    Check(chain.origin.DistanceTo(origin) < 1e-6, "RecognizeSteppedHoleChains recovers the blind chain's own exact entry point");
+    Check((chain.axis - down).Length() < 1e-6, "RecognizeSteppedHoleChains recovers the blind chain's own exact drilling direction");
+    Check(chain.steps.size() == 3, "RecognizeSteppedHoleChains recovers all three steps of the non-monotonic chain");
+    Check(std::abs(chain.steps[0].radius - r1) < 1e-6,
+          "RecognizeSteppedHoleChains keeps step 1's own narrower radius first, not reordered by size");
+    Check(std::abs(chain.steps[1].radius - r2) < 1e-6,
+          "RecognizeSteppedHoleChains keeps step 2's own WIDER radius in the middle, not reordered by size");
+    Check(std::abs(chain.steps[2].radius - r3) < 1e-6, "RecognizeSteppedHoleChains recovers step 3's own radius");
+
+    const double expected_volume = 1000.0 - (ON_PI * r1 * r1 * l1 + ON_PI * r2 * r2 * l2 + ON_PI * r3 * r3 * l3);
+    const Mesh result_mesh = result.TessellateToClosedMesh(64, 64);
+    Check(std::abs(result_mesh.Volume() - expected_volume) < 0.5,
+          "the non-monotonic 3-step blind bore's own tessellated volume matches the hand-derived closed form");
+  }
+  {
+    // Negative control: a plain single-radius through hole (MakeHole()'s
+    // own well-tested construction) has no chain to merge.
+    const Brep single = dino8::kernel::MakeHole(box, origin, down, 1.0, 0.0, /*through=*/true);
+    Check(RecognizeSteppedHoleChains(single).empty(), "RecognizeSteppedHoleChains finds no chain on a plain single-radius hole");
+  }
+  {
+    // Negative control: a plain two-segment counterbore
+    // (CounterboreHole()'s own well-tested construction, already
+    // RecognizeCounterboreHoles()'s own domain) is NOT also reported
+    // here - the two functions' own outputs stay disjoint, the same
+    // one-capability-several-vocabularies convention this file's other
+    // Recognize* functions already follow.
+    const Brep two_step = dino8::kernel::CounterboreHole(box, origin, down, 1.0, 6.0, 2.0, 3.0);
+    Check(RecognizeSteppedHoleChains(two_step).empty(),
+          "RecognizeSteppedHoleChains finds no chain on a plain two-segment counterbore - that stays "
+          "RecognizeCounterboreHoles()'s own domain, not duplicated here");
+  }
+}
+
+// The boss-side mirror of TestRecognizeSteppedHoleChainsRoundTrip() above:
+// closes RecognizeSteppedBosses()'s own disclosed "a stepped chain of
+// more than two radii is not walked past the first adjacent pair" gap for
+// a convex chain.
+void TestRecognizeSteppedBossChainsRoundTrip() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::RecognizeBosses;
+  using dino8::kernel::RecognizeSteppedBossChains;
+  using dino8::kernel::RecognizeSteppedBosses;
+  using dino8::kernel::SteppedBossChain;
+  using dino8::kernel::SteppedBossFeature;
+  using dino8::kernel::Vector3d;
+
+  const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+  const Point3d surface(5, 5, 10);
+  const Vector3d up(0, 0, 1);
+
+  {
+    // The common case: a wide shoulder flush with the box's own top face,
+    // narrowing in two further steps to a free-standing tip - the tool's
+    // own segments are supplied base-to-tip, offset 0 exactly at the
+    // box's own surface, so the FIRST candidate ScanFullCylinderFaces()
+    // finds is the attached one and no chain reversal is needed.
+    const double r1 = 2.0, h1 = 1.0;
+    const double r2 = 1.2, h2 = 1.0;
+    const double r3 = 0.6, h3 = 2.0;
+    const Brep result = BuildSteppedBossFixture(box, surface, up, {{r1, h1}, {r2, h2}, {r3, h3}});
+
+    // Sanity: RecognizeBosses() itself reports only the free tip segment
+    // as an independent boss (both other segments read "both ends
+    // attached" - real material genuinely continues on both sides of
+    // each interior step - and are silently skipped), and
+    // RecognizeSteppedBosses() itself finds NOTHING AT ALL for this
+    // fixture: its own only considered pair (the first two segments)
+    // reads BOTH ends attached too (backed by the third segment
+    // continuing beyond it) and is silently skipped - an even starker
+    // symptom of the "not walked past the first pair" gap than a case
+    // where it partially, wrongly matches (see the flared case below for
+    // that one). Confirms this fixture genuinely exercises the gap being
+    // closed.
+    Check(RecognizeBosses(result).size() == 1,
+          "sanity: RecognizeBosses() itself reports only the free tip as an independent boss on this 3-step "
+          "shoulder");
+    Check(RecognizeSteppedBosses(result).empty(),
+          "sanity: RecognizeSteppedBosses() itself finds NOTHING on this 3-step shoulder - its own only "
+          "considered pair (segments 1+2) reads both ends attached, backed by the third segment continuing "
+          "beyond it, and is silently skipped");
+
+    const std::vector<SteppedBossChain> found = RecognizeSteppedBossChains(result);
+    Check(found.size() == 1, "RecognizeSteppedBossChains merges all three steps into exactly one compound feature");
+    const SteppedBossChain& chain = found[0];
+    Check(!chain.through, "RecognizeSteppedBossChains reports this flush-base boss as NOT through");
+    Check(chain.origin.DistanceTo(surface) < 1e-6, "RecognizeSteppedBossChains recovers the chain's own exact base/attach point");
+    Check((chain.axis - up).Length() < 1e-6, "RecognizeSteppedBossChains recovers the chain's own exact outward direction");
+    Check(chain.steps.size() == 3, "RecognizeSteppedBossChains recovers all three steps, not just the first pair");
+    Check(std::abs(chain.steps[0].radius - r1) < 1e-6 && std::abs(chain.steps[0].height - h1) < 1e-6,
+          "RecognizeSteppedBossChains recovers the base step's own exact radius/height");
+    Check(std::abs(chain.steps[1].radius - r2) < 1e-6 && std::abs(chain.steps[1].height - h2) < 1e-6,
+          "RecognizeSteppedBossChains recovers the middle step's own exact radius/height");
+    Check(std::abs(chain.steps[2].radius - r3) < 1e-6 && std::abs(chain.steps[2].height - h3) < 1e-6,
+          "RecognizeSteppedBossChains recovers the tip step's own exact radius/height");
+
+    const double expected_volume = 1000.0 + (ON_PI * r1 * r1 * h1 + ON_PI * r2 * r2 * h2 + ON_PI * r3 * r3 * h3);
+    const Mesh result_mesh = result.TessellateToClosedMesh(64, 64);
+    Check(std::abs(result_mesh.Volume() - expected_volume) < 0.5,
+          "the 3-step flush boss's own tessellated volume matches the hand-derived closed form (box plus three "
+          "coaxial cylinders)");
+
+    const Brep rebuilt = BuildSteppedBossFixture(
+        box, chain.origin, chain.axis,
+        {{chain.steps[0].radius, chain.steps[0].height},
+         {chain.steps[1].radius, chain.steps[1].height},
+         {chain.steps[2].radius, chain.steps[2].height}});
+    const Mesh rebuilt_mesh = rebuilt.TessellateToClosedMesh(64, 64);
+    Check(std::abs(result_mesh.Volume() - rebuilt_mesh.Volume()) < 1e-6,
+          "rebuilding from RecognizeSteppedBossChains()'s own recognized origin/axis/steps reproduces the original "
+          "3-step boss's own exact volume");
+  }
+  {
+    // The opposite construction order: the tool's own segments are
+    // supplied TIP-to-base (offset 0 sits at the free tip, well away from
+    // the box; the LAST segment is the one flush against the box's own
+    // surface) - so the candidate ScanFullCylinderFaces()/
+    // FindSteppedChains() walk first-to-last from is the FREE end, not
+    // the attached one, and RecognizeSteppedBossChains() must reverse the
+    // whole walked chain to put `origin` back at the genuinely attached
+    // end. This is exactly the correctness pitfall this session's own
+    // hole-side hand-derivation flagged as a real risk (see
+    // RecognizeSteppedBossChains()'s own "far_attached" branch,
+    // features.cpp) - a case that would silently misreport `origin` (and
+    // reverse every step) if that branch were missing or wrong.
+    const double r1 = 0.6, h1 = 1.5;  // built first (offset 0): the tip, free
+    const double r2 = 1.2, h2 = 1.0;  // built second: the middle step
+    const double r3 = 2.0, h3 = 0.5;  // built last: the base, flush with the box
+    const Point3d tip(5, 5, 13.0);    // h1+h2+h3 == 3.0, landing exactly on the box's own top face (z=10)
+    const Vector3d down(0, 0, -1);
+    const Brep result = BuildSteppedBossFixture(box, tip, down, {{r1, h1}, {r2, h2}, {r3, h3}});
+
+    // Sanity: RecognizeSteppedBosses() itself, pairing only the first two
+    // segments it scans (tip + middle), reports a base_radius of 1.2 (the
+    // MIDDLE segment) - not this boss's own true base radius of 2.0,
+    // which sits in the unconsumed third segment its own pairing never
+    // reaches. A real, visible wrong-number symptom of the "not walked
+    // past the first pair" gap, not merely an abstract limitation.
+    const std::vector<SteppedBossFeature> partial = RecognizeSteppedBosses(result);
+    Check(partial.size() == 1 && std::abs(partial[0].base_radius - r2) < 1e-6,
+          "sanity: RecognizeSteppedBosses() itself reports the flared boss's own base_radius as 1.2 (the middle "
+          "segment) rather than the true base radius 2.0, since its own pairing never reaches the third segment");
+
+    const std::vector<SteppedBossChain> found = RecognizeSteppedBossChains(result);
+    Check(found.size() == 1, "RecognizeSteppedBossChains merges the flared boss's three steps into one compound feature");
+    const SteppedBossChain& chain = found[0];
+    Check(!chain.through, "RecognizeSteppedBossChains reports the flared boss as NOT through");
+    Check(chain.origin.DistanceTo(surface) < 1e-6,
+          "RecognizeSteppedBossChains recovers the flared boss's own true base point (the box's own surface), not "
+          "the free tip the underlying chain walk actually started from");
+    Check((chain.axis - up).Length() < 1e-6, "RecognizeSteppedBossChains recovers the flared boss's own exact outward direction");
+    Check(chain.steps.size() == 3, "RecognizeSteppedBossChains recovers all three of the flared boss's own steps");
+    Check(std::abs(chain.steps[0].radius - r3) < 1e-6 && std::abs(chain.steps[0].height - h3) < 1e-6,
+          "RecognizeSteppedBossChains reorders the reversed walk so the TRUE base segment (radius 2.0) comes "
+          "first, not the segment the underlying chain walk happened to start from");
+    Check(std::abs(chain.steps[1].radius - r2) < 1e-6 && std::abs(chain.steps[1].height - h2) < 1e-6,
+          "RecognizeSteppedBossChains recovers the flared boss's own middle step");
+    Check(std::abs(chain.steps[2].radius - r1) < 1e-6 && std::abs(chain.steps[2].height - h1) < 1e-6,
+          "RecognizeSteppedBossChains recovers the flared boss's own tip step last, after reversal");
+
+    const double expected_volume = 1000.0 + (ON_PI * r1 * r1 * h1 + ON_PI * r2 * r2 * h2 + ON_PI * r3 * r3 * h3);
+    const Mesh result_mesh = result.TessellateToClosedMesh(64, 64);
+    Check(std::abs(result_mesh.Volume() - expected_volume) < 0.5,
+          "the flared 3-step boss's own tessellated volume matches the hand-derived closed form");
+  }
+  {
+    // Negative control: a free-standing single-radius solid cylinder
+    // (MakeCylinderAxisForGeneralBooleanTest()'s own fixture, used
+    // earlier in this file for the same "plain convex cylinder" shape)
+    // has no chain to merge.
+    const Brep solid_pin = MakeCylinderAxisForGeneralBooleanTest(Point3d(0, 0, 0), Vector3d(0, 0, 1), 1.0, 6.0);
+    Check(RecognizeSteppedBossChains(solid_pin).empty(), "RecognizeSteppedBossChains finds no chain on a plain single-radius boss");
+  }
+  {
+    // Negative control: a plain two-segment stepped boss
+    // (RecognizeSteppedBosses()'s own well-tested construction, already
+    // its own domain) is NOT also reported here.
+    const double shoulder_radius = 2.0, shoulder_height = 1.0;
+    const double shaft_radius = 0.8, shaft_height = 3.0;
+    const Brep two_step = BuildSteppedBossFixture(box, surface, up, {{shoulder_radius, shoulder_height}, {shaft_radius, shaft_height}});
+    Check(RecognizeSteppedBossChains(two_step).empty(),
+          "RecognizeSteppedBossChains finds no chain on a plain two-segment stepped boss - that stays "
+          "RecognizeSteppedBosses()'s own domain, not duplicated here");
+  }
+}
+
 int main() {
   ON::Begin();
 
@@ -52888,6 +53230,8 @@ int main() {
   TestCounterboreHoleBlindAxisAlignedVolume();
   TestRecognizeCounterboreHolesRoundTrip();
   TestRecognizeSteppedBossesRoundTrip();
+  TestRecognizeSteppedHoleChainsRoundTrip();
+  TestRecognizeSteppedBossChainsRoundTrip();
 
   ON::End();
 

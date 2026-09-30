@@ -1,6 +1,7 @@
 #include "dino8/kernel/features.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
@@ -369,6 +370,152 @@ std::vector<SteppedPair> FindAdjacentSteppedPairs(const std::vector<CylindricalF
   return pairs;
 }
 
+// One chain of THREE OR MORE coaxial, pairwise-adjacent, non-overlapping
+// full-cylinder candidates on the SAME axis line, each consecutive pair
+// differing in radius - the generalization of SteppedPair/
+// FindAdjacentSteppedPairs() above from exactly two segments to an
+// arbitrary chain length, shared by RecognizeSteppedHoleChains() (concave
+// candidates) and RecognizeSteppedBossChains() (convex candidates) below
+// the same way FindAdjacentSteppedPairs() itself is already shared by
+// RecognizeCounterboreHoles()/RecognizeSteppedBosses() - one chain-walking
+// geometry scan, not two near-identical copies of it.
+//
+// `indices` lists the chain's own constituent candidates (indices into
+// the `candidates` vector FindSteppedChains() was called with) in
+// physical entry-to-far geometric order. `first_outer_is_min` is the only
+// per-candidate sign information a caller needs to turn this ordered
+// index list into an absolute 3D origin/axis: it records whether the
+// FIRST element's own OUTER (non-touching, i.e. not shared with the next
+// element) end is that candidate's own t_min end (true) or t_max end
+// (false) - every other step's own length is simply its own t_max - t_min
+// (each candidate's own axial extent IS its own segment length, and each
+// successive segment is already confirmed, during the walk below, to
+// start exactly where the previous one's far end sits), so no further 3D
+// touch-point recomputation is needed past this one bit.
+struct SteppedChain {
+  std::vector<size_t> indices;
+  bool first_outer_is_min = false;
+};
+
+std::vector<SteppedChain> FindSteppedChains(const std::vector<CylindricalFaceCandidate>& candidates) {
+  const size_t n = candidates.size();
+  const double kTol = tolerance::kDistance * 100.0;
+
+  // Per-candidate, per-end adjacency: link[i][0] describes candidate i's
+  // own t_min end, link[i][1] its own t_max end. `ambiguous` marks an end
+  // that more than one OTHER candidate's own end claims to touch - a
+  // degenerate, not-actually-a-simple-chain topology this function
+  // conservatively refuses to walk through (treated as a chain terminus),
+  // rather than picking one of several candidates arbitrarily.
+  struct EndLink {
+    bool has = false;
+    bool ambiguous = false;
+    size_t neighbor = 0;
+    bool neighbor_is_min = false;
+  };
+  std::vector<std::array<EndLink, 2>> link(n);
+
+  auto record = [&](size_t idx, int end_idx, size_t other, int other_end_idx) {
+    EndLink& l = link[idx][static_cast<size_t>(end_idx)];
+    if (!l.has) {
+      l.has = true;
+      l.neighbor = other;
+      l.neighbor_is_min = (other_end_idx == 0);
+    } else if (l.neighbor != other) {
+      l.ambiguous = true;
+    }
+  };
+
+  // Same pairwise adjacency test FindAdjacentSteppedPairs() itself uses
+  // (same axis line, one end of each genuinely touching in 3D, radii
+  // differing) - but recorded into the per-end link table above instead
+  // of immediately consuming both candidates into a single pair, so a
+  // candidate with a valid link on BOTH of its own ends can still
+  // continue a chain past it.
+  for (size_t i = 0; i < n; ++i) {
+    for (size_t j = i + 1; j < n; ++j) {
+      const CylindricalFaceCandidate& a = candidates[i];
+      const CylindricalFaceCandidate& b = candidates[j];
+      if (a.radius == b.radius) continue;  // same radius - not a step at all
+
+      const double align = std::fabs(ON_DotProduct(a.axis_dir, b.axis_dir));
+      if (align < 1.0 - tolerance::kAlignment) continue;
+      const Vector3d to_b = b.axis_ref - a.axis_ref;
+      const Vector3d off_axis = to_b - ON_DotProduct(to_b, a.axis_dir) * a.axis_dir;
+      if (off_axis.Length() > kTol) continue;  // not the same axis line
+
+      const Point3d a_lo = a.axis_ref + a.t_min * a.axis_dir;
+      const Point3d a_hi = a.axis_ref + a.t_max * a.axis_dir;
+      const Point3d b_lo = b.axis_ref + b.t_min * b.axis_dir;
+      const Point3d b_hi = b.axis_ref + b.t_max * b.axis_dir;
+
+      if (a_hi.DistanceTo(b_lo) <= kTol) {
+        record(i, 1, j, 0);
+        record(j, 0, i, 1);
+      } else if (a_lo.DistanceTo(b_hi) <= kTol) {
+        record(i, 0, j, 1);
+        record(j, 1, i, 0);
+      } else if (a_hi.DistanceTo(b_hi) <= kTol) {
+        record(i, 1, j, 1);
+        record(j, 1, i, 1);
+      } else if (a_lo.DistanceTo(b_lo) <= kTol) {
+        record(i, 0, j, 0);
+        record(j, 0, i, 0);
+      }
+      // else: no shared endpoint at all - not adjacent, no link recorded.
+    }
+  }
+
+  std::vector<SteppedChain> chains;
+  std::vector<bool> visited(n, false);
+
+  auto is_terminal = [&](size_t idx, int end_idx) {
+    const EndLink& l = link[idx][static_cast<size_t>(end_idx)];
+    return !l.has || l.ambiguous;
+  };
+
+  for (size_t i = 0; i < n; ++i) {
+    if (visited[i]) continue;
+    const bool min_terminal = is_terminal(i, 0);
+    const bool max_terminal = is_terminal(i, 1);
+    // A chain START is a candidate with EXACTLY one terminal end (the
+    // other genuinely, unambiguously linked onward): an interior link of
+    // some other chain has both ends linked (skipped here, reached later
+    // by walking FROM its own chain's actual start instead); an entirely
+    // isolated candidate has both ends terminal (a chain of 1, not a
+    // multi-step chain at all - already RecognizeHoles()'s/
+    // RecognizeBosses()'s own domain).
+    if (min_terminal == max_terminal) continue;
+
+    const int start_end = min_terminal ? 1 : 0;  // this candidate's own outgoing (linked) end
+    std::vector<size_t> ordered;
+    size_t cur = i;
+    int incoming_end = -1;  // -1: `cur` is the chain's own first element, no incoming end yet
+    while (!visited[cur]) {
+      visited[cur] = true;
+      ordered.push_back(cur);
+      const int outgoing_end = (incoming_end == -1) ? start_end : (1 - incoming_end);
+      const EndLink& l = link[cur][static_cast<size_t>(outgoing_end)];
+      if (!l.has || l.ambiguous) break;  // chain ends here
+      const size_t next = l.neighbor;
+      const int next_incoming_end = l.neighbor_is_min ? 0 : 1;
+      cur = next;
+      incoming_end = next_incoming_end;
+    }
+    if (ordered.size() < 3) continue;  // exactly 1 or 2 segments: RecognizeHoles()'s/RecognizeBosses()'s/
+                                        // RecognizeCounterboreHoles()'s/RecognizeSteppedBosses()'s own domain
+
+    SteppedChain chain;
+    chain.indices = std::move(ordered);
+    // The first element's own OUTER end is whichever end is NOT the
+    // outgoing one this walk started from.
+    chain.first_outer_is_min = (start_end == 1);
+    chains.push_back(std::move(chain));
+  }
+
+  return chains;
+}
+
 }  // namespace
 
 std::vector<HoleFeature> RecognizeHoles(const Brep& solid) {
@@ -530,6 +677,84 @@ std::vector<CounterboreFeature> RecognizeCounterboreHoles(const Brep& solid) {
   return out;
 }
 
+// Turns a walked SteppedChain (candidate indices in physical entry-to-far
+// order, plus the one first_outer_is_min sign bit) into an absolute 3D
+// origin point and unit axis direction pointing from that origin along
+// the chain toward its own far end - shared by RecognizeSteppedHoleChains()
+// and RecognizeSteppedBossChains() below, since both need exactly this
+// same conversion before applying their own (opposite) open/attached
+// probe semantics.
+std::pair<Point3d, Vector3d> SteppedChainOriginAndAxis(const std::vector<CylindricalFaceCandidate>& candidates,
+                                                        const SteppedChain& chain) {
+  const CylindricalFaceCandidate& first = candidates[chain.indices.front()];
+  if (chain.first_outer_is_min) {
+    return {first.axis_ref + first.t_min * first.axis_dir, first.axis_dir};
+  }
+  return {first.axis_ref + first.t_max * first.axis_dir, -first.axis_dir};
+}
+
+std::vector<SteppedHoleChain> RecognizeSteppedHoleChains(const Brep& solid) {
+  std::vector<SteppedHoleChain> out;
+
+  std::vector<CylindricalFaceCandidate> candidates;
+  for (CylindricalFaceCandidate& c : ScanFullCylinderFaces(solid)) {
+    if (c.concave) candidates.push_back(c);
+  }
+  if (candidates.size() < 3) return out;
+
+  const Mesh solid_mesh = solid.TessellateToClosedMesh(16, 32);
+
+  for (const SteppedChain& chain : FindSteppedChains(candidates)) {
+    std::vector<double> radii, lengths;
+    std::vector<int> face_indices;
+    double total_length = 0.0;
+    double max_radius = 0.0;
+    for (size_t idx : chain.indices) {
+      const CylindricalFaceCandidate& c = candidates[idx];
+      radii.push_back(c.radius);
+      lengths.push_back(c.t_max - c.t_min);
+      face_indices.push_back(c.face_index);
+      total_length += c.t_max - c.t_min;
+      max_radius = std::max(max_radius, c.radius);
+    }
+
+    const auto [chain_origin, chain_axis] = SteppedChainOriginAndAxis(candidates, chain);
+
+    // Same on-axis open/capped probe RecognizeHoles()/RecognizeCounterboreHoles()
+    // themselves use, applied to the whole chain's own merged span.
+    CylindricalFaceCandidate merged;
+    merged.radius = max_radius;
+    merged.axis_ref = chain_origin;
+    merged.axis_dir = chain_axis;
+    merged.t_min = 0.0;
+    merged.t_max = total_length;
+    const EndOccupancy occ = ClassifyEndOccupancy(solid_mesh, merged);
+    const bool near_open = !occ.near_inside;
+    const bool far_open = !occ.far_inside;
+    if (!near_open && !far_open) continue;  // fully enclosed chain: not a hole feature
+
+    SteppedHoleChain shc;
+    shc.through = near_open && far_open;
+    if (near_open) {
+      // The chain's own walk order already starts at the open (entry)
+      // end - keep it as-is.
+      shc.origin = chain_origin;
+      shc.axis = chain_axis;
+      for (size_t k = 0; k < radii.size(); ++k) shc.steps.push_back({radii[k], lengths[k], face_indices[k]});
+    } else {
+      // Only the FAR end is open: reverse the whole chain so `origin`
+      // sits at the open end instead, matching HoleFeature's/
+      // CounterboreFeature's own "origin is the entry" convention.
+      shc.origin = chain_origin + chain_axis * total_length;
+      shc.axis = -chain_axis;
+      for (size_t k = radii.size(); k-- > 0;) shc.steps.push_back({radii[k], lengths[k], face_indices[k]});
+    }
+    out.push_back(std::move(shc));
+  }
+
+  return out;
+}
+
 std::vector<SteppedBossFeature> RecognizeSteppedBosses(const Brep& solid) {
   std::vector<SteppedBossFeature> out;
 
@@ -607,6 +832,76 @@ std::vector<SteppedBossFeature> RecognizeSteppedBosses(const Brep& solid) {
       sf.tip_face_index = second.face_index;
     }
     out.push_back(sf);
+  }
+
+  return out;
+}
+
+std::vector<SteppedBossChain> RecognizeSteppedBossChains(const Brep& solid) {
+  std::vector<SteppedBossChain> out;
+
+  std::vector<CylindricalFaceCandidate> candidates;
+  for (CylindricalFaceCandidate& c : ScanFullCylinderFaces(solid)) {
+    if (!c.concave) candidates.push_back(c);
+  }
+  if (candidates.size() < 3) return out;
+
+  const Mesh solid_mesh = solid.TessellateToClosedMesh(16, 32);
+
+  for (const SteppedChain& chain : FindSteppedChains(candidates)) {
+    std::vector<double> radii, heights;
+    std::vector<int> face_indices;
+    double total_length = 0.0;
+    double max_radius = 0.0;
+    for (size_t idx : chain.indices) {
+      const CylindricalFaceCandidate& c = candidates[idx];
+      radii.push_back(c.radius);
+      heights.push_back(c.t_max - c.t_min);
+      face_indices.push_back(c.face_index);
+      total_length += c.t_max - c.t_min;
+      max_radius = std::max(max_radius, c.radius);
+    }
+
+    const auto [chain_origin, chain_axis] = SteppedChainOriginAndAxis(candidates, chain);
+
+    // Same on-axis attached/free probe RecognizeBosses()/RecognizeSteppedBosses()
+    // themselves use, applied to the whole chain's own merged span.
+    CylindricalFaceCandidate merged;
+    merged.radius = max_radius;
+    merged.axis_ref = chain_origin;
+    merged.axis_dir = chain_axis;
+    merged.t_min = 0.0;
+    merged.t_max = total_length;
+    const EndOccupancy occ = ClassifyEndOccupancy(solid_mesh, merged);
+    const bool near_attached = occ.near_inside;
+    const bool far_attached = occ.far_inside;
+    if (near_attached && far_attached) continue;  // fully embedded chain: not a visible feature
+
+    SteppedBossChain sbc;
+    if (!near_attached && !far_attached) {
+      // Free on both ends - a free-standing multi-step rod. Pin the base
+      // at the chain's own first outer end arbitrarily, mirroring
+      // BossFeature's/SteppedBossFeature's own "through" convention.
+      sbc.through = true;
+      sbc.origin = chain_origin;
+      sbc.axis = chain_axis;
+      for (size_t k = 0; k < radii.size(); ++k) sbc.steps.push_back({radii[k], heights[k], face_indices[k]});
+    } else if (near_attached) {
+      // The chain's own walk order already starts at the attached (base)
+      // end - keep it as-is.
+      sbc.through = false;
+      sbc.origin = chain_origin;
+      sbc.axis = chain_axis;
+      for (size_t k = 0; k < radii.size(); ++k) sbc.steps.push_back({radii[k], heights[k], face_indices[k]});
+    } else {
+      // Only the FAR end is attached: reverse the whole chain so `origin`
+      // sits at the attached (base) end instead.
+      sbc.through = false;
+      sbc.origin = chain_origin + chain_axis * total_length;
+      sbc.axis = -chain_axis;
+      for (size_t k = radii.size(); k-- > 0;) sbc.steps.push_back({radii[k], heights[k], face_indices[k]});
+    }
+    out.push_back(std::move(sbc));
   }
 
   return out;

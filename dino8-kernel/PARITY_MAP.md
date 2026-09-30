@@ -3447,6 +3447,138 @@ riskier increment than this session's own recognition-only scope. Still
 **6/16/2, 58.3%**, identical to the count directly above. Full
 `dino8_kernel_tests` suite (via `ctest`): 100% passing, 0 regressions.
 
+**2026-09-30, a twelfth session:** two closely-related follow-ups, both
+in `dino8::kernel::features.h`/`features.cpp`, closing the LAST disclosed
+gap both `RecognizeCounterboreHoles()` and `RecognizeSteppedBosses()` name
+in their own text above: "a stepped chain of more than two radii ... is
+not walked past the first adjacent pair." `RecognizeSteppedHoleChains(solid)`
+(features.h:393; features.cpp:696) is the hole-side walker - the
+CONCAVE-candidate generalization of `RecognizeCounterboreHoles()` from
+exactly two coaxial steps to an arbitrary chain (a spot-face, then a
+counterbore recess, then a further pilot reduction, or any other length) -
+and `RecognizeSteppedBossChains(solid)` (features.h:530; features.cpp:840)
+is its boss-side (CONVEX-candidate) mirror, the same generalization of
+`RecognizeSteppedBosses()`. Both return a `SteppedHoleChain`/
+`SteppedBossChain` (features.h:358/497) holding an ordered `steps` vector
+of `{radius, length, face_index}` entries (features.h:320/467) instead of
+the fixed two-field `counterbore_radius`/`drill_radius` shape
+`CounterboreFeature`/`SteppedBossFeature` use, since there is no longer a
+fixed step count to name individual fields after.
+
+Genuinely new capability - the first N-segment (N >= 3) compound-feature
+merge this kernel has had, not a citation fix or a re-styling of existing
+two-segment code - built on a genuinely new shared helper,
+`FindSteppedChains()` (features.cpp:400, anonymous namespace), the
+generalization of the existing `FindAdjacentSteppedPairs()` (features.cpp,
+shared by `RecognizeCounterboreHoles()`/`RecognizeSteppedBosses()`) from a
+single greedy pairing pass to a full chain walk: every candidate's own two
+ends are recorded into a per-end adjacency table (same axis line, a
+genuine 3D-touching end, differing radius - the exact pairwise test
+`FindAdjacentSteppedPairs()` already uses, just recorded rather than
+immediately consumed), an end claimed by more than one other candidate is
+marked ambiguous and treated as a chain terminus rather than picked
+arbitrarily, and each maximal simple path between two true termini (one
+linked end, one free end) becomes one chain of three or more segments -
+exactly two segments stays `RecognizeCounterboreHoles()`'s/
+`RecognizeSteppedBosses()`'s own domain, not repeated here, the same
+one-capability-several-vocabularies convention this file's other
+`Recognize*` functions already follow. A single shared conversion,
+`SteppedChainOriginAndAxis()` (features.cpp:687), turns a walked chain's
+own ordered candidate-index list back into an absolute 3D origin and axis
+direction from just one sign bit (`first_outer_is_min` - which raw end of
+the chain's own first element is the free, non-touching one), reused by
+both the hole-side and boss-side walkers rather than duplicated; each
+function then applies its own (opposite) `Mesh::ContainsPoint()` open/
+capped or attached/free probe to the chain's own two outer ends, EXACTLY
+mirroring `RecognizeHoles()`'s/`RecognizeBosses()`'s own single-candidate
+probe logic and `RecognizeCounterboreHoles()`'s/`RecognizeSteppedBosses()`'s
+own merged-span probe, generalized from two segments to the whole chain.
+
+Deliberately more general than the two-segment functions' own naming
+suggests: neither walker requires the chain's own radii to trend
+monotonically (narrowing steadily toward the pilot bore, or widening
+steadily toward the tip) - any sequence of adjacent, non-overlapping,
+pairwise-different-radius same-axis-line segments merges, including one
+that widens then narrows again. Verified by 2 new tests
+(`tests/test_basic.cpp`, both built via `BuildSteppedCylinderTool()`
+(test_basic.cpp:50398), the N-segment generalization of `CounterboreHole()`'s
+own "adjacent `CylindricalFace` segments through one `BooleanCombineMixed`
+call" compound-cutter construction, used both subtractively
+(`BuildSteppedHoleFixture`) and additively (`BuildSteppedBossFixture`) so
+these fixtures are real, tested kernel geometry, not mocks):
+`TestRecognizeSteppedHoleChainsRoundTrip` (test_basic.cpp:50454) covers a
+monotonically-narrowing 3-step THROUGH bore (its own tessellated volume
+checked against the hand-derived `box - sum(pi r_i^2 l_i)` closed form)
+and a NON-monotonic 3-step BLIND bore (a spot-face wider than the
+counterbore recess beneath it - proving the no-fixed-trend claim above,
+not just asserting it), each with a sanity check confirming
+`RecognizeCounterboreHoles()` itself still merges only the first adjacent
+pair of the same fixture (so the fixture genuinely exercises the gap being
+closed), a full round-trip of every recovered step's own radius/length
+back through `BuildSteppedHoleFixture()` reproducing the original's exact
+volume, and negative controls confirming a plain single-radius hole and a
+plain two-segment counterbore (`CounterboreHole()`'s own domain) both find
+no chain here. `TestRecognizeSteppedBossChainsRoundTrip` (test_basic.cpp:50578)
+covers a flush-base 3-step boss built base-to-tip (no chain reversal
+needed) and, separately, the SAME shape built tip-to-base (the tool's own
+first-supplied segment is the free tip, its LAST-supplied segment the
+attached base) - a real, deliberately-constructed exercise of a genuine
+correctness pitfall found while writing this evidence: since
+`FindSteppedChains()`'s own walk always starts from whichever true
+terminus its outer scanning loop reaches first (an implementation detail
+of `ScanFullCylinderFaces()`'s own face-index iteration order, not
+anything either walker controls), the chain it hands back is not
+guaranteed to already start at the physically attached/open end, so
+`RecognizeSteppedBossChains()`/`RecognizeSteppedHoleChains()` must detect
+a far-end (rather than near-end) attached/open result and REVERSE the
+whole chain - `origin`, `axis`, and every step's own order - before
+returning it; this second boss case is the test that would have caught it
+missing or backwards, and it also confirms
+`RecognizeSteppedBosses()`'s own 2-segment pairing, applied to the SAME
+3-step fixture, reports a visibly WRONG `base_radius` of 1.2 (the middle
+segment) rather than the boss's own true base radius of 2.0, a concrete,
+not merely hypothetical, symptom of the gap being closed. Both tests also
+confirm `RecognizeSteppedBosses()` finds nothing at all, or the wrong
+segment, on these 3-step fixtures (further sanity that the fixtures
+genuinely exercise the gap), check the tessellated volume against the
+hand-derived `box + sum(pi r_i^2 h_i)` closed form for both orientations,
+and round-trip the recognized origin/axis/steps back through
+`BuildSteppedBossFixture()`, plus negative controls for a plain
+single-radius boss and a plain two-segment stepped boss.
+
+**No score change**: "Feature recognition" was already counted `partial`
+and stays `partial` here too - a general (non-cylindrical) pocket and a
+countersink's own conical second step remain unrecognized (same as
+before), and no `dino8-app` command surfaces any of this (same as every
+other kernel-only feature op in this category). Still **6/16/2, 58.3%**,
+identical to the count directly above.
+
+**Test suite status, verified two ways, not merely asserted:** every new
+check this session added passes (`ctest`/`dino8_kernel_tests` run
+end-to-end past this session's own new tests with no failure reported
+from any of them). The full `dino8_kernel_tests` binary as a whole,
+however, is NOT 100% green: one single pre-existing failure, in
+`TestBooleanCombineMixedUnequalRadiusPerpendicularNegativeControls()`
+(test_basic.cpp:33930) - its own "unequal-radius at 60 degrees"
+pinch-point-exactness check (a `boolean.cpp`/`boolean_general.cpp`
+Steinmetz-curve concern, nowhere near this session's own `features.cpp`/
+`features.h` changes) - fails at a tight 1e-9 coordinate tolerance. Confirmed, not merely suspected, to be
+PRE-EXISTING and unrelated to this session's own work: a `git worktree`
+checkout of this branch's own committed HEAD (commit 7fa8b61, i.e. every
+line of this session's own diff excluded) was built and run through the
+SAME `dino8_kernel_tests` binary independently, and it fails at the
+EXACT same check, the EXACT same 1e-9 tolerance, with the EXACT same
+message - proving this session's own additions changed neither this
+outcome nor its cause. Two independent full runs of THIS session's own
+binary (with the `RecognizeSteppedHoleChains`/`RecognizeSteppedBossChains`
+changes included) reproduce that SAME single failure deterministically
+(not a flaky/nondeterministic result), and nothing else. Zero regressions
+from this session's own work; fixing this one pre-existing, unrelated
+numerical-tolerance gap is out of scope for a "Feature operations"
+recognition-only pass and is left disclosed here for a future session
+that resumes work on the boolean engine's own Steinmetz-curve pinch-point
+math.
+
 **Fossilith kernel — Curve operations** (curveops):
 - [partial] Curve fairing/smoothing — app-only Laplacian smoothing (dino8-app/src/commands/cmd_meshtools.cpp:740 / cmd_remaining.cpp:866); no kernel fairing.
 - [partial] Match curve end continuity — `MatchCommand` (dino8-app/src/commands/cmd_curves2.cpp:1500), position/tangent only, app-only.
