@@ -17,6 +17,7 @@
 #include "imgui.h"
 
 using dino8::app::IsReservedShortcut;
+using dino8::app::IsUnbindableCaptureKey;
 
 namespace {
 int failures = 0;
@@ -70,6 +71,40 @@ int main() {
   Check(!IsReservedShortcut(static_cast<int>(ImGuiKey_F6), false, false, false), "plain F6 is NOT reserved");
   Check(!IsReservedShortcut(static_cast<int>(ImGuiKey_Z), false, false, false), "plain Z (no Ctrl) is NOT reserved - only the Ctrl+Z chord is");
   Check(!IsReservedShortcut(static_cast<int>(ImGuiKey_Delete), true, false, false), "Ctrl+Delete is NOT reserved (only plain Delete is)");
+
+  // IsUnbindableCaptureKey: the Options > Shortcuts "Press a key..."
+  // capture flow (ui/Panels.cpp) must skip the four modifier keys (they're
+  // captured separately, into ctrl_mod/shift_mod/alt_mod, from
+  // ImGuiIO::KeyCtrl/KeyShift/KeyAlt at the moment the real key is
+  // pressed), their internal mod-storage aliases, and the mouse-button
+  // aliases ImGui exposes through the same ImGuiKey enum - see
+  // ShortcutRules.h's own comment for why none of these can be "the key".
+  const std::pair<ImGuiKey, const char*> modifiers[] = {
+      {ImGuiKey_LeftCtrl, "LeftCtrl"}, {ImGuiKey_LeftShift, "LeftShift"}, {ImGuiKey_LeftAlt, "LeftAlt"},
+      {ImGuiKey_LeftSuper, "LeftSuper"}, {ImGuiKey_RightCtrl, "RightCtrl"}, {ImGuiKey_RightShift, "RightShift"},
+      {ImGuiKey_RightAlt, "RightAlt"}, {ImGuiKey_RightSuper, "RightSuper"}};
+  for (const auto& [k, name] : modifiers) {
+    char label[64];
+    std::snprintf(label, sizeof(label), "modifier key %s is unbindable-as-key", name);
+    Check(IsUnbindableCaptureKey(static_cast<int>(k)), label);
+  }
+  const ImGuiKey mod_aliases[] = {ImGuiKey_ReservedForModCtrl, ImGuiKey_ReservedForModShift, ImGuiKey_ReservedForModAlt,
+                                   ImGuiKey_ReservedForModSuper};
+  for (ImGuiKey k : mod_aliases) Check(IsUnbindableCaptureKey(static_cast<int>(k)), "reserved mod-storage alias is unbindable-as-key");
+  const ImGuiKey mouse[] = {ImGuiKey_MouseLeft, ImGuiKey_MouseRight, ImGuiKey_MouseMiddle,
+                             ImGuiKey_MouseX1, ImGuiKey_MouseX2, ImGuiKey_MouseWheelX, ImGuiKey_MouseWheelY};
+  for (ImGuiKey k : mouse) Check(IsUnbindableCaptureKey(static_cast<int>(k)), "mouse-button alias is unbindable-as-key");
+  // Ordinary keys must NOT be excluded - the function must not just return
+  // true for everything, same cross-check style as the reserved-chord
+  // table above.
+  const std::pair<ImGuiKey, const char*> bindable[] = {
+      {ImGuiKey_L, "L"}, {ImGuiKey_F5, "F5"}, {ImGuiKey_Escape, "Escape"}, {ImGuiKey_Delete, "Delete"},
+      {ImGuiKey_Space, "Space"}, {ImGuiKey_Keypad0, "Keypad0"}, {ImGuiKey_GamepadFaceDown, "GamepadFaceDown"}};
+  for (const auto& [k, name] : bindable) {
+    char label[64];
+    std::snprintf(label, sizeof(label), "ordinary key %s IS bindable-as-key", name);
+    Check(!IsUnbindableCaptureKey(static_cast<int>(k)), label);
+  }
 
   if (failures) std::printf("%d FAILED\n", failures);
   else std::printf("all passed\n");

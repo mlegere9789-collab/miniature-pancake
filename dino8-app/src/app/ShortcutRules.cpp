@@ -32,4 +32,11 @@ bool IsReservedShortcut(int key_i, bool ctrl, bool shift, bool alt) {
   return false;
 }
 
+bool IsUnbindableCaptureKey(int key_i) {
+  const ImGuiKey key = static_cast<ImGuiKey>(key_i);
+  return (key >= ImGuiKey_LeftCtrl && key <= ImGuiKey_RightSuper) ||
+         (key >= ImGuiKey_ReservedForModCtrl && key <= ImGuiKey_ReservedForModSuper) ||
+         (key >= ImGuiKey_MouseLeft && key <= ImGuiKey_MouseWheelY);
+}
+
 }  // namespace dino8::app

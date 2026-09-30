@@ -4332,12 +4332,52 @@ echo "$HS" | grep -q "^smoke:" || { echo "$HS"; echo "FAIL: history script produ
 hcheck() { if echo "$HS" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$HS" "$1"; fail=1; fi; }
 hcheck "History recording: off. 0 object(s) with live construction history" "History defaults Off and reports it"
 hcheck "UpdateHistory: 0 object(s) re-evaluated from their source curve(s)' current geometry" "an Extrude made while History was Off recorded nothing for UpdateHistory to redo"
-hcheck "History recording: on - new Extrude/ExtrudeCrvToPoint/Revolve/Loft/SubDLoft results will remember their source curve(s) for UpdateHistory" "History On toggled recording on"
+hcheck "History recording: on - new Extrude/ExtrudeCrvToPoint/Revolve/Loft/SubDLoft/Pipe results will remember their source curve(s) for UpdateHistory" "History On toggled recording on"
 hcheck "Bounding box min 20,0,0 max 30,0,5" "the freshly-extruded surface's bounding box, before the source curve moves"
 hcheck "UpdateHistory: 1 object(s) re-evaluated from their source curve(s)' current geometry" "UpdateHistory found and rebuilt exactly the one object History was tracking"
 hcheck "Bounding box min 20,0,20 max 30,0,25" "UpdateHistory genuinely re-derived the extruded surface's geometry from the source curve's new z=20 position - not the z=0..5 box baked at creation time"
 hcheck "History recording: on. 1 object(s) with live construction history:" "the live report lists exactly one tracked object"
 hcheck "object 4: Extrude <- 3" "the report names the real dependent/source pair (surface 4 built from curve 3)"
+
+# History extended to a sixth command, Pipe (PipeCommand, cmd_surface.cpp;
+# RebuildPipe, history_rebuild.h) - see history_pipe_script.txt's own
+# header comment for exactly what this checks. Same real-bounding-box-move
+# money check as the Extrude case above, not just an object count.
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  HSP="$("$BIN" --smoke 100 --script "$HERE/history_pipe_script.txt" 2>&1)" || { echo "$HSP"; echo "FAIL: history-pipe script exited non-zero"; exit 1; }
+else
+  HSP="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 100 --script "$HERE/history_pipe_script.txt" 2>&1)" || { echo "$HSP"; echo "FAIL: history-pipe script exited non-zero"; exit 1; }
+fi
+echo "$HSP" | grep -E "^(ok|FAIL)"
+if echo "$HSP" | grep -q "^FAIL"; then fail=1; fi
+echo "$HSP" | grep -q "^smoke:" || { echo "$HSP"; echo "FAIL: history-pipe script produced no smoke line"; fail=1; }
+hspcheck() { if echo "$HSP" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$HSP" "$1"; fail=1; fi; }
+hspcheck "object 2: Pipe <- 1" "History tracks a Pipe result (object 2) built from its rail curve (object 1)"
+hspcheck "Bounding box min 0,-1,-1 max 10,1,1" "the freshly-built pipe's bounding box, before the rail curve moves"
+hspcheck "UpdateHistory: 1 object(s) re-evaluated from their source curve(s)' current geometry" "UpdateHistory found and rebuilt exactly the one Pipe History was tracking"
+hspcheck "Bounding box min 0,-1,4 max 10,1,6" "UpdateHistory genuinely re-derived the pipe's geometry from the rail curve's new z=5 position - not the z=-1..1 mesh baked at creation time"
+
+# RecordMacro: a real action recorder for the Macro Editor's buffer (see
+# record_macro_script.txt's own header comment for exactly what this
+# checks) - PARITY_MAP.md's "VBA-style macro recorder and editor" item.
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  RM="$("$BIN" --smoke 100 --script "$HERE/record_macro_script.txt" 2>&1)" || { echo "$RM"; echo "FAIL: record-macro script exited non-zero"; exit 1; }
+else
+  RM="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 100 --script "$HERE/record_macro_script.txt" 2>&1)" || { echo "$RM"; echo "FAIL: record-macro script exited non-zero"; exit 1; }
+fi
+echo "$RM" | grep -E "^(ok|FAIL)"
+if echo "$RM" | grep -q "^FAIL"; then fail=1; fi
+echo "$RM" | grep -q "^smoke:" || { echo "$RM"; echo "FAIL: record-macro script produced no smoke line"; fail=1; }
+rmcheck() { if echo "$RM" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$RM" "$1"; fail=1; fi; }
+rmcheck "Macro recording: off (type On to start). Buffer:" "RecordMacro with no argument reports Off and dumps the buffer before anything was recorded"
+rmcheck "Macro recording: on - every command line you type is appended to the Macro Editor's buffer" "RecordMacro On reports the state changed"
+rmcheck "  Line 0,0,0 10,0,0" "the Line command typed while recording was on was appended to the buffer verbatim"
+rmcheck "  Box 20,0,0 25,5,5 5" "the Box command typed while recording was on was appended to the buffer verbatim, in order after Line"
+RM_LINE50_COUNT="$(echo "$RM" | grep -cF "Line 50,0,0 60,0,0")"
+[ "$RM_LINE50_COUNT" = "1" ] && echo "ok   the Line command typed AFTER RecordMacro Off was run but NOT appended to the buffer (it appears exactly once, as the typed command line itself, not a second time in the final dump)" || { echo "FAIL a command typed after RecordMacro Off leaked into the buffer (expected 1 occurrence, got $RM_LINE50_COUNT)"; fail=1; }
+RM_SELF_COUNT="$(echo "$RM" | grep -cF "  RecordMacro")"
+[ "$RM_SELF_COUNT" = "0" ] && echo "ok   RecordMacro never recorded itself into its own buffer" || { echo "FAIL RecordMacro recorded one of its own toggle lines into the buffer"; fail=1; }
+
 # Undo id-reuse regression (see the last section of history_script.txt):
 # a Box drawn right after undoing a tracked Extrude used to be handed the
 # undone extrusion's own id (6), so its HistoryRecord/Provenance entries -
