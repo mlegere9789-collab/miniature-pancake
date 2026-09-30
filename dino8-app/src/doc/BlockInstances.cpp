@@ -59,6 +59,7 @@ std::vector<BlockInstance> LoadBlockInstances(const Document& doc) {
     b.block = v["block"].AsString();
     b.state = v["state"].AsString();
     b.insert = kernel::Point3d(v["ix"].number, v["iy"].number, v["iz"].number);
+    b.flipped = v["flip"].number != 0;
     const json::Value& objs = v["objects"];
     for (size_t j = 0; j < objs.Size(); ++j) b.objects.push_back(static_cast<ObjectId>(objs[j].number));
     out.push_back(std::move(b));
@@ -73,7 +74,8 @@ void SaveBlockInstances(Document& doc, const std::vector<BlockInstance>& list) {
     const BlockInstance& b = list[i];
     out << (i ? "," : "") << "{\"group\":" << b.group << ",\"block\":\"" << JsonEscape(b.block) << "\""
         << ",\"state\":\"" << JsonEscape(b.state) << "\""
-        << ",\"ix\":" << b.insert.x << ",\"iy\":" << b.insert.y << ",\"iz\":" << b.insert.z << ",\"objects\":[";
+        << ",\"ix\":" << b.insert.x << ",\"iy\":" << b.insert.y << ",\"iz\":" << b.insert.z
+        << ",\"flip\":" << (b.flipped ? 1 : 0) << ",\"objects\":[";
     for (size_t j = 0; j < b.objects.size(); ++j) out << (j ? "," : "") << b.objects[j];
     out << "]}";
   }
@@ -96,8 +98,19 @@ bool FindBlockInstanceByObject(const Document& doc, ObjectId object_id, BlockIns
 namespace {
 // Builds the objects for `state` at `at`, unconditionally (no BlockInstance
 // bookkeeping) - shared by InstantiateDynamicBlock and RebuildBlockInstance.
-std::vector<ObjectId> PlaceFiltered(Document& doc, const BlockDefinition& def, kernel::Point3d at, const std::string& state) {
-  const ON_Xform xf = ON_Xform::TranslationTransformation(at - def.base);
+// `flipped` mirrors the definition's geometry about a vertical world plane
+// (normal +X) through `def.base` before the insert-point translation, so a
+// flipped instance's base point still lands exactly at `at` like an
+// unflipped one - only left/right of the base is mirrored, not the
+// instance's position.
+std::vector<ObjectId> PlaceFiltered(Document& doc, const BlockDefinition& def, kernel::Point3d at, const std::string& state, bool flipped) {
+  ON_Xform xf = ON_Xform::TranslationTransformation(at - def.base);
+  if (flipped) {
+    const kernel::Vector3d n(1, 0, 0);
+    const ON_Xform mirror = ON_Xform::MirrorTransformation(
+        ON_PlaneEquation(n.x, n.y, n.z, -ON_DotProduct(n, kernel::Vector3d(def.base.x, def.base.y, def.base.z))));
+    xf = xf * mirror;
+  }
   std::vector<ObjectId> ids;
   for (const SceneObject& o : def.objects) {
     if (!ObjectVisibleInState(o, state)) continue;
@@ -118,7 +131,7 @@ int InstantiateDynamicBlock(Document& doc, const std::string& name, kernel::Poin
   if (!def) return -1;
   std::string active = state;
   if (active.empty() && !def->states.empty()) active = def->states.front();
-  const std::vector<ObjectId> ids = PlaceFiltered(doc, *def, at, active);
+  const std::vector<ObjectId> ids = PlaceFiltered(doc, *def, at, active, false);
   // Same anchor-object provenance as the static-block path in
   // InstantiateBlockInDocument (cmd_drafting.cpp) - see ProvenanceInfo's
   // comment in doc/Document.h.
@@ -145,7 +158,7 @@ bool RebuildBlockInstance(Document& doc, int group) {
   BlockDefinition* def = doc.FindBlock(it->block);
   if (!def) return false;
   for (ObjectId id : it->objects) doc.Remove(id);
-  it->objects = PlaceFiltered(doc, *def, it->insert, it->state);
+  it->objects = PlaceFiltered(doc, *def, it->insert, it->state, it->flipped);
   // Re-attach the fresh objects to the same group id so selection/explode
   // (which key off Document::Group membership) still find this instance,
   // and rebuild the anchor-object provenance the same way InstantiateDynamicBlock does.
@@ -160,6 +173,15 @@ bool SetBlockInstanceState(Document& doc, int group, const std::string& new_stat
   auto it = std::find_if(list.begin(), list.end(), [&](const BlockInstance& b) { return b.group == group; });
   if (it == list.end()) return false;
   it->state = new_state;
+  SaveBlockInstances(doc, list);
+  return RebuildBlockInstance(doc, group);
+}
+
+bool SetBlockInstanceFlip(Document& doc, int group, bool flipped) {
+  std::vector<BlockInstance> list = LoadBlockInstances(doc);
+  auto it = std::find_if(list.begin(), list.end(), [&](const BlockInstance& b) { return b.group == group; });
+  if (it == list.end()) return false;
+  it->flipped = flipped;
   SaveBlockInstances(doc, list);
   return RebuildBlockInstance(doc, group);
 }

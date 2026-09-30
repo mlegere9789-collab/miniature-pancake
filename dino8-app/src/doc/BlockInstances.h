@@ -44,6 +44,19 @@ struct BlockInstance {
   std::string state;          // active visibility state ("" if the block has none)
   kernel::Point3d insert{0, 0, 0};
   std::vector<ObjectId> objects;  // objects currently built for this instance
+  // Flip parameter: mirrors the instance's geometry about a vertical world
+  // plane (normal +X) through the block definition's own base point, applied
+  // before the insert-point translation - the same "mirror in place, then
+  // move" order InstantiateDynamicBlock/RebuildBlockInstance's PlaceFiltered
+  // uses for every other transform. A per-instance flag rather than a second
+  // BlockDefinition::states-style named list: Rhino's own Flip parameter is
+  // a plain two-state toggle per placed instance, not a named state shared
+  // by the definition. Only reachable on a dynamic block (one with at least
+  // one visibility state already named - see BlockDefinition::states) since
+  // that is what makes InstantiateDynamicBlock create this record at all; a
+  // block with pure static geometry and no named states still instantiates
+  // through InstantiateBlockInDocument's own untracked path, same as before.
+  bool flipped = false;
 };
 
 std::vector<BlockInstance> LoadBlockInstances(const Document& doc);
@@ -85,6 +98,10 @@ bool RebuildBlockInstance(Document& doc, int group);
 // Looks up the stored record for `group`, changes its state and rebuilds.
 // Returns false if `group` isn't a known dynamic-block instance.
 bool SetBlockInstanceState(Document& doc, int group, const std::string& new_state);
+
+// Looks up the stored record for `group`, sets its Flip parameter and
+// rebuilds. Returns false if `group` isn't a known dynamic-block instance.
+bool SetBlockInstanceFlip(Document& doc, int group, bool flipped);
 
 // Finds the BlockInstance owning `object_id` (one of its current objects).
 bool FindBlockInstanceByObject(const Document& doc, ObjectId object_id, BlockInstance& out);
