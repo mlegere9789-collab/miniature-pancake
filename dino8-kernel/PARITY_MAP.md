@@ -127,11 +127,19 @@ already use):
 None of the three changes the category's own present/partial/missing
 counts (11/6/2 of 19, 73.7%) or this document's headline. Three new test
 scripts (`tests/history_pipe_script.txt`, `tests/record_macro_script.txt`)
-plus three new `tests/test_shortcuts.cpp` check groups were added and pass;
-the full app-level `ctest` suite (24/24) and `tests/smoke.sh` were re-run
-clean under Xvfb+llvmpipe after this pass (see this document's own count
-note near the top of the category gaps section for the exact totals this
-pass measured).
+plus three new `tests/test_shortcuts.cpp` check groups were added and pass.
+Full local suite re-run after this pass, under Xvfb+llvmpipe: the app-level
+`ctest` suite 24/24 passing; `dino8-kernel`'s own standalone `ctest`
+(`dino8_kernel_tests`, built separately with `DINO8_KERNEL_BUILD_TESTS=ON`
+- the app build turns this off) 7855/7855 checks passing, 0 failures;
+`tests/smoke.sh` end-to-end against the built `Dino8` binary, 2106 `ok`
+lines and 0 `FAIL` lines, exiting 0. One real bug this pass's own new
+`smoke.sh` checks introduced was caught and fixed before landing: `grep -c`
+exits 1 on a zero-match count even though it still prints "0", and this
+script's `set -e` turned that into a silent full-suite abort partway
+through on the two checks proving a line is *absent* from the RecordMacro
+buffer - fixed with the same `|| true` guard the rest of this file already
+uses for that exact pattern.
 
 **2026-09-30 kernel rotation on "Intersections & projections":** three
 `[partial]` bullets close to `[present]` this pass — Curve self-intersection,
