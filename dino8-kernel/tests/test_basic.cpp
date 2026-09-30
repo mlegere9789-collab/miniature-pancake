@@ -38645,6 +38645,86 @@ void TestBooleanOperationErrorStructuredFields() {
                "BooleanCombineGeneral");
 }
 
+// Extends TestBooleanOperationErrorStructuredFields above from the one
+// refusal shape (CompoundOperand) every engine already shared to the three
+// new BooleanFailureReason values boolean_general.cpp's own general-engine
+// functions gained this pass (UnsupportedOperation, InvalidTolerance,
+// EmptyOperand) - see BooleanFailureReason's own doc comment in boolean.h
+// for why this does NOT also retype Brep::FromMixedFaces()'s/BuildLoop()'s
+// non-manifold reassembly throw (a cross-layer/base-class concern of its
+// own). One representative call per new reason on two DIFFERENT functions
+// each, not all ~15 sites converted - enough to prove each reason is
+// genuinely reused, not hardcoded to a single call site.
+void TestBooleanOperationErrorGeneralEngineFailureReasons() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::BooleanCombineGeneral;
+  using dino8::kernel::BooleanCombineGeneralNAry;
+  using dino8::kernel::BooleanFailureReason;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::BooleanOperationError;
+  using dino8::kernel::ImprintFaces;
+  using dino8::kernel::MutualImprintFaces;
+  using dino8::kernel::SplitBySheet;
+  using dino8::kernel::TrimSheetBySolid;
+
+  const Brep box = Brep::Box(0, 0, 0, 2, 2, 2);
+  const Brep other = Brep::Box(1, 1, 1, 3, 3, 3);
+  const Brep empty;
+
+  auto expect = [](auto&& call, BooleanFailureReason expected_reason, const char* expected_function_name,
+                    const char* label) {
+    bool caught = false;
+    BooleanFailureReason reason{};
+    std::string function_name;
+    try {
+      call();
+    } catch (const BooleanOperationError& e) {
+      caught = true;
+      reason = e.reason();
+      function_name = e.function_name();
+    }
+    Check(caught, (std::string(label) + ": catchable as BooleanOperationError").c_str());
+    Check(reason == expected_reason, (std::string(label) + ": reason() matches").c_str());
+    Check(function_name == expected_function_name, (std::string(label) + ": function_name() matches").c_str());
+    // Still a plain std::invalid_argument to every pre-existing caller that
+    // never learns about this type at all.
+    bool caught_as_base = false;
+    try {
+      call();
+    } catch (const std::invalid_argument&) {
+      caught_as_base = true;
+    }
+    Check(caught_as_base, (std::string(label) + ": still catchable as plain std::invalid_argument").c_str());
+  };
+
+  // UnsupportedOperation: SymmetricDifference, on two different functions.
+  expect([&] { BooleanCombineGeneral(box, other, BooleanOp::SymmetricDifference); },
+         BooleanFailureReason::UnsupportedOperation, "BooleanCombineGeneral", "BooleanCombineGeneral SymmetricDifference");
+  expect([&] { BooleanCombineGeneralNAry({box}, {other}, BooleanOp::SymmetricDifference); },
+         BooleanFailureReason::UnsupportedOperation, "BooleanCombineGeneralNAry",
+         "BooleanCombineGeneralNAry SymmetricDifference");
+
+  // InvalidTolerance: a non-positive caller tolerance, on two different functions.
+  expect([&] { BooleanCombineGeneral(box, other, BooleanOp::Union, 0.0); }, BooleanFailureReason::InvalidTolerance,
+         "BooleanCombineGeneral", "BooleanCombineGeneral zero tolerance");
+  expect([&] { ImprintFaces(box, other, -1.0); }, BooleanFailureReason::InvalidTolerance, "ImprintFaces",
+         "ImprintFaces negative tolerance");
+
+  // EmptyOperand: a faceless operand, on four different functions (both
+  // sides of ImprintFaces/SplitBySheet, one representative side each of
+  // MutualImprintFaces/TrimSheetBySolid).
+  expect([&] { ImprintFaces(empty, box); }, BooleanFailureReason::EmptyOperand, "ImprintFaces",
+         "ImprintFaces empty target");
+  expect([&] { ImprintFaces(box, empty); }, BooleanFailureReason::EmptyOperand, "ImprintFaces",
+         "ImprintFaces empty tool");
+  expect([&] { MutualImprintFaces(empty, box); }, BooleanFailureReason::EmptyOperand, "MutualImprintFaces",
+         "MutualImprintFaces empty a");
+  expect([&] { SplitBySheet(empty, box); }, BooleanFailureReason::EmptyOperand, "SplitBySheet",
+         "SplitBySheet empty solid");
+  expect([&] { TrimSheetBySolid(empty, box); }, BooleanFailureReason::EmptyOperand, "TrimSheetBySolid",
+         "TrimSheetBySolid empty sheet");
+}
+
 // BooleanCombineMixed's own compound-operand support (boolean.cpp): closes
 // the "BooleanCombineMixed still refuses a compound operand for every op"
 // half of the "Multi-body / multi-tool booleans" PARITY_MAP.md bullet's
@@ -55787,6 +55867,7 @@ int main() {
   TestBooleanCombinePlanarDifferenceThrowsOnTouchingLumpXorCompound();
   TestBooleanCombinePlanarUnionAndXorStillRefuseCompoundOperand();
   TestBooleanOperationErrorStructuredFields();
+  TestBooleanOperationErrorGeneralEngineFailureReasons();
   TestBooleanCombineMixedDifferenceAcceptsCompoundFirstOperand();
   TestBooleanCombineMixedIntersectionAcceptsCompoundOperand();
   TestBooleanCombineMixedIntersectionAcceptsCompoundOperandWithEmbeddedCylinders();

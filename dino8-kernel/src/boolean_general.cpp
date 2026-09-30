@@ -2824,12 +2824,14 @@ void RefuseCompoundOperand(const Brep& operand, const char* function_name) {
 
 Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op, double tolerance) {
   if (op == BooleanOp::SymmetricDifference) {
-    throw std::invalid_argument(
+    throw BooleanOperationError(
+        BooleanFailureReason::UnsupportedOperation, "BooleanCombineGeneral",
         "dino8::kernel::BooleanCombineGeneral: SymmetricDifference is not "
         "yet implemented - see boolean_general.h's own disclosed scope");
   }
   if (!(tolerance > 0.0)) {
-    throw std::invalid_argument("dino8::kernel::BooleanCombineGeneral: tolerance must be positive");
+    throw BooleanOperationError(BooleanFailureReason::InvalidTolerance, "BooleanCombineGeneral",
+                                 "dino8::kernel::BooleanCombineGeneral: tolerance must be positive");
   }
   // Union still needs a lump-merge step this engine has no more of than
   // boolean.cpp's own two B-rep engines do (compound lumps that touch or
@@ -3212,7 +3214,8 @@ Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op, double to
 Brep BooleanCombineGeneralNAry(const std::vector<Brep>& first_group, const std::vector<Brep>& second_group,
                                 BooleanOp op, double tolerance) {
   if (op == BooleanOp::SymmetricDifference) {
-    throw std::invalid_argument(
+    throw BooleanOperationError(
+        BooleanFailureReason::UnsupportedOperation, "BooleanCombineGeneralNAry",
         "dino8::kernel::BooleanCombineGeneralNAry: SymmetricDifference is not yet implemented - "
         "BooleanCombineGeneral itself refuses it outright, so there is nothing for an N-ary fold to build on");
   }
@@ -3277,13 +3280,16 @@ Brep ImprintFaces(const Brep& target, const Brep& tool, double tolerance) {
   const int nt = bt.m_F.Count();
   const int nl = bl.m_F.Count();
   if (nt == 0) {
-    throw std::invalid_argument("dino8::kernel::ImprintFaces: target has no faces");
+    throw BooleanOperationError(BooleanFailureReason::EmptyOperand, "ImprintFaces",
+                                 "dino8::kernel::ImprintFaces: target has no faces");
   }
   if (nl == 0) {
-    throw std::invalid_argument("dino8::kernel::ImprintFaces: tool has no faces");
+    throw BooleanOperationError(BooleanFailureReason::EmptyOperand, "ImprintFaces",
+                                 "dino8::kernel::ImprintFaces: tool has no faces");
   }
   if (!(tolerance > 0.0)) {
-    throw std::invalid_argument("dino8::kernel::ImprintFaces: tolerance must be positive");
+    throw BooleanOperationError(BooleanFailureReason::InvalidTolerance, "ImprintFaces",
+                                 "dino8::kernel::ImprintFaces: tolerance must be positive");
   }
 
   IntersectOptions opt;
@@ -3403,13 +3409,16 @@ Brep ImprintFaces(const Brep& target, const Brep& tool, double tolerance) {
 // change what `ImprintFaces(b, a, ...)` sees of `b`.
 std::pair<Brep, Brep> MutualImprintFaces(const Brep& a, const Brep& b, double tolerance) {
   if (a.raw().m_F.Count() == 0) {
-    throw std::invalid_argument("dino8::kernel::MutualImprintFaces: a has no faces");
+    throw BooleanOperationError(BooleanFailureReason::EmptyOperand, "MutualImprintFaces",
+                                 "dino8::kernel::MutualImprintFaces: a has no faces");
   }
   if (b.raw().m_F.Count() == 0) {
-    throw std::invalid_argument("dino8::kernel::MutualImprintFaces: b has no faces");
+    throw BooleanOperationError(BooleanFailureReason::EmptyOperand, "MutualImprintFaces",
+                                 "dino8::kernel::MutualImprintFaces: b has no faces");
   }
   if (!(tolerance > 0.0)) {
-    throw std::invalid_argument("dino8::kernel::MutualImprintFaces: tolerance must be positive");
+    throw BooleanOperationError(BooleanFailureReason::InvalidTolerance, "MutualImprintFaces",
+                                 "dino8::kernel::MutualImprintFaces: tolerance must be positive");
   }
   Brep a_imprinted = ImprintFaces(a, b, tolerance);
   Brep b_imprinted = ImprintFaces(b, a, tolerance);
@@ -3623,13 +3632,16 @@ std::pair<Brep, Brep> SplitBySheet(const Brep& solid, const Brep& sheet, double 
   const int ns = bs.m_F.Count();
   const int nh = bh.m_F.Count();
   if (ns == 0) {
-    throw std::invalid_argument("dino8::kernel::SplitBySheet: solid has no faces");
+    throw BooleanOperationError(BooleanFailureReason::EmptyOperand, "SplitBySheet",
+                                 "dino8::kernel::SplitBySheet: solid has no faces");
   }
   if (nh == 0) {
-    throw std::invalid_argument("dino8::kernel::SplitBySheet: sheet has no faces");
+    throw BooleanOperationError(BooleanFailureReason::EmptyOperand, "SplitBySheet",
+                                 "dino8::kernel::SplitBySheet: sheet has no faces");
   }
   if (!(tolerance > 0.0)) {
-    throw std::invalid_argument("dino8::kernel::SplitBySheet: tolerance must be positive");
+    throw BooleanOperationError(BooleanFailureReason::InvalidTolerance, "SplitBySheet",
+                                 "dino8::kernel::SplitBySheet: tolerance must be positive");
   }
 
   IntersectOptions opt;
@@ -3794,13 +3806,16 @@ Brep TrimSheetBySolid(const Brep& sheet, const Brep& solid, bool keep_inside, do
   const int nh = bh.m_F.Count();
   const int ns = bs.m_F.Count();
   if (nh == 0) {
-    throw std::invalid_argument("dino8::kernel::TrimSheetBySolid: sheet has no faces");
+    throw BooleanOperationError(BooleanFailureReason::EmptyOperand, "TrimSheetBySolid",
+                                 "dino8::kernel::TrimSheetBySolid: sheet has no faces");
   }
   if (ns == 0) {
-    throw std::invalid_argument("dino8::kernel::TrimSheetBySolid: solid has no faces");
+    throw BooleanOperationError(BooleanFailureReason::EmptyOperand, "TrimSheetBySolid",
+                                 "dino8::kernel::TrimSheetBySolid: solid has no faces");
   }
   if (!(tolerance > 0.0)) {
-    throw std::invalid_argument("dino8::kernel::TrimSheetBySolid: tolerance must be positive");
+    throw BooleanOperationError(BooleanFailureReason::InvalidTolerance, "TrimSheetBySolid",
+                                 "dino8::kernel::TrimSheetBySolid: tolerance must be positive");
   }
 
   IntersectOptions opt;

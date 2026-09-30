@@ -2340,6 +2340,18 @@ echo "$BO" | grep -E "^(ok|FAIL)"
 if echo "$BO" | grep -q "^FAIL"; then fail=1; fi
 echo "$BO" | grep -q "^smoke:" || { echo "$BO"; echo "FAIL: boolean script produced no smoke line"; fail=1; }
 
+# Imprint/MutualImprint: kernel::ImprintFaces()/MutualImprintFaces()'s first
+# app commands (see imprint_script.txt) - PARITY_MAP.md's "kernel: Boolean
+# operations" category's "Face-face imprint" bullet.
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  IM="$("$BIN" --smoke 60 --script "$HERE/imprint_script.txt" 2>&1)" || { echo "$IM"; echo "FAIL: imprint script exited non-zero"; exit 1; }
+else
+  IM="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$HERE/imprint_script.txt" 2>&1)" || { echo "$IM"; echo "FAIL: imprint script exited non-zero"; exit 1; }
+fi
+echo "$IM" | grep -E "^(ok|FAIL)"
+if echo "$IM" | grep -q "^FAIL"; then fail=1; fi
+echo "$IM" | grep -q "^smoke:" || { echo "$IM"; echo "FAIL: imprint script produced no smoke line"; fail=1; }
+
 # SplitByObject regression: a non-intersecting cutter must not be consumed
 # (see splitbyobject_regression.txt) - SplitByObject used to delete every
 # selected cutting object unconditionally, even when nothing was actually

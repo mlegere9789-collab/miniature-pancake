@@ -1,5 +1,6 @@
 // Boolean and splitting commands (mesh-based, via Manifold).
 #include "commands/cmd_common.h"
+#include "dino8/kernel/boolean_general.h"
 
 namespace dino8::app {
 
@@ -222,6 +223,127 @@ class Boolean2ObjectsCommand : public Command {
   std::vector<ObjectId> a_, b_;
   std::string result_ = "Union";
   bool ready_ = false;
+};
+
+// Shared by ImprintCommand/MutualImprintCommand: the first object in `ids`
+// that is a plain Brep with at least one face - the exact precondition
+// kernel::ImprintFaces()/MutualImprintFaces() themselves enforce (they throw
+// std::invalid_argument on a faceless operand, TestImprintFacesRejects
+// EmptyOperands, tests/test_basic.cpp), so this is a pre-check for a clear
+// command-level warning, not a stand-in for that guard. No IsSolid()
+// requirement (unlike TryExactBrepBoolean's operand collection above) -
+// imprinting works on an open sheet as well as a closed solid, since it
+// never ray-casts in/out of either operand, only splits faces along their
+// mutual SSX curves.
+const SceneObject* FirstImprintableBrep(CommandContext& ctx, const std::vector<ObjectId>& ids) {
+  for (ObjectId id : ids) {
+    const SceneObject* o = ctx.Doc().Find(id);
+    if (o && o->kind == ObjectKind::Brep && o->brep && o->brep->raw().m_F.Count() > 0) return o;
+  }
+  return nullptr;
+}
+
+// Imprint: splits `target`'s own faces wherever they cross `tool`, without
+// removing material from either - Parasolid PK_BODY_imprint / ACIS IMPRINT
+// (PARITY_MAP.md's "kernel: Boolean operations" "Face-face imprint" gap).
+// kernel::ImprintFaces() already existed, fully tested at the kernel layer;
+// this is its first app command. `target` is replaced in the document by
+// the imprinted result (its exact original shape/volume, with more faces
+// wherever `tool` crosses it); `tool` is read-only per ImprintFaces()'s own
+// contract and is left in the document untouched, exactly like a fillet or
+// chamfer command leaves its reference geometry alone.
+class ImprintCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantObjects("Select object to imprint (its own shape and volume are kept; only its faces split)"); }
+  void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
+    if (!have_target_) {
+      const SceneObject* o = FirstImprintableBrep(ctx, ids);
+      if (!o) { ctx.Warn("Imprint: select a Brep with at least one face"); Finish(); return; }
+      target_id_ = o->id;
+      have_target_ = true;
+      ctx.Doc().Select(target_id_, false);
+      WantObjects("Select the imprinting tool object (kept unchanged)");
+      accept_preselection = false;
+      return;
+    }
+    Run(ctx, ids);
+    Finish();
+  }
+  void Run(CommandContext& ctx, const std::vector<ObjectId>& ids) {
+    const SceneObject* tool = FirstImprintableBrep(ctx, ids);
+    const SceneObject* target = ctx.Doc().Find(target_id_);
+    if (!tool || tool->id == target_id_ || !target || !target->brep) {
+      ctx.Warn("Imprint: select a different Brep as the tool");
+      return;
+    }
+    const int before = target->brep->raw().m_F.Count();
+    const int layer = target->layer_index;
+    try {
+      kernel::Brep result = kernel::ImprintFaces(*target->brep, *tool->brep);
+      ctx.Doc().BeginChange("Imprint");
+      ctx.Doc().Remove(target_id_);
+      SceneObject n = SceneObject::MakeBrep(result);
+      n.layer_index = layer;
+      ctx.Doc().Add(std::move(n));
+      ctx.Print("Imprint: " + std::to_string(result.raw().m_F.Count()) + " face(s) (was " + std::to_string(before) + "), no material removed");
+    } catch (const std::exception& ex) {
+      ctx.Warn(std::string("Imprint failed: ") + ex.what());
+    }
+  }
+  ObjectId target_id_ = kNoObject;
+  bool have_target_ = false;
+};
+
+// MutualImprint: like Imprint above, but both operands imprint each other -
+// Parasolid/ACIS's own two-way imprint. kernel::MutualImprintFaces() runs
+// ImprintFaces() twice with the operands swapped; neither side ever loses
+// material. Both objects are replaced in the document by their own
+// imprinted result.
+class MutualImprintCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantObjects("Select first object to imprint"); }
+  void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
+    if (!have_first_) {
+      const SceneObject* o = FirstImprintableBrep(ctx, ids);
+      if (!o) { ctx.Warn("MutualImprint: select a Brep with at least one face"); Finish(); return; }
+      first_id_ = o->id;
+      have_first_ = true;
+      ctx.Doc().Select(first_id_, false);
+      WantObjects("Select the second object to imprint");
+      accept_preselection = false;
+      return;
+    }
+    Run(ctx, ids);
+    Finish();
+  }
+  void Run(CommandContext& ctx, const std::vector<ObjectId>& ids) {
+    const SceneObject* second = FirstImprintableBrep(ctx, ids);
+    const SceneObject* first = ctx.Doc().Find(first_id_);
+    if (!second || second->id == first_id_ || !first || !first->brep) {
+      ctx.Warn("MutualImprint: select a different Brep as the second object");
+      return;
+    }
+    const ObjectId second_id = second->id;
+    const int layer_a = first->layer_index, layer_b = second->layer_index;
+    try {
+      auto [imprinted_a, imprinted_b] = kernel::MutualImprintFaces(*first->brep, *second->brep);
+      ctx.Doc().BeginChange("MutualImprint");
+      ctx.Doc().Remove(first_id_);
+      ctx.Doc().Remove(second_id);
+      SceneObject na = SceneObject::MakeBrep(imprinted_a);
+      na.layer_index = layer_a;
+      ctx.Doc().Add(std::move(na));
+      SceneObject nb = SceneObject::MakeBrep(imprinted_b);
+      nb.layer_index = layer_b;
+      ctx.Doc().Add(std::move(nb));
+      ctx.Print("MutualImprint: " + std::to_string(imprinted_a.raw().m_F.Count()) + " + " +
+                std::to_string(imprinted_b.raw().m_F.Count()) + " face(s), no material removed");
+    } catch (const std::exception& ex) {
+      ctx.Warn(std::string("MutualImprint failed: ") + ex.what());
+    }
+  }
+  ObjectId first_id_ = kNoObject;
+  bool have_first_ = false;
 };
 
 // Split solids by a plane through two picked points (normal to the CPlane).
@@ -527,6 +649,10 @@ void RegisterBooleanCommands(CommandEngine& e) {
   Reg(e, "BooleanDifference", Make<BooleanCommand>(kernel::BooleanOp::Difference, "BooleanDifference", true, /*try_exact_brep=*/true));
   Reg(e, "BooleanIntersection", Make<BooleanCommand>(kernel::BooleanOp::Intersection, "BooleanIntersection", true, /*try_exact_brep=*/true));
   Reg(e, "Boolean2Objects", Make<Boolean2ObjectsCommand>());
+  Reg(e, "Imprint", Make<ImprintCommand>(), CommandStatus::Implemented,
+      "Splits the target object's faces wherever they cross the tool object, removing no material from either (Parasolid/ACIS IMPRINT) - the tool is left unchanged.");
+  Reg(e, "MutualImprint", Make<MutualImprintCommand>(), CommandStatus::Implemented,
+      "Like Imprint, but both objects imprint each other and both are replaced by their own split result.");
   Reg(e, "MeshBooleanUnion", Make<BooleanCommand>(kernel::BooleanOp::Union, "MeshBooleanUnion", false));
   Reg(e, "MeshBooleanDifference", Make<BooleanCommand>(kernel::BooleanOp::Difference, "MeshBooleanDifference", true));
   Reg(e, "MeshBooleanIntersection", Make<BooleanCommand>(kernel::BooleanOp::Intersection, "MeshBooleanIntersection", true));

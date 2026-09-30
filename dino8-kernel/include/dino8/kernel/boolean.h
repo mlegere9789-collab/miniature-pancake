@@ -14,18 +14,46 @@ namespace dino8::kernel {
 // Structured reason for a refused Boolean operation - the first typed
 // alternative to this file's (and boolean_general.cpp's) own ~160 plain
 // std::invalid_argument/std::runtime_error throws, each of which names its
-// precondition only as free text today. Deliberately scoped to the one
+// precondition only as free text today. Originally scoped to just the one
 // refusal shape shared, verbatim, by all three B-rep engines
-// (RefuseCompoundOperand, one copy each in boolean.cpp/boolean_general.cpp)
-// rather than an attempt to retype this file's own much larger catalogue of
-// individual preconditions - PARITY_MAP.md's "Boolean failure diagnostics"
-// bullet names that fuller rewrite as a separate, larger gap this does not
-// close.
+// (RefuseCompoundOperand, one copy each in boolean.cpp/boolean_general.cpp);
+// three more reasons below extend this to boolean_general.cpp's own
+// general-engine precondition checks (BooleanCombineGeneral/
+// BooleanCombineGeneralNAry/ImprintFaces/MutualImprintFaces/SplitBySheet/
+// TrimSheetBySolid), still not an attempt at this file's full ~160-site
+// catalogue nor at the non-manifold reassembly refusal
+// Brep::FromMixedFaces()/BuildLoop() throw deeper inside the reassembly step
+// (a cross-layer/type-hierarchy concern of its own - FromMixedFaces() is a
+// general Brep primitive several non-Boolean callers also use, and
+// BuildLoop()'s own throw is a std::runtime_error, not this type's
+// std::invalid_argument base, so typing it here would either misattribute a
+// non-Boolean-specific error to this Boolean-specific type or silently
+// change which base class TestBooleanCombineGeneralDifferenceThrowsOn
+// TouchingLumpXorCompound (tests/test_basic.cpp) already catches it as) -
+// PARITY_MAP.md's "Boolean failure diagnostics" bullet still names that
+// fuller rewrite, and real structured naked-edge reporting, as remaining
+// gaps this does not close.
 enum class BooleanFailureReason {
   // An operand is a Brep::Compound() of 2+ lumps, refused by an op with no
   // lump-merge step of its own (Union/SymmetricDifference on all three
   // engines - see RefuseCompoundOperand's own doc comment in boolean.cpp).
   CompoundOperand,
+  // An operation this function has never implemented at all is requested -
+  // BooleanCombineGeneral()/BooleanCombineGeneralNAry()'s own
+  // SymmetricDifference refusal (boolean_general.h's own disclosed scope),
+  // not a precondition on the operands themselves.
+  UnsupportedOperation,
+  // A caller-supplied tolerance is not strictly positive - the shared
+  // `!(tolerance > 0.0)` guard boolean_general.cpp's own
+  // BooleanCombineGeneral()/ImprintFaces()/MutualImprintFaces()/
+  // SplitBySheet()/TrimSheetBySolid() each already had before this reason
+  // existed to name it.
+  InvalidTolerance,
+  // An operand Brep has no faces at all - nothing for the general engine's
+  // SSX-driven fragmentation to work with. ImprintFaces()/
+  // MutualImprintFaces()/SplitBySheet()/TrimSheetBySolid() each already
+  // refused this; this reason just gives the refusal a programmatic name.
+  EmptyOperand,
 };
 
 // Thrown by RefuseCompoundOperand (boolean.cpp, boolean_general.cpp) in
