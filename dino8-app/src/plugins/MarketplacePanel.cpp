@@ -18,6 +18,7 @@ const char* CompatibilityLabel(Compatibility c) {
   switch (c) {
     case Compatibility::Compatible: return "Compatible";
     case Compatibility::ApiTooNew: return "Needs newer Dino 8";
+    case Compatibility::AppTooOld: return "Needs newer Dino 8";
     case Compatibility::Unknown: return "Unknown";
   }
   return "Unknown";
@@ -27,9 +28,34 @@ ImVec4 CompatibilityColor(Compatibility c) {
   switch (c) {
     case Compatibility::Compatible: return ImVec4(0.4f, 0.8f, 0.4f, 1);
     case Compatibility::ApiTooNew: return ImVec4(0.9f, 0.4f, 0.4f, 1);
+    case Compatibility::AppTooOld: return ImVec4(0.9f, 0.4f, 0.4f, 1);
     case Compatibility::Unknown: return ImVec4(0.8f, 0.8f, 0.4f, 1);
   }
   return ImVec4(0.8f, 0.8f, 0.4f, 1);
+}
+
+// Display names (falling back to the id) for an entry's declared
+// dependencies, each tagged with whether that dependency is currently
+// satisfied - the same FindInstalled check the "Installed" column already
+// uses per row, just applied to the selected entry's dependency list so the
+// detail panel actually shows what Install/Update will pull in (or already
+// found satisfied) before the user clicks it.
+std::string DependencySummary(const Marketplace& market, const MarketplaceEntry& entry) {
+  if (entry.dependencies.empty()) return "";
+  std::string out;
+  for (const std::string& dep_id : entry.dependencies) {
+    if (!out.empty()) out += ", ";
+    const MarketplaceEntry* dep = nullptr;
+    for (const MarketplaceEntry& e : market.Index().plugins)
+      if (e.id == dep_id) { dep = &e; break; }
+    out += dep ? dep->name : dep_id;
+    std::string installed_version;
+    UpdateStatus status;
+    if (dep && market.FindInstalled(*dep, installed_version, status)) out += " (installed)";
+    else if (!dep) out += " (missing from index)";
+    else out += " (not installed)";
+  }
+  return out;
 }
 
 // Builds the "Loaded ... (N plug-in(s))" status line for a freshly loaded
@@ -157,7 +183,7 @@ void DrawPluginMarketplacePanel(app::Application& app, bool& open) {
       }
 
       ImGui::TableNextColumn(); ImGui::TextUnformatted(e.author.c_str());
-      const Compatibility compat = CheckCompatibility(e);
+      const Compatibility compat = CheckCompatibility(e, DINO8_VERSION);
       ImGui::TableNextColumn(); ImGui::TextColored(CompatibilityColor(compat), "%s", CompatibilityLabel(compat));
       ImGui::TableNextColumn();
       const std::string rating_summary = RatingSummary(e.id);
@@ -165,11 +191,16 @@ void DrawPluginMarketplacePanel(app::Application& app, bool& open) {
       else ImGui::TextUnformatted(rating_summary.c_str());
       ImGui::TableNextColumn(); ImGui::TextUnformatted(e.bundled_path.empty() ? "remote download" : "bundled with this build");
       ImGui::TableNextColumn();
-      ImGui::BeginDisabled(compat == Compatibility::ApiTooNew);
+      ImGui::BeginDisabled(compat == Compatibility::ApiTooNew || compat == Compatibility::AppTooOld);
       const char* button_label = update_status == UpdateStatus::UpdateAvailable ? "Update" : "Install";
       if (ImGui::SmallButton(button_label)) {
         std::string error;
-        if (InstallEntry(app, e, app.ExeDir(), error)) {
+        // Goes through InstallById, not InstallEntry directly, so a click
+        // here resolves e's dependencies exactly like the PluginMarketplaceInstall
+        // command does (plugin-index/SCHEMA.md's "Dependencies" section) -
+        // installing straight from the panel used to skip that resolution
+        // entirely and could load e with an unmet dependency still missing.
+        if (market.InstallById(app, e.id, error)) {
           status = std::string(button_label) + "d " + e.name + " " + e.version + ".";
           app.Notify("Plug-in Marketplace: installed " + e.name + " " + e.version);
         } else {
@@ -215,7 +246,9 @@ void DrawPluginMarketplacePanel(app::Application& app, bool& open) {
       for (const std::string& t : e.tags) tags += (tags.empty() ? "" : ", ") + t;
       ImGui::TextDisabled("Tags: %s", tags.c_str());
     }
-    ImGui::TextDisabled("Plug-in API v%d - %s", e.api_version, CompatibilityLabel(CheckCompatibility(e)));
+    ImGui::TextDisabled("Plug-in API v%d - %s", e.api_version, CompatibilityLabel(CheckCompatibility(e, DINO8_VERSION)));
+    const std::string deps = DependencySummary(market, e);
+    if (!deps.empty()) ImGui::TextDisabled("Requires: %s", deps.c_str());
 
     ImGui::Separator();
     const auto& reviews = PluginReviewStore::Get().ReviewsFor(e.id);

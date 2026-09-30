@@ -127,6 +127,33 @@ int main(int argc, char** argv) {
   e.api_version = DINO8_PLUGIN_API_VERSION + 1;
   Check(CheckCompatibility(e) == Compatibility::ApiTooNew, "a newer-than-this-build api_version is ApiTooNew");
 
+  // ---- CheckCompatibility: min_app_version (enforced only when the caller
+  // passes a running_app_version; omitting it keeps the old "informational
+  // only" behavior so every check above, which never passes one, still
+  // holds unchanged) --------------------------------------------------------
+  MarketplaceEntry old_app;
+  old_app.api_version = 1;
+  old_app.min_app_version = "1.0.0";
+  Check(CheckCompatibility(old_app) == Compatibility::Compatible,
+        "min_app_version is not enforced when the caller passes no running_app_version");
+  Check(CheckCompatibility(old_app, "0.5.0") == Compatibility::AppTooOld,
+        "an entry requiring a newer app version than the running one is AppTooOld");
+  Check(CheckCompatibility(old_app, "1.0.0") == Compatibility::Compatible,
+        "an app version exactly equal to min_app_version is Compatible, not AppTooOld");
+  Check(CheckCompatibility(old_app, "2.0.0") == Compatibility::Compatible,
+        "an app version newer than min_app_version is Compatible");
+  Check(CheckCompatibility(old_app, "1.9.0") == Compatibility::Compatible,
+        "min_app_version compares numerically, not lexically (1.9.0 >= 1.0.0)");
+  MarketplaceEntry no_min;
+  no_min.api_version = 1;
+  Check(CheckCompatibility(no_min, "0.0.1") == Compatibility::Compatible,
+        "an entry with no min_app_version is unaffected by running_app_version");
+  MarketplaceEntry both_too_new;
+  both_too_new.api_version = DINO8_PLUGIN_API_VERSION + 1;
+  both_too_new.min_app_version = "1.0.0";
+  Check(CheckCompatibility(both_too_new, "0.5.0") == Compatibility::ApiTooNew,
+        "ApiTooNew takes priority over AppTooOld when an entry fails both checks");
+
   // ---- CompareVersions ----------------------------------------------------
   Check(CompareVersions("1.0.0", "1.0.0") == 0, "CompareVersions: equal versions compare equal");
   Check(CompareVersions("1.0.0", "1.0.1") < 0, "CompareVersions: a patch bump compares greater");

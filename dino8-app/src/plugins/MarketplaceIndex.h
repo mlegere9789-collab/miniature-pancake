@@ -17,7 +17,7 @@ struct MarketplaceEntry {
   std::string description;
   std::string author;
   std::string homepage;     // optional
-  std::string min_app_version;  // optional, informational only
+  std::string min_app_version;  // optional; enforced by CheckCompatibility
   std::vector<std::string> tags;
   int api_version = 0;      // the DINO8_PLUGIN_API_VERSION this plug-in targets
 
@@ -45,13 +45,22 @@ struct MarketplaceIndex {
   std::vector<MarketplaceEntry> plugins;
 };
 
-enum class Compatibility { Compatible, ApiTooNew, Unknown };
+enum class Compatibility { Compatible, ApiTooNew, AppTooOld, Unknown };
 
-// Compares entry.api_version against DINO8_PLUGIN_API_VERSION. The plug-in
-// ABI is additive (see include/dino8_plugin.h's version-2 comment), so any
-// api_version <= this build's is expected to load; higher means this build
-// is too old for it.
-Compatibility CheckCompatibility(const MarketplaceEntry& entry);
+// Compares entry.api_version against DINO8_PLUGIN_API_VERSION, and - when
+// `running_app_version` is given - entry.min_app_version against it too.
+// The plug-in ABI is additive (see include/dino8_plugin.h's version-2
+// comment), so any api_version <= this build's is expected to load; higher
+// means this build is too old for it (ApiTooNew, checked first).
+// Otherwise, if the entry declares a min_app_version and the caller passed a
+// non-empty running_app_version, AppTooOld means this build's own version is
+// older than the plug-in requires (compared numerically via
+// CompareVersions, not lexically). `running_app_version` defaults to "",
+// which skips that second check entirely - the same "informational only"
+// behavior this function always had before min_app_version was enforced;
+// callers that care (InstallEntry, the marketplace panel, PluginMarketplaceList)
+// pass DINO8_VERSION.
+Compatibility CheckCompatibility(const MarketplaceEntry& entry, const std::string& running_app_version = "");
 
 // Compares two dotted-numeric version strings ("1.2.3", "1.10.0", ...)
 // component by component as integers - not a lexical string compare, so

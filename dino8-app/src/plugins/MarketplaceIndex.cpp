@@ -75,9 +75,13 @@ bool FetchUrlToTempFile(const std::string& url, std::string& out_path, std::stri
   return true;
 }
 
-Compatibility CheckCompatibility(const MarketplaceEntry& entry) {
-  if (entry.api_version <= 0) return Compatibility::Unknown;
-  return entry.api_version <= DINO8_PLUGIN_API_VERSION ? Compatibility::Compatible : Compatibility::ApiTooNew;
+Compatibility CheckCompatibility(const MarketplaceEntry& entry, const std::string& running_app_version) {
+  if (entry.api_version > 0 && entry.api_version > DINO8_PLUGIN_API_VERSION) return Compatibility::ApiTooNew;
+  if (!entry.min_app_version.empty() && !running_app_version.empty() &&
+      CompareVersions(running_app_version, entry.min_app_version) < 0) {
+    return Compatibility::AppTooOld;
+  }
+  return entry.api_version <= 0 ? Compatibility::Unknown : Compatibility::Compatible;
 }
 
 namespace {

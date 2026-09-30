@@ -87,10 +87,14 @@ bool InstallEntry(app::Application& app, const MarketplaceEntry& entry, const st
     error = entry.name + ": entry has neither download_url nor bundled_path";
     return false;
   }
-  const Compatibility compat = CheckCompatibility(entry);
+  const Compatibility compat = CheckCompatibility(entry, DINO8_VERSION);
   if (compat == Compatibility::ApiTooNew) {
     error = entry.name + " needs plug-in API v" + std::to_string(entry.api_version) +
             ", this build only supports up to v" + std::to_string(DINO8_PLUGIN_API_VERSION);
+    return false;
+  }
+  if (compat == Compatibility::AppTooOld) {
+    error = entry.name + " needs Dino 8 " + entry.min_app_version + " or newer, this build is " DINO8_VERSION;
     return false;
   }
 

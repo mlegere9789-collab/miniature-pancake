@@ -3892,6 +3892,26 @@ else
   echo "ok   PluginMarketplaceInstall's crafted library_filename left no file outside <config>/plugins ($CANARY was never created)"
 fi
 
+# Plug-in Marketplace: min_app_version is enforced, not just informational
+# (CheckCompatibility in src/plugins/MarketplaceIndex.cpp takes the running
+# DINO8_VERSION and reports AppTooOld when an entry requires a newer one;
+# InstallEntry in src/plugins/Marketplace.cpp refuses to install such an
+# entry, the same way it already refused an api_version that's too new).
+# tests/plugin_marketplace_appversion_index.json's futureplugin declares
+# min_app_version 99.0.0, far ahead of any real release, so both
+# PluginMarketplaceList's compatibility label and PluginMarketplaceInstall's
+# refusal must reflect it.
+sed "s|@DINO8ROOT@|$HEREW/..|g" "$HERE/plugin_marketplace_appversion_script.txt" > "$TMPW/plugin_marketplace_appversion_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  PMV="$("$BIN" --smoke 60 --script "$TMPW/plugin_marketplace_appversion_script.txt" 2>&1)" || { echo "$PMV"; echo "FAIL: plugin marketplace app-version script exited non-zero"; exit 1; }
+else
+  PMV="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$TMPW/plugin_marketplace_appversion_script.txt" 2>&1)" || { echo "$PMV"; echo "FAIL: plugin marketplace app-version script exited non-zero"; exit 1; }
+fi
+pmvcheck() { if echo "$PMV" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$PMV" "$1"; fail=1; fi; }
+pmvcheck "PluginMarketplaceIndex: loaded \"App Version Test Index (min_app_version enforcement fixture)\" - 1 plug-in(s)" "PluginMarketplaceIndex loaded the app-version-fixture index"
+pmvcheck "  futureplugin: FuturePlugin 1.0.0 by Dino 8 Project (api v1, needs newer Dino 8)" "PluginMarketplaceList labels a too-high min_app_version entry as needing a newer Dino 8"
+pmvcheck "! PluginMarketplaceInstall: FuturePlugin needs Dino 8 99.0.0 or newer, this build is" "PluginMarketplaceInstall refuses to install an entry whose min_app_version exceeds this build's own version"
+
 # Plug-in Marketplace: version checking/update notifications
 # (Marketplace::CheckForUpdates, PluginMarketplaceCheckUpdates - see
 # src/plugins/MarketplaceIndex.cpp's CompareVersions/CheckForUpdate and
@@ -3961,6 +3981,8 @@ else
 fi
 pmdcheck() { if echo "$PMD" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$PMD" "$1"; fail=1; fi; }
 pmdcheck "PluginMarketplaceIndex: loaded \"Dependency Test Index (plugin dependency resolution fixture)\" - 3 plug-in(s)" "PluginMarketplaceIndex loaded the dependency-fixture index"
+pmdcheck "  curvetools: CurveTools 1.0.0 by Dino 8 Project (api v2, compatible) - requires meshtools" "PluginMarketplaceList shows curvetools' dependency on meshtools, not just its install-time resolution"
+pmdcheck "  analysistools: AnalysisTools 1.0.0 by Dino 8 Project (api v2, compatible) - requires doesnotexist" "PluginMarketplaceList shows analysistools' dependency even though doesnotexist isn't in the index"
 pmdcheck "! PluginMarketplaceInstall: AnalysisTools (analysistools) requires plug-in \"doesnotexist\", which is not in the loaded index" "PluginMarketplaceInstall refuses to install a plug-in whose dependency is missing from the index"
 pmdcheck "PluginMarketplaceInstall: installed curvetools - 1 command(s), 3 flow node(s) registered" "PluginMarketplaceInstall installs a plug-in whose dependency is already satisfied"
 # Split the transcript at each GrasshopperPluginList's own output: PMD_S1 is

@@ -38,7 +38,12 @@ misreading it.
   "description": "...",         // optional but strongly recommended
   "author": "...",              // optional
   "homepage": "https://...",    // optional
-  "min_app_version": "0.1.0",   // optional, informational only (not enforced)
+  "min_app_version": "0.1.0",   // optional: the lowest Dino 8 version this
+                                 // plug-in needs. Compared numerically
+                                 // (like "api_version" below) against this
+                                 // build's own version; Install refuses an
+                                 // entry that needs a newer one, same as it
+                                 // already refuses an api_version too new.
   "tags": ["sample", "starter"],// optional
 
   "dependencies": ["other-id"], // optional, ids of other entries in this
@@ -108,7 +113,15 @@ plug-in (matched by name, the same check `PluginMarketplaceCheckUpdates`
 uses) is left alone, and each other is installed first, recursively
 resolving its own dependencies the same way. Installing fails - with
 nothing installed - if a listed id isn't in the loaded index, or if the
-dependency graph cycles back on an id already being resolved.
+dependency graph cycles back on an id already being resolved. The panel's
+own Install/Update button goes through `Marketplace::InstallById` too, so
+clicking it in the UI resolves dependencies exactly like the command does.
+
+`PluginMarketplaceList` prints a `- requires a, b` suffix for any entry
+with dependencies (even one naming an id missing from the index, since that
+is exactly what would make installing it fail); the panel's detail view
+shows the same list as `Requires: A (installed), B (not installed)`,
+resolving each id to its display name and current install status.
 
 `PluginMarketplaceUninstall`/`Marketplace::UninstallById` reverses this: it
 removes the `<config>/plugins` copy it finds for the requested id, then
@@ -126,6 +139,13 @@ compatibility label:
 |---|---|
 | `<=` (including `0`/absent, treated as unknown) | absent → "Unknown"; otherwise "Compatible" |
 | `>` | "Needs newer Dino 8" - Install refuses it |
+
+`min_app_version`, if the entry gives one, is checked the same way against
+this build's own version (numerically, via the same comparison
+`CompareVersions` uses for `CheckForUpdate`): a build older than
+`min_app_version` also shows "Needs newer Dino 8" and Install also refuses
+it. `api_version` is checked first, so an entry that fails both checks is
+reported for its `api_version` mismatch.
 
 ## Writing your own index
 

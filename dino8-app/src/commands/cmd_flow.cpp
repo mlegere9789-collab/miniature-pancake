@@ -205,12 +205,20 @@ void RegisterFlowCommands(CommandEngine& e) {
         const auto& idx = plugins::Marketplace::Get().Index();
         ctx.Print("PluginMarketplaceList: " + std::to_string(idx.plugins.size()) + " plug-in(s) in the loaded index");
         for (const plugins::MarketplaceEntry& p : idx.plugins) {
-          const plugins::Compatibility compat = plugins::CheckCompatibility(p);
-          const std::string compat_label = compat == plugins::Compatibility::Compatible   ? "compatible"
-                                            : compat == plugins::Compatibility::ApiTooNew ? "needs newer Dino 8"
-                                                                                            : "compatibility unknown";
-          ctx.Print("  " + p.id + ": " + p.name + " " + p.version + " by " + p.author + " (api v" +
-                    std::to_string(p.api_version) + ", " + compat_label + ")");
+          const plugins::Compatibility compat = plugins::CheckCompatibility(p, DINO8_VERSION);
+          const std::string compat_label = compat == plugins::Compatibility::Compatible ? "compatible"
+                                            : compat == plugins::Compatibility::ApiTooNew ||
+                                                    compat == plugins::Compatibility::AppTooOld
+                                                ? "needs newer Dino 8"
+                                                : "compatibility unknown";
+          std::string line = "  " + p.id + ": " + p.name + " " + p.version + " by " + p.author + " (api v" +
+                              std::to_string(p.api_version) + ", " + compat_label + ")";
+          if (!p.dependencies.empty()) {
+            std::string deps;
+            for (const std::string& d : p.dependencies) deps += (deps.empty() ? "" : ", ") + d;
+            line += " - requires " + deps;
+          }
+          ctx.Print(line);
         }
       }));
 
