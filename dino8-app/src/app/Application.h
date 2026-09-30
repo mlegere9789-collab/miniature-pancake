@@ -12,6 +12,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "app/ShortcutRules.h"
 #include "app/ViewTools.h"
 #include "commands/CommandCatalog.h"
 #include "commands/CommandEngine.h"
@@ -119,10 +120,12 @@ struct RenderImage {
 // A single user-assignable keyboard shortcut (Options > Shortcuts):
 // modifier chord + one ImGui key -> a command line, checked by
 // Application::HandleShortcuts alongside its own built-in Ctrl+Z/F1-F11/etc
-// bindings (which always take priority - a user shortcut that collides with
-// one of those never fires, exactly like Rhino's own built-in bindings
-// winning over a customized one). `key` is an ImGuiKey value; stored as int
-// here (not ImGuiKey) so this header does not have to include imgui.h.
+// bindings. A shortcut assigned to a chord that also has a built-in default
+// (IsReservedShortcut below) REPLACES that default rather than being
+// blocked by it - Rhino's own Tools > Options > Keyboard behavior, where
+// even Ctrl+Z itself can be reassigned. `key` is an ImGuiKey value; stored
+// as int here (not ImGuiKey) so this header does not have to include
+// imgui.h.
 struct KeyShortcut {
   int key = 0;
   bool ctrl = false, shift = false, alt = false;
