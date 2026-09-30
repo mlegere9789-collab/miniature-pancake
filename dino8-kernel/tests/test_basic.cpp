@@ -44295,14 +44295,15 @@ void TestExtrudeToBoundaryNegativeControls() {
   const NurbsCurve open_chain = Polyline({P(0, 0, 0), P(1, 0, 0), P(1, 1, 0)});
   Check(Throws([&] { ExtrudeToBoundary(open_chain, Vector3d(0, 0, 1), flat_ahead); }), "an open profile throws");
 
-  // `profile` must be a QUADRILATERAL specifically - Brep::FromUntrimmedQuadFaces()'s
-  // own "surface domain IS the whole true shape" contract (this function's
-  // own construction, see boolean_general.h) only holds for a genuine
-  // quad face; a 5-vertex profile is refused, not silently approximated.
-  const NurbsCurve pentagon = Polyline(
-      {P(0, 0, 0), P(2, 0, 0), P(3, 2, 0), P(1, 3, 0), P(-1, 2, 0), P(0, 0, 0)});
-  Check(Throws([&] { ExtrudeToBoundary(pentagon, Vector3d(0, 0, 1), flat_ahead); }),
-        "a non-quadrilateral (5-vertex) profile throws");
+  // `profile` must have at least 3 distinct vertices (a 2-point "polygon"
+  // is degenerate - Newell's own normal is undefined/zero for it, caught
+  // by the same collinear-vertices check a degenerate quad already hits).
+  const NurbsCurve two_point = Polyline({P(0, 0, 0), P(1, 0, 0), P(0, 0, 0)});
+  Check(Throws([&] { ExtrudeToBoundary(two_point, Vector3d(0, 0, 1), flat_ahead); }),
+        "a degenerate (2-point) profile throws");
+
+  // A non-quadrilateral profile is no longer refused outright - see
+  // TestExtrudeToBoundaryNgonProfile below for the N != 4 path itself.
 }
 
 // A clockwise profile and/or a `direction` pointing the opposite way along
@@ -44343,6 +44344,67 @@ void TestExtrudeToBoundaryHandlesReversedWindingAndDirection() {
   Check(mesh_oblique.IsClosedManifold(), "an oblique direction still tessellates to a closed manifold");
   Check(std::abs(mesh_oblique.Volume() - 24.0) < 1e-6,
         "an oblique direction to a flat boundary still gives area * height exactly (Cavalieri's principle)");
+}
+
+// A profile with N != 4 vertices - refused outright by an earlier version
+// of this function (Brep::FromUntrimmedQuadFaces() cannot build an N-sided
+// cap for N > 4) - now goes through Brep::PlanarFace/FromPlanarFaces()
+// instead (see ExtrudeToBoundary's own boolean_general.cpp comment),
+// giving a genuinely SOLID result (unlike the N == 4 path, which stays on
+// the original topology-free FromUntrimmedQuadFaces() convention - see
+// TestExtrudeToBoundaryTiltedPlaneMatchesExactAffineCapVolume's own
+// comment - so IsSolid() there is still false, by design, not tested
+// here).
+void TestExtrudeToBoundaryNgonProfile() {
+  using dino8::kernel::ExtrudeToBoundary;
+
+  // An irregular (non-regular, non-convex-suspicious) pentagon footprint;
+  // area computed independently via the shoelace formula, not assumed.
+  const std::vector<Point3d> pts = {P(0, 0, 0), P(2, 0, 0), P(3, 2, 0), P(1, 3, 0), P(-1, 2, 0)};
+  double signed_area2 = 0.0;
+  for (size_t i = 0; i < pts.size(); ++i) {
+    const Point3d& a = pts[i];
+    const Point3d& b = pts[(i + 1) % pts.size()];
+    signed_area2 += a.x * b.y - b.x * a.y;
+  }
+  const double area = std::abs(signed_area2) * 0.5;
+  std::vector<Point3d> loop = pts;
+  loop.push_back(pts[0]);
+  const NurbsCurve pentagon = Polyline(loop);
+
+  const Brep flat = MakeTiltedPlanarSheet(-3, -3, 5, 5, 0.0, 0.0, 5.0);
+  const Brep cut = ExtrudeToBoundary(pentagon, Vector3d(0, 0, 1), flat);
+  Check(cut.raw().IsSolid(), "a pentagon profile builds a genuine IsSolid() B-rep (unlike the N == 4 path)");
+  Check(cut.FaceCount() == 7, "a pentagon profile gives 2 caps + 5 walls = 7 faces");
+  const Mesh mesh = cut.TessellateToClosedMesh(16, 16);
+  Check(std::abs(mesh.Volume() - area * 5.0) < 1e-6,
+        "pentagon-to-flat-boundary volume matches footprint area * height exactly (area * 5)");
+
+  // A reversed (clockwise) winding and a reversed extrusion direction,
+  // exactly TestExtrudeToBoundaryHandlesReversedWindingAndDirection's own
+  // regression pair, generalized to N != 4.
+  std::vector<Point3d> loop_cw(pts.rbegin(), pts.rend());
+  loop_cw.push_back(loop_cw.front());
+  const NurbsCurve pentagon_cw = Polyline(loop_cw);
+  const Brep flat_below = MakeTiltedPlanarSheet(-3, -3, 5, 5, 0.0, 0.0, -5.0);
+  const Brep cut_down = ExtrudeToBoundary(pentagon_cw, Vector3d(0, 0, -1), flat_below);
+  Check(cut_down.raw().IsSolid(), "a clockwise pentagon extruded downward still builds a genuine solid");
+  const Mesh mesh_down = cut_down.TessellateToClosedMesh(16, 16);
+  Check(std::abs(mesh_down.Volume() - area * 5.0) < 1e-6,
+        "clockwise pentagon extruded downward gives the same exact positive volume");
+
+  // A triangle (the smallest possible N != 4 case) against a tilted
+  // boundary - genuinely oblique, not merely a smoke test.
+  const NurbsCurve triangle = Polyline({P(0, 0, 0), P(4, 0, 0), P(0, 4, 0), P(0, 0, 0)});
+  const Brep tilted = MakeTiltedPlanarSheet(-2, -2, 6, 6, 0.2, 0.3, 5.0);
+  const Brep cut_tri = ExtrudeToBoundary(triangle, Vector3d(0, 0, 1), tilted);
+  Check(cut_tri.raw().IsSolid(), "a triangular profile builds a genuine solid too");
+  Check(cut_tri.FaceCount() == 5, "a triangle profile gives 2 caps + 3 walls = 5 faces");
+  const double tri_area = 0.5 * 4.0 * 4.0;
+  const double tri_centroid_h = 5.0 + 0.2 * (4.0 / 3.0) + 0.3 * (4.0 / 3.0);  // affine height at the centroid
+  const Mesh mesh_tri = cut_tri.TessellateToClosedMesh(16, 16);
+  Check(std::abs(mesh_tri.Volume() - tri_area * tri_centroid_h) < 1e-6,
+        "triangle-to-tilted-boundary volume matches area * height-at-centroid exactly (Cavalieri's principle)");
 }
 
 // Sweep2: two-rail sweep with scaling (brep.h's own doc comment has the
@@ -51107,6 +51169,7 @@ int main() {
   sweep_tests::TestExtrudeToBoundaryMatchesPlainExtrudeForAFlatBoundary();
   sweep_tests::TestExtrudeToBoundaryNegativeControls();
   sweep_tests::TestExtrudeToBoundaryHandlesReversedWindingAndDirection();
+  sweep_tests::TestExtrudeToBoundaryNgonProfile();
 
   TestSurfaceUnrollDevelopablePlaneIsExactIsometry();
   TestSurfaceUnrollDevelopableCylinderPreservesHeightAndCircumferenceExactly();

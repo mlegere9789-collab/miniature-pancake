@@ -4118,34 +4118,44 @@ Brep ExtrudeToBoundary(const NurbsCurve& profile, Vector3d direction, const Brep
   const char* caller = "dino8::kernel::ExtrudeToBoundary";
   if (profile.Degree() != 1 || profile.IsRational() || !profile.IsClosed() || !profile.IsPlanar()) {
     throw std::invalid_argument(std::string(caller) +
-                                 ": `profile` must be a closed, planar, degree-1, non-rational quadrilateral");
+                                 ": `profile` must be a closed, planar, degree-1, non-rational polygon");
   }
   const int vcount = profile.ControlPointCount() - 1;  // closed polyline repeats CV[0] as CV[last]
-  if (vcount != 4) {
-    throw std::invalid_argument(std::string(caller) +
-                                 ": `profile` must be a quadrilateral (exactly 4 distinct vertices)");
+  if (vcount < 3) {
+    throw std::invalid_argument(std::string(caller) + ": `profile` must have at least 3 distinct vertices");
   }
-  std::vector<Point3d> v(4);
-  for (int i = 0; i < 4; ++i) v[static_cast<size_t>(i)] = profile.ControlPointAt(i);
+  std::vector<Point3d> v(static_cast<size_t>(vcount));
+  for (int i = 0; i < vcount; ++i) v[static_cast<size_t>(i)] = profile.ControlPointAt(i);
 
   Vector3d dir_n = direction;
   if (!dir_n.Unitize()) {
     throw std::invalid_argument(std::string(caller) + ": direction is zero or non-finite");
   }
 
-  // Newell/shoelace normal (robust for any simple planar quad, convex or
-  // not), used only to pick which of `v`'s own two possible windings is
-  // the OUTWARD-facing base cap - the same auto-reverse convention
+  // Newell/shoelace normal, robust for any simple planar polygon (convex
+  // or not, 3 or more vertices) - reused below (once the walls and caps
+  // are assembled) to derive each generated face's own correct outward
+  // `ON_Plane` directly from its already-correctly-wound loop, rather
+  // than hand-tracking a sign flip through every case the way an earlier,
+  // quadrilateral-only version of this function did.
+  auto newell_normal = [](const std::vector<Point3d>& poly) {
+    Vector3d n(0, 0, 0);
+    const int m = static_cast<int>(poly.size());
+    for (int i = 0; i < m; ++i) {
+      const Point3d& a = poly[static_cast<size_t>(i)];
+      const Point3d& b = poly[static_cast<size_t>((i + 1) % m)];
+      n.x += (a.y - b.y) * (a.z + b.z);
+      n.y += (a.z - b.z) * (a.x + b.x);
+      n.z += (a.x - b.x) * (a.y + b.y);
+    }
+    return n;
+  };
+
+  // Used only to pick which of `v`'s own two possible windings is the
+  // OUTWARD-facing base cap - the same auto-reverse convention
   // `Brep::Extrude()`'s own doc comment documents, generalized from
   // "parallel to direction" to "any non-perpendicular direction".
-  Vector3d normal(0, 0, 0);
-  for (int i = 0; i < 4; ++i) {
-    const Point3d& a = v[static_cast<size_t>(i)];
-    const Point3d& b = v[static_cast<size_t>((i + 1) % 4)];
-    normal.x += (a.y - b.y) * (a.z + b.z);
-    normal.y += (a.z - b.z) * (a.x + b.x);
-    normal.z += (a.x - b.x) * (a.y + b.y);
-  }
+  Vector3d normal = newell_normal(v);
   if (!normal.Unitize()) {
     throw std::invalid_argument(std::string(caller) + ": `profile`'s own vertices are degenerate (collinear)");
   }
@@ -4173,12 +4183,12 @@ Brep ExtrudeToBoundary(const NurbsCurve& profile, Vector3d direction, const Brep
     throw std::invalid_argument(std::string(caller) + ": `direction` is parallel to `boundary`'s own plane");
   }
 
-  // Exact ray/plane intersection at each of the 4 base corners - `top[i]`
-  // lands exactly ON `boundary`'s plane by construction, so all 4 are
-  // exactly coplanar (a genuine, not approximate, tilted cap) regardless
-  // of how oblique `boundary` is relative to `direction`.
-  std::vector<Point3d> top(4);
-  for (int i = 0; i < 4; ++i) {
+  // Exact ray/plane intersection at each of the `vcount` base corners -
+  // `top[i]` lands exactly ON `boundary`'s plane by construction, so all
+  // of them are exactly coplanar (a genuine, not approximate, tilted cap)
+  // regardless of how oblique `boundary` is relative to `direction`.
+  std::vector<Point3d> top(static_cast<size_t>(vcount));
+  for (int i = 0; i < vcount; ++i) {
     const double t = ((plane.origin - base[static_cast<size_t>(i)]) * Vector3d(plane.zaxis)) / denom;
     if (!(t > 1e-9)) {
       throw std::invalid_argument(
@@ -4206,7 +4216,7 @@ Brep ExtrudeToBoundary(const NurbsCurve& profile, Vector3d direction, const Brep
       const Vector3d d = p - plane.origin;
       poly2d.emplace_back(d * Vector3d(plane.xaxis), d * Vector3d(plane.yaxis));
     }
-    for (int i = 0; i < 4; ++i) {
+    for (int i = 0; i < vcount; ++i) {
       const Vector3d d = top[static_cast<size_t>(i)] - plane.origin;
       const Point2d p2(d * Vector3d(plane.xaxis), d * Vector3d(plane.yaxis));
       if (!PointInPolygon(poly2d, p2)) {
@@ -4233,29 +4243,81 @@ Brep ExtrudeToBoundary(const NurbsCurve& profile, Vector3d direction, const Brep
   }
 
   // Each wall spans base[i]->base[j] (j = i+1) up to the matching top
-  // corners - but WHICH of base[i]/base[j] comes first in the quad also
-  // has to flip with `alignment`'s sign, for the identical reason the
-  // caps above do: `top[i] - base[i]` is `direction`-sized, so reversing
-  // `direction` (moving `alignment` from positive to negative for the
-  // SAME profile) flips that vector and, with it, the sign of
-  // `FromUntrimmedQuadFaces()`'s own (q1-q0) x (q3-q0) outward-normal
-  // formula for a wall built from an unchanged (i, j) order (confirmed
-  // directly - the naive fix that reorders only the caps, above, reverses
-  // 2 of a prism's 6 faces but leaves the other 4 inverted, exactly the
-  // "closed manifold, exactly wrong-sign volume" failure this fix
-  // replaces).
-  std::vector<std::vector<Point3d>> quads;
-  quads.reserve(6);
-  quads.push_back(std::move(bottom_cap_loop));
-  quads.push_back(std::move(top_cap_loop));
-  for (int i = 0; i < 4; ++i) {
-    const int j = (i + 1) % 4;
+  // corners - but WHICH of base[i]/base[j] comes first also has to flip
+  // with `alignment`'s sign, for the identical reason the caps above do:
+  // `top[i] - base[i]` is `direction`-sized, so reversing `direction`
+  // (moving `alignment` from positive to negative for the SAME profile)
+  // flips that vector and, with it, the sign of a wall built from an
+  // unchanged (i, j) order's own outward normal (confirmed directly - the
+  // naive fix that reorders only the caps, above, reverses 2 of a prism's
+  // 6 faces but leaves the rest inverted, exactly the "closed manifold,
+  // exactly wrong-sign volume" failure this fix replaces). base[i]/
+  // base[j], top[i]/top[j] are automatically coplanar regardless of
+  // `direction`'s own obliqueness or of the two corners' own (possibly
+  // different, for a tilted `boundary`) extrusion distances: both top
+  // points are base points plus a multiple of the SAME `dir_n`, so all
+  // four lie in the plane spanned by the base edge and `dir_n` through
+  // base[i] - the classic "a sheared extrusion wall stays planar" fact.
+  std::vector<std::vector<Point3d>> wall_quads;
+  wall_quads.reserve(static_cast<size_t>(vcount));
+  for (int i = 0; i < vcount; ++i) {
+    const int j = (i + 1) % vcount;
     const int first = (alignment > 0.0) ? i : j;
     const int second = (alignment > 0.0) ? j : i;
-    quads.push_back({base[static_cast<size_t>(first)], base[static_cast<size_t>(second)],
-                      top[static_cast<size_t>(second)], top[static_cast<size_t>(first)]});
+    wall_quads.push_back({base[static_cast<size_t>(first)], base[static_cast<size_t>(second)],
+                          top[static_cast<size_t>(second)], top[static_cast<size_t>(first)]});
   }
-  return Brep::FromUntrimmedQuadFaces(quads);
+
+  if (vcount == 4) {
+    // The original, already-thoroughly-tested quadrilateral path, kept
+    // byte-for-byte: `Brep::FromUntrimmedQuadFaces()` (six independent
+    // untrimmed surfaces, mesh-compatible only - the same deliberately
+    // topology-free convention `Box()` documents) reproduces the exact
+    // existing volumes/mesh-closedness this function's own tests already
+    // check. The N != 4 path below (needed for a cap `FromUntrimmedQuadFaces`
+    // cannot build at all) was measured to build a genuinely SOLID
+    // (`IsSolid() == true`) result via `FromPlanarFaces()`'s own real
+    // welded topology, but with a real tradeoff for a non-rectangular
+    // trimmed cap: `TessellateToClosedMesh()`'s own per-face grid
+    // tessellation can leave small T-junction cracks at a cap's own
+    // non-axis-aligned trim boundary (mesh-level `IsClosedManifold()` can
+    // read false there even though the B-rep itself is genuinely closed)
+    // - not worth risking on the N == 4 case, which has no such trim
+    // boundary to crack at and already has zero-regression evidence in
+    // this function's own existing test suite.
+    std::vector<std::vector<Point3d>> quads;
+    quads.reserve(6);
+    quads.push_back(std::move(bottom_cap_loop));
+    quads.push_back(std::move(top_cap_loop));
+    for (auto& q : wall_quads) quads.push_back(std::move(q));
+    return Brep::FromUntrimmedQuadFaces(quads);
+  }
+
+  // N != 4: `Brep::FromUntrimmedQuadFaces()` cannot build an N-sided cap
+  // at all, so every face - the two N-gon caps AND the always-quad walls
+  // alike - is instead built as a `Brep::PlanarFace` and welded into one
+  // genuine, real-topology solid by ONE `Brep::FromPlanarFaces()` call
+  // (its own `VertexWelder` shares an edge automatically wherever two
+  // faces' loops meet at the same 3D point - see its own doc comment).
+  // Each face's own outward `ON_Plane` is derived directly from its own
+  // (already correctly wound) loop via `newell_normal`, rather than
+  // re-deriving the same alignment-sign bookkeeping a second time.
+  std::vector<Brep::PlanarFace> faces;
+  faces.reserve(static_cast<size_t>(vcount) + 2);
+  auto add_face = [&](std::vector<Point3d> loop) {
+    Vector3d n = newell_normal(loop);
+    if (!n.Unitize()) {
+      throw std::runtime_error(std::string(caller) + ": a generated face is degenerate - please report this as a bug");
+    }
+    Brep::PlanarFace pf;
+    pf.plane = ON_Plane(loop[0], n);
+    pf.loop = std::move(loop);
+    faces.push_back(std::move(pf));
+  };
+  add_face(std::move(bottom_cap_loop));
+  add_face(std::move(top_cap_loop));
+  for (auto& q : wall_quads) add_face(std::move(q));
+  return Brep::FromPlanarFaces(faces);
 }
 
 // --- TessellateGeneralBooleanClosedMesh(): T-junction stitching --------
