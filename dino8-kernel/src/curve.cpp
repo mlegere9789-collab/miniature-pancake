@@ -1,6 +1,7 @@
 #include "dino8/kernel/curve.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <stdexcept>
 #include <string>
@@ -547,6 +548,105 @@ Result NurbsCurve::ChamferCorner(Point3d p0, Point3d corner, Point3d p1, double 
   const Point3d T0 = corner + distance0 * u;
   const Point3d T1 = corner + distance1 * v;
   out = FromControlPoints({p0, T0, T1, p1}, 1);
+  return Result::Ok;
+}
+
+namespace {
+
+// Reads position + derivatives up to order `continuity` (1..3) of `curve`
+// at parameter `t` via the generic `ON_Curve::Evaluate` (the same base
+// evaluation method `TangentAt`/`CurvatureAt` are themselves built on top
+// of, per `Ev1Der`/`Ev2Der`/`EvCurvature`), applying the t -> -t
+// reparametrization sign flip to every ODD-order derivative when
+// `reverse` is true - see `BlendCurves`' own doc comment for why that is
+// the correct identity (EVEN-order derivatives, including the 0th/
+// position, are unaffected). `out_derivs[k-1]` holds the (possibly sign-
+// flipped) k-th derivative for k in [1, continuity]. Returns false if
+// `Evaluate` itself fails.
+bool EvaluateBlendEnd(const ON_NurbsCurve& curve, double t, bool reverse, int continuity, Point3d& out_point,
+                       std::array<Vector3d, 3>& out_derivs) {
+  double v[4 * 3] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+  if (!curve.Evaluate(t, continuity, 3, v)) return false;
+  out_point = Point3d(v[0], v[1], v[2]);
+  for (int k = 1; k <= continuity; ++k) {
+    Vector3d d(v[k * 3 + 0], v[k * 3 + 1], v[k * 3 + 2]);
+    if (reverse && (k % 2 == 1)) d = -d;
+    out_derivs[static_cast<size_t>(k - 1)] = d;
+  }
+  return true;
+}
+
+}  // namespace
+
+Result NurbsCurve::BlendCurves(const NurbsCurve& curve0, double t0, bool reverse0, const NurbsCurve& curve1,
+                                double t1, bool reverse1, int continuity, NurbsCurve& out) {
+  if (continuity < 1 || continuity > 3) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsCurve::BlendCurves: continuity must be 1 (G1), 2 (G2) or 3 (G3)");
+  }
+  const Interval dom0 = curve0.Domain();
+  const Interval dom1 = curve1.Domain();
+  if (t0 < dom0.min || t0 > dom0.max) {
+    throw std::invalid_argument("dino8::kernel::NurbsCurve::BlendCurves: t0 is outside curve0's own Domain()");
+  }
+  if (t1 < dom1.min || t1 > dom1.max) {
+    throw std::invalid_argument("dino8::kernel::NurbsCurve::BlendCurves: t1 is outside curve1's own Domain()");
+  }
+
+  Point3d P0, P1;
+  std::array<Vector3d, 3> D0{}, D1{};
+  if (!EvaluateBlendEnd(curve0.curve_, t0, reverse0, continuity, P0, D0) ||
+      !EvaluateBlendEnd(curve1.curve_, t1, reverse1, continuity, P1, D1)) {
+    return Result::Failed;
+  }
+
+  const double scale = std::max(1.0, P0.DistanceTo(Point3d(0, 0, 0)));
+  if (P0.DistanceTo(P1) <= 1e-9 * scale) {
+    return Result::Failed;
+  }
+
+  // Every step below is deliberately written using only Point-Point
+  // (-> Vector) subtraction, Vector*scalar, and Point+-Vector - the
+  // operators this codebase's own Point3d/Vector3d arithmetic already
+  // relies on everywhere else (e.g. FilletCornerArc's own `corner +
+  // d*u`) - rather than a direct `scalar*Point3d` combination, which
+  // this file does not otherwise use. Each formula below is the
+  // textbook forward/backward Bezier finite-difference identity
+  // (`BlendCurves`' own doc comment derives it), algebraically
+  // rearranged into that same "Point + Vector" shape:
+  //   2*P1 - P0        == P1 + (P1 - P0)
+  //   3*P2 - 3*P1 + P0  == P0 + 3*(P2 - P1)
+  // and the mirror-image rearrangement for the back (u=1) side.
+  const int d = 2 * continuity + 1;
+  const double inv_d1 = 1.0 / static_cast<double>(d);
+  const double inv_d2 = 1.0 / static_cast<double>(d * (d - 1));
+  const double inv_d3 = 1.0 / static_cast<double>(d * (d - 1) * (d - 2));
+  std::vector<Point3d> ctrl(static_cast<size_t>(d) + 1);
+  ctrl[0] = P0;
+  if (continuity >= 1) ctrl[1] = ctrl[0] + D0[0] * inv_d1;
+  if (continuity >= 2) {
+    ctrl[2] = ctrl[1] + (ctrl[1] - ctrl[0]) + D0[1] * inv_d2;
+  }
+  if (continuity >= 3) {
+    ctrl[3] = ctrl[0] + 3.0 * (ctrl[2] - ctrl[1]) + D0[2] * inv_d3;
+  }
+
+  ctrl[static_cast<size_t>(d)] = P1;
+  if (continuity >= 1) {
+    ctrl[static_cast<size_t>(d - 1)] = ctrl[static_cast<size_t>(d)] - D1[0] * inv_d1;
+  }
+  if (continuity >= 2) {
+    ctrl[static_cast<size_t>(d - 2)] = ctrl[static_cast<size_t>(d - 1)] -
+                                        (ctrl[static_cast<size_t>(d)] - ctrl[static_cast<size_t>(d - 1)]) +
+                                        D1[1] * inv_d2;
+  }
+  if (continuity >= 3) {
+    ctrl[static_cast<size_t>(d - 3)] =
+        ctrl[static_cast<size_t>(d)] -
+        3.0 * (ctrl[static_cast<size_t>(d - 1)] - ctrl[static_cast<size_t>(d - 2)]) - D1[2] * inv_d3;
+  }
+
+  out = FromControlPoints(ctrl, d);
   return Result::Ok;
 }
 

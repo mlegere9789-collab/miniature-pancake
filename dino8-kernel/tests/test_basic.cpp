@@ -56962,6 +56962,220 @@ void TestNurbsCurveChamferCornerRejectsInvalidInput() {
         "does NOT reject a collinear corner - a straight-line chamfer is still a well-defined 4-point polyline");
 }
 
+namespace {
+
+// Two genuinely curved (nonzero curvature) NurbsCurve fixtures for the
+// BlendCurves tests below - two independent circles, so G2/G3 continuity
+// checks actually exercise real 2nd/3rd derivative matching rather than
+// the degenerate all-derivatives-past-1st-are-zero case a straight line
+// would give.
+dino8::kernel::NurbsCurve BlendTestCircle(dino8::kernel::Point3d center, double radius) {
+  const ON_Circle on_circle(ON_Plane(center, ON_3dVector(0, 0, 1)), radius);
+  ON_NurbsCurve nurbs_form;
+  on_circle.GetNurbForm(nurbs_form);
+  dino8::kernel::NurbsCurve out;
+  out.raw() = nurbs_form;
+  return out;
+}
+
+// Reads position + derivatives up to order 3 of `curve` at `t` directly
+// off the raw `ON_NurbsCurve`, independent of `NurbsCurve::BlendCurves`'
+// own internal `EvaluateBlendEnd` helper (curve.cpp) - so a test built on
+// this checks BlendCurves' OWN output against an independently-obtained
+// reference, not against a second call into the exact same helper it is
+// itself testing.
+void BlendTestEvaluate(const dino8::kernel::NurbsCurve& curve, double t, dino8::kernel::Point3d& point,
+                        dino8::kernel::Vector3d& d1, dino8::kernel::Vector3d& d2, dino8::kernel::Vector3d& d3) {
+  double v[12] = {0};
+  Check(curve.raw().Evaluate(t, 3, 3, v), "BlendTestEvaluate: underlying ON_Curve::Evaluate succeeded");
+  point = dino8::kernel::Point3d(v[0], v[1], v[2]);
+  d1 = dino8::kernel::Vector3d(v[3], v[4], v[5]);
+  d2 = dino8::kernel::Vector3d(v[6], v[7], v[8]);
+  d3 = dino8::kernel::Vector3d(v[9], v[10], v[11]);
+}
+
+}  // namespace
+
+void TestNurbsCurveBlendCurvesG1MatchesEndpointPositionsAndTangents() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+  using dino8::kernel::Vector3d;
+
+  const NurbsCurve c0 = BlendTestCircle(Point3d(0, 0, 0), 2.0);
+  const NurbsCurve c1 = BlendTestCircle(Point3d(10, 0, 0), 3.0);
+  const double t0 = c0.Domain().min, t1 = c1.Domain().min;
+
+  NurbsCurve out;
+  Check(NurbsCurve::BlendCurves(c0, t0, false, c1, t1, false, 1, out) == Result::Ok,
+        "BlendCurves(continuity=1) succeeds on two independent circles");
+  Check(out.Degree() == 3, "continuity=1 gives a cubic (degree 3, order 4) Bezier-basis curve");
+  Check(out.ControlPointCount() == 4, "a cubic has exactly 4 control points");
+
+  Point3d p0, p1;
+  Vector3d d0_1, d0_2, d0_3, d1_1, d1_2, d1_3;
+  BlendTestEvaluate(c0, t0, p0, d0_1, d0_2, d0_3);
+  BlendTestEvaluate(c1, t1, p1, d1_1, d1_2, d1_3);
+
+  const dino8::kernel::Interval out_dom = out.Domain();
+  Point3d out_p0, out_p1;
+  Vector3d out_d0_1, out_d0_2, out_d0_3, out_d1_1, out_d1_2, out_d1_3;
+  BlendTestEvaluate(out, out_dom.min, out_p0, out_d0_1, out_d0_2, out_d0_3);
+  BlendTestEvaluate(out, out_dom.max, out_p1, out_d1_1, out_d1_2, out_d1_3);
+
+  Check(out_p0.DistanceTo(p0) < 1e-9, "the blend's own start point is exactly curve0's point at t0");
+  Check(out_p1.DistanceTo(p1) < 1e-9, "the blend's own end point is exactly curve1's point at t1");
+  Check((out_d0_1 - d0_1).Length() < 1e-9 * std::max(1.0, d0_1.Length()),
+        "the blend's own first derivative at its start matches curve0's own first derivative at t0 (G1/tangent)");
+  Check((out_d1_1 - d1_1).Length() < 1e-9 * std::max(1.0, d1_1.Length()),
+        "the blend's own first derivative at its end matches curve1's own first derivative at t1 (G1/tangent)");
+}
+
+void TestNurbsCurveBlendCurvesG2MatchesCurvatureAtBothEnds() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+  using dino8::kernel::Vector3d;
+
+  const NurbsCurve c0 = BlendTestCircle(Point3d(0, 0, 0), 2.0);
+  const NurbsCurve c1 = BlendTestCircle(Point3d(10, 0, 0), 3.0);
+  const double t0 = c0.Domain().min, t1 = c1.Domain().min;
+
+  NurbsCurve out;
+  Check(NurbsCurve::BlendCurves(c0, t0, false, c1, t1, false, 2, out) == Result::Ok,
+        "BlendCurves(continuity=2) succeeds on two independent circles");
+  Check(out.Degree() == 5, "continuity=2 gives a quintic (degree 5, order 6) Bezier-basis curve");
+  Check(out.ControlPointCount() == 6, "a quintic has exactly 6 control points");
+
+  Point3d p0, p1;
+  Vector3d d0_1, d0_2, d0_3, d1_1, d1_2, d1_3;
+  BlendTestEvaluate(c0, t0, p0, d0_1, d0_2, d0_3);
+  BlendTestEvaluate(c1, t1, p1, d1_1, d1_2, d1_3);
+
+  const dino8::kernel::Interval out_dom = out.Domain();
+  Point3d out_p0, out_p1;
+  Vector3d out_d0_1, out_d0_2, out_d0_3, out_d1_1, out_d1_2, out_d1_3;
+  BlendTestEvaluate(out, out_dom.min, out_p0, out_d0_1, out_d0_2, out_d0_3);
+  BlendTestEvaluate(out, out_dom.max, out_p1, out_d1_1, out_d1_2, out_d1_3);
+
+  Check((out_d0_1 - d0_1).Length() < 1e-9 * std::max(1.0, d0_1.Length()), "G2 blend still matches 1st derivative at start");
+  Check((out_d1_1 - d1_1).Length() < 1e-9 * std::max(1.0, d1_1.Length()), "G2 blend still matches 1st derivative at end");
+  Check(d0_2.Length() > 1e-6, "sanity: curve0's own 2nd derivative at t0 is genuinely nonzero (a real circle, not "
+                              "a degenerate straight fixture)");
+  Check((out_d0_2 - d0_2).Length() < 1e-6 * std::max(1.0, d0_2.Length()),
+        "the blend's own 2nd derivative at its start matches curve0's own 2nd derivative at t0 (G2/curvature)");
+  Check((out_d1_2 - d1_2).Length() < 1e-6 * std::max(1.0, d1_2.Length()),
+        "the blend's own 2nd derivative at its end matches curve1's own 2nd derivative at t1 (G2/curvature)");
+}
+
+// The genuine new capability PARITY_MAP.md's own "Curve-to-curve blend"
+// bullet names as missing entirely ("No G3+ and no kernel API"):
+// continuity = 3 matches position and derivatives up to 3rd order at
+// both ends, on a real (nonzero-3rd-derivative) curved fixture.
+void TestNurbsCurveBlendCurvesG3MatchesThirdDerivativeAtBothEnds() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+  using dino8::kernel::Vector3d;
+
+  const NurbsCurve c0 = BlendTestCircle(Point3d(0, 0, 0), 2.0);
+  const NurbsCurve c1 = BlendTestCircle(Point3d(10, 0, 0), 3.0);
+  const double t0 = c0.Domain().min, t1 = c1.Domain().min;
+
+  NurbsCurve out;
+  Check(NurbsCurve::BlendCurves(c0, t0, false, c1, t1, false, 3, out) == Result::Ok,
+        "BlendCurves(continuity=3) succeeds on two independent circles");
+  Check(out.Degree() == 7, "continuity=3 gives a septic (degree 7, order 8) Bezier-basis curve");
+  Check(out.ControlPointCount() == 8, "a septic has exactly 8 control points");
+
+  Point3d p0, p1;
+  Vector3d d0_1, d0_2, d0_3, d1_1, d1_2, d1_3;
+  BlendTestEvaluate(c0, t0, p0, d0_1, d0_2, d0_3);
+  BlendTestEvaluate(c1, t1, p1, d1_1, d1_2, d1_3);
+
+  const dino8::kernel::Interval out_dom = out.Domain();
+  Point3d out_p0, out_p1;
+  Vector3d out_d0_1, out_d0_2, out_d0_3, out_d1_1, out_d1_2, out_d1_3;
+  BlendTestEvaluate(out, out_dom.min, out_p0, out_d0_1, out_d0_2, out_d0_3);
+  BlendTestEvaluate(out, out_dom.max, out_p1, out_d1_1, out_d1_2, out_d1_3);
+
+  Check(out_p0.DistanceTo(p0) < 1e-9 && out_p1.DistanceTo(p1) < 1e-9, "G3 blend matches both endpoint positions");
+  Check((out_d0_1 - d0_1).Length() < 1e-6 * std::max(1.0, d0_1.Length()) &&
+            (out_d1_1 - d1_1).Length() < 1e-6 * std::max(1.0, d1_1.Length()),
+        "G3 blend matches both endpoints' 1st derivative");
+  Check((out_d0_2 - d0_2).Length() < 1e-6 * std::max(1.0, d0_2.Length()) &&
+            (out_d1_2 - d1_2).Length() < 1e-6 * std::max(1.0, d1_2.Length()),
+        "G3 blend matches both endpoints' 2nd derivative");
+  Check(d0_3.Length() > 1e-6 && d1_3.Length() > 1e-6,
+        "sanity: both fixtures' own 3rd derivatives are genuinely nonzero");
+  Check((out_d0_3 - d0_3).Length() < 1e-4 * std::max(1.0, d0_3.Length()),
+        "the blend's own 3rd derivative at its start matches curve0's own 3rd derivative at t0 (G3, the new "
+        "capability this closes)");
+  Check((out_d1_3 - d1_3).Length() < 1e-4 * std::max(1.0, d1_3.Length()),
+        "the blend's own 3rd derivative at its end matches curve1's own 3rd derivative at t1 (G3)");
+}
+
+void TestNurbsCurveBlendCurvesReverseFlagNegatesOddDerivatives() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+  using dino8::kernel::Vector3d;
+
+  const NurbsCurve c0 = BlendTestCircle(Point3d(0, 0, 0), 2.0);
+  const NurbsCurve c1 = BlendTestCircle(Point3d(10, 0, 0), 3.0);
+  const double t0 = c0.Domain().min, t1 = c1.Domain().min;
+
+  NurbsCurve fwd, rev;
+  Check(NurbsCurve::BlendCurves(c0, t0, false, c1, t1, false, 2, fwd) == Result::Ok, "forward blend succeeds");
+  Check(NurbsCurve::BlendCurves(c0, t0, true, c1, t1, false, 2, rev) == Result::Ok,
+        "reverse0=true blend succeeds");
+
+  Point3d unused_p;
+  Vector3d fwd_d1, fwd_d2, fwd_d3, rev_d1, rev_d2, rev_d3;
+  BlendTestEvaluate(fwd, fwd.Domain().min, unused_p, fwd_d1, fwd_d2, fwd_d3);
+  BlendTestEvaluate(rev, rev.Domain().min, unused_p, rev_d1, rev_d2, rev_d3);
+
+  Check((rev_d1 + fwd_d1).Length() < 1e-6 * std::max(1.0, fwd_d1.Length()),
+        "reverse0=true negates the 1st (odd-order) derivative matched at the start, relative to reverse0=false");
+  Check((rev_d2 - fwd_d2).Length() < 1e-6 * std::max(1.0, fwd_d2.Length()),
+        "reverse0=true leaves the 2nd (even-order) derivative matched at the start UNCHANGED");
+}
+
+void TestNurbsCurveBlendCurvesRejectsInvalidInput() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  auto throws = [](const std::function<void()>& fn) {
+    try {
+      fn();
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+    return false;
+  };
+
+  const NurbsCurve c0 = BlendTestCircle(Point3d(0, 0, 0), 2.0);
+  const NurbsCurve c1 = BlendTestCircle(Point3d(10, 0, 0), 3.0);
+  const double t0 = c0.Domain().min, t1 = c1.Domain().min;
+  NurbsCurve out;
+
+  Check(throws([&] { NurbsCurve::BlendCurves(c0, t0, false, c1, t1, false, 0, out); }),
+        "BlendCurves rejects continuity == 0");
+  Check(throws([&] { NurbsCurve::BlendCurves(c0, t0, false, c1, t1, false, 4, out); }),
+        "BlendCurves rejects continuity == 4 (only 1/2/3 are implemented)");
+  Check(throws([&] { NurbsCurve::BlendCurves(c0, c0.Domain().max + 1.0, false, c1, t1, false, 1, out); }),
+        "BlendCurves rejects t0 outside curve0's own Domain()");
+  Check(throws([&] { NurbsCurve::BlendCurves(c0, t0, false, c1, c1.Domain().max + 1.0, false, 1, out); }),
+        "BlendCurves rejects t1 outside curve1's own Domain()");
+
+  // Coincident endpoints: blending a circle to ITSELF at the same
+  // parameter has zero-length position gap - no well-defined tangent
+  // direction to solve for.
+  Check(NurbsCurve::BlendCurves(c0, t0, false, c0, t0, false, 1, out) == Result::Failed,
+        "BlendCurves reports Result::Failed when both ends coincide");
+}
+
 // A genuinely 3D (non-coplanar-in-the-given-plane) polyline handed to the
 // explicit-plane overload: the exact per-corner miter formula does NOT
 // apply here (it only lands on both offset lines when every edge is
@@ -60327,6 +60541,11 @@ int main() {
   TestNurbsCurveFilletCornerArcRejectsInvalidInput();
   TestNurbsCurveChamferCornerAsymmetricDistances();
   TestNurbsCurveChamferCornerRejectsInvalidInput();
+  TestNurbsCurveBlendCurvesG1MatchesEndpointPositionsAndTangents();
+  TestNurbsCurveBlendCurvesG2MatchesCurvatureAtBothEnds();
+  TestNurbsCurveBlendCurvesG3MatchesThirdDerivativeAtBothEnds();
+  TestNurbsCurveBlendCurvesReverseFlagNegatesOddDerivatives();
+  TestNurbsCurveBlendCurvesRejectsInvalidInput();
   TestCurveOffsetInPlaneWithExplicitPlaneNonCoplanarPolylineFallsBackToGeneralPath();
 
 
