@@ -44476,11 +44476,55 @@ void TestExtrudeFaceRejectsInvalidArguments() {
         "ExtrudeFace() throws for a single-face body that is closed/periodic (a full sphere wraps back on "
         "itself in u), the same scope Thicken() itself carries");
 
+  // A trimmed face on a NON-planar surface still throws (see
+  // TestExtrudeFaceTrimmedPlanarFace below for the now-supported planar
+  // trimmed case).
+  const std::vector<Point3d> bumpy_grid = {P(0, 0, 0), P(0, 1, 0.3), P(1, 0, -0.3), P(1, 1, 0.2)};
+  const NurbsSurface bumpy = NurbsSurface::FromControlGrid(bumpy_grid, 2, 2, 1, 1);
   const std::vector<Point2d> trim = {Point2d(0.2, 0.2), Point2d(0.8, 0.2), Point2d(0.8, 0.8), Point2d(0.2, 0.8)};
-  const Brep trimmed = Brep::TrimmedPlanarFace(flat, trim);
-  Check(Throws([&] { Brep::ExtrudeFace(trimmed, 0, Vector3d(0, 0, 1)); }),
-        "ExtrudeFace() throws for a trimmed face - extruding its full untrimmed rectangle instead would be a "
-        "correctness bug, not merely a disclosed limitation");
+  const Brep bumpy_trimmed = Brep::TrimmedPlanarFace(bumpy, trim);
+  Check(Throws([&] { Brep::ExtrudeFace(bumpy_trimmed, 0, Vector3d(0, 0, 1)); }),
+        "ExtrudeFace() throws for a trimmed face on a NON-planar surface - a straight UV trim polygon does not "
+        "map to straight 3D edges there");
+}
+
+// A trimmed PLANAR face no longer throws outright - see ExtrudeFace's own
+// brep.h doc comment for the scope (planar, no holes) and sweep.cpp's own
+// comment for the construction (Brep::PlanarFace walls/caps welded by ONE
+// Brep::FromPlanarFaces() call, the same one ExtrudeToBoundary()'s own
+// N-gon-profile fix already uses).
+void TestExtrudeFaceTrimmedPlanarFace() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point2d;
+
+  // A 4x4 planar sheet trimmed to an L-shape (a 4x4 square missing its
+  // own [2,4]x[2,4] corner - footprint area 12, matching this file's own
+  // area-times-height convention for every other ExtrudeFace test above).
+  const std::vector<Point3d> grid = {P(0, 0, 0), P(0, 4, 0), P(4, 0, 0), P(4, 4, 0)};
+  const NurbsSurface sheet_srf = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+  const std::vector<Point2d> loop_uv = {Point2d(0, 0),   Point2d(1, 0),   Point2d(1, 0.5),
+                                        Point2d(0.5, 0.5), Point2d(0.5, 1), Point2d(0, 1)};
+  const Brep l_sheet = Brep::TrimmedPlanarFace(sheet_srf, loop_uv);
+
+  const Brep solid = Brep::ExtrudeFace(l_sheet, 0, Vector3d(0, 0, 3));
+  Check(solid.raw().IsSolid(), "a trimmed planar L-face extrudes into a genuine IsSolid() B-rep");
+  Check(solid.FaceCount() == 8, "L-shape (6 boundary vertices) gives 2 caps + 6 walls = 8 faces");
+  const Mesh m = solid.TessellateToClosedMesh(8, 8);
+  Check(std::abs(m.Volume() - 36.0) < 1e-6,
+        "trimmed L-face extrude volume matches footprint area * height exactly (12 * 3 = 36)");
+
+  const Brep open = Brep::ExtrudeFace(l_sheet, 0, Vector3d(0, 0, 3), /*cap=*/false);
+  Check(open.FaceCount() == 6 && !open.raw().IsSolid(),
+        "cap=false on a trimmed planar face gives the 6 open walls alone, matching the untrimmed path's own "
+        "capped/uncapped distinction");
+
+  // A trimmed face WITH a hole still throws (out of scope, disclosed).
+  const std::vector<Point2d> outer = {Point2d(0, 0), Point2d(1, 0), Point2d(1, 1), Point2d(0, 1)};
+  const std::vector<Point2d> hole = {Point2d(0.25, 0.25), Point2d(0.75, 0.25), Point2d(0.75, 0.75), Point2d(0.25, 0.75)};
+  const Brep holed_sheet = Brep::TrimmedPlanarFace(sheet_srf, outer, /*exact_clip=*/false, {hole});
+  Check(Throws([&] { Brep::ExtrudeFace(holed_sheet, 0, Vector3d(0, 0, 3)); }),
+        "a trimmed planar face WITH a hole still throws - not attempted here yet");
 }
 
 void TestPipeVariable() {
@@ -52172,6 +52216,7 @@ int main() {
   sweep_tests::TestExtrudeFaceOnMultiFaceBodyExtractsOneFaceIntoANewIndependentSolid();
   sweep_tests::TestExtrudeFaceUncappedGivesOpenTube();
   sweep_tests::TestExtrudeFaceRejectsInvalidArguments();
+  sweep_tests::TestExtrudeFaceTrimmedPlanarFace();
   sweep_tests::TestExtrudeTaperedCircularProfileIsExactConeFrustum();
   sweep_tests::TestExtrudeTaperedConvexPolygonIsExactPlanarFrustum();
   sweep_tests::TestExtrudeTaperedObliqueDirectionIsShearedFrustum();

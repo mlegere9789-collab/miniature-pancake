@@ -1768,12 +1768,16 @@ Brep Brep::ExtrudeFace(const Brep& body, int face_index, Vector3d direction, boo
   }
   const bool trim_table_ok = body.face_trim_loops_.size() == static_cast<size_t>(src.m_F.Count()) &&
                               body.face_hole_loops_.size() == static_cast<size_t>(src.m_F.Count());
-  if (!trim_table_ok || !body.face_trim_loops_[static_cast<size_t>(face_index)].empty() ||
-      !body.face_hole_loops_[static_cast<size_t>(face_index)].empty()) {
+  const bool trimmed = trim_table_ok && (!body.face_trim_loops_[static_cast<size_t>(face_index)].empty() ||
+                                         !body.face_hole_loops_[static_cast<size_t>(face_index)].empty());
+  if (!trim_table_ok && (body.face_trim_loops_.empty() || body.face_hole_loops_.empty())) {
+    // Side tables entirely unpopulated (some general operation cleared
+    // them wholesale - see GetTightBoundingBox()'s own "trim_table_ok"
+    // caveat): can't tell trimmed from untrimmed, so refused rather than
+    // silently assumed untrimmed.
     Fail(caller,
-         "face_index's face must be untrimmed (e.g. a face built by FromSurface()/Box()/Extrude() itself) - a "
-         "trimmed face's real boundary is not its surface's 4 domain isocurves, and this Brep's own trim side "
-         "tables either are not populated or record a real trim/hole loop for this face");
+         "this Brep's own trim side tables are not populated, so whether face_index's face is trimmed can't be "
+         "determined - not safe to extrude either way");
   }
   const ON_Surface* raw_surface = face.SurfaceOf();
   if (raw_surface == nullptr) Internal(caller, "face has no surface");
@@ -1786,6 +1790,88 @@ Brep Brep::ExtrudeFace(const Brep& body, int face_index, Vector3d direction, boo
          "the face's surface must be open (non-periodic) in both parametric directions - a fully or partially "
          "closed face (e.g. a full cylinder, sphere, or torus patch) needs a variable side-wall count this "
          "scoped version does not attempt");
+  }
+
+  if (trimmed) {
+    // A trimmed face's real boundary is not its surface's 4 domain
+    // isocurves, so the untrimmed path's "4 RuledBetween() walls between
+    // matching domain isocurves" construction below does not apply.
+    // Scoped down to a PLANAR trimmed face with no holes: the trim loop
+    // (`face_trim_loops_`, a polygon in the surface's own (u, v) - see
+    // TrimmedPlanarFace()'s own doc comment) maps through a PLANAR
+    // surface to a genuine 3D polygon, so both caps and every wall are
+    // exact flat facets, built as `Brep::PlanarFace` entries and welded
+    // into ONE real, `IsSolid()`-true solid by a single
+    // `Brep::FromPlanarFaces()` call - the exact same construction
+    // `ExtrudeToBoundary()`'s own N-gon-profile fix already uses and
+    // verifies, not a new one. A non-planar trimmed surface (a trimmed
+    // patch of a genuinely freeform face) is refused: mapping a straight
+    // UV polygon through a curved surface does not give straight (or
+    // even necessarily planar) 3D edges, so this flat-facet construction
+    // does not apply there - a real, disclosed, narrower gap than the
+    // untrimmed path's own "any degree, any shape" scope.
+    if (!body.face_hole_loops_[static_cast<size_t>(face_index)].empty()) {
+      Fail(caller, "a trimmed face with holes is not attempted here yet - only a single outer trim loop");
+    }
+    const std::vector<Point2d>& loop_uv = body.face_trim_loops_[static_cast<size_t>(face_index)];
+    if (loop_uv.size() < 3) Internal(caller, "a stored trim loop has fewer than 3 points");
+    ON_Plane plane;
+    if (!near_surf.IsPlanar(&plane, 1e-8 * std::max(near_surf.BoundingBox().Diagonal().Length(), 1.0))) {
+      Fail(caller,
+           "a trimmed face's surface must be planar - mapping a straight UV trim polygon through a curved "
+           "surface does not give straight (or even necessarily planar) 3D edges, so this flat-facet "
+           "construction does not apply; the untrimmed path already handles any curved face exactly");
+    }
+    std::vector<Point3d> loop, far_loop;
+    loop.reserve(loop_uv.size());
+    far_loop.reserve(loop_uv.size());
+    for (const Point2d& uv : loop_uv) {
+      const Point3d p = near_surf.PointAt(uv.x, uv.y);
+      loop.push_back(p);
+      far_loop.push_back(p + direction);
+    }
+    auto newell_normal = [](const std::vector<Point3d>& poly) {
+      Vector3d n(0, 0, 0);
+      const int m = static_cast<int>(poly.size());
+      for (int i = 0; i < m; ++i) {
+        const Point3d& a = poly[static_cast<size_t>(i)];
+        const Point3d& b = poly[static_cast<size_t>((i + 1) % m)];
+        n.x += (a.y - b.y) * (a.z + b.z);
+        n.y += (a.z - b.z) * (a.x + b.x);
+        n.z += (a.x - b.x) * (a.y + b.y);
+      }
+      return n;
+    };
+    std::vector<Brep::PlanarFace> pfaces;
+    auto add_face = [&](std::vector<Point3d> pts) {
+      Vector3d n = newell_normal(pts);
+      if (!n.Unitize()) Fail(caller, "a generated face is degenerate (the trim loop is self-intersecting or has a zero-length edge)");
+      Brep::PlanarFace pf;
+      pf.plane = ON_Plane(pts[0], n);
+      pf.loop = std::move(pts);
+      pfaces.push_back(std::move(pf));
+    };
+    const int n = static_cast<int>(loop.size());
+    if (cap) {
+      // Near faces -direction, far faces +direction; the actual sign is
+      // verified (and corrected with a single whole-body flip) below, the
+      // same "guess, then check the tessellated volume" convention every
+      // sweep factory in this file already ends with.
+      std::vector<Point3d> near_rev(loop.rbegin(), loop.rend());
+      add_face(std::move(near_rev));
+      add_face(far_loop);
+    }
+    for (int i = 0; i < n; ++i) {
+      const int j = (i + 1) % n;
+      add_face({loop[static_cast<size_t>(i)], loop[static_cast<size_t>(j)], far_loop[static_cast<size_t>(j)],
+                far_loop[static_cast<size_t>(i)]});
+    }
+    Brep result = Brep::FromPlanarFaces(pfaces);
+    if (result.raw().IsSolid()) {
+      const Mesh check = result.TessellateToClosedMesh(8, 8);
+      if (check.Volume() < 0.0) result.raw().Flip();
+    }
+    return result;
   }
 
   ON_NurbsSurface far_surf = near_surf;

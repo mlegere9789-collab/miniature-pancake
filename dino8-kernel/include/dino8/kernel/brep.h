@@ -427,19 +427,32 @@ class Brep {
   // 4 ruled side walls are built, an open tube with two free boundary
   // edges (matching Extrude()'s own capped/uncapped distinction).
   //
+  // A TRIMMED face (checked against `body`'s own face_trim_loops_/
+  // face_hole_loops_ side tables - those tables must actually be
+  // populated for `body`; some general operations elsewhere in this file
+  // clear them wholesale rather than update them - see
+  // GetTightBoundingBox()'s own "trim_table_ok" check for the same
+  // caveat) is supported for a PLANAR surface with no holes: the trim
+  // loop (a polygon in the surface's own (u, v) - TrimmedPlanarFace()'s
+  // own doc comment) maps through a planar surface to a genuine 3D
+  // polygon, so both end caps and every wall are exact flat facets,
+  // welded into one real, IsSolid()-true solid by ONE
+  // Brep::FromPlanarFaces() call - the same construction
+  // ExtrudeToBoundary()'s own N-gon-profile support already uses (see
+  // sweep.cpp's own comment on this function for why the untrimmed path
+  // below stays on its original, different "surface-only" construction
+  // instead of switching to this one too). A trimmed face with a hole,
+  // or on a NON-planar surface (mapping a straight UV polygon through a
+  // curved surface does not give straight, or even necessarily planar,
+  // 3D edges, so this flat-facet construction does not apply there),
+  // still throws.
+  //
   // Scope, checked and refused (std::invalid_argument, or std::out_of_range
   // for the index itself) rather than silently misbuilt: `face_index`
-  // must name a live face of `body`; that face must be UNTRIMMED (checked
-  // directly against `body`'s own face_trim_loops_/face_hole_loops_ side
-  // tables - the same precondition, and for the same reason, Thicken()
-  // itself checks: a trimmed face's real boundary is not its surface's 4
-  // domain isocurves) and those tables must actually be populated for
-  // `body` (some general operations elsewhere in this file clear them
-  // wholesale rather than update them - see GetTightBoundingBox()'s own
-  // "trim_table_ok" check for the same caveat); the face's surface must be
-  // open (IsClosed() false) in BOTH parametric directions, the same "no
-  // variable side-wall count" scope Thicken() itself carries; and
-  // `direction` must be non-zero.
+  // must name a live face of `body`; the face's surface must be open
+  // (IsClosed() false) in BOTH parametric directions, the same "no
+  // variable side-wall count" scope Thicken() itself carries (for both
+  // the trimmed and untrimmed cases); and `direction` must be non-zero.
   static Brep ExtrudeFace(const Brep& body, int face_index, Vector3d direction, bool cap = true);
 
   // ExtrudeWireBody: sweep an existing wire body's own edges (WireBody()/
