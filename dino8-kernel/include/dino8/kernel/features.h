@@ -835,4 +835,64 @@ struct TaperedBossChain {
 // path specifically.
 std::vector<TaperedBossChain> RecognizeTaperedBossChains(const Brep& solid);
 
+// A prismatic (straight-walled) pocket recognized on an existing solid
+// (parity-map "Feature recognition" - closes this item's own long-
+// disclosed "a general (non-cylindrical) pocket remains entirely
+// unrecognized" gap, left open by every Recognize* function above, all of
+// which only ever look at cylindrical/conical candidate faces): the
+// geometric inverse of `EmbossProfile()`'s Deboss mode for a straight
+// (non-oblique) profile - given a Brep that already has a flat-bottomed,
+// straight-walled recess cut into it (by any means, not necessarily
+// `EmbossProfile()` itself), recovers the flat floor's own plane
+// (`origin`, a point genuinely on the floor's own trimmed boundary rather
+// than an arbitrary point on its infinite carrier plane, and `normal`,
+// pointing OUT of the material into the pocket's own open interior - the
+// same outward-facing convention `ON_BrepFace::m_bRev`-corrected
+// `ON_Surface::NormalAt()` gives every other Recognize* function in this
+// file) and `depth` (how far the floor sits below the surrounding
+// opening).
+struct PocketFeature {
+  Point3d origin;
+  Vector3d normal;
+  double depth = 0.0;
+
+  // Index into `solid.raw().m_F` of the floor face this feature came
+  // from - lets a caller correlate a returned PocketFeature back to the
+  // specific face of its own input, e.g. to select it in a UI (the same
+  // convention HoleFeature::face_index above uses).
+  int face_index = -1;
+};
+
+// Scans every face of `solid` for a bounded PLANAR face with a single
+// outer loop and no inner (island) loops (the pocket's own floor) whose
+// ENTIRE boundary borders wall face(s) whose own far (non-shared)
+// vertices sit strictly ABOVE the floor along its own outward normal,
+// toward open space, rather than below it. That is the one fact that
+// actually tells a genuine recessed pocket floor apart from a plain
+// exterior face sitting at the TOP of the material (e.g. the top of a
+// plain box): a box's own top face is ALSO bordered on every side by
+// perpendicular planar faces, but those faces fall AWAY from the top
+// face's own outward normal, DOWN into the material, not up toward an
+// opening - the negative case this scan rejects rather than misreporting
+// as a pocket.
+//
+// Read off the wall(s)' own topological VERTICES rather than requiring
+// `IsPlanar()` on any whole wall surface, deliberately: a rectangular
+// pocket cut via `EmbossProfile()` (boolean_general.cpp) gets ONE wall
+// face for its whole polyline profile (`Brep::Extrude()` does not split a
+// wall per profile segment), so that single wall is not globally planar
+// even though every one of its own flat facets is - this works for
+// either construction (one compound wall bordering the whole floor loop,
+// or several separate per-side walls) without caring which.
+//
+// Deliberately conservative (a first pass, not full general-pocket
+// recognition, the same incremental posture RecognizeHoles()'s own "Still
+// partial" note above already takes for the cylindrical case): a floor
+// with an inner (island) loop, a curved/cylindrical wall (that remains
+// RecognizeHoles()'s own domain, not this function's), or walls that
+// don't all reach the SAME height above the floor within tolerance (a
+// stepped or sloped-bottom pocket) are all out of scope and simply not
+// reported, rather than reported inaccurately.
+std::vector<PocketFeature> RecognizePockets(const Brep& solid);
+
 }  // namespace dino8::kernel

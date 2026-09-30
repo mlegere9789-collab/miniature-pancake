@@ -1679,4 +1679,65 @@ std::vector<CurveCurveHit> IntersectCurveSelfIntersections(const ON_Curve& c, co
   return hits;
 }
 
+PullbackResult PullbackCurveToSurface(const ON_Curve& c, const ON_Surface& s, const IntersectOptions& opt) {
+  PullbackResult out;
+  const ON_Interval d = c.Domain();
+  if (!d.IsIncreasing()) return out;
+  const ON_BoundingBox cb = c.BoundingBox();
+  const double clen = cb.IsValid() ? cb.Diagonal().Length() : 1;
+  const int n = static_cast<int>(Clamp(std::ceil(clen / std::max(opt.mesh_tolerance, 1e-6)), 64, 2000));
+  const bool closed = c.IsClosed() != 0;
+
+  double u = 0, v = 0;
+  double prev_err = 0;
+  for (int i = 0; i <= n; ++i) {
+    // A closed curve's last sample coincides with its first; InterpolateCubic's
+    // own closed-curve contract wants that duplicate point OMITTED (it wraps
+    // the seam itself - see its header doc comment), matching the same
+    // dedup IntersectSurfaces() applies to its own closed SSX curves.
+    if (closed && i == n) break;
+    const double t = d.ParameterAt(static_cast<double>(i) / n);
+    const Point3d p = c.PointAt(t);
+    bool ok;
+    if (i == 0) {
+      ok = SurfaceClosestPointGlobal(s, p, u, v);
+    } else {
+      ok = SurfaceClosestPoint(s, p, u, v);  // seeded from the PREVIOUS sample's (u, v)
+      const double try_err = ok ? s.PointAt(u, v).DistanceTo(p) : std::numeric_limits<double>::max();
+      // Re-seed globally when the warm local seed either failed to converge
+      // or landed implausibly far from this sample relative to how close
+      // the previous sample managed to land - a warm seed that wandered
+      // off a disconnected sheet, or across an awkward periodic seam,
+      // self-corrects here instead of silently drifting for the rest of
+      // the curve.
+      if (!ok || try_err > std::max(opt.mesh_tolerance * 4, prev_err * 8 + 1e-9)) {
+        double gu = u, gv = v;
+        const bool gok = SurfaceClosestPointGlobal(s, p, gu, gv);
+        const double gerr = s.PointAt(gu, gv).DistanceTo(p);
+        if (gok && gerr < try_err) { u = gu; v = gv; }
+      }
+    }
+    const double err = s.PointAt(u, v).DistanceTo(p);
+    prev_err = err;
+    out.max_error = std::max(out.max_error, err);
+    out.t.push_back(t);
+    out.uv.emplace_back(u, v);
+  }
+  out.on_surface = out.max_error <= opt.tolerance;
+  if (out.uv.size() < 2) return out;
+
+  std::vector<ON_3dPoint> pa, p3;
+  pa.reserve(out.uv.size());
+  p3.reserve(out.uv.size());
+  for (const ON_2dPoint& p : out.uv) {
+    pa.emplace_back(p.x, p.y, 0.0);
+    const Point3d back = s.PointAt(p.x, p.y);
+    p3.emplace_back(back.x, back.y, back.z);
+  }
+  out.params = ChordParams(pa, closed);
+  out.pcurve = InterpolateCubic(pa, out.params, closed, 2);
+  out.pulled_curve = InterpolateCubic(p3, out.params, closed, 3);
+  return out;
+}
+
 }  // namespace dino8::kernel
