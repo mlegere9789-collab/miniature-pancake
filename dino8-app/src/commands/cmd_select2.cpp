@@ -872,7 +872,12 @@ void RegisterSelect2Commands(CommandEngine& e) {
 
   // Blocks.
   Reg(e, "SelMirroredBlocks", SelWhere([](CommandContext&, const SceneObject& o) { return o.user_text.count("Block") > 0 && o.user_text.count("Mirrored") > 0; }), CommandStatus::Implemented, "Selects block instances created (or that had their own mirror-copy) via Mirror, which tags each member object Mirrored (see cmd_transform.cpp).");
-  Reg(e, "SelObjectsWithHistory", Immediate([](CommandContext& ctx) { ctx.Print("0 objects selected (Dino 8 keeps no construction history; every edit is undoable instead)"); }));
+  // Real since cmd_history.cpp's HistoryRecord mechanism landed - was a
+  // dead stub claiming Dino 8 keeps no construction history at all, which
+  // stopped being true once History/UpdateHistory shipped (they record a
+  // HistoryRecord per Extrude/ExtrudeCrvToPoint/Revolve/Loft/SubDLoft
+  // result made while History is On; see cmd_history.cpp).
+  Reg(e, "SelObjectsWithHistory", SelWhere([](CommandContext& ctx, const SceneObject& o) { return ctx.Doc().FindHistoryRecord(o.id) != nullptr; }), CommandStatus::Implemented, "Selects every object with a recorded construction history (see History/UpdateHistory).");
 
   // Attributes.
   Reg(e, "SelRenderColor", Immediate([](CommandContext& ctx) {

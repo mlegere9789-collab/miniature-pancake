@@ -127,6 +127,51 @@ void ToggleOrReport(CommandContext& ctx, bool report) {
   if (!lines.empty()) ctx.Print(lines.substr(0, lines.size() - 1));
 }
 
+// Shared by UpdateHistory and HistoryUpdate below (Rhino ships both names
+// for the same rebuild-on-edit command - see cmd_state.cpp's removed dead
+// stub, which used to own the "HistoryUpdate" catalog entry and always
+// claimed no history was recorded even when UpdateHistory's own real
+// mechanism, right next to it, had live records). ctx.Engine().ActiveName()
+// reports back whichever of the two the user actually typed, so the
+// printed message always names the command that was really run.
+void DoUpdateHistory(CommandContext& ctx) {
+  const std::string label = ctx.Engine().ActiveName();
+  const std::map<ObjectId, HistoryRecord> recs = ctx.Doc().HistoryRecords();  // copy: ClearHistoryRecord below mutates the live table
+  ctx.Doc().BeginChange(label);
+  int rebuilt = 0, failed = 0, orphaned = 0;
+  for (const auto& [id, rec] : recs) {
+    SceneObject* target = ctx.Doc().Find(id);
+    if (!target) { ctx.Doc().ClearHistoryRecord(id); ++orphaned; continue; }
+    if (RebuildOneHistoryObject(ctx, *target, rec)) ++rebuilt; else ++failed;
+  }
+  std::string msg = label + ": " + std::to_string(rebuilt) + " object(s) re-evaluated from their source curve(s)' current geometry";
+  if (failed) msg += ", " + std::to_string(failed) + " skipped (source curve missing or the construction failed on its current shape)";
+  if (orphaned) msg += ", " + std::to_string(orphaned) + " orphaned entr" + std::string(orphaned == 1 ? "y" : "ies") + " cleared (object deleted or an Undo passed the construction)";
+  ctx.Print(msg);
+}
+
+// HistoryPurge: drops the recorded HistoryRecord for objects so a later
+// UpdateHistory/HistoryUpdate no longer touches them, matching Rhino's own
+// HistoryPurge (remove history from the selection, or the whole document
+// when nothing is selected). The side table this clears is, like every
+// other RebuildOneHistoryObject input, deliberately not part of Undo (see
+// Document.cpp), so this does not itself open a BeginChange - no scene
+// geometry is touched, only which objects UpdateHistory will still rebuild.
+void DoHistoryPurge(CommandContext& ctx) {
+  const std::string label = ctx.Engine().ActiveName();
+  const std::vector<ObjectId> sel = ctx.Doc().SelectedIds();
+  std::vector<ObjectId> targets;
+  if (!sel.empty()) {
+    for (ObjectId id : sel) if (ctx.Doc().FindHistoryRecord(id)) targets.push_back(id);
+  } else {
+    for (const auto& [id, rec] : ctx.Doc().HistoryRecords()) targets.push_back(id);
+  }
+  for (ObjectId id : targets) ctx.Doc().ClearHistoryRecord(id);
+  std::string msg = label + ": " + std::to_string(targets.size()) + " object(s) had their recorded construction history removed";
+  msg += targets.empty() ? " (nothing to purge)" : ("; " + label + " will no longer rebuild " + (targets.size() == 1 ? "it" : "them") + " from a source curve");
+  ctx.Print(msg);
+}
+
 }  // namespace
 
 void RegisterHistoryCommands(CommandEngine& e) {
@@ -134,21 +179,12 @@ void RegisterHistoryCommands(CommandEngine& e) {
       "A real, scoped constructional-history mechanism: with no argument, reports the On/Off state and every object with live history and its source(s); On/Off toggles whether NEW results from Extrude/ExtrudeCrv, ExtrudeCrvToPoint, Revolve, Loft and SubDLoft (only) record their source curve(s) and parameters - existing objects and every other construction command are unaffected, matching Rhino's own History On/Off gating 'new construction only'. UpdateHistory does the actual rebuild-on-edit. NOT a general dependency graph for all ~1050 commands - see UpdateHistory's own note for exactly why those five and the honest scope limit.");
   Reg(e, "RecordHistory", Immediate([](CommandContext& ctx) { ToggleOrReport(ctx, /*report=*/false); }), CommandStatus::Implemented,
       "The same On/Off toggle as History (Rhino's own alternate name for it); use History with no argument for the live report.");
-  Reg(e, "UpdateHistory", Immediate([](CommandContext& ctx) {
-        const std::map<ObjectId, HistoryRecord> recs = ctx.Doc().HistoryRecords();  // copy: ClearHistoryRecord below mutates the live table
-        ctx.Doc().BeginChange("UpdateHistory");
-        int rebuilt = 0, failed = 0, orphaned = 0;
-        for (const auto& [id, rec] : recs) {
-          SceneObject* target = ctx.Doc().Find(id);
-          if (!target) { ctx.Doc().ClearHistoryRecord(id); ++orphaned; continue; }
-          if (RebuildOneHistoryObject(ctx, *target, rec)) ++rebuilt; else ++failed;
-        }
-        std::string msg = "UpdateHistory: " + std::to_string(rebuilt) + " object(s) re-evaluated from their source curve(s)' current geometry";
-        if (failed) msg += ", " + std::to_string(failed) + " skipped (source curve missing or the construction failed on its current shape)";
-        if (orphaned) msg += ", " + std::to_string(orphaned) + " orphaned entr" + std::string(orphaned == 1 ? "y" : "ies") + " cleared (object deleted or an Undo passed the construction)";
-        ctx.Print(msg);
-      }), CommandStatus::Implemented,
+  Reg(e, "UpdateHistory", Immediate(DoUpdateHistory), CommandStatus::Implemented,
       "Re-runs Extrude/ExtrudeCrvToPoint/Revolve/Loft/SubDLoft for every object History recorded, against its source curve(s)' *current* geometry (moved, reshaped, or control-point-edited since), and replaces that object's geometry in place - same object id, same layer/color/name/user text, only the shape changes. The same explicit-recompute shape as ElecRebuild (cmd_elec.cpp) and UpdateDimensions (cmd_annotate.cpp) use for their own associative rebuilds, not an automatic hook on every document edit. Revolve's axis is recorded as-picked and does not move with the curve, matching Rhino's own Revolve history. Objects made before History was turned On, or by any other command, have no recorded history and are left untouched.");
+  Reg(e, "HistoryUpdate", Immediate(DoUpdateHistory), CommandStatus::Implemented,
+      "Rhino's own alternate name for UpdateHistory - identical rebuild, reported under whichever name was typed. Previously a dead cmd_state.cpp stub that always claimed no history was recorded; now the real mechanism.");
+  Reg(e, "HistoryPurge", Immediate(DoHistoryPurge), CommandStatus::Implemented,
+      "Drops the recorded construction history for the current selection (or every object in the document, if nothing is selected), so a later UpdateHistory/HistoryUpdate no longer rebuilds them. Previously a dead cmd_state.cpp stub that always claimed no history was recorded; now checks Document::HistoryRecords() for real.");
 }
 
 }  // namespace dino8::app
