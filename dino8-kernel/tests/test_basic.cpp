@@ -32,6 +32,7 @@
 #include "dino8/kernel/fillet.h"
 #include "dino8/kernel/mesh.h"
 #include "dino8/kernel/point_cloud.h"
+#include "dino8/kernel/sheet_metal.h"
 #include "dino8/kernel/subd.h"
 #include "dino8/kernel/surface.h"
 #include "dino8/kernel/surface_intersect.h"
@@ -2519,6 +2520,115 @@ void TestIntersectBrepsAndCurveBrep() {
   Check(far_hits.empty(), "a curve nowhere near the B-rep produces no curve/B-rep hits");
 }
 
+// PARITY_MAP's intersections category, "Pullback of a 3D curve to surface
+// parameter space" bullet: PullbackCurveToSurface() is the general-purpose
+// kernel entry point (SSX's own pcurve_a/pcurve_b are a by-product of a
+// surface/surface crossing, not usable for an arbitrary standalone curve).
+void TestPullbackCurveToSurfaceCylinderRulingLine() {
+  using dino8::kernel::IntersectOptions;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::PullbackCurveToSurface;
+  using dino8::kernel::PullbackResult;
+
+  const ON_Circle base_circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 2.0);
+  const ON_Cylinder on_cylinder(base_circle, 6.0);
+  ON_NurbsSurface cyl_surface;
+  Check(on_cylinder.GetNurbForm(cyl_surface) != 0, "ON_Cylinder::GetNurbForm succeeds");
+  NurbsSurface wall;
+  wall.raw() = cyl_surface;
+
+  IntersectOptions opt;
+  opt.tolerance = 1e-6;
+  opt.mesh_tolerance = 0.05;
+
+  // A straight ruling line of the cylinder is, by construction, EXACTLY
+  // on the surface: fix u at the surface's own domain midpoint and take
+  // two distinct v values - since a cylinder's v direction is genuinely
+  // linear along the axis at constant angle, the straight 3D segment
+  // between those two evaluated points lies exactly on the wall, not
+  // merely close to it.
+  const dino8::kernel::Interval du = wall.Domain(0), dv = wall.Domain(1);
+  const double u0 = du.min + (du.max - du.min) * 0.5;
+  const double va = dv.min + (dv.max - dv.min) * 0.2;
+  const double vb = dv.min + (dv.max - dv.min) * 0.8;
+  const Point3d pa = wall.PointAt(u0, va);
+  const Point3d pb = wall.PointAt(u0, vb);
+  const NurbsCurve ruling = NurbsCurve::FromControlPoints({pa, pb}, /*degree=*/1);
+
+  const PullbackResult pb_result = PullbackCurveToSurface(ruling.raw(), wall.raw(), opt);
+  Check(pb_result.on_surface, "a genuine ruling line of the cylinder pulls back with on_surface == true");
+  Check(pb_result.max_error < 1e-4, "the pullback's worst per-sample closest-point residual is within tolerance");
+  Check(pb_result.uv.size() >= 2, "the pullback sampled at least its two endpoints");
+
+  // The cylinder's own known UV relationship for a vertical ruling line:
+  // u is CONSTANT (the angle never changes) and v varies monotonically
+  // between the two endpoints' own v - both independently verifiable
+  // facts about a cylinder's parametrization, not fit to whatever the
+  // pullback happens to produce.
+  double max_u_dev = 0;
+  for (const ON_2dPoint& uv : pb_result.uv) max_u_dev = std::max(max_u_dev, std::abs(uv.x - u0));
+  Check(max_u_dev < 1e-3, "every pulled-back sample keeps the ruling line's own constant angle u0 (within tolerance)");
+  const bool increasing = vb > va;
+  bool monotonic = true;
+  for (size_t i = 1; i < pb_result.uv.size(); ++i) {
+    const double prev_v = pb_result.uv[i - 1].y, cur_v = pb_result.uv[i].y;
+    if (increasing ? (cur_v < prev_v - 1e-9) : (cur_v > prev_v + 1e-9)) { monotonic = false; break; }
+  }
+  Check(monotonic, "the pulled-back v samples move monotonically along the ruling line, matching the cylinder's own linear height parametrization");
+
+  // The fitted pcurve itself (not just the raw samples) must round-trip:
+  // evaluating it at its own domain ends and mapping through the surface
+  // must land back near the original line's own endpoints.
+  const ON_Interval pdom = pb_result.pcurve.Domain();
+  const ON_3dPoint uv_start = pb_result.pcurve.PointAt(pdom.Min());
+  const ON_3dPoint uv_end = pb_result.pcurve.PointAt(pdom.Max());
+  const Point3d back_start = wall.PointAt(uv_start.x, uv_start.y);
+  const Point3d back_end = wall.PointAt(uv_end.x, uv_end.y);
+  Check(back_start.DistanceTo(pa) < 1e-3 && back_end.DistanceTo(pb) < 1e-3,
+        "the fitted pcurve's own two domain endpoints map back through the surface to the ruling line's own endpoints");
+
+  // `pulled_curve` (PARITY_MAP's separate "Pull curves/points to surfaces"
+  // bullet - the literal 3D curve-on-surface result, not the 2D pcurve)
+  // must, for this already-on-surface ruling line, land essentially
+  // exactly back on pa/pb at its own domain ends too.
+  const ON_Interval pulled_dom = pb_result.pulled_curve.Domain();
+  const ON_3dPoint pulled_start = pb_result.pulled_curve.PointAt(pulled_dom.Min());
+  const ON_3dPoint pulled_end = pb_result.pulled_curve.PointAt(pulled_dom.Max());
+  Check(Point3d(pulled_start.x, pulled_start.y, pulled_start.z).DistanceTo(pa) < 1e-3 &&
+        Point3d(pulled_end.x, pulled_end.y, pulled_end.z).DistanceTo(pb) < 1e-3,
+        "pulled_curve's own two domain endpoints land essentially exactly on the ruling line's own endpoints");
+
+  // Negative case for on_surface/pcurve: a curve held well clear of the
+  // cylinder wall entirely (radius 2 wall, this line sits at radius 20)
+  // must honestly report on_surface == false rather than silently
+  // pretending to have found a meaningful pullback.
+  const NurbsCurve far_line = NurbsCurve::FromControlPoints({Point3d(20, 0, 0), Point3d(20, 0, 4)}, /*degree=*/1);
+  const PullbackResult far_result = PullbackCurveToSurface(far_line.raw(), wall.raw(), opt);
+  Check(!far_result.on_surface, "a curve held far from the surface pulls back with on_surface == false");
+  Check(far_result.max_error > opt.tolerance, "the far curve's max_error genuinely exceeds the requested tolerance");
+
+  // But `pulled_curve` is meaningful regardless of on_surface - that is
+  // the whole point of a Pull operation. The cylinder's axis is the world
+  // z-axis (base_circle's own plane, center at the origin), so the exact,
+  // independently-derivable expectation is that pulling this off-axis
+  // line onto the radius-2 wall lands it at (2, 0, z) for z in [0, 4] -
+  // every pulled sample must sit at radial distance == 2 from the z-axis,
+  // and the curve's own endpoints must land at exactly (2, 0, 0) and (2, 0, 4).
+  double max_radial_error = 0;
+  for (const ON_3dPoint& p3 : std::vector<ON_3dPoint>{far_result.pulled_curve.PointAtStart(), far_result.pulled_curve.PointAtEnd()}) {
+    max_radial_error = std::max(max_radial_error, std::abs(std::hypot(p3.x, p3.y) - 2.0));
+  }
+  Check(max_radial_error < 1e-3, "pulling an off-surface line onto the cylinder lands its own pulled_curve endpoints at exactly radius 2 from the axis");
+  const ON_3dPoint far_pulled_start = far_result.pulled_curve.PointAtStart();
+  const ON_3dPoint far_pulled_end = far_result.pulled_curve.PointAtEnd();
+  Check(Point3d(far_pulled_start.x, far_pulled_start.y, far_pulled_start.z).DistanceTo(Point3d(2, 0, 0)) < 1e-2,
+        "the far line's pulled_curve start lands at the hand-derived (2, 0, 0)");
+  Check(Point3d(far_pulled_end.x, far_pulled_end.y, far_pulled_end.z).DistanceTo(Point3d(2, 0, 4)) < 1e-2,
+        "the far line's pulled_curve end lands at the hand-derived (2, 0, 4)");
+}
+
 void TestBooleanCombineGeneralBoxBox() {
   using dino8::kernel::BooleanCombineGeneral;
   using dino8::kernel::BooleanOp;
@@ -4301,6 +4411,152 @@ void TestTrimSheetBySolidCallerTolerance() {
     threw = true;
   }
   Check(threw, "TrimSheetBySolid throws std::invalid_argument for a non-positive tolerance");
+}
+
+void TestSplitBrepBySolidOverlappingBoxesSumBackToOriginalVolume() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SplitBrepBySolid;
+
+  // PARITY_MAP.md's "Keep/split options" gap: "BooleanSplit solid-by-solid
+  // keeping all pieces... [is] all plane-split only (kernel SplitByPlane)" -
+  // the app's own general-cutter KeepAll split (SplitByObjectCommand) is
+  // mesh-level, not a real B-rep solid-by-solid split. A 4x4x4 target
+  // (volume 64) split by a 4x4x4 cutter offset by 2 units in every axis
+  // (overlap region [2,4]^3, volume 8).
+  const Brep target = Brep::Box(0, 0, 0, 4, 4, 4);
+  const Brep cutter = Brep::Box(2, 2, 2, 6, 6, 6);
+
+  const auto [outside, inside] = SplitBrepBySolid(target, cutter);
+  Check(outside.raw().IsValid(), "SplitBrepBySolid's outside piece is a valid ON_Brep");
+  Check(inside.raw().IsValid(), "SplitBrepBySolid's inside piece is a valid ON_Brep");
+
+  const Mesh mo = outside.TessellateToClosedMesh(16, 16);
+  const Mesh mi = inside.TessellateToClosedMesh(16, 16);
+  Check(std::abs(mo.Volume() - 56.0) < 0.5, "outside piece's volume is exactly target minus the overlap (64-8=56)");
+  Check(std::abs(mi.Volume() - 8.0) < 0.5, "inside piece's volume is exactly the overlap region (2x2x2=8)");
+  Check(std::abs((mo.Volume() + mi.Volume()) - 64.0) < 1e-3,
+        "outside + inside sum back to the original target's own volume (4^3=64) exactly - no material gained or "
+        "lost by the split");
+}
+
+void TestSplitBrepBySolidDisjointCutterKeepsWholeTargetOutside() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SplitBrepBySolid;
+
+  const Brep target = Brep::Box(0, 0, 0, 4, 4, 4);
+  const Brep cutter = Brep::Box(100, 100, 100, 104, 104, 104);
+
+  const auto [outside, inside] = SplitBrepBySolid(target, cutter);
+  Check(inside.FaceCount() == 0, "a cutter that never reaches target leaves the inside piece the empty Brep");
+  Check(outside.raw().IsValid() && outside.FaceCount() == target.FaceCount(),
+        "outside keeps every one of target's own faces, unchanged");
+  const Mesh mo = outside.TessellateToClosedMesh(8, 8);
+  Check(std::abs(mo.Volume() - 64.0) < 1e-3, "outside's volume is target's own, unchanged (4^3=64)");
+}
+
+void TestSplitBrepBySolidCutterFullyContainsTarget() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SplitBrepBySolid;
+
+  const Brep target = Brep::Box(1, 1, 1, 3, 3, 3);
+  const Brep cutter = Brep::Box(0, 0, 0, 4, 4, 4);
+
+  const auto [outside, inside] = SplitBrepBySolid(target, cutter);
+  Check(outside.FaceCount() == 0, "a cutter that fully contains target leaves the outside piece the empty Brep");
+  Check(inside.raw().IsValid(), "inside (the whole, untouched target) is a valid ON_Brep");
+  const Mesh mi = inside.TessellateToClosedMesh(8, 8);
+  Check(std::abs(mi.Volume() - 8.0) < 1e-3, "inside's volume is target's own, unchanged (2^3=8)");
+}
+
+void TestSplitBrepBySolidRejectsEmptyOperandsAndNonPositiveTolerance() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::SplitBrepBySolid;
+
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+  const Brep empty;
+
+  bool threw = false;
+  try {
+    SplitBrepBySolid(empty, box);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "SplitBrepBySolid throws std::invalid_argument for an empty target");
+
+  threw = false;
+  try {
+    SplitBrepBySolid(box, empty);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "SplitBrepBySolid throws std::invalid_argument for an empty cutter");
+
+  threw = false;
+  try {
+    SplitBrepBySolid(box, box, -1.0);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "SplitBrepBySolid throws std::invalid_argument for a non-positive tolerance");
+}
+
+void TestSplitBrepByManySolidsTwoDisjointCuttersSumBackToOriginalVolume() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SplitBrepByManySolids;
+  using dino8::kernel::SplitBrepBySolid;
+
+  // Closes the N-ary half of the "Keep/split options" gap
+  // SplitBrepBySolid (single cutter) leaves open. A 10x10x10 target
+  // (volume 1000) split by two disjoint interior cutters, each a 2x2x2 box
+  // (volume 8 apiece, 16 total) - the union of the cutters never overlaps
+  // itself, so `inside` should be exactly their combined volume and
+  // `outside` exactly the rest.
+  const Brep target = Brep::Box(0, 0, 0, 10, 10, 10);
+  const Brep cutter1 = Brep::Box(1, 1, 1, 3, 3, 3);
+  const Brep cutter2 = Brep::Box(6, 6, 6, 8, 8, 8);
+
+  const auto [outside, inside] = SplitBrepByManySolids(target, {cutter1, cutter2});
+  Check(outside.raw().IsValid(), "SplitBrepByManySolids's outside piece is a valid ON_Brep");
+  Check(inside.raw().IsValid(), "SplitBrepByManySolids's inside piece is a valid ON_Brep");
+
+  const Mesh mo = outside.TessellateToClosedMesh(16, 16);
+  const Mesh mi = inside.TessellateToClosedMesh(16, 16);
+  Check(std::abs(mi.Volume() - 16.0) < 0.5,
+        "inside piece's volume is exactly both disjoint cutters' own combined volume (8+8=16)");
+  Check(std::abs(mo.Volume() - 984.0) < 0.5, "outside piece's volume is exactly target minus both cutters (1000-16=984)");
+  Check(std::abs((mo.Volume() + mi.Volume()) - 1000.0) < 1e-3,
+        "outside + inside sum back to the original target's own volume (10^3=1000) exactly");
+
+  // Cross-check against two chained single-cutter SplitBrepBySolid calls:
+  // splitting target by cutter1 first, then splitting ITS OWN outside
+  // piece by cutter2, should recover the identical inside/outside split
+  // (cutter1/cutter2 are disjoint, so neither cutter's own piece touches
+  // the other's).
+  const auto [after1_outside, after1_inside] = SplitBrepBySolid(target, cutter1);
+  const auto [after2_outside, after2_inside] = SplitBrepBySolid(after1_outside, cutter2);
+  const double chained_inside = after1_inside.TessellateToClosedMesh(16, 16).Volume() +
+                                 after2_inside.TessellateToClosedMesh(16, 16).Volume();
+  Check(std::abs(chained_inside - mi.Volume()) < 1e-6,
+        "SplitBrepByManySolids's own combined inside volume matches two chained single-cutter SplitBrepBySolid "
+        "calls exactly");
+}
+
+void TestSplitBrepByManySolidsRejectsEmptyCutterGroup() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::SplitBrepByManySolids;
+
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+  bool threw = false;
+  try {
+    SplitBrepByManySolids(box, {});
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "SplitBrepByManySolids throws std::invalid_argument for an empty cutters group");
 }
 
 void TestSurfaceGetApproximateSize() {
@@ -35765,6 +36021,63 @@ void TestBooleanCombineMixedParallelCylinderCapTrimNeededThrows() {
         "possibly-wrong end cap - the honestly-disclosed ParallelCylinderCapNeedsNoTrim scope limit");
 }
 
+void TestBooleanCombineMixedParallelCylinderCapTrimNeededIsTypedUnsupportedGeometry() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanFailureReason;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::BooleanOperationError;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  // Same fixture as TestBooleanCombineMixedParallelCylinderCapTrimNeededThrows
+  // above - closes this file's own next-named extension of BooleanOperationError
+  // (boolean.h's own class-level doc comment): "retyping... the
+  // ParallelCylinderCapNeedsNoTrim... refusal" from a plain
+  // std::invalid_argument to this file's own structured failure type, still
+  // fully backward compatible (the prior test, unchanged, still catches it
+  // as plain std::invalid_argument with identical what() text) but now also
+  // giving a caller wanting a programmatic reason one to read.
+  Brep::CylindricalFace cyl_a;
+  cyl_a.frame.origin = Point3d(0, 0, 0);
+  cyl_a.frame.xaxis = Vector3d(1, 0, 0);
+  cyl_a.frame.yaxis = Vector3d(0, 1, 0);
+  cyl_a.frame.zaxis = Vector3d(0, 0, 1);
+  cyl_a.frame.UpdateEquation();
+  cyl_a.radius = 2.0;
+  cyl_a.angle = 2.0 * ON_PI;
+  cyl_a.length = 5.0;
+  const Brep a = Brep::FromMixedFaces({}, {cyl_a});
+
+  Brep::CylindricalFace cyl_b;
+  cyl_b.frame.origin = Point3d(1.5, 0, 0);
+  cyl_b.frame.xaxis = Vector3d(1, 0, 0);
+  cyl_b.frame.yaxis = Vector3d(0, 1, 0);
+  cyl_b.frame.zaxis = Vector3d(0, 0, 1);
+  cyl_b.frame.UpdateEquation();
+  cyl_b.radius = 1.8;
+  cyl_b.angle = 2.0 * ON_PI;
+  cyl_b.length = 5.0;
+  const Brep b = Brep::FromMixedFaces({}, {cyl_b});
+
+  bool caught_typed = false;
+  bool caught_plain = false;
+  try {
+    BooleanCombineMixed(a, b, BooleanOp::Union);
+  } catch (const BooleanOperationError& e) {
+    caught_typed = true;
+    Check(e.reason() == BooleanFailureReason::UnsupportedGeometry,
+          "the parallel-cylinder cap-trim refusal reports BooleanFailureReason::UnsupportedGeometry");
+    Check(e.function_name() == "BooleanCombineMixed",
+          "the parallel-cylinder cap-trim refusal names BooleanCombineMixed as the refusing function");
+  } catch (const std::invalid_argument&) {
+    caught_plain = true;
+  }
+  Check(caught_typed, "the parallel-cylinder cap-trim refusal is catchable as BooleanOperationError");
+  Check(!caught_plain, "catching BooleanOperationError (a std::invalid_argument subclass) intercepts it first - "
+                        "the plain std::invalid_argument handler never fires");
+}
+
 void TestBooleanCombineMixedSteinmetzStillThrows() {
   using dino8::kernel::BooleanCombineMixed;
   using dino8::kernel::BooleanOp;
@@ -39967,6 +40280,173 @@ void TestBooleanCombineMixedChainedNegativeControls() {
 // triangles (no curvature to approximate) - `Within(..., 1e-9)` below is a
 // real exactness check on the measured mesh volume, not a loosened one.
 double NAryTestVolume(const dino8::kernel::Brep& b) { return b.TessellateToClosedMesh(4, 4).Volume(); }
+
+// Area of a closed planar polygon via the standard "shoelace about the
+// origin" identity (Area = 0.5 * |sum_i P_i x P_{i+1}|) - unlike a fan
+// triangulation from vertex 0 (boolean.cpp's own internal
+// PlanarPolygonArea, restricted to convex input by every caller it
+// actually has), this is exact for ANY simple polygon, convex or not,
+// which is exactly what PolygonBooleanPlanar's own non-convex test below
+// needs to verify against.
+double PolygonLoopArea(const std::vector<dino8::kernel::Point3d>& loop) {
+  using dino8::kernel::Vector3d;
+  Vector3d sum(0, 0, 0);
+  const size_t n = loop.size();
+  for (size_t i = 0; i < n; ++i) {
+    const dino8::kernel::Point3d& p0 = loop[i];
+    const dino8::kernel::Point3d& p1 = loop[(i + 1) % n];
+    sum += ON_CrossProduct(Vector3d(p0.x, p0.y, p0.z), Vector3d(p1.x, p1.y, p1.z));
+  }
+  return 0.5 * sum.Length();
+}
+
+void TestPolygonBooleanPlanarUnionOfTwoOverlappingSquares() {
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::PolygonBooleanPlanar;
+
+  const ON_Plane plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1));
+  const std::vector<Point3d> a = {Point3d(0, 0, 0), Point3d(2, 0, 0), Point3d(2, 2, 0), Point3d(0, 2, 0)};
+  const std::vector<Point3d> b = {Point3d(1, 1, 0), Point3d(3, 1, 0), Point3d(3, 3, 0), Point3d(1, 3, 0)};
+
+  const auto result = PolygonBooleanPlanar(a, b, plane, BooleanOp::Union);
+  Check(result.size() == 1, "PolygonBooleanPlanar Union of two overlapping unit squares: one connected result polygon");
+  double total = 0.0;
+  for (const auto& loop : result) total += PolygonLoopArea(loop);
+  Check(Within(total, 7.0, 1e-9),
+        "PolygonBooleanPlanar Union of a [0,2]x[0,2] and a [1,3]x[1,3] square: area is exactly 4 + 4 - 1 = 7");
+}
+
+void TestPolygonBooleanPlanarIntersectionOfTwoOverlappingSquares() {
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::PolygonBooleanPlanar;
+
+  const ON_Plane plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1));
+  const std::vector<Point3d> a = {Point3d(0, 0, 0), Point3d(2, 0, 0), Point3d(2, 2, 0), Point3d(0, 2, 0)};
+  const std::vector<Point3d> b = {Point3d(1, 1, 0), Point3d(3, 1, 0), Point3d(3, 3, 0), Point3d(1, 3, 0)};
+
+  const auto result = PolygonBooleanPlanar(a, b, plane, BooleanOp::Intersection);
+  Check(result.size() == 1, "PolygonBooleanPlanar Intersection of two overlapping unit squares: one result polygon");
+  double total = 0.0;
+  for (const auto& loop : result) total += PolygonLoopArea(loop);
+  Check(Within(total, 1.0, 1e-9),
+        "PolygonBooleanPlanar Intersection of the same two squares: the overlap is exactly the unit square "
+        "[1,2]x[1,2]");
+}
+
+void TestPolygonBooleanPlanarDifferenceOfTwoOverlappingSquares() {
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::PolygonBooleanPlanar;
+
+  const ON_Plane plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1));
+  const std::vector<Point3d> a = {Point3d(0, 0, 0), Point3d(2, 0, 0), Point3d(2, 2, 0), Point3d(0, 2, 0)};
+  const std::vector<Point3d> b = {Point3d(1, 1, 0), Point3d(3, 1, 0), Point3d(3, 3, 0), Point3d(1, 3, 0)};
+
+  const auto result = PolygonBooleanPlanar(a, b, plane, BooleanOp::Difference);
+  double total = 0.0;
+  for (const auto& loop : result) total += PolygonLoopArea(loop);
+  Check(Within(total, 3.0, 1e-9), "PolygonBooleanPlanar Difference a-b area is exactly 4 - 1 = 3");
+}
+
+void TestPolygonBooleanPlanarNonConvexLShapeIntersection() {
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::PolygonBooleanPlanar;
+
+  // A non-convex L-shaped polygon: a 2x2 square with a 1x1 notch cut from
+  // its top-right corner, area 4 - 1 = 3 - the case
+  // BooleanIntersectConvexPlanar/ShellConvexPlanar's own IsConvex()
+  // precondition would refuse outright, and PolygonBooleanPlanar's own
+  // doc comment claims BooleanCombinePlanar's general (non-convex)
+  // planar-faced-polyhedron handling covers.
+  const std::vector<Point3d> l_shape = {Point3d(0, 0, 0), Point3d(2, 0, 0), Point3d(2, 1, 0),
+                                         Point3d(1, 1, 0), Point3d(1, 2, 0), Point3d(0, 2, 0)};
+  const std::vector<Point3d> bounding_square = {Point3d(0, 0, 0), Point3d(2, 0, 0), Point3d(2, 2, 0),
+                                                 Point3d(0, 2, 0)};
+  const ON_Plane plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1));
+
+  const auto result = PolygonBooleanPlanar(l_shape, bounding_square, plane, BooleanOp::Intersection);
+  double total = 0.0;
+  for (const auto& loop : result) total += PolygonLoopArea(loop);
+  Check(Within(total, 3.0, 1e-9),
+        "PolygonBooleanPlanar Intersection of a non-convex L-shaped polygon (area 3) with its own bounding square "
+        "returns the L-shape itself, area unchanged");
+}
+
+void TestPolygonBooleanPlanarDisjointOperands() {
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::PolygonBooleanPlanar;
+
+  const std::vector<Point3d> a = {Point3d(0, 0, 0), Point3d(1, 0, 0), Point3d(1, 1, 0), Point3d(0, 1, 0)};
+  const std::vector<Point3d> b = {Point3d(5, 5, 0), Point3d(6, 5, 0), Point3d(6, 6, 0), Point3d(5, 6, 0)};
+  const ON_Plane plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1));
+
+  const auto u = PolygonBooleanPlanar(a, b, plane, BooleanOp::Union);
+  double total = 0.0;
+  for (const auto& loop : u) total += PolygonLoopArea(loop);
+  Check(u.size() == 2 && Within(total, 2.0, 1e-9),
+        "PolygonBooleanPlanar Union of two disjoint unit squares: two separate result polygons, combined area 2");
+
+  const auto i = PolygonBooleanPlanar(a, b, plane, BooleanOp::Intersection);
+  Check(i.empty(), "PolygonBooleanPlanar Intersection of two disjoint squares: empty result");
+}
+
+void TestPolygonBooleanPlanarDifferenceLeavesARingWithHoleLoop() {
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::PolygonBooleanPlanar;
+
+  // `b` sits fully inside `a` - a-b is a genuine ring, not a simply
+  // connected region: BooleanCombinePlanar's own raw per-fragment faces
+  // (dissolved back into loops by boolean.cpp's own
+  // DissolveCoplanarFragments) must come back as TWO loops here, the
+  // outer 10x10 boundary and the inner 4x4 hole boundary, not one
+  // self-intersecting loop or a silently dropped hole.
+  const std::vector<Point3d> big = {Point3d(0, 0, 0), Point3d(10, 0, 0), Point3d(10, 10, 0), Point3d(0, 10, 0)};
+  const std::vector<Point3d> hole = {Point3d(3, 3, 0), Point3d(7, 3, 0), Point3d(7, 7, 0), Point3d(3, 7, 0)};
+  const ON_Plane plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1));
+
+  const auto result = PolygonBooleanPlanar(big, hole, plane, BooleanOp::Difference);
+  Check(result.size() == 2, "PolygonBooleanPlanar Difference leaving a ring returns exactly two loops");
+  if (result.size() == 2) {
+    const double area0 = PolygonLoopArea(result[0]);
+    const double area1 = PolygonLoopArea(result[1]);
+    const double outer = std::max(area0, area1);
+    const double inner = std::min(area0, area1);
+    Check(Within(outer, 100.0, 1e-9), "the ring's outer loop has the full 10x10 area (100)");
+    Check(Within(inner, 16.0, 1e-9), "the ring's hole loop has the cut-out 4x4 area (16)");
+  }
+}
+
+void TestPolygonBooleanPlanarNegativeControls() {
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::PolygonBooleanPlanar;
+
+  const ON_Plane plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1));
+  const std::vector<Point3d> tri = {Point3d(0, 0, 0), Point3d(1, 0, 0), Point3d(0, 1, 0)};
+
+  const std::vector<Point3d> too_few = {Point3d(0, 0, 0), Point3d(1, 0, 0)};
+  bool threw = false;
+  try {
+    PolygonBooleanPlanar(too_few, tri, plane, BooleanOp::Union);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "PolygonBooleanPlanar refuses a polygon with fewer than 3 vertices");
+
+  const std::vector<Point3d> off_plane = {Point3d(0, 0, 1), Point3d(1, 0, 1), Point3d(0, 1, 1)};
+  threw = false;
+  try {
+    PolygonBooleanPlanar(off_plane, tri, plane, BooleanOp::Union);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "PolygonBooleanPlanar refuses a polygon whose vertices don't lie in the given plane");
+}
 
 void TestBooleanCombineMixedNAryUnionThreeOverlappingBoxesMatchesInclusionExclusion() {
   using dino8::kernel::BooleanCombineMixedNAry;
@@ -48656,6 +49136,96 @@ void TestMakeCounterboreHoleRejectsInvalidArguments() {
         "MakeCounterboreHole throws for a zero-length axis");
 }
 
+void TestMakeRevolvedCutTurnsDownRodToUniformSmallerRadius() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::MakeRevolvedCut;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::NurbsCurve;
+
+  // parity-map "kernel: Feature operations" - "Revolved cut (RevolvedHole)":
+  // the app's own `RevolvedHole` (cmd_solidtools.cpp) still cuts a MESH via
+  // a revolved mesh tool, and never calls `Brep::Revolve()` at all - this
+  // is the first kernel-level feature op composing `Revolve()` into an
+  // actual B-rep cut, mirroring `MakeHole()`/`MakeCounterboreHole()`'s own
+  // "one Revolve()/Pipe() tool, one BooleanCombineGeneral() call" shape,
+  // just with a caller-supplied profile instead of a fixed hole shape.
+  //
+  // A "turn down the diameter" cut (a real lathe-style revolved cut, not a
+  // contrived shape): a rod of radius 2, height 10, cut down to a uniform
+  // radius 1.2 over its WHOLE length. The tool is a closed, off-axis
+  // rectangular profile spanning radius [1.2, 2.5] and z in
+  // [-1, height+1] - past both of the rod's own end caps, so the tool's
+  // own flat annulus faces never touch the rod at all (no floating-cap-
+  // inside-material topology, the one disclosed case where
+  // BooleanCombineGeneral()'s own tessellation isn't reliably closed - see
+  // MakeHole()'s own blind-hole test above). The only real intersection is
+  // the tool's inner cylindrical wall (radius 1.2) crossing the rod's own
+  // two flat end caps, leaving a plain reduced-radius cylinder: exactly
+  // the same 3-face shape (one cylindrical wall, two planar caps)
+  // `Brep::Pipe()` itself would build directly.
+  const double rod_radius = 2.0, rod_height = 10.0;
+  const NurbsCurve rail = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(0, 0, rod_height)}, 1);
+  const Brep rod = Brep::Pipe(rail, rod_radius, /*cap=*/true, /*stations=*/2);
+
+  const double r_in = 1.2, r_out = rod_radius + 0.5;
+  const double z0 = -1.0, z1 = rod_height + 1.0;
+  const NurbsCurve profile = NurbsCurve::FromControlPoints(
+      {Point3d(r_in, 0, z0), Point3d(r_out, 0, z0), Point3d(r_out, 0, z1), Point3d(r_in, 0, z1), Point3d(r_in, 0, z0)},
+      1);
+  Check(profile.IsClosed() && profile.IsPlanar(), "the turn-down profile is a genuine closed planar polygon");
+
+  const Brep cut = MakeRevolvedCut(rod, profile, Point3d(0, 0, 0), Vector3d(0, 0, 1), 360.0);
+  Check(cut.raw().IsValid(), "MakeRevolvedCut produces a valid ON_Brep");
+  Check(cut.FaceCount() == 3,
+        "MakeRevolvedCut's turn-down leaves exactly 3 faces - one cylindrical wall at the new radius, two "
+        "unchanged-shape planar caps - the same count a plain Brep::Pipe() at that radius would have");
+  // The wall's own underlying surface is a (trimmed) sub-patch of the
+  // profile's single compound Brep::Revolve() surface, not a re-expressed
+  // ON_Cylinder - ON_Surface::IsCylinder() checks the surface's own FULL
+  // parametric domain (which still includes the profile's r_out corners
+  // outside the rod's own z-range), so it does not classify this face as
+  // a cylinder even though the KEPT, visible portion genuinely is one -
+  // the exact same reason MakeCounterboreHole()'s own stepped-profile
+  // wall isn't picked up by HasCylinderFaceWithRadius() either (see that
+  // test's own comment above). Checked the same way that test is instead:
+  // specific 3D points that can only lie on the wall at the true turn-down
+  // radius, well within the rod's own height.
+  Check(BrepPassesThroughPoint(cut, Point3d(r_in, 0, rod_height / 2.0)),
+        "MakeRevolvedCut's wall passes through the requested turn-down radius, well within the rod's own height");
+  Check(BrepPassesThroughPoint(cut, Point3d(0, r_in, 2.0)),
+        "MakeRevolvedCut's wall passes through the requested turn-down radius all the way around, not just at one "
+        "angle");
+
+  const Mesh m = cut.TessellateToClosedMesh(32, 128);
+  const double expected = ON_PI * r_in * r_in * rod_height;
+  Check(std::abs(m.Volume() - expected) < 0.5,
+        "MakeRevolvedCut's turned-down rod matches the closed-form pi*r_in^2*height volume");
+}
+
+void TestMakeRevolvedCutRejectsInvalidArguments() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::MakeRevolvedCut;
+  using dino8::kernel::NurbsCurve;
+
+  const Brep rod = Brep::Pipe(NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(0, 0, 10)}, 1), 2.0, true, 2);
+  const Brep empty;
+  const NurbsCurve profile = NurbsCurve::FromControlPoints(
+      {Point3d(1, 0, -1), Point3d(3, 0, -1), Point3d(3, 0, 11), Point3d(1, 0, 11), Point3d(1, 0, -1)}, 1);
+  const Point3d axis_point(0, 0, 0);
+  const Vector3d axis(0, 0, 1);
+
+  Check(Throws([&] { MakeRevolvedCut(empty, profile, axis_point, axis, 360.0); }),
+        "MakeRevolvedCut throws for a faceless solid");
+  Check(Throws([&] { MakeRevolvedCut(rod, profile, axis_point, axis, 0.0); }),
+        "MakeRevolvedCut throws for a non-positive revolve angle");
+  Check(Throws([&] { MakeRevolvedCut(rod, profile, axis_point, axis, -30.0); }),
+        "MakeRevolvedCut throws for a negative revolve angle");
+  Check(Throws([&] { MakeRevolvedCut(rod, profile, axis_point, axis, 361.0); }),
+        "MakeRevolvedCut throws for a revolve angle past a full turn");
+  Check(Throws([&] { MakeRevolvedCut(rod, profile, axis_point, Vector3d(0, 0, 0), 360.0); }),
+        "MakeRevolvedCut throws for a zero-length axis (surfaced via Brep::Revolve() itself)");
+}
+
 void TestRecognizeHolesBlindAndThroughRoundTrip() {
   using dino8::kernel::Brep;
   using dino8::kernel::HoleFeature;
@@ -49129,6 +49699,67 @@ void TestEmbossProfileRejectsInvalidArguments() {
         "EmbossProfile throws for a zero-length direction");
   Check(Throws([&] { EmbossProfile(box, square, Vector3d(1, 0, 0), 1.0, EmbossMode::Deboss); }),
         "EmbossProfile throws (via Brep::Extrude()) when direction lies in the profile's own plane");
+}
+
+void TestRecognizePocketsBlindPocketRoundTripAndNegativeControls() {
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::EmbossMode;
+  using dino8::kernel::EmbossProfile;
+  using dino8::kernel::PocketFeature;
+  using dino8::kernel::RecognizePockets;
+
+  // parity-map "kernel: Feature operations" - "Feature recognition": every
+  // Recognize* function above (RecognizeHoles/Bosses/CounterboreHoles/...)
+  // only ever looks at cylindrical/conical candidate faces, leaving this
+  // item's own disclosed "a general (non-cylindrical) pocket remains
+  // entirely unrecognized" gap open across all of them. RecognizePockets()
+  // closes it: the geometric inverse of EmbossProfile()'s own Deboss mode
+  // for a straight profile - the SAME blind-pocket fixture
+  // TestEmbossProfileDebossBlindPocket above builds, read back instead of
+  // built.
+  const Brep box = Brep::Box(0, 0, 0, 4, 4, 4);
+  const NurbsCurve square = Polyline({P(1.5, 1.5, 4), P(2.5, 1.5, 4), P(2.5, 2.5, 4), P(1.5, 2.5, 4), P(1.5, 1.5, 4)});
+  const Vector3d down(0, 0, -1);
+  const double depth = 1.5;
+  const Brep pocketed = EmbossProfile(box, square, down, depth, EmbossMode::Deboss);
+
+  const std::vector<PocketFeature> found = RecognizePockets(pocketed);
+  Check(found.size() == 1, "RecognizePockets finds exactly one pocket on a box with a single blind pocket cut into it");
+  if (found.size() == 1) {
+    const PocketFeature& pf = found[0];
+    Check(std::abs(pf.normal.z - 1.0) < 1e-6 && std::abs(pf.normal.x) < 1e-6 && std::abs(pf.normal.y) < 1e-6,
+          "RecognizePockets recovers the floor's own outward normal (+z, out of the material into the pocket)");
+    Check(std::abs(pf.origin.z - (4.0 - depth)) < 1e-6,
+          "RecognizePockets recovers the floor's own exact height (4 - depth = 2.5)");
+    Check(pf.origin.x > 1.5 && pf.origin.x < 2.5 && pf.origin.y > 1.5 && pf.origin.y < 2.5,
+          "RecognizePockets' recovered origin genuinely sits within the pocket's own 1.5-2.5 footprint");
+    Check(std::abs(pf.depth - depth) < 1e-6, "RecognizePockets recovers the exact requested pocket depth (1.5)");
+  }
+
+  // Negative control: a plain box finds nothing - its own top face is
+  // ALSO bordered on every side by perpendicular planar faces (the same
+  // shape a pocket floor has), but those walls fall AWAY from the top
+  // face's own outward normal, down into the material, not up toward an
+  // opening - exactly the distinction this function's own doc comment
+  // describes.
+  Check(RecognizePockets(box).empty(), "RecognizePockets finds nothing on a plain box (no pocket exists)");
+
+  // Negative control: a boss (the same square profile, raised OUT of the
+  // top face instead of cut into it) finds nothing either - its own top
+  // cap is surrounded by walls falling away DOWN toward the base, not
+  // rising toward an opening.
+  const Brep boss_tool = Brep::Extrude(square, Vector3d(0, 0, 1.0), /*cap=*/true);
+  const Brep bossed = BooleanCombineGeneral(box, boss_tool, BooleanOp::Union);
+  Check(RecognizePockets(bossed).empty(), "RecognizePockets finds nothing on a boss (a protrusion, not a recess)");
+
+  // Negative control: a THROUGH pocket (the same profile, cut clean
+  // through the box) finds nothing - there is no flat floor face at all
+  // for this function to recognize (RecognizeHoles()'s own "through"
+  // concept, not this function's domain).
+  const Brep through_pocket = EmbossProfile(box, square, down, /*depth=*/4.5, EmbossMode::Deboss);
+  Check(RecognizePockets(through_pocket).empty(),
+        "RecognizePockets finds nothing on a through-cut (no flat floor face exists to recognize)");
 }
 
 void TestThickenFlatSheetProducesExactBoxVolume() {
@@ -57947,6 +58578,93 @@ void TestRecognizeTaperedBossChainsRoundTrip() {
   }
 }
 
+void TestBendVolumeMatchesPappusClosedFormAndAllowanceSelfConsistency() {
+  using dino8::kernel::Bend;
+  using dino8::kernel::BendAllowance;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+
+  // parity-map "kernel: Feature operations" - "Sheet-metal features":
+  // previously zero sheet-metal-specific code anywhere in this kernel
+  // (`UnrollDevelopable()`, surface_edit.cpp, is single-surface unrolling
+  // only) - `Bend()` is this kernel's first dedicated sheet-metal feature
+  // op, a genuine curved single-bend part (not two flat legs joined by a
+  // sharp crease): a closed 2D profile (inner/outer boundary, each a
+  // leg-arc-leg shape) extruded by `width` via Brep::Extrude().
+  //
+  // Because this sweeps a constant rectangular cross-section through a
+  // real circular arc, Pappus's centroid theorem gives its EXACT volume:
+  // the two flat legs contribute leg_length*width*thickness each, and the
+  // curved region contributes bend_angle_radians * (inside_radius +
+  // thickness/2) * width*thickness - the cross-section's own geometric
+  // centroid radius (deliberately not the K-factor-adjusted radius
+  // BendAllowance() below uses for a different purpose).
+  const double leg1 = 5.0, leg2 = 3.0, width = 2.0, thickness = 0.1, r_in = 0.2, angle_deg = 90.0;
+  const Brep bent = Bend(leg1, leg2, width, thickness, r_in, angle_deg);
+  Check(bent.raw().IsValid(), "Bend produces a valid ON_Brep");
+  Check(bent.FaceCount() == 3,
+        "Bend's single-arc profile extrudes into exactly 3 faces: the swept wall and its two end caps");
+
+  const Mesh m = bent.TessellateToClosedMesh(128, 256);
+  Check(m.IsClosedManifold(), "Bend's tessellation is a genuine closed manifold");
+  const double theta = angle_deg * ON_PI / 180.0;
+  const double r_mid = r_in + thickness / 2.0;
+  const double expected_volume = (leg1 + leg2) * width * thickness + theta * r_mid * width * thickness;
+  Check(std::abs(m.Volume() - expected_volume) < 0.01 * expected_volume,
+        "Bend's tessellated volume matches the exact Pappus closed form to within 1%");
+
+  // BendAllowance() self-consistency: at k_factor == 0.5, the K-factor
+  // neutral axis coincides EXACTLY with the true geometric mid-plane
+  // Bend()'s own construction sweeps through - so the flat-pattern length
+  // for just the curved region must equal theta * r_mid exactly, tying
+  // the two independent formulas together at that special case.
+  const double allowance_half = BendAllowance(thickness, r_in, angle_deg, 0.5);
+  Check(std::abs(allowance_half - theta * r_mid) < 1e-9,
+        "BendAllowance at k_factor=0.5 exactly matches Bend()'s own true geometric mid-plane arc length");
+
+  // A shallower bend (30 degrees) and a steeper one (60 degrees) both
+  // stay valid, star-shaped, closed solids - not just the one 90-degree
+  // case above. (A much steeper bend angle with these same dimensions -
+  // confirmed directly, dino8_scratch_test - can exceed Brep::Extrude()'s
+  // own star-shaped capping requirement well before 180 degrees, since a
+  // fairly THICK annular sector's own star-shaped kernel shrinks faster
+  // with angle than a thin one's does; picking dimensions/angles that
+  // stay comfortably inside that boundary is this function's own caller's
+  // responsibility, the same as any other Extrude()-based feature op in
+  // this kernel.)
+  for (double angle : {30.0, 60.0}) {
+    const Brep b = Bend(2.0, 2.0, 1.0, 0.2, 0.3, angle);
+    Check(b.raw().IsValid(), "Bend stays a valid ON_Brep across a range of bend angles");
+    const Mesh bm = b.TessellateToClosedMesh(64, 128);
+    Check(bm.IsClosedManifold(), "Bend's tessellation stays closed across a range of bend angles");
+    Check(bm.Volume() > 0.0, "Bend's tessellated volume stays positive (outward-facing solid) across bend angles");
+  }
+}
+
+void TestBendAndBendAllowanceRejectInvalidArguments() {
+  using dino8::kernel::Bend;
+  using dino8::kernel::BendAllowance;
+  using sweep_tests::Throws;
+
+  Check(Throws([&] { Bend(0.0, 3.0, 2.0, 0.1, 0.2, 90.0); }), "Bend throws for a non-positive leg1_length");
+  Check(Throws([&] { Bend(5.0, -1.0, 2.0, 0.1, 0.2, 90.0); }), "Bend throws for a non-positive leg2_length");
+  Check(Throws([&] { Bend(5.0, 3.0, 0.0, 0.1, 0.2, 90.0); }), "Bend throws for a non-positive width");
+  Check(Throws([&] { Bend(5.0, 3.0, 2.0, 0.0, 0.2, 90.0); }), "Bend throws for a non-positive thickness");
+  Check(Throws([&] { Bend(5.0, 3.0, 2.0, 0.1, 0.0, 90.0); }), "Bend throws for a non-positive inside_radius");
+  Check(Throws([&] { Bend(5.0, 3.0, 2.0, 0.1, 0.2, 0.0); }), "Bend throws for a zero bend angle");
+  Check(Throws([&] { Bend(5.0, 3.0, 2.0, 0.1, 0.2, 180.0); }), "Bend throws for a bend angle of exactly 180 degrees");
+  Check(Throws([&] { Bend(5.0, 3.0, 2.0, 0.1, 0.2, 200.0); }), "Bend throws for a bend angle past 180 degrees");
+
+  Check(Throws([&] { BendAllowance(0.0, 0.2, 90.0); }), "BendAllowance throws for a non-positive thickness");
+  Check(Throws([&] { BendAllowance(0.1, 0.0, 90.0); }), "BendAllowance throws for a non-positive inside_radius");
+  Check(Throws([&] { BendAllowance(0.1, 0.2, 0.0); }), "BendAllowance throws for a zero bend angle");
+  Check(Throws([&] { BendAllowance(0.1, 0.2, 180.0); }), "BendAllowance throws for a bend angle of exactly 180 degrees");
+  Check(Throws([&] { BendAllowance(0.1, 0.2, 90.0, -0.1); }), "BendAllowance throws for a negative k_factor");
+  Check(Throws([&] { BendAllowance(0.1, 0.2, 90.0, 1.1); }), "BendAllowance throws for a k_factor past 1");
+  Check(!Throws([&] { BendAllowance(0.1, 0.2, 90.0, 0.0); }), "BendAllowance accepts a k_factor of exactly 0");
+  Check(!Throws([&] { BendAllowance(0.1, 0.2, 90.0, 1.0); }), "BendAllowance accepts a k_factor of exactly 1");
+}
+
 int main() {
   ON::Begin();
 
@@ -57996,6 +58714,7 @@ int main() {
   TestIntersectCurvePlaneFindsCrossingsAndRejectsMisses();
   TestIntersectCurveSelfIntersectionsFindsBowtieAndRejectsSimpleCurves();
   TestIntersectBrepsAndCurveBrep();
+  TestPullbackCurveToSurfaceCylinderRulingLine();
   TestBooleanCombineGeneralBoxBox();
   TestBooleanCombineGeneralFreeformSurfaceOperand();
   TestBooleanCombineGeneralCoplanarBoxes();
@@ -58024,6 +58743,12 @@ int main() {
   TestTrimSheetBySolidDisjointSheetKeepsWholeOrEmpty();
   TestTrimSheetBySolidRejectsEmptyOperands();
   TestTrimSheetBySolidCallerTolerance();
+  TestSplitBrepBySolidOverlappingBoxesSumBackToOriginalVolume();
+  TestSplitBrepBySolidDisjointCutterKeepsWholeTargetOutside();
+  TestSplitBrepBySolidCutterFullyContainsTarget();
+  TestSplitBrepBySolidRejectsEmptyOperandsAndNonPositiveTolerance();
+  TestSplitBrepByManySolidsTwoDisjointCuttersSumBackToOriginalVolume();
+  TestSplitBrepByManySolidsRejectsEmptyCutterGroup();
   TestSurfaceGetApproximateSize();
   TestSurfaceTessellateGridClippedExactRejectsTooFewPoints();
   TestSurfaceTessellateGridRejectsTooFewTrimPoints();
@@ -58480,6 +59205,7 @@ int main() {
   TestBooleanCombineMixedParallelCylinderUnionOneFullyNestedContributesNothing();
   TestBooleanCombineMixedParallelCylinderPartialSweepCapClosesOtherwiseOpenWedge();
   TestBooleanCombineMixedParallelCylinderCapTrimNeededThrows();
+  TestBooleanCombineMixedParallelCylinderCapTrimNeededIsTypedUnsupportedGeometry();
   TestBooleanCombineMixedSteinmetzStillThrows();
   TestBooleanCombineMixedGeneralSkewCylinderStillThrows();
   TestBooleanCombineMixedParallelAxisDetectionToleranceBoundary();
@@ -58529,6 +59255,13 @@ int main() {
   TestBooleanCombinePlanarNAryDifferenceSubtractsEveryToolInSecondGroup();
   TestBooleanCombinePlanarNAryIntersectionUnionsEachSideBeforeCombining();
   TestBooleanCombinePlanarNAryNegativeControls();
+  TestPolygonBooleanPlanarUnionOfTwoOverlappingSquares();
+  TestPolygonBooleanPlanarIntersectionOfTwoOverlappingSquares();
+  TestPolygonBooleanPlanarDifferenceOfTwoOverlappingSquares();
+  TestPolygonBooleanPlanarNonConvexLShapeIntersection();
+  TestPolygonBooleanPlanarDisjointOperands();
+  TestPolygonBooleanPlanarDifferenceLeavesARingWithHoleLoop();
+  TestPolygonBooleanPlanarNegativeControls();
   TestBooleanCombinePlanarDifferenceAcceptsCompoundFirstOperand();
   TestBooleanCombinePlanarDifferenceAcceptsCompoundSecondOperand();
   TestBooleanCombinePlanarIntersectionAcceptsCompoundOperand();
@@ -58731,6 +59464,7 @@ int main() {
   sweep_tests::TestEmbossProfileDebossBlindPocket();
   sweep_tests::TestEmbossProfileEmbossBoss();
   sweep_tests::TestEmbossProfileRejectsInvalidArguments();
+  sweep_tests::TestRecognizePocketsBlindPocketRoundTripAndNegativeControls();
   sweep_tests::TestThickenFlatSheetProducesExactBoxVolume();
   sweep_tests::TestThickenSymmetricPutsOriginalSurfaceOnMidplane();
   sweep_tests::TestThickenCurvedSheetProducesGenuineClosedSolid();
@@ -58849,6 +59583,12 @@ int main() {
   TestRecognizeTaperedBossesRoundTrip();
   TestRecognizeCountersinkChainsRoundTrip();
   TestRecognizeTaperedBossChainsRoundTrip();
+
+  sweep_tests::TestMakeRevolvedCutTurnsDownRodToUniformSmallerRadius();
+  sweep_tests::TestMakeRevolvedCutRejectsInvalidArguments();
+
+  TestBendVolumeMatchesPappusClosedFormAndAllowanceSelfConsistency();
+  TestBendAndBendAllowanceRejectInvalidArguments();
 
   ON::End();
 
