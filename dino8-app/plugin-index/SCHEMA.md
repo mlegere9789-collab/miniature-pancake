@@ -46,8 +46,10 @@ misreading it.
                                  // already refuses an api_version too new.
   "tags": ["sample", "starter"],// optional
 
-  "dependencies": ["other-id"], // optional, ids of other entries in this
-                                 // same index that must be installed first -
+  "dependencies": ["other-id", "another-id@1.2.0"], // optional, ids of
+                                 // other entries in this same index that
+                                 // must be installed first, each optionally
+                                 // requiring a minimum version via "@" -
                                  // see "Dependencies" below
 
   "api_version": 2,             // the DINO8_PLUGIN_API_VERSION this plug-in
@@ -106,29 +108,51 @@ any other.
 ## Dependencies
 
 An entry's `dependencies` list names other entries **in the same index** by
-`id`. `PluginMarketplaceInstall`/`Marketplace::InstallById`
-(`src/plugins/Marketplace.cpp`) resolves this list before installing the
-entry itself: each dependency already satisfied by a currently-loaded
-plug-in (matched by name, the same check `PluginMarketplaceCheckUpdates`
-uses) is left alone, and each other is installed first, recursively
-resolving its own dependencies the same way. Installing fails - with
-nothing installed - if a listed id isn't in the loaded index, or if the
-dependency graph cycles back on an id already being resolved. The panel's
-own Install/Update button goes through `Marketplace::InstallById` too, so
-clicking it in the UI resolves dependencies exactly like the command does.
+`id`, each optionally suffixed `@min_version` (e.g. `"meshtools@1.2.0"`) to
+require at least that version of it - a bare id (`"meshtools"`) accepts
+whatever version is available. `PluginMarketplaceInstall`/
+`Marketplace::InstallById` (`src/plugins/Marketplace.cpp`,
+`SplitDependencySpec` in `MarketplaceIndex.cpp`) resolves this list before
+installing the entry itself: a dependency already satisfied by a
+currently-loaded plug-in (matched by name, the same check
+`PluginMarketplaceCheckUpdates` uses) whose version meets the constraint (if
+any) is left alone; one that's loaded but *older* than `min_version` is
+upgraded in place - installed fresh from the loaded index, same as if it
+weren't installed at all; one not loaded at all is installed the same way,
+recursively resolving its own dependencies first. Installing fails - with
+nothing installed - if a listed id isn't in the loaded index, the
+dependency graph cycles back on an id already being resolved, or the loaded
+index's own version of a dependency is itself older than `min_version` (a
+real version conflict: no install or upgrade can satisfy the requirement).
+The panel's own Install/Update button goes through `Marketplace::InstallById`
+too, so clicking it in the UI resolves dependencies exactly like the
+command does.
 
 `PluginMarketplaceList` prints a `- requires a, b` suffix for any entry
 with dependencies (even one naming an id missing from the index, since that
 is exactly what would make installing it fail); the panel's detail view
 shows the same list as `Requires: A (installed), B (not installed)`,
-resolving each id to its display name and current install status.
+resolving each id to its display name and current install status, with
+`>=min_version` shown next to a constrained entry and `(installed X, too
+old)` when the loaded copy doesn't meet it.
 
 `PluginMarketplaceUninstall`/`Marketplace::UninstallById` reverses this: it
 removes the `<config>/plugins` copy it finds for the requested id, then
 walks that same `dependencies` list and removes any dependency that no
 other currently-installed entry in the loaded index still lists as a
 dependency, recursively. A dependency still needed by some other installed
-entry is left in place.
+entry is left in place. This only protects a dependency uninstalled as part
+of that cascade, though - uninstalling an id *directly* that some other
+still-installed entry declares as its own dependency is allowed (the
+marketplace doesn't lock a shared dependency in place), but is reported: both
+the command and the panel print a warning naming every such dependent, since
+it may now be broken.
+
+`PluginMarketplaceList` (and the panel's own filter box) both take an
+optional filter: text matched case-insensitively as a substring against an
+entry's id, name, author, description, or any tag - e.g.
+`PluginMarketplaceList mesh` lists only entries mentioning "mesh"
+somewhere. An empty filter (the default) lists everything.
 
 ## Compatibility
 

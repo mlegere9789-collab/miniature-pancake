@@ -75,6 +75,17 @@ bool FetchUrlToTempFile(const std::string& url, std::string& out_path, std::stri
   return true;
 }
 
+void SplitDependencySpec(const std::string& spec, std::string& id, std::string& min_version) {
+  const size_t at = spec.find('@');
+  if (at == std::string::npos) {
+    id = spec;
+    min_version.clear();
+    return;
+  }
+  id = spec.substr(0, at);
+  min_version = spec.substr(at + 1);
+}
+
 Compatibility CheckCompatibility(const MarketplaceEntry& entry, const std::string& running_app_version) {
   if (entry.api_version > 0 && entry.api_version > DINO8_PLUGIN_API_VERSION) return Compatibility::ApiTooNew;
   if (!entry.min_app_version.empty() && !running_app_version.empty() &&
@@ -118,6 +129,29 @@ int CompareVersions(const std::string& a, const std::string& b) {
 UpdateStatus CheckForUpdate(const std::string& installed_version, const std::string& available_version) {
   if (installed_version.empty() || available_version.empty()) return UpdateStatus::Unknown;
   return CompareVersions(available_version, installed_version) > 0 ? UpdateStatus::UpdateAvailable : UpdateStatus::UpToDate;
+}
+
+namespace {
+std::string Lower(const std::string& s) {
+  std::string out = s;
+  std::transform(out.begin(), out.end(), out.begin(), [](unsigned char c) { return std::tolower(c); });
+  return out;
+}
+bool ContainsCi(const std::string& haystack_lower, const std::string& needle_lower) {
+  return haystack_lower.find(needle_lower) != std::string::npos;
+}
+}  // namespace
+
+bool MatchesFilter(const MarketplaceEntry& entry, const std::string& filter) {
+  if (filter.empty()) return true;
+  const std::string needle = Lower(filter);
+  if (ContainsCi(Lower(entry.id), needle)) return true;
+  if (ContainsCi(Lower(entry.name), needle)) return true;
+  if (ContainsCi(Lower(entry.author), needle)) return true;
+  if (ContainsCi(Lower(entry.description), needle)) return true;
+  for (const std::string& tag : entry.tags)
+    if (ContainsCi(Lower(tag), needle)) return true;
+  return false;
 }
 
 bool ParseIndex(const std::string& json_text, MarketplaceIndex& out, std::string& error) {

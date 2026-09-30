@@ -202,9 +202,25 @@ void RegisterFlowCommands(CommandEngine& e) {
       }));
 
   Reg(e, "PluginMarketplaceList", Immediate([](CommandContext& ctx) {
+        std::vector<std::string> toks;
+        while (auto tok = ctx.Engine().TakePendingInput()) toks.push_back(*tok);
+        std::string filter;
+        for (const std::string& t : toks) filter += (filter.empty() ? "" : " ") + t;
+
         const auto& idx = plugins::Marketplace::Get().Index();
-        ctx.Print("PluginMarketplaceList: " + std::to_string(idx.plugins.size()) + " plug-in(s) in the loaded index");
+        std::vector<const plugins::MarketplaceEntry*> matches;
         for (const plugins::MarketplaceEntry& p : idx.plugins) {
+          if (filter.empty() || plugins::MatchesFilter(p, filter)) matches.push_back(&p);
+        }
+
+        if (filter.empty()) {
+          ctx.Print("PluginMarketplaceList: " + std::to_string(idx.plugins.size()) + " plug-in(s) in the loaded index");
+        } else {
+          ctx.Print("PluginMarketplaceList: " + std::to_string(matches.size()) + " of " +
+                    std::to_string(idx.plugins.size()) + " plug-in(s) match \"" + filter + "\"");
+        }
+        for (const plugins::MarketplaceEntry* pp : matches) {
+          const plugins::MarketplaceEntry& p = *pp;
           const plugins::Compatibility compat = plugins::CheckCompatibility(p, DINO8_VERSION);
           const std::string compat_label = compat == plugins::Compatibility::Compatible ? "compatible"
                                             : compat == plugins::Compatibility::ApiTooNew ||
@@ -253,8 +269,9 @@ void RegisterFlowCommands(CommandEngine& e) {
           return;
         }
         std::vector<std::string> removed;
+        std::vector<std::string> still_needed_by;
         std::string error;
-        if (plugins::Marketplace::Get().UninstallById(toks[0], removed, error)) {
+        if (plugins::Marketplace::Get().UninstallById(toks[0], removed, still_needed_by, error)) {
           std::string msg = "PluginMarketplaceUninstall: uninstalled " + toks[0];
           if (removed.size() > 1) {
             std::string extra;
@@ -263,6 +280,13 @@ void RegisterFlowCommands(CommandEngine& e) {
                    (removed.size() == 2 ? "y" : "ies") + " (" + extra + ")";
           }
           ctx.Print(msg);
+          if (!still_needed_by.empty()) {
+            std::string names;
+            for (const std::string& n : still_needed_by) names += (names.empty() ? "" : ", ") + n;
+            ctx.Warn("PluginMarketplaceUninstall: " + names + " still list" +
+                     (still_needed_by.size() == 1 ? "s" : "") + " " + toks[0] +
+                     " as a dependency and may now be broken");
+          }
         } else {
           ctx.Warn("PluginMarketplaceUninstall: " + error);
         }

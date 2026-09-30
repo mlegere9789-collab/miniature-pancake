@@ -186,22 +186,42 @@ bool Marketplace::InstallByIdChecked(app::Application& app, const std::string& i
   }
   chain.push_back(id);
 
-  for (const std::string& dep_id : entry->dependencies) {
+  for (const std::string& dep_spec : entry->dependencies) {
+    std::string dep_id, min_version;
+    SplitDependencySpec(dep_spec, dep_id, min_version);
     const MarketplaceEntry* dep = FindEntryById(index_, dep_id);
     if (!dep) {
       error = entry->name + " (" + id + ") requires plug-in \"" + dep_id + "\", which is not in the loaded index";
       return false;
     }
+    if (!min_version.empty() && CompareVersions(dep->version, min_version) < 0) {
+      error = entry->name + " (" + id + ") requires " + dep->name + " >= " + min_version +
+              ", but the loaded index only offers " + dep->version + " - version conflict, cannot resolve";
+      return false;
+    }
     std::string installed_version;
     UpdateStatus status;
-    if (FindInstalled(*dep, installed_version, status)) continue;  // already satisfied
+    const bool already_installed = FindInstalled(*dep, installed_version, status);
+    // Satisfied outright: loaded, and either no minimum was named or the
+    // loaded copy already meets it. Otherwise (not loaded at all, or loaded
+    // but older than min_version - already ruled out above as unfixable by
+    // the index itself) fall through and (re)install it, which upgrades an
+    // already-loaded-but-stale copy to what the index offers.
+    if (already_installed && (min_version.empty() || CompareVersions(installed_version, min_version) >= 0)) continue;
     if (!InstallByIdChecked(app, dep_id, chain, error)) return false;
   }
 
   return InstallEntry(app, *entry, app.ExeDir(), error);
 }
 
-bool Marketplace::UninstallById(const std::string& id, std::vector<std::string>& removed, std::string& error) {
+bool Marketplace::UninstallById(const std::string& id, std::vector<std::string>& removed,
+                                 std::vector<std::string>& still_needed_by, std::string& error) {
+  // Computed before anything is actually removed, against the id as
+  // requested (not a cascade dependency) - a direct uninstall is exactly
+  // the case IsDependencyStillNeeded's own cascade never protects, since
+  // that check only ever gates dependencies coming out underneath a
+  // successful uninstall of something else.
+  still_needed_by = DependentsStillInstalled(id);
   std::vector<std::string> chain;
   return UninstallByIdChecked(id, chain, removed, error);
 }
@@ -234,7 +254,9 @@ bool Marketplace::UninstallByIdChecked(const std::string& id, std::vector<std::s
   // the executable). A dependency that fails to cascade (e.g. its own
   // sub-dependency forms a cycle) is left installed; that failure isn't
   // this call's own, so it doesn't fail the whole uninstall.
-  for (const std::string& dep_id : entry->dependencies) {
+  for (const std::string& dep_spec : entry->dependencies) {
+    std::string dep_id, dep_min_version;
+    SplitDependencySpec(dep_spec, dep_id, dep_min_version);
     if (IsDependencyStillNeeded(dep_id)) continue;
     const MarketplaceEntry* dep_entry = FindEntryById(index_, dep_id);
     if (!dep_entry || !IsLoadedAt(DestPath(*dep_entry))) continue;
@@ -245,13 +267,24 @@ bool Marketplace::UninstallByIdChecked(const std::string& id, std::vector<std::s
   return true;
 }
 
-bool Marketplace::IsDependencyStillNeeded(const std::string& dep_id) const {
+std::vector<std::string> Marketplace::DependentsStillInstalled(const std::string& dep_id) const {
+  std::vector<std::string> dependents;
   for (const MarketplaceEntry& e : index_.plugins) {
     if (e.id == dep_id) continue;
-    if (std::find(e.dependencies.begin(), e.dependencies.end(), dep_id) == e.dependencies.end()) continue;
-    if (IsLoadedAt(DestPath(e))) return true;
+    bool needs_it = false;
+    for (const std::string& dep_spec : e.dependencies) {
+      std::string spec_id, spec_min_version;
+      SplitDependencySpec(dep_spec, spec_id, spec_min_version);
+      if (spec_id == dep_id) { needs_it = true; break; }
+    }
+    if (!needs_it) continue;
+    if (IsLoadedAt(DestPath(e))) dependents.push_back(e.name);
   }
-  return false;
+  return dependents;
+}
+
+bool Marketplace::IsDependencyStillNeeded(const std::string& dep_id) const {
+  return !DependentsStillInstalled(dep_id).empty();
 }
 
 bool Marketplace::FindInstalled(const MarketplaceEntry& entry, std::string& installed_version, UpdateStatus& status) const {

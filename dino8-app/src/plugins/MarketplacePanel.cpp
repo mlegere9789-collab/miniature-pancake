@@ -43,17 +43,26 @@ ImVec4 CompatibilityColor(Compatibility c) {
 std::string DependencySummary(const Marketplace& market, const MarketplaceEntry& entry) {
   if (entry.dependencies.empty()) return "";
   std::string out;
-  for (const std::string& dep_id : entry.dependencies) {
+  for (const std::string& dep_spec : entry.dependencies) {
     if (!out.empty()) out += ", ";
+    std::string dep_id, min_version;
+    SplitDependencySpec(dep_spec, dep_id, min_version);
     const MarketplaceEntry* dep = nullptr;
     for (const MarketplaceEntry& e : market.Index().plugins)
       if (e.id == dep_id) { dep = &e; break; }
     out += dep ? dep->name : dep_id;
+    if (!min_version.empty()) out += " >=" + min_version;
     std::string installed_version;
     UpdateStatus status;
-    if (dep && market.FindInstalled(*dep, installed_version, status)) out += " (installed)";
-    else if (!dep) out += " (missing from index)";
-    else out += " (not installed)";
+    if (dep && market.FindInstalled(*dep, installed_version, status)) {
+      out += (min_version.empty() || CompareVersions(installed_version, min_version) >= 0)
+                 ? " (installed)"
+                 : " (installed " + installed_version + ", too old)";
+    } else if (!dep) {
+      out += " (missing from index)";
+    } else {
+      out += " (not installed)";
+    }
   }
   return out;
 }
@@ -110,6 +119,7 @@ void DrawPluginMarketplacePanel(app::Application& app, bool& open) {
   static int review_rating = 5;
   static char review_reviewer[128] = "";
   static char review_comment[256] = "";
+  static char filter[128] = "";
 
   ImGui::TextWrapped(
       "Browse a plug-in index - a JSON file listing installable plug-ins (schema: plugin-index/SCHEMA.md). "
@@ -152,6 +162,13 @@ void DrawPluginMarketplacePanel(app::Application& app, bool& open) {
   ImGui::TextDisabled("%s%s", market.Index().index_name.c_str(),
                       market.Index().updated.empty() ? "" : (" - updated " + market.Index().updated).c_str());
 
+  ImGui::InputTextWithHint("##filter", "Filter by name, tag, author, or id...", filter, sizeof filter);
+  size_t shown = 0;
+  for (const MarketplaceEntry& e : market.Index().plugins)
+    if (MatchesFilter(e, filter)) ++shown;
+  if (filter[0] != '\0')
+    ImGui::TextDisabled("%zu of %zu plug-in(s) match", shown, market.Index().plugins.size());
+
   if (ImGui::BeginTable("marketplace_plugins", 8,
                         ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable)) {
     ImGui::TableSetupColumn("Name");
@@ -164,6 +181,7 @@ void DrawPluginMarketplacePanel(app::Application& app, bool& open) {
     ImGui::TableSetupColumn("");
     ImGui::TableHeadersRow();
     for (const MarketplaceEntry& e : market.Index().plugins) {
+      if (!MatchesFilter(e, filter)) continue;
       ImGui::PushID(e.id.c_str());
       ImGui::TableNextRow();
       ImGui::TableNextColumn();
@@ -217,12 +235,19 @@ void DrawPluginMarketplacePanel(app::Application& app, bool& open) {
       ImGui::BeginDisabled(!installed);
       if (ImGui::SmallButton("Uninstall")) {
         std::vector<std::string> removed;
+        std::vector<std::string> still_needed_by;
         std::string error;
-        if (market.UninstallById(e.id, removed, error)) {
+        if (market.UninstallById(e.id, removed, still_needed_by, error)) {
           status = "Uninstalled " + e.name + (removed.size() > 1 ? " and " + std::to_string(removed.size() - 1) +
                                                                         " now-unneeded dependenc" +
                                                                         (removed.size() == 2 ? "y" : "ies") + "."
                                                                   : ".");
+          if (!still_needed_by.empty()) {
+            std::string names;
+            for (const std::string& n : still_needed_by) names += (names.empty() ? "" : ", ") + n;
+            status += " Warning: " + names + " still list" + (still_needed_by.size() == 1 ? "s" : "") +
+                      " this as a dependency and may now be broken.";
+          }
           app.Notify("Plug-in Marketplace: uninstalled " + e.name);
         } else {
           status = "Uninstall failed: " + error;

@@ -38,12 +38,17 @@ class Marketplace {
   const std::string& Source() const { return source_; }
 
   // Looks `id` up in the currently loaded index and installs it, first
-  // resolving its manifest's `dependencies` (other ids in the same index):
-  // each one already satisfied by a loaded plug-in (FindInstalled) is
-  // skipped, and each other is installed (recursively resolving its own
-  // dependencies) before `id` itself. Fails - installing nothing - if a
-  // dependency id isn't in the loaded index or the dependency graph cycles
-  // back on itself.
+  // resolving its manifest's `dependencies` (other ids in the same index,
+  // each optionally suffixed "@min_version" - see SplitDependencySpec):
+  // one already satisfied by a loaded plug-in whose version meets that
+  // minimum (FindInstalled + CompareVersions) is skipped; one that's loaded
+  // but older than the minimum is upgraded in place by installing it fresh
+  // (recursively resolving its own dependencies first); one that isn't
+  // loaded at all is installed the same way. Fails - installing nothing -
+  // if a dependency id isn't in the loaded index, the dependency graph
+  // cycles back on itself, or the loaded index's own version of a
+  // dependency is older than what the minimum requires (a real version
+  // conflict - upgrading would still leave the requirement unmet).
   bool InstallById(app::Application& app, const std::string& id, std::string& error);
 
   // Uninstalls the plug-in InstallEntry put at `id`'s own <config>/plugins
@@ -60,8 +65,15 @@ class Marketplace {
   // loaded from its marketplace install path; a dependency that fails to
   // cascade (e.g. it's part of a dependency cycle, or was never installed
   // via the marketplace) is simply left installed rather than failing the
-  // whole call.
-  bool UninstallById(const std::string& id, std::vector<std::string>& removed, std::string& error);
+  // whole call. `still_needed_by` is filled (before anything is actually
+  // removed) with the display name of every other currently-installed
+  // entry in the loaded index that lists `id` itself as a dependency - so
+  // a caller can warn the user that uninstalling `id` directly (as opposed
+  // to letting it fall out of a cascade) will leave that entry without a
+  // dependency it declared, since UninstallById never refuses this the way
+  // InstallById refuses an unmet dependency; it only reports it.
+  bool UninstallById(const std::string& id, std::vector<std::string>& removed, std::vector<std::string>& still_needed_by,
+                      std::string& error);
 
   // Matches `entry.name` (case-insensitively) against the plug-ins
   // plugins::Manager::Get() has actually loaded, and reports the loaded
@@ -85,10 +97,14 @@ class Marketplace {
                            std::string& error);
   bool UninstallByIdChecked(const std::string& id, std::vector<std::string>& chain, std::vector<std::string>& removed,
                              std::string& error);
-  // True if some other entry in the loaded index that still needs `dep_id`
-  // as a dependency is itself currently installed - i.e. uninstalling
-  // whatever brought `dep_id` in would leave that other entry broken, so
-  // `dep_id` must stay.
+  // Display names of every other entry in the loaded index that lists
+  // `dep_id` as a dependency (see SplitDependencySpec - the id half, a
+  // version constraint doesn't change who "needs" it) and is itself
+  // currently installed - i.e. uninstalling whatever brought `dep_id` in
+  // would leave each of these broken.
+  std::vector<std::string> DependentsStillInstalled(const std::string& dep_id) const;
+  // True if DependentsStillInstalled(dep_id) is non-empty - `dep_id` must
+  // stay installed for the cascade in UninstallByIdChecked.
   bool IsDependencyStillNeeded(const std::string& dep_id) const;
 
   MarketplaceIndex index_;

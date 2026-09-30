@@ -1,6 +1,9 @@
 GrasshopperPluginList
 PluginMarketplaceIndex @DINO8ROOT@/plugin-index/index.json
 PluginMarketplaceList
+PluginMarketplaceList mesh
+PluginMarketplaceList sample
+PluginMarketplaceList doesnotexist123
 PluginMarketplaceInstall hellodino
 GrasshopperPluginList
 HelloDino MarketplaceTest

@@ -24,7 +24,9 @@ struct MarketplaceEntry {
   // ids of other entries in the same index that must be installed before
   // this one - see plugins::Marketplace::InstallById, which resolves and
   // installs each of these (skipping any already satisfied by a loaded
-  // plug-in) ahead of this entry itself.
+  // plug-in) ahead of this entry itself. Each entry is either a bare id
+  // ("meshtools") or an id plus a minimum version required of it
+  // ("meshtools@1.2.0") - see SplitDependencySpec.
   std::vector<std::string> dependencies;
 
   // Exactly one of these two identifies where the library comes from:
@@ -62,6 +64,15 @@ enum class Compatibility { Compatible, ApiTooNew, AppTooOld, Unknown };
 // pass DINO8_VERSION.
 Compatibility CheckCompatibility(const MarketplaceEntry& entry, const std::string& running_app_version = "");
 
+// Splits one dependencies[] entry into the id it names and the minimum
+// version it requires of that id, if any: "meshtools@1.2.0" splits to
+// ("meshtools", "1.2.0"); a bare "meshtools" splits to ("meshtools", "").
+// Used by Marketplace::InstallByIdChecked to decide whether an
+// already-installed dependency still satisfies what depends on it, and by
+// the marketplace panel/commands to look the id up in the loaded index and
+// display the constraint.
+void SplitDependencySpec(const std::string& spec, std::string& id, std::string& min_version);
+
 // Compares two dotted-numeric version strings ("1.2.3", "1.10.0", ...)
 // component by component as integers - not a lexical string compare, so
 // "1.10.0" correctly orders above "1.2.0". A missing trailing component (or
@@ -77,6 +88,13 @@ enum class UpdateStatus { UpToDate, UpdateAvailable, Unknown };
 // PluginManager.h) against a marketplace entry's version. Unknown when
 // either string is empty, since there's nothing meaningful to compare.
 UpdateStatus CheckForUpdate(const std::string& installed_version, const std::string& available_version);
+
+// True if `filter` (matched case-insensitively, as a substring) appears in
+// `entry`'s id, name, author, description, or any one of its tags. An empty
+// `filter` matches everything. Shared by the PluginMarketplaceList command
+// and the marketplace panel's filter box, so typing "mesh" in either one
+// finds the same plug-ins the same way.
+bool MatchesFilter(const MarketplaceEntry& entry, const std::string& filter);
 
 // Parses index JSON already read into memory. Returns false (with `error`
 // set to a human-readable message) on malformed JSON, an unsupported

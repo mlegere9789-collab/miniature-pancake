@@ -3880,6 +3880,15 @@ pmcheck() { if echo "$PM" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL 
 pmcheck "PluginMarketplaceIndex: loaded \"Dino 8 Reference Plugin Index\" - 4 plug-in(s)" "PluginMarketplaceIndex loaded the real reference index"
 pmcheck "PluginMarketplaceList: 4 plug-in(s) in the loaded index" "PluginMarketplaceList reports all 4 entries"
 pmcheck "  hellodino: HelloDino 1.0.0 by Dino 8 Project (api v2, compatible)" "PluginMarketplaceList reports HelloDino as compatible"
+# PluginMarketplaceList's filter (MatchesFilter in src/plugins/MarketplaceIndex.cpp,
+# shared with the panel's own filter box): "mesh" matches only meshtools (its
+# id, name, description and "mesh" tag all contain it), "sample" is a tag
+# every one of the 4 sample entries carries, and a filter matching nothing
+# reports 0 rather than silently falling back to the unfiltered list.
+pmcheck "PluginMarketplaceList: 1 of 4 plug-in(s) match \"mesh\"" "PluginMarketplaceList's filter narrows to the one entry mentioning \"mesh\""
+pmcheck "  meshtools: MeshTools 1.0.0 by Dino 8 Project (api v2, compatible)" "the \"mesh\" filter's one match is meshtools itself"
+pmcheck "PluginMarketplaceList: 4 of 4 plug-in(s) match \"sample\"" "PluginMarketplaceList's filter matches all 4 entries on their shared \"sample\" tag"
+pmcheck "PluginMarketplaceList: 0 of 4 plug-in(s) match \"doesnotexist123\"" "PluginMarketplaceList's filter reports 0 matches for text nothing contains, not the full list"
 pmcheck "PluginMarketplaceInstall: installed hellodino - 1 command(s), 1 flow node(s) registered" "PluginMarketplaceInstall installed HelloDino and reports what it registered"
 pmcheck "HelloDino: hello, MarketplaceTest! (from the sample plug-in)" "the freshly marketplace-installed HelloDino copy's own command actually runs"
 pmcheck "objects=1 " "HelloDino's command added exactly the one point object it always adds"
@@ -4123,5 +4132,61 @@ pmuncheck "PluginMarketplaceInstall: installed toolboxpro" "PluginMarketplaceIns
 pmuncheck "PluginMarketplaceUninstall: uninstalled toolboxpro - also removed 1 now-orphaned dependency (orphanlib)" "PluginMarketplaceUninstall removes toolboxpro and cascades to orphanlib, by name, in one reported call"
 pmuncheck "! PluginMarketplaceUninstall: OrphanLib (orphanlib) is not currently installed via the marketplace" "orphanlib is genuinely gone after the cascade - uninstalling it again fails, not just a printed claim"
 pmuncheck "PluginMarketplaceUninstall: uninstalled shareddeps" "shareddeps genuinely survived toolboxpro's cascade (othersuite still needs it) - it can still be uninstalled on its own"
+# Marketplace::UninstallById's own still_needed_by out-param (Marketplace.h/
+# .cpp): a *direct* uninstall of a dependency (as opposed to one falling out
+# of a cascade) is still allowed - the marketplace doesn't lock a shared
+# dependency in place - but must now warn, since IsDependencyStillNeeded's
+# cascade check never protects the id actually requested. othersuite is
+# still installed and still declares shareddeps as a dependency at the
+# moment shareddeps is uninstalled directly above, so that warning must
+# name it.
+pmuncheck "! PluginMarketplaceUninstall: OtherSuite still lists shareddeps as a dependency and may now be broken" "PluginMarketplaceUninstall warns that OtherSuite still depends on the plug-in just uninstalled directly"
+
+# Plug-in Marketplace: version-constrained dependencies ("id@min_version" in
+# MarketplaceEntry::dependencies, split by SplitDependencySpec and resolved
+# in Marketplace::InstallByIdChecked, src/plugins/Marketplace.cpp).
+# tests/plugin_marketplace_verdep_index.json's meshtools is auto-loaded from
+# next to the executable reporting version 1.0.0, but the index itself
+# advertises 2.0.0: analysistools requires meshtools>=9.9.9, which the index
+# can never satisfy (a real version conflict - even installing the index's
+# own 2.0.0 isn't enough) and must fail installing nothing; curvetools
+# requires meshtools>=1.5.0, which the stale auto-loaded 1.0.0 copy does not
+# satisfy, so installing curvetools must (re)install meshtools fresh from
+# the index - a genuine second, independent MeshTools load - rather than
+# wrongly treating the auto-loaded copy as already satisfying it.
+sed "s|@DINO8ROOT@|$HEREW/..|g" "$HERE/plugin_marketplace_verdep_script.txt" > "$TMPW/plugin_marketplace_verdep_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  PMVD="$("$BIN" --smoke 60 --script "$TMPW/plugin_marketplace_verdep_script.txt" 2>&1)" || { echo "$PMVD"; echo "FAIL: plugin marketplace version-constrained dependency script exited non-zero"; exit 1; }
+else
+  PMVD="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$TMPW/plugin_marketplace_verdep_script.txt" 2>&1)" || { echo "$PMVD"; echo "FAIL: plugin marketplace version-constrained dependency script exited non-zero"; exit 1; }
+fi
+pmvdcheck() { if echo "$PMVD" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$PMVD" "$1"; fail=1; fi; }
+pmvdcheck "PluginMarketplaceIndex: loaded \"Version-Constrained Dependency Test Index (min-version dependency resolution fixture)\" - 3 plug-in(s)" "PluginMarketplaceIndex loaded the version-constrained-dependency fixture index"
+pmvdcheck "! PluginMarketplaceInstall: AnalysisTools (analysistools) requires MeshTools >= 9.9.9, but the loaded index only offers 2.0.0 - version conflict, cannot resolve" "PluginMarketplaceInstall refuses a dependency version the loaded index can never satisfy"
+pmvdcheck "PluginMarketplaceInstall: installed curvetools - 1 command(s), 3 flow node(s) registered" "PluginMarketplaceInstall installs curvetools once its stale meshtools dependency is upgraded"
+awk '/^history: GrasshopperPluginList: /{n++} {print > ("'"$TMPW"'/plugindep/verdepsec" n ".txt")}' <<<"$PMVD"
+PMVD_S1="$(cat "$TMPW/plugindep/verdepsec1.txt" 2>/dev/null)"
+PMVD_S2="$(cat "$TMPW/plugindep/verdepsec2.txt" 2>/dev/null)"
+PMVD_S3="$(cat "$TMPW/plugindep/verdepsec3.txt" 2>/dev/null)"
+MT1="$(echo "$PMVD_S1" | grep -c 'MeshTools 1.0.0 -' || true)"
+MT2="$(echo "$PMVD_S2" | grep -c 'MeshTools 1.0.0 -' || true)"
+if [ "$MT1" = "1" ] && [ "$MT2" = "1" ]; then
+  echo "ok   the version-conflicting analysistools install left MeshTools's loaded-copy count unchanged ($MT1 -> $MT2) - nothing was installed"
+else
+  echo "FAIL analysistools's version-conflict install changed MeshTools's loaded-copy count ($MT1 -> $MT2), should have installed nothing"; fail=1
+fi
+MT3="$(echo "$PMVD_S3" | grep -c 'MeshTools 1.0.0 -' || true)"
+if [ "$MT2" = "1" ] && [ "$MT3" = "2" ]; then
+  echo "ok   installing curvetools upgraded its stale meshtools dependency with a genuine second, independent load (1 auto-loaded reporting 1.0.0, 2 after the marketplace install) - not wrongly treated as already satisfied"
+else
+  echo "FAIL installing curvetools did not add a second independently-loaded MeshTools copy for its unmet >=1.5.0 requirement (saw $MT2 before, $MT3 after)"; fail=1
+fi
+CT2="$(echo "$PMVD_S2" | grep -c 'CurveTools 1.0.0 -' || true)"
+CT3="$(echo "$PMVD_S3" | grep -c 'CurveTools 1.0.0 -' || true)"
+if [ "$CT2" = "1" ] && [ "$CT3" = "2" ]; then
+  echo "ok   installing curvetools added its own genuine second, independent load (1 auto-loaded from next to the executable, 2 after the marketplace install) once its version-constrained dependency was resolved"
+else
+  echo "FAIL installing curvetools did not add its own independently-loaded copy (saw $CT2 before, $CT3 after)"; fail=1
+fi
 
 exit $fail

@@ -26,7 +26,9 @@ using dino8::plugins::CompareVersions;
 using dino8::plugins::LoadIndexFromFile;
 using dino8::plugins::MarketplaceEntry;
 using dino8::plugins::MarketplaceIndex;
+using dino8::plugins::MatchesFilter;
 using dino8::plugins::ParseIndex;
+using dino8::plugins::SplitDependencySpec;
 using dino8::plugins::UpdateStatus;
 
 namespace {
@@ -114,6 +116,44 @@ int main(int argc, char** argv) {
               dep_idx.plugins[2].dependencies[1] == "b",
           "entry 'c' parsed its two dependencies in order");
   }
+
+  // ---- ParseIndex: version-constrained dependencies ("id@min_version") --
+  MarketplaceIndex verdep_idx;
+  std::string verdep_error;
+  const std::string with_verdeps =
+      "{\"schema_version\": 1, \"plugins\": ["
+      "{\"id\":\"a\",\"name\":\"A\",\"version\":\"1.0.0\",\"bundled_path\":\"plugins/a\"},"
+      "{\"id\":\"b\",\"name\":\"B\",\"version\":\"1.0.0\",\"bundled_path\":\"plugins/b\",\"dependencies\":[\"a@1.2.0\"]}"
+      "]}";
+  Check(ParseIndex(with_verdeps, verdep_idx, verdep_error), "ParseIndex accepts a dependency with an \"@min_version\" suffix");
+  Check(verdep_idx.plugins.size() == 2 && verdep_idx.plugins[1].dependencies.size() == 1 &&
+            verdep_idx.plugins[1].dependencies[0] == "a@1.2.0",
+        "ParseIndex keeps the \"id@min_version\" spec string verbatim (split lazily by SplitDependencySpec)");
+
+  // ---- SplitDependencySpec ------------------------------------------------
+  std::string spec_id, spec_min;
+  SplitDependencySpec("meshtools", spec_id, spec_min);
+  Check(spec_id == "meshtools" && spec_min.empty(), "SplitDependencySpec: a bare id has no minimum version");
+  SplitDependencySpec("meshtools@1.2.0", spec_id, spec_min);
+  Check(spec_id == "meshtools" && spec_min == "1.2.0", "SplitDependencySpec: \"id@version\" splits into both parts");
+  SplitDependencySpec("meshtools@", spec_id, spec_min);
+  Check(spec_id == "meshtools" && spec_min.empty(), "SplitDependencySpec: a trailing bare \"@\" leaves an empty (unconstrained) minimum");
+
+  // ---- MatchesFilter --------------------------------------------------------
+  MarketplaceEntry filter_entry;
+  filter_entry.id = "meshtools";
+  filter_entry.name = "MeshTools";
+  filter_entry.author = "Dino 8 Project";
+  filter_entry.description = "Mesh cleanup and repair utilities.";
+  filter_entry.tags = {"mesh", "repair"};
+  Check(MatchesFilter(filter_entry, ""), "MatchesFilter: an empty filter matches every entry");
+  Check(MatchesFilter(filter_entry, "mesh"), "MatchesFilter: matches a substring of the name");
+  Check(MatchesFilter(filter_entry, "MESH"), "MatchesFilter: matches case-insensitively");
+  Check(MatchesFilter(filter_entry, "meshtools"), "MatchesFilter: matches the id");
+  Check(MatchesFilter(filter_entry, "Dino 8"), "MatchesFilter: matches the author");
+  Check(MatchesFilter(filter_entry, "cleanup"), "MatchesFilter: matches the description");
+  Check(MatchesFilter(filter_entry, "repair"), "MatchesFilter: matches a tag");
+  Check(!MatchesFilter(filter_entry, "curvetools"), "MatchesFilter: does not match unrelated text");
 
   // ---- CheckCompatibility ------------------------------------------------
   MarketplaceEntry e;
