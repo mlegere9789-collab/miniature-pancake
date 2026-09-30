@@ -297,6 +297,7 @@ set(DINO8_SOURCES
   src/spatial/ObjectGrid.cpp
   src/viewport/Camera.cpp
   src/viewport/Viewport.cpp
+  src/viewport/AdaptiveTessellation.cpp
   src/render/GlRenderer.cpp
   src/render/ImageIO.cpp
   src/platform/Clipboard.cpp
@@ -722,6 +723,26 @@ if(DINO8_BUILD_TESTS)
   add_executable(dino8_test_shortcuts tests/test_shortcuts.cpp src/app/ShortcutRules.cpp)
   target_include_directories(dino8_test_shortcuts PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${imgui_SOURCE_DIR})
   add_test(NAME dino8_shortcuts COMMAND dino8_test_shortcuts)
+
+  # View-dependent adaptive tessellation (src/viewport/AdaptiveTessellation.
+  # h/.cpp's LodScaleForPixelSize) - see PARITY_MAP.md's "View-dependent
+  # adaptive tessellation" item: real frustum culling already existed, but
+  # nothing scaled tessellation with zoom. Standalone like
+  # dino8_test_aci_palette - AdaptiveTessellation.cpp needs only <algorithm>,
+  # so this links no GL/ImGui/document code at all.
+  add_executable(dino8_test_adaptive_tessellation tests/test_adaptive_tessellation.cpp src/viewport/AdaptiveTessellation.cpp)
+  target_include_directories(dino8_test_adaptive_tessellation PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  add_test(NAME dino8_adaptive_tessellation COMMAND dino8_test_adaptive_tessellation)
+
+  # SceneObject::EnsureAdaptiveDisplay's own hysteresis-gated rebuild
+  # decision (doc/SceneObject.h/.cpp) - the other half of view-dependent
+  # adaptive tessellation, driven directly rather than through a real
+  # Viewport/GL context. Like dino8_test_block_flip, needs the real
+  # SceneObject/BrepMesher/kernel code (no Document needed here).
+  add_executable(dino8_test_adaptive_display tests/test_adaptive_display.cpp src/doc/SceneObject.cpp src/geom/BrepMesher.cpp)
+  target_include_directories(dino8_test_adaptive_display PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(dino8_test_adaptive_display PRIVATE dino8_kernel)
+  add_test(NAME dino8_adaptive_display COMMAND dino8_test_adaptive_display)
 
   # Minimal HTTP request server (src/net/ComputeServer.h/.cpp) - see
   # PARITY_MAP.md's "Cloud/network compute service (Rhino.Compute
