@@ -2,6 +2,60 @@
 
 **Fossilith vs Parasolid/ACIS = 68.0% (weighted, verified); Dino 8 vs Rhino 8 + AutoCAD 2027 = 72.0%.**
 
+**2026-09-30 re-score (an eighteenth session, prompted by a claim that "at
+least 10" unscored commits had landed since the last successful re-score and
+that the two master tables' total weights were 17.75/25.5):** both premises
+were checked and only half of the first one holds. Against this branch's
+actual tip (fetched fresh; it moved twice more during this session, `561467d`
+-> `d9900cc` -> `66de729`), `git log --oneline` shows only **2** commits
+touching `dino8-kernel/src`/`dino8-app/src` since `561467d` (the commit that
+wrote the seventeenth-session entry below) — not 10: `d9900cc` (PushPullFaces
+batch driver + RemoveAllHoleLoopsInBrep whole-Brep sweep) and `66de729` (IGES
+importer entity-count DoS cap). Both were already correctly handled before
+this pass started: `d9900cc` touches `PARITY_MAP.md` in the same commit and
+already self-scores — verified against its own diff and live source
+(`boolean.cpp:1781`, `brep.cpp:8917`): both new functions are batch/whole-Brep
+conveniences over already-`[partial]` single-target siblings, so Local /
+direct-edit operations' 7/21/0 (62.5%) is genuinely unchanged. `66de729` is a
+pure untrusted-entity-count DoS cap with no capability change, the same class
+this document has repeatedly and correctly left unscored before (`27f1a0a`,
+`1a15a3b`, `d2e9425`). The second premise — 17.75/25.5 — is wrong for the app
+table: this document's own arithmetic throughout (e.g. the "/ 7.75" division
+a few paragraphs below) and a direct sum of the app table's own 8 row weights
+(1.5+1.0+1.0+1.0+1.0+0.75+1.0+0.5) both give **7.75**, not 25.5; the kernel
+table's 17.75 is correct. No table edit follows from either false
+premise — there is no unscored work, and no wrong denominator, to fix.
+
+This pass re-verified both master tables' own weighted averages directly
+against their current row counts (the doc's usual "recompute from the table,
+don't trust the running total" check): kernel, `sum(weight*(present+0.5*
+partial)/items)/17.75` = 67.96%, still rounding to **68.0%**; app, the same
+formula `/7.75` = 71.99%, still rounding to **72.0%**. Neither headline
+moves. It also spot-checked a sample of bullets against live source rather
+than trusting prior citations outright: `dino8-app/src/io/*.cpp` still has
+zero hits for `TESSELLATED`/`TRIANGULATED_FACE`/`AP242`/`PMI` (STEP AP242
+stays `[missing]`), zero hits for `IFC` anywhere in `dino8-app/src`/
+`dino8-kernel/src` (stays `[missing]`), zero hits for `JT` in
+`dino8-app/src/io/*.cpp` (stays `[missing]`), and the AT-SPI2 bridge's
+Command List/Command Aliases/Keyboard Shortcuts accessibles the
+seventeenth-session entry below cites do exist, in `AccessibilityTree.cpp:
+480/507/525` as described. No corrections found. The "Priority order for
+maximum score-per-fix" section below (`weight / remaining_items` per
+category) was recomputed against the current tables and is unchanged, since
+no row's present/partial/missing counts moved this pass.
+
+One dangling reference, no score effect: the seventeenth-session entry below
+cites its own baseline commit as `6080d7c`, which does not resolve anywhere
+on this branch's current history (`git log --oneline 6080d7c..HEAD` errors
+with "bad revision") — most likely a hash orphaned by an earlier rebase/
+rewrite of this branch rather than a content error in that entry's own
+counts, which this pass's independent recomputation above confirms are still
+correct regardless. Noted here rather than left for a future session to trip
+over again.
+
+`dino8_kernel_tests`/`dino8_app_tests` were not rebuilt or re-run this pass
+(docs-only change, per this session's own scope; no source was touched).
+
 **2026-09-30 re-score (a seventeenth session, re-verifying against the last
 full re-score, `6080d7c`, ~5.5 hours earlier):** `git log --format='%H %ci %s'
 6080d7c..HEAD -- dino8-kernel/src dino8-app/src` returns 40 commits (4 merge
