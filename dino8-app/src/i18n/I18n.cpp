@@ -19,6 +19,11 @@ namespace {
 // language instead of the current UI language. Not looked up by Tr().
 constexpr const char* kMetaNameKey = "_language_name";
 
+// Optional per-language reading direction, "_direction": "rtl" (e.g.
+// ar.json). Absent (or any value other than "rtl") means left-to-right.
+// Not looked up by Tr().
+constexpr const char* kMetaDirKey = "_direction";
+
 std::unordered_map<std::string, std::unordered_map<std::string, std::string>>& Tables() {
   static std::unordered_map<std::string, std::unordered_map<std::string, std::string>> tables;
   return tables;
@@ -27,6 +32,11 @@ std::unordered_map<std::string, std::unordered_map<std::string, std::string>>& T
 std::unordered_map<std::string, std::string>& Names() {
   static std::unordered_map<std::string, std::string> names;
   return names;
+}
+
+std::unordered_map<std::string, bool>& Directions() {
+  static std::unordered_map<std::string, bool> directions;
+  return directions;
 }
 
 std::string& ActiveCode() {
@@ -60,12 +70,15 @@ void LoadFile(const fs::path& path) {
   const std::string code = Lower(path.stem().string());
   auto& table = Tables()[code];
   std::string name = code;
+  bool rtl = false;
   for (const auto& [key, value] : root.object) {
     if (!value.IsString()) continue;
     if (key == kMetaNameKey) { name = value.string; continue; }
+    if (key == kMetaDirKey) { rtl = Lower(value.string) == "rtl"; continue; }
     table[key] = value.string;
   }
   Names()[code] = name;
+  Directions()[code] = rtl;
 }
 
 }  // namespace
@@ -99,14 +112,21 @@ const std::string& CurrentLanguageName() {
   return it != Names().end() ? it->second : ActiveCode();
 }
 
+bool IsRTL(const std::string& code) {
+  const auto it = Directions().find(Lower(code));
+  return it != Directions().end() && it->second;
+}
+
+bool IsRTL() { return IsRTL(ActiveCode()); }
+
 std::vector<LanguageEntry> AvailableLanguages() {
   std::vector<LanguageEntry> out;
   for (const auto& [code, name] : Names()) {
     if (code == "en") continue;
-    out.push_back({code, name});
+    out.push_back({code, name, IsRTL(code)});
   }
   std::sort(out.begin(), out.end(), [](const LanguageEntry& a, const LanguageEntry& b) { return a.code < b.code; });
-  if (Names().count("en")) out.insert(out.begin(), {"en", Names()["en"]});
+  if (Names().count("en")) out.insert(out.begin(), {"en", Names()["en"], false});
   return out;
 }
 

@@ -1086,7 +1086,11 @@ void Application::BuildDefaultLayout(unsigned dockspace_id) {
   ImGui::DockBuilderSetNodeSize(dockspace_id, ImGui::GetMainViewport()->WorkSize);
 
   ImGuiID main_id = dockspace_id;
-  ImGuiID right_id = ImGui::DockBuilderSplitNode(main_id, ImGuiDir_Right, 0.22f, nullptr, &main_id);
+  // An RTL language mirrors the default panel layout (Layers/Properties/etc.
+  // move to the left, matching DrawLeftSidebar's own mirrored tool strip)
+  // instead of leaving them on the right the way an LTR reader expects them.
+  const ImGuiDir panel_dir = dino8::i18n::IsRTL() ? ImGuiDir_Left : ImGuiDir_Right;
+  ImGuiID right_id = ImGui::DockBuilderSplitNode(main_id, panel_dir, 0.22f, nullptr, &main_id);
   ImGuiID bottom_id = ImGui::DockBuilderSplitNode(main_id, ImGuiDir_Down, 0.18f, nullptr, &main_id);
   ImGuiID right_bottom = ImGui::DockBuilderSplitNode(right_id, ImGuiDir_Down, 0.5f, nullptr, &right_id);
 
@@ -1181,7 +1185,10 @@ void Application::DrawDockspace() {
   const float status_h = StatusBarHeight() + ViewportTabsHeight();
   const float toolbar_h = ToolbarHeight(*this);
   const float sidebar_w = LeftSidebarWidth(*this);
-  ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + sidebar_w, vp->WorkPos.y + command_h + toolbar_h));
+  // Mirrors DrawLeftSidebar's own RTL placement: the dockspace fills
+  // whichever side the tool strip didn't take.
+  const float dockspace_x = dino8::i18n::IsRTL() ? vp->WorkPos.x : vp->WorkPos.x + sidebar_w;
+  ImGui::SetNextWindowPos(ImVec2(dockspace_x, vp->WorkPos.y + command_h + toolbar_h));
   ImGui::SetNextWindowSize(ImVec2(vp->WorkSize.x - sidebar_w, vp->WorkSize.y - command_h - status_h - toolbar_h));
   ImGui::SetNextWindowViewport(vp->ID);
   ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);

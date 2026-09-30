@@ -3395,6 +3395,8 @@ SetLanguage ko
 I18nSelfTest
 SetLanguage ru
 I18nSelfTest
+SetLanguage ar
+I18nSelfTest
 SetLanguage English
 I18nSelfTest
 SetLanguage nope
@@ -3436,11 +3438,16 @@ i18ncheck "I18nSelfTest: menu\.file=파일" "a translated string (menu.file) rea
 i18ncheck "SetLanguage: ru" "SetLanguage switched to Russian"
 i18ncheck "I18nSelfTest: active=ru" "the active language is now ru"
 i18ncheck "I18nSelfTest: menu\.file=Файл" "a translated string (menu.file) reads Файл in Russian, proving ru.json is a real ninth hand-translated language, not a scaffold-only stub"
+i18ncheck "SetLanguage: ar" "SetLanguage switched to Arabic"
+i18ncheck "I18nSelfTest: active=ar" "the active language is now ar"
+i18ncheck "I18nSelfTest: menu\.file=ملف" "a translated string (menu.file) reads ملف in Arabic, proving ar.json is a real tenth hand-translated language, not a scaffold-only stub"
+i18ncheck "I18nSelfTest: rtl=true" "Arabic (ar.json's _direction: rtl) reports rtl=true from I18nSelfTest, proving the RTL flag actually round-trips through the loader rather than being a dead JSON field"
 i18ncheck "I18nSelfTest: fallback(panel\.imgui_demo)=ImGui Demo (developer)" "a key missing from es.json falls back to the English text, not a blank string or the raw key"
 i18ncheck "I18nSelfTest: unknown_key=this\.key\.does\.not\.exist\.anywhere" "a key present in no language table at all falls back to the key itself rather than crashing or blanking"
 i18ncheck "SetLanguage: en" "SetLanguage switched back to English"
 i18ncheck "I18nSelfTest: active=en" "the active language is en again"
 i18ncheck "I18nSelfTest: menu\.file=File\$" "the same key reads back in plain English once switched back"
+i18ncheck "I18nSelfTest: rtl=false" "switching back to English also flips rtl back to false, proving IsRTL() tracks the active language rather than latching"
 i18ncheck "SetLanguage: unknown language 'nope'" "an unrecognised language name fails with a clear diagnostic instead of doing nothing"
 
 # a11y: High Contrast is a distinct palette (pure black bg / pure white

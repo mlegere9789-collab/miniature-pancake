@@ -35,11 +35,18 @@ bool SetLanguage(const std::string& code);
 const std::string& CurrentLanguage();  // e.g. "en"
 const std::string& CurrentLanguageName();  // e.g. "English", in its own language
 
-// One entry per loaded language: {code, native display name}, "en" first,
-// the rest alphabetically by code.
+// True when `code`'s table declared itself right-to-left (its JSON file's
+// "_direction" meta key is "rtl", e.g. ar.json - see LoadFile). Unknown
+// codes and every left-to-right language answer false.
+bool IsRTL(const std::string& code);
+bool IsRTL();  // IsRTL(CurrentLanguage())
+
+// One entry per loaded language: {code, native display name, is it RTL},
+// "en" first, the rest alphabetically by code.
 struct LanguageEntry {
   std::string code;
   std::string name;
+  bool rtl = false;
 };
 std::vector<LanguageEntry> AvailableLanguages();
 

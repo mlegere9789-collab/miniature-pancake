@@ -652,6 +652,7 @@ void RegisterStateCommands(CommandEngine& e) {
         ctx.Print("I18nSelfTest: menu.file=" + i18n::Tr("menu.file"));
         ctx.Print("I18nSelfTest: fallback(panel.imgui_demo)=" + i18n::Tr("panel.imgui_demo"));
         ctx.Print("I18nSelfTest: unknown_key=" + i18n::Tr("this.key.does.not.exist.anywhere"));
+        ctx.Print(std::string("I18nSelfTest: rtl=") + (i18n::IsRTL() ? "true" : "false"));
       }));
 
   // Switches the active UI theme (Dark / Light / High Contrast) the same

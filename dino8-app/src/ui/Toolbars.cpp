@@ -13,6 +13,7 @@
 #include <cstring>
 #include <string>
 #include <vector>
+#include "i18n/I18n.h"
 #include "imgui.h"
 #include "imgui_internal.h"
 #include "ui/Icons.h"
@@ -547,7 +548,12 @@ void DrawLeftSidebar(Application& app) {
   const ImGuiViewport* vp = ImGui::GetMainViewport();
   const float top = vp->WorkPos.y + ToolbarHeight(app) + app.CommandLineHeight();
   const float bottom = vp->WorkPos.y + vp->WorkSize.y - app.StatusBarHeight();
-  ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x, top));
+  // An RTL language (e.g. Arabic) reads right-to-left, so the tool strip
+  // that anchors the modeling workflow belongs on the right edge, mirroring
+  // the whole window - see BuildDefaultLayout for the matching panel-dock
+  // mirror and DrawDockspace for the matching reserved-space mirror.
+  const float x = dino8::i18n::IsRTL() ? vp->WorkPos.x + vp->WorkSize.x - w : vp->WorkPos.x;
+  ImGui::SetNextWindowPos(ImVec2(x, top));
   ImGui::SetNextWindowSize(ImVec2(w, std::max(10.0f, bottom - top)));
   ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
                            ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoDocking |

@@ -10,7 +10,8 @@
 // tests/smoke.sh's i18n section a real missing-key fallback to exercise.
 // Every other language - fr.json, de.json, ja.json (Japanese), pt.json
 // (Portuguese), it.json (Italian), zh.json (Simplified Chinese),
-// ko.json (Korean), and ru.json (Russian) - must have zero missing keys.
+// ko.json (Korean), ru.json (Russian), and ar.json (Arabic) - must have
+// zero missing keys.
 //
 // This is a "did a language quietly drift behind en.json" regression
 // guard: en.json gaining new keys (panel.activity_log, panel.block_manager,
@@ -44,7 +45,9 @@ bool LoadObject(const std::string& path, dino8::json::Value& out) {
 std::set<std::string> StringKeys(const dino8::json::Value& obj) {
   std::set<std::string> keys;
   for (const auto& [key, value] : obj.object) {
-    if (key == "_language_name") continue;
+    // Both meta keys (I18n.cpp's LoadFile skips them the same way - they
+    // describe the language table, they aren't translated UI strings).
+    if (key == "_language_name" || key == "_direction") continue;
     if (value.IsString()) keys.insert(key);
   }
   return keys;
@@ -82,6 +85,7 @@ int main(int argc, char** argv) {
       {"zh", {}},
       {"ko", {}},
       {"ru", {}},
+      {"ar", {}},
       {"es", {"panel.imgui_demo"}},
   };
 
@@ -229,6 +233,28 @@ int main(int argc, char** argv) {
                 "\xd0\xa0\xd1\x83\xd1\x81\xd1\x81\xd0\xba\xd0\xb8\xd0\xb9",
             "ru.json's _language_name is the Russian word for Russian "
             "(\xd0\xa0\xd1\x83\xd1\x81\xd1\x81\xd0\xba\xd0\xb8\xd0\xb9)");
+    }
+  }
+
+  // The headline deliverable: Arabic is a tenth complete, hand-translated
+  // language, matching en.json's key set exactly (not just "mostly", the
+  // way a machine-generated stub might partially cover it).
+  {
+    dino8::json::Value ar_root;
+    Check(LoadObject(dir + "/ar.json", ar_root), "ar.json exists and parses");
+    if (LoadObject(dir + "/ar.json", ar_root)) {
+      const std::set<std::string> ar_keys = StringKeys(ar_root);
+      char label[160];
+      std::snprintf(label, sizeof(label), "ar.json defines exactly en.json's key set (%zu keys, 0 missing, 0 extra)",
+                    ar_keys.size());
+      Check(ar_keys == en_keys, label);
+      Check(ar_root["_language_name"].AsString("") ==
+                "\xd8\xa7\xd9\x84\xd8\xb9\xd8\xb1\xd8\xa8\xd9\x8a\xd8\xa9",
+            "ar.json's _language_name is the Arabic word for Arabic "
+            "(\xd8\xa7\xd9\x84\xd8\xb9\xd8\xb1\xd8\xa8\xd9\x8a\xd8\xa9)");
+      Check(ar_root["_direction"].AsString("") == "rtl",
+            "ar.json declares _direction: rtl, the right-to-left flag I18n.cpp's loader reads into "
+            "i18n::IsRTL()");
     }
   }
 
