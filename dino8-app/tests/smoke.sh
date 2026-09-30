@@ -391,6 +391,18 @@ PDFOFF="$(grep -a -A1 "^startxref$" "$TMPW/exchange.pdf" | tail -1)"
 grep -aq "^h$" "$TMPW/exchange.pdf" && echo "ok   exchange.pdf closes paths with h" || { echo "FAIL exchange.pdf closed paths"; fail=1; }
 if command -v qpdf >/dev/null 2>&1; then qpdf --check "$TMPW/exchange.pdf" >/dev/null 2>&1 && echo "ok   qpdf --check passes" || { echo "FAIL qpdf --check"; fail=1; }; fi
 head -1 "$TMPW/exchange.ply" | grep -q "^ply" && grep -q "^element face 6" "$TMPW/exchange.ply" && echo "ok   exchange.ply is an ASCII PLY with 6 faces" || { echo "FAIL exchange.ply"; fail=1; }
+# PLY import list-count DoS: a corrupt/malicious file can declare a face's
+# vertex_indices list count as an arbitrarily large number with no values
+# behind it (see ply_dos.ply / ply_dos_script.txt). This must fail fast, not
+# hang or balloon memory.
+sed "s|@PLYDOSFILE@|$HEREW/ply_dos.ply|g" "$HERE/ply_dos_script.txt" > "$TMPW/ply_dos_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  PD="$("$BIN" --smoke 20 --script "$TMPW/ply_dos_script.txt" 2>&1)" || { echo "$PD"; echo "FAIL: PLY list-count DoS script exited non-zero (crashed or hung until the job's own timeout)"; exit 1; }
+else
+  PD="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 20 --script "$TMPW/ply_dos_script.txt" 2>&1)" || { echo "$PD"; echo "FAIL: PLY list-count DoS script exited non-zero (crashed or hung until the job's own timeout)"; exit 1; }
+fi
+pdcheck() { if echo "$PD" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$PD" "$1"; fail=1; fi; }
+pdcheck "! PLY file has an invalid list count" "opening a PLY with a 2000000000 face list count failed cleanly and instantly instead of hanging or exhausting memory"
 # DXF fidelity: a freeform NURBS curve and a full ellipse must round-trip
 # exactly (SPLINE/ELLIPSE entities), not as sampled polylines (see
 # dxf_fidelity_script.txt).

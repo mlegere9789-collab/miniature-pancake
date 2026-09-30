@@ -1,0 +1,13 @@
+# PLY import list-count DoS QC: ply_dos.ply is a 9-line ASCII PLY whose one
+# face declares a vertex_indices list count of 2000000000 with no values
+# behind it. Before the fix, ImportPly's per-property list loop
+# (FileExchange.cpp) had no upper bound on that count and no per-value
+# stream-failure check inside the loop: a truncated/corrupt count this large
+# spun the loop up to two billion times pushing the failed extraction's
+# leftover 0 into the face's index vector every time - an unbounded-
+# allocation DoS from a nine-line file, the binary-format sibling of which
+# (a 4-byte uint32 list count) spun closer to four billion times with no
+# allocation at all, purely a CPU hang. After the fix, an out-of-range list
+# count is rejected immediately, so opening this file fails cleanly and
+# instantly instead of hanging or exhausting memory.
+Open @PLYDOSFILE@

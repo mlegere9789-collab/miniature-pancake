@@ -2544,6 +2544,13 @@ struct PlyElement {
   std::vector<PlyProperty> props;
 };
 
+// Real PLY list properties (a face's vertex-index list, chiefly) never run
+// beyond a few hundred entries; this is generous headroom above any
+// legitimate use, just large enough to reject a corrupt/malicious count
+// outright rather than spend seconds to minutes (or gigabytes of memory)
+// discovering the file ran out of data.
+constexpr long kMaxPlyListCount = 1 << 20;
+
 size_t PlyTypeSize(const std::string& t) {
   if (t == "char" || t == "uchar" || t == "int8" || t == "uint8") return 1;
   if (t == "short" || t == "ushort" || t == "int16" || t == "uint16") return 2;
@@ -2616,7 +2623,20 @@ bool ImportPly(Document& doc, const std::string& path, std::string& error) {
         for (size_t i = 0; i < e.props.size(); ++i) {
           if (!e.props[i].count_type.empty()) {
             long cnt = 0; ls >> cnt;
-            for (long k = 0; k < cnt; ++k) { long v = 0; ls >> v; if (i == 0 || is_face) indices.push_back(v); }
+            // cnt comes straight from the file with no upper bound. A
+            // corrupt/malicious line like "3 2000000000" (a huge list count
+            // with no values behind it) used to spin this loop billions of
+            // times pushing the failed extraction's leftover 0 into
+            // indices every time - an unbounded-allocation DoS from a
+            // few-byte file. Reject an unreasonable count outright, and
+            // bail the moment a value actually fails to parse instead of
+            // ploughing on past the end of the line.
+            if (!ls || cnt < 0 || cnt > kMaxPlyListCount) { error = "PLY file has an invalid list count"; return false; }
+            for (long k = 0; k < cnt; ++k) {
+              long v = 0; ls >> v;
+              if (!ls) { error = "PLY file ended early"; return false; }
+              if (i == 0 || is_face) indices.push_back(v);
+            }
           } else {
             ls >> scalars[i];
           }
@@ -2625,8 +2645,17 @@ bool ImportPly(Document& doc, const std::string& path, std::string& error) {
         for (size_t i = 0; i < e.props.size(); ++i) {
           if (!e.props[i].count_type.empty()) {
             const long cnt = static_cast<long>(PlyReadBinary(is, e.props[i].count_type, big));
+            // Same hazard as the ascii branch above, but worse: PlyReadBinary
+            // keeps returning (stale/zero) values once the stream hits EOF
+            // instead of throwing, so an attacker-chosen cnt near
+            // std::numeric_limits<uint32_t>::max() used to spin this loop
+            // ~4 billion times - a CPU-hang DoS - before the one "!is" check
+            // that existed, which ran only after the whole row finished.
+            // Bound cnt and check the stream on every iteration instead.
+            if (!is || cnt < 0 || cnt > kMaxPlyListCount) { error = "PLY file ended early"; return false; }
             for (long k = 0; k < cnt; ++k) {
               const long v = static_cast<long>(PlyReadBinary(is, e.props[i].type, big));
+              if (!is) { error = "PLY file ended early"; return false; }
               if (is_face && indices.size() < 64) indices.push_back(v);
             }
           } else {
