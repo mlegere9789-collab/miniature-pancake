@@ -224,4 +224,60 @@ AccessibleNode BuildLinetypesNode(const std::vector<LinetypeSummary>& linetypes)
   return list;
 }
 
+AccessibleNode BuildMaterialsPanelNode(const std::vector<MaterialSummary>& materials) {
+  AccessibleNode list;
+  list.name = "Materials";
+  list.role = AccessibleRole::List;
+  char count_buf[32];
+  std::snprintf(count_buf, sizeof(count_buf), "%zu materials", materials.size());
+  list.description = count_buf;
+
+  for (const MaterialSummary& m : materials) {
+    AccessibleNode item;
+    item.role = AccessibleRole::ListItem;
+    item.name = m.name;
+    item.description = "Colour: " + m.diffuse_text;
+    list.children.push_back(std::move(item));
+  }
+  return list;
+}
+
+AccessibleNode BuildClippingPlanesPanelNode(const std::vector<ClippingPlaneSummary>& planes) {
+  AccessibleNode list;
+  list.name = "Clipping Planes";
+  list.role = AccessibleRole::List;
+  char count_buf[32];
+  std::snprintf(count_buf, sizeof(count_buf), "%zu clipping planes", planes.size());
+  list.description = count_buf;
+
+  for (const ClippingPlaneSummary& p : planes) {
+    AccessibleNode item;
+    item.role = AccessibleRole::ListItem;
+    item.name = p.name + (p.enabled ? ", on" : ", off");
+    item.description = p.clips_every_viewport
+                            ? "Clips every viewport"
+                            : "Clips " + std::to_string(p.clipped_viewport_count) +
+                                  (p.clipped_viewport_count == 1 ? " viewport" : " viewports");
+    list.children.push_back(std::move(item));
+  }
+  return list;
+}
+
+AccessibleNode BuildLayoutsPanelNode(const std::vector<LayoutSummary>& layouts) {
+  AccessibleNode list;
+  list.name = "Layouts";
+  list.role = AccessibleRole::List;
+  char count_buf[32];
+  std::snprintf(count_buf, sizeof(count_buf), "%zu layouts", layouts.size());
+  list.description = count_buf;
+
+  for (const LayoutSummary& l : layouts) {
+    AccessibleNode item;
+    item.role = AccessibleRole::ListItem;
+    item.name = l.name + (l.active ? ", active" : "");
+    list.children.push_back(std::move(item));
+  }
+  return list;
+}
+
 }  // namespace dino8::platform

@@ -2,9 +2,10 @@
 // input, and the full command-history log), the main menu bar, the running
 // command's options, the Layers/Properties panels' current content, every
 // viewport's title/view-menu button state, the persisted Activity Log of
-// finalized edits, the document's saved Named Views and Named CPlanes, and
-// its Linetypes to assistive technology, so a screen reader can read and be
-// notified of them without a sighted user's help.
+// finalized edits, the document's saved Named Views and Named CPlanes, its
+// Linetypes, its Materials, its Clipping Planes, and its Layouts to
+// assistive technology, so a screen reader can read and be notified of them
+// without a sighted user's help.
 //
 // Real implementation: AT-SPI2 over D-Bus on Linux (see
 // AccessibilityLinux.cpp). A no-op everywhere else, and on Linux too if the
@@ -33,12 +34,14 @@ void InitAccessibility(const std::string& app_name);
 // ...) queued since the last call. Call once per frame.
 //
 // `menu_bar`, `command_options`, `layers_panel`, `properties_panel`,
-// `viewports_panel`, `activity_log`, `named_views`, `named_cplanes` and
-// `linetypes` are typically ui::LastMenuBarAccessibleTree(),
-// ui::CommandOptionsAccessibleTree(app), ui::LayersPanelAccessibleTree(app),
-// ui::PropertiesPanelAccessibleTree(app), ui::ViewportsAccessibleTree(app),
-// ui::ActivityLogAccessibleTree(app), ui::NamedViewsAccessibleTree(app),
-// ui::NamedCPlanesAccessibleTree(app) and ui::LinetypesAccessibleTree(app)
+// `viewports_panel`, `activity_log`, `named_views`, `named_cplanes`,
+// `linetypes`, `materials`, `clipping_planes` and `layouts` are typically
+// ui::LastMenuBarAccessibleTree(), ui::CommandOptionsAccessibleTree(app),
+// ui::LayersPanelAccessibleTree(app), ui::PropertiesPanelAccessibleTree(app),
+// ui::ViewportsAccessibleTree(app), ui::ActivityLogAccessibleTree(app),
+// ui::NamedViewsAccessibleTree(app), ui::NamedCPlanesAccessibleTree(app),
+// ui::LinetypesAccessibleTree(app), ui::MaterialsAccessibleTree(app),
+// ui::ClippingPlanesAccessibleTree(app) and ui::LayoutsAccessibleTree(app)
 // (see src/ui/Panels.h) - passed in rather than computed here so this module
 // stays independent of app::Application/Document.
 void UpdateAccessibility(const std::string& prompt, const std::string& command_input,
@@ -46,7 +49,9 @@ void UpdateAccessibility(const std::string& prompt, const std::string& command_i
                           const AccessibleNode& command_options, const AccessibleNode& layers_panel,
                           const AccessibleNode& properties_panel, const AccessibleNode& viewports_panel,
                           const AccessibleNode& activity_log, const AccessibleNode& named_views,
-                          const AccessibleNode& named_cplanes, const AccessibleNode& linetypes);
+                          const AccessibleNode& named_cplanes, const AccessibleNode& linetypes,
+                          const AccessibleNode& materials, const AccessibleNode& clipping_planes,
+                          const AccessibleNode& layouts);
 
 // Just the request-processing half of UpdateAccessibility, without touching
 // any published content. Used by main.cpp's `waitfile` script directive

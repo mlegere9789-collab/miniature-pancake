@@ -54,6 +54,22 @@ dino8::platform::AccessibleNode NamedCPlanesAccessibleTree(Application& app);
 // pattern per row the same way the on-screen panel's Name/Pattern columns
 // do.
 dino8::platform::AccessibleNode LinetypesAccessibleTree(Application& app);
+// The AT-SPI2-queryable snapshot of Document::Materials() - independent of
+// whether DrawMaterialsPanel's window is open, mirroring the name and
+// diffuse colour per row (the colour swatch DrawMaterialsPanel draws next to
+// each name, reduced to plain "R, G, B" text).
+dino8::platform::AccessibleNode MaterialsAccessibleTree(Application& app);
+// The AT-SPI2-queryable snapshot of Document::ClippingPlanes() - independent
+// of whether DrawClippingPlanesPanel's window is open, mirroring the name,
+// on/off state and viewport scope each row's checkbox and hover tooltip
+// show.
+dino8::platform::AccessibleNode ClippingPlanesAccessibleTree(Application& app);
+// The AT-SPI2-queryable snapshot of Document::Layouts() - independent of
+// whether DrawLayoutsPanel's window is open, mirroring the name per row plus
+// which one is currently active (Application::ActiveLayoutIndex()), the way
+// DrawLayoutsPanel itself only distinguishes the active row by selection
+// highlight.
+dino8::platform::AccessibleNode LayoutsAccessibleTree(Application& app);
 void DrawToolbars(Application& app);
 void DrawLayersPanel(Application& app);
 void DrawPropertiesPanel(Application& app);

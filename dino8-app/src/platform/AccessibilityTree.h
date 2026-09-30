@@ -15,9 +15,11 @@
 // (name, active/maximized, current display mode - see BuildViewportsPanelNode),
 // the persisted Activity Log of finalized edits (see BuildActivityLogNode),
 // the document's saved Named Views (see BuildNamedViewsNode), its saved
-// Named CPlanes (see BuildNamedCPlanesNode), and its Linetypes (see
-// BuildLinetypesNode).
-// The 3D viewport's own rendered content and the ~36 other panels/dialogs are
+// Named CPlanes (see BuildNamedCPlanesNode), its Linetypes (see
+// BuildLinetypesNode), its Materials (see BuildMaterialsPanelNode), its
+// Clipping Planes (see BuildClippingPlanesPanelNode), and its Layouts (see
+// BuildLayoutsPanelNode).
+// The 3D viewport's own rendered content and the ~33 other panels/dialogs are
 // still not mirrored into this tree.
 #pragma once
 
@@ -258,5 +260,70 @@ struct LinetypeSummary {
 // Linetypes panel window is actually open right now, the same way the
 // other panel-backed regions above don't depend on their own panel window.
 AccessibleNode BuildLinetypesNode(const std::vector<LinetypeSummary>& linetypes);
+
+// One Materials-panel row (doc/Document.h's Material, reduced to plain data
+// the same way LayerSummary/LinetypeSummary above keep this module
+// independent of doc/Document): the material's name and its diffuse colour
+// already rendered as plain text ("200, 200, 200") - the one fact the
+// on-screen Materials panel's colour swatch conveys visually per row (see
+// DrawMaterialsPanel), which a screen reader otherwise has no way to read.
+struct MaterialSummary {
+  std::string name;
+  std::string diffuse_text;
+};
+
+// Builds the "Materials" List accessible: one ListItem per material, in the
+// same order Document::Materials() holds them, each named after it with a
+// Description giving its diffuse colour as plain "R, G, B" text -
+// independent of whether the Materials panel window is actually open right
+// now, the same way the other panel-backed regions above don't depend on
+// their own panel window.
+AccessibleNode BuildMaterialsPanelNode(const std::vector<MaterialSummary>& materials);
+
+// One Clipping Planes panel row (doc/Document.h's ClippingPlane, reduced to
+// plain data the same way the summaries above keep this module independent
+// of doc/Document): the plane's name, whether it's switched on (the
+// on-screen row's own checkbox), and which viewports it clips - "every
+// viewport" or a count of specifically chosen ones - the same two facts
+// DrawClippingPlanesPanel's checkbox and its row's hover tooltip give a
+// sighted user (the origin/normal themselves stay tooltip-only, the same way
+// Named CPlanes above leaves origin/axes out of its own row).
+struct ClippingPlaneSummary {
+  std::string name;
+  bool enabled = true;
+  bool clips_every_viewport = true;   // ClippingPlane::viewports is empty
+  int clipped_viewport_count = 0;     // meaningful only when !clips_every_viewport
+};
+
+// Builds the "Clipping Planes" List accessible: one ListItem per clipping
+// plane, in the same order Document::ClippingPlanes() holds them, each named
+// after it with a Description giving its on/off state and viewport scope -
+// independent of whether the Clipping Planes panel window is actually open
+// right now, the same way the other panel-backed regions above don't depend
+// on their own panel window.
+AccessibleNode BuildClippingPlanesPanelNode(const std::vector<ClippingPlaneSummary>& planes);
+
+// One Layouts panel row (doc/Document.h's Layout, reduced to plain data the
+// same way the summaries above keep this module independent of doc/Document):
+// the layout's name and whether it's the one currently active in the Layouts
+// panel - DrawLayoutsPanel marks the active row only by selection highlight,
+// not text, so a screen reader needs it spelled out the same way
+// BuildViewportsPanelNode spells out which viewport is active. The page size
+// and its details stay only in the expanded editor for the active layout,
+// matching what the panel's own top-level row shows.
+struct LayoutSummary {
+  std::string name;
+  bool active = false;
+};
+
+// Builds the "Layouts" List accessible: one ListItem per layout, in the same
+// order Document::Layouts() holds them, naming which one is currently active
+// - independent of whether the Layouts panel window is actually open right
+// now, the same way the other panel-backed regions above don't depend on
+// their own panel window. This does not include the always-present "Model"
+// layout DrawLayoutsPanel itself lists first, since it isn't a
+// Document::Layouts() entry - see Application::ActiveLayoutIndex()'s own -1
+// "Model" convention.
+AccessibleNode BuildLayoutsPanelNode(const std::vector<LayoutSummary>& layouts);
 
 }  // namespace dino8::platform

@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -210,6 +211,26 @@ void DrawMaterialsPanel(Application& app) {
     for (SceneObject& o : doc.Objects()) if (o.material_name == m->name) o.InvalidateDisplay();
   }
   ImGui::End();
+}
+
+// AT-SPI2-queryable snapshot of Document::Materials() (see
+// docs/ACCESSIBILITY.md): built straight from Document state, independent of
+// whether DrawMaterialsPanel itself has ever been drawn or is open right
+// now - mirrors the same name each row's Selectable shows plus its diffuse
+// colour as plain "R, G, B" text, the one fact the row's colour swatch
+// otherwise conveys only visually (gloss/reflectivity/transparency/texture
+// stay in the expanded editor only, out of this mirror, the same way
+// Layouts' page size stays out of its own top-level row).
+dino8::platform::AccessibleNode MaterialsAccessibleTree(Application& app) {
+  std::vector<dino8::platform::MaterialSummary> summaries;
+  summaries.reserve(app.Doc().Materials().size());
+  for (const auto& m : app.Doc().Materials()) {
+    auto byte = [](float c) { return static_cast<int>(std::lround(std::clamp(c, 0.f, 1.f) * 255.f)); };
+    const std::string diffuse = std::to_string(byte(m.diffuse.r)) + ", " + std::to_string(byte(m.diffuse.g)) + ", " +
+                                 std::to_string(byte(m.diffuse.b));
+    summaries.push_back({m.name, diffuse});
+  }
+  return dino8::platform::BuildMaterialsPanelNode(summaries);
 }
 
 // ---------------------------------------------------------------------------

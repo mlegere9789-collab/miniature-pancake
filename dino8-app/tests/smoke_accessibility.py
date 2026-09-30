@@ -63,6 +63,23 @@ connection, the same way a screen reader would - to prove:
       10/11 use for Named Views/Named CPlanes (Linetypes just starts
       non-empty, since unlike named views/cplanes every document ships with
       built-in linetypes already - see Document::DefaultLinetypes()).
+  13. A "Materials" accessible (role LIST) is discoverable and starts empty
+      (a fresh document has none - unlike Linetypes it ships with no
+      built-ins) - mirroring Document::Materials(). No mutation check here:
+      unlike NamedView/NamedCPlane/SetCustomLinetype, adding a material over
+      the command line (RenderAssignMaterialToObjects) requires a real
+      object selection to finish, which this script does not set up.
+  14. A "Clipping Planes" accessible (role LIST) is discoverable, starts
+      empty, and gains one new ListItem reporting itself "on" once a real
+      "ClippingPlane <corner1> <corner2>" command runs - mirroring
+      Document::ClippingPlanes(), the same before/after pattern check 10
+      uses for Named Views.
+  15. A "Layouts" accessible (role LIST) is discoverable, starts empty, and
+      gains one new ListItem named after the layout and reporting itself
+      "active" once a real "Layout <name>" command runs (LayoutCommand
+      makes the new layout active - see cmd_viewtools.cpp) - mirroring
+      Document::Layouts(), the same before/after pattern check 10 uses for
+      Named Views.
 
 This is a real integration test: at-spi2-registryd is the actual daemon
 GNOME uses, pyatspi is the actual library screen readers use, and Dino8 is
@@ -166,6 +183,8 @@ def main():
     sync4 = os.path.join(tmp, "sync4")
     sync5 = os.path.join(tmp, "sync5")
     sync6 = os.path.join(tmp, "sync6")
+    sync7 = os.path.join(tmp, "sync7")
+    sync8 = os.path.join(tmp, "sync8")
     script_path = os.path.join(tmp, "script.txt")
     with open(script_path, "w") as f:
         # `@waitfile` (like the built-in `@wait N` frames directive) needs
@@ -222,6 +241,18 @@ def main():
         # document ships with built-in linetypes already).
         f.write("SetCustomLinetype Name=MyLinetype Pattern=5,2\n")
         f.write(f"@waitfile {sync6}\n")
+        # Same shape again: ClippingPlaneCommand finishes in one line once it
+        # has both corner points (the same way "Line 0,0,0 10,10,0" above
+        # feeds Line's two points in one line), so one more sync point is
+        # enough to observe Clipping Planes gain a new entry.
+        f.write("ClippingPlane 0,0,0 5,5,0\n")
+        f.write(f"@waitfile {sync7}\n")
+        # Same shape again: LayoutCommand finishes in one line once a name is
+        # given on the line itself (Begin's "!pos.empty()" branch - see
+        # cmd_viewtools.cpp's LayoutCommand), so one more sync point is
+        # enough to observe Layouts gain a new, active entry.
+        f.write("Layout MyLayout\n")
+        f.write(f"@waitfile {sync8}\n")
 
     procs = []
     dino8_proc = None
@@ -385,6 +416,36 @@ def main():
                     fail(f"Linetypes' first child is not Continuous (got {first_linetype.name if first_linetype else None!r})")
                 else:
                     ok('Linetypes\' first ListItem names the built-in "Continuous" linetype')
+
+        materials = find_child_by_name(app, "Materials", 10)
+        if materials is None:
+            fail('"Materials" accessible not found among the application\'s children')
+        else:
+            ok('"Materials" accessible is discoverable via the real AT-SPI2 desktop')
+            if materials.childCount != 0:
+                fail(f"Materials has {materials.childCount} children in a fresh document (expected 0)")
+            else:
+                ok("Materials has no ListItem children in a fresh document (no built-in materials)")
+
+        clipping_planes = find_child_by_name(app, "Clipping Planes", 10)
+        if clipping_planes is None:
+            fail('"Clipping Planes" accessible not found among the application\'s children')
+        else:
+            ok('"Clipping Planes" accessible is discoverable via the real AT-SPI2 desktop')
+            if clipping_planes.childCount != 0:
+                fail(f"Clipping Planes has {clipping_planes.childCount} children before any plane is created (expected 0)")
+            else:
+                ok("Clipping Planes has no ListItem children before any plane is created")
+
+        layouts = find_child_by_name(app, "Layouts", 10)
+        if layouts is None:
+            fail('"Layouts" accessible not found among the application\'s children')
+        else:
+            ok('"Layouts" accessible is discoverable via the real AT-SPI2 desktop')
+            if layouts.childCount != 0:
+                fail(f"Layouts has {layouts.childCount} children before any layout is created (expected 0)")
+            else:
+                ok("Layouts has no ListItem children before any layout is created")
 
         viewports = find_child_by_name(app, "Viewports", 10)
         if viewports is None:
@@ -606,7 +667,51 @@ def main():
                 ok(f"Linetypes gains a new entry naming the custom linetype once \"SetCustomLinetype\" runs "
                    f"({newest_linetype.name!r})")
 
-        open(sync6, "w").close()  # let the app finish its remaining frames/script and exit
+        clipping_planes_count_before = clipping_planes.childCount if clipping_planes is not None else None
+
+        open(sync6, "w").close()  # let the script run "ClippingPlane 0,0,0 5,5,0"
+
+        if clipping_planes is not None:
+            deadline = time.time() + 10
+            newest_plane = None
+            while time.time() < deadline:
+                count = clipping_planes.childCount
+                if clipping_planes_count_before is not None and count > clipping_planes_count_before:
+                    newest_plane = clipping_planes.getChildAtIndex(count - 1)
+                    break
+                time.sleep(0.2)
+            if newest_plane is None:
+                fail(f"Clipping Planes did not gain a new entry after \"ClippingPlane\" ran within 10s "
+                     f"(childCount stayed at {clipping_planes_count_before!r})")
+            elif ", on" not in newest_plane.name:
+                fail(f"Clipping Planes' newest entry does not report itself on (got {newest_plane.name!r})")
+            else:
+                ok(f"Clipping Planes gains a new entry reporting itself on once \"ClippingPlane\" runs "
+                   f"({newest_plane.name!r})")
+
+        layouts_count_before = layouts.childCount if layouts is not None else None
+
+        open(sync7, "w").close()  # let the script run "Layout MyLayout"
+
+        if layouts is not None:
+            deadline = time.time() + 10
+            newest_layout = None
+            while time.time() < deadline:
+                count = layouts.childCount
+                if layouts_count_before is not None and count > layouts_count_before:
+                    newest_layout = layouts.getChildAtIndex(count - 1)
+                    break
+                time.sleep(0.2)
+            if newest_layout is None:
+                fail(f"Layouts did not gain a new entry after \"Layout MyLayout\" ran within 10s "
+                     f"(childCount stayed at {layouts_count_before!r})")
+            elif newest_layout.name != "MyLayout, active":
+                fail(f"Layouts' newest entry does not name the new active layout (got {newest_layout.name!r})")
+            else:
+                ok(f"Layouts gains a new, active entry naming the new layout once \"Layout\" runs "
+                   f"({newest_layout.name!r})")
+
+        open(sync8, "w").close()  # let the app finish its remaining frames/script and exit
 
         try:
             out, _ = dino8_proc.communicate(timeout=20)

@@ -597,6 +597,45 @@ dino8::platform::AccessibleNode LinetypesAccessibleTree(Application& app) {
   return dino8::platform::BuildLinetypesNode(summaries);
 }
 
+// AT-SPI2-queryable snapshot of Document::ClippingPlanes() (see
+// docs/ACCESSIBILITY.md): built straight from Document state, independent of
+// whether DrawClippingPlanesPanel itself has ever been drawn or is open
+// right now - mirrors the same on/off state its row's checkbox shows and the
+// same "clips every viewport" vs. specific-viewport scope its row's hover
+// tooltip shows (the origin/normal stay tooltip-only, as with Named CPlanes).
+dino8::platform::AccessibleNode ClippingPlanesAccessibleTree(Application& app) {
+  std::vector<dino8::platform::ClippingPlaneSummary> summaries;
+  summaries.reserve(app.Doc().ClippingPlanes().size());
+  for (const auto& cp : app.Doc().ClippingPlanes()) {
+    dino8::platform::ClippingPlaneSummary s;
+    s.name = cp.name;
+    s.enabled = cp.enabled;
+    s.clips_every_viewport = cp.viewports.empty();
+    s.clipped_viewport_count = static_cast<int>(cp.viewports.size());
+    summaries.push_back(std::move(s));
+  }
+  return dino8::platform::BuildClippingPlanesPanelNode(summaries);
+}
+
+// AT-SPI2-queryable snapshot of Document::Layouts() (see
+// docs/ACCESSIBILITY.md): built straight from Document state, independent of
+// whether DrawLayoutsPanel itself has ever been drawn or is open right now -
+// mirrors only the name per row plus which one is active, matching what
+// DrawLayoutsPanel's own top-level Selectable row shows (page size and
+// details only appear once a row is expanded, so they stay out of this
+// mirror the same way Named Views/CPlanes leave their own extra state out).
+dino8::platform::AccessibleNode LayoutsAccessibleTree(Application& app) {
+  std::vector<dino8::platform::LayoutSummary> summaries;
+  summaries.reserve(app.Doc().Layouts().size());
+  for (size_t i = 0; i < app.Doc().Layouts().size(); ++i) {
+    dino8::platform::LayoutSummary s;
+    s.name = app.Doc().Layouts()[i].name;
+    s.active = static_cast<int>(i) == app.ActiveLayoutIndex();
+    summaries.push_back(std::move(s));
+  }
+  return dino8::platform::BuildLayoutsPanelNode(summaries);
+}
+
 // ---------------------------------------------------------------------------
 // Command history / list / help
 // ---------------------------------------------------------------------------

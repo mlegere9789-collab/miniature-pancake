@@ -7,11 +7,12 @@ high-contrast theme (shipped), full keyboard operability (audited and
 fixed where it was broken), screen-reader support for the command line, the
 main menu bar, the running command's options, the Layers/Properties panels,
 each viewport's title/view-menu button, the persisted Activity Log of
-finalized edits, and the document's saved Named Views, Named CPlanes and
-Linetypes (a real, still-narrow AT-SPI2 bridge, shipped on Linux - see
-section 3), and screen-reader support for the rest of the UI (still a hard
-platform limitation of ImGui itself for the reasons section 3 explains - not
-shipped, and not something a few labels can fix).
+finalized edits, and the document's saved Named Views, Named CPlanes,
+Linetypes, Materials, Clipping Planes and Layouts (a real, still-narrow
+AT-SPI2 bridge, shipped on Linux - see section 3), and screen-reader support
+for the rest of the UI (still a hard platform limitation of ImGui itself for
+the reasons section 3 explains - not shipped, and not something a few
+labels can fix).
 
 ## 1. High Contrast theme - shipped
 
@@ -185,7 +186,7 @@ through each platform's native accessibility API - exactly the scope the
 ImGui maintainers have discussed for years without landing project-wide.
 That has not changed and is not what shipped here.
 
-### What has shipped: a real AT-SPI2 bridge for the command line, the menu bar, the Layers/Properties panels, the viewports, the Activity Log, Named Views, Named CPlanes, and Linetypes (Linux)
+### What has shipped: a real AT-SPI2 bridge for the command line, the menu bar, the Layers/Properties panels, the viewports, the Activity Log, Named Views, Named CPlanes, Linetypes, Materials, Clipping Planes, and Layouts (Linux)
 
 The one place in Dino 8 blind command-line-driven use is already the
 primary interaction model - the command line itself
@@ -200,8 +201,8 @@ a toy or a simulation: it is the real protocol, verified end-to-end against
 the real registry daemon and the real `pyatspi` client library (see
 "Verifying it yourself" below). The same bridge also publishes the main
 menu bar, the Layers/Properties panels' content, each viewport's title/
-view-menu button state, the Activity Log, Named Views, Named CPlanes, and
-Linetypes, described below.
+view-menu button state, the Activity Log, Named Views, Named CPlanes,
+Linetypes, Materials, Clipping Planes, and Layouts, described below.
 
 **Command line**: exactly one accessible object, named "Command Line"
 (`ATSPI_ROLE_LOG` - "a text widget or container holding log content"),
@@ -351,20 +352,77 @@ linetype and confirm it saved entirely from the command line
 `cmd_annotate2.cpp`'s `SetCustomLinetypeCommand`) without needing to see the
 panel at all.
 
+**Materials**: a "Materials" accessible (`ATSPI_ROLE_LIST`) with one
+`ATSPI_ROLE_LIST_ITEM` per material, named after it, each carrying a
+`Description` giving its diffuse colour as plain `"Colour: R, G, B"` text
+(e.g. `"Colour: 200, 200, 200"`) - the one fact the on-screen Materials
+panel's colour swatch conveys per row (see `DrawMaterialsPanel`) that a
+screen reader otherwise has no way to read; gloss, reflectivity,
+transparency and texture stay in the expanded per-material editor only, not
+part of the row itself, the same way Linetypes' row above leaves out
+anything not shown in its own on-screen columns. Built from
+`Document::Materials()` (`ui::MaterialsAccessibleTree`,
+`src/ui/RenderPanels.cpp`), independent of whether the Materials panel
+window is actually open on screen right now, the same way the other
+panel-backed regions above don't depend on their own panel windows being
+open. A screen-reader user can assign a material to the current selection
+entirely from the command line (`RenderAssignMaterialToObjects`, see
+`cmd_render.cpp`'s `AssignMaterialCommand`) and confirm which materials
+exist and what colour each one is without needing to see the panel at all.
+
+**Clipping Planes**: a "Clipping Planes" accessible (`ATSPI_ROLE_LIST`) with
+one `ATSPI_ROLE_LIST_ITEM` per clipping plane, named after it with its on/off
+state folded into the name (e.g. `"Section A, on"`) and a `Description`
+giving its viewport scope - `"Clips every viewport"` or `"Clips N
+viewport(s)"` - the same two facts the on-screen Clipping Planes panel's
+row checkbox and hover tooltip give a sighted user (see
+`DrawClippingPlanesPanel`; the plane's origin/normal stay tooltip-only there
+too, so they stay out of this mirror the same way Named CPlanes' own
+origin/axes do). Built from `Document::ClippingPlanes()`
+(`ui::ClippingPlanesAccessibleTree`, `src/ui/Panels.cpp`), independent of
+whether the Clipping Planes panel window is actually open on screen right
+now, the same way the other panel-backed regions above don't depend on their
+own panel windows being open. A screen-reader user can create and inspect
+clipping planes entirely from the command line (`ClippingPlane`, see
+`cmd_viewtools.cpp`) and confirm which ones exist, whether each is switched
+on, and whether it clips every viewport or a chosen few, without needing to
+see the panel at all.
+
+**Layouts**: a "Layouts" accessible (`ATSPI_ROLE_LIST`) with one
+`ATSPI_ROLE_LIST_ITEM` per layout, named after it with the currently active
+one called out in its name (e.g. `"Layout 1, active"`) - `DrawLayoutsPanel`
+distinguishes its active row only by selection highlight, so this mirror
+spells it out in text the same way `BuildViewportsPanelNode` spells out
+which viewport is active. Page size and per-detail state only appear in the
+panel's own expanded editor for the active layout, so they stay out of this
+row, matching what the panel's own top-level Selectable row shows (see
+`DrawLayoutsPanel`); this also does not include the always-present "Model"
+layout the panel lists first, since it isn't a `Document::Layouts()` entry -
+see `Application::ActiveLayoutIndex()`'s own `-1` "Model" convention. Built
+from `Document::Layouts()` (`ui::LayoutsAccessibleTree`,
+`src/ui/Panels.cpp`), independent of whether the Layouts panel window is
+actually open on screen right now, the same way the other panel-backed
+regions above don't depend on their own panel windows being open. A
+screen-reader user can create a new layout and see it added entirely from
+the command line (`Layout`, see `cmd_viewtools.cpp`'s `LayoutCommand`)
+without needing to see the panel at all.
+
 **Why these regions and not the rest of the UI**: the command line is the
 one region where "expose the text" is both sufficient (there is no
 meaningful spatial layout to convey - it *is* a stream of text) and
 complete on its own (every command in the ~1000+ catalog is already
 reachable by typing into it, per section 2). The menu bar, the
 Layers/Properties panels, the viewports, the Activity Log, Named Views,
-Named CPlanes and Linetypes extend this to the next-most load-bearing UI
-surfaces - discovering what commands exist by name, inspecting/editing
-layer and object state, knowing where you're looking, reviewing what
-actually happened to the document, recalling a saved camera bookmark,
-recalling a saved construction plane, and knowing which dash patterns are
-available to apply - without requiring the full shadow-tree-for-every-widget
-effort described above.
-Mirroring the 3D viewport and the ~36 remaining panels/dialogs the same way
+Named CPlanes, Linetypes, Materials, Clipping Planes and Layouts extend this
+to the next-most load-bearing UI surfaces - discovering what commands exist
+by name, inspecting/editing layer and object state, knowing where you're
+looking, reviewing what actually happened to the document, recalling a
+saved camera bookmark, recalling a saved construction plane, knowing which
+dash patterns and materials are available to apply, knowing which clipping
+planes exist and whether each is on, and knowing which layout is currently
+active - without requiring the full shadow-tree-for-every-widget effort
+described above.
+Mirroring the 3D viewport and the ~33 remaining panels/dialogs the same way
 would still need that effort; this does not extrapolate to "screen reader
 support" for those in the way a browser or native-toolkit app would provide
 it, and this document does not claim otherwise.
@@ -466,6 +524,29 @@ hang.
   setting (`DocumentSettings::linetype_scale`/`linetype_display`), which
   `DrawLinetypesPanel` shows above its table - those stay queryable only via
   `SetLinetypeScale`/`LinetypeDisplay` on the command line.
+- Materials has the same read-only gap (no `Action` interface - assigning a
+  material to the current selection over AT-SPI itself is not possible; a
+  screen-reader user still drives that through the equivalent
+  `RenderAssignMaterialToObjects` command by name), and it exposes only the
+  diffuse colour per row - gloss, reflectivity, transparency, emission and
+  texture stay queryable only via `DrawMaterialsPanel`'s own expanded editor
+  or by reading the material back out through a script.
+- Clipping Planes has the same read-only gap (no `Action` interface -
+  switching a plane on/off or restricting it to specific viewports over
+  AT-SPI itself is not possible; a screen-reader user still drives that
+  through the equivalent `EnableClippingPlane`/`DisableClippingPlane`
+  command by name), and it does not expose each plane's origin, size or
+  normal - matching `DrawClippingPlanesPanel` itself, which also keeps those
+  as a hover tooltip rather than part of the row - those stay queryable only
+  via the panel itself or a script.
+- Layouts has the same read-only gap (no `Action` interface - switching the
+  active layout over AT-SPI itself is not possible; a screen-reader user
+  still drives that through the equivalent `Layouts <name>` command by
+  name), and it exposes only the name and active state per row - matching
+  `DrawLayoutsPanel`'s own top-level row - not the page size or per-detail
+  state shown only once a row is expanded, which stay queryable only via
+  `LayoutProperties` or `Layouts` (with no name, to print every layout's
+  size and detail count) on the command line.
 
 **Internal design, independent of AT-SPI itself**: the accessible tree's
 *shape and text* are built by a small, pure, platform-independent module,
@@ -473,7 +554,8 @@ hang.
 `BuildCommandLineText`, `MenuTreeBuilder`, `BuildLayersPanelNode`,
 `BuildPropertiesPanelNode`, `BuildCommandOptionsNode`,
 `BuildViewportsPanelNode`, `BuildActivityLogNode`, `BuildNamedViewsNode`,
-`BuildNamedCPlanesNode`, `BuildLinetypesNode`), with its own unit test
+`BuildNamedCPlanesNode`, `BuildLinetypesNode`, `BuildMaterialsPanelNode`,
+`BuildClippingPlanesPanelNode`, `BuildLayoutsPanelNode`), with its own unit test
 (`tests/test_accessibility_tree.cpp`, registered as the
 `dino8_accessibility_tree` CTest target) that needs no display, no D-Bus, and
 no AT-SPI2 build at all - it runs on every platform and every CI job. The
@@ -482,16 +564,20 @@ menu-drawing calls in `src/ui/MenuBar.cpp` (`MenuTreeBuilder`'s
 `OpenMenu`/`CloseMenu`/`LeafMenu`/`Item`, driven by that file's
 `BeginMenuA`/`EndMenuA`/`MenuItemA`/`Item` wrappers), so it can never drift
 from what was actually drawn. The Layers, Properties, Command Options,
-Viewports, Activity Log, Named Views, Named CPlanes and Linetypes mirrors
+Viewports, Activity Log, Named Views, Named CPlanes, Linetypes, Materials,
+Clipping Planes and Layouts mirrors
 (`src/ui/Panels.cpp`'s `LayersPanelAccessibleTree`/
 `PropertiesPanelAccessibleTree`/`CommandOptionsAccessibleTree`/
 `ViewportsAccessibleTree`/`ActivityLogAccessibleTree`/
 `NamedViewsAccessibleTree`/`NamedCPlanesAccessibleTree`/
-`LinetypesAccessibleTree`) are built straight
+`LinetypesAccessibleTree`/`ClippingPlanesAccessibleTree`/
+`LayoutsAccessibleTree`, and `src/ui/RenderPanels.cpp`'s
+`MaterialsAccessibleTree`) are built straight
 from `Document`/`Application`/`CommandEngine` state, independent of
 `DrawLayersPanel`/`DrawPropertiesPanel`/`DrawCommandLine`/`Viewport::DrawUI`/
 `DrawActivityLogPanel`/`DrawNamedViewsPanel`/`DrawNamedCPlanesPanel`/
-`DrawLinetypesPanel`.
+`DrawLinetypesPanel`/`DrawMaterialsPanel`/`DrawClippingPlanesPanel`/
+`DrawLayoutsPanel`.
 `AccessibilityLinux.cpp` is a thin transport on top
 of all of this: every frame it receives the whole tree wholesale
 (`platform::PlatformSetAccessibleTree`) and answers AT-SPI's
@@ -510,9 +596,10 @@ real `dbus-daemon` and the real `at-spi2-registryd`, and uses the real
 `pyatspi` client library to walk the AT-SPI2 desktop and find Dino8's
 "Command Line", "Menu Bar" (with its "File" child), "Layers", "Properties",
 "Command Options", "Viewports" (with its default "Perspective" row
-reporting itself active), "Activity Log", "Named Views", "Named CPlanes" and
-"Linetypes" accessibles - the same objects a screen reader would find - then
-asserts the command line's and the Properties list's content each change
+reporting itself active), "Activity Log", "Named Views", "Named CPlanes",
+"Linetypes", "Materials", "Clipping Planes" and "Layouts" accessibles - the
+same objects a screen reader would find - then asserts the command line's
+and the Properties list's content each change
 after a real command (`Line 0,0,0 10,10,0`) runs, that Command Options goes
 empty -> lists Circle's option chips -> empty again around a real running
 `Circle` command, that the Activity Log gains a new entry naming `Line`
@@ -520,20 +607,26 @@ right after that same command finishes, that Named Views starts empty and
 gains an entry named `"MyView"` right after a real `NamedView Save MyView`
 command runs, that Named CPlanes starts empty and gains an entry named
 `"MyCPlane"` right after a real `NamedCPlane Save MyCPlane` command runs,
-and that Linetypes starts with the built-in "Continuous" linetype already
+that Linetypes starts with the built-in "Continuous" linetype already
 present and gains an entry named `"MyLinetype"` right after a real
-`SetCustomLinetype Name=MyLinetype Pattern=5,2` command runs. It does not
-fake, mock, or stub any part of the AT-SPI2 stack.
+`SetCustomLinetype Name=MyLinetype Pattern=5,2` command runs, that Materials
+starts empty (a fresh document has no built-in materials), that Clipping
+Planes starts empty and gains an entry reporting itself "on" right after a
+real `ClippingPlane 0,0,0 5,5,0` command runs, and that Layouts starts empty
+and gains an entry named `"MyLayout, active"` right after a real `Layout
+MyLayout` command runs. It does not fake, mock, or stub any part of the
+AT-SPI2 stack.
 
-This was run successfully, including the new Linetypes checks, in the
-environment this addition was built and verified in, after installing:
+This was run successfully, including the new Materials/Clipping
+Planes/Layouts checks, in the environment this addition was built and
+verified in, after installing:
 `libatspi2.0-dev`, `libglib2.0-dev`, `at-spi2-core` (provides
 `at-spi2-registryd`), `dbus-x11` (provides `dbus-daemon`), and
-`python3-pyatspi` (Ubuntu 24.04/noble package names) - all fourteen checks
+`python3-pyatspi` (Ubuntu 24.04/noble package names) - all checks
 above passed against the real registry daemon, including "Command Options
 lists Circle's option chips while it is running (['Diameter', '3Point',
-'Vertical'])" and "Linetypes gains a new entry naming the custom linetype
-once \"SetCustomLinetype\" runs ('MyLinetype')". One environment-specific wrinkle worth knowing about, not
+'Vertical'])" and "Layouts gains a new, active entry naming the new layout
+once \"Layout\" runs ('MyLayout, active')". One environment-specific wrinkle worth knowing about, not
 specific to this project: Debian/Ubuntu's `python3-pyatspi`/`python3-gi`
 ship a `gi._gi` extension compiled for one specific CPython ABI (on the box
 this was verified on, that was `python3.12`, even though the default
@@ -554,5 +647,5 @@ requirement and runs as part of the normal CTest suite everywhere.
 |---|---|
 | High-contrast theme | Shipped: Options > General > Theme > High Contrast |
 | Keyboard-only operability | Audited; one real bug found and fixed (toolbar/sidebar/tab-strip/bell/viewport-title buttons were `InvisibleButton` without `EnableNav`, so Tab skipped them); nav-focus tooltips added for icon-only buttons; free 3D viewport orbit and a few inherently-drag widgets remain mouse-only by design, same as in Rhino |
-| Screen-reader support (command line, menu bar, command options, Layers/Properties panels, viewports, Activity Log, Named Views, Named CPlanes, Linetypes) | Shipped on Linux: a real AT-SPI2 bridge (`src/platform/AccessibilityLinux.cpp`) exposes the command line's live text and full history log, the main menu bar (mirroring exactly what's currently open, built live alongside `ui/MenuBar.cpp`'s own drawing calls), the running command's options (with per-option guidance on how to change it), the Layers/Properties panels' current content (Properties rows note which are real value editors), every viewport's title/view-menu button state (name, active/maximized, current display mode), the persisted Activity Log of finalized edits (timestamp/action/summary per entry, distinct from the command line's own raw text log), the document's saved Named Views (name per saved view), its saved Named CPlanes (name per saved construction plane), and its Linetypes (name and dash pattern per linetype) as queryable, updating accessible objects, verified end-to-end against the real registry daemon and `pyatspi` (`tests/smoke_accessibility.py`), including the new Linetypes checks. Windows/macOS not implemented. Built only when `atspi-2`/`gio-2.0` are available; a silent no-op otherwise |
-| Screen-reader support (rest of the UI) | Not implemented - hard ImGui platform limitation (no accessibility-tree bridge for the 3D viewport's own rendered content or the ~36 remaining panels/dialogs on any OS). Descriptive text/tooltips exist everywhere as a prerequisite, but that is not screen-reader support |
+| Screen-reader support (command line, menu bar, command options, Layers/Properties panels, viewports, Activity Log, Named Views, Named CPlanes, Linetypes, Materials, Clipping Planes, Layouts) | Shipped on Linux: a real AT-SPI2 bridge (`src/platform/AccessibilityLinux.cpp`) exposes the command line's live text and full history log, the main menu bar (mirroring exactly what's currently open, built live alongside `ui/MenuBar.cpp`'s own drawing calls), the running command's options (with per-option guidance on how to change it), the Layers/Properties panels' current content (Properties rows note which are real value editors), every viewport's title/view-menu button state (name, active/maximized, current display mode), the persisted Activity Log of finalized edits (timestamp/action/summary per entry, distinct from the command line's own raw text log), the document's saved Named Views (name per saved view), its saved Named CPlanes (name per saved construction plane), its Linetypes (name and dash pattern per linetype), its Materials (name and diffuse colour per material), its Clipping Planes (name, on/off state and viewport scope per plane), and its Layouts (name per layout, with the active one called out) as queryable, updating accessible objects, verified end-to-end against the real registry daemon and `pyatspi` (`tests/smoke_accessibility.py`), including the new Materials/Clipping Planes/Layouts checks. Windows/macOS not implemented. Built only when `atspi-2`/`gio-2.0` are available; a silent no-op otherwise |
+| Screen-reader support (rest of the UI) | Not implemented - hard ImGui platform limitation (no accessibility-tree bridge for the 3D viewport's own rendered content or the ~33 remaining panels/dialogs on any OS). Descriptive text/tooltips exist everywhere as a prerequisite, but that is not screen-reader support |

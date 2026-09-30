@@ -20,9 +20,15 @@
 // the command line's own raw text log); the named-views builder produces one
 // row per saved view naming it, matching Document::NamedViews; and the
 // named-cplanes builder produces one row per saved construction plane naming
-// it, matching Document::NamedCPlanes; and the linetypes builder produces one
+// it, matching Document::NamedCPlanes; the linetypes builder produces one
 // row per linetype naming it with its dash pattern as the Description,
-// matching Document::Linetypes.
+// matching Document::Linetypes; the materials builder produces one row per
+// material naming it with its diffuse colour as the Description, matching
+// Document::Materials; the clipping-planes builder produces one row per
+// clipping plane naming it with its on/off state and viewport scope,
+// matching Document::ClippingPlanes; and the layouts builder produces one
+// row per layout naming it and which one is active, matching
+// Document::Layouts.
 // This needs no display, no D-Bus session, and no AT-SPI2 build at all, so
 // it runs on every platform and every CI job regardless of whether
 // AccessibilityLinux.cpp itself was compiled in this build (see
@@ -46,8 +52,14 @@ using dino8::platform::CommandOptionSummary;
 using dino8::platform::BuildNamedCPlanesNode;
 using dino8::platform::BuildNamedViewsNode;
 using dino8::platform::BuildLinetypesNode;
+using dino8::platform::BuildMaterialsPanelNode;
+using dino8::platform::BuildClippingPlanesPanelNode;
+using dino8::platform::BuildLayoutsPanelNode;
+using dino8::platform::ClippingPlaneSummary;
 using dino8::platform::LayerSummary;
+using dino8::platform::LayoutSummary;
 using dino8::platform::LinetypeSummary;
+using dino8::platform::MaterialSummary;
 using dino8::platform::MenuTreeBuilder;
 using dino8::platform::NamedCPlaneSummary;
 using dino8::platform::NamedViewSummary;
@@ -413,6 +425,92 @@ int main() {
     Check(empty_linetypes.children.empty(), "no linetypes -> no ListItem children, not a missing accessible");
   }
 
+  // Materials: one ListItem per material, naming it, with a Description
+  // giving its diffuse colour as plain "R, G, B" text - the one fact the
+  // on-screen Materials panel's colour swatch otherwise conveys only
+  // visually (see DrawMaterialsPanel, Document::Materials/Material).
+  {
+    std::vector<MaterialSummary> materials;
+    materials.push_back({"Default", "200, 200, 200"});
+    materials.push_back({"Steel", "150, 155, 165"});
+    const dino8::platform::AccessibleNode list = BuildMaterialsPanelNode(materials);
+    Check(list.name == "Materials", "materials list is named \"Materials\"");
+    Check(list.role == dino8::platform::AccessibleRole::List, "materials list role is List");
+    Check(list.description == "2 materials", "material count is carried as the list's Description");
+    Check(list.children.size() == 2, "two ListItem children, one per material");
+    if (list.children.size() == 2) {
+      Check(list.children[0].role == dino8::platform::AccessibleRole::ListItem, "material row role is ListItem");
+      Check(list.children[0].name == "Default", "first row names its material");
+      Check(list.children[0].description == "Colour: 200, 200, 200", "first row's diffuse colour is its Description");
+      Check(list.children[1].name == "Steel", "second row names its own material");
+      Check(list.children[1].description == "Colour: 150, 155, 165", "second row's own diffuse colour is present");
+    }
+  }
+  {
+    const dino8::platform::AccessibleNode empty_materials = BuildMaterialsPanelNode({});
+    Check(empty_materials.name == "Materials", "still named \"Materials\" with no materials at all");
+    Check(empty_materials.children.empty(), "no materials -> no ListItem children, not a missing accessible");
+  }
+
+  // Clipping Planes: one ListItem per plane, naming it with its on/off state
+  // folded into the name and a Description giving its viewport scope -
+  // "every viewport" vs. a count of specifically chosen ones - the same two
+  // facts DrawClippingPlanesPanel's row checkbox and hover tooltip give a
+  // sighted user (see Document::ClippingPlanes/ClippingPlane).
+  {
+    std::vector<ClippingPlaneSummary> planes;
+    planes.push_back({"Section A", /*enabled=*/true, /*clips_every_viewport=*/true, /*clipped_viewport_count=*/0});
+    planes.push_back({"Section B", /*enabled=*/false, /*clips_every_viewport=*/false, /*clipped_viewport_count=*/2});
+    const dino8::platform::AccessibleNode list = BuildClippingPlanesPanelNode(planes);
+    Check(list.name == "Clipping Planes", "clipping planes list is named \"Clipping Planes\"");
+    Check(list.role == dino8::platform::AccessibleRole::List, "clipping planes list role is List");
+    Check(list.description == "2 clipping planes", "plane count is carried as the list's Description");
+    Check(list.children.size() == 2, "two ListItem children, one per clipping plane");
+    if (list.children.size() == 2) {
+      Check(list.children[0].role == dino8::platform::AccessibleRole::ListItem, "clipping plane row role is ListItem");
+      Check(list.children[0].name == "Section A, on", "on-state plane's name reports \"on\"");
+      Check(list.children[0].description == "Clips every viewport", "no chosen viewports -> \"every viewport\"");
+      Check(list.children[1].name == "Section B, off", "off-state plane's name reports \"off\"");
+      Check(list.children[1].description == "Clips 2 viewports", "specific viewport count is reported");
+    }
+  }
+  {
+    std::vector<ClippingPlaneSummary> one = {{"Only", true, false, 1}};
+    const dino8::platform::AccessibleNode list = BuildClippingPlanesPanelNode(one);
+    Check(list.children.size() == 1 && list.children[0].description == "Clips 1 viewport",
+          "a single chosen viewport is singular, not \"1 viewports\"");
+  }
+  {
+    const dino8::platform::AccessibleNode empty_planes = BuildClippingPlanesPanelNode({});
+    Check(empty_planes.name == "Clipping Planes", "still named \"Clipping Planes\" with no planes at all");
+    Check(empty_planes.children.empty(), "no clipping planes -> no ListItem children, not a missing accessible");
+  }
+
+  // Layouts: one ListItem per layout, naming it, with the currently active
+  // one called out in the name - DrawLayoutsPanel only distinguishes it by
+  // selection highlight, so a screen reader needs it spelled out (see
+  // Document::Layouts/Layout, Application::ActiveLayoutIndex).
+  {
+    std::vector<LayoutSummary> layouts;
+    layouts.push_back({"Layout 1", /*active=*/true});
+    layouts.push_back({"Layout 2", /*active=*/false});
+    const dino8::platform::AccessibleNode list = BuildLayoutsPanelNode(layouts);
+    Check(list.name == "Layouts", "layouts list is named \"Layouts\"");
+    Check(list.role == dino8::platform::AccessibleRole::List, "layouts list role is List");
+    Check(list.description == "2 layouts", "layout count is carried as the list's Description");
+    Check(list.children.size() == 2, "two ListItem children, one per layout");
+    if (list.children.size() == 2) {
+      Check(list.children[0].role == dino8::platform::AccessibleRole::ListItem, "layout row role is ListItem");
+      Check(list.children[0].name == "Layout 1, active", "active layout is called out in its name");
+      Check(list.children[1].name == "Layout 2", "non-active layout isn't marked active");
+    }
+  }
+  {
+    const dino8::platform::AccessibleNode empty_layouts = BuildLayoutsPanelNode({});
+    Check(empty_layouts.name == "Layouts", "still named \"Layouts\" with no layouts at all");
+    Check(empty_layouts.children.empty(), "no layouts -> no ListItem children, not a missing accessible");
+  }
+
   // BuildAccessibleTree accepts extra top-level regions (menu bar, panels)
   // alongside the always-present command line - the shape the live bridge
   // (Accessibility.cpp::UpdateAccessibility) assembles every frame.
@@ -428,15 +526,18 @@ int main() {
     dino8::platform::AccessibleNode named_views = BuildNamedViewsNode({});
     dino8::platform::AccessibleNode named_cplanes = BuildNamedCPlanesNode({});
     dino8::platform::AccessibleNode linetypes = BuildLinetypesNode({});
+    dino8::platform::AccessibleNode materials = BuildMaterialsPanelNode({});
+    dino8::platform::AccessibleNode clipping_planes = BuildClippingPlanesPanelNode({});
+    dino8::platform::AccessibleNode layouts = BuildLayoutsPanelNode({});
 
     const dino8::platform::AccessibleNode root =
         BuildAccessibleTree("Dino8", "Command: ", "", {},
                              {menu_bar, cmd_options, layers, props, viewports, activity_log, named_views,
-                              named_cplanes, linetypes});
-    Check(root.children.size() == 10,
+                              named_cplanes, linetypes, materials, clipping_planes, layouts});
+    Check(root.children.size() == 13,
           "command line + menu bar + command options + layers + properties + viewports + activity log + "
-          "named views + named cplanes + linetypes = 10 top-level children");
-    if (root.children.size() == 10) {
+          "named views + named cplanes + linetypes + materials + clipping planes + layouts = 13 top-level children");
+    if (root.children.size() == 13) {
       Check(root.children[0].role == AccessibleRole::Log, "child 0 is still the command line");
       Check(root.children[1].role == dino8::platform::AccessibleRole::MenuBar, "child 1 is the menu bar");
       Check(root.children[2].name == "Command Options", "child 2 is the command options list");
@@ -447,6 +548,9 @@ int main() {
       Check(root.children[7].name == "Named Views", "child 7 is the named views panel");
       Check(root.children[8].name == "Named CPlanes", "child 8 is the named cplanes panel");
       Check(root.children[9].name == "Linetypes", "child 9 is the linetypes panel");
+      Check(root.children[10].name == "Materials", "child 10 is the materials panel");
+      Check(root.children[11].name == "Clipping Planes", "child 11 is the clipping planes panel");
+      Check(root.children[12].name == "Layouts", "child 12 is the layouts panel");
     }
   }
 
