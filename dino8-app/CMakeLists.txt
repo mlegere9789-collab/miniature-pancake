@@ -374,6 +374,7 @@ set(DINO8_SOURCES
   src/compare/DwgCompare.cpp
   src/commands/cmd_compare.cpp
   src/commands/cmd_sheetset.cpp
+  src/net/ComputeServer.cpp
 )
 
 # Real OS-clipboard image backend for ViewCaptureToClipboard/
@@ -721,6 +722,18 @@ if(DINO8_BUILD_TESTS)
   add_executable(dino8_test_shortcuts tests/test_shortcuts.cpp src/app/ShortcutRules.cpp)
   target_include_directories(dino8_test_shortcuts PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${imgui_SOURCE_DIR})
   add_test(NAME dino8_shortcuts COMMAND dino8_test_shortcuts)
+
+  # Minimal HTTP request server (src/net/ComputeServer.h/.cpp) - see
+  # PARITY_MAP.md's "Cloud/network compute service (Rhino.Compute
+  # equivalent)" item, which had no server/socket/HTTP code anywhere before
+  # this. Standalone like dino8_test_aci_palette - ComputeServer.cpp has no
+  # Document/Application dependency at all, so this links no dino8_kernel/
+  # imgui/GLFW/GL code. Covers request parsing (including a request split
+  # across two partial reads) purely in memory, plus a genuine end-to-end
+  # round trip over a real loopback TCP socket.
+  add_executable(dino8_test_compute_server tests/test_compute_server.cpp src/net/ComputeServer.cpp)
+  target_include_directories(dino8_test_compute_server PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  add_test(NAME dino8_compute_server COMMAND dino8_test_compute_server)
 
   # Standalone timing benchmark for Document's diff-based undo/redo history
   # (see tests/undo_bench.cpp and tests/undo_scaling_notes.md) - not an

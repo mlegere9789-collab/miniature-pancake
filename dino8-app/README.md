@@ -82,6 +82,14 @@ hidden, then exits on its own with a real exit code - no `--smoke` frame
 count and no human needed to close a window. See
 [`docs/BATCH_SCRIPTING.md`](docs/BATCH_SCRIPTING.md).
 
+## Compute server
+
+`Dino8 --serve PORT` runs headless and starts a minimal HTTP server: POST a
+Lua script to it, get back its printed output, against the same running
+document every request shares. A first, deliberately small step toward a
+Rhino.Compute-style story - no auth, no concurrency, no geometry wire
+format. See [`docs/COMPUTE_SERVER.md`](docs/COMPUTE_SERVER.md).
+
 ## Packaging
 
 The GitHub Actions workflow `dino8-app.yml` builds and tests on Linux,

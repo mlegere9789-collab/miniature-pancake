@@ -4474,7 +4474,7 @@ rmaccheck "Macro recording: off (type On to start). Buffer:" "RecordMacro with n
 rmaccheck "Macro recording: on - every command line you type is appended to the Macro Editor's buffer" "RecordMacro On reports the state changed"
 rmaccheck "  Line 0,0,0 10,0,0" "the Line command typed while recording was on was appended to the buffer verbatim"
 rmaccheck "  Box 20,0,0 25,5,5 5" "the Box command typed while recording was on was appended to the buffer verbatim, in order after Line"
-RMAC_LINE50_COUNT="$(echo "$RMAC" | grep -cF "Line 50,0,0 60,0,0")"
+RMAC_LINE50_COUNT="$(echo "$RMAC" | grep -cF "Line 50,0,0 60,0,0" || true)"
 [ "$RMAC_LINE50_COUNT" = "1" ] && echo "ok   the Line command typed AFTER RecordMacro Off was run but NOT appended to the buffer (it appears exactly once, as the typed command line itself, not a second time in the final dump)" || { echo "FAIL a command typed after RecordMacro Off leaked into the buffer (expected 1 occurrence, got $RMAC_LINE50_COUNT)"; fail=1; }
 RMAC_SELF_COUNT="$(echo "$RMAC" | grep -cF "  RecordMacro" || true)"
 [ "$RMAC_SELF_COUNT" = "0" ] && echo "ok   RecordMacro never recorded itself into its own buffer" || { echo "FAIL RecordMacro recorded one of its own toggle lines into the buffer"; fail=1; }
@@ -5270,6 +5270,69 @@ elif [ "$BSF_EC" -eq 2 ] && echo "$BSF_OUT" | grep -q "^FAIL expect_objects 99";
   echo "ok   batch mode exits 2 (not 0, not a hang) when the script's own @expect_objects check fails"
 else
   echo "$BSF_OUT"; echo "FAIL: batch mode with a failing @expect_objects exited $BSF_EC, expected 2"; fail=1
+fi
+
+# --serve: the minimal compute server (net/ComputeServer.h, docs/
+# COMPUTE_SERVER.md) - see PARITY_MAP.md's "Cloud/network compute service"
+# item, which had no server/socket/HTTP code anywhere before this. Starts
+# the real app with --serve 0 (an OS-assigned ephemeral port, so this can
+# never collide with another process on a fixed port) and
+# --serve-max-requests 3 so the process is self-terminating like batch
+# --script mode above, backgrounds it, waits (bounded, not an unbounded
+# sleep loop) for its own "serve: listening on port N" line, then drives it
+# over a real loopback HTTP connection with curl: a POST that builds
+# geometry and reads back its printed output, a GET that must be rejected
+# with 405, and a POST calling an interactive rs.Get* prompt that must be
+# rejected instead of hanging the connection - see
+# tests/test_compute_server.cpp for the lower-level, no-app unit coverage
+# of the request parsing/response formatting this end-to-end check builds
+# on top of.
+if ! command -v curl >/dev/null 2>&1; then
+  echo "skip --serve compute-server checks (curl not available)"
+else
+  SERVE_LOG="$TMPW/serve.log"
+  if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+    timeout 30 "$BIN" --serve 0 --serve-max-requests 3 > "$SERVE_LOG" 2>&1 &
+  else
+    timeout 30 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --serve 0 --serve-max-requests 3 > "$SERVE_LOG" 2>&1 &
+  fi
+  SERVE_PID=$!
+
+  SERVE_PORT=""
+  for _ in $(seq 1 100); do
+    if grep -q "^serve: listening on port " "$SERVE_LOG" 2>/dev/null; then
+      SERVE_PORT="$(grep "^serve: listening on port " "$SERVE_LOG" | head -1 | awk '{print $NF}')"
+      break
+    fi
+    sleep 0.1
+  done
+
+  if [ -z "$SERVE_PORT" ]; then
+    cat "$SERVE_LOG"; echo "FAIL: --serve never printed its listening port within 10s"; fail=1
+    kill "$SERVE_PID" 2>/dev/null || true
+    wait "$SERVE_PID" 2>/dev/null || true
+  else
+    echo "ok   --serve started headless and printed its bound port ($SERVE_PORT)"
+
+    set +e
+    RESP1="$(curl -s --max-time 10 -X POST --data 'rs.Command("Box 0,0,0 5,5,0 5")
+print("objects: " .. #rs.AllObjects())' "http://127.0.0.1:$SERVE_PORT/run")"
+    CODE2="$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$SERVE_PORT/run")"
+    RESP3="$(curl -s --max-time 10 -X POST --data 'rs.GetPoint()' "http://127.0.0.1:$SERVE_PORT/run")"
+    set -e
+    echo "$RESP1" | grep -q "^objects: 1$" && echo "ok   POST /run built a box over HTTP and read back its printed object count" || { echo "$RESP1"; echo "FAIL --serve POST /run did not report objects: 1"; fail=1; }
+    [ "$CODE2" = "405" ] && echo "ok   a GET request to the compute server is rejected with 405 Method Not Allowed" || { echo "FAIL --serve GET /run returned HTTP $CODE2, expected 405"; fail=1; }
+    echo "$RESP3" | grep -q "compute error: script requires interactive input" && echo "ok   a script calling an interactive rs.Get* prompt is rejected instead of hanging the connection" || { echo "$RESP3"; echo "FAIL --serve interactive-prompt script was not rejected as expected"; fail=1; }
+
+    set +e; wait "$SERVE_PID"; SERVE_EC=$?; set -e
+    if [ "$SERVE_EC" -eq 124 ]; then
+      cat "$SERVE_LOG"; echo "FAIL: --serve process hung and was killed by the 30s timeout instead of exiting after --serve-max-requests"; fail=1
+    elif [ "$SERVE_EC" -ne 0 ]; then
+      cat "$SERVE_LOG"; echo "FAIL: --serve process exited $SERVE_EC, expected 0"; fail=1
+    else
+      grep -q "^serve: done requests=3$" "$SERVE_LOG" && echo "ok   --serve exited cleanly on its own after --serve-max-requests 3 real HTTP requests" || { cat "$SERVE_LOG"; echo "FAIL --serve done-summary line missing or wrong"; fail=1; }
+    fi
+  fi
 fi
 
 exit $fail

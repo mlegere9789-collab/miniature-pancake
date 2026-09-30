@@ -1,16 +1,21 @@
 # Fossilith / Dino 8 parity map (2026-09-28, updated 2026-09-30)
 
-**Fossilith vs Parasolid/ACIS = 68.8% (weighted, verified); Dino 8 vs Rhino 8 + AutoCAD 2027 = 75.4%.**
+**Fossilith vs Parasolid/ACIS = 68.8% (weighted, verified); Dino 8 vs Rhino 8 + AutoCAD 2027 = 75.8%.**
 
 **Merge note:** this File I/O rotation (below) landed on this branch
 concurrently with a separate run of same-day sessions covering a doc-only
 audit pass, a Local/direct-edit transcription fix, a Feature-operations
-close, a second Intersections & projections rotation, and a second
-Command system & core commands round (all folded into the kernel headline
-of 68.8% these sessions already arrived at - see their own notes just
-below). None of those touch the app table's File I/O row or any other app
-row this pass changes, so this rotation's own 75.0% -> 75.4% app-headline
-delta applies on top of that 68.8% kernel figure unmodified.
+close, a second Intersections & projections rotation, a second Command
+system & core commands round, a FilletConcaveEdgeTapered kernel close, and
+a Scripting-category rotation (Python API breadth's document-state
+functions plus a new Cloud/network compute service, moving that category's
+own row from 11/2/2 (80.0%) to 11/3/1 (83.3%) - see that session's own note
+further below). None of those touch the app table's File I/O row, so this
+rotation's own File I/O delta (61.8% -> 64.7%) and the Scripting session's
+own delta (80.0% -> 83.3%) both apply independently on top of the same
+7.75-total-weight app table: `(581.6 + 2.9 + 3.3) / 7.75` = 75.0% -> 75.8%,
+combined with the kernel headline these other sessions already arrived at
+(68.8%, unaffected by any app-level row).
 
 **2026-09-30 re-score (a second rotation pass on the app table's "File I/O &
 interoperability (app level)" category):** real fixes for three of this
@@ -89,13 +94,20 @@ project policy.
 
 This category's own Present/Partial/Missing counts move from 8/5/4 (61.8%)
 to 9/4/4 (64.7%) (`(9 + 0.5*4) / 17`); recomputed against the app table's
-usual `sum(weight * row%) / 7.75` check, the app table's weighted average
-moves from 75.0% to **75.4%** (this row's own weight-1.0 contribution is
-the only term that changes: `(581.6 - 61.8 + 64.7) / 7.75`) - the only
-headline that moves; the kernel headline (68.4%) is untouched, since no
-`dino8-kernel/src` file was touched this pass. Full `dino8_app_tests`
-ctest suite (24/24 passing) and `tests/smoke.sh` under Xvfb (2089 checks,
-0 failures) re-run clean after this pass.
+usual `sum(weight * row%) / 7.75` check, this row's own weight-1.0
+contribution alone would move the app headline from 75.0% to 75.4%
+(`(581.6 - 61.8 + 64.7) / 7.75`) - see the top-of-document merge note for
+the combined 75.8% figure once the concurrent Scripting-category session's
+own +3.3pp row delta (80.0% -> 83.3%) is folded in alongside this one; the
+kernel headline (68.4% at the time this paragraph was written, 68.8% after
+folding in the other concurrent kernel-side sessions - again see the
+top-of-document merge note) is untouched by this pass, since no
+`dino8-kernel/src` file was touched here. Full `dino8_app_tests` ctest
+suite (24/24 passing) and `tests/smoke.sh` under Xvfb (2089 checks, 0
+failures) re-run clean after this pass; a separate concurrent session's own
+`set -e`/`grep -c` fix to `tests/smoke.sh`'s RecordMacro section (needed to
+get a full, uninterrupted `smoke.sh` run at all once its own test was
+merged in) was folded in and re-verified clean too.
 
 **2026-09-30 re-score (a doc-only audit pass, no source changes):** re-derived
 every kernel/app category's own Present/Partial/Missing counts directly from
@@ -162,6 +174,14 @@ Intersections & projections 17/10/2/29, every other row unchanged) gives
 68.6% → **68.8%**, reflected above. The app headline stays 75.0%,
 unaffected by any of the three.
 
+**2026-09-30 rotation on "Scripting, automation & visual programming"
+(app-side, a separate concurrent session):** moves the app headline
+75.0% → 75.5% (Cloud/network compute service `[missing]` → `[partial]`),
+independent of and combined with the kernel-side deltas above; see this
+document's own "App category gaps" section below for the full detail.
+Combining both concurrent deltas gives the top-of-document headline
+(68.8% kernel / 75.5% app).
+
 **2026-09-30 second round on "Command system & core commands"** (the
 category already re-scored once this same day - see the "2026-09-30
 re-score" note further below, in the category gaps section itself): three
@@ -214,11 +234,19 @@ already use):
 None of the three changes the category's own present/partial/missing
 counts (11/6/2 of 19, 73.7%) or this document's headline. Three new test
 scripts (`tests/history_pipe_script.txt`, `tests/record_macro_script.txt`)
-plus three new `tests/test_shortcuts.cpp` check groups were added and pass;
-the full app-level `ctest` suite (24/24) and `tests/smoke.sh` were re-run
-clean under Xvfb+llvmpipe after this pass (see this document's own count
-note near the top of the category gaps section for the exact totals this
-pass measured).
+plus three new `tests/test_shortcuts.cpp` check groups were added and pass.
+Full local suite re-run after this pass, under Xvfb+llvmpipe: the app-level
+`ctest` suite 24/24 passing; `dino8-kernel`'s own standalone `ctest`
+(`dino8_kernel_tests`, built separately with `DINO8_KERNEL_BUILD_TESTS=ON`
+- the app build turns this off) 7855/7855 checks passing, 0 failures;
+`tests/smoke.sh` end-to-end against the built `Dino8` binary, 2106 `ok`
+lines and 0 `FAIL` lines, exiting 0. One real bug this pass's own new
+`smoke.sh` checks introduced was caught and fixed before landing: `grep -c`
+exits 1 on a zero-match count even though it still prints "0", and this
+script's `set -e` turned that into a silent full-suite abort partway
+through on the two checks proving a line is *absent* from the RecordMacro
+buffer - fixed with the same `|| true` guard the rest of this file already
+uses for that exact pattern.
 
 **2026-09-30 kernel rotation on "Intersections & projections":** three
 `[partial]` bullets close to `[present]` this pass — Curve self-intersection,
@@ -6437,7 +6465,7 @@ and `dino8-kernel/tests/test_basic.cpp`.
 | Dino 8: Command system & core commands | 1.5 | 19 | 11 | 6 | 2 | 73.7% |
 | Dino 8: 2D drafting, annotation & documentation | 1.0 | 18 | 12 | 5 | 1 | 80.6% |
 | Dino 8: Viewport display, rendering & visualization | 1.0 | 18 | 13 | 4 | 1 | 83.3% |
-| Dino 8: Scripting, automation & visual programming | 1.0 | 15 | 11 | 2 | 2 | 80.0% |
+| Dino 8: Scripting, automation & visual programming | 1.0 | 15 | 11 | 3 | 1 | 83.3% |
 | Dino 8: File I/O & interoperability (app level) | 1.0 | 17 | 9 | 4 | 4 | 64.7% |
 | Dino 8: SubD & mesh modeling toolset (app level) | 0.75 | 24 | 19 | 3 | 2 | 85.4% |
 | Dino 8: UI/UX, accessibility & localization | 1.0 | 19 | 13 | 3 | 3 | 76.3% |
@@ -6474,6 +6502,59 @@ fuzz-test target, the app_display ShadowBlob struct's file attribution and
 the PathTracer.cpp env-map line range, and the app_interop DXF writer's
 start line) — all citation-precision fixes, not scoring changes.
 
+**2026-09-30 rotation on "Scripting, automation & visual programming":**
+this category's own weight/remaining ranking (see the App ranking table
+above) already put it at rank 1, the single highest-priority app category
+by weight/remaining-items (1.0/4 = 0.250), and it had two real, tractable
+gaps within it: the `Windows-Python` half of "Embedded Python 3" and the
+interactive-prompts half of "Python API breadth" both explicitly need a
+real architecture change (a bundled CPython runtime for the former, a
+coroutine-style suspend/resume for the latter), not incremental work, but
+the *other* half of "Python API breadth" (the document-state functions)
+and "Cloud/network compute service" were both real, scoped,
+mechanically-verifiable gaps nobody had touched. Two sessions landed on
+this same branch in parallel, one per gap:
+1. **Python API breadth** — a concurrent session ported
+   `Undo`/`Redo`/`BeginUndo`/`UnitSystem`/`UnitSystemName`/`Name`/`Path`/
+   `Modified`/`CommandHistory`/`ClearCommandHistory`/`Version`/
+   `LastCommandName` into the `dino8` Python module (commits `d16ca7c8`/
+   `beae277`/`eed6e2b`), closing the "undo/document-state functions ...
+   remain entirely unported" half of this bullet's own last sentence (see
+   the bullet itself for the full construction/test detail). Stays
+   `partial` — interactive prompts are the one remaining, and much larger,
+   half. No headline-count change (that session's own PARITY_MAP note
+   already covers this).
+2. **Cloud/network compute service (Rhino.Compute equivalent)** (this
+   session) moves `[missing]` → `[partial]`: `dino8-app/src/net/
+   ComputeServer.{h,cpp}` and `main.cpp`'s new `--serve PORT` flag are
+   real, tested, POSIX-socket HTTP server code — the first of anything in
+   this category's own description ("no server/socket/HTTP code anywhere
+   in the source") — not a stub or a TODO. See the bullet itself for the
+   full scope (and, just as importantly, the explicit list of what it
+   deliberately does not do: Rhino.Compute this is not).
+
+Net effect of this session's own Cloud/network compute service work: this
+category's own present/partial/missing counts move 11/2/2/15 (80.0%) →
+11/3/1/15 (83.3%) — the item count moving from missing to partial, not a
+headline-count change, so this category's own weight/remaining ranking
+(1.0/4 = 0.250) is unaffected: the same four remaining items, one just
+moved from "missing" to "partial." Recomputing the app table's own
+`sum(weight * parity%) / 7.75` headline with this one row's delta (+3.3 pp
+× 1.0 weight ÷ 7.75 total weight) moves the Dino 8 vs Rhino 8 + AutoCAD
+2027 headline from 75.0% to 75.5%, reflected at the top of this document
+(independent of, and combined with, the parallel session's own kernel-side
+headline work — see the top-of-document merge notes). Full
+`dino8_app_tests` ctest suite (25 targets, including the new
+`dino8_compute_server` target) and `tests/smoke.sh` (0 FAIL lines across
+the whole suite, including the new `--serve` end-to-end checks) both
+re-run clean after merging with the concurrent Python API breadth session's
+own commits. This session's own source edits: `dino8-app/src/net/
+ComputeServer.h`/`.cpp` (new), `dino8-app/src/main.cpp`,
+`dino8-app/CMakeLists.txt`, `dino8-app/tests/test_compute_server.cpp`
+(new), `dino8-app/tests/smoke.sh` (the `--serve` section only - the
+Undo/Redo/UnitSystem checks in the same file are the concurrent session's
+own), `dino8-app/docs/COMPUTE_SERVER.md` (new), and `dino8-app/README.md`.
+
 ### App category gaps (missing / partial items, with evidence)
 
 **Dino 8: Command system & core commands** (app_commands):
@@ -6505,7 +6586,7 @@ start line) — all citation-precision fixes, not scoring changes.
 - [partial] Embedded Python 3 — `dino8-app/CMakeLists.txt:146` sets `option(DINO8_ENABLE_PYTHON ... OFF)` on Windows specifically, `:148` `ON` elsewhere; shipped Windows builds have no Python at all; mid-script prompts are also missing.
 - [partial] Python API breadth — `RunCommand` reaches every registered command; the real gap is the object model and interactive prompts. `PythonEngine.cpp`'s object-model surface gained 12 methods in an earlier pass (`ObjectsByName`/`ObjectsByType`/`BoundingBox`, `CurveLength`/`CurveDomain`/`EvaluateCurve`/`CurveClosestPoint`/`DivideCurve`, `SurfaceArea`/`SurfaceVolume`/`IsObjectSolid`/`SurfaceClosestPoint`/`MeshVertices`) plus the `dino8.doc.Layers` table. **This pass ports the undo/document-state functions that same note listed as entirely unported**: `dino8.doc.Undo`/`Redo`/`BeginUndo` (mirroring `rs.Undo`/`rs.Redo`/`rs.BeginUndo`, verified through a real add-point/`Undo`/`Redo`/`Undo` round trip, not just called and ignored), `dino8.doc.UnitSystem`/`UnitSystemName` (get by Rhino's own numeric code, set by either name or code, mirroring `rs.UnitSystem`/`rs.UnitSystemName`), `dino8.doc.Name`/`Path`/`Modified` (mirroring `rs.DocumentName`/`rs.DocumentPath`/`rs.DocumentModified`), and the module-level `dino8.CommandHistory`/`ClearCommandHistory`/`Version`/`LastCommandName` (mirroring `rs.CommandHistory`/`rs.ClearCommandHistory`/`rs.Version`/`rs.LastCommandName`) — 12 more previously-absent bindings, all a mechanical port of existing `Document`/`CommandEngine` methods the Lua engine already reaches, with 19 new `tests/smoke.sh` checks against a real build (`RunPythonScript`'s own test script, `python_script.txt`). Still genuinely partial: interactive prompts (`GetPoint`/`GetObject`/`GetString`/etc.) remain entirely unported — Python scripts still run start-to-finish in one call with no coroutine-style suspend/resume the way Lua's `rs.GetPoint` has, so porting those needs a real architecture change, not a mechanical port like every addition so far.
 - [present] Headless/batch scripting mode — **upgraded from partial.** `--script FILE` given WITHOUT `--smoke` (`dino8-app/src/main.cpp`) is now a real, standalone, documented batch/automation mode: the window is created hidden, the process is treated as headless (skipping `ShowFileDialog`'s blocking OS picker and the unsaved-changes-confirm prompt, either of which would otherwise hang a batch job), and it exits on its own the instant the script finishes (exit 0, or 2 on a failed `@expect_*` check) instead of falling into the interactive loop forever, which is what it did before this pass (main.cpp's own script-finished exit check only ever fired when `--smoke` was also given). Documented in the new `dino8-app/docs/BATCH_SCRIPTING.md` and a new README section; still genuinely needs a real or virtual display (Xvfb+llvmpipe on headless Linux, this project's own already-accepted headless story elsewhere) — this pass closes "framed as a QA mode, not a supported batch product," not the underlying GL-context requirement, which no claim here pretends is gone. Three new `tests/smoke.sh` checks across two script runs cover the fixed hang (a 30s `timeout` is the actual regression guard) and the exit-code-2 failure path.
-- [missing] Cloud/network compute service (Rhino.Compute equivalent) — no server/socket/HTTP code anywhere in the source.
+- [partial] Cloud/network compute service (Rhino.Compute equivalent) — **reclassified this pass, no longer missing.** Before this there was no server/socket/HTTP code anywhere in the source; `dino8-app/src/net/ComputeServer.{h,cpp}` is a genuine, if deliberately minimal, first step: a real POSIX-socket-based HTTP server (`ComputeServer::Start`/`PollOnce`, plus the pure `TryParseHttpRequest`/`BuildHttpResponse` request-parsing/response-formatting helpers), wired into `main.cpp`'s new `--serve PORT [--serve-max-requests N]` flag the same way `--script FILE` already wires up batch scripting — `PollOnce(handler, timeout_ms=0)` is called once per iteration of the existing per-frame loop (never blocking rendering), servicing one connection at a time: read a full HTTP request, hand its body to `handler`, write the response, close. `main.cpp`'s handler runs a POST request's body as a Lua script against `app.Lua()` — the same engine the command line and `RunScript` already share — and returns its captured `print()` output as the response body; a script that tries to suspend on an interactive `rs.Get*` prompt is aborted and reported as a `500` instead of hanging the connection, since a synchronous HTTP request has no way to supply a pick. Documented in the new `dino8-app/docs/COMPUTE_SERVER.md` and a new README section, including an explicit "what this deliberately does not do" list (no auth, no concurrency, no TLS, no geometry wire format — text in, printed text out). Verified two ways: `dino8_test_compute_server` (a new standalone ctest target with no Document/Application/GL dependency at all) covers the request-parsing edge cases purely in memory — a request split across two partial reads, an incomplete header block, a Content-Length body that hasn't fully arrived — plus a genuine end-to-end round trip over a real loopback TCP socket (`ComputeServer::Start(0)` on an OS-assigned ephemeral port, a real client socket on a background thread); and `tests/smoke.sh` drives the real, built app with `--serve 0 --serve-max-requests 3`, waits for its real "serve: listening on port N" line, then sends three real HTTP requests over curl — a `POST /run` that builds a box and reads its object count back from the response body, a bare `GET /run` that must come back `405`, and a `POST` calling `rs.GetPoint()` that must be rejected rather than hang — before checking the process exits cleanly on its own. Still honestly `partial`, nowhere near Rhino.Compute itself: one request at a time (no concurrency), no authentication, binds loopback only, and no geometry (de)serialization format at all — a script gets and returns plain text, exactly like the command line does, not JSON geometry payloads.
 - [missing] AI-assisted modeling or scripting — no neural/inference code anywhere; the one "smart" feature explicitly documents its own technique as not machine learning.
 
 **Dino 8: File I/O & interoperability (app level)** (app_interop):
@@ -6915,7 +6996,7 @@ top 40:
 - [app/app_drafting] Field text (dynamic text driven by an object property) (missing)
 - [app/app_display] Real-time shadow maps in the rasterized renderer (missing)
 - [app/app_display] SSAO in the rasterized renderer (missing)
-- [app/app_scripting] Cloud/network compute service (Rhino.Compute equivalent) (missing)
+- [app/app_scripting] Cloud/network compute service (Rhino.Compute equivalent) (missing; now partial - a real POSIX-socket HTTP server, `net/ComputeServer.{h,cpp}` and `main.cpp`'s `--serve PORT` flag, runs a POST request's body as a Lua script and returns its output - see the category bullet above for the full scope and what it deliberately still lacks)
 - [app/app_scripting] AI-assisted modeling or scripting (missing)
 - [app/app_interop] STEP AP242 (missing)
 - [app/app_interop] Digital signing of exported files (missing; now present - a real RSA-2048/SHA-256/PKCS#1v1.5 file-signing scheme, `DigitalSignature.{h,cpp}`/`BigUint.{h,cpp}` - see the category bullet above for detail)
