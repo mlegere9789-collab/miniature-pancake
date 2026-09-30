@@ -54736,6 +54736,486 @@ void TestRecognizeSteppedBossChainsRoundTrip() {
   }
 }
 
+// Local helper shared by BuildTaperedBossFixture()/BuildFlaredTaperedBossFixture()
+// below: given a ConicalFace whose `frame`/`radius0` are already set for a
+// patch that STARTS (radius0) at `patch_start`, shifts `frame.origin` back
+// to the cone's own TRUE apex - ConicalFace's own contract (brep.h):
+// `frame.origin` is the apex, strictly outside the trimmed patch, offset
+// from the patch's own narrow end by radius0/tan(half_angle)
+// (BuildCountersinkHoleFixture()'s own "cone.frame.origin = transition -
+// zaxis*(bore_radius/tan(half_angle))" construction above, generalized
+// from an angle PARAMETER to the slope implied directly by
+// radius0/radius1/length).
+void ShiftConeFrameToApex(ON_Plane& frame, dino8::kernel::Point3d patch_start, double radius0, double radius1,
+                           double length) {
+  const double tan_half_angle = (radius1 - radius0) / length;
+  frame.origin = patch_start - frame.zaxis * (radius0 / tan_half_angle);
+  frame.UpdateEquation();
+}
+
+// Builds a standalone tapered-boss shape directly via FromMixedFaces (no
+// boolean) - a "body" filler cylinder (standing in for the larger body
+// the feature emerges from, the same standalone-weld precedent
+// MakeTwoSegmentCylinder()/BuildCountersinkHoleFixture() above already
+// use, sidestepping BooleanCombineGeneral()'s own confirmed Union-side
+// "floating base cap" gap, BossFeature's own doc comment, a real
+// boolean-Union fixture would hit), then a cylindrical shaft, then a
+// conical taper down to `cone_tip_radius` - the "ordinary" orientation
+// (cylindrical base, free conical tip). Only the body's own outer end and
+// the taper's own tip are capped; every interior transition is left
+// uncapped so FromMixedFaces() welds each into one interior edge instead
+// - the same convention BuildCountersinkHoleFixture() itself uses.
+dino8::kernel::Brep BuildTaperedBossFixture(dino8::kernel::Point3d body_far_end, dino8::kernel::Vector3d axis,
+                                             double body_radius, double body_length, double shaft_radius,
+                                             double shaft_length, double cone_tip_radius, double cone_length) {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  Vector3d dir = axis;
+  dir.Unitize();
+
+  const ON_Plane body_frame = FrameFromAxisForGeneralBooleanTest(body_far_end, dir);
+  Brep::CylindricalFace body_cf;
+  body_cf.frame = body_frame;
+  body_cf.radius = body_radius;
+  body_cf.angle = 2.0 * ON_PI;
+  body_cf.length = body_length;
+
+  // body -> cylindrical shaft (radius shaft_radius, may differ from
+  // body_radius - an ordinary step weld, same as CounterboreHole()'s own
+  // "adjacent different-radius segments" construction) -> conical taper
+  // down to cone_tip_radius.
+  const Point3d after_body = body_far_end + dir * body_length;
+  const ON_Plane shaft_frame = FrameFromAxisForGeneralBooleanTest(after_body, dir);
+  Brep::CylindricalFace shaft_cf;
+  shaft_cf.frame = shaft_frame;
+  shaft_cf.radius = shaft_radius;
+  shaft_cf.angle = 2.0 * ON_PI;
+  shaft_cf.length = shaft_length;
+
+  const Point3d cone_start = after_body + dir * shaft_length;
+  const Point3d tip_point = cone_start + dir * cone_length;
+  const ON_Plane tip_point_frame = FrameFromAxisForGeneralBooleanTest(tip_point, -dir);
+  ON_Plane cone_frame = tip_point_frame;
+  ShiftConeFrameToApex(cone_frame, tip_point, cone_tip_radius, shaft_radius, cone_length);
+  Brep::ConicalFace cone_cf;
+  cone_cf.frame = cone_frame;
+  cone_cf.radius0 = cone_tip_radius;  // at the patch's own start (tip_point)
+  cone_cf.radius1 = shaft_radius;     // at the patch's own end (cone_start)
+  cone_cf.angle = 2.0 * ON_PI;
+  cone_cf.length = cone_length;
+
+  const Brep::PlanarFace body_cap = DiskCapForGeneralBooleanTest(body_frame, 0.0, body_radius, /*flip=*/true);
+  const Brep::PlanarFace tip_cap = DiskCapForGeneralBooleanTest(tip_point_frame, 0.0, cone_tip_radius, /*flip=*/true);
+
+  return Brep::FromMixedFaces({body_cap, tip_cap}, {body_cf, shaft_cf}, {cone_cf});
+}
+
+// A free-standing (unattached to any body) tapered rod - a cylindrical
+// shaft with a conical taper down to `tip_radius` at one end, capped at
+// its own two TRUE outer ends only (both open to air), the `through =
+// true` fixture for RecognizeTaperedBosses() below.
+dino8::kernel::Brep BuildFreeStandingTaperedRodFixture(dino8::kernel::Point3d base, dino8::kernel::Vector3d axis,
+                                                        double shaft_radius, double shaft_length, double tip_radius,
+                                                        double cone_length) {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  Vector3d dir = axis;
+  dir.Unitize();
+
+  const ON_Plane shaft_frame = FrameFromAxisForGeneralBooleanTest(base, dir);
+  Brep::CylindricalFace shaft_cf;
+  shaft_cf.frame = shaft_frame;
+  shaft_cf.radius = shaft_radius;
+  shaft_cf.angle = 2.0 * ON_PI;
+  shaft_cf.length = shaft_length;
+
+  const Point3d cone_start = base + dir * shaft_length;
+  const Point3d tip_point = cone_start + dir * cone_length;
+  const ON_Plane tip_point_frame = FrameFromAxisForGeneralBooleanTest(tip_point, -dir);
+  ON_Plane cone_frame = tip_point_frame;
+  ShiftConeFrameToApex(cone_frame, tip_point, tip_radius, shaft_radius, cone_length);
+  Brep::ConicalFace cone_cf;
+  cone_cf.frame = cone_frame;
+  cone_cf.radius0 = tip_radius;
+  cone_cf.radius1 = shaft_radius;
+  cone_cf.angle = 2.0 * ON_PI;
+  cone_cf.length = cone_length;
+
+  const Brep::PlanarFace base_cap = DiskCapForGeneralBooleanTest(shaft_frame, 0.0, shaft_radius, /*flip=*/true);
+  const Brep::PlanarFace tip_cap = DiskCapForGeneralBooleanTest(tip_point_frame, 0.0, tip_radius, /*flip=*/true);
+
+  return Brep::FromMixedFaces({base_cap, tip_cap}, {shaft_cf}, {cone_cf});
+}
+
+// The "flared base" tapered-boss fixture: TWO conical segments (a wide
+// "pad" cone from `pad_radius` down to `mid_radius`, then the actual
+// taper feature from `mid_radius` down to `shaft_radius`) feeding into a
+// cylindrical shaft, capped only at the pad's own true outer end and the
+// shaft's own free tip. Deliberately NOT a cylindrical "body" filler
+// (BuildTaperedBossFixture()'s own construction, mirrored to a flared-base
+// orientation, was tried first and reverted): a filler CYLINDER sharing
+// the taper cone's own wide-end radius
+// (required for a seamless weld, the same "no radius step directly next
+// to a cap" constraint BuildCountersinkHoleFixture()'s own construction
+// already follows) is ALSO, unavoidably, a second real full-cylinder
+// candidate that happens to touch the SAME cone at the SAME radius -
+// confirmed directly (a real, reproducible false pairing, not
+// hypothetical) to let FindAdjacentConeCylinderPairs() match the cone to
+// that filler body instead of to the actual shaft, silently reporting the
+// wrong segment's own radius/length. A second CONE never has this
+// problem: FindAdjacentConeCylinderPairs() only ever pairs a cone against
+// a CYLINDER candidate, so a "pad" cone touching the feature's own cone
+// at a shared radius is simply invisible to that pairing search, exactly
+// the way ScanFullConeFaces()'s own candidates never collide with
+// ScanFullCylinderFaces()'s.
+dino8::kernel::Brep BuildFlaredTaperedBossFixture(dino8::kernel::Point3d base_far_end, dino8::kernel::Vector3d axis,
+                                                   double pad_radius, double pad_length, double mid_radius,
+                                                   double taper_length, double shaft_radius, double shaft_length) {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  Vector3d dir = axis;
+  dir.Unitize();
+
+  // Pad cone: patch starts at base_far_end (radius0=pad_radius, the TRUE
+  // outer/capped end) and ends at mid_point (radius1=mid_radius, welds to
+  // the taper cone) - zaxis=dir (radius increases in the wrong direction
+  // for the apex-offset formula's own "radius0 at the patch's own start"
+  // convention unless pad_radius < mid_radius; both orderings are handled
+  // via ShiftConeFrameToApex()'s own generic (radius1-radius0)/length
+  // slope, which is negative when pad_radius > mid_radius - still a valid
+  // apex offset, just on the other side).
+  const Point3d mid_point = base_far_end + dir * pad_length;
+  ON_Plane pad_frame = FrameFromAxisForGeneralBooleanTest(base_far_end, dir);
+  ShiftConeFrameToApex(pad_frame, base_far_end, pad_radius, mid_radius, pad_length);
+  Brep::ConicalFace pad_cf;
+  pad_cf.frame = pad_frame;
+  pad_cf.radius0 = pad_radius;
+  pad_cf.radius1 = mid_radius;
+  pad_cf.angle = 2.0 * ON_PI;
+  pad_cf.length = pad_length;
+
+  // Taper cone (the actual feature): patch starts at mid_point
+  // (radius0=mid_radius, welds to the pad cone) and ends at
+  // shaft_start (radius1=shaft_radius, welds to the shaft).
+  const Point3d shaft_start = mid_point + dir * taper_length;
+  ON_Plane taper_frame = FrameFromAxisForGeneralBooleanTest(mid_point, dir);
+  ShiftConeFrameToApex(taper_frame, mid_point, mid_radius, shaft_radius, taper_length);
+  Brep::ConicalFace taper_cf;
+  taper_cf.frame = taper_frame;
+  taper_cf.radius0 = mid_radius;
+  taper_cf.radius1 = shaft_radius;
+  taper_cf.angle = 2.0 * ON_PI;
+  taper_cf.length = taper_length;
+
+  const ON_Plane shaft_frame = FrameFromAxisForGeneralBooleanTest(shaft_start, dir);
+  Brep::CylindricalFace shaft_cf;
+  shaft_cf.frame = shaft_frame;
+  shaft_cf.radius = shaft_radius;
+  shaft_cf.angle = 2.0 * ON_PI;
+  shaft_cf.length = shaft_length;
+
+  const ON_Plane pad_cap_frame = FrameFromAxisForGeneralBooleanTest(base_far_end, dir);
+  const Brep::PlanarFace pad_cap = DiskCapForGeneralBooleanTest(pad_cap_frame, 0.0, pad_radius, /*flip=*/true);
+  const Brep::PlanarFace tip_cap = DiskCapForGeneralBooleanTest(shaft_frame, shaft_length, shaft_radius, /*flip=*/false);
+
+  return Brep::FromMixedFaces({pad_cap, tip_cap}, {shaft_cf}, {pad_cf, taper_cf});
+}
+
+// parity-map "kernel: Feature operations" - "Feature recognition": closes
+// this file's own total absence of any CONVEX-cone recognition - the
+// boss-side mirror of TestRecognizeCountersinkHolesRoundTrip() above.
+// RecognizeTaperedBosses() merges a convex full cone with an adjacent
+// convex full cylinder into one TaperedBossFeature, using the SAME
+// FindAdjacentConeCylinderPairs() geometry RecognizeCountersinkHoles()
+// itself uses (concave/convex-agnostic).
+void TestRecognizeTaperedBossesRoundTrip() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::RecognizeCountersinkHoles;
+  using dino8::kernel::RecognizeTaperedBosses;
+  using dino8::kernel::TaperedBossFeature;
+  using dino8::kernel::Vector3d;
+
+  const Point3d body_far_end(0, 0, 0);
+  const Vector3d up(0, 0, 1);
+
+  {
+    // The ordinary orientation: a cylindrical shaft attached to the body,
+    // narrowing through a conical taper to a free (pencil-point) tip - a
+    // dowel pin with a chamfered lead-in point.
+    const double body_radius = 1.5, body_length = 1.0;
+    const double shaft_radius = 0.6, shaft_length = 2.0;
+    const double tip_radius = 0.2, cone_length = 0.8;
+    const Brep result = BuildTaperedBossFixture(body_far_end, up, body_radius, body_length, shaft_radius,
+                                                  shaft_length, tip_radius, cone_length);
+
+    // Sanity: RecognizeCountersinkHoles() finds nothing here (it only ever
+    // reads CONCAVE candidates) - confirms this fixture genuinely exercises
+    // the CONVEX gap being closed. (Not cross-checked against
+    // RecognizeBosses() here: this fixture's own body/shaft step weld,
+    // directly adjacent to a true end cap, hits a separate, unrelated
+    // FromMixedFaces() tessellation quirk - a heterogeneous-radius step
+    // immediately next to a capped end leaves that specific cap's own
+    // Mesh::ContainsPoint() reading unreliable, confirmed directly
+    // (dino8_scratch_test) to reproduce even on a bare two-segment
+    // cylinder+caps construction with no cone involved at all - harmless
+    // to RecognizeTaperedBosses() itself, whose own occupancy probes never
+    // go near that cap, but it does make RecognizeBosses()'s OWN "both
+    // ends attached" cross-check unreliable specifically for this body
+    // segment, so it's not used as a sanity check here.)
+    Check(RecognizeCountersinkHoles(result).empty(), "sanity: RecognizeCountersinkHoles() finds nothing on a CONVEX cone/cylinder pair");
+
+    const std::vector<TaperedBossFeature> found = RecognizeTaperedBosses(result);
+    Check(found.size() == 1, "RecognizeTaperedBosses merges the shaft and taper into exactly one compound feature");
+    const TaperedBossFeature& tf = found[0];
+    const Point3d attach = body_far_end + up * body_length;
+    Check(tf.origin.DistanceTo(attach) < 1e-6, "RecognizeTaperedBosses recovers the boss's own exact attach point");
+    Check((tf.axis - up).Length() < 1e-6, "RecognizeTaperedBosses recovers the boss's own exact outward direction");
+    Check(tf.base_is_cylindrical, "RecognizeTaperedBosses reports the cylindrical shaft as the base segment");
+    Check(std::abs(tf.cyl_radius - shaft_radius) < 1e-6, "RecognizeTaperedBosses recovers the shaft's own exact radius");
+    Check(std::abs(tf.cyl_length - shaft_length) < 1e-6, "RecognizeTaperedBosses recovers the shaft's own exact length");
+    Check(std::abs(tf.cone_small_radius - tip_radius) < 1e-6, "RecognizeTaperedBosses recovers the taper's own exact tip radius");
+    Check(std::abs(tf.cone_large_radius - shaft_radius) < 1e-6, "RecognizeTaperedBosses recovers the taper's own exact base radius (matching the shaft)");
+    Check(std::abs(tf.cone_length - cone_length) < 1e-6, "RecognizeTaperedBosses recovers the taper's own exact length");
+    const double expected_angle = 2.0 * std::atan2(shaft_radius - tip_radius, cone_length) * 180.0 / ON_PI;
+    Check(std::abs(tf.taper_angle_degrees - expected_angle) < 1e-4, "RecognizeTaperedBosses recovers the taper's own exact full included angle");
+    Check(!tf.through, "RecognizeTaperedBosses reports the attached boss as NOT through");
+
+    // Verified directly on the B-rep (radius/length fields above), not via
+    // tessellated volume, for the same disclosed reason given above (the
+    // body/shaft step's own cap-adjacent tessellation quirk would corrupt
+    // a whole-solid Volume() reading here) - the shaft's own true
+    // cylindrical wall and the taper's own true conical wall are each
+    // already confirmed exact above; this adds one more direct B-rep
+    // check, that the tip actually reaches the expected point in space.
+    const Point3d expected_tip = attach + up * (shaft_length + cone_length);
+    const ON_BoundingBox bb = result.raw().BoundingBox();
+    Check(bb.m_max.z > expected_tip.z - 1e-6, "the tapered boss's own bounding box genuinely reaches the taper's own tip height");
+  }
+  {
+    // The opposite orientation: a flared conical pad at the base
+    // narrowing to a cylindrical free tip - e.g. a countersunk-head-shaped
+    // boss. BuildFlaredTaperedBossFixture() below attaches the actual
+    // taper (mid_radius -> shaft_radius, the feature RecognizeTaperedBosses()
+    // should recover) to a SECOND, wider pad cone rather than a
+    // cylindrical filler body - see that function's own doc comment for
+    // why a cylindrical filler is unsafe here (a real, confirmed false
+    // pairing, not hypothetical).
+    const double pad_radius = 2.0, pad_length = 1.0;
+    const double mid_radius = 1.2, taper_length = 1.2;
+    const double shaft_radius = 0.5, shaft_length = 1.5;
+    const Brep result = BuildFlaredTaperedBossFixture(body_far_end, up, pad_radius, pad_length, mid_radius,
+                                                        taper_length, shaft_radius, shaft_length);
+
+    const std::vector<TaperedBossFeature> found = RecognizeTaperedBosses(result);
+    Check(found.size() == 1, "RecognizeTaperedBosses merges the flared-base taper and shaft into exactly one compound feature");
+    const TaperedBossFeature& tf = found[0];
+    const Point3d attach = body_far_end + up * pad_length;
+    Check(tf.origin.DistanceTo(attach) < 1e-6, "RecognizeTaperedBosses recovers the flared boss's own exact attach point");
+    Check((tf.axis - up).Length() < 1e-6, "RecognizeTaperedBosses recovers the flared boss's own exact outward direction");
+    Check(!tf.base_is_cylindrical, "RecognizeTaperedBosses reports the conical segment as the base (the flared pad), not the shaft");
+    Check(std::abs(tf.cyl_radius - shaft_radius) < 1e-6, "RecognizeTaperedBosses recovers the flared boss's own exact shaft radius");
+    Check(std::abs(tf.cyl_length - shaft_length) < 1e-6, "RecognizeTaperedBosses recovers the flared boss's own exact shaft length");
+    Check(std::abs(tf.cone_large_radius - mid_radius) < 1e-6, "RecognizeTaperedBosses recovers the taper's own exact radius at the pad transition, not the pad's own further, wider radius");
+    Check(std::abs(tf.cone_small_radius - shaft_radius) < 1e-6, "RecognizeTaperedBosses recovers the taper's own exact radius at the shaft transition");
+    Check(std::abs(tf.cone_length - taper_length) < 1e-6, "RecognizeTaperedBosses recovers the taper's own exact length");
+  }
+  {
+    // Negative control: a free-standing tapered rod, attached to nothing -
+    // both ends open to air, the `through = true` case.
+    const double shaft_radius = 0.8, shaft_length = 2.0;
+    const double tip_radius = 0.3, cone_length = 1.0;
+    const Brep rod = BuildFreeStandingTaperedRodFixture(body_far_end, up, shaft_radius, shaft_length, tip_radius, cone_length);
+    const std::vector<TaperedBossFeature> found = RecognizeTaperedBosses(rod);
+    Check(found.size() == 1, "RecognizeTaperedBosses finds exactly one feature on a free-standing tapered rod");
+    Check(found[0].through, "RecognizeTaperedBosses reports a free-standing tapered rod (open on both ends) as through");
+    Check(std::abs(found[0].cyl_length - shaft_length) < 1e-6, "RecognizeTaperedBosses recovers the free-standing rod's own exact shaft length");
+    Check(std::abs(found[0].cone_length - cone_length) < 1e-6, "RecognizeTaperedBosses recovers the free-standing rod's own exact taper length");
+  }
+  {
+    // Negative controls: a plain solid cylinder (no cone at all) and a
+    // plain concave countersink (RecognizeCountersinkHoles()'s own domain,
+    // opposite winding) both find no tapered boss here.
+    const Brep plain_pin = MakeCylinderAxisForGeneralBooleanTest(Point3d(0, 0, 0), Vector3d(0, 0, 1), 1.0, 4.0);
+    Check(RecognizeTaperedBosses(plain_pin).empty(), "RecognizeTaperedBosses finds no cone on a plain solid cylinder");
+
+    const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+    const Brep countersink = BuildCountersinkHoleFixture(box, Point3d(5, 5, 10), Vector3d(0, 0, -1), 2.0, 90.0, 0.5, 5.0);
+    Check(RecognizeTaperedBosses(countersink).empty(), "RecognizeTaperedBosses finds nothing on a concave (CONCAVE-winding) countersink");
+  }
+}
+
+// Extends BuildCountersinkHoleFixture()'s own sleeve+cone+cylinder tool
+// (one compound Brep, one BooleanCombineGeneral() Difference pass) with a
+// second, narrower CylindricalFace segment immediately after the pilot
+// bore - a real 3-step machined feature (countersink mouth, first pilot
+// bore, a further-reduced final bore) as ONE compound tool cut in ONE
+// boolean pass, the same "single compound tool, not two sequential
+// Difference passes" precedent CounterboreHole()'s own doc comment
+// establishes (features.cpp) - two sequential passes against a target
+// eventually re-clip an already-circular face against a second, different
+// circle, which ClipPolygonByCircle3d's own doc comment (boolean.h)
+// explicitly disclaims.
+dino8::kernel::Brep BuildCountersinkChainFixture(const dino8::kernel::Brep& solid, dino8::kernel::Point3d origin,
+                                                  dino8::kernel::Vector3d axis, double countersink_radius,
+                                                  double countersink_angle_degrees, double first_bore_radius,
+                                                  double first_bore_length, double second_bore_radius,
+                                                  double second_bore_length) {
+  using dino8::kernel::BooleanCombineGeneral;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  Vector3d dir = axis;
+  dir.Unitize();
+  const double half_angle = countersink_angle_degrees * ON_PI / 360.0;
+  const double countersink_depth = (countersink_radius - first_bore_radius) / std::tan(half_angle);
+  const Point3d transition = origin + dir * countersink_depth;
+  const double margin = std::max(0.5, countersink_radius * 0.25);
+
+  Brep::CylindricalFace sleeve;
+  sleeve.frame = FrameFromAxisForGeneralBooleanTest(origin - dir * margin, dir);
+  sleeve.radius = countersink_radius;
+  sleeve.angle = 2.0 * ON_PI;
+  sleeve.length = margin;
+
+  const ON_Plane cone_base_frame = FrameFromAxisForGeneralBooleanTest(transition, -dir);
+  Brep::ConicalFace cone;
+  cone.frame = cone_base_frame;
+  cone.frame.origin = transition - cone_base_frame.zaxis * (first_bore_radius / std::tan(half_angle));
+  cone.frame.UpdateEquation();
+  cone.radius0 = first_bore_radius;
+  cone.radius1 = countersink_radius;
+  cone.angle = 2.0 * ON_PI;
+  cone.length = countersink_depth;
+
+  const ON_Plane cyl1_frame = FrameFromAxisForGeneralBooleanTest(transition, dir);
+  Brep::CylindricalFace cyl1;
+  cyl1.frame = cyl1_frame;
+  cyl1.radius = first_bore_radius;
+  cyl1.angle = 2.0 * ON_PI;
+  cyl1.length = first_bore_length;
+
+  const Point3d step2_start = transition + dir * first_bore_length;
+  const ON_Plane cyl2_frame = FrameFromAxisForGeneralBooleanTest(step2_start, dir);
+  Brep::CylindricalFace cyl2;
+  cyl2.frame = cyl2_frame;
+  cyl2.radius = second_bore_radius;
+  cyl2.angle = 2.0 * ON_PI;
+  cyl2.length = second_bore_length;
+
+  const Brep::PlanarFace mouth_cap = DiskCapForGeneralBooleanTest(sleeve.frame, 0.0, countersink_radius, /*flip=*/true);
+  const Brep::PlanarFace far_cap = DiskCapForGeneralBooleanTest(cyl2_frame, second_bore_length, second_bore_radius, /*flip=*/false);
+
+  const Brep tool = Brep::FromMixedFaces({mouth_cap, far_cap}, {sleeve, cyl1, cyl2}, {cone});
+  return BooleanCombineGeneral(solid, tool, BooleanOp::Difference);
+}
+
+// parity-map "kernel: Feature operations" - "Feature recognition": closes
+// RecognizeCountersinkHoles()'s own disclosed "a countersink stacked with
+// a further counterbore/pilot step on the same axis (three or more steps
+// mixing conical and cylindrical segments) is out of scope here" gap.
+// RecognizeCountersinkChains() walks forward from the cone/cylinder touch
+// point through any further adjacent, differing-radius cylindrical steps.
+void TestRecognizeCountersinkChainsRoundTrip() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::CountersinkChain;
+  using dino8::kernel::CountersinkFeature;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::RecognizeCountersinkChains;
+  using dino8::kernel::RecognizeCountersinkHoles;
+  using dino8::kernel::Vector3d;
+
+  const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+  const Point3d origin(5, 5, 10);
+  const Vector3d down(0, 0, -1);
+
+  {
+    // A countersink whose pilot bore itself steps down through a second,
+    // narrower cylindrical segment, extending all the way THROUGH the
+    // box - the tool's own nominal second_bore_length (7.0) deliberately
+    // extends past the box's own remaining depth (5.0, computed below),
+    // the same "past the box's own height rather than exactly equal to
+    // it" avoidance TestRecognizeCountersinkHolesRoundTrip's own through
+    // case already establishes for this identical BooleanCombineGeneral()
+    // "edge is claimed by 3 or more fragment loops" coincident-face
+    // degeneracy.
+    const double countersink_radius = 2.0, angle_degrees = 90.0;
+    const double bore_radius = 0.6, first_bore_length = 3.6;
+    const double final_radius = 0.3, nominal_second_bore_length = 7.0;
+    const double countersink_depth = (countersink_radius - bore_radius) / std::tan(angle_degrees * ON_PI / 360.0);
+    const double true_second_bore_length = 10.0 - countersink_depth - first_bore_length;  // box's own real remaining depth
+    const Brep result = BuildCountersinkChainFixture(box, origin, down, countersink_radius, angle_degrees, bore_radius,
+                                                       first_bore_length, final_radius, nominal_second_bore_length);
+
+    // Sanity: RecognizeCountersinkHoles() itself still merges only the
+    // cone with the FIRST pilot bore (its own two-segment domain), never
+    // reaching the third segment - confirms this fixture genuinely
+    // exercises the gap being closed.
+    const std::vector<CountersinkFeature> partial = RecognizeCountersinkHoles(result);
+    Check(partial.size() == 1 && std::abs(partial[0].bore_radius - bore_radius) < 1e-6,
+          "sanity: RecognizeCountersinkHoles() itself reports only the first pilot bore's own radius, never "
+          "reaching the third, further-reduced step");
+
+    const std::vector<CountersinkChain> found = RecognizeCountersinkChains(result);
+    Check(found.size() == 1, "RecognizeCountersinkChains merges the countersink and both pilot-bore steps into one compound feature");
+    const CountersinkChain& chain = found[0];
+    Check(chain.origin.DistanceTo(origin) < 1e-6, "RecognizeCountersinkChains recovers the chain's own exact entry point");
+    Check((chain.axis - down).Length() < 1e-6, "RecognizeCountersinkChains recovers the chain's own exact drilling direction");
+    Check(std::abs(chain.countersink_diameter - 2.0 * countersink_radius) < 0.01,
+          "RecognizeCountersinkChains recovers the countersink's own mouth diameter to within the general boolean engine's own SSX tolerance");
+    Check(std::abs(chain.countersink_angle_degrees - angle_degrees) < 0.2,
+          "RecognizeCountersinkChains recovers the countersink's own full included angle to within the general boolean engine's own SSX tolerance");
+    Check(chain.steps.size() == 2, "RecognizeCountersinkChains recovers both of the chain's own cylindrical steps");
+    Check(std::abs(chain.steps[0].radius - bore_radius) < 1e-6, "RecognizeCountersinkChains recovers the first pilot bore's own exact radius");
+    Check(std::abs(chain.steps[0].length - first_bore_length) < 1e-6, "RecognizeCountersinkChains recovers the first pilot bore's own exact length");
+    Check(std::abs(chain.steps[1].radius - final_radius) < 1e-6, "RecognizeCountersinkChains recovers the second, further-reduced step's own exact radius");
+    Check(std::abs(chain.steps[1].length - true_second_bore_length) < 1e-6,
+          "RecognizeCountersinkChains recovers the second step's own exact TOTAL (box-clipped) length, not the "
+          "tool's own nominal, further-reaching length");
+    Check(chain.through, "RecognizeCountersinkChains reports this through chain as through");
+
+    const double expected_removed = ON_PI * countersink_depth / 3.0 *
+                                         (countersink_radius * countersink_radius +
+                                          countersink_radius * bore_radius + bore_radius * bore_radius) +
+                                     ON_PI * bore_radius * bore_radius * first_bore_length +
+                                     ON_PI * final_radius * final_radius * true_second_bore_length;
+    // Loose (0.2% relative, not the usual tight absolute tolerance) here
+    // specifically: this fixture's own compound tool - a sleeve, a cone,
+    // AND two cylindrical steps, all welded into ONE tool cut via ONE
+    // BooleanCombineGeneral() call - is more complex than
+    // TestRecognizeCountersinkHolesRoundTrip's own 2-segment tool, and
+    // measurably (confirmed directly, ~0.1%) accumulates more of the
+    // general boolean engine's own SSX curve-sampling residual into the
+    // tessellated volume than that simpler fixture does - the same kind
+    // of small, disclosed numerical effect (not a recognition bug) that
+    // fixture's own mouth diameter/angle checks already tolerate.
+    const Mesh result_mesh = result.TessellateToClosedMesh(64, 64);
+    const double expected_volume = 1000.0 - expected_removed;
+    Check(std::abs(result_mesh.Volume() - expected_volume) < expected_volume * 0.002,
+          "the 3-step countersink chain's own tessellated volume matches the hand-derived closed form (box minus "
+          "a cone frustum minus two cylinders) to within the general boolean engine's own SSX tolerance");
+  }
+  {
+    // Negative controls: a plain (single-step) countersink is
+    // RecognizeCountersinkHoles()'s own domain and is not repeated here;
+    // a plain 3-step stepped hole (no cone at all) has no countersink
+    // mouth to anchor a chain on.
+    const Brep plain_countersink = BuildCountersinkHoleFixture(box, origin, down, 2.0, 90.0, 0.5, 5.0);
+    Check(RecognizeCountersinkChains(plain_countersink).empty(),
+          "RecognizeCountersinkChains finds no chain on a plain single-step countersink - that stays "
+          "RecognizeCountersinkHoles()'s own domain");
+  }
+}
+
 int main() {
   ON::Begin();
 
@@ -55606,6 +56086,8 @@ int main() {
   TestRecognizeSteppedBossesRoundTrip();
   TestRecognizeSteppedHoleChainsRoundTrip();
   TestRecognizeSteppedBossChainsRoundTrip();
+  TestRecognizeTaperedBossesRoundTrip();
+  TestRecognizeCountersinkChainsRoundTrip();
 
   ON::End();
 

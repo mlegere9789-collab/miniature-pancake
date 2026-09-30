@@ -4225,6 +4225,132 @@ scope, same as `RecognizeCounterboreHoles()`'s own two-segment-only
 domain, and no `dino8-app` command surfaces any of this. Still **6/16/2,
 58.3%**, identical to the count directly above.
 
+**2026-09-30, a fourteenth session:** two closely-related follow-ups, both
+in `dino8::kernel::features.h`/`features.cpp`, both built directly on
+`RecognizeCountersinkHoles()`'s own `FindAdjacentConeCylinderPairs()`
+helper (the thirteenth session's own construction, above) rather than
+duplicating it.
+
+First, `dino8::kernel::RecognizeTaperedBosses(solid)` closes this file's
+own total absence of any CONVEX-cone recognition - genuinely new
+capability, not a citation fix: every existing `Recognize*` function that
+touches a cone (`RecognizeCountersinkHoles()`) only ever reads the
+CONCAVE half of `ScanFullConeFaces()`'s own candidates, the same way
+`RecognizeHoles()` only ever reads the concave half of
+`ScanFullCylinderFaces()`'s. `RecognizeTaperedBosses()` is the boss-side
+(CONVEX) mirror: a cylindrical shaft feeding into a conical taper sharing
+the same axis line and touching at a matching radius - a dowel pin with a
+chamfered lead-in point, or (the opposite orientation) a flared conical
+pad narrowing to a cylindrical shaft. `FindAdjacentConeCylinderPairs()`
+itself needed no change at all to serve this - it never reads either
+candidate's own `concave` flag, so the identical pairing test already
+works unchanged when fed the CONVEX half of both scans instead of the
+concave half. Like `SteppedBossFeature` before it, a tapered boss has no
+fixed "which segment is the base" convention (unlike a countersink, whose
+entry is always the cone's own wide mouth) - `base_is_cylindrical` records
+which segment `origin` actually sits on, read via the same on-axis
+`Mesh::ContainsPoint()` attached/free probe every other boss-side
+`Recognize*` function already uses.
+
+Two genuine, confirmed pitfalls found and fixed while building this
+evidence, both in the TEST FIXTURE builder, not in the recognizer itself
+(mirroring the thirteenth session's own precedent of disclosing fixture
+pitfalls separately from recognizer pitfalls): (1) `Brep::ConicalFace`'s
+own contract (`frame.origin` is the cone's TRUE APEX, strictly outside the
+trimmed patch, not the patch's own narrow end - brep.h's own doc comment)
+was initially violated by placing `frame.origin` directly at the patch's
+own narrow end instead of offsetting it by `radius0/tan(half_angle)`; this
+built a genuinely wrong surface (confirmed directly via `dino8_scratch_test`:
+`ON_Cone::ApexPoint()` came back sitting exactly on top of the patch's own
+narrow end instead of further beyond it), not merely a mislabeled one -
+fixed by computing the same apex offset `BuildCountersinkHoleFixture()`'s
+own construction already applies, generalized from an angle PARAMETER to
+the slope implied directly by `radius0`/`radius1`/`length`. (2) a
+standalone (no-boolean, `Brep::FromMixedFaces()`-only) fixture combining a
+genuine cylinder-to-cylinder RADIUS STEP with a true end cap on the SAME
+solid - a combination no existing test anywhere in this file had - leaves
+`Mesh::ContainsPoint()` and `Volume()` both wrong specifically at that
+capped end, confirmed directly (`dino8_scratch_test`) to reproduce on a
+bare two-segment stepped cylinder with two end caps and nothing else, no
+cone involved at all: a real, previously-unconfirmed `FromMixedFaces()`
+construction gap, disclosed here rather than chased further (out of scope
+for a recognition-only pass - the underlying step-ring/cap interaction
+itself is untouched by this session's own work, which lives entirely in
+`features.h`/`features.cpp`). Worked around in the test fixture two
+different ways depending on which end needed to read reliably: the
+"ordinary" orientation's own sanity/volume checks were narrowed to avoid
+that specific cap instead (verified directly on the B-rep's own
+radius/length fields plus a bounding-box reach check, not a whole-solid
+tessellated volume); the "flared-base" orientation's own fixture avoids
+the step+cap combination entirely by using a SECOND, wider CONE (a "pad")
+in place of a cylindrical filler body - a cone sharing the feature cone's
+own touching radius is invisible to `FindAdjacentConeCylinderPairs()`'s
+cone-vs-CYLINDER pairing (confirmed the naive cylindrical-filler version
+first: it produces a real, reproducible false pairing, matching the
+filler body's own radius/length instead of the shaft's, not a hypothetical
+concern).
+
+Verified by 1 new test with 4 sub-cases (`TestRecognizeTaperedBossesRoundTrip`,
+tests/test_basic.cpp): the ordinary (cylindrical-base) orientation
+recovers the shaft's exact radius/length, the taper's exact tip/base
+radii/length/full included angle, and the exact attach point/outward
+direction; the flared-base orientation recovers the same fields with
+`base_is_cylindrical` correctly false and the taper's own `cone_large_radius`
+correctly read at the PAD TRANSITION, not the pad's own further, wider
+radius; a free-standing tapered rod (open on both ends) reports
+`through = true`; and negative controls confirm a plain solid cylinder and
+a plain CONCAVE countersink (opposite winding) both find nothing.
+
+Second, `dino8::kernel::RecognizeCountersinkChains(solid)` closes
+`RecognizeCountersinkHoles()`'s own disclosed "a countersink stacked with
+a further counterbore/pilot step on the same axis ... is out of scope
+here" gap - genuinely new capability, the first N-segment compound
+feature this file has that STARTS from a cone rather than being built
+entirely out of cylinders (`RecognizeSteppedHoleChains`/
+`RecognizeSteppedBossChains`, twelfth session). Reuses
+`FindAdjacentConeCylinderPairs()` unchanged to find the cone's own first
+matching cylinder, then continues a simple forward-only walk from that
+cylinder's own far end through any further adjacent, non-overlapping,
+differing-radius cylindrical candidates - the same pairwise adjacency
+test `FindSteppedChains()` itself uses, but a plain one-directional walk
+rather than a full per-end link table, since the cone's own end already
+fixes which direction is "forward" (unlike a plain stepped hole, there is
+no "which end is the entry" ambiguity left to resolve here). A chain
+reaching fewer than two cylindrical steps (the cone touching exactly one
+cylinder that doesn't itself continue) is `RecognizeCountersinkHoles()`'s
+own disjoint domain, not repeated here.
+
+Verified by 1 new test (`TestRecognizeCountersinkChainsRoundTrip`,
+tests/test_basic.cpp) built via a new fixture,
+`BuildCountersinkChainFixture` (extends `BuildCountersinkHoleFixture`'s
+own sleeve+cone+cylinder tool with a second, narrower `CylindricalFace`
+segment - ONE compound tool, ONE `BooleanCombineGeneral()` Difference
+pass, the same "single compound tool, not two sequential Difference
+passes" precedent `CounterboreHole()`'s own doc comment establishes,
+avoided here deliberately after confirming directly that two sequential
+real cuts on the same axis is exactly the composition
+`ClipPolygonByCircle3d`'s own doc comment already disclaims): a THROUGH
+3-step chain (countersink mouth, first pilot bore, a further-reduced final
+bore extending past the box) recovers the countersink's own mouth
+diameter/angle, both cylindrical steps' own exact radius, the first
+step's own exact length and the second step's own exact TOTAL
+(box-clipped) length - not the tool's own nominal, further-reaching one,
+the same "recognizes the real, clipped geometry" property
+`RecognizeSteppedHoleChains()`'s own through case already established -
+and `through = true`; a sanity check confirms `RecognizeCountersinkHoles()`
+itself still reports only the first pilot bore on this same fixture,
+never reaching the third segment; and a negative control confirms a plain
+single-step countersink (`RecognizeCountersinkHoles()`'s own domain) finds
+no chain here.
+
+**No score change**: "Feature recognition" was already counted `partial`
+and stays `partial` here too - a general (non-cylindrical) pocket remains
+unrecognized, a countersink chain mixing MORE than one cone (or a cone
+anywhere but the chain's own first step) is out of scope, and no
+`dino8-app` command surfaces any of this. Still **6/16/2, 58.3%**,
+identical to the count directly above. Full `dino8_kernel_tests` suite
+(via `ctest`): 7048 checks, 100% passing, 0 regressions.
+
 **Fossilith kernel — Curve operations** (curveops):
 - [partial] Curve fairing/smoothing — app-only Laplacian smoothing (dino8-app/src/commands/cmd_meshtools.cpp:740 / cmd_remaining.cpp:866); no kernel fairing.
 - [partial] Match curve end continuity — `MatchCommand` (dino8-app/src/commands/cmd_curves2.cpp:1500), position/tangent only, app-only.

@@ -1209,4 +1209,208 @@ std::vector<SteppedBossChain> RecognizeSteppedBossChains(const Brep& solid) {
   return out;
 }
 
+std::vector<TaperedBossFeature> RecognizeTaperedBosses(const Brep& solid) {
+  std::vector<TaperedBossFeature> out;
+
+  std::vector<ConeFaceCandidate> cones;
+  for (ConeFaceCandidate& c : ScanFullConeFaces(solid)) {
+    if (!c.concave) cones.push_back(c);
+  }
+  std::vector<CylindricalFaceCandidate> cyls;
+  for (CylindricalFaceCandidate& c : ScanFullCylinderFaces(solid)) {
+    if (!c.concave) cyls.push_back(c);
+  }
+  if (cones.empty() || cyls.empty()) return out;
+
+  const Mesh solid_mesh = solid.TessellateToClosedMesh(16, 32);
+
+  for (const ConeCylinderStep& step : FindAdjacentConeCylinderPairs(cones, cyls)) {
+    const ConeFaceCandidate& cone = cones[step.cone_index];
+    const CylindricalFaceCandidate& cyl = cyls[step.cyl_index];
+
+    // step.axis points from the cone's own open (non-touching) end through
+    // the touch point to the cylinder's own outer end (far_point) - exactly
+    // RecognizeCountersinkHoles()'s own "into the material" direction, the
+    // OPPOSITE of BossFeature's own "away from material" convention this
+    // function needs, so `away_axis` (base toward tip) is the reverse.
+    const Point3d cyl_outer = step.far_point;    // candidate base end
+    const Point3d cone_outer = step.open_point;  // candidate tip end
+    const Vector3d away_axis = -step.axis;       // base -> tip
+
+    CylindricalFaceCandidate merged;
+    merged.radius = std::max(cyl.radius, step.open_radius);
+    merged.axis_ref = cyl_outer;
+    merged.axis_dir = away_axis;
+    merged.t_min = 0.0;
+    merged.t_max = step.cyl_length + step.cone_length;
+    const EndOccupancy occ = ClassifyEndOccupancy(solid_mesh, merged);
+    const bool near_attached = occ.near_inside;  // cyl_outer end
+    const bool far_attached = occ.far_inside;    // cone_outer end
+    if (near_attached && far_attached) continue;  // both embedded: not a visible feature
+
+    // Full included angle from the cone's own MEASURED slope, same
+    // construction RecognizeCountersinkHoles() itself uses - not any
+    // ON_Cone field (see ConeFaceCandidate's own doc comment for why).
+    const double half_angle = std::atan2(cone.radius_max - cone.radius_min, cone.t_max - cone.t_min);
+
+    TaperedBossFeature tf;
+    tf.cyl_radius = cyl.radius;
+    tf.cyl_length = step.cyl_length;
+    tf.cone_small_radius = cone.radius_min;
+    tf.cone_large_radius = cone.radius_max;
+    tf.cone_length = step.cone_length;
+    tf.taper_angle_degrees = 2.0 * half_angle * 180.0 / ON_PI;
+    tf.cyl_face_index = cyl.face_index;
+    tf.cone_face_index = cone.face_index;
+
+    if (!near_attached && !far_attached) {
+      // Free on both ends - a free-standing tapered rod (see BossFeature's
+      // own doc comment for why this is not a chain embedded partway
+      // through a wall). Pin the origin at the cylindrical segment's own
+      // outer end arbitrarily, mirroring BossFeature's/SteppedBossFeature's
+      // own "through" convention.
+      tf.through = true;
+      tf.base_is_cylindrical = true;
+      tf.origin = cyl_outer;
+      tf.axis = away_axis;
+    } else if (near_attached) {
+      // cyl_outer end attached: the cylindrical shaft is the base, the
+      // cone is the free tip (a dowel pin with a chamfered lead-in point).
+      tf.through = false;
+      tf.base_is_cylindrical = true;
+      tf.origin = cyl_outer;
+      tf.axis = away_axis;
+    } else {
+      // cone_outer end attached: the conical segment is the base (a
+      // flared conical pad narrowing to a cylindrical free tip).
+      tf.through = false;
+      tf.base_is_cylindrical = false;
+      tf.origin = cone_outer;
+      tf.axis = -away_axis;
+    }
+    out.push_back(tf);
+  }
+
+  return out;
+}
+
+std::vector<CountersinkChain> RecognizeCountersinkChains(const Brep& solid) {
+  std::vector<CountersinkChain> out;
+
+  std::vector<ConeFaceCandidate> cones;
+  for (ConeFaceCandidate& c : ScanFullConeFaces(solid)) {
+    if (c.concave) cones.push_back(c);
+  }
+  std::vector<CylindricalFaceCandidate> cyls;
+  for (CylindricalFaceCandidate& c : ScanFullCylinderFaces(solid)) {
+    if (c.concave) cyls.push_back(c);
+  }
+  if (cones.empty() || cyls.size() < 2) return out;
+
+  const Mesh solid_mesh = solid.TessellateToClosedMesh(16, 32);
+  const double kTol = tolerance::kDistance * 100.0;
+
+  for (const ConeCylinderStep& step : FindAdjacentConeCylinderPairs(cones, cyls)) {
+    const ConeFaceCandidate& cone = cones[step.cone_index];
+
+    std::vector<CountersinkChainStep> steps;
+    steps.push_back({cyls[step.cyl_index].radius, step.cyl_length, cyls[step.cyl_index].face_index});
+
+    std::vector<bool> used(cyls.size(), false);
+    used[step.cyl_index] = true;
+
+    Point3d cur_point = step.far_point;
+    Vector3d cur_axis = step.axis;  // continues straight past the first cylinder step
+    double cur_radius = cyls[step.cyl_index].radius;
+
+    // Forward-only walk from the first cylinder's own far end through any
+    // further adjacent, non-overlapping, differing-radius cylindrical
+    // candidates - the same pairwise adjacency test FindSteppedChains()
+    // itself uses (same axis line, a genuine 3D-touching end, differing
+    // radius), but as a simple one-directional walk rather than a full
+    // per-end link table, since the cone's own end already fixes which
+    // direction is "forward" - there is no reverse direction to walk here.
+    for (;;) {
+      int match_index = -1;
+      bool ambiguous = false;
+      for (size_t k = 0; k < cyls.size(); ++k) {
+        if (used[k]) continue;
+        const CylindricalFaceCandidate& cand = cyls[k];
+        if (cand.radius == cur_radius) continue;  // same radius - not a step at all
+
+        const double align = std::fabs(ON_DotProduct(cand.axis_dir, cur_axis));
+        if (align < 1.0 - tolerance::kAlignment) continue;
+        const Vector3d to_c = cand.axis_ref - cur_point;
+        const Vector3d off_axis = to_c - ON_DotProduct(to_c, cur_axis) * cur_axis;
+        if (off_axis.Length() > kTol) continue;  // not the same axis line
+
+        const Point3d cand_lo = cand.axis_ref + cand.t_min * cand.axis_dir;
+        const Point3d cand_hi = cand.axis_ref + cand.t_max * cand.axis_dir;
+        Point3d outer;
+        if (cur_point.DistanceTo(cand_lo) <= kTol) {
+          outer = cand_hi;
+        } else if (cur_point.DistanceTo(cand_hi) <= kTol) {
+          outer = cand_lo;
+        } else {
+          continue;  // no shared endpoint at all - not adjacent
+        }
+
+        const double seg_len = cand.t_max - cand.t_min;
+        const Point3d predicted_outer = cur_point + cur_axis * seg_len;
+        if (predicted_outer.DistanceTo(outer) > kTol) continue;  // doesn't continue straight - not a genuine step
+
+        if (match_index != -1) {
+          ambiguous = true;
+          break;
+        }
+        match_index = static_cast<int>(k);
+      }
+      if (match_index == -1 || ambiguous) break;  // chain terminus (or a genuinely ambiguous branch - don't guess)
+
+      const CylindricalFaceCandidate& matched = cyls[static_cast<size_t>(match_index)];
+      const double seg_len = matched.t_max - matched.t_min;
+      steps.push_back({matched.radius, seg_len, matched.face_index});
+      used[static_cast<size_t>(match_index)] = true;
+      cur_point = cur_point + cur_axis * seg_len;
+      cur_radius = matched.radius;
+    }
+
+    if (steps.size() < 2) continue;  // exactly one cylinder step: RecognizeCountersinkHoles()'s own domain
+
+    double total_cyl_length = 0.0;
+    double max_radius = step.open_radius;
+    for (const CountersinkChainStep& s : steps) {
+      total_cyl_length += s.length;
+      max_radius = std::max(max_radius, s.radius);
+    }
+
+    // Same on-axis open/capped probe RecognizeCountersinkHoles() itself
+    // uses, applied to the merged cone+chain span.
+    CylindricalFaceCandidate merged;
+    merged.radius = max_radius;
+    merged.axis_ref = step.open_point;
+    merged.axis_dir = step.axis;
+    merged.t_min = 0.0;
+    merged.t_max = step.cone_length + total_cyl_length;
+    const EndOccupancy occ = ClassifyEndOccupancy(solid_mesh, merged);
+    const bool near_open = !occ.near_inside;
+    const bool far_open = !occ.far_inside;
+    if (!near_open) continue;  // a countersink's own entry must be open to the outside
+
+    const double half_angle = std::atan2(cone.radius_max - cone.radius_min, cone.t_max - cone.t_min);
+
+    CountersinkChain chain;
+    chain.origin = step.open_point;
+    chain.axis = step.axis;
+    chain.countersink_diameter = 2.0 * step.open_radius;
+    chain.countersink_angle_degrees = 2.0 * half_angle * 180.0 / ON_PI;
+    chain.countersink_face_index = cone.face_index;
+    chain.steps = std::move(steps);
+    chain.through = far_open;
+    out.push_back(std::move(chain));
+  }
+
+  return out;
+}
+
 }  // namespace dino8::kernel

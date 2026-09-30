@@ -601,4 +601,155 @@ struct SteppedBossChain {
 // specifically; and no `dino8-app` command surfaces any of this.
 std::vector<SteppedBossChain> RecognizeSteppedBossChains(const Brep& solid);
 
+// One compound tapered boss recognized on an existing solid (parity-map
+// "Feature recognition" - the boss-side (CONVEX) mirror of
+// CountersinkFeature/RecognizeCountersinkHoles() above, closing this
+// file's own long-standing total absence of any CONVEX-cone recognition:
+// a cylindrical shaft feeding into a conical taper sharing the same axis
+// line and touching at a matching radius - e.g. a dowel pin with a
+// chamfered lead-in tip, a shoulder screw's own conical point, or a boss
+// whose base is a flared conical pad narrowing to a cylindrical shaft.
+// Built on the SAME FindAdjacentConeCylinderPairs() helper
+// RecognizeCountersinkHoles() itself uses (that pairing test is already
+// concave/convex-agnostic - it never reads either candidate's own
+// `concave` flag - so this is the identical geometric match, filtered to
+// the CONVEX half of both ScanFullConeFaces() and ScanFullCylinderFaces()
+// instead of the concave half).
+//
+// Unlike a countersink, whose entry is always the cone's own wide mouth
+// (HoleFeature's "into the material" convention leaves no ambiguity about
+// which segment is the surface-facing one), a tapered boss has no such
+// fixed convention - either the cylindrical shaft or the conical segment
+// can be the one actually attached to the body it emerges from, the exact
+// same ambiguity SteppedBossFeature's own doc comment discloses for a
+// two-cylinder stepped boss - so `base_is_cylindrical` records which
+// segment `origin` sits on, read via the same on-axis
+// `Mesh::ContainsPoint()` attached/free probe every other boss-side
+// Recognize* function in this file already uses.
+//
+// `origin` is the point on the axis where the feature meets the body it
+// emerges from; `axis` is a unit vector pointing AWAY from the material,
+// from `origin` toward the free tip (BossFeature's own convention).
+// `cyl_radius`/`cyl_length` describe the cylindrical segment;
+// `cone_small_radius`/`cone_large_radius`/`cone_length` describe the
+// conical segment - both true radii read directly off the same sampled
+// boundary points ScanFullConeFaces() itself already reads its own axial
+// extent from, not any ON_Cone field (see ConeFaceCandidate's own doc
+// comment for why); `taper_angle_degrees` is the cone's own full included
+// angle. `through` mirrors BossFeature::through/SteppedBossFeature::through:
+// true only when NEITHER end is attached (a free-standing tapered rod,
+// `origin` pinned to the cylindrical segment's own outer end arbitrarily,
+// `base_is_cylindrical = true`).
+//
+// Still partial: this only ever matches a SINGLE cone segment directly
+// adjacent to a SINGLE cylinder segment - a tapered boss stacked with a
+// further stepped segment (three or more steps mixing conical and
+// cylindrical segments) is out of scope here, the same limitation
+// RecognizeCountersinkHoles() itself discloses for the concave case; and,
+// like every other Recognize* function in this file, this inherits
+// Mesh::ContainsPoint()'s own disclosed "closed, consistently-oriented
+// mesh" precondition, including RecognizeBosses()'s own CONFIRMED
+// Union-side gap (see BossFeature's own doc comment) for a tapered boss
+// built via BooleanCombineGeneral()'s own Union path specifically.
+struct TaperedBossFeature {
+  Point3d origin;
+  Vector3d axis;
+  bool base_is_cylindrical = false;
+  double cyl_radius = 0.0;
+  double cyl_length = 0.0;
+  double cone_small_radius = 0.0;
+  double cone_large_radius = 0.0;
+  double cone_length = 0.0;
+  double taper_angle_degrees = 0.0;
+  bool through = false;
+
+  // Face indices of the two walls this feature was merged from. Same
+  // convention as CounterboreFeature's own counterbore_face_index/
+  // drill_face_index.
+  int cyl_face_index = -1;
+  int cone_face_index = -1;
+};
+
+std::vector<TaperedBossFeature> RecognizeTaperedBosses(const Brep& solid);
+
+// One segment of the cylindrical tail recognized by
+// RecognizeCountersinkChains() below - the same shape as SteppedHoleStep,
+// reused rather than duplicated since a countersink chain's own
+// cylindrical steps are geometrically identical to a plain stepped hole's.
+struct CountersinkChainStep {
+  double radius = 0.0;
+  double length = 0.0;
+  int face_index = -1;
+};
+
+// A countersink whose pilot bore is itself stepped - closing
+// RecognizeCountersinkHoles()'s own disclosed "a countersink stacked with
+// a further counterbore/pilot step on the same axis (three or more steps
+// mixing conical and cylindrical segments) is out of scope here" gap: a
+// single concave full-cone mouth (exactly like CountersinkFeature's own
+// `countersink_diameter`/`countersink_angle_degrees`) followed by TWO OR
+// MORE adjacent, non-overlapping, pairwise-different-radius concave
+// full-cylinder steps - e.g. a countersunk clearance hole that itself
+// steps down through a counterbore recess to a narrower final pilot bore,
+// a real 3-step machined feature no existing Recognize* function in this
+// file can see as one compound feature: RecognizeCountersinkHoles() only
+// ever matches the cone to exactly ONE adjacent cylinder (see its own doc
+// comment), and RecognizeSteppedHoleChains() never looks at cone faces at
+// all.
+//
+// `origin`/`axis` describe the countersink's own entry point exactly like
+// CountersinkFeature's own fields (axis pointing INTO the material).
+// `countersink_diameter`/`countersink_angle_degrees` describe the cone
+// exactly like CountersinkFeature's own fields. `steps` lists each
+// cylindrical segment's own radius/length/face_index in entry-to-far
+// order, the SAME "each entry measured from where the previous one ends"
+// convention SteppedHoleChain's own `steps` field already uses - `steps`
+// always has at least 2 entries here (an exactly-one-cylinder-step
+// countersink is RecognizeCountersinkHoles()'s own disjoint domain, not
+// repeated in this function's output, the same one-capability-several-
+// vocabularies convention this file's other Recognize* functions already
+// follow). `through` reflects the chain's own far end.
+struct CountersinkChain {
+  Point3d origin;
+  Vector3d axis;
+  double countersink_diameter = 0.0;
+  double countersink_angle_degrees = 0.0;
+  int countersink_face_index = -1;
+  std::vector<CountersinkChainStep> steps;
+  bool through = false;
+};
+
+// Scans `solid` for a concave full cone whose narrower end touches a
+// concave full-cylinder candidate (the exact same FindAdjacentConeCylinderPairs()
+// match RecognizeCountersinkHoles() itself uses), then - unlike
+// RecognizeCountersinkHoles(), which stops there - continues walking
+// FORWARD from that first cylinder's own far end through any further
+// adjacent, non-overlapping, differing-radius cylindrical candidates
+// (the same pairwise adjacency test FindSteppedChains() itself uses,
+// applied here as a simple forward walk rather than a full bidirectional
+// chain scan, since a countersink's own cone end is always the one fixed,
+// known starting point - there is no "which end is the entry" ambiguity
+// to resolve the way FindSteppedChains() itself has to for a plain
+// stepped hole). An end reachable by more than one un-consumed candidate
+// is ambiguous and treated as a chain terminus, the same conservative
+// "don't guess" rule FindSteppedChains() itself applies.
+//
+// A chain reaching fewer than two cylindrical steps total (i.e. the cone
+// touches exactly one cylinder that doesn't itself continue any further)
+// is RecognizeCountersinkHoles()'s own domain and is not repeated here.
+//
+// The chain's own two outer ends (the cone's own open mouth, and the
+// final cylindrical step's own far end) are classified open/capped with
+// the exact same on-axis Mesh::ContainsPoint() test RecognizeCountersinkHoles()
+// itself uses, tessellating `solid` once and reusing it for every
+// candidate chain; a chain with neither end open is silently skipped,
+// mirroring RecognizeSteppedHoleChains()'s own "both ends capped" skip.
+//
+// Still partial: only a SINGLE cone at the chain's own entry is supported
+// (a chain of two or more cones, or a cone appearing anywhere but the
+// very first step, is out of scope); a general (non-cylindrical) pocket
+// remains out of scope; and this inherits Mesh::ContainsPoint()'s own
+// disclosed "closed, consistently-oriented mesh" precondition.
+std::vector<CountersinkChain> RecognizeCountersinkChains(const Brep& solid);
+
 }  // namespace dino8::kernel
