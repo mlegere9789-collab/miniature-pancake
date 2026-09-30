@@ -277,3 +277,40 @@ Rho=0.5
 Enter
 SelAll
 Volume
+# --- FilletEdge RailType=DistFromEdge/DistBetweenRails: kernel::
+# FilletConvexEdgeByDistanceFromEdge/ByDistanceBetweenRails - the SAME
+# rolling-ball circular fillet FilletConvexEdge itself builds, just
+# specified by a distance instead of the radius directly (Radius supplies
+# that distance). On a box corner the interior dihedral angle theta is
+# exactly 90 degrees, so DistFromEdge's closed form radius = distance *
+# tan(theta/2) gives radius = distance * tan(45deg) = distance exactly;
+# at distance=2 that is bit-for-bit the same r=2 rolling-ball fillet the
+# very first FilletEdge case in this script already builds, so this
+# reproduces that same already-verified Volume = 991.4 through the
+# distance-based RailType path instead of a literal Radius.
+SelAll
+Hide
+Box 900,0,0 910,10,0 10
+FilletEdge
+Radius=2
+RailType=DistFromEdge
+910,10,5
+Enter
+SelAll
+Volume
+# --- DistBetweenRails' own closed form is radius = rail_distance /
+# (2*cos(theta/2)); at theta=90 degrees, cos(45deg) = sqrt(2)/2, so
+# radius^2 = rail_distance^2 / (4*cos^2(45deg)) = rail_distance^2 / 2 -
+# at rail_distance=2 that is radius^2 = 2 exactly (radius =
+# sqrt(2) =~ 1.41421), removed volume = 10*2*(1-pi/4) = 4.292, leaving
+# 1000 - 4.292 = 995.7.
+SelAll
+Hide
+Box 950,0,0 960,10,0 10
+FilletEdge
+Radius=2
+RailType=DistBetweenRails
+960,10,5
+Enter
+SelAll
+Volume

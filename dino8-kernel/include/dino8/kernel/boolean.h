@@ -403,7 +403,27 @@ Brep BooleanIntersectConvexPlanar(const Brep& a, const Brep& b);
 // disjoint - no shared contact curve at all, the common case this pass
 // targets - reassembles cleanly; see boolean.cpp's own doc comment at this
 // function's tail for the full argument.
-Brep BooleanCombinePlanar(const Brep& a, const Brep& b, BooleanOp op);
+//
+// `tolerance`, if non-negative, is used as-is for every distance/coincidence
+// test this function makes (SplitAgainstAllPlanes' own split tolerance,
+// ClassifyPointVsSolid's on/in/out threshold, and the Difference branch's
+// own `same_plane` coincident-face dedup) - closing the "Tolerant booleans
+// (caller-specified tolerance)" PARITY_MAP.md bullet's own previously-named
+// gap for this engine ("BooleanCombinePlanar... hardcode their own internal
+// tolerance with no caller control at all"). If negative (the default,
+// matching every existing caller), the tolerance is derived automatically
+// from `a`/`b`'s own coordinate magnitudes exactly as before this parameter
+// existed (RelativeTol(), scaled off the larger of the two operands) - the
+// same negative-sentinel convention ClipConvexPolygon() above already
+// established for the identical "caller value if given, else a relative
+// default" shape. A caller-supplied tolerance looser than the operands' own
+// true separation can heal a hairline gap between two operands that should
+// have coincided exactly (e.g. two boxes meant to sit flush but built with
+// a tiny numerical offset) into a single coincident boundary instead of two
+// separately-classified near-miss faces - this is the "caller-specified
+// tolerance" half of that bullet's item; the OTHER half it names
+// (automatic gap-healing with no caller tolerance at all) is untouched.
+Brep BooleanCombinePlanar(const Brep& a, const Brep& b, BooleanOp op, double tolerance = -1.0);
 
 // N-ary counterpart of BooleanCombinePlanar, identical in shape and
 // contract to BooleanCombineMixedNAry below (see that function's own doc
@@ -420,8 +440,13 @@ Brep BooleanCombinePlanar(const Brep& a, const Brep& b, BooleanOp op);
 // fold. Each pairwise call inherits BooleanCombinePlanar's own
 // RefuseCompoundOperand precondition, so every operand in either group
 // must itself be a single-lump Brep.
+//
+// `tolerance` is forwarded as-is to every pairwise BooleanCombinePlanar()
+// call this makes (each fold_union step and the final combine alike) - see
+// that function's own doc comment above for the negative-sentinel ("auto")
+// convention.
 Brep BooleanCombinePlanarNAry(const std::vector<Brep>& first_group, const std::vector<Brep>& second_group,
-                               BooleanOp op);
+                               BooleanOp op, double tolerance = -1.0);
 
 // The Sutherland-Hodgman half-space clipper shared by
 // BooleanIntersectConvexPlanar (above) and ShellConvexPlanar (below) -
@@ -1928,7 +1953,18 @@ Brep DeleteFaceHealConvexPlanar(const Brep& solid, int face_index);
 // shared contact curve still throws the pre-existing "an edge is shared by
 // 3 or more faces" refusal, since nothing about Difference/Intersection
 // separates that contact curve on its own.
-Brep BooleanCombineMixed(const Brep& a, const Brep& b, BooleanOp op);
+//
+// `tolerance`, if non-negative, is used as-is for every distance/coincidence
+// test this function makes (SplitAndBucketMixed's own split/classify
+// tolerance, the Difference branch's own `same_plane` coincident-face
+// dedup, and SynthesizeEndCaps' own per-face probes) - closing the
+// "Tolerant booleans (caller-specified tolerance)" PARITY_MAP.md bullet's
+// own previously-named gap for this engine, the same way BooleanCombinePlanar
+// above already closes it for that engine. If negative (the default,
+// matching every existing caller), the tolerance is derived automatically
+// exactly as before this parameter existed (RelativeTolMixed(), scaled off
+// the larger of the two operands' own extent, cylindrical radius included).
+Brep BooleanCombineMixed(const Brep& a, const Brep& b, BooleanOp op, double tolerance = -1.0);
 
 // Combines an arbitrary number of operands into ONE result via repeated
 // BooleanCombineMixed() pairwise calls - closing this category's own
@@ -1983,7 +2019,12 @@ Brep BooleanCombineMixed(const Brep& a, const Brep& b, BooleanOp op);
 // gap this same PARITY_MAP.md bullet also names ("B-rep XOR returns a
 // two-lump Compound... compound operands are refused by the planar/mixed
 // engines").
+//
+// `tolerance` is forwarded as-is to every pairwise BooleanCombineMixed()
+// call this makes (each fold_union step and the final combine alike) - see
+// that function's own doc comment above for the negative-sentinel ("auto")
+// convention.
 Brep BooleanCombineMixedNAry(const std::vector<Brep>& first_group, const std::vector<Brep>& second_group,
-                              BooleanOp op);
+                              BooleanOp op, double tolerance = -1.0);
 
 }  // namespace dino8::kernel

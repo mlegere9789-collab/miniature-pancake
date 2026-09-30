@@ -12471,6 +12471,117 @@ void TestMeshOffsetMovesVerticesAlongExactVertexNormal() {
   Check(all_exact, "every vertex moves by exactly (0, 0, 2.5) - the flat square's exact normal times the distance");
 }
 
+// OffsetDirectional(): the kernel-native counterpart to OpenNURBS' own
+// ON_Mesh::OffsetMesh(distance, direction) fixed-direction variant, which
+// this codebase never calls (see PARITY_MAP.md's "OpenNURBS-native mesh
+// offset" bullet). Distinct from Offset() in a way this test actually
+// exercises, not just asserts: every vertex must move by the exact SAME
+// vector regardless of its own local (averaged, per-vertex) normal.
+void TestMeshOffsetDirectionalMovesEveryVertexByTheSameFixedVector() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  // On a flat mesh whose own normal IS the chosen direction,
+  // OffsetDirectional must reproduce Offset()'s result exactly.
+  const auto square = MakeFlatUnitSquareMesh();
+  const auto directional = square.OffsetDirectional(2.5, Vector3d(0, 0, 1));
+  Check(directional.VertexCount() == 4 && directional.FaceCount() == 1,
+        "OffsetDirectional() doesn't change vertex/face counts");
+  bool all_exact = true;
+  for (int i = 0; i < 4; ++i) {
+    const Point3d before(square.raw().m_V[i]);
+    const Point3d after(directional.raw().m_V[i]);
+    all_exact = all_exact && std::fabs(after.x - before.x) < 1e-9 && std::fabs(after.y - before.y) < 1e-9 &&
+                std::fabs(after.z - before.z - 2.5) < 1e-9;
+  }
+  Check(all_exact, "on a flat square, OffsetDirectional(2.5, +Z) moves every vertex by exactly (0, 0, 2.5)");
+
+  // `direction` need not be a unit vector - the distance is along its
+  // UNIT direction, not scaled by its own magnitude.
+  const auto non_unit = square.OffsetDirectional(2.5, Vector3d(0, 0, 5));
+  bool non_unit_exact = true;
+  for (int i = 0; i < 4; ++i) {
+    const Point3d before(square.raw().m_V[i]);
+    const Point3d after(non_unit.raw().m_V[i]);
+    non_unit_exact = non_unit_exact && std::fabs(after.z - before.z - 2.5) < 1e-9;
+  }
+  Check(non_unit_exact, "a non-unit direction (0,0,5) still moves each vertex by exactly distance (2.5) along Z, "
+                        "not distance times the vector's own magnitude");
+
+  // Zero-vector direction has no well-defined unit direction - refused.
+  bool threw_zero_direction = false;
+  try {
+    (void)square.OffsetDirectional(1.0, Vector3d(0, 0, 0));
+  } catch (const std::invalid_argument&) {
+    threw_zero_direction = true;
+  }
+  Check(threw_zero_direction, "OffsetDirectional() throws on a zero-vector direction");
+
+  // The real distinguishing case: a V-groove whose two walls meet at a
+  // shared apex edge. Offset() moves the apex vertices along their own
+  // AVERAGED normal (a blend of both walls' normals, different from
+  // either wall's own top-vertex normal) - genuinely different vertices
+  // move by genuinely different vectors. OffsetDirectional(), by
+  // contrast, must move EVERY vertex - apex and wall-top alike - by the
+  // exact same displacement vector, since it never consults per-vertex
+  // normals at all.
+  Mesh groove;
+  ON_Mesh& raw = groove.raw();
+  for (double y : {0.0, 1.0}) {
+    raw.m_V.Append(ON_3fPoint(-1, y, 2));  // top of left wall
+    raw.m_V.Append(ON_3fPoint(0, y, 0));   // apex
+    raw.m_V.Append(ON_3fPoint(1, y, 2));   // top of right wall
+  }
+  auto addquad = [&](int a, int b, int c, int d) {
+    ON_MeshFace f;
+    f.vi[0] = a;
+    f.vi[1] = b;
+    f.vi[2] = c;
+    f.vi[3] = d;
+    raw.m_F.Append(f);
+  };
+  addquad(0, 3, 4, 1);
+  addquad(1, 4, 5, 2);
+
+  const Vector3d direction(0.3, 0.0, 0.9);
+  const auto groove_directional = groove.OffsetDirectional(2.0, direction);
+  const Vector3d expected = 2.0 * (direction / direction.Length());
+  bool all_same_vector = true;
+  for (int i = 0; i < groove.raw().m_V.Count(); ++i) {
+    const Point3d before(groove.raw().m_V[i]);
+    const Point3d after(groove_directional.raw().m_V[i]);
+    const double dx = after.x - before.x, dy = after.y - before.y, dz = after.z - before.z;
+    all_same_vector = all_same_vector && std::fabs(dx - expected.x) < 1e-6 && std::fabs(dy - expected.y) < 1e-6 &&
+                       std::fabs(dz - expected.z) < 1e-6;
+  }
+  Check(all_same_vector,
+        "on the V-groove, OffsetDirectional() moves every vertex - apex and wall-top alike - by the identical "
+        "fixed displacement vector");
+
+  // Offset() on the same groove must NOT do this - the apex vertices'
+  // own averaged normal genuinely differs from a wall-top vertex's, so
+  // at least one vertex's displacement must differ from the others'.
+  const auto groove_offset = groove.Offset(2.0);
+  bool any_different = false;
+  Vector3d first_displacement;
+  for (int i = 0; i < groove.raw().m_V.Count(); ++i) {
+    const Point3d before(groove.raw().m_V[i]);
+    const Point3d after(groove_offset.raw().m_V[i]);
+    const Vector3d disp(after.x - before.x, after.y - before.y, after.z - before.z);
+    if (i == 0) {
+      first_displacement = disp;
+    } else if (std::fabs(disp.x - first_displacement.x) > 1e-6 || std::fabs(disp.y - first_displacement.y) > 1e-6 ||
+               std::fabs(disp.z - first_displacement.z) > 1e-6) {
+      any_different = true;
+    }
+  }
+  Check(any_different,
+        "...whereas the per-vertex-normal Offset() moves the groove's own vertices by genuinely DIFFERENT "
+        "displacement vectors - confirming OffsetDirectional() is solving a different problem, not a renamed "
+        "duplicate");
+}
+
 // Thicken() on the same flat unit square must produce an EXACT unit cube
 // (for distance = 1): 8 vertices, 6 faces (1 flipped original bottom, 1
 // offset top, 4 side walls), closed manifold, volume exactly 1 - a fully
@@ -19221,6 +19332,134 @@ void TestMeshSavePlyBigEndianRoundTrips() {
   }
 }
 
+// SavePly()/LoadPly() close the "kernel SavePly/LoadPly still only handle
+// position/normal/UV, no per-vertex color" gap this format's own PARITY_MAP
+// bullet used to name: Mesh::SetVertexColors() (mesh.h) stores one RGB
+// triple per vertex in ON_Mesh's own `m_C` array - the same array
+// dino8-app's ComputeVertexColors command already writes directly
+// (cmd_meshtools.cpp) - and SavePly()/LoadPly() now read/write it as PLY's
+// ordinary `red`/`green`/`blue` uchar vertex-color convention. Checks the
+// written header actually declares genuine `uchar` color properties (not
+// silently upgraded to `float` the way position/normal/UV are), that the
+// ASCII and binary payloads both round-trip every channel byte-exact (no
+// precision loss - unlike position/UV, which only round-trip within
+// single-precision float error), that a mesh with no colors set keeps
+// writing exactly the same header SavePly() always has (no colors columns
+// at all, not a set-but-empty one), and that a color property declared
+// under a non-`uchar` type (e.g. `float`, as some other tools do write)
+// still reads correctly by value, not by assumed byte width.
+void TestMeshSavePlyVertexColorsRoundTrips() {
+  using dino8::kernel::Color;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Result;
+
+  const auto box = MakeQuadBoxMesh(0, 0, 0, 2, 3, 4);
+
+  // No colors set: the header must have no red/green/blue properties at
+  // all - HasVertexColors() is false, so SavePly() must not write an
+  // "everyone gets black" fallback column.
+  {
+    const std::string path = "dino8_kernel_mesh_ply_no_colors_test.ply";
+    Check(box.SavePly(path) == Result::Ok, "fixture: SavePly succeeds on a mesh with no vertex colors");
+    std::ifstream in(path);
+    std::string line;
+    bool saw_color_property = false;
+    while (std::getline(in, line)) {
+      if (line == "end_header") break;
+      if (line.find("red") != std::string::npos || line.find("green") != std::string::npos ||
+          line.find("blue") != std::string::npos) {
+        saw_color_property = true;
+      }
+    }
+    Check(!saw_color_property,
+          "a mesh with HasVertexColors() == false writes no red/green/blue property lines at all");
+    std::remove(path.c_str());
+  }
+
+  std::vector<Color> colors;
+  for (int i = 0; i < box.VertexCount(); ++i) {
+    colors.push_back(Color{static_cast<unsigned char>((i * 37) % 256), static_cast<unsigned char>((i * 91) % 256),
+                            static_cast<unsigned char>((i * 173) % 256)});
+  }
+
+  auto check_round_trip = [&](bool binary, const std::string& path) {
+    Mesh with_colors = box;
+    Check(with_colors.SetVertexColors(colors) == Result::Ok, "fixture: SetVertexColors succeeds");
+    Check(with_colors.HasVertexColors(), "HasVertexColors() is true once SetVertexColors() was called "
+                                          "with exactly VertexCount() many entries");
+
+    Check(with_colors.SavePly(path, binary) == Result::Ok,
+          binary ? "SavePly(binary=true) succeeds on a mesh with vertex colors"
+                 : "SavePly succeeds on a mesh with vertex colors");
+
+    if (!binary) {
+      std::ifstream in(path);
+      std::string line;
+      bool saw_uchar_red = false, saw_uchar_green = false, saw_uchar_blue = false;
+      while (std::getline(in, line)) {
+        if (line == "end_header") break;
+        if (line == "property uchar red") saw_uchar_red = true;
+        if (line == "property uchar green") saw_uchar_green = true;
+        if (line == "property uchar blue") saw_uchar_blue = true;
+      }
+      Check(saw_uchar_red && saw_uchar_green && saw_uchar_blue,
+            "the header declares genuine 'property uchar red/green/blue' lines, matching PLY's "
+            "ordinary vertex-color convention by name");
+    }
+
+    Mesh reloaded;
+    Check(Mesh::LoadPly(path, reloaded) == Result::Ok, "LoadPly succeeds on a .ply file with vertex colors");
+    Check(reloaded.HasVertexColors(), "the reloaded mesh reports having vertex colors");
+    bool colors_match = true;
+    for (int i = 0; i < reloaded.VertexCount(); ++i) {
+      const Color original = colors[static_cast<size_t>(i)];
+      const Color loaded = reloaded.VertexColorAt(i);
+      if (original.r != loaded.r || original.g != loaded.g || original.b != loaded.b) {
+        colors_match = false;
+        break;
+      }
+    }
+    Check(colors_match, binary
+                             ? "every reloaded vertex's color exactly matches the original, byte-for-byte, "
+                               "through the binary .ply payload (uchar has no precision to lose)"
+                             : "every reloaded vertex's color exactly matches the original, byte-for-byte, "
+                               "through the ASCII .ply payload");
+    std::remove(path.c_str());
+  };
+
+  check_round_trip(/*binary=*/false, "dino8_kernel_mesh_ply_colors_ascii_test.ply");
+  check_round_trip(/*binary=*/true, "dino8_kernel_mesh_ply_colors_binary_test.ply");
+
+  // A color property declared under a non-uchar type (e.g. a hypothetical
+  // other tool that writes 0-255 values as plain floats) still reads
+  // correctly by value, not by an assumed uchar byte width - LoadPly()
+  // already reads every property at its own declared type for position/
+  // normal/UV; this proves the same is true for red/green/blue.
+  {
+    const std::string path = "dino8_kernel_mesh_ply_float_colors_test.ply";
+    std::ofstream out(path, std::ios::binary);
+    out << "ply\nformat ascii 1.0\nelement vertex 3\n";
+    out << "property float x\nproperty float y\nproperty float z\n";
+    out << "property float red\nproperty float green\nproperty float blue\n";
+    out << "element face 1\nproperty list uchar int vertex_indices\nend_header\n";
+    out << "0 0 0 12 34 56\n1 0 0 78 90 123\n0 1 0 200 210 220\n";
+    out << "3 0 1 2\n";
+    out.close();
+
+    Mesh loaded;
+    Check(Mesh::LoadPly(path, loaded) == Result::Ok, "LoadPly() succeeds on a color property declared as 'float'");
+    Check(loaded.HasVertexColors(), "the reloaded mesh reports having vertex colors from the float-typed columns");
+    const Color c0 = loaded.VertexColorAt(0);
+    const Color c1 = loaded.VertexColorAt(1);
+    const Color c2 = loaded.VertexColorAt(2);
+    Check(c0.r == 12 && c0.g == 34 && c0.b == 56 && c1.r == 78 && c1.g == 90 && c1.b == 123 && c2.r == 200 &&
+              c2.g == 210 && c2.b == 220,
+          "every color channel declared as 'float' is read at its own declared type and rounded to the "
+          "correct 0-255 byte, not misread at an assumed uchar width");
+    std::remove(path.c_str());
+  }
+}
+
 // Malformed/out-of-scope input is rejected outright, never silently
 // misread. Covers: an unrecognized `format` line (binary_little_endian
 // and binary_big_endian are both supported now - see
@@ -19302,6 +19541,23 @@ void TestMeshLoadPlyRejectsMalformedFiles() {
     Mesh loaded;
     Check(Mesh::LoadPly(path, loaded) == Result::Failed,
           "LoadPly() fails on a face referencing vertex index 7 when only 3 vertices (0-2) exist");
+    std::remove(path.c_str());
+  }
+
+  {
+    // A vertex element declaring its "red" property as a list (a genuinely
+    // malformed PLY - no real tool emits a per-vertex color as a
+    // variable-length list) must still be rejected, the same "a list
+    // property on a vertex isn't a position/normal/UV/color" rule LoadPly()
+    // already applies to every other vertex property.
+    const std::string path = "dino8_kernel_mesh_ply_list_color_test.ply";
+    write_file(path,
+               "ply\nformat ascii 1.0\nelement vertex 1\nproperty float x\nproperty float y\n"
+               "property float z\nproperty list uchar uchar red\nelement face 0\n"
+               "property list uchar int vertex_indices\nend_header\n0 0 0 1 255\n");
+    Mesh loaded;
+    Check(Mesh::LoadPly(path, loaded) == Result::Failed,
+          "LoadPly() fails when a vertex element declares its 'red' property as a list");
     std::remove(path.c_str());
   }
 
@@ -33291,6 +33547,187 @@ void TestBooleanCombineGeneralNAryRefusesCompoundOperandAtEveryPairwiseStep() {
   }
 }
 
+// Parity-map "Tolerant booleans (caller-specified tolerance)": until this
+// pass, only BooleanCombineGeneral (and ImprintFaces/SplitBySheet/
+// TrimSheetBySolid, which share its SSX engine) took a caller tolerance -
+// BooleanCombinePlanar/BooleanCombineMixed still hardcoded their own
+// internal RelativeTol()/RelativeTolMixed() with no caller control at all.
+// Both now take an optional `tolerance` (negative/omitted = the same
+// auto-derived relative default as before this parameter existed; see
+// ClipConvexPolygon's own identical negative-sentinel convention in
+// boolean.h). This test proves the parameter is a genuine, wired-through
+// control, not a decorative no-op, on a fixture built specifically to make
+// its effect unambiguous: two boxes sharing the same 10x10 footprint,
+// stacked along z with a real but tiny (1e-5) overlap - far bigger than the
+// auto-derived default tolerance (~1e-8 for this fixture's own ~20-unit
+// extent) but far smaller than a deliberately loose caller override.
+void TestBooleanCombinePlanarCallerTolerance() {
+  using dino8::kernel::BooleanCombinePlanar;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+
+  const double g = 1e-5;
+  const Brep a = Brep::Box(0, 0, 0, 10, 10, 10);
+  const Brep b = Brep::Box(0, 0, 10 - g, 10, 10, 20 - g);
+
+  // Default (omitted) and an explicit tight tolerance (1e-8, still well
+  // under the real 1e-5 overlap) both take the classification path that
+  // correctly recognizes the overlap as genuine - a valid closed manifold
+  // whose volume is (up to a small, disclosed reassembly wobble from this
+  // fixture's own coincident side walls - see the Difference-branch same_plane
+  // dedup boolean.cpp's own doc comment describes) close to the exact
+  // 2000 - 1000*g = 1999.999.
+  const Brep default_arg = BooleanCombinePlanar(a, b, BooleanOp::Union);
+  const Brep tight = BooleanCombinePlanar(a, b, BooleanOp::Union, 1e-8);
+  const Mesh default_mesh = default_arg.TessellateToClosedMesh(4, 4);
+  const Mesh tight_mesh = tight.TessellateToClosedMesh(4, 4);
+  Check(default_arg.FaceCount() == tight.FaceCount(),
+        "omitting `tolerance` reproduces the exact same face count as an explicit tight tolerance well under the "
+        "fixture's own real overlap - backward compatibility with every pre-existing caller");
+  Check(std::abs(default_mesh.Volume() - tight_mesh.Volume()) < 1e-9,
+        "omitting `tolerance` reproduces the exact same tessellated volume as an explicit tight tolerance");
+  Check(default_mesh.IsClosedManifold(), "the default-tolerance Union is a genuinely closed, watertight manifold");
+  Check(std::abs(default_mesh.Volume() - (2000.0 - 1000.0 * g)) < 1e-2,
+        "the default-tolerance Union's volume matches the two boxes' true combined volume (double-counting the "
+        "tiny real overlap correctly excluded), within this fixture's own small reassembly wobble");
+
+  // A caller tolerance (1e-3) far looser than the fixture's own real 1e-5
+  // overlap is a genuine, disclosed footgun, not merely a theoretical one:
+  // it makes the classification step treat A's and B's near-coincident
+  // faces as if they were exactly flush, which this specific fixture's own
+  // face-count change (14 -> 11) and loss of manifold closure (verified
+  // directly here, not assumed) demonstrate concretely - proving `tolerance`
+  // reaches the real per-fragment classification decisions inside
+  // SplitAndBucket/ClassifyPointVsSolid, not just a cosmetic default value.
+  const Brep loose = BooleanCombinePlanar(a, b, BooleanOp::Union, 1e-3);
+  const Mesh loose_mesh = loose.TessellateToClosedMesh(4, 4);
+  Check(loose.FaceCount() != default_arg.FaceCount(),
+        "a caller tolerance far looser than the fixture's own real overlap measurably changes the result's face "
+        "count relative to the default/tight case - `tolerance` is genuinely wired through, not decorative");
+  Check(!loose_mesh.IsClosedManifold(),
+        "a real, disclosed scope limit found while building this, not assumed: a caller tolerance far looser than "
+        "the operands' true separation can misclassify a genuinely-overlapping (not just flush-touching) pair of "
+        "faces as coincident, dropping one side's boundary face with nothing compensating for it - degrading a "
+        "valid closed result into a non-manifold one for this exact fixture shape (matching footprints, stacked "
+        "along one axis). Choosing a tolerance appropriately smaller than the real feature size being modeled "
+        "remains the caller's own responsibility, exactly as for every other tolerance parameter in this kernel");
+}
+
+void TestBooleanCombineMixedCallerTolerance() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+
+  // Identical fixture and reasoning to TestBooleanCombinePlanarCallerTolerance
+  // above - BooleanCombineMixed shares the same SplitAndBucketMixed/
+  // RelativeTolMixed shape, just for the mixed planar+cylindrical engine (no
+  // cylindrical face appears in this fixture at all, so it exercises the
+  // exact same planar classification code path as the Planar engine's own
+  // SplitAndBucket/ClassifyPointVsSolid).
+  const double g = 1e-5;
+  const Brep a = Brep::Box(0, 0, 0, 10, 10, 10);
+  const Brep b = Brep::Box(0, 0, 10 - g, 10, 10, 20 - g);
+
+  const Brep default_arg = BooleanCombineMixed(a, b, BooleanOp::Union);
+  const Brep tight = BooleanCombineMixed(a, b, BooleanOp::Union, 1e-8);
+  const Mesh default_mesh = default_arg.TessellateToClosedMesh(4, 4);
+  const Mesh tight_mesh = tight.TessellateToClosedMesh(4, 4);
+  Check(default_arg.FaceCount() == tight.FaceCount(),
+        "omitting `tolerance` reproduces the exact same face count as an explicit tight tolerance well under the "
+        "fixture's own real overlap - backward compatibility with every pre-existing caller");
+  Check(std::abs(default_mesh.Volume() - tight_mesh.Volume()) < 1e-9,
+        "omitting `tolerance` reproduces the exact same tessellated volume as an explicit tight tolerance");
+  Check(default_mesh.IsClosedManifold(), "the default-tolerance Union is a genuinely closed, watertight manifold");
+  Check(std::abs(default_mesh.Volume() - (2000.0 - 1000.0 * g)) < 1e-2,
+        "the default-tolerance Union's volume matches the two boxes' true combined volume, within this fixture's "
+        "own small reassembly wobble");
+
+  const Brep loose = BooleanCombineMixed(a, b, BooleanOp::Union, 1e-3);
+  const Mesh loose_mesh = loose.TessellateToClosedMesh(4, 4);
+  Check(loose.FaceCount() != default_arg.FaceCount(),
+        "a caller tolerance far looser than the fixture's own real overlap measurably changes the result's face "
+        "count relative to the default/tight case - `tolerance` is genuinely wired through, not decorative");
+  Check(!loose_mesh.IsClosedManifold(),
+        "same real, disclosed scope limit as BooleanCombinePlanar's own identical fixture: a caller tolerance far "
+        "looser than the operands' true separation can degrade a valid closed result into a non-manifold one");
+}
+
+// Mirrors TestBooleanCombineGeneralNAryCallerToleranceForwardedToEveryPairwiseCall
+// for the other two B-rep engines: a caller-supplied tolerance reaches every
+// pairwise fold step BooleanCombinePlanarNAry/BooleanCombineMixedNAry make,
+// not just a final combine - proven by matching an equivalent hand-folded
+// sequence of pairwise calls at the identical tolerance, bit-for-bit.
+void TestBooleanCombinePlanarNAryCallerToleranceForwardedToEveryPairwiseCall() {
+  using dino8::kernel::BooleanCombinePlanar;
+  using dino8::kernel::BooleanCombinePlanarNAry;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+
+  // Same axis-aligned "chain of three boxes overlapping by one unit along
+  // x" fixture TestBooleanCombinePlanarNAryUnionThreeOverlappingBoxesMatchesInclusionExclusion
+  // above already uses successfully for this engine - NOT the diagonally-
+  // staggered fixture BooleanCombineGeneralNAry's own equivalent test uses,
+  // which this category's own trailing notes explain is specifically
+  // avoided for that engine's tests because a shared coplanar,
+  // partially-overlapping side face runs into a real, disclosed scope
+  // limit there.
+  const Brep a = Brep::Box(0, 0, 0, 2, 2, 2);
+  const Brep b = Brep::Box(1, 0, 0, 3, 2, 2);
+  const Brep c = Brep::Box(2, 0, 0, 4, 2, 2);
+
+  // 1e-6, not 1e-5: this fixture's own second fold step (acc, c) reclassifies
+  // acc's freshly-computed geometry against c, and a caller tolerance loose
+  // enough to reach whatever small representation error that first fold
+  // introduces risks the exact same real, disclosed "loose tolerance can
+  // misclassify a near-but-not-exactly coincident feature" scope limit
+  // TestBooleanCombinePlanarCallerTolerance/TestBooleanCombineMixedCallerTolerance
+  // above document directly - confirmed empirically for this exact fixture
+  // (1e-6 is safe, 1e-5 is not, for BooleanCombineMixedNAry's own equivalent
+  // test below). 1e-6 is still a real, non-default, explicitly-caller-chosen
+  // value - the point of this test - just a safe one for this fixture.
+  const double tol = 1e-6;
+  const Brep via_nary = BooleanCombinePlanarNAry({a, b, c}, {}, BooleanOp::Union, tol);
+  const Brep folded_by_hand =
+      BooleanCombinePlanar(BooleanCombinePlanar(a, b, BooleanOp::Union, tol), c, BooleanOp::Union, tol);
+  Check(std::abs(NAryTestVolume(via_nary) - NAryTestVolume(folded_by_hand)) < 1e-9,
+        "a caller-supplied tolerance reaches every pairwise fold step, matching an equivalent hand-folded sequence "
+        "of BooleanCombinePlanar calls at the same tolerance");
+}
+
+void TestBooleanCombineMixedNAryCallerToleranceForwardedToEveryPairwiseCall() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanCombineMixedNAry;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+
+  // Same fixture as TestBooleanCombinePlanarNAryCallerToleranceForwardedToEveryPairwiseCall
+  // above, for the same reason - the axis-aligned x-chain every other
+  // Mixed-engine NAry test in this file already uses successfully.
+  const Brep a = Brep::Box(0, 0, 0, 2, 2, 2);
+  const Brep b = Brep::Box(1, 0, 0, 3, 2, 2);
+  const Brep c = Brep::Box(2, 0, 0, 4, 2, 2);
+
+  // A real, disclosed limit found while building this test, not assumed:
+  // this exact fixture's second fold step throws `FromMixedFaces`' own "an
+  // edge is shared by 3 or more faces" at tol=1e-5 (confirmed directly by a
+  // standalone probe sweeping tol from 1e-12 to 1e-5) - the same "loose
+  // tolerance can misclassify a near-but-not-exactly coincident feature"
+  // risk TestBooleanCombineMixedCallerTolerance above documents on a
+  // different fixture, here triggered by the first fold's own freshly
+  // computed geometry rather than a deliberately tiny built-in overlap.
+  // 1e-6 stays well clear of that threshold while still being a real,
+  // explicitly-caller-chosen, non-default value - the point of this test.
+  const double tol = 1e-6;
+  const Brep via_nary = BooleanCombineMixedNAry({a, b, c}, {}, BooleanOp::Union, tol);
+  const Brep folded_by_hand =
+      BooleanCombineMixed(BooleanCombineMixed(a, b, BooleanOp::Union, tol), c, BooleanOp::Union, tol);
+  Check(std::abs(NAryTestVolume(via_nary) - NAryTestVolume(folded_by_hand)) < 1e-9,
+        "a caller-supplied tolerance reaches every pairwise fold step, matching an equivalent hand-folded sequence "
+        "of BooleanCombineMixed calls at the same tolerance");
+}
+
 // Documents the boundary of THIS increment (notch-aware ClassifyPointVsMixedSolid/
 // RayVsMixedFace/CylinderPlaneNoInteraction, boolean.cpp): the ON-check and
 // ray-cast now consult the notched cap's own true (angle, height) curve
@@ -46507,6 +46944,7 @@ int main() {
   TestMeshSavePlyRoundTrips();
   TestMeshSavePlyBinaryRoundTrips();
   TestMeshSavePlyBigEndianRoundTrips();
+  TestMeshSavePlyVertexColorsRoundTrips();
   TestMeshLoadPlyRejectsMalformedFiles();
   TestExactClippingMatchesAreaButNotCellCounts();
   TestExactClippingHandlesNonConvexTrim();
@@ -46778,6 +47216,10 @@ int main() {
   TestBooleanCombineGeneralIntersectionAcceptsCompoundOperand();
   TestBooleanCombineGeneralDifferenceThrowsOnTouchingLumpXorCompound();
   TestBooleanCombineGeneralNAryRefusesCompoundOperandAtEveryPairwiseStep();
+  TestBooleanCombinePlanarCallerTolerance();
+  TestBooleanCombineMixedCallerTolerance();
+  TestBooleanCombinePlanarNAryCallerToleranceForwardedToEveryPairwiseCall();
+  TestBooleanCombineMixedNAryCallerToleranceForwardedToEveryPairwiseCall();
   TestBooleanCombineMixedUnequalRadiusGeneralAngleIntersectionAndAllOps();
   TestBooleanCombineMixedUnequalRadiusGeneralAngleArgumentOrderAndSharedArcIsBitIdentical();
   TestBooleanCombineMixedUnequalRadiusGeneralAngleNegativeControls();
@@ -46866,6 +47308,7 @@ int main() {
   TestMeshTrisToQuadsMergesSeveralIndependentSquaresInOneCall();
   TestMeshTrisToQuadsRefusesCoincidentApexes();
   TestMeshOffsetMovesVerticesAlongExactVertexNormal();
+  TestMeshOffsetDirectionalMovesEveryVertexByTheSameFixedVector();
   TestMeshThickenBuildsExactUnitCubeFromFlatSquare();
   TestMeshFindOffsetSelfIntersectionsDetectsGenuineFold();
   TestMeshInsetFaceUnitSquareMatchesExactConcentricSquare();

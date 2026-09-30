@@ -864,6 +864,28 @@ Point2d Mesh::TextureCoordinateAt(int vertex_index) const {
   return Point2d(s.x, s.y);
 }
 
+Result Mesh::SetVertexColors(const std::vector<Color>& colors) {
+  if (static_cast<int>(colors.size()) != mesh_.m_V.Count()) {
+    return Result::Failed;
+  }
+  mesh_.m_C.SetCount(0);
+  mesh_.m_C.Reserve(static_cast<int>(colors.size()));
+  for (const Color& c : colors) {
+    mesh_.m_C.Append(ON_Color(c.r, c.g, c.b));
+  }
+  return Result::Ok;
+}
+
+bool Mesh::HasVertexColors() const {
+  return mesh_.m_V.Count() > 0 && mesh_.m_C.Count() == mesh_.m_V.Count();
+}
+
+Color Mesh::VertexColorAt(int vertex_index) const {
+  const ON_Color& c = mesh_.m_C[vertex_index];
+  return Color{static_cast<unsigned char>(c.Red()), static_cast<unsigned char>(c.Green()),
+               static_cast<unsigned char>(c.Blue())};
+}
+
 Mesh Mesh::FlipNormals() const {
   Mesh result = *this;
   ON_Mesh& out = result.mesh_;
@@ -1572,6 +1594,7 @@ Result Mesh::SavePly(const std::string& path, bool binary, bool big_endian) cons
 
   const std::vector<Vector3d> normals = ComputeVertexNormals();
   const bool has_uvs = HasTextureCoordinates();
+  const bool has_colors = HasVertexColors();
 
   const std::string format = !binary ? "ascii" : (big_endian ? "binary_big_endian" : "binary_little_endian");
   out << "ply\n";
@@ -1587,6 +1610,11 @@ Result Mesh::SavePly(const std::string& path, bool binary, bool big_endian) cons
   if (has_uvs) {
     out << "property float u\n";
     out << "property float v\n";
+  }
+  if (has_colors) {
+    out << "property uchar red\n";
+    out << "property uchar green\n";
+    out << "property uchar blue\n";
   }
   out << "element face " << mesh_.m_F.Count() << '\n';
   out << "property list uchar int vertex_indices\n";
@@ -1612,11 +1640,21 @@ Result Mesh::SavePly(const std::string& path, bool binary, bool big_endian) cons
         write_f32(uv.x);
         write_f32(uv.y);
       }
+      if (has_colors) {
+        const Color c = VertexColorAt(i);
+        WriteBinaryScalar(out, static_cast<uint8_t>(c.r), big_endian);
+        WriteBinaryScalar(out, static_cast<uint8_t>(c.g), big_endian);
+        WriteBinaryScalar(out, static_cast<uint8_t>(c.b), big_endian);
+      }
     } else {
       out << p.x << ' ' << p.y << ' ' << p.z << ' ' << n.x << ' ' << n.y << ' ' << n.z;
       if (has_uvs) {
         const Point2d uv = TextureCoordinateAt(i);
         out << ' ' << uv.x << ' ' << uv.y;
+      }
+      if (has_colors) {
+        const Color c = VertexColorAt(i);
+        out << ' ' << static_cast<int>(c.r) << ' ' << static_cast<int>(c.g) << ' ' << static_cast<int>(c.b);
       }
       out << '\n';
     }
@@ -1683,22 +1721,28 @@ Result Mesh::LoadPly(const std::string& path, Mesh& out_mesh) {
   bool found_face = false;
   std::vector<Point2d> uvs;
   bool have_uvs = false;
+  std::vector<Color> colors;
+  bool have_colors = false;
 
   for (const PlyElement& element : elements) {
     if (element.name == "vertex") {
       found_vertex = true;
       int idx_x = -1, idx_y = -1, idx_z = -1, idx_u = -1, idx_v = -1;
+      int idx_r = -1, idx_g = -1, idx_b = -1;
       for (size_t i = 0; i < element.properties.size(); ++i) {
         const PlyProperty& property = element.properties[i];
         if (property.is_list) {
-          return Result::Failed;  // a list property on a vertex isn't a position/normal/UV
+          return Result::Failed;  // a list property on a vertex isn't a position/normal/UV/color
         }
         if (property.name == "x") idx_x = static_cast<int>(i);
         else if (property.name == "y") idx_y = static_cast<int>(i);
         else if (property.name == "z") idx_z = static_cast<int>(i);
         else if (property.name == "u") idx_u = static_cast<int>(i);
         else if (property.name == "v") idx_v = static_cast<int>(i);
-        // nx/ny/nz and any other property (color, ...) are read as plain
+        else if (property.name == "red") idx_r = static_cast<int>(i);
+        else if (property.name == "green") idx_g = static_cast<int>(i);
+        else if (property.name == "blue") idx_b = static_cast<int>(i);
+        // nx/ny/nz and any other property (alpha, ...) are read as plain
         // columns below but never looked up by name - discarded, same
         // "always geometry-derived" convention as LoadObj()'s vn.
       }
@@ -1706,6 +1750,18 @@ Result Mesh::LoadPly(const std::string& path, Mesh& out_mesh) {
         return Result::Failed;
       }
       have_uvs = idx_u >= 0 && idx_v >= 0;
+      have_colors = idx_r >= 0 && idx_g >= 0 && idx_b >= 0;
+
+      // Rounds a raw property value (whatever scalar type it was declared
+      // as - `uchar` 0-255 the ordinary case, but a `float`/`double` file
+      // from another tool is tolerated too) to the 0-255 byte Color
+      // holds, clamping rather than wrapping/truncating an out-of-range
+      // value (e.g. a malformed or negative one).
+      auto to_byte = [](double v) -> unsigned char {
+        if (v < 0.0) return 0;
+        if (v > 255.0) return 255;
+        return static_cast<unsigned char>(v + 0.5);
+      };
 
       std::vector<double> values;
       for (int row = 0; row < element.count; ++row) {
@@ -1717,6 +1773,11 @@ Result Mesh::LoadPly(const std::string& path, Mesh& out_mesh) {
                                    values[static_cast<size_t>(idx_z)]));
         if (have_uvs) {
           uvs.push_back(Point2d(values[static_cast<size_t>(idx_u)], values[static_cast<size_t>(idx_v)]));
+        }
+        if (have_colors) {
+          colors.push_back(Color{to_byte(values[static_cast<size_t>(idx_r)]),
+                                  to_byte(values[static_cast<size_t>(idx_g)]),
+                                  to_byte(values[static_cast<size_t>(idx_b)])});
         }
       }
     } else if (element.name == "face") {
@@ -1813,6 +1874,12 @@ Result Mesh::LoadPly(const std::string& path, Mesh& out_mesh) {
       return Result::Failed;  // can only happen if the header lied about the vertex count
     }
     result.SetTextureCoordinates(uvs);
+  }
+  if (have_colors) {
+    if (static_cast<int>(colors.size()) != raw.m_V.Count()) {
+      return Result::Failed;  // can only happen if the header lied about the vertex count
+    }
+    result.SetVertexColors(colors);
   }
 
   out_mesh = std::move(result);
@@ -4189,6 +4256,24 @@ Mesh Mesh::Offset(double distance) const {
   const std::vector<Vector3d> normals = ComputeVertexNormals();
   for (int i = 0; i < result.mesh_.m_V.Count(); ++i) {
     const ON_3dPoint moved = ON_3dPoint(result.mesh_.m_V[i]) + distance * normals[static_cast<size_t>(i)];
+    result.mesh_.m_V[i] = ON_3fPoint(moved);
+  }
+  result.mesh_.m_N.Destroy();
+  result.mesh_.m_FN.Destroy();
+  return result;
+}
+
+Mesh Mesh::OffsetDirectional(double distance, const Vector3d& direction) const {
+  Vector3d unit_direction = direction;
+  if (!unit_direction.Unitize()) {
+    throw std::invalid_argument(
+        "dino8::kernel::Mesh::OffsetDirectional: direction must not be the "
+        "zero vector");
+  }
+  Mesh result = *this;
+  const ON_3dVector offset = distance * unit_direction;
+  for (int i = 0; i < result.mesh_.m_V.Count(); ++i) {
+    const ON_3dPoint moved = ON_3dPoint(result.mesh_.m_V[i]) + offset;
     result.mesh_.m_V[i] = ON_3fPoint(moved);
   }
   result.mesh_.m_N.Destroy();

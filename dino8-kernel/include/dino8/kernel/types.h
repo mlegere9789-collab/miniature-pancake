@@ -40,4 +40,15 @@ struct Interval {
   double max;
 };
 
+// A plain 0-255 RGB triple, kept independent of ON_Color so a caller
+// naming a color (a layer's, a vertex's, ...) doesn't need to know the
+// OpenNURBS type underneath. Originally file_io.h-only (Model::AddLayer()'s
+// `color` parameter); moved here so mesh.h can use it too, for
+// Mesh::SetVertexColors() below.
+struct Color {
+  unsigned char r = 0;
+  unsigned char g = 0;
+  unsigned char b = 0;
+};
+
 }  // namespace dino8::kernel

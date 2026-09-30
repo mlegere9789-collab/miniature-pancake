@@ -1275,6 +1275,10 @@ flcheck "degree 5 x 3, CVs 6 x 25" "VariableBlendSrf's Continuity=Curvature outp
 flcheck "FilletEdge: edge .* -- mesh fallback (exact B-rep trim unavailable here; result is an approximate mesh, not a clean B-rep)" "FilletEdge succeeded on a solid cylinder's own closed (periodic) rim edge via the mesh fallback - this used to fail unconditionally with a watertight-gap error regardless of radius (see adversarial_corpus_notes.md SS3)"
 flcheck "FilletEdge: edge 10 of object .* replaced with an exact conic fillet (rho 0.5, distance 2)" "FilletEdge's Rho option wires straight to kernel::FilletConvexEdgeConic, a genuine ellipse/parabola/hyperbola cross-section blend distinct from the default rolling-ball circular arc"
 flcheck "Volume = 993.3 cubic" "a 10x10x10 box minus a rho=0.5 (exact parabola) conic edge fillet at distance 2 has volume 1000 - 2*2*sin(90deg)*10/6 = 993.3, the closed form FilletConvexEdgeConic's own doc comment derives for rho=0.5"
+flcheck "FilletEdge: edge 10 of object .* replaced with an exact fillet (RailType=DistFromEdge, distance 2)" "FilletEdge's RailType=DistFromEdge option wires straight to kernel::FilletConvexEdgeByDistanceFromEdge, the same rolling-ball circular fillet as a plain Radius= but specified as a distance-from-edge instead of the radius directly"
+flcheck "Volume = 991.4 cubic" "a 10x10x10 box minus a DistFromEdge=2 edge fillet: on a box corner (dihedral 90 degrees) radius = distance*tan(45deg) = 2 exactly, the same r=2 rolling-ball fillet the very first FilletEdge case already verified, now reached via the distance-based RailType path"
+flcheck "FilletEdge: edge 10 of object .* replaced with an exact fillet (RailType=DistBetweenRails, distance 2)" "FilletEdge's RailType=DistBetweenRails option wires straight to kernel::FilletConvexEdgeByDistanceBetweenRails, the same rolling-ball circular fillet specified by the straight-line distance between the two rails instead of the radius"
+flcheck "Volume = 995.7 cubic" "a 10x10x10 box minus a DistBetweenRails=2 edge fillet: radius = rail_distance/(2*cos(45deg)) gives radius^2 = 2 exactly, so removed volume = 10*2*(1-pi/4) = 4.292, leaving 1000 - 4.292 = 995.7"
 echo "$FL" | grep -E "^(ok|FAIL)"
 if echo "$FL" | grep -q "^FAIL"; then fail=1; fi
 flcheck "^ok   expect_objects 40" "fillet script produced the expected object count"
@@ -1302,6 +1306,7 @@ facheck "! ChamferEdge: an asymmetric Distance1/Distance2 or Distance/Angle cham
 facheck "FilletEdge: edge 10 of object 8 replaced with an exact conic fillet (rho 0.5, distance1 2, distance2 4)" "FilletEdge's Rho option combined with Distance2 wires straight to kernel::FilletConvexEdgeConic's own two-INDEPENDENT-distance form, an elliptical (not parabolic) conic cross-section"
 facheck "Volume = 986.7 cubic" "a 10x10x10 box minus an asymmetric distance1=2/distance2=4 rho=0.5 conic edge fillet has volume 1000 - 2*4*sin(90deg)*10/6 = 986.7"
 facheck "! FilletEdge: an exact conic .Rho. fillet needs the whole object to be planar-faced at this edge" "a Rho request on a cylinder's curved-adjacent-face rim edge fails outright instead of silently building a plain circular rolling-ball fillet that quietly ignores Rho - unlike Chamfer's symmetric-distance case, there is no approximate fallback a non-circular conic could ever be represented by"
+facheck "! FilletEdge: an exact RailType=DistFromEdge fillet needs the whole object to be planar-faced at this edge" "a RailType=DistFromEdge request on a cylinder's curved-adjacent-face rim edge fails outright instead of silently building a plain radius=1 rolling-ball fillet under a mismatched distance interpretation - like Rho, the dihedral-angle-to-radius conversion has no meaning on a curved adjacent face"
 facheck "! FilletSrf: the offset surfaces do not meet" "FilletSrf on two nearly-flat planes failed with its own clear diagnostic instead of a garbage surface"
 echo "$FA" | grep -E "^(ok|FAIL)"
 if echo "$FA" | grep -q "^FAIL"; then fail=1; fi
@@ -1676,6 +1681,16 @@ print("object count with arc: %d" % len(dino8.doc.Objects.AllObjects()))
 bad_arc = dino8.doc.Objects.AddArc3Pt(dino8.Point3d(0, 0, 0), dino8.Point3d(10, 0, 0), dino8.Point3d(5, 0, 0))
 print("collinear arc: " + str(bad_arc))
 
+srf_id = dino8.doc.Objects.AddSrfPt([dino8.Point3d(0, 0, 0), dino8.Point3d(10, 0, 0), dino8.Point3d(10, 10, 0), dino8.Point3d(0, 10, 0)])
+srf = dino8.doc.Objects.Find(srf_id)
+print("srf kind: " + srf.ObjectType)
+print("object count with srf: %d" % len(dino8.doc.Objects.AllObjects()))
+try:
+    dino8.doc.Objects.AddSrfPt([dino8.Point3d(0, 0, 0), dino8.Point3d(10, 0, 0)])
+    print("bad srf: no error")
+except RuntimeError as e:
+    print("bad srf rejected: " + str(e))
+
 dino8.RunCommand("NewLayer", "Parts")
 PY
 sed "s|@TMP@|$TMPW|g" "$HERE/python_script.txt" > "$TMPW/python_script.txt"
@@ -1735,7 +1750,10 @@ else
   pscheck "history: arc kind: curve" "dino8.doc.Objects.AddArc3Pt built a curve object, matching rs.AddArc3Pt"
   pscheck "history: object count with arc: 6" "AllObjects sees the box, the circle, the cone, the torus, the interpolated curve and the new arc"
   pscheck "history: collinear arc: None" "AddArc3Pt returned None for three collinear points, matching rs.AddArc3Pt pushing nil instead of raising"
-  pscheck "^ok   expect_objects 6" "RunPythonScript left the box, the circle, the cone, the torus, the interpolated curve and the arc (the sphere was deleted from inside the script)"
+  pscheck "history: srf kind: surface" "dino8.doc.Objects.AddSrfPt built a surface object, matching rs.AddSrfPt"
+  pscheck "history: object count with srf: 7" "AllObjects sees the box, the circle, the cone, the torus, the interpolated curve, the arc and the new surface"
+  pscheck "history: bad srf rejected:" "AddSrfPt raised a Python exception for fewer than three corner points, instead of silently returning"
+  pscheck "^ok   expect_objects 7" "RunPythonScript left the box, the circle, the cone, the torus, the interpolated curve, the arc and the surface (the sphere was deleted from inside the script)"
   grep -q "! Python error" <<<"$PS" && { echo "FAIL python_script.txt printed a Python error"; fail=1; } || echo "ok   no Python script errors"
 fi
 
