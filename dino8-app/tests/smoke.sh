@@ -1292,6 +1292,11 @@ facheck "FilletEdge: edge 10 of object 2 replaced with an exact fillet (radius 1
 facheck "7 faces, 15 edges, closed solid" "the at-the-limit fillet is a genuine closed solid, not degenerate"
 facheck "! FilletEdge: the offset surfaces do not meet" "a radius more than double what the geometry supports failed with a clear diagnostic, not a hang or garbage surface"
 facheck "! FilletEdge: could not build a watertight result at this object's coordinate scale" "a huge-coordinate-scale box's otherwise-ordinary fillet failed gracefully instead of silently returning a broken 'closed solid' (documented kernel limitation)"
+facheck "ChamferEdge: edge 10 of object 5 replaced with an exact chamfer (distance1 2, distance2 4)" "ChamferEdge's Distance2 option wires straight to kernel::ChamferConvexEdge's own two-INDEPENDENT-distance construction, not the symmetric rolling-ball-derived approximate path"
+facheck "Volume = 960 cubic" "a 10x10x10 box minus a 2x4 asymmetric edge chamfer has volume 1000 - 2*4*10/2 = 960 exactly"
+facheck "ChamferEdge: edge 10 of object 6 replaced with an exact chamfer (distance1 2, angle 45 degrees from face 1)" "ChamferEdge's Angle option wires to kernel::ChamferConvexEdgeAngle, whose law-of-sines dispatch to the two-distance form is exercised here at exactly the symmetric 45-degree case"
+facheck "Volume = 980 cubic" "at Angle=45 on a right-angle edge distance_j == distance_i exactly, so this lands on the identical volume a plain symmetric Radius=2 chamfer would: 1000 - 2*2*10/2 = 980"
+facheck "! ChamferEdge: an asymmetric Distance1/Distance2 or Distance/Angle chamfer needs the whole object to be planar-faced at this edge" "a Distance2 request on a cylinder's curved-adjacent-face rim edge fails with a clear diagnostic instead of silently building a SYMMETRIC approximate chamfer that quietly ignores Distance2"
 facheck "! FilletSrf: the offset surfaces do not meet" "FilletSrf on two nearly-flat planes failed with its own clear diagnostic instead of a garbage surface"
 echo "$FA" | grep -E "^(ok|FAIL)"
 if echo "$FA" | grep -q "^FAIL"; then fail=1; fi

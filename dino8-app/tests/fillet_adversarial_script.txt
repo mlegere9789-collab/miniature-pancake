@@ -74,6 +74,60 @@ SelAll
 @expect_objects 1
 SelAll
 Delete
+# --- ChamferEdge Distance2 (asymmetric two-distance chamfer): wires
+# straight to kernel::ChamferConvexEdge(solid, p0, p1, distance_i,
+# distance_j) - a genuine flat planar bevel with two INDEPENDENT
+# distances, not the rolling-ball-derived approximate path below (whose
+# RuledBetween() ruled surface runs between two EQUAL-offset contact
+# curves, so it can only ever build a symmetric chamfer regardless of what
+# Distance2 asks for). Closed form: removed volume = distance_i *
+# distance_j * edge_length / 2 (the chamfer's right-triangle
+# cross-section prism) = 2 * 4 * 10 / 2 = 40, so 1000 - 40 = 960 exactly.
+Box 1300000,0,0 1300010,10,0 10
+ChamferEdge
+Radius=2
+Distance2=4
+1300010,10,5
+Enter
+SelAll
+Volume
+@expect_objects 1
+SelAll
+Delete
+# --- ChamferEdge Angle (Distance/Angle mode): kernel::ChamferConvexEdgeAngle
+# dispatches to the same two-distance construction via the law of sines;
+# at 45 degrees on a right-angle edge distance_j == distance_i EXACTLY (see
+# that function's own doc comment), so this must land on the identical
+# exact volume as a plain symmetric Radius=2 chamfer: 1000 - 2*2*10/2 = 980.
+Box 1300020,0,0 1300030,10,0 10
+ChamferEdge
+Radius=2
+Angle=45
+1300030,10,5
+Enter
+SelAll
+Volume
+@expect_objects 1
+SelAll
+Delete
+# --- ChamferEdge Distance2 on a curved-adjacent-face edge (a solid
+# cylinder's own flat-top rim: one planar face, one cylindrical face): the
+# exact kernel path needs the WHOLE solid planar-faced
+# (kernel::Brep::PlanarFaces()'s own scope), so an asymmetric request here
+# must fail with a clear diagnostic instead of silently building a
+# SYMMETRIC approximate chamfer that quietly ignores Distance2 - exactly
+# the misleading-success bug this Distance2/Angle wiring must not
+# reintroduce. The cylinder itself must survive untouched.
+Cylinder 1300040,0,0 5 20
+ChamferEdge
+Radius=1
+Distance2=2
+1300040,5,20
+Enter
+SelAll
+@expect_objects 1
+SelAll
+Delete
 # --- FilletSrf on two nearly-flat (shallow bend, not a sharp corner)
 # planes: the offset surfaces diverge rather than converge at this shallow
 # an angle for the requested radius, so BuildFillet reports its own clear

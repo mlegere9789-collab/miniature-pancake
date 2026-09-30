@@ -20,6 +20,7 @@
 // back to a mesh boolean of a swept cutting tool, and says so in the
 // command's printed note ("mesh fallback").
 #include "commands/cmd_common.h"
+#include "dino8/kernel/fillet.h"
 #include "geom/BlendSurface.h"
 #include "geom/BrepTrimFace.h"
 #include "geom/SurfaceIntersect.h"
@@ -1054,6 +1055,19 @@ class FilletEdgeCommand : public Command {
       // a plain Radius clears this and reverts to a single constant radius.
       options.push_back({"Radii", "", {}, false, false});
     }
+    if (mode_ == Mode::Chamfer) {
+      // Distance2 (a second, independent setback -- Rhino's ChamferEdge
+      // Distance1/Distance2 mode) and Angle (Rhino's Distance/Angle mode,
+      // mutually exclusive with Distance2) only ever feed the EXACT
+      // kernel::ChamferConvexEdge/ChamferConcaveEdge(Angle) path below: the
+      // rolling-ball-derived approximate fallback has no way to represent
+      // an asymmetric or angled chamfer (it's built from one offset
+      // radius), so leaving either set falls through to a warning instead
+      // of silently building a symmetric result under the caller's asked-
+      // for distances.
+      options.push_back({"Distance2", "", {}, true, false});
+      options.push_back({"Angle", "", {}, true, false});
+    }
     if (mode_ == Mode::Blend) options = {{"Continuity", "Tangency", {"Tangency", "Curvature"}, false, false}};
     options.push_back({"Preview", "No", {"Yes", "No"}, false, true});
     WantPoint("Click an edge to " + std::string(mode_ == Mode::Fillet ? "fillet" : mode_ == Mode::Chamfer ? "chamfer" : "blend") + " (Enter when done)");
@@ -1061,6 +1075,8 @@ class FilletEdgeCommand : public Command {
   void OnOption(CommandContext&, const std::string& n, const std::string& v) override {
     if (n == "Radius") { radius_ = std::atof(v.c_str()); radii_.clear(); }
     if (n == "Radii") radii_ = ParseRadiusHandles(v);
+    if (n == "Distance2") { distance2_ = v.empty() ? std::nullopt : std::optional<double>(std::atof(v.c_str())); if (distance2_) angle_deg_.reset(); }
+    if (n == "Angle") { angle_deg_ = v.empty() ? std::nullopt : std::optional<double>(std::atof(v.c_str())); if (angle_deg_) distance2_.reset(); }
     if (n == "Continuity") curvature_ = (v == "Curvature");
     if (n == "Preview") preview_ = (v == "Yes");
   }
@@ -1117,6 +1133,48 @@ class FilletEdgeCommand : public Command {
     if (!sa || !sb) { ctx.Warn("Could not read the adjacent surfaces"); return; }
     const double tol = std::max(ctx.Settings().absolute_tolerance, 1e-5);
     const std::string label = mode_ == Mode::Fillet ? "FilletEdge" : mode_ == Mode::Chamfer ? "ChamferEdge" : "BlendEdge";
+    // Exact planar chamfer, tried FIRST (ahead of the rolling-ball-derived
+    // approximate path below): kernel::ChamferConvexEdge/ChamferConcaveEdge
+    // (and their Angle overloads) build a genuine flat-bevel B-rep with
+    // real Distance1/Distance2 (or Distance/Angle) support, something the
+    // approximate path below can never produce (RuledBetween's ruled
+    // surface always runs between two EQUAL-offset contact curves, so
+    // it's only ever a symmetric chamfer regardless of what Distance2 or
+    // Angle ask for). Only attempted for a constant (non-variable, no
+    // Radii=) distance and when Preview isn't requested (the exact path
+    // replaces the polysurface directly; there's no separate "preview
+    // surface" form for it, unlike the approximate path's AddSurfaceFrom).
+    // Requires the WHOLE solid - not just the two adjacent faces - to be
+    // planar-faced (kernel::Brep::PlanarFaces()'s own scope); anything
+    // else throws and is treated as "exact unavailable" below.
+    if (mode_ == Mode::Chamfer && radii_.empty() && !preview_) {
+      const bool asymmetric = distance2_.has_value() && std::fabs(*distance2_ - radius_) > 1e-9;
+      const bool angled = angle_deg_.has_value();
+      ON_Brep exact;
+      std::string detail;
+      if (TryExactChamfer(*b, edge.PointAtStart(), edge.PointAtEnd(), exact, detail)) {
+        ctx.Doc().BeginChange(label);
+        if (SceneObject* orig = ctx.Doc().Find(pick.id)) {
+          orig->kind = ObjectKind::Brep;
+          if (!orig->brep) orig->brep = std::make_unique<kernel::Brep>();
+          orig->brep->raw() = exact;
+          orig->surface.reset();
+          orig->InvalidateDisplay();
+        }
+        ctx.Print(label + ": edge " + std::to_string(pick.edge) + " of object " + std::to_string(pick.id) +
+                   " replaced with an exact chamfer (" + ChamferDistanceDescription() + ")");
+        return;
+      }
+      if (asymmetric || angled) {
+        ctx.Warn(label + ": an asymmetric Distance1/Distance2 or Distance/Angle chamfer needs the whole object to be planar-faced at this edge (" + detail +
+                  "); use a plain Radius for the approximate rolling-ball-derived chamfer instead");
+        return;
+      }
+      // Symmetric distance, exact path unavailable here (a curved adjacent
+      // face, a non-planar third face at an end, etc.) - fall through to
+      // the approximate rolling-ball-derived chamfer below exactly as
+      // before this Distance2/Angle wiring existed.
+    }
     ON_NurbsSurface built;
     std::vector<Point3d> spine;
     std::vector<Point3d> contact_pts_a, contact_pts_b;  // one contact point per spine sample, for the mesh-fallback wedge cutter
@@ -1405,9 +1463,61 @@ class FilletEdgeCommand : public Command {
     return s;
   }
 
+  // Printable summary for the exact-chamfer path only (Run() prints this
+  // instead of RadiusDescription() once TryExactChamfer succeeds). Kept as
+  // plain "radius N" for the plain symmetric case - matching
+  // RadiusDescription()'s own wording, since that's the case this fast
+  // path now handles INSTEAD OF the older exact_ok/RoundFaceCorner path
+  // further down (same construction, same message, for the same box-
+  // corner case fillet_script.txt's own ChamferEdge check already covers).
+  std::string ChamferDistanceDescription() const {
+    if (angle_deg_) return "distance1 " + FormatNumber(radius_) + ", angle " + FormatNumber(*angle_deg_) + " degrees from face 1";
+    if (distance2_ && std::fabs(*distance2_ - radius_) > 1e-9) return "distance1 " + FormatNumber(radius_) + ", distance2 " + FormatNumber(*distance2_);
+    return "radius " + FormatNumber(radius_);
+  }
+
+  // Tries the exact kernel chamfer (convex, then concave) between p0/p1 on
+  // `solid`'s own two adjacent faces, using radius_ as distance_i and
+  // either angle_deg_ (Distance/Angle mode) or distance2_.value_or(radius_)
+  // (Distance1/Distance2 mode, symmetric when Distance2 is unset) for the
+  // second parameter. Returns false (leaving `out` untouched) if neither
+  // convexity fits or `solid` isn't fully planar-faced - PlanarFaces()'s
+  // own requirement, inherited by ChamferConvexEdge/ChamferConcaveEdge -
+  // with both underlying exception messages joined into `detail` so a
+  // caller that needs to report a real failure (as opposed to silently
+  // falling back) has something concrete to show, not just "didn't work".
+  bool TryExactChamfer(const ON_Brep& solid, Point3d p0, Point3d p1, ON_Brep& out, std::string& detail) const {
+    kernel::Brep kb;
+    kb.raw() = solid;
+    const double d_i = radius_;
+    const bool use_angle = angle_deg_.has_value();
+    const double angle_from_i = use_angle ? (*angle_deg_) * ON_PI / 180.0 : 0.0;
+    const double d_j = distance2_.value_or(d_i);
+    std::string convex_err, concave_err;
+    auto attempt = [&](bool convex, std::string& err) -> bool {
+      try {
+        kernel::Brep result = use_angle ? (convex ? kernel::ChamferConvexEdgeAngle(kb, p0, p1, d_i, angle_from_i)
+                                                   : kernel::ChamferConcaveEdgeAngle(kb, p0, p1, d_i, angle_from_i))
+                                         : (convex ? kernel::ChamferConvexEdge(kb, p0, p1, d_i, d_j)
+                                                   : kernel::ChamferConcaveEdge(kb, p0, p1, d_i, d_j));
+        out = result.raw();
+        return true;
+      } catch (const std::exception& ex) {
+        err = ex.what();
+        return false;
+      }
+    };
+    if (attempt(true, convex_err)) return true;
+    if (attempt(false, concave_err)) return true;
+    detail = "convex attempt: " + convex_err + "; concave attempt: " + concave_err;
+    return false;
+  }
+
   Mode mode_;
   double radius_ = 2;
   std::vector<std::pair<double, double>> radii_;  // (t in [0,1], radius) handles; empty = constant radius_
+  std::optional<double> distance2_;  // Chamfer only: second distance (Distance1/Distance2 mode); unset = symmetric
+  std::optional<double> angle_deg_;  // Chamfer only: angle from face 1 in degrees (Distance/Angle mode); mutually exclusive with distance2_
   bool curvature_ = false;
   bool preview_ = false;
   bool variable_engine_used_ = false;  // set by Run(): true when BuildPlanarVariableFillet (the exact closed form) built the last variable-radius result
