@@ -1,6 +1,6 @@
 # Fossilith / Dino 8 parity map (2026-09-28, updated 2026-09-30)
 
-**Fossilith vs Parasolid/ACIS = 68.6% (weighted, verified); Dino 8 vs Rhino 8 + AutoCAD 2027 = 75.0%.**
+**Fossilith vs Parasolid/ACIS = 68.8% (weighted, verified); Dino 8 vs Rhino 8 + AutoCAD 2027 = 75.0%.**
 
 **2026-09-30 re-score (a doc-only audit pass, no source changes):** re-derived
 every kernel/app category's own Present/Partial/Missing counts directly from
@@ -38,6 +38,34 @@ both this pass's Local/direct-edit fix and that session's Feature operations
 update into the same 17-row table and re-deriving the kernel headline
 directly (still 17.75 total weight) gives 68.4% → **68.6%** (both deltas
 applied together; the app headline stays 75.0%, unaffected by either).
+
+**2026-09-30, same-day second rotation on "Intersections & projections"**
+(a parallel session, landing on this same branch alongside the two notes
+above): a fourth bullet, Pull curves/points to surfaces, closes `[partial]`
+-> `[present]` — `PullbackCurveToSurface`'s new `pulled_curve` result
+(dino8-kernel/include/dino8/kernel/surface_intersect.h; src/
+surface_intersect.cpp) is the literal 3D "pull a curve onto a surface"
+result this bullet's own prior evidence named missing, meaningful for any
+input curve (on the surface or genuinely far from it), verified by
+`TestPullbackCurveToSurfaceCylinderRulingLine` (tests/test_basic.cpp)
+against a cylinder's own hand-derivable geometry (see the category's own
+bullet and count note below for full detail). The category's own score
+moves 74.1% -> 75.9% (17/10/2 of 29, up from 16/11/2). `PullbackCurveToSurface`'s
+OTHER field, `pcurve`, does not close the separate "Pullback of a 3D curve
+to surface parameter space" bullet, which stays `[partial]` on its own
+disclosed limitation (see that bullet for detail). Full
+`dino8_kernel_tests` suite: 7699 checks, 0 failures, 0 regressions (7686
+checks, all passing, immediately before this rotation's own 13 new ones).
+
+**Fold-in note:** this intersections delta landed independently of, and at
+the same time as, the Local/direct-edit fix and Feature-operations update
+folded together just above (68.4% → 68.6%) - none of the three touches
+the others' own rows. Folding all three into the same 17-row table and
+re-deriving the kernel headline directly (still 17.75 total weight; row
+values: Local/direct-edit 8/20/0/28, Feature operations 6/17/1/24,
+Intersections & projections 17/10/2/29, every other row unchanged) gives
+68.6% → **68.8%**, reflected above. The app headline stays 75.0%,
+unaffected by any of the three.
 
 **2026-09-30 kernel rotation on "Intersections & projections":** three
 `[partial]` bullets close to `[present]` this pass — Curve self-intersection,
@@ -1637,7 +1665,7 @@ Screen-reader support and Plugin marketplace both moving `missing`->
 
 | Rank | Category | Weight | Remaining (partial+missing) | Weight / Remaining |
 |---|---|---|---|---|
-| 1 | Intersections & projections | 1.5 | 13 | 0.115 |
+| 1 | Intersections & projections | 1.5 | 12 | 0.125 |
 | 2 | SubD & mesh kernel support | 0.75 | 7 | 0.107 |
 | 3 | Boolean operations | 1.5 | 16 | 0.094 |
 | 4 | Geometry representation | 1 | 11 | 0.091 |
@@ -1656,6 +1684,7 @@ Screen-reader support and Plugin marketplace both moving `missing`->
 | 17 | Offsetting, shelling, thickening | 1 | 27 | 0.037 |
 
 *Updated 2026-09-30: Intersections & projections' own remaining count dropped 16 -> 13 (three bullets closed `partial`->`present`, see its own category note above), moving its weight/remaining ratio from 0.094 (tied for rank 2 with Boolean operations) to 0.115 - now the single highest-priority kernel category, ahead of SubD & mesh kernel support. Boolean operations, untouched this pass, now ranks alone at 3 rather than tied at 2. Every other row is unchanged.*
+*Same-day second update: a fourth bullet (Pull curves/points to surfaces) also closes `partial`->`present` this pass (see the category's own count note above), dropping the remaining count once more, 13 -> 12, and the ratio to 0.125. Rank order is unchanged (already alone at 1).*
 
 ### App table (Dino 8 vs Rhino 8 + AutoCAD 2027), by weight / remaining items
 
@@ -1701,7 +1730,7 @@ it stays last.
 | kernel: Sweeping, lofting, extruding, revolving | 1 | 29 | 6 | 21 | 2 | 56.9% |
 | kernel: Offsetting, shelling, thickening | 1 | 27 | 0 | 27 | 0 | 50.0% |
 | kernel: Local / direct-edit operations | 1 | 28 | 8 | 20 | 0 | 64.3% |
-| kernel: Intersections & projections | 1.5 | 29 | 16 | 11 | 2 | 74.1% |
+| kernel: Intersections & projections | 1.5 | 29 | 17 | 10 | 2 | 75.9% |
 | kernel: Healing, repair, validation, tolerant modeling | 1 | 30 | 19 | 10 | 1 | 80.0% |
 | kernel: Mass properties & spatial queries | 1 | 30 | 16 | 14 | 0 | 76.7% |
 | kernel: Tessellation / faceting | 1 | 25 | 14 | 9 | 2 | 74.0% |
@@ -4363,13 +4392,13 @@ Still partial, and does NOT change this category's present/partial/missing count
 - [partial] Mesh self-intersection detection — `Mesh::FindSelfIntersections`/`FindOffsetSelfIntersections` (mesh.cpp:3342 area). **Same-day follow-up:** the "overlapping coplanar triangles are never reported" half of this bullet's own prior evidence is closed — `CoplanarTrianglesOverlap` (mesh.cpp, next to `TrianglesProperlyOverlap`) is a genuine, if narrowly-scoped, fix: `TrianglesProperlyOverlap`'s own cross-product-of-normals construction returns a zero vector for two coplanar planes (no shared line to measure an interval along), so a coplanar pair was silently unreachable by that test no matter how much they overlapped; the new function instead confirms the two triangles genuinely share ONE plane (not merely parallel ones - every vertex of the second triangle is checked to lie within `tolerance` of the first's own plane, correctly rejecting the box test fixture's own parallel-but-offset top/bottom faces), projects both onto an orthonormal basis of that shared plane, and applies the standard two-convex-polygon separating-axis test (no separating line among either triangle's own up to 6 edge directions means a genuine positive-area overlap). `FindSelfIntersections()` now ORs this into its existing per-pair test, so nothing about the crossing-triangle path changes. Verified by re-deriving `TestMeshFindSelfIntersectionsDetectsOnlyGenuineCrossings()`'s own case (4) fixture (previously pinned as `.empty()`, a documented gap, not a silent one) to now assert the pair IS reported, plus two new cases: a coplanar pair with real area but genuinely no overlap (correctly still clean) and a parallel-but-offset-plane pair (correctly still clean, proving the plane-coincidence check does real work beyond the parallel-normal check alone). "Any pair sharing a vertex is never examined" is NOT a gap, on inspection of the method's own doc comment - that is by design (ordinary mesh connectivity, not a self-intersection question this method is meant to answer) and was mis-stated in this bullet's own prior text; corrected here. Full `dino8_kernel_tests` suite (via `ctest`): 100% passing, 0 regressions. Still honestly partial: DETECTION ONLY, no repair - a genuine self-intersection has no single correct automatic fix, the same considered position `Check()`'s own `non_manifold_edges` already takes.
 - [partial] Surface / B-rep self-intersection detection — `Brep::Check()` reports `SelfIntersectingLoop` and `SelfIntersectingLoop3d` (brep.h:2707,2726; used in brep.cpp:6542,6549 — corrected 2026-09-28, was mis-cited brep.h:2524,2543; brep.cpp:6342,6349). Still partial: only face boundaries are checked, no face-interior self-intersection test and no face-vs-face crossing test within a B-rep; nearly-parallel close segments are excluded by design. (Two exact-duplicate bullets from the pre-measurement map were merged into this one.)
 - [partial] Projection of curves/points onto surfaces along a direction (Project) — app `ProjectCommand` samples the curve and ray-casts along the CPlane normal onto the render mesh, then refits. No kernel project API.
-- [partial] Pull curves/points to surfaces (closest-point projection) — kernel point projection is solid (`ClosestPointParameter`/`ClosestPoint`, `SurfaceClosestPointGlobal`), but there is no kernel "pull a curve into a curve-on-surface" API.
+- [present] Pull curves/points to surfaces (closest-point projection) — closed 2026-09-30: kernel point projection was already solid (`ClosestPointParameter`/`ClosestPoint`, `SurfaceClosestPointGlobal`), and the curve case this bullet's own prior evidence named missing is now real too. `PullbackCurveToSurface`'s `pulled_curve` result (dino8-kernel/include/dino8/kernel/surface_intersect.h; src/surface_intersect.cpp) is the literal 3D "pull a curve onto a surface" result: every sample of the input curve is closest-point-projected (continuity-seeded from the previous sample, re-seeded globally on failure or an implausible jump) and the projected 3D points are refit as their own curve via `InterpolateCubic(..., dim=3)` — meaningful for ANY input curve, on the surface or genuinely far from it (that is the definition of Pull; unlike this same function's own separate `pcurve`/`on_surface` fields, which are about parameter-space correspondence and DO require the input to already lie on the surface — those still back the separate, still-`[partial]` "Pullback of a 3D curve to surface parameter space" bullet below, not this one). Verified by `TestPullbackCurveToSurfaceCylinderRulingLine` (tests/test_basic.cpp): an on-surface ruling line's `pulled_curve` round-trips to its own exact endpoints, and — the real Pull case — a line held at radius 20 from a radius-2 cylinder pulls onto the wall with both `pulled_curve` endpoints landing at the hand-derived exact points (2, 0, 0) and (2, 0, 4), at exactly radius 2 from the axis. Kept honest: the projection is a per-sample closest-point search with a heuristic (not provably globally robust) re-seeding rule for warm-seed jumps or ambiguous multi-sheet closest points — a real, if narrow, caveat, of the same "engineering limit, not a wrong-answer-for-a-whole-input-class" character this category's own other same-day `[present]` calls (e.g. `IntersectBreps`' own "returned un-stitched" caveat) already cross with.
 - [partial] Silhouette / outline curves — still app-only and mesh-based (`Silhouette`, render-mesh edges where adjacent face normals flip against the view vector). No kernel silhouette.
 - [present] B-rep/B-rep and curve/B-rep intersection as a kernel API — closed 2026-09-30: `IntersectBreps`/`IntersectCurveBrep` (surface_intersect.h/.cpp) are the public Brep-level entry points this bullet's own prior evidence named missing, composing the existing face-level `IntersectFaces`/`IntersectCurveSurface` over every bounding-box-overlapping face pair (the same pruning `BooleanCombineGeneral`'s own face-pair loop uses) and returning each result's own `face_a`/`face_b` (or `face_index`) so a caller can tell which faces produced it. Deliberately returned un-stitched, one entry per face-pair-and-curve — confirmed directly on the two-overlapping-boxes fixture that a single physical edge can legitimately come back as more than one piece for the same face pair (a pre-existing `IntersectFaces` mesh-chaining property, not a defect introduced here); a caller wanting one merged chain per physical intersection stitches these the same way `BooleanCombineGeneral`'s own `StitchChains` does, which this intentionally does not duplicate. Tested on overlapping boxes (the shared cube's exact edge endpoints and z-span both verified), disjoint boxes (correctly empty), and a line through a box (exactly its two pierced faces).
 - [partial] Pullback of a 3D curve to surface parameter space (pcurve generation for arbitrary curves on a surface) — still no public pullback API; SSX produces pcurves as a by-product. The kernel builds real trims by pullback inside `Brep::ReplaceEdgeCurve` and `SplitNakedEdgeAt`, but both are internal to topology edits, not a general-purpose pullback call.
 - [partial] Point-cloud contour/section as separate app commands (PointCloudContour/PointCloudSection) — app-level band-sampling around a plane; the kernel `PointCloud` has no section API.
 
-*Note on this category's counts: 16 present / 11 partial / 2 missing (29 items), 74.1% — updated 2026-09-30. Three bullets flip `partial`->`present` this pass (Curve self-intersection, Curve/plane intersection, B-rep/B-rep and curve/B-rep intersection as a kernel API), each closed by a genuine new kernel-level function with its own tests (`IntersectCurveSelfIntersections`, `IntersectCurvePlane`, `IntersectBreps`/`IntersectCurveBrep` — surface_intersect.h/.cpp), not a scoring correction; every other item's status is unchanged. Full `dino8_kernel_tests` suite: 7686 checks, 0 failures. (Prior count, itself a same-day arithmetic-slip correction from 11/16 to 13/14: 13 present / 14 partial / 2 missing, 69.0%.)*
+*Note on this category's counts: 17 present / 10 partial / 2 missing (29 items), 75.9% — updated 2026-09-30 (a second same-day rotation on this category). A fourth bullet flips `partial`->`present` this pass: Pull curves/points to surfaces, closed by `PullbackCurveToSurface`'s own `pulled_curve` result (surface_intersect.h/.cpp), with its own test (`TestPullbackCurveToSurfaceCylinderRulingLine`, tests/test_basic.cpp) — see that bullet above for detail. This is additive to, not a re-derivation of, the same-day 13/14/2 -> 16/11/2 (74.1%) move already recorded immediately above (Curve self-intersection, Curve/plane intersection, B-rep/B-rep and curve/B-rep intersection as a kernel API): (17 + 0.5*10)/29 = 22/29 = 75.9%. `PullbackCurveToSurface`'s OTHER field, `pcurve` (parameter-space correspondence, not the 3D pull result), does not close the separate "Pullback of a 3D curve to surface parameter space" bullet below — that one stays `[partial]` on its own honestly-disclosed periodic-seam limitation. Full `dino8_kernel_tests` suite: 7699 checks, 0 failures, 0 regressions (7686 checks, all passing, immediately before this rotation's own 13 new ones).*
 
 **kernel: Healing, repair, validation, tolerant modeling** (healing):
 - [partial] Tolerant sewing with edge splitting (partial-overlap edges, T-junctions, mismatched edge subdivision) — `Brep::SewTJunctions` (declaration brep.h:3273, implementation brep.cpp:7745-7797 — corrected 2026-09-28, was mis-cited brep.h:2766-2801; brep.cpp:6779-6836, a range that actually held `SplitNonManifoldVertex`/`Vertices` code) finds every T-junction among naked edges, splits the longer edge via `SplitNakedEdgeAt`, and finishes with `JoinNakedEdges`. Still partial: refuses every curved naked edge (`if (!a.IsLinear(tol)) continue;`); the app's own `JoinNakedEdges` does not call it; a latent bug re-confirmed by reading the current source — in the `for (int k = 0; k < 2; ++k)` inner loop the `break;` at line 7792 (corrected 2026-09-28, was mis-cited brep.cpp:6820) is unconditional, so if edge B's first endpoint (k=0) satisfies the on-line/strictly-interior test but `SplitNakedEdgeAt` then returns anything other than `Result::Ok`, the loop still breaks and B's second endpoint (k=1) is never tried in that pass.
@@ -6380,7 +6409,7 @@ top 40:
 - [kernel/localops] Rotate face about hinge edge — exact version for planar solids (partial)
 - [kernel/localops] Delete face with heal — planar case using CapPlanarHoles (partial)
 - [kernel/intersections] Curve self-intersection — kernel API (partial)
-- [kernel/intersections] Pull curves/points to surfaces — curve-on-surface pull-back (partial)
+- [kernel/intersections] ~~Pull curves/points to surfaces — curve-on-surface pull-back~~ **closed** — `PullbackCurveToSurface`'s `pulled_curve` result (dino8-kernel/include/dino8/kernel/surface_intersect.h; src/surface_intersect.cpp) is the real 3D pull-a-curve-onto-a-surface API this row named; see the category bullet above for the verification detail. Kept in the list for this row's own history; not an active item.
 - [kernel/healing] Analytic-form recognition — fix IsTorus() tolerance (partial)
 - [kernel/massprops] Closest point on trimmed B-rep — untrimmed-face case first (partial)
 - [kernel/massprops] Ray firing against exact B-rep faces — untrimmed-face case first (partial)
