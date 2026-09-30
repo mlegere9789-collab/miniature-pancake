@@ -217,6 +217,28 @@ struct HatchInfo {
   double pattern_scale = 1.0;
 };
 
+// One dash/gap line in a `Lines`-fill hatch pattern, for
+// Model::AddHatchPattern()'s own `lines` parameter and
+// Model::HatchPatternLineAt()'s own return value below - closes the
+// "a Lines pattern this kernel creates always has zero lines in it... this
+// kernel adds no way to populate its actual dash/offset lines via
+// ON_HatchPattern::AddHatchLine()" gap HatchFillType's own doc comment
+// above names. Mirrors ON_HatchLine's own fields directly: `base`/`offset`
+// are in the hatch pattern's own local 2D coordinate system (not the
+// hatch's own plane - a pattern is defined once and reused by any hatch
+// that references it), `offset.x` shifts each repeated line parallel to
+// itself and `offset.y` spaces repetitions apart, and `dashes` is a
+// repeating on/off sequence along the line: a positive entry is a drawn
+// dash of that length, a negative entry a gap of that length (an empty
+// `dashes`, the default, is ON_HatchLine's own "solid line" contract - see
+// ON_HatchLine's own header comment for the exact convention this mirrors).
+struct HatchPatternLine {
+  double angle_radians = 0.0;
+  Point2d base = Point2d(0.0, 0.0);
+  Point2d offset = Point2d(0.0, 0.0);
+  std::vector<double> dashes;
+};
+
 // A text dot read back from Model::TextDotAt() below - the read-side
 // counterpart to Model::AddTextDot()'s own parameters.
 struct TextDotInfo {
@@ -224,6 +246,20 @@ struct TextDotInfo {
   Point3d center;
   std::string primary_text;
   std::string secondary_text;
+};
+
+// A text annotation (Rhino's own Text command, ON_Text underneath) read
+// back from Model::TextAt() below - the read-side counterpart to
+// Model::AddText()'s own parameters. Distinct from TextDotInfo above:
+// a text dot is a small screen-facing label anchored at a point, while a
+// text annotation lives on a real 3D plane like any other ON_Annotation
+// (Rhino's Dim/Leader/Text family) - the exact "annotations (ON_Annotation/
+// dimension objects)" gap PARITY_MAP.md's own "kernel: Kernel-level data
+// exchange" evidence names as entirely unaddressed.
+struct TextAnnotationInfo {
+  std::string name;
+  std::string text;
+  ON_Plane plane;
 };
 
 // Thin wrapper around ONX_Model so .3dm compatibility comes from
@@ -781,11 +817,35 @@ class Model {
   // counterintuitively, even a plain solid-fill hatch requires calling this
   // method first to get a real non-negative index into THIS model's own
   // hatch pattern table, exactly as AddLayer() is required before a
-  // non-default `layer_index` can be used above.
-  int AddHatchPattern(const std::string& name, HatchFillType fill_type = HatchFillType::Solid);
+  // non-default `layer_index` can be used above. `lines` (empty by
+  // default, the pre-existing "always zero lines" behavior, unchanged for
+  // every existing caller) is appended to the new pattern via
+  // ON_HatchPattern::AddHatchLine() one entry at a time, in the order
+  // given - see HatchPatternLine's own doc comment above for what each
+  // entry means. Meaningful only for `fill_type == HatchFillType::Lines`
+  // (a `Solid` pattern ignores any lines it's given, same as Rhino itself
+  // ignoring a solid hatch's own unused line table), but not rejected for
+  // `Solid` - a caller building a pattern it may later want to switch is
+  // free to populate lines ahead of that.
+  int AddHatchPattern(const std::string& name, HatchFillType fill_type = HatchFillType::Solid,
+                       const std::vector<HatchPatternLine>& lines = std::vector<HatchPatternLine>());
 
   // Returns the number of hatch patterns added via AddHatchPattern() above.
   int HatchPatternCount() const;
+
+  // Returns the number of lines AddHatchPattern()'s own `lines` parameter
+  // added to the pattern at `pattern_index` (as returned by
+  // AddHatchPattern() itself) - 0 for a pattern added with no `lines`, and
+  // for `pattern_index` not naming a hatch pattern this model actually has.
+  int HatchPatternLineCount(int pattern_index) const;
+
+  // Returns the line at `line_index` (as counted by HatchPatternLineCount()
+  // above) within the hatch pattern at `pattern_index` - the read-side
+  // counterpart to AddHatchPattern()'s own `lines` parameter, the same
+  // read-side gap HatchAt()/TextDotAt() elsewhere in this class close for
+  // their own tables. Either index not naming a real pattern/line returns a
+  // default-constructed HatchPatternLine.
+  HatchPatternLine HatchPatternLineAt(int pattern_index, int line_index) const;
 
   // Adds a hatch (Rhino's own Hatch command, ON_Hatch underneath) to the
   // model and returns its index (>= 0) among hatches specifically - closing
@@ -863,6 +923,41 @@ class Model {
   // their own tables. `text_dot_index` not naming a text dot this model
   // actually has returns a default-constructed TextDotInfo.
   TextDotInfo TextDotAt(int text_dot_index) const;
+
+  // Adds a text annotation (Rhino's own Text command, ON_Text underneath) to
+  // the model and returns its index (>= 0) among text annotations
+  // specifically - closing PARITY_MAP.md's own "kernel: Kernel-level data
+  // exchange" evidence for "Rhino non-geometry/composite objects in .3dm":
+  // "annotations (ON_Annotation/dimension objects) remain entirely
+  // unaddressed, no kernel API for them at all". `text` is the plain string
+  // content (ON_Text::Create() parses it directly - no RTF markup required,
+  // matching how OpenNURBS' own importers hand it a plain string);  `plane`
+  // is the annotation's own 3D coordinate plane, the same "a real 3D plane,
+  // not a screen-facing point" distinction TextAnnotationInfo's own doc
+  // comment draws against TextDotInfo above. Built via
+  // ON_Text::Create(text, dimstyle, plane) against OpenNURBS' own built-in
+  // ON_DimStyle::Default - this kernel has no dimstyle table of its own to
+  // pick a caller-supplied style from, the same narrowing `AddHatchPattern()`
+  // already accepts for `HatchFillType` against ON_HatchPattern's own wider
+  // set. Returns -1 without adding anything if `name` or `text` is empty,
+  // `plane` is not a valid plane (`ON_Plane::IsValid()`), or the underlying
+  // `ON_Text::Create()` call itself fails.
+  int AddText(const std::string& text, const ON_Plane& plane, const std::string& name = std::string(),
+              int layer_index = -1, std::optional<Color> render_color = std::nullopt,
+              const UserStrings& user_strings = UserStrings(),
+              std::optional<int> linetype_index = std::nullopt,
+              const std::vector<int>& group_indices = std::vector<int>(),
+              std::optional<int> material_index = std::nullopt);
+
+  // Returns the number of text annotations added via AddText() above.
+  int TextCount() const;
+
+  // Returns the text annotation at `text_index` (as counted by TextCount()
+  // above) - the read-side counterpart to AddText()'s own parameters, the
+  // same read-side gap TextDotAt()/HatchAt() above each close for their own
+  // tables. `text_index` not naming a text annotation this model actually
+  // has returns a default-constructed TextAnnotationInfo.
+  TextAnnotationInfo TextAt(int text_index) const;
 
   // Sets the model's length unit system - closing PARITY_MAP.md's own
   // "kernel-level data exchange" evidence for "Unit-system conversion":
