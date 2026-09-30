@@ -308,6 +308,15 @@ class Application {
   void ConfirmDiscard(std::function<void()> then);
   void RequestQuit() { ConfirmDiscard([this]() { quit_ = true; }); }
   const std::string& ExeDir() const { return exe_dir_; }
+  // The bundled reference plug-in index (plugin-index/index.json, shipped as
+  // data/plugin-index/index.json next to the executable - see CMakeLists.txt's
+  // POST_BUILD copy and its install() rules), resolved with the same
+  // build-tree/install-layout/macOS-bundle search order as commands.json and
+  // data/i18n above. Lets PluginMarketplaceIndex/the marketplace panel offer
+  // a one-click "browse the reference index" default instead of requiring a
+  // path or URL to be typed in by hand. Empty if none of those candidates
+  // exist (e.g. a custom build that dropped plugin-index/ entirely).
+  std::string DefaultMarketplaceIndexPath() const;
 
   void ShowHelpFor(const std::string& command_name);
   void ZoomExtentsAll();

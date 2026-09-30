@@ -158,6 +158,30 @@ bool Application::Init(const std::string& exe_dir, std::string& error) {
   return true;
 }
 
+std::string Application::DefaultMarketplaceIndexPath() const {
+  // Same search order as the commands.json/data/i18n candidates in Init()
+  // above, with "data/plugin-index/index.json" in place of "data/commands.json" -
+  // plus one extra build-tree candidate pointing straight at the source
+  // location (plugin-index/index.json ships there too; CMakeLists.txt also
+  // copies it next to the executable, but a build that predates that copy
+  // step, or one run straight out of the source tree, still finds it here).
+  const std::vector<std::string> candidates = {
+      exe_dir_ + "/data/plugin-index/index.json",
+      exe_dir_ + "/../Resources/data/plugin-index/index.json",  // macOS bundle
+      exe_dir_ + "/../share/dino8/data/plugin-index/index.json",  // Linux install
+      exe_dir_ + "/../../data/plugin-index/index.json",           // build tree
+      exe_dir_ + "/../../../dino8-app/data/plugin-index/index.json",
+      exe_dir_ + "/../../../dino8-app/plugin-index/index.json",  // straight from source
+      "data/plugin-index/index.json",
+      "plugin-index/index.json",
+  };
+  for (const std::string& path : candidates) {
+    std::error_code ec;
+    if (std::filesystem::exists(path, ec)) return path;
+  }
+  return "";
+}
+
 std::string Application::ScriptsDirectory() const {
   const std::string dir = ConfigDirectory() + "/scripts";
   std::error_code ec;

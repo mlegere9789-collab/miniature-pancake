@@ -4084,6 +4084,91 @@ pmucheck "PluginMarketplaceCheckUpdates: all installed plug-ins are up to date w
 pmucheck "PluginMarketplaceCheckUpdates: 1 update(s) available" "PluginMarketplaceCheckUpdates finds exactly one update once the bumped-version index is loaded"
 pmucheck "  hellodino: HelloDino 1.0.0 -> 1.1.0" "PluginMarketplaceCheckUpdates reports the installed and available versions for the out-of-date plug-in"
 
+# Plug-in Marketplace: loading the bundled reference index with no path or
+# URL typed in (Application::DefaultMarketplaceIndexPath,
+# PluginMarketplaceIndex with no argument - see plugin-index/SCHEMA.md's
+# "Loading the bundled reference index without a path" section).
+# CMakeLists.txt's POST_BUILD step copies plugin-index/index.json to
+# data/plugin-index/index.json right next to this very $BIN, so
+# DefaultMarketplaceIndexPath's first candidate (<exe_dir>/data/plugin-index/index.json)
+# is exactly where it lands - this only works end to end through the real
+# built binary, not the standalone dino8_test_plugin_marketplace unit test.
+sed "s|@DINO8ROOT@|$HEREW/..|g" "$HERE/plugin_marketplace_default_script.txt" > "$TMPW/plugin_marketplace_default_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  PMDEF="$("$BIN" --smoke 60 --script "$TMPW/plugin_marketplace_default_script.txt" 2>&1)" || { echo "$PMDEF"; echo "FAIL: plugin marketplace default-index script exited non-zero"; exit 1; }
+else
+  PMDEF="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$TMPW/plugin_marketplace_default_script.txt" 2>&1)" || { echo "$PMDEF"; echo "FAIL: plugin marketplace default-index script exited non-zero"; exit 1; }
+fi
+pmdefcheck() { if echo "$PMDEF" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$PMDEF" "$1"; fail=1; fi; }
+pmdefcheck "PluginMarketplaceIndex: loaded \"Dino 8 Reference Plugin Index\" - 4 plug-in(s) from" "PluginMarketplaceIndex with no argument falls back to the bundled reference index"
+pmdefcheck "PluginMarketplaceList: 4 plug-in(s) in the loaded index" "the bundled default index loaded is the real one (all 4 reference entries), not an empty placeholder"
+
+# Plug-in Marketplace: PluginMarketplaceUpdateAll/Marketplace::UpdateAll -
+# installs every out-of-date entry PluginMarketplaceCheckUpdates would report,
+# in one call, reusing the same InstallById a single row's Update button
+# already goes through. With no index loaded there is nothing to update
+# (mirrors PluginMarketplaceCheckUpdates' own "up to date" wording); loading
+# tests/plugin_marketplace_update_index.json's bumped hellodino entry (same
+# fixture the update-notification check above uses) gives it exactly one
+# real update to apply.
+sed "s|@DINO8ROOT@|$HEREW/..|g" "$HERE/plugin_marketplace_updateall_script.txt" > "$TMPW/plugin_marketplace_updateall_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  PMUA="$("$BIN" --smoke 60 --script "$TMPW/plugin_marketplace_updateall_script.txt" 2>&1)" || { echo "$PMUA"; echo "FAIL: plugin marketplace update-all script exited non-zero"; exit 1; }
+else
+  PMUA="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$TMPW/plugin_marketplace_updateall_script.txt" 2>&1)" || { echo "$PMUA"; echo "FAIL: plugin marketplace update-all script exited non-zero"; exit 1; }
+fi
+pmuacheck() { if echo "$PMUA" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$PMUA" "$1"; fail=1; fi; }
+pmuacheck "PluginMarketplaceUpdateAll: all installed plug-ins are up to date with the loaded index" "PluginMarketplaceUpdateAll reports nothing to do before any index is loaded"
+pmuacheck "PluginMarketplaceCheckUpdates: 1 update(s) available" "the bumped-version index flags hellodino as out of date, same as the plain CheckUpdates test above"
+pmuacheck "PluginMarketplaceUpdateAll: updated 1 plug-in(s) (hellodino)" "PluginMarketplaceUpdateAll installs the one out-of-date entry it found and reports its id"
+# Not re-checked here: a load-count "genuine install, not just a print
+# statement" proof like the plain install test above uses. hellodino's own
+# <config>/plugins destination was already installed once and never
+# uninstalled by the very first marketplace section above, and XDG_CONFIG_HOME
+# (set once at the top of this script) is shared for this whole smoke.sh run -
+# ScanDefaultFolders (src/plugins/PluginManager.cpp) scans that folder on
+# every fresh process, so hellodino is already loaded twice (sample
+# auto-load + that leftover marketplace copy) before this section's process
+# even starts. InstallEntry's own Unload-then-copy-then-load (Marketplace.cpp)
+# means UpdateAll genuinely replaces that leftover copy in place rather than
+# adding a third load, so a load-count delta isn't a meaningful signal here
+# specifically - InstallById's own "not just a print statement" proof is
+# already covered independently by the plain install/dependency/deepchain
+# tests above, each running before any prior section has touched their own
+# ids' destinations.
+
+# Plug-in Marketplace: PluginMarketplaceVerify/Marketplace::VerifyInstalled -
+# re-hashes the file currently installed at an id's own marketplace
+# destination and compares it against the loaded index entry's sha256, on
+# demand (see plugin-index/SCHEMA.md's "Verifying an installed copy"
+# section). Exercises every branch that doesn't require knowing the real
+# built library's own hash ahead of time: an id missing from the loaded
+# index (both with no index loaded at all and with the real reference index
+# loaded), an id that's only auto-loaded as a sample (never installed via
+# the marketplace), an installed entry with no sha256 in the index to check
+# (plugin-index/index.json's real hellodino entry - a bundled_path entry is
+# never sha256-checked at install time either), and a deliberately wrong
+# sha256 (tests/plugin_marketplace_verify_index.json) against the real
+# installed file, which can only ever mismatch. The exact-match "Verified"
+# branch - which needs the real build's own sha256 hard-coded into a fixture
+# - is left untested here for the same reason download_url's own sha256
+# check is (see plugin-index/SCHEMA.md's "download_url vs bundled_path"
+# section): both call the identical util::Sha256HexOfFile/EqualsIgnoreCase
+# primitives already exercised by the mismatch case below.
+sed "s|@DINO8ROOT@|$HEREW/..|g" "$HERE/plugin_marketplace_verify_script.txt" > "$TMPW/plugin_marketplace_verify_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  PMVER="$("$BIN" --smoke 60 --script "$TMPW/plugin_marketplace_verify_script.txt" 2>&1)" || { echo "$PMVER"; echo "FAIL: plugin marketplace verify script exited non-zero"; exit 1; }
+else
+  PMVER="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$TMPW/plugin_marketplace_verify_script.txt" 2>&1)" || { echo "$PMVER"; echo "FAIL: plugin marketplace verify script exited non-zero"; exit 1; }
+fi
+pmvercheck() { if echo "$PMVER" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$PMVER" "$1"; fail=1; fi; }
+pmvercheck "! PluginMarketplaceVerify: no plugin with id \"doesnotexist\" in the loaded index (0 entries)" "PluginMarketplaceVerify refuses an unknown id with no index loaded"
+pmvercheck "! PluginMarketplaceVerify: no plugin with id \"doesnotexist2\" in the loaded index (4 entries)" "PluginMarketplaceVerify refuses an unknown id once the real reference index is loaded"
+pmvercheck "! PluginMarketplaceVerify: MeshTools (meshtools) is not currently installed via the marketplace" "PluginMarketplaceVerify reports a sample-auto-loaded-only plug-in as not installed via the marketplace"
+pmvercheck "PluginMarketplaceVerify: HelloDino (hellodino) has no sha256 in the loaded index to verify against (bundled_path entries aren't hash-checked)" "PluginMarketplaceVerify reports NoHashToCheck (not a failure) for the real reference index's hellodino entry, once installed"
+pmvercheck "! PluginMarketplaceVerify: HelloDino (hellodino): sha256 mismatch - index says 0000000000000000000000000000000000000000000000000000000000000000, installed file at" "PluginMarketplaceVerify catches a deliberately wrong sha256 against the real installed file"
+pmvercheck "(corrupted, tampered with, or replaced outside the marketplace)" "PluginMarketplaceVerify's mismatch message explains what a mismatch could mean"
+
 # Plug-in Marketplace: local ratings/reviews (src/plugins/PluginReviews.cpp,
 # PluginMarketplaceRate/PluginMarketplaceReviews in src/commands/cmd_flow.cpp)
 # - stored in <config>/plugin_reviews.json, not fetched from anywhere, so a

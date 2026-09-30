@@ -309,4 +309,51 @@ std::vector<Marketplace::PluginUpdate> Marketplace::CheckForUpdates() const {
   return updates;
 }
 
+bool Marketplace::UpdateAll(app::Application& app, std::vector<std::string>& updated, std::vector<std::string>& failed) {
+  // Snapshotted once, up front: an id installed earlier in this loop can
+  // change what CheckForUpdates() would report for a later one (e.g. it was
+  // also that later entry's own dependency), and re-querying mid-loop would
+  // silently skip entries this call already promised to attempt.
+  const auto updates = CheckForUpdates();
+  for (const auto& u : updates) {
+    std::string error;
+    if (InstallById(app, u.id, error)) {
+      updated.push_back(u.id);
+    } else {
+      failed.push_back(u.id + ": " + error);
+    }
+  }
+  return failed.empty();
+}
+
+Marketplace::VerifyStatus Marketplace::VerifyInstalled(const std::string& id, std::string& detail) const {
+  const MarketplaceEntry* entry = FindEntryById(index_, id);
+  if (!entry) {
+    detail = "no plugin with id \"" + id + "\" in the loaded index (" + std::to_string(index_.plugins.size()) + " entries)";
+    return VerifyStatus::Error;
+  }
+  const std::string dest_path = DestPath(*entry);
+  if (!IsLoadedAt(dest_path)) {
+    detail = entry->name + " (" + id + ") is not currently installed via the marketplace (nothing loaded from " + dest_path + ")";
+    return VerifyStatus::NotInstalled;
+  }
+  if (entry->sha256.empty()) {
+    detail = entry->name + " (" + id + ") has no sha256 in the loaded index to verify against" +
+             (entry->bundled_path.empty() ? "" : " (bundled_path entries aren't hash-checked)");
+    return VerifyStatus::NoHashToCheck;
+  }
+  std::string got, hash_error;
+  if (!util::Sha256HexOfFile(dest_path, got, hash_error)) {
+    detail = entry->name + " (" + id + "): " + hash_error;
+    return VerifyStatus::Error;
+  }
+  if (!EqualsIgnoreCase(got, entry->sha256)) {
+    detail = entry->name + " (" + id + "): sha256 mismatch - index says " + entry->sha256 + ", installed file at " +
+             dest_path + " is " + got + " (corrupted, tampered with, or replaced outside the marketplace)";
+    return VerifyStatus::Mismatch;
+  }
+  detail = entry->name + " (" + id + "): sha256 matches (" + got + ")";
+  return VerifyStatus::Verified;
+}
+
 }  // namespace dino8::plugins

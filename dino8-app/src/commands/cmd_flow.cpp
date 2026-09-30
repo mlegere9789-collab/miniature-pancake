@@ -187,15 +187,22 @@ void RegisterFlowCommands(CommandEngine& e) {
   Reg(e, "PluginMarketplaceIndex", Immediate([](CommandContext& ctx) {
         std::vector<std::string> toks;
         while (auto tok = ctx.Engine().TakePendingInput()) toks.push_back(*tok);
-        if (toks.empty()) {
-          ctx.Warn("PluginMarketplaceIndex: give a local path or an http(s) URL to a plug-in index (see plugin-index/SCHEMA.md)");
+        // No argument: fall back to the bundled reference index (see
+        // Application::DefaultMarketplaceIndexPath) rather than just
+        // demanding a path/URL - the same "Load Bundled Index" default the
+        // panel's own button offers, so the command line has a one-word way
+        // to browse the real reference index too.
+        std::string source = toks.empty() ? ctx.App().DefaultMarketplaceIndexPath() : toks[0];
+        if (source.empty()) {
+          ctx.Warn("PluginMarketplaceIndex: give a local path or an http(s) URL to a plug-in index (see plugin-index/SCHEMA.md) - "
+                    "no bundled default index was found next to this build");
           return;
         }
         std::string error;
-        if (plugins::Marketplace::Get().LoadFrom(toks[0], error)) {
+        if (plugins::Marketplace::Get().LoadFrom(source, error)) {
           const auto& idx = plugins::Marketplace::Get().Index();
           ctx.Print("PluginMarketplaceIndex: loaded \"" + idx.index_name + "\" - " + std::to_string(idx.plugins.size()) +
-                    " plug-in(s) from " + toks[0]);
+                    " plug-in(s) from " + source);
         } else {
           ctx.Warn("PluginMarketplaceIndex: " + error);
         }
@@ -301,6 +308,42 @@ void RegisterFlowCommands(CommandEngine& e) {
         ctx.Print("PluginMarketplaceCheckUpdates: " + std::to_string(updates.size()) + " update(s) available");
         for (const auto& u : updates) {
           ctx.Print("  " + u.id + ": " + u.name + " " + u.installed_version + " -> " + u.available_version);
+        }
+      }));
+
+  Reg(e, "PluginMarketplaceUpdateAll", Immediate([](CommandContext& ctx) {
+        std::vector<std::string> updated, failed;
+        plugins::Marketplace::Get().UpdateAll(ctx.App(), updated, failed);
+        if (updated.empty() && failed.empty()) {
+          ctx.Print("PluginMarketplaceUpdateAll: all installed plug-ins are up to date with the loaded index");
+          return;
+        }
+        if (!updated.empty()) {
+          std::string ids;
+          for (const std::string& id : updated) ids += (ids.empty() ? "" : ", ") + id;
+          ctx.Print("PluginMarketplaceUpdateAll: updated " + std::to_string(updated.size()) + " plug-in(s) (" + ids + ")");
+        }
+        for (const std::string& f : failed) ctx.Warn("PluginMarketplaceUpdateAll: " + f);
+      }));
+
+  Reg(e, "PluginMarketplaceVerify", Immediate([](CommandContext& ctx) {
+        std::vector<std::string> toks;
+        while (auto tok = ctx.Engine().TakePendingInput()) toks.push_back(*tok);
+        if (toks.empty()) {
+          ctx.Warn("PluginMarketplaceVerify: give the id of an installed plug-in to verify (PluginMarketplaceList shows ids)");
+          return;
+        }
+        std::string detail;
+        const auto status = plugins::Marketplace::Get().VerifyInstalled(toks[0], detail);
+        // NoHashToCheck isn't a problem - it just means the index gave
+        // nothing to compare against (a bundled_path entry, or one that
+        // simply omits sha256) - so it's printed like a normal result, not
+        // warned about the way an actual mismatch or install-state issue is.
+        if (status == plugins::Marketplace::VerifyStatus::Verified ||
+            status == plugins::Marketplace::VerifyStatus::NoHashToCheck) {
+          ctx.Print("PluginMarketplaceVerify: " + detail);
+        } else {
+          ctx.Warn("PluginMarketplaceVerify: " + detail);
         }
       }));
 

@@ -12,6 +12,24 @@ loadable reference index built from the four sample plug-ins that ship in
 this repository (see `plugins/sample`, `plugins/mesh_tools`,
 `plugins/curve_tools`, `plugins/analysis_tools`).
 
+## Loading the bundled reference index without a path
+
+`index.json` in this folder is also copied to `data/plugin-index/index.json`
+next to the built executable (see `CMakeLists.txt`'s `POST_BUILD` copy step
+and its `install()` rules for each platform) and installed there too, so it
+ships as a real runtime asset, not just a source-tree fixture.
+`Application::DefaultMarketplaceIndexPath` (`src/app/Application.h/.cpp`)
+resolves it with the same build-tree/install-layout/macOS-bundle search order
+already used for `data/commands.json` and `data/i18n`. Running
+`PluginMarketplaceIndex` with **no argument** loads that default; the panel's
+"Load Bundled Index" button does the same with one click. Either way this is
+still just *pointing the existing loader at a well-known path* - there is no
+separate code path, no built-in registry, and no network fetch involved
+(the two "must supply a path or URL by hand" caveats a plain
+`PluginMarketplaceIndex <path>`/URL and the reference index in
+`../docs/PLUGIN_SDK.md`'s discussion of this still apply to any *other*
+index).
+
 ## Top level
 
 ```jsonc
@@ -170,6 +188,33 @@ this build's own version (numerically, via the same comparison
 `min_app_version` also shows "Needs newer Dino 8" and Install also refuses
 it. `api_version` is checked first, so an entry that fails both checks is
 reported for its `api_version` mismatch.
+
+## Updating everything at once
+
+`PluginMarketplaceCheckUpdates`/`Marketplace::CheckForUpdates` only reports
+what's out of date; `PluginMarketplaceUpdateAll`/`Marketplace::UpdateAll`
+(`src/plugins/Marketplace.cpp`) actually installs every one of those updates,
+one at a time through the same `InstallById` a single row's Update button
+uses - so each resolves its own dependencies normally, and an entry whose
+dependency was itself just upgraded earlier in the same batch sees that
+upgrade rather than a stale version. One entry failing (a newly-introduced
+version conflict, a compatibility refusal, …) does not stop the rest of the
+batch from being attempted; the command prints which ids updated and warns
+about any that didn't, and the panel's "Update All (`N`)" button (next to the
+filter box, disabled when nothing is out of date) does the same.
+
+## Verifying an installed copy
+
+`PluginMarketplaceVerify <id>`/`Marketplace::VerifyInstalled` re-hashes the
+file currently sitting at that entry's own `<config>/plugins` destination and
+compares it against the loaded index entry's `sha256` - the identical check
+`InstallEntry` makes before ever writing the file, just re-run on demand
+against what is actually on disk right now. This catches a copy that was
+corrupted or edited after installing without requiring a reinstall to find
+out; it reports "no hash to check" (not a failure) for a `bundled_path` entry
+or one whose index simply doesn't supply a `sha256`, since there's nothing to
+compare in that case. The panel's detail view offers a "Verify" button next
+to Requires:, enabled once the selected entry is installed.
 
 ## Writing your own index
 

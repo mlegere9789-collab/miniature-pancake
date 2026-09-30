@@ -150,6 +150,25 @@ void DrawPluginMarketplacePanel(app::Application& app, bool& open) {
       }
     });
   }
+  ImGui::SameLine();
+  // Discovery without typing anything: the reference index this build ships
+  // with (plugin-index/index.json, see Application::DefaultMarketplaceIndexPath),
+  // the same default PluginMarketplaceIndex falls back to with no argument.
+  const std::string default_index_path = app.DefaultMarketplaceIndexPath();
+  ImGui::BeginDisabled(default_index_path.empty());
+  if (ImGui::Button("Load Bundled Index")) {
+    std::snprintf(source, sizeof source, "%s", default_index_path.c_str());
+    std::string error;
+    if (market.LoadFrom(default_index_path, error)) {
+      status = LoadedStatus(app, market);
+      selected_id.clear();
+    } else {
+      status = "Load failed: " + error;
+    }
+  }
+  ImGui::EndDisabled();
+  if (default_index_path.empty() && ImGui::IsItemHovered())
+    ImGui::SetTooltip("No bundled reference index was found next to this build.");
   if (!status.empty()) ImGui::TextWrapped("%s", status.c_str());
   ImGui::Separator();
 
@@ -161,6 +180,26 @@ void DrawPluginMarketplacePanel(app::Application& app, bool& open) {
 
   ImGui::TextDisabled("%s%s", market.Index().index_name.c_str(),
                       market.Index().updated.empty() ? "" : (" - updated " + market.Index().updated).c_str());
+
+  const auto pending_updates = market.CheckForUpdates();
+  ImGui::BeginDisabled(pending_updates.empty());
+  if (ImGui::Button(pending_updates.empty() ? "Update All" : ("Update All (" + std::to_string(pending_updates.size()) + ")").c_str())) {
+    // Goes through Marketplace::UpdateAll, which installs each pending
+    // update via InstallById - the same per-row Update button's own path -
+    // one at a time, so a batch upgrade resolves dependencies exactly like a
+    // single click would and one failure doesn't stop the rest.
+    std::vector<std::string> updated, failed;
+    market.UpdateAll(app, updated, failed);
+    status = updated.empty() ? "" : ("Updated " + std::to_string(updated.size()) + " plug-in(s).");
+    if (!failed.empty()) {
+      std::string names;
+      for (const std::string& f : failed) names += (names.empty() ? "" : "; ") + f;
+      status += (status.empty() ? "" : " ") + std::string("Failed: ") + names;
+    }
+    if (!updated.empty()) app.Notify("Plug-in Marketplace: updated " + std::to_string(updated.size()) + " plug-in(s)");
+    if (!failed.empty()) app.Notify("Plug-in Marketplace: " + std::to_string(failed.size()) + " update(s) failed");
+  }
+  ImGui::EndDisabled();
 
   ImGui::InputTextWithHint("##filter", "Filter by name, tag, author, or id...", filter, sizeof filter);
   size_t shown = 0;
@@ -274,6 +313,24 @@ void DrawPluginMarketplacePanel(app::Application& app, bool& open) {
     ImGui::TextDisabled("Plug-in API v%d - %s", e.api_version, CompatibilityLabel(CheckCompatibility(e, DINO8_VERSION)));
     const std::string deps = DependencySummary(market, e);
     if (!deps.empty()) ImGui::TextDisabled("Requires: %s", deps.c_str());
+
+    {
+      std::string installed_version;
+      UpdateStatus update_status;
+      const bool installed = market.FindInstalled(e, installed_version, update_status);
+      ImGui::BeginDisabled(!installed);
+      if (ImGui::SmallButton("Verify")) {
+        // Re-hashes the file actually on disk right now against the index's
+        // sha256 - catches a copy that was corrupted or edited after install
+        // without requiring a reinstall to find out (Marketplace::VerifyInstalled).
+        std::string detail;
+        const auto vstatus = market.VerifyInstalled(e.id, detail);
+        status = detail;
+        if (vstatus == Marketplace::VerifyStatus::Mismatch) app.Notify("Plug-in Marketplace: " + detail);
+      }
+      ImGui::EndDisabled();
+      if (!installed && ImGui::IsItemHovered()) ImGui::SetTooltip("Install this plug-in first to verify it.");
+    }
 
     ImGui::Separator();
     const auto& reviews = PluginReviewStore::Get().ReviewsFor(e.id);

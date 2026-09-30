@@ -501,6 +501,13 @@ add_custom_command(TARGET Dino8 POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:Dino8>/data
   COMMAND ${CMAKE_COMMAND} -E copy_if_different ${DINO8_DATA_FILES} $<TARGET_FILE_DIR:Dino8>/data/
   COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_CURRENT_SOURCE_DIR}/data/i18n $<TARGET_FILE_DIR:Dino8>/data/i18n
+  # The bundled plug-in marketplace reference index (plugin-index/index.json,
+  # see plugin-index/SCHEMA.md) ships next to the executable too, at
+  # data/plugin-index/index.json - Application::DefaultMarketplaceIndexPath
+  # looks for it there first, so PluginMarketplaceIndex/the marketplace
+  # panel's "Load Bundled Index" button work with no path or URL typed in.
+  COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:Dino8>/data/plugin-index
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_CURRENT_SOURCE_DIR}/plugin-index/index.json $<TARGET_FILE_DIR:Dino8>/data/plugin-index/
   COMMENT "Copying Dino8 data files next to the executable")
 
 # ---------------------------------------------------------------------------
@@ -737,14 +744,17 @@ if(APPLE)
   install(TARGETS Dino8 BUNDLE DESTINATION . COMPONENT app)
   install(FILES ${DINO8_DATA_FILES} DESTINATION "Dino8.app/Contents/Resources/data" COMPONENT app)
   install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/data/i18n DESTINATION "Dino8.app/Contents/Resources/data" COMPONENT app)
+  install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/plugin-index/index.json DESTINATION "Dino8.app/Contents/Resources/data/plugin-index" COMPONENT app)
 elseif(WIN32)
   install(TARGETS Dino8 RUNTIME DESTINATION . COMPONENT app)
   install(FILES ${DINO8_DATA_FILES} DESTINATION data COMPONENT app)
   install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/data/i18n DESTINATION data COMPONENT app)
+  install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/plugin-index/index.json DESTINATION data/plugin-index COMPONENT app)
 else()
   install(TARGETS Dino8 RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT app)
   install(FILES ${DINO8_DATA_FILES} DESTINATION ${CMAKE_INSTALL_DATADIR}/dino8/data COMPONENT app)
   install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/data/i18n DESTINATION ${CMAKE_INSTALL_DATADIR}/dino8/data COMPONENT app)
+  install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/plugin-index/index.json DESTINATION ${CMAKE_INSTALL_DATADIR}/dino8/data/plugin-index COMPONENT app)
   install(FILES packaging/linux/dino8.desktop DESTINATION ${CMAKE_INSTALL_DATADIR}/applications COMPONENT app)
   install(FILES resources/dino8.png DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/256x256/apps RENAME dino8.png COMPONENT app OPTIONAL)
 endif()

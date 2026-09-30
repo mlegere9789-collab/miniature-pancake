@@ -218,22 +218,34 @@ loaded and how many commands/nodes each plug-in registered.
 
 Copying a library by hand doesn't scale past one machine. `Window > Plug-in
 Marketplace` (or the `PluginMarketplace`/`PluginMarketplaceIndex`/
-`PluginMarketplaceList`/`PluginMarketplaceInstall`/`PluginMarketplaceUninstall`
-commands) loads a JSON **plug-in index** - a list of plug-ins with a name,
-version, author, description and where to get the library from - from a
-local file or an `http(s)://` URL, and installs any entry straight into
-`<config>/plugins` through the same `plugins::Manager::LoadFile` path
-described above.
+`PluginMarketplaceList`/`PluginMarketplaceInstall`/`PluginMarketplaceUninstall`/
+`PluginMarketplaceUpdateAll`/`PluginMarketplaceVerify` commands) loads a JSON
+**plug-in index** - a list of plug-ins with a name, version, author,
+description and where to get the library from - from a local file or an
+`http(s)://` URL, and installs any entry straight into `<config>/plugins`
+through the same `plugins::Manager::LoadFile` path described above.
 
 The index format is documented in
 [`../plugin-index/SCHEMA.md`](../plugin-index/SCHEMA.md), and
 [`../plugin-index/index.json`](../plugin-index/index.json) is a real,
 loadable reference index built from the four sample plug-ins on this page -
 `PluginMarketplaceInstall hellodino` against it installs HelloDino for
-real, no placeholder. Publishing an index is nothing more than hosting that
-JSON file somewhere reachable; there is no registration step and no
-authority this repository controls, matching the plug-in ABI's own "no
-licence, no accounts, no network" starting point.
+real, no placeholder. That same reference index ships next to the built
+executable too (`data/plugin-index/index.json`), so `PluginMarketplaceIndex`
+with no argument, or the panel's "Load Bundled Index" button, loads it with
+nothing typed in at all - see SCHEMA.md's "Loading the bundled reference
+index without a path" section. Publishing your own index is nothing more
+than hosting that JSON file somewhere reachable; there is no registration
+step and no authority this repository controls, matching the plug-in ABI's
+own "no licence, no accounts, no network" starting point.
+
+`PluginMarketplaceUpdateAll` installs every entry `PluginMarketplaceCheckUpdates`
+would report as out of date, in one call, instead of updating each one by
+hand. `PluginMarketplaceVerify <id>` re-hashes the file actually installed
+at that id's own destination and compares it to the index's `sha256` on
+demand, catching a copy that was corrupted or tampered with after install
+without requiring a reinstall to find out - see SCHEMA.md's "Updating
+everything at once" and "Verifying an installed copy" sections.
 
 `PluginMarketplaceUninstall <id>` removes the exact `<config>/plugins` copy
 a matching `PluginMarketplaceInstall <id>` put there - never a plug-in only

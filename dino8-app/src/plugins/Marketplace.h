@@ -89,6 +89,32 @@ class Marketplace {
   };
   std::vector<PluginUpdate> CheckForUpdates() const;
 
+  // Installs every entry CheckForUpdates() reports right now, one at a time
+  // through InstallById - so each resolves its own dependencies exactly like
+  // a manual per-row Update click would, and an entry whose dependency was
+  // itself just upgraded by an earlier entry in this same batch sees that
+  // upgrade. `updated` collects the id of each one that installed
+  // successfully, in CheckForUpdates' own order; `failed` collects "id:
+  // error" for any that didn't (e.g. a compatibility or dependency failure)
+  // - one failure never stops the rest of the batch from being attempted.
+  // Returns false if `failed` ends up non-empty; true if every update found
+  // (including none at all) installed cleanly.
+  bool UpdateAll(app::Application& app, std::vector<std::string>& updated, std::vector<std::string>& failed);
+
+  enum class VerifyStatus { Verified, Mismatch, NoHashToCheck, NotInstalled, Error };
+
+  // Recomputes the sha256 of the file currently installed at `id`'s own
+  // marketplace destination path (DestPath in Marketplace.cpp - the exact
+  // file InstallEntry wrote and UninstallById would remove) and compares it
+  // to the loaded index entry's own `sha256` - the same check InstallEntry
+  // makes before ever writing that file, re-run against what's on disk right
+  // now, so a copy that was corrupted or tampered with after installing is
+  // caught without having to reinstall to find out. `detail` is always
+  // filled with a human-readable explanation. NoHashToCheck covers a
+  // bundled_path entry or one whose index simply doesn't supply a sha256 -
+  // that isn't a failure, there's just nothing to compare against.
+  VerifyStatus VerifyInstalled(const std::string& id, std::string& detail) const;
+
  private:
   // `chain` is the sequence of ids currently being resolved (this call's own
   // id last), so a dependency cycle is caught as soon as it repeats one
