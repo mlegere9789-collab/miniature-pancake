@@ -102,6 +102,35 @@ class GlRenderer {
   // Rendered display mode: Blinn-Phong with the lights from SetLights and
   // an optional texture sampled with `uvs` (u,v per vertex; may be null).
   void DrawTrianglesRendered(const std::vector<float>& data, const std::vector<float>* uvs, const RenderMaterial& m);
+  // Background::Image's real equirectangular texture (the same GLuint the
+  // full-viewport background quad already draws - see Viewport.cpp's
+  // DrawBackgroundImage), sampled by a reflective Rendered-mode surface's
+  // reflection vector instead of the procedural studio Environment(). 0
+  // (the default) keeps the procedural fallback, closing the "interactive
+  // rasterizer viewport ... no reflection contribution" gap.
+  void SetEnvironmentMap(GLuint tex) { env_map_tex_ = tex; }
+
+  // Real-time shadow mapping for Rendered mode, closing "Real-time shadow
+  // maps in the rasterized renderer" (only ground-plane ShadowBlob contact
+  // shadows existed before - see DrawGroundPlane above, which is unrelated
+  // and still applies independently: object-on-ground, not object-on-
+  // object). A single dominant light (the caller's choice - Viewport.cpp
+  // picks light index 0 of SetLights' own list) casts real shadows from a
+  // depth-only pass; every other light stays unshadowed, a documented
+  // single-shadow-caster scope rather than a full per-light shadow atlas.
+  //
+  // BeginShadowPass binds the shadow FBO, computes an orthographic light-
+  // space view/projection framing a sphere of `radius` centred on `center`
+  // from `light_dir` (the direction the light travels, INTO the scene -
+  // the same convention GpuLight::direction/SetLightDirection use), and
+  // clears its depth buffer; every DrawTriangles*/DrawMesh call made
+  // before the matching EndShadowPass writes only into this depth map
+  // (DrawLines/DrawPoints are no-ops during the pass - only mesh geometry
+  // casts a shadow). Returns false (nothing drawn, no shadow this frame)
+  // if `light_dir` has no usable direction or the FBO fails to build.
+  bool BeginShadowPass(kernel::Vector3d light_dir, kernel::Point3d center, double radius);
+  void EndShadowPass();
+  static constexpr int kShadowMapSize = 2048;
   // Ground plane quad at world height z, centred on (cx, cy) with the
   // given half-size, fading out beyond `fade_radius`, with contact shadows.
   void DrawGroundPlane(double cx, double cy, double z, double half_size, double fade_radius, Color color,
@@ -155,7 +184,18 @@ class GlRenderer {
   GLint mesh_u_light_count_ = -1, mesh_u_light_pos_ = -1, mesh_u_light_dir_ = -1, mesh_u_light_color_ = -1,
         mesh_u_light_spot_ = -1, mesh_u_ambient_ = -1, mesh_u_specular_ = -1, mesh_u_emission_ = -1,
         mesh_u_reflectivity_ = -1, mesh_u_use_texture_ = -1, mesh_u_texture_ = -1, mesh_u_blob_count_ = -1,
-        mesh_u_blobs_ = -1, mesh_u_blob_strength_ = -1, mesh_u_ground_ = -1;
+        mesh_u_blobs_ = -1, mesh_u_blob_strength_ = -1, mesh_u_ground_ = -1, mesh_u_env_map_ = -1,
+        mesh_u_env_map_valid_ = -1, mesh_u_light_vp_ = -1, mesh_u_shadow_map_ = -1, mesh_u_shadow_valid_ = -1;
+  GLuint env_map_tex_ = 0;
+
+  // Shadow-pass state (see BeginShadowPass/EndShadowPass above).
+  GLuint shadow_fbo_ = 0, shadow_tex_ = 0, shadow_program_ = 0;
+  GLint shadow_u_light_vp_ = -1;
+  bool shadow_pass_ = false;   // true only between BeginShadowPass/EndShadowPass
+  bool shadow_valid_ = false;  // true once a shadow map has actually been rendered this frame
+  Mat4 light_vp_ = Mat4::Identity();
+  GLuint shadow_prev_fbo_ = 0;
+  GLint shadow_prev_viewport_[4] = {0, 0, 0, 0};
   GLint line_u_mvp_ = -1, line_u_color_ = -1, line_u_size_ = -1, line_u_offset_ = -1;
   GLint mesh_u_clip_[kMaxClipPlanes] = {-1, -1, -1, -1, -1, -1}, mesh_u_clip_count_ = -1;
   GLint line_u_clip_[kMaxClipPlanes] = {-1, -1, -1, -1, -1, -1}, line_u_clip_count_ = -1;

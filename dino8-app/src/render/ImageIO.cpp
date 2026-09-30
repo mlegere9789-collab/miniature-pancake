@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <cstdio>
@@ -408,6 +409,59 @@ void PutBe32(std::vector<unsigned char>& out, uint32_t v) {
   out.push_back(static_cast<unsigned char>(v & 0xFF));
 }
 
+// ---------------------------------------------------------------------------
+// Radiance HDR / RGBE (.hdr)
+// ---------------------------------------------------------------------------
+
+// Ward's shared-exponent encode: the largest of r,g,b picks a common
+// power-of-two exponent, and all three channels are quantized to 8 bits of
+// mantissa against it. Non-negative, non-finite-safe (NaN/Inf clamp to 0
+// via the `m < 1e-32f` branch, since frexpf on them is undefined-ish and
+// callers should never feed a renderer NaN through here anyway).
+void EncodeRgbe(float r, float g, float b, unsigned char out[4]) {
+  float m = std::max(r, std::max(g, b));
+  if (!(m > 1e-32f) || !std::isfinite(m)) { out[0] = out[1] = out[2] = out[3] = 0; return; }
+  int e = 0;
+  const float mantissa = std::frexp(m, &e);
+  const float scale = mantissa * 256.0f / m;
+  auto q = [&](float c) { return static_cast<unsigned char>(std::clamp(c * scale, 0.0f, 255.0f)); };
+  out[0] = q(r); out[1] = q(g); out[2] = q(b);
+  out[3] = static_cast<unsigned char>(std::clamp(e + 128, 0, 255));
+}
+
+void DecodeRgbe(const unsigned char in[4], float& r, float& g, float& b) {
+  if (in[3] == 0) { r = g = b = 0.0f; return; }
+  const float f = std::ldexp(1.0f, static_cast<int>(in[3]) - (128 + 8));
+  r = (in[0] + 0.5f) * f; g = (in[1] + 0.5f) * f; b = (in[2] + 0.5f) * f;
+}
+
+// Decodes one new-style RLE scanline's four component planes (R, G, B, E,
+// each independently run-length coded) into `scan` (w*4 bytes, RGBE
+// interleaved). Per Radiance's spec: a byte > 128 starts a run of
+// (byte - 128) copies of the next byte; a byte in [1,128] is a literal
+// count of that many raw bytes.
+bool DecodeRleScanline(const unsigned char* d, size_t n, size_t& pos, int w, std::vector<unsigned char>& scan) {
+  scan.assign(static_cast<size_t>(w) * 4, 0);
+  for (int chan = 0; chan < 4; ++chan) {
+    int x = 0;
+    while (x < w) {
+      if (pos >= n) return false;
+      const unsigned char count = d[pos++];
+      if (count > 128) {
+        const int run = count - 128;
+        if (pos >= n || x + run > w) return false;
+        const unsigned char value = d[pos++];
+        for (int i = 0; i < run; ++i) scan[static_cast<size_t>(x++) * 4 + chan] = value;
+      } else {
+        const int lit = count;
+        if (lit == 0 || pos + static_cast<size_t>(lit) > n || x + lit > w) return false;
+        for (int i = 0; i < lit; ++i) scan[static_cast<size_t>(x++) * 4 + chan] = d[pos++];
+      }
+    }
+  }
+  return true;
+}
+
 }  // namespace
 
 bool EncodePng(int width, int height, const std::vector<unsigned char>& rgb, std::vector<unsigned char>& out,
@@ -472,14 +526,118 @@ bool ZlibInflate(const unsigned char* data, size_t size, std::vector<unsigned ch
   return true;
 }
 
+// Reinhard tone-map (c/(1+c)) plus gamma 2.2, so an 8-bit consumer (texture
+// atlases, thumbnails) gets a sane preview of an HDR image's LDR range
+// instead of every above-1.0 highlight clipping straight to white.
+void TonemapHdrToRgba(const ImageHdr& hdr, Image& out) {
+  out.width = hdr.width; out.height = hdr.height;
+  out.rgba.assign(static_cast<size_t>(hdr.width) * hdr.height * 4, 255);
+  for (size_t i = 0; i < static_cast<size_t>(hdr.width) * hdr.height; ++i) {
+    for (int c = 0; c < 3; ++c) {
+      const float lin = std::max(0.0f, hdr.rgb[i * 3 + static_cast<size_t>(c)]);
+      const float mapped = std::pow(lin / (1.0f + lin), 1.0f / 2.2f);
+      out.rgba[i * 4 + static_cast<size_t>(c)] = static_cast<unsigned char>(std::clamp(mapped * 255.0f + 0.5f, 0.0f, 255.0f));
+    }
+  }
+}
+
 bool LoadImageFile(const std::string& path, Image& out, std::string& error) {
   std::vector<unsigned char> data;
   if (!ReadFile(path, data)) { error = "Cannot read " + path; return false; }
   if (data.size() >= 8 && data[0] == 0x89 && data[1] == 'P') return LoadPng(data, out, error);
   if (data.size() >= 2 && data[0] == 'B' && data[1] == 'M') return LoadBmp(data, out, error);
+  if (data.size() >= 2 && data[0] == '#' && data[1] == '?') {
+    ImageHdr hdr;
+    if (!LoadImageHdr(path, hdr, error)) return false;
+    TonemapHdrToRgba(hdr, out);
+    return true;
+  }
   if (data.size() >= 2 && data[0] == 'P') return LoadPpm(data, out, error);
-  error = "Unsupported image format: " + LowerExt(path) + " (BMP, PPM/PGM and PNG are supported)";
+  error = "Unsupported image format: " + LowerExt(path) + " (BMP, PPM/PGM, PNG and HDR are supported)";
   return false;
+}
+
+bool LoadImageHdr(const std::string& path, ImageHdr& out, std::string& error) {
+  std::vector<unsigned char> data;
+  if (!ReadFile(path, data)) { error = "Cannot read " + path; return false; }
+  if (data.size() < 2 || data[0] != '#' || data[1] != '?') { error = "Not a Radiance HDR file"; return false; }
+  size_t pos = 0;
+  auto read_line = [&](std::string& line) {
+    line.clear();
+    while (pos < data.size() && data[pos] != '\n') line.push_back(static_cast<char>(data[pos++]));
+    if (pos < data.size()) ++pos;  // skip '\n'
+    return !line.empty() || pos <= data.size();
+  };
+  std::string line;
+  read_line(line);  // "#?RADIANCE" / "#?RGBE" magic, already checked above
+  bool got_format = false;
+  for (;;) {
+    if (pos >= data.size()) { error = "Truncated HDR header"; return false; }
+    if (!read_line(line)) { error = "Truncated HDR header"; return false; }
+    if (line.empty()) break;  // blank line ends the header
+    if (line.rfind("FORMAT=", 0) == 0) got_format = true;
+  }
+  (void)got_format;  // informational only — every real-world writer emits 32-bit_rle_rgbe; nothing else is defined
+  if (pos >= data.size() || !read_line(line)) { error = "Missing HDR resolution line"; return false; }
+  int h = 0, w = 0;
+  if (std::sscanf(line.c_str(), "-Y %d +X %d", &h, &w) != 2) {
+    error = "Unsupported HDR orientation (only top-down -Y H +X W is supported): " + line;
+    return false;
+  }
+  if (w <= 0 || h <= 0 || static_cast<int64_t>(w) * h > (1 << 28)) { error = "Invalid HDR resolution"; return false; }
+  out.width = w; out.height = h;
+  out.rgb.assign(static_cast<size_t>(w) * h * 3, 0.0f);
+  std::vector<unsigned char> scan;
+  for (int y = 0; y < h; ++y) {
+    // New-style RLE marker: 2,2,(w>>8)&0xff,w&0xff, only used for scanlines
+    // 8..0x7fff pixels wide (older/odd-width files fall back to flat).
+    const bool can_rle = w >= 8 && w < 0x7fff;
+    bool is_rle = false;
+    if (can_rle && pos + 4 <= data.size() && data[pos] == 2 && data[pos + 1] == 2 &&
+        (((data[pos + 2] << 8) | data[pos + 3]) == w)) {
+      is_rle = true;
+      pos += 4;
+    }
+    if (is_rle) {
+      if (!DecodeRleScanline(data.data(), data.size(), pos, w, scan)) { error = "Corrupt HDR RLE scanline"; return false; }
+      for (int x = 0; x < w; ++x) {
+        float r, g, b;
+        DecodeRgbe(&scan[static_cast<size_t>(x) * 4], r, g, b);
+        const size_t o = (static_cast<size_t>(y) * w + x) * 3;
+        out.rgb[o] = r; out.rgb[o + 1] = g; out.rgb[o + 2] = b;
+      }
+    } else {
+      // Flat (uncompressed) scanline: w*4 raw RGBE bytes, possibly with the
+      // 4 bytes already consumed above as an ordinary (non-marker) pixel.
+      const size_t need = static_cast<size_t>(w) * 4;
+      if (pos + need > data.size()) { error = "Truncated HDR scanline data"; return false; }
+      for (int x = 0; x < w; ++x) {
+        float r, g, b;
+        DecodeRgbe(&data[pos + static_cast<size_t>(x) * 4], r, g, b);
+        const size_t o = (static_cast<size_t>(y) * w + x) * 3;
+        out.rgb[o] = r; out.rgb[o + 1] = g; out.rgb[o + 2] = b;
+      }
+      pos += need;
+    }
+  }
+  return true;
+}
+
+bool SaveImageHdr(const std::string& path, int w, int h, const std::vector<float>& rgb, std::string& error) {
+  if (w <= 0 || h <= 0 || rgb.size() < static_cast<size_t>(w) * h * 3) { error = "Nothing to save"; return false; }
+  FILE* f = std::fopen(path.c_str(), "wb");
+  if (!f) { error = "Cannot write " + path; return false; }
+  std::fprintf(f, "#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n\n-Y %d +X %d\n", h, w);
+  std::vector<unsigned char> row(static_cast<size_t>(w) * 4);
+  for (int y = 0; y < h; ++y) {
+    for (int x = 0; x < w; ++x) {
+      const size_t i = (static_cast<size_t>(y) * w + x) * 3;
+      EncodeRgbe(std::max(0.0f, rgb[i]), std::max(0.0f, rgb[i + 1]), std::max(0.0f, rgb[i + 2]), &row[static_cast<size_t>(x) * 4]);
+    }
+    std::fwrite(row.data(), 1, row.size(), f);
+  }
+  std::fclose(f);
+  return true;
 }
 
 bool SaveImageRGB(const std::string& path, int w, int h, const std::vector<unsigned char>& rgb, std::string& error) {

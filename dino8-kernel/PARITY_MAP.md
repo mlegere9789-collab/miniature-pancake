@@ -1,6 +1,58 @@
 # Fossilith / Dino 8 parity map (2026-09-28, updated 2026-09-30)
 
-**Fossilith vs Parasolid/ACIS = 68.0% (weighted, verified); Dino 8 vs Rhino 8 + AutoCAD 2027 = 72.0%.**
+**Fossilith vs Parasolid/ACIS = 68.0% (weighted, verified); Dino 8 vs Rhino 8 + AutoCAD 2027 = 72.3%.**
+
+**2026-09-30 re-score (a nineteenth session, a dedicated rotation round on the
+app table's "Viewport display, rendering & visualization" category — this
+session's own priority-order arithmetic ranked it joint-highest score-per-fix
+in the whole document, weight 1.0 over only 5 remaining items, and it had not
+had a dedicated round yet):** real engineering against 2 of that category's 5
+remaining bullets, both closed enough to move the row's own Present/Partial/
+Missing counts, not just narrowed in place:
+
+1. **Environments and image-based lighting** stays `[partial]` (an `.exr`
+   loader and true HDR range in the rasterizer's own reflection/background
+   are still missing - see the bullet below for the full account) but both
+   rendering-surface gaps it previously named as open are now closed: the
+   interactive rasterizer's Rendered-mode reflections sample the real
+   environment image (`GlRenderer::SetEnvironmentMap`/`SampleEnvMap`,
+   `Viewport.cpp`'s `UpdateEnvironmentMap`) instead of only a procedural sky,
+   and `GpuRaytracer` no longer forces a solid-colour fallback for
+   `Background::Image` (`UploadEnvironmentMap`, a real `GL_TEXTURE_2D` -
+   `GL_RGB32F` for a true `.hdr` source). A new dependency-free Radiance
+   `.hdr`/RGBE codec (`ImageIO.cpp`'s `LoadImageHdr`/`SaveImageHdr`, unit-
+   tested by the new `dino8_image_hdr` ctest target) gives the CPU path
+   tracer and, via the same float texture, the GPU raytraced preview real
+   unclamped HDR-range environment lighting for the first time.
+2. **Real-time shadow maps in the rasterized renderer** moves
+   `[missing]` -> `[partial]`: `GlRenderer::BeginShadowPass`/`EndShadowPass`
+   render a real depth-only shadow map (2048x2048, orthographic, framing the
+   document's visible bounding sphere) and the mesh shader's `Shade()` samples
+   it with 3x3 PCF to cast real object-on-object shadows in Rendered mode -
+   not just the pre-existing ground-plane `ShadowBlob` contact shadows. Scope
+   is honestly still narrow (a single shadow-casting light, Rendered mode
+   only, shadow casters limited to the viewing camera's own frustum), so it
+   stays `[partial]`, not closed outright - see the bullet below for the full
+   account of what still doesn't work.
+
+Neither the "Per-object display mode override" nor "View-dependent adaptive
+tessellation" bullets in the same category, nor "SSAO in the rasterized
+renderer," were attempted this round (kept for a future rotation rather than
+rushed) - so 3 of the category's original 5 remaining items are untouched
+this pass, and none of the 5 was taken all the way to a full, no-longer-
+partial/missing close; both changes above are real narrowings/reclassifications,
+the same "close what you can verify, keep the rest honest" standard this
+document has used throughout, not a claim that the category is done.
+
+Recomputed against the app table's own current 8 rows (this document's usual
+`sum(weight * (present + 0.5*partial) / items) / 7.75` check, the same
+formula the eighteenth-session entry below re-verified at 71.99%): the
+Viewport row's Present/Partial/Missing move from 13/3/2 (80.6%) to 13/4/1
+(83.3%), and the app table's weighted average recomputes to 72.33%, rounding
+to **72.3%** - the only headline that moves; the kernel headline (68.0%) is
+untouched, since no `dino8-kernel/src` file was touched this pass. Full
+`dino8_app_tests` ctest suite (including the new `dino8_image_hdr` target)
+re-run clean after this pass, plus `tests/smoke.sh` under Xvfb+llvmpipe.
 
 **2026-09-30 re-score (a nineteenth session, app wiring for two more
 already-exact Blending & chamfering kernel constructions, continuing the
@@ -5237,7 +5289,7 @@ test_basic.cpp`.
 |---|---|---|---|---|---|---|
 | Dino 8: Command system & core commands | 1.5 | 19 | 11 | 6 | 2 | 73.7% |
 | Dino 8: 2D drafting, annotation & documentation | 1.0 | 18 | 12 | 5 | 1 | 80.6% |
-| Dino 8: Viewport display, rendering & visualization | 1.0 | 18 | 13 | 3 | 2 | 80.6% |
+| Dino 8: Viewport display, rendering & visualization | 1.0 | 18 | 13 | 4 | 1 | 83.3% |
 | Dino 8: Scripting, automation & visual programming | 1.0 | 15 | 10 | 3 | 2 | 76.7% |
 | Dino 8: File I/O & interoperability (app level) | 1.0 | 17 | 5 | 5 | 7 | 44.1% |
 | Dino 8: SubD & mesh modeling toolset (app level) | 0.75 | 24 | 19 | 3 | 2 | 85.4% |
@@ -5296,10 +5348,10 @@ start line) — all citation-precision fixes, not scoring changes.
 - [missing] Field text (text driven by object properties) — no field or formula text type found anywhere; all text is static baked geometry.
 
 **Dino 8: Viewport display, rendering & visualization** (app_display):
-- [partial] Environments and image-based lighting — **materially updated by commit 7059e20.** `PathTracer::SkyColor()` (`dino8-app/src/render/PathTracer.cpp:241-284` — corrected 2026-09-28, was mis-cited as the malformed range `241-113`) now has a real `Background::Image` branch: a standard equirectangular (atan2/acos) lookup through a new shared `PathTracer::SampleBilinear` helper. Critically, `SkyColor()` is called from inside `TracePath`'s bounce loop (`PathTracer.cpp:452`, `radiance += Mul(throughput, SkyColor(dir))`) for any ray that escapes the scene at any bounce depth, not just primary camera rays — so this is genuine image-based lighting/reflection contribution (a ray that bounces off a glossy/reflective surface and then misses geometry now picks up the environment image, weighted by accumulated `throughput`) for the offline CPU path-traced renders (`Render`/`RenderPreview`/`RenderArctic`/`RenderBlowup` at `Quality=Raytraced`). This closes the gap for that one rendering surface. It remains partial because two of the app's three render surfaces still lack it: the interactive rasterizer viewport still draws the image only as a stretched full-viewport quad with no reflection contribution (`dino8-app/src/viewport/Viewport.cpp`, `DrawBackgroundImage`), and the live `RayTracedViewport` GPU preview still falls back to a solid color for `Image` (`dino8-app/src/render/GpuRaytracer.cpp:683`, `bg_mode_ = 0; // no env-map sampling on GPU`). There is also still no HDRI lighting or `.hdr`/`.exr` loader — `LoadImageFile` (`dino8-app/src/render/ImageIO.cpp:475`) supports only BMP/PPM/PGM/PNG (8-bit LDR), so an environment image can only ever be an LDR backdrop, never true HDR-range lighting.
+- [partial] Environments and image-based lighting — **the two rendering-surface gaps this bullet named are now closed; the HDR-loader gap is substantially narrowed.** (1) The interactive rasterizer's reflective Rendered-mode surfaces now sample the real environment image instead of only the procedural studio sky: `GlRenderer::SetEnvironmentMap`, fed by `Viewport.cpp`'s new `UpdateEnvironmentMap` from the same texture `DrawBackgroundImage` already draws, is sampled by a new `SampleEnvMap` equirectangular lookup inside the mesh fragment shader's `Shade()` reflectivity branch — the view-space reflection vector is carried back to world space with `transpose(mat3(u_view))` (a camera view matrix is orthonormal, so its transpose is its inverse). `DrawBackgroundImage`'s own flat full-viewport quad is unchanged (still a stretch, not a lat-long unwarp), but a chrome/glossy object now genuinely reflects the loaded image, not just the procedural sky. (2) `GpuRaytracer` no longer forces `bg_mode_ = 0` for `Background::Image`: a new `UploadEnvironmentMap` uploads the image as a real `GL_TEXTURE_2D` (`GL_RGB32F` for a true `.hdr` source, so an above-1.0 highlight isn't clamped away here either; `GL_RGB8` for every other supported format), sampled by `skyColor()`'s new `u_bg_mode==3` branch with the same equirectangular mapping `PathTracer::SkyColor` uses. (3) `ImageIO.cpp` gains a real, dependency-free Radiance `.hdr`/RGBE codec — `LoadImageHdr`/`SaveImageHdr`, decoding both new-style-RLE and flat scanlines (round-tripped, plus a hand-built RLE scanline and the malformed-input error paths, by `tests/test_image_hdr.cpp`/`dino8_image_hdr` in ctest) — and `PathTracer::TexCache` now carries a `.hdr` source's true unclamped linear radiance alongside the existing tone-mapped 8-bit copy (`TexCache::hdr`, read by `SampleBilinear` instead of the `/255` byte path whenever it is populated), so a `.hdr` environment delivers real HDR-range lighting - not just an LDR backdrop clamped to `[0,1]` - to both the CPU path tracer and, via the same `GL_RGB32F` texture, the GPU raytraced preview. Stays partial: `.exr` is still entirely unsupported (Radiance `.hdr` only), and the interactive rasterizer's own reflection/background above is still necessarily tone-mapped to 8-bit like the rest of its forward-rendering pipeline, so true HDR range reaches only 2 of the app's 3 render surfaces, and the CPU/GPU/rasterizer three-way split this bullet has tracked since it was first opened is not fully closed yet.
 - [partial] Per-object display mode override — only Wireframe and Shaded are supported per-object; every other mode is viewport-wide only.
 - [partial] View-dependent adaptive tessellation — real frustum culling exists, but there is still no LOD and no re-tessellation on zoom.
-- [missing] Real-time shadow maps in the rasterized renderer — `dino8-app/src/render/GlRenderer.cpp` has only ground-plane contact-shadow "blobs" (`ShadowBlob`/`kMaxShadowBlobs` struct+constant declared in `GlRenderer.h:60-63` — corrected 2026-09-28, previously mis-attributed to the .cpp; fragment-shader smoothstep logic at GlRenderer.cpp:169-175, upload/draw code at :554-641, both confirmed accurate) — a screen-space blob fade, not shadow maps, self-shadowing, or object-on-object cast shadows. Real cast shadows appear only in the GPU raytraced and CPU path-traced modes (`ground_.shadows`, `PathTracer.cpp:178,339` — corrected 2026-09-28, was mis-cited :178,338).
+- [partial] Real-time shadow maps in the rasterized renderer — **reclassified this window, no longer missing.** `GlRenderer` gains a real depth-only shadow pass, not just the pre-existing ground-plane contact-shadow `ShadowBlob`s (a screen-space blob fade, unrelated and still applied independently): `BeginShadowPass`/`EndShadowPass` render every visible mesh's geometry into a 2048x2048 `GL_DEPTH_COMPONENT24` texture from an orthographic camera that frames the document's visible bounding sphere along a shadow-casting light's direction, and the mesh shader's `Shade()` samples it with 3x3 PCF (`ShadowFactor()`) to attenuate that one light's diffuse/specular contribution — real object-on-object cast shadows in Rendered mode, the case this bullet previously said only the GPU-raytraced/CPU-path-traced modes could produce. `Viewport::DrawShadowPass` wires it in from `DrawScene`: the shadow-casting light is index 0 of the same list `SetupLights` already builds and uploads (the first enabled document light if any exist, else the sun when enabled, else the default key light), so the shadowed light and the scene's strongest light stay in sync without re-deriving that priority order. Stays genuinely partial, not a full shadow-mapping system: only that one light casts a shadow (every other simultaneous light in the up-to-8-light Rendered scene stays unshadowed — a documented single-shadow-caster scope, not a per-light shadow atlas); only the Rendered-mode `Shade()` path reads the map (Shaded and every other fill mode still light with no shadow term at all); and only objects inside the *viewing camera's own frustum* are depth-rendered into the map, so an object just outside the visible frame cannot cast a shadow into it. Real cast shadows also still appear in the GPU raytraced and CPU path-traced modes, as before.
 - [missing] SSAO in the rasterized renderer — no "ssao"/"ambient occlusion" hit anywhere in `dino8-app/src/render/`.
 
 **Dino 8: Scripting, automation & visual programming** (app_scripting):

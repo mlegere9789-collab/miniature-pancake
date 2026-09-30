@@ -1,6 +1,8 @@
 // Tiny dependency-free image codecs for textures and render output:
-// reads PPM (P3/P6), BMP (24/32-bit uncompressed) and PNG (8/16-bit,
-// non-interlaced, via a small zlib inflate); writes BMP, PPM and PNG.
+// reads PPM (P3/P6), BMP (24/32-bit uncompressed), PNG (8/16-bit,
+// non-interlaced, via a small zlib inflate) and Radiance HDR/RGBE
+// (8-bit-per-channel-with-shared-exponent, true unclamped radiance);
+// writes BMP, PPM, PNG and HDR.
 #pragma once
 
 #include <string>
@@ -14,9 +16,37 @@ struct Image {
   bool Valid() const { return width > 0 && height > 0 && rgba.size() == static_cast<size_t>(width) * height * 4; }
 };
 
-// Loads a .ppm / .pgm / .bmp / .png file. Returns false and sets `error`
-// on failure (unknown format, unsupported variant, corrupt data).
+// A true HDR image: linear radiance per channel, not clamped to [0,1] the
+// way `Image` above is. Loaded from / saved to Radiance's .hdr (RGBE) file
+// format (used for environment/IBL panoramas — see LoadImageHdr).
+struct ImageHdr {
+  int width = 0, height = 0;
+  std::vector<float> rgb;  // top-down rows, 3 floats per pixel, linear
+  bool Valid() const { return width > 0 && height > 0 && rgb.size() == static_cast<size_t>(width) * height * 3; }
+};
+
+// Loads a .ppm / .pgm / .bmp / .png / .hdr file. Returns false and sets
+// `error` on failure (unknown format, unsupported variant, corrupt data).
+// A loaded .hdr is tone-mapped (Reinhard + gamma 2.2) into `out.rgba`, so
+// every existing 8-bit consumer (thumbnails, GUI previews, the texture
+// atlases) keeps working unchanged; a consumer that wants the real,
+// unclamped radiance values (environment lighting) should call
+// LoadImageHdr directly instead.
 bool LoadImageFile(const std::string& path, Image& out, std::string& error);
+
+// Loads a Radiance .hdr (RGBE) file: the classic "#?RADIANCE" flat-ASCII
+// header followed by either flat or new-style per-scanline RLE-compressed
+// scanlines of 4-byte (R,G,B,E) shared-exponent pixels. Supports both
+// encodings (a real-world .hdr, e.g. one downloaded from an HDRI site, is
+// virtually always new-style RLE; SaveImageHdr below writes the simpler
+// flat encoding). Only the standard top-down, left-to-right orientation
+// ("-Y H +X W") is supported.
+bool LoadImageHdr(const std::string& path, ImageHdr& out, std::string& error);
+
+// Writes a linear-radiance RGB buffer (top-down rows, 3 floats per pixel,
+// any non-negative range — not clamped to [0,1]) as a flat-encoded
+// Radiance .hdr file.
+bool SaveImageHdr(const std::string& path, int width, int height, const std::vector<float>& rgb, std::string& error);
 
 // Writes an RGB buffer (top-down rows, 3 bytes per pixel) as a 24-bit BMP
 // or binary PPM depending on the extension (.ppm -> PPM, anything else BMP).

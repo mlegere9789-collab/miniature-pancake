@@ -77,11 +77,12 @@ uniform vec4 u_light_a[kMaxLights];  // position.xyz, type (0 point/area 1 spot 
 uniform vec4 u_light_b[kMaxLights];  // direction.xyz, cos_outer
 uniform vec4 u_light_c[kMaxLights];  // color.rgb, cos_inner
 
-uniform int u_bg_mode;  // 0 solid, 1 gradient, 2 sky
+uniform int u_bg_mode;  // 0 solid, 1 gradient, 2 sky, 3 image (env map)
 uniform vec3 u_bg_top, u_bg_bottom;
 uniform int u_sun_enabled;
 uniform vec3 u_sun_dir, u_sun_color;
 uniform float u_sun_intensity;
+uniform sampler2D u_env_map;  // only sampled when u_bg_mode == 3
 
 // ---- RNG (xorshift/hash, reseeded per pixel + frame) ----------------------
 uint hash1(uint x) {
@@ -99,11 +100,21 @@ vec3 cosineSampleHemisphere(vec3 n) {
   return normalize(t * (r * cos(theta)) + b * (r * sin(theta)) + n * sqrt(max(0.0, 1.0 - u1)));
 }
 
-// ---- sky (approximates PathTracer::SkyColor for Sky/Gradient/Solid) -------
+// ---- sky (approximates PathTracer::SkyColor for Sky/Gradient/Solid/Image) -
 vec3 skyColor(vec3 d) {
   if (u_bg_mode == 0) return u_bg_top;
   float t = clamp(d.z * 0.5 + 0.5, 0.0, 1.0);
   if (u_bg_mode == 1) return mix(u_bg_bottom, u_bg_top, t);
+  if (u_bg_mode == 3) {
+    // Same equirectangular lat-long mapping as PathTracer::SkyColor's
+    // Background::Image branch, in this app's z-up convention. u_env_map
+    // is uploaded top-down like u_tex_atlas, so the v coordinate is
+    // flipped the same way sampleAlbedo() flips uv.y above.
+    float theta = acos(clamp(d.z, -1.0, 1.0));
+    float u = atan(d.y, d.x) / (2.0 * 3.14159265358979) + 0.5;
+    float v = 1.0 - theta / 3.14159265358979;
+    return texture(u_env_map, vec2(fract(u), 1.0 - fract(v))).rgb;
+  }
   vec3 zenith = vec3(0.30, 0.45, 0.75), horizon = vec3(0.75, 0.82, 0.90);
   vec3 sky = mix(horizon, zenith, pow(t, 0.7));
   if (u_sun_enabled == 1) {
@@ -503,6 +514,7 @@ bool GpuRaytracer::CompilePrograms(std::string& error) {
   t_bg_mode_ = glGetUniformLocation(trace_program_, "u_bg_mode");
   t_bg_top_ = glGetUniformLocation(trace_program_, "u_bg_top");
   t_bg_bottom_ = glGetUniformLocation(trace_program_, "u_bg_bottom");
+  t_env_map_ = glGetUniformLocation(trace_program_, "u_env_map");
   t_sun_enabled_ = glGetUniformLocation(trace_program_, "u_sun_enabled");
   t_sun_dir_ = glGetUniformLocation(trace_program_, "u_sun_dir");
   t_sun_color_ = glGetUniformLocation(trace_program_, "u_sun_color");
@@ -541,6 +553,7 @@ void GpuRaytracer::Shutdown() {
   if (node_buf_) glDeleteBuffers(1, &node_buf_);
   if (tri_buf_) glDeleteBuffers(1, &tri_buf_);
   if (tex_atlas_) glDeleteTextures(1, &tex_atlas_);
+  if (env_tex_) glDeleteTextures(1, &env_tex_);
   for (GLuint t : accum_tex_) if (t) glDeleteTextures(1, &t);
   if (gbuf_tex_) glDeleteTextures(1, &gbuf_tex_);
   for (GLuint f : trace_fbo_) if (f) glDeleteFramebuffers(1, &f);
@@ -628,6 +641,47 @@ void GpuRaytracer::UploadTextureAtlas(const std::vector<app::Material>& mats) {
   Check("UploadTextureAtlas");
 }
 
+// Builds/rebuilds env_tex_ for Background::Image, closing the "no env-map
+// sampling on GPU" gap the old bg_mode_ = 0 override left (see
+// UploadScene below and gpu_render_notes.md). A true .hdr source uploads
+// as GL_RGB32F so an above-1.0 highlight/sun reaches the shader unclamped,
+// exactly like PathTracer::TexCache::hdr on the CPU path; every other
+// supported format uploads as the ordinary 8-bit GL_RGB8 the atlas already
+// uses.
+void GpuRaytracer::UploadEnvironmentMap(const std::string& path) {
+  if (env_tex_) { glDeleteTextures(1, &env_tex_); env_tex_ = 0; }
+  env_path_ = path;
+  if (path.empty()) return;
+  int w = 0, h = 0;
+  bool is_hdr = path.size() > 4 && path.compare(path.size() - 4, 4, ".hdr") == 0;
+  std::vector<float> hdr_rgb;
+  std::vector<unsigned char> ldr_rgba;
+  if (is_hdr) {
+    app::ImageHdr img; std::string err;
+    if (app::LoadImageHdr(path, img, err) && img.Valid()) { hdr_rgb = std::move(img.rgb); w = img.width; h = img.height; }
+    else is_hdr = false;  // fall through to the LDR loader below (e.g. a mis-named file)
+  }
+  if (!is_hdr) {
+    app::Image img; std::string err;
+    if (app::LoadImageFile(path, img, err) && img.Valid()) { ldr_rgba = std::move(img.rgba); w = img.width; h = img.height; }
+  }
+  if (w <= 0 || h <= 0) return;  // missing/unreadable: skyColor's u_bg_mode==3 branch samples an unbound black texture
+  glGenTextures(1, &env_tex_);
+  glBindTexture(GL_TEXTURE_2D, env_tex_);
+  glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+  if (is_hdr) {
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB32F, w, h, 0, GL_RGB, GL_FLOAT, hdr_rgb.data());
+  } else {
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, ldr_rgba.data());
+  }
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+  glBindTexture(GL_TEXTURE_2D, 0);
+  Check("UploadEnvironmentMap");
+}
+
 void GpuRaytracer::UploadScene(const app::PathTracer& tracer, const app::RenderSettings& settings) {
   const Bvh& bvh = tracer.SceneBvh();
   std::vector<float> nodes, tris;
@@ -680,7 +734,14 @@ void GpuRaytracer::UploadScene(const app::PathTracer& tracer, const app::RenderS
   }
 
   bg_mode_ = static_cast<int>(settings.background);
-  if (settings.background == app::RenderSettings::Background::Image) bg_mode_ = 0;  // no env-map sampling on GPU
+  if (settings.background == app::RenderSettings::Background::Image) {
+    if (settings.environment_image != env_path_ || !env_tex_) UploadEnvironmentMap(settings.environment_image);
+    if (!env_tex_) bg_mode_ = 2;  // image missing/unreadable: fall back to the Sky gradient, same as the CPU path
+  } else if (env_tex_) {
+    // Background switched away from Image: drop the now-unused texture
+    // rather than leaving it bound to a path no longer in use.
+    UploadEnvironmentMap("");
+  }
   bg_top_[0] = settings.background == app::RenderSettings::Background::Gradient ? settings.gradient_top.r : settings.background_color.r;
   bg_top_[1] = settings.background == app::RenderSettings::Background::Gradient ? settings.gradient_top.g : settings.background_color.g;
   bg_top_[2] = settings.background == app::RenderSettings::Background::Gradient ? settings.gradient_top.b : settings.background_color.b;
@@ -777,6 +838,7 @@ GLuint GpuRaytracer::Render(const app::Camera& camera, double aspect, int width,
   glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_BUFFER, tri_tex_); glUniform1i(t_tris_, 1);
   glActiveTexture(GL_TEXTURE2); glBindTexture(GL_TEXTURE_2D, accum_tex_[src]); glUniform1i(t_prev_, 2);
   glActiveTexture(GL_TEXTURE3); glBindTexture(GL_TEXTURE_2D_ARRAY, tex_atlas_); glUniform1i(t_tex_atlas_, 3);
+  glActiveTexture(GL_TEXTURE4); glBindTexture(GL_TEXTURE_2D, env_tex_); glUniform1i(t_env_map_, 4);
 
   glUniform1i(t_mat_count_, mat_count_);
   glUniform4fv(t_mat_a_, 64, mat_a_.data());
@@ -811,6 +873,7 @@ GLuint GpuRaytracer::Render(const app::Camera& camera, double aspect, int width,
   Check("denoise draw");
 
   glBindVertexArray(0);
+  glActiveTexture(GL_TEXTURE4); glBindTexture(GL_TEXTURE_2D, 0);
   glActiveTexture(GL_TEXTURE3); glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
   glActiveTexture(GL_TEXTURE0);
   glBindTexture(GL_TEXTURE_2D, 0);

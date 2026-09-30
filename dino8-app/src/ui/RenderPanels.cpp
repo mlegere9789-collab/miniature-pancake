@@ -389,8 +389,9 @@ void DrawEnvironmentsPanel(Application& app) {
     if (InputText("Environment image", r.environment_image, ImGuiInputTextFlags_EnterReturnsTrue)) t = true;
     if (r.background == RenderSettings::Background::Image) {
       ImGui::TextDisabled("Drawn as a real equirectangular background by a raytraced Render/RenderPreview/RenderArctic "
-                           "(PathTracer::SkyColor); the interactive Rendered-mode GPU raytraced preview still falls "
-                           "back to a solid colour (GpuRaytracer has no env-map sampling yet).");
+                           "(PathTracer::SkyColor) and by the interactive Rendered-mode GPU raytraced preview "
+                           "(GpuRaytracer's own env-map sampling); a .hdr source keeps its true, unclamped radiance "
+                           "on both paths, not just a tone-mapped [0,1] copy.");
     }
   }
   if (ImGui::CollapsingHeader("Ground plane", ImGuiTreeNodeFlags_DefaultOpen)) {

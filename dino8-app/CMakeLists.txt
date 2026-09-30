@@ -623,6 +623,15 @@ if(DINO8_BUILD_TESTS)
   target_include_directories(dino8_test_i18n_coverage PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   add_test(NAME dino8_i18n_coverage COMMAND dino8_test_i18n_coverage ${CMAKE_CURRENT_SOURCE_DIR}/data/i18n)
 
+  # Radiance .hdr (RGBE) codec (src/render/ImageIO.cpp's LoadImageHdr/
+  # SaveImageHdr): an encode/decode round trip well above the [0,1] range
+  # PNG/BMP/PPM are stuck at, a real-world-shaped new-style-RLE scanline
+  # decoded by hand, and the malformed-input error paths. Standalone like
+  # dino8_test_aci_palette - ImageIO.cpp has no dino8_kernel dependency.
+  add_executable(dino8_test_image_hdr tests/test_image_hdr.cpp src/render/ImageIO.cpp)
+  target_include_directories(dino8_test_image_hdr PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  add_test(NAME dino8_image_hdr COMMAND dino8_test_image_hdr)
+
   # Numerically verifies VariableBlendSrf's own claim (cmd_fillet.cpp's
   # VariableBlendSrfCommand): that BuildBlendSurfaceG1/G2's new
   # width_frac_at hook makes the blend's cross-section width genuinely

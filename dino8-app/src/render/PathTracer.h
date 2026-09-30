@@ -150,7 +150,15 @@ class PathTracer {
   // stays valid for as long as the PathTracer itself (tex_cache_.clear() in
   // the ctor/reset is the only thing that invalidates it, and that happens
   // before any render starts).
-  struct TexCache { int w = 0, h = 0; std::vector<unsigned char> rgba; };
+  // `hdr` carries true, unclamped linear radiance for a .hdr (Radiance
+  // RGBE) source - `rgba` alone would force every environment image back
+  // through an 8-bit [0,1] bottleneck, exactly the "never true HDR-range
+  // lighting" gap this cache closes. `rgba` is still populated for a .hdr
+  // source too (tone-mapped, via LoadImageFile), so a non-environment
+  // caller (AlbedoAt's material textures, which have no HDR-range need)
+  // keeps working unchanged; only SkyColor's environment-image branch
+  // reads `hdr` when it is present.
+  struct TexCache { int w = 0, h = 0; std::vector<unsigned char> rgba; std::vector<float> hdr; };
   mutable std::mutex tex_cache_mutex_;
   mutable std::deque<std::pair<std::string, TexCache>> tex_cache_;
   const TexCache* TextureFor(const std::string& path) const;

@@ -182,6 +182,21 @@ void DrawBackgroundImage(GlRenderer& renderer, const Document* doc, DisplayMode 
   renderer.EnableDepthTest(true);
 }
 
+// Feeds a reflective Rendered-mode surface (GlRenderer::SetEnvironmentMap)
+// the same Background::Image texture the full-viewport quad above just
+// drew, so a chrome/glossy object's reflection actually shows the loaded
+// environment instead of only the procedural studio sky - the interactive
+// rasterizer's half of the "Environments and image-based lighting" gap.
+void UpdateEnvironmentMap(GlRenderer& renderer, const Document* doc, DisplayMode mode, bool arctic) {
+  if (arctic || mode != DisplayMode::Rendered || !doc) { renderer.SetEnvironmentMap(0); return; }
+  const RenderSettings& r = doc->Render();
+  if (r.background != RenderSettings::Background::Image || r.environment_image.empty()) {
+    renderer.SetEnvironmentMap(0);
+    return;
+  }
+  renderer.SetEnvironmentMap(renderer.TextureFor(r.environment_image));
+}
+
 void Viewport::Render(GlRenderer& renderer, const FrameContext& ctx) {
   if (!target_.Resize(std::max(width_, 1), std::max(height_, 1))) return;
   target_.Bind();
@@ -196,6 +211,7 @@ void Viewport::Render(GlRenderer& renderer, const FrameContext& ctx) {
   renderer.SetMatrices(camera_.ViewMatrix(), camera_.ProjectionMatrix(Aspect()));
   renderer.ClearGradient(top, bottom);
   if (!ctx.show_zbuffer) DrawBackgroundImage(renderer, ctx.doc, mode_, false, false);
+  UpdateEnvironmentMap(renderer, ctx.doc, mode_, false);
   renderer.EnableDepthTest(true);
   renderer.EnableBlend(true);
   if (mode_ == DisplayMode::RayTraced && !page_ && ctx.doc && !ctx.show_zbuffer) {
@@ -305,6 +321,7 @@ bool Viewport::RenderToImage(GlRenderer& renderer, const FrameContext& base, int
   renderer.SetMatrices(camera_.ViewMatrix(), camera_.BlowupProjectionMatrix(aspect, blowup[0], blowup[1], blowup[2], blowup[3]));
   renderer.ClearGradient(top, bottom);
   DrawBackgroundImage(renderer, ctx.doc, DisplayMode::Rendered, arctic, true);
+  UpdateEnvironmentMap(renderer, ctx.doc, DisplayMode::Rendered, arctic);
   renderer.EnableDepthTest(true);
   renderer.EnableBlend(true);
   DrawScene(renderer, ctx, DisplayMode::Rendered, aspect);
@@ -345,7 +362,13 @@ void Viewport::DrawScene(GlRenderer& renderer, const FrameContext& ctx, DisplayM
   // top of the depth image.
   if (!ctx.for_render && !ground && !ctx.show_zbuffer) DrawGrid(renderer, ctx.doc->Settings(), mode);
   if (mode == DisplayMode::Rendered) {
-    SetupLights(renderer, ctx);
+    std::vector<GpuLight> lights;
+    SetupLights(renderer, ctx, &lights);
+    // Light index 0 of the same list SetupLights just uploaded is the
+    // shadow-casting light (see GlRenderer::BeginShadowPass) - keeps the
+    // shadow's direction and the shading's strongest light in sync without
+    // re-deriving SetupLights' own sun/point/spot/default priority here.
+    if (!ctx.show_zbuffer && !lights.empty()) DrawShadowPass(renderer, ctx, lights[0].direction);
     DrawGroundPlane(renderer, ctx);
   }
   // Clipping planes that clip this viewport cut the model (not the grid).
@@ -365,7 +388,7 @@ void Viewport::DrawScene(GlRenderer& renderer, const FrameContext& ctx, DisplayM
   if (!ctx.for_render) DrawLightWidgets(renderer, *ctx.doc);
 }
 
-void Viewport::SetupLights(GlRenderer& renderer, const FrameContext& ctx) {
+void Viewport::SetupLights(GlRenderer& renderer, const FrameContext& ctx, std::vector<GpuLight>* out_lights) {
   const Document& doc = *ctx.doc;
   const RenderSettings& r = doc.Render();
   std::vector<GpuLight> lights;
@@ -431,6 +454,18 @@ void Viewport::SetupLights(GlRenderer& renderer, const FrameContext& ctx) {
     for (GpuLight& g : lights) { g.r *= 0.7f; g.g *= 0.7f; g.b *= 0.7f; }
   }
   renderer.SetLights(lights, ambient);
+  if (out_lights) *out_lights = lights;
+}
+
+void Viewport::DrawShadowPass(GlRenderer& renderer, const FrameContext& ctx, kernel::Vector3d light_dir) {
+  if (!ctx.doc) return;
+  kernel::BoundingBox box;
+  if (!ctx.doc->VisibleBoundingBox(box)) return;
+  const kernel::Point3d center((box.min.x + box.max.x) / 2, (box.min.y + box.max.y) / 2, (box.min.z + box.max.z) / 2);
+  const double radius = std::max({box.max.x - box.min.x, box.max.y - box.min.y, box.max.z - box.min.z, 1.0}) / 2;
+  if (!renderer.BeginShadowPass(light_dir, center, radius)) return;
+  DrawObjects(renderer, ctx, DisplayMode::Rendered);
+  renderer.EndShadowPass();
 }
 
 void Viewport::DrawGroundPlane(GlRenderer& renderer, const FrameContext& ctx) {

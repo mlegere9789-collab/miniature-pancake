@@ -305,7 +305,17 @@ class Viewport {
   // plane, objects, light widgets. `mode` may differ from mode_ (Render).
   void DrawScene(GlRenderer& renderer, const FrameContext& ctx, DisplayMode mode, double aspect);
   void DrawObjects(GlRenderer& renderer, const FrameContext& ctx, DisplayMode mode);
-  void SetupLights(GlRenderer& renderer, const FrameContext& ctx);
+  // `out_lights`, when given, receives the same light list just uploaded
+  // via renderer.SetLights - DrawScene's shadow pre-pass uses out_lights[0]
+  // as the shadow-casting light without duplicating this function's own
+  // sun/point/spot/default-key-light priority logic.
+  void SetupLights(GlRenderer& renderer, const FrameContext& ctx, std::vector<GpuLight>* out_lights = nullptr);
+  // Real-time shadow map pre-pass (GlRenderer::BeginShadowPass): frames the
+  // document's visible bounding box from `light_dir` and depth-only-draws
+  // every visible object's mesh into it. A no-op (renderer keeps whatever
+  // shadow map it already had this frame) if there is nothing visible or
+  // no usable light direction.
+  void DrawShadowPass(GlRenderer& renderer, const FrameContext& ctx, kernel::Vector3d light_dir);
   void DrawGroundPlane(GlRenderer& renderer, const FrameContext& ctx);
   void DrawLightWidgets(GlRenderer& renderer, const Document& doc);
   void DrawAxesGizmo(GlRenderer& renderer);

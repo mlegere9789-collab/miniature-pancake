@@ -58,6 +58,7 @@ class GpuRaytracer {
   bool CompilePrograms(std::string& error);
   void UploadBuffer(GLuint& buf, GLuint& tex, const std::vector<float>& floats);
   void UploadTextureAtlas(const std::vector<app::Material>& mats);
+  void UploadEnvironmentMap(const std::string& path);
 
   bool inited_ = false;
   GLuint trace_program_ = 0, denoise_program_ = 0;
@@ -90,6 +91,13 @@ class GpuRaytracer {
   int light_count_ = 0;
   int bg_mode_ = 0;
   float bg_top_[3] = {0.5f, 0.6f, 0.8f}, bg_bottom_[3] = {0.85f, 0.85f, 0.85f};
+  // Background::Image env map: a plain 2D texture (GL_RGB32F when the
+  // source is a true .hdr, so an above-1.0 highlight isn't clamped away
+  // here either - GL_RGB8 for every other supported format), sampled by
+  // skyColor()'s u_bg_mode==3 branch. env_path_ is the path this texture
+  // was last built from, so UploadScene only rebuilds it on a real change.
+  GLuint env_tex_ = 0;
+  std::string env_path_;
   bool sun_enabled_ = false;
   float sun_dir_[3] = {0, 0, -1}, sun_color_[3] = {1, 1, 1};
   float sun_intensity_ = 1.f;
@@ -111,7 +119,7 @@ class GpuRaytracer {
         t_alpha_ = -1, t_mat_count_ = -1, t_mat_a_ = -1, t_mat_b_ = -1, t_mat_c_ = -1, t_mat_d_ = -1,
         t_tex_atlas_ = -1, t_max_bounces_ = -1, t_light_count_ = -1,
         t_light_a_ = -1, t_light_b_ = -1, t_light_c_ = -1, t_bg_mode_ = -1, t_bg_top_ = -1, t_bg_bottom_ = -1,
-        t_sun_enabled_ = -1, t_sun_dir_ = -1, t_sun_color_ = -1, t_sun_intensity_ = -1;
+        t_sun_enabled_ = -1, t_sun_dir_ = -1, t_sun_color_ = -1, t_sun_intensity_ = -1, t_env_map_ = -1;
   // Cached uniform locations (denoise program).
   GLint d_accum_ = -1, d_gbuf_ = -1, d_resolution_ = -1, d_accum_frames_ = -1;
 };

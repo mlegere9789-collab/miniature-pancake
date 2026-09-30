@@ -294,6 +294,12 @@ const PathTracer::TexCache* PathTracer::TextureFor(const std::string& path) cons
   } else {
     Image img; std::string err;
     if (LoadImageFile(path, img, err) && img.Valid()) { tc.rgba = img.rgba; tc.w = img.width; tc.h = img.height; ok = true; }
+    // A true .hdr source also gets its real, unclamped linear radiance
+    // cached alongside the tone-mapped 8-bit copy above - see TexCache::hdr.
+    if (ok && path.size() > 4 && path.compare(path.size() - 4, 4, ".hdr") == 0) {
+      ImageHdr hdr_img;
+      if (LoadImageHdr(path, hdr_img, err) && hdr_img.Valid()) tc.hdr = std::move(hdr_img.rgb);
+    }
   }
   tex_cache_.emplace_back(path, ok ? tc : TexCache{});
   return &tex_cache_.back().second;
@@ -305,8 +311,15 @@ Vector3d PathTracer::SampleBilinear(const TexCache& tc, float u, float v) {
   int x0 = static_cast<int>(std::floor(fx)), y0 = static_cast<int>(std::floor(fy));
   const float tx = fx - x0, ty = fy - y0;
   auto wrap = [](int v, int n) { v %= n; return v < 0 ? v + n : v; };
+  // True HDR radiance (no /255 clamp) when this cache entry came from a
+  // .hdr source; the 8-bit tone-mapped copy otherwise.
+  const bool hdr = tc.hdr.size() == static_cast<size_t>(tc.w) * tc.h * 3;
   auto sample = [&](int x, int y) {
     x = wrap(x, tc.w); y = wrap(y, tc.h);
+    if (hdr) {
+      const float* p = &tc.hdr[(static_cast<size_t>(y) * tc.w + x) * 3];
+      return Vector3d(p[0], p[1], p[2]);
+    }
     const unsigned char* p = &tc.rgba[(static_cast<size_t>(y) * tc.w + x) * 4];
     return Vector3d(p[0] / 255.0, p[1] / 255.0, p[2] / 255.0);
   };
