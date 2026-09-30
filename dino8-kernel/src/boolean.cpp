@@ -1074,7 +1074,8 @@ Brep BooleanCombinePlanar(const Brep& a, const Brep& b, BooleanOp op, double tol
       }
       break;
     default:
-      throw std::invalid_argument("dino8::kernel::BooleanCombinePlanar: unknown BooleanOp");
+      throw BooleanOperationError(BooleanFailureReason::UnsupportedOperation, "BooleanCombinePlanar",
+                                   "dino8::kernel::BooleanCombinePlanar: unknown BooleanOp");
   }
   // A real, disclosed scope limit found while building this, not assumed:
   // reassembling ALL of a compound operand's faces through the single
@@ -1130,13 +1131,15 @@ Brep BooleanCombinePlanar(const Brep& a, const Brep& b, BooleanOp op, double tol
 Brep BooleanCombinePlanarNAry(const std::vector<Brep>& first_group, const std::vector<Brep>& second_group,
                                BooleanOp op, double tolerance) {
   if (op == BooleanOp::SymmetricDifference) {
-    throw std::invalid_argument(
+    throw BooleanOperationError(
+        BooleanFailureReason::UnsupportedOperation, "BooleanCombinePlanarNAry",
         "dino8::kernel::BooleanCombinePlanarNAry: SymmetricDifference has no well-defined N-ary fold - its own "
         "pairwise result is a Brep::Compound of two lumps that cannot be fed into a further Union (see "
         "BooleanCombinePlanar's own SymmetricDifference branch above)");
   }
   if (first_group.empty()) {
-    throw std::invalid_argument("dino8::kernel::BooleanCombinePlanarNAry: first_group is empty");
+    throw BooleanOperationError(BooleanFailureReason::EmptyOperandGroup, "BooleanCombinePlanarNAry",
+                                 "dino8::kernel::BooleanCombinePlanarNAry: first_group is empty");
   }
 
   // Same left-to-right Union fold as BooleanCombineMixedNAry, for the
@@ -1153,7 +1156,8 @@ Brep BooleanCombinePlanarNAry(const std::vector<Brep>& first_group, const std::v
   const Brep folded_first = fold_union(first_group);
   if (second_group.empty()) {
     if (op != BooleanOp::Union) {
-      throw std::invalid_argument(
+      throw BooleanOperationError(
+          BooleanFailureReason::EmptyOperandGroup, "BooleanCombinePlanarNAry",
           "dino8::kernel::BooleanCombinePlanarNAry: second_group is empty but op is not Union - "
           "Intersection/Difference need a second operand to combine against");
     }
@@ -7580,7 +7584,8 @@ Brep BooleanCombineMixed(const Brep& a, const Brep& b, BooleanOp op, double tole
       }
       break;
     default:
-      throw std::invalid_argument("dino8::kernel::BooleanCombineMixed: unknown BooleanOp");
+      throw BooleanOperationError(BooleanFailureReason::UnsupportedOperation, "BooleanCombineMixed",
+                                   "dino8::kernel::BooleanCombineMixed: unknown BooleanOp");
   }
 
   std::vector<Brep::PlanarFace> out_planar;
@@ -7645,13 +7650,15 @@ Brep BooleanCombineMixed(const Brep& a, const Brep& b, BooleanOp op, double tole
 Brep BooleanCombineMixedNAry(const std::vector<Brep>& first_group, const std::vector<Brep>& second_group,
                               BooleanOp op, double tolerance) {
   if (op == BooleanOp::SymmetricDifference) {
-    throw std::invalid_argument(
+    throw BooleanOperationError(
+        BooleanFailureReason::UnsupportedOperation, "BooleanCombineMixedNAry",
         "dino8::kernel::BooleanCombineMixedNAry: SymmetricDifference has no well-defined N-ary fold - its own "
         "pairwise result is a Brep::Compound of two lumps that cannot be fed into a further Union (see "
         "BooleanCombineMixed's own SymmetricDifference doc comment above)");
   }
   if (first_group.empty()) {
-    throw std::invalid_argument("dino8::kernel::BooleanCombineMixedNAry: first_group is empty");
+    throw BooleanOperationError(BooleanFailureReason::EmptyOperandGroup, "BooleanCombineMixedNAry",
+                                 "dino8::kernel::BooleanCombineMixedNAry: first_group is empty");
   }
 
   // Same "union each side sequentially, then combine the two sides" shape
@@ -7676,7 +7683,8 @@ Brep BooleanCombineMixedNAry(const std::vector<Brep>& first_group, const std::ve
     // Nothing to combine `folded_first` against - the plain
     // multi-object BooleanUnion case (a single group, no `op` to apply).
     if (op != BooleanOp::Union) {
-      throw std::invalid_argument(
+      throw BooleanOperationError(
+          BooleanFailureReason::EmptyOperandGroup, "BooleanCombineMixedNAry",
           "dino8::kernel::BooleanCombineMixedNAry: second_group is empty but op is not Union - "
           "Intersection/Difference need a second operand to combine against");
     }

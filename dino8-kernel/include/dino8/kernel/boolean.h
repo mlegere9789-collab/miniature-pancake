@@ -17,22 +17,31 @@ namespace dino8::kernel {
 // precondition only as free text today. Originally scoped to just the one
 // refusal shape shared, verbatim, by all three B-rep engines
 // (RefuseCompoundOperand, one copy each in boolean.cpp/boolean_general.cpp);
-// three more reasons below extend this to boolean_general.cpp's own
-// general-engine precondition checks (BooleanCombineGeneral/
-// BooleanCombineGeneralNAry/ImprintFaces/MutualImprintFaces/SplitBySheet/
-// TrimSheetBySolid), still not an attempt at this file's full ~160-site
-// catalogue nor at the non-manifold reassembly refusal
-// Brep::FromMixedFaces()/BuildLoop() throw deeper inside the reassembly step
-// (a cross-layer/type-hierarchy concern of its own - FromMixedFaces() is a
-// general Brep primitive several non-Boolean callers also use, and
-// BuildLoop()'s own throw is a std::runtime_error, not this type's
-// std::invalid_argument base, so typing it here would either misattribute a
-// non-Boolean-specific error to this Boolean-specific type or silently
-// change which base class TestBooleanCombineGeneralDifferenceThrowsOn
-// TouchingLumpXorCompound (tests/test_basic.cpp) already catches it as) -
-// PARITY_MAP.md's "Boolean failure diagnostics" bullet still names that
-// fuller rewrite, and real structured naked-edge reporting, as remaining
-// gaps this does not close.
+// three more reasons were added to cover boolean_general.cpp's own
+// general-engine precondition checks (BooleanCombineGeneral/ImprintFaces/
+// MutualImprintFaces/SplitBySheet/TrimSheetBySolid) - though, at the time,
+// NOT actually BooleanCombineGeneralNAry's own two argument-validation
+// throws despite being named alongside those five, an omission EmptyOperandGroup
+// below closes. This reason, plus retyping the "unknown BooleanOp"
+// defensive-default throw in BooleanCombinePlanar/BooleanCombineMixed and
+// the SymmetricDifference/empty-group refusals shared by all three engines'
+// *NAry wrappers (BooleanCombinePlanarNAry/BooleanCombineMixedNAry/
+// BooleanCombineGeneralNAry), is this type's next extension - still not an
+// attempt at this file's full ~160-site catalogue nor at the non-manifold
+// reassembly refusal Brep::FromMixedFaces()/BuildLoop() throw deeper inside
+// the reassembly step (a cross-layer/type-hierarchy concern of its own -
+// FromMixedFaces() is a general Brep primitive several non-Boolean callers
+// also use, and BuildLoop()'s own throw is a std::runtime_error, not this
+// type's std::invalid_argument base, so typing it here would either
+// misattribute a non-Boolean-specific error to this Boolean-specific type or
+// silently change which base class TestBooleanCombineGeneralDifferenceThrowsOn
+// TouchingLumpXorCompound (tests/test_basic.cpp) already catches it as).
+// Brep::PlanarFaces()/Brep::MixedFaces() (brep.cpp) are the same kind of
+// shared, non-Boolean-specific primitive - fillet.cpp calls both extensively
+// - so their own face-extraction throws are deliberately left untyped here
+// too, for the identical reason. PARITY_MAP.md's "Boolean failure
+// diagnostics" bullet still names that fuller rewrite, and real structured
+// naked-edge reporting, as remaining gaps this does not close.
 enum class BooleanFailureReason {
   // An operand is a Brep::Compound() of 2+ lumps, refused by an op with no
   // lump-merge step of its own (Union/SymmetricDifference on all three
@@ -54,6 +63,15 @@ enum class BooleanFailureReason {
   // MutualImprintFaces()/SplitBySheet()/TrimSheetBySolid() each already
   // refused this; this reason just gives the refusal a programmatic name.
   EmptyOperand,
+  // An N-ary fold was given an empty std::vector<Brep> operand GROUP where
+  // one is required - BooleanCombinePlanarNAry()/BooleanCombineMixedNAry()/
+  // BooleanCombineGeneralNAry()'s own `first_group.empty()` refusal, and
+  // their shared "second_group is empty but op is not Union" refusal
+  // (Intersection/Difference need a real second operand to combine against;
+  // an empty second_group is only well-defined for Union, where it means
+  // "just fold first_group"). Distinct from EmptyOperand above, which is
+  // about a single Brep with no faces, not an empty vector of operands.
+  EmptyOperandGroup,
 };
 
 // Thrown by RefuseCompoundOperand (boolean.cpp, boolean_general.cpp) in

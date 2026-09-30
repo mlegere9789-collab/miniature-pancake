@@ -39229,6 +39229,97 @@ void TestBooleanOperationErrorGeneralEngineFailureReasons() {
          "TrimSheetBySolid empty sheet");
 }
 
+// Extends the typed-refusal mechanism past the two prior tests above to the
+// N-ary wrappers' own argument-validation throws (all three engines) and the
+// "unknown BooleanOp" defensive-default throw (Planar/Mixed) - closing the
+// gap BooleanFailureReason's own doc comment in boolean.h names: these sites
+// were left as plain std::invalid_argument even after the general-engine
+// pass above, despite BooleanCombineGeneralNAry being named alongside the
+// five functions that pass DID retype. New reason EmptyOperandGroup covers
+// the N-ary wrappers' "first_group is empty"/"second_group is empty but op
+// is not Union" refusals (an empty std::vector<Brep> operand GROUP, distinct
+// from EmptyOperand's single faceless Brep); UnsupportedOperation is reused,
+// not a new reason, for both the NAry SymmetricDifference refusal and the
+// unreachable-in-practice "unknown BooleanOp" default (BooleanOp is a
+// closed 4-value enum, so this defensive branch has no real caller - tested
+// here only via an out-of-range static_cast to prove the throw itself is
+// correctly typed, not to claim a real reachable gap).
+void TestBooleanOperationErrorNAryAndDefensiveDefaultFailureReasons() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::BooleanCombineGeneralNAry;
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanCombineMixedNAry;
+  using dino8::kernel::BooleanCombinePlanar;
+  using dino8::kernel::BooleanCombinePlanarNAry;
+  using dino8::kernel::BooleanFailureReason;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::BooleanOperationError;
+
+  const Brep box = Brep::Box(0, 0, 0, 2, 2, 2);
+  const Brep other = Brep::Box(1, 1, 1, 3, 3, 3);
+  const BooleanOp bogus_op = static_cast<BooleanOp>(99);
+
+  auto expect = [](auto&& call, BooleanFailureReason expected_reason, const char* expected_function_name,
+                    const char* label) {
+    bool caught = false;
+    BooleanFailureReason reason{};
+    std::string function_name;
+    try {
+      call();
+    } catch (const BooleanOperationError& e) {
+      caught = true;
+      reason = e.reason();
+      function_name = e.function_name();
+    }
+    Check(caught, (std::string(label) + ": catchable as BooleanOperationError").c_str());
+    Check(reason == expected_reason, (std::string(label) + ": reason() matches").c_str());
+    Check(function_name == expected_function_name, (std::string(label) + ": function_name() matches").c_str());
+    bool caught_as_base = false;
+    try {
+      call();
+    } catch (const std::invalid_argument&) {
+      caught_as_base = true;
+    }
+    Check(caught_as_base, (std::string(label) + ": still catchable as plain std::invalid_argument").c_str());
+  };
+
+  // UnsupportedOperation: the "unknown BooleanOp" defensive default, Planar
+  // and Mixed.
+  expect([&] { BooleanCombinePlanar(box, other, bogus_op); }, BooleanFailureReason::UnsupportedOperation,
+         "BooleanCombinePlanar", "BooleanCombinePlanar unknown op");
+  expect([&] { BooleanCombineMixed(box, other, bogus_op); }, BooleanFailureReason::UnsupportedOperation,
+         "BooleanCombineMixed", "BooleanCombineMixed unknown op");
+
+  // UnsupportedOperation: SymmetricDifference has no well-defined N-ary
+  // fold, on the two engines whose NAry wrapper wasn't already covered above.
+  expect([&] { BooleanCombinePlanarNAry({box}, {other}, BooleanOp::SymmetricDifference); },
+         BooleanFailureReason::UnsupportedOperation, "BooleanCombinePlanarNAry",
+         "BooleanCombinePlanarNAry SymmetricDifference");
+  expect([&] { BooleanCombineMixedNAry({box}, {other}, BooleanOp::SymmetricDifference); },
+         BooleanFailureReason::UnsupportedOperation, "BooleanCombineMixedNAry",
+         "BooleanCombineMixedNAry SymmetricDifference");
+
+  // EmptyOperandGroup: an empty first_group, on all three engines' NAry
+  // wrappers.
+  expect([&] { BooleanCombinePlanarNAry({}, {other}, BooleanOp::Union); }, BooleanFailureReason::EmptyOperandGroup,
+         "BooleanCombinePlanarNAry", "BooleanCombinePlanarNAry empty first_group");
+  expect([&] { BooleanCombineMixedNAry({}, {other}, BooleanOp::Union); }, BooleanFailureReason::EmptyOperandGroup,
+         "BooleanCombineMixedNAry", "BooleanCombineMixedNAry empty first_group");
+  expect([&] { BooleanCombineGeneralNAry({}, {other}, BooleanOp::Union); }, BooleanFailureReason::EmptyOperandGroup,
+         "BooleanCombineGeneralNAry", "BooleanCombineGeneralNAry empty first_group");
+
+  // EmptyOperandGroup: an empty second_group with a non-Union op, on all
+  // three engines' NAry wrappers.
+  expect([&] { BooleanCombinePlanarNAry({box}, {}, BooleanOp::Difference); }, BooleanFailureReason::EmptyOperandGroup,
+         "BooleanCombinePlanarNAry", "BooleanCombinePlanarNAry empty second_group, Difference");
+  expect([&] { BooleanCombineMixedNAry({box}, {}, BooleanOp::Intersection); },
+         BooleanFailureReason::EmptyOperandGroup, "BooleanCombineMixedNAry",
+         "BooleanCombineMixedNAry empty second_group, Intersection");
+  expect([&] { BooleanCombineGeneralNAry({box}, {}, BooleanOp::Difference); },
+         BooleanFailureReason::EmptyOperandGroup, "BooleanCombineGeneralNAry",
+         "BooleanCombineGeneralNAry empty second_group, Difference");
+}
+
 // BooleanCombineMixed's own compound-operand support (boolean.cpp): closes
 // the "BooleanCombineMixed still refuses a compound operand for every op"
 // half of the "Multi-body / multi-tool booleans" PARITY_MAP.md bullet's
@@ -56376,6 +56467,7 @@ int main() {
   TestBooleanCombinePlanarUnionAndXorStillRefuseCompoundOperand();
   TestBooleanOperationErrorStructuredFields();
   TestBooleanOperationErrorGeneralEngineFailureReasons();
+  TestBooleanOperationErrorNAryAndDefensiveDefaultFailureReasons();
   TestBooleanCombineMixedDifferenceAcceptsCompoundFirstOperand();
   TestBooleanCombineMixedIntersectionAcceptsCompoundOperand();
   TestBooleanCombineMixedIntersectionAcceptsCompoundOperandWithEmbeddedCylinders();

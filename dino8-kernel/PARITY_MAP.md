@@ -3468,6 +3468,78 @@ the tables above and in "Priority order for maximum score-per-fix" are
 verified accurate as they stand (16 remaining items, 0.094 weight/remaining)
 and need no edit.*
 
+*Eighteenth note on this category's score (this pass): two more genuine,
+independently-tested findings land in the "Boolean failure diagnostics"
+bullet, neither a bucket move. **(1)** The Seventeenth note above (and the
+one before it) said the typed-refusal mechanism now covers "every one of
+`boolean_general.cpp`'s own general-engine precondition checks" by naming
+six functions including `BooleanCombineGeneralNAry` - but that was only
+half true: `BooleanCombineGeneralNAry`'s own two argument-validation throws
+(`first_group.empty()`; a non-`Union` `op` with an empty `second_group`)
+were never actually retyped, left as plain `std::invalid_argument` even
+though the function was named alongside the five that genuinely were. A new
+`BooleanFailureReason::EmptyOperandGroup` (boolean.h) now covers exactly
+this shape - an empty `std::vector<Brep>` operand GROUP, distinct from
+`EmptyOperand`'s single faceless `Brep` - and both `BooleanCombineGeneralNAry`
+throw sites (boolean_general.cpp) are retyped to use it, closing that
+specific omission. **(2)** The identical two-throw-site pattern is the same
+shape `BooleanCombinePlanarNAry`/`BooleanCombineMixedNAry` (boolean.cpp) each
+independently have - never previously in scope for typing at all, since the
+prior passes' own typed-refusal work was scoped to `boolean_general.cpp`
+only - so this pass extends `EmptyOperandGroup` to both of those too, plus
+their own SymmetricDifference-has-no-N-ary-fold refusal (reusing the
+existing `UnsupportedOperation` reason, the same one `BooleanCombineGeneralNAry`'s
+own SymmetricDifference refusal already used), and the "unknown BooleanOp"
+defensive-default throw inside `BooleanCombinePlanar`/`BooleanCombineMixed`
+themselves (also `UnsupportedOperation` - unreachable in practice, since
+`BooleanOp` is a closed 4-value enum with every case already handled, but
+now typed consistently with every other refusal in the file rather than
+left as the one remaining plain throw). Every one of these ten sites (two
+per NAry wrapper across three engines, plus the two defensive defaults) is
+still fully backward compatible - identical `what()` text, still catchable
+as plain `std::invalid_argument` - the same contract every prior
+`BooleanOperationError` extension in this category has kept. Verified
+(`TestBooleanOperationErrorNAryAndDefensiveDefaultFailureReasons`,
+tests/test_basic.cpp) with the same "catchable as `BooleanOperationError`
+with the right `reason()`/`function_name()`, still catchable as plain
+`std::invalid_argument`" shape the two prior typed-refusal tests already
+use, covering all three engines' NAry wrappers for both `EmptyOperandGroup`
+shapes and the SymmetricDifference refusal, plus both `BooleanCombinePlanar`/
+`BooleanCombineMixed` "unknown BooleanOp" defaults via an out-of-range
+`static_cast<BooleanOp>`. **A related, independently-verified correction to
+the neighboring "Tolerant booleans" bullet's own text, not a code change:**
+that bullet's claim that "`BooleanCombinePlanar`/`BooleanCombineMixed`
+(boolean.cpp) ... still hardcode their own internal tolerance with no
+caller control at all" is stale, not current - both functions have taken an
+optional caller `tolerance` parameter (`double tolerance = -1.0`, boolean.h)
+for some time, already exercised by pre-existing, passing tests
+(`TestBooleanCombinePlanarCallerTolerance`, `TestBooleanCombineMixedCallerTolerance`,
+and their NAry-forwarding counterparts, tests/test_basic.cpp, all already
+wired into the suite before this pass touched anything). The bullet's
+underlying `partial` classification is unaffected by this correction (the
+other, still-true half of that same sentence - `BooleanCombineGeneral`'s
+still-fixed bbox/coincident-face-detection epsilon aside, there remains no
+gap-healing of imprecise operands, the actual capability that bullet is
+about) - this narrows a stale sub-claim rather than closing the item, the
+same "narrowing, not erasing" convention this document already applies to
+superseded evidence elsewhere (e.g. the "Multi-body / multi-tool booleans"
+bullet's own now-corrected `BooleanCombineGeneral` compound-operand claim
+near the top of this document). Same "genuine new evidence, unchanged
+partial score" pattern as the notes above - the category's 9/15/1/25 (66.0%)
+split is unchanged: "Boolean failure diagnostics" stays `partial` (this
+still covers only the sites named above, not `Brep::PlanarFaces()`/
+`Brep::MixedFaces()`'s own extraction throws - deliberately, for the same
+cross-layer reason `Brep::FromMixedFaces()`/`BuildLoop()` were never
+retyped, since both are general Brep primitives `fillet.cpp` also calls
+extensively - nor the non-manifold reassembly refusal, nor is there
+structured naked-edge reporting). Full `dino8_kernel_tests` suite (built via
+`cmake --build build --parallel $(nproc)`, run directly): 7438 checks, 100%
+passing, 0 regressions. The kernel-only
+headline is unaffected (no bucket moved); this category's own row counts in
+the tables above and in "Priority order for maximum score-per-fix" remain
+accurate as they stand (16 remaining items, 0.094 weight/remaining) and need
+no edit.*
+
 **Blending & chamfering** (blending):
 - [partial] Constant-radius edge fillet on curved adjacent faces (cylinder/plane, cylinder/cylinder, freeform, closed/periodic rims) with B-rep trimming — every kernel fillet still requires both adjacent faces to be planar (fillet.h:147-159), so fillets cannot be chained onto a solid that already carries a curved face. App `FilletEdge` produces a genuine B-rep trim only when both faces are planar (cmd_fillet.cpp:175, "exact for planes; approximate elsewhere") — historically via the generic offset+SSX `BuildFillet` path, not the closed-form kernel function itself (see the bullet just below for the "nothing in the app calls it" half this pass closes). **This pass:** `FilletEdgeCommand::Run`'s plain-Radius case (default `RailType=RollingBall`, no `Rho`) now tries a new `TryExactFillet` FIRST — `kernel::FilletConvexEdge`/`FilletConcaveEdge` directly, convex then concave — ahead of the unchanged `BuildFillet` path, the identical "exact kernel construction first, fail open to the approximate path on any `PlanarFaces()` rejection" structure `TryExactChamfer` already established for `ChamferEdge`'s own plain-Radius case. Still partial: curved adjacent faces remain fundamentally out of scope (the kernel's own `PlanarFaces()` requirement, unchanged) and `BuildFillet`'s approximate path is still what actually runs there; this closes a representation gap (which construction produces the planar-face result), not a capability gap (the printed message and volume for a planar-face fillet are unchanged, since `BuildFillet` was already numerically exact for planes too). Net effect on the scores below: narrows, does not flip, the SAME already-partial item.
 - [partial] Concave (internal) edge fillet — kernel-native and exact: `FilletConcaveEdge` (fillet.cpp:1070 — corrected 2026-09-28, was mis-cited fillet.cpp:989; fillet.h:162-270) builds the mirrored rolling-ball construction with outward=false, closing perpendicular and oblique third faces; `FilletConcaveEdges` (fillet.cpp:2746; fillet.h:1111-1205) fillets several independent edges plus m==3 trihedral concave spherical corners. **This pass:** closes the single-edge half of "nothing in the app calls it" — `FilletEdgeCommand`'s new `TryExactFillet` (see the bullet just above) tries `kernel::FilletConvexEdge` FIRST and `FilletConcaveEdge` SECOND on any planar-faced solid, the same convex-then-concave cascade `TryExactChamfer`/`TryExactConicFillet`/`TryExactRailFillet` already use elsewhere in this file for the identical reason (the command doesn't know the edge's own convexity in advance). Verified structurally and via the convex branch end-to-end (`fillet_script.txt`'s own existing plain-`Radius=2` box-corner case now goes through this exact dispatch, unchanged volume); the concave branch is NOT independently verified through the app in script form — building an app-level fixture with a genuinely planar-faced concave (reflex) edge turned out to be blocked by a separate, disclosed app-layer limitation: `ExtrudeCrv`'s own `ON_BrepTrimmedPlane`/`ON_BrepExtrudeFace` construction builds ONE ruled side-wall face per whole closed boundary loop, not one flat quad per polygon edge (confirmed directly: extruding a plain 4-sided rectangle profile also yields only 3 faces/3 edges total, the single ruled wall genuinely non-planar end-to-end, not just at the concave corner) — so no closed polygon profile extruded this way, convex or concave, can reach `PlanarFaces()`'s own exact-planar requirement at all, and the app has no other command that builds a multi-facet polygonal solid. Still partial, same remaining gaps as before: planar faces only, one radius, m>=2 or higher-valence corners throw, oblique third faces out of scope for `FilletConcaveEdges`, a mixed convex+concave solid cannot be fully filleted, and the multi-edge `FilletConcaveEdges` batch form remains entirely unreachable from the app. Net effect on the scores below: narrows, does not flip, the SAME already-partial item.

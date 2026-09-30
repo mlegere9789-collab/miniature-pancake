@@ -3220,7 +3220,8 @@ Brep BooleanCombineGeneralNAry(const std::vector<Brep>& first_group, const std::
         "BooleanCombineGeneral itself refuses it outright, so there is nothing for an N-ary fold to build on");
   }
   if (first_group.empty()) {
-    throw std::invalid_argument("dino8::kernel::BooleanCombineGeneralNAry: first_group is empty");
+    throw BooleanOperationError(BooleanFailureReason::EmptyOperandGroup, "BooleanCombineGeneralNAry",
+                                 "dino8::kernel::BooleanCombineGeneralNAry: first_group is empty");
   }
 
   // Same left-to-right Union fold as BooleanCombineMixedNAry/
@@ -3239,7 +3240,8 @@ Brep BooleanCombineGeneralNAry(const std::vector<Brep>& first_group, const std::
   const Brep folded_first = fold_union(first_group);
   if (second_group.empty()) {
     if (op != BooleanOp::Union) {
-      throw std::invalid_argument(
+      throw BooleanOperationError(
+          BooleanFailureReason::EmptyOperandGroup, "BooleanCombineGeneralNAry",
           "dino8::kernel::BooleanCombineGeneralNAry: second_group is empty but op is not Union - "
           "Intersection/Difference need a second operand to combine against");
     }
