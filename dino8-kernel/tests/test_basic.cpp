@@ -14821,6 +14821,20 @@ void TestMeshShellPerFaceThicknessRefusesInvalidInput() {
     expect_throw([&] { (void)box.Shell(with_negative); },
                  "Shell(face_thickness) throws when any single entry is negative");
   }
+  {
+    std::vector<double> with_nan(static_cast<size_t>(box.FaceCount()), 0.5);
+    with_nan[0] = std::numeric_limits<double>::quiet_NaN();
+    expect_throw([&] { (void)box.Shell(with_nan); },
+                 "Shell(face_thickness) throws when any single entry is NaN - unlike the uniform-thickness "
+                 "overload, this one moves each vertex directly rather than through Offset()'s own guard");
+  }
+  {
+    std::vector<double> with_inf(static_cast<size_t>(box.FaceCount()), 0.5);
+    with_inf[0] = std::numeric_limits<double>::infinity();
+    expect_throw([&] { (void)box.Shell(with_inf); },
+                 "Shell(face_thickness) throws when any single entry is +infinity - a bare `> 0.0` check alone "
+                 "would let this one through");
+  }
 
   const auto open_square = MakeFlatUnitSquareMesh();
   expect_throw(
@@ -14910,6 +14924,18 @@ void TestMeshShellFaceThicknessWithRemovedFacesRefusesInvalidInput() {
     with_zero[0] = 0.0;
     expect_throw([&] { (void)box.Shell(with_zero, {1}); },
                  "Shell(face_thickness, {face}) throws when any single entry is not strictly positive");
+  }
+  {
+    std::vector<double> with_nan(static_cast<size_t>(fc), 0.5);
+    with_nan[0] = std::numeric_limits<double>::quiet_NaN();
+    expect_throw([&] { (void)box.Shell(with_nan, {1}); },
+                 "Shell(face_thickness, {face}) throws when any single entry is NaN");
+  }
+  {
+    std::vector<double> with_inf(static_cast<size_t>(fc), 0.5);
+    with_inf[0] = std::numeric_limits<double>::infinity();
+    expect_throw([&] { (void)box.Shell(with_inf, {1}); },
+                 "Shell(face_thickness, {face}) throws when any single entry is +infinity");
   }
   expect_throw([&] { (void)box.Shell(std::vector<double>(static_cast<size_t>(fc), 0.5), {}); },
                "Shell(face_thickness, {}) throws - an empty removal list should use the no-opening "
@@ -15293,6 +15319,17 @@ void TestMeshInsetFaceRefusesInvalidInput() {
   Check(Throws([&] { (void)square.InsetFace(1, 0.1); }), "InsetFace throws on an out-of-range face_index");
   Check(Throws([&] { (void)square.InsetFace(0, 0.0); }), "InsetFace throws on a zero distance");
   Check(Throws([&] { (void)square.InsetFace(0, -0.1); }), "InsetFace throws on a negative distance");
+  Check(Throws([&] { (void)square.InsetFace(0, std::numeric_limits<double>::quiet_NaN()); }),
+        "InsetFace throws on a NaN distance");
+  Check(Throws([&] { (void)square.InsetFace(0, std::numeric_limits<double>::infinity()); }),
+        "InsetFace throws on a +infinity distance - a bare `> 0.0` check alone would let this one reach the "
+        "miter arithmetic, where an inf-minus-inf corner difference produces NaN and silently defeats the "
+        "own inradius guard below (a NaN comparison is never <= 0.0)");
+  Check(Throws([&] { (void)square.InsetFace(0, 0.1, std::numeric_limits<double>::quiet_NaN()); }),
+        "InsetFace throws on a NaN depth - previously unguarded, since `depth != 0.0` is true for NaN and "
+        "would silently bake it into every inset vertex with no check downstream");
+  Check(Throws([&] { (void)square.InsetFace(0, 0.1, std::numeric_limits<double>::infinity()); }),
+        "InsetFace throws on an infinite depth");
   // The unit square's own inradius is exactly 0.5 (center to any edge) -
   // a distance at or past that folds a corner past the opposite side.
   Check(Throws([&] { (void)square.InsetFace(0, 0.5); }),
@@ -25281,6 +25318,27 @@ void TestShellConvexPlanarPerFaceWallThicknessArgumentChecks() {
   Check(threw, "ShellConvexPlanar's per-face overload throws when a KEPT face's "
                "own wall_thickness entry is non-positive");
 
+  threw = false;
+  std::vector<double> inf_on_kept(n, 1.0);
+  inf_on_kept[0] = std::numeric_limits<double>::infinity();
+  try {
+    ShellConvexPlanar(box, {1}, inf_on_kept);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "ShellConvexPlanar's per-face overload throws when a KEPT face's own wall_thickness entry is "
+               "+infinity - a bare `> 0.0` check alone would let this one through");
+
+  threw = false;
+  std::vector<double> nan_on_kept(n, 1.0);
+  nan_on_kept[0] = std::numeric_limits<double>::quiet_NaN();
+  try {
+    ShellConvexPlanar(box, {1}, nan_on_kept);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "ShellConvexPlanar's per-face overload throws when a KEPT face's own wall_thickness entry is NaN");
+
   // A REMOVED face's own entry is never read, so a nonsensical value
   // there (even negative) must not throw.
   std::vector<double> junk_on_removed(n, 1.0);
@@ -25335,6 +25393,25 @@ void TestShellClosedSphereMatchesExactShellVolume() {
   threw = false;
   try { ShellClosedSphere(Point3d(0, 0, 0), -1.0, 1.0); } catch (const std::invalid_argument&) { threw = true; }
   Check(threw, "ShellClosedSphere(negative outer_radius) is refused");
+
+  threw = false;
+  try {
+    ShellClosedSphere(Point3d(0, 0, 0), std::numeric_limits<double>::infinity(), 1.0);
+  } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "ShellClosedSphere(+infinity outer_radius) is refused - a bare `> 0.0` check alone would let "
+               "this reach Brep::Sphere() with an infinite radius");
+
+  threw = false;
+  try {
+    ShellClosedSphere(Point3d(0, 0, 0), R, std::numeric_limits<double>::infinity());
+  } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "ShellClosedSphere(+infinity thickness) is refused");
+
+  threw = false;
+  try {
+    ShellClosedSphere(Point3d(0, 0, 0), std::numeric_limits<double>::quiet_NaN(), 1.0);
+  } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "ShellClosedSphere(NaN outer_radius) is refused");
 }
 
 void TestShellClosedTorusMatchesExactShellVolumeAndRejectsSpindle() {
@@ -25370,6 +25447,25 @@ void TestShellClosedTorusMatchesExactShellVolumeAndRejectsSpindle() {
   threw = false;
   try { ShellClosedTorus(plane, -1.0, r, t); } catch (const std::invalid_argument&) { threw = true; }
   Check(threw, "ShellClosedTorus refuses a non-positive major_radius");
+
+  threw = false;
+  try {
+    ShellClosedTorus(plane, std::numeric_limits<double>::infinity(), r, t);
+  } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "ShellClosedTorus refuses an infinite major_radius - a bare `> 0.0` check alone would let this "
+               "reach ON_Torus() with an infinite major radius");
+
+  threw = false;
+  try {
+    ShellClosedTorus(plane, R, std::numeric_limits<double>::infinity(), t);
+  } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "ShellClosedTorus refuses an infinite outer_minor_radius");
+
+  threw = false;
+  try {
+    ShellClosedTorus(plane, R, r, std::numeric_limits<double>::quiet_NaN());
+  } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "ShellClosedTorus refuses a NaN thickness");
 }
 
 void TestOffsetFaceOnBoxMatchesExactLinearVolumeAndPinsOtherFaces() {
@@ -25423,6 +25519,16 @@ void TestOffsetFaceOnBoxMatchesExactLinearVolumeAndPinsOtherFaces() {
   threw = false;
   try { OffsetFace(box, 99, 1.0); } catch (const std::invalid_argument&) { threw = true; }
   Check(threw, "OffsetFace refuses an out-of-range face_index");
+
+  threw = false;
+  try { OffsetFace(box, 1, std::numeric_limits<double>::quiet_NaN()); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "OffsetFace refuses a NaN distance - previously unchecked entirely, and a NaN distance would "
+               "produce a NaN clipped-polygon area that silently fails the pre-existing `area <= area_tol` "
+               "guard (a NaN comparison is never true)");
+
+  threw = false;
+  try { OffsetFace(box, 1, std::numeric_limits<double>::infinity()); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "OffsetFace refuses an infinite distance");
 }
 
 // A right tetrahedron (apex at the origin, base triangle in the plane
@@ -25520,6 +25626,24 @@ void TestOffsetSolidConvexPlanarUniformBoxMatchesExactVolume() {
   threw = false;
   try { OffsetSolidConvexPlanar(box, std::vector<double>{1.0, 2.0, 3.0}); } catch (const std::invalid_argument&) { threw = true; }
   Check(threw, "OffsetSolidConvexPlanar refuses a distances vector whose size doesn't match PlanarFaces().size()");
+
+  threw = false;
+  try { OffsetSolidConvexPlanar(box, std::numeric_limits<double>::quiet_NaN()); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "OffsetSolidConvexPlanar refuses a NaN distance - previously unchecked entirely, and would "
+               "otherwise produce a NaN clipped-polygon area that silently fails the pre-existing "
+               "`area <= area_tol` guard (a NaN comparison is never true)");
+
+  threw = false;
+  try { OffsetSolidConvexPlanar(box, std::numeric_limits<double>::infinity()); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "OffsetSolidConvexPlanar refuses an infinite distance");
+
+  {
+    std::vector<double> with_nan(box.PlanarFaces().size(), 1.0);
+    with_nan[0] = std::numeric_limits<double>::quiet_NaN();
+    threw = false;
+    try { OffsetSolidConvexPlanar(box, with_nan); } catch (const std::invalid_argument&) { threw = true; }
+    Check(threw, "OffsetSolidConvexPlanar's per-face overload refuses a NaN entry anywhere in the vector");
+  }
 }
 
 // The per-face (vector) overload with DIFFERENT distances per face -

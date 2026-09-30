@@ -1225,10 +1225,12 @@ Brep ShellConvexPlanar(const Brep& solid, const std::vector<int>& removed_faces,
   }
 
   for (int i = 0; i < n; ++i) {
-    if (!is_removed[static_cast<size_t>(i)] && !(wall_thickness[static_cast<size_t>(i)] > 0.0)) {
+    if (!is_removed[static_cast<size_t>(i)] &&
+        (!std::isfinite(wall_thickness[static_cast<size_t>(i)]) ||
+         !(wall_thickness[static_cast<size_t>(i)] > 0.0))) {
       throw std::invalid_argument(
           "dino8::kernel::ShellConvexPlanar: wall_thickness[" + std::to_string(i) +
-          "] must be positive for a kept face");
+          "] must be finite and positive for a kept face");
     }
   }
 
@@ -1436,14 +1438,14 @@ Brep ShellConvexPlanar(const Brep& solid, const std::vector<int>& removed_faces,
 }
 
 Brep ShellClosedSphere(Point3d center, double outer_radius, double thickness) {
-  if (!(outer_radius > 0.0)) {
-    throw std::invalid_argument("dino8::kernel::ShellClosedSphere: outer_radius must be positive");
+  if (!std::isfinite(outer_radius) || !(outer_radius > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::ShellClosedSphere: outer_radius must be finite and positive");
   }
-  if (!(thickness > 0.0) || !(thickness < outer_radius)) {
+  if (!std::isfinite(thickness) || !(thickness > 0.0) || !(thickness < outer_radius)) {
     throw std::invalid_argument(
-        "dino8::kernel::ShellClosedSphere: thickness must be strictly between 0 "
-        "and outer_radius - otherwise the inner sphere collapses through, or "
-        "inverts past, the center");
+        "dino8::kernel::ShellClosedSphere: thickness must be finite and strictly "
+        "between 0 and outer_radius - otherwise the inner sphere collapses "
+        "through, or inverts past, the center");
   }
   Brep outer = Brep::Sphere(center, outer_radius);
   Brep inner = Brep::Sphere(center, outer_radius - thickness);
@@ -1452,9 +1454,10 @@ Brep ShellClosedSphere(Point3d center, double outer_radius, double thickness) {
 }
 
 Brep ShellClosedTorus(const ON_Plane& plane, double major_radius, double outer_minor_radius, double thickness) {
-  if (!(major_radius > 0.0) || !(outer_minor_radius > 0.0)) {
+  if (!std::isfinite(major_radius) || !std::isfinite(outer_minor_radius) ||
+      !(major_radius > 0.0) || !(outer_minor_radius > 0.0)) {
     throw std::invalid_argument(
-        "dino8::kernel::ShellClosedTorus: major_radius and outer_minor_radius must be positive");
+        "dino8::kernel::ShellClosedTorus: major_radius and outer_minor_radius must be finite and positive");
   }
   if (!(outer_minor_radius < major_radius)) {
     throw std::invalid_argument(
@@ -1462,11 +1465,11 @@ Brep ShellClosedTorus(const ON_Plane& plane, double major_radius, double outer_m
         "major_radius - otherwise the OUTER torus itself is already a "
         "self-intersecting spindle torus");
   }
-  if (!(thickness > 0.0) || !(thickness < outer_minor_radius)) {
+  if (!std::isfinite(thickness) || !(thickness > 0.0) || !(thickness < outer_minor_radius)) {
     throw std::invalid_argument(
-        "dino8::kernel::ShellClosedTorus: thickness must be strictly between 0 "
-        "and outer_minor_radius - otherwise the inner torus collapses through, "
-        "or inverts past, the center circle");
+        "dino8::kernel::ShellClosedTorus: thickness must be finite and strictly "
+        "between 0 and outer_minor_radius - otherwise the inner torus collapses "
+        "through, or inverts past, the center circle");
   }
 
   auto build_torus = [&](double minor_radius) {
@@ -1492,6 +1495,9 @@ Brep OffsetFace(const Brep& solid, int face_index, double distance) {
   if (face_index < 0 || face_index >= n) {
     throw std::invalid_argument(
         "dino8::kernel::OffsetFace: face_index is out of range for solid.PlanarFaces()");
+  }
+  if (!std::isfinite(distance)) {
+    throw std::invalid_argument("dino8::kernel::OffsetFace: distance must be finite");
   }
 
   const double tol = RelativeTol(faces);
@@ -1589,6 +1595,11 @@ Brep OffsetSolidConvexPlanar(const Brep& solid, const std::vector<double>& dista
     throw std::invalid_argument(
         "dino8::kernel::OffsetSolidConvexPlanar: distances.size() must equal "
         "solid.PlanarFaces().size()");
+  }
+  for (double d : distances) {
+    if (!std::isfinite(d)) {
+      throw std::invalid_argument("dino8::kernel::OffsetSolidConvexPlanar: every distance must be finite");
+    }
   }
 
   const double tol = RelativeTol(faces);

@@ -5988,8 +5988,9 @@ Mesh Mesh::Shell(const std::vector<double>& face_thickness) const {
         "dino8::kernel::Mesh::Shell: face_thickness.size() must equal FaceCount()");
   }
   for (double t : face_thickness) {
-    if (!(t > 0.0)) {
-      throw std::invalid_argument("dino8::kernel::Mesh::Shell: every face_thickness entry must be strictly positive");
+    if (!std::isfinite(t) || !(t > 0.0)) {
+      throw std::invalid_argument(
+          "dino8::kernel::Mesh::Shell: every face_thickness entry must be finite and strictly positive");
     }
   }
   if (!IsClosedManifold()) {
@@ -6068,8 +6069,9 @@ Mesh Mesh::Shell(const std::vector<double>& face_thickness, const std::vector<in
         "dino8::kernel::Mesh::Shell: face_thickness.size() must equal FaceCount()");
   }
   for (double t : face_thickness) {
-    if (!(t > 0.0)) {
-      throw std::invalid_argument("dino8::kernel::Mesh::Shell: every face_thickness entry must be strictly positive");
+    if (!std::isfinite(t) || !(t > 0.0)) {
+      throw std::invalid_argument(
+          "dino8::kernel::Mesh::Shell: every face_thickness entry must be finite and strictly positive");
     }
   }
   if (!IsClosedManifold()) {
@@ -6186,8 +6188,11 @@ Mesh Mesh::InsetFace(int face_index, double distance, double depth) const {
   if (face_index < 0 || face_index >= mesh_.m_F.Count()) {
     throw std::invalid_argument("dino8::kernel::Mesh::InsetFace: face_index out of range");
   }
-  if (!(distance > 0.0)) {
-    throw std::invalid_argument("dino8::kernel::Mesh::InsetFace: distance must be strictly positive");
+  if (!std::isfinite(distance) || !(distance > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::Mesh::InsetFace: distance must be finite and strictly positive");
+  }
+  if (!std::isfinite(depth)) {
+    throw std::invalid_argument("dino8::kernel::Mesh::InsetFace: depth must be finite");
   }
 
   const ON_MeshFace& f = mesh_.m_F[face_index];
