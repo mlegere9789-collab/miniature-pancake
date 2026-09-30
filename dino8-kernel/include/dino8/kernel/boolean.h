@@ -1,6 +1,8 @@
 #pragma once
 
 #include <cstddef>
+#include <stdexcept>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -8,6 +10,44 @@
 #include "dino8/kernel/mesh.h"
 
 namespace dino8::kernel {
+
+// Structured reason for a refused Boolean operation - the first typed
+// alternative to this file's (and boolean_general.cpp's) own ~160 plain
+// std::invalid_argument/std::runtime_error throws, each of which names its
+// precondition only as free text today. Deliberately scoped to the one
+// refusal shape shared, verbatim, by all three B-rep engines
+// (RefuseCompoundOperand, one copy each in boolean.cpp/boolean_general.cpp)
+// rather than an attempt to retype this file's own much larger catalogue of
+// individual preconditions - PARITY_MAP.md's "Boolean failure diagnostics"
+// bullet names that fuller rewrite as a separate, larger gap this does not
+// close.
+enum class BooleanFailureReason {
+  // An operand is a Brep::Compound() of 2+ lumps, refused by an op with no
+  // lump-merge step of its own (Union/SymmetricDifference on all three
+  // engines - see RefuseCompoundOperand's own doc comment in boolean.cpp).
+  CompoundOperand,
+};
+
+// Thrown by RefuseCompoundOperand (boolean.cpp, boolean_general.cpp) in
+// place of a plain std::invalid_argument. Still catchable as
+// std::invalid_argument - every existing caller/test that only checks for
+// that base class (e.g. TestBooleanCombineGeneralRefusesCompoundOperand)
+// sees identical behavior, including the same what() text - but a caller
+// wanting a programmatic reason instead of parsing what() can catch this
+// type directly and read reason()/function_name().
+class BooleanOperationError : public std::invalid_argument {
+ public:
+  BooleanOperationError(BooleanFailureReason reason, std::string function_name,
+                         const std::string& message)
+      : std::invalid_argument(message), reason_(reason), function_name_(std::move(function_name)) {}
+
+  BooleanFailureReason reason() const { return reason_; }
+  const std::string& function_name() const { return function_name_; }
+
+ private:
+  BooleanFailureReason reason_;
+  std::string function_name_;
+};
 
 enum class BooleanOp {
   Union,
@@ -87,6 +127,31 @@ struct MultiInterferenceResult {
 // std::runtime_error failure mode inherited from BooleanCombine().
 std::vector<MultiInterferenceResult> ComputeMultiWayInterference(const std::vector<Mesh>& bodies,
                                                                    double clearance = 0.0);
+
+// Both interference reports (pairwise AND N-way) from ONE call, the
+// "single combined API" PARITY_MAP.md's own "AutoCAD-style INTERFERE"
+// bullet named as still missing: a caller wanting the full report
+// previously had to call ComputeInterference() and
+// ComputeMultiWayInterference() separately, each of which independently
+// recomputes the exact same pairwise BooleanCombine(..., Intersection)
+// calls as its own first step.
+struct AllInterferenceResult {
+  std::vector<InterferenceResult> pairwise;
+  std::vector<MultiInterferenceResult> multi_way;
+};
+
+// Computes `pairwise` and `multi_way` together, sharing the one pairwise
+// overlap pass both would otherwise run independently - not just a thin
+// wrapper calling ComputeInterference() then ComputeMultiWayInterference(),
+// which would run every pairwise BooleanCombine(..., Intersection) call
+// TWICE. Same contract as the two functions above (same bbox-prefilter,
+// same `clearance` meaning, same std::runtime_error failure mode on a body
+// that isn't IsClosedManifold()); `pairwise`/`multi_way` are exactly what
+// ComputeInterference(bodies, clearance)/
+// ComputeMultiWayInterference(bodies, clearance) would each return on their
+// own.
+AllInterferenceResult ComputeAllInterference(const std::vector<Mesh>& bodies,
+                                              double clearance = 0.0);
 
 // Splits `mesh` into two closed, watertight halves along the plane
 // `{p : dot(p, plane_normal) == plane_offset}`, backed by Manifold's own

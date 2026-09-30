@@ -2374,6 +2374,97 @@ void TestBooleanCombineGeneralBoxBox() {
   }
 }
 
+// PARITY_MAP.md's "Free-form (non-analytic) NURBS surface operands in
+// B-rep booleans" bullet: BooleanCombineGeneral() is written for any
+// ON_Surface, but every existing test/sweep operand up to this pass was an
+// analytic primitive (box/cylinder/sphere) - "no freeform-operand test
+// exists" was this bullet's own specific complaint. This closes it with a
+// genuine doubly-curved, non-developable, non-quadric operand: a 4x4
+// bicubic Bezier patch (NurbsSurface::FromControlGrid, degree (3, 3)) with
+// deliberately asymmetric control-point heights (no mirror symmetry in
+// either u or v, and no separable u*v product term either, so it is not
+// secretly a ruled or translational surface in disguise), thickened
+// (Brep::Thicken) into a genuine closed solid - a real freeform "blob",
+// not a bent analytic primitive.
+//
+// There is no closed-form volume for a Bezier bump's own thickened solid,
+// so this leans on an implementation-independent identity instead:
+// Volume(A) + Volume(B) == Volume(Union(A, B)) + Volume(Intersection(A, B))
+// holds for ANY two solids, freeform or not - proving the general engine's
+// SSX-driven crossing/capping logic reached the right answer on a genuinely
+// non-analytic operand without needing to hand-derive what that answer
+// "should" be. The fixture geometry is chosen so the crossing itself stays
+// simple and in-scope (one crossing component per face pair): the bump's
+// own footprint ([0,3]x[0,3]) sits strictly inside the box's own larger
+// footprint ([-1,4]x[-1,4], no shared/coincident side faces), and the
+// bump's own z range (top cap in [0.3, 1.0], bottom cap comfortably
+// negative) is chosen so the box's own top face (z=0) crosses ONLY the
+// freeform solid's 4 ruled side walls - never its top or bottom cap
+// surfaces - so there is no grazing/tangential contact anywhere.
+void TestBooleanCombineGeneralFreeformSurfaceOperand() {
+  using dino8::kernel::BooleanCombineGeneral;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::TessellateGeneralBooleanClosedMesh;
+
+  const double z[4][4] = {
+      {0.3, 0.5, 0.4, 0.3},
+      {0.5, 1.0, 0.8, 0.4},
+      {0.4, 0.8, 0.9, 0.5},
+      {0.3, 0.4, 0.5, 0.3},
+  };
+  std::vector<Point3d> grid;
+  for (int i = 0; i < 4; ++i) {
+    for (int j = 0; j < 4; ++j) grid.push_back(Point3d(double(i), double(j), z[i][j]));
+  }
+  const NurbsSurface bump = NurbsSurface::FromControlGrid(grid, 4, 4, /*u_degree=*/3, /*v_degree=*/3);
+  const Brep sheet = Brep::FromSurface(bump);
+  const Brep freeform = Brep::Thicken(sheet, -1.5);
+
+  const Brep box = Brep::Box(-1, -1, -5, 4, 4, 0);
+
+  const double vol_freeform = freeform.TessellateToClosedMesh(24, 24).Volume();
+  const double vol_box = box.TessellateToClosedMesh(24, 24).Volume();
+
+  const Brep u = BooleanCombineGeneral(freeform, box, BooleanOp::Union);
+  const Brep i = BooleanCombineGeneral(freeform, box, BooleanOp::Intersection);
+  const Brep d = BooleanCombineGeneral(freeform, box, BooleanOp::Difference);
+
+  Check(u.raw().IsValid(), "freeform+box Union is a valid ON_Brep");
+  Check(i.raw().IsValid(), "freeform+box Intersection is a valid ON_Brep");
+  Check(d.raw().IsValid(), "freeform+box Difference is a valid ON_Brep");
+
+  const Mesh mu = TessellateGeneralBooleanClosedMesh(u, 24, 24);
+  const Mesh mi = TessellateGeneralBooleanClosedMesh(i, 24, 24);
+  const Mesh md = TessellateGeneralBooleanClosedMesh(d, 24, 24);
+
+  Check(mu.IsClosedManifold(), "freeform+box Union's TessellateGeneralBooleanClosedMesh() result is a genuine closed manifold");
+  Check(mi.IsClosedManifold(), "freeform+box Intersection's TessellateGeneralBooleanClosedMesh() result is a genuine closed manifold");
+  Check(md.IsClosedManifold(), "freeform+box Difference's TessellateGeneralBooleanClosedMesh() result is a genuine closed manifold");
+
+  // The implementation-independent inclusion-exclusion identity - the
+  // actual proof this freeform operand booleaned correctly, with no
+  // closed-form volume to compare against directly. A loose (0.01,
+  // relative to volumes around 130) tolerance well above the ~1e-4
+  // tessellation-resolution noise this fixture's own curved boundary
+  // produces at (24, 24), but far below any real defect-scale error.
+  Check(std::abs((mu.Volume() + mi.Volume()) - (vol_freeform + vol_box)) < 0.01,
+        "Volume(Union) + Volume(Intersection) matches Volume(freeform) + Volume(box) - the "
+        "implementation-independent identity holding for a genuinely freeform operand");
+  Check(std::abs(md.Volume() - (vol_freeform - mi.Volume())) < 0.01,
+        "freeform+box Difference's volume matches Volume(freeform) - Volume(Intersection)");
+
+  const Brep d_reverse = BooleanCombineGeneral(box, freeform, BooleanOp::Difference);
+  const Mesh md_reverse = TessellateGeneralBooleanClosedMesh(d_reverse, 24, 24);
+  Check(md_reverse.IsClosedManifold(), "box-freeform Difference's TessellateGeneralBooleanClosedMesh() result is a genuine closed manifold");
+  Check(std::abs(md_reverse.Volume() - (vol_box - mi.Volume())) < 0.01,
+        "box-freeform Difference's volume matches Volume(box) - Volume(Intersection), the other "
+        "argument order of the same Difference identity");
+}
+
 void TestBooleanCombineGeneralCoplanarBoxes() {
   using dino8::kernel::BooleanCombineGeneral;
   using dino8::kernel::BooleanOp;
@@ -7096,6 +7187,100 @@ void TestComputeMultiWayInterference() {
     Check(threw,
           "a non-closed operand reachable while extending a pairwise overlap throws "
           "std::runtime_error, same failure mode as BooleanCombine() itself");
+  }
+}
+
+void TestComputeAllInterference() {
+  using dino8::kernel::ComputeAllInterference;
+  using dino8::kernel::ComputeInterference;
+  using dino8::kernel::ComputeMultiWayInterference;
+  using dino8::kernel::Mesh;
+
+  // Same 4-body fixture TestComputeMultiWayInterference's own quadruple
+  // case uses: A/B/C share the closed-form [1,2]x[1,2]x[0,2] triple region
+  // (volume 2), and D narrows that same region to [1,2]x[1,2]x[0,1]
+  // (volume 1) - so this one fixture has a genuine pairwise interference
+  // (A/B, A/C, B/C all individually overlap too, not just the well-known
+  // triple), several 3-way triples, and one 4-way quadruple, exercising
+  // every branch ComputeAllInterference()'s own shared frontier passes
+  // through.
+  const auto a = MakeBox(0, 0, 0, 2, 2, 2);
+  const auto b = MakeBox(1, 0, 0, 3, 2, 2);
+  const auto c = MakeBox(0, 1, 0, 2, 3, 2);
+  const auto d = MakeBox(1, 1, 0, 2, 2, 1);
+  const std::vector<Mesh> bodies = {a, b, c, d};
+
+  const auto combined = ComputeAllInterference(bodies);
+  const auto expected_pairwise = ComputeInterference(bodies);
+  const auto expected_multi_way = ComputeMultiWayInterference(bodies);
+
+  Check(combined.pairwise.size() == expected_pairwise.size(),
+        "ComputeAllInterference()'s own pairwise count matches a standalone ComputeInterference() call");
+  Check(combined.multi_way.size() == expected_multi_way.size(),
+        "ComputeAllInterference()'s own multi_way count matches a standalone "
+        "ComputeMultiWayInterference() call");
+
+  bool pairwise_matches = combined.pairwise.size() == expected_pairwise.size();
+  for (size_t i = 0; i < combined.pairwise.size() && pairwise_matches; ++i) {
+    pairwise_matches = combined.pairwise[i].a_index == expected_pairwise[i].a_index &&
+                       combined.pairwise[i].b_index == expected_pairwise[i].b_index &&
+                       std::abs(combined.pairwise[i].solid.Volume() -
+                                expected_pairwise[i].solid.Volume()) < 1e-9;
+  }
+  Check(pairwise_matches,
+        "every ComputeAllInterference() pairwise result names the same pair and the same "
+        "exact solid volume a standalone ComputeInterference() call reports");
+
+  bool multi_way_matches = combined.multi_way.size() == expected_multi_way.size();
+  for (size_t i = 0; i < combined.multi_way.size() && multi_way_matches; ++i) {
+    multi_way_matches = combined.multi_way[i].indices == expected_multi_way[i].indices &&
+                        std::abs(combined.multi_way[i].solid.Volume() -
+                                 expected_multi_way[i].solid.Volume()) < 1e-9;
+  }
+  Check(multi_way_matches,
+        "every ComputeAllInterference() multi-way result names the same body set and the "
+        "same exact solid volume a standalone ComputeMultiWayInterference() call reports");
+
+  bool found_quadruple = false;
+  for (const auto& result : combined.multi_way) {
+    if (result.indices.size() == 4) found_quadruple = true;
+  }
+  Check(found_quadruple,
+        "ComputeAllInterference()'s own multi_way still reports the real 4-way interference, "
+        "not just the pairwise/3-way levels");
+
+  // Negative controls: disjoint bodies report nothing in either half, and
+  // a non-closed operand still throws std::runtime_error - the identical
+  // failure mode ComputeInterference()/ComputeMultiWayInterference()
+  // themselves use, inherited from the same shared pairwise pass.
+  {
+    const auto disjoint = MakeBox(10, 10, 10, 12, 12, 12);
+    const auto none = ComputeAllInterference({a, disjoint});
+    Check(none.pairwise.empty() && none.multi_way.empty(),
+          "two disjoint boxes report nothing in either half of ComputeAllInterference()");
+  }
+  {
+    Mesh open_triangle;
+    ON_Mesh& raw = open_triangle.raw();
+    raw.m_V.Append(ON_3fPoint(0.5f, 0.5f, 0.5f));
+    raw.m_V.Append(ON_3fPoint(1.5f, 0.5f, 0.5f));
+    raw.m_V.Append(ON_3fPoint(0.5f, 1.5f, 0.5f));
+    ON_MeshFace face;
+    face.vi[0] = 0;
+    face.vi[1] = 1;
+    face.vi[2] = 2;
+    face.vi[3] = 2;
+    raw.m_F.Append(face);
+
+    bool threw = false;
+    try {
+      ComputeAllInterference({a, open_triangle});
+    } catch (const std::runtime_error&) {
+      threw = true;
+    }
+    Check(threw,
+          "a non-closed operand throws std::runtime_error from ComputeAllInterference() too, "
+          "the same failure mode as BooleanCombine() itself");
   }
 }
 
@@ -34336,6 +34521,76 @@ void TestBooleanCombinePlanarUnionAndXorStillRefuseCompoundOperand() {
   }
 }
 
+// The first typed refusal this category has: RefuseCompoundOperand (one
+// copy each in boolean.cpp/boolean_general.cpp) now throws
+// BooleanOperationError instead of a plain std::invalid_argument -
+// verifies both halves of that change on all three B-rep engines: it is
+// still catchable as std::invalid_argument (so every existing test/caller
+// above and elsewhere, which only ever catches that base class, sees
+// identical behavior), AND a caller catching the derived type directly can
+// read reason()/function_name() instead of parsing what().
+void TestBooleanOperationErrorStructuredFields() {
+  using dino8::kernel::BooleanCombineGeneral;
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanCombinePlanar;
+  using dino8::kernel::BooleanFailureReason;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::BooleanOperationError;
+  using dino8::kernel::Brep;
+
+  const Brep box1 = Brep::Box(0, 0, 0, 2, 2, 2);
+  const Brep box2 = Brep::Box(10, 10, 10, 12, 12, 12);
+  const Brep compound = Brep::Compound({box1, box2});
+  const Brep other = Brep::Box(1, 1, 1, 3, 3, 3);
+
+  auto check_engine = [](auto&& call, const char* expected_function_name, const char* label) {
+    bool caught_structured = false;
+    bool caught_base = false;
+    BooleanFailureReason reason{};
+    std::string function_name;
+    try {
+      call();
+    } catch (const BooleanOperationError& e) {
+      caught_structured = true;
+      reason = e.reason();
+      function_name = e.function_name();
+    } catch (const std::invalid_argument&) {
+      caught_base = true;
+    }
+    Check(caught_structured,
+          (std::string(label) + ": a compound-operand refusal is catchable as BooleanOperationError").c_str());
+    Check(!caught_base,
+          (std::string(label) + ": catching BooleanOperationError takes priority over the plainer "
+                                 "std::invalid_argument catch clause (it is one, so no separate case is hit)")
+              .c_str());
+    Check(reason == BooleanFailureReason::CompoundOperand,
+          (std::string(label) + ": reason() reports CompoundOperand").c_str());
+    Check(function_name == expected_function_name,
+          (std::string(label) + ": function_name() names the refusing function").c_str());
+
+    // Also still directly catchable as plain std::invalid_argument, the
+    // base-class behavior every pre-existing caller/test relies on.
+    bool caught_as_base_only = false;
+    try {
+      call();
+    } catch (const std::invalid_argument&) {
+      caught_as_base_only = true;
+    }
+    Check(caught_as_base_only,
+          (std::string(label) + ": still catchable as plain std::invalid_argument").c_str());
+  };
+
+  check_engine([&] { BooleanCombinePlanar(compound, other, BooleanOp::Union); }, "BooleanCombinePlanar",
+               "BooleanCombinePlanar");
+  check_engine([&] { BooleanCombineMixed(compound, other, BooleanOp::Union); }, "BooleanCombineMixed",
+               "BooleanCombineMixed");
+
+  const Brep xor_compound = BooleanCombinePlanar(box1, other, BooleanOp::SymmetricDifference);
+  const Brep disjoint = Brep::Box(20, 20, 20, 22, 22, 22);
+  check_engine([&] { BooleanCombineGeneral(xor_compound, disjoint, BooleanOp::Union); }, "BooleanCombineGeneral",
+               "BooleanCombineGeneral");
+}
+
 // BooleanCombineMixed's own compound-operand support (boolean.cpp): closes
 // the "BooleanCombineMixed still refuses a compound operand for every op"
 // half of the "Multi-body / multi-tool booleans" PARITY_MAP.md bullet's
@@ -48269,6 +48524,7 @@ int main() {
   TestSurfaceIntersectSphereGreatCircle();
   TestIntersectCurvesFindsCrossingsAndRejectsMisses();
   TestBooleanCombineGeneralBoxBox();
+  TestBooleanCombineGeneralFreeformSurfaceOperand();
   TestBooleanCombineGeneralCoplanarBoxes();
   TestBooleanCombineGeneralBoxCylinder();
   TestBooleanCombineGeneralCallerTolerance();
@@ -48362,6 +48618,7 @@ int main() {
   TestBooleanSymmetricDifference();
   TestComputeInterference();
   TestComputeMultiWayInterference();
+  TestComputeAllInterference();
   TestBrepBoxIsClosedAndWatertight();
   TestBrepLacksFullOpenNurbsTopologyButStillUsable();
   TestBrepGetTightBoundingBox();
@@ -48750,6 +49007,7 @@ int main() {
   TestBooleanCombinePlanarDifferenceAcceptsGapSeparatedXorCompound();
   TestBooleanCombinePlanarDifferenceThrowsOnTouchingLumpXorCompound();
   TestBooleanCombinePlanarUnionAndXorStillRefuseCompoundOperand();
+  TestBooleanOperationErrorStructuredFields();
   TestBooleanCombineMixedDifferenceAcceptsCompoundFirstOperand();
   TestBooleanCombineMixedIntersectionAcceptsCompoundOperand();
   TestBooleanCombineMixedIntersectionAcceptsCompoundOperandWithEmbeddedCylinders();

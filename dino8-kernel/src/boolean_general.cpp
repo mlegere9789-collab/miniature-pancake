@@ -2809,13 +2809,15 @@ std::vector<FaceFrags> FragmentFaces(const ON_Brep& brep, int n, std::vector<std
 // result's true lump structure afterward.
 void RefuseCompoundOperand(const Brep& operand, const char* function_name) {
   if (operand.LumpFaceRanges().size() <= 1) return;
-  throw std::invalid_argument(std::string("dino8::kernel::") + function_name +
-                              ": an operand is a Brep::Compound of several lumps (e.g. a "
-                              "SymmetricDifference result) - this engine classifies fragments "
-                              "purely by a per-face ray-cast against the other operand with no "
-                              "lump-boundary awareness, so a multi-lump operand is refused rather "
-                              "than silently processed; see boolean.cpp's own RefuseCompoundOperand "
-                              "doc comment for the same rule on the other two B-rep engines");
+  throw BooleanOperationError(
+      BooleanFailureReason::CompoundOperand, function_name,
+      std::string("dino8::kernel::") + function_name +
+          ": an operand is a Brep::Compound of several lumps (e.g. a "
+          "SymmetricDifference result) - this engine classifies fragments "
+          "purely by a per-face ray-cast against the other operand with no "
+          "lump-boundary awareness, so a multi-lump operand is refused rather "
+          "than silently processed; see boolean.cpp's own RefuseCompoundOperand "
+          "doc comment for the same rule on the other two B-rep engines");
 }
 
 }  // namespace

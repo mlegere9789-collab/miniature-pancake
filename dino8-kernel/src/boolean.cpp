@@ -179,29 +179,6 @@ bool BoundingBoxesTouch(const BoundingBox& a, const BoundingBox& b, double clear
          a.min.z - clearance <= b.max.z && b.min.z - clearance <= a.max.z;
 }
 
-}  // namespace
-
-std::vector<InterferenceResult> ComputeInterference(const std::vector<Mesh>& bodies,
-                                                      double clearance) {
-  std::vector<BoundingBox> boxes;
-  boxes.reserve(bodies.size());
-  for (const Mesh& body : bodies) boxes.push_back(body.GetBoundingBox());
-
-  std::vector<InterferenceResult> results;
-  for (size_t i = 0; i < bodies.size(); ++i) {
-    for (size_t j = i + 1; j < bodies.size(); ++j) {
-      if (!BoundingBoxesTouch(boxes[i], boxes[j], clearance)) continue;
-      Mesh overlap = BooleanCombine(bodies[i], bodies[j], BooleanOp::Intersection);
-      if (overlap.FaceCount() > 0) {
-        results.push_back(InterferenceResult{i, j, std::move(overlap)});
-      }
-    }
-  }
-  return results;
-}
-
-namespace {
-
 // One candidate mutual overlap being extended, level by level, from an
 // initial pairwise overlap: `indices` names which input bodies share
 // `solid` (their real accumulated Boolean intersection so far), and
@@ -213,17 +190,15 @@ struct MultiOverlapCandidate {
   BoundingBox box;
 };
 
-}  // namespace
-
-std::vector<MultiInterferenceResult> ComputeMultiWayInterference(const std::vector<Mesh>& bodies,
-                                                                   double clearance) {
-  std::vector<BoundingBox> boxes;
-  boxes.reserve(bodies.size());
-  for (const Mesh& body : bodies) boxes.push_back(body.GetBoundingBox());
-
-  // Level 2: every pairwise overlap, computed the same way
-  // ComputeInterference() itself does - this is the seed every higher
-  // level extends from, one more body at a time.
+// Level 2: every pairwise overlap - the one pass ComputeInterference(),
+// ComputeMultiWayInterference() and ComputeAllInterference() all need as
+// their own starting point, factored out here so ComputeAllInterference()
+// runs it exactly ONCE instead of the two independent calls it replaces
+// each running it on their own (see ComputeAllInterference's own doc
+// comment in boolean.h).
+std::vector<MultiOverlapCandidate> ComputePairwiseOverlaps(const std::vector<Mesh>& bodies,
+                                                             const std::vector<BoundingBox>& boxes,
+                                                             double clearance) {
   std::vector<MultiOverlapCandidate> frontier;
   for (size_t i = 0; i < bodies.size(); ++i) {
     for (size_t j = i + 1; j < bodies.size(); ++j) {
@@ -234,7 +209,17 @@ std::vector<MultiInterferenceResult> ComputeMultiWayInterference(const std::vect
       frontier.push_back(MultiOverlapCandidate{{i, j}, std::move(overlap), box});
     }
   }
+  return frontier;
+}
 
+// Levels 3+: extends `frontier` (the pairwise overlaps ComputePairwiseOverlaps()
+// already found, or a higher level's own survivors) one more body at a
+// time, exactly as ComputeMultiWayInterference() itself always has -
+// factored out so ComputeAllInterference() can share it too.
+std::vector<MultiInterferenceResult> ExpandMultiWayOverlaps(std::vector<MultiOverlapCandidate> frontier,
+                                                             const std::vector<Mesh>& bodies,
+                                                             const std::vector<BoundingBox>& boxes,
+                                                             double clearance) {
   std::vector<MultiInterferenceResult> results;
   while (!frontier.empty()) {
     std::vector<MultiOverlapCandidate> next_frontier;
@@ -258,6 +243,53 @@ std::vector<MultiInterferenceResult> ComputeMultiWayInterference(const std::vect
     frontier = std::move(next_frontier);
   }
   return results;
+}
+
+}  // namespace
+
+std::vector<InterferenceResult> ComputeInterference(const std::vector<Mesh>& bodies,
+                                                      double clearance) {
+  std::vector<BoundingBox> boxes;
+  boxes.reserve(bodies.size());
+  for (const Mesh& body : bodies) boxes.push_back(body.GetBoundingBox());
+
+  std::vector<MultiOverlapCandidate> frontier = ComputePairwiseOverlaps(bodies, boxes, clearance);
+  std::vector<InterferenceResult> results;
+  results.reserve(frontier.size());
+  for (MultiOverlapCandidate& candidate : frontier) {
+    results.push_back(InterferenceResult{candidate.indices[0], candidate.indices[1],
+                                          std::move(candidate.solid)});
+  }
+  return results;
+}
+
+std::vector<MultiInterferenceResult> ComputeMultiWayInterference(const std::vector<Mesh>& bodies,
+                                                                   double clearance) {
+  std::vector<BoundingBox> boxes;
+  boxes.reserve(bodies.size());
+  for (const Mesh& body : bodies) boxes.push_back(body.GetBoundingBox());
+
+  std::vector<MultiOverlapCandidate> frontier = ComputePairwiseOverlaps(bodies, boxes, clearance);
+  return ExpandMultiWayOverlaps(std::move(frontier), bodies, boxes, clearance);
+}
+
+AllInterferenceResult ComputeAllInterference(const std::vector<Mesh>& bodies, double clearance) {
+  std::vector<BoundingBox> boxes;
+  boxes.reserve(bodies.size());
+  for (const Mesh& body : bodies) boxes.push_back(body.GetBoundingBox());
+
+  std::vector<MultiOverlapCandidate> frontier = ComputePairwiseOverlaps(bodies, boxes, clearance);
+
+  AllInterferenceResult result;
+  result.pairwise.reserve(frontier.size());
+  // `frontier` is reused below as the multi-way expansion's own seed, so
+  // each pairwise result gets its own copy of `solid` rather than moving it
+  // out from under that expansion.
+  for (const MultiOverlapCandidate& candidate : frontier) {
+    result.pairwise.push_back(InterferenceResult{candidate.indices[0], candidate.indices[1], candidate.solid});
+  }
+  result.multi_way = ExpandMultiWayOverlaps(std::move(frontier), bodies, boxes, clearance);
+  return result;
 }
 
 std::pair<Mesh, Mesh> SplitByPlane(const Mesh& mesh, Vector3d plane_normal, double plane_offset) {
@@ -937,11 +969,13 @@ namespace {
 // FromMixedFaces.
 void RefuseCompoundOperand(const Brep& operand, const char* function_name) {
   if (operand.LumpFaceRanges().size() <= 1) return;
-  throw std::invalid_argument(std::string("dino8::kernel::") + function_name +
-                              ": an operand is a Brep::Compound of several lumps (e.g. a "
-                              "SymmetricDifference result) - a boolean over lumps needs a "
-                              "per-lump distribution plus a Union merge step this kernel does "
-                              "not have yet; see Brep::Compound's own doc comment in brep.h");
+  throw BooleanOperationError(
+      BooleanFailureReason::CompoundOperand, function_name,
+      std::string("dino8::kernel::") + function_name +
+          ": an operand is a Brep::Compound of several lumps (e.g. a "
+          "SymmetricDifference result) - a boolean over lumps needs a "
+          "per-lump distribution plus a Union merge step this kernel does "
+          "not have yet; see Brep::Compound's own doc comment in brep.h");
 }
 
 }  // namespace
