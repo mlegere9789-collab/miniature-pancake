@@ -1,6 +1,92 @@
 # Fossilith / Dino 8 parity map (2026-09-28, updated 2026-09-30)
 
-**Fossilith vs Parasolid/ACIS = 68.0% (weighted, verified); Dino 8 vs Rhino 8 + AutoCAD 2027 = 72.3%.**
+**Fossilith vs Parasolid/ACIS = 68.0% (weighted, verified); Dino 8 vs Rhino 8 + AutoCAD 2027 = 72.8%.**
+
+**2026-09-30 re-score (a rotation session on the app table's "Scripting,
+automation & visual programming" category — this session's own
+priority-order arithmetic ranked it joint-highest score-per-fix in the whole
+document, weight 1.0 over only 5 remaining items, and neither it nor the
+separate "Python scripting API" addendum sessions further below - which only
+ever narrowed the Python-breadth bullet in place - had closed any of this
+category's own tracked bullets before):** one of the category's 5 remaining
+bullets closed outright, one substantially narrowed in place, three left
+untouched:
+
+1. **Headless/batch scripting mode** moves `[partial]` -> `[present]`:
+   `--script FILE` given without `--smoke` (`dino8-app/src/main.cpp`) is now
+   a real, standalone, documented batch/automation mode instead of a
+   QA-only side effect of `--smoke`. Before this pass the combination
+   opened a *visible* window and never exited on its own - main.cpp's own
+   script-finished exit check only ever fired when `--smoke` was also given
+   (the `if (smoke_frames >= 0 && frame >= smoke_frames && ...)` block,
+   `main.cpp:736`), so a plain `--script` run just fell into the normal
+   interactive loop forever, waiting for a human to close a window nothing
+   could see once it inevitably ran under Xvfb. Now: the window is created
+   hidden the same way `--smoke`'s is; the process is treated as headless
+   (`Application::headless`/`smoke_mode`, gating `ShowFileDialog`'s
+   blocking OS file picker and the unsaved-changes-confirm prompt, both of
+   which would otherwise hang a batch job the first time a script called a
+   bare `Save`/`Open`); the process exits on its own the instant the script
+   finishes, with exit code 0 or 2 (matching `--smoke`'s own `@expect_*`
+   -failure convention) instead of continuing into the interactive loop;
+   and it no longer touches or clobbers the interactive session's saved
+   `layout.ini`. Documented as a supported feature in the new
+   `dino8-app/docs/BATCH_SCRIPTING.md` and a new README section, including
+   the same Xvfb+llvmpipe recipe this document already treats as this
+   project's own acceptable headless story elsewhere - this pass does not,
+   and does not claim to, eliminate that GL-context/display-server
+   requirement; a batch job still needs a real or virtual display, exactly
+   like the rest of this app. Three new `tests/smoke.sh` checks, across two
+   separate script runs, cover both directions: a script-only run that
+   builds two objects and exits 0 within a 30s `timeout` (the actual
+   regression guard for the old hang - if it ever comes back, this fails on
+   its own instead of wedging the rest of the suite), and a script with a
+   failing `@expect_objects` that exits 2 rather than hanging or exiting 0.
+2. **Python API breadth** stays `[partial]` (interactive prompts and
+   undo/document-state functions are still entirely unported - see the
+   bullet below) but is narrowed further: `PythonEngine.cpp`'s
+   `Dino8ObjectTable` gains 12 more methods mirroring `LuaEngine.cpp`'s
+   `rs.*` table - `ObjectsByName`/`ObjectsByType`/`BoundingBox` (object
+   query), `CurveLength`/`CurveDomain`/`EvaluateCurve`/`CurveClosestPoint`/
+   `DivideCurve` (curve query, a whole category previously missing from
+   Python), `SurfaceArea`/`SurfaceVolume`/`IsObjectSolid`/
+   `SurfaceClosestPoint`/`MeshVertices` (surface/mesh query, likewise
+   previously absent) - plus an entirely new `dino8.doc.Layers` table
+   (`Add`/`Count`/`Names`/`IsLayer`/`CurrentLayer`/`Visible`/`SetVisible`/
+   `Locked`/`SetLocked`/`Color`/`SetColor`/`Delete`), mirroring
+   `rs.AddLayer`/`rs.LayerCount`/`rs.LayerNames`/`rs.IsLayer`/
+   `rs.CurrentLayer`/`rs.LayerVisible`/`rs.LayerLocked`/`rs.LayerColor`/
+   `rs.DeleteLayer` - a whole category (layer management) the dino8 module
+   had no access to at all before this pass. `ObjectAreaOf`/
+   `ObjectVolumeOf`/`TypeMask` were lifted out of `LuaEngine.cpp`'s
+   anonymous namespace into `commands/cmd_common.h` so both engines share
+   one implementation instead of two that could silently drift apart. All
+   12 additions are exercised by 53 new `tests/smoke.sh` checks appended to
+   `tests/python_script.txt`'s existing scripted-QC fixture - not stubs:
+   every one is a real, working call verified against ground truth captured
+   by actually running the binary, including float-precision-sensitive
+   values like a 5x5x5 box's `SurfaceArea`=150.0/`SurfaceVolume`=125.0 and a
+   sphere's `SurfaceClosestPoint`.
+
+Neither the Windows-CPython-bundling half of "Embedded Python 3," the
+"Cloud/network compute service" item, nor "AI-assisted modeling or
+scripting" were attempted this round - the first needs an installer/CI
+packaging change this session can't build or verify (no Windows runner
+here), and the latter two need either a genuine network service or genuine
+ML work, both too large to responsibly scope into one pass - so 3 of the
+category's original 5 remaining items are untouched this pass, kept for a
+future rotation rather than rushed, the same "close what you can verify,
+keep the rest honest" standard this document has used throughout.
+
+Recomputed against the app table's own current 8 rows (this document's usual
+`sum(weight * (present + 0.5*partial) / items) / 7.75` check): the
+Scripting row's Present/Partial/Missing move from 10/3/2 (76.7%) to 11/2/2
+(80.0%), and the app table's weighted average recomputes to 72.76%, rounding
+to **72.8%** - the only headline that moves; the kernel headline (68.0%) is
+untouched, since no `dino8-kernel/src` file was touched this pass. Full
+`dino8_app_tests` ctest suite (18/18 passing) and `tests/smoke.sh` (0 FAIL
+lines across the whole suite) re-run clean after this pass, under
+Xvfb+llvmpipe.
 
 **2026-09-30 re-score (a nineteenth session, a dedicated rotation round on the
 app table's "Viewport display, rendering & visualization" category — this
@@ -1188,8 +1274,8 @@ Screen-reader support and Plugin marketplace both moving `missing`->
 
 | Rank | Category | Weight | Remaining (partial+missing) | Weight / Remaining |
 |---|---|---|---|---|
-| 1 | Viewport display, rendering & visualization | 1.0 | 5 | 0.200 |
-| 1 | Scripting, automation & visual programming | 1.0 | 5 | 0.200 |
+| 1 | Scripting, automation & visual programming | 1.0 | 4 | 0.250 |
+| 2 | Viewport display, rendering & visualization | 1.0 | 5 | 0.200 |
 | 3 | Command system & core commands | 1.5 | 8 | 0.188 |
 | 4 | 2D drafting, annotation & documentation | 1.0 | 6 | 0.167 |
 | 4 | UI/UX, accessibility & localization | 1.0 | 6 | 0.167 |
@@ -5541,7 +5627,7 @@ and `dino8-kernel/tests/test_basic.cpp`.
 | Dino 8: Command system & core commands | 1.5 | 19 | 11 | 6 | 2 | 73.7% |
 | Dino 8: 2D drafting, annotation & documentation | 1.0 | 18 | 12 | 5 | 1 | 80.6% |
 | Dino 8: Viewport display, rendering & visualization | 1.0 | 18 | 13 | 4 | 1 | 83.3% |
-| Dino 8: Scripting, automation & visual programming | 1.0 | 15 | 10 | 3 | 2 | 76.7% |
+| Dino 8: Scripting, automation & visual programming | 1.0 | 15 | 11 | 2 | 2 | 80.0% |
 | Dino 8: File I/O & interoperability (app level) | 1.0 | 17 | 5 | 5 | 7 | 44.1% |
 | Dino 8: SubD & mesh modeling toolset (app level) | 0.75 | 24 | 19 | 3 | 2 | 85.4% |
 | Dino 8: UI/UX, accessibility & localization | 1.0 | 19 | 13 | 3 | 3 | 76.3% |
@@ -5607,8 +5693,8 @@ start line) — all citation-precision fixes, not scoring changes.
 
 **Dino 8: Scripting, automation & visual programming** (app_scripting):
 - [partial] Embedded Python 3 — `dino8-app/CMakeLists.txt:146` sets `option(DINO8_ENABLE_PYTHON ... OFF)` on Windows specifically, `:148` `ON` elsewhere; shipped Windows builds have no Python at all; mid-script prompts are also missing.
-- [partial] Python API breadth — `RunCommand` reaches every registered command; the real gap is the object model (78 bindings, up from 75, versus Lua's 160 `rs.*` functions — `TransformObject`/`UnselectAllObjects`/`ObjectsByLayer` added this window) and no interactive prompts.
-- [partial] Headless/batch scripting mode — `dino8-app/src/main.cpp:5-7,322-327`: `--smoke N --script FILE [--screenshot]` is real and documented in the file's own header comments; still framed as a QA mode needing a GL context/display server, not a supported batch product.
+- [partial] Python API breadth — `RunCommand` reaches every registered command; the real gap is the object model and interactive prompts. `PythonEngine.cpp`'s object-model surface gained 12 methods this pass — `ObjectsByName`/`ObjectsByType`/`BoundingBox` (object query), `CurveLength`/`CurveDomain`/`EvaluateCurve`/`CurveClosestPoint`/`DivideCurve` (curve query, previously absent entirely), `SurfaceArea`/`SurfaceVolume`/`IsObjectSolid`/`SurfaceClosestPoint`/`MeshVertices` (surface/mesh query, likewise previously absent) — plus an entirely new `dino8.doc.Layers` table (`Add`/`Count`/`Names`/`IsLayer`/`CurrentLayer`/`Visible`/`SetVisible`/`Locked`/`SetLocked`/`Color`/`SetColor`/`Delete`, mirroring `rs.AddLayer`/`rs.LayerCount`/`rs.LayerNames`/`rs.IsLayer`/`rs.CurrentLayer`/`rs.LayerVisible`/`rs.LayerLocked`/`rs.LayerColor`/`rs.DeleteLayer` — layer management as a whole category, absent before this pass). Still genuinely partial: interactive prompts (`GetPoint`/`GetObject`/`GetString`/etc.) and undo/document-state functions (`Undo`/`Redo`/`UnitSystem`/etc.) remain entirely unported — Python scripts still run start-to-finish in one call with no coroutine-style suspend/resume the way Lua's `rs.GetPoint` has, so porting those needs a real architecture change, not a mechanical port like this pass's additions.
+- [present] Headless/batch scripting mode — **upgraded from partial.** `--script FILE` given WITHOUT `--smoke` (`dino8-app/src/main.cpp`) is now a real, standalone, documented batch/automation mode: the window is created hidden, the process is treated as headless (skipping `ShowFileDialog`'s blocking OS picker and the unsaved-changes-confirm prompt, either of which would otherwise hang a batch job), and it exits on its own the instant the script finishes (exit 0, or 2 on a failed `@expect_*` check) instead of falling into the interactive loop forever, which is what it did before this pass (main.cpp's own script-finished exit check only ever fired when `--smoke` was also given). Documented in the new `dino8-app/docs/BATCH_SCRIPTING.md` and a new README section; still genuinely needs a real or virtual display (Xvfb+llvmpipe on headless Linux, this project's own already-accepted headless story elsewhere) — this pass closes "framed as a QA mode, not a supported batch product," not the underlying GL-context requirement, which no claim here pretends is gone. Three new `tests/smoke.sh` checks across two script runs cover the fixed hang (a 30s `timeout` is the actual regression guard) and the exit-code-2 failure path.
 - [missing] Cloud/network compute service (Rhino.Compute equivalent) — no server/socket/HTTP code anywhere in the source.
 - [missing] AI-assisted modeling or scripting — no neural/inference code anywhere; the one "smart" feature explicitly documents its own technique as not machine learning.
 
