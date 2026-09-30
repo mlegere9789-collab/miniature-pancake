@@ -4157,6 +4157,19 @@ Brep EmbossProfile(const Brep& solid, const NurbsCurve& profile, Vector3d direct
   return BooleanCombineGeneral(solid, tool, deboss ? BooleanOp::Difference : BooleanOp::Union);
 }
 
+Brep MakeRevolvedCut(const Brep& solid, const NurbsCurve& profile, Point3d axis_point, Vector3d axis_direction,
+                      double revolve_angle_degrees) {
+  if (solid.raw().m_F.Count() == 0) {
+    throw std::invalid_argument("dino8::kernel::MakeRevolvedCut: solid has no faces");
+  }
+  if (!(revolve_angle_degrees > 0.0) || revolve_angle_degrees > 360.0) {
+    throw std::invalid_argument("dino8::kernel::MakeRevolvedCut: revolve_angle_degrees must be in (0, 360]");
+  }
+  const double angle = revolve_angle_degrees * ON_PI / 180.0;
+  const Brep tool = Brep::Revolve(profile, axis_point, axis_direction, angle, /*cap=*/true);
+  return BooleanCombineGeneral(solid, tool, BooleanOp::Difference);
+}
+
 // --- ExtrudeToBoundary(): extrude a quadrilateral profile until it -----
 // --- meets a planar boundary -------------------------------------------
 //

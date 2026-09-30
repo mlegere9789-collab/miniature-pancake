@@ -454,6 +454,40 @@ Brep MakeCountersinkHole(const Brep& solid, Point3d center, Vector3d axis, doubl
 enum class EmbossMode { Emboss, Deboss };
 Brep EmbossProfile(const Brep& solid, const NurbsCurve& profile, Vector3d direction, double depth, EmbossMode mode);
 
+// A revolved cut (Rhino/SolidWorks "Revolved Cut"/"Revolve Cut" feature,
+// parity-map "Revolved cut (RevolvedHole)"): closes this item's own
+// long-standing gap - `Brep::Revolve()` existed, but no kernel feature op
+// ever composed it into an actual cut against a target solid (the app's
+// own `RevolvedHole`, dino8-app/src/commands/cmd_solidtools.cpp, only ever
+// cut a MESH via a revolved mesh tool and never called `Revolve()` at
+// all). Unlike `MakeCounterboreHole()`/`MakeCountersinkHole()` above,
+// which each revolve one FIXED internal profile shape, this is their
+// general counterpart: the caller supplies ANY profile curve accepted by
+// `Brep::Revolve()` (see that function's own doc comment - a closed
+// off-axis profile, an open profile with both ends on the axis, or an
+// open profile with one end on the axis), built into a solid cutting tool
+// via ONE `Brep::Revolve()` call and subtracted from `solid` via ONE
+// `BooleanCombineGeneral()` Difference call - the same "avoid a second
+// boolean call against an already-cut operand" reasoning
+// `MakeCounterboreHole()` above gives.
+//
+// `axis_point`/`axis_direction` describe the revolve axis exactly as
+// `Brep::Revolve()` itself takes them (not normalized internally there,
+// but `axis_direction` must still be non-zero). `revolve_angle_degrees`
+// must be in (0, 360] and is converted to radians for `Revolve()`; the
+// tool is always capped (`cap=true`) so a partial-angle cut leaves a real
+// solid tool rather than an open shell, following whatever `Revolve()`
+// itself allows/refuses to cap for `profile`'s particular shape.
+//
+// Throws std::invalid_argument if `solid` has no faces, if
+// `revolve_angle_degrees` is not in (0, 360], or whatever `Brep::Revolve()`
+// itself throws for `profile`'s shape/placement relative to the axis -
+// plus whatever `BooleanCombineGeneral()` throws for its own disclosed
+// scope limits (genus-0 operands, at most one intersection chain per
+// opposing face pair).
+Brep MakeRevolvedCut(const Brep& solid, const NurbsCurve& profile, Point3d axis_point, Vector3d axis_direction,
+                      double revolve_angle_degrees = 360.0);
+
 // Extrude a closed planar QUADRILATERAL profile "to a boundary"
 // (PARITY_MAP.md's "kernel: Sweeping, lofting, extruding, revolving" gap
 // - "Extrude to a boundary surface / body (Rhino ToBoundary,
