@@ -44978,6 +44978,197 @@ void TestSweep1RoadlikeAlignmentMatchesExtrudeOnAStraightRailAndRejectsDegenerat
         "an in-plane roadlike_up is parallel to a full circular rail's own tangent somewhere on the loop, and still throws");
 }
 
+// twist_schedule closes the "twist is linear end-to-end only, not a
+// piecewise schedule" gap PARITY_MAP.md's own "Sweep along one rail" and
+// "Sweep controls" bullets both name - Sweep1's general-profile
+// counterpart to PipeVariable()'s own circular-only radius_points
+// schedule, sharing its exact (t, value) convention.
+void TestSweep1TwistScheduleMatchesPlainTwistAtEndpointsAndInsertsRealStations() {
+  using TP = std::pair<double, double>;
+  const NurbsCurve rail = Polyline({P(0, 0, 0), P(0, 0, 10)});
+  const NurbsCurve square = Polyline({P(-0.5, -0.5, 0), P(0.5, -0.5, 0), P(0.5, 0.5, 0), P(-0.5, 0.5, 0), P(-0.5, -0.5, 0)});
+
+  // A trivial two-point schedule spanning the whole rail describes the
+  // IDENTICAL twist as the plain scalar - both must build a bit-identical
+  // wall, the same exact 2-station ruled shortcut on a straight rail.
+  {
+    const double twist = M_PI / 2;
+    const std::vector<TP> schedule = {{0.0, 0.0}, {1.0, twist}};
+    const Brep scheduled = Brep::Sweep1(square, rail, 32, true, 0.0, 1.0, nullptr, &schedule);
+    const Brep plain = Brep::Sweep1(square, rail, 32, true, twist);
+    CheckSolidTopology(scheduled, 3, "twist-scheduled square sweep (trivial 2-point schedule)");
+    const NurbsSurface wa = FaceSurface(scheduled, 0), wb = FaceSurface(plain, 0);
+    Check(wa.DegreeV() == 1 && wa.CVCountV() == 2, "a trivial 2-point twist_schedule keeps the exact 2-station ruled shortcut");
+    double worst = 0.0;
+    const ON_Interval dua = wa.raw().Domain(0), dub = wb.raw().Domain(0);
+    for (int i = 0; i <= 8; ++i) {
+      for (double v : {0.0, 1.0}) {
+        worst = std::max(worst, wa.PointAt(dua.ParameterAt(i / 8.0), v).DistanceTo(wb.PointAt(dub.ParameterAt(i / 8.0), v)));
+      }
+    }
+    Check(worst < 1e-12, "a trivial {(0,0),(1,twist)} twist_schedule reproduces plain twist_total's wall bit-for-bit");
+  }
+
+  // A genuine 3-point schedule inserts a real extra station at its own
+  // middle breakpoint (leaving the 2-station shortcut), but the two ENDS
+  // are still exactly the un-rotated near section and the far section
+  // rotated by exactly the schedule's own end value - a skin's boundary
+  // rows always reproduce their own input section exactly regardless of
+  // the interpolation between them (the same invariant AddDomeCap()'s own
+  // doc comment already states, and TestLoftInterpolatesSectionsExactly()
+  // already verifies for this shared SkinSections() machinery).
+  {
+    const double end_twist = M_PI / 2;
+    const std::vector<TP> schedule = {{0.0, 0.0}, {0.5, M_PI / 4}, {1.0, end_twist}};
+    const Brep scheduled = Brep::Sweep1(square, rail, 32, true, 0.0, 1.0, nullptr, &schedule);
+    CheckSolidTopology(scheduled, 3, "twist-scheduled square sweep (3-point schedule)");
+    const NurbsSurface wall = FaceSurface(scheduled, 0);
+    Check(wall.CVCountV() > 2, "a genuine 3-point twist_schedule inserts a real extra station, leaving the 2-station shortcut");
+    const ON_Interval du = wall.raw().Domain(0), dv = wall.raw().Domain(1);
+    {
+      double worst = 0.0;
+      for (int corner = 0; corner < 4; ++corner) {
+        const Point3d expect = square.ControlPointAt(corner);
+        double best = 1e9;
+        for (int j = 0; j < 4; ++j) best = std::min(best, wall.PointAt(du.ParameterAt(j / 4.0), dv.Min()).DistanceTo(expect));
+        worst = std::max(worst, best);
+      }
+      Check(worst < 1e-9, "the near end is untouched (the schedule's own twist at t=0 is 0)");
+    }
+    {
+      double worst = 0.0;
+      for (int corner = 0; corner < 4; ++corner) {
+        const Point3d c = square.ControlPointAt(corner);
+        const Point3d expect(c.x * std::cos(end_twist) - c.y * std::sin(end_twist), c.x * std::sin(end_twist) + c.y * std::cos(end_twist),
+                              10.0);
+        double best = 1e9;
+        for (int j = 0; j < 4; ++j) best = std::min(best, wall.PointAt(du.ParameterAt(j / 4.0), dv.Max()).DistanceTo(expect));
+        worst = std::max(worst, best);
+      }
+      Check(worst < 1e-9, "the far end is rotated by exactly the schedule's own end twist value");
+    }
+    Check(scheduled.TessellateToClosedMesh(8, 96).IsClosedManifold(), "twist-scheduled sweep is still a closed manifold");
+  }
+
+  // Negative controls.
+  Check(Throws([&] {
+          const std::vector<TP> schedule = {{0.0, 0.0}, {1.0, M_PI / 2}};
+          Brep::Sweep1(square, rail, 32, true, /*twist_total=*/0.1, 1.0, nullptr, &schedule);
+        }),
+        "twist_total != 0 together with twist_schedule throws (mutually exclusive)");
+  Check(Throws([&] {
+          const std::vector<TP> schedule = {{0.0, 0.0}};
+          Brep::Sweep1(square, rail, 32, true, 0.0, 1.0, nullptr, &schedule);
+        }),
+        "a twist_schedule with fewer than 2 points throws");
+  Check(Throws([&] {
+          const std::vector<TP> schedule = {{0.5, 0.0}, {0.2, 1.0}};
+          Brep::Sweep1(square, rail, 32, true, 0.0, 1.0, nullptr, &schedule);
+        }),
+        "a non-increasing twist_schedule throws");
+  Check(Throws([&] {
+          const NurbsCurve circle_rail = Circle(P(0, 0, 0), Vector3d(0, 0, 1), 3.0);
+          const std::vector<TP> schedule = {{0.0, 0.0}, {1.0, M_PI / 4}};
+          Brep::Sweep1(square, circle_rail, 16, false, 0.0, 1.0, nullptr, &schedule);
+        }),
+        "twist_schedule on a closed rail throws");
+}
+
+// scale_schedule's own counterpart test - mirrors PipeVariable()'s own
+// 2-point-exact / 3-point-bulge test structure (TestPipeVariable() above)
+// as closely as the two methods' shared "insert exact stations at the
+// schedule's own breakpoints" construction allows.
+void TestSweep1ScaleScheduleMatchesPlainScaleAtEndpointsAndInsertsRealStations() {
+  using TP = std::pair<double, double>;
+
+  // Trivial 2-point schedule: bit-identical to the plain scale_end wall.
+  {
+    const double r0 = 2.0, r1 = 1.0, scale_end = r1 / r0;
+    const NurbsCurve rail = Polyline({P(0, 0, 0), P(0, 0, 5)});
+    const NurbsCurve circle_r0 = Circle(P(0, 0, 0), Vector3d(0, 0, 1), r0);
+    const std::vector<TP> schedule = {{0.0, 1.0}, {1.0, scale_end}};
+    const Brep scheduled = Brep::Sweep1(circle_r0, rail, 32, true, 0.0, 1.0, nullptr, nullptr, &schedule);
+    const Brep plain = Brep::Sweep1(circle_r0, rail, 32, true, 0.0, scale_end);
+    CheckSolidTopology(scheduled, 3, "scale-scheduled circle sweep (trivial 2-point schedule)");
+    const NurbsSurface wa = FaceSurface(scheduled, 0), wb = FaceSurface(plain, 0);
+    Check(wa.DegreeV() == 1 && wa.CVCountV() == 2, "a trivial 2-point scale_schedule keeps the exact 2-station ruled shortcut");
+    double worst = 0.0;
+    const ON_Interval du = wa.raw().Domain(0);
+    for (int i = 0; i <= 32; ++i) {
+      const double u = du.ParameterAt(i / 32.0);
+      worst = std::max(worst, wa.PointAt(u, 0.0).DistanceTo(wb.PointAt(u, 0.0)));
+      worst = std::max(worst, wa.PointAt(u, 1.0).DistanceTo(wb.PointAt(u, 1.0)));
+    }
+    Check(worst < 1e-12, "a trivial {(0,1),(1,scale_end)} scale_schedule reproduces plain scale_end's wall bit-for-bit");
+  }
+
+  // A genuine 3-point symmetric bulge: not exactly representable by a
+  // single ruled surface, so this takes the general interpolating-skin
+  // path - cross-checked the same two ways TestPipeVariable()'s own
+  // 3-point bulge case already is: (1) the wall's own domain-boundary
+  // sections are still exactly the unscaled/scale_end square (guaranteed
+  // by the skin's own boundary-reproduction contract), and (2) the
+  // tessellated volume against the closed-form volume of the TRUE
+  // piecewise-linear-side solid this schedule describes (two stacked
+  // pyramid frustums), which this only interpolates, not reproduces
+  // exactly - the same 96-station/1% bound TestPipeVariable() already
+  // measures 0.3% under.
+  {
+    const double H = 4.0, s0 = 1.0, sm = 3.0, s1 = 1.0;
+    const NurbsCurve square = Polyline(
+        {P(-s0 / 2, -s0 / 2, 0), P(s0 / 2, -s0 / 2, 0), P(s0 / 2, s0 / 2, 0), P(-s0 / 2, s0 / 2, 0), P(-s0 / 2, -s0 / 2, 0)});
+    const NurbsCurve rail = Polyline({P(0, 0, 0), P(0, 0, H)});
+    const std::vector<TP> schedule = {{0.0, 1.0}, {0.5, sm / s0}, {1.0, s1 / s0}};
+    const Brep bulge = Brep::Sweep1(square, rail, 96, true, 0.0, 1.0, nullptr, nullptr, &schedule);
+    CheckSolidTopology(bulge, 3, "scale-scheduled square sweep (3-point bulge)");
+    const NurbsSurface wall = FaceSurface(bulge, 0);
+    Check(wall.CVCountV() > 2, "a genuine 3-point scale_schedule inserts a real extra station, leaving the 2-station shortcut");
+    const ON_Interval du = wall.raw().Domain(0), dv = wall.raw().Domain(1);
+    double worst0 = 0.0, worst1 = 0.0;
+    for (int corner = 0; corner < 4; ++corner) {
+      const Point3d c = square.ControlPointAt(corner);
+      double best0 = 1e9, best1 = 1e9;
+      for (int j = 0; j < 4; ++j) {
+        best0 = std::min(best0, wall.PointAt(du.ParameterAt(j / 4.0), dv.Min()).DistanceTo(c));
+        best1 = std::min(best1, wall.PointAt(du.ParameterAt(j / 4.0), dv.Max()).DistanceTo(Point3d(c.x * s1 / s0, c.y * s1 / s0, H)));
+      }
+      worst0 = std::max(worst0, best0);
+      worst1 = std::max(worst1, best1);
+    }
+    Check(worst0 < 1e-9 && worst1 < 1e-9, "the 3-point bulge's end squares are still exactly unscaled and scale_end-scaled");
+    const double half = H / 2.0;
+    const double exact = (half / 3.0) * (s0 * s0 + s0 * sm + sm * sm) + (half / 3.0) * (sm * sm + sm * s1 + s1 * s1);
+    CheckClosedMeshVolume(bulge, 64, 8, exact, 0.01, "scale-scheduled square 3-point bulge vs. stacked-frustum reference");
+  }
+
+  // Negative controls.
+  {
+    const NurbsCurve rail = Polyline({P(0, 0, 0), P(0, 0, 5)});
+    const NurbsCurve circle = Circle(P(0, 0, 0), Vector3d(0, 0, 1), 1.0);
+    Check(Throws([&] {
+            const std::vector<TP> schedule = {{0.0, 1.0}, {1.0, 2.0}};
+            Brep::Sweep1(circle, rail, 32, true, 0.0, /*scale_end=*/1.5, nullptr, nullptr, &schedule);
+          }),
+          "scale_end != 1 together with scale_schedule throws (mutually exclusive)");
+    Check(Throws([&] {
+            const std::vector<TP> schedule = {{0.0, 1.0}};
+            Brep::Sweep1(circle, rail, 32, true, 0.0, 1.0, nullptr, nullptr, &schedule);
+          }),
+          "a scale_schedule with fewer than 2 points throws");
+    Check(Throws([&] {
+            const std::vector<TP> schedule = {{0.0, 1.0}, {1.0, -2.0}};
+            Brep::Sweep1(circle, rail, 32, true, 0.0, 1.0, nullptr, nullptr, &schedule);
+          }),
+          "a non-positive scale_schedule value throws");
+    Check(Throws([&] {
+            const NurbsCurve circle_rail = Circle(P(0, 0, 0), Vector3d(0, 0, 1), 3.0);
+            const std::vector<TP> schedule = {{0.0, 1.0}, {1.0, 2.0}};
+            Brep::Sweep1(circle, circle_rail, 16, false, 0.0, 1.0, nullptr, nullptr, &schedule);
+          }),
+          "scale_schedule on a closed rail throws");
+  }
+}
+
 // Scans every face of `b` for one whose surface IsCylinder() within
 // `surf_tol`, with a fitted radius within `radius_tol` of `expected_radius`
 // - works directly off ON_Surface::IsCylinder() (unlike this file's own
@@ -54413,6 +54604,8 @@ int main() {
   sweep_tests::TestSweep1TwistIsExactOnAStraightRailAndRejectsOnClosedRail();
   sweep_tests::TestSweep1ScaleIsExactContinuouslyOnAStraightRailAndRejectsOnClosedRail();
   sweep_tests::TestSweep1RoadlikeAlignmentMatchesExtrudeOnAStraightRailAndRejectsDegenerateUp();
+  sweep_tests::TestSweep1TwistScheduleMatchesPlainTwistAtEndpointsAndInsertsRealStations();
+  sweep_tests::TestSweep1ScaleScheduleMatchesPlainScaleAtEndpointsAndInsertsRealStations();
   sweep_tests::TestMakeHoleBlindAndThrough();
   sweep_tests::TestMakeHoleRejectsInvalidArguments();
   sweep_tests::TestMakeCounterboreHoleBoxStepped();

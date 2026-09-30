@@ -2909,8 +2909,48 @@ Brep Brep::Loft(const std::vector<NurbsCurve>& sections_in, int degree, bool clo
   return AssembleSweptBody(wall.release(), want_caps, want_caps, false, false, caller);
 }
 
+namespace {
+
+// Piecewise-linear lookup over a (t, value) schedule, held flat at the
+// nearest endpoint's value outside the given range - the exact convention
+// PipeVariable()'s own radius_at() uses, shared here verbatim.
+double ScheduleAt(const std::vector<std::pair<double, double>>& schedule, double f) {
+  if (f <= schedule.front().first) return schedule.front().second;
+  if (f >= schedule.back().first) return schedule.back().second;
+  for (size_t i = 1; i < schedule.size(); ++i) {
+    if (f <= schedule[i].first) {
+      const double t0 = schedule[i - 1].first, t1 = schedule[i].first;
+      const double v0 = schedule[i - 1].second, v1 = schedule[i].second;
+      return v0 + (f - t0) / (t1 - t0) * (v1 - v0);
+    }
+  }
+  return schedule.back().second;  // unreachable given the f >= back() check above
+}
+
+void ValidateSweep1Schedule(const std::vector<std::pair<double, double>>* schedule, const char* name,
+                            bool value_must_be_positive, const char* caller) {
+  if (!schedule) return;
+  if (schedule->size() < 2) Fail(caller, std::string(name) + " needs at least 2 points");
+  for (size_t i = 0; i < schedule->size(); ++i) {
+    const double t = (*schedule)[i].first;
+    if (!std::isfinite(t) || t < 0.0 || t > 1.0) {
+      Fail(caller, std::string(name) + " point " + std::to_string(i) + " has t outside [0, 1]");
+    }
+    if (value_must_be_positive && !((*schedule)[i].second > 0.0)) {
+      Fail(caller, std::string(name) + " point " + std::to_string(i) + " has a non-positive value");
+    }
+    if (i > 0 && !(t > (*schedule)[i - 1].first)) {
+      Fail(caller, std::string(name) + " points must be strictly increasing in t");
+    }
+  }
+}
+
+}  // namespace
+
 Brep Brep::Sweep1(const NurbsCurve& section_in, const NurbsCurve& rail_in, int stations, bool cap, double twist_total,
-                  double scale_end, const Vector3d* roadlike_up) {
+                  double scale_end, const Vector3d* roadlike_up,
+                  const std::vector<std::pair<double, double>>* twist_schedule,
+                  const std::vector<std::pair<double, double>>* scale_schedule) {
   const char* caller = "Sweep1";
   if (stations < 2) Fail(caller, "stations must be at least 2");
   if (!(scale_end > 0.0)) Fail(caller, "scale_end must be positive");
@@ -2920,12 +2960,21 @@ Brep Brep::Sweep1(const NurbsCurve& section_in, const NurbsCurve& rail_in, int s
   if (!section.IsValid()) Fail(caller, "section is not a valid NURBS curve");
   ClampIfPeriodic(section);
   const bool wrap = rail.IsClosed();
-  if (wrap && twist_total != 0.0) {
-    Fail(caller, "twist_total is not supported for a closed rail - a non-multiple-of-2*pi twist would keep the tube from "
+
+  ValidateSweep1Schedule(twist_schedule, "twist_schedule", /*value_must_be_positive=*/false, caller);
+  ValidateSweep1Schedule(scale_schedule, "scale_schedule", /*value_must_be_positive=*/true, caller);
+  if (twist_schedule && twist_total != 0.0) {
+    Fail(caller, "twist_total must be 0 when twist_schedule is given - the two are mutually exclusive");
+  }
+  if (scale_schedule && scale_end != 1.0) {
+    Fail(caller, "scale_end must be 1 when scale_schedule is given - the two are mutually exclusive");
+  }
+  if (wrap && (twist_total != 0.0 || twist_schedule)) {
+    Fail(caller, "twist is not supported for a closed rail - a non-multiple-of-2*pi twist would keep the tube from "
                  "closing up smoothly, and the multiple-of-2*pi spiral case is not attempted here");
   }
-  if (wrap && scale_end != 1.0) {
-    Fail(caller, "scale_end != 1.0 is not supported for a closed rail - the tube would not meet itself at the seam");
+  if (wrap && (scale_end != 1.0 || scale_schedule)) {
+    Fail(caller, "scale is not supported for a closed rail - the tube would not meet itself at the seam");
   }
   ON_3dVector up;
   if (roadlike_up) {
@@ -2933,13 +2982,70 @@ Brep Brep::Sweep1(const NurbsCurve& section_in, const NurbsCurve& rail_in, int s
     if (!up.Unitize()) Fail(caller, "roadlike_up must be a nonzero vector");
   }
   const bool straight = !wrap && rail.IsLinear(1e-9 * CurveScale(rail));
-  const int m = straight ? 2 : std::max(stations, 3);
+  const bool has_schedule = twist_schedule || scale_schedule;  // wrap already refused above when true
 
-  // Equal-arc-length stations (the wrapper's DivideByCount); a closed
-  // rail's last division point is its first and is dropped.
-  std::vector<double> params = rail_in.DivideByCount(wrap ? m : m - 1);
-  if (wrap) params.pop_back();
-  if (static_cast<int>(params.size()) != m) Internal(caller, "station count mismatch");
+  // Station fractions (of the rail's own arc length from its start) and
+  // the rail parameter at each.
+  std::vector<double> fractions;
+  std::vector<double> params;
+  if (!has_schedule) {
+    // Exactly the pre-existing construction, byte-for-byte - m = 2 on a
+    // straight rail (the exact-extrusion shortcut), max(stations, 3)
+    // otherwise; equal-arc-length stations via the wrapper's
+    // DivideByCount(), with a closed rail's own last (repeated) division
+    // point dropped. Every existing (non-schedule) call keeps its own
+    // already-established numerical guarantees untouched, on a closed
+    // rail in particular: DivideByCount()'s own m-point spacing (not the
+    // schedule branch's arc-length-fraction reconstruction below, which
+    // assumes a non-wrapping, non-repeating station list) is what
+    // RmfFrames()'s own wrap holonomy correction requires.
+    const int m_ = straight ? 2 : std::max(stations, 3);
+    params = rail_in.DivideByCount(wrap ? m_ : m_ - 1);
+    if (wrap) params.pop_back();
+    if (static_cast<int>(params.size()) != m_) Internal(caller, "station count mismatch");
+    fractions.resize(static_cast<size_t>(m_));
+    for (int k = 0; k < m_; ++k) fractions[static_cast<size_t>(k)] = static_cast<double>(k) / static_cast<double>(m_ - 1);
+  } else {
+    // A schedule was given (wrap already refused above, so there is no
+    // holonomy concern here). A schedule of exactly the two endpoints
+    // {(0, .), (1, .)} on a straight rail collapses onto the SAME m = 2
+    // exact-extrusion shortcut the plain scalar case already takes; any
+    // other schedule (more breakpoints, or a curved rail) merges every
+    // breakpoint's own fraction into the arc-length-equal grid - the
+    // "insert exact stations at the given points" construction
+    // PipeVariable() already uses for its own radius schedule.
+    auto is_trivial_two_point = [](const std::vector<std::pair<double, double>>* s) {
+      return !s || (s->size() == 2 && (*s)[0].first == 0.0 && (*s)[1].first == 1.0);
+    };
+    if (straight && is_trivial_two_point(twist_schedule) && is_trivial_two_point(scale_schedule)) {
+      fractions = {0.0, 1.0};
+      params = {rail.Domain().Min(), rail.Domain().Max()};
+    } else {
+      const double total_length = rail_in.Length();
+      if (!(total_length > 0.0)) Fail(caller, "the rail has zero length");
+      const int m_even = std::max(stations, 3);
+      std::vector<double> raw;
+      raw.reserve(static_cast<size_t>(m_even) + (twist_schedule ? twist_schedule->size() : 0) +
+                  (scale_schedule ? scale_schedule->size() : 0));
+      for (int k = 0; k < m_even; ++k) raw.push_back(static_cast<double>(k) / static_cast<double>(m_even - 1));
+      if (twist_schedule) {
+        for (const auto& p : *twist_schedule) raw.push_back(p.first);
+      }
+      if (scale_schedule) {
+        for (const auto& p : *scale_schedule) raw.push_back(p.first);
+      }
+      std::sort(raw.begin(), raw.end());
+      for (double f : raw) {
+        if (fractions.empty() || f - fractions.back() > 1e-9) fractions.push_back(f);
+      }
+      if (fractions.size() < 2) Internal(caller, "station count mismatch");
+      params.resize(fractions.size());
+      for (size_t k = 0; k < fractions.size(); ++k) {
+        params[k] = rail_in.ParameterAtArcLength(fractions[k] * total_length);
+      }
+    }
+  }
+  const int m = static_cast<int>(fractions.size());
   std::vector<Frame> frames = RmfFrames(rail, params, wrap, caller);
   if (roadlike_up) {
     // Road-like alignment: replace RMF's own transported reference
@@ -2958,22 +3064,15 @@ Brep Brep::Sweep1(const NurbsCurve& section_in, const NurbsCurve& rail_in, int s
       f.s = ON_CrossProduct(f.t, f.r);
     }
   }
-  if (twist_total != 0.0) {
-    // Extra rotation about each station's own tangent, linear in arc-
-    // length station fraction k / (m - 1): 0 at the start, exactly
-    // twist_total at the end. Same (r, s)-plane rotation the closed-
-    // rail holonomy correction above already uses, so a straight rail's
-    // m == 2 exact-extrusion path stays exact - RuledBetween() below
-    // connects frame 0 (untouched) straight to frame m - 1 (rotated by
-    // exactly twist_total), nothing in between to approximate.
-    for (int k = 0; k < m; ++k) {
-      Frame& f = frames[static_cast<size_t>(k)];
-      const double a = twist_total * static_cast<double>(k) / static_cast<double>(m - 1);
-      const ON_3dVector r0 = f.r, s0 = f.s;
-      f.r = r0 * std::cos(a) + s0 * std::sin(a);
-      f.s = ON_CrossProduct(f.t, f.r);
-    }
-  }
+
+  // Absolute twist/scale at a given arc-length fraction: the schedule's
+  // own piecewise-linear value when given, otherwise the pre-existing
+  // linear-from-the-start formula (0 / 1.0 at f = 0, exactly
+  // twist_total / scale_end at f = 1).
+  auto twist_at = [&](double f) { return twist_schedule ? ScheduleAt(*twist_schedule, f) : twist_total * f; };
+  auto scale_at = [&](double f) {
+    return scale_schedule ? ScheduleAt(*scale_schedule, f) : 1.0 + (scale_end - 1.0) * f;
+  };
 
   const bool closed_section = section.IsClosed();
   const bool want_caps = cap && closed_section && !wrap;
@@ -2987,24 +3086,42 @@ Brep Brep::Sweep1(const NurbsCurve& section_in, const NurbsCurve& rail_in, int s
     if (SignedAreaAbout(section, about_t) < 0.0) ReverseKeepDomain(section);
   }
 
+  // Every station's own transform is built the SAME way, including k = 0
+  // (FrameToFrame(frames[0], frames[0]) is the identity, and the default
+  // twist_at(0) == 0 / scale_at(0) == 1.0 formulas are exact zeros there
+  // too) - unlike the old "skip k == 0" special case, this stays correct
+  // even for a schedule anchored away from a literal zero at the start
+  // (held-flat rather than forced to 0 / 1.0), rather than silently
+  // leaving station 0 unrotated/unscaled while every later station reads
+  // an absolute schedule value. The twist rotation is applied as its own
+  // explicit rotation about the station's OWN tangent at its OWN origin
+  // (mathematically identical to the old approach of baking the same
+  // rotation into the RMF frame's own (r, s) before computing
+  // FrameToFrame - both give the same rigid rotation mapping frame 0's
+  // basis onto the twisted frame k's basis, since twisting a frame's
+  // (r, s) about its own t and then reading the rotation from an
+  // untwisted frame 0 is the same rotation as reading frame-0-to-
+  // untwisted-frame-k first and rotating the RESULT about frame k's own
+  // t afterward - the two are the same unique rigid rotation agreeing on
+  // all three orthonormal axes), just decoupled from the frames array
+  // itself so a nonzero twist_at(0) has somewhere to go.
   std::vector<ON_NurbsCurve> copies;
   copies.reserve(static_cast<size_t>(m));
   for (int k = 0; k < m; ++k) {
     ON_NurbsCurve ck = section;
-    if (k > 0) {
-      ON_Xform xf = FrameToFrame(frames[0], frames[static_cast<size_t>(k)]);
-      if (scale_end != 1.0) {
-        // Uniform scale about the station's OWN rail point, applied
-        // AFTER the rigid transport so it scales the already-placed
-        // local geometry rather than the pre-transport section - linear
-        // in station fraction, 1.0 at k = 0 (skipped above; a scale of
-        // 1.0 there is the identity anyway) to exactly `scale_end` at
-        // k = m - 1.
-        const double s = 1.0 + (scale_end - 1.0) * static_cast<double>(k) / static_cast<double>(m - 1);
-        xf = ON_Xform::ScaleTransformation(frames[static_cast<size_t>(k)].origin, s) * xf;
-      }
-      ck.Transform(xf);
+    const Frame& fk = frames[static_cast<size_t>(k)];
+    ON_Xform xf = FrameToFrame(frames[0], fk);
+    const double a = twist_at(fractions[static_cast<size_t>(k)]);
+    if (a != 0.0) {
+      ON_Xform twist_xf;
+      twist_xf.Rotation(a, fk.t, fk.origin);
+      xf = twist_xf * xf;
     }
+    const double s = scale_at(fractions[static_cast<size_t>(k)]);
+    if (s != 1.0) {
+      xf = ON_Xform::ScaleTransformation(fk.origin, s) * xf;
+    }
+    if (a != 0.0 || s != 1.0 || k > 0) ck.Transform(xf);
     copies.push_back(std::move(ck));
   }
   MakeCompatible(copies, caller);  // no-op for rigid+scaled copies; keeps one code path

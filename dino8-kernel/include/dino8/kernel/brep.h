@@ -841,9 +841,41 @@ class Brep {
   // the default RMF frame. Throws std::invalid_argument if `*roadlike_up`
   // is the zero vector, or if it is parallel (within 1e-6) to the rail
   // tangent at any station, where the projection is undefined.
+  //
+  // `twist_schedule`/`scale_schedule`, when non-null, replace `twist_total`/
+  // `scale_end`'s own single-slope-to-the-end interpolation with a genuine
+  // PIECEWISE-LINEAR one, each a list of (t, value) pairs where `t` is the
+  // fraction, in [0, 1], of the rail's own arc length from its start - the
+  // exact same convention `PipeVariable()`'s `radius_points` already uses,
+  // this method's own general-profile counterpart to that circular-only
+  // schedule (at least 2 points, strictly increasing `t`, held flat at the
+  // nearest endpoint's value outside the given range - the same contract
+  // `PipeVariable()`'s own doc comment states, reused here verbatim).
+  // Passing one is mutually exclusive with its own plain scalar
+  // (`twist_total` must stay 0, `scale_end` must stay 1) - not a silent
+  // override - and, like both scalars, neither is supported on a closed
+  // rail (throws, same reasoning as `twist_total`/`scale_end` above: the
+  // tube would not meet itself at the seam). Every schedule breakpoint's
+  // own fraction is inserted as a real station (in addition to `stations`
+  // stations spaced evenly in arc length), the same "insert exact stations
+  // at the given points, then skin through them" construction
+  // `PipeVariable()` already uses for its own radius schedule, so the
+  // section matches every given (t, value) pair EXACTLY there, not only
+  // approximately near it (two fractions closer than 1e-9 collapse to one
+  // station, as `PipeVariable()` does). A schedule of exactly the two
+  // endpoints {(0, .), (1, .)} on a straight rail keeps the exact
+  // 2-station ruled-wall path (identical to the plain scalar case); any
+  // other schedule uses the same station-count skin interpolant this
+  // method already uses for a curved rail, so it is only approximately
+  // piecewise-linear BETWEEN breakpoints, tighter as `stations` grows -
+  // the schedule's own exactness guarantee is at its breakpoints, not
+  // continuously in between, the same caveat `PipeVariable()`'s own doc
+  // comment already discloses for its radius.
   static Brep Sweep1(const NurbsCurve& section, const NurbsCurve& rail, int stations = 32,
                      bool cap = true, double twist_total = 0.0, double scale_end = 1.0,
-                     const Vector3d* roadlike_up = nullptr);
+                     const Vector3d* roadlike_up = nullptr,
+                     const std::vector<std::pair<double, double>>* twist_schedule = nullptr,
+                     const std::vector<std::pair<double, double>>* scale_schedule = nullptr);
 
   // Sweep2: `section` carried between `rail1` and `rail2` (Parasolid/
   // Rhino's two-rail sweep with scaling). At each of `stations` equal-
