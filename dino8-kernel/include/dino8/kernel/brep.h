@@ -3909,6 +3909,53 @@ class Brep {
   };
   AddHoleLoopResult AddHoleLoop(int face_index, const Brep& wire_body, double tolerance = tolerance::kDistance);
 
+  // AddHoleLoops: the "punch several new holes in one call" batch
+  // counterpart to AddHoleLoop() above. This doc comment's own prior
+  // text, and the "Loop structure" bullet in PARITY_MAP.md that quotes
+  // it, named "each hole still needs its own AddHoleLoop call (no single
+  // call bridging more than one new hole at once)" as this item's own
+  // next narrower follow-up; this closes it.
+  //
+  // Not a new validation path: each `wire_bodies[k]` is punched via an
+  // ordinary AddHoleLoop() call, in order, against a private trial copy
+  // of this Brep - so the SAME cross-hole rules AddHoleLoop() already
+  // enforces one hole at a time (a new hole must not cross, nest inside,
+  // or swallow ANY hole the face already has) apply between entries of
+  // this same batch too, simply because each entry's own AddHoleLoop()
+  // call sees every hole punched by an earlier entry of the same batch as
+  // an "existing" hole already on the face - the identical mechanism
+  // FilletConvexEdgesConic()'s own doc comment (fillet.h) uses to reason
+  // about several independent edges in one call, just via a real trial
+  // copy here instead of a shared read-only snapshot, since AddHoleLoop()
+  // mutates in place rather than returning a fresh Brep.
+  //
+  // All-or-nothing, unlike RemoveAllHoleLoops()'s own best-effort "skip
+  // what can't be removed" contract below: RemoveAllHoleLoops() can
+  // afford to skip a refusal because leaving an existing hole in place is
+  // always safe, but silently skipping one of the caller's own supplied
+  // wire bodies here would leave the caller unsure which holes actually
+  // landed. So if ANY entry fails - a genuine geometric refusal
+  // (AddHoleLoopResult::result != Result::Ok) for that entry - this Brep
+  // is left COMPLETELY untouched (Result::Failed, an empty
+  // loop_indices) and nothing from the batch is applied, the same
+  // "left completely untouched" contract every other topology-surgery
+  // method in this class already gives for its own refusals.
+  //
+  // Throws std::invalid_argument if `wire_bodies` is empty. Any exception
+  // AddHoleLoop() itself would throw for a given entry (an out-of-range
+  // or already-deleted `face_index`, a `wire_body` that doesn't satisfy
+  // IsWireBody()) propagates unchanged - a thrown exception already means
+  // "this call is a caller bug", not a mere geometric refusal - and the
+  // trial copy it was thrown against is simply discarded as the stack
+  // unwinds, leaving this Brep untouched exactly as if AddHoleLoops() had
+  // never been called.
+  struct AddHoleLoopsResult {
+    Result result = Result::Failed;
+    std::vector<int> loop_indices;  // one per wire body, in order; empty on Result::Failed
+  };
+  AddHoleLoopsResult AddHoleLoops(int face_index, const std::vector<Brep>& wire_bodies,
+                                  double tolerance = tolerance::kDistance);
+
   // Removes a hole ("island") from a face IN PLACE, at the topology
   // level - the kernel-level "UntrimHoles" this class never had:
   // PARITY_MAP.md's own "Untrim face / remove outer trim / remove hole

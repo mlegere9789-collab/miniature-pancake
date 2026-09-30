@@ -8292,6 +8292,34 @@ Brep::AddHoleLoopResult Brep::AddHoleLoop(int face_index, const Brep& wire_body,
   return result;
 }
 
+Brep::AddHoleLoopsResult Brep::AddHoleLoops(int face_index, const std::vector<Brep>& wire_bodies, double tolerance) {
+  if (wire_bodies.empty()) {
+    throw std::invalid_argument("dino8::kernel::Brep::AddHoleLoops: wire_bodies must not be empty");
+  }
+  // A private trial copy: each entry is punched via an ordinary
+  // AddHoleLoop() call against THIS copy, so a later entry's own
+  // AddHoleLoop() call sees every hole an earlier entry in the same
+  // batch already punched as an "existing" hole on the face - the same
+  // cross-hole crossing/nesting/containment checks AddHoleLoop() already
+  // makes one hole at a time, simply chained. If any entry fails, the
+  // trial copy is discarded (falling off the end of this function) and
+  // `*this` is never touched, giving the same all-or-nothing contract
+  // this method's own doc comment promises.
+  Brep trial = *this;
+  std::vector<int> loop_indices;
+  loop_indices.reserve(wire_bodies.size());
+  for (const Brep& wire_body : wire_bodies) {
+    const AddHoleLoopResult r = trial.AddHoleLoop(face_index, wire_body, tolerance);
+    if (r.result != Result::Ok) return AddHoleLoopsResult{};
+    loop_indices.push_back(r.loop_index);
+  }
+  *this = std::move(trial);
+  AddHoleLoopsResult result;
+  result.result = Result::Ok;
+  result.loop_indices = std::move(loop_indices);
+  return result;
+}
+
 Result Brep::RemoveHoleLoopNoFinalize(int loop_index) {
   ON_Brep& b = brep_;
   if (loop_index < 0 || loop_index >= b.m_L.Count()) {

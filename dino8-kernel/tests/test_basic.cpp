@@ -11443,6 +11443,161 @@ void TestBrepAddHoleLoop() {
   Check(threw_face_range, "an out-of-range face_index throws std::out_of_range");
 }
 
+// AddHoleLoops(): the "punch several new holes in one call" batch
+// counterpart to AddHoleLoop() above - PARITY_MAP.md's own "Loop
+// structure" bullet names "each hole still needs its own AddHoleLoop
+// call (no single call bridging more than one new hole at once)" as
+// this item's own next narrower follow-up; this test proves it's closed.
+// Reuses the exact same outer-only 5x5-sheet fixture, and the exact same
+// 2x2-square / tiny-triangle wire bodies, TestBrepAddHoleLoop() above
+// already builds and verifies one call at a time - here punched in ONE
+// AddHoleLoops() call instead, so every assertion below can compare
+// directly against that already-proven-correct two-call result.
+void TestBrepAddHoleLoops() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FaceContainsUV;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point2d;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  const double min_x = -0.5, max_x = 4.5, min_y = -0.5, max_y = 4.5;
+  const std::vector<Point3d> grid = {
+      Point3d(min_x, min_y, 0), Point3d(min_x, max_y, 0),
+      Point3d(max_x, min_y, 0), Point3d(max_x, max_y, 0),
+  };
+  const NurbsSurface surface = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+  const std::vector<Point3d> outer_pts = {Point3d(0, 0, 0), Point3d(4, 0, 0), Point3d(4, 4, 0), Point3d(0, 4, 0)};
+  auto to_uv = [&](double x, double y) {
+    return Point2d((x - min_x) / (max_x - min_x), (y - min_y) / (max_y - min_y));
+  };
+  // Builds a fresh outer-only sheet, identical in shape to
+  // TestBrepAddHoleLoop()'s own fixture, returning it plus its one face
+  // index - self-contained the same way that test's own `fresh_sheet`
+  // lambda is, since it isn't shared across functions.
+  auto fresh_sheet = [&]() {
+    Brep s;
+    ON_Brep& sb = s.raw();
+    const int si = sb.AddSurface(new ON_NurbsSurface(surface.raw()));
+    const int fi = sb.NewFace(si).m_face_index;
+    std::vector<int> vids(4);
+    for (int k = 0; k < 4; ++k) vids[static_cast<size_t>(k)] = sb.NewVertex(outer_pts[static_cast<size_t>(k)], 0.0).m_vertex_index;
+    const int li = sb.NewLoop(ON_BrepLoop::outer, sb.m_F[fi]).m_loop_index;
+    for (int k = 0; k < 4; ++k) {
+      const int k1 = (k + 1) % 4;
+      const int va = vids[static_cast<size_t>(k)], vb = vids[static_cast<size_t>(k1)];
+      const int c3i = sb.AddEdgeCurve(new ON_LineCurve(sb.m_V[va].point, sb.m_V[vb].point));
+      const int ei = sb.NewEdge(sb.m_V[va], sb.m_V[vb], c3i).m_edge_index;
+      sb.m_E[ei].m_tolerance = 0.0;
+      const Point2d uv_a = to_uv(outer_pts[static_cast<size_t>(k)].x, outer_pts[static_cast<size_t>(k)].y);
+      const Point2d uv_b = to_uv(outer_pts[static_cast<size_t>(k1)].x, outer_pts[static_cast<size_t>(k1)].y);
+      const int c2i = sb.AddTrimCurve(new ON_LineCurve(uv_a, uv_b));
+      ON_BrepTrim& trim = sb.NewTrim(sb.m_E[ei], /*bRev3d=*/false, sb.m_L[li], c2i);
+      trim.m_tolerance[0] = trim.m_tolerance[1] = 0.0;
+    }
+    sb.SetTrimIsoFlags();
+    sb.SetTolerancesBoxesAndFlags();
+    return std::make_pair(s, fi);
+  };
+
+  // The same two independent holes TestBrepAddHoleLoop() above proves one
+  // at a time: a 2x2 inner square, and a tiny triangle near a corner,
+  // nowhere near each other.
+  const Point3d I0(1, 1, 0), I1(1, 3, 0), I2(3, 3, 0), I3(3, 1, 0);
+  const Brep hole_wire =
+      Brep::WireBody({NurbsCurve::FromControlPoints({I0, I1}, 1), NurbsCurve::FromControlPoints({I1, I2}, 1),
+                      NurbsCurve::FromControlPoints({I2, I3}, 1), NurbsCurve::FromControlPoints({I3, I0}, 1)});
+  const Point3d J0(0.1, 0.1, 0), J1(0.1, 0.2, 0), J2(0.2, 0.2, 0);
+  const Brep tiny_wire = Brep::WireBody({NurbsCurve::FromControlPoints({J0, J1}, 1),
+                                         NurbsCurve::FromControlPoints({J1, J2}, 1),
+                                         NurbsCurve::FromControlPoints({J2, J0}, 1)});
+
+  // Success: both holes land in ONE AddHoleLoops() call, matching the
+  // exact V/E growth and loop count TestBrepAddHoleLoop()'s own two
+  // sequential AddHoleLoop() calls already established for this identical
+  // fixture (V/E grow by 4 then 3; LoopCount() reaches 3).
+  {
+    auto [sheet, face_index] = fresh_sheet();
+    ON_Brep& b = sheet.raw();
+    const int v_before = b.m_V.Count(), e_before = b.m_E.Count();
+    const auto added = sheet.AddHoleLoops(face_index, {hole_wire, tiny_wire});
+    Check(added.result == Result::Ok, "AddHoleLoops() succeeds on two independent, non-overlapping holes");
+    Check(added.loop_indices.size() == 2, "loop_indices carries exactly one entry per wire body, in order");
+    Check(added.loop_indices[0] >= 0 && added.loop_indices[1] >= 0 && added.loop_indices[0] != added.loop_indices[1],
+          "both returned loop indices are real and distinct");
+    Check(b.m_V.Count() == v_before + 4 + 3, "V grew by exactly 4+3 - both holes' own new corners, nothing shared");
+    Check(b.m_E.Count() == e_before + 4 + 3, "E grew by exactly 4+3 - both holes' own new edges, nothing shared");
+    Check(sheet.FaceCount() == 1, "F is unchanged - AddHoleLoops() never adds a face");
+    Check(b.m_F[face_index].LoopCount() == 3, "the face now has 3 loops - outer + both holes, same as two calls");
+    for (const int li : added.loop_indices) {
+      const ON_BrepLoop* loop = &b.m_L[li];
+      Check(loop->m_type == ON_BrepLoop::inner, "each returned loop_index is a genuine ON_BrepLoop::inner");
+    }
+    Check(!FaceContainsUV(b.m_F[face_index], 0.5, 0.5), "the first hole's own centre is genuinely outside the face");
+    const Point2d inside_second_hole = to_uv(0.13, 0.15);
+    Check(!FaceContainsUV(b.m_F[face_index], inside_second_hole.x, inside_second_hole.y),
+          "the second hole's own centre is genuinely outside the face");
+    Check(FaceContainsUV(b.m_F[face_index], 0.2, 0.2), "the surrounding material is still inside the face");
+    Check(b.IsValid(), "the sheet is still a topologically valid ON_Brep after AddHoleLoops()");
+    const Brep::CheckReport after = sheet.Check();
+    Check(after.Count(Brep::CheckIssue::Kind::NakedEdge) == 4 + 4 + 3,
+          "Check() reports the 4 outer plus both holes' own naked edges, and nothing else new");
+    Check(after.issues.size() == 4 + 4 + 3, "...exactly that many issues total");
+  }
+
+  // All-or-nothing: a batch where the SECOND entry crosses the FIRST
+  // entry's own boundary (both new to this call, neither pre-existing on
+  // the face) must refuse the whole call, leaving the sheet completely
+  // untouched - not silently keep the first hole and drop the second.
+  {
+    auto [sheet, face_index] = fresh_sheet();
+    ON_Brep& b = sheet.raw();
+    const int v_before = b.m_V.Count(), e_before = b.m_E.Count();
+    const int f_before = sheet.FaceCount();
+    const Point3d C0(2, 2, 0), C1(2, 3.5, 0), C2(3.5, 3.5, 0), C3(3.5, 2, 0);
+    const Brep crossing_wire =
+        Brep::WireBody({NurbsCurve::FromControlPoints({C0, C1}, 1), NurbsCurve::FromControlPoints({C1, C2}, 1),
+                        NurbsCurve::FromControlPoints({C2, C3}, 1), NurbsCurve::FromControlPoints({C3, C0}, 1)});
+    const auto result = sheet.AddHoleLoops(face_index, {hole_wire, crossing_wire});
+    Check(result.result == Result::Failed, "AddHoleLoops() refuses the whole batch when a later entry conflicts");
+    Check(result.loop_indices.empty(), "...and returns no loop indices at all");
+    Check(b.m_V.Count() == v_before && b.m_E.Count() == e_before && sheet.FaceCount() == f_before,
+          "...the sheet is left completely untouched - not even the first, individually-valid hole was applied");
+    Check(b.m_F[face_index].LoopCount() == 1, "the face still has only its original outer loop");
+  }
+
+  // Refusal: an empty wire_bodies list throws std::invalid_argument
+  // rather than silently doing nothing.
+  {
+    auto [sheet, face_index] = fresh_sheet();
+    bool threw_empty = false;
+    try {
+      (void)sheet.AddHoleLoops(face_index, {});
+    } catch (const std::invalid_argument&) {
+      threw_empty = true;
+    }
+    Check(threw_empty, "AddHoleLoops() with an empty wire_bodies list throws std::invalid_argument");
+  }
+
+  // A single-entry batch reproduces AddHoleLoop()'s own exact result -
+  // proof AddHoleLoops() is a genuine thin wrapper, not a parallel
+  // reimplementation with its own subtly different behavior.
+  {
+    auto [single_call_sheet, fi1] = fresh_sheet();
+    const auto single_result = single_call_sheet.AddHoleLoop(fi1, hole_wire);
+    auto [batch_sheet, fi2] = fresh_sheet();
+    const auto batch_result = batch_sheet.AddHoleLoops(fi2, {hole_wire});
+    Check(single_result.result == Result::Ok && batch_result.result == Result::Ok,
+          "setup: both the single call and the one-entry batch succeed");
+    Check(batch_result.loop_indices.size() == 1 && batch_result.loop_indices[0] == single_result.loop_index,
+          "a one-entry AddHoleLoops() call lands on the identical loop_index AddHoleLoop() itself would");
+    Check(single_call_sheet.raw().m_V.Count() == batch_sheet.raw().m_V.Count() &&
+              single_call_sheet.raw().m_E.Count() == batch_sheet.raw().m_E.Count(),
+          "...and grows V/E by the identical amount");
+  }
+}
+
 // Flip one face: Check() names the flipped face on each of its 4 edges
 // (index = the flipped face, other_index = each neighbour), the welded
 // mesh is no longer a closed manifold (an orientation conflict on every
@@ -47991,6 +48146,7 @@ int main() {
   TestBrepExtrudeWireBody();
   TestBrepOffsetWireBody();
   TestBrepAddHoleLoop();
+  TestBrepAddHoleLoops();
   TestBrepCheckAndUnifyNormalsOnFlippedFace();
   TestBrepCheckReportsDroppedFaceAndCapPlanarHolesRestoresIt();
   TestBrepJoinNakedEdgesRecordsTolerantEdges();
