@@ -6216,6 +6216,244 @@ Result Brep::RemoveNakedMicroEdge(int edge_index, double tolerance) {
   return Result::Ok;
 }
 
+Result Brep::RemoveSharedMicroEdge(int edge_index, double tolerance) {
+  if (edge_index < 0 || edge_index >= brep_.m_E.Count()) {
+    throw std::out_of_range("dino8::kernel::Brep::RemoveSharedMicroEdge: edge_index " +
+                             std::to_string(edge_index) + " is out of range (this Brep has " +
+                             std::to_string(brep_.m_E.Count()) + " edge slot(s))");
+  }
+  const ON_BrepEdge& micro = brep_.m_E[edge_index];
+  if (micro.m_edge_index < 0) {
+    throw std::invalid_argument("dino8::kernel::Brep::RemoveSharedMicroEdge: edge_index " +
+                                 std::to_string(edge_index) + " refers to a deleted edge");
+  }
+  if (micro.TrimCount() != 2) return Result::Failed;  // not a shared (interior) edge - out of scope
+
+  // Must actually BE a micro edge - identical length measure
+  // RemoveNakedMicroEdge() uses.
+  {
+    ON_NurbsCurve nc;
+    if (micro.GetNurbForm(nc) <= 0) return Result::Failed;
+    NurbsCurve len_check;
+    len_check.raw() = nc;
+    if (len_check.Length(20) >= tolerance) return Result::Failed;
+  }
+
+  const int ti0 = micro.m_ti[0];
+  const int ti1 = micro.m_ti[1];
+  if (ti0 < 0 || ti0 >= brep_.m_T.Count() || ti1 < 0 || ti1 >= brep_.m_T.Count()) return Result::Failed;
+  const ON_BrepTrim& trim0 = brep_.m_T[ti0];
+  const ON_BrepTrim& trim1 = brep_.m_T[ti1];
+  const int face0 = trim0.FaceIndexOf();
+  const int face1 = trim1.FaceIndexOf();
+  if (face0 < 0 || face1 < 0 || face0 == face1) return Result::Failed;  // both trims on one face - out of scope
+
+  const int v_start = micro.m_vi[0];
+  const int v_end = micro.m_vi[1];
+  if (v_start < 0 || v_end < 0 || v_start == v_end) return Result::Failed;
+  if (v_start >= brep_.m_V.Count() || v_end >= brep_.m_V.Count()) return Result::Failed;
+
+  // Loop-size guard: removing this edge from either face's own loop must
+  // leave at least 3 trims behind, never a degenerate 2-edge bigon.
+  if (trim0.m_li < 0 || trim0.m_li >= brep_.m_L.Count()) return Result::Failed;
+  if (trim1.m_li < 0 || trim1.m_li >= brep_.m_L.Count()) return Result::Failed;
+  if (brep_.m_L[trim0.m_li].m_ti.Count() < 4 || brep_.m_L[trim1.m_li].m_ti.Count() < 4) return Result::Failed;
+
+  const int ti0_prev = brep_.PrevTrim(ti0);
+  const int ti0_next = brep_.NextTrim(ti0);
+  const int ti1_prev = brep_.PrevTrim(ti1);
+  const int ti1_next = brep_.NextTrim(ti1);
+  if (ti0_prev < 0 || ti0_next < 0 || ti0_prev == ti0 || ti0_next == ti0 || ti0_prev == ti0_next) {
+    return Result::Failed;
+  }
+  if (ti1_prev < 0 || ti1_next < 0 || ti1_prev == ti1 || ti1_next == ti1 || ti1_prev == ti1_next) {
+    return Result::Failed;
+  }
+  const int e0p = brep_.m_T[ti0_prev].m_ei;
+  const int e0n = brep_.m_T[ti0_next].m_ei;
+  const int e1p = brep_.m_T[ti1_prev].m_ei;
+  const int e1n = brep_.m_T[ti1_next].m_ei;
+  if (e0p < 0 || e0n < 0 || e1p < 0 || e1n < 0) return Result::Failed;
+  if (e0p == edge_index || e0n == edge_index || e1p == edge_index || e1n == edge_index) return Result::Failed;
+  if (e0p >= brep_.m_E.Count() || e0n >= brep_.m_E.Count() || e1p >= brep_.m_E.Count() ||
+      e1n >= brep_.m_E.Count()) {
+    return Result::Failed;
+  }
+
+  // Sort each face's own two neighbors by which endpoint they actually
+  // touch (an edge's own m_vi[] is fixed regardless of loop/trim
+  // direction, the same vertex-identity test RemoveNakedMicroEdge()'s own
+  // nudge() closure already relies on) rather than assuming loop order.
+  auto touches = [&](int ei, int vi) {
+    const ON_BrepEdge& e = brep_.m_E[ei];
+    return e.m_vi[0] == vi || e.m_vi[1] == vi;
+  };
+  int e0_at_start = -1, e0_at_end = -1;
+  if (touches(e0p, v_start) && touches(e0n, v_end)) {
+    e0_at_start = e0p;
+    e0_at_end = e0n;
+  } else if (touches(e0n, v_start) && touches(e0p, v_end)) {
+    e0_at_start = e0n;
+    e0_at_end = e0p;
+  } else {
+    return Result::Failed;
+  }
+  int e1_at_start = -1, e1_at_end = -1;
+  if (touches(e1p, v_start) && touches(e1n, v_end)) {
+    e1_at_start = e1p;
+    e1_at_end = e1n;
+  } else if (touches(e1n, v_start) && touches(e1p, v_end)) {
+    e1_at_start = e1n;
+    e1_at_end = e1p;
+  } else {
+    return Result::Failed;
+  }
+  // The four neighbors must be four genuinely distinct edges - a
+  // coincidence here means the two faces already share a second edge at
+  // this same vertex, a bowtie this method declines to guess at.
+  if (e0_at_start == e1_at_start || e0_at_end == e1_at_end || e0_at_start == e1_at_end ||
+      e0_at_end == e1_at_start) {
+    return Result::Failed;
+  }
+
+  // Isolated-sliver check, extended to two allowed neighbors per vertex:
+  // each endpoint may touch nothing in this WHOLE Brep besides the micro
+  // edge itself and its own two loop-neighbors (one per face).
+  auto only_touches = [&](int vi, int allowed_a, int allowed_b) {
+    const ON_BrepVertex& v = brep_.m_V[vi];
+    for (int k = 0; k < v.m_ei.Count(); ++k) {
+      const int e = v.m_ei[k];
+      if (e != edge_index && e != allowed_a && e != allowed_b) return false;
+    }
+    return true;
+  };
+  if (!only_touches(v_start, e0_at_start, e1_at_start)) return Result::Failed;
+  if (!only_touches(v_end, e0_at_end, e1_at_end)) return Result::Failed;
+
+  const ON_3dPoint p_start = brep_.m_V[v_start].point;
+  const ON_3dPoint p_end = brep_.m_V[v_end].point;
+  const ON_3dPoint merged((p_start.x + p_end.x) / 2.0, (p_start.y + p_end.y) / 2.0,
+                           (p_start.z + p_end.z) / 2.0);
+
+  // Phase 1 (no mutation yet): nudge each of the four neighbors' own
+  // curve, at whichever end touches the shared vertex, over to `merged` -
+  // the identical SetStartPoint()/SetEndPoint() primitive
+  // RemoveNakedMicroEdge() already uses, just run four times instead of
+  // two. Bail before touching this Brep if any one can't be moved.
+  auto nudge = [&](int ei, int vi) -> std::optional<NurbsCurve> {
+    const ON_BrepEdge& e = brep_.m_E[ei];
+    ON_Curve* dup = e.DuplicateCurve();
+    if (!dup) return std::nullopt;
+    const bool at_end = (e.m_vi[1] == vi);
+    const bool moved = at_end ? dup->SetEndPoint(merged) : dup->SetStartPoint(merged);
+    if (!moved) {
+      delete dup;
+      return std::nullopt;
+    }
+    ON_NurbsCurve nc;
+    const bool has_nurbs_form = dup->GetNurbForm(nc) > 0;
+    delete dup;
+    if (!has_nurbs_form) return std::nullopt;
+    NurbsCurve out;
+    out.raw() = nc;
+    return out;
+  };
+  std::optional<NurbsCurve> new_e0_start = nudge(e0_at_start, v_start);
+  std::optional<NurbsCurve> new_e0_end = nudge(e0_at_end, v_end);
+  std::optional<NurbsCurve> new_e1_start = nudge(e1_at_start, v_start);
+  std::optional<NurbsCurve> new_e1_end = nudge(e1_at_end, v_end);
+  if (!new_e0_start || !new_e0_end || !new_e1_start || !new_e1_end) return Result::Failed;
+
+  // Phase 2: commit. Move the two vertices to their shared merged point
+  // FIRST, same reason RemoveNakedMicroEdge() does - so ReplaceEdgeCurve()'s
+  // own "new curve endpoints must land near the edge's EXISTING vertices"
+  // check passes with near-zero residual.
+  brep_.m_V[v_start].point = merged;
+  brep_.m_V[v_end].point = merged;
+  const double retrim_tolerance = std::max(tolerance, p_start.DistanceTo(p_end));
+  try {
+    ReplaceEdgeCurve(e0_at_start, *new_e0_start, retrim_tolerance);
+    ReplaceEdgeCurve(e0_at_end, *new_e0_end, retrim_tolerance);
+    ReplaceEdgeCurve(e1_at_start, *new_e1_start, retrim_tolerance);
+    ReplaceEdgeCurve(e1_at_end, *new_e1_end, retrim_tolerance);
+  } catch (const std::exception&) {
+    // Leaves this Brep with, at most, some neighbors' curves nudged by the
+    // same micro-scale amount this whole operation is trying to close (a
+    // no-op-sized change, never a structural one) and the shared edge
+    // itself untouched - a safe, honest "couldn't", not a corrupted Brep.
+    return Result::Failed;
+  }
+
+  // Both faces' own neighbor pairs now reach the shared `merged` point;
+  // weld the micro edge's own two vertices into one and delete the now
+  // fully degenerate shared edge and its two trims, then physically cull
+  // them.
+  brep_.CombineCoincidentVertices(brep_.m_V[v_start], brep_.m_V[v_end]);
+  brep_.m_E[edge_index].m_edge_index = -1;
+  brep_.m_T[ti0].m_trim_index = -1;
+  brep_.m_T[ti1].m_trim_index = -1;
+  brep_.Compact();
+
+  brep_.SetTolerancesBoxesAndFlags();
+  FixUnsetEdgeTolerances(brep_);
+  // Both affected faces' own trim loops just changed shape (one fewer
+  // edge each), so this class's own per-face side tables would otherwise
+  // silently keep describing the pre-edit boundary.
+  face_trim_loops_.clear();
+  face_exact_clip_.clear();
+  face_hole_loops_.clear();
+  face_arc_runs_.clear();
+  face_notch_rows_.clear();
+  face_records_.clear();
+  return Result::Ok;
+}
+
+int Brep::RemoveAllNakedMicroEdges(double tolerance) {
+  int removed = 0;
+  const int kMaxIterations = 4 * std::max(brep_.m_E.Count(), 1) + 16;
+  for (int iter = 0; iter < kMaxIterations; ++iter) {
+    bool found = false;
+    for (int ei = 0; ei < brep_.m_E.Count() && !found; ++ei) {
+      const ON_BrepEdge& e = brep_.m_E[ei];
+      if (e.m_edge_index < 0 || e.TrimCount() != 1) continue;
+      ON_NurbsCurve nc;
+      if (e.GetNurbForm(nc) <= 0) continue;
+      NurbsCurve len_check;
+      len_check.raw() = nc;
+      if (len_check.Length(20) >= tolerance) continue;
+      if (RemoveNakedMicroEdge(ei, tolerance) == Result::Ok) {
+        ++removed;
+        found = true;  // Compact() inside just renumbered everything - rescan.
+      }
+    }
+    if (!found) break;
+  }
+  return removed;
+}
+
+int Brep::RemoveAllSharedMicroEdges(double tolerance) {
+  int removed = 0;
+  const int kMaxIterations = 4 * std::max(brep_.m_E.Count(), 1) + 16;
+  for (int iter = 0; iter < kMaxIterations; ++iter) {
+    bool found = false;
+    for (int ei = 0; ei < brep_.m_E.Count() && !found; ++ei) {
+      const ON_BrepEdge& e = brep_.m_E[ei];
+      if (e.m_edge_index < 0 || e.TrimCount() != 2) continue;
+      ON_NurbsCurve nc;
+      if (e.GetNurbForm(nc) <= 0) continue;
+      NurbsCurve len_check;
+      len_check.raw() = nc;
+      if (len_check.Length(20) >= tolerance) continue;
+      if (RemoveSharedMicroEdge(ei, tolerance) == Result::Ok) {
+        ++removed;
+        found = true;  // Compact() inside just renumbered everything - rescan.
+      }
+    }
+    if (!found) break;
+  }
+  return removed;
+}
+
 Result Brep::MergeContiguousEdges(int edge_index_a, int edge_index_b, double angle_tolerance_radians) {
   if (edge_index_a < 0 || edge_index_a >= brep_.m_E.Count()) {
     throw std::out_of_range("dino8::kernel::Brep::MergeContiguousEdges: edge_index_a " +

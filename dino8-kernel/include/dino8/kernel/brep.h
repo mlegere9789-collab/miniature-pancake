@@ -3093,6 +3093,78 @@ class Brep {
   // this returns Result::Failed before touching this Brep at all.
   Result RemoveNakedMicroEdge(int edge_index, double tolerance = tolerance::kEdgeJoin);
 
+  // RemoveNakedMicroEdge()'s own sibling for the other half of PARITY_MAP.
+  // md's "Remove small / sliver edges" gap: a SHARED (2-trim, interior)
+  // micro edge - two faces meeting along a hairline-short common edge -
+  // rather than a naked (1-trim, boundary) one. Same isolated-sliver
+  // discipline, extended to two loops instead of one: `edge_index` must be
+  // shorter than `tolerance` (the identical GetNurbForm + 20-sample
+  // polyline length test RemoveNakedMicroEdge() uses), border exactly two
+  // DIFFERENT faces (TrimCount() == 2 and the two trims' own FaceIndexOf()
+  // differ - a 2-trim edge with both trims on the SAME face is left alone
+  // rather than guessed at), and each of its own two loop-neighbors per
+  // side (four edges total: one on either side of each endpoint, one pair
+  // per face) must be the ONLY other thing either endpoint vertex touches
+  // in this WHOLE Brep - the same "no third edge, no non-manifold
+  // junction" isolation RemoveNakedMicroEdge() already requires, just
+  // checked against two allowed neighbors per vertex instead of one.
+  // Also refused: either face's own loop has fewer than 4 trims - removing
+  // the shared edge would leave that face's loop with only 2 edges left (a
+  // degenerate bigon, not a valid boundary), the same way
+  // MergeContiguousEdges() refuses a valence check it can't satisfy rather
+  // than emit a broken topology.
+  //
+  // The actual close mirrors RemoveNakedMicroEdge()'s own two-phase
+  // "nudge every neighbor's curve to the shared midpoint via
+  // SetStartPoint()/SetEndPoint(), THEN commit through ReplaceEdgeCurve()"
+  // shape, just run for all four neighbors (ReplaceEdgeCurve() already
+  // re-trims every face sharing whichever neighbor edge is passed to it,
+  // so a neighbor that is itself a shared edge with a THIRD face is
+  // handled for free, the same way RemoveNakedMicroEdge()'s own neighbors
+  // are re-trimmed) before the two endpoint vertices are combined
+  // (ON_Brep::CombineCoincidentVertices()) and the now fully degenerate
+  // shared edge and its two trims are deleted and the Brep is Compact()ed.
+  //
+  // Returns Result::Failed - not a thrown exception, the same "can't, but
+  // that's not a bug" contract RemoveNakedMicroEdge() already has - for
+  // every case outside this scope, or if any neighbor's curve could not be
+  // nudged or re-trimmed; the Brep is left exactly as it was. Throws
+  // std::out_of_range if `edge_index` itself is out of range, or
+  // std::invalid_argument if it refers to an already-deleted edge - both
+  // genuine caller bugs, not ordinary outcomes.
+  Result RemoveSharedMicroEdge(int edge_index, double tolerance = tolerance::kEdgeJoin);
+
+  // Repeatedly applies RemoveNakedMicroEdge() across this whole Brep - the
+  // kernel-level "strip every naked sliver this Brep has" convenience,
+  // the same one-call pairing `RemoveAllHoleLoops()`/`MergeAllContiguous
+  // Edges()` already give their own single-edge siblings above. Each pass
+  // scans every edge for a naked (1-trim) one shorter than `tolerance`
+  // and removes the first one found; a successful removal changes this
+  // Brep's own edge/vertex numbering (via Compact(), inside
+  // RemoveNakedMicroEdge()), so - exactly like MergeAllContiguousEdges()'s
+  // own repeated-rescan loop - at most one removal is committed per pass
+  // before rescanning from scratch, never a stale list of candidates
+  // acted on after the indices underneath it moved. This is what lets a
+  // straight boundary built as several consecutive micro-length slivers
+  // collapse all the way down, not just one at a time. Bounded the same
+  // way MergeAllContiguousEdges()/SewTJunctions() bound their own loops (a
+  // small multiple of the edge count plus a constant), so a pathological
+  // input can never spin forever.
+  //
+  // Returns the number of edges actually removed (0 if none of this
+  // Brep's naked edges qualify). Never throws: every candidate it finds
+  // already passed RemoveNakedMicroEdge()'s own trim-count/length
+  // precondition by construction, so that call only ever returns Ok or
+  // Failed for it here, never one of that method's own thrown "genuine
+  // caller bug" cases.
+  int RemoveAllNakedMicroEdges(double tolerance = tolerance::kEdgeJoin);
+
+  // RemoveAllNakedMicroEdges()'s own sibling for RemoveSharedMicroEdge():
+  // repeatedly applies RemoveSharedMicroEdge() across this whole Brep,
+  // same one-removal-per-pass/rescan-from-scratch discipline, same
+  // iteration bound, same "0 if none qualify, never throws" contract.
+  int RemoveAllSharedMicroEdges(double tolerance = tolerance::kEdgeJoin);
+
   // Kernel wrapper for ON_Brep::CombineContiguousEdges - previously
   // reachable only from the app layer (cmd_fillet.cpp's MergeEdgeCommand,
   // which reaches straight into the raw ON_Brep) and absent from this

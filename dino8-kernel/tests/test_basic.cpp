@@ -37733,6 +37733,311 @@ void TestRemoveNakedMicroEdgeRefusesASliverNextToASharedEdge() {
         "RemoveNakedMicroEdge() on a shared (2-trim) edge returns Result::Failed");
 }
 
+// Brep::RemoveSharedMicroEdge() - RemoveNakedMicroEdge()'s own sibling for
+// PARITY_MAP.md's "Remove small / sliver edges ... Shared (2-trim) micro
+// edges are still unsupported" gap. Fixture: two flat quads A and B, each
+// really a triangle with one corner split into two points 1e-4 apart (the
+// same "clipped corner" sliver shape TestRemoveNakedMicroEdgeClosesIsolated
+// SliverOnAPlate() already uses for the naked case), sharing that split
+// corner's own micro-length edge - A is (0,0,0)-(4,0,0)-(2+eps,3,0)-
+// (2,3,0), roughly a triangle with apex near (2,3,0); B is (2,3,0)-
+// (0,-5,0)-(6,-5,0)-(2+eps,3,0), roughly a triangle hanging below sharing
+// that same apex. B's own vertex order matters: (2,3,0),(2+eps,3,0),
+// (0,-5,0),(6,-5,0) has the same (positive) signed area but is a genuine
+// bowtie - its R1-T and S-R2 sides cross just past the R1/R2 tip, which
+// TessellateGridClippedExact() (correctly) refuses as non-simple. The
+// order used below walks the quad's actual convex perimeter instead
+// (R1, T, S, R2), simple by construction, still with the SAME sign
+// shoelace found the crossing one had - a reminder that a positive
+// signed area alone does not make a polygon simple. Both R1=(2,3,0) and
+// R2=(2+eps,3,0) are genuinely valence-3 (the micro edge plus exactly one
+// further neighbor per face), squarely the scope this method closes.
+dino8::kernel::Brep TwoQuadsSharingAMicroEdge() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+
+  const double eps = 1e-4;
+  Brep::PlanarFace a, b;
+  a.plane = ON_Plane(Point3d(0, 0, 0), ON_3dVector(0, 0, 1));
+  a.loop = {Point3d(0, 0, 0), Point3d(4, 0, 0), Point3d(2 + eps, 3, 0), Point3d(2, 3, 0)};
+  b.plane = ON_Plane(Point3d(0, 0, 0), ON_3dVector(0, 0, 1));
+  b.loop = {Point3d(2, 3, 0), Point3d(0, -5, 0), Point3d(6, -5, 0), Point3d(2 + eps, 3, 0)};
+  return Brep::FromPlanarFaces({a, b});
+}
+
+void TestRemoveSharedMicroEdgeClosesIsolatedSeamBetweenTwoFaces() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Result;
+
+  Brep flat = TwoQuadsSharingAMicroEdge();
+  Check(flat.FaceCount() == 2, "the two-quad fixture starts with exactly 2 faces");
+  Check(flat.raw().IsValid(), "the two-quad fixture is a valid ON_Brep before the fix");
+  Check(flat.raw().m_V.Count() == 6, "the fixture has 6 vertices (4 per quad, 2 shared)");
+  Check(flat.raw().m_E.Count() == 7, "the fixture has 7 edges (3 unshared per face plus 1 shared micro edge)");
+  Check(flat.raw().m_F[0].Loop(0)->TrimCount() == 4 && flat.raw().m_F[1].Loop(0)->TrimCount() == 4,
+        "setup: both faces are genuine 4-trim quads");
+
+  int micro_index = -1;
+  for (int i = 0; i < flat.raw().m_E.Count(); ++i) {
+    const ON_BrepEdge& e = flat.raw().m_E[i];
+    if (e.m_edge_index < 0 || e.TrimCount() != 2) continue;
+    ON_NurbsCurve nc;
+    if (e.GetNurbForm(nc) <= 0) continue;
+    dino8::kernel::NurbsCurve k;
+    k.raw() = nc;
+    if (k.Length(20) < 0.01) { micro_index = i; break; }
+  }
+  Check(micro_index >= 0, "found the shared micro edge between the two faces");
+
+  auto total_area = [&]() {
+    double a = 0;
+    for (const dino8::kernel::Mesh& m : flat.Tessellate(24, 24)) a += m.Area();
+    return a;
+  };
+  const double area_before = total_area();
+  Check(std::abs(area_before - 30.0) < 1e-2, "the two-quad fixture's combined area is ~30 (two near-triangles) before the fix");
+
+  const Result r = flat.RemoveSharedMicroEdge(micro_index, 0.01);
+  Check(r == Result::Ok, "RemoveSharedMicroEdge() succeeded on the isolated shared seam");
+  Check(flat.raw().IsValid(), "the Brep is still a valid ON_Brep after the fix");
+  Check(flat.FaceCount() == 2, "still exactly 2 faces - only each face's own boundary loop changed");
+  Check(flat.raw().m_V.Count() == 5, "the two merged vertices collapsed into one: 5 vertices left, not 6");
+  Check(flat.raw().m_E.Count() == 6, "the shared micro edge is genuinely gone: 6 edges left, not 7");
+  Check(flat.raw().m_F[0].Loop(0)->TrimCount() == 3 && flat.raw().m_F[1].Loop(0)->TrimCount() == 3,
+        "both faces are now plain triangles (3 trims), the micro edge's own loop slot gone from each");
+
+  const double area_after = total_area();
+  Check(std::abs(area_after - area_before) < 1e-3,
+        "closing the shared seam left the combined area unchanged within a tight tolerance - real geometry "
+        "wasn't removed, just the numerical gap");
+
+  // A second call on any remaining (ordinary-length) shared or naked edge
+  // has nothing micro to close.
+  bool any_ordinary_failed = false;
+  for (int i = 0; i < flat.raw().m_E.Count(); ++i) {
+    if (flat.raw().m_E[i].m_edge_index < 0) continue;
+    if (flat.RemoveSharedMicroEdge(i, 0.01) == Result::Failed) any_ordinary_failed = true;
+  }
+  Check(any_ordinary_failed, "RemoveSharedMicroEdge() on the fixture's remaining ordinary-length edges returns Result::Failed");
+
+  bool threw = false;
+  try {
+    flat.RemoveSharedMicroEdge(flat.raw().m_E.Count() + 100, 0.01);
+  } catch (const std::out_of_range&) {
+    threw = true;
+  }
+  Check(threw, "RemoveSharedMicroEdge() throws std::out_of_range for an out-of-range edge_index");
+}
+
+// Scope restrictions: a naked (1-trim) edge is out of scope regardless of
+// length (that's RemoveNakedMicroEdge()'s own job), and a shared edge next
+// to a TRIANGULAR face is refused rather than collapsed into a degenerate
+// bigon.
+void TestRemoveSharedMicroEdgeRefusesNakedEdgeAndDegenerateLoop() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // A naked micro edge (RemoveNakedMicroEdge()'s own fixture) is refused
+  // by RemoveSharedMicroEdge() - wrong trim count, not this method's job.
+  {
+    Brep::PlanarFace f;
+    f.plane = ON_Plane(Point3d(0, 0, 0), ON_3dVector(0, 0, 1));
+    f.loop = {Point3d(0, 0, 0), Point3d(1, 0, 0), Point3d(1, 1e-4, 0), Point3d(1, 1, 0), Point3d(0, 1, 0)};
+    Brep plate = Brep::FromPlanarFaces({f});
+    int micro_index = -1;
+    for (int i = 0; i < plate.raw().m_E.Count(); ++i) {
+      const ON_BrepEdge& e = plate.raw().m_E[i];
+      if (e.m_edge_index < 0 || e.TrimCount() != 1) continue;
+      ON_NurbsCurve nc;
+      if (e.GetNurbForm(nc) <= 0) continue;
+      dino8::kernel::NurbsCurve k;
+      k.raw() = nc;
+      if (k.Length(20) < 0.01) { micro_index = i; break; }
+    }
+    Check(micro_index >= 0, "found the naked sliver edge on the single-face plate");
+    const int e_before = plate.raw().m_E.Count();
+    Check(plate.RemoveSharedMicroEdge(micro_index, 0.01) == Result::Failed,
+          "RemoveSharedMicroEdge() refuses a naked (1-trim) micro edge");
+    Check(plate.raw().m_E.Count() == e_before, "a refused call leaves the edge count completely unchanged");
+    Check(plate.raw().IsValid(), "the plate is still valid after the refused call");
+  }
+
+  // A shared micro edge next to a TRIANGULAR face (only 3 trims in that
+  // face's own loop) is refused: collapsing it would leave that face's
+  // loop with only 2 trims, a degenerate bigon.
+  {
+    const double eps = 1e-4;
+    Brep::PlanarFace a, tri;
+    a.plane = ON_Plane(Point3d(0, 0, 0), ON_3dVector(0, 0, 1));
+    a.loop = {Point3d(0, 0, 0), Point3d(4, 0, 0), Point3d(2 + eps, 3, 0), Point3d(2, 3, 0)};
+    // A bare triangle sharing the same micro edge (R1, R2) as one full side
+    // - only 3 trims total in its own loop, so removing the micro edge
+    // would leave just 2.
+    tri.plane = ON_Plane(Point3d(0, 0, 0), ON_3dVector(0, 0, 1));
+    tri.loop = {Point3d(2, 3, 0), Point3d(2 + eps, 3, 0), Point3d(3, -5, 0)};
+    Brep flat = Brep::FromPlanarFaces({a, tri});
+    Check(flat.FaceCount() == 2, "setup: the degenerate-neighbor fixture has 2 faces");
+
+    int micro_index = -1;
+    for (int i = 0; i < flat.raw().m_E.Count(); ++i) {
+      const ON_BrepEdge& e = flat.raw().m_E[i];
+      if (e.m_edge_index < 0 || e.TrimCount() != 2) continue;
+      ON_NurbsCurve nc;
+      if (e.GetNurbForm(nc) <= 0) continue;
+      dino8::kernel::NurbsCurve k;
+      k.raw() = nc;
+      if (k.Length(20) < 0.01) { micro_index = i; break; }
+    }
+    Check(micro_index >= 0, "found the shared micro edge next to the triangular face");
+    const int v_before = flat.raw().m_V.Count();
+    const int e_before = flat.raw().m_E.Count();
+    Check(flat.RemoveSharedMicroEdge(micro_index, 0.01) == Result::Failed,
+          "RemoveSharedMicroEdge() refuses a shared micro edge whose neighbor face is a triangle "
+          "(collapsing it would leave a degenerate bigon)");
+    Check(flat.raw().m_V.Count() == v_before && flat.raw().m_E.Count() == e_before,
+          "a refused call leaves vertex/edge counts completely unchanged");
+    Check(flat.raw().IsValid(), "the Brep is still valid after the refused call");
+  }
+
+  // Refuses an already-deleted edge_index.
+  {
+    Brep flat = TwoQuadsSharingAMicroEdge();
+    ON_Brep& raw = flat.raw();
+    const int any_edge = 0;
+    raw.m_E[any_edge].m_edge_index = -1;  // simulate an already-deleted edge
+    bool threw_invalid = false;
+    try {
+      flat.RemoveSharedMicroEdge(any_edge, 0.01);
+    } catch (const std::invalid_argument&) {
+      threw_invalid = true;
+    }
+    Check(threw_invalid, "RemoveSharedMicroEdge() throws std::invalid_argument on an already-deleted edge_index");
+  }
+}
+
+// Brep::RemoveAllNakedMicroEdges() - the one-call "strip every naked
+// sliver this Brep has" convenience for RemoveNakedMicroEdge(), the same
+// single/all pairing MergeContiguousEdges()/MergeAllContiguousEdges()
+// already give each other. Fixture: a single face with TWO independent
+// slivers (the same "near-duplicate point along an otherwise-straight
+// side" shape TestRemoveNakedMicroEdgeClosesIsolatedSliverOnAPlate()'s
+// own fixture already uses, doubled onto two different sides so a single
+// call has more than one candidate to find).
+void TestRemoveAllNakedMicroEdgesStripsEveryIsolatedSliverInOneCall() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+
+  const double eps = 1e-4;
+  Brep::PlanarFace f;
+  f.plane = ON_Plane(Point3d(0, 0, 0), ON_3dVector(0, 0, 1));
+  f.loop = {Point3d(0, 0, 0),      Point3d(1, 0, 0),         Point3d(1, eps, 0),
+            Point3d(1, 1, 0),      Point3d(1 - eps, 1, 0),   Point3d(0, 1, 0)};
+  Brep plate = Brep::FromPlanarFaces({f});
+  Check(plate.FaceCount() == 1, "the double-sliver plate fixture has exactly 1 face");
+  Check(plate.raw().IsValid(), "the double-sliver plate fixture is a valid ON_Brep before the fix");
+  Check(plate.raw().m_E.Count() == 6,
+        "the double-sliver plate fixture has 6 naked boundary edges (4 real sides, 2 slivers)");
+
+  auto count_micro = [&]() {
+    int n = 0;
+    for (int i = 0; i < plate.raw().m_E.Count(); ++i) {
+      const ON_BrepEdge& e = plate.raw().m_E[i];
+      if (e.m_edge_index < 0 || e.TrimCount() != 1) continue;
+      ON_NurbsCurve nc;
+      if (e.GetNurbForm(nc) <= 0) continue;
+      dino8::kernel::NurbsCurve k;
+      k.raw() = nc;
+      if (k.Length(20) < 0.01) ++n;
+    }
+    return n;
+  };
+  Check(count_micro() == 2, "found both sliver edges before the fix");
+
+  auto plate_area = [&]() {
+    double a = 0;
+    for (const dino8::kernel::Mesh& m : plate.Tessellate(24, 24)) a += m.Area();
+    return a;
+  };
+  const double area_before = plate_area();
+
+  const int removed = plate.RemoveAllNakedMicroEdges(0.01);
+  Check(removed == 2, "RemoveAllNakedMicroEdges() removed both slivers in one call");
+  Check(plate.raw().IsValid(), "the plate is still a valid ON_Brep after the fix");
+  Check(plate.raw().m_E.Count() == 4,
+        "both slivers (and the vertices they collapsed into their neighbours) are genuinely gone: 4 edges "
+        "left, not 6");
+  Check(count_micro() == 0, "no micro edge left after RemoveAllNakedMicroEdges()");
+
+  const double area_after = plate_area();
+  Check(std::abs(area_after - area_before) < 1e-3,
+        "closing both slivers left the plate's own area unchanged within a tight tolerance");
+
+  Check(plate.RemoveAllNakedMicroEdges(0.01) == 0, "a second call finds nothing left to remove");
+}
+
+// Brep::RemoveAllSharedMicroEdges() - RemoveAllNakedMicroEdges()'s own
+// sibling for RemoveSharedMicroEdge(). Fixture: TWO independent copies of
+// TwoQuadsSharingAMicroEdge()'s own two-quad pair, the second one
+// translated 20 units along x (far enough apart that neither pair's
+// geometry interacts with the other's, while reusing the exact same
+// relative vertex offsets already verified simple/non-self-intersecting)
+// - four faces, two independent shared seams for one call to find.
+void TestRemoveAllSharedMicroEdgesStripsEveryIsolatedSeamInOneCall() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+
+  const double eps = 1e-4;
+  auto make_pair = [&](double dx, Brep::PlanarFace& a, Brep::PlanarFace& b) {
+    a.plane = ON_Plane(Point3d(0, 0, 0), ON_3dVector(0, 0, 1));
+    a.loop = {Point3d(dx + 0, 0, 0), Point3d(dx + 4, 0, 0), Point3d(dx + 2 + eps, 3, 0), Point3d(dx + 2, 3, 0)};
+    b.plane = ON_Plane(Point3d(0, 0, 0), ON_3dVector(0, 0, 1));
+    b.loop = {Point3d(dx + 2, 3, 0), Point3d(dx + 0, -5, 0), Point3d(dx + 6, -5, 0), Point3d(dx + 2 + eps, 3, 0)};
+  };
+  Brep::PlanarFace a1, b1, a2, b2;
+  make_pair(0.0, a1, b1);
+  make_pair(20.0, a2, b2);
+  Brep flat = Brep::FromPlanarFaces({a1, b1, a2, b2});
+  Check(flat.FaceCount() == 4, "the double-pair fixture has exactly 4 faces");
+  Check(flat.raw().IsValid(), "the double-pair fixture is a valid ON_Brep before the fix");
+
+  auto count_shared_micro = [&]() {
+    int n = 0;
+    for (int i = 0; i < flat.raw().m_E.Count(); ++i) {
+      const ON_BrepEdge& e = flat.raw().m_E[i];
+      if (e.m_edge_index < 0 || e.TrimCount() != 2) continue;
+      ON_NurbsCurve nc;
+      if (e.GetNurbForm(nc) <= 0) continue;
+      dino8::kernel::NurbsCurve k;
+      k.raw() = nc;
+      if (k.Length(20) < 0.01) ++n;
+    }
+    return n;
+  };
+  Check(count_shared_micro() == 2, "found both shared micro edges (one per independent pair) before the fix");
+
+  auto total_area = [&]() {
+    double a = 0;
+    for (const dino8::kernel::Mesh& m : flat.Tessellate(24, 24)) a += m.Area();
+    return a;
+  };
+  const double area_before = total_area();
+
+  const int removed = flat.RemoveAllSharedMicroEdges(0.01);
+  Check(removed == 2, "RemoveAllSharedMicroEdges() removed both independent seams in one call");
+  Check(flat.raw().IsValid(), "the Brep is still a valid ON_Brep after the fix");
+  Check(count_shared_micro() == 0, "no shared micro edge left after RemoveAllSharedMicroEdges()");
+  for (int fi = 0; fi < flat.FaceCount(); ++fi) {
+    Check(flat.raw().m_F[fi].Loop(0)->TrimCount() == 3, "each of the 4 faces is now a plain triangle");
+  }
+
+  const double area_after = total_area();
+  Check(std::abs(area_after - area_before) < 2e-3,
+        "closing both seams left the combined area unchanged within a tight tolerance");
+
+  Check(flat.RemoveAllSharedMicroEdges(0.01) == 0, "a second call finds nothing left to remove");
+}
+
 // Brep::MergeContiguousEdges() - the kernel wrapper for ON_Brep::
 // CombineContiguousEdges(), closing PARITY_MAP.md's "Edge merging ...
 // app-only; no kernel wrapper" gap. Fixture: a unit square whose bottom
@@ -49294,6 +49599,10 @@ int main() {
   TestUnjoinEdgeSplitsSharedEdgeIntoTwoNakedCopies();
   TestRemoveNakedMicroEdgeClosesIsolatedSliverOnAPlate();
   TestRemoveNakedMicroEdgeRefusesASliverNextToASharedEdge();
+  TestRemoveSharedMicroEdgeClosesIsolatedSeamBetweenTwoFaces();
+  TestRemoveSharedMicroEdgeRefusesNakedEdgeAndDegenerateLoop();
+  TestRemoveAllNakedMicroEdgesStripsEveryIsolatedSliverInOneCall();
+  TestRemoveAllSharedMicroEdgesStripsEveryIsolatedSeamInOneCall();
   TestMergeContiguousEdgesCombinesTwoCollinearNakedEdges();
   TestMergeContiguousEdgesRefusesAKinkedCorner();
   TestMergeContiguousEdgesThrowsOnInvalidIndicesRefusesWrongValence();
