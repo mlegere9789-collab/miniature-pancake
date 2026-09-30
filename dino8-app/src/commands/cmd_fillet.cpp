@@ -107,6 +107,28 @@ bool EdgeClosest(const ON_BrepEdge& e, Point3d p, double& t) {
   return true;
 }
 
+// Finds the ON_BrepEdge shared by two faces of the SAME brep (fi/fj are
+// `b`'s own face indices), the mirror-image lookup of PickEdge above: that
+// one starts from a picked point on an edge and returns the edge; this
+// starts from two already-picked FACES (FilletTwoSurfacesCommand's own
+// PickFace, not PickEdge) and returns whether they're actually adjacent -
+// needed because ChamferConvexEdge/ChamferConcaveEdge below take the shared
+// edge's own endpoints, not a face pair.
+bool FindSharedEdgeEndpoints(const ON_Brep& b, int fi, int fj, Point3d& p0, Point3d& p1) {
+  for (int i = 0; i < b.m_E.Count(); ++i) {
+    const ON_BrepEdge& e = b.m_E[i];
+    if (e.m_edge_index < 0 || e.TrimCount() != 2) continue;
+    const int a = b.m_T[e.m_ti[0]].FaceIndexOf();
+    const int c = b.m_T[e.m_ti[1]].FaceIndexOf();
+    if ((a == fi && c == fj) || (a == fj && c == fi)) {
+      p0 = e.PointAtStart();
+      p1 = e.PointAtEnd();
+      return true;
+    }
+  }
+  return false;
+}
+
 struct EdgePick { ObjectId id = kNoObject; int edge = -1; double dist = 0; };
 
 std::optional<EdgePick> PickEdge(CommandContext& ctx, Point3d p) {
@@ -901,6 +923,60 @@ class FilletTwoSurfacesCommand : public Command {
     const bool chamfer = mode_ == Mode::Chamfer || mode_ == Mode::VariableChamfer;
     const double r0 = radius_, r1 = variable ? end_radius_ : radius_;
     auto radius_at = [&](double t) { return r0 + (r1 - r0) * t; };
+    // Exact planar chamfer, tried FIRST: kernel::ChamferConvexEdge/
+    // ChamferConcaveEdge build a genuine flat-bevel B-rep the same way
+    // ChamferEdge's own exact path does (cmd_fillet.cpp's FilletEdgeCommand::
+    // TryExactChamfer) - the RuledBetween ruled surface below is only ever a
+    // faceted approximation between two independently-lofted contact curves,
+    // never a real trimmed B-rep. Only reachable here when both picks landed
+    // on the SAME solid (fa.id == fb.id): ChamferConvexEdge needs one shared
+    // ON_BrepEdge to identify the corner, which only exists when the two
+    // faces come from one object - two genuinely independent surfaces (the
+    // common FilletSrf/ChamferSrf case) have no such edge, so those always
+    // fall through to the approximate path below exactly as before this
+    // wiring existed. Also skipped for the tapered (r0 != r1) case: there is
+    // no tapered-chamfer kernel construction (unlike FilletConvexEdgeTapered
+    // for fillets), so VariableChamfer always uses the approximate path;
+    // and for Trim=No, since the exact path always replaces the whole solid
+    // with an already-trimmed result, unlike the untrimmed-surface-only
+    // result Trim=No asks for.
+    if (chamfer && !variable && trim_ && fa.id == fb.id) {
+      std::optional<ON_Brep> solid = BrepOfObject(*oa);
+      Point3d p0, p1;
+      if (solid && FindSharedEdgeEndpoints(*solid, fa.face, fb.face, p0, p1)) {
+        kernel::Brep kb;
+        kb.raw() = *solid;
+        ON_Brep exact;
+        bool got = false;
+        try {
+          exact = kernel::ChamferConvexEdge(kb, p0, p1, radius_, radius_).raw();
+          got = true;
+        } catch (const std::exception&) {}
+        if (!got) {
+          try {
+            exact = kernel::ChamferConcaveEdge(kb, p0, p1, radius_, radius_).raw();
+            got = true;
+          } catch (const std::exception&) {}
+        }
+        if (got) {
+          ctx.Doc().BeginChange("ChamferSrf");
+          if (SceneObject* orig = ctx.Doc().Find(fa.id)) {
+            orig->kind = ObjectKind::Brep;
+            if (!orig->brep) orig->brep = std::make_unique<kernel::Brep>();
+            orig->brep->raw() = exact;
+            orig->surface.reset();
+            orig->InvalidateDisplay();
+          }
+          ctx.Doc().Select(fa.id, true);
+          ctx.Print("ChamferSrf: faces " + std::to_string(fa.face) + " and " + std::to_string(fb.face) + " of object " + std::to_string(fa.id) +
+                     " replaced with an exact chamfer (distance " + FormatNumber(radius_) + ")");
+          return;
+        }
+      }
+      // Exact path unavailable here (not adjacent, curved faces, or a
+      // non-manifold third face) - fall through to the approximate path
+      // below exactly as before this wiring existed.
+    }
     FilletBuild fb2;
     // Same exact plane+perpendicular-cylinder closed form FilletEdge uses
     // for its Radii= option (see BuildPlaneCylinderVariableFillet's own
@@ -2918,7 +2994,7 @@ void RegisterFilletCommands(CommandEngine& e) {
   Reg(e, "FilletSrf", Make<FilletTwoSurfacesCommand>(FilletTwoSurfacesCommand::Mode::Fillet), CommandStatus::Implemented,
       "Rolling-ball fillet via offset+SSX+exact contact arcs; real planar trim when both inputs are planar, otherwise left untrimmed.");
   Reg(e, "ChamferSrf", Make<FilletTwoSurfacesCommand>(FilletTwoSurfacesCommand::Mode::Chamfer), CommandStatus::Implemented,
-      "Ruled surface between the two exact contact curves found the same way as FilletSrf.");
+      "Exact kernel::ChamferConvexEdge/ChamferConcaveEdge flat-bevel B-rep when both picks land on the same solid's two adjacent planar faces (Trim=Yes); otherwise a ruled surface between the two exact contact curves found the same way as FilletSrf.");
   Reg(e, "VariableFilletSrf", Make<FilletTwoSurfacesCommand>(FilletTwoSurfacesCommand::Mode::VariableFillet), CommandStatus::Implemented,
       "Radius interpolated linearly along the spine from Radius= to EndRadius= (spine itself uses the average radius, an approximation for strongly varying radii).");
   Reg(e, "VariableChamferSrf", Make<FilletTwoSurfacesCommand>(FilletTwoSurfacesCommand::Mode::VariableChamfer), CommandStatus::Implemented,

@@ -199,3 +199,41 @@ List
 SelAll
 Delete
 @expect_objects 0
+# --- ChamferSrf on a curved-adjacent-face pair (a cylinder's own flat top
+# cap and its cylindrical side wall, picked as two faces of the SAME
+# object, unlike FilletSrf's independently-extracted-surfaces case above):
+# kernel::ChamferConvexEdge/ChamferConcaveEdge need the WHOLE solid
+# planar-faced (Brep::PlanarFaces()'s own scope, the identical requirement
+# ChamferEdge's own Distance2 exact path already has), and a cylindrical
+# face fails that outright - so this must fall through to the approximate
+# RuledBetween path below exactly as before this wiring existed, not
+# crash, hang, or silently misbuild.
+Cylinder 1300090,0,0 5 20
+ChamferSrf
+Radius=1
+1300090,0,20
+1300095,0,10
+SelAll
+List
+@expect_objects 2
+SelAll
+Delete
+# --- ChamferSrf Trim=No on a planar box's own two adjacent faces (same
+# object, otherwise identical to the exact case fillet_script.txt already
+# covers): the exact kernel path always replaces the WHOLE solid with an
+# already-trimmed result, which is not what Trim=No asks for (an
+# untrimmed separate surface, the pre-existing behavior), so this must
+# also fall through to the approximate path rather than silently ignoring
+# Trim=No.
+Box 1300100,0,0 1300110,10,0 10
+ChamferSrf
+Radius=2
+Trim=No
+1300110,5,5
+1300105,10,5
+SelAll
+List
+@expect_objects 2
+SelAll
+Delete
+@expect_objects 0
