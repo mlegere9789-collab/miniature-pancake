@@ -46294,6 +46294,85 @@ void TestFilletConvexEdgesSingleEdgeMatchesFilletConvexEdge() {
   Check(one.raw().IsSolid(), "a single-edge FilletConvexEdges result is a closed solid");
 }
 
+// TANGENT EDGE CHAIN merging (fillet.cpp's own MergeTangentEdgeChains,
+// called from FilletConvexEdges before its usual m==1/m==3 vertex logic
+// runs): a box edge artificially split into 2 (or 3) collinear
+// sub-segments by an intermediate vertex on the same 2 faces must fillet
+// EXACTLY like the one whole edge - the intermediate vertex is not a real
+// corner, just an artifact of how the edge happened to be split, and used
+// to be rejected outright as an unsupported m == 2 vertex configuration
+// (see TestFilletConvexEdgesRejectsUnsupportedConfigurations' own
+// GENUINE m == 2 corner case just below, which is NOT a chain and must
+// keep throwing).
+void TestFilletConvexEdgesMergesTangentChainSplitEdge() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConvexEdge;
+  using dino8::kernel::FilletConvexEdges;
+  using dino8::kernel::Point3d;
+
+  const Point3d p000(0, 0, 0), p100(1, 0, 0), p010(0, 1, 0), p110(1, 1, 0);
+  const Point3d p001(0, 0, 1), p101(1, 0, 1), p011(0, 1, 1), p111(1, 1, 1);
+  const Point3d pmid(0.5, 0, 1);
+
+  // A unit box whose top (z=1) and front (y=0) faces both carry an extra,
+  // exactly collinear vertex at `pmid` splitting their shared top-front
+  // edge (p001-p101) into two - every other face is the ordinary 4-corner
+  // box face. Winding verified by hand (Newell's method, matching
+  // ChamferTestPlanarFace's own convention) to give every face its correct
+  // outward normal.
+  const std::vector<Brep::PlanarFace> split_faces = {
+      ChamferTestPlanarFace({p000, p010, p110, p100}),        // bottom, -z
+      ChamferTestPlanarFace({p001, pmid, p101, p111, p011}),  // top, +z (split)
+      ChamferTestPlanarFace({p000, p100, p101, pmid, p001}),  // front, -y (split)
+      ChamferTestPlanarFace({p011, p111, p110, p010}),        // back, +y
+      ChamferTestPlanarFace({p000, p001, p011, p010}),        // left, -x
+      ChamferTestPlanarFace({p100, p110, p111, p101}),        // right, +x
+  };
+  const Brep split = Brep::FromPlanarFaces(split_faces);
+  Check(split.raw().IsSolid(), "sanity: the split-top-front-edge box fixture is a closed solid");
+  Check(std::fabs(split.TessellateToClosedMesh(4, 4).Volume() - 1.0) < 1e-9,
+        "sanity: the split-edge box fixture's own volume is still exactly 1 (the extra vertex changes no geometry)");
+
+  const double r = 0.3;
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+  const Brep ref = FilletConvexEdge(box, p001, p101, r);
+
+  // Two collinear sub-segments in their natural forward order.
+  const Brep chained = FilletConvexEdges(split, {{p001, pmid}, {pmid, p101}}, r);
+  Check(chained.FaceCount() == ref.FaceCount() && chained.raw().m_E.Count() == ref.raw().m_E.Count() &&
+            chained.raw().m_V.Count() == ref.raw().m_V.Count(),
+        "FilletConvexEdges merges two collinear, same-face-pair sub-segments into one fillet, matching "
+        "FilletConvexEdge's own single-edge face/edge/vertex counts");
+  Check(std::fabs(chained.TessellateToClosedMeshAdaptive(1e-7).Volume() -
+                   ref.TessellateToClosedMeshAdaptive(1e-7).Volume()) < 1e-9,
+        "the merged-chain fillet's tessellated volume matches the single-edge reference");
+  Check(chained.raw().IsSolid(), "the merged-chain fillet result is a closed solid");
+
+  // The same two sub-segments, each reversed in direction AND listed in
+  // swapped order - the merge must be indifferent to both.
+  const Brep chained_rev = FilletConvexEdges(split, {{p101, pmid}, {pmid, p001}}, r);
+  Check(chained_rev.FaceCount() == ref.FaceCount() && chained_rev.raw().m_V.Count() == ref.raw().m_V.Count(),
+        "the merge also fires when both sub-segments are given in reverse direction and swapped list order");
+
+  // A genuine THREE-segment chain (two intermediate vertices) collapses to
+  // the same single fillet too, confirming the merge repeats to a fixed
+  // point rather than only ever fusing one pair.
+  const Point3d pq1(0.25, 0, 1), pq2(0.75, 0, 1);
+  const std::vector<Brep::PlanarFace> split3_faces = {
+      ChamferTestPlanarFace({p000, p010, p110, p100}),
+      ChamferTestPlanarFace({p001, pq1, pq2, p101, p111, p011}),
+      ChamferTestPlanarFace({p000, p100, p101, pq2, pq1, p001}),
+      ChamferTestPlanarFace({p011, p111, p110, p010}),
+      ChamferTestPlanarFace({p000, p001, p011, p010}),
+      ChamferTestPlanarFace({p100, p110, p111, p101}),
+  };
+  const Brep split3 = Brep::FromPlanarFaces(split3_faces);
+  Check(split3.raw().IsSolid(), "sanity: the three-segment split-edge box fixture is a closed solid");
+  const Brep chained3 = FilletConvexEdges(split3, {{p001, pq1}, {pq1, pq2}, {pq2, p101}}, r);
+  Check(chained3.FaceCount() == ref.FaceCount() && chained3.raw().m_V.Count() == ref.raw().m_V.Count(),
+        "a three-segment collinear chain also merges down to one fillet, matching the single-edge reference");
+}
+
 void TestFilletConvexEdgesRejectsUnsupportedConfigurations() {
   using dino8::kernel::Brep;
   using dino8::kernel::FilletConvexEdges;
@@ -51460,6 +51539,89 @@ void TestFilletConcaveEdgesAddsExactVolumeForTwoIndependentNotches() {
   const double expected = base_volume + 2.0 * r * r * (1.0 - ON_PI / 4.0);
   Check(std::fabs(filleted.TessellateToClosedMeshAdaptive(1e-6).Volume() - expected) < 1e-6,
         "the two independent fillets together ADD exactly 2*r^2*(1-pi/4) - the sum of each notch's own closed form");
+}
+
+// TANGENT EDGE CHAIN merging, the concave mirror of
+// TestFilletConvexEdgesMergesTangentChainSplitEdge above: the L-shaped
+// prism's own concave edge (1,1,0)-(1,1,1), split into two collinear
+// sub-segments by an intermediate vertex at its own midpoint, must fillet
+// exactly like the one whole edge - see fillet.cpp's own
+// MergeTangentEdgeChains doc comment (FilletConvexEdges' own call site has
+// the fuller rationale; FilletConcaveEdges calls the same helper).
+void TestFilletConcaveEdgesMergesTangentChainSplitEdge() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConcaveEdge;
+  using dino8::kernel::FilletConcaveEdges;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  // Verbatim ConcaveLShapedPrism()'s own footprint/wall construction (see
+  // that function just above), except walls 2 and 3 - the two walls
+  // sharing the concave edge (1,1,0)-(1,1,1) - each carry an extra vertex
+  // at that edge's own midpoint, splitting it into two collinear
+  // sub-segments on the same two faces.
+  const std::vector<Point3d> footprint = {Point3d(0, 0, 0), Point3d(2, 0, 0), Point3d(2, 1, 0),
+                                          Point3d(1, 1, 0), Point3d(1, 2, 0), Point3d(0, 2, 0)};
+  const Point3d pmid(1, 1, 0.5);
+  auto make_face = [](const std::vector<Point3d>& loop, Vector3d normal) {
+    Brep::PlanarFace f;
+    f.loop = loop;
+    f.plane = ON_Plane(loop[0], normal);
+    return f;
+  };
+  std::vector<Point3d> top_loop = footprint;
+  for (Point3d& p : top_loop) p = Point3d(p.x, p.y, 1.0);
+  std::vector<Point3d> bottom_loop = footprint;
+  std::reverse(bottom_loop.begin(), bottom_loop.end());
+  std::vector<Brep::PlanarFace> split_faces;
+  split_faces.push_back(make_face(bottom_loop, Vector3d(0, 0, -1)));
+  split_faces.push_back(make_face(top_loop, Vector3d(0, 0, 1)));
+  const size_t n = footprint.size();
+  for (size_t k = 0; k < n; ++k) {
+    const Point3d& a = footprint[k];
+    const Point3d& b = footprint[(k + 1) % n];
+    Vector3d edge_dir = b - a;
+    edge_dir.Unitize();
+    Vector3d normal = ON_CrossProduct(edge_dir, Vector3d(0, 0, 1));
+    normal.Unitize();
+    std::vector<Point3d> wall;
+    if (k == 2) {
+      // a=(2,1,0), b=(1,1,0): the concave edge is b->(b,1); splice pmid in.
+      wall = {a, b, pmid, Point3d(b.x, b.y, 1), Point3d(a.x, a.y, 1)};
+    } else if (k == 3) {
+      // a=(1,1,0), b=(1,2,0): the concave edge is (b,1)->a, the loop's own
+      // wrap-around closing edge; splice pmid in right before that wrap.
+      wall = {a, b, Point3d(b.x, b.y, 1), Point3d(a.x, a.y, 1), pmid};
+    } else {
+      wall = {a, b, Point3d(b.x, b.y, 1), Point3d(a.x, a.y, 1)};
+    }
+    split_faces.push_back(make_face(wall, normal));
+  }
+  const Brep split = Brep::FromPlanarFaces(split_faces);
+  Check(split.raw().IsSolid(), "sanity: the split-concave-edge L-shaped prism fixture is a closed solid");
+  Check(std::fabs(split.TessellateToClosedMesh(4, 4).Volume() - 3.0) < 1e-6,
+        "sanity: the split-edge prism's own footprint volume is still exactly 3 (the extra vertex changes no "
+        "geometry)");
+
+  const double r = 0.3;
+  const Point3d edge_p0(1, 1, 0), edge_p1(1, 1, 1);
+  const Brep ref = FilletConcaveEdge(ConcaveLShapedPrism(), edge_p0, edge_p1, r);
+
+  const Brep chained = FilletConcaveEdges(split, {{edge_p0, pmid}, {pmid, edge_p1}}, r);
+  Check(chained.FaceCount() == ref.FaceCount() && chained.raw().m_E.Count() == ref.raw().m_E.Count() &&
+            chained.raw().m_V.Count() == ref.raw().m_V.Count(),
+        "FilletConcaveEdges merges two collinear, same-face-pair sub-segments into one fillet, matching "
+        "FilletConcaveEdge's own single-edge face/edge/vertex counts");
+  Check(std::fabs(chained.TessellateToClosedMeshAdaptive(1e-6).Volume() -
+                   ref.TessellateToClosedMeshAdaptive(1e-6).Volume()) < 1e-6,
+        "the merged-chain concave fillet's tessellated volume matches the single-edge reference");
+  Check(chained.raw().IsSolid(), "the merged-chain concave fillet result is a closed solid");
+
+  // Reversed direction, swapped list order - the merge must be indifferent
+  // to both, exactly as the convex case is.
+  const Brep chained_rev = FilletConcaveEdges(split, {{edge_p1, pmid}, {pmid, edge_p0}}, r);
+  Check(chained_rev.FaceCount() == ref.FaceCount() && chained_rev.raw().m_V.Count() == ref.raw().m_V.Count(),
+        "the merge also fires when both sub-segments are given in reverse direction and swapped list order");
 }
 
 void TestFilletConcaveEdgesRejectsUnsupportedConfigurations() {
@@ -57770,6 +57932,7 @@ int main() {
   TestFilletConvexEdgesParallelPairDoubleNotchesEndFaces();
   TestFilletConvexEdgesSingleCornerSphereWithNotchedFarEnds();
   TestFilletConvexEdgesSingleEdgeMatchesFilletConvexEdge();
+  TestFilletConvexEdgesMergesTangentChainSplitEdge();
   TestFilletConvexEdgesRejectsUnsupportedConfigurations();
   TestFilletConvexEdgeObliqueEndFaceIsExactAndClosed();
   TestFilletConvexEdgeObliqueEndMatchesPerpendicularAtZeroSlope();
@@ -57795,6 +57958,7 @@ int main() {
   TestFilletConcaveEdgesSingleEdgeMatchesFilletConcaveEdgeOnObliqueEnd();
   TestFilletConcaveEdgesRejectsOversizedRadiusAtObliqueEnd();
   TestFilletConcaveEdgesAddsExactVolumeForTwoIndependentNotches();
+  TestFilletConcaveEdgesMergesTangentChainSplitEdge();
   TestFilletConcaveEdgesRejectsUnsupportedConfigurations();
   TestFilletConcaveEdgesTwoIndependentEdgesWithObliqueEndsMatchHandDerivedLength();
   TestRemoveBlendLeavesTheOtherConcaveFilletIntactAmongTwo();

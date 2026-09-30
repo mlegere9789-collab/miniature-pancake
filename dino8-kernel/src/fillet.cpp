@@ -2856,6 +2856,141 @@ struct MultiEdge {
   bool sphere_at_p0 = false, sphere_at_p1 = false;
 };
 
+// One "directed edge, plus the two faces it borders" record, the raw
+// material MergeTangentEdgeChains below fuses into longer runs. idx_i/idx_j
+// follow FindEdgeFaces' own convention: idx_i is the face whose loop walks
+// p0->p1, idx_j the face whose loop walks p1->p0.
+struct ChainSeg {
+  Point3d p0, p1;
+  int idx_i = -1, idx_j = -1;
+};
+
+ChainSeg ReverseSeg(const ChainSeg& s) { return ChainSeg{s.p1, s.p0, s.idx_j, s.idx_i}; }
+
+// If segA and segB (each tried in both of its two directions) concatenate
+// into one longer straight run - i.e. one ends exactly where the other
+// starts, they border the identical ORDERED face pair once oriented that
+// way, and their directions agree (collinear, not folded back on
+// themselves) - fills `combined` (the fused p0->p1, carrying the matching
+// orientation's own idx_i/idx_j unchanged) and `joint` (the shared point
+// being absorbed) and returns true. Trying all 4 orientation combinations
+// is what makes this indifferent to which of an edge's two endpoints the
+// caller happened to list first.
+bool TryConcatChainSegs(const ChainSeg& segA, const ChainSeg& segB, double tol, ChainSeg& combined, Point3d& joint) {
+  const ChainSeg orients_a[2] = {segA, ReverseSeg(segA)};
+  const ChainSeg orients_b[2] = {segB, ReverseSeg(segB)};
+  for (const ChainSeg& a : orients_a) {
+    for (const ChainSeg& b : orients_b) {
+      if (!PointsEqual(a.p1, b.p0, tol)) continue;
+      if (a.idx_i != b.idx_i || a.idx_j != b.idx_j) continue;
+      Vector3d da = a.p1 - a.p0;
+      Vector3d db = b.p1 - b.p0;
+      if (!da.Unitize() || !db.Unitize()) continue;
+      // Collinear (not merely parallel) AND same-sense, not folded back:
+      // both faces bordering a genuinely straight run already force this
+      // whenever idx_i/idx_j really do match, so this is a defensive
+      // sanity check, not new information - see MergeTangentEdgeChains'
+      // own doc comment for why idx_i/idx_j alone already implies it for
+      // any face pair with no shared edge lying on two different lines.
+      if (ON_CrossProduct(da, db).Length() > 1e-9 || da * db <= 0.0) continue;
+      joint = a.p1;
+      combined = ChainSeg{a.p0, b.p1, a.idx_i, a.idx_j};
+      return true;
+    }
+  }
+  return false;
+}
+
+// TANGENT EDGE CHAIN merging: fuses consecutive entries of `edges` that are
+// really one continuous straight run split into several entries only
+// because an intermediate vertex happens to sit on it (e.g. left over from
+// an earlier boolean/imprint operation, or simply because the caller's own
+// edge-chain picker handed in every sub-segment individually) into a
+// single edge spanning the run's own two true endpoints, BEFORE
+// FilletConvexEdges/FilletConcaveEdges' own per-vertex m==1/m==3 topology
+// classification runs.
+//
+// Left unmerged, the shared intermediate vertex between two such
+// sub-segments is an m == 2 vertex - exactly two filleted edges incident,
+// the "third edge stays sharp" case those two functions' own doc comments
+// both explicitly disclose as NOT attempted (it needs the two fillets' own
+// mutual surface intersection, a genuinely different and harder
+// construction) - even though geometrically there is no real corner there
+// to blend at all, only an artifact of how the edge happened to be split.
+// This closes exactly that gap for the straight-run case, without
+// attempting the general two-fillets-meeting-at-a-sharp-corner problem.
+//
+// Two entries are fused only when, oriented consistently (see
+// TryConcatChainSegs above):
+//   - they share an endpoint, within `tol`;
+//   - they border the SAME two faces of `solid`, in the SAME walk
+//     direction (idx_i/idx_j match exactly once oriented that way) - the
+//     one fact that actually certifies "this is one straight boundary
+//     line between the same two planes", since two PLANAR faces meet in at
+//     most one line;
+//   - their own directions agree (collinear, same sense);
+//   - the shared vertex has EXACTLY these two entries of `edges` incident
+//     to it - a third filleted edge there is a genuine branch/corner (an
+//     ordinary m == 3 trihedral vertex, or an unsupported configuration),
+//     left alone for the existing vertex logic rather than silently
+//     absorbed into a chain.
+// Repeats to a fixed point, so a run of 3+ collinear sub-segments collapses
+// into one edge in one call, in any order.
+//
+// Every input edge's own idx_i/idx_j is found via the same FindEdgeFaces
+// every single-edge fillet/chamfer function already uses (so a genuinely
+// malformed edge is rejected with that function's own familiar message,
+// via `who`, exactly as before this preprocessing pass existed), and an
+// exact-or-reversed duplicate among `edges` is still rejected up front,
+// the same check the un-merged path used to run inline.
+std::vector<ChainSeg> MergeTangentEdgeChains(const std::vector<Brep::PlanarFace>& faces,
+                                              const std::vector<std::pair<Point3d, Point3d>>& edges, double tol,
+                                              const char* who) {
+  std::vector<ChainSeg> segs;
+  segs.reserve(edges.size());
+  for (const std::pair<Point3d, Point3d>& ed : edges) {
+    for (const ChainSeg& other : segs) {
+      if ((PointsEqual(other.p0, ed.first, tol) && PointsEqual(other.p1, ed.second, tol)) ||
+          (PointsEqual(other.p0, ed.second, tol) && PointsEqual(other.p1, ed.first, tol))) {
+        throw std::invalid_argument(std::string("dino8::kernel::") + who + ": an edge is listed twice");
+      }
+    }
+    ChainSeg s;
+    s.p0 = ed.first;
+    s.p1 = ed.second;
+    FindEdgeFaces(faces, s.p0, s.p1, tol, who, s.idx_i, s.idx_j);
+    segs.push_back(s);
+  }
+  auto incident_count = [&](const Point3d& p) {
+    int n = 0;
+    for (const ChainSeg& s : segs) {
+      if (PointsEqual(s.p0, p, tol) || PointsEqual(s.p1, p, tol)) ++n;
+    }
+    return n;
+  };
+  for (;;) {
+    bool merged_any = false;
+    for (size_t a = 0; a < segs.size() && !merged_any; ++a) {
+      for (size_t b = a + 1; b < segs.size() && !merged_any; ++b) {
+        ChainSeg combined;
+        Point3d joint;
+        if (!TryConcatChainSegs(segs[a], segs[b], tol, combined, joint)) continue;
+        if (incident_count(joint) != 2) continue;
+        std::vector<ChainSeg> next;
+        next.reserve(segs.size() - 1);
+        for (size_t k = 0; k < segs.size(); ++k) {
+          if (k != a && k != b) next.push_back(segs[k]);
+        }
+        next.push_back(combined);
+        segs = std::move(next);
+        merged_any = true;
+      }
+    }
+    if (!merged_any) break;
+  }
+  return segs;
+}
+
 }  // namespace
 
 Brep FilletConvexEdges(const Brep& solid, const std::vector<std::pair<Point3d, Point3d>>& edges, double radius) {
@@ -2868,20 +3003,20 @@ Brep FilletConvexEdges(const Brep& solid, const std::vector<std::pair<Point3d, P
   const std::vector<Brep::PlanarFace> faces = solid.PlanarFaces();
   const double tol = RelativeTol(faces);
 
-  // --- per-edge geometry, verbatim FilletConvexEdge's own steps 1-2 ---
+  // --- tangent-chain merge, THEN per-edge geometry verbatim FilletConvexEdge's own steps 1-2 ---
+  // (see MergeTangentEdgeChains' own doc comment: this absorbs any
+  // intermediate vertex that only splits one genuinely straight run into
+  // several caller-supplied entries, so the m==1/m==3 vertex logic below
+  // never sees a spurious m==2 "corner" there.)
+  const std::vector<ChainSeg> chained = MergeTangentEdgeChains(faces, edges, tol, "FilletConvexEdges");
   std::vector<MultiEdge> me;
-  me.reserve(edges.size());
-  for (const std::pair<Point3d, Point3d>& ed : edges) {
+  me.reserve(chained.size());
+  for (const ChainSeg& ed : chained) {
     MultiEdge m;
-    m.p0 = ed.first;
-    m.p1 = ed.second;
-    for (const MultiEdge& other : me) {
-      if ((PointsEqual(other.p0, m.p0, tol) && PointsEqual(other.p1, m.p1, tol)) ||
-          (PointsEqual(other.p0, m.p1, tol) && PointsEqual(other.p1, m.p0, tol))) {
-        throw std::invalid_argument("dino8::kernel::FilletConvexEdges: an edge is listed twice");
-      }
-    }
-    FindEdgeFaces(faces, m.p0, m.p1, tol, "FilletConvexEdges", m.idx_i, m.idx_j);
+    m.p0 = ed.p0;
+    m.p1 = ed.p1;
+    m.idx_i = ed.idx_i;
+    m.idx_j = ed.idx_j;
     const ON_Plane& plane_i = faces[static_cast<size_t>(m.idx_i)].plane;
     const ON_Plane& plane_j = faces[static_cast<size_t>(m.idx_j)].plane;
     m.n_i = plane_i.zaxis;
@@ -3288,43 +3423,47 @@ Brep FilletConcaveEdges(const Brep& solid, const std::vector<std::pair<Point3d, 
   const std::vector<Brep::PlanarFace> faces = solid.PlanarFaces();
   const double tol = RelativeTol(faces);
 
+  // Tangent-chain merge first - see MergeTangentEdgeChains' own doc
+  // comment (FilletConvexEdges' own call site has the fuller rationale).
+  // idx_i/idx_j come back from FindEdgeFaces' plain, undirected
+  // convention (idx_i walks p0->p1); the hand-sign fix just below still
+  // runs exactly as before to pick the concave-specific xaxis reference.
+  const std::vector<ChainSeg> chained = MergeTangentEdgeChains(faces, edges, tol, "FilletConcaveEdges");
   std::vector<MultiEdge> me;
-  me.reserve(edges.size());
-  for (const std::pair<Point3d, Point3d>& ed : edges) {
+  me.reserve(chained.size());
+  for (const ChainSeg& ed : chained) {
     MultiEdge m;
-    m.p0 = ed.first;
-    m.p1 = ed.second;
-    for (const MultiEdge& other : me) {
-      if ((PointsEqual(other.p0, m.p0, tol) && PointsEqual(other.p1, m.p1, tol)) ||
-          (PointsEqual(other.p0, m.p1, tol) && PointsEqual(other.p1, m.p0, tol))) {
-        throw std::invalid_argument("dino8::kernel::FilletConcaveEdges: an edge is listed twice");
-      }
-    }
-
-    int idx_i = -1, idx_j = -1;
-    size_t k_i = 0;
-    for (size_t f = 0; f < faces.size() && (idx_i < 0 || idx_j < 0); ++f) {
-      const std::vector<Point3d>& loop = faces[f].loop;
-      const size_t n = loop.size();
-      for (size_t k = 0; k < n; ++k) {
-        const Point3d& a = loop[k];
-        const Point3d& b = loop[(k + 1) % n];
-        if (idx_i < 0 && PointsEqual(a, m.p0, tol) && PointsEqual(b, m.p1, tol)) {
-          idx_i = static_cast<int>(f);
-          k_i = k;
-        }
-        if (idx_j < 0 && PointsEqual(a, m.p1, tol) && PointsEqual(b, m.p0, tol)) idx_j = static_cast<int>(f);
-      }
-    }
-    if (idx_i < 0 || idx_j < 0 || idx_i == idx_j) {
-      throw std::invalid_argument(
-          "dino8::kernel::FilletConcaveEdges: an edge is not a shared boundary edge of two distinct faces of "
-          "`solid`, walked in opposite directions on their own loops");
-    }
+    m.p0 = ed.p0;
+    m.p1 = ed.p1;
+    int idx_i = ed.idx_i;
+    int idx_j = ed.idx_j;
     {
+      // Find m.p0/m.p1's own indices in face i's loop directly (rather
+      // than assuming they are loop-adjacent, i.e. k_i1 == k_i + 1): a
+      // merged multi-segment chain's two endpoints are real vertices of
+      // this loop, but generally separated by one or more intermediate
+      // vertices from the absorbed chain - EdgeConvexity itself only ever
+      // uses these two indices to EXCLUDE them from its own scan of the
+      // loop's OTHER vertices, so it needs no adjacency between them.
       const std::vector<Point3d>& loop_i = faces[static_cast<size_t>(idx_i)].loop;
       const ON_Plane& plane_j_pre = faces[static_cast<size_t>(idx_j)].plane;
-      const size_t k_i1 = (k_i + 1) % loop_i.size();
+      size_t k_i = 0, k_i1 = 0;
+      bool found_p0 = false, found_p1 = false;
+      for (size_t k = 0; k < loop_i.size(); ++k) {
+        if (!found_p0 && PointsEqual(loop_i[k], m.p0, tol)) {
+          k_i = k;
+          found_p0 = true;
+        }
+        if (!found_p1 && PointsEqual(loop_i[k], m.p1, tol)) {
+          k_i1 = k;
+          found_p1 = true;
+        }
+      }
+      if (!found_p0 || !found_p1) {
+        throw std::runtime_error(
+            "dino8::kernel::FilletConcaveEdges: an edge's own endpoint is not a vertex of its face's loop - please "
+            "report this as a bug");
+      }
       bool degenerate = false;
       const bool convex = EdgeConvexity(loop_i, k_i, k_i1, plane_j_pre, tol, &degenerate);
       if (!degenerate && convex) {

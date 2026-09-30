@@ -127,4 +127,53 @@ bool BuildBlendSurfaceG2(const ON_Curve& ea, const ON_Surface& sa, const std::fu
                           int samples, ON_NurbsSurface& out,
                           const std::function<double(double)>& width_frac_at = nullptr);
 
+// Max Euclidean distance between `a` and `b` sampled at the same
+// (grid_n+1) x (grid_n+1) grid of (u, v) parameters, one per domain
+// fraction i/grid_n, j/grid_n (both surfaces' own domains are always
+// exactly [0,1]x[0,1] by construction - see LoftRows' own knot-setting
+// code in BlendSurface.cpp - so evaluating both at the SAME (u, v) is
+// meaningful without any reparametrization or closest-point search).
+// Shared by BuildBlendSurfaceG1Adaptive/BuildBlendSurfaceG2Adaptive below
+// to measure how much a blend surface's own shape still changes when its
+// row sample count is doubled - the practical stand-in for "distance to
+// the true rolling-ball envelope" a general two-freeform-surface blend has
+// no closed form for at all (see BuildBlendSurfaceG2's own doc comment for
+// why: a canal surface over a non-linear radius/rail law is not rational
+// in general), the same convergence-based bound any adaptive
+// discretization of an unknown-closed-form surface has to fall back on.
+double MaxSurfaceGap(const ON_NurbsSurface& a, const ON_NurbsSurface& b, int grid_n);
+
+// ADAPTIVE, TOLERANCE-ENFORCING wrapper around BuildBlendSurfaceG1: builds
+// at `min_samples`, then repeatedly DOUBLES the row sample count and
+// measures MaxSurfaceGap between the last two resolutions (see that
+// function's own doc comment) until the gap is at most `max_gap`, at which
+// point `out` is set to the finer (converged) build and this returns true;
+// or until doubling would exceed `max_samples`, at which point `out` is
+// set to the last successfully built (coarser) surface and this returns
+// false - max_gap could not be certified within the given sample budget,
+// disclosed via the return value rather than silently accepted.
+// `achieved_gap_out`, when non-null, always receives the LAST measured gap
+// (the one between the final pair of resolutions tried), on both success
+// and failure, so a caller can report how close a failed attempt actually
+// got. Returns false immediately, without measuring any gap (and leaving
+// `*achieved_gap_out` at +infinity, if requested), if the very first
+// BuildBlendSurfaceG1 call itself fails (too few usable samples) - the
+// same "not enough input to build anything at all" failure that function
+// already reports, now surfaced through this one too rather than treated
+// as gap = 0.
+bool BuildBlendSurfaceG1Adaptive(const ON_Curve& ea, const ON_Surface& sa, const std::function<ON_2dPoint(double)>& uv_a_at,
+                                  const ON_Curve& eb, const ON_Surface& sb, const std::function<ON_2dPoint(double)>& uv_b_at,
+                                  bool tangent_boost, double max_gap, int min_samples, int max_samples,
+                                  ON_NurbsSurface& out, double* achieved_gap_out = nullptr,
+                                  const std::function<double(double)>& width_frac_at = nullptr);
+
+// Exactly BuildBlendSurfaceG1Adaptive's own construction, wrapping
+// BuildBlendSurfaceG2 instead - see that function's own doc comment for
+// every claim here, mirrored.
+bool BuildBlendSurfaceG2Adaptive(const ON_Curve& ea, const ON_Surface& sa, const std::function<ON_2dPoint(double)>& uv_a_at,
+                                  const ON_Curve& eb, const ON_Surface& sb, const std::function<ON_2dPoint(double)>& uv_b_at,
+                                  double max_gap, int min_samples, int max_samples, ON_NurbsSurface& out,
+                                  double* achieved_gap_out = nullptr,
+                                  const std::function<double(double)>& width_frac_at = nullptr);
+
 }  // namespace dino8::app
