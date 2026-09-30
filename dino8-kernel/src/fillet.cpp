@@ -1546,6 +1546,251 @@ Brep BuildTwoStationTaperedFillet(const Brep& solid, Point3d edge_p0, Point3d ed
   return Brep::FromMixedFaces(mixed_planar, {}, {fillet_face});
 }
 
+// The CONCAVE mirror of BuildTwoStationTaperedFillet just above - see
+// fillet.h's own FilletConcaveEdgeTapered doc comment for why this is a
+// real re-application of FilletConcaveEdge's own sign-flip pattern, not a
+// re-derivation from scratch. Structured as closely as possible to
+// BuildTwoStationTaperedFillet's own body, deviating only where the
+// concave sign convention genuinely requires it - every such deviation is
+// flagged in a comment naming the convex line it mirrors.
+Brep BuildTwoStationTaperedFilletConcave(const Brep& solid, Point3d edge_p0, Point3d edge_p1, double radius0,
+                                          double radius1) {
+  if (!(radius0 > 0.0) || !(radius1 > 0.0)) {
+    throw std::invalid_argument(
+        "dino8::kernel::FilletConcaveEdgeTapered: radius0 and radius1 must both "
+        "be strictly positive (a radius reaching zero partway along the edge "
+        "would put the swept patch's own apex INSIDE the filled wedge - a "
+        "genuinely different, out-of-scope topology - see this function's own "
+        "doc comment)");
+  }
+
+  const std::vector<Brep::PlanarFace> faces = solid.PlanarFaces();
+  const double tol = RelativeTol(faces);
+
+  // --- locate the two faces sharing (edge_p0, edge_p1) - verbatim from
+  // FilletConcaveEdge's own step (1), keeping k_i (the loop index of
+  // edge_p0 on face i's own loop) so EdgeConvexity below can use it.
+  int idx_i = -1, idx_j = -1;
+  size_t k_i_index = 0;
+  for (size_t f = 0; f < faces.size() && (idx_i < 0 || idx_j < 0); ++f) {
+    const std::vector<Point3d>& loop = faces[f].loop;
+    const size_t n = loop.size();
+    for (size_t k = 0; k < n; ++k) {
+      const Point3d& a = loop[k];
+      const Point3d& b = loop[(k + 1) % n];
+      if (idx_i < 0 && PointsEqual(a, edge_p0, tol) && PointsEqual(b, edge_p1, tol)) {
+        idx_i = static_cast<int>(f);
+        k_i_index = k;
+      }
+      if (idx_j < 0 && PointsEqual(a, edge_p1, tol) && PointsEqual(b, edge_p0, tol)) {
+        idx_j = static_cast<int>(f);
+      }
+    }
+  }
+  if (idx_i < 0 || idx_j < 0 || idx_i == idx_j) {
+    throw std::invalid_argument(
+        "dino8::kernel::FilletConcaveEdgeTapered: edge_p0->edge_p1 is not a "
+        "shared boundary edge of two distinct faces of `solid`, walked in "
+        "opposite directions on their own loops - see FilletConvexEdge's own "
+        "doc comment for the required topology, which this function shares");
+  }
+
+  // Genuinely CONCAVE check - arccos(n_i . n_j) alone cannot tell convex
+  // from concave (FilletConcaveEdge's own doc comment), so this asks
+  // EdgeConvexity directly rather than trusting a dihedral-angle range.
+  {
+    const ON_Plane& plane_j_pre = faces[static_cast<size_t>(idx_j)].plane;
+    const std::vector<Point3d>& loop_i = faces[static_cast<size_t>(idx_i)].loop;
+    const size_t k_i1 = (k_i_index + 1) % loop_i.size();
+    bool degenerate = false;
+    const bool convex = EdgeConvexity(loop_i, k_i_index, k_i1, plane_j_pre, tol, &degenerate);
+    if (!degenerate && convex) {
+      throw std::invalid_argument(
+          "dino8::kernel::FilletConcaveEdgeTapered: edge is a CONVEX dihedral "
+          "edge, not concave - see FilletConvexEdgeTapered instead");
+    }
+  }
+
+  // Face-handedness swap - verbatim FilletConcaveEdge's own step (see that
+  // function's own doc comment for the algebraic proof this relies on):
+  // whichever face gives a POSITIVE (n_i x n_j).e is the correct angle-0
+  // reference for a right-handed (xaxis, yaxis=e x xaxis, zaxis=e) cone
+  // frame.
+  {
+    const Vector3d n_i_pre = faces[static_cast<size_t>(idx_i)].plane.zaxis;
+    const Vector3d n_j_pre = faces[static_cast<size_t>(idx_j)].plane.zaxis;
+    Vector3d e_pre = edge_p1 - edge_p0;
+    if (!e_pre.Unitize()) {
+      throw std::invalid_argument("dino8::kernel::FilletConcaveEdgeTapered: edge_p0 and edge_p1 coincide");
+    }
+    if ((ON_CrossProduct(n_i_pre, n_j_pre) * e_pre) < 0.0) {
+      std::swap(idx_i, idx_j);
+    }
+  }
+
+  const ON_Plane& plane_i = faces[static_cast<size_t>(idx_i)].plane;
+  const ON_Plane& plane_j = faces[static_cast<size_t>(idx_j)].plane;
+  const Vector3d n_i = plane_i.zaxis;
+  const Vector3d n_j = plane_j.zaxis;
+
+  Vector3d e = edge_p1 - edge_p0;
+  const double L = edge_p0.DistanceTo(edge_p1);
+  if (!e.Unitize()) {
+    throw std::invalid_argument("dino8::kernel::FilletConcaveEdgeTapered: edge_p0 and edge_p1 coincide");
+  }
+
+  const double dot_ij = std::max(-1.0, std::min(1.0, n_i * n_j));
+
+  Vector3d bis = n_i + n_j;
+  if (!bis.Unitize()) {
+    throw std::invalid_argument(
+        "dino8::kernel::FilletConcaveEdgeTapered: the two adjacent faces' "
+        "normals sum to (near) zero - a degenerate (near-180-degree) dihedral");
+  }
+  const double cosb = bis * n_i;  // == bis*n_j (bis is symmetric in i,j)
+  if (cosb < 1e-9) {
+    throw std::invalid_argument(
+        "dino8::kernel::FilletConcaveEdgeTapered: degenerate bisector geometry "
+        "(cosb too small)");
+  }
+
+  // --- dispatch to today's FilletConcaveEdge, UNCHANGED, when the taper is
+  // negligible - the exact m=0 case, mirroring BuildTwoStationTaperedFillet's
+  // own identical dispatch.
+  const double radius_tol = std::max(1e-9, std::max(radius0, radius1) * 1e-9);
+  if (std::fabs(radius1 - radius0) <= radius_tol) {
+    return FilletConcaveEdge(solid, edge_p0, edge_p1, radius0);
+  }
+
+  // --- rail directions: the CONCAVE mirror of BuildTwoStationTaperedFillet's
+  // own k_i = n_i - bis/cosb - negated, exactly the same "D_i = bis*offset -
+  // n_i*radius is the NEGATION of FilletConvexEdge's own D_i" substitution
+  // FilletConcaveEdge's own doc comment derives (fillet.h's own
+  // FilletConcaveEdgeTapered doc comment spells out the algebra this
+  // reduces to).
+  const Vector3d k_i = bis * (1.0 / cosb) - n_i;
+  const Vector3d k_j = bis * (1.0 / cosb) - n_j;
+  const double m0 = (radius1 - radius0) / L;
+  auto r_of = [&](double t) { return radius0 + m0 * t; };
+  auto rail_i = [&](double t) { return edge_p0 + t * e + r_of(t) * k_i; };
+  auto rail_j = [&](double t) { return edge_p0 + t * e + r_of(t) * k_j; };
+
+  // --- cone apex/axis/frame: BuildTaperedConeSegment itself is unchanged,
+  // called with `n_i`/`bis` both NEGATED - see fillet.h's own doc comment
+  // for the direct-substitution proof this reproduces exactly the concave
+  // axis_point/contact_i/contact_j sign convention FilletConcaveEdge's own
+  // doc comment establishes, without re-deriving the cone math itself.
+  const TaperedConeSegment seg = BuildTaperedConeSegment(edge_p0, L, radius0, radius1, e, -bis, cosb, -n_i, dot_ij);
+  const double m = seg.m;
+  const Point3d& apex = seg.apex;
+  const Vector3d& u_hat = seg.u_hat;
+  const Vector3d& xaxis = seg.xaxis;
+  const Vector3d& yaxis = seg.yaxis;
+  const double cone_sweep_angle = seg.cone_sweep_angle;
+
+  Brep::ConicalFace fillet_face;
+  fillet_face.frame.origin = apex;
+  fillet_face.frame.xaxis = xaxis;
+  fillet_face.frame.yaxis = yaxis;
+  fillet_face.frame.zaxis = u_hat;
+  fillet_face.frame.UpdateEquation();
+  fillet_face.radius0 = seg.radius0_true;
+  fillet_face.radius1 = seg.radius1_true;
+  fillet_face.angle = cone_sweep_angle;
+  fillet_face.length = seg.length_true;
+  // Concave mirror of CylindricalFace::outward - FilletConcaveEdge's own
+  // doc comment explains why: this patch bounds material from the concave
+  // side, so its presented normal must point radially INWARD.
+  fillet_face.outward = false;
+
+  // --- re-trim faces i/j: verbatim BuildTwoStationTaperedFillet's own
+  // step, using the concave rail_i/rail_j above.
+  const Vector3d d_i = e + m * k_i;
+  const Vector3d d_j = e + m * k_j;
+
+  Vector3d m_i = ON_CrossProduct(n_i, d_i);
+  if (!m_i.Unitize()) {
+    throw std::invalid_argument(
+        "dino8::kernel::FilletConcaveEdgeTapered: degenerate face/edge geometry "
+        "(face i's own tilted rail direction is parallel to its own normal)");
+  }
+  const Point3d contact_i0 = rail_i(0.0);
+  if (m_i * (edge_p0 - contact_i0) >= 0.0) m_i = -m_i;
+
+  Vector3d m_j = ON_CrossProduct(n_j, d_j);
+  if (!m_j.Unitize()) {
+    throw std::invalid_argument(
+        "dino8::kernel::FilletConcaveEdgeTapered: degenerate face/edge geometry "
+        "(face j's own tilted rail direction is parallel to its own normal)");
+  }
+  const Point3d contact_j1 = rail_j(L);
+  if (m_j * (edge_p1 - contact_j1) >= 0.0) m_j = -m_j;
+
+  const Point3d rail_i_far = rail_i(L);
+  const Point3d rail_j_near = rail_j(0.0);
+  auto loop_has_point_near = [&](const std::vector<Point3d>& loop, const Point3d& p) {
+    for (const Point3d& v : loop) {
+      if (PointsEqual(v, p, tol)) return true;
+    }
+    return false;
+  };
+
+  const ON_Plane cut_i(contact_i0, -m_i);
+  const ON_Plane cut_j(contact_j1, -m_j);
+
+  Brep::PlanarFace retrimmed_i = faces[static_cast<size_t>(idx_i)];
+  retrimmed_i.loop = detail::ClipByHalfspace3d(retrimmed_i.loop, cut_i, tol);
+  Brep::PlanarFace retrimmed_j = faces[static_cast<size_t>(idx_j)];
+  retrimmed_j.loop = detail::ClipByHalfspace3d(retrimmed_j.loop, cut_j, tol);
+  if (retrimmed_i.loop.size() < 3 || retrimmed_j.loop.size() < 3) {
+    throw std::invalid_argument(
+        "dino8::kernel::FilletConcaveEdgeTapered: re-trimming an adjacent face "
+        "left fewer than 3 vertices - radius0/radius1 too large for this "
+        "solid's geometry");
+  }
+  if (!loop_has_point_near(retrimmed_i.loop, contact_i0) || !loop_has_point_near(retrimmed_i.loop, rail_i_far) ||
+      !loop_has_point_near(retrimmed_j.loop, rail_j_near) || !loop_has_point_near(retrimmed_j.loop, contact_j1)) {
+    throw std::invalid_argument(
+        "dino8::kernel::FilletConcaveEdgeTapered: radius0/radius1 too large to "
+        "fit - the intended rail line (rail_i(0)-rail_i(L) on face i, "
+        "rail_j(0)-rail_j(L) on face j) no longer lies within one of the "
+        "adjacent faces' own bounded extent, so the tilted retrim plane cut "
+        "through a different, unrelated region instead of the intended sliver");
+  }
+
+  // --- assemble: all untouched faces, then the two re-trimmed ones, then
+  // the one new ConicalFace. EllipseNotchCornerAtVertex is reused
+  // UNCHANGED (same reason FilletConcaveEdge's own doc comment gives for
+  // reusing NotchCornerAtVertex unchanged: it is already generic in
+  // apex/u_hat/xaxis/yaxis/tan_half_angle, with no convex-specific sign
+  // baked in, so the already-mirrored xaxis/yaxis above produce the
+  // correct ADDED-material notch automatically) - it silently no-ops at
+  // either end when no matching perpendicular third face is found, so
+  // this is safe to call unconditionally for both the free-boundary and
+  // closed-solid cases alike.
+  std::vector<Brep::PlanarFace> others;
+  others.reserve(faces.size() - 2);
+  for (size_t f = 0; f < faces.size(); ++f) {
+    if (static_cast<int>(f) != idx_i && static_cast<int>(f) != idx_j) {
+      others.push_back(faces[f]);
+    }
+  }
+
+  const double tan_half_angle = (fillet_face.radius1 - fillet_face.radius0) / fillet_face.length;
+  EllipseNotchCornerAtVertex(others, edge_p0, e, plane_i, plane_j, apex, u_hat, xaxis, yaxis, tan_half_angle,
+                              cone_sweep_angle, tol, fillet_face.cap0_notch_points,
+                              fillet_face.cap0_notch_tolerance);
+  EllipseNotchCornerAtVertex(others, edge_p1, e, plane_i, plane_j, apex, u_hat, xaxis, yaxis, tan_half_angle,
+                              cone_sweep_angle, tol, fillet_face.cap1_notch_points,
+                              fillet_face.cap1_notch_tolerance);
+
+  std::vector<Brep::PlanarFace> mixed_planar = std::move(others);
+  mixed_planar.push_back(std::move(retrimmed_i));
+  mixed_planar.push_back(std::move(retrimmed_j));
+
+  return Brep::FromMixedFaces(mixed_planar, {}, {fillet_face});
+}
+
 // Replaces the ONE loop edge from `from` to `to` (which must be
 // consecutive loop vertices, `loop[k] == from`, `loop[(k+1)%n] == to`,
 // within `tol` - the same guarantee PlanarFaces()'s own convention
@@ -1903,6 +2148,10 @@ Brep FilletConvexEdgeTapered(const Brep& solid, Point3d edge_p0, Point3d edge_p1
 Brep FilletConvexEdgeTapered(const Brep& solid, Point3d edge_p0, Point3d edge_p1, double radius0, double radius1) {
   return FilletConvexEdgeTapered(solid, edge_p0, edge_p1,
                                   std::vector<FilletRadiusStation>{{0.0, radius0}, {edge_p0.DistanceTo(edge_p1), radius1}});
+}
+
+Brep FilletConcaveEdgeTapered(const Brep& solid, Point3d edge_p0, Point3d edge_p1, double radius0, double radius1) {
+  return BuildTwoStationTaperedFilletConcave(solid, edge_p0, edge_p1, radius0, radius1);
 }
 
 
