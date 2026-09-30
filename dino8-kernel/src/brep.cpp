@@ -8924,6 +8924,40 @@ int Brep::RemoveAllHoleLoops(int face_index) {
   return removed;
 }
 
+int Brep::RemoveAllHoleLoopsInBrep() {
+  ON_Brep& b = brep_;
+
+  // Every hole loop on every live face, collected up front across the
+  // WHOLE Brep - RemoveHoleLoopNoFinalize() never calls Compact(), so no
+  // face's own loop indices shift while another face's holes are being
+  // collected or removed, the same "defer Compact to one call at the end"
+  // discipline RemoveAllHoleLoops() itself already uses within one face.
+  std::vector<int> hole_loops;
+  for (int fi = 0; fi < b.m_F.Count(); ++fi) {
+    if (b.m_F[fi].m_face_index < 0) continue;
+    const ON_BrepFace& face = b.m_F[fi];
+    for (int k = 0; k < face.m_li.Count(); ++k) {
+      const int li = face.m_li[k];
+      if (li >= 0 && li < b.m_L.Count() && b.m_L[li].m_type == ON_BrepLoop::inner) {
+        hole_loops.push_back(li);
+      }
+    }
+  }
+  if (hole_loops.empty()) return 0;
+
+  int removed = 0;
+  for (const int li : hole_loops) {
+    if (RemoveHoleLoopNoFinalize(li) == Result::Ok) ++removed;
+  }
+  if (removed == 0) return 0;
+
+  b.Compact();
+  b.SetTolerancesBoxesAndFlags();
+  FixUnsetEdgeTolerances(b);
+  ClearFaceSideTables();
+  return removed;
+}
+
 Result Brep::RemoveOuterTrim(int face_index) {
   ON_Brep& b = brep_;
   if (face_index < 0 || face_index >= b.m_F.Count()) {

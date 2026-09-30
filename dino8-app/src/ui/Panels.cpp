@@ -796,6 +796,26 @@ dino8::platform::AccessibleNode AuditResultsAccessibleTree(Application& app) {
   return dino8::platform::BuildAuditResultsNode(summaries);
 }
 
+// AT-SPI2-queryable snapshot of CommandEngine::Registry() (see
+// docs/ACCESSIBILITY.md): built straight from the command registry,
+// independent of whether DrawCommandListPanel itself has ever been drawn or
+// is open right now - mirrors the same name/status/description facts the
+// on-screen table's Command/Status/Description columns show per row, using
+// exactly the `rc.info ? rc.info->description : rc.note` choice
+// DrawCommandListPanel/DrawHelpPanel already make. Never empty in a real
+// build: RegisterCatalogPlaceholders registers the ~1055-command Rhino 8
+// reference catalog at startup even for commands with no implementation
+// yet.
+dino8::platform::AccessibleNode CommandListAccessibleTree(Application& app) {
+  std::vector<dino8::platform::CommandListEntrySummary> summaries;
+  summaries.reserve(app.Engine().Registry().size());
+  for (const auto& [key, rc] : app.Engine().Registry()) {
+    const std::string desc = rc.info ? rc.info->description : rc.note;
+    summaries.push_back({rc.name, CommandStatusName(rc.status), desc});
+  }
+  return dino8::platform::BuildCommandListNode(summaries);
+}
+
 void DrawCommandListPanel(Application& app, std::string& filter, int& status_filter) {
   if (!ImGui::Begin(PanelTitle("panel.command_list", "CommandList").c_str(), &app.Panels().command_list)) { ImGui::End(); return; }
   CommandEngine& eng = app.Engine();
@@ -1144,6 +1164,39 @@ void DrawWhatsNewWindow(Application& app) {
   }
   if (ImGui::Button("Close")) app.Panels().whats_new = false;
   ImGui::End();
+}
+
+// AT-SPI2-queryable snapshot of CommandEngine::Aliases() (see
+// docs/ACCESSIBILITY.md): built straight from the alias map, independent of
+// whether the Options window's Aliases tab is actually open right now -
+// mirrors each alias with the full command name it expands to as its
+// Description, the same shape DocumentUserTextAccessibleTree already uses
+// for its own key/value rows. Never empty in a real build:
+// CommandEngine::InstallDefaultAliases() installs Rhino's own default alias
+// set at startup.
+dino8::platform::AccessibleNode CommandAliasesAccessibleTree(Application& app) {
+  std::vector<dino8::platform::CommandAliasSummary> summaries;
+  summaries.reserve(app.Engine().Aliases().size());
+  for (const auto& [alias, command] : app.Engine().Aliases()) summaries.push_back({alias, command});
+  return dino8::platform::BuildCommandAliasesNode(summaries);
+}
+
+// AT-SPI2-queryable snapshot of Application::user_shortcuts (see
+// docs/ACCESSIBILITY.md): built straight from the shortcut list, independent
+// of whether the Options window's Shortcuts tab is actually open right now -
+// mirrors each shortcut's human-readable key combo (built the same
+// "Ctrl+"/"Shift+"/"Alt+" prefix-and-KeyShortcutName way that tab's own row
+// formats it - see DrawOptionsWindow below) with the command it runs as its
+// Description. Starts empty on a fresh app: unlike Command Aliases, there is
+// no default-shortcuts installer.
+dino8::platform::AccessibleNode KeyboardShortcutsAccessibleTree(Application& app) {
+  std::vector<dino8::platform::KeyboardShortcutSummary> summaries;
+  summaries.reserve(app.user_shortcuts.size());
+  for (const KeyShortcut& s : app.user_shortcuts) {
+    const std::string combo = std::string(s.ctrl ? "Ctrl+" : "") + (s.shift ? "Shift+" : "") + (s.alt ? "Alt+" : "") + KeyShortcutName(s.key);
+    summaries.push_back({combo, s.command});
+  }
+  return dino8::platform::BuildKeyboardShortcutsNode(summaries);
 }
 
 void DrawOptionsWindow(Application& app) {

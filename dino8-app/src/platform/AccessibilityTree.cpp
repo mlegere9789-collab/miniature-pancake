@@ -475,4 +475,67 @@ AccessibleNode BuildPluginsNode(const std::vector<PluginSummary>& plugins) {
   return list;
 }
 
+AccessibleNode BuildCommandListNode(const std::vector<CommandListEntrySummary>& commands) {
+  AccessibleNode list;
+  list.name = "Command List";
+  list.role = AccessibleRole::List;
+
+  size_t n_impl = 0, n_part = 0, n_plan = 0;
+  for (const CommandListEntrySummary& c : commands) {
+    if (c.status_text == "Implemented") ++n_impl;
+    else if (c.status_text == "Partial") ++n_part;
+    else if (c.status_text == "Planned") ++n_plan;
+  }
+  char count_buf[160];
+  std::snprintf(count_buf, sizeof(count_buf), "%zu commands in the Rhino 8 reference: %zu implemented, %zu partial, %zu planned (help only)",
+                commands.size(), n_impl, n_part, n_plan);
+  list.description = count_buf;
+
+  for (const CommandListEntrySummary& c : commands) {
+    AccessibleNode item;
+    item.role = AccessibleRole::ListItem;
+    item.name = c.name;
+    item.description = c.status_text;
+    if (!c.description.empty()) item.description += ": " + c.description;
+    list.children.push_back(std::move(item));
+  }
+  return list;
+}
+
+AccessibleNode BuildCommandAliasesNode(const std::vector<CommandAliasSummary>& aliases) {
+  AccessibleNode list;
+  list.name = "Command Aliases";
+  list.role = AccessibleRole::List;
+  char count_buf[32];
+  std::snprintf(count_buf, sizeof(count_buf), "%zu command aliases", aliases.size());
+  list.description = count_buf;
+
+  for (const CommandAliasSummary& a : aliases) {
+    AccessibleNode item;
+    item.role = AccessibleRole::ListItem;
+    item.name = a.alias;
+    item.description = a.command;
+    list.children.push_back(std::move(item));
+  }
+  return list;
+}
+
+AccessibleNode BuildKeyboardShortcutsNode(const std::vector<KeyboardShortcutSummary>& shortcuts) {
+  AccessibleNode list;
+  list.name = "Keyboard Shortcuts";
+  list.role = AccessibleRole::List;
+  char count_buf[32];
+  std::snprintf(count_buf, sizeof(count_buf), "%zu keyboard shortcuts", shortcuts.size());
+  list.description = count_buf;
+
+  for (const KeyboardShortcutSummary& s : shortcuts) {
+    AccessibleNode item;
+    item.role = AccessibleRole::ListItem;
+    item.name = s.combo_text;
+    item.description = s.command;
+    list.children.push_back(std::move(item));
+  }
+  return list;
+}
+
 }  // namespace dino8::platform

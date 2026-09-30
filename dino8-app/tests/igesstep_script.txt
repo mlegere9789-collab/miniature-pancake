@@ -100,3 +100,20 @@ Open @TMP@/iges_bad_pd_ptr_fixture.igs
 @expect_objects 1
 SelAll
 List
+# --- A hand-crafted malformed IGES file: a single type-102 composite curve
+# whose own N field (how many child-curve DE pointers follow) declares
+# 2000000000 segments while the file supplies only one. Regression for a
+# real crash this session's audit found: BuildIgesCurve's composite-curve
+# case did `segs.reserve(n)` - and even the per-segment read loop below it -
+# straight from that untrusted N, with only a *depth* cap on how deeply
+# composite curves can nest, never a cap on how wide any single one of them
+# claims to be. A hostile/corrupt file's N alone, with no actual segment
+# data behind it, drove an unbounded reserve()/loop (confirmed: reverting
+# the fix reproduces a multi-gigabyte allocation attempt on this exact
+# fixture). Must now be rejected cleanly (0 objects), not hang or crash.
+cancel
+New
+Open @TMP@/iges_huge_composite_fixture.igs
+@expect_objects 0
+SelAll
+List

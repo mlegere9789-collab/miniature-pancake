@@ -10406,6 +10406,95 @@ void TestBrepRemoveAllHoleLoopsRemovesEveryHoleInOneCall() {
   Check(solo.brep.RemoveAllHoleLoops(solo.face_index) == 0, "RemoveAllHoleLoops() on a hole-free face returns 0");
 }
 
+// RemoveAllHoleLoopsInBrep(): the whole-Brep generalization of
+// RemoveAllHoleLoops(face_index) above - strips every hole on EVERY live
+// face, not just one named face. Adds a SECOND face (its own independent
+// planar surface, well clear of the fixture face's own [-0.5,4.5] domain)
+// with its own single hole into the SAME Brep as PlanarFaceWithHoleFixture's
+// fixture face (which already carries its own single central hole), then
+// verifies one call removes both - one per face - and reports count 2.
+void TestBrepRemoveAllHoleLoopsInBrepStripsHolesAcrossEveryFace() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FaceContainsUV;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point2d;
+  using dino8::kernel::Point3d;
+
+  PlanarFaceWithHoleFixture fixture = BuildPlanarFaceWithHole();
+  Brep& brep = fixture.brep;
+  ON_Brep& b = brep.raw();
+  const int face_a = fixture.face_index;
+
+  // A second, independent 4x4 face (own surface, own domain shifted +100
+  // in x so it can never be confused with the fixture face's own
+  // [-0.5,4.5] extent) with its own single 2x2 central hole - the same
+  // hand-loop-building recipe BuildPlanarFaceWithHole() uses internally,
+  // added directly into this same Brep rather than a fresh one.
+  const double min_x = 99.5, max_x = 104.5, min_y = -0.5, max_y = 4.5;
+  const std::vector<Point3d> grid = {
+      Point3d(min_x, min_y, 0), Point3d(min_x, max_y, 0),
+      Point3d(max_x, min_y, 0), Point3d(max_x, max_y, 0),
+  };
+  const NurbsSurface surface = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+  auto* surface_copy = new ON_NurbsSurface(surface.raw());
+  const int surface_index = b.AddSurface(surface_copy);
+  const int face_b = b.NewFace(surface_index).m_face_index;
+
+  auto to_uv = [&](double x, double y) {
+    return Point2d((x - min_x) / (max_x - min_x), (y - min_y) / (max_y - min_y));
+  };
+  auto build_loop = [&](const std::vector<Point3d>& pts, ON_BrepLoop::TYPE type) {
+    const int n = static_cast<int>(pts.size());
+    std::vector<int> vids(static_cast<size_t>(n));
+    for (int k = 0; k < n; ++k) vids[static_cast<size_t>(k)] = b.NewVertex(pts[static_cast<size_t>(k)], 0.0).m_vertex_index;
+    const int loop_index = b.NewLoop(type, b.m_F[face_b]).m_loop_index;
+    for (int k = 0; k < n; ++k) {
+      const int k1 = (k + 1) % n;
+      const int va = vids[static_cast<size_t>(k)];
+      const int vb = vids[static_cast<size_t>(k1)];
+      const int c3i = b.AddEdgeCurve(new ON_LineCurve(b.m_V[va].point, b.m_V[vb].point));
+      const int edge_index = b.NewEdge(b.m_V[va], b.m_V[vb], c3i).m_edge_index;
+      b.m_E[edge_index].m_tolerance = 0.0;
+      const Point2d uv_a = to_uv(pts[static_cast<size_t>(k)].x, pts[static_cast<size_t>(k)].y);
+      const Point2d uv_b = to_uv(pts[static_cast<size_t>(k1)].x, pts[static_cast<size_t>(k1)].y);
+      const int c2i = b.AddTrimCurve(new ON_LineCurve(uv_a, uv_b));
+      ON_BrepTrim& trim = b.NewTrim(b.m_E[edge_index], /*bRev3d=*/false, b.m_L[loop_index], c2i);
+      trim.m_tolerance[0] = trim.m_tolerance[1] = 0.0;
+    }
+  };
+  const std::vector<Point3d> outer_pts = {
+      Point3d(100, 0, 0), Point3d(104, 0, 0), Point3d(104, 4, 0), Point3d(100, 4, 0),
+  };
+  const std::vector<Point3d> inner_pts = {
+      Point3d(101, 1, 0), Point3d(101, 3, 0), Point3d(103, 3, 0), Point3d(103, 1, 0),
+  };
+  build_loop(outer_pts, ON_BrepLoop::outer);
+  build_loop(inner_pts, ON_BrepLoop::inner);
+  b.SetTrimIsoFlags();
+  b.SetTolerancesBoxesAndFlags();
+
+  Check(brep.FaceCount() == 2, "setup: the Brep now has 2 independent faces");
+  Check(b.m_F[face_a].LoopCount() == 2 && b.m_F[face_b].LoopCount() == 2,
+        "setup: both faces have their own outer loop plus one hole loop");
+  Check(!FaceContainsUV(b.m_F[face_a], 0.5, 0.5), "setup: face A's own hole centre is outside face A");
+  Check(!FaceContainsUV(b.m_F[face_b], 0.5, 0.5), "setup: face B's own hole centre is outside face B");
+
+  const int removed = brep.RemoveAllHoleLoopsInBrep();
+  Check(removed == 2, "RemoveAllHoleLoopsInBrep() removes exactly one hole per face, across the whole Brep, in one call");
+  Check(brep.FaceCount() == 2, "F is unchanged - RemoveAllHoleLoopsInBrep() never adds or removes a face");
+  Check(b.m_F[face_a].LoopCount() == 1 && b.m_F[face_b].LoopCount() == 1,
+        "both faces are left with only their own outer loop - every hole, on every face, is gone");
+  Check(FaceContainsUV(b.m_F[face_a], 0.5, 0.5), "face A's former hole centre is now inside face A");
+  Check(FaceContainsUV(b.m_F[face_b], 0.5, 0.5), "face B's former hole centre is now inside face B");
+
+  // A Brep with no holes at all anywhere: a clean no-op reporting 0.
+  PlanarFaceWithHoleFixture solo = BuildPlanarFaceWithHole();
+  Check(solo.brep.RemoveHoleLoop(solo.brep.raw().m_F[solo.face_index].Loop(1)->m_loop_index) ==
+            dino8::kernel::Result::Ok,
+        "setup: strip solo fixture down to a plain hole-free Brep");
+  Check(solo.brep.RemoveAllHoleLoopsInBrep() == 0, "RemoveAllHoleLoopsInBrep() on a hole-free Brep returns 0");
+}
+
 // RemoveHoleLoop() refusal paths: the outer loop itself, out-of-range and
 // already-deleted loop_index, and a hole edge that's also used by a trim
 // OUTSIDE the hole loop (a decoy second face reusing one of the hole's own
@@ -25128,6 +25217,204 @@ void TestPushPullFaceOnNonConvexLShapeGrowsByExactSlabVolume() {
         "(2 caps + 2 side walls) are retrimmed in place and no new wall is added");
   Check(shrunk.TessellateToClosedMesh(1, 1).IsClosedManifold(),
         "the shrunk non-convex result also tessellates to a closed, watertight manifold");
+}
+
+// The batch generalization of PushPullFace(): a single-entry
+// PushPullFaces() call must reproduce PushPullFace()'s own output
+// bit-for-bit, vertex for vertex, in both the push and pull direction -
+// proof the batch's shared reconstruction introduces no divergence of its
+// own for the one-target case.
+void TestPushPullFacesSingleEntryMatchesPushPullFace() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::PushPullFace;
+  using dino8::kernel::PushPullFaces;
+
+  auto check_matches = [](const Brep& a, const Brep& b, const char* label) {
+    Check(a.FaceCount() == b.FaceCount(), (std::string(label) + ": same face count").c_str());
+    const std::vector<Brep::PlanarFace> fa = a.PlanarFaces();
+    const std::vector<Brep::PlanarFace> fb = b.PlanarFaces();
+    for (size_t i = 0; i < fa.size() && i < fb.size(); ++i) {
+      Check(fa[i].loop.size() == fb[i].loop.size(), (std::string(label) + ": same vertex count per face").c_str());
+      for (size_t j = 0; j < fa[i].loop.size() && j < fb[i].loop.size(); ++j) {
+        Check(fa[i].loop[j].DistanceTo(fb[i].loop[j]) < 1e-9,
+              (std::string(label) + ": every vertex matches exactly").c_str());
+      }
+    }
+  };
+
+  const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+
+  const Brep push_single = PushPullFace(box, 1, 2.0);
+  const Brep push_batch = PushPullFaces(box, {{1, 2.0}});
+  check_matches(push_single, push_batch, "push: single vs. single-entry batch");
+
+  const Brep pull_single = PushPullFace(box, 1, -2.0);
+  const Brep pull_batch = PushPullFaces(box, {{1, -2.0}});
+  check_matches(pull_single, pull_batch, "pull: single vs. single-entry batch");
+}
+
+// Genuine "one call, many named faces" batching value, and a genuine
+// consistency guarantee sequential calls don't have: pushing the box's
+// front wall out while independently pulling its (non-adjacent, opposite)
+// back wall in, in ONE PushPullFaces() call, must match the identical
+// result of two SEQUENTIAL single PushPullFace() calls in EITHER order -
+// unlike a naive "just call PushPullFace() twice", where the SECOND call
+// would (for a pull) run against whichever intermediate boundary the FIRST
+// call happened to leave its neighbours at, this batch derives every
+// named face's own new cap and every unnamed neighbour's own clip from
+// `solid`'s own ORIGINAL geometry exactly once, so the result is the same
+// regardless of any ordering a caller might have chosen instead.
+void TestPushPullFacesTwoIndependentPushPullMatchesEitherSequentialOrder() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::PushPullFace;
+  using dino8::kernel::PushPullFaces;
+  using dino8::kernel::Vector3d;
+
+  // Box face order per Brep::Box()'s own comment: 0=bottom(-z) 1=top(+z)
+  // 2=front(-y) 3=back(+y) 4=left(-x) 5=right(+x). Front and back are
+  // OPPOSITE faces of the box, so they never share an edge.
+  const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+
+  auto find_face_by_normal = [](const Brep& b, const Vector3d& n) {
+    const std::vector<Brep::PlanarFace> pf = b.PlanarFaces();
+    for (size_t i = 0; i < pf.size(); ++i) {
+      if ((pf[i].plane.zaxis - n).Length() < 1e-6) return static_cast<int>(i);
+    }
+    return -1;
+  };
+
+  const Vector3d front_normal(0, -1, 0);
+  const Vector3d back_normal(0, 1, 0);
+  const int front_idx = find_face_by_normal(box, front_normal);
+  const int back_idx = find_face_by_normal(box, back_normal);
+  Check(front_idx >= 0 && back_idx >= 0, "found the box's own front and back walls by their outward normal");
+
+  const double push = 2.0;
+  const double pull = 1.0;
+
+  const Brep via_batch = PushPullFaces(box, {{front_idx, push}, {back_idx, -pull}});
+  Check(std::fabs(PlanarBrepVolumeExact(via_batch) - (1000.0 + 100.0 * push - 100.0 * pull)) < 1e-9,
+        "batched push-front/pull-back matches the exact volume arithmetic: 1000 + 100*2 - 100*1 = 1100");
+  Check(via_batch.TessellateToClosedMesh(1, 1).IsClosedManifold(),
+        "the batch-pushed-and-pulled box tessellates to a closed, watertight manifold");
+
+  // Order 1: push front first, then pull back on that intermediate result
+  // (re-found by normal, since pushing front shifts every later face's
+  // own index down by one).
+  const Brep after_front = PushPullFace(box, front_idx, push);
+  const int back_after_front = find_face_by_normal(after_front, back_normal);
+  Check(back_after_front >= 0, "back wall still found by its own normal after the independent front push");
+  const Brep seq_a = PushPullFace(after_front, back_after_front, -pull);
+
+  // Order 2: pull back first, then push front on that intermediate result.
+  const Brep after_back = PushPullFace(box, back_idx, -pull);
+  const int front_after_back = find_face_by_normal(after_back, front_normal);
+  Check(front_after_back >= 0, "front wall still found by its own normal after the independent back pull");
+  const Brep seq_b = PushPullFace(after_back, front_after_back, push);
+
+  // Order-independent comparison: PushPullFace()'s own new-face append
+  // order depends on WHICH face was named (a pushed/pulled face's own
+  // replacement always lands at the END of its own call's result), so the
+  // two sequential orders - and the batch, which appends its own named
+  // entries in yet a third arrangement - genuinely produce PlanarFaces()
+  // lists in different INDEX order even when they describe the exact same
+  // solid. What must actually agree is the same SET of faces (matched by
+  // centroid + vertex count, since two distinct faces of one of these
+  // fixtures never share a centroid), each with the same loop up to a
+  // cyclic rotation (ClipConvexPolygon()/this reconstruction is free to
+  // start a rebuilt loop at a different vertex, the same caveat
+  // TestFoldFacesConvexPlanarTwoIndependentFoldsMatchesSequentialSingleFolds
+  // already documents elsewhere in this file).
+  auto centroid = [](const Brep::PlanarFace& f) {
+    double x = 0, y = 0, z = 0;
+    for (const Point3d& p : f.loop) { x += p.x; y += p.y; z += p.z; }
+    const double n = static_cast<double>(f.loop.size());
+    return Point3d(x / n, y / n, z / n);
+  };
+  auto check_same_face_set = [&](const Brep& a, const Brep& b, const char* label) {
+    const std::vector<Brep::PlanarFace> fa = a.PlanarFaces();
+    const std::vector<Brep::PlanarFace> fb = b.PlanarFaces();
+    Check(fa.size() == fb.size(), (std::string(label) + ": same face count").c_str());
+    std::vector<bool> used(fb.size(), false);
+    for (const Brep::PlanarFace& face_a : fa) {
+      const Point3d ca = centroid(face_a);
+      int best = -1;
+      for (size_t j = 0; j < fb.size(); ++j) {
+        if (used[j] || fb[j].loop.size() != face_a.loop.size()) continue;
+        if (ca.DistanceTo(centroid(fb[j])) < 1e-9) { best = static_cast<int>(j); break; }
+      }
+      Check(best >= 0, (std::string(label) + ": every face has a matching-centroid, matching-vertex-count "
+                                              "counterpart in the other result").c_str());
+      if (best < 0) continue;
+      used[static_cast<size_t>(best)] = true;
+      const std::vector<Point3d>& la = face_a.loop;
+      const std::vector<Point3d>& lb = fb[static_cast<size_t>(best)].loop;
+      const size_t m = la.size();
+      bool loop_matches = false;
+      for (size_t rot = 0; rot < m && !loop_matches; ++rot) {
+        bool ok = true;
+        for (size_t k = 0; k < m; ++k) {
+          if (la[k].DistanceTo(lb[(k + rot) % m]) >= 1e-9) { ok = false; break; }
+        }
+        loop_matches = ok;
+      }
+      Check(loop_matches, (std::string(label) + ": the matched face's own loop vertices agree exactly, "
+                                                 "possibly starting at a different index").c_str());
+    }
+  };
+  check_same_face_set(via_batch, seq_a, "batch vs. sequential push-front-then-pull-back");
+  check_same_face_set(via_batch, seq_b, "batch vs. sequential pull-back-then-push-front");
+}
+
+void TestPushPullFacesRefusesInvalidInput() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::PushPullFaces;
+
+  const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+
+  bool threw = false;
+  try {
+    PushPullFaces(box, {});
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "PushPullFaces refuses an empty face_distances list");
+
+  threw = false;
+  try {
+    PushPullFaces(box, {{99, 1.0}});
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "PushPullFaces refuses an out-of-range face_index");
+
+  threw = false;
+  try {
+    PushPullFaces(box, {{1, 0.0}});
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "PushPullFaces refuses a zero distance");
+
+  threw = false;
+  try {
+    PushPullFaces(box, {{1, 1.0}, {1, -1.0}});
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "PushPullFaces refuses a duplicate face_index");
+
+  // Front (index 2) and top (index 1) are ADJACENT (they share the
+  // top-front edge) - naming both is refused rather than guessed at, see
+  // PushPullFaces()'s own doc comment.
+  threw = false;
+  try {
+    PushPullFaces(box, {{1, 1.0}, {2, 1.0}});
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "PushPullFaces refuses two named targets that share an edge");
 }
 
 // The exact B-rep draft/taper-an-existing-body feature - PARITY_MAP's
@@ -54673,6 +54960,9 @@ int main() {
   TestOffsetSolidConvexPlanarRejectsNonConvexLShape();
   TestPushPullFaceOnBoxPushOutAddsWallsAndMatchesExactVolume();
   TestPushPullFaceOnNonConvexLShapeGrowsByExactSlabVolume();
+  TestPushPullFacesSingleEntryMatchesPushPullFace();
+  TestPushPullFacesTwoIndependentPushPullMatchesEitherSequentialOrder();
+  TestPushPullFacesRefusesInvalidInput();
   TestDraftFacesConvexPlanarBoxAllWallsMatchesExactFrustumVolume();
   TestDraftFacesConvexPlanarSingleFaceLeavesOppositeFaceExactlyUntouched();
   TestReplaceFacePlaneConvexPlanarMatchesOffsetFaceForPureTranslate();
@@ -55007,6 +55297,7 @@ int main() {
   TestBrepMakeEdgeKillRingAndKillEdgeMakeRingAreExactInverses();
   TestBrepRemoveHoleLoopRestoresSolidFaceExactly();
   TestBrepRemoveAllHoleLoopsRemovesEveryHoleInOneCall();
+  TestBrepRemoveAllHoleLoopsInBrepStripsHolesAcrossEveryFace();
   TestBrepRemoveHoleLoopRefusesOuterLoopSharedEdgeAndInvalidInput();
   TestBrepRemoveOuterTrimRestoresSurfaceNaturalBoundaryAndKeepsHoles();
   TestBrepRemoveOuterTrimRefusesSingularTrimSharedEdgeAndInvalidInput();

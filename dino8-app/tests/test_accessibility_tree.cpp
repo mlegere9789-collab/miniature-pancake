@@ -52,10 +52,18 @@
 // Document::UndoLabels()/RedoLabels() and DrawUndoMultipleWindow's own
 // numbered rows; the hatch patterns builder produces one row per pattern
 // naming it with its own description text as the Description, matching
-// HatchLibrary::Instance().Patterns(); and the plugins builder produces one
+// HatchLibrary::Instance().Patterns(); the plugins builder produces one
 // row per loaded plug-in naming its name/version/status with its command and
 // flow-node counts (and load error, if any) as the Description, matching
-// plugins::Manager::Get().Plugins().
+// plugins::Manager::Get().Plugins(); the command list builder produces one
+// row per registered command naming it with its status and description/note
+// text as the Description, plus an implemented/partial/planned breakdown as
+// the list's own Description, matching CommandEngine::Registry(); the
+// command aliases builder produces one row per alias naming it with the full
+// command it expands to as the Description, matching CommandEngine::Aliases();
+// and the keyboard shortcuts builder produces one row per customized
+// shortcut naming its human-readable key combo with the command it runs as
+// the Description, matching Application::user_shortcuts.
 // This needs no display, no D-Bus session, and no AT-SPI2 build at all, so
 // it runs on every platform and every CI job regardless of whether
 // AccessibilityLinux.cpp itself was compiled in this build (see
@@ -112,6 +120,12 @@ using dino8::platform::BuildHatchPatternsNode;
 using dino8::platform::BuildPluginsNode;
 using dino8::platform::HatchPatternSummary;
 using dino8::platform::PluginSummary;
+using dino8::platform::BuildCommandListNode;
+using dino8::platform::BuildCommandAliasesNode;
+using dino8::platform::BuildKeyboardShortcutsNode;
+using dino8::platform::CommandListEntrySummary;
+using dino8::platform::CommandAliasSummary;
+using dino8::platform::KeyboardShortcutSummary;
 
 namespace {
 int failures = 0;
@@ -853,6 +867,99 @@ int main() {
     Check(empty_plugins.children.empty(), "no plug-ins -> no ListItem children, not a missing accessible");
   }
 
+  // Command List: one ListItem per registered command naming it, with a
+  // Description combining its status and description/note text - the same
+  // facts DrawCommandListPanel's Command/Status/Description columns show per
+  // row, using the same `rc.info ? rc.info->description : rc.note` choice
+  // DrawCommandListPanel/DrawHelpPanel already make. The list's own
+  // Description gives an implemented/partial/planned breakdown (see
+  // BuildCommandListNode).
+  {
+    std::vector<CommandListEntrySummary> commands;
+    commands.push_back({"Line", "Implemented", "Draws a line between two points."});
+    commands.push_back({"BlendSrf", "Partial", "Creates a blend surface between two edges."});
+    commands.push_back({"FutureTool", "Planned", "engine hook not written yet"});
+    const dino8::platform::AccessibleNode list = BuildCommandListNode(commands);
+    Check(list.name == "Command List", "command list is named \"Command List\"");
+    Check(list.role == dino8::platform::AccessibleRole::List, "command list role is List");
+    Check(list.description == "3 commands in the Rhino 8 reference: 1 implemented, 1 partial, 1 planned (help only)",
+          "the list's own Description gives the total plus an implemented/partial/planned breakdown");
+    Check(list.children.size() == 3, "three ListItem children, one per command");
+    if (list.children.size() == 3) {
+      Check(list.children[0].role == dino8::platform::AccessibleRole::ListItem, "command row role is ListItem");
+      Check(list.children[0].name == "Line", "first row names the command");
+      Check(list.children[0].description == "Implemented: Draws a line between two points.",
+            "first row's Description combines its status and description text");
+      Check(list.children[1].description == "Partial: Creates a blend surface between two edges.",
+            "second row's Description reflects its Partial status");
+      Check(list.children[2].description == "Planned: engine hook not written yet",
+            "third row's Description falls back to its internal note the same way rc.note does when info is null");
+    }
+  }
+  {
+    const dino8::platform::AccessibleNode empty_commands = BuildCommandListNode({});
+    Check(empty_commands.name == "Command List", "still named \"Command List\" with no commands registered");
+    Check(empty_commands.description == "0 commands in the Rhino 8 reference: 0 implemented, 0 partial, 0 planned (help only)",
+          "empty command list still carries a 0-count breakdown Description");
+    Check(empty_commands.children.empty(), "no commands -> no ListItem children, not a missing accessible");
+  }
+
+  // Command Aliases: one ListItem per alias, named after the alias, with the
+  // full command name it expands to as the Description - the same shape
+  // BuildDocumentUserTextNode already uses for its own key/value rows,
+  // matching CommandEngine::Aliases().
+  {
+    std::vector<CommandAliasSummary> aliases;
+    aliases.push_back({"l", "Line"});
+    aliases.push_back({"bs", "BlendSrf"});
+    const dino8::platform::AccessibleNode list = BuildCommandAliasesNode(aliases);
+    Check(list.name == "Command Aliases", "command aliases list is named \"Command Aliases\"");
+    Check(list.role == dino8::platform::AccessibleRole::List, "command aliases list role is List");
+    Check(list.description == "2 command aliases", "alias count is carried as the list's Description");
+    Check(list.children.size() == 2, "two ListItem children, one per alias");
+    if (list.children.size() == 2) {
+      Check(list.children[0].role == dino8::platform::AccessibleRole::ListItem, "alias row role is ListItem");
+      Check(list.children[0].name == "l", "first row is named after its alias");
+      Check(list.children[0].description == "Line", "first row's Description is the command it expands to");
+      Check(list.children[1].name == "bs", "second row is named after its own alias");
+      Check(list.children[1].description == "BlendSrf", "second row's Description is present");
+    }
+  }
+  {
+    const dino8::platform::AccessibleNode empty_aliases = BuildCommandAliasesNode({});
+    Check(empty_aliases.name == "Command Aliases", "still named \"Command Aliases\" with no aliases at all");
+    Check(empty_aliases.description == "0 command aliases", "empty alias list still carries a 0-count Description");
+    Check(empty_aliases.children.empty(), "no aliases -> no ListItem children, not a missing accessible");
+  }
+
+  // Keyboard Shortcuts: one ListItem per customized shortcut, named after its
+  // human-readable key combo, with the command it runs as the Description -
+  // matching the Options window's Shortcuts tab row format (see
+  // Application::user_shortcuts).
+  {
+    std::vector<KeyboardShortcutSummary> shortcuts;
+    shortcuts.push_back({"Ctrl+L", "Line"});
+    shortcuts.push_back({"Ctrl+Shift+Alt+B", "BlendSrf"});
+    const dino8::platform::AccessibleNode list = BuildKeyboardShortcutsNode(shortcuts);
+    Check(list.name == "Keyboard Shortcuts", "keyboard shortcuts list is named \"Keyboard Shortcuts\"");
+    Check(list.role == dino8::platform::AccessibleRole::List, "keyboard shortcuts list role is List");
+    Check(list.description == "2 keyboard shortcuts", "shortcut count is carried as the list's Description");
+    Check(list.children.size() == 2, "two ListItem children, one per shortcut");
+    if (list.children.size() == 2) {
+      Check(list.children[0].role == dino8::platform::AccessibleRole::ListItem, "shortcut row role is ListItem");
+      Check(list.children[0].name == "Ctrl+L", "first row is named after its key combo");
+      Check(list.children[0].description == "Line", "first row's Description is the command it runs");
+      Check(list.children[1].name == "Ctrl+Shift+Alt+B", "second row's combo carries every modifier prefix");
+      Check(list.children[1].description == "BlendSrf", "second row's Description is present");
+    }
+  }
+  {
+    const dino8::platform::AccessibleNode empty_shortcuts = BuildKeyboardShortcutsNode({});
+    Check(empty_shortcuts.name == "Keyboard Shortcuts", "still named \"Keyboard Shortcuts\" with none customized");
+    Check(empty_shortcuts.description == "0 keyboard shortcuts", "empty shortcut list still carries a 0-count Description");
+    Check(empty_shortcuts.children.empty(), "no shortcuts -> no ListItem children, not a missing accessible");
+  }
+
   // BuildAccessibleTree accepts extra top-level regions (menu bar, panels)
   // alongside the always-present command line - the shape the live bridge
   // (Accessibility.cpp::UpdateAccessibility) assembles every frame.
@@ -883,20 +990,23 @@ int main() {
     dino8::platform::AccessibleNode redo_history = BuildRedoHistoryNode({});
     dino8::platform::AccessibleNode hatch_patterns = BuildHatchPatternsNode({});
     dino8::platform::AccessibleNode plugins = BuildPluginsNode({});
+    dino8::platform::AccessibleNode command_list = BuildCommandListNode({});
+    dino8::platform::AccessibleNode command_aliases = BuildCommandAliasesNode({});
+    dino8::platform::AccessibleNode keyboard_shortcuts = BuildKeyboardShortcutsNode({});
 
     const dino8::platform::AccessibleNode root = BuildAccessibleTree(
         "Dino8", "Command: ", "", {},
         {menu_bar, cmd_options, layers, props, viewports, activity_log, named_views, named_cplanes, linetypes,
          materials, clipping_planes, layouts, block_manager, layer_state_manager, document_user_text, lights,
          annotation_styles, document_notes, environments, audit_results, undo_history, redo_history, hatch_patterns,
-         plugins});
-    Check(root.children.size() == 25,
+         plugins, command_list, command_aliases, keyboard_shortcuts});
+    Check(root.children.size() == 28,
           "command line + menu bar + command options + layers + properties + viewports + activity log + "
           "named views + named cplanes + linetypes + materials + clipping planes + layouts + block manager + "
           "layer state manager + document user text + lights + annotation styles + document notes + "
-          "environments + audit results + undo history + redo history + hatch patterns + plugins = "
-          "25 top-level children");
-    if (root.children.size() == 25) {
+          "environments + audit results + undo history + redo history + hatch patterns + plugins + command list "
+          "+ command aliases + keyboard shortcuts = 28 top-level children");
+    if (root.children.size() == 28) {
       Check(root.children[0].role == AccessibleRole::Log, "child 0 is still the command line");
       Check(root.children[1].role == dino8::platform::AccessibleRole::MenuBar, "child 1 is the menu bar");
       Check(root.children[2].name == "Command Options", "child 2 is the command options list");
@@ -922,6 +1032,9 @@ int main() {
       Check(root.children[22].name == "Redo History", "child 22 is the redo history panel");
       Check(root.children[23].name == "Hatch Patterns", "child 23 is the hatch patterns panel");
       Check(root.children[24].name == "Plug-ins", "child 24 is the plug-ins panel");
+      Check(root.children[25].name == "Command List", "child 25 is the command list panel");
+      Check(root.children[26].name == "Command Aliases", "child 26 is the command aliases panel");
+      Check(root.children[27].name == "Keyboard Shortcuts", "child 27 is the keyboard shortcuts panel");
     }
   }
 

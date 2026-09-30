@@ -168,6 +168,30 @@ connection, the same way a screen reader would - to prove:
       plugins::Manager::Get().Plugins(). No further mutation check here:
       loading an additional plug-in needs a real, separate shared-library
       file on disk, which this script does not provide.
+  28. A "Command List" accessible (role LIST) is discoverable and starts
+      non-empty (the ~1055-command Rhino 8 reference catalog is registered
+      as placeholders at startup - see
+      CommandEngine::RegisterCatalogPlaceholders), with a known command
+      ("Line") present among its rows, its Description starting with
+      "Implemented:" - mirroring CommandEngine::Registry(). No mutation
+      check here: the registry itself never changes at runtime.
+  29. A "Command Aliases" accessible (role LIST) is discoverable and starts
+      non-empty with Rhino's own default aliases already installed (e.g.
+      "l" -> "Line") - mirroring CommandEngine::Aliases(), which
+      InstallDefaultAliases() seeds at startup (the same "never empty"
+      shape check 26/27 use for Hatch Patterns/Plug-ins) - and gains a new
+      entry naming the typed alias with the aliased command as its
+      Description once a real "Alias" command runs (see cmd_misc.cpp's
+      AliasCommand), the same before/after pattern check 10 uses for Named
+      Views.
+  30. A "Keyboard Shortcuts" accessible (role LIST) is discoverable and
+      starts empty: unlike Command Aliases, there is no default-shortcuts
+      installer anywhere in the source, so a fresh Application's
+      user_shortcuts starts as an empty vector - mirroring
+      Application::user_shortcuts. No mutation check here: there is no
+      command-line way to add one (shortcuts are only ever added through
+      the Options window's own Shortcuts tab), unlike every other region
+      above.
 
 This is a real integration test: at-spi2-registryd is the actual daemon
 GNOME uses, pyatspi is the actual library screen readers use, and Dino8 is
@@ -281,6 +305,7 @@ def main():
     sync13 = os.path.join(tmp, "sync13")
     sync14 = os.path.join(tmp, "sync14")
     sync15 = os.path.join(tmp, "sync15")
+    sync16 = os.path.join(tmp, "sync16")
     sync_final = os.path.join(tmp, "sync_final")
     script_path = os.path.join(tmp, "script.txt")
     with open(script_path, "w") as f:
@@ -418,6 +443,14 @@ def main():
         # Environments/Audit Results not touching the object undo stack),
         # so this is what Undo hands to Redo History.
         f.write("Undo\n")
+        f.write(f"@waitfile {sync16}\n")
+        # Same two-line shape "Circle 0,0,0" / "5" and "Block" / "0,0,0" /
+        # "MyBlock" already use above for a multi-step command: AliasCommand
+        # (see cmd_misc.cpp) prompts for the alias name on the first line,
+        # then the command it should run on the second - so one more sync
+        # point is enough to observe Command Aliases gain a new entry.
+        f.write("Alias smoketestalias\n")
+        f.write("Line\n")
         f.write(f"@waitfile {sync_final}\n")
 
     procs = []
@@ -760,6 +793,68 @@ def main():
                     names = [plugins_node.getChildAtIndex(j).name for j in range(plugins_node.childCount)]
                     ok(f"Plug-ins lists {plugins_node.childCount} already-loaded bundled plug-in(s), each naming "
                        f"its own Loaded/Error status ({names!r})")
+
+        command_list = find_child_by_name(app, "Command List", 10)
+        if command_list is None:
+            fail('"Command List" accessible not found among the application\'s children')
+        else:
+            ok('"Command List" accessible is discoverable via the real AT-SPI2 desktop')
+            if command_list.childCount < 1:
+                fail("Command List has no ListItem children (expected the Rhino 8 reference catalog)")
+            else:
+                line_row = None
+                for j in range(command_list.childCount):
+                    child = command_list.getChildAtIndex(j)
+                    if child is not None and child.name == "Line":
+                        line_row = child
+                        break
+                if line_row is None:
+                    fail('Command List has no row named "Line" among its children')
+                elif not line_row.description.startswith("Implemented:"):
+                    fail(f"Command List's \"Line\" row Description does not start with \"Implemented:\" "
+                         f"(got {line_row.description!r})")
+                else:
+                    ok(f'Command List lists {command_list.childCount} commands, including a "Line" row whose '
+                       f'Description starts "Implemented:" ({line_row.description!r})')
+
+        command_aliases = find_child_by_name(app, "Command Aliases", 10)
+        if command_aliases is None:
+            fail('"Command Aliases" accessible not found among the application\'s children')
+        else:
+            ok('"Command Aliases" accessible is discoverable via the real AT-SPI2 desktop')
+            # Non-empty by default: CommandEngine::InstallDefaultAliases()
+            # seeds Rhino's own default alias set at startup (see
+            # CommandEngine.cpp), the same "never empty" shape Hatch
+            # Patterns/Plug-ins/Command List use above.
+            if command_aliases.childCount < 1:
+                fail("Command Aliases has no ListItem children (expected Rhino's own default aliases)")
+            else:
+                l_alias = None
+                for j in range(command_aliases.childCount):
+                    child = command_aliases.getChildAtIndex(j)
+                    if child is not None and child.name == "l":
+                        l_alias = child
+                        break
+                if l_alias is None:
+                    fail('Command Aliases has no row named "l" among its default aliases')
+                elif l_alias.description != "Line":
+                    fail(f"Command Aliases' \"l\" row Description is not \"Line\" (got {l_alias.description!r})")
+                else:
+                    ok(f'Command Aliases lists {command_aliases.childCount} default aliases, including '
+                       f'"l" -> "Line" ({l_alias.name!r}, {l_alias.description!r})')
+
+        keyboard_shortcuts = find_child_by_name(app, "Keyboard Shortcuts", 10)
+        if keyboard_shortcuts is None:
+            fail('"Keyboard Shortcuts" accessible not found among the application\'s children')
+        else:
+            ok('"Keyboard Shortcuts" accessible is discoverable via the real AT-SPI2 desktop')
+            # Starts empty: unlike Command Aliases, there is no
+            # default-shortcuts installer anywhere in the source - a fresh
+            # Application::user_shortcuts is an empty vector.
+            if keyboard_shortcuts.childCount != 0:
+                fail(f"Keyboard Shortcuts has {keyboard_shortcuts.childCount} children in a fresh app (expected 0)")
+            else:
+                ok("Keyboard Shortcuts has no ListItem children in a fresh app (no default-shortcuts installer)")
 
         viewports = find_child_by_name(app, "Viewports", 10)
         if viewports is None:
@@ -1240,6 +1335,34 @@ def main():
             else:
                 ok(f"Undo History loses its topmost entry once \"Undo\" runs "
                    f"({undo_history_count_before!r} -> {count!r})")
+
+        command_aliases_count_before = command_aliases.childCount if command_aliases is not None else None
+
+        open(sync16, "w").close()  # let the script run "Alias smoketestalias" / "Line"
+
+        if command_aliases is not None:
+            deadline = time.time() + 10
+            newest_alias = None
+            while time.time() < deadline:
+                count = command_aliases.childCount
+                if command_aliases_count_before is not None and count > command_aliases_count_before:
+                    for j in range(count):
+                        child = command_aliases.getChildAtIndex(j)
+                        if child is not None and child.name == "smoketestalias":
+                            newest_alias = child
+                            break
+                    if newest_alias is not None:
+                        break
+                time.sleep(0.2)
+            if newest_alias is None:
+                fail(f"Command Aliases did not gain a \"smoketestalias\" entry after \"Alias\" ran within 10s "
+                     f"(childCount stayed at {command_aliases_count_before!r})")
+            elif newest_alias.description != "Line":
+                fail(f"Command Aliases' new \"smoketestalias\" entry does not name \"Line\" as its Description "
+                     f"(got {newest_alias.description!r})")
+            else:
+                ok('Command Aliases gains a "smoketestalias" entry naming "Line" as its Description once '
+                   '"Alias" runs')
 
         open(sync_final, "w").close()  # let the app finish its remaining frames/script and exit
 

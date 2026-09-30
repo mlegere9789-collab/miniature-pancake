@@ -119,6 +119,22 @@ dino8::platform::AccessibleNode AuditResultsAccessibleTree(Application& app);
 // direction. Starts empty on a fresh document.
 dino8::platform::AccessibleNode UndoHistoryAccessibleTree(Application& app);
 dino8::platform::AccessibleNode RedoHistoryAccessibleTree(Application& app);
+// The AT-SPI2-queryable snapshot of CommandEngine::Registry() - independent
+// of whether the Command List panel window is open, mirroring the same
+// name/status/description facts DrawCommandListPanel's own table shows per
+// row, plus an implemented/partial/planned breakdown as the list's own
+// Description.
+dino8::platform::AccessibleNode CommandListAccessibleTree(Application& app);
+// The AT-SPI2-queryable snapshot of CommandEngine::Aliases() - independent
+// of whether the Options window's Aliases tab is open, mirroring each
+// alias and the command it expands to, the same shape
+// DocumentUserTextAccessibleTree already uses for its own key/value rows.
+dino8::platform::AccessibleNode CommandAliasesAccessibleTree(Application& app);
+// The AT-SPI2-queryable snapshot of Application::user_shortcuts -
+// independent of whether the Options window's Shortcuts tab is open,
+// mirroring each shortcut's human-readable key combo and the command it
+// runs, the same way that tab's own row formats them.
+dino8::platform::AccessibleNode KeyboardShortcutsAccessibleTree(Application& app);
 void DrawToolbars(Application& app);
 void DrawLayersPanel(Application& app);
 void DrawPropertiesPanel(Application& app);
