@@ -463,3 +463,53 @@ RailType=DistBetweenRails
 1755,10,5
 SelAll
 Volume
+# --- ChamferVertex: exact kernel::ChamferConvexVertex single-facet cut
+# across the 3 edges meeting at one solid vertex - PARITY_MAP.md's Blending
+# & chamfering "Vertex blend" entry's own doc comment also names this
+# construction as a previously-zero-call-site gap (RemoveFillet already
+# reaches its own inverse, RemoveChamferVertex, but nothing built one
+# forward). Picks the box corner at (1800,0,0); unlike FilletVertex's own
+# spherical corner, no perpendicular-face restriction applies here (a plane
+# always exists through any 3 non-collinear points), so this needs no
+# special "pole face" corner. Closed form (ChamferConvexVertex's own doc
+# comment): removed volume = (distance^3/6)*|e_0.(e_1 x e_2)| for the 3
+# UNIT edge directions, which is exactly 1 for a box corner's own mutually-
+# perpendicular edges regardless of the box's size - at distance=3 that is
+# 1000 - 27/6 = 995.5, and exact (every face, including the new chamfer
+# facet, stays flat, so tessellation adds no approximation error, the same
+# reason the plain ChamferEdge case above lands on a clean 955).
+SelAll
+Hide
+Box 1800,0,0 1810,10,0 10
+ChamferVertex
+Distance=3
+1800,0,0
+SelAll
+Volume
+# --- FilletEdge Rho, two edges sharing a face staged in ONE run: kernel::
+# FilletConvexEdgesConic's own "two edges in this batch share a face"
+# validation (fillet.h/fillet.cpp) rejects the whole staged batch
+# atomically, instead of the bug this staging (cmd_fillet.cpp's own
+# pending_conic_, added alongside ChamferVertex above) fixes: before it,
+# the FIRST pick's own exact conic result already carried a curved wall
+# face, and PlanarFaces() (called first by every one of these kernel
+# functions) rejects ANY solid already carrying one, so a SECOND Rho pick
+# used to fail with a confusing "needs the whole object to be planar-faced"
+# warning about a perfectly ordinary planar edge, after already having
+# silently applied the first edge's own fillet - a partially-applied,
+# order-dependent result. Both picks here land on the TOP face's own front
+# and back edges of the same box (their own end notches doubly conflict on
+# the LEFT/RIGHT faces too), so both the convex and concave whole-batch
+# attempts fail and NEITHER edge is touched - the object survives with its
+# exact original volume, not a partial fillet.
+SelAll
+Hide
+Box 1850,0,0 1860,10,0 10
+FilletEdge
+Radius=2
+Rho=0.5
+1855,0,10
+1855,10,10
+Enter
+SelAll
+Volume

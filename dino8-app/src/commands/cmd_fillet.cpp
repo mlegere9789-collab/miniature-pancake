@@ -1460,11 +1460,96 @@ class FilletEdgeCommand : public Command {
     }
     return radii_.back().second;
   }
-  void OnEnter(CommandContext&) override { Finish(); }
+  void OnEnter(CommandContext& ctx) override {
+    FlushPendingConic(ctx);
+    Finish();
+  }
   void OnPoint(CommandContext& ctx, Point3d p) override {
     std::optional<EdgePick> pick = PickEdge(ctx, p);
     if (!pick) { ctx.Warn("No shareable edge near that point (needs two adjacent faces)"); return; }
     Run(ctx, *pick);
+  }
+  // Applies every staged Rho edge (see the Run()/Rho block above) in one
+  // kernel::FilletConvexEdgesConic/FilletConcaveEdgesConic batch call - the
+  // same convex-then-concave cascade TryExactChamfer/TryExactRailFillet/
+  // TryExactFillet above already use, since a batch is only ever uniformly
+  // convex or uniformly concave (each kernel function validates every
+  // edge's own dihedral matches before building anything - a mixed-
+  // convexity batch is out of scope, see FilletConvexEdgesConic's own doc
+  // comment, and both attempts fail cleanly rather than building half a
+  // result). A single staged edge is exact here too, not an approximation
+  // of the old single-edge helper: FilletConvexEdgesConic's own doc
+  // comment derives every staged edge's own retrim/notch/wall exactly as
+  // the single-edge FilletConvexEdgeConic construction does, just batched.
+  // A no-op when nothing was staged (Rho never set, or the Fillet+Rho
+  // branch never reached this run at all).
+  void FlushPendingConic(CommandContext& ctx) {
+    if (pending_conic_.empty()) return;
+    const std::vector<kernel::ConicEdgeSpec> edges = std::move(pending_conic_);
+    const ObjectId id = pending_conic_id_;
+    const int first_edge = pending_conic_first_edge_;
+    pending_conic_.clear();
+    pending_conic_id_ = kNoObject;
+    pending_conic_first_edge_ = -1;
+    const SceneObject* o = ctx.Doc().Find(id);
+    if (!o) return;
+    std::optional<ON_Brep> b = BrepOfObject(*o);
+    if (!b) return;
+    kernel::Brep kb;
+    kb.raw() = *b;
+    kernel::Brep result;
+    std::string convex_err, concave_err;
+    bool ok = false;
+    try {
+      result = kernel::FilletConvexEdgesConic(kb, edges);
+      ok = true;
+    } catch (const std::exception& ex) {
+      convex_err = ex.what();
+    }
+    if (!ok) {
+      try {
+        result = kernel::FilletConcaveEdgesConic(kb, edges);
+        ok = true;
+      } catch (const std::exception& ex) {
+        concave_err = ex.what();
+      }
+    }
+    const std::string label = "FilletEdge";
+    if (!ok) {
+      const std::string detail = "convex attempt: " + convex_err + "; concave attempt: " + concave_err;
+      if (edges.size() == 1) {
+        // Same wording a single staged edge always produced before this
+        // batch refactor (the pre-existing adversarial-script expectation:
+        // "needs the whole object to be planar-faced at this edge").
+        ctx.Warn(label + ": an exact conic (Rho) fillet needs the whole object to be planar-faced at this edge (" +
+                  detail + "); Rho has no approximate rolling-ball equivalent, so this cannot silently fall back");
+      } else {
+        ctx.Warn(label + ": an exact conic (Rho) fillet of the " + std::to_string(edges.size()) +
+                  " staged edge(s) on object " + std::to_string(id) + " failed (" + detail +
+                  "); Rho has no approximate rolling-ball equivalent, so this cannot silently fall back - edges "
+                  "sharing a face, or a mix of convex and concave edges, are out of scope for one FilletEdge run");
+      }
+      return;
+    }
+    ctx.Doc().BeginChange(label);
+    if (SceneObject* orig = ctx.Doc().Find(id)) {
+      orig->kind = ObjectKind::Brep;
+      if (!orig->brep) orig->brep = std::make_unique<kernel::Brep>();
+      orig->brep->raw() = result.raw();
+      orig->surface.reset();
+      orig->InvalidateDisplay();
+    }
+    if (edges.size() == 1) {
+      const kernel::ConicEdgeSpec& e = edges.front();
+      const std::string dist = std::fabs(e.distance_j - e.distance_i) > 1e-9
+                                    ? "distance1 " + FormatNumber(e.distance_i) + ", distance2 " + FormatNumber(e.distance_j)
+                                    : "distance " + FormatNumber(e.distance_i);
+      ctx.Print(label + ": edge " + std::to_string(first_edge) + " of object " + std::to_string(id) +
+                 " replaced with an exact conic fillet (rho " + FormatNumber(e.rho) + ", " + dist + ")");
+    } else {
+      ctx.Print(label + ": " + std::to_string(edges.size()) + " staged edges of object " + std::to_string(id) +
+                 " replaced with an exact multi-edge conic fillet");
+    }
   }
   void Run(CommandContext& ctx, const EdgePick& pick) {
     const SceneObject* o = ctx.Doc().Find(pick.id);
@@ -1531,27 +1616,41 @@ class FilletEdgeCommand : public Command {
     // conic a circle for this edge's own dihedral (never special-cased or
     // detected here) would be silently misrepresented as a plain round
     // fillet - the same "misleading success" bug the Chamfer wiring's own
-    // Distance2-on-a-curved-edge case is documented to avoid. So a failure
-    // of the exact path with Rho set always warns and returns rather than
-    // falling back.
+    // Distance2-on-a-curved-edge case is documented to avoid.
+    //
+    // Every Rho pick is STAGED (pending_conic_) rather than applied here:
+    // applying the first edge immediately, as this used to do, would
+    // silently break picking a SECOND independent Rho edge in the same run
+    // - the first edge's own committed result already carries a curved
+    // conic wall face, and PlanarFaces() (called first by every one of
+    // these kernel functions) rejects any solid already carrying one, so
+    // the second pick would fail with a confusing "not planar-faced" warning
+    // even though it names a perfectly ordinary planar edge. Staging and
+    // applying the whole batch together at Enter, via
+    // kernel::FilletConvexEdgesConic/FilletConcaveEdgesConic, avoids that
+    // entirely (one shared PlanarFaces() snapshot for every staged edge) and
+    // closes PARITY_MAP.md's Blending & chamfering entry for that batch
+    // API's own previously-zero app reachability. See FlushPendingConic
+    // (below OnEnter) for the actual build.
     if (mode_ == Mode::Fillet && rho_.has_value() && radii_.empty() && !preview_) {
-      ON_Brep exact;
-      std::string detail;
-      if (TryExactConicFillet(*b, edge.PointAtStart(), edge.PointAtEnd(), exact, detail)) {
-        ctx.Doc().BeginChange(label);
-        if (SceneObject* orig = ctx.Doc().Find(pick.id)) {
-          orig->kind = ObjectKind::Brep;
-          if (!orig->brep) orig->brep = std::make_unique<kernel::Brep>();
-          orig->brep->raw() = exact;
-          orig->surface.reset();
-          orig->InvalidateDisplay();
-        }
-        ctx.Print(label + ": edge " + std::to_string(pick.edge) + " of object " + std::to_string(pick.id) +
-                   " replaced with an exact conic fillet (rho " + FormatNumber(*rho_) + ", " + ConicDistanceDescription() + ")");
+      if (!pending_conic_.empty() && pending_conic_id_ != pick.id) {
+        ctx.Warn(label + ": a Rho edge on a different object can't be staged in the same FilletEdge run (object " +
+                  std::to_string(pending_conic_id_) + " already has " + std::to_string(pending_conic_.size()) +
+                  " staged); press Enter to apply those first, then run FilletEdge again for this object");
         return;
       }
-      ctx.Warn(label + ": an exact conic (Rho) fillet needs the whole object to be planar-faced at this edge (" + detail +
-                "); Rho has no approximate rolling-ball equivalent, so this cannot silently fall back");
+      pending_conic_id_ = pick.id;
+      if (pending_conic_.empty()) pending_conic_first_edge_ = pick.edge;
+      kernel::ConicEdgeSpec spec;
+      spec.p0 = edge.PointAtStart();
+      spec.p1 = edge.PointAtEnd();
+      spec.distance_i = radius_;
+      spec.distance_j = distance2_.value_or(radius_);
+      spec.rho = *rho_;
+      pending_conic_.push_back(spec);
+      ctx.Print(label + ": edge " + std::to_string(pick.edge) + " of object " + std::to_string(pick.id) +
+                 " staged for an exact conic fillet (rho " + FormatNumber(*rho_) + ", " + ConicDistanceDescription() +
+                 ") - " + std::to_string(pending_conic_.size()) + " staged, Enter to apply");
       return;
     }
     // Exact RailType fillet: kernel::FilletConvexEdgeByDistanceFromEdge/
@@ -2007,46 +2106,14 @@ class FilletEdgeCommand : public Command {
     return "distance " + FormatNumber(radius_);
   }
 
-  // Tries the exact kernel conic fillet (convex, then concave) between
-  // p0/p1 on `solid`'s own two adjacent faces, using radius_ as distance_i,
-  // distance2_.value_or(radius_) as distance_j, and rho_ as the conic shape
-  // parameter. Same convex-then-concave/detail-joining structure as
-  // TryExactChamfer above, for the identical reason: the caller doesn't
-  // know the edge's own convexity in advance, and both kernel functions
-  // already reject the wrong one cleanly via EdgeConvexity/
-  // RequireConcaveEdge.
-  bool TryExactConicFillet(const ON_Brep& solid, Point3d p0, Point3d p1, ON_Brep& out, std::string& detail) const {
-    kernel::Brep kb;
-    kb.raw() = solid;
-    const double d_i = radius_;
-    const double d_j = distance2_.value_or(d_i);
-    const double rho = *rho_;
-    std::string convex_err, concave_err;
-    auto attempt = [&](bool convex, std::string& err) -> bool {
-      try {
-        kernel::Brep result = convex ? kernel::FilletConvexEdgeConic(kb, p0, p1, d_i, d_j, rho)
-                                      : kernel::FilletConcaveEdgeConic(kb, p0, p1, d_i, d_j, rho);
-        out = result.raw();
-        return true;
-      } catch (const std::exception& ex) {
-        err = ex.what();
-        return false;
-      }
-    };
-    if (attempt(true, convex_err)) return true;
-    if (attempt(false, concave_err)) return true;
-    detail = "convex attempt: " + convex_err + "; concave attempt: " + concave_err;
-    return false;
-  }
-
   // Tries the exact kernel rolling-ball fillet (convex, then concave)
   // specified via a RailType distance instead of a direct radius -
   // kernel::FilletConvexEdgeByDistanceFromEdge/ByDistanceBetweenRails (and
   // their concave mirrors) are pure closed-form radius conversions that
   // dispatch straight to FilletConvexEdge/FilletConcaveEdge, so this
   // reuses the identical convex-then-concave/detail-joining structure
-  // TryExactConicFillet above uses, for the identical reason: the caller
-  // doesn't know the edge's own convexity in advance.
+  // FlushPendingConic's own batch call above uses, for the identical
+  // reason: the caller doesn't know the edge's own convexity in advance.
   bool TryExactRailFillet(const ON_Brep& solid, Point3d p0, Point3d p1, ON_Brep& out, std::string& detail) const {
     kernel::Brep kb;
     kb.raw() = solid;
@@ -2076,10 +2143,10 @@ class FilletEdgeCommand : public Command {
   // between p0/p1 on `solid`'s own two adjacent faces, using radius_ for
   // both faces (a plain rolling-ball fillet has one shared radius, unlike
   // Chamfer's independent d_i/d_j). Same convex-then-concave/detail-joining
-  // structure as TryExactChamfer/TryExactConicFillet/TryExactRailFillet
-  // above, for the identical reason: the caller doesn't know the edge's own
-  // convexity in advance, and both kernel functions already reject the
-  // wrong one cleanly via EdgeConvexity/RequireConcaveEdge.
+  // structure as TryExactChamfer/TryExactRailFillet above, for the
+  // identical reason: the caller doesn't know the edge's own convexity in
+  // advance, and both kernel functions already reject the wrong one
+  // cleanly via EdgeConvexity/RequireConcaveEdge.
   bool TryExactFillet(const ON_Brep& solid, Point3d p0, Point3d p1, ON_Brep& out, std::string& detail) const {
     kernel::Brep kb;
     kb.raw() = solid;
@@ -2160,6 +2227,25 @@ class FilletEdgeCommand : public Command {
   bool curvature_ = false;
   bool preview_ = false;
   bool variable_engine_used_ = false;  // set by Run(): true when TryExactTaperedFillet (kernel::FilletConvexEdgeTapered) or BuildPlanarVariableFillet/BuildPlaneCylinderVariableFillet (the app's own exact closed forms) built the last variable-radius result
+
+  // Staged Rho (exact conic) edges for this command run, applied together at
+  // Enter via kernel::FilletConvexEdgesConic/FilletConcaveEdgesConic
+  // (PARITY_MAP.md's Blending & chamfering entry: that multi-edge batch API
+  // previously had no app call site at all). A single FilletConvexEdgeConic/
+  // FilletConcaveEdgeConic call can't simply be chained per edge - the first
+  // edge's own output already carries a curved conic wall face, which
+  // PlanarFaces() (called first by every one of these functions) rejects on
+  // the next edge's own attempt - so instead of applying each Rho pick
+  // immediately like the plain/Chamfer/RailType branches below, every pick
+  // is staged here (its own distance_i/distance_j/rho captured AT PICK TIME,
+  // so changing Distance2/Rho between picks still gives each staged edge its
+  // own values) and the whole batch is built in one call once Enter is
+  // pressed. All staged edges must belong to the SAME object (the kernel
+  // call needs one shared PlanarFaces() snapshot); a pick on a different
+  // object is refused rather than silently mixed in.
+  std::vector<kernel::ConicEdgeSpec> pending_conic_;
+  ObjectId pending_conic_id_ = kNoObject;
+  int pending_conic_first_edge_ = -1;  // ON_BrepEdge index of the first staged edge, for the single-edge message
 };
 
 // ---------------------------------------------------------------------------
@@ -3464,6 +3550,86 @@ class FilletVertexCommand : public Command {
 };
 
 // ---------------------------------------------------------------------------
+// Vertex chamfer (the flat-facet sibling of FilletVertex above): PARITY_MAP.md's
+// Blending & chamfering "Vertex blend" entry's own doc comment also names
+// kernel::ChamferConvexVertex/ChamferConcaveVertex - the single-new-planar-
+// facet cut across a trihedral corner, ChamferConvexEdge's genuine 3D
+// analogue for a VERTEX rather than an edge - but, like FilletConvexEdges/
+// FilletConcaveEdges before FilletVertexCommand above, neither had any app
+// caller (RemoveFilletCommand already reaches their own inverse,
+// RemoveChamferVertex, so only the forward construction was unreached).
+// Unlike FilletVertex's own spherical corner (which needs one of the 3
+// faces perpendicular to the other two, or the blend isn't a sphere), a
+// plane always exists through any 3 non-collinear points, so this accepts
+// ANY convex (or, mirrored, concave) trihedral corner - see
+// ChamferConvexVertex's own doc comment. Same convex-then-concave cascade
+// as FilletVertexCommand, for the identical reason (the picked vertex's own
+// convexity isn't known in advance).
+class ChamferVertexCommand : public Command {
+ public:
+  void Begin(CommandContext&) override {
+    options = {{"Distance", FormatNumber(distance_), {}, true, false}};
+    WantPoint("Click a solid's vertex to chamfer (cuts the trihedral corner meeting there with one flat facet)");
+  }
+  void OnOption(CommandContext&, const std::string& n, const std::string& v) override {
+    if (n == "Distance") distance_ = std::atof(v.c_str());
+  }
+  void OnPoint(CommandContext& ctx, Point3d p) override {
+    Run(ctx, p);
+    Finish();
+  }
+  void Run(CommandContext& ctx, Point3d p) {
+    std::optional<VertexPick> pick = PickVertex(ctx, p);
+    if (!pick) { ctx.Warn("ChamferVertex: no vertex near that point"); return; }
+    const SceneObject* o = ctx.Doc().Find(pick->id);
+    if (!o) return;
+    std::optional<ON_Brep> b = BrepOfObject(*o);
+    if (!b) { ctx.Warn("ChamferVertex: picked object has no B-rep"); return; }
+    const ON_BrepVertex& v = b->m_V[pick->vertex];
+    if (v.m_ei.Count() != 3) {
+      ctx.Warn("ChamferVertex: needs a vertex where exactly 3 edges meet (found " + std::to_string(v.m_ei.Count()) +
+                "); higher-valence corners have no exact single-facet chamfer construction");
+      return;
+    }
+    kernel::Brep kb;
+    kb.raw() = *b;
+    std::string convex_err, concave_err;
+    ON_Brep result;
+    const char* kind = nullptr;
+    try {
+      result = kernel::ChamferConvexVertex(kb, p, distance_).raw();
+      kind = "convex";
+    } catch (const std::exception& ex1) {
+      convex_err = ex1.what();
+      try {
+        result = kernel::ChamferConcaveVertex(kb, p, distance_).raw();
+        kind = "concave";
+      } catch (const std::exception& ex2) {
+        concave_err = ex2.what();
+      }
+    }
+    if (!kind) {
+      ctx.Warn("ChamferVertex: not a supported trihedral corner (convex attempt: " + convex_err +
+                "; concave attempt: " + concave_err + ")");
+      return;
+    }
+    ctx.Doc().BeginChange("ChamferVertex");
+    if (SceneObject* orig = ctx.Doc().Find(pick->id)) {
+      orig->kind = ObjectKind::Brep;
+      if (!orig->brep) orig->brep = std::make_unique<kernel::Brep>();
+      orig->brep->raw() = result;
+      orig->surface.reset();
+      orig->InvalidateDisplay();
+    }
+    ctx.Print("ChamferVertex: " + std::string(kind) + " corner at vertex " + std::to_string(pick->vertex) +
+               " of object " + std::to_string(pick->id) + " chamfered (distance " + FormatNumber(distance_) + ")");
+  }
+
+ private:
+  double distance_ = 2;
+};
+
+// ---------------------------------------------------------------------------
 // Blend/chamfer removal (Rhino's RemoveFillet): PARITY_MAP.md's Blending &
 // chamfering "Blend removal / defeaturing with healing" entry already
 // documents genuinely exact kernel inverses - RemoveBlend (fillets, plain
@@ -3587,6 +3753,8 @@ void RegisterFilletCommands(CommandEngine& e) {
       "Exact kernel::RemoveBlend/RemoveChamfer/RemoveChamferVertex inverse of FilletEdge/ChamferEdge/vertex-chamfer, tried in that order from a single picked face - restores the sharp edge or vertex purely from the solid's own geometry, no separate provenance needed.");
   Reg(e, "FilletVertex", Make<FilletVertexCommand>(), CommandStatus::Implemented,
       "Exact kernel::FilletConvexEdges/FilletConcaveEdges spherical-corner blend of the 3 edges meeting at a picked trihedral vertex (needs one of the 3 faces perpendicular to the other two, e.g. any box corner) - tried convex then concave.");
+  Reg(e, "ChamferVertex", Make<ChamferVertexCommand>(), CommandStatus::Implemented,
+      "Exact kernel::ChamferConvexVertex/ChamferConcaveVertex single-facet cut across the 3 edges meeting at a picked trihedral vertex (any convex or concave corner, no perpendicular-face restriction) - tried convex then concave. RemoveFillet already reaches this construction's own inverse (RemoveChamferVertex).");
 }
 
 }  // namespace dino8::app
