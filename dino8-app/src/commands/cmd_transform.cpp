@@ -5,6 +5,25 @@ namespace dino8::app {
 
 namespace {
 
+// Resolves `ids` to actual object *values* in one O(document size +
+// selection size) FindMany() pass, instead of one O(document size) Find()
+// per id - the same win FindMany() gives a Find()-per-id loop, just
+// returning copies rather than pointers. Copies (not pointers) are the
+// point: every call site below duplicates each source object one or more
+// times and interleaves those duplicates with Document::Add(), which may
+// reallocate objects_ and invalidate any pointer resolved before it - so
+// the source data has to be captured before the first Add(), not looked up
+// again inside the copy loop. Missing ids are skipped, matching Find()'s
+// existing behavior at every call site this replaces.
+std::vector<SceneObject> ResolveObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) {
+  std::vector<SceneObject> out;
+  out.reserve(ids.size());
+  for (const SceneObject* o : ctx.Doc().FindMany(ids)) {
+    if (o) out.push_back(*o);
+  }
+  return out;
+}
+
 void ApplyXform(CommandContext& ctx, const std::vector<ObjectId>& ids, const ON_Xform& xf, bool copy, const std::string& label) {
   // Move/Rotate/Scale/Mirror/Orient/Nudge/ProjectToCPlane (copy=false): the
   // full set of ids about to be Transform()-ed in place is known upfront
@@ -15,18 +34,19 @@ void ApplyXform(CommandContext& ctx, const std::vector<ObjectId>& ids, const ON_
   // only adds new objects and never touches `ids`, which the general
   // BeginChange(label) path already records cheaply (an add-only delta
   // costs nothing for the untouched objects), so it doesn't need the fast
-  // path.
+  // path - but it still resolves the selection with ResolveObjects()
+  // rather than one Find() per id, since that Find() cost is independent
+  // of which undo path records the edit (see ResolveObjects()'s comment).
   if (copy) {
     ctx.Doc().BeginChange(label);
+    std::vector<SceneObject> sources = ResolveObjects(ctx, ids);
     std::vector<ObjectId> made;
-    for (ObjectId id : ids) {
-      SceneObject* o = ctx.Doc().Find(id);
-      if (!o) continue;
-      SceneObject dup = *o;
-      dup.id = kNoObject;
-      dup.selected = false;
-      dup.Transform(xf);
-      made.push_back(ctx.Doc().Add(std::move(dup)));  // may reallocate objects_
+    made.reserve(sources.size());
+    for (SceneObject& src : sources) {
+      src.id = kNoObject;
+      src.selected = false;
+      src.Transform(xf);
+      made.push_back(ctx.Doc().Add(std::move(src)));  // may reallocate objects_
     }
     ctx.Print("Copied " + std::to_string(made.size()) + " object(s)");
   } else {
@@ -357,17 +377,19 @@ class MirrorCommand : public Command {
     // change (finalized lazily on the next Begin/Undo/Redo), so it's
     // captured by the same undo entry as the transform itself.
     if (copy_) {
-      const std::vector<SceneObject>& objs = ctx.Doc().Objects();
+      // The freshly-made copies are exactly Objects()[before..end) - no
+      // Find() needed at all, let alone one per object: index the vector
+      // directly instead of an O(document size) id lookup per new object.
+      std::vector<SceneObject>& objs = ctx.Doc().Objects();
       for (size_t i = before; i < objs.size(); ++i) {
-        if (SceneObject* o = ctx.Doc().Find(objs[i].id)) {
-          if (o->user_text.count("Block")) o->user_text["Mirrored"] = "1";
-        }
+        if (objs[i].user_text.count("Block")) objs[i].user_text["Mirrored"] = "1";
       }
     } else {
-      for (ObjectId id : ids_) {
-        if (SceneObject* o = ctx.Doc().Find(id)) {
-          if (o->user_text.count("Block")) o->user_text["Mirrored"] = "1";
-        }
+      // ids_ was transformed in place; FindMany() resolves the whole
+      // selection in one O(document size) pass instead of one O(document
+      // size) Find() per id (same win as ApplyXform's in-place branch).
+      for (SceneObject* o : ctx.Doc().FindMany(ids_)) {
+        if (o && o->user_text.count("Block")) o->user_text["Mirrored"] = "1";
       }
     }
     ctx.ClearPreview();
@@ -408,16 +430,20 @@ class ArrayCommand : public Command {
   void OnPoint(CommandContext& ctx, Point3d p) override { if (stage_ >= 3) Apply(ctx, p - base_); }
   void Apply(CommandContext& ctx, Vector3d spacing) {
     ctx.Doc().BeginChange("Array");
+    // Resolve the source selection once (O(document size + selection size))
+    // instead of once per (grid cell x id) - a rectangular array's copy
+    // count multiplies the old per-id Find() cost on top of the selection
+    // size, for O(cells * selection size * document size) total; this
+    // brings it down to O(document size + cells * selection size).
+    const std::vector<SceneObject> sources = ResolveObjects(ctx, ids_);
     int made = 0;
     for (int i = 0; i < counts_[0]; ++i)
       for (int j = 0; j < counts_[1]; ++j)
         for (int k = 0; k < counts_[2]; ++k) {
           if (i == 0 && j == 0 && k == 0) continue;
           ON_Xform xf = ON_Xform::TranslationTransformation(Vector3d(spacing.x * i, spacing.y * j, spacing.z * k));
-          for (ObjectId id : ids_) {
-            SceneObject* o = ctx.Doc().Find(id);
-            if (!o) continue;
-            SceneObject dup = *o; dup.id = kNoObject; dup.selected = false; dup.Transform(xf);
+          for (const SceneObject& src : sources) {
+            SceneObject dup = src; dup.id = kNoObject; dup.selected = false; dup.Transform(xf);
             ctx.Doc().Add(std::move(dup));
             ++made;
           }
@@ -457,13 +483,13 @@ class ArrayLinearCommand : public Command {
   }
   void Apply(CommandContext& ctx, Vector3d spacing) {
     ctx.Doc().BeginChange("ArrayLinear");
+    // See ArrayCommand::Apply()'s comment - same fix, same reason.
+    const std::vector<SceneObject> sources = ResolveObjects(ctx, ids_);
     int made = 0;
     for (int i = 1; i < *count_; ++i) {
       ON_Xform xf = ON_Xform::TranslationTransformation(spacing * i);
-      for (ObjectId id : ids_) {
-        SceneObject* o = ctx.Doc().Find(id);
-        if (!o) continue;
-        SceneObject dup = *o; dup.id = kNoObject; dup.selected = false; dup.Transform(xf);
+      for (const SceneObject& src : sources) {
+        SceneObject dup = src; dup.id = kNoObject; dup.selected = false; dup.Transform(xf);
         ctx.Doc().Add(std::move(dup));
         ++made;
       }
@@ -494,12 +520,14 @@ class ArrayPolarCommand : public Command {
     if (!count_) { count_ = std::max(2, static_cast<int>(v)); WantNumber("Angle to fill", 360); return; }
     double fill = v * ON_PI / 180.0;
     ctx.Doc().BeginChange("ArrayPolar");
+    // See ArrayCommand::Apply()'s comment - same fix, same reason.
+    const std::vector<SceneObject> sources = ResolveObjects(ctx, ids_);
     const int n = *count_;
     const bool full = std::fabs(v - 360.0) < 1e-9;
     for (int i = 1; i < n; ++i) {
       ON_Xform xf;
       xf.Rotation(fill * i / (full ? n : n - 1), ActiveNormal(ctx), center_);
-      for (ObjectId id : ids_) { SceneObject* o = ctx.Doc().Find(id); if (!o) continue; SceneObject dup = *o; dup.id = kNoObject; dup.selected = false; dup.Transform(xf); ctx.Doc().Add(std::move(dup)); }
+      for (const SceneObject& src : sources) { SceneObject dup = src; dup.id = kNoObject; dup.selected = false; dup.Transform(xf); ctx.Doc().Add(std::move(dup)); }
     }
     Finish();
   }
@@ -591,10 +619,13 @@ class SetPtCommand : public Command {
   }
   void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
     if (!set_x_ && !set_y_ && !set_z_) { ctx.Warn("SetPt: no coordinate selected (SetX/SetY/SetZ)"); Finish(); return; }
-    ctx.Doc().BeginChange("SetPt");
+    // Pure in-place edit of a known id set (no add/remove) - same fast path
+    // as ApplyXform's copy=false branch: BeginChangeForObjects() for
+    // O(selection size) undo recording, FindMany() for one O(document size)
+    // resolve instead of one Find() per id.
+    ctx.Doc().BeginChangeForObjects("SetPt", ids);
     int done = 0;
-    for (ObjectId id : ids) {
-      SceneObject* o = ctx.Doc().Find(id);
+    for (SceneObject* o : ctx.Doc().FindMany(ids)) {
       if (!o) continue;
       kernel::BoundingBox bb = o->BoundingBox();
       Vector3d d(0, 0, 0);
