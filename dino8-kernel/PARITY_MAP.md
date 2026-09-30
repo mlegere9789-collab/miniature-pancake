@@ -1482,22 +1482,25 @@ Screen-reader support and Plugin marketplace both moving `missing`->
 | 7 | File I/O & interoperability (app level) | 1.0 | 9 | 0.111 |
 | 8 | Ecosystem, trust, cloud/AI & platform reach | 0.5 | 9 | 0.056 |
 
-The app table's top four categories (Viewport display, Scripting, Command
-system, 2D drafting/UI-UX) each earn 1.5-3.6x the headline points per
+The app table's top four categories (Scripting, Viewport display, Command
+system, 2D drafting/UI-UX) each earn 1.5-4.5x the headline points per
 remaining item closed that the bottom two (File I/O, Ecosystem) do — a
-single closed item in Viewport display or Scripting is still worth as much
+single closed item in Scripting or Viewport display is still worth as much
 to the Dino 8 headline as roughly 3-4 items closed in Ecosystem, though
 File I/O's own gap to the top narrowed this pass (0.083 -> 0.111) once
 three of its seven `missing` items closed, cutting its own remaining-item
-denominator from 12 to 9. On the kernel side the spread is narrower (SubD &
-mesh kernel support tops out at ~3x Offsetting/shelling at the bottom)
-because kernel category weights cluster closer together (mostly 0.5-1.5)
-than the app table's does (0.5-1.5 over fewer, larger categories). UI/UX
-moved up two rows in an earlier pass purely from its own reclassification
-above (Screen-reader support leaving `missing` narrows the category's own
-remaining-item denominator); Ecosystem's remaining count also dropped by
-one for the same reason (Plugin marketplace), but it started so far behind
-(0.5 weight over 16 items) that it stays last.
+denominator from 12 to 9; Scripting jumped to the top spot the same day for
+the same reason (0.200 -> 0.250, its own remaining-item denominator
+narrowing from 5 to 4 - see the rotation session below). On the kernel side
+the spread is narrower (SubD & mesh kernel support tops out at ~3x
+Offsetting/shelling at the bottom) because kernel category weights cluster
+closer together (mostly 0.5-1.5) than the app table's does (0.5-1.5 over
+fewer, larger categories). UI/UX moved up two rows in an earlier pass purely
+from its own reclassification above (Screen-reader support leaving
+`missing` narrows the category's own remaining-item denominator);
+Ecosystem's remaining count also dropped by one for the same reason (Plugin
+marketplace), but it started so far behind (0.5 weight over 16 items) that
+it stays last.
 
 ## Kernel: Fossilith vs Parasolid/ACIS
 
@@ -6310,9 +6313,9 @@ top 40:
 - [app/app_scripting] Cloud/network compute service (Rhino.Compute equivalent) (missing)
 - [app/app_scripting] AI-assisted modeling or scripting (missing)
 - [app/app_interop] STEP AP242 (missing)
-- [app/app_interop] Digital signing of exported files (missing)
-- [app/app_interop] Point-cloud exchange formats (LAS/E57/PTS/XYZ) (missing)
-- [app/app_interop] IFC (BIM) import/export (missing)
+- [app/app_interop] Digital signing of exported files (missing; now present - a real RSA-2048/SHA-256/PKCS#1v1.5 file-signing scheme, `DigitalSignature.{h,cpp}`/`BigUint.{h,cpp}` - see the category bullet above for detail)
+- [app/app_interop] Point-cloud exchange formats (LAS/E57/PTS/XYZ) (missing; now present for LAS/PTS/XYZ - `FileExchange.cpp`'s `Export`/`Import` `Xyz`/`Pts`/`Las` wire the kernel's existing PointCloud save/load into the app; E57 stays out of scope, a substantially larger undertaking - see the category bullet above)
+- [app/app_interop] IFC (BIM) import/export (missing; now present, scoped to tessellated mesh geometry - `FileIgesStep.{h,cpp}`'s `ExportIfc`/`ImportIfc`, a real IFC4 file verified against IfcOpenShell's own schema validator and geometry engine - see the category bullet above)
 - [app/app_interop] JT (PLM interchange) import/export (missing)
 - [app/app_subd_mesh] SubD booleans (missing)
 - [app/app_subd_mesh] Sculpting (multi-resolution brush sculpting) (missing)
