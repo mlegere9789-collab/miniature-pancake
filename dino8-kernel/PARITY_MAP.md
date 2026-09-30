@@ -3210,7 +3210,7 @@ Still partial, and does NOT change this category's present/partial/missing count
 - [partial] Curve self-intersection — still app-only and sampled (`same_curve` path, `CurveSelfIntersects`). The kernel's own `IntersectCurves(c, c)` is still not usable for this (spurious self-hits on a plain line).
 - [partial] Curve/plane intersection — app `CurvePlaneHits` (sign change plus bisection). A caller can pass a bounded `ON_PlaneSurface` to `IntersectCurveSurface`, but there is no dedicated infinite-plane API.
 - [partial] Plane sections / contours of surfaces and B-reps (Section, Contour, ClippingSections) — the app still slices render meshes (`SliceObjects`/`SliceMesh`). Kernel `SplitByPlane` is mesh-only; the exact route (`IntersectSurfaces` per face) is not used for sections.
-- [partial] Mesh self-intersection detection — `Mesh::FindSelfIntersections`/`FindOffsetSelfIntersections` (mesh.cpp:3342 area). Still partial: overlapping coplanar triangles are never reported, any pair sharing a vertex is never examined, and it only detects — it does not repair.
+- [partial] Mesh self-intersection detection — `Mesh::FindSelfIntersections`/`FindOffsetSelfIntersections` (mesh.cpp:3342 area). **Same-day follow-up:** the "overlapping coplanar triangles are never reported" half of this bullet's own prior evidence is closed — `CoplanarTrianglesOverlap` (mesh.cpp, next to `TrianglesProperlyOverlap`) is a genuine, if narrowly-scoped, fix: `TrianglesProperlyOverlap`'s own cross-product-of-normals construction returns a zero vector for two coplanar planes (no shared line to measure an interval along), so a coplanar pair was silently unreachable by that test no matter how much they overlapped; the new function instead confirms the two triangles genuinely share ONE plane (not merely parallel ones - every vertex of the second triangle is checked to lie within `tolerance` of the first's own plane, correctly rejecting the box test fixture's own parallel-but-offset top/bottom faces), projects both onto an orthonormal basis of that shared plane, and applies the standard two-convex-polygon separating-axis test (no separating line among either triangle's own up to 6 edge directions means a genuine positive-area overlap). `FindSelfIntersections()` now ORs this into its existing per-pair test, so nothing about the crossing-triangle path changes. Verified by re-deriving `TestMeshFindSelfIntersectionsDetectsOnlyGenuineCrossings()`'s own case (4) fixture (previously pinned as `.empty()`, a documented gap, not a silent one) to now assert the pair IS reported, plus two new cases: a coplanar pair with real area but genuinely no overlap (correctly still clean) and a parallel-but-offset-plane pair (correctly still clean, proving the plane-coincidence check does real work beyond the parallel-normal check alone). "Any pair sharing a vertex is never examined" is NOT a gap, on inspection of the method's own doc comment - that is by design (ordinary mesh connectivity, not a self-intersection question this method is meant to answer) and was mis-stated in this bullet's own prior text; corrected here. Full `dino8_kernel_tests` suite (via `ctest`): 100% passing, 0 regressions. Still honestly partial: DETECTION ONLY, no repair - a genuine self-intersection has no single correct automatic fix, the same considered position `Check()`'s own `non_manifold_edges` already takes.
 - [partial] Surface / B-rep self-intersection detection — `Brep::Check()` reports `SelfIntersectingLoop` and `SelfIntersectingLoop3d` (brep.h:2707,2726; used in brep.cpp:6542,6549 — corrected 2026-09-28, was mis-cited brep.h:2524,2543; brep.cpp:6342,6349). Still partial: only face boundaries are checked, no face-interior self-intersection test and no face-vs-face crossing test within a B-rep; nearly-parallel close segments are excluded by design. (Two exact-duplicate bullets from the pre-measurement map were merged into this one.)
 - [partial] Projection of curves/points onto surfaces along a direction (Project) — app `ProjectCommand` samples the curve and ray-casts along the CPlane normal onto the render mesh, then refits. No kernel project API.
 - [partial] Pull curves/points to surfaces (closest-point projection) — kernel point projection is solid (`ClosestPointParameter`/`ClosestPoint`, `SurfaceClosestPointGlobal`), but there is no kernel "pull a curve into a curve-on-surface" API.
@@ -4238,6 +4238,89 @@ failing check unreliable this pass): 100% passing (all checks passed),
 above. This session's only source edits are `dino8-kernel/include/dino8/
 kernel/subd.h`, `dino8-kernel/src/subd.cpp`, and `dino8-kernel/tests/
 test_basic.cpp`.
+
+**2026-09-30 follow-up (the `Mesh`-side mirror of `SubD::Check()`'s own
+repair pair above, plus a closely-related `Mesh` detection gap):** `git
+log --oneline -3 -- dino8-kernel/src/subd.cpp dino8-kernel/src/mesh.cpp`
+at the start of this session showed the `SplitNonManifoldVertex`/
+`MergeDuplicateVertices` commit above as the most recent work in this
+category, entirely on the `SubD` side; `Mesh::CheckReport` had the
+identical `duplicate_vertices` condition (it's the older of the two —
+`SubD::Check()`'s own version was explicitly modeled on it) but, per its
+own class-comment history, only a boundary-restricted weld
+(`CloseNakedEdges()`) and no general one. This session closed that, plus
+a second, separately-disclosed `Mesh` gap in the same file discovered
+while reading the class for the first gap.
+
+`Mesh::MergeDuplicateVertices(tolerance)` (dino8-kernel/include/dino8/
+kernel/mesh.h; src/mesh.cpp) is the direct `Mesh`-class counterpart of
+`SubD::MergeDuplicateVertices()` above: welds every group of
+`tolerance`-coincident vertices ANYWHERE in the mesh (not merely ones
+sitting on a naked edge, the restriction `CloseNakedEdges()` has always
+had by design), reusing the exact `WeldGroups()` grid/exact-distance
+grouping `Check()`'s own `duplicate_vertices` count already groups by, so
+`Check(tolerance).duplicate_vertices == 0` after this runs at the same
+tolerance. Deliberately a separate, explicitly-called method rather than
+something `Check()` or any other repair runs automatically, for the exact
+reason this class's own `Check()` doc comment already gave for never
+having one: an interior feature that happens to land `tolerance`-close to
+another is not the same bug as a seam left open by construction, and
+silently welding it could collapse real geometry a caller never asked to
+change. Welding a shared vertex does NOT by itself merge any edge between
+the two sides (that needs both endpoints of an edge to match, not just
+one shared corner) — closing a resulting seam, if any, stays
+`CloseNakedEdges()`'s own separate job. Verified by
+`TestMeshMergeDuplicateVerticesWeldsCoincidentPairs` (tests/
+test_basic.cpp), mirroring `SubD::MergeDuplicateVertices()`'s own
+two-independent-quad-wings-with-a-coincident-corner fixture exactly: 8
+vertices / 2 duplicate-flagged / 8 naked edges before, 1 vertex welded
+away, 7 vertices / 0 duplicates / the SAME 8 naked edges after (proving
+the vertex weld alone never merges an edge), plus a clean box (nothing to
+merge) and an empty mesh (refuses trivially) both correctly merging zero.
+
+Separately, while re-reading this class's own `FindSelfIntersections()`
+doc comment for context, its own disclosed "(1) two overlapping COPLANAR
+triangles are not reported" limitation turned out to be a real, closeable
+gap in the same file, not a materially bigger problem: `TrianglesProperly
+Overlap()`'s cross-product-of-normals construction is zero for two
+coplanar planes by definition (no shared line exists to measure an
+overlap interval along), so a genuine coplanar overlap was silently
+unreachable regardless of how much area the two triangles actually
+shared. `CoplanarTrianglesOverlap()` (mesh.cpp, next to `TrianglesProperly
+Overlap()`) closes it: confirms the two triangles genuinely share ONE
+plane (every vertex of the second triangle within `tolerance` of the
+first's own plane — not merely parallel ones, which correctly still
+excludes e.g. a box's own parallel-but-offset top and bottom faces),
+projects both onto an orthonormal basis of that shared plane, and applies
+the standard two-convex-polygon separating-axis test (no separating line
+among either triangle's own up to 6 edge directions means a genuine
+positive-area overlap, each candidate axis unitized first so `tolerance`
+is a real planar distance, not a raw edge-length-scaled dot product).
+`FindSelfIntersections()` now ORs this into its existing per-pair test;
+the crossing-triangle path is untouched. Verified by re-deriving
+`TestMeshFindSelfIntersectionsDetectsOnlyGenuineCrossings()`'s own case
+(4) fixture — previously pinned as reporting nothing, a documented gap,
+never a silent one — to now assert the pair IS reported, plus two new
+cases: a coplanar pair with real area but genuinely no overlap (still
+correctly clean) and a parallel-but-offset-plane pair (still correctly
+clean, proving the plane-coincidence check does real work beyond the
+parallel-normal check TrianglesProperlyOverlap() already had). That same
+bullet's own prior text also claimed "any pair sharing a vertex is never
+examined" as a limitation; rereading the method's own doc comment shows
+that is by design (ordinary mesh connectivity, not a self-intersection
+question this method answers), not a gap — mis-stated previously,
+corrected in this category's own cross-referenced bullet under **kernel:
+Intersections & projections** above.
+
+Neither addition flips any of this category's own 22 checklist items —
+`Mesh`'s `duplicate_vertices`/self-intersection machinery was never one
+of them in the first place, only `SubD`'s was (closed by the prior
+follow-up above). This category's own present/partial/missing counts
+are therefore unchanged at 15/7/0/22 (84.1%). Full `dino8_kernel_tests`
+suite (via the test binary directly): 100% passing (all checks passed),
+0 regressions. This session's only source edits are `dino8-kernel/
+include/dino8/kernel/mesh.h`, `dino8-kernel/src/mesh.cpp`, and
+`dino8-kernel/tests/test_basic.cpp`.
 
 ## App: Dino 8 vs Rhino 8 + AutoCAD 2027
 

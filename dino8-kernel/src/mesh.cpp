@@ -4731,6 +4731,66 @@ bool TrianglesProperlyOverlap(const Point3d a[3], const Point3d b[3], double tol
   return t1 - t0 > tolerance;
 }
 
+// The coplanar counterpart TrianglesProperlyOverlap() above cannot answer
+// (see its own "coplanar or parallel" early-out): whether two triangles
+// that genuinely SHARE a plane (not merely have parallel normals - every
+// vertex of `b` must also lie within `tolerance` of `a`'s own plane, so
+// two parallel-but-offset faces, e.g. the box test fixture's own top and
+// bottom, are correctly rejected here too) overlap by a positive AREA
+// once projected onto that shared plane. Both triangles are projected
+// onto an orthonormal (u, v) basis of the plane (`u` along `a`'s own
+// first edge, `v = na x u`), then tested with the standard two-convex-
+// polygon separating-axis theorem: a line perpendicular to one of the
+// two triangles' own (up to) 6 edges, in this 2D basis, separates them
+// iff every projected extent of one triangle lies more than `tolerance`
+// to one side of the other's - no such axis existing among all 6 means a
+// genuine overlap. Each candidate axis is unitized before its projected
+// extents are compared, so `tolerance` is a real distance in the shared
+// plane, not a raw (edge-length-scaled) dot product.
+bool CoplanarTrianglesOverlap(const Point3d a[3], const Point3d b[3], double tolerance) {
+  Vector3d na = ON_CrossProduct(a[1] - a[0], a[2] - a[0]);
+  if (!na.Unitize()) return false;
+  for (int i = 0; i < 3; ++i) {
+    if (std::fabs(ON_DotProduct(b[i] - a[0], na)) > tolerance) return false;  // not on a's own plane
+  }
+  Vector3d nb = ON_CrossProduct(b[1] - b[0], b[2] - b[0]);
+  if (!nb.Unitize()) return false;
+  if (ON_CrossProduct(na, nb).Length() > tolerance::kZeroVector) return false;  // not even parallel
+
+  Vector3d u = a[1] - a[0];
+  if (!u.Unitize()) return false;
+  const Vector3d v = ON_CrossProduct(na, u);
+  auto project = [&](const Point3d p[3], ON_2dPoint out[3]) {
+    for (int i = 0; i < 3; ++i) {
+      const Vector3d d = p[i] - a[0];
+      out[i] = ON_2dPoint(ON_DotProduct(d, u), ON_DotProduct(d, v));
+    }
+  };
+  ON_2dPoint pa[3], pb[3];
+  project(a, pa);
+  project(b, pb);
+
+  ON_2dVector axes[6];
+  for (int i = 0; i < 3; ++i) axes[i] = pa[(i + 1) % 3] - pa[i];
+  for (int i = 0; i < 3; ++i) axes[3 + i] = pb[(i + 1) % 3] - pb[i];
+  for (ON_2dVector edge : axes) {
+    ON_2dVector axis(-edge.y, edge.x);
+    if (!axis.Unitize()) continue;  // degenerate (zero-length) edge - not a valid axis
+    double amin = std::numeric_limits<double>::infinity(), amax = -amin;
+    double bmin = amin, bmax = amax;
+    for (int i = 0; i < 3; ++i) {
+      const double ta = axis.x * pa[i].x + axis.y * pa[i].y;
+      amin = std::min(amin, ta);
+      amax = std::max(amax, ta);
+      const double tb = axis.x * pb[i].x + axis.y * pb[i].y;
+      bmin = std::min(bmin, tb);
+      bmax = std::max(bmax, tb);
+    }
+    if (amax < bmin - tolerance || bmax < amin - tolerance) return false;  // separating axis found
+  }
+  return true;
+}
+
 // Area-weighted per-vertex reconciliation of a per-face thickness vector -
 // the same weighting scheme ComputeVertexNormals() already uses for
 // direction, applied here to a scalar instead. Shared by both per-face
@@ -4968,7 +5028,7 @@ std::vector<std::pair<int, int>> Mesh::FindSelfIntersections(double tolerance) c
             if (shares_vertex) continue;
             const Point3d pa[3] = {Point3d(mesh_.m_V[A.vi[0]]), Point3d(mesh_.m_V[A.vi[1]]), Point3d(mesh_.m_V[A.vi[2]])};
             const Point3d pb[3] = {Point3d(mesh_.m_V[B.vi[0]]), Point3d(mesh_.m_V[B.vi[1]]), Point3d(mesh_.m_V[B.vi[2]])};
-            if (TrianglesProperlyOverlap(pa, pb, tol)) {
+            if (TrianglesProperlyOverlap(pa, pb, tol) || CoplanarTrianglesOverlap(pa, pb, tol)) {
               hits.insert(std::minmax(A.face, B.face));
             }
           }
@@ -5024,6 +5084,50 @@ int Mesh::CloseNakedEdges(double tolerance) {
   if (welded == 0) return 0;
 
   // Remap faces, dropping the ones that collapsed.
+  ON_SimpleArray<ON_MeshFace> faces;
+  for (int i = 0; i < mesh_.m_F.Count(); ++i) {
+    ON_MeshFace f = mesh_.m_F[i];
+    const bool quad = f.IsQuad();
+    for (int k = 0; k < 4; ++k) f.vi[k] = remap[static_cast<size_t>(f.vi[k])];
+    std::vector<int> distinct;
+    for (int k = 0; k < (quad ? 4 : 3); ++k) {
+      if (std::find(distinct.begin(), distinct.end(), f.vi[k]) == distinct.end()) distinct.push_back(f.vi[k]);
+    }
+    if (distinct.size() < 3) continue;
+    if (distinct.size() == 3) {
+      f.vi[0] = distinct[0];
+      f.vi[1] = distinct[1];
+      f.vi[2] = distinct[2];
+      f.vi[3] = distinct[2];
+    }
+    faces.Append(f);
+  }
+  mesh_.m_F = faces;
+  CompactUnusedVertices(mesh_);
+  mesh_.m_S.Destroy();
+  mesh_.m_N.Destroy();
+  mesh_.m_FN.Destroy();
+  return welded;
+}
+
+int Mesh::MergeDuplicateVertices(double tolerance) {
+  const double tol = std::max(tolerance, 0.0);
+  if (mesh_.m_V.Count() < 2) return 0;
+  std::vector<int> all(static_cast<size_t>(mesh_.m_V.Count()));
+  for (int i = 0; i < mesh_.m_V.Count(); ++i) all[static_cast<size_t>(i)] = i;
+  const std::vector<int> rep = WeldGroups(mesh_, all, tol);
+  int welded = 0;
+  std::vector<int> remap(static_cast<size_t>(mesh_.m_V.Count()));
+  for (int i = 0; i < mesh_.m_V.Count(); ++i) {
+    const int r = rep[static_cast<size_t>(i)];
+    remap[static_cast<size_t>(i)] = (r >= 0) ? r : i;
+    if (r >= 0 && r != i) ++welded;
+  }
+  if (welded == 0) return 0;
+
+  // Same remap-and-drop-collapsed-faces shape as CloseNakedEdges() above,
+  // just applied to every vertex's own group rather than only the
+  // naked-edge-restricted `candidates` that method builds.
   ON_SimpleArray<ON_MeshFace> faces;
   for (int i = 0; i < mesh_.m_F.Count(); ++i) {
     ON_MeshFace f = mesh_.m_F[i];

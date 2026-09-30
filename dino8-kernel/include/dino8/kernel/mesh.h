@@ -1163,14 +1163,18 @@ class Mesh {
   // valid ones (CloseNakedEdges() and FillSmallHoles() for naked_edges,
   // UnifyNormals() for orientation_conflicts, RemoveDegenerateFaces() for
   // degenerate_faces, RemoveDuplicateFaces() for duplicate_faces, below).
-  // Two of CheckReport's six conditions still have no repair here:
+  // One of CheckReport's six conditions still has no repair here:
   // non_manifold_edges (repairing a 3+-face edge needs a judgment call -
-  // which faces stay grouped together - this class doesn't make for you)
-  // and interior duplicate_vertices away from any naked edge
-  // (CloseNakedEdges() only welds boundary ones, by design - an interior
-  // feature that happens to be `tolerance`-close to another is not the
-  // same bug as a seam left open by construction, and silently welding
-  // it could collapse real geometry).
+  // which faces stay grouped together - this class doesn't make for
+  // you). The other five all have one: CloseNakedEdges()/FillSmallHoles()
+  // for naked_edges, UnifyNormals() for orientation_conflicts,
+  // RemoveDegenerateFaces() for degenerate_faces, RemoveDuplicateFaces()
+  // for duplicate_faces, and - closing what used to be this comment's own
+  // second named gap - MergeDuplicateVertices() below for
+  // duplicate_vertices anywhere in the mesh, not merely the boundary-
+  // restricted case CloseNakedEdges() already covered; see that method's
+  // own doc comment for why it is a separate, explicitly-called repair
+  // rather than something run automatically.
   struct CheckReport {
     // Undirected edges used by exactly one face (the open boundary).
     int naked_edges = 0;
@@ -1244,22 +1248,26 @@ class Mesh {
   // patches coincident within tolerance) are not reported, only a genuine
   // crossing is.
   //
-  // Honest limitations, both inherited from the same cross-triangle test
-  // surface_intersect.cpp's own TriTri uses for cross-SURFACE intersection
-  // curves (this is that same construction, specialized to one mesh's own
-  // self-overlap question rather than two independent meshes' intersection
-  // curve): (1) two overlapping COPLANAR triangles are not reported - the
-  // cross-product of two coplanar faces' normals is zero, so this test can't
-  // place them along a shared line at all; a real coplanar overlap (e.g. two
-  // duplicate-but-shifted flat faces) needs its own 2D-polygon-overlap test,
-  // which this is not. (2) DETECTION ONLY - no repair. A genuine
+  // A separate, second test covers the one case that construction cannot
+  // place along any such cross-product line at all: two triangles whose
+  // planes genuinely COINCIDE (not merely parallel - every vertex of one
+  // lies within `tolerance` of the other's plane too), where a real
+  // overlap is an AREA question, not a line-interval one (e.g. two
+  // duplicate-but-shifted flat faces, the "honest gap" this method's own
+  // history used to name). Both triangles are projected onto an
+  // orthonormal basis of their shared plane and tested with the standard
+  // two-convex-polygon separating-axis test (no separating line among
+  // either triangle's own 3 edge directions means a genuine positive-area
+  // overlap, not just a touch); non-coplanar pairs and coplanar pairs
+  // that don't actually overlap are both correctly left unreported.
+  //
+  // Honest remaining limitation: DETECTION ONLY - no repair. A genuine
   // self-intersection has no single correct fix (split both triangles at
   // the crossing? drop one sheet? re-run the operation at a tighter
   // tolerance?) the way a duplicate face or a below-tolerance sliver does,
-  // so - the same considered position Check()'s own non_manifold_edges and
-  // interior duplicate_vertices already take, see CheckReport's class
-  // comment above - this kernel reports it and leaves the fix to the
-  // caller rather than guess.
+  // so - the same considered position Check()'s own non_manifold_edges
+  // already takes, see CheckReport's class comment above - this kernel
+  // reports it and leaves the fix to the caller rather than guess.
   //
   // Broad-phase accelerated with a uniform grid over the mesh's own
   // triangles (mirroring surface_intersect.cpp's own Grid), so this stays
@@ -1297,6 +1305,42 @@ class Mesh {
   // vertices welded away. Texture coordinates are dropped (a welded
   // vertex has no single UV).
   int CloseNakedEdges(double tolerance);
+
+  // The general-purpose counterpart to CloseNakedEdges() above: welds
+  // every group of `tolerance`-coincident vertices ANYWHERE in this mesh,
+  // not merely the ones sitting on a naked edge - the explicit, caller-
+  // opt-in repair this class's own Check() class comment used to name as
+  // still missing ("interior duplicate_vertices away from any naked edge
+  // ... is not the same bug as a seam left open by construction, and
+  // silently welding it could collapse real geometry"). That reasoning is
+  // exactly why this is a separate, explicitly-called method rather than
+  // something Check() or any other repair runs automatically: a caller
+  // who has actually decided two coincident-but-distinct vertex records
+  // really are the same point (e.g. two meshes appended via a plain
+  // ON_Mesh::Append() instead of MergeAndWeld(), or a naive concatenation
+  // that never welded anything at all) now has one direct way to say so,
+  // over the WHOLE mesh, mirroring SubD::MergeDuplicateVertices()'s own
+  // same-named repair for the sibling class.
+  //
+  // Reuses the exact grid/exact-distance grouping (mesh.cpp's own
+  // WeldGroups()) Check()'s own duplicate_vertices count already groups
+  // by, so Check(tolerance).duplicate_vertices == 0 after this runs at
+  // the same tolerance. The lowest-indexed vertex of each group survives
+  // at ITS OWN position (nothing averaged or moved); faces are remapped
+  // onto it, a face that collapses to fewer than 3 distinct vertices is
+  // dropped, and a quad that collapses to 3 becomes a triangle - the
+  // exact same repair shape CloseNakedEdges() already applies, just over
+  // every vertex rather than only the naked-edge ones. Welding two
+  // vertices together does NOT by itself merge any edge between their
+  // respective faces (that needs both endpoints of an edge to match, not
+  // just one shared vertex) - a caller who welds two independently-built
+  // patches at a single coincident corner this way, rather than along a
+  // whole shared boundary, gets a mesh whose two halves now share that
+  // one vertex but are otherwise still just as open as before; closing
+  // the resulting seam, if any, is CloseNakedEdges()'s own job, not this
+  // one's. Texture coordinates are dropped, same reason as
+  // CloseNakedEdges(). Returns the number of vertices welded away.
+  int MergeDuplicateVertices(double tolerance = tolerance::kDistance);
 
   // Removes every face Check(tolerance) would count in degenerate_faces -
   // literally the same test, not a redefinition of it (see Check()'s own

@@ -12857,6 +12857,69 @@ void TestMeshCloseNakedEdgesWeldsDuplicateAndOffsetVertices() {
   }
 }
 
+// Mesh::MergeDuplicateVertices(): mirrors
+// SubD::MergeDuplicateVertices()'s own
+// TestSubDMergeDuplicateVerticesWeldsCoincidentPairs fixture - two
+// single-quad "wings" built as entirely separate vertex records (so
+// nothing but position ties them together), with wing B's own first
+// corner moved onto the exact same point as wing A's. Both wings stay
+// wholly open on their own regardless of the merge (a shared VERTEX is
+// not a shared EDGE), so this exercises the "general, not naked-edge-
+// restricted" half of the repair CloseNakedEdges() alone cannot claim.
+void TestMeshMergeDuplicateVerticesWeldsCoincidentPairs() {
+  using dino8::kernel::Mesh;
+
+  Mesh mesh;
+  ON_Mesh& raw = mesh.raw();
+  auto add_wing_quad = [&](double x0, double y0, double z0) {
+    const int base = raw.m_V.Count();
+    raw.m_V.Append(ON_3fPoint(static_cast<float>(x0), static_cast<float>(y0), static_cast<float>(z0)));
+    raw.m_V.Append(ON_3fPoint(static_cast<float>(x0 + 1.0), static_cast<float>(y0), static_cast<float>(z0)));
+    raw.m_V.Append(ON_3fPoint(static_cast<float>(x0 + 1.0), static_cast<float>(y0 + 1.0), static_cast<float>(z0)));
+    raw.m_V.Append(ON_3fPoint(static_cast<float>(x0), static_cast<float>(y0 + 1.0), static_cast<float>(z0)));
+    ON_MeshFace f;
+    f.vi[0] = base;
+    f.vi[1] = base + 1;
+    f.vi[2] = base + 2;
+    f.vi[3] = base + 3;
+    raw.m_F.Append(f);
+    return base;
+  };
+
+  const int wing_a_v0 = add_wing_quad(0.0, 0.0, 0.0);
+  const int wing_b_v0 = add_wing_quad(3.0, 3.0, 0.0);
+  raw.m_V[wing_b_v0] = raw.m_V[wing_a_v0];  // wing B's own first corner now coincides with wing A's
+
+  Check(mesh.VertexCount() == 8, "sanity: 8 distinct vertex records before merging, wings' first corners coincident");
+  const Mesh::CheckReport before = mesh.Check();
+  Check(before.duplicate_vertices == 2, "sanity: exactly the coincident pair is flagged before merging");
+  Check(before.naked_edges == 8, "sanity: both wings are still wholly open single quads, 4 naked edges apiece");
+
+  const int merged = mesh.MergeDuplicateVertices();
+  Check(merged == 1, "exactly one vertex record (the discarded half of the coincident pair) was welded away");
+  Check(mesh.VertexCount() == 7, "vertex count drops by exactly 1 - the two coincident records become one");
+
+  const Mesh::CheckReport after = mesh.Check();
+  Check(after.duplicate_vertices == 0, "no duplicate vertices remain after merging");
+  Check(after.naked_edges == 8,
+        "merging a shared VERTEX never by itself merges an EDGE - both wings' own 4 boundary edges "
+        "apiece are completely unaffected, since no two of them share BOTH endpoints, only the one "
+        "corner point");
+
+  // A clean mesh (no coincident-but-distinct vertices) merges nothing.
+  {
+    Mesh clean = MakeQuadBoxMesh(0, 0, 0, 1, 1, 1);
+    Check(clean.MergeDuplicateVertices() == 0, "a clean box mesh has nothing to merge");
+    Check(clean.VertexCount() == 8, "vertex count is unchanged when there is nothing to merge");
+  }
+
+  // A mesh with fewer than 2 vertices refuses trivially (nothing to group).
+  {
+    Mesh empty;
+    Check(empty.MergeDuplicateVertices() == 0, "an empty mesh merges nothing");
+  }
+}
+
 // Mesh-level RemoveDegenerateFaces(): three faces, each degenerate for a
 // DIFFERENT one of Check()'s own reasons (repeated vertex index, a
 // zero-length edge between two coincident-but-distinct vertices, and a
@@ -14365,11 +14428,11 @@ void TestMeshCheckLocalizesNonManifoldEdges() {
 //  (3) two triangles sharing NO vertex and not overlapping at all (one far
 //      out at (100, 100, 100)) - a true negative distinct from (1)'s
 //      vertex-sharing exclusion, since this pair has nothing to skip on.
-//  (4) two overlapping COPLANAR triangles (both in the z=0 plane) - the
-//      documented honest gap: a real overlap this method does NOT catch,
-//      because coplanar triangles have no shared cross-product line to
-//      measure an overlap along. Pinned here so a future change to that
-//      behavior is a deliberate test update, never a silent regression.
+//  (4) two overlapping COPLANAR triangles (both in the z=0 plane) - closed
+//      this session by CoplanarTrianglesOverlap()'s own separating-axis
+//      test: no shared cross-product line exists for two coplanar planes,
+//      but a genuine positive-area overlap is still real and is now
+//      caught by a dedicated 2D test instead of being silently missed.
 void TestMeshFindSelfIntersectionsDetectsOnlyGenuineCrossings() {
   using dino8::kernel::Brep;
   using dino8::kernel::Mesh;
@@ -14419,9 +14482,32 @@ void TestMeshFindSelfIntersectionsDetectsOnlyGenuineCrossings() {
   Mesh coplanar;
   add_tri(coplanar, 0, 0, 0, 4, 0, 0, 0, 4, 0);
   add_tri(coplanar, 1, 1, 0, 5, 1, 0, 1, 5, 0);
-  Check(coplanar.FindSelfIntersections().empty(),
-        "two overlapping COPLANAR triangles are NOT reported - a documented limitation, not a silent one (see "
-        "FindSelfIntersections' own doc comment)");
+  const auto coplanar_hits = coplanar.FindSelfIntersections();
+  Check(coplanar_hits.size() == 1 && coplanar_hits[0] == std::make_pair(0, 1),
+        "two overlapping COPLANAR triangles sharing no vertex ARE now reported, via the dedicated "
+        "2D separating-axis overlap test");
+
+  // (5) two coplanar triangles that share no vertex and genuinely do NOT
+  // overlap (side by side along x, a clean gap between them) - a true
+  // negative distinct from (4), since this pair has real area on the same
+  // plane but no overlap to find.
+  Mesh coplanar_apart;
+  add_tri(coplanar_apart, 0, 0, 0, 1, 0, 0, 0, 1, 0);
+  add_tri(coplanar_apart, 5, 0, 0, 6, 0, 0, 5, 1, 0);
+  Check(coplanar_apart.FindSelfIntersections().empty(),
+        "two coplanar triangles with real area but no overlap are correctly reported clean");
+
+  // (6) two triangles that are merely PARALLEL, not coplanar (same normal
+  // direction, offset planes - e.g. the box test fixture's own top/bottom
+  // faces) - must stay unreported: CoplanarTrianglesOverlap()'s own plane-
+  // coincidence check (every vertex of one within tolerance of the
+  // other's plane) has to actually refuse this, not just the parallel-
+  // normal check alone.
+  Mesh parallel_planes;
+  add_tri(parallel_planes, 0, 0, 0, 4, 0, 0, 0, 4, 0);
+  add_tri(parallel_planes, 1, 1, 2, 5, 1, 2, 1, 5, 2);
+  Check(parallel_planes.FindSelfIntersections().empty(),
+        "two triangles with parallel but distinct (offset) planes are not coplanar and are not reported");
 }
 
 void TestLoftClosedRingsConcaveEndCapsExactPrismVolume() {
@@ -53500,6 +53586,7 @@ int main() {
   TestMeshCheckAndFillSmallHolesRestoreDroppedFaces();
   TestMeshUnifyNormalsFixesFlippedAndInvertedFaces();
   TestMeshCloseNakedEdgesWeldsDuplicateAndOffsetVertices();
+  TestMeshMergeDuplicateVerticesWeldsCoincidentPairs();
   TestMeshRemoveDegenerateFacesDropsOnlyDegenerateOnes();
   TestMeshRemoveDuplicateFacesKeepsOneCopyPerPolygon();
   TestMeshTrisToQuadsRecombinesTessellatedBoxFaces();
