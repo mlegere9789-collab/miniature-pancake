@@ -1,6 +1,6 @@
 # Fossilith / Dino 8 parity map (2026-09-28, updated 2026-09-30)
 
-**Fossilith vs Parasolid/ACIS = 68.5% (weighted, verified); Dino 8 vs Rhino 8 + AutoCAD 2027 = 75.0%.**
+**Fossilith vs Parasolid/ACIS = 68.6% (weighted, verified); Dino 8 vs Rhino 8 + AutoCAD 2027 = 75.0%.**
 
 **2026-09-30 re-score (a doc-only audit pass, no source changes):** re-derived
 every kernel/app category's own Present/Partial/Missing counts directly from
@@ -28,6 +28,16 @@ one bullet below to stop it from miscounting as 13 partial items instead of
 score-per-fix" section's Local/direct-edit row is refreshed to match (21 → 20
 remaining, 0.048 → 0.050 score/fix); rank order is unchanged, since 0.050
 still sits below Kernel-level data exchange's 0.053.
+
+**Merge note:** a concurrent sixteenth session landed on this same branch in
+parallel, closing three kernel: Feature operations gaps (`MakeRevolvedCut`,
+`Bend`/`BendAllowance`, `RecognizePockets`) and moving that category's own
+row from 6/16/2 (58.3%) to 6/17/1 (60.4%); that session deliberately left
+the top-of-document headline unrecomputed (see its own note below). Folding
+both this pass's Local/direct-edit fix and that session's Feature operations
+update into the same 17-row table and re-deriving the kernel headline
+directly (still 17.75 total weight) gives 68.4% → **68.6%** (both deltas
+applied together; the app headline stays 75.0%, unaffected by either).
 
 **2026-09-30 kernel rotation on "Intersections & projections":** three
 `[partial]` bullets close to `[present]` this pass — Curve self-intersection,
