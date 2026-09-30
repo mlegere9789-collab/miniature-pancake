@@ -1,6 +1,72 @@
 # Fossilith / Dino 8 parity map (2026-09-28, updated 2026-09-30)
 
-**Fossilith vs Parasolid/ACIS = 67.4% (weighted, verified); Dino 8 vs Rhino 8 + AutoCAD 2027 = 71.4%.**
+**Fossilith vs Parasolid/ACIS = 67.4% (weighted, verified); Dino 8 vs Rhino 8 + AutoCAD 2027 = 72.0%.**
+
+**2026-09-30 re-score (a sixteenth session, prompted by a claim the headline had
+"gone nearly flat" despite ~94 commits landing over the prior ~44 hours):**
+that specific premise was false on inspection - `git log --since="46 hours
+ago" -- dino8-kernel/src dino8-app/src` returns 41 commits, not 94 - but the
+underlying complaint pointed at something real. Every commit that touches
+`PARITY_MAP.md` in the same commit already self-scores (confirmed by
+diffing the 41 recent source-touching commits against the 21 of them that
+also edited this file), so this pass instead diffed the other 21 - the ones
+that changed `dino8-kernel/src`/`dino8-app/src` without ever touching this
+document - against the category bullets below by hand. Most were bug/test
+fixes correctly left unscored (a dangling-pointer fix, an O(k\*N)-complexity
+doc comment, a crash fix, a flaky-smoke-test fix, a solver-parameter clamp).
+Two were genuine, previously-uncredited capabilities, and neither was new
+this window - both existed since this subtree's own first commit and had
+simply been mis-scored (one of them explicitly, wrongly, marked
+"infeasible") every session since:
+
+1. **Screen-reader support** was scored `[missing]` and listed as
+   infeasible ("no platform accessibility tree... requires replacing the
+   entire UI toolkit"). `dino8-app/docs/ACCESSIBILITY.md` and
+   `dino8-app/src/platform/AccessibilityLinux.cpp` (640 lines, present
+   since the subtree's own genesis commit) directly contradict that: a
+   real AT-SPI2 D-Bus bridge exists on Linux, hand-implementing
+   `org.a11y.atspi.Accessible`/`.Application`/`.Text` and registering with
+   the real `at-spi2-registryd`, verified end-to-end against the real
+   `pyatspi` client library per that doc's own "Verifying it yourself"
+   section - not a stub. It covers the command line, main menu bar, the
+   running command's options, Layers/Properties panels, each viewport's
+   title/view-menu button, the Activity Log, Named Views and Named
+   CPlanes (the last five of those closed by five more commits within
+   this same recent window: `0bbc84c`/`0343403`/`330fa81`/`6b71f93`/
+   `aa25102`). Reclassified `[missing]`->`[partial]`, no longer infeasible
+   (see the category bullet and the Infeasible section below for detail).
+2. **Plugin marketplace / discovery mechanism** was scored `[missing]`,
+   "not attempted," and listed as infeasible ("needs third-party adoption
+   over time"). `dino8-app/src/plugins/Marketplace.{h,cpp}`/
+   `MarketplaceIndex.{h,cpp}`/`MarketplacePanel.{h,cpp}` (837 lines,
+   present since genesis, extended this window by `78d4425` dependency
+   resolution before install, `76f3020` uninstall with orphaned-dependency
+   cleanup, and `ecf989e` local ratings/reviews) is a real, tested
+   install/uninstall/dependency-graph/ratings system, not a stub - but it
+   has no built-in curated index: a user must already have a path or
+   http(s) URL to a JSON index (`MarketplacePanel.cpp:94`), so it is real
+   plugin *installation* infrastructure without real *discovery*.
+   Reclassified `[missing]`->`[partial]`, no longer infeasible (the
+   *separate* "Third-party plugin ecosystem (real external adoption)" item
+   stays infeasible - a network-effect gap, not an engineering one).
+
+Both corrections are app-side only; the kernel table (17.75 weight) was
+independently spot-checked against the same 21-commit diff and needed no
+change, so the kernel-only headline stays 67.4%. The app table
+(**Dino 8: UI/UX, accessibility & localization** 1.0/19: 13/2/4 ->13/3/3,
+73.7%->76.3%; **Dino 8: Ecosystem, trust, cloud/AI & platform reach**
+0.5/16: 7/1/8->7/2/7, 46.9%->50.0%) moves by
+`(1.0x(76.3-73.7) + 0.5x(50.0-46.9)) / 7.75 = +0.6pp`, giving **72.0%**
+(was 71.4%). Two small honest-narrowing notes with no score effect: the
+Python object-model binding count (**Dino 8: Scripting**'s "Python API
+breadth" bullet) is now 62, not 56, after `2f7456f`/`318db10`/`5fa68c4`/
+`835a976`/`bee11db`/`e5afa1a` added `AddTorus`/`AddInterpCurve`/
+`AddCircle`/`AddSrfPt`/`AddCone`/`AddArc3Pt`; and **Dino 8: 2D drafting**'s
+"Associative annotation updating" bullet now also covers MultiLeader
+arrows (`0ebdb07`) and the four GD&T symbol commands (`f66cdf9`), still via
+the same explicit-recompute-command shape the bullet already named as the
+gap, so it stays `partial`. Full `dino8_app_tests`/`dino8_kernel_tests`
+suites re-run clean after this pass (docs-only change, no source edited).
 
 **2026-09-28 re-verification addendum (same day, later session):** the brief for
 this addendum claimed "roughly 60+" capability-adding commits had landed since
@@ -742,6 +808,73 @@ stays `partial` — a concave n-gon can still fan-triangulate into a triangle
 whose interior falls outside the source polygon, a disclosed limitation of
 the fan approach this pass does not attempt to detect or fix. File-disjoint
 from every other session above.
+
+## Priority order for maximum score-per-fix
+
+Added 2026-09-30, alongside that day's re-score above. Ranks every category
+in both tables below by `weight / remaining_items` (`remaining_items` =
+partial + missing = non-present items in that category), descending — the
+weighted-headline points earned per single item closed, highest first, so a
+future round can pick the next gap from the top of these lists instead of
+an arbitrary one. It is a per-item-closed heuristic, not a per-effort one
+(closing one `small`-effort item in a low-ranked category can still be
+cheaper in practice than one `large`-effort item in a high-ranked one — see
+the effort tags in the Ranked closeable backlog above for that dimension);
+the two are meant to be read together, not as a single number. Ties are
+broken by table order. Both tables' ratios recomputed fresh from the two
+category tables as they stand after this pass's own two reclassifications
+(kernel table unchanged from the last verification; app table reflects
+Screen-reader support and Plugin marketplace both moving `missing`->
+`partial` — see above).
+
+### Kernel table (Fossilith vs Parasolid/ACIS), by weight / remaining items
+
+| Rank | Category | Weight | Remaining (partial+missing) | Weight / Remaining |
+|---|---|---|---|---|
+| 1 | SubD & mesh kernel support | 0.75 | 7 | 0.107 |
+| 2 | Intersections & projections | 1.5 | 16 | 0.094 |
+| 3 | Geometry representation | 1 | 11 | 0.091 |
+| 3 | Healing, repair, validation, tolerant modeling | 1 | 11 | 0.091 |
+| 3 | Tessellation / faceting | 1 | 11 | 0.091 |
+| 3 | Curve operations | 1 | 11 | 0.091 |
+| 7 | Boolean operations | 1.5 | 17 | 0.088 |
+| 8 | Blending & chamfering | 1.5 | 19 | 0.079 |
+| 9 | Topology & data structure | 1 | 14 | 0.071 |
+| 9 | Mass properties & spatial queries | 1 | 14 | 0.071 |
+| 11 | Surface operations | 1 | 15 | 0.067 |
+| 12 | Feature operations | 1 | 18 | 0.056 |
+| 13 | Kernel-level data exchange | 1 | 19 | 0.053 |
+| 14 | Local / direct-edit operations | 1 | 21 | 0.048 |
+| 15 | Sweeping, lofting, extruding, revolving | 1 | 23 | 0.043 |
+| 16 | Transformations, patterns, splitting | 0.5 | 13 | 0.038 |
+| 17 | Offsetting, shelling, thickening | 1 | 27 | 0.037 |
+
+### App table (Dino 8 vs Rhino 8 + AutoCAD 2027), by weight / remaining items
+
+| Rank | Category | Weight | Remaining (partial+missing) | Weight / Remaining |
+|---|---|---|---|---|
+| 1 | Viewport display, rendering & visualization | 1.0 | 5 | 0.200 |
+| 1 | Scripting, automation & visual programming | 1.0 | 5 | 0.200 |
+| 3 | Command system & core commands | 1.5 | 8 | 0.188 |
+| 4 | 2D drafting, annotation & documentation | 1.0 | 6 | 0.167 |
+| 4 | UI/UX, accessibility & localization | 1.0 | 6 | 0.167 |
+| 6 | SubD & mesh modeling toolset (app level) | 0.75 | 5 | 0.150 |
+| 7 | File I/O & interoperability (app level) | 1.0 | 12 | 0.083 |
+| 8 | Ecosystem, trust, cloud/AI & platform reach | 0.5 | 9 | 0.056 |
+
+The app table's top four categories (Viewport display, Scripting, Command
+system, 2D drafting/UI-UX) each earn 2-4x the headline points per item
+closed that the bottom two (File I/O, Ecosystem) do — a single closed item
+in Viewport display or Scripting is worth as much to the Dino 8 headline as
+roughly 3-4 items closed in Ecosystem. On the kernel side the spread is
+narrower (SubD & mesh kernel support tops out at ~3x Offsetting/shelling at
+the bottom) because kernel category weights cluster closer together (mostly
+0.5-1.5) than the app table's does (0.5-1.5 over fewer, larger categories).
+UI/UX moved up two rows this pass purely from its own reclassification
+above (Screen-reader support leaving `missing` narrows the category's own
+remaining-item denominator); Ecosystem's remaining count also dropped by
+one for the same reason (Plugin marketplace), but it started so far behind
+(0.5 weight over 16 items) that it stays last.
 
 ## Kernel: Fossilith vs Parasolid/ACIS
 
@@ -3099,8 +3232,8 @@ passing (1 test target, `dino8_kernel_smoke`, 5561 checks), 0 regressions.
 | Dino 8: Scripting, automation & visual programming | 1.0 | 15 | 10 | 3 | 2 | 76.7% |
 | Dino 8: File I/O & interoperability (app level) | 1.0 | 17 | 5 | 5 | 7 | 44.1% |
 | Dino 8: SubD & mesh modeling toolset (app level) | 0.75 | 24 | 19 | 3 | 2 | 85.4% |
-| Dino 8: UI/UX, accessibility & localization | 1.0 | 19 | 13 | 2 | 4 | 73.7% |
-| Dino 8: Ecosystem, trust, cloud/AI & platform reach | 0.5 | 16 | 7 | 1 | 8 | 46.9% |
+| Dino 8: UI/UX, accessibility & localization | 1.0 | 19 | 13 | 3 | 3 | 76.3% |
+| Dino 8: Ecosystem, trust, cloud/AI & platform reach | 0.5 | 16 | 7 | 2 | 7 | 50.0% |
 
 All 8 rows are numerically unchanged from the 2026-09-25 map. Of the ~12
 non-merge commits since then, only two touch app-level substance: the
@@ -3114,6 +3247,15 @@ changes that bullet. Kernel `Sweep1 twist_total` is confirmed still not
 called anywhere from `dino8-app`. Every other bullet across all 8
 categories was independently re-grepped/re-read against current source this
 pass and reconfirmed unchanged with fresh citations.
+
+**2026-09-30 correction:** two of these "reconfirmed unchanged" rows were
+not, in fact, correct as of this paragraph's own writing, let alone since -
+see the 2026-09-30 re-score note at the top of this document. UI/UX and
+Ecosystem both had a real, then-already-present capability mis-scored
+`missing`/infeasible (Screen-reader support's AT-SPI2 bridge; the Plugin
+marketplace system) that every re-verification pass through this one
+re-grepped past without checking against the actual source tree named in
+its own bullet text. Both rows are corrected in the table above.
 
 **2026-09-28 re-verification addendum:** re-checked again, independently,
 against current HEAD (still the same commit — see the top-of-document
@@ -3137,7 +3279,7 @@ start line) — all citation-precision fixes, not scoring changes.
 - [missing] ObjectARX-equivalent native extension API — the only native API is a Dino-specific plugin ABI, not an ObjectARX-compatible binary interface.
 
 **Dino 8: 2D drafting, annotation & documentation** (app_drafting):
-- [partial] Associative annotation updating (dimensions, leaders, center marks, center lines) — UpdateDimensions rebuilds several dimension/leader/mark types from their anchors, but only on an explicit command run, and a point is anchored only if it coincides exactly with a Point object or curve endpoint.
+- [partial] Associative annotation updating (dimensions, leaders, center marks, center lines) — UpdateDimensions rebuilds several dimension/leader/mark types from their anchors, but only on an explicit command run, and a point is anchored only if it coincides exactly with a Point object or curve endpoint. This window extended the same explicit-recompute shape to MultiLeader arrows (`UpdateMultiLeaders`, commit `0ebdb07`) and the four GD&T symbol commands (`UpdateGdtSymbols`, commit `f66cdf9`) — more annotation types now re-associate, but the underlying gap this bullet names (no automatic recompute hooked into document edits) is unchanged, so it stays partial.
 - [partial] Print and plot output — Print writes a vector PDF/SVG of the active view with an optional scale, but there are no lineweights, no print widths, and no plot styles (CTB/STB); no printer-device output.
 - [partial] Dynamic blocks — only visibility states exist (BlockAddState/BlockSetVisibility); stretch, flip, array and lookup parameters and actions are not attempted.
 - [partial] Live external data linking into tables — a two-way CSV sync with conflict refusal, not native .xlsx; formula cells come back as their last saved values. Commit 19c14a0 (`cmd_drafting2.cpp:233`) added `std::ios::binary` to `WriteCsvFile`'s and `BillOfMaterials::Run`'s ofstream opens — verified this is purely a Windows CRLF-translation fix (a no-op on Linux/macOS) so CSV bytes match across platforms; it does not touch the CSV-vs-.xlsx or frozen-formula-cell limitations, so the score and reasoning are unchanged.
@@ -3153,7 +3295,7 @@ start line) — all citation-precision fixes, not scoring changes.
 
 **Dino 8: Scripting, automation & visual programming** (app_scripting):
 - [partial] Embedded Python 3 — `dino8-app/CMakeLists.txt:146` sets `option(DINO8_ENABLE_PYTHON ... OFF)` on Windows specifically, `:148` `ON` elsewhere; shipped Windows builds have no Python at all; mid-script prompts are also missing.
-- [partial] Python API breadth — `RunCommand` reaches every registered command; the real gap is the object model (56 bindings versus Lua's 160 `rs.*` functions) and no interactive prompts.
+- [partial] Python API breadth — `RunCommand` reaches every registered command; the real gap is the object model (62 bindings, up from 56, versus Lua's 160 `rs.*` functions — `AddTorus`/`AddInterpCurve`/`AddCircle`/`AddSrfPt`/`AddCone`/`AddArc3Pt` added this window) and no interactive prompts.
 - [partial] Headless/batch scripting mode — `dino8-app/src/main.cpp:5-7,322-327`: `--smoke N --script FILE [--screenshot]` is real and documented in the file's own header comments; still framed as a QA mode needing a GL context/display server, not a supported batch product.
 - [missing] Cloud/network compute service (Rhino.Compute equivalent) — no server/socket/HTTP code anywhere in the source.
 - [missing] AI-assisted modeling or scripting — no neural/inference code anywhere; the one "smart" feature explicitly documents its own technique as not machine learning.
@@ -3182,7 +3324,7 @@ start line) — all citation-precision fixes, not scoring changes.
 **Dino 8: UI/UX, accessibility & localization** (app_ux):
 - [partial] Breadth of localization (10+ languages, professional review) — a fresh key-count check found `en.json` has 183 flattened keys, `fr.json` has 178 (`panel.activity_log`, `panel.block_manager`, `panel.uv_editor`, `panel.mapping_widget`, `panel.whats_new` still missing); only Spanish and French exist beside English.
 - [partial] Worksessions (shared multi-file referencing) — a real Worksession mechanism exists (`dino8-app/src/session/Worksession.h`/`.cpp`), attaching other .3dm files as locked reference models with filtering and a saved JSON session file. Attached objects are copied in with no live link or refresh.
-- [missing] Screen-reader support — still explicitly documented as not implemented; the UI toolkit exposes no platform accessibility tree. (Infeasible — see below.)
+- [partial] Screen-reader support — **reclassified 2026-09-30, no longer infeasible.** `dino8-app/src/platform/AccessibilityLinux.cpp` implements a real AT-SPI2 D-Bus bridge (`org.a11y.atspi.Accessible`/`.Application`/`.Text`, registered with the real `at-spi2-registryd`), covering the command line, main menu bar, the running command's options, Layers/Properties panels, each viewport's title/view-menu button, the Activity Log, Named Views and Named CPlanes (`dino8-app/docs/ACCESSIBILITY.md` section 3 has the full account, including how to verify it against the real `pyatspi` client library). Still genuinely partial: Linux-only (no UIA/MSAA on Windows, no NSAccessibility on macOS), and the 3D viewport's own content and most other panels/dialogs remain unreached — ImGui itself still has no retained widget tree for a screen reader to attach to outside the specific regions this bridge hand-builds.
 - [missing] Localized command and toolbar help text — the ~1055 command names/help texts and toolbar tooltips remain English-only in every language.
 - [missing] Video tutorials / community forum — needs an audience and hosting, not source-tree work. (Infeasible — see below.)
 - [missing] Real-time multi-user collaborative editing — single-document, single-user desktop app; no network code found anywhere.
@@ -3194,34 +3336,37 @@ start line) — all citation-precision fixes, not scoring changes.
 - [missing] Cloud model viewer / app builder (ShapeDiver equivalent) — no web-viewer or embed code exists.
 - [missing] Touch-first companion app (Rhino for iPad equivalent) — desktop only; a separate product, not a feature of this app. (Infeasible — see below.)
 - [missing] Code-signed / notarized installers — the signing CI steps only run if a certificate secret is set, and no certificate has been purchased. (Infeasible — see below.)
-- [missing] Plugin marketplace / discovery mechanism — not attempted. (Infeasible — see below.)
+- [partial] Plugin marketplace / discovery mechanism — **reclassified 2026-09-30, no longer infeasible.** `dino8-app/src/plugins/Marketplace.{h,cpp}`/`MarketplaceIndex.{h,cpp}`/`MarketplacePanel.{h,cpp}` is a real, tested system: `InstallEntry` fetches or copies a plug-in's library (with sha256 verification) into `<config>/plugins` and loads it; `InstallById`/`UninstallById` resolve and cascade a declared dependency graph (cycle-refusing) on install and uninstall respectively; local ratings/reviews are attached per entry. Still partial: there is no built-in curated/hosted index — a user must supply a local path or an http(s) URL to a JSON index by hand (`MarketplacePanel.cpp:94`) — so this is real plugin *installation* infrastructure without real *discovery*. (The separate "Third-party plugin ecosystem (real external adoption)" item below stays infeasible — a network-effect gap, not an engineering one.)
 - [missing] Third-party plugin ecosystem (real external adoption) — four first-party example plugins exist and no third-party plugins; a network-effect gap, not an engineering one. (Infeasible — see below.)
 - [missing] Real-time multi-user collaboration / co-editing — same evidence as the app_ux item; no network code anywhere.
 
 ## Infeasible / non-engineering
 
-These 12 items still cannot be closed by writing more code in this
-repository — none of the commits in this window changed that, and none of
-the five verification passes found reason to move any of them off this list.
+These 10 items still cannot be closed by writing more code in this
+repository. (Two more lived on this list through every prior session -
+Screen-reader support and Plugin marketplace / discovery mechanism - until
+this pass found each one already has a real, if narrow, engineering
+solution in the current source and reclassified both `[missing]`->
+`[partial]`, no longer infeasible; see the category bullets above and the
+2026-09-30 re-score note at the top of this document for the evidence.)
 
 - **[app/app_interop] Parasolid (.x_t/.x_b) import/export** (missing) — infeasible: Parasolid's format is proprietary and undocumented outside a licensed Siemens SDK.
 - **[app/app_interop] ACIS (.sat/.sab) import/export** (missing) — infeasible: same proprietary-format rationale as Parasolid.
-- **[app/app_ux] Screen-reader support** (missing) — infeasible without replacing the entire UI toolkit (Dear ImGui), a framework-migration-scale undertaking.
 - **[app/app_ux] Video tutorials / community forum** (missing) — infeasible for a codebase alone to provide; requires an actual user community and hosting operation.
 - **[kernel/exchange] Parasolid XT (.x_t/.x_b) read/write** (missing) — proprietary format + SDK licence (Siemens).
 - **[kernel/exchange] ACIS SAT/SAB read/write** (missing) — proprietary format + SDK licence (Spatial).
 - **[app/app_ecosystem] Hosted cloud compute / geometry-as-a-service (Rhino Compute equivalent)** (missing) — infeasible from source code alone: requires standing up and operating server infrastructure.
 - **[app/app_ecosystem] Touch-first companion app (Rhino for iPad equivalent)** (missing) — infeasible: a distinct mobile product with its own distribution and touch-first UI.
 - **[app/app_ecosystem] Code-signed / notarized installers** (missing) — infeasible for engineering alone: requires a purchased certificate and legal-entity registration.
-- **[app/app_ecosystem] Plugin marketplace / discovery mechanism** (missing) — infeasible to close by engineering alone; needs third-party adoption over time.
 - **[app/app_ecosystem] Third-party plugin ecosystem (real external adoption)** (missing) — infeasible: a network-effect gap, not an engineering gap.
 - **[app/app_ux] Breadth of localization (10+ languages, professional review)** (partial) — infeasible at full Rhino-matching breadth within an engineering-only pass, though the infrastructure itself is complete.
 
 ## Ranked closeable backlog
 
 335 non-present items were found across all 25 categories (279 kernel, 56
-app); the same 12 above are infeasible for engineering alone to close and are
-excluded from this ranking. The remaining 323 are ranked by
+app); the same 10 above are infeasible for engineering alone to close and are
+excluded from this ranking (two fewer than before this pass - see the
+2026-09-30 re-score note at the top of this document). The remaining 325 are ranked by
 `priority = category_weight x status_factor x effort_factor` (`status_factor`
 1.0 for missing / 0.5 for already-partial, `effort_factor` 1.0/0.6/0.35 for
 small/medium/large estimated effort) — a heuristic meant to surface
@@ -3275,7 +3420,7 @@ top 40:
 | 39 | kernel | subd_mesh | ~~Kernel-native SubD local edit operators (insert edge, extrude face, spin, weld, expand)~~ **closed** | present | large | `SubD::InsertEdge`/`SpinEdge`/`ExtrudeFace`/`ExpandFaces` (subd.cpp) wrap real `ON_SubD::SplitFace`/`SpinEdge`/`ExtrudeComponents`; `SubD::Weld` (subd.cpp) has no ready-made OpenNURBS primitive of its own, so it's a hand-rolled snapshot-and-rebuild instead (capture the whole control net's vertices/face corner-ids/interior-edge tags, remap the discarded vertex's id onto the kept one's, rebuild via `AddVertexForExperts`+`FindOrAddFace` - a local `DeleteComponents`-based surgery was tried first and found unsafe, see that method's own doc comment). All 5 named sub-operators now genuinely exist. Kept in the table (not renumbered away) only so this row's own history is traceable; not an active priority. None is wired to any app command - a real, separate App-level gap this row's own kernel-level scope doesn't measure. |
 | 40 | kernel | subd_mesh | Quad-remeshing of an arbitrary mesh into a clean SubD-ready cage | missing | large | No quad-dominant remesher targeting SubD-cage quality exists in the kernel. |
 
-### Remainder, grouped by effort (281 items)
+### Remainder, grouped by effort (283 items)
 
 **Small effort** (59 items):
 - [kernel/topology] Non-manifold topology (edge shared by 3+ faces, non-manifold vertices) (partial)
@@ -3338,7 +3483,7 @@ top 40:
 - [app/app_ux] Worksessions — status/refresh indicator for the copy-in model (partial)
 - [app/app_ecosystem] Large-scale adversarial/property-based QA — extend to Windows-specific cases (partial)
 
-**Medium effort** (137 items):
+**Medium effort** (138 items):
 - [kernel/topology] Multi-shell / multi-lump bodies — allow booleans on compound operands (partial)
 - [kernel/topology] Loop structure — walking (`NextTrimInLoop`/`PrevTrimInLoop`) and classification (`TypeOfLoop`) now real; remaining: real inner loops only from general boolean/`MakeEdgeKillRing`, `TrimmedPlanarFace` holes still side-table, `MergeCoplanarFaces` still refuses holed faces (partial)
 - [kernel/topology] Remove edge / collapse micro edge — general above-tolerance case (partial)
@@ -3512,8 +3657,9 @@ top 40:
 - [app/app_interop] DWG — write beyond DXF-writer's limits (partial)
 - [app/app_subd_mesh] SubD to NURBS (ToNURBS) — wire the adaptive converter in (partial)
 - [app/app_ux] Breadth of localization — bring existing languages to full key parity (partial)
+- [app/app_ecosystem] Plugin marketplace / discovery mechanism — a real, curated/hosted default index and in-app browse/discovery UI, beyond the existing real install/uninstall/dependency-resolution/ratings system that requires a user to already supply a path or URL (missing; now partial — reclassified 2026-09-30, see the app_ecosystem category bullet above)
 
-**Large effort** (85 items):
+**Large effort** (86 items):
 - [kernel/topology] Wire bodies (edge/vertex-only B-rep body) (missing; now partial - see `Brep::WireBody`/`Brep::IsWireBody`/`Brep::AddWireCurves`/`Brep::ExtrudeWireBody`/`Brep::OffsetWireBody`, brep.h/brep.cpp/sweep.cpp - remaining effort is small, not large: app wiring and using a wire body as a boolean/imprint tool)
 - [kernel/topology] Euler operators (missing; MEV/KEV, MEF/KEF and now MEKR/KEMR are all real and tested - present)
 - [kernel/topology] Persistent naming / topology identity across edits (missing)
@@ -3574,6 +3720,7 @@ top 40:
 - [app/app_ecosystem] Real AI/ML-based modeling assistance (missing)
 - [app/app_ecosystem] Cloud model viewer / app builder (ShapeDiver equivalent) (missing)
 - [app/app_ecosystem] Real-time multi-user collaboration / co-editing (missing)
+- [app/app_ux] Screen-reader support — the rest of the UI (3D viewport content, most panels/dialogs) and Windows/macOS platform bridges, beyond the real AT-SPI2/Linux bridge that now covers the command line, menu bar, running command's options, Layers/Properties, viewport title bars, Activity Log, Named Views and Named CPlanes (missing; now partial — reclassified 2026-09-30, see the app_ux category bullet above)
 - [kernel/booleans] Non-manifold boolean results — full non-manifold construction, not just tolerating detection (partial)
 - [kernel/booleans] 2D region / planar curve booleans — exact kernel implementation, not mesh slabs (partial)
 - [kernel/blending] Constant-radius edge fillet on curved adjacent faces — lift the planar-faces restriction (partial)
