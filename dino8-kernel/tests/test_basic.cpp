@@ -54126,6 +54126,218 @@ void TestFilletEdgeByDistanceRailTypeFunctionsRejectInvalidInput() {
         "FilletConvexEdgeByDistanceFromEdge rejects a diagonal that is not a shared boundary edge");
 }
 
+// ---------------------------------------------------------------------------
+// MULTI-EDGE generalization of the RailType functions above
+// (FilletConvexEdgesByDistanceFromEdge/ByDistanceBetweenRails and their
+// FilletConcaveEdges counterparts, fillet.h) - PARITY_MAP.md's own
+// "Alternative blend rail types" item, "the multi-edge/vertex-blend form"
+// half of its remaining gap, for the uniform-dihedral-angle case (see
+// fillet.h's own doc comment on these four functions for exactly what
+// "uniform" means and why a mismatch is refused rather than guessed at).
+
+void TestFilletConvexEdgesByDistanceFromEdgeAndBetweenRailsMatchFilletConvexEdgesOnUniformDihedralEdges() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConvexEdges;
+  using dino8::kernel::FilletConvexEdgesByDistanceBetweenRails;
+  using dino8::kernel::FilletConvexEdgesByDistanceFromEdge;
+  using dino8::kernel::Point3d;
+
+  // (a) A box's own two parallel top edges: theta = pi/2 on both, so both
+  // RailType conversions agree trivially (radius == distance for
+  // DistFromEdge, radius == distance/sqrt(2) for DistBetweenRails) - the
+  // same "uniform dihedral" case this function's own doc comment names
+  // as the real target.
+  {
+    const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+    const std::vector<std::pair<Point3d, Point3d>> edges = {{Point3d(0, 0, 1), Point3d(1, 0, 1)},
+                                                              {Point3d(0, 1, 1), Point3d(1, 1, 1)}};
+    const double d = 0.2;
+    const Brep by_distance = FilletConvexEdgesByDistanceFromEdge(box, edges, d);
+    const Brep by_radius = FilletConvexEdges(box, edges, d);
+    Check(by_distance.raw().m_V.Count() == by_radius.raw().m_V.Count() &&
+              by_distance.raw().m_E.Count() == by_radius.raw().m_E.Count() &&
+              by_distance.FaceCount() == by_radius.FaceCount(),
+          "on two 90-degree box edges, multi-edge DistFromEdge(d) has identical topology to FilletConvexEdges "
+          "at radius=d");
+    Check(std::fabs(by_distance.TessellateToClosedMesh(6, 6).Volume() -
+                     by_radius.TessellateToClosedMesh(6, 6).Volume()) < 1e-9,
+          "and the same tessellated volume");
+
+    const double c = 0.2 * std::sqrt(2.0);
+    const Brep by_rails = FilletConvexEdgesByDistanceBetweenRails(box, edges, c);
+    const Brep by_radius2 = FilletConvexEdges(box, edges, 0.2);
+    Check(std::fabs(by_rails.TessellateToClosedMesh(6, 6).Volume() - by_radius2.TessellateToClosedMesh(6, 6).Volume()) <
+              1e-9,
+          "multi-edge DistBetweenRails(c) matches FilletConvexEdges at its own independently-derived equivalent "
+          "radius");
+  }
+
+  // (b) A regular hexagonal prism's own two INDEPENDENT (non-adjacent)
+  // vertical side/side edges: theta = 2*pi/3 (120 degrees) on both - a
+  // genuinely non-right dihedral, so this really exercises the per-edge
+  // tan(theta/2)/cos(theta/2) conversion, not a tan(45)==1 coincidence.
+  {
+    const int N = 6;
+    const double R = 1.0, H = 1.5;
+    std::vector<Point3d> bot, top;
+    for (int k = 0; k < N; ++k) {
+      const double ang = 2.0 * ON_PI * k / N;
+      bot.push_back(Point3d(R * std::cos(ang), R * std::sin(ang), 0));
+      top.push_back(Point3d(R * std::cos(ang), R * std::sin(ang), H));
+    }
+    std::vector<Brep::PlanarFace> faces;
+    faces.push_back(ChamferTestPlanarFace(std::vector<Point3d>(bot.rbegin(), bot.rend())));
+    faces.push_back(ChamferTestPlanarFace(top));
+    for (int k = 0; k < N; ++k) {
+      const int k1 = (k + 1) % N;
+      faces.push_back(ChamferTestPlanarFace({bot[k], bot[k1], top[k1], top[k]}));
+    }
+    const Brep prism = Brep::FromPlanarFaces(faces);
+
+    const std::vector<std::pair<Point3d, Point3d>> edges = {{bot[0], top[0]}, {bot[2], top[2]}};
+    const double theta = 2.0 * ON_PI / 3.0;
+
+    const double d = 0.15;
+    const double expected_radius = d * std::tan(theta / 2.0);
+    const Brep by_distance = FilletConvexEdgesByDistanceFromEdge(prism, edges, d);
+    const Brep by_radius = FilletConvexEdges(prism, edges, expected_radius);
+    Check(by_distance.raw().m_V.Count() == by_radius.raw().m_V.Count() &&
+              by_distance.raw().m_E.Count() == by_radius.raw().m_E.Count() &&
+              by_distance.FaceCount() == by_radius.FaceCount(),
+          "on two 120-degree prism edges, multi-edge DistFromEdge(d) matches FilletConvexEdges at the "
+          "independently-derived equivalent radius, topology-wise");
+    Check(std::fabs(by_distance.TessellateToClosedMeshAdaptive(1e-7).Volume() -
+                     by_radius.TessellateToClosedMeshAdaptive(1e-7).Volume()) < 1e-9,
+          "and volume-wise");
+    ON_TextLog log;
+    bool oriented = false, has_boundary = true;
+    Check(by_distance.raw().IsValid(&log) && by_distance.raw().IsManifold(&oriented, &has_boundary) && oriented &&
+              !has_boundary && by_distance.raw().IsSolid(),
+          "the multi-edge DistFromEdge result on two independent prism edges is a closed, oriented, manifold solid");
+
+    const double c = 0.3;
+    const double expected_radius2 = c / (2.0 * std::cos(theta / 2.0));
+    const Brep by_rails = FilletConvexEdgesByDistanceBetweenRails(prism, edges, c);
+    const Brep by_radius3 = FilletConvexEdges(prism, edges, expected_radius2);
+    Check(std::fabs(by_rails.TessellateToClosedMeshAdaptive(1e-7).Volume() -
+                     by_radius3.TessellateToClosedMeshAdaptive(1e-7).Volume()) < 1e-9,
+          "multi-edge DistBetweenRails(c) on two 120-degree prism edges matches FilletConvexEdges at the "
+          "independently-derived equivalent radius");
+  }
+}
+
+void TestFilletConcaveEdgesByDistanceFromEdgeAndBetweenRailsMatchFilletConcaveEdgesOnTwoIndependentNotches() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConcaveEdges;
+  using dino8::kernel::FilletConcaveEdgesByDistanceBetweenRails;
+  using dino8::kernel::FilletConcaveEdgesByDistanceFromEdge;
+  using dino8::kernel::Point3d;
+
+  // TwoConcaveNotchPrism's own two independent 90-degree reflex edges
+  // (TestFilletConcaveEdgesAddsExactVolumeForTwoIndependentNotches above
+  // already establishes both are genuine 90-degree concave dihedrals).
+  const Brep prism = TwoConcaveNotchPrism();
+  const std::vector<std::pair<Point3d, Point3d>> edges = {{Point3d(1, 1, 0), Point3d(1, 1, 1)},
+                                                            {Point3d(5, 2, 0), Point3d(5, 2, 1)}};
+
+  const double d = 0.15;
+  const Brep by_distance = FilletConcaveEdgesByDistanceFromEdge(prism, edges, d);
+  const Brep by_radius = FilletConcaveEdges(prism, edges, d);  // radius == d at theta == 90 degrees
+  Check(by_distance.raw().m_V.Count() == by_radius.raw().m_V.Count() &&
+            by_distance.raw().m_E.Count() == by_radius.raw().m_E.Count(),
+        "multi-edge FilletConcaveEdgesByDistanceFromEdge(d) matches FilletConcaveEdges(radius=d) on two "
+        "independent 90-degree concave notches");
+  Check(std::fabs(by_distance.TessellateToClosedMeshAdaptive(1e-6).Volume() -
+                   by_radius.TessellateToClosedMeshAdaptive(1e-6).Volume()) < 1e-9,
+        "and the same tessellated volume");
+
+  const double c = 0.15 * std::sqrt(2.0);
+  const Brep by_rails = FilletConcaveEdgesByDistanceBetweenRails(prism, edges, c);
+  const Brep by_radius2 = FilletConcaveEdges(prism, edges, 0.15);  // c / (2*cos(45deg)) == 0.15
+  Check(std::fabs(by_rails.TessellateToClosedMeshAdaptive(1e-6).Volume() -
+                   by_radius2.TessellateToClosedMeshAdaptive(1e-6).Volume()) < 1e-9,
+        "multi-edge FilletConcaveEdgesByDistanceBetweenRails(c) matches FilletConcaveEdges at its own "
+        "independently-derived equivalent radius");
+}
+
+void TestFilletEdgesByDistanceRailTypeFunctionsRejectMismatchedDihedralAnglesAndInvalidInput() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConcaveEdgesByDistanceBetweenRails;
+  using dino8::kernel::FilletConcaveEdgesByDistanceFromEdge;
+  using dino8::kernel::FilletConvexEdgesByDistanceBetweenRails;
+  using dino8::kernel::FilletConvexEdgesByDistanceFromEdge;
+  using dino8::kernel::Point3d;
+  auto throws = [](const std::function<void()>& fn) {
+    try {
+      fn();
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+    return false;
+  };
+
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+  const std::vector<std::pair<Point3d, Point3d>> two_box_edges = {{Point3d(0, 0, 1), Point3d(1, 0, 1)},
+                                                                    {Point3d(0, 1, 1), Point3d(1, 1, 1)}};
+
+  Check(throws([&] { FilletConvexEdgesByDistanceFromEdge(box, two_box_edges, 0.0); }),
+        "FilletConvexEdgesByDistanceFromEdge rejects distance == 0");
+  Check(throws([&] { FilletConvexEdgesByDistanceFromEdge(box, two_box_edges, -0.1); }),
+        "FilletConvexEdgesByDistanceFromEdge rejects a negative distance");
+  Check(throws([&] { FilletConvexEdgesByDistanceBetweenRails(box, two_box_edges, 0.0); }),
+        "FilletConvexEdgesByDistanceBetweenRails rejects rail_distance == 0");
+  Check(throws([&] { FilletConvexEdgesByDistanceFromEdge(box, {}, 0.2); }),
+        "FilletConvexEdgesByDistanceFromEdge rejects an empty edge list");
+
+  const Brep prism = TwoConcaveNotchPrism();
+  const std::vector<std::pair<Point3d, Point3d>> two_concave_edges = {{Point3d(1, 1, 0), Point3d(1, 1, 1)},
+                                                                        {Point3d(5, 2, 0), Point3d(5, 2, 1)}};
+  Check(throws([&] { FilletConcaveEdgesByDistanceFromEdge(prism, two_concave_edges, -0.2); }),
+        "FilletConcaveEdgesByDistanceFromEdge rejects a negative distance");
+  Check(throws([&] { FilletConcaveEdgesByDistanceBetweenRails(prism, two_concave_edges, 0.0); }),
+        "FilletConcaveEdgesByDistanceBetweenRails rejects rail_distance == 0");
+
+  // Convexity mismatch: a genuinely concave edge fed to the CONVEX
+  // wrapper (and vice versa) must be refused, not silently mis-dispatched.
+  Check(throws([&] { FilletConvexEdgesByDistanceFromEdge(prism, two_concave_edges, 0.2); }),
+        "FilletConvexEdgesByDistanceFromEdge rejects genuinely concave edges");
+  Check(throws([&] { FilletConcaveEdgesByDistanceFromEdge(box, two_box_edges, 0.2); }),
+        "FilletConcaveEdgesByDistanceFromEdge rejects genuinely convex edges");
+
+  // The real new check this function adds: two edges whose dihedral
+  // angles genuinely differ (a hexagonal prism's own 120-degree
+  // vertical side/side edge together with its 90-degree top/side edge)
+  // convert the SAME distance to two different radii - refused by name,
+  // not silently averaged or picked arbitrarily.
+  {
+    const int N = 6;
+    const double R = 1.0, H = 1.5;
+    std::vector<Point3d> bot, top;
+    for (int k = 0; k < N; ++k) {
+      const double ang = 2.0 * ON_PI * k / N;
+      bot.push_back(Point3d(R * std::cos(ang), R * std::sin(ang), 0));
+      top.push_back(Point3d(R * std::cos(ang), R * std::sin(ang), H));
+    }
+    std::vector<Brep::PlanarFace> faces;
+    faces.push_back(ChamferTestPlanarFace(std::vector<Point3d>(bot.rbegin(), bot.rend())));
+    faces.push_back(ChamferTestPlanarFace(top));
+    for (int k = 0; k < N; ++k) {
+      const int k1 = (k + 1) % N;
+      faces.push_back(ChamferTestPlanarFace({bot[k], bot[k1], top[k1], top[k]}));
+    }
+    const Brep hex_prism = Brep::FromPlanarFaces(faces);
+
+    const std::vector<std::pair<Point3d, Point3d>> mixed_angle_edges = {
+        {bot[0], top[0]},     // vertical side/side edge, theta = 120 degrees
+        {top[0], top[1]}};    // top/side edge, theta = 90 degrees
+    Check(throws([&] { FilletConvexEdgesByDistanceFromEdge(hex_prism, mixed_angle_edges, 0.2); }),
+          "FilletConvexEdgesByDistanceFromEdge rejects two edges whose dihedral angles genuinely differ, rather "
+          "than picking one radius arbitrarily");
+    Check(throws([&] { FilletConvexEdgesByDistanceBetweenRails(hex_prism, mixed_angle_edges, 0.2); }),
+          "FilletConvexEdgesByDistanceBetweenRails rejects the same mismatched-dihedral-angle pair");
+  }
+}
+
 void TestChamferConcaveEdgeAddsExactRightTriangleVolume() {
   using dino8::kernel::Brep;
   using dino8::kernel::ChamferConcaveEdge;
@@ -59680,6 +59892,9 @@ int main() {
   TestFilletConvexEdgeByDistanceBetweenRailsMatchesEquivalentRadius();
   TestFilletConcaveEdgeByDistanceFromEdgeAndByDistanceBetweenRailsMatchEquivalentRadius();
   TestFilletEdgeByDistanceRailTypeFunctionsRejectInvalidInput();
+  TestFilletConvexEdgesByDistanceFromEdgeAndBetweenRailsMatchFilletConvexEdgesOnUniformDihedralEdges();
+  TestFilletConcaveEdgesByDistanceFromEdgeAndBetweenRailsMatchFilletConcaveEdgesOnTwoIndependentNotches();
+  TestFilletEdgesByDistanceRailTypeFunctionsRejectMismatchedDihedralAnglesAndInvalidInput();
   TestChamferConcaveEdgeAddsExactRightTriangleVolume();
   TestChamferConcaveEdgeAngleMatchesTwoDistanceForm();
   TestChamferConcaveEdgeRejectsUnsupportedConfigurations();

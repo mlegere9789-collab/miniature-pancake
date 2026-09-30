@@ -1927,4 +1927,64 @@ Brep FilletConvexEdgeByDistanceBetweenRails(const Brep& solid, Point3d edge_p0, 
 Brep FilletConcaveEdgeByDistanceFromEdge(const Brep& solid, Point3d edge_p0, Point3d edge_p1, double distance);
 Brep FilletConcaveEdgeByDistanceBetweenRails(const Brep& solid, Point3d edge_p0, Point3d edge_p1, double rail_distance);
 
+// ---------------------------------------------------------------------------
+// MULTI-EDGE generalization of the four single-edge RailType functions
+// above - PARITY_MAP.md's own disclosed "Alternative blend rail types"
+// remaining gap ("the multi-edge/vertex-blend form ... is small, not
+// large"). `FilletConvexEdges`/`FilletConcaveEdges` already fillet several
+// independent straight edges of the same solid in one call, but only for
+// a single SHARED rolling-ball `radius` - a genuine, disclosed scope
+// limit of those two functions ("one radius for all edges ... mixed radii
+// unsupported"), since a vertex where several differently-radiused
+// fillets meet is not a sphere at all.
+//
+// A `distance`-specified rail type does not remove that limit - it is
+// still the SAME single-shared-radius multi-edge construction underneath
+// - but it DOES let several edges of DIFFERENT dihedral angle reach it
+// under one caller-supplied distance whenever that distance happens to
+// convert to the SAME radius on every edge: `EdgeDihedralAngleForRailType`
+// converts `distance` (or `rail_distance`) to a radius per edge via
+// exactly the same closed-form `radius = distance * tan(theta_e / 2)` (or
+// `rail_distance / (2 * cos(theta_e / 2))`) the single-edge functions
+// above already use, computed independently for every edge in `edges`
+// against the ORIGINAL (unmodified) `solid` - each edge's own theta_e
+// depends only on its own two adjacent faces' normals, not on any other
+// edge, so this per-edge lookup is exact and independent of iteration
+// order. If every edge's own derived radius agrees (within a relative
+// 1e-9 tolerance - floating-point roundoff across independently-computed
+// acos/tan chains, not a geometric approximation), the single common
+// radius is handed to `FilletConvexEdges`/`FilletConcaveEdges` UNCHANGED,
+// so every tangency/topology/closed-solid claim either of those two
+// functions' own doc comments already makes continues to hold here
+// bit-for-bit - the same "dispatch to the exact same production code
+// path" discipline the single-edge RailType functions above already
+// establish. This is not a rare coincidence in practice: it is exactly
+// what happens whenever every requested edge shares the same dihedral
+// angle - e.g. any set of edges of a rectangular box, all at theta = pi/2
+// - the common real-world case this closed-form rail-type conversion
+// exists for in the first place.
+//
+// SCOPE, stated plainly rather than silently narrowed: if the edges'
+// own dihedral angles genuinely differ enough that the SAME distance
+// converts to genuinely different radii, this throws
+// std::invalid_argument naming the conflicting edge and both derived
+// radii, rather than picking one arbitrarily or silently averaging - a
+// true mixed-radius multi-edge fillet (this function's own "same
+// distance, different radius per edge" case, or `FilletConvexEdges`'
+// own longstanding "mixed radii unsupported" limit in general) remains
+// out of scope, a genuinely different, harder problem this function does
+// not attempt. Every other scope limit `FilletConvexEdges`/
+// `FilletConcaveEdges` already state (one radius for all edges once
+// dispatched, m == 1 or m == 3 trihedral vertex configurations only, no
+// edge listed twice, planar faces only) applies unchanged, since this
+// function's own output IS that dispatch's output.
+Brep FilletConvexEdgesByDistanceFromEdge(const Brep& solid, const std::vector<std::pair<Point3d, Point3d>>& edges,
+                                          double distance);
+Brep FilletConvexEdgesByDistanceBetweenRails(const Brep& solid, const std::vector<std::pair<Point3d, Point3d>>& edges,
+                                              double rail_distance);
+Brep FilletConcaveEdgesByDistanceFromEdge(const Brep& solid, const std::vector<std::pair<Point3d, Point3d>>& edges,
+                                           double distance);
+Brep FilletConcaveEdgesByDistanceBetweenRails(const Brep& solid, const std::vector<std::pair<Point3d, Point3d>>& edges,
+                                               double rail_distance);
+
 }  // namespace dino8::kernel

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <functional>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -5991,6 +5992,100 @@ Brep FilletConcaveEdgeByDistanceBetweenRails(const Brep& solid, Point3d edge_p0,
                                                      "FilletConcaveEdgeByDistanceBetweenRails");
   const double radius = rail_distance / (2.0 * std::cos(theta / 2.0));
   return FilletConcaveEdge(solid, edge_p0, edge_p1, radius);
+}
+
+namespace {
+
+// Shared by the four multi-edge RailType wrappers below: converts every
+// edge in `edges` to its own independently-derived radius via `convert`
+// (one of the two closed-form distance->radius conversions the
+// single-edge RailType functions above already establish -
+// `distance * tan(theta/2)` for DistFromEdge, `rail_distance / (2 *
+// cos(theta/2))` for DistBetweenRails), using `EdgeDihedralAngleForRailType`
+// (above) on the ORIGINAL, unmodified `solid` for each edge independently
+// - and requires every edge's own derived radius to agree with the
+// first edge's, within a relative 1e-9 tolerance (floating-point
+// roundoff across independently-computed acos/tan chains on different
+// input normals, not a geometric approximation this function itself
+// introduces). Returns that one common radius, or throws naming the
+// first conflicting edge and both derived radii - see fillet.h's own
+// doc comment on the four public wrappers for why a genuine mismatch
+// here means a true mixed-radius multi-edge fillet, out of scope for
+// this function.
+double CommonRadiusForEdgesByRailType(const Brep& solid, const std::vector<std::pair<Point3d, Point3d>>& edges,
+                                       bool want_convex, const char* caller,
+                                       const std::function<double(double theta)>& convert) {
+  if (edges.empty()) {
+    throw std::invalid_argument(std::string("dino8::kernel::") + caller + ": at least one edge is required");
+  }
+  double common_radius = -1.0;
+  for (size_t k = 0; k < edges.size(); ++k) {
+    const double theta = EdgeDihedralAngleForRailType(solid, edges[k].first, edges[k].second, want_convex, caller);
+    const double radius = convert(theta);
+    if (k == 0) {
+      common_radius = radius;
+      continue;
+    }
+    const double scale = std::max(1.0, std::max(std::fabs(radius), std::fabs(common_radius)));
+    if (std::fabs(radius - common_radius) > 1e-9 * scale) {
+      throw std::invalid_argument(
+          std::string("dino8::kernel::") + caller + ": edge " + std::to_string(k) +
+          " converts the same requested distance to a different radius (" + std::to_string(radius) +
+          ") than edge 0 did (" + std::to_string(common_radius) +
+          ") - the edges have genuinely different dihedral angles, so no single rolling-ball radius "
+          "satisfies all of them at this distance; a true mixed-radius multi-edge fillet is out of "
+          "scope, see fillet.h's own doc comment on this function");
+    }
+  }
+  return common_radius;
+}
+
+}  // namespace
+
+Brep FilletConvexEdgesByDistanceFromEdge(const Brep& solid, const std::vector<std::pair<Point3d, Point3d>>& edges,
+                                          double distance) {
+  if (!(distance > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::FilletConvexEdgesByDistanceFromEdge: distance must be positive");
+  }
+  const double radius = CommonRadiusForEdgesByRailType(
+      solid, edges, /*want_convex=*/true, "FilletConvexEdgesByDistanceFromEdge",
+      [distance](double theta) { return distance * std::tan(theta / 2.0); });
+  return FilletConvexEdges(solid, edges, radius);
+}
+
+Brep FilletConvexEdgesByDistanceBetweenRails(const Brep& solid, const std::vector<std::pair<Point3d, Point3d>>& edges,
+                                              double rail_distance) {
+  if (!(rail_distance > 0.0)) {
+    throw std::invalid_argument(
+        "dino8::kernel::FilletConvexEdgesByDistanceBetweenRails: rail_distance must be positive");
+  }
+  const double radius = CommonRadiusForEdgesByRailType(
+      solid, edges, /*want_convex=*/true, "FilletConvexEdgesByDistanceBetweenRails",
+      [rail_distance](double theta) { return rail_distance / (2.0 * std::cos(theta / 2.0)); });
+  return FilletConvexEdges(solid, edges, radius);
+}
+
+Brep FilletConcaveEdgesByDistanceFromEdge(const Brep& solid, const std::vector<std::pair<Point3d, Point3d>>& edges,
+                                           double distance) {
+  if (!(distance > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::FilletConcaveEdgesByDistanceFromEdge: distance must be positive");
+  }
+  const double radius = CommonRadiusForEdgesByRailType(
+      solid, edges, /*want_convex=*/false, "FilletConcaveEdgesByDistanceFromEdge",
+      [distance](double theta) { return distance * std::tan(theta / 2.0); });
+  return FilletConcaveEdges(solid, edges, radius);
+}
+
+Brep FilletConcaveEdgesByDistanceBetweenRails(const Brep& solid, const std::vector<std::pair<Point3d, Point3d>>& edges,
+                                               double rail_distance) {
+  if (!(rail_distance > 0.0)) {
+    throw std::invalid_argument(
+        "dino8::kernel::FilletConcaveEdgesByDistanceBetweenRails: rail_distance must be positive");
+  }
+  const double radius = CommonRadiusForEdgesByRailType(
+      solid, edges, /*want_convex=*/false, "FilletConcaveEdgesByDistanceBetweenRails",
+      [rail_distance](double theta) { return rail_distance / (2.0 * std::cos(theta / 2.0)); });
+  return FilletConcaveEdges(solid, edges, radius);
 }
 
 }  // namespace dino8::kernel
