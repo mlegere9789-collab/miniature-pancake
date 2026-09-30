@@ -12483,6 +12483,143 @@ void TestBrepSewTJunctionsNoOpOnCleanBreps() {
         "...and is left completely untouched");
 }
 
+// DeleteFace()/DeleteFaces() on an arbitrary, currently-valid face - the
+// general-purpose counterpart RemoveDegenerateFaces()/RemoveSliverFaces()
+// never gave a caller for a face THEY didn't already pick via Check().
+// Uses Brep::FromPlanarFaces(CheckHealBoxFaces()) rather than the bare
+// Brep::Box() factory: Box() is one of the surface-only constructors the
+// "Genuine topology produced by every constructor" bullet already
+// discloses (no real edges/vertices at all), so it can never show a
+// deleted face's own boundary going naked - CheckHealBoxFaces() gives a
+// genuinely welded box (12 shared 2-trim edges, the same fixture
+// TestBrepSewTJunctionsNoOpOnCleanBreps() above already uses).
+void TestBrepDeleteFaceRemovesArbitraryFaceAndRefusesBadIndices() {
+  using dino8::kernel::Brep;
+
+  {
+    Brep box = Brep::FromPlanarFaces(CheckHealBoxFaces());
+    box.DeleteFace(0);
+    Check(box.FaceCount() == 5, "DeleteFace() removes exactly the one requested face from a valid box");
+    const Brep::CheckReport report = box.Check();
+    Check(report.Count(Brep::CheckIssue::Kind::NakedEdge) == 4,
+          "the deleted face's own 4 boundary edges are now naked - DeleteFace() opens the shell, it does not "
+          "geometrically extend the neighbours to close it");
+  }
+  {
+    Brep box = Brep::FromPlanarFaces(CheckHealBoxFaces());
+    bool threw = false;
+    try {
+      box.DeleteFace(6);
+    } catch (const std::out_of_range&) {
+      threw = true;
+    }
+    Check(threw && box.FaceCount() == 6,
+          "DeleteFace() throws std::out_of_range on an out-of-range face_index and leaves the Brep untouched");
+  }
+  {
+    // DeleteFace()/DeleteFaces() always Compact() before returning (see
+    // their own header doc comment for why), so a face_index is never
+    // left pointing at a deleted-but-not-yet-compacted slot across two
+    // separate calls the way a loop-index into RemoveAllHoleLoops()'s own
+    // uncompacted batch can be - index 0 always refers to whichever face
+    // is CURRENTLY first, not to whatever used to be there. Confirmed
+    // here rather than just asserted: deleting index 0 six times in a
+    // row (the box's own original face count) empties the Brep one live
+    // face at a time, never throwing early.
+    Brep box = Brep::FromPlanarFaces(CheckHealBoxFaces());
+    for (int i = 6; i > 0; --i) {
+      box.DeleteFace(0);
+      Check(box.FaceCount() == i - 1, "repeatedly deleting index 0 removes whichever face is CURRENTLY first, "
+                                       "one at a time, down to an empty Brep");
+    }
+    bool threw = false;
+    try {
+      box.DeleteFace(0);
+    } catch (const std::out_of_range&) {
+      threw = true;
+    }
+    Check(threw, "DeleteFace() on an empty Brep throws std::out_of_range (0 face slots), not some other error");
+  }
+  {
+    // An invalid index anywhere in a DeleteFaces() batch refuses the
+    // WHOLE call, leaving the Brep completely untouched - the same
+    // all-or-nothing refusal AddHoleLoops() already gives its own batch.
+    Brep box = Brep::FromPlanarFaces(CheckHealBoxFaces());
+    bool threw = false;
+    try {
+      box.DeleteFaces({0, 1, 42});
+    } catch (const std::out_of_range&) {
+      threw = true;
+    }
+    Check(threw && box.FaceCount() == 6,
+          "DeleteFaces() throws on a bad index anywhere in the batch and removes NOTHING, not just the valid "
+          "prefix");
+  }
+  {
+    // Duplicates collapse to one removal, not a double-delete.
+    Brep box = Brep::FromPlanarFaces(CheckHealBoxFaces());
+    const int removed = box.DeleteFaces({0, 0, 1});
+    Check(removed == 2 && box.FaceCount() == 4,
+          "DeleteFaces() collapses a duplicate index and removes exactly the 2 distinct faces requested");
+  }
+}
+
+// DeleteFace()'s `heal` flag: deleting a face elsewhere in the SAME Brep
+// as a pre-existing T-junction also sews that T-junction when heal=true
+// (JoinNakedEdges()+SewTJunctions() run over the whole Brep, not scoped
+// to the deleted face's own neighbours) but leaves it completely
+// untouched when heal=false. Reuses the exact fixture
+// TestBrepSewTJunctionsClosesActualTJunction() above already proves
+// SewTJunctions() itself closes (unit square `a` beside two half-height
+// squares `b`/`c`), plus one extra, wholly disconnected square `d` far
+// away - `d` is the face actually being deleted, so any change to a/b/c's
+// own naked-edge count can only come from `heal`, not from the deletion
+// itself.
+void TestBrepDeleteFaceHealFlagControlsJoinAndSewTJunctions() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+
+  auto build = [] {
+    Brep::PlanarFace a = CheckHealFace(
+        {Point3d(0, 0, 0), Point3d(1, 0, 0), Point3d(1, 1, 0), Point3d(0, 1, 0)}, ON_3dVector(0, 0, 1));
+    Brep::PlanarFace b = CheckHealFace(
+        {Point3d(1, 0, 0), Point3d(2, 0, 0), Point3d(2, 0.5, 0), Point3d(1, 0.5, 0)}, ON_3dVector(0, 0, 1));
+    Brep::PlanarFace c = CheckHealFace(
+        {Point3d(1, 0.5, 0), Point3d(2, 0.5, 0), Point3d(2, 1, 0), Point3d(1, 1, 0)}, ON_3dVector(0, 0, 1));
+    Brep::PlanarFace d = CheckHealFace(
+        {Point3d(10, 10, 0), Point3d(11, 10, 0), Point3d(11, 11, 0), Point3d(10, 11, 0)}, ON_3dVector(0, 0, 1));
+    return Brep::FromMixedFaces({a, b, c, d}, {});
+  };
+
+  {
+    Brep plate = build();
+    Check(plate.FaceCount() == 4, "the fixture starts with its 4 faces (a/b/c's T-junction plus disconnected d)");
+    plate.DeleteFace(3, /*heal=*/false);
+    Check(plate.FaceCount() == 3, "DeleteFace() removed exactly d");
+    const Brep::CheckReport report = plate.Check();
+    Check(report.Count(Brep::CheckIssue::Kind::NakedEdge) == 10,
+          "heal=false: a/b/c's own pre-existing T-junction (10 naked edges, the same count "
+          "TestBrepSewTJunctionsClosesActualTJunction() measures before sewing) is untouched by deleting the "
+          "wholly unrelated face d");
+  }
+  {
+    Brep plate = build();
+    plate.DeleteFace(3, /*heal=*/true);
+    Check(plate.FaceCount() == 3, "DeleteFace() removed exactly d");
+    const Brep::CheckReport report = plate.Check();
+    Check(report.Count(Brep::CheckIssue::Kind::NakedEdge) == 7,
+          "heal=true: DeleteFace() also sews a/b/c's own pre-existing T-junction elsewhere in the same Brep down "
+          "to the 2x1 rectangle's own 7-edge outer boundary, the exact same after-state "
+          "TestBrepSewTJunctionsClosesActualTJunction() proves for SewTJunctions() alone");
+    int shared = 0;
+    for (int ei = 0; ei < plate.raw().m_E.Count(); ++ei) {
+      const ON_BrepEdge& e = plate.raw().m_E[ei];
+      if (e.m_edge_index >= 0 && e.TrimCount() == 2) ++shared;
+    }
+    Check(shared == 3, "all 3 of a/b/c's own interior boundaries are shared (2-trim) after heal=true");
+  }
+}
+
 // Brep::Check()'s 3D counterpart to its own 2D SelfIntersectingLoop check
 // (CheckIssue::Kind::SelfIntersectingLoop3d's own doc comment has the full
 // rationale): a loop's sampled 2D trim polygon can be perfectly simple
@@ -51883,6 +52020,8 @@ int main() {
   TestBrepSplitNakedEdgeAtRefusesInvalidInputs();
   TestBrepSewTJunctionsClosesActualTJunction();
   TestBrepSewTJunctionsNoOpOnCleanBreps();
+  TestBrepDeleteFaceRemovesArbitraryFaceAndRefusesBadIndices();
+  TestBrepDeleteFaceHealFlagControlsJoinAndSewTJunctions();
   TestBrepCheckDetects3dSelfIntersectingLoopBeyondThe2dTrimCheck();
   TestMeshCheckAndFillSmallHolesRestoreDroppedFaces();
   TestMeshUnifyNormalsFixesFlippedAndInvertedFaces();

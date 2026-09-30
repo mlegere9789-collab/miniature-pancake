@@ -3458,6 +3458,46 @@ class Brep {
   // number of faces removed.
   int RemoveSliverFaces(double max_width = tolerance::kEdgeJoin);
 
+  // Deletes face `face_index` outright (ON_Brep::DeleteFace, freeing its
+  // own edges) - the general-purpose counterpart RemoveDegenerateFaces()/
+  // RemoveSliverFaces() never gave a caller for a face THEY didn't already
+  // pick via Check(): this closes the "kernel has no public delete-face
+  // API" half of PARITY_MAP.md's own "Delete / extract face" gap
+  // (dino8-app's own ExtractSrf/DeleteFaces command still calls
+  // ON_Brep::DuplicateFace/DeleteFace directly, with no re-extend at all).
+  // Unless `heal` is false, re-joins the naked-edge boundary the deletion
+  // exposes on the neighbours with JoinNakedEdges(join_tolerance) and then
+  // SewTJunctions(join_tolerance) - the SAME delete-and-tolerant-join heal
+  // RemoveThinFaces() already gives a Check()-flagged face (now sharing
+  // its own implementation with this method), plus the T-junction sweep
+  // RemoveDegenerateFaces()/RemoveSliverFaces() never called, closing that
+  // separately-named gap for both of them too. Still not a geometric
+  // neighbour-EXTENSION: a face whose removal doesn't expose a coincident
+  // naked-edge boundary (nothing to join, or a genuine T-junction
+  // SewTJunctions can't resolve) leaves the shell open, same honest limit
+  // RemoveThinFaces() already discloses - this does not make an arbitrary
+  // face deletion always fillable. Throws std::out_of_range for an
+  // out-of-range face_index. There is deliberately no separate
+  // "already-deleted" check: this method always Compact()s before
+  // returning (see DeleteFaces() below), so face_index is always either
+  // in range and live, or out of range - the same reason RemoveThinFaces()
+  // never needed one either, unlike AddHoleLoop()/RemoveAllHoleLoops(),
+  // which validate a face_index a caller may be reusing ACROSS a separate,
+  // uncompacted batch of loop edits.
+  void DeleteFace(int face_index, bool heal = true, double join_tolerance = tolerance::kEdgeJoin);
+
+  // Batch counterpart to DeleteFace(): deletes every entry of
+  // `face_indices` (duplicates collapsed) in one Compact()/heal pass
+  // rather than one per call. Validates every index up front - an
+  // out-of-range entry throws the same way DeleteFace() does, and the
+  // WHOLE call is refused before anything is touched, the same "left
+  // completely untouched" refusal contract every other topology-surgery
+  // method in this class already gives. An empty `face_indices` is a
+  // no-op (returns 0), not a refusal. Returns the number of distinct
+  // faces removed.
+  int DeleteFaces(const std::vector<int>& face_indices, bool heal = true,
+                  double join_tolerance = tolerance::kEdgeJoin);
+
   // Collapses every edge Check() would report as DegenerateEdge at
   // `tolerance` (3D length within tolerance) to a single vertex via
   // ON_Brep::CollapseEdge() (which closes the resulting 2D trim gaps in
@@ -4341,6 +4381,15 @@ class Brep {
   void ClearFaceSideTables();
   // Shared body of RemoveDegenerateFaces()/RemoveSliverFaces().
   int RemoveThinFaces(double width, double join_tolerance, bool slivers_too);
+  // Shared body of RemoveThinFaces()/DeleteFace()/DeleteFaces(): the
+  // actual ON_Brep::DeleteFace() calls plus Compact()/
+  // SetTolerancesBoxesAndFlags()/FixUnsetEdgeTolerances(), and, if `heal`,
+  // JoinNakedEdges(join_tolerance) + SewTJunctions(join_tolerance).
+  // `face_indices` is trusted to already be validated (in-range, live,
+  // duplicate-free) by the caller. Returns the number of faces actually
+  // removed (an already-deleted slot reached via a stale index is skipped,
+  // not an error, for RemoveThinFaces()'s own Check()-derived callers).
+  int DeleteFacesImpl(const std::vector<int>& face_indices, bool heal, double join_tolerance);
   // Shared body of RemoveHoleLoop()/RemoveAllHoleLoops(): does the actual
   // loop/trim/edge/vertex surgery but skips Compact()/
   // SetTolerancesBoxesAndFlags()/FixUnsetEdgeTolerances()/

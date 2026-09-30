@@ -7362,6 +7362,26 @@ int Brep::UnifyNormals() {
   return flipped;
 }
 
+int Brep::DeleteFacesImpl(const std::vector<int>& face_indices, bool heal, double join_tolerance) {
+  if (face_indices.empty()) return 0;
+  ClearFaceSideTables();
+  int removed = 0;
+  for (const int fi : face_indices) {
+    if (fi < 0 || fi >= brep_.m_F.Count() || brep_.m_F[fi].m_face_index < 0) continue;
+    brep_.DeleteFace(brep_.m_F[fi], /*bDeleteFaceEdges=*/true);
+    ++removed;
+  }
+  if (removed == 0) return 0;
+  brep_.Compact();
+  brep_.SetTolerancesBoxesAndFlags();
+  FixUnsetEdgeTolerances(brep_);
+  if (heal) {
+    JoinNakedEdges(join_tolerance);
+    SewTJunctions(join_tolerance);
+  }
+  return removed;
+}
+
 int Brep::RemoveThinFaces(double width, double join_tolerance, bool slivers_too) {
   const double tol = std::max(width, 0.0);
   const CheckReport report = slivers_too ? Check(std::min(tolerance::kDistance, tol), tol) : Check(tol, tol);
@@ -7371,19 +7391,7 @@ int Brep::RemoveThinFaces(double width, double join_tolerance, bool slivers_too)
       doomed.push_back(issue.index);
     }
   }
-  if (doomed.empty()) return 0;
-  ClearFaceSideTables();
-  int removed = 0;
-  for (const int fi : doomed) {
-    if (fi < 0 || fi >= brep_.m_F.Count() || brep_.m_F[fi].m_face_index < 0) continue;
-    brep_.DeleteFace(brep_.m_F[fi], /*bDeleteFaceEdges=*/true);
-    ++removed;
-  }
-  brep_.Compact();
-  brep_.SetTolerancesBoxesAndFlags();
-  FixUnsetEdgeTolerances(brep_);
-  JoinNakedEdges(join_tolerance);
-  return removed;
+  return DeleteFacesImpl(doomed, /*heal=*/true, join_tolerance);
 }
 
 int Brep::RemoveDegenerateFaces(double tolerance) {
@@ -7392,6 +7400,23 @@ int Brep::RemoveDegenerateFaces(double tolerance) {
 
 int Brep::RemoveSliverFaces(double max_width) {
   return RemoveThinFaces(max_width, max_width, /*slivers_too=*/true);
+}
+
+void Brep::DeleteFace(int face_index, bool heal, double join_tolerance) {
+  DeleteFaces(std::vector<int>{face_index}, heal, join_tolerance);
+}
+
+int Brep::DeleteFaces(const std::vector<int>& face_indices, bool heal, double join_tolerance) {
+  const ON_Brep& b = brep_;
+  std::vector<int> distinct;
+  for (const int fi : face_indices) {
+    if (fi < 0 || fi >= b.m_F.Count()) {
+      throw std::out_of_range("dino8::kernel::Brep::DeleteFaces: face_index " + std::to_string(fi) +
+                              " is out of range (this Brep has " + std::to_string(b.m_F.Count()) + " face slot(s))");
+    }
+    if (std::find(distinct.begin(), distinct.end(), fi) == distinct.end()) distinct.push_back(fi);
+  }
+  return DeleteFacesImpl(distinct, heal, join_tolerance);
 }
 
 int Brep::RemoveDegenerateEdges(double tolerance) {
