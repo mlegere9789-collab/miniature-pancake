@@ -1045,6 +1045,7 @@ class FilletTwoSurfacesCommand : public Command {
 class FilletEdgeCommand : public Command {
  public:
   enum class Mode { Fillet, Chamfer, Blend };
+  enum class RailType { RollingBall, DistFromEdge, DistBetweenRails };
   explicit FilletEdgeCommand(Mode m) : mode_(m) {}
   void Begin(CommandContext&) override {
     if (mode_ != Mode::Blend) {
@@ -1081,6 +1082,22 @@ class FilletEdgeCommand : public Command {
       // distance_j; unset defaults to symmetric (distance_j = Radius).
       options.push_back({"Rho", "", {}, true, false});
       options.push_back({"Distance2", "", {}, true, false});
+      // RailType (default RollingBall): kernel::FilletConvexEdgeByDistanceFromEdge/
+      // ByDistanceBetweenRails (and their concave mirrors) - the SAME
+      // circular rolling-ball fillet surface FilletConvexEdge/
+      // FilletConcaveEdge already build, just specified by measuring a
+      // distance instead of the radius directly (Rhino 8's own FilletEdge
+      // RailType option). Radius supplies that distance under either
+      // non-default setting - a plain re-use rather than a new option,
+      // since both rail types and the default radius input are mutually
+      // exclusive ways to specify the same one free parameter. Only ever
+      // feeds the exact kernel path below: like Rho, this requires the
+      // whole solid to be planar-faced at the edge (the dihedral-angle
+      // conversion has no meaning on a curved adjacent face), so a
+      // request that can't be satisfied exactly warns and returns rather
+      // than silently building a plain radius-based rolling-ball fillet
+      // under a different distance interpretation.
+      options.push_back({"RailType", "RollingBall", {"RollingBall", "DistFromEdge", "DistBetweenRails"}, false, false});
     }
     if (mode_ == Mode::Blend) options = {{"Continuity", "Tangency", {"Tangency", "Curvature"}, false, false}};
     options.push_back({"Preview", "No", {"Yes", "No"}, false, true});
@@ -1092,6 +1109,7 @@ class FilletEdgeCommand : public Command {
     if (n == "Distance2") { distance2_ = v.empty() ? std::nullopt : std::optional<double>(std::atof(v.c_str())); if (distance2_) angle_deg_.reset(); }
     if (n == "Angle") { angle_deg_ = v.empty() ? std::nullopt : std::optional<double>(std::atof(v.c_str())); if (angle_deg_) distance2_.reset(); }
     if (n == "Rho") rho_ = v.empty() ? std::nullopt : std::optional<double>(std::atof(v.c_str()));
+    if (n == "RailType") rail_type_ = v == "DistFromEdge" ? RailType::DistFromEdge : v == "DistBetweenRails" ? RailType::DistBetweenRails : RailType::RollingBall;
     if (n == "Continuity") curvature_ = (v == "Curvature");
     if (n == "Preview") preview_ = (v == "Yes");
   }
@@ -1220,6 +1238,38 @@ class FilletEdgeCommand : public Command {
       }
       ctx.Warn(label + ": an exact conic (Rho) fillet needs the whole object to be planar-faced at this edge (" + detail +
                 "); Rho has no approximate rolling-ball equivalent, so this cannot silently fall back");
+      return;
+    }
+    // Exact RailType fillet: kernel::FilletConvexEdgeByDistanceFromEdge/
+    // ByDistanceBetweenRails (and their concave mirrors) - the same
+    // circular rolling-ball surface the approximate path below can also
+    // build, just specified via a distance instead of the radius
+    // directly. Like Rho just above, the dihedral-angle-to-radius
+    // conversion this depends on only has a meaning on planar-faced
+    // solids, so a request that fails here warns and returns rather than
+    // falling back to the approximate path under a mismatched distance
+    // interpretation (that path only ever takes Radius as a literal
+    // radius, not a DistFromEdge/DistBetweenRails distance).
+    if (mode_ == Mode::Fillet && rail_type_ != RailType::RollingBall && radii_.empty() && !preview_) {
+      ON_Brep exact;
+      std::string detail;
+      if (TryExactRailFillet(*b, edge.PointAtStart(), edge.PointAtEnd(), exact, detail)) {
+        ctx.Doc().BeginChange(label);
+        if (SceneObject* orig = ctx.Doc().Find(pick.id)) {
+          orig->kind = ObjectKind::Brep;
+          if (!orig->brep) orig->brep = std::make_unique<kernel::Brep>();
+          orig->brep->raw() = exact;
+          orig->surface.reset();
+          orig->InvalidateDisplay();
+        }
+        const std::string rail_name = rail_type_ == RailType::DistFromEdge ? "DistFromEdge" : "DistBetweenRails";
+        ctx.Print(label + ": edge " + std::to_string(pick.edge) + " of object " + std::to_string(pick.id) +
+                   " replaced with an exact fillet (RailType=" + rail_name + ", distance " + FormatNumber(radius_) + ")");
+        return;
+      }
+      ctx.Warn(label + ": an exact RailType=" + std::string(rail_type_ == RailType::DistFromEdge ? "DistFromEdge" : "DistBetweenRails") +
+                " fillet needs the whole object to be planar-faced at this edge (" + detail +
+                "); RailType has no approximate rolling-ball-by-radius equivalent, so this cannot silently fall back");
       return;
     }
     ON_NurbsSurface built;
@@ -1602,12 +1652,46 @@ class FilletEdgeCommand : public Command {
     return false;
   }
 
+  // Tries the exact kernel rolling-ball fillet (convex, then concave)
+  // specified via a RailType distance instead of a direct radius -
+  // kernel::FilletConvexEdgeByDistanceFromEdge/ByDistanceBetweenRails (and
+  // their concave mirrors) are pure closed-form radius conversions that
+  // dispatch straight to FilletConvexEdge/FilletConcaveEdge, so this
+  // reuses the identical convex-then-concave/detail-joining structure
+  // TryExactConicFillet above uses, for the identical reason: the caller
+  // doesn't know the edge's own convexity in advance.
+  bool TryExactRailFillet(const ON_Brep& solid, Point3d p0, Point3d p1, ON_Brep& out, std::string& detail) const {
+    kernel::Brep kb;
+    kb.raw() = solid;
+    const double d = radius_;
+    const bool from_edge = rail_type_ == RailType::DistFromEdge;
+    std::string convex_err, concave_err;
+    auto attempt = [&](bool convex, std::string& err) -> bool {
+      try {
+        kernel::Brep result = from_edge ? (convex ? kernel::FilletConvexEdgeByDistanceFromEdge(kb, p0, p1, d)
+                                                    : kernel::FilletConcaveEdgeByDistanceFromEdge(kb, p0, p1, d))
+                                         : (convex ? kernel::FilletConvexEdgeByDistanceBetweenRails(kb, p0, p1, d)
+                                                    : kernel::FilletConcaveEdgeByDistanceBetweenRails(kb, p0, p1, d));
+        out = result.raw();
+        return true;
+      } catch (const std::exception& ex) {
+        err = ex.what();
+        return false;
+      }
+    };
+    if (attempt(true, convex_err)) return true;
+    if (attempt(false, concave_err)) return true;
+    detail = "convex attempt: " + convex_err + "; concave attempt: " + concave_err;
+    return false;
+  }
+
   Mode mode_;
   double radius_ = 2;
   std::vector<std::pair<double, double>> radii_;  // (t in [0,1], radius) handles; empty = constant radius_
   std::optional<double> distance2_;  // Chamfer/Fillet: second distance (Distance1/Distance2 mode); unset = symmetric
   std::optional<double> angle_deg_;  // Chamfer only: angle from face 1 in degrees (Distance/Angle mode); mutually exclusive with distance2_
   std::optional<double> rho_;  // Fillet only: conic shape parameter in (0,1) for the exact FilletConvexEdgeConic/FilletConcaveEdgeConic path; unset = default rolling-ball circular fillet
+  RailType rail_type_ = RailType::RollingBall;  // Fillet only: alternate distance-based input for the same circular rolling-ball fillet; RollingBall = plain Radius (default)
   bool curvature_ = false;
   bool preview_ = false;
   bool variable_engine_used_ = false;  // set by Run(): true when BuildPlanarVariableFillet (the exact closed form) built the last variable-radius result

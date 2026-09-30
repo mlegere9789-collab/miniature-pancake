@@ -164,6 +164,25 @@ SelAll
 @expect_objects 1
 SelAll
 Delete
+# --- FilletEdge RailType=DistFromEdge on the same kind of curved-adjacent-
+# face edge: EdgeDihedralAngleForRailType (the closed-form distance-to-
+# radius conversion both RailType functions dispatch through) walks the
+# solid's own PlanarFaces() - the same whole-object-planar-faced
+# requirement Rho needs, for the same reason (there is no single dihedral
+# angle to convert on a curved face) - so this must also fail outright
+# rather than silently building a plain radius=1 rolling-ball fillet under
+# a mismatched distance interpretation. The cylinder itself must survive
+# untouched.
+Cylinder 1300080,0,0 5 20
+FilletEdge
+Radius=1
+RailType=DistFromEdge
+1300080,5,20
+Enter
+SelAll
+@expect_objects 1
+SelAll
+Delete
 # --- FilletSrf on two nearly-flat (shallow bend, not a sharp corner)
 # planes: the offset surfaces diverge rather than converge at this shallow
 # an angle for the requested radius, so BuildFillet reports its own clear
