@@ -49,6 +49,11 @@ dino8::platform::AccessibleNode NamedViewsAccessibleTree(Application& app);
 // per row the same way the on-screen panel does (origin/axes are a hover
 // tooltip there, not part of the row itself).
 dino8::platform::AccessibleNode NamedCPlanesAccessibleTree(Application& app);
+// The AT-SPI2-queryable snapshot of Document::Linetypes() - independent of
+// whether DrawLinetypesPanel's window is open, mirroring the name and dash
+// pattern per row the same way the on-screen panel's Name/Pattern columns
+// do.
+dino8::platform::AccessibleNode LinetypesAccessibleTree(Application& app);
 void DrawToolbars(Application& app);
 void DrawLayersPanel(Application& app);
 void DrawPropertiesPanel(Application& app);

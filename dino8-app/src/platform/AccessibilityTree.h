@@ -14,9 +14,10 @@
 // PropertyEntry::editable), each viewport's title/view-menu button state
 // (name, active/maximized, current display mode - see BuildViewportsPanelNode),
 // the persisted Activity Log of finalized edits (see BuildActivityLogNode),
-// the document's saved Named Views (see BuildNamedViewsNode), and its saved
-// Named CPlanes (see BuildNamedCPlanesNode).
-// The 3D viewport's own rendered content and the ~37 other panels/dialogs are
+// the document's saved Named Views (see BuildNamedViewsNode), its saved
+// Named CPlanes (see BuildNamedCPlanesNode), and its Linetypes (see
+// BuildLinetypesNode).
+// The 3D viewport's own rendered content and the ~36 other panels/dialogs are
 // still not mirrored into this tree.
 #pragma once
 
@@ -239,5 +240,23 @@ struct NamedCPlaneSummary {
 // of whether the Named CPlanes panel window is actually open right now, the
 // same way BuildNamedViewsNode doesn't depend on its own panel.
 AccessibleNode BuildNamedCPlanesNode(const std::vector<NamedCPlaneSummary>& cplanes);
+
+// One Linetypes-panel row (doc/Document.h's Linetype, reduced to plain data
+// the same way LayerSummary/NamedViewSummary/NamedCPlaneSummary above keep
+// this module independent of doc/Document): the linetype's name and its
+// dash/gap pattern already rendered as plain text ("5, 2" or "continuous"
+// for an empty pattern) - the same two facts the on-screen Linetypes
+// panel's Name/Pattern columns show per row (see DrawLinetypesPanel).
+struct LinetypeSummary {
+  std::string name;
+  std::string pattern_text;
+};
+
+// Builds the "Linetypes" List accessible: one ListItem per linetype, in the
+// same order Document::Linetypes() holds them, each named after it with a
+// Description giving its dash pattern - independent of whether the
+// Linetypes panel window is actually open right now, the same way the
+// other panel-backed regions above don't depend on their own panel window.
+AccessibleNode BuildLinetypesNode(const std::vector<LinetypeSummary>& linetypes);
 
 }  // namespace dino8::platform

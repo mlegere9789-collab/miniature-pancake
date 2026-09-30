@@ -580,6 +580,23 @@ dino8::platform::AccessibleNode NamedCPlanesAccessibleTree(Application& app) {
   return dino8::platform::BuildNamedCPlanesNode(summaries);
 }
 
+// AT-SPI2-queryable snapshot of Document::Linetypes() (see
+// docs/ACCESSIBILITY.md): built straight from Document state, independent of
+// whether DrawLinetypesPanel itself has ever been drawn or is open right now
+// - mirrors the same name and pattern text DrawLinetypesPanel's Name/Pattern
+// columns show per row, including its "continuous" fallback for an empty
+// pattern.
+dino8::platform::AccessibleNode LinetypesAccessibleTree(Application& app) {
+  std::vector<dino8::platform::LinetypeSummary> summaries;
+  summaries.reserve(app.Doc().Linetypes().size());
+  for (const auto& lt : app.Doc().Linetypes()) {
+    std::string pattern;
+    for (double d : lt.pattern) pattern += (pattern.empty() ? "" : ", ") + FormatNumber(d);
+    summaries.push_back({lt.name, pattern.empty() ? "continuous" : pattern});
+  }
+  return dino8::platform::BuildLinetypesNode(summaries);
+}
+
 // ---------------------------------------------------------------------------
 // Command history / list / help
 // ---------------------------------------------------------------------------

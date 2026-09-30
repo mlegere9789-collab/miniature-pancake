@@ -20,7 +20,9 @@
 // the command line's own raw text log); the named-views builder produces one
 // row per saved view naming it, matching Document::NamedViews; and the
 // named-cplanes builder produces one row per saved construction plane naming
-// it, matching Document::NamedCPlanes.
+// it, matching Document::NamedCPlanes; and the linetypes builder produces one
+// row per linetype naming it with its dash pattern as the Description,
+// matching Document::Linetypes.
 // This needs no display, no D-Bus session, and no AT-SPI2 build at all, so
 // it runs on every platform and every CI job regardless of whether
 // AccessibilityLinux.cpp itself was compiled in this build (see
@@ -43,7 +45,9 @@ using dino8::platform::BuildViewportsPanelNode;
 using dino8::platform::CommandOptionSummary;
 using dino8::platform::BuildNamedCPlanesNode;
 using dino8::platform::BuildNamedViewsNode;
+using dino8::platform::BuildLinetypesNode;
 using dino8::platform::LayerSummary;
+using dino8::platform::LinetypeSummary;
 using dino8::platform::MenuTreeBuilder;
 using dino8::platform::NamedCPlaneSummary;
 using dino8::platform::NamedViewSummary;
@@ -382,6 +386,33 @@ int main() {
     Check(empty_cplanes.children.empty(), "no saved cplanes -> no ListItem children, not a missing accessible");
   }
 
+  // Linetypes: one ListItem per linetype, naming it, with a Description
+  // giving its dash pattern as plain text - the same two facts the on-screen
+  // Linetypes panel's Name/Pattern columns show per row (see
+  // DrawLinetypesPanel, Document::Linetypes/Linetype).
+  {
+    std::vector<LinetypeSummary> linetypes;
+    linetypes.push_back({"Continuous", "continuous"});
+    linetypes.push_back({"Dashed", "5, 2"});
+    const dino8::platform::AccessibleNode list = BuildLinetypesNode(linetypes);
+    Check(list.name == "Linetypes", "linetypes list is named \"Linetypes\"");
+    Check(list.role == dino8::platform::AccessibleRole::List, "linetypes list role is List");
+    Check(list.description == "2 linetypes", "linetype count is carried as the list's Description");
+    Check(list.children.size() == 2, "two ListItem children, one per linetype");
+    if (list.children.size() == 2) {
+      Check(list.children[0].role == dino8::platform::AccessibleRole::ListItem, "linetype row role is ListItem");
+      Check(list.children[0].name == "Continuous", "first row names its linetype");
+      Check(list.children[0].description == "Pattern: continuous", "first row's pattern is given as its Description");
+      Check(list.children[1].name == "Dashed", "second row names its own linetype");
+      Check(list.children[1].description == "Pattern: 5, 2", "second row's dash pattern is given as its Description");
+    }
+  }
+  {
+    const dino8::platform::AccessibleNode empty_linetypes = BuildLinetypesNode({});
+    Check(empty_linetypes.name == "Linetypes", "still named \"Linetypes\" with no linetypes at all");
+    Check(empty_linetypes.children.empty(), "no linetypes -> no ListItem children, not a missing accessible");
+  }
+
   // BuildAccessibleTree accepts extra top-level regions (menu bar, panels)
   // alongside the always-present command line - the shape the live bridge
   // (Accessibility.cpp::UpdateAccessibility) assembles every frame.
@@ -396,14 +427,16 @@ int main() {
     dino8::platform::AccessibleNode activity_log = BuildActivityLogNode({});
     dino8::platform::AccessibleNode named_views = BuildNamedViewsNode({});
     dino8::platform::AccessibleNode named_cplanes = BuildNamedCPlanesNode({});
+    dino8::platform::AccessibleNode linetypes = BuildLinetypesNode({});
 
-    const dino8::platform::AccessibleNode root = BuildAccessibleTree(
-        "Dino8", "Command: ", "", {},
-        {menu_bar, cmd_options, layers, props, viewports, activity_log, named_views, named_cplanes});
-    Check(root.children.size() == 9,
+    const dino8::platform::AccessibleNode root =
+        BuildAccessibleTree("Dino8", "Command: ", "", {},
+                             {menu_bar, cmd_options, layers, props, viewports, activity_log, named_views,
+                              named_cplanes, linetypes});
+    Check(root.children.size() == 10,
           "command line + menu bar + command options + layers + properties + viewports + activity log + "
-          "named views + named cplanes = 9 top-level children");
-    if (root.children.size() == 9) {
+          "named views + named cplanes + linetypes = 10 top-level children");
+    if (root.children.size() == 10) {
       Check(root.children[0].role == AccessibleRole::Log, "child 0 is still the command line");
       Check(root.children[1].role == dino8::platform::AccessibleRole::MenuBar, "child 1 is the menu bar");
       Check(root.children[2].name == "Command Options", "child 2 is the command options list");
@@ -413,6 +446,7 @@ int main() {
       Check(root.children[6].name == "Activity Log", "child 6 is the activity log");
       Check(root.children[7].name == "Named Views", "child 7 is the named views panel");
       Check(root.children[8].name == "Named CPlanes", "child 8 is the named cplanes panel");
+      Check(root.children[9].name == "Linetypes", "child 9 is the linetypes panel");
     }
   }
 
