@@ -40,6 +40,10 @@ dino8::platform::AccessibleNode ViewportsAccessibleTree(Application& app);
 // ActivityLogEntry) - independent of whether DrawActivityLogPanel's window
 // is open, and distinct from the command line's raw text log.
 dino8::platform::AccessibleNode ActivityLogAccessibleTree(Application& app);
+// The AT-SPI2-queryable snapshot of Document::NamedViews() - independent of
+// whether DrawNamedViewsPanel's window is open, mirroring only the name per
+// row the same way the on-screen panel does.
+dino8::platform::AccessibleNode NamedViewsAccessibleTree(Application& app);
 void DrawToolbars(Application& app);
 void DrawLayersPanel(Application& app);
 void DrawPropertiesPanel(Application& app);

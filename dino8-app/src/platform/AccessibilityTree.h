@@ -13,8 +13,9 @@
 // current content (Properties' editable rows are flagged as such - see
 // PropertyEntry::editable), each viewport's title/view-menu button state
 // (name, active/maximized, current display mode - see BuildViewportsPanelNode),
-// and the persisted Activity Log of finalized edits (see BuildActivityLogNode).
-// The 3D viewport's own rendered content and the ~39 other panels/dialogs are
+// the persisted Activity Log of finalized edits (see BuildActivityLogNode),
+// and the document's saved Named Views (see BuildNamedViewsNode).
+// The 3D viewport's own rendered content and the ~38 other panels/dialogs are
 // still not mirrored into this tree.
 #pragma once
 
@@ -204,5 +205,21 @@ struct ActivityLogSummary {
 // output, not Document::ActivityLog) and of whether the Activity Log panel
 // window is actually open right now.
 AccessibleNode BuildActivityLogNode(const std::vector<ActivityLogSummary>& entries);
+
+// One Named Views panel row (doc/Document.h's NamedView, reduced to plain
+// data the same way LayerSummary/PropertyEntry/CommandOptionSummary/
+// ViewportSummary/ActivityLogSummary above keep this module independent of
+// doc/Document): just the saved view's name, matching the on-screen Named
+// Views panel, which likewise shows only the name per row (no camera detail)
+// - see DrawNamedViewsPanel.
+struct NamedViewSummary {
+  std::string name;
+};
+
+// Builds the "Named Views" List accessible: one ListItem per saved view, in
+// the same order Document::NamedViews() holds them, named the same as the
+// on-screen ##NamedViews Selectable row - independent of whether the Named
+// Views panel window is actually open right now.
+AccessibleNode BuildNamedViewsNode(const std::vector<NamedViewSummary>& views);
 
 }  // namespace dino8::platform

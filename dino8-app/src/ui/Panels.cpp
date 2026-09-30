@@ -551,6 +551,20 @@ dino8::platform::AccessibleNode ActivityLogAccessibleTree(Application& app) {
   return dino8::platform::BuildActivityLogNode(summaries);
 }
 
+// AT-SPI2-queryable snapshot of Document::NamedViews() (see
+// docs/ACCESSIBILITY.md): built straight from Document state, independent of
+// whether DrawNamedViewsPanel itself has ever been drawn or is open right
+// now - mirrors only the name per row, matching what DrawNamedViewsPanel
+// itself shows on screen (no camera detail).
+dino8::platform::AccessibleNode NamedViewsAccessibleTree(Application& app) {
+  std::vector<dino8::platform::NamedViewSummary> summaries;
+  summaries.reserve(app.Doc().NamedViews().size());
+  for (const auto& v : app.Doc().NamedViews()) {
+    summaries.push_back({v.name});
+  }
+  return dino8::platform::BuildNamedViewsNode(summaries);
+}
+
 // ---------------------------------------------------------------------------
 // Command history / list / help
 // ---------------------------------------------------------------------------

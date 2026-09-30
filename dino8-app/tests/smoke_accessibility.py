@@ -45,6 +45,11 @@ connection, the same way a screen reader would - to prove:
      *next* Document::BeginChange() fires (see Document.cpp), so this check
      - like the Command Options and command-line/Properties checks above -
      drives one more real command through the app to observe it.
+  10. A "Named Views" accessible (role LIST) is discoverable, starts empty,
+      and gains one new ListItem named after the view once a real
+      "NamedView Save <name>" command runs - mirroring Document::NamedViews(),
+      the same way the Activity Log check above observes a real edit landing
+      in its own accessible.
 
 This is a real integration test: at-spi2-registryd is the actual daemon
 GNOME uses, pyatspi is the actual library screen readers use, and Dino8 is
@@ -145,6 +150,7 @@ def main():
     sync2 = os.path.join(tmp, "sync2")
     sync2b = os.path.join(tmp, "sync2b")
     sync3 = os.path.join(tmp, "sync3")
+    sync4 = os.path.join(tmp, "sync4")
     script_path = os.path.join(tmp, "script.txt")
     with open(script_path, "w") as f:
         # `@waitfile` (like the built-in `@wait N` frames directive) needs
@@ -181,6 +187,13 @@ def main():
         # own comment).
         f.write("Line 5,5,0 6,6,0\n")
         f.write(f"@waitfile {sync3}\n")
+        # NamedView Save is a plain, single-frame command (no options, no
+        # pending-edit finalization dance like Circle/Line above), so one
+        # more sync point around it is enough to observe Named Views go
+        # empty -> populated, the same before/after pattern as checks
+        # 3/6/9 above.
+        f.write("NamedView Save MyView\n")
+        f.write(f"@waitfile {sync4}\n")
 
     procs = []
     dino8_proc = None
@@ -310,6 +323,16 @@ def main():
             fail('"Activity Log" accessible not found among the application\'s children')
         else:
             ok('"Activity Log" accessible is discoverable via the real AT-SPI2 desktop')
+
+        named_views = find_child_by_name(app, "Named Views", 10)
+        if named_views is None:
+            fail('"Named Views" accessible not found among the application\'s children')
+        else:
+            ok('"Named Views" accessible is discoverable via the real AT-SPI2 desktop')
+            if named_views.childCount != 0:
+                fail(f"Named Views has {named_views.childCount} children before any view is saved (expected 0)")
+            else:
+                ok("Named Views has no ListItem children before any view is saved")
 
         viewports = find_child_by_name(app, "Viewports", 10)
         if viewports is None:
@@ -465,7 +488,29 @@ def main():
                 ok(f"Activity Log gains a new entry naming a finalized command once a later edit flushes it "
                    f"({newest.name!r})")
 
-        open(sync3, "w").close()  # let the app finish its remaining frames/script and exit
+        named_views_count_before = named_views.childCount if named_views is not None else None
+
+        open(sync3, "w").close()  # let the script run "NamedView Save MyView"
+
+        if named_views is not None:
+            deadline = time.time() + 10
+            newest_view = None
+            while time.time() < deadline:
+                count = named_views.childCount
+                if named_views_count_before is not None and count > named_views_count_before:
+                    newest_view = named_views.getChildAtIndex(count - 1)
+                    break
+                time.sleep(0.2)
+            if newest_view is None:
+                fail(f"Named Views did not gain a new entry after \"NamedView Save MyView\" ran within 10s "
+                     f"(childCount stayed at {named_views_count_before!r})")
+            elif newest_view.name != "MyView":
+                fail(f"Named Views' newest entry does not name the saved view (got {newest_view.name!r})")
+            else:
+                ok(f"Named Views gains a new entry naming the saved view once \"NamedView Save\" runs "
+                   f"({newest_view.name!r})")
+
+        open(sync4, "w").close()  # let the app finish its remaining frames/script and exit
 
         try:
             out, _ = dino8_proc.communicate(timeout=20)

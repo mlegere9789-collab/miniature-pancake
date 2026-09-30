@@ -17,7 +17,8 @@
 // activity-log builder produces one row per recorded edit naming its
 // timestamp, action label and object-count summary, matching
 // Document::ActivityLog's persisted, structured edit history (distinct from
-// the command line's own raw text log).
+// the command line's own raw text log); and the named-views builder
+// produces one row per saved view naming it, matching Document::NamedViews.
 // This needs no display, no D-Bus session, and no AT-SPI2 build at all, so
 // it runs on every platform and every CI job regardless of whether
 // AccessibilityLinux.cpp itself was compiled in this build (see
@@ -38,8 +39,10 @@ using dino8::platform::BuildLayersPanelNode;
 using dino8::platform::BuildPropertiesPanelNode;
 using dino8::platform::BuildViewportsPanelNode;
 using dino8::platform::CommandOptionSummary;
+using dino8::platform::BuildNamedViewsNode;
 using dino8::platform::LayerSummary;
 using dino8::platform::MenuTreeBuilder;
+using dino8::platform::NamedViewSummary;
 using dino8::platform::PropertyEntry;
 using dino8::platform::ViewportSummary;
 
@@ -324,6 +327,31 @@ int main() {
     Check(empty_log.children.empty(), "no entries -> no ListItem children, not a missing accessible");
   }
 
+  // Named Views: one ListItem per saved view, naming it - the same single
+  // fact the on-screen Named Views panel shows per row (see
+  // DrawNamedViewsPanel, Document::NamedViews/NamedView), independent of the
+  // saved camera state itself.
+  {
+    std::vector<NamedViewSummary> views;
+    views.push_back({"Front Elevation"});
+    views.push_back({"Roof Study"});
+    const dino8::platform::AccessibleNode list = BuildNamedViewsNode(views);
+    Check(list.name == "Named Views", "named views list is named \"Named Views\"");
+    Check(list.role == dino8::platform::AccessibleRole::List, "named views list role is List");
+    Check(list.description == "2 named views", "view count is carried as the list's Description");
+    Check(list.children.size() == 2, "two ListItem children, one per saved view");
+    if (list.children.size() == 2) {
+      Check(list.children[0].role == dino8::platform::AccessibleRole::ListItem, "named view row role is ListItem");
+      Check(list.children[0].name == "Front Elevation", "first row names its saved view");
+      Check(list.children[1].name == "Roof Study", "second row names its own saved view");
+    }
+  }
+  {
+    const dino8::platform::AccessibleNode empty_views = BuildNamedViewsNode({});
+    Check(empty_views.name == "Named Views", "still named \"Named Views\" with no saved views yet");
+    Check(empty_views.children.empty(), "no saved views -> no ListItem children, not a missing accessible");
+  }
+
   // BuildAccessibleTree accepts extra top-level regions (menu bar, panels)
   // alongside the always-present command line - the shape the live bridge
   // (Accessibility.cpp::UpdateAccessibility) assembles every frame.
@@ -336,13 +364,15 @@ int main() {
     dino8::platform::AccessibleNode props = BuildPropertiesPanelNode("No selection", {});
     dino8::platform::AccessibleNode viewports = BuildViewportsPanelNode({});
     dino8::platform::AccessibleNode activity_log = BuildActivityLogNode({});
+    dino8::platform::AccessibleNode named_views = BuildNamedViewsNode({});
 
-    const dino8::platform::AccessibleNode root = BuildAccessibleTree(
-        "Dino8", "Command: ", "", {}, {menu_bar, cmd_options, layers, props, viewports, activity_log});
-    Check(root.children.size() == 7,
-          "command line + menu bar + command options + layers + properties + viewports + activity log = "
-          "7 top-level children");
-    if (root.children.size() == 7) {
+    const dino8::platform::AccessibleNode root =
+        BuildAccessibleTree("Dino8", "Command: ", "", {},
+                             {menu_bar, cmd_options, layers, props, viewports, activity_log, named_views});
+    Check(root.children.size() == 8,
+          "command line + menu bar + command options + layers + properties + viewports + activity log + "
+          "named views = 8 top-level children");
+    if (root.children.size() == 8) {
       Check(root.children[0].role == AccessibleRole::Log, "child 0 is still the command line");
       Check(root.children[1].role == dino8::platform::AccessibleRole::MenuBar, "child 1 is the menu bar");
       Check(root.children[2].name == "Command Options", "child 2 is the command options list");
@@ -350,6 +380,7 @@ int main() {
       Check(root.children[4].name == "Properties", "child 4 is the properties panel");
       Check(root.children[5].name == "Viewports", "child 5 is the viewports panel");
       Check(root.children[6].name == "Activity Log", "child 6 is the activity log");
+      Check(root.children[7].name == "Named Views", "child 7 is the named views panel");
     }
   }
 
