@@ -111,6 +111,27 @@ bool LoadSettingsFrom(const std::string& path_str, Application& app, float& ui_s
   if (tb.IsArray() && tb.Size() > 0) { app.toolbar_commands.clear(); for (size_t i = 0; i < tb.Size(); ++i) app.toolbar_commands.push_back(tb[i].AsString()); }
   if (root["working_folder"].IsString()) app.State().working_folder = root["working_folder"].AsString();
   if (root["startup_script"].IsString()) app.startup_script = root["startup_script"].AsString();
+  if (root["macro_text"].IsString()) app.State().macro_text = root["macro_text"].AsString();
+  // Aliases: a wholesale replace (not a merge) when the key is present, so a
+  // default alias the user deleted via the Options panel or Alias command
+  // stays deleted across a restart/import instead of InstallDefaultAliases'
+  // own earlier call silently re-adding it.
+  const json::Value& aliases = root["aliases"];
+  if (aliases.IsObject()) {
+    app.Engine().Aliases().clear();
+    for (const auto& [k, v] : aliases.object) if (v.IsString()) app.Engine().Aliases()[k] = v.AsString();
+  }
+  const json::Value& shortcuts = root["shortcuts"];
+  if (shortcuts.IsArray()) {
+    app.user_shortcuts.clear();
+    for (size_t i = 0; i < shortcuts.Size(); ++i) {
+      const json::Value& sc = shortcuts[i];
+      if (!sc.IsObject() || !sc["key"].IsString() || !sc["command"].IsString()) continue;
+      const int key = KeyShortcutFromName(sc["key"].AsString());
+      if (key == 0) continue;
+      app.user_shortcuts.push_back({key, Bool(sc["ctrl"], false), Bool(sc["shift"], false), Bool(sc["alt"], false), sc["command"].AsString()});
+    }
+  }
   app.toolbar_icon_size = static_cast<int>(Num(root["toolbar_icon_size"], app.toolbar_icon_size));
   if (app.toolbar_icon_size != 24 && app.toolbar_icon_size != 32 && app.toolbar_icon_size != 40) app.toolbar_icon_size = 24;
   app.toolbar_labels = Bool(root["toolbar_labels"], app.toolbar_labels);
@@ -143,6 +164,21 @@ bool SaveSettingsTo(const std::string& path_str, const Application& app, float u
   out << "],\n";
   out << "  \"working_folder\": \"" << Escape(a.State().working_folder) << "\",\n";
   out << "  \"startup_script\": \"" << Escape(a.startup_script) << "\",\n";
+  out << "  \"macro_text\": \"" << Escape(a.State().macro_text) << "\",\n";
+  out << "  \"aliases\": {";
+  {
+    bool first = true;
+    for (const auto& [k, v] : a.Engine().Aliases()) { out << (first ? "" : ", ") << "\"" << Escape(k) << "\": \"" << Escape(v) << "\""; first = false; }
+  }
+  out << "},\n";
+  out << "  \"shortcuts\": [";
+  for (size_t i = 0; i < a.user_shortcuts.size(); ++i) {
+    const KeyShortcut& s = a.user_shortcuts[i];
+    out << (i ? ", " : "") << "{\"key\": \"" << Escape(KeyShortcutName(s.key)) << "\", \"ctrl\": " << (s.ctrl ? "true" : "false")
+        << ", \"shift\": " << (s.shift ? "true" : "false") << ", \"alt\": " << (s.alt ? "true" : "false")
+        << ", \"command\": \"" << Escape(s.command) << "\"}";
+  }
+  out << "],\n";
   out << "  \"toolbar_icon_size\": " << a.toolbar_icon_size << ",\n";
   out << "  \"toolbar_labels\": " << (a.toolbar_labels ? "true" : "false") << ",\n";
   out << "  \"toolbar_tab\": " << a.toolbar_tab << ",\n";

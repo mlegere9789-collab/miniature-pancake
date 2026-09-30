@@ -2300,6 +2300,45 @@ s2check "Gumball reset" "GumballReset"
 s2check "ViewCaptureToClipboard: [0-9]*x[0-9]* image copied to the system clipboard (image/png)" "ViewCaptureToClipboard copied a real image to the OS clipboard"
 s2check "ScreenCaptureToClipboard: [0-9]*x[0-9]* image copied to the system clipboard (image/png)" "ScreenCaptureToClipboard copied a real image to the OS clipboard"
 s2check "Alias qq -> Box" "Alias"
+s2check "Alias qq -> Line" "Alias qq re-set to Line before the persistence round trip"
+s2check "Alias qq -> Circle" "Alias qq re-set to Circle in memory, about to be overwritten by OptionsImport"
+# Alias persistence round trip (state_script2.txt): qq was Line when
+# OptionsExport wrote alias_roundtrip.json, then overwritten to Circle
+# in-memory, then OptionsImport must restore Line from the file - proving
+# CommandEngine's alias table is actually read back, not just written.
+# The list print (Alias with no argument, AliasCommand::OnEnter) has no
+# "Alias " prefix, unlike the Alias-command's own set confirmation above
+# (each app-printed line is echoed as "history: <line>" by main.cpp's
+# script harness), so anchoring right after that prefix is what tells the
+# two apart.
+if echo "$S2" | grep -qE "^history: qq -> Line$"; then echo "ok   OptionsImport restored the alias table (qq back to Line, not the in-memory Circle)"; else echo "FAIL OptionsImport did not restore aliases"; near "$S2" "qq -> "; fail=1; fi
+if echo "$S2" | grep -qE "^history: qq -> Circle$"; then echo "FAIL OptionsImport left the pre-import in-memory alias (Circle) in place instead of restoring the saved one"; fail=1; else echo "ok   qq is not stuck on the pre-import in-memory value"; fi
+# Same OptionsExport call also persists the Command system's Macro Editor
+# buffer (AppState::macro_text, Settings.cpp) - checked directly in the
+# written file since headless smoke scripts have no console command to
+# read the ImGui-only macro buffer back out.
+ALIAS_JSON="$TMPW/state2/alias_roundtrip.json"
+if [ -f "$ALIAS_JSON" ] && grep -qF '"macro_text": "! _Box 0,0,0 10,10,10\n_ZoomExtents\n"' "$ALIAS_JSON"; then
+  echo "ok   OptionsExport persists the Macro Editor's buffer (macro_text)"
+else
+  echo "FAIL OptionsExport did not persist macro_text as expected"; fail=1
+fi
+if [ -f "$ALIAS_JSON" ] && grep -qF '"qq": "Line"' "$ALIAS_JSON"; then
+  echo "ok   OptionsExport persists the alias table (aliases.qq)"
+else
+  echo "FAIL OptionsExport did not persist the alias table"; fail=1
+fi
+# User-assignable keyboard shortcuts (Options > Shortcuts, AppState-adjacent
+# Application::user_shortcuts): no console command sets these (matching real
+# Rhino, where keyboard customization is dialog-only too), so this checks
+# the export/import machinery's shape directly - the default empty table
+# round-trips as a valid, present JSON array, the same "key exists and
+# parses" bar macro_text's own check above uses for another UI-only field.
+if [ -f "$ALIAS_JSON" ] && grep -qF '"shortcuts": []' "$ALIAS_JSON"; then
+  echo "ok   OptionsExport persists the (empty-by-default) user keyboard shortcut table"
+else
+  echo "FAIL OptionsExport did not persist the shortcuts key as expected"; fail=1
+fi
 if echo "$S2" | grep -qF "2+3*4 = 14"; then echo "ok   Calc"; else echo "FAIL Calc"; fail=1; fi
 s2check "Left sidebar" "ToggleLeftSidebar"
 s2check "Pause: continuing" "Pause"

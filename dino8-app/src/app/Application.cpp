@@ -1600,6 +1600,51 @@ void Application::ProcessViewportEvents(Viewport& vp, const ViewportEvents& ev) 
   }
 }
 
+std::string KeyShortcutName(int key) {
+  const char* n = ImGui::GetKeyName(static_cast<ImGuiKey>(key));
+  return n ? n : "";
+}
+
+int KeyShortcutFromName(const std::string& name) {
+  for (int k = ImGuiKey_NamedKey_BEGIN; k < ImGuiKey_NamedKey_END; ++k) {
+    const char* n = ImGui::GetKeyName(static_cast<ImGuiKey>(k));
+    if (n && name == n) return k;
+  }
+  return static_cast<int>(ImGuiKey_None);
+}
+
+namespace {
+// Every chord Application::HandleShortcuts hardcodes below, so a
+// user-assigned shortcut (Options > Shortcuts) that collides with one of
+// these never double-fires alongside it - the built-in always wins, exactly
+// like Rhino's own built-in bindings take priority over a customized one.
+// AddOrUpdateShortcut (ui/Panels.cpp, Options > Shortcuts) also calls this
+// to refuse recording a reserved chord in the first place.
+bool IsReservedShortcut(int key_i, bool ctrl, bool shift, bool alt) {
+  const ImGuiKey key = static_cast<ImGuiKey>(key_i);
+  if (!ctrl && !shift && !alt) {
+    switch (key) {
+      case ImGuiKey_Escape: case ImGuiKey_Delete: case ImGuiKey_F1: case ImGuiKey_F2: case ImGuiKey_F3:
+      case ImGuiKey_F4: case ImGuiKey_F7: case ImGuiKey_F8: case ImGuiKey_F9: case ImGuiKey_F10: case ImGuiKey_F11:
+      case ImGuiKey_Home: case ImGuiKey_PageUp: case ImGuiKey_PageDown:
+      case ImGuiKey_LeftArrow: case ImGuiKey_RightArrow: case ImGuiKey_UpArrow: case ImGuiKey_DownArrow:
+        return true;
+      default: break;
+    }
+  }
+  if (ctrl && !shift && !alt) {
+    switch (key) {
+      case ImGuiKey_Z: case ImGuiKey_Y: case ImGuiKey_A: case ImGuiKey_S: case ImGuiKey_O: case ImGuiKey_N:
+      case ImGuiKey_G: case ImGuiKey_H: case ImGuiKey_C: case ImGuiKey_V: case ImGuiKey_X: case ImGuiKey_F1:
+        return true;
+      default: break;
+    }
+  }
+  if (ctrl && shift && !alt && key == ImGuiKey_S) return true;  // SaveAs
+  return false;
+}
+}  // namespace
+
 void Application::HandleShortcuts() {
   ImGuiIO& io = ImGui::GetIO();
   const bool text_active = io.WantTextInput;
@@ -1652,6 +1697,21 @@ void Application::HandleShortcuts() {
       if (ImGui::IsKeyPressed(ImGuiKey_RightArrow)) v->GetCamera().Orbit(40, 0);
       if (ImGui::IsKeyPressed(ImGuiKey_UpArrow)) v->GetCamera().Orbit(0, -40);
       if (ImGui::IsKeyPressed(ImGuiKey_DownArrow)) v->GetCamera().Orbit(0, 40);
+    }
+  }
+  // User-assignable shortcuts (Options > Shortcuts, AppState-adjacent
+  // user_shortcuts, persisted in Settings.cpp): every built-in chord above
+  // always wins over a colliding user one (IsReservedShortcut), so a user
+  // shortcut can extend the command line's muscle-memory bindings without
+  // being able to silently override Undo, Save, the F-keys, and so on.
+  if (!text_active && !engine_->IsRunning()) {
+    for (const KeyShortcut& s : user_shortcuts) {
+      if (IsReservedShortcut(s.key, s.ctrl, s.shift, s.alt)) continue;
+      if (io.KeyCtrl == s.ctrl && io.KeyShift == s.shift && io.KeyAlt == s.alt &&
+          ImGui::IsKeyPressed(static_cast<ImGuiKey>(s.key))) {
+        engine_->Execute(s.command);
+        break;  // one shortcut per keypress, even if two entries somehow share a chord
+      }
     }
   }
 }

@@ -180,6 +180,16 @@ ToggleLeftSidebar
 Toolbar
 ToolbarReset
 Alias qq Box
+# Alias persistence (Settings.cpp's "aliases" key, loaded/saved alongside
+# every other Options setting): qq is overwritten to Line, exported,
+# overwritten again to Circle in memory, then OptionsImport must restore it
+# to Line from the file - not silently leave the in-memory Circle in place.
+Alias qq Line
+OptionsExport @TMP@/alias_roundtrip.json
+Alias qq Circle
+OptionsImport @TMP@/alias_roundtrip.json
+Alias
+Enter
 Calc 2+3*4
 CalcRPN 2+3*4
 MacroEditor

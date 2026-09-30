@@ -1184,6 +1184,47 @@ void DrawOptionsWindow(Application& app) {
       }
       ImGui::EndTabItem();
     }
+    if (ImGui::BeginTabItem(Tr("options.tab_shortcuts").c_str())) {
+      static char key_name[32] = "L", shortcut_cmd[128] = "";
+      static bool ctrl_mod = true, shift_mod = false, alt_mod = false;
+      static std::string warning;
+      ImGui::TextWrapped(
+          "Key name exactly as ImGui reports it: a letter/digit, F1-F24, Up/Down/Left/Right, Escape, Delete, "
+          "Tab, Space, Home, End, PageUp, PageDown, Insert, and similar. Built-in bindings (Ctrl+Z/C/V/X/S/O/N/A/G/H, "
+          "F1-F11, Delete, Escape, Home, PageUp/PageDown, the arrow keys) always win over a colliding shortcut here.");
+      ImGui::InputText("Key", key_name, sizeof(key_name));
+      ImGui::SameLine(); ImGui::Checkbox("Ctrl", &ctrl_mod);
+      ImGui::SameLine(); ImGui::Checkbox("Shift", &shift_mod);
+      ImGui::SameLine(); ImGui::Checkbox("Alt", &alt_mod);
+      ImGui::InputText("Command", shortcut_cmd, sizeof(shortcut_cmd));
+      if (ImGui::Button("Add / Update") && key_name[0] && shortcut_cmd[0]) {
+        const int key = KeyShortcutFromName(key_name);
+        if (key == 0) {
+          warning = std::string("Unrecognized key name: ") + key_name;
+        } else {
+          std::vector<KeyShortcut>& v = app.user_shortcuts;
+          auto it = std::find_if(v.begin(), v.end(), [&](const KeyShortcut& s) {
+            return s.key == key && s.ctrl == ctrl_mod && s.shift == shift_mod && s.alt == alt_mod;
+          });
+          if (it != v.end()) it->command = shortcut_cmd; else v.push_back({key, ctrl_mod, shift_mod, alt_mod, shortcut_cmd});
+          shortcut_cmd[0] = 0;
+          warning.clear();
+        }
+      }
+      if (!warning.empty()) { ImGui::TextColored(ImVec4(1, 0.5f, 0.3f, 1), "%s", warning.c_str()); }
+      ImGui::Separator();
+      for (size_t i = 0; i < app.user_shortcuts.size();) {
+        KeyShortcut& s = app.user_shortcuts[i];
+        ImGui::PushID(static_cast<int>(i));
+        ImGui::Text("%s%s%s%-10s -> %s", s.ctrl ? "Ctrl+" : "", s.shift ? "Shift+" : "", s.alt ? "Alt+" : "",
+                    KeyShortcutName(s.key).c_str(), s.command.c_str());
+        ImGui::SameLine();
+        const bool del = ImGui::SmallButton("x");
+        ImGui::PopID();
+        if (del) app.user_shortcuts.erase(app.user_shortcuts.begin() + static_cast<long>(i)); else ++i;
+      }
+      ImGui::EndTabItem();
+    }
     if (ImGui::BeginTabItem(Tr("options.tab_toolbar").c_str())) {
       int size_index = app.toolbar_icon_size == 40 ? 2 : app.toolbar_icon_size == 32 ? 1 : 0;
       ImGui::SetNextItemWidth(120);
@@ -1584,19 +1625,37 @@ void DrawSelectionFilterPanel(Application& app) {
   ImGui::End();
 }
 
+namespace {
+// Grows `text` (an arbitrary std::string, passed as UserData) to fit
+// whatever ImGui wants to put in the buffer - the same resize-callback
+// protocol the Script Editor's own ScriptEditorTextCallback (further down
+// this file) uses for its own std::string buffer, duplicated locally here
+// rather than forward-declared so this function stays usable regardless of
+// where in the file the Script Editor section itself ends up.
+int GrowStringTextCallback(ImGuiInputTextCallbackData* data) {
+  auto* out = static_cast<std::string*>(data->UserData);
+  if (data->EventFlag == ImGuiInputTextFlags_CallbackResize) {
+    out->resize(static_cast<size_t>(data->BufTextLen));
+    data->Buf = out->data();
+  }
+  return 0;
+}
+}  // namespace
+
 void DrawMacroEditor(Application& app) {
   ImGui::SetNextWindowSize(ImVec2(520, 360), ImGuiCond_Appearing);
   if (!ImGui::Begin(PanelTitle("panel.macro_editor", "MacroEditor").c_str(), &app.Panels().macro_editor)) { ImGui::End(); return; }
-  static char text[4096] = "! _Box 0,0,0 10,10,10\n_ZoomExtents\n";
+  std::string& text = app.State().macro_text;
   ImGui::TextDisabled("One command per line. ! cancels the running command, _ forces English names, - suppresses dialogs.");
-  ImGui::InputTextMultiline("##macro", text, sizeof(text), ImVec2(-1, -ImGui::GetFrameHeightWithSpacing() * 1.5f));
+  ImGui::InputTextMultiline("##macro", text.data(), text.capacity() + 1, ImVec2(-1, -ImGui::GetFrameHeightWithSpacing() * 1.5f),
+                            ImGuiInputTextFlags_CallbackResize, GrowStringTextCallback, &text);
   if (ImGui::Button("Run")) {
     std::istringstream in(text);
     std::string line;
     while (std::getline(in, line)) if (!line.empty()) app.Engine().Execute(line);
   }
   ImGui::SameLine();
-  if (ImGui::Button("Copy")) ImGui::SetClipboardText(text);
+  if (ImGui::Button("Copy")) ImGui::SetClipboardText(text.c_str());
   ImGui::End();
 }
 
