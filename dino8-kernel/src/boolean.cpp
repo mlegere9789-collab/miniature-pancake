@@ -1778,6 +1778,127 @@ Brep PushPullFace(const Brep& solid, int face_index, double distance) {
   return Brep::FromPlanarFaces(result);
 }
 
+Brep PushPullFaces(const Brep& solid, const std::vector<std::pair<int, double>>& face_distances) {
+  if (face_distances.empty()) {
+    throw std::invalid_argument("dino8::kernel::PushPullFaces: face_distances must not be empty");
+  }
+
+  std::vector<Brep::PlanarFace> faces = solid.PlanarFaces();
+  const int n = static_cast<int>(faces.size());
+  std::vector<int> target_of(static_cast<size_t>(n), -1);  // face_index -> its own entry index, or -1
+  for (size_t e = 0; e < face_distances.size(); ++e) {
+    const auto& [face_index, distance] = face_distances[e];
+    if (face_index < 0 || face_index >= n) {
+      throw std::invalid_argument(
+          "dino8::kernel::PushPullFaces: face_distances names a face_index out of range for solid.PlanarFaces()");
+    }
+    if (!ON_IsValid(distance) || distance == 0.0) {
+      throw std::invalid_argument(
+          "dino8::kernel::PushPullFaces: face_distances contains a distance that isn't a nonzero, finite value");
+    }
+    if (target_of[static_cast<size_t>(face_index)] != -1) {
+      throw std::invalid_argument(
+          "dino8::kernel::PushPullFaces: face_distances names face_index " + std::to_string(face_index) +
+          " more than once - ambiguous which entry's own distance should apply");
+    }
+    if (faces[static_cast<size_t>(face_index)].loop.size() < 3) {
+      throw std::invalid_argument(
+          "dino8::kernel::PushPullFaces: face_distances names a degenerate face (fewer than 3 boundary vertices)");
+    }
+    target_of[static_cast<size_t>(face_index)] = static_cast<int>(e);
+  }
+
+  const double tol = RelativeTol(faces);
+
+  // Two named targets sharing an edge would each independently want to
+  // redraw the OTHER's own boundary there - refused outright rather than
+  // guessed at, see this function's own doc comment.
+  for (size_t e = 0; e < face_distances.size(); ++e) {
+    const int fi = face_distances[e].first;
+    for (size_t e2 = e + 1; e2 < face_distances.size(); ++e2) {
+      const int fj = face_distances[e2].first;
+      if (FacesShareEdge(faces[static_cast<size_t>(fi)], faces[static_cast<size_t>(fj)], tol)) {
+        throw std::invalid_argument(
+            "dino8::kernel::PushPullFaces: face_distances names two faces (" + std::to_string(fi) + " and " +
+            std::to_string(fj) +
+            ") that share an edge - each would independently redraw the other's own boundary there, see this "
+            "function's own doc comment");
+      }
+    }
+  }
+
+  // Per-named-face new (shifted) boundary and its own plane, computed once
+  // from `solid`'s own original geometry - every unnamed neighbour's own
+  // clip below and every named face's own new cap are both derived from
+  // this, never from another entry's result.
+  std::vector<ON_Plane> cut_planes(static_cast<size_t>(n));
+  std::vector<std::vector<Point3d>> new_loops(static_cast<size_t>(n));
+  for (const auto& [fi, distance] : face_distances) {
+    const Brep::PlanarFace& face = faces[static_cast<size_t>(fi)];
+    const Vector3d offset = face.plane.zaxis * distance;
+    std::vector<Point3d> new_loop(face.loop.size());
+    for (size_t i = 0; i < face.loop.size(); ++i) new_loop[i] = face.loop[i] + offset;
+    cut_planes[static_cast<size_t>(fi)] = ON_Plane(new_loop[0], face.plane.zaxis);
+    new_loops[static_cast<size_t>(fi)] = std::move(new_loop);
+  }
+
+  std::vector<Brep::PlanarFace> result;
+  result.reserve(static_cast<size_t>(n) * 2);
+
+  for (int i = 0; i < n; ++i) {
+    if (target_of[static_cast<size_t>(i)] != -1) continue;
+    Brep::PlanarFace g = faces[static_cast<size_t>(i)];
+    for (const auto& [fi, distance] : face_distances) {
+      if (distance >= 0.0) continue;  // a push never touches a neighbour
+      const Brep::PlanarFace& pulled = faces[static_cast<size_t>(fi)];
+      if (!FacesShareEdge(g, pulled, tol)) continue;
+      if (std::fabs(ON_DotProduct(g.plane.zaxis, pulled.plane.zaxis)) > 1e-6) {
+        throw std::invalid_argument(
+            "dino8::kernel::PushPullFaces: face " + std::to_string(i) + " neighbours pulled face " +
+            std::to_string(fi) +
+            " but isn't perpendicular to its normal - retrimming an oblique neighbour needs a genuine "
+            "re-intersection this function does not attempt, see PushPullFace()'s own doc comment");
+      }
+      std::vector<Point3d> clipped = SplitByHalfspace(g.loop, cut_planes[static_cast<size_t>(fi)], tol).inside;
+      if (clipped.size() < 3) {
+        throw std::invalid_argument(
+            "dino8::kernel::PushPullFaces: distance collapses neighbour face " + std::to_string(i) +
+            "'s own boundary to fewer than 3 vertices - too large a pull for this solid's own geometry there");
+      }
+      g.loop = std::move(clipped);
+    }
+    result.push_back(std::move(g));
+  }
+
+  for (const auto& [fi, distance] : face_distances) {
+    const Brep::PlanarFace& face = faces[static_cast<size_t>(fi)];
+    const std::vector<Point3d>& new_loop = new_loops[static_cast<size_t>(fi)];
+    if (distance > 0.0) {
+      // Real new material bridging the OLD boundary (still exactly where
+      // `solid`'s own neighbours meet it) to the NEW one - one side wall
+      // per edge of the pushed face's own loop, exactly as PushPullFace()
+      // itself builds for a single push.
+      const size_t m = face.loop.size();
+      const Vector3d offset = face.plane.zaxis * distance;
+      for (size_t i = 0; i < m; ++i) {
+        const size_t j = (i + 1) % m;
+        Brep::PlanarFace side;
+        side.loop = {face.loop[i], face.loop[j], new_loop[j], new_loop[i]};
+        Vector3d normal = ON_CrossProduct(face.loop[j] - face.loop[i], offset);
+        normal.Unitize();
+        side.plane = ON_Plane(side.loop[0], normal);
+        result.push_back(std::move(side));
+      }
+    }
+    Brep::PlanarFace new_cap;
+    new_cap.plane = cut_planes[static_cast<size_t>(fi)];
+    new_cap.loop = new_loop;
+    result.push_back(std::move(new_cap));
+  }
+
+  return Brep::FromPlanarFaces(result);
+}
+
 Brep DraftFacesConvexPlanar(const Brep& solid, const std::vector<int>& face_indices, const ON_Plane& neutral_plane,
                              double angle_radians) {
   const std::vector<Brep::PlanarFace> faces = solid.PlanarFaces();

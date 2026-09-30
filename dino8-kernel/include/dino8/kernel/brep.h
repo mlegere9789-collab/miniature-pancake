@@ -4209,6 +4209,31 @@ class Brep {
   // or std::invalid_argument if it refers to an already-deleted face.
   int RemoveAllHoleLoops(int face_index);
 
+  // The whole-Brep generalization of `RemoveAllHoleLoops()` above: strips
+  // every hole loop on EVERY live face of this Brep in one call, rather
+  // than the caller enumerating `m_F` itself and calling
+  // `RemoveAllHoleLoops(face_index)` once per face - the same "one call,
+  // every qualifying target in this Brep" convenience
+  // `RemoveAllNakedMicroEdges()`/`RemoveAllSharedMicroEdges()` already give
+  // their own single-edge siblings, applied here to hole loops instead of
+  // micro edges. Every hole loop on every live face is collected up front,
+  // across every face at once: `RemoveHoleLoopNoFinalize()` never calls
+  // `Compact()`, so no face's own loop indices are disturbed by removing a
+  // hole on some OTHER face either, the identical "defer Compact to one
+  // call at the end" discipline `RemoveAllHoleLoops()` itself already uses
+  // within one face, just widened to the whole Brep - one shared finalize
+  // at the end rather than `RemoveAllHoleLoops()`'s own per-face Compact()
+  // repeated once per face. A hole that `RemoveHoleLoop()` itself would
+  // refuse (a shared edge, a singular trim) is simply skipped, the same
+  // best-effort contract `RemoveAllHoleLoops()` already gives for one face.
+  //
+  // Returns the number of hole loops actually removed across the whole
+  // Brep (0 if it has none, or none could be removed). Never throws for an
+  // out-of-range or already-deleted face on its own - unlike
+  // `RemoveAllHoleLoops(face_index)`, there is no single `face_index` for a
+  // caller to get wrong here.
+  int RemoveAllHoleLoopsInBrep();
+
   // Removes a face's own OUTER trim IN PLACE and rebuilds it as the
   // underlying surface's natural full-domain boundary - the other half
   // of PARITY_MAP.md's "Untrim face / remove outer trim / remove hole

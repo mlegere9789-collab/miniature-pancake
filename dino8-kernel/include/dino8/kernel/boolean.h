@@ -838,6 +838,45 @@ Brep OffsetSolidConvexPlanar(const Brep& solid, double distance);
 // vertices (too large a pull for this solid's own local geometry there).
 Brep PushPullFace(const Brep& solid, int face_index, double distance);
 
+// The batch generalization of `PushPullFace()` above: a caller-chosen SET
+// of independent push/pulls, one `(face_index, distance)` pair per named
+// face - the same two positional arguments `PushPullFace()` takes for one
+// face at a time - applied in a single call rather than through N
+// sequential `PushPullFace()` calls each rebuilding the whole solid from
+// its own prior call's result. That sequencing matters here in a way it
+// doesn't for a pure push (which never touches another face): a PULL
+// retrims every perpendicular neighbour it touches, so a second sequential
+// `PushPullFace()` call naming a face that the FIRST call already retrimmed
+// as a neighbour would run against that already-shrunken boundary, not the
+// original one - order-dependent in a way this single combined call never
+// is, since every named face's own cap and every unnamed neighbour's own
+// clip are all derived once from `solid`'s own original geometry.
+//
+// Two named faces that share an edge are refused outright rather than
+// guessed at: unlike `ReplaceFacePlanesConvexPlanar()`/`MoveFacesConvexPlanar()`
+// (whose named faces only ever replace a PLANE, so two adjacent named faces
+// simply meet at whatever new line their two new planes happen to cross),
+// two adjacent named PUSH/PULL targets would each independently want to
+// redraw the OTHER's own shared boundary (a pushed face's new side wall
+// starts at its old edge; a pulled neighbour's own retrim ends at a new,
+// closer one) - genuinely ambiguous, not a case this function attempts to
+// reconcile. An unnamed face bordering exactly one named PULL is unaffected
+// by this restriction and is retrimmed exactly as `PushPullFace()` itself
+// would retrim it - including the identical perpendicular-neighbour-only
+// refusal - whether or not some OTHER, non-adjacent face is also named in
+// the same call.
+//
+// Every entry keeps `PushPullFace()`'s own per-entry validation (nonzero,
+// finite `distance`; in-range `face_index`; at least 3 boundary vertices;
+// any PULL's own neighbour-perpendicularity and non-collapse checks) -
+// throws std::invalid_argument on the first violation found, leaving
+// nothing applied. Two entries naming the same `face_index` are refused as
+// ambiguous, the same discipline `MoveFacesConvexPlanar()`/
+// `ReplaceFacePlanesConvexPlanar()` already enforce for a duplicate target.
+// `face_distances` must be non-empty. Same "no convexity precondition,
+// planar-faced only" scope as `PushPullFace()` above.
+Brep PushPullFaces(const Brep& solid, const std::vector<std::pair<int, double>>& face_distances);
+
 // Tilts one or more faces of a convex planar-faced solid about their own
 // intersection line with a caller-supplied "neutral plane" - the
 // Rhino/SolidWorks "Draft" (a.k.a. taper) feature applied to an EXISTING
