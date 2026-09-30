@@ -1073,6 +1073,25 @@ class Brep {
   int VertexCount() const;
   int EdgeCount() const;
 
+  // Live counterparts to FaceCount()/VertexCount()/EdgeCount(): those three
+  // return the raw m_F/m_V/m_E table SIZE, which still counts a deleted-
+  // but-not-yet-Compact()ed slot (m_face_index/m_vertex_index/m_edge_index
+  // < 0 - the same "deleted" convention RequireLoop()/RequireTrim() and
+  // every Kill*/Delete* method's own refusal checks already use) - stale
+  // right after a per-call method that deliberately does NOT Compact()
+  // between calls of its own (RemoveHoleLoop()/RemoveAllHoleLoops()'s own
+  // doc comments both name this as a caller-beware; most other topology-
+  // surgery methods in this class DO Compact() before returning, per their
+  // own doc comments, so for them the raw and live counts already agree).
+  // These three instead walk their own table once and count only the live
+  // entries, giving an accurate current count with no side effect (unlike
+  // Compact(), which also renumbers every surviving slot) - closing the
+  // "still include deleted slots until Compact()" gap PARITY_MAP.md's own
+  // "Kernel-level topology enumeration API" item names for this class.
+  int LiveFaceCount() const;
+  int LiveVertexCount() const;
+  int LiveEdgeCount() const;
+
   // Mass-properties volume via the divergence theorem - direct NURBS
   // integration, not a tessellation chord approximation: sum over every
   // face of INT INT (1/3) S(u,v) . (Su(u,v) x Sv(u,v)) du dv over that

@@ -30218,6 +30218,60 @@ void TestBrepAdjacencyQueries() {
         "Box()'s own surface-only faces carry no ON_BrepVertex/ON_BrepEdge records");
 }
 
+// FaceCount()/VertexCount()/EdgeCount() return the raw m_F/m_V/m_E table
+// SIZE, which still counts a deleted-but-not-yet-Compact()ed slot -
+// PARITY_MAP.md's own "Kernel-level topology enumeration API" item names
+// this as a still-partial gap. Every public topology-surgery method in
+// this class (DeleteFace() included) already Compact()s before
+// returning, so this divergence is never externally observable through
+// them alone - it only shows up when a caller reaches past that and
+// marks a slot deleted directly via raw() (exactly what ON_Brep's own
+// bare DeleteFace()/DeleteFaces() do, and what dino8-app's ExtractSrf/
+// DeleteFaces command used to do before it was wired onto this class's
+// own DeleteFace() instead), which is exactly what this test does to
+// exercise LiveFaceCount()/LiveVertexCount()/LiveEdgeCount() honestly.
+void TestBrepLiveCountsExcludeUncompactedDeletedSlots() {
+  using dino8::kernel::Brep;
+
+  Brep box = Brep::FromPlanarFaces(Brep::Box(0, 0, 0, 1, 1, 1).PlanarFaces());
+  Check(box.FaceCount() == 6 && box.LiveFaceCount() == 6, "a freshly-built, already-compact box: raw == live (6 faces)");
+  Check(box.VertexCount() == 8 && box.LiveVertexCount() == 8, "...and 8 vertices, raw == live");
+  Check(box.EdgeCount() == 12 && box.LiveEdgeCount() == 12, "...and 12 edges, raw == live");
+
+  // ON_Brep::DeleteFace() called directly on raw() marks a face deleted in
+  // place - it does NOT Compact() - so the raw table size stays exactly
+  // as it started while the live count drops immediately. Its own
+  // trim/edge/vertex cleanup only actually deletes a SHARED edge once
+  // BOTH its bordering faces are gone (the edge's own last remaining trim
+  // going, per ON_Brep::DeleteTrim's own "am I the only trim left"
+  // check), and only deletes a vertex once every one of ITS incident
+  // edges is itself gone - so all 6 of this genuinely-welded box's faces
+  // are deleted here, one raw() DeleteFace() call at a time, to exercise
+  // the edge/vertex divergence too, not just the face one a single
+  // deletion would already show.
+  for (int fi = 0; fi < box.raw().m_F.Count(); ++fi) {
+    if (box.raw().m_F[fi].m_face_index >= 0) box.raw().DeleteFace(box.raw().m_F[fi], true);
+  }
+  Check(box.FaceCount() == 6, "FaceCount() is unchanged after 6 uncompacted raw() DeleteFace() calls - it still "
+                              "counts every one of the 6 now-deleted slots");
+  Check(box.LiveFaceCount() == 0, "...but LiveFaceCount() already reports zero live faces");
+  Check(box.VertexCount() == 8, "VertexCount() is likewise unchanged");
+  Check(box.LiveVertexCount() == 0,
+        "...but LiveVertexCount() reports zero: every vertex's own 3 incident edges ended up deleted too, once "
+        "both of each edge's own bordering faces were gone");
+  Check(box.EdgeCount() == 12, "EdgeCount() is likewise unchanged");
+  Check(box.LiveEdgeCount() == 0,
+        "...but LiveEdgeCount() reports zero: every edge's own second (last) trim was removed once both of its "
+        "two bordering faces had been deleted");
+
+  // Compact() renumbers every surviving slot and drops the deleted ones
+  // outright - after it, raw and live agree again, this time at zero.
+  box.raw().Compact();
+  Check(box.FaceCount() == 0 && box.LiveFaceCount() == 0, "after Compact(): raw == live again, both zero");
+  Check(box.VertexCount() == 0 && box.LiveVertexCount() == 0, "...0 vertices");
+  Check(box.EdgeCount() == 0 && box.LiveEdgeCount() == 0, "...0 edges");
+}
+
 // BooleanCombinePlanar assembles its result via Brep::FromPlanarFaces
 // (see boolean.cpp) - no change to boolean.cpp itself was needed for this
 // to inherit real topology automatically.
@@ -52918,6 +52972,7 @@ int main() {
   TestRemoveChamferRoundTripsAConcaveChamfer();
   TestBrepFromPlanarFacesBuildsValidOpenNurbsTopology();
   TestBrepAdjacencyQueries();
+  TestBrepLiveCountsExcludeUncompactedDeletedSlots();
   TestBooleanCombinePlanarResultHasValidClosedTopology();
   TestShellConvexPlanarResultHasValidTopology();
   TestFilletConvexEdgeFreeBoundaryCapHasValidOpenTopology();

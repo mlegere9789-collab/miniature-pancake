@@ -26,6 +26,18 @@ kernel::Brep WrapBrepPtr(ON_Brep* b) {
   return k;
 }
 
+// Deletes face_index from b via the kernel's own Brep::DeleteFace() -
+// which re-joins the exposed naked-edge boundary (JoinNakedEdges then
+// SewTJunctions) before Compact()ing - instead of the bare
+// ON_Brep::DeleteFace()+Compact() this file used to call directly, which
+// left every neighbour edge naked with no re-join attempt at all.
+void DeleteFaceHealed(ON_Brep& b, int face_index) {
+  kernel::Brep k;
+  k.raw() = b;
+  k.DeleteFace(face_index);
+  b = k.raw();
+}
+
 // The surface behind an object: a Surface object, or a single brep face.
 std::optional<ON_NurbsSurface> SurfaceOfObject(const SceneObject& o, int face = 0) {
   if (o.kind == ObjectKind::Surface && o.surface) return o.surface->raw();
@@ -240,8 +252,7 @@ class FacePickCommand : public Command {
         if (!copy_ && op_ == Op::Extract) {
           if (b->m_F.Count() <= 1) ctx.Doc().Remove(pick->id);
           else {
-            b->DeleteFace(b->m_F[fi], true);
-            b->Compact();
+            DeleteFaceHealed(*b, fi);
             if (SceneObject* orig = ctx.Doc().Find(pick->id)) { orig->brep->raw() = *b; orig->InvalidateDisplay(); }
           }
         }
@@ -251,8 +262,7 @@ class FacePickCommand : public Command {
       }
       case Op::Delete: {
         if (b->m_F.Count() <= 1) { ctx.Doc().Remove(pick->id); ctx.Print("DeleteFaces: object " + std::to_string(pick->id) + " deleted (last face)"); break; }
-        b->DeleteFace(b->m_F[fi], true);
-        b->Compact();
+        DeleteFaceHealed(*b, fi);
         if (SceneObject* orig = ctx.Doc().Find(pick->id)) { orig->brep->raw() = *b; orig->InvalidateDisplay(); }
         ctx.Print("DeleteFaces: face " + std::to_string(fi) + " deleted, " + std::to_string(b->m_F.Count()) + " face(s) left");
         break;
@@ -265,7 +275,7 @@ class FacePickCommand : public Command {
         nb.Create(nsp);
         if (b->m_F.Count() <= 1) { if (SceneObject* orig = ctx.Doc().Find(pick->id)) { orig->kind = ObjectKind::Brep; if (!orig->brep) orig->brep = std::make_unique<kernel::Brep>(); orig->brep->raw() = nb; orig->surface.reset(); orig->InvalidateDisplay(); } }
         else {
-          b->DeleteFace(b->m_F[fi], true); b->Compact();
+          DeleteFaceHealed(*b, fi);
           if (SceneObject* orig = ctx.Doc().Find(pick->id)) { orig->brep->raw() = *b; orig->InvalidateDisplay(); }
           AddBrepFrom(ctx, nb, like);
         }
@@ -288,7 +298,7 @@ class FacePickCommand : public Command {
         dup->SetTolerancesBoxesAndFlags();
         if (b->m_F.Count() <= 1) { if (SceneObject* orig = ctx.Doc().Find(pick->id)) { orig->kind = ObjectKind::Brep; if (!orig->brep) orig->brep = std::make_unique<kernel::Brep>(); orig->brep->raw() = *dup; orig->surface.reset(); orig->InvalidateDisplay(); } }
         else {
-          b->DeleteFace(b->m_F[fi], true); b->Compact();
+          DeleteFaceHealed(*b, fi);
           if (SceneObject* orig = ctx.Doc().Find(pick->id)) { orig->brep->raw() = *b; orig->InvalidateDisplay(); }
           AddBrepFrom(ctx, *dup, like);
         }
@@ -729,7 +739,7 @@ class ExtendSrfCommand : public Command {
     else {
       ON_Brep nb; ON_NurbsSurface* nsp = new ON_NurbsSurface(ext); nb.Create(nsp);
       if (o->brep->raw().m_F.Count() <= 1) { o->brep->raw() = nb; o->InvalidateDisplay(); }
-      else { SceneObject like = *o; ON_Brep b = o->brep->raw(); b.DeleteFace(b.m_F[pick_->face], true); b.Compact(); o->brep->raw() = b; o->InvalidateDisplay(); AddBrepFrom(ctx, nb, like); }
+      else { SceneObject like = *o; ON_Brep b = o->brep->raw(); DeleteFaceHealed(b, pick_->face); o->brep->raw() = b; o->InvalidateDisplay(); AddBrepFrom(ctx, nb, like); }
     }
     ctx.Print("ExtendSrf: extended by " + FormatNumber(len) + " along " + (dir == 0 ? "U" : "V") + (linear_ ? " (linear)" : " (smooth)"));
     Finish();

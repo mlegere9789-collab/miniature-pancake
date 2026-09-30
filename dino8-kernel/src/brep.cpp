@@ -351,6 +351,30 @@ int Brep::FaceCount() const { return brep_.m_F.Count(); }
 int Brep::VertexCount() const { return brep_.m_V.Count(); }
 int Brep::EdgeCount() const { return brep_.m_E.Count(); }
 
+int Brep::LiveFaceCount() const {
+  int n = 0;
+  for (int i = 0; i < brep_.m_F.Count(); ++i) {
+    if (brep_.m_F[i].m_face_index >= 0) ++n;
+  }
+  return n;
+}
+
+int Brep::LiveVertexCount() const {
+  int n = 0;
+  for (int i = 0; i < brep_.m_V.Count(); ++i) {
+    if (brep_.m_V[i].m_vertex_index >= 0) ++n;
+  }
+  return n;
+}
+
+int Brep::LiveEdgeCount() const {
+  int n = 0;
+  for (int i = 0; i < brep_.m_E.Count(); ++i) {
+    if (brep_.m_E[i].m_edge_index >= 0) ++n;
+  }
+  return n;
+}
+
 namespace {
 
 // 5-point Gauss-Legendre quadrature on [-1, 1] - exact for any
