@@ -306,11 +306,83 @@ struct CounterboreFeature {
 // Still partial: only the CYLINDRICAL/CYLINDRICAL step case (a real
 // counterbore) is recognized - a countersink's own conical step
 // (MakeCountersinkHole()'s own frustum wall) is a different surface type
-// entirely and is not merged here; a stepped hole with more than two
-// radii (a counterbore followed by its own further pilot reduction) is
-// not walked past the first pair; and, like RecognizeHoles() itself, a
-// general (non-cylindrical) pocket is out of scope.
+// entirely and is not merged here (see RecognizeCountersinkHoles() below
+// for that case); a stepped hole with more than two radii (a counterbore
+// followed by its own further pilot reduction) is not walked past the
+// first pair; and, like RecognizeHoles() itself, a general
+// (non-cylindrical) pocket is out of scope.
 std::vector<CounterboreFeature> RecognizeCounterboreHoles(const Brep& solid);
+
+// One compound countersink feature recognized on an existing solid
+// (parity-map "Feature recognition" - closes RecognizeCounterboreHoles()'s
+// own disclosed "a countersink's own conical step ... is a different
+// surface type entirely and is not merged here" gap): the CONICAL sibling
+// of CounterboreFeature/RecognizeCounterboreHoles() above - a concave full
+// (closed, 2*pi) CONE face whose own narrower end coincides, both in 3D
+// position and in radius, with one end of an adjacent concave full-
+// CYLINDER face on the SAME axis line, merged into ONE feature instead of
+// being invisible to every Recognize* function in this file (RecognizeHoles()
+// itself only ever scans for a full CYLINDER - it never reports a cone at
+// all, concave or otherwise).
+//
+// `origin`/`axis` describe the countersink's own entry point exactly like
+// CounterboreFeature's own fields (axis pointing INTO the material, the
+// same HoleFeature/CounterboreFeature convention). `countersink_diameter`/
+// `countersink_angle_degrees` and `bore_radius`/`bore_depth`/`through`
+// mirror MakeCountersinkHole()'s own parameter names and conventions
+// exactly - in particular `bore_depth` is the TOTAL axial distance from
+// `origin` to the pilot bore's own far end (MakeCountersinkHole()'s own
+// "total depth from the entry surface" convention, not a distance
+// measured from the cone/cylinder transition), so a round-trip is a
+// straight `MakeCountersinkHole(fresh_solid, origin, axis, bore_radius,
+// bore_depth, through, countersink_diameter, countersink_angle_degrees)`
+// call.
+struct CountersinkFeature {
+  Point3d origin;
+  Vector3d axis;
+  double countersink_diameter = 0.0;
+  double countersink_angle_degrees = 0.0;
+  double bore_radius = 0.0;
+  double bore_depth = 0.0;
+  bool through = false;
+
+  // Face indices of the two walls this feature was merged from - the
+  // conical countersink wall and the cylindrical pilot bore, in that
+  // order. Same convention as CounterboreFeature's own
+  // counterbore_face_index/drill_face_index.
+  int countersink_face_index = -1;
+  int bore_face_index = -1;
+};
+
+// Scans `solid` for a concave full (closed, 2*pi) CONE face
+// (`ON_Surface::IsCone()`, the conical sibling of the `IsCylinder()` gate
+// every full-cylinder scan in this file already uses) whose own narrower
+// end coincides, in 3D AND in radius, with one end of a concave full-
+// cylinder candidate on the same axis line - the same "adjacent, non-
+// overlapping, genuinely touching in 3D" pairing test
+// FindAdjacentSteppedPairs() uses for two cylinders, generalized to a
+// cone/cylinder pair (checked against BOTH of the cone's own two ends,
+// not assumed to always be the narrower one, and requiring the touching
+// end's own radius to actually match the cylinder's - a coincidental
+// touch at the wrong radius is not a genuine smooth transition).
+//
+// The countersink's own entry (the cone's own OTHER, non-touching end)
+// must be open to the outside - the same "a counterbore's own entry must
+// be open" requirement RecognizeCounterboreHoles() itself applies - tested
+// via the same on-axis `Mesh::ContainsPoint()` probe every other
+// Recognize* function in this file already uses, tessellating `solid`
+// once and reusing it for every candidate pair.
+//
+// Still partial: this only ever matches a SINGLE cone segment directly
+// adjacent to a SINGLE cylinder segment - a countersink stacked with a
+// further counterbore/pilot step on the same axis (three or more steps
+// mixing conical and cylindrical segments) is out of scope here, the same
+// "not walked past the first pair" limitation RecognizeCounterboreHoles()
+// itself discloses, now also true of the conical case; and, like every
+// other Recognize* function in this file, this inherits
+// Mesh::ContainsPoint()'s own disclosed "closed, consistently-oriented
+// mesh" precondition.
+std::vector<CountersinkFeature> RecognizeCountersinkHoles(const Brep& solid);
 
 // One segment of a multi-step chain recognized by
 // RecognizeSteppedHoleChains() below - a single cylindrical wall's own

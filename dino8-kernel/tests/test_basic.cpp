@@ -52745,6 +52745,262 @@ void TestRecognizeCounterboreHolesRoundTrip() {
         "RecognizeCounterboreHoles finds no compound step on a plain single-radius hole");
 }
 
+// Builds a countersink-shaped tool - a conical frustum (wide mouth ->
+// narrow bore_radius) immediately followed by a straight cylindrical bore
+// segment, MakeCountersinkHole()'s own two-piece geometry (see that
+// function's own "standard countersink geometry" doc comment,
+// boolean_general.h, for the derived countersink_depth formula) - but as
+// two DISCRETE analytic Brep::ConicalFace/Brep::CylindricalFace primitives
+// (CounterboreHole()'s own "adjacent same-axis segments via
+// FromMixedFaces()" construction, features.cpp, generalized to a conical
+// first segment) rather than MakeCountersinkHole()'s own single Revolve()
+// wall - so the cone IS recognizable by ON_Surface::IsCone(), unlike
+// MakeCountersinkHole()'s own product (see RecognizeCountersinkHoles()'s
+// own doc comment, features.h, for why that distinction matters here).
+// `origin` is the entry point on `solid`'s own surface, `axis` points INTO
+// the material (MakeHole()'s own convention), and `bore_depth` is the
+// TOTAL axial distance from `origin` to the pilot bore's own far end
+// (MakeCountersinkHole()'s own `bore_depth` convention, not just the
+// straight-bore segment's own length).
+//
+// Subtracted via BooleanCombineGeneral() rather than BooleanCombineMixed()
+// specifically because BooleanCombineMixed() itself refuses any operand
+// carrying a ConicalFace outright (boolean.h's own doc comment, confirmed
+// directly by TestBooleanCombineMixedRefusesConicalFaceOperand elsewhere
+// in this file) - BooleanCombineGeneral() has no such restriction.
+//
+// Unlike BooleanCombineMixed() (boolean.cpp), which situationally
+// synthesizes a bare, uncapped CylindricalFace tool's own end material
+// during the boolean itself (see MakeCylinderZ()'s own doc comment,
+// scratch_test.cpp), BooleanCombineGeneral() has no such special-casing -
+// confirmed directly (dino8_scratch_test): an UNCAPPED cone+cylinder tool
+// throws "an edge is claimed by 3 or more fragment loops" even for a
+// fixture with every cap well clear of every box face, an open-tube
+// operand fed to an engine that requires a genuinely closed solid. The
+// tool is therefore explicitly capped - but a SECOND, independently
+// confirmed (dino8_scratch_test) coincident-face degeneracy also applies
+// here: a tool cap landing exactly ON `solid`'s own surface (not just
+// past it) throws the identical error, the same pitfall
+// MakeHole()/MakeCountersinkHole() (boolean_general.cpp) avoid by backing
+// their own cutting tool off the entry surface by a small margin. Since
+// `origin` sits exactly ON `solid`'s own surface by construction, the
+// tool's own wide mouth cap can't sit there directly - a short
+// `margin`-length cylindrical SLEEVE (radius countersink_radius) is
+// prepended, so the tool's own TRUE outer cap floats just outside `solid`
+// instead, and the sleeve/cone transition (still exactly at `origin`)
+// becomes an ordinary interior weld rather than an operand boundary.
+dino8::kernel::Brep BuildCountersinkHoleFixture(const dino8::kernel::Brep& solid, dino8::kernel::Point3d origin,
+                                                 dino8::kernel::Vector3d axis, double countersink_radius,
+                                                 double countersink_angle_degrees, double bore_radius,
+                                                 double bore_depth) {
+  using dino8::kernel::BooleanCombineGeneral;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  Vector3d dir = axis;
+  dir.Unitize();
+  const double half_angle = countersink_angle_degrees * ON_PI / 360.0;
+  const double countersink_depth = (countersink_radius - bore_radius) / std::tan(half_angle);
+  const Point3d transition = origin + dir * countersink_depth;
+  const double cyl_length = bore_depth - countersink_depth;
+  const double margin = std::max(0.5, countersink_radius * 0.25);
+
+  Brep::CylindricalFace sleeve;
+  sleeve.frame = FrameFromAxisForGeneralBooleanTest(origin - dir * margin, dir);
+  sleeve.radius = countersink_radius;
+  sleeve.angle = 2.0 * ON_PI;
+  sleeve.length = margin;
+
+  // The cone segment, via MakeFrustumAxisForGeneralBooleanTest()'s own
+  // "base = narrow end (r0), axis points toward the wide end (r1)"
+  // convention - so base=transition (radius bore_radius), its own axis
+  // -dir (toward the wide mouth, the opposite sense from `dir`'s "into the
+  // material" convention).
+  const ON_Plane cone_base_frame = FrameFromAxisForGeneralBooleanTest(transition, -dir);
+  Brep::ConicalFace cone;
+  cone.frame = cone_base_frame;
+  // The apex sits FURTHER into the material beyond `transition` - where a
+  // full cone's own radius would extrapolate to exactly zero - at distance
+  // bore_radius/tan(half_angle) past it, the same similar-triangles
+  // relationship ConicalFace's own doc comment (brep.h) describes for a
+  // patch's "distance from apex to its own start".
+  cone.frame.origin = transition - cone_base_frame.zaxis * (bore_radius / std::tan(half_angle));
+  cone.frame.UpdateEquation();
+  cone.radius0 = bore_radius;         // at the narrow end (transition)
+  cone.radius1 = countersink_radius;  // at the wide end (origin, the mouth)
+  cone.angle = 2.0 * ON_PI;
+  cone.length = countersink_depth;
+
+  const ON_Plane cyl_frame = FrameFromAxisForGeneralBooleanTest(transition, dir);
+  Brep::CylindricalFace cyl;
+  cyl.frame = cyl_frame;
+  cyl.radius = bore_radius;
+  cyl.angle = 2.0 * ON_PI;
+  cyl.length = cyl_length;
+
+  // Only the tool's own two TRUE outer ends are capped (flip=false, the
+  // "far cap in its own local frame" convention DiskCapForGeneralBooleanTest's
+  // other callers already use, since h=0 is each own segment's own NEAR
+  // end) - every interior transition (sleeve/cone at `origin`, cone/cyl at
+  // `transition`) is deliberately left uncapped so FromMixedFaces() welds
+  // each into one interior edge instead.
+  const Brep::PlanarFace mouth_cap = DiskCapForGeneralBooleanTest(sleeve.frame, 0.0, countersink_radius, /*flip=*/true);
+  const Brep::PlanarFace far_cap = DiskCapForGeneralBooleanTest(cyl_frame, cyl_length, bore_radius, /*flip=*/false);
+
+  const Brep tool = Brep::FromMixedFaces({mouth_cap, far_cap}, {sleeve, cyl}, {cone});
+  return BooleanCombineGeneral(solid, tool, BooleanOp::Difference);
+}
+
+// parity-map "kernel: Feature operations" - "Feature recognition": closes
+// RecognizeCounterboreHoles()'s own disclosed "a countersink's own conical
+// step ... is a different surface type entirely and is not merged here"
+// gap. RecognizeCountersinkHoles() merges a concave full-cone face with an
+// adjacent concave full-cylinder face into one CountersinkFeature, the
+// conical sibling of RecognizeCounterboreHoles() above.
+void TestRecognizeCountersinkHolesRoundTrip() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::CounterboreHole;
+  using dino8::kernel::CountersinkFeature;
+  using dino8::kernel::MakeCountersinkHole;
+  using dino8::kernel::MakeHole;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::RecognizeCounterboreHoles;
+  using dino8::kernel::RecognizeCountersinkHoles;
+  using dino8::kernel::RecognizeHoles;
+  using dino8::kernel::Vector3d;
+
+  const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+  const Point3d origin(5, 5, 10);
+  const Vector3d down(0, 0, -1);
+
+  {
+    // A THROUGH countersink at a standard 90-degree included angle - the
+    // tool's own nominal bore_depth (12.0) deliberately extends PAST the
+    // box's own 10-unit height, so its far cap floats below the box rather
+    // than landing exactly flush with the bottom face - the same
+    // "deliberately uses a depth past the box's own height rather than
+    // exactly equal to it" avoidance EmbossProfile's own pitfall note
+    // (features.h) already establishes for the identical
+    // BooleanCombineGeneral() "edge is claimed by 3 or more fragment
+    // loops" coincident-face degeneracy (confirmed directly: bore_depth ==
+    // 10.0 exactly throws that very error). The RESULT's own true bore
+    // depth is therefore the box's own remaining 10.0 - origin.z, not the
+    // tool's own nominal 12.0 - RecognizeCountersinkHoles() must recover
+    // that CLIPPED value, the real test here.
+    const double countersink_radius = 2.0, angle_degrees = 90.0;
+    const double bore_radius = 0.5, tool_bore_depth = 12.0;  // extends 2 units past the box's own bottom face
+    const double true_bore_depth = 10.0;                     // the box's own real depth from origin.z to z=0
+    const Brep result = BuildCountersinkHoleFixture(box, origin, down, countersink_radius, angle_degrees, bore_radius,
+                                                      tool_bore_depth);
+
+    // Sanity: RecognizeHoles() itself never reports the cone at all (it
+    // only ever scans for a full CYLINDER) and RecognizeCounterboreHoles()
+    // finds no cylindrical/cylindrical step here - confirms this fixture
+    // genuinely exercises the gap being closed, not something either
+    // function already handled.
+    Check(RecognizeHoles(result).size() == 1,
+          "sanity: RecognizeHoles() itself reports only the cylindrical pilot bore, never the cone");
+    Check(RecognizeCounterboreHoles(result).empty(),
+          "sanity: RecognizeCounterboreHoles() itself finds no cylindrical/cylindrical step on a countersink");
+
+    const std::vector<CountersinkFeature> found = RecognizeCountersinkHoles(result);
+    Check(found.size() == 1, "RecognizeCountersinkHoles merges the cone and the pilot bore into exactly one compound feature");
+    const CountersinkFeature& cf = found[0];
+    Check(cf.origin.DistanceTo(origin) < 1e-6, "RecognizeCountersinkHoles recovers the countersink's own exact entry point");
+    Check((cf.axis - down).Length() < 1e-6, "RecognizeCountersinkHoles recovers the countersink's own exact drilling direction");
+    // Loose (not 1e-6) tolerance here specifically: unlike origin/axis/
+    // bore_radius/bore_depth (all read off a real SHARED interior edge
+    // between two analytic tool faces, exact to floating-point precision),
+    // the mouth diameter/angle are read off the cone's OWN wide end, whose
+    // true radius is perturbed by a few parts in 1e3 through
+    // BooleanCombineGeneral()'s own SSX curve-intersection sampling
+    // against `solid`'s flat top face (confirmed directly,
+    // dino8_scratch_test: ~0.09% on diameter, ~0.08% on angle at this
+    // fixture's own default SSX tolerance) - a real, small numerical
+    // effect of the general boolean engine itself, not a recognition bug.
+    Check(std::abs(cf.countersink_diameter - 2.0 * countersink_radius) < 0.01,
+          "RecognizeCountersinkHoles recovers the countersink's own mouth diameter to within the general boolean "
+          "engine's own SSX tolerance");
+    Check(std::abs(cf.countersink_angle_degrees - angle_degrees) < 0.2,
+          "RecognizeCountersinkHoles recovers the countersink's own full included angle to within the general "
+          "boolean engine's own SSX tolerance");
+    Check(std::abs(cf.bore_radius - bore_radius) < 1e-6, "RecognizeCountersinkHoles recovers the pilot bore's own exact radius");
+    Check(std::abs(cf.bore_depth - true_bore_depth) < 1e-6,
+          "RecognizeCountersinkHoles recovers the pilot bore's own exact TOTAL (box-clipped) depth, not the tool's "
+          "own nominal, further-reaching bore_depth");
+    Check(cf.through, "RecognizeCountersinkHoles reports this through bore as through");
+
+    const double countersink_depth = (countersink_radius - bore_radius) / std::tan(angle_degrees * ON_PI / 360.0);
+    const double expected_removed = ON_PI * countersink_depth / 3.0 *
+                                         (countersink_radius * countersink_radius +
+                                          countersink_radius * bore_radius + bore_radius * bore_radius) +
+                                     ON_PI * bore_radius * bore_radius * (true_bore_depth - countersink_depth);
+    const Mesh result_mesh = result.TessellateToClosedMesh(64, 64);
+    Check(std::abs(result_mesh.Volume() - (1000.0 - expected_removed)) < 0.5,
+          "the through countersink's own tessellated volume matches the hand-derived closed form (box minus a "
+          "cone frustum minus a cylinder)");
+
+    // Round-trip through MakeCountersinkHole() itself (not just this
+    // file's own fixture builder) - the real test that the recognized
+    // parameters are usable in MakeCountersinkHole()'s own exact units and
+    // convention, even though it builds the shape via a single Revolve()
+    // wall rather than this fixture's discrete ConicalFace/CylindricalFace
+    // pair.
+    const Brep rebuilt = MakeCountersinkHole(box, cf.origin, cf.axis, cf.bore_radius, cf.bore_depth, cf.through,
+                                              cf.countersink_diameter, cf.countersink_angle_degrees);
+    const Mesh rebuilt_mesh = rebuilt.TessellateToClosedMesh(64, 64);
+    Check(std::abs(result_mesh.Volume() - rebuilt_mesh.Volume()) < 0.5,
+          "MakeCountersinkHole(box, recognized_origin, recognized_axis, recognized_bore_radius, "
+          "recognized_bore_depth, recognized_through, recognized_countersink_diameter, "
+          "recognized_countersink_angle_degrees) reproduces the original countersink's own volume");
+  }
+  {
+    // A BLIND countersink at a different, also-standard angle (82 degrees)
+    // - verified structurally (recognized fields + `through`), not via
+    // tessellated volume, for the same disclosed reason MakeHole()'s own
+    // blind case is (BooleanCombineGeneral()'s own blind-hole tessellation
+    // is not reliably closed near the entry rim - see MakeHole()'s own doc
+    // comment, boolean_general.h).
+    const double countersink_radius = 1.5, angle_degrees = 82.0;
+    const double bore_radius = 0.4, bore_depth = 4.0;  // well short of the box's own 10-unit depth
+    const Brep result =
+        BuildCountersinkHoleFixture(box, origin, down, countersink_radius, angle_degrees, bore_radius, bore_depth);
+
+    const std::vector<CountersinkFeature> found = RecognizeCountersinkHoles(result);
+    Check(found.size() == 1, "RecognizeCountersinkHoles merges the blind countersink's cone and pilot bore into one feature");
+    const CountersinkFeature& cf = found[0];
+    Check(cf.origin.DistanceTo(origin) < 1e-6, "RecognizeCountersinkHoles recovers the blind countersink's own exact entry point");
+    Check((cf.axis - down).Length() < 1e-6, "RecognizeCountersinkHoles recovers the blind countersink's own exact drilling direction");
+    // Same loosened tolerance as the through case above, for the same
+    // "read off the SSX-perturbed mouth" reason.
+    Check(std::abs(cf.countersink_diameter - 2.0 * countersink_radius) < 0.01,
+          "RecognizeCountersinkHoles recovers the blind countersink's own mouth diameter to within the general "
+          "boolean engine's own SSX tolerance");
+    Check(std::abs(cf.countersink_angle_degrees - angle_degrees) < 0.2,
+          "RecognizeCountersinkHoles recovers the blind countersink's own full included angle to within the "
+          "general boolean engine's own SSX tolerance");
+    Check(std::abs(cf.bore_radius - bore_radius) < 1e-6, "RecognizeCountersinkHoles recovers the blind pilot bore's own exact radius");
+    Check(std::abs(cf.bore_depth - bore_depth) < 1e-6,
+          "RecognizeCountersinkHoles recovers the blind pilot bore's own exact total depth");
+    Check(!cf.through, "RecognizeCountersinkHoles reports this blind pilot bore as NOT through");
+  }
+  {
+    // Negative controls: a plain single-radius hole (no cone at all) and a
+    // plain cylindrical/cylindrical counterbore (RecognizeCounterboreHoles()'s
+    // own domain, no conical step) both find no countersink here.
+    const Brep plain_hole = MakeHole(box, origin, down, 1.0, /*depth=*/0.0, /*through=*/true);
+    Check(RecognizeCountersinkHoles(plain_hole).empty(), "RecognizeCountersinkHoles finds no cone on a plain single-radius hole");
+
+    const Brep plain_counterbore = CounterboreHole(box, origin, down, /*drill_radius=*/1.0, /*drill_depth=*/6.0,
+                                                    /*counterbore_radius=*/2.0, /*counterbore_depth=*/3.0);
+    Check(RecognizeCountersinkHoles(plain_counterbore).empty(),
+          "RecognizeCountersinkHoles finds no cone on a plain cylindrical/cylindrical counterbore");
+  }
+}
+
 // The boss-side mirror of TestRecognizeCounterboreHolesRoundTrip() above:
 // closes BossFeature's own disclosed "a counterbore/countersink's own
 // second step ... has no boss-side analogue implemented here" gap.
@@ -54074,6 +54330,7 @@ int main() {
   TestCounterboreHoleAxisAlignedVolumeAndTopology();
   TestCounterboreHoleBlindAxisAlignedVolume();
   TestRecognizeCounterboreHolesRoundTrip();
+  TestRecognizeCountersinkHolesRoundTrip();
   TestRecognizeSteppedBossesRoundTrip();
   TestRecognizeSteppedHoleChainsRoundTrip();
   TestRecognizeSteppedBossChainsRoundTrip();

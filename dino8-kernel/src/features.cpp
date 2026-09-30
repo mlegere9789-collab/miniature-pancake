@@ -677,6 +677,308 @@ std::vector<CounterboreFeature> RecognizeCounterboreHoles(const Brep& solid) {
   return out;
 }
 
+namespace {
+
+// The conical sibling of CylindricalFaceCandidate above, for
+// RecognizeCountersinkHoles() below: one candidate full-cone face, before
+// it's known whether its own narrower end actually touches an adjacent
+// cylindrical bore. `apex`/`axis_dir` are oriented so `t` (dot(point -
+// apex, axis_dir)) comes out POSITIVE and increasing away from the apex
+// for every point of this patch - a real conical frustum patch never
+// contains its own apex, so exactly one sign of axis_dir makes this true
+// (the same "orient so both heights-from-apex are positive" idea
+// ExtractConicalFace(), brep.cpp, already applies to exactly two points;
+// here to an arbitrary sampled set). `radius_min`/`radius_max` are the
+// true cone cross-section radius at `t_min`/`t_max` respectively
+// (`radius_max` > `radius_min` always follows from `t_max` > `t_min` > 0
+// for a genuine right circular cone), measured directly off the same
+// sampled boundary points ScanFullCylinderFaces() itself reads its own
+// axial extent from - deliberately NOT derived from ON_Cone's own
+// `radius`/`height` fields, which (per ExtractConicalFace's own doc
+// comment in brep.cpp) can carry an arbitrary reference scale unrelated to
+// this specific trimmed patch's own two true ends.
+struct ConeFaceCandidate {
+  int face_index = -1;
+  Point3d apex;
+  Vector3d axis_dir;  // unit, oriented so t increases away from the apex
+  double t_min = 0.0, t_max = 0.0;
+  double radius_min = 0.0, radius_max = 0.0;
+  bool concave = false;
+};
+
+std::vector<ConeFaceCandidate> ScanFullConeFaces(const Brep& solid) {
+  const ON_Brep& brep = solid.raw();
+  std::vector<ConeFaceCandidate> candidates;
+
+  // Same tolerance scale ExtractConicalFace() (brep.cpp) and
+  // ScanFullCylinderFaces() above both use for their own analytic-surface
+  // fit checks.
+  constexpr double kConeTol = 1e-4;
+
+  for (int fi = 0; fi < brep.m_F.Count(); ++fi) {
+    const ON_BrepFace& face = brep.m_F[fi];
+    const ON_Surface* srf = face.SurfaceOf();
+    if (!srf) continue;
+
+    ON_Cone cone;
+    if (!srf->IsCone(&cone, kConeTol)) continue;
+    // A partial (less than 2*pi) cone sector - e.g. a fillet's own conical
+    // rolling-ball wall - isn't itself a countersink, whatever solid it's
+    // attached to; only a full sweep is a candidate.
+    if (!srf->IsClosed(0)) continue;
+
+    Vector3d axis_dir = cone.Axis();
+    if (!axis_dir.Unitize()) continue;
+    const Point3d apex = cone.ApexPoint();
+
+    // Concavity: same midpoint-normal-vs-radial-direction test
+    // ScanFullCylinderFaces() uses, generalized from a cylinder's fixed
+    // radius to a cone's own on-axis closest point at the SAMPLED point's
+    // own height - sign-invariant to whichever way axis_dir happens to
+    // point, so this is safe to compute before the t_min/t_max
+    // orientation fix below.
+    const ON_Interval du = srf->Domain(0), dv = srf->Domain(1);
+    const Point3d p_mid = srf->PointAt(du.Mid(), dv.Mid());
+    Vector3d n_mid = srf->NormalAt(du.Mid(), dv.Mid());
+    if (face.m_bRev) n_mid = -n_mid;
+    const Point3d axis_at_mid = apex + ON_DotProduct(p_mid - apex, axis_dir) * axis_dir;
+    Vector3d radial_out = p_mid - axis_at_mid;
+    if (!radial_out.Unitize()) continue;  // p_mid landed exactly on the axis - degenerate
+    const bool concave = ON_DotProduct(n_mid, radial_out) <= 0.0;
+
+    // Same plain global min/max over every sampled loop/trim/edge point
+    // ScanFullCylinderFaces() itself uses for its own axial extent -
+    // immune to loop/trim adjacency and fragmentation for the identical
+    // reason - but keeping the actual extremal POINT alongside each
+    // extreme t, not just the t value, since a cone's own radius varies
+    // along its axis (unlike a cylinder's constant radius, there is no
+    // single shared "the radius" to fall back on).
+    double raw_t_min = std::numeric_limits<double>::infinity();
+    double raw_t_max = -std::numeric_limits<double>::infinity();
+    Point3d p_at_raw_min, p_at_raw_max;
+    for (int li = 0; li < face.m_li.Count(); ++li) {
+      const int loop_index = face.m_li[li];
+      if (loop_index < 0 || loop_index >= brep.m_L.Count()) continue;
+      const ON_BrepLoop& loop = brep.m_L[loop_index];
+      for (int k = 0; k < loop.m_ti.Count(); ++k) {
+        const int ti = loop.m_ti[k];
+        if (ti < 0 || ti >= brep.m_T.Count()) continue;
+        const ON_BrepTrim& trim = brep.m_T[ti];
+        if (trim.m_ei < 0 || trim.m_ei >= brep.m_E.Count()) continue;
+        const ON_BrepEdge& edge = brep.m_E[trim.m_ei];
+        const ON_Interval ed = edge.Domain();
+        constexpr int kSamples = 4;
+        for (int s = 0; s <= kSamples; ++s) {
+          const Point3d p = edge.PointAt(ed.ParameterAt(static_cast<double>(s) / kSamples));
+          const double t = ON_DotProduct(p - apex, axis_dir);
+          if (t < raw_t_min) {
+            raw_t_min = t;
+            p_at_raw_min = p;
+          }
+          if (t > raw_t_max) {
+            raw_t_max = t;
+            p_at_raw_max = p;
+          }
+        }
+      }
+    }
+    if (!(raw_t_max > raw_t_min)) continue;  // no real axial extent found - degenerate/unreadable face
+
+    // Orient axis_dir so both true heights-from-apex come out positive - a
+    // genuine conical frustum patch always sits entirely on ONE side of
+    // its own apex, so exactly one sign works. Flipping axis_dir negates
+    // every t, so the point that achieved the OLD raw_t_min becomes the
+    // NEW t_max (and vice versa).
+    ConeFaceCandidate c;
+    c.face_index = fi;
+    c.apex = apex;
+    Point3d p_at_tmin, p_at_tmax;
+    if (raw_t_min < 0.0) {
+      c.axis_dir = -axis_dir;
+      c.t_min = -raw_t_max;
+      c.t_max = -raw_t_min;
+      p_at_tmin = p_at_raw_max;
+      p_at_tmax = p_at_raw_min;
+    } else {
+      c.axis_dir = axis_dir;
+      c.t_min = raw_t_min;
+      c.t_max = raw_t_max;
+      p_at_tmin = p_at_raw_min;
+      p_at_tmax = p_at_raw_max;
+    }
+    if (!(c.t_min > 0.0)) continue;  // patch would have to contain the apex itself - degenerate
+
+    const Point3d axis_at_tmin = apex + c.t_min * c.axis_dir;
+    const Point3d axis_at_tmax = apex + c.t_max * c.axis_dir;
+    c.radius_min = (p_at_tmin - axis_at_tmin).Length();
+    c.radius_max = (p_at_tmax - axis_at_tmax).Length();
+    if (!(c.radius_max > c.radius_min)) continue;  // not a genuine frustum patch away from the apex
+
+    c.concave = concave;
+    candidates.push_back(c);
+  }
+
+  return candidates;
+}
+
+// One matched cone/cylinder pair - the conical sibling of SteppedPair
+// above, for RecognizeCountersinkHoles() below. `open_point`/`open_radius`
+// are the cone's own OTHER (non-touching) end - the countersink's own
+// entry surface for a real countersink, where MakeCountersinkHole()'s own
+// `center` parameter would sit; `far_point` is the matched cylinder's own
+// OTHER (non-touching) end - the pilot bore's own far end.
+struct ConeCylinderStep {
+  size_t cone_index = 0;
+  size_t cyl_index = 0;
+  Point3d open_point;
+  double open_radius = 0.0;
+  Point3d far_point;
+  Vector3d axis;  // unit, from open_point through the touch point to far_point
+  double cone_length = 0.0;
+  double cyl_length = 0.0;
+};
+
+// Pairs each cone candidate with at most one cylinder candidate, the
+// conical/cylindrical sibling of FindAdjacentSteppedPairs() above - same
+// axis-line + genuine-3D-touch test, generalized to check BOTH of the
+// cone's own two ends against a candidate cylinder (not assumed to always
+// be the narrower one - a stepped BOSS's own tapered tip can touch its
+// cylinder at either end, see SteppedBossFeature's own doc comment for the
+// cylinder/cylinder precedent) and requiring the touching end's own radius
+// to actually match the cylinder's radius (a coincidental 3D touch at the
+// wrong radius is not a genuine smooth transition, so it's rejected before
+// the touch-point check even runs).
+std::vector<ConeCylinderStep> FindAdjacentConeCylinderPairs(const std::vector<ConeFaceCandidate>& cones,
+                                                             const std::vector<CylindricalFaceCandidate>& cyls) {
+  std::vector<ConeCylinderStep> pairs;
+  std::vector<bool> cyl_consumed(cyls.size(), false);
+  const double kTol = tolerance::kDistance * 100.0;
+
+  for (size_t ci = 0; ci < cones.size(); ++ci) {
+    const ConeFaceCandidate& cone = cones[ci];
+    const Point3d p_narrow = cone.apex + cone.t_min * cone.axis_dir;
+    const Point3d p_wide = cone.apex + cone.t_max * cone.axis_dir;
+    struct End {
+      Point3d touch, open;
+      double touch_radius, open_radius;
+    };
+    const End ends[2] = {
+        {p_narrow, p_wide, cone.radius_min, cone.radius_max},
+        {p_wide, p_narrow, cone.radius_max, cone.radius_min},
+    };
+
+    for (size_t cyi = 0; cyi < cyls.size(); ++cyi) {
+      if (cyl_consumed[cyi]) continue;
+      const CylindricalFaceCandidate& cyl = cyls[cyi];
+
+      const double align = std::fabs(ON_DotProduct(cone.axis_dir, cyl.axis_dir));
+      if (align < 1.0 - tolerance::kAlignment) continue;
+      const Vector3d to_cyl = cyl.axis_ref - cone.apex;
+      const Vector3d off_axis = to_cyl - ON_DotProduct(to_cyl, cone.axis_dir) * cone.axis_dir;
+      if (off_axis.Length() > kTol) continue;  // not the same axis line
+
+      const Point3d cyl_lo = cyl.axis_ref + cyl.t_min * cyl.axis_dir;
+      const Point3d cyl_hi = cyl.axis_ref + cyl.t_max * cyl.axis_dir;
+
+      bool matched = false;
+      for (const End& end : ends) {
+        if (std::fabs(end.touch_radius - cyl.radius) > std::max(kTol, cyl.radius * 1e-4)) continue;
+
+        Point3d far_point;
+        if (end.touch.DistanceTo(cyl_lo) <= kTol) {
+          far_point = cyl_hi;
+        } else if (end.touch.DistanceTo(cyl_hi) <= kTol) {
+          far_point = cyl_lo;
+        } else {
+          continue;
+        }
+
+        Vector3d axis = end.touch - end.open;
+        if (!axis.Unitize()) continue;
+        const double cyl_length = cyl.t_max - cyl.t_min;
+        // `axis` must actually continue straight on to `far_point` (a
+        // genuine adjacent step, not an overlap or a fold-back) -
+        // confirmed directly, the same check FindAdjacentSteppedPairs()
+        // itself applies to its own two candidates.
+        const Point3d predicted_far = end.touch + axis * cyl_length;
+        if (predicted_far.DistanceTo(far_point) > kTol) continue;
+
+        ConeCylinderStep step;
+        step.cone_index = ci;
+        step.cyl_index = cyi;
+        step.open_point = end.open;
+        step.open_radius = end.open_radius;
+        step.far_point = far_point;
+        step.axis = axis;
+        step.cone_length = cone.t_max - cone.t_min;
+        step.cyl_length = cyl_length;
+        pairs.push_back(step);
+        cyl_consumed[cyi] = true;
+        matched = true;
+        break;
+      }
+      if (matched) break;
+    }
+  }
+
+  return pairs;
+}
+
+}  // namespace
+
+std::vector<CountersinkFeature> RecognizeCountersinkHoles(const Brep& solid) {
+  std::vector<CountersinkFeature> out;
+
+  std::vector<ConeFaceCandidate> cones;
+  for (ConeFaceCandidate& c : ScanFullConeFaces(solid)) {
+    if (c.concave) cones.push_back(c);
+  }
+  std::vector<CylindricalFaceCandidate> cyls;
+  for (CylindricalFaceCandidate& c : ScanFullCylinderFaces(solid)) {
+    if (c.concave) cyls.push_back(c);
+  }
+  if (cones.empty() || cyls.empty()) return out;
+
+  const Mesh solid_mesh = solid.TessellateToClosedMesh(16, 32);
+
+  for (const ConeCylinderStep& step : FindAdjacentConeCylinderPairs(cones, cyls)) {
+    const ConeFaceCandidate& cone = cones[step.cone_index];
+    const CylindricalFaceCandidate& cyl = cyls[step.cyl_index];
+
+    // Same on-axis open/capped probe RecognizeCounterboreHoles() itself
+    // uses, applied to the merged cone+cylinder span.
+    CylindricalFaceCandidate merged;
+    merged.radius = std::max(step.open_radius, cyl.radius);
+    merged.axis_ref = step.open_point;
+    merged.axis_dir = step.axis;
+    merged.t_min = 0.0;
+    merged.t_max = step.cone_length + step.cyl_length;
+    const EndOccupancy occ = ClassifyEndOccupancy(solid_mesh, merged);
+    const bool near_open = !occ.near_inside;
+    const bool far_open = !occ.far_inside;
+    if (!near_open) continue;  // a countersink's own entry must be open to the outside
+
+    // Full included angle from the cone's own MEASURED slope (radius gap
+    // over axial length), not any ON_Cone field - see ConeFaceCandidate's
+    // own doc comment for why.
+    const double half_angle = std::atan2(cone.radius_max - cone.radius_min, cone.t_max - cone.t_min);
+
+    CountersinkFeature cf;
+    cf.origin = step.open_point;
+    cf.axis = step.axis;
+    cf.countersink_diameter = 2.0 * step.open_radius;
+    cf.countersink_angle_degrees = 2.0 * half_angle * 180.0 / ON_PI;
+    cf.bore_radius = cyl.radius;
+    cf.bore_depth = step.cone_length + step.cyl_length;
+    cf.through = far_open;
+    cf.countersink_face_index = cone.face_index;
+    cf.bore_face_index = cyl.face_index;
+    out.push_back(cf);
+  }
+
+  return out;
+}
+
 // Turns a walked SteppedChain (candidate indices in physical entry-to-far
 // order, plus the one first_outer_is_min sign bit) into an absolute 3D
 // origin point and unit axis direction pointing from that origin along
