@@ -1209,10 +1209,17 @@ bool BuildIgesCurve(const IgesRawEntity& e, const std::map<int, IgesRawEntity>& 
       std::vector<ON_3dPoint> pts;
       if (e.form == 11 || e.form == 63) {
         const int n = PInt(p, idx++);
+        // Reject a corrupt/hostile file's count instead of an unbounded
+        // allocation: PNum()/PInt() silently return 0 past the end of a
+        // short `p`, so an attacker doesn't even need to write the points -
+        // just a huge N field - to make this loop run out to INT_MAX,
+        // appending an ON_3dPoint (24 bytes) each time.
+        if (n < 0 || n > 100000) return false;
         const double z = ip == 1 ? PNum(p, idx++) : 0.0;
         for (int i = 0; i < n; ++i) { const double x = PNum(p, idx++), y = PNum(p, idx++); pts.emplace_back(x, y, ip == 1 ? z : 0.0); }
       } else if (e.form == 12 || e.form == 1) {
         const int n = PInt(p, idx++);
+        if (n < 0 || n > 100000) return false;  // same guard as the form 11/63 branch above
         for (int i = 0; i < n; ++i) { const double x = PNum(p, idx++), y = PNum(p, idx++), z = PNum(p, idx++); pts.emplace_back(x, y, z); }
       } else {
         return false;
@@ -1270,7 +1277,13 @@ bool BuildIgesCurve(const IgesRawEntity& e, const std::map<int, IgesRawEntity>& 
     }
     case 102: {  // composite curve: N child curve DE pointers, joined end to end
       const int n = PInt(p, 0);
-      if (n <= 0) return false;
+      // Reject a corrupt/hostile file's count instead of an unbounded
+      // reserve(): unlike a plain read loop, segs.reserve(n) allocates
+      // n * sizeof(ON_NurbsCurve) immediately, before any child DE is even
+      // looked up, so a single huge N field here crashes/hangs the import
+      // on its own (BuildIgesCurve's depth<=64 guard only bounds how deep a
+      // chain of composite curves can nest, not how wide any one of them is).
+      if (n <= 0 || n > 100000) return false;
       std::vector<ON_NurbsCurve> segs;
       segs.reserve(static_cast<size_t>(n));
       for (int i = 0; i < n; ++i) {
@@ -1421,6 +1434,7 @@ bool ImportIges(Document& doc, const std::string& path, std::string& summary) {
   for (const auto& [de, e] : entities) {
     if (e.type != 402) continue;
     const int n = PInt(e.params, 0);
+    if (n < 0 || n > 100000) continue;  // a corrupt/hostile group member count: skip this group, don't loop unbounded
     for (int i = 0; i < n; ++i) face_owner[PInt(e.params, static_cast<size_t>(1 + i))] = de;
   }
 
@@ -1511,6 +1525,7 @@ bool ImportIges(Document& doc, const std::string& path, std::string& summary) {
         size_t idx = 3;
         int outer_142 = 0;
         if (n1 == 1) outer_142 = PInt(e.params, idx++);
+        if (n2 < 0 || n2 > 100000) { importer.Skip(); break; }  // corrupt/hostile inner-boundary count
         std::vector<int> inner;
         for (int i = 0; i < n2; ++i) inner.push_back(PInt(e.params, idx++));
         auto its = entities.find(srf_de);
@@ -1532,6 +1547,7 @@ bool ImportIges(Document& doc, const std::string& path, std::string& summary) {
           if (it == entities.end()) return out;
           if (it->second.type != 102) { out.push_back(de); return out; }
           const int n = PInt(it->second.params, 0);
+          if (n < 0 || n > 100000) return out;  // corrupt/hostile segment count: treat as having no segments
           for (int i = 0; i < n; ++i) out.push_back(PInt(it->second.params, static_cast<size_t>(1 + i)));
           return out;
         };
@@ -1597,6 +1613,7 @@ bool ImportIges(Document& doc, const std::string& path, std::string& summary) {
         if (itdef == entities.end()) { importer.Skip(); break; }
         // Members are the DEs listed in the 308's own parameter list.
         const int n = PInt(itdef->second.params, 2);
+        if (n < 0 || n > 100000) { importer.Skip(); break; }  // corrupt/hostile member count
         for (int i = 0; i < n; ++i) {
           const int mde = PInt(itdef->second.params, static_cast<size_t>(3 + i));
           auto itm = entities.find(mde);
