@@ -135,6 +135,11 @@ class CommandEngine {
   bool TryParsePoint(const std::string& text, kernel::Point3d& out);
   bool TryOption(const std::string& text);
   std::string ResolveName(const std::string& typed) const;
+  // Every registered command name (canonical casing) whose lowercase form
+  // starts with `lower` (already-lowercased). Used by ResolveName to
+  // resolve an unambiguous prefix, and by RunCommand to report what an
+  // ambiguous one could mean instead of a flat "Unknown command".
+  std::vector<std::string> PrefixMatches(const std::string& lower) const;
   void RunLuaLine(const std::string& code);
 
   Application& app_;

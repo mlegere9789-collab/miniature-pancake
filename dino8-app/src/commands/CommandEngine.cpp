@@ -176,6 +176,15 @@ void CommandEngine::InstallDefaultAliases() {
   for (const auto& kv : defaults) aliases_[kv.first] = kv.second;
 }
 
+std::vector<std::string> CommandEngine::PrefixMatches(const std::string& lower) const {
+  std::vector<std::string> out;
+  for (const auto& kv : registry_) {
+    if (kv.first.compare(0, lower.size(), lower) == 0) out.push_back(kv.second.name);
+  }
+  std::sort(out.begin(), out.end());
+  return out;
+}
+
 std::string CommandEngine::ResolveName(const std::string& typed) const {
   std::string t = typed;
   // Strip Rhino's prefixes: "!" cancels, "_" = english name, "-" = script mode.
@@ -185,10 +194,7 @@ std::string CommandEngine::ResolveName(const std::string& typed) const {
   if (alias != aliases_.end()) return alias->second;
   if (registry_.count(lower)) return registry_.at(lower).name;
   // Unique prefix match.
-  std::vector<std::string> matches;
-  for (const auto& kv : registry_) {
-    if (kv.first.compare(0, lower.size(), lower) == 0) matches.push_back(kv.second.name);
-  }
+  const std::vector<std::string> matches = PrefixMatches(lower);
   if (matches.size() == 1) return matches.front();
   return t;
 }
@@ -340,7 +346,20 @@ void CommandEngine::Execute(const std::string& raw_input) {
 void CommandEngine::RunCommand(const std::string& name, bool script_mode) {
   const RegisteredCommand* r = Find(name);
   if (!r) {
-    Print("Unknown command: " + name);
+    // ResolveName already turned a *unique* prefix into its one match (and
+    // a registered alias into its target) before calling here; an
+    // unresolved name that still prefix-matches more than one registered
+    // command (e.g. "Pla" -> Plan/Planar/PlanarSrf/...) is ambiguous, not
+    // unknown - say what it could mean instead of a flat "Unknown command"
+    // that leaves the user to guess or retype.
+    const std::vector<std::string> matches = PrefixMatches(ToLower(name));
+    if (matches.size() > 1) {
+      std::string list;
+      for (size_t i = 0; i < matches.size(); ++i) { if (i) list += ", "; list += matches[i]; }
+      Print(name + ": ambiguous command name, could be: " + list);
+    } else {
+      Print("Unknown command: " + name);
+    }
     command_failed_ = true;
     pending_inputs_.clear();
     return;
