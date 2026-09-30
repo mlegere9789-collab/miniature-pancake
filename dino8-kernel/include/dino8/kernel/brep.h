@@ -3154,6 +3154,59 @@ class Brep {
   void ReplaceEdgeCurve(int edge_index, const NurbsCurve& new_curve,
                         double tolerance = tolerance::kEdgeJoin);
 
+  // Closes PARITY_MAP.md's own "Re-intersect adjacent faces / rebuild
+  // edges after an edit" gap: the app's `RebuildEdgesReal` (cmd_fillet.
+  // cpp) refits a 2-trim edge through the REAL surface-surface
+  // intersection of the two faces it borders, but until now no kernel API
+  // did the same - `ReplaceEdgeCurve()` above re-trims against WHATEVER
+  // substitute curve the caller hands it; it never computes one from the
+  // two faces' own actual geometry itself. `RebuildEdgeCurve` does: it
+  // runs the kernel's own general SSX intersector (`IntersectFaces()`,
+  // dino8/kernel/surface_intersect.h - the same Newton-polished
+  // mesh-seeded surface/surface intersector `ImprintFaces()`/
+  // `SplitFaceByCurve()` already build on, general to ANY `ON_Surface`
+  // pair, not enumerated per surface-type) between `edge_index`'s own two
+  // bordering faces' REAL surfaces, picks whichever resulting piece lands
+  // on this edge (its own endpoints matching the edge's existing two
+  // vertices within `tolerance`, in either direction), and hands that
+  // piece straight to `ReplaceEdgeCurve()` above to commit it - "compute
+  // the true intersection, delegate the re-trim," the same shape
+  // `FoldFaceConvexPlanar()`/`ReplaceFacePlaneConvexPlanar()` already use
+  // elsewhere in this file for "compute a plane, delegate."
+  //
+  // Requires `edge_index` to border exactly two DIFFERENT faces (the same
+  // `TrimCount() == 2`, `FaceIndexOf()` differ precondition
+  // `RemoveSharedMicroEdge()` already enforces) and both faces to have a
+  // surface. Returns `Result::Failed` - not a thrown exception, the same
+  // "can't, but that's not a bug" contract `UnjoinEdge()`/
+  // `RemoveNakedMicroEdge()` already have - whenever the two faces' real
+  // surfaces don't actually meet anywhere landing on this edge's own two
+  // vertices within `tolerance` (a genuinely degenerate or tangential
+  // pair, or a rebuilt curve `ReplaceEdgeCurve()` itself then refuses to
+  // fit either face within tolerance), leaving this Brep untouched.
+  // Throws `std::out_of_range`/`std::invalid_argument` for the usual
+  // out-of-range/already-deleted `edge_index` caller bugs, matching every
+  // sibling above.
+  Result RebuildEdgeCurve(int edge_index, double tolerance = tolerance::kEdgeJoin);
+
+  // `RebuildEdgeCurve()`'s own whole-Brep convenience, the same
+  // single/all pairing `RemoveNakedMicroEdge()`/`RemoveAllNakedMicroEdges()`
+  // and `RemoveHoleLoop()`/`RemoveAllHoleLoopsInBrep()` already give their
+  // own single-target siblings: walks every LIVE edge once (no Compact()
+  // runs inside `RebuildEdgeCurve()`/`ReplaceEdgeCurve()`, so indices stay
+  // valid for the whole pass - unlike the micro-edge-removal family, this
+  // never needs a rescan-from-scratch loop), calls `RebuildEdgeCurve()` on
+  // every 2-trim one, and returns how many were genuinely rebuilt (their
+  // own resulting curve differs from the one they started with by more
+  // than `tolerance`; an edge whose curve already IS the true intersection
+  // - the overwhelmingly common case for a Brep that hasn't been tweaked
+  // - is left untouched and not counted, so this reports rebuilds, not
+  // mere attempts). Every edge this doesn't apply to (naked, non-manifold,
+  // or whose faces' surfaces don't meet on it) is silently skipped, the
+  // same "0 if none qualify, never throws for an ordinary non-match"
+  // contract `RemoveAllSharedMicroEdges()` already has.
+  int RebuildAllEdgeCurves(double tolerance = tolerance::kEdgeJoin);
+
   // Splits a shared (exactly two trims) edge into two coincident but
   // topologically distinct naked edges, in place, while leaving both
   // faces in THIS SAME Brep - Rhino's own UnjoinEdge semantics exactly

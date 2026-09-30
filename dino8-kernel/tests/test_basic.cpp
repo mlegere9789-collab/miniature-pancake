@@ -10526,6 +10526,307 @@ void TestBrepRemoveAllHoleLoopsInBrepStripsHolesAcrossEveryFace() {
   Check(solo.brep.RemoveAllHoleLoopsInBrep() == 0, "RemoveAllHoleLoopsInBrep() on a hole-free Brep returns 0");
 }
 
+struct TwoPerpendicularFacesFixture {
+  dino8::kernel::Brep brep;
+  int face_a = -1;  // the z=0 plane, trimmed to y in [0,5]
+  int face_b = -1;  // the y=0 plane, trimmed to z in [0,5]
+  int shared_edge = -1;
+  int face_a_naked_edge = -1;  // one of face_a's own other three (1-trim) sides
+};
+
+// Builds two hand-authored planar faces on two DIFFERENT, perpendicular
+// surfaces (face_a: the z=0 plane; face_b: the y=0 plane) that share one
+// real topological edge along the x-axis from (-5,0,0) to (5,0,0) - the
+// two planes' own true intersection line. Each surface's own domain
+// extends well past that shared boundary in the OTHER, non-shared
+// direction (face_a's own domain covers y in [-5,5], its trim only y in
+// [0,5]; face_b's own domain covers z in [-5,5], its trim only z in
+// [0,5]), so the shared edge sits strictly inside each surface's own full
+// parameter domain rather than smeared along an entire domain boundary
+// the way two adjacent faces of a plain axis-aligned Brep::Box() would
+// be - a clean, non-degenerate transversal crossing for
+// surface_intersect.h's general mesh-seeded SSX intersector to find.
+TwoPerpendicularFacesFixture BuildTwoPerpendicularFacesFixture() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point2d;
+  using dino8::kernel::Point3d;
+
+  TwoPerpendicularFacesFixture fixture;
+  ON_Brep& b = fixture.brep.raw();
+
+  const int v0 = b.NewVertex(Point3d(-5, 0, 0), 0.0).m_vertex_index;
+  const int v1 = b.NewVertex(Point3d(5, 0, 0), 0.0).m_vertex_index;
+  const int shared_c3i = b.AddEdgeCurve(new ON_LineCurve(b.m_V[v0].point, b.m_V[v1].point));
+  const int shared_edge = b.NewEdge(b.m_V[v0], b.m_V[v1], shared_c3i).m_edge_index;
+  b.m_E[shared_edge].m_tolerance = 0.0;
+  fixture.shared_edge = shared_edge;
+
+  // Face A: z=0 plane, own domain x in [-5,5], y in [-5,5]; trimmed to
+  // the y in [0,5] half.
+  {
+    const std::vector<Point3d> grid = {
+        Point3d(-5, -5, 0), Point3d(-5, 5, 0), Point3d(5, -5, 0), Point3d(5, 5, 0),
+    };
+    const NurbsSurface surface = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+    const int si = b.AddSurface(new ON_NurbsSurface(surface.raw()));
+    const int face_index = b.NewFace(si).m_face_index;
+    fixture.face_a = face_index;
+    auto to_uv = [&](double x, double y) { return Point2d((x + 5.0) / 10.0, (y + 5.0) / 10.0); };
+    const std::vector<Point3d> outer_pts = {
+        Point3d(-5, 0, 0), Point3d(5, 0, 0), Point3d(5, 5, 0), Point3d(-5, 5, 0),
+    };
+    const int n = static_cast<int>(outer_pts.size());
+    std::vector<int> vids(static_cast<size_t>(n));
+    vids[0] = v0;
+    vids[1] = v1;
+    for (int k = 2; k < n; ++k) {
+      vids[static_cast<size_t>(k)] = b.NewVertex(outer_pts[static_cast<size_t>(k)], 0.0).m_vertex_index;
+    }
+    const int loop_index = b.NewLoop(ON_BrepLoop::outer, b.m_F[face_index]).m_loop_index;
+    for (int k = 0; k < n; ++k) {
+      const int k1 = (k + 1) % n;
+      const int va = vids[static_cast<size_t>(k)];
+      const int vb = vids[static_cast<size_t>(k1)];
+      int edge_index;
+      if (k == 0) {
+        edge_index = shared_edge;
+      } else {
+        const int c3i = b.AddEdgeCurve(new ON_LineCurve(b.m_V[va].point, b.m_V[vb].point));
+        edge_index = b.NewEdge(b.m_V[va], b.m_V[vb], c3i).m_edge_index;
+        b.m_E[edge_index].m_tolerance = 0.0;
+        if (fixture.face_a_naked_edge < 0) fixture.face_a_naked_edge = edge_index;
+      }
+      const Point2d uv_a = to_uv(outer_pts[static_cast<size_t>(k)].x, outer_pts[static_cast<size_t>(k)].y);
+      const Point2d uv_b = to_uv(outer_pts[static_cast<size_t>(k1)].x, outer_pts[static_cast<size_t>(k1)].y);
+      const int c2i = b.AddTrimCurve(new ON_LineCurve(uv_a, uv_b));
+      ON_BrepTrim& trim = b.NewTrim(b.m_E[edge_index], /*bRev3d=*/false, b.m_L[loop_index], c2i);
+      trim.m_tolerance[0] = trim.m_tolerance[1] = 0.0;
+    }
+  }
+
+  // Face B: y=0 plane, own domain x in [-5,5], z in [-5,5]; trimmed to
+  // the z in [0,5] half.
+  {
+    const std::vector<Point3d> grid = {
+        Point3d(-5, 0, -5), Point3d(-5, 0, 5), Point3d(5, 0, -5), Point3d(5, 0, 5),
+    };
+    const NurbsSurface surface = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+    const int si = b.AddSurface(new ON_NurbsSurface(surface.raw()));
+    const int face_index = b.NewFace(si).m_face_index;
+    fixture.face_b = face_index;
+    auto to_uv = [&](double x, double z) { return Point2d((x + 5.0) / 10.0, (z + 5.0) / 10.0); };
+    const std::vector<Point3d> outer_pts = {
+        Point3d(-5, 0, 0), Point3d(5, 0, 0), Point3d(5, 0, 5), Point3d(-5, 0, 5),
+    };
+    const int n = static_cast<int>(outer_pts.size());
+    std::vector<int> vids(static_cast<size_t>(n));
+    vids[0] = v0;
+    vids[1] = v1;
+    for (int k = 2; k < n; ++k) {
+      vids[static_cast<size_t>(k)] = b.NewVertex(outer_pts[static_cast<size_t>(k)], 0.0).m_vertex_index;
+    }
+    const int loop_index = b.NewLoop(ON_BrepLoop::outer, b.m_F[face_index]).m_loop_index;
+    for (int k = 0; k < n; ++k) {
+      const int k1 = (k + 1) % n;
+      const int va = vids[static_cast<size_t>(k)];
+      const int vb = vids[static_cast<size_t>(k1)];
+      int edge_index;
+      if (k == 0) {
+        edge_index = shared_edge;
+      } else {
+        const int c3i = b.AddEdgeCurve(new ON_LineCurve(b.m_V[va].point, b.m_V[vb].point));
+        edge_index = b.NewEdge(b.m_V[va], b.m_V[vb], c3i).m_edge_index;
+        b.m_E[edge_index].m_tolerance = 0.0;
+      }
+      const Point2d uv_a = to_uv(outer_pts[static_cast<size_t>(k)].x, outer_pts[static_cast<size_t>(k)].z);
+      const Point2d uv_b = to_uv(outer_pts[static_cast<size_t>(k1)].x, outer_pts[static_cast<size_t>(k1)].z);
+      const int c2i = b.AddTrimCurve(new ON_LineCurve(uv_a, uv_b));
+      ON_BrepTrim& trim = b.NewTrim(b.m_E[edge_index], /*bRev3d=*/false, b.m_L[loop_index], c2i);
+      trim.m_tolerance[0] = trim.m_tolerance[1] = 0.0;
+    }
+  }
+
+  b.SetTrimIsoFlags();
+  b.SetTolerancesBoxesAndFlags();
+  return fixture;
+}
+
+// RebuildEdgeCurve() closes PARITY_MAP.md's own "Re-intersect adjacent
+// faces / rebuild edges after an edit" gap: refits a 2-trim edge through
+// the REAL surface-surface intersection of its two bordering faces,
+// rather than re-trimming against whatever curve a caller hands it
+// (ReplaceEdgeCurve()'s own job). Perturbs the fixture's shared edge away
+// from the true x-axis intersection line, confirms the perturbation
+// genuinely took, then confirms RebuildEdgeCurve() snaps it back to the
+// two planes' own EXACT analytic intersection - not merely something
+// closer than before - and that RebuildAllEdgeCurves() finds and fixes
+// exactly the one qualifying edge in one whole-Brep pass, reporting 0 on
+// a second pass once nothing is left to change.
+void TestBrepRebuildEdgeCurveRecoversExactPlaneIntersectionAfterPerturbation() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  TwoPerpendicularFacesFixture fixture = BuildTwoPerpendicularFacesFixture();
+  Brep& brep = fixture.brep;
+  ON_Brep& b = brep.raw();
+  const int shared_edge = fixture.shared_edge;
+
+  Check(b.m_E[shared_edge].TrimCount() == 2, "setup: the shared edge genuinely borders two trims");
+  const int ti0 = b.m_E[shared_edge].m_ti[0];
+  const int ti1 = b.m_E[shared_edge].m_ti[1];
+  Check(b.m_T[ti0].FaceIndexOf() != b.m_T[ti1].FaceIndexOf(), "setup: its two trims belong to two DIFFERENT faces");
+
+  // Perturb: replace the edge's own straight x-axis curve with a
+  // same-endpoints bulge that sags ~0.005 in +z at its own midpoint - off
+  // the true line, but still well within ReplaceEdgeCurve()'s own
+  // projection tolerance for both faces (the bulge lies exactly IN face
+  // B's own y=0 plane throughout, so face B's own projection residual is
+  // zero; only face A's z=0 plane is genuinely stressed).
+  const Point3d p0(-5, 0, 0), p1(5, 0, 0), mid(0, 0, 0.01);
+  const NurbsCurve bulge = NurbsCurve::FromControlPoints({p0, mid, p1}, 2);
+  brep.ReplaceEdgeCurve(shared_edge, bulge, 1e-3);
+
+  ON_NurbsCurve perturbed_nc;
+  Check(b.m_E[shared_edge].GetNurbForm(perturbed_nc) > 0, "setup: the edge now has a real NURBS curve");
+  const ON_3dPoint perturbed_mid = perturbed_nc.PointAt(perturbed_nc.Domain().Mid());
+  Check(std::fabs(perturbed_mid.z) > 1e-4, "setup: the perturbed edge is genuinely off the true x-axis line");
+
+  const Result result = brep.RebuildEdgeCurve(shared_edge);
+  Check(result == Result::Ok, "RebuildEdgeCurve() succeeds on the two perpendicular planes' own shared edge");
+
+  ON_NurbsCurve rebuilt_nc;
+  Check(b.m_E[shared_edge].GetNurbForm(rebuilt_nc) > 0, "the rebuilt edge still has a real NURBS curve");
+  constexpr int kSamples = 12;
+  const ON_Interval dom = rebuilt_nc.Domain();
+  double max_off_axis = 0.0;
+  for (int i = 0; i <= kSamples; ++i) {
+    const ON_3dPoint p = rebuilt_nc.PointAt(dom.ParameterAt(static_cast<double>(i) / kSamples));
+    max_off_axis = std::max(max_off_axis, std::max(std::fabs(p.y), std::fabs(p.z)));
+  }
+  Check(max_off_axis < 1e-6,
+        "RebuildEdgeCurve() replaces the perturbed edge with the two planes' own EXACT analytic "
+        "intersection (the x-axis, y=0 and z=0 everywhere along it), not merely something closer than before");
+
+  const ON_3dPoint new_start = rebuilt_nc.PointAtStart();
+  const ON_3dPoint new_end = rebuilt_nc.PointAtEnd();
+  const bool endpoints_preserved =
+      (new_start.DistanceTo(p0) < 1e-6 && new_end.DistanceTo(p1) < 1e-6) ||
+      (new_start.DistanceTo(p1) < 1e-6 && new_end.DistanceTo(p0) < 1e-6);
+  Check(endpoints_preserved, "the rebuilt edge still runs between the SAME two vertices");
+
+  // RebuildAllEdgeCurves(): perturb again, then confirm the whole-Brep
+  // sweep finds and fixes exactly this one qualifying (2-trim) edge, and
+  // reports 0 on a second pass once the Brep is already exact.
+  brep.ReplaceEdgeCurve(shared_edge, bulge, 1e-3);
+  const int rebuilt_count = brep.RebuildAllEdgeCurves();
+  Check(rebuilt_count == 1, "RebuildAllEdgeCurves() rebuilds exactly the one 2-trim edge that was actually off");
+  const int rebuilt_again = brep.RebuildAllEdgeCurves();
+  Check(rebuilt_again == 0,
+        "a second RebuildAllEdgeCurves() pass over an already-exact Brep finds nothing left to change");
+}
+
+// RebuildEdgeCurve() refusal paths: out-of-range and already-deleted
+// edge_index (genuine caller bugs, thrown), a naked (1-trim) edge (out of
+// this method's own two-face scope, Result::Failed), and two faces whose
+// real surfaces never actually intersect anywhere (two parallel planes
+// forced to share a fabricated edge - Result::Failed, not an invented
+// curve) - every refusal leaves the Brep completely untouched.
+void TestBrepRebuildEdgeCurveRefusesInvalidInput() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point2d;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  TwoPerpendicularFacesFixture fixture = BuildTwoPerpendicularFacesFixture();
+  Brep& brep = fixture.brep;
+  ON_Brep& b = brep.raw();
+
+  bool threw_range = false;
+  try {
+    brep.RebuildEdgeCurve(b.m_E.Count() + 5);
+  } catch (const std::out_of_range&) {
+    threw_range = true;
+  }
+  Check(threw_range, "RebuildEdgeCurve() throws std::out_of_range for an out-of-range edge_index");
+
+  Check(fixture.face_a_naked_edge >= 0, "setup: face A has at least one of its own naked (1-trim) sides");
+  Check(b.m_E[fixture.face_a_naked_edge].TrimCount() == 1, "setup: that side is genuinely naked");
+  Check(brep.RebuildEdgeCurve(fixture.face_a_naked_edge) == Result::Failed,
+        "RebuildEdgeCurve() refuses a naked (1-trim) edge - out of this method's own two-face scope");
+
+  const int deleted_edge = fixture.shared_edge;
+  b.m_E[deleted_edge].m_edge_index = -1;
+  bool threw_invalid = false;
+  try {
+    brep.RebuildEdgeCurve(deleted_edge);
+  } catch (const std::invalid_argument&) {
+    threw_invalid = true;
+  }
+  Check(threw_invalid, "RebuildEdgeCurve() throws std::invalid_argument for an already-deleted edge");
+
+  // Two PARALLEL planes (z=0 and z=1) forced to share a fabricated edge:
+  // IntersectFaces() genuinely finds nothing (two parallel planes never
+  // cross anywhere), so RebuildEdgeCurve() must refuse rather than invent
+  // a curve.
+  {
+    Brep parallel;
+    ON_Brep& pb = parallel.raw();
+    const int pv0 = pb.NewVertex(Point3d(0, 0, 0), 0.0).m_vertex_index;
+    const int pv1 = pb.NewVertex(Point3d(1, 0, 0), 0.0).m_vertex_index;
+    const int pc3i = pb.AddEdgeCurve(new ON_LineCurve(pb.m_V[pv0].point, pb.m_V[pv1].point));
+    const int shared = pb.NewEdge(pb.m_V[pv0], pb.m_V[pv1], pc3i).m_edge_index;
+    pb.m_E[shared].m_tolerance = 0.0;
+
+    auto add_face = [&](double z) {
+      const std::vector<Point3d> grid = {
+          Point3d(0, 0, z), Point3d(0, 1, z), Point3d(1, 0, z), Point3d(1, 1, z),
+      };
+      const NurbsSurface surface = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+      const int si = pb.AddSurface(new ON_NurbsSurface(surface.raw()));
+      const int fi = pb.NewFace(si).m_face_index;
+      const int loop_index = pb.NewLoop(ON_BrepLoop::outer, pb.m_F[fi]).m_loop_index;
+      const std::vector<Point3d> outer_pts = {
+          Point3d(0, 0, z), Point3d(1, 0, z), Point3d(1, 1, z), Point3d(0, 1, z),
+      };
+      std::vector<int> vids = {pv0, pv1, -1, -1};
+      vids[2] = pb.NewVertex(outer_pts[2], 0.0).m_vertex_index;
+      vids[3] = pb.NewVertex(outer_pts[3], 0.0).m_vertex_index;
+      for (int k = 0; k < 4; ++k) {
+        const int k1 = (k + 1) % 4;
+        int edge_index;
+        if (k == 0) {
+          edge_index = shared;
+        } else {
+          const int c3i = pb.AddEdgeCurve(new ON_LineCurve(pb.m_V[vids[static_cast<size_t>(k)]].point,
+                                                             pb.m_V[vids[static_cast<size_t>(k1)]].point));
+          edge_index =
+              pb.NewEdge(pb.m_V[vids[static_cast<size_t>(k)]], pb.m_V[vids[static_cast<size_t>(k1)]], c3i)
+                  .m_edge_index;
+          pb.m_E[edge_index].m_tolerance = 0.0;
+        }
+        const Point2d uv_a(outer_pts[static_cast<size_t>(k)].x, outer_pts[static_cast<size_t>(k)].y);
+        const Point2d uv_b(outer_pts[static_cast<size_t>(k1)].x, outer_pts[static_cast<size_t>(k1)].y);
+        const int c2i = pb.AddTrimCurve(new ON_LineCurve(uv_a, uv_b));
+        ON_BrepTrim& trim = pb.NewTrim(pb.m_E[edge_index], /*bRev3d=*/false, pb.m_L[loop_index], c2i);
+        trim.m_tolerance[0] = trim.m_tolerance[1] = 0.0;
+      }
+      return fi;
+    };
+    add_face(0.0);
+    add_face(1.0);
+    pb.SetTrimIsoFlags();
+    pb.SetTolerancesBoxesAndFlags();
+
+    Check(pb.m_E[shared].TrimCount() == 2,
+          "setup: the fabricated edge borders two trims from two DIFFERENT parallel faces");
+    Check(parallel.RebuildEdgeCurve(shared) == Result::Failed,
+          "RebuildEdgeCurve() refuses when the two faces' real surfaces never actually intersect anywhere");
+  }
+}
+
 // RemoveHoleLoop() refusal paths: the outer loop itself, out-of-range and
 // already-deleted loop_index, and a hole edge that's also used by a trim
 // OUTSIDE the hole loop (a decoy second face reusing one of the hole's own
@@ -55953,6 +56254,8 @@ int main() {
   TestBrepRemoveHoleLoopRestoresSolidFaceExactly();
   TestBrepRemoveAllHoleLoopsRemovesEveryHoleInOneCall();
   TestBrepRemoveAllHoleLoopsInBrepStripsHolesAcrossEveryFace();
+  TestBrepRebuildEdgeCurveRecoversExactPlaneIntersectionAfterPerturbation();
+  TestBrepRebuildEdgeCurveRefusesInvalidInput();
   TestBrepRemoveHoleLoopRefusesOuterLoopSharedEdgeAndInvalidInput();
   TestBrepRemoveOuterTrimRestoresSurfaceNaturalBoundaryAndKeepsHoles();
   TestBrepRemoveOuterTrimRefusesSingularTrimSharedEdgeAndInvalidInput();

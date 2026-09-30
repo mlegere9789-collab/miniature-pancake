@@ -22,6 +22,7 @@
 #include "dino8/kernel/detail/polygon2d.h"
 #include "dino8/kernel/detail/segment3d.h"
 #include "dino8/kernel/mesh.h"
+#include "dino8/kernel/surface_intersect.h"
 #include "dino8/kernel/tolerance.h"
 
 namespace dino8::kernel {
@@ -6221,6 +6222,137 @@ void Brep::ReplaceEdgeCurve(int edge_index, const NurbsCurve& new_curve, double 
   face_arc_runs_.clear();
   face_notch_rows_.clear();
   face_records_.clear();
+}
+
+Result Brep::RebuildEdgeCurve(int edge_index, double tolerance) {
+  if (edge_index < 0 || edge_index >= brep_.m_E.Count()) {
+    throw std::out_of_range("dino8::kernel::Brep::RebuildEdgeCurve: edge_index " +
+                             std::to_string(edge_index) + " is out of range (this Brep has " +
+                             std::to_string(brep_.m_E.Count()) + " edge slot(s))");
+  }
+  const ON_BrepEdge& edge = brep_.m_E[edge_index];
+  if (edge.m_edge_index < 0) {
+    throw std::invalid_argument("dino8::kernel::Brep::RebuildEdgeCurve: edge_index " +
+                                 std::to_string(edge_index) + " refers to a deleted edge");
+  }
+  if (edge.TrimCount() != 2) return Result::Failed;  // not an ordinary shared edge - out of scope
+
+  const int ti0 = edge.m_ti[0];
+  const int ti1 = edge.m_ti[1];
+  if (ti0 < 0 || ti0 >= brep_.m_T.Count() || ti1 < 0 || ti1 >= brep_.m_T.Count()) return Result::Failed;
+  const int face0_idx = brep_.m_T[ti0].FaceIndexOf();
+  const int face1_idx = brep_.m_T[ti1].FaceIndexOf();
+  if (face0_idx < 0 || face1_idx < 0 || face0_idx == face1_idx) return Result::Failed;
+
+  const ON_BrepFace& face0 = brep_.m_F[face0_idx];
+  const ON_BrepFace& face1 = brep_.m_F[face1_idx];
+  const ON_Surface* srf0 = face0.SurfaceOf();
+  const ON_Surface* srf1 = face1.SurfaceOf();
+  if (!srf0 || !srf1) return Result::Failed;
+
+  const int v0 = edge.m_vi[0];
+  const int v1 = edge.m_vi[1];
+  if (v0 < 0 || v1 < 0 || v0 >= brep_.m_V.Count() || v1 >= brep_.m_V.Count()) return Result::Failed;
+  const ON_3dPoint p0 = brep_.m_V[v0].point;
+  const ON_3dPoint p1 = brep_.m_V[v1].point;
+
+  // Deliberately the UNTRIMMED intersector (IntersectSurfaces), not
+  // IntersectFaces: a real shared edge, by construction, runs exactly
+  // ALONG the trim boundary of both bordering faces the ENTIRE way (that
+  // is what "these two faces meet along this edge" means) - not merely
+  // touching it at an isolated point - so IntersectFaces' own
+  // inside/outside trim classification (built for a curve that CROSSES a
+  // trim boundary, e.g. ImprintFaces()' piercing case) degenerately finds
+  // every single sample sitting exactly on that boundary and clips the
+  // whole curve away as "outside" (confirmed directly: on two hand-built
+  // perpendicular faces sharing a genuine edge, IntersectFaces() returned
+  // zero curves while IntersectSurfaces() on the same two surfaces found
+  // exactly the expected line). Matching against the edge's own known
+  // vertices below (rather than face-trim clipping) is what keeps this
+  // safe from picking up an unrelated, far-away crossing of the two
+  // surfaces' full extents instead.
+  IntersectOptions opt;
+  opt.tolerance = std::max(std::min(0.001, tolerance * 0.25), 1e-9);
+  const std::vector<IntersectionCurve> curves = IntersectSurfaces(*srf0, *srf1, opt);
+  if (curves.empty()) return Result::Failed;
+
+  // Pick whichever piece actually passes near THIS edge's own two
+  // vertices - not necessarily at its own curve endpoints (the two
+  // faces' real surfaces may well extend past the trimmed edge, so the
+  // raw SSX curve can run longer than the edge itself; the matching
+  // sub-arc between the two closest parameters is extracted below,
+  // rather than requiring the whole raw curve to start/end exactly at
+  // the edge's vertices). A pair of faces can genuinely meet along more
+  // than one component (e.g. two cylinders crossing twice), so this
+  // deliberately checks every candidate rather than taking curves[0].
+  NurbsCurve candidate;
+  bool found = false;
+  for (const IntersectionCurve& ic : curves) {
+    if (ic.closed || ic.points.size() < 2) continue;
+    const ON_NurbsCurve& c = ic.curve;
+    if (!c.IsValid()) continue;
+    const double t0 = CurveClosestParamGlobal(c, p0, 64);
+    const double t1 = CurveClosestParamGlobal(c, p1, 64);
+    if (c.PointAt(t0).DistanceTo(p0) > tolerance || c.PointAt(t1).DistanceTo(p1) > tolerance) continue;
+    if (std::fabs(t0 - t1) < 1e-12) continue;  // degenerate zero-length match
+
+    const double lo = std::min(t0, t1);
+    const double hi = std::max(t0, t1);
+    constexpr int kExtractSamples = 24;
+    std::vector<ON_3dPoint> pts;
+    pts.reserve(kExtractSamples + 1);
+    for (int i = 0; i <= kExtractSamples; ++i) {
+      const double t = lo + (hi - lo) * (static_cast<double>(i) / kExtractSamples);
+      pts.push_back(c.PointAt(t));
+    }
+    if (t0 > t1) std::reverse(pts.begin(), pts.end());  // orient so pts.front() lands near p0
+    candidate.raw() = InterpolateCubic(pts, {}, /*closed=*/false, /*dim=*/3);
+    found = true;
+    break;
+  }
+  if (!found) return Result::Failed;
+
+  try {
+    ReplaceEdgeCurve(edge_index, candidate, tolerance);
+  } catch (const std::runtime_error&) {
+    // The true intersection curve exists but doesn't reasonably fit one
+    // of the two faces within tolerance (e.g. a face whose trim domain is
+    // smaller than the real SSX curve needs) - an ordinary "can't", not a
+    // caller bug.
+    return Result::Failed;
+  }
+  return Result::Ok;
+}
+
+int Brep::RebuildAllEdgeCurves(double tolerance) {
+  int rebuilt = 0;
+  const int edge_count = brep_.m_E.Count();
+  for (int ei = 0; ei < edge_count; ++ei) {
+    const ON_BrepEdge& edge = brep_.m_E[ei];
+    if (edge.m_edge_index < 0 || edge.TrimCount() != 2) continue;
+    ON_NurbsCurve before;
+    const bool had_before = edge.GetNurbForm(before) > 0;
+    if (RebuildEdgeCurve(ei, tolerance) != Result::Ok) continue;
+    // Only count a GENUINE rebuild - one whose resulting curve actually
+    // differs from what was there before - so re-running this on an
+    // already-exact Brep reports 0 rather than every eligible edge.
+    const ON_BrepEdge& after = brep_.m_E[ei];
+    ON_NurbsCurve now;
+    const bool had_now = after.GetNurbForm(now) > 0;
+    bool changed = !had_before || !had_now;
+    if (!changed) {
+      constexpr int kSamples = 8;
+      const ON_Interval bd = before.Domain(), nd = now.Domain();
+      for (int i = 0; i <= kSamples && !changed; ++i) {
+        const double s = static_cast<double>(i) / kSamples;
+        const ON_3dPoint pb = before.PointAt(bd.ParameterAt(s));
+        const ON_3dPoint pn = now.PointAt(nd.ParameterAt(s));
+        if (pb.DistanceTo(pn) > tolerance) changed = true;
+      }
+    }
+    if (changed) ++rebuilt;
+  }
+  return rebuilt;
 }
 
 Result Brep::UnjoinEdge(int edge_index) {
