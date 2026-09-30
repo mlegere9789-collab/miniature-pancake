@@ -286,3 +286,88 @@ Volume
 SelAll
 Delete
 @expect_objects 0
+# --- VariableFilletSrf on a curved-adjacent-face pair (a cylinder's own
+# flat top cap and its cylindrical side wall, same object): kernel::
+# FilletConvexEdgeTapered needs the WHOLE solid planar-faced
+# (Brep::PlanarFaces()'s own scope), and a cylindrical face fails that
+# outright, so this must fall through to the approximate
+# BuildPlaneCylinderVariableFillet/BuildFillet cascade below (the same
+# fallthrough ChamferSrf's own curved-face negative control above already
+# exercises for the Chamfer case), not crash or silently misbuild.
+Cylinder 1300300,0,0 5 20
+VariableFilletSrf
+Radius=1
+EndRadius=2
+1300300,0,20
+1300305,0,10
+SelAll
+List
+@expect_objects 2
+SelAll
+Delete
+# --- VariableFilletSrf Trim=No on a planar box's own two adjacent faces
+# (same object, otherwise identical to the exact case fillet_script.txt
+# covers): the exact kernel path always replaces the WHOLE solid, which is
+# not what Trim=No asks for (an untrimmed separate surface), so this must
+# also fall through to the approximate cascade rather than silently
+# ignoring Trim=No.
+Box 1300310,0,0 1300320,10,0 10
+VariableFilletSrf
+Radius=1
+EndRadius=2
+Trim=No
+1300320,5,5
+1300315,10,5
+SelAll
+List
+@expect_objects 2
+SelAll
+Delete
+# --- FilletSrf Rho on a curved-adjacent-face pair (a cylinder's own flat
+# top cap and cylindrical side wall): unlike Chamfer/VariableFillet above,
+# there is deliberately NO fallthrough to the approximate path for Rho (it
+# can only ever build a circular cross-section, so silently building one
+# here would quietly ignore the caller's own Rho request) - this must
+# refuse with a clear diagnostic instead, and the cylinder is left
+# completely untouched.
+Cylinder 1300330,0,0 5 20
+FilletSrf
+Radius=1
+Rho=0.5
+1300330,0,20
+1300335,0,10
+SelAll
+List
+@expect_objects 1
+SelAll
+Delete
+@expect_objects 0
+# --- FilletSrf Rho on two genuinely INDEPENDENT surfaces (extracted from
+# two different boxes, no shared edge at all - the ordinary FilletSrf case
+# fillet_script.txt's own plain-Radius section above exercises): the same
+# "no fallthrough for Rho" refusal as the curved-face case just above,
+# since fa.id != fb.id means kernel::FilletConvexEdgeConic/
+# FilletConcaveEdgeConic have no shared ON_BrepEdge to identify at all, not
+# merely a PlanarFaces() rejection - both independently-picked surfaces
+# are left completely untouched.
+Box 1300340,0,0 1300350,10,0 10
+ExtractSrf
+1300350,5,5
+Enter
+SelNone
+Box 1300360,0,0 1300370,10,0 10
+ExtractSrf
+1300360,5,5
+Enter
+SelNone
+FilletSrf
+Radius=1
+Rho=0.5
+1300350,5,5
+1300360,5,5
+SelAll
+List
+@expect_objects 4
+SelAll
+Delete
+@expect_objects 0

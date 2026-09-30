@@ -7,6 +7,25 @@
 
 namespace dino8::plugins {
 
+// AT-SPI2-queryable snapshot of Manager::Get().Plugins() (see
+// docs/ACCESSIBILITY.md): built straight from the plug-in manager's own
+// state, independent of whether DrawPlugInManagerPanel itself has ever been
+// drawn or is open right now - mirrors each plug-in's name/version/status
+// and command/flow-node counts the same way the on-screen table's own
+// columns do, with the Status column's hover-tooltip error text folded
+// directly into the row's Description since AT-SPI has no per-cell tooltip
+// to mirror it into.
+dino8::platform::AccessibleNode PluginsAccessibleTree() {
+  std::vector<dino8::platform::PluginSummary> summaries;
+  const std::vector<LoadedPlugin>& plugins = Manager::Get().Plugins();
+  summaries.reserve(plugins.size());
+  for (const LoadedPlugin& p : plugins) {
+    summaries.push_back({p.name, p.version, p.loaded_ok, p.error, static_cast<int>(p.commands.size()),
+                          static_cast<int>(p.flow_nodes.size())});
+  }
+  return dino8::platform::BuildPluginsNode(summaries);
+}
+
 void DrawPlugInManagerPanel(app::Application& app, bool& open) {
   if (!open) return;
   ImGui::SetNextWindowSize(ImVec2(560, 360), ImGuiCond_FirstUseEver);

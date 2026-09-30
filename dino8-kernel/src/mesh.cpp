@@ -13,6 +13,7 @@
 #include <iomanip>
 #include <limits>
 #include <map>
+#include <numeric>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -1973,6 +1974,17 @@ Result Mesh::SaveOff(const std::string& path) const {
   return out.good() ? Result::Ok : Result::Failed;
 }
 
+// OFF's vertex/face counts sit in the header with no data behind them yet -
+// a handful of bytes ("COFF\n2147483647 0 0\n") is enough to declare a
+// vertex_count near INT_MAX. Used unchecked, that count used to go straight
+// into colors.reserve() below (and drives the vertex-loop bound either way),
+// so that one line alone forced a multi-gigabyte allocation before a single
+// real vertex was read - the same untrusted-file-count hazard already fixed
+// for PLY import (see FileExchange.cpp's kMaxPlyListCount) and Dino Flow's
+// node inputs. Real OFF meshes/scans never approach this; it's headroom
+// above any legitimate use, just low enough to reject the lie outright.
+constexpr int kMaxOffElementCount = 200'000'000;
+
 Result Mesh::LoadOff(const std::string& path, Mesh& out_mesh) {
   std::ifstream in(path);
   if (!in) {
@@ -1991,7 +2003,8 @@ Result Mesh::LoadOff(const std::string& path, Mesh& out_mesh) {
   if (!NextOffToken(in, token) || !ParseOffInt(token, face_count)) return Result::Failed;
   if (!NextOffToken(in, token) || !ParseOffInt(token, edge_count)) return Result::Failed;
   (void)edge_count;  // read but unused - see LoadOff()'s own doc comment
-  if (vertex_count < 0 || face_count < 0) {
+  if (vertex_count < 0 || face_count < 0 || vertex_count > kMaxOffElementCount ||
+      face_count > kMaxOffElementCount) {
     return Result::Failed;
   }
 
@@ -4585,6 +4598,129 @@ std::vector<int> WeldGroups(const ON_Mesh& mesh, const std::vector<int>& candida
   return rep;
 }
 
+// Groups the faces in `incident` (every face touching vertex `v`, already
+// collected by the caller - Check() collects every vertex's own list in
+// one pass over the whole face list; SplitNonManifoldVertex() needs only
+// one vertex's, so it collects just that one) by shared-edge adjacency AT
+// `v`: two incident faces land in the same group iff they share an edge
+// that also touches `v`, the same "does this vertex's own fan form ONE
+// connected piece" union-find-over-shared-incident-edges construction
+// SubD::Check()'s own non_manifold_vertices/SplitNonManifoldVertex()
+// already use via v->EdgeCount()/e->FaceCount(), reproduced here over a
+// plain incident-face index list instead of ON_SubD's own edge objects.
+// Returns each entry's own 0-based group id, parallel to `incident`, in
+// first-seen (face-list) order - all zero when `incident` has fewer than
+// 2 faces (trivially one group).
+std::vector<int> GroupIncidentFacesByVertex(const ON_Mesh& mesh, int v, const std::vector<int>& incident) {
+  std::vector<int> group(incident.size(), 0);
+  if (incident.size() < 2) return group;
+
+  std::vector<int> parent(incident.size());
+  std::iota(parent.begin(), parent.end(), 0);
+  std::function<int(int)> find = [&](int x) {
+    while (parent[static_cast<size_t>(x)] != x) {
+      parent[static_cast<size_t>(x)] = parent[static_cast<size_t>(parent[static_cast<size_t>(x)])];
+      x = parent[static_cast<size_t>(x)];
+    }
+    return x;
+  };
+  auto unite = [&](int a, int b) {
+    a = find(a);
+    b = find(b);
+    if (a != b) parent[static_cast<size_t>(a)] = b;
+  };
+  // Two incident faces sharing an edge (v, other) are the same edge at v -
+  // unite the first face seen at that "other" endpoint with every later
+  // one sharing it.
+  std::map<int, int> first_position_at_other_end;
+  for (size_t k = 0; k < incident.size(); ++k) {
+    ForEachDirectedEdge(mesh.m_F[incident[k]], [&](int a, int b) {
+      int other = -1;
+      if (a == v) other = b;
+      else if (b == v) other = a;
+      if (other < 0) return;
+      const auto it = first_position_at_other_end.find(other);
+      if (it == first_position_at_other_end.end()) {
+        first_position_at_other_end[other] = static_cast<int>(k);
+      } else {
+        unite(it->second, static_cast<int>(k));
+      }
+    });
+  }
+  std::map<int, int> root_to_group;
+  for (size_t k = 0; k < incident.size(); ++k) {
+    const int root = find(static_cast<int>(k));
+    const auto it = root_to_group.find(root);
+    if (it == root_to_group.end()) {
+      const int gid = static_cast<int>(root_to_group.size());
+      root_to_group.emplace(root, gid);
+      group[k] = gid;
+    } else {
+      group[k] = it->second;
+    }
+  }
+  return group;
+}
+
+// Groups every face in `mesh` by whole-mesh connectivity: two faces land
+// in the same group iff they share an edge (any undirected edge used by
+// 2+ faces), transitively - the same "faces sharing an edge are the same
+// piece" definition SubD::Check()'s own body_count/SplitDisjointPieces()
+// use for SubD (itself modeled on Brep::SplitDisjointPieces()'s own
+// ON_Brep::LabelConnectedComponents()). Shared by Mesh::Check() (which
+// only needs `.second`, the group COUNT) and Mesh::SplitDisjointPieces()
+// (which needs `.first`, the actual per-face membership). Returns a
+// per-face 0-based group id, in first-seen (face-list) order, alongside
+// the total group count - {}/{0} for an empty face list.
+std::pair<std::vector<int>, size_t> GroupFacesByConnectivity(const ON_Mesh& mesh) {
+  const int face_count = mesh.m_F.Count();
+  std::vector<int> group(static_cast<size_t>(face_count), 0);
+  if (face_count == 0) return {group, 0};
+
+  std::vector<int> parent(static_cast<size_t>(face_count));
+  std::iota(parent.begin(), parent.end(), 0);
+  std::function<int(int)> find = [&](int x) {
+    while (parent[static_cast<size_t>(x)] != x) {
+      parent[static_cast<size_t>(x)] = parent[static_cast<size_t>(parent[static_cast<size_t>(x)])];
+      x = parent[static_cast<size_t>(x)];
+    }
+    return x;
+  };
+  auto unite = [&](int a, int b) {
+    a = find(a);
+    b = find(b);
+    if (a != b) parent[static_cast<size_t>(a)] = b;
+  };
+  // Two faces sharing an edge (a, b) are the same piece - unite the first
+  // face seen at that edge with every later one sharing it (handles a
+  // non-manifold 3+-face edge the same way, all landing in one group).
+  std::map<std::pair<int, int>, int> first_face_at_edge;
+  for (int i = 0; i < face_count; ++i) {
+    ForEachDirectedEdge(mesh.m_F[i], [&](int a, int b) {
+      const std::pair<int, int> key = std::minmax(a, b);
+      const auto it = first_face_at_edge.find(key);
+      if (it == first_face_at_edge.end()) {
+        first_face_at_edge.emplace(key, i);
+      } else {
+        unite(it->second, i);
+      }
+    });
+  }
+  std::map<int, int> root_to_group;
+  for (int i = 0; i < face_count; ++i) {
+    const int root = find(i);
+    const auto it = root_to_group.find(root);
+    if (it == root_to_group.end()) {
+      const int gid = static_cast<int>(root_to_group.size());
+      root_to_group.emplace(root, gid);
+      group[static_cast<size_t>(i)] = gid;
+    } else {
+      group[static_cast<size_t>(i)] = it->second;
+    }
+  }
+  return {group, root_to_group.size()};
+}
+
 // Same degeneracy test Mesh::Check() has always used, factored out so
 // Mesh::RemoveDegenerateFaces() removes EXACTLY what Check() counts - a
 // repeated vertex index, an edge shorter than `tolerance`, or a height
@@ -4921,8 +5057,37 @@ Mesh::CheckReport Mesh::Check(double tolerance) const {
   std::map<int, int> group_size;
   for (int i = 0; i < mesh_.m_V.Count(); ++i) ++group_size[rep[static_cast<size_t>(i)]];
   for (int i = 0; i < mesh_.m_V.Count(); ++i) {
-    if (group_size[rep[static_cast<size_t>(i)]] > 1) ++report.duplicate_vertices;
+    if (group_size[rep[static_cast<size_t>(i)]] > 1) {
+      ++report.duplicate_vertices;
+      report.duplicate_vertex_list.push_back(i);
+    }
   }
+  // non_manifold_vertices / non_manifold_vertex_list: every vertex's own
+  // incident faces, collected in one pass over the face list, then
+  // grouped by GroupIncidentFacesByVertex() above - more than one group
+  // means that vertex is a bowtie.
+  {
+    std::vector<std::vector<int>> incident(static_cast<size_t>(mesh_.m_V.Count()));
+    for (int i = 0; i < mesh_.m_F.Count(); ++i) {
+      const ON_MeshFace& f = mesh_.m_F[i];
+      const int n = f.IsQuad() ? 4 : 3;
+      for (int k = 0; k < n; ++k) incident[static_cast<size_t>(f.vi[k])].push_back(i);
+    }
+    for (int v = 0; v < mesh_.m_V.Count(); ++v) {
+      const std::vector<int>& faces_here = incident[static_cast<size_t>(v)];
+      if (faces_here.size() < 2) continue;
+      const std::vector<int> group = GroupIncidentFacesByVertex(mesh_, v, faces_here);
+      const int group_count = *std::max_element(group.begin(), group.end()) + 1;
+      if (group_count > 1) {
+        ++report.non_manifold_vertices;
+        report.non_manifold_vertex_list.push_back(v);
+      }
+    }
+  }
+  // Whole-mesh body count: the distinct face-connectivity groups among all
+  // faces - the same "faces sharing an edge are the same piece" definition
+  // SubD::Check()'s own body_count already uses for SubD.
+  report.body_count = static_cast<int>(GroupFacesByConnectivity(mesh_).second);
   return report;
 }
 
@@ -5152,6 +5317,92 @@ int Mesh::MergeDuplicateVertices(double tolerance) {
   mesh_.m_N.Destroy();
   mesh_.m_FN.Destroy();
   return welded;
+}
+
+bool Mesh::SplitNonManifoldVertex(int vertex_index) {
+  if (vertex_index < 0 || vertex_index >= mesh_.m_V.Count()) return false;
+
+  std::vector<int> incident;
+  for (int i = 0; i < mesh_.m_F.Count(); ++i) {
+    const ON_MeshFace& f = mesh_.m_F[i];
+    const int n = f.IsQuad() ? 4 : 3;
+    for (int k = 0; k < n; ++k) {
+      if (f.vi[k] == vertex_index) {
+        incident.push_back(i);
+        break;
+      }
+    }
+  }
+  if (incident.size() < 2) return false;
+
+  const std::vector<int> group = GroupIncidentFacesByVertex(mesh_, vertex_index, incident);
+  const int group_count = *std::max_element(group.begin(), group.end()) + 1;
+  if (group_count < 2) return false;  // already one connected fan - nothing to split
+
+  // Group 0 (first-seen order, the same convention Brep::SplitNonManifold
+  // Vertex()/SubD::SplitNonManifoldVertex() both already use) keeps
+  // `vertex_index` itself; every other group gets a freshly appended
+  // vertex at the same point. Unlike the SubD version, a Mesh vertex is
+  // just an array position, so no id/watermark bookkeeping is needed - a
+  // plain append is enough, and no OTHER vertex's own index moves.
+  std::vector<int> new_index(static_cast<size_t>(group_count), vertex_index);
+  for (int g = 1; g < group_count; ++g) {
+    new_index[static_cast<size_t>(g)] = mesh_.m_V.Count();
+    mesh_.m_V.Append(mesh_.m_V[vertex_index]);
+  }
+  for (size_t k = 0; k < incident.size(); ++k) {
+    ON_MeshFace& f = mesh_.m_F[incident[k]];
+    // All 4 slots, unconditionally - a triangle's own vi[3] mirrors vi[2]
+    // (ON_MeshFace::IsQuad()'s own definition), so both independently
+    // matching `vertex_index` here and getting the SAME new_index[group[k]]
+    // keeps that mirror intact without a separate triangle-only fixup.
+    for (int c = 0; c < 4; ++c) {
+      if (f.vi[c] == vertex_index) f.vi[c] = new_index[static_cast<size_t>(group[k])];
+    }
+  }
+  mesh_.m_S.Destroy();
+  mesh_.m_N.Destroy();
+  mesh_.m_FN.Destroy();
+  return true;
+}
+
+int Mesh::SplitNonManifoldVertices(double tolerance) {
+  const std::vector<int> to_split = Check(tolerance).non_manifold_vertex_list;
+  int count = 0;
+  for (const int v : to_split) {
+    if (SplitNonManifoldVertex(v)) ++count;
+  }
+  return count;
+}
+
+std::vector<Mesh> Mesh::SplitDisjointPieces() const {
+  const auto [group, group_count] = GroupFacesByConnectivity(mesh_);
+  if (group_count <= 1) return {*this};
+
+  // Group faces by group id, preserving first-encountered order so the
+  // returned pieces come back in a stable, reproducible order rather than
+  // whatever order the underlying union-find roots happen to land on -
+  // GroupFacesByConnectivity() already assigns group ids in that order.
+  std::vector<std::vector<int>> member_faces(group_count);
+  for (int i = 0; i < mesh_.m_F.Count(); ++i) {
+    member_faces[static_cast<size_t>(group[static_cast<size_t>(i)])].push_back(i);
+  }
+
+  std::vector<Mesh> pieces;
+  pieces.reserve(group_count);
+  for (const std::vector<int>& faces : member_faces) {
+    Mesh piece;
+    piece.mesh_.m_V = mesh_.m_V;
+    for (const int idx : faces) piece.mesh_.m_F.Append(mesh_.m_F[idx]);
+    // Drops every vertex not referenced by this piece's own faces and
+    // remaps m_F onto the resulting compact 0-based indices - a plain
+    // per-piece renumbering, not an id-preserving rebuild the way
+    // SubD::SplitDisjointPieces() needs (a Mesh vertex is just an array
+    // position, with no stable id to preserve across pieces).
+    CompactUnusedVertices(piece.mesh_);
+    pieces.push_back(std::move(piece));
+  }
+  return pieces;
 }
 
 int Mesh::RemoveDegenerateFaces(double tolerance) {

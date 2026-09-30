@@ -12920,6 +12920,258 @@ void TestMeshMergeDuplicateVerticesWeldsCoincidentPairs() {
   }
 }
 
+// Mesh::Check()'s new non_manifold_vertices/non_manifold_vertex_list and
+// duplicate_vertex_list - the Mesh-side mirror of SubD::Check()'s own
+// bowtie detection and duplicate-vertex localization. Two independent
+// fixtures, deliberately proving the two conditions are distinct: a
+// bowtie (one vertex INDEX shared by two locally-disconnected quad
+// "wings", zero edges between them) is not a duplicate_vertices hit, and
+// TestMeshMergeDuplicateVerticesWeldsCoincidentPairs' own coincident-but-
+// distinct-corner fixture (two separate vertex RECORDS at the same point)
+// is not a non_manifold_vertices hit.
+void TestMeshCheckDetectsNonManifoldVertexAndDuplicateVertexList() {
+  using dino8::kernel::Mesh;
+
+  Mesh bowtie;
+  {
+    ON_Mesh& raw = bowtie.raw();
+    raw.m_V.Append(ON_3fPoint(0, 0, 0));   // 0: the shared pinch point
+    raw.m_V.Append(ON_3fPoint(1, 0, 0));   // wing A
+    raw.m_V.Append(ON_3fPoint(1, 1, 0));
+    raw.m_V.Append(ON_3fPoint(0, 1, 0));
+    raw.m_V.Append(ON_3fPoint(-1, 0, 0));  // wing B
+    raw.m_V.Append(ON_3fPoint(-1, -1, 0));
+    raw.m_V.Append(ON_3fPoint(0, -1, 0));
+    auto add_quad = [&](int a, int b, int c, int d) {
+      ON_MeshFace f;
+      f.vi[0] = a;
+      f.vi[1] = b;
+      f.vi[2] = c;
+      f.vi[3] = d;
+      raw.m_F.Append(f);
+    };
+    add_quad(0, 1, 2, 3);
+    add_quad(0, 4, 5, 6);
+  }
+
+  const Mesh::CheckReport bowtie_report = bowtie.Check();
+  Check(bowtie_report.non_manifold_vertices == 1, "the shared pinch point is the only non-manifold vertex");
+  Check(bowtie_report.non_manifold_vertex_list.size() == 1 && bowtie_report.non_manifold_vertex_list[0] == 0,
+        "non_manifold_vertex_list names exactly vertex 0, the shared corner");
+  Check(bowtie_report.non_manifold_edges == 0,
+        "the two wings share no EDGE, only the one vertex - non_manifold_edges alone would miss it");
+  Check(bowtie_report.duplicate_vertices == 0,
+        "a bowtie is one shared vertex RECORD, not two coincident-but-distinct ones - not a duplicate_vertices hit");
+
+  // Reuses TestMeshMergeDuplicateVerticesWeldsCoincidentPairs' own two-
+  // independent-quad-wings-with-a-coincident-corner fixture, this time
+  // checking duplicate_vertex_list itself, not just the count.
+  Mesh dup;
+  ON_Mesh& raw = dup.raw();
+  auto add_wing_quad = [&](double x0, double y0, double z0) {
+    const int base = raw.m_V.Count();
+    raw.m_V.Append(ON_3fPoint(static_cast<float>(x0), static_cast<float>(y0), static_cast<float>(z0)));
+    raw.m_V.Append(ON_3fPoint(static_cast<float>(x0 + 1.0), static_cast<float>(y0), static_cast<float>(z0)));
+    raw.m_V.Append(
+        ON_3fPoint(static_cast<float>(x0 + 1.0), static_cast<float>(y0 + 1.0), static_cast<float>(z0)));
+    raw.m_V.Append(ON_3fPoint(static_cast<float>(x0), static_cast<float>(y0 + 1.0), static_cast<float>(z0)));
+    ON_MeshFace f;
+    f.vi[0] = base;
+    f.vi[1] = base + 1;
+    f.vi[2] = base + 2;
+    f.vi[3] = base + 3;
+    raw.m_F.Append(f);
+    return base;
+  };
+  const int wing_a_v0 = add_wing_quad(0.0, 0.0, 0.0);
+  const int wing_b_v0 = add_wing_quad(3.0, 3.0, 0.0);
+  raw.m_V[wing_b_v0] = raw.m_V[wing_a_v0];
+
+  const Mesh::CheckReport dup_report = dup.Check();
+  Check(dup_report.duplicate_vertices == 2, "sanity: matches TestMeshMergeDuplicateVerticesWeldsCoincidentPairs' own count");
+  Check(dup_report.duplicate_vertex_list.size() == 2 && dup_report.duplicate_vertex_list[0] == wing_a_v0 &&
+            dup_report.duplicate_vertex_list[1] == wing_b_v0,
+        "duplicate_vertex_list names exactly the coincident pair, in vertex-index order");
+  Check(dup_report.non_manifold_vertices == 0,
+        "two separate vertex records at the same point is not a bowtie - not a non_manifold_vertices hit");
+}
+
+// Mesh::SplitNonManifoldVertex()/SplitNonManifoldVertices(): the repair
+// counterpart of the bowtie detection above, mirroring
+// SubD::SplitNonManifoldVertex() - reuses
+// TestMeshCheckDetectsNonManifoldVertexAndDuplicateVertexList's own
+// two-wings-sharing-one-vertex-index fixture.
+void TestMeshSplitNonManifoldVertexSplitsBowtie() {
+  using dino8::kernel::Mesh;
+
+  auto make_bowtie = [] {
+    Mesh m;
+    ON_Mesh& raw = m.raw();
+    raw.m_V.Append(ON_3fPoint(0, 0, 0));
+    raw.m_V.Append(ON_3fPoint(1, 0, 0));
+    raw.m_V.Append(ON_3fPoint(1, 1, 0));
+    raw.m_V.Append(ON_3fPoint(0, 1, 0));
+    raw.m_V.Append(ON_3fPoint(-1, 0, 0));
+    raw.m_V.Append(ON_3fPoint(-1, -1, 0));
+    raw.m_V.Append(ON_3fPoint(0, -1, 0));
+    auto add_quad = [&](int a, int b, int c, int d) {
+      ON_MeshFace f;
+      f.vi[0] = a;
+      f.vi[1] = b;
+      f.vi[2] = c;
+      f.vi[3] = d;
+      raw.m_F.Append(f);
+    };
+    add_quad(0, 1, 2, 3);
+    add_quad(0, 4, 5, 6);
+    return m;
+  };
+
+  {
+    Mesh m = make_bowtie();
+    Check(!m.SplitNonManifoldVertex(-1), "refuses a negative vertex index");
+    Check(!m.SplitNonManifoldVertex(100), "refuses a vertex index past the end");
+  }
+  {
+    Mesh m = make_bowtie();
+    Check(!m.SplitNonManifoldVertex(1), "vertex 1 belongs to only wing A - already one connected fan, nothing to split");
+  }
+
+  Mesh m = make_bowtie();
+  Check(m.VertexCount() == 7 && m.FaceCount() == 2, "sanity: the bowtie fixture starts at 7 vertices, 2 faces");
+  Check(m.Check().non_manifold_vertices == 1, "sanity: vertex 0 is flagged before splitting");
+
+  Check(m.SplitNonManifoldVertex(0), "splits the genuine bowtie at vertex 0");
+  Check(m.VertexCount() == 8, "vertex count grows by exactly 1 - a fresh vertex for the second wing's own copy");
+  Check(m.FaceCount() == 2, "face count is unchanged - this only repoints indices, never adds or removes a face");
+
+  const Mesh::CheckReport after = m.Check();
+  Check(after.non_manifold_vertices == 0, "no bowtie remains after splitting");
+  Check(after.naked_edges == 8,
+        "each wing is still its own wholly-open quad, 4 naked edges apiece, unaffected by the split");
+
+  {
+    const ON_MeshFace& fa = m.raw().m_F[0];
+    const ON_MeshFace& fb = m.raw().m_F[1];
+    bool shares_a_vertex = false;
+    for (int a : fa.vi) {
+      for (int b : fb.vi) {
+        if (a == b) shares_a_vertex = true;
+      }
+    }
+    Check(!shares_a_vertex, "the split gives each wing its own independent vertex - no index shared between the two faces anymore");
+  }
+
+  Check(!m.SplitNonManifoldVertex(0), "vertex 0 (wing A's own copy) is already a single fan now - refused");
+
+  {
+    Mesh batch = make_bowtie();
+    Check(batch.SplitNonManifoldVertices() == 1, "the batch driver finds and splits the one bowtie without the caller naming its id");
+    Check(batch.Check().non_manifold_vertices == 0, "no bowtie remains after the batch call");
+  }
+}
+
+// Mesh::CheckReport::body_count - the Mesh-side mirror of
+// SubD::SubDCheckReport::body_count, mirroring
+// TestSubDCheckDisjointPiecesReportsMultipleBodies' own fixture: two
+// ordinary closed boxes appended into one Mesh with disjoint vertex index
+// ranges (the second box's faces reference vertices 8-15, never reusing
+// any of the first box's 0-7), so no edge or vertex is shared between
+// them by construction.
+void TestMeshCheckDetectsDisjointPiecesBodyCount() {
+  using dino8::kernel::Mesh;
+
+  Check(Mesh().Check().body_count == 0, "an empty mesh (no faces at all) reports zero bodies");
+
+  const Mesh box_a = MakeQuadBoxMesh(0, 0, 0, 1, 1, 1);
+  Check(box_a.Check().body_count == 1, "a single ordinary closed box is one body");
+
+  const Mesh box_b = MakeQuadBoxMesh(5, 5, 5, 6, 6, 6);
+  Mesh combined;
+  ON_Mesh& raw = combined.raw();
+  const int offset = box_a.raw().m_V.Count();
+  for (int i = 0; i < box_a.raw().m_V.Count(); ++i) raw.m_V.Append(box_a.raw().m_V[i]);
+  for (int i = 0; i < box_b.raw().m_V.Count(); ++i) raw.m_V.Append(box_b.raw().m_V[i]);
+  for (int i = 0; i < box_a.raw().m_F.Count(); ++i) raw.m_F.Append(box_a.raw().m_F[i]);
+  for (int i = 0; i < box_b.raw().m_F.Count(); ++i) {
+    ON_MeshFace f = box_b.raw().m_F[i];
+    f.vi[0] += offset;
+    f.vi[1] += offset;
+    f.vi[2] += offset;
+    f.vi[3] += offset;
+    raw.m_F.Append(f);
+  }
+  Check(combined.VertexCount() == 16 && combined.FaceCount() == 12,
+        "sanity: the combined mesh really does hold both boxes' full topology");
+
+  const Mesh::CheckReport report = combined.Check();
+  Check(report.body_count == 2, "two disjoint boxes sharing no edge or vertex report as exactly 2 bodies");
+  Check(report.non_manifold_edges == 0 && report.non_manifold_vertices == 0 && report.duplicate_vertices == 0,
+        "two cleanly disjoint boxes trip none of the other conditions - only body_count flags them");
+  Check(report.IsClosedManifold(),
+        "IsClosedManifold() deliberately ignores body_count, same as it already ignores "
+        "non_manifold_vertices/duplicate_vertices - each piece is independently a clean closed manifold");
+}
+
+// Mesh::SplitDisjointPieces() - the mesh-level counterpart of
+// SubD::SplitDisjointPieces()/Brep::SplitDisjointPieces(), reusing
+// TestMeshCheckDetectsDisjointPiecesBodyCount's own two-disjoint-boxes
+// fixture.
+void TestMeshSplitDisjointPiecesSplitsIntoSeparateMeshes() {
+  using dino8::kernel::Mesh;
+
+  {
+    const std::vector<Mesh> empty_pieces = Mesh().SplitDisjointPieces();
+    Check(empty_pieces.size() == 1 && empty_pieces[0].FaceCount() == 0,
+          "an empty mesh (body_count == 0) splits into exactly 1 piece: an empty copy, not zero pieces");
+  }
+  {
+    const Mesh box = MakeQuadBoxMesh(0, 0, 0, 1, 1, 1);
+    const std::vector<Mesh> single = box.SplitDisjointPieces();
+    Check(single.size() == 1 && single[0].VertexCount() == 8 && single[0].FaceCount() == 6,
+          "a single-body mesh splits into exactly 1 piece, an exact copy");
+  }
+
+  const Mesh box_a = MakeQuadBoxMesh(0, 0, 0, 1, 1, 1);
+  const Mesh box_b = MakeQuadBoxMesh(5, 5, 5, 7, 7, 7);
+  Mesh combined;
+  ON_Mesh& raw = combined.raw();
+  const int offset = box_a.raw().m_V.Count();
+  for (int i = 0; i < box_a.raw().m_V.Count(); ++i) raw.m_V.Append(box_a.raw().m_V[i]);
+  for (int i = 0; i < box_b.raw().m_V.Count(); ++i) raw.m_V.Append(box_b.raw().m_V[i]);
+  for (int i = 0; i < box_a.raw().m_F.Count(); ++i) raw.m_F.Append(box_a.raw().m_F[i]);
+  for (int i = 0; i < box_b.raw().m_F.Count(); ++i) {
+    ON_MeshFace f = box_b.raw().m_F[i];
+    f.vi[0] += offset;
+    f.vi[1] += offset;
+    f.vi[2] += offset;
+    f.vi[3] += offset;
+    raw.m_F.Append(f);
+  }
+  Check(combined.Check().body_count == 2, "sanity: matches TestMeshCheckDetectsDisjointPiecesBodyCount's own count");
+
+  const std::vector<Mesh> pieces = combined.SplitDisjointPieces();
+  Check(pieces.size() == 2, "splits into exactly 2 pieces, matching body_count");
+  for (const Mesh& piece : pieces) {
+    Check(piece.VertexCount() == 8 && piece.FaceCount() == 6,
+          "each piece has exactly one original box's own 8 vertices / 6 faces, not the combined 16/12");
+    Check(piece.Check().body_count == 1, "each returned piece is independently a single body");
+  }
+  // Volumes distinguish which piece is which: box_a is a unit cube
+  // (volume 1), box_b is a 2x2x2 cube (volume 8) - and prove
+  // CompactUnusedVertices() actually renumbered each piece down to its
+  // own 8 vertices rather than merely copying the full 16-vertex array
+  // (a stray unused vertex would leave Volume()'s own divergence-theorem
+  // sum correct regardless, but VertexCount() above already caught that;
+  // this instead confirms no piece is silently empty or swapped).
+  const double vol0 = pieces[0].Volume();
+  const double vol1 = pieces[1].Volume();
+  const double min_vol = std::min(vol0, vol1);
+  const double max_vol = std::max(vol0, vol1);
+  Check(std::abs(min_vol - 1.0) < 1e-9, "the smaller piece is the unit box (volume 1)");
+  Check(std::abs(max_vol - 8.0) < 1e-9, "the larger piece is the 2x2x2 box (volume 8)");
+}
+
 // Mesh-level RemoveDegenerateFaces(): three faces, each degenerate for a
 // DIFFERENT one of Check()'s own reasons (repeated vertex index, a
 // zero-length edge between two coincident-but-distinct vertices, and a
@@ -16131,6 +16383,216 @@ void TestPointCloudLoadPcdRejectsMalformedInput() {
     write_file(path, "VERSION 0.7\nFIELDS x y z\nWIDTH 1\nHEIGHT 1\nPOINTS 1\n1 2 3\n");
     PointCloud loaded;
     Check(PointCloud::LoadPcd(path, loaded) == Result::Failed, "LoadPcd() fails with no DATA line at all");
+    std::remove(path.c_str());
+  }
+}
+
+void TestPointCloudLasRoundTrips() {
+  using dino8::kernel::Point3d;
+  using dino8::kernel::PointCloud;
+  using dino8::kernel::Result;
+
+  // Positions only - Point Data Format 0.
+  {
+    PointCloud cloud;
+    cloud.AppendPoint(Point3d(0, 0, 0));
+    cloud.AppendPoint(Point3d(1.5, -2.25, 3.125));
+    cloud.AppendPoint(Point3d(-10, 20, -30));
+    Check(!cloud.HasColors(), "fixture: cloud has no colors");
+
+    const std::string path = "dino8_kernel_point_cloud_las_positions_test.las";
+    Check(cloud.SaveLas(path) == Result::Ok, "SaveLas() succeeds for a positions-only cloud");
+
+    PointCloud loaded;
+    Check(PointCloud::LoadLas(path, loaded) == Result::Ok, "LoadLas() succeeds");
+    Check(loaded.PointCount() == cloud.PointCount(), "loaded point count matches (3)");
+    Check(!loaded.HasColors(), "loaded cloud has no colors - Format 0 has no RGB fields");
+    for (int i = 0; i < cloud.PointCount(); ++i) {
+      // Quantized to the writer's own 0.001 scale factor - see SaveLas()'s
+      // own doc comment - so the round trip is exact only to within half
+      // that scale (0.0005), not bit-for-bit.
+      Check(loaded.PointAt(i).DistanceTo(cloud.PointAt(i)) < 0.0005 * std::sqrt(3.0) + 1e-9,
+            "round-tripped position matches within the format's own quantization");
+    }
+    std::remove(path.c_str());
+  }
+
+  // Positions + colors - Point Data Format 2, exercising the exact
+  // *257/-257 RGB scaling.
+  {
+    PointCloud cloud;
+    cloud.AppendPoint(Point3d(1, 2, 3));
+    cloud.AppendPoint(Point3d(-4, 5, -6));
+    cloud.AppendPoint(Point3d(100, 200, 300));
+    cloud.SetColors({ON_Color(255, 0, 0), ON_Color(10, 200, 30), ON_Color(0, 0, 0)});
+
+    const std::string path = "dino8_kernel_point_cloud_las_colors_test.las";
+    Check(cloud.SaveLas(path) == Result::Ok, "SaveLas() succeeds for a cloud with colors");
+
+    PointCloud loaded;
+    Check(PointCloud::LoadLas(path, loaded) == Result::Ok, "LoadLas() succeeds");
+    Check(loaded.HasColors(), "loaded cloud has colors - Format 2 carries RGB");
+    for (int i = 0; i < cloud.PointCount(); ++i) {
+      Check(loaded.PointAt(i).DistanceTo(cloud.PointAt(i)) < 0.0005 * std::sqrt(3.0) + 1e-9,
+            "round-tripped position matches within the format's own quantization");
+      Check(loaded.ColorAt(i) == cloud.ColorAt(i),
+            "round-tripped color matches exactly - the *257 scaling has no remainder to lose");
+    }
+    std::remove(path.c_str());
+  }
+
+  // SaveLas() rejects an empty cloud (no bounding box/offset to derive).
+  {
+    PointCloud cloud;
+    const std::string path = "dino8_kernel_point_cloud_las_empty_test.las";
+    Check(cloud.SaveLas(path) == Result::Failed, "SaveLas() fails on an empty cloud");
+    std::remove(path.c_str());
+  }
+}
+
+// Malformed/unsupported LAS input is rejected outright (Result::Failed).
+void TestPointCloudLoadLasRejectsMalformedInput() {
+  using dino8::kernel::Point3d;
+  using dino8::kernel::PointCloud;
+  using dino8::kernel::Result;
+
+  {
+    PointCloud loaded;
+    Check(PointCloud::LoadLas("dino8_kernel_point_cloud_las_nonexistent.las", loaded) == Result::Failed,
+          "LoadLas() fails on a file that doesn't exist");
+  }
+
+  // Control: a genuinely well-formed file (SaveLas()'s own output) loads.
+  {
+    PointCloud cloud;
+    cloud.AppendPoint(Point3d(1, 2, 3));
+    cloud.AppendPoint(Point3d(4, 5, 6));
+    const std::string path = "dino8_kernel_point_cloud_las_control_test.las";
+    Check(cloud.SaveLas(path) == Result::Ok, "control: SaveLas() succeeds");
+    PointCloud loaded;
+    Check(PointCloud::LoadLas(path, loaded) == Result::Ok, "control: a well-formed file loads fine");
+    Check(loaded.PointCount() == 2, "control: loaded the expected 2 points");
+    std::remove(path.c_str());
+  }
+
+  // Wrong file signature.
+  {
+    const std::string path = "dino8_kernel_point_cloud_las_bad_signature_test.las";
+    std::ofstream out(path, std::ios::binary);
+    out.write("XXXX", 4);
+    out.close();
+    PointCloud loaded;
+    Check(PointCloud::LoadLas(path, loaded) == Result::Failed,
+          "LoadLas() fails on a file with the wrong 4-byte signature");
+    std::remove(path.c_str());
+  }
+
+  // A file too short to even hold the signature + version bytes.
+  {
+    const std::string path = "dino8_kernel_point_cloud_las_truncated_header_test.las";
+    std::ofstream out(path, std::ios::binary);
+    out.write("LASF", 4);
+    out.close();
+    PointCloud loaded;
+    Check(PointCloud::LoadLas(path, loaded) == Result::Failed,
+          "LoadLas() fails on a file truncated before the version bytes");
+    std::remove(path.c_str());
+  }
+
+  // Wrong version (this reader only understands LAS 1.2).
+  {
+    PointCloud cloud;
+    cloud.AppendPoint(Point3d(1, 2, 3));
+    const std::string path = "dino8_kernel_point_cloud_las_wrong_version_test.las";
+    Check(cloud.SaveLas(path) == Result::Ok, "fixture: SaveLas() succeeds");
+    {
+      std::fstream f(path, std::ios::binary | std::ios::in | std::ios::out);
+      f.seekp(25);  // Version Minor
+      const uint8_t minor = 4;
+      f.write(reinterpret_cast<const char*>(&minor), 1);
+    }
+    PointCloud loaded;
+    Check(PointCloud::LoadLas(path, loaded) == Result::Failed,
+          "LoadLas() fails on a LAS version other than 1.2 (e.g. 1.4)");
+    std::remove(path.c_str());
+  }
+
+  // An unsupported Point Data Format ID (e.g. 1 - position + GPS time).
+  {
+    PointCloud cloud;
+    cloud.AppendPoint(Point3d(1, 2, 3));
+    const std::string path = "dino8_kernel_point_cloud_las_bad_format_test.las";
+    Check(cloud.SaveLas(path) == Result::Ok, "fixture: SaveLas() succeeds");
+    {
+      std::fstream f(path, std::ios::binary | std::ios::in | std::ios::out);
+      f.seekp(104);  // Point Data Format ID
+      const uint8_t format = 1;
+      f.write(reinterpret_cast<const char*>(&format), 1);
+    }
+    PointCloud loaded;
+    Check(PointCloud::LoadLas(path, loaded) == Result::Failed,
+          "LoadLas() fails on an unsupported Point Data Format ID (1)");
+    std::remove(path.c_str());
+  }
+
+  // Record length in the header doesn't match the declared format.
+  {
+    PointCloud cloud;
+    cloud.AppendPoint(Point3d(1, 2, 3));
+    const std::string path = "dino8_kernel_point_cloud_las_bad_record_length_test.las";
+    Check(cloud.SaveLas(path) == Result::Ok, "fixture: SaveLas() succeeds");
+    {
+      std::fstream f(path, std::ios::binary | std::ios::in | std::ios::out);
+      f.seekp(105);  // Point Data Record Length
+      const uint16_t bad_length = 26;  // Format 0 declared with Format 2's own length
+      f.write(reinterpret_cast<const char*>(&bad_length), sizeof(bad_length));
+    }
+    PointCloud loaded;
+    Check(PointCloud::LoadLas(path, loaded) == Result::Failed,
+          "LoadLas() fails when the record length doesn't match Format 0's own 20 bytes");
+    std::remove(path.c_str());
+  }
+
+  // A Variable Length Record count other than 0 - out of scope.
+  {
+    PointCloud cloud;
+    cloud.AppendPoint(Point3d(1, 2, 3));
+    const std::string path = "dino8_kernel_point_cloud_las_with_vlr_test.las";
+    Check(cloud.SaveLas(path) == Result::Ok, "fixture: SaveLas() succeeds");
+    {
+      std::fstream f(path, std::ios::binary | std::ios::in | std::ios::out);
+      f.seekp(100);  // Number of Variable Length Records
+      const uint32_t vlr_count = 1;
+      f.write(reinterpret_cast<const char*>(&vlr_count), sizeof(vlr_count));
+    }
+    PointCloud loaded;
+    Check(PointCloud::LoadLas(path, loaded) == Result::Failed,
+          "LoadLas() fails when the header declares a Variable Length Record - out of scope");
+    std::remove(path.c_str());
+  }
+
+  // File truncated before all of its own declared point records.
+  {
+    PointCloud cloud;
+    cloud.AppendPoint(Point3d(1, 2, 3));
+    cloud.AppendPoint(Point3d(4, 5, 6));
+    cloud.AppendPoint(Point3d(7, 8, 9));
+    const std::string path = "dino8_kernel_point_cloud_las_truncated_points_test.las";
+    Check(cloud.SaveLas(path) == Result::Ok, "fixture: SaveLas() succeeds");
+    {
+      std::ifstream in(path, std::ios::binary | std::ios::ate);
+      const std::streamsize full_size = in.tellg();
+      in.close();
+      std::vector<char> bytes(static_cast<size_t>(full_size));
+      std::ifstream in2(path, std::ios::binary);
+      in2.read(bytes.data(), full_size);
+      in2.close();
+      std::ofstream out(path, std::ios::binary | std::ios::trunc);
+      out.write(bytes.data(), full_size - 5);  // chop off the last record's own tail
+    }
+    PointCloud loaded;
+    Check(PointCloud::LoadLas(path, loaded) == Result::Failed,
+          "LoadLas() fails on a file truncated before all of its own declared point records");
     std::remove(path.c_str());
   }
 }
@@ -20272,6 +20734,58 @@ void TestMeshLoadOffRejectsMalformedFiles() {
   std::remove(too_few_path.c_str());
   std::remove(oob_index_path.c_str());
   std::remove(truncated_path.c_str());
+}
+
+// An OFF header's vertex/face counts have no data behind them yet, so a
+// tiny file can lie about having billions of either. Before this kernel
+// rejected an implausible count outright, a COFF header alone
+// (colors.reserve(vertex_count), below the loop) forced a multi-gigabyte
+// allocation from a few real bytes on disk - the same "untrusted file
+// count reaches an unchecked allocation" hazard already fixed for PLY
+// import (FileExchange.cpp's kMaxPlyListCount). This checks the fix
+// rejects the lie instead of acting on it.
+void TestMeshLoadOffRejectsImplausibleElementCounts() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Result;
+
+  Mesh out;
+
+  const std::string huge_vertex_path = "dino8_kernel_mesh_off_test_huge_vertex_count.off";
+  {
+    std::ofstream bad(huge_vertex_path);
+    // Plain OFF: no colors.reserve() involved, just the header count
+    // itself - still an implausible count that should be rejected before
+    // the vertex loop ever runs.
+    bad << "OFF\n2000000000 0 0\n";
+  }
+  Check(Mesh::LoadOff(huge_vertex_path, out) == Result::Failed,
+        "LoadOff fails on a header declaring an implausible vertex count "
+        "with no real vertices behind it");
+
+  const std::string huge_face_path = "dino8_kernel_mesh_off_test_huge_face_count.off";
+  {
+    std::ofstream bad(huge_face_path);
+    bad << "OFF\n3 2000000000 0\n0 0 0\n1 0 0\n0 1 0\n";
+  }
+  Check(Mesh::LoadOff(huge_face_path, out) == Result::Failed,
+        "LoadOff fails on a header declaring an implausible face count "
+        "with no real faces behind it");
+
+  const std::string huge_coff_path = "dino8_kernel_mesh_off_test_huge_coff_count.off";
+  {
+    std::ofstream bad(huge_coff_path);
+    // COFF specifically: this is the path that used to call
+    // colors.reserve(vertex_count) unconditionally, so this is the
+    // exact shape that used to force the multi-gigabyte allocation.
+    bad << "COFF\n2147483647 0 0\n";
+  }
+  Check(Mesh::LoadOff(huge_coff_path, out) == Result::Failed,
+        "LoadOff fails on a COFF header declaring an implausible vertex "
+        "count instead of reserving space for it");
+
+  std::remove(huge_vertex_path.c_str());
+  std::remove(huge_face_path.c_str());
+  std::remove(huge_coff_path.c_str());
 }
 
 void TestMeshLoadOffFanTriangulatesNgonFaces() {
@@ -24968,6 +25482,177 @@ void TestFoldFaceConvexPlanarRefusesInvalidInput() {
   Check(threw, "FoldFaceConvexPlanar refuses a negative hinge_loop_index");
 }
 
+// Single-entry FoldFacesConvexPlanar() must reproduce FoldFaceConvexPlanar()'s
+// own output bit-for-bit, vertex for vertex - proof the batch's own
+// flatten-into-(face_index,new_plane) step introduces no divergence of its
+// own from the single-face rotation math it duplicates.
+void TestFoldFacesConvexPlanarSingleEntryMatchesFoldFaceConvexPlanar() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FaceFold;
+  using dino8::kernel::FoldFaceConvexPlanar;
+  using dino8::kernel::FoldFacesConvexPlanar;
+  using dino8::kernel::Point3d;
+
+  const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+  const std::vector<Brep::PlanarFace> box_pf = box.PlanarFaces();
+  const int loop_size = static_cast<int>(box_pf[2].loop.size());
+  int hinge_index = -1;
+  for (int i = 0; i < loop_size; ++i) {
+    const Point3d& a = box_pf[2].loop[static_cast<size_t>(i)];
+    const Point3d& b = box_pf[2].loop[static_cast<size_t>((i + 1) % loop_size)];
+    if (std::fabs(a.z) < 1e-9 && std::fabs(b.z) < 1e-9) {
+      hinge_index = i;
+      break;
+    }
+  }
+  Check(hinge_index >= 0, "the front wall's own loop has an edge lying exactly on the bottom (z=0) plane");
+
+  const double theta = std::atan(0.3);
+  const Brep via_single = FoldFaceConvexPlanar(box, 2, hinge_index, theta);
+  const Brep via_batch = FoldFacesConvexPlanar(box, {FaceFold{2, hinge_index, theta}});
+
+  Check(via_single.FaceCount() == via_batch.FaceCount(),
+        "FoldFacesConvexPlanar keeps the same face count as FoldFaceConvexPlanar for one entry");
+  const std::vector<Brep::PlanarFace> single_faces = via_single.PlanarFaces();
+  const std::vector<Brep::PlanarFace> batch_faces = via_batch.PlanarFaces();
+  Check(single_faces.size() == batch_faces.size(), "same number of faces to compare pointwise");
+  for (size_t i = 0; i < single_faces.size(); ++i) {
+    Check(single_faces[i].loop.size() == batch_faces[i].loop.size(), "each face has the same vertex count in both results");
+    for (size_t j = 0; j < single_faces[i].loop.size() && j < batch_faces[i].loop.size(); ++j) {
+      Check(single_faces[i].loop[j].DistanceTo(batch_faces[i].loop[j]) < 1e-9,
+            "every vertex lands in exactly the same place under FoldFaceConvexPlanar and a single-entry "
+            "FoldFacesConvexPlanar");
+    }
+  }
+}
+
+// Genuine "one call, many named faces" batching value: two INDEPENDENT
+// hinge folds (the box's own front and back walls, each about its own
+// bottom edge, small enough that neither reaches the other's plane) must
+// match the identical result of two SEQUENTIAL single FoldFaceConvexPlanar()
+// calls (front folded first, then back folded on that intermediate result)
+// bit-for-bit - proof the batch's own single ReplaceFacePlanesConvexPlanar()
+// pass reconstructs exactly what a valid sequential composition would,
+// not a separate and possibly-divergent construction.
+void TestFoldFacesConvexPlanarTwoIndependentFoldsMatchesSequentialSingleFolds() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FaceFold;
+  using dino8::kernel::FoldFaceConvexPlanar;
+  using dino8::kernel::FoldFacesConvexPlanar;
+  using dino8::kernel::Point3d;
+
+  // Box face order per Brep::Box()'s own comment: 0=bottom(-z) 1=top(+z)
+  // 2=front(-y) 3=back(+y) 4=left(-x) 5=right(+x).
+  const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+  const std::vector<Brep::PlanarFace> box_pf = box.PlanarFaces();
+
+  auto find_bottom_hinge = [](const Brep::PlanarFace& face) {
+    const int loop_size = static_cast<int>(face.loop.size());
+    for (int i = 0; i < loop_size; ++i) {
+      const Point3d& a = face.loop[static_cast<size_t>(i)];
+      const Point3d& b = face.loop[static_cast<size_t>((i + 1) % loop_size)];
+      if (std::fabs(a.z) < 1e-9 && std::fabs(b.z) < 1e-9) return i;
+    }
+    return -1;
+  };
+  const int front_hinge = find_bottom_hinge(box_pf[2]);
+  const int back_hinge = find_bottom_hinge(box_pf[3]);
+  Check(front_hinge >= 0 && back_hinge >= 0,
+        "both the front and back walls have an edge lying exactly on the bottom (z=0) plane");
+
+  const double front_theta = std::atan(0.1);
+  const double back_theta = std::atan(0.15);
+
+  const Brep after_front = FoldFaceConvexPlanar(box, 2, front_hinge, front_theta);
+  // Folding the front wall by a small angle never reaches the back wall's
+  // own plane, so the back wall's PHYSICAL boundary - and therefore its
+  // own hinge edge - is completely unchanged by that first fold. The
+  // reconstruction every FoldFaceConvexPlanar()/ReplaceFacePlanesConvexPlanar()
+  // call runs (even for an untouched face) re-derives every face's own loop
+  // from scratch via ClipConvexPolygon(), which is free to start that loop
+  // at a different vertex than Brep::Box()'s own native ordering - so
+  // find_bottom_hinge() below may legitimately return a DIFFERENT index
+  // than `back_hinge` for the identical physical edge; only the two
+  // matched POINTS, not the index, need to agree.
+  const std::vector<Brep::PlanarFace> after_front_pf = after_front.PlanarFaces();
+  const int back_hinge_after_front = find_bottom_hinge(after_front_pf[3]);
+  const int back_loop_size = static_cast<int>(box_pf[3].loop.size());
+  const Point3d& back_p0_original = box_pf[3].loop[static_cast<size_t>(back_hinge)];
+  const Point3d& back_p1_original = box_pf[3].loop[static_cast<size_t>((back_hinge + 1) % back_loop_size)];
+  const Point3d& back_p0_after_front = after_front_pf[3].loop[static_cast<size_t>(back_hinge_after_front)];
+  Check(back_p0_after_front.DistanceTo(back_p0_original) < 1e-9 ||
+            back_p0_after_front.DistanceTo(back_p1_original) < 1e-9,
+        "the back wall's own hinge edge sits at the same physical position after the (independent) front fold, "
+        "even if ClipConvexPolygon() happened to start its rebuilt loop at a different vertex");
+  const Brep via_sequential = FoldFaceConvexPlanar(after_front, 3, back_hinge_after_front, back_theta);
+
+  const Brep via_batch =
+      FoldFacesConvexPlanar(box, {FaceFold{2, front_hinge, front_theta}, FaceFold{3, back_hinge, back_theta}});
+
+  Check(via_sequential.FaceCount() == via_batch.FaceCount(),
+        "FoldFacesConvexPlanar keeps the same face count as the sequential two-call composition");
+  const std::vector<Brep::PlanarFace> seq_faces = via_sequential.PlanarFaces();
+  const std::vector<Brep::PlanarFace> batch_faces = via_batch.PlanarFaces();
+  Check(seq_faces.size() == batch_faces.size(), "same number of faces to compare pointwise");
+  for (size_t i = 0; i < seq_faces.size(); ++i) {
+    Check(seq_faces[i].loop.size() == batch_faces[i].loop.size(), "each face has the same vertex count in both results");
+    for (size_t j = 0; j < seq_faces[i].loop.size() && j < batch_faces[i].loop.size(); ++j) {
+      Check(seq_faces[i].loop[j].DistanceTo(batch_faces[i].loop[j]) < 1e-9,
+            "every vertex lands in exactly the same place under a batched FoldFacesConvexPlanar and the "
+            "equivalent sequential pair of single FoldFaceConvexPlanar calls, for two independent folds");
+    }
+  }
+
+  // A real, non-trivial volume change confirms both folds actually took
+  // effect, not merely that two no-ops matched each other.
+  Check(std::fabs(PlanarBrepVolumeExact(via_batch) - 1000.0) > 1.0,
+        "the batched fold produces a genuinely different volume from the original 1000 box, not a no-op");
+
+  Check(via_batch.TessellateToClosedMesh(1, 1).IsClosedManifold(),
+        "the batch-folded box also tessellates to a closed, watertight manifold");
+}
+
+void TestFoldFacesConvexPlanarRefusesInvalidInput() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FaceFold;
+  using dino8::kernel::FoldFacesConvexPlanar;
+
+  const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+  const int loop_size = static_cast<int>(box.PlanarFaces()[2].loop.size());
+
+  bool threw = false;
+  try {
+    FoldFacesConvexPlanar(box, {});
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "FoldFacesConvexPlanar refuses an empty folds list");
+
+  threw = false;
+  try {
+    FoldFacesConvexPlanar(box, {FaceFold{99, 0, 0.1}});
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "FoldFacesConvexPlanar refuses an out-of-range face_index");
+
+  threw = false;
+  try {
+    FoldFacesConvexPlanar(box, {FaceFold{2, loop_size, 0.1}});
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "FoldFacesConvexPlanar refuses a hinge_loop_index out of range for the named face's own loop");
+
+  threw = false;
+  try {
+    FoldFacesConvexPlanar(box, {FaceFold{2, 0, 0.1}, FaceFold{2, 1, 0.2}});
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "FoldFacesConvexPlanar refuses two entries naming the same face_index");
+}
+
 // Builds one PlanarFace from `loop` (already in the right cyclic order),
 // orienting it outward by comparing the raw cross-product normal against
 // the direction from `solid_centroid` to this face's own centroid -
@@ -25993,6 +26678,143 @@ void TestDeleteFaceHealConvexPlanarRefusesInvalidInput() {
   Check(threw,
         "DeleteFaceHealConvexPlanar refuses deleting a face whose neighbours never converge (leaves the solid "
         "unbounded)");
+}
+
+// PARITY_MAP's kernel: Local / direct-edit operations "Delete face with
+// heal" gap's own remaining "one face at a time" limitation - the batch
+// generalization of DeleteFaceHealConvexPlanar() above.
+//
+// A unit cube with BOTH the (1,1,1) AND (0,0,0) corners chamfered off by
+// their own triangular plane: 8 faces total - all 6 box-derived faces
+// become pentagons (every one of them touches one chamfered corner or the
+// other), plus the 2 chamfer triangles themselves (indices 6 and 7).
+dino8::kernel::Brep MakeDoubleChamferedUnitCube() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  const Point3d v000(0, 0, 0), v100(1, 0, 0), v110(1, 1, 0), v010(0, 1, 0);
+  const Point3d v001(0, 0, 1), v101(1, 0, 1), v011(0, 1, 1);
+  const Point3d cx(0.7, 1, 1), cy(1, 0.7, 1), cz(1, 1, 0.7);  // chamfer near (1,1,1)
+  const Point3d dx(0.3, 0, 0), dy(0, 0.3, 0), dz(0, 0, 0.3);  // chamfer near (0,0,0)
+  const Point3d solid_centroid(0.5, 0.5, 0.5);
+
+  std::vector<Brep::PlanarFace> faces;
+  faces.push_back(MakeOutwardTestFace({v100, v110, v010, dy, dx}, solid_centroid));    // bottom, z=0 (pentagon)
+  faces.push_back(MakeOutwardTestFace({v001, v101, cy, cx, v011}, solid_centroid));    // top, z=1 (pentagon)
+  faces.push_back(MakeOutwardTestFace({v010, v011, v001, dz, dy}, solid_centroid));    // x=0 (pentagon)
+  faces.push_back(MakeOutwardTestFace({v001, v101, v100, dx, dz}, solid_centroid));    // y=0 (pentagon)
+  faces.push_back(MakeOutwardTestFace({v100, v110, cz, cy, v101}, solid_centroid));    // x=1 (pentagon)
+  faces.push_back(MakeOutwardTestFace({v010, v011, cx, cz, v110}, solid_centroid));    // y=1 (pentagon)
+  faces.push_back(MakeOutwardTestFace({cx, cy, cz}, solid_centroid));                  // chamfer near (1,1,1), index 6
+  faces.push_back(MakeOutwardTestFace({dx, dy, dz}, solid_centroid));                  // chamfer near (0,0,0), index 7
+  return Brep::FromPlanarFaces(faces);
+}
+
+// Deleting both chamfer faces in one DeleteFacesHealConvexPlanar() call
+// must reconstruct the EXACT original unit cube, and must match - vertex
+// for vertex - the identical result of two SEQUENTIAL single
+// DeleteFaceHealConvexPlanar() calls, in EITHER order: since each
+// remaining face's own reconstruction depends only on the FINAL set of
+// surviving planes, not on the order they were dropped in, all three
+// paths (one batch call, or either of the two sequential orderings) must
+// agree exactly - proof this is a genuine "drop many at once" sibling of
+// DeleteFaceHealConvexPlanar(), not a separate and possibly-divergent
+// construction.
+void TestDeleteFacesHealConvexPlanarTwoIndependentChamfersMatchesEitherSequentialOrder() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::DeleteFaceHealConvexPlanar;
+  using dino8::kernel::DeleteFacesHealConvexPlanar;
+  using dino8::kernel::Point3d;
+
+  const Brep double_chamfered = MakeDoubleChamferedUnitCube();
+  Check(double_chamfered.PlanarFaces().size() == 8,
+        "the double-chamfered fixture itself has 8 faces (6 box-derived + 2 chamfers)");
+
+  const Brep via_batch = DeleteFacesHealConvexPlanar(double_chamfered, {6, 7});
+  Check(via_batch.PlanarFaces().size() == 6,
+        "deleting both chamfer faces in one call leaves exactly the original 6 box faces");
+  for (const Brep::PlanarFace& f : via_batch.PlanarFaces()) {
+    Check(f.loop.size() == 4, "every healed face is a plain quad again - both corners regrew");
+  }
+  const double batch_volume = PlanarBrepVolumeExact(via_batch);
+  Check(std::fabs(batch_volume - 1.0) < 1e-9,
+        "the batch-healed solid's volume matches the exact unit cube, not merely a plausible-looking number");
+
+  // Order 1: delete the (1,1,1) chamfer (index 6) first, then the
+  // (0,0,0) chamfer - which has shifted down to index 6 in the 7-face
+  // intermediate result once index 6 was removed.
+  const Brep seq_a1 = DeleteFaceHealConvexPlanar(double_chamfered, 6);
+  Check(seq_a1.PlanarFaces().size() == 7, "removing one of two chamfers leaves 7 faces, not yet fully healed");
+  const Brep seq_a2 = DeleteFaceHealConvexPlanar(seq_a1, 6);
+
+  // Order 2: delete the (0,0,0) chamfer (index 7) first - nothing before
+  // it shifts - then the (1,1,1) chamfer, still at index 6.
+  const Brep seq_b1 = DeleteFaceHealConvexPlanar(double_chamfered, 7);
+  const Brep seq_b2 = DeleteFaceHealConvexPlanar(seq_b1, 6);
+
+  auto check_matches = [](const Brep& a, const Brep& b, const char* label) {
+    const std::vector<Brep::PlanarFace> fa = a.PlanarFaces();
+    const std::vector<Brep::PlanarFace> fb = b.PlanarFaces();
+    Check(fa.size() == fb.size(), (std::string(label) + ": same face count").c_str());
+    for (size_t i = 0; i < fa.size() && i < fb.size(); ++i) {
+      Check(fa[i].loop.size() == fb[i].loop.size(), (std::string(label) + ": same vertex count per face").c_str());
+      for (size_t j = 0; j < fa[i].loop.size() && j < fb[i].loop.size(); ++j) {
+        Check(fa[i].loop[j].DistanceTo(fb[i].loop[j]) < 1e-9,
+              (std::string(label) + ": every vertex matches exactly").c_str());
+      }
+    }
+  };
+  check_matches(via_batch, seq_a2, "batch vs. sequential (1,1,1)-then-(0,0,0)");
+  check_matches(via_batch, seq_b2, "batch vs. sequential (0,0,0)-then-(1,1,1)");
+
+  Check(via_batch.TessellateToClosedMesh(1, 1).IsClosedManifold(),
+        "the batch-healed cube also tessellates to a closed, watertight manifold");
+}
+
+void TestDeleteFacesHealConvexPlanarRefusesInvalidInput() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::DeleteFacesHealConvexPlanar;
+
+  const Brep double_chamfered = MakeDoubleChamferedUnitCube();
+
+  bool threw = false;
+  try {
+    DeleteFacesHealConvexPlanar(double_chamfered, {});
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "DeleteFacesHealConvexPlanar refuses an empty face_indices list");
+
+  threw = false;
+  try {
+    DeleteFacesHealConvexPlanar(double_chamfered, {99});
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "DeleteFacesHealConvexPlanar refuses an out-of-range face_index");
+
+  threw = false;
+  try {
+    DeleteFacesHealConvexPlanar(double_chamfered, {6, 6});
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "DeleteFacesHealConvexPlanar refuses a duplicate face_index");
+
+  // Deleting both the top (index 1) and bottom (index 0) of a plain box
+  // leaves the 4 side walls with nothing bounding them from either end:
+  // genuinely unbounded, not a heal - the same failure mode
+  // DeleteFaceHealConvexPlanar() already documents, now checked with two
+  // faces dropped in the same call.
+  threw = false;
+  try {
+    const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+    DeleteFacesHealConvexPlanar(box, {0, 1});
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw,
+        "DeleteFacesHealConvexPlanar refuses dropping a set of faces whose remaining neighbours never converge "
+        "(leaves the solid unbounded)");
 }
 
 }  // namespace
@@ -44523,6 +45345,197 @@ void TestSweep1RoadlikeAlignmentMatchesExtrudeOnAStraightRailAndRejectsDegenerat
         "an in-plane roadlike_up is parallel to a full circular rail's own tangent somewhere on the loop, and still throws");
 }
 
+// twist_schedule closes the "twist is linear end-to-end only, not a
+// piecewise schedule" gap PARITY_MAP.md's own "Sweep along one rail" and
+// "Sweep controls" bullets both name - Sweep1's general-profile
+// counterpart to PipeVariable()'s own circular-only radius_points
+// schedule, sharing its exact (t, value) convention.
+void TestSweep1TwistScheduleMatchesPlainTwistAtEndpointsAndInsertsRealStations() {
+  using TP = std::pair<double, double>;
+  const NurbsCurve rail = Polyline({P(0, 0, 0), P(0, 0, 10)});
+  const NurbsCurve square = Polyline({P(-0.5, -0.5, 0), P(0.5, -0.5, 0), P(0.5, 0.5, 0), P(-0.5, 0.5, 0), P(-0.5, -0.5, 0)});
+
+  // A trivial two-point schedule spanning the whole rail describes the
+  // IDENTICAL twist as the plain scalar - both must build a bit-identical
+  // wall, the same exact 2-station ruled shortcut on a straight rail.
+  {
+    const double twist = M_PI / 2;
+    const std::vector<TP> schedule = {{0.0, 0.0}, {1.0, twist}};
+    const Brep scheduled = Brep::Sweep1(square, rail, 32, true, 0.0, 1.0, nullptr, &schedule);
+    const Brep plain = Brep::Sweep1(square, rail, 32, true, twist);
+    CheckSolidTopology(scheduled, 3, "twist-scheduled square sweep (trivial 2-point schedule)");
+    const NurbsSurface wa = FaceSurface(scheduled, 0), wb = FaceSurface(plain, 0);
+    Check(wa.DegreeV() == 1 && wa.CVCountV() == 2, "a trivial 2-point twist_schedule keeps the exact 2-station ruled shortcut");
+    double worst = 0.0;
+    const ON_Interval dua = wa.raw().Domain(0), dub = wb.raw().Domain(0);
+    for (int i = 0; i <= 8; ++i) {
+      for (double v : {0.0, 1.0}) {
+        worst = std::max(worst, wa.PointAt(dua.ParameterAt(i / 8.0), v).DistanceTo(wb.PointAt(dub.ParameterAt(i / 8.0), v)));
+      }
+    }
+    Check(worst < 1e-12, "a trivial {(0,0),(1,twist)} twist_schedule reproduces plain twist_total's wall bit-for-bit");
+  }
+
+  // A genuine 3-point schedule inserts a real extra station at its own
+  // middle breakpoint (leaving the 2-station shortcut), but the two ENDS
+  // are still exactly the un-rotated near section and the far section
+  // rotated by exactly the schedule's own end value - a skin's boundary
+  // rows always reproduce their own input section exactly regardless of
+  // the interpolation between them (the same invariant AddDomeCap()'s own
+  // doc comment already states, and TestLoftInterpolatesSectionsExactly()
+  // already verifies for this shared SkinSections() machinery).
+  {
+    const double end_twist = M_PI / 2;
+    const std::vector<TP> schedule = {{0.0, 0.0}, {0.5, M_PI / 4}, {1.0, end_twist}};
+    const Brep scheduled = Brep::Sweep1(square, rail, 32, true, 0.0, 1.0, nullptr, &schedule);
+    CheckSolidTopology(scheduled, 3, "twist-scheduled square sweep (3-point schedule)");
+    const NurbsSurface wall = FaceSurface(scheduled, 0);
+    Check(wall.CVCountV() > 2, "a genuine 3-point twist_schedule inserts a real extra station, leaving the 2-station shortcut");
+    const ON_Interval du = wall.raw().Domain(0), dv = wall.raw().Domain(1);
+    {
+      double worst = 0.0;
+      for (int corner = 0; corner < 4; ++corner) {
+        const Point3d expect = square.ControlPointAt(corner);
+        double best = 1e9;
+        for (int j = 0; j < 4; ++j) best = std::min(best, wall.PointAt(du.ParameterAt(j / 4.0), dv.Min()).DistanceTo(expect));
+        worst = std::max(worst, best);
+      }
+      Check(worst < 1e-9, "the near end is untouched (the schedule's own twist at t=0 is 0)");
+    }
+    {
+      double worst = 0.0;
+      for (int corner = 0; corner < 4; ++corner) {
+        const Point3d c = square.ControlPointAt(corner);
+        const Point3d expect(c.x * std::cos(end_twist) - c.y * std::sin(end_twist), c.x * std::sin(end_twist) + c.y * std::cos(end_twist),
+                              10.0);
+        double best = 1e9;
+        for (int j = 0; j < 4; ++j) best = std::min(best, wall.PointAt(du.ParameterAt(j / 4.0), dv.Max()).DistanceTo(expect));
+        worst = std::max(worst, best);
+      }
+      Check(worst < 1e-9, "the far end is rotated by exactly the schedule's own end twist value");
+    }
+    Check(scheduled.TessellateToClosedMesh(8, 96).IsClosedManifold(), "twist-scheduled sweep is still a closed manifold");
+  }
+
+  // Negative controls.
+  Check(Throws([&] {
+          const std::vector<TP> schedule = {{0.0, 0.0}, {1.0, M_PI / 2}};
+          Brep::Sweep1(square, rail, 32, true, /*twist_total=*/0.1, 1.0, nullptr, &schedule);
+        }),
+        "twist_total != 0 together with twist_schedule throws (mutually exclusive)");
+  Check(Throws([&] {
+          const std::vector<TP> schedule = {{0.0, 0.0}};
+          Brep::Sweep1(square, rail, 32, true, 0.0, 1.0, nullptr, &schedule);
+        }),
+        "a twist_schedule with fewer than 2 points throws");
+  Check(Throws([&] {
+          const std::vector<TP> schedule = {{0.5, 0.0}, {0.2, 1.0}};
+          Brep::Sweep1(square, rail, 32, true, 0.0, 1.0, nullptr, &schedule);
+        }),
+        "a non-increasing twist_schedule throws");
+  Check(Throws([&] {
+          const NurbsCurve circle_rail = Circle(P(0, 0, 0), Vector3d(0, 0, 1), 3.0);
+          const std::vector<TP> schedule = {{0.0, 0.0}, {1.0, M_PI / 4}};
+          Brep::Sweep1(square, circle_rail, 16, false, 0.0, 1.0, nullptr, &schedule);
+        }),
+        "twist_schedule on a closed rail throws");
+}
+
+// scale_schedule's own counterpart test - mirrors PipeVariable()'s own
+// 2-point-exact / 3-point-bulge test structure (TestPipeVariable() above)
+// as closely as the two methods' shared "insert exact stations at the
+// schedule's own breakpoints" construction allows.
+void TestSweep1ScaleScheduleMatchesPlainScaleAtEndpointsAndInsertsRealStations() {
+  using TP = std::pair<double, double>;
+
+  // Trivial 2-point schedule: bit-identical to the plain scale_end wall.
+  {
+    const double r0 = 2.0, r1 = 1.0, scale_end = r1 / r0;
+    const NurbsCurve rail = Polyline({P(0, 0, 0), P(0, 0, 5)});
+    const NurbsCurve circle_r0 = Circle(P(0, 0, 0), Vector3d(0, 0, 1), r0);
+    const std::vector<TP> schedule = {{0.0, 1.0}, {1.0, scale_end}};
+    const Brep scheduled = Brep::Sweep1(circle_r0, rail, 32, true, 0.0, 1.0, nullptr, nullptr, &schedule);
+    const Brep plain = Brep::Sweep1(circle_r0, rail, 32, true, 0.0, scale_end);
+    CheckSolidTopology(scheduled, 3, "scale-scheduled circle sweep (trivial 2-point schedule)");
+    const NurbsSurface wa = FaceSurface(scheduled, 0), wb = FaceSurface(plain, 0);
+    Check(wa.DegreeV() == 1 && wa.CVCountV() == 2, "a trivial 2-point scale_schedule keeps the exact 2-station ruled shortcut");
+    double worst = 0.0;
+    const ON_Interval du = wa.raw().Domain(0);
+    for (int i = 0; i <= 32; ++i) {
+      const double u = du.ParameterAt(i / 32.0);
+      worst = std::max(worst, wa.PointAt(u, 0.0).DistanceTo(wb.PointAt(u, 0.0)));
+      worst = std::max(worst, wa.PointAt(u, 1.0).DistanceTo(wb.PointAt(u, 1.0)));
+    }
+    Check(worst < 1e-12, "a trivial {(0,1),(1,scale_end)} scale_schedule reproduces plain scale_end's wall bit-for-bit");
+  }
+
+  // A genuine 3-point symmetric bulge: not exactly representable by a
+  // single ruled surface, so this takes the general interpolating-skin
+  // path - cross-checked the same two ways TestPipeVariable()'s own
+  // 3-point bulge case already is: (1) the wall's own domain-boundary
+  // sections are still exactly the unscaled/scale_end square (guaranteed
+  // by the skin's own boundary-reproduction contract), and (2) the
+  // tessellated volume against the closed-form volume of the TRUE
+  // piecewise-linear-side solid this schedule describes (two stacked
+  // pyramid frustums), which this only interpolates, not reproduces
+  // exactly - the same 96-station/1% bound TestPipeVariable() already
+  // measures 0.3% under.
+  {
+    const double H = 4.0, s0 = 1.0, sm = 3.0, s1 = 1.0;
+    const NurbsCurve square = Polyline(
+        {P(-s0 / 2, -s0 / 2, 0), P(s0 / 2, -s0 / 2, 0), P(s0 / 2, s0 / 2, 0), P(-s0 / 2, s0 / 2, 0), P(-s0 / 2, -s0 / 2, 0)});
+    const NurbsCurve rail = Polyline({P(0, 0, 0), P(0, 0, H)});
+    const std::vector<TP> schedule = {{0.0, 1.0}, {0.5, sm / s0}, {1.0, s1 / s0}};
+    const Brep bulge = Brep::Sweep1(square, rail, 96, true, 0.0, 1.0, nullptr, nullptr, &schedule);
+    CheckSolidTopology(bulge, 3, "scale-scheduled square sweep (3-point bulge)");
+    const NurbsSurface wall = FaceSurface(bulge, 0);
+    Check(wall.CVCountV() > 2, "a genuine 3-point scale_schedule inserts a real extra station, leaving the 2-station shortcut");
+    const ON_Interval du = wall.raw().Domain(0), dv = wall.raw().Domain(1);
+    double worst0 = 0.0, worst1 = 0.0;
+    for (int corner = 0; corner < 4; ++corner) {
+      const Point3d c = square.ControlPointAt(corner);
+      double best0 = 1e9, best1 = 1e9;
+      for (int j = 0; j < 4; ++j) {
+        best0 = std::min(best0, wall.PointAt(du.ParameterAt(j / 4.0), dv.Min()).DistanceTo(c));
+        best1 = std::min(best1, wall.PointAt(du.ParameterAt(j / 4.0), dv.Max()).DistanceTo(Point3d(c.x * s1 / s0, c.y * s1 / s0, H)));
+      }
+      worst0 = std::max(worst0, best0);
+      worst1 = std::max(worst1, best1);
+    }
+    Check(worst0 < 1e-9 && worst1 < 1e-9, "the 3-point bulge's end squares are still exactly unscaled and scale_end-scaled");
+    const double half = H / 2.0;
+    const double exact = (half / 3.0) * (s0 * s0 + s0 * sm + sm * sm) + (half / 3.0) * (sm * sm + sm * s1 + s1 * s1);
+    CheckClosedMeshVolume(bulge, 64, 8, exact, 0.01, "scale-scheduled square 3-point bulge vs. stacked-frustum reference");
+  }
+
+  // Negative controls.
+  {
+    const NurbsCurve rail = Polyline({P(0, 0, 0), P(0, 0, 5)});
+    const NurbsCurve circle = Circle(P(0, 0, 0), Vector3d(0, 0, 1), 1.0);
+    Check(Throws([&] {
+            const std::vector<TP> schedule = {{0.0, 1.0}, {1.0, 2.0}};
+            Brep::Sweep1(circle, rail, 32, true, 0.0, /*scale_end=*/1.5, nullptr, nullptr, &schedule);
+          }),
+          "scale_end != 1 together with scale_schedule throws (mutually exclusive)");
+    Check(Throws([&] {
+            const std::vector<TP> schedule = {{0.0, 1.0}};
+            Brep::Sweep1(circle, rail, 32, true, 0.0, 1.0, nullptr, nullptr, &schedule);
+          }),
+          "a scale_schedule with fewer than 2 points throws");
+    Check(Throws([&] {
+            const std::vector<TP> schedule = {{0.0, 1.0}, {1.0, -2.0}};
+            Brep::Sweep1(circle, rail, 32, true, 0.0, 1.0, nullptr, nullptr, &schedule);
+          }),
+          "a non-positive scale_schedule value throws");
+    Check(Throws([&] {
+            const NurbsCurve circle_rail = Circle(P(0, 0, 0), Vector3d(0, 0, 1), 3.0);
+            const std::vector<TP> schedule = {{0.0, 1.0}, {1.0, 2.0}};
+            Brep::Sweep1(circle, circle_rail, 16, false, 0.0, 1.0, nullptr, nullptr, &schedule);
+          }),
+          "scale_schedule on a closed rail throws");
+  }
+}
+
 // Scans every face of `b` for one whose surface IsCylinder() within
 // `surf_tol`, with a fitted radius within `radius_tol` of `expected_radius`
 // - works directly off ON_Surface::IsCylinder() (unlike this file's own
@@ -52493,6 +53506,262 @@ void TestRecognizeCounterboreHolesRoundTrip() {
         "RecognizeCounterboreHoles finds no compound step on a plain single-radius hole");
 }
 
+// Builds a countersink-shaped tool - a conical frustum (wide mouth ->
+// narrow bore_radius) immediately followed by a straight cylindrical bore
+// segment, MakeCountersinkHole()'s own two-piece geometry (see that
+// function's own "standard countersink geometry" doc comment,
+// boolean_general.h, for the derived countersink_depth formula) - but as
+// two DISCRETE analytic Brep::ConicalFace/Brep::CylindricalFace primitives
+// (CounterboreHole()'s own "adjacent same-axis segments via
+// FromMixedFaces()" construction, features.cpp, generalized to a conical
+// first segment) rather than MakeCountersinkHole()'s own single Revolve()
+// wall - so the cone IS recognizable by ON_Surface::IsCone(), unlike
+// MakeCountersinkHole()'s own product (see RecognizeCountersinkHoles()'s
+// own doc comment, features.h, for why that distinction matters here).
+// `origin` is the entry point on `solid`'s own surface, `axis` points INTO
+// the material (MakeHole()'s own convention), and `bore_depth` is the
+// TOTAL axial distance from `origin` to the pilot bore's own far end
+// (MakeCountersinkHole()'s own `bore_depth` convention, not just the
+// straight-bore segment's own length).
+//
+// Subtracted via BooleanCombineGeneral() rather than BooleanCombineMixed()
+// specifically because BooleanCombineMixed() itself refuses any operand
+// carrying a ConicalFace outright (boolean.h's own doc comment, confirmed
+// directly by TestBooleanCombineMixedRefusesConicalFaceOperand elsewhere
+// in this file) - BooleanCombineGeneral() has no such restriction.
+//
+// Unlike BooleanCombineMixed() (boolean.cpp), which situationally
+// synthesizes a bare, uncapped CylindricalFace tool's own end material
+// during the boolean itself (see MakeCylinderZ()'s own doc comment,
+// scratch_test.cpp), BooleanCombineGeneral() has no such special-casing -
+// confirmed directly (dino8_scratch_test): an UNCAPPED cone+cylinder tool
+// throws "an edge is claimed by 3 or more fragment loops" even for a
+// fixture with every cap well clear of every box face, an open-tube
+// operand fed to an engine that requires a genuinely closed solid. The
+// tool is therefore explicitly capped - but a SECOND, independently
+// confirmed (dino8_scratch_test) coincident-face degeneracy also applies
+// here: a tool cap landing exactly ON `solid`'s own surface (not just
+// past it) throws the identical error, the same pitfall
+// MakeHole()/MakeCountersinkHole() (boolean_general.cpp) avoid by backing
+// their own cutting tool off the entry surface by a small margin. Since
+// `origin` sits exactly ON `solid`'s own surface by construction, the
+// tool's own wide mouth cap can't sit there directly - a short
+// `margin`-length cylindrical SLEEVE (radius countersink_radius) is
+// prepended, so the tool's own TRUE outer cap floats just outside `solid`
+// instead, and the sleeve/cone transition (still exactly at `origin`)
+// becomes an ordinary interior weld rather than an operand boundary.
+dino8::kernel::Brep BuildCountersinkHoleFixture(const dino8::kernel::Brep& solid, dino8::kernel::Point3d origin,
+                                                 dino8::kernel::Vector3d axis, double countersink_radius,
+                                                 double countersink_angle_degrees, double bore_radius,
+                                                 double bore_depth) {
+  using dino8::kernel::BooleanCombineGeneral;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  Vector3d dir = axis;
+  dir.Unitize();
+  const double half_angle = countersink_angle_degrees * ON_PI / 360.0;
+  const double countersink_depth = (countersink_radius - bore_radius) / std::tan(half_angle);
+  const Point3d transition = origin + dir * countersink_depth;
+  const double cyl_length = bore_depth - countersink_depth;
+  const double margin = std::max(0.5, countersink_radius * 0.25);
+
+  Brep::CylindricalFace sleeve;
+  sleeve.frame = FrameFromAxisForGeneralBooleanTest(origin - dir * margin, dir);
+  sleeve.radius = countersink_radius;
+  sleeve.angle = 2.0 * ON_PI;
+  sleeve.length = margin;
+
+  // The cone segment, via MakeFrustumAxisForGeneralBooleanTest()'s own
+  // "base = narrow end (r0), axis points toward the wide end (r1)"
+  // convention - so base=transition (radius bore_radius), its own axis
+  // -dir (toward the wide mouth, the opposite sense from `dir`'s "into the
+  // material" convention).
+  const ON_Plane cone_base_frame = FrameFromAxisForGeneralBooleanTest(transition, -dir);
+  Brep::ConicalFace cone;
+  cone.frame = cone_base_frame;
+  // The apex sits FURTHER into the material beyond `transition` - where a
+  // full cone's own radius would extrapolate to exactly zero - at distance
+  // bore_radius/tan(half_angle) past it, the same similar-triangles
+  // relationship ConicalFace's own doc comment (brep.h) describes for a
+  // patch's "distance from apex to its own start".
+  cone.frame.origin = transition - cone_base_frame.zaxis * (bore_radius / std::tan(half_angle));
+  cone.frame.UpdateEquation();
+  cone.radius0 = bore_radius;         // at the narrow end (transition)
+  cone.radius1 = countersink_radius;  // at the wide end (origin, the mouth)
+  cone.angle = 2.0 * ON_PI;
+  cone.length = countersink_depth;
+
+  const ON_Plane cyl_frame = FrameFromAxisForGeneralBooleanTest(transition, dir);
+  Brep::CylindricalFace cyl;
+  cyl.frame = cyl_frame;
+  cyl.radius = bore_radius;
+  cyl.angle = 2.0 * ON_PI;
+  cyl.length = cyl_length;
+
+  // Only the tool's own two TRUE outer ends are capped (flip=false, the
+  // "far cap in its own local frame" convention DiskCapForGeneralBooleanTest's
+  // other callers already use, since h=0 is each own segment's own NEAR
+  // end) - every interior transition (sleeve/cone at `origin`, cone/cyl at
+  // `transition`) is deliberately left uncapped so FromMixedFaces() welds
+  // each into one interior edge instead.
+  const Brep::PlanarFace mouth_cap = DiskCapForGeneralBooleanTest(sleeve.frame, 0.0, countersink_radius, /*flip=*/true);
+  const Brep::PlanarFace far_cap = DiskCapForGeneralBooleanTest(cyl_frame, cyl_length, bore_radius, /*flip=*/false);
+
+  const Brep tool = Brep::FromMixedFaces({mouth_cap, far_cap}, {sleeve, cyl}, {cone});
+  return BooleanCombineGeneral(solid, tool, BooleanOp::Difference);
+}
+
+// parity-map "kernel: Feature operations" - "Feature recognition": closes
+// RecognizeCounterboreHoles()'s own disclosed "a countersink's own conical
+// step ... is a different surface type entirely and is not merged here"
+// gap. RecognizeCountersinkHoles() merges a concave full-cone face with an
+// adjacent concave full-cylinder face into one CountersinkFeature, the
+// conical sibling of RecognizeCounterboreHoles() above.
+void TestRecognizeCountersinkHolesRoundTrip() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::CounterboreHole;
+  using dino8::kernel::CountersinkFeature;
+  using dino8::kernel::MakeCountersinkHole;
+  using dino8::kernel::MakeHole;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::RecognizeCounterboreHoles;
+  using dino8::kernel::RecognizeCountersinkHoles;
+  using dino8::kernel::RecognizeHoles;
+  using dino8::kernel::Vector3d;
+
+  const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+  const Point3d origin(5, 5, 10);
+  const Vector3d down(0, 0, -1);
+
+  {
+    // A THROUGH countersink at a standard 90-degree included angle - the
+    // tool's own nominal bore_depth (12.0) deliberately extends PAST the
+    // box's own 10-unit height, so its far cap floats below the box rather
+    // than landing exactly flush with the bottom face - the same
+    // "deliberately uses a depth past the box's own height rather than
+    // exactly equal to it" avoidance EmbossProfile's own pitfall note
+    // (features.h) already establishes for the identical
+    // BooleanCombineGeneral() "edge is claimed by 3 or more fragment
+    // loops" coincident-face degeneracy (confirmed directly: bore_depth ==
+    // 10.0 exactly throws that very error). The RESULT's own true bore
+    // depth is therefore the box's own remaining 10.0 - origin.z, not the
+    // tool's own nominal 12.0 - RecognizeCountersinkHoles() must recover
+    // that CLIPPED value, the real test here.
+    const double countersink_radius = 2.0, angle_degrees = 90.0;
+    const double bore_radius = 0.5, tool_bore_depth = 12.0;  // extends 2 units past the box's own bottom face
+    const double true_bore_depth = 10.0;                     // the box's own real depth from origin.z to z=0
+    const Brep result = BuildCountersinkHoleFixture(box, origin, down, countersink_radius, angle_degrees, bore_radius,
+                                                      tool_bore_depth);
+
+    // Sanity: RecognizeHoles() itself never reports the cone at all (it
+    // only ever scans for a full CYLINDER) and RecognizeCounterboreHoles()
+    // finds no cylindrical/cylindrical step here - confirms this fixture
+    // genuinely exercises the gap being closed, not something either
+    // function already handled.
+    Check(RecognizeHoles(result).size() == 1,
+          "sanity: RecognizeHoles() itself reports only the cylindrical pilot bore, never the cone");
+    Check(RecognizeCounterboreHoles(result).empty(),
+          "sanity: RecognizeCounterboreHoles() itself finds no cylindrical/cylindrical step on a countersink");
+
+    const std::vector<CountersinkFeature> found = RecognizeCountersinkHoles(result);
+    Check(found.size() == 1, "RecognizeCountersinkHoles merges the cone and the pilot bore into exactly one compound feature");
+    const CountersinkFeature& cf = found[0];
+    Check(cf.origin.DistanceTo(origin) < 1e-6, "RecognizeCountersinkHoles recovers the countersink's own exact entry point");
+    Check((cf.axis - down).Length() < 1e-6, "RecognizeCountersinkHoles recovers the countersink's own exact drilling direction");
+    // Loose (not 1e-6) tolerance here specifically: unlike origin/axis/
+    // bore_radius/bore_depth (all read off a real SHARED interior edge
+    // between two analytic tool faces, exact to floating-point precision),
+    // the mouth diameter/angle are read off the cone's OWN wide end, whose
+    // true radius is perturbed by a few parts in 1e3 through
+    // BooleanCombineGeneral()'s own SSX curve-intersection sampling
+    // against `solid`'s flat top face (confirmed directly,
+    // dino8_scratch_test: ~0.09% on diameter, ~0.08% on angle at this
+    // fixture's own default SSX tolerance) - a real, small numerical
+    // effect of the general boolean engine itself, not a recognition bug.
+    Check(std::abs(cf.countersink_diameter - 2.0 * countersink_radius) < 0.01,
+          "RecognizeCountersinkHoles recovers the countersink's own mouth diameter to within the general boolean "
+          "engine's own SSX tolerance");
+    Check(std::abs(cf.countersink_angle_degrees - angle_degrees) < 0.2,
+          "RecognizeCountersinkHoles recovers the countersink's own full included angle to within the general "
+          "boolean engine's own SSX tolerance");
+    Check(std::abs(cf.bore_radius - bore_radius) < 1e-6, "RecognizeCountersinkHoles recovers the pilot bore's own exact radius");
+    Check(std::abs(cf.bore_depth - true_bore_depth) < 1e-6,
+          "RecognizeCountersinkHoles recovers the pilot bore's own exact TOTAL (box-clipped) depth, not the tool's "
+          "own nominal, further-reaching bore_depth");
+    Check(cf.through, "RecognizeCountersinkHoles reports this through bore as through");
+
+    const double countersink_depth = (countersink_radius - bore_radius) / std::tan(angle_degrees * ON_PI / 360.0);
+    const double expected_removed = ON_PI * countersink_depth / 3.0 *
+                                         (countersink_radius * countersink_radius +
+                                          countersink_radius * bore_radius + bore_radius * bore_radius) +
+                                     ON_PI * bore_radius * bore_radius * (true_bore_depth - countersink_depth);
+    const Mesh result_mesh = result.TessellateToClosedMesh(64, 64);
+    Check(std::abs(result_mesh.Volume() - (1000.0 - expected_removed)) < 0.5,
+          "the through countersink's own tessellated volume matches the hand-derived closed form (box minus a "
+          "cone frustum minus a cylinder)");
+
+    // Round-trip through MakeCountersinkHole() itself (not just this
+    // file's own fixture builder) - the real test that the recognized
+    // parameters are usable in MakeCountersinkHole()'s own exact units and
+    // convention, even though it builds the shape via a single Revolve()
+    // wall rather than this fixture's discrete ConicalFace/CylindricalFace
+    // pair.
+    const Brep rebuilt = MakeCountersinkHole(box, cf.origin, cf.axis, cf.bore_radius, cf.bore_depth, cf.through,
+                                              cf.countersink_diameter, cf.countersink_angle_degrees);
+    const Mesh rebuilt_mesh = rebuilt.TessellateToClosedMesh(64, 64);
+    Check(std::abs(result_mesh.Volume() - rebuilt_mesh.Volume()) < 0.5,
+          "MakeCountersinkHole(box, recognized_origin, recognized_axis, recognized_bore_radius, "
+          "recognized_bore_depth, recognized_through, recognized_countersink_diameter, "
+          "recognized_countersink_angle_degrees) reproduces the original countersink's own volume");
+  }
+  {
+    // A BLIND countersink at a different, also-standard angle (82 degrees)
+    // - verified structurally (recognized fields + `through`), not via
+    // tessellated volume, for the same disclosed reason MakeHole()'s own
+    // blind case is (BooleanCombineGeneral()'s own blind-hole tessellation
+    // is not reliably closed near the entry rim - see MakeHole()'s own doc
+    // comment, boolean_general.h).
+    const double countersink_radius = 1.5, angle_degrees = 82.0;
+    const double bore_radius = 0.4, bore_depth = 4.0;  // well short of the box's own 10-unit depth
+    const Brep result =
+        BuildCountersinkHoleFixture(box, origin, down, countersink_radius, angle_degrees, bore_radius, bore_depth);
+
+    const std::vector<CountersinkFeature> found = RecognizeCountersinkHoles(result);
+    Check(found.size() == 1, "RecognizeCountersinkHoles merges the blind countersink's cone and pilot bore into one feature");
+    const CountersinkFeature& cf = found[0];
+    Check(cf.origin.DistanceTo(origin) < 1e-6, "RecognizeCountersinkHoles recovers the blind countersink's own exact entry point");
+    Check((cf.axis - down).Length() < 1e-6, "RecognizeCountersinkHoles recovers the blind countersink's own exact drilling direction");
+    // Same loosened tolerance as the through case above, for the same
+    // "read off the SSX-perturbed mouth" reason.
+    Check(std::abs(cf.countersink_diameter - 2.0 * countersink_radius) < 0.01,
+          "RecognizeCountersinkHoles recovers the blind countersink's own mouth diameter to within the general "
+          "boolean engine's own SSX tolerance");
+    Check(std::abs(cf.countersink_angle_degrees - angle_degrees) < 0.2,
+          "RecognizeCountersinkHoles recovers the blind countersink's own full included angle to within the "
+          "general boolean engine's own SSX tolerance");
+    Check(std::abs(cf.bore_radius - bore_radius) < 1e-6, "RecognizeCountersinkHoles recovers the blind pilot bore's own exact radius");
+    Check(std::abs(cf.bore_depth - bore_depth) < 1e-6,
+          "RecognizeCountersinkHoles recovers the blind pilot bore's own exact total depth");
+    Check(!cf.through, "RecognizeCountersinkHoles reports this blind pilot bore as NOT through");
+  }
+  {
+    // Negative controls: a plain single-radius hole (no cone at all) and a
+    // plain cylindrical/cylindrical counterbore (RecognizeCounterboreHoles()'s
+    // own domain, no conical step) both find no countersink here.
+    const Brep plain_hole = MakeHole(box, origin, down, 1.0, /*depth=*/0.0, /*through=*/true);
+    Check(RecognizeCountersinkHoles(plain_hole).empty(), "RecognizeCountersinkHoles finds no cone on a plain single-radius hole");
+
+    const Brep plain_counterbore = CounterboreHole(box, origin, down, /*drill_radius=*/1.0, /*drill_depth=*/6.0,
+                                                    /*counterbore_radius=*/2.0, /*counterbore_depth=*/3.0);
+    Check(RecognizeCountersinkHoles(plain_counterbore).empty(),
+          "RecognizeCountersinkHoles finds no cone on a plain cylindrical/cylindrical counterbore");
+  }
+}
+
 // The boss-side mirror of TestRecognizeCounterboreHolesRoundTrip() above:
 // closes BossFeature's own disclosed "a counterbore/countersink's own
 // second step ... has no boss-side analogue implemented here" gap.
@@ -53165,6 +54434,8 @@ int main() {
   TestPointCloudLoadPtsRejectsMalformedInput();
   TestPointCloudPcdRoundTrips();
   TestPointCloudLoadPcdRejectsMalformedInput();
+  TestPointCloudLasRoundTrips();
+  TestPointCloudLoadLasRejectsMalformedInput();
   TestMeshAreaCountsBothQuadTriangles();
   TestSubDFromBoxSubdividesToExactCatmullClarkCounts();
   TestSubDFromControlMeshRejectsEmptyMesh();
@@ -53227,6 +54498,7 @@ int main() {
   TestMeshLoadObjFanTriangulatesNgonFaces();
   TestMeshSaveOffRoundTrips();
   TestMeshLoadOffRejectsMalformedFiles();
+  TestMeshLoadOffRejectsImplausibleElementCounts();
   TestMeshLoadOffFanTriangulatesNgonFaces();
   TestMeshSaveOffWritesAndReadsCoffColors();
   TestMeshSaveAmfRoundTrips();
@@ -53294,6 +54566,9 @@ int main() {
   TestReplaceFacePlaneConvexPlanarRefusesInvalidInput();
   TestFoldFaceConvexPlanarBoxFrontWallHingedAtBottomEdgeMatchesExactIntegral();
   TestFoldFaceConvexPlanarRefusesInvalidInput();
+  TestFoldFacesConvexPlanarSingleEntryMatchesFoldFaceConvexPlanar();
+  TestFoldFacesConvexPlanarTwoIndependentFoldsMatchesSequentialSingleFolds();
+  TestFoldFacesConvexPlanarRefusesInvalidInput();
   TestMoveVertexConvexPlanarPyramidApexMatchesExactVolumeAndLeavesBaseUntouched();
   TestMoveVertexConvexPlanarRefusesInvalidInput();
   TestMoveFaceConvexPlanarMatchesOffsetFaceForPureNormalTranslate();
@@ -53313,6 +54588,8 @@ int main() {
   TestMoveFacesConvexPlanarRefusesInvalidInput();
   TestDeleteFaceHealConvexPlanarChamferedCubeRecoversExactUnitCube();
   TestDeleteFaceHealConvexPlanarRefusesInvalidInput();
+  TestDeleteFacesHealConvexPlanarTwoIndependentChamfersMatchesEitherSequentialOrder();
+  TestDeleteFacesHealConvexPlanarRefusesInvalidInput();
   TestFilletConvexEdgeUnitCubeTopFrontCorner();
   TestFilletConvexEdgeTaperedRailExactness();
   TestFilletConvexEdgeTaperedClosedFormVolumeMatchesFrustumFormula();
@@ -53644,6 +54921,10 @@ int main() {
   TestMeshUnifyNormalsFixesFlippedAndInvertedFaces();
   TestMeshCloseNakedEdgesWeldsDuplicateAndOffsetVertices();
   TestMeshMergeDuplicateVerticesWeldsCoincidentPairs();
+  TestMeshCheckDetectsNonManifoldVertexAndDuplicateVertexList();
+  TestMeshSplitNonManifoldVertexSplitsBowtie();
+  TestMeshCheckDetectsDisjointPiecesBodyCount();
+  TestMeshSplitDisjointPiecesSplitsIntoSeparateMeshes();
   TestMeshRemoveDegenerateFacesDropsOnlyDegenerateOnes();
   TestMeshRemoveDuplicateFacesKeepsOneCopyPerPolygon();
   TestMeshTrisToQuadsRecombinesTessellatedBoxFaces();
@@ -53695,6 +54976,8 @@ int main() {
   sweep_tests::TestSweep1TwistIsExactOnAStraightRailAndRejectsOnClosedRail();
   sweep_tests::TestSweep1ScaleIsExactContinuouslyOnAStraightRailAndRejectsOnClosedRail();
   sweep_tests::TestSweep1RoadlikeAlignmentMatchesExtrudeOnAStraightRailAndRejectsDegenerateUp();
+  sweep_tests::TestSweep1TwistScheduleMatchesPlainTwistAtEndpointsAndInsertsRealStations();
+  sweep_tests::TestSweep1ScaleScheduleMatchesPlainScaleAtEndpointsAndInsertsRealStations();
   sweep_tests::TestMakeHoleBlindAndThrough();
   sweep_tests::TestMakeHoleRejectsInvalidArguments();
   sweep_tests::TestMakeCounterboreHoleBoxStepped();
@@ -53818,6 +55101,7 @@ int main() {
   TestCounterboreHoleAxisAlignedVolumeAndTopology();
   TestCounterboreHoleBlindAxisAlignedVolume();
   TestRecognizeCounterboreHolesRoundTrip();
+  TestRecognizeCountersinkHolesRoundTrip();
   TestRecognizeSteppedBossesRoundTrip();
   TestRecognizeSteppedHoleChainsRoundTrip();
   TestRecognizeSteppedBossChainsRoundTrip();

@@ -652,9 +652,12 @@ void RegisterAnnotateCommands(CommandEngine& e) {
               if (auto it = o.user_text.find("DimRefObj1"); it != o.user_text.end()) { ref1 = static_cast<ObjectId>(std::strtoull(it->second.c_str(), nullptr, 10)); end1 = o.user_text.count("DimRefEnd1") ? o.user_text.at("DimRefEnd1") : "point"; has1 = true; }
               if (auto it = o.user_text.find("DimRefObj2"); it != o.user_text.end()) { ref2 = static_cast<ObjectId>(std::strtoull(it->second.c_str(), nullptr, 10)); end2 = o.user_text.count("DimRefEnd2") ? o.user_text.at("DimRefEnd2") : "point"; has2 = true; }
             }
+            const std::string tol = GroupToleranceSuffix(ctx, g, old_glyph);
             for (ObjectId id : ctx.Doc().GroupMembers(g)) ctx.Doc().Remove(id);
             double len = 0;
-            if (BuildLinearDimensionGroup(ctx, p0, p1, L, h, has1, ref1, end1, has2, ref2, end2, &len) >= 0) {
+            const int new_g = BuildLinearDimensionGroup(ctx, p0, p1, L, h, has1, ref1, end1, has2, ref2, end2, &len);
+            if (new_g >= 0) {
+              ReapplyToleranceSuffix(ctx, new_g, tol);
               ++updated;
               ctx.Print("UpdateDimensions:   " + std::string(L.aligned ? "DimAligned" : "DimLinear") + " now measures " + Fmt(len));
             } else ++skipped;
@@ -673,9 +676,12 @@ void RegisterAnnotateCommands(CommandEngine& e) {
               if (auto it = o.user_text.find("DimRefObj2"); it != o.user_text.end()) { r1 = static_cast<ObjectId>(std::strtoull(it->second.c_str(), nullptr, 10)); e1 = o.user_text.count("DimRefEnd2") ? o.user_text.at("DimRefEnd2") : "point"; h1 = true; }
               if (auto it = o.user_text.find("DimRefObj3"); it != o.user_text.end()) { r2 = static_cast<ObjectId>(std::strtoull(it->second.c_str(), nullptr, 10)); e2 = o.user_text.count("DimRefEnd3") ? o.user_text.at("DimRefEnd3") : "point"; h2 = true; }
             }
+            const std::string tol = GroupToleranceSuffix(ctx, g, old_glyph);
             for (ObjectId id : ctx.Doc().GroupMembers(g)) ctx.Doc().Remove(id);
             double deg = 0;
-            if (BuildAngleDimensionGroup(ctx, v, p1, p2, pl, h, h0, r0, e0, h1, r1, e1, h2, r2, e2, &deg) >= 0) {
+            const int new_g = BuildAngleDimensionGroup(ctx, v, p1, p2, pl, h, h0, r0, e0, h1, r1, e1, h2, r2, e2, &deg);
+            if (new_g >= 0) {
+              ReapplyToleranceSuffix(ctx, new_g, tol);
               ++updated;
               ctx.Print("UpdateDimensions:   DimAngle now measures " + Fmt(deg) + " deg");
             } else ++skipped;
@@ -691,9 +697,12 @@ void RegisterAnnotateCommands(CommandEngine& e) {
               if (o.group_id != g) continue;
               if (auto it = o.user_text.find("DimRefObj1"); it != o.user_text.end()) { ref1 = static_cast<ObjectId>(std::strtoull(it->second.c_str(), nullptr, 10)); has1 = true; }
             }
+            const std::string tol = GroupToleranceSuffix(ctx, g, old_glyph);
             for (ObjectId id : ctx.Doc().GroupMembers(g)) ctx.Doc().Remove(id);
             double val = 0;
-            if (BuildRadiusDimensionGroup(ctx, center, radius, L, h, has1, ref1, &val) >= 0) {
+            const int new_g = BuildRadiusDimensionGroup(ctx, center, radius, L, h, has1, ref1, &val);
+            if (new_g >= 0) {
+              ReapplyToleranceSuffix(ctx, new_g, tol);
               ++updated;
               ctx.Print("UpdateDimensions:   " + kind + " now measures " + Fmt(val));
             } else ++skipped;
@@ -757,7 +766,7 @@ void RegisterAnnotateCommands(CommandEngine& e) {
         }
         ctx.Print("UpdateDimensions: " + std::to_string(updated) + " dimension(s) regenerated" + (skipped ? ", " + std::to_string(skipped) + " skipped (no resolvable layout/points)" : ""));
       }), CommandStatus::Implemented,
-      "Re-evaluates every associative dimension's anchor(s) - DimLinear/DimAligned/DimRotated, DimAngle, DimRadius/DimDiameter, Leader, Centermark, CenterLine - and rebuilds its curve/arrow/text geometry from their current position, replacing the old baked geometry in place - the associative counterpart to those dimension types' static bake, following the same explicit-recompute shape as UpdateSectionViews (cmd_drafting2.cpp) rather than an automatic hook on every document edit.");
+      "Re-evaluates every associative dimension's anchor(s) - DimLinear/DimAligned/DimRotated, DimAngle, DimRadius/DimDiameter, Leader, Centermark, CenterLine - and rebuilds its curve/arrow/text geometry from their current position, replacing the old baked geometry in place - the associative counterpart to those dimension types' static bake, following the same explicit-recompute shape as UpdateSectionViews (cmd_drafting2.cpp) rather than an automatic hook on every document edit. This window fixes a gap in that rebuild for DimLinear/DimAligned, DimAngle and DimRadius/DimDiameter: a DimTolerance suffix (cmd_drafting2.cpp) on one of these used to be silently dropped, since the rebuilt text was always the freshly recomputed measurement alone. It is now diffed against the DimTolerance.Base tag DimTolerance itself leaves and re-appended to whatever the new measurement is (GroupToleranceSuffix/ReapplyToleranceSuffix, annotate_common.h) - a dimension carrying a tolerance keeps it through a move/edit, not just through the DimTolerance command's own idempotent re-run. Leader was never affected (its text is a static label copied verbatim, not recomputed), and Centermark/CenterLine have no text to lose.");
 }
 
 }  // namespace dino8::app

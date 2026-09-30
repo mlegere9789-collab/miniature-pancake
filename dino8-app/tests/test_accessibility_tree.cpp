@@ -45,9 +45,17 @@
 // environments builder produces one Label: value row per render Environment
 // fact (background type/colour, ground plane, sun/sky), reusing the
 // Properties panel's own PropertyEntry shape under the "Environments" name,
-// matching DrawEnvironmentsPanel; and the audit results builder produces one
+// matching DrawEnvironmentsPanel; the audit results builder produces one
 // row per invalid object naming its id and type, with the failure reason as
-// the Description, matching Application::AuditResults.
+// the Description, matching Application::AuditResults; the undo/redo
+// history builders each produce one numbered row per label, matching
+// Document::UndoLabels()/RedoLabels() and DrawUndoMultipleWindow's own
+// numbered rows; the hatch patterns builder produces one row per pattern
+// naming it with its own description text as the Description, matching
+// HatchLibrary::Instance().Patterns(); and the plugins builder produces one
+// row per loaded plug-in naming its name/version/status with its command and
+// flow-node counts (and load error, if any) as the Description, matching
+// plugins::Manager::Get().Plugins().
 // This needs no display, no D-Bus session, and no AT-SPI2 build at all, so
 // it runs on every platform and every CI job regardless of whether
 // AccessibilityLinux.cpp itself was compiled in this build (see
@@ -98,6 +106,12 @@ using dino8::platform::LightSummary;
 using dino8::platform::AuditIssueSummary;
 using dino8::platform::BuildAuditResultsNode;
 using dino8::platform::BuildEnvironmentsPanelNode;
+using dino8::platform::BuildUndoHistoryNode;
+using dino8::platform::BuildRedoHistoryNode;
+using dino8::platform::BuildHatchPatternsNode;
+using dino8::platform::BuildPluginsNode;
+using dino8::platform::HatchPatternSummary;
+using dino8::platform::PluginSummary;
 
 namespace {
 int failures = 0;
@@ -754,6 +768,91 @@ int main() {
     Check(empty_audit.children.empty(), "no invalid objects -> no ListItem children, not a missing accessible");
   }
 
+  // Undo/Redo History: one numbered ListItem per label, matching
+  // Document::UndoLabels()/RedoLabels() and DrawUndoMultipleWindow's own
+  // "N. label" rows (see BuildUndoHistoryNode/BuildRedoHistoryNode).
+  {
+    std::vector<std::string> labels = {"Move", "Line", "Delete"};
+    const dino8::platform::AccessibleNode undo = BuildUndoHistoryNode(labels);
+    Check(undo.name == "Undo History", "undo history list is named \"Undo History\"");
+    Check(undo.role == dino8::platform::AccessibleRole::List, "undo history list role is List");
+    Check(undo.children.size() == 3, "one ListItem per undo label");
+    if (undo.children.size() == 3) {
+      Check(undo.children[0].role == dino8::platform::AccessibleRole::ListItem, "undo row role is ListItem");
+      Check(undo.children[0].name == "1. Move", "first row is numbered 1 and named after the most recent edit");
+      Check(undo.children[2].name == "3. Delete", "third row is numbered 3");
+    }
+
+    const dino8::platform::AccessibleNode redo = BuildRedoHistoryNode(labels);
+    Check(redo.name == "Redo History", "redo history list is named \"Redo History\", not \"Undo History\"");
+    Check(redo.children.size() == 3, "one ListItem per redo label");
+    if (redo.children.size() == 3) Check(redo.children[0].name == "1. Move", "redo rows are numbered the same way");
+  }
+  {
+    const dino8::platform::AccessibleNode empty_undo = BuildUndoHistoryNode({});
+    Check(empty_undo.name == "Undo History", "still named \"Undo History\" with nothing to undo");
+    Check(empty_undo.children.empty(), "no undo labels -> no ListItem children, not a missing accessible");
+    const dino8::platform::AccessibleNode empty_redo = BuildRedoHistoryNode({});
+    Check(empty_redo.name == "Redo History", "still named \"Redo History\" with nothing to redo");
+    Check(empty_redo.children.empty(), "no redo labels -> no ListItem children, not a missing accessible");
+  }
+
+  // Hatch Patterns: one ListItem per pattern naming it with its own
+  // description text as the Description, matching
+  // HatchLibrary::Instance().Patterns() (see BuildHatchPatternsNode).
+  {
+    std::vector<HatchPatternSummary> patterns;
+    patterns.push_back({"ANSI31", "ANSI Iron, Brick, Stone masonry"});
+    patterns.push_back({"HONEY", "Honeycomb pattern"});
+    const dino8::platform::AccessibleNode list = BuildHatchPatternsNode(patterns);
+    Check(list.name == "Hatch Patterns", "hatch patterns list is named \"Hatch Patterns\"");
+    Check(list.role == dino8::platform::AccessibleRole::List, "hatch patterns list role is List");
+    Check(list.description == "2 hatch patterns", "pattern count is carried as the list's Description");
+    Check(list.children.size() == 2, "two ListItem children, one per pattern");
+    if (list.children.size() == 2) {
+      Check(list.children[0].role == dino8::platform::AccessibleRole::ListItem, "hatch row role is ListItem");
+      Check(list.children[0].name == "ANSI31", "first row names the pattern");
+      Check(list.children[0].description == "ANSI Iron, Brick, Stone masonry",
+            "first row's own description text is its Description");
+      Check(list.children[1].name == "HONEY", "second row names its own pattern");
+    }
+  }
+  {
+    const dino8::platform::AccessibleNode empty_patterns = BuildHatchPatternsNode({});
+    Check(empty_patterns.name == "Hatch Patterns", "still named \"Hatch Patterns\" with no patterns loaded");
+    Check(empty_patterns.children.empty(), "no patterns -> no ListItem children, not a missing accessible");
+  }
+
+  // Plug-ins: one ListItem per loaded plug-in naming its name/version/status
+  // with its command and flow-node counts (and load error, if any) as the
+  // Description, matching plugins::Manager::Get().Plugins() (see
+  // BuildPluginsNode).
+  {
+    std::vector<PluginSummary> plugins;
+    plugins.push_back({"Fillet Helper", "1.2", true, "", 3, 1});
+    plugins.push_back({"Broken Plug-in", "0.9", false, "undefined symbol: dino8_register", 0, 0});
+    const dino8::platform::AccessibleNode list = BuildPluginsNode(plugins);
+    Check(list.name == "Plug-ins", "plug-ins list is named \"Plug-ins\"");
+    Check(list.role == dino8::platform::AccessibleRole::List, "plug-ins list role is List");
+    Check(list.description == "2 plug-in(s)", "plug-in count is carried as the list's Description");
+    Check(list.children.size() == 2, "two ListItem children, one per plug-in");
+    if (list.children.size() == 2) {
+      Check(list.children[0].role == dino8::platform::AccessibleRole::ListItem, "plug-in row role is ListItem");
+      Check(list.children[0].name == "Fillet Helper 1.2, Loaded", "first row names the plug-in's name/version/status");
+      Check(list.children[0].description == "3 commands, 1 flow node",
+            "first row's Description gives its command and flow-node counts");
+      Check(list.children[1].name == "Broken Plug-in 0.9, Error", "second row's status reflects its load failure");
+      Check(list.children[1].description == "0 commands, 0 flow nodes; undefined symbol: dino8_register",
+            "second row's Description appends the load error after its counts");
+    }
+  }
+  {
+    const dino8::platform::AccessibleNode empty_plugins = BuildPluginsNode({});
+    Check(empty_plugins.name == "Plug-ins", "still named \"Plug-ins\" with none loaded");
+    Check(empty_plugins.description == "0 plug-in(s)", "empty plug-in list still carries a 0-count Description");
+    Check(empty_plugins.children.empty(), "no plug-ins -> no ListItem children, not a missing accessible");
+  }
+
   // BuildAccessibleTree accepts extra top-level regions (menu bar, panels)
   // alongside the always-present command line - the shape the live bridge
   // (Accessibility.cpp::UpdateAccessibility) assembles every frame.
@@ -780,18 +879,24 @@ int main() {
     dino8::platform::AccessibleNode document_notes = BuildDocumentNotesNode("");
     dino8::platform::AccessibleNode environments = BuildEnvironmentsPanelNode({});
     dino8::platform::AccessibleNode audit_results = BuildAuditResultsNode({});
+    dino8::platform::AccessibleNode undo_history = BuildUndoHistoryNode({});
+    dino8::platform::AccessibleNode redo_history = BuildRedoHistoryNode({});
+    dino8::platform::AccessibleNode hatch_patterns = BuildHatchPatternsNode({});
+    dino8::platform::AccessibleNode plugins = BuildPluginsNode({});
 
     const dino8::platform::AccessibleNode root = BuildAccessibleTree(
         "Dino8", "Command: ", "", {},
         {menu_bar, cmd_options, layers, props, viewports, activity_log, named_views, named_cplanes, linetypes,
          materials, clipping_planes, layouts, block_manager, layer_state_manager, document_user_text, lights,
-         annotation_styles, document_notes, environments, audit_results});
-    Check(root.children.size() == 21,
+         annotation_styles, document_notes, environments, audit_results, undo_history, redo_history, hatch_patterns,
+         plugins});
+    Check(root.children.size() == 25,
           "command line + menu bar + command options + layers + properties + viewports + activity log + "
           "named views + named cplanes + linetypes + materials + clipping planes + layouts + block manager + "
           "layer state manager + document user text + lights + annotation styles + document notes + "
-          "environments + audit results = 21 top-level children");
-    if (root.children.size() == 21) {
+          "environments + audit results + undo history + redo history + hatch patterns + plugins = "
+          "25 top-level children");
+    if (root.children.size() == 25) {
       Check(root.children[0].role == AccessibleRole::Log, "child 0 is still the command line");
       Check(root.children[1].role == dino8::platform::AccessibleRole::MenuBar, "child 1 is the menu bar");
       Check(root.children[2].name == "Command Options", "child 2 is the command options list");
@@ -813,6 +918,10 @@ int main() {
       Check(root.children[18].role == AccessibleRole::Log, "child 18 is the document notes Log accessible");
       Check(root.children[19].name == "Environments", "child 19 is the environments panel");
       Check(root.children[20].name == "Audit Results", "child 20 is the audit results panel");
+      Check(root.children[21].name == "Undo History", "child 21 is the undo history panel");
+      Check(root.children[22].name == "Redo History", "child 22 is the redo history panel");
+      Check(root.children[23].name == "Hatch Patterns", "child 23 is the hatch patterns panel");
+      Check(root.children[24].name == "Plug-ins", "child 24 is the plug-ins panel");
     }
   }
 

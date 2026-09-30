@@ -115,6 +115,47 @@ class Marketplace {
   // that isn't a failure, there's just nothing to compare against.
   VerifyStatus VerifyInstalled(const std::string& id, std::string& detail) const;
 
+  struct VerifyResult {
+    std::string id, name, detail;
+    VerifyStatus status = VerifyStatus::Error;
+  };
+
+  // VerifyInstalled, run once for every entry in the currently loaded index
+  // that's actually installed via the marketplace right now (the same scope
+  // VerifyInstalled itself requires - anything else would just report
+  // NotInstalled) - so checking a whole install doesn't mean clicking
+  // Verify, or running PluginMarketplaceVerify, once per id by hand. Order
+  // matches the loaded index; an id with nothing installed at its own
+  // destination is left out of the result entirely, not reported as
+  // NotInstalled - there is nothing to verify there, unlike a direct
+  // VerifyInstalled(id) call, which a caller might make about a specific id
+  // it expected to be installed.
+  std::vector<VerifyResult> VerifyAll() const;
+
+  // True if any entry in the currently loaded index is currently installed
+  // via the marketplace (IsLoadedAt(DestPath(entry)) in Marketplace.cpp) -
+  // a cheap (no file hashing) check for enabling/disabling a "verify
+  // everything" or "uninstall everything" control, since VerifyAll's own
+  // per-entry sha256 hashing is too costly to run every UI frame just to
+  // decide whether a button should be clickable.
+  bool AnyInstalled() const;
+
+  // Uninstalls every entry in the currently loaded index that's currently
+  // installed via the marketplace, through the same UninstallById a single
+  // row's Uninstall button already uses - so each one cascades its own
+  // now-unneeded dependencies exactly like uninstalling it by hand would.
+  // `removed` collects every id actually removed (the entries UninstallAll
+  // targeted directly, plus whatever each one's own cascade took with it,
+  // in the order UninstallById reports them) with no duplicate: an id that
+  // an earlier target's cascade already removed is skipped rather than
+  // re-attempted (which would otherwise show up as a spurious failure,
+  // since it is no longer installed by the time its own turn comes up).
+  // `failed` collects "id: error" for a target whose own uninstall call
+  // failed outright (not a merely-already-gone-via-cascade id, which is
+  // simply skipped, never counted as a failure). Returns false if `failed`
+  // ends up non-empty.
+  bool UninstallAll(std::vector<std::string>& removed, std::vector<std::string>& failed);
+
  private:
   // `chain` is the sequence of ids currently being resolved (this call's own
   // id last), so a dependency cycle is caught as soon as it repeats one

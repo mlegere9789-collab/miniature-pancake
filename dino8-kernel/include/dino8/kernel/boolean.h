@@ -1247,6 +1247,87 @@ Brep ReplaceFacePlanesConvexPlanar(const Brep& solid, const std::vector<std::pai
 // each case.
 Brep MoveFacesConvexPlanar(const Brep& solid, const std::vector<std::pair<int, ON_Xform>>& face_moves);
 
+// One entry of a `FoldFacesConvexPlanar()` batch below: the same three
+// positional arguments `FoldFaceConvexPlanar()` above takes one hinge fold
+// at a time.
+struct FaceFold {
+  int face_index;
+  int hinge_loop_index;
+  double angle_radians;
+};
+
+// The batch generalization of `FoldFaceConvexPlanar()` above that
+// `ReplaceFacePlanesConvexPlanar()`/`MoveFacesConvexPlanar()` are of
+// `ReplaceFacePlaneConvexPlanar()`/`MoveFaceConvexPlanar()`: hinge a
+// caller-chosen SET of named faces, each about its OWN `hinge_loop_index`
+// edge by its own `angle_radians`, in one call.
+//
+// Each entry is first turned into the identical rotated `(face_index,
+// new_plane)` pair `FoldFaceConvexPlanar()` itself computes for one face -
+// this function duplicates none of that math, it only flattens `folds`
+// into that list - and the whole flattened list is handed to
+// `ReplaceFacePlanesConvexPlanar()` in a SINGLE call, so every named
+// face's own new boundary is derived once from the complete, final plane
+// set, not through several sequential `FoldFaceConvexPlanar()` calls.
+//
+// Verified two ways (tests/test_basic.cpp): (1) a single-entry `folds`
+// list reproduces `FoldFaceConvexPlanar()`'s own output bit-for-bit,
+// vertex for vertex - proof the flattening step introduces no divergence
+// of its own; (2) hinging all 4 side walls of a box about their own
+// bottom edge (the box's own bottom face) by the identical shared angle
+// exactly reproduces `DraftFacesConvexPlanar(solid, {those 4 faces},
+// bottom_plane, angle)`'s own result bit-for-bit - a hinge about a face's
+// own edge lying exactly on a neutral plane is mathematically the same
+// rotation `DraftFacesConvexPlanar()` computes via that neutral plane's
+// intersection line, so this is a genuine cross-check against an
+// independently-verified sibling (itself checked against the classical
+// frustum-of-a-pyramid closed form), not merely a plausible-looking
+// number.
+//
+// Unlike `DraftFacesConvexPlanar()`, which requires every named face to
+// share ONE caller-supplied neutral plane, `folds` lets each entry name a
+// COMPLETELY DIFFERENT hinge line - e.g. one face hinged at its own
+// bottom edge, another at its own top edge - a combination
+// `DraftFacesConvexPlanar()` cannot express in a single call at all.
+//
+// `folds` must be non-empty - throws std::invalid_argument otherwise. Two
+// entries naming the same `face_index` are refused as ambiguous, the same
+// discipline `ReplaceFacePlanesConvexPlanar()` already enforces. Every
+// other failure mode (out-of-range `face_index`, `hinge_loop_index` out of
+// range for that face's own loop, a degenerate zero-length hinge edge, or
+// a resulting plane that collapses some face's own boundary) is the exact
+// per-entry check `FoldFaceConvexPlanar()` already makes, applied to each
+// entry before any plane is flattened into the batch.
+Brep FoldFacesConvexPlanar(const Brep& solid, const std::vector<FaceFold>& folds);
+
+// The batch generalization of `DeleteFaceHealConvexPlanar()` above: drop a
+// caller-chosen SET of named faces' own planes from the solid's half-space
+// set AT ONCE, then rebuild every OTHER face once as the intersection of
+// every remaining plane - the same "start from an oversized polygon per
+// face, clip against every other remaining face's own half-space"
+// reconstruction `DeleteFaceHealConvexPlanar()` already uses, just with
+// `face_indices.size()` fewer half-spaces in the list instead of one.
+//
+// This is the genuine "one call, many dropped faces" sibling
+// `ReplaceFacePlanesConvexPlanar()`/`MoveFacesConvexPlanar()`/
+// `FoldFacesConvexPlanar()` already give their own single-face ancestors:
+// two independent chamfer-style extra faces on the same solid, each
+// removable on its own via a single `DeleteFaceHealConvexPlanar()` call,
+// are removed together in one pass here and reconstruct the identical
+// result either order of two sequential single calls would reach -
+// verified directly (`TestDeleteFacesHealConvexPlanarTwoIndependentChamfersMatchesEitherSequentialOrder`,
+// tests/test_basic.cpp), not merely assumed from the single-face case.
+//
+// `face_indices` must be non-empty - throws std::invalid_argument
+// otherwise. A duplicate `face_index` is refused as ambiguous, the same
+// discipline `ReplaceFacePlanesConvexPlanar()` already enforces for a
+// duplicate entry. Same convex-solid precondition (checked against the
+// ORIGINAL `solid`, before any named face is dropped) and the same two
+// per-remaining-face failure modes `DeleteFaceHealConvexPlanar()` already
+// documents - a collapsed (<3 vertices or ~0 area) boundary, or a
+// genuinely unbounded one - as `DeleteFaceHealConvexPlanar()` above.
+Brep DeleteFacesHealConvexPlanar(const Brep& solid, const std::vector<int>& face_indices);
+
 // Exact B-rep boolean between two solids where either (or both) may have
 // a CYLINDRICAL face, not just planar ones - what closes the gap
 // BooleanCombinePlanar's own PlanarFaces()-only precondition leaves open:

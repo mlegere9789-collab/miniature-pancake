@@ -137,6 +137,37 @@ connection, the same way a screen reader would - to prove:
       "MakeInvalidCurve" then "Audit" pair of commands runs (see
       cmd_analyze.cpp) - mirroring Application::AuditResults(), the same
       before/after pattern check 10 uses for Named Views.
+  24. An "Undo History" accessible (role LIST) is discoverable, starts
+      empty, and after the first real "Line" command runs shows two
+      numbered entries - "1. Line" (this edit, still pending) and
+      "2. Circle" (the earlier Circle, finalized when this Line's own
+      BeginChange fired) - mirroring Document::UndoLabels() and the same
+      numbered rows DrawUndoMultipleWindow(app, /*redo=*/false) shows.
+  25. A "Redo History" accessible (role LIST) is discoverable, starts
+      empty, and gains a "1. MakeInvalidCurve" entry - the same label Undo
+      History's own top entry loses - once a real "Undo" command runs
+      after "MakeInvalidCurve"/"Audit" (check 23) - mirroring
+      Document::RedoLabels() and DrawUndoMultipleWindow(app, /*redo=*/true).
+  26. A "Hatch Patterns" accessible (role LIST) is discoverable and starts
+      non-empty with the built-in "SOLID" pattern first - mirroring
+      HatchLibrary::Instance().Patterns(), which always carries its
+      built-ins even with no data/*.pat files present (unlike Named
+      Views/CPlanes, the same "never empty" shape check 22 uses for
+      Environments). No mutation check here: applying a pattern
+      (cmd_drafting2.cpp's Hatch command) needs a real boundary selection
+      first, which this script does not set up, the same reason check 13
+      skips a mutation check for Materials.
+  27. A "Plug-ins" accessible (role LIST) is discoverable and starts
+      non-empty: Application's own constructor scans the binary's own
+      exe_dir/plugins folder at startup (Manager::ScanDefaultFolders), and
+      this repository builds and installs its bundled example plug-ins
+      (mesh_tools, curve_tools, analysis_tools, sample) right there by
+      default - so this checks only that each already-loaded entry's name
+      is non-empty and reports itself Loaded/Error, not a specific count or
+      order (directory iteration order is filesystem-dependent) - mirroring
+      plugins::Manager::Get().Plugins(). No further mutation check here:
+      loading an additional plug-in needs a real, separate shared-library
+      file on disk, which this script does not provide.
 
 This is a real integration test: at-spi2-registryd is the actual daemon
 GNOME uses, pyatspi is the actual library screen readers use, and Dino8 is
@@ -249,6 +280,7 @@ def main():
     sync12 = os.path.join(tmp, "sync12")
     sync13 = os.path.join(tmp, "sync13")
     sync14 = os.path.join(tmp, "sync14")
+    sync15 = os.path.join(tmp, "sync15")
     sync_final = os.path.join(tmp, "sync_final")
     script_path = os.path.join(tmp, "script.txt")
     with open(script_path, "w") as f:
@@ -377,6 +409,15 @@ def main():
         # new entry.
         f.write("MakeInvalidCurve\n")
         f.write("Audit\n")
+        f.write(f"@waitfile {sync15}\n")
+        # Same shape again: Undo is also a plain, single-frame command (see
+        # Document::Undo, Document.cpp), so one more sync point is enough to
+        # observe Redo History gain the entry Undo History just lost -
+        # MakeInvalidCurve's own BeginChange left its label as the topmost
+        # pending Undo History entry (see check 22/23's own note on
+        # Environments/Audit Results not touching the object undo stack),
+        # so this is what Undo hands to Redo History.
+        f.write("Undo\n")
         f.write(f"@waitfile {sync_final}\n")
 
     procs = []
@@ -662,6 +703,64 @@ def main():
             else:
                 ok("Audit Results has no ListItem children before any Audit run")
 
+        undo_history = find_child_by_name(app, "Undo History", 10)
+        if undo_history is None:
+            fail('"Undo History" accessible not found among the application\'s children')
+        else:
+            ok('"Undo History" accessible is discoverable via the real AT-SPI2 desktop')
+            if undo_history.childCount != 0:
+                fail(f"Undo History has {undo_history.childCount} children in a fresh document (expected 0)")
+            else:
+                ok("Undo History has no ListItem children in a fresh document")
+
+        redo_history = find_child_by_name(app, "Redo History", 10)
+        if redo_history is None:
+            fail('"Redo History" accessible not found among the application\'s children')
+        else:
+            ok('"Redo History" accessible is discoverable via the real AT-SPI2 desktop')
+            if redo_history.childCount != 0:
+                fail(f"Redo History has {redo_history.childCount} children in a fresh document (expected 0)")
+            else:
+                ok("Redo History has no ListItem children in a fresh document")
+
+        hatch_patterns = find_child_by_name(app, "Hatch Patterns", 10)
+        if hatch_patterns is None:
+            fail('"Hatch Patterns" accessible not found among the application\'s children')
+        else:
+            ok('"Hatch Patterns" accessible is discoverable via the real AT-SPI2 desktop')
+            if hatch_patterns.childCount < 1:
+                fail("Hatch Patterns has no ListItem children (expected at least the built-in \"SOLID\" pattern)")
+            else:
+                first_pattern = hatch_patterns.getChildAtIndex(0)
+                if first_pattern is None or first_pattern.name != "SOLID":
+                    fail(f"Hatch Patterns' first child is not SOLID (got {first_pattern.name if first_pattern else None!r})")
+                else:
+                    ok('Hatch Patterns\' first ListItem names the built-in "SOLID" pattern')
+
+        plugins_node = find_child_by_name(app, "Plug-ins", 10)
+        if plugins_node is None:
+            fail('"Plug-ins" accessible not found among the application\'s children')
+        else:
+            ok('"Plug-ins" accessible is discoverable via the real AT-SPI2 desktop')
+            # Non-empty by default: Application's own constructor scans the
+            # binary's own exe_dir/plugins folder at startup, and this
+            # repository's bundled example plug-ins land right there by
+            # default build options (DINO8_BUILD_SAMPLE_PLUGIN/
+            # DINO8_BUILD_EXAMPLE_PLUGINS, both ON) - so this only checks
+            # each row is well-formed, not a specific count or order
+            # (directory iteration order is filesystem-dependent).
+            if plugins_node.childCount < 1:
+                fail("Plug-ins has no ListItem children (expected at least the bundled example plug-ins)")
+            else:
+                bad = [plugins_node.getChildAtIndex(j).name for j in range(plugins_node.childCount)
+                       if not (plugins_node.getChildAtIndex(j).name or "").endswith(("Loaded", "Error"))]
+                if bad:
+                    fail(f"Plug-ins has row(s) not ending in \"Loaded\"/\"Error\" (got {bad!r})")
+                else:
+                    names = [plugins_node.getChildAtIndex(j).name for j in range(plugins_node.childCount)]
+                    ok(f"Plug-ins lists {plugins_node.childCount} already-loaded bundled plug-in(s), each naming "
+                       f"its own Loaded/Error status ({names!r})")
+
         viewports = find_child_by_name(app, "Viewports", 10)
         if viewports is None:
             fail('"Viewports" accessible not found among the application\'s children')
@@ -781,6 +880,27 @@ def main():
                  f"(still {properties_after!r})")
         elif properties_after is not None:
             ok(f"Properties' object count updates after a command runs ({properties_before!r} -> {properties_after!r})")
+
+        # This first Line's own BeginChange finalized Circle's edit (the
+        # same fact the Activity Log comment just below relies on), so at
+        # this exact point - after the first Line ran, before the second
+        # one below - Undo History should read pending "Line" over
+        # finalized "Circle", the same two-entry snapshot
+        # DrawUndoMultipleWindow(app, /*redo=*/false) would show right now.
+        if undo_history is not None:
+            deadline = time.time() + 10
+            names = []
+            while time.time() < deadline:
+                names = [undo_history.getChildAtIndex(j).name for j in range(undo_history.childCount)]
+                if names:
+                    break
+                time.sleep(0.2)
+            if names != ["1. Line", "2. Circle"]:
+                fail(f"Undo History does not read [\"1. Line\", \"2. Circle\"] after the first Line command ran "
+                     f"within 10s (got {names!r})")
+            else:
+                ok('Undo History reads ["1. Line", "2. Circle"] - pending Line over finalized Circle - '
+                   "once the first Line command runs")
 
         # Line's own edit is not finalized into the Activity Log by its own
         # completion - Document::FinalizePending() only runs when the *next*
@@ -1083,6 +1203,43 @@ def main():
                 ok(f"Audit Results gains a new entry naming the invalid object's id and type, with its failure "
                    f"reason as its Description, once \"MakeInvalidCurve\"/\"Audit\" run "
                    f"({newest_issue.name!r}, {newest_issue.description!r})")
+
+        undo_history_count_before = undo_history.childCount if undo_history is not None else None
+        redo_history_count_before = redo_history.childCount if redo_history is not None else None
+
+        open(sync15, "w").close()  # let the script run "Undo"
+
+        if redo_history is not None:
+            deadline = time.time() + 10
+            newest_redo = None
+            while time.time() < deadline:
+                count = redo_history.childCount
+                if redo_history_count_before is not None and count > redo_history_count_before:
+                    newest_redo = redo_history.getChildAtIndex(0)
+                    break
+                time.sleep(0.2)
+            if newest_redo is None:
+                fail(f"Redo History did not gain a new entry after \"Undo\" ran within 10s "
+                     f"(childCount stayed at {redo_history_count_before!r})")
+            elif newest_redo.name != "1. MakeInvalidCurve":
+                fail(f"Redo History's new entry does not name the undone MakeInvalidCurve edit (got {newest_redo.name!r})")
+            else:
+                ok('Redo History gains a "1. MakeInvalidCurve" entry once "Undo" runs')
+
+        if undo_history is not None and undo_history_count_before is not None:
+            deadline = time.time() + 10
+            count = undo_history_count_before
+            while time.time() < deadline:
+                count = undo_history.childCount
+                if count < undo_history_count_before:
+                    break
+                time.sleep(0.2)
+            if count >= undo_history_count_before:
+                fail(f"Undo History did not lose an entry after \"Undo\" ran within 10s "
+                     f"(childCount stayed at {count!r})")
+            else:
+                ok(f"Undo History loses its topmost entry once \"Undo\" runs "
+                   f"({undo_history_count_before!r} -> {count!r})")
 
         open(sync_final, "w").close()  # let the app finish its remaining frames/script and exit
 

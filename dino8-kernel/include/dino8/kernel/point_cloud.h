@@ -248,6 +248,65 @@ class PointCloud {
   // `FIELDS` implies, or any column fails to parse as a number.
   static Result LoadPcd(const std::string& path, PointCloud& out_cloud);
 
+  // Writes this cloud to a binary ASPRS LAS 1.2 (.las) file - the fourth
+  // point-cloud interchange format this kernel gets a path to, and the one
+  // real LiDAR/survey tooling (PDAL, LAStools, most GIS/point-cloud
+  // software) actually reads and writes, unlike XYZ/.pts/.pcd's plain-text
+  // conventions above. Writes Point Data Record Format 0 (position only)
+  // if this cloud has no colors, or Format 2 (position + RGB) if
+  // `HasColors()` is true - the same "no fabricating a column this cloud
+  // has no data for" discipline SaveXyz()/SavePts()/SavePcd() already apply
+  // to their own formats. Normals are NOT written: no LAS point data format
+  // has a normal field at all (LAS is a LiDAR *scan* format - normals are
+  // something a later processing step derives, never something a scanner
+  // itself records), so there is no convention to follow here, the same
+  // honest-omission reasoning SavePts() already gives for its own missing
+  // normal column.
+  //
+  // Positions are quantized, a fundamental property of the LAS format
+  // itself (every coordinate is stored as a scaled int32, not a native
+  // double) rather than a shortcut this writer takes: each axis gets its
+  // own offset (that axis' own minimum value over the whole cloud, the
+  // ordinary LAS convention for keeping the stored integers small) and a
+  // fixed scale factor of 0.001 (LAS' own common millimeter-precision
+  // convention), so `stored_int = round((coordinate - axis_offset) / 0.001)`
+  // and decoding is exact given that int - a round trip through
+  // SaveLas()/LoadLas() reproduces the original position only to within
+  // half the scale factor (0.0005), not bit-for-bit. Colors, in contrast,
+  // round-trip exactly: each 8-bit channel is scaled to LAS' own 16-bit
+  // Red/Green/Blue fields by the exact factor 257 (255 * 257 == 65535, so
+  // `channel * 257` never exceeds a uint16, and integer-dividing back by
+  // 257 recovers the original 0-255 value with no remainder for every
+  // possible input). Returns Result::Failed if the file can't be opened
+  // for writing, or if this cloud is empty (there is no meaningful
+  // per-axis offset/bounding box to derive from zero points).
+  Result SaveLas(const std::string& path) const;
+
+  // Reads a binary LAS file written by SaveLas() (or a compatible LAS 1.2
+  // file using Point Data Record Format 0 or 2) into `out_cloud`. A
+  // deliberately narrow reader, not a general LAS 1.0-1.4 parser: the
+  // 227-byte LAS 1.2 public header block is required exactly - file
+  // signature `LASF`, version major/minor `1`/`2`, header size `227`, and
+  // offset-to-point-data `227` (i.e. no Variable Length Records, which this
+  // reader does not understand at all) - and the Point Data Format ID must
+  // be `0` (20-byte records: position only) or `2` (26-byte records:
+  // position + RGB), with the header's own declared point-data record
+  // length matching that format exactly. Every other LAS version, any file
+  // carrying VLRs, and every other point data format (1/3/4/5/... -
+  // GPS time, waveform data, extra bytes, and every other richer LAS
+  // feature) are rejected outright rather than silently misread, the same
+  // "require the format's own exact structure, don't guess" stance
+  // LoadGlb()'s own magic/version/chunk checks already take. Colors are
+  // read back from Format 2's Red/Green/Blue fields (integer-divided by
+  // 257, the exact inverse of SaveLas()'s own scaling - see SaveLas()'s
+  // own doc comment); a Format-0 file leaves the loaded cloud with no
+  // colors at all. Returns Result::Failed - leaving `out_cloud` untouched -
+  // if the file can't be opened, the header doesn't match the exact
+  // structure above, the point data format isn't 0 or 2, the record length
+  // in the header doesn't match the format, or the file is truncated
+  // before all of the header's own declared point records can be read.
+  static Result LoadLas(const std::string& path, PointCloud& out_cloud);
+
   const ON_PointCloud& raw() const { return cloud_; }
   ON_PointCloud& raw() { return cloud_; }
 

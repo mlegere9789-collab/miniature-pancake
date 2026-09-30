@@ -1182,19 +1182,29 @@ a2check "Centermark: 1 center mark(s) (associative to the selected circle/arc)" 
 a2check "UpdateDimensions:   Centermark now at 720,15,0" "UpdateDimensions redrew the Centermark at the moved circle's new center (720,15,0), not the 700,0,0 it was created at"
 a2check "CenterLine: midline between the two selected lines (associative to both)" "CenterLine recorded both selected lines as associative references"
 a2check "UpdateDimensions:   CenterLine now spans 800,0,0 to 800,10,0" "UpdateDimensions redrew the CenterLine's midline at x=800 after moving one of the two lines from x=800 to x=780 (midline between the moved line and the untouched x=820 line), not the x=810 midline it was created at"
-# --- DimVolume/DimCreaseAngle associativity (UpdateMeasureDims, new this
-# window - see MeasureRefIds/DimRefObj1/DimRefObj2 in cmd_annotate2.cpp):
-# DimVolume tracks the measured box's current volume (Scale1D doubles it
-# from 1000 to 2000), and DimCreaseAngle tracks two measured lines' current
-# directions (Rotate turns one 90 -> 45 degrees), neither by moving the
-# dimension itself but by re-measuring the shape of the object(s) it
-# references, same "an edit propagates, not just a move" contract
-# DimLinear/DimRadius/DimAngle already have via UpdateDimensions.
+# --- DimVolume/DimCreaseAngle/DimOrdinate associativity (UpdateMeasureDims,
+# new this window - see MeasureRefIds/DimRefObj1/DimRefObj2 in
+# cmd_annotate2.cpp): DimVolume tracks the measured box's current volume
+# (Scale1D doubles it from 1000 to 2000), DimCreaseAngle tracks two measured
+# lines' current directions (Rotate turns one 90 -> 45 degrees), and the
+# second DimOrdinate (OrdBase/OrdFeature Point objects) tracks its feature
+# point's current position (Move takes it from x=1150 to x=1220, changing
+# the ordinate from 50 to 120) - none by moving the dimension itself but by
+# re-measuring/re-anchoring to the object(s) it references, same "an edit
+# propagates, not just a move" contract DimLinear/DimRadius/DimAngle already
+# have via UpdateDimensions. The first DimOrdinate (free-floating base/
+# feature points, above) is unaffected by any of these edits and so is
+# expected to redraw at its original value, 50 - proving it is also handled
+# by UpdateMeasureDims (via its DimP0/DimP1 fallback, no live anchor) rather
+# than silently skipped as a still-static dimension.
 a2check "DimVolume: Volume = 1000 cubic" "DimVolume measured the box (10x10x10)"
 a2check "DimCreaseAngle: 90 deg (associative to both measured objects)" "DimCreaseAngle recorded both selected lines as associative references"
 a2check "UpdateMeasureDims:   DimVolume now Volume = 2000 cubic" "UpdateMeasureDims redrew DimVolume from the box's doubled x-extent (Scale1D 900-910 -> 900-920), not the 1000 baked at creation time"
+a2check "Text = Volume = 2000 cubic.*0\.05" "a DimTolerance suffix added to DimVolume before the stretch survives UpdateMeasureDims's rebuild, carrying both the new 2000 measurement and the 0.05 tolerance"
 a2check "UpdateMeasureDims:   DimCreaseAngle now 45 deg" "UpdateMeasureDims redrew DimCreaseAngle from the rotated line's new direction, not the 90 deg baked at creation time"
-a2check "UpdateMeasureDims: 4 updated, 0 skipped" "UpdateMeasureDims re-derived all 4 associative measured dimensions (DimArea, DimCurveLength, DimVolume, DimCreaseAngle) with 0 skipped"
+a2check "UpdateMeasureDims:   DimOrdinate now X 50" "UpdateMeasureDims redrew the free-floating (unanchored) DimOrdinate from its baked DimP0/DimP1 points, unchanged at 50 since neither point was ever anchored or moved"
+a2check "UpdateMeasureDims:   DimOrdinate now X 120" "UpdateMeasureDims redrew the OrdBase/OrdFeature DimOrdinate from the feature Point object's moved position (x=1220), not the 50 (x=1150) baked at creation time"
+a2check "UpdateMeasureDims: 6 updated, 0 skipped" "UpdateMeasureDims re-derived all 6 associative measured dimensions (DimArea, DimCurveLength, DimVolume, DimCreaseAngle, and both DimOrdinates) with 0 skipped"
 a2check "gl_error=0" "annotate2 script ran without OpenGL errors"
 # Solid tools: RoundHole, CurveBoolean, Clash, Cage/CageEdit, Flow, ScaleByPlane (see solidtools_script.txt).
 sed "s|@TMP@|$TMPW|g" "$HERE/solidtools_script.txt" > "$TMPW/solidtools_script.txt"
@@ -1313,6 +1323,14 @@ flcheck "Volume = 1000 cubic" "RemoveFillet's chamfer round trip also restores t
 flcheck "FilletVertex: convex spherical corner at vertex .* of object .* filleted (radius 2)" "FilletVertex reached kernel::FilletConvexEdges' own m==3 spherical-corner blend from a single picked vertex - PARITY_MAP.md's Blending .. chamfering .Vertex blend. entry's own previously-zero app reachability for FilletConvexEdges/FilletConcaveEdges"
 flcheck "10 faces, [0-9]* edges, closed solid" "the rounded corner is a genuine closed solid: 6 planar + 3 cylindrical + 1 spherical face, matching kernel::FilletConvexEdges' own single-corner regression test"
 flcheck "Volume = 975.4 cubic" "a 10x10x10 box minus one r=2 spherical vertex-blend corner: the closed form 3(1-r)r^2(1-pi/4) + r^3(1-pi/6) at r=0.2 scaled by 1000 gives 1000*(1 - 3*0.8*0.04*(1-pi/4) - 0.008*(1-pi/6)) = 975.587, but Volume tessellates the exact analytic sphere/cylinder/plane solid at a fixed 0.005 tolerance rather than measuring it exactly, and a coarse polygonal approximation of a convex curved surface always inscribes chords slightly inside the true surface, landing at 975.4"
+flcheck "FilletSrf: faces 1 and 2 of object .* replaced with an exact tapered fillet (radius 1 to 3)" "VariableFilletSrf's two-face-pick UI now reaches kernel::FilletConvexEdgeTapered (the same exact construction FilletEdge's own Radii= path uses) when both picks land on the same solid's own adjacent planar faces with r0 != r1, instead of always building the approximate BuildPlaneCylinderVariableFillet/BuildFillet loft"
+flcheck "Volume = 990.8 cubic" "a 10x10x10 box minus a radius 1->3 VariableFilletSrf taper has the identical exact volume as the plain FilletEdge Radii=0:1,1:3 case above: same kernel::FilletConvexEdgeTapered construction, just reached via two picked faces instead of one picked edge"
+flcheck "FilletSrf: faces 1 and 2 of object .* replaced with an exact conic fillet (rho 0.5, distance 2)" "FilletSrf's own new Rho option (previously FilletEdgeCommand-only) wires straight to kernel::FilletConvexEdgeConic when both picks land on the same solid's own adjacent planar faces with Trim=Yes"
+flcheck "Volume = 993.3 cubic" "a 10x10x10 box minus a rho=0.5 FilletSrf conic fillet at distance 2 has the identical exact volume as the plain FilletEdge Rho=0.5 case above"
+flcheck "FilletSrf: faces 1 and 2 of object .* replaced with an exact fillet (RailType=DistFromEdge, distance 2)" "FilletSrf's own new RailType option (previously FilletEdgeCommand-only) wires straight to kernel::FilletConvexEdgeByDistanceFromEdge when both picks land on the same solid's own adjacent planar faces with Trim=Yes"
+flcheck "Volume = 991.4 cubic" "a 10x10x10 box minus a DistFromEdge=2 FilletSrf fillet has the identical exact volume as the plain FilletEdge RailType=DistFromEdge case above"
+flcheck "FilletSrf: faces 1 and 2 of object .* replaced with an exact fillet (RailType=DistBetweenRails, distance 2)" "FilletSrf's own new RailType=DistBetweenRails option reaches kernel::FilletConvexEdgeByDistanceBetweenRails the same way"
+flcheck "Volume = 995.7 cubic" "a 10x10x10 box minus a DistBetweenRails=2 FilletSrf fillet has the identical exact volume as the plain FilletEdge RailType=DistBetweenRails case above"
 echo "$FL" | grep -E "^(ok|FAIL)"
 if echo "$FL" | grep -q "^FAIL"; then fail=1; fi
 flcheck "^ok   expect_objects 41" "fillet script produced the expected object count"
@@ -1350,6 +1368,10 @@ facheck "! RemoveFillet: the picked face is not a recognized fillet, chamfer, or
 facheck "Volume = 1000 cubic" "the box RemoveFillet declined to touch survives with its exact original volume"
 facheck "! FilletVertex: not a supported trihedral corner" "a FilletVertex radius too large for a 2x2x2 box's own corner edges fails cleanly on both the convex and concave kernel attempts, not a crash or garbage geometry"
 facheck "Volume = 8 cubic" "the box a failed FilletVertex declined to touch survives with its exact original 2x2x2 volume"
+facheck "FilletSrf: built between object .* and .*, radius 1 to 2; surfaces not planar, left untrimmed" "VariableFilletSrf on a cylinder's own flat-top cap and curved side wall falls through to the approximate BuildPlaneCylinderVariableFillet/BuildFillet cascade (kernel::FilletConvexEdgeTapered needs the WHOLE solid planar-faced, which a cylindrical face fails outright) instead of crashing or silently misbuilding"
+facheck "FilletSrf: built between object .* and .*, radius 1 to 2$" "VariableFilletSrf Trim=No on an otherwise-exact planar box corner also falls through to the approximate cascade - the exact kernel path always replaces the whole solid, not the untrimmed separate surface Trim=No asks for"
+facheck "! FilletSrf: an exact conic (Rho) fillet needs the two faces to share an edge on one planar-faced solid with Trim=Yes (convex attempt:.*not planar" "FilletSrf Rho on a cylinder's own flat-top cap and curved side wall refuses with a clear diagnostic instead of silently building a plain round fillet that quietly ignores Rho - unlike Chamfer/VariableFillet just above, there is no approximate fallback a non-circular conic could ever be represented by"
+facheck "! FilletSrf: an exact conic (Rho) fillet needs the two faces to share an edge on one planar-faced solid with Trim=Yes (the two picks are independent surfaces with no shared edge)" "FilletSrf Rho on two genuinely independent (no shared edge) extracted surfaces refuses the same way - fa.id != fb.id means kernel::FilletConvexEdgeConic/FilletConcaveEdgeConic have no shared ON_BrepEdge to identify at all, not merely a curved-face rejection"
 echo "$FA" | grep -E "^(ok|FAIL)"
 if echo "$FA" | grep -q "^FAIL"; then fail=1; fi
 facheck "^ok   expect_objects 0" "fillet-adversarial script cleaned up to zero objects at the end"
@@ -1803,6 +1825,32 @@ print("move returned circle id: " + str(move_ids == [circle_id]))
 print("move missing skipped: " + str(dino8.doc.Objects.MoveObject([999999], dino8.Vector3d(1, 0, 0))))
 print("object count with move: %d" % len(dino8.doc.Objects.AllObjects()))
 
+copy_ids = dino8.doc.Objects.CopyObject([circle_id])
+print("copy is new id: " + str(len(copy_ids) == 1 and copy_ids[0] != circle_id))
+print("copy original survives: " + str(dino8.doc.Objects.Find(circle_id) is not None))
+print("object count with copy: %d" % len(dino8.doc.Objects.AllObjects()))
+copy_moved_ids = dino8.doc.Objects.CopyObject([circle_id], dino8.Vector3d(200, 0, 0))
+print("object count with copy moved: %d" % len(dino8.doc.Objects.AllObjects()))
+print("copy missing skipped: " + str(dino8.doc.Objects.CopyObject([999999])))
+
+rotate_line_id = dino8.doc.Objects.AddLine(dino8.Point3d(1, 0, 0), dino8.Point3d(2, 0, 0))
+rotate_ids = dino8.doc.Objects.RotateObject([rotate_line_id], dino8.Point3d(0, 0, 0), 90)
+print("rotate returned same id: " + str(rotate_ids == [rotate_line_id]))
+print("object count with rotate: %d" % len(dino8.doc.Objects.AllObjects()))
+rotate_copy_ids = dino8.doc.Objects.RotateObject([rotate_line_id], dino8.Point3d(0, 0, 0), 45, dino8.Vector3d(0, 0, 1), True)
+print("rotate copy is new id: " + str(len(rotate_copy_ids) == 1 and rotate_copy_ids[0] != rotate_line_id))
+print("object count with rotate copy: %d" % len(dino8.doc.Objects.AllObjects()))
+print("rotate missing skipped: " + str(dino8.doc.Objects.RotateObject([999999], dino8.Point3d(0, 0, 0), 90)))
+
+scale_box_id = dino8.doc.Objects.AddBox(dino8.Point3d(50, 0, 0), dino8.Vector3d(2, 2, 2))
+scale_ids = dino8.doc.Objects.ScaleObject([scale_box_id], dino8.Point3d(50, 0, 0), dino8.Vector3d(2, 2, 2))
+print("scale returned same id: " + str(scale_ids == [scale_box_id]))
+print("object count with scale: %d" % len(dino8.doc.Objects.AllObjects()))
+scale_copy_ids = dino8.doc.Objects.ScaleObject([scale_box_id], dino8.Point3d(50, 0, 0), dino8.Vector3d(2, 2, 2), True)
+print("scale copy is new id: " + str(len(scale_copy_ids) == 1 and scale_copy_ids[0] != scale_box_id))
+print("object count with scale copy: %d" % len(dino8.doc.Objects.AllObjects()))
+print("scale missing skipped: " + str(dino8.doc.Objects.ScaleObject([999999], dino8.Point3d(0, 0, 0), dino8.Vector3d(2, 2, 2))))
+
 dino8.RunCommand("NewLayer", "Parts")
 PY
 sed "s|@TMP@|$TMPW|g" "$HERE/python_script.txt" > "$TMPW/python_script.txt"
@@ -1893,7 +1941,22 @@ else
   pscheck "history: move returned circle id: True" "dino8.doc.Objects.MoveObject translated the circle in place and returned its own id back, matching rs.MoveObject"
   pscheck "history: move missing skipped: \[\]" "MoveObject returned an empty list for an id that no longer exists, matching LuaEngine.cpp's TransformIds skip-missing loop instead of raising"
   pscheck "history: object count with move: 17" "MoveObject translates objects in place, so AllObjects is unchanged by it"
-  pscheck "^ok   expect_objects 17" "RunPythonScript left the box, the circle, the cone, the torus, the interpolated curve, the arc, the srf, the planar surface, three points, the extruded surface, the extruded solid, the union mesh, the difference mesh and the intersection mesh (the sphere, the two union input boxes, the two difference input boxes and the two intersection input boxes were removed from inside the script)"
+  pscheck "history: copy is new id: True" "dino8.doc.Objects.CopyObject returned a single fresh id distinct from the source, matching rs.CopyObject"
+  pscheck "history: copy original survives: True" "CopyObject left the source object in place, matching rs.CopyObject copying rather than moving"
+  pscheck "history: object count with copy: 18" "AllObjects gained the untranslated copy of the circle"
+  pscheck "history: object count with copy moved: 19" "AllObjects gained the second, translated copy of the circle"
+  pscheck "history: copy missing skipped: \[\]" "CopyObject returned an empty list for an id that no longer exists, matching LuaEngine.cpp's TransformIds skip-missing loop instead of raising"
+  pscheck "history: rotate returned same id: True" "dino8.doc.Objects.RotateObject rotated the line in place and returned its own id back, matching rs.RotateObject(id, center, angleDeg, axis, copy=false)"
+  pscheck "history: object count with rotate: 20" "RotateObject without copy=True transforms in place, so AllObjects only gained the new line"
+  pscheck "history: rotate copy is new id: True" "RotateObject with copy=True left the line in place and added a rotated duplicate under a fresh id, matching rs.RotateObject(id, center, angleDeg, axis, copy=true)"
+  pscheck "history: object count with rotate copy: 21" "AllObjects gained the rotated copy of the line"
+  pscheck "history: rotate missing skipped: \[\]" "RotateObject returned an empty list for an id that no longer exists, matching LuaEngine.cpp's TransformIds skip-missing loop instead of raising"
+  pscheck "history: scale returned same id: True" "dino8.doc.Objects.ScaleObject scaled the box in place and returned its own id back, matching rs.ScaleObject(id, origin, scale, copy=false)"
+  pscheck "history: object count with scale: 22" "ScaleObject without copy=True transforms in place, so AllObjects only gained the new box"
+  pscheck "history: scale copy is new id: True" "ScaleObject with copy=True left the box in place and added a scaled duplicate under a fresh id, matching rs.ScaleObject(id, origin, scale, copy=true)"
+  pscheck "history: object count with scale copy: 23" "AllObjects gained the scaled copy of the box"
+  pscheck "history: scale missing skipped: \[\]" "ScaleObject returned an empty list for an id that no longer exists, matching LuaEngine.cpp's TransformIds skip-missing loop instead of raising"
+  pscheck "^ok   expect_objects 23" "RunPythonScript left the box, the circle, the cone, the torus, the interpolated curve, the arc, the srf, the planar surface, three points, the extruded surface, the extruded solid, the union mesh, the difference mesh, the intersection mesh, the two circle copies, the rotate line and its rotated copy, and the scale box and its scaled copy (the sphere, the two union input boxes, the two difference input boxes and the two intersection input boxes were removed from inside the script)"
   grep -q "! Python error" <<<"$PS" && { echo "FAIL python_script.txt printed a Python error"; fail=1; } || echo "ok   no Python script errors"
 fi
 
@@ -2707,7 +2770,7 @@ d2check "WeldSymbol: Groove (Below)" "WeldSymbol drew the groove glyph"
 d2check "WeldSymbol: Spot (Above)" "WeldSymbol drew the spot glyph"
 d2check "MultiLeader: 2 arrow(s), \"Note\"" "MultiLeader built two arrows to one landing"
 D2_DIMTOL_COUNT=$(echo "$D2" | grep -c "DimTolerance: 1 dimension(s) updated")
-if [ "$D2_DIMTOL_COUNT" = "2" ]; then echo "ok   DimTolerance ran twice, each updating the dimension"; else echo "FAIL DimTolerance ran twice, each updating the dimension"; fail=1; fi
+if [ "$D2_DIMTOL_COUNT" = "3" ]; then echo "ok   DimTolerance ran three times (twice on the first dimension, once on MovingLine below), each updating a dimension"; else echo "FAIL DimTolerance ran three times, each updating a dimension"; fail=1; fi
 d2check "Text = .*0\.03" "the rebuilt dimension text carries the second (0.03) tolerance"
 if grep -q -- "Text = .*0\.02.*0\.03\|Text = .*0\.03.*0\.02.*0\.02" <<< "$D2"; then echo "FAIL DimTolerance compounded the suffix on the second run"; fail=1; else echo "ok   DimTolerance did not compound the suffix on the second run"; fi
 d2check "BillOfMaterials: " "BillOfMaterials built a table over the scene objects"
@@ -2723,10 +2786,16 @@ d2check "(none) qty=1 material=(none)" "the By=Material row was built while BomB
 d2check "NewMaterial qty=1 material=NewMaterial" "UpdateBillOfMaterials picked up BomBall's newly-assigned material, not the empty one baked at creation time"
 
 # Associativity: UpdateDimensions re-measures a DimLinear anchored to a real
-# Line object's endpoints after Scale1D stretches it from 20 to 40 units.
+# Line object's endpoints after Scale1D stretches it from 20 to 40 units. A
+# DimTolerance suffix added to it right after creation (before the stretch)
+# must survive that same rebuild instead of being silently dropped - it used
+# to vanish whenever UpdateDimensions regenerated the text from a moved
+# anchor, since the rebuild always started from the fresh measurement alone
+# (GroupToleranceSuffix/ReapplyToleranceSuffix, annotate_common.h, fix this).
 d2check "Total length = 20 " "the line measured 20 units before the stretch"
 d2check "Total length = 40 " "Scale1D stretched the line to 40 units"
 d2check "UpdateDimensions:   DimLinear now measures 40" "UpdateDimensions redrew the dimension text from the stretched line's new length, not the 20 baked at creation time"
+d2check "Text = 40.*0\.02" "the redrawn dimension's text carries both the new 40 measurement and the 0.02 tolerance DimTolerance had added before the stretch, not just one or the other"
 d2check "DimRadius 5 (associative to selected arc/circle)" "DimRadius recorded the selected circle as its associative reference"
 d2check "UpdateDimensions:   DimRadius now measures 10" "UpdateDimensions redrew DimRadius from the circle's doubled radius, not the 5 baked at creation time"
 d2check "DimAngle 90 deg (associative to 3 point(s))" "DimAngle anchored all three points (vertex + two direction points) to real Point objects"
@@ -4061,7 +4130,7 @@ else
 fi
 pmvcheck() { if echo "$PMV" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$PMV" "$1"; fail=1; fi; }
 pmvcheck "PluginMarketplaceIndex: loaded \"App Version Test Index (min_app_version enforcement fixture)\" - 1 plug-in(s)" "PluginMarketplaceIndex loaded the app-version-fixture index"
-pmvcheck "  futureplugin: FuturePlugin 1.0.0 by Dino 8 Project (api v1, needs newer Dino 8)" "PluginMarketplaceList labels a too-high min_app_version entry as needing a newer Dino 8"
+pmvcheck "  futureplugin: FuturePlugin 1.0.0 by Dino 8 Project (api v1, needs Dino 8 99.0.0 or newer, this build is" "PluginMarketplaceList shows the specific min_app_version a too-high entry requires (CompatibilityReason), not just a generic \"needs newer Dino 8\""
 pmvcheck "! PluginMarketplaceInstall: FuturePlugin needs Dino 8 99.0.0 or newer, this build is" "PluginMarketplaceInstall refuses to install an entry whose min_app_version exceeds this build's own version"
 
 # Plug-in Marketplace: version checking/update notifications
@@ -4168,6 +4237,37 @@ pmvercheck "! PluginMarketplaceVerify: MeshTools (meshtools) is not currently in
 pmvercheck "PluginMarketplaceVerify: HelloDino (hellodino) has no sha256 in the loaded index to verify against (bundled_path entries aren't hash-checked)" "PluginMarketplaceVerify reports NoHashToCheck (not a failure) for the real reference index's hellodino entry, once installed"
 pmvercheck "! PluginMarketplaceVerify: HelloDino (hellodino): sha256 mismatch - index says 0000000000000000000000000000000000000000000000000000000000000000, installed file at" "PluginMarketplaceVerify catches a deliberately wrong sha256 against the real installed file"
 pmvercheck "(corrupted, tampered with, or replaced outside the marketplace)" "PluginMarketplaceVerify's mismatch message explains what a mismatch could mean"
+
+# Plug-in Marketplace: PluginMarketplaceVerifyAll/Marketplace::VerifyAll -
+# VerifyInstalled run once for every entry actually installed via the
+# marketplace, the batch counterpart to the single-id PluginMarketplaceVerify
+# tested just above (and to PluginMarketplaceUpdateAll's own batching of
+# per-id Update). tests/plugin_marketplace_verifyall_index.json has three
+# entries: hellodino (no sha256 - NoHashToCheck once installed), meshtools (a
+# deliberately wrong sha256 - Mismatch once installed), and curvetools (never
+# installed by this script - proving VerifyAll only reports on what's
+# actually installed, not every entry in the loaded index).
+sed "s|@DINO8ROOT@|$HEREW/..|g" "$HERE/plugin_marketplace_verifyall_script.txt" > "$TMPW/plugin_marketplace_verifyall_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  PMVA="$("$BIN" --smoke 60 --script "$TMPW/plugin_marketplace_verifyall_script.txt" 2>&1)" || { echo "$PMVA"; echo "FAIL: plugin marketplace verify-all script exited non-zero"; exit 1; }
+else
+  PMVA="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$TMPW/plugin_marketplace_verifyall_script.txt" 2>&1)" || { echo "$PMVA"; echo "FAIL: plugin marketplace verify-all script exited non-zero"; exit 1; }
+fi
+pmvacheck() { if echo "$PMVA" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$PMVA" "$1"; fail=1; fi; }
+pmvacheck "PluginMarketplaceVerifyAll: nothing installed via the marketplace to verify" "PluginMarketplaceVerifyAll reports nothing to check before any index is loaded"
+pmvacheck "PluginMarketplaceIndex: loaded \"Verify-All Test Index (batch sha256 integrity-check fixture)\" - 3 plug-in(s)" "PluginMarketplaceIndex loaded the verify-all fixture"
+# Not asserted here: that VerifyAll still reports "nothing installed" right
+# after loading the index but before this script's own two installs below.
+# hellodino is this same shared XDG_CONFIG_HOME's very first marketplace
+# test's own leftover install (never uninstalled since, by design - see that
+# section's own comments) and this fixture also names a "hellodino" entry,
+# so that intermediate call may legitimately already see it as installed -
+# which this script's own explicit PluginMarketplaceInstall hellodino below
+# then simply reinstalls in place either way, so the final assertions below
+# hold regardless of that leftover state.
+pmvacheck "PluginMarketplaceVerifyAll: HelloDino (hellodino) has no sha256 in the loaded index to verify against (bundled_path entries aren't hash-checked)" "PluginMarketplaceVerifyAll reports NoHashToCheck for hellodino once installed, in the same batch as meshtools' mismatch"
+pmvacheck "! PluginMarketplaceVerifyAll: MeshTools (meshtools): sha256 mismatch - index says 1111111111111111111111111111111111111111111111111111111111111111, installed file at" "PluginMarketplaceVerifyAll catches meshtools' deliberately wrong sha256 in the same batch"
+pmvacheck "PluginMarketplaceVerifyAll: checked 2 installed plug-in(s) - 1 mismatch(es)" "PluginMarketplaceVerifyAll's summary line counts exactly the 2 installed entries (not curvetools, never installed) and the 1 mismatch among them"
 
 # Plug-in Marketplace: local ratings/reviews (src/plugins/PluginReviews.cpp,
 # PluginMarketplaceRate/PluginMarketplaceReviews in src/commands/cmd_flow.cpp)
@@ -4344,6 +4444,56 @@ pmuncheck "PluginMarketplaceUninstall: uninstalled shareddeps" "shareddeps genui
 # moment shareddeps is uninstalled directly above, so that warning must
 # name it.
 pmuncheck "! PluginMarketplaceUninstall: OtherSuite still lists shareddeps as a dependency and may now be broken" "PluginMarketplaceUninstall warns that OtherSuite still depends on the plug-in just uninstalled directly"
+
+# Plug-in Marketplace: PluginMarketplaceUninstallAll/Marketplace::UninstallAll -
+# the batch counterpart to the single-id PluginMarketplaceUninstall tested
+# just above (and to PluginMarketplaceUpdateAll's own batching of Install).
+# Reuses the same tests/plugin_marketplace_uninstall_index.json fixture and
+# its othersuite/toolboxpro/shareddeps/orphanlib dependency graph: installing
+# both othersuite and toolboxpro leaves all four entries installed (shareddeps
+# and orphanlib pulled in as dependencies), and a single UninstallAll must
+# remove all four in one call - proving it dedupes an id an earlier target's
+# own cascade already removed (shareddeps/orphanlib) rather than reattempting
+# it and reporting a spurious failure.
+sed "s|@DINO8ROOT@|$HEREW/..|g" "$HERE/plugin_marketplace_uninstallall_script.txt" > "$TMPW/plugin_marketplace_uninstallall_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  PMUNA="$("$BIN" --smoke 60 --script "$TMPW/plugin_marketplace_uninstallall_script.txt" 2>&1)" || { echo "$PMUNA"; echo "FAIL: plugin marketplace uninstall-all script exited non-zero"; exit 1; }
+else
+  PMUNA="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$TMPW/plugin_marketplace_uninstallall_script.txt" 2>&1)" || { echo "$PMUNA"; echo "FAIL: plugin marketplace uninstall-all script exited non-zero"; exit 1; }
+fi
+pmunacheck() { if echo "$PMUNA" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$PMUNA" "$1"; fail=1; fi; }
+pmunacheck "PluginMarketplaceUninstallAll: nothing installed via the marketplace to uninstall" "PluginMarketplaceUninstallAll reports nothing to do before any index is loaded"
+pmunacheck "PluginMarketplaceIndex: loaded \"Uninstall Test Index (plugin dependency resolution fixture)\" - 4 plug-in(s)" "PluginMarketplaceIndex loaded the uninstall-fixture index for the uninstall-all script"
+pmunacheck "PluginMarketplaceInstall: installed othersuite" "PluginMarketplaceUninstallAll script installs othersuite (and shareddeps) first"
+pmunacheck "PluginMarketplaceInstall: installed toolboxpro" "PluginMarketplaceUninstallAll script installs toolboxpro (and orphanlib) too"
+# The script's own two installs above leave exactly othersuite/shareddeps/
+# orphanlib/toolboxpro installed, regardless of whatever this same shared
+# XDG_CONFIG_HOME's earlier smoke.sh sections left lying around (e.g. this
+# same fixture's own "existing Uninstall test" section, just above, leaves
+# othersuite installed and never removes it - the very first UninstallAll
+# call below, before either install, may itself report cleaning that up
+# rather than "nothing installed"; either way, state is clean again before
+# the two installs run). The LAST "uninstalled ..." report in the whole
+# transcript is therefore always this script's own final, full-removal
+# call - the one right before the closing idempotency check - never an
+# earlier, possibly-partial cleanup call.
+UNINSTALLALL_LINE="$(echo "$PMUNA" | grep -F 'PluginMarketplaceUninstallAll: uninstalled' | tail -n1)"
+if echo "$UNINSTALLALL_LINE" | grep -qF "uninstalled 4 plug-in(s)"; then
+  echo "ok   PluginMarketplaceUninstallAll removed all 4 installed entries (targets + cascaded dependencies) in one call"
+else
+  echo "FAIL PluginMarketplaceUninstallAll did not report removing exactly 4 plug-ins: $UNINSTALLALL_LINE"; fail=1
+fi
+for id in shareddeps orphanlib toolboxpro othersuite; do
+  if echo "$UNINSTALLALL_LINE" | grep -qF "$id"; then
+    echo "ok   PluginMarketplaceUninstallAll's report names $id"
+  else
+    echo "FAIL PluginMarketplaceUninstallAll's report is missing $id: $UNINSTALLALL_LINE"; fail=1
+  fi
+done
+echo "$PMUNA" | grep -qF "! PluginMarketplaceUninstallAll:" \
+  && { echo "FAIL PluginMarketplaceUninstallAll reported a failure - the cascade dedupe should leave none"; fail=1; } \
+  || echo "ok   PluginMarketplaceUninstallAll reported no failures - the cascade dedupe left nothing to reattempt"
+pmunacheck "PluginMarketplaceUninstallAll: nothing installed via the marketplace to uninstall" "a second PluginMarketplaceUninstallAll right after the first reports nothing left to do - everything genuinely uninstalled, not just claimed"
 
 # Plug-in Marketplace: version-constrained dependencies ("id@min_version" in
 # MarketplaceEntry::dependencies, split by SplitDependencySpec and resolved

@@ -113,6 +113,12 @@ dino8::platform::AccessibleNode EnvironmentsAccessibleTree(Application& app);
 // the id/type/description each on-screen row's Type and Problem columns
 // show. Starts empty until Audit runs.
 dino8::platform::AccessibleNode AuditResultsAccessibleTree(Application& app);
+// The AT-SPI2-queryable snapshot of Document::UndoLabels()/RedoLabels() -
+// independent of whether the Undo/Redo panel window is open, mirroring the
+// same numbered "1. Line" rows DrawUndoMultipleWindow shows for the given
+// direction. Starts empty on a fresh document.
+dino8::platform::AccessibleNode UndoHistoryAccessibleTree(Application& app);
+dino8::platform::AccessibleNode RedoHistoryAccessibleTree(Application& app);
 void DrawToolbars(Application& app);
 void DrawLayersPanel(Application& app);
 void DrawPropertiesPanel(Application& app);
@@ -188,6 +194,11 @@ bool OpenInScriptEditor(Application& app, const std::string& path);
 void RunScriptEditor(Application& app);
 void DrawHatchPatternsPanel(Application& app);  // defined in cmd_drafting2.cpp
 void DrawTableEditorPanel(Application& app);    // defined in cmd_drafting2.cpp
+// The AT-SPI2-queryable snapshot of HatchLibrary::Instance().Patterns() -
+// independent of whether the Hatch Patterns panel window is open, mirroring
+// each pattern's name and description text (defined alongside
+// DrawHatchPatternsPanel in cmd_drafting2.cpp).
+dino8::platform::AccessibleNode HatchPatternsAccessibleTree();
 
 // Toolbars (Toolbars.cpp): tabbed icon toolbar + left sidebar.
 struct IconButtonResult {

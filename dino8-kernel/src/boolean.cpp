@@ -2500,6 +2500,166 @@ Brep MoveFacesConvexPlanar(const Brep& solid, const std::vector<std::pair<int, O
   return ReplaceFacePlanesConvexPlanar(solid, face_planes);
 }
 
+Brep FoldFacesConvexPlanar(const Brep& solid, const std::vector<FaceFold>& folds) {
+  if (folds.empty()) {
+    throw std::invalid_argument("dino8::kernel::FoldFacesConvexPlanar: folds must not be empty");
+  }
+  const std::vector<Brep::PlanarFace> faces = solid.PlanarFaces();
+  const int n = static_cast<int>(faces.size());
+  std::vector<bool> named(static_cast<size_t>(n), false);
+  std::vector<std::pair<int, ON_Plane>> face_planes;
+  face_planes.reserve(folds.size());
+  for (const FaceFold& fold : folds) {
+    if (fold.face_index < 0 || fold.face_index >= n) {
+      throw std::invalid_argument(
+          "dino8::kernel::FoldFacesConvexPlanar: folds contains a face_index out of range for "
+          "solid.PlanarFaces()");
+    }
+    if (named[static_cast<size_t>(fold.face_index)]) {
+      throw std::invalid_argument(
+          "dino8::kernel::FoldFacesConvexPlanar: two entries in folds name the same face_index - "
+          "ambiguous which entry's own hinge/angle should apply");
+    }
+    named[static_cast<size_t>(fold.face_index)] = true;
+
+    const Brep::PlanarFace& face = faces[static_cast<size_t>(fold.face_index)];
+    const int loop_size = static_cast<int>(face.loop.size());
+    if (fold.hinge_loop_index < 0 || fold.hinge_loop_index >= loop_size) {
+      throw std::invalid_argument(
+          "dino8::kernel::FoldFacesConvexPlanar: an entry's hinge_loop_index is out of range for "
+          "face " +
+          std::to_string(fold.face_index) + "'s own loop");
+    }
+
+    // The identical hinge-rotation math FoldFaceConvexPlanar() itself
+    // applies to one face - this function duplicates none of that math,
+    // it only flattens `folds` into the (face_index, new_plane) list
+    // ReplaceFacePlanesConvexPlanar() below applies in one shared pass.
+    const Point3d& p0 = face.loop[static_cast<size_t>(fold.hinge_loop_index)];
+    const Point3d& p1 = face.loop[static_cast<size_t>((fold.hinge_loop_index + 1) % loop_size)];
+    Vector3d axis = p1 - p0;
+    const double axis_len = axis.Length();
+    if (axis_len <= 1e-12) {
+      throw std::invalid_argument(
+          "dino8::kernel::FoldFacesConvexPlanar: an entry's hinge_loop_index names a degenerate "
+          "(zero-length) edge on face " +
+          std::to_string(fold.face_index) + "'s own loop");
+    }
+    axis.Unitize();
+
+    const double ca = std::cos(fold.angle_radians);
+    const double sa = std::sin(fold.angle_radians);
+    auto rotate = [&](const Vector3d& v) {
+      return v * ca + ON_CrossProduct(axis, v) * sa + axis * (ON_DotProduct(axis, v) * (1.0 - ca));
+    };
+
+    const ON_Plane& old_plane = face.plane;
+    ON_Plane new_plane;
+    new_plane.origin = p0 + rotate(old_plane.origin - p0);
+    new_plane.xaxis = rotate(old_plane.xaxis);
+    new_plane.yaxis = rotate(old_plane.yaxis);
+    new_plane.zaxis = rotate(old_plane.zaxis);
+    new_plane.UpdateEquation();
+    face_planes.emplace_back(fold.face_index, new_plane);
+  }
+
+  // Every named face's own rotated plane is applied in a SINGLE
+  // ReplaceFacePlanesConvexPlanar() call - the same flatten-and-delegate
+  // shape MoveFacesConvexPlanar() above already uses.
+  return ReplaceFacePlanesConvexPlanar(solid, face_planes);
+}
+
+Brep DeleteFacesHealConvexPlanar(const Brep& solid, const std::vector<int>& face_indices) {
+  if (face_indices.empty()) {
+    throw std::invalid_argument("dino8::kernel::DeleteFacesHealConvexPlanar: face_indices must not be empty");
+  }
+  const std::vector<Brep::PlanarFace> faces = solid.PlanarFaces();
+  const int n = static_cast<int>(faces.size());
+  std::vector<bool> dropped(static_cast<size_t>(n), false);
+  for (int face_index : face_indices) {
+    if (face_index < 0 || face_index >= n) {
+      throw std::invalid_argument(
+          "dino8::kernel::DeleteFacesHealConvexPlanar: face_indices contains a face_index out of "
+          "range for solid.PlanarFaces()");
+    }
+    if (dropped[static_cast<size_t>(face_index)]) {
+      throw std::invalid_argument(
+          "dino8::kernel::DeleteFacesHealConvexPlanar: face_indices contains a duplicate face_index");
+    }
+    dropped[static_cast<size_t>(face_index)] = true;
+  }
+
+  const double tol = RelativeTol(faces);
+  if (!IsConvex(faces, tol)) {
+    throw std::invalid_argument(
+        "dino8::kernel::DeleteFacesHealConvexPlanar: solid must be convex (a vertex "
+        "of one of its own faces lies outside one of its own other faces' "
+        "half-spaces) - see BooleanIntersectConvexPlanar's own doc comment "
+        "for why non-convex input isn't handled here");
+  }
+
+  // Same generous halfspace-intersection superset DeleteFaceHealConvexPlanar()
+  // uses, sized from the ORIGINAL solid's own extent - every dropped face's
+  // own former extent still contributes to how big "oversized" needs to be.
+  ON_BoundingBox bbox;
+  for (const Brep::PlanarFace& f : faces) {
+    for (const Point3d& p : f.loop) bbox.Set(p, true);
+  }
+  const double half_size = 50.0 * std::max(tol, bbox.Diagonal().Length());
+  const double unbounded_threshold = half_size * 0.5;
+
+  std::vector<Brep::PlanarFace> result;
+  result.reserve(static_cast<size_t>(n) - face_indices.size());
+  for (int i = 0; i < n; ++i) {
+    if (dropped[static_cast<size_t>(i)]) continue;  // dropped outright, never rebuilt
+    const ON_Plane& pl = faces[static_cast<size_t>(i)].plane;
+    const std::vector<Point3d> oversized = {
+        pl.origin + half_size * pl.xaxis + half_size * pl.yaxis,
+        pl.origin - half_size * pl.xaxis + half_size * pl.yaxis,
+        pl.origin - half_size * pl.xaxis - half_size * pl.yaxis,
+        pl.origin + half_size * pl.xaxis - half_size * pl.yaxis,
+    };
+    std::vector<ON_Plane> others;
+    others.reserve(static_cast<size_t>(n) - face_indices.size() - 1);
+    for (int k = 0; k < n; ++k) {
+      if (k == i || dropped[static_cast<size_t>(k)]) continue;
+      others.push_back(faces[static_cast<size_t>(k)].plane);
+    }
+    std::vector<Point3d> clipped = ClipConvexPolygon(oversized, pl, others, tol);
+    const double area = PlanarPolygonArea(clipped, pl.zaxis);
+    const double area_tol = tol * tol;
+    if (clipped.size() < 3 || area <= area_tol) {
+      throw std::invalid_argument(
+          "dino8::kernel::DeleteFacesHealConvexPlanar: dropping the given face_indices collapses "
+          "face " +
+          std::to_string(i) +
+          "'s own boundary to fewer than 3 vertices or ~0 area - the resulting "
+          "solid's topology would need to change (a face vanishing entirely), "
+          "which is out of scope here");
+    }
+    // Same unbounded-result detection DeleteFaceHealConvexPlanar() already
+    // uses, applied here against the whole dropped set at once.
+    for (const Point3d& p : clipped) {
+      const double lx = ON_DotProduct(p - pl.origin, pl.xaxis);
+      const double ly = ON_DotProduct(p - pl.origin, pl.yaxis);
+      if (std::fabs(lx) > unbounded_threshold || std::fabs(ly) > unbounded_threshold) {
+        throw std::invalid_argument(
+            "dino8::kernel::DeleteFacesHealConvexPlanar: dropping the given face_indices leaves "
+            "face " +
+            std::to_string(i) +
+            " genuinely unbounded - the remaining faces never converge to close "
+            "the gap this deletion opens, so there is no valid solid to heal to");
+      }
+    }
+    Brep::PlanarFace new_face;
+    new_face.plane = pl;
+    new_face.loop = std::move(clipped);
+    result.push_back(std::move(new_face));
+  }
+
+  return Brep::FromPlanarFaces(result);
+}
+
 // ---------------------------------------------------------------------
 // BooleanCombineMixed: the axis-perpendicular-only extension of the
 // non-convex planar pipeline above to a solid that may have a

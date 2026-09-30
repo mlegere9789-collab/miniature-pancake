@@ -201,6 +201,46 @@ void DrawPluginMarketplacePanel(app::Application& app, bool& open) {
   }
   ImGui::EndDisabled();
 
+  // AnyInstalled() is a cheap (no file hashing) check, unlike calling
+  // VerifyAll() itself just to see if it would have anything to do - which
+  // matters here since this runs every frame the panel is open.
+  const bool any_installed = market.AnyInstalled();
+  ImGui::SameLine();
+  ImGui::BeginDisabled(!any_installed);
+  if (ImGui::Button("Verify All")) {
+    // Marketplace::VerifyAll - the batch counterpart to the per-entry
+    // Verify button below, re-hashing every currently-installed entry's
+    // file against the index's sha256 in one click.
+    const auto results = market.VerifyAll();
+    size_t mismatches = 0;
+    for (const auto& r : results)
+      if (r.status == Marketplace::VerifyStatus::Mismatch) ++mismatches;
+    status = "Verified " + std::to_string(results.size()) + " installed plug-in(s)" +
+             (mismatches ? (" - " + std::to_string(mismatches) + " mismatch(es).") : std::string("."));
+    if (mismatches) app.Notify("Plug-in Marketplace: " + std::to_string(mismatches) + " installed plug-in(s) failed verification");
+  }
+  ImGui::EndDisabled();
+  if (!any_installed && ImGui::IsItemHovered()) ImGui::SetTooltip("Install a plug-in first to verify it.");
+
+  ImGui::SameLine();
+  ImGui::BeginDisabled(!any_installed);
+  if (ImGui::Button("Uninstall All")) {
+    // Marketplace::UninstallAll - the batch counterpart to a single row's
+    // Uninstall button, cascading each target's own now-unneeded
+    // dependencies exactly like uninstalling it by hand would.
+    std::vector<std::string> removed, failed;
+    market.UninstallAll(removed, failed);
+    status = removed.empty() ? "" : ("Uninstalled " + std::to_string(removed.size()) + " plug-in(s).");
+    if (!failed.empty()) {
+      std::string names;
+      for (const std::string& f : failed) names += (names.empty() ? "" : "; ") + f;
+      status += (status.empty() ? "" : " ") + std::string("Failed: ") + names;
+    }
+    if (!removed.empty()) app.Notify("Plug-in Marketplace: uninstalled " + std::to_string(removed.size()) + " plug-in(s)");
+  }
+  ImGui::EndDisabled();
+  if (!any_installed && ImGui::IsItemHovered()) ImGui::SetTooltip("Nothing is currently installed via the marketplace.");
+
   ImGui::InputTextWithHint("##filter", "Filter by name, tag, author, or id...", filter, sizeof filter);
   size_t shown = 0;
   for (const MarketplaceEntry& e : market.Index().plugins)
@@ -241,7 +281,10 @@ void DrawPluginMarketplacePanel(app::Application& app, bool& open) {
 
       ImGui::TableNextColumn(); ImGui::TextUnformatted(e.author.c_str());
       const Compatibility compat = CheckCompatibility(e, DINO8_VERSION);
-      ImGui::TableNextColumn(); ImGui::TextColored(CompatibilityColor(compat), "%s", CompatibilityLabel(compat));
+      ImGui::TableNextColumn();
+      ImGui::TextColored(CompatibilityColor(compat), "%s", CompatibilityLabel(compat));
+      if ((compat == Compatibility::ApiTooNew || compat == Compatibility::AppTooOld) && ImGui::IsItemHovered())
+        ImGui::SetTooltip("%s", CompatibilityReason(e, DINO8_VERSION).c_str());
       ImGui::TableNextColumn();
       const std::string rating_summary = RatingSummary(e.id);
       if (rating_summary == "Not yet rated") ImGui::TextDisabled("%s", rating_summary.c_str());
@@ -266,6 +309,8 @@ void DrawPluginMarketplacePanel(app::Application& app, bool& open) {
         }
       }
       ImGui::EndDisabled();
+      if ((compat == Compatibility::ApiTooNew || compat == Compatibility::AppTooOld) && ImGui::IsItemHovered())
+        ImGui::SetTooltip("%s", CompatibilityReason(e, DINO8_VERSION).c_str());
       // Only offer to uninstall a copy the marketplace itself put in
       // <config>/plugins - never the sample plug-ins auto-loaded from next
       // to the executable, which UninstallById leaves alone (see its own
@@ -310,7 +355,10 @@ void DrawPluginMarketplacePanel(app::Application& app, bool& open) {
       for (const std::string& t : e.tags) tags += (tags.empty() ? "" : ", ") + t;
       ImGui::TextDisabled("Tags: %s", tags.c_str());
     }
-    ImGui::TextDisabled("Plug-in API v%d - %s", e.api_version, CompatibilityLabel(CheckCompatibility(e, DINO8_VERSION)));
+    const Compatibility detail_compat = CheckCompatibility(e, DINO8_VERSION);
+    ImGui::TextDisabled("Plug-in API v%d - %s", e.api_version, CompatibilityLabel(detail_compat));
+    if (detail_compat == Compatibility::ApiTooNew || detail_compat == Compatibility::AppTooOld)
+      ImGui::TextColored(CompatibilityColor(detail_compat), "%s", CompatibilityReason(e, DINO8_VERSION).c_str());
     const std::string deps = DependencySummary(market, e);
     if (!deps.empty()) ImGui::TextDisabled("Requires: %s", deps.c_str());
 

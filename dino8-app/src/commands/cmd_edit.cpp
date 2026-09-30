@@ -206,11 +206,13 @@ class SetObjectNameCommand : public Command {
   void OnText(CommandContext& ctx, const std::string& name) override {
     if (name.empty()) { ctx.Warn("SetObjectName: name cannot be empty"); Finish(); return; }
     // ids_ is the fixed selection collected in OnObjects above; only
-    // name is set on those existing objects - fast path candidate.
+    // name is set on those existing objects - fast path. FindMany() resolves
+    // it in one O(document size) pass instead of a Find() per id, the same
+    // O(selection size * document size) -> O(document size + selection size)
+    // win as HideShow/Lock (cmd_edit.cpp).
     ctx.Doc().BeginChangeForObjects("SetObjectName", ids_);
     int i = 0;
-    for (ObjectId id : ids_) {
-      SceneObject* o = ctx.Doc().Find(id);
+    for (SceneObject* o : ctx.Doc().FindMany(ids_)) {
       if (!o) continue;
       ++i;
       o->name = (ids_.size() > 1 && i > 1) ? name + " (" + std::to_string(i) + ")" : name;
@@ -240,9 +242,10 @@ class SetUserTextCommand : public Command {
       return;
     }
     // ids_ is the fixed selection collected up front; only user_text is
-    // set on those existing objects - fast path candidate.
+    // set on those existing objects - fast path, same FindMany() win as
+    // SetObjectName above.
     ctx.Doc().BeginChangeForObjects("SetUserText", ids_);
-    for (ObjectId id : ids_) if (SceneObject* o = ctx.Doc().Find(id)) o->user_text[key_] = t;
+    for (SceneObject* o : ctx.Doc().FindMany(ids_)) if (o) o->user_text[key_] = t;
     ctx.Print("SetUserText: " + key_ + " = " + t + " on " + std::to_string(ids_.size()) + " object(s)");
     Finish();
   }

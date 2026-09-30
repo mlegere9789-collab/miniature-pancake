@@ -64,6 +64,18 @@ enum class Compatibility { Compatible, ApiTooNew, AppTooOld, Unknown };
 // pass DINO8_VERSION.
 Compatibility CheckCompatibility(const MarketplaceEntry& entry, const std::string& running_app_version = "");
 
+// The specific reason CheckCompatibility(entry, running_app_version) returned
+// anything other than Compatible - the same wording InstallEntry's own
+// refusal already uses (Marketplace.cpp), just without the leading
+// "<entry name>: " a caller that already shows the name elsewhere (a list
+// row, a compatibility-badge tooltip) doesn't want repeated. Empty when
+// CheckCompatibility(...) is Compatible (nothing to explain) or Unknown
+// (api_version is simply absent/0 - not actually refused, just unrated).
+// Lets a caller show *what* is required (an exact api_version or
+// min_app_version) instead of a generic "needs newer Dino 8" label, without
+// having to attempt - and fail - an install first.
+std::string CompatibilityReason(const MarketplaceEntry& entry, const std::string& running_app_version = "");
+
 // Splits one dependencies[] entry into the id it names and the minimum
 // version it requires of that id, if any: "meshtools@1.2.0" splits to
 // ("meshtools", "1.2.0"); a bare "meshtools" splits to ("meshtools", "").

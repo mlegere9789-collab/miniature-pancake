@@ -1851,11 +1851,12 @@ void MatchProperties(CommandContext& ctx, const std::vector<ObjectId>& targets, 
   // targets is the fixed selection passed in; only per-object attribute
   // fields (layer/color/material/linetype/name/user_text) are set on
   // those existing objects, nothing else about the document - fast path.
+  // FindMany() resolves the whole selection in one O(document size) pass
+  // instead of a Find() per id, the same fix as MatchLayer (cmd_layer.cpp).
   ctx.Doc().BeginChangeForObjects("MatchProperties", targets);
   int n = 0;
-  for (ObjectId id : targets) {
-    SceneObject* t = ctx.Doc().Find(id);
-    if (!t || id == src->id) continue;
+  for (SceneObject* t : ctx.Doc().FindMany(targets)) {
+    if (!t || t->id == src->id) continue;
     if (layer) t->layer_index = a.layer;
     if (color) { t->color = a.color; t->color_by_layer = a.by_layer; }
     if (material) t->material_name = a.material;

@@ -154,10 +154,12 @@ class SetRenderColorCommand : public Command {
     if (!ParseMiscColor(t, c)) { ctx.Warn("SetRenderColor: use r,g,b (0-255) or a colour name"); Finish(); return; }
     // ids_ is the fixed selection from OnObjects above; only color/
     // color_by_layer change on those existing objects - fast path.
+    // FindMany() resolves the whole selection in one O(document size) pass
+    // instead of a Find() per id (see cmd_edit.cpp's SetObjectName/
+    // SetUserText for the same fix).
     ctx.Doc().BeginChangeForObjects("SetRenderColor", ids_);
     int n = 0;
-    for (ObjectId id : ids_) {
-      SceneObject* o = ctx.Doc().Find(id);
+    for (SceneObject* o : ctx.Doc().FindMany(ids_)) {
       if (!o) continue;
       o->color = c;
       o->color_by_layer = false;

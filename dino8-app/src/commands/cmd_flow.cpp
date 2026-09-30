@@ -229,11 +229,19 @@ void RegisterFlowCommands(CommandEngine& e) {
         for (const plugins::MarketplaceEntry* pp : matches) {
           const plugins::MarketplaceEntry& p = *pp;
           const plugins::Compatibility compat = plugins::CheckCompatibility(p, DINO8_VERSION);
-          const std::string compat_label = compat == plugins::Compatibility::Compatible ? "compatible"
-                                            : compat == plugins::Compatibility::ApiTooNew ||
-                                                    compat == plugins::Compatibility::AppTooOld
-                                                ? "needs newer Dino 8"
-                                                : "compatibility unknown";
+          std::string compat_label;
+          if (compat == plugins::Compatibility::Compatible) {
+            compat_label = "compatible";
+          } else if (compat == plugins::Compatibility::Unknown) {
+            compat_label = "compatibility unknown";
+          } else {
+            // ApiTooNew/AppTooOld: the specific requirement (mirrors
+            // InstallEntry's own refusal text) instead of a generic "needs
+            // newer Dino 8" that never said what version is actually
+            // needed - visible here without having to attempt, and fail,
+            // an install just to find out.
+            compat_label = plugins::CompatibilityReason(p, DINO8_VERSION);
+          }
           std::string line = "  " + p.id + ": " + p.name + " " + p.version + " by " + p.author + " (api v" +
                               std::to_string(p.api_version) + ", " + compat_label + ")";
           if (!p.dependencies.empty()) {
@@ -345,6 +353,50 @@ void RegisterFlowCommands(CommandEngine& e) {
         } else {
           ctx.Warn("PluginMarketplaceVerify: " + detail);
         }
+      }));
+
+  Reg(e, "PluginMarketplaceVerifyAll", Immediate([](CommandContext& ctx) {
+        // VerifyInstalled, run once per entry currently installed via the
+        // marketplace - the batch counterpart to PluginMarketplaceVerify,
+        // the same way PluginMarketplaceUpdateAll batches PluginMarketplaceCheckUpdates'
+        // per-id Update.
+        const auto results = plugins::Marketplace::Get().VerifyAll();
+        if (results.empty()) {
+          ctx.Print("PluginMarketplaceVerifyAll: nothing installed via the marketplace to verify");
+          return;
+        }
+        size_t mismatches = 0;
+        for (const auto& r : results) {
+          if (r.status == plugins::Marketplace::VerifyStatus::Mismatch ||
+              r.status == plugins::Marketplace::VerifyStatus::Error) {
+            ctx.Warn("PluginMarketplaceVerifyAll: " + r.detail);
+            if (r.status == plugins::Marketplace::VerifyStatus::Mismatch) ++mismatches;
+          } else {
+            ctx.Print("PluginMarketplaceVerifyAll: " + r.detail);
+          }
+        }
+        ctx.Print("PluginMarketplaceVerifyAll: checked " + std::to_string(results.size()) + " installed plug-in(s)" +
+                  (mismatches ? " - " + std::to_string(mismatches) + " mismatch(es)" : ""));
+      }));
+
+  Reg(e, "PluginMarketplaceUninstallAll", Immediate([](CommandContext& ctx) {
+        // The batch counterpart to PluginMarketplaceUninstall, the same way
+        // PluginMarketplaceUpdateAll batches Install: uninstalls every entry
+        // in the loaded index currently installed via the marketplace,
+        // cascading each one's now-unneeded dependencies exactly like a
+        // manual per-row Uninstall would.
+        std::vector<std::string> removed, failed;
+        plugins::Marketplace::Get().UninstallAll(removed, failed);
+        if (removed.empty() && failed.empty()) {
+          ctx.Print("PluginMarketplaceUninstallAll: nothing installed via the marketplace to uninstall");
+          return;
+        }
+        if (!removed.empty()) {
+          std::string ids;
+          for (const std::string& id : removed) ids += (ids.empty() ? "" : ", ") + id;
+          ctx.Print("PluginMarketplaceUninstallAll: uninstalled " + std::to_string(removed.size()) + " plug-in(s) (" + ids + ")");
+        }
+        for (const std::string& f : failed) ctx.Warn("PluginMarketplaceUninstallAll: " + f);
       }));
 
   Reg(e, "PluginMarketplaceRate", Immediate([](CommandContext& ctx) {

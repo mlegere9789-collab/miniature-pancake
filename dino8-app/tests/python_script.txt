@@ -24,9 +24,16 @@
 # module also lacked until now), dino8.doc.Objects.BooleanDifference and
 # dino8.doc.Objects.BooleanIntersection (the two-set counterparts of
 # BooleanUnion, matching Lua's rs.BooleanDifference/rs.BooleanIntersection,
-# that the dino8 module also lacked until now) and dino8.doc.Objects.MoveObject
+# that the dino8 module also lacked until now), dino8.doc.Objects.MoveObject
 # (translates objects in place, skipping ids that no longer exist rather
 # than raising, matching Lua's rs.MoveObject, that the dino8 module also
+# lacked until now), dino8.doc.Objects.CopyObject (copies objects,
+# optionally translated, matching Lua's rs.CopyObject, that the dino8
+# module also lacked until now), dino8.doc.Objects.RotateObject (rotates
+# objects about an axis through a center, in place or onto copies, matching
+# Lua's rs.RotateObject, that the dino8 module also lacked until now) and
+# dino8.doc.Objects.ScaleObject (scales objects about an origin, in place
+# or onto copies, matching Lua's rs.ScaleObject, that the dino8 module also
 # lacked until now).
 # Unlike script_script.txt's Lua test, this never goes interactive
 # mid-script (see PythonEngine.h): Python scripts run start to finish in
@@ -35,4 +42,4 @@
 # smoke.sh substitutes @TMP@ with a scratch directory and writes @TMP@/t.py
 # before running this.
 RunPythonScript @TMP@/t.py
-@expect_objects 17
+@expect_objects 23

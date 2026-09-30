@@ -172,15 +172,23 @@ SelNone
 # stretches it along its x-extent (900-910 -> 900-920) doubling its volume
 # from 1000 to 2000; UpdateMeasureDims must re-measure the box's current
 # volume instead of the value baked at creation time (MeasureRefIds - see
-# cmd_annotate2.cpp).
+# cmd_annotate2.cpp). A DimTolerance suffix added before the stretch must
+# also survive UpdateMeasureDims's rebuild instead of being silently
+# dropped (GroupToleranceSuffix/ReapplyToleranceSuffix, annotate_common.h) -
+# same fix, same helpers, as UpdateDimensions's own DimTolerance test
+# (drafting2_script.txt).
 Box 900,0,0 910,10,0 10
 SelLast
 SetObjectName VolBox
 DimVolume
 920,20,0
+SelLast
+DimTolerance Type=Symmetric Value=0.05
 SelName VolBox
 Scale1D 900,0,0 2
 UpdateMeasureDims
+SelLast
+GetUserText
 SelNone
 # --- Associative DimCreaseAngle: two real Line objects measured directly
 # (whole-object reference, not coincident-point matching - same shape as
@@ -203,5 +211,27 @@ DimCreaseAngle
 1010,10,0
 SelName CreaseLine2
 Rotate 1000,0,0 45
+# --- Associative DimOrdinate: base point and feature point each coincide
+# with a real Point object (FindPointAnchor, same coincidence rule as
+# DimLinear - see BuildOrdinateDimGroup, cmd_annotate2.cpp). Moving the
+# feature point's Point object from x=1150 to x=1220 changes the X ordinate
+# from 50 (1150-1100) to 120 (1220-1100); the shared UpdateMeasureDims call
+# below must redraw it as 120, not the 50 baked at creation time - same
+# "edit the referenced object, not the dimension" contract as DimVolume/
+# DimCreaseAngle above.
+Point 1100,0,0
+SelLast
+SetObjectName OrdBase
+SelNone
+Point 1150,0,0
+SelLast
+SetObjectName OrdFeature
+SelNone
+DimOrdinate
+1100,0,0
+1150,0,0
+Enter
+SelName OrdFeature
+Move 1150,0,0 1220,0,0
 UpdateMeasureDims
 SelNone
