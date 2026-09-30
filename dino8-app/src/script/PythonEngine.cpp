@@ -280,6 +280,26 @@ struct PyObjectTable {
     return PyObjId(AddObj(SceneObject::MakeSurface(kernel::NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1)), "AddSrfPt"));
   }
 
+  // Mirrors rs.AddPlanarSrf(curveIds) in LuaEngine.cpp: one trimmed planar
+  // surface per closed, planar input curve, skipping ids that aren't
+  // closed planar curves; None when nothing qualified.
+  py::object AddPlanarSrf(std::vector<ObjectId> ids) {
+    Document& d = DocOf();
+    std::vector<ObjectId> made;
+    d.BeginChange("AddPlanarSrf");
+    for (ObjectId id : ids) {
+      const SceneObject* o = d.Find(id);
+      if (!o || o->kind != ObjectKind::Curve) continue;
+      ON_Plane pl;
+      if (!o->curve->raw().IsClosed() || !o->curve->raw().IsPlanar(&pl, d.Settings().absolute_tolerance)) continue;
+      if (ON_Brep* b = ON_BrepTrimmedPlane(pl, o->curve->raw())) made.push_back(d.Add(SceneObject::MakeBrep(WrapBrep(b))));
+    }
+    if (made.empty()) return py::none();
+    py::list out;
+    for (ObjectId id : made) out.append(PyObjId(id));
+    return out;
+  }
+
   py::object AddMesh(std::vector<Point3d> verts, std::vector<std::vector<int>> faces) {
     kernel::Mesh m;
     ON_Mesh& r = m.raw();
@@ -407,6 +427,7 @@ PYBIND11_EMBEDDED_MODULE(dino8, m) {
       .def("AddCircle", &PyObjectTable::AddCircle, py::arg("center"), py::arg("radius"), py::arg("normal") = py::none())
       .def("AddArc3Pt", &PyObjectTable::AddArc3Pt)
       .def("AddSrfPt", &PyObjectTable::AddSrfPt)
+      .def("AddPlanarSrf", &PyObjectTable::AddPlanarSrf)
       .def("AddBox", &PyObjectTable::AddBox, py::arg("corner"), py::arg("size"))
       .def("AddSphere", &PyObjectTable::AddSphere, py::arg("center"), py::arg("radius"))
       .def("AddCylinder", &PyObjectTable::AddCylinder, py::arg("base"), py::arg("axis"), py::arg("radius"), py::arg("cap") = true)

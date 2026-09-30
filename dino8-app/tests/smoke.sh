@@ -1695,6 +1695,13 @@ try:
 except RuntimeError as e:
     print("bad srf rejected: " + str(e))
 
+planar_ids = dino8.doc.Objects.AddPlanarSrf([circle_id])
+planar = dino8.doc.Objects.Find(planar_ids[0])
+print("planar kind: " + planar.ObjectType)
+print("object count with planar: %d" % len(dino8.doc.Objects.AllObjects()))
+no_planar = dino8.doc.Objects.AddPlanarSrf([box_id])
+print("planar from non-curve: " + str(no_planar))
+
 dino8.RunCommand("NewLayer", "Parts")
 PY
 sed "s|@TMP@|$TMPW|g" "$HERE/python_script.txt" > "$TMPW/python_script.txt"
@@ -1757,7 +1764,10 @@ else
   pscheck "history: srf kind: surface" "dino8.doc.Objects.AddSrfPt built a surface object, matching rs.AddSrfPt"
   pscheck "history: object count with srf: 7" "AllObjects sees the box, the circle, the cone, the torus, the interpolated curve, the arc and the new surface"
   pscheck "history: bad srf rejected:" "AddSrfPt raised a Python exception for fewer than three corner points, instead of silently returning"
-  pscheck "^ok   expect_objects 7" "RunPythonScript left the box, the circle, the cone, the torus, the interpolated curve, the arc and the surface (the sphere was deleted from inside the script)"
+  pscheck "history: planar kind: polysurface" "dino8.doc.Objects.AddPlanarSrf built a trimmed planar brep from the closed circle, matching rs.AddPlanarSrf (Brep-kind objects report as polysurface regardless of face count, same as AddBox/AddCone/AddTorus)"
+  pscheck "history: object count with planar: 8" "AllObjects sees the box, the circle, the cone, the torus, the interpolated curve, the arc, the srf and the new planar surface"
+  pscheck "history: planar from non-curve: None" "AddPlanarSrf returned None when none of the ids were closed planar curves, matching rs.AddPlanarSrf pushing nil instead of raising"
+  pscheck "^ok   expect_objects 8" "RunPythonScript left the box, the circle, the cone, the torus, the interpolated curve, the arc, the srf and the planar surface (the sphere was deleted from inside the script)"
   grep -q "! Python error" <<<"$PS" && { echo "FAIL python_script.txt printed a Python error"; fail=1; } || echo "ok   no Python script errors"
 fi
 
