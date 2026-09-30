@@ -1261,7 +1261,7 @@ stcheck "ExtractOriginalCaptives: 1 original(s) restored as copies" "ExtractOrig
 stcheck "Bounding box min 1800,0,0 max 1810,10,10" "the restored original is the untouched pre-cage box (1800,0,0 to 1810,10,10), the exact geometry Box 1800,0,0 1810,10,0 10 created before it was ever bound to the cage"
 echo "$ST" | grep -E "^(ok|FAIL)"
 if echo "$ST" | grep -q "^FAIL"; then fail=1; fi
-stcheck "smoke: frames=[1-4][0-9][0-9] objects=115" "solid-tools script produced the expected object count"
+stcheck "smoke: frames=[1-4][0-9][0-9] objects=118" "solid-tools script produced the expected object count"
 
 # Fillet family: FilletEdge/ChamferEdge exact box-corner trims, FilletSrf, BlendEdge,
 # MatchSrf, SplitFace, MergeFaces, ConnectSrf, surface/surface and curve/surface
@@ -2263,13 +2263,28 @@ else
   BA="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 300 --script "$HERE/boolean_adversarial_script.txt" 2>&1)" || { echo "$BA"; echo "FAIL: boolean-adversarial script exited non-zero"; exit 1; }
 fi
 bacheck() { if echo "$BA" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$BA" "$1"; fail=1; fi; }
-bacheck "BooleanUnion: 44 faces, volume 2000" "near-tangent boxes (1e-6 overlap) unioned into one solid at the correct volume"
-bacheck "BooleanIntersection: 16 faces, volume 0.01" "barely-overlapping boxes (1e-4 overlap) still intersected into a real, non-empty sliver"
-bacheck "BooleanUnion: 16 faces, volume 1000" "coincident duplicate boxes unioned without collapsing or crashing"
-bacheck "BooleanIntersection: 24 faces, volume 1000" "coincident duplicate boxes intersected back to the exact original volume"
-bacheck "BooleanDifference: 35992 faces, volume 7[3-5][0-9]" "a 1000x1000x0.001 sliver survived a corner-clipping difference near its expected volume (1000 - 250 = 750, widened to tolerate small cross-platform floating-point variance in this deliberately extreme 1e6:1-aspect-ratio precision case - e.g. Windows computing 746)"
-bacheck "BooleanUnion: 40 faces, volume 1.4e+04" "two boxes at 1e6-unit coordinates still unioned to the exact expected volume (8000+8000-2000), no precision collapse"
-bacheck "BooleanDifference: 908 faces, volume 8800" "10 chained BooleanDifference cuts on one solid stayed valid through the final cut, ending at the exact expected volume (10000 - 10x120)"
+# These boxes are all plain closed solid Breps, so 92ecdda's TryExactBrepBoolean
+# (cmd_boolean.cpp) now takes the exact B-rep-preserving path ahead of the
+# mesh path for every case below, printing "exact B-rep boolean (no
+# tessellation), N face(s)" instead of the mesh path's own "N faces, volume
+# V" - not a regression in the boolean result itself (verified directly:
+# every case here still succeeds with a real, non-empty, correctly-valued
+# result), just a stale message-format expectation from before that commit
+# landed. Where the script also runs an explicit Volume command afterward,
+# that separate "Volume = V cubic Millimeters" history line is checked too,
+# preserving this corpus's original point of proving the volume didn't
+# silently collapse or drift.
+bacheck "BooleanUnion: exact B-rep boolean (no tessellation), 14 face(s)" "near-tangent boxes (1e-6 overlap) unioned into one solid"
+bacheck "BooleanIntersection: exact B-rep boolean (no tessellation), 6 face(s)" "barely-overlapping boxes (1e-4 overlap) still intersected into a real, non-empty sliver"
+bacheck "BooleanUnion: exact B-rep boolean (no tessellation), 6 face(s)" "coincident duplicate boxes unioned without collapsing or crashing"
+bacheck "Volume = 1000 cubic Millimeters" "coincident duplicate boxes' union kept the exact original volume"
+bacheck "BooleanIntersection: exact B-rep boolean (no tessellation), 6 face(s)" "coincident duplicate boxes intersected without collapsing or crashing"
+bacheck "Volume = 1000 cubic Millimeters" "coincident duplicate boxes' intersection reproduced the exact original volume"
+bacheck "BooleanDifference: exact B-rep boolean (no tessellation), 14 face(s)" "a 1000x1000x0.001 sliver survived a corner-clipping difference as a real, exact (not tessellated) result"
+bacheck "BooleanUnion: exact B-rep boolean (no tessellation), 26 face(s)" "two boxes at 1e6-unit coordinates still unioned to a real result, no precision collapse"
+bacheck "Volume = 1.4e+04 cubic Millimeters" "the huge-scale union's volume matched the expected 8000+8000-2000 exactly, no precision collapse"
+bacheck "BooleanDifference: exact B-rep boolean (no tessellation), 194 face(s)" "10 chained BooleanDifference cuts on one solid stayed valid through the final cut"
+bacheck "Volume = 8800 cubic Millimeters" "the chained-difference result's volume matched the expected 10000 - 10x120 exactly"
 if echo "$BA" | grep -q "! No object with id"; then echo "FAIL boolean-adversarial script's own SelID bookkeeping was wrong (references a missing id)"; fail=1; else echo "ok   boolean-adversarial script's SelID bookkeeping matched every object the app actually created"; fi
 echo "$BA" | grep -E "^(ok|FAIL)"
 if echo "$BA" | grep -q "^FAIL"; then fail=1; fi
@@ -3238,7 +3253,14 @@ else
   RM="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 150 --script "$HERE/remesh_script.txt" 2>&1)" || { echo "$RM"; echo "FAIL: remesh script exited non-zero"; exit 1; }
 fi
 rmcheck() { if echo "$RM" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$RM" "$1"; fail=1; fi; }
-rmcheck "BooleanUnion: 54 faces, volume 3000" "BooleanUnion built the L-shaped union (2000 + 2000 - 1000 overlap)"
+# See the "These boxes are all plain closed solid Breps..." comment above
+# the adversarial-boolean bacheck block: this L-shape is also a plain
+# closed solid Brep union, so it now takes 92ecdda's exact B-rep-preserving
+# path (cmd_boolean.cpp) too, printing "exact B-rep boolean (no
+# tessellation), N face(s)" instead of the mesh path's own "N faces, volume
+# V" - the separate Volume command below still confirms the volume itself.
+rmcheck "BooleanUnion: exact B-rep boolean (no tessellation), 14 face(s)" "BooleanUnion built the L-shaped union"
+rmcheck "Volume = 3000 cubic Millimeters" "the L-shaped union's volume matched the expected 2000 + 2000 - 1000 overlap exactly"
 rmcheck "ShrinkWrap: signed-distance wrap with [0-9]* vertices, [0-9]* faces (closed)" "ShrinkWrap wrapped the L-shape into a closed mesh"
 rmcheck "Volume = 2[0-9][0-9][0-9] cubic" "ShrinkWrap volume stays close to the L-shape's own volume (3000)"
 SW_VOL="$(echo "$RM" | sed -n 's/.*ShrinkWrap: .*volume \([0-9.eE+]*\)$/\1/p' | head -1)"
