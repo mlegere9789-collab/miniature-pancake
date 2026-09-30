@@ -631,22 +631,63 @@ Brep FilletConvexEdgeTapered(const Brep& solid, Point3d edge_p0, Point3d edge_p1
 // coincidentally-matching separate construction" convention
 // FilletConvexEdgeTapered's own two-radius overload already established.
 //
-// SCOPE, narrower than FilletConvexEdgeTapered's: only the two-radius
-// (single-segment) form exists here - the N-station piecewise-linear
-// generalization (BuildMultiStationTaperedFillet's own convex-only
-// machinery: interior-station cap joins, SpliceLoopEdge) has not been
-// re-derived for the concave sign convention yet, a genuine, disclosed
-// increment left for later, not silently narrowed. Otherwise shares every
-// other scope limit FilletConcaveEdge's own doc comment already states
-// (planar faces only, one edge, a third face at either endpoint must be a
-// free boundary or exactly perpendicular to the edge - closed via the
-// same EllipseNotchCornerAtVertex corner-notch splice
-// FilletConvexEdgeTapered's own two-radius overload already uses, reused
-// here unchanged since it is already generic in apex/u_hat/xaxis/yaxis/
-// tan_half_angle with no convex-specific assumption baked in, exactly the
-// same reason FilletConcaveEdge's own doc comment gives for reusing
-// NotchCornerAtVertex unchanged).
+// Otherwise shares every other scope limit FilletConcaveEdge's own doc
+// comment already states (planar faces only, one edge, a third face at
+// either endpoint must be a free boundary or exactly perpendicular to the
+// edge - closed via the same EllipseNotchCornerAtVertex corner-notch
+// splice FilletConvexEdgeTapered's own two-radius overload already uses,
+// reused here unchanged since it is already generic in apex/u_hat/xaxis/
+// yaxis/tan_half_angle with no convex-specific assumption baked in,
+// exactly the same reason FilletConcaveEdge's own doc comment gives for
+// reusing NotchCornerAtVertex unchanged).
+//
+// N-STATION GENERALIZATION: see the overload below (taking
+// `std::vector<FilletRadiusStation>`) for the concave mirror of
+// FilletConvexEdgeTapered's own N-station piecewise-linear profile - this
+// two-radius overload is unchanged and still dispatches to
+// BuildTwoStationTaperedFilletConcave directly, not through the new
+// overload, so its own already-verified bit-for-bit behavior is
+// untouched by that addition.
 Brep FilletConcaveEdgeTapered(const Brep& solid, Point3d edge_p0, Point3d edge_p1, double radius0, double radius1);
+
+// N-STATION concave generalization of the two-radius overload above - the
+// concave mirror of FilletConvexEdgeTapered's own N-station overload
+// (same `FilletRadiusStation` convention: `t` is arc length from
+// `edge_p0`, `stations.front().t` must be 0 and `stations.back().t` must
+// equal the edge's own length, sorted by strictly increasing `t`, radii
+// strictly positive and monotonic across the whole profile for
+// `stations.size() >= 3` - identical validation, see
+// FilletConvexEdgeTapered's own N-station doc comment for the reasons
+// each restriction exists). `stations.size() == 2` dispatches to
+// FilletConcaveEdge (near-equal radii) or BuildTwoStationTaperedFilletConcave
+// (the two-radius overload's own construction) exactly as the plain
+// two-radius overload above does, so both overloads agree bit-for-bit at
+// the 2-station case - the same cross-check FilletConvexEdgeTapered's own
+// two overloads already establish and this closes for the concave side.
+//
+// `stations.size() >= 3` builds N-1 genuine ConicalFace segments via the
+// concave mirror of BuildMultiStationTaperedFillet's own construction:
+// every per-segment cone (BuildTaperedConeSegment) is built with `bis`/
+// `n_i` BOTH NEGATED - the same direct-substitution proof this file's own
+// two-radius FilletConcaveEdgeTapered doc comment already gives for the
+// single-segment case, re-applied per segment here - and each resulting
+// ConicalFace is marked `outward = false`, the concave mirror of
+// CylindricalFace::outward. The interior-station cap-join geometry and
+// the rail-splice into faces i/j are exactly BuildMultiStationTaperedFillet's
+// own code, unchanged: neither depends on bis/n_i directly, only on the
+// already-correctly-signed per-segment outputs, the same "already
+// generic" fact this file's own two-radius overload already relies on
+// for EllipseNotchCornerAtVertex.
+//
+// SCOPE: closes PARITY_MAP.md's own disclosed "the N-station
+// piecewise-linear generalization has not been re-derived for the
+// concave sign convention" gap - otherwise identical to the two-radius
+// overload's own scope above (planar faces only, one edge, third-face end
+// conditions limited to a free boundary or an exactly perpendicular
+// face - an oblique third face on a >2-station profile is still out of
+// scope, matching FilletConvexEdgeTapered's own N-station overload).
+Brep FilletConcaveEdgeTapered(const Brep& solid, Point3d edge_p0, Point3d edge_p1,
+                               const std::vector<FilletRadiusStation>& stations);
 
 
 // Exact kernel-level CHAMFER of ONE straight, convex edge shared by two
