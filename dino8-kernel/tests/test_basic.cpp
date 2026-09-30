@@ -14046,6 +14046,75 @@ void TestMeshShellRemovedFacesHandlesDisconnectedRemainder() {
         "shell, as expected for a shell missing 4 of its 6 walls");
 }
 
+// The test above verifies the UNIFORM-thickness removed-face overload,
+// Shell(thickness, removed_face_indices), on a disconnected remainder.
+// Shell(face_thickness, removed_face_indices) - the fourth and most general
+// overload, combining per-face thickness AND an opening in one call (see
+// that bullet's own "New this pass" text in PARITY_MAP.md) - reuses the
+// identical per-naked-edge side-wall stitching loop, with no reference to
+// which connected piece a naked edge belongs to, so the same disconnected-
+// remainder generality should hold here too. Never actually exercised on
+// one before this pass. Verified two ways, on the SAME
+// MakeSymmetricCubeMesh(0,0,0,4,4,4)-minus-4-side-faces fixture the test
+// above already establishes splits into two entirely disconnected flat
+// squares: (1) a uniform face_thickness vector must reproduce
+// Shell(thickness, removed_face_indices)'s own result exactly on this
+// disconnected topology, the same "matches the uniform overload" standard
+// TestMeshShellFaceThicknessWithRemovedFaceMatchesUniformOverloadAndStitchesWall
+// already applies on a single-opening fixture; (2) a genuinely VARYING
+// per-face thickness - including on the REMOVED side faces, which still
+// matter here since AreaWeightedVertexThickness() blends every incident
+// face's own thickness into a shared vertex, removed or not - stays a
+// valid closed 2-manifold with no leftover naked edge, and encloses
+// strictly less material than the fully-closed per-face shell built from
+// the identical thickness vector.
+void TestMeshShellFaceThicknessWithRemovedFacesHandlesDisconnectedRemainder() {
+  using dino8::kernel::Mesh;
+
+  const auto box = MakeSymmetricCubeMesh(0, 0, 0, 4, 4, 4);
+  const double thickness = 0.5;
+  const int face_count = box.FaceCount();
+
+  const std::vector<double> uniform(static_cast<size_t>(face_count), thickness);
+  const Mesh via_vector = box.Shell(uniform, {2, 3, 4, 5});
+  const Mesh via_scalar = box.Shell(thickness, {2, 3, 4, 5});
+  Check(via_vector.VertexCount() == via_scalar.VertexCount() && via_vector.FaceCount() == via_scalar.FaceCount(),
+        "Shell(uniform face_thickness, {2,3,4,5})'s vertex/face counts match Shell(thickness, {2,3,4,5})'s own, "
+        "on the identical disconnected-remainder (two separate flat squares) fixture");
+  bool vertices_match = true;
+  for (int i = 0; i < via_scalar.VertexCount(); ++i) {
+    const ON_3fPoint& a = via_scalar.raw().m_V[i];
+    const ON_3fPoint& b = via_vector.raw().m_V[i];
+    vertices_match = vertices_match && std::fabs(a.x - b.x) < 1e-9 && std::fabs(a.y - b.y) < 1e-9 &&
+                     std::fabs(a.z - b.z) < 1e-9;
+  }
+  Check(vertices_match, "...and every vertex position matches too, to ordinary floating-point roundoff");
+  Check(via_vector.IsClosedManifold(),
+        "the uniform-per-face-vector result is a genuine closed 2-manifold on the disconnected remainder");
+
+  std::vector<double> varying(static_cast<size_t>(face_count));
+  varying[0] = 0.3;  // bottom (kept)
+  varying[1] = 0.7;  // top (kept)
+  for (int i = 2; i <= 5; ++i) varying[static_cast<size_t>(i)] = 0.5;  // sides (removed, but still blend in)
+  const Mesh cup = box.Shell(varying, {2, 3, 4, 5});
+  Check(cup.VertexCount() == box.VertexCount() * 2,
+        "Shell(varying face_thickness, {2,3,4,5}) keeps both full vertex layers, same as every other overload");
+  Check(cup.FaceCount() == 4 + 8,
+        "2 outer (bottom, top) + 2 inner (flipped bottom, top) + 8 side-wall quads (4 naked edges per "
+        "disconnected piece, 2 pieces) = 12 faces, matching the uniform-thickness disconnected case's own count");
+  Check(cup.IsClosedManifold(),
+        "the varying-per-face-thickness result is still a genuine closed, orientation-consistent 2-manifold, "
+        "even split across two entirely disconnected pieces");
+  Check(cup.Check().naked_edge_list.empty(),
+        "no leftover naked edge on either disconnected piece - both openings are fully sealed by their own "
+        "independent side wall");
+
+  const Mesh full_shell = box.Shell(varying);
+  Check(cup.Volume() > 0.0 && cup.Volume() < full_shell.Volume(),
+        "the two-disconnected-piece partial shell encloses strictly less material than the fully-closed "
+        "per-face shell built from the identical thickness vector");
+}
+
 // Perpendicular distance from `p` to the infinite line through `a`/`b`, in
 // 3D - a plain, independent geometric primitive (NOT InsetFace's own
 // miter-offset formula) used below to verify an inset corner's actual
@@ -23980,6 +24049,67 @@ void TestOffsetSolidConvexPlanarTetrahedronMatchesIndependentVertexRecomputation
   Check(expected_vol > orig_vol, "growing every face outward by the same positive d increases the volume");
   Check(offset.TessellateToClosedMesh(1, 1).IsClosedManifold(),
         "the offset tetrahedron also tessellates to a closed, watertight manifold");
+}
+
+// OffsetSolidConvexPlanar's own doc comment (boolean.h) and its IsConvex()
+// guard (boolean.cpp) both say a non-convex solid is refused - and
+// TestPushPullFaceOnNonConvexLShapeGrowsByExactSlabVolume's own comment,
+// below, repeats that claim to explain why PushPullFace is needed at all
+// ("directly, unlike OffsetFace/OffsetSolidConvexPlanar/ShellConvexPlanar").
+// Until this test, nothing had actually CALLED OffsetSolidConvexPlanar on a
+// genuinely non-convex solid to confirm the guard fires rather than
+// silently mis-clipping - a guard that is never exercised is a claim, not a
+// tested fact. Reuses the exact same L-shaped (one reflex corner) prism
+// fixture TestBooleanCombinePlanarNonConvexLShapeVsBox and
+// TestPushPullFaceOnNonConvexLShapeGrowsByExactSlabVolume already build via
+// MakePrismFromPolygon, on both overloads (uniform distance and the
+// per-face vector, which share the identical IsConvex() precondition check
+// before either does any per-face clipping work).
+void TestOffsetSolidConvexPlanarRejectsNonConvexLShape() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::OffsetSolidConvexPlanar;
+  using dino8::kernel::Point2d;
+
+  const std::vector<Point2d> l_base = {
+      Point2d(0, 0), Point2d(4, 0), Point2d(4, 2), Point2d(2, 2), Point2d(2, 4), Point2d(0, 4),
+  };
+  const Brep l_prism = MakePrismFromPolygon(l_base, 0.0, 3.0);
+  Check(l_prism.PlanarFaces().size() == 8,
+        "sanity: the L-shaped prism has 8 planar faces (2 six-sided caps + 6 rectangular walls)");
+
+  bool threw = false;
+  try {
+    (void)OffsetSolidConvexPlanar(l_prism, 0.5);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "OffsetSolidConvexPlanar(l_prism, 0.5) throws - the uniform-distance overload's IsConvex() "
+               "precondition guard genuinely fires on this reflex-cornered solid, not merely documented to");
+
+  threw = false;
+  try {
+    (void)OffsetSolidConvexPlanar(l_prism, std::vector<double>(l_prism.PlanarFaces().size(), 0.5));
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "OffsetSolidConvexPlanar(l_prism, per-face distances) throws the same way - both overloads "
+               "share the identical IsConvex() guard ahead of any per-face clipping");
+
+  // Contrast, cross-checked directly against this same fixture rather than
+  // trusted from the other test's own comment alone: PushPullFace (which
+  // only ever needs the ONE pushed face's own immediate neighbours, never a
+  // whole-solid convexity check) accepts the identical non-convex prism
+  // without throwing.
+  using dino8::kernel::PushPullFace;
+  bool push_pull_threw = false;
+  try {
+    (void)PushPullFace(l_prism, 0, 0.5);
+  } catch (const std::invalid_argument&) {
+    push_pull_threw = true;
+  }
+  Check(!push_pull_threw, "...while PushPullFace on the SAME non-convex prism does NOT throw - confirming the "
+                          "refusal above is specifically OffsetSolidConvexPlanar's convexity precondition, not "
+                          "some unrelated defect in the fixture itself");
 }
 
 // PARITY_MAP's "Push/pull a face" gap: unlike OffsetFace (which moves an
@@ -51977,6 +52107,7 @@ int main() {
   TestOffsetSolidConvexPlanarUniformBoxMatchesExactVolume();
   TestOffsetSolidConvexPlanarPerFaceBoxMatchesExactBoundingBox();
   TestOffsetSolidConvexPlanarTetrahedronMatchesIndependentVertexRecomputation();
+  TestOffsetSolidConvexPlanarRejectsNonConvexLShape();
   TestPushPullFaceOnBoxPushOutAddsWallsAndMatchesExactVolume();
   TestPushPullFaceOnNonConvexLShapeGrowsByExactSlabVolume();
   TestDraftFacesConvexPlanarBoxAllWallsMatchesExactFrustumVolume();
@@ -52348,6 +52479,7 @@ int main() {
   TestMeshShellFaceThicknessWithRemovedFacesRefusesInvalidInput();
   TestMeshShellRemovedFacesRefusesBowtieOpeningBoundary();
   TestMeshShellRemovedFacesHandlesDisconnectedRemainder();
+  TestMeshShellFaceThicknessWithRemovedFacesHandlesDisconnectedRemainder();
   TestMeshInsetFaceUnitSquareMatchesExactConcentricSquare();
   TestMeshInsetFaceTriangleMatchesIndependentPerpendicularDistance();
   TestMeshInsetFaceRefusesInvalidInput();
