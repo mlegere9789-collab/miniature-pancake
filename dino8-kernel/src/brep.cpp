@@ -954,15 +954,57 @@ Brep::CylindricalFace ExtractCylindricalFace(const ON_Brep& brep, int face_index
   cf.length = v_max - v_min;
   cf.outward = !brep.m_F[face_index].m_bRev;
 
-  double r_min = 0.0, r_max = 0.0;
-  if (!cyl.circle.GetRadianFromNurbFormParameter(u_min, &r_min) ||
-      !cyl.circle.GetRadianFromNurbFormParameter(u_max, &r_max)) {
-    throw std::runtime_error(
-        "dino8::kernel::Brep::MixedFaces: face " + std::to_string(face_index) +
-        ": ON_Circle::GetRadianFromNurbFormParameter failed converting the "
-        "trim's own u-domain to true angle");
+  // A genuinely FULL (closed, untrimmed-in-u) cylindrical wall - going all
+  // the way around back to its own start point - is detected directly and
+  // geometrically here (the point at u_max coincides with the point at
+  // u_min, the same test a closed curve's own start/end would pass) rather
+  // than through GetRadianFromNurbFormParameter below: that OpenNURBS
+  // helper's own NurbParameter contract (per ON_Circle::
+  // GetRadianFromNurbFormParameter's doc comment, "0 <= NurbParameter <=
+  // 2*PI*Radius") is radius-scaled, but its actual implementation checks
+  // NurbParameter against ON_Arc::Domain() (m_angle, always plain radians,
+  // independent of radius - confirmed directly in opennurbs_arc.cpp) - a
+  // genuine upstream contract/implementation mismatch that only happens to
+  // cancel out at radius == 1 (where the two conventions coincide), which
+  // is the only radius every pre-existing caller of this geometric
+  // (no-FaceRecord) fallback path happened to exercise before now. A face
+  // built by this kernel's own dedicated factories (Brep::Box/MakeCylinderZ
+  // and friends) never reaches here at all - MixedFaces()'s own verbatim
+  // FaceRecord fast path (this method's own doc comment) intercepts those
+  // first - so this was never hit until a PLAIN library-built ON_Brep (e.g.
+  // ON_BrepCylinder, with no dino8 FaceRecord of its own - see
+  // dino8-app/src/commands/cmd_solids.cpp's own AddBrep/WrapBrep, which
+  // never populates one) at a non-unit radius was fed through it, which is
+  // exactly the app's own plain Cylinder command's real output. Confirmed
+  // directly (not assumed): a radius=2 ON_BrepCylinder's own full wall
+  // face has u_min=0/u_max=2*pi*2 (the radius-scaled convention), which
+  // ON_Arc::Domain()'s own always-radians [0, 2*pi] does not include, so
+  // GetRadianFromNurbFormParameter always returns false for it - not a
+  // near-boundary rounding issue, a hard domain-inclusion test failure.
+  const Point3d p_at_u_max = fg.surface.PointAt(u_max, v_min);
+  const bool is_full_sweep = p_corner.DistanceTo(p_at_u_max) <= tolerance::kWeld;
+  double angle = 0.0;
+  if (is_full_sweep) {
+    angle = 2.0 * ON_PI;
+  } else {
+    // Not a full sweep - a genuine partial cylindrical wedge. This still
+    // inherits the same radius-scaling mismatch above for a non-unit
+    // radius (disclosed, not fixed here: a much narrower, real remaining
+    // gap than the full-sweep case just closed, since a hand-trimmed
+    // partial cylindrical face with no FaceRecord at radius != 1 is a
+    // rarer shape than the plain full Cylinder/drilled-hole case this
+    // pass targets).
+    double r_min = 0.0, r_max = 0.0;
+    if (!cyl.circle.GetRadianFromNurbFormParameter(u_min, &r_min) ||
+        !cyl.circle.GetRadianFromNurbFormParameter(u_max, &r_max)) {
+      throw std::runtime_error(
+          "dino8::kernel::Brep::MixedFaces: face " + std::to_string(face_index) +
+          ": ON_Circle::GetRadianFromNurbFormParameter failed converting the "
+          "trim's own u-domain to true angle");
+    }
+    angle = r_max - r_min;
   }
-  cf.angle = r_max - r_min;
+  cf.angle = angle;
   return cf;
 }
 

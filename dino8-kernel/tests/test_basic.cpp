@@ -37144,6 +37144,111 @@ void TestBooleanCombineMixedIntersectionAcceptsCompoundOperandWithEmbeddedCylind
         "identical answer two independent single-cylinder Intersection calls would");
 }
 
+// Regression test for a real bug found while investigating why
+// BooleanCombineMixed never succeeds on a plain, application-built
+// cylinder (dino8-app's own Cylinder command wraps a raw ON_BrepCylinder()
+// with no dino8 FaceRecord at all - see cmd_solids.cpp's AddBrep/WrapBrep -
+// so MixedFaces() must take its own geometric-extraction fallback path,
+// never the verbatim-FaceRecord fast path every OTHER test in this file
+// exercises via Brep::Box()/Brep::FromMixedFaces()). ExtractCylindricalFace
+// (brep.cpp) used to derive a cylindrical face's own angular sweep via
+// ON_Circle::GetRadianFromNurbFormParameter(u_min/u_max, ...) - but that
+// helper's own NurbParameter contract (per its doc comment, "0 <=
+// NurbParameter <= 2*PI*Radius") is radius-scaled, while its actual
+// implementation checks NurbParameter against ON_Arc::Domain() (always
+// plain radians, confirmed directly in opennurbs_arc.cpp), a genuine
+// upstream contract/implementation mismatch that only cancels out at
+// radius == 1 - the only radius this file's own pre-existing MixedFaces()
+// coverage happened to use for a record-less face. At any other radius, a
+// full (closed) cylindrical wall's own u-domain ([0, 2*pi*radius] by the
+// same radius-scaled convention every OpenNURBS circle-based surface
+// uses) always falls outside ON_Arc::Domain()'s plain-radians [0, 2*pi],
+// so GetRadianFromNurbFormParameter always returned false and MixedFaces()
+// always threw - not a near-boundary rounding issue, a hard domain-
+// inclusion failure, confirmed directly (not assumed) via a standalone
+// scratch reproduction before this fix landed. Fixed by detecting a
+// genuinely FULL sweep geometrically instead (the point at u_max coincides
+// with the point at u_min, the same test a closed curve's own start/end
+// would pass) - unit-convention-agnostic, so it works at any radius.
+//
+// A SEPARATE, previously-undocumented limitation was found (not fixed)
+// while building this test, and is disclosed rather than silently worked
+// around: BooleanCombineMixed(box, cyl, Difference) itself now runs
+// without throwing (the fix above), but its tessellated result is NOT a
+// closed manifold and its volume is measurably wrong. Root-caused, not
+// merely observed: ExtractPlanarFace's own FaceOuterUv sampling of a
+// record-less circular cap face's trim loop takes whatever polyline
+// vertices the RAW ON_Brep's own trim curve happens to carry (16 points
+// for ON_BrepCylinder's own cap, confirmed by direct comparison) rather
+// than densely resampling the true circular boundary the way
+// Brep::FromMixedFaces()'s own construction does (128 points, for the
+// identical circle) - a coarse-chord polygon approximating a circle sits
+// measurably inside the true circle, so the cap's own boundary and the
+// cylindrical wall's own exact circular cross-section no longer agree,
+// which is what breaks the boolean's stitch/closure. Confirmed directly by
+// swapping only the cylinder operand between a Brep::FromMixedFaces()-built
+// one (closes correctly) and this test's own record-less one (does not),
+// with every field of the extracted CylindricalFace itself bit-identical
+// between the two (frame/radius/length/angle/outward all match to 17
+// significant digits) - ruling out this test's own angle fix as the cause
+// of the closure failure. This is a PlanarFaces()/MixedFaces()-wide gap
+// (any curved trim loop on a record-less face, not just a cylinder cap),
+// materially larger than the angle-recovery bug this test targets, and is
+// left for a future pass - not attempted here.
+void TestBrepMixedFacesRecoversFullCylinderWallWithoutFaceRecordAtNonUnitRadius() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+
+  // A plain box and a plain radius-2 cylinder, built the exact way
+  // dino8-app's own Box/Cylinder commands do - through the bare OpenNURBS
+  // constructors, with the result's raw() assigned directly and NO dino8
+  // FaceRecord ever attached (WrapBrep's own "k.raw() = *b" pattern,
+  // cmd_solids.cpp) - unlike every other fixture in this file, which goes
+  // through Brep::Box()/Brep::FromMixedFaces() and so always takes
+  // MixedFaces()' verbatim-FaceRecord fast path instead of ever reaching
+  // the geometric-extraction fallback this test targets.
+  Brep box;
+  {
+    ON_3dPoint c[8] = {ON_3dPoint(0, 0, 0),   ON_3dPoint(10, 0, 0),  ON_3dPoint(10, 10, 0),  ON_3dPoint(0, 10, 0),
+                       ON_3dPoint(0, 0, 10),  ON_3dPoint(10, 0, 10), ON_3dPoint(10, 10, 10), ON_3dPoint(0, 10, 10)};
+    ON_Brep* b = ON_BrepBox(c);
+    box.raw() = *b;
+    delete b;
+  }
+  Brep cyl;
+  {
+    ON_Plane pl(ON_3dPoint(5, 5, -5), ON_3dVector(0, 0, 1));
+    ON_Cylinder cylinder(ON_Circle(pl, 2.0), 20.0);  // radius 2, spans z -5..15 - a clean through-hole
+    ON_Brep* b = ON_BrepCylinder(cylinder, true, true);
+    cyl.raw() = *b;
+    delete b;
+  }
+
+  const auto mf = cyl.MixedFaces();
+  Check(mf.cylindrical.size() == 1, "the bare cylinder's own wall is recovered as exactly one CylindricalFace "
+                                     "(previously: threw before reaching this point at all)");
+  if (mf.cylindrical.size() == 1) {
+    Check(std::fabs(mf.cylindrical[0].angle - 2.0 * ON_PI) < 1e-6,
+          "the recovered face is a genuinely FULL (2*pi) sweep, not a partial one misread from the same bug");
+    Check(std::fabs(mf.cylindrical[0].radius - 2.0) < 1e-9, "the recovered radius matches the true radius exactly");
+  }
+
+  bool threw = false;
+  std::string message;
+  try {
+    BooleanCombineMixed(box, cyl, BooleanOp::Difference);
+  } catch (const std::exception& e) {
+    threw = true;
+    message = e.what();
+  }
+  Check(!threw, (std::string("BooleanCombineMixed(box, radius-2 through-hole cylinder, Difference) must not throw "
+                              "on the angle-recovery bug this test targets (a separate cap-loop-sampling gap, "
+                              "disclosed in this test's own doc comment, can still leave the result's closure/volume "
+                              "wrong - not asserted here) - ") + message)
+                    .c_str());
+}
+
 // Regression check: Union and SymmetricDifference must still refuse a
 // compound operand exactly as before - this pass narrows the refusal, it
 // does not remove it.
@@ -52950,6 +53055,7 @@ int main() {
   TestBooleanCombineMixedDifferenceAcceptsCompoundFirstOperand();
   TestBooleanCombineMixedIntersectionAcceptsCompoundOperand();
   TestBooleanCombineMixedIntersectionAcceptsCompoundOperandWithEmbeddedCylinders();
+  TestBrepMixedFacesRecoversFullCylinderWallWithoutFaceRecordAtNonUnitRadius();
   TestBooleanCombineMixedUnionAndXorStillRefuseCompoundOperand();
   TestBooleanCombineMixedDifferenceThrowsOnTouchingLumpXorCompound();
   TestBooleanCombineMixedNArySingleElementCompoundGroupReachesFinalCombine();

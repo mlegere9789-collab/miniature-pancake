@@ -2290,6 +2290,24 @@ echo "$BA" | grep -E "^(ok|FAIL)"
 if echo "$BA" | grep -q "^FAIL"; then fail=1; fi
 bacheck "^ok   expect_objects 0" "boolean-adversarial script cleaned up to zero objects at the end"
 
+# Compound-operand exact booleans: a compound (multi-lump) Brep operand -
+# the actual output of an earlier Boolean2Objects Result=SymmetricDifference
+# call, not just an artificial fixture - reaches BooleanCombinePlanar's own
+# compound-accepting Difference through the app, not just the kernel's own
+# unit tests (see boolean_mixed_and_compound_script.txt).
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  BM="$("$BIN" --smoke 200 --script "$HERE/boolean_mixed_and_compound_script.txt" 2>&1)" || { echo "$BM"; echo "FAIL: boolean-mixed-and-compound script exited non-zero"; exit 1; }
+else
+  BM="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 200 --script "$HERE/boolean_mixed_and_compound_script.txt" 2>&1)" || { echo "$BM"; echo "FAIL: boolean-mixed-and-compound script exited non-zero"; exit 1; }
+fi
+bmcheck() { if echo "$BM" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$BM" "$1"; fail=1; fi; }
+bmcheck "BooleanDifference: exact B-rep boolean (no tessellation)" "a compound (two-lump) Brep operand, built by a real Boolean2Objects Result=SymmetricDifference call, took the exact path through the app, not the mesh fallback"
+bmcheck "Volume = 1750 cubic" "the compound difference is correct (only the touched lump lost its overlap, the untouched lump kept its full volume)"
+if echo "$BM" | grep -q "! No object with id"; then echo "FAIL boolean-mixed-and-compound script's own SelID bookkeeping was wrong (references a missing id)"; fail=1; else echo "ok   boolean-mixed-and-compound script's SelID bookkeeping matched every object the app actually created"; fi
+echo "$BM" | grep -E "^(ok|FAIL)"
+if echo "$BM" | grep -q "^FAIL"; then fail=1; fi
+bmcheck "^ok   expect_objects 0" "boolean-mixed-and-compound script cleaned up to zero objects at the end"
+
 # Adversarial curve self-intersection: a closed bowtie polyline fed into
 # PlanarSrf (must be rejected) and a solid-capping Extrude (must degrade to
 # an open surface), an open self-crossing polyline confirming IntersectSelf
