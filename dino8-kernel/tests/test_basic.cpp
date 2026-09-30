@@ -8947,6 +8947,82 @@ void TestBrepCheckDoesNotFalselyFlagCurvedOrToplessValidFaces() {
   }
 }
 
+// PARITY_MAP.md's own honest note on "Geometric consistency validation":
+// TrimEdgeGapMeasure only compared the trim's 3D image against the
+// edge's own curve at 3 samples (start/middle/end), which cannot see a
+// gap that peaks strictly BETWEEN those samples. This builds a plate
+// whose top edge's own 3D curve is IDENTICAL to its trim's 3D image at
+// s=0, 0.5, 1 (all z=0) but bulges to z=0.5 at EXACTLY s=0.25 - a
+// mismatch invisible to the 3-sample check by construction, not by
+// accident. The bulge curve is a degree-1 (piecewise-linear) clamped
+// uniform NURBS through 5 points, reparametrized to domain [0,1] via
+// SetDomain(): a degree-1 clamped-uniform curve passes through each of
+// its own control points EXACTLY at its own knot values, so after
+// SetDomain(0,1) those 5 points land at EXACTLY s=0, 0.25, 0.5, 0.75, 1 -
+// confirmed directly via a standalone probe program, not assumed.
+void TestBrepCheckDetectsTrimEdgeGapAtAQuarterPointBulge() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+
+  Brep::PlanarFace top_face = CheckHealFace(
+      {Point3d(0, 1, 0), Point3d(1, 1, 0), Point3d(1, 0, 0), Point3d(0, 0, 0)}, ON_3dVector(0, 0, -1));
+  Brep plate = Brep::FromPlanarFaces({top_face});
+  // A lone open plate has 4 expected NakedEdge issues by design (not a
+  // defect - see this class's own top comment) so IsClean() is never
+  // true for it; the actually relevant baseline is zero TrimEdgeGap.
+  Check(plate.Check().Count(Brep::CheckIssue::Kind::TrimEdgeGap) == 0,
+        "the plate fixture reports zero TrimEdgeGap issues before the deliberate edge-curve swap");
+
+  int top_ei = -1;
+  for (int i = 0; i < plate.raw().m_E.Count(); ++i) {
+    const ON_BrepEdge& e = plate.raw().m_E[i];
+    if (e.m_edge_index < 0) continue;
+    if (e.PointAtStart().DistanceTo(Point3d(0, 1, 0)) < 1e-9 && e.PointAtEnd().DistanceTo(Point3d(1, 1, 0)) < 1e-9) {
+      top_ei = i;
+      break;
+    }
+  }
+  Check(top_ei >= 0, "found the top edge (0,1,0)-(1,1,0) by its own exact endpoints");
+
+  // A degree-1 clamped-uniform NURBS through these 5 points, reparametrized
+  // to [0,1], passes through (0.25,1,0.5) at EXACTLY s=0.25 and every other
+  // listed point at its own exact s - confirmed by direct probe, not assumed.
+  const ON_3dPoint bulge_pts[5] = {
+      ON_3dPoint(0, 1, 0), ON_3dPoint(0.25, 1, 0.5), ON_3dPoint(0.5, 1, 0),
+      ON_3dPoint(0.75, 1, 0), ON_3dPoint(1, 1, 0),
+  };
+  auto* bulge_curve = new ON_NurbsCurve();
+  Check(bulge_curve->CreateClampedUniformNurbs(3, 2, 5, bulge_pts), "the bulge curve itself builds successfully");
+  bulge_curve->SetDomain(0.0, 1.0);
+
+  ON_Brep& raw = plate.raw();
+  const int c3i = raw.AddEdgeCurve(bulge_curve);
+  ON_BrepEdge& top_edge = raw.m_E[top_ei];
+  Check(top_edge.ChangeEdgeCurve(c3i), "ChangeEdgeCurve (the same expert-user primitive ReplaceEdgeCurve() itself "
+                                       "uses) accepts the bulge curve as this edge's new 3D geometry");
+
+  // Sanity: at the exact bulge parameter, the edge's own curve really
+  // does disagree with its trim's still-flat 3D image by exactly 0.5 -
+  // the gap this fix must report, confirmed independently of
+  // TrimEdgeGapMeasure's own internals before trusting Check() on it.
+  {
+    const ON_3dPoint edge_p = top_edge.PointAt(top_edge.Domain().ParameterAt(0.25));
+    Check(std::fabs(edge_p.z - 0.5) < 1e-9,
+          "independently confirmed: the swapped-in edge curve's own point at s=0.25 really is 0.5 off the flat "
+          "z=0 plane the trim/surface still expect there");
+  }
+
+  const Brep::CheckReport after = plate.Check();
+  Check(after.Count(Brep::CheckIssue::Kind::TrimEdgeGap) >= 1,
+        "Check() now reports the quarter-point bulge as a TrimEdgeGap - invisible to the old 3-sample "
+        "(start/middle/end) measurement by construction");
+  const auto it = std::find_if(after.issues.begin(), after.issues.end(), [](const Brep::CheckIssue& i) {
+    return i.kind == Brep::CheckIssue::Kind::TrimEdgeGap;
+  });
+  Check(it != after.issues.end() && it->measure > 0.4,
+        "...and its own measured gap is close to the true 0.5 bulge, not some unrelated small residual");
+}
+
 // PARITY_MAP.md previously documented RemoveDegenerateFaces()/
 // RemoveSliverFaces() as "destructive on the kernel's own valid solids"
 // (probed: 3/3 and 6/6 faces deleted from a valid Extrude(circle) and
@@ -46749,6 +46825,7 @@ int main() {
   TestTolerancePolicyValuesAreTheOnesInForce();
   TestBrepCheckReportsCleanBoxAsClean();
   TestBrepCheckDoesNotFalselyFlagCurvedOrToplessValidFaces();
+  TestBrepCheckDetectsTrimEdgeGapAtAQuarterPointBulge();
   TestBrepRemoveDegenerateOrSliverFacesDoesNotTouchValidSolids();
   TestBrepCheckDetectsNonManifoldPinchVertex();
   TestBrepSplitNonManifoldVertexHealsPinchPoint();

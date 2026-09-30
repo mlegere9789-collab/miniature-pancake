@@ -6307,15 +6307,29 @@ bool TrimPoint3d(const ON_BrepTrim& trim, double s, ON_3dPoint& out) {
   return true;
 }
 
-// The largest distance, over the trim's start/middle/end, between the
-// trim's 3D image (TrimPoint3d) and the edge's own 3D curve at the
-// matching parameter (reversed when m_bRev3d says the trim runs against
-// the edge). `where` receives the trim-side point at the worst sample.
-// Returns -1.0 if the trim can't be evaluated.
+// The largest distance, over `kGapSamples + 1` evenly-spaced points along
+// the trim (0, 1/kGapSamples, ..., 1), between the trim's 3D image
+// (TrimPoint3d) and the edge's own 3D curve at the matching parameter
+// (reversed when m_bRev3d says the trim runs against the edge). `where`
+// receives the trim-side point at the worst sample. Returns -1.0 if the
+// trim can't be evaluated.
+//
+// PARITY_MAP.md's own honest note this closes: the previous 3-sample
+// version (start/middle/end only) cannot see a gap that peaks strictly
+// BETWEEN those samples - e.g. a mid-span bulge in an edge's own 3D
+// curve that happens to return to the trim's surface at both the
+// quarter-point AND at start/middle/end would measure as a clean gap of
+// ~0 under 3 samples while a genuine, non-trivial gap sits right at the
+// quarter point. Verified directly (`TestBrepCheckDetectsTrimEdgeGapAtAQuarterPointBulge`):
+// a trim/edge pair built to be IDENTICAL at s=0, 0.5, 1 but deliberately
+// bulged only at s=0.25 reports ~0 gap under the reverted 3-sample logic
+// and the true bulge distance under this version.
 double TrimEdgeGapMeasure(const ON_BrepTrim& trim, const ON_BrepEdge& edge, ON_3dPoint* where) {
+  constexpr int kGapSamples = 8;
   double worst = -1.0;
   const ON_Interval ed = edge.Domain();
-  for (const double s : {0.0, 0.5, 1.0}) {
+  for (int i = 0; i <= kGapSamples; ++i) {
+    const double s = static_cast<double>(i) / kGapSamples;
     ON_3dPoint tp;
     if (!TrimPoint3d(trim, s, tp)) return -1.0;
     const ON_3dPoint ep = edge.PointAt(ed.ParameterAt(trim.m_bRev3d ? 1.0 - s : s));

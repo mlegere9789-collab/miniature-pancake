@@ -4952,6 +4952,39 @@ honestly out of scope.
   failures; `dino8_general_boolean_sweep` byte-identical to its prior
   baseline.
 
+- **`Brep::Check()`'s `TrimEdgeGap` measurement only sampled 3 points
+  (start/middle/end)** (`brep.cpp`'s `TrimEdgeGapMeasure`) - closes
+  PARITY_MAP.md's own honest note on this exact limitation under
+  "Geometric consistency validation": a gap between a trim's 3D image and
+  its edge's own 3D curve that peaks strictly BETWEEN those 3 samples was
+  invisible to `Check()` - a real false-negative risk for exactly the
+  case this check exists to catch (a badly re-fit trim, a `ReplaceEdge`
+  gone wrong in the middle of its span, ...). Fixed by widening the
+  sample set to 9 evenly-spaced points (0, 1/8, ..., 1) - a pure
+  monotonic improvement, since the old 3 samples are a subset of the new
+  9, so the measured gap can only ever go UP, never silently down, on any
+  existing fixture.
+  Verified (`TestBrepCheckDetectsTrimEdgeGapAtAQuarterPointBulge`): a
+  plate's top edge has its own 3D curve directly swapped (via
+  `ON_BrepEdge::ChangeEdgeCurve`, the same "expert user" primitive
+  `ReplaceEdgeCurve()` itself already uses) for a degree-1 clamped-uniform
+  NURBS built to be IDENTICAL to the original flat curve at s=0, 0.5, 1
+  but bulged by exactly 0.5 at s=0.25 - a mismatch invisible to the old
+  3-sample check BY CONSTRUCTION (confirmed directly: a degree-1
+  clamped-uniform curve through 5 points passes through each control
+  point EXACTLY at its own knot value, verified via a standalone probe
+  before trusting the fixture). `Check()` now reports this as a
+  `TrimEdgeGap` with `measure` close to the true 0.5 bulge. Mutation-
+  tested: reverting to the 3-sample logic makes exactly this test's two
+  bulge-detection assertions fail, with 0 unrelated regressions (one
+  already-known, already-documented intermittent
+  `FoldFaceConvexPlanar` flake - see PARITY_MAP.md's own prior note on
+  it - appeared on the mutated run and was independently confirmed absent
+  on this same unchanged code both before and after the mutation cycle,
+  so not attributable to this change). Full `dino8_kernel_tests`: 5897
+  checks, 0 failures; `dino8_general_boolean_sweep` byte-identical to its
+  prior baseline.
+
 ## What's still not done (as of chunk 2)
 
 - `Brep::Box()`, `Brep::Sphere()`, `Brep::TrimmedPlanarFace()`
