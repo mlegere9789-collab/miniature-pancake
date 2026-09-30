@@ -7,6 +7,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 
 #include <manifold/manifold.h>
 
@@ -1165,6 +1166,222 @@ Brep BooleanCombinePlanarNAry(const std::vector<Brep>& first_group, const std::v
   }
   const Brep folded_second = fold_union(second_group);
   return BooleanCombinePlanar(folded_first, folded_second, op, tolerance);
+}
+
+namespace {
+
+// One right prism over `polygon` (CCW as seen from `plane.zaxis`), base
+// in `plane`, extruded a distance `height` along `plane.zaxis` - the
+// PolygonBooleanPlanar reduction's own operand builder. Every face is
+// built directly as a Brep::PlanarFace (not via Brep::Extrude(), which
+// goes through a NurbsCurve profile and a separate capping step this
+// function has no need of): the bottom cap is `polygon` reversed (CCW as
+// seen from -plane.zaxis, its own outward normal), the top cap is
+// `polygon` translated by `height * plane.zaxis` (unchanged order - CCW
+// as seen from +plane.zaxis is already its own outward normal), and each
+// side is the quad over one polygon edge, oriented outward by construction
+// (cross(edge, up) - the same right-prism lateral-face convention
+// Brep::FromUntrimmedQuadFaces's own doc comment derives for a CCW base
+// polygon with `up` pointing out of the base).
+Brep PrismFromPolygon(const std::vector<Point3d>& polygon, const ON_Plane& plane, double height,
+                       const char* caller) {
+  const size_t n = polygon.size();
+  const Vector3d up = height * plane.zaxis;
+
+  std::vector<Brep::PlanarFace> faces;
+  faces.reserve(n + 2);
+
+  Brep::PlanarFace bottom;
+  bottom.loop.assign(polygon.rbegin(), polygon.rend());
+  bottom.plane = ON_Plane(polygon[0], -plane.zaxis);
+  faces.push_back(std::move(bottom));
+
+  Brep::PlanarFace top;
+  top.loop.reserve(n);
+  for (const Point3d& p : polygon) top.loop.push_back(p + up);
+  top.plane = ON_Plane(polygon[0] + up, plane.zaxis);
+  faces.push_back(std::move(top));
+
+  for (size_t i = 0; i < n; ++i) {
+    const Point3d& p0 = polygon[i];
+    const Point3d& p1 = polygon[(i + 1) % n];
+    Vector3d normal = ON_CrossProduct(p1 - p0, up);
+    if (!normal.Unitize()) {
+      throw std::invalid_argument(std::string("dino8::kernel::") + caller +
+                                   ": a polygon has two consecutive coincident vertices (a degenerate edge)");
+    }
+    Brep::PlanarFace side;
+    side.loop = {p0, p1, p1 + up, p0 + up};
+    side.plane = ON_Plane(p0, normal);
+    faces.push_back(std::move(side));
+  }
+
+  return Brep::FromPlanarFaces(faces);
+}
+
+// BooleanCombinePlanar's own SplitAndBucket pipeline never re-merges
+// adjacent same-plane fragments it kept into one bigger face - the result
+// of PolygonBooleanPlanar's own base-plane face filter is genuinely one
+// small convex (or, for a non-convex input, general) fragment PER
+// SplitAgainstAllPlanes() cut, not one simple polygon per connected
+// region (confirmed directly, not assumed: two overlapping unit squares'
+// own Union comes back as 7 separate unit-ish quads tiling the true
+// 7-area union region, not 1). This dissolves that raw fragment tiling
+// back into simple closed loops the standard way: an edge shared by two
+// ADJACENT fragments is walked once in each direction (CCW fragments
+// sharing an edge always traverse it in opposite directions - the same
+// property Brep::FromPlanarFaces's own BuildFaceLoop edge-matching
+// relies on), so it cancels; an edge with no such opposite-direction
+// match is a genuine boundary edge (outer or, for a region with a hole,
+// inner) and survives. Walking the survivors tip-to-tail recovers one
+// loop per connected boundary component - the outer loop of each
+// disjoint region, plus one loop per interior hole (at the opposite
+// winding from its own outer loop, the standard convention this
+// function's own doc comment discloses rather than hides).
+struct WeldKey {
+  long long x = 0, y = 0, z = 0;
+  bool operator==(const WeldKey& o) const { return x == o.x && y == o.y && z == o.z; }
+};
+struct WeldKeyHash {
+  size_t operator()(const WeldKey& k) const {
+    size_t h = std::hash<long long>()(k.x);
+    h ^= std::hash<long long>()(k.y) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+    h ^= std::hash<long long>()(k.z) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+    return h;
+  }
+};
+
+std::vector<std::vector<Point3d>> DissolveCoplanarFragments(const std::vector<std::vector<Point3d>>& fragments,
+                                                              double tol) {
+  auto key_of = [tol](const Point3d& p) {
+    return WeldKey{std::llround(p.x / tol), std::llround(p.y / tol), std::llround(p.z / tol)};
+  };
+
+  struct EdgeKey {
+    WeldKey a, b;
+    bool operator==(const EdgeKey& o) const { return a == o.a && b == o.b; }
+  };
+  struct EdgeKeyHash {
+    size_t operator()(const EdgeKey& k) const {
+      const WeldKeyHash h;
+      return h(k.a) ^ (h(k.b) * 0x100000001b3ULL);
+    }
+  };
+
+  std::unordered_map<EdgeKey, int, EdgeKeyHash> forward_count;
+  for (const std::vector<Point3d>& frag : fragments) {
+    const size_t n = frag.size();
+    for (size_t i = 0; i < n; ++i) {
+      ++forward_count[EdgeKey{key_of(frag[i]), key_of(frag[(i + 1) % n])}];
+    }
+  }
+
+  // A directed edge survives (is part of the true dissolved boundary) iff
+  // no fragment anywhere walks it in the opposite direction.
+  std::vector<std::pair<Point3d, Point3d>> boundary;
+  for (const std::vector<Point3d>& frag : fragments) {
+    const size_t n = frag.size();
+    for (size_t i = 0; i < n; ++i) {
+      const Point3d& p0 = frag[i];
+      const Point3d& p1 = frag[(i + 1) % n];
+      if (forward_count.find(EdgeKey{key_of(p1), key_of(p0)}) == forward_count.end()) {
+        boundary.emplace_back(p0, p1);
+      }
+    }
+  }
+
+  std::unordered_map<WeldKey, std::vector<size_t>, WeldKeyHash> out_edges_at;
+  for (size_t i = 0; i < boundary.size(); ++i) out_edges_at[key_of(boundary[i].first)].push_back(i);
+
+  std::vector<bool> used(boundary.size(), false);
+  std::vector<std::vector<Point3d>> loops;
+  for (size_t start = 0; start < boundary.size(); ++start) {
+    if (used[start]) continue;
+    std::vector<Point3d> loop;
+    size_t cur = start;
+    while (!used[cur]) {
+      used[cur] = true;
+      loop.push_back(boundary[cur].first);
+      const WeldKey next_key = key_of(boundary[cur].second);
+      const auto it = out_edges_at.find(next_key);
+      size_t next = boundary.size();
+      if (it != out_edges_at.end()) {
+        for (size_t candidate : it->second) {
+          if (!used[candidate]) {
+            next = candidate;
+            break;
+          }
+        }
+      }
+      if (next == boundary.size()) break;
+      cur = next;
+    }
+    if (loop.size() >= 3) loops.push_back(std::move(loop));
+  }
+  return loops;
+}
+
+}  // namespace
+
+std::vector<std::vector<Point3d>> PolygonBooleanPlanar(const std::vector<Point3d>& a, const std::vector<Point3d>& b,
+                                                         const ON_Plane& plane, BooleanOp op, double tolerance) {
+  const char* caller = "PolygonBooleanPlanar";
+  if (a.size() < 3 || b.size() < 3) {
+    throw std::invalid_argument(std::string("dino8::kernel::") + caller +
+                                 ": both polygons need at least 3 vertices");
+  }
+
+  double max_extent = kConvexTol;
+  for (const std::vector<Point3d>* poly : {&a, &b}) {
+    for (const Point3d& p : *poly) {
+      max_extent = std::max({max_extent, std::fabs(p.x), std::fabs(p.y), std::fabs(p.z)});
+      if (std::fabs(plane.DistanceTo(p)) > max_extent * 1e-6) {
+        throw std::invalid_argument(std::string("dino8::kernel::") + caller +
+                                     ": every vertex of both polygons must lie in `plane`");
+      }
+    }
+  }
+
+  // The prism's height needs to be comparable to the footprint's own
+  // extent (never a degenerate sliver relative to it, nor absurdly taller
+  // than it) for BooleanCombinePlanar's own relative-tolerance derivation
+  // to stay well-conditioned - the combined bounding-box diagonal of both
+  // polygons is exactly that scale.
+  Point3d lo = a[0], hi = a[0];
+  for (const std::vector<Point3d>* poly : {&a, &b}) {
+    for (const Point3d& p : *poly) {
+      lo.x = std::min(lo.x, p.x);
+      lo.y = std::min(lo.y, p.y);
+      lo.z = std::min(lo.z, p.z);
+      hi.x = std::max(hi.x, p.x);
+      hi.y = std::max(hi.y, p.y);
+      hi.z = std::max(hi.z, p.z);
+    }
+  }
+  double height = (hi - lo).Length();
+  if (!(height > 0.0)) height = 1.0;
+
+  const Brep prism_a = PrismFromPolygon(a, plane, height, caller);
+  const Brep prism_b = PrismFromPolygon(b, plane, height, caller);
+  const Brep combined = BooleanCombinePlanar(prism_a, prism_b, op, tolerance);
+
+  const double tol = tolerance >= 0.0 ? tolerance : std::max(kConvexTol, height * 1e-9);
+  std::vector<std::vector<Point3d>> base_fragments;
+  for (const Brep::PlanarFace& f : combined.PlanarFaces()) {
+    // The base-plane faces are exactly the ones whose outward normal is
+    // -plane.zaxis and whose plane coincides with `plane` itself - the
+    // bottom cap PrismFromPolygon built for each operand, and the only
+    // faces BooleanCombinePlanar's own classification ever keeps in that
+    // exact plane (every other kept face is either a side wall or the top
+    // cap, neither of which shares this plane).
+    if (f.plane.zaxis.IsParallelTo(plane.zaxis, 1e-6) == -1 && std::fabs(plane.DistanceTo(f.plane.origin)) <= tol) {
+      // f.loop is CCW as seen from -plane.zaxis (this face's own outward
+      // normal) - reverse it back to CCW as seen from +plane.zaxis, the
+      // convention `a`/`b` (and this function's own return value) use.
+      base_fragments.emplace_back(f.loop.rbegin(), f.loop.rend());
+    }
+  }
+  return DissolveCoplanarFragments(base_fragments, tol);
 }
 
 namespace {
@@ -7411,7 +7628,8 @@ std::vector<MixedFace> SynthesizeEndCaps(const std::vector<MixedFace>& fragments
         ++crossing_count;
       }
       if (crossing_count > 1) {
-        throw std::invalid_argument(
+        throw BooleanOperationError(
+            BooleanFailureReason::UnsupportedGeometry, "BooleanCombineMixed",
             "dino8::kernel::BooleanCombineMixed: a synthesized Intersection/"
             "Difference end cap's own footprint is reached by MORE THAN ONE "
             "genuinely-crossing parallel-axis cylinder at once - a "
@@ -7436,7 +7654,8 @@ std::vector<MixedFace> SynthesizeEndCaps(const std::vector<MixedFace>& fragments
         // scope limit of this increment's own parallel-axis cylinder/
         // cylinder capability, not a bug.
         if (!ParallelCylinderCapSafeAgainstAll(cf, /*at_v0=*/true, other, tol)) {
-          throw std::invalid_argument(
+          throw BooleanOperationError(
+              BooleanFailureReason::UnsupportedGeometry, "BooleanCombineMixed",
               "dino8::kernel::BooleanCombineMixed: a synthesized end cap's "
               "own footprint may need trimming against an interacting "
               "parallel-axis cylinder that also reaches this end's height "
@@ -7451,7 +7670,8 @@ std::vector<MixedFace> SynthesizeEndCaps(const std::vector<MixedFace>& fragments
       const Point3d probe = cf.frame.origin + (cf.length + probe_eps) * cf.frame.zaxis;
       if (ClassifyPointVsMixedSolid(probe, other, tol) == needed_class) {
         if (!ParallelCylinderCapSafeAgainstAll(cf, /*at_v0=*/false, other, tol)) {
-          throw std::invalid_argument(
+          throw BooleanOperationError(
+              BooleanFailureReason::UnsupportedGeometry, "BooleanCombineMixed",
               "dino8::kernel::BooleanCombineMixed: a synthesized end cap's "
               "own footprint may need trimming against an interacting "
               "parallel-axis cylinder that also reaches this end's height "

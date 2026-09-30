@@ -339,6 +339,15 @@ void CommandEngine::Execute(const std::string& raw_input) {
   }
   const std::string name = ResolveName(first);
   Print("Command: " + input);
+  // Action recorder (RecordMacro, cmd_misc.cpp): append this exact typed
+  // line to the Macro Editor's buffer - excluding RecordMacro itself, so
+  // toggling recording off doesn't leave a trailing "RecordMacro Off" as
+  // the buffer's own last recorded line. `input` is the whole line as
+  // typed, args included ("Box 0,0,0 10,10,10"), not just the command
+  // name - see AppState::macro_recording's own comment (Application.h).
+  if (app_.State().macro_recording && name != "RecordMacro") {
+    app_.State().macro_text += input + "\n";
+  }
   pending_inputs_.assign(rest.begin(), rest.end());
   RunCommand(name, script);
 }

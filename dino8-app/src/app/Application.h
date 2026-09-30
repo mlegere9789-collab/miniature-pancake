@@ -172,6 +172,7 @@ struct AppState {
   bool dig_beep = false;             // DigBeep: terminal-bell feedback per digitized point
   std::string content_filter;        // ContentFilter: case-insensitive name substring for the Materials/Textures/Environments panels
   std::string macro_text = "! _Box 0,0,0 10,10,10\n_ZoomExtents\n";  // MacroEditor's buffer (Options.cpp Settings persists this, like startup_script)
+  bool macro_recording = false;      // RecordMacro On/Off: while on, CommandEngine::Execute appends each typed top-level command line to macro_text - see cmd_misc.cpp's RecordMacro
 };
 
 struct FileDialogState {
@@ -352,6 +353,12 @@ class Application {
   std::string language = "en";
   std::vector<std::string> toolbar_commands;  // customizable Standard toolbar (empty = default set)
   std::vector<KeyShortcut> user_shortcuts;    // Options > Shortcuts (persisted in Settings); see HandleShortcuts
+  // Options > Shortcuts "Press a key..." capture button (Panels.cpp): while
+  // true, HandleShortcuts skips ALL of its own dispatch for the frame (same
+  // as the existing text_active guard) so a chord being captured for a new
+  // binding can never also fire its own current action or an unrelated
+  // existing user_shortcuts entry out from under the capture.
+  bool capturing_shortcut = false;
   // Toolbar appearance (Options > Toolbar), persisted in Settings.
   int toolbar_icon_size = 24;        // 24, 32 or 40 px
   bool toolbar_labels = true;        // small caption under each icon

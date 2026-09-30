@@ -3712,7 +3712,8 @@ std::pair<Brep, Brep> SplitBySheet(const Brep& solid, const Brep& sheet, double 
         for (FaceFrags& x : frags_h) delete x.surface;
         for (KeptFace& kf : kept_pos) delete kf.surface;
         for (KeptFace& kf : kept_neg) delete kf.surface;
-        throw std::invalid_argument(
+        throw BooleanOperationError(
+            BooleanFailureReason::UnsupportedGeometry, "SplitBySheet",
             "dino8::kernel::SplitBySheet: a fragment of `solid` could not be classified "
             "to a side of `sheet` - `sheet` is degenerate (every one of its faces failed "
             "to converge a closest point)");
@@ -3916,6 +3917,52 @@ Brep TrimSheetBySolid(const Brep& sheet, const Brep& solid, bool keep_inside, do
   return result;
 }
 
+std::pair<Brep, Brep> SplitBrepBySolid(const Brep& target, const Brep& cutter, double tolerance) {
+  if (target.raw().m_F.Count() == 0) {
+    throw BooleanOperationError(BooleanFailureReason::EmptyOperand, "SplitBrepBySolid",
+                                 "dino8::kernel::SplitBrepBySolid: target has no faces");
+  }
+  if (cutter.raw().m_F.Count() == 0) {
+    throw BooleanOperationError(BooleanFailureReason::EmptyOperand, "SplitBrepBySolid",
+                                 "dino8::kernel::SplitBrepBySolid: cutter has no faces");
+  }
+  if (!(tolerance > 0.0)) {
+    throw BooleanOperationError(BooleanFailureReason::InvalidTolerance, "SplitBrepBySolid",
+                                 "dino8::kernel::SplitBrepBySolid: tolerance must be positive");
+  }
+
+  // Deliberately two independent BooleanCombineGeneral() calls rather than
+  // a hand-rolled shared fragmentation pass (the way ComputeAllInterference,
+  // boolean.cpp, later factored ComputeInterference/ComputeMultiWayInterference's
+  // own duplicated pairwise work into one shared helper) - this function is
+  // new, not an optimization of two pre-existing callers, so there is no
+  // caller-visible duplicated cost to remove yet; a future pass wanting both
+  // pieces at lower cost can factor this the same way, without changing
+  // either piece's own answer.
+  Brep outside = BooleanCombineGeneral(target, cutter, BooleanOp::Difference, tolerance);
+  Brep inside = BooleanCombineGeneral(target, cutter, BooleanOp::Intersection, tolerance);
+  return {std::move(outside), std::move(inside)};
+}
+
+std::pair<Brep, Brep> SplitBrepByManySolids(const Brep& target, const std::vector<Brep>& cutters,
+                                             double tolerance) {
+  if (target.raw().m_F.Count() == 0) {
+    throw BooleanOperationError(BooleanFailureReason::EmptyOperand, "SplitBrepByManySolids",
+                                 "dino8::kernel::SplitBrepByManySolids: target has no faces");
+  }
+  if (cutters.empty()) {
+    throw BooleanOperationError(BooleanFailureReason::EmptyOperandGroup, "SplitBrepByManySolids",
+                                 "dino8::kernel::SplitBrepByManySolids: cutters is empty");
+  }
+  if (!(tolerance > 0.0)) {
+    throw BooleanOperationError(BooleanFailureReason::InvalidTolerance, "SplitBrepByManySolids",
+                                 "dino8::kernel::SplitBrepByManySolids: tolerance must be positive");
+  }
+
+  const Brep folded_cutter = BooleanCombineGeneralNAry(cutters, {}, BooleanOp::Union, tolerance);
+  return SplitBrepBySolid(target, folded_cutter, tolerance);
+}
+
 // --- MakeHole()/MakeCounterboreHole()/MakeCountersinkHole() ------------
 
 namespace {
@@ -4108,6 +4155,19 @@ Brep EmbossProfile(const Brep& solid, const NurbsCurve& profile, Vector3d direct
   const Vector3d extrude_vector = deboss ? dir * (margin + depth) : -dir * (margin + depth);
   const Brep tool = Brep::Extrude(base, extrude_vector, /*cap=*/true);
   return BooleanCombineGeneral(solid, tool, deboss ? BooleanOp::Difference : BooleanOp::Union);
+}
+
+Brep MakeRevolvedCut(const Brep& solid, const NurbsCurve& profile, Point3d axis_point, Vector3d axis_direction,
+                      double revolve_angle_degrees) {
+  if (solid.raw().m_F.Count() == 0) {
+    throw std::invalid_argument("dino8::kernel::MakeRevolvedCut: solid has no faces");
+  }
+  if (!(revolve_angle_degrees > 0.0) || revolve_angle_degrees > 360.0) {
+    throw std::invalid_argument("dino8::kernel::MakeRevolvedCut: revolve_angle_degrees must be in (0, 360]");
+  }
+  const double angle = revolve_angle_degrees * ON_PI / 180.0;
+  const Brep tool = Brep::Revolve(profile, axis_point, axis_direction, angle, /*cap=*/true);
+  return BooleanCombineGeneral(solid, tool, BooleanOp::Difference);
 }
 
 // --- ExtrudeToBoundary(): extrude a quadrilateral profile until it -----

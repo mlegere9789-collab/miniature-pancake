@@ -206,6 +206,73 @@ std::vector<CurveCurveHit> IntersectCurves(const ON_Curve& a, const ON_Curve& b,
 // "usability" gap PARITY_MAP.md's own evidence names.
 std::vector<CurveCurveHit> IntersectCurveSelfIntersections(const ON_Curve& c, const IntersectOptions& opt);
 
+struct PullbackResult {
+  ON_NurbsCurve pcurve;         // 2D curve in the surface's (u, v) parameter space
+  ON_NurbsCurve pulled_curve;   // the literal 3D "Pull curve to surface" result: S(pcurve(t)), refit as its own 3D curve
+  std::vector<ON_2dPoint> uv;   // the (u, v) found at each sample (same order as `t`)
+  std::vector<double> t;        // the curve parameters (in c.Domain()) that were sampled
+  std::vector<double> params;   // pcurve's/pulled_curve's own chord-length parameters (same order as `uv`/`t`)
+  double max_error = 0;         // largest |S(u, v) - C(t)| at any SAMPLED point
+  bool on_surface = false;      // true iff max_error <= opt.tolerance
+};
+
+// General-purpose pullback AND pull: projects an ARBITRARY 3D curve (on,
+// near, or genuinely far from a surface) onto that surface, returning BOTH
+// a 2D pcurve in the surface's own (u, v) parameter space and the literal
+// 3D "pull curve to surface" result (Rhino's Pull command semantics -
+// `pulled_curve`, the pcurve mapped back through the surface as its own 3D
+// curve). This is the general-purpose sibling of two things the kernel
+// previously only did as a by-product of something else: the pullback
+// ReplaceEdgeCurve()/SplitNakedEdgeAt() already do internally (brep.cpp) as
+// part of a topology edit (2D, but only reachable from inside those edits),
+// and the plain closest-point projection SurfaceClosestPoint/Global already
+// do per POINT (3D, but with no curve-level call to drive it across a whole
+// input curve and refit the result as one curve).
+//
+// The curve is sampled at a resolution driven by opt.mesh_tolerance (same
+// formula as IntersectCurveSurface), each sample is closest-point-projected
+// onto the surface (SurfaceClosestPointGlobal for the first sample, then
+// SurfaceClosestPoint seeded from the PREVIOUS sample's (u, v) for
+// continuity - re-seeded globally whenever the local Newton polish fails or
+// lands implausibly far from the sample point, so a warm seed that has
+// wandered off a disconnected sheet or across a awkward periodic seam
+// self-corrects rather than silently drifting), and the resulting (u, v)
+// samples are fit with InterpolateCubic(..., dim=2) for `pcurve` and the
+// matching S(u, v) samples are separately fit with InterpolateCubic(...,
+// dim=3) for `pulled_curve` - the exact same cubic-fit call
+// IntersectSurfaces() itself uses to build pcurve_a/pcurve_b (and, for
+// `pulled_curve`, its 3D `curve` field).
+//
+// Honesty notes (read before trusting the result):
+//  - max_error is the worst per-SAMPLE closest-point residual; unlike
+//    IntersectSurfaces()'s own post-fit pass, neither fitted curve's
+//    deviation from the surface/input BETWEEN samples is independently
+//    re-checked or refined with inserted points - a caller who needs a
+//    tighter guarantee on a highly-curved input should tighten
+//    opt.mesh_tolerance (more samples), not rely on this call to notice
+//    and self-correct.
+//  - `pulled_curve` (the literal "Pull to surface" result) is meaningful
+//    for ANY input, on-surface or not - that is the definition of a Pull
+//    operation, and on_surface need not be true to trust it. `pcurve` and
+//    `on_surface`, by contrast, are about PARAMETER-SPACE correspondence:
+//    when the curve does NOT actually lie on the surface within tolerance
+//    (on_surface == false), `pcurve` is still returned (it is whatever
+//    curve interpolates the raw closest-point (u, v) projections), but
+//    treating it as a meaningful pullback of THIS curve's own shape is not
+//    warranted - it is closest-point noise reparametrized, not a pullback.
+//    Callers MUST check on_surface before trusting `pcurve` as a shape-
+//    preserving parametrization; this call does not throw or return an
+//    empty curve for an off-surface input, since "far from the surface"
+//    has no single correct threshold this general-purpose call can assume
+//    for every caller.
+//  - Like IntersectSurfaces()'s own pcurve_a/pcurve_b, a raw (u, v) sample
+//    sequence that crosses a periodic surface direction's seam is not
+//    unwrapped - the cubic fit can swing through the domain's middle
+//    between the two bracketing samples there (a visibly wrong `pcurve`
+//    shape for that specific stretch, even though the individual `uv`
+//    samples, `pulled_curve`, and max_error remain correct).
+PullbackResult PullbackCurveToSurface(const ON_Curve& c, const ON_Surface& s, const IntersectOptions& opt);
+
 // --- numerical helpers ------------------------------------------------------
 
 // Damped Gauss-Newton on residual(x) (m equations, n unknowns) with box

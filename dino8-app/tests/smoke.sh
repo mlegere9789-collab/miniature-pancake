@@ -2026,6 +2026,40 @@ print("layers count final: %d" % dino8.doc.Layers.Count())
 print("layers is layer after delete: " + str(dino8.doc.Layers.IsLayer("QCLayer")))
 
 dino8.RunCommand("NewLayer", "Parts")
+
+print("unit system before: %d" % dino8.doc.UnitSystem)
+dino8.doc.UnitSystem = "Feet"
+print("unit system after set by name: %d" % dino8.doc.UnitSystem)
+print("unit system name after set: " + dino8.doc.UnitSystemName)
+dino8.doc.UnitSystem = 2
+print("unit system after set by code: " + dino8.doc.UnitSystemName)
+
+print("doc name: " + dino8.doc.Name)
+print("doc path: " + str(dino8.doc.Path))
+print("doc modified before: " + str(dino8.doc.Modified))
+dino8.doc.Modified = False
+print("doc modified after set: " + str(dino8.doc.Modified))
+dino8.doc.Modified = True
+
+dino8.doc.BeginUndo("QCPointGroup")
+undo_pt = dino8.doc.Objects.AddPoint(600, 0, 0)
+print("object count before undo: %d" % len(dino8.doc.Objects.AllObjects()))
+print("undo point present: " + str(dino8.doc.Objects.Find(undo_pt) is not None))
+print("undo returned: " + str(dino8.doc.Undo()))
+print("object count after undo: %d" % len(dino8.doc.Objects.AllObjects()))
+print("undo point gone: " + str(dino8.doc.Objects.Find(undo_pt) is None))
+print("redo returned: " + str(dino8.doc.Redo()))
+print("object count after redo: %d" % len(dino8.doc.Objects.AllObjects()))
+print("redo point back: " + str(dino8.doc.Objects.Find(undo_pt) is not None))
+print("final undo returned: " + str(dino8.doc.Undo()))
+print("object count after final undo: %d" % len(dino8.doc.Objects.AllObjects()))
+
+print("last command name: " + dino8.LastCommandName())
+print("version starts with Dino 8: " + str(dino8.Version().startswith("Dino 8 ")))
+print("command history has last command: " + str(dino8.LastCommandName() in dino8.CommandHistory()))
+dino8.ClearCommandHistory()
+print("command history empty after clear: " + str(dino8.CommandHistory() == ""))
+print("last command survives history clear: " + str(dino8.LastCommandName() == "RunPythonScript"))
 PY
 sed "s|@TMP@|$TMPW|g" "$HERE/python_script.txt" > "$TMPW/python_script.txt"
 # Captured with set +e, not "|| { ...; exit 1; }": python_script.txt's own
@@ -2203,7 +2237,30 @@ else
   pscheck "history: layers delete after switch: True" "Delete succeeded once the layer was no longer current"
   pscheck "history: layers count final: 1" "Layers.Count is back to 1 after the delete"
   pscheck "history: layers is layer after delete: False" "IsLayer no longer finds the deleted layer"
-  pscheck "^ok   expect_objects 36" "RunPythonScript left the box, the circle, the cone, the torus, the interpolated curve, the arc, the srf, the planar surface, three points, the extruded surface, the extruded solid, the union mesh, the difference mesh, the intersection mesh, the two circle copies, the rotate line and its rotated copy, the scale box and its scaled copy, the mirror line and its mirrored copy, the transform line and its transformed copy, the curve-query line, its 3 create=True divide points, the bounding-box test box, the surface-closest-point sphere, the AddMesh triangle, and the two fresh ObjectsByType test points (the sphere, the two union input boxes, the two difference input boxes and the two intersection input boxes were removed from inside the script)"
+  pscheck "history: unit system before: 2" "dino8.doc.UnitSystem read back the default document unit system (2, Millimeters), matching rs.UnitSystem's getter form and Document::Settings().unit_system's default"
+  pscheck "history: unit system after set by name: 9" "assigning dino8.doc.UnitSystem = \"Feet\" resolved the name to Rhino's own unit code (9), matching rs.UnitSystem's setter-by-name form and UnitCode's table in LuaEngine.cpp"
+  pscheck "history: unit system name after set: Feet" "dino8.doc.UnitSystemName read back the word form after the by-name set, matching rs.UnitSystemName"
+  pscheck "history: unit system after set by code: Millimeters" "assigning dino8.doc.UnitSystem = 2 (an int) resolved through the same code table, matching rs.UnitSystem's setter-by-code form"
+  pscheck "history: doc name: Untitled" "dino8.doc.Name reported \"Untitled\" for a document with no path yet, matching rs.DocumentName"
+  pscheck "history: doc path: None" "dino8.doc.Path is None for an unsaved document, matching rs.DocumentPath pushing nil instead of an empty string"
+  pscheck "history: doc modified before: True" "dino8.doc.Modified reflects the many edits this script already made, matching rs.DocumentModified's getter form"
+  pscheck "history: doc modified after set: False" "assigning dino8.doc.Modified = False round-tripped, matching rs.DocumentModified's setter form"
+  pscheck "history: object count before undo: 37" "dino8.doc.Objects.AddPoint after dino8.doc.BeginUndo(\"QCPointGroup\") added the one new point, matching rs.BeginUndo/rs.AddPoint"
+  pscheck "history: undo point present: True" "the freshly added point resolves through Find before any undo"
+  pscheck "history: undo returned: True" "dino8.doc.Undo() reported success, matching rs.Undo() - previously entirely unported to Python per the PARITY_MAP note on undo/document-state functions"
+  pscheck "history: object count after undo: 36" "Undo() removed exactly the point BeginUndo's group added"
+  pscheck "history: undo point gone: True" "the undone point no longer resolves through Find"
+  pscheck "history: redo returned: True" "dino8.doc.Redo() reported success, matching rs.Redo() - also previously entirely unported to Python"
+  pscheck "history: object count after redo: 37" "Redo() restored exactly the point Undo() had removed"
+  pscheck "history: redo point back: True" "the redone point resolves through Find again"
+  pscheck "history: final undo returned: True" "a second dino8.doc.Undo() call cleanly reverted the redo, leaving the document's object count where the rest of this script expects it"
+  pscheck "history: object count after final undo: 36" "the undo/redo round trip nets to zero extra objects, so the final @expect_objects count below is unaffected"
+  pscheck "history: last command name: RunPythonScript" "dino8.LastCommandName() reported RunPythonScript itself, matching rs.LastCommandName - CommandEngine::RunNested saves/restores last_command_ around a nested dino8.RunCommand call the same way rs.Command does, so the earlier NewLayer/AddLayer/etc. nested calls never clobber it"
+  pscheck "history: version starts with Dino 8: True" "dino8.Version() reports a Dino 8 version string, matching rs.Version() - previously entirely unported to Python"
+  pscheck "history: command history has last command: True" "dino8.CommandHistory() includes the line-1 \"Command: RunPythonScript ...\" entry LastCommandName just named, matching rs.CommandHistory()"
+  pscheck "history: command history empty after clear: True" "dino8.ClearCommandHistory() actually cleared it, matching rs.ClearCommandHistory()"
+  pscheck "history: last command survives history clear: True" "clearing the history deque leaves last_command_ itself untouched, matching rs.ClearCommandHistory() only ever clearing rs.CommandHistory()'s own log"
+  pscheck "^ok   expect_objects 36" "RunPythonScript left the box, the circle, the cone, the torus, the interpolated curve, the arc, the srf, the planar surface, three points, the extruded surface, the extruded solid, the union mesh, the difference mesh, the intersection mesh, the two circle copies, the rotate line and its rotated copy, the scale box and its scaled copy, the mirror line and its mirrored copy, the transform line and its transformed copy, the curve-query line, its 3 create=True divide points, the bounding-box test box, the surface-closest-point sphere, the AddMesh triangle, and the two fresh ObjectsByType test points (the sphere, the two union input boxes, the two difference input boxes and the two intersection input boxes were removed from inside the script, and the undo/redo group's own point was undone again at the end)"
   grep -q "! Python error" <<<"$PS" && { echo "FAIL python_script.txt printed a Python error"; fail=1; } || echo "ok   no Python script errors"
 fi
 
@@ -4376,12 +4433,52 @@ echo "$HS" | grep -q "^smoke:" || { echo "$HS"; echo "FAIL: history script produ
 hcheck() { if echo "$HS" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$HS" "$1"; fail=1; fi; }
 hcheck "History recording: off. 0 object(s) with live construction history" "History defaults Off and reports it"
 hcheck "UpdateHistory: 0 object(s) re-evaluated from their source curve(s)' current geometry" "an Extrude made while History was Off recorded nothing for UpdateHistory to redo"
-hcheck "History recording: on - new Extrude/ExtrudeCrvToPoint/Revolve/Loft/SubDLoft results will remember their source curve(s) for UpdateHistory" "History On toggled recording on"
+hcheck "History recording: on - new Extrude/ExtrudeCrvToPoint/Revolve/Loft/SubDLoft/Pipe results will remember their source curve(s) for UpdateHistory" "History On toggled recording on"
 hcheck "Bounding box min 20,0,0 max 30,0,5" "the freshly-extruded surface's bounding box, before the source curve moves"
 hcheck "UpdateHistory: 1 object(s) re-evaluated from their source curve(s)' current geometry" "UpdateHistory found and rebuilt exactly the one object History was tracking"
 hcheck "Bounding box min 20,0,20 max 30,0,25" "UpdateHistory genuinely re-derived the extruded surface's geometry from the source curve's new z=20 position - not the z=0..5 box baked at creation time"
 hcheck "History recording: on. 1 object(s) with live construction history:" "the live report lists exactly one tracked object"
 hcheck "object 4: Extrude <- 3" "the report names the real dependent/source pair (surface 4 built from curve 3)"
+
+# History extended to a sixth command, Pipe (PipeCommand, cmd_surface.cpp;
+# RebuildPipe, history_rebuild.h) - see history_pipe_script.txt's own
+# header comment for exactly what this checks. Same real-bounding-box-move
+# money check as the Extrude case above, not just an object count.
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  HSP="$("$BIN" --smoke 100 --script "$HERE/history_pipe_script.txt" 2>&1)" || { echo "$HSP"; echo "FAIL: history-pipe script exited non-zero"; exit 1; }
+else
+  HSP="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 100 --script "$HERE/history_pipe_script.txt" 2>&1)" || { echo "$HSP"; echo "FAIL: history-pipe script exited non-zero"; exit 1; }
+fi
+echo "$HSP" | grep -E "^(ok|FAIL)"
+if echo "$HSP" | grep -q "^FAIL"; then fail=1; fi
+echo "$HSP" | grep -q "^smoke:" || { echo "$HSP"; echo "FAIL: history-pipe script produced no smoke line"; fail=1; }
+hspcheck() { if echo "$HSP" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$HSP" "$1"; fail=1; fi; }
+hspcheck "object 2: Pipe <- 1" "History tracks a Pipe result (object 2) built from its rail curve (object 1)"
+hspcheck "Bounding box min 0,-1,-1 max 10,1,1" "the freshly-built pipe's bounding box, before the rail curve moves"
+hspcheck "UpdateHistory: 1 object(s) re-evaluated from their source curve(s)' current geometry" "UpdateHistory found and rebuilt exactly the one Pipe History was tracking"
+hspcheck "Bounding box min 0,-1,4 max 10,1,6" "UpdateHistory genuinely re-derived the pipe's geometry from the rail curve's new z=5 position - not the z=-1..1 mesh baked at creation time"
+
+# RecordMacro: a real action recorder for the Macro Editor's buffer (see
+# record_macro_script.txt's own header comment for exactly what this
+# checks) - PARITY_MAP.md's "VBA-style macro recorder and editor" item.
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  RMAC="$("$BIN" --smoke 100 --script "$HERE/record_macro_script.txt" 2>&1)" || { echo "$RMAC"; echo "FAIL: record-macro script exited non-zero"; exit 1; }
+else
+  RMAC="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 100 --script "$HERE/record_macro_script.txt" 2>&1)" || { echo "$RMAC"; echo "FAIL: record-macro script exited non-zero"; exit 1; }
+fi
+echo "$RMAC" | grep -E "^(ok|FAIL)"
+if echo "$RMAC" | grep -q "^FAIL"; then fail=1; fi
+echo "$RMAC" | grep -q "^smoke:" || { echo "$RMAC"; echo "FAIL: record-macro script produced no smoke line"; fail=1; }
+rmaccheck() { if echo "$RMAC" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$RMAC" "$1"; fail=1; fi; }
+rmaccheck "Macro recording: off (type On to start). Buffer:" "RecordMacro with no argument reports Off and dumps the buffer before anything was recorded"
+rmaccheck "Macro recording: on - every command line you type is appended to the Macro Editor's buffer" "RecordMacro On reports the state changed"
+rmaccheck "  Line 0,0,0 10,0,0" "the Line command typed while recording was on was appended to the buffer verbatim"
+rmaccheck "  Box 20,0,0 25,5,5 5" "the Box command typed while recording was on was appended to the buffer verbatim, in order after Line"
+RMAC_LINE50_COUNT="$(echo "$RMAC" | grep -cF "Line 50,0,0 60,0,0")"
+[ "$RMAC_LINE50_COUNT" = "1" ] && echo "ok   the Line command typed AFTER RecordMacro Off was run but NOT appended to the buffer (it appears exactly once, as the typed command line itself, not a second time in the final dump)" || { echo "FAIL a command typed after RecordMacro Off leaked into the buffer (expected 1 occurrence, got $RMAC_LINE50_COUNT)"; fail=1; }
+RMAC_SELF_COUNT="$(echo "$RMAC" | grep -cF "  RecordMacro")"
+[ "$RMAC_SELF_COUNT" = "0" ] && echo "ok   RecordMacro never recorded itself into its own buffer" || { echo "FAIL RecordMacro recorded one of its own toggle lines into the buffer"; fail=1; }
+
 # Undo id-reuse regression (see the last section of history_script.txt):
 # a Box drawn right after undoing a tracked Extrude used to be handed the
 # undone extrusion's own id (6), so its HistoryRecord/Provenance entries -
