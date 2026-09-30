@@ -56,4 +56,10 @@ std::optional<SceneObject> RebuildRevolve(CommandContext& ctx, const kernel::Nur
 std::optional<SceneObject> RebuildLoft(CommandContext& ctx, const std::vector<const kernel::NurbsCurve*>& curves,
                                         const HistoryRecord& rec);
 
+// Pipe (PipeCommand, cmd_surface.cpp). Reads num: radius (> 0), cap (1/0,
+// Cap=Yes/No). `wrap` (closed rail, and so mesh-vs-surface) is not a
+// recorded parameter - it is read fresh from the curve passed in, same as
+// the live command derives it from c.IsClosed() rather than recording it.
+std::optional<SceneObject> RebuildPipe(CommandContext& ctx, const kernel::NurbsCurve& curve, const HistoryRecord& rec);
+
 }  // namespace dino8::app

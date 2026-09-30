@@ -1,0 +1,50 @@
+# History / UpdateHistory extended to Pipe (PipeCommand, cmd_surface.cpp;
+# RebuildPipe, history_rebuild.h): the same source-curve-moves ->
+# UpdateHistory-rederives loop history_script.txt already proves for
+# Extrude/Revolve/Loft/SubDLoft, now for Pipe as a sixth tracked command -
+# see cmd_history.cpp's own header comment for the full scope list. The
+# money check is a real bounding-box move (0..5 z to 5..10 min/1..max
+# unchanged in x/y), not just an object count, so a fake/no-op rebuild
+# would fail this the same way it would in history_script.txt.
+# Object ids below are the deterministic 1-based counter Document::Add
+# assigns, in creation order. BoundingBox (cmd_analyze.cpp) both prints a
+# report AND adds a real box Brep object for a genuinely 3D selection (a
+# capped pipe mesh has volume in all three axes, unlike history_script.txt's
+# own flat/degenerate extrusion, where ON_BrepBox silently fails and adds
+# nothing) - the @expect_objects counts below account for that extra
+# object each time BoundingBox runs.
+
+History On
+Line 0,0,0 10,0,0
+SelNone
+SelID 1
+Pipe
+1
+@expect_objects 2
+
+# Radius-1 capped mesh pipe around the line from (0,0,0) to (10,0,0): exact
+# bounding box min 0,-1,-1 max 10,1,1 (mesh ring radius has no CV-circle
+# correction, unlike the open-surface Cap=No case).
+SelNone
+SelID 2
+BoundingBox
+@expect_objects 3
+History
+
+# Move the source line (id 1) straight up 5 units in Z - the pipe (id 2) is
+# NOT touched by Move itself, so UpdateHistory is the only thing that can
+# change what it reports next.
+SelNone
+SelID 1
+Move
+0,0,0
+0,0,5
+
+# UpdateHistory re-derives object 2 from curve 1's new position - the money
+# check: min/max z must move from -1..1 to 4..6, not stay put.
+UpdateHistory
+SelNone
+SelID 2
+BoundingBox
+@expect_objects 4
+History

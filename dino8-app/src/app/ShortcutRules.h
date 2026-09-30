@@ -24,4 +24,17 @@ namespace dino8::app {
 // replaces a built-in" instead of silently doing nothing the way it used to.
 bool IsReservedShortcut(int key, bool ctrl, bool shift, bool alt);
 
+// True for a key value the Options > Shortcuts "Press a key..." capture
+// flow (ui/Panels.cpp) must never offer as the bound key itself: the four
+// modifier keys (captured separately into that flow's ctrl/shift/alt
+// booleans, from ImGuiIO::KeyCtrl/KeyShift/KeyAlt at the moment the real
+// key is pressed - same as the pre-existing typed-name entry path), their
+// "[Internal] Reserved for mod storage" aliases, and the mouse-button
+// aliases ImGui also exposes through the ImGuiKey enum (the capture
+// button's own click is a mouse release, not a keyboard chord, and
+// Options > Shortcuts has no mouse-binding concept anywhere else in this
+// app). `key` is an ImGuiKey value, passed as int for the same
+// no-imgui-library-link reason IsReservedShortcut takes one.
+bool IsUnbindableCaptureKey(int key);
+
 }  // namespace dino8::app

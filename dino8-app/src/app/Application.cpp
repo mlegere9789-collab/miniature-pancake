@@ -1678,6 +1678,11 @@ const KeyShortcut* FindUserShortcut(const std::vector<KeyShortcut>& shortcuts, I
 }  // namespace
 
 void Application::HandleShortcuts() {
+  // Options > Shortcuts' "Press a key..." capture button (Panels.cpp) is
+  // itself reading key-press state this same frame to fill in a new
+  // binding; skip every binding below entirely while that's happening; see
+  // capturing_shortcut's own comment (Application.h) for why.
+  if (capturing_shortcut) return;
   ImGuiIO& io = ImGui::GetIO();
   const bool text_active = io.WantTextInput;
   // A user shortcut (Options > Shortcuts) on a chord that also has a
