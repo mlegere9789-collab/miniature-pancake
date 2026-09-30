@@ -657,6 +657,45 @@ if(DINO8_BUILD_TESTS)
   target_link_libraries(dino8_test_variable_blend PRIVATE dino8_kernel)
   add_test(NAME dino8_variable_blend COMMAND dino8_test_variable_blend)
 
+  # Dynamic-block Flip parameter (src/doc/BlockInstances.cpp's
+  # SetBlockInstanceFlip/PlaceFiltered): mirrors a placed instance about a
+  # vertical plane through its block's base point without moving the insert
+  # point, persists through the same dino8.block_instances JSON user-text
+  # every other BlockInstance field already round-trips through, and is
+  # reversible. See PARITY_MAP.md's "Dynamic blocks" item. Needs a real
+  # Document (BlockDefinition/SceneObject/group bookkeeping), same dependency
+  # shape as dino8_find_bench above, plus json_mini.cpp for the user-text
+  # (de)serialization BlockInstances.cpp itself calls.
+  add_executable(dino8_test_block_flip tests/test_block_flip.cpp src/doc/Document.cpp src/doc/SceneObject.cpp
+                                        src/doc/SubObjectEdit.cpp src/doc/BlockInstances.cpp
+                                        src/geom/BrepMesher.cpp src/util/json_mini.cpp)
+  target_include_directories(dino8_test_block_flip PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(dino8_test_block_flip PRIVATE dino8_kernel)
+  add_test(NAME dino8_block_flip COMMAND dino8_test_block_flip)
+
+  # AnnotationStyle::linear_precision / FormatDimensionNumber
+  # (commands/DimGeometry.h) - see tests/test_dim_precision.cpp's own file
+  # comment for why this is header-only against DimGeometry.h (no Document/
+  # CommandContext needed) with a locally-defined FormatNumber stand-in
+  # rather than linking commands/CommandEngine.cpp's real one, which would
+  # drag in app/Application.h and the whole GL/ImGui app.
+  add_executable(dino8_test_dim_precision tests/test_dim_precision.cpp)
+  target_include_directories(dino8_test_dim_precision PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(dino8_test_dim_precision PRIVATE dino8_kernel)
+  add_test(NAME dino8_dim_precision COMMAND dino8_test_dim_precision)
+
+  # Layer::print_width_mm / LayerPrints / EffectivePrintWidthMm (doc/
+  # Document.h) - see tests/test_print_width.cpp's own file comment. Purely
+  # header-only (no Document/SceneObject instantiated, so no Document.cpp/
+  # SceneObject.cpp/etc. needed) - dino8_kernel is linked only for its
+  # public include directories (doc/SceneObject.h, pulled in transitively by
+  # Document.h, needs dino8/kernel/brep.h et al. to be on the include path
+  # to parse at all, even though nothing in the kernel is actually called).
+  add_executable(dino8_test_print_width tests/test_print_width.cpp)
+  target_include_directories(dino8_test_print_width PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(dino8_test_print_width PRIVATE dino8_kernel)
+  add_test(NAME dino8_print_width COMMAND dino8_test_print_width)
+
   # Keyboard-shortcut chord table (src/app/ShortcutRules.cpp's
   # IsReservedShortcut): every chord Application::HandleShortcuts hardcodes
   # a built-in default for, and that a user shortcut (Options > Shortcuts)
