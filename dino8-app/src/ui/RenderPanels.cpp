@@ -414,6 +414,44 @@ void DrawEnvironmentsPanel(Application& app) {
   ImGui::End();
 }
 
+// AT-SPI2-queryable snapshot of Document::Render() (see
+// docs/ACCESSIBILITY.md): built straight from Document state, independent of
+// whether DrawEnvironmentsPanel itself has ever been drawn or is open right
+// now - one Label: value fact per field DrawEnvironmentsPanel's own
+// "Background", "Ground plane" and "Sun and sky" sections show (the
+// background's colour/gradient/image detail only appears for the type it
+// actually applies to, matching that section's own conditional fields; the
+// "Gradient background in modelling views" checkbox and render
+// width/height/quality stay out of this mirror the same way Materials'
+// gloss/reflectivity/transparency/texture stay out of its own row mirror).
+dino8::platform::AccessibleNode EnvironmentsAccessibleTree(Application& app) {
+  const RenderSettings& r = app.Doc().Render();
+  auto byte = [](float c) { return static_cast<int>(std::lround(std::clamp(c, 0.f, 1.f) * 255.f)); };
+  auto rgb = [&](const Color& c) {
+    return std::to_string(byte(c.r)) + ", " + std::to_string(byte(c.g)) + ", " + std::to_string(byte(c.b));
+  };
+  std::vector<dino8::platform::PropertyEntry> entries;
+  const char* bg_names[] = {"Solid", "Gradient", "Sky", "Image"};
+  entries.push_back({"Background", bg_names[static_cast<int>(r.background)]});
+  if (r.background == RenderSettings::Background::Solid) {
+    entries.push_back({"Background colour", rgb(r.background_color)});
+  } else if (r.background == RenderSettings::Background::Gradient) {
+    entries.push_back({"Gradient top colour", rgb(r.gradient_top)});
+    entries.push_back({"Gradient bottom colour", rgb(r.gradient_bottom)});
+  } else if (r.background == RenderSettings::Background::Image) {
+    entries.push_back({"Background image", r.environment_image.empty() ? "(none set)" : r.environment_image});
+  }
+  entries.push_back({"Ground plane", r.ground_plane ? "on" : "off"});
+  entries.push_back({"Ground height", r.ground_auto_height ? "Automatic" : FormatNumber(r.ground_height)});
+  entries.push_back({"Ground colour", rgb(r.ground_color)});
+  entries.push_back({"Ground shadows", r.ground_shadows ? "Yes" : "No"});
+  entries.push_back({"Sun", r.sun ? "on" : "off"});
+  entries.push_back({"Sun azimuth", FormatNumber(r.sun_azimuth) + " deg"});
+  entries.push_back({"Sun altitude", FormatNumber(r.sun_altitude) + " deg"});
+  entries.push_back({"Skylight", r.skylight ? "on" : "off"});
+  return dino8::platform::BuildEnvironmentsPanelNode(entries);
+}
+
 // ---------------------------------------------------------------------------
 // Textures
 // ---------------------------------------------------------------------------

@@ -16,7 +16,8 @@ void UpdateAccessibility(const std::string& prompt, const std::string& command_i
                           const AccessibleNode& layouts, const AccessibleNode& block_manager,
                           const AccessibleNode& layer_state_manager, const AccessibleNode& document_user_text,
                           const AccessibleNode& lights, const AccessibleNode& annotation_styles,
-                          const AccessibleNode& document_notes) {
+                          const AccessibleNode& document_notes, const AccessibleNode& environments,
+                          const AccessibleNode& audit_results) {
   AccessibleNode command_line;
   command_line.name = "Command Line";
   command_line.role = AccessibleRole::Log;
@@ -26,7 +27,7 @@ void UpdateAccessibility(const std::string& prompt, const std::string& command_i
   PlatformSetAccessibleTree({command_line, menu_bar, command_options, layers_panel, properties_panel,
                               viewports_panel, activity_log, named_views, named_cplanes, linetypes, materials,
                               clipping_planes, layouts, block_manager, layer_state_manager, document_user_text,
-                              lights, annotation_styles, document_notes});
+                              lights, annotation_styles, document_notes, environments, audit_results});
   PlatformPumpAccessibilityEvents();
 }
 

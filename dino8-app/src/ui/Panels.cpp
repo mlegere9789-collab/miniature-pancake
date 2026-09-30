@@ -783,6 +783,19 @@ void DrawAuditResultsPanel(Application& app) {
   ImGui::End();
 }
 
+// AT-SPI2-queryable snapshot of Application::AuditResults() (see
+// docs/ACCESSIBILITY.md): built straight from the last Audit run's results,
+// independent of whether DrawAuditResultsPanel itself has ever been drawn or
+// is open right now - mirrors the same id/type/description the on-screen
+// table's Type and Problem columns show per row. Starts empty (Audit hasn't
+// run yet, or found nothing) the same way Named Views/CPlanes start empty.
+dino8::platform::AccessibleNode AuditResultsAccessibleTree(Application& app) {
+  std::vector<dino8::platform::AuditIssueSummary> summaries;
+  summaries.reserve(app.AuditResults().size());
+  for (const AuditIssue& issue : app.AuditResults()) summaries.push_back({issue.id, issue.type, issue.description});
+  return dino8::platform::BuildAuditResultsNode(summaries);
+}
+
 void DrawCommandListPanel(Application& app, std::string& filter, int& status_filter) {
   if (!ImGui::Begin(PanelTitle("panel.command_list", "CommandList").c_str(), &app.Panels().command_list)) { ImGui::End(); return; }
   CommandEngine& eng = app.Engine();

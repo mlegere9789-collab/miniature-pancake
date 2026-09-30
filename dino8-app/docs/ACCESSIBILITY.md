@@ -515,6 +515,50 @@ just opens the panel - see `cmd_file.cpp`); a screen-reader user can still
 read what's stored, but writing a note still means driving the real
 multiline text box directly.
 
+**Environments**: an "Environments" accessible (`ATSPI_ROLE_LIST`) with one
+`ATSPI_ROLE_LIST_ITEM` per `"Label: value"` fact about the document's render
+Environment settings - the same facts `DrawEnvironmentsPanel`'s own
+"Background", "Ground plane" and "Sun and sky" sections show (background
+type, plus its colour, gradient colours or image path, whichever the current
+type actually uses; ground plane on/off, height, colour and shadows; sun
+on/off, azimuth, altitude and skylight) - reusing the label/value row shape
+the "Properties" accessible already uses for the current selection's facts,
+just under its own "Environments" name rather than "Properties". The
+"Gradient background in modelling views" checkbox and the render
+width/height/quality stay out of this mirror, the same way Materials'
+gloss/reflectivity/transparency/texture stay out of its own row mirror.
+Built from `Document::Render()` (`ui::EnvironmentsAccessibleTree`,
+`src/ui/RenderPanels.cpp`), independent of whether the Environments panel
+window is actually open on screen right now, the same way the other
+panel-backed regions above don't depend on their own panel windows being
+open. Unlike Named Views/Named CPlanes, this list is never empty: every
+document ships with a full set of render Environment settings already (the
+default background is Sky, not the first enum value - see
+`RenderSettings::background`'s own default). A screen-reader user can change
+any of these entirely from the command line (`Environments Background=<type>`
+/ `GroundPlane` / `Sun`, see `cmd_render.cpp`) and confirm the result without
+needing to see the panel at all.
+
+**Audit Results**: an "Audit Results" accessible (`ATSPI_ROLE_LIST`) with one
+`ATSPI_ROLE_LIST_ITEM` per invalid object found by the last `Audit` run,
+named after the object's id and kind (e.g. `"Object 12 (curve)"`) with
+OpenNURBS' own `IsValid()` failure text as its `Description` (e.g. `"start of
+NURBS knot vector is not increasing"`) - the same two facts the on-screen
+Audit Results panel's Type and Problem columns show per row (see
+`DrawAuditResultsPanel`). Built from `Application::AuditResults()`
+(`ui::AuditResultsAccessibleTree`, `src/ui/Panels.cpp`), independent of
+whether the Audit Results panel window is actually open on screen right now,
+the same way the other panel-backed regions above don't depend on their own
+panel windows being open. Unlike the other panel-backed regions above, this
+one mirrors a snapshot from the last time a command ran, not a persisted
+part of the document itself - it starts empty (no `Audit` run yet this
+session) the same way Named Views/Named CPlanes start empty. A screen-reader
+user can run `Audit` from the command line (see `cmd_analyze.cpp`) and see
+exactly which objects it flagged and why, without needing to see the panel
+at all; `MakeInvalidCurve` (test/QC-only, same file) deliberately builds one
+genuinely invalid curve so this can be exercised without hand-corrupting a
+real document.
+
 **Why these regions and not the rest of the UI**: the command line is the
 one region where "expose the text" is both sufficient (there is no
 meaningful spatial layout to convey - it *is* a stream of text) and
@@ -522,8 +566,8 @@ complete on its own (every command in the ~1000+ catalog is already
 reachable by typing into it, per section 2). The menu bar, the
 Layers/Properties panels, the viewports, the Activity Log, Named Views,
 Named CPlanes, Linetypes, Materials, Clipping Planes, Layouts, Block
-Manager, Layer State Manager, Document User Text, Lights, Annotation Styles
-and Notes extend this to the
+Manager, Layer State Manager, Document User Text, Lights, Annotation Styles,
+Notes, Environments and Audit Results extend this to the
 next-most load-bearing UI surfaces - discovering what commands exist by
 name, inspecting/editing layer and object state, knowing where you're
 looking, reviewing what actually happened to the document, recalling a
@@ -534,10 +578,12 @@ active, knowing which block definitions exist and how many instances of
 each are placed, recalling a saved layer state, knowing what document
 user-text metadata is stored, knowing which lights exist and whether each is
 on, knowing which annotation style is current and its text height/arrow
-size/font, and reading the document's free-text Notes - without requiring
+size/font, reading the document's free-text Notes, knowing the render
+Environment's background/ground plane/sun and sky settings, and reviewing
+which objects the last Audit run found invalid and why - without requiring
 the full
 shadow-tree-for-every-widget effort described above.
-Mirroring the 3D viewport and the ~27 remaining panels/dialogs the same way
+Mirroring the 3D viewport and the ~25 remaining panels/dialogs the same way
 would still need that effort; this does not extrapolate to "screen reader
 support" for those in the way a browser or native-toolkit app would provide
 it, and this document does not claim otherwise.
@@ -835,5 +881,5 @@ requirement and runs as part of the normal CTest suite everywhere.
 |---|---|
 | High-contrast theme | Shipped: Options > General > Theme > High Contrast |
 | Keyboard-only operability | Audited; one real bug found and fixed (toolbar/sidebar/tab-strip/bell/viewport-title buttons were `InvisibleButton` without `EnableNav`, so Tab skipped them); nav-focus tooltips added for icon-only buttons; free 3D viewport orbit and a few inherently-drag widgets remain mouse-only by design, same as in Rhino |
-| Screen-reader support (command line, menu bar, command options, Layers/Properties panels, viewports, Activity Log, Named Views, Named CPlanes, Linetypes, Materials, Clipping Planes, Layouts, Block Manager, Layer State Manager, Document User Text, Lights, Annotation Styles, Notes) | Shipped on Linux: a real AT-SPI2 bridge (`src/platform/AccessibilityLinux.cpp`) exposes the command line's live text and full history log, the main menu bar (mirroring exactly what's currently open, built live alongside `ui/MenuBar.cpp`'s own drawing calls), the running command's options (with per-option guidance on how to change it), the Layers/Properties panels' current content (Properties rows note which are real value editors), every viewport's title/view-menu button state (name, active/maximized, current display mode), the persisted Activity Log of finalized edits (timestamp/action/summary per entry, distinct from the command line's own raw text log), the document's saved Named Views (name per saved view), its saved Named CPlanes (name per saved construction plane), its Linetypes (name and dash pattern per linetype), its Materials (name and diffuse colour per material), its Clipping Planes (name, on/off state and viewport scope per plane), its Layouts (name per layout, with the active one called out), its Block Manager (name plus object/instance counts per block definition), its Layer State Manager (name plus layer count per saved state), its Document User Text (key/value per document user-text entry), its Lights (name, type and on/off state per light), its Annotation Styles (name and current-style flag per style, plus text height/arrow size/font as Description), and its Notes (the document's free-text Notes, as a single Text value) as queryable, updating accessible objects, verified end-to-end against the real registry daemon and `pyatspi` (`tests/smoke_accessibility.py`), including the new Lights/Annotation Styles/Document Notes checks. Windows/macOS not implemented. Built only when `atspi-2`/`gio-2.0` are available; a silent no-op otherwise |
-| Screen-reader support (rest of the UI) | Not implemented - hard ImGui platform limitation (no accessibility-tree bridge for the 3D viewport's own rendered content or the ~27 remaining panels/dialogs on any OS). Descriptive text/tooltips exist everywhere as a prerequisite, but that is not screen-reader support |
+| Screen-reader support (command line, menu bar, command options, Layers/Properties panels, viewports, Activity Log, Named Views, Named CPlanes, Linetypes, Materials, Clipping Planes, Layouts, Block Manager, Layer State Manager, Document User Text, Lights, Annotation Styles, Notes, Environments, Audit Results) | Shipped on Linux: a real AT-SPI2 bridge (`src/platform/AccessibilityLinux.cpp`) exposes the command line's live text and full history log, the main menu bar (mirroring exactly what's currently open, built live alongside `ui/MenuBar.cpp`'s own drawing calls), the running command's options (with per-option guidance on how to change it), the Layers/Properties panels' current content (Properties rows note which are real value editors), every viewport's title/view-menu button state (name, active/maximized, current display mode), the persisted Activity Log of finalized edits (timestamp/action/summary per entry, distinct from the command line's own raw text log), the document's saved Named Views (name per saved view), its saved Named CPlanes (name per saved construction plane), its Linetypes (name and dash pattern per linetype), its Materials (name and diffuse colour per material), its Clipping Planes (name, on/off state and viewport scope per plane), its Layouts (name per layout, with the active one called out), its Block Manager (name plus object/instance counts per block definition), its Layer State Manager (name plus layer count per saved state), its Document User Text (key/value per document user-text entry), its Lights (name, type and on/off state per light), its Annotation Styles (name and current-style flag per style, plus text height/arrow size/font as Description), its Notes (the document's free-text Notes, as a single Text value), its render Environment settings (background/ground plane/sun and sky, as Label: value rows), and the last Audit run's results (id/type per invalid object, with the failure reason as Description) as queryable, updating accessible objects, verified end-to-end against the real registry daemon and `pyatspi` (`tests/smoke_accessibility.py`), including the new Environments/Audit Results checks. Windows/macOS not implemented. Built only when `atspi-2`/`gio-2.0` are available; a silent no-op otherwise |
+| Screen-reader support (rest of the UI) | Not implemented - hard ImGui platform limitation (no accessibility-tree bridge for the 3D viewport's own rendered content or the ~25 remaining panels/dialogs on any OS). Descriptive text/tooltips exist everywhere as a prerequisite, but that is not screen-reader support |

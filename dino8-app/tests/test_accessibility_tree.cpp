@@ -39,9 +39,15 @@
 // light with its type and on/off state folded into the name, matching
 // Document::Lights; the annotation styles builder produces one row per
 // style naming it and which one is current, with its text height/arrow
-// size/font as the Description, matching Document::AnnotationStyles; and
-// the document notes builder produces a single Log accessible whose text is
-// exactly Document::Notes(), matching DrawNotesPanel's own text box.
+// size/font as the Description, matching Document::AnnotationStyles; the
+// document notes builder produces a single Log accessible whose text is
+// exactly Document::Notes(), matching DrawNotesPanel's own text box; the
+// environments builder produces one Label: value row per render Environment
+// fact (background type/colour, ground plane, sun/sky), reusing the
+// Properties panel's own PropertyEntry shape under the "Environments" name,
+// matching DrawEnvironmentsPanel; and the audit results builder produces one
+// row per invalid object naming its id and type, with the failure reason as
+// the Description, matching Application::AuditResults.
 // This needs no display, no D-Bus session, and no AT-SPI2 build at all, so
 // it runs on every platform and every CI job regardless of whether
 // AccessibilityLinux.cpp itself was compiled in this build (see
@@ -89,6 +95,9 @@ using dino8::platform::BuildAnnotationStylesNode;
 using dino8::platform::BuildDocumentNotesNode;
 using dino8::platform::BuildLightsPanelNode;
 using dino8::platform::LightSummary;
+using dino8::platform::AuditIssueSummary;
+using dino8::platform::BuildAuditResultsNode;
+using dino8::platform::BuildEnvironmentsPanelNode;
 
 namespace {
 int failures = 0;
@@ -688,6 +697,63 @@ int main() {
     Check(empty_notes.text.empty(), "empty Document::Notes() reports as empty text, not a missing accessible");
   }
 
+  // Environments: one Label: value ListItem per render Environment fact,
+  // reusing the Properties panel's own PropertyEntry shape under the
+  // "Environments" name rather than "Properties" (see DrawEnvironmentsPanel).
+  {
+    std::vector<PropertyEntry> entries;
+    entries.push_back({"Background", "Sky", false});
+    entries.push_back({"Ground plane", "off", false});
+    entries.push_back({"Ground height", "Automatic", false});
+    entries.push_back({"Ground colour", "168, 171, 176", false});
+    entries.push_back({"Ground shadows", "Yes", false});
+    entries.push_back({"Sun", "off", false});
+    entries.push_back({"Sun azimuth", "135 deg", false});
+    entries.push_back({"Sun altitude", "45 deg", false});
+    entries.push_back({"Skylight", "on", false});
+    const dino8::platform::AccessibleNode list = BuildEnvironmentsPanelNode(entries);
+    Check(list.name == "Environments", "environments list is named \"Environments\", not \"Properties\"");
+    Check(list.role == dino8::platform::AccessibleRole::List, "environments list role is List");
+    Check(list.children.size() == 9, "one ListItem per fact passed in");
+    if (list.children.size() == 9) {
+      Check(list.children[0].role == dino8::platform::AccessibleRole::ListItem, "environments row role is ListItem");
+      Check(list.children[0].name == "Background: Sky", "first row is the background type fact");
+      Check(list.children[8].name == "Skylight: on", "last row is the skylight fact");
+    }
+  }
+  {
+    const dino8::platform::AccessibleNode empty_environments = BuildEnvironmentsPanelNode({});
+    Check(empty_environments.name == "Environments", "still named \"Environments\" with no facts at all");
+    Check(empty_environments.children.empty(), "no facts -> no ListItem children, not a missing accessible");
+  }
+
+  // Audit Results: one ListItem per invalid object naming its id and type,
+  // with the failure reason as the Description (see DrawAuditResultsPanel
+  // and Application::AuditResults/AuditIssue).
+  {
+    std::vector<AuditIssueSummary> issues;
+    issues.push_back({12, "curve", "start of NURBS knot vector is not increasing"});
+    issues.push_back({7, "surface", "control point count does not match knot vector"});
+    const dino8::platform::AccessibleNode list = BuildAuditResultsNode(issues);
+    Check(list.name == "Audit Results", "audit results list is named \"Audit Results\"");
+    Check(list.role == dino8::platform::AccessibleRole::List, "audit results list role is List");
+    Check(list.description == "2 invalid object(s)", "invalid object count is carried as the list's Description");
+    Check(list.children.size() == 2, "two ListItem children, one per invalid object");
+    if (list.children.size() == 2) {
+      Check(list.children[0].role == dino8::platform::AccessibleRole::ListItem, "audit row role is ListItem");
+      Check(list.children[0].name == "Object 12 (curve)", "first row names the object's id and type");
+      Check(list.children[0].description == "start of NURBS knot vector is not increasing",
+            "first row's failure reason is its Description");
+      Check(list.children[1].name == "Object 7 (surface)", "second row names its own id and type");
+    }
+  }
+  {
+    const dino8::platform::AccessibleNode empty_audit = BuildAuditResultsNode({});
+    Check(empty_audit.name == "Audit Results", "still named \"Audit Results\" with no invalid objects at all");
+    Check(empty_audit.description == "0 invalid object(s)", "empty results still carry a 0-count Description");
+    Check(empty_audit.children.empty(), "no invalid objects -> no ListItem children, not a missing accessible");
+  }
+
   // BuildAccessibleTree accepts extra top-level regions (menu bar, panels)
   // alongside the always-present command line - the shape the live bridge
   // (Accessibility.cpp::UpdateAccessibility) assembles every frame.
@@ -712,18 +778,20 @@ int main() {
     dino8::platform::AccessibleNode lights = BuildLightsPanelNode({});
     dino8::platform::AccessibleNode annotation_styles = BuildAnnotationStylesNode({});
     dino8::platform::AccessibleNode document_notes = BuildDocumentNotesNode("");
+    dino8::platform::AccessibleNode environments = BuildEnvironmentsPanelNode({});
+    dino8::platform::AccessibleNode audit_results = BuildAuditResultsNode({});
 
-    const dino8::platform::AccessibleNode root =
-        BuildAccessibleTree("Dino8", "Command: ", "", {},
-                             {menu_bar, cmd_options, layers, props, viewports, activity_log, named_views,
-                              named_cplanes, linetypes, materials, clipping_planes, layouts, block_manager,
-                              layer_state_manager, document_user_text, lights, annotation_styles, document_notes});
-    Check(root.children.size() == 19,
+    const dino8::platform::AccessibleNode root = BuildAccessibleTree(
+        "Dino8", "Command: ", "", {},
+        {menu_bar, cmd_options, layers, props, viewports, activity_log, named_views, named_cplanes, linetypes,
+         materials, clipping_planes, layouts, block_manager, layer_state_manager, document_user_text, lights,
+         annotation_styles, document_notes, environments, audit_results});
+    Check(root.children.size() == 21,
           "command line + menu bar + command options + layers + properties + viewports + activity log + "
           "named views + named cplanes + linetypes + materials + clipping planes + layouts + block manager + "
-          "layer state manager + document user text + lights + annotation styles + document notes = "
-          "19 top-level children");
-    if (root.children.size() == 19) {
+          "layer state manager + document user text + lights + annotation styles + document notes + "
+          "environments + audit results = 21 top-level children");
+    if (root.children.size() == 21) {
       Check(root.children[0].role == AccessibleRole::Log, "child 0 is still the command line");
       Check(root.children[1].role == dino8::platform::AccessibleRole::MenuBar, "child 1 is the menu bar");
       Check(root.children[2].name == "Command Options", "child 2 is the command options list");
@@ -743,6 +811,8 @@ int main() {
       Check(root.children[16].name == "Lights", "child 16 is the lights panel");
       Check(root.children[17].name == "Annotation Styles", "child 17 is the annotation styles panel");
       Check(root.children[18].role == AccessibleRole::Log, "child 18 is the document notes Log accessible");
+      Check(root.children[19].name == "Environments", "child 19 is the environments panel");
+      Check(root.children[20].name == "Audit Results", "child 20 is the audit results panel");
     }
   }
 

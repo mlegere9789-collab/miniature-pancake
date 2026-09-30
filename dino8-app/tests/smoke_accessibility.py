@@ -124,6 +124,19 @@ connection, the same way a screen reader would - to prove:
       DrawNotesPanel's own multiline text box writes it - see
       ui/Panels.cpp), the same "discoverable, no mutation check" shape
       check 13 uses for Materials.
+  22. An "Environments" accessible (role LIST) is discoverable, starts with
+      the document's default render Environment facts already present (the
+      background defaults to "Sky", not empty - unlike Named Views/CPlanes,
+      every document ships with a full RenderSettings already), and its
+      "Background: ..." row changes to "Background: Solid" once a real
+      "Environments Background=Solid" command runs - mirroring
+      Document::Render() (see cmd_render.cpp's EnvironmentsCommand).
+  23. An "Audit Results" accessible (role LIST) is discoverable, starts
+      empty, and gains one new ListItem naming the object's id and type
+      with its failure reason as the Description once a real
+      "MakeInvalidCurve" then "Audit" pair of commands runs (see
+      cmd_analyze.cpp) - mirroring Application::AuditResults(), the same
+      before/after pattern check 10 uses for Named Views.
 
 This is a real integration test: at-spi2-registryd is the actual daemon
 GNOME uses, pyatspi is the actual library screen readers use, and Dino8 is
@@ -155,6 +168,7 @@ Requires (see docs/ACCESSIBILITY.md "Verifying it yourself"):
 Usage: python3 tests/smoke_accessibility.py /path/to/Dino8
 """
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -233,6 +247,8 @@ def main():
     sync10 = os.path.join(tmp, "sync10")
     sync11 = os.path.join(tmp, "sync11")
     sync12 = os.path.join(tmp, "sync12")
+    sync13 = os.path.join(tmp, "sync13")
+    sync14 = os.path.join(tmp, "sync14")
     sync_final = os.path.join(tmp, "sync_final")
     script_path = os.path.join(tmp, "script.txt")
     with open(script_path, "w") as f:
@@ -344,6 +360,23 @@ def main():
         # since the document ships with a "Default" annotation style
         # already - see check 12's own note for Linetypes).
         f.write("AnnotationStyles Name=MyStyle Height=2.5 Arrow=1 Font=Arial\n")
+        f.write(f"@waitfile {sync13}\n")
+        # Same shape again: EnvironmentsCommand is also a plain, single-frame
+        # command (Immediate, see cmd_render.cpp), so one more sync point is
+        # enough to observe the Environments accessible's "Background" row
+        # change (it starts non-empty at the document's default "Sky"
+        # background, unlike Named Views/CPlanes - see check 22's own note).
+        f.write("Environments Background=Solid\n")
+        f.write(f"@waitfile {sync14}\n")
+        # MakeInvalidCurve (test/QC-only, see cmd_analyze.cpp) deliberately
+        # builds one genuinely invalid curve, then Audit finds it - both
+        # plain, single-frame Immediate commands, run on two consecutive
+        # frames before this one sync point, the same way this script
+        # already runs "Circle 0,0,0" then waits before feeding "5" - so one
+        # sync point after both is enough to observe Audit Results gain a
+        # new entry.
+        f.write("MakeInvalidCurve\n")
+        f.write("Audit\n")
         f.write(f"@waitfile {sync_final}\n")
 
     procs = []
@@ -604,6 +637,30 @@ def main():
                 fail(f"Document Notes reports {notes_text!r} in a fresh document (expected the empty string)")
             else:
                 ok("Document Notes reports the empty string in a fresh document")
+
+        environments = find_child_by_name(app, "Environments", 10)
+        if environments is None:
+            fail('"Environments" accessible not found among the application\'s children')
+        else:
+            ok('"Environments" accessible is discoverable via the real AT-SPI2 desktop')
+            if environments.childCount != 9:
+                fail(f"Environments has {environments.childCount} children in a fresh document (expected 9 facts)")
+            else:
+                background_row = environments.getChildAtIndex(0)
+                if background_row is None or background_row.name != "Background: Sky":
+                    fail(f"Environments' first child is not the default \"Sky\" background (got {background_row.name if background_row else None!r})")
+                else:
+                    ok('Environments\' first ListItem names the document\'s default "Sky" background')
+
+        audit_results = find_child_by_name(app, "Audit Results", 10)
+        if audit_results is None:
+            fail('"Audit Results" accessible not found among the application\'s children')
+        else:
+            ok('"Audit Results" accessible is discoverable via the real AT-SPI2 desktop')
+            if audit_results.childCount != 0:
+                fail(f"Audit Results has {audit_results.childCount} children before any Audit run (expected 0)")
+            else:
+                ok("Audit Results has no ListItem children before any Audit run")
 
         viewports = find_child_by_name(app, "Viewports", 10)
         if viewports is None:
@@ -982,6 +1039,50 @@ def main():
             else:
                 ok(f"Annotation Styles gains a new, current entry with its text height/arrow size/font as its "
                    f"Description once \"AnnotationStyles\" runs ({newest_style.name!r}, {newest_style.description!r})")
+
+        open(sync13, "w").close()  # let the script run "Environments Background=Solid"
+
+        if environments is not None:
+            deadline = time.time() + 10
+            background_row = None
+            while time.time() < deadline:
+                row = environments.getChildAtIndex(0)
+                if row is not None and row.name == "Background: Solid":
+                    background_row = row
+                    break
+                time.sleep(0.2)
+            if background_row is None:
+                fail("Environments' \"Background\" row did not change to \"Background: Solid\" after "
+                     "\"Environments Background=Solid\" ran within 10s")
+            else:
+                ok('Environments\' "Background" row changes to "Background: Solid" once '
+                   '"Environments Background=Solid" runs')
+
+        audit_results_count_before = audit_results.childCount if audit_results is not None else None
+
+        open(sync14, "w").close()  # let the script run "MakeInvalidCurve" then "Audit"
+
+        if audit_results is not None:
+            deadline = time.time() + 10
+            newest_issue = None
+            while time.time() < deadline:
+                count = audit_results.childCount
+                if audit_results_count_before is not None and count > audit_results_count_before:
+                    newest_issue = audit_results.getChildAtIndex(count - 1)
+                    break
+                time.sleep(0.2)
+            if newest_issue is None:
+                fail(f"Audit Results did not gain a new entry after \"MakeInvalidCurve\"/\"Audit\" ran within 10s "
+                     f"(childCount stayed at {audit_results_count_before!r})")
+            elif not re.match(r"^Object \d+ \(curve\)$", newest_issue.name):
+                fail(f"Audit Results' newest entry does not name an object id and \"Curve\" type "
+                     f"(got {newest_issue.name!r})")
+            elif not newest_issue.description:
+                fail("Audit Results' newest entry carries no failure-reason Description")
+            else:
+                ok(f"Audit Results gains a new entry naming the invalid object's id and type, with its failure "
+                   f"reason as its Description, once \"MakeInvalidCurve\"/\"Audit\" run "
+                   f"({newest_issue.name!r}, {newest_issue.description!r})")
 
         open(sync_final, "w").close()  # let the app finish its remaining frames/script and exit
 

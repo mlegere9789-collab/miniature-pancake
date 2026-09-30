@@ -103,6 +103,16 @@ dino8::platform::AccessibleNode AnnotationStylesAccessibleTree(Application& app)
 // DrawNotesPanel's multiline text box edits, the same single-Text-value
 // shape as the "Command Line" accessible.
 dino8::platform::AccessibleNode DocumentNotesAccessibleTree(Application& app);
+// The AT-SPI2-queryable snapshot of Document::Render() (defined alongside
+// DrawEnvironmentsPanel in RenderPanels.cpp) - independent of whether the
+// Environments panel window is open, mirroring the same Background/Ground
+// plane/Sun and sky facts each on-screen section shows as Label: value rows.
+dino8::platform::AccessibleNode EnvironmentsAccessibleTree(Application& app);
+// The AT-SPI2-queryable snapshot of Application::AuditResults() -
+// independent of whether the Audit Results panel window is open, mirroring
+// the id/type/description each on-screen row's Type and Problem columns
+// show. Starts empty until Audit runs.
+dino8::platform::AccessibleNode AuditResultsAccessibleTree(Application& app);
 void DrawToolbars(Application& app);
 void DrawLayersPanel(Application& app);
 void DrawPropertiesPanel(Application& app);

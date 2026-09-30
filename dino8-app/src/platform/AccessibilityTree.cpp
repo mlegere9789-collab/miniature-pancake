@@ -380,4 +380,36 @@ AccessibleNode BuildDocumentNotesNode(const std::string& notes) {
   return node;
 }
 
+AccessibleNode BuildEnvironmentsPanelNode(const std::vector<PropertyEntry>& entries) {
+  AccessibleNode list;
+  list.name = "Environments";
+  list.role = AccessibleRole::List;
+
+  for (const PropertyEntry& e : entries) {
+    AccessibleNode item;
+    item.role = AccessibleRole::ListItem;
+    item.name = e.label + ": " + e.value;
+    list.children.push_back(std::move(item));
+  }
+  return list;
+}
+
+AccessibleNode BuildAuditResultsNode(const std::vector<AuditIssueSummary>& issues) {
+  AccessibleNode list;
+  list.name = "Audit Results";
+  list.role = AccessibleRole::List;
+  char count_buf[32];
+  std::snprintf(count_buf, sizeof(count_buf), "%zu invalid object(s)", issues.size());
+  list.description = count_buf;
+
+  for (const AuditIssueSummary& issue : issues) {
+    AccessibleNode item;
+    item.role = AccessibleRole::ListItem;
+    item.name = "Object " + std::to_string(issue.id) + " (" + issue.type + ")";
+    item.description = issue.description;
+    list.children.push_back(std::move(item));
+  }
+  return list;
+}
+
 }  // namespace dino8::platform

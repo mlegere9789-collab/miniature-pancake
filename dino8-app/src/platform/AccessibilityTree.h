@@ -22,11 +22,14 @@
 // Layer State Manager (see BuildLayerStateManagerNode), its Document
 // User Text (see BuildDocumentUserTextNode), its Lights (see
 // BuildLightsPanelNode), its Annotation Styles (see
-// BuildAnnotationStylesNode), and its Notes (see BuildDocumentNotesNode).
-// The 3D viewport's own rendered content and the ~27 other panels/dialogs are
+// BuildAnnotationStylesNode), its Notes (see BuildDocumentNotesNode), its
+// render Environment settings (see BuildEnvironmentsPanelNode), and the last
+// Audit run's results (see BuildAuditResultsNode).
+// The 3D viewport's own rendered content and the ~25 other panels/dialogs are
 // still not mirrored into this tree.
 #pragma once
 
+#include <cstdint>
 #include <deque>
 #include <string>
 #include <vector>
@@ -449,5 +452,46 @@ AccessibleNode BuildAnnotationStylesNode(const std::vector<AnnotationStyleSummar
 // no children, matching what the on-screen widget itself is: one editable
 // block of free text, not a collection of rows.
 AccessibleNode BuildDocumentNotesNode(const std::string& notes);
+
+// Builds the "Environments" List accessible: one ListItem per Label: value
+// fact about Document::Render()'s RenderSettings - reusing the same
+// label/value PropertyEntry shape BuildPropertiesPanelNode already uses for
+// the Properties panel's own facts, just under a different accessible name.
+// The caller (ui::EnvironmentsAccessibleTree, RenderPanels.cpp) supplies one
+// entry for the background type (plus its colour, gradient colours or image
+// path, whichever DrawEnvironmentsPanel's "Background" section shows for the
+// current type), and one entry each for ground plane on/off, height, colour
+// and shadows, and sun/sky on/off, azimuth, altitude and skylight - the same
+// facts DrawEnvironmentsPanel's "Background", "Ground plane" and "Sun and
+// sky" sections show. Independent of whether the Environments panel window
+// is actually open right now, the same way the other panel-backed regions
+// above don't depend on their own panel window. A screen-reader user can
+// change any of these entirely from the command line (Environments/
+// GroundPlane/Sun, see cmd_render.cpp) and confirm the result without
+// needing to see the panel at all.
+AccessibleNode BuildEnvironmentsPanelNode(const std::vector<PropertyEntry>& entries);
+
+// One invalid object found by Audit/Check (app/Application.h's AuditIssue,
+// reduced to plain data the same way the summaries above keep this module
+// independent of app::Application): the object's id, its kind name
+// (ObjectKindName(o.kind)) and OpenNURBS' own IsValid(ON_TextLog*) failure
+// text - the same three facts the on-screen Audit Results panel's Type and
+// Problem columns show per row (see DrawAuditResultsPanel).
+struct AuditIssueSummary {
+  std::uint64_t id = 0;
+  std::string type;
+  std::string description;
+};
+
+// Builds the "Audit Results" List accessible: one ListItem per invalid
+// object found by the last Audit run, in the same order
+// Application::AuditResults() holds them, naming the object's id and type
+// with its failure description as the Description - independent of whether
+// the Audit Results panel window is actually open right now, the same way
+// the other panel-backed regions above don't depend on their own panel
+// window. Starts empty until a screen-reader user runs Audit from the
+// command line (see cmd_analyze.cpp), the same "starts empty, gains rows"
+// shape Named Views/CPlanes already use.
+AccessibleNode BuildAuditResultsNode(const std::vector<AuditIssueSummary>& issues);
 
 }  // namespace dino8::platform
