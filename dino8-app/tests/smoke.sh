@@ -3799,4 +3799,62 @@ else
   echo "FAIL installing curvetools did not add its own independently-loaded copy (saw $CT2 before, $CT3 after)"; fail=1
 fi
 
+# Plug-in Marketplace: circular dependency detection (Marketplace::InstallByIdChecked's
+# `chain` argument tracks the ids currently being resolved, so a dependency
+# graph that cycles back on itself is caught as soon as it repeats an id,
+# instead of recursing forever). tests/plugin_marketplace_circular_index.json's
+# three entries form a cycle that isn't just a direct mutual pair
+# (loopa -> loopb -> loopc -> loopa); installing loopa must fail cleanly,
+# with nothing installed, rather than looping or crashing.
+sed "s|@DINO8ROOT@|$HEREW/..|g" "$HERE/plugin_marketplace_circular_script.txt" > "$TMPW/plugin_marketplace_circular_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  PMC="$("$BIN" --smoke 60 --script "$TMPW/plugin_marketplace_circular_script.txt" 2>&1)" || { echo "$PMC"; echo "FAIL: plugin marketplace circular script exited non-zero"; exit 1; }
+else
+  PMC="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$TMPW/plugin_marketplace_circular_script.txt" 2>&1)" || { echo "$PMC"; echo "FAIL: plugin marketplace circular script exited non-zero"; exit 1; }
+fi
+pmccheck() { if echo "$PMC" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$PMC" "$1"; fail=1; fi; }
+pmccheck "PluginMarketplaceIndex: loaded \"Circular Dependency Test Index (plugin dependency resolution fixture)\" - 3 plug-in(s)" "PluginMarketplaceIndex loaded the circular-fixture index"
+pmccheck "! PluginMarketplaceInstall: LoopA (loopa) is part of a circular dependency chain" "PluginMarketplaceInstall refuses to install a plug-in whose dependency graph cycles back on itself"
+mkdir -p "$TMPW/plugincirc"
+awk '/^history: GrasshopperPluginList: /{n++} {print > ("'"$TMPW"'/plugincirc/sec" n ".txt")}' <<<"$PMC"
+PMC_S1="$(cat "$TMPW/plugincirc/sec1.txt" 2>/dev/null)"
+PMC_S2="$(cat "$TMPW/plugincirc/sec2.txt" 2>/dev/null)"
+for name in HelloDino MeshTools CurveTools; do
+  c1="$(echo "$PMC_S1" | grep -c "$name 1.0.0 -" || true)"
+  c2="$(echo "$PMC_S2" | grep -c "$name 1.0.0 -" || true)"
+  if [ "$c1" = "$c2" ]; then
+    echo "ok   the refused circular install left $name's loaded-copy count unchanged ($c1 -> $c2) - nothing was installed"
+  else
+    echo "FAIL $name's loaded-copy count changed on a refused circular install ($c1 -> $c2)"; fail=1
+  fi
+done
+
+# Plug-in Marketplace: a valid multi-level dependency chain
+# (tests/plugin_marketplace_deepchain_index.json's gadgettools -> gizmotools
+# -> widgettools, none already satisfied) must resolve and install every
+# link, in order, before the requested entry itself - not stop after just
+# its immediate dependency.
+sed "s|@DINO8ROOT@|$HEREW/..|g" "$HERE/plugin_marketplace_deepchain_script.txt" > "$TMPW/plugin_marketplace_deepchain_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  PMX="$("$BIN" --smoke 60 --script "$TMPW/plugin_marketplace_deepchain_script.txt" 2>&1)" || { echo "$PMX"; echo "FAIL: plugin marketplace deep-chain script exited non-zero"; exit 1; }
+else
+  PMX="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$TMPW/plugin_marketplace_deepchain_script.txt" 2>&1)" || { echo "$PMX"; echo "FAIL: plugin marketplace deep-chain script exited non-zero"; exit 1; }
+fi
+pmxcheck() { if echo "$PMX" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$PMX" "$1"; fail=1; fi; }
+pmxcheck "PluginMarketplaceIndex: loaded \"Deep Chain Test Index (plugin dependency resolution fixture)\" - 3 plug-in(s)" "PluginMarketplaceIndex loaded the deep-chain-fixture index"
+pmxcheck "PluginMarketplaceInstall: installed gadgettools" "PluginMarketplaceInstall installs the top of a 3-level dependency chain"
+mkdir -p "$TMPW/plugindeep"
+awk '/^history: GrasshopperPluginList: /{n++} {print > ("'"$TMPW"'/plugindeep/sec" n ".txt")}' <<<"$PMX"
+PMX_S1="$(cat "$TMPW/plugindeep/sec1.txt" 2>/dev/null)"
+PMX_S2="$(cat "$TMPW/plugindeep/sec2.txt" 2>/dev/null)"
+for name in HelloDino MeshTools CurveTools; do
+  c1="$(echo "$PMX_S1" | grep -c "$name 1.0.0 -" || true)"
+  c2="$(echo "$PMX_S2" | grep -c "$name 1.0.0 -" || true)"
+  if [ "$c1" = "1" ] && [ "$c2" = "2" ]; then
+    echo "ok   installing gadgettools added its own independent load of $name ($c1 -> $c2) - the dependency chain resolved that deep"
+  else
+    echo "FAIL $name's loaded-copy count did not go from 1 to 2 installing gadgettools (saw $c1 -> $c2) - the dependency chain did not resolve that deep"; fail=1
+  fi
+done
+
 exit $fail

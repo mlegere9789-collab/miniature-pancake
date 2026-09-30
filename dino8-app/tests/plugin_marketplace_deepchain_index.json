@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "index_name": "Deep Chain Test Index (plugin dependency resolution fixture)",
+  "plugins": [
+    {
+      "id": "widgettools",
+      "name": "WidgetTools",
+      "version": "1.0.0",
+      "author": "Dino 8 Project",
+      "description": "Bottom of a 3-level dependency chain (gadgettools -> gizmotools -> widgettools). No dependencies of its own.",
+      "api_version": 2,
+      "bundled_path": "plugins/hello_dino"
+    },
+    {
+      "id": "gizmotools",
+      "name": "GizmoTools",
+      "version": "1.0.0",
+      "author": "Dino 8 Project",
+      "description": "Middle of the chain: depends on widgettools.",
+      "api_version": 2,
+      "bundled_path": "plugins/mesh_tools",
+      "dependencies": ["widgettools"]
+    },
+    {
+      "id": "gadgettools",
+      "name": "GadgetTools",
+      "version": "1.0.0",
+      "author": "Dino 8 Project",
+      "description": "Top of the chain: depends on gizmotools, which depends on widgettools. Installing this must resolve and install both, in order, before installing gadgettools itself - none of the three is already satisfied.",
+      "api_version": 2,
+      "bundled_path": "plugins/curve_tools",
+      "dependencies": ["gizmotools"]
+    }
+  ]
+}
