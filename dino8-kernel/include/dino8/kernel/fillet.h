@@ -596,6 +596,58 @@ Brep FilletConvexEdgeTapered(const Brep& solid, Point3d edge_p0, Point3d edge_p1
 Brep FilletConvexEdgeTapered(const Brep& solid, Point3d edge_p0, Point3d edge_p1,
                               const std::vector<FilletRadiusStation>& stations);
 
+// The CONCAVE mirror of the two-radius FilletConvexEdgeTapered overload
+// above - the genuinely missing half of variable-radius fillets this
+// kernel had before this function existed (PARITY_MAP.md's own
+// "Blending & chamfering" entry named this explicitly: "no
+// FilletConcaveEdgeTapered exists in the kernel yet"). NOT a thin
+// dispatch to the convex construction the way FilletConcaveEdgeConic is
+// to FilletConvexEdgeConic: a piecewise-linear rolling-ball taper's own
+// apex/axis/frame derivation (BuildTaperedConeSegment, fillet.cpp) is
+// built from the SAME fixed "d(t)" rail-direction vectors FilletConvexEdge/
+// FilletConcaveEdge's own plain (constant-radius) constructions use, which
+// FilletConcaveEdge's own doc comment already establishes are genuinely
+// sign-flipped relative to FilletConvexEdge's (axis_point/contact_i/
+// contact_j/frame.xaxis/D_i, not merely re-labeled) - so this function
+// mirrors FilletConcaveEdge's own relationship to FilletConvexEdge,
+// re-applied to the tapered cone case: same face-handedness swap when
+// (n_i x n_j).e < 0, same negated axis_point/contact_i/contact_j sign
+// convention (equivalently: BuildTaperedConeSegment is called with `n_i`
+// and `bis` both negated, which is algebraically exactly the substitution
+// FilletConcaveEdge's own D_i = bis*offset - n_i*radius formula makes -
+// verified by direct substitution, not merely asserted, in this
+// function's own definition), and the resulting ConicalFace carries
+// `outward = false`, the same flag FilletConcaveEdge's own CylindricalFace
+// sets for the identical reason (the patch bounds material from the
+// concave side).
+//
+// `radius0`/`radius1` are the ball radius at edge_p0/edge_p1 respectively,
+// exactly as FilletConvexEdgeTapered's own two-radius overload defines
+// them, both required strictly positive for the same reason (a radius
+// reaching zero partway along the edge would place the swept patch's own
+// apex INSIDE the filled wedge, a different, out-of-scope topology). When
+// radius0 and radius1 are (near-)equal, this dispatches to FilletConcaveEdge
+// itself, bit-for-bit, the same "flat taper is a real code path, not a
+// coincidentally-matching separate construction" convention
+// FilletConvexEdgeTapered's own two-radius overload already established.
+//
+// SCOPE, narrower than FilletConvexEdgeTapered's: only the two-radius
+// (single-segment) form exists here - the N-station piecewise-linear
+// generalization (BuildMultiStationTaperedFillet's own convex-only
+// machinery: interior-station cap joins, SpliceLoopEdge) has not been
+// re-derived for the concave sign convention yet, a genuine, disclosed
+// increment left for later, not silently narrowed. Otherwise shares every
+// other scope limit FilletConcaveEdge's own doc comment already states
+// (planar faces only, one edge, a third face at either endpoint must be a
+// free boundary or exactly perpendicular to the edge - closed via the
+// same EllipseNotchCornerAtVertex corner-notch splice
+// FilletConvexEdgeTapered's own two-radius overload already uses, reused
+// here unchanged since it is already generic in apex/u_hat/xaxis/yaxis/
+// tan_half_angle with no convex-specific assumption baked in, exactly the
+// same reason FilletConcaveEdge's own doc comment gives for reusing
+// NotchCornerAtVertex unchanged).
+Brep FilletConcaveEdgeTapered(const Brep& solid, Point3d edge_p0, Point3d edge_p1, double radius0, double radius1);
+
 
 // Exact kernel-level CHAMFER of ONE straight, convex edge shared by two
 // PLANAR faces of `solid`: the classical two-distance chamfer (Parasolid
