@@ -2520,6 +2520,115 @@ void TestIntersectBrepsAndCurveBrep() {
   Check(far_hits.empty(), "a curve nowhere near the B-rep produces no curve/B-rep hits");
 }
 
+// PARITY_MAP's intersections category, "Pullback of a 3D curve to surface
+// parameter space" bullet: PullbackCurveToSurface() is the general-purpose
+// kernel entry point (SSX's own pcurve_a/pcurve_b are a by-product of a
+// surface/surface crossing, not usable for an arbitrary standalone curve).
+void TestPullbackCurveToSurfaceCylinderRulingLine() {
+  using dino8::kernel::IntersectOptions;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::PullbackCurveToSurface;
+  using dino8::kernel::PullbackResult;
+
+  const ON_Circle base_circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 2.0);
+  const ON_Cylinder on_cylinder(base_circle, 6.0);
+  ON_NurbsSurface cyl_surface;
+  Check(on_cylinder.GetNurbForm(cyl_surface) != 0, "ON_Cylinder::GetNurbForm succeeds");
+  NurbsSurface wall;
+  wall.raw() = cyl_surface;
+
+  IntersectOptions opt;
+  opt.tolerance = 1e-6;
+  opt.mesh_tolerance = 0.05;
+
+  // A straight ruling line of the cylinder is, by construction, EXACTLY
+  // on the surface: fix u at the surface's own domain midpoint and take
+  // two distinct v values - since a cylinder's v direction is genuinely
+  // linear along the axis at constant angle, the straight 3D segment
+  // between those two evaluated points lies exactly on the wall, not
+  // merely close to it.
+  const dino8::kernel::Interval du = wall.Domain(0), dv = wall.Domain(1);
+  const double u0 = du.min + (du.max - du.min) * 0.5;
+  const double va = dv.min + (dv.max - dv.min) * 0.2;
+  const double vb = dv.min + (dv.max - dv.min) * 0.8;
+  const Point3d pa = wall.PointAt(u0, va);
+  const Point3d pb = wall.PointAt(u0, vb);
+  const NurbsCurve ruling = NurbsCurve::FromControlPoints({pa, pb}, /*degree=*/1);
+
+  const PullbackResult pb_result = PullbackCurveToSurface(ruling.raw(), wall.raw(), opt);
+  Check(pb_result.on_surface, "a genuine ruling line of the cylinder pulls back with on_surface == true");
+  Check(pb_result.max_error < 1e-4, "the pullback's worst per-sample closest-point residual is within tolerance");
+  Check(pb_result.uv.size() >= 2, "the pullback sampled at least its two endpoints");
+
+  // The cylinder's own known UV relationship for a vertical ruling line:
+  // u is CONSTANT (the angle never changes) and v varies monotonically
+  // between the two endpoints' own v - both independently verifiable
+  // facts about a cylinder's parametrization, not fit to whatever the
+  // pullback happens to produce.
+  double max_u_dev = 0;
+  for (const ON_2dPoint& uv : pb_result.uv) max_u_dev = std::max(max_u_dev, std::abs(uv.x - u0));
+  Check(max_u_dev < 1e-3, "every pulled-back sample keeps the ruling line's own constant angle u0 (within tolerance)");
+  const bool increasing = vb > va;
+  bool monotonic = true;
+  for (size_t i = 1; i < pb_result.uv.size(); ++i) {
+    const double prev_v = pb_result.uv[i - 1].y, cur_v = pb_result.uv[i].y;
+    if (increasing ? (cur_v < prev_v - 1e-9) : (cur_v > prev_v + 1e-9)) { monotonic = false; break; }
+  }
+  Check(monotonic, "the pulled-back v samples move monotonically along the ruling line, matching the cylinder's own linear height parametrization");
+
+  // The fitted pcurve itself (not just the raw samples) must round-trip:
+  // evaluating it at its own domain ends and mapping through the surface
+  // must land back near the original line's own endpoints.
+  const ON_Interval pdom = pb_result.pcurve.Domain();
+  const ON_3dPoint uv_start = pb_result.pcurve.PointAt(pdom.Min());
+  const ON_3dPoint uv_end = pb_result.pcurve.PointAt(pdom.Max());
+  const Point3d back_start = wall.PointAt(uv_start.x, uv_start.y);
+  const Point3d back_end = wall.PointAt(uv_end.x, uv_end.y);
+  Check(back_start.DistanceTo(pa) < 1e-3 && back_end.DistanceTo(pb) < 1e-3,
+        "the fitted pcurve's own two domain endpoints map back through the surface to the ruling line's own endpoints");
+
+  // `pulled_curve` (PARITY_MAP's separate "Pull curves/points to surfaces"
+  // bullet - the literal 3D curve-on-surface result, not the 2D pcurve)
+  // must, for this already-on-surface ruling line, land essentially
+  // exactly back on pa/pb at its own domain ends too.
+  const ON_Interval pulled_dom = pb_result.pulled_curve.Domain();
+  const ON_3dPoint pulled_start = pb_result.pulled_curve.PointAt(pulled_dom.Min());
+  const ON_3dPoint pulled_end = pb_result.pulled_curve.PointAt(pulled_dom.Max());
+  Check(Point3d(pulled_start.x, pulled_start.y, pulled_start.z).DistanceTo(pa) < 1e-3 &&
+        Point3d(pulled_end.x, pulled_end.y, pulled_end.z).DistanceTo(pb) < 1e-3,
+        "pulled_curve's own two domain endpoints land essentially exactly on the ruling line's own endpoints");
+
+  // Negative case for on_surface/pcurve: a curve held well clear of the
+  // cylinder wall entirely (radius 2 wall, this line sits at radius 20)
+  // must honestly report on_surface == false rather than silently
+  // pretending to have found a meaningful pullback.
+  const NurbsCurve far_line = NurbsCurve::FromControlPoints({Point3d(20, 0, 0), Point3d(20, 0, 4)}, /*degree=*/1);
+  const PullbackResult far_result = PullbackCurveToSurface(far_line.raw(), wall.raw(), opt);
+  Check(!far_result.on_surface, "a curve held far from the surface pulls back with on_surface == false");
+  Check(far_result.max_error > opt.tolerance, "the far curve's max_error genuinely exceeds the requested tolerance");
+
+  // But `pulled_curve` is meaningful regardless of on_surface - that is
+  // the whole point of a Pull operation. The cylinder's axis is the world
+  // z-axis (base_circle's own plane, center at the origin), so the exact,
+  // independently-derivable expectation is that pulling this off-axis
+  // line onto the radius-2 wall lands it at (2, 0, z) for z in [0, 4] -
+  // every pulled sample must sit at radial distance == 2 from the z-axis,
+  // and the curve's own endpoints must land at exactly (2, 0, 0) and (2, 0, 4).
+  double max_radial_error = 0;
+  for (const ON_3dPoint& p3 : std::vector<ON_3dPoint>{far_result.pulled_curve.PointAtStart(), far_result.pulled_curve.PointAtEnd()}) {
+    max_radial_error = std::max(max_radial_error, std::abs(std::hypot(p3.x, p3.y) - 2.0));
+  }
+  Check(max_radial_error < 1e-3, "pulling an off-surface line onto the cylinder lands its own pulled_curve endpoints at exactly radius 2 from the axis");
+  const ON_3dPoint far_pulled_start = far_result.pulled_curve.PointAtStart();
+  const ON_3dPoint far_pulled_end = far_result.pulled_curve.PointAtEnd();
+  Check(Point3d(far_pulled_start.x, far_pulled_start.y, far_pulled_start.z).DistanceTo(Point3d(2, 0, 0)) < 1e-2,
+        "the far line's pulled_curve start lands at the hand-derived (2, 0, 0)");
+  Check(Point3d(far_pulled_end.x, far_pulled_end.y, far_pulled_end.z).DistanceTo(Point3d(2, 0, 4)) < 1e-2,
+        "the far line's pulled_curve end lands at the hand-derived (2, 0, 4)");
+}
+
 void TestBooleanCombineGeneralBoxBox() {
   using dino8::kernel::BooleanCombineGeneral;
   using dino8::kernel::BooleanOp;
@@ -58034,6 +58143,7 @@ int main() {
   TestIntersectCurvePlaneFindsCrossingsAndRejectsMisses();
   TestIntersectCurveSelfIntersectionsFindsBowtieAndRejectsSimpleCurves();
   TestIntersectBrepsAndCurveBrep();
+  TestPullbackCurveToSurfaceCylinderRulingLine();
   TestBooleanCombineGeneralBoxBox();
   TestBooleanCombineGeneralFreeformSurfaceOperand();
   TestBooleanCombineGeneralCoplanarBoxes();
