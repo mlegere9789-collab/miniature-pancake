@@ -169,4 +169,19 @@ bool PluginReviewStore::AddReview(const std::string& plugin_id, int rating, cons
   return SaveReviewsToFile((fs::path(dir_) / "plugin_reviews.json").string(), reviews_, error);
 }
 
+bool PluginReviewStore::DeleteReview(const std::string& plugin_id, size_t index, std::string& error) {
+  auto it = reviews_.find(plugin_id);
+  if (it == reviews_.end() || index >= it->second.size()) {
+    error = "no review at index " + std::to_string(index) + " for \"" + plugin_id + "\" (" +
+            std::to_string(it == reviews_.end() ? 0 : it->second.size()) + " review(s) on file)";
+    return false;
+  }
+  it->second.erase(it->second.begin() + static_cast<std::ptrdiff_t>(index));
+  if (it->second.empty()) reviews_.erase(it);
+  if (dir_.empty()) return true;  // EnsureLoaded was never called - kept in memory only
+  std::error_code ec;
+  fs::create_directories(dir_, ec);
+  return SaveReviewsToFile((fs::path(dir_) / "plugin_reviews.json").string(), reviews_, error);
+}
+
 }  // namespace dino8::plugins

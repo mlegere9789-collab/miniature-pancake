@@ -218,9 +218,9 @@ loaded and how many commands/nodes each plug-in registered.
 
 Copying a library by hand doesn't scale past one machine. `Window > Plug-in
 Marketplace` (or the `PluginMarketplace`/`PluginMarketplaceIndex`/
-`PluginMarketplaceList`/`PluginMarketplaceInstall`/`PluginMarketplaceUninstall`/
-`PluginMarketplaceUpdateAll`/`PluginMarketplaceUninstallAll`/`PluginMarketplaceVerify`/
-`PluginMarketplaceVerifyAll` commands) loads a JSON
+`PluginMarketplaceList`/`PluginMarketplaceInstall`/`PluginMarketplaceInstallAll`/
+`PluginMarketplaceUninstall`/`PluginMarketplaceUpdateAll`/`PluginMarketplaceUninstallAll`/
+`PluginMarketplaceVerify`/`PluginMarketplaceVerifyAll` commands) loads a JSON
 **plug-in index** - a list of plug-ins with a name, version, author,
 description and where to get the library from - from a local file or an
 `http(s)://` URL, and installs any entry straight into `<config>/plugins`
@@ -239,6 +239,12 @@ index without a path" section. Publishing your own index is nothing more
 than hosting that JSON file somewhere reachable; there is no registration
 step and no authority this repository controls, matching the plug-in ABI's
 own "no licence, no accounts, no network" starting point.
+
+`PluginMarketplaceInstallAll` installs every entry in the loaded index that
+isn't already installed, in one call, instead of clicking Install once per
+row - the batch counterpart to a single `PluginMarketplaceInstall <id>`, the
+same way `PluginMarketplaceUpdateAll` batches a single entry's Update; see
+SCHEMA.md's "Installing everything at once" section.
 
 `PluginMarketplaceUpdateAll` installs every entry `PluginMarketplaceCheckUpdates`
 would report as out of date, in one call, instead of updating each one by

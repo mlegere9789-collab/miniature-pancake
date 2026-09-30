@@ -199,6 +199,22 @@ prints it in place of the old generic label for an incompatible entry; the
 panel shows it as a tooltip on the compatibility badge and on a disabled
 Install/Update button, and inline in the selected entry's detail view.
 
+## Installing everything at once
+
+`PluginMarketplaceInstallAll`/`Marketplace::InstallAll` installs every entry
+in the loaded index that isn't already matched to a loaded plug-in (the same
+`FindInstalled` check the panel's own "Installed" column and Install/Update
+button already use per row), one at a time through the same `InstallById` a
+single row's Install button uses - so a freshly loaded (or freshly
+switched-to) index can be brought in wholesale, resolving each entry's own
+dependencies normally, instead of clicking Install once per row. An entry
+already pulled in earlier in the same batch as another entry's dependency is
+skipped rather than reinstalled. One entry failing (an incompatible entry, an
+unresolved dependency, …) does not stop the rest of the batch from being
+attempted; the command prints which ids installed and warns about any that
+didn't, and the panel's "Install All (`N`)" button (next to the filter box,
+disabled when nothing is left to install) does the same.
+
 ## Updating everything at once
 
 `PluginMarketplaceCheckUpdates`/`Marketplace::CheckForUpdates` only reports

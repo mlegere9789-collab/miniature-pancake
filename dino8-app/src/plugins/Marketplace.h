@@ -101,6 +101,25 @@ class Marketplace {
   // (including none at all) installed cleanly.
   bool UpdateAll(app::Application& app, std::vector<std::string>& updated, std::vector<std::string>& failed);
 
+  // Installs every entry in the currently loaded index that FindInstalled
+  // does not currently match to a loaded plug-in - i.e. everything the panel
+  // would otherwise show "not installed" for - one at a time through
+  // InstallById, so a fresh index (or one just switched to) can be brought
+  // in wholesale instead of clicking Install once per row. `installed`
+  // collects the id of each one that installed successfully, in the loaded
+  // index's own order; `failed` collects "id: error" for any that didn't
+  // (an incompatible entry, an unresolved dependency, ...) - one failure
+  // never stops the rest of the batch from being attempted. The
+  // not-yet-installed set is snapshotted up front, the same reason UpdateAll
+  // snapshots CheckForUpdates(): installing one entry can pull in another
+  // later in this same batch as its own dependency (InstallById resolves
+  // dependencies first), and re-checking FindInstalled mid-loop would just
+  // make that already-installed pass look like nothing happened rather than
+  // the skip it actually is. Returns false if `failed` ends up non-empty;
+  // true if every entry found missing (including none at all) installed
+  // cleanly.
+  bool InstallAll(app::Application& app, std::vector<std::string>& installed, std::vector<std::string>& failed);
+
   enum class VerifyStatus { Verified, Mismatch, NoHashToCheck, NotInstalled, Error };
 
   // Recomputes the sha256 of the file currently installed at `id`'s own

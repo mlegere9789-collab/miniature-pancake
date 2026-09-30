@@ -154,6 +154,35 @@ int main() {
   store.EnsureLoaded(dir.string());
   Check(store.ReviewsFor("hellodino").size() == 2, "EnsureLoaded on an already-loaded directory is a no-op, not a reload");
 
+  // ---- PluginReviewStore::DeleteReview --------------------------------
+  Check(!store.DeleteReview("nosuchplugin", 0, error), "DeleteReview rejects a plugin id with no reviews at all");
+  Check(!store.DeleteReview("hellodino", 2, error), "DeleteReview rejects an out-of-range index (only 0 and 1 exist)");
+  Check(store.ReviewsFor("hellodino").size() == 2, "a rejected DeleteReview call changed nothing");
+
+  Check(store.DeleteReview("hellodino", 0, error), "DeleteReview removes Dana's review at index 0 (" + error + ")");
+  Check(store.ReviewsFor("hellodino").size() == 1, "one review remains after deleting the other");
+  Check(store.ReviewsFor("hellodino")[0].reviewer.empty() && store.ReviewsFor("hellodino")[0].rating == 3,
+        "the surviving review is the anonymous one that was at index 1, now shifted to index 0");
+
+  // DeleteReview must persist immediately too, the same as AddReview.
+  ReviewsByPlugin reread_after_delete;
+  Check(LoadReviewsFromFile((dir / "plugin_reviews.json").string(), reread_after_delete, error) &&
+            reread_after_delete["hellodino"].size() == 1,
+        "DeleteReview persisted the removal to disk without a separate save step");
+
+  Check(store.DeleteReview("hellodino", 0, error), "DeleteReview removes the last remaining review");
+  Check(store.ReviewsFor("hellodino").empty(), "hellodino has no reviews left after deleting the last one");
+  Check(!store.DeleteReview("hellodino", 0, error),
+        "DeleteReview on a plugin just emptied out behaves like one that was never rated - rejected, not a crash");
+
+  // Emptying a plugin's review list must drop it from the on-disk store
+  // entirely (SerializeReviews already skips empty entries), not leave a
+  // dangling "hellodino": [] behind.
+  ReviewsByPlugin reread_after_empty;
+  Check(LoadReviewsFromFile((dir / "plugin_reviews.json").string(), reread_after_empty, error) &&
+            reread_after_empty.count("hellodino") == 0,
+        "deleting a plugin's last review drops it from the persisted store rather than leaving an empty array");
+
   fs::remove_all(dir, ec);
 
   if (failures) std::printf("%d FAILED\n", failures);

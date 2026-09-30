@@ -334,6 +334,25 @@ void RegisterFlowCommands(CommandEngine& e) {
         for (const std::string& f : failed) ctx.Warn("PluginMarketplaceUpdateAll: " + f);
       }));
 
+  Reg(e, "PluginMarketplaceInstallAll", Immediate([](CommandContext& ctx) {
+        // Installs every entry FindInstalled doesn't already match to a
+        // loaded plug-in, the batch counterpart to a single row's Install
+        // button - so a freshly loaded (or freshly switched-to) index can
+        // be brought in wholesale instead of clicking Install once per row.
+        std::vector<std::string> installed, failed;
+        plugins::Marketplace::Get().InstallAll(ctx.App(), installed, failed);
+        if (installed.empty() && failed.empty()) {
+          ctx.Print("PluginMarketplaceInstallAll: everything in the loaded index is already installed");
+          return;
+        }
+        if (!installed.empty()) {
+          std::string ids;
+          for (const std::string& id : installed) ids += (ids.empty() ? "" : ", ") + id;
+          ctx.Print("PluginMarketplaceInstallAll: installed " + std::to_string(installed.size()) + " plug-in(s) (" + ids + ")");
+        }
+        for (const std::string& f : failed) ctx.Warn("PluginMarketplaceInstallAll: " + f);
+      }));
+
   Reg(e, "PluginMarketplaceVerify", Immediate([](CommandContext& ctx) {
         std::vector<std::string> toks;
         while (auto tok = ctx.Engine().TakePendingInput()) toks.push_back(*tok);
@@ -444,9 +463,33 @@ void RegisterFlowCommands(CommandEngine& e) {
         }
         ctx.Print("PluginMarketplaceReviews: " + toks[0] + " - " + std::to_string(reviews.size()) + " review(s), average " +
                   FormatNumber(plugins::AverageRating(reviews)) + "/5");
-        for (const auto& r : reviews) {
-          ctx.Print("  " + std::string(r.reviewer.empty() ? "Anonymous" : r.reviewer) + ": " + std::to_string(r.rating) + "/5" +
-                    (r.comment.empty() ? "" : " - " + r.comment));
+        for (size_t i = 0; i < reviews.size(); ++i) {
+          const auto& r = reviews[i];
+          ctx.Print("  [" + std::to_string(i) + "] " + std::string(r.reviewer.empty() ? "Anonymous" : r.reviewer) + ": " +
+                    std::to_string(r.rating) + "/5" + (r.comment.empty() ? "" : " - " + r.comment));
+        }
+      }));
+
+  Reg(e, "PluginMarketplaceDeleteReview", Immediate([](CommandContext& ctx) {
+        std::vector<std::string> toks;
+        while (auto tok = ctx.Engine().TakePendingInput()) toks.push_back(*tok);
+        if (toks.size() < 2) {
+          ctx.Warn("PluginMarketplaceDeleteReview: usage PluginMarketplaceDeleteReview id index "
+                    "(PluginMarketplaceReviews shows each review's [index])");
+          return;
+        }
+        char* end = nullptr;
+        const long index = std::strtol(toks[1].c_str(), &end, 10);
+        if (end == toks[1].c_str() || *end != '\0' || index < 0) {
+          ctx.Warn("PluginMarketplaceDeleteReview: index must be a non-negative whole number, got \"" + toks[1] + "\"");
+          return;
+        }
+        plugins::PluginReviewStore::Get().EnsureLoaded(ConfigDirectory());
+        std::string error;
+        if (plugins::PluginReviewStore::Get().DeleteReview(toks[0], static_cast<size_t>(index), error)) {
+          ctx.Print("PluginMarketplaceDeleteReview: removed review [" + toks[1] + "] from " + toks[0]);
+        } else {
+          ctx.Warn("PluginMarketplaceDeleteReview: " + error);
         }
       }));
 

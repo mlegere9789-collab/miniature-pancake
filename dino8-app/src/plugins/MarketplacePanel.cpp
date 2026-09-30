@@ -181,6 +181,33 @@ void DrawPluginMarketplacePanel(app::Application& app, bool& open) {
   ImGui::TextDisabled("%s%s", market.Index().index_name.c_str(),
                       market.Index().updated.empty() ? "" : (" - updated " + market.Index().updated).c_str());
 
+  size_t not_installed_count = 0;
+  for (const MarketplaceEntry& e : market.Index().plugins) {
+    std::string installed_version;
+    UpdateStatus status;
+    if (!market.FindInstalled(e, installed_version, status)) ++not_installed_count;
+  }
+  ImGui::BeginDisabled(not_installed_count == 0);
+  if (ImGui::Button(not_installed_count == 0 ? "Install All" : ("Install All (" + std::to_string(not_installed_count) + ")").c_str())) {
+    // Goes through Marketplace::InstallAll, which installs each not-yet-installed
+    // entry via InstallById - the same per-row Install button's own path -
+    // one at a time, so bringing in a whole index resolves dependencies
+    // exactly like a single click would and one failure doesn't stop the rest.
+    std::vector<std::string> installed, failed;
+    market.InstallAll(app, installed, failed);
+    status = installed.empty() ? "" : ("Installed " + std::to_string(installed.size()) + " plug-in(s).");
+    if (!failed.empty()) {
+      std::string names;
+      for (const std::string& f : failed) names += (names.empty() ? "" : "; ") + f;
+      status += (status.empty() ? "" : " ") + std::string("Failed: ") + names;
+    }
+    if (!installed.empty()) app.Notify("Plug-in Marketplace: installed " + std::to_string(installed.size()) + " plug-in(s)");
+    if (!failed.empty()) app.Notify("Plug-in Marketplace: " + std::to_string(failed.size()) + " install(s) failed");
+  }
+  ImGui::EndDisabled();
+  if (not_installed_count == 0 && ImGui::IsItemHovered()) ImGui::SetTooltip("Everything in the loaded index is already installed.");
+
+  ImGui::SameLine();
   const auto pending_updates = market.CheckForUpdates();
   ImGui::BeginDisabled(pending_updates.empty());
   if (ImGui::Button(pending_updates.empty() ? "Update All" : ("Update All (" + std::to_string(pending_updates.size()) + ")").c_str())) {
@@ -383,9 +410,27 @@ void DrawPluginMarketplacePanel(app::Application& app, bool& open) {
     ImGui::Separator();
     const auto& reviews = PluginReviewStore::Get().ReviewsFor(e.id);
     ImGui::TextWrapped("Ratings & Reviews: %s", RatingSummary(e.id).c_str());
-    for (const PluginReview& r : reviews) {
+    // Deleting shifts every later index down, and reviews is a live
+    // reference into the store PluginReviewStore::Get().DeleteReview is
+    // about to mutate - so the delete itself has to happen after this loop
+    // finishes walking `reviews`, never from inside it.
+    int delete_index = -1;
+    for (size_t i = 0; i < reviews.size(); ++i) {
+      const PluginReview& r = reviews[i];
+      ImGui::PushID(static_cast<int>(i));
       ImGui::BulletText("%s - %d/5%s", r.reviewer.empty() ? "Anonymous" : r.reviewer.c_str(), r.rating,
                         r.comment.empty() ? "" : (": " + r.comment).c_str());
+      ImGui::SameLine();
+      if (ImGui::SmallButton("Delete")) delete_index = static_cast<int>(i);
+      ImGui::PopID();
+    }
+    if (delete_index >= 0) {
+      std::string error;
+      if (PluginReviewStore::Get().DeleteReview(e.id, static_cast<size_t>(delete_index), error)) {
+        status = "Removed a review for " + e.name + ".";
+      } else {
+        status = "Delete review failed: " + error;
+      }
     }
     ImGui::SliderInt("Your rating", &review_rating, 1, 5);
     ImGui::InputTextWithHint("##reviewer_name", "Your name (optional)", review_reviewer, sizeof review_reviewer);

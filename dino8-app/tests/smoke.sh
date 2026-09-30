@@ -4243,6 +4243,62 @@ pmdefcheck() { if echo "$PMDEF" | grep -qF "$1"; then echo "ok   $2"; else echo 
 pmdefcheck "PluginMarketplaceIndex: loaded \"Dino 8 Reference Plugin Index\" - 4 plug-in(s) from" "PluginMarketplaceIndex with no argument falls back to the bundled reference index"
 pmdefcheck "PluginMarketplaceList: 4 plug-in(s) in the loaded index" "the bundled default index loaded is the real one (all 4 reference entries), not an empty placeholder"
 
+# Plug-in Marketplace: PluginMarketplaceInstallAll/Marketplace::InstallAll -
+# installs every entry FindInstalled doesn't already match to a loaded
+# plug-in, in one call, reusing the same InstallById a single row's Install
+# button already goes through - the batch counterpart to
+# PluginMarketplaceUpdateAll (which only ever handles what's already
+# installed). With no index loaded there is nothing to install
+# (mirrors PluginMarketplaceUpdateAll's own "up to date"/"nothing to do"
+# wording for the same 0-entries case). tests/plugin_marketplace_installall_index.json
+# has three entries: alpha and beta, each declaring a library_filename no
+# other tests/*.json fixture writes to (so neither can already be sitting
+# installed from an earlier smoke.sh section sharing this same
+# $XDG_CONFIG_HOME), and futuregamma, whose min_app_version is far ahead of
+# any real Dino 8 release - proving one incompatible entry in the batch
+# doesn't stop the other two from installing.
+sed "s|@DINO8ROOT@|$HEREW/..|g" "$HERE/plugin_marketplace_installall_script.txt" > "$TMPW/plugin_marketplace_installall_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  PMIA="$("$BIN" --smoke 60 --script "$TMPW/plugin_marketplace_installall_script.txt" 2>&1)" || { echo "$PMIA"; echo "FAIL: plugin marketplace install-all script exited non-zero"; exit 1; }
+else
+  PMIA="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$TMPW/plugin_marketplace_installall_script.txt" 2>&1)" || { echo "$PMIA"; echo "FAIL: plugin marketplace install-all script exited non-zero"; exit 1; }
+fi
+pmiacheck() { if echo "$PMIA" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$PMIA" "$1"; fail=1; fi; }
+pmiacheck "PluginMarketplaceInstallAll: everything in the loaded index is already installed" "PluginMarketplaceInstallAll reports nothing to do before any index is loaded"
+pmiacheck "PluginMarketplaceIndex: loaded \"Install-All Test Index (batch install fixture)\" - 3 plug-in(s)" "PluginMarketplaceIndex loaded the install-all fixture"
+pmiacheck "PluginMarketplaceInstallAll: installed 2 plug-in(s) (alpha, beta)" "PluginMarketplaceInstallAll installs both alpha and beta in one call, in the loaded index's own order"
+pmiacheck "! PluginMarketplaceInstallAll: futuregamma: FutureGamma needs Dino 8 99.0.0 or newer, this build is" "PluginMarketplaceInstallAll reports futuregamma's compatibility failure without stopping alpha/beta from installing"
+# alpha/beta's own library_filename destinations are never written by any
+# other fixture in this suite, so neither can already be loaded from a
+# leftover install before this script's own PluginMarketplaceInstallAll
+# runs; the first GrasshopperPluginList (before the fixture is even loaded)
+# establishes whatever baseline count of HelloDino/CurveTools loads earlier
+# smoke.sh sections already left behind at their OWN (different) leftover
+# destinations (the exact number isn't asserted, only that PluginMarketplaceInstallAll
+# adds exactly one more of each) - the same "genuine second, independent
+# load, not just a print statement" proof the very first marketplace
+# install test above uses, expressed as a delta rather than an absolute
+# count so it isn't coupled to exactly what state earlier sections leave
+# behind. The script's own trailing PluginMarketplaceUninstall alpha/beta
+# then removes both again, so later sections' own absolute HelloDino/
+# CurveTools counts aren't shifted by this section having run.
+IA_BEFORE_HELLO="$(echo "$PMIA" | sed -n '1,/PluginMarketplaceIndex: loaded/p' | grep -c '  HelloDino 1.0.0 -' || true)"
+IA_AFTER_HELLO="$(echo "$PMIA" | sed -n '/PluginMarketplaceInstallAll: installed 2/,$p' | grep -c '  HelloDino 1.0.0 -' || true)"
+if [ "$IA_AFTER_HELLO" = "$((IA_BEFORE_HELLO + 1))" ]; then
+  echo "ok   PluginMarketplaceInstallAll genuinely installed and loaded alpha's HelloDino copy ($IA_BEFORE_HELLO before, $IA_AFTER_HELLO after), not just a print statement"
+else
+  echo "FAIL PluginMarketplaceInstallAll did not produce exactly one more independently-loaded HelloDino for alpha (saw $IA_BEFORE_HELLO before, $IA_AFTER_HELLO after)"; fail=1
+fi
+IA_BEFORE_CURVE="$(echo "$PMIA" | sed -n '1,/PluginMarketplaceIndex: loaded/p' | grep -c '  CurveTools 1.0.0 -' || true)"
+IA_AFTER_CURVE="$(echo "$PMIA" | sed -n '/PluginMarketplaceInstallAll: installed 2/,$p' | grep -c '  CurveTools 1.0.0 -' || true)"
+if [ "$IA_AFTER_CURVE" = "$((IA_BEFORE_CURVE + 1))" ]; then
+  echo "ok   PluginMarketplaceInstallAll genuinely installed and loaded beta's CurveTools copy ($IA_BEFORE_CURVE before, $IA_AFTER_CURVE after), not just a print statement"
+else
+  echo "FAIL PluginMarketplaceInstallAll did not produce exactly one more independently-loaded CurveTools for beta (saw $IA_BEFORE_CURVE before, $IA_AFTER_CURVE after)"; fail=1
+fi
+pmiacheck "PluginMarketplaceUninstall: uninstalled alpha" "the script cleans up its own alpha install afterward, so later sections' own HelloDino/CurveTools counts aren't shifted by this section having run"
+pmiacheck "PluginMarketplaceUninstall: uninstalled beta" "the script cleans up its own beta install afterward too"
+
 # Plug-in Marketplace: PluginMarketplaceUpdateAll/Marketplace::UpdateAll -
 # installs every out-of-date entry PluginMarketplaceCheckUpdates would report,
 # in one call, reusing the same InstallById a single row's Update button
@@ -4361,13 +4417,49 @@ pmrcheck "PluginMarketplaceRate: recorded a 5/5 rating for hellodino" "PluginMar
 pmrcheck "PluginMarketplaceRate: recorded a 3/5 rating for hellodino" "PluginMarketplaceRate records the second, anonymous 3/5 rating"
 pmrcheck "! PluginMarketplaceRate: rating must be between 1 and 5, got 12" "PluginMarketplaceRate refuses an out-of-range rating (12)"
 pmrcheck "PluginMarketplaceReviews: hellodino - 2 review(s), average 4" "PluginMarketplaceReviews averages only the 2 valid ratings ((5+3)/2 == 4), not the rejected one"
-pmrcheck "  Alice: 5/5 - Works great" "PluginMarketplaceReviews lists Alice's named review with its comment"
-pmrcheck "  Anonymous: 3/5 - A bit slow on big meshes" "PluginMarketplaceReviews lists the second review as Anonymous (no Reviewer= given)"
+pmrcheck "  [0] Alice: 5/5 - Works great" "PluginMarketplaceReviews lists Alice's named review with its comment, tagged with its [index] for PluginMarketplaceDeleteReview"
+pmrcheck "  [1] Anonymous: 3/5 - A bit slow on big meshes" "PluginMarketplaceReviews lists the second review as Anonymous (no Reviewer= given) at index [1]"
 REVIEWS_FILE="$XDG_CONFIG_HOME/dino8/plugin_reviews.json"
 if [ -f "$REVIEWS_FILE" ] && grep -q "hellodino" "$REVIEWS_FILE" && grep -q "Alice" "$REVIEWS_FILE"; then
   echo "ok   ratings persisted to $REVIEWS_FILE, not just kept in memory"
 else
   echo "FAIL $REVIEWS_FILE was not written with hellodino's ratings"; fail=1
+fi
+
+# Plug-in Marketplace: PluginMarketplaceDeleteReview/PluginReviewStore::DeleteReview
+# - a separate script/process from the ratings one just above (rather than
+# appended to it) so that section's own "ratings persisted to disk" check
+# still finds hellodino/Alice on disk afterward instead of racing against
+# this section's own deletions of that same file. Picks up the Alice/
+# Anonymous reviews the script above just persisted to this same shared
+# $XDG_CONFIG_HOME: an out-of-range index (5, only 0 and 1 exist) is refused
+# and changes nothing; deleting index 0 (Alice's review) leaves just the
+# Anonymous one, reindexed down to [0]; deleting that last remaining review
+# empties hellodino out entirely, back to "has no reviews yet" - proving the
+# delete actually mutates (and re-persists) the store, not just prints a
+# claim.
+sed "s|@DINO8ROOT@|$HEREW/..|g" "$HERE/plugin_marketplace_delete_review_script.txt" > "$TMPW/plugin_marketplace_delete_review_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  PMDR="$("$BIN" --smoke 60 --script "$TMPW/plugin_marketplace_delete_review_script.txt" 2>&1)" || { echo "$PMDR"; echo "FAIL: plugin marketplace delete-review script exited non-zero"; exit 1; }
+else
+  PMDR="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$TMPW/plugin_marketplace_delete_review_script.txt" 2>&1)" || { echo "$PMDR"; echo "FAIL: plugin marketplace delete-review script exited non-zero"; exit 1; }
+fi
+pmdrcheck() { if echo "$PMDR" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$PMDR" "$1"; fail=1; fi; }
+pmdrcheck "PluginMarketplaceReviews: hellodino - 2 review(s), average 4" "the delete-review script starts from the same 2 persisted reviews the ratings script above just wrote to disk"
+pmdrcheck "! PluginMarketplaceDeleteReview: no review at index 5 for \"hellodino\" (2 review(s) on file)" "PluginMarketplaceDeleteReview refuses an out-of-range index and reports how many reviews actually exist"
+pmdrcheck "PluginMarketplaceReviews: hellodino - 1 review(s), average 3" "only the Anonymous 3/5 review remains after deleting Alice's"
+pmdrcheck "  [0] Anonymous: 3/5 - A bit slow on big meshes" "the surviving review shifted down to index [0] after the deletion"
+pmdrcheck "PluginMarketplaceReviews: hellodino has no reviews yet" "deleting the last remaining review empties hellodino out, same wording as before anything was ever rated"
+PMDR_REMOVED_COUNT="$(echo "$PMDR" | grep -c 'PluginMarketplaceDeleteReview: removed review \[0\] from hellodino' || true)"
+if [ "$PMDR_REMOVED_COUNT" = "2" ]; then
+  echo "ok   PluginMarketplaceDeleteReview genuinely removed both reviews, one call each (Alice, then the reindexed Anonymous), not just one claim repeated"
+else
+  echo "FAIL expected PluginMarketplaceDeleteReview to report 2 successful removals, saw $PMDR_REMOVED_COUNT"; fail=1
+fi
+if grep -q "hellodino" "$REVIEWS_FILE" 2>/dev/null; then
+  echo "FAIL $REVIEWS_FILE still mentions hellodino after its last review was deleted"; fail=1
+else
+  echo "ok   deleting hellodino's last review dropped it from $REVIEWS_FILE entirely, not just in memory"
 fi
 
 # Plug-in Marketplace: dependency resolution (src/plugins/MarketplaceIndex.h's

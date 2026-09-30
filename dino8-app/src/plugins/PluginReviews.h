@@ -64,6 +64,16 @@ class PluginReviewStore {
   bool AddReview(const std::string& plugin_id, int rating, const std::string& comment, const std::string& reviewer,
                  const std::string& date, std::string& error);
 
+  // Removes the review at `index` (0-based, in the same order ReviewsFor
+  // returns - i.e. the order it was added in) from `plugin_id`'s list and
+  // saves immediately, the same "survives a crash" guarantee AddReview
+  // already gives a newly added review. A plug-in left with no reviews at
+  // all is dropped from the on-disk store entirely rather than kept as an
+  // empty array, matching what SerializeReviews already does for one. Fails
+  // without changing anything if `plugin_id` has no reviews or `index` is
+  // out of range.
+  bool DeleteReview(const std::string& plugin_id, size_t index, std::string& error);
+
  private:
   std::string dir_;
   bool loaded_ = false;

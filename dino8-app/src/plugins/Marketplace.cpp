@@ -326,6 +326,35 @@ bool Marketplace::UpdateAll(app::Application& app, std::vector<std::string>& upd
   return failed.empty();
 }
 
+bool Marketplace::InstallAll(app::Application& app, std::vector<std::string>& installed, std::vector<std::string>& failed) {
+  // Snapshotted up front, the same reason UpdateAll/UninstallAll snapshot
+  // their own targets: installing one entry can pull in another later in
+  // this same list as its own dependency, and re-querying FindInstalled
+  // mid-loop would just make that already-installed pass look like a no-op
+  // rather than the skip it actually is.
+  std::vector<std::string> targets;
+  for (const MarketplaceEntry& e : index_.plugins) {
+    std::string installed_version;
+    UpdateStatus status;
+    if (!FindInstalled(e, installed_version, status)) targets.push_back(e.id);
+  }
+
+  for (const std::string& id : targets) {
+    const MarketplaceEntry* entry = FindEntryById(index_, id);
+    if (!entry) continue;
+    std::string installed_version;
+    UpdateStatus status;
+    if (FindInstalled(*entry, installed_version, status)) continue;  // pulled in already as an earlier target's own dependency
+    std::string error;
+    if (InstallById(app, id, error)) {
+      installed.push_back(id);
+    } else {
+      failed.push_back(id + ": " + error);
+    }
+  }
+  return failed.empty();
+}
+
 Marketplace::VerifyStatus Marketplace::VerifyInstalled(const std::string& id, std::string& detail) const {
   const MarketplaceEntry* entry = FindEntryById(index_, id);
   if (!entry) {
