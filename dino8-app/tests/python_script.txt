@@ -63,7 +63,15 @@
 # (Add/Count/Names/IsLayer/CurrentLayer/Visible/Locked/Color/Delete,
 # matching Lua's rs.AddLayer/rs.LayerCount/rs.LayerNames/rs.IsLayer/
 # rs.CurrentLayer/rs.LayerVisible/rs.LayerLocked/rs.LayerColor/
-# rs.DeleteLayer, that the dino8 module lacked entirely until now).
+# rs.DeleteLayer, that the dino8 module lacked entirely until now), and the
+# document-state functions PARITY_MAP.md's app_scripting row called out as
+# "entirely unported": dino8.doc.UnitSystem/UnitSystemName (get-by-code,
+# set-by-name-or-code, matching rs.UnitSystem/rs.UnitSystemName),
+# dino8.doc.Name/Path/Modified (matching rs.DocumentName/rs.DocumentPath/
+# rs.DocumentModified), and dino8.doc.Undo/Redo/BeginUndo (matching
+# rs.Undo/rs.Redo/rs.BeginUndo) - the last three round-tripped here through
+# a real add/undo/redo/undo cycle on a fresh point, not just called and
+# ignored, so the net object count below is unaffected.
 # Unlike script_script.txt's Lua test, this never goes interactive
 # mid-script (see PythonEngine.h): Python scripts run start to finish in
 # one call, so there is no trailing point token to feed a GetPoint-style
