@@ -539,6 +539,26 @@ else
   echo "FAIL dwg_fixture_gen was not built next to $BIN (DINO8_BUILD_TESTS off?) - skipping the HATCH fixture check"
   fail=1
 fi
+# DXF HATCH export: the two tests above only ever prove ImportDxf's HATCH
+# reading; ExportDxf itself had no HATCH writer function at all until this
+# change (see WriteDxfHatchSolid in FileExchange.cpp) - a solid hatch made
+# in-app used to round-trip out to bare boundary curves, losing its fill
+# entirely. Makes a real solid hatch (Hatch Pattern=Solid), exports it,
+# reopens the exported file in a fresh document, and checks the same
+# SelHatch/Area facts the fixture-based import tests above already check,
+# proving the new writer and the existing reader agree on the wire format.
+sed "s|@TMP@|$TMPW|g" "$HERE/dxf_hatch_export_script.txt" > "$TMPW/dxf_hatch_export_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  DHE="$("$BIN" --smoke 30 --script "$TMPW/dxf_hatch_export_script.txt" 2>&1)" || { echo "$DHE"; echo "FAIL: DXF HATCH export script exited non-zero"; exit 1; }
+else
+  DHE="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/dxf_hatch_export_script.txt" 2>&1)" || { echo "$DHE"; echo "FAIL: DXF HATCH export script exited non-zero"; exit 1; }
+fi
+dhecheck() { if echo "$DHE" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$DHE" "$1"; fail=1; fi; }
+dhecheck "Exported $TMPW/dxf_hatch_export.dxf" "ExportDxf wrote a file"
+dhecheck "DXF: 0 curves, 0 points, 0 meshes, 1 hatch" "the reopened file's HATCH entity round-tripped as a real hatch, not bare boundary curves"
+dhecheck "1 object(s) selected" "SelHatch found the round-tripped hatch"
+dhecheck "Area = 100 square" "the round-tripped hatch's area is exactly the 10x10 boundary"
+grep -q "^HATCH$" "$TMPW/dxf_hatch_export.dxf" && echo "ok   dxf_hatch_export.dxf contains a real HATCH entity, not just boundary LINE/POLYLINE entities" || { echo "FAIL dxf_hatch_export.dxf has no HATCH entity"; fail=1; }
 # DWG SPLINE: built via LibreDWG's own dwg_add_SPLINE (marked "Experimental.
 # Does not work yet properly" in dwg_api.h - confirmed by hand it only ever
 # populates fit_pts, never real NURBS control points), so this exercises
@@ -2941,6 +2961,30 @@ flcheck "Exported $TMPW/file/exportorigin.obj (origin at 5,5,0)" "ExportWithOrig
 test -s "$TMPW/file/exportorigin.obj" && echo "ok   exportorigin.obj exists" || { echo "FAIL exportorigin.obj missing"; fail=1; }
 grep -q "^v -5 -5 0$" "$TMPW/file/exportorigin.obj" && echo "ok   ExportWithOrigin translated the box corner to -5,-5,0" || { echo "FAIL ExportWithOrigin did not re-base the geometry"; fail=1; }
 
+# OBJ per-object/material round trip: ImportMeshFile/ExportMeshFile used to
+# always merge every exported object into one single welded mesh with no
+# "o"/"g" split and no .mtl material file (see ImportObjMulti/ExportObjMulti
+# in File3dm.cpp). Two boxes with distinct colors, exported together, must
+# come back as two separate named objects, not one merged colorless blob,
+# and the sidecar .mtl must actually carry the two colors.
+sed "s|@TMP@|$TMPW|g" "$HERE/obj_multi_script.txt" > "$TMPW/obj_multi_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  OM="$("$BIN" --smoke 30 --script "$TMPW/obj_multi_script.txt" 2>&1)" || { echo "$OM"; echo "FAIL: OBJ multi-object script exited non-zero"; exit 1; }
+else
+  OM="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/obj_multi_script.txt" 2>&1)" || { echo "$OM"; echo "FAIL: OBJ multi-object script exited non-zero"; exit 1; }
+fi
+echo "$OM" | grep -E "^(ok|FAIL)"
+if echo "$OM" | grep -q "^FAIL"; then fail=1; fi
+omcheck() { if echo "$OM" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$OM" "$1"; fail=1; fi; }
+omcheck "Exported $TMPW/obj_multi.obj" "Export wrote the multi-object .obj file"
+omcheck "name 'Object'" "the first box round-tripped as its own named object"
+omcheck "name 'Object_2'" "the second box round-tripped as a separate, distinctly-named object (not merged into the first)"
+test -s "$TMPW/obj_multi.mtl" && echo "ok   ExportObjMulti wrote a sidecar .mtl file" || { echo "FAIL obj_multi.mtl missing"; fail=1; }
+grep -q "^mtllib obj_multi.mtl$" "$TMPW/obj_multi.obj" && echo "ok   obj_multi.obj references its sidecar .mtl by name" || { echo "FAIL obj_multi.obj has no mtllib reference"; fail=1; }
+[ "$(grep -c '^o ' "$TMPW/obj_multi.obj")" = "2" ] && echo "ok   obj_multi.obj has two real \"o\" object groups, not one merged mesh" || { echo "FAIL obj_multi.obj did not split into two \"o\" groups"; fail=1; }
+grep -q "^Kd 1 0 0$" "$TMPW/obj_multi.mtl" && echo "ok   obj_multi.mtl carries the first box's red color" || { echo "FAIL obj_multi.mtl is missing the red Kd entry"; fail=1; }
+grep -q "^Kd 0 1 0$" "$TMPW/obj_multi.mtl" && echo "ok   obj_multi.mtl carries the second box's green color" || { echo "FAIL obj_multi.mtl is missing the green Kd entry"; fail=1; }
+
 # Point-cloud exchange at the app level (XYZ/PTS/LAS - see
 # io/FileExchange.cpp's ExportXyz/ImportXyz/ExportPts/ImportPts/ExportLas/
 # ImportLas) and digital signing of an exported file (io/DigitalSignature.h -
@@ -4453,6 +4497,42 @@ EOS
   mcheck "$MG" "Opened $TMPW/mesh_good.3dm (1 objects)" "a mesh with only in-range faces - including a degenerate repeated-index one, which is legitimate - still loads (the check is a range check, not the stricter no-repeated-index rule)"
 else
   echo "FAIL mesh_fixture_gen was not built next to $BIN (DINO8_BUILD_TESTS off?) - skipping the corrupt-mesh fixture check"
+  fail=1
+fi
+
+# Native .3dm ON_Hatch import: previously Load3dm had no ON_Hatch handling
+# at all, so a hatch authored by a real, independent CAD tool (not Dino 8's
+# own baked-geometry export) was silently skipped on open. hatch3dm_fixture_gen
+# builds a real ON_Hatch (solid fill, 10x10 square boundary on the world XY
+# plane, referencing a real "Solid" ON_HatchPattern table entry) directly
+# through OpenNURBS' own API, independent of Dino 8's exporter - the same
+# "real externally-authored file, not a round trip" proof mesh_fixture_gen
+# and dwg_fixture_gen.c already give their own formats. The checks mirror
+# the existing DXF HATCH import test exactly: same SelHatch/List/Area
+# expectations, since Load3dm's new code path is the same BuildSolidHatch
+# helper DxfImporter::Hatch already uses.
+HATCHBIN="$(dirname "$BIN")/hatch3dm_fixture_gen"
+if [ -x "$HATCHBIN" ]; then
+  "$HATCHBIN" "$TMPW/hatch_fixture.3dm" >/dev/null || { echo "FAIL: hatch3dm_fixture_gen failed to write the hatch fixture"; exit 1; }
+  cat > "$TMPW/hatch3dm_script.txt" <<EOS
+Open $TMPW/hatch_fixture.3dm
+SelHatch
+List
+Area
+EOS
+  if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+    H3D="$("$BIN" --smoke 30 --script "$TMPW/hatch3dm_script.txt" 2>&1)" || { echo "$H3D"; echo "FAIL: hatch .3dm script exited non-zero"; exit 1; }
+  else
+    H3D="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/hatch3dm_script.txt" 2>&1)" || { echo "$H3D"; echo "FAIL: hatch .3dm script exited non-zero"; exit 1; }
+  fi
+  h3check() { if echo "$H3D" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$H3D" "$1"; fail=1; fi; }
+  h3check "Opened $TMPW/hatch_fixture.3dm (1 objects)" "Load3dm read the real ON_Hatch as one object, not zero (silently skipped, the old behaviour)"
+  h3check "1 object(s) selected" "SelHatch found the imported hatch (real Hatch=Solid user_text, not just an ordinary object)"
+  h3check "name 'Hatch Solid'" "the imported solid hatch is the same trimmed-planar-brep object BuildSolidHatch builds in-app / from DXF"
+  h3check "1 faces, 1 edges, open" "the imported hatch is a single trimmed planar face"
+  h3check "Area = 100 square" "the imported hatch's area is exactly the 10x10 boundary (not a sampled approximation)"
+else
+  echo "FAIL hatch3dm_fixture_gen was not built next to $BIN (DINO8_BUILD_TESTS off?) - skipping the .3dm ON_Hatch fixture check"
   fail=1
 fi
 
