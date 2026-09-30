@@ -97,7 +97,14 @@ SelNone
 # point, so the start stays put and the end moves from x=20 to x=40) and
 # running UpdateDimensions redraws the dimension line/arrows/text from the
 # new 40-unit length instead of leaving the original 20-unit static
-# measurement baked at creation time.
+# measurement baked at creation time. A DimTolerance suffix added right
+# after creation must survive that same UpdateDimensions rebuild instead of
+# being silently dropped - it used to vanish whenever UpdateDimensions
+# regenerated a dimension's text from a moved anchor, since the rebuilt
+# text was always the freshly recomputed measurement alone
+# (GroupToleranceSuffix/ReapplyToleranceSuffix, annotate_common.h, fix
+# this) - so the redrawn text below must carry both the new 40 measurement
+# and the 0.02 tolerance, not just one or the other.
 SelNone
 Line 0,-90,0 20,-90,0
 SelLast
@@ -106,12 +113,16 @@ DimLinear
 0,-90,0
 20,-90,0
 0,-95,0
+SelLast
+DimTolerance Type=Symmetric Value=0.02
 SelName MovingLine
 Length
 Scale1D 0,-90,0 2
 UpdateDimensions
 SelName MovingLine
 Length
+SelLast
+GetUserText
 SelNone
 # --- Associative DimRadius: always associative to the selected arc/circle
 # (not coincident-point matching). Doubling the circle's radius via a

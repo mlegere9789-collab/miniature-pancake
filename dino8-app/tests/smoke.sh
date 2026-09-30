@@ -1200,6 +1200,7 @@ a2check "UpdateDimensions:   CenterLine now spans 800,0,0 to 800,10,0" "UpdateDi
 a2check "DimVolume: Volume = 1000 cubic" "DimVolume measured the box (10x10x10)"
 a2check "DimCreaseAngle: 90 deg (associative to both measured objects)" "DimCreaseAngle recorded both selected lines as associative references"
 a2check "UpdateMeasureDims:   DimVolume now Volume = 2000 cubic" "UpdateMeasureDims redrew DimVolume from the box's doubled x-extent (Scale1D 900-910 -> 900-920), not the 1000 baked at creation time"
+a2check "Text = Volume = 2000 cubic.*0\.05" "a DimTolerance suffix added to DimVolume before the stretch survives UpdateMeasureDims's rebuild, carrying both the new 2000 measurement and the 0.05 tolerance"
 a2check "UpdateMeasureDims:   DimCreaseAngle now 45 deg" "UpdateMeasureDims redrew DimCreaseAngle from the rotated line's new direction, not the 90 deg baked at creation time"
 a2check "UpdateMeasureDims:   DimOrdinate now X 50" "UpdateMeasureDims redrew the free-floating (unanchored) DimOrdinate from its baked DimP0/DimP1 points, unchanged at 50 since neither point was ever anchored or moved"
 a2check "UpdateMeasureDims:   DimOrdinate now X 120" "UpdateMeasureDims redrew the OrdBase/OrdFeature DimOrdinate from the feature Point object's moved position (x=1220), not the 50 (x=1150) baked at creation time"
@@ -2769,7 +2770,7 @@ d2check "WeldSymbol: Groove (Below)" "WeldSymbol drew the groove glyph"
 d2check "WeldSymbol: Spot (Above)" "WeldSymbol drew the spot glyph"
 d2check "MultiLeader: 2 arrow(s), \"Note\"" "MultiLeader built two arrows to one landing"
 D2_DIMTOL_COUNT=$(echo "$D2" | grep -c "DimTolerance: 1 dimension(s) updated")
-if [ "$D2_DIMTOL_COUNT" = "2" ]; then echo "ok   DimTolerance ran twice, each updating the dimension"; else echo "FAIL DimTolerance ran twice, each updating the dimension"; fail=1; fi
+if [ "$D2_DIMTOL_COUNT" = "3" ]; then echo "ok   DimTolerance ran three times (twice on the first dimension, once on MovingLine below), each updating a dimension"; else echo "FAIL DimTolerance ran three times, each updating a dimension"; fail=1; fi
 d2check "Text = .*0\.03" "the rebuilt dimension text carries the second (0.03) tolerance"
 if grep -q -- "Text = .*0\.02.*0\.03\|Text = .*0\.03.*0\.02.*0\.02" <<< "$D2"; then echo "FAIL DimTolerance compounded the suffix on the second run"; fail=1; else echo "ok   DimTolerance did not compound the suffix on the second run"; fi
 d2check "BillOfMaterials: " "BillOfMaterials built a table over the scene objects"
@@ -2785,10 +2786,16 @@ d2check "(none) qty=1 material=(none)" "the By=Material row was built while BomB
 d2check "NewMaterial qty=1 material=NewMaterial" "UpdateBillOfMaterials picked up BomBall's newly-assigned material, not the empty one baked at creation time"
 
 # Associativity: UpdateDimensions re-measures a DimLinear anchored to a real
-# Line object's endpoints after Scale1D stretches it from 20 to 40 units.
+# Line object's endpoints after Scale1D stretches it from 20 to 40 units. A
+# DimTolerance suffix added to it right after creation (before the stretch)
+# must survive that same rebuild instead of being silently dropped - it used
+# to vanish whenever UpdateDimensions regenerated the text from a moved
+# anchor, since the rebuild always started from the fresh measurement alone
+# (GroupToleranceSuffix/ReapplyToleranceSuffix, annotate_common.h, fix this).
 d2check "Total length = 20 " "the line measured 20 units before the stretch"
 d2check "Total length = 40 " "Scale1D stretched the line to 40 units"
 d2check "UpdateDimensions:   DimLinear now measures 40" "UpdateDimensions redrew the dimension text from the stretched line's new length, not the 20 baked at creation time"
+d2check "Text = 40.*0\.02" "the redrawn dimension's text carries both the new 40 measurement and the 0.02 tolerance DimTolerance had added before the stretch, not just one or the other"
 d2check "DimRadius 5 (associative to selected arc/circle)" "DimRadius recorded the selected circle as its associative reference"
 d2check "UpdateDimensions:   DimRadius now measures 10" "UpdateDimensions redrew DimRadius from the circle's doubled radius, not the 5 baked at creation time"
 d2check "DimAngle 90 deg (associative to 3 point(s))" "DimAngle anchored all three points (vertex + two direction points) to real Point objects"

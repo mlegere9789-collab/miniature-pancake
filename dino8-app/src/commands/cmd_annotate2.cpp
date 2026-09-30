@@ -1546,10 +1546,13 @@ void RegisterAnnotate2Commands(CommandEngine& e) {
               if (has1 && o.user_text.count("DimRefEnd1")) end1 = o.user_text.at("DimRefEnd1");
               if (has2 && o.user_text.count("DimRefEnd2")) end2 = o.user_text.at("DimRefEnd2");
             }
+            const std::string tol = GroupToleranceSuffix(ctx, g, old_glyph);
             for (ObjectId id : ctx.Doc().GroupMembers(g)) ctx.Doc().Remove(id);
             double value = 0;
-            if (BuildOrdinateDimGroup(ctx, base, feature, dir, pl, h, has1, r1, end1.empty() ? "point" : end1,
-                                       has2, r2, end2.empty() ? "point" : end2, &value) >= 0) {
+            const int new_g = BuildOrdinateDimGroup(ctx, base, feature, dir, pl, h, has1, r1, end1.empty() ? "point" : end1,
+                                                     has2, r2, end2.empty() ? "point" : end2, &value);
+            if (new_g >= 0) {
+              ReapplyToleranceSuffix(ctx, new_g, tol);
               ++updated;
               ctx.Print("UpdateMeasureDims:   DimOrdinate now " + std::string(1, dir) + " " + FormatNumber(value));
             } else ++skipped;
@@ -1568,8 +1571,12 @@ void RegisterAnnotate2Commands(CommandEngine& e) {
             const bool normal = n1 || n2;
             const Point3d anchor = (c1 + c2) / 2.0;
             const std::string text = FormatNumber(angle) + " deg" + (normal ? " (crease " + FormatNumber(180.0 - angle) + " deg)" : "");
+            GlyphSpec old_glyph;
+            const std::string tol = GroupGlyphSpec(ctx, g, old_glyph) ? GroupToleranceSuffix(ctx, g, old_glyph) : "";
             for (ObjectId id : ctx.Doc().GroupMembers(g)) ctx.Doc().Remove(id);
-            if (AddLeaderText(ctx, "DimCreaseAngle", anchor, at, text, {{"DimRefObj1", ref1_tag}, {"DimRefObj2", ref2_tag}, {"MeasureAt", at_tag}}) >= 0) {
+            const int new_g = AddLeaderText(ctx, "DimCreaseAngle", anchor, at, text, {{"DimRefObj1", ref1_tag}, {"DimRefObj2", ref2_tag}, {"MeasureAt", at_tag}});
+            if (new_g >= 0) {
+              ReapplyToleranceSuffix(ctx, new_g, tol);
               ++updated;
               ctx.Print("UpdateMeasureDims:   DimCreaseAngle now " + text);
             } else ++skipped;
@@ -1587,15 +1594,19 @@ void RegisterAnnotate2Commands(CommandEngine& e) {
           }
           if (!any) { ++skipped; continue; }
           const std::string text = MeasureDimText(mk, value, Units(ctx));
+          GlyphSpec old_glyph;
+          const std::string tol = GroupGlyphSpec(ctx, g, old_glyph) ? GroupToleranceSuffix(ctx, g, old_glyph) : "";
           for (ObjectId id : ctx.Doc().GroupMembers(g)) ctx.Doc().Remove(id);
-          if (AddLeaderText(ctx, kind, anchor, at, text, {{"MeasureRefIds", ObjIdsTag(ids)}, {"MeasureAt", at_tag}}) >= 0) {
+          const int new_g = AddLeaderText(ctx, kind, anchor, at, text, {{"MeasureRefIds", ObjIdsTag(ids)}, {"MeasureAt", at_tag}});
+          if (new_g >= 0) {
+            ReapplyToleranceSuffix(ctx, new_g, tol);
             ++updated;
             ctx.Print("UpdateMeasureDims:   " + kind + " now " + text);
           } else ++skipped;
         }
         ctx.Print("UpdateMeasureDims: " + std::to_string(updated) + " updated, " + std::to_string(skipped) + " skipped");
       }), CommandStatus::Implemented,
-      "Re-derives DimArea/DimCurveLength/DimVolume (summed from every recorded source object's current shape, MeasureRefIds) and DimCreaseAngle (from its two recorded objects' current direction, DimRefObj1/DimRefObj2) and rebuilds each leader/text in place - the same explicit-recompute shape as UpdateDimensions (cmd_annotate.cpp) and UpdateTitleBlock/UpdatePanelSchedule/UpdateBillOfMaterials (cmd_drafting2.cpp), not an automatic hook on every document edit. A dimension built before this window (no MeasureRefIds/DimRefObj1 tag), or one whose recorded object(s) no longer measure under their kind (deleted, or a shape edit made a DimArea curve non-closed etc.), is skipped and stays (or reverts to) a static baked measurement; the leader's landing point (MeasureAt) is kept fixed across an update, only the value and arrowhead position change. This window adds DimOrdinate, associative per point exactly like DimLinear (FindPointAnchor on the base point and, separately, each feature point - see DimOrdinateCommand/BuildOrdinateDimGroup above): UpdateMeasureDims re-evaluates whichever of the two points matched a real object and rebuilds that ordinate's leader/text from their current positions, same as before if neither point was ever anchored (it still carries its built DimP0/DimP1 points, so it re-lays-out identically rather than being skipped).");
+      "Re-derives DimArea/DimCurveLength/DimVolume (summed from every recorded source object's current shape, MeasureRefIds), DimCreaseAngle (from its two recorded objects' current direction, DimRefObj1/DimRefObj2) and DimOrdinate (per point, FindPointAnchor on the base point and, separately, each feature point - DimOrdinateCommand/BuildOrdinateDimGroup) and rebuilds each leader/text in place - the same explicit-recompute shape as UpdateDimensions (cmd_annotate.cpp) and UpdateTitleBlock/UpdatePanelSchedule/UpdateBillOfMaterials (cmd_drafting2.cpp), not an automatic hook on every document edit. A dimension built before DimOrdinate's associativity was added (no MeasureRefIds/DimRefObj1/DimP0 tag), or one whose recorded object(s) no longer measure under their kind (deleted, or a shape edit made a DimArea curve non-closed etc.), is skipped and stays (or reverts to) a static baked measurement; the leader's landing point (MeasureAt) is kept fixed across an update, only the value and arrowhead position change. A DimOrdinate point that was never anchored still carries its built DimP0/DimP1 points, so it re-lays-out identically rather than being skipped. This window fixes the same DimTolerance-drop gap UpdateDimensions had: a tolerance suffix (cmd_drafting2.cpp DimTolerance) on any of these five kinds used to vanish on rebuild, since the rebuilt text was always the freshly recomputed measurement alone; it is now recovered from the DimTolerance.Base tag and re-appended to the new measurement (GroupToleranceSuffix/ReapplyToleranceSuffix, annotate_common.h), same fix, same helpers, shared with UpdateDimensions.");
   Reg(e, "DimRecenterText", OnSelection("Select dimensions to recenter text", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         const int n = EditGroups(ctx, ids, "DimRecenterText", [](GlyphSpec&) {});
         ctx.Print("DimRecenterText: " + std::to_string(n) + " annotation(s) rebuilt at their original text position");

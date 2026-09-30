@@ -185,6 +185,24 @@ inline int RebuildGroupText(CommandContext& ctx, int group_id, const GlyphSpec& 
   return static_cast<int>(AddGlyphCurves(ctx, g, layer, group_id, tags).size());
 }
 
+// A DimTolerance suffix (cmd_drafting2.cpp DimToleranceCommand) is stored as
+// the pre-suffix "DimTolerance.Base" tag alongside the now-suffixed glyph
+// text, so it can be recovered by diffing the two. Read *before* an
+// associative rebuild removes the group's old members (UpdateDimensions/
+// UpdateMeasureDims capture `old_glyph` via GroupGlyphSpec for exactly this
+// reason already); returns "" when the group carries no tolerance.
+inline std::string GroupToleranceSuffix(CommandContext& ctx, int group_id, const GlyphSpec& old_glyph) {
+  for (const SceneObject& o : ctx.Doc().Objects()) {
+    if (o.group_id != group_id || !o.user_text.count("Glyph")) continue;
+    auto it = o.user_text.find("DimTolerance.Base");
+    if (it == o.user_text.end()) return "";
+    const std::string& base = it->second;
+    if (old_glyph.text.size() > base.size() && old_glyph.text.compare(0, base.size(), base) == 0) return old_glyph.text.substr(base.size());
+    return "";
+  }
+  return "";
+}
+
 // The distinct annotation groups among `ids` (objects tagged Annotation).
 inline std::vector<int> AnnotationGroupsOf(CommandContext& ctx, const std::vector<ObjectId>& ids) {
   std::vector<int> groups;
@@ -202,6 +220,23 @@ inline bool GroupGlyphSpec(CommandContext& ctx, int group_id, GlyphSpec& g) {
     if (o.group_id == group_id && o.user_text.count("Glyph") && GlyphSpecOf(o, g)) return true;
   }
   return false;
+}
+
+// Re-applies a tolerance suffix (from GroupToleranceSuffix, captured before
+// an associative rebuild) onto a just-rebuilt group's freshly-computed text -
+// the same base-then-suffix replace DimToleranceCommand itself runs. Without
+// this, a rebuild that recomputes a dimension's text from scratch (a new
+// measured length, angle, area...) silently drops a tolerance the user had
+// added, since the rebuilt text never carried the suffix to begin with.
+inline void ReapplyToleranceSuffix(CommandContext& ctx, int group_id, const std::string& suffix) {
+  if (suffix.empty()) return;
+  GlyphSpec spec;
+  if (!GroupGlyphSpec(ctx, group_id, spec)) return;
+  const std::string base = spec.text;
+  spec.text = base + suffix;
+  if (RebuildGroupText(ctx, group_id, spec, {"DimTolerance.Base"}) > 0) {
+    for (SceneObject& o : ctx.Doc().Objects()) if (o.group_id == group_id && o.user_text.count("Glyph")) o.user_text["DimTolerance.Base"] = base;
+  }
 }
 
 // Finds a real document object anchored exactly at `p` (a Point object at

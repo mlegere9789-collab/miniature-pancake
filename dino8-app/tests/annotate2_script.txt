@@ -172,15 +172,23 @@ SelNone
 # stretches it along its x-extent (900-910 -> 900-920) doubling its volume
 # from 1000 to 2000; UpdateMeasureDims must re-measure the box's current
 # volume instead of the value baked at creation time (MeasureRefIds - see
-# cmd_annotate2.cpp).
+# cmd_annotate2.cpp). A DimTolerance suffix added before the stretch must
+# also survive UpdateMeasureDims's rebuild instead of being silently
+# dropped (GroupToleranceSuffix/ReapplyToleranceSuffix, annotate_common.h) -
+# same fix, same helpers, as UpdateDimensions's own DimTolerance test
+# (drafting2_script.txt).
 Box 900,0,0 910,10,0 10
 SelLast
 SetObjectName VolBox
 DimVolume
 920,20,0
+SelLast
+DimTolerance Type=Symmetric Value=0.05
 SelName VolBox
 Scale1D 900,0,0 2
 UpdateMeasureDims
+SelLast
+GetUserText
 SelNone
 # --- Associative DimCreaseAngle: two real Line objects measured directly
 # (whole-object reference, not coincident-point matching - same shape as
