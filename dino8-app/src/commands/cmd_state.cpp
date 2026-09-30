@@ -987,8 +987,11 @@ void RegisterStateCommands(CommandEngine& e) {
   // Snapshots, Worksession/LimitReferenceModel and the Dig* digitizer
   // commands are registered by RegisterSessionCommands (cmd_session.cpp),
   // called after this function.
-  Reg(e, "HistoryPurge", Say("HistoryPurge: no construction history is recorded; nothing to purge."));
-  Reg(e, "HistoryUpdate", Say("HistoryUpdate: no construction history is recorded; nothing to update."));
+  // HistoryPurge/HistoryUpdate: superseded by cmd_history.cpp's real
+  // HistoryRecord mechanism (RegisterHistoryCommands runs after this file,
+  // so it always won here anyway; these stubs were dead code that always
+  // claimed no history was recorded, even when UpdateHistory's own
+  // real mechanism had live records for these exact catalog names).
   // Worksession/LimitReferenceModel: superseded by cmd_session.cpp's real
   // implementations (RegisterSessionCommands runs after this file, so it
   // always wins here anyway; these stubs were dead code).

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 #include <opennurbs.h>
 
@@ -250,6 +251,81 @@ bool BuildBlendSurfaceG2(const ON_Curve& ea, const ON_Surface& sa, const std::fu
   }
   (void)eb;
   return LoftRows(rows, params, 6, out);
+}
+
+double MaxSurfaceGap(const ON_NurbsSurface& a, const ON_NurbsSurface& b, int grid_n) {
+  double worst = 0.0;
+  const ON_Interval au = a.Domain(0), av = a.Domain(1);
+  const ON_Interval bu = b.Domain(0), bv = b.Domain(1);
+  grid_n = std::max(1, grid_n);
+  for (int i = 0; i <= grid_n; ++i) {
+    const double t_u = static_cast<double>(i) / grid_n;
+    for (int j = 0; j <= grid_n; ++j) {
+      const double t_v = static_cast<double>(j) / grid_n;
+      const ON_3dPoint pa = a.PointAt(au.ParameterAt(t_u), av.ParameterAt(t_v));
+      const ON_3dPoint pb = b.PointAt(bu.ParameterAt(t_u), bv.ParameterAt(t_v));
+      worst = std::max(worst, pa.DistanceTo(pb));
+    }
+  }
+  return worst;
+}
+
+namespace {
+
+// Shared driver for BuildBlendSurfaceG1Adaptive/BuildBlendSurfaceG2Adaptive:
+// `build(samples, out)` is either BuildBlendSurfaceG1 or BuildBlendSurfaceG2
+// with every other argument already bound.
+bool AdaptiveRefine(const std::function<bool(int, ON_NurbsSurface&)>& build, double max_gap, int min_samples,
+                     int max_samples, ON_NurbsSurface& out, double* achieved_gap_out) {
+  if (achieved_gap_out) *achieved_gap_out = std::numeric_limits<double>::infinity();
+  int samples = std::max(2, min_samples);
+  ON_NurbsSurface coarse;
+  if (!build(samples, coarse)) return false;
+  for (;;) {
+    const int finer_samples = samples * 2;
+    if (finer_samples > max_samples) {
+      out = coarse;
+      return false;
+    }
+    ON_NurbsSurface finer;
+    if (!build(finer_samples, finer)) {
+      out = coarse;
+      return false;
+    }
+    // A grid at least as fine as the coarser build's own row count, so the
+    // measurement can't miss a real shape change by under-sampling it.
+    const double gap = MaxSurfaceGap(coarse, finer, std::max(8, samples));
+    if (achieved_gap_out) *achieved_gap_out = gap;
+    if (gap <= max_gap) {
+      out = finer;
+      return true;
+    }
+    coarse = finer;
+    samples = finer_samples;
+  }
+}
+
+}  // namespace
+
+bool BuildBlendSurfaceG1Adaptive(const ON_Curve& ea, const ON_Surface& sa, const std::function<ON_2dPoint(double)>& uv_a_at,
+                                  const ON_Curve& eb, const ON_Surface& sb, const std::function<ON_2dPoint(double)>& uv_b_at,
+                                  bool tangent_boost, double max_gap, int min_samples, int max_samples,
+                                  ON_NurbsSurface& out, double* achieved_gap_out,
+                                  const std::function<double(double)>& width_frac_at) {
+  auto build = [&](int samples, ON_NurbsSurface& result) {
+    return BuildBlendSurfaceG1(ea, sa, uv_a_at, eb, sb, uv_b_at, tangent_boost, samples, result, width_frac_at);
+  };
+  return AdaptiveRefine(build, max_gap, min_samples, max_samples, out, achieved_gap_out);
+}
+
+bool BuildBlendSurfaceG2Adaptive(const ON_Curve& ea, const ON_Surface& sa, const std::function<ON_2dPoint(double)>& uv_a_at,
+                                  const ON_Curve& eb, const ON_Surface& sb, const std::function<ON_2dPoint(double)>& uv_b_at,
+                                  double max_gap, int min_samples, int max_samples, ON_NurbsSurface& out,
+                                  double* achieved_gap_out, const std::function<double(double)>& width_frac_at) {
+  auto build = [&](int samples, ON_NurbsSurface& result) {
+    return BuildBlendSurfaceG2(ea, sa, uv_a_at, eb, sb, uv_b_at, samples, result, width_frac_at);
+  };
+  return AdaptiveRefine(build, max_gap, min_samples, max_samples, out, achieved_gap_out);
 }
 
 }  // namespace dino8::app

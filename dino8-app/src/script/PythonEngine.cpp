@@ -1,5 +1,6 @@
 #include "script/PythonEngine.h"
 
+#include <cctype>
 #include <sstream>
 #include <fstream>
 #include <filesystem>
@@ -125,6 +126,58 @@ int LayerIndexArg(const py::object& layer) {
   return i;
 }
 
+// Mirrors LuaEngine.cpp's NeedLayer: LayerIndexArg above, but raising for a
+// layer that doesn't exist instead of returning -1 - used by every
+// Dino8LayerTable method that operates on one specific existing layer.
+int NeedLayerIndex(const py::object& layer) {
+  const int idx = LayerIndexArg(layer);
+  if (idx < 0) throw std::runtime_error("layer not found");
+  return idx;
+}
+
+Color ColorArg(const py::tuple& rgb) {
+  if (rgb.size() < 3) throw std::runtime_error("color must be an (r, g, b) tuple");
+  return Color::FromBytes(rgb[0].cast<int>(), rgb[1].cast<int>(), rgb[2].cast<int>());
+}
+
+py::tuple ColorToTuple(const Color& c) {
+  return py::make_tuple(static_cast<int>(std::lround(c.r * 255)), static_cast<int>(std::lround(c.g * 255)), static_cast<int>(std::lround(c.b * 255)));
+}
+
+// Mirrors LuaEngine.cpp's NeedCurve/NeedMesh: fetches the object and raises
+// if it doesn't exist or isn't the right kind, used by the curve/mesh query
+// bindings below (CurveLength, EvaluateCurve, MeshVertices, ...).
+const kernel::NurbsCurve& NeedCurvePy(ObjectId id) {
+  SceneObject* o = FindObj(id);
+  if (!o) throw std::runtime_error("object " + std::to_string(id) + " no longer exists");
+  if (o->kind != ObjectKind::Curve || !o->curve) throw std::runtime_error("object " + std::to_string(id) + " is not a curve");
+  return *o->curve;
+}
+
+const kernel::Mesh& NeedMeshPy(ObjectId id) {
+  SceneObject* o = FindObj(id);
+  if (!o) throw std::runtime_error("object " + std::to_string(id) + " no longer exists");
+  if (o->kind != ObjectKind::Mesh || !o->mesh) throw std::runtime_error("object " + std::to_string(id) + " is not a mesh");
+  return *o->mesh;
+}
+
+// Mirrors LuaEngine.cpp's TypeMaskFromArg: None/no argument means "every
+// type" (mask 0), an int is taken as a raw mask, and a string is one of the
+// same type names rs.ObjectType/rs.ObjectsByType accept.
+int TypeMaskFromPy(const py::object& type) {
+  if (type.is_none()) return 0;
+  if (py::isinstance<py::int_>(type)) return type.cast<int>();
+  std::string t = type.cast<std::string>();
+  for (char& ch : t) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+  if (t == "point") return 1;
+  if (t == "curve") return 4;
+  if (t == "surface") return 8;
+  if (t == "polysurface" || t == "brep") return 16;
+  if (t == "mesh") return 32;
+  if (t == "subd") return 262144;
+  return 0;
+}
+
 // A thin reference to a document object, returned by dino8.doc.Objects.*
 // so scripts can write `obj.Name = "Widget"` / `obj.Layer = "Parts"`
 // (RhinoCommon's rhino3dm.CommonObject-ish surface) instead of threading
@@ -159,14 +212,9 @@ struct PyObjectRef {
     Need("Layer").layer_index = idx;
   }
 
-  py::tuple GetColor() const {
-    Document& d = DocOf();
-    const Color c = d.EffectiveColor(Need("Color"));
-    return py::make_tuple(static_cast<int>(std::lround(c.r * 255)), static_cast<int>(std::lround(c.g * 255)), static_cast<int>(std::lround(c.b * 255)));
-  }
+  py::tuple GetColor() const { return ColorToTuple(DocOf().EffectiveColor(Need("Color"))); }
   void SetColor(py::tuple rgb) {
-    if (rgb.size() < 3) throw std::runtime_error("Color must be an (r, g, b) tuple");
-    const Color c = Color::FromBytes(rgb[0].cast<int>(), rgb[1].cast<int>(), rgb[2].cast<int>());
+    const Color c = ColorArg(rgb);
     DocOf().BeginChange("ObjectColor");
     SceneObject& o = Need("Color");
     o.color = c;
@@ -612,12 +660,222 @@ struct PyObjectTable {
     for (ObjectId id : DocOf().SelectedIds()) out.emplace_back(id);
     return out;
   }
+
+  // Mirrors rs.ObjectsByName(name, select=false) in LuaEngine.cpp: every
+  // object whose Name exactly matches, optionally selecting them too.
+  std::vector<PyObjectRef> ObjectsByName(const std::string& name, bool select) {
+    Document& d = DocOf();
+    std::vector<PyObjectRef> out;
+    for (const SceneObject& o : d.Objects()) {
+      if (o.name != name) continue;
+      out.emplace_back(o.id);
+      if (select) d.Select(o.id, true);
+    }
+    return out;
+  }
+
+  // Mirrors rs.ObjectsByType(type, select=false) in LuaEngine.cpp: `type`
+  // is a type-name string ("curve", "surface", "polysurface"/"brep",
+  // "mesh", "point", "subd"), a raw rs.ObjectType mask int, or None for
+  // every object.
+  std::vector<PyObjectRef> ObjectsByType(py::object type, bool select) {
+    const int mask = TypeMaskFromPy(type);
+    Document& d = DocOf();
+    std::vector<PyObjectRef> out;
+    for (const SceneObject& o : d.Objects()) {
+      if (mask != 0 && !(TypeMask(o) & mask)) continue;
+      out.emplace_back(o.id);
+      if (select) d.Select(o.id, true);
+    }
+    return out;
+  }
+
+  // Mirrors rs.BoundingBox(ids) in LuaEngine.cpp: the world-axis-aligned
+  // box of `ids` as its 8 corners (bottom face then top face, matching
+  // Rhino's own corner order), or None when `ids` has no boxable geometry.
+  py::object BoundingBox(std::vector<ObjectId> ids) {
+    kernel::BoundingBox bb;
+    if (!DocOf().BoundingBoxOf(ids, bb)) return py::none();
+    const Point3d& a = bb.min;
+    const Point3d& b = bb.max;
+    py::list out;
+    for (const Point3d& p : {a, Point3d(b.x, a.y, a.z), Point3d(b.x, b.y, a.z), Point3d(a.x, b.y, a.z),
+                              Point3d(a.x, a.y, b.z), Point3d(b.x, a.y, b.z), b, Point3d(a.x, b.y, b.z)}) {
+      out.append(p);
+    }
+    return out;
+  }
+
+  // ---- curve query (mirrors LuaEngine.cpp's rs.Curve* functions) --------
+
+  double CurveLength(ObjectId curveId) { return NeedCurvePy(curveId).Length(); }
+
+  py::tuple CurveDomain(ObjectId curveId) {
+    const kernel::Interval d = NeedCurvePy(curveId).Domain();
+    return py::make_tuple(d.min, d.max);
+  }
+
+  Point3d EvaluateCurve(ObjectId curveId, double t) { return NeedCurvePy(curveId).PointAt(t); }
+
+  double CurveClosestPoint(ObjectId curveId, Point3d point) { return NeedCurvePy(curveId).ClosestPointParameter(point); }
+
+  // Mirrors rs.DivideCurve(curveId, segments, create=false, returnPoints=true)
+  // in LuaEngine.cpp: `segments` equally-arc-length-spaced parameters
+  // (always including both domain ends), returned as points by default or
+  // as raw parameters when returnPoints=False; create=True also adds a
+  // point object at each one.
+  py::object DivideCurve(ObjectId curveId, int segments, bool create, bool returnPoints) {
+    const kernel::NurbsCurve& c = NeedCurvePy(curveId);
+    if (segments < 1) throw std::runtime_error("DivideCurve: segments must be >= 1");
+    std::vector<double> params = c.DivideByCount(segments);
+    const kernel::Interval d = c.Domain();
+    if (params.empty() || std::fabs(params.front() - d.min) > 1e-12) params.insert(params.begin(), d.min);
+    if (std::fabs(params.back() - d.max) > 1e-12) params.push_back(d.max);
+    if (create) {
+      Document& doc = DocOf();
+      doc.BeginChange("DivideCurve");
+      for (double t : params) doc.Add(SceneObject::MakePoint(c.PointAt(t)));
+    }
+    py::list out;
+    if (returnPoints) for (double t : params) out.append(c.PointAt(t));
+    else for (double t : params) out.append(t);
+    return out;
+  }
+
+  // ---- surface/mesh query (mirrors LuaEngine.cpp's rs.Surface*/rs.Mesh*) -
+
+  // Mirrors rs.SurfaceArea(id) in LuaEngine.cpp: works for any object kind
+  // that has a defined area (surface/mesh/Brep/SubD), 0 for anything else.
+  double SurfaceArea(ObjectId id) { return ObjectAreaOf(Need(id, "SurfaceArea")); }
+
+  // Mirrors rs.SurfaceVolume(id) in LuaEngine.cpp: None unless `id` is a
+  // closed, manifold solid.
+  py::object SurfaceVolume(ObjectId id) {
+    bool closed = false;
+    const double v = ObjectVolumeOf(Need(id, "SurfaceVolume"), closed);
+    return closed ? py::cast(v) : py::none();
+  }
+
+  // Mirrors rs.IsObjectSolid(id) in LuaEngine.cpp: false for a missing
+  // object rather than raising (unlike SurfaceArea/SurfaceVolume above).
+  bool IsObjectSolid(ObjectId id) {
+    SceneObject* o = FindObj(id);
+    bool closed = false;
+    if (o) ObjectVolumeOf(*o, closed);
+    return closed;
+  }
+
+  // Mirrors rs.SurfaceClosestPoint(id, point) in LuaEngine.cpp: the exact
+  // closest point for a true Surface object, or the closest point on a
+  // best-effort mesh (MeshOf) for anything else meshable; None if neither
+  // is possible.
+  py::object SurfaceClosestPoint(ObjectId id, Point3d point) {
+    SceneObject& o = Need(id, "SurfaceClosestPoint");
+    if (o.kind == ObjectKind::Surface && o.surface) return py::cast(o.surface->ClosestPoint(point));
+    std::optional<kernel::Mesh> m = MeshOf(o, 0.01);
+    if (!m) return py::none();
+    return py::cast(m->ClosestPoint(point));
+  }
+
+  std::vector<Point3d> MeshVertices(ObjectId id) {
+    const ON_Mesh& m = NeedMeshPy(id).raw();
+    std::vector<Point3d> pts;
+    for (int i = 0; i < m.VertexCount(); ++i) pts.push_back(m.Vertex(i));
+    return pts;
+  }
+
+ private:
+  SceneObject& Need(ObjectId id, const char* what) {
+    SceneObject* o = FindObj(id);
+    if (!o) throw std::runtime_error(std::string("object ") + std::to_string(id) + " no longer exists (" + what + ")");
+    return *o;
+  }
 };
 
-// dino8.doc - just enough of RhinoCommon's RhinoDoc to reach Objects; more
-// (Layers, ActiveDoc-style globals) can grow here the same way.
+// dino8.doc.Layers - the RhinoCommon LayerTable equivalent. Every method
+// mirrors an rs_*Layer* function in LuaEngine.cpp so the two engines stay
+// behaviourally identical; see that file for the layer-index-resolution
+// details LayerIndexArg/NeedLayerIndex above share with it.
+struct PyLayerTable {
+  int Count() const { return static_cast<int>(DocOf().Layers().size()); }
+
+  std::vector<std::string> Names() const {
+    Document& d = DocOf();
+    std::vector<std::string> out;
+    for (size_t i = 0; i < d.Layers().size(); ++i) out.push_back(d.LayerFullPath(static_cast<int>(i)));
+    return out;
+  }
+
+  bool IsLayer(py::object layer) const { return LayerIndexArg(layer) >= 0; }
+
+  // Mirrors rs.AddLayer(name=None, color=None, visible=None, locked=None,
+  // parent=None) in LuaEngine.cpp: finds an existing layer with that name
+  // first (so calling it twice with the same name doesn't duplicate),
+  // otherwise creates one; returns the layer's (possibly auto-generated)
+  // name.
+  std::string Add(py::object name, py::object color, py::object visible, py::object locked, py::object parent) {
+    Document& d = DocOf();
+    const std::string n = name.is_none() ? ("Layer " + std::to_string(d.Layers().size() + 1)) : name.cast<std::string>();
+    const Color c = color.is_none() ? Color::FromBytes(0, 0, 0) : ColorArg(color.cast<py::tuple>());
+    const int parent_idx = parent.is_none() ? -1 : NeedLayerIndex(parent);
+    d.BeginChange("AddLayer");
+    int idx = d.FindLayer(n);
+    if (idx < 0) idx = d.AddLayer(n, c, parent_idx);
+    Layer& layer = d.Layers()[static_cast<size_t>(idx)];
+    if (!color.is_none()) layer.color = c;
+    if (!visible.is_none()) layer.visible = visible.cast<bool>();
+    if (!locked.is_none()) layer.locked = locked.cast<bool>();
+    return layer.name;
+  }
+
+  std::string CurrentLayerName() const {
+    Document& d = DocOf();
+    return d.Layers()[static_cast<size_t>(d.CurrentLayer())].name;
+  }
+  void SetCurrentLayer(py::object layer) { DocOf().SetCurrentLayer(NeedLayerIndex(layer)); }
+
+  bool Visible(py::object layer) const { return DocOf().Layers()[static_cast<size_t>(NeedLayerIndex(layer))].visible; }
+  void SetVisible(py::object layer, bool v) {
+    Document& d = DocOf();
+    d.Layers()[static_cast<size_t>(NeedLayerIndex(layer))].visible = v;
+    d.Touch();
+  }
+
+  bool Locked(py::object layer) const { return DocOf().Layers()[static_cast<size_t>(NeedLayerIndex(layer))].locked; }
+  void SetLocked(py::object layer, bool v) {
+    Document& d = DocOf();
+    d.Layers()[static_cast<size_t>(NeedLayerIndex(layer))].locked = v;
+    d.Touch();
+  }
+
+  // Named GetColor, not Color: a C++ member function named the same as the
+  // `Color` type would hide that type name for unqualified lookup
+  // throughout this whole class body (the Add() method above needs it).
+  // The pybind11 registration below still exposes this as Python's
+  // `.Color(layer)`.
+  py::tuple GetColor(py::object layer) const { return ColorToTuple(DocOf().Layers()[static_cast<size_t>(NeedLayerIndex(layer))].color); }
+  void SetColor(py::object layer, py::tuple rgb) {
+    Document& d = DocOf();
+    d.Layers()[static_cast<size_t>(NeedLayerIndex(layer))].color = ColorArg(rgb);
+    d.Touch();
+  }
+
+  // Mirrors rs.DeleteLayer(layer) in LuaEngine.cpp: false for a
+  // nonexistent layer, and Document::RemoveLayer itself refuses (also
+  // returning false) if any object still uses the layer or it's current.
+  bool Delete(py::object layer) {
+    const int idx = LayerIndexArg(layer);
+    if (idx < 0) return false;
+    DocOf().BeginChange("DeleteLayer");
+    return DocOf().RemoveLayer(idx);
+  }
+};
+
+// dino8.doc - just enough of RhinoCommon's RhinoDoc to reach Objects/Layers;
+// more (ActiveDoc-style globals) can grow here the same way.
 struct PyDoc {
   PyObjectTable objects;
+  PyLayerTable layers;
 };
 
 bool RunCommand(const std::string& name, py::args args) {
@@ -719,10 +977,38 @@ PYBIND11_EMBEDDED_MODULE(dino8, m) {
       .def("Find", &PyObjectTable::Find)
       .def("Delete", &PyObjectTable::Delete)
       .def("AllObjects", &PyObjectTable::AllObjects)
-      .def("GetSelectedObjects", &PyObjectTable::GetSelectedObjects);
+      .def("GetSelectedObjects", &PyObjectTable::GetSelectedObjects)
+      .def("ObjectsByName", &PyObjectTable::ObjectsByName, py::arg("name"), py::arg("select") = false)
+      .def("ObjectsByType", &PyObjectTable::ObjectsByType, py::arg("type") = py::none(), py::arg("select") = false)
+      .def("BoundingBox", &PyObjectTable::BoundingBox, py::arg("ids"))
+      .def("CurveLength", &PyObjectTable::CurveLength, py::arg("curveId"))
+      .def("CurveDomain", &PyObjectTable::CurveDomain, py::arg("curveId"))
+      .def("EvaluateCurve", &PyObjectTable::EvaluateCurve, py::arg("curveId"), py::arg("t"))
+      .def("CurveClosestPoint", &PyObjectTable::CurveClosestPoint, py::arg("curveId"), py::arg("point"))
+      .def("DivideCurve", &PyObjectTable::DivideCurve, py::arg("curveId"), py::arg("segments"), py::arg("create") = false, py::arg("returnPoints") = true)
+      .def("SurfaceArea", &PyObjectTable::SurfaceArea, py::arg("id"))
+      .def("SurfaceVolume", &PyObjectTable::SurfaceVolume, py::arg("id"))
+      .def("IsObjectSolid", &PyObjectTable::IsObjectSolid, py::arg("id"))
+      .def("SurfaceClosestPoint", &PyObjectTable::SurfaceClosestPoint, py::arg("id"), py::arg("point"))
+      .def("MeshVertices", &PyObjectTable::MeshVertices, py::arg("id"));
+
+  py::class_<PyLayerTable>(m, "Dino8LayerTable")
+      .def("Count", &PyLayerTable::Count)
+      .def("Names", &PyLayerTable::Names)
+      .def("IsLayer", &PyLayerTable::IsLayer, py::arg("layer"))
+      .def("Add", &PyLayerTable::Add, py::arg("name") = py::none(), py::arg("color") = py::none(), py::arg("visible") = py::none(), py::arg("locked") = py::none(), py::arg("parent") = py::none())
+      .def_property("CurrentLayer", &PyLayerTable::CurrentLayerName, &PyLayerTable::SetCurrentLayer)
+      .def("Visible", &PyLayerTable::Visible, py::arg("layer"))
+      .def("SetVisible", &PyLayerTable::SetVisible, py::arg("layer"), py::arg("visible"))
+      .def("Locked", &PyLayerTable::Locked, py::arg("layer"))
+      .def("SetLocked", &PyLayerTable::SetLocked, py::arg("layer"), py::arg("locked"))
+      .def("Color", &PyLayerTable::GetColor, py::arg("layer"))
+      .def("SetColor", &PyLayerTable::SetColor, py::arg("layer"), py::arg("color"))
+      .def("Delete", &PyLayerTable::Delete, py::arg("layer"));
 
   py::class_<PyDoc>(m, "Dino8Doc")
-      .def_readonly("Objects", &PyDoc::objects);
+      .def_readonly("Objects", &PyDoc::objects)
+      .def_readonly("Layers", &PyDoc::layers);
 
   // A single persistent PyDoc instance, like RhinoCommon's `scriptcontext.doc`.
   m.attr("doc") = PyDoc{};

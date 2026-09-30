@@ -612,6 +612,19 @@ if(DINO8_BUILD_TESTS)
   target_include_directories(dino8_test_digital_signature PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   add_test(NAME dino8_digital_signature COMMAND dino8_test_digital_signature)
 
+  # Verifies BuildBlendSurfaceG1Adaptive/BuildBlendSurfaceG2Adaptive (geom/
+  # BlendSurface.h): the adaptive, max_gap-enforcing wrapper that closes
+  # PARITY_MAP.md's "Rolling-ball blend surface accuracy on freeform
+  # surfaces - enforce max_gap" gap, by doubling the row sample count until
+  # two successive resolutions agree to within max_gap (there is no
+  # closed-form rolling-ball envelope to check a freeform blend against at
+  # all - see MaxSurfaceGap's own doc comment). See
+  # tests/test_blend_adaptive_gap.cpp.
+  add_executable(dino8_test_blend_adaptive_gap tests/test_blend_adaptive_gap.cpp src/geom/BlendSurface.cpp)
+  target_include_directories(dino8_test_blend_adaptive_gap PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(dino8_test_blend_adaptive_gap PRIVATE dino8_kernel)
+  add_test(NAME dino8_blend_adaptive_gap COMMAND dino8_test_blend_adaptive_gap)
+
   # Verifies the internal accessibility-tree mirror (see
   # src/platform/AccessibilityTree.h and docs/ACCESSIBILITY.md) that
   # AccessibilityLinux.cpp's real AT-SPI2 bridge publishes over D-Bus. Pure
