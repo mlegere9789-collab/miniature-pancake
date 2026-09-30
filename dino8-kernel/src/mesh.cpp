@@ -5207,6 +5207,98 @@ Mesh Mesh::Shell(double thickness, const std::vector<int>& removed_face_indices)
   return result;
 }
 
+Mesh Mesh::Shell(const std::vector<double>& face_thickness) const {
+  const int face_count = mesh_.m_F.Count();
+  if (static_cast<int>(face_thickness.size()) != face_count) {
+    throw std::invalid_argument(
+        "dino8::kernel::Mesh::Shell: face_thickness.size() must equal FaceCount()");
+  }
+  for (double t : face_thickness) {
+    if (!(t > 0.0)) {
+      throw std::invalid_argument("dino8::kernel::Mesh::Shell: every face_thickness entry must be strictly positive");
+    }
+  }
+  if (!IsClosedManifold()) {
+    throw std::invalid_argument(
+        "dino8::kernel::Mesh::Shell: this mesh is not a closed 2-manifold - "
+        "an open sheet needs Thicken(), not Shell()");
+  }
+
+  // Area-weighted per-vertex reconciliation of the per-face thicknesses -
+  // the same weighting scheme ComputeVertexNormals() already uses for
+  // direction (see this method's own header doc comment), applied here
+  // to a scalar instead of a vector.
+  const int n = mesh_.m_V.Count();
+  std::vector<double> weighted_sum(static_cast<size_t>(n), 0.0);
+  std::vector<double> weight_sum(static_cast<size_t>(n), 0.0);
+  auto accumulate_triangle = [&](int i0, int i1, int i2, double t) {
+    const Point3d a(mesh_.m_V[i0]);
+    const Point3d b(mesh_.m_V[i1]);
+    const Point3d c(mesh_.m_V[i2]);
+    const double w = ON_CrossProduct(b - a, c - a).Length();
+    weighted_sum[static_cast<size_t>(i0)] += w * t;
+    weighted_sum[static_cast<size_t>(i1)] += w * t;
+    weighted_sum[static_cast<size_t>(i2)] += w * t;
+    weight_sum[static_cast<size_t>(i0)] += w;
+    weight_sum[static_cast<size_t>(i1)] += w;
+    weight_sum[static_cast<size_t>(i2)] += w;
+  };
+  for (int i = 0; i < face_count; ++i) {
+    const ON_MeshFace& f = mesh_.m_F[i];
+    accumulate_triangle(f.vi[0], f.vi[1], f.vi[2], face_thickness[static_cast<size_t>(i)]);
+    if (f.IsQuad()) {
+      accumulate_triangle(f.vi[0], f.vi[2], f.vi[3], face_thickness[static_cast<size_t>(i)]);
+    }
+  }
+  std::vector<double> vertex_thickness(static_cast<size_t>(n), 0.0);
+  for (int i = 0; i < n; ++i) {
+    const double w = weight_sum[static_cast<size_t>(i)];
+    vertex_thickness[static_cast<size_t>(i)] = w > tolerance::kZero ? weighted_sum[static_cast<size_t>(i)] / w : 0.0;
+  }
+
+  const std::vector<Vector3d> normals = ComputeVertexNormals();
+  Mesh inner_unflipped = *this;
+  for (int i = 0; i < n; ++i) {
+    const ON_3dPoint moved =
+        ON_3dPoint(inner_unflipped.raw().m_V[i]) - vertex_thickness[static_cast<size_t>(i)] * normals[static_cast<size_t>(i)];
+    inner_unflipped.raw().m_V[i] = ON_3fPoint(moved);
+  }
+  inner_unflipped.raw().m_N.Destroy();
+  inner_unflipped.raw().m_FN.Destroy();
+
+  // Same feasibility guards Shell(thickness) already applies, against the
+  // actual per-vertex offset this method applies rather than a uniform
+  // stand-in.
+  if (!inner_unflipped.FindSelfIntersections().empty()) {
+    throw std::invalid_argument(
+        "dino8::kernel::Mesh::Shell: face_thickness folds the inward offset "
+        "through itself - exceeds the local wall-to-wall feasibility somewhere on this mesh");
+  }
+  const double outer_volume = Volume();
+  const double inner_volume = inner_unflipped.Volume();
+  if (!(inner_volume > 0.0 && inner_volume < outer_volume)) {
+    throw std::invalid_argument(
+        "dino8::kernel::Mesh::Shell: face_thickness is too large somewhere - the inward "
+        "offset has collapsed or inverted through the opposite wall rather than nesting inside this mesh");
+  }
+
+  Mesh result;
+  ON_Mesh& raw = result.raw();
+  raw.m_V.Reserve(n * 2);
+  for (int i = 0; i < n; ++i) raw.m_V.Append(mesh_.m_V[i]);
+  for (int i = 0; i < n; ++i) raw.m_V.Append(inner_unflipped.raw().m_V[i]);
+
+  raw.m_F.Reserve(face_count * 2);
+  for (int i = 0; i < face_count; ++i) raw.m_F.Append(mesh_.m_F[i]);
+  for (int i = 0; i < face_count; ++i) {
+    ON_MeshFace f = mesh_.m_F[i];
+    for (int k = 0; k < 4; ++k) f.vi[k] += n;
+    FlipOneFace(f);
+    raw.m_F.Append(f);
+  }
+  return result;
+}
+
 std::vector<std::pair<int, int>> Mesh::FindOffsetSelfIntersections(double distance, double tolerance) const {
   return Offset(distance).FindSelfIntersections(tolerance);
 }

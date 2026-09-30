@@ -13467,6 +13467,110 @@ void TestMeshShellWithRemovedFacesRefusesInvalidInput() {
                "Shell() with an opening still refuses a thickness that folds/inverts the full inward offset");
 }
 
+// Mesh::Shell(face_thickness): the per-face generalization of the
+// uniform-thickness overload. Two claims verified independently of the
+// method's own area-weighting code: (1) a UNIFORM face_thickness vector
+// (every entry the same value `t`) reproduces Shell(t)'s own result,
+// since an area-weighted average of identical values can't differ from
+// that value; and (2) on MakeSymmetricCubeMesh's own 6 equal-area square
+// faces, area-weighting degenerates to a PLAIN average (equal weights),
+// so each vertex's own expected offset distance is hand-computable
+// directly from its 3 incident faces' named thicknesses, and checked
+// against the vertex's own actual displacement magnitude - not against
+// the method's own internal weighted_sum/weight_sum arithmetic.
+void TestMeshShellPerFaceThicknessMatchesUniformOverloadAndHandDerivedAverages() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+
+  const auto box = MakeSymmetricCubeMesh(0, 0, 0, 4, 4, 4);
+
+  // (1) Uniform vector reproduces Shell(t).
+  const double t = 0.5;
+  const std::vector<double> uniform(static_cast<size_t>(box.FaceCount()), t);
+  const Mesh via_uniform_vector = box.Shell(uniform);
+  const Mesh via_scalar = box.Shell(t);
+  Check(via_uniform_vector.VertexCount() == via_scalar.VertexCount() &&
+            via_uniform_vector.FaceCount() == via_scalar.FaceCount(),
+        "Shell(uniform face_thickness) matches Shell(t)'s own vertex/face counts");
+  bool vertices_match = true;
+  for (int i = 0; i < via_scalar.VertexCount(); ++i) {
+    const ON_3fPoint& a = via_scalar.raw().m_V[i];
+    const ON_3fPoint& b = via_uniform_vector.raw().m_V[i];
+    vertices_match = vertices_match && std::fabs(a.x - b.x) < 1e-9 && std::fabs(a.y - b.y) < 1e-9 &&
+                     std::fabs(a.z - b.z) < 1e-9;
+  }
+  Check(vertices_match, "Shell(uniform face_thickness)'s vertices match Shell(t)'s own, to ordinary "
+                        "floating-point roundoff - an area-weighted average of identical values can't pull "
+                        "away from that value");
+
+  // (2) Per-face thicknesses: MakeSymmetricCubeMesh's own face order is
+  // bottom(0), top(1), front(2), back(3), left(4), right(5) - see that
+  // helper's own comment. Every face here is an equal-area square, so
+  // area-weighting reduces to a plain average of a vertex's own 3
+  // incident faces.
+  const std::vector<double> per_face = {0.2, 0.4, 0.3, 0.3, 0.3, 0.3};  // bottom, top, front, back, left, right
+  const Mesh shelled = box.Shell(per_face);
+  // Vertex 0 (bottom layer corner) touches bottom(0.2), front(0.3), left(0.3): average 0.2667.
+  // Vertex 6 (top layer corner) touches top(0.4), back(0.3), right(0.3): average 0.3333.
+  const double expected_v0 = (0.2 + 0.3 + 0.3) / 3.0;
+  const double expected_v6 = (0.4 + 0.3 + 0.3) / 3.0;
+  const Point3d original_v0(box.raw().m_V[0]);
+  const Point3d original_v6(box.raw().m_V[6]);
+  const Point3d moved_v0(shelled.raw().m_V[box.VertexCount() + 0]);
+  const Point3d moved_v6(shelled.raw().m_V[box.VertexCount() + 6]);
+  Check(std::fabs((original_v0 - moved_v0).Length() - expected_v0) < 1e-6,
+        "vertex 0's own inward displacement matches the hand-derived plain average of its 3 incident faces' "
+        "named thicknesses (0.2, 0.3, 0.3) - not the method's own internal weighting arithmetic");
+  Check(std::fabs((original_v6 - moved_v6).Length() - expected_v6) < 1e-6,
+        "vertex 6's own inward displacement matches the hand-derived plain average of ITS 3 incident faces' "
+        "named thicknesses (0.4, 0.3, 0.3)");
+  Check(shelled.IsClosedManifold(),
+        "Shell(face_thickness) still produces two disjoint closed layers, no openings, same as Shell(t)");
+}
+
+void TestMeshShellPerFaceThicknessRefusesInvalidInput() {
+  using dino8::kernel::Mesh;
+
+  const auto box = MakeSymmetricCubeMesh(0, 0, 0, 4, 4, 4);
+
+  auto expect_throw = [](const std::function<void()>& call, const char* message) {
+    bool threw = false;
+    try {
+      call();
+    } catch (const std::invalid_argument&) {
+      threw = true;
+    }
+    Check(threw, message);
+  };
+
+  expect_throw([&] { (void)box.Shell(std::vector<double>(static_cast<size_t>(box.FaceCount()) - 1, 0.5)); },
+               "Shell(face_thickness) throws when the vector's size doesn't match FaceCount()");
+  expect_throw([&] { (void)box.Shell(std::vector<double>(static_cast<size_t>(box.FaceCount()) + 1, 0.5)); },
+               "Shell(face_thickness) throws when the vector is too long too");
+  {
+    std::vector<double> with_zero(static_cast<size_t>(box.FaceCount()), 0.5);
+    with_zero[0] = 0.0;
+    expect_throw([&] { (void)box.Shell(with_zero); },
+                 "Shell(face_thickness) throws when any single entry is zero");
+  }
+  {
+    std::vector<double> with_negative(static_cast<size_t>(box.FaceCount()), 0.5);
+    with_negative[0] = -1.0;
+    expect_throw([&] { (void)box.Shell(with_negative); },
+                 "Shell(face_thickness) throws when any single entry is negative");
+  }
+
+  const auto open_square = MakeFlatUnitSquareMesh();
+  expect_throw(
+      [&] { (void)open_square.Shell(std::vector<double>(static_cast<size_t>(open_square.FaceCount()), 0.1)); },
+      "Shell(face_thickness) on an already-open mesh throws - Thicken() is the open-sheet operation, not this one");
+
+  const auto slab = MakeQuadBoxMesh(0, 0, 0, 4, 4, 0.4);
+  expect_throw([&] { (void)slab.Shell(std::vector<double>(static_cast<size_t>(slab.FaceCount()), 1.0)); },
+               "Shell(face_thickness) refuses a thickness that folds/inverts the per-vertex inward offset, the "
+               "same guard the uniform-thickness overload already applies");
+}
+
 // Perpendicular distance from `p` to the infinite line through `a`/`b`, in
 // 3D - a plain, independent geometric primitive (NOT InsetFace's own
 // miter-offset formula) used below to verify an inset corner's actual
@@ -49672,6 +49776,8 @@ int main() {
   TestMeshShellRefusesInvalidInput();
   TestMeshShellWithRemovedFaceProducesClosedManifoldCupWithStitchedWall();
   TestMeshShellWithRemovedFacesRefusesInvalidInput();
+  TestMeshShellPerFaceThicknessMatchesUniformOverloadAndHandDerivedAverages();
+  TestMeshShellPerFaceThicknessRefusesInvalidInput();
   TestMeshInsetFaceUnitSquareMatchesExactConcentricSquare();
   TestMeshInsetFaceTriangleMatchesIndependentPerpendicularDistance();
   TestMeshInsetFaceRefusesInvalidInput();

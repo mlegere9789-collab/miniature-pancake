@@ -1491,6 +1491,42 @@ class Mesh {
   // refuses.
   Mesh Shell(double thickness, const std::vector<int>& removed_face_indices) const;
 
+  // The uniform-thickness Shell(double)'s own per-face generalization -
+  // the mesh-level answer to PARITY_MAP.md's "Per-face (multi-thickness)
+  // shell" gap, whose only prior kernel evidence (`ShellConvexPlanar`'s
+  // own per-face overload, boolean.h) is convex-planar-Brep-only.
+  // `face_thickness` names one thickness per face of THIS mesh (must
+  // match FaceCount() exactly, every entry strictly positive).
+  //
+  // A per-vertex offset mesh has no natural per-FACE wall (unlike a Brep,
+  // whose faces are independent planes/surfaces): every vertex is shared
+  // by several faces and moves along ONE shared vertex normal, so this
+  // reconciles a vertex's neighbouring faces' differing thicknesses into
+  // one effective distance for that vertex via the SAME area-weighted
+  // scheme ComputeVertexNormals() already uses for direction (each
+  // incident triangle contributes its own thickness weighted by its own
+  // area, not an unweighted per-face average) - a vertex touching three
+  // equal-area faces of thickness 0.2/0.3/0.3, say, offsets by their
+  // plain average, 0.2667. This is an honest reconciliation, not an
+  // approximation error: a mesh vertex genuinely has no way to carry two
+  // different thicknesses on either side of it at once the way a Brep's
+  // separately-clipped per-face planes can (see `ShellConvexPlanar`'s own
+  // per-face overload for that exact, sharper alternative when the
+  // convex-planar precondition holds).
+  //
+  // Uniform `face_thickness` (every entry equal to the same `t`) recovers
+  // `Shell(t)`'s own result up to ordinary floating-point roundoff in the
+  // area-weighted average's summation order - the area weighting cannot
+  // pull a constant away from itself, only differing neighbours ever do.
+  //
+  // Throws std::invalid_argument if `face_thickness.size()` does not
+  // equal `FaceCount()`, if any entry is not strictly positive, if this
+  // mesh is not a closed 2-manifold, or under the same self-intersection/
+  // volume-inversion guard the uniform-thickness overload already applies
+  // (checked against the per-vertex offset this method actually applies,
+  // not a uniform stand-in).
+  Mesh Shell(const std::vector<double>& face_thickness) const;
+
   // Answers the real hazard Offset()'s own doc comment above already
   // names but has no way to check on its own: whether Offset(distance)
   // applied to THIS mesh would fold over itself. Computes Offset(distance)
