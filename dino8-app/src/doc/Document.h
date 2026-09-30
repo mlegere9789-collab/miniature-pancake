@@ -188,23 +188,54 @@ struct Linetype {
 
 // An annotation style: defaults for the text / dimension commands. Every
 // annotation group records the style it was made with (user text "Style").
+//
+// precision/angular_precision/unit_suffix/ext_offset/ext_extension/
+// text_placement/tol_* are real per-style dimension properties (units/
+// precision, extension-line geometry, text placement, a default tolerance),
+// wired into the actual dimension-building/text-formatting code in
+// DimGeometry.h/cmd_annotate.cpp/cmd_annotate2.cpp - not stored-and-ignored
+// fields. text/dimension annotations still share this one style table (no
+// separate DimensionStyle type) - matching Rhino 8's own architecture, not
+// a gap versus it: Rhino 8's Document Properties > Annotation Styles is
+// likewise one unified style governing text, dimensions and leaders
+// together (see PARITY_MAP.md's "Dimension styles" entry for the citation).
 struct AnnotationStyle {
   std::string name = "Default";
   double text_height = 0;   // 0: twice the grid spacing (the legacy default)
   double arrow_size = 0;    // 0: the text height
   std::string font;         // empty: the first system sans-serif font found
-  // Decimal places shown on a linear/radius/diameter dimension's measured
-  // value built or rebuilt with this style (DimLinear/DimAligned/DimRadius/
-  // DimDiameter - commands/DimGeometry.h's FormatDimensionNumber). -1 (the
-  // legacy default): unchanged, adaptive FormatNumber() formatting ("Auto").
-  // >= 0: always exactly that many decimals, fixed notation, e.g. precision
-  // 2 shows "10.00" for an exact round number rather than rounding it away -
-  // Rhino's own dimension-style Linear precision, still missing here before
-  // this field. Does not affect any other number in the app (coordinates,
-  // options, the Properties panel, ...), only a built dimension's own label
-  // text, and still shares this one AnnotationStyle table with text styles
-  // (no tolerance or extension-line control) - see PARITY_MAP.md.
-  int linear_precision = -1;
+  // Units/precision: decimal places for a dimension's measured text; -1
+  // (the default) keeps FormatNumber's existing "%.4g, integers bare"
+  // auto behavior unchanged. angular_precision is the same idea for
+  // DimAngle's degree value, tracked separately since an angle and a
+  // length rarely want the same number of decimals.
+  int precision = -1;
+  int angular_precision = -1;
+  // Appended (after one space) to every linear/radius measurement's text,
+  // e.g. "25.400 mm" - empty (the default) appends nothing, unchanged.
+  std::string unit_suffix;
+  // Extension-line geometry (DimLinear/DimAligned/DimRotated only): the gap
+  // left between the measured point and where the extension line begins,
+  // and how far past the dimension line it overshoots - both 0 (the
+  // default) reproduces the exact pre-existing geometry (extension line
+  // runs precisely from the measured point to the dimension line, no gap,
+  // no overshoot).
+  double ext_offset = 0;
+  double ext_extension = 0;
+  // "Above": the dimension line is unbroken and the text sits above it -
+  // the pre-existing, unchanged default. "Centered": the dimension line is
+  // broken and the text sits centered in the gap, on the line - AutoCAD's
+  // own DIMTAD=0 style.
+  std::string text_placement = "Above";
+  // A default tolerance new DimLinear/DimAligned/DimRotated/DimAngle/
+  // DimRadius/DimDiameter dimensions built with this style carry
+  // automatically, in the same "symmetric"/"deviation"/"limits" shape and
+  // suffix format as the manual DimTolerance command (cmd_drafting2.cpp) -
+  // empty tol_mode (the default) applies no tolerance, unchanged.
+  std::string tol_mode;
+  std::string tol_value = "0.05";
+  std::string tol_upper;
+  std::string tol_lower;
 };
 
 // A Layer State: a named snapshot of every layer's visible/locked flags
