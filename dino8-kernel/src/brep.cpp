@@ -5463,23 +5463,55 @@ int WeldCoincidentNakedEdges(ON_Brep& b, double tol) {
   return joined;
 }
 
+// Scans `face`'s own loops the same way Brep::AddHoleLoop() already does:
+// exactly one ON_BrepLoop::outer loop, plus zero or more ON_BrepLoop::inner
+// (hole) loops, appended to `*hole_loop_indices` when non-null. Returns the
+// outer loop's own index, or -1 if the face carries a slit/curve-on-surface/
+// point-on-surface loop (out of scope, same as AddHoleLoop()'s own refusal),
+// more than one outer loop, or no outer loop at all.
+int FindOuterLoop(const ON_Brep& b, const ON_BrepFace& face, std::vector<int>* hole_loop_indices) {
+  int outer_loop_index = -1;
+  for (int k = 0; k < face.m_li.Count(); ++k) {
+    const int li = face.m_li[k];
+    if (li < 0 || li >= b.m_L.Count()) continue;
+    if (b.m_L[li].m_type == ON_BrepLoop::outer) {
+      if (outer_loop_index >= 0) return -1;
+      outer_loop_index = li;
+    } else if (b.m_L[li].m_type == ON_BrepLoop::inner) {
+      if (hole_loop_indices) hole_loop_indices->push_back(li);
+    } else {
+      return -1;
+    }
+  }
+  return outer_loop_index;
+}
+
 // Attempts to merge faces `fa`/`fb` of `b`, already confirmed coplanar and
 // sharing EXACTLY one edge (`shared_edge_index`, with exactly two trims),
 // into a single face on `plane`. On success, deletes both source faces,
 // appends the merged one, re-welds any naked edges the deletion exposed
-// on their other neighbors, and returns true. Returns false (leaving `b`
-// completely untouched) if the merge boundary can't be spliced into one
-// simple closed loop or ON_BrepTrimmedPlane refuses it - the caller
-// treats that the same as "not eligible", not an error: a face pair that
-// merely LOOKS mergeable (coplanar, one shared 2-trim edge) can still
-// fail here, e.g. if the two loops' own stored trim directions aren't the
-// standard opposite pair a valid 2-manifold edge is expected to have.
+// on their other neighbors, restores every hole either source face already
+// had (see the "trial copy" block near the end of this function), and
+// returns true. Returns false (leaving `b` completely untouched) if the
+// merge boundary can't be spliced into one simple closed loop, either
+// face carries a loop AddHoleLoop() itself would refuse (a slit/curve-on-
+// surface/point-on-surface loop, or more than one outer loop), a hole has
+// a curved edge (still out of scope - the same straight-edges-only
+// restriction AddHoleLoop() itself already has), or ON_BrepTrimmedPlane
+// refuses the merge - the caller treats that the same as "not eligible",
+// not an error: a face pair that merely LOOKS mergeable (coplanar, one
+// shared 2-trim edge) can still fail here, e.g. if the two loops' own
+// stored trim directions aren't the standard opposite pair a valid
+// 2-manifold edge is expected to have.
 bool TryMergeCoplanarPair(ON_Brep& b, int fa, int fb, int shared_edge_index, const ON_Plane& plane, double tol) {
   const ON_BrepFace& face_a = b.m_F[fa];
   const ON_BrepFace& face_b = b.m_F[fb];
-  if (face_a.LoopCount() != 1 || face_b.LoopCount() != 1) return false;
-  const ON_BrepLoop& loop_a = *face_a.Loop(0);
-  const ON_BrepLoop& loop_b = *face_b.Loop(0);
+  std::vector<int> holes_a, holes_b;
+  const int outer_a = FindOuterLoop(b, face_a, &holes_a);
+  const int outer_b = FindOuterLoop(b, face_b, &holes_b);
+  if (outer_a < 0 || outer_b < 0) return false;
+  const ON_BrepLoop& loop_a = b.m_L[outer_a];
+  const ON_BrepLoop& loop_b = b.m_L[outer_b];
 
   std::vector<std::unique_ptr<ON_Curve>> owned;
 
@@ -5531,6 +5563,43 @@ bool TryMergeCoplanarPair(ON_Brep& b, int fa, int fb, int shared_edge_index, con
     return false;
   }
 
+  // Capture every hole either source face already has, as its own ordered
+  // 3D vertex chain, before this function mutates `b` at all - the same
+  // "read everything first, mutate only once we know we can finish" shape
+  // every other all-or-nothing method in this class already follows.
+  // Scoped exactly like AddHoleLoop()'s own wire-loop input: only a hole
+  // whose every edge is straight (IsLinear()) is captured; a face with a
+  // curved-edge hole is left unmerged, not merged-with-its-hole-dropped.
+  const double edge_tol = std::max(tol, 1e-9);
+  auto capture_hole_loop = [&](const ON_BrepLoop& loop) -> std::vector<Point3d> {
+    const int n = loop.TrimCount();
+    if (n < 3) return {};
+    std::vector<Point3d> pts(static_cast<size_t>(n));
+    for (int k = 0; k < n; ++k) {
+      const ON_BrepTrim* t = loop.Trim(k);
+      const ON_BrepEdge* e = t ? t->Edge() : nullptr;
+      const ON_BrepVertex* v = t ? t->Vertex(0) : nullptr;
+      // A trim is purely topological (its own PointAtStart()/PointAtEnd()
+      // read its 2D, UV-space curve, not a 3D position - see
+      // ON_BrepTrim's own doc comment) - the real 3D point is this
+      // vertex's own, not the trim's.
+      if (!e || !v || t->m_type == ON_BrepTrim::singular || !e->IsLinear(edge_tol)) return {};
+      pts[static_cast<size_t>(k)] = Point3d(v->point.x, v->point.y, v->point.z);
+    }
+    return pts;
+  };
+  std::vector<std::vector<Point3d>> hole_loops;
+  for (const int li : holes_a) {
+    std::vector<Point3d> pts = capture_hole_loop(b.m_L[li]);
+    if (pts.empty()) return false;
+    hole_loops.push_back(std::move(pts));
+  }
+  for (const int li : holes_b) {
+    std::vector<Point3d> pts = capture_hole_loop(b.m_L[li]);
+    if (pts.empty()) return false;
+    hole_loops.push_back(std::move(pts));
+  }
+
   ON_SimpleArray<ON_Curve*> boundary;
   for (ON_Curve* c : path_a) boundary.Append(c);
   for (ON_Curve* c : path_b) boundary.Append(c);
@@ -5563,15 +5632,58 @@ bool TryMergeCoplanarPair(ON_Brep& b, int fa, int fb, int shared_edge_index, con
     }
   }
 
+  // Every mutation from here on happens on a TRIAL copy, never `b` itself -
+  // restoring fa/fb's own captured holes onto the merged face (below) is a
+  // second, separate topology-surgery step that can in principle fail even
+  // though the merge itself already succeeded, and this method's own
+  // "leave the Brep completely untouched on refusal" contract (every other
+  // topology-surgery method in this class already gives it) would
+  // otherwise be broken by a merge that lands with some of its holes
+  // silently missing. The same trial-copy discipline AddHoleLoops() above
+  // already uses for its own multi-step batch.
+  ON_Brep trial = b;
   const int hi = std::max(fa, fb), lo = std::min(fa, fb);
-  b.DeleteFace(b.m_F[hi], true);
-  b.DeleteFace(b.m_F[lo], true);
-  b.Compact();
-  b.Append(merged);
-  WeldCoincidentNakedEdges(b, std::max(tol * 20, tolerance::kEdgeJoin));
-  b.Compact();
-  b.SetTolerancesBoxesAndFlags();
-  FixUnsetEdgeTolerances(b);
+  trial.DeleteFace(trial.m_F[hi], true);
+  trial.DeleteFace(trial.m_F[lo], true);
+  trial.Compact();
+  trial.Append(merged);
+  WeldCoincidentNakedEdges(trial, std::max(tol * 20, tolerance::kEdgeJoin));
+  trial.Compact();
+  trial.SetTolerancesBoxesAndFlags();
+  FixUnsetEdgeTolerances(trial);
+
+  if (!hole_loops.empty()) {
+    // The merged face is always the LAST surviving face at this point: it
+    // was Append()ed only after fa's/fb's own slots were already deleted
+    // and compacted away, and neither WeldCoincidentNakedEdges() nor the
+    // Compact() right after it adds, removes, or reorders any face.
+    const int merged_face_index = trial.m_F.Count() - 1;
+    Brep wrapper;
+    wrapper.raw() = trial;
+    for (const std::vector<Point3d>& pts : hole_loops) {
+      const int n = static_cast<int>(pts.size());
+      std::vector<NurbsCurve> edges;
+      edges.reserve(static_cast<size_t>(n));
+      for (int k = 0; k < n; ++k) {
+        edges.push_back(NurbsCurve::FromControlPoints(
+            {pts[static_cast<size_t>(k)], pts[static_cast<size_t>((k + 1) % n)]}, /*degree=*/1));
+      }
+      // Reuses the already-tested AddHoleLoop() wholesale rather than
+      // re-deriving its own uv-mapping/containment logic here: this hole
+      // already sat safely inside fa's or fb's own material before the
+      // merge, entirely clear of the edge that was just dissolved between
+      // them, so it is guaranteed to still land safely inside the merged
+      // face's own (larger) boundary - AddHoleLoop()'s own containment/
+      // crossing checks re-run here anyway, as a defensive backstop, not
+      // because failure is actually expected.
+      if (wrapper.AddHoleLoop(merged_face_index, Brep::WireBody(edges), tol).result != Result::Ok) {
+        return false;  // `b` itself was never touched - trial/wrapper are local copies
+      }
+    }
+    trial = wrapper.raw();
+  }
+
+  b = trial;
   return true;
 }
 
@@ -5615,16 +5727,17 @@ int Brep::MergeCoplanarFaces(double tolerance) {
     changed = false;
     for (int fa = 0; fa < brep_.m_F.Count() && !changed; ++fa) {
       const ON_BrepFace& face_a = brep_.m_F[fa];
-      if (face_a.m_face_index < 0 || face_a.LoopCount() != 1) continue;
+      if (face_a.m_face_index < 0) continue;
+      const int outer_a = FindOuterLoop(brep_, face_a, nullptr);
+      if (outer_a < 0) continue;
       FaceGeometry fga;
       if (!ResolveFace(brep_, fa, face_trim_loops_, face_exact_clip_, face_hole_loops_, fga)) continue;
-      if (!fga.holes.empty()) continue;
       NurbsSurface wa;
       wa.raw() = fga.surface;
       if (!wa.IsPlanar()) continue;
       const PlanarFace pa = ExtractPlanarFace(fga);
 
-      const ON_BrepLoop& loop_a = *face_a.Loop(0);
+      const ON_BrepLoop& loop_a = brep_.m_L[outer_a];
       for (int k = 0; k < loop_a.TrimCount() && !changed; ++k) {
         const ON_BrepTrim* trim = loop_a.Trim(k);
         const ON_BrepEdge* edge = trim ? trim->Edge() : nullptr;
@@ -5634,7 +5747,7 @@ int Brep::MergeCoplanarFaces(double tolerance) {
         const int fb = other_trim.FaceIndexOf();
         if (fb < 0 || fb == fa) continue;
         const ON_BrepFace& face_b = brep_.m_F[fb];
-        if (face_b.LoopCount() != 1) continue;
+        if (FindOuterLoop(brep_, face_b, nullptr) < 0) continue;
 
         // fa/fb must share EXACTLY this one edge - a pair also touching
         // along a second, separate edge would not merge into one simple
@@ -5653,7 +5766,6 @@ int Brep::MergeCoplanarFaces(double tolerance) {
 
         FaceGeometry fgb;
         if (!ResolveFace(brep_, fb, face_trim_loops_, face_exact_clip_, face_hole_loops_, fgb)) continue;
-        if (!fgb.holes.empty()) continue;
         NurbsSurface wb;
         wb.raw() = fgb.surface;
         if (!wb.IsPlanar()) continue;

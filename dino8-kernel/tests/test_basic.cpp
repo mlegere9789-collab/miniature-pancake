@@ -38161,6 +38161,229 @@ void TestMergeCoplanarFacesRestoresBoxAfterSplittingFourFacesAtOnePlane() {
   Check(box.MergeCoplanarFaces() == 0, "a second MergeCoplanarFaces() call on the restored box finds nothing left to merge");
 }
 
+// Fixture for the two tests just below: two coplanar 4x4 squares built
+// entirely by hand (NewVertex/NewEdge/NewLoop/NewTrim, the same recipe
+// BuildPlanarFaceWithHole() above already uses for a single face), sharing
+// one genuine 2-trim edge along x=4 - face A spans physical x in [0,4],
+// face B spans x in [4,8], both y in [0,4]. Built by hand rather than via
+// FromPlanarFaces() (as TestMergeCoplanarFacesWeldsTwoAdjacentSquaresIntoOne
+// above already uses) so a hole can be punched onto face A specifically
+// before merging, exercising MergeCoplanarFaces()'s own new "still merges a
+// pair even when one side carries an existing hole" capability below.
+struct TwoAdjacentFacesFixture {
+  dino8::kernel::Brep brep;
+  int face_a = -1;
+  int face_b = -1;
+};
+
+TwoAdjacentFacesFixture BuildTwoAdjacentPlanarFaces() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point2d;
+  using dino8::kernel::Point3d;
+
+  TwoAdjacentFacesFixture fixture;
+  ON_Brep& b = fixture.brep.raw();
+
+  auto make_face = [&](double x0, double x1, double y0, double y1) {
+    const std::vector<Point3d> grid = {
+        Point3d(x0, y0, 0), Point3d(x0, y1, 0),
+        Point3d(x1, y0, 0), Point3d(x1, y1, 0),
+    };
+    const NurbsSurface surface = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+    auto* surface_copy = new ON_NurbsSurface(surface.raw());
+    const int surface_index = b.AddSurface(surface_copy);
+    return b.NewFace(surface_index).m_face_index;
+  };
+
+  fixture.face_a = make_face(0, 4, 0, 4);
+  fixture.face_b = make_face(4, 8, 0, 4);
+
+  auto uv_a = [&](double x, double y) { return Point2d(x / 4.0, y / 4.0); };
+  auto uv_b = [&](double x, double y) { return Point2d((x - 4.0) / 4.0, y / 4.0); };
+
+  const int v_a0 = b.NewVertex(Point3d(0, 0, 0), 0.0).m_vertex_index;
+  const int v_a1 = b.NewVertex(Point3d(0, 4, 0), 0.0).m_vertex_index;
+  const int v_bl = b.NewVertex(Point3d(4, 0, 0), 0.0).m_vertex_index;
+  const int v_tl = b.NewVertex(Point3d(4, 4, 0), 0.0).m_vertex_index;
+  const int v_b0 = b.NewVertex(Point3d(8, 0, 0), 0.0).m_vertex_index;
+  const int v_b1 = b.NewVertex(Point3d(8, 4, 0), 0.0).m_vertex_index;
+
+  auto new_private_edge = [&](int va, int vb) {
+    const int c3i = b.AddEdgeCurve(new ON_LineCurve(b.m_V[va].point, b.m_V[vb].point));
+    const int ei = b.NewEdge(b.m_V[va], b.m_V[vb], c3i).m_edge_index;
+    b.m_E[ei].m_tolerance = 0.0;
+    return ei;
+  };
+  auto add_trim = [&](int loop_index, int edge_index, bool rev, const Point2d& uv0, const Point2d& uv1) {
+    const int c2i = b.AddTrimCurve(new ON_LineCurve(uv0, uv1));
+    ON_BrepTrim& trim = b.NewTrim(b.m_E[edge_index], rev, b.m_L[loop_index], c2i);
+    trim.m_tolerance[0] = trim.m_tolerance[1] = 0.0;
+  };
+
+  // The one genuinely SHARED edge: built once, its canonical 3D direction
+  // running bl->tl; face A's own trim uses that direction directly
+  // (bRev3d=false) and face B's own trim walks it the opposite way
+  // (bRev3d=true) - the standard two-manifold-edge convention
+  // TryMergeCoplanarPair() itself already requires.
+  const int shared_edge = new_private_edge(v_bl, v_tl);
+
+  const int loop_a = b.NewLoop(ON_BrepLoop::outer, b.m_F[fixture.face_a]).m_loop_index;
+  add_trim(loop_a, new_private_edge(v_a0, v_bl), false, uv_a(0, 0), uv_a(4, 0));
+  add_trim(loop_a, shared_edge, false, uv_a(4, 0), uv_a(4, 4));
+  add_trim(loop_a, new_private_edge(v_tl, v_a1), false, uv_a(4, 4), uv_a(0, 4));
+  add_trim(loop_a, new_private_edge(v_a1, v_a0), false, uv_a(0, 4), uv_a(0, 0));
+
+  const int loop_b = b.NewLoop(ON_BrepLoop::outer, b.m_F[fixture.face_b]).m_loop_index;
+  add_trim(loop_b, new_private_edge(v_bl, v_b0), false, uv_b(4, 0), uv_b(8, 0));
+  add_trim(loop_b, new_private_edge(v_b0, v_b1), false, uv_b(8, 0), uv_b(8, 4));
+  add_trim(loop_b, new_private_edge(v_b1, v_tl), false, uv_b(8, 4), uv_b(4, 4));
+  add_trim(loop_b, shared_edge, true, uv_b(4, 4), uv_b(4, 0));
+
+  b.SetTrimIsoFlags();
+  b.SetTolerancesBoxesAndFlags();
+  return fixture;
+}
+
+// MergeCoplanarFaces()'s own new "faces with holes" capability: the
+// "Still partial: ... MergeCoplanarFaces still refuses any face with
+// holes" gap PARITY_MAP.md's own Topology & data structure category named
+// (both directly, on this method's own bullet, and as a blocker on the
+// AddHoleLoop family's own bullet) is closed for the straight-edged case -
+// a face carrying an existing hole is no longer skipped outright; the hole
+// survives onto the merged face intact.
+void TestMergeCoplanarFacesPreservesExistingHoleOnMergedFace() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  TwoAdjacentFacesFixture fixture = BuildTwoAdjacentPlanarFaces();
+  Brep& brep = fixture.brep;
+
+  // Punch a small straight-edged hole into face A only (via the already-
+  // tested AddHoleLoop()), well clear of the shared x=4 edge.
+  const std::vector<Point3d> hole_pts = {Point3d(1, 1, 0), Point3d(2, 1, 0), Point3d(2, 2, 0), Point3d(1, 2, 0)};
+  std::vector<NurbsCurve> hole_edges;
+  for (int k = 0; k < 4; ++k) {
+    hole_edges.push_back(NurbsCurve::FromControlPoints(
+        {hole_pts[static_cast<size_t>(k)], hole_pts[static_cast<size_t>((k + 1) % 4)]}, /*degree=*/1));
+  }
+  Check(brep.AddHoleLoop(fixture.face_a, Brep::WireBody(hole_edges)).result == Result::Ok,
+        "setup: AddHoleLoop() punches the small square hole into face A");
+  Check(brep.raw().m_F[fixture.face_a].LoopCount() == 2, "setup: face A now has an outer loop plus the new hole");
+  Check(brep.FaceCount() == 2, "setup: still 2 separate faces before merging");
+  Check(brep.raw().IsValid(), "setup: the two-face-plus-hole fixture is a valid ON_Brep");
+
+  const int merges = brep.MergeCoplanarFaces();
+  Check(merges == 1, "MergeCoplanarFaces() merges the pair even though face A carries a hole");
+  Check(brep.FaceCount() == 1, "the two faces merged into one");
+  Check(brep.raw().IsValid(), "the merged face, with its restored hole, is still a valid ON_Brep");
+
+  const ON_BrepFace& merged = brep.raw().m_F[brep.raw().m_F.Count() - 1];
+  Check(merged.LoopCount() == 2, "the merged face still has its outer loop AND the restored hole loop");
+  const ON_BrepLoop* outer = nullptr;
+  const ON_BrepLoop* hole = nullptr;
+  for (int k = 0; k < merged.LoopCount(); ++k) {
+    const ON_BrepLoop* lp = merged.Loop(k);
+    if (lp->m_type == ON_BrepLoop::outer) outer = lp;
+    else if (lp->m_type == ON_BrepLoop::inner) hole = lp;
+  }
+  Check(outer != nullptr, "the merged face has a real outer loop");
+  Check(hole != nullptr && hole->TrimCount() == 4, "the merged face has the hole's own untouched 4-trim inner loop");
+
+  // The restored hole is the SAME hole, geometrically: its 4 vertices are
+  // exactly hole_pts (in some rotation/order - AddHoleLoop() is free to
+  // normalize winding), not some other shape or position.
+  if (hole != nullptr) {
+    std::vector<Point3d> restored_pts;
+    for (int k = 0; k < hole->TrimCount(); ++k) {
+      const ON_BrepTrim* t = hole->Trim(k);
+      const ON_3dPoint p = t->PointAtStart();
+      restored_pts.emplace_back(p.x, p.y, p.z);
+    }
+    Check(restored_pts.size() == hole_pts.size(), "the restored hole has exactly 4 vertices");
+    for (const Point3d& expected : hole_pts) {
+      bool found = false;
+      for (const Point3d& actual : restored_pts) {
+        if ((expected - actual).Length() < 1e-9) { found = true; break; }
+      }
+      Check(found, "every one of the original hole's own 4 corners reappears on the restored hole");
+    }
+  }
+
+  const Brep::CheckReport report = brep.Check();
+  Check(report.Count(Brep::CheckIssue::Kind::NakedEdge) == 10,
+        "Check() reports exactly 10 naked edges: the merged face's own 6-edge outer hexagon "
+        "(the two original 4-edge squares' own boundaries, minus the dissolved shared edge, still "
+        "carrying the extra collinear split point at x=4) plus the hole's own 4 edges, nothing else new");
+
+  Check(brep.MergeCoplanarFaces() == 0, "a second call finds nothing left to merge");
+}
+
+// The straight-edges-only scoping AddHoleLoop() itself already has: a hole
+// with a curved edge is still out of scope for MergeCoplanarFaces() too,
+// and - critically - that means the WHOLE PAIR is left unmerged, never
+// merged with the curved hole silently dropped (which would turn a hole
+// into solid material with no diagnostic at all).
+void TestMergeCoplanarFacesRefusesPairWhoseHoleHasCurvedEdge() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point2d;
+  using dino8::kernel::Point3d;
+
+  TwoAdjacentFacesFixture fixture = BuildTwoAdjacentPlanarFaces();
+  Brep& brep = fixture.brep;
+  ON_Brep& b = brep.raw();
+
+  // A 3-edge hole loop on face A: two straight edges plus one arc (curved)
+  // closing edge - built entirely by hand, uv scaled by the same uniform
+  // 1/4 factor BuildTwoAdjacentPlanarFaces() itself already uses for face
+  // A, so the arc's own uv-space curve is a genuine (scaled) arc too, not
+  // an approximation.
+  const Point3d p0(1, 1, 0), p1(2, 1, 0), p2(1.5, 1.6, 0), p_mid(1.15, 1.4, 0);
+  auto uv_a = [&](const Point3d& p) { return Point2d(p.x / 4.0, p.y / 4.0); };
+
+  const int v0 = b.NewVertex(p0, 0.0).m_vertex_index;
+  const int v1 = b.NewVertex(p1, 0.0).m_vertex_index;
+  const int v2 = b.NewVertex(p2, 0.0).m_vertex_index;
+
+  const int hole_loop = b.NewLoop(ON_BrepLoop::inner, b.m_F[fixture.face_a]).m_loop_index;
+
+  auto add_line_trim = [&](int va, int vb) {
+    const int c3i = b.AddEdgeCurve(new ON_LineCurve(b.m_V[va].point, b.m_V[vb].point));
+    const int ei = b.NewEdge(b.m_V[va], b.m_V[vb], c3i).m_edge_index;
+    b.m_E[ei].m_tolerance = 0.0;
+    const int c2i = b.AddTrimCurve(new ON_LineCurve(uv_a(b.m_V[va].point), uv_a(b.m_V[vb].point)));
+    ON_BrepTrim& trim = b.NewTrim(b.m_E[ei], /*bRev3d=*/false, b.m_L[hole_loop], c2i);
+    trim.m_tolerance[0] = trim.m_tolerance[1] = 0.0;
+  };
+  add_line_trim(v0, v1);
+  add_line_trim(v1, v2);
+
+  // The closing edge, p2 -> p0, is a genuine arc through p_mid (curved,
+  // not faceted) - both its 3D curve and its uv-space trim curve.
+  const ON_Arc arc3d(p2, p_mid, p0);
+  const int c3i = b.AddEdgeCurve(new ON_ArcCurve(arc3d));
+  const int arc_edge = b.NewEdge(b.m_V[v2], b.m_V[v0], c3i).m_edge_index;
+  b.m_E[arc_edge].m_tolerance = 0.0;
+  const ON_Arc arc2d(uv_a(p2), uv_a(p_mid), uv_a(p0));
+  const int c2i = b.AddTrimCurve(new ON_ArcCurve(arc2d));
+  ON_BrepTrim& arc_trim = b.NewTrim(b.m_E[arc_edge], /*bRev3d=*/false, b.m_L[hole_loop], c2i);
+  arc_trim.m_tolerance[0] = arc_trim.m_tolerance[1] = 0.0;
+
+  b.SetTrimIsoFlags();
+  b.SetTolerancesBoxesAndFlags();
+
+  Check(b.m_F[fixture.face_a].LoopCount() == 2, "setup: face A has its outer loop plus the new curved-edge hole");
+  Check(!b.m_E[arc_edge].IsLinear(1e-9), "setup: the hole's own closing edge is genuinely curved, not straight");
+  Check(brep.FaceCount() == 2, "setup: still 2 separate faces before attempting the merge");
+
+  const int merges = brep.MergeCoplanarFaces();
+  Check(merges == 0, "MergeCoplanarFaces() refuses the pair outright rather than merging with the curved hole "
+                      "silently dropped");
+  Check(brep.FaceCount() == 2, "the two faces are left completely untouched by the refusal");
+  Check(b.m_F[fixture.face_a].LoopCount() == 2, "face A still has its own original outer loop plus the untouched hole");
+}
+
 // Brep::MergeSameSurfaceFaces() - the curved-surface sibling of
 // MergeCoplanarFaces() above (PARITY_MAP's own "Merge faces on the same
 // non-planar surface (cylinder/tangent split faces)" gap). Builds two
@@ -50739,6 +50962,8 @@ int main() {
 
   TestMergeCoplanarFacesWeldsTwoAdjacentSquaresIntoOne();
   TestMergeCoplanarFacesRestoresBoxAfterSplittingFourFacesAtOnePlane();
+  TestMergeCoplanarFacesPreservesExistingHoleOnMergedFace();
+  TestMergeCoplanarFacesRefusesPairWhoseHoleHasCurvedEdge();
   TestMergeSameSurfaceFacesWeldsTwoCylindricalPatchesIntoOne();
   TestMergeSameSurfaceFacesLeavesDistinctCoplanarSurfacesUntouched();
   TestReplaceEdgeCurveRefitsANakedEdgeToABowedSubstitute();
