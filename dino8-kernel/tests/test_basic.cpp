@@ -7594,6 +7594,76 @@ void TestOffsetSolidZeroDistanceIsIdentityAndArgumentChecks() {
   Check(threw, "OffsetSolid throws for sphere_divisions < 3 (cannot tessellate a genuine 3D sphere)");
 }
 
+// Every OffsetSolid test above (Grow/Shrink/ExcessiveShrink/ZeroDistance)
+// uses a single convex box - this test's own header comment in boolean.h
+// disclosed that as a real, named gap ("every test fixture is convex so
+// the arbitrary concave claim is unverified"), not a hypothetical one:
+// Manifold's MinkowskiSum/MinkowskiDifference are general-purpose and take
+// no convexity precondition, but nothing in this codebase had actually
+// exercised that on a genuinely non-convex solid before now. Fixture: an
+// L-shaped prism - Union(Box(0,0,0,10,4,6), Box(0,0,0,4,10,6)) - built the
+// same way the rest of this file already builds an L/notched solid for
+// boolean tests (BooleanCombine + BooleanOp::Union on two boxes), with one
+// genuine reflex (270-degree, concave) vertical edge at x=4,y=4 where the
+// two arms meet, plus several ordinary convex edges/corners elsewhere -
+// not a fixture where "arbitrary concave" is merely asserted.
+void TestOffsetSolidHandlesGenuinelyConcaveSolid() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::BooleanCombine;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::OffsetSolid;
+
+  const Mesh arm_a = Brep::Box(0, 0, 0, 10, 4, 6).TessellateToClosedMesh(1, 1);
+  const Mesh arm_b = Brep::Box(0, 0, 0, 4, 10, 6).TessellateToClosedMesh(1, 1);
+  const Mesh l_shape = BooleanCombine(arm_a, arm_b, BooleanOp::Union);
+
+  // Independent, hand-computed cross-section area: a 10x10 square (100)
+  // minus the 6x6 square NOT covered by either arm (the region x in
+  // (4,10], y in (4,10]) = 100 - 36 = 64, extruded to height 6.
+  const double expected_volume = 64.0 * 6.0;
+  Check(std::fabs(l_shape.Volume() - expected_volume) < 1e-3,
+        "sanity: the L-shaped union fixture itself has the expected hand-computed volume 64*6=384 - "
+        "confirms this really is an L, not something BooleanCombine silently mangled");
+  Check(l_shape.IsClosedManifold(), "sanity: the L-shaped fixture is a genuine closed manifold before offsetting it");
+
+  const auto l_bounds = l_shape.GetBoundingBox();
+
+  const double d = 1.0;
+  const Mesh grown = OffsetSolid(l_shape, d, 24);
+  Check(grown.IsClosedManifold(), "OffsetSolid(+1.0) on a genuinely concave (L-shaped) solid still produces a "
+                                   "closed 2-manifold - the reflex edge is not a special case Manifold needs help "
+                                   "with");
+  // A Minkowski sum with a ball of radius d always expands the bounding
+  // box by EXACTLY d on every one of the 6 axis-aligned sides, for ANY
+  // compact solid - convex or not: bbox_max_x(P (+) B) = max_{p in P} p.x
+  // + max_{b in B} b.x = bbox_max_x(P) + d, since P and the ball attain
+  // their own per-axis extremes independently. This holds regardless of
+  // the reflex edge, so it is a real convexity-agnostic check, not the
+  // convex-only Steiner formula the existing Grow test above uses.
+  const auto grown_bounds = grown.GetBoundingBox();
+  Check(std::fabs(grown_bounds.min.x - (l_bounds.min.x - d)) < 1e-6 &&
+            std::fabs(grown_bounds.max.x - (l_bounds.max.x + d)) < 1e-6 &&
+            std::fabs(grown_bounds.min.y - (l_bounds.min.y - d)) < 1e-6 &&
+            std::fabs(grown_bounds.max.y - (l_bounds.max.y + d)) < 1e-6 &&
+            std::fabs(grown_bounds.min.z - (l_bounds.min.z - d)) < 1e-6 &&
+            std::fabs(grown_bounds.max.z - (l_bounds.max.z + d)) < 1e-6,
+        "OffsetSolid(+1.0) on the L-shape still expands the bounding box by exactly 1.0 on every side - the exact, "
+        "convexity-independent bounding-box identity every Minkowski-sum-with-a-ball offset must satisfy");
+  Check(grown.Volume() > l_shape.Volume(), "the grown L-shape encloses strictly more material than the original");
+
+  // Shrink (erosion): well within the L-shape's own smallest feature size
+  // (every wall here is at least 4 units thick), so this must succeed,
+  // not erode away to nothing, and must not GROW past the original -
+  // erosion of any solid (convex or not) can only ever remove material,
+  // never add it.
+  const Mesh shrunk = OffsetSolid(l_shape, -0.5, 24);
+  Check(shrunk.IsClosedManifold(), "OffsetSolid(-0.5) on the L-shape still produces a closed 2-manifold");
+  Check(shrunk.VertexCount() > 0 && shrunk.FaceCount() > 0 && shrunk.Volume() > 0.0 && shrunk.Volume() < l_shape.Volume(),
+        "OffsetSolid(-0.5) on the L-shape succeeds, stays non-empty, and encloses strictly less material than the "
+        "original - a real, non-degenerate erosion result on a genuinely concave solid");
+}
+
 void TestDecompose() {
   using dino8::kernel::Decompose;
   using dino8::kernel::Mesh;
@@ -13771,6 +13841,72 @@ void TestMeshShellRemovedFacesRefusesBowtieOpeningBoundary() {
     }
   }(), "Shell(thickness, {0, 1}) - two edge-adjacent removed faces sharing top's own e2 edge - merges into one "
        "ordinary opening and produces a valid closed manifold, not a bowtie refusal");
+}
+
+// Every existing removed-face Shell() test fixture leaves a remainder that
+// stays a SINGLE connected patch (one opening, or several edge-adjacent
+// openings merging into one bigger one) - the same scope dino8-app's own
+// IsSimpleManifoldWithBoundary guard (cmd_surface.cpp) deliberately
+// restricts itself to. Nothing in Shell(thickness, removed_face_indices)'s
+// own implementation actually requires that, though: its side-wall
+// stitching loop connects each naked edge to its own inner-offset
+// counterpart one at a time, with no reference to which connected piece it
+// belongs to. MakeSymmetricCubeMesh's own bottom (face 0, vertices 0-3)
+// and top (face 1, vertices 4-7) share NOT ONE vertex by construction (see
+// that helper's own comment) - removing the 4 side faces (2, 3, 4, 5)
+// leaves exactly that: two entirely disconnected flat squares, the most
+// extreme "disconnected remainder" case this fixture can produce, well
+// beyond what dino8-app's own conservative guard would ever accept for
+// this exact kernel method.
+void TestMeshShellRemovedFacesHandlesDisconnectedRemainder() {
+  using dino8::kernel::Mesh;
+
+  const auto box = MakeSymmetricCubeMesh(0, 0, 0, 4, 4, 4);
+  const double thickness = 0.5;
+  const Mesh result = box.Shell(thickness, {2, 3, 4, 5});
+  // The same substrate the implementation itself offsets (on the FULL
+  // mesh) before dropping the removed faces - computed independently here,
+  // not re-derived from the result, so this is a real cross-check.
+  const Mesh inner_unflipped = box.Offset(-thickness);
+
+  const int n = box.VertexCount();
+  Check(result.VertexCount() == n * 2,
+        "the full vertex set is still duplicated (outer + inner), even though only 8 of the 16 are referenced "
+        "by any kept face");
+  Check(result.FaceCount() == 4 + 8,
+        "2 outer (bottom, top) + 2 inner (flipped bottom, top) + 8 side-wall quads (4 naked edges per "
+        "disconnected piece, 2 pieces) = 12 faces");
+
+  bool outer_kept_unchanged = true, inner_kept_matches_offset = true;
+  for (int face : {0, 1}) {
+    const ON_MeshFace& f = box.raw().m_F[face];
+    for (int k = 0; k < 4; ++k) {
+      const int vi = f.vi[k];
+      const ON_3fPoint& a = box.raw().m_V[vi];
+      const ON_3fPoint& b = result.raw().m_V[vi];
+      outer_kept_unchanged = outer_kept_unchanged && a.x == b.x && a.y == b.y && a.z == b.z;
+      const ON_3fPoint& ia = inner_unflipped.raw().m_V[vi];
+      const ON_3fPoint& ib = result.raw().m_V[n + vi];
+      inner_kept_matches_offset = inner_kept_matches_offset && ia.x == ib.x && ia.y == ib.y && ia.z == ib.z;
+    }
+  }
+  Check(outer_kept_unchanged,
+        "bottom and top's own kept vertices are byte-for-byte unchanged in the result's outer layer");
+  Check(inner_kept_matches_offset,
+        "bottom and top's own kept vertices' inner-layer counterparts exactly match an independently-computed "
+        "Offset(-thickness) on the FULL box");
+
+  Check(result.IsClosedManifold(),
+        "two entirely disconnected shelled pieces still together form one valid closed 2-manifold - Shell()'s "
+        "per-naked-edge side-wall stitching has no notion of connectivity to break here");
+  Check(result.Check().naked_edge_list.empty(),
+        "no leftover naked edge anywhere - both pieces' own openings are fully sealed by their own independent "
+        "side wall");
+
+  const Mesh full_shell = box.Shell(thickness);
+  Check(result.Volume() > 0.0 && result.Volume() < full_shell.Volume(),
+        "the two-disconnected-piece partial shell encloses strictly less material than the fully-closed 6-face "
+        "shell, as expected for a shell missing 4 of its 6 walls");
 }
 
 // Perpendicular distance from `p` to the infinite line through `a`/`b`, in
@@ -51223,6 +51359,7 @@ int main() {
   TestOffsetSolidShrinkStaysExactForConvexSolid();
   TestOffsetSolidExcessiveShrinkErodesToNothingAndThrows();
   TestOffsetSolidZeroDistanceIsIdentityAndArgumentChecks();
+  TestOffsetSolidHandlesGenuinelyConcaveSolid();
   TestDecompose();
   TestMinGap();
   TestRefineToLength();
@@ -51770,6 +51907,7 @@ int main() {
   TestMeshShellFaceThicknessWithRemovedFaceMatchesUniformOverloadAndStitchesWall();
   TestMeshShellFaceThicknessWithRemovedFacesRefusesInvalidInput();
   TestMeshShellRemovedFacesRefusesBowtieOpeningBoundary();
+  TestMeshShellRemovedFacesHandlesDisconnectedRemainder();
   TestMeshInsetFaceUnitSquareMatchesExactConcentricSquare();
   TestMeshInsetFaceTriangleMatchesIndependentPerpendicularDistance();
   TestMeshInsetFaceRefusesInvalidInput();
