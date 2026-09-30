@@ -18621,6 +18621,248 @@ void TestMeshLoadColladaFanTriangulatesNgonFaces() {
   std::remove(hexagon_path.c_str());
 }
 
+void TestMeshSaveX3dRoundTrips() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Result;
+
+  // Same MakeQuadBoxMesh fixture SaveOff()'s/SaveAmf()'s/SaveVrml()'s/
+  // SaveCollada()'s own round-trip tests use: 8 vertices, 6 quad faces,
+  // known exact volume.
+  const auto box = MakeQuadBoxMesh(0, 0, 0, 2, 2, 2);
+  const std::string path = "dino8_kernel_mesh_x3d_test.x3d";
+  Check(box.SaveX3d(path) == Result::Ok, "Mesh::SaveX3d succeeds");
+
+  std::ifstream in(path);
+  Check(static_cast<bool>(in), "the .x3d file SaveX3d wrote can be reopened for reading");
+  std::string file_text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  Check(file_text.find("<?xml") == 0, "the file starts with an XML declaration");
+  Check(file_text.find("<X3D") != std::string::npos, "the file has an X3D root element");
+  Check(file_text.find("<IndexedFaceSet") != std::string::npos,
+        "the file has an IndexedFaceSet element");
+  Check(file_text.find("coordIndex=\"") != std::string::npos,
+        "coordIndex is written as an XML attribute, not a nested element");
+  Check(file_text.find("point=\"") != std::string::npos,
+        "point is written as an XML attribute, not a nested element");
+
+  size_t quad_run_count = 0;
+  for (size_t pos = file_text.find(" -1"); pos != std::string::npos;
+       pos = file_text.find(" -1", pos + 1)) {
+    ++quad_run_count;
+  }
+  Check(quad_run_count == static_cast<size_t>(box.FaceCount()),
+        "exactly one coordIndex run (ending in -1) per face - 6 for the box");
+
+  // Full round trip: LoadX3d() the file SaveX3d() just wrote and check the
+  // result is geometrically the same solid.
+  Mesh reloaded;
+  Check(Mesh::LoadX3d(path, reloaded) == Result::Ok, "Mesh::LoadX3d succeeds on SaveX3d()'s own output");
+  Check(reloaded.VertexCount() == box.VertexCount() && reloaded.FaceCount() == box.FaceCount(),
+        "the reloaded mesh has the same vertex/face counts as the original - "
+        "quad faces round-tripped as a native 4-index run, not split");
+  Check(std::abs(reloaded.Volume() - box.Volume()) < 1e-9,
+        "the reloaded mesh's volume exactly matches the original");
+  std::remove(path.c_str());
+
+  // A hand-written file exercising attribute ordering/whitespace and a
+  // 'DEF'-named Shape - a single triangle whose known corners let
+  // LoadX3d()'s geometry be checked exactly, not just its counts.
+  const std::string hand_written_path = "dino8_kernel_mesh_x3d_test_hand_written.x3d";
+  {
+    std::ofstream out(hand_written_path);
+    out << "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n";
+    out << "<X3D version=\"3.3\">\n";
+    out << " <Scene>\n";
+    out << "  <Shape DEF=\"MyShape\">\n";
+    out << "   <IndexedFaceSet solid=\"false\" coordIndex=\"0 1 2 -1\">\n";
+    out << "    <Coordinate point=\"0 0 0 2 0 0 0 2 0\"/>\n";
+    out << "   </IndexedFaceSet>\n";
+    out << "  </Shape>\n";
+    out << " </Scene>\n";
+    out << "</X3D>\n";
+  }
+  Mesh hand_written;
+  Check(Mesh::LoadX3d(hand_written_path, hand_written) == Result::Ok,
+        "LoadX3d succeeds on a hand-written file with extra attributes "
+        "(DEF, solid) around coordIndex/point");
+  Check(hand_written.VertexCount() == 3 && hand_written.FaceCount() == 1,
+        "the hand-written file's 3 vertices and 1 triangle are read correctly");
+  const ON_MeshFace& tri = hand_written.raw().m_F[0];
+  Check(tri.vi[0] == 0 && tri.vi[1] == 1 && tri.vi[2] == 2,
+        "X3D's 0-based coordIndex values resolved directly to the same 0-based corners");
+  std::remove(hand_written_path.c_str());
+}
+
+void TestMeshLoadX3dRejectsMalformedFiles() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Result;
+
+  const std::string missing_path = "dino8_kernel_mesh_x3d_test_does_not_exist.x3d";
+  Mesh out;
+  Check(Mesh::LoadX3d(missing_path, out) == Result::Failed, "LoadX3d fails on a file that doesn't exist");
+
+  const std::string bad_header_path = "dino8_kernel_mesh_x3d_test_bad_header.x3d";
+  {
+    std::ofstream bad(bad_header_path);
+    bad << "#VRML V2.0 utf8\nShape { geometry IndexedFaceSet {\n"
+        << "coord Coordinate { point [ 0 0 0, 1 0 0, 0 1 0 ] }\n"
+        << "coordIndex [ 0, 1, 2, -1 ]\n} }\n";
+  }
+  Check(Mesh::LoadX3d(bad_header_path, out) == Result::Failed,
+        "LoadX3d fails on a file with no <X3D root tag at all");
+
+  const std::string too_few_path = "dino8_kernel_mesh_x3d_test_too_few.x3d";
+  {
+    std::ofstream bad(too_few_path);
+    // A face run needs at least 3 indices before its -1; 2 is not a valid
+    // polygon.
+    bad << "<X3D><Scene><Shape><IndexedFaceSet coordIndex=\"0 1 -1\">\n"
+        << "<Coordinate point=\"0 0 0 1 0 0 0 1 0\"/>\n"
+        << "</IndexedFaceSet></Shape></Scene></X3D>\n";
+  }
+  Check(Mesh::LoadX3d(too_few_path, out) == Result::Failed,
+        "LoadX3d fails on a coordIndex run with fewer than 3 indices before its -1");
+
+  const std::string oob_index_path = "dino8_kernel_mesh_x3d_test_oob_index.x3d";
+  {
+    std::ofstream bad(oob_index_path);
+    // Only 3 vertices declared (indices 0-2); index 3 doesn't exist.
+    bad << "<X3D><Scene><Shape><IndexedFaceSet coordIndex=\"0 1 3 -1\">\n"
+        << "<Coordinate point=\"0 0 0 1 0 0 0 1 0\"/>\n"
+        << "</IndexedFaceSet></Shape></Scene></X3D>\n";
+  }
+  Check(Mesh::LoadX3d(oob_index_path, out) == Result::Failed,
+        "LoadX3d fails on a coordIndex run referencing a vertex index that doesn't exist");
+
+  const std::string no_point_path = "dino8_kernel_mesh_x3d_test_no_point.x3d";
+  {
+    std::ofstream bad(no_point_path);
+    bad << "<X3D><Scene><Shape><IndexedFaceSet coordIndex=\"0 1 2 -1\">\n"
+        << "<Coordinate/>\n"
+        << "</IndexedFaceSet></Shape></Scene></X3D>\n";
+  }
+  Check(Mesh::LoadX3d(no_point_path, out) == Result::Failed,
+        "LoadX3d fails on a Coordinate element with no point attribute at all");
+
+  const std::string no_index_path = "dino8_kernel_mesh_x3d_test_no_index.x3d";
+  {
+    std::ofstream bad(no_index_path);
+    bad << "<X3D><Scene><Shape><IndexedFaceSet>\n"
+        << "<Coordinate point=\"0 0 0 1 0 0 0 1 0\"/>\n"
+        << "</IndexedFaceSet></Shape></Scene></X3D>\n";
+  }
+  Check(Mesh::LoadX3d(no_index_path, out) == Result::Failed,
+        "LoadX3d fails on an IndexedFaceSet with no coordIndex attribute at all");
+
+  const std::string unterminated_path = "dino8_kernel_mesh_x3d_test_unterminated.x3d";
+  {
+    std::ofstream bad(unterminated_path);
+    bad << "<X3D><Scene><Shape><IndexedFaceSet coordIndex=\"0 1 2\">\n"
+        << "<Coordinate point=\"0 0 0 1 0 0 0 1 0\"/>\n"
+        << "</IndexedFaceSet></Shape></Scene></X3D>\n";  // no closing -1
+  }
+  Check(Mesh::LoadX3d(unterminated_path, out) == Result::Failed,
+        "LoadX3d fails on a coordIndex run never closed with a -1");
+
+  std::remove(bad_header_path.c_str());
+  std::remove(too_few_path.c_str());
+  std::remove(oob_index_path.c_str());
+  std::remove(no_point_path.c_str());
+  std::remove(no_index_path.c_str());
+  std::remove(unterminated_path.c_str());
+}
+
+void TestMeshLoadX3dFanTriangulatesNgonFaces() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Result;
+
+  // Same shoelace-area ground truth TestMeshLoadVrmlFanTriangulatesNgonFaces/
+  // TestMeshLoadColladaFanTriangulatesNgonFaces use, applied to X3D's own
+  // attribute-based coordIndex n-gon runs instead.
+  auto shoelace_area = [](const std::vector<std::pair<double, double>>& pts) {
+    double sum = 0.0;
+    for (size_t i = 0; i < pts.size(); ++i) {
+      const auto& [x0, y0] = pts[i];
+      const auto& [x1, y1] = pts[(i + 1) % pts.size()];
+      sum += x0 * y1 - x1 * y0;
+    }
+    return std::abs(sum) * 0.5;
+  };
+  auto triangle_area_sum = [](const Mesh& mesh) {
+    double total = 0.0;
+    const ON_Mesh& raw = mesh.raw();
+    for (int i = 0; i < raw.m_F.Count(); ++i) {
+      const ON_MeshFace& f = raw.m_F[i];
+      const ON_3fPoint& a = raw.m_V[f.vi[0]];
+      const ON_3fPoint& b = raw.m_V[f.vi[1]];
+      const ON_3fPoint& c = raw.m_V[f.vi[2]];
+      const ON_3dVector cross =
+          ON_3dVector::CrossProduct(ON_3dVector(b - a), ON_3dVector(c - a));
+      total += 0.5 * cross.Length();
+    }
+    return total;
+  };
+
+  // Convex pentagon (5 corners) - the smallest n-gon ON_MeshFace can't
+  // represent directly.
+  const std::vector<std::pair<double, double>> pentagon = {
+      {0, 0}, {2, 0}, {3, 1}, {1, 2}, {-1, 1}};
+  const std::string pentagon_path = "dino8_kernel_mesh_x3d_test_pentagon_fan.x3d";
+  {
+    std::ofstream out(pentagon_path);
+    out << "<X3D><Scene><Shape><IndexedFaceSet coordIndex=\"0 1 2 3 4 -1\">\n";
+    out << "<Coordinate point=\"";
+    for (const auto& [x, y] : pentagon) out << x << ' ' << y << " 0 ";
+    out << "\"/>\n</IndexedFaceSet></Shape></Scene></X3D>\n";
+  }
+  Mesh pentagon_mesh;
+  Check(Mesh::LoadX3d(pentagon_path, pentagon_mesh) == Result::Ok,
+        "LoadX3d succeeds on a 5-index (pentagon) coordIndex run instead of "
+        "rejecting it outright");
+  Check(pentagon_mesh.VertexCount() == 5,
+        "the pentagon's 5 vertices are all preserved, unduplicated");
+  Check(pentagon_mesh.FaceCount() == 3,
+        "a pentagon fan-triangulates into exactly 5-2=3 triangles");
+  const ON_MeshFace& p0 = pentagon_mesh.raw().m_F[0];
+  const ON_MeshFace& p1 = pentagon_mesh.raw().m_F[1];
+  const ON_MeshFace& p2 = pentagon_mesh.raw().m_F[2];
+  Check(p0.vi[0] == 0 && p0.vi[1] == 1 && p0.vi[2] == 2 && p0.vi[3] == 2,
+        "the first fan triangle is corners (0,1,2), stored as a "
+        "degenerate quad (vi[3]==vi[2]) the same way an explicit "
+        "triangle face already is");
+  Check(p1.vi[0] == 0 && p1.vi[1] == 2 && p1.vi[2] == 3,
+        "the second fan triangle is corners (0,2,3)");
+  Check(p2.vi[0] == 0 && p2.vi[1] == 3 && p2.vi[2] == 4,
+        "the third fan triangle is corners (0,3,4), reaching the "
+        "pentagon's last corner");
+  Check(std::abs(triangle_area_sum(pentagon_mesh) - shoelace_area(pentagon)) < 1e-9,
+        "the 3 fan triangles' combined area exactly reproduces the "
+        "convex pentagon's own shoelace area");
+  std::remove(pentagon_path.c_str());
+
+  // A convex hexagon (6 corners) exercises n > 5 too, not just the
+  // smallest unsupported case.
+  const std::vector<std::pair<double, double>> hexagon = {
+      {2, 0}, {1, 2}, {-1, 2}, {-2, 0}, {-1, -2}, {1, -2}};
+  const std::string hexagon_path = "dino8_kernel_mesh_x3d_test_hexagon_fan.x3d";
+  {
+    std::ofstream out(hexagon_path);
+    out << "<X3D><Scene><Shape><IndexedFaceSet coordIndex=\"0 1 2 3 4 5 -1\">\n";
+    out << "<Coordinate point=\"";
+    for (const auto& [x, y] : hexagon) out << x << ' ' << y << " 0 ";
+    out << "\"/>\n</IndexedFaceSet></Shape></Scene></X3D>\n";
+  }
+  Mesh hexagon_mesh;
+  Check(Mesh::LoadX3d(hexagon_path, hexagon_mesh) == Result::Ok,
+        "LoadX3d succeeds on a 6-index (hexagon) coordIndex run");
+  Check(hexagon_mesh.VertexCount() == 6 && hexagon_mesh.FaceCount() == 4,
+        "a hexagon fan-triangulates into exactly 6-2=4 triangles, no "
+        "vertex duplication");
+  Check(std::abs(triangle_area_sum(hexagon_mesh) - shoelace_area(hexagon)) < 1e-9,
+        "the 4 fan triangles' combined area exactly reproduces the "
+        "convex hexagon's own shoelace area");
+  std::remove(hexagon_path.c_str());
+}
+
 void TestMeshSaveStlSplitsQuadsAndComputesNormals() {
   using dino8::kernel::Result;
 
@@ -46860,6 +47102,9 @@ int main() {
   TestMeshSaveColladaRoundTrips();
   TestMeshLoadColladaRejectsMalformedFiles();
   TestMeshLoadColladaFanTriangulatesNgonFaces();
+  TestMeshSaveX3dRoundTrips();
+  TestMeshLoadX3dRejectsMalformedFiles();
+  TestMeshLoadX3dFanTriangulatesNgonFaces();
   TestMeshSaveStlSplitsQuadsAndComputesNormals();
   TestMeshLoadStlRoundTrips();
   TestMeshLoadStlBinary();

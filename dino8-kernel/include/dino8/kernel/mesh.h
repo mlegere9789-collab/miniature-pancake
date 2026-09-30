@@ -895,6 +895,58 @@ class Mesh {
   // partially filled and silently trusted.
   static Result LoadCollada(const std::string& path, Mesh& out_mesh);
 
+  // Writes this mesh as a plain-XML X3D (`.x3d`, ISO/IEC 19775, VRML97's
+  // XML-encoded successor) file - the eighth "other file format" here, and
+  // the genuine gap `SaveVrml()`'s own doc comment already named and
+  // deferred ("VRML's XML-based successor... remains a separate, larger,
+  // XML-schema lift out of scope"): an `<X3D><Scene><Shape>` holding one
+  // `<IndexedFaceSet>` element whose `coordIndex` XML ATTRIBUTE (not a
+  // nested element the way COLLADA's `<p>` is) carries VRML's own flat,
+  // `-1`-terminated-per-face index convention, and whose child
+  // `<Coordinate>` element's own `point` attribute carries the flat
+  // "x y z x y z ..." vertex list. A quad face (`ON_MeshFace::IsQuad()`) is
+  // written as its own native 4-index run (`i0 i1 i2 i3 -1`), the same
+  // "a real variable-length face list" reasoning `SaveVrml()`/`SaveOff()`/
+  // `SaveCollada()` already give for their own formats. No `Appearance`/
+  // `Material`, per-vertex normal/color, or any node besides this single
+  // `Shape` is written - this kernel's `Mesh` has nothing to source those
+  // from anyway (same reasoning `SaveVrml()`'s own doc comment gives).
+  // Returns Result::Failed if the file can't be opened for writing; does
+  // not validate the mesh's own geometry (an empty mesh writes a valid
+  // `IndexedFaceSet` with empty `coordIndex`/`point` attributes).
+  Result SaveX3d(const std::string& path) const;
+
+  // Reads a plain-XML X3D `.x3d` file written by SaveX3d() (or any other
+  // reasonably well-formed single-`IndexedFaceSet` X3D file) into
+  // `out_mesh`. This is a deliberately narrow, hand-rolled scan for exactly
+  // the attribute-based structure SaveX3d() writes - not a general X3D/XML
+  // parser - so it requires an `<X3D` root tag (the same "no variant/other-
+  // format file silently misread" stance `LoadVrml()`'s own `#VRML` header
+  // check and `LoadOff()`'s own header check already take), then reads only
+  // the FIRST `<IndexedFaceSet>`'s own `coordIndex` attribute and the FIRST
+  // `<Coordinate>`'s own `point` attribute found anywhere in the file (in a
+  // well-formed single-`Shape` file, these are the only ones) - a second
+  // `IndexedFaceSet` (e.g. a second `Shape` sibling) is silently ignored,
+  // not merged in or rejected, the same "first one found wins" convention
+  // `LoadAmf()`/`LoadVrml()`/`LoadCollada()` already use for a second
+  // sibling element. A `coordIndex` run of exactly 3 or 4 indices before
+  // its `-1` becomes one native `ON_MeshFace` triangle or quad; a genuine
+  // n-gon run (5+ indices) is fan-triangulated from its own first index
+  // into `n-2` triangles, the same accommodation `LoadVrml()` already
+  // makes for its own n-gon `coordIndex` runs - X3D's XML encoding keeps
+  // VRML's exact per-face `-1` sentinel convention, unlike COLLADA's
+  // per-face `<vcount>` prefix. `Appearance`/`Material`/`Normal`/
+  // `TextureCoordinate` nodes and any node besides `Coordinate`/
+  // `IndexedFaceSet` are not understood at all - present or absent, they
+  // have no effect on the result. Returns Result::Failed if the file can't
+  // be opened, it has no `<X3D` root tag, no `IndexedFaceSet` or
+  // `Coordinate` element is found, either one's required attribute is
+  // missing, a `coordIndex` run has fewer than 3 indices before its `-1`,
+  // a trailing run is never closed with a `-1`, or any index falls outside
+  // the vertex list's range - `out_mesh` is left unspecified in that case,
+  // not partially filled and silently trusted.
+  static Result LoadX3d(const std::string& path, Mesh& out_mesh);
+
   const ON_Mesh& raw() const { return mesh_; }
   ON_Mesh& raw() { return mesh_; }
 
