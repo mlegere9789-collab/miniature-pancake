@@ -12395,6 +12395,117 @@ void TestMeshOffsetMovesVerticesAlongExactVertexNormal() {
   Check(all_exact, "every vertex moves by exactly (0, 0, 2.5) - the flat square's exact normal times the distance");
 }
 
+// OffsetDirectional(): the kernel-native counterpart to OpenNURBS' own
+// ON_Mesh::OffsetMesh(distance, direction) fixed-direction variant, which
+// this codebase never calls (see PARITY_MAP.md's "OpenNURBS-native mesh
+// offset" bullet). Distinct from Offset() in a way this test actually
+// exercises, not just asserts: every vertex must move by the exact SAME
+// vector regardless of its own local (averaged, per-vertex) normal.
+void TestMeshOffsetDirectionalMovesEveryVertexByTheSameFixedVector() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  // On a flat mesh whose own normal IS the chosen direction,
+  // OffsetDirectional must reproduce Offset()'s result exactly.
+  const auto square = MakeFlatUnitSquareMesh();
+  const auto directional = square.OffsetDirectional(2.5, Vector3d(0, 0, 1));
+  Check(directional.VertexCount() == 4 && directional.FaceCount() == 1,
+        "OffsetDirectional() doesn't change vertex/face counts");
+  bool all_exact = true;
+  for (int i = 0; i < 4; ++i) {
+    const Point3d before(square.raw().m_V[i]);
+    const Point3d after(directional.raw().m_V[i]);
+    all_exact = all_exact && std::fabs(after.x - before.x) < 1e-9 && std::fabs(after.y - before.y) < 1e-9 &&
+                std::fabs(after.z - before.z - 2.5) < 1e-9;
+  }
+  Check(all_exact, "on a flat square, OffsetDirectional(2.5, +Z) moves every vertex by exactly (0, 0, 2.5)");
+
+  // `direction` need not be a unit vector - the distance is along its
+  // UNIT direction, not scaled by its own magnitude.
+  const auto non_unit = square.OffsetDirectional(2.5, Vector3d(0, 0, 5));
+  bool non_unit_exact = true;
+  for (int i = 0; i < 4; ++i) {
+    const Point3d before(square.raw().m_V[i]);
+    const Point3d after(non_unit.raw().m_V[i]);
+    non_unit_exact = non_unit_exact && std::fabs(after.z - before.z - 2.5) < 1e-9;
+  }
+  Check(non_unit_exact, "a non-unit direction (0,0,5) still moves each vertex by exactly distance (2.5) along Z, "
+                        "not distance times the vector's own magnitude");
+
+  // Zero-vector direction has no well-defined unit direction - refused.
+  bool threw_zero_direction = false;
+  try {
+    (void)square.OffsetDirectional(1.0, Vector3d(0, 0, 0));
+  } catch (const std::invalid_argument&) {
+    threw_zero_direction = true;
+  }
+  Check(threw_zero_direction, "OffsetDirectional() throws on a zero-vector direction");
+
+  // The real distinguishing case: a V-groove whose two walls meet at a
+  // shared apex edge. Offset() moves the apex vertices along their own
+  // AVERAGED normal (a blend of both walls' normals, different from
+  // either wall's own top-vertex normal) - genuinely different vertices
+  // move by genuinely different vectors. OffsetDirectional(), by
+  // contrast, must move EVERY vertex - apex and wall-top alike - by the
+  // exact same displacement vector, since it never consults per-vertex
+  // normals at all.
+  Mesh groove;
+  ON_Mesh& raw = groove.raw();
+  for (double y : {0.0, 1.0}) {
+    raw.m_V.Append(ON_3fPoint(-1, y, 2));  // top of left wall
+    raw.m_V.Append(ON_3fPoint(0, y, 0));   // apex
+    raw.m_V.Append(ON_3fPoint(1, y, 2));   // top of right wall
+  }
+  auto addquad = [&](int a, int b, int c, int d) {
+    ON_MeshFace f;
+    f.vi[0] = a;
+    f.vi[1] = b;
+    f.vi[2] = c;
+    f.vi[3] = d;
+    raw.m_F.Append(f);
+  };
+  addquad(0, 3, 4, 1);
+  addquad(1, 4, 5, 2);
+
+  const Vector3d direction(0.3, 0.0, 0.9);
+  const auto groove_directional = groove.OffsetDirectional(2.0, direction);
+  const Vector3d expected = 2.0 * (direction / direction.Length());
+  bool all_same_vector = true;
+  for (int i = 0; i < groove.raw().m_V.Count(); ++i) {
+    const Point3d before(groove.raw().m_V[i]);
+    const Point3d after(groove_directional.raw().m_V[i]);
+    const double dx = after.x - before.x, dy = after.y - before.y, dz = after.z - before.z;
+    all_same_vector = all_same_vector && std::fabs(dx - expected.x) < 1e-6 && std::fabs(dy - expected.y) < 1e-6 &&
+                       std::fabs(dz - expected.z) < 1e-6;
+  }
+  Check(all_same_vector,
+        "on the V-groove, OffsetDirectional() moves every vertex - apex and wall-top alike - by the identical "
+        "fixed displacement vector");
+
+  // Offset() on the same groove must NOT do this - the apex vertices'
+  // own averaged normal genuinely differs from a wall-top vertex's, so
+  // at least one vertex's displacement must differ from the others'.
+  const auto groove_offset = groove.Offset(2.0);
+  bool any_different = false;
+  Vector3d first_displacement;
+  for (int i = 0; i < groove.raw().m_V.Count(); ++i) {
+    const Point3d before(groove.raw().m_V[i]);
+    const Point3d after(groove_offset.raw().m_V[i]);
+    const Vector3d disp(after.x - before.x, after.y - before.y, after.z - before.z);
+    if (i == 0) {
+      first_displacement = disp;
+    } else if (std::fabs(disp.x - first_displacement.x) > 1e-6 || std::fabs(disp.y - first_displacement.y) > 1e-6 ||
+               std::fabs(disp.z - first_displacement.z) > 1e-6) {
+      any_different = true;
+    }
+  }
+  Check(any_different,
+        "...whereas the per-vertex-normal Offset() moves the groove's own vertices by genuinely DIFFERENT "
+        "displacement vectors - confirming OffsetDirectional() is solving a different problem, not a renamed "
+        "duplicate");
+}
+
 // Thicken() on the same flat unit square must produce an EXACT unit cube
 // (for distance = 1): 8 vertices, 6 faces (1 flipped original bottom, 1
 // offset top, 4 side walls), closed manifold, volume exactly 1 - a fully
@@ -46789,6 +46900,7 @@ int main() {
   TestMeshTrisToQuadsMergesSeveralIndependentSquaresInOneCall();
   TestMeshTrisToQuadsRefusesCoincidentApexes();
   TestMeshOffsetMovesVerticesAlongExactVertexNormal();
+  TestMeshOffsetDirectionalMovesEveryVertexByTheSameFixedVector();
   TestMeshThickenBuildsExactUnitCubeFromFlatSquare();
   TestMeshFindOffsetSelfIntersectionsDetectsGenuineFold();
   TestMeshInsetFaceUnitSquareMatchesExactConcentricSquare();

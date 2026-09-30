@@ -4196,6 +4196,24 @@ Mesh Mesh::Offset(double distance) const {
   return result;
 }
 
+Mesh Mesh::OffsetDirectional(double distance, const Vector3d& direction) const {
+  Vector3d unit_direction = direction;
+  if (!unit_direction.Unitize()) {
+    throw std::invalid_argument(
+        "dino8::kernel::Mesh::OffsetDirectional: direction must not be the "
+        "zero vector");
+  }
+  Mesh result = *this;
+  const ON_3dVector offset = distance * unit_direction;
+  for (int i = 0; i < result.mesh_.m_V.Count(); ++i) {
+    const ON_3dPoint moved = ON_3dPoint(result.mesh_.m_V[i]) + offset;
+    result.mesh_.m_V[i] = ON_3fPoint(moved);
+  }
+  result.mesh_.m_N.Destroy();
+  result.mesh_.m_FN.Destroy();
+  return result;
+}
+
 Mesh Mesh::Thicken(double distance) const {
   if (distance == 0.0) {
     throw std::invalid_argument("dino8::kernel::Mesh::Thicken: distance must be nonzero");

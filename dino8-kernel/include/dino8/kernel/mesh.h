@@ -1122,6 +1122,29 @@ class Mesh {
   // here. Returns a new mesh; this one is untouched.
   Mesh Offset(double distance) const;
 
+  // The fixed-direction counterpart to Offset(distance) above: every
+  // vertex moves by the SAME vector, `distance * direction.UnitVector()`,
+  // rather than along its own per-vertex normal - the kernel-native
+  // equivalent of OpenNURBS' own ON_Mesh::OffsetMesh(distance, direction),
+  // which this codebase never calls. Distinct from Offset() in a way that
+  // matters, not just in name: Offset() preserves a flat face's own
+  // planarity only when that face's normal already matches every one of
+  // its vertices' averaged normals (true for an isolated flat patch, false
+  // near a crease), while OffsetDirectional() preserves planarity of ANY
+  // flat region by construction - translating every point of a plane by
+  // the same vector is still a plane, regardless of neighboring
+  // curvature - at the cost of no longer keeping a curved region's own
+  // wall thickness uniform (every vertex moves the same amount along
+  // `direction`, not along the locally-varying true normal), the same
+  // tradeoff the fixed-direction OpenNURBS variant itself has. Face
+  // topology is untouched, so face indices stay in exact 1:1
+  // correspondence with this mesh's own faces. Returns a new mesh; this
+  // one is untouched.
+  //
+  // Throws std::invalid_argument if `direction` is the zero vector (no
+  // well-defined unit direction to offset along).
+  Mesh OffsetDirectional(double distance, const Vector3d& direction) const;
+
   // Builds a solid shell from this (necessarily OPEN) mesh: an
   // Offset(distance) copy stitched to the original along every naked
   // edge with a new quad "wall" face, so the result is a single closed
