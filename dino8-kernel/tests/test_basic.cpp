@@ -45863,9 +45863,10 @@ void TestExtrudeTaperedConvexPolygonIsExactPlanarFrustum() {
   }
 
   // Negative controls.
-  const NurbsCurve cee = Polyline({P(0, 0, 0), P(3, 0, 0), P(3, 1, 0), P(1, 1, 0), P(1, 2, 0), P(3, 2, 0), P(3, 3, 0), P(0, 3, 0), P(0, 0, 0)});
-  Check(Throws([&] { Brep::ExtrudeTapered(cee, Vector3d(0, 0, 1), std::atan(0.1)); }),
-        "a non-convex (C-shaped) multi-segment profile throws");
+  // A non-convex (C-shaped) profile no longer throws from convexity alone
+  // - see TestExtrudeTaperedConcavePolygonIsExactPrismatoid() below for
+  // the (still-current) reason a CAPPED version of this exact profile
+  // throws (Loft's own separate star-shaped-cap requirement).
   Check(Throws([&] { Brep::ExtrudeTapered(square, Vector3d(0, 0, 1), std::atan(2.0)); }),
         "a draft distance exceeding the square's own inradius throws (an edge would invert)");
   Check(Throws([&] { Brep::ExtrudeTapered(square, Vector3d(0, 0, 0), std::atan(0.1)); }), "zero direction throws");
@@ -45873,6 +45874,91 @@ void TestExtrudeTaperedConvexPolygonIsExactPlanarFrustum() {
   Check(Throws([&] { Brep::ExtrudeTapered(skew, Vector3d(0, 0, 5), std::atan(0.1)); }), "a non-planar profile throws");
   Check(Throws([&] { Brep::ExtrudeTapered(square, Vector3d(1, 0, 0), std::atan(0.1)); }),
         "direction in the profile's own plane throws");
+}
+
+void TestExtrudeTaperedConcavePolygonIsExactPrismatoid() {
+  // A single-reflex-vertex "L" profile - STAR-SHAPED, so Loft's own fan
+  // cap can still close it: a full end-to-end CAPPED concave taper, not
+  // just the offset in isolation.
+  const NurbsCurve el = Polyline({P(0, 0, 0), P(2, 0, 0), P(2, 1, 0), P(1, 1, 0), P(1, 2, 0), P(0, 2, 0), P(0, 0, 0)});
+  const double theta = std::atan(0.3);
+  const Brep body = Brep::ExtrudeTapered(el, Vector3d(0, 0, 1), theta);
+  CheckSolidTopology(body, 3, "drafted L-shape");
+
+  // Every corner of this profile is a right angle, so the exact miter
+  // offset formula (n0.n1 = 0, denom = 1, offset = distance*(n0+n1))
+  // reduces to translating each vertex by `distance` along each of its
+  // two adjacent edges' own outward normals - hand-derived here, not by
+  // calling the kernel's own offset function, and checked directly
+  // against the wall's own control points.
+  const NurbsSurface wall = FaceSurface(body, 0);
+  const std::vector<Point3d> expect_top = {P(0.3, 0.3, 1), P(1.7, 0.3, 1), P(1.7, 0.7, 1),
+                                            P(0.7, 0.7, 1), P(0.7, 1.7, 1), P(0.3, 1.7, 1)};
+  const ON_Interval du = wall.raw().Domain(0), dv = wall.raw().Domain(1);
+  for (size_t i = 0; i < expect_top.size(); ++i) {
+    const double u = du.ParameterAt(static_cast<double>(i) / 6.0);
+    Check(wall.PointAt(u, dv.Max()).DistanceTo(expect_top[i]) < 1e-9,
+          "a top wall corner is exactly the hand-derived offset vertex (right-angle corner => pure "
+          "per-edge translation, convex or reflex alike)");
+  }
+
+  // Volume: the general PRISMATOID formula V = h/6*(A0 + 4*Am + A1) is
+  // exact for any solid bounded by two parallel polygons joined by
+  // straight-line (ruled) lateral elements - true here regardless of
+  // convexity, since each wall quad's parameter lines run straight from a
+  // bottom vertex to its corresponding top vertex (the ordinary cone/box
+  // frustum volume this file already checks elsewhere is the special
+  // case of this same formula). A0/A1 are the bottom/top polygon areas
+  // (shoelace, by hand); Am is the area of the polygon through the
+  // vertex MIDPOINTS (each wall's own straight parameter line at t=0.5) -
+  // a third, independently hand-computed concave L-shape area.
+  const double A0 = 3.0;   // 2x2 square minus its 1x1 notch
+  const double A1 = 0.96;  // 1.4x1.4 minus its 1.0x1.0 notch
+  const double Am = 1.89;  // 1.7x1.7 minus its 1.0x1.0 notch
+  const double exact = (A0 + 4.0 * Am + A1) / 6.0;
+  // The wall panels here are genuinely non-planar (each corner offsets by
+  // a different amount), so - unlike the isotropic-square case above,
+  // whose planar walls give bit-exact volume at any division - a
+  // CONVERGING tessellated volume at a high division is the right bar,
+  // confirmed to converge monotonically toward `exact` as division rises
+  // (1.9104 / 1.9176 / 1.9194 at 40 / 80 / 160, verified while writing
+  // this test): the discrepancy is a flat-triangulation-of-a-warped-panel
+  // artifact, not a wrong result.
+  Check(std::abs(body.TessellateToClosedMesh(160, 160).Volume() - exact) < 2e-3,
+        "tessellated volume converges to the exact prismatoid-formula volume");
+
+  // Same shape family, NOT star-shaped this time (a "C" channel: two arms
+  // joined by a thin spine) - the OFFSET itself is still exact and
+  // non-self-intersecting; only Loft's own separate star-shaped-cap
+  // requirement still refuses a cap, an unrelated, pre-existing
+  // limitation this function does not touch.
+  const NurbsCurve cee = Polyline({P(0, 0, 0), P(3, 0, 0), P(3, 1, 0), P(1, 1, 0), P(1, 2, 0), P(3, 2, 0), P(3, 3, 0), P(0, 3, 0), P(0, 0, 0)});
+  {
+    const Brep open = Brep::ExtrudeTapered(cee, Vector3d(0, 0, 1), std::atan(0.1), /*cap=*/false);
+    Check(open.FaceCount() == 1, "the C-channel's own wall builds fine with no cap requested");
+  }
+  Check(Throws([&] { Brep::ExtrudeTapered(cee, Vector3d(0, 0, 1), std::atan(0.1)); }),
+        "...but WITH a cap it still throws - Loft's own star-shaped fan-cap requirement (the C-channel's "
+        "kernel is empty: no single point sees its whole boundary), not a convexity restriction in the "
+        "offset itself");
+
+  // Two INDEPENDENT notches (no shared vertex or edge) whose offsets
+  // approach each other as the profile shrinks - the general "two
+  // far-apart edges cross" self-intersection the new GLOBAL check exists
+  // for, distinct from the pre-existing LOCAL "this edge's own two
+  // corners collided" inradius check (this file's own convex-polygon
+  // negative control above already covers that one; a shared-vertex
+  // reflex-corner variant of this same idea collapses via the local check
+  // first, confirmed directly while designing this fixture - it takes two
+  // genuinely unrelated features to isolate the global check).
+  const NurbsCurve two_notch = Polyline({P(0, 0, 0), P(4, 0, 0), P(4, 0.4, 0), P(6, 0.4, 0), P(6, 0, 0), P(10, 0, 0), P(10, 2, 0),
+                                          P(6, 2, 0), P(6, 1.6, 0), P(4, 1.6, 0), P(4, 2, 0), P(0, 2, 0), P(0, 0, 0)});
+  // Remaining material band is 1.2; each notch floor moves `d` toward the
+  // other. d = 0.5 leaves 0.2 apart (fine); d = 0.7 overlaps by 0.2 (must throw).
+  Check(!Throws([&] { Brep::ExtrudeTapered(two_notch, Vector3d(0, 0, 1), std::atan(0.5), /*cap=*/false); }),
+        "two notches whose offsets stay apart (0.2 of clearance left) still succeed");
+  Check(Throws([&] { Brep::ExtrudeTapered(two_notch, Vector3d(0, 0, 1), std::atan(0.7), /*cap=*/false); }),
+        "...but past the point their offsets cross, the new global self-intersection check refuses it");
 }
 
 // Builds a single-face, untrimmed, planar "sheet" Brep spanning x in
@@ -53293,6 +53379,7 @@ int main() {
   sweep_tests::TestExtrudeFaceTrimmedPlanarFace();
   sweep_tests::TestExtrudeTaperedCircularProfileIsExactConeFrustum();
   sweep_tests::TestExtrudeTaperedConvexPolygonIsExactPlanarFrustum();
+  sweep_tests::TestExtrudeTaperedConcavePolygonIsExactPrismatoid();
   sweep_tests::TestExtrudeTaperedObliqueDirectionIsShearedFrustum();
   sweep_tests::TestExtrudeToBoundaryTiltedPlaneMatchesExactAffineCapVolume();
   sweep_tests::TestExtrudeToBoundaryMatchesPlainExtrudeForAFlatBoundary();

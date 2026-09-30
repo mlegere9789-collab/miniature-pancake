@@ -361,26 +361,27 @@ class Brep {
   //     `(pi*L/3)(r0^2 + r0*r1 + r1^2)` up to tessellation chord error,
   //     the same closed form Loft()'s own two-circle case already
   //     verifies.
-  //   - A CONVEX multi-segment polyline profile (degree 1, not reducible
-  //     to a single line or arc): this kernel's own exact planar
-  //     miter-join offset (every vertex moved to the intersection of its
-  //     two adjacent edges' offset copies, in closed form - see
-  //     OffsetConvexPolyline() in sweep.cpp), NOT OffsetInPlane()'s own
+  //   - A multi-segment polyline profile (degree 1, not reducible to a
+  //     single line or arc), CONVEX or CONCAVE: this kernel's own exact
+  //     planar miter-join offset (every vertex moved to the intersection
+  //     of its two adjacent edges' offset copies, in closed form - see
+  //     OffsetConvexPolyline() in sweep.cpp; the formula itself does not
+  //     care about local turning direction), NOT OffsetInPlane()'s own
   //     general per-sample least-squares refit, which cannot be exact for
   //     a sharp corner (it blurs one) and, for a CLOSED polygon whose
   //     seam sits exactly at a corner, does not even reproduce a closed
   //     curve (the tangent - and so the offset direction - genuinely
   //     differs on the two sides of that corner, splitting the fitted
-  //     seam into two different points). Restricted to CONVEX input
-  //     (checked; throws otherwise) because that is exactly the case a
-  //     cheap, EXACT validity check exists for (every offset edge stays a
-  //     positive multiple of its own original direction - proof in
-  //     OffsetConvexPolyline()'s own comment); a concave polygon's offset
-  //     can self-intersect far from any single corner, the general
-  //     polygon-offset self-intersection-removal problem this kernel
-  //     discloses elsewhere as a known gap (PARITY_MAP.md, "Offsetting,
-  //     shelling, thickening" - "Offset self-intersection / invalid-loop
-  //     removal"), and is refused here rather than silently risking a
+  //     seam into two different points). Two EXACT validity checks apply
+  //     unconditionally instead of a convexity restriction: every offset
+  //     edge must stay a positive multiple of its own original direction
+  //     (catches an inverted/collapsed edge), and no two non-adjacent
+  //     offset edges may pass within tolerance of each other (catches a
+  //     concave corner's offset self-intersecting far from itself, using
+  //     the same closest-segment-segment utility this kernel already
+  //     shares for curve-intersection seeding and mesh distance queries -
+  //     see detail::ClosestSegmentSegment()). A profile whose offset
+  //     fails either check is refused rather than silently risking a
   //     folded wall.
   //   - Any other planar profile: falls through to OffsetInPlane()'s own
   //     general least-squares branch, with its own documented exactness/
@@ -389,11 +390,10 @@ class Brep {
   //     curve offset, not a new limitation invented for this function.
   // Throws std::invalid_argument for a non-finite or out-of-range
   // `draft_angle`, a non-planar profile, a `direction` lying flat in the
-  // profile's own plane, a non-convex multi-segment polyline profile, or a
-  // draft/height combination whose offset would self-intersect or fold
-  // through itself (surfaced by whichever of the three paths above hit
-  // it) - propagated with a message naming which one refused and why, never silently
-  // built anyway.
+  // profile's own plane, or a draft/height combination whose offset would
+  // self-intersect or fold through itself (surfaced by whichever of the
+  // three paths above hit it) - propagated with a message naming which
+  // one refused and why, never silently built anyway.
   static Brep ExtrudeTapered(const NurbsCurve& profile, Vector3d direction, double draft_angle, bool cap = true);
 
   // ExtrudeFace: extrude one existing B-rep FACE (a face of `body`, given

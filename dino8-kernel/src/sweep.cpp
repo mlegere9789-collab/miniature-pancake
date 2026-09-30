@@ -33,6 +33,7 @@
 
 #include "dino8/kernel/brep.h"
 #include "dino8/kernel/curve.h"
+#include "dino8/kernel/detail/segment3d.h"
 #include "dino8/kernel/mesh.h"
 #include "dino8/kernel/surface.h"
 
@@ -1473,11 +1474,12 @@ std::vector<TwoRailFrame> TwoRailFrames(const ON_NurbsCurve& rail1, const ON_Nur
 
 namespace {
 
-// Exact, closed-form in-plane offset of a CONVEX degree-1 polyline (open
-// or closed, non-rational, at least 3 distinct vertices, not reducible to
-// a single line or arc - callers filter for that) by `distance`, along
-// the same "edge tangent x plane.zaxis" convention NurbsCurve::
-// OffsetInPlane()'s own Line/Arc cases use (distance > 0 grows).
+// Exact, closed-form in-plane offset of a SIMPLE (non-self-intersecting)
+// degree-1 polyline (open or closed, non-rational, at least 3 distinct
+// vertices, not reducible to a single line or arc - callers filter for
+// that), convex OR concave, by `distance`, along the same "edge tangent x
+// plane.zaxis" convention NurbsCurve::OffsetInPlane()'s own Line/Arc
+// cases use (distance > 0 grows).
 //
 // Every vertex gets the exact planar MITER-JOIN point: for the two unit
 // offset directions n0 (incoming edge) and n1 (outgoing edge) meeting at
@@ -1493,29 +1495,21 @@ namespace {
 // adjacent edge and just translate by `distance * n` along it - exactly
 // OffsetInPlane()'s own Line case.
 //
-// Deliberately restricted to CONVEX input (checked here first; throws
-// otherwise) - the same scope this kernel's polygon machinery already
-// draws elsewhere (PlanCap()'s star-shaped-only cap above, fillet.h's
-// "concave/degenerate edges are out of scope"). The restriction earns
-// something concrete in return: for a convex polygon offset uniformly, a
-// cheap and EXACT sufficient validity check exists and is applied
-// unconditionally below - every offset edge must stay a POSITIVE
-// multiple of its own original direction. That this is sufficient is a
-// direct consequence of convexity, not merely plausible: walking a
-// convex polygon's edges in order turns monotonically in ONE angular
-// direction by a total of exactly 2*pi; each edge's own supporting line
-// moves outward (grow) or inward (shrink) by the same `distance` without
-// changing its DIRECTION (a translated line is still parallel to
-// itself), so the new edges still turn monotonically the same way by the
-// same total 2*pi PROVIDED none of them inverted - which is exactly what
-// the check confirms. A monotonically-turning closed polygon with no
-// inverted edge is convex and simple by construction (it cannot cross
-// itself: crossing would require an edge to double back, i.e. invert,
-// somewhere). A general (possibly concave) polygon has no such
-// guarantee - its offset can self-intersect far from any single corner -
-// which is exactly the "Offset self-intersection / invalid-loop removal"
-// gap this kernel discloses in PARITY_MAP.md ("Offsetting, shelling,
-// thickening"); that harder problem is not attempted here.
+// The miter-join formula above is exact regardless of local convexity, so
+// a concave (reflex) corner is not special-cased away here - each vertex
+// still gets its own exact bisector point. Two validity checks are
+// applied unconditionally below instead of a convexity pre-check: (1) a
+// cheap local one - every offset edge must stay a POSITIVE multiple of
+// its own original direction, catching an edge that inverted or
+// collapsed - and (2) a global one - no two non-adjacent offset edges may
+// come closer than a small tolerance, catching a self-intersection a
+// concave polygon's offset can introduce far from any single corner (a
+// convex polygon's offset can never fail this: its edges turn
+// monotonically by exactly 2*pi, which cannot self-cross). Together these
+// two checks are the general "is this a simple polygon" test, not a
+// convexity proxy, so both convex and concave SIMPLE inputs pass and any
+// genuinely self-intersecting result - simple input or not - is caught
+// and reported rather than silently returned.
 ON_NurbsCurve OffsetConvexPolyline(const ON_NurbsCurve& c, const ON_Plane& plane, double distance,
                                    const char* caller) {
   const bool closed = c.IsClosed();
@@ -1534,32 +1528,6 @@ ON_NurbsCurve OffsetConvexPolyline(const ON_NurbsCurve& c, const ON_Plane& plane
     ON_3dVector n = ON_CrossProduct(d, plane.zaxis);
     if (!n.Unitize()) Internal(caller, "degenerate edge offset direction");
     ndir[static_cast<size_t>(i)] = n;
-  }
-
-  // Convexity: every turn (consecutive edge pair; wrapping for a closed
-  // polyline, interior vertices only for an open one) must have the SAME
-  // sign of cross product about plane.zaxis - a dimensionless quantity
-  // (both edir entries are unit vectors), so a small absolute tolerance
-  // is the right kind of tolerance here, not a scaled one. Collinear
-  // (near-zero) turns are allowed either way.
-  {
-    double sign = 0.0;
-    const int turns = closed ? edge_count : edge_count - 1;
-    for (int i = 0; i < turns; ++i) {
-      const ON_3dVector& a = edir[static_cast<size_t>(i)];
-      const ON_3dVector& b = edir[static_cast<size_t>((i + 1) % edge_count)];
-      const double cross = ON_DotProduct(ON_CrossProduct(a, b), plane.zaxis);
-      if (std::fabs(cross) <= 1e-9) continue;
-      const double this_sign = cross > 0.0 ? 1.0 : -1.0;
-      if (sign == 0.0) {
-        sign = this_sign;
-      } else if (this_sign != sign) {
-        Fail(caller,
-             "a draft-angle extrusion of a multi-segment profile needs a CONVEX polygon - this one turns both "
-             "ways (a reflex corner), which risks a self-intersecting offset this kernel does not detect/repair "
-             "for general polygons (see PARITY_MAP.md's disclosed offset self-intersection gap)");
-      }
-    }
   }
 
   std::vector<ON_3dPoint> out(static_cast<size_t>(vcount));
@@ -1581,9 +1549,9 @@ ON_NurbsCurve OffsetConvexPolyline(const ON_NurbsCurve& c, const ON_Plane& plane
     out[static_cast<size_t>(i)] = v[static_cast<size_t>(i)] + (distance / denom) * (n0 + n1);
   }
 
-  // Validity: every offset edge must be a positive multiple of its own
-  // original direction (see this function's own doc comment for why
-  // that is a sufficient simplicity proof for a convex input).
+  // Validity (local): every offset edge must be a positive multiple of
+  // its own original direction - catches an edge that inverted or
+  // collapsed.
   const double length_floor = 1e-12 * CurveScale(c);
   for (int i = 0; i < edge_count; ++i) {
     const ON_3dVector e = out[static_cast<size_t>((i + 1) % vcount)] - out[static_cast<size_t>(i)];
@@ -1591,6 +1559,32 @@ ON_NurbsCurve OffsetConvexPolyline(const ON_NurbsCurve& c, const ON_Plane& plane
       Fail(caller,
            "the draft angle/height shrinks the profile past its own inradius - an edge would invert or collapse; "
            "use a smaller draft angle, a shorter extrusion, or a larger profile");
+    }
+  }
+
+  // Validity (global): no two non-adjacent offset edges may pass within
+  // tolerance of each other - the general simple-polygon test that
+  // catches a self-intersection a concave corner's offset can introduce
+  // far from itself (see this function's own doc comment; a convex
+  // input's offset can never trigger this).
+  {
+    const double gap_tol = 1e-9 * CurveScale(c);
+    const double gap_tol2 = gap_tol * gap_tol;
+    for (int i = 0; i < edge_count; ++i) {
+      const Point3d& p0 = out[static_cast<size_t>(i)];
+      const Point3d& p1 = out[static_cast<size_t>((i + 1) % vcount)];
+      for (int j = i + 1; j < edge_count; ++j) {
+        if (j == i + 1) continue;
+        if (closed && i == 0 && j == edge_count - 1) continue;
+        const Point3d& q0 = out[static_cast<size_t>(j)];
+        const Point3d& q1 = out[static_cast<size_t>((j + 1) % vcount)];
+        double s = 0.0, t = 0.0;
+        if (detail::ClosestSegmentSegment(p0, p1, q0, q1, s, t) <= gap_tol2) {
+          Fail(caller,
+               "the offset profile self-intersects - a concave corner's offset crossed a non-adjacent edge; use "
+               "a smaller draft angle/offset distance or a simpler profile");
+        }
+      }
     }
   }
 
@@ -1732,9 +1726,10 @@ Brep Brep::ExtrudeTapered(const NurbsCurve& profile, Vector3d direction, double 
   NurbsCurve top;
   const bool is_line_or_arc = c.IsLinear(1e-9 * CurveScale(c)) || c.IsArc(nullptr, nullptr, 1e-9 * CurveScale(c));
   if (c.Degree() == 1 && !c.IsRational() && !is_line_or_arc) {
-    // A genuine multi-segment polyline: this kernel's own exact convex
-    // miter offset, not OffsetInPlane()'s general least-squares branch
-    // (see ExtrudeTapered()'s own brep.h doc comment for why).
+    // A genuine multi-segment polyline: this kernel's own exact miter
+    // offset (convex or concave input), not OffsetInPlane()'s general
+    // least-squares branch (see ExtrudeTapered()'s own brep.h doc comment
+    // for why).
     top.raw() = OffsetConvexPolyline(c, plane, offset_distance, caller);
   } else {
     NurbsCurve profile_wrapped;
