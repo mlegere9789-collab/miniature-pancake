@@ -505,11 +505,16 @@ void RegisterEditCommands(CommandEngine& e) {
       }, 1));
   Reg(e, "Ungroup", OnSelection("Select groups to ungroup", [](CommandContext& ctx, const std::vector<ObjectId>& ids) { ctx.Doc().BeginChange("Ungroup"); ctx.Doc().Ungroup(ids); }));
   Reg(e, "AddToGroup", OnSelection("Select objects to add to the selected group", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
+        // FindMany() resolves the whole selection in one O(document size)
+        // pass instead of a Find() per id (see CreateGroup()/Ungroup() in
+        // Document.cpp) - the loop below over `objs` reuses it rather than
+        // re-resolving every id a second time.
+        const std::vector<SceneObject*> objs = ctx.Doc().FindMany(ids);
         int g = -1;
-        for (ObjectId id : ids) if (const SceneObject* o = ctx.Doc().Find(id)) if (o->group_id >= 0) { g = o->group_id; break; }
+        for (const SceneObject* o : objs) if (o && o->group_id >= 0) { g = o->group_id; break; }
         if (g < 0) { ctx.Warn("Selection contains no group"); return; }
         ctx.Doc().BeginChange("AddToGroup");
-        for (ObjectId id : ids) if (SceneObject* o = ctx.Doc().Find(id)) o->group_id = g;
+        for (SceneObject* o : objs) if (o) o->group_id = g;
       }));
   Reg(e, "RemoveFromGroup", OnSelection("Select objects to remove from their group", [](CommandContext& ctx, const std::vector<ObjectId>& ids) { ctx.Doc().BeginChange("RemoveFromGroup"); ctx.Doc().Ungroup(ids); }));
   Reg(e, "Hide", OnSelection("Select objects to hide", [](CommandContext& ctx, const std::vector<ObjectId>& ids) { HideShow(ctx, ids, false, "Hide"); }));

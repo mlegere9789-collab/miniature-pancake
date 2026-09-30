@@ -453,26 +453,53 @@ std::string Document::LayerFullPath(int index) const {
   return path;
 }
 
+// Resolves the whole selection via FindMany() (one O(document size + ids
+// size) pass) instead of the old Find()-per-id loop, the same Find()-per-id
+// bug shape already fixed for Hide/Lock/ChangeLayer/MatchLayer/
+// SetObjectName/SetUserText/SetRenderColor/MatchProperties - see those
+// commands' comments and tests/properties_bench.cpp. CreateGroup() and
+// Ungroup() back every grouping command (Group/Ungroup/AddToGroup/
+// RemoveFromGroup, plus every CreateGroup() call block/annotation/dimension
+// commands make to tag their own generated objects), so this was an
+// O(selection size * document size) bulk operation on every one of them.
 int Document::CreateGroup(const std::vector<ObjectId>& ids, const std::string& name) {
   Group g;
   g.id = next_group_id_++;
   g.name = name.empty() ? "Group" + std::to_string(g.id) : name;
   groups_.push_back(g);
-  for (ObjectId id : ids) {
-    if (SceneObject* o = Find(id)) o->group_id = g.id;
+  for (SceneObject* o : FindMany(ids)) {
+    if (o) o->group_id = g.id;
   }
   Touch();
   return g.id;
 }
 
 void Document::Ungroup(const std::vector<ObjectId>& ids) {
-  for (ObjectId id : ids) {
-    if (SceneObject* o = Find(id)) o->group_id = -1;
+  for (SceneObject* o : FindMany(ids)) {
+    if (o) o->group_id = -1;
+  }
+  PruneEmptyGroups();
+  Touch();
+}
+
+// Used to call GroupMembers(g.id) - an O(document size) scan - once per
+// *existing* group, i.e. O(group count * document size). A document with
+// many small groups (e.g. after grouping lots of individually-tagged
+// annotation/table/block objects) made this the dominant cost of both
+// Ungroup() and RemoveEmptyGroups()'s Purge command, independent of how
+// many ids either call was actually given. Counting every object's
+// group_id in a single O(document size) pass first, then testing each
+// group against that count map in O(1), makes the whole prune O(document
+// size + group count).
+void Document::PruneEmptyGroups() {
+  std::unordered_map<int, size_t> member_counts;
+  member_counts.reserve(groups_.size());
+  for (const SceneObject& o : objects_) {
+    if (o.group_id >= 0) ++member_counts[o.group_id];
   }
   groups_.erase(std::remove_if(groups_.begin(), groups_.end(),
-                               [this](const Group& g) { return GroupMembers(g.id).empty(); }),
+                               [&member_counts](const Group& g) { return member_counts.find(g.id) == member_counts.end(); }),
                 groups_.end());
-  Touch();
 }
 
 std::vector<ObjectId> Document::GroupMembers(int group_id) const {
@@ -493,9 +520,7 @@ bool Document::RemoveBlock(const std::string& name) {
 
 int Document::RemoveEmptyGroups() {
   const size_t before = groups_.size();
-  groups_.erase(std::remove_if(groups_.begin(), groups_.end(),
-                               [this](const Group& g) { return GroupMembers(g.id).empty(); }),
-                groups_.end());
+  PruneEmptyGroups();
   const int removed = static_cast<int>(before - groups_.size());
   if (removed > 0) Touch();
   return removed;

@@ -881,6 +881,12 @@ class Document {
   void FlushActivityLogToDisk() const;
 
  private:
+  // Shared by Ungroup() and RemoveEmptyGroups(): drops every group with no
+  // remaining member in one O(document size + group count) pass. See its
+  // definition in Document.cpp for why this replaced calling
+  // GroupMembers(g.id) - an O(document size) scan - once per group.
+  void PruneEmptyGroups();
+
   struct Snapshot {
     std::string label;
     std::vector<SceneObject> objects;
