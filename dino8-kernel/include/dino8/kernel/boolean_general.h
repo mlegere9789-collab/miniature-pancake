@@ -292,6 +292,63 @@ std::pair<Brep, Brep> SplitBySheet(const Brep& solid, const Brep& sheet, double 
 // function's exact prior behavior for every existing caller.
 Brep TrimSheetBySolid(const Brep& sheet, const Brep& solid, bool keep_inside = true, double tolerance = 0.001);
 
+// A closed-solid-cutter counterpart to SplitBySheet() above, closing the
+// specific gap PARITY_MAP.md's own "Keep/split options" bullet names:
+// "BooleanSplit solid-by-solid keeping all pieces... is all plane-split
+// only (kernel SplitByPlane)" - the app's own general-cutter KeepAll split
+// (SplitByObjectCommand) is mesh-level, not a real B-rep solid-by-solid
+// split. `target` split by a genuinely closed-solid `cutter` (not an open
+// sheet - see SplitBySheet() above for that case) is exactly
+// {target - cutter, target intersect cutter}: two independently-computed
+// BooleanCombineGeneral() calls, not a hand-rolled fragmentation of its
+// own, so this inherits that function's own proven correctness and scope
+// limits wholesale (one crossing component per face pair, genus-0 faces,
+// no self-crossing chains - see BooleanCombineGeneral()'s own doc comment
+// above) rather than re-deriving them.
+//
+// Returns {outside, inside} - `outside` is the portion of `target` lying
+// outside `cutter`, `inside` the portion lying inside it; together they
+// always recover `target` exactly (same volume, whether or not `cutter`
+// actually crosses it - see this function's own doc comment in
+// boolean_general.cpp for the disjoint/fully-enclosing degenerate cases,
+// where one side comes back the empty Brep rather than an error, mirroring
+// SplitBySheet()'s/TrimSheetBySolid()'s own "kept.empty()" convention).
+// Both pieces are real B-rep solids the caller can inspect, select and
+// further edit - not a tessellated approximation of either.
+//
+// Throws std::invalid_argument if either operand has no faces or if
+// `tolerance` is not positive - the same precondition BooleanCombineGeneral()
+// itself already enforces on both calls this makes.
+//
+// `tolerance` is the same caller-controlled SSX Newton-refinement accuracy
+// BooleanCombineGeneral()/SplitBySheet()/TrimSheetBySolid() above take.
+std::pair<Brep, Brep> SplitBrepBySolid(const Brep& target, const Brep& cutter, double tolerance = 0.001);
+
+// SplitBrepBySolid() above, but against several cutters at once - closes
+// the N-ary half of the same "Keep/split options" bullet
+// BooleanCombineGeneralNAry() (above) already closed for a plain N-ary
+// combine: `cutters` is first folded into one solid via
+// BooleanCombineGeneralNAry(cutters, {}, BooleanOp::Union, tolerance) (the
+// exact same left-to-right Union fold every other *NAry wrapper in this
+// file/boolean.cpp already uses - see that function's own doc comment for
+// the full rationale), then `target` is split against the folded result
+// via one SplitBrepBySolid() call. Not a new algorithm: both steps reuse
+// already-proven entry points as-is, so this inherits their combined scope
+// wholesale (BooleanCombineGeneral's own one-crossing-component-per-face-
+// pair/genus-0/non-self-crossing-chain limits, applied at every pairwise
+// fold step and the final split alike).
+//
+// Returns {outside, inside} with the identical contract SplitBrepBySolid()
+// has for a single cutter - `inside` is the portion of `target` lying in
+// ANY of `cutters` (their union), `outside` the rest; together they always
+// recover `target` exactly.
+//
+// Throws std::invalid_argument if `target` has no faces or `cutters` is
+// empty (BooleanCombineGeneralNAry's own `first_group.empty()` refusal),
+// or if `tolerance` is not positive.
+std::pair<Brep, Brep> SplitBrepByManySolids(const Brep& target, const std::vector<Brep>& cutters,
+                                             double tolerance = 0.001);
+
 // A blind or through round hole (Rhino/SolidWorks "Hole" feature), cut
 // straight into `solid` via BooleanCombineGeneral() above - so, unlike the
 // app's `RoundHole`/`MakeHole`/`PlaceHole` (dino8-app/src/commands/

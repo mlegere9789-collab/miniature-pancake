@@ -4303,6 +4303,152 @@ void TestTrimSheetBySolidCallerTolerance() {
   Check(threw, "TrimSheetBySolid throws std::invalid_argument for a non-positive tolerance");
 }
 
+void TestSplitBrepBySolidOverlappingBoxesSumBackToOriginalVolume() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SplitBrepBySolid;
+
+  // PARITY_MAP.md's "Keep/split options" gap: "BooleanSplit solid-by-solid
+  // keeping all pieces... [is] all plane-split only (kernel SplitByPlane)" -
+  // the app's own general-cutter KeepAll split (SplitByObjectCommand) is
+  // mesh-level, not a real B-rep solid-by-solid split. A 4x4x4 target
+  // (volume 64) split by a 4x4x4 cutter offset by 2 units in every axis
+  // (overlap region [2,4]^3, volume 8).
+  const Brep target = Brep::Box(0, 0, 0, 4, 4, 4);
+  const Brep cutter = Brep::Box(2, 2, 2, 6, 6, 6);
+
+  const auto [outside, inside] = SplitBrepBySolid(target, cutter);
+  Check(outside.raw().IsValid(), "SplitBrepBySolid's outside piece is a valid ON_Brep");
+  Check(inside.raw().IsValid(), "SplitBrepBySolid's inside piece is a valid ON_Brep");
+
+  const Mesh mo = outside.TessellateToClosedMesh(16, 16);
+  const Mesh mi = inside.TessellateToClosedMesh(16, 16);
+  Check(std::abs(mo.Volume() - 56.0) < 0.5, "outside piece's volume is exactly target minus the overlap (64-8=56)");
+  Check(std::abs(mi.Volume() - 8.0) < 0.5, "inside piece's volume is exactly the overlap region (2x2x2=8)");
+  Check(std::abs((mo.Volume() + mi.Volume()) - 64.0) < 1e-3,
+        "outside + inside sum back to the original target's own volume (4^3=64) exactly - no material gained or "
+        "lost by the split");
+}
+
+void TestSplitBrepBySolidDisjointCutterKeepsWholeTargetOutside() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SplitBrepBySolid;
+
+  const Brep target = Brep::Box(0, 0, 0, 4, 4, 4);
+  const Brep cutter = Brep::Box(100, 100, 100, 104, 104, 104);
+
+  const auto [outside, inside] = SplitBrepBySolid(target, cutter);
+  Check(inside.FaceCount() == 0, "a cutter that never reaches target leaves the inside piece the empty Brep");
+  Check(outside.raw().IsValid() && outside.FaceCount() == target.FaceCount(),
+        "outside keeps every one of target's own faces, unchanged");
+  const Mesh mo = outside.TessellateToClosedMesh(8, 8);
+  Check(std::abs(mo.Volume() - 64.0) < 1e-3, "outside's volume is target's own, unchanged (4^3=64)");
+}
+
+void TestSplitBrepBySolidCutterFullyContainsTarget() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SplitBrepBySolid;
+
+  const Brep target = Brep::Box(1, 1, 1, 3, 3, 3);
+  const Brep cutter = Brep::Box(0, 0, 0, 4, 4, 4);
+
+  const auto [outside, inside] = SplitBrepBySolid(target, cutter);
+  Check(outside.FaceCount() == 0, "a cutter that fully contains target leaves the outside piece the empty Brep");
+  Check(inside.raw().IsValid(), "inside (the whole, untouched target) is a valid ON_Brep");
+  const Mesh mi = inside.TessellateToClosedMesh(8, 8);
+  Check(std::abs(mi.Volume() - 8.0) < 1e-3, "inside's volume is target's own, unchanged (2^3=8)");
+}
+
+void TestSplitBrepBySolidRejectsEmptyOperandsAndNonPositiveTolerance() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::SplitBrepBySolid;
+
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+  const Brep empty;
+
+  bool threw = false;
+  try {
+    SplitBrepBySolid(empty, box);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "SplitBrepBySolid throws std::invalid_argument for an empty target");
+
+  threw = false;
+  try {
+    SplitBrepBySolid(box, empty);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "SplitBrepBySolid throws std::invalid_argument for an empty cutter");
+
+  threw = false;
+  try {
+    SplitBrepBySolid(box, box, -1.0);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "SplitBrepBySolid throws std::invalid_argument for a non-positive tolerance");
+}
+
+void TestSplitBrepByManySolidsTwoDisjointCuttersSumBackToOriginalVolume() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SplitBrepByManySolids;
+  using dino8::kernel::SplitBrepBySolid;
+
+  // Closes the N-ary half of the "Keep/split options" gap
+  // SplitBrepBySolid (single cutter) leaves open. A 10x10x10 target
+  // (volume 1000) split by two disjoint interior cutters, each a 2x2x2 box
+  // (volume 8 apiece, 16 total) - the union of the cutters never overlaps
+  // itself, so `inside` should be exactly their combined volume and
+  // `outside` exactly the rest.
+  const Brep target = Brep::Box(0, 0, 0, 10, 10, 10);
+  const Brep cutter1 = Brep::Box(1, 1, 1, 3, 3, 3);
+  const Brep cutter2 = Brep::Box(6, 6, 6, 8, 8, 8);
+
+  const auto [outside, inside] = SplitBrepByManySolids(target, {cutter1, cutter2});
+  Check(outside.raw().IsValid(), "SplitBrepByManySolids's outside piece is a valid ON_Brep");
+  Check(inside.raw().IsValid(), "SplitBrepByManySolids's inside piece is a valid ON_Brep");
+
+  const Mesh mo = outside.TessellateToClosedMesh(16, 16);
+  const Mesh mi = inside.TessellateToClosedMesh(16, 16);
+  Check(std::abs(mi.Volume() - 16.0) < 0.5,
+        "inside piece's volume is exactly both disjoint cutters' own combined volume (8+8=16)");
+  Check(std::abs(mo.Volume() - 984.0) < 0.5, "outside piece's volume is exactly target minus both cutters (1000-16=984)");
+  Check(std::abs((mo.Volume() + mi.Volume()) - 1000.0) < 1e-3,
+        "outside + inside sum back to the original target's own volume (10^3=1000) exactly");
+
+  // Cross-check against two chained single-cutter SplitBrepBySolid calls:
+  // splitting target by cutter1 first, then splitting ITS OWN outside
+  // piece by cutter2, should recover the identical inside/outside split
+  // (cutter1/cutter2 are disjoint, so neither cutter's own piece touches
+  // the other's).
+  const auto [after1_outside, after1_inside] = SplitBrepBySolid(target, cutter1);
+  const auto [after2_outside, after2_inside] = SplitBrepBySolid(after1_outside, cutter2);
+  const double chained_inside = after1_inside.TessellateToClosedMesh(16, 16).Volume() +
+                                 after2_inside.TessellateToClosedMesh(16, 16).Volume();
+  Check(std::abs(chained_inside - mi.Volume()) < 1e-6,
+        "SplitBrepByManySolids's own combined inside volume matches two chained single-cutter SplitBrepBySolid "
+        "calls exactly");
+}
+
+void TestSplitBrepByManySolidsRejectsEmptyCutterGroup() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::SplitBrepByManySolids;
+
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+  bool threw = false;
+  try {
+    SplitBrepByManySolids(box, {});
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "SplitBrepByManySolids throws std::invalid_argument for an empty cutters group");
+}
+
 void TestSurfaceGetApproximateSize() {
   using dino8::kernel::NurbsSurface;
   using dino8::kernel::Point3d;
@@ -35564,6 +35710,63 @@ void TestBooleanCombineMixedParallelCylinderCapTrimNeededThrows() {
         "possibly-wrong end cap - the honestly-disclosed ParallelCylinderCapNeedsNoTrim scope limit");
 }
 
+void TestBooleanCombineMixedParallelCylinderCapTrimNeededIsTypedUnsupportedGeometry() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanFailureReason;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::BooleanOperationError;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  // Same fixture as TestBooleanCombineMixedParallelCylinderCapTrimNeededThrows
+  // above - closes this file's own next-named extension of BooleanOperationError
+  // (boolean.h's own class-level doc comment): "retyping... the
+  // ParallelCylinderCapNeedsNoTrim... refusal" from a plain
+  // std::invalid_argument to this file's own structured failure type, still
+  // fully backward compatible (the prior test, unchanged, still catches it
+  // as plain std::invalid_argument with identical what() text) but now also
+  // giving a caller wanting a programmatic reason one to read.
+  Brep::CylindricalFace cyl_a;
+  cyl_a.frame.origin = Point3d(0, 0, 0);
+  cyl_a.frame.xaxis = Vector3d(1, 0, 0);
+  cyl_a.frame.yaxis = Vector3d(0, 1, 0);
+  cyl_a.frame.zaxis = Vector3d(0, 0, 1);
+  cyl_a.frame.UpdateEquation();
+  cyl_a.radius = 2.0;
+  cyl_a.angle = 2.0 * ON_PI;
+  cyl_a.length = 5.0;
+  const Brep a = Brep::FromMixedFaces({}, {cyl_a});
+
+  Brep::CylindricalFace cyl_b;
+  cyl_b.frame.origin = Point3d(1.5, 0, 0);
+  cyl_b.frame.xaxis = Vector3d(1, 0, 0);
+  cyl_b.frame.yaxis = Vector3d(0, 1, 0);
+  cyl_b.frame.zaxis = Vector3d(0, 0, 1);
+  cyl_b.frame.UpdateEquation();
+  cyl_b.radius = 1.8;
+  cyl_b.angle = 2.0 * ON_PI;
+  cyl_b.length = 5.0;
+  const Brep b = Brep::FromMixedFaces({}, {cyl_b});
+
+  bool caught_typed = false;
+  bool caught_plain = false;
+  try {
+    BooleanCombineMixed(a, b, BooleanOp::Union);
+  } catch (const BooleanOperationError& e) {
+    caught_typed = true;
+    Check(e.reason() == BooleanFailureReason::UnsupportedGeometry,
+          "the parallel-cylinder cap-trim refusal reports BooleanFailureReason::UnsupportedGeometry");
+    Check(e.function_name() == "BooleanCombineMixed",
+          "the parallel-cylinder cap-trim refusal names BooleanCombineMixed as the refusing function");
+  } catch (const std::invalid_argument&) {
+    caught_plain = true;
+  }
+  Check(caught_typed, "the parallel-cylinder cap-trim refusal is catchable as BooleanOperationError");
+  Check(!caught_plain, "catching BooleanOperationError (a std::invalid_argument subclass) intercepts it first - "
+                        "the plain std::invalid_argument handler never fires");
+}
+
 void TestBooleanCombineMixedSteinmetzStillThrows() {
   using dino8::kernel::BooleanCombineMixed;
   using dino8::kernel::BooleanOp;
@@ -39766,6 +39969,173 @@ void TestBooleanCombineMixedChainedNegativeControls() {
 // triangles (no curvature to approximate) - `Within(..., 1e-9)` below is a
 // real exactness check on the measured mesh volume, not a loosened one.
 double NAryTestVolume(const dino8::kernel::Brep& b) { return b.TessellateToClosedMesh(4, 4).Volume(); }
+
+// Area of a closed planar polygon via the standard "shoelace about the
+// origin" identity (Area = 0.5 * |sum_i P_i x P_{i+1}|) - unlike a fan
+// triangulation from vertex 0 (boolean.cpp's own internal
+// PlanarPolygonArea, restricted to convex input by every caller it
+// actually has), this is exact for ANY simple polygon, convex or not,
+// which is exactly what PolygonBooleanPlanar's own non-convex test below
+// needs to verify against.
+double PolygonLoopArea(const std::vector<dino8::kernel::Point3d>& loop) {
+  using dino8::kernel::Vector3d;
+  Vector3d sum(0, 0, 0);
+  const size_t n = loop.size();
+  for (size_t i = 0; i < n; ++i) {
+    const dino8::kernel::Point3d& p0 = loop[i];
+    const dino8::kernel::Point3d& p1 = loop[(i + 1) % n];
+    sum += ON_CrossProduct(Vector3d(p0.x, p0.y, p0.z), Vector3d(p1.x, p1.y, p1.z));
+  }
+  return 0.5 * sum.Length();
+}
+
+void TestPolygonBooleanPlanarUnionOfTwoOverlappingSquares() {
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::PolygonBooleanPlanar;
+
+  const ON_Plane plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1));
+  const std::vector<Point3d> a = {Point3d(0, 0, 0), Point3d(2, 0, 0), Point3d(2, 2, 0), Point3d(0, 2, 0)};
+  const std::vector<Point3d> b = {Point3d(1, 1, 0), Point3d(3, 1, 0), Point3d(3, 3, 0), Point3d(1, 3, 0)};
+
+  const auto result = PolygonBooleanPlanar(a, b, plane, BooleanOp::Union);
+  Check(result.size() == 1, "PolygonBooleanPlanar Union of two overlapping unit squares: one connected result polygon");
+  double total = 0.0;
+  for (const auto& loop : result) total += PolygonLoopArea(loop);
+  Check(Within(total, 7.0, 1e-9),
+        "PolygonBooleanPlanar Union of a [0,2]x[0,2] and a [1,3]x[1,3] square: area is exactly 4 + 4 - 1 = 7");
+}
+
+void TestPolygonBooleanPlanarIntersectionOfTwoOverlappingSquares() {
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::PolygonBooleanPlanar;
+
+  const ON_Plane plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1));
+  const std::vector<Point3d> a = {Point3d(0, 0, 0), Point3d(2, 0, 0), Point3d(2, 2, 0), Point3d(0, 2, 0)};
+  const std::vector<Point3d> b = {Point3d(1, 1, 0), Point3d(3, 1, 0), Point3d(3, 3, 0), Point3d(1, 3, 0)};
+
+  const auto result = PolygonBooleanPlanar(a, b, plane, BooleanOp::Intersection);
+  Check(result.size() == 1, "PolygonBooleanPlanar Intersection of two overlapping unit squares: one result polygon");
+  double total = 0.0;
+  for (const auto& loop : result) total += PolygonLoopArea(loop);
+  Check(Within(total, 1.0, 1e-9),
+        "PolygonBooleanPlanar Intersection of the same two squares: the overlap is exactly the unit square "
+        "[1,2]x[1,2]");
+}
+
+void TestPolygonBooleanPlanarDifferenceOfTwoOverlappingSquares() {
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::PolygonBooleanPlanar;
+
+  const ON_Plane plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1));
+  const std::vector<Point3d> a = {Point3d(0, 0, 0), Point3d(2, 0, 0), Point3d(2, 2, 0), Point3d(0, 2, 0)};
+  const std::vector<Point3d> b = {Point3d(1, 1, 0), Point3d(3, 1, 0), Point3d(3, 3, 0), Point3d(1, 3, 0)};
+
+  const auto result = PolygonBooleanPlanar(a, b, plane, BooleanOp::Difference);
+  double total = 0.0;
+  for (const auto& loop : result) total += PolygonLoopArea(loop);
+  Check(Within(total, 3.0, 1e-9), "PolygonBooleanPlanar Difference a-b area is exactly 4 - 1 = 3");
+}
+
+void TestPolygonBooleanPlanarNonConvexLShapeIntersection() {
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::PolygonBooleanPlanar;
+
+  // A non-convex L-shaped polygon: a 2x2 square with a 1x1 notch cut from
+  // its top-right corner, area 4 - 1 = 3 - the case
+  // BooleanIntersectConvexPlanar/ShellConvexPlanar's own IsConvex()
+  // precondition would refuse outright, and PolygonBooleanPlanar's own
+  // doc comment claims BooleanCombinePlanar's general (non-convex)
+  // planar-faced-polyhedron handling covers.
+  const std::vector<Point3d> l_shape = {Point3d(0, 0, 0), Point3d(2, 0, 0), Point3d(2, 1, 0),
+                                         Point3d(1, 1, 0), Point3d(1, 2, 0), Point3d(0, 2, 0)};
+  const std::vector<Point3d> bounding_square = {Point3d(0, 0, 0), Point3d(2, 0, 0), Point3d(2, 2, 0),
+                                                 Point3d(0, 2, 0)};
+  const ON_Plane plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1));
+
+  const auto result = PolygonBooleanPlanar(l_shape, bounding_square, plane, BooleanOp::Intersection);
+  double total = 0.0;
+  for (const auto& loop : result) total += PolygonLoopArea(loop);
+  Check(Within(total, 3.0, 1e-9),
+        "PolygonBooleanPlanar Intersection of a non-convex L-shaped polygon (area 3) with its own bounding square "
+        "returns the L-shape itself, area unchanged");
+}
+
+void TestPolygonBooleanPlanarDisjointOperands() {
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::PolygonBooleanPlanar;
+
+  const std::vector<Point3d> a = {Point3d(0, 0, 0), Point3d(1, 0, 0), Point3d(1, 1, 0), Point3d(0, 1, 0)};
+  const std::vector<Point3d> b = {Point3d(5, 5, 0), Point3d(6, 5, 0), Point3d(6, 6, 0), Point3d(5, 6, 0)};
+  const ON_Plane plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1));
+
+  const auto u = PolygonBooleanPlanar(a, b, plane, BooleanOp::Union);
+  double total = 0.0;
+  for (const auto& loop : u) total += PolygonLoopArea(loop);
+  Check(u.size() == 2 && Within(total, 2.0, 1e-9),
+        "PolygonBooleanPlanar Union of two disjoint unit squares: two separate result polygons, combined area 2");
+
+  const auto i = PolygonBooleanPlanar(a, b, plane, BooleanOp::Intersection);
+  Check(i.empty(), "PolygonBooleanPlanar Intersection of two disjoint squares: empty result");
+}
+
+void TestPolygonBooleanPlanarDifferenceLeavesARingWithHoleLoop() {
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::PolygonBooleanPlanar;
+
+  // `b` sits fully inside `a` - a-b is a genuine ring, not a simply
+  // connected region: BooleanCombinePlanar's own raw per-fragment faces
+  // (dissolved back into loops by boolean.cpp's own
+  // DissolveCoplanarFragments) must come back as TWO loops here, the
+  // outer 10x10 boundary and the inner 4x4 hole boundary, not one
+  // self-intersecting loop or a silently dropped hole.
+  const std::vector<Point3d> big = {Point3d(0, 0, 0), Point3d(10, 0, 0), Point3d(10, 10, 0), Point3d(0, 10, 0)};
+  const std::vector<Point3d> hole = {Point3d(3, 3, 0), Point3d(7, 3, 0), Point3d(7, 7, 0), Point3d(3, 7, 0)};
+  const ON_Plane plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1));
+
+  const auto result = PolygonBooleanPlanar(big, hole, plane, BooleanOp::Difference);
+  Check(result.size() == 2, "PolygonBooleanPlanar Difference leaving a ring returns exactly two loops");
+  if (result.size() == 2) {
+    const double area0 = PolygonLoopArea(result[0]);
+    const double area1 = PolygonLoopArea(result[1]);
+    const double outer = std::max(area0, area1);
+    const double inner = std::min(area0, area1);
+    Check(Within(outer, 100.0, 1e-9), "the ring's outer loop has the full 10x10 area (100)");
+    Check(Within(inner, 16.0, 1e-9), "the ring's hole loop has the cut-out 4x4 area (16)");
+  }
+}
+
+void TestPolygonBooleanPlanarNegativeControls() {
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::PolygonBooleanPlanar;
+
+  const ON_Plane plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1));
+  const std::vector<Point3d> tri = {Point3d(0, 0, 0), Point3d(1, 0, 0), Point3d(0, 1, 0)};
+
+  const std::vector<Point3d> too_few = {Point3d(0, 0, 0), Point3d(1, 0, 0)};
+  bool threw = false;
+  try {
+    PolygonBooleanPlanar(too_few, tri, plane, BooleanOp::Union);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "PolygonBooleanPlanar refuses a polygon with fewer than 3 vertices");
+
+  const std::vector<Point3d> off_plane = {Point3d(0, 0, 1), Point3d(1, 0, 1), Point3d(0, 1, 1)};
+  threw = false;
+  try {
+    PolygonBooleanPlanar(off_plane, tri, plane, BooleanOp::Union);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "PolygonBooleanPlanar refuses a polygon whose vertices don't lie in the given plane");
+}
 
 void TestBooleanCombineMixedNAryUnionThreeOverlappingBoxesMatchesInclusionExclusion() {
   using dino8::kernel::BooleanCombineMixedNAry;
@@ -57823,6 +58193,12 @@ int main() {
   TestTrimSheetBySolidDisjointSheetKeepsWholeOrEmpty();
   TestTrimSheetBySolidRejectsEmptyOperands();
   TestTrimSheetBySolidCallerTolerance();
+  TestSplitBrepBySolidOverlappingBoxesSumBackToOriginalVolume();
+  TestSplitBrepBySolidDisjointCutterKeepsWholeTargetOutside();
+  TestSplitBrepBySolidCutterFullyContainsTarget();
+  TestSplitBrepBySolidRejectsEmptyOperandsAndNonPositiveTolerance();
+  TestSplitBrepByManySolidsTwoDisjointCuttersSumBackToOriginalVolume();
+  TestSplitBrepByManySolidsRejectsEmptyCutterGroup();
   TestSurfaceGetApproximateSize();
   TestSurfaceTessellateGridClippedExactRejectsTooFewPoints();
   TestSurfaceTessellateGridRejectsTooFewTrimPoints();
@@ -58276,6 +58652,7 @@ int main() {
   TestBooleanCombineMixedParallelCylinderUnionOneFullyNestedContributesNothing();
   TestBooleanCombineMixedParallelCylinderPartialSweepCapClosesOtherwiseOpenWedge();
   TestBooleanCombineMixedParallelCylinderCapTrimNeededThrows();
+  TestBooleanCombineMixedParallelCylinderCapTrimNeededIsTypedUnsupportedGeometry();
   TestBooleanCombineMixedSteinmetzStillThrows();
   TestBooleanCombineMixedGeneralSkewCylinderStillThrows();
   TestBooleanCombineMixedParallelAxisDetectionToleranceBoundary();
@@ -58325,6 +58702,13 @@ int main() {
   TestBooleanCombinePlanarNAryDifferenceSubtractsEveryToolInSecondGroup();
   TestBooleanCombinePlanarNAryIntersectionUnionsEachSideBeforeCombining();
   TestBooleanCombinePlanarNAryNegativeControls();
+  TestPolygonBooleanPlanarUnionOfTwoOverlappingSquares();
+  TestPolygonBooleanPlanarIntersectionOfTwoOverlappingSquares();
+  TestPolygonBooleanPlanarDifferenceOfTwoOverlappingSquares();
+  TestPolygonBooleanPlanarNonConvexLShapeIntersection();
+  TestPolygonBooleanPlanarDisjointOperands();
+  TestPolygonBooleanPlanarDifferenceLeavesARingWithHoleLoop();
+  TestPolygonBooleanPlanarNegativeControls();
   TestBooleanCombinePlanarDifferenceAcceptsCompoundFirstOperand();
   TestBooleanCombinePlanarDifferenceAcceptsCompoundSecondOperand();
   TestBooleanCombinePlanarIntersectionAcceptsCompoundOperand();
