@@ -2732,8 +2732,8 @@ bucket moved).*
 - [missing] SubD-result revolve and multi-pipe menu entries are broken references, not implemented commands (SubDRevolve, SubDMultiPipe) — the SubD menu (MenuBar.cpp:182) still lists both names, with no matching command registration anywhere.
 
 **kernel: Offsetting, shelling, thickening** (offsetshell):
-- [partial] Closed hollow shell (uniform wall, no openings) of a solid — app `ShellCommand` still hollows via mesh offset + mesh boolean. Kernel `ShellClosedSphere`/`ShellClosedTorus` (boolean.h:415-451) give an exact B-rep shell, but only for a full sphere or torus; `OffsetSolid(-t)` plus a boolean gives a general hollow at mesh level only.
-- [partial] Shell with removed/open faces (cup/case), including multi-face openings — kernel `ShellConvexPlanar` (boolean.h:340-387) is exact but convex planar solids only, and mutually-adjacent removed faces are refused. App `ShellCommand` face removal works on a mesh for simple box-like solids only.
+- [partial] Closed hollow shell (uniform wall, no openings) of a solid — app `ShellCommand` still hollows via mesh offset + mesh boolean. Kernel `ShellClosedSphere`/`ShellClosedTorus` (boolean.h:415-451) give an exact B-rep shell, but only for a full sphere or torus; `OffsetSolid(-t)` plus a boolean still gives a general hollow at B-rep level only via two separate calls. **New this pass:** `Mesh::Shell(thickness)` (dino8-kernel/include/dino8/kernel/mesh.h; src/mesh.cpp) closes the equivalent gap at mesh level directly, in one call rather than composing `Offset`+boolean by hand: it hollows an already-closed mesh into two disjoint closed layers — the original, entirely unchanged, as the outer wall, plus a flipped `Offset(-thickness)` copy as the inner wall — with no wall faces needed, since a closed mesh has no naked edge to stitch one to. Refuses a non-positive thickness, an open (not `IsClosedManifold()`) input (that case is `Thicken()`'s, not this method's), and a thickness large enough to fold the inward offset through itself or invert it past the opposite wall (checked via `FindSelfIntersections()` plus an independent enclosed-volume-ordering guard: the inner copy's own volume must land strictly between 0 and the outer's, not just be self-intersection-free — a shape thin/curved enough can silently turn inside-out without any single pair of triangles ever crossing). Still partial: mesh-level, not B-rep; no openings (see the next bullet); wall thickness is uniform, not per-face.
+- [partial] Shell with removed/open faces (cup/case), including multi-face openings — kernel `ShellConvexPlanar` (boolean.h:340-387) is exact but convex planar solids only, and mutually-adjacent removed faces are refused. App `ShellCommand` face removal works on a mesh for simple box-like solids only. **New this pass:** `Mesh::Shell(thickness, removed_face_indices)` (dino8-kernel/include/dino8/kernel/mesh.h; src/mesh.cpp) is a genuine KERNEL-level mesh cup/case shell, and — unlike `ShellConvexPlanar` — not limited to convex planar solids: it removes the named faces from both the outer layer and the inward-offset inner layer, then stitches a new ring of side-wall quads around each resulting opening's own boundary, reusing `Thicken()`'s own established "one quad per naked edge, `vi = {a, b, b+n, a+n}`" construction rather than inventing a second one — the result is still a genuine closed, orientation-consistent 2-manifold (`IsClosedManifold()` holds; the cavity is exposed only through the opening's own sealed rim, not through bare naked edges). Mutually adjacent removed faces (an opening spanning several faces) are NOT refused the way `ShellConvexPlanar`'s own convex-planar assembly must refuse them — there is no equivalent topological hazard at the mesh level, verified directly (`TestMeshShellWithRemovedFaceProducesClosedManifoldCupWithStitchedWall`, tests/test_basic.cpp) on both a single removed face and two adjacent removed faces at once. Still partial: mesh-level only, not wired to any `dino8-app` command (the app's own `ShellCommand` still uses its separate, box-like-only mesh path), and a removed-face set whose own boundary is non-manifold or self-touching (a "bowtie" opening) is not specially detected.
 - [partial] Per-face (multi-thickness) shell — kernel `ShellConvexPlanar` per-face overload exists (convex planar solids only). App `OffsetMeshPerFace` remains mesh-level.
 - [partial] Face offset in place (move one face along its normal, neighbours re-intersected, B-rep kept) — kernel `OffsetFace` (boolean.h:453-488) moves one plane and re-clips every other face against it, but limited to convex planar solids with no topology change allowed (a face vanishing throws); not wired to any app command. App `MovePartsCommand` remains approximate.
 - [partial] Body offset (offset an entire closed solid outward/inward as a B-rep) — kernel `OffsetSolid` is a ball dilation/erosion through Manifold Minkowski, mesh-level not B-rep. New this pass: `OffsetSolidConvexPlanar` (boolean.h/.cpp) is an exact B-rep whole-body offset — every face of a convex planar-faced solid moved along its own outward normal at once (uniform or independently per face), sharp/mitered corners reconstructed via the same `ClipConvexPolygon` half-space-clipping `OffsetFace`/`ShellConvexPlanar` already use — verified against an exact box (closed-form volume, both uniform and per-face) and a hand-built tetrahedron (checked against an independent three-plane-intersection recomputation of every new vertex). Still partial: convex planar solids only (the same precondition `OffsetFace`/`ShellConvexPlanar` already enforce), no curved or non-convex body, and not wired to any app command. App `OffsetSrf` non-Surface branch uses a mesh vertex-normal offset.
@@ -2771,6 +2771,8 @@ bucket moved).*
 *A later pass still: this pass's own sphere-branch fix to `NurbsSurface::OffsetAnalytic` (see the "Exact analytic-face offset" bullet above for the full construction and test detail) closes BOTH the longitude and latitude halves of that item's own "sphere still discards the input patch's own extent" disclosed gap in one pass, and along the way fixes two real, previously-undiscovered bugs the cylinder/cone fixes never had to face: `ON_Sphere(center, radius)`'s own constructor silently resetting `plane` to the world XY plane, and `ON_Surface::IsSphere()`'s own fallback fit being genuinely ambiguous (equator-frame vs. meridian-frame) for anything short of a full sphere — both invisible on the world-aligned fixtures a less adversarial test would have used. Does NOT change this category's own present/partial/missing counts: "Exact analytic-face offset" was already `[partial]` and stays `[partial]` — torus still discards the input patch's own extent entirely, and this remains a single-surface operation with no B-rep-face wiring. The table's own 0/27/0/27 (50.0%) is unchanged.*
 
 *A later pass in turn: this pass's own torus-branch fix to `NurbsSurface::OffsetAnalytic` (see the "Exact analytic-face offset" bullet above for the full construction and test detail) closes BOTH the major-angle and minor-angle halves of that item's own "torus still discards the input patch's own extent" disclosed gap, and along the way finds and works around a real, previously-undiscovered OpenNURBS bug in `ON_Torus::ClosestPointTo()`'s own minor-angle output (wrong for any off-origin torus, invisible on the world-centered fixture the pre-existing coaxial-torus test already used). This is the last of the five analytic branches (plane, cylinder, cone, sphere, torus) to gain extent preservation. Does NOT change this category's own present/partial/missing counts: "Exact analytic-face offset" was already `[partial]` and stays `[partial]` — a seam-straddling patch is still refused rather than mishandled in any branch, and this remains a single-surface operation with no B-rep-face wiring. The table's own 0/27/0/27 (50.0%) is unchanged.*
+
+**This session's own follow-up:** `git log --oneline -3 -- dino8-kernel/src/mesh.cpp` at the start of this session showed `004f3aa` (`kernel: Mesh::Shell hollows a closed mesh with a uniform-thickness wall`) as the most recent commit touching this file, landed but never reflected in this document - so this session documented that gap first (see the "Closed hollow shell" bullet's own "New this pass" text above), then picked the next closely-related item in the same category rather than a distant one: "Shell with removed/open faces (cup/case)", the very next bullet, whose own kernel evidence (`ShellConvexPlanar`, convex-planar-only) `Mesh::Shell(thickness)`'s own closed-mesh construction generalizes naturally to once face removal is added. `Mesh::Shell(thickness, removed_face_indices)` (see that bullet's own "New this pass" text above) closes it: reuses `Shell(thickness)`'s own feasibility guards verbatim (opening faces up can only relax the wall-to-wall fold hazard, never worsen it) and `Thicken()`'s own naked-edge stitching formula to seal each opening's rim between the outer and inner layers, verified by 2 new tests covering a single removed face, two mutually-adjacent removed faces, and the full input-validation surface (empty/duplicate/out-of-range/all-faces-removed index lists, non-positive thickness, an already-open input, and the same thin-slab fold hazard `Shell(thickness)`'s own test already exercises) - `TestMeshShellWithRemovedFaceProducesClosedManifoldCupWithStitchedWall`/`TestMeshShellWithRemovedFacesRefusesInvalidInput`, tests/test_basic.cpp. Does NOT change this category's own present/partial/missing counts: both items were already `[partial]` and stay `[partial]` - real, tested, honestly-scoped new mesh-level coverage (a non-convex, non-box-like closed mesh can now be shelled with an opening, where before only a convex-planar Brep or an app-level box-like mesh path could), not yet `[present]` (no app wiring for either method, still mesh-only rather than B-rep, and a bowtie-shaped opening boundary is not specially detected). The table's own 0/27/0/27 (50.0%) is unchanged. Testing this surfaced a real bug before it landed: the wall's initial winding (naively copying `Thicken()`'s own `vi = {a, b, b+n, a+n}` verbatim) left `IsClosedManifold()` reporting 8 `orientation_conflicts` on the very first fixture tried - `Thicken()`'s formula relies on its OWN sheet getting flipped into the inner-wall role before storage, which doesn't hold here (this method's outer layer stays unflipped); reversed to `vi = {b, a, a+n, b+n}` once traced through by hand and confirmed via a standalone scratch-binary `Check()` dump (8 conflicts -> 0), rather than shipped on the strength of "it compiles and looks like Thicken()'s". Full `dino8_kernel_tests` suite (via `ctest`): 100% passing (1 test target, `dino8_kernel_smoke`), 0 regressions.*
 
 **kernel: Local / direct-edit operations** (localops):
 - [partial] Split an edge at a point (SplitEdge) — app `SplitEdgeCommand` (cmd_fillet.cpp:2153-2301) does a real vertex/edge/trim split. Kernel `Brep::SplitNakedEdgeAt` covers only naked, straight edges. The app splits each trim at the same normalized parameter fraction as the 3D edge, exact only when trim and edge parameterizations are proportional — approximate on curved or non-uniformly parameterized trims.
@@ -3274,6 +3276,55 @@ uses). This session's only source edits are `dino8-kernel/include/dino8/
 kernel/mesh.h`, `dino8-kernel/src/mesh.cpp`, and `dino8-kernel/tests/
 test_basic.cpp`; full `dino8_kernel_tests` suite (via `ctest`): 100%
 passing (1 test target, `dino8_kernel_smoke`, 5561 checks), 0 regressions.
+
+**2026-09-30 follow-up (creasing read-back, not tied to a distinct
+checklist item):** `git log --oneline -3 -- dino8-kernel/src/subd.cpp` at
+the start of this session showed `73f898a` (`kernel: SubD::SetEdgeSharpness
+gains genuine per-end-variable weight`) as the most recent commit touching
+this file - already documented above (see the "2026-09-30 follow-up
+(creasing edge case...)" note) - so this session picked the real gap that
+addition's own text left standing: both `SetEdgeSharpness()` overloads
+could WRITE a per-end sharpness value from the moment they existed, but
+there was no way to READ one back short of a `const_cast` onto `raw()`
+directly (`ON_SubDEdge::EndSharpness(vertex)`, the exact primitive
+`SetEdgeSharpness()` itself already calls internally to map p0/p1 onto the
+edge's own storage order, was never exposed to a caller for the reverse
+direction).
+
+`SubD::EdgeSharpnessAt(p0, p1, point_tolerance)` (dino8-kernel/include/
+dino8/kernel/subd.h; src/subd.cpp) closes it: returns a new
+`SubDEdgeSharpnessInfo{found, sharpness_at_p0, sharpness_at_p1}`, reusing
+the identical FindVertex/FindEdge/`IsSmooth()` refusal logic
+`SetEdgeSharpness()` already established (a hard Crease-tagged edge, a
+missing vertex, or no edge between them all read back `found = false`
+rather than a stale/zero value indistinguishable from "genuinely zero
+sharpness") and the identical `e->Vertex(0u) == v0` point-vs-storage-order
+mapping, applied to reading instead of writing. Verified by 4 new checks
+(`TestSubDEdgeSharpnessAtReadsBackWhatWasWritten`, tests/test_basic.cpp):
+an untouched smooth edge reads back `found = true` with both ends
+genuinely 0 (the real OpenNURBS default, not an unset sentinel); a
+constant-weight write round-trips exactly; a genuinely UNEVEN per-end
+write (kMax at one end, 0 at the other) round-trips exactly in the SAME
+point order it was written in, AND reads back correctly REVERSED when the
+two query points are swapped - the real claim this test exists for, proving
+the read side tracks the physical point rather than OpenNURBS' own
+internal `m_vertex[0]`/`[1]` storage order, the identical property
+`SetEdgeSharpness()`'s own per-end overload already guarantees for
+writing; and a hard-crease edge, a missing vertex, and two real vertices
+with no edge between them all correctly read back `found = false`. Full
+`dino8_kernel_tests` suite (via `ctest`): 100% passing, 0 regressions. Does
+NOT flip any item's present/partial/missing status in this category's own
+checklist - the underlying creasing capability was already `[partial]` (as
+part of "SubD display-level control at kernel level") and this closes
+real, tested ground under it (a caller can now inspect what sharpness an
+edge already carries, where before only writing was possible) without
+claiming a materially bigger problem is solved. The table's own 15/7/0/22
+(84.1%) is unchanged. This session's only source edits are
+`dino8-kernel/include/dino8/kernel/subd.h`, `dino8-kernel/src/subd.cpp`,
+and `dino8-kernel/tests/test_basic.cpp` (plus, in the same session, the
+"Shell with removed/open faces" work documented under **kernel:
+Offsetting, shelling, thickening** above, touching `mesh.h`/`mesh.cpp`
+instead).
 
 ## App: Dino 8 vs Rhino 8 + AutoCAD 2027
 

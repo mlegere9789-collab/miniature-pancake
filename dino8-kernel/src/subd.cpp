@@ -611,6 +611,27 @@ bool SubD::SetEdgeSharpness(const Point3d& p0, const Point3d& p1,
   return true;
 }
 
+SubDEdgeSharpnessInfo SubD::EdgeSharpnessAt(const Point3d& p0, const Point3d& p1,
+                                            double point_tolerance) const {
+  SubDEdgeSharpnessInfo info;
+  const ON_SubDVertex* v0 = subd_.FindVertex(&p0.x, point_tolerance);
+  const ON_SubDVertex* v1 = subd_.FindVertex(&p1.x, point_tolerance);
+  if (v0 == nullptr || v1 == nullptr) {
+    return info;
+  }
+  const ON_SubDEdge* e = subd_.FindEdge(v0, v1).Edge();
+  if (e == nullptr || !e->IsSmooth()) {
+    return info;
+  }
+  // Same p0/p1-vs-m_vertex[0]/[1] mapping SetEdgeSharpness()'s own
+  // per-end overload already uses, applied here to reading.
+  const bool p0_is_end0 = (e->Vertex(0u) == v0);
+  info.sharpness_at_p0 = p0_is_end0 ? e->EndSharpness(0u) : e->EndSharpness(1u);
+  info.sharpness_at_p1 = p0_is_end0 ? e->EndSharpness(1u) : e->EndSharpness(0u);
+  info.found = true;
+  return info;
+}
+
 bool SubD::SetCrease(const Point3d& p0, const Point3d& p1, bool crease, double point_tolerance) {
   const ON_SubDVertex* v0 = subd_.FindVertex(&p0.x, point_tolerance);
   const ON_SubDVertex* v1 = subd_.FindVertex(&p1.x, point_tolerance);

@@ -13187,6 +13187,101 @@ void TestMeshShellRefusesInvalidInput() {
                     "opposite wall, rather than silently returning a turned-inside-out result");
 }
 
+// Shell(thickness, removed_face_indices): cuts a genuine opening (cup/case
+// shell) rather than a fully closed hollow shape. The key structural claim
+// this checks is IsClosedManifold() on the RESULT - not merely "no naked
+// edges" but the stronger orientation-consistent condition (see
+// IsClosedManifold()'s own "orientation_conflicts" check in Check()): if
+// the new stitching wall's winding were backwards, an edge it shares with
+// either the outer or inner layer would be walked the SAME direction by
+// both faces, and IsClosedManifold() would report false - so this is a
+// real, self-verifying check of the wall's orientation, not just its
+// existence.
+void TestMeshShellWithRemovedFaceProducesClosedManifoldCupWithStitchedWall() {
+  using dino8::kernel::Mesh;
+
+  const auto box = MakeQuadBoxMesh(0, 0, 0, 4, 4, 4);
+  const double thickness = 0.5;
+
+  // Face index 1 is MakeQuadBoxMesh's own top (+z) face - see its comment.
+  const Mesh cup = box.Shell(thickness, {1});
+
+  Check(cup.VertexCount() == box.VertexCount() * 2,
+        "Shell(thickness, {face}) keeps both full vertex layers (outer + inner), same as the no-opening overload - "
+        "only faces, never vertices, are removed");
+
+  // One quad face is removed from EACH of the outer and inner layers
+  // (6-1)*2 = 10, plus one new stitching quad per naked edge of the
+  // post-removal outer layer - a single quad face's own 4 edges, all
+  // becoming naked at once, so exactly 4 new wall faces: 10 + 4 = 14.
+  Check(cup.FaceCount() == (box.FaceCount() - 1) * 2 + 4,
+        "removing one quad face from each layer and stitching its own 4-edge boundary with new wall quads gives "
+        "exactly (6-1)*2 + 4 = 14 faces");
+
+  Check(cup.IsClosedManifold(),
+        "the cup - outer layer minus one face, inner layer minus the same face, plus the new stitching wall around "
+        "the opening's own rim - is still a genuine closed, orientation-consistent 2-manifold: the opening is "
+        "sealed by the wall, not left as bare naked edges");
+
+  Check(cup.Volume() > 0.0,
+        "a positive enclosed volume confirms the whole result - including the new stitching wall - is consistently "
+        "outward-oriented, not merely closed by coincidence with some faces backwards");
+
+  // Removing a different single face (index 4, "left (-x)") gives the
+  // identical structural counts - the construction doesn't depend on
+  // which face happens to be named.
+  const Mesh cup2 = box.Shell(thickness, {4});
+  Check(cup2.FaceCount() == (box.FaceCount() - 1) * 2 + 4 && cup2.IsClosedManifold(),
+        "removing a different single face gives the same structural counts and stays a closed manifold");
+
+  // Two ADJACENT removed faces (top and right, which share an edge) open
+  // one larger, still-single, opening - unlike ShellConvexPlanar's own
+  // Brep-level convex-planar construction, mutually adjacent removed
+  // faces are not refused here (see this overload's own header doc
+  // comment for why no equivalent hazard exists at the mesh level).
+  const Mesh cup3 = box.Shell(thickness, {1, 5});
+  Check(cup3.VertexCount() == box.VertexCount() * 2 && cup3.IsClosedManifold(),
+        "two mutually adjacent removed faces merge into one larger opening and still produce a valid closed "
+        "manifold, not a refusal");
+}
+
+void TestMeshShellWithRemovedFacesRefusesInvalidInput() {
+  using dino8::kernel::Mesh;
+
+  const auto box = MakeQuadBoxMesh(0, 0, 0, 4, 4, 4);
+
+  auto expect_throw = [](const std::function<void()>& call, const char* message) {
+    bool threw = false;
+    try {
+      call();
+    } catch (const std::invalid_argument&) {
+      threw = true;
+    }
+    Check(threw, message);
+  };
+
+  expect_throw([&] { (void)box.Shell(0.0, {0}); }, "Shell(0.0, {face}) throws - thickness must be strictly positive");
+  expect_throw([&] { (void)box.Shell(-1.0, {0}); }, "Shell(-1.0, {face}) throws - thickness must be strictly positive");
+  expect_throw([&] { (void)box.Shell(0.5, {}); },
+               "Shell(thickness, {}) throws - an empty removal list should use the no-opening overload instead");
+  expect_throw([&] { (void)box.Shell(0.5, {0, 0}); }, "Shell() throws on a duplicate face index");
+  expect_throw([&] { (void)box.Shell(0.5, {-1}); }, "Shell() throws on a negative (out-of-range) face index");
+  expect_throw([&] { (void)box.Shell(0.5, {box.FaceCount()}); }, "Shell() throws on a too-large (out-of-range) face index");
+  expect_throw([&] { (void)box.Shell(0.5, {0, 1, 2, 3, 4, 5}); },
+               "Shell() throws when every face is named - an entirely open shell has no outer wall left");
+
+  const auto open_square = MakeFlatUnitSquareMesh();
+  expect_throw([&] { (void)open_square.Shell(0.1, {0}); },
+               "Shell() on an already-open mesh throws - Thicken() is the open-sheet operation, not this one");
+
+  // Same thin-slab fold hazard the no-opening overload's own test already
+  // exercises - the feasibility guard is checked against the FULL mesh
+  // before any face is removed, so it still fires here.
+  const auto slab = MakeQuadBoxMesh(0, 0, 0, 4, 4, 0.4);
+  expect_throw([&] { (void)slab.Shell(1.0, {0}); },
+               "Shell() with an opening still refuses a thickness that folds/inverts the full inward offset");
+}
+
 // Perpendicular distance from `p` to the infinite line through `a`/`b`, in
 // 3D - a plain, independent geometric primitive (NOT InsetFace's own
 // miter-offset formula) used below to verify an inset corner's actual
@@ -15628,6 +15723,82 @@ void TestSubDSetEdgeSharpnessSupportsPerEndVariableWeight() {
           "exactly 1.0 down to 0 - a strictly UNEVEN decay, proving the "
           "two ends are tracked independently rather than averaged up "
           "front");
+  }
+}
+
+// SubD::EdgeSharpnessAt(): the read-back counterpart the two
+// SetEdgeSharpness() overloads above never had. Reuses the same hinge
+// fixture and fold_a/fold_b naming.
+void TestSubDEdgeSharpnessAtReadsBackWhatWasWritten() {
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SubD;
+  using dino8::kernel::SubDEdgeSharpnessInfo;
+
+  const Point3d fold_a(0, 0, 0);
+  const Point3d fold_b(1, 0, 0);
+  const double kMax = ON_SubDEdgeSharpness::MaximumValue;  // 4.0
+
+  // --- An edge nobody has ever set sharpness on reads back found=true,
+  // both weights 0 - the real OpenNURBS default, not an unset/garbage
+  // value. ---
+  {
+    auto subd = SubD::FromControlMesh(MakeHingedDoubleEdgeMesh(), /*crease_at_double_edges=*/false);
+    const SubDEdgeSharpnessInfo info = subd.EdgeSharpnessAt(fold_a, fold_b, 1e-9);
+    Check(info.found && info.sharpness_at_p0 == 0.0 && info.sharpness_at_p1 == 0.0,
+          "an untouched smooth edge reads back found=true with both ends genuinely 0, "
+          "the real default weight, not a sentinel");
+  }
+
+  // --- Round trip through the constant-weight overload. ---
+  {
+    auto subd = SubD::FromControlMesh(MakeHingedDoubleEdgeMesh(), /*crease_at_double_edges=*/false);
+    Check(subd.SetEdgeSharpness(fold_a, fold_b, 2.5, 1e-9), "constant-weight write succeeds");
+    const SubDEdgeSharpnessInfo info = subd.EdgeSharpnessAt(fold_a, fold_b, 1e-9);
+    Check(info.found && info.sharpness_at_p0 == 2.5 && info.sharpness_at_p1 == 2.5,
+          "EdgeSharpnessAt reads back the exact constant weight SetEdgeSharpness just wrote");
+  }
+
+  // --- Round trip through the per-end-variable overload, in BOTH point
+  // orders - the real claim this test exists for: the mapping is keyed
+  // to the POINT, not to whichever end OpenNURBS happens to store as
+  // m_vertex[0] internally, for reading exactly as it already is for
+  // writing. ---
+  {
+    auto subd = SubD::FromControlMesh(MakeHingedDoubleEdgeMesh(), /*crease_at_double_edges=*/false);
+    Check(subd.SetEdgeSharpness(fold_a, fold_b, kMax, 0.0, 1e-9),
+          "genuinely uneven (kMax at p0, 0 at p1) write succeeds");
+
+    const SubDEdgeSharpnessInfo forward = subd.EdgeSharpnessAt(fold_a, fold_b, 1e-9);
+    Check(forward.found && forward.sharpness_at_p0 == kMax && forward.sharpness_at_p1 == 0.0,
+          "reading in the SAME (p0, p1) order as the write reproduces (kMax, 0) exactly");
+
+    const SubDEdgeSharpnessInfo reversed = subd.EdgeSharpnessAt(fold_b, fold_a, 1e-9);
+    Check(reversed.found && reversed.sharpness_at_p0 == 0.0 && reversed.sharpness_at_p1 == kMax,
+          "reading with the two points REVERSED reports the reversed values too - the mapping tracks the physical "
+          "point, not internal edge-storage order, for reading exactly as SetEdgeSharpness's own doc comment "
+          "already establishes for writing");
+  }
+
+  // --- Refusal cases: a hard crease has no sharpness to read, same
+  // condition SetEdgeSharpness() itself already refuses to write. ---
+  {
+    auto creased = SubD::FromControlMesh(MakeHingedDoubleEdgeMesh(), /*crease_at_double_edges=*/true);
+    const SubDEdgeSharpnessInfo info = creased.EdgeSharpnessAt(fold_a, fold_b, 1e-9);
+    Check(!info.found && info.sharpness_at_p0 == 0.0 && info.sharpness_at_p1 == 0.0,
+          "a hard Crease-tagged edge reads back found=false with both fields left at 0, not a stale or "
+          "uninitialized value");
+
+    auto subd = SubD::FromControlMesh(MakeHingedDoubleEdgeMesh(), /*crease_at_double_edges=*/false);
+    const SubDEdgeSharpnessInfo missing_vertex = subd.EdgeSharpnessAt(Point3d(9, 9, 9), Point3d(9, 9, 8), 1e-9);
+    Check(!missing_vertex.found, "no vertex found at either point reads back found=false");
+
+    // (1,0,1) and (1,1,0) are both real MakeHingedDoubleEdgeMesh vertices
+    // but sit on OPPOSITE sides of the hinge with no edge directly
+    // between them (each connects to fold_a/fold_b and to each other's
+    // own far corner only) - a genuine "no edge connects them" case, not
+    // a missing-vertex one.
+    const SubDEdgeSharpnessInfo no_edge = subd.EdgeSharpnessAt(Point3d(1, 0, 1), Point3d(1, 1, 0), 1e-9);
+    Check(!no_edge.found, "two real vertices with no edge between them read back found=false");
   }
 }
 
@@ -47859,6 +48030,7 @@ int main() {
   TestSubDSymmetrizeWeldsSeamAndFlipsMirroredFaces();
   TestSubDSetEdgeSharpnessCreatesRealSemiSharpCrease();
   TestSubDSetEdgeSharpnessSupportsPerEndVariableWeight();
+  TestSubDEdgeSharpnessAtReadsBackWhatWasWritten();
   TestSubDSetCreaseTagsAndUntagsEdges();
   TestSubDFlatQuadGridStaysFlatAndAreaExact();
   TestSubDToNurbsPatchesExactOnRegularFlatGrid();
@@ -48295,6 +48467,8 @@ int main() {
   TestMeshFindOffsetSelfIntersectionsDetectsGenuineFold();
   TestMeshShellHollowsClosedBoxWithVolumeIdentityAndFlippedInnerWall();
   TestMeshShellRefusesInvalidInput();
+  TestMeshShellWithRemovedFaceProducesClosedManifoldCupWithStitchedWall();
+  TestMeshShellWithRemovedFacesRefusesInvalidInput();
   TestMeshInsetFaceUnitSquareMatchesExactConcentricSquare();
   TestMeshInsetFaceTriangleMatchesIndependentPerpendicularDistance();
   TestMeshInsetFaceRefusesInvalidInput();

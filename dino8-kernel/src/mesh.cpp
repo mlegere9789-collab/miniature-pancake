@@ -4556,6 +4556,117 @@ Mesh Mesh::Shell(double thickness) const {
   return result;
 }
 
+Mesh Mesh::Shell(double thickness, const std::vector<int>& removed_face_indices) const {
+  if (!(thickness > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::Mesh::Shell: thickness must be strictly positive");
+  }
+  if (!IsClosedManifold()) {
+    throw std::invalid_argument(
+        "dino8::kernel::Mesh::Shell: this mesh is not a closed 2-manifold - "
+        "an open sheet needs Thicken(), not Shell()");
+  }
+  if (removed_face_indices.empty()) {
+    throw std::invalid_argument(
+        "dino8::kernel::Mesh::Shell: removed_face_indices is empty - call "
+        "Shell(thickness) instead for a fully closed shell with no openings");
+  }
+  const int face_count = mesh_.m_F.Count();
+  std::set<int> removed(removed_face_indices.begin(), removed_face_indices.end());
+  if (removed.size() != removed_face_indices.size()) {
+    throw std::invalid_argument("dino8::kernel::Mesh::Shell: removed_face_indices contains a duplicate index");
+  }
+  for (int i : removed) {
+    if (i < 0 || i >= face_count) {
+      throw std::invalid_argument("dino8::kernel::Mesh::Shell: removed_face_indices contains an out-of-range index");
+    }
+  }
+  if (static_cast<int>(removed.size()) >= face_count) {
+    throw std::invalid_argument(
+        "dino8::kernel::Mesh::Shell: removed_face_indices names every face - "
+        "an entirely open shell has no outer wall left to hollow");
+  }
+
+  // Same feasibility guards as Shell(thickness), checked against the FULL
+  // mesh - see this overload's own header doc comment for why opening up
+  // some faces can only ever relax this, never worsen it.
+  const Mesh inner_unflipped_full = Offset(-thickness);
+  if (!inner_unflipped_full.FindSelfIntersections().empty()) {
+    throw std::invalid_argument(
+        "dino8::kernel::Mesh::Shell: thickness folds the inward offset "
+        "through itself - exceeds the local wall-to-wall feasibility "
+        "somewhere on this mesh");
+  }
+  const double outer_volume = Volume();
+  const double inner_volume = inner_unflipped_full.Volume();
+  if (!(inner_volume > 0.0 && inner_volume < outer_volume)) {
+    throw std::invalid_argument(
+        "dino8::kernel::Mesh::Shell: thickness is too large - the inward "
+        "offset has collapsed or inverted through the opposite wall rather "
+        "than nesting inside this mesh");
+  }
+
+  const int n = mesh_.m_V.Count();
+
+  // The outer layer: this mesh's own faces, unchanged, minus the removed
+  // ones - kept in a real Mesh so Check() can compute its post-removal
+  // naked_edge_list directly, rather than re-deriving edge-counting logic
+  // here a second time.
+  Mesh outer_open;
+  {
+    ON_Mesh& outer_raw = outer_open.raw();
+    outer_raw.m_V = mesh_.m_V;
+    outer_raw.m_F.Reserve(face_count - static_cast<int>(removed.size()));
+    for (int i = 0; i < face_count; ++i) {
+      if (removed.count(i) == 0) outer_raw.m_F.Append(mesh_.m_F[i]);
+    }
+  }
+  const auto opening_naked_edges = outer_open.Check().naked_edge_list;
+
+  Mesh result;
+  ON_Mesh& raw = result.raw();
+  raw.m_V.Reserve(n * 2);
+  for (int i = 0; i < n; ++i) raw.m_V.Append(mesh_.m_V[i]);
+  for (int i = 0; i < n; ++i) raw.m_V.Append(inner_unflipped_full.raw().m_V[i]);
+
+  raw.m_F.Reserve(outer_open.raw().m_F.Count() * 2 + static_cast<int>(opening_naked_edges.size()));
+  // Outer wall: the post-removal outer layer, entirely unchanged.
+  for (int i = 0; i < outer_open.raw().m_F.Count(); ++i) {
+    raw.m_F.Append(outer_open.raw().m_F[i]);
+  }
+  // Inner wall: the SAME faces removed from the inward offset copy,
+  // flipped, reindexed by +n.
+  for (int i = 0; i < face_count; ++i) {
+    if (removed.count(i) != 0) continue;
+    ON_MeshFace f = mesh_.m_F[i];
+    for (int k = 0; k < 4; ++k) f.vi[k] += n;
+    FlipOneFace(f);
+    raw.m_F.Append(f);
+  }
+  // Side walls: one quad per naked edge of the post-removal outer layer -
+  // REVERSED from Thicken()'s own `vi = {a, b, b+n, a+n}`, deliberately:
+  // Thicken()'s naked edge (a, b) comes from the sheet BEFORE it gets
+  // flipped into the inner-wall role, so the wall's own (a, b) edge ends
+  // up opposite the STORED (post-flip) inner face's direction there. Here
+  // the outer layer is stored UNFLIPPED (this method's own "outer layer
+  // unchanged" convention), so the wall must instead walk (b, a) to end
+  // up opposite the outer layer's own stored direction at that edge - and
+  // correspondingly opposite the flipped inner layer's stored direction
+  // at (a+n, b+n) too (a flip reverses every one of a face's directed
+  // edges individually, so the inner layer's stored direction there is
+  // (b+n, a+n), the reverse of the wall's own (a+n, b+n)). Verified
+  // empirically via a standalone Check() dump before finalizing (8
+  // "orientation_conflicts" with the naive a/b order, 0 with this one).
+  for (const auto& [a, b] : opening_naked_edges) {
+    ON_MeshFace f;
+    f.vi[0] = b;
+    f.vi[1] = a;
+    f.vi[2] = a + n;
+    f.vi[3] = b + n;
+    raw.m_F.Append(f);
+  }
+  return result;
+}
+
 std::vector<std::pair<int, int>> Mesh::FindOffsetSelfIntersections(double distance, double tolerance) const {
   return Offset(distance).FindSelfIntersections(tolerance);
 }

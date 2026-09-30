@@ -30,6 +30,25 @@ struct SubDNurbsPatch {
   bool exact;
 };
 
+// One edge's current sharpness state, from SubD::EdgeSharpnessAt() - the
+// read-back counterpart the two SetEdgeSharpness() overloads never had
+// (see their own doc comments below): writing a semi-sharp weight has
+// been possible since those methods existed, but there was previously no
+// caller-facing way to ask what weight (if any) an edge currently
+// carries, short of a const_cast onto raw() directly.
+struct SubDEdgeSharpnessInfo {
+  // False if p0/p1 don't identify two vertices of an interior SMOOTH
+  // edge (see EdgeSharpnessAt()'s own doc comment for the exact refusal
+  // conditions) - both sharpness fields are 0 in that case, not left
+  // uninitialized.
+  bool found = false;
+  // The weight at the end nearest p0/p1 respectively - same point-keyed
+  // (not internal-storage-order-keyed) convention the per-end
+  // SetEdgeSharpness() overload's own doc comment already establishes.
+  double sharpness_at_p0 = 0.0;
+  double sharpness_at_p1 = 0.0;
+};
+
 // One control-net vertex's exact Catmull-Clark limit-surface point, from
 // SubD::LimitPoints().
 struct SubDLimitPoint {
@@ -569,6 +588,38 @@ class SubD {
   bool SetEdgeSharpness(const Point3d& p0, const Point3d& p1,
                         double sharpness_at_p0, double sharpness_at_p1,
                         double point_tolerance);
+
+  // Reads back the current per-end sharpness of the SMOOTH interior edge
+  // between the control-net vertices found at (or within
+  // `point_tolerance` of) `p0` and `p1` - the read-back counterpart the
+  // two SetEdgeSharpness() overloads above never had (see
+  // SubDEdgeSharpnessInfo's own comment at the top of this file).
+  // `ON_SubDEdge::EndSharpness(vertex)` already reads whatever weight is
+  // currently stored (0 for an edge nobody ever called
+  // SetEdgeSharpness() on - real Pixar/OpenSubdiv convention, not this
+  // class's own invention), it just had no public accessor reaching it
+  // without a const_cast onto raw() directly, the identical gap
+  // SetEdgeSharpness() itself closed for writing.
+  //
+  // Returns `found = false` (both sharpness fields 0) if: no vertex is
+  // found at p0 or at p1 within point_tolerance; no edge connects them;
+  // or that edge is not an interior SMOOTH edge (a hard Crease-tagged
+  // edge, or a naked boundary edge, has no sharpness value in
+  // OpenNURBS' own model - the same refusal condition both
+  // SetEdgeSharpness() overloads already use, applied here to reading
+  // rather than writing).
+  //
+  // `sharpness_at_p0`/`sharpness_at_p1` map onto the edge's own two ends
+  // by POSITION, the same way the per-end SetEdgeSharpness() overload's
+  // own doc comment already establishes for writing: whichever value was
+  // last written at the end nearest p0 reads back as `sharpness_at_p0`,
+  // independent of which of the edge's own two ends OpenNURBS happens to
+  // store as m_vertex[0] internally - so a round trip through
+  // SetEdgeSharpness(p0, p1, s0, s1, tol) then
+  // EdgeSharpnessAt(p0, p1, tol) always reads back (s0, s1) exactly,
+  // regardless of internal storage order.
+  SubDEdgeSharpnessInfo EdgeSharpnessAt(const Point3d& p0, const Point3d& p1,
+                                        double point_tolerance = 0.0) const;
 
   // Retags the interior edge between the control-net vertices found at
   // (or within `point_tolerance` of) `p0` and `p1` as a hard Crease

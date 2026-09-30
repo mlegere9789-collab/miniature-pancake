@@ -1307,6 +1307,73 @@ class Mesh {
   // smaller nested solid but has silently turned inside out).
   Mesh Shell(double thickness) const;
 
+  // Shell()'s own "no openings" restriction, lifted: hollows this
+  // (necessarily CLOSED) mesh the same way the single-argument Shell()
+  // does, but with every face named in `removed_face_indices` cut away
+  // from BOTH the outer and inner layer first, and a ring of new side
+  // wall quads stitched around each resulting opening's own boundary -
+  // the mesh-level counterpart to PARITY_MAP.md's "Shell with removed/
+  // open faces (cup/case), including multi-face openings" gap, whose own
+  // kernel entry (`ShellConvexPlanar`, boolean.h) is exact but limited to
+  // a convex, all-planar Brep; this instead accepts any closed 2-manifold
+  // triangle/quad mesh, curved or not, convex or not - the same
+  // generality the no-opening `Shell(thickness)` overload above already
+  // has over `ShellClosedSphere`/`ShellClosedTorus`.
+  //
+  // Unlike a hand-rolled "delete faces from the result of Shell()"
+  // (which would leave the opening's own rim as two separate, unwelded
+  // naked loops - one on the outer layer, one on the inner - with no
+  // material connecting them, not a real cup/case wall), this reuses
+  // Thicken()'s own established IDEA for turning a naked boundary loop
+  // into a genuine wall (one new quad per naked edge) - but with the
+  // wall's own winding REVERSED from Thicken()'s `vi = {a, b, b+n,
+  // a+n}`, deliberately, not by oversight: Thicken()'s naked edge (a, b)
+  // is read off the sheet BEFORE that sheet gets flipped into the
+  // INNER-wall role, so its wall ends up correctly opposite the STORED
+  // (post-flip) inner face's own direction there. This method's outer
+  // layer, by contrast, is stored UNFLIPPED (see this class's own
+  // "outer layer unchanged" convention above) - so its wall must instead
+  // walk `vi = {b, a, a+n, b+n}` to land opposite the outer layer's own
+  // stored direction, and correspondingly opposite the (separately
+  // flipped) inner layer's own stored direction at the `(a+n, b+n)` edge
+  // too. Confirmed empirically, not just argued, before landing (a
+  // scratch `Check()` dump showed 8 `orientation_conflicts` with the
+  // naive un-reversed order, 0 with this one).
+  //
+  // `removed_face_indices` names faces of THIS mesh (not the offset
+  // copy) - the same face is removed from the inward-offset copy before
+  // it becomes the inner layer, so the opening lines up exactly between
+  // the two layers. Faces may be mutually adjacent (an opening spanning
+  // several faces) or come from more than one disjoint group (several
+  // separate openings, each stitched with its own ring of side walls,
+  // via however many naked-edge loops the post-removal outer layer
+  // actually has) - neither is refused the way `ShellConvexPlanar`'s own
+  // Brep-level convex-planar construction must refuse adjacent removed
+  // faces; there is no equivalent topological hazard at the mesh level,
+  // where a face is just a row in a flat list.
+  //
+  // The feasibility guards are the SAME ones `Shell(thickness)` already
+  // applies, checked against the FULL (pre-removal) mesh and its full
+  // inward offset - opening some faces up can only ever relax the
+  // wall-to-wall feasibility problem (there's less material left to fold
+  // through itself), never worsen it, so reusing the whole-mesh check
+  // is both correct and simpler than re-deriving a partial-mesh version.
+  //
+  // Throws std::invalid_argument if: `thickness` is not strictly
+  // positive; this mesh is not itself a closed 2-manifold (the same
+  // precondition `Shell(thickness)` applies - `removed_face_indices`
+  // describes an opening to cut INTO an already-closed solid, it is not
+  // itself the reason the input may already be open); `removed_face_indices`
+  // is empty (use the no-opening overload instead - a real, if
+  // unenforced-elsewhere, "don't call the more general overload for
+  // nothing" convention rather than silently degrading to it); contains
+  // an index outside [0, FaceCount()), a duplicate index, or names every
+  // face of the mesh (an entirely open shell has no "outer wall" left to
+  // define an inside/outside at all); or `thickness` folds/inverts the
+  // full inward offset the same way the no-opening overload already
+  // refuses.
+  Mesh Shell(double thickness, const std::vector<int>& removed_face_indices) const;
+
   // Answers the real hazard Offset()'s own doc comment above already
   // names but has no way to check on its own: whether Offset(distance)
   // applied to THIS mesh would fold over itself. Computes Offset(distance)
