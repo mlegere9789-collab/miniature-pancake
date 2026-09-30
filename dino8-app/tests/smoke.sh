@@ -3848,18 +3848,23 @@ fi
 pmxcheck() { if echo "$PMX" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$PMX" "$1"; fail=1; fi; }
 pmxcheck "PluginMarketplaceIndex: loaded \"Deep Chain Test Index (plugin dependency resolution fixture)\" - 3 plug-in(s)" "PluginMarketplaceIndex loaded the deep-chain-fixture index"
 pmxcheck "PluginMarketplaceInstall: installed gadgettools" "PluginMarketplaceInstall installs the top of a 3-level dependency chain"
-mkdir -p "$TMPW/plugindeep"
-awk '/^history: GrasshopperPluginList: /{n++} {print > ("'"$TMPW"'/plugindeep/sec" n ".txt")}' <<<"$PMX"
-PMX_S1="$(cat "$TMPW/plugindeep/sec1.txt" 2>/dev/null)"
-PMX_S2="$(cat "$TMPW/plugindeep/sec2.txt" 2>/dev/null)"
-for name in HelloDino MeshTools CurveTools; do
-  c1="$(echo "$PMX_S1" | grep -c "$name 1.0.0 -" || true)"
-  c2="$(echo "$PMX_S2" | grep -c "$name 1.0.0 -" || true)"
-  if [ "$c1" = "1" ] && [ "$c2" = "2" ]; then
-    echo "ok   installing gadgettools added its own independent load of $name ($c1 -> $c2) - the dependency chain resolved that deep"
-  else
-    echo "FAIL $name's loaded-copy count did not go from 1 to 2 installing gadgettools (saw $c1 -> $c2) - the dependency chain did not resolve that deep"; fail=1
-  fi
-done
+# Which of widgettools/gizmotools/gadgettools' own underlying sample plug-ins
+# (hello_dino/mesh_tools/curve_tools) were already sitting in <config>/plugins
+# from some earlier, unrelated smoke.sh section - and so already auto-loaded
+# a second time before this script's own install even runs - varies with
+# everything else this suite has done by this point; a loaded-copy *count*
+# before/after isn't a stable signal here (installing over an
+# already-config-installed path unloads and replaces it in place, a net-zero
+# change - see Marketplace::InstallEntry's fix for the crash that used to
+# happen here instead). What's stable regardless of that history is each
+# sample plug-in's own one-line init banner, printed exactly once per real
+# load: grep for it specifically between the install command and its own
+# success line, proving all three chain levels actually loaded during BUT
+# resolution, not just the top one.
+PMX_INSTALL_SLICE="$(sed -n '/^history: Command: PluginMarketplaceInstall gadgettools$/,/^history: PluginMarketplaceInstall: installed gadgettools/p' <<<"$PMX")"
+pmxdeepcheck() { if echo "$PMX_INSTALL_SLICE" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$PMX" "$1"; fail=1; fi; }
+pmxdeepcheck "HelloDino sample plug-in loaded." "installing gadgettools resolved all the way down to widgettools (HelloDino) - the bottom of the chain"
+pmxdeepcheck "MeshTools sample plug-in loaded (TerrainMesh command" "installing gadgettools resolved through gizmotools (MeshTools), the middle of the chain"
+pmxdeepcheck "CurveTools sample plug-in loaded (Spiral command" "installing gadgettools loaded its own entry (CurveTools) after both dependencies"
 
 exit $fail
