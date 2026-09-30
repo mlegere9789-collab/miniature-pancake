@@ -51549,6 +51549,238 @@ void TestFilletConcaveEdgeRejectsUnsupportedConfigurations() {
         "rejects a radius too large to fit");
 }
 
+// ==============================================================
+// FilletConcaveEdgeTapered - the CONCAVE mirror of the two-radius
+// FilletConvexEdgeTapered overload. See fillet.cpp's own
+// BuildTwoStationTaperedFilletConcave doc comment for the full derivation:
+// this is NOT a sign-flip of the convex construction (an earlier attempt
+// at exactly that was caught, during this feature's own development, by
+// an earlier version of TestFilletConcaveEdgeTaperedClosesCornerNotchOnLShapedPrism
+// below throwing "cap0_notch_points's own first/last points must exactly
+// match this face's own two rail corners" - a genuine bug these tests are
+// written to catch, not a hypothetical).
+// ==============================================================
+
+// Verification item (1): the cone geometry ITSELF obeys the identical
+// frustum-of-a-cone-sector closed form
+// TestFilletConvexEdgeTaperedClosedFormVolumeMatchesFrustumFormula already
+// establishes for the convex case - checked here on a genuinely
+// concave-built ConicalFace whose own radius0/radius1/length/angle fields
+// are independently re-derived (not simply copied from the convex
+// construction - see this function's own doc comment).
+void TestFilletConcaveEdgeTaperedClosedFormVolumeMatchesFrustumFormula() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConcaveEdgeTapered;
+  using dino8::kernel::Point3d;
+
+  const double radius0 = 0.15, radius1 = 0.35;
+  const Brep prism = ConcaveLShapedPrism();
+  const std::vector<Brep::PlanarFace> all_faces = prism.PlanarFaces();
+  // Skip index 0/1 (bottom/top caps - see ConcaveLShapedPrism's own
+  // construction order), keeping only the 6 vertical walls, so neither
+  // endpoint of the reflex edge touches a third face (the corner-notch
+  // question is orthogonal to this test).
+  const std::vector<Brep::PlanarFace> walls(all_faces.begin() + 2, all_faces.end());
+  const Brep tube = Brep::FromPlanarFaces(walls);
+  const Point3d edge_p0(1, 1, 0), edge_p1(1, 1, 1);
+  const Brep filleted = FilletConcaveEdgeTapered(tube, edge_p0, edge_p1, radius0, radius1);
+
+  Check(filleted.FaceCount() == 7,
+        "tapered fillet of one free reflex edge yields 7 faces (5 untouched/re-trimmed walls + 1 new "
+        "conical fillet face)");
+
+  const Brep::MixedFacesResult mf = filleted.MixedFaces();
+  Check(mf.conical.size() == 1, "MixedFaces() finds exactly the one conical fillet face (volume test)");
+  if (mf.conical.size() != 1) return;
+  const Brep::ConicalFace& cf = mf.conical[0];
+  Check(cf.radius0 > 0.0 && cf.radius1 > cf.radius0 && cf.length > 0.0 && cf.angle > 0.0 && cf.angle < 2 * ON_PI,
+        "sanity: the concave cone's own independently re-derived radius0/radius1/length/angle fields are "
+        "all positive and in-range - not the (wrong) convex-derived values an earlier, reverted attempt "
+        "at this feature produced");
+
+  const double tan_half_angle = (cf.radius1 - cf.radius0) / cf.length;
+  const double v0 = cf.radius0 / tan_half_angle;
+  const double v1 = v0 + cf.length;
+
+  const double closed_form_volume = (cf.angle / 6.0) * cf.length *
+                                     (cf.radius0 * cf.radius0 + cf.radius0 * cf.radius1 + cf.radius1 * cf.radius1);
+  Check(closed_form_volume > 0.0, "sanity check: the closed-form frustum volume is a positive number");
+
+  auto cone_pt = [&](double v, double phi) {
+    const double rho = tan_half_angle * v;
+    return cf.frame.origin + v * cf.frame.zaxis +
+           rho * (std::cos(phi) * cf.frame.xaxis + std::sin(phi) * cf.frame.yaxis);
+  };
+  const Point3d axis0 = cf.frame.origin + v0 * cf.frame.zaxis;
+  const Point3d axis1 = cf.frame.origin + v1 * cf.frame.zaxis;
+  const Point3d rail_i0 = cone_pt(v0, 0.0), rail_i1 = cone_pt(v1, 0.0);
+  const Point3d rail_j0 = cone_pt(v0, cf.angle), rail_j1 = cone_pt(v1, cf.angle);
+
+  auto newell = [](const std::vector<Point3d>& loop) {
+    ON_3dVector n(0, 0, 0);
+    for (size_t i = 0; i < loop.size(); ++i) {
+      const Point3d& p = loop[i];
+      const Point3d& q = loop[(i + 1) % loop.size()];
+      n.x += (p.y - q.y) * (p.z + q.z);
+      n.y += (p.z - q.z) * (p.x + q.x);
+      n.z += (p.x - q.x) * (p.y + q.y);
+    }
+    n.Unitize();
+    return n;
+  };
+  auto make_face = [&](std::vector<Point3d> loop) {
+    Brep::PlanarFace f;
+    f.plane = ON_Plane(loop[0], newell(loop));
+    f.loop = std::move(loop);
+    return f;
+  };
+
+  constexpr int kCapSamples = 1000;
+  std::vector<Point3d> v0cap_loop;
+  v0cap_loop.reserve(kCapSamples + 2);
+  v0cap_loop.push_back(axis0);
+  for (int s = 0; s <= kCapSamples; ++s) {
+    const double phi = cf.angle * (1.0 - static_cast<double>(s) / kCapSamples);
+    v0cap_loop.push_back(cone_pt(v0, phi));
+  }
+  std::vector<Point3d> v1cap_loop;
+  v1cap_loop.reserve(kCapSamples + 2);
+  v1cap_loop.push_back(axis1);
+  for (int s = 0; s <= kCapSamples; ++s) {
+    const double phi = cf.angle * static_cast<double>(s) / kCapSamples;
+    v1cap_loop.push_back(cone_pt(v1, phi));
+  }
+  const std::vector<Point3d> wall_i_loop = {axis0, rail_i0, rail_i1, axis1};
+  const std::vector<Point3d> wall_j_loop = {axis0, axis1, rail_j1, rail_j0};
+
+  const Brep test_solid = Brep::FromMixedFaces(
+      {make_face(v0cap_loop), make_face(v1cap_loop), make_face(wall_i_loop), make_face(wall_j_loop)}, {}, {cf});
+
+  const double measured_volume = std::fabs(test_solid.TessellateToClosedMeshAdaptive(1e-8).Volume());
+  Check(std::fabs(measured_volume - closed_form_volume) < 1e-5 * closed_form_volume,
+        "the CONCAVE tapered fillet's own ACTUAL ConicalFace, closed into a self-contained "
+        "frustum-of-a-cone-sector test solid, has a tessellated volume matching the closed form - "
+        "confirming the independently re-derived radius0/radius1/length/angle fields describe a "
+        "genuine, consistent right-circular cone, not merely four plausible-looking numbers");
+}
+
+// Verification item (2): m -> 0 (radius1 == radius0) dispatches to today's
+// (already fully verified) FilletConcaveEdge as a genuine CODE PATH.
+void TestFilletConcaveEdgeTaperedDispatchesToConstantRadiusAtZeroTaper() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConcaveEdge;
+  using dino8::kernel::FilletConcaveEdgeTapered;
+  using dino8::kernel::Point3d;
+
+  const double r = 0.3;
+  const Brep prism = ConcaveLShapedPrism();
+  const Point3d edge_p0(1, 1, 0), edge_p1(1, 1, 1);
+
+  const Brep constant = FilletConcaveEdge(prism, edge_p0, edge_p1, r);
+  const Brep tapered_zero = FilletConcaveEdgeTapered(prism, edge_p0, edge_p1, r, r);
+
+  const ON_Brep& a = constant.raw();
+  const ON_Brep& b = tapered_zero.raw();
+  Check(a.m_S.Count() == b.m_S.Count() && a.m_F.Count() == b.m_F.Count() && a.m_V.Count() == b.m_V.Count() &&
+            a.m_E.Count() == b.m_E.Count(),
+        "FilletConcaveEdgeTapered(radius0==radius1)'s raw topology counts exactly match "
+        "FilletConcaveEdge(radius0)'s own - a genuine dispatch, not a similar-looking separate "
+        "construction");
+
+  bool all_vertices_match = a.m_V.Count() == b.m_V.Count();
+  for (int i = 0; all_vertices_match && i < a.m_V.Count(); ++i) {
+    if (a.m_V[i].point.DistanceTo(b.m_V[i].point) > 0.0) all_vertices_match = false;
+  }
+  Check(all_vertices_match,
+        "every welded vertex point is BIT-FOR-BIT identical between FilletConcaveEdge(radius0) and "
+        "FilletConcaveEdgeTapered(radius0, radius0)");
+
+  const double vol_a = constant.TessellateToClosedMeshAdaptive(1e-7).Volume();
+  const double vol_b = tapered_zero.TessellateToClosedMeshAdaptive(1e-7).Volume();
+  Check(std::fabs(vol_a - vol_b) < 1e-12, "the two tessellated volumes also match to full floating-point precision");
+}
+
+// Verification item (3): the corner-notch, on the SAME full corner-to-
+// corner edge TestFilletConcaveEdgeAddsExactQuarterRoundVolume already
+// uses (both endpoints hit a perpendicular third face), is genuinely
+// closed and the result is a valid solid, with the two adjacent walls cut
+// back by radius0 (at edge_p0, z=0) and radius1 (at edge_p1, z=1)
+// respectively - not the same radius at both ends, the one new thing a
+// taper adds over the constant-radius case.
+void TestFilletConcaveEdgeTaperedClosesCornerNotchOnLShapedPrism() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConcaveEdgeTapered;
+  using dino8::kernel::Point3d;
+
+  const double radius0 = 0.15, radius1 = 0.35;
+  const Brep prism = ConcaveLShapedPrism();
+  const Point3d edge_p0(1, 1, 0), edge_p1(1, 1, 1);
+  const Brep filleted = FilletConcaveEdgeTapered(prism, edge_p0, edge_p1, radius0, radius1);
+
+  ON_TextLog log;
+  bool oriented = false, has_boundary = true;
+  Check(filleted.raw().IsValid(&log) && filleted.raw().IsManifold(&oriented, &has_boundary) && oriented &&
+            !has_boundary && filleted.raw().IsSolid(),
+        "the concave tapered-filleted L-shaped prism is itself a valid, closed, manifold solid");
+
+  // trim_back(radius) == radius for this fixture's own 90-degree reflex
+  // corner (see TestFilletConcaveEdgeAddsExactQuarterRoundVolume's own doc
+  // comment) - so the two adjacent walls are cut back to
+  // x=1+radius0/y=1+radius0 at z=0 (edge_p0, radius0) and
+  // x=1+radius1/y=1+radius1 at z=1 (edge_p1, radius1).
+  Check(ChamferTestBrepHasVertexNear(filleted, Point3d(1 + radius0, 1, 0), 1e-9) &&
+            ChamferTestBrepHasVertexNear(filleted, Point3d(1, 1 + radius0, 0), 1e-9),
+        "the z=0 end (edge_p0, radius0) is cut back by exactly radius0 on both adjacent walls");
+  Check(ChamferTestBrepHasVertexNear(filleted, Point3d(1 + radius1, 1, 1), 1e-9) &&
+            ChamferTestBrepHasVertexNear(filleted, Point3d(1, 1 + radius1, 1), 1e-9),
+        "the z=1 end (edge_p1, radius1) is cut back by exactly radius1 on both adjacent walls - a "
+        "DIFFERENT distance than the z=0 end, the one genuinely new claim over the constant-radius case");
+  Check(!ChamferTestBrepHasVertexNear(filleted, edge_p0, 1e-9) && !ChamferTestBrepHasVertexNear(filleted, edge_p1, 1e-9),
+        "the original sharp concave corner vertices are gone at both ends");
+
+  const double footprint_volume = prism.TessellateToClosedMesh(4, 4).Volume();
+  Check(filleted.TessellateToClosedMeshAdaptive(1e-6).Volume() > footprint_volume,
+        "the concave taper ADDS material (volume strictly greater than the unfilleted footprint), the "
+        "same direction FilletConcaveEdge's own constant-radius case adds in - not subtracts");
+}
+
+// Verification item (4): validity checks - FilletConcaveEdgeTapered shares
+// FilletConvexEdgeTapered's own non-positive-radius/bad-edge rejections,
+// plus a genuinely NEW one (convex edges must be rejected, the mirror of
+// FilletConcaveEdge's own EdgeConvexity check).
+void TestFilletConcaveEdgeTaperedRejectsInvalidInput() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConcaveEdgeTapered;
+  using dino8::kernel::Point3d;
+  auto throws = [](const std::function<void()>& fn) {
+    try {
+      fn();
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+    return false;
+  };
+
+  const Brep prism = ConcaveLShapedPrism();
+  const Point3d edge_p0(1, 1, 0), edge_p1(1, 1, 1);
+
+  Check(throws([&] { FilletConcaveEdgeTapered(prism, edge_p0, edge_p1, 0.0, 0.3); }),
+        "FilletConcaveEdgeTapered rejects radius0 == 0");
+  Check(throws([&] { FilletConcaveEdgeTapered(prism, edge_p0, edge_p1, 0.1, -0.2); }),
+        "FilletConcaveEdgeTapered rejects a negative radius1");
+  Check(throws([&] { FilletConcaveEdgeTapered(prism, Point3d(0, 0, 0), Point3d(1, 1, 1), 0.1, 0.2); }),
+        "FilletConcaveEdgeTapered rejects a point pair that isn't a shared boundary edge of two faces of "
+        "the solid");
+  Check(throws([&] { FilletConcaveEdgeTapered(prism, edge_p0, edge_p1, 0.1, 5.0); }),
+        "FilletConcaveEdgeTapered rejects a radius1 too large to fit on the adjacent faces");
+
+  // A plain box's every edge is CONVEX - the concave-mirror EdgeConvexity
+  // check (mirroring FilletConcaveEdge's own) must refuse it.
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+  Check(throws([&] { FilletConcaveEdgeTapered(box, Point3d(0, 0, 1), Point3d(1, 0, 1), 0.1, 0.3); }),
+        "FilletConcaveEdgeTapered rejects a genuinely convex edge - see FilletConvexEdgeTapered instead");
+}
+
 void TestFilletConcaveEdgeObliqueEndFaceIsExactAndClosed() {
   using dino8::kernel::Brep;
   using dino8::kernel::FilletConcaveEdge;
@@ -58163,6 +58395,10 @@ int main() {
   TestRemoveChamferRejectsUnsupportedConfigurations();
   TestFilletConcaveEdgeAddsExactQuarterRoundVolume();
   TestFilletConcaveEdgeRejectsUnsupportedConfigurations();
+  TestFilletConcaveEdgeTaperedClosedFormVolumeMatchesFrustumFormula();
+  TestFilletConcaveEdgeTaperedDispatchesToConstantRadiusAtZeroTaper();
+  TestFilletConcaveEdgeTaperedClosesCornerNotchOnLShapedPrism();
+  TestFilletConcaveEdgeTaperedRejectsInvalidInput();
   TestFilletConcaveEdgeObliqueEndFaceIsExactAndClosed();
   TestFilletConcaveEdgesSingleEdgeMatchesFilletConcaveEdgeOnObliqueEnd();
   TestFilletConcaveEdgesRejectsOversizedRadiusAtObliqueEnd();

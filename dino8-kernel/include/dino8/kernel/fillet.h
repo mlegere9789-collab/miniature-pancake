@@ -448,6 +448,15 @@ Brep FilletConcaveEdge(const Brep& solid, Point3d edge_p0, Point3d edge_p1, doub
 Brep FilletConvexEdgeTapered(const Brep& solid, Point3d edge_p0, Point3d edge_p1, double radius0,
                               double radius1);
 
+// The CONCAVE mirror of FilletConvexEdgeTapered (two-radius linear taper
+// only - no N-station overload exists yet for the concave case, a real,
+// disclosed gap, see fillet.cpp's own BuildTwoStationTaperedFilletConcave
+// doc comment for the full derivation this is genuinely re-derived from,
+// not a sign-flip of the convex construction). VALIDATION/SCOPE identical
+// to FilletConvexEdgeTapered's own, with the convexity sense reversed
+// (rejects a convex edge, the mirror of FilletConcaveEdge's own check).
+Brep FilletConcaveEdgeTapered(const Brep& solid, Point3d edge_p0, Point3d edge_p1, double radius0, double radius1);
+
 // PIECEWISE-LINEAR MULTI-STATION generalization of the two-radius
 // FilletConvexEdgeTapered above: rolls a ball whose radius r(t) is
 // piecewise-linear in arc length t along the edge, interpolating
