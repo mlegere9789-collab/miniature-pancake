@@ -459,6 +459,18 @@ constexpr uint8_t kLasFormatWithColor = 2;
 constexpr uint16_t kLasRecordLengthPositionOnly = 20;
 constexpr uint16_t kLasRecordLengthWithColor = 26;
 
+// LAS's point count sits in the header with no data behind it yet - a
+// handful of bytes are enough to declare num_points near UINT32_MAX. Used
+// unchecked, that count used to go straight into positions.reserve() (and
+// colors.reserve() for the color format) below, before a single point
+// record was read, so the header alone forced a multi-gigabyte allocation
+// attempt - the same untrusted-file-count hazard already fixed for OFF/COFF
+// import (see Mesh::LoadOff's kMaxOffElementCount) and the IGES importer's
+// entity-count fields. Real LAS point clouds never approach this; it's
+// headroom above any legitimate use, just low enough to reject the lie
+// outright.
+constexpr uint32_t kMaxLasPointCount = 200'000'000;
+
 }  // namespace
 
 Result PointCloud::SaveLas(const std::string& path) const {
@@ -568,6 +580,7 @@ Result PointCloud::LoadLas(const std::string& path, PointCloud& out_cloud) {
       format == kLasFormatWithColor ? kLasRecordLengthWithColor : kLasRecordLengthPositionOnly;
   if (record_length != expected_length) return Result::Failed;
   if (!ReadLasScalar(in, num_points)) return Result::Failed;
+  if (num_points > kMaxLasPointCount) return Result::Failed;
 
   in.seekg(131);  // X/Y/Z scale factor, then X/Y/Z offset
   double scale_x = 0, scale_y = 0, scale_z = 0, offset_x = 0, offset_y = 0, offset_z = 0;

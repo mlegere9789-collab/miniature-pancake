@@ -17827,6 +17827,29 @@ void TestPointCloudLoadLasRejectsMalformedInput() {
           "LoadLas() fails on a file truncated before all of its own declared point records");
     std::remove(path.c_str());
   }
+
+  // Header declares an implausible point count (near UINT32_MAX) with no
+  // actual point records behind it. Before the kMaxLasPointCount guard, this
+  // went straight into positions.reserve(num_points) - a multi-gigabyte
+  // allocation attempt from a few header bytes alone, the same DoS class as
+  // the OFF/COFF vertex-count bug (Mesh::LoadOff's kMaxOffElementCount) and
+  // the IGES importer's entity-count fields.
+  {
+    PointCloud cloud;
+    cloud.AppendPoint(Point3d(1, 2, 3));
+    const std::string path = "dino8_kernel_point_cloud_las_huge_point_count_test.las";
+    Check(cloud.SaveLas(path) == Result::Ok, "fixture: SaveLas() succeeds");
+    {
+      std::fstream f(path, std::ios::binary | std::ios::in | std::ios::out);
+      f.seekp(107);  // Number of point records
+      const uint32_t huge_count = 4000000000u;
+      f.write(reinterpret_cast<const char*>(&huge_count), sizeof(huge_count));
+    }
+    PointCloud loaded;
+    Check(PointCloud::LoadLas(path, loaded) == Result::Failed,
+          "LoadLas() fails on a header declaring an implausible (near UINT32_MAX) point count");
+    std::remove(path.c_str());
+  }
 }
 
 void TestMeshAreaCountsBothQuadTriangles() {
