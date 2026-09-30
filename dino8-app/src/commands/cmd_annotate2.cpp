@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <ctime>
 #include <filesystem>
 #include <sstream>
 
@@ -203,6 +204,149 @@ class MeasureDimCommand : public Command {
   double value_ = 0;
   std::vector<ObjectId> ids_;
   Point3d anchor_;
+};
+
+// ---------------------------------------------------------------------------
+// Field: live text driven by a document/object property (filename, date,
+// current layer, document object count, or a selected object's length/
+// area/volume), baked as glyph-outline curve geometry like every other
+// annotation here - not a live TextEntity, same caveat TextObject's own
+// note already gives. Re-evaluated on demand by UpdateFields below, the
+// same explicit-recompute associativity shape UpdateDimensions/
+// UpdateMeasureDims/UpdateTitleBlock already follow, just for a document/
+// object *fact* instead of a measured point. A Field's own recorded
+// FieldKind tag decides what ResolveFieldValue re-pulls; Length/Area/Volume
+// additionally record the measured object id(s) (FieldRefIds, an
+// ObjIdsTag-encoded list - the same MeasureRefIds shape DimArea/
+// DimCurveLength/DimVolume above already use), reusing their own MeasureOne
+// math directly, so a Field and a DimArea/DimCurveLength/DimVolume built
+// from the same object always agree and both pick up an edit to the
+// source's current *shape*, not just its position.
+// ---------------------------------------------------------------------------
+
+const std::vector<std::string> kFieldKinds = {"Filename", "FilePath", "Date", "CurrentLayer", "ObjectCount", "Length", "Area", "Volume"};
+
+bool FieldKindNeedsObjects(const std::string& kind) { return kind == "Length" || kind == "Area" || kind == "Volume"; }
+
+// Re-evaluates one field kind to its current display text. `ref_ids` is
+// only consulted for Length/Area/Volume; every other kind reads live
+// document/app state unrelated to any specific object. Returns false when
+// nothing resolves (every recorded Length/Area/Volume source object is gone
+// or no longer measurable under its kind) - the caller leaves the field at
+// its last baked text rather than blanking it, the same "an unmeasurable
+// member no longer counts, but isn't erased" rule UpdateMeasureDims/
+// BomRefIds use for a since-changed or since-deleted source object.
+bool ResolveFieldValue(CommandContext& ctx, const std::string& kind, const std::vector<ObjectId>& ref_ids, std::string& text) {
+  if (kind == "Filename") { text = ctx.Doc().Path().empty() ? "Untitled" : std::filesystem::path(ctx.Doc().Path()).filename().string(); return true; }
+  if (kind == "FilePath") { text = ctx.Doc().Path().empty() ? "Untitled" : ctx.Doc().Path(); return true; }
+  if (kind == "Date") {
+    const std::time_t now = std::time(nullptr);
+    char buf[16];
+    std::strftime(buf, sizeof buf, "%Y-%m-%d", std::localtime(&now));
+    text = buf;
+    return true;
+  }
+  if (kind == "CurrentLayer") {
+    const int li = ctx.Doc().CurrentLayer();
+    const std::vector<Layer>& layers = ctx.Doc().Layers();
+    text = (li >= 0 && static_cast<size_t>(li) < layers.size()) ? layers[static_cast<size_t>(li)].name : "";
+    return true;
+  }
+  if (kind == "ObjectCount") {
+    int n = 0;
+    for (const SceneObject& o : ctx.Doc().Objects()) if (!o.user_text.count("Annotation")) ++n;
+    text = std::to_string(n);
+    return true;
+  }
+  if (kind == "Length" || kind == "Area" || kind == "Volume") {
+    const MeasureDimKind mk = kind == "Length" ? MeasureDimKind::Length : kind == "Area" ? MeasureDimKind::Area : MeasureDimKind::Volume;
+    double sum = 0;
+    int found = 0;
+    for (ObjectId id : ref_ids) {
+      const SceneObject* o = ctx.Doc().Find(id);
+      double v = 0;
+      Point3d a;
+      if (o && MeasureOne(*o, mk, v, a)) { sum += v; ++found; }
+    }
+    if (found == 0) return false;
+    text = FormatNumber(sum);
+    return true;
+  }
+  return false;
+}
+
+// Builds (or rebuilds) a Field's glyph curves: the same glyph-only shape
+// TextCommand's AddTextCurves uses for Text/TextObject (cmd_annotate.cpp),
+// via AddGlyphCurves directly rather than AddAnnotationGroup - that helper's
+// own `extra_tags` parameter only ever tags a `curves` list member (see its
+// comment in annotate_common.h), never the glyph it separately adds, which
+// would silently drop FieldKind/FieldRefIds for a glyph-only annotation
+// like this one.
+int BuildFieldGroup(CommandContext& ctx, const std::string& kind, const std::string& text, const ON_Plane& pl, double h, const std::vector<ObjectId>& ref_ids) {
+  const std::string style = ctx.Settings().annotation_style;
+  std::map<std::string, std::string> tags = {{"Annotation", "Field"}, {"Style", style}, {"FieldKind", kind}};
+  if (!ref_ids.empty()) tags["FieldRefIds"] = ObjIdsTag(ref_ids);
+  GlyphSpec g;
+  g.text = text; g.height = h; g.plane = pl; g.center = false;
+  std::vector<ObjectId> ids = AddGlyphCurves(ctx, g, ctx.Doc().CurrentLayer(), -1, tags);
+  if (ids.empty()) return -1;
+  return ctx.Doc().CreateGroup(ids, "Field");
+}
+
+// Kind= (Filename/FilePath/Date/CurrentLayer/ObjectCount need no selection
+// and go straight to placing the text; Length/Area/Volume select an object
+// first, exactly like DimArea/DimCurveLength/DimVolume above, then place.
+class FieldCommand : public Command {
+ public:
+  void Begin(CommandContext& ctx) override {
+    auto opts = TakeOptionTokens(ctx);
+    kind_ = OptionOr(opts, "kind", "Filename");
+    if (std::find(kFieldKinds.begin(), kFieldKinds.end(), kind_) == kFieldKinds.end()) kind_ = "Filename";
+    options = {{"Kind", kind_, kFieldKinds, false, false}};
+    if (FieldKindNeedsObjects(kind_)) {
+      WantObjects(kind_ == "Length" ? "Select a curve" : kind_ == "Area" ? "Select a closed planar curve, surface or polysurface" : "Select a closed surface, polysurface or mesh");
+    } else {
+      WantPoint("Field text location");
+    }
+  }
+  void OnOption(CommandContext&, const std::string& n, const std::string& v) override {
+    if (n != "Kind") return;
+    if (!v.empty() && std::find(kFieldKinds.begin(), kFieldKinds.end(), v) != kFieldKinds.end()) {
+      kind_ = v;
+    } else {
+      size_t i = 0;
+      for (; i < kFieldKinds.size(); ++i) if (kFieldKinds[i] == kind_) break;
+      kind_ = kFieldKinds[(i + 1) % kFieldKinds.size()];
+    }
+    options[0].value = kind_;
+    if (FieldKindNeedsObjects(kind_)) WantObjects(kind_ == "Length" ? "Select a curve" : kind_ == "Area" ? "Select a closed planar curve, surface or polysurface" : "Select a closed surface, polysurface or mesh");
+    else WantPoint("Field text location");
+  }
+  void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
+    const MeasureDimKind mk = kind_ == "Length" ? MeasureDimKind::Length : kind_ == "Area" ? MeasureDimKind::Area : MeasureDimKind::Volume;
+    for (ObjectId id : ids) {
+      const SceneObject* o = ctx.Doc().Find(id);
+      double v = 0;
+      Point3d a;
+      if (o && MeasureOne(*o, mk, v, a)) ref_ids_.push_back(id);
+    }
+    if (ref_ids_.empty()) { ctx.Warn("Field: nothing measurable in the selection"); Finish(); return; }
+    WantPoint("Field text location");
+  }
+  void OnPoint(CommandContext& ctx, Point3d p) override {
+    ctx.ClearPreview();
+    std::string text;
+    if (!ResolveFieldValue(ctx, kind_, ref_ids_, text)) { ctx.Warn("Field: could not resolve " + kind_); Finish(); return; }
+    ON_Plane pl = ActivePlane(ctx);
+    pl.SetOrigin(p);
+    ctx.Doc().BeginChange("Field");
+    const int g = BuildFieldGroup(ctx, kind_, text, pl, AnnotationTextHeight(ctx), ref_ids_);
+    ctx.Print("Field (" + kind_ + "): " + text + (g < 0 ? " (failed)" : ""));
+    Finish();
+  }
+  void OnCancel(CommandContext& ctx) override { ctx.ClearPreview(); }
+  std::string kind_ = "Filename";
+  std::vector<ObjectId> ref_ids_;
 };
 
 // ---------------------------------------------------------------------------
@@ -794,7 +938,15 @@ class FindTextCommand : public Command {
 // ---------------------------------------------------------------------------
 
 std::string StyleSummary(const AnnotationStyle& s) {
-  return s.name + " (text height " + (s.text_height > 0 ? FormatNumber(s.text_height) : std::string("auto")) + ", arrow " + (s.arrow_size > 0 ? FormatNumber(s.arrow_size) : std::string("auto")) + (s.font.empty() ? "" : ", font " + s.font) + ")";
+  std::string out = s.name + " (text height " + (s.text_height > 0 ? FormatNumber(s.text_height) : std::string("auto")) + ", arrow " + (s.arrow_size > 0 ? FormatNumber(s.arrow_size) : std::string("auto")) + (s.font.empty() ? "" : ", font " + s.font);
+  out += ", precision " + (s.precision >= 0 ? std::to_string(s.precision) : std::string("auto"));
+  out += ", angular precision " + (s.angular_precision >= 0 ? std::to_string(s.angular_precision) : std::string("auto"));
+  if (!s.unit_suffix.empty()) out += ", suffix " + s.unit_suffix;
+  if (s.ext_offset > 0 || s.ext_extension > 0) out += ", ext " + FormatNumber(s.ext_offset) + "/" + FormatNumber(s.ext_extension);
+  out += ", text " + s.text_placement;
+  if (!s.tol_mode.empty()) out += ", tol " + s.tol_mode + " " + s.tol_value;
+  out += ")";
+  return out;
 }
 
 void AnnotationStylesCommand(CommandContext& ctx) {
@@ -806,10 +958,20 @@ void AnnotationStylesCommand(CommandContext& ctx) {
     return;
   }
   AnnotationStyle* st = ctx.Doc().FindAnnotationStyle(name);
-  if (!st) { ctx.Doc().AnnotationStyles().push_back(AnnotationStyle{name, 0, 0, ""}); st = &ctx.Doc().AnnotationStyles().back(); }
+  if (!st) { AnnotationStyle fresh; fresh.name = name; ctx.Doc().AnnotationStyles().push_back(fresh); st = &ctx.Doc().AnnotationStyles().back(); }
   if (opts.count("height")) st->text_height = std::max(0.0, std::atof(opts["height"].c_str()));
   if (opts.count("arrow")) st->arrow_size = std::max(0.0, std::atof(opts["arrow"].c_str()));
   if (opts.count("font")) st->font = opts["font"];
+  if (opts.count("precision")) st->precision = std::clamp(std::atoi(opts["precision"].c_str()), -1, 15);
+  if (opts.count("angularprecision")) st->angular_precision = std::clamp(std::atoi(opts["angularprecision"].c_str()), -1, 15);
+  if (opts.count("suffix")) st->unit_suffix = opts["suffix"];
+  if (opts.count("extoffset")) st->ext_offset = std::max(0.0, std::atof(opts["extoffset"].c_str()));
+  if (opts.count("extextension")) st->ext_extension = std::max(0.0, std::atof(opts["extextension"].c_str()));
+  if (opts.count("textplacement")) st->text_placement = ToLower(opts["textplacement"]) == "centered" ? "Centered" : "Above";
+  if (opts.count("tolmode")) st->tol_mode = ToLower(opts["tolmode"]) == "none" ? "" : opts["tolmode"];
+  if (opts.count("tolvalue")) st->tol_value = opts["tolvalue"];
+  if (opts.count("tolupper")) st->tol_upper = opts["tolupper"];
+  if (opts.count("tollower")) st->tol_lower = opts["tollower"];
   if (!opts.count("current") || YesLike(opts["current"])) ctx.Settings().annotation_style = name;
   ctx.Doc().Touch();
   ctx.Print("AnnotationStyles: " + StyleSummary(*st) + (ctx.Settings().annotation_style == name ? " is current" : ""));
@@ -1607,6 +1769,40 @@ void RegisterAnnotate2Commands(CommandEngine& e) {
         ctx.Print("UpdateMeasureDims: " + std::to_string(updated) + " updated, " + std::to_string(skipped) + " skipped");
       }), CommandStatus::Implemented,
       "Re-derives DimArea/DimCurveLength/DimVolume (summed from every recorded source object's current shape, MeasureRefIds), DimCreaseAngle (from its two recorded objects' current direction, DimRefObj1/DimRefObj2) and DimOrdinate (per point, FindPointAnchor on the base point and, separately, each feature point - DimOrdinateCommand/BuildOrdinateDimGroup) and rebuilds each leader/text in place - the same explicit-recompute shape as UpdateDimensions (cmd_annotate.cpp) and UpdateTitleBlock/UpdatePanelSchedule/UpdateBillOfMaterials (cmd_drafting2.cpp), not an automatic hook on every document edit. A dimension built before DimOrdinate's associativity was added (no MeasureRefIds/DimRefObj1/DimP0 tag), or one whose recorded object(s) no longer measure under their kind (deleted, or a shape edit made a DimArea curve non-closed etc.), is skipped and stays (or reverts to) a static baked measurement; the leader's landing point (MeasureAt) is kept fixed across an update, only the value and arrowhead position change. A DimOrdinate point that was never anchored still carries its built DimP0/DimP1 points, so it re-lays-out identically rather than being skipped. This window fixes the same DimTolerance-drop gap UpdateDimensions had: a tolerance suffix (cmd_drafting2.cpp DimTolerance) on any of these five kinds used to vanish on rebuild, since the rebuilt text was always the freshly recomputed measurement alone; it is now recovered from the DimTolerance.Base tag and re-appended to the new measurement (GroupToleranceSuffix/ReapplyToleranceSuffix, annotate_common.h), same fix, same helpers, shared with UpdateDimensions.");
+  Reg(e, "Field", Make<FieldCommand>(), CommandStatus::Implemented,
+      "Field text: live text driven by a document/object property rather than a hand-typed string - Kind=Filename/FilePath/Date/CurrentLayer/ObjectCount need no selection; Kind=Length/Area/Volume select an object first (same MeasureOne math and prompts as DimArea/DimCurveLength/DimVolume above). Baked as glyph-outline curve geometry like every annotation in this app (not a live TextEntity - same caveat Text/TextObject's own note already gives), so it does not re-flow on its own; UpdateFields re-evaluates it on demand (see that command's own note) the same explicit-recompute way UpdateDimensions/UpdateMeasureDims/UpdateTitleBlock already work for every other associative annotation here.");
+  Reg(e, "UpdateFields", Immediate([](CommandContext& ctx) {
+        std::vector<int> groups;
+        for (const SceneObject& o : ctx.Doc().Objects()) {
+          auto it = o.user_text.find("Annotation");
+          if (it == o.user_text.end() || it->second != "Field") continue;
+          if (o.group_id >= 0 && std::find(groups.begin(), groups.end(), o.group_id) == groups.end()) groups.push_back(o.group_id);
+        }
+        if (groups.empty()) { ctx.Print("UpdateFields: no field text in this document"); return; }
+        ctx.Doc().BeginChange("UpdateFields");
+        int updated = 0, skipped = 0;
+        for (int g : groups) {
+          std::string kind, ref_tag;
+          for (const SceneObject& o : ctx.Doc().Objects()) {
+            if (o.group_id != g) continue;
+            if (auto it = o.user_text.find("FieldKind"); it != o.user_text.end()) kind = it->second;
+            if (auto it = o.user_text.find("FieldRefIds"); it != o.user_text.end()) ref_tag = it->second;
+          }
+          if (kind.empty()) { ++skipped; continue; }
+          const std::vector<ObjectId> ref_ids = ParseObjIdsTag(ref_tag);
+          std::string text;
+          if (!ResolveFieldValue(ctx, kind, ref_ids, text)) { ++skipped; continue; }
+          GlyphSpec spec;
+          const double h = GroupGlyphSpec(ctx, g, spec) ? spec.height : AnnotationTextHeight(ctx);
+          spec.text = text; spec.height = h;
+          if (RebuildGroupText(ctx, g, spec, {"FieldKind", "FieldRefIds"}) > 0) {
+            ++updated;
+            ctx.Print("UpdateFields:   " + kind + " now \"" + text + "\"");
+          } else ++skipped;
+        }
+        ctx.Print("UpdateFields: " + std::to_string(updated) + " field(s) regenerated" + (skipped ? ", " + std::to_string(skipped) + " skipped" : ""));
+      }), CommandStatus::Implemented,
+      "Re-evaluates every Field's live value - Filename/FilePath (the document's own Save path), Date (today), CurrentLayer (the document's current layer name), ObjectCount (non-annotation object count), or Length/Area/Volume (summed from its recorded FieldRefIds via the same MeasureOne math DimArea/DimCurveLength/DimVolume use) - and rebuilds its glyph text in place, replacing the old baked text, the same explicit-recompute shape as UpdateDimensions/UpdateMeasureDims/UpdateTitleBlock rather than an automatic hook on every document edit. A field whose Length/Area/Volume source object(s) are all gone or no longer measurable under their kind is skipped and stays at its last baked text, the same dead-reference rule UpdateMeasureDims/BomRefIds use.");
   Reg(e, "DimRecenterText", OnSelection("Select dimensions to recenter text", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         const int n = EditGroups(ctx, ids, "DimRecenterText", [](GlyphSpec&) {});
         ctx.Print("DimRecenterText: " + std::to_string(n) + " annotation(s) rebuilt at their original text position");
@@ -1629,7 +1825,8 @@ void RegisterAnnotate2Commands(CommandEngine& e) {
   Reg(e, "ScaleTextHeight", Make<ScaleTextHeightCommand>());
   Reg(e, "FindText", Make<FindTextCommand>());
   Reg(e, "SetDimensionLayer", Make<SetDimensionLayerCommand>());
-  Reg(e, "AnnotationStyles", Immediate(AnnotationStylesCommand), CommandStatus::Implemented, "Name= Height= Arrow= Font= creates or edits a style; bare lists them and opens Document Properties.");
+  Reg(e, "AnnotationStyles", Immediate(AnnotationStylesCommand), CommandStatus::Implemented,
+      "Name= Height= Arrow= Font= Precision= AngularPrecision= Suffix= ExtOffset= ExtExtension= TextPlacement=Above|Centered TolMode=None|symmetric|deviation|limits TolValue= TolUpper= TolLower= creates or edits a style; bare lists them (with a full summary of every field - see StyleSummary) and opens Document Properties, whose Annotation Styles section edits every one of these fields too.");
   Reg(e, "DupAnnotationStyle", Immediate(DupAnnotationStyle));
   Reg(e, "ImportAnnotationStyles", Immediate(ImportAnnotationStyles));
   Reg(e, "SelAnnotationStyle", Immediate(SelAnnotationStyle));
