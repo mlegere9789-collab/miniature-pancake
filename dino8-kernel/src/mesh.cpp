@@ -4608,6 +4608,74 @@ bool TrianglesProperlyOverlap(const Point3d a[3], const Point3d b[3], double tol
   return t1 - t0 > tolerance;
 }
 
+// Area-weighted per-vertex reconciliation of a per-face thickness vector -
+// the same weighting scheme ComputeVertexNormals() already uses for
+// direction, applied here to a scalar instead. Shared by both per-face
+// `Mesh::Shell` overloads (with and without removed faces): a face named in
+// `removed_face_indices` still contributes its own thickness entry to any
+// vertex it shares with a kept neighbour, the same "no special-casing for
+// removed faces" choice the uniform-thickness `Shell(thickness,
+// removed_face_indices)` overload already makes for its own feasibility
+// guard (checked against the FULL mesh, not just the post-removal part).
+std::vector<double> AreaWeightedVertexThickness(const ON_Mesh& mesh, const std::vector<double>& face_thickness) {
+  const int n = mesh.m_V.Count();
+  std::vector<double> weighted_sum(static_cast<size_t>(n), 0.0);
+  std::vector<double> weight_sum(static_cast<size_t>(n), 0.0);
+  auto accumulate_triangle = [&](int i0, int i1, int i2, double t) {
+    const Point3d a(mesh.m_V[i0]);
+    const Point3d b(mesh.m_V[i1]);
+    const Point3d c(mesh.m_V[i2]);
+    const double w = ON_CrossProduct(b - a, c - a).Length();
+    weighted_sum[static_cast<size_t>(i0)] += w * t;
+    weighted_sum[static_cast<size_t>(i1)] += w * t;
+    weighted_sum[static_cast<size_t>(i2)] += w * t;
+    weight_sum[static_cast<size_t>(i0)] += w;
+    weight_sum[static_cast<size_t>(i1)] += w;
+    weight_sum[static_cast<size_t>(i2)] += w;
+  };
+  for (int i = 0; i < mesh.m_F.Count(); ++i) {
+    const ON_MeshFace& f = mesh.m_F[i];
+    accumulate_triangle(f.vi[0], f.vi[1], f.vi[2], face_thickness[static_cast<size_t>(i)]);
+    if (f.IsQuad()) {
+      accumulate_triangle(f.vi[0], f.vi[2], f.vi[3], face_thickness[static_cast<size_t>(i)]);
+    }
+  }
+  std::vector<double> vertex_thickness(static_cast<size_t>(n), 0.0);
+  for (int i = 0; i < n; ++i) {
+    const double w = weight_sum[static_cast<size_t>(i)];
+    vertex_thickness[static_cast<size_t>(i)] = w > tolerance::kZero ? weighted_sum[static_cast<size_t>(i)] / w : 0.0;
+  }
+  return vertex_thickness;
+}
+
+// Refuses a removed-face opening whose own naked-edge rim is not a single
+// simple loop - a vertex visited by more than 2 of the opening's naked
+// edges means the rim revisits itself ("bowtie": two lobes of the opening
+// pinched together at one vertex, or a lobe sharing a vertex with its own
+// rim elsewhere), which neither `Mesh::Shell` overload's side-wall
+// stitching loop (one quad per naked edge, walking (b, a) -> (a+n, b+n))
+// can represent unambiguously: at a degree-4 vertex there is no way to
+// tell, from the naked edges alone, which two of its four form one lobe's
+// own local corner and which two form the other's. Shared by both
+// removed-face `Shell` overloads (uniform and per-face thickness) - see
+// PARITY_MAP.md's "Shell with removed/open faces (cup/case)" bullet for
+// the disclosed gap this closes.
+void ThrowIfOpeningBoundaryIsBowtie(const std::vector<std::pair<int, int>>& opening_naked_edges) {
+  std::map<int, int> naked_degree;
+  for (const auto& [a, b] : opening_naked_edges) {
+    ++naked_degree[a];
+    ++naked_degree[b];
+  }
+  for (const auto& [vertex, degree] : naked_degree) {
+    if (degree > 2) {
+      throw std::invalid_argument(
+          "dino8::kernel::Mesh::Shell: removed_face_indices produces a "
+          "self-touching (\"bowtie\") opening boundary - a vertex on the "
+          "opening's own rim is shared by more than two naked edges");
+    }
+  }
+}
+
 }  // namespace
 
 Mesh::CheckReport Mesh::Check(double tolerance) const {
@@ -5288,6 +5356,7 @@ Mesh Mesh::Shell(double thickness, const std::vector<int>& removed_face_indices)
     }
   }
   const auto opening_naked_edges = outer_open.Check().naked_edge_list;
+  ThrowIfOpeningBoundaryIsBowtie(opening_naked_edges);
 
   Mesh result;
   ON_Mesh& raw = result.raw();
@@ -5354,34 +5423,10 @@ Mesh Mesh::Shell(const std::vector<double>& face_thickness) const {
   // Area-weighted per-vertex reconciliation of the per-face thicknesses -
   // the same weighting scheme ComputeVertexNormals() already uses for
   // direction (see this method's own header doc comment), applied here
-  // to a scalar instead of a vector.
+  // to a scalar instead of a vector. Shared with the removed-faces overload
+  // below via AreaWeightedVertexThickness().
   const int n = mesh_.m_V.Count();
-  std::vector<double> weighted_sum(static_cast<size_t>(n), 0.0);
-  std::vector<double> weight_sum(static_cast<size_t>(n), 0.0);
-  auto accumulate_triangle = [&](int i0, int i1, int i2, double t) {
-    const Point3d a(mesh_.m_V[i0]);
-    const Point3d b(mesh_.m_V[i1]);
-    const Point3d c(mesh_.m_V[i2]);
-    const double w = ON_CrossProduct(b - a, c - a).Length();
-    weighted_sum[static_cast<size_t>(i0)] += w * t;
-    weighted_sum[static_cast<size_t>(i1)] += w * t;
-    weighted_sum[static_cast<size_t>(i2)] += w * t;
-    weight_sum[static_cast<size_t>(i0)] += w;
-    weight_sum[static_cast<size_t>(i1)] += w;
-    weight_sum[static_cast<size_t>(i2)] += w;
-  };
-  for (int i = 0; i < face_count; ++i) {
-    const ON_MeshFace& f = mesh_.m_F[i];
-    accumulate_triangle(f.vi[0], f.vi[1], f.vi[2], face_thickness[static_cast<size_t>(i)]);
-    if (f.IsQuad()) {
-      accumulate_triangle(f.vi[0], f.vi[2], f.vi[3], face_thickness[static_cast<size_t>(i)]);
-    }
-  }
-  std::vector<double> vertex_thickness(static_cast<size_t>(n), 0.0);
-  for (int i = 0; i < n; ++i) {
-    const double w = weight_sum[static_cast<size_t>(i)];
-    vertex_thickness[static_cast<size_t>(i)] = w > tolerance::kZero ? weighted_sum[static_cast<size_t>(i)] / w : 0.0;
-  }
+  const std::vector<double> vertex_thickness = AreaWeightedVertexThickness(mesh_, face_thickness);
 
   const std::vector<Vector3d> normals = ComputeVertexNormals();
   Mesh inner_unflipped = *this;
@@ -5421,6 +5466,135 @@ Mesh Mesh::Shell(const std::vector<double>& face_thickness) const {
     ON_MeshFace f = mesh_.m_F[i];
     for (int k = 0; k < 4; ++k) f.vi[k] += n;
     FlipOneFace(f);
+    raw.m_F.Append(f);
+  }
+  return result;
+}
+
+// The two most recent Shell() generalizations combined: a per-face
+// thickness vector AND a set of removed (opening) faces in one call,
+// closing PARITY_MAP.md's "Shell with removed/open faces" and "Per-face
+// (multi-thickness) shell" bullets' own remaining "still separate" gap -
+// previously a caller wanting both a cup/case opening and a varying wall
+// thickness had no single kernel entry point for it. Construction reuses
+// every piece of machinery its two parents already established rather
+// than inventing a third: AreaWeightedVertexThickness() for the per-vertex
+// blend (Shell(face_thickness)'s own technique), the post-removal outer
+// layer plus opening-boundary side-wall stitching (Shell(thickness,
+// removed_face_indices)'s own technique, including its `vi = {b, a, a+n,
+// b+n}` winding and its new ThrowIfOpeningBoundaryIsBowtie() guard).
+Mesh Mesh::Shell(const std::vector<double>& face_thickness, const std::vector<int>& removed_face_indices) const {
+  const int face_count = mesh_.m_F.Count();
+  if (static_cast<int>(face_thickness.size()) != face_count) {
+    throw std::invalid_argument(
+        "dino8::kernel::Mesh::Shell: face_thickness.size() must equal FaceCount()");
+  }
+  for (double t : face_thickness) {
+    if (!(t > 0.0)) {
+      throw std::invalid_argument("dino8::kernel::Mesh::Shell: every face_thickness entry must be strictly positive");
+    }
+  }
+  if (!IsClosedManifold()) {
+    throw std::invalid_argument(
+        "dino8::kernel::Mesh::Shell: this mesh is not a closed 2-manifold - "
+        "an open sheet needs Thicken(), not Shell()");
+  }
+  if (removed_face_indices.empty()) {
+    throw std::invalid_argument(
+        "dino8::kernel::Mesh::Shell: removed_face_indices is empty - call "
+        "Shell(face_thickness) instead for a fully closed per-face shell with no openings");
+  }
+  std::set<int> removed(removed_face_indices.begin(), removed_face_indices.end());
+  if (removed.size() != removed_face_indices.size()) {
+    throw std::invalid_argument("dino8::kernel::Mesh::Shell: removed_face_indices contains a duplicate index");
+  }
+  for (int i : removed) {
+    if (i < 0 || i >= face_count) {
+      throw std::invalid_argument("dino8::kernel::Mesh::Shell: removed_face_indices contains an out-of-range index");
+    }
+  }
+  if (static_cast<int>(removed.size()) >= face_count) {
+    throw std::invalid_argument(
+        "dino8::kernel::Mesh::Shell: removed_face_indices names every face - "
+        "an entirely open shell has no outer wall left to hollow");
+  }
+
+  // Same area-weighted reconciliation Shell(face_thickness) uses, over the
+  // FULL face set - a removed face's own named thickness still blends into
+  // a boundary vertex it shares with a kept neighbour (see
+  // AreaWeightedVertexThickness()'s own comment for why this is the
+  // deliberate, non-special-cased choice).
+  const int n = mesh_.m_V.Count();
+  const std::vector<double> vertex_thickness = AreaWeightedVertexThickness(mesh_, face_thickness);
+
+  const std::vector<Vector3d> normals = ComputeVertexNormals();
+  Mesh inner_unflipped = *this;
+  for (int i = 0; i < n; ++i) {
+    const ON_3dPoint moved =
+        ON_3dPoint(inner_unflipped.raw().m_V[i]) - vertex_thickness[static_cast<size_t>(i)] * normals[static_cast<size_t>(i)];
+    inner_unflipped.raw().m_V[i] = ON_3fPoint(moved);
+  }
+  inner_unflipped.raw().m_N.Destroy();
+  inner_unflipped.raw().m_FN.Destroy();
+
+  // Same feasibility guards the other three Shell() overloads already
+  // apply, against the FULL per-vertex offset (see Shell(thickness,
+  // removed_face_indices)'s own comment for why opening up faces can only
+  // relax this, never worsen it).
+  if (!inner_unflipped.FindSelfIntersections().empty()) {
+    throw std::invalid_argument(
+        "dino8::kernel::Mesh::Shell: face_thickness folds the inward offset "
+        "through itself - exceeds the local wall-to-wall feasibility somewhere on this mesh");
+  }
+  const double outer_volume = Volume();
+  const double inner_volume = inner_unflipped.Volume();
+  if (!(inner_volume > 0.0 && inner_volume < outer_volume)) {
+    throw std::invalid_argument(
+        "dino8::kernel::Mesh::Shell: face_thickness is too large somewhere - the inward "
+        "offset has collapsed or inverted through the opposite wall rather than nesting inside this mesh");
+  }
+
+  Mesh outer_open;
+  {
+    ON_Mesh& outer_raw = outer_open.raw();
+    outer_raw.m_V = mesh_.m_V;
+    outer_raw.m_F.Reserve(face_count - static_cast<int>(removed.size()));
+    for (int i = 0; i < face_count; ++i) {
+      if (removed.count(i) == 0) outer_raw.m_F.Append(mesh_.m_F[i]);
+    }
+  }
+  const auto opening_naked_edges = outer_open.Check().naked_edge_list;
+  ThrowIfOpeningBoundaryIsBowtie(opening_naked_edges);
+
+  Mesh result;
+  ON_Mesh& raw = result.raw();
+  raw.m_V.Reserve(n * 2);
+  for (int i = 0; i < n; ++i) raw.m_V.Append(mesh_.m_V[i]);
+  for (int i = 0; i < n; ++i) raw.m_V.Append(inner_unflipped.raw().m_V[i]);
+
+  raw.m_F.Reserve(outer_open.raw().m_F.Count() * 2 + static_cast<int>(opening_naked_edges.size()));
+  // Outer wall: the post-removal outer layer, entirely unchanged.
+  for (int i = 0; i < outer_open.raw().m_F.Count(); ++i) {
+    raw.m_F.Append(outer_open.raw().m_F[i]);
+  }
+  // Inner wall: the SAME faces removed from the inward offset copy,
+  // flipped, reindexed by +n.
+  for (int i = 0; i < face_count; ++i) {
+    if (removed.count(i) != 0) continue;
+    ON_MeshFace f = mesh_.m_F[i];
+    for (int k = 0; k < 4; ++k) f.vi[k] += n;
+    FlipOneFace(f);
+    raw.m_F.Append(f);
+  }
+  // Side walls: same reversed winding as Shell(thickness,
+  // removed_face_indices) uses, for the same reason (see that overload's
+  // own comment) - the outer layer here is likewise stored unflipped.
+  for (const auto& [a, b] : opening_naked_edges) {
+    ON_MeshFace f;
+    f.vi[0] = b;
+    f.vi[1] = a;
+    f.vi[2] = a + n;
+    f.vi[3] = b + n;
     raw.m_F.Append(f);
   }
   return result;

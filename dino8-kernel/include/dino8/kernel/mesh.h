@@ -1505,7 +1505,13 @@ class Mesh {
   // actually has) - neither is refused the way `ShellConvexPlanar`'s own
   // Brep-level convex-planar construction must refuse adjacent removed
   // faces; there is no equivalent topological hazard at the mesh level,
-  // where a face is just a row in a flat list.
+  // where a face is just a row in a flat list. The opening's own resulting
+  // naked-edge rim IS checked for a different hazard, though: a
+  // self-touching ("bowtie") boundary, where some vertex sits on more than
+  // 2 of the opening's own naked edges - the side-wall stitching below has
+  // no way to tell which two of that vertex's several naked edges belong
+  // to the same local corner, so this is refused rather than stitched
+  // ambiguously.
   //
   // The feasibility guards are the SAME ones `Shell(thickness)` already
   // applies, checked against the FULL (pre-removal) mesh and its full
@@ -1524,9 +1530,10 @@ class Mesh {
   // nothing" convention rather than silently degrading to it); contains
   // an index outside [0, FaceCount()), a duplicate index, or names every
   // face of the mesh (an entirely open shell has no "outer wall" left to
-  // define an inside/outside at all); or `thickness` folds/inverts the
+  // define an inside/outside at all); `thickness` folds/inverts the
   // full inward offset the same way the no-opening overload already
-  // refuses.
+  // refuses; or the opening's own naked-edge rim is a self-touching
+  // ("bowtie") boundary as described above.
   Mesh Shell(double thickness, const std::vector<int>& removed_face_indices) const;
 
   // The uniform-thickness Shell(double)'s own per-face generalization -
@@ -1564,6 +1571,37 @@ class Mesh {
   // (checked against the per-vertex offset this method actually applies,
   // not a uniform stand-in).
   Mesh Shell(const std::vector<double>& face_thickness) const;
+
+  // The two overloads directly above, combined: a per-face thickness
+  // vector AND a set of removed (opening) faces in one call - closing the
+  // "still separate" gap PARITY_MAP.md's "Shell with removed/open faces"
+  // and "Per-face (multi-thickness) shell" bullets both disclose once each
+  // other existed. `face_thickness` names one thickness per face of THIS
+  // mesh (including a removed one - see below for why), `removed_face_
+  // indices` the faces to leave open, exactly like the two single-purpose
+  // overloads above.
+  //
+  // A removed face's own `face_thickness` entry still counts toward the
+  // area-weighted per-vertex blend at any vertex it shares with a kept
+  // neighbour - this method does not special-case removed faces out of
+  // that reconciliation, the same "no special-casing" choice the uniform-
+  // thickness `Shell(thickness, removed_face_indices)` overload already
+  // makes for its own feasibility guard (checked against the offset the
+  // FULL mesh would get, not just the post-removal part).
+  //
+  // The opening's own naked-edge rim is additionally refused if it is not
+  // a single simple loop (a "bowtie": some vertex on the rim shared by
+  // more than 2 of the opening's own naked edges) - the disclosed hazard
+  // the uniform-thickness removed-face overload's own doc comment already
+  // names as "not specially detected"; both removed-face overloads now
+  // detect it.
+  //
+  // Throws std::invalid_argument under every condition either parent
+  // overload already throws under (bad `face_thickness` size/sign, an
+  // open input, a bad `removed_face_indices` list, the fold/volume-
+  // inversion feasibility guard against the per-vertex offset this method
+  // actually applies), plus the new bowtie-boundary refusal above.
+  Mesh Shell(const std::vector<double>& face_thickness, const std::vector<int>& removed_face_indices) const;
 
   // Answers the real hazard Offset()'s own doc comment above already
   // names but has no way to check on its own: whether Offset(distance)

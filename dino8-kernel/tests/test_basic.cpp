@@ -13571,6 +13571,208 @@ void TestMeshShellPerFaceThicknessRefusesInvalidInput() {
                "same guard the uniform-thickness overload already applies");
 }
 
+// Mesh::Shell(face_thickness, removed_face_indices): the two most recent
+// generalizations combined in one call. Verified two ways, mirroring the
+// standard this category already holds each half to independently: (1) a
+// UNIFORM face_thickness vector reproduces Shell(thickness,
+// removed_face_indices)'s own result exactly (an area-weighted average of
+// identical values can't pull away from that value, the same claim
+// TestMeshShellPerFaceThicknessMatchesUniformOverloadAndHandDerivedAverages
+// already makes for the no-opening overload); and (2) the same structural
+// counts (vertex/face count, closed manifold, positive volume)
+// TestMeshShellWithRemovedFaceProducesClosedManifoldCupWithStitchedWall
+// already checks for the uniform-thickness removed-face overload hold
+// here too, since removing faces and stitching the opening's own wall is
+// exactly the same construction, only the per-vertex offset distance
+// differs.
+void TestMeshShellFaceThicknessWithRemovedFaceMatchesUniformOverloadAndStitchesWall() {
+  using dino8::kernel::Mesh;
+
+  const auto box = MakeQuadBoxMesh(0, 0, 0, 4, 4, 4);
+  const double thickness = 0.5;
+
+  // (1) A uniform face_thickness vector reproduces
+  // Shell(thickness, {face}).
+  const std::vector<double> uniform(static_cast<size_t>(box.FaceCount()), thickness);
+  const Mesh via_vector = box.Shell(uniform, {1});
+  const Mesh via_scalar = box.Shell(thickness, {1});
+  Check(via_vector.VertexCount() == via_scalar.VertexCount() && via_vector.FaceCount() == via_scalar.FaceCount(),
+        "Shell(uniform face_thickness, {face}) matches Shell(thickness, {face})'s own vertex/face counts");
+  bool vertices_match = true;
+  for (int i = 0; i < via_scalar.VertexCount(); ++i) {
+    const ON_3fPoint& a = via_scalar.raw().m_V[i];
+    const ON_3fPoint& b = via_vector.raw().m_V[i];
+    vertices_match = vertices_match && std::fabs(a.x - b.x) < 1e-9 && std::fabs(a.y - b.y) < 1e-9 &&
+                     std::fabs(a.z - b.z) < 1e-9;
+  }
+  Check(vertices_match, "Shell(uniform face_thickness, {face})'s vertices match Shell(thickness, {face})'s own, "
+                        "to ordinary floating-point roundoff");
+
+  // (2) Structural counts/closed-manifold check, same standard the
+  // uniform-thickness removed-face overload's own test already applies -
+  // a varying per-face thickness doesn't change the wall topology, only
+  // the offset distance.
+  std::vector<double> per_face(static_cast<size_t>(box.FaceCount()), 0.4);
+  per_face[4] = 0.6;  // "left" gets a different thickness than its neighbours
+  const Mesh cup = box.Shell(per_face, {1});
+  Check(cup.VertexCount() == box.VertexCount() * 2,
+        "Shell(face_thickness, {face}) keeps both full vertex layers, same as every other Shell() overload");
+  Check(cup.FaceCount() == (box.FaceCount() - 1) * 2 + 4,
+        "removing one quad face from each layer and stitching its own 4-edge boundary gives the same "
+        "(6-1)*2 + 4 = 14 faces the uniform-thickness overload's own test already derives");
+  Check(cup.IsClosedManifold(),
+        "a per-face thickness cup is still a genuine closed, orientation-consistent 2-manifold");
+  Check(cup.Volume() > 0.0, "a positive enclosed volume confirms consistent outward orientation");
+}
+
+void TestMeshShellFaceThicknessWithRemovedFacesRefusesInvalidInput() {
+  using dino8::kernel::Mesh;
+
+  const auto box = MakeQuadBoxMesh(0, 0, 0, 4, 4, 4);
+  const int fc = box.FaceCount();
+
+  auto expect_throw = [](const std::function<void()>& call, const char* message) {
+    bool threw = false;
+    try {
+      call();
+    } catch (const std::invalid_argument&) {
+      threw = true;
+    }
+    Check(threw, message);
+  };
+
+  expect_throw([&] { (void)box.Shell(std::vector<double>(static_cast<size_t>(fc) - 1, 0.5), {0}); },
+               "Shell(face_thickness, {face}) throws when the vector's size doesn't match FaceCount()");
+  {
+    std::vector<double> with_zero(static_cast<size_t>(fc), 0.5);
+    with_zero[0] = 0.0;
+    expect_throw([&] { (void)box.Shell(with_zero, {1}); },
+                 "Shell(face_thickness, {face}) throws when any single entry is not strictly positive");
+  }
+  expect_throw([&] { (void)box.Shell(std::vector<double>(static_cast<size_t>(fc), 0.5), {}); },
+               "Shell(face_thickness, {}) throws - an empty removal list should use the no-opening "
+               "Shell(face_thickness) overload instead");
+  expect_throw([&] { (void)box.Shell(std::vector<double>(static_cast<size_t>(fc), 0.5), {0, 0}); },
+               "Shell(face_thickness, removed_face_indices) throws on a duplicate face index");
+  expect_throw([&] { (void)box.Shell(std::vector<double>(static_cast<size_t>(fc), 0.5), {-1}); },
+               "Shell(face_thickness, removed_face_indices) throws on a negative (out-of-range) face index");
+  expect_throw([&] { (void)box.Shell(std::vector<double>(static_cast<size_t>(fc), 0.5), {fc}); },
+               "Shell(face_thickness, removed_face_indices) throws on a too-large (out-of-range) face index");
+  expect_throw([&] { (void)box.Shell(std::vector<double>(static_cast<size_t>(fc), 0.5), {0, 1, 2, 3, 4, 5}); },
+               "Shell(face_thickness, removed_face_indices) throws when every face is named");
+
+  const auto open_square = MakeFlatUnitSquareMesh();
+  expect_throw(
+      [&] {
+        (void)open_square.Shell(std::vector<double>(static_cast<size_t>(open_square.FaceCount()), 0.1), {0});
+      },
+      "Shell(face_thickness, removed_face_indices) on an already-open mesh throws");
+
+  const auto slab = MakeQuadBoxMesh(0, 0, 0, 4, 4, 0.4);
+  expect_throw(
+      [&] { (void)slab.Shell(std::vector<double>(static_cast<size_t>(slab.FaceCount()), 1.0), {0}); },
+      "Shell(face_thickness, removed_face_indices) refuses a thickness that folds/inverts the full inward "
+      "offset, checked against the FULL mesh before any face is removed - the same feasibility guard every "
+      "other Shell() overload already applies");
+}
+
+// A regular octahedron, built by hand (not via ConvexHull(), whose own
+// triangulation order is not a stable contract) so this test can name
+// specific face indices. 6 vertices - top/bottom apexes plus 4 equator
+// points e1..e4 in CCW order viewed from +z - and 8 triangular faces, 4
+// around each apex. Outward winding verified once here via Volume() > 0
+// rather than trusted from the hand derivation alone.
+dino8::kernel::Mesh MakeOctahedronMesh() {
+  dino8::kernel::Mesh mesh;
+  ON_Mesh& raw = mesh.raw();
+
+  raw.m_V.Append(ON_3fPoint(0, 0, 1));   // 0 top
+  raw.m_V.Append(ON_3fPoint(1, 0, 0));   // 1 e1
+  raw.m_V.Append(ON_3fPoint(0, 1, 0));   // 2 e2
+  raw.m_V.Append(ON_3fPoint(-1, 0, 0));  // 3 e3
+  raw.m_V.Append(ON_3fPoint(0, -1, 0));  // 4 e4
+  raw.m_V.Append(ON_3fPoint(0, 0, -1));  // 5 bottom
+
+  auto add_tri = [&raw](int a, int b, int c) {
+    ON_MeshFace face;
+    face.vi[0] = a;
+    face.vi[1] = b;
+    face.vi[2] = c;
+    face.vi[3] = c;
+    raw.m_F.Append(face);
+  };
+
+  add_tri(0, 1, 2);  // 0: top, e1, e2
+  add_tri(0, 2, 3);  // 1: top, e2, e3
+  add_tri(0, 3, 4);  // 2: top, e3, e4
+  add_tri(0, 4, 1);  // 3: top, e4, e1
+  add_tri(5, 2, 1);  // 4: bottom, e2, e1
+  add_tri(5, 3, 2);  // 5: bottom, e3, e2
+  add_tri(5, 4, 3);  // 6: bottom, e4, e3
+  add_tri(5, 1, 4);  // 7: bottom, e1, e4
+
+  return mesh;
+}
+
+// The new hazard both removed-face Shell() overloads now detect: an
+// opening whose own naked-edge rim is not a single simple loop. Face 0
+// (top, e1, e2) and face 5 (bottom, e3, e2) share exactly one vertex (e2)
+// and no edge, so removing both at once pinches two separate flap
+// openings together at e2 - after removal, e2 sits on 4 naked edges (2
+// from each flap), not the 2 a simple rim allows. Contrasted against
+// removing two faces that share an EDGE instead (0 and 1, both touching
+// top), which merges into one ordinary larger opening and must NOT be
+// refused - the guard is specifically about a shared VERTEX with no
+// shared edge, not about "more than one removed face" in general.
+void TestMeshShellRemovedFacesRefusesBowtieOpeningBoundary() {
+  using dino8::kernel::Mesh;
+
+  const auto octahedron = MakeOctahedronMesh();
+  Check(octahedron.Volume() > 0.0, "sanity: the hand-built octahedron's winding is genuinely outward");
+
+  auto expect_throw = [](const std::function<void()>& call, const char* message) {
+    bool threw = false;
+    try {
+      call();
+    } catch (const std::invalid_argument&) {
+      threw = true;
+    }
+    Check(threw, message);
+  };
+
+  const double t = 0.1;
+  const std::vector<double> per_face(static_cast<size_t>(octahedron.FaceCount()), t);
+
+  expect_throw([&] { (void)octahedron.Shell(t, {0, 5}); },
+               "Shell(thickness, {0, 5}) throws - faces 0 and 5 share only vertex e2, pinching two openings "
+               "into a self-touching bowtie boundary there");
+  expect_throw([&] { (void)octahedron.Shell(per_face, {0, 5}); },
+               "Shell(face_thickness, {0, 5}) throws under the identical bowtie hazard");
+
+  // Contrast: removing a SINGLE face never has this hazard (there is only
+  // one opening, so no two openings can pinch together).
+  Check([&] {
+    try {
+      (void)octahedron.Shell(t, {0});
+      return true;
+    } catch (const std::invalid_argument&) {
+      return false;
+    }
+  }(), "Shell(thickness, {0}) - a single removed face - does not throw");
+
+  // Contrast: two EDGE-adjacent removed faces merge into one ordinary
+  // larger opening, not a bowtie, and must not be refused.
+  Check([&] {
+    try {
+      const Mesh cup = octahedron.Shell(t, {0, 1});
+      return cup.IsClosedManifold();
+    } catch (const std::invalid_argument&) {
+      return false;
+    }
+  }(), "Shell(thickness, {0, 1}) - two edge-adjacent removed faces sharing top's own e2 edge - merges into one "
+       "ordinary opening and produces a valid closed manifold, not a bowtie refusal");
+}
+
 // Perpendicular distance from `p` to the infinite line through `a`/`b`, in
 // 3D - a plain, independent geometric primitive (NOT InsetFace's own
 // miter-offset formula) used below to verify an inset corner's actual
@@ -50620,6 +50822,9 @@ int main() {
   TestMeshShellWithRemovedFacesRefusesInvalidInput();
   TestMeshShellPerFaceThicknessMatchesUniformOverloadAndHandDerivedAverages();
   TestMeshShellPerFaceThicknessRefusesInvalidInput();
+  TestMeshShellFaceThicknessWithRemovedFaceMatchesUniformOverloadAndStitchesWall();
+  TestMeshShellFaceThicknessWithRemovedFacesRefusesInvalidInput();
+  TestMeshShellRemovedFacesRefusesBowtieOpeningBoundary();
   TestMeshInsetFaceUnitSquareMatchesExactConcentricSquare();
   TestMeshInsetFaceTriangleMatchesIndependentPerpendicularDistance();
   TestMeshInsetFaceRefusesInvalidInput();
