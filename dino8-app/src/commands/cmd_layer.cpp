@@ -46,7 +46,7 @@ class ChangeLayerCommand : public Command {
       // selection, nothing else about the document - fast path candidate.
       ctx.Doc().BeginChangeForObjects("ChangeLayer", ids_);
     }
-    for (ObjectId id : ids_) if (SceneObject* o = ctx.Doc().Find(id)) { o->layer_index = idx; o->InvalidateDisplay(); }
+    for (SceneObject* o : ctx.Doc().FindMany(ids_)) if (o) { o->layer_index = idx; o->InvalidateDisplay(); }
     ctx.Print("Moved " + std::to_string(ids_.size()) + " object(s) to " + ctx.Doc().LayerFullPath(idx));
     Finish();
   }
@@ -129,14 +129,16 @@ void RegisterLayerCommands(CommandEngine& e) {
   Reg(e, "ChangeToCurrentLayer", OnSelection("Select objects to move to the current layer", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         // Fixed, known selection; only layer_index changes - fast path.
         ctx.Doc().BeginChangeForObjects("ChangeToCurrentLayer", ids);
-        for (ObjectId id : ids) if (SceneObject* o = ctx.Doc().Find(id)) { o->layer_index = ctx.Doc().CurrentLayer(); o->InvalidateDisplay(); }
+        const int current = ctx.Doc().CurrentLayer();
+        for (SceneObject* o : ctx.Doc().FindMany(ids)) if (o) { o->layer_index = current; o->InvalidateDisplay(); }
       }));
   Reg(e, "MatchLayer", OnSelection("Select objects, the last one is the layer to match", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         const SceneObject* ref = ctx.Doc().Find(ids.back());
         if (!ref) return;
+        const int ref_layer = ref->layer_index;
         // Fixed, known selection; only layer_index changes - fast path.
         ctx.Doc().BeginChangeForObjects("MatchLayer", ids);
-        for (ObjectId id : ids) if (SceneObject* o = ctx.Doc().Find(id)) { o->layer_index = ref->layer_index; o->InvalidateDisplay(); }
+        for (SceneObject* o : ctx.Doc().FindMany(ids)) if (o) { o->layer_index = ref_layer; o->InvalidateDisplay(); }
       }, 2));
   Reg(e, "SetLayerToObject", OnSelection("Select an object", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         if (const SceneObject* o = ctx.Doc().Find(ids.front())) { ctx.Doc().SetCurrentLayer(o->layer_index); ctx.Print("Current layer: " + ctx.Doc().LayerFullPath(o->layer_index)); }
@@ -169,7 +171,7 @@ void RegisterLayerCommands(CommandEngine& e) {
           return;
         }
         std::vector<ObjectId> sel = ctx.Doc().SelectedIds();
-        if (!sel.empty()) { for (ObjectId id : sel) if (SceneObject* o = ctx.Doc().Find(id)) ctx.Doc().Layers()[static_cast<size_t>(o->layer_index)].visible = false; return; }
+        if (!sel.empty()) { for (SceneObject* o : ctx.Doc().FindMany(sel)) if (o) ctx.Doc().Layers()[static_cast<size_t>(o->layer_index)].visible = false; return; }
         ctx.Doc().Layers()[static_cast<size_t>(ctx.Doc().CurrentLayer())].visible = false;
       }));
   Reg(e, "LayerLock", Immediate([](CommandContext& ctx) {
@@ -181,7 +183,7 @@ void RegisterLayerCommands(CommandEngine& e) {
           return;
         }
         std::vector<ObjectId> sel = ctx.Doc().SelectedIds();
-        if (!sel.empty()) { for (ObjectId id : sel) if (SceneObject* o = ctx.Doc().Find(id)) ctx.Doc().Layers()[static_cast<size_t>(o->layer_index)].locked = true; return; }
+        if (!sel.empty()) { for (SceneObject* o : ctx.Doc().FindMany(sel)) if (o) ctx.Doc().Layers()[static_cast<size_t>(o->layer_index)].locked = true; return; }
         ctx.Doc().Layers()[static_cast<size_t>(ctx.Doc().CurrentLayer())].locked = true;
       }));
   Reg(e, "LayerUnlock", Immediate([](CommandContext& ctx) {

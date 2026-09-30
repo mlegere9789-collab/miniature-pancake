@@ -681,6 +681,18 @@ if(DINO8_BUILD_TESTS)
   target_link_libraries(dino8_array_bench PRIVATE dino8_kernel)
   add_test(NAME dino8_array_bench COMMAND dino8_array_bench)
 
+  # Timing benchmark + regression guard for the layer commands that
+  # bulk-retarget a selection - ChangeLayer/ChangeToCurrentLayer/MatchLayer
+  # (cmd_layer.cpp): Document::Find(id) once per selected id (see
+  # tests/layer_bench.cpp) vs resolving the whole selection in one
+  # Document::FindMany() call. Same style as dino8_find_bench/
+  # dino8_array_bench above: asserts a same-run relative speedup.
+  add_executable(dino8_layer_bench tests/layer_bench.cpp src/doc/Document.cpp src/doc/SceneObject.cpp
+                                    src/doc/SubObjectEdit.cpp src/geom/BrepMesher.cpp)
+  target_include_directories(dino8_layer_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(dino8_layer_bench PRIVATE dino8_kernel)
+  add_test(NAME dino8_layer_bench COMMAND dino8_layer_bench)
+
   # DWG round-trip fixture generator (see tests/dwg_fixture_gen.c and
   # smoke.sh's DWG section): builds a small real DWG file directly through
   # LibreDWG's public dwg_add_* API - the same API LibreDWG's own
