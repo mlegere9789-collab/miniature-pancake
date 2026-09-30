@@ -2629,6 +2629,194 @@ void TestPullbackCurveToSurfaceCylinderRulingLine() {
         "the far line's pulled_curve end lands at the hand-derived (2, 0, 4)");
 }
 
+// PARITY_MAP.md's own "kernel: Intersections & projections" category,
+// "Plane sections / contours of surfaces and B-reps" bullet: "the app
+// still slices render meshes (SliceObjects/SliceMesh). Kernel SplitByPlane
+// is mesh-only; the exact route (IntersectSurfaces per face) is not used
+// for sections." IntersectBrepByPlane() is that exact route.
+void TestIntersectBrepByPlaneBoxSideWalls() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::BrepPlaneIntersection;
+  using dino8::kernel::IntersectBrepByPlane;
+  using dino8::kernel::IntersectOptions;
+  using dino8::kernel::Point3d;
+
+  // A box [0,2]^3, sectioned by the plane z=1: Box()'s own six faces share
+  // no topology (its own doc comment), so the plane must cross the four
+  // SIDE walls (each getting exactly one straight-line section, since a
+  // Box() face's domain equals its whole untrimmed shape) and miss the
+  // top (z=2) and bottom (z=0) faces entirely (they sit at a single z,
+  // never touching z=1) - a hand-derivable exact result, not merely "some
+  // curves came back".
+  const Brep box = Brep::Box(0, 0, 0, 2, 2, 2);
+  const ON_Plane mid_plane(ON_3dPoint(0, 0, 1), ON_3dVector(0, 0, 1));
+  IntersectOptions opt;
+  opt.tolerance = 1e-6;
+  opt.mesh_tolerance = 0.05;
+
+  // Not asserting an exact curve COUNT: like IntersectBreps() (see
+  // TestIntersectBrepsAndCurveBrep()'s own doc comment), the mesh-seeded
+  // chainer underneath IntersectFaces() can legitimately split one
+  // physical straight-line section into more than one IntersectionCurve
+  // piece for the same face, especially for an exactly axis-aligned,
+  // exactly-integer-coordinate line like this fixture's own - so this
+  // checks the aggregate, honest properties instead (every side wall
+  // contributes at least one piece, every corner shows up SOMEWHERE, and
+  // nothing from the top/bottom faces leaks in).
+  const std::vector<BrepPlaneIntersection> sections = IntersectBrepByPlane(box.raw(), mid_plane, opt);
+  Check(sections.size() >= 4, "the z=1 plane produces at least one section curve per side wall");
+
+  std::set<int> distinct_faces;
+  bool every_point_at_z1 = true;
+  bool has_00 = false, has_02 = false, has_20 = false, has_22 = false;
+  for (const BrepPlaneIntersection& bpi : sections) {
+    distinct_faces.insert(bpi.face_index);
+    for (const Point3d& p : bpi.curve.points) {
+      if (std::abs(p.z - 1.0) > 1e-4) every_point_at_z1 = false;
+      if (p.DistanceTo(Point3d(0, 0, 1)) < 1e-3) has_00 = true;
+      if (p.DistanceTo(Point3d(0, 2, 1)) < 1e-3) has_02 = true;
+      if (p.DistanceTo(Point3d(2, 0, 1)) < 1e-3) has_20 = true;
+      if (p.DistanceTo(Point3d(2, 2, 1)) < 1e-3) has_22 = true;
+    }
+  }
+  Check(every_point_at_z1, "every returned section point genuinely sits at z == 1 (the top/bottom faces contributed nothing)");
+  Check(distinct_faces.size() == 4, "the 4 section curves each came from a distinct face - no face produced two pieces");
+  Check(has_00 && has_02 && has_20 && has_22,
+        "all four of the box's own vertical edges' z=1 crossings - (0,0,1), (0,2,1), (2,0,1), (2,2,1) - appear "
+        "among the returned section curves' points");
+
+  // A plane far outside the box's own bounding box entirely must produce
+  // no sections, pruned by the bounding-box broad phase rather than
+  // evaluated face by face and found empty.
+  const ON_Plane far_plane(ON_3dPoint(0, 0, 100), ON_3dVector(0, 0, 1));
+  const std::vector<BrepPlaneIntersection> far_sections = IntersectBrepByPlane(box.raw(), far_plane, opt);
+  Check(far_sections.empty(), "a plane far from the B-rep's own bounding box produces zero sections");
+}
+
+// PARITY_MAP.md's own "kernel: Intersections & projections" category,
+// "Projection of curves/points onto surfaces along a direction (Project)"
+// bullet: "app ProjectCommand samples the curve and ray-casts along the
+// CPlane normal onto the render mesh, then refits. No kernel project
+// API." ProjectCurveToSurface() is that kernel API, against the exact
+// surface rather than a tessellated stand-in.
+void TestProjectCurveToSurfaceFlatPlaneStraightDown() {
+  using dino8::kernel::IntersectOptions;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::ProjectCurveToSurface;
+  using dino8::kernel::ProjectedCurveResult;
+  using dino8::kernel::Vector3d;
+
+  // A flat, generously-bounded horizontal plane surface at z = 0.
+  ON_PlaneSurface ground(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)));
+  ground.SetExtents(0, ON_Interval(-100, 100), true);
+  ground.SetExtents(1, ON_Interval(-100, 100), true);
+
+  // A line held entirely above the ground plane, projected straight down
+  // along -Z: every sample must land at its own (x, y) with z == 0 exactly
+  // - a hand-derivable, independently-checkable closed form for THIS
+  // direction/surface pair (unlike Pull, which would instead move every
+  // point to its own nearest point on the plane - already the same (x, y,
+  // 0) here only because the plane happens to be horizontal; a projection
+  // along a direction that ISN'T the plane's own normal would diverge from
+  // Pull's answer, which this test doesn't need to exercise to prove the
+  // two operations are genuinely different calls).
+  const NurbsCurve held_line = NurbsCurve::FromControlPoints({Point3d(1, 1, 5), Point3d(3, 2, 7)}, /*degree=*/1);
+  IntersectOptions opt;
+  opt.tolerance = 1e-6;
+  opt.mesh_tolerance = 0.25;
+
+  const ProjectedCurveResult result = ProjectCurveToSurface(held_line.raw(), ground, Vector3d(0, 0, -1), opt);
+  Check(result.sample_count >= 2, "the curve was sampled at least twice");
+  Check(result.hit_count == result.sample_count, "every sample of a line held above an unbounded ground plane hits it");
+  bool all_correct = result.hit_count > 0;
+  for (size_t i = 0; i < result.points.size(); ++i) {
+    const ON_3dPoint original = held_line.raw().PointAt(result.t[i]);
+    const Point3d& landed = result.points[i];
+    if (std::abs(landed.x - original.x) > 1e-4 || std::abs(landed.y - original.y) > 1e-4 || std::abs(landed.z) > 1e-6) {
+      all_correct = false;
+    }
+  }
+  Check(all_correct, "every projected point keeps the original sample's own (x, y) and lands exactly at z == 0");
+  Check(result.projected_curve.IsValid(), "a curve with every sample hit gets a valid refit projected_curve");
+  const ON_3dPoint fit_start = result.projected_curve.PointAtStart();
+  const ON_3dPoint fit_end = result.projected_curve.PointAtEnd();
+  Check(Point3d(fit_start.x, fit_start.y, fit_start.z).DistanceTo(Point3d(1, 1, 0)) < 1e-3,
+        "projected_curve's own start lands at the hand-derived (1, 1, 0)");
+  Check(Point3d(fit_end.x, fit_end.y, fit_end.z).DistanceTo(Point3d(3, 2, 0)) < 1e-3,
+        "projected_curve's own end lands at the hand-derived (3, 2, 0)");
+
+  // Degenerate direction (zero length) must refuse outright, not divide by
+  // zero or silently return an empty-but-"successful" result.
+  const ProjectedCurveResult zero_dir = ProjectCurveToSurface(held_line.raw(), ground, Vector3d(0, 0, 0), opt);
+  Check(zero_dir.sample_count == 0 && zero_dir.hit_count == 0, "a zero-length direction returns an empty result rather than dividing by zero");
+
+  // ProjectPointToSurface() is the point-level sibling closing the other
+  // half of PARITY_MAP's own "curves/points" bullet: the same straight-down
+  // ray from one of this curve's own endpoints must land at the same
+  // hand-derived (1, 1, 0).
+  using dino8::kernel::PointProjectionHit;
+  using dino8::kernel::ProjectPointToSurface;
+  const PointProjectionHit point_hit = ProjectPointToSurface(Point3d(1, 1, 5), Vector3d(0, 0, -1), ground, opt);
+  Check(point_hit.hit, "a point held above an unbounded ground plane hits it");
+  Check(point_hit.point.DistanceTo(Point3d(1, 1, 0)) < 1e-4, "the projected point lands at the hand-derived (1, 1, 0)");
+  const PointProjectionHit zero_dir_point = ProjectPointToSurface(Point3d(1, 1, 5), Vector3d(0, 0, 0), ground, opt);
+  Check(!zero_dir_point.hit, "ProjectPointToSurface with a zero-length direction reports hit == false rather than dividing by zero");
+}
+
+void TestProjectCurveToSurfacePartialMiss() {
+  using dino8::kernel::IntersectOptions;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::ProjectCurveToSurface;
+  using dino8::kernel::ProjectedCurveResult;
+  using dino8::kernel::Vector3d;
+
+  // A ground plane bounded to x, y in [-1, 1] only - unlike Pull (which
+  // always finds SOME closest point, however far), a directional ray
+  // genuinely misses a bounded surface once the ray's own (x, y) falls
+  // outside it, so this is a real, distinct failure mode this call must
+  // report honestly (hit[i] == false, the sample dropped) rather than
+  // papering over.
+  ON_PlaneSurface bounded_ground(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)));
+  bounded_ground.SetExtents(0, ON_Interval(-1, 1), true);
+  bounded_ground.SetExtents(1, ON_Interval(-1, 1), true);
+
+  // A line from x=-3 to x=3 at y=0, z=5 - its middle third (|x| <= 1) sits
+  // over the bounded plane, its two outer thirds do not.
+  const NurbsCurve wide_line = NurbsCurve::FromControlPoints({Point3d(-3, 0, 5), Point3d(3, 0, 5)}, /*degree=*/1);
+  IntersectOptions opt;
+  opt.tolerance = 1e-6;
+  opt.mesh_tolerance = 0.1;
+
+  const ProjectedCurveResult result = ProjectCurveToSurface(wide_line.raw(), bounded_ground, Vector3d(0, 0, -1), opt);
+  Check(result.hit_count > 0, "at least the middle portion of the line, over the bounded plane, hits it");
+  Check(result.hit_count < result.sample_count, "the two outer thirds, off the bounded plane entirely, genuinely miss it");
+  Check(result.hit.size() == static_cast<size_t>(result.sample_count), "hit[] records one entry per attempted sample, hits and misses alike");
+
+  bool every_hit_inside_bounds = true, every_hit_lands_correctly = true;
+  for (size_t i = 0; i < result.points.size(); ++i) {
+    const Point3d& p = result.points[i];
+    if (p.x < -1.0 - 1e-3 || p.x > 1.0 + 1e-3) every_hit_inside_bounds = false;
+    const ON_3dPoint original = wide_line.raw().PointAt(result.t[i]);
+    if (std::abs(p.x - original.x) > 1e-4 || std::abs(p.y) > 1e-6 || std::abs(p.z) > 1e-6) every_hit_lands_correctly = false;
+  }
+  Check(every_hit_inside_bounds, "every reported hit's own (x, y) genuinely lies within the bounded plane's own domain");
+  Check(every_hit_lands_correctly, "every reported hit keeps the original sample's own x and lands at y == 0, z == 0");
+
+  // The same bounded-surface miss, at the single-point level:
+  // ProjectPointToSurface() must honestly report hit == false for a point
+  // whose straight-down ray falls outside the plane's own domain, and
+  // hit == true (landing correctly) for one that doesn't.
+  using dino8::kernel::PointProjectionHit;
+  using dino8::kernel::ProjectPointToSurface;
+  const PointProjectionHit inside_hit = ProjectPointToSurface(Point3d(0, 0, 5), Vector3d(0, 0, -1), bounded_ground, opt);
+  Check(inside_hit.hit && inside_hit.point.DistanceTo(Point3d(0, 0, 0)) < 1e-4,
+        "a point over the bounded plane's own domain hits it and lands at the hand-derived (0, 0, 0)");
+  const PointProjectionHit outside_hit = ProjectPointToSurface(Point3d(-3, 0, 5), Vector3d(0, 0, -1), bounded_ground, opt);
+  Check(!outside_hit.hit, "a point off the bounded plane's own domain entirely genuinely misses it");
+}
+
 void TestBooleanCombineGeneralBoxBox() {
   using dino8::kernel::BooleanCombineGeneral;
   using dino8::kernel::BooleanOp;
@@ -18164,6 +18352,59 @@ void TestPointCloudSpatialQueries() {
     Check(threw_kneg, "KNearest(k < 0) throws");
     Check(threw_radius, "PointsWithinRadius(negative radius) throws");
   }
+}
+
+// PARITY_MAP.md's own "kernel: Intersections & projections" category names
+// this gap directly under "Point-cloud contour/section as separate app
+// commands": "app-level band-sampling around a plane; the kernel
+// PointCloud has no section API." PointsNearPlane() is that kernel API.
+void TestPointCloudPointsNearPlane() {
+  using dino8::kernel::Point3d;
+  using dino8::kernel::PointCloud;
+
+  // Seven points with hand-derivable exact |distance| from the z=0 plane,
+  // appended out of distance order so a passing test can't be an accident
+  // of insertion order already being sorted:
+  //   idx 0: z=-2.0   distance 2.0   (outside the 0.5 band)
+  //   idx 1: z=-0.3   distance 0.3   (inside)
+  //   idx 2: z=0.0    distance 0.0   (inside, exact match)
+  //   idx 3: z=0.1    distance 0.1   (inside)
+  //   idx 4: z=1.5    distance 1.5   (outside)
+  //   idx 5: z=-0.5   distance 0.5   (inside: exactly at the band's own edge, inclusive)
+  //   idx 6: z=0.51   distance 0.51  (outside: just past the band's own edge)
+  PointCloud cloud;
+  cloud.AppendPoint(Point3d(0, 0, -2.0));
+  cloud.AppendPoint(Point3d(1, 0, -0.3));
+  cloud.AppendPoint(Point3d(2, 0, 0.0));
+  cloud.AppendPoint(Point3d(3, 0, 0.1));
+  cloud.AppendPoint(Point3d(4, 0, 1.5));
+  cloud.AppendPoint(Point3d(5, 0, -0.5));
+  cloud.AppendPoint(Point3d(6, 0, 0.51));
+
+  const ON_Plane z0_plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1));
+  const auto near_plane = cloud.PointsNearPlane(z0_plane, 0.5);
+  Check(near_plane.size() == 4, "PointsNearPlane(band=0.5) finds exactly the 4 points within 0.5 of z=0");
+  const std::vector<int> expected_order = {2, 3, 1, 5};  // ascending distance: 0, 0.1, 0.3, 0.5
+  bool order_ok = near_plane.size() == expected_order.size();
+  for (size_t i = 0; order_ok && i < expected_order.size(); ++i) order_ok = near_plane[i].index == expected_order[i];
+  Check(order_ok, "PointsNearPlane is sorted by ascending |distance|: idx 2, 3, 1, 5 (0, 0.1, 0.3, 0.5)");
+  Check(near_plane.size() == 4 && std::abs(near_plane[3].distance - 0.5) < 1e-12,
+        "the point exactly at the band's own edge (distance == band) is included, inclusive like PointsWithinRadius");
+
+  Check(cloud.PointsNearPlane(z0_plane, 10.0).size() == 7, "a band covering every point's distance finds all 7 points");
+  Check(cloud.PointsNearPlane(z0_plane, 0.0).size() == 1, "band=0 finds only the exact on-plane point (idx 2)");
+
+  bool threw_band = false;
+  try {
+    cloud.PointsNearPlane(z0_plane, -0.001);
+  } catch (const std::invalid_argument&) {
+    threw_band = true;
+  }
+  Check(threw_band, "PointsNearPlane(negative band) throws");
+
+  const PointCloud empty;
+  Check(empty.PointsNearPlane(z0_plane, 1e9).empty(),
+        "PointsNearPlane on an empty cloud returns an empty result, not an error");
 }
 
 // SaveXyz()/LoadXyz() close a real gap: before this, a PointCloud had no
@@ -59343,6 +59584,9 @@ int main() {
   TestIntersectCurveSelfIntersectionsFindsBowtieAndRejectsSimpleCurves();
   TestIntersectBrepsAndCurveBrep();
   TestPullbackCurveToSurfaceCylinderRulingLine();
+  TestIntersectBrepByPlaneBoxSideWalls();
+  TestProjectCurveToSurfaceFlatPlaneStraightDown();
+  TestProjectCurveToSurfacePartialMiss();
   TestBooleanCombineGeneralBoxBox();
   TestBooleanCombineGeneralFreeformSurfaceOperand();
   TestBooleanCombineGeneralCoplanarBoxes();
@@ -59501,6 +59745,7 @@ int main() {
   TestMeshDistanceTo();
   TestMeshClashWith();
   TestPointCloudSpatialQueries();
+  TestPointCloudPointsNearPlane();
   TestPointCloudXyzRoundTrips();
   TestPointCloudLoadXyzRejectsMalformedInput();
   TestPointCloudPtsRoundTrips();
