@@ -211,7 +211,26 @@ std::vector<ObjectId> BuildGeometry(Document& doc, ElecComponent& c) {
 // ---------------------------------------------------------------------------
 namespace {
 constexpr const char* kUserTextKey = "dino8.elec";
+
+// `circuit` is free-typed user text (ElecCircuit, cmd_elec.cpp) - unlike
+// end0/end1 below (always "point"/"start"/"end"), it can contain a quote or
+// backslash, so it needs real JSON string escaping to keep SaveElec's output
+// well-formed.
+std::string JsonEscapeCircuit(const std::string& s) {
+  std::string out;
+  out.reserve(s.size());
+  for (char c : s) {
+    switch (c) {
+      case '"': out += "\\\""; break;
+      case '\\': out += "\\\\"; break;
+      case '\n': out += "\\n"; break;
+      case '\r': break;
+      default: out += c;
+    }
+  }
+  return out;
 }
+}  // namespace
 
 std::vector<ElecComponent> LoadElec(const Document& doc) {
   std::vector<ElecComponent> out;
@@ -249,6 +268,8 @@ std::vector<ElecComponent> LoadElec(const Document& doc) {
     c.ref1 = static_cast<ObjectId>(v["ref1"].number);
     c.end0 = v["end0"].AsString();
     c.end1 = v["end1"].AsString();
+    c.circuit = v["circuit"].AsString();
+    c.load_va = v["load_va"].number;
     const json::Value& objs = v["objects"];
     for (size_t j = 0; j < objs.Size(); ++j) c.objects.push_back(static_cast<ObjectId>(objs[j].number));
     out.push_back(c);
@@ -270,6 +291,7 @@ void SaveElec(Document& doc, const std::vector<ElecComponent>& list) {
         << ",\"has_ref0\":" << (c.has_ref0 ? 1 : 0) << ",\"has_ref1\":" << (c.has_ref1 ? 1 : 0)
         << ",\"ref0\":" << c.ref0 << ",\"ref1\":" << c.ref1
         << ",\"end0\":\"" << c.end0 << "\",\"end1\":\"" << c.end1 << "\""
+        << ",\"circuit\":\"" << JsonEscapeCircuit(c.circuit) << "\",\"load_va\":" << c.load_va
         << ",\"objects\":[";
     for (size_t j = 0; j < c.objects.size(); ++j) out << (j ? "," : "") << c.objects[j];
     out << "]}";

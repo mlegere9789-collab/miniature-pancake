@@ -1695,6 +1695,13 @@ try:
 except RuntimeError as e:
     print("bad srf rejected: " + str(e))
 
+planar_ids = dino8.doc.Objects.AddPlanarSrf([circle_id])
+planar = dino8.doc.Objects.Find(planar_ids[0])
+print("planar kind: " + planar.ObjectType)
+print("object count with planar: %d" % len(dino8.doc.Objects.AllObjects()))
+no_planar = dino8.doc.Objects.AddPlanarSrf([box_id])
+print("planar from non-curve: " + str(no_planar))
+
 dino8.RunCommand("NewLayer", "Parts")
 PY
 sed "s|@TMP@|$TMPW|g" "$HERE/python_script.txt" > "$TMPW/python_script.txt"
@@ -1757,7 +1764,10 @@ else
   pscheck "history: srf kind: surface" "dino8.doc.Objects.AddSrfPt built a surface object, matching rs.AddSrfPt"
   pscheck "history: object count with srf: 7" "AllObjects sees the box, the circle, the cone, the torus, the interpolated curve, the arc and the new surface"
   pscheck "history: bad srf rejected:" "AddSrfPt raised a Python exception for fewer than three corner points, instead of silently returning"
-  pscheck "^ok   expect_objects 7" "RunPythonScript left the box, the circle, the cone, the torus, the interpolated curve, the arc and the surface (the sphere was deleted from inside the script)"
+  pscheck "history: planar kind: polysurface" "dino8.doc.Objects.AddPlanarSrf built a trimmed planar brep from the closed circle, matching rs.AddPlanarSrf (Brep-kind objects report as polysurface regardless of face count, same as AddBox/AddCone/AddTorus)"
+  pscheck "history: object count with planar: 8" "AllObjects sees the box, the circle, the cone, the torus, the interpolated curve, the arc, the srf and the new planar surface"
+  pscheck "history: planar from non-curve: None" "AddPlanarSrf returned None when none of the ids were closed planar curves, matching rs.AddPlanarSrf pushing nil instead of raising"
+  pscheck "^ok   expect_objects 8" "RunPythonScript left the box, the circle, the cone, the torus, the interpolated curve, the arc, the srf and the planar surface (the sphere was deleted from inside the script)"
   grep -q "! Python error" <<<"$PS" && { echo "FAIL python_script.txt printed a Python error"; fail=1; } || echo "ok   no Python script errors"
 fi
 
@@ -2899,7 +2909,11 @@ if echo "$MM" | grep -q "^FAIL"; then fail=1; fi
 # wire's length/endpoints from its new position. No @expect_objects in the
 # script itself (ElecTag/PanelSchedule bake font-dependent glyph curve
 # counts), so ElecTag/PanelSchedule are each checked by their own printed
-# summary line instead of a total object count.
+# summary line instead of a total object count. PanelSchedule's own
+# associativity (ElecCircuit assigning Resistor #1/Lamp #5 to real panel
+# circuits, an associative PanelSchedule built from that selection, then
+# UpdatePanelSchedule re-deriving it after Lamp #5's load changes) is
+# checked the same way - by its printed row summary, not object ids.
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   EL="$("$BIN" --smoke 150 --script "$HERE/elec_script.txt" 2>&1)" || { echo "$EL"; echo "FAIL: electrical script exited non-zero"; exit 1; }
 else
@@ -2929,6 +2943,13 @@ elcheck "CV\[0\] 15,10,0" "the rebuilt WireRun's own start point is the moved an
 elcheck "CV\[1\] 10,20,0" "the rebuilt WireRun's end point is the untouched second anchor's position"
 elcheck "ElecTag: \"R1\" baked as [0-9]* curve(s)" "ElecTag baked a real reference-designator string as font-outline curves (count is font-dependent, same as Text's own smoke check)"
 elcheck "PanelSchedule: 3 circuit row(s) built" "PanelSchedule built a real data table with the exact row count from its Circuits= option, via the same Table/BuildTableGroup mechanism as RevisionTable/BillOfMaterials"
+elcheck "ElecCircuit: Resistor #1 -> circuit 1 (100 VA)" "ElecCircuit assigned Resistor #1 to circuit 1 at 100 VA, stored on the component rather than as geometry"
+elcheck "ElecCircuit: Lamp #5 -> circuit 2 (60 VA)" "ElecCircuit assigned Lamp #5 to circuit 2 at 60 VA"
+elcheck "PanelSchedule: 2 circuit row(s) built, associative to the selected component(s)" "a second PanelSchedule with no Circuits= option instead selected the two circuit-assigned components and built an associative table"
+elcheck "PanelSchedule:   circuit 1: Resistor #1 100 VA; circuit 2: Lamp #5 60 VA" "the associative PanelSchedule's rows reflect the real ElecCircuit assignment (not hand-typed text), sorted by circuit"
+elcheck "ElecCircuit: Lamp #5 -> circuit 2 (90 VA)" "Lamp #5's load was bumped from 60 to 90 VA via a second ElecCircuit call"
+elcheck "UpdatePanelSchedule:   Panel A: 2 circuit row(s) (circuit 1: Resistor #1 100 VA; circuit 2: Lamp #5 90 VA)" "UpdatePanelSchedule re-derived the table from the components' *current* assignment (90, not the 60 baked when the table was first built)"
+elcheck "UpdatePanelSchedule: 1 table(s) regenerated" "UpdatePanelSchedule found and regenerated exactly the one associative panel schedule, leaving the earlier hand-typed Circuits= table (which carries neither PanelAll nor PanelRefIds) untouched"
 echo "$EL" | grep -E "^(ok|FAIL)" || true
 if echo "$EL" | grep -q "^FAIL"; then fail=1; fi
 

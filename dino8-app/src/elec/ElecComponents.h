@@ -113,6 +113,17 @@ struct ElecComponent {
   // Geometry ElecRebuild owns: every curve object Build() last produced for
   // this component (cleared and rewritten on every Rebuild()).
   std::vector<ObjectId> objects;
+
+  // Panel-schedule assignment (ElecCircuit, cmd_elec.cpp): which circuit this
+  // component belongs to, and its rated load. Empty `circuit` means "not on
+  // any panel schedule" - the default for every component, since a
+  // schematic symbol has no circuit/load of its own until ElecCircuit tags
+  // it. Neither field affects Build()'s geometry; they exist purely so
+  // PanelSchedule/UpdatePanelSchedule (cmd_drafting2.cpp) can aggregate real,
+  // current component data into a panel-schedule table instead of the
+  // hand-typed Circuits= text those commands also still accept.
+  std::string circuit;
+  double load_va = 0;
 };
 
 std::vector<ElecComponent> LoadElec(const Document& doc);
