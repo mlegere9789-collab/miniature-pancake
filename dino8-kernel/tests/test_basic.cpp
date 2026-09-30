@@ -21111,6 +21111,84 @@ void TestSubDBooleanRejectsOpenNonManifoldOperand() {
         "silently producing a corrupt result");
 }
 
+void TestSubDBooleanToSubDReturnsEditableSubDMatchingBooleanVolume() {
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::SubD;
+
+  // Same disjoint-box fixture as TestSubDBooleanUnionOfDisjointBoxesSumsVolumes
+  // above, so the expected volume (8+8=16) is exact and hand-derivable, the
+  // same reasoning that test's own comment already establishes.
+  const SubD a = SubD::FromControlMesh(MakeQuadBoxMesh(0, 0, 0, 2, 2, 2));
+  const SubD b = SubD::FromControlMesh(MakeQuadBoxMesh(5, 0, 0, 7, 2, 2));
+
+  const SubD result = a.BooleanToSubD(b, BooleanOp::Union);
+  Check(result.IsValid(), "SubD::BooleanToSubD returns a structurally valid SubD (ON_SubD::IsValid())");
+  Check(result.FaceCount() > 0, "sanity: the returned SubD has faces");
+  Check(std::abs(result.ToApproximateMesh().Volume() - 16.0) < 1e-9,
+        "BooleanToSubD()'s level-0 control net matches Boolean()'s own exact volume (8+8=16) - "
+        "FromControlMesh() genuinely reproduces the boolean's own mesh, not a different shape");
+}
+
+void TestSubDBooleanToSubDIsGenuinelyFurtherSubdividable() {
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::SubD;
+
+  // Same overlapping-box fixture as
+  // TestSubDBooleanIntersectionOfOverlappingBoxesMatchesExactOverlap above.
+  // A frozen/non-SubD copy of the triangulated boolean mesh would leave
+  // its own volume exactly unchanged by Subdivide(); a real control net's
+  // volume strictly shrinks (Catmull-Clark's own well-known corner-
+  // rounding "shrinkage") - the same proof-of-genuineness this file's
+  // other FromBrep()/FromControlMesh() tests already hold themselves to
+  // (e.g. TestSubDFromBrepBoxProducesWatertightManifoldCage's own "further
+  // Subdivide() genuinely rounding it").
+  const SubD a = SubD::FromControlMesh(MakeQuadBoxMesh(0, 0, 0, 2, 2, 2));
+  const SubD b = SubD::FromControlMesh(MakeQuadBoxMesh(1, 1, 1, 3, 3, 3));
+
+  SubD result = a.BooleanToSubD(b, BooleanOp::Intersection);
+  const double level0_volume = result.ToApproximateMesh().Volume();
+  result.Subdivide(1);
+  const double level1_volume = result.ToApproximateMesh().Volume();
+  Check(level1_volume < level0_volume - 1e-9,
+        "Subdivide()ing a BooleanToSubD() result genuinely shrinks its volume (real Catmull-Clark "
+        "refinement of a real control net), not a frozen copy of the boolean's own triangulated mesh");
+}
+
+void TestSubDBooleanToSubDPropagatesBooleanFailure() {
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SubD;
+
+  // Same open-grid fixture as TestSubDBooleanRejectsOpenNonManifoldOperand
+  // above: BooleanToSubD() delegates to Boolean(), so the same
+  // precondition failure must propagate unchanged, not be swallowed or
+  // reinterpreted into a different (or no) exception.
+  Mesh grid;
+  ON_Mesh& raw = grid.raw();
+  raw.m_V.Append(ON_3fPoint(0, 0, 0));
+  raw.m_V.Append(ON_3fPoint(1, 0, 0));
+  raw.m_V.Append(ON_3fPoint(1, 1, 0));
+  raw.m_V.Append(ON_3fPoint(0, 1, 0));
+  ON_MeshFace face;
+  face.vi[0] = 0;
+  face.vi[1] = 1;
+  face.vi[2] = 2;
+  face.vi[3] = 3;
+  raw.m_F.Append(face);
+  const SubD open_patch = SubD::FromControlMesh(grid);
+  const SubD box = SubD::FromControlMesh(MakeQuadBoxMesh(0, 0, 0, 2, 2, 2));
+
+  bool threw = false;
+  try {
+    (void)open_patch.BooleanToSubD(box, BooleanOp::Union);
+  } catch (const std::runtime_error&) {
+    threw = true;
+  }
+  Check(threw,
+        "SubD::BooleanToSubD throws std::runtime_error when an operand's ToApproximateMesh() is "
+        "open, the same precondition Boolean() itself already enforces");
+}
+
 void TestMeshComputeVertexNormals() {
   using dino8::kernel::Mesh;
   using dino8::kernel::Vector3d;
@@ -56837,6 +56915,9 @@ int main() {
   TestSubDBooleanIntersectionOfOverlappingBoxesMatchesExactOverlap();
   TestSubDBooleanDifferenceSubtractsOnlyTheOverlap();
   TestSubDBooleanRejectsOpenNonManifoldOperand();
+  TestSubDBooleanToSubDReturnsEditableSubDMatchingBooleanVolume();
+  TestSubDBooleanToSubDIsGenuinelyFurtherSubdividable();
+  TestSubDBooleanToSubDPropagatesBooleanFailure();
   TestMeshComputeVertexNormals();
   TestMeshSaveObjRoundTrips();
   TestMeshTextureCoordinates();

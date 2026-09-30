@@ -256,6 +256,10 @@ Mesh SubD::Boolean(const SubD& other, BooleanOp op) const {
   return BooleanCombine(ToApproximateMesh(), other.ToApproximateMesh(), op);
 }
 
+SubD SubD::BooleanToSubD(const SubD& other, BooleanOp op) const {
+  return SubD::FromControlMesh(Boolean(other, op));
+}
+
 SubD SubD::Transform(const ON_Xform& xform) const {
   SubD result = *this;  // ON_SubD's copy ctor deep-copies (verified in SetEdgeSharpness()'s own comment)
   if (!result.subd_.Transform(xform)) {

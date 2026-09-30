@@ -5421,6 +5421,62 @@ above. This session's only source edits are `dino8-kernel/include/dino8/
 kernel/mesh.h`, `dino8-kernel/src/mesh.cpp`, and `dino8-kernel/tests/
 test_basic.cpp`.
 
+**2026-09-30 follow-up (SubD boolean operations, editable-result half):**
+`git log --oneline -10 -- dino8-kernel/src/subd.cpp dino8-kernel/include/
+dino8/kernel/subd.h` at the start of this session showed the `body_count`/
+`SplitDisjointPieces()` work above as the most recent commit touching
+this category, so this session picked the next still-`[partial]` item
+with a genuinely tractable piece left in it rather than duplicating that
+work: "SubD boolean operations". Its own bullet above already discloses
+the real remaining gap precisely ("a real topological SubD-to-SubD
+boolean... a new, editable SubD control cage with correct creases/
+valences along the cut... is a materially bigger problem") - re-
+triangulating a subdivision surface's own control net at an arbitrary cut
+curve, still squarely out of scope, not attempted here either. But that
+bullet's own existing `Boolean()` method never gave a caller a SubD back
+AT ALL, only a static `Mesh` - conflating two separate questions ("what
+shape is the result" and "can I keep editing/subdividing it as a SubD
+afterward"). The second question has a real, tractable answer without
+touching the first: `SubD::BooleanToSubD(other, op)` (subd.cpp, subd.h)
+runs the exact same `Boolean()` computation and hands its result straight
+to the already-existing `FromControlMesh()`, returning a genuine,
+further-editable `SubD` instead of a frozen `Mesh`.
+
+Verified by 3 new tests (tests/test_basic.cpp), reusing the same three
+box fixtures `TestSubDBoolean{UnionOfDisjointBoxesSumsVolumes,
+IntersectionOfOverlappingBoxesMatchesExactOverlap,
+RejectsOpenNonManifoldOperand}` above already established, so the
+expected volumes stay the same hand-derivable numbers: the returned SubD
+is `IsValid()` and its level-0 `ToApproximateMesh()` volume matches
+`Boolean()`'s own exact union volume (8+8=16) bit-for-bit -
+`FromControlMesh()` genuinely reproduces the boolean mesh, not some other
+shape (`TestSubDBooleanToSubDReturnsEditableSubDMatchingBooleanVolume`);
+calling `Subdivide(1)` on the result strictly shrinks its volume rather
+than leaving it exactly unchanged - the same "frozen copy vs. a real
+control net" proof this document's other `FromBrep()`/`FromControlMesh()`
+tests already hold themselves to, here distinguishing a genuine SubD from
+one that merely LOOKS like one
+(`TestSubDBooleanToSubDIsGenuinelyFurtherSubdividable`); and an operand
+whose `ToApproximateMesh()` is open still throws `std::runtime_error`,
+unchanged from `Boolean()`'s own precondition, not swallowed or
+reinterpreted by the extra `FromControlMesh()` step
+(`TestSubDBooleanToSubDPropagatesBooleanFailure`). Full
+`dino8_kernel_tests` suite (via the test binary directly): 100% passing,
+0 regressions.
+
+Does NOT flip "SubD boolean operations" to `present`, and this category's
+own present/partial/missing counts stay unchanged at 15/7/0/22 (84.1%):
+the returned SubD's own control cage is still whatever Manifold's
+triangulated boolean result happens to be (every face a raw triangle, no
+creases placed along the cut, no quad-dominant remeshing) - genuinely
+further-editable now, where before it wasn't reachable as a SubD at all,
+but not the topologically-reconstructed cage the item's own remaining gap
+names. Still not wired into any `dino8-app` command, the same disclosed
+App-level gap `Boolean()`'s own bullet already names for the Mesh-
+returning form. This session's only source edits are
+`dino8-kernel/include/dino8/kernel/subd.h`, `dino8-kernel/src/subd.cpp`,
+and `dino8-kernel/tests/test_basic.cpp`.
+
 ## App: Dino 8 vs Rhino 8 + AutoCAD 2027
 
 | Category | Weight | Items | Present | Partial | Missing | Parity % |
@@ -5678,7 +5734,7 @@ top 40:
 - [kernel/curveops] Knot / control-point insertion and removal — curve knot removal (partial)
 - [kernel/surfaceops] Convert to Beziers (surface) (missing)
 - [kernel/subd_mesh] SubD from NURBS/B-rep conversion — wire into the app (partial)
-- [kernel/subd_mesh] SubD non-manifold / multi-body validity checks — report what/where (partial)
+- [kernel/subd_mesh] ~~SubD non-manifold / multi-body validity checks — report what/where~~ **stale entry, corrected 2026-09-30** — this was already `present` in the category's own checklist above (`SubD::Check()`'s `non_manifold_edge_list`/`non_manifold_vertex_list`/`body_count`, closed by an earlier same-day session; see the "SubD non-manifold/multi-body validity checks" note and the later `body_count`/`SplitDisjointPieces()` follow-up in the category bullet text above) at the time this backlog row was last touched - this list simply never got updated to drop it. Kept here, struck through, only for this row's own history; not an active item.
 - [app/app_subd_mesh] NURBS/Brep to SubD — add test coverage (partial)
 - [app/app_ux] Worksessions — status/refresh indicator for the copy-in model (partial)
 - [app/app_ecosystem] Large-scale adversarial/property-based QA — extend to Windows-specific cases (partial)

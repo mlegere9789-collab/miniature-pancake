@@ -280,6 +280,31 @@ class SubD {
   // further precondition of its own.
   Mesh Boolean(const SubD& other, BooleanOp op) const;
 
+  // Like Boolean() above, but hands its result to FromControlMesh() and
+  // returns a new, editable SubD instead of a static Mesh - closing part
+  // of Boolean()'s own disclosed gap ("a real topological SubD-to-SubD
+  // boolean... a new, editable SubD control cage with correct creases/
+  // valences at the cut... is a materially bigger problem") for the piece
+  // that IS tractable without that bigger problem: a caller wanting to
+  // keep EDITING or further Subdivide()ing the boolean result as a SubD -
+  // not just display it - previously had no way to get one back at all,
+  // since Boolean() only ever returns a flat Mesh.
+  //
+  // Still honestly not what that disclosed gap describes, and not a new,
+  // separate limitation invented here: the returned SubD's control cage
+  // is whatever Manifold's own triangulated boolean result happens to
+  // be - every face a raw triangle from the mesh-boolean engine, not a
+  // clean quad-dominant cage with creases placed along the cut the way a
+  // hand-modeled SubD would have. Subdivide()ing the result genuinely
+  // smooths the shape (a real Catmull-Clark refinement of a real control
+  // net - verified below, not assumed), but the cage's own topology
+  // carries none of that reconstruction. `FromControlMesh()`'s own
+  // failure mode (an unbuildable topology - shouldn't occur for the
+  // closed, manifold mesh `BooleanCombine()` itself already guarantees,
+  // but not reinterpreted here either way) and `Boolean()`'s own
+  // preconditions both apply unchanged.
+  SubD BooleanToSubD(const SubD& other, BooleanOp op) const;
+
   // Applies `xform` to a copy of this SubD's ENTIRE control cage (every
   // level it currently holds, not just the active one) and returns it -
   // the same missing piece `Mesh::Transform()` already closes for
