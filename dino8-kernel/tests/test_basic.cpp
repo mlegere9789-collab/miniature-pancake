@@ -24968,6 +24968,177 @@ void TestFoldFaceConvexPlanarRefusesInvalidInput() {
   Check(threw, "FoldFaceConvexPlanar refuses a negative hinge_loop_index");
 }
 
+// Single-entry FoldFacesConvexPlanar() must reproduce FoldFaceConvexPlanar()'s
+// own output bit-for-bit, vertex for vertex - proof the batch's own
+// flatten-into-(face_index,new_plane) step introduces no divergence of its
+// own from the single-face rotation math it duplicates.
+void TestFoldFacesConvexPlanarSingleEntryMatchesFoldFaceConvexPlanar() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FaceFold;
+  using dino8::kernel::FoldFaceConvexPlanar;
+  using dino8::kernel::FoldFacesConvexPlanar;
+  using dino8::kernel::Point3d;
+
+  const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+  const std::vector<Brep::PlanarFace> box_pf = box.PlanarFaces();
+  const int loop_size = static_cast<int>(box_pf[2].loop.size());
+  int hinge_index = -1;
+  for (int i = 0; i < loop_size; ++i) {
+    const Point3d& a = box_pf[2].loop[static_cast<size_t>(i)];
+    const Point3d& b = box_pf[2].loop[static_cast<size_t>((i + 1) % loop_size)];
+    if (std::fabs(a.z) < 1e-9 && std::fabs(b.z) < 1e-9) {
+      hinge_index = i;
+      break;
+    }
+  }
+  Check(hinge_index >= 0, "the front wall's own loop has an edge lying exactly on the bottom (z=0) plane");
+
+  const double theta = std::atan(0.3);
+  const Brep via_single = FoldFaceConvexPlanar(box, 2, hinge_index, theta);
+  const Brep via_batch = FoldFacesConvexPlanar(box, {FaceFold{2, hinge_index, theta}});
+
+  Check(via_single.FaceCount() == via_batch.FaceCount(),
+        "FoldFacesConvexPlanar keeps the same face count as FoldFaceConvexPlanar for one entry");
+  const std::vector<Brep::PlanarFace> single_faces = via_single.PlanarFaces();
+  const std::vector<Brep::PlanarFace> batch_faces = via_batch.PlanarFaces();
+  Check(single_faces.size() == batch_faces.size(), "same number of faces to compare pointwise");
+  for (size_t i = 0; i < single_faces.size(); ++i) {
+    Check(single_faces[i].loop.size() == batch_faces[i].loop.size(), "each face has the same vertex count in both results");
+    for (size_t j = 0; j < single_faces[i].loop.size() && j < batch_faces[i].loop.size(); ++j) {
+      Check(single_faces[i].loop[j].DistanceTo(batch_faces[i].loop[j]) < 1e-9,
+            "every vertex lands in exactly the same place under FoldFaceConvexPlanar and a single-entry "
+            "FoldFacesConvexPlanar");
+    }
+  }
+}
+
+// Genuine "one call, many named faces" batching value: two INDEPENDENT
+// hinge folds (the box's own front and back walls, each about its own
+// bottom edge, small enough that neither reaches the other's plane) must
+// match the identical result of two SEQUENTIAL single FoldFaceConvexPlanar()
+// calls (front folded first, then back folded on that intermediate result)
+// bit-for-bit - proof the batch's own single ReplaceFacePlanesConvexPlanar()
+// pass reconstructs exactly what a valid sequential composition would,
+// not a separate and possibly-divergent construction.
+void TestFoldFacesConvexPlanarTwoIndependentFoldsMatchesSequentialSingleFolds() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FaceFold;
+  using dino8::kernel::FoldFaceConvexPlanar;
+  using dino8::kernel::FoldFacesConvexPlanar;
+  using dino8::kernel::Point3d;
+
+  // Box face order per Brep::Box()'s own comment: 0=bottom(-z) 1=top(+z)
+  // 2=front(-y) 3=back(+y) 4=left(-x) 5=right(+x).
+  const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+  const std::vector<Brep::PlanarFace> box_pf = box.PlanarFaces();
+
+  auto find_bottom_hinge = [](const Brep::PlanarFace& face) {
+    const int loop_size = static_cast<int>(face.loop.size());
+    for (int i = 0; i < loop_size; ++i) {
+      const Point3d& a = face.loop[static_cast<size_t>(i)];
+      const Point3d& b = face.loop[static_cast<size_t>((i + 1) % loop_size)];
+      if (std::fabs(a.z) < 1e-9 && std::fabs(b.z) < 1e-9) return i;
+    }
+    return -1;
+  };
+  const int front_hinge = find_bottom_hinge(box_pf[2]);
+  const int back_hinge = find_bottom_hinge(box_pf[3]);
+  Check(front_hinge >= 0 && back_hinge >= 0,
+        "both the front and back walls have an edge lying exactly on the bottom (z=0) plane");
+
+  const double front_theta = std::atan(0.1);
+  const double back_theta = std::atan(0.15);
+
+  const Brep after_front = FoldFaceConvexPlanar(box, 2, front_hinge, front_theta);
+  // Folding the front wall by a small angle never reaches the back wall's
+  // own plane, so the back wall's PHYSICAL boundary - and therefore its
+  // own hinge edge - is completely unchanged by that first fold. The
+  // reconstruction every FoldFaceConvexPlanar()/ReplaceFacePlanesConvexPlanar()
+  // call runs (even for an untouched face) re-derives every face's own loop
+  // from scratch via ClipConvexPolygon(), which is free to start that loop
+  // at a different vertex than Brep::Box()'s own native ordering - so
+  // find_bottom_hinge() below may legitimately return a DIFFERENT index
+  // than `back_hinge` for the identical physical edge; only the two
+  // matched POINTS, not the index, need to agree.
+  const std::vector<Brep::PlanarFace> after_front_pf = after_front.PlanarFaces();
+  const int back_hinge_after_front = find_bottom_hinge(after_front_pf[3]);
+  const int back_loop_size = static_cast<int>(box_pf[3].loop.size());
+  const Point3d& back_p0_original = box_pf[3].loop[static_cast<size_t>(back_hinge)];
+  const Point3d& back_p1_original = box_pf[3].loop[static_cast<size_t>((back_hinge + 1) % back_loop_size)];
+  const Point3d& back_p0_after_front = after_front_pf[3].loop[static_cast<size_t>(back_hinge_after_front)];
+  Check(back_p0_after_front.DistanceTo(back_p0_original) < 1e-9 ||
+            back_p0_after_front.DistanceTo(back_p1_original) < 1e-9,
+        "the back wall's own hinge edge sits at the same physical position after the (independent) front fold, "
+        "even if ClipConvexPolygon() happened to start its rebuilt loop at a different vertex");
+  const Brep via_sequential = FoldFaceConvexPlanar(after_front, 3, back_hinge_after_front, back_theta);
+
+  const Brep via_batch =
+      FoldFacesConvexPlanar(box, {FaceFold{2, front_hinge, front_theta}, FaceFold{3, back_hinge, back_theta}});
+
+  Check(via_sequential.FaceCount() == via_batch.FaceCount(),
+        "FoldFacesConvexPlanar keeps the same face count as the sequential two-call composition");
+  const std::vector<Brep::PlanarFace> seq_faces = via_sequential.PlanarFaces();
+  const std::vector<Brep::PlanarFace> batch_faces = via_batch.PlanarFaces();
+  Check(seq_faces.size() == batch_faces.size(), "same number of faces to compare pointwise");
+  for (size_t i = 0; i < seq_faces.size(); ++i) {
+    Check(seq_faces[i].loop.size() == batch_faces[i].loop.size(), "each face has the same vertex count in both results");
+    for (size_t j = 0; j < seq_faces[i].loop.size() && j < batch_faces[i].loop.size(); ++j) {
+      Check(seq_faces[i].loop[j].DistanceTo(batch_faces[i].loop[j]) < 1e-9,
+            "every vertex lands in exactly the same place under a batched FoldFacesConvexPlanar and the "
+            "equivalent sequential pair of single FoldFaceConvexPlanar calls, for two independent folds");
+    }
+  }
+
+  // A real, non-trivial volume change confirms both folds actually took
+  // effect, not merely that two no-ops matched each other.
+  Check(std::fabs(PlanarBrepVolumeExact(via_batch) - 1000.0) > 1.0,
+        "the batched fold produces a genuinely different volume from the original 1000 box, not a no-op");
+
+  Check(via_batch.TessellateToClosedMesh(1, 1).IsClosedManifold(),
+        "the batch-folded box also tessellates to a closed, watertight manifold");
+}
+
+void TestFoldFacesConvexPlanarRefusesInvalidInput() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FaceFold;
+  using dino8::kernel::FoldFacesConvexPlanar;
+
+  const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+  const int loop_size = static_cast<int>(box.PlanarFaces()[2].loop.size());
+
+  bool threw = false;
+  try {
+    FoldFacesConvexPlanar(box, {});
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "FoldFacesConvexPlanar refuses an empty folds list");
+
+  threw = false;
+  try {
+    FoldFacesConvexPlanar(box, {FaceFold{99, 0, 0.1}});
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "FoldFacesConvexPlanar refuses an out-of-range face_index");
+
+  threw = false;
+  try {
+    FoldFacesConvexPlanar(box, {FaceFold{2, loop_size, 0.1}});
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "FoldFacesConvexPlanar refuses a hinge_loop_index out of range for the named face's own loop");
+
+  threw = false;
+  try {
+    FoldFacesConvexPlanar(box, {FaceFold{2, 0, 0.1}, FaceFold{2, 1, 0.2}});
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "FoldFacesConvexPlanar refuses two entries naming the same face_index");
+}
+
 // Builds one PlanarFace from `loop` (already in the right cyclic order),
 // orienting it outward by comparing the raw cross-product normal against
 // the direction from `solid_centroid` to this face's own centroid -
@@ -25993,6 +26164,143 @@ void TestDeleteFaceHealConvexPlanarRefusesInvalidInput() {
   Check(threw,
         "DeleteFaceHealConvexPlanar refuses deleting a face whose neighbours never converge (leaves the solid "
         "unbounded)");
+}
+
+// PARITY_MAP's kernel: Local / direct-edit operations "Delete face with
+// heal" gap's own remaining "one face at a time" limitation - the batch
+// generalization of DeleteFaceHealConvexPlanar() above.
+//
+// A unit cube with BOTH the (1,1,1) AND (0,0,0) corners chamfered off by
+// their own triangular plane: 8 faces total - all 6 box-derived faces
+// become pentagons (every one of them touches one chamfered corner or the
+// other), plus the 2 chamfer triangles themselves (indices 6 and 7).
+dino8::kernel::Brep MakeDoubleChamferedUnitCube() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  const Point3d v000(0, 0, 0), v100(1, 0, 0), v110(1, 1, 0), v010(0, 1, 0);
+  const Point3d v001(0, 0, 1), v101(1, 0, 1), v011(0, 1, 1);
+  const Point3d cx(0.7, 1, 1), cy(1, 0.7, 1), cz(1, 1, 0.7);  // chamfer near (1,1,1)
+  const Point3d dx(0.3, 0, 0), dy(0, 0.3, 0), dz(0, 0, 0.3);  // chamfer near (0,0,0)
+  const Point3d solid_centroid(0.5, 0.5, 0.5);
+
+  std::vector<Brep::PlanarFace> faces;
+  faces.push_back(MakeOutwardTestFace({v100, v110, v010, dy, dx}, solid_centroid));    // bottom, z=0 (pentagon)
+  faces.push_back(MakeOutwardTestFace({v001, v101, cy, cx, v011}, solid_centroid));    // top, z=1 (pentagon)
+  faces.push_back(MakeOutwardTestFace({v010, v011, v001, dz, dy}, solid_centroid));    // x=0 (pentagon)
+  faces.push_back(MakeOutwardTestFace({v001, v101, v100, dx, dz}, solid_centroid));    // y=0 (pentagon)
+  faces.push_back(MakeOutwardTestFace({v100, v110, cz, cy, v101}, solid_centroid));    // x=1 (pentagon)
+  faces.push_back(MakeOutwardTestFace({v010, v011, cx, cz, v110}, solid_centroid));    // y=1 (pentagon)
+  faces.push_back(MakeOutwardTestFace({cx, cy, cz}, solid_centroid));                  // chamfer near (1,1,1), index 6
+  faces.push_back(MakeOutwardTestFace({dx, dy, dz}, solid_centroid));                  // chamfer near (0,0,0), index 7
+  return Brep::FromPlanarFaces(faces);
+}
+
+// Deleting both chamfer faces in one DeleteFacesHealConvexPlanar() call
+// must reconstruct the EXACT original unit cube, and must match - vertex
+// for vertex - the identical result of two SEQUENTIAL single
+// DeleteFaceHealConvexPlanar() calls, in EITHER order: since each
+// remaining face's own reconstruction depends only on the FINAL set of
+// surviving planes, not on the order they were dropped in, all three
+// paths (one batch call, or either of the two sequential orderings) must
+// agree exactly - proof this is a genuine "drop many at once" sibling of
+// DeleteFaceHealConvexPlanar(), not a separate and possibly-divergent
+// construction.
+void TestDeleteFacesHealConvexPlanarTwoIndependentChamfersMatchesEitherSequentialOrder() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::DeleteFaceHealConvexPlanar;
+  using dino8::kernel::DeleteFacesHealConvexPlanar;
+  using dino8::kernel::Point3d;
+
+  const Brep double_chamfered = MakeDoubleChamferedUnitCube();
+  Check(double_chamfered.PlanarFaces().size() == 8,
+        "the double-chamfered fixture itself has 8 faces (6 box-derived + 2 chamfers)");
+
+  const Brep via_batch = DeleteFacesHealConvexPlanar(double_chamfered, {6, 7});
+  Check(via_batch.PlanarFaces().size() == 6,
+        "deleting both chamfer faces in one call leaves exactly the original 6 box faces");
+  for (const Brep::PlanarFace& f : via_batch.PlanarFaces()) {
+    Check(f.loop.size() == 4, "every healed face is a plain quad again - both corners regrew");
+  }
+  const double batch_volume = PlanarBrepVolumeExact(via_batch);
+  Check(std::fabs(batch_volume - 1.0) < 1e-9,
+        "the batch-healed solid's volume matches the exact unit cube, not merely a plausible-looking number");
+
+  // Order 1: delete the (1,1,1) chamfer (index 6) first, then the
+  // (0,0,0) chamfer - which has shifted down to index 6 in the 7-face
+  // intermediate result once index 6 was removed.
+  const Brep seq_a1 = DeleteFaceHealConvexPlanar(double_chamfered, 6);
+  Check(seq_a1.PlanarFaces().size() == 7, "removing one of two chamfers leaves 7 faces, not yet fully healed");
+  const Brep seq_a2 = DeleteFaceHealConvexPlanar(seq_a1, 6);
+
+  // Order 2: delete the (0,0,0) chamfer (index 7) first - nothing before
+  // it shifts - then the (1,1,1) chamfer, still at index 6.
+  const Brep seq_b1 = DeleteFaceHealConvexPlanar(double_chamfered, 7);
+  const Brep seq_b2 = DeleteFaceHealConvexPlanar(seq_b1, 6);
+
+  auto check_matches = [](const Brep& a, const Brep& b, const char* label) {
+    const std::vector<Brep::PlanarFace> fa = a.PlanarFaces();
+    const std::vector<Brep::PlanarFace> fb = b.PlanarFaces();
+    Check(fa.size() == fb.size(), (std::string(label) + ": same face count").c_str());
+    for (size_t i = 0; i < fa.size() && i < fb.size(); ++i) {
+      Check(fa[i].loop.size() == fb[i].loop.size(), (std::string(label) + ": same vertex count per face").c_str());
+      for (size_t j = 0; j < fa[i].loop.size() && j < fb[i].loop.size(); ++j) {
+        Check(fa[i].loop[j].DistanceTo(fb[i].loop[j]) < 1e-9,
+              (std::string(label) + ": every vertex matches exactly").c_str());
+      }
+    }
+  };
+  check_matches(via_batch, seq_a2, "batch vs. sequential (1,1,1)-then-(0,0,0)");
+  check_matches(via_batch, seq_b2, "batch vs. sequential (0,0,0)-then-(1,1,1)");
+
+  Check(via_batch.TessellateToClosedMesh(1, 1).IsClosedManifold(),
+        "the batch-healed cube also tessellates to a closed, watertight manifold");
+}
+
+void TestDeleteFacesHealConvexPlanarRefusesInvalidInput() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::DeleteFacesHealConvexPlanar;
+
+  const Brep double_chamfered = MakeDoubleChamferedUnitCube();
+
+  bool threw = false;
+  try {
+    DeleteFacesHealConvexPlanar(double_chamfered, {});
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "DeleteFacesHealConvexPlanar refuses an empty face_indices list");
+
+  threw = false;
+  try {
+    DeleteFacesHealConvexPlanar(double_chamfered, {99});
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "DeleteFacesHealConvexPlanar refuses an out-of-range face_index");
+
+  threw = false;
+  try {
+    DeleteFacesHealConvexPlanar(double_chamfered, {6, 6});
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "DeleteFacesHealConvexPlanar refuses a duplicate face_index");
+
+  // Deleting both the top (index 1) and bottom (index 0) of a plain box
+  // leaves the 4 side walls with nothing bounding them from either end:
+  // genuinely unbounded, not a heal - the same failure mode
+  // DeleteFaceHealConvexPlanar() already documents, now checked with two
+  // faces dropped in the same call.
+  threw = false;
+  try {
+    const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+    DeleteFacesHealConvexPlanar(box, {0, 1});
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw,
+        "DeleteFacesHealConvexPlanar refuses dropping a set of faces whose remaining neighbours never converge "
+        "(leaves the solid unbounded)");
 }
 
 }  // namespace
@@ -53238,6 +53546,9 @@ int main() {
   TestReplaceFacePlaneConvexPlanarRefusesInvalidInput();
   TestFoldFaceConvexPlanarBoxFrontWallHingedAtBottomEdgeMatchesExactIntegral();
   TestFoldFaceConvexPlanarRefusesInvalidInput();
+  TestFoldFacesConvexPlanarSingleEntryMatchesFoldFaceConvexPlanar();
+  TestFoldFacesConvexPlanarTwoIndependentFoldsMatchesSequentialSingleFolds();
+  TestFoldFacesConvexPlanarRefusesInvalidInput();
   TestMoveVertexConvexPlanarPyramidApexMatchesExactVolumeAndLeavesBaseUntouched();
   TestMoveVertexConvexPlanarRefusesInvalidInput();
   TestMoveFaceConvexPlanarMatchesOffsetFaceForPureNormalTranslate();
@@ -53257,6 +53568,8 @@ int main() {
   TestMoveFacesConvexPlanarRefusesInvalidInput();
   TestDeleteFaceHealConvexPlanarChamferedCubeRecoversExactUnitCube();
   TestDeleteFaceHealConvexPlanarRefusesInvalidInput();
+  TestDeleteFacesHealConvexPlanarTwoIndependentChamfersMatchesEitherSequentialOrder();
+  TestDeleteFacesHealConvexPlanarRefusesInvalidInput();
   TestFilletConvexEdgeUnitCubeTopFrontCorner();
   TestFilletConvexEdgeTaperedRailExactness();
   TestFilletConvexEdgeTaperedClosedFormVolumeMatchesFrustumFormula();
