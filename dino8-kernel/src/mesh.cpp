@@ -4967,30 +4967,32 @@ std::vector<double> AreaWeightedVertexThickness(const ON_Mesh& mesh, const std::
   return vertex_thickness;
 }
 
-// Refuses a removed-face opening whose own naked-edge rim is not a single
-// simple loop - a vertex visited by more than 2 of the opening's naked
-// edges means the rim revisits itself ("bowtie": two lobes of the opening
+// Refuses a naked-edge boundary that is not a single simple loop (or
+// several entirely disjoint simple loops) - a vertex visited by more than
+// 2 naked edges means the boundary revisits itself ("bowtie": two lobes
 // pinched together at one vertex, or a lobe sharing a vertex with its own
-// rim elsewhere), which neither `Mesh::Shell` overload's side-wall
-// stitching loop (one quad per naked edge, walking (b, a) -> (a+n, b+n))
-// can represent unambiguously: at a degree-4 vertex there is no way to
-// tell, from the naked edges alone, which two of its four form one lobe's
-// own local corner and which two form the other's. Shared by both
-// removed-face `Shell` overloads (uniform and per-face thickness) - see
-// PARITY_MAP.md's "Shell with removed/open faces (cup/case)" bullet for
-// the disclosed gap this closes.
-void ThrowIfOpeningBoundaryIsBowtie(const std::vector<std::pair<int, int>>& opening_naked_edges) {
+// rim elsewhere), which the side-wall stitching loop shared by `Thicken()`
+// and both removed-face `Shell` overloads (one quad per naked edge,
+// walking (a, b) -> (b+n, a+n) or its reverse) can't represent
+// unambiguously: at a degree-4-or-more vertex there is no way to tell,
+// from the naked edges alone, which two of them form one lobe's own local
+// corner and which two form another's. `method_name` and
+// `boundary_description` are folded into the exception text so the same
+// check reads naturally from either caller - see PARITY_MAP.md's "Shell
+// with removed/open faces (cup/case)" and "Thicken sheet" bullets for the
+// disclosed gaps this closes.
+void ThrowIfNakedBoundaryIsBowtie(const std::vector<std::pair<int, int>>& naked_edges, const char* method_name,
+                                   const char* boundary_description) {
   std::map<int, int> naked_degree;
-  for (const auto& [a, b] : opening_naked_edges) {
+  for (const auto& [a, b] : naked_edges) {
     ++naked_degree[a];
     ++naked_degree[b];
   }
   for (const auto& [vertex, degree] : naked_degree) {
     if (degree > 2) {
-      throw std::invalid_argument(
-          "dino8::kernel::Mesh::Shell: removed_face_indices produces a "
-          "self-touching (\"bowtie\") opening boundary - a vertex on the "
-          "opening's own rim is shared by more than two naked edges");
+      throw std::invalid_argument(std::string("dino8::kernel::Mesh::") + method_name + ": " + boundary_description +
+                                   " is a self-touching (\"bowtie\") boundary - a vertex is shared by more than two "
+                                   "naked edges, which the side-wall stitching can't represent unambiguously");
     }
   }
 }
@@ -5677,8 +5679,35 @@ Mesh Mesh::Thicken(double distance) const {
         "a closed mesh needs a hollowing/shell operation this method "
         "doesn't attempt");
   }
+  // Same hazard `Mesh::Shell`'s removed-face overloads already guard
+  // against on their own opening boundary: an open sheet whose naked-edge
+  // rim touches itself at a vertex (e.g. two lobes joined at a single
+  // point, not an edge) gives that vertex a naked-edge degree above 2,
+  // which the side-wall loop below - one quad per naked edge, no
+  // knowledge of which lobe an edge belongs to - can't stitch
+  // unambiguously without producing a non-manifold wall there.
+  ThrowIfNakedBoundaryIsBowtie(report.naked_edge_list, "Thicken", "this mesh's own naked-edge boundary");
 
   const Mesh outer = Offset(distance);
+  // Same fold-safety guard `Mesh::Shell(thickness)` already runs on its own
+  // inward offset copy before trusting it as a wall (see that overload's
+  // own `FindSelfIntersections()` check): a `distance` large enough - or a
+  // sheet curved/creased enough - folds this offset copy through itself,
+  // silently producing a self-intersecting outer wall with no single
+  // out-of-range input to catch it otherwise. Scope-limited like that
+  // sibling guard: it only catches the offset copy folding through
+  // ITSELF, not a wall crossing the original sheet or the side walls
+  // self-intersecting against either layer - the "no fold repair"
+  // disclosed gap on this method (see PARITY_MAP.md's "Thicken sheet"
+  // bullet) is about repair, and stays open; this closes the silent-
+  // corruption half of it by refusing instead.
+  if (!outer.FindSelfIntersections().empty()) {
+    throw std::invalid_argument(
+        "dino8::kernel::Mesh::Thicken: distance folds the offset copy "
+        "through itself - exceeds this sheet's own local wall feasibility "
+        "somewhere (too large a distance for how sharply it's curved or "
+        "creased there)");
+  }
   const int n = mesh_.m_V.Count();
 
   Mesh result;
@@ -5834,7 +5863,7 @@ Mesh Mesh::Shell(double thickness, const std::vector<int>& removed_face_indices)
     }
   }
   const auto opening_naked_edges = outer_open.Check().naked_edge_list;
-  ThrowIfOpeningBoundaryIsBowtie(opening_naked_edges);
+  ThrowIfNakedBoundaryIsBowtie(opening_naked_edges, "Shell", "removed_face_indices produces an opening whose own rim");
 
   Mesh result;
   ON_Mesh& raw = result.raw();
@@ -6042,7 +6071,7 @@ Mesh Mesh::Shell(const std::vector<double>& face_thickness, const std::vector<in
     }
   }
   const auto opening_naked_edges = outer_open.Check().naked_edge_list;
-  ThrowIfOpeningBoundaryIsBowtie(opening_naked_edges);
+  ThrowIfNakedBoundaryIsBowtie(opening_naked_edges, "Shell", "removed_face_indices produces an opening whose own rim");
 
   Mesh result;
   ON_Mesh& raw = result.raw();
