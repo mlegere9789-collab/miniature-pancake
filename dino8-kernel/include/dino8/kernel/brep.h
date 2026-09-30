@@ -3852,16 +3852,14 @@ class Brep {
   // above, for the identical reason (a fabricated straight 2D trim only
   // stays exact over an affine (u, v) -> 3D map - the same restriction
   // SplitNakedEdgeAt() places on itself): the face's own surface must
-  // report IsPlanar(), the face must have EXACTLY one loop (an existing
-  // hole is out of scope - punching a second, independent hole is a
-  // narrower follow-up, not this pass), `wire_body` must satisfy
-  // IsWireBody() and its own edge graph must walk (the same walk-
-  // coverage discipline ExtrudeWireBody()/OffsetWireBody() already use
-  // for an open chain, applied here to require a CLOSED one instead) as
-  // a single simple closed loop of at least 3 edges, and every one of
-  // those edges must itself report IsLinear() - a curved wire edge (e.g.
-  // a circular OffsetWireBody() result) is out of scope, refused rather
-  // than silently faceted.
+  // report IsPlanar(), `wire_body` must satisfy IsWireBody() and its own
+  // edge graph must walk (the same walk-coverage discipline
+  // ExtrudeWireBody()/OffsetWireBody() already use for an open chain,
+  // applied here to require a CLOSED one instead) as a single simple
+  // closed loop of at least 3 edges, and every one of those edges must
+  // itself report IsLinear() - a curved wire edge (e.g. a circular
+  // OffsetWireBody() result) is out of scope, refused rather than
+  // silently faceted.
   //
   // Every wire vertex must lie within `tolerance` of the face's own
   // plane (checked directly against the plane IsPlanar() itself reports,
@@ -3874,11 +3872,22 @@ class Brep {
   // against it (validated the same simple-polygon way MakeEdgeFace()'s
   // own diagonal already is, approximating the outer loop by its own
   // trim-start points exactly as MakeEdgeFace()/MakeEdgeKillRing()
-  // already do) and must not self-intersect. The new loop's own winding
-  // is normalized to the standard outer-CCW/inner-CW convention
-  // KillEdgeMakeRing() already relies on (reversing the wire's own walk
-  // order first if needed, via the same SignedArea2D() this file already
-  // uses) rather than trusting wire_body's own arbitrary curve order.
+  // already do) and must not self-intersect.
+  //
+  // A face that already has one or more holes is no longer out of scope
+  // (the "punching a second, independent hole is a narrower follow-up"
+  // limitation this doc comment previously named): each call punches ONE
+  // more ON_BrepLoop::inner loop, checked against every hole the face
+  // already has, not just its outer boundary - the new hole's own 2D
+  // image must not cross any existing hole's own boundary, must not land
+  // strictly inside an existing hole (that is empty space already, not
+  // material left to punch), and must not itself strictly contain an
+  // existing hole (this call can't represent "replace two holes with
+  // one"). The new loop's own winding is normalized to the standard
+  // outer-CCW/inner-CW convention KillEdgeMakeRing() already relies on
+  // (reversing the wire's own walk order first if needed, via the same
+  // SignedArea2D() this file already uses) rather than trusting
+  // wire_body's own arbitrary curve order.
   //
   // Returns Result::Failed - not a thrown exception, the same "can't,
   // but that's not a bug" contract every other topology-surgery method
@@ -3887,12 +3896,13 @@ class Brep {
   // or std::invalid_argument if it refers to an already-deleted face or
   // if `wire_body` does not satisfy IsWireBody().
   //
-  // Still partial even once this lands: only one hole per call (a face
-  // that already has a hole refuses, rather than adding a second,
-  // independent one); `wire_body` must be a single closed loop of
-  // straight edges, not a general curve; and no app command constructs
-  // or drives a wire body at all yet (WireBody()'s own doc comment above
-  // already names this same app-wiring gap).
+  // Still partial even once this lands: `wire_body` must be a single
+  // closed loop of straight edges, not a general curve; a face with a
+  // slit or curve-on-surface/point-on-surface loop (from MakeEdgeKillRing()
+  // or a trimmed-curve construction) is refused rather than punched
+  // alongside those loops; and no app command constructs or drives a
+  // wire body at all yet (WireBody()'s own doc comment above already
+  // names this same app-wiring gap).
   struct AddHoleLoopResult {
     Result result = Result::Failed;
     int loop_index = -1;  // the new ON_BrepLoop::inner loop, or -1 on Result::Failed

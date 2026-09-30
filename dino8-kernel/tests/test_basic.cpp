@@ -11192,17 +11192,65 @@ void TestBrepAddHoleLoop() {
         "Check() now reports 8 naked edges - the original 4 outer plus the new hole's own 4, and nothing else new");
   Check(after.issues.size() == 8, "...exactly 8 issues total, nothing else was disturbed");
 
-  // Refusal: a face that already has a hole (2 loops) is out of scope -
-  // punching a SECOND, independent hole is a narrower follow-up.
+  // A face that already has a hole is no longer out of scope: a SECOND,
+  // genuinely independent hole (a small triangle near a corner, nowhere
+  // near the first hole) succeeds exactly like the first one did.
+  const int v_count_after_first = b.m_V.Count(), e_count_after_first = b.m_E.Count();
   const Point3d J0(0.1, 0.1, 0), J1(0.1, 0.2, 0), J2(0.2, 0.2, 0);
   const Brep tiny_wire = Brep::WireBody({NurbsCurve::FromControlPoints({J0, J1}, 1),
                                          NurbsCurve::FromControlPoints({J1, J2}, 1),
                                          NurbsCurve::FromControlPoints({J2, J0}, 1)});
   const auto second_hole = sheet.AddHoleLoop(face_index, tiny_wire);
-  Check(second_hole.result == Result::Failed && second_hole.loop_index == -1,
-        "AddHoleLoop() refuses a face that already has a hole (LoopCount() != 1)");
-  Check(b.m_V.Count() == v_count_before + 4 && b.m_E.Count() == e_count_before + 4,
-        "...and the sheet is left completely untouched");
+  Check(second_hole.result == Result::Ok && second_hole.loop_index >= 0,
+        "AddHoleLoop() succeeds on a SECOND, independent hole that neither crosses nor nests with the first");
+  Check(b.m_V.Count() == v_count_after_first + 3, "V grew by exactly 3 - the triangle's own 3 new corners");
+  Check(b.m_E.Count() == e_count_after_first + 3, "E grew by exactly 3 - the triangle's own 3 new edges");
+  Check(b.m_F[face_index].LoopCount() == 3, "the face now has 3 loops - outer + both holes");
+  const Point2d inside_second_hole = to_uv(0.13, 0.15);  // interior of triangle J0/J1/J2 above
+  Check(!FaceContainsUV(b.m_F[face_index], inside_second_hole.x, inside_second_hole.y),
+        "the second hole's own centre is genuinely outside the face");
+  Check(b.IsValid(), "the sheet is still a topologically valid ON_Brep after a second AddHoleLoop()");
+
+  // Refusal: a new hole that CROSSES an existing hole's own boundary
+  // (overlaps it, rather than sitting cleanly inside solid material or
+  // fully separate).
+  {
+    const int vb = b.m_V.Count(), eb = b.m_E.Count();
+    const Point3d C0(2, 2, 0), C1(2, 3.5, 0), C2(3.5, 3.5, 0), C3(3.5, 2, 0);
+    const Brep crossing_wire =
+        Brep::WireBody({NurbsCurve::FromControlPoints({C0, C1}, 1), NurbsCurve::FromControlPoints({C1, C2}, 1),
+                        NurbsCurve::FromControlPoints({C2, C3}, 1), NurbsCurve::FromControlPoints({C3, C0}, 1)});
+    const auto r = sheet.AddHoleLoop(face_index, crossing_wire);
+    Check(r.result == Result::Failed, "AddHoleLoop() refuses a new hole that crosses an existing hole's boundary");
+    Check(b.m_V.Count() == vb && b.m_E.Count() == eb, "...and the sheet is left completely untouched");
+  }
+
+  // Refusal: a new hole nested strictly INSIDE an existing hole - that's
+  // empty space already, not material left to punch.
+  {
+    const int vb = b.m_V.Count(), eb = b.m_E.Count();
+    const Point3d N0(1.5, 1.5, 0), N1(1.5, 2, 0), N2(2, 2, 0), N3(2, 1.5, 0);
+    const Brep nested_wire =
+        Brep::WireBody({NurbsCurve::FromControlPoints({N0, N1}, 1), NurbsCurve::FromControlPoints({N1, N2}, 1),
+                        NurbsCurve::FromControlPoints({N2, N3}, 1), NurbsCurve::FromControlPoints({N3, N0}, 1)});
+    const auto r = sheet.AddHoleLoop(face_index, nested_wire);
+    Check(r.result == Result::Failed, "AddHoleLoop() refuses a new hole nested strictly inside an existing hole");
+    Check(b.m_V.Count() == vb && b.m_E.Count() == eb, "...and the sheet is left completely untouched");
+  }
+
+  // Refusal: a new hole that would SWALLOW an existing hole whole (fully
+  // contains it) - this call can't represent "replace two holes with
+  // one".
+  {
+    const int vb = b.m_V.Count(), eb = b.m_E.Count();
+    const Point3d S0(0.5, 0.5, 0), S1(0.5, 3.5, 0), S2(3.5, 3.5, 0), S3(3.5, 0.5, 0);
+    const Brep swallow_wire =
+        Brep::WireBody({NurbsCurve::FromControlPoints({S0, S1}, 1), NurbsCurve::FromControlPoints({S1, S2}, 1),
+                        NurbsCurve::FromControlPoints({S2, S3}, 1), NurbsCurve::FromControlPoints({S3, S0}, 1)});
+    const auto r = sheet.AddHoleLoop(face_index, swallow_wire);
+    Check(r.result == Result::Failed, "AddHoleLoop() refuses a new hole that would swallow an existing hole whole");
+    Check(b.m_V.Count() == vb && b.m_E.Count() == eb, "...and the sheet is left completely untouched");
+  }
 
   // Refusal: wire_body is not actually a wire body (a real solid).
   const Brep box = Brep::FromPlanarFaces(CheckHealBoxFaces());

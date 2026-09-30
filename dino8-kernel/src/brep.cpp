@@ -8092,7 +8092,20 @@ Brep::AddHoleLoopResult Brep::AddHoleLoop(int face_index, const Brep& wire_body,
   }
 
   const ON_BrepFace& face = b.m_F[face_index];
-  if (face.LoopCount() != 1) return AddHoleLoopResult{};  // no outer loop, or already has a hole - out of scope
+  int outer_loop_index = -1;
+  std::vector<int> existing_hole_loop_indices;
+  for (int k = 0; k < face.m_li.Count(); ++k) {
+    const int li = face.m_li[k];
+    if (li < 0 || li >= b.m_L.Count()) continue;
+    if (b.m_L[li].m_type == ON_BrepLoop::outer) {
+      outer_loop_index = li;
+    } else if (b.m_L[li].m_type == ON_BrepLoop::inner) {
+      existing_hole_loop_indices.push_back(li);
+    } else {
+      return AddHoleLoopResult{};  // a slit/curve-on-surface/point-on-surface loop - out of scope
+    }
+  }
+  if (outer_loop_index < 0) return AddHoleLoopResult{};  // no outer loop - shouldn't happen for a valid face
 
   const ON_Surface* srf = face.SurfaceOf();
   const double tol = std::max(tolerance, 0.0);
@@ -8146,7 +8159,7 @@ Brep::AddHoleLoopResult Brep::AddHoleLoop(int face_index, const Brep& wire_body,
   // Outer loop's own 2D polygon, approximated by its trim-start points -
   // the exact same approximation MakeEdgeFace()/MakeEdgeKillRing() above
   // already make for this same kind of containment/crossing check.
-  const ON_BrepLoop& outer_loop = *face.Loop(0);
+  const ON_BrepLoop& outer_loop = b.m_L[outer_loop_index];
   const int n_o = outer_loop.TrimCount();
   if (n_o < 3) return AddHoleLoopResult{};
   std::vector<Point2d> outer_poly(static_cast<size_t>(n_o));
@@ -8179,6 +8192,41 @@ Brep::AddHoleLoopResult Brep::AddHoleLoop(int face_index, const Brep& wire_body,
                                        hole_poly[static_cast<size_t>(h2)], hole_poly[static_cast<size_t>(h3)])) {
         return AddHoleLoopResult{};  // the wire loop itself self-intersects
       }
+    }
+  }
+
+  // Against every hole this face ALREADY has: the new hole must land
+  // entirely in the face's own remaining solid material, so it can
+  // neither cross nor nest (either direction) with an existing hole -
+  // punching two independent holes is fine, but two holes that touch,
+  // cross, or one swallowing the other isn't a single "add a hole"
+  // operation this constructor can represent.
+  for (const int existing_li : existing_hole_loop_indices) {
+    const ON_BrepLoop& existing_loop = b.m_L[existing_li];
+    const int n_e = existing_loop.TrimCount();
+    if (n_e < 3) return AddHoleLoopResult{};  // defensive - shouldn't happen for a live hole loop
+    std::vector<Point2d> existing_poly(static_cast<size_t>(n_e));
+    for (int k = 0; k < n_e; ++k) {
+      const ON_BrepTrim* t = existing_loop.Trim(k);
+      if (!t || t->m_type == ON_BrepTrim::singular || !t->Edge()) return AddHoleLoopResult{};
+      const ON_3dPoint p0 = t->PointAtStart();
+      existing_poly[static_cast<size_t>(k)] = Point2d(p0.x, p0.y);
+    }
+    for (int k = 0; k < n_e; ++k) {
+      const int k1 = (k + 1) % n_e;
+      for (int h = 0; h < n; ++h) {
+        const int h1 = (h + 1) % n;
+        if (SegmentsProperlyIntersect2D(existing_poly[static_cast<size_t>(k)], existing_poly[static_cast<size_t>(k1)],
+                                         hole_poly[static_cast<size_t>(h)], hole_poly[static_cast<size_t>(h1)])) {
+          return AddHoleLoopResult{};  // crosses an existing hole's boundary
+        }
+      }
+    }
+    if (PointInPolygon2D(hole_poly[0], existing_poly)) {
+      return AddHoleLoopResult{};  // nested inside an existing hole - that's empty space, not material
+    }
+    if (PointInPolygon2D(existing_poly[0], hole_poly)) {
+      return AddHoleLoopResult{};  // would swallow an existing hole whole
     }
   }
 
