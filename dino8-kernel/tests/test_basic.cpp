@@ -21591,7 +21591,8 @@ void TestReplaceFacePlaneConvexPlanarTiltedRoofMatchesExactIntegralAndRetrimsWal
   // Back wall (index 3, y=10): roof height there is 14-0.4*10=10, exactly
   // the ORIGINAL flat top height - this wall must come back completely
   // unchanged from the original box.
-  const Brep::PlanarFace& original_back = box.PlanarFaces()[3];
+  const std::vector<Brep::PlanarFace> box_pf = box.PlanarFaces();
+  const Brep::PlanarFace& original_back = box_pf[3];
   Check(pf[3].loop.size() == original_back.loop.size(), "back wall keeps the same vertex count");
   for (const Point3d& p : pf[3].loop) {
     Check(std::fabs(p.y - 10.0) < 1e-9, "back wall vertices stay exactly at y=10 (unchanged footprint)");
@@ -21685,7 +21686,22 @@ void TestFoldFaceConvexPlanarBoxFrontWallHingedAtBottomEdgeMatchesExactIntegral(
   // Box face order per Brep::Box()'s own comment: 0=bottom(-z) 1=top(+z)
   // 2=front(-y) 3=back(+y) 4=left(-x) 5=right(+x).
   const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
-  const Brep::PlanarFace& front = box.PlanarFaces()[2];
+  // NOTE: PlanarFaces() returns its std::vector<PlanarFace> BY VALUE - a
+  // temporary. Binding a reference directly to one of ITS elements (as a
+  // prior version of this test did: `const PlanarFace& front =
+  // box.PlanarFaces()[2];`) does NOT extend that temporary vector's own
+  // lifetime (only binding a reference to the temporary itself would),
+  // so the vector - and every PlanarFace/Point3d it owns - is destroyed
+  // at the end of the full expression, leaving `front` dangling. This
+  // was a genuine use-after-free (confirmed via valgrind --track-
+  // origins=yes, not assumed), intermittently reading whatever
+  // unrelated data happened to occupy that freed heap block afterward -
+  // which is why this test could pass or fail across otherwise-identical
+  // runs of the same unchanged logic, depending only on incidental
+  // memory reuse elsewhere in the binary. Fixed by naming the vector so
+  // it outlives every reference taken into it.
+  const std::vector<Brep::PlanarFace> box_pf = box.PlanarFaces();
+  const Brep::PlanarFace& front = box_pf[2];
   const int loop_size = static_cast<int>(front.loop.size());
 
   int hinge_index = -1;
@@ -21727,7 +21743,8 @@ void TestFoldFaceConvexPlanarBoxFrontWallHingedAtBottomEdgeMatchesExactIntegral(
   // at all - must be completely untouched: FoldFaceConvexPlanar only ever
   // changes face_index's own plane, exactly like every sibling in this
   // family.
-  const Brep::PlanarFace& bottom = folded.PlanarFaces()[0];
+  const std::vector<Brep::PlanarFace> folded_pf = folded.PlanarFaces();
+  const Brep::PlanarFace& bottom = folded_pf[0];
   for (const Point3d& p : bottom.loop) {
     Check(std::fabs(p.z) < 1e-9,
           "the bottom face stays exactly at z=0 - FoldFaceConvexPlanar never touches a neighbour's own plane, "
