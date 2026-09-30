@@ -42329,18 +42329,65 @@ void TestExtrudeToPointNegativeControls() {
   Check(Throws([&] { Brep::ExtrudeToPoint(skew, apex, /*cap=*/false); }),
         "...and throws uncapped too - planarity is required unconditionally here, not only for the cap");
 
-  // An open profile is scoped out entirely (see this function's own
-  // brep.h doc comment for why): the cone topology this builds (one apex
-  // vertex, one closed rim edge, one doubled seam edge) only exists for a
-  // closed profile.
-  const NurbsCurve openp = Polyline({P(0, 0, 0), P(1, 0, 0), P(1, 1, 0)});
-  Check(Throws([&] { Brep::ExtrudeToPoint(openp, apex, /*cap=*/false); }), "an open profile throws");
+  // An open profile no longer throws - see TestExtrudeToPointOpenProfileFan
+  // below for the open-fan-shell path itself.
 
   // A degenerate (zero-length) apex offset from a point already off the
   // curve's own control points, but landing back in-plane, is the same
   // "apex in plane" case above; a truly invalid curve is refused too.
   NurbsCurve bad;
   Check(Throws([&] { Brep::ExtrudeToPoint(bad, apex); }), "an invalid (default-constructed) curve throws");
+}
+
+// An OPEN profile cones to an open fan SHELL (no closed rim, so no solid
+// and no cap) rather than throwing - see this function's own brep.h doc
+// comment for the topology (apex vertex, two separate spoke edges, the
+// open profile curve as a third boundary edge).
+void TestExtrudeToPointOpenProfileFan() {
+  const NurbsCurve open_l = Polyline({P(0, 0, 0), P(2, 0, 0), P(2, 2, 0)});
+  const Point3d apex(1, 1, 3);
+  const Brep fan = Brep::ExtrudeToPoint(open_l, apex, /*cap=*/false);
+
+  Check(fan.FaceCount() == 1, "an open profile still gives exactly one wall face");
+  Check(fan.raw().m_E.Count() == 3 && fan.raw().m_V.Count() == 3,
+        "open-profile topology: apex + 2 profile endpoints, 2 spoke edges + 1 profile edge");
+  Check(!fan.raw().IsSolid(), "an open profile's fan is not a solid (no closed rim to bound one)");
+  bool oriented = false, has_boundary = false;
+  Check(fan.raw().IsManifold(&oriented, &has_boundary) && has_boundary,
+        "the open fan is a genuine (non-self-intersecting) manifold shell with a naked boundary");
+
+  // Every sampled wall point must equal FanSurface's own documented
+  // formula D(u, v) = (1 - v) * apex + v * profile(u) exactly - not just
+  // "some plausible-looking surface".
+  const NurbsSurface wall = FaceSurface(fan, 0);
+  const ON_Interval du = wall.raw().Domain(0), dv = wall.raw().Domain(1);
+  const ON_Interval dc = open_l.raw().Domain();
+  double worst = 0.0;
+  for (int i = 0; i <= 10; ++i) {
+    for (int j = 0; j <= 10; ++j) {
+      const double u = du.ParameterAt(i / 10.0), v = dv.ParameterAt(j / 10.0);
+      const Point3d p = wall.PointAt(u, v);
+      const double vf = dv.NormalizedParameterAt(v);
+      const Point3d prof = open_l.PointAt(dc.ParameterAt(du.NormalizedParameterAt(u)));
+      const Point3d expected(apex.x + vf * (prof.x - apex.x), apex.y + vf * (prof.y - apex.y),
+                             apex.z + vf * (prof.z - apex.z));
+      worst = std::max(worst, p.DistanceTo(expected));
+    }
+  }
+  Check(worst < 1e-9, "every wall sample equals apex + v * (profile(u) - apex) exactly");
+
+  // `cap` is silently ignored for an open profile, matching
+  // ExtrudeAlongCurve()'s own "no caps regardless of cap" convention.
+  const Brep fan_cap_requested = Brep::ExtrudeToPoint(open_l, apex, /*cap=*/true);
+  Check(fan_cap_requested.FaceCount() == 1, "cap=true on an open profile is silently ignored, not an error");
+
+  // Planarity and apex-off-plane are still required unconditionally for
+  // an open profile too, the same as the closed case.
+  const NurbsCurve open_skew = Polyline({P(0, 0, 0), P(2, 0, 0), P(2, 3, 1), P(0, 3, 0)});
+  Check(Throws([&] { Brep::ExtrudeToPoint(open_skew, apex, /*cap=*/false); }),
+        "a non-planar open profile still throws");
+  Check(Throws([&] { Brep::ExtrudeToPoint(open_l, Point3d(1, 1, 0), /*cap=*/false); }),
+        "apex in an open profile's own plane still throws");
 }
 
 void TestRevolveExactSolidsAndCaps() {
@@ -51741,6 +51788,7 @@ int main() {
   sweep_tests::TestExtrudeToPointSupportsRationalProfileExactCircularCone();
   sweep_tests::TestExtrudeToPointWallEmbedsEvenForNonStarShapedProfile();
   sweep_tests::TestExtrudeToPointNegativeControls();
+  sweep_tests::TestExtrudeToPointOpenProfileFan();
   sweep_tests::TestRevolveExactSolidsAndCaps();
   sweep_tests::TestRevolveStartAngleShiftsSweepExactly();
   sweep_tests::TestLoftInterpolatesSectionsExactly();

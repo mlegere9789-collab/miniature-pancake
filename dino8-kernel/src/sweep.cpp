@@ -2149,13 +2149,7 @@ Brep Brep::ExtrudeToPoint(const NurbsCurve& profile, Point3d apex, bool cap) {
   ON_NurbsCurve c = profile.raw();
   if (!c.IsValid()) Fail(caller, "profile is not a valid NURBS curve");
   ClampIfPeriodic(c);
-  if (!c.IsClosed()) {
-    Fail(caller,
-         "profile must be closed - the cone topology (one apex vertex, one closed rim edge, one seam edge "
-         "shared by the wall's own east/west trims - see this function's own brep.h doc comment) is only "
-         "built for a closed profile; an open profile's fan to a point would need different topology this "
-         "does not attempt");
-  }
+  const bool closed = c.IsClosed();
 
   ON_Plane plane;
   if (!c.IsPlanar(&plane, 1e-8 * CurveScale(c))) {
@@ -2180,10 +2174,18 @@ Brep Brep::ExtrudeToPoint(const NurbsCurve& profile, Point3d apex, bool cap) {
   // toward the profile's own plane (v = 1, the far/rim end) standing in
   // for Extrude()'s own `direction` (which likewise points from its
   // wall's v = 0 end to its v = 1 end) - the negative of (apex - plane
-  // point), i.e. pointing away from apex.
-  const ON_3dVector d_unit = signed_dist >= 0.0 ? -plane.zaxis : plane.zaxis;
-  const ON_Plane about_d(plane.origin, d_unit);
-  if (SignedAreaAbout(c, about_d) < 0.0) ReverseKeepDomain(c);
+  // point), i.e. pointing away from apex. Only meaningful for a CLOSED
+  // profile: "outward" here means "radially away from the cone's own
+  // interior", which needs a closed loop with a well-defined interior to
+  // be outward FROM - an open profile's fan has no such interior (it is
+  // a curved wedge, not a solid boundary), so no auto-reversal is applied
+  // there; the wall's own normal direction follows directly from
+  // FanSurface(profile, apex)'s own construction, exactly as given.
+  if (closed) {
+    const ON_3dVector d_unit = signed_dist >= 0.0 ? -plane.zaxis : plane.zaxis;
+    const ON_Plane about_d(plane.origin, d_unit);
+    if (SignedAreaAbout(c, about_d) < 0.0) ReverseKeepDomain(c);
+  }
 
   std::unique_ptr<ON_NurbsSurface> wall_in = FanSurface(c, apex, caller);
   const ON_NurbsSurface wall = *wall_in;  // keep an evaluable copy; the brep owns the original
@@ -2202,10 +2204,24 @@ Brep Brep::ExtrudeToPoint(const NurbsCurve& profile, Point3d apex, bool cap) {
   // rim edge at v = 1. AssembleSweptBody() is deliberately NOT used here:
   // it explicitly refuses any wall singular at v0/v1 (built for non-
   // degenerate rectangular sweeps), which this wall is by construction.
+  // For an OPEN profile, `wall` is open in u too (the profile's own two
+  // distinct endpoints), giving NewFace's own topology inference two
+  // separate straight "spoke" edges (apex to each endpoint) instead of
+  // the closed case's one doubled seam edge, plus the open profile curve
+  // itself as the third boundary edge - a valid, if uncappable, open
+  // fan shell (a curved wedge/slice), no different in kind from the
+  // "open profile gives one open face" convention `ExtrudeAlongCurve()`
+  // already documents.
   if (!brep.NewFace(wall_in.release(), vid, eid, rev)) Internal(caller, "ON_Brep::NewFace refused the cone wall");
   int faces = 1;
 
-  if (cap) {
+  // `cap` is silently ignored for an open profile - the same "no caps
+  // regardless of cap" convention `ExtrudeAlongCurve()` already uses for
+  // its own open-profile case, since an open profile's fan has no single
+  // natural closing cap the way a closed one's flat rim does (the "chord
+  // closing the open boundary" a cap would need is not a real edge of
+  // this wall at all, unlike the closed case's genuine closed rim).
+  if (cap && closed) {
     const ON_Interval dv = wall.Domain(1);
     const double um = wall.Domain(0).Mid();
     std::unique_ptr<ON_NurbsCurve> rim(IsoCurveOf(wall, 0, dv.Max(), caller));

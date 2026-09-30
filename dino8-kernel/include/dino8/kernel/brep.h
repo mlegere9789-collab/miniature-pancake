@@ -542,10 +542,10 @@ class Brep {
   // ExtrudeToPoint: `profile` coned to a single apex point (Rhino/AutoCAD
   // ExtrudeCrvToPoint / ExtrudeSrfToPoint, "kernel ConeToApex") - a genuine
   // B-rep cone, not the mesh-only `Mesh::ConeToApex` or `Loft()`'s own
-  // refusal to cap a collapsed end section. `profile` must be CLOSED and
-  // PLANAR, and `apex` must NOT lie in `profile`'s own plane (checked;
-  // throws std::invalid_argument otherwise - see the exactness argument
-  // below for why both are load-bearing, not just convenience checks).
+  // refusal to cap a collapsed end section. `profile` must be PLANAR, and
+  // `apex` must NOT lie in `profile`'s own plane (checked; throws
+  // std::invalid_argument otherwise - see the exactness argument below for
+  // why both are load-bearing, not just convenience checks).
   // Unlike `ExtrudeAlongCurve()`, `profile` MAY be rational (e.g. a true
   // NURBS circle): the wall is built by `FanSurface()` (sweep.cpp),
   // D(u, v) = (1 - v) * apex + v * profile(u), degree (profile's own
@@ -594,17 +594,28 @@ class Brep {
   // distance from `apex` to `profile`'s own plane, for ANY simple planar
   // base regardless of convexity (the general pyramid volume formula).
   //
-  // Scoped to CLOSED profiles only (an open profile's fan-to-a-point
-  // would need different, not-yet-built topology - see sweep.cpp's own
-  // comment on `ON_Brep::NewFace`'s handling of a closed-in-u, singular-
-  // at-v0 surface for exactly which topology a closed profile gets: one
-  // apex vertex, one closed rim edge, and one seam edge running apex-to-
-  // rim that appears twice in the wall's own loop, the standard "cone
-  // with a pole" B-rep shape, structurally the same device `Revolve()`'s
-  // own singular poles and `Sphere()`'s own seam already use). Throws
-  // std::invalid_argument for an invalid curve, an open profile, a non-
-  // planar profile, `apex` in the profile's own plane, or (with `cap`) a
-  // closed planar profile whose region is not star-shaped.
+  // An OPEN profile cones to an open fan shell instead of a closed cone -
+  // see sweep.cpp's own comment on `ON_Brep::NewFace`'s handling of a
+  // closed-in-u, singular-at-v0 surface for exactly which topology each
+  // case gets: a CLOSED profile gives one apex vertex, one closed rim
+  // edge, and one seam edge running apex-to-rim that appears twice in the
+  // wall's own loop (the standard "cone with a pole" B-rep shape,
+  // structurally the same device `Revolve()`'s own singular poles and
+  // `Sphere()`'s own seam already use); an OPEN profile gives the same
+  // apex vertex but two SEPARATE straight spoke edges (apex to each of
+  // the profile's own two distinct endpoints) plus the open profile
+  // curve itself as a third boundary edge - a valid open shell (a curved
+  // wedge), not a solid, with no auto-reverse orientation applied (there
+  // is no well-defined "radially outward" for a shape with no interior
+  // to be outward from - the wall's own normal follows directly from
+  // `FanSurface(profile, apex)`'s own construction) and `cap` silently
+  // ignored (the same "no caps regardless of cap" convention
+  // `ExtrudeAlongCurve()` already uses for its own open-profile case: the
+  // "closing chord" a cap would need is not a real edge of this wall at
+  // all, unlike a closed profile's genuine closed rim). Throws
+  // std::invalid_argument for an invalid curve, a non-planar profile,
+  // `apex` in the profile's own plane, or (with `cap`, closed profile
+  // only) a region that is not star-shaped.
   static Brep ExtrudeToPoint(const NurbsCurve& profile, Point3d apex, bool cap = true);
 
   // Revolve: `profile` spun about the axis through `axis_point` along
