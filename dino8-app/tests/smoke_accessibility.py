@@ -50,6 +50,11 @@ connection, the same way a screen reader would - to prove:
       "NamedView Save <name>" command runs - mirroring Document::NamedViews(),
       the same way the Activity Log check above observes a real edit landing
       in its own accessible.
+  11. A "Named CPlanes" accessible (role LIST) is discoverable, starts empty,
+      and gains one new ListItem named after the construction plane once a
+      real "NamedCPlane Save <name>" command runs - mirroring
+      Document::NamedCPlanes(), the same before/after pattern check 10 uses
+      for Named Views.
 
 This is a real integration test: at-spi2-registryd is the actual daemon
 GNOME uses, pyatspi is the actual library screen readers use, and Dino8 is
@@ -151,6 +156,7 @@ def main():
     sync2b = os.path.join(tmp, "sync2b")
     sync3 = os.path.join(tmp, "sync3")
     sync4 = os.path.join(tmp, "sync4")
+    sync5 = os.path.join(tmp, "sync5")
     script_path = os.path.join(tmp, "script.txt")
     with open(script_path, "w") as f:
         # `@waitfile` (like the built-in `@wait N` frames directive) needs
@@ -194,6 +200,11 @@ def main():
         # 3/6/9 above.
         f.write("NamedView Save MyView\n")
         f.write(f"@waitfile {sync4}\n")
+        # Same shape as the NamedView Save check just above: NamedCPlane Save
+        # is also a plain, single-frame command, so one more sync point is
+        # enough to observe Named CPlanes go empty -> populated.
+        f.write("NamedCPlane Save MyCPlane\n")
+        f.write(f"@waitfile {sync5}\n")
 
     procs = []
     dino8_proc = None
@@ -333,6 +344,16 @@ def main():
                 fail(f"Named Views has {named_views.childCount} children before any view is saved (expected 0)")
             else:
                 ok("Named Views has no ListItem children before any view is saved")
+
+        named_cplanes = find_child_by_name(app, "Named CPlanes", 10)
+        if named_cplanes is None:
+            fail('"Named CPlanes" accessible not found among the application\'s children')
+        else:
+            ok('"Named CPlanes" accessible is discoverable via the real AT-SPI2 desktop')
+            if named_cplanes.childCount != 0:
+                fail(f"Named CPlanes has {named_cplanes.childCount} children before any cplane is saved (expected 0)")
+            else:
+                ok("Named CPlanes has no ListItem children before any cplane is saved")
 
         viewports = find_child_by_name(app, "Viewports", 10)
         if viewports is None:
@@ -510,7 +531,29 @@ def main():
                 ok(f"Named Views gains a new entry naming the saved view once \"NamedView Save\" runs "
                    f"({newest_view.name!r})")
 
-        open(sync4, "w").close()  # let the app finish its remaining frames/script and exit
+        named_cplanes_count_before = named_cplanes.childCount if named_cplanes is not None else None
+
+        open(sync4, "w").close()  # let the script run "NamedCPlane Save MyCPlane"
+
+        if named_cplanes is not None:
+            deadline = time.time() + 10
+            newest_cplane = None
+            while time.time() < deadline:
+                count = named_cplanes.childCount
+                if named_cplanes_count_before is not None and count > named_cplanes_count_before:
+                    newest_cplane = named_cplanes.getChildAtIndex(count - 1)
+                    break
+                time.sleep(0.2)
+            if newest_cplane is None:
+                fail(f"Named CPlanes did not gain a new entry after \"NamedCPlane Save MyCPlane\" ran within 10s "
+                     f"(childCount stayed at {named_cplanes_count_before!r})")
+            elif newest_cplane.name != "MyCPlane":
+                fail(f"Named CPlanes' newest entry does not name the saved cplane (got {newest_cplane.name!r})")
+            else:
+                ok(f"Named CPlanes gains a new entry naming the saved cplane once \"NamedCPlane Save\" runs "
+                   f"({newest_cplane.name!r})")
+
+        open(sync5, "w").close()  # let the app finish its remaining frames/script and exit
 
         try:
             out, _ = dino8_proc.communicate(timeout=20)

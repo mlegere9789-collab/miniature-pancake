@@ -13,12 +13,14 @@
 // text, for whatever the running command's Command::options currently are;
 // the viewports builder produces one row per viewport naming which one is
 // active, whether it's maximized, and its current display mode, matching
-// Viewport.cpp's title-overlay pill and corner display-mode label; and the
+// Viewport.cpp's title-overlay pill and corner display-mode label; the
 // activity-log builder produces one row per recorded edit naming its
 // timestamp, action label and object-count summary, matching
 // Document::ActivityLog's persisted, structured edit history (distinct from
-// the command line's own raw text log); and the named-views builder
-// produces one row per saved view naming it, matching Document::NamedViews.
+// the command line's own raw text log); the named-views builder produces one
+// row per saved view naming it, matching Document::NamedViews; and the
+// named-cplanes builder produces one row per saved construction plane naming
+// it, matching Document::NamedCPlanes.
 // This needs no display, no D-Bus session, and no AT-SPI2 build at all, so
 // it runs on every platform and every CI job regardless of whether
 // AccessibilityLinux.cpp itself was compiled in this build (see
@@ -39,9 +41,11 @@ using dino8::platform::BuildLayersPanelNode;
 using dino8::platform::BuildPropertiesPanelNode;
 using dino8::platform::BuildViewportsPanelNode;
 using dino8::platform::CommandOptionSummary;
+using dino8::platform::BuildNamedCPlanesNode;
 using dino8::platform::BuildNamedViewsNode;
 using dino8::platform::LayerSummary;
 using dino8::platform::MenuTreeBuilder;
+using dino8::platform::NamedCPlaneSummary;
 using dino8::platform::NamedViewSummary;
 using dino8::platform::PropertyEntry;
 using dino8::platform::ViewportSummary;
@@ -352,6 +356,32 @@ int main() {
     Check(empty_views.children.empty(), "no saved views -> no ListItem children, not a missing accessible");
   }
 
+  // Named CPlanes: one ListItem per saved construction plane, naming it -
+  // the same single fact the on-screen Named CPlanes panel shows per row
+  // (see DrawNamedCPlanesPanel, Document::NamedCPlanes/NamedCPlane),
+  // independent of the saved origin/axes themselves (a hover tooltip there,
+  // not part of the row).
+  {
+    std::vector<NamedCPlaneSummary> cplanes;
+    cplanes.push_back({"Roof Slope"});
+    cplanes.push_back({"Wall A"});
+    const dino8::platform::AccessibleNode list = BuildNamedCPlanesNode(cplanes);
+    Check(list.name == "Named CPlanes", "named cplanes list is named \"Named CPlanes\"");
+    Check(list.role == dino8::platform::AccessibleRole::List, "named cplanes list role is List");
+    Check(list.description == "2 named cplanes", "cplane count is carried as the list's Description");
+    Check(list.children.size() == 2, "two ListItem children, one per saved cplane");
+    if (list.children.size() == 2) {
+      Check(list.children[0].role == dino8::platform::AccessibleRole::ListItem, "named cplane row role is ListItem");
+      Check(list.children[0].name == "Roof Slope", "first row names its saved cplane");
+      Check(list.children[1].name == "Wall A", "second row names its own saved cplane");
+    }
+  }
+  {
+    const dino8::platform::AccessibleNode empty_cplanes = BuildNamedCPlanesNode({});
+    Check(empty_cplanes.name == "Named CPlanes", "still named \"Named CPlanes\" with no saved cplanes yet");
+    Check(empty_cplanes.children.empty(), "no saved cplanes -> no ListItem children, not a missing accessible");
+  }
+
   // BuildAccessibleTree accepts extra top-level regions (menu bar, panels)
   // alongside the always-present command line - the shape the live bridge
   // (Accessibility.cpp::UpdateAccessibility) assembles every frame.
@@ -365,14 +395,15 @@ int main() {
     dino8::platform::AccessibleNode viewports = BuildViewportsPanelNode({});
     dino8::platform::AccessibleNode activity_log = BuildActivityLogNode({});
     dino8::platform::AccessibleNode named_views = BuildNamedViewsNode({});
+    dino8::platform::AccessibleNode named_cplanes = BuildNamedCPlanesNode({});
 
-    const dino8::platform::AccessibleNode root =
-        BuildAccessibleTree("Dino8", "Command: ", "", {},
-                             {menu_bar, cmd_options, layers, props, viewports, activity_log, named_views});
-    Check(root.children.size() == 8,
+    const dino8::platform::AccessibleNode root = BuildAccessibleTree(
+        "Dino8", "Command: ", "", {},
+        {menu_bar, cmd_options, layers, props, viewports, activity_log, named_views, named_cplanes});
+    Check(root.children.size() == 9,
           "command line + menu bar + command options + layers + properties + viewports + activity log + "
-          "named views = 8 top-level children");
-    if (root.children.size() == 8) {
+          "named views + named cplanes = 9 top-level children");
+    if (root.children.size() == 9) {
       Check(root.children[0].role == AccessibleRole::Log, "child 0 is still the command line");
       Check(root.children[1].role == dino8::platform::AccessibleRole::MenuBar, "child 1 is the menu bar");
       Check(root.children[2].name == "Command Options", "child 2 is the command options list");
@@ -381,6 +412,7 @@ int main() {
       Check(root.children[5].name == "Viewports", "child 5 is the viewports panel");
       Check(root.children[6].name == "Activity Log", "child 6 is the activity log");
       Check(root.children[7].name == "Named Views", "child 7 is the named views panel");
+      Check(root.children[8].name == "Named CPlanes", "child 8 is the named cplanes panel");
     }
   }
 

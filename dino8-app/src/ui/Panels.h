@@ -44,6 +44,11 @@ dino8::platform::AccessibleNode ActivityLogAccessibleTree(Application& app);
 // whether DrawNamedViewsPanel's window is open, mirroring only the name per
 // row the same way the on-screen panel does.
 dino8::platform::AccessibleNode NamedViewsAccessibleTree(Application& app);
+// The AT-SPI2-queryable snapshot of Document::NamedCPlanes() - independent
+// of whether DrawNamedCPlanesPanel's window is open, mirroring only the name
+// per row the same way the on-screen panel does (origin/axes are a hover
+// tooltip there, not part of the row itself).
+dino8::platform::AccessibleNode NamedCPlanesAccessibleTree(Application& app);
 void DrawToolbars(Application& app);
 void DrawLayersPanel(Application& app);
 void DrawPropertiesPanel(Application& app);

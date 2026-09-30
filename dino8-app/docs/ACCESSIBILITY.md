@@ -7,9 +7,9 @@ high-contrast theme (shipped), full keyboard operability (audited and
 fixed where it was broken), screen-reader support for the command line, the
 main menu bar, the running command's options, the Layers/Properties panels,
 each viewport's title/view-menu button, the persisted Activity Log of
-finalized edits, and the document's saved Named Views (a real, still-narrow
-AT-SPI2 bridge, shipped on Linux - see section 3), and screen-reader support
-for the rest of the UI (still a hard
+finalized edits, and the document's saved Named Views and Named CPlanes (a
+real, still-narrow AT-SPI2 bridge, shipped on Linux - see section 3), and
+screen-reader support for the rest of the UI (still a hard
 platform limitation of ImGui itself for the reasons section 3 explains - not
 shipped, and not something a few labels can fix).
 
@@ -185,7 +185,7 @@ through each platform's native accessibility API - exactly the scope the
 ImGui maintainers have discussed for years without landing project-wide.
 That has not changed and is not what shipped here.
 
-### What has shipped: a real AT-SPI2 bridge for the command line, the menu bar, the Layers/Properties panels, the viewports, the Activity Log, and Named Views (Linux)
+### What has shipped: a real AT-SPI2 bridge for the command line, the menu bar, the Layers/Properties panels, the viewports, the Activity Log, Named Views, and Named CPlanes (Linux)
 
 The one place in Dino 8 blind command-line-driven use is already the
 primary interaction model - the command line itself
@@ -200,7 +200,8 @@ a toy or a simulation: it is the real protocol, verified end-to-end against
 the real registry daemon and the real `pyatspi` client library (see
 "Verifying it yourself" below). The same bridge also publishes the main
 menu bar, the Layers/Properties panels' content, each viewport's title/
-view-menu button state, the Activity Log, and Named Views, described below.
+view-menu button state, the Activity Log, Named Views, and Named CPlanes,
+described below.
 
 **Command line**: exactly one accessible object, named "Command Line"
 (`ATSPI_ROLE_LOG` - "a text widget or container holding log content"),
@@ -319,18 +320,33 @@ and jump between named camera bookmarks entirely from the command line
 `cmd_view.cpp`'s `NamedViewCommand`) and confirm what got saved without
 needing to see the panel at all.
 
+**Named CPlanes**: a "Named CPlanes" accessible (`ATSPI_ROLE_LIST`) with one
+`ATSPI_ROLE_LIST_ITEM` per saved construction plane, named after it - the
+same single fact the on-screen Named CPlanes panel's row shows per saved
+plane (the origin/x-axis/y-axis are a hover tooltip there, not part of the
+row itself - see `DrawNamedCPlanesPanel`). Built from
+`Document::NamedCPlanes()` (`ui::NamedCPlanesAccessibleTree`,
+`src/ui/Panels.cpp`), independent of whether the Named CPlanes panel window
+is actually open on screen right now, the same way the other panel-backed
+regions above don't depend on their own panel windows being open. A
+screen-reader user can save and restore named construction planes entirely
+from the command line (`NamedCPlane Save <name>` / `Restore <name>` /
+`Delete <name>` / `List`, see `cmd_viewtools.cpp`'s `NamedCPlaneCommand`) and
+confirm what got saved without needing to see the panel at all.
+
 **Why these regions and not the rest of the UI**: the command line is the
 one region where "expose the text" is both sufficient (there is no
 meaningful spatial layout to convey - it *is* a stream of text) and
 complete on its own (every command in the ~1000+ catalog is already
 reachable by typing into it, per section 2). The menu bar, the
-Layers/Properties panels, the viewports, the Activity Log and Named Views
-extend this to the next-most load-bearing UI surfaces - discovering what commands exist by
-name, inspecting/editing layer and object state, knowing where you're
-looking, reviewing what actually happened to the document, and recalling a
-saved camera bookmark - without requiring the full shadow-tree-for-every-widget
-effort described above.
-Mirroring the 3D viewport and the ~38 remaining panels/dialogs the same way
+Layers/Properties panels, the viewports, the Activity Log, Named Views and
+Named CPlanes extend this to the next-most load-bearing UI surfaces -
+discovering what commands exist by name, inspecting/editing layer and
+object state, knowing where you're looking, reviewing what actually
+happened to the document, recalling a saved camera bookmark, and recalling
+a saved construction plane - without requiring the full
+shadow-tree-for-every-widget effort described above.
+Mirroring the 3D viewport and the ~37 remaining panels/dialogs the same way
 would still need that effort; this does not extrapolate to "screen reader
 support" for those in the way a browser or native-toolkit app would provide
 it, and this document does not claim otherwise.
@@ -417,13 +433,21 @@ hang.
   `DrawNamedViewsPanel` itself, exposes only each view's name - not its
   saved camera location/target, which stays queryable only via `NamedView
   List` on the command line.
+- Named CPlanes has the same read-only gap (no `Action` interface - restoring
+  or deleting a saved construction plane over AT-SPI itself is not possible;
+  a screen-reader user still drives that through the equivalent `NamedCPlane
+  Restore <name>`/`Delete <name>` command by name), and, matching
+  `DrawNamedCPlanesPanel` itself, exposes only each plane's name - not its
+  saved origin/x-axis/y-axis, which stays queryable only via `NamedCPlane
+  List` on the command line.
 
 **Internal design, independent of AT-SPI itself**: the accessible tree's
 *shape and text* are built by a small, pure, platform-independent module,
 `src/platform/AccessibilityTree.h`/`.cpp` (`BuildAccessibleTree`,
 `BuildCommandLineText`, `MenuTreeBuilder`, `BuildLayersPanelNode`,
 `BuildPropertiesPanelNode`, `BuildCommandOptionsNode`,
-`BuildViewportsPanelNode`, `BuildActivityLogNode`, `BuildNamedViewsNode`), with its own unit test
+`BuildViewportsPanelNode`, `BuildActivityLogNode`, `BuildNamedViewsNode`,
+`BuildNamedCPlanesNode`), with its own unit test
 (`tests/test_accessibility_tree.cpp`, registered as the
 `dino8_accessibility_tree` CTest target) that needs no display, no D-Bus, and
 no AT-SPI2 build at all - it runs on every platform and every CI job. The
@@ -432,13 +456,15 @@ menu-drawing calls in `src/ui/MenuBar.cpp` (`MenuTreeBuilder`'s
 `OpenMenu`/`CloseMenu`/`LeafMenu`/`Item`, driven by that file's
 `BeginMenuA`/`EndMenuA`/`MenuItemA`/`Item` wrappers), so it can never drift
 from what was actually drawn. The Layers, Properties, Command Options,
-Viewports, Activity Log and Named Views mirrors (`src/ui/Panels.cpp`'s
-`LayersPanelAccessibleTree`/`PropertiesPanelAccessibleTree`/
-`CommandOptionsAccessibleTree`/`ViewportsAccessibleTree`/
-`ActivityLogAccessibleTree`/`NamedViewsAccessibleTree`) are built straight from
-`Document`/`Application`/`CommandEngine` state, independent of
+Viewports, Activity Log, Named Views and Named CPlanes mirrors
+(`src/ui/Panels.cpp`'s `LayersPanelAccessibleTree`/
+`PropertiesPanelAccessibleTree`/`CommandOptionsAccessibleTree`/
+`ViewportsAccessibleTree`/`ActivityLogAccessibleTree`/
+`NamedViewsAccessibleTree`/`NamedCPlanesAccessibleTree`) are built straight
+from `Document`/`Application`/`CommandEngine` state, independent of
 `DrawLayersPanel`/`DrawPropertiesPanel`/`DrawCommandLine`/`Viewport::DrawUI`/
-`DrawActivityLogPanel`/`DrawNamedViewsPanel`. `AccessibilityLinux.cpp` is a thin transport on top
+`DrawActivityLogPanel`/`DrawNamedViewsPanel`/`DrawNamedCPlanesPanel`.
+`AccessibilityLinux.cpp` is a thin transport on top
 of all of this: every frame it receives the whole tree wholesale
 (`platform::PlatformSetAccessibleTree`) and answers AT-SPI's
 `Text.GetText`/`Accessible.GetChildren`/etc. by walking it - one
@@ -456,25 +482,27 @@ real `dbus-daemon` and the real `at-spi2-registryd`, and uses the real
 `pyatspi` client library to walk the AT-SPI2 desktop and find Dino8's
 "Command Line", "Menu Bar" (with its "File" child), "Layers", "Properties",
 "Command Options", "Viewports" (with its default "Perspective" row
-reporting itself active), "Activity Log" and "Named Views" accessibles -
-the same objects a screen reader would find - then asserts the command
-line's and the Properties list's content each change after a real command
-(`Line 0,0,0 10,10,0`) runs, that Command Options goes empty -> lists
+reporting itself active), "Activity Log", "Named Views" and "Named CPlanes"
+accessibles - the same objects a screen reader would find - then asserts the
+command line's and the Properties list's content each change after a real
+command (`Line 0,0,0 10,10,0`) runs, that Command Options goes empty -> lists
 Circle's option chips -> empty again around a real running `Circle`
 command, that the Activity Log gains a new entry naming `Line` right after
-that same command finishes, and that Named Views starts empty and gains an
+that same command finishes, that Named Views starts empty and gains an
 entry named `"MyView"` right after a real `NamedView Save MyView` command
-runs. It does not fake, mock, or stub any part of the AT-SPI2 stack.
+runs, and that Named CPlanes starts empty and gains an entry named
+`"MyCPlane"` right after a real `NamedCPlane Save MyCPlane` command runs. It
+does not fake, mock, or stub any part of the AT-SPI2 stack.
 
-This was run successfully, including the new Named Views checks, in the
+This was run successfully, including the new Named CPlanes checks, in the
 environment this addition was built and verified in, after installing:
 `libatspi2.0-dev`, `libglib2.0-dev`, `at-spi2-core` (provides
 `at-spi2-registryd`), `dbus-x11` (provides `dbus-daemon`), and
-`python3-pyatspi` (Ubuntu 24.04/noble package names) - all ten checks
+`python3-pyatspi` (Ubuntu 24.04/noble package names) - all twelve checks
 above passed against the real registry daemon, including "Command Options
 lists Circle's option chips while it is running (['Diameter', '3Point',
-'Vertical'])" and "Named Views gains a new entry naming the saved view once
-\"NamedView Save\" runs ('MyView')". One environment-specific wrinkle worth knowing about, not
+'Vertical'])" and "Named CPlanes gains a new entry naming the saved cplane
+once \"NamedCPlane Save\" runs ('MyCPlane')". One environment-specific wrinkle worth knowing about, not
 specific to this project: Debian/Ubuntu's `python3-pyatspi`/`python3-gi`
 ship a `gi._gi` extension compiled for one specific CPython ABI (on the box
 this was verified on, that was `python3.12`, even though the default
@@ -495,5 +523,5 @@ requirement and runs as part of the normal CTest suite everywhere.
 |---|---|
 | High-contrast theme | Shipped: Options > General > Theme > High Contrast |
 | Keyboard-only operability | Audited; one real bug found and fixed (toolbar/sidebar/tab-strip/bell/viewport-title buttons were `InvisibleButton` without `EnableNav`, so Tab skipped them); nav-focus tooltips added for icon-only buttons; free 3D viewport orbit and a few inherently-drag widgets remain mouse-only by design, same as in Rhino |
-| Screen-reader support (command line, menu bar, command options, Layers/Properties panels, viewports, Activity Log, Named Views) | Shipped on Linux: a real AT-SPI2 bridge (`src/platform/AccessibilityLinux.cpp`) exposes the command line's live text and full history log, the main menu bar (mirroring exactly what's currently open, built live alongside `ui/MenuBar.cpp`'s own drawing calls), the running command's options (with per-option guidance on how to change it), the Layers/Properties panels' current content (Properties rows note which are real value editors), every viewport's title/view-menu button state (name, active/maximized, current display mode), the persisted Activity Log of finalized edits (timestamp/action/summary per entry, distinct from the command line's own raw text log), and the document's saved Named Views (name per saved view) as queryable, updating accessible objects, verified end-to-end against the real registry daemon and `pyatspi` (`tests/smoke_accessibility.py`), including the new Named Views checks. Windows/macOS not implemented. Built only when `atspi-2`/`gio-2.0` are available; a silent no-op otherwise |
-| Screen-reader support (rest of the UI) | Not implemented - hard ImGui platform limitation (no accessibility-tree bridge for the 3D viewport's own rendered content or the ~38 remaining panels/dialogs on any OS). Descriptive text/tooltips exist everywhere as a prerequisite, but that is not screen-reader support |
+| Screen-reader support (command line, menu bar, command options, Layers/Properties panels, viewports, Activity Log, Named Views, Named CPlanes) | Shipped on Linux: a real AT-SPI2 bridge (`src/platform/AccessibilityLinux.cpp`) exposes the command line's live text and full history log, the main menu bar (mirroring exactly what's currently open, built live alongside `ui/MenuBar.cpp`'s own drawing calls), the running command's options (with per-option guidance on how to change it), the Layers/Properties panels' current content (Properties rows note which are real value editors), every viewport's title/view-menu button state (name, active/maximized, current display mode), the persisted Activity Log of finalized edits (timestamp/action/summary per entry, distinct from the command line's own raw text log), the document's saved Named Views (name per saved view), and its saved Named CPlanes (name per saved construction plane) as queryable, updating accessible objects, verified end-to-end against the real registry daemon and `pyatspi` (`tests/smoke_accessibility.py`), including the new Named CPlanes checks. Windows/macOS not implemented. Built only when `atspi-2`/`gio-2.0` are available; a silent no-op otherwise |
+| Screen-reader support (rest of the UI) | Not implemented - hard ImGui platform limitation (no accessibility-tree bridge for the 3D viewport's own rendered content or the ~37 remaining panels/dialogs on any OS). Descriptive text/tooltips exist everywhere as a prerequisite, but that is not screen-reader support |

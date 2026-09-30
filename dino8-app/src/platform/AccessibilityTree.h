@@ -14,8 +14,9 @@
 // PropertyEntry::editable), each viewport's title/view-menu button state
 // (name, active/maximized, current display mode - see BuildViewportsPanelNode),
 // the persisted Activity Log of finalized edits (see BuildActivityLogNode),
-// and the document's saved Named Views (see BuildNamedViewsNode).
-// The 3D viewport's own rendered content and the ~38 other panels/dialogs are
+// the document's saved Named Views (see BuildNamedViewsNode), and its saved
+// Named CPlanes (see BuildNamedCPlanesNode).
+// The 3D viewport's own rendered content and the ~37 other panels/dialogs are
 // still not mirrored into this tree.
 #pragma once
 
@@ -221,5 +222,22 @@ struct NamedViewSummary {
 // on-screen ##NamedViews Selectable row - independent of whether the Named
 // Views panel window is actually open right now.
 AccessibleNode BuildNamedViewsNode(const std::vector<NamedViewSummary>& views);
+
+// One Named CPlanes panel row (doc/Document.h's NamedCPlane, reduced to
+// plain data the same way NamedViewSummary above keeps this module
+// independent of doc/Document): just the saved construction plane's name,
+// matching the on-screen Named CPlanes panel, which likewise shows only the
+// name per row (origin/axes are a hover tooltip there, not part of the row
+// itself) - see DrawNamedCPlanesPanel.
+struct NamedCPlaneSummary {
+  std::string name;
+};
+
+// Builds the "Named CPlanes" List accessible: one ListItem per saved
+// construction plane, in the same order Document::NamedCPlanes() holds
+// them, named the same as the on-screen ##ncp Selectable row - independent
+// of whether the Named CPlanes panel window is actually open right now, the
+// same way BuildNamedViewsNode doesn't depend on its own panel.
+AccessibleNode BuildNamedCPlanesNode(const std::vector<NamedCPlaneSummary>& cplanes);
 
 }  // namespace dino8::platform

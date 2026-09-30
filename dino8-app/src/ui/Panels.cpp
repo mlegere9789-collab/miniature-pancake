@@ -565,6 +565,21 @@ dino8::platform::AccessibleNode NamedViewsAccessibleTree(Application& app) {
   return dino8::platform::BuildNamedViewsNode(summaries);
 }
 
+// AT-SPI2-queryable snapshot of Document::NamedCPlanes() (see
+// docs/ACCESSIBILITY.md): built straight from Document state, independent of
+// whether DrawNamedCPlanesPanel itself has ever been drawn or is open right
+// now - mirrors only the name per row, matching what DrawNamedCPlanesPanel
+// itself shows on screen (origin/axes are a hover tooltip there, not part of
+// the row).
+dino8::platform::AccessibleNode NamedCPlanesAccessibleTree(Application& app) {
+  std::vector<dino8::platform::NamedCPlaneSummary> summaries;
+  summaries.reserve(app.Doc().NamedCPlanes().size());
+  for (const auto& c : app.Doc().NamedCPlanes()) {
+    summaries.push_back({c.name});
+  }
+  return dino8::platform::BuildNamedCPlanesNode(summaries);
+}
+
 // ---------------------------------------------------------------------------
 // Command history / list / help
 // ---------------------------------------------------------------------------

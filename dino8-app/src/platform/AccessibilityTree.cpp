@@ -189,4 +189,21 @@ AccessibleNode BuildNamedViewsNode(const std::vector<NamedViewSummary>& views) {
   return list;
 }
 
+AccessibleNode BuildNamedCPlanesNode(const std::vector<NamedCPlaneSummary>& cplanes) {
+  AccessibleNode list;
+  list.name = "Named CPlanes";
+  list.role = AccessibleRole::List;
+  char count_buf[32];
+  std::snprintf(count_buf, sizeof(count_buf), "%zu named cplanes", cplanes.size());
+  list.description = count_buf;
+
+  for (const NamedCPlaneSummary& c : cplanes) {
+    AccessibleNode item;
+    item.role = AccessibleRole::ListItem;
+    item.name = c.name;
+    list.children.push_back(std::move(item));
+  }
+  return list;
+}
+
 }  // namespace dino8::platform
