@@ -10,6 +10,7 @@
 #include <cstring>
 #include <fstream>
 #include <functional>
+#include <iomanip>
 #include <limits>
 #include <map>
 #include <set>
@@ -2344,6 +2345,19 @@ Result Mesh::SaveVrml(const std::string& path) const {
     }
   }
   out << "  ]\n";
+  if (HasVertexColors()) {
+    out << "  color Color {\n";
+    out << "   color [\n";
+    out << std::fixed << std::setprecision(8);
+    for (int i = 0; i < mesh_.m_V.Count(); ++i) {
+      const Color c = VertexColorAt(i);
+      out << "    " << (c.r / 255.0) << ' ' << (c.g / 255.0) << ' ' << (c.b / 255.0) << ",\n";
+    }
+    out << std::defaultfloat << std::setprecision(6);
+    out << "   ]\n";
+    out << "  }\n";
+    out << "  colorPerVertex TRUE\n";
+  }
   out << " }\n";
   out << "}\n";
 
@@ -2433,6 +2447,47 @@ Result Mesh::LoadVrml(const std::string& path, Mesh& out_mesh) {
     }
     if (i >= tokens.size()) return Result::Failed;  // unterminated coordIndex [ ... ]
     if (!current_face.empty()) return Result::Failed;  // trailing run never closed with -1
+  }
+
+  // A `Color` node (VRML97's own per-vertex color convention, distinct from
+  // the lowercase `color` field name both introducing it and, again, naming
+  // its own value array - `FindVrmlToken` matches the capitalized node-type
+  // token first, then the field keyword nested inside it) is optional; a
+  // file with none leaves the mesh with no vertex colors at all, same as
+  // before this was understood.
+  const size_t color_node = FindVrmlToken(tokens, "Color", 0);
+  if (color_node != tokens.size()) {
+    const size_t color_kw = FindVrmlToken(tokens, "color", color_node + 1);
+    if (color_kw == tokens.size() || color_kw + 1 >= tokens.size() || tokens[color_kw + 1] != "[") {
+      return Result::Failed;
+    }
+    std::vector<double> numbers;
+    size_t i = color_kw + 2;
+    for (; i < tokens.size() && tokens[i] != "]"; ++i) {
+      double value = 0;
+      if (!ParseOffDouble(tokens[i], value)) return Result::Failed;
+      numbers.push_back(value);
+    }
+    if (i >= tokens.size()) return Result::Failed;  // unterminated color [ ... ]
+    if (numbers.size() % 3 != 0) return Result::Failed;
+    // Deliberately narrow: only the `colorPerVertex TRUE` shape (one RGB
+    // triple per vertex, `SaveVrml()`'s own convention) is understood - a
+    // per-face color list (VRML97's other, `colorPerVertex FALSE` option)
+    // wouldn't line up with this kernel's per-vertex-only color model and
+    // is rejected outright rather than silently misapplied.
+    if (numbers.size() / 3 != static_cast<size_t>(raw.m_V.Count())) {
+      return Result::Failed;
+    }
+    std::vector<Color> colors;
+    colors.reserve(numbers.size() / 3);
+    for (size_t v = 0; v + 2 < numbers.size(); v += 3) {
+      auto to_byte = [](double x) {
+        x = std::max(0.0, std::min(1.0, x));
+        return static_cast<unsigned char>(std::lround(x * 255.0));
+      };
+      colors.push_back(Color{to_byte(numbers[v]), to_byte(numbers[v + 1]), to_byte(numbers[v + 2])});
+    }
+    result.SetVertexColors(colors);
   }
 
   out_mesh = std::move(result);
@@ -2692,7 +2747,9 @@ Result Mesh::SaveX3d(const std::string& path) const {
       out << f.vi[0] << ' ' << f.vi[1] << ' ' << f.vi[2] << " -1";
     }
   }
-  out << "\">\n";
+  out << "\"";
+  if (HasVertexColors()) out << " colorPerVertex=\"true\"";
+  out << ">\n";
   out << "    <Coordinate point=\"";
   for (int i = 0; i < mesh_.m_V.Count(); ++i) {
     const ON_3fPoint& v = mesh_.m_V[i];
@@ -2700,6 +2757,17 @@ Result Mesh::SaveX3d(const std::string& path) const {
     out << v.x << ' ' << v.y << ' ' << v.z;
   }
   out << "\"/>\n";
+  if (HasVertexColors()) {
+    out << "    <Color color=\"";
+    out << std::fixed << std::setprecision(8);
+    for (int i = 0; i < mesh_.m_V.Count(); ++i) {
+      const Color c = VertexColorAt(i);
+      if (i > 0) out << ' ';
+      out << (c.r / 255.0) << ' ' << (c.g / 255.0) << ' ' << (c.b / 255.0);
+    }
+    out << std::defaultfloat << std::setprecision(6);
+    out << "\"/>\n";
+  }
   out << "   </IndexedFaceSet>\n";
   out << "  </Shape>\n";
   out << " </Scene>\n";
@@ -2785,6 +2853,39 @@ Result Mesh::LoadX3d(const std::string& path, Mesh& out_mesh) {
       current_face.push_back(value);
     }
     if (!current_face.empty()) return Result::Failed;  // trailing run never closed with -1
+  }
+
+  // A `<Color color="...">` element (X3D's own per-vertex color convention,
+  // reusing `LoadVrml()`'s Color-node reasoning re-encoded as an attribute
+  // the same way `coordIndex`/`point` already are) is optional; a file with
+  // none leaves the mesh with no vertex colors, same as before this was
+  // understood. `Color` can never false-match the earlier `Coordinate`
+  // search - `FindX3dTag()`'s own "don't false-match a longer tag name"
+  // guard already rejects that.
+  std::string color_tag;
+  if (FindX3dTag(text, "Color", 0, color_tag) != std::string::npos) {
+    std::string color_attr;
+    if (!ExtractX3dAttribute(color_tag, "color", color_attr)) return Result::Failed;
+    std::vector<double> numbers;
+    if (!ParseColladaDoubles(color_attr, numbers)) return Result::Failed;
+    if (numbers.size() % 3 != 0) return Result::Failed;
+    // Deliberately narrow, the same reasoning LoadVrml() already gives for
+    // its own Color node: only one RGB triple per vertex is understood - a
+    // per-face color list doesn't fit this kernel's per-vertex-only color
+    // model and is rejected outright rather than silently misapplied.
+    if (numbers.size() / 3 != static_cast<size_t>(raw.m_V.Count())) {
+      return Result::Failed;
+    }
+    std::vector<Color> colors;
+    colors.reserve(numbers.size() / 3);
+    for (size_t v = 0; v + 2 < numbers.size(); v += 3) {
+      auto to_byte = [](double x) {
+        x = std::max(0.0, std::min(1.0, x));
+        return static_cast<unsigned char>(std::lround(x * 255.0));
+      };
+      colors.push_back(Color{to_byte(numbers[v]), to_byte(numbers[v + 1]), to_byte(numbers[v + 2])});
+    }
+    result.SetVertexColors(colors);
   }
 
   out_mesh = std::move(result);

@@ -20672,12 +20672,103 @@ void TestMeshLoadVrmlRejectsMalformedFiles() {
   Check(Mesh::LoadVrml(unterminated_path, out) == Result::Failed,
         "LoadVrml fails on a coordIndex array truncated before its closing ]");
 
+  const std::string bad_color_count_path = "dino8_kernel_mesh_vrml_test_bad_color_count.wrl";
+  {
+    std::ofstream bad(bad_color_count_path);
+    // 3 vertices, but only 2 color triples - a per-face (not per-vertex)
+    // color list, or any other mismatched count, doesn't fit this kernel's
+    // per-vertex-only color model.
+    bad << "#VRML V2.0 utf8\nShape { geometry IndexedFaceSet {\n"
+        << "coord Coordinate { point [ 0 0 0, 1 0 0, 0 1 0 ] }\n"
+        << "coordIndex [ 0, 1, 2, -1 ]\n"
+        << "color Color { color [ 1 0 0, 0 1 0 ] }\n"
+        << "colorPerVertex TRUE\n} }\n";
+  }
+  Check(Mesh::LoadVrml(bad_color_count_path, out) == Result::Failed,
+        "LoadVrml fails when a Color node's own value count doesn't equal the vertex count");
+
   std::remove(bad_header_path.c_str());
   std::remove(too_few_path.c_str());
   std::remove(oob_index_path.c_str());
   std::remove(no_point_path.c_str());
   std::remove(no_index_path.c_str());
   std::remove(unterminated_path.c_str());
+  std::remove(bad_color_count_path.c_str());
+}
+
+void TestMeshSaveVrmlWritesAndReadsColors() {
+  using dino8::kernel::Color;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Result;
+
+  auto box = MakeQuadBoxMesh(0, 0, 0, 2, 2, 2);
+  std::vector<Color> colors;
+  for (int i = 0; i < box.VertexCount(); ++i) {
+    colors.push_back(Color{static_cast<unsigned char>(i * 30), static_cast<unsigned char>(255 - i * 20),
+                            static_cast<unsigned char>(i * 10)});
+  }
+  Check(box.SetVertexColors(colors) == Result::Ok, "fixture: SetVertexColors succeeds for all 8 vertices");
+
+  const std::string path = "dino8_kernel_mesh_vrml_color_test.wrl";
+  Check(box.SaveVrml(path) == Result::Ok, "SaveVrml succeeds for a mesh with vertex colors");
+
+  std::ifstream in(path);
+  std::string file_text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  in.close();
+  Check(file_text.find("Color") != std::string::npos, "a colored mesh writes a Color node");
+  Check(file_text.find("colorPerVertex") != std::string::npos,
+        "a colored mesh writes the colorPerVertex field");
+
+  Mesh reloaded;
+  Check(Mesh::LoadVrml(path, reloaded) == Result::Ok, "LoadVrml succeeds on SaveVrml()'s own colored output");
+  Check(reloaded.HasVertexColors(), "the reloaded mesh has per-vertex colors again");
+  bool all_colors_match = true;
+  for (int i = 0; i < box.VertexCount(); ++i) {
+    const Color loaded_c = reloaded.VertexColorAt(i);
+    const Color original_c = box.VertexColorAt(i);
+    if (loaded_c.r != original_c.r || loaded_c.g != original_c.g || loaded_c.b != original_c.b) {
+      all_colors_match = false;
+      break;
+    }
+  }
+  Check(all_colors_match,
+        "every round-tripped vertex color matches the original exactly, despite the "
+        "byte -> [0,1] float -> byte conversion");
+  std::remove(path.c_str());
+
+  // Without colors, SaveVrml() writes no Color node at all - proof the
+  // color path is conditional, not always-on.
+  const auto plain_box = MakeQuadBoxMesh(0, 0, 0, 1, 1, 1);
+  const std::string plain_path = "dino8_kernel_mesh_vrml_no_color_test.wrl";
+  Check(plain_box.SaveVrml(plain_path) == Result::Ok, "SaveVrml succeeds for a mesh without vertex colors");
+  std::ifstream plain_in(plain_path);
+  std::string plain_text((std::istreambuf_iterator<char>(plain_in)), std::istreambuf_iterator<char>());
+  Check(plain_text.find("Color") == std::string::npos,
+        "a mesh with no vertex colors writes no Color node at all");
+  std::remove(plain_path.c_str());
+
+  // A hand-written file with known [0, 1] color values, checked against
+  // exact expected bytes rather than just round-tripped through SaveVrml().
+  const std::string hand_written_path = "dino8_kernel_mesh_vrml_color_test_hand_written.wrl";
+  {
+    std::ofstream out(hand_written_path);
+    out << "#VRML V2.0 utf8\nShape { geometry IndexedFaceSet {\n"
+        << "coord Coordinate { point [ 0 0 0, 2 0 0, 0 2 0 ] }\n"
+        << "coordIndex [ 0, 1, 2, -1 ]\n"
+        << "color Color { color [ 1 0 0, 0 1 0, 0 0 1 ] }\n"
+        << "colorPerVertex TRUE\n} }\n";
+  }
+  Mesh hand_written;
+  Check(Mesh::LoadVrml(hand_written_path, hand_written) == Result::Ok,
+        "LoadVrml succeeds on a hand-written file with a Color node");
+  Check(hand_written.HasVertexColors(), "the hand-written file's colors were read");
+  const Color c0 = hand_written.VertexColorAt(0);
+  const Color c1 = hand_written.VertexColorAt(1);
+  const Color c2 = hand_written.VertexColorAt(2);
+  Check(c0.r == 255 && c0.g == 0 && c0.b == 0, "hand-written VRML: first vertex is red");
+  Check(c1.r == 0 && c1.g == 255 && c1.b == 0, "hand-written VRML: second vertex is green");
+  Check(c2.r == 0 && c2.g == 0 && c2.b == 255, "hand-written VRML: third vertex is blue");
+  std::remove(hand_written_path.c_str());
 }
 
 void TestMeshLoadVrmlFanTriangulatesNgonFaces() {
@@ -21192,12 +21283,102 @@ void TestMeshLoadX3dRejectsMalformedFiles() {
   Check(Mesh::LoadX3d(unterminated_path, out) == Result::Failed,
         "LoadX3d fails on a coordIndex run never closed with a -1");
 
+  const std::string bad_color_count_path = "dino8_kernel_mesh_x3d_test_bad_color_count.x3d";
+  {
+    std::ofstream bad(bad_color_count_path);
+    // 3 vertices, but only 2 color triples.
+    bad << "<X3D><Scene><Shape><IndexedFaceSet coordIndex=\"0 1 2 -1\" colorPerVertex=\"true\">\n"
+        << "<Coordinate point=\"0 0 0 1 0 0 0 1 0\"/>\n"
+        << "<Color color=\"1 0 0 0 1 0\"/>\n"
+        << "</IndexedFaceSet></Shape></Scene></X3D>\n";
+  }
+  Check(Mesh::LoadX3d(bad_color_count_path, out) == Result::Failed,
+        "LoadX3d fails when a Color element's own value count doesn't equal the vertex count");
+
   std::remove(bad_header_path.c_str());
   std::remove(too_few_path.c_str());
   std::remove(oob_index_path.c_str());
   std::remove(no_point_path.c_str());
   std::remove(no_index_path.c_str());
   std::remove(unterminated_path.c_str());
+  std::remove(bad_color_count_path.c_str());
+}
+
+void TestMeshSaveX3dWritesAndReadsColors() {
+  using dino8::kernel::Color;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Result;
+
+  auto box = MakeQuadBoxMesh(0, 0, 0, 2, 2, 2);
+  std::vector<Color> colors;
+  for (int i = 0; i < box.VertexCount(); ++i) {
+    colors.push_back(Color{static_cast<unsigned char>(i * 30), static_cast<unsigned char>(255 - i * 20),
+                            static_cast<unsigned char>(i * 10)});
+  }
+  Check(box.SetVertexColors(colors) == Result::Ok, "fixture: SetVertexColors succeeds for all 8 vertices");
+
+  const std::string path = "dino8_kernel_mesh_x3d_color_test.x3d";
+  Check(box.SaveX3d(path) == Result::Ok, "SaveX3d succeeds for a mesh with vertex colors");
+
+  std::ifstream in(path);
+  std::string file_text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  in.close();
+  Check(file_text.find("<Color color=\"") != std::string::npos,
+        "a colored mesh writes a Color element with a color attribute");
+  Check(file_text.find("colorPerVertex=\"true\"") != std::string::npos,
+        "a colored mesh writes colorPerVertex=\"true\" on IndexedFaceSet");
+
+  Mesh reloaded;
+  Check(Mesh::LoadX3d(path, reloaded) == Result::Ok, "LoadX3d succeeds on SaveX3d()'s own colored output");
+  Check(reloaded.HasVertexColors(), "the reloaded mesh has per-vertex colors again");
+  bool all_colors_match = true;
+  for (int i = 0; i < box.VertexCount(); ++i) {
+    const Color loaded_c = reloaded.VertexColorAt(i);
+    const Color original_c = box.VertexColorAt(i);
+    if (loaded_c.r != original_c.r || loaded_c.g != original_c.g || loaded_c.b != original_c.b) {
+      all_colors_match = false;
+      break;
+    }
+  }
+  Check(all_colors_match,
+        "every round-tripped vertex color matches the original exactly, despite the "
+        "byte -> [0,1] float -> byte conversion");
+  std::remove(path.c_str());
+
+  // Without colors, SaveX3d() writes neither the Color element nor the
+  // colorPerVertex attribute - proof the color path is conditional.
+  const auto plain_box = MakeQuadBoxMesh(0, 0, 0, 1, 1, 1);
+  const std::string plain_path = "dino8_kernel_mesh_x3d_no_color_test.x3d";
+  Check(plain_box.SaveX3d(plain_path) == Result::Ok, "SaveX3d succeeds for a mesh without vertex colors");
+  std::ifstream plain_in(plain_path);
+  std::string plain_text((std::istreambuf_iterator<char>(plain_in)), std::istreambuf_iterator<char>());
+  Check(plain_text.find("<Color") == std::string::npos,
+        "a mesh with no vertex colors writes no Color element at all");
+  Check(plain_text.find("colorPerVertex") == std::string::npos,
+        "a mesh with no vertex colors writes no colorPerVertex attribute at all");
+  std::remove(plain_path.c_str());
+
+  // A hand-written file with known [0, 1] color values, checked against
+  // exact expected bytes rather than just round-tripped through SaveX3d().
+  const std::string hand_written_path = "dino8_kernel_mesh_x3d_color_test_hand_written.x3d";
+  {
+    std::ofstream out(hand_written_path);
+    out << "<X3D><Scene><Shape><IndexedFaceSet coordIndex=\"0 1 2 -1\" colorPerVertex=\"true\">\n"
+        << "<Coordinate point=\"0 0 0 2 0 0 0 2 0\"/>\n"
+        << "<Color color=\"1 0 0 0 1 0 0 0 1\"/>\n"
+        << "</IndexedFaceSet></Shape></Scene></X3D>\n";
+  }
+  Mesh hand_written;
+  Check(Mesh::LoadX3d(hand_written_path, hand_written) == Result::Ok,
+        "LoadX3d succeeds on a hand-written file with a Color element");
+  Check(hand_written.HasVertexColors(), "the hand-written file's colors were read");
+  const Color c0 = hand_written.VertexColorAt(0);
+  const Color c1 = hand_written.VertexColorAt(1);
+  const Color c2 = hand_written.VertexColorAt(2);
+  Check(c0.r == 255 && c0.g == 0 && c0.b == 0, "hand-written X3D: first vertex is red");
+  Check(c1.r == 0 && c1.g == 255 && c1.b == 0, "hand-written X3D: second vertex is green");
+  Check(c2.r == 0 && c2.g == 0 && c2.b == 255, "hand-written X3D: third vertex is blue");
+  std::remove(hand_written_path.c_str());
 }
 
 void TestMeshLoadX3dFanTriangulatesNgonFaces() {
@@ -52897,12 +53078,14 @@ int main() {
   TestMeshSaveVrmlRoundTrips();
   TestMeshLoadVrmlRejectsMalformedFiles();
   TestMeshLoadVrmlFanTriangulatesNgonFaces();
+  TestMeshSaveVrmlWritesAndReadsColors();
   TestMeshSaveColladaRoundTrips();
   TestMeshLoadColladaRejectsMalformedFiles();
   TestMeshLoadColladaFanTriangulatesNgonFaces();
   TestMeshSaveX3dRoundTrips();
   TestMeshLoadX3dRejectsMalformedFiles();
   TestMeshLoadX3dFanTriangulatesNgonFaces();
+  TestMeshSaveX3dWritesAndReadsColors();
   TestMeshSaveUsdaRoundTrips();
   TestMeshLoadUsdaRejectsMalformedFiles();
   TestMeshLoadUsdaFanTriangulatesNgonFaces();

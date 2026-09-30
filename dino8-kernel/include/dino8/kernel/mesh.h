@@ -816,13 +816,21 @@ class Mesh {
   // (`ON_MeshFace::IsQuad()`) is written as its own native 4-index run
   // (`i0 i1 i2 i3 -1`), not split into two triangles - the same
   // "IndexedFaceSet has a real variable-length face list" reasoning
-  // `SaveOff()`/`SavePly()` already give for their own formats. No
-  // per-vertex normal/color, `Appearance`/`Material`, or any node besides
-  // this single `Shape` is written - this kernel's `Mesh` has nothing to
-  // source those from anyway (same reasoning `SaveOff()`'s own doc comment
-  // gives). Returns Result::Failed if the file can't be opened for
-  // writing; does not validate the mesh's own geometry (an empty mesh
-  // writes a valid `Shape` with empty `point`/`coordIndex` lists).
+  // `SaveOff()`/`SavePly()` already give for their own formats. When
+  // `HasVertexColors()` is true, a `color Color { color [ r g b, ... ] }`
+  // node (one triple per vertex, VRML97's own `[0, 1]` float color range -
+  // not the 0-255 byte range `Color` itself stores, so each channel is
+  // divided by 255 on the way out) plus a `colorPerVertex TRUE` field are
+  // also written, the same "one value per vertex, all-or-nothing" shape
+  // `SaveOff()`'s own `COFF` variant already has; an uncolored mesh writes
+  // no `Color` node at all, same as `SaveOff()` writing a plain `OFF`
+  // header rather than `COFF`. No per-vertex normal, `Appearance`/
+  // `Material`, or any node besides this single `Shape` is written - this
+  // kernel's `Mesh` has nowhere to source those from anyway (same reasoning
+  // `SaveOff()`'s own doc comment gives for normals). Returns
+  // Result::Failed if the file can't be opened for writing; does not
+  // validate the mesh's own geometry (an empty mesh writes a valid `Shape`
+  // with empty `point`/`coordIndex` lists).
   Result SaveVrml(const std::string& path) const;
 
   // Reads a plain-text VRML97 `.wrl` file written by SaveVrml() (or any
@@ -845,16 +853,25 @@ class Mesh {
   // its `-1` becomes one native `ON_MeshFace` triangle or quad; a genuine
   // n-gon run (5+ indices) is fan-triangulated from its own first index
   // into `n-2` triangles, the same accommodation `LoadObj()`/`LoadOff()`
-  // already make for their own n-gon faces. `Material`/`Appearance`/
-  // `Normal`/`TextureCoordinate` nodes and any node besides `Coordinate`/
-  // `IndexedFaceSet` are not understood at all - present or absent, they
-  // have no effect on the result. Returns Result::Failed if the file can't
-  // be opened, its first line isn't a `#VRML` header, no `point` or
-  // `coordIndex` array is found, a `point` entry isn't a valid "x y z"
-  // triple, a `coordIndex` run has fewer than 3 indices before its `-1`,
-  // or any index falls outside the vertex list's range - `out_mesh` is
-  // left unspecified in that case, not partially filled and silently
-  // trusted.
+  // already make for their own n-gon faces. A `Color { color [ ... ] }`
+  // node (found by its capitalized node-type token, distinct from the
+  // lowercase `color` field name both introducing it and naming its own
+  // value array) is optional - a file with none leaves the mesh with no
+  // vertex colors - but when present must carry exactly one `[0, 1]` RGB
+  // triple per vertex (each component clamped to `[0, 1]` then rounded to
+  // the nearest 0-255 byte); a per-face color list (VRML97's other,
+  // `colorPerVertex FALSE` option) doesn't fit this kernel's per-vertex-
+  // only color model and is rejected outright rather than silently
+  // misapplied. `Appearance`/`Material`/`Normal`/`TextureCoordinate` nodes
+  // and any node besides `Coordinate`/`IndexedFaceSet`/`Color` are not
+  // understood at all - present or absent, they have no effect on the
+  // result. Returns Result::Failed if the file can't be opened, its first
+  // line isn't a `#VRML` header, no `point` or `coordIndex` array is found,
+  // a `point` entry isn't a valid "x y z" triple, a `coordIndex` run has
+  // fewer than 3 indices before its `-1`, any index falls outside the
+  // vertex list's range, or a `Color` node's own value count doesn't equal
+  // the vertex count - `out_mesh` is left unspecified in that case, not
+  // partially filled and silently trusted.
   static Result LoadVrml(const std::string& path, Mesh& out_mesh);
 
   // Writes this mesh as a plain-XML COLLADA (`.dae`, ISO/IEC 17506) file -
@@ -922,13 +939,21 @@ class Mesh {
   // "x y z x y z ..." vertex list. A quad face (`ON_MeshFace::IsQuad()`) is
   // written as its own native 4-index run (`i0 i1 i2 i3 -1`), the same
   // "a real variable-length face list" reasoning `SaveVrml()`/`SaveOff()`/
-  // `SaveCollada()` already give for their own formats. No `Appearance`/
-  // `Material`, per-vertex normal/color, or any node besides this single
-  // `Shape` is written - this kernel's `Mesh` has nothing to source those
-  // from anyway (same reasoning `SaveVrml()`'s own doc comment gives).
-  // Returns Result::Failed if the file can't be opened for writing; does
-  // not validate the mesh's own geometry (an empty mesh writes a valid
-  // `IndexedFaceSet` with empty `coordIndex`/`point` attributes).
+  // `SaveCollada()` already give for their own formats. When
+  // `HasVertexColors()` is true, the `<IndexedFaceSet>` tag also gains a
+  // `colorPerVertex="true"` attribute and a child `<Color color="r g b r g
+  // b ..."/>` element (one `[0, 1]`-range triple per vertex, X3D's own
+  // float color range - not the 0-255 byte range `Color` itself stores, so
+  // each channel is divided by 255 on the way out), the same "one value per
+  // vertex, all-or-nothing" shape `SaveVrml()`'s own `Color` node already
+  // has; an uncolored mesh writes neither attribute nor element. No
+  // `Appearance`/`Material`, per-vertex normal, or any node besides this
+  // single `Shape` is written - this kernel's `Mesh` has nowhere to source
+  // those from anyway (same reasoning `SaveVrml()`'s own doc comment gives
+  // for normals). Returns Result::Failed if the file can't be opened for
+  // writing; does not validate the mesh's own geometry (an empty mesh
+  // writes a valid `IndexedFaceSet` with empty `coordIndex`/`point`
+  // attributes).
   Result SaveX3d(const std::string& path) const;
 
   // Reads a plain-XML X3D `.x3d` file written by SaveX3d() (or any other
@@ -950,15 +975,24 @@ class Mesh {
   // into `n-2` triangles, the same accommodation `LoadVrml()` already
   // makes for its own n-gon `coordIndex` runs - X3D's XML encoding keeps
   // VRML's exact per-face `-1` sentinel convention, unlike COLLADA's
-  // per-face `<vcount>` prefix. `Appearance`/`Material`/`Normal`/
+  // per-face `<vcount>` prefix. A `<Color color="...">` element (found by
+  // tag name, never confused with the earlier `<Coordinate>` search -
+  // `FindX3dTag()`'s own "don't false-match a longer tag name" guard
+  // already rules that out) is optional - a file with none leaves the mesh
+  // with no vertex colors - but when present must carry exactly one
+  // `[0, 1]` RGB triple per vertex (each component clamped to `[0, 1]` then
+  // rounded to the nearest 0-255 byte); a per-face color list doesn't fit
+  // this kernel's per-vertex-only color model and is rejected outright
+  // rather than silently misapplied. `Appearance`/`Material`/`Normal`/
   // `TextureCoordinate` nodes and any node besides `Coordinate`/
-  // `IndexedFaceSet` are not understood at all - present or absent, they
-  // have no effect on the result. Returns Result::Failed if the file can't
-  // be opened, it has no `<X3D` root tag, no `IndexedFaceSet` or
+  // `IndexedFaceSet`/`Color` are not understood at all - present or absent,
+  // they have no effect on the result. Returns Result::Failed if the file
+  // can't be opened, it has no `<X3D` root tag, no `IndexedFaceSet` or
   // `Coordinate` element is found, either one's required attribute is
   // missing, a `coordIndex` run has fewer than 3 indices before its `-1`,
-  // a trailing run is never closed with a `-1`, or any index falls outside
-  // the vertex list's range - `out_mesh` is left unspecified in that case,
+  // a trailing run is never closed with a `-1`, any index falls outside the
+  // vertex list's range, or a `Color` element's own value count doesn't
+  // equal the vertex count - `out_mesh` is left unspecified in that case,
   // not partially filled and silently trusted.
   static Result LoadX3d(const std::string& path, Mesh& out_mesh);
 
