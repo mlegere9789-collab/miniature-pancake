@@ -82,3 +82,21 @@ Open @TMP@/step_recursive_fixture.stp
 @expect_objects 0
 SelAll
 List
+# --- A hand-crafted malformed IGES file: a single type-116 (POINT) entity
+# whose directory entry's own Parameter Data pointer (columns 9-16 of the
+# first DE line) is blank, with no Parameter Data section at all.
+# Regression for a real out-of-bounds read this session's audit found:
+# ImportIges only bounds-checked the *upper* end of the parameter-line
+# index it computed from that pointer, so a blank/zero/negative pointer -
+# reachable from any malformed or hostile .igs file, no valid P section
+# required - underflowed to a negative index that, once cast to size_t,
+# read plines[SIZE_MAX] (confirmed: reverting the fix reproduces the same
+# out-of-bounds vector access on this exact fixture). Must now be handled
+# cleanly (the entity's parameter list is left empty, same as any other
+# entity with insufficient parameters), not crash.
+cancel
+New
+Open @TMP@/iges_bad_pd_ptr_fixture.igs
+@expect_objects 1
+SelAll
+List

@@ -1390,7 +1390,18 @@ bool ImportIges(Document& doc, const std::string& path, std::string& summary) {
     // count (columns 2 and 4 of the second DE line, 1-based).
     const int line_count = std::max(1, std::atoi(field(dlines[i + 1], 3).c_str()));
     std::string text;
-    for (int k = 0; k < line_count && pd_ptr - 1 + k < static_cast<int>(plines.size()); ++k) text += plines[static_cast<size_t>(pd_ptr - 1 + k)];
+    // pd_ptr comes straight from column 9-16 of an untrusted .igs file's
+    // directory entry; a blank, zero, or negative value here (a malformed
+    // or hostile file, not just one with an empty parameter section) makes
+    // `pd_ptr - 1 + k` negative. The loop below only bounds-checked the
+    // upper end, so a negative index passed straight through the
+    // static_cast<size_t> and read plines[SIZE_MAX] - an out-of-bounds
+    // read (garbage std::string, most likely a crash) reachable just by
+    // opening a file with File > Open, drag-and-drop, or the command line,
+    // no valid Parameter Data section required.
+    if (pd_ptr >= 1) {
+      for (int k = 0; k < line_count && pd_ptr - 1 + k < static_cast<int>(plines.size()); ++k) text += plines[static_cast<size_t>(pd_ptr - 1 + k)];
+    }
     // Drop the leading "type," field.
     const size_t comma = text.find(pd);
     std::vector<std::string> all = SplitIgesParams(comma == std::string::npos ? text : text.substr(comma + 1), pd, rd);
