@@ -7972,6 +7972,82 @@ void TestModelAddHatchRoundTrips() {
   std::remove(path.c_str());
 }
 
+void TestModelAddHatchPatternLinesRoundTrips() {
+  using dino8::kernel::HatchFillType;
+  using dino8::kernel::HatchPatternLine;
+  using dino8::kernel::Model;
+  using dino8::kernel::Point2d;
+  using dino8::kernel::Result;
+
+  // HatchFillType's own doc comment in file_io.h names this exact gap: "a
+  // Lines pattern this kernel creates always has zero lines in it... this
+  // kernel adds no way to populate its actual dash/offset lines via
+  // ON_HatchPattern::AddHatchLine()" - PARITY_MAP.md's own evidence for the
+  // same item. Before this, AddHatchPattern() had no `lines` parameter at
+  // all.
+  Model model;
+  const int empty_pattern = model.AddHatchPattern("No Lines", HatchFillType::Lines);
+  Check(empty_pattern == 0, "AddHatchPattern() with no lines argument still succeeds, unchanged behavior");
+  Check(model.HatchPatternLineCount(empty_pattern) == 0,
+        "a pattern added with no lines argument has zero lines - the pre-existing behavior, unchanged");
+
+  HatchPatternLine solid_line;
+  solid_line.angle_radians = 0.0;
+  solid_line.base = Point2d(0.0, 0.0);
+  solid_line.offset = Point2d(0.0, 0.5);
+  // no dashes - a solid line, ON_HatchLine's own "no dashes means solid" contract
+
+  HatchPatternLine dashed_line;
+  dashed_line.angle_radians = ON_PI / 2.0;  // vertical
+  dashed_line.base = Point2d(0.25, 0.0);
+  dashed_line.offset = Point2d(0.0, 0.5);
+  dashed_line.dashes = {0.25, -0.125, 0.25};  // dash, gap, dash
+
+  const int pattern_index =
+      model.AddHatchPattern("Cross-Hatch", HatchFillType::Lines, {solid_line, dashed_line});
+  Check(pattern_index == 1, "the second AddHatchPattern() call returns index 1");
+  Check(model.HatchPatternLineCount(pattern_index) == 2,
+        "the pattern has exactly the 2 lines AddHatchPattern()'s own lines argument gave it");
+
+  const auto line0 = model.HatchPatternLineAt(pattern_index, 0);
+  Check(std::abs(line0.angle_radians - 0.0) < 1e-9, "the first line's angle survives HatchPatternLineAt()");
+  Check(line0.base.DistanceTo(ON_2dPoint(0.0, 0.0)) < 1e-9, "the first line's base survives HatchPatternLineAt()");
+  Check(line0.offset.DistanceTo(ON_2dPoint(0.0, 0.5)) < 1e-9,
+        "the first line's offset survives HatchPatternLineAt()");
+  Check(line0.dashes.empty(), "the first (solid) line reports no dashes");
+
+  const auto line1 = model.HatchPatternLineAt(pattern_index, 1);
+  Check(std::abs(line1.angle_radians - ON_PI / 2.0) < 1e-9, "the second line's angle survives HatchPatternLineAt()");
+  Check(line1.base.DistanceTo(ON_2dPoint(0.25, 0.0)) < 1e-9,
+        "the second line's base survives HatchPatternLineAt()");
+  Check(line1.dashes.size() == 3, "the second line's dash count survives HatchPatternLineAt()");
+  Check(line1.dashes.size() == 3 && std::abs(line1.dashes[0] - 0.25) < 1e-9 &&
+            std::abs(line1.dashes[1] - (-0.125)) < 1e-9 && std::abs(line1.dashes[2] - 0.25) < 1e-9,
+        "the second line's exact dash/gap lengths, in order, survive HatchPatternLineAt()");
+
+  const auto out_of_range = model.HatchPatternLineAt(pattern_index, 9999);
+  Check(out_of_range.dashes.empty() && std::abs(out_of_range.angle_radians) < 1e-12,
+        "HatchPatternLineAt() on a line index this pattern doesn't have returns a "
+        "default-constructed HatchPatternLine, same contract as HatchAt()/TextDotAt() etc.");
+  Check(model.HatchPatternLineCount(9999) == 0,
+        "HatchPatternLineCount() on a pattern index this model doesn't have returns 0");
+
+  const std::string path = "dino8_kernel_model_hatch_pattern_lines_roundtrip_test.3dm";
+  Check(model.Save(path) == Result::Ok, ".3dm save with a lined hatch pattern succeeded");
+
+  Model loaded;
+  Check(Model::Load(path, loaded) == Result::Ok, ".3dm load succeeded");
+  Check(loaded.HatchPatternLineCount(pattern_index) == 2,
+        "both lines survive the .3dm round trip");
+  const auto reloaded_line1 = loaded.HatchPatternLineAt(pattern_index, 1);
+  Check(std::abs(reloaded_line1.angle_radians - ON_PI / 2.0) < 1e-6,
+        "the reloaded second line's angle survives the .3dm round trip");
+  Check(reloaded_line1.dashes.size() == 3 && std::abs(reloaded_line1.dashes[0] - 0.25) < 1e-6,
+        "the reloaded second line's dash lengths survive the .3dm round trip");
+
+  std::remove(path.c_str());
+}
+
 void TestModelAddTextDotRoundTrips() {
   using dino8::kernel::Model;
   using dino8::kernel::Point3d;
@@ -8016,6 +8092,63 @@ void TestModelAddTextDotRoundTrips() {
   Check(reloaded.primary_text == "QC-1", "the reloaded text dot's primary_text survives the round trip");
   Check(reloaded.secondary_text == "Failed inspection on 2026-09-29",
         "the reloaded text dot's secondary_text survives the round trip");
+
+  std::remove(path.c_str());
+}
+
+void TestModelAddTextAnnotationRoundTrips() {
+  using dino8::kernel::Model;
+  using dino8::kernel::Result;
+
+  // PARITY_MAP.md's own "kernel: Kernel-level data exchange" evidence for
+  // "Rhino non-geometry/composite objects in .3dm" names annotations as
+  // entirely unaddressed: "annotations (ON_Annotation/dimension objects)
+  // remain entirely unaddressed, no kernel API for them at all" - before
+  // this, nothing in this kernel could create an ON_Text (or any other
+  // ON_Annotation subtype) at all.
+  Model model;
+  Check(model.TextCount() == 0, "a fresh Model has no text annotations");
+  const ON_Plane world_xy(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1));
+  Check(model.AddText("hi", world_xy, "") == -1,
+        "AddText() returns -1 for an empty name, same contract as AddTextDot()/AddLight() etc.");
+  Check(model.AddText("", world_xy, "Empty Text") == -1, "AddText() returns -1 for empty text content");
+  const ON_Plane invalid_plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 0));
+  Check(model.AddText("hi", invalid_plane, "Bad Plane") == -1,
+        "AddText() returns -1 for a degenerate (zero-normal) plane");
+  Check(model.TextCount() == 0, "none of the refused calls above added anything");
+
+  const ON_Plane plane(ON_3dPoint(1, 2, 3), ON_3dVector(0, 0, 1));
+  const int index = model.AddText("Hello, Fossilith", plane, "Note A");
+  Check(index == 0, "the first real AddText() call returns index 0");
+  Check(model.TextCount() == 1, "model has one text annotation after AddText()");
+  Check(model.ObjectCount() == 1,
+        "a text annotation is a real model geometry object, also counted by ObjectCount()");
+
+  const auto info = model.TextAt(0);
+  Check(info.name == "Note A", "TextAt() reports the name AddText() was given");
+  Check(info.text == "Hello, Fossilith", "TextAt() reports the exact text content AddText() was given");
+  Check(info.plane.origin.DistanceTo(plane.origin) < 1e-9,
+        "TextAt() reports the exact plane origin AddText() was given");
+  Check((info.plane.Normal() - plane.Normal()).Length() < 1e-9,
+        "TextAt() reports the exact plane normal AddText() was given");
+
+  const auto out_of_range = model.TextAt(9999);
+  Check(out_of_range.name.empty(),
+        "TextAt() on an index this model doesn't have returns a default-constructed "
+        "TextAnnotationInfo, same contract as TextDotAt()/HatchAt() etc.");
+
+  const std::string path = "dino8_kernel_model_text_annotation_roundtrip_test.3dm";
+  Check(model.Save(path) == Result::Ok, ".3dm save with a text annotation succeeded");
+
+  Model loaded;
+  Check(Model::Load(path, loaded) == Result::Ok, ".3dm load succeeded");
+  Check(loaded.TextCount() == 1, "the text annotation survives the .3dm round trip");
+  const auto reloaded = loaded.TextAt(0);
+  Check(reloaded.name == "Note A", "the reloaded text annotation's name survives the round trip");
+  Check(reloaded.text == "Hello, Fossilith",
+        "the reloaded text annotation's text content survives the round trip");
+  Check(reloaded.plane.origin.DistanceTo(plane.origin) < 1e-6,
+        "the reloaded text annotation's plane origin survives the round trip");
 
   std::remove(path.c_str());
 }
@@ -25300,6 +25433,169 @@ void TestMeshLoadGlbRejectsMalformedFiles() {
   std::remove(declared_too_long_path.c_str());
   std::remove(missing_bin_path.c_str());
   std::remove(missing_json_path.c_str());
+  std::remove(oob_index_path.c_str());
+}
+
+void TestMeshSaveIfcRoundTrips() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Result;
+
+  // PARITY_MAP.md's own "kernel: Kernel-level data exchange" evidence names
+  // IFC as fully missing: "zero hits for IFC in dino8-app/src or
+  // dino8-kernel/src". Same MakeQuadBoxMesh fixture every other "other
+  // file format" round-trip test in this file uses: 8 vertices, 6 quad
+  // faces, known exact volume.
+  const auto box = MakeQuadBoxMesh(0, 0, 0, 2, 2, 2);
+  const std::string path = "dino8_kernel_mesh_ifc_test.ifc";
+  Check(box.SaveIfc(path) == Result::Ok, "Mesh::SaveIfc succeeds");
+
+  std::ifstream in(path);
+  Check(static_cast<bool>(in), "the .ifc file SaveIfc wrote can be reopened for reading");
+  std::string file_text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  Check(file_text.find("ISO-10303-21;") == 0, "the file starts with the ISO-10303-21 physical-file header");
+  Check(file_text.find("FILE_SCHEMA(('IFC4'))") != std::string::npos,
+        "the file declares the IFC4 schema in its HEADER section");
+  Check(file_text.find("IFCCARTESIANPOINTLIST3D") != std::string::npos,
+        "the file has an IfcCartesianPointList3D entity");
+  Check(file_text.find("IFCTRIANGULATEDFACESET") != std::string::npos,
+        "the file has an IfcTriangulatedFaceSet entity");
+
+  // Every one of the box's 6 quad faces splits into 2 triangles - count the
+  // "),(" triangle-tuple separators plus 1 between the CoordIndex list's
+  // own opening and closing parens to confirm 12 triangles were written,
+  // not 6 (i.e. that a quad genuinely split rather than one tuple per
+  // face).
+  const size_t faceset_pos = file_text.find("IFCTRIANGULATEDFACESET(#1,$,$,(");
+  Check(faceset_pos != std::string::npos,
+        "CoordIndex follows the documented Coordinates=#1, Normals=$, Closed=$ argument order");
+  const size_t coord_index_start = faceset_pos + std::string("IFCTRIANGULATEDFACESET(#1,$,$,(").size();
+  const size_t coord_index_end = file_text.find("),$);", coord_index_start);
+  Check(coord_index_end != std::string::npos, "CoordIndex's own list is closed before the trailing $ (PnIndex)");
+  const std::string coord_index_text = file_text.substr(coord_index_start, coord_index_end - coord_index_start);
+  size_t triangle_count = coord_index_text.empty() ? 0 : 1;
+  for (size_t pos = coord_index_text.find("),("); pos != std::string::npos;
+       pos = coord_index_text.find("),(", pos + 1)) {
+    ++triangle_count;
+  }
+  Check(triangle_count == static_cast<size_t>(box.FaceCount()) * 2,
+        "CoordIndex holds 2 triangles per quad face - 12 for the box's 6 quads, confirming a quad splits");
+
+  Mesh reloaded;
+  Check(Mesh::LoadIfc(path, reloaded) == Result::Ok, "Mesh::LoadIfc succeeds on SaveIfc()'s own output");
+  Check(reloaded.VertexCount() == box.VertexCount(),
+        "the reloaded mesh has the same vertex count as the original - IfcCartesianPointList3D is a real "
+        "shared vertex list, not duplicated per triangle");
+  Check(reloaded.FaceCount() == box.FaceCount() * 2,
+        "the reloaded mesh has 12 triangles for the original's 6 quads");
+  Check(std::abs(reloaded.Volume() - box.Volume()) < 1e-6,
+        "the reloaded mesh's volume exactly matches the original, within the triangle split");
+  std::remove(path.c_str());
+
+  // A hand-written file (not SaveIfc()'s own output) exercising a parent
+  // wrapping the recognized entities, extra whitespace, and a single
+  // triangle whose known corners let LoadIfc()'s geometry be checked
+  // exactly - the same independent-fixture discipline
+  // TestMeshSaveUsdaRoundTrips()/TestMeshSaveGltfRoundTrips() already use.
+  const std::string hand_written_path = "dino8_kernel_mesh_ifc_test_hand_written.ifc";
+  {
+    std::ofstream out(hand_written_path);
+    out << "ISO-10303-21;\n";
+    out << "HEADER;\n";
+    out << "FILE_DESCRIPTION((''),'2;1');\n";
+    out << "FILE_NAME('t','2026-09-30T00:00:00',(''),(''),'','','');\n";
+    out << "FILE_SCHEMA(('IFC4'));\n";
+    out << "ENDSEC;\n";
+    out << "DATA;\n";
+    out << "#1 = IFCCARTESIANPOINTLIST3D( ( (0., 0., 0.) , (2.,0.,0.), (0., 2., 0.) ) ) ;\n";
+    out << "#2=IFCTRIANGULATEDFACESET(#1,$,$,((1,2,3)),$);\n";
+    out << "ENDSEC;\n";
+    out << "END-ISO-10303-21;\n";
+  }
+  Mesh hand_written;
+  Check(Mesh::LoadIfc(hand_written_path, hand_written) == Result::Ok,
+        "LoadIfc succeeds on a hand-written file with irregular spacing around '='/parens");
+  Check(hand_written.VertexCount() == 3 && hand_written.FaceCount() == 1,
+        "the hand-written file's 3 points and 1 triangle are read correctly");
+  const ON_MeshFace& tri = hand_written.raw().m_F[0];
+  Check(tri.vi[0] == 0 && tri.vi[1] == 1 && tri.vi[2] == 2,
+        "IFC's 1-based CoordIndex (1,2,3) resolved to this kernel's own 0-based corners (0,1,2)");
+  const ON_3fPoint& p0 = hand_written.raw().m_V[0];
+  const ON_3fPoint& p1 = hand_written.raw().m_V[1];
+  const ON_3fPoint& p2 = hand_written.raw().m_V[2];
+  Check(p0.x == 0 && p0.y == 0 && p0.z == 0, "the first point reads back exactly as written");
+  Check(p1.x == 2 && p1.y == 0 && p1.z == 0, "the second point reads back exactly as written");
+  Check(p2.x == 0 && p2.y == 2 && p2.z == 0, "the third point reads back exactly as written");
+  std::remove(hand_written_path.c_str());
+}
+
+void TestMeshLoadIfcRejectsMalformedFiles() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Result;
+
+  const std::string missing_path = "dino8_kernel_mesh_ifc_test_does_not_exist.ifc";
+  Mesh out;
+  Check(Mesh::LoadIfc(missing_path, out) == Result::Failed, "LoadIfc fails on a file that doesn't exist");
+
+  const std::string bad_header_path = "dino8_kernel_mesh_ifc_test_bad_header.ifc";
+  {
+    std::ofstream bad(bad_header_path);
+    bad << "#1=IFCCARTESIANPOINTLIST3D(((0.,0.,0.),(1.,0.,0.),(0.,1.,0.)));\n"
+        << "#2=IFCTRIANGULATEDFACESET(#1,$,$,((1,2,3)),$);\n";
+  }
+  Check(Mesh::LoadIfc(bad_header_path, out) == Result::Failed,
+        "LoadIfc fails on a file with no ISO-10303-21; header line at all");
+
+  const std::string no_points_path = "dino8_kernel_mesh_ifc_test_no_points.ifc";
+  {
+    std::ofstream bad(no_points_path);
+    bad << "ISO-10303-21;\nDATA;\n#2=IFCTRIANGULATEDFACESET(#1,$,$,((1,2,3)),$);\nENDSEC;\n";
+  }
+  Check(Mesh::LoadIfc(no_points_path, out) == Result::Failed,
+        "LoadIfc fails on a file with no IfcCartesianPointList3D entity at all");
+
+  const std::string no_faceset_path = "dino8_kernel_mesh_ifc_test_no_faceset.ifc";
+  {
+    std::ofstream bad(no_faceset_path);
+    bad << "ISO-10303-21;\nDATA;\n#1=IFCCARTESIANPOINTLIST3D(((0.,0.,0.),(1.,0.,0.),(0.,1.,0.)));\nENDSEC;\n";
+  }
+  Check(Mesh::LoadIfc(no_faceset_path, out) == Result::Failed,
+        "LoadIfc fails on a file with no IfcTriangulatedFaceSet entity at all");
+
+  const std::string bad_triple_path = "dino8_kernel_mesh_ifc_test_bad_triple.ifc";
+  {
+    std::ofstream bad(bad_triple_path);
+    // A CoordIndex tuple with only 2 indices instead of 3.
+    bad << "ISO-10303-21;\nDATA;\n#1=IFCCARTESIANPOINTLIST3D(((0.,0.,0.),(1.,0.,0.),(0.,1.,0.)));\n"
+        << "#2=IFCTRIANGULATEDFACESET(#1,$,$,((1,2)),$);\nENDSEC;\n";
+  }
+  Check(Mesh::LoadIfc(bad_triple_path, out) == Result::Failed,
+        "LoadIfc fails on a CoordIndex tuple that isn't exactly 3 integers");
+
+  const std::string zero_index_path = "dino8_kernel_mesh_ifc_test_zero_index.ifc";
+  {
+    std::ofstream bad(zero_index_path);
+    // IFC's CoordIndex is 1-based (IfcPositiveInteger) - 0 is never valid.
+    bad << "ISO-10303-21;\nDATA;\n#1=IFCCARTESIANPOINTLIST3D(((0.,0.,0.),(1.,0.,0.),(0.,1.,0.)));\n"
+        << "#2=IFCTRIANGULATEDFACESET(#1,$,$,((0,1,2)),$);\nENDSEC;\n";
+  }
+  Check(Mesh::LoadIfc(zero_index_path, out) == Result::Failed,
+        "LoadIfc fails on a CoordIndex entry of 0 - IFC indices are 1-based, never 0");
+
+  const std::string oob_index_path = "dino8_kernel_mesh_ifc_test_oob_index.ifc";
+  {
+    std::ofstream bad(oob_index_path);
+    // Only 3 points declared (valid 1-based indices 1-3); index 4 doesn't exist.
+    bad << "ISO-10303-21;\nDATA;\n#1=IFCCARTESIANPOINTLIST3D(((0.,0.,0.),(1.,0.,0.),(0.,1.,0.)));\n"
+        << "#2=IFCTRIANGULATEDFACESET(#1,$,$,((1,2,4)),$);\nENDSEC;\n";
+  }
+  Check(Mesh::LoadIfc(oob_index_path, out) == Result::Failed,
+        "LoadIfc fails on a CoordIndex entry referencing a point index that doesn't exist");
+
+  std::remove(bad_header_path.c_str());
+  std::remove(no_points_path.c_str());
+  std::remove(no_faceset_path.c_str());
+  std::remove(bad_triple_path.c_str());
+  std::remove(zero_index_path.c_str());
   std::remove(oob_index_path.c_str());
 }
 
@@ -59376,7 +59672,9 @@ int main() {
   TestModelAddClippingPlaneRoundTrips();
   TestModelAddInstanceReferenceRoundTrips();
   TestModelAddHatchRoundTrips();
+  TestModelAddHatchPatternLinesRoundTrips();
   TestModelAddTextDotRoundTrips();
+  TestModelAddTextAnnotationRoundTrips();
   TestModelUnitConversionFactor();
   TestModelConvertUnitsScalesGeometryAndUpdatesUnitSystem();
   TestModelLoadRejectsMeshWithOutOfRangeFaceIndex();
@@ -59545,6 +59843,8 @@ int main() {
   TestMeshLoadGltfRejectsMalformedFiles();
   TestMeshSaveGlbRoundTrips();
   TestMeshLoadGlbRejectsMalformedFiles();
+  TestMeshSaveIfcRoundTrips();
+  TestMeshLoadIfcRejectsMalformedFiles();
   TestMeshSaveStlSplitsQuadsAndComputesNormals();
   TestMeshLoadStlRoundTrips();
   TestMeshLoadStlBinary();

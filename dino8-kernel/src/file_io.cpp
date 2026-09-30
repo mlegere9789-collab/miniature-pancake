@@ -759,7 +759,8 @@ InstanceReferenceInfo Model::InstanceReferenceAt(int index) const {
   return result;
 }
 
-int Model::AddHatchPattern(const std::string& name, HatchFillType fill_type) {
+int Model::AddHatchPattern(const std::string& name, HatchFillType fill_type,
+                            const std::vector<HatchPatternLine>& lines) {
   if (name.empty()) {
     return -1;
   }
@@ -767,6 +768,15 @@ int Model::AddHatchPattern(const std::string& name, HatchFillType fill_type) {
   pattern.SetName(ON_wString(name.c_str()));
   pattern.SetFillType(fill_type == HatchFillType::Lines ? ON_HatchPattern::HatchFillType::Lines
                                                          : ON_HatchPattern::HatchFillType::Solid);
+  for (const HatchPatternLine& line : lines) {
+    ON_SimpleArray<double> dash_array;
+    for (double dash : line.dashes) {
+      dash_array.Append(dash);
+    }
+    const ON_HatchLine hatch_line(line.angle_radians, ON_2dPoint(line.base.x, line.base.y),
+                                   ON_2dVector(line.offset.x, line.offset.y), dash_array);
+    pattern.AddHatchLine(hatch_line);
+  }
   const ON_ModelComponentReference pattern_ref = model_.AddModelComponent(pattern, true);
   const ON_HatchPattern* managed_pattern = ON_HatchPattern::FromModelComponentRef(pattern_ref, nullptr);
   return managed_pattern != nullptr ? managed_pattern->Index() : -1;
@@ -774,6 +784,42 @@ int Model::AddHatchPattern(const std::string& name, HatchFillType fill_type) {
 
 int Model::HatchPatternCount() const {
   return static_cast<int>(model_.ActiveComponentCount(ON_ModelComponent::Type::HatchPattern));
+}
+
+int Model::HatchPatternLineCount(int pattern_index) const {
+  if (pattern_index < 0) {
+    return 0;
+  }
+  const ON_ModelComponentReference pattern_ref =
+      model_.ComponentFromIndex(ON_ModelComponent::Type::HatchPattern, pattern_index);
+  const ON_HatchPattern* pattern = ON_HatchPattern::Cast(pattern_ref.ModelComponent());
+  return pattern != nullptr ? pattern->HatchLineCount() : 0;
+}
+
+HatchPatternLine Model::HatchPatternLineAt(int pattern_index, int line_index) const {
+  HatchPatternLine result;
+  if (pattern_index < 0 || line_index < 0) {
+    return result;
+  }
+  const ON_ModelComponentReference pattern_ref =
+      model_.ComponentFromIndex(ON_ModelComponent::Type::HatchPattern, pattern_index);
+  const ON_HatchPattern* pattern = ON_HatchPattern::Cast(pattern_ref.ModelComponent());
+  if (pattern == nullptr) {
+    return result;
+  }
+  const ON_HatchLine* line = pattern->HatchLine(line_index);
+  if (line == nullptr) {
+    return result;
+  }
+  result.angle_radians = line->AngleRadians();
+  const ON_2dPoint base = line->Base();
+  result.base = Point2d(base.x, base.y);
+  const ON_2dVector offset = line->Offset();
+  result.offset = Point2d(offset.x, offset.y);
+  for (int i = 0; i < line->DashCount(); ++i) {
+    result.dashes.push_back(line->Dash(i));
+  }
+  return result;
 }
 
 int Model::AddHatch(const ON_Plane& plane, const std::vector<Point2d>& boundary, int pattern_index,
@@ -923,6 +969,66 @@ TextDotInfo Model::TextDotAt(int text_dot_index) const {
       result.center = dot->CenterPoint();
       result.primary_text = ToStdString(ON_wString(dot->PrimaryText()));
       result.secondary_text = ToStdString(ON_wString(dot->SecondaryText()));
+      return result;
+    }
+    ++position;
+  }
+  return result;
+}
+
+int Model::AddText(const std::string& text, const ON_Plane& plane, const std::string& name, int layer_index,
+                    std::optional<Color> render_color, const UserStrings& user_strings,
+                    std::optional<int> linetype_index, const std::vector<int>& group_indices,
+                    std::optional<int> material_index) {
+  if (name.empty() || text.empty() || !plane.IsValid()) {
+    return -1;
+  }
+  auto* annotation = new ON_Text();
+  if (!annotation->Create(ON_wString(text.c_str()), &ON_DimStyle::Default, plane)) {
+    delete annotation;
+    return -1;
+  }
+  const int index = TextCount();
+  ON_3dmObjectAttributes attributes = MakeAttributes(
+      name, layer_index, render_color, user_strings, linetype_index, group_indices, material_index);
+  model_.AddModelGeometryComponent(annotation, &attributes);
+  return index;
+}
+
+int Model::TextCount() const {
+  int count = 0;
+  ONX_ModelComponentIterator iterator(model_, ON_ModelComponent::Type::ModelGeometry);
+  for (const ON_ModelComponent* component = iterator.FirstComponent(); component != nullptr;
+       component = iterator.NextComponent()) {
+    const auto* geometry_component = static_cast<const ON_ModelGeometryComponent*>(component);
+    if (ON_Text::Cast(geometry_component->Geometry(nullptr)) != nullptr) {
+      ++count;
+    }
+  }
+  return count;
+}
+
+TextAnnotationInfo Model::TextAt(int text_index) const {
+  TextAnnotationInfo result;
+  if (text_index < 0) {
+    return result;
+  }
+  int position = 0;
+  ONX_ModelComponentIterator iterator(model_, ON_ModelComponent::Type::ModelGeometry);
+  for (const ON_ModelComponent* component = iterator.FirstComponent(); component != nullptr;
+       component = iterator.NextComponent()) {
+    const auto* geometry_component = static_cast<const ON_ModelGeometryComponent*>(component);
+    const ON_Text* annotation = ON_Text::Cast(geometry_component->Geometry(nullptr));
+    if (annotation == nullptr) {
+      continue;
+    }
+    if (position == text_index) {
+      const ON_3dmObjectAttributes* attributes = geometry_component->Attributes(nullptr);
+      if (attributes != nullptr) {
+        result.name = ToStdString(attributes->Name());
+      }
+      result.text = ToStdString(annotation->PlainText());
+      result.plane = annotation->Plane();
       return result;
     }
     ++position;

@@ -1166,6 +1166,62 @@ class Mesh {
   // silently trusted.
   static Result LoadGlb(const std::string& path, Mesh& out_mesh);
 
+  // Writes this mesh as a plain-ASCII IFC4 (Industry Foundation Classes,
+  // ISO 16739-1) file in STEP Part 21 physical-file syntax (ISO 10303-21) -
+  // IFC's own physical file format literally IS ISO 10303-21 with an IFC
+  // EXPRESS schema instead of an AP203/214/242 one, the same textual
+  // encoding STEP itself uses. Before this, PARITY_MAP.md's own "kernel:
+  // Kernel-level data exchange" evidence named IFC as fully missing: "zero
+  // hits for IFC in dino8-app/src or dino8-kernel/src". Writes the minimal
+  // ISO-10303-21 HEADER section (FILE_DESCRIPTION/FILE_NAME/
+  // FILE_SCHEMA(('IFC4'))) plus a DATA section holding exactly two
+  // entities: an `IFCCARTESIANPOINTLIST3D` (one (x, y, z) triple per
+  // vertex - IFC4's own flat point-list representation, the same shared-
+  // vertex-list shape `SaveAmf()`/`SaveCollada()` already use, unlike
+  // .stl's unshared-per-triangle one) and an `IFCTRIANGULATEDFACESET`
+  // referencing it (`Coordinates`, `Normals` unset, `Closed` unset,
+  // `CoordIndex` - a LIST of 1-based, per STEP's own IfcPositiveInteger
+  // convention (unlike this kernel's own 0-based ON_MeshFace::vi) -
+  // triangle index triples, `PnIndex` unset). Unlike OFF/PLY/VRML/X3D/
+  // Collada/USD above, `IfcTriangulatedFaceSet.CoordIndex` has no native
+  // quad or n-gon at all (its own EXPRESS definition fixes it at
+  // `LIST [3:3]`), so a quad face (`ON_MeshFace::IsQuad()`) is split into
+  // its two triangles on write, the same accommodation `SaveStl()`/
+  // `SaveAmf()`/`SaveGltf()` already make for the identical reason. Returns
+  // Result::Failed if the file can't be opened for writing; does not
+  // validate the mesh's own geometry (an empty mesh writes a valid, empty
+  // `IfcTriangulatedFaceSet`).
+  Result SaveIfc(const std::string& path) const;
+
+  // Reads a plain-ASCII IFC `.ifc` file written by SaveIfc() (or any other
+  // reasonably well-formed IFC4 file built from a single
+  // `IfcCartesianPointList3D` + `IfcTriangulatedFaceSet` pair) into
+  // `out_mesh`. This is a deliberately narrow, hand-rolled scan for exactly
+  // this structure - not a general STEP/IFC/EXPRESS parser (no entity
+  // cross-reference resolution, no other IFC entity type, no other IFC
+  // schema version understood at all) - so it requires an `ISO-10303-21;`
+  // header line (the same "no variant/other-format file silently misread"
+  // stance `LoadVrml()`'s own `#VRML` check already takes), then reads only
+  // the FIRST `IFCCARTESIANPOINTLIST3D(...)` and FIRST
+  // `IFCTRIANGULATEDFACESET(...)` found anywhere in the file - a second
+  // instance of either, or the `#`-numbered cross-reference the real STEP
+  // `Coordinates` attribute uses to point at a particular one, is not
+  // resolved at all, the same "first one found wins" convention
+  // `LoadAmf()`/`LoadVrml()`/`LoadCollada()`/`LoadX3d()`/`LoadUsda()`
+  // already use for a second sibling element. Every `CoordIndex` triple is
+  // read as a native triangle (this entity's own `LIST [3:3]` shape leaves
+  // no n-gon or quad case to fan-triangulate, unlike every text format
+  // above), each 1-based index converted back to this kernel's own 0-based
+  // `ON_MeshFace::vi`. Returns Result::Failed if the file can't be opened,
+  // it has no `ISO-10303-21;` header, either required entity is missing,
+  // `Coordinates` isn't a whole number of `(x, y, z)` triples, a
+  // `CoordIndex` entry isn't exactly 3 integers, any index is below 1 or
+  // exceeds the point list's own count, or the `IFCTRIANGULATEDFACESET(...)`
+  // call has fewer than 4 top-level arguments (`Coordinates`, `Normals`,
+  // `Closed`, `CoordIndex`) - `out_mesh` is left unspecified in that case,
+  // not partially filled and silently trusted.
+  static Result LoadIfc(const std::string& path, Mesh& out_mesh);
+
   const ON_Mesh& raw() const { return mesh_; }
   ON_Mesh& raw() { return mesh_; }
 
