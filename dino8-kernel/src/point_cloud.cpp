@@ -415,4 +415,199 @@ Result PointCloud::LoadPcd(const std::string& path, PointCloud& out_cloud) {
   return Result::Ok;
 }
 
+namespace {
+
+// Writes one little-endian scalar - LAS is always little-endian, unlike
+// SavePly()'s own big_endian-toggle WriteBinaryScalar() in mesh.cpp (not
+// shared across translation units, the same "each file's own narrow
+// helpers" convention this kernel already has, e.g. LoadAmf()'s tag-scan
+// helpers vs. LoadX3d()'s own attribute-scan helpers).
+template <typename T>
+void WriteLasScalar(std::ostream& out, T value) {
+  char buf[sizeof(T)];
+  std::memcpy(buf, &value, sizeof(T));
+  out.write(buf, sizeof(T));
+}
+
+// Reads one little-endian scalar; returns false (leaving `out_value`
+// untouched) on a short read, so callers can detect a truncated file
+// exactly the way every other read helper in this kernel already does.
+template <typename T>
+bool ReadLasScalar(std::istream& in, T& out_value) {
+  char buf[sizeof(T)];
+  in.read(buf, sizeof(T));
+  if (!in) return false;
+  std::memcpy(&out_value, buf, sizeof(T));
+  return true;
+}
+
+// Writes exactly `width` bytes: `text` truncated/null-padded to fit - the
+// LAS header's own fixed-width System Identifier/Generating Software
+// fields, which are ASCII, null-terminated if shorter than the field, and
+// unspecified-but-conventionally-null past that (never garbage), the same
+// null-padding convention SaveGltf()'s own fixed-size buffers already use.
+void WriteLasFixedString(std::ostream& out, const std::string& text, size_t width) {
+  std::vector<char> buf(width, '\0');
+  std::memcpy(buf.data(), text.data(), std::min(text.size(), width));
+  out.write(buf.data(), static_cast<std::streamsize>(width));
+}
+
+constexpr double kLasScale = 0.001;
+constexpr int kLasHeaderSize = 227;
+constexpr uint8_t kLasFormatPositionOnly = 0;
+constexpr uint8_t kLasFormatWithColor = 2;
+constexpr uint16_t kLasRecordLengthPositionOnly = 20;
+constexpr uint16_t kLasRecordLengthWithColor = 26;
+
+}  // namespace
+
+Result PointCloud::SaveLas(const std::string& path) const {
+  const int n = PointCount();
+  if (n == 0) return Result::Failed;  // no bounding box/offset to derive from zero points
+
+  std::ofstream out(path, std::ios::binary);
+  if (!out) return Result::Failed;
+
+  const BoundingBox bbox = GetBoundingBox();
+  const bool has_colors = HasColors();
+  const uint8_t format = has_colors ? kLasFormatWithColor : kLasFormatPositionOnly;
+  const uint16_t record_length = has_colors ? kLasRecordLengthWithColor : kLasRecordLengthPositionOnly;
+
+  // Public Header Block (LAS 1.2, exactly 227 bytes).
+  out.write("LASF", 4);
+  WriteLasScalar<uint16_t>(out, 0);  // File Source ID
+  WriteLasScalar<uint16_t>(out, 0);  // Global Encoding
+  WriteLasScalar<uint32_t>(out, 0);  // Project ID GUID data 1
+  WriteLasScalar<uint16_t>(out, 0);  // Project ID GUID data 2
+  WriteLasScalar<uint16_t>(out, 0);  // Project ID GUID data 3
+  for (int i = 0; i < 8; ++i) WriteLasScalar<uint8_t>(out, 0);  // Project ID GUID data 4
+  WriteLasScalar<uint8_t>(out, 1);  // Version Major
+  WriteLasScalar<uint8_t>(out, 2);  // Version Minor
+  WriteLasFixedString(out, "dino8-kernel", 32);  // System Identifier
+  WriteLasFixedString(out, "dino8-kernel", 32);  // Generating Software
+  WriteLasScalar<uint16_t>(out, 0);  // File Creation Day of Year
+  WriteLasScalar<uint16_t>(out, 0);  // File Creation Year
+  WriteLasScalar<uint16_t>(out, kLasHeaderSize);  // Header Size
+  WriteLasScalar<uint32_t>(out, static_cast<uint32_t>(kLasHeaderSize));  // Offset to point data (no VLRs)
+  WriteLasScalar<uint32_t>(out, 0);  // Number of Variable Length Records
+  WriteLasScalar<uint8_t>(out, format);
+  WriteLasScalar<uint16_t>(out, record_length);
+  WriteLasScalar<uint32_t>(out, static_cast<uint32_t>(n));  // Number of point records (legacy)
+  WriteLasScalar<uint32_t>(out, static_cast<uint32_t>(n));  // Number of points by return[0]
+  for (int i = 0; i < 4; ++i) WriteLasScalar<uint32_t>(out, 0);  // by return[1..4]
+  WriteLasScalar<double>(out, kLasScale);  // X scale factor
+  WriteLasScalar<double>(out, kLasScale);  // Y scale factor
+  WriteLasScalar<double>(out, kLasScale);  // Z scale factor
+  WriteLasScalar<double>(out, bbox.min.x);  // X offset
+  WriteLasScalar<double>(out, bbox.min.y);  // Y offset
+  WriteLasScalar<double>(out, bbox.min.z);  // Z offset
+  WriteLasScalar<double>(out, bbox.max.x);
+  WriteLasScalar<double>(out, bbox.min.x);
+  WriteLasScalar<double>(out, bbox.max.y);
+  WriteLasScalar<double>(out, bbox.min.y);
+  WriteLasScalar<double>(out, bbox.max.z);
+  WriteLasScalar<double>(out, bbox.min.z);
+
+  for (int i = 0; i < n; ++i) {
+    const Point3d p = PointAt(i);
+    WriteLasScalar<int32_t>(out, static_cast<int32_t>(std::llround((p.x - bbox.min.x) / kLasScale)));
+    WriteLasScalar<int32_t>(out, static_cast<int32_t>(std::llround((p.y - bbox.min.y) / kLasScale)));
+    WriteLasScalar<int32_t>(out, static_cast<int32_t>(std::llround((p.z - bbox.min.z) / kLasScale)));
+    WriteLasScalar<uint16_t>(out, 0);  // Intensity
+    // Return Number = 1 (bits 0-2) and Number of Returns = 1 (bits 3-5):
+    // every point in this kernel is its own single, first-and-only return
+    // (there is no multi-return scan data to source real values from) -
+    // encoded as 1 | (1 << 3) = 9, not left at the semantically-invalid
+    // "0 returns" a plain 1 would claim.
+    WriteLasScalar<uint8_t>(out, 0x09);
+    WriteLasScalar<uint8_t>(out, 0);   // Classification
+    WriteLasScalar<int8_t>(out, 0);    // Scan Angle Rank
+    WriteLasScalar<uint8_t>(out, 0);   // User Data
+    WriteLasScalar<uint16_t>(out, 0);  // Point Source ID
+    if (has_colors) {
+      const ON_Color c = ColorAt(i);
+      WriteLasScalar<uint16_t>(out, static_cast<uint16_t>(c.Red() * 257));
+      WriteLasScalar<uint16_t>(out, static_cast<uint16_t>(c.Green() * 257));
+      WriteLasScalar<uint16_t>(out, static_cast<uint16_t>(c.Blue() * 257));
+    }
+  }
+
+  out.flush();
+  return out.good() ? Result::Ok : Result::Failed;
+}
+
+Result PointCloud::LoadLas(const std::string& path, PointCloud& out_cloud) {
+  std::ifstream in(path, std::ios::binary);
+  if (!in) return Result::Failed;
+
+  char signature[4];
+  in.read(signature, 4);
+  if (!in || std::memcmp(signature, "LASF", 4) != 0) return Result::Failed;
+
+  in.seekg(24);  // Version Major, right after the 20-byte Project ID GUID
+  uint8_t version_major = 0, version_minor = 0;
+  if (!ReadLasScalar(in, version_major) || !ReadLasScalar(in, version_minor)) return Result::Failed;
+  if (version_major != 1 || version_minor != 2) return Result::Failed;
+
+  in.seekg(94);  // Header Size
+  uint16_t header_size = 0;
+  uint32_t offset_to_point_data = 0, num_vlr = 0;
+  uint8_t format = 0;
+  uint16_t record_length = 0;
+  uint32_t num_points = 0;
+  if (!ReadLasScalar(in, header_size) || header_size != kLasHeaderSize) return Result::Failed;
+  if (!ReadLasScalar(in, offset_to_point_data) ||
+      offset_to_point_data != static_cast<uint32_t>(kLasHeaderSize)) {
+    return Result::Failed;
+  }
+  if (!ReadLasScalar(in, num_vlr) || num_vlr != 0) return Result::Failed;  // VLRs: out of scope
+  if (!ReadLasScalar(in, format)) return Result::Failed;
+  if (format != kLasFormatPositionOnly && format != kLasFormatWithColor) return Result::Failed;
+  if (!ReadLasScalar(in, record_length)) return Result::Failed;
+  const uint16_t expected_length =
+      format == kLasFormatWithColor ? kLasRecordLengthWithColor : kLasRecordLengthPositionOnly;
+  if (record_length != expected_length) return Result::Failed;
+  if (!ReadLasScalar(in, num_points)) return Result::Failed;
+
+  in.seekg(131);  // X/Y/Z scale factor, then X/Y/Z offset
+  double scale_x = 0, scale_y = 0, scale_z = 0, offset_x = 0, offset_y = 0, offset_z = 0;
+  if (!ReadLasScalar(in, scale_x) || !ReadLasScalar(in, scale_y) || !ReadLasScalar(in, scale_z) ||
+      !ReadLasScalar(in, offset_x) || !ReadLasScalar(in, offset_y) || !ReadLasScalar(in, offset_z)) {
+    return Result::Failed;
+  }
+
+  in.seekg(kLasHeaderSize);
+  if (!in) return Result::Failed;
+
+  std::vector<std::array<double, 3>> positions;
+  std::vector<ON_Color> colors;
+  positions.reserve(num_points);
+  if (format == kLasFormatWithColor) colors.reserve(num_points);
+
+  for (uint32_t i = 0; i < num_points; ++i) {
+    int32_t x = 0, y = 0, z = 0;
+    uint16_t intensity = 0, point_source_id = 0;
+    uint8_t flags = 0, classification = 0, user_data = 0;
+    int8_t scan_angle = 0;
+    if (!ReadLasScalar(in, x) || !ReadLasScalar(in, y) || !ReadLasScalar(in, z) ||
+        !ReadLasScalar(in, intensity) || !ReadLasScalar(in, flags) ||
+        !ReadLasScalar(in, classification) || !ReadLasScalar(in, scan_angle) ||
+        !ReadLasScalar(in, user_data) || !ReadLasScalar(in, point_source_id)) {
+      return Result::Failed;
+    }
+    positions.push_back({offset_x + x * scale_x, offset_y + y * scale_y, offset_z + z * scale_z});
+    if (format == kLasFormatWithColor) {
+      uint16_t r = 0, g = 0, b = 0;
+      if (!ReadLasScalar(in, r) || !ReadLasScalar(in, g) || !ReadLasScalar(in, b)) return Result::Failed;
+      colors.push_back(ON_Color(r / 257, g / 257, b / 257));
+    }
+  }
+
+  PointCloud cloud;
+  for (const auto& p : positions) cloud.AppendPoint(Point3d(p[0], p[1], p[2]));
+  if (!colors.empty()) cloud.SetColors(colors);
+  out_cloud = std::move(cloud);
+  return Result::Ok;
+}
+
 }  // namespace dino8::kernel

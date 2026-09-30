@@ -16387,6 +16387,216 @@ void TestPointCloudLoadPcdRejectsMalformedInput() {
   }
 }
 
+void TestPointCloudLasRoundTrips() {
+  using dino8::kernel::Point3d;
+  using dino8::kernel::PointCloud;
+  using dino8::kernel::Result;
+
+  // Positions only - Point Data Format 0.
+  {
+    PointCloud cloud;
+    cloud.AppendPoint(Point3d(0, 0, 0));
+    cloud.AppendPoint(Point3d(1.5, -2.25, 3.125));
+    cloud.AppendPoint(Point3d(-10, 20, -30));
+    Check(!cloud.HasColors(), "fixture: cloud has no colors");
+
+    const std::string path = "dino8_kernel_point_cloud_las_positions_test.las";
+    Check(cloud.SaveLas(path) == Result::Ok, "SaveLas() succeeds for a positions-only cloud");
+
+    PointCloud loaded;
+    Check(PointCloud::LoadLas(path, loaded) == Result::Ok, "LoadLas() succeeds");
+    Check(loaded.PointCount() == cloud.PointCount(), "loaded point count matches (3)");
+    Check(!loaded.HasColors(), "loaded cloud has no colors - Format 0 has no RGB fields");
+    for (int i = 0; i < cloud.PointCount(); ++i) {
+      // Quantized to the writer's own 0.001 scale factor - see SaveLas()'s
+      // own doc comment - so the round trip is exact only to within half
+      // that scale (0.0005), not bit-for-bit.
+      Check(loaded.PointAt(i).DistanceTo(cloud.PointAt(i)) < 0.0005 * std::sqrt(3.0) + 1e-9,
+            "round-tripped position matches within the format's own quantization");
+    }
+    std::remove(path.c_str());
+  }
+
+  // Positions + colors - Point Data Format 2, exercising the exact
+  // *257/-257 RGB scaling.
+  {
+    PointCloud cloud;
+    cloud.AppendPoint(Point3d(1, 2, 3));
+    cloud.AppendPoint(Point3d(-4, 5, -6));
+    cloud.AppendPoint(Point3d(100, 200, 300));
+    cloud.SetColors({ON_Color(255, 0, 0), ON_Color(10, 200, 30), ON_Color(0, 0, 0)});
+
+    const std::string path = "dino8_kernel_point_cloud_las_colors_test.las";
+    Check(cloud.SaveLas(path) == Result::Ok, "SaveLas() succeeds for a cloud with colors");
+
+    PointCloud loaded;
+    Check(PointCloud::LoadLas(path, loaded) == Result::Ok, "LoadLas() succeeds");
+    Check(loaded.HasColors(), "loaded cloud has colors - Format 2 carries RGB");
+    for (int i = 0; i < cloud.PointCount(); ++i) {
+      Check(loaded.PointAt(i).DistanceTo(cloud.PointAt(i)) < 0.0005 * std::sqrt(3.0) + 1e-9,
+            "round-tripped position matches within the format's own quantization");
+      Check(loaded.ColorAt(i) == cloud.ColorAt(i),
+            "round-tripped color matches exactly - the *257 scaling has no remainder to lose");
+    }
+    std::remove(path.c_str());
+  }
+
+  // SaveLas() rejects an empty cloud (no bounding box/offset to derive).
+  {
+    PointCloud cloud;
+    const std::string path = "dino8_kernel_point_cloud_las_empty_test.las";
+    Check(cloud.SaveLas(path) == Result::Failed, "SaveLas() fails on an empty cloud");
+    std::remove(path.c_str());
+  }
+}
+
+// Malformed/unsupported LAS input is rejected outright (Result::Failed).
+void TestPointCloudLoadLasRejectsMalformedInput() {
+  using dino8::kernel::Point3d;
+  using dino8::kernel::PointCloud;
+  using dino8::kernel::Result;
+
+  {
+    PointCloud loaded;
+    Check(PointCloud::LoadLas("dino8_kernel_point_cloud_las_nonexistent.las", loaded) == Result::Failed,
+          "LoadLas() fails on a file that doesn't exist");
+  }
+
+  // Control: a genuinely well-formed file (SaveLas()'s own output) loads.
+  {
+    PointCloud cloud;
+    cloud.AppendPoint(Point3d(1, 2, 3));
+    cloud.AppendPoint(Point3d(4, 5, 6));
+    const std::string path = "dino8_kernel_point_cloud_las_control_test.las";
+    Check(cloud.SaveLas(path) == Result::Ok, "control: SaveLas() succeeds");
+    PointCloud loaded;
+    Check(PointCloud::LoadLas(path, loaded) == Result::Ok, "control: a well-formed file loads fine");
+    Check(loaded.PointCount() == 2, "control: loaded the expected 2 points");
+    std::remove(path.c_str());
+  }
+
+  // Wrong file signature.
+  {
+    const std::string path = "dino8_kernel_point_cloud_las_bad_signature_test.las";
+    std::ofstream out(path, std::ios::binary);
+    out.write("XXXX", 4);
+    out.close();
+    PointCloud loaded;
+    Check(PointCloud::LoadLas(path, loaded) == Result::Failed,
+          "LoadLas() fails on a file with the wrong 4-byte signature");
+    std::remove(path.c_str());
+  }
+
+  // A file too short to even hold the signature + version bytes.
+  {
+    const std::string path = "dino8_kernel_point_cloud_las_truncated_header_test.las";
+    std::ofstream out(path, std::ios::binary);
+    out.write("LASF", 4);
+    out.close();
+    PointCloud loaded;
+    Check(PointCloud::LoadLas(path, loaded) == Result::Failed,
+          "LoadLas() fails on a file truncated before the version bytes");
+    std::remove(path.c_str());
+  }
+
+  // Wrong version (this reader only understands LAS 1.2).
+  {
+    PointCloud cloud;
+    cloud.AppendPoint(Point3d(1, 2, 3));
+    const std::string path = "dino8_kernel_point_cloud_las_wrong_version_test.las";
+    Check(cloud.SaveLas(path) == Result::Ok, "fixture: SaveLas() succeeds");
+    {
+      std::fstream f(path, std::ios::binary | std::ios::in | std::ios::out);
+      f.seekp(25);  // Version Minor
+      const uint8_t minor = 4;
+      f.write(reinterpret_cast<const char*>(&minor), 1);
+    }
+    PointCloud loaded;
+    Check(PointCloud::LoadLas(path, loaded) == Result::Failed,
+          "LoadLas() fails on a LAS version other than 1.2 (e.g. 1.4)");
+    std::remove(path.c_str());
+  }
+
+  // An unsupported Point Data Format ID (e.g. 1 - position + GPS time).
+  {
+    PointCloud cloud;
+    cloud.AppendPoint(Point3d(1, 2, 3));
+    const std::string path = "dino8_kernel_point_cloud_las_bad_format_test.las";
+    Check(cloud.SaveLas(path) == Result::Ok, "fixture: SaveLas() succeeds");
+    {
+      std::fstream f(path, std::ios::binary | std::ios::in | std::ios::out);
+      f.seekp(104);  // Point Data Format ID
+      const uint8_t format = 1;
+      f.write(reinterpret_cast<const char*>(&format), 1);
+    }
+    PointCloud loaded;
+    Check(PointCloud::LoadLas(path, loaded) == Result::Failed,
+          "LoadLas() fails on an unsupported Point Data Format ID (1)");
+    std::remove(path.c_str());
+  }
+
+  // Record length in the header doesn't match the declared format.
+  {
+    PointCloud cloud;
+    cloud.AppendPoint(Point3d(1, 2, 3));
+    const std::string path = "dino8_kernel_point_cloud_las_bad_record_length_test.las";
+    Check(cloud.SaveLas(path) == Result::Ok, "fixture: SaveLas() succeeds");
+    {
+      std::fstream f(path, std::ios::binary | std::ios::in | std::ios::out);
+      f.seekp(105);  // Point Data Record Length
+      const uint16_t bad_length = 26;  // Format 0 declared with Format 2's own length
+      f.write(reinterpret_cast<const char*>(&bad_length), sizeof(bad_length));
+    }
+    PointCloud loaded;
+    Check(PointCloud::LoadLas(path, loaded) == Result::Failed,
+          "LoadLas() fails when the record length doesn't match Format 0's own 20 bytes");
+    std::remove(path.c_str());
+  }
+
+  // A Variable Length Record count other than 0 - out of scope.
+  {
+    PointCloud cloud;
+    cloud.AppendPoint(Point3d(1, 2, 3));
+    const std::string path = "dino8_kernel_point_cloud_las_with_vlr_test.las";
+    Check(cloud.SaveLas(path) == Result::Ok, "fixture: SaveLas() succeeds");
+    {
+      std::fstream f(path, std::ios::binary | std::ios::in | std::ios::out);
+      f.seekp(100);  // Number of Variable Length Records
+      const uint32_t vlr_count = 1;
+      f.write(reinterpret_cast<const char*>(&vlr_count), sizeof(vlr_count));
+    }
+    PointCloud loaded;
+    Check(PointCloud::LoadLas(path, loaded) == Result::Failed,
+          "LoadLas() fails when the header declares a Variable Length Record - out of scope");
+    std::remove(path.c_str());
+  }
+
+  // File truncated before all of its own declared point records.
+  {
+    PointCloud cloud;
+    cloud.AppendPoint(Point3d(1, 2, 3));
+    cloud.AppendPoint(Point3d(4, 5, 6));
+    cloud.AppendPoint(Point3d(7, 8, 9));
+    const std::string path = "dino8_kernel_point_cloud_las_truncated_points_test.las";
+    Check(cloud.SaveLas(path) == Result::Ok, "fixture: SaveLas() succeeds");
+    {
+      std::ifstream in(path, std::ios::binary | std::ios::ate);
+      const std::streamsize full_size = in.tellg();
+      in.close();
+      std::vector<char> bytes(static_cast<size_t>(full_size));
+      std::ifstream in2(path, std::ios::binary);
+      in2.read(bytes.data(), full_size);
+      in2.close();
+      std::ofstream out(path, std::ios::binary | std::ios::trunc);
+      out.write(bytes.data(), full_size - 5);  // chop off the last record's own tail
+    }
+    PointCloud loaded;
+    Check(PointCloud::LoadLas(path, loaded) == Result::Failed,
+          "LoadLas() fails on a file truncated before all of its own declared point records");
+    std::remove(path.c_str());
+  }
+}
+
 void TestMeshAreaCountsBothQuadTriangles() {
   using dino8::kernel::Mesh;
 
@@ -54168,6 +54378,8 @@ int main() {
   TestPointCloudLoadPtsRejectsMalformedInput();
   TestPointCloudPcdRoundTrips();
   TestPointCloudLoadPcdRejectsMalformedInput();
+  TestPointCloudLasRoundTrips();
+  TestPointCloudLoadLasRejectsMalformedInput();
   TestMeshAreaCountsBothQuadTriangles();
   TestSubDFromBoxSubdividesToExactCatmullClarkCounts();
   TestSubDFromControlMeshRejectsEmptyMesh();
