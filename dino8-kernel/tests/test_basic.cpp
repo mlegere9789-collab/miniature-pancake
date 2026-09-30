@@ -10058,6 +10058,247 @@ void TestBrepCheckDetectsAndSplitNonManifoldEdgeHeals() {
   Check(threw_deleted, "edge_index 0 marked deleted (m_edge_index < 0) throws std::invalid_argument");
 }
 
+// The exact mirror of NonManifoldEdgeFixture/BuildNonManifoldEdgeBook()
+// above, but built with 3 completely SEPARATE per-page spine
+// vertices/edge instead of one pre-shared edge record: same 3-page
+// "book" shape, same coincident spine location (0,0,0)-(0,0,1)), same
+// per-page bRev3d convention, but nothing is welded yet - so
+// JoinNonManifoldEdge() below has genuine work to do, rather than
+// starting from a Brep that already has the non-manifold edge built in.
+struct DisjointNonManifoldEdgeFixture {
+  dino8::kernel::Brep brep;
+  std::array<int, 3> spine_edge_indices{};
+  std::array<int, 3> face_indices{};
+  // One arbitrary non-spine (outer) side edge per page - naked, but
+  // nowhere near the spine, for the "two naked edges that simply don't
+  // coincide" refusal tests below.
+  std::array<int, 3> far_side_edge_indices{};
+};
+
+DisjointNonManifoldEdgeFixture BuildDisjointNonManifoldEdgeBook() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point2d;
+  using dino8::kernel::Point3d;
+
+  DisjointNonManifoldEdgeFixture fixture;
+  ON_Brep& b = fixture.brep.raw();
+
+  const bool shared_rev[3] = {false, true, false};
+
+  for (int i = 0; i < 3; ++i) {
+    const double theta = i * (2.0 * M_PI / 3.0);
+    const Point3d outer_bottom(std::cos(theta), std::sin(theta), 0.0);
+    const Point3d outer_top(std::cos(theta), std::sin(theta), 1.0);
+
+    const int v_bottom = b.NewVertex(Point3d(0, 0, 0), 0.0).m_vertex_index;
+    const int v_top = b.NewVertex(Point3d(0, 0, 1), 0.0).m_vertex_index;
+    const int vob = b.NewVertex(outer_bottom, 0.0).m_vertex_index;
+    const int vot = b.NewVertex(outer_top, 0.0).m_vertex_index;
+
+    const std::vector<Point3d> grid = {b.m_V[v_bottom].point, b.m_V[v_top].point, outer_bottom, outer_top};
+    const NurbsSurface surface = NurbsSurface::FromControlGrid(grid, /*u_count=*/2, /*v_count=*/2,
+                                                                /*u_degree=*/1, /*v_degree=*/1);
+    auto* surface_copy = new ON_NurbsSurface(surface.raw());
+    const int surface_index = b.AddSurface(surface_copy);
+    const int face_index = b.NewFace(surface_index).m_face_index;
+    fixture.face_indices[static_cast<size_t>(i)] = face_index;
+
+    const int loop_index = b.NewLoop(ON_BrepLoop::outer, b.m_F[face_index]).m_loop_index;
+
+    auto add_side = [&](int va, int vb, Point2d uv_a, Point2d uv_b) {
+      const int c3i = b.AddEdgeCurve(new ON_LineCurve(b.m_V[va].point, b.m_V[vb].point));
+      const int edge_index = b.NewEdge(b.m_V[va], b.m_V[vb], c3i).m_edge_index;
+      b.m_E[edge_index].m_tolerance = 0.0;
+      const int c2i = b.AddTrimCurve(new ON_LineCurve(uv_a, uv_b));
+      ON_BrepTrim& trim = b.NewTrim(b.m_E[edge_index], /*bRev3d=*/false, b.m_L[loop_index], c2i);
+      trim.m_tolerance[0] = trim.m_tolerance[1] = 0.0;
+      return edge_index;
+    };
+
+    // This page's own PRIVATE spine edge - built exactly like add_side()
+    // above builds every other side, unlike BuildNonManifoldEdgeBook(),
+    // which reuses one pre-shared edge record across all 3 pages.
+    {
+      const int c3i = b.AddEdgeCurve(new ON_LineCurve(b.m_V[v_bottom].point, b.m_V[v_top].point));
+      const int spine_edge = b.NewEdge(b.m_V[v_bottom], b.m_V[v_top], c3i).m_edge_index;
+      b.m_E[spine_edge].m_tolerance = 0.0;
+      const int c2i = b.AddTrimCurve(new ON_LineCurve(Point2d(0, 0), Point2d(0, 1)));
+      ON_BrepTrim& trim = b.NewTrim(b.m_E[spine_edge], shared_rev[static_cast<size_t>(i)], b.m_L[loop_index], c2i);
+      trim.m_tolerance[0] = trim.m_tolerance[1] = 0.0;
+      fixture.spine_edge_indices[static_cast<size_t>(i)] = spine_edge;
+    }
+    fixture.far_side_edge_indices[static_cast<size_t>(i)] = add_side(v_top, vot, Point2d(0, 1), Point2d(1, 1));
+    add_side(vot, vob, Point2d(1, 1), Point2d(1, 0));
+    add_side(vob, v_bottom, Point2d(1, 0), Point2d(0, 0));
+  }
+
+  b.SetTrimIsoFlags();
+  b.SetTolerancesBoxesAndFlags();
+  return fixture;
+}
+
+// JoinNonManifoldEdge()/JoinNonManifoldEdges() - the exact complement of
+// SplitNonManifoldEdge() above and of UnjoinEdge(): instead of HEALING a
+// non-manifold edge the kernel stumbled into, this DELIBERATELY
+// CONSTRUCTS one from separate, previously-unrelated naked boundaries -
+// PARITY_MAP.md's own "let the kernel construct... non-manifold topology
+// as first-class" gap. Verified by welding BuildDisjointNonManifoldEdge
+// Book()'s own 3 private per-page spines back into the exact shape
+// BuildNonManifoldEdgeBook() above builds directly, then confirming the
+// result is a genuinely functional non-manifold edge by round-tripping
+// it straight through the already-tested SplitNonManifoldEdge() heal.
+void TestJoinNonManifoldEdgeConstructsNonManifoldEdge() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Result;
+
+  {
+    DisjointNonManifoldEdgeFixture fixture = BuildDisjointNonManifoldEdgeBook();
+    Brep& book = fixture.brep;
+    Check(book.FaceCount() == 3, "setup: the disjoint fixture has its own genuine 3 pages");
+    Check(book.raw().m_E.Count() == 12, "setup: 3 private spines + 3 pages * 3 own sides = 12 edges");
+    Check(book.raw().m_V.Count() == 12, "setup: 3 pages * 4 own corners = 12 vertices - nothing shared yet");
+    for (const int spine : fixture.spine_edge_indices) {
+      Check(book.raw().m_E[spine].TrimCount() == 1, "each page's own spine starts naked - no sharing yet");
+    }
+    Check(book.Check().Count(Brep::CheckIssue::Kind::NonManifoldEdge) == 0,
+          "setup: nothing is non-manifold yet - the 3 spines are still 3 unrelated edges");
+
+    const std::vector<int> spines(fixture.spine_edge_indices.begin(), fixture.spine_edge_indices.end());
+    const auto joined = book.JoinNonManifoldEdge(spines);
+    Check(joined.result == Result::Ok, "JoinNonManifoldEdge() succeeds welding the 3 coincident private spines");
+    Check(joined.edge_index >= 0, "...and reports the surviving edge's own index");
+    Check(book.raw().m_E[joined.edge_index].TrimCount() == 3,
+          "the surviving edge now genuinely carries all 3 pages' own trims - a real non-manifold edge");
+    Check(book.LiveEdgeCount() == 10,
+          "10 live edges remain (3 originally-separate spines folded into 1, plus the 9 never-shared page "
+          "sides) - matching BuildNonManifoldEdgeBook()'s own edge count exactly");
+    Check(book.LiveVertexCount() == 8,
+          "8 live vertices remain (the 3 pages' own spine endpoints welded down to 1 shared pair, plus "
+          "3 pages * 2 own outer corners) - matching BuildNonManifoldEdgeBook()'s own vertex count exactly");
+    Check(book.FaceCount() == 3, "face count is untouched - pure edge/vertex bookkeeping, no face touched");
+
+    const Brep::CheckReport after = book.Check();
+    Check(after.Count(Brep::CheckIssue::Kind::NonManifoldEdge) == 1,
+          "Check() now reports exactly the newly-CONSTRUCTED non-manifold edge");
+    const Brep::CheckIssue* nme = nullptr;
+    for (const Brep::CheckIssue& issue : after.issues) {
+      if (issue.kind == Brep::CheckIssue::Kind::NonManifoldEdge) nme = &issue;
+    }
+    Check(nme != nullptr && nme->index == joined.edge_index && nme->other_index == 3,
+          "...naming the joined edge itself and its own trim count (3)");
+    Check(after.Count(Brep::CheckIssue::Kind::InconsistentFaceOrientation) == 0,
+          "the constructed edge is well-formed - not a same-orientation clash");
+
+    // The constructed edge is a genuine, fully-functional non-manifold
+    // edge: the existing heal (tested above against a pre-shared
+    // fixture) works identically against one JoinNonManifoldEdge() itself
+    // built from scratch.
+    Check(book.SplitNonManifoldEdge(joined.edge_index) == Result::Ok,
+          "the constructed edge round-trips cleanly through the existing SplitNonManifoldEdge() heal");
+    Check(book.Check().Count(Brep::CheckIssue::Kind::NonManifoldEdge) == 0,
+          "...leaving no non-manifold edge behind, exactly like splitting a naturally-occurring one");
+  }
+
+  // Refusals - each leaves its own fresh fixture completely untouched.
+  {
+    DisjointNonManifoldEdgeFixture fixture = BuildDisjointNonManifoldEdgeBook();
+    Brep& book = fixture.brep;
+    const int e_count_before = book.raw().m_E.Count();
+    const int v_count_before = book.raw().m_V.Count();
+
+    bool threw_few = false;
+    try {
+      book.JoinNonManifoldEdge({fixture.spine_edge_indices[0]});
+    } catch (const std::invalid_argument&) {
+      threw_few = true;
+    }
+    Check(threw_few, "fewer than 2 edge_indices throws std::invalid_argument");
+
+    bool threw_dup = false;
+    try {
+      book.JoinNonManifoldEdge({fixture.spine_edge_indices[0], fixture.spine_edge_indices[0]});
+    } catch (const std::invalid_argument&) {
+      threw_dup = true;
+    }
+    Check(threw_dup, "a repeated edge_index throws std::invalid_argument");
+
+    bool threw_range = false;
+    try {
+      book.JoinNonManifoldEdge({fixture.spine_edge_indices[0], book.raw().m_E.Count() + 100});
+    } catch (const std::out_of_range&) {
+      threw_range = true;
+    }
+    Check(threw_range, "an out-of-range edge_index throws std::out_of_range");
+
+    const int poked = fixture.spine_edge_indices[1];
+    const int saved_index = book.raw().m_E[poked].m_edge_index;
+    book.raw().m_E[poked].m_edge_index = -1;
+    bool threw_deleted = false;
+    try {
+      book.JoinNonManifoldEdge({fixture.spine_edge_indices[0], poked});
+    } catch (const std::invalid_argument&) {
+      threw_deleted = true;
+    }
+    Check(threw_deleted, "a deleted edge_index throws std::invalid_argument");
+    book.raw().m_E[poked].m_edge_index = saved_index;  // undo the poke - the rest of this fixture is still needed below
+
+    Check(book.raw().m_E.Count() == e_count_before && book.raw().m_V.Count() == v_count_before,
+          "none of the 4 refusals above touched this Brep");
+  }
+
+  // A second operand that is not naked (already borders 2+ faces) is out
+  // of scope - Result::Failed, not a thrown exception, this Brep left
+  // exactly as it was.
+  {
+    DisjointNonManifoldEdgeFixture fixture = BuildDisjointNonManifoldEdgeBook();
+    Brep& book = fixture.brep;
+
+    const auto pre_join = book.JoinNonManifoldEdge({fixture.spine_edge_indices[0], fixture.spine_edge_indices[1]});
+    Check(pre_join.result == Result::Ok, "setup: weld 2 of the 3 spines first so there is a genuinely 2-trim edge");
+    Check(book.raw().m_E[pre_join.edge_index].TrimCount() == 2, "setup: ...confirmed 2-trim, not naked");
+
+    const int e_count_before = book.raw().m_E.Count();
+    const int v_count_before = book.raw().m_V.Count();
+    const auto refused = book.JoinNonManifoldEdge({fixture.spine_edge_indices[2], pre_join.edge_index});
+    Check(refused.result == Result::Failed,
+          "a second operand that already has 2 trims (not naked) is refused, Result::Failed");
+    Check(book.raw().m_E.Count() == e_count_before && book.raw().m_V.Count() == v_count_before,
+          "...and this Brep is left completely untouched");
+  }
+
+  // Two naked edges that simply do not coincide are refused the same way.
+  {
+    DisjointNonManifoldEdgeFixture fixture = BuildDisjointNonManifoldEdgeBook();
+    Brep& book = fixture.brep;
+    const int e_count_before = book.raw().m_E.Count();
+    const int v_count_before = book.raw().m_V.Count();
+
+    // Page 0's own spine (at x=y=0) against page 1's own far outer-edge
+    // side (nowhere near the spine) - both naked, neither coincident.
+    const auto refused =
+        book.JoinNonManifoldEdge({fixture.spine_edge_indices[0], fixture.far_side_edge_indices[1]});
+    Check(refused.result == Result::Failed, "two naked but non-coincident edges are refused, Result::Failed");
+    Check(book.raw().m_E.Count() == e_count_before && book.raw().m_V.Count() == v_count_before,
+          "...and this Brep is left completely untouched");
+  }
+
+  // JoinNonManifoldEdges() - the best-effort batch: a valid group and an
+  // invalid one in the SAME call, neither affecting the other.
+  {
+    DisjointNonManifoldEdgeFixture fixture = BuildDisjointNonManifoldEdgeBook();
+    Brep& book = fixture.brep;
+
+    const std::vector<int> good_group(fixture.spine_edge_indices.begin(), fixture.spine_edge_indices.end());
+    const std::vector<int> bad_group = {fixture.spine_edge_indices[0], fixture.far_side_edge_indices[1]};
+    // Order matters here on purpose: the bad group is attempted first, to
+    // prove its own failure doesn't block the good group right after it.
+    const int joined_count =
+        book.JoinNonManifoldEdges(std::vector<std::vector<int>>{bad_group, good_group});
+    Check(joined_count == 1, "exactly 1 of the 2 groups joins - the bad one is skipped, not fatal");
+    Check(book.LiveEdgeCount() == 10, "the good group's own 3 spines still welded into the expected 10 live edges");
+  }
+}
+
 // MakeEdgeVertex()/KillEdgeVertex() - the MEV/KEV Euler-operator pair
 // (PARITY_MAP.md's own "Euler operators" item). MEV attaches a genuine
 // wire edge (TrimCount() == 0, no face uses it) to an existing vertex;
@@ -13075,6 +13316,67 @@ void TestCapPlanarHolesResolvesAMultiWayNonManifoldPinch() {
 
   // A second call has nothing left to cap.
   Check(pinch.CapPlanarHoles() == 0, "a fully capped pinch fixture has no hole left to cap");
+}
+
+// CapPlanarHoles(tolerance, &skipped) - the overload reporting WHICH
+// naked-edge chain it declined to cap and WHY, closing PARITY_MAP.md's
+// own "extend Cap naked loops to non-planar-hole detection" gap: a
+// genuinely non-planar hole used to just silently stay open, with no way
+// to tell it apart from a dead-end chain or an unresolvable branch
+// short of re-deriving the same geometry check by hand.
+void TestCapPlanarHolesReportsWhyANonPlanarHoleIsSkipped() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+
+  // A "box" whose 4 side walls are genuine planar trapezoids - each side
+  // still spans one fixed (x,y) column top-to-bottom, so independently
+  // raising or lowering just its OWN top corner never un-planarizes that
+  // wall (see CheckHealBoxFaces()'s own construction above, which this
+  // mirrors) - but whose own missing top boundary is deliberately NOT
+  // coplanar: 3 top corners at z=1, the 4th at z=2.
+  const std::vector<Point3d> bcorners = {Point3d(0, 0, 0), Point3d(1, 0, 0), Point3d(1, 1, 0), Point3d(0, 1, 0)};
+  const std::vector<Point3d> tcorners = {Point3d(0, 0, 1), Point3d(1, 0, 1), Point3d(1, 1, 1), Point3d(0, 1, 2)};
+  std::vector<Brep::PlanarFace> faces;
+  faces.push_back(CheckHealFace({bcorners[3], bcorners[2], bcorners[1], bcorners[0]}, ON_3dVector(0, 0, -1)));
+  for (size_t i = 0; i < 4; ++i) {
+    const size_t j = (i + 1) % 4;
+    ON_3dVector n = ON_CrossProduct(bcorners[j] - bcorners[i], tcorners[i] - bcorners[i]);
+    n.Unitize();
+    faces.push_back(CheckHealFace({bcorners[i], bcorners[j], tcorners[j], tcorners[i]}, n));
+  }
+  Brep warped = Brep::FromPlanarFaces(faces);
+  Check(warped.FaceCount() == 5, "setup: bottom + 4 planar trapezoidal walls, no top - each wall is genuinely planar");
+  const Brep::CheckReport before = warped.Check();
+  Check(before.Count(Brep::CheckIssue::Kind::NakedEdge) == 4 && before.issues.size() == 4,
+        "setup: the missing top leaves exactly 4 naked edges and nothing else wrong");
+
+  std::vector<Brep::SkippedCap> skipped;
+  Check(warped.CapPlanarHoles(dino8::kernel::tolerance::kEdgeJoin, &skipped) == 0,
+        "CapPlanarHoles() correctly refuses to fake a cap through a genuinely non-planar hole");
+  Check(warped.FaceCount() == 5 && warped.raw().m_E.Count() == 12,
+        "...and leaves this Brep completely untouched (still 5 faces, 12 edges - the 4 bottom-to-wall shared "
+        "edges, 4 wall-to-wall shared vertical edges, and the 4 still-naked top edges)");
+  Check(skipped.size() == 1, "exactly one chain was recorded as skipped - the single non-planar top loop");
+  Check(skipped[0].reason == Brep::SkippedCap::Reason::NonPlanar,
+        "...reported with the NonPlanar reason specifically, not just silently left open");
+  Check(skipped[0].edge_indices.size() == 4, "...naming all 4 of the top loop's own naked edges, in walk order");
+  std::set<int> skipped_edge_set(skipped[0].edge_indices.begin(), skipped[0].edge_indices.end());
+  Check(skipped_edge_set.size() == 4, "...all 4 distinct - no edge named twice");
+  for (const int ei : skipped[0].edge_indices) {
+    Check(ei >= 0 && ei < warped.raw().m_E.Count() && warped.raw().m_E[ei].TrimCount() == 1,
+          "...each named edge is a genuine, still-naked edge of this Brep");
+  }
+
+  // Check() afterward still reports the same 4 naked edges - nothing was
+  // silently consumed or half-processed on the way to the report.
+  const Brep::CheckReport after = warped.Check();
+  Check(after.Count(Brep::CheckIssue::Kind::NakedEdge) == 4, "the 4 naked top edges are still naked afterward");
+
+  // The pre-existing, tolerance-only overload's contract is completely
+  // unchanged by adding this one: same 0 caps, same untouched Brep, no
+  // reporting attempted or required.
+  Check(warped.CapPlanarHoles() == 0, "the single-argument overload still just silently declines - unchanged");
+  Check(warped.FaceCount() == 5, "...still untouched");
 }
 
 // Offset an edge by 1e-4: the top face is built at z = 1 + 1e-4, so none
@@ -57741,6 +58043,7 @@ int main() {
   TestBrepCheckDetectsNonManifoldPinchVertex();
   TestBrepSplitNonManifoldVertexHealsPinchPoint();
   TestBrepCheckDetectsAndSplitNonManifoldEdgeHeals();
+  TestJoinNonManifoldEdgeConstructsNonManifoldEdge();
   TestBrepMakeEdgeVertexAndKillEdgeVertexAreExactInverses();
   TestBrepMakeEdgeFaceAndKillEdgeFaceAreExactInverses();
   TestBrepMakeEdgeKillRingAndKillEdgeMakeRingAreExactInverses();
@@ -57764,6 +58067,7 @@ int main() {
   TestBrepCheckReportsDroppedFaceAndCapPlanarHolesRestoresIt();
   TestCapPlanarHolesCapsACurvedCircularRim();
   TestCapPlanarHolesResolvesAMultiWayNonManifoldPinch();
+  TestCapPlanarHolesReportsWhyANonPlanarHoleIsSkipped();
   TestBrepJoinNakedEdgesRecordsTolerantEdges();
   TestBrepRemoveSliverAndDegenerateFacesHealHairlineStrip();
   TestBrepRemoveDegenerateEdgesCollapsesSharedMicroEdge();

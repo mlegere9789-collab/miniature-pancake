@@ -7886,6 +7886,93 @@ int Brep::SplitNonManifoldEdges(double tolerance) {
   return split;
 }
 
+Brep::JoinNonManifoldEdgeResult Brep::JoinNonManifoldEdge(const std::vector<int>& edge_indices,
+                                                           double tolerance) {
+  if (edge_indices.size() < 2) {
+    throw std::invalid_argument(
+        "dino8::kernel::Brep::JoinNonManifoldEdge: need at least 2 edge_indices, got " +
+        std::to_string(edge_indices.size()));
+  }
+  ON_Brep& b = brep_;
+  for (size_t i = 0; i < edge_indices.size(); ++i) {
+    const int ei = edge_indices[i];
+    if (ei < 0 || ei >= b.m_E.Count()) {
+      throw std::out_of_range("dino8::kernel::Brep::JoinNonManifoldEdge: edge_index " +
+                              std::to_string(ei) + " is out of range (this Brep has " +
+                              std::to_string(b.m_E.Count()) + " edge slot(s))");
+    }
+    if (b.m_E[ei].m_edge_index < 0) {
+      throw std::invalid_argument("dino8::kernel::Brep::JoinNonManifoldEdge: edge_index " +
+                                  std::to_string(ei) + " refers to a deleted edge");
+    }
+    for (size_t j = 0; j < i; ++j) {
+      if (edge_indices[j] == ei) {
+        throw std::invalid_argument("dino8::kernel::Brep::JoinNonManifoldEdge: edge_index " +
+                                    std::to_string(ei) + " is repeated in the same call");
+      }
+    }
+  }
+  // Every entry beyond the target must be a currently-naked boundary - a
+  // separate face's own untouched edge being welded onto the (possibly
+  // already-shared) target, never two edges that already each have their
+  // own manifold pair.
+  for (size_t i = 1; i < edge_indices.size(); ++i) {
+    if (b.m_E[edge_indices[i]].TrimCount() != 1) return JoinNonManifoldEdgeResult{};
+  }
+
+  const double tol = std::max(tolerance, 0.0);
+  int target = edge_indices[0];
+  for (size_t i = 1; i < edge_indices.size(); ++i) {
+    const int other = edge_indices[i];
+    ON_BrepEdge& e0 = b.m_E[target];
+    ON_BrepEdge& e1 = b.m_E[other];
+
+    // Same coincidence test WeldCoincidentNakedEdges() (above) already
+    // uses for its own ordinary pairwise weld: forward or reversed
+    // endpoint match, or - for a closed edge, where the endpoints alone
+    // say nothing about direction - matching start-tangent direction.
+    const ON_3dPoint a0 = e0.PointAtStart(), a1 = e0.PointAtEnd();
+    const ON_3dPoint p0 = e1.PointAtStart(), p1 = e1.PointAtEnd();
+    bool forward = a0.DistanceTo(p0) <= tol && a1.DistanceTo(p1) <= tol;
+    bool reversed = !forward && a0.DistanceTo(p1) <= tol && a1.DistanceTo(p0) <= tol;
+    if (forward && a0.DistanceTo(a1) <= tol) {
+      forward = ON_DotProduct(e0.TangentAt(e0.Domain().Min()), e1.TangentAt(e1.Domain().Min())) > 0;
+      reversed = !forward;
+    }
+    if (!forward && !reversed) return JoinNonManifoldEdgeResult{};  // not coincident - refuse the whole call
+    const ON_3dPoint m0 = e0.PointAt(e0.Domain().Mid()), m1 = e1.PointAt(e1.Domain().Mid());
+    if (m0.DistanceTo(m1) > tol * 10) return JoinNonManifoldEdgeResult{};
+    if (reversed && !e1.Reverse()) return JoinNonManifoldEdgeResult{};
+
+    for (int k = 0; k < 2; ++k) {
+      if (e0.m_vi[k] == e1.m_vi[k]) continue;
+      if (!b.CombineCoincidentVertices(b.m_V[e0.m_vi[k]], b.m_V[e1.m_vi[k]])) {
+        return JoinNonManifoldEdgeResult{};
+      }
+    }
+    if (!b.CombineCoincidentEdges(e0, e1)) return JoinNonManifoldEdgeResult{};
+    // CombineCoincidentEdges() may keep either operand - continue folding
+    // onto whichever of the two is still live.
+    target = (e0.m_edge_index >= 0) ? target : other;
+  }
+
+  b.SetTolerancesBoxesAndFlags();
+  FixUnsetEdgeTolerances(b);
+
+  JoinNonManifoldEdgeResult result;
+  result.result = Result::Ok;
+  result.edge_index = target;
+  return result;
+}
+
+int Brep::JoinNonManifoldEdges(const std::vector<std::vector<int>>& groups, double tolerance) {
+  int joined = 0;
+  for (const std::vector<int>& group : groups) {
+    if (JoinNonManifoldEdge(group, tolerance).result == Result::Ok) ++joined;
+  }
+  return joined;
+}
+
 Brep::MakeEdgeVertexResult Brep::MakeEdgeVertex(int from_vertex, Point3d to_point, double tolerance) {
   if (from_vertex < 0 || from_vertex >= brep_.m_V.Count()) {
     throw std::out_of_range("dino8::kernel::Brep::MakeEdgeVertex: from_vertex " +
@@ -9514,9 +9601,14 @@ Mesh Brep::TessellateToClosedMeshTolerant(int u_divisions, int v_divisions) cons
   return mesh;
 }
 
-int Brep::CapPlanarHoles(double tolerance) {
+int Brep::CapPlanarHoles(double tolerance) { return CapPlanarHoles(tolerance, nullptr); }
+
+int Brep::CapPlanarHoles(double tolerance, std::vector<SkippedCap>* skipped) {
   ON_Brep& b = brep_;
   const double tol = std::max(tolerance, 0.0);
+  auto record_skip = [&](SkippedCap::Reason reason, std::vector<int> edges) {
+    if (skipped) skipped->push_back(SkippedCap{reason, std::move(edges)});
+  };
 
   // Naked edges by vertex, for chaining.
   std::map<int, std::vector<int>> naked_at_vertex;
@@ -9557,16 +9649,21 @@ int Brep::CapPlanarHoles(double tolerance) {
           // Not planar, no area, or not star-shaped from any point -
           // leave this hole open, same fallback as a straight loop this
           // function can't triangulate either.
+          record_skip(SkippedCap::Reason::DegenerateCurvedLoop, {start});
         }
+      } else {
+        record_skip(SkippedCap::Reason::DegenerateCurvedLoop, {start});
       }
       continue;
     }
 
     std::vector<int> loop_vertices;
+    std::vector<int> chain_edges;
     int ei = start;
     bool rev = false;
     const int origin = b.m_E[start].m_vi[0];
     bool ok = true;
+    SkippedCap::Reason fail_reason = SkippedCap::Reason::OpenOrDegenerateChain;
     while (true) {
       const ON_BrepEdge& e = b.m_E[ei];
       if (used.count(ei)) {
@@ -9574,10 +9671,14 @@ int Brep::CapPlanarHoles(double tolerance) {
         break;
       }
       used.insert(ei);
+      chain_edges.push_back(ei);
       // A curved naked edge can't be capped by a straight-edged planar
       // face without polygonizing it into edges the join could never
       // match - refused rather than left as a loose, unjoined face.
-      if (!e.IsLinear(tolerance::kDistance)) ok = false;
+      if (!e.IsLinear(tolerance::kDistance)) {
+        ok = false;
+        fail_reason = SkippedCap::Reason::CurvedEdge;
+      }
       loop_vertices.push_back(rev ? e.m_vi[1] : e.m_vi[0]);
       const int head = rev ? e.m_vi[0] : e.m_vi[1];
       if (head == origin) break;
@@ -9639,6 +9740,7 @@ int Brep::CapPlanarHoles(double tolerance) {
           nei = same_group.front();
         } else {
           ok = false;  // still ambiguous even by face-group - never guessed
+          fail_reason = SkippedCap::Reason::AmbiguousJunction;
           break;
         }
       }
@@ -9651,7 +9753,10 @@ int Brep::CapPlanarHoles(double tolerance) {
       }
       ei = nei;
     }
-    if (!ok || loop_vertices.size() < 3) continue;
+    if (!ok || loop_vertices.size() < 3) {
+      record_skip(fail_reason, chain_edges);
+      continue;
+    }
 
     std::vector<Point3d> loop;
     for (const int vi : loop_vertices) {
@@ -9661,7 +9766,10 @@ int Brep::CapPlanarHoles(double tolerance) {
       }
       loop.push_back(b.m_V[vi].point);
     }
-    if (!ok) continue;
+    if (!ok) {
+      record_skip(SkippedCap::Reason::OpenOrDegenerateChain, chain_edges);
+      continue;
+    }
 
     // Plane through the loop: Newell normal (the normal the loop is CCW
     // about, which is exactly PlanarFace's own "CCW as seen from
@@ -9681,7 +9789,10 @@ int Brep::CapPlanarHoles(double tolerance) {
       normal.z += (p.x - q.x) * (p.y + q.y);
       extent = std::max(extent, p.DistanceTo(centroid));
     }
-    if (normal.Length() <= tolerance::kZeroVector) continue;
+    if (normal.Length() <= tolerance::kZeroVector) {
+      record_skip(SkippedCap::Reason::OpenOrDegenerateChain, chain_edges);
+      continue;
+    }
     normal.Unitize();
     const double plane_tol = std::max(tol, tolerance::DistanceForSize(extent));
     bool planar = true;
@@ -9691,7 +9802,10 @@ int Brep::CapPlanarHoles(double tolerance) {
         break;
       }
     }
-    if (!planar) continue;
+    if (!planar) {
+      record_skip(SkippedCap::Reason::NonPlanar, chain_edges);
+      continue;
+    }
     PlanarFace cap;
     cap.plane = ON_Plane(centroid, normal);
     cap.loop = loop;

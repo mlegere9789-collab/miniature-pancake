@@ -3761,6 +3761,72 @@ class Brep {
   // number of edges actually split.
   int SplitNonManifoldEdges(double tolerance = tolerance::kDistance);
 
+  // Constructs a genuinely non-manifold edge (three or more trims sharing
+  // one ON_BrepEdge) BY DESIGN - the exact complement of UnjoinEdge()
+  // above and of SplitNonManifoldEdge()/SplitNonManifoldVertex() (which
+  // only ever HEAL a non-manifold defect the kernel stumbled into, never
+  // deliberately CREATE one). `edge_indices[0]` is the target, kept on
+  // success and possibly already shared or itself non-manifold; every
+  // OTHER entry must be a currently-naked edge (TrimCount() == 1) - a
+  // separate, untouched face boundary being welded onto the target, never
+  // two edges that already each border a manifold pair of their own. Each
+  // is folded onto the (possibly already-grown) target in turn, using the
+  // exact same coincidence test and ON_Brep::CombineCoincidentVertices()/
+  // CombineCoincidentEdges() pair the private WeldCoincidentNakedEdges()
+  // helper backing JoinNakedEdges() already uses for its own ordinary
+  // 2-edge case (forward/reversed endpoint match, or - for a closed edge
+  // - matching start-tangent direction, each within `tolerance`) - simply
+  // not stopping at one pair: ON_Brep::CombineCoincidentEdges() itself has
+  // no 2-trim ceiling, it always APPENDS the discarded edge's own trims
+  // onto whichever operand survives, however many it already had - so
+  // folding N edges one at a time genuinely produces an N-trim
+  // non-manifold edge once 3 or more boundaries coincide, something
+  // JoinNakedEdges() itself can never do on its own (WeldCoincidentNaked
+  // Edges() requires BOTH operands to be exactly 1-trim, so a pair it
+  // just welded into 2 trims is disqualified from welding onto a third).
+  //
+  // ON_Brep::CombineCoincidentEdges() may keep EITHER operand it's handed
+  // (an internal tolerance/isoparametric heuristic, not always the first
+  // argument) - the survivor is tracked across the whole fold and
+  // returned as `edge_index` on success.
+  //
+  // Deliberately does not call Compact(): like UnjoinEdge()/
+  // SplitNonManifoldEdge() above, this only ever reassigns which
+  // ON_BrepEdge/ON_BrepVertex record a trim points to (plus marking the
+  // discarded records deleted) - no face is added, removed, or
+  // renumbered, and no face's own visible boundary changes shape, so the
+  // per-face side tables stay valid and are not cleared either.
+  //
+  // Throws std::invalid_argument if fewer than 2 `edge_indices` are
+  // given, if any index repeats, or if any index refers to an
+  // already-deleted edge; throws std::out_of_range for an out-of-range
+  // index - all genuine caller bugs. Returns Result::Failed - not a
+  // thrown exception, the same "can't, but that's not a bug" contract
+  // every sibling above shares - leaving this Brep completely untouched,
+  // if any edge after the first is not naked, if any pair fails the
+  // coincidence test above, or if CombineCoincidentVertices()/
+  // CombineCoincidentEdges() itself refuses partway through.
+  struct JoinNonManifoldEdgeResult {
+    Result result = Result::Failed;
+    int edge_index = -1;
+  };
+  JoinNonManifoldEdgeResult JoinNonManifoldEdge(const std::vector<int>& edge_indices,
+                                                 double tolerance = tolerance::kDistance);
+
+  // JoinNonManifoldEdge()'s own best-effort batch convenience: attempts
+  // each entry of `groups` (an edge_indices list exactly as
+  // JoinNonManifoldEdge() itself takes) in turn as an independent call,
+  // skipping - not aborting the whole call for - any group that fails,
+  // the same "skip what can't be done" contract RemoveAllHoleLoops()/
+  // SplitNonManifoldEdges() already use for their own batches, NOT
+  // AddHoleLoops()'s all-or-nothing one: unlike punching a caller-
+  // supplied hole, leaving a group's edges exactly as they were because
+  // they didn't coincide is never destructive, so one bad group should
+  // never block every other, independent group in the same call. Returns
+  // the number of groups actually joined.
+  int JoinNonManifoldEdges(const std::vector<std::vector<int>>& groups,
+                            double tolerance = tolerance::kDistance);
+
   // MEV ("Make Edge, Vertex") and its exact inverse KEV ("Kill Edge,
   // Vertex") below - two of the classic Baumgart/ACIS/Parasolid Euler-
   // operator construction primitives (MEV/MEF/KEV/KEF/KEMR/MEKR -
@@ -4519,6 +4585,56 @@ class Brep {
   // following Check(). Returns the number of caps added. Clears the side
   // tables.
   int CapPlanarHoles(double tolerance = tolerance::kEdgeJoin);
+
+  // A naked-edge chain CapPlanarHoles() below declined to cap, and why -
+  // closes PARITY_MAP.md's own "extend Cap naked loops to non-planar-hole
+  // detection" gap: every one of the refusal cases CapPlanarHoles()'s own
+  // doc comment above already lists used to simply leave the hole open
+  // with no record of WHY, discoverable only indirectly through a
+  // following Check() still reporting the same NakedEdge issues it always
+  // did - never distinguishing "this was genuinely non-planar" from "this
+  // chain never closes" or "this vertex is a genuine topological branch".
+  struct SkippedCap {
+    enum class Reason {
+      // A multi-edge chain containing at least one curved (non-linear)
+      // edge - no polygon approximation is attempted for it.
+      CurvedEdge,
+      // A straight-edged, closed chain whose own vertices don't all lie
+      // within tolerance of one common plane - the literal "non-planar
+      // hole" case this struct's own gap names.
+      NonPlanar,
+      // A single closed curved edge (e.g. an uncapped extrusion's own
+      // rim) that is not planar, has no real area, or is not star-shaped
+      // from any point in its own plane - CapClosedCurvedLoop()'s own
+      // refusal (see its doc comment), or whose GetNurbForm() itself
+      // failed.
+      DegenerateCurvedLoop,
+      // A vertex on the chain carries more than one live candidate naked
+      // edge to continue onto, even after the face-group disambiguation
+      // CapPlanarHoles() itself already applies - a genuine topological
+      // branch (e.g. a hole loop touching its own face's outer loop),
+      // never guessed at.
+      AmbiguousJunction,
+      // The chain never closed back onto its own origin vertex (a naked
+      // boundary with a genuine dead end), closed with fewer than 3
+      // vertices, or encloses no measurable area.
+      OpenOrDegenerateChain,
+    };
+    Reason reason = Reason::OpenOrDegenerateChain;
+    // The naked edges collected for this chain before it was discarded,
+    // in walk order (a single entry for the two single-closed-edge
+    // reasons above).
+    std::vector<int> edge_indices;
+  };
+
+  // Same capping pass as CapPlanarHoles(tolerance) above - both overloads
+  // share one implementation, the tolerance-only overload is this one
+  // with `skipped` left null - but also appends a SkippedCap entry for
+  // every naked-edge chain it declines to cap, instead of just leaving it
+  // open silently. Returns the number of caps added, exactly like the
+  // overload above; `skipped` itself is only ever appended to, never
+  // cleared, so a caller can accumulate it across several calls.
+  int CapPlanarHoles(double tolerance, std::vector<SkippedCap>* skipped);
 
   // A standalone, single-face open shell exactly capping `boundary` (a
   // closed, planar curve) - CapPlanarHoles()'s own genuine-curve cap
