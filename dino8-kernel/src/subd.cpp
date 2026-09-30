@@ -758,6 +758,275 @@ std::vector<SubD> SubD::SplitDisjointPieces() const {
   return pieces;
 }
 
+bool SubD::SplitNonManifoldVertex(unsigned int vertex_id) {
+  const ON_SubDVertex* target = subd_.VertexFromId(vertex_id);
+  if (target == nullptr) return false;
+
+  // Exactly Check()'s own non_manifold_vertices grouping: union `target`'s
+  // own incident faces via whichever of ITS incident edges they share.
+  const unsigned int face_count = target->FaceCount();
+  if (face_count < 2) return false;  // 0 or 1 incident face can't be split into >1 group
+
+  std::vector<const ON_SubDFace*> faces(face_count);
+  for (unsigned int i = 0; i < face_count; ++i) faces[i] = target->Face(i);
+  const auto face_index = [&faces](const ON_SubDFace* f) -> int {
+    for (size_t i = 0; i < faces.size(); ++i) {
+      if (faces[i] == f) return static_cast<int>(i);
+    }
+    return -1;
+  };
+
+  UnionFind uf(faces.size());
+  const unsigned int edge_count = target->EdgeCount();
+  for (unsigned int i = 0; i < edge_count; ++i) {
+    const ON_SubDEdge* e = target->Edge(i);
+    if (e == nullptr) continue;
+    const unsigned int edge_face_count = e->FaceCount();
+    int first = -1;
+    for (unsigned int j = 0; j < edge_face_count; ++j) {
+      const int idx = face_index(e->Face(j));
+      if (idx < 0) continue;  // this edge's face doesn't touch target - can't happen, defensive only
+      if (first < 0) {
+        first = idx;
+      } else {
+        uf.Union(static_cast<size_t>(first), static_cast<size_t>(idx));
+      }
+    }
+  }
+
+  // Assign group indices in first-encountered order - group 0 always
+  // contains target->Face(0), matching Check()'s own "first-seen order"
+  // convention (and Brep::SplitNonManifoldVertex()'s: "group 0 keeps
+  // vertex_index itself").
+  std::vector<size_t> root_order;
+  std::unordered_map<size_t, size_t> root_to_group;
+  std::vector<size_t> face_group(faces.size());
+  for (size_t i = 0; i < faces.size(); ++i) {
+    const size_t root = uf.Find(i);
+    const auto it = root_to_group.find(root);
+    if (it == root_to_group.end()) {
+      const size_t g = root_order.size();
+      root_to_group.emplace(root, g);
+      root_order.push_back(root);
+      face_group[i] = g;
+    } else {
+      face_group[i] = it->second;
+    }
+  }
+  const size_t group_count = root_order.size();
+  if (group_count <= 1) return false;  // not actually non-manifold
+
+  // Whole-net snapshot-and-rebuild - the same DeleteComponents()-unsafety
+  // reason Weld()'s own doc comment gives for taking this approach rather
+  // than local surgery. Faces/edges not touching `target` at all are
+  // recorded with their corner/endpoint ids verbatim; a corner or endpoint
+  // that IS `target` is recorded as its own face's group index instead
+  // (resolved to a real id below, once every extra group's fresh vertex
+  // actually exists).
+  struct FSnap {
+    std::vector<unsigned int> corner_ids;  // real id, or (group index) for a target corner
+    std::vector<bool> corner_is_target;
+  };
+  std::vector<FSnap> faces_snapshot;
+  {
+    ON_SubDFaceIterator fit = subd_.FaceIterator();
+    for (const ON_SubDFace* f = fit.FirstFace(); f != nullptr; f = fit.NextFace()) {
+      const unsigned int n = f->EdgeCount();
+      const int local_idx = face_index(f);  // >= 0 iff this face touches target
+      FSnap fs;
+      fs.corner_ids.reserve(n);
+      fs.corner_is_target.reserve(n);
+      for (unsigned int j = 0; j < n; ++j) {
+        const ON_SubDVertex* v = f->Vertex(j);
+        if (v == nullptr) {
+          throw std::runtime_error(
+              "dino8::kernel::SubD::SplitNonManifoldVertex: a face has a null corner");
+        }
+        if (v == target) {
+          fs.corner_ids.push_back(static_cast<unsigned int>(
+              local_idx >= 0 ? face_group[static_cast<size_t>(local_idx)] : 0));
+          fs.corner_is_target.push_back(true);
+        } else {
+          fs.corner_ids.push_back(v->m_id);
+          fs.corner_is_target.push_back(false);
+        }
+      }
+      faces_snapshot.push_back(std::move(fs));
+    }
+  }
+
+  struct ESnap {
+    unsigned int a, b;  // real id, or (group index) where a_is_target/b_is_target
+    bool a_is_target, b_is_target;
+    ON_SubDEdgeTag tag;
+    ON_SubDEdgeSharpness sharpness;
+  };
+  std::vector<ESnap> edges_snapshot;
+  {
+    ON_SubDEdgeIterator eit = subd_.EdgeIterator();
+    for (const ON_SubDEdge* e = eit.FirstEdge(); e != nullptr; e = eit.NextEdge()) {
+      if (e->m_vertex[0] == nullptr || e->m_vertex[1] == nullptr) {
+        throw std::runtime_error(
+            "dino8::kernel::SubD::SplitNonManifoldVertex: an edge has a null vertex");
+      }
+      // Same convention Weld() uses: only a genuinely interior edge's own
+      // tag/sharpness is worth reapplying verbatim.
+      if (e->FaceCount() != 2) continue;
+      const bool a_is_target = e->m_vertex[0] == target;
+      const bool b_is_target = e->m_vertex[1] == target;
+      size_t group = 0;
+      if (a_is_target || b_is_target) {
+        // Both of a 2-face edge's own faces are always in the SAME group
+        // here: if one of the edge's endpoints is target, target is a
+        // corner of both faces, so the union-find pass above always unions
+        // them together via this very edge - so either face's group
+        // suffices.
+        const int fidx = face_index(e->Face(0));
+        group = fidx >= 0 ? face_group[static_cast<size_t>(fidx)] : 0;
+      }
+      edges_snapshot.push_back({a_is_target ? static_cast<unsigned int>(group) : e->m_vertex[0]->m_id,
+                                 b_is_target ? static_cast<unsigned int>(group) : e->m_vertex[1]->m_id,
+                                 a_is_target, b_is_target, e->m_edge_tag,
+                                 e->Sharpness(/*bUseCreaseSharpness=*/false)});
+    }
+  }
+
+  ON_SubD new_subd;
+  std::vector<unsigned int> group_vertex_id(group_count, 0);
+  {
+    // Every original vertex, INCLUDING target itself (as group 0, at its
+    // own natural position in iteration order), each under its own
+    // preserved id. Critically, target must be re-added HERE, in its
+    // original relative position, rather than held back and appended
+    // afterward: ON_SubD::AddVertexForExperts()'s own candidate_id is only
+    // honored when it EXCEEDS the id watermark seen so far (there is no
+    // "unused id" slot to reclaim it from in a freshly built, never-had-
+    // a-deletion new_subd) - the same ordering invariant every OTHER
+    // preserved-id rebuild in this file (Weld(), SplitDisjointPieces())
+    // already relies on by never moving a kept vertex out of its own
+    // natural iteration position. Only once every original id is placed
+    // does the watermark correctly reflect the WHOLE original id range, so
+    // the extra per-group vertices added next (candidate_id 0) are
+    // guaranteed genuinely fresh.
+    ON_SubDVertexIterator vit = subd_.VertexIterator();
+    for (const ON_SubDVertex* v = vit.FirstVertex(); v != nullptr; v = vit.NextVertex()) {
+      const ON_3dPoint p = v->ControlNetPoint();
+      const ON_SubDVertex* nv = new_subd.AddVertexForExperts(v->m_id, ON_SubDVertexTag::Unset, &p.x, 0, 0);
+      if (nv == nullptr) {
+        throw std::runtime_error(
+            "dino8::kernel::SubD::SplitNonManifoldVertex: ON_SubD::AddVertexForExperts failed");
+      }
+      if (v == target) group_vertex_id[0] = nv->m_id;
+    }
+  }
+
+  // One brand-new vertex per EXTRA group (group_count - 1 of them), at
+  // target's own point, each with a genuinely fresh id (candidate_id 0) -
+  // safe only now that every original id above has already established
+  // the true watermark.
+  {
+    const ON_3dPoint p = target->ControlNetPoint();
+    for (size_t g = 1; g < group_count; ++g) {
+      const ON_SubDVertex* v = new_subd.AddVertexForExperts(0, ON_SubDVertexTag::Unset, &p.x, 0, 0);
+      if (v == nullptr) {
+        throw std::runtime_error(
+            "dino8::kernel::SubD::SplitNonManifoldVertex: ON_SubD::AddVertexForExperts failed "
+            "for a split vertex");
+      }
+      group_vertex_id[g] = v->m_id;
+    }
+  }
+
+  for (const FSnap& fs : faces_snapshot) {
+    std::vector<const ON_SubDVertex*> corners(fs.corner_ids.size());
+    for (size_t i = 0; i < fs.corner_ids.size(); ++i) {
+      const unsigned int id = fs.corner_is_target[i] ? group_vertex_id[fs.corner_ids[i]] : fs.corner_ids[i];
+      corners[i] = new_subd.VertexFromId(id);
+      if (corners[i] == nullptr) {
+        throw std::runtime_error(
+            "dino8::kernel::SubD::SplitNonManifoldVertex: a rebuilt face corner vertex is missing");
+      }
+    }
+    if (new_subd.FindOrAddFace(ON_SubDEdgeTag::Unset, corners.data(), corners.size()) == nullptr) {
+      throw std::runtime_error(
+          "dino8::kernel::SubD::SplitNonManifoldVertex: ON_SubD::FindOrAddFace failed while "
+          "rebuilding a face");
+    }
+  }
+
+  for (const ESnap& es : edges_snapshot) {
+    const unsigned int a_id = es.a_is_target ? group_vertex_id[es.a] : es.a;
+    const unsigned int b_id = es.b_is_target ? group_vertex_id[es.b] : es.b;
+    const ON_SubDVertex* a = new_subd.VertexFromId(a_id);
+    const ON_SubDVertex* b = new_subd.VertexFromId(b_id);
+    if (a == nullptr || b == nullptr) continue;
+    const ON_SubDEdge* e = new_subd.FindEdge(a, b).Edge();
+    if (e == nullptr) continue;  // defensive only - both endpoints are always in this rebuild's own face(s)
+    const_cast<ON_SubDEdge*>(e)->m_edge_tag = es.tag;
+    if (es.tag == ON_SubDEdgeTag::Smooth || es.tag == ON_SubDEdgeTag::SmoothX) {
+      const_cast<ON_SubDEdge*>(e)->SetSharpnessForExperts(es.sharpness);
+    }
+  }
+
+  new_subd.UpdateAllTagsAndSectorCoefficients(/*bUnsetValuesOnly=*/true);
+  subd_ = new_subd;
+  return true;
+}
+
+int SubD::SplitNonManifoldVertices(double tolerance) {
+  const std::vector<unsigned int> to_split = Check(tolerance).non_manifold_vertex_list;
+  int count = 0;
+  for (const unsigned int id : to_split) {
+    if (SplitNonManifoldVertex(id)) ++count;
+  }
+  return count;
+}
+
+int SubD::MergeDuplicateVertices(double tolerance) {
+  std::vector<unsigned int> ids;
+  std::vector<ON_3dPoint> points;
+  {
+    ON_SubDVertexIterator vit = subd_.VertexIterator();
+    for (const ON_SubDVertex* v = vit.FirstVertex(); v != nullptr; v = vit.NextVertex()) {
+      ids.push_back(v->m_id);
+      points.push_back(v->ControlNetPoint());
+    }
+  }
+  if (ids.size() < 2) return 0;
+
+  const std::vector<size_t> groups = GroupByProximity(points, tolerance);
+  std::vector<size_t> root_order;
+  std::unordered_map<size_t, std::vector<unsigned int>> group_members;
+  for (size_t i = 0; i < groups.size(); ++i) {
+    const size_t root = groups[i];
+    const auto it = group_members.find(root);
+    if (it == group_members.end()) {
+      group_members.emplace(root, std::vector<unsigned int>{ids[i]});
+      root_order.push_back(root);
+    } else {
+      it->second.push_back(ids[i]);
+    }
+  }
+
+  int merged = 0;
+  for (const size_t root : root_order) {
+    const std::vector<unsigned int>& members = group_members[root];
+    if (members.size() < 2) continue;
+    const unsigned int keep = members.front();
+    for (size_t i = 1; i < members.size(); ++i) {
+      // Weld() itself independently re-checks keep's/this member's own
+      // distance (GroupByProximity()'s own grouping is not necessarily
+      // transitive within `tolerance` - see its doc comment), and refuses
+      // (false, no throw) if the two are already edge-connected or already
+      // two distinct corners of the same face - silently left unmerged
+      // either way, the same "can't, but that's not a bug" contract every
+      // Weld()-based repair here already has.
+      if (Weld(keep, members[i], tolerance)) ++merged;
+    }
+  }
+  return merged;
+}
+
 int SubD::CreaseEdgeCount() const {
   int count = 0;
   ON_SubDEdgeIterator eit = subd_.EdgeIterator();

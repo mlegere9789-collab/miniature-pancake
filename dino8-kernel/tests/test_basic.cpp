@@ -18168,6 +18168,187 @@ void TestSubDSplitDisjointPiecesSplitsIntoSeparateSubDs() {
         "the exact same control point - ids are preserved, not renumbered from scratch");
 }
 
+void TestSubDSplitNonManifoldVertexSplitsBowtie() {
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SubD;
+
+  // Reuse TestSubDCheckBowtieVertexDetected's own fixture: two single-quad
+  // wings sharing ONLY vertex v0, no edge in common at all.
+  SubD subd;
+  ON_SubD& raw = subd.raw();
+  const double p0[3] = {0.0, 0.0, 0.0};
+  ON_SubDVertex* v0 = raw.AddVertex(ON_SubDVertexTag::Unset, p0);
+
+  auto add_wing_quad = [&](double x0, double y0) {
+    const double pa[3] = {x0, y0, 0.0};
+    const double pb[3] = {x0 + 1.0, y0, 0.0};
+    const double pc[3] = {x0 + 1.0, y0 + 1.0, 0.0};
+    ON_SubDVertex* va = raw.AddVertex(ON_SubDVertexTag::Unset, pa);
+    ON_SubDVertex* vb = raw.AddVertex(ON_SubDVertexTag::Unset, pb);
+    ON_SubDVertex* vc = raw.AddVertex(ON_SubDVertexTag::Unset, pc);
+    ON_SubDEdge* e0 = raw.AddEdge(ON_SubDEdgeTag::Unset, v0, va);
+    ON_SubDEdge* e1 = raw.AddEdge(ON_SubDEdgeTag::Unset, va, vb);
+    ON_SubDEdge* e2 = raw.AddEdge(ON_SubDEdgeTag::Unset, vb, vc);
+    ON_SubDEdge* e3 = raw.AddEdge(ON_SubDEdgeTag::Unset, vc, v0);
+    ON_SimpleArray<ON_SubDEdge*> edges(4);
+    edges.Append(e0);
+    edges.Append(e1);
+    edges.Append(e2);
+    edges.Append(e3);
+    return raw.AddFace(edges);
+  };
+
+  Check(add_wing_quad(1.0, 0.0) != nullptr, "wing A was added");
+  Check(add_wing_quad(-2.0, -1.0) != nullptr, "wing B was added, sharing only v0 with wing A");
+  const unsigned int v0_id = v0->m_id;
+  Check(subd.Check().non_manifold_vertices == 1, "sanity: v0 is a bowtie before any repair is attempted");
+  Check(subd.VertexCount() == 7 && subd.FaceCount() == 2, "sanity: 7 vertices (v0 shared) / 2 faces before splitting");
+
+  Check(!subd.SplitNonManifoldVertex(999999u), "refuses an id that doesn't identify a vertex of this SubD");
+
+  Check(subd.SplitNonManifoldVertex(v0_id), "splits the genuine bowtie vertex");
+  Check(subd.VertexCount() == 8, "one brand-new vertex was added - 7 + 1 = 8, no longer sharing v0 between wings");
+  Check(subd.FaceCount() == 2, "face count is unchanged - this is pure topology surgery, no face added or removed");
+
+  const auto post_report = subd.Check();
+  Check(post_report.non_manifold_vertices == 0, "the bowtie is gone - every vertex's incident faces form one fan");
+  Check(post_report.body_count == 2,
+        "body_count now counts the two wings as 2 separate bodies - splitting the shared vertex made "
+        "the pre-existing edge-adjacency separation (they never shared an edge) visible there too");
+  Check(post_report.duplicate_vertices == 2 && post_report.duplicate_vertex_list.size() == 2,
+        "the original v0 and its new split-off twin now sit at the exact same point as two distinct "
+        "records - genuinely duplicate by Check()'s own definition, the expected residue of a "
+        "'disjoin' repair (same convention Brep::SplitNonManifoldVertex()'s own doc comment "
+        "establishes: nothing about the geometry was wrong, only the topology)");
+
+  // Geometric correctness: the original v0 id still resolves to (0,0,0)
+  // and is incident to exactly one of the two wings; the new split-off
+  // vertex is incident to the other, also at (0,0,0) - not a stray point.
+  const ON_SubDVertex* kept = subd.raw().VertexFromId(v0_id);
+  Check(kept != nullptr && kept->ControlNetPoint().DistanceTo(Point3d(0, 0, 0)) < 1e-12,
+        "the original vertex id still resolves, still at the origin");
+  Check(kept->FaceCount() == 1, "the kept vertex now belongs to exactly one wing, not both");
+
+  const ON_SubDVertex* new_v = nullptr;
+  ON_SubDVertexIterator vit = subd.raw().VertexIterator();
+  for (const ON_SubDVertex* v = vit.FirstVertex(); v != nullptr; v = vit.NextVertex()) {
+    if (v->m_id != v0_id && v->ControlNetPoint().DistanceTo(Point3d(0, 0, 0)) < 1e-12) {
+      new_v = v;
+      break;
+    }
+  }
+  Check(new_v != nullptr, "a second vertex now sits at the origin - the split-off twin");
+  Check(new_v->FaceCount() == 1, "the new twin also belongs to exactly one wing");
+  Check(kept->Face(0) != new_v->Face(0), "the kept vertex and its twin belong to two DIFFERENT faces");
+
+  // A single-fan vertex (not actually non-manifold) refuses.
+  Check(!subd.SplitNonManifoldVertex(kept->m_id), "refuses a vertex whose incident faces already form one fan");
+
+  // Batch driver: rebuild the same two-wing bowtie fixture fresh and
+  // confirm SplitNonManifoldVertices() finds and splits it without the
+  // caller naming the id itself.
+  {
+    SubD subd2;
+    ON_SubD& raw2 = subd2.raw();
+    ON_SubDVertex* w0 = raw2.AddVertex(ON_SubDVertexTag::Unset, p0);
+    auto add_wing2 = [&](double x0, double y0) {
+      const double pa[3] = {x0, y0, 0.0};
+      const double pb[3] = {x0 + 1.0, y0, 0.0};
+      const double pc[3] = {x0 + 1.0, y0 + 1.0, 0.0};
+      ON_SubDVertex* va = raw2.AddVertex(ON_SubDVertexTag::Unset, pa);
+      ON_SubDVertex* vb = raw2.AddVertex(ON_SubDVertexTag::Unset, pb);
+      ON_SubDVertex* vc = raw2.AddVertex(ON_SubDVertexTag::Unset, pc);
+      ON_SubDEdge* e0 = raw2.AddEdge(ON_SubDEdgeTag::Unset, w0, va);
+      ON_SubDEdge* e1 = raw2.AddEdge(ON_SubDEdgeTag::Unset, va, vb);
+      ON_SubDEdge* e2 = raw2.AddEdge(ON_SubDEdgeTag::Unset, vb, vc);
+      ON_SubDEdge* e3 = raw2.AddEdge(ON_SubDEdgeTag::Unset, vc, w0);
+      ON_SimpleArray<ON_SubDEdge*> edges(4);
+      edges.Append(e0);
+      edges.Append(e1);
+      edges.Append(e2);
+      edges.Append(e3);
+      raw2.AddFace(edges);
+    };
+    add_wing2(1.0, 0.0);
+    add_wing2(-2.0, -1.0);
+    Check(subd2.Check().non_manifold_vertices == 1, "sanity: subd2 also starts with exactly one bowtie");
+    const int split_count = subd2.SplitNonManifoldVertices();
+    Check(split_count == 1, "SplitNonManifoldVertices() splits exactly the one bowtie vertex it found");
+    Check(subd2.Check().non_manifold_vertices == 0, "no bowtie vertex remains after the batch driver runs");
+  }
+}
+
+void TestSubDMergeDuplicateVerticesWeldsCoincidentPairs() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SubD;
+
+  // TestSubDCheckDuplicateVerticesDetected's own fixture: two single-quad
+  // wings, each built from entirely distinct vertex objects, with wing B's
+  // own v0 moved onto the exact same point as wing A's own v0.
+  SubD subd;
+  ON_SubD& raw = subd.raw();
+  auto add_wing_quad = [&](double x0, double y0, double z0) {
+    const double p0[3] = {x0, y0, z0};
+    const double pa[3] = {x0 + 1.0, y0, z0};
+    const double pb[3] = {x0 + 1.0, y0 + 1.0, z0};
+    const double pc[3] = {x0, y0 + 1.0, z0};
+    ON_SubDVertex* v0 = raw.AddVertex(ON_SubDVertexTag::Unset, p0);
+    ON_SubDVertex* va = raw.AddVertex(ON_SubDVertexTag::Unset, pa);
+    ON_SubDVertex* vb = raw.AddVertex(ON_SubDVertexTag::Unset, pb);
+    ON_SubDVertex* vc = raw.AddVertex(ON_SubDVertexTag::Unset, pc);
+    ON_SubDEdge* e0 = raw.AddEdge(ON_SubDEdgeTag::Unset, v0, va);
+    ON_SubDEdge* e1 = raw.AddEdge(ON_SubDEdgeTag::Unset, va, vb);
+    ON_SubDEdge* e2 = raw.AddEdge(ON_SubDEdgeTag::Unset, vb, vc);
+    ON_SubDEdge* e3 = raw.AddEdge(ON_SubDEdgeTag::Unset, vc, v0);
+    ON_SimpleArray<ON_SubDEdge*> edges(4);
+    edges.Append(e0);
+    edges.Append(e1);
+    edges.Append(e2);
+    edges.Append(e3);
+    raw.AddFace(edges);
+    return v0;
+  };
+
+  const ON_SubDVertex* vA0 = add_wing_quad(0.0, 0.0, 0.0);
+  const ON_SubDVertex* vB0 = add_wing_quad(3.0, 3.0, 0.0);
+  const_cast<ON_SubDVertex*>(vB0)->SetControlNetPoint(ON_3dPoint(0.0, 0.0, 0.0), false);
+  Check(subd.VertexCount() == 8, "sanity: 8 distinct vertex objects before merging, vA0/vB0 coincident");
+  Check(subd.Check().duplicate_vertices == 2, "sanity: exactly the vA0/vB0 pair is flagged before merging");
+
+  const int merged = subd.MergeDuplicateVertices();
+  Check(merged == 1, "exactly one vertex (the discarded half of the vA0/vB0 pair) was welded away");
+  Check(subd.VertexCount() == 7, "vertex count drops by exactly 1 - the two coincident records become one");
+
+  const auto post_report = subd.Check();
+  Check(post_report.duplicate_vertices == 0 && post_report.duplicate_vertex_list.empty(),
+        "no duplicate vertices remain after merging");
+  Check(post_report.body_count == 2,
+        "body_count (edge-adjacency connectivity) still counts the two wings as 2 bodies even after "
+        "the merge - a shared VERTEX is not a shared EDGE, the same distinction "
+        "TestSubDCheckBowtieVertexDetected's own bowtie case already draws for a vertex-only pinch "
+        "point; merging two coincident records never by itself creates a face-to-face edge connection");
+  Check(post_report.non_manifold_vertices == 1,
+        "the newly-merged shared vertex is now a genuine bowtie (both wings' faces meet only at this "
+        "one point, no shared edge) - MergeDuplicateVertices() only welds the coincident records "
+        "together, it does not attempt to resolve the bowtie that welding two originally-separate "
+        "wings at a single point always produces; that is SplitNonManifoldVertex()'s own job, "
+        "deliberately a different repair for a different defect");
+
+  // A clean SubD (no coincident-but-distinct vertices) merges nothing.
+  {
+    SubD clean = SubD::FromControlMesh(MakeQuadBoxMesh(0, 0, 0, 1, 1, 1));
+    const int clean_merged = clean.MergeDuplicateVertices();
+    Check(clean_merged == 0, "a clean box SubD has nothing to merge");
+    Check(clean.VertexCount() == 8, "vertex count is unchanged when there is nothing to merge");
+  }
+
+  // A SubD with fewer than 2 vertices refuses trivially (nothing to group).
+  {
+    SubD empty;
+    Check(empty.MergeDuplicateVertices() == 0, "an empty SubD merges nothing");
+  }
+}
+
 // SubD::InsertEdge(): a single flat quad face split along its own
 // diagonal - exact, hand-derivable topology counts (1 face/4 vertices/4
 // edges become 2 faces/4 vertices/5 edges), plus the documented refusals
@@ -51711,6 +51892,8 @@ int main() {
   TestSubDCheckBowtieVertexDetected();
   TestSubDCheckDuplicateVerticesDetected();
   TestSubDSplitDisjointPiecesSplitsIntoSeparateSubDs();
+  TestSubDSplitNonManifoldVertexSplitsBowtie();
+  TestSubDMergeDuplicateVerticesWeldsCoincidentPairs();
   TestSubDInsertEdgeSplitsFaceIntoTwoAlongDiagonal();
   TestSubDSpinEdgeRotatesSharedInteriorEdge();
   TestSubDExtrudeFaceAddsProtrusionAlongNormal();

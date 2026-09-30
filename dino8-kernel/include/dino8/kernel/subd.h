@@ -1199,6 +1199,88 @@ class SubD {
   // when body_count <= 1 (nothing to split).
   std::vector<SubD> SplitDisjointPieces() const;
 
+  // The SubD-level counterpart of Brep::SplitNonManifoldVertex(): heals a
+  // single non-manifold ("bowtie") vertex - Check()'s own
+  // non_manifold_vertices/non_manifold_vertex_list - by the same
+  // Parasolid/ACIS "disjoin" repair Brep::SplitNonManifoldVertex() already
+  // applies to a Brep: nothing about any face's own shape at the pinch
+  // point is wrong, only the TOPOLOGY of one ON_SubDVertex record being
+  // shared between two-or-more locally-disconnected fans of faces is.
+  // Groups `vertex_id`'s own incident faces exactly the way Check() does
+  // (union-find via each incident edge's face pair, AT this vertex); group
+  // 0 (in Check()'s own first-seen order, i.e. `vertex_id`'s own
+  // ON_SubDVertex::Face(0) and whatever else unions with it) keeps
+  // `vertex_id` itself, and every OTHER group gets its own fresh vertex at
+  // the SAME control-net point, with that group's own faces repointed onto
+  // it - so a caller who welded two SubDs at a shared boundary and got a
+  // bowtie back where a fan should have stayed separate can split it apart
+  // again. Unlike Brep::SplitNonManifoldVertex() (a pure append, safe to
+  // call repeatedly across a Check() report's other issues without
+  // invalidating their own indices), this is a whole-net snapshot-and-
+  // rebuild - the same DeleteComponents()-unsafety reason Weld()'s own doc
+  // comment already gives for taking that approach on this class - but
+  // EVERY other vertex's own id (including any other bowtie vertex's from
+  // the same Check() call) is still preserved unchanged across the
+  // rebuild, exactly as Weld()/SplitDisjointPieces() above already
+  // guarantee, so a caller driving this off one Check() report by id is
+  // still safe. Every wholly-interior (FaceCount()==2) edge touching
+  // `vertex_id` keeps its own tag/sharpness, reapplied post-split onto
+  // whichever of the (up to) two resulting vertices its own two faces
+  // actually landed on (always the SAME one of the two, since a 2-face
+  // edge's own two faces are always unioned into the same group here - see
+  // this method's own definition for why).
+  //
+  // Returns false - not a thrown exception, the same "can't, but that's
+  // not a bug" contract every other id-keyed SubD topology method here
+  // (Weld(), SetEdgeSharpness(), ...) already shares - if `vertex_id`
+  // doesn't identify a vertex of this SubD, or if it isn't actually
+  // non-manifold (fewer than 2 incident faces, or its incident faces
+  // already form a single fan). This SubD is left completely untouched in
+  // either refusal.
+  //
+  // Deliberately does NOT attempt Brep::SplitNonManifoldVertex()'s own
+  // "which group should keep the original vertex" judgment call any
+  // differently than Check()'s own first-seen order already makes it, and
+  // does not attempt to pick WHICH of several bowtie vertices to split
+  // first when more than one exists - see SplitNonManifoldVertices() below
+  // for the batch driver that runs this over every one Check() reports.
+  bool SplitNonManifoldVertex(unsigned int vertex_id);
+
+  // Runs Check(tolerance) once and calls SplitNonManifoldVertex() on every
+  // non_manifold_vertex_list id it reports - safe as a SINGLE pass over
+  // that one report, the same reason Brep::SplitNonManifoldVertices()
+  // above is: SplitNonManifoldVertex() never changes or removes any OTHER
+  // vertex's own id (see its own doc comment). `tolerance` only feeds
+  // Check()'s own duplicate_vertex_tolerance parameter (irrelevant to
+  // which vertices are non-manifold, but Check() takes one regardless).
+  // Returns the number of vertices actually split.
+  int SplitNonManifoldVertices(double tolerance = tolerance::kDistance);
+
+  // The repair counterpart of Check()'s own duplicate_vertices/
+  // duplicate_vertex_list: welds every group of `tolerance`-coincident
+  // control-net vertices (the same spatial-proximity grouping Check()
+  // itself uses to flag them, GroupByProximity() in subd.cpp) down to one
+  // real vertex per group, via repeated Weld() calls - the first
+  // encountered id in each group is kept, every other member is welded
+  // onto it in turn. Closes the "duplicate-vertex detection... has no
+  // SubD counterpart" repair gap Check()'s own PARITY_MAP.md history
+  // explicitly disclosed alongside SplitNonManifoldVertex() above (that
+  // one heals a bowtie; this one heals the OTHER defect Check() added
+  // detection for - two-or-more coincident-but-distinct vertex records
+  // that were never welded together in the first place, e.g. two SubDs
+  // built independently and merged without a shared-boundary Weld() pass).
+  //
+  // A member Weld() itself refuses (already edge-connected to the group's
+  // kept vertex, or already two distinct corners of the same face - see
+  // Weld()'s own doc comment) is silently left unmerged rather than
+  // treated as an error, the same "can't, but that's not a bug" contract
+  // every Weld()-based repair here already has; GroupByProximity()'s own
+  // documented non-transitivity (a proximity chain can span more than
+  // `tolerance` end-to-end) means a group can therefore shrink by fewer
+  // than its own full size. Returns the number of vertices actually
+  // welded away (i.e. discarded) - 0 if no group had more than one member.
+  int MergeDuplicateVertices(double tolerance = tolerance::kDistance);
+
   const ON_SubD& raw() const { return subd_; }
   ON_SubD& raw() { return subd_; }
 

@@ -3819,6 +3819,108 @@ This session's only source edits are `dino8-kernel/include/dino8/kernel/
 subd.h`, `dino8-kernel/src/subd.cpp`, and `dino8-kernel/tests/
 test_basic.cpp`.
 
+**2026-09-30 follow-up (the two repair gaps `SplitDisjointPieces()`'s own
+introducing note above left explicitly open):** `git log --oneline -3 --
+dino8-kernel/src/subd.cpp` at the start of this session showed
+`b7c1e6f` (`SubD::Check()` duplicate-vertex detection + `SplitDisjointPieces`)
+as the most recent commit touching this category, whose own text already
+named exactly what it did NOT attempt: "no repair/split counterpart
+(`Brep::SplitNonManifoldVertex`/`SplitDisjointPieces` have no SubD analog
+here...)" and "duplicate-vertex detection... is not attempted" (closed to
+detection-only by that same commit, still with no WELD counterpart). Both
+are now closed, picked together since they're the two halves of the same
+"`Check()` can find it, nothing can fix it" gap.
+
+`SubD::SplitNonManifoldVertex(vertex_id)` (subd.h; subd.cpp) is the
+SubD-level counterpart of `Brep::SplitNonManifoldVertex()`: the same
+Parasolid/ACIS "disjoin" repair for a bowtie vertex — nothing about any
+face's own shape at the pinch point is wrong, only the topology of one
+`ON_SubDVertex` record being shared between two-or-more locally-
+disconnected fans of faces is. Groups the vertex's own incident faces via
+the identical union-find-over-shared-incident-edges `Check()`'s own
+`non_manifold_vertices` already computes; group 0 (first-seen order, same
+convention `Check()`/`Brep::SplitNonManifoldVertex()` both already use)
+keeps the original vertex, every other group gets a fresh vertex at the
+same control-net point with that group's own faces repointed onto it. Like
+`Weld()`/`SplitDisjointPieces()` above (and for the identical
+`DeleteComponents()`-unsafety reason their own doc comments already give),
+this is a whole-net snapshot-and-rebuild rather than local surgery — but
+every OTHER vertex's own id, including any other bowtie vertex's from the
+same `Check()` call, is still preserved unchanged across the rebuild, so
+`SplitNonManifoldVertices()` (the batch driver alongside it) can safely
+run `Check()` once and split every reported id in one pass, the same
+safety property `Brep::SplitNonManifoldVertices()` already has for a
+different (pure-append) reason. One real implementation pitfall caught
+before it shipped: `ON_SubD::AddVertexForExperts()`'s own candidate-id
+parameter is only honored when it EXCEEDS the id watermark already seen
+in the (never-had-a-deletion) fresh `ON_SubD` being built — so the target
+vertex's OWN id had to be re-added at its natural position in the SAME
+vertex-iteration pass as every other preserved vertex (establishing the
+watermark correctly before any fresh id is requested), not held back and
+appended afterward the way a first draft tried; verified by direct
+reproduction (the naive appended-afterward version silently handed group 0
+a DIFFERENT id than the one requested whenever the target's original id
+wasn't the maximum in the whole vertex range) before landing the fix.
+
+`SubD::MergeDuplicateVertices(tolerance)` closes the other half: the weld
+counterpart of `Check()`'s own `duplicate_vertices`/`duplicate_vertex_list`
+— groups control-net vertices by the identical `GroupByProximity()`
+spatial clustering `Check()` itself already uses to flag them, then welds
+every group down to one real vertex via repeated `Weld()` calls (first
+member kept, every other member welded onto it). Deliberately reuses
+`Weld()` rather than reimplementing vertex-merge topology surgery a second
+time; a member `Weld()` itself refuses (already edge-connected to the
+kept vertex, or already two distinct corners of the same face) is left
+unmerged rather than treated as an error, same "can't, but that's not a
+bug" contract every other `Weld()`-based repair here already has.
+
+Verified by 9 new checks across 2 tests (tests/test_basic.cpp):
+`TestSubDSplitNonManifoldVertexSplitsBowtie` reuses
+`TestSubDCheckBowtieVertexDetected`'s own two-wings-sharing-one-vertex
+fixture — refuses an id that doesn't identify a vertex of this SubD;
+splits the genuine bowtie (vertex count 7->8, face count unchanged at 2,
+`non_manifold_vertices` 1->0); the original id and its new twin both still
+sit exactly at the origin, each now belonging to exactly one (different)
+wing; a post-split re-check confirms `SplitNonManifoldVertex()` itself now
+refuses the already-fixed, single-fan vertex; and a fresh instance of the
+same fixture proves the `SplitNonManifoldVertices()` batch driver finds and
+splits the one bowtie without the caller naming its id.
+`TestSubDMergeDuplicateVerticesWeldsCoincidentPairs` reuses
+`TestSubDCheckDuplicateVerticesDetected`'s own two-wings-with-a-
+coincident-but-distinct-vertex-pair fixture — merges exactly 1 vertex away
+(8->7), `duplicate_vertices` 2->0 afterward, `body_count` STAYS 2 (a
+shared vertex is not a shared edge — the same distinction the bowtie test
+already draws, confirmed here from the opposite direction), and
+`non_manifold_vertices` becomes 1 (welding two originally-separate wings
+at a single point always produces a genuine bowtie, which
+`MergeDuplicateVertices()` deliberately does not itself try to resolve —
+that's `SplitNonManifoldVertex()`'s own separate job); plus a clean box
+(nothing to merge) and an empty SubD both correctly merge zero. One real
+test-writing mistake caught and fixed before landing, not shipped on
+first instinct: an initial draft asserted `body_count == 1` after the
+merge (assuming a shared vertex joins the two wings into one body) — false
+on inspection, since `body_count` is purely edge-adjacency and a bare
+shared vertex creates no edge; corrected to assert `body_count == 2`
+before this pass's own final full-suite run, per this document's own
+established practice of never landing a check the code doesn't actually
+satisfy.
+
+This category's own present/partial/missing counts are unchanged
+(15/7/0/22, 84.1%) — `Check()`'s own item was already `present` before
+this pass and stays `present`; this closes real, tested ground under the
+two residual gaps that item's own text explicitly disclosed, without
+claiming the one thing `Brep::SplitNonManifoldVertex()`'s own doc comment
+already scopes out for its own Brep counterpart either: which group
+"should" keep the original vertex/id remains Check()'s own first-seen
+order, never a caller-supplied judgment call. Full `dino8_kernel_tests`
+suite (via the test binary directly, not `ctest`'s own wrapper, whose
+buffered/interleaved-with-other-suites output made isolating a single
+failing check unreliable this pass): 100% passing (all checks passed),
+0 regressions, after fixing the one `body_count` assertion mistake noted
+above. This session's only source edits are `dino8-kernel/include/dino8/
+kernel/subd.h`, `dino8-kernel/src/subd.cpp`, and `dino8-kernel/tests/
+test_basic.cpp`.
+
 ## App: Dino 8 vs Rhino 8 + AutoCAD 2027
 
 | Category | Weight | Items | Present | Partial | Missing | Parity % |
