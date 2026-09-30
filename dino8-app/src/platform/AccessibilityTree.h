@@ -26,10 +26,14 @@
 // render Environment settings (see BuildEnvironmentsPanelNode), the last
 // Audit run's results (see BuildAuditResultsNode), its pending Undo/Redo
 // history (see BuildUndoHistoryNode/BuildRedoHistoryNode), the loaded Hatch
-// Pattern library (see BuildHatchPatternsNode), and its loaded plug-ins (see
-// BuildPluginsNode).
-// The 3D viewport's own rendered content and the ~22 other panels/dialogs are
-// still not mirrored into this tree.
+// Pattern library (see BuildHatchPatternsNode), its loaded plug-ins (see
+// BuildPluginsNode), the ~1055-command Rhino 8 reference catalog (see
+// BuildCommandListNode), the user's saved command aliases (see
+// BuildCommandAliasesNode), and the user's customized keyboard shortcuts
+// (see BuildKeyboardShortcutsNode).
+// The 3D viewport's own rendered content and the ~21 remaining panels/
+// dialogs (plus most of the Options window - only its Aliases and
+// Shortcuts tabs are covered above) are still not mirrored into this tree.
 #pragma once
 
 #include <cstdint>
@@ -574,5 +578,84 @@ struct PluginSummary {
 // Plug-in Manager panel's own Load File.../Rescan Folders buttons that add
 // more entries after that.
 AccessibleNode BuildPluginsNode(const std::vector<PluginSummary>& plugins);
+
+// One Command List row (CommandEngine's RegisteredCommand, reduced to plain
+// data the same way the summaries above keep this module independent of
+// commands/CommandEngine): the command's canonical name, its status as
+// plain text (CommandEngine.h's CommandStatusName - "Implemented",
+// "Partial" or "Planned", kept as text here rather than the enum itself so
+// this module stays independent of commands/CommandEngine), and its
+// description - its real CommandInfo description when it has one, or its
+// internal engineering note otherwise, exactly the `rc.info ?
+// rc.info->description : rc.note` choice DrawCommandListPanel/DrawHelpPanel
+// already make.
+struct CommandListEntrySummary {
+  std::string name;
+  std::string status_text;
+  std::string description;
+};
+
+// Builds the "Command List" List accessible: one ListItem per registered
+// command, in the same order CommandEngine::Registry() (a std::map, so
+// already name-sorted) holds them, each named after the command with a
+// Description combining its status and description text - the same facts
+// DrawCommandListPanel's Command/Status/Description table columns show per
+// row. The list's own Description gives the total command count plus an
+// implemented/partial/planned breakdown, matching DrawCommandListPanel's own
+// header text. Independent of whether the Command List panel window is
+// actually open right now, the same way the other panel-backed regions
+// above don't depend on their own panel window. Never empty in a real
+// build: the ~1055-command Rhino 8 reference catalog is registered as
+// placeholders at startup even for commands with no implementation yet (see
+// CommandEngine::RegisterCatalogPlaceholders), the same "never empty" shape
+// Hatch Patterns/Plug-ins use.
+AccessibleNode BuildCommandListNode(const std::vector<CommandListEntrySummary>& commands);
+
+// One Command Aliases row (CommandEngine::Aliases(), a
+// std::map<std::string, std::string> reduced to plain data the same way
+// DocumentUserTextSummary above keeps this module independent of
+// doc/Document): an alias and the full command name it expands to - the
+// same two facts the Options window's Aliases tab shows per row.
+struct CommandAliasSummary {
+  std::string alias;
+  std::string command;
+};
+
+// Builds the "Command Aliases" List accessible: one ListItem per alias, in
+// the same order CommandEngine::Aliases() (a std::map, so already
+// alias-sorted) holds them, named after the alias with a Description giving
+// the full command name it runs - the same shape BuildDocumentUserTextNode
+// already uses for its own key/value rows. Independent of whether the
+// Options window's Aliases tab is actually open right now, the same way the
+// other panel-backed regions above don't depend on their own panel window.
+// Never empty in a real build: CommandEngine::InstallDefaultAliases()
+// installs Rhino's own default alias set at startup, the same "never empty"
+// shape Hatch Patterns/Plug-ins/Command List use, not the "starts empty,
+// gains rows" shape Named Views/Named CPlanes use.
+AccessibleNode BuildCommandAliasesNode(const std::vector<CommandAliasSummary>& aliases);
+
+// One Keyboard Shortcuts row (app/Application.h's KeyShortcut, reduced to
+// plain data the same way the summaries above keep this module independent
+// of app::Application): the human-readable key combo already formatted as
+// plain text ("Ctrl+Shift+Alt+L", built the same "Ctrl+"/"Shift+"/"Alt+"
+// prefix-and-KeyShortcutName way the Options window's Shortcuts tab formats
+// its own row - see DrawOptionsWindow), and the command it runs.
+struct KeyboardShortcutSummary {
+  std::string combo_text;
+  std::string command;
+};
+
+// Builds the "Keyboard Shortcuts" List accessible: one ListItem per
+// customized shortcut, in the same order Application::user_shortcuts holds
+// them, named after its key combo with a Description giving the command it
+// runs - the same two facts the Options window's Shortcuts tab shows per
+// row. Independent of whether the Options window's Shortcuts tab is
+// actually open right now, the same way the other panel-backed regions
+// above don't depend on their own panel window. Starts empty on a fresh
+// app: unlike Command Aliases, there is no default-shortcuts installer, so
+// this is the "starts empty, gains rows" shape Named Views/Named CPlanes/
+// Audit Results/Undo History use, not the "never empty" shape Command
+// Aliases uses.
+AccessibleNode BuildKeyboardShortcutsNode(const std::vector<KeyboardShortcutSummary>& shortcuts);
 
 }  // namespace dino8::platform
