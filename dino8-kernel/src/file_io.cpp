@@ -295,8 +295,28 @@ void Model::AddPointCloud(const PointCloud& cloud, const std::string& name, int 
 }
 
 int Model::ObjectCount() const {
-  return static_cast<int>(
-      model_.ActiveComponentCount(ON_ModelComponent::Type::ModelGeometry));
+  // Deliberately NOT ActiveComponentCount(ModelGeometry) (what this used to
+  // be): that counts every ModelGeometry component regardless of attribute
+  // mode, including a block's own member geometry added via
+  // AddInstanceDefinition() below with ON::idef_object mode specifically so
+  // it would NOT read as an ordinary scene object - ON::idef_object is an
+  // attribute flag, not a different ON_ModelComponent::Type, so it still
+  // lands in ONX_Model's own ModelGeometry table either way. Excluding it
+  // here changes nothing for any object this class already knew how to add
+  // (AddCurve()/AddMesh()/etc. above never set that mode), so this is a
+  // pure narrowing for existing callers.
+  int count = 0;
+  ONX_ModelComponentIterator iterator(model_, ON_ModelComponent::Type::ModelGeometry);
+  for (const ON_ModelComponent* component = iterator.FirstComponent(); component != nullptr;
+       component = iterator.NextComponent()) {
+    const auto* geometry_component = static_cast<const ON_ModelGeometryComponent*>(component);
+    const ON_3dmObjectAttributes* attributes = geometry_component->Attributes(nullptr);
+    if (attributes != nullptr && attributes->Mode() == ON::idef_object) {
+      continue;
+    }
+    ++count;
+  }
+  return count;
 }
 
 ObjectAttributes Model::ObjectAttributesAt(int index) const {
@@ -307,14 +327,22 @@ ObjectAttributes Model::ObjectAttributesAt(int index) const {
   ONX_ModelComponentIterator iterator(model_, ON_ModelComponent::Type::ModelGeometry);
   int position = 0;
   for (const ON_ModelComponent* component = iterator.FirstComponent(); component != nullptr;
-       component = iterator.NextComponent(), ++position) {
-    if (position != index) {
-      continue;
-    }
+       component = iterator.NextComponent()) {
     const auto* geometry_component = static_cast<const ON_ModelGeometryComponent*>(component);
     const ON_3dmObjectAttributes* attributes = geometry_component->Attributes(nullptr);
     if (attributes == nullptr) {
-      return result;
+      continue;
+    }
+    // See ObjectCount() above for why a block's own member geometry is
+    // skipped here too - otherwise its presence would shift every later
+    // object's index, and it would eventually be returned by some index
+    // even though ObjectCount() itself doesn't count it.
+    if (attributes->Mode() == ON::idef_object) {
+      continue;
+    }
+    if (position != index) {
+      ++position;
+      continue;
     }
     result.name = ToStdString(attributes->Name());
     result.layer_index = attributes->m_layer_index;
@@ -597,6 +625,304 @@ ClippingPlaneInfo Model::ClippingPlaneAt(int clipping_plane_index) const {
       result.origin = surface->m_plane.origin;
       result.normal = surface->m_plane.zaxis;
       result.enabled = surface->m_clipping_plane.m_bEnabled;
+      return result;
+    }
+    ++position;
+  }
+  return result;
+}
+
+int Model::AddInstanceDefinition(const std::string& name, const std::vector<Mesh>& member_meshes) {
+  if (name.empty() || member_meshes.empty()) {
+    return -1;
+  }
+  ON_SimpleArray<ON_UUID> member_ids;
+  for (const Mesh& mesh : member_meshes) {
+    auto* geometry = new ON_Mesh(mesh.raw());
+    ON_3dmObjectAttributes attributes;
+    ON_CreateUuid(attributes.m_uuid);
+    // ON::idef_object: "this object is part of an ON_InstanceDefinition" -
+    // see AddInstanceDefinition()'s own doc comment in file_io.h for why
+    // this is what keeps a block's member geometry out of ObjectCount().
+    attributes.SetMode(ON::idef_object);
+    model_.AddModelGeometryComponent(geometry, &attributes);
+    member_ids.Append(attributes.m_uuid);
+  }
+  ON_InstanceDefinition idef;
+  idef.SetName(ON_wString(name.c_str()));
+  idef.SetInstanceGeometryIdList(member_ids);
+  const ON_ModelComponentReference idef_ref = model_.AddModelComponent(idef, true);
+  const ON_InstanceDefinition* managed_idef = ON_InstanceDefinition::FromModelComponentRef(idef_ref, nullptr);
+  return managed_idef != nullptr ? managed_idef->Index() : -1;
+}
+
+int Model::InstanceDefinitionCount() const {
+  return static_cast<int>(model_.ActiveComponentCount(ON_ModelComponent::Type::InstanceDefinition));
+}
+
+std::string Model::InstanceDefinitionNameAt(int definition_index) const {
+  const ON_ModelComponentReference idef_ref =
+      model_.ComponentFromIndex(ON_ModelComponent::Type::InstanceDefinition, definition_index);
+  const ON_InstanceDefinition* idef = ON_InstanceDefinition::Cast(idef_ref.ModelComponent());
+  return idef != nullptr ? ToStdString(idef->Name()) : std::string();
+}
+
+int Model::InstanceDefinitionMemberMeshCount(int definition_index) const {
+  const ON_ModelComponentReference idef_ref =
+      model_.ComponentFromIndex(ON_ModelComponent::Type::InstanceDefinition, definition_index);
+  const ON_InstanceDefinition* idef = ON_InstanceDefinition::Cast(idef_ref.ModelComponent());
+  return idef != nullptr ? idef->InstanceGeometryIdList().Count() : 0;
+}
+
+Mesh Model::InstanceDefinitionMemberMeshAt(int definition_index, int member_index) const {
+  Mesh result;
+  const ON_ModelComponentReference idef_ref =
+      model_.ComponentFromIndex(ON_ModelComponent::Type::InstanceDefinition, definition_index);
+  const ON_InstanceDefinition* idef = ON_InstanceDefinition::Cast(idef_ref.ModelComponent());
+  if (idef == nullptr) {
+    return result;
+  }
+  const ON_SimpleArray<ON_UUID>& member_ids = idef->InstanceGeometryIdList();
+  if (member_index < 0 || member_index >= member_ids.Count()) {
+    return result;
+  }
+  const ON_ModelGeometryComponent& geometry_component =
+      model_.ModelGeometryComponentFromId(member_ids[member_index]);
+  const ON_Mesh* mesh = ON_Mesh::Cast(geometry_component.Geometry(nullptr));
+  if (mesh != nullptr) {
+    result.raw() = *mesh;
+  }
+  return result;
+}
+
+int Model::AddInstanceReference(int definition_index, const ON_Xform& xform, const std::string& name,
+                                 int layer_index, std::optional<Color> render_color,
+                                 const UserStrings& user_strings, std::optional<int> linetype_index,
+                                 const std::vector<int>& group_indices, std::optional<int> material_index) {
+  const ON_ModelComponentReference idef_ref =
+      model_.ComponentFromIndex(ON_ModelComponent::Type::InstanceDefinition, definition_index);
+  const ON_InstanceDefinition* idef = ON_InstanceDefinition::Cast(idef_ref.ModelComponent());
+  if (idef == nullptr) {
+    return -1;
+  }
+  auto* instance_ref = new ON_InstanceRef();
+  instance_ref->m_instance_definition_uuid = idef->Id();
+  instance_ref->m_xform = xform;
+  const int index = InstanceReferenceCount();
+  ON_3dmObjectAttributes attributes = MakeAttributes(
+      name, layer_index, render_color, user_strings, linetype_index, group_indices, material_index);
+  model_.AddModelGeometryComponent(instance_ref, &attributes);
+  return index;
+}
+
+int Model::InstanceReferenceCount() const {
+  int count = 0;
+  ONX_ModelComponentIterator iterator(model_, ON_ModelComponent::Type::ModelGeometry);
+  for (const ON_ModelComponent* component = iterator.FirstComponent(); component != nullptr;
+       component = iterator.NextComponent()) {
+    const auto* geometry_component = static_cast<const ON_ModelGeometryComponent*>(component);
+    if (ON_InstanceRef::Cast(geometry_component->Geometry(nullptr)) != nullptr) {
+      ++count;
+    }
+  }
+  return count;
+}
+
+InstanceReferenceInfo Model::InstanceReferenceAt(int index) const {
+  InstanceReferenceInfo result;
+  if (index < 0) {
+    return result;
+  }
+  int position = 0;
+  ONX_ModelComponentIterator iterator(model_, ON_ModelComponent::Type::ModelGeometry);
+  for (const ON_ModelComponent* component = iterator.FirstComponent(); component != nullptr;
+       component = iterator.NextComponent()) {
+    const auto* geometry_component = static_cast<const ON_ModelGeometryComponent*>(component);
+    const ON_InstanceRef* instance_ref = ON_InstanceRef::Cast(geometry_component->Geometry(nullptr));
+    if (instance_ref == nullptr) {
+      continue;
+    }
+    if (position == index) {
+      const ON_3dmObjectAttributes* attributes = geometry_component->Attributes(nullptr);
+      if (attributes != nullptr) {
+        result.name = ToStdString(attributes->Name());
+      }
+      const ON_ModelComponentReference idef_ref = model_.ComponentFromId(
+          ON_ModelComponent::Type::InstanceDefinition, instance_ref->m_instance_definition_uuid);
+      const ON_InstanceDefinition* idef = ON_InstanceDefinition::Cast(idef_ref.ModelComponent());
+      result.definition_index = idef != nullptr ? idef->Index() : -1;
+      result.transform = instance_ref->m_xform;
+      return result;
+    }
+    ++position;
+  }
+  return result;
+}
+
+int Model::AddHatchPattern(const std::string& name, HatchFillType fill_type) {
+  if (name.empty()) {
+    return -1;
+  }
+  ON_HatchPattern pattern;
+  pattern.SetName(ON_wString(name.c_str()));
+  pattern.SetFillType(fill_type == HatchFillType::Lines ? ON_HatchPattern::HatchFillType::Lines
+                                                         : ON_HatchPattern::HatchFillType::Solid);
+  const ON_ModelComponentReference pattern_ref = model_.AddModelComponent(pattern, true);
+  const ON_HatchPattern* managed_pattern = ON_HatchPattern::FromModelComponentRef(pattern_ref, nullptr);
+  return managed_pattern != nullptr ? managed_pattern->Index() : -1;
+}
+
+int Model::HatchPatternCount() const {
+  return static_cast<int>(model_.ActiveComponentCount(ON_ModelComponent::Type::HatchPattern));
+}
+
+int Model::AddHatch(const ON_Plane& plane, const std::vector<Point2d>& boundary, int pattern_index,
+                     double pattern_rotation, double pattern_scale, const std::string& name,
+                     int layer_index, std::optional<Color> render_color, const UserStrings& user_strings,
+                     std::optional<int> linetype_index, const std::vector<int>& group_indices,
+                     std::optional<int> material_index) {
+  if (name.empty() || boundary.size() < 3 || pattern_index < 0) {
+    return -1;
+  }
+  const ON_ModelComponentReference pattern_ref =
+      model_.ComponentFromIndex(ON_ModelComponent::Type::HatchPattern, pattern_index);
+  if (ON_HatchPattern::Cast(pattern_ref.ModelComponent()) == nullptr) {
+    return -1;
+  }
+  // ON_HatchLoop's own doc comment: "the 2d loop curve in the hatch's plane
+  // coordinates ... really a 3d curve with z coordinates = 0" - so `boundary`
+  // becomes a closed 3D polyline with each (u, v) point's z forced to 0,
+  // not a curve in world coordinates.
+  ON_3dPointArray loop_points;
+  for (const Point2d& uv : boundary) {
+    loop_points.Append(ON_3dPoint(uv.x, uv.y, 0.0));
+  }
+  loop_points.Append(loop_points[0]);  // ON_PolylineCurve requires an explicitly closed point list
+  ON_PolylineCurve loop_curve(loop_points);
+  ON_SimpleArray<const ON_Curve*> loops;
+  loops.Append(static_cast<const ON_Curve*>(&loop_curve));
+  auto* hatch = new ON_Hatch();
+  if (!hatch->Create(plane, loops, pattern_index, pattern_rotation, pattern_scale)) {
+    delete hatch;
+    return -1;
+  }
+  const int index = HatchCount();
+  ON_3dmObjectAttributes attributes = MakeAttributes(
+      name, layer_index, render_color, user_strings, linetype_index, group_indices, material_index);
+  model_.AddModelGeometryComponent(hatch, &attributes);
+  return index;
+}
+
+int Model::HatchCount() const {
+  int count = 0;
+  ONX_ModelComponentIterator iterator(model_, ON_ModelComponent::Type::ModelGeometry);
+  for (const ON_ModelComponent* component = iterator.FirstComponent(); component != nullptr;
+       component = iterator.NextComponent()) {
+    const auto* geometry_component = static_cast<const ON_ModelGeometryComponent*>(component);
+    if (ON_Hatch::Cast(geometry_component->Geometry(nullptr)) != nullptr) {
+      ++count;
+    }
+  }
+  return count;
+}
+
+HatchInfo Model::HatchAt(int hatch_index) const {
+  HatchInfo result;
+  if (hatch_index < 0) {
+    return result;
+  }
+  int position = 0;
+  ONX_ModelComponentIterator iterator(model_, ON_ModelComponent::Type::ModelGeometry);
+  for (const ON_ModelComponent* component = iterator.FirstComponent(); component != nullptr;
+       component = iterator.NextComponent()) {
+    const auto* geometry_component = static_cast<const ON_ModelGeometryComponent*>(component);
+    const ON_Hatch* hatch = ON_Hatch::Cast(geometry_component->Geometry(nullptr));
+    if (hatch == nullptr) {
+      continue;
+    }
+    if (position == hatch_index) {
+      const ON_3dmObjectAttributes* attributes = geometry_component->Attributes(nullptr);
+      if (attributes != nullptr) {
+        result.name = ToStdString(attributes->Name());
+      }
+      result.plane = hatch->Plane();
+      if (hatch->LoopCount() > 0) {
+        const ON_HatchLoop* loop = hatch->Loop(0);
+        const ON_Curve* loop_curve = loop != nullptr ? loop->Curve() : nullptr;
+        if (loop_curve != nullptr) {
+          // The loop curve is a closed polyline whose last point duplicates
+          // its first (see AddHatch() above, which appends that duplicate
+          // to close ON_PolylineCurve's own point list) - dropped here so
+          // `boundary` round-trips exactly what AddHatch() was given.
+          ON_3dPointArray points;
+          if (loop_curve->IsPolyline(&points) >= 2) {
+            const int usable = points.Count() - 1;
+            for (int i = 0; i < usable; ++i) {
+              result.boundary.push_back(Point2d(points[i].x, points[i].y));
+            }
+          }
+        }
+      }
+      result.pattern_index = hatch->PatternIndex();
+      result.pattern_rotation = hatch->PatternRotation();
+      result.pattern_scale = hatch->PatternScale();
+      return result;
+    }
+    ++position;
+  }
+  return result;
+}
+
+int Model::AddTextDot(Point3d center, const std::string& primary_text, const std::string& secondary_text,
+                       const std::string& name, int layer_index, std::optional<Color> render_color,
+                       const UserStrings& user_strings, std::optional<int> linetype_index,
+                       const std::vector<int>& group_indices, std::optional<int> material_index) {
+  if (name.empty()) {
+    return -1;
+  }
+  auto* dot = new ON_TextDot(center, ON_wString(primary_text.c_str()), ON_wString(secondary_text.c_str()));
+  const int index = TextDotCount();
+  ON_3dmObjectAttributes attributes = MakeAttributes(
+      name, layer_index, render_color, user_strings, linetype_index, group_indices, material_index);
+  model_.AddModelGeometryComponent(dot, &attributes);
+  return index;
+}
+
+int Model::TextDotCount() const {
+  int count = 0;
+  ONX_ModelComponentIterator iterator(model_, ON_ModelComponent::Type::ModelGeometry);
+  for (const ON_ModelComponent* component = iterator.FirstComponent(); component != nullptr;
+       component = iterator.NextComponent()) {
+    const auto* geometry_component = static_cast<const ON_ModelGeometryComponent*>(component);
+    if (ON_TextDot::Cast(geometry_component->Geometry(nullptr)) != nullptr) {
+      ++count;
+    }
+  }
+  return count;
+}
+
+TextDotInfo Model::TextDotAt(int text_dot_index) const {
+  TextDotInfo result;
+  if (text_dot_index < 0) {
+    return result;
+  }
+  int position = 0;
+  ONX_ModelComponentIterator iterator(model_, ON_ModelComponent::Type::ModelGeometry);
+  for (const ON_ModelComponent* component = iterator.FirstComponent(); component != nullptr;
+       component = iterator.NextComponent()) {
+    const auto* geometry_component = static_cast<const ON_ModelGeometryComponent*>(component);
+    const ON_TextDot* dot = ON_TextDot::Cast(geometry_component->Geometry(nullptr));
+    if (dot == nullptr) {
+      continue;
+    }
+    if (position == text_dot_index) {
+      const ON_3dmObjectAttributes* attributes = geometry_component->Attributes(nullptr);
+      if (attributes != nullptr) {
+        result.name = ToStdString(attributes->Name());
+      }
+      result.center = dot->CenterPoint();
+      result.primary_text = ToStdString(ON_wString(dot->PrimaryText()));
+      result.secondary_text = ToStdString(ON_wString(dot->SecondaryText()));
       return result;
     }
     ++position;

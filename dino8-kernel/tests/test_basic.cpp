@@ -7375,6 +7375,207 @@ void TestModelAddClippingPlaneRoundTrips() {
   std::remove(path.c_str());
 }
 
+void TestModelAddInstanceReferenceRoundTrips() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Model;
+  using dino8::kernel::Result;
+
+  // PARITY_MAP.md's own "kernel: Kernel-level data exchange" evidence for
+  // ".3dm composite objects" names block instances as entirely missing:
+  // before this, nothing in this kernel could create an
+  // ON_InstanceDefinition/ON_InstanceRef pair at all.
+  const auto box = MakeQuadBoxMesh(0, 0, 0, 1, 1, 1);
+  Model model;
+  Check(model.InstanceDefinitionCount() == 0, "a fresh Model has no instance definitions");
+  Check(model.AddInstanceDefinition("", {box}) == -1,
+        "AddInstanceDefinition() returns -1 for an empty name, same contract as AddLayer() etc.");
+  Check(model.AddInstanceDefinition("Empty", {}) == -1,
+        "AddInstanceDefinition() returns -1 for no member geometry - nothing to define");
+  Check(model.InstanceDefinitionCount() == 0, "neither refused call above added anything");
+
+  const int def_index = model.AddInstanceDefinition("Block A", {box});
+  Check(def_index == 0, "the first real AddInstanceDefinition() call returns index 0");
+  Check(model.InstanceDefinitionCount() == 1, "model has one instance definition after AddInstanceDefinition()");
+  Check(model.InstanceDefinitionNameAt(def_index) == "Block A",
+        "InstanceDefinitionNameAt() reports the name AddInstanceDefinition() was given");
+  Check(model.InstanceDefinitionMemberMeshCount(def_index) == 1,
+        "the definition has exactly the one member mesh it was created with");
+  Check(model.ObjectCount() == 0,
+        "a block's own member geometry does NOT show up in ObjectCount() - it's marked "
+        "ON::idef_object, not an ordinary scene object");
+  const Mesh member = model.InstanceDefinitionMemberMeshAt(def_index, 0);
+  Check(member.VertexCount() == box.VertexCount() && member.FaceCount() == box.FaceCount(),
+        "InstanceDefinitionMemberMeshAt() reports the same mesh AddInstanceDefinition() was given");
+
+  Check(model.AddInstanceReference(9999, ON_Xform::IdentityTransformation) == -1,
+        "AddInstanceReference() returns -1 for a definition_index this model doesn't have");
+  Check(model.InstanceReferenceCount() == 0, "the refused call above added nothing");
+
+  const ON_Xform xform = ON_Xform::TranslationTransformation(ON_3dVector(5, 6, 7));
+  const int ref_index = model.AddInstanceReference(def_index, xform, "Insert 1");
+  Check(ref_index == 0, "the first real AddInstanceReference() call returns index 0");
+  Check(model.InstanceReferenceCount() == 1, "model has one instance reference after AddInstanceReference()");
+  Check(model.ObjectCount() == 1,
+        "an instance reference IS an ordinary ModelGeometry object, unlike its own definition's "
+        "member geometry above");
+
+  const auto placement = model.InstanceReferenceAt(0);
+  Check(placement.name == "Insert 1", "InstanceReferenceAt() reports the name AddInstanceReference() was given");
+  Check(placement.definition_index == def_index,
+        "InstanceReferenceAt() reports the definition_index AddInstanceReference() was given");
+  Check(placement.transform == xform,
+        "InstanceReferenceAt() reports the exact transform AddInstanceReference() was given");
+
+  const auto out_of_range = model.InstanceReferenceAt(9999);
+  Check(out_of_range.name.empty() && out_of_range.definition_index == -1,
+        "InstanceReferenceAt() on an index this model doesn't have returns a default-constructed "
+        "InstanceReferenceInfo, same contract as LightAt()/ClippingPlaneAt() etc.");
+
+  const std::string path = "dino8_kernel_model_instance_reference_roundtrip_test.3dm";
+  Check(model.Save(path) == Result::Ok, ".3dm save with a block instance succeeded");
+
+  Model loaded;
+  Check(Model::Load(path, loaded) == Result::Ok, ".3dm load succeeded");
+  Check(loaded.InstanceDefinitionCount() == 1, "the instance definition survives the .3dm round trip");
+  Check(loaded.InstanceDefinitionNameAt(0) == "Block A",
+        "the reloaded instance definition's name survives the round trip");
+  Check(loaded.InstanceDefinitionMemberMeshCount(0) == 1,
+        "the reloaded instance definition still has its one member mesh");
+  const Mesh reloaded_member = loaded.InstanceDefinitionMemberMeshAt(0, 0);
+  Check(reloaded_member.VertexCount() == box.VertexCount() && reloaded_member.FaceCount() == box.FaceCount(),
+        "the reloaded member mesh's vertex/face counts survive the round trip");
+  Check(loaded.InstanceReferenceCount() == 1, "the instance reference survives the .3dm round trip");
+  const auto reloaded_ref = loaded.InstanceReferenceAt(0);
+  Check(reloaded_ref.name == "Insert 1", "the reloaded instance reference's name survives the round trip");
+  Check(reloaded_ref.definition_index == 0,
+        "the reloaded instance reference still points at the (only) instance definition");
+  Check(reloaded_ref.transform == xform,
+        "the reloaded instance reference's transform survives the round trip exactly (a pure "
+        "translation, representable exactly in a .3dm's own double-precision xform)");
+
+  std::remove(path.c_str());
+}
+
+void TestModelAddHatchRoundTrips() {
+  using dino8::kernel::HatchFillType;
+  using dino8::kernel::Model;
+  using dino8::kernel::Point2d;
+  using dino8::kernel::Result;
+
+  // PARITY_MAP.md's own "kernel: Kernel-level data exchange" evidence for
+  // ".3dm composite objects" names hatches as entirely missing: before
+  // this, nothing in this kernel could create an ON_Hatch at all.
+  Model model;
+  Check(model.HatchPatternCount() == 0, "a fresh Model has no hatch patterns");
+  Check(model.AddHatchPattern("") == -1,
+        "AddHatchPattern() returns -1 for an empty name, same contract as AddLayer() etc.");
+  const int pattern_index = model.AddHatchPattern("Solid Fill", HatchFillType::Solid);
+  Check(pattern_index == 0, "the first real AddHatchPattern() call returns index 0");
+  Check(model.HatchPatternCount() == 1, "model has one hatch pattern after AddHatchPattern()");
+
+  const std::vector<Point2d> square = {Point2d(0, 0), Point2d(2, 0), Point2d(2, 2), Point2d(0, 2)};
+  Check(model.AddHatch(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), square, /*pattern_index=*/-1) ==
+            -1,
+        "AddHatch() returns -1 for a negative pattern_index, even though ON_HatchPattern::Solid "
+        "itself is index -1 - see AddHatchPattern()'s own doc comment for why");
+  Check(model.AddHatch(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), {Point2d(0, 0), Point2d(1, 0)},
+                        pattern_index) == -1,
+        "AddHatch() returns -1 for a boundary with fewer than 3 points");
+  Check(model.HatchCount() == 0, "none of the refused calls above added anything");
+
+  const ON_Plane plane(ON_3dPoint(1, 2, 3), ON_3dVector(0, 0, 1));
+  const int hatch_index =
+      model.AddHatch(plane, square, pattern_index, /*pattern_rotation=*/0.1, /*pattern_scale=*/2.0, "Hatch A");
+  Check(hatch_index == 0, "the first real AddHatch() call returns index 0");
+  Check(model.HatchCount() == 1, "model has one hatch after AddHatch()");
+  Check(model.ObjectCount() == 1, "a hatch is a real model geometry object, also counted by ObjectCount()");
+
+  const auto hatch_info = model.HatchAt(0);
+  Check(hatch_info.name == "Hatch A", "HatchAt() reports the name AddHatch() was given");
+  Check(hatch_info.plane.origin.DistanceTo(plane.origin) < 1e-9,
+        "HatchAt() reports the exact plane origin AddHatch() was given");
+  Check(hatch_info.pattern_index == pattern_index,
+        "HatchAt() reports the exact pattern_index AddHatch() was given");
+  Check(std::abs(hatch_info.pattern_rotation - 0.1) < 1e-9,
+        "HatchAt() reports the exact pattern_rotation AddHatch() was given");
+  Check(std::abs(hatch_info.pattern_scale - 2.0) < 1e-9,
+        "HatchAt() reports the exact pattern_scale AddHatch() was given");
+  Check(hatch_info.boundary.size() == square.size(),
+        "HatchAt() reports a boundary with the same point count AddHatch() was given");
+  bool boundary_matches = hatch_info.boundary.size() == square.size();
+  for (size_t i = 0; boundary_matches && i < square.size(); ++i) {
+    if (hatch_info.boundary[i].DistanceTo(square[i]) > 1e-9) boundary_matches = false;
+  }
+  Check(boundary_matches, "HatchAt() reports the exact boundary points AddHatch() was given, in order");
+
+  const std::string path = "dino8_kernel_model_hatch_roundtrip_test.3dm";
+  Check(model.Save(path) == Result::Ok, ".3dm save with a hatch succeeded");
+
+  Model loaded;
+  Check(Model::Load(path, loaded) == Result::Ok, ".3dm load succeeded");
+  Check(loaded.HatchCount() == 1, "the hatch survives the .3dm round trip");
+  const auto reloaded = loaded.HatchAt(0);
+  Check(reloaded.name == "Hatch A", "the reloaded hatch's name survives the round trip");
+  Check(reloaded.plane.origin.DistanceTo(plane.origin) < 1e-6,
+        "the reloaded hatch's plane origin survives the round trip");
+  Check(std::abs(reloaded.pattern_rotation - 0.1) < 1e-6,
+        "the reloaded hatch's pattern_rotation survives the round trip");
+  Check(std::abs(reloaded.pattern_scale - 2.0) < 1e-6,
+        "the reloaded hatch's pattern_scale survives the round trip");
+  Check(reloaded.boundary.size() == square.size(),
+        "the reloaded hatch's boundary point count survives the round trip");
+
+  std::remove(path.c_str());
+}
+
+void TestModelAddTextDotRoundTrips() {
+  using dino8::kernel::Model;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // PARITY_MAP.md's own "kernel: Kernel-level data exchange" evidence for
+  // ".3dm composite objects" names text dots as entirely missing: before
+  // this, nothing in this kernel could create an ON_TextDot at all.
+  Model model;
+  Check(model.TextDotCount() == 0, "a fresh Model has no text dots");
+  Check(model.AddTextDot(Point3d(0, 0, 0), "hi", "", "") == -1,
+        "AddTextDot() returns -1 for an empty name, same contract as AddLight() etc.");
+  Check(model.TextDotCount() == 0, "the refused call above added nothing");
+
+  const Point3d center(1, 2, 3);
+  const int index = model.AddTextDot(center, "QC-1", "Failed inspection on 2026-09-29", "Dot A");
+  Check(index == 0, "the first real AddTextDot() call returns index 0");
+  Check(model.TextDotCount() == 1, "model has one text dot after AddTextDot()");
+  Check(model.ObjectCount() == 1, "a text dot is a real model geometry object, also counted by ObjectCount()");
+
+  const auto dot = model.TextDotAt(0);
+  Check(dot.name == "Dot A", "TextDotAt() reports the name AddTextDot() was given");
+  Check(dot.center.DistanceTo(center) < 1e-9, "TextDotAt() reports the exact center AddTextDot() was given");
+  Check(dot.primary_text == "QC-1", "TextDotAt() reports the exact primary_text AddTextDot() was given");
+  Check(dot.secondary_text == "Failed inspection on 2026-09-29",
+        "TextDotAt() reports the exact secondary_text AddTextDot() was given");
+
+  const auto out_of_range = model.TextDotAt(9999);
+  Check(out_of_range.name.empty(),
+        "TextDotAt() on an index this model doesn't have returns a default-constructed "
+        "TextDotInfo, same contract as LightAt()/ClippingPlaneAt() etc.");
+
+  const std::string path = "dino8_kernel_model_text_dot_roundtrip_test.3dm";
+  Check(model.Save(path) == Result::Ok, ".3dm save with a text dot succeeded");
+
+  Model loaded;
+  Check(Model::Load(path, loaded) == Result::Ok, ".3dm load succeeded");
+  Check(loaded.TextDotCount() == 1, "the text dot survives the .3dm round trip");
+  const auto reloaded = loaded.TextDotAt(0);
+  Check(reloaded.name == "Dot A", "the reloaded text dot's name survives the round trip");
+  Check(reloaded.center.DistanceTo(center) < 1e-6, "the reloaded text dot's center survives the round trip");
+  Check(reloaded.primary_text == "QC-1", "the reloaded text dot's primary_text survives the round trip");
+  Check(reloaded.secondary_text == "Failed inspection on 2026-09-29",
+        "the reloaded text dot's secondary_text survives the round trip");
+
+  std::remove(path.c_str());
+}
+
 void TestModelUnitConversionFactor() {
   using dino8::kernel::Model;
   using dino8::kernel::UnitSystem;
@@ -57872,6 +58073,9 @@ int main() {
   TestModelMaterialExtendedFieldsRoundTrip();
   TestModelAddLightRoundTrips();
   TestModelAddClippingPlaneRoundTrips();
+  TestModelAddInstanceReferenceRoundTrips();
+  TestModelAddHatchRoundTrips();
+  TestModelAddTextDotRoundTrips();
   TestModelUnitConversionFactor();
   TestModelConvertUnitsScalesGeometryAndUpdatesUnitSystem();
   TestModelLoadRejectsMeshWithOutOfRangeFaceIndex();
