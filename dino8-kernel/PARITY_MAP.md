@@ -4446,6 +4446,91 @@ suite (via the test binary directly): 100% passing (all checks passed),
 include/dino8/kernel/mesh.h`, `dino8-kernel/src/mesh.cpp`, and
 `dino8-kernel/tests/test_basic.cpp`.
 
+**2026-09-30 follow-up (the `Mesh`-side mirror of `SubD::Check()`'s own
+bowtie detection/repair pair, plus the matching duplicate-vertex
+localization):** `git log --oneline -3 -- dino8-kernel/src/subd.cpp
+dino8-kernel/src/mesh.cpp` at the start of this session showed the
+`Mesh::MergeDuplicateVertices`/`CoplanarTrianglesOverlap` commit above as
+the most recent work in this category - it closed `Mesh`'s own general
+duplicate-vertex weld and a self-intersection gap, but left two things
+untouched that the same "port `SubD::Check()`'s own diagnostics to
+`Mesh`" theme already covers: `Mesh::CheckReport` had a `duplicate_vertices`
+COUNT with no accompanying LOCALIZATION list (`SubD::Check()`'s own
+`duplicate_vertex_list` had one; `Mesh::Check()` never did, even before
+this session), and `Mesh` had no bowtie-vertex concept at all -
+`SubD::Check()`'s own `non_manifold_vertices`/`non_manifold_vertex_list`/
+`SplitNonManifoldVertex()` trio (a vertex shared by faces that don't form
+one connected fan, independent of `non_manifold_edges`) had never been
+ported to `Mesh`, even though `Mesh::CheckReport` already carries the
+identically-shaped `non_manifold_edges`/`non_manifold_edge_list` pair its
+own SubD counterpart was modeled on. All three closed together, since
+they are the same one gap: `Mesh::Check()`'s own vertex-level diagnostics
+lagging behind `SubD::Check()`'s.
+
+`Mesh::CheckReport` gains `non_manifold_vertices`/`non_manifold_vertex_list`
+(`Check()`, mesh.cpp): for every vertex, its own incident faces are
+grouped by shared-edge adjacency AT that vertex
+(`GroupIncidentFacesByVertex()`, mesh.cpp - the same union-find-over-
+shared-incident-edges construction `SubD::Check()` already uses via
+`v->EdgeCount()`/`e->FaceCount()`, reproduced here over `Mesh`'s own plain
+index-based face list instead of `ON_SubD`'s own edge objects); more than
+one resulting group means the vertex is a pinch point between locally-
+disconnected pieces of the mesh, independent of `non_manifold_edges` -
+that fires on a 3+-face EDGE, this fires on two fans sharing only a
+VERTEX with zero shared edges between them, which an edge-only count can
+never see (the identical distinction `SubD::Check()`'s own introducing
+note already draws). `duplicate_vertex_list` closes the smaller of the
+two gaps: the exact same `WeldGroups()` grouping `duplicate_vertices`
+already counts by is now also recorded per flagged vertex, in index
+order.
+
+`Mesh::SplitNonManifoldVertex(vertex_index)`/`SplitNonManifoldVertices(
+tolerance)` (mesh.h/mesh.cpp) close the repair half - the `Mesh`-level
+counterpart of `SubD::SplitNonManifoldVertex()`/`Brep::
+SplitNonManifoldVertex()`'s own "disjoin" repair: group 0 (first-seen
+order, the same convention both existing versions already use) keeps the
+vertex, every other group gets a freshly appended vertex at the same
+point with that group's own faces repointed onto it. Materially simpler
+than the SubD version: a `Mesh` vertex is just an array position, not an
+`ON_SubD`-managed id, so no watermark/id bookkeeping is needed at all - a
+plain append plus a face-index rewrite is enough, and (unlike the SubD
+version, which needs a whole-net snapshot-and-rebuild for its own
+`DeleteComponents()`-safety reason) no OTHER vertex's own index is ever
+touched, moved, or renumbered. The batch driver runs `Check()` once and
+splits every reported id in one pass, safe for the identical reason
+`SubD::SplitNonManifoldVertices()` already is: splitting one vertex only
+ever appends and repoints ITS OWN incident faces, never shifting another
+reported vertex's own index out from under it.
+
+Verified by 2 new tests (tests/test_basic.cpp):
+`TestMeshCheckDetectsNonManifoldVertexAndDuplicateVertexList` builds a
+bowtie (two independent quad "wings" sharing exactly one vertex INDEX,
+zero shared edges) and separately reuses `TestMeshMergeDuplicateVertices
+WeldsCoincidentPairs`' own coincident-but-distinct-corner fixture,
+confirming the two conditions are genuinely independent in BOTH
+directions (a bowtie reports zero `duplicate_vertices`; a coincident-but-
+distinct pair reports zero `non_manifold_vertices`) and that
+`duplicate_vertex_list` names the exact flagged pair in index order;
+`TestMeshSplitNonManifoldVertexSplitsBowtie` refuses an out-of-range
+index and an already-manifold vertex, splits the genuine bowtie (vertex
+count 7->8, face count unchanged, `non_manifold_vertices` 1->0, the two
+wings now sharing no vertex at all), confirms a post-split re-check
+refuses the now-fixed vertex, and confirms the batch driver finds and
+splits the one bowtie unaided. Full `dino8_kernel_tests` suite (via the
+test binary directly): 100% passing (all checks passed), 0 regressions.
+
+This category's own present/partial/missing counts are unchanged at
+15/7/0/22 (84.1%) - none of these three additions was one of the 22
+tracked checklist items to begin with (the same reason the
+`Mesh::MergeDuplicateVertices`/`CoplanarTrianglesOverlap` follow-up above
+didn't move them either); this closes real, tested ground under
+`Mesh::Check()`'s own diagnostic/repair surface, bringing it to the same
+vertex-level parity with `SubD::Check()` that edge-level
+(`non_manifold_edges`/`non_manifold_edge_list`) and general-duplicate-
+vertex (`MergeDuplicateVertices`) parity already reached. This session's
+only source edits are `dino8-kernel/include/dino8/kernel/mesh.h`,
+`dino8-kernel/src/mesh.cpp`, and `dino8-kernel/tests/test_basic.cpp`.
+
 ## App: Dino 8 vs Rhino 8 + AutoCAD 2027
 
 | Category | Weight | Items | Present | Partial | Missing | Parity % |

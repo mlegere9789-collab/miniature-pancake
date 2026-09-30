@@ -1158,28 +1158,43 @@ class Mesh {
   //
   // The mesh-level counterpart of Brep::Check() and its repairs: the
   // same questions IsClosedManifold() answers with one bool, as COUNTS
-  // and LOCATIONS a caller can act on, plus the five repairs that turn
+  // and LOCATIONS a caller can act on, plus the repairs that turn
   // the common "almost closed" or "almost clean" meshes back into closed,
   // valid ones (CloseNakedEdges() and FillSmallHoles() for naked_edges,
   // UnifyNormals() for orientation_conflicts, RemoveDegenerateFaces() for
   // degenerate_faces, RemoveDuplicateFaces() for duplicate_faces, below).
-  // One of CheckReport's six conditions still has no repair here:
-  // non_manifold_edges (repairing a 3+-face edge needs a judgment call -
-  // which faces stay grouped together - this class doesn't make for
-  // you). The other five all have one: CloseNakedEdges()/FillSmallHoles()
-  // for naked_edges, UnifyNormals() for orientation_conflicts,
-  // RemoveDegenerateFaces() for degenerate_faces, RemoveDuplicateFaces()
-  // for duplicate_faces, and - closing what used to be this comment's own
-  // second named gap - MergeDuplicateVertices() below for
-  // duplicate_vertices anywhere in the mesh, not merely the boundary-
-  // restricted case CloseNakedEdges() already covered; see that method's
-  // own doc comment for why it is a separate, explicitly-called repair
-  // rather than something run automatically.
+  // Of CheckReport's conditions, only non_manifold_edges still has no
+  // repair here: fixing a 3+-face edge needs a judgment call - which
+  // faces stay grouped together - this class doesn't make for you (the
+  // same considered position SubD::Check()'s own non_manifold_edges
+  // already takes). Every other condition has one: CloseNakedEdges()/
+  // FillSmallHoles() for naked_edges, UnifyNormals() for
+  // orientation_conflicts, RemoveDegenerateFaces() for degenerate_faces,
+  // RemoveDuplicateFaces() for duplicate_faces, MergeDuplicateVertices()
+  // below for duplicate_vertices anywhere in the mesh (not merely the
+  // boundary-restricted case CloseNakedEdges() already covered; see that
+  // method's own doc comment for why it is a separate, explicitly-called
+  // repair rather than something run automatically), and -
+  // SubD::Check()'s own once-disclosed "Check() can find it, nothing can
+  // fix it" gap, mirrored and closed here too - SplitNonManifoldVertex()/
+  // SplitNonManifoldVertices() below for non_manifold_vertices.
   struct CheckReport {
     // Undirected edges used by exactly one face (the open boundary).
     int naked_edges = 0;
     // Undirected edges used by three or more faces.
     int non_manifold_edges = 0;
+    // Vertices shared by faces that do not form one connected fan - a
+    // "bowtie" pinch point between two-or-more locally-disconnected
+    // pieces of the mesh that happen to touch at exactly one point,
+    // independent of non_manifold_edges: that condition fires when one
+    // EDGE has 3+ faces, this one fires when two fans share only a
+    // VERTEX with zero shared edges between them, which an edge-only
+    // count can never see (the same distinction SubD::Check()'s own
+    // non_manifold_vertices already draws for SubD). Detected the same
+    // way: for each vertex, its incident faces are grouped via union-find
+    // over shared edges that also touch that vertex, and more than one
+    // resulting group means the vertex is non-manifold.
+    int non_manifold_vertices = 0;
     // Directed edges used twice - two faces walking a shared edge the
     // same way, IsClosedManifold()'s own orientation-conflict condition.
     int orientation_conflicts = 0;
@@ -1216,6 +1231,20 @@ class Mesh {
     // should stay grouped together at a 3+-face edge is a judgment call
     // this class still doesn't make (see Check()'s own class comment).
     std::vector<std::pair<int, int>> non_manifold_edge_list;
+    // Every non-manifold (bowtie) vertex index, matching
+    // non_manifold_vertices' own count, in vertex-index order - the
+    // localization SplitNonManifoldVertex() below needs to act on a
+    // specific vertex rather than merely being told the mesh has one
+    // somewhere.
+    std::vector<int> non_manifold_vertex_list;
+    // Every duplicate vertex index, matching duplicate_vertices' own
+    // count, in vertex-index order - the localization
+    // MergeDuplicateVertices() below does not itself need (it welds every
+    // group at once) but a caller inspecting a report before deciding
+    // whether to call it does, the same "count told you something was
+    // wrong, never where" gap non_manifold_edge_list already closes for
+    // non_manifold_edges.
+    std::vector<int> duplicate_vertex_list;
     // Same three conditions as Mesh::IsClosedManifold().
     bool IsClosedManifold() const {
       return naked_edges == 0 && non_manifold_edges == 0 && orientation_conflicts == 0;
@@ -1341,6 +1370,38 @@ class Mesh {
   // one's. Texture coordinates are dropped, same reason as
   // CloseNakedEdges(). Returns the number of vertices welded away.
   int MergeDuplicateVertices(double tolerance = tolerance::kDistance);
+
+  // The mesh-level counterpart of SubD::SplitNonManifoldVertex(): the same
+  // Parasolid/ACIS "disjoin" repair for a bowtie vertex - nothing about
+  // any face's own shape at the pinch point is wrong, only the topology
+  // of one vertex index being shared between two-or-more locally-
+  // disconnected fans of faces is. Groups `vertex_index`'s own incident
+  // faces via the identical union-find-over-shared-incident-edges
+  // Check()'s own non_manifold_vertices already computes; the first group
+  // encountered (in face-list order, the same first-seen convention
+  // Brep::SplitNonManifoldVertex()/SubD::SplitNonManifoldVertex() both
+  // already use) keeps `vertex_index` itself, every other group gets a
+  // freshly appended vertex at the same point with that group's own
+  // faces repointed onto it. Unlike the SubD version, this needs no
+  // watermark/id bookkeeping at all: a Mesh vertex is just an array
+  // position, so splitting one is a plain append plus a face-index
+  // rewrite, and no OTHER vertex's own index is ever touched, moved, or
+  // renumbered by this call. Returns false (and changes nothing) if
+  // `vertex_index` is out of range or is not, in fact, non-manifold
+  // (fewer than 2 incident faces, or its incident faces already form one
+  // connected fan) - a caller can always tell success from a no-op.
+  // Texture coordinates and any cached normals are dropped, same reason
+  // as MergeDuplicateVertices() above.
+  bool SplitNonManifoldVertex(int vertex_index);
+
+  // Runs Check(tolerance) once and calls SplitNonManifoldVertex() on
+  // every vertex index its own non_manifold_vertex_list reports, fixing
+  // every bowtie in one pass. Safe to do in one Check() call the same way
+  // SubD::SplitNonManifoldVertices() already is: splitting one vertex only
+  // ever appends a fresh vertex and repoints ITS OWN incident faces, so no
+  // other reported vertex's own index shifts out from under a later split
+  // in the same batch. Returns the number of vertices actually split.
+  int SplitNonManifoldVertices(double tolerance = tolerance::kDistance);
 
   // Removes every face Check(tolerance) would count in degenerate_faces -
   // literally the same test, not a redefinition of it (see Check()'s own

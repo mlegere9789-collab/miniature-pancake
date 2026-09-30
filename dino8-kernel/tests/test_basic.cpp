@@ -12920,6 +12920,157 @@ void TestMeshMergeDuplicateVerticesWeldsCoincidentPairs() {
   }
 }
 
+// Mesh::Check()'s new non_manifold_vertices/non_manifold_vertex_list and
+// duplicate_vertex_list - the Mesh-side mirror of SubD::Check()'s own
+// bowtie detection and duplicate-vertex localization. Two independent
+// fixtures, deliberately proving the two conditions are distinct: a
+// bowtie (one vertex INDEX shared by two locally-disconnected quad
+// "wings", zero edges between them) is not a duplicate_vertices hit, and
+// TestMeshMergeDuplicateVerticesWeldsCoincidentPairs' own coincident-but-
+// distinct-corner fixture (two separate vertex RECORDS at the same point)
+// is not a non_manifold_vertices hit.
+void TestMeshCheckDetectsNonManifoldVertexAndDuplicateVertexList() {
+  using dino8::kernel::Mesh;
+
+  Mesh bowtie;
+  {
+    ON_Mesh& raw = bowtie.raw();
+    raw.m_V.Append(ON_3fPoint(0, 0, 0));   // 0: the shared pinch point
+    raw.m_V.Append(ON_3fPoint(1, 0, 0));   // wing A
+    raw.m_V.Append(ON_3fPoint(1, 1, 0));
+    raw.m_V.Append(ON_3fPoint(0, 1, 0));
+    raw.m_V.Append(ON_3fPoint(-1, 0, 0));  // wing B
+    raw.m_V.Append(ON_3fPoint(-1, -1, 0));
+    raw.m_V.Append(ON_3fPoint(0, -1, 0));
+    auto add_quad = [&](int a, int b, int c, int d) {
+      ON_MeshFace f;
+      f.vi[0] = a;
+      f.vi[1] = b;
+      f.vi[2] = c;
+      f.vi[3] = d;
+      raw.m_F.Append(f);
+    };
+    add_quad(0, 1, 2, 3);
+    add_quad(0, 4, 5, 6);
+  }
+
+  const Mesh::CheckReport bowtie_report = bowtie.Check();
+  Check(bowtie_report.non_manifold_vertices == 1, "the shared pinch point is the only non-manifold vertex");
+  Check(bowtie_report.non_manifold_vertex_list.size() == 1 && bowtie_report.non_manifold_vertex_list[0] == 0,
+        "non_manifold_vertex_list names exactly vertex 0, the shared corner");
+  Check(bowtie_report.non_manifold_edges == 0,
+        "the two wings share no EDGE, only the one vertex - non_manifold_edges alone would miss it");
+  Check(bowtie_report.duplicate_vertices == 0,
+        "a bowtie is one shared vertex RECORD, not two coincident-but-distinct ones - not a duplicate_vertices hit");
+
+  // Reuses TestMeshMergeDuplicateVerticesWeldsCoincidentPairs' own two-
+  // independent-quad-wings-with-a-coincident-corner fixture, this time
+  // checking duplicate_vertex_list itself, not just the count.
+  Mesh dup;
+  ON_Mesh& raw = dup.raw();
+  auto add_wing_quad = [&](double x0, double y0, double z0) {
+    const int base = raw.m_V.Count();
+    raw.m_V.Append(ON_3fPoint(static_cast<float>(x0), static_cast<float>(y0), static_cast<float>(z0)));
+    raw.m_V.Append(ON_3fPoint(static_cast<float>(x0 + 1.0), static_cast<float>(y0), static_cast<float>(z0)));
+    raw.m_V.Append(
+        ON_3fPoint(static_cast<float>(x0 + 1.0), static_cast<float>(y0 + 1.0), static_cast<float>(z0)));
+    raw.m_V.Append(ON_3fPoint(static_cast<float>(x0), static_cast<float>(y0 + 1.0), static_cast<float>(z0)));
+    ON_MeshFace f;
+    f.vi[0] = base;
+    f.vi[1] = base + 1;
+    f.vi[2] = base + 2;
+    f.vi[3] = base + 3;
+    raw.m_F.Append(f);
+    return base;
+  };
+  const int wing_a_v0 = add_wing_quad(0.0, 0.0, 0.0);
+  const int wing_b_v0 = add_wing_quad(3.0, 3.0, 0.0);
+  raw.m_V[wing_b_v0] = raw.m_V[wing_a_v0];
+
+  const Mesh::CheckReport dup_report = dup.Check();
+  Check(dup_report.duplicate_vertices == 2, "sanity: matches TestMeshMergeDuplicateVerticesWeldsCoincidentPairs' own count");
+  Check(dup_report.duplicate_vertex_list.size() == 2 && dup_report.duplicate_vertex_list[0] == wing_a_v0 &&
+            dup_report.duplicate_vertex_list[1] == wing_b_v0,
+        "duplicate_vertex_list names exactly the coincident pair, in vertex-index order");
+  Check(dup_report.non_manifold_vertices == 0,
+        "two separate vertex records at the same point is not a bowtie - not a non_manifold_vertices hit");
+}
+
+// Mesh::SplitNonManifoldVertex()/SplitNonManifoldVertices(): the repair
+// counterpart of the bowtie detection above, mirroring
+// SubD::SplitNonManifoldVertex() - reuses
+// TestMeshCheckDetectsNonManifoldVertexAndDuplicateVertexList's own
+// two-wings-sharing-one-vertex-index fixture.
+void TestMeshSplitNonManifoldVertexSplitsBowtie() {
+  using dino8::kernel::Mesh;
+
+  auto make_bowtie = [] {
+    Mesh m;
+    ON_Mesh& raw = m.raw();
+    raw.m_V.Append(ON_3fPoint(0, 0, 0));
+    raw.m_V.Append(ON_3fPoint(1, 0, 0));
+    raw.m_V.Append(ON_3fPoint(1, 1, 0));
+    raw.m_V.Append(ON_3fPoint(0, 1, 0));
+    raw.m_V.Append(ON_3fPoint(-1, 0, 0));
+    raw.m_V.Append(ON_3fPoint(-1, -1, 0));
+    raw.m_V.Append(ON_3fPoint(0, -1, 0));
+    auto add_quad = [&](int a, int b, int c, int d) {
+      ON_MeshFace f;
+      f.vi[0] = a;
+      f.vi[1] = b;
+      f.vi[2] = c;
+      f.vi[3] = d;
+      raw.m_F.Append(f);
+    };
+    add_quad(0, 1, 2, 3);
+    add_quad(0, 4, 5, 6);
+    return m;
+  };
+
+  {
+    Mesh m = make_bowtie();
+    Check(!m.SplitNonManifoldVertex(-1), "refuses a negative vertex index");
+    Check(!m.SplitNonManifoldVertex(100), "refuses a vertex index past the end");
+  }
+  {
+    Mesh m = make_bowtie();
+    Check(!m.SplitNonManifoldVertex(1), "vertex 1 belongs to only wing A - already one connected fan, nothing to split");
+  }
+
+  Mesh m = make_bowtie();
+  Check(m.VertexCount() == 7 && m.FaceCount() == 2, "sanity: the bowtie fixture starts at 7 vertices, 2 faces");
+  Check(m.Check().non_manifold_vertices == 1, "sanity: vertex 0 is flagged before splitting");
+
+  Check(m.SplitNonManifoldVertex(0), "splits the genuine bowtie at vertex 0");
+  Check(m.VertexCount() == 8, "vertex count grows by exactly 1 - a fresh vertex for the second wing's own copy");
+  Check(m.FaceCount() == 2, "face count is unchanged - this only repoints indices, never adds or removes a face");
+
+  const Mesh::CheckReport after = m.Check();
+  Check(after.non_manifold_vertices == 0, "no bowtie remains after splitting");
+  Check(after.naked_edges == 8,
+        "each wing is still its own wholly-open quad, 4 naked edges apiece, unaffected by the split");
+
+  {
+    const ON_MeshFace& fa = m.raw().m_F[0];
+    const ON_MeshFace& fb = m.raw().m_F[1];
+    bool shares_a_vertex = false;
+    for (int a : fa.vi) {
+      for (int b : fb.vi) {
+        if (a == b) shares_a_vertex = true;
+      }
+    }
+    Check(!shares_a_vertex, "the split gives each wing its own independent vertex - no index shared between the two faces anymore");
+  }
+
+  Check(!m.SplitNonManifoldVertex(0), "vertex 0 (wing A's own copy) is already a single fan now - refused");
+
+  {
+    Mesh batch = make_bowtie();
+    Check(batch.SplitNonManifoldVertices() == 1, "the batch driver finds and splits the one bowtie without the caller naming its id");
+    Check(batch.Check().non_manifold_vertices == 0, "no bowtie remains after the batch call");
+  }
+}
+
 // Mesh-level RemoveDegenerateFaces(): three faces, each degenerate for a
 // DIFFERENT one of Check()'s own reasons (repeated vertex index, a
 // zero-length edge between two coincident-but-distinct vertices, and a
@@ -54209,6 +54360,8 @@ int main() {
   TestMeshUnifyNormalsFixesFlippedAndInvertedFaces();
   TestMeshCloseNakedEdgesWeldsDuplicateAndOffsetVertices();
   TestMeshMergeDuplicateVerticesWeldsCoincidentPairs();
+  TestMeshCheckDetectsNonManifoldVertexAndDuplicateVertexList();
+  TestMeshSplitNonManifoldVertexSplitsBowtie();
   TestMeshRemoveDegenerateFacesDropsOnlyDegenerateOnes();
   TestMeshRemoveDuplicateFacesKeepsOneCopyPerPolygon();
   TestMeshTrisToQuadsRecombinesTessellatedBoxFaces();
