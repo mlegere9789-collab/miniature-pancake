@@ -8,8 +8,8 @@
 // es.json is the one documented exception: it deliberately omits
 // "panel.imgui_demo" to give I18nSelfTest (src/commands/cmd_state.cpp) and
 // tests/smoke.sh's i18n section a real missing-key fallback to exercise.
-// Every other language - fr.json, de.json, ja.json (Japanese), and pt.json
-// (Portuguese) - must have zero missing keys.
+// Every other language - fr.json, de.json, ja.json (Japanese), pt.json
+// (Portuguese), and it.json (Italian) - must have zero missing keys.
 //
 // This is a "did a language quietly drift behind en.json" regression
 // guard: en.json gaining new keys (panel.activity_log, panel.block_manager,
@@ -77,6 +77,7 @@ int main(int argc, char** argv) {
       {"de", {}},
       {"ja", {}},
       {"pt", {}},
+      {"it", {}},
       {"es", {"panel.imgui_demo"}},
   };
 
@@ -153,6 +154,23 @@ int main(int argc, char** argv) {
       Check(pt_keys == en_keys, label);
       Check(pt_root["_language_name"].AsString("") == "Portugu\xc3\xaas",
             "pt.json's _language_name is the Portuguese word for Portuguese (Portugu\xc3\xaas)");
+    }
+  }
+
+  // The headline deliverable: Italian is a sixth complete, hand-translated
+  // language, matching en.json's key set exactly (not just "mostly", the
+  // way a machine-generated stub might partially cover it).
+  {
+    dino8::json::Value it_root;
+    Check(LoadObject(dir + "/it.json", it_root), "it.json exists and parses");
+    if (LoadObject(dir + "/it.json", it_root)) {
+      const std::set<std::string> it_keys = StringKeys(it_root);
+      char label[160];
+      std::snprintf(label, sizeof(label), "it.json defines exactly en.json's key set (%zu keys, 0 missing, 0 extra)",
+                    it_keys.size());
+      Check(it_keys == en_keys, label);
+      Check(it_root["_language_name"].AsString("") == "Italiano",
+            "it.json's _language_name is the Italian word for Italian (Italiano)");
     }
   }
 
