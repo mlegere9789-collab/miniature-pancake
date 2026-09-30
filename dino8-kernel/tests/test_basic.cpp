@@ -43328,6 +43328,111 @@ void TestSurfaceOffsetAnalyticSphereIsExactConcentricSphere() {
         "OffsetAnalytic(-2.0) on a sphere: shrunk radius is exactly 3.0");
 }
 
+void TestSurfaceOffsetAnalyticSpherePreservesPartialPatchExtent() {
+  using dino8::kernel::Interval;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+  using dino8::kernel::Vector3d;
+
+  // A deliberately non-world-aligned equatorial frame (polar axis along
+  // world X, not Z) - genuinely exercises the "new_sphere.plane must match
+  // the input's own frame" fix below. A world-aligned sphere can't fail
+  // that check no matter what, since ON_Sphere(center, radius)'s own
+  // world-xy-plane default would then coincide with the input by luck.
+  const Point3d center(1.0, -2.0, 3.0);
+  const Vector3d xaxis(0.0, 1.0, 0.0);
+  const Vector3d yaxis(0.0, 0.0, 1.0);
+  const Vector3d zaxis(1.0, 0.0, 0.0);  // polar axis
+  ON_Sphere sphere;
+  sphere.plane = ON_Plane(center, xaxis, yaxis);
+  sphere.radius = 6.0;
+  ON_NurbsSurface full_raw;
+  Check(sphere.GetNurbForm(full_raw) != 0, "rotated-sphere setup: GetNurbForm succeeds");
+
+  NurbsSurface patch;
+  patch.raw() = full_raw;
+  // [0, pi/2] is exactly the first knot span in both directions of
+  // ON_Sphere::GetNurbForm()'s own construction (u: longitude knots 0,
+  // pi/2, pi, 3pi/2, 2pi; v: latitude knots -pi/2, 0, pi/2) - a clean,
+  // unambiguous quarter-longitude, upper-quarter-latitude patch (equator
+  // to north pole) to offset, touching the north pole but not the south.
+  Check(patch.Trim(0, 0.0, 0.5 * ON_PI) == Result::Ok, "rotated-sphere setup: longitude trim succeeds");
+  Check(patch.Trim(1, 0.0, 0.5 * ON_PI) == Result::Ok, "rotated-sphere setup: latitude trim succeeds");
+
+  NurbsSurface out;
+  Check(patch.OffsetAnalytic(1.5, out) == Result::Ok, "OffsetAnalytic(+1.5) succeeds on a rotated partial-sphere patch");
+
+  const Interval odu = out.Domain(0);
+  const Interval odv = out.Domain(1);
+
+  auto longitude_of = [&](const Point3d& q) {
+    const Vector3d dir = q - center;
+    return std::atan2(ON_DotProduct(dir, yaxis), ON_DotProduct(dir, xaxis));
+  };
+  auto latitude_of = [&](const Point3d& q) {
+    Vector3d dir = q - center;
+    const double len = dir.Length();
+    const double h = ON_DotProduct(dir, zaxis) / len;
+    return std::asin(std::max(-1.0, std::min(1.0, h)));
+  };
+
+  // Radius exactness, everywhere on the offset patch.
+  double worst_radius = 0.0;
+  for (double t = 0.1; t < 1.0; t += 0.2) {
+    const double u = odu.min + t * (odu.max - odu.min);
+    for (double s = 0.1; s < 1.0; s += 0.2) {
+      const double v = odv.min + s * (odv.max - odv.min);
+      const Point3d q = out.PointAt(u, v);
+      worst_radius = std::max(worst_radius, std::abs(q.DistanceTo(center) - 7.5));
+    }
+  }
+  Check(worst_radius < 1e-9,
+        "OffsetAnalytic on a rotated partial-sphere patch: every sampled point sits at exactly the offset radius 7.5");
+
+  // Longitude extent, measured against the INPUT's own (rotated) frame -
+  // the check that would fail if new_sphere.plane were silently reset to
+  // the world ON_xy_plane: the offset patch's u-domain boundaries sit at
+  // true longitude 0 and pi/2, not wherever those knot values would fall
+  // in a mismatched frame.
+  const double v_mid = 0.5 * (odv.min + odv.max);
+  const Point3d p_u0 = out.PointAt(odu.min, v_mid);
+  const Point3d p_u1 = out.PointAt(odu.max, v_mid);
+  Check(std::abs(longitude_of(p_u0) - 0.0) < 1e-6,
+        "offset rotated partial-sphere patch: U-min boundary sits at true longitude 0");
+  Check(std::abs(longitude_of(p_u1) - 0.5 * ON_PI) < 1e-6,
+        "offset rotated partial-sphere patch: U-max boundary sits at true longitude pi/2");
+
+  // Latitude extent - the fix's other half: V-min boundary is the equator
+  // (latitude 0), V-max is the north pole (latitude pi/2).
+  const double u_mid = 0.5 * (odu.min + odu.max);
+  const Point3d p_v0 = out.PointAt(u_mid, odv.min);
+  const Point3d p_v1 = out.PointAt(u_mid, odv.max);
+  Check(std::abs(latitude_of(p_v0) - 0.0) < 1e-6,
+        "offset rotated partial-sphere patch: V-min boundary sits at true latitude 0 (equator)");
+  Check(std::abs(latitude_of(p_v1) - 0.5 * ON_PI) < 1e-6,
+        "offset rotated partial-sphere patch: V-max boundary sits at true latitude pi/2 (north pole)");
+
+  // Directly proves this isn't secretly the full sphere: both domain
+  // spans are small fractions of the untrimmed GetNurbForm() sphere's own
+  // full spans (whatever units that nonlinear parametrization uses).
+  const double full_u_span = full_raw.Domain(0)[1] - full_raw.Domain(0)[0];
+  const double full_v_span = full_raw.Domain(1)[1] - full_raw.Domain(1)[0];
+  Check((odu.max - odu.min) < 0.5 * full_u_span,
+        "offset rotated partial-sphere patch: U-domain span is a small fraction of a full turn");
+  // This patch's own v-span (equator to north pole) is exactly HALF the
+  // full pole-to-pole range by construction, not some arbitrary "small"
+  // fraction - so the bound below is 0.75, comfortably between that exact
+  // half and the full range, rather than the tighter (and here boundary-
+  // exact, so spuriously failing) 0.5 the U-domain check above uses.
+  Check((odv.max - odv.min) < 0.75 * full_v_span,
+        "offset rotated partial-sphere patch: V-domain span is well under the full pole-to-pole range");
+
+  // Self-intersection guard still applies unchanged on a partial patch.
+  Check(patch.OffsetAnalytic(-100.0, out) == Result::Failed,
+        "OffsetAnalytic(-100.0) on this partial sphere patch is refused (would collapse through the center)");
+}
+
 void TestSurfaceOffsetAnalyticCylinderIsExactCoaxialCylinder() {
   using dino8::kernel::NurbsSurface;
   using dino8::kernel::Point3d;
@@ -46296,6 +46401,7 @@ int main() {
   TestSurfaceCoonsPatchRefusesNonClosingBoundaries();
 
   TestSurfaceOffsetAnalyticSphereIsExactConcentricSphere();
+  TestSurfaceOffsetAnalyticSpherePreservesPartialPatchExtent();
   TestSurfaceOffsetAnalyticCylinderIsExactCoaxialCylinder();
   TestSurfaceOffsetAnalyticCylinderPreservesQuarterPatchExtent();
   TestSurfaceOffsetAnalyticConePreservesHalfAngleAndShiftsApex();

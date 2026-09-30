@@ -2040,9 +2040,168 @@ Result NurbsSurface::OffsetAnalytic(double distance, NurbsSurface& out, double t
       const double new_radius = sphere.radius + sign * distance;
       if (!(new_radius > 0.0)) return Result::Failed;
       ON_Sphere new_sphere(sphere.Center(), new_radius);
+
+      // Preserve a partial patch's own extent in both directions, the same
+      // "GetNurbForm() always builds the FULL primitive" defect the
+      // cylinder/cone branches above already fix for their own domain(s).
+      // A sphere's NURBS form pairs the exact same rational-quadratic
+      // angle<->parameter relationship a plain ON_Circle::GetNurbForm()
+      // uses in EACH direction independently: longitude in u (an ordinary
+      // full circle in the equatorial plane) and latitude in v (a
+      // semicircle meridian from south pole to north pole, sharing that
+      // same weight pattern one factor short of a full circle).
+      //
+      // Doing this needs a reference frame (an equatorial xaxis/yaxis and
+      // a polar axis) that matches THIS surface's own u/v convention - and
+      // a real bug surfaced getting there: `sphere.plane` (from
+      // `IsSphere()` above) can NOT be trusted for that, for anything
+      // short of a full, untrimmed sphere. `ON_Surface::IsSphere()`'s own
+      // fallback fit (opennurbs_revsurface.cpp) samples an EQUATOR-style
+      // isocurve (fixed v) and a MERIDIAN-style isocurve (fixed u), each
+      // IsArc()-fitted into its own candidate `ON_Sphere::plane`, and
+      // returns whichever ONE of the two candidates happens to validate -
+      // a sphere's rotational symmetry means either is an equally valid
+      // "some center/radius fit", but only the FIRST convention's own
+      // xaxis (this surface's own longitude-zero direction) is what the
+      // trim math below needs; a meridian-plane's own "xaxis"/"zaxis" is a
+      // completely different (still valid, still orthonormal, but
+      // ROTATED) frame that silently wrecks every angle measured against
+      // it. `ON_Sphere(center, radius)`'s own default `plane` (always the
+      // world ON_xy_plane, `Create()`'s own construction) is just as
+      // unusable, for the same underlying reason (a fixed convention with
+      // no tie to THIS surface's own parametrization at all).
+      //
+      // So a genuine per-surface frame is derived here directly, from
+      // sampled points on the surface itself: a latitude circle's own
+      // plane is perpendicular to the polar axis by definition, so 3
+      // points at the SAME v and 3 distinct u fractions (never the exact
+      // domain ends, so a full/closed loop's own seam - u=du.min and
+      // u=du.max coinciding - can't degenerate them into 2 points) fit
+      // exactly that plane; its normal is the polar axis, and the first of
+      // the 3 (at the true u=du.min, this surface's own longitude-zero)
+      // fixes the equatorial xaxis.
+      const bool trim_u = du.max - du.min < 2.0 * ON_PI - 1e-9;
+      const bool trim_v = dv.max - dv.min < ON_PI - 1e-9;
+      Vector3d axis, xaxis, yaxis;
+      if (trim_u || trim_v) {
+        const double du_span = du.max - du.min;
+        const Point3d q_a = PointAt(du.min, vmid);
+        const Point3d q_b = PointAt(du.min + du_span / 3.0, vmid);
+        const Point3d q_c = PointAt(du.min + 2.0 * du_span / 3.0, vmid);
+        axis = ON_CrossProduct(q_b - q_a, q_c - q_a);
+        bool have_frame = axis.Unitize();
+        if (have_frame) {
+          xaxis = (q_a - sphere.Center()) - ON_DotProduct(q_a - sphere.Center(), axis) * axis;
+          have_frame = xaxis.Unitize();
+        }
+        if (!have_frame) return Result::Failed;  // degenerate (vmid at a pole, or a too-thin u-span)
+        yaxis = ON_CrossProduct(axis, xaxis);
+        new_sphere.plane = ON_Plane(sphere.Center(), xaxis, yaxis);
+      } else {
+        new_sphere.plane = sphere.plane;
+      }
+
       ON_NurbsSurface ns;
       if (new_sphere.GetNurbForm(ns) == 0) return Result::Failed;
       out.surface_ = ns;
+
+      // Longitude (u): identical technique to the cylinder/cone branches
+      // above (see either's own comment for the full derivation), against
+      // the self-derived frame instead of `sphere.plane`.
+      if (trim_u) {
+        const ON_Circle longitude_ref(new_sphere.plane, 1.0);
+        const Point3d p_umin = PointAt(du.min, vmid);
+        const Point3d p_umax = PointAt(du.max, vmid);
+        const Point3d p_umid = PointAt(umid, vmid);
+        double angle_umin, angle_umax, angle_umid;
+        if (!longitude_ref.ClosestPointTo(p_umin, &angle_umin) ||
+            !longitude_ref.ClosestPointTo(p_umax, &angle_umax) ||
+            !longitude_ref.ClosestPointTo(p_umid, &angle_umid)) {
+          return Result::Failed;
+        }
+        double nurb_umin, nurb_umax, nurb_umid;
+        if (!longitude_ref.GetNurbFormParameterFromRadian(angle_umin, &nurb_umin) ||
+            !longitude_ref.GetNurbFormParameterFromRadian(angle_umax, &nurb_umax) ||
+            !longitude_ref.GetNurbFormParameterFromRadian(angle_umid, &nurb_umid)) {
+          return Result::Failed;
+        }
+        // `ClosestPointTo`/`GetNurbFormParameterFromRadian` both wrap into
+        // [0, 2pi) - fine away from the branch cut, but `p_umin` sits
+        // EXACTLY on `longitude_ref`'s own xaxis by construction (it IS
+        // the sample `xaxis` was built from, above), the single worst spot
+        // for that wrap: float noise in its angle can land it a hair
+        // below 0 OR above 0, and only the latter survives the wrap,
+        // landing at ~2*pi instead of ~0 - silently flipping a genuine
+        // short arc's own two ends to look like the long way around.
+        // Re-express both ends within +-pi of the (safely domain-interior,
+        // never boundary-adjacent) midpoint - the correct branch for any
+        // patch under half a turn, which every other seam-straddling
+        // refusal in this file already assumes.
+        auto unwrap_near = [](double angle, double reference) {
+          while (angle - reference > ON_PI) angle -= 2.0 * ON_PI;
+          while (angle - reference < -ON_PI) angle += 2.0 * ON_PI;
+          return angle;
+        };
+        nurb_umin = unwrap_near(nurb_umin, nurb_umid);
+        nurb_umax = unwrap_near(nurb_umax, nurb_umid);
+        // The unwrap above can leave a boundary sample a hair outside
+        // `new_sphere`'s own full [0, 2pi] u-domain (the same float noise
+        // that motivated it) - clamp back before Trim, which a domain a
+        // few ULPs wide would otherwise refuse outright.
+        const double t0 = std::max(0.0, std::min(nurb_umin, nurb_umax));
+        const double t1 = std::min(2.0 * ON_PI, std::max(nurb_umin, nurb_umax));
+        // Same seam-straddling refusal the cylinder/cone branches use.
+        if (!(t1 > t0 + 1e-9 && nurb_umid >= t0 - 1e-9 && nurb_umid <= t1 + 1e-9)) {
+          return Result::Failed;
+        }
+        if (out.Trim(0, t0, t1) != Result::Ok) return Result::Failed;
+      }
+
+      // Latitude (v): same reparametrization, applied to the meridian
+      // half-circle instead of the equator. Latitude itself is measured
+      // directly off the self-derived polar axis (asin of the axial
+      // component, scaled by radius) rather than via ClosestPointTo on a
+      // single meridian circle - a fixed meridian plane only contains
+      // points at ONE longitude, so projecting a general sample (any
+      // longitude) onto it the way ClosestPointTo would conflates the two
+      // angles; the axial projection has no such issue, since it is
+      // exactly the sphere's own PointAt/NormalAt latitude coordinate
+      // regardless of longitude.
+      if (trim_v) {
+        const auto latitude_at = [&](double u, double v) {
+          const Point3d q = PointAt(u, v);
+          const double h = ON_DotProduct(q - sphere.Center(), axis) / sphere.radius;
+          return std::asin(std::max(-1.0, std::min(1.0, h)));
+        };
+        const double lat_vmin = latitude_at(umid, dv.min);
+        const double lat_vmax = latitude_at(umid, dv.max);
+        const double lat_vmid = latitude_at(umid, 0.5 * (dv.min + dv.max));
+
+        // `meridian_ref`'s own angle 0 is the south pole direction (-axis)
+        // and angle pi/2 is the equator at longitude 0 (+xaxis) - so its
+        // raw NURBS parameter domain [0, 2pi] starts exactly where the
+        // sphere's own v-knots start (-pi/2), once shifted back by that
+        // same pi/2: passing (latitude + pi/2) as the true angle and
+        // subtracting pi/2 from the returned raw parameter reproduces the
+        // sphere's own v-domain convention exactly, the same knot values
+        // (-pi/2, 0, pi/2) `ON_Sphere::GetNurbForm()` itself uses.
+        const ON_Plane meridian_plane(sphere.Center(), -axis, xaxis);
+        const ON_Circle meridian_ref(meridian_plane, 1.0);
+        double nurb_vmin, nurb_vmax, nurb_vmid;
+        if (!meridian_ref.GetNurbFormParameterFromRadian(lat_vmin + 0.5 * ON_PI, &nurb_vmin) ||
+            !meridian_ref.GetNurbFormParameterFromRadian(lat_vmax + 0.5 * ON_PI, &nurb_vmax) ||
+            !meridian_ref.GetNurbFormParameterFromRadian(lat_vmid + 0.5 * ON_PI, &nurb_vmid)) {
+          return Result::Failed;
+        }
+        const double s0 = std::min(nurb_vmin, nurb_vmax) - 0.5 * ON_PI;
+        const double s1 = std::max(nurb_vmin, nurb_vmax) - 0.5 * ON_PI;
+        const double smid = nurb_vmid - 0.5 * ON_PI;
+        if (!(s1 > s0 + 1e-9 && smid >= s0 - 1e-9 && smid <= s1 + 1e-9)) {
+          return Result::Failed;
+        }
+        if (out.Trim(1, s0, s1) != Result::Ok) return Result::Failed;
+      }
+
       return Result::Ok;
     }
   }
