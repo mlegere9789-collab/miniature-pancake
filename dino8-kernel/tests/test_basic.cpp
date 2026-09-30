@@ -56015,6 +56015,258 @@ void TestRecognizeCountersinkChainsRoundTrip() {
   }
 }
 
+// Builds a standalone tapered-boss-CHAIN shape directly via FromMixedFaces
+// (BuildTaperedBossFixture()'s own precedent, sidestepping
+// BooleanCombineGeneral()'s own confirmed Union-side "floating base cap"
+// gap) - a "body" filler cylinder, then TWO differing-radius cylindrical
+// steps, then a conical taper down to `cone_tip_radius`: the ordinary
+// (cylindrical-base) orientation, generalized from BuildTaperedBossFixture's
+// own single shaft segment to a real two-step chain.
+//
+// `body_radius` is deliberately passed equal to `cyl_a_radius` by every
+// caller below - a genuine, confirmed pitfall found while building this
+// fixture (mirroring the precedent set by BuildFlaredTaperedBossFixture's
+// own doc comment above): giving the filler body a DIFFERENT radius from
+// `cyl_a` makes it a real third same-axis step, and RecognizeTaperedBossChains()'s
+// own forward walk (correctly, not a bug) keeps walking straight through it,
+// silently absorbing the standalone fixture's own "rest of the body" filler
+// into the recognized chain instead of stopping at it. Radius-matching the
+// body to `cyl_a` defeats the walk's own "differing radius" step test at
+// exactly that boundary (`cand.radius == cur_radius` in
+// RecognizeTaperedBossChains()), stopping the chain there while the on-axis
+// occupancy probe (at that same boundary, not at the body's own true end
+// cap - the one location this file's "eighth session"/"fourteenth session"
+// notes already disclose as unreliable for a FromMixedFaces() fixture) still
+// reads correctly.
+dino8::kernel::Brep BuildTaperedBossChainFixture(dino8::kernel::Point3d body_far_end, dino8::kernel::Vector3d axis,
+                                                  double body_radius, double body_length, double cyl_a_radius,
+                                                  double cyl_a_length, double cyl_b_radius, double cyl_b_length,
+                                                  double cone_tip_radius, double cone_length) {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  Vector3d dir = axis;
+  dir.Unitize();
+
+  const ON_Plane body_frame = FrameFromAxisForGeneralBooleanTest(body_far_end, dir);
+  Brep::CylindricalFace body_cf;
+  body_cf.frame = body_frame;
+  body_cf.radius = body_radius;
+  body_cf.angle = 2.0 * ON_PI;
+  body_cf.length = body_length;
+
+  const Point3d after_body = body_far_end + dir * body_length;
+  const ON_Plane a_frame = FrameFromAxisForGeneralBooleanTest(after_body, dir);
+  Brep::CylindricalFace cyl_a_cf;
+  cyl_a_cf.frame = a_frame;
+  cyl_a_cf.radius = cyl_a_radius;
+  cyl_a_cf.angle = 2.0 * ON_PI;
+  cyl_a_cf.length = cyl_a_length;
+
+  const Point3d after_a = after_body + dir * cyl_a_length;
+  const ON_Plane b_frame = FrameFromAxisForGeneralBooleanTest(after_a, dir);
+  Brep::CylindricalFace cyl_b_cf;
+  cyl_b_cf.frame = b_frame;
+  cyl_b_cf.radius = cyl_b_radius;
+  cyl_b_cf.angle = 2.0 * ON_PI;
+  cyl_b_cf.length = cyl_b_length;
+
+  const Point3d cone_start = after_a + dir * cyl_b_length;
+  const Point3d tip_point = cone_start + dir * cone_length;
+  const ON_Plane tip_point_frame = FrameFromAxisForGeneralBooleanTest(tip_point, -dir);
+  ON_Plane cone_frame = tip_point_frame;
+  ShiftConeFrameToApex(cone_frame, tip_point, cone_tip_radius, cyl_b_radius, cone_length);
+  Brep::ConicalFace cone_cf;
+  cone_cf.frame = cone_frame;
+  cone_cf.radius0 = cone_tip_radius;
+  cone_cf.radius1 = cyl_b_radius;
+  cone_cf.angle = 2.0 * ON_PI;
+  cone_cf.length = cone_length;
+
+  const Brep::PlanarFace body_cap = DiskCapForGeneralBooleanTest(body_frame, 0.0, body_radius, /*flip=*/true);
+  const Brep::PlanarFace tip_cap = DiskCapForGeneralBooleanTest(tip_point_frame, 0.0, cone_tip_radius, /*flip=*/true);
+
+  return Brep::FromMixedFaces({body_cap, tip_cap}, {body_cf, cyl_a_cf, cyl_b_cf}, {cone_cf});
+}
+
+// The flared-base orientation of the same chain shape: a wide conical "pad"
+// (BuildFlaredTaperedBossFixture()'s own precedent, avoiding a cylindrical
+// filler body for the identical reason that function's own doc comment
+// gives - a filler CYLINDER sharing the taper cone's own wide-end radius is
+// itself a second real full-cylinder candidate `FindAdjacentConeCylinderPairs()`
+// could falsely match instead of the real shaft), feeding into the actual
+// taper (the feature `RecognizeTaperedBossChains()` should recover), then
+// TWO differing-radius cylindrical steps down to the free tip.
+dino8::kernel::Brep BuildFlaredTaperedBossChainFixture(dino8::kernel::Point3d base_far_end, dino8::kernel::Vector3d axis,
+                                                        double pad_radius, double pad_length, double mid_radius,
+                                                        double taper_length, double cyl_c_radius, double cyl_c_length,
+                                                        double cyl_d_radius, double cyl_d_length) {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  Vector3d dir = axis;
+  dir.Unitize();
+
+  const Point3d mid_point = base_far_end + dir * pad_length;
+  ON_Plane pad_frame = FrameFromAxisForGeneralBooleanTest(base_far_end, dir);
+  ShiftConeFrameToApex(pad_frame, base_far_end, pad_radius, mid_radius, pad_length);
+  Brep::ConicalFace pad_cf;
+  pad_cf.frame = pad_frame;
+  pad_cf.radius0 = pad_radius;
+  pad_cf.radius1 = mid_radius;
+  pad_cf.angle = 2.0 * ON_PI;
+  pad_cf.length = pad_length;
+
+  const Point3d cyl_c_start = mid_point + dir * taper_length;
+  ON_Plane taper_frame = FrameFromAxisForGeneralBooleanTest(mid_point, dir);
+  ShiftConeFrameToApex(taper_frame, mid_point, mid_radius, cyl_c_radius, taper_length);
+  Brep::ConicalFace taper_cf;
+  taper_cf.frame = taper_frame;
+  taper_cf.radius0 = mid_radius;
+  taper_cf.radius1 = cyl_c_radius;
+  taper_cf.angle = 2.0 * ON_PI;
+  taper_cf.length = taper_length;
+
+  const ON_Plane c_frame = FrameFromAxisForGeneralBooleanTest(cyl_c_start, dir);
+  Brep::CylindricalFace cyl_c_cf;
+  cyl_c_cf.frame = c_frame;
+  cyl_c_cf.radius = cyl_c_radius;
+  cyl_c_cf.angle = 2.0 * ON_PI;
+  cyl_c_cf.length = cyl_c_length;
+
+  const Point3d cyl_d_start = cyl_c_start + dir * cyl_c_length;
+  const ON_Plane d_frame = FrameFromAxisForGeneralBooleanTest(cyl_d_start, dir);
+  Brep::CylindricalFace cyl_d_cf;
+  cyl_d_cf.frame = d_frame;
+  cyl_d_cf.radius = cyl_d_radius;
+  cyl_d_cf.angle = 2.0 * ON_PI;
+  cyl_d_cf.length = cyl_d_length;
+
+  const ON_Plane pad_cap_frame = FrameFromAxisForGeneralBooleanTest(base_far_end, dir);
+  const Brep::PlanarFace pad_cap = DiskCapForGeneralBooleanTest(pad_cap_frame, 0.0, pad_radius, /*flip=*/true);
+  const Brep::PlanarFace tip_cap = DiskCapForGeneralBooleanTest(d_frame, cyl_d_length, cyl_d_radius, /*flip=*/false);
+
+  return Brep::FromMixedFaces({pad_cap, tip_cap}, {cyl_c_cf, cyl_d_cf}, {pad_cf, taper_cf});
+}
+
+// parity-map "kernel: Feature operations" - "Feature recognition": closes
+// TaperedBossFeature's own disclosed "this only ever matches a SINGLE cone
+// segment directly adjacent to a SINGLE cylinder segment - a tapered boss
+// stacked with a further stepped segment ... is out of scope here" gap - the
+// boss-side mirror of TestRecognizeCountersinkChainsRoundTrip() above.
+void TestRecognizeTaperedBossChainsRoundTrip() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::RecognizeTaperedBosses;
+  using dino8::kernel::RecognizeTaperedBossChains;
+  using dino8::kernel::TaperedBossChain;
+  using dino8::kernel::TaperedBossFeature;
+  using dino8::kernel::Vector3d;
+
+  const Point3d body_far_end(0, 0, 0);
+  const Vector3d up(0, 0, 1);
+
+  {
+    // The ordinary orientation: a cylindrical base that itself steps once
+    // before narrowing through a conical taper to a free tip.
+    const double body_radius = 1.0, body_length = 1.0;
+    const double cyl_a_radius = 1.0, cyl_a_length = 1.2;  // body_radius == cyl_a_radius: see the fixture's own doc comment
+    const double cyl_b_radius = 0.6, cyl_b_length = 0.9;
+    const double tip_radius = 0.2, cone_length = 0.7;
+    const Brep result = BuildTaperedBossChainFixture(body_far_end, up, body_radius, body_length, cyl_a_radius,
+                                                       cyl_a_length, cyl_b_radius, cyl_b_length, tip_radius, cone_length);
+
+    // Sanity: RecognizeTaperedBosses() itself still merges only the cone
+    // with the immediately-adjacent cyl_b (its own two-segment domain),
+    // never reaching cyl_a - confirms this fixture genuinely exercises the
+    // gap being closed.
+    const std::vector<TaperedBossFeature> partial = RecognizeTaperedBosses(result);
+    Check(partial.size() == 1 && std::abs(partial[0].cyl_radius - cyl_b_radius) < 1e-6,
+          "sanity: RecognizeTaperedBosses() itself reports only the cone-adjacent segment's own radius, never "
+          "reaching the further, second cylindrical step");
+
+    const std::vector<TaperedBossChain> found = RecognizeTaperedBossChains(result);
+    Check(found.size() == 1, "RecognizeTaperedBossChains merges both cylindrical steps and the taper into one compound feature");
+    const TaperedBossChain& chain = found[0];
+    // The chain's own base-attached end is the body/cyl_a boundary (where
+    // the walk stops, per the fixture's own doc comment above) - NOT the
+    // cyl_a/cyl_b boundary one step further in.
+    const Point3d attach = body_far_end + up * body_length;
+    Check(chain.origin.DistanceTo(attach) < 1e-6, "RecognizeTaperedBossChains recovers the chain's own exact attach point");
+    Check((chain.axis - up).Length() < 1e-6, "RecognizeTaperedBossChains recovers the chain's own exact outward direction");
+    Check(chain.base_is_cylindrical, "RecognizeTaperedBossChains reports the cylindrical side as the base");
+    Check(chain.steps.size() == 2, "RecognizeTaperedBossChains recovers both of the chain's own cylindrical steps");
+    Check(std::abs(chain.steps[0].radius - cyl_a_radius) < 1e-6, "RecognizeTaperedBossChains recovers the base-most step's own exact radius first");
+    Check(std::abs(chain.steps[0].height - cyl_a_length) < 1e-6, "RecognizeTaperedBossChains recovers the base-most step's own exact height first");
+    Check(std::abs(chain.steps[1].radius - cyl_b_radius) < 1e-6, "RecognizeTaperedBossChains recovers the tip-most cylindrical step's own exact radius second");
+    Check(std::abs(chain.steps[1].height - cyl_b_length) < 1e-6, "RecognizeTaperedBossChains recovers the tip-most cylindrical step's own exact height second");
+    Check(std::abs(chain.cone_small_radius - tip_radius) < 1e-6, "RecognizeTaperedBossChains recovers the taper's own exact tip radius");
+    Check(std::abs(chain.cone_large_radius - cyl_b_radius) < 1e-6, "RecognizeTaperedBossChains recovers the taper's own exact base radius");
+    Check(std::abs(chain.cone_length - cone_length) < 1e-6, "RecognizeTaperedBossChains recovers the taper's own exact length");
+    const double expected_angle = 2.0 * std::atan2(cyl_b_radius - tip_radius, cone_length) * 180.0 / ON_PI;
+    Check(std::abs(chain.taper_angle_degrees - expected_angle) < 1e-4, "RecognizeTaperedBossChains recovers the taper's own exact full included angle");
+    Check(!chain.through, "RecognizeTaperedBossChains reports the attached chain as NOT through");
+  }
+  {
+    // The opposite (flared-base) orientation: a conical pad at the base,
+    // narrowing through the actual taper to a stepped cylindrical shaft.
+    const double pad_radius = 2.0, pad_length = 1.0;
+    const double mid_radius = 1.2, taper_length = 1.0;
+    const double cyl_c_radius = 0.8, cyl_c_length = 0.9;
+    const double cyl_d_radius = 0.4, cyl_d_length = 1.1;
+    const Brep result = BuildFlaredTaperedBossChainFixture(body_far_end, up, pad_radius, pad_length, mid_radius,
+                                                             taper_length, cyl_c_radius, cyl_c_length, cyl_d_radius,
+                                                             cyl_d_length);
+
+    const std::vector<TaperedBossChain> found = RecognizeTaperedBossChains(result);
+    Check(found.size() == 1, "RecognizeTaperedBossChains merges the flared taper and both cylindrical steps into one compound feature");
+    const TaperedBossChain& chain = found[0];
+    const Point3d attach = body_far_end + up * pad_length;
+    Check(chain.origin.DistanceTo(attach) < 1e-6, "RecognizeTaperedBossChains recovers the flared chain's own exact attach point");
+    Check((chain.axis - up).Length() < 1e-6, "RecognizeTaperedBossChains recovers the flared chain's own exact outward direction");
+    Check(!chain.base_is_cylindrical, "RecognizeTaperedBossChains reports the conical segment as the base for the flared orientation");
+    Check(chain.steps.size() == 2, "RecognizeTaperedBossChains recovers both of the flared chain's own cylindrical steps");
+    Check(std::abs(chain.steps[0].radius - cyl_c_radius) < 1e-6, "RecognizeTaperedBossChains recovers the taper-adjacent step's own exact radius first");
+    Check(std::abs(chain.steps[0].height - cyl_c_length) < 1e-6, "RecognizeTaperedBossChains recovers the taper-adjacent step's own exact height first");
+    Check(std::abs(chain.steps[1].radius - cyl_d_radius) < 1e-6, "RecognizeTaperedBossChains recovers the tip-most step's own exact radius second");
+    Check(std::abs(chain.steps[1].height - cyl_d_length) < 1e-6, "RecognizeTaperedBossChains recovers the tip-most step's own exact height second");
+    Check(std::abs(chain.cone_large_radius - mid_radius) < 1e-6,
+          "RecognizeTaperedBossChains recovers the taper's own exact radius at the pad transition, not the pad's own further, wider radius");
+    Check(std::abs(chain.cone_small_radius - cyl_c_radius) < 1e-6, "RecognizeTaperedBossChains recovers the taper's own exact radius at the shaft transition");
+    Check(std::abs(chain.cone_length - taper_length) < 1e-6, "RecognizeTaperedBossChains recovers the flared taper's own exact length");
+    Check(!chain.through, "RecognizeTaperedBossChains reports the attached flared chain as NOT through");
+  }
+  {
+    // Negative control: a plain single-cylinder-step tapered boss has no
+    // second cylindrical step to chain, so RecognizeTaperedBossChains()
+    // finds nothing here. Deliberately `body_radius == shaft_radius`
+    // (unlike TestRecognizeTaperedBossesRoundTrip's own same-named fixture
+    // call, which uses a DIFFERENT body radius specifically so its own
+    // two-segment-only RecognizeTaperedBosses() has a real step boundary to
+    // probe occupancy at): a real, confirmed pitfall found while building
+    // this negative control, not merely disclosed after the fact - a
+    // differing body radius is not a "filler", it is a genuine second
+    // cylindrical step on the same axis, and RecognizeTaperedBossChains()'s
+    // own forward walk (correctly) keeps going straight into it, so THAT
+    // fixture is actually a positive two-segment chain case, not a negative
+    // control at all. Matching the body radius to the shaft's own defeats
+    // the walk's "differing radius" step test right at that boundary (the
+    // same technique BuildTaperedBossChainFixture() above uses deliberately,
+    // just for the opposite purpose here - stopping the chain at exactly
+    // one cylindrical step instead of two).
+    const double body_radius = 0.6, body_length = 1.0;
+    const double shaft_radius = 0.6, shaft_length = 2.0;
+    const double tip_radius = 0.2, cone_length = 0.8;
+    const Brep plain = BuildTaperedBossFixture(body_far_end, up, body_radius, body_length, shaft_radius, shaft_length,
+                                                tip_radius, cone_length);
+    Check(RecognizeTaperedBossChains(plain).empty(),
+          "RecognizeTaperedBossChains finds no chain on a plain single-step tapered boss - that stays "
+          "RecognizeTaperedBosses()'s own domain");
+  }
+}
+
 int main() {
   ON::Begin();
 
@@ -56895,6 +57147,7 @@ int main() {
   TestRecognizeSteppedBossChainsRoundTrip();
   TestRecognizeTaperedBossesRoundTrip();
   TestRecognizeCountersinkChainsRoundTrip();
+  TestRecognizeTaperedBossChainsRoundTrip();
 
   ON::End();
 

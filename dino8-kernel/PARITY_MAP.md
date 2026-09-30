@@ -4547,6 +4547,87 @@ anywhere but the chain's own first step) is out of scope, and no
 identical to the count directly above. Full `dino8_kernel_tests` suite
 (via `ctest`): 7048 checks, 100% passing, 0 regressions.
 
+**2026-09-30, a fifteenth session:** `dino8::kernel::RecognizeTaperedBossChains`
+(features.h/features.cpp) closes `TaperedBossFeature`'s own disclosed "this
+only ever matches a SINGLE cone segment directly adjacent to a SINGLE
+cylinder segment - a tapered boss stacked with a further stepped segment
+... is out of scope here" gap - the last remaining asymmetry in this file's
+own hole/boss recognition family: every other compound-feature pair already
+has both a concave (hole-side) and convex (boss-side) form
+(RecognizeHoles/RecognizeBosses, RecognizeCounterboreHoles/RecognizeSteppedBosses,
+RecognizeSteppedHoleChains/RecognizeSteppedBossChains,
+RecognizeCountersinkHoles/RecognizeTaperedBosses), except
+RecognizeCountersinkChains (fourteenth session), whose boss-side mirror this
+closes. Genuinely new capability, not a citation fix: the first N-segment
+chain walker in this file that starts from a CONVEX cone rather than a
+concave one.
+
+Built entirely on existing helpers, reused unchanged: `FindAdjacentConeCylinderPairs()`
+(never reads either candidate's own `concave` flag) finds the cone's first
+matching cylinder exactly as `RecognizeTaperedBosses()` itself does, and the
+same forward-only walk `RecognizeCountersinkChains()` already performs
+(same pairwise adjacency test, same "an end claimed by more than one
+un-consumed candidate is ambiguous, treated as a terminus" rule) continues
+from that cylinder's own far end through any further adjacent,
+non-overlapping, differing-radius cylindrical candidates. The one genuinely
+new piece of logic is direction bookkeeping: unlike a countersink chain
+(whose cone is always the entry, HoleFeature's fixed "into the material"
+convention), a tapered boss chain has no such fixed convention - either the
+cone's own outer end or the cylindrical chain's own outer end can be the one
+actually attached to the body (the identical ambiguity `TaperedBossFeature`'s
+own two-segment case already resolves via an on-axis `Mesh::ContainsPoint()`
+probe at BOTH outer ends, generalized here to the whole chain's span) - so
+`TaperedBossChain::steps` is stored in base-to-tip order
+(`SteppedBossChain`'s own convention) rather than `CountersinkChain::steps`'s
+"entry-to-far from the cone" convention, reversing the walked order when the
+cylindrical side turns out to be the base.
+
+**Two genuine, confirmed pitfalls found and fixed while building this
+evidence, both in the TEST FIXTURE, not the recognizer - the first caught by
+the test itself immediately failing, not merely disclosed after the fact:**
+(1) the ordinary-orientation fixture's own expected attach point was
+initially computed one step too far in (the cyl_a/cyl_b INTERNAL boundary,
+rather than the body/cyl_a boundary where the walk actually terminates) -
+a plain arithmetic mistake in the test, caught immediately by the chain's
+own recovered `origin` not matching, fixed by measuring the attach point at
+`body_far_end + body_length` instead. (2) the first attempt at a negative
+control reused `TestRecognizeTaperedBossesRoundTrip()`'s own
+`BuildTaperedBossFixture()` fixture verbatim (body radius 1.5, shaft radius
+0.6) expecting `RecognizeTaperedBossChains()` to find nothing on a "plain
+single-step" boss - it failed too, and rightly so: that fixture's own
+DIFFERING body/shaft radii are not a "filler", they are a genuine second
+cylindrical step on the same axis, so the new forward walk (correctly, not
+a bug) keeps going straight into the body segment, making that fixture an
+actual two-segment chain, not a negative control at all. Fixed by giving the
+negative-control fixture a body radius EQUAL to the shaft's own (the same
+technique the new chain fixtures themselves rely on deliberately, in the
+opposite direction, to stop a chain's walk exactly where a synthetic
+"rest of the body" filler segment begins - see `BuildTaperedBossChainFixture()`'s
+own doc comment for the full reasoning).
+
+Verified by 1 new test with 3 sub-cases (`TestRecognizeTaperedBossChainsRoundTrip`,
+tests/test_basic.cpp): the ordinary (cylindrical-base) orientation - a
+filler body, two differing-radius cylindrical steps, then a conical tip -
+recovers both steps' own exact radius/height in base-to-tip order, the
+taper's own exact tip/base radii/length/full included angle, and the exact
+attach point/outward direction, with a sanity check confirming
+`RecognizeTaperedBosses()` itself still reports only the cone-adjacent
+segment, never reaching the further step; the flared-base orientation (a
+conical pad feeding the actual taper, then two differing-radius cylindrical
+steps to a free tip) recovers the same fields with `base_is_cylindrical`
+correctly false and the steps kept in their already-base-to-tip walked
+order (no reversal needed for this orientation); and the negative control
+above confirms a genuine plain single-step tapered boss finds no chain here.
+
+**No score change**: "Feature recognition" was already counted `partial`
+and stays `partial` here too - a general (non-cylindrical) pocket and a
+countersink/tapered-boss chain mixing more than one cone remain
+unrecognized (same as before), and no `dino8-app` command surfaces any of
+this (same as every other kernel-only feature op in this category). Still
+**6/16/2, 58.3%**, identical to the count directly above. Full
+`dino8_kernel_tests` suite: 7427 checks, 100% passing, 0 regressions -
+confirmed via two full independent runs of the rebuilt binary, both clean.
+
 **Fossilith kernel — Curve operations** (curveops):
 - [partial] Curve fairing/smoothing — app-only Laplacian smoothing (dino8-app/src/commands/cmd_meshtools.cpp:740 / cmd_remaining.cpp:866); no kernel fairing.
 - [partial] Match curve end continuity — `MatchCommand` (dino8-app/src/commands/cmd_curves2.cpp:1500), position/tangent only, app-only.

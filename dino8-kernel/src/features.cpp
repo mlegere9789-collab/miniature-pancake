@@ -1413,4 +1413,157 @@ std::vector<CountersinkChain> RecognizeCountersinkChains(const Brep& solid) {
   return out;
 }
 
+std::vector<TaperedBossChain> RecognizeTaperedBossChains(const Brep& solid) {
+  std::vector<TaperedBossChain> out;
+
+  std::vector<ConeFaceCandidate> cones;
+  for (ConeFaceCandidate& c : ScanFullConeFaces(solid)) {
+    if (!c.concave) cones.push_back(c);
+  }
+  std::vector<CylindricalFaceCandidate> cyls;
+  for (CylindricalFaceCandidate& c : ScanFullCylinderFaces(solid)) {
+    if (!c.concave) cyls.push_back(c);
+  }
+  if (cones.empty() || cyls.size() < 2) return out;
+
+  const Mesh solid_mesh = solid.TessellateToClosedMesh(16, 32);
+  const double kTol = tolerance::kDistance * 100.0;
+
+  for (const ConeCylinderStep& step : FindAdjacentConeCylinderPairs(cones, cyls)) {
+    const ConeFaceCandidate& cone = cones[step.cone_index];
+
+    // Same forward-only walk RecognizeCountersinkChains() itself performs -
+    // it never reads either candidate's own `concave` flag, so it works
+    // unchanged fed the CONVEX candidate lists above.
+    std::vector<TaperedBossChainStep> walked;
+    walked.push_back({cyls[step.cyl_index].radius, step.cyl_length, cyls[step.cyl_index].face_index});
+
+    std::vector<bool> used(cyls.size(), false);
+    used[step.cyl_index] = true;
+
+    Point3d cur_point = step.far_point;
+    Vector3d cur_axis = step.axis;
+    double cur_radius = cyls[step.cyl_index].radius;
+
+    for (;;) {
+      int match_index = -1;
+      bool ambiguous = false;
+      for (size_t k = 0; k < cyls.size(); ++k) {
+        if (used[k]) continue;
+        const CylindricalFaceCandidate& cand = cyls[k];
+        if (cand.radius == cur_radius) continue;  // same radius - not a step at all
+
+        const double align = std::fabs(ON_DotProduct(cand.axis_dir, cur_axis));
+        if (align < 1.0 - tolerance::kAlignment) continue;
+        const Vector3d to_c = cand.axis_ref - cur_point;
+        const Vector3d off_axis = to_c - ON_DotProduct(to_c, cur_axis) * cur_axis;
+        if (off_axis.Length() > kTol) continue;  // not the same axis line
+
+        const Point3d cand_lo = cand.axis_ref + cand.t_min * cand.axis_dir;
+        const Point3d cand_hi = cand.axis_ref + cand.t_max * cand.axis_dir;
+        Point3d outer;
+        if (cur_point.DistanceTo(cand_lo) <= kTol) {
+          outer = cand_hi;
+        } else if (cur_point.DistanceTo(cand_hi) <= kTol) {
+          outer = cand_lo;
+        } else {
+          continue;  // no shared endpoint at all - not adjacent
+        }
+
+        const double seg_len = cand.t_max - cand.t_min;
+        const Point3d predicted_outer = cur_point + cur_axis * seg_len;
+        if (predicted_outer.DistanceTo(outer) > kTol) continue;  // doesn't continue straight - not a genuine step
+
+        if (match_index != -1) {
+          ambiguous = true;
+          break;
+        }
+        match_index = static_cast<int>(k);
+      }
+      if (match_index == -1 || ambiguous) break;
+
+      const CylindricalFaceCandidate& matched = cyls[static_cast<size_t>(match_index)];
+      const double seg_len = matched.t_max - matched.t_min;
+      walked.push_back({matched.radius, seg_len, matched.face_index});
+      used[static_cast<size_t>(match_index)] = true;
+      cur_point = cur_point + cur_axis * seg_len;
+      cur_radius = matched.radius;
+    }
+
+    if (walked.size() < 2) continue;  // exactly one cylinder step: RecognizeTaperedBosses()'s own domain
+
+    // `cur_point`/`cur_axis` now sit at the chain's own far end (the
+    // outermost cylindrical step's own outer terminus), exactly
+    // TaperedBosses()'s own "cyl_outer" for the two-segment case, generalized
+    // to the whole walked chain.
+    const Point3d chain_far_point = cur_point;
+    double total_cyl_length = 0.0;
+    double max_radius = step.open_radius;
+    for (const TaperedBossChainStep& s : walked) {
+      total_cyl_length += s.height;
+      max_radius = std::max(max_radius, s.radius);
+    }
+
+    // step.axis points from the cone's own open (tip) end through the touch
+    // point to the chain's own far end - the "into material" sense
+    // RecognizeCountersinkChains() itself uses; `away_axis` (base -> tip) is
+    // its reverse, exactly like RecognizeTaperedBosses()'s own away_axis.
+    const Point3d cone_outer = step.open_point;
+    const Vector3d away_axis = -step.axis;
+
+    CylindricalFaceCandidate merged;
+    merged.radius = max_radius;
+    merged.axis_ref = chain_far_point;
+    merged.axis_dir = away_axis;
+    merged.t_min = 0.0;
+    merged.t_max = step.cone_length + total_cyl_length;
+    const EndOccupancy occ = ClassifyEndOccupancy(solid_mesh, merged);
+    const bool near_attached = occ.near_inside;  // chain_far_point end
+    const bool far_attached = occ.far_inside;    // cone_outer end
+    if (near_attached && far_attached) continue;  // both embedded: not a visible feature
+
+    const double half_angle = std::atan2(cone.radius_max - cone.radius_min, cone.t_max - cone.t_min);
+
+    TaperedBossChain chain;
+    chain.cone_small_radius = cone.radius_min;
+    chain.cone_large_radius = cone.radius_max;
+    chain.cone_length = cone.t_max - cone.t_min;
+    chain.taper_angle_degrees = 2.0 * half_angle * 180.0 / ON_PI;
+    chain.cone_face_index = cone.face_index;
+
+    if (!near_attached && !far_attached) {
+      // Free-standing on both ends, mirroring TaperedBossFeature's own
+      // "through" convention: pin the origin at the chain's own cylindrical
+      // far end arbitrarily, base-to-tip order = the walk reversed.
+      chain.through = true;
+      chain.base_is_cylindrical = true;
+      chain.origin = chain_far_point;
+      chain.axis = away_axis;
+      for (size_t k = walked.size(); k-- > 0;) chain.steps.push_back(walked[k]);
+    } else if (near_attached) {
+      // The chain's own cylindrical far end is the base; the cone is the
+      // free tip. `walked` is entry(cone)-to-far order - reverse it so
+      // `steps[0]` is the segment actually touching the body, matching
+      // SteppedBossChain's own base-to-tip convention.
+      chain.through = false;
+      chain.base_is_cylindrical = true;
+      chain.origin = chain_far_point;
+      chain.axis = away_axis;
+      for (size_t k = walked.size(); k-- > 0;) chain.steps.push_back(walked[k]);
+    } else {
+      // The cone's own outer end is the base (a flared conical pad feeding
+      // into a stepped shaft) - `walked` is already base(cone-adjacent)-to-
+      // tip order, kept as-is.
+      chain.through = false;
+      chain.base_is_cylindrical = false;
+      chain.origin = cone_outer;
+      chain.axis = step.axis;
+      chain.steps = walked;
+    }
+    out.push_back(std::move(chain));
+  }
+
+  return out;
+}
+
 }  // namespace dino8::kernel

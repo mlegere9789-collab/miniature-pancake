@@ -752,4 +752,87 @@ struct CountersinkChain {
 // disclosed "closed, consistently-oriented mesh" precondition.
 std::vector<CountersinkChain> RecognizeCountersinkChains(const Brep& solid);
 
+// One cylindrical segment of a multi-step chain recognized by
+// RecognizeTaperedBossChains() below - the boss-side sibling of
+// CountersinkChainStep (same shape, `height` rather than `length` to match
+// SteppedBossStep's own boss-vocabulary field name).
+struct TaperedBossChainStep {
+  double radius = 0.0;
+  double height = 0.0;
+  int face_index = -1;
+};
+
+// A tapered boss whose cylindrical side is itself stepped - closing
+// TaperedBossFeature's own disclosed "this only ever matches a SINGLE cone
+// segment directly adjacent to a SINGLE cylinder segment - a tapered boss
+// stacked with a further stepped segment ... is out of scope here" gap: the
+// boss-side (CONVEX) mirror of CountersinkChain above, built on the exact
+// same FindAdjacentConeCylinderPairs() cone/cylinder match
+// RecognizeTaperedBosses() itself uses, then continuing a forward walk from
+// the matched cylinder's own far end through any further adjacent,
+// non-overlapping, differing-radius cylindrical candidates - e.g. a
+// shouldered dowel pin whose shaft itself steps down before narrowing
+// through a conical lead-in point, or a flanged boss whose flared conical
+// base feeds into a stepped shaft.
+//
+// Unlike CountersinkChain (whose axis convention is fixed by HoleFeature's
+// own "always into the material from the entry surface" rule, since a real
+// countersink's cone is always the mouth), a tapered boss has no such fixed
+// convention - see TaperedBossFeature's own doc comment for why - so
+// `base_is_cylindrical` records which SIDE of the whole chain is genuinely
+// attached, read via the same on-axis `Mesh::ContainsPoint()` probe every
+// other boss-side Recognize* function in this file already uses, applied to
+// the chain's own two outer ends (the cone's own free/attached end, and the
+// outermost cylindrical step's own far end) exactly like TaperedBossFeature's
+// own two-segment probe, generalized to the whole chain's span. `origin`/
+// `axis` describe the chain's own attached (base) end and outward direction
+// (BossFeature's convention: axis points away from the material, toward the
+// free tip). `steps` lists each cylindrical segment's own radius/height/
+// face_index in BASE-to-TIP order - SteppedBossChain's own convention, NOT
+// CountersinkChain's "entry-to-far from the cone" convention, since the
+// cone here can sit at EITHER end of the chain (unlike a countersink, whose
+// cone is always the entry) - when the cylindrical side is the base, the
+// walked order (nearest-cone-first) is reversed before being stored so
+// `steps[0]` is always the segment actually touching the body. `through`
+// mirrors TaperedBossFeature::through: true only when NEITHER outer end is
+// attached (a free-standing multi-step tapered rod).
+//
+// A chain reaching fewer than two cylindrical steps total (i.e. the cone
+// touches exactly one cylinder that doesn't itself continue any further) is
+// RecognizeTaperedBosses()'s own domain and is not repeated here.
+struct TaperedBossChain {
+  Point3d origin;
+  Vector3d axis;
+  bool base_is_cylindrical = false;
+  double cone_small_radius = 0.0;
+  double cone_large_radius = 0.0;
+  double cone_length = 0.0;
+  double taper_angle_degrees = 0.0;
+  int cone_face_index = -1;
+  std::vector<TaperedBossChainStep> steps;
+  bool through = false;
+};
+
+// Scans `solid` for a convex full cone matched to a convex full cylinder
+// (the same FindAdjacentConeCylinderPairs() match RecognizeTaperedBosses()
+// itself uses, filtered to the CONVEX half of both ScanFullConeFaces() and
+// ScanFullCylinderFaces() instead of the concave half CountersinkChain's own
+// RecognizeCountersinkChains() uses), then continues a forward walk from the
+// matched cylinder's own far end through any further adjacent,
+// non-overlapping, differing-radius cylindrical candidates - the identical
+// walk RecognizeCountersinkChains() itself performs, reused unchanged (it
+// never reads either candidate's own `concave` flag).
+//
+// Still partial: only a SINGLE cone is supported, and only at one end of the
+// chain (a boss with a cone stacked anywhere but that one segment is out of
+// scope, the same limitation RecognizeCountersinkChains() itself discloses
+// for the concave case); a general (non-cylindrical) pocket/boss shape
+// remains out of scope; and, like every other Recognize* function in this
+// file, this inherits Mesh::ContainsPoint()'s own disclosed "closed,
+// consistently-oriented mesh" precondition, including RecognizeBosses()'s
+// own CONFIRMED Union-side "floating base cap" gap (see BossFeature's own
+// doc comment) for a chain built via BooleanCombineGeneral()'s own Union
+// path specifically.
+std::vector<TaperedBossChain> RecognizeTaperedBossChains(const Brep& solid);
+
 }  // namespace dino8::kernel
