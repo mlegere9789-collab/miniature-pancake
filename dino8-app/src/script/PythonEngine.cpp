@@ -887,6 +887,55 @@ bool RunCommand(const std::string& name, py::args args) {
   return AppOf().Engine().RunNested(line);
 }
 
+// Document-state functions, matching rs.Undo/rs.Redo/rs.BeginUndo/
+// rs.UnitSystem/rs.UnitSystemName/rs.DocumentName in LuaEngine.cpp - the
+// "undo/document-state functions (Undo/Redo/UnitSystem/etc.) remain
+// entirely unported" half of PARITY_MAP.md's "Python API breadth" gap.
+// See LuaEngine.cpp's own rs_Undo/rs_Redo/rs_BeginUndo/rs_UnitSystem/
+// rs_UnitSystemName for the Lua-side twin of each of these.
+bool Undo() { return DocOf().Undo(); }
+bool Redo() { return DocOf().Redo(); }
+void BeginUndo(const std::string& label) { DocOf().BeginChange(label); }
+
+int UnitCode(const std::string& name) {
+  std::string n = name;
+  for (char& c : n) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  if (n == "microns") return 1;
+  if (n == "millimeters") return 2;
+  if (n == "centimeters") return 3;
+  if (n == "meters") return 4;
+  if (n == "kilometers") return 5;
+  if (n == "microinches") return 6;
+  if (n == "mils") return 7;
+  if (n == "inches") return 8;
+  if (n == "feet") return 9;
+  if (n == "miles") return 10;
+  return 0;
+}
+
+int UnitSystem(py::object unit) {
+  DocumentSettings& s = DocOf().Settings();
+  const int old = UnitCode(s.unit_system);
+  if (!unit.is_none()) {
+    static const char* names[] = {"None", "Microns", "Millimeters", "Centimeters", "Meters", "Kilometers", "Microinches", "Mils", "Inches", "Feet", "Miles"};
+    if (py::isinstance<py::int_>(unit)) {
+      const int c = unit.cast<int>();
+      if (c >= 0 && c <= 10) s.unit_system = names[c];
+    } else {
+      s.unit_system = unit.cast<std::string>();
+    }
+    DocOf().Touch();
+  }
+  return old;
+}
+
+std::string UnitSystemName() { return DocOf().Settings().unit_system; }
+
+std::string DocumentName() {
+  const std::string& p = DocOf().Path();
+  return p.empty() ? "Untitled" : std::filesystem::path(p).filename().string();
+}
+
 // Buffers Python's sys.stdout/sys.stderr writes and forwards them to the
 // engine one line at a time (print() issues one write() per argument/sep
 // plus one for the trailing newline, so lines have to be reassembled here
@@ -1014,6 +1063,12 @@ PYBIND11_EMBEDDED_MODULE(dino8, m) {
   m.attr("doc") = PyDoc{};
 
   m.def("RunCommand", &RunCommand, "Runs one Dino 8 command line by name, exactly as if typed on the command line (dino8.RunCommand('Box 0,0,0 5,5,5')).");
+  m.def("Undo", &Undo, "Undoes the last change, matching rs.Undo().");
+  m.def("Redo", &Redo, "Redoes the last undone change, matching rs.Redo().");
+  m.def("BeginUndo", &BeginUndo, py::arg("label") = "Script", "Records an undo point with a label, matching rs.BeginUndo(label).");
+  m.def("UnitSystem", &UnitSystem, py::arg("unit") = py::none(), "Gets or sets the document unit system (Rhino codes: 2 mm, 3 cm, 4 m, 8 in, 9 ft), matching rs.UnitSystem([unit]).");
+  m.def("UnitSystemName", &UnitSystemName, "The unit system as a word, matching rs.UnitSystemName().");
+  m.def("DocumentName", &DocumentName, "The document's file name, or 'Untitled' if it has never been saved, matching rs.DocumentName().");
 
   // Internal: sys.stdout/sys.stderr are redirected to this on construction
   // (see PythonEngine::PythonEngine) so print() output reaches the command

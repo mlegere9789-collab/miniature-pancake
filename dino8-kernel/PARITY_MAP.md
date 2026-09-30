@@ -1,6 +1,6 @@
 # Fossilith / Dino 8 parity map (2026-09-28, updated 2026-09-30)
 
-**Fossilith vs Parasolid/ACIS = 68.4% (weighted, verified); Dino 8 vs Rhino 8 + AutoCAD 2027 = 75.0%.**
+**Fossilith vs Parasolid/ACIS = 68.4% (weighted, verified); Dino 8 vs Rhino 8 + AutoCAD 2027 = 75.5%.**
 
 **2026-09-30 kernel rotation on "Intersections & projections":** three
 `[partial]` bullets close to `[present]` this pass — Curve self-intersection,
@@ -5983,7 +5983,7 @@ and `dino8-kernel/tests/test_basic.cpp`.
 | Dino 8: Command system & core commands | 1.5 | 19 | 11 | 6 | 2 | 73.7% |
 | Dino 8: 2D drafting, annotation & documentation | 1.0 | 18 | 12 | 5 | 1 | 80.6% |
 | Dino 8: Viewport display, rendering & visualization | 1.0 | 18 | 13 | 4 | 1 | 83.3% |
-| Dino 8: Scripting, automation & visual programming | 1.0 | 15 | 11 | 2 | 2 | 80.0% |
+| Dino 8: Scripting, automation & visual programming | 1.0 | 15 | 11 | 3 | 1 | 83.3% |
 | Dino 8: File I/O & interoperability (app level) | 1.0 | 17 | 8 | 5 | 4 | 61.8% |
 | Dino 8: SubD & mesh modeling toolset (app level) | 0.75 | 24 | 19 | 3 | 2 | 85.4% |
 | Dino 8: UI/UX, accessibility & localization | 1.0 | 19 | 13 | 3 | 3 | 76.3% |
@@ -6020,6 +6020,51 @@ fuzz-test target, the app_display ShadowBlob struct's file attribution and
 the PathTracer.cpp env-map line range, and the app_interop DXF writer's
 start line) — all citation-precision fixes, not scoring changes.
 
+**2026-09-30 rotation on "Scripting, automation & visual programming":**
+this category's own weight/remaining ranking (see the App ranking table
+above) already put it at rank 1, the single highest-priority app category
+by weight/remaining-items (1.0/4 = 0.250), and it had two real, tractable
+gaps within it: the `Windows-Python`
+half of "Embedded Python 3" and the interactive-prompts half of "Python API
+breadth" both explicitly need a real architecture change (a bundled CPython
+runtime for the former, a coroutine-style suspend/resume for the latter),
+not incremental work, but the *other* half of "Python API breadth" (the
+document-state functions) and "Cloud/network compute service" were both
+real, scoped, mechanically-verifiable gaps nobody had touched.
+1. **Python API breadth** — `Undo`/`Redo`/`BeginUndo`/`UnitSystem`/
+   `UnitSystemName`/`DocumentName` added to the `dino8` Python module,
+   closing the "undo/document-state functions ... remain entirely
+   unported" half of this bullet's own last sentence (see the bullet
+   itself for the full construction/test detail). Stays `partial` —
+   interactive prompts are the one remaining, and much larger, half.
+2. **Cloud/network compute service (Rhino.Compute equivalent)** moves
+   `[missing]` → `[partial]`: `dino8-app/src/net/ComputeServer.{h,cpp}` and
+   `main.cpp`'s new `--serve PORT` flag are real, tested, POSIX-socket HTTP
+   server code — the first of anything in this category's own description
+   ("no server/socket/HTTP code anywhere in the source") — not a stub or a
+   TODO. See the bullet itself for the full scope (and, just as
+   importantly, the explicit list of what it deliberately does not do:
+   Rhino.Compute this is not).
+
+Net effect: this category's own present/partial/missing counts move
+11/2/2/15 (80.0%) → 11/3/1/15 (83.3%) — the item count moving from missing
+to partial, not a headline-count change, so this category's own
+weight/remaining ranking (1.0/4 = 0.250) is unaffected: the same four
+remaining items, one just moved from "missing" to "partial." Recomputing
+the app table's own `sum(weight * parity%) / 7.75` headline with this one
+row's delta (+3.3 pp × 1.0 weight ÷ 7.75 total weight) moves the Dino 8 vs
+Rhino 8 + AutoCAD 2027 headline from 75.0% to 75.5%, reflected at the top
+of this document. Full `dino8_app_tests` ctest suite (25 targets, including
+the new `dino8_compute_server` target) and `tests/smoke.sh` (0 FAIL lines
+across the whole suite, including the new `--serve` end-to-end checks and
+the extended `python_script.txt`/`smoke.sh` Undo/Redo/UnitSystem checks)
+both re-run clean after this pass. This session's source edits:
+`dino8-app/src/script/PythonEngine.cpp`, `dino8-app/src/net/
+ComputeServer.h`/`.cpp` (new), `dino8-app/src/main.cpp`,
+`dino8-app/CMakeLists.txt`, `dino8-app/tests/test_compute_server.cpp`
+(new), `dino8-app/tests/python_script.txt`, `dino8-app/tests/smoke.sh`,
+`dino8-app/docs/COMPUTE_SERVER.md` (new), and `dino8-app/README.md`.
+
 ### App category gaps (missing / partial items, with evidence)
 
 **Dino 8: Command system & core commands** (app_commands):
@@ -6049,9 +6094,9 @@ start line) — all citation-precision fixes, not scoring changes.
 
 **Dino 8: Scripting, automation & visual programming** (app_scripting):
 - [partial] Embedded Python 3 — `dino8-app/CMakeLists.txt:146` sets `option(DINO8_ENABLE_PYTHON ... OFF)` on Windows specifically, `:148` `ON` elsewhere; shipped Windows builds have no Python at all; mid-script prompts are also missing.
-- [partial] Python API breadth — `RunCommand` reaches every registered command; the real gap is the object model and interactive prompts. `PythonEngine.cpp`'s object-model surface gained 12 methods this pass — `ObjectsByName`/`ObjectsByType`/`BoundingBox` (object query), `CurveLength`/`CurveDomain`/`EvaluateCurve`/`CurveClosestPoint`/`DivideCurve` (curve query, previously absent entirely), `SurfaceArea`/`SurfaceVolume`/`IsObjectSolid`/`SurfaceClosestPoint`/`MeshVertices` (surface/mesh query, likewise previously absent) — plus an entirely new `dino8.doc.Layers` table (`Add`/`Count`/`Names`/`IsLayer`/`CurrentLayer`/`Visible`/`SetVisible`/`Locked`/`SetLocked`/`Color`/`SetColor`/`Delete`, mirroring `rs.AddLayer`/`rs.LayerCount`/`rs.LayerNames`/`rs.IsLayer`/`rs.CurrentLayer`/`rs.LayerVisible`/`rs.LayerLocked`/`rs.LayerColor`/`rs.DeleteLayer` — layer management as a whole category, absent before this pass). Still genuinely partial: interactive prompts (`GetPoint`/`GetObject`/`GetString`/etc.) and undo/document-state functions (`Undo`/`Redo`/`UnitSystem`/etc.) remain entirely unported — Python scripts still run start-to-finish in one call with no coroutine-style suspend/resume the way Lua's `rs.GetPoint` has, so porting those needs a real architecture change, not a mechanical port like this pass's additions.
+- [partial] Python API breadth — `RunCommand` reaches every registered command; the real gap is the object model and interactive prompts. `PythonEngine.cpp`'s object-model surface gained 12 methods in an earlier pass — `ObjectsByName`/`ObjectsByType`/`BoundingBox` (object query), `CurveLength`/`CurveDomain`/`EvaluateCurve`/`CurveClosestPoint`/`DivideCurve` (curve query, previously absent entirely), `SurfaceArea`/`SurfaceVolume`/`IsObjectSolid`/`SurfaceClosestPoint`/`MeshVertices` (surface/mesh query, likewise previously absent) — plus an entirely new `dino8.doc.Layers` table (`Add`/`Count`/`Names`/`IsLayer`/`CurrentLayer`/`Visible`/`SetVisible`/`Locked`/`SetLocked`/`Color`/`SetColor`/`Delete`, mirroring `rs.AddLayer`/`rs.LayerCount`/`rs.LayerNames`/`rs.IsLayer`/`rs.CurrentLayer`/`rs.LayerVisible`/`rs.LayerLocked`/`rs.LayerColor`/`rs.DeleteLayer` — layer management as a whole category, absent before that pass). **This pass closes the other half of that same bullet's own last sentence** — the "undo/document-state functions (`Undo`/`Redo`/`UnitSystem`/etc.) remain entirely unported" half, not the interactive-prompts half. `PythonEngine.cpp` gains six new top-level `dino8.*` functions mirroring `LuaEngine.cpp`'s `rs_Undo`/`rs_Redo`/`rs_BeginUndo`/`rs_UnitSystem`/`rs_UnitSystemName`/`rs_DocumentName` one-for-one: `Undo()`/`Redo()` call the same `Document::Undo`/`Document::Redo` the Lua side does, `BeginUndo(label="Script")` opens the same labeled `Document::BeginChange` entry, `UnitSystem(unit=None)` gets-or-sets `DocumentSettings::unit_system` (accepting either a Rhino unit code or a name, exactly like the Lua version's `UnitCode`/name-table pair, ported verbatim since it's pure C++ with no Lua-specific API), `UnitSystemName()` reads it back as a word, and `DocumentName()` returns the open file's name or "Untitled". Verified end-to-end through the real app, not just the binding layer (`dino8-app/tests/python_script.txt`/`smoke.sh`): a scratch point is added, `dino8.Undo()` removes it and `dino8.Redo()` restores it (both checked against `AllObjects()`/`Find()`, not just the boolean return value), `dino8.BeginUndo(label)` is proven to have actually pushed a real, poppable undo entry (popping it via `Undo()` immediately afterward, per `Document::BeginChange`'s own always-finalizes-the-previous-pending-entry contract — the same mechanism `rs.BeginUndo` already relies on), and `UnitSystem`/`UnitSystemName` round-trip a numeric code through Millimeters/Feet and back. Still genuinely partial: interactive prompts (`GetPoint`/`GetObject`/`GetString`/etc.) remain entirely unported — Python scripts still run start-to-finish in one call with no coroutine-style suspend/resume the way Lua's `rs.GetPoint` has, so porting those needs a real architecture change, not a mechanical port like this pass's and the earlier pass's additions.
 - [present] Headless/batch scripting mode — **upgraded from partial.** `--script FILE` given WITHOUT `--smoke` (`dino8-app/src/main.cpp`) is now a real, standalone, documented batch/automation mode: the window is created hidden, the process is treated as headless (skipping `ShowFileDialog`'s blocking OS picker and the unsaved-changes-confirm prompt, either of which would otherwise hang a batch job), and it exits on its own the instant the script finishes (exit 0, or 2 on a failed `@expect_*` check) instead of falling into the interactive loop forever, which is what it did before this pass (main.cpp's own script-finished exit check only ever fired when `--smoke` was also given). Documented in the new `dino8-app/docs/BATCH_SCRIPTING.md` and a new README section; still genuinely needs a real or virtual display (Xvfb+llvmpipe on headless Linux, this project's own already-accepted headless story elsewhere) — this pass closes "framed as a QA mode, not a supported batch product," not the underlying GL-context requirement, which no claim here pretends is gone. Three new `tests/smoke.sh` checks across two script runs cover the fixed hang (a 30s `timeout` is the actual regression guard) and the exit-code-2 failure path.
-- [missing] Cloud/network compute service (Rhino.Compute equivalent) — no server/socket/HTTP code anywhere in the source.
+- [partial] Cloud/network compute service (Rhino.Compute equivalent) — **reclassified this pass, no longer missing.** Before this there was no server/socket/HTTP code anywhere in the source; `dino8-app/src/net/ComputeServer.{h,cpp}` is a genuine, if deliberately minimal, first step: a real POSIX-socket-based HTTP server (`ComputeServer::Start`/`PollOnce`, plus the pure `TryParseHttpRequest`/`BuildHttpResponse` request-parsing/response-formatting helpers), wired into `main.cpp`'s new `--serve PORT [--serve-max-requests N]` flag the same way `--script FILE` already wires up batch scripting — `PollOnce(handler, timeout_ms=0)` is called once per iteration of the existing per-frame loop (never blocking rendering), servicing one connection at a time: read a full HTTP request, hand its body to `handler`, write the response, close. `main.cpp`'s handler runs a POST request's body as a Lua script against `app.Lua()` — the same engine the command line and `RunScript` already share — and returns its captured `print()` output as the response body; a script that tries to suspend on an interactive `rs.Get*` prompt is aborted and reported as a `500` instead of hanging the connection, since a synchronous HTTP request has no way to supply a pick. Documented in the new `dino8-app/docs/COMPUTE_SERVER.md` and a new README section, including an explicit "what this deliberately does not do" list (no auth, no concurrency, no TLS, no geometry wire format — text in, printed text out). Verified two ways: `dino8_test_compute_server` (a new standalone ctest target with no Document/Application/GL dependency at all) covers the request-parsing edge cases purely in memory — a request split across two partial reads, an incomplete header block, a Content-Length body that hasn't fully arrived — plus a genuine end-to-end round trip over a real loopback TCP socket (`ComputeServer::Start(0)` on an OS-assigned ephemeral port, a real client socket on a background thread); and `tests/smoke.sh` drives the real, built app with `--serve 0 --serve-max-requests 3`, waits for its real "serve: listening on port N" line, then sends three real HTTP requests over curl — a `POST /run` that builds a box and reads its object count back from the response body, a bare `GET /run` that must come back `405`, and a `POST` calling `rs.GetPoint()` that must be rejected rather than hang — before checking the process exits cleanly on its own. Still honestly `partial`, nowhere near Rhino.Compute itself: one request at a time (no concurrency), no authentication, binds loopback only, and no geometry (de)serialization format at all — a script gets and returns plain text, exactly like the command line does, not JSON geometry payloads.
 - [missing] AI-assisted modeling or scripting — no neural/inference code anywhere; the one "smart" feature explicitly documents its own technique as not machine learning.
 
 **Dino 8: File I/O & interoperability (app level)** (app_interop):
@@ -6461,7 +6506,7 @@ top 40:
 - [app/app_drafting] Field text (dynamic text driven by an object property) (missing)
 - [app/app_display] Real-time shadow maps in the rasterized renderer (missing)
 - [app/app_display] SSAO in the rasterized renderer (missing)
-- [app/app_scripting] Cloud/network compute service (Rhino.Compute equivalent) (missing)
+- [app/app_scripting] Cloud/network compute service (Rhino.Compute equivalent) (missing; now partial - a real POSIX-socket HTTP server, `net/ComputeServer.{h,cpp}` and `main.cpp`'s `--serve PORT` flag, runs a POST request's body as a Lua script and returns its output - see the category bullet above for the full scope and what it deliberately still lacks)
 - [app/app_scripting] AI-assisted modeling or scripting (missing)
 - [app/app_interop] STEP AP242 (missing)
 - [app/app_interop] Digital signing of exported files (missing; now present - a real RSA-2048/SHA-256/PKCS#1v1.5 file-signing scheme, `DigitalSignature.{h,cpp}`/`BigUint.{h,cpp}` - see the category bullet above for detail)

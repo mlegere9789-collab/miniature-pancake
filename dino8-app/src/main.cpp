@@ -28,6 +28,18 @@
 //                     tests/cull_test.sh.
 //   --cull-screenshot FILE.bmp   with --cull-test: write the viewport's
 //                 own render (Viewport::CaptureToFile) to FILE.bmp.
+//   --serve PORT  start the minimal compute server (net/ComputeServer.h) on
+//                 PORT (0 asks the OS for a free ephemeral port - see the
+//                 "serve: listening on port N" line this prints) and run
+//                 headless, exactly like a pure --script batch run: each
+//                 POST /run request's body is run as a Lua script against
+//                 the same LuaEngine the command line uses, and the
+//                 captured print() output comes back as the response body.
+//                 See docs/COMPUTE_SERVER.md and PARITY_MAP.md's "Cloud/
+//                 network compute service" item.
+//   --serve-max-requests N   with --serve: exit after N requests have been
+//                 serviced instead of running until killed (used by
+//                 tests/smoke.sh for a deterministic, self-terminating run).
 //
 // Script lines starting with '@' are synthetic input for UI tests:
 //   @move X Y | @down [button] | @up [button] | @click X Y [button]
@@ -80,6 +92,7 @@
 #include "app/Application.h"
 #include "app/Settings.h"
 #include "doc/Document.h"
+#include "net/ComputeServer.h"
 #include "platform/Accessibility.h"
 #include "platform/Clipboard.h"
 #include "plugins/PluginPanel.h"
@@ -335,6 +348,8 @@ int main(int argc, char** argv) {
   std::string open_path;
   std::string screenshot_path;
   std::string cull_screenshot_path;
+  int serve_port = -1;
+  int serve_max_requests = -1;
   for (int i = 1; i < argc; ++i) {
     if (std::strcmp(argv[i], "--smoke") == 0 && i + 1 < argc) smoke_frames = std::atoi(argv[++i]);
     else if (std::strcmp(argv[i], "--stress") == 0 && i + 1 < argc) stress_count = std::atoi(argv[++i]);
@@ -342,6 +357,8 @@ int main(int argc, char** argv) {
     else if (std::strcmp(argv[i], "--cull-screenshot") == 0 && i + 1 < argc) cull_screenshot_path = argv[++i];
     else if (std::strcmp(argv[i], "--script") == 0 && i + 1 < argc) script_path = argv[++i];
     else if (std::strcmp(argv[i], "--screenshot") == 0 && i + 1 < argc) screenshot_path = argv[++i];
+    else if (std::strcmp(argv[i], "--serve") == 0 && i + 1 < argc) serve_port = std::atoi(argv[++i]);
+    else if (std::strcmp(argv[i], "--serve-max-requests") == 0 && i + 1 < argc) serve_max_requests = std::atoi(argv[++i]);
     else if (std::strcmp(argv[i], "--version") == 0) { std::printf("Dino 8 %s\n", DINO8_VERSION); return 0; }
     else if (argv[i][0] != '-') open_path = argv[i];
   }
@@ -424,7 +441,7 @@ int main(int argc, char** argv) {
   // runs, and not in batch --script runs either (a hidden, unattended batch
   // job has no real layout to save, and must never clobber the user's own
   // saved interactive layout.ini).
-  const bool interactive_run = smoke_frames < 0 && script_path.empty();
+  const bool interactive_run = smoke_frames < 0 && script_path.empty() && serve_port < 0;
   const std::string ini_path = dino8::app::ConfigDirectory() + "/layout.ini";
   const bool has_layout = interactive_run && std::filesystem::exists(ini_path);
   io.IniFilename = interactive_run ? ini_path.c_str() : nullptr;
@@ -525,6 +542,48 @@ int main(int argc, char** argv) {
   // Starts at History().size(), not 0: the block above already flushed
   // everything recorded up to and including hook registration.
   size_t history_printed = app.Engine().History().size();
+
+  // --serve: the minimal compute server (net/ComputeServer.h). Started
+  // here, after app.Init() (so app.Engine() already exists) and before the
+  // frame loop, exactly like script_lines above is prepared before the
+  // loop feeds it one line per frame. compute_handler runs a POST /run
+  // request's body as a Lua script against the running document's own
+  // LuaEngine - the same engine the command line and RunScript already
+  // use - and returns its captured print() output as the response. A
+  // script that suspends on an rs.Get*-style prompt can't be satisfied
+  // over a synchronous HTTP request, so that case is aborted and reported
+  // as an error instead of hanging the connection.
+  dino8::app::ComputeServer compute_server;
+  int serve_requests_handled = 0;
+  if (serve_port >= 0) {
+    std::string serve_error;
+    if (!compute_server.Start(serve_port, serve_error)) {
+      std::fprintf(stderr, "%s\n", serve_error.c_str());
+      return 1;
+    }
+    std::printf("serve: listening on port %d\n", compute_server.Port());
+    std::fflush(stdout);
+  }
+  const dino8::app::ComputeHandler compute_handler = [&app](const dino8::app::HttpRequest& req) {
+    dino8::app::HttpResponse resp;
+    if (req.method != "POST") {
+      resp.status = 405;
+      resp.body = "Dino 8 compute service: only POST /run is supported\n";
+      return resp;
+    }
+    const bool ok = app.Lua().Start(req.body, "compute-request");
+    const bool suspended = app.Lua().Suspended();
+    if (suspended) app.Lua().Abort();
+    std::string out;
+    for (const std::string& line : app.Lua().LastOutput()) {
+      out += line;
+      out += '\n';
+    }
+    if (suspended) out += "! compute error: script requires interactive input (rs.Get*), which the compute server cannot satisfy\n";
+    resp.status = (ok && !suspended) ? 200 : 500;
+    resp.body = out;
+    return resp;
+  };
 
   int frame = 0;
   int exit_code = 0;
@@ -754,6 +813,19 @@ int main(int argc, char** argv) {
     if (smoke_frames < 0 && !script_path.empty() && script_cursor >= script_lines.size() && wait_frames == 0) {
       std::printf("script: done objects=%zu commands=%zu\n", app.Doc().ObjectCount(), app.Engine().Registry().size());
       break;
+    }
+    // --serve: service at most one waiting connection per frame (timeout 0
+    // - never blocks the frame loop) so this coexists with everything else
+    // the loop does, exactly like the --stress/--cull-test/script-feeding
+    // hooks above it. --serve-max-requests bounds the run for
+    // tests/smoke.sh the same way pure batch-script mode bounds itself on
+    // running out of script lines, above.
+    if (serve_port >= 0) {
+      if (compute_server.PollOnce(compute_handler, /*timeout_ms=*/0)) ++serve_requests_handled;
+      if (serve_max_requests >= 0 && serve_requests_handled >= serve_max_requests) {
+        std::printf("serve: done requests=%d\n", serve_requests_handled);
+        break;
+      }
     }
   }
 

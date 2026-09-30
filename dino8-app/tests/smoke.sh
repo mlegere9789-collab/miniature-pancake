@@ -2005,6 +2005,40 @@ print("layers delete after switch: " + str(dino8.doc.Layers.Delete("QCLayer")))
 print("layers count final: %d" % dino8.doc.Layers.Count())
 print("layers is layer after delete: " + str(dino8.doc.Layers.IsLayer("QCLayer")))
 
+# Document-state functions - dino8.Undo/Redo/BeginUndo/UnitSystem/
+# UnitSystemName/DocumentName, matching Lua's rs.Undo/rs.Redo/rs.BeginUndo/
+# rs.UnitSystem/rs.UnitSystemName/rs.DocumentName - closing part of
+# PARITY_MAP.md's "Python API breadth" gap (these "undo/document-state
+# functions" were entirely unported before now). A fresh, never-saved
+# document defaults to Untitled/Millimeters.
+print("document name: " + dino8.DocumentName())
+unit_before = dino8.UnitSystem()
+print("unit system before: %d" % unit_before)
+print("unit system name before: " + dino8.UnitSystemName())
+old_unit = dino8.UnitSystem("Feet")
+print("unit system set returned old: %d" % old_unit)
+print("unit system name after set: " + dino8.UnitSystemName())
+dino8.UnitSystem(unit_before)
+print("unit system name restored: " + dino8.UnitSystemName())
+
+undo_pt_id = dino8.doc.Objects.AddPoint(600, 0, 0)
+print("object count before undo: %d" % len(dino8.doc.Objects.AllObjects()))
+print("undo returned: " + str(dino8.Undo()))
+print("object count after undo: %d" % len(dino8.doc.Objects.AllObjects()))
+print("undone point gone: " + str(dino8.doc.Objects.Find(undo_pt_id) is None))
+print("redo returned: " + str(dino8.Redo()))
+print("object count after redo: %d" % len(dino8.doc.Objects.AllObjects()))
+print("redone point back: " + str(dino8.doc.Objects.Find(undo_pt_id) is not None))
+
+# BeginUndo just opens a labeled undo entry (identical to LuaEngine.cpp's
+# rs_BeginUndo calling the same Document::BeginChange) - Undo()'s own
+# FinalizePending() closes it out as an empty, no-op entry before popping
+# and reverting it, so this proves it pushed a real, poppable undo entry
+# without disturbing document state.
+dino8.BeginUndo("PythonScriptEdit")
+print("begin undo entry undone: " + str(dino8.Undo()))
+print("object count unaffected by empty begin-undo entry: %d" % len(dino8.doc.Objects.AllObjects()))
+
 dino8.RunCommand("NewLayer", "Parts")
 PY
 sed "s|@TMP@|$TMPW|g" "$HERE/python_script.txt" > "$TMPW/python_script.txt"
@@ -2183,7 +2217,22 @@ else
   pscheck "history: layers delete after switch: True" "Delete succeeded once the layer was no longer current"
   pscheck "history: layers count final: 1" "Layers.Count is back to 1 after the delete"
   pscheck "history: layers is layer after delete: False" "IsLayer no longer finds the deleted layer"
-  pscheck "^ok   expect_objects 36" "RunPythonScript left the box, the circle, the cone, the torus, the interpolated curve, the arc, the srf, the planar surface, three points, the extruded surface, the extruded solid, the union mesh, the difference mesh, the intersection mesh, the two circle copies, the rotate line and its rotated copy, the scale box and its scaled copy, the mirror line and its mirrored copy, the transform line and its transformed copy, the curve-query line, its 3 create=True divide points, the bounding-box test box, the surface-closest-point sphere, the AddMesh triangle, and the two fresh ObjectsByType test points (the sphere, the two union input boxes, the two difference input boxes and the two intersection input boxes were removed from inside the script)"
+  pscheck "history: document name: Untitled" "dino8.DocumentName() reported Untitled for a never-saved document, matching rs.DocumentName()"
+  pscheck "history: unit system before: 2" "dino8.UnitSystem() read the document's default Millimeters (code 2), matching rs.UnitSystem()"
+  pscheck "history: unit system name before: Millimeters" "dino8.UnitSystemName() matched UnitSystem()'s code, matching rs.UnitSystemName()"
+  pscheck "history: unit system set returned old: 2" "dino8.UnitSystem(\"Feet\") returned the previous code (2), matching rs.UnitSystem's get-old/set-new contract"
+  pscheck "history: unit system name after set: Feet" "UnitSystemName reflects the just-set Feet unit system"
+  pscheck "history: unit system name restored: Millimeters" "dino8.UnitSystem(2) accepted a numeric Rhino unit code and restored Millimeters"
+  pscheck "history: object count before undo: 37" "AllObjects gained the new undo-test point"
+  pscheck "history: undo returned: True" "dino8.Undo() undid the AddPoint change, matching rs.Undo()"
+  pscheck "history: object count after undo: 36" "Undo() removed the undo-test point"
+  pscheck "history: undone point gone: True" "the undone point no longer resolves via Find"
+  pscheck "history: redo returned: True" "dino8.Redo() redid the undone AddPoint change, matching rs.Redo()"
+  pscheck "history: object count after redo: 37" "Redo() restored the undo-test point"
+  pscheck "history: redone point back: True" "the redone point resolves via Find again"
+  pscheck "history: begin undo entry undone: True" "dino8.BeginUndo(label) opened a real, poppable undo entry, matching rs.BeginUndo(label)"
+  pscheck "history: object count unaffected by empty begin-undo entry: 37" "BeginUndo's own empty entry round-tripped through Undo() with no side effect"
+  pscheck "^ok   expect_objects 37" "RunPythonScript left the box, the circle, the cone, the torus, the interpolated curve, the arc, the srf, the planar surface, three points, the extruded surface, the extruded solid, the union mesh, the difference mesh, the intersection mesh, the two circle copies, the rotate line and its rotated copy, the scale box and its scaled copy, the mirror line and its mirrored copy, the transform line and its transformed copy, the curve-query line, its 3 create=True divide points, the bounding-box test box, the surface-closest-point sphere, the AddMesh triangle, the two fresh ObjectsByType test points, and the Undo/Redo test point left behind by the redo (the sphere, the two union input boxes, the two difference input boxes and the two intersection input boxes were removed from inside the script)"
   grep -q "! Python error" <<<"$PS" && { echo "FAIL python_script.txt printed a Python error"; fail=1; } || echo "ok   no Python script errors"
 fi
 
@@ -5093,6 +5142,69 @@ elif [ "$BSF_EC" -eq 2 ] && echo "$BSF_OUT" | grep -q "^FAIL expect_objects 99";
   echo "ok   batch mode exits 2 (not 0, not a hang) when the script's own @expect_objects check fails"
 else
   echo "$BSF_OUT"; echo "FAIL: batch mode with a failing @expect_objects exited $BSF_EC, expected 2"; fail=1
+fi
+
+# --serve: the minimal compute server (net/ComputeServer.h, docs/
+# COMPUTE_SERVER.md) - see PARITY_MAP.md's "Cloud/network compute service"
+# item, which had no server/socket/HTTP code anywhere before this. Starts
+# the real app with --serve 0 (an OS-assigned ephemeral port, so this can
+# never collide with another process on a fixed port) and
+# --serve-max-requests 3 so the process is self-terminating like batch
+# --script mode above, backgrounds it, waits (bounded, not an unbounded
+# sleep loop) for its own "serve: listening on port N" line, then drives it
+# over a real loopback HTTP connection with curl: a POST that builds
+# geometry and reads back its printed output, a GET that must be rejected
+# with 405, and a POST calling an interactive rs.Get* prompt that must be
+# rejected instead of hanging the connection - see
+# tests/test_compute_server.cpp for the lower-level, no-app unit coverage
+# of the request parsing/response formatting this end-to-end check builds
+# on top of.
+if ! command -v curl >/dev/null 2>&1; then
+  echo "skip --serve compute-server checks (curl not available)"
+else
+  SERVE_LOG="$TMPW/serve.log"
+  if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+    timeout 30 "$BIN" --serve 0 --serve-max-requests 3 > "$SERVE_LOG" 2>&1 &
+  else
+    timeout 30 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --serve 0 --serve-max-requests 3 > "$SERVE_LOG" 2>&1 &
+  fi
+  SERVE_PID=$!
+
+  SERVE_PORT=""
+  for _ in $(seq 1 100); do
+    if grep -q "^serve: listening on port " "$SERVE_LOG" 2>/dev/null; then
+      SERVE_PORT="$(grep "^serve: listening on port " "$SERVE_LOG" | head -1 | awk '{print $NF}')"
+      break
+    fi
+    sleep 0.1
+  done
+
+  if [ -z "$SERVE_PORT" ]; then
+    cat "$SERVE_LOG"; echo "FAIL: --serve never printed its listening port within 10s"; fail=1
+    kill "$SERVE_PID" 2>/dev/null || true
+    wait "$SERVE_PID" 2>/dev/null || true
+  else
+    echo "ok   --serve started headless and printed its bound port ($SERVE_PORT)"
+
+    set +e
+    RESP1="$(curl -s --max-time 10 -X POST --data 'rs.Command("Box 0,0,0 5,5,0 5")
+print("objects: " .. #rs.AllObjects())' "http://127.0.0.1:$SERVE_PORT/run")"
+    CODE2="$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$SERVE_PORT/run")"
+    RESP3="$(curl -s --max-time 10 -X POST --data 'rs.GetPoint()' "http://127.0.0.1:$SERVE_PORT/run")"
+    set -e
+    echo "$RESP1" | grep -q "^history: objects: 1$" && echo "ok   POST /run built a box over HTTP and read back its printed object count" || { echo "$RESP1"; echo "FAIL --serve POST /run did not report objects: 1"; fail=1; }
+    [ "$CODE2" = "405" ] && echo "ok   a GET request to the compute server is rejected with 405 Method Not Allowed" || { echo "FAIL --serve GET /run returned HTTP $CODE2, expected 405"; fail=1; }
+    echo "$RESP3" | grep -q "compute error: script requires interactive input" && echo "ok   a script calling an interactive rs.Get* prompt is rejected instead of hanging the connection" || { echo "$RESP3"; echo "FAIL --serve interactive-prompt script was not rejected as expected"; fail=1; }
+
+    set +e; wait "$SERVE_PID"; SERVE_EC=$?; set -e
+    if [ "$SERVE_EC" -eq 124 ]; then
+      cat "$SERVE_LOG"; echo "FAIL: --serve process hung and was killed by the 30s timeout instead of exiting after --serve-max-requests"; fail=1
+    elif [ "$SERVE_EC" -ne 0 ]; then
+      cat "$SERVE_LOG"; echo "FAIL: --serve process exited $SERVE_EC, expected 0"; fail=1
+    else
+      grep -q "^serve: done requests=3$" "$SERVE_LOG" && echo "ok   --serve exited cleanly on its own after --serve-max-requests 3 real HTTP requests" || { cat "$SERVE_LOG"; echo "FAIL --serve done-summary line missing or wrong"; fail=1; }
+    fi
+  fi
 fi
 
 exit $fail
