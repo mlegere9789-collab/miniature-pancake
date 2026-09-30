@@ -3,9 +3,12 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <map>
 #include <stdexcept>
 #include <string>
+#include <tuple>
 #include <unordered_map>
+#include <unordered_set>
 
 #include "dino8/kernel/boolean.h"
 #include "dino8/kernel/brep.h"
@@ -441,9 +444,54 @@ class UnionFind {
   std::vector<size_t> parent_;
 };
 
+// Groups `points` by mutual `tolerance`-closeness via a spatial grid +
+// union-find - the same clustering shape mesh.cpp's own WeldGroups() uses
+// for Mesh::CheckReport::duplicate_vertices, reimplemented here rather than
+// shared because that one keys off ON_Mesh vertex INDICES into a fixed
+// mesh_.m_V array, while this one just takes a flat point list. Returns one
+// group id per input point (points[i] and points[j] are in the same group
+// iff result[i] == result[j]); NOT necessarily transitive by the pairwise
+// tolerance test alone (the same single-linkage caveat WeldGroups()'s own
+// comment documents - a chain of near-tolerance pairs can join into one
+// group spanning more than `tolerance`), which is fine here since this is
+// only ever used to COUNT/LOCATE existing near-coincident vertices, never
+// to decide how far apart a weld is allowed to move one.
+std::vector<size_t> GroupByProximity(const std::vector<ON_3dPoint>& points, double tolerance) {
+  const size_t n = points.size();
+  UnionFind uf(n);
+  const double cell = std::max(tolerance, 1e-12);
+  const auto key_of = [&](const ON_3dPoint& p) {
+    return std::make_tuple(static_cast<long long>(std::floor(p.x / cell)),
+                            static_cast<long long>(std::floor(p.y / cell)),
+                            static_cast<long long>(std::floor(p.z / cell)));
+  };
+  std::map<std::tuple<long long, long long, long long>, std::vector<size_t>> grid;
+  for (size_t i = 0; i < n; ++i) grid[key_of(points[i])].push_back(i);
+
+  for (size_t i = 0; i < n; ++i) {
+    const auto [kx, ky, kz] = key_of(points[i]);
+    for (long long dx = -1; dx <= 1; ++dx) {
+      for (long long dy = -1; dy <= 1; ++dy) {
+        for (long long dz = -1; dz <= 1; ++dz) {
+          const auto it = grid.find(std::make_tuple(kx + dx, ky + dy, kz + dz));
+          if (it == grid.end()) continue;
+          for (const size_t j : it->second) {
+            if (j <= i) continue;
+            if (points[i].DistanceTo(points[j]) <= tolerance) uf.Union(i, j);
+          }
+        }
+      }
+    }
+  }
+
+  std::vector<size_t> groups(n);
+  for (size_t i = 0; i < n; ++i) groups[i] = uf.Find(i);
+  return groups;
+}
+
 }  // namespace
 
-SubD::SubDCheckReport SubD::Check() const {
+SubD::SubDCheckReport SubD::Check(double duplicate_vertex_tolerance) const {
   SubDCheckReport report;
 
   ON_SubDEdgeIterator eit = subd_.EdgeIterator();
@@ -557,7 +605,157 @@ SubD::SubDCheckReport SubD::Check() const {
     }
   }
 
+  // Duplicate (coincident-but-distinct) vertices: every vertex is a
+  // candidate, grouped purely by spatial proximity (no topological
+  // relationship required) via GroupByProximity() above.
+  {
+    std::vector<unsigned int> vertex_ids;
+    std::vector<ON_3dPoint> points;
+    ON_SubDVertexIterator vit2 = subd_.VertexIterator();
+    for (const ON_SubDVertex* v = vit2.FirstVertex(); v != nullptr; v = vit2.NextVertex()) {
+      vertex_ids.push_back(v->m_id);
+      points.push_back(v->ControlNetPoint());
+    }
+    const std::vector<size_t> groups = GroupByProximity(points, duplicate_vertex_tolerance);
+    std::unordered_map<size_t, int> group_size;
+    for (const size_t g : groups) ++group_size[g];
+    for (size_t i = 0; i < groups.size(); ++i) {
+      if (group_size[groups[i]] > 1) {
+        ++report.duplicate_vertices;
+        report.duplicate_vertex_list.push_back(vertex_ids[i]);
+      }
+    }
+  }
+
   return report;
+}
+
+std::vector<SubD> SubD::SplitDisjointPieces() const {
+  std::vector<const ON_SubDFace*> all_faces;
+  {
+    ON_SubDFaceIterator fit = subd_.FaceIterator();
+    for (const ON_SubDFace* f = fit.FirstFace(); f != nullptr; f = fit.NextFace()) all_faces.push_back(f);
+  }
+  if (all_faces.empty()) return {};
+
+  // Exactly Check()'s own body_count grouping (faces sharing an edge, via
+  // FaceCount() >= 2), reproduced here rather than shared because that one
+  // only needs the group COUNT while this needs the actual membership.
+  std::unordered_map<const ON_SubDFace*, size_t> face_index;
+  face_index.reserve(all_faces.size() * 2);
+  for (size_t i = 0; i < all_faces.size(); ++i) face_index.emplace(all_faces[i], i);
+
+  UnionFind uf(all_faces.size());
+  {
+    ON_SubDEdgeIterator eit = subd_.EdgeIterator();
+    for (const ON_SubDEdge* e = eit.FirstEdge(); e != nullptr; e = eit.NextEdge()) {
+      const unsigned int face_count = e->FaceCount();
+      if (face_count < 2) continue;
+      const auto first_it = face_index.find(e->Face(0));
+      if (first_it == face_index.end()) continue;  // defensive only - every edge's faces are in the SubD's own face list
+      for (unsigned int j = 1; j < face_count; ++j) {
+        const auto other_it = face_index.find(e->Face(j));
+        if (other_it == face_index.end()) continue;
+        uf.Union(first_it->second, other_it->second);
+      }
+    }
+  }
+
+  // Group faces by root, preserving first-encountered order so the
+  // returned pieces come back in a stable, reproducible order rather than
+  // whatever order union-find roots happen to land on.
+  std::vector<size_t> root_order;
+  std::unordered_map<size_t, std::vector<size_t>> groups;
+  for (size_t i = 0; i < all_faces.size(); ++i) {
+    const size_t root = uf.Find(i);
+    auto it = groups.find(root);
+    if (it == groups.end()) {
+      groups.emplace(root, std::vector<size_t>{i});
+      root_order.push_back(root);
+    } else {
+      it->second.push_back(i);
+    }
+  }
+
+  if (root_order.size() <= 1) return {*this};
+
+  std::vector<SubD> pieces;
+  pieces.reserve(root_order.size());
+  for (const size_t root : root_order) {
+    const std::vector<size_t>& member_faces = groups[root];
+
+    std::unordered_set<unsigned int> vertex_ids_in_piece;
+    for (const size_t idx : member_faces) {
+      const ON_SubDFace* f = all_faces[idx];
+      const unsigned int n = f->EdgeCount();
+      for (unsigned int j = 0; j < n; ++j) {
+        const ON_SubDVertex* v = f->Vertex(j);
+        if (v != nullptr) vertex_ids_in_piece.insert(v->m_id);
+      }
+    }
+
+    // Same snapshot-and-replay rebuild Weld() uses above: add every
+    // member vertex via AddVertexForExperts() (preserving its original
+    // id and position), rebuild every member face via FindOrAddFace(),
+    // then reapply each wholly-interior original edge's tag/sharpness.
+    // Walking THIS SubD's own vertex iterator (rather than
+    // vertex_ids_in_piece's own unordered order) keeps each piece's
+    // vertex insertion order matching the original SubD's, same as
+    // Weld()'s own vertices_snapshot does.
+    ON_SubD piece_subd;
+    ON_SubDVertexIterator vit = subd_.VertexIterator();
+    for (const ON_SubDVertex* v = vit.FirstVertex(); v != nullptr; v = vit.NextVertex()) {
+      if (vertex_ids_in_piece.count(v->m_id) == 0) continue;
+      const ON_3dPoint p = v->ControlNetPoint();
+      if (piece_subd.AddVertexForExperts(v->m_id, ON_SubDVertexTag::Unset, &p.x, 0, 0) == nullptr) {
+        throw std::runtime_error(
+            "dino8::kernel::SubD::SplitDisjointPieces: ON_SubD::AddVertexForExperts failed");
+      }
+    }
+
+    for (const size_t idx : member_faces) {
+      const ON_SubDFace* f = all_faces[idx];
+      const unsigned int n = f->EdgeCount();
+      std::vector<const ON_SubDVertex*> corners(n);
+      for (unsigned int j = 0; j < n; ++j) {
+        const ON_SubDVertex* v = f->Vertex(j);
+        corners[j] = v != nullptr ? piece_subd.VertexFromId(v->m_id) : nullptr;
+        if (corners[j] == nullptr) {
+          throw std::runtime_error(
+              "dino8::kernel::SubD::SplitDisjointPieces: a rebuilt face corner vertex is missing");
+        }
+      }
+      if (piece_subd.FindOrAddFace(ON_SubDEdgeTag::Unset, corners.data(), corners.size()) == nullptr) {
+        throw std::runtime_error(
+            "dino8::kernel::SubD::SplitDisjointPieces: ON_SubD::FindOrAddFace failed while rebuilding a face");
+      }
+    }
+
+    {
+      ON_SubDEdgeIterator eit = subd_.EdgeIterator();
+      for (const ON_SubDEdge* e = eit.FirstEdge(); e != nullptr; e = eit.NextEdge()) {
+        if (e->FaceCount() != 2) continue;
+        if (e->m_vertex[0] == nullptr || e->m_vertex[1] == nullptr) continue;
+        if (vertex_ids_in_piece.count(e->m_vertex[0]->m_id) == 0) continue;
+        if (vertex_ids_in_piece.count(e->m_vertex[1]->m_id) == 0) continue;
+        const ON_SubDVertex* a = piece_subd.VertexFromId(e->m_vertex[0]->m_id);
+        const ON_SubDVertex* b = piece_subd.VertexFromId(e->m_vertex[1]->m_id);
+        if (a == nullptr || b == nullptr) continue;
+        const ON_SubDEdge* pe = piece_subd.FindEdge(a, b).Edge();
+        if (pe == nullptr) continue;  // defensive only - both endpoints are always in this piece's face(s)
+        const_cast<ON_SubDEdge*>(pe)->m_edge_tag = e->m_edge_tag;
+        if (e->m_edge_tag == ON_SubDEdgeTag::Smooth || e->m_edge_tag == ON_SubDEdgeTag::SmoothX) {
+          const_cast<ON_SubDEdge*>(pe)->SetSharpnessForExperts(e->Sharpness(/*bUseCreaseSharpness=*/false));
+        }
+      }
+    }
+
+    piece_subd.UpdateAllTagsAndSectorCoefficients(/*bUnsetValuesOnly=*/true);
+    SubD piece;
+    piece.subd_ = piece_subd;
+    pieces.push_back(std::move(piece));
+  }
+  return pieces;
 }
 
 int SubD::CreaseEdgeCount() const {

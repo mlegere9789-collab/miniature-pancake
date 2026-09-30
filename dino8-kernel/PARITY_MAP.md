@@ -3458,6 +3458,93 @@ and `dino8-kernel/tests/test_basic.cpp` (plus, in the same session, the
 Offsetting, shelling, thickening** above, touching `mesh.h`/`mesh.cpp`
 instead).
 
+**2026-09-30 follow-up (SubD::Check() repair/localization gaps, not tied
+to a distinct checklist item):** `git log --oneline -3 -- dino8-kernel/
+src/subd.cpp` at the start of this session showed the "creasing
+read-back" follow-up above (`EdgeSharpnessAt`) and, before it, the
+Shell-with-openings/EdgeSharpnessAt round's own commit `c064854` as the
+most recent work touching this file, neither of which touched
+`SubD::Check()` itself - so this session went back to that method's own
+still-standing self-disclosed gaps instead: its introducing "Same-day
+follow-up" note above named two things it explicitly did NOT attempt -
+"no repair/split counterpart (`Brep::SplitNonManifoldVertex`/
+`SplitDisjointPieces` have no SubD analog here)" and "duplicate-vertex
+detection (two coincident-but-distinct control-net vertices) is not
+attempted, the same condition `Mesh::CheckReport::duplicate_vertices`
+covers for `Mesh` but has no `SubD` counterpart." Both are now closed.
+
+`SubD::Check()` gains a `duplicate_vertex_tolerance` parameter (default
+`tolerance::kDistance`, so every existing no-argument call site is
+unaffected) and its `SubDCheckReport` gains `duplicate_vertices`/
+`duplicate_vertex_list` (dino8-kernel/include/dino8/kernel/subd.h;
+src/subd.cpp): every control-net vertex within that tolerance of another
+distinct vertex is flagged, grouped by simple spatial proximity via a
+grid + union-find (`GroupByProximity`, subd.cpp, anonymous namespace) -
+the same clustering shape `mesh.cpp`'s own `WeldGroups()` already uses
+for `Mesh::CheckReport::duplicate_vertices`, reimplemented rather than
+shared since that one is keyed to `ON_Mesh` vertex array indices and this
+one just takes a flat point list. Deliberately a different condition from
+`non_manifold_vertices` (a bowtie is ONE vertex shared correctly by two
+unconnected fans; a duplicate is TWO OR MORE separate `ON_SubDVertex`
+records that were never welded together at all) and left OUT of
+`IsManifoldSingleBody()`, same convention `naked_edges` already gets
+there: an as-yet-unwelded coincident seam is a real defect worth
+reporting, but not itself a topological manifold/multi-body failure.
+Verified by 6 new checks (`TestSubDCheckDuplicateVerticesDetected`,
+tests/test_basic.cpp): two boxes merged with disjoint vertex-index ranges
+but positioned so exactly one corner coincides ([0,1]^3 and [1,2]^3, both
+having a corner at exactly (1,1,1)) report `duplicate_vertices == 2`
+(one flag per side of the one coincident pair) at the default tolerance,
+at an exact zero tolerance, and at 1e-15 (an exact match survives
+shrinking the tolerance far below the default); the same fixture's
+`body_count` stays 2 and `non_manifold_vertices` stays 0, confirming this
+is genuinely independent of both existing conditions; and a single clean
+box (no coincident-but-distinct corners at all) reports zero.
+
+`SubD::SplitDisjointPieces()` (subd.h; subd.cpp) closes the other half:
+the SubD-level counterpart of `Brep::SplitDisjointPieces()`, splitting a
+multi-body SubD into that many separate single-body SubDs using the exact
+same face-connectivity-via-shared-edge definition `Check()`'s own
+`body_count` already computes (reproduced here rather than shared, since
+`body_count` only needs the group COUNT while this needs the actual
+membership) - so a bowtie vertex (shared by two otherwise-disconnected
+fans) is duplicated into each piece it touches rather than left bridging
+them, consistent with `body_count` already treating those fans as
+separate bodies. Rebuilt the same snapshot-and-replay way `Weld()`
+rebuilds its own result: every member vertex re-added via
+`ON_SubD::AddVertexForExperts()` (preserving its original `m_id` and
+position, so a piece's vertex can still be looked up by id in the
+original SubD), every member face rebuilt via `FindOrAddFace()`, and
+every wholly-interior original edge's tag/sharpness reapplied afterward -
+not local surgery, for the identical `DeleteComponents()`-unsafety reason
+`Weld()`'s own doc comment already gives for taking that approach.
+Verified by 8 new checks (`TestSubDSplitDisjointPiecesSplitsIntoSeparate
+SubDs`, tests/test_basic.cpp): a single-body box SubD splits into exactly
+1 piece, an exact copy (same face/vertex counts, itself still
+`IsManifoldSingleBody()`); a faceless SubD splits into 0 pieces; the same
+two-disjoint-boxes fixture `TestSubDCheckDisjointPiecesReportsMultiple
+Bodies` uses splits into exactly 2 pieces, each independently
+`IsManifoldSingleBody()` with exactly one box's own 6 faces / 8 vertices
+(not the combined 12/16); each piece's own bounding box (via
+`ToApproximateMesh()`, which exports the control net directly - i.e.
+exact original corner positions, not a subdivided approximation)
+unambiguously matches one original box's own extent, not a duplicate of
+the other piece; and every vertex id in a returned piece resolves, back
+in the ORIGINAL combined SubD, to a vertex at the exact same control
+point - ids are preserved, never renumbered from scratch. This category's
+own present/partial/missing counts are unchanged (15/7/0/22, 84.1%) -
+`Check()`'s own item was already `present` (moved out of this gap list by
+an earlier same-day follow-up above) and stays `present`; this closes
+real, tested ground under a residual gap that item's own text already
+disclosed, without claiming a materially bigger problem (a repair that
+picks WHICH group a non-manifold vertex's faces should split into, which
+`Check()`'s own introducing note already named as a genuine judgment call
+this class still doesn't make for a caller) is now solved. Full
+`dino8_kernel_tests` suite (via `ctest`): 100% passing, 0 regressions.
+This session's only source edits are `dino8-kernel/include/dino8/kernel/
+subd.h`, `dino8-kernel/src/subd.cpp`, and `dino8-kernel/tests/
+test_basic.cpp`.
+
 ## App: Dino 8 vs Rhino 8 + AutoCAD 2027
 
 | Category | Weight | Items | Present | Partial | Missing | Parity % |

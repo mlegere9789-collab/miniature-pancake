@@ -1137,15 +1137,67 @@ class SubD {
     // one entry per such vertex, in the order first encountered walking
     // the SubD's own vertex list.
     std::vector<unsigned int> non_manifold_vertex_list;
+    // Control-net vertices within `duplicate_vertex_tolerance` (Check()'s
+    // own parameter, below) of another distinct vertex - two-or-more
+    // coincident-but-distinct ON_SubDVertex records sitting at (nearly)
+    // the same point, the same "same point stored twice" condition
+    // Mesh::CheckReport::duplicate_vertices already flags for meshes but
+    // this class never checked for at all (see this field's own
+    // PARITY_MAP.md history: explicitly disclosed there as "not
+    // attempted" alongside the missing non-manifold-vertex repair). This
+    // is a genuinely different defect from non_manifold_vertices above: a
+    // bowtie vertex is one ON_SubDVertex shared correctly by two
+    // unconnected face fans; a duplicate vertex is TWO OR MORE separate
+    // ON_SubDVertex records that never got welded into one in the first
+    // place (e.g. two SubDs built independently and merged without a
+    // shared-boundary Weld() pass) - grouped by simple spatial proximity
+    // via a grid union-find, the same clustering shape mesh.cpp's own
+    // WeldGroups() uses, not by any topological relationship. Counted per
+    // vertex that has at least one such partner, so a group of 3
+    // coincident vertices contributes 3, not 1.
+    int duplicate_vertices = 0;
+    // Every duplicate_vertices vertex's own id (ON_SubDVertex::m_id), one
+    // entry per such vertex, in the order first encountered walking the
+    // SubD's own vertex list - the localization the bare count doesn't
+    // give by itself, same convention as non_manifold_vertex_list above.
+    std::vector<unsigned int> duplicate_vertex_list;
     // True iff this SubD is a single connected piece with no non-manifold
     // edge or vertex - the SubD-level analog of Mesh::CheckReport::
-    // IsClosedManifold() (naked_edges is deliberately excluded, same as
-    // there: an intentionally open patch is still "clean").
+    // IsClosedManifold() (naked_edges and duplicate_vertices are
+    // deliberately excluded, same as there: an intentionally open patch,
+    // or one with an as-yet-unwelded coincident seam, is still "clean" by
+    // this narrower topological definition).
     bool IsManifoldSingleBody() const {
       return non_manifold_edges == 0 && non_manifold_vertices == 0 && body_count <= 1;
     }
   };
-  SubDCheckReport Check() const;
+  // `duplicate_vertex_tolerance` governs duplicate_vertices/
+  // duplicate_vertex_list above only - every other field is purely
+  // topological and unaffected by it.
+  SubDCheckReport Check(double duplicate_vertex_tolerance = tolerance::kDistance) const;
+
+  // The SubD-level counterpart of Brep::SplitDisjointPieces(): splits a
+  // multi-body SubD (Check().body_count > 1) into that many separate,
+  // single-body SubDs, one per face-connectivity component (two faces are
+  // in the same piece iff they share an edge, transitively - the exact
+  // same definition Check()'s own body_count already computes; a vertex
+  // shared only by two otherwise-disconnected fans, i.e. a
+  // non_manifold_vertices "bowtie", is therefore duplicated into each
+  // piece it touches rather than left bridging them, consistent with
+  // body_count treating those fans as separate bodies in the first
+  // place). Closes the "no repair/split counterpart" gap Check()'s own
+  // PARITY_MAP.md history explicitly disclosed
+  // (`Brep::SplitNonManifoldVertex`/`SplitDisjointPieces` had no SubD
+  // analog). Each returned piece keeps its faces' original
+  // ON_SubDVertex::m_id values (so a piece can still be matched back to
+  // this SubD's own ids) and every purely-interior (FaceCount()==2 in
+  // the original) edge's tag/sharpness, rebuilt the same
+  // snapshot-and-replay way Weld() rebuilds its own result, via
+  // ON_SubD::AddVertexForExperts()/FindOrAddFace() rather than local
+  // surgery. Returns an empty vector for a SubD with no faces at all;
+  // returns a single-element vector containing an exact copy of `*this`
+  // when body_count <= 1 (nothing to split).
+  std::vector<SubD> SplitDisjointPieces() const;
 
   const ON_SubD& raw() const { return subd_; }
   ON_SubD& raw() { return subd_; }

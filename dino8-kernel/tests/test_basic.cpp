@@ -17243,6 +17243,200 @@ void TestSubDCheckBowtieVertexDetected() {
   Check(!report.IsManifoldSingleBody(), "IsManifoldSingleBody() is false once a bowtie vertex exists");
 }
 
+void TestSubDCheckDuplicateVerticesDetected() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SubD;
+
+  // Two single-quad "wings" built directly via ON_SubD's own low-level
+  // AddVertex/AddEdge/AddFace (the same raw-construction technique
+  // TestSubDCheckBowtieVertexDetected above uses) - NOT via
+  // FromControlMesh()/ON_SubD::CreateFromMesh, which turns out to weld
+  // coincident-position vertices together during conversion regardless of
+  // originating mesh vertex index (confirmed by direct reproduction: a
+  // FromControlMesh()-based version of this fixture came back with only
+  // 15 vertices, not 16 - so it could never exercise a genuine two-
+  // distinct-records case at all). Wing A and wing B share NO vertex or
+  // edge object whatsoever, but wing A's own vA0 and wing B's own vB0 are
+  // placed at the EXACT same coordinate (0,0,0) - two independent
+  // ON_SubDVertex records that happen to coincide, the precise "same
+  // point stored twice" condition duplicate_vertices exists to catch,
+  // genuinely distinct from TestSubDCheckBowtieVertexDetected's bowtie
+  // (there, ONE vertex object is legitimately shared by two unconnected
+  // fans; here, TWO separate vertex objects merely occupy the same spot).
+  SubD subd;
+  ON_SubD& raw = subd.raw();
+  const double origin[3] = {0.0, 0.0, 0.0};
+
+  auto add_wing_quad = [&](double x0, double y0, double z0) {
+    const double p0[3] = {x0, y0, z0};
+    const double pa[3] = {x0 + 1.0, y0, z0};
+    const double pb[3] = {x0 + 1.0, y0 + 1.0, z0};
+    const double pc[3] = {x0, y0 + 1.0, z0};
+    ON_SubDVertex* v0 = raw.AddVertex(ON_SubDVertexTag::Unset, p0);
+    ON_SubDVertex* va = raw.AddVertex(ON_SubDVertexTag::Unset, pa);
+    ON_SubDVertex* vb = raw.AddVertex(ON_SubDVertexTag::Unset, pb);
+    ON_SubDVertex* vc = raw.AddVertex(ON_SubDVertexTag::Unset, pc);
+    ON_SubDEdge* e0 = raw.AddEdge(ON_SubDEdgeTag::Unset, v0, va);
+    ON_SubDEdge* e1 = raw.AddEdge(ON_SubDEdgeTag::Unset, va, vb);
+    ON_SubDEdge* e2 = raw.AddEdge(ON_SubDEdgeTag::Unset, vb, vc);
+    ON_SubDEdge* e3 = raw.AddEdge(ON_SubDEdgeTag::Unset, vc, v0);
+    ON_SimpleArray<ON_SubDEdge*> edges(4);
+    edges.Append(e0);
+    edges.Append(e1);
+    edges.Append(e2);
+    edges.Append(e3);
+    raw.AddFace(edges);
+    return v0;
+  };
+
+  const ON_SubDVertex* vA0 = add_wing_quad(0.0, 0.0, 0.0);
+  const ON_SubDVertex* vB0 = add_wing_quad(3.0, 3.0, 0.0);
+  Check(vA0 != nullptr && vB0 != nullptr && vA0 != vB0,
+        "wing A's and wing B's own first corners are two distinct vertex objects");
+  Check(ON_3dPoint(origin).DistanceTo(vA0->ControlNetPoint()) == 0.0 &&
+            ON_3dPoint(origin).DistanceTo(vB0->ControlNetPoint()) != 0.0,
+        "sanity: wing B was placed away from the origin - only vA0 sits there so far");
+
+  // Displace wing B's own v0 onto the exact same point as vA0, directly
+  // (raw ON_SubDVertex position edit - no API here re-welds two already-
+  // distinct vertex records just because their positions now match).
+  const_cast<ON_SubDVertex*>(vB0)->SetControlNetPoint(ON_3dPoint(origin), false);
+  Check(vA0->ControlNetPoint().DistanceTo(vB0->ControlNetPoint()) == 0.0,
+        "sanity: vA0 and vB0 now occupy the exact same point, as two still-separate vertex objects");
+  Check(subd.VertexCount() == 8, "sanity: still 8 distinct vertex objects total - moving a vertex never merges it");
+
+  const auto default_report = subd.Check();
+  Check(default_report.duplicate_vertices == 2,
+        "Check()'s own default tolerance (tolerance::kDistance) catches the one exactly-coincident "
+        "vA0/vB0 pair - 2 vertices flagged, one per side of the pair");
+  Check(default_report.duplicate_vertex_list.size() == 2,
+        "duplicate_vertex_list carries exactly the 2 flagged vertex ids");
+  const unsigned int idA = vA0->m_id;
+  const unsigned int idB = vB0->m_id;
+  Check((default_report.duplicate_vertex_list[0] == idA || default_report.duplicate_vertex_list[0] == idB) &&
+            (default_report.duplicate_vertex_list[1] == idA || default_report.duplicate_vertex_list[1] == idB) &&
+            default_report.duplicate_vertex_list[0] != default_report.duplicate_vertex_list[1],
+        "duplicate_vertex_list names exactly vA0's and vB0's own ids");
+  Check(default_report.body_count == 2,
+        "the two wings are still 2 separate bodies by body_count's own edge-adjacency definition - "
+        "a coincident-but-unwelded vertex is not an edge connection, the same distinction "
+        "TestSubDCheckBowtieVertexDetected's own bowtie case draws for a vertex-only pinch point");
+  Check(default_report.non_manifold_vertices == 0,
+        "vA0 and vB0 are two DISTINCT ON_SubDVertex records, each with only its own wing's single "
+        "face incident to it - neither is a bowtie (a vertex whose own incident faces split into "
+        "more than one fan), so non_manifold_vertices is a genuinely different, unrelated condition");
+  Check(default_report.IsManifoldSingleBody() == false,
+        "duplicate_vertices does not, by itself, change IsManifoldSingleBody() - it's already false "
+        "here from body_count == 2, same as the plain two-disjoint-bodies case");
+
+  const auto zero_tolerance_report = subd.Check(0.0);
+  Check(zero_tolerance_report.duplicate_vertices == 2,
+        "an EXACTLY coincident pair is still caught at a zero tolerance (exact floating-point equality)");
+
+  const auto tiny_tolerance_report = subd.Check(1e-15);
+  Check(tiny_tolerance_report.duplicate_vertices == 2,
+        "an exact match is unaffected by shrinking the tolerance far below the default");
+
+  // Sanity: a clean closed box (no coincident-but-distinct vertices at
+  // all) reports zero duplicates at the same default tolerance.
+  const SubD clean = SubD::FromControlMesh(MakeQuadBoxMesh(0, 0, 0, 1, 1, 1));
+  const auto clean_report = clean.Check();
+  Check(clean_report.duplicate_vertices == 0 && clean_report.duplicate_vertex_list.empty(),
+        "a single clean box SubD has no duplicate vertices");
+}
+
+void TestSubDSplitDisjointPiecesSplitsIntoSeparateSubDs() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SubD;
+
+  // A single connected SubD (one clean box) must come back as exactly
+  // one piece, an exact copy of the original - nothing to split.
+  {
+    const SubD single = SubD::FromControlMesh(MakeQuadBoxMesh(0, 0, 0, 1, 1, 1));
+    const auto pieces = single.SplitDisjointPieces();
+    Check(pieces.size() == 1, "a single-body SubD splits into exactly 1 piece");
+    Check(pieces[0].FaceCount() == single.FaceCount() && pieces[0].VertexCount() == single.VertexCount(),
+          "the single returned piece has the same face/vertex counts as the original");
+    Check(pieces[0].Check().IsManifoldSingleBody(), "the single returned piece is itself a clean, single body");
+  }
+
+  // A SubD with no faces at all splits into zero pieces.
+  {
+    const SubD empty;
+    Check(empty.SplitDisjointPieces().empty(), "a faceless SubD splits into zero pieces");
+  }
+
+  // The same two-disjoint-boxes construction TestSubDCheckDisjointPieces
+  // ReportsMultipleBodies uses: two ordinary closed boxes sharing no
+  // vertex, edge, or face, merged into one SubD. SplitDisjointPieces()
+  // must return exactly 2 pieces, each a genuine closed-box SubD in its
+  // own right (not just a face-count-only split), with each piece's
+  // vertex ids matching the ORIGINAL SubD's own ids for that box (so a
+  // caller can still cross-reference a piece back to the whole).
+  const Mesh box_a = MakeQuadBoxMesh(0, 0, 0, 1, 1, 1);
+  const Mesh box_b = MakeQuadBoxMesh(5, 5, 5, 6, 6, 6);
+  Mesh combined;
+  ON_Mesh& raw = combined.raw();
+  const int offset = box_a.raw().m_V.Count();
+  for (int i = 0; i < box_a.raw().m_V.Count(); ++i) raw.m_V.Append(box_a.raw().m_V[i]);
+  for (int i = 0; i < box_b.raw().m_V.Count(); ++i) raw.m_V.Append(box_b.raw().m_V[i]);
+  for (int i = 0; i < box_a.raw().m_F.Count(); ++i) raw.m_F.Append(box_a.raw().m_F[i]);
+  for (int i = 0; i < box_b.raw().m_F.Count(); ++i) {
+    ON_MeshFace f = box_b.raw().m_F[i];
+    f.vi[0] += offset;
+    f.vi[1] += offset;
+    f.vi[2] += offset;
+    f.vi[3] += offset;
+    raw.m_F.Append(f);
+  }
+  const SubD combined_subd = SubD::FromControlMesh(combined);
+  Check(combined_subd.Check().body_count == 2, "sanity: the combined SubD really is 2 bodies before splitting");
+
+  const auto pieces = combined_subd.SplitDisjointPieces();
+  Check(pieces.size() == 2, "the two-disjoint-boxes SubD splits into exactly 2 pieces");
+  Check(pieces[0].FaceCount() == 6 && pieces[0].VertexCount() == 8 &&
+            pieces[1].FaceCount() == 6 && pieces[1].VertexCount() == 8,
+        "each piece has exactly one box's own 6 faces / 8 vertices, not the combined 12/16");
+  Check(pieces[0].Check().IsManifoldSingleBody() && pieces[1].Check().IsManifoldSingleBody(),
+        "each piece is independently a clean, single-body closed SubD");
+
+  // Exact-volume check via each piece's own level-0 approximate mesh - a
+  // real, geometrically-correct split, not just a plausible face count:
+  // one piece must be the unit box (volume 1), the other the [5,6]^3 box
+  // (also volume 1, since it's the same size, just translated) - so
+  // instead check each piece's own bounding box matches one of the two
+  // originals exactly, which does distinguish "which box is which".
+  auto matches_bbox = [](const SubD& piece, double lo, double hi) {
+    const Mesh m = piece.ToApproximateMesh();
+    const dino8::kernel::BoundingBox bbox = m.GetBoundingBox();
+    return std::fabs(bbox.min.x - lo) < 1e-9 && std::fabs(bbox.max.x - hi) < 1e-9;
+  };
+  const bool piece0_is_box_a = matches_bbox(pieces[0], 0.0, 1.0);
+  const bool piece0_is_box_b = matches_bbox(pieces[0], 5.0, 6.0);
+  Check(piece0_is_box_a != piece0_is_box_b, "the first returned piece is unambiguously exactly one of the two boxes");
+  const SubD& other = pieces[0];
+  (void)other;
+  Check(matches_bbox(pieces[1], piece0_is_box_a ? 5.0 : 0.0, piece0_is_box_a ? 6.0 : 1.0),
+        "the second returned piece is exactly the OTHER box, not a duplicate of the first");
+
+  // Vertex ids are preserved from the original combined SubD: every
+  // vertex in piece 0 (whichever box it is) has an id that, looked up
+  // back in combined_subd, resolves to a control point matching that
+  // same piece's own vertex at that id.
+  ON_SubDVertexIterator pit = pieces[0].raw().VertexIterator();
+  bool ids_match_original = true;
+  for (const ON_SubDVertex* v = pit.FirstVertex(); v != nullptr; v = pit.NextVertex()) {
+    const ON_SubDVertex* orig = combined_subd.raw().VertexFromId(v->m_id);
+    if (orig == nullptr || orig->ControlNetPoint().DistanceTo(v->ControlNetPoint()) > 1e-9) {
+      ids_match_original = false;
+      break;
+    }
+  }
+  Check(ids_match_original,
+        "every vertex id in a returned piece resolves, in the ORIGINAL combined SubD, to a vertex at "
+        "the exact same control point - ids are preserved, not renumbered from scratch");
+}
+
 // SubD::InsertEdge(): a single flat quad face split along its own
 // diagonal - exact, hand-derivable topology counts (1 face/4 vertices/4
 // edges become 2 faces/4 vertices/5 edges), plus the documented refusals
@@ -49345,6 +49539,8 @@ int main() {
   TestSubDCheckDisjointPiecesReportsMultipleBodies();
   TestSubDCheckNonManifoldEdgeDetected();
   TestSubDCheckBowtieVertexDetected();
+  TestSubDCheckDuplicateVerticesDetected();
+  TestSubDSplitDisjointPiecesSplitsIntoSeparateSubDs();
   TestSubDInsertEdgeSplitsFaceIntoTwoAlongDiagonal();
   TestSubDSpinEdgeRotatesSharedInteriorEdge();
   TestSubDExtrudeFaceAddsProtrusionAlongNormal();
