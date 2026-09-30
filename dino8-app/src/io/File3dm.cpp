@@ -820,12 +820,44 @@ bool Load3dm(Document& doc, const std::string& path, std::string& error) {
       const std::string value = FromWide(strings[i].m_string_value);
       const std::string style_prefix = "Dino8.AnnotationStyle.";
       if (key.compare(0, style_prefix.size(), style_prefix) == 0) {
-        // "height;arrow;font"
+        // New format (this window on): "height;arrow;precision;angprec;
+        // suffix;extoffset;extext;placement;tolmode;tolvalue;tolupper;
+        // tollower;font" - font last and un-delimited (takes the rest of
+        // the string verbatim) since it's the one field that could itself
+        // contain a literal ';' in principle. A file saved before this
+        // window (old 2-semicolon "height;arrow;font" format) is still
+        // read correctly by falling back below - the new fields simply
+        // stay at their AnnotationStyle{} defaults for it.
         AnnotationStyle st;
         st.name = key.substr(style_prefix.size());
-        char font[256] = "";
-        std::sscanf(value.c_str(), "%lf;%lf;%255[^\n]", &st.text_height, &st.arrow_size, font);
-        st.font = font;
+        std::vector<std::string> parts;
+        size_t start = 0;
+        bool new_format = true;
+        for (int i = 0; i < 12; ++i) {
+          const size_t semi = value.find(';', start);
+          if (semi == std::string::npos) { new_format = false; break; }
+          parts.push_back(value.substr(start, semi - start));
+          start = semi + 1;
+        }
+        if (new_format) {
+          st.text_height = std::atof(parts[0].c_str());
+          st.arrow_size = std::atof(parts[1].c_str());
+          st.precision = std::atoi(parts[2].c_str());
+          st.angular_precision = std::atoi(parts[3].c_str());
+          st.unit_suffix = parts[4];
+          st.ext_offset = std::atof(parts[5].c_str());
+          st.ext_extension = std::atof(parts[6].c_str());
+          st.text_placement = parts[7].empty() ? "Above" : parts[7];
+          st.tol_mode = parts[8];
+          st.tol_value = parts[9];
+          st.tol_upper = parts[10];
+          st.tol_lower = parts[11];
+          st.font = value.substr(start);
+        } else {
+          char font[256] = "";
+          std::sscanf(value.c_str(), "%lf;%lf;%255[^\n]", &st.text_height, &st.arrow_size, font);
+          st.font = font;
+        }
         if (AnnotationStyle* existing = doc.FindAnnotationStyle(st.name)) *existing = st; else doc.AnnotationStyles().push_back(st);
         continue;
       }
@@ -914,8 +946,15 @@ bool Save3dm(const Document& doc, const std::string& path, std::string& error, b
     std::snprintf(buf, sizeof(buf), "%g,%g,%g", hb.x, hb.y, hb.z);
     model.SetDocumentUserString(L"Dino8.HatchBase", ON_wString(buf));
     for (const AnnotationStyle& st : doc.AnnotationStyles()) {
-      std::snprintf(buf, sizeof(buf), "%g;%g;%s", st.text_height, st.arrow_size, st.font.c_str());
-      model.SetDocumentUserString(ON_wString(("Dino8.AnnotationStyle." + st.name).c_str()), ON_wString(buf));
+      // "height;arrow;precision;angprec;suffix;extoffset;extext;placement;
+      // tolmode;tolvalue;tolupper;tollower;font" - see the reader's own
+      // comment on this format and its old-file fallback.
+      char style_buf[1024];
+      std::snprintf(style_buf, sizeof(style_buf), "%g;%g;%d;%d;%s;%g;%g;%s;%s;%s;%s;%s;%s",
+                    st.text_height, st.arrow_size, st.precision, st.angular_precision, st.unit_suffix.c_str(),
+                    st.ext_offset, st.ext_extension, st.text_placement.c_str(), st.tol_mode.c_str(), st.tol_value.c_str(),
+                    st.tol_upper.c_str(), st.tol_lower.c_str(), st.font.c_str());
+      model.SetDocumentUserString(ON_wString(("Dino8.AnnotationStyle." + st.name).c_str()), ON_wString(style_buf));
     }
     for (const LayerState& ls : doc.LayerStates()) {
       std::string packed;

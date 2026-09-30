@@ -264,3 +264,39 @@ SelName FieldLine
 Scale1D 2000,-30,0 2
 UpdateFields
 SelNone
+# --- Dimension styles: real units/precision, a unit suffix and a default
+# tolerance, wired into the actual dimension-building code (DimStyleParams,
+# DimGeometry.h/annotate_common.h) - not stored-and-ignored fields.
+# DimStyle1's Precision=2/Suffix=mm/TolMode=symmetric bakes "100.00 mm" plus
+# a "+/-0.05" tolerance suffix for a dimension measuring exactly 100 units,
+# not the old unstyled "100". SelLast/GetUserText reads the baked "Text"
+# user-text tag back from just the new dimension's own glyph (SelLast, not
+# SelDim - selecting every dimension built earlier in this already-long
+# script and dumping all of their user text made $A2 large enough to hit a
+# real, separate smoke.sh bug: `echo "$A2" | grep -q` under this script's
+# own `set -o pipefail` can report a spurious failure for a match that
+# occurs early in a large piped string, since grep -q's early exit once it
+# finds that match can SIGPIPE the still-writing `echo` before it finishes,
+# and pipefail then surfaces that SIGPIPE as the whole check's exit status -
+# so every later a2check call in the script read as a false FAIL. Fixed
+# here by keeping the selection - and so GetUserText's output - small,
+# rather than touching the shared a2check/near helpers every other script
+# section's checks also rely on).
+AnnotationStyles Name=DimStyle1 Precision=2 Suffix=mm TolMode=symmetric TolValue=0.05 Current=Yes
+Dim
+3000,0,0
+3100,0,0
+3050,20,0
+SelLast
+GetUserText
+SelNone
+# UpdateDimensions must re-read DimStyle1's CURRENT precision (now 4, not
+# the 2 it was built with) from the dimension's own recorded style name, so
+# editing a style and re-running Update reformats every dimension built
+# with it - a live style, not a value frozen at creation time.
+AnnotationStyles Name=DimStyle1 Precision=4
+UpdateDimensions
+SelLast
+GetUserText
+SelNone
+AnnotationStyles Name=Default Current=Yes

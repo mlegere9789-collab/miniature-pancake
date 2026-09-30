@@ -22,6 +22,7 @@
 #include <string>
 #include <vector>
 
+#include "commands/DimGeometry.h"
 #include "commands/cmd_common.h"
 #include "geom/TextOutline.h"
 
@@ -233,6 +234,66 @@ inline void ReapplyToleranceSuffix(CommandContext& ctx, int group_id, const std:
   GlyphSpec spec;
   if (!GroupGlyphSpec(ctx, group_id, spec)) return;
   const std::string base = spec.text;
+  spec.text = base + suffix;
+  if (RebuildGroupText(ctx, group_id, spec, {"DimTolerance.Base"}) > 0) {
+    for (SceneObject& o : ctx.Doc().Objects()) if (o.group_id == group_id && o.user_text.count("Glyph")) o.user_text["DimTolerance.Base"] = base;
+  }
+}
+
+// A style's precision/suffix/extension-line/text-placement fields, reduced
+// to DimGeometry.h's plain-data DimStyleParams (that header has no Document
+// dependency - see its own comment). Used when BUILDING a new dimension,
+// from the document's current style.
+inline DimStyleParams StyleParamsOf(const AnnotationStyle& st) {
+  DimStyleParams p;
+  p.precision = st.precision;
+  p.suffix = st.unit_suffix;
+  p.ext_offset = st.ext_offset;
+  p.ext_extension = st.ext_extension;
+  p.text_centered_on_line = st.text_placement == "Centered";
+  return p;
+}
+inline DimStyleParams StyleParamsOf(CommandContext& ctx) { return StyleParamsOf(ctx.Doc().CurrentAnnotationStyle()); }
+
+// Same, but resolved by name (falling back to the document's current style
+// if `name` no longer names one - e.g. deleted since the dimension was
+// built) - used by UpdateDimensions/UpdateMeasureDims to re-read whatever
+// the dimension's own recorded "Style" tag currently says, so editing a
+// style's precision/suffix/extension-line/placement and re-running Update
+// picks up the change, the same live-style-edit behavior Rhino's own
+// DimStyle gives (unlike text_height/arrow_size, which this app's Update*
+// commands deliberately keep frozen at whatever the dimension was last
+// built with - see UpdateDimensions' own GroupGlyphSpec-height comment).
+inline DimStyleParams StyleParamsByName(Document& doc, const std::string& name) {
+  if (AnnotationStyle* st = doc.FindAnnotationStyle(name)) return StyleParamsOf(*st);
+  return StyleParamsOf(doc.CurrentAnnotationStyle());
+}
+
+// A dimension group's own recorded style name ("Style" tag, from any
+// member - TagAnnotation stamps it on every curve, same as "Annotation").
+inline std::string GroupStyleName(Document& doc, int group_id) {
+  for (const SceneObject& o : doc.Objects()) {
+    if (o.group_id == group_id) { auto it = o.user_text.find("Style"); if (it != o.user_text.end()) return it->second; }
+  }
+  return doc.Settings().annotation_style;
+}
+
+// Applies a style's default tolerance (tol_mode/tol_value/tol_upper/
+// tol_lower) to a just-built dimension group, if the style has one set -
+// the exact same suffix format DimToleranceCommand (cmd_drafting2.cpp)
+// builds by hand, factored out here so a style's default and a manual
+// DimTolerance run can never drift apart. A no-op when tol_mode is empty
+// (the default - most styles carry no tolerance).
+inline void ApplyStyleTolerance(CommandContext& ctx, int group_id, const AnnotationStyle& st) {
+  if (st.tol_mode.empty() || group_id < 0) return;
+  GlyphSpec spec;
+  if (!GroupGlyphSpec(ctx, group_id, spec)) return;
+  const std::string base = spec.text;
+  std::string suffix;
+  const std::string mode = ToLower(st.tol_mode);
+  if (mode == "limits") suffix = " " + (st.tol_upper.empty() ? st.tol_value : st.tol_upper) + "/-" + (st.tol_lower.empty() ? st.tol_value : st.tol_lower);
+  else if (mode == "deviation") suffix = " +" + (st.tol_upper.empty() ? st.tol_value : st.tol_upper) + "/-" + (st.tol_lower.empty() ? st.tol_value : st.tol_lower);
+  else suffix = std::string(" ") + "\xC2\xB1" + st.tol_value;  // U+00B1 PLUS-MINUS SIGN, UTF-8
   spec.text = base + suffix;
   if (RebuildGroupText(ctx, group_id, spec, {"DimTolerance.Base"}) > 0) {
     for (SceneObject& o : ctx.Doc().Objects()) if (o.group_id == group_id && o.user_text.count("Glyph")) o.user_text["DimTolerance.Base"] = base;

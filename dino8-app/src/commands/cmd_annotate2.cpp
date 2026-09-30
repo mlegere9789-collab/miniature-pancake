@@ -938,7 +938,15 @@ class FindTextCommand : public Command {
 // ---------------------------------------------------------------------------
 
 std::string StyleSummary(const AnnotationStyle& s) {
-  return s.name + " (text height " + (s.text_height > 0 ? FormatNumber(s.text_height) : std::string("auto")) + ", arrow " + (s.arrow_size > 0 ? FormatNumber(s.arrow_size) : std::string("auto")) + (s.font.empty() ? "" : ", font " + s.font) + ")";
+  std::string out = s.name + " (text height " + (s.text_height > 0 ? FormatNumber(s.text_height) : std::string("auto")) + ", arrow " + (s.arrow_size > 0 ? FormatNumber(s.arrow_size) : std::string("auto")) + (s.font.empty() ? "" : ", font " + s.font);
+  out += ", precision " + (s.precision >= 0 ? std::to_string(s.precision) : std::string("auto"));
+  out += ", angular precision " + (s.angular_precision >= 0 ? std::to_string(s.angular_precision) : std::string("auto"));
+  if (!s.unit_suffix.empty()) out += ", suffix " + s.unit_suffix;
+  if (s.ext_offset > 0 || s.ext_extension > 0) out += ", ext " + FormatNumber(s.ext_offset) + "/" + FormatNumber(s.ext_extension);
+  out += ", text " + s.text_placement;
+  if (!s.tol_mode.empty()) out += ", tol " + s.tol_mode + " " + s.tol_value;
+  out += ")";
+  return out;
 }
 
 void AnnotationStylesCommand(CommandContext& ctx) {
@@ -954,6 +962,16 @@ void AnnotationStylesCommand(CommandContext& ctx) {
   if (opts.count("height")) st->text_height = std::max(0.0, std::atof(opts["height"].c_str()));
   if (opts.count("arrow")) st->arrow_size = std::max(0.0, std::atof(opts["arrow"].c_str()));
   if (opts.count("font")) st->font = opts["font"];
+  if (opts.count("precision")) st->precision = std::clamp(std::atoi(opts["precision"].c_str()), -1, 15);
+  if (opts.count("angularprecision")) st->angular_precision = std::clamp(std::atoi(opts["angularprecision"].c_str()), -1, 15);
+  if (opts.count("suffix")) st->unit_suffix = opts["suffix"];
+  if (opts.count("extoffset")) st->ext_offset = std::max(0.0, std::atof(opts["extoffset"].c_str()));
+  if (opts.count("extextension")) st->ext_extension = std::max(0.0, std::atof(opts["extextension"].c_str()));
+  if (opts.count("textplacement")) st->text_placement = ToLower(opts["textplacement"]) == "centered" ? "Centered" : "Above";
+  if (opts.count("tolmode")) st->tol_mode = ToLower(opts["tolmode"]) == "none" ? "" : opts["tolmode"];
+  if (opts.count("tolvalue")) st->tol_value = opts["tolvalue"];
+  if (opts.count("tolupper")) st->tol_upper = opts["tolupper"];
+  if (opts.count("tollower")) st->tol_lower = opts["tollower"];
   if (!opts.count("current") || YesLike(opts["current"])) ctx.Settings().annotation_style = name;
   ctx.Doc().Touch();
   ctx.Print("AnnotationStyles: " + StyleSummary(*st) + (ctx.Settings().annotation_style == name ? " is current" : ""));
@@ -1807,7 +1825,8 @@ void RegisterAnnotate2Commands(CommandEngine& e) {
   Reg(e, "ScaleTextHeight", Make<ScaleTextHeightCommand>());
   Reg(e, "FindText", Make<FindTextCommand>());
   Reg(e, "SetDimensionLayer", Make<SetDimensionLayerCommand>());
-  Reg(e, "AnnotationStyles", Immediate(AnnotationStylesCommand), CommandStatus::Implemented, "Name= Height= Arrow= Font= creates or edits a style; bare lists them and opens Document Properties.");
+  Reg(e, "AnnotationStyles", Immediate(AnnotationStylesCommand), CommandStatus::Implemented,
+      "Name= Height= Arrow= Font= Precision= AngularPrecision= Suffix= ExtOffset= ExtExtension= TextPlacement=Above|Centered TolMode=None|symmetric|deviation|limits TolValue= TolUpper= TolLower= creates or edits a style; bare lists them (with a full summary of every field - see StyleSummary) and opens Document Properties, whose Annotation Styles section edits every one of these fields too.");
   Reg(e, "DupAnnotationStyle", Immediate(DupAnnotationStyle));
   Reg(e, "ImportAnnotationStyles", Immediate(ImportAnnotationStyles));
   Reg(e, "SelAnnotationStyle", Immediate(SelAnnotationStyle));

@@ -1214,6 +1214,15 @@ a2check "UpdateFields: 2 field(s) regenerated" "UpdateFields re-evaluated both f
 a2check "Field (Length): 100" "Field Kind=Length measures the 100-unit line (MeasureOne, the same math DimCurveLength uses)"
 a2check "UpdateFields:   Length now \"200\"" "UpdateFields redrew Field Kind=Length from the line's doubled length (Scale1D 2000,-30,0 x2: 100 -> 200), not the 100 baked at Field's own creation time - the live-recompute proof, not just a property-sounding name"
 a2check "UpdateFields: 3 field(s) regenerated" "UpdateFields re-evaluated all 3 fields (Filename, CurrentLayer, Length) with 0 skipped"
+# --- Dimension styles (doc/Document.h's AnnotationStyle gaining real
+# precision/unit_suffix/tolerance/extension-line/text-placement fields,
+# wired into DimGeometry.h/annotate_common.h/cmd_annotate.cpp - see
+# PARITY_MAP.md's "Dimension styles" entry): a style's precision/suffix/
+# tolerance are real, wired-in dimension-building inputs, not stored-and-
+# ignored fields, and UpdateDimensions re-reads them live from the
+# dimension's own recorded style by name.
+a2check "Text = 100.00 mm.*0\.05" "DimStyle1 (Precision=2, Suffix=mm, TolMode=symmetric) baked \"100.00 mm\" plus the tolerance suffix for a dimension measuring exactly 100, not the old unstyled \"100\""
+a2check "Text = 100.0000 mm.*0\.05" "UpdateDimensions re-read DimStyle1's CURRENT precision (edited to 4 after the dimension was built) from the dimension's own recorded style by name and reformatted it to 4 decimal places, keeping the tolerance suffix through the rebuild"
 a2check "gl_error=0" "annotate2 script ran without OpenGL errors"
 # Solid tools: RoundHole, CurveBoolean, Clash, Cage/CageEdit, Flow, ScaleByPlane (see solidtools_script.txt).
 sed "s|@TMP@|$TMPW|g" "$HERE/solidtools_script.txt" > "$TMPW/solidtools_script.txt"

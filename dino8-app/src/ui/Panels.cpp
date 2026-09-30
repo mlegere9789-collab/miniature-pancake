@@ -1571,6 +1571,30 @@ void DrawDocumentPropertiesWindow(Application& app) {
         if (ImGui::InputDouble("Text height (0 = auto)", &h)) { st.text_height = std::max(0.0, h); doc.Touch(); }
         if (ImGui::InputDouble("Arrow size (0 = text height)", &a)) { st.arrow_size = std::max(0.0, a); doc.Touch(); }
         if (InputString("Font", st.font)) doc.Touch();
+        ImGui::Separator();
+        ImGui::TextDisabled("Units / precision / tolerance");
+        int prec = st.precision;
+        if (ImGui::InputInt("Linear decimal places (-1 = auto)", &prec)) { st.precision = std::clamp(prec, -1, 15); doc.Touch(); }
+        int aprec = st.angular_precision;
+        if (ImGui::InputInt("Angular decimal places (-1 = auto)", &aprec)) { st.angular_precision = std::clamp(aprec, -1, 15); doc.Touch(); }
+        if (InputString("Unit suffix (e.g. mm)", st.unit_suffix)) doc.Touch();
+        static const char* kTolModes[] = {"(none)", "symmetric", "deviation", "limits"};
+        int tol_idx = st.tol_mode.empty() ? 0 : st.tol_mode == "symmetric" ? 1 : st.tol_mode == "deviation" ? 2 : st.tol_mode == "limits" ? 3 : 0;
+        if (ImGui::Combo("Default tolerance", &tol_idx, kTolModes, 4)) { st.tol_mode = tol_idx == 0 ? "" : kTolModes[tol_idx]; doc.Touch(); }
+        if (tol_idx != 0) {
+          if (InputString("Tolerance value", st.tol_value)) doc.Touch();
+          if (InputString("Tolerance + (blank = value)", st.tol_upper)) doc.Touch();
+          if (InputString("Tolerance - (blank = value)", st.tol_lower)) doc.Touch();
+        }
+        ImGui::Separator();
+        ImGui::TextDisabled("Extension lines / text placement (linear dimensions)");
+        double eo = st.ext_offset, ee = st.ext_extension;
+        if (ImGui::InputDouble("Extension line offset", &eo)) { st.ext_offset = std::max(0.0, eo); doc.Touch(); }
+        if (ImGui::InputDouble("Extension line overshoot", &ee)) { st.ext_extension = std::max(0.0, ee); doc.Touch(); }
+        static const char* kPlacements[] = {"Above", "Centered"};
+        int pl_idx = st.text_placement == "Centered" ? 1 : 0;
+        if (ImGui::Combo("Text placement", &pl_idx, kPlacements, 2)) { st.text_placement = kPlacements[pl_idx]; doc.Touch(); }
+        ImGui::Separator();
         if (ImGui::SmallButton("Duplicate")) { AnnotationStyle copy = st; copy.name = st.name + " copy"; styles.push_back(copy); doc.Touch(); ImGui::TreePop(); ImGui::PopID(); break; }
         if (styles.size() > 1 && st.name != s.annotation_style) { ImGui::SameLine(); if (ImGui::SmallButton("Delete")) { styles.erase(styles.begin() + static_cast<long>(i)); doc.Touch(); ImGui::TreePop(); ImGui::PopID(); break; } }
         ImGui::TreePop();

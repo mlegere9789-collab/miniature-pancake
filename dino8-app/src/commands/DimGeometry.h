@@ -23,6 +23,7 @@
 // decoupled), so this header is safe to include from io/FileExchange.cpp.
 #pragma once
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <map>
@@ -42,6 +43,46 @@ using kernel::Vector3d;
 // via commands/cmd_common.h (see the collision note above) - same pattern as
 // drafting/HatchBuild.h.
 std::string FormatNumber(double v);
+bool DecimalComma();
+
+// A dimension style's text-formatting/extension-line/text-placement
+// properties (doc/Document.h's AnnotationStyle, reduced to the plain
+// numbers this decoupled header can use with no Document dependency) -
+// threaded through BuildLinearDimensionGeometry/BuildRadiusDimensionGeometry
+// below by both the live Dim/DimRadius/DimDiameter commands (cmd_annotate.cpp,
+// which resolve it from the current or a named AnnotationStyle) and DXF/DWG
+// DIMENSION import (io/FileExchange.cpp). The default-constructed value
+// reproduces this header's own pre-existing behavior exactly (FormatNumber's
+// auto precision, no suffix, no extension-line offset/overshoot, text above
+// an unbroken line), so every existing caller that doesn't pass one is
+// unaffected.
+struct DimStyleParams {
+  int precision = -1;
+  std::string suffix;
+  double ext_offset = 0;
+  double ext_extension = 0;
+  bool text_centered_on_line = false;
+};
+
+// Formats a measurement using a dimension style's precision/suffix:
+// `precision` < 0 falls back to FormatNumber's own auto ("%.4g", integers
+// bare) behavior; `precision` >= 0 formats with exactly that many fixed
+// decimal places (DecimalComma() still applies, matching FormatNumber's own
+// convention). `suffix`, when non-empty, is appended after one space (e.g.
+// "25.400 mm").
+inline std::string FormatMeasurement(double v, int precision, const std::string& suffix) {
+  std::string s;
+  if (precision < 0) {
+    s = FormatNumber(v);
+  } else {
+    char buf[64];
+    std::snprintf(buf, sizeof(buf), "%.*f", std::clamp(precision, 0, 15), v);
+    s = buf;
+    if (DecimalComma()) for (char& c : s) if (c == '.') c = ',';
+  }
+  if (!suffix.empty()) { s += ' '; s += suffix; }
+  return s;
+}
 
 // Point tag codec (same "%.10g,%.10g,%.10g" format as annotate_common.h's
 // PointTag/ParsePointTag, which cmd_annotate.cpp's LoadLinearDimLayout/
@@ -104,6 +145,21 @@ inline kernel::NurbsCurve MakePolyline(const std::vector<Point3d>& pts) {
 
 inline void AddLine(std::vector<kernel::NurbsCurve>& out, Point3d a, Point3d b) { out.push_back(MakePolyline({a, b})); }
 
+// An extension line from the measured point `from` to the dimension line at
+// `to`, per a style's ext_offset (a gap left near the measured point, so the
+// line doesn't touch it) / ext_extension (how far it overshoots `to`, past
+// the dimension line) - AutoCAD's own DIMEXO/DIMEXE. Both 0 reproduces a
+// plain AddLine(from, to), the pre-existing geometry exactly.
+inline void AddExtensionLine(std::vector<kernel::NurbsCurve>& out, Point3d from, Point3d to, double offset, double extension) {
+  const Vector3d d = to - from;
+  const double len = d.Length();
+  if (len < 1e-12 || (offset <= 0 && extension <= 0)) { out.push_back(MakePolyline({from, to})); return; }
+  const Vector3d u = d / len;
+  const Point3d start = from + u * std::min(std::max(offset, 0.0), len * 0.95);
+  const Point3d end = to + u * std::max(extension, 0.0);
+  out.push_back(MakePolyline({start, end}));
+}
+
 inline void AddArrow(std::vector<kernel::NurbsCurve>& out, Point3d tip, Vector3d dir, double size, const ON_Plane& pl) {
   dir.Unitize();
   Vector3d side = ON_CrossProduct(pl.zaxis, dir);
@@ -124,7 +180,8 @@ inline void AddArrow(std::vector<kernel::NurbsCurve>& out, Point3d tip, Vector3d
 // as the live command's zero-length pick.
 inline bool BuildLinearDimensionGeometry(Point3d p0, Point3d p1, const LinearDimLayout& L, double text_h,
                                          std::vector<kernel::NurbsCurve>& curves, DimGlyphSpec& text,
-                                         std::map<std::string, std::string>& tags, double* len_out = nullptr) {
+                                         std::map<std::string, std::string>& tags, double* len_out = nullptr,
+                                         const DimStyleParams& style = {}) {
   using namespace dim_geom_detail;
   const ON_Plane& pl = L.plane;
   Point3d a = p0, b = p1;
@@ -144,18 +201,34 @@ inline bool BuildLinearDimensionGeometry(Point3d p0, Point3d p1, const LinearDim
   if (len_out) *len_out = len;
   if (len <= 0) return false;
   curves.clear();
-  AddLine(curves, a, b);
-  AddLine(curves, p0, a);
-  AddLine(curves, p1, b);
-  AddArrow(curves, a, a - b, text_h, pl);
-  AddArrow(curves, b, b - a, text_h, pl);
   Vector3d up = ON_CrossProduct(pl.zaxis, dir);
   up.Unitize();
   if (ON_DotProduct(up, pl.yaxis) < 0) up = -up;
-  text.text = FormatNumber(len);
+  const std::string measured = FormatMeasurement(len, style.precision, style.suffix);
+  if (style.text_centered_on_line) {
+    // A gap in the dimension line, centered on it, sized to the (approximate
+    // - no font metrics here, a documented estimate) width of the text that
+    // sits in it - AutoCAD's own DIMTAD=0 style, vs. the default unbroken-
+    // line-with-text-above below.
+    const double half_gap = std::min((text_h * 0.62) * static_cast<double>(measured.size()) / 2.0, len * 0.45);
+    if (half_gap > 1e-9) {
+      const Vector3d u = dir / len;
+      AddLine(curves, a, a + u * (len / 2.0 - half_gap));
+      AddLine(curves, b - u * (len / 2.0 - half_gap), b);
+    } else {
+      AddLine(curves, a, b);
+    }
+  } else {
+    AddLine(curves, a, b);
+  }
+  AddExtensionLine(curves, p0, a, style.ext_offset, style.ext_extension);
+  AddExtensionLine(curves, p1, b, style.ext_offset, style.ext_extension);
+  AddArrow(curves, a, a - b, text_h, pl);
+  AddArrow(curves, b, b - a, text_h, pl);
+  text.text = measured;
   text.height = text_h;
   text.plane = pl;
-  text.plane.SetOrigin((a + b) / 2.0 + up * (text_h * 0.6));
+  text.plane.SetOrigin(style.text_centered_on_line ? (a + b) / 2.0 : (a + b) / 2.0 + up * (text_h * 0.6));
   text.center = true;
   tags.clear();
   tags["DimAligned"] = L.aligned ? "1" : "0";
@@ -178,7 +251,8 @@ inline bool BuildLinearDimensionGeometry(Point3d p0, Point3d p1, const LinearDim
 // silently producing a zero-length dimension).
 inline bool BuildRadiusDimensionGeometry(Point3d center, double radius, const RadiusDimLayout& L, double text_h,
                                          std::vector<kernel::NurbsCurve>& curves, DimGlyphSpec& text,
-                                         std::map<std::string, std::string>& tags, double* val_out = nullptr) {
+                                         std::map<std::string, std::string>& tags, double* val_out = nullptr,
+                                         const DimStyleParams& style = {}) {
   using namespace dim_geom_detail;
   if (radius <= 0) return false;
   const ON_Plane& pl = L.plane;
@@ -201,7 +275,7 @@ inline bool BuildRadiusDimensionGeometry(Point3d center, double radius, const Ra
   tags["DimExtra"] = FormatNumber(L.extra);
   tags["DimCenter"] = DimPointTag(center);
   tags["DimRadiusVal"] = FormatNumber(radius);
-  text.text = std::string(L.diameter ? "D " : "R ") + FormatNumber(val);
+  text.text = std::string(L.diameter ? "D " : "R ") + FormatMeasurement(val, style.precision, style.suffix);
   text.height = text_h;
   text.plane = pl;
   text.plane.SetOrigin(p + d * text_h);
