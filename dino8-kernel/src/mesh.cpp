@@ -2769,6 +2769,546 @@ Result Mesh::LoadX3d(const std::string& path, Mesh& out_mesh) {
   return Result::Ok;
 }
 
+namespace {
+
+// Finds `key = [...]` (USD's own attribute-assignment syntax) and returns
+// the content strictly between the first `[` after `key`'s own `=` and its
+// matching `]` - USD arrays here never nest brackets (a `point3f[]`'s own
+// tuples use parens, not brackets), so a plain first-`[`-to-first-`]` scan
+// is sufficient, the same "no need to be more general than what SaveUsda()
+// itself writes" stance FindX3dTag()/FindAmfOpenTag() already take for
+// their own formats. Returns false if `key` isn't found or its `[...]`
+// is never closed.
+bool FindUsdaArray(const std::string& text, const std::string& key, std::string& out_content) {
+  const size_t key_pos = text.find(key);
+  if (key_pos == std::string::npos) return false;
+  const size_t open = text.find('[', key_pos);
+  if (open == std::string::npos) return false;
+  const size_t close = text.find(']', open);
+  if (close == std::string::npos) return false;
+  out_content = text.substr(open + 1, close - open - 1);
+  return true;
+}
+
+// Parses a `point3f[]` array's own "(x, y, z), (x, y, z), ..." content into
+// a flat x0,y0,z0,x1,y1,z1,... list. Returns false if a tuple isn't found,
+// doesn't hold exactly 3 comma-separated numbers, or any number fails to
+// parse.
+bool ParseUsdaPointTuples(const std::string& text, std::vector<double>& out_values) {
+  size_t pos = 0;
+  while (true) {
+    const size_t open = text.find('(', pos);
+    if (open == std::string::npos) break;
+    const size_t close = text.find(')', open);
+    if (close == std::string::npos) return false;
+    std::string inner = text.substr(open + 1, close - open - 1);
+    for (char& c : inner) {
+      if (c == ',') c = ' ';
+    }
+    std::istringstream iss(inner);
+    std::string token;
+    int count = 0;
+    while (iss >> token) {
+      double value = 0;
+      if (!ParseOffDouble(token, value)) return false;
+      out_values.push_back(value);
+      ++count;
+    }
+    if (count != 3) return false;
+    pos = close + 1;
+  }
+  return true;
+}
+
+// Parses a flat `int[]` array's own comma-or-whitespace-separated content
+// (USD writes both `faceVertexCounts`/`faceVertexIndices` this way) into
+// values - a comma is treated as pure whitespace, the same convention
+// TokenizeVrmlBody() already applies for VRML97's own comma-separated
+// arrays. Returns false if any token fails to parse as an int.
+bool ParseUsdaInts(const std::string& text, std::vector<int>& out_values) {
+  std::string cleaned = text;
+  for (char& c : cleaned) {
+    if (c == ',') c = ' ';
+  }
+  std::istringstream iss(cleaned);
+  std::string token;
+  while (iss >> token) {
+    int value = 0;
+    if (!ParseOffInt(token, value)) return false;
+    out_values.push_back(value);
+  }
+  return true;
+}
+
+}  // namespace
+
+Result Mesh::SaveUsda(const std::string& path) const {
+  std::ofstream out(path);
+  if (!out) {
+    return Result::Failed;
+  }
+
+  out << "#usda 1.0\n";
+  out << "\n";
+  out << "def Mesh \"mesh\"\n";
+  out << "{\n";
+  out << "    point3f[] points = [";
+  for (int i = 0; i < mesh_.m_V.Count(); ++i) {
+    const ON_3fPoint& v = mesh_.m_V[i];
+    if (i > 0) out << ", ";
+    out << "(" << v.x << ", " << v.y << ", " << v.z << ")";
+  }
+  out << "]\n";
+
+  out << "    int[] faceVertexCounts = [";
+  for (int i = 0; i < mesh_.m_F.Count(); ++i) {
+    if (i > 0) out << ", ";
+    out << (mesh_.m_F[i].IsQuad() ? 4 : 3);
+  }
+  out << "]\n";
+
+  out << "    int[] faceVertexIndices = [";
+  bool first_index = true;
+  for (int i = 0; i < mesh_.m_F.Count(); ++i) {
+    const ON_MeshFace& f = mesh_.m_F[i];
+    const int corners = f.IsQuad() ? 4 : 3;
+    for (int c = 0; c < corners; ++c) {
+      if (!first_index) out << ", ";
+      first_index = false;
+      out << f.vi[c];
+    }
+  }
+  out << "]\n";
+  out << "}\n";
+
+  return out.good() ? Result::Ok : Result::Failed;
+}
+
+Result Mesh::LoadUsda(const std::string& path, Mesh& out_mesh) {
+  std::ifstream in(path, std::ios::binary);
+  if (!in) {
+    return Result::Failed;
+  }
+  std::ostringstream buffer;
+  buffer << in.rdbuf();
+  const std::string text = buffer.str();
+
+  if (text.find("#usda") == std::string::npos) {
+    return Result::Failed;  // not a USD ASCII file at all - never silently misread
+  }
+
+  Mesh result;
+  ON_Mesh& raw = result.mesh_;
+
+  std::string points_content;
+  if (!FindUsdaArray(text, "points", points_content)) return Result::Failed;
+  {
+    std::vector<double> numbers;
+    if (!ParseUsdaPointTuples(points_content, numbers)) return Result::Failed;
+    if (numbers.size() % 3 != 0) return Result::Failed;
+    for (size_t v = 0; v + 2 < numbers.size(); v += 3) {
+      raw.m_V.Append(ON_3fPoint(numbers[v], numbers[v + 1], numbers[v + 2]));
+    }
+  }
+
+  std::string counts_content;
+  if (!FindUsdaArray(text, "faceVertexCounts", counts_content)) return Result::Failed;
+  std::vector<int> counts;
+  if (!ParseUsdaInts(counts_content, counts)) return Result::Failed;
+
+  std::string indices_content;
+  if (!FindUsdaArray(text, "faceVertexIndices", indices_content)) return Result::Failed;
+  std::vector<int> indices;
+  if (!ParseUsdaInts(indices_content, indices)) return Result::Failed;
+
+  size_t cursor = 0;
+  for (int count : counts) {
+    if (count < 3) return Result::Failed;
+    if (cursor + static_cast<size_t>(count) > indices.size()) return Result::Failed;
+    for (int k = 0; k < count; ++k) {
+      const int idx = indices[cursor + k];
+      if (idx < 0 || idx >= raw.m_V.Count()) return Result::Failed;
+    }
+    if (count <= 4) {
+      ON_MeshFace face;
+      face.vi[0] = indices[cursor];
+      face.vi[1] = indices[cursor + 1];
+      face.vi[2] = indices[cursor + 2];
+      face.vi[3] = (count == 4) ? indices[cursor + 3] : indices[cursor + 2];
+      raw.m_F.Append(face);
+    } else {
+      // A genuine n-gon (5+ indices) doesn't fit ON_MeshFace -
+      // fan-triangulate from the face's own first index, the same
+      // accommodation LoadVrml()/LoadX3d() already make.
+      for (int c = 1; c + 1 < count; ++c) {
+        ON_MeshFace face;
+        face.vi[0] = indices[cursor];
+        face.vi[1] = indices[cursor + c];
+        face.vi[2] = indices[cursor + c + 1];
+        face.vi[3] = face.vi[2];
+        raw.m_F.Append(face);
+      }
+    }
+    cursor += count;
+  }
+  if (cursor != indices.size()) return Result::Failed;  // trailing indices no count claims
+
+  out_mesh = std::move(result);
+  return Result::Ok;
+}
+
+namespace {
+
+// Encodes `bytes` as standard base64 (RFC 4648, '+'/'/' alphabet, '='
+// padding) - glTF's own `data:` URI convention for an embedded buffer.
+std::string Base64Encode(const std::string& bytes) {
+  static const char kAlphabet[] =
+      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  std::string out;
+  out.reserve(((bytes.size() + 2) / 3) * 4);
+  size_t i = 0;
+  while (i + 3 <= bytes.size()) {
+    const uint32_t n = (static_cast<uint8_t>(bytes[i]) << 16) |
+                        (static_cast<uint8_t>(bytes[i + 1]) << 8) |
+                        static_cast<uint8_t>(bytes[i + 2]);
+    out.push_back(kAlphabet[(n >> 18) & 0x3F]);
+    out.push_back(kAlphabet[(n >> 12) & 0x3F]);
+    out.push_back(kAlphabet[(n >> 6) & 0x3F]);
+    out.push_back(kAlphabet[n & 0x3F]);
+    i += 3;
+  }
+  const size_t remaining = bytes.size() - i;
+  if (remaining == 1) {
+    const uint32_t n = static_cast<uint8_t>(bytes[i]) << 16;
+    out.push_back(kAlphabet[(n >> 18) & 0x3F]);
+    out.push_back(kAlphabet[(n >> 12) & 0x3F]);
+    out.push_back('=');
+    out.push_back('=');
+  } else if (remaining == 2) {
+    const uint32_t n = (static_cast<uint8_t>(bytes[i]) << 16) | (static_cast<uint8_t>(bytes[i + 1]) << 8);
+    out.push_back(kAlphabet[(n >> 18) & 0x3F]);
+    out.push_back(kAlphabet[(n >> 12) & 0x3F]);
+    out.push_back(kAlphabet[(n >> 6) & 0x3F]);
+    out.push_back('=');
+  }
+  return out;
+}
+
+// Decodes standard base64 (with or without '=' padding) back to bytes.
+// Returns false on an invalid length or a character outside the base64
+// alphabet (whitespace included - a real `data:` URI payload SaveGltf()
+// itself writes never contains any).
+bool Base64Decode(const std::string& text, std::string& out_bytes) {
+  auto decode_char = [](char c) -> int {
+    if (c >= 'A' && c <= 'Z') return c - 'A';
+    if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+    if (c >= '0' && c <= '9') return c - '0' + 52;
+    if (c == '+') return 62;
+    if (c == '/') return 63;
+    return -1;
+  };
+
+  std::string cleaned = text;
+  while (!cleaned.empty() && cleaned.back() == '=') cleaned.pop_back();
+  if (cleaned.size() % 4 == 1) return false;  // no valid base64 length ends in 1 leftover char
+
+  out_bytes.clear();
+  size_t i = 0;
+  while (i + 4 <= cleaned.size()) {
+    int v[4];
+    for (int k = 0; k < 4; ++k) {
+      v[k] = decode_char(cleaned[i + k]);
+      if (v[k] < 0) return false;
+    }
+    const uint32_t n = (v[0] << 18) | (v[1] << 12) | (v[2] << 6) | v[3];
+    out_bytes.push_back(static_cast<char>((n >> 16) & 0xFF));
+    out_bytes.push_back(static_cast<char>((n >> 8) & 0xFF));
+    out_bytes.push_back(static_cast<char>(n & 0xFF));
+    i += 4;
+  }
+  const size_t remaining = cleaned.size() - i;
+  if (remaining == 2) {
+    int v0 = decode_char(cleaned[i]);
+    int v1 = decode_char(cleaned[i + 1]);
+    if (v0 < 0 || v1 < 0) return false;
+    const uint32_t n = (v0 << 18) | (v1 << 12);
+    out_bytes.push_back(static_cast<char>((n >> 16) & 0xFF));
+  } else if (remaining == 3) {
+    int v0 = decode_char(cleaned[i]);
+    int v1 = decode_char(cleaned[i + 1]);
+    int v2 = decode_char(cleaned[i + 2]);
+    if (v0 < 0 || v1 < 0 || v2 < 0) return false;
+    const uint32_t n = (v0 << 18) | (v1 << 12) | (v2 << 6);
+    out_bytes.push_back(static_cast<char>((n >> 16) & 0xFF));
+    out_bytes.push_back(static_cast<char>((n >> 8) & 0xFF));
+  } else if (remaining != 0) {
+    return false;
+  }
+  return true;
+}
+
+// Finds the next JSON object at or after `from` (its own next '{') and
+// returns the content strictly between that '{' and its matching '}',
+// tracking brace/bracket depth but not string literals - safe here because
+// the only string value this reader ever has to scan past (the base64
+// `data:` URI) is guaranteed by the base64 alphabet to contain none of
+// `{}[]`, the same "deliberately narrow, not a general parser" trade-off
+// FindX3dTag()/FindAmfOpenTag() already make for their own formats.
+// Returns std::string::npos (leaving `out_content` untouched) if no
+// complete object is found; otherwise returns the position just after the
+// object's own closing '}'.
+size_t FindNextJsonObject(const std::string& text, size_t from, std::string& out_content) {
+  const size_t open = text.find('{', from);
+  if (open == std::string::npos) return std::string::npos;
+  int depth = 0;
+  for (size_t i = open; i < text.size(); ++i) {
+    if (text[i] == '{') ++depth;
+    else if (text[i] == '}') {
+      --depth;
+      if (depth == 0) {
+        out_content = text.substr(open + 1, i - open - 1);
+        return i + 1;
+      }
+    }
+  }
+  return std::string::npos;
+}
+
+// Finds `"key"` followed by `:` and, after any whitespace, an array - and
+// returns the content strictly between that array's own '[' and its
+// matching ']' (bracket-depth tracked, same string-literal caveat as
+// FindNextJsonObject() above). Returns false if `key` isn't found as a
+// quoted key or its array is never closed.
+bool FindJsonArrayContent(const std::string& text, const std::string& key, std::string& out_content) {
+  const std::string needle = "\"" + key + "\"";
+  size_t pos = text.find(needle);
+  if (pos == std::string::npos) return false;
+  size_t colon = text.find(':', pos + needle.size());
+  if (colon == std::string::npos) return false;
+  size_t open = colon + 1;
+  while (open < text.size() && std::isspace(static_cast<unsigned char>(text[open]))) ++open;
+  if (open >= text.size() || text[open] != '[') return false;
+  int depth = 0;
+  for (size_t i = open; i < text.size(); ++i) {
+    if (text[i] == '[') ++depth;
+    else if (text[i] == ']') {
+      --depth;
+      if (depth == 0) {
+        out_content = text.substr(open + 1, i - open - 1);
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+// Extracts an integer field `"key": <number>` from a JSON object's own
+// content (as FindNextJsonObject() returns it). Returns false if `key`
+// isn't found as a quoted key immediately followed by `:` and a number.
+bool ExtractJsonIntField(const std::string& object_text, const std::string& key, long long& out_value) {
+  const std::string needle = "\"" + key + "\"";
+  size_t pos = object_text.find(needle);
+  if (pos == std::string::npos) return false;
+  size_t colon = object_text.find(':', pos + needle.size());
+  if (colon == std::string::npos) return false;
+  size_t start = colon + 1;
+  while (start < object_text.size() && std::isspace(static_cast<unsigned char>(object_text[start]))) ++start;
+  size_t end = start;
+  while (end < object_text.size() &&
+         (std::isdigit(static_cast<unsigned char>(object_text[end])) || object_text[end] == '-')) {
+    ++end;
+  }
+  if (end == start) return false;
+  out_value = std::atoll(object_text.substr(start, end - start).c_str());
+  return true;
+}
+
+// Extracts a string field `"key": "value"` from a JSON object's own
+// content. Returns false if `key` isn't found as a quoted key immediately
+// followed by `:` and a quoted string, or the string's opening quote is
+// never closed. Does not process backslash escapes (SaveGltf() itself
+// never writes one into the fields this reader looks at).
+bool ExtractJsonStringField(const std::string& object_text, const std::string& key, std::string& out_value) {
+  const std::string needle = "\"" + key + "\"";
+  size_t pos = object_text.find(needle);
+  if (pos == std::string::npos) return false;
+  size_t colon = object_text.find(':', pos + needle.size());
+  if (colon == std::string::npos) return false;
+  size_t quote_open = object_text.find('"', colon + 1);
+  if (quote_open == std::string::npos) return false;
+  size_t quote_close = object_text.find('"', quote_open + 1);
+  if (quote_close == std::string::npos) return false;
+  out_value = object_text.substr(quote_open + 1, quote_close - quote_open - 1);
+  return true;
+}
+
+const char kGltfDataUriPrefix[] = "data:application/octet-stream;base64,";
+
+}  // namespace
+
+Result Mesh::SaveGltf(const std::string& path) const {
+  std::ofstream out(path);
+  if (!out) {
+    return Result::Failed;
+  }
+
+  // Build the binary buffer: every position first (float32 XYZ, always
+  // little-endian per the glTF spec - the same "no swap" WriteBinaryScalar()
+  // path SavePly()'s own little-endian mode already uses), then every
+  // triangle's indices (uint32) - a quad is split into two triangles here,
+  // since glTF's TRIANGLES mode has no native quad, the same accommodation
+  // SaveStl()/SaveAmf() already make.
+  std::ostringstream buffer_stream;
+  for (int i = 0; i < mesh_.m_V.Count(); ++i) {
+    const ON_3fPoint& v = mesh_.m_V[i];
+    WriteBinaryScalar(buffer_stream, static_cast<float>(v.x), false);
+    WriteBinaryScalar(buffer_stream, static_cast<float>(v.y), false);
+    WriteBinaryScalar(buffer_stream, static_cast<float>(v.z), false);
+  }
+  const size_t position_bytes = buffer_stream.str().size();
+
+  int triangle_count = 0;
+  for (int i = 0; i < mesh_.m_F.Count(); ++i) {
+    const ON_MeshFace& f = mesh_.m_F[i];
+    WriteBinaryScalar(buffer_stream, static_cast<uint32_t>(f.vi[0]), false);
+    WriteBinaryScalar(buffer_stream, static_cast<uint32_t>(f.vi[1]), false);
+    WriteBinaryScalar(buffer_stream, static_cast<uint32_t>(f.vi[2]), false);
+    ++triangle_count;
+    if (f.IsQuad()) {
+      WriteBinaryScalar(buffer_stream, static_cast<uint32_t>(f.vi[0]), false);
+      WriteBinaryScalar(buffer_stream, static_cast<uint32_t>(f.vi[2]), false);
+      WriteBinaryScalar(buffer_stream, static_cast<uint32_t>(f.vi[3]), false);
+      ++triangle_count;
+    }
+  }
+  const std::string buffer_bytes = buffer_stream.str();
+  const size_t index_bytes = buffer_bytes.size() - position_bytes;
+
+  double min_x = 0, min_y = 0, min_z = 0, max_x = 0, max_y = 0, max_z = 0;
+  if (mesh_.m_V.Count() > 0) {
+    min_x = max_x = mesh_.m_V[0].x;
+    min_y = max_y = mesh_.m_V[0].y;
+    min_z = max_z = mesh_.m_V[0].z;
+    for (int i = 1; i < mesh_.m_V.Count(); ++i) {
+      const ON_3fPoint& v = mesh_.m_V[i];
+      min_x = std::min(min_x, static_cast<double>(v.x));
+      min_y = std::min(min_y, static_cast<double>(v.y));
+      min_z = std::min(min_z, static_cast<double>(v.z));
+      max_x = std::max(max_x, static_cast<double>(v.x));
+      max_y = std::max(max_y, static_cast<double>(v.y));
+      max_z = std::max(max_z, static_cast<double>(v.z));
+    }
+  }
+
+  const std::string base64 = Base64Encode(buffer_bytes);
+
+  out << "{\n";
+  out << "  \"asset\": { \"version\": \"2.0\", \"generator\": \"dino8-kernel\" },\n";
+  out << "  \"buffers\": [ { \"uri\": \"" << kGltfDataUriPrefix << base64 << "\", \"byteLength\": "
+      << buffer_bytes.size() << " } ],\n";
+  out << "  \"bufferViews\": [\n";
+  out << "    { \"buffer\": 0, \"byteOffset\": 0, \"byteLength\": " << position_bytes
+      << ", \"target\": 34962 },\n";
+  out << "    { \"buffer\": 0, \"byteOffset\": " << position_bytes << ", \"byteLength\": " << index_bytes
+      << ", \"target\": 34963 }\n";
+  out << "  ],\n";
+  out << "  \"accessors\": [\n";
+  out << "    { \"bufferView\": 0, \"componentType\": 5126, \"count\": " << mesh_.m_V.Count()
+      << ", \"type\": \"VEC3\", \"min\": [" << min_x << ", " << min_y << ", " << min_z << "], \"max\": ["
+      << max_x << ", " << max_y << ", " << max_z << "] },\n";
+  out << "    { \"bufferView\": 1, \"componentType\": 5125, \"count\": " << (triangle_count * 3)
+      << ", \"type\": \"SCALAR\" }\n";
+  out << "  ],\n";
+  out << "  \"meshes\": [ { \"primitives\": [ { \"attributes\": { \"POSITION\": 0 }, \"indices\": 1, "
+         "\"mode\": 4 } ] } ],\n";
+  out << "  \"nodes\": [ { \"mesh\": 0 } ],\n";
+  out << "  \"scenes\": [ { \"nodes\": [ 0 ] } ],\n";
+  out << "  \"scene\": 0\n";
+  out << "}\n";
+
+  return out.good() ? Result::Ok : Result::Failed;
+}
+
+Result Mesh::LoadGltf(const std::string& path, Mesh& out_mesh) {
+  std::ifstream in(path, std::ios::binary);
+  if (!in) {
+    return Result::Failed;
+  }
+  std::ostringstream stream_buffer;
+  stream_buffer << in.rdbuf();
+  const std::string text = stream_buffer.str();
+
+  std::string buffers_content;
+  if (!FindJsonArrayContent(text, "buffers", buffers_content)) return Result::Failed;
+  std::string buffer_object;
+  if (FindNextJsonObject(buffers_content, 0, buffer_object) == std::string::npos) return Result::Failed;
+  std::string uri;
+  if (!ExtractJsonStringField(buffer_object, "uri", uri)) return Result::Failed;
+  if (uri.rfind(kGltfDataUriPrefix, 0) != 0) {
+    return Result::Failed;  // an external .bin reference - never silently misread
+  }
+  std::string decoded_buffer;
+  if (!Base64Decode(uri.substr(std::strlen(kGltfDataUriPrefix)), decoded_buffer)) return Result::Failed;
+
+  std::string buffer_views_content;
+  if (!FindJsonArrayContent(text, "bufferViews", buffer_views_content)) return Result::Failed;
+  std::string position_view, index_view;
+  size_t next = FindNextJsonObject(buffer_views_content, 0, position_view);
+  if (next == std::string::npos) return Result::Failed;
+  next = FindNextJsonObject(buffer_views_content, next, index_view);
+  if (next == std::string::npos) return Result::Failed;
+
+  long long position_offset = 0, position_length = 0, index_offset = 0, index_length = 0;
+  if (!ExtractJsonIntField(position_view, "byteLength", position_length)) return Result::Failed;
+  ExtractJsonIntField(position_view, "byteOffset", position_offset);  // defaults to 0 if absent
+  if (!ExtractJsonIntField(index_view, "byteLength", index_length)) return Result::Failed;
+  if (!ExtractJsonIntField(index_view, "byteOffset", index_offset)) return Result::Failed;
+
+  if (position_length < 0 || index_length < 0 || position_offset < 0 || index_offset < 0) {
+    return Result::Failed;
+  }
+  if (position_length % 12 != 0) return Result::Failed;  // not a whole number of float32 VEC3s
+  if (index_length % 4 != 0 || index_length % 12 != 0) return Result::Failed;  // not whole uint32 triangles
+  if (static_cast<size_t>(position_offset + position_length) > decoded_buffer.size()) return Result::Failed;
+  if (static_cast<size_t>(index_offset + index_length) > decoded_buffer.size()) return Result::Failed;
+
+  Mesh result;
+  ON_Mesh& raw = result.mesh_;
+
+  const int vertex_count = static_cast<int>(position_length / 12);
+  for (int i = 0; i < vertex_count; ++i) {
+    const size_t base = static_cast<size_t>(position_offset) + static_cast<size_t>(i) * 12;
+    float x, y, z;
+    std::memcpy(&x, decoded_buffer.data() + base, 4);
+    std::memcpy(&y, decoded_buffer.data() + base + 4, 4);
+    std::memcpy(&z, decoded_buffer.data() + base + 8, 4);
+    raw.m_V.Append(ON_3fPoint(x, y, z));
+  }
+
+  const int triangle_count = static_cast<int>(index_length / 12);
+  for (int i = 0; i < triangle_count; ++i) {
+    const size_t base = static_cast<size_t>(index_offset) + static_cast<size_t>(i) * 12;
+    uint32_t a, b, c;
+    std::memcpy(&a, decoded_buffer.data() + base, 4);
+    std::memcpy(&b, decoded_buffer.data() + base + 4, 4);
+    std::memcpy(&c, decoded_buffer.data() + base + 8, 4);
+    if (static_cast<int>(a) < 0 || static_cast<int>(a) >= vertex_count ||
+        static_cast<int>(b) < 0 || static_cast<int>(b) >= vertex_count ||
+        static_cast<int>(c) < 0 || static_cast<int>(c) >= vertex_count) {
+      return Result::Failed;
+    }
+    ON_MeshFace face;
+    face.vi[0] = static_cast<int>(a);
+    face.vi[1] = static_cast<int>(b);
+    face.vi[2] = static_cast<int>(c);
+    face.vi[3] = static_cast<int>(c);
+    raw.m_F.Append(face);
+  }
+
+  out_mesh = std::move(result);
+  return Result::Ok;
+}
+
 Result Mesh::LoadStl(const std::string& path, Mesh& out_mesh) {
   // Distinguishes binary from ASCII the same way most real-world STL
   // readers do: an ASCII file's own text can start with "solid" and

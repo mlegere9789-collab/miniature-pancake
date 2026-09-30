@@ -947,6 +947,123 @@ class Mesh {
   // not partially filled and silently trusted.
   static Result LoadX3d(const std::string& path, Mesh& out_mesh);
 
+  // Writes this mesh as a plain-ASCII USD (`.usda`, Universal Scene
+  // Description's own human-readable text encoding, Pixar) file - the
+  // ninth "other file format" here. A single `def Mesh "mesh" { ... }`
+  // prim holding USD's own three real mesh attributes: `point3f[] points`
+  // (one `(x, y, z)` tuple per vertex), `int[] faceVertexCounts` (one
+  // entry per face, its corner count - USD's own real variable-length
+  // face list, the same "not forced into all-triangle" shape `SaveOff()`/
+  // `SaveVrml()`/`SaveCollada()`/`SaveX3d()` already have, unlike AMF/STL's
+  // triangle-only formats), and `int[] faceVertexIndices` (one flat run of
+  // 0-based vertex indices, `faceVertexCounts[i]` values per face `i`, USD's
+  // own convention - unlike VRML/X3D's `-1`-terminated runs, a USD reader
+  // walks this list by consulting `faceVertexCounts` alongside it, not a
+  // sentinel). A quad face (`ON_MeshFace::IsQuad()`) is written as its own
+  // native 4-count/4-index entry, never split. No `normals`, `primvars:st`
+  // (UVs), `displayColor`, material binding, or any prim besides this
+  // single `Mesh` is written - this kernel's `Mesh` has nothing further to
+  // source a full USD scene graph from anyway (same reasoning `SaveVrml()`'s
+  // own doc comment gives for its own narrower scope). Returns
+  // Result::Failed if the file can't be opened for writing; does not
+  // validate the mesh's own geometry (an empty mesh writes a valid `Mesh`
+  // prim with empty arrays).
+  Result SaveUsda(const std::string& path) const;
+
+  // Reads a plain-ASCII USD `.usda` file written by SaveUsda() (or any
+  // other reasonably well-formed single-`Mesh`-prim `.usda` file) into
+  // `out_mesh`. This is a deliberately narrow, hand-rolled scan for exactly
+  // the three attributes SaveUsda() writes - not a general USD/Sdf text
+  // parser (no prim hierarchy, references, variants, or layer composition
+  // understood at all) - so it requires a `#usda` header line (the same
+  // "no variant/other-format file silently misread" stance `LoadVrml()`'s
+  // own `#VRML` header check already takes), then reads only the FIRST
+  // `points`, FIRST `faceVertexCounts`, and FIRST `faceVertexIndices`
+  // array found anywhere in the file - a second `Mesh` prim is silently
+  // ignored, not merged in or rejected, the same "first one found wins"
+  // convention `LoadAmf()`/`LoadVrml()`/`LoadCollada()`/`LoadX3d()` already
+  // use for a second sibling element. `faceVertexCounts` and
+  // `faceVertexIndices` are walked together exactly as USD itself defines:
+  // each successive count `n` consumes the next `n` indices from the flat
+  // index list as one face - `n` of 3 or 4 becomes one native `ON_MeshFace`
+  // triangle or quad; a genuine n-gon (`n` >= 5) is fan-triangulated from
+  // its own first index into `n-2` triangles, the same accommodation
+  // `LoadVrml()`/`LoadX3d()` already make for their own n-gon faces.
+  // `normals`/`primvars:st`/`displayColor` and any attribute besides these
+  // three are not understood at all - present or absent, they have no
+  // effect on the result. Returns Result::Failed if the file can't be
+  // opened, it has no `#usda` header, any of the three required arrays is
+  // missing, `points` isn't a whole number of `(x, y, z)` tuples, the sum
+  // of `faceVertexCounts` doesn't exactly match `faceVertexIndices`'s own
+  // length, a count is below 3, or any index falls outside the vertex
+  // list's range - `out_mesh` is left unspecified in that case, not
+  // partially filled and silently trusted.
+  static Result LoadUsda(const std::string& path, Mesh& out_mesh);
+
+  // Writes this mesh as a single self-contained glTF 2.0 (`.gltf`) file -
+  // the tenth "other file format" here, and the first one whose binary
+  // vertex/index data is embedded as a base64 `data:` URI inside the JSON
+  // itself (glTF's own "embedded buffer" convention, a single valid,
+  // portable `.gltf` file with no companion `.bin`) rather than written as
+  // plain text the way every prior format's numbers are. Unlike every
+  // other format here, glTF's `TRIANGLES` primitive mode has no native
+  // quad or n-gon - so a quad face (`ON_MeshFace::IsQuad()`) is split into
+  // its two triangles on write, the same accommodation `SaveStl()`/
+  // `SaveAmf()` already make for the identical reason. The buffer holds
+  // the position array first (`float` XYZ triples, accessor 0, `VEC3`)
+  // immediately followed by the index array (`unsigned int` scalars,
+  // accessor 1, `SCALAR`) - both already 4-byte-aligned, so no inter-view
+  // padding is needed. `asset`/`buffers`/`bufferViews`/`accessors`/
+  // `meshes`/`nodes`/`scenes`/`scene` are all written (a real, spec-valid
+  // minimal glTF a general-purpose viewer can open), but only the
+  // `POSITION` attribute - no `NORMAL`, `TEXCOORD_0`, materials, or any
+  // node transform - this kernel's `Mesh` has nothing further to source a
+  // full glTF scene from anyway (same reasoning `SaveVrml()`'s own doc
+  // comment gives for its own narrower scope). Returns Result::Failed if
+  // the file can't be opened for writing; does not validate the mesh's
+  // own geometry (an empty mesh writes a structurally valid but empty
+  // buffer/accessor pair).
+  Result SaveGltf(const std::string& path) const;
+
+  // Reads a glTF 2.0 `.gltf` file written by SaveGltf() into `out_mesh`.
+  // This is a deliberately narrow, hand-rolled scan for exactly the
+  // structure SaveGltf() writes - not a general glTF/JSON parser (no
+  // `.glb` binary container, external `.bin` buffer `uri`, sparse
+  // accessors, or multi-primitive/multi-mesh scenes understood at all) -
+  // built on a small brace/bracket-depth JSON object/array scanner
+  // (`FindNextJsonObject`/`FindJsonArrayContent`, mesh.cpp, anonymous
+  // namespace) that does not need to be string-literal-aware, because
+  // the only JSON string value it ever has to skip past (the base64
+  // `data:` URI itself) is guaranteed by the base64 alphabet to contain
+  // none of `{}[]` - a general-purpose glTF file whose *other* string
+  // fields (names, extras) happened to contain one of those characters
+  // could still desync this scanner, a disclosed limitation this narrow
+  // reader accepts for files it itself wrote. It requires the buffer's
+  // own `uri` to start with `data:application/octet-stream;base64,`
+  // (rejecting an external-`.bin` reference outright rather than trying
+  // and failing to open a relative path), decodes that payload, then
+  // reads the FIRST two `bufferViews` entries as the position/index byte
+  // ranges directly - vertex and triangle counts come from those byte
+  // lengths (`byteLength / 12`, a `float` VEC3 or an `unsigned int` triple)
+  // rather than from the `accessors` array's own `count` fields, the same
+  // fixed "bufferView 0 is POSITION, bufferView 1 is indices" assumption
+  // `LoadCollada()` already makes about a single `VERTEX` input at offset
+  // 0, rather than actually resolving `meshes[0].primitives[0].attributes`
+  // /`indices` through `accessors` at all. Every triangle read back is a
+  // genuine triangle (glTF has
+  // no native quad), so no fan-triangulation or quad-merging is attempted
+  // - unlike every text-based format here, a glTF round trip through this
+  // pair does not preserve `ON_MeshFace::IsQuad()` faces as quads. Returns
+  // Result::Failed if the file can't be opened, it has no recognizable
+  // `bufferViews`/`accessors`/buffer `uri`, the `uri` isn't a base64 data
+  // URI, the base64 payload fails to decode, the position bufferView's
+  // byte length isn't an exact multiple of 12 (`float` VEC3), the index
+  // bufferView's byte length isn't an exact multiple of 4 (`unsigned int`
+  // SCALAR) or of 12 (a whole number of triangles), or any index falls
+  // outside the position count's range - `out_mesh` is left unspecified
+  // in that case, not partially filled and silently trusted.
+  static Result LoadGltf(const std::string& path, Mesh& out_mesh);
+
   const ON_Mesh& raw() const { return mesh_; }
   ON_Mesh& raw() { return mesh_; }
 

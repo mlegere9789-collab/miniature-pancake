@@ -19724,6 +19724,398 @@ void TestMeshLoadX3dFanTriangulatesNgonFaces() {
   std::remove(hexagon_path.c_str());
 }
 
+void TestMeshSaveUsdaRoundTrips() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Result;
+
+  // Same MakeQuadBoxMesh fixture SaveOff()'s/SaveAmf()'s/SaveVrml()'s/
+  // SaveCollada()'s/SaveX3d()'s own round-trip tests use: 8 vertices, 6
+  // quad faces, known exact volume.
+  const auto box = MakeQuadBoxMesh(0, 0, 0, 2, 2, 2);
+  const std::string path = "dino8_kernel_mesh_usda_test.usda";
+  Check(box.SaveUsda(path) == Result::Ok, "Mesh::SaveUsda succeeds");
+
+  std::ifstream in(path);
+  Check(static_cast<bool>(in), "the .usda file SaveUsda wrote can be reopened for reading");
+  std::string file_text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  Check(file_text.find("#usda") == 0, "the file starts with a #usda header line");
+  Check(file_text.find("def Mesh") != std::string::npos, "the file has a def Mesh prim");
+  Check(file_text.find("point3f[] points") != std::string::npos, "the file has a points attribute");
+  Check(file_text.find("faceVertexCounts") != std::string::npos,
+        "the file has a faceVertexCounts attribute");
+  Check(file_text.find("faceVertexIndices") != std::string::npos,
+        "the file has a faceVertexIndices attribute");
+
+  size_t four_count = 0;
+  for (size_t pos = file_text.find("4", file_text.find("faceVertexCounts"));
+       pos != std::string::npos && pos < file_text.find("faceVertexIndices");
+       pos = file_text.find("4", pos + 1)) {
+    ++four_count;
+  }
+  Check(four_count == static_cast<size_t>(box.FaceCount()),
+        "faceVertexCounts holds a native 4 per face - 6 for the box, quads not split");
+
+  Mesh reloaded;
+  Check(Mesh::LoadUsda(path, reloaded) == Result::Ok, "Mesh::LoadUsda succeeds on SaveUsda()'s own output");
+  Check(reloaded.VertexCount() == box.VertexCount() && reloaded.FaceCount() == box.FaceCount(),
+        "the reloaded mesh has the same vertex/face counts as the original - "
+        "quad faces round-tripped as a native 4-index entry, not split");
+  Check(std::abs(reloaded.Volume() - box.Volume()) < 1e-9,
+        "the reloaded mesh's volume exactly matches the original");
+  std::remove(path.c_str());
+
+  // A hand-written file nested inside a parent Xform prim (proving this
+  // reader doesn't care about surrounding prim structure, only the three
+  // attributes it looks for) with irregular whitespace - a single triangle
+  // whose known corners let LoadUsda()'s geometry be checked exactly.
+  const std::string hand_written_path = "dino8_kernel_mesh_usda_test_hand_written.usda";
+  {
+    std::ofstream out(hand_written_path);
+    out << "#usda 1.0\n";
+    out << "def Xform \"root\"\n{\n";
+    out << "    def Mesh \"tri\"\n    {\n";
+    out << "        point3f[] points = [ (0, 0, 0) , (2,0,0), (0, 2, 0) ]\n";
+    out << "        int[] faceVertexCounts = [3]\n";
+    out << "        int[] faceVertexIndices = [0, 1, 2]\n";
+    out << "    }\n}\n";
+  }
+  Mesh hand_written;
+  Check(Mesh::LoadUsda(hand_written_path, hand_written) == Result::Ok,
+        "LoadUsda succeeds on a hand-written file nested inside a parent Xform, "
+        "with irregular comma/space spacing");
+  Check(hand_written.VertexCount() == 3 && hand_written.FaceCount() == 1,
+        "the hand-written file's 3 vertices and 1 triangle are read correctly");
+  const ON_MeshFace& tri = hand_written.raw().m_F[0];
+  Check(tri.vi[0] == 0 && tri.vi[1] == 1 && tri.vi[2] == 2,
+        "USD's 0-based faceVertexIndices values resolved directly to the same 0-based corners");
+  std::remove(hand_written_path.c_str());
+}
+
+void TestMeshLoadUsdaRejectsMalformedFiles() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Result;
+
+  const std::string missing_path = "dino8_kernel_mesh_usda_test_does_not_exist.usda";
+  Mesh out;
+  Check(Mesh::LoadUsda(missing_path, out) == Result::Failed, "LoadUsda fails on a file that doesn't exist");
+
+  const std::string bad_header_path = "dino8_kernel_mesh_usda_test_bad_header.usda";
+  {
+    std::ofstream bad(bad_header_path);
+    bad << "points = [(0,0,0),(1,0,0),(0,1,0)]\nfaceVertexCounts = [3]\nfaceVertexIndices = [0,1,2]\n";
+  }
+  Check(Mesh::LoadUsda(bad_header_path, out) == Result::Failed,
+        "LoadUsda fails on a file with no #usda header at all");
+
+  const std::string no_points_path = "dino8_kernel_mesh_usda_test_no_points.usda";
+  {
+    std::ofstream bad(no_points_path);
+    bad << "#usda 1.0\ndef Mesh \"m\" {\n    int[] faceVertexCounts = [3]\n"
+        << "    int[] faceVertexIndices = [0, 1, 2]\n}\n";
+  }
+  Check(Mesh::LoadUsda(no_points_path, out) == Result::Failed,
+        "LoadUsda fails on a Mesh prim with no points attribute at all");
+
+  const std::string no_counts_path = "dino8_kernel_mesh_usda_test_no_counts.usda";
+  {
+    std::ofstream bad(no_counts_path);
+    bad << "#usda 1.0\ndef Mesh \"m\" {\n"
+        << "    point3f[] points = [(0,0,0),(1,0,0),(0,1,0)]\n"
+        << "    int[] faceVertexIndices = [0, 1, 2]\n}\n";
+  }
+  Check(Mesh::LoadUsda(no_counts_path, out) == Result::Failed,
+        "LoadUsda fails on a Mesh prim with no faceVertexCounts attribute at all");
+
+  const std::string mismatch_path = "dino8_kernel_mesh_usda_test_mismatch.usda";
+  {
+    std::ofstream bad(mismatch_path);
+    // faceVertexCounts claims 3+3=6 indices; only 3 are given.
+    bad << "#usda 1.0\ndef Mesh \"m\" {\n"
+        << "    point3f[] points = [(0,0,0),(1,0,0),(0,1,0)]\n"
+        << "    int[] faceVertexCounts = [3, 3]\n"
+        << "    int[] faceVertexIndices = [0, 1, 2]\n}\n";
+  }
+  Check(Mesh::LoadUsda(mismatch_path, out) == Result::Failed,
+        "LoadUsda fails when faceVertexCounts's own sum doesn't match faceVertexIndices's length");
+
+  const std::string too_few_path = "dino8_kernel_mesh_usda_test_too_few.usda";
+  {
+    std::ofstream bad(too_few_path);
+    bad << "#usda 1.0\ndef Mesh \"m\" {\n"
+        << "    point3f[] points = [(0,0,0),(1,0,0),(0,1,0)]\n"
+        << "    int[] faceVertexCounts = [2]\n"
+        << "    int[] faceVertexIndices = [0, 1]\n}\n";
+  }
+  Check(Mesh::LoadUsda(too_few_path, out) == Result::Failed,
+        "LoadUsda fails on a faceVertexCounts entry below 3");
+
+  const std::string oob_index_path = "dino8_kernel_mesh_usda_test_oob_index.usda";
+  {
+    std::ofstream bad(oob_index_path);
+    // Only 3 vertices declared (indices 0-2); index 3 doesn't exist.
+    bad << "#usda 1.0\ndef Mesh \"m\" {\n"
+        << "    point3f[] points = [(0,0,0),(1,0,0),(0,1,0)]\n"
+        << "    int[] faceVertexCounts = [3]\n"
+        << "    int[] faceVertexIndices = [0, 1, 3]\n}\n";
+  }
+  Check(Mesh::LoadUsda(oob_index_path, out) == Result::Failed,
+        "LoadUsda fails on a faceVertexIndices entry referencing a vertex index that doesn't exist");
+
+  std::remove(bad_header_path.c_str());
+  std::remove(no_points_path.c_str());
+  std::remove(no_counts_path.c_str());
+  std::remove(mismatch_path.c_str());
+  std::remove(too_few_path.c_str());
+  std::remove(oob_index_path.c_str());
+}
+
+void TestMeshLoadUsdaFanTriangulatesNgonFaces() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Result;
+
+  // Same shoelace-area ground truth TestMeshLoadX3dFanTriangulatesNgonFaces
+  // uses, applied to USD's own faceVertexCounts/faceVertexIndices pair
+  // instead of a -1-terminated coordIndex run.
+  auto shoelace_area = [](const std::vector<std::pair<double, double>>& pts) {
+    double sum = 0.0;
+    for (size_t i = 0; i < pts.size(); ++i) {
+      const auto& [x0, y0] = pts[i];
+      const auto& [x1, y1] = pts[(i + 1) % pts.size()];
+      sum += x0 * y1 - x1 * y0;
+    }
+    return std::abs(sum) * 0.5;
+  };
+  auto triangle_area_sum = [](const Mesh& mesh) {
+    double total = 0.0;
+    const ON_Mesh& raw = mesh.raw();
+    for (int i = 0; i < raw.m_F.Count(); ++i) {
+      const ON_MeshFace& f = raw.m_F[i];
+      const ON_3fPoint& a = raw.m_V[f.vi[0]];
+      const ON_3fPoint& b = raw.m_V[f.vi[1]];
+      const ON_3fPoint& c = raw.m_V[f.vi[2]];
+      const ON_3dVector cross =
+          ON_3dVector::CrossProduct(ON_3dVector(b - a), ON_3dVector(c - a));
+      total += 0.5 * cross.Length();
+    }
+    return total;
+  };
+
+  const std::vector<std::pair<double, double>> pentagon = {
+      {0, 0}, {2, 0}, {3, 1}, {1, 2}, {-1, 1}};
+  const std::string pentagon_path = "dino8_kernel_mesh_usda_test_pentagon_fan.usda";
+  {
+    std::ofstream out(pentagon_path);
+    out << "#usda 1.0\ndef Mesh \"m\" {\n    point3f[] points = [";
+    for (size_t i = 0; i < pentagon.size(); ++i) {
+      if (i > 0) out << ", ";
+      out << "(" << pentagon[i].first << ", " << pentagon[i].second << ", 0)";
+    }
+    out << "]\n    int[] faceVertexCounts = [5]\n";
+    out << "    int[] faceVertexIndices = [0, 1, 2, 3, 4]\n}\n";
+  }
+  Mesh pentagon_mesh;
+  Check(Mesh::LoadUsda(pentagon_path, pentagon_mesh) == Result::Ok,
+        "LoadUsda succeeds on a 5-entry (pentagon) face instead of rejecting it outright");
+  Check(pentagon_mesh.VertexCount() == 5,
+        "the pentagon's 5 vertices are all preserved, unduplicated");
+  Check(pentagon_mesh.FaceCount() == 3,
+        "a pentagon fan-triangulates into exactly 5-2=3 triangles");
+  const ON_MeshFace& p0 = pentagon_mesh.raw().m_F[0];
+  const ON_MeshFace& p1 = pentagon_mesh.raw().m_F[1];
+  const ON_MeshFace& p2 = pentagon_mesh.raw().m_F[2];
+  Check(p0.vi[0] == 0 && p0.vi[1] == 1 && p0.vi[2] == 2 && p0.vi[3] == 2,
+        "the first fan triangle is corners (0,1,2), stored as a "
+        "degenerate quad (vi[3]==vi[2]) the same way an explicit "
+        "triangle face already is");
+  Check(p1.vi[0] == 0 && p1.vi[1] == 2 && p1.vi[2] == 3,
+        "the second fan triangle is corners (0,2,3)");
+  Check(p2.vi[0] == 0 && p2.vi[1] == 3 && p2.vi[2] == 4,
+        "the third fan triangle is corners (0,3,4), reaching the pentagon's last corner");
+  Check(std::abs(triangle_area_sum(pentagon_mesh) - shoelace_area(pentagon)) < 1e-9,
+        "the 3 fan triangles' combined area exactly reproduces the "
+        "convex pentagon's own shoelace area");
+  std::remove(pentagon_path.c_str());
+
+  const std::vector<std::pair<double, double>> hexagon = {
+      {2, 0}, {1, 2}, {-1, 2}, {-2, 0}, {-1, -2}, {1, -2}};
+  const std::string hexagon_path = "dino8_kernel_mesh_usda_test_hexagon_fan.usda";
+  {
+    std::ofstream out(hexagon_path);
+    out << "#usda 1.0\ndef Mesh \"m\" {\n    point3f[] points = [";
+    for (size_t i = 0; i < hexagon.size(); ++i) {
+      if (i > 0) out << ", ";
+      out << "(" << hexagon[i].first << ", " << hexagon[i].second << ", 0)";
+    }
+    out << "]\n    int[] faceVertexCounts = [6]\n";
+    out << "    int[] faceVertexIndices = [0, 1, 2, 3, 4, 5]\n}\n";
+  }
+  Mesh hexagon_mesh;
+  Check(Mesh::LoadUsda(hexagon_path, hexagon_mesh) == Result::Ok,
+        "LoadUsda succeeds on a 6-entry (hexagon) face");
+  Check(hexagon_mesh.VertexCount() == 6 && hexagon_mesh.FaceCount() == 4,
+        "a hexagon fan-triangulates into exactly 6-2=4 triangles, no vertex duplication");
+  Check(std::abs(triangle_area_sum(hexagon_mesh) - shoelace_area(hexagon)) < 1e-9,
+        "the 4 fan triangles' combined area exactly reproduces the "
+        "convex hexagon's own shoelace area");
+  std::remove(hexagon_path.c_str());
+}
+
+void TestMeshSaveGltfRoundTrips() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Result;
+
+  // Same MakeQuadBoxMesh fixture every other "other format" round-trip
+  // test uses: 8 vertices, 6 quad faces, known exact volume.
+  const auto box = MakeQuadBoxMesh(0, 0, 0, 2, 2, 2);
+  const std::string path = "dino8_kernel_mesh_gltf_test.gltf";
+  Check(box.SaveGltf(path) == Result::Ok, "Mesh::SaveGltf succeeds");
+
+  std::ifstream in(path);
+  Check(static_cast<bool>(in), "the .gltf file SaveGltf wrote can be reopened for reading");
+  std::string file_text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  Check(file_text.find("\"asset\"") != std::string::npos, "the file has an asset field");
+  Check(file_text.find("data:application/octet-stream;base64,") != std::string::npos,
+        "the buffer is embedded as a base64 data URI, not an external .bin reference");
+  Check(file_text.find("\"bufferViews\"") != std::string::npos, "the file has a bufferViews array");
+  Check(file_text.find("\"POSITION\": 0") != std::string::npos,
+        "the mesh primitive's POSITION attribute names accessor 0");
+
+  Mesh reloaded;
+  Check(Mesh::LoadGltf(path, reloaded) == Result::Ok, "Mesh::LoadGltf succeeds on SaveGltf()'s own output");
+  Check(reloaded.VertexCount() == box.VertexCount(),
+        "the reloaded mesh keeps the same vertex count - no position is split or merged");
+  Check(reloaded.FaceCount() == box.FaceCount() * 2,
+        "each of the box's 6 quads split into 2 triangles on write - glTF has no native quad - "
+        "so the reloaded triangle count is exactly double the original quad count");
+  Check(std::abs(reloaded.Volume() - box.Volume()) < 1e-9,
+        "the reloaded mesh's volume exactly matches the original, proving the quad split "
+        "didn't change the actual geometry");
+  std::remove(path.c_str());
+
+  // A hand-written file built from an independently (Python/struct)
+  // computed base64 payload, not SaveGltf()'s own output - a single
+  // triangle (0,0,0),(2,0,0),(0,2,0) whose known corners let LoadGltf()'s
+  // actual byte-level decoding be checked, not just a self-round-trip that
+  // could hide a matched write/read bug.
+  const std::string hand_written_path = "dino8_kernel_mesh_gltf_test_hand_written.gltf";
+  {
+    std::ofstream out(hand_written_path);
+    out << "{\n"
+        << "  \"asset\": { \"version\": \"2.0\" },\n"
+        << "  \"buffers\": [ { \"uri\": "
+           "\"data:application/octet-stream;base64,"
+           "AAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAEAAAACAAAA\", "
+           "\"byteLength\": 48 } ],\n"
+        << "  \"bufferViews\": [\n"
+        << "    { \"buffer\": 0, \"byteOffset\": 0, \"byteLength\": 36, \"target\": 34962 },\n"
+        << "    { \"buffer\": 0, \"byteOffset\": 36, \"byteLength\": 12, \"target\": 34963 }\n"
+        << "  ],\n"
+        << "  \"accessors\": [\n"
+        << "    { \"bufferView\": 0, \"componentType\": 5126, \"count\": 3, \"type\": \"VEC3\" },\n"
+        << "    { \"bufferView\": 1, \"componentType\": 5125, \"count\": 3, \"type\": \"SCALAR\" }\n"
+        << "  ],\n"
+        << "  \"meshes\": [ { \"primitives\": [ { \"attributes\": { \"POSITION\": 0 }, \"indices\": 1, "
+           "\"mode\": 4 } ] } ]\n"
+        << "}\n";
+  }
+  Mesh hand_written;
+  Check(Mesh::LoadGltf(hand_written_path, hand_written) == Result::Ok,
+        "LoadGltf succeeds on an independently-encoded base64 buffer, not just SaveGltf()'s own output");
+  Check(hand_written.VertexCount() == 3 && hand_written.FaceCount() == 1,
+        "the hand-written file's 3 vertices and 1 triangle are read correctly");
+  const ON_3fPoint& v0 = hand_written.raw().m_V[0];
+  const ON_3fPoint& v1 = hand_written.raw().m_V[1];
+  const ON_3fPoint& v2 = hand_written.raw().m_V[2];
+  Check(v0.x == 0 && v0.y == 0 && v0.z == 0 && v1.x == 2 && v1.y == 0 && v1.z == 0 && v2.x == 0 &&
+            v2.y == 2 && v2.z == 0,
+        "the decoded float32 little-endian vertex positions exactly match the independently-encoded "
+        "source values");
+  const ON_MeshFace& tri = hand_written.raw().m_F[0];
+  Check(tri.vi[0] == 0 && tri.vi[1] == 1 && tri.vi[2] == 2,
+        "the decoded uint32 little-endian indices resolve to the same 0-based corners");
+  std::remove(hand_written_path.c_str());
+}
+
+void TestMeshLoadGltfRejectsMalformedFiles() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Result;
+
+  const std::string missing_path = "dino8_kernel_mesh_gltf_test_does_not_exist.gltf";
+  Mesh out;
+  Check(Mesh::LoadGltf(missing_path, out) == Result::Failed, "LoadGltf fails on a file that doesn't exist");
+
+  const std::string no_buffers_path = "dino8_kernel_mesh_gltf_test_no_buffers.gltf";
+  {
+    std::ofstream bad(no_buffers_path);
+    bad << "{ \"bufferViews\": [], \"accessors\": [] }\n";
+  }
+  Check(Mesh::LoadGltf(no_buffers_path, out) == Result::Failed,
+        "LoadGltf fails on a file with no buffers array at all");
+
+  const std::string external_uri_path = "dino8_kernel_mesh_gltf_test_external_uri.gltf";
+  {
+    std::ofstream bad(external_uri_path);
+    bad << "{\n  \"buffers\": [ { \"uri\": \"mesh.bin\", \"byteLength\": 12 } ],\n"
+        << "  \"bufferViews\": [\n"
+        << "    { \"buffer\": 0, \"byteOffset\": 0, \"byteLength\": 12, \"target\": 34962 },\n"
+        << "    { \"buffer\": 0, \"byteOffset\": 12, \"byteLength\": 12, \"target\": 34963 }\n"
+        << "  ]\n}\n";
+  }
+  Check(Mesh::LoadGltf(external_uri_path, out) == Result::Failed,
+        "LoadGltf fails on a buffer uri that references an external .bin file instead of embedding "
+        "a base64 data URI");
+
+  const std::string bad_base64_path = "dino8_kernel_mesh_gltf_test_bad_base64.gltf";
+  {
+    std::ofstream bad(bad_base64_path);
+    bad << "{\n  \"buffers\": [ { \"uri\": \"data:application/octet-stream;base64,!!!!\", "
+           "\"byteLength\": 3 } ],\n"
+        << "  \"bufferViews\": [\n"
+        << "    { \"buffer\": 0, \"byteOffset\": 0, \"byteLength\": 12, \"target\": 34962 },\n"
+        << "    { \"buffer\": 0, \"byteOffset\": 12, \"byteLength\": 12, \"target\": 34963 }\n"
+        << "  ]\n}\n";
+  }
+  Check(Mesh::LoadGltf(bad_base64_path, out) == Result::Failed,
+        "LoadGltf fails when the data URI's own payload contains characters outside the base64 alphabet");
+
+  const std::string bad_length_path = "dino8_kernel_mesh_gltf_test_bad_length.gltf";
+  {
+    std::ofstream bad(bad_length_path);
+    // 4 zero bytes (base64 "AAAAAA==") - a position bufferView byteLength
+    // of 4 is not an exact multiple of 12 (one float32 VEC3).
+    bad << "{\n  \"buffers\": [ { \"uri\": \"data:application/octet-stream;base64,AAAAAA==\", "
+           "\"byteLength\": 4 } ],\n"
+        << "  \"bufferViews\": [\n"
+        << "    { \"buffer\": 0, \"byteOffset\": 0, \"byteLength\": 4, \"target\": 34962 },\n"
+        << "    { \"buffer\": 0, \"byteOffset\": 4, \"byteLength\": 0, \"target\": 34963 }\n"
+        << "  ]\n}\n";
+  }
+  Check(Mesh::LoadGltf(bad_length_path, out) == Result::Failed,
+        "LoadGltf fails when the position bufferView's byteLength isn't an exact multiple of 12");
+
+  const std::string oob_index_path = "dino8_kernel_mesh_gltf_test_oob_index.gltf";
+  {
+    std::ofstream bad(oob_index_path);
+    // 1 vertex (12 bytes) followed by indices [0, 1, 2] (12 bytes) - only
+    // vertex 0 exists, so indices 1 and 2 are out of range.
+    bad << "{\n  \"buffers\": [ { \"uri\": "
+           "\"data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAAAAAAEAAAACAAAA\", "
+           "\"byteLength\": 24 } ],\n"
+        << "  \"bufferViews\": [\n"
+        << "    { \"buffer\": 0, \"byteOffset\": 0, \"byteLength\": 12, \"target\": 34962 },\n"
+        << "    { \"buffer\": 0, \"byteOffset\": 12, \"byteLength\": 12, \"target\": 34963 }\n"
+        << "  ]\n}\n";
+  }
+  Check(Mesh::LoadGltf(oob_index_path, out) == Result::Failed,
+        "LoadGltf fails on an index referencing a vertex position that doesn't exist");
+
+  std::remove(no_buffers_path.c_str());
+  std::remove(external_uri_path.c_str());
+  std::remove(bad_base64_path.c_str());
+  std::remove(bad_length_path.c_str());
+  std::remove(oob_index_path.c_str());
+}
+
 void TestMeshSaveStlSplitsQuadsAndComputesNormals() {
   using dino8::kernel::Result;
 
@@ -48088,6 +48480,11 @@ int main() {
   TestMeshSaveX3dRoundTrips();
   TestMeshLoadX3dRejectsMalformedFiles();
   TestMeshLoadX3dFanTriangulatesNgonFaces();
+  TestMeshSaveUsdaRoundTrips();
+  TestMeshLoadUsdaRejectsMalformedFiles();
+  TestMeshLoadUsdaFanTriangulatesNgonFaces();
+  TestMeshSaveGltfRoundTrips();
+  TestMeshLoadGltfRejectsMalformedFiles();
   TestMeshSaveStlSplitsQuadsAndComputesNormals();
   TestMeshLoadStlRoundTrips();
   TestMeshLoadStlBinary();
