@@ -37584,6 +37584,62 @@ void TestBrepMixedFacesRecoversFullCylinderWallWithoutFaceRecordAtNonUnitRadius(
         "drilled-box fixtures use, to the same tolerance");
 }
 
+// Brep::HasCylindricalFace (brep.h) - the cheap, record-less probe built as
+// the gate a caller would need to try BooleanCombineMixed only when "a
+// genuine CylindricalFace is present", added alongside the cap-loop-sampling
+// fix above so that gating has something real to call - not currently
+// called from dino8-app (see PARITY_MAP.md's "kernel: Boolean operations"
+// category, "Fifteenth note": a gated app-level attempt was built and
+// verified around this exact method, then reverted anyway for a separate,
+// disclosed reason this method does not touch). Deliberately exercises both
+// a record-less Brep (WrapBrep's own "k.raw() = *b" pattern, no dino8
+// FaceRecord attached - the actual shape dino8-app's Box/Cylinder commands
+// build) and a FaceRecord-backed one (Brep::Box()/Brep::FromMixedFaces()),
+// since the method must agree with itself regardless of which path built
+// the underlying ON_Brep.
+void TestBrepHasCylindricalFaceDetectsRecordlessCylinderAndRejectsPurelyPlanarBrep() {
+  using dino8::kernel::Brep;
+
+  // Record-less plain box (WrapBrep's own pattern): no cylindrical face at
+  // all, every face planar.
+  Brep box;
+  {
+    ON_3dPoint c[8] = {ON_3dPoint(0, 0, 0),   ON_3dPoint(10, 0, 0),  ON_3dPoint(10, 10, 0),  ON_3dPoint(0, 10, 0),
+                       ON_3dPoint(0, 0, 10),  ON_3dPoint(10, 0, 10), ON_3dPoint(10, 10, 10), ON_3dPoint(0, 10, 10)};
+    ON_Brep* b = ON_BrepBox(c);
+    box.raw() = *b;
+    delete b;
+  }
+  Check(!box.HasCylindricalFace(), "a record-less plain box has no cylindrical face at all");
+
+  // Record-less plain cylinder (WrapBrep's own pattern): a genuine
+  // cylindrical wall plus two planar caps.
+  Brep cyl;
+  {
+    ON_Plane pl(ON_3dPoint(5, 5, -5), ON_3dVector(0, 0, 1));
+    ON_Cylinder cylinder(ON_Circle(pl, 2.0), 20.0);
+    ON_Brep* b = ON_BrepCylinder(cylinder, true, true);
+    cyl.raw() = *b;
+    delete b;
+  }
+  Check(cyl.HasCylindricalFace(), "a record-less plain cylinder's own wall is detected without needing a "
+                                   "dino8 FaceRecord or the full MixedFaces() extraction");
+
+  // FaceRecord-backed equivalents (Brep::Box()/Brep::FromMixedFaces()) must
+  // agree - this is a property of the real underlying ON_Surface geometry,
+  // not of which factory happened to build it.
+  const Brep record_box = Brep::Box(0, 0, 0, 10, 10, 10);
+  Check(!record_box.HasCylindricalFace(), "a FaceRecord-backed box likewise has no cylindrical face");
+
+  Brep::CylindricalFace cf;
+  cf.frame = ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1));
+  cf.radius = 3.0;
+  cf.angle = 2.0 * ON_PI;
+  cf.length = 8.0;
+  const Brep record_cyl = Brep::FromMixedFaces({}, {cf});
+  Check(record_cyl.HasCylindricalFace(), "a FaceRecord-backed lone cylindrical wall is likewise detected");
+}
+
 // Regression check: Union and SymmetricDifference must still refuse a
 // compound operand exactly as before - this pass narrows the refusal, it
 // does not remove it.
@@ -53480,6 +53536,7 @@ int main() {
   TestBooleanCombineMixedIntersectionAcceptsCompoundOperand();
   TestBooleanCombineMixedIntersectionAcceptsCompoundOperandWithEmbeddedCylinders();
   TestBrepMixedFacesRecoversFullCylinderWallWithoutFaceRecordAtNonUnitRadius();
+  TestBrepHasCylindricalFaceDetectsRecordlessCylinderAndRejectsPurelyPlanarBrep();
   TestBooleanCombineMixedUnionAndXorStillRefuseCompoundOperand();
   TestBooleanCombineMixedDifferenceThrowsOnTouchingLumpXorCompound();
   TestBooleanCombineMixedNArySingleElementCompoundGroupReachesFinalCombine();

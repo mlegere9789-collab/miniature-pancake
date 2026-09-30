@@ -3055,6 +3055,144 @@ unchanged partial score" pattern as the notes above. Full
 directly): 6754 checks, 100% passing, 0 regressions. The kernel-only headline is
 unaffected (no bucket moved).*
 
+*Fifteenth note on this category's score (this pass): the exact "next step"
+the Fourteenth note's own closing paragraph named - re-wiring
+`BooleanCombineMixed` into `TryExactBrepBoolean` (dino8-app/src/commands/
+cmd_boolean.cpp) as a second attempt, gated strictly on "a genuine
+`CylindricalFace` is present" so the Thirteenth note's own problem (1) (a
+purely-planar adversarial fixture silently accepted by `BooleanCombineMixed`'s
+own looser tolerance) cannot be reached - was built, verified end-to-end
+through the real app, and reverted again, for a NEW, deeper, disclosed
+reason this pass is the first to actually measure. First, the good news,
+confirmed rather than re-assumed: `kernel::Brep::HasCylindricalFace(double
+tolerance = 1e-4)` (brep.h:2017; brep.cpp:1200) is a real, tested, minimal
+addition that closes the "decide the cleanest way to expose an equivalent
+check" question the Fourteenth note's own next-step description left open -
+a cheap, record-less, non-throwing probe (walks every live face's
+`SurfaceOf()->IsCylinder(&cyl, tolerance)`, short-circuiting on the first
+match, the same OpenNURBS call and tolerance scale `MixedFaces()`'s own
+`ExtractCylindricalFace()` call site and `BuildPlaneCylinderVariableFillet`
+(dino8-app/src/commands/cmd_fillet.cpp) already use) rather than reusing the
+heavier `MixedFaces()` extraction itself, which throws on the first
+non-planar/cylindrical/conical face and so is the wrong contract for a plain
+yes/no gate. Verified
+(`TestBrepHasCylindricalFaceDetectsRecordlessCylinderAndRejectsPurelyPlanarBrep`,
+tests/test_basic.cpp) on both a record-less box/cylinder pair (`WrapBrep`'s
+own pattern, cmd_solids.cpp - no dino8 `FaceRecord`) and the FaceRecord-backed
+equivalents (`Brep::Box()`/`Brep::FromMixedFaces()`), confirming the method
+agrees with itself regardless of which factory built the underlying
+`ON_Brep`. Gating a `TryExactBrepBoolean` Mixed attempt on this check does
+what the Fourteenth note predicted it would: re-run against the full
+`boolean_adversarial_script.txt` corpus (which has zero cylindrical/conical/
+spherical primitives anywhere in it - confirmed by inspection, not assumed)
+confirms every one of its near-tangent/barely-overlapping/coincident-face/
+huge-scale/chained-cut fixtures never even reaches the gate, let alone the
+Mixed engine, so the Thirteenth note's own problem (1) is provably
+unreachable through this gate, not merely presumed avoided.
+
+**But wiring the gated attempt into `TryExactBrepBoolean` itself was tried,
+verified, and reverted anyway - because a second, more fundamental blocker
+was found this pass, independent of both of the Thirteenth note's own two
+problems.** Built and ran (not merely reasoned about) both a `BooleanUnion`
+of a record-less box and an embedded record-less cylindrical boss, and a
+`BooleanDifference` drilling a record-less through-hole in a record-less
+box, through the real app with the gated Mixed attempt actually wired in:
+both took the exact path cleanly (`BooleanUnion: exact B-rep boolean (no
+tessellation), 20 face(s)`; `BooleanDifference: exact B-rep boolean (no
+tessellation), 13 face(s)`) - the boolean construction itself genuinely
+succeeds, and the resulting `ON_Brep` is `IsValid()` and `IsManifold()` (both
+confirmed directly via a standalone probe, not inferred). But a subsequent
+`Volume` command on either result reports `! Object N is not closed` /
+`Volume = 0` - the app's selection/measurement pipeline (`ObjectVolume`,
+dino8-app/src/commands/cmd_analyze.cpp, via `MeshOf`/`MeshBrepClosed`,
+cmd_common.cpp/geom/BrepMesher.cpp) cannot make sense of the exact result at
+all. Root-caused, not left as a repeat of the Thirteenth note's own
+"tessellates to an OPEN mesh" observation: a standalone probe confirms the
+result's raw `ON_Brep::IsSolid()` is **false** (while `IsValid()`/
+`IsManifold()` are both true) - and `MeshBrepClosed`'s own automatic
+finer-chord-tolerance retry (BrepMesher.cpp:800-812) is gated on
+`brep.IsSolid()`, so for a `CylindricalFace`-bearing `BooleanCombineMixed`
+result that safety net never engages at all, regardless of how coarse or
+fine the first attempt's tolerance was. Forcing the question further - a
+second standalone probe called `MeshBrepClosed` directly at five explicit
+chord tolerances from 0.005 down to 0.000001 (bypassing the `IsSolid()` gate
+entirely) - shows this is not a tolerance problem the gate merely hides:
+every single tolerance still comes back non-closed, and the measured volume
+does not converge toward the true closed form (4000 - pi\*3^2\*10 = 3717.26)
+as tolerance tightens the way a genuine chordal-deficit/coarseness effect
+would - it drifts further away (3717.5 at tol=0.005, 3765.5 at
+tol=0.000001), the signature of a genuine boundary-curve mismatch between
+independently-tessellated adjacent faces, not insufficient resolution. For
+comparison, the SAME result's `ON_Brep`, fed through the KERNEL's own
+specialized `TessellateToClosedMeshConforming(64, 64)` (the machinery the
+Fourteenth note's own fix actually targets), closes correctly and measures
+3717.285 - confirming the Fourteenth note's own fix is genuinely still
+sound at the kernel layer; the newly-found blocker is entirely in the APP's
+own separate, independent tessellator, which never uses `SampleLoop`,
+`ResolveFace`, or any other machinery the Fourteenth note touched at all
+(dino8-app/src/geom/BrepMesher.cpp's own `MeshBrepFaces`/`MeshBrepClosedOnce`
+is a from-scratch constrained-Delaunay tessellator working directly off each
+`ON_BrepFace`'s own trim loops, entirely separate from the kernel's own
+polygon-sampling and conforming-mesh code).
+
+This is the SAME disclosed "genuine `ON_Brep` edge/vertex topology" gap the
+Eighth/Ninth notes above already named for a `CylindricalFace`-bearing
+`BooleanCombineMixed`/`BooleanCombineGeneral` result (there, measured only as
+`SplitDisjointPieces()`'s own `LumpFaceRanges()` bookkeeping going wrong,
+with the actual tessellated SHAPE still confirmed correct through each
+engine's own specialized tessellator) - this pass's own contribution is
+finding and measuring a second, more serious consequence of that same root
+cause: without genuine shared edges between the cylindrical wall and its own
+planar caps, the app's independently-tessellating-each-face mesher has no
+guarantee two adjacent faces' own boundary samples land at the same 3D
+points at all, so `Mesh::MergeAndWeld`'s vertex-proximity stitch can fail at
+any tolerance - not merely produce a coarse-but-closed approximation the way
+it does for every other B-rep object in this app (including every existing
+`BooleanCombinePlanar` result already reachable through this same
+`TryExactBrepBoolean`, unaffected, since that engine's own planar-only
+results keep real, `IsSolid()`-true topology throughout). This also
+disentangles the Thirteenth note's own problem (2) from problem (1) for the
+first time: at the time of that note, the coarse-trim-polygon defect (fixed
+by the Fourteenth note, confirmed above still sound) and this deeper
+missing-topology defect were both present and un-separated, so "tessellates
+to an OPEN mesh... reports not closed, volume 0" could plausibly have been
+blamed entirely on the coarseness bug; this pass shows that fixing the
+coarseness bug alone does not fix the app-level symptom, because a second,
+independent cause was there all along.
+
+Given this, shipping the gated wiring would make dino8-app's own single most
+common real-world Mixed case - a plain `Cylinder` drilled into or bossed
+onto a plain `Box`, exactly the shape `WrapBrep` (cmd_solids.cpp) attaches no
+`FaceRecord` to - measurably WORSE for a user than today's mesh fallback: an
+"exact" result the app can no longer measure (`Volume` reports 0) or reload
+into any other mesh-consuming command, in place of a merely-tessellated but
+fully working, measurable one. Reverted rather than shipped half-safe, the
+same standard this category has already applied twice to this exact idea
+(the "later pass" account in the "B-rep-preserving booleans" bullet above,
+and the Thirteenth note). `TryExactBrepBoolean` is unchanged from the
+Planar-only version; `dino8-app/src/commands/cmd_boolean.cpp` carries no
+changes this pass. What IS kept: `Brep::HasCylindricalFace` itself, real
+tested kernel-only groundwork for whichever future pass closes the
+app-mesher gap this note newly discloses (most likely by teaching
+`MeshOf`/`MeshBrepClosed` to route a `CylindricalFace`-bearing Brep through
+the kernel's own `TessellateToClosedMeshConforming` instead of
+`BrepMesher.cpp`'s independent per-face CDT path - a genuinely new,
+disclosed architecture item, not attempted here). Net effect on the scores
+below: narrows, does not flip, the SAME already-partial items ("B-rep-
+preserving booleans reachable from the application" and "Multi-body /
+multi-tool booleans") - this category's own present/partial/missing counts
+and 9/15/1/25 (66.0%) split are unchanged. Full `dino8_kernel_tests` suite
+(via both the built binary directly and `ctest`): 6815 checks, 100% passing,
+0 regressions (4 of the 61 checks added since the Fourteenth note's own 6754
+baseline are
+`TestBrepHasCylindricalFaceDetectsRecordlessCylinderAndRejectsPurelyPlanarBrep`'s
+own; the other 57 predate this pass, from intervening, unrelated commits).
+`dino8-app/tests/smoke.sh` (including the unmodified `boolean_script.txt`,
+`boolean_adversarial_script.txt` and `boolean_mixed_and_compound_script.txt`)
+re-run clean end to end, byte-identical to before this pass, since
+`cmd_boolean.cpp` itself carries no net change. The kernel-only headline is
+unaffected (no bucket moved).*
+
 **Blending & chamfering** (blending):
 - [partial] Constant-radius edge fillet on curved adjacent faces (cylinder/plane, cylinder/cylinder, freeform, closed/periodic rims) with B-rep trimming — every kernel fillet still requires both adjacent faces to be planar (fillet.h:147-159), so fillets cannot be chained onto a solid that already carries a curved face. App `FilletEdge` produces a genuine B-rep trim only when both faces are planar (cmd_fillet.cpp:175, "exact for planes; approximate elsewhere") — historically via the generic offset+SSX `BuildFillet` path, not the closed-form kernel function itself (see the bullet just below for the "nothing in the app calls it" half this pass closes). **This pass:** `FilletEdgeCommand::Run`'s plain-Radius case (default `RailType=RollingBall`, no `Rho`) now tries a new `TryExactFillet` FIRST — `kernel::FilletConvexEdge`/`FilletConcaveEdge` directly, convex then concave — ahead of the unchanged `BuildFillet` path, the identical "exact kernel construction first, fail open to the approximate path on any `PlanarFaces()` rejection" structure `TryExactChamfer` already established for `ChamferEdge`'s own plain-Radius case. Still partial: curved adjacent faces remain fundamentally out of scope (the kernel's own `PlanarFaces()` requirement, unchanged) and `BuildFillet`'s approximate path is still what actually runs there; this closes a representation gap (which construction produces the planar-face result), not a capability gap (the printed message and volume for a planar-face fillet are unchanged, since `BuildFillet` was already numerically exact for planes too). Net effect on the scores below: narrows, does not flip, the SAME already-partial item.
 - [partial] Concave (internal) edge fillet — kernel-native and exact: `FilletConcaveEdge` (fillet.cpp:1070 — corrected 2026-09-28, was mis-cited fillet.cpp:989; fillet.h:162-270) builds the mirrored rolling-ball construction with outward=false, closing perpendicular and oblique third faces; `FilletConcaveEdges` (fillet.cpp:2746; fillet.h:1111-1205) fillets several independent edges plus m==3 trihedral concave spherical corners. **This pass:** closes the single-edge half of "nothing in the app calls it" — `FilletEdgeCommand`'s new `TryExactFillet` (see the bullet just above) tries `kernel::FilletConvexEdge` FIRST and `FilletConcaveEdge` SECOND on any planar-faced solid, the same convex-then-concave cascade `TryExactChamfer`/`TryExactConicFillet`/`TryExactRailFillet` already use elsewhere in this file for the identical reason (the command doesn't know the edge's own convexity in advance). Verified structurally and via the convex branch end-to-end (`fillet_script.txt`'s own existing plain-`Radius=2` box-corner case now goes through this exact dispatch, unchanged volume); the concave branch is NOT independently verified through the app in script form — building an app-level fixture with a genuinely planar-faced concave (reflex) edge turned out to be blocked by a separate, disclosed app-layer limitation: `ExtrudeCrv`'s own `ON_BrepTrimmedPlane`/`ON_BrepExtrudeFace` construction builds ONE ruled side-wall face per whole closed boundary loop, not one flat quad per polygon edge (confirmed directly: extruding a plain 4-sided rectangle profile also yields only 3 faces/3 edges total, the single ruled wall genuinely non-planar end-to-end, not just at the concave corner) — so no closed polygon profile extruded this way, convex or concave, can reach `PlanarFaces()`'s own exact-planar requirement at all, and the app has no other command that builds a multi-facet polygonal solid. Still partial, same remaining gaps as before: planar faces only, one radius, m>=2 or higher-valence corners throw, oblique third faces out of scope for `FilletConcaveEdges`, a mixed convex+concave solid cannot be fully filleted, and the multi-edge `FilletConcaveEdges` batch form remains entirely unreachable from the app. Net effect on the scores below: narrows, does not flip, the SAME already-partial item.

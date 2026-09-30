@@ -1197,6 +1197,16 @@ std::vector<Brep::PlanarFace> Brep::PlanarFaces() const {
   return result;
 }
 
+bool Brep::HasCylindricalFace(double tolerance) const {
+  for (int i = 0; i < brep_.m_F.Count(); ++i) {
+    const ON_Surface* srf = brep_.m_F[i].SurfaceOf();
+    if (!srf) continue;
+    ON_Cylinder cyl;
+    if (srf->IsCylinder(&cyl, tolerance)) return true;
+  }
+  return false;
+}
+
 Brep::MixedFacesResult Brep::MixedFaces() const {
   MixedFacesResult result;
   for (int i = 0; i < brep_.m_F.Count(); ++i) {

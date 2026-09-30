@@ -1991,6 +1991,40 @@ class Brep {
     bool outward = true;
   };
 
+  // Cheap, record-less "does this Brep have a genuine cylindrical face at
+  // all" probe - built as the gating check a caller would need to try
+  // BooleanCombineMixed only when it is actually worth attempting (see
+  // boolean.h's own doc comment on BooleanCombineMixed for why a
+  // purely-planar operand should never reach that engine: its own
+  // auto-derived tolerance, RelativeTolMixed, does not always agree with
+  // BooleanCombinePlanar's RelativeTol on adversarial near-degenerate
+  // planar geometry). NOT currently called from dino8-app - see
+  // PARITY_MAP.md's "kernel: Boolean operations" category, this bullet's
+  // own "Fifteenth note", for why a gated app-level BooleanCombineMixed
+  // attempt built and verified around this exact method was reverted
+  // anyway (a real, disclosed, DIFFERENT blocker than the one this method
+  // itself closes: the app's own independent BrepMesher.cpp tessellator
+  // cannot render/measure a CylindricalFace-bearing BooleanCombineMixed
+  // result at all, regardless of this gate). Kept as real, tested,
+  // disclosed-but-unconsumed groundwork for whichever future pass closes
+  // that separate gap. Deliberately NOT MixedFaces() (the full extraction
+  // below) reused for this: MixedFaces() throws std::invalid_argument on
+  // the first face that is neither planar, cylindrical nor conical - the
+  // right contract for actually BUILDING a MixedFacesResult, but the
+  // wrong one for a plain yes/no probe, which must not throw merely
+  // because some OTHER face on the same Brep is a free-form surface
+  // unrelated to the question being asked. Walks every live face's raw()
+  // surface directly and calls `ON_Surface::IsCylinder(&cyl, tolerance)`
+  // on it - the same real OpenNURBS API, and the same 1e-4 default
+  // tolerance scale, MixedFaces()'s own ExtractCylindricalFace() call
+  // site and dino8-app's own BuildPlaneCylinderVariableFillet
+  // (cmd_fillet.cpp) already use to recognize a cylindrical face -
+  // returning true on the first match, so a Brep with many faces
+  // short-circuits rather than probing every one. Never throws: a face
+  // with no live surface (a deleted-face table hole) is simply skipped,
+  // not an error.
+  bool HasCylindricalFace(double tolerance = 1e-4) const;
+
   // The general sibling of PlanarFaces() that also recognizes a
   // cylindrical face rather than throwing on it - the extraction half of
   // what BooleanCombineMixed (see boolean.h) needs to get a
