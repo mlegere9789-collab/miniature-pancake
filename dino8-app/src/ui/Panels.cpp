@@ -1605,7 +1605,7 @@ void DrawDocumentPropertiesWindow(Application& app) {
     ImGui::SetNextItemWidth(160);
     ImGui::InputTextWithHint("##newstyle", "new style name", new_style, sizeof(new_style));
     ImGui::SameLine();
-    if (ImGui::Button("Add style") && new_style[0] && !doc.FindAnnotationStyle(new_style)) { styles.push_back(AnnotationStyle{new_style, 0, 0, ""}); doc.Touch(); new_style[0] = 0; }
+    if (ImGui::Button("Add style") && new_style[0] && !doc.FindAnnotationStyle(new_style)) { AnnotationStyle st; st.name = new_style; styles.push_back(st); doc.Touch(); new_style[0] = 0; }
   }
   ImGui::Separator();
   ImGui::Text("Linetypes");

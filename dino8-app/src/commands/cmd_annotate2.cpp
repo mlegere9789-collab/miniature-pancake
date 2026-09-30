@@ -958,7 +958,7 @@ void AnnotationStylesCommand(CommandContext& ctx) {
     return;
   }
   AnnotationStyle* st = ctx.Doc().FindAnnotationStyle(name);
-  if (!st) { ctx.Doc().AnnotationStyles().push_back(AnnotationStyle{name, 0, 0, ""}); st = &ctx.Doc().AnnotationStyles().back(); }
+  if (!st) { AnnotationStyle fresh; fresh.name = name; ctx.Doc().AnnotationStyles().push_back(fresh); st = &ctx.Doc().AnnotationStyles().back(); }
   if (opts.count("height")) st->text_height = std::max(0.0, std::atof(opts["height"].c_str()));
   if (opts.count("arrow")) st->arrow_size = std::max(0.0, std::atof(opts["arrow"].c_str()));
   if (opts.count("font")) st->font = opts["font"];
