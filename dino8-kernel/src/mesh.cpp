@@ -1973,6 +1973,17 @@ Result Mesh::SaveOff(const std::string& path) const {
   return out.good() ? Result::Ok : Result::Failed;
 }
 
+// OFF's vertex/face counts sit in the header with no data behind them yet -
+// a handful of bytes ("COFF\n2147483647 0 0\n") is enough to declare a
+// vertex_count near INT_MAX. Used unchecked, that count used to go straight
+// into colors.reserve() below (and drives the vertex-loop bound either way),
+// so that one line alone forced a multi-gigabyte allocation before a single
+// real vertex was read - the same untrusted-file-count hazard already fixed
+// for PLY import (see FileExchange.cpp's kMaxPlyListCount) and Dino Flow's
+// node inputs. Real OFF meshes/scans never approach this; it's headroom
+// above any legitimate use, just low enough to reject the lie outright.
+constexpr int kMaxOffElementCount = 200'000'000;
+
 Result Mesh::LoadOff(const std::string& path, Mesh& out_mesh) {
   std::ifstream in(path);
   if (!in) {
@@ -1991,7 +2002,8 @@ Result Mesh::LoadOff(const std::string& path, Mesh& out_mesh) {
   if (!NextOffToken(in, token) || !ParseOffInt(token, face_count)) return Result::Failed;
   if (!NextOffToken(in, token) || !ParseOffInt(token, edge_count)) return Result::Failed;
   (void)edge_count;  // read but unused - see LoadOff()'s own doc comment
-  if (vertex_count < 0 || face_count < 0) {
+  if (vertex_count < 0 || face_count < 0 || vertex_count > kMaxOffElementCount ||
+      face_count > kMaxOffElementCount) {
     return Result::Failed;
   }
 

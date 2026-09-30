@@ -20274,6 +20274,58 @@ void TestMeshLoadOffRejectsMalformedFiles() {
   std::remove(truncated_path.c_str());
 }
 
+// An OFF header's vertex/face counts have no data behind them yet, so a
+// tiny file can lie about having billions of either. Before this kernel
+// rejected an implausible count outright, a COFF header alone
+// (colors.reserve(vertex_count), below the loop) forced a multi-gigabyte
+// allocation from a few real bytes on disk - the same "untrusted file
+// count reaches an unchecked allocation" hazard already fixed for PLY
+// import (FileExchange.cpp's kMaxPlyListCount). This checks the fix
+// rejects the lie instead of acting on it.
+void TestMeshLoadOffRejectsImplausibleElementCounts() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Result;
+
+  Mesh out;
+
+  const std::string huge_vertex_path = "dino8_kernel_mesh_off_test_huge_vertex_count.off";
+  {
+    std::ofstream bad(huge_vertex_path);
+    // Plain OFF: no colors.reserve() involved, just the header count
+    // itself - still an implausible count that should be rejected before
+    // the vertex loop ever runs.
+    bad << "OFF\n2000000000 0 0\n";
+  }
+  Check(Mesh::LoadOff(huge_vertex_path, out) == Result::Failed,
+        "LoadOff fails on a header declaring an implausible vertex count "
+        "with no real vertices behind it");
+
+  const std::string huge_face_path = "dino8_kernel_mesh_off_test_huge_face_count.off";
+  {
+    std::ofstream bad(huge_face_path);
+    bad << "OFF\n3 2000000000 0\n0 0 0\n1 0 0\n0 1 0\n";
+  }
+  Check(Mesh::LoadOff(huge_face_path, out) == Result::Failed,
+        "LoadOff fails on a header declaring an implausible face count "
+        "with no real faces behind it");
+
+  const std::string huge_coff_path = "dino8_kernel_mesh_off_test_huge_coff_count.off";
+  {
+    std::ofstream bad(huge_coff_path);
+    // COFF specifically: this is the path that used to call
+    // colors.reserve(vertex_count) unconditionally, so this is the
+    // exact shape that used to force the multi-gigabyte allocation.
+    bad << "COFF\n2147483647 0 0\n";
+  }
+  Check(Mesh::LoadOff(huge_coff_path, out) == Result::Failed,
+        "LoadOff fails on a COFF header declaring an implausible vertex "
+        "count instead of reserving space for it");
+
+  std::remove(huge_vertex_path.c_str());
+  std::remove(huge_face_path.c_str());
+  std::remove(huge_coff_path.c_str());
+}
+
 void TestMeshLoadOffFanTriangulatesNgonFaces() {
   using dino8::kernel::Mesh;
   using dino8::kernel::Result;
@@ -53735,6 +53787,7 @@ int main() {
   TestMeshLoadObjFanTriangulatesNgonFaces();
   TestMeshSaveOffRoundTrips();
   TestMeshLoadOffRejectsMalformedFiles();
+  TestMeshLoadOffRejectsImplausibleElementCounts();
   TestMeshLoadOffFanTriangulatesNgonFaces();
   TestMeshSaveOffWritesAndReadsCoffColors();
   TestMeshSaveAmfRoundTrips();
