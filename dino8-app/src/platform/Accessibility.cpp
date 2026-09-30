@@ -20,7 +20,9 @@ void UpdateAccessibility(const std::string& prompt, const std::string& command_i
                           const AccessibleNode& audit_results, const AccessibleNode& undo_history,
                           const AccessibleNode& redo_history, const AccessibleNode& hatch_patterns,
                           const AccessibleNode& plugins, const AccessibleNode& command_list,
-                          const AccessibleNode& command_aliases, const AccessibleNode& keyboard_shortcuts) {
+                          const AccessibleNode& command_aliases, const AccessibleNode& keyboard_shortcuts,
+                          const AccessibleNode& document_properties, const AccessibleNode& textures,
+                          const AccessibleNode& display) {
   AccessibleNode command_line;
   command_line.name = "Command Line";
   command_line.role = AccessibleRole::Log;
@@ -32,7 +34,7 @@ void UpdateAccessibility(const std::string& prompt, const std::string& command_i
                               clipping_planes, layouts, block_manager, layer_state_manager, document_user_text,
                               lights, annotation_styles, document_notes, environments, audit_results, undo_history,
                               redo_history, hatch_patterns, plugins, command_list, command_aliases,
-                              keyboard_shortcuts});
+                              keyboard_shortcuts, document_properties, textures, display});
   PlatformPumpAccessibilityEvents();
 }
 

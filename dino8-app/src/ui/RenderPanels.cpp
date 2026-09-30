@@ -483,6 +483,26 @@ void DrawTexturesPanel(Application& app) {
   ImGui::End();
 }
 
+// AT-SPI2-queryable snapshot of Document::Materials() filtered to just the
+// materials that carry a texture (see docs/ACCESSIBILITY.md): built
+// straight from Document state, independent of whether DrawTexturesPanel
+// itself has ever been drawn or is open right now, and independent of its
+// on-screen content filter (PassesContentFilter is UI-only state, not part
+// of the document, the same way MaterialsAccessibleTree above ignores it
+// too) - mirrors the same mapping mode and found/missing status
+// DrawTexturesPanel's own "(mode, found/missing)" disabled-text suffix
+// shows per row. Empty when no material has a texture assigned.
+dino8::platform::AccessibleNode TexturesAccessibleTree(Application& app) {
+  std::vector<dino8::platform::TextureSummary> summaries;
+  for (const Material& m : app.Doc().Materials()) {
+    if (m.texture_path.empty()) continue;
+    std::error_code ec;
+    const bool exists = std::filesystem::exists(m.texture_path, ec);
+    summaries.push_back({m.name, TextureMappingName(m.mapping), exists});
+  }
+  return dino8::platform::BuildTexturesPanelNode(summaries);
+}
+
 // ---------------------------------------------------------------------------
 // Render Window
 // ---------------------------------------------------------------------------

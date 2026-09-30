@@ -135,6 +135,24 @@ dino8::platform::AccessibleNode CommandAliasesAccessibleTree(Application& app);
 // mirroring each shortcut's human-readable key combo and the command it
 // runs, the same way that tab's own row formats them.
 dino8::platform::AccessibleNode KeyboardShortcutsAccessibleTree(Application& app);
+// The AT-SPI2-queryable snapshot of DocumentSettings' units, tolerances,
+// grid and saved metadata - independent of whether the Document Properties
+// window is open, mirroring the same facts DrawDocumentPropertiesWindow's
+// own Units/tolerance/Grid/Metadata sections show (its Annotation Styles
+// and Linetypes sub-sections are already covered by their own accessible
+// trees above, so are not repeated here).
+dino8::platform::AccessibleNode DocumentPropertiesAccessibleTree(Application& app);
+// The AT-SPI2-queryable snapshot of Document::Materials() filtered to just
+// the materials that carry a texture (defined alongside DrawTexturesPanel
+// in RenderPanels.cpp) - independent of whether the Textures panel window
+// is open, mirroring the mapping mode and found/missing status
+// DrawTexturesPanel's own disabled-text suffix shows per row.
+dino8::platform::AccessibleNode TexturesAccessibleTree(Application& app);
+// The AT-SPI2-queryable snapshot of the active viewport's display
+// mode/projection/lens and the document's grid/display-tolerance settings
+// - independent of whether the Display panel window is open, mirroring the
+// same facts DrawDisplayPanel itself shows.
+dino8::platform::AccessibleNode DisplayAccessibleTree(Application& app);
 void DrawToolbars(Application& app);
 void DrawLayersPanel(Application& app);
 void DrawPropertiesPanel(Application& app);

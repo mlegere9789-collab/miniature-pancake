@@ -29,9 +29,13 @@
 // Pattern library (see BuildHatchPatternsNode), its loaded plug-ins (see
 // BuildPluginsNode), the ~1055-command Rhino 8 reference catalog (see
 // BuildCommandListNode), the user's saved command aliases (see
-// BuildCommandAliasesNode), and the user's customized keyboard shortcuts
-// (see BuildKeyboardShortcutsNode).
-// The 3D viewport's own rendered content and the ~21 remaining panels/
+// BuildCommandAliasesNode), the user's customized keyboard shortcuts (see
+// BuildKeyboardShortcutsNode), the document's units/tolerances/grid/
+// metadata Document Properties (see BuildDocumentPropertiesNode), the
+// materials that carry an assigned Texture (see BuildTexturesPanelNode),
+// and the active viewport/grid/display-tolerance Display settings (see
+// BuildDisplayPanelNode).
+// The 3D viewport's own rendered content and the ~18 remaining panels/
 // dialogs (plus most of the Options window - only its Aliases and
 // Shortcuts tabs are covered above) are still not mirrored into this tree.
 #pragma once
@@ -657,5 +661,57 @@ struct KeyboardShortcutSummary {
 // Audit Results/Undo History use, not the "never empty" shape Command
 // Aliases uses.
 AccessibleNode BuildKeyboardShortcutsNode(const std::vector<KeyboardShortcutSummary>& shortcuts);
+
+// Builds the "Document Properties" List accessible: one ListItem per Label:
+// value fact about the document's units, tolerances, grid and saved
+// metadata - reusing the same label/value PropertyEntry shape
+// BuildEnvironmentsPanelNode already uses for its own facts, just under a
+// different accessible name. The caller (ui::DocumentPropertiesAccessibleTree,
+// Panels.cpp) supplies entries for Units, Absolute tolerance, Angle
+// tolerance, Grid spacing/major-every/extents, and Title/Author/Comments -
+// the same facts DrawDocumentPropertiesWindow's own Units/tolerance/Grid/
+// Metadata sections show (its own Annotation Styles and Linetypes
+// sub-sections are already covered by BuildAnnotationStylesNode and
+// BuildLinetypesNode, so are not repeated here). Independent of whether the
+// Document Properties window is actually open right now, the same way the
+// other panel-backed regions above don't depend on their own panel window.
+AccessibleNode BuildDocumentPropertiesNode(const std::vector<PropertyEntry>& entries);
+
+// One Textures-panel row (derived from doc/Document.h's Material, the same
+// source BuildMaterialsPanelNode reads, filtered to just the materials that
+// carry a texture - Dino 8 has no separate texture entity of its own, see
+// DrawTexturesPanel): the material's name, its texture mapping mode already
+// rendered as plain text (SceneObject.h's TextureMappingName), and whether
+// the referenced image file was found on disk - the same two facts
+// DrawTexturesPanel's own "(mode, found/missing)" disabled-text suffix shows
+// per row.
+struct TextureSummary {
+  std::string name;
+  std::string mapping_text;
+  bool found = true;
+};
+
+// Builds the "Textures" List accessible: one ListItem per material that
+// carries a texture, in Document::Materials() order, each named after the
+// material with a Description giving its mapping mode and found/missing
+// status - independent of whether the Textures panel window is actually
+// open right now, the same way the other panel-backed regions above don't
+// depend on their own panel window. Empty when no material has a texture
+// assigned, the same "starts empty" shape Named Views/Named CPlanes use.
+AccessibleNode BuildTexturesPanelNode(const std::vector<TextureSummary>& textures);
+
+// Builds the "Display" List accessible: one ListItem per Label: value fact
+// about the active viewport's display mode/projection/lens and the
+// document's grid and display-tolerance settings - reusing the same
+// label/value PropertyEntry shape BuildEnvironmentsPanelNode/
+// BuildDocumentPropertiesNode already use. The caller
+// (ui::DisplayAccessibleTree, Panels.cpp) supplies entries for the active
+// viewport's name, display mode, perspective projection and lens, plus
+// Show grid/Show axes/Grid spacing/Major line every/Grid extents/Curve
+// display tolerance/Surface display tolerance/Control points on selected -
+// the same facts DrawDisplayPanel itself shows. Independent of whether the
+// Display panel window is actually open right now, the same way the other
+// panel-backed regions above don't depend on their own panel window.
+AccessibleNode BuildDisplayPanelNode(const std::vector<PropertyEntry>& entries);
 
 }  // namespace dino8::platform

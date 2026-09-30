@@ -380,9 +380,15 @@ AccessibleNode BuildDocumentNotesNode(const std::string& notes) {
   return node;
 }
 
-AccessibleNode BuildEnvironmentsPanelNode(const std::vector<PropertyEntry>& entries) {
+namespace {
+// Shared by BuildEnvironmentsPanelNode/BuildDocumentPropertiesNode/
+// BuildDisplayPanelNode: each is a List of plain "Label: value" facts with
+// no count Description (unlike the row-of-entities lists above), just under
+// its own accessible name - the same shape BuildUndoRedoHistoryNode shares
+// for Undo History/Redo History.
+AccessibleNode BuildLabelValueListNode(const std::string& list_name, const std::vector<PropertyEntry>& entries) {
   AccessibleNode list;
-  list.name = "Environments";
+  list.name = list_name;
   list.role = AccessibleRole::List;
 
   for (const PropertyEntry& e : entries) {
@@ -392,6 +398,11 @@ AccessibleNode BuildEnvironmentsPanelNode(const std::vector<PropertyEntry>& entr
     list.children.push_back(std::move(item));
   }
   return list;
+}
+}  // namespace
+
+AccessibleNode BuildEnvironmentsPanelNode(const std::vector<PropertyEntry>& entries) {
+  return BuildLabelValueListNode("Environments", entries);
 }
 
 AccessibleNode BuildAuditResultsNode(const std::vector<AuditIssueSummary>& issues) {
@@ -536,6 +547,32 @@ AccessibleNode BuildKeyboardShortcutsNode(const std::vector<KeyboardShortcutSumm
     list.children.push_back(std::move(item));
   }
   return list;
+}
+
+AccessibleNode BuildDocumentPropertiesNode(const std::vector<PropertyEntry>& entries) {
+  return BuildLabelValueListNode("Document Properties", entries);
+}
+
+AccessibleNode BuildTexturesPanelNode(const std::vector<TextureSummary>& textures) {
+  AccessibleNode list;
+  list.name = "Textures";
+  list.role = AccessibleRole::List;
+  char count_buf[48];
+  std::snprintf(count_buf, sizeof(count_buf), "%zu material(s) carry a texture", textures.size());
+  list.description = count_buf;
+
+  for (const TextureSummary& t : textures) {
+    AccessibleNode item;
+    item.role = AccessibleRole::ListItem;
+    item.name = t.name;
+    item.description = t.mapping_text + " mapping, " + (t.found ? "found" : "missing");
+    list.children.push_back(std::move(item));
+  }
+  return list;
+}
+
+AccessibleNode BuildDisplayPanelNode(const std::vector<PropertyEntry>& entries) {
+  return BuildLabelValueListNode("Display", entries);
 }
 
 }  // namespace dino8::platform

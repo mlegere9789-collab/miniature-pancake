@@ -11,7 +11,8 @@ finalized edits, and the document's saved Named Views, Named CPlanes,
 Linetypes, Materials, Clipping Planes, Layouts, Block Manager, Layer State
 Manager, Document User Text, Lights, Annotation Styles, Notes, Environments,
 Audit Results, Undo/Redo History, Hatch Patterns, Plug-ins, the Command
-List, Command Aliases and Keyboard Shortcuts (a real,
+List, Command Aliases, Keyboard Shortcuts, Document Properties, Textures
+and Display (a real,
 still-narrow AT-SPI2 bridge, shipped
 on Linux - see section 3), and screen-reader support
 for the rest of the UI (still a hard platform limitation of ImGui itself for
@@ -190,7 +191,7 @@ through each platform's native accessibility API - exactly the scope the
 ImGui maintainers have discussed for years without landing project-wide.
 That has not changed and is not what shipped here.
 
-### What has shipped: a real AT-SPI2 bridge for the command line, the menu bar, the Layers/Properties panels, the viewports, the Activity Log, Named Views, Named CPlanes, Linetypes, Materials, Clipping Planes, Layouts, Block Manager, Layer State Manager, Document User Text, Lights, Annotation Styles, Notes, Environments, Audit Results, Undo/Redo History, Hatch Patterns, Plug-ins, the Command List, Command Aliases, and Keyboard Shortcuts (Linux)
+### What has shipped: a real AT-SPI2 bridge for the command line, the menu bar, the Layers/Properties panels, the viewports, the Activity Log, Named Views, Named CPlanes, Linetypes, Materials, Clipping Planes, Layouts, Block Manager, Layer State Manager, Document User Text, Lights, Annotation Styles, Notes, Environments, Audit Results, Undo/Redo History, Hatch Patterns, Plug-ins, the Command List, Command Aliases, Keyboard Shortcuts, Document Properties, Textures and Display (Linux)
 
 The one place in Dino 8 blind command-line-driven use is already the
 primary interaction model - the command line itself
@@ -209,7 +210,8 @@ view-menu button state, the Activity Log, Named Views, Named CPlanes,
 Linetypes, Materials, Clipping Planes, Layouts, Block Manager, Layer State
 Manager, Document User Text, Lights, Annotation Styles, Notes, Environments,
 Audit Results, Undo/Redo History, Hatch Patterns, Plug-ins, the Command
-List, Command Aliases, and Keyboard Shortcuts, described
+List, Command Aliases, Keyboard Shortcuts, Document Properties, Textures
+and Display, described
 below.
 
 **Command line**: exactly one accessible object, named "Command Line"
@@ -704,6 +706,81 @@ shape Command Aliases uses. Like Command Aliases, there is no command-line
 way to add, change or remove a shortcut either - a screen-reader user still
 edits shortcuts only through the Options window's own Shortcuts tab.
 
+**Document Properties**: a "Document Properties" accessible
+(`ATSPI_ROLE_LIST`) with one `ATSPI_ROLE_LIST_ITEM` per `"Label: value"`
+fact about the document's units, tolerances, grid and saved metadata - the
+same facts `DrawDocumentPropertiesWindow`'s own Units combo, Absolute/Angle
+tolerance fields, Grid spacing/Major every/Extents fields and Title/Author/
+Comments fields show, reusing the same label/value row shape the
+"Properties" and "Environments" accessibles already use, just under its own
+"Document Properties" name. That window's own Annotation Styles and
+Linetypes sub-sections are not repeated here, since
+`BuildAnnotationStylesNode`/`BuildLinetypesNode` already mirror them under
+their own accessible names. Built from `Document::Settings()`
+(`ui::DocumentPropertiesAccessibleTree`, `src/ui/Panels.cpp`), independent
+of whether the Document Properties window is actually open on screen right
+now, the same way the other panel-backed regions above don't depend on
+their own panel windows being open. Unlike most of the panel-backed regions
+above, only one of these nine facts is actually settable from the command
+line today: Grid spacing, via `SnapSize`/`SetSnap` (see `cmd_state.cpp`'s
+grid-snap-size setter, which doubles as this same field). `DocumentProperties`,
+`Units`, `GridOptions` and `DocumentPropertiesPage` (see `cmd_file.cpp`/
+`cmd_view.cpp`/`cmd_state.cpp`) all just open this same window rather than
+accept a value, so a screen-reader user can always read every one of these
+facts without sight, but changing the other eight still means driving the
+window's own fields directly.
+
+**Textures**: a "Textures" accessible (`ATSPI_ROLE_LIST`) with one
+`ATSPI_ROLE_LIST_ITEM` per material that carries a texture - Dino 8 has no
+separate texture entity of its own; a texture is just a `Material` with a
+non-empty `texture_path`, the same source `DrawTexturesPanel` and the
+"Materials" accessible above both read - named after the material, with a
+`Description` giving its texture mapping mode (`TextureMappingName`) and
+whether the referenced image file was found on disk (e.g. `"Planar mapping,
+found"`) - the same two facts `DrawTexturesPanel`'s own `"(mode,
+found/missing)"` disabled-text suffix shows per row. Built from
+`Document::Materials()` (`ui::TexturesAccessibleTree`,
+`src/ui/RenderPanels.cpp`), independent of whether the Textures panel window
+is actually open on screen right now, and independent of that panel's own
+content-filter search box (`PassesContentFilter` is transient UI-only
+state, not part of the document, the same way the "Materials" accessible
+above already ignores it) - the same way the other panel-backed regions
+above don't depend on their own panel windows being open. Empty when no
+material has a texture assigned, the same "starts empty, gains rows" shape
+Named Views/Named CPlanes/Keyboard Shortcuts use. A screen-reader user can
+assign a texture to a material with the `Picture` command (see
+`cmd_render.cpp`) and confirm it was picked up, and whether the file was
+actually found, without needing to see the panel at all.
+
+**Display**: a "Display" accessible (`ATSPI_ROLE_LIST`) with one
+`ATSPI_ROLE_LIST_ITEM` per `"Label: value"` fact about the active
+viewport's display mode, projection and lens, and the document's grid and
+display-tolerance settings - the same facts `DrawDisplayPanel`'s own Combo,
+Checkbox and Slider widgets show, reusing the same label/value row shape
+Document Properties/Environments/Properties already use. When no viewport
+currently has focus (a transient state that can't happen once the app has
+drawn a frame, but is handled honestly rather than assumed away) the
+"Active viewport" row reads `"(none)"` and the display-mode/projection/lens
+rows are left out, matching what `DrawDisplayPanel` itself would have
+nothing to show for. Built from `Application::ActiveViewport()` and
+`Document::Settings()` (`ui::DisplayAccessibleTree`, `src/ui/Panels.cpp`),
+independent of whether the Display panel window is actually open on screen
+right now, the same way the other panel-backed regions above don't depend
+on their own panel windows being open. As with Document Properties above,
+only some of these facts have a real command-line setter: Show grid
+(`Grid`, see `cmd_view.cpp`) and Grid spacing (`SnapSize`/`SetSnap`, see
+`cmd_state.cpp` - the same field Document Properties' own Grid spacing row
+reads) toggle or set the document setting directly, and the active
+viewport's Perspective projection can be switched on with `Perspective` or
+off by picking any standard orthographic view (`Top`/`Front`/`Right`/...,
+see `cmd_view.cpp`'s `SetView`). The active viewport's own Display mode has
+no command-line setter of its own - `SetDisplayMode` (`cmd_view.cpp`) just
+opens this same panel rather than accept a mode name - and neither do the
+Lens, Show axes, Major line every, Grid extents, either display-tolerance
+value, or Control points on selected, so a screen-reader user can always
+read every one of these facts without sight, but changing those still means
+driving the panel's own widgets directly.
+
 **Why these regions and not the rest of the UI**: the command line is the
 one region where "expose the text" is both sufficient (there is no
 meaningful spatial layout to convey - it *is* a stream of text) and
@@ -713,7 +790,8 @@ Layers/Properties panels, the viewports, the Activity Log, Named Views,
 Named CPlanes, Linetypes, Materials, Clipping Planes, Layouts, Block
 Manager, Layer State Manager, Document User Text, Lights, Annotation Styles,
 Notes, Environments, Audit Results, Undo/Redo History, Hatch Patterns,
-Plug-ins, the Command List, Command Aliases and Keyboard Shortcuts extend
+Plug-ins, the Command List, Command Aliases, Keyboard Shortcuts, Document
+Properties, Textures and Display extend
 this to the
 next-most load-bearing UI surfaces - discovering what commands exist by
 name, inspecting/editing layer and object state, knowing where you're
@@ -732,8 +810,11 @@ Undo or Redo would take to reach a given past edit, knowing which hatch
 patterns are available to apply, knowing which plug-ins are loaded and
 whether each loaded successfully, browsing the full ~1055-command catalog by
 name/status/description instead of needing to already know a name to type,
-and knowing which aliases and keyboard shortcuts are currently
-configured - without requiring
+knowing which aliases and keyboard shortcuts are currently
+configured, knowing the document's units/tolerances/grid/saved metadata,
+knowing which materials carry a texture and whether the file was found, and
+knowing the active viewport's display mode/projection/lens plus the
+document's grid/display-tolerance settings - without requiring
 the full
 shadow-tree-for-every-widget effort described above.
 Command List is the one region above that retires an entire panel
@@ -742,8 +823,12 @@ panel a screen-reader user would otherwise still need sight for; Command
 Aliases and Keyboard Shortcuts only cover two of the larger Options
 window's seven tabs (`DrawOptionsWindow`), not the whole thing - its
 General, Modeling Aids, View, Toolbar and static built-in-shortcuts
-reference tabs remain unreached. Mirroring the 3D viewport and
-the rest of the UI (most of the Options window, and roughly two dozen other
+reference tabs remain unreached. Document Properties, Textures and Display
+are read-only mirrors alongside panels a screen-reader user still needs
+sight for to actually change most of what they show (see each section's own
+account of which facts do and don't have a command-line setter). Mirroring
+the 3D viewport and
+the rest of the UI (most of the Options window, and roughly 18 other
 panels/dialogs) the same way
 would still need that effort; this does not extrapolate to "screen reader
 support" for those in the way a browser or native-toolkit app would provide
@@ -1112,5 +1197,5 @@ requirement and runs as part of the normal CTest suite everywhere.
 |---|---|
 | High-contrast theme | Shipped: Options > General > Theme > High Contrast |
 | Keyboard-only operability | Audited; one real bug found and fixed (toolbar/sidebar/tab-strip/bell/viewport-title buttons were `InvisibleButton` without `EnableNav`, so Tab skipped them); nav-focus tooltips added for icon-only buttons; free 3D viewport orbit and a few inherently-drag widgets remain mouse-only by design, same as in Rhino |
-| Screen-reader support (command line, menu bar, command options, Layers/Properties panels, viewports, Activity Log, Named Views, Named CPlanes, Linetypes, Materials, Clipping Planes, Layouts, Block Manager, Layer State Manager, Document User Text, Lights, Annotation Styles, Notes, Environments, Audit Results, Undo/Redo History, Hatch Patterns, Plug-ins, Command List, Command Aliases, Keyboard Shortcuts) | Shipped on Linux: a real AT-SPI2 bridge (`src/platform/AccessibilityLinux.cpp`) exposes the command line's live text and full history log, the main menu bar (mirroring exactly what's currently open, built live alongside `ui/MenuBar.cpp`'s own drawing calls), the running command's options (with per-option guidance on how to change it), the Layers/Properties panels' current content (Properties rows note which are real value editors), every viewport's title/view-menu button state (name, active/maximized, current display mode), the persisted Activity Log of finalized edits (timestamp/action/summary per entry, distinct from the command line's own raw text log), the document's saved Named Views (name per saved view), its saved Named CPlanes (name per saved construction plane), its Linetypes (name and dash pattern per linetype), its Materials (name and diffuse colour per material), its Clipping Planes (name, on/off state and viewport scope per plane), its Layouts (name per layout, with the active one called out), its Block Manager (name plus object/instance counts per block definition), its Layer State Manager (name plus layer count per saved state), its Document User Text (key/value per document user-text entry), its Lights (name, type and on/off state per light), its Annotation Styles (name and current-style flag per style, plus text height/arrow size/font as Description), its Notes (the document's free-text Notes, as a single Text value), its render Environment settings (background/ground plane/sun and sky, as Label: value rows), the last Audit run's results (id/type per invalid object, with the failure reason as Description), its pending Undo/Redo history (numbered label per pending-or-undoable/redoable edit), the loaded Hatch Pattern library (name and description per pattern), its loaded plug-ins (name/version/status plus command and flow-node counts per plug-in), the full ~1055-command Rhino 8 reference catalog (name/status/description per command, plus an implemented/partial/planned breakdown), its saved command aliases (alias/command per row), and its customized keyboard shortcuts (key combo/command per row) as queryable, updating accessible objects, verified end-to-end against the real registry daemon and `pyatspi` (`tests/smoke_accessibility.py`), including the new Command List/Command Aliases/Keyboard Shortcuts checks. Windows/macOS not implemented. Built only when `atspi-2`/`gio-2.0` are available; a silent no-op otherwise |
-| Screen-reader support (rest of the UI) | Not implemented - hard ImGui platform limitation (no accessibility-tree bridge for the 3D viewport's own rendered content or the ~21 remaining panels/dialogs on any OS, narrowed from ~22 now that Command List's own panel is retired by its mirror above). The Options window is not one of those ~21 - it still has no bridge of its own - but two of its seven tabs (Aliases, Shortcuts) are now covered by the Command Aliases/Keyboard Shortcuts mirrors above; its other five tabs (General, Modeling Aids, View, Toolbar, and the static built-in-shortcuts reference tab) remain unreached. Descriptive text/tooltips exist everywhere as a prerequisite, but that is not screen-reader support |
+| Screen-reader support (command line, menu bar, command options, Layers/Properties panels, viewports, Activity Log, Named Views, Named CPlanes, Linetypes, Materials, Clipping Planes, Layouts, Block Manager, Layer State Manager, Document User Text, Lights, Annotation Styles, Notes, Environments, Audit Results, Undo/Redo History, Hatch Patterns, Plug-ins, Command List, Command Aliases, Keyboard Shortcuts, Document Properties, Textures, Display) | Shipped on Linux: a real AT-SPI2 bridge (`src/platform/AccessibilityLinux.cpp`) exposes the command line's live text and full history log, the main menu bar (mirroring exactly what's currently open, built live alongside `ui/MenuBar.cpp`'s own drawing calls), the running command's options (with per-option guidance on how to change it), the Layers/Properties panels' current content (Properties rows note which are real value editors), every viewport's title/view-menu button state (name, active/maximized, current display mode), the persisted Activity Log of finalized edits (timestamp/action/summary per entry, distinct from the command line's own raw text log), the document's saved Named Views (name per saved view), its saved Named CPlanes (name per saved construction plane), its Linetypes (name and dash pattern per linetype), its Materials (name and diffuse colour per material), its Clipping Planes (name, on/off state and viewport scope per plane), its Layouts (name per layout, with the active one called out), its Block Manager (name plus object/instance counts per block definition), its Layer State Manager (name plus layer count per saved state), its Document User Text (key/value per document user-text entry), its Lights (name, type and on/off state per light), its Annotation Styles (name and current-style flag per style, plus text height/arrow size/font as Description), its Notes (the document's free-text Notes, as a single Text value), its render Environment settings (background/ground plane/sun and sky, as Label: value rows), the last Audit run's results (id/type per invalid object, with the failure reason as Description), its pending Undo/Redo history (numbered label per pending-or-undoable/redoable edit), the loaded Hatch Pattern library (name and description per pattern), its loaded plug-ins (name/version/status plus command and flow-node counts per plug-in), the full ~1055-command Rhino 8 reference catalog (name/status/description per command, plus an implemented/partial/planned breakdown), its saved command aliases (alias/command per row), its customized keyboard shortcuts (key combo/command per row), its Document Properties (units/tolerances/grid/metadata as Label: value rows), the materials that carry a Texture (name plus mapping mode and found/missing status), and the active viewport's Display settings (display mode/projection/lens plus grid/display-tolerance settings, as Label: value rows) as queryable, updating accessible objects, verified end-to-end against the real registry daemon and `pyatspi` (`tests/smoke_accessibility.py`), including the new Document Properties/Textures/Display checks. Windows/macOS not implemented. Built only when `atspi-2`/`gio-2.0` are available; a silent no-op otherwise |
+| Screen-reader support (rest of the UI) | Not implemented - hard ImGui platform limitation (no accessibility-tree bridge for the 3D viewport's own rendered content or the ~18 remaining panels/dialogs on any OS, narrowed from ~21 now that Document Properties, Textures and Display are covered by their own mirrors above). The Options window is not one of those ~18 - it still has no bridge of its own - but two of its seven tabs (Aliases, Shortcuts) are now covered by the Command Aliases/Keyboard Shortcuts mirrors above; its other five tabs (General, Modeling Aids, View, Toolbar, and the static built-in-shortcuts reference tab) remain unreached. Descriptive text/tooltips exist everywhere as a prerequisite, but that is not screen-reader support |

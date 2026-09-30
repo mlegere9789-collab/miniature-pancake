@@ -8,9 +8,11 @@
 // Annotation Styles, its Notes, its render Environment settings, the last
 // Audit run's results, its pending Undo/Redo history, the loaded Hatch
 // Pattern library, its loaded plug-ins, the ~1055-command Rhino 8 reference
-// catalog, its saved command aliases, and its customized keyboard shortcuts
-// to assistive technology, so a screen reader can read and be notified of
-// them without a sighted user's help.
+// catalog, its saved command aliases, its customized keyboard shortcuts, its
+// units/tolerances/grid/metadata Document Properties, the materials that
+// carry a Texture, and its active-viewport/grid/display-tolerance Display
+// settings to assistive technology, so a screen reader can read and be
+// notified of them without a sighted user's help.
 //
 // Real implementation: AT-SPI2 over D-Bus on Linux (see
 // AccessibilityLinux.cpp). A no-op everywhere else, and on Linux too if the
@@ -44,7 +46,8 @@ void InitAccessibility(const std::string& app_name);
 // `layer_state_manager`, `document_user_text`, `lights`,
 // `annotation_styles`, `document_notes`, `environments`, `audit_results`,
 // `undo_history`, `redo_history`, `hatch_patterns`, `plugins`,
-// `command_list`, `command_aliases` and `keyboard_shortcuts` are typically
+// `command_list`, `command_aliases`, `keyboard_shortcuts`,
+// `document_properties`, `textures` and `display` are typically
 // ui::LastMenuBarAccessibleTree(), ui::CommandOptionsAccessibleTree(app),
 // ui::LayersPanelAccessibleTree(app), ui::PropertiesPanelAccessibleTree(app),
 // ui::ViewportsAccessibleTree(app), ui::ActivityLogAccessibleTree(app),
@@ -57,10 +60,11 @@ void InitAccessibility(const std::string& app_name);
 // ui::EnvironmentsAccessibleTree(app), ui::AuditResultsAccessibleTree(app),
 // ui::UndoHistoryAccessibleTree(app), ui::RedoHistoryAccessibleTree(app),
 // ui::HatchPatternsAccessibleTree(), plugins::PluginsAccessibleTree(),
-// ui::CommandListAccessibleTree(app), ui::CommandAliasesAccessibleTree(app)
-// and ui::KeyboardShortcutsAccessibleTree(app) (see src/ui/Panels.h and
-// src/plugins/PluginPanel.h) - passed in rather than computed here so this
-// module stays independent of app::Application/Document.
+// ui::CommandListAccessibleTree(app), ui::CommandAliasesAccessibleTree(app),
+// ui::KeyboardShortcutsAccessibleTree(app), ui::DocumentPropertiesAccessibleTree(app),
+// ui::TexturesAccessibleTree(app) and ui::DisplayAccessibleTree(app) (see
+// src/ui/Panels.h and src/plugins/PluginPanel.h) - passed in rather than
+// computed here so this module stays independent of app::Application/Document.
 void UpdateAccessibility(const std::string& prompt, const std::string& command_input,
                           const std::deque<std::string>& history, const AccessibleNode& menu_bar,
                           const AccessibleNode& command_options, const AccessibleNode& layers_panel,
@@ -75,7 +79,9 @@ void UpdateAccessibility(const std::string& prompt, const std::string& command_i
                           const AccessibleNode& audit_results, const AccessibleNode& undo_history,
                           const AccessibleNode& redo_history, const AccessibleNode& hatch_patterns,
                           const AccessibleNode& plugins, const AccessibleNode& command_list,
-                          const AccessibleNode& command_aliases, const AccessibleNode& keyboard_shortcuts);
+                          const AccessibleNode& command_aliases, const AccessibleNode& keyboard_shortcuts,
+                          const AccessibleNode& document_properties, const AccessibleNode& textures,
+                          const AccessibleNode& display);
 
 // Just the request-processing half of UpdateAccessibility, without touching
 // any published content. Used by main.cpp's `waitfile` script directive

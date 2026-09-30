@@ -126,6 +126,10 @@ using dino8::platform::BuildKeyboardShortcutsNode;
 using dino8::platform::CommandListEntrySummary;
 using dino8::platform::CommandAliasSummary;
 using dino8::platform::KeyboardShortcutSummary;
+using dino8::platform::BuildDocumentPropertiesNode;
+using dino8::platform::BuildTexturesPanelNode;
+using dino8::platform::BuildDisplayPanelNode;
+using dino8::platform::TextureSummary;
 
 namespace {
 int failures = 0;
@@ -960,6 +964,82 @@ int main() {
     Check(empty_shortcuts.children.empty(), "no shortcuts -> no ListItem children, not a missing accessible");
   }
 
+  // Document Properties: one ListItem per Label: value fact about the
+  // document's units, tolerances, grid and saved metadata - the same
+  // label/value PropertyEntry shape Environments already uses, just under
+  // its own accessible name and with no count Description (matching
+  // Environments, which also has none).
+  {
+    std::vector<PropertyEntry> entries;
+    entries.push_back({"Units", "Millimeters"});
+    entries.push_back({"Absolute tolerance", "0.001"});
+    const dino8::platform::AccessibleNode list = BuildDocumentPropertiesNode(entries);
+    Check(list.name == "Document Properties", "document properties list is named \"Document Properties\"");
+    Check(list.role == dino8::platform::AccessibleRole::List, "document properties list role is List");
+    Check(list.children.size() == 2, "two ListItem children, one per fact");
+    if (list.children.size() == 2) {
+      Check(list.children[0].role == dino8::platform::AccessibleRole::ListItem, "fact row role is ListItem");
+      Check(list.children[0].name == "Units: Millimeters", "first row folds label and value into its name");
+      Check(list.children[1].name == "Absolute tolerance: 0.001", "second row folds label and value into its name");
+    }
+  }
+  {
+    const dino8::platform::AccessibleNode empty_props = BuildDocumentPropertiesNode({});
+    Check(empty_props.name == "Document Properties", "still named \"Document Properties\" with no facts given");
+    Check(empty_props.children.empty(), "no entries -> no ListItem children, not a missing accessible");
+  }
+
+  // Textures: one ListItem per material that carries a texture, named after
+  // the material, with a Description giving its mapping mode and
+  // found/missing status - matching DrawTexturesPanel's own
+  // "(mode, found/missing)" row suffix.
+  {
+    std::vector<TextureSummary> textures;
+    textures.push_back({"Brick", "Planar", true});
+    textures.push_back({"Rust", "Box", false});
+    const dino8::platform::AccessibleNode list = BuildTexturesPanelNode(textures);
+    Check(list.name == "Textures", "textures list is named \"Textures\"");
+    Check(list.role == dino8::platform::AccessibleRole::List, "textures list role is List");
+    Check(list.description == "2 material(s) carry a texture", "material count is carried as the list's Description");
+    Check(list.children.size() == 2, "two ListItem children, one per textured material");
+    if (list.children.size() == 2) {
+      Check(list.children[0].role == dino8::platform::AccessibleRole::ListItem, "texture row role is ListItem");
+      Check(list.children[0].name == "Brick", "first row is named after its material");
+      Check(list.children[0].description == "Planar mapping, found", "first row's Description gives mapping and found status");
+      Check(list.children[1].name == "Rust", "second row is named after its own material");
+      Check(list.children[1].description == "Box mapping, missing", "second row's Description reports a missing texture file");
+    }
+  }
+  {
+    const dino8::platform::AccessibleNode empty_textures = BuildTexturesPanelNode({});
+    Check(empty_textures.name == "Textures", "still named \"Textures\" with no textured materials");
+    Check(empty_textures.description == "0 material(s) carry a texture", "empty textures list still carries a 0-count Description");
+    Check(empty_textures.children.empty(), "no textured materials -> no ListItem children, not a missing accessible");
+  }
+
+  // Display: one ListItem per Label: value fact about the active
+  // viewport's display mode/projection/lens and the document's
+  // grid/display-tolerance settings - the same label/value shape Document
+  // Properties/Environments already use.
+  {
+    std::vector<PropertyEntry> entries;
+    entries.push_back({"Active viewport", "Perspective"});
+    entries.push_back({"Display mode", "Shaded"});
+    const dino8::platform::AccessibleNode list = BuildDisplayPanelNode(entries);
+    Check(list.name == "Display", "display list is named \"Display\"");
+    Check(list.role == dino8::platform::AccessibleRole::List, "display list role is List");
+    Check(list.children.size() == 2, "two ListItem children, one per fact");
+    if (list.children.size() == 2) {
+      Check(list.children[0].name == "Active viewport: Perspective", "first row folds label and value into its name");
+      Check(list.children[1].name == "Display mode: Shaded", "second row folds label and value into its name");
+    }
+  }
+  {
+    const dino8::platform::AccessibleNode empty_display = BuildDisplayPanelNode({});
+    Check(empty_display.name == "Display", "still named \"Display\" with no facts given");
+    Check(empty_display.children.empty(), "no entries -> no ListItem children, not a missing accessible");
+  }
+
   // BuildAccessibleTree accepts extra top-level regions (menu bar, panels)
   // alongside the always-present command line - the shape the live bridge
   // (Accessibility.cpp::UpdateAccessibility) assembles every frame.
@@ -993,20 +1073,23 @@ int main() {
     dino8::platform::AccessibleNode command_list = BuildCommandListNode({});
     dino8::platform::AccessibleNode command_aliases = BuildCommandAliasesNode({});
     dino8::platform::AccessibleNode keyboard_shortcuts = BuildKeyboardShortcutsNode({});
+    dino8::platform::AccessibleNode document_properties = BuildDocumentPropertiesNode({});
+    dino8::platform::AccessibleNode textures = BuildTexturesPanelNode({});
+    dino8::platform::AccessibleNode display = BuildDisplayPanelNode({});
 
     const dino8::platform::AccessibleNode root = BuildAccessibleTree(
         "Dino8", "Command: ", "", {},
         {menu_bar, cmd_options, layers, props, viewports, activity_log, named_views, named_cplanes, linetypes,
          materials, clipping_planes, layouts, block_manager, layer_state_manager, document_user_text, lights,
          annotation_styles, document_notes, environments, audit_results, undo_history, redo_history, hatch_patterns,
-         plugins, command_list, command_aliases, keyboard_shortcuts});
-    Check(root.children.size() == 28,
+         plugins, command_list, command_aliases, keyboard_shortcuts, document_properties, textures, display});
+    Check(root.children.size() == 31,
           "command line + menu bar + command options + layers + properties + viewports + activity log + "
           "named views + named cplanes + linetypes + materials + clipping planes + layouts + block manager + "
           "layer state manager + document user text + lights + annotation styles + document notes + "
           "environments + audit results + undo history + redo history + hatch patterns + plugins + command list "
-          "+ command aliases + keyboard shortcuts = 28 top-level children");
-    if (root.children.size() == 28) {
+          "+ command aliases + keyboard shortcuts + document properties + textures + display = 31 top-level children");
+    if (root.children.size() == 31) {
       Check(root.children[0].role == AccessibleRole::Log, "child 0 is still the command line");
       Check(root.children[1].role == dino8::platform::AccessibleRole::MenuBar, "child 1 is the menu bar");
       Check(root.children[2].name == "Command Options", "child 2 is the command options list");
@@ -1035,6 +1118,9 @@ int main() {
       Check(root.children[25].name == "Command List", "child 25 is the command list panel");
       Check(root.children[26].name == "Command Aliases", "child 26 is the command aliases panel");
       Check(root.children[27].name == "Keyboard Shortcuts", "child 27 is the keyboard shortcuts panel");
+      Check(root.children[28].name == "Document Properties", "child 28 is the document properties panel");
+      Check(root.children[29].name == "Textures", "child 29 is the textures panel");
+      Check(root.children[30].name == "Display", "child 30 is the display panel");
     }
   }
 

@@ -192,6 +192,35 @@ connection, the same way a screen reader would - to prove:
       command-line way to add one (shortcuts are only ever added through
       the Options window's own Shortcuts tab), unlike every other region
       above.
+  31. A "Document Properties" accessible (role LIST) is discoverable and
+      reports a fresh document's 9 default facts (Units: Millimeters,
+      Absolute tolerance: 0.001, Angle tolerance (deg): 1, Grid spacing: 1,
+      Grid major every: 5, Grid extents: 50, and empty Title/Author/
+      Comments) - mirroring DocumentSettings. No mutation check here:
+      DocumentProperties/Units/GridOptions/DocumentPropertiesPage all just
+      open this same window rather than accept a value (see
+      docs/ACCESSIBILITY.md's own account of this), so none of these nine
+      facts has a real command-line setter of its own to exercise headlessly.
+  32. A "Textures" accessible (role LIST) is discoverable and starts empty:
+      a fresh document's default materials carry no texture_path, the same
+      "starts empty, gains rows" shape Named Views/Named CPlanes/Keyboard
+      Shortcuts use above - mirroring Document::Materials() filtered to just
+      the ones with a texture. No mutation check here: assigning a texture
+      needs a real, loadable image file on disk (the `Picture` command), a
+      separate concern from the accessible-tree plumbing this script
+      otherwise exercises.
+  33. A "Display" accessible (role LIST) is discoverable and reports the
+      default "Perspective" viewport's facts (Active viewport: Perspective,
+      Display mode: Shaded, Perspective projection: Yes, Lens (mm): 50) plus
+      the document's default grid/display-tolerance facts (Show grid: Yes,
+      Show axes: Yes, Grid spacing: 1, Major line every: 5, Grid extents:
+      50, Curve display tolerance: 0.02, Surface display tolerance: 0.05,
+      Control points on selected: No) - mirroring Application::
+      ActiveViewport()/Document::Settings(). Then gains a real mutation: the
+      "Grid" command (see cmd_view.cpp) toggles Document::Settings().
+      show_grid, so its "Show grid" row is checked to flip from "Yes" to
+      "No" once it runs - the same before/after pattern check 10 uses for
+      Named Views.
 
 This is a real integration test: at-spi2-registryd is the actual daemon
 GNOME uses, pyatspi is the actual library screen readers use, and Dino8 is
@@ -306,6 +335,7 @@ def main():
     sync14 = os.path.join(tmp, "sync14")
     sync15 = os.path.join(tmp, "sync15")
     sync16 = os.path.join(tmp, "sync16")
+    sync17 = os.path.join(tmp, "sync17")
     sync_final = os.path.join(tmp, "sync_final")
     script_path = os.path.join(tmp, "script.txt")
     with open(script_path, "w") as f:
@@ -451,6 +481,12 @@ def main():
         # point is enough to observe Command Aliases gain a new entry.
         f.write("Alias smoketestalias\n")
         f.write("Line\n")
+        f.write(f"@waitfile {sync17}\n")
+        # Same shape again: Grid is also a plain, single-frame command (it
+        # just flips Document::Settings().show_grid - see cmd_view.cpp), so
+        # one more sync point is enough to observe the Display accessible's
+        # "Show grid" row flip from "Yes" to "No".
+        f.write("Grid\n")
         f.write(f"@waitfile {sync_final}\n")
 
     procs = []
@@ -855,6 +891,68 @@ def main():
                 fail(f"Keyboard Shortcuts has {keyboard_shortcuts.childCount} children in a fresh app (expected 0)")
             else:
                 ok("Keyboard Shortcuts has no ListItem children in a fresh app (no default-shortcuts installer)")
+
+        document_properties = find_child_by_name(app, "Document Properties", 10)
+        if document_properties is None:
+            fail('"Document Properties" accessible not found among the application\'s children')
+        else:
+            ok('"Document Properties" accessible is discoverable via the real AT-SPI2 desktop')
+            expected_doc_props = [
+                "Units: Millimeters",
+                "Absolute tolerance: 0.001",
+                "Angle tolerance (deg): 1",
+                "Grid spacing: 1",
+                "Grid major every: 5",
+                "Grid extents: 50",
+                "Title: ",
+                "Author: ",
+                "Comments: ",
+            ]
+            got_doc_props = [document_properties.getChildAtIndex(j).name for j in range(document_properties.childCount)]
+            if got_doc_props != expected_doc_props:
+                fail(f"Document Properties' rows are {got_doc_props!r} in a fresh document "
+                     f"(expected {expected_doc_props!r})")
+            else:
+                ok("Document Properties reports a fresh document's 9 default units/tolerance/grid/metadata facts")
+
+        textures = find_child_by_name(app, "Textures", 10)
+        if textures is None:
+            fail('"Textures" accessible not found among the application\'s children')
+        else:
+            ok('"Textures" accessible is discoverable via the real AT-SPI2 desktop')
+            # Starts empty: a fresh document's default materials carry no
+            # texture_path - the same "starts empty, gains rows" shape
+            # Named Views/Named CPlanes/Keyboard Shortcuts use above.
+            if textures.childCount != 0:
+                fail(f"Textures has {textures.childCount} children in a fresh document (expected 0)")
+            else:
+                ok("Textures has no ListItem children in a fresh document (no material carries a texture yet)")
+
+        display = find_child_by_name(app, "Display", 10)
+        if display is None:
+            fail('"Display" accessible not found among the application\'s children')
+        else:
+            ok('"Display" accessible is discoverable via the real AT-SPI2 desktop')
+            expected_display = [
+                "Active viewport: Perspective",
+                "Display mode: Shaded",
+                "Perspective projection: Yes",
+                "Lens (mm): 50",
+                "Show grid: Yes",
+                "Show axes: Yes",
+                "Grid spacing: 1",
+                "Major line every: 5",
+                "Grid extents: 50",
+                "Curve display tolerance: 0.02",
+                "Surface display tolerance: 0.05",
+                "Control points on selected: No",
+            ]
+            got_display = [display.getChildAtIndex(j).name for j in range(display.childCount)]
+            if got_display != expected_display:
+                fail(f"Display's rows are {got_display!r} in a fresh app (expected {expected_display!r})")
+            else:
+                ok("Display reports the default Perspective viewport's facts plus the document's default "
+                   "grid/display-tolerance facts")
 
         viewports = find_child_by_name(app, "Viewports", 10)
         if viewports is None:
@@ -1363,6 +1461,25 @@ def main():
             else:
                 ok('Command Aliases gains a "smoketestalias" entry naming "Line" as its Description once '
                    '"Alias" runs')
+
+        open(sync17, "w").close()  # let the script run "Grid" (toggles Document::Settings().show_grid)
+
+        if display is not None:
+            deadline = time.time() + 10
+            show_grid_off_row = None
+            while time.time() < deadline:
+                for j in range(display.childCount):
+                    child = display.getChildAtIndex(j)
+                    if child is not None and child.name == "Show grid: No":
+                        show_grid_off_row = child
+                        break
+                if show_grid_off_row is not None:
+                    break
+                time.sleep(0.2)
+            if show_grid_off_row is None:
+                fail('Display\'s "Show grid" row did not change to "Show grid: No" after "Grid" ran within 10s')
+            else:
+                ok('Display\'s "Show grid" row changes to "Show grid: No" once "Grid" runs')
 
         open(sync_final, "w").close()  # let the app finish its remaining frames/script and exit
 

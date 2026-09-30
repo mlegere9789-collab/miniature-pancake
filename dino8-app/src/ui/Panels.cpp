@@ -1035,6 +1035,34 @@ void DrawDisplayPanel(Application& app) {
   ImGui::End();
 }
 
+// AT-SPI2-queryable snapshot of the active viewport's display
+// mode/projection/lens and the document's grid/display-tolerance settings
+// (see docs/ACCESSIBILITY.md): built straight from Viewport/Document/
+// Application state, independent of whether DrawDisplayPanel itself has
+// ever been drawn or is open right now - mirrors the same facts that
+// panel's own Combo/Checkbox/Slider widgets show.
+dino8::platform::AccessibleNode DisplayAccessibleTree(Application& app) {
+  std::vector<dino8::platform::PropertyEntry> entries;
+  Viewport* vp = app.ActiveViewport();
+  entries.push_back({"Active viewport", vp ? vp->Name() : "(none)"});
+  if (vp) {
+    entries.push_back({"Display mode", DisplayModeName(vp->Mode())});
+    const CameraState& c = vp->GetCamera().State();
+    entries.push_back({"Perspective projection", c.perspective ? "Yes" : "No"});
+    entries.push_back({"Lens (mm)", FormatNumber(c.lens_mm)});
+  }
+  DocumentSettings& s = app.Doc().Settings();
+  entries.push_back({"Show grid", s.show_grid ? "Yes" : "No"});
+  entries.push_back({"Show axes", s.show_axes ? "Yes" : "No"});
+  entries.push_back({"Grid spacing", FormatNumber(s.grid_spacing)});
+  entries.push_back({"Major line every", std::to_string(s.grid_major_every)});
+  entries.push_back({"Grid extents", std::to_string(s.grid_extents)});
+  entries.push_back({"Curve display tolerance", FormatNumber(app.curve_display_tolerance)});
+  entries.push_back({"Surface display tolerance", FormatNumber(app.surface_display_tolerance)});
+  entries.push_back({"Control points on selected", app.show_control_points_for_selected ? "Yes" : "No"});
+  return dino8::platform::BuildDisplayPanelNode(entries);
+}
+
 void DrawCalculatorPanel(Application& app, std::string& input, std::string& result) {
   if (!ImGui::Begin(PanelTitle("panel.calculator", "Calculator").c_str(), &app.Panels().calculator)) { ImGui::End(); return; }
   ImGui::TextDisabled("+ - * / ^ %%  sqrt sin cos tan asin acos atan abs ln log exp floor ceil round min max pow hypot pi e");
@@ -1569,6 +1597,29 @@ void DrawDocumentPropertiesWindow(Application& app) {
   ImGui::Text("Objects: %zu   Layers: %zu   Revision: %llu", app.Doc().ObjectCount(), app.Doc().Layers().size(),
               static_cast<unsigned long long>(app.Doc().Revision()));
   ImGui::End();
+}
+
+// AT-SPI2-queryable snapshot of DocumentSettings' units, tolerances, grid
+// and saved metadata (see docs/ACCESSIBILITY.md): built straight from
+// Document state, independent of whether DrawDocumentPropertiesWindow
+// itself has ever been drawn or is open right now - mirrors the same facts
+// that window's own Units/tolerance/Grid/Metadata sections show. Its
+// Annotation Styles and Linetypes sub-sections already have their own
+// accessible trees (AnnotationStylesAccessibleTree/LinetypesAccessibleTree),
+// so are not repeated here.
+dino8::platform::AccessibleNode DocumentPropertiesAccessibleTree(Application& app) {
+  DocumentSettings& s = app.Doc().Settings();
+  std::vector<dino8::platform::PropertyEntry> entries;
+  entries.push_back({"Units", s.unit_system});
+  entries.push_back({"Absolute tolerance", FormatNumber(s.absolute_tolerance)});
+  entries.push_back({"Angle tolerance (deg)", FormatNumber(s.angle_tolerance_degrees)});
+  entries.push_back({"Grid spacing", FormatNumber(s.grid_spacing)});
+  entries.push_back({"Grid major every", std::to_string(s.grid_major_every)});
+  entries.push_back({"Grid extents", std::to_string(s.grid_extents)});
+  entries.push_back({"Title", s.title});
+  entries.push_back({"Author", s.author});
+  entries.push_back({"Comments", s.comments});
+  return dino8::platform::BuildDocumentPropertiesNode(entries);
 }
 
 // AT-SPI2-queryable snapshot of Document::AnnotationStyles() (see
