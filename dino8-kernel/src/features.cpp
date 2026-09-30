@@ -1566,4 +1566,123 @@ std::vector<TaperedBossChain> RecognizeTaperedBossChains(const Brep& solid) {
   return out;
 }
 
+std::vector<PocketFeature> RecognizePockets(const Brep& solid) {
+  std::vector<PocketFeature> out;
+  const ON_Brep& raw = solid.raw();
+  const double plane_tol = 1e-4;
+  const double height_tol = 1e-4;
+
+  for (int fi = 0; fi < raw.m_F.Count(); ++fi) {
+    const ON_BrepFace& face = raw.m_F[fi];
+    if (face.m_face_index < 0) continue;
+    if (face.LoopCount() != 1) continue;  // an inner (island) loop - out of scope
+    const ON_Surface* srf = face.SurfaceOf();
+    if (!srf) continue;
+    ON_Plane floor_plane;
+    if (!srf->IsPlanar(&floor_plane, plane_tol)) continue;
+
+    const ON_Interval du = srf->Domain(0), dv = srf->Domain(1);
+    Vector3d floor_normal = srf->NormalAt(du.Mid(), dv.Mid());
+    if (face.m_bRev) floor_normal = -floor_normal;
+    if (!floor_normal.Unitize()) continue;
+
+    const ON_BrepLoop* loop = face.OuterLoop();
+    if (!loop || loop->TrimCount() < 3) continue;
+
+    // The floor's own centroid, read directly off its boundary loop's
+    // shared vertices - genuinely ON the trimmed face (unlike
+    // `floor_plane.origin`, which - like every other `ON_Surface::
+    // IsPlanar()` reference plane in this kernel - is just some point on
+    // the face's INFINITE carrier plane, not necessarily anywhere near the
+    // actual trimmed patch).
+    std::vector<Point3d> floor_pts;
+    for (int k = 0; k < loop->TrimCount(); ++k) {
+      const ON_BrepTrim* trim = loop->Trim(k);
+      const ON_BrepEdge* edge = trim ? trim->Edge() : nullptr;
+      if (!edge) continue;  // a singular/naked trim (e.g. a boolean-fragmentation artifact) - skip, not fatal
+      const ON_3dPoint& p = raw.m_V[edge->m_vi[0]].point;
+      floor_pts.emplace_back(p.x, p.y, p.z);
+    }
+    if (floor_pts.empty()) continue;
+    Point3d floor_centroid(0, 0, 0);
+    for (const Point3d& p : floor_pts) floor_centroid = floor_centroid + p;
+    floor_centroid = floor_centroid * (1.0 / static_cast<double>(floor_pts.size()));
+
+    auto height_above_floor = [&](const Point3d& p) { return (p - floor_centroid) * floor_normal; };
+
+    // Every one of the floor's own boundary edges must border a face
+    // whose own far (non-shared) vertices sit strictly ABOVE the floor
+    // along `floor_normal` - the check that actually distinguishes a
+    // genuine pocket (walls rising toward an opening) from a plain
+    // exterior face at the top of the material (walls falling away into
+    // it - see this function's own doc comment in features.h). Reading
+    // this off the wall's own topological VERTICES rather than requiring
+    // `IsPlanar()` on the wall's whole surface is deliberate: a
+    // rectangular pocket cut via `EmbossProfile()` (boolean_general.cpp)
+    // gets ONE wall face for its whole polyline profile (`Brep::Extrude()`
+    // does not split a wall per profile segment - confirmed directly,
+    // `TestEmbossProfileDebossBlindPocket`'s own face count above), so
+    // that single wall is NOT globally planar even though every one of
+    // its own flat facets is - this vertex-based check works for either
+    // construction (one compound wall or several separate planar ones)
+    // without caring which.
+    //
+    // A trim with no edge, a non-manifold edge, or an edge whose "other"
+    // face is this SAME face are all skipped rather than treated as
+    // disqualifying: `BooleanCombineGeneral()`'s own SSX-driven
+    // fragmentation (boolean_general.cpp's own top-of-file scope note)
+    // routinely leaves a real boundary loop carrying a singular trim or a
+    // degenerate self-seam edge alongside its genuine wall-bordering
+    // trims (confirmed directly, dino8_scratch_test, on this exact
+    // EmbossProfile()-built fixture) - those are topology artifacts of
+    // HOW the loop was assembled, not evidence about whether a real wall
+    // is actually there.
+    bool ok = true;
+    bool found_wall = false;
+    double common_depth = -1.0;
+    for (int k = 0; k < loop->TrimCount() && ok; ++k) {
+      const ON_BrepTrim* trim = loop->Trim(k);
+      const ON_BrepEdge* edge = trim ? trim->Edge() : nullptr;
+      if (!edge || edge->TrimCount() != 2) continue;
+      const ON_BrepTrim* t0 = edge->Trim(0);
+      const ON_BrepTrim* t1 = edge->Trim(1);
+      if (!t0 || !t1) continue;
+      const ON_BrepFace* other = (t0->Face() == &face) ? t1->Face() : t0->Face();
+      if (!other || other->m_face_index == fi) continue;
+
+      const ON_BrepLoop* wloop = other->OuterLoop();
+      if (!wloop) continue;
+      double wall_top = 0.0;
+      for (int m = 0; m < wloop->TrimCount(); ++m) {
+        const ON_BrepTrim* wt = wloop->Trim(m);
+        const ON_BrepEdge* we = wt ? wt->Edge() : nullptr;
+        if (!we) continue;
+        for (int vi : {we->m_vi[0], we->m_vi[1]}) {
+          const ON_3dPoint& p = raw.m_V[vi].point;
+          const double h = height_above_floor(Point3d(p.x, p.y, p.z));
+          if (h > wall_top) wall_top = h;
+        }
+      }
+      if (!(wall_top > height_tol)) { ok = false; break; }  // wall falls away, not toward open space - reject
+      found_wall = true;
+      if (common_depth < 0.0) {
+        common_depth = wall_top;
+      } else if (std::fabs(wall_top - common_depth) > std::max(10.0 * height_tol, 0.05 * common_depth)) {
+        ok = false;  // walls disagree on depth - a stepped/sloped pocket, out of scope
+        break;
+      }
+    }
+    if (!ok || !found_wall || common_depth <= 0.0) continue;
+
+    PocketFeature pf;
+    pf.origin = floor_centroid;
+    pf.normal = floor_normal;
+    pf.depth = common_depth;
+    pf.face_index = fi;
+    out.push_back(pf);
+  }
+
+  return out;
+}
+
 }  // namespace dino8::kernel
