@@ -169,6 +169,63 @@ struct ObjectAttributes {
   std::optional<int> material_index;
 };
 
+// A block instance placement read back from Model::InstanceReferenceAt()
+// below - the read-side counterpart to Model::AddInstanceReference()'s own
+// `definition_index`/`xform` parameters. Closes part of PARITY_MAP.md's own
+// "kernel: Kernel-level data exchange" evidence for ".3dm composite
+// objects": "block instances ... the read cast chain
+// (dino8-app/src/io/File3dm.cpp:554-614) handles only ON_Point/ON_Curve/
+// ON_Brep/ON_Surface/ON_Mesh/ON_SubD/ON_Extrusion/ON_PointCloud; everything
+// else is skipped" - before this, this kernel's Model had no concept of a
+// block (Rhino's own "instance definition") at all, even though ONX_Model
+// (and so the .3dm format underneath) has always supported them via
+// ON_InstanceDefinition/ON_InstanceRef.
+struct InstanceReferenceInfo {
+  std::string name;
+  int definition_index = -1;
+  ON_Xform transform = ON_Xform::IdentityTransformation;
+};
+
+// Which fill Model::AddHatchPattern() below gives a hatch pattern, narrowed
+// from ON_HatchPattern::HatchFillType's own wider set the same way
+// LightStyle above narrows ON::light_style: `Solid` (a flat fill in the
+// hatch's own object/layer color) and `Lines` (a repeating line pattern -
+// this kernel adds no way to populate its actual dash/offset lines via
+// ON_HatchPattern::AddHatchLine(), so a `Lines` pattern this kernel creates
+// always has zero lines in it, a disclosed narrowing rather than the
+// "no hatch pattern support at all" gap PARITY_MAP.md's own ".3dm composite
+// objects" evidence names). OpenNURBS' own third variant, Gradient, is
+// commented out in ON_HatchPattern::HatchFillType itself (never
+// implemented), so there is nothing to narrow away there.
+enum class HatchFillType {
+  Solid,
+  Lines,
+};
+
+// A hatch read back from Model::HatchAt() below - the read-side counterpart
+// to Model::AddHatch()'s own parameters. `boundary` is always the hatch's
+// OUTER loop only (in the hatch's own `plane`-relative (u, v) coordinates,
+// exactly as AddHatch()'s own `boundary` parameter is given) - AddHatch()
+// itself never creates more than one loop, so there is never an inner loop
+// (a hole) to report back.
+struct HatchInfo {
+  std::string name;
+  ON_Plane plane;
+  std::vector<Point2d> boundary;
+  int pattern_index = -1;
+  double pattern_rotation = 0.0;
+  double pattern_scale = 1.0;
+};
+
+// A text dot read back from Model::TextDotAt() below - the read-side
+// counterpart to Model::AddTextDot()'s own parameters.
+struct TextDotInfo {
+  std::string name;
+  Point3d center;
+  std::string primary_text;
+  std::string secondary_text;
+};
+
 // Thin wrapper around ONX_Model so .3dm compatibility comes from
 // OpenNURBS directly rather than a reimplementation. This is the
 // "can open/save .3dm" exit criterion for chunk 1 — nothing more.
@@ -636,6 +693,176 @@ class Model {
   // `clipping_plane_index` not naming a clipping plane this model actually
   // has returns a default-constructed ClippingPlaneInfo.
   ClippingPlaneInfo ClippingPlaneAt(int clipping_plane_index) const;
+
+  // Defines a reusable block (Rhino's own "instance definition", ON's own
+  // ON_InstanceDefinition) from `member_meshes` - the block's own geometry,
+  // stored once and shared by every AddInstanceReference() placement of it
+  // below. Returns the definition's index (>= 0) for use as
+  // AddInstanceReference()'s own `definition_index` parameter, or -1 for an
+  // empty `name` or an empty `member_meshes` (nothing to define). Each mesh
+  // is added to the model as its own ModelGeometry object, but with
+  // ON::idef_object attribute mode (ON_3dmObjectAttributes::SetMode()) -
+  // OpenNURBS' own "this object belongs to an instance definition, not the
+  // visible scene" flag, `ON_InstanceDefinition::m_object_uuid[]`'s own
+  // documented meaning for such an object - so unlike AddMesh() above, a
+  // block's member geometry does NOT show up in ObjectCount()/
+  // ObjectAttributesAt() (see InstanceDefinitionMemberMeshCount()/
+  // InstanceDefinitionMemberMeshAt() below for reading it back instead), the
+  // same "own dedicated table, not ModelGeometry's ordinary one" situation
+  // AddLight() above already has. Further member geometry kinds (Brep,
+  // SubD, ...) are a possible future widening, the same disclosed
+  // narrowing LightStyle's own Point/Directional-only support already uses
+  // elsewhere in this file.
+  int AddInstanceDefinition(const std::string& name, const std::vector<Mesh>& member_meshes);
+
+  // Returns the number of block definitions added via
+  // AddInstanceDefinition() above.
+  int InstanceDefinitionCount() const;
+
+  // Returns the name of the block definition at `definition_index` (as
+  // returned by AddInstanceDefinition() above), or an empty string if
+  // `definition_index` does not name a block definition this model
+  // actually has.
+  std::string InstanceDefinitionNameAt(int definition_index) const;
+
+  // Returns the number of member meshes the block definition at
+  // `definition_index` was created with - the read-side counterpart to
+  // AddInstanceDefinition()'s own `member_meshes` parameter.
+  int InstanceDefinitionMemberMeshCount(int definition_index) const;
+
+  // Returns the block definition's member mesh at `member_index` (as
+  // counted by InstanceDefinitionMemberMeshCount() above). Returns a
+  // default-constructed (empty) Mesh if `definition_index` does not name a
+  // block definition this model actually has, or `member_index` is out of
+  // range for it.
+  Mesh InstanceDefinitionMemberMeshAt(int definition_index, int member_index) const;
+
+  // Places one copy of `definition_index`'s block geometry (as returned by
+  // AddInstanceDefinition() above) into the model, transformed by `xform` -
+  // Rhino's own Insert command, ON_InstanceRef underneath. Unlike a block's
+  // own member geometry (see AddInstanceDefinition() above), an instance
+  // reference IS an ordinary ModelGeometry object - it lands in
+  // ObjectCount()/ObjectAttributesAt() alongside a mesh or brep, exactly
+  // like a clipping plane does (see AddClippingPlane() above) - so it also
+  // shows up in its own InstanceReferenceCount()/InstanceReferenceAt()
+  // table below for the fields ObjectAttributesAt() doesn't carry
+  // (`definition_index`/`xform`). Returns -1 without adding anything if
+  // `definition_index` does not name a block definition this model
+  // actually has (ON_InstanceRef's own `m_instance_definition_uuid`
+  // pointing nowhere would otherwise silently write a dangling reference).
+  int AddInstanceReference(int definition_index, const ON_Xform& xform,
+                            const std::string& name = std::string(), int layer_index = -1,
+                            std::optional<Color> render_color = std::nullopt,
+                            const UserStrings& user_strings = UserStrings(),
+                            std::optional<int> linetype_index = std::nullopt,
+                            const std::vector<int>& group_indices = std::vector<int>(),
+                            std::optional<int> material_index = std::nullopt);
+
+  // Returns the number of instance references added via
+  // AddInstanceReference() above.
+  int InstanceReferenceCount() const;
+
+  // Returns the instance reference at `index` (as counted by
+  // InstanceReferenceCount() above) - the read-side counterpart to
+  // AddInstanceReference()'s own `definition_index`/`xform` parameters, the
+  // same read-side gap LightAt()/ClippingPlaneAt() above each close for
+  // their own tables. `index` not naming an instance reference this model
+  // actually has returns a default-constructed InstanceReferenceInfo.
+  InstanceReferenceInfo InstanceReferenceAt(int index) const;
+
+  // Adds a hatch pattern (ON_HatchPattern) to the model and returns its
+  // index (>= 0) for use as AddHatch()'s own `pattern_index` parameter
+  // below. Returns -1 for an empty `name`, same contract as AddLayer()/
+  // AddLinetype()/AddGroup()/AddMaterial() above. Unlike those, an empty
+  // `name` is not the only way to end up unable to add a hatch:
+  // ON_Hatch::Create() itself (which AddHatch() below wraps) rejects any
+  // `pattern_index` < 0 outright, including OpenNURBS' own built-in
+  // ON_HatchPattern::Solid constant (index -1) - so, perhaps
+  // counterintuitively, even a plain solid-fill hatch requires calling this
+  // method first to get a real non-negative index into THIS model's own
+  // hatch pattern table, exactly as AddLayer() is required before a
+  // non-default `layer_index` can be used above.
+  int AddHatchPattern(const std::string& name, HatchFillType fill_type = HatchFillType::Solid);
+
+  // Returns the number of hatch patterns added via AddHatchPattern() above.
+  int HatchPatternCount() const;
+
+  // Adds a hatch (Rhino's own Hatch command, ON_Hatch underneath) to the
+  // model and returns its index (>= 0) among hatches specifically - closing
+  // PARITY_MAP.md's own ".3dm composite objects" evidence for "hatches":
+  // before this, this kernel had no way to create one at all. `plane` is
+  // the hatch's own coordinate plane; `boundary` is the single outer loop,
+  // given as (u, v) points in that plane's own coordinates (`Point2d`,
+  // already used elsewhere in this kernel for "a trim loop vertex" - see
+  // types.h) rather than world 3D points, matching ON_HatchLoop's own
+  // documented contract ("the 2d loop curve in the hatch's plane
+  // coordinates... really a 3d curve with z coordinates = 0"). Closed
+  // automatically (the first point is not repeated). `pattern_index` must
+  // be a non-negative index from THIS model's own AddHatchPattern() above -
+  // see that method's own doc comment for why OpenNURBS itself refuses a
+  // negative one, even a built-in constant. Returns -1 without adding
+  // anything if `name` is empty, `boundary` has fewer than 3 points, or
+  // `pattern_index` is negative or refers to no hatch pattern this model
+  // actually has (a caller error, but one ON_Hatch::Create() itself would
+  // otherwise silently accept as a dangling reference). A hatch IS an
+  // ordinary ModelGeometry object - it lands in ObjectCount()/
+  // ObjectAttributesAt() alongside a mesh or brep, exactly like a clipping
+  // plane does (see AddClippingPlane() above), so it also shows up in its
+  // own HatchCount()/HatchAt() table below for the fields
+  // ObjectAttributesAt() doesn't carry (`plane`/`boundary`/`pattern_index`/
+  // `pattern_rotation`/`pattern_scale`).
+  int AddHatch(const ON_Plane& plane, const std::vector<Point2d>& boundary, int pattern_index,
+               double pattern_rotation = 0.0, double pattern_scale = 1.0,
+               const std::string& name = std::string(), int layer_index = -1,
+               std::optional<Color> render_color = std::nullopt,
+               const UserStrings& user_strings = UserStrings(),
+               std::optional<int> linetype_index = std::nullopt,
+               const std::vector<int>& group_indices = std::vector<int>(),
+               std::optional<int> material_index = std::nullopt);
+
+  // Returns the number of hatches added via AddHatch() above.
+  int HatchCount() const;
+
+  // Returns the hatch at `hatch_index` (as counted by HatchCount() above) -
+  // the read-side counterpart to AddHatch()'s own parameters, the same
+  // read-side gap LightAt()/ClippingPlaneAt() above each close for their
+  // own tables. `hatch_index` not naming a hatch this model actually has
+  // returns a default-constructed HatchInfo.
+  HatchInfo HatchAt(int hatch_index) const;
+
+  // Adds a text dot (Rhino's own TextDot command, ON_TextDot underneath) to
+  // the model and returns its index (>= 0) among text dots specifically -
+  // closing PARITY_MAP.md's own ".3dm composite objects" evidence for "text
+  // dots": before this, this kernel had no way to create one at all.
+  // `center` is the dot's world-space anchor point; `primary_text` is the
+  // short label always shown on the dot itself (ON_TextDot's own default is
+  // an empty string, same as this parameter's own default); `secondary_text`
+  // is the longer text Rhino shows on hover/click (also empty by default).
+  // Returns -1 without adding anything if `name` is empty - needed here
+  // specifically because a caller needs this index back to read the text
+  // dot back via TextDotAt() below, same contract AddLight()/
+  // AddClippingPlane() above already have for the same reason. Note this
+  // `name` is the dino8-kernel object name (Model::ObjectAttributesAt()'s
+  // own `name` field), a wholly different string from `primary_text`/
+  // `secondary_text` above, which are ON_TextDot's own displayed content.
+  int AddTextDot(Point3d center, const std::string& primary_text,
+                 const std::string& secondary_text = std::string(),
+                 const std::string& name = std::string(), int layer_index = -1,
+                 std::optional<Color> render_color = std::nullopt,
+                 const UserStrings& user_strings = UserStrings(),
+                 std::optional<int> linetype_index = std::nullopt,
+                 const std::vector<int>& group_indices = std::vector<int>(),
+                 std::optional<int> material_index = std::nullopt);
+
+  // Returns the number of text dots added via AddTextDot() above.
+  int TextDotCount() const;
+
+  // Returns the text dot at `text_dot_index` (as counted by TextDotCount()
+  // above) - the read-side counterpart to AddTextDot()'s own parameters,
+  // the same read-side gap LightAt()/ClippingPlaneAt() above each close for
+  // their own tables. `text_dot_index` not naming a text dot this model
+  // actually has returns a default-constructed TextDotInfo.
+  TextDotInfo TextDotAt(int text_dot_index) const;
 
   // Sets the model's length unit system - closing PARITY_MAP.md's own
   // "kernel-level data exchange" evidence for "Unit-system conversion":
