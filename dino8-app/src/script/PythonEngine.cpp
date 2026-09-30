@@ -270,6 +270,16 @@ struct PyObjectTable {
     return PyObjId(AddBrepObj(ON_BrepTorus(torus), "AddTorus"));
   }
 
+  // Mirrors rs.AddSrfPt({p0,p1,p2,p3}) in LuaEngine.cpp: a bilinear surface
+  // through three or four corner points (a triangular corner is doubled,
+  // same as rs_AddSrfPt), reordered into a 2x2 control grid.
+  py::object AddSrfPt(std::vector<Point3d> p) {
+    if (p.size() == 3) p.push_back(p[2]);
+    if (p.size() != 4) throw std::runtime_error("AddSrfPt needs 3 or 4 corner points");
+    std::vector<Point3d> grid = {p[0], p[1], p[3], p[2]};
+    return PyObjId(AddObj(SceneObject::MakeSurface(kernel::NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1)), "AddSrfPt"));
+  }
+
   py::object AddMesh(std::vector<Point3d> verts, std::vector<std::vector<int>> faces) {
     kernel::Mesh m;
     ON_Mesh& r = m.raw();
@@ -396,6 +406,7 @@ PYBIND11_EMBEDDED_MODULE(dino8, m) {
       .def("AddInterpCurve", &PyObjectTable::AddInterpCurve)
       .def("AddCircle", &PyObjectTable::AddCircle, py::arg("center"), py::arg("radius"), py::arg("normal") = py::none())
       .def("AddArc3Pt", &PyObjectTable::AddArc3Pt)
+      .def("AddSrfPt", &PyObjectTable::AddSrfPt)
       .def("AddBox", &PyObjectTable::AddBox, py::arg("corner"), py::arg("size"))
       .def("AddSphere", &PyObjectTable::AddSphere, py::arg("center"), py::arg("radius"))
       .def("AddCylinder", &PyObjectTable::AddCylinder, py::arg("base"), py::arg("axis"), py::arg("radius"), py::arg("cap") = true)

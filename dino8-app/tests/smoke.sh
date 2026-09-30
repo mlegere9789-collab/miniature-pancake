@@ -1681,6 +1681,16 @@ print("object count with arc: %d" % len(dino8.doc.Objects.AllObjects()))
 bad_arc = dino8.doc.Objects.AddArc3Pt(dino8.Point3d(0, 0, 0), dino8.Point3d(10, 0, 0), dino8.Point3d(5, 0, 0))
 print("collinear arc: " + str(bad_arc))
 
+srf_id = dino8.doc.Objects.AddSrfPt([dino8.Point3d(0, 0, 0), dino8.Point3d(10, 0, 0), dino8.Point3d(10, 10, 0), dino8.Point3d(0, 10, 0)])
+srf = dino8.doc.Objects.Find(srf_id)
+print("srf kind: " + srf.ObjectType)
+print("object count with srf: %d" % len(dino8.doc.Objects.AllObjects()))
+try:
+    dino8.doc.Objects.AddSrfPt([dino8.Point3d(0, 0, 0), dino8.Point3d(10, 0, 0)])
+    print("bad srf: no error")
+except RuntimeError as e:
+    print("bad srf rejected: " + str(e))
+
 dino8.RunCommand("NewLayer", "Parts")
 PY
 sed "s|@TMP@|$TMPW|g" "$HERE/python_script.txt" > "$TMPW/python_script.txt"
@@ -1740,7 +1750,10 @@ else
   pscheck "history: arc kind: curve" "dino8.doc.Objects.AddArc3Pt built a curve object, matching rs.AddArc3Pt"
   pscheck "history: object count with arc: 6" "AllObjects sees the box, the circle, the cone, the torus, the interpolated curve and the new arc"
   pscheck "history: collinear arc: None" "AddArc3Pt returned None for three collinear points, matching rs.AddArc3Pt pushing nil instead of raising"
-  pscheck "^ok   expect_objects 6" "RunPythonScript left the box, the circle, the cone, the torus, the interpolated curve and the arc (the sphere was deleted from inside the script)"
+  pscheck "history: srf kind: surface" "dino8.doc.Objects.AddSrfPt built a surface object, matching rs.AddSrfPt"
+  pscheck "history: object count with srf: 7" "AllObjects sees the box, the circle, the cone, the torus, the interpolated curve, the arc and the new surface"
+  pscheck "history: bad srf rejected:" "AddSrfPt raised a Python exception for fewer than three corner points, instead of silently returning"
+  pscheck "^ok   expect_objects 7" "RunPythonScript left the box, the circle, the cone, the torus, the interpolated curve, the arc and the surface (the sphere was deleted from inside the script)"
   grep -q "! Python error" <<<"$PS" && { echo "FAIL python_script.txt printed a Python error"; fail=1; } || echo "ok   no Python script errors"
 fi
 
