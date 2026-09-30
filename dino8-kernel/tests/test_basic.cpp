@@ -23497,6 +23497,246 @@ void TestMoveVertexConvexPlanarRefusesInvalidInput() {
   Check(threw, "MoveVertexConvexPlanar refuses a move that collapses an incident face's own triangle to ~0 area");
 }
 
+// PARITY_MAP's kernel: Local / direct-edit operations "Move/transform face
+// (tweak face, neighbours adjust)" gap - previously only OffsetFace()'s
+// own normal-only translate. Feeding MoveFaceConvexPlanar the exact
+// translation OffsetFace() itself applies internally (distance*zaxis)
+// must reproduce OffsetFace()'s own result bit-for-bit, since that's
+// genuinely what a "pure normal translate" rigid transform is - proof
+// this is a real generalization, not a parallel construction that might
+// silently diverge.
+void TestMoveFaceConvexPlanarMatchesOffsetFaceForPureNormalTranslate() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::MoveFaceConvexPlanar;
+  using dino8::kernel::OffsetFace;
+  using dino8::kernel::Point3d;
+
+  // Box face order per Brep::Box()'s own comment: 0=bottom(-z) 1=top(+z)
+  // 2=front(-y) 3=back(+y) 4=left(-x) 5=right(+x).
+  const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+  const Brep::PlanarFace top = box.PlanarFaces()[1];
+
+  const ON_Xform translate = ON_Xform::TranslationTransformation(2.0 * top.plane.zaxis);
+  const Brep via_move = MoveFaceConvexPlanar(box, 1, translate);
+  const Brep via_offset = OffsetFace(box, 1, 2.0);
+
+  Check(via_move.FaceCount() == via_offset.FaceCount(),
+        "MoveFaceConvexPlanar keeps the same face count as OffsetFace on the identical move");
+  Check(std::fabs(PlanarBrepVolumeExact(via_move) - PlanarBrepVolumeExact(via_offset)) < 1e-9,
+        "MoveFaceConvexPlanar's volume matches OffsetFace's exactly for a pure normal-translate xform");
+  Check(std::fabs(PlanarBrepVolumeExact(via_move) - 1200.0) < 1e-9,
+        "...and both match the independently-known 10x10x12 box volume");
+
+  const std::vector<Brep::PlanarFace> offset_faces = via_offset.PlanarFaces();
+  const std::vector<Brep::PlanarFace> move_faces = via_move.PlanarFaces();
+  Check(offset_faces.size() == move_faces.size(), "same number of faces to compare pointwise");
+  for (size_t i = 0; i < offset_faces.size(); ++i) {
+    const std::vector<Point3d>& a = offset_faces[i].loop;
+    const std::vector<Point3d>& b = move_faces[i].loop;
+    Check(a.size() == b.size(), "each face has the same vertex count in both results");
+    for (size_t j = 0; j < a.size() && j < b.size(); ++j) {
+      Check(a[j].DistanceTo(b[j]) < 1e-9,
+            "every vertex lands in exactly the same place under OffsetFace and MoveFaceConvexPlanar");
+    }
+  }
+}
+
+// The genuinely new capability a plain translation vector cannot express
+// at all (see MoveFaceConvexPlanar's own doc comment): a rotation of the
+// face's own frame. Rotating about an axis through the face's own current
+// plane origin makes that origin the rotation's fixed point, so two
+// invariants are checkable independently of MoveFaceConvexPlanar's own
+// half-space-clip arithmetic: the new plane still passes through the
+// EXACT same origin point, and its normal has rotated away from the old
+// one by EXACTLY the given angle (cos(angle) == new_normal . old_normal).
+void TestMoveFaceConvexPlanarRotationMatchesExactAngleAndFixedOrigin() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::MoveFaceConvexPlanar;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+  const Brep::PlanarFace top = box.PlanarFaces()[1];
+  const Vector3d old_normal = top.plane.zaxis;
+  const Point3d fixed_point = top.plane.origin;
+
+  const double angle_radians = 0.2;
+  ON_Xform rotate;
+  rotate.Rotation(angle_radians, Vector3d(1.0, 0.0, 0.0), fixed_point);
+
+  const Brep rotated = MoveFaceConvexPlanar(box, 1, rotate);
+  Check(rotated.FaceCount() == 6, "MoveFaceConvexPlanar on a box keeps exactly 6 faces (no topology change)");
+
+  const std::vector<Brep::PlanarFace> pf = rotated.PlanarFaces();
+  Check(pf[1].plane.origin.DistanceTo(fixed_point) < 1e-9,
+        "rotating about the face's own current plane origin leaves that exact point on the new plane - the "
+        "rotation's own fixed point, an invariant no translation could produce");
+  const double cos_measured = ON_DotProduct(pf[1].plane.zaxis, old_normal);
+  Check(std::fabs(cos_measured - std::cos(angle_radians)) < 1e-9,
+        "the new plane's normal has rotated away from the original by exactly angle_radians - a rigid-body fact "
+        "independent of MoveFaceConvexPlanar's own reconstruction, and something no translation vector (which "
+        "cannot change a plane's orientation at all) could ever produce");
+  Check(std::fabs(cos_measured - 1.0) > 1e-6,
+        "sanity: the normal genuinely changed (this isn't accidentally the identity transform)");
+}
+
+void TestMoveFaceConvexPlanarRefusesInvalidInput() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::MoveFaceConvexPlanar;
+
+  const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+
+  bool threw = false;
+  try {
+    MoveFaceConvexPlanar(box, 99, ON_Xform::IdentityTransformation);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "MoveFaceConvexPlanar refuses a face_index out of range for solid.PlanarFaces()");
+
+  threw = false;
+  try {
+    MoveFaceConvexPlanar(box, 1, ON_Xform::ZeroTransformation);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw,
+        "MoveFaceConvexPlanar refuses a singular xform that collapses the face's own frame to an invalid plane");
+}
+
+// PARITY_MAP's kernel: Local / direct-edit operations "Move/transform edge
+// (tweak edge)" gap - previously no kernel edge-move op at all. A
+// tetrahedron where every face is a triangle (so every edge's own two
+// incident faces both qualify under MoveVertexConvexPlanar()'s own
+// triangle-only scope, unlike a box corner/edge whose incident faces are
+// quads).
+dino8::kernel::Brep MakeTestTetrahedron(dino8::kernel::Point3d apex, dino8::kernel::Point3d b0,
+                                         dino8::kernel::Point3d b1, dino8::kernel::Point3d b2) {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+  const Point3d centroid((apex.x + b0.x + b1.x + b2.x) / 4.0, (apex.y + b0.y + b1.y + b2.y) / 4.0,
+                          (apex.z + b0.z + b1.z + b2.z) / 4.0);
+  auto make_outward = [&](Point3d p0, Point3d p1, Point3d p2) {
+    Brep::PlanarFace f;
+    Vector3d n = ON_CrossProduct(p1 - p0, p2 - p0);
+    n.Unitize();
+    if (ON_DotProduct(n, p0 - centroid) < 0) {
+      std::swap(p1, p2);
+      n = -n;
+    }
+    f.plane = ON_Plane(p0, n);
+    f.loop = {p0, p1, p2};
+    return f;
+  };
+  const std::vector<Brep::PlanarFace> faces = {
+      make_outward(apex, b0, b1),
+      make_outward(apex, b1, b2),
+      make_outward(apex, b2, b0),
+      make_outward(b0, b2, b1),  // base
+  };
+  return Brep::FromPlanarFaces(faces);
+}
+
+// Moves the (apex, b0) edge - shared by two of the tetrahedron's own four
+// triangular faces, (apex,b0,b1) and (apex,b2,b0) - to a new pair of
+// positions in one call. Both endpoints move simultaneously, so those two
+// shared faces each get BOTH of their own moved corners replaced before
+// their plane is re-derived once, exercising the "more than one moved
+// point on the same face" path MoveVertexConvexPlanar()'s own
+// single-point core never has to handle. Volume is checked via the
+// general tetrahedron closed form (the signed scalar triple product of
+// the edge vectors from one vertex, /6) applied directly to the NEW four
+// vertices - independent of MoveEdgeConvexPlanar's own half-space-clip
+// arithmetic.
+void TestMoveEdgeConvexPlanarTetrahedronMatchesExactVolumeFromSignedTripleProduct() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::MoveEdgeConvexPlanar;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  const Point3d apex(0, 0, 0);
+  const Point3d b0(2, 0, 3), b1(-1, 2, 3), b2(-1, -2, 3);
+  const Brep tet = MakeTestTetrahedron(apex, b0, b1, b2);
+
+  const Point3d new_apex(0.4, -0.3, -0.6);
+  const Point3d new_b0(2.6, 0.4, 3.5);
+  const Brep moved = MoveEdgeConvexPlanar(tet, apex, b0, new_apex, new_b0);
+
+  Check(moved.FaceCount() == 4, "MoveEdgeConvexPlanar keeps the tetrahedron's own 4-face topology");
+
+  const Vector3d e1 = new_b0 - new_apex;
+  const Vector3d e2 = b1 - new_apex;
+  const Vector3d e3 = b2 - new_apex;
+  const double expected_volume = std::fabs(ON_DotProduct(ON_CrossProduct(e1, e2), e3)) / 6.0;
+  const double measured_volume = PlanarBrepVolumeExact(moved);
+  Check(std::fabs(measured_volume - expected_volume) / expected_volume < 1e-9,
+        "the moved tetrahedron's volume matches the exact signed-triple-product formula for its new 4 vertices, "
+        "not merely a plausible-looking number");
+
+  const std::vector<Brep::PlanarFace> result = moved.PlanarFaces();
+  auto loop_contains = [](const std::vector<Point3d>& loop, const Point3d& p) {
+    for (const Point3d& q : loop) {
+      if (q.DistanceTo(p) < 1e-9) return true;
+    }
+    return false;
+  };
+  bool found_apex_only_face = false;
+  bool found_b0_only_face = false;
+  for (const Brep::PlanarFace& f : result) {
+    if (f.loop.size() != 3) continue;
+    const bool has_new_apex = loop_contains(f.loop, new_apex);
+    const bool has_new_b0 = loop_contains(f.loop, new_b0);
+    if (has_new_apex && !has_new_b0 && loop_contains(f.loop, b1) && loop_contains(f.loop, b2)) {
+      found_apex_only_face = true;
+    }
+    if (has_new_b0 && !has_new_apex && loop_contains(f.loop, b1) && loop_contains(f.loop, b2)) {
+      found_b0_only_face = true;
+    }
+  }
+  Check(found_apex_only_face,
+        "the face touching only the moved edge's apex endpoint (apex,b1,b2) keeps its own b1/b2 corners exactly, "
+        "with only apex replaced by new_apex");
+  Check(found_b0_only_face,
+        "the face touching only the moved edge's b0 endpoint (the base, b0,b2,b1) keeps its own b1/b2 corners "
+        "exactly, with only b0 replaced by new_b0");
+}
+
+void TestMoveEdgeConvexPlanarRefusesInvalidInput() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::MoveEdgeConvexPlanar;
+  using dino8::kernel::Point3d;
+
+  const Point3d apex(0, 0, 0);
+  const Point3d b0(2, 0, 3), b1(-1, 2, 3), b2(-1, -2, 3);
+  const Brep tet = MakeTestTetrahedron(apex, b0, b1, b2);
+
+  bool threw = false;
+  try {
+    MoveEdgeConvexPlanar(tet, apex, apex, Point3d(1, 1, 1), Point3d(2, 2, 2));
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "MoveEdgeConvexPlanar refuses old_p0 and old_p1 that coincide - not a valid edge to name");
+
+  threw = false;
+  try {
+    const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+    MoveEdgeConvexPlanar(box, Point3d(0, 0, 0), Point3d(10, 0, 0), Point3d(1, 1, 1), Point3d(9, 1, 1));
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "MoveEdgeConvexPlanar refuses an edge whose incident faces are non-triangular (a box's own quads)");
+
+  threw = false;
+  try {
+    MoveEdgeConvexPlanar(tet, Point3d(99, 99, 99), b0, Point3d(1, 1, 1), Point3d(2, 2, 2));
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "MoveEdgeConvexPlanar refuses an old_p0 that doesn't land within tolerance of any vertex");
+}
+
 // PARITY_MAP's kernel: Local / direct-edit operations "Delete face with
 // heal (remove face, grow neighbours to close the gap)" gap - previously
 // only a flat re-cap (Brep::CapPlanarHoles), never a genuine heal.
@@ -49632,6 +49872,11 @@ int main() {
   TestFoldFaceConvexPlanarRefusesInvalidInput();
   TestMoveVertexConvexPlanarPyramidApexMatchesExactVolumeAndLeavesBaseUntouched();
   TestMoveVertexConvexPlanarRefusesInvalidInput();
+  TestMoveFaceConvexPlanarMatchesOffsetFaceForPureNormalTranslate();
+  TestMoveFaceConvexPlanarRotationMatchesExactAngleAndFixedOrigin();
+  TestMoveFaceConvexPlanarRefusesInvalidInput();
+  TestMoveEdgeConvexPlanarTetrahedronMatchesExactVolumeFromSignedTripleProduct();
+  TestMoveEdgeConvexPlanarRefusesInvalidInput();
   TestDeleteFaceHealConvexPlanarChamferedCubeRecoversExactUnitCube();
   TestDeleteFaceHealConvexPlanarRefusesInvalidInput();
   TestFilletConvexEdgeUnitCubeTopFrontCorner();

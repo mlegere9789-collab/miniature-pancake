@@ -688,6 +688,42 @@ Brep ShellClosedTorus(const ON_Plane& plane, double major_radius, double outer_m
 // that face or guessing a replacement.
 Brep OffsetFace(const Brep& solid, int face_index, double distance);
 
+// PARITY_MAP's kernel: Local / direct-edit operations "Move/transform face
+// (tweak face, neighbours adjust)" gap: neither OffsetFace() (translate
+// along the face's OWN normal only) nor FoldFaceConvexPlanar()/
+// DraftFacesConvexPlanar() (rotate about a hinge edge or a neutral-plane
+// intersection line specifically) can reposition a face by an arbitrary
+// rigid transform - a rotation about any axis (not tied to one of the
+// face's own edges or a caller-supplied neutral plane) combined with a
+// translation, applied directly to that face's own local frame.
+//
+// NOTE: a pure translation vector alone would NOT be a genuine
+// generalization of OffsetFace() - a plane's geometry is invariant under
+// translating its origin WITHIN the plane, so only a translation's
+// component along the face's own normal has any observable effect, which
+// is exactly what OffsetFace()'s own `distance` already expresses. This
+// function is only a real generalization because `xform` can also ROTATE
+// the face's own frame, which neither OffsetFace() nor a plain translation
+// vector can do at all.
+//
+// `xform` is applied directly to `solid.PlanarFaces()[face_index].plane`
+// via `ON_Plane::Transform()` (origin, xaxis, yaxis and zaxis all
+// transformed consistently, then the plane equation rebuilt), and the
+// resulting plane is handed straight to `ReplaceFacePlaneConvexPlanar()`
+// below, which does the actual half-space-intersection re-trim of every
+// face (including this one) - a thin delegation, not a second
+// reconstruction. Feeding it `ON_Xform::TranslationTransformation(distance
+// * old_plane.zaxis)` reproduces `OffsetFace()`'s own result bit-for-bit.
+//
+// Same convex-solid precondition and failure mode as `OffsetFace()`/
+// `ReplaceFacePlaneConvexPlanar()` above. Throws std::invalid_argument if
+// `face_index` is out of range for `solid.PlanarFaces()`, if the
+// transformed plane isn't `IsValid()` (e.g. `xform` is singular/
+// non-invertible and collapses the frame), or if the transformed plane
+// collapses any face's own new boundary (including `face_index`'s own) to
+// fewer than 3 vertices or ~0 area.
+Brep MoveFaceConvexPlanar(const Brep& solid, int face_index, const ON_Xform& xform);
+
 // Offsets EVERY face of a convex planar-faced solid along its own outward
 // normal at once - the whole-BODY counterpart of OffsetFace() above (which
 // moves only one named face) and the exact B-rep analogue of the
@@ -990,6 +1026,37 @@ Brep FoldFaceConvexPlanar(const Brep& solid, int face_index, int hinge_loop_inde
 // face's own new boundary (including an incident one) to fewer than 3
 // vertices or ~0 area, out of scope here exactly as in the siblings above.
 Brep MoveVertexConvexPlanar(const Brep& solid, const Point3d& old_position, const Point3d& new_position);
+
+// PARITY_MAP's kernel: Local / direct-edit operations "Move/transform edge
+// (tweak edge)" gap - previously no kernel edge-move op at all (only the
+// same approximate app-level `MoveBrepParts` path the face-move item
+// shares). Generalizes `MoveVertexConvexPlanar()` immediately above from
+// one moved point to two: `old_p0`/`old_p1` name an existing edge's two
+// endpoints (matched by position exactly as a single vertex is there),
+// `new_p0`/`new_p1` are their new positions, and every face incident to
+// EITHER endpoint has each of its own matched corners replaced before its
+// plane is re-derived - so a face containing the whole edge (both
+// endpoints on its own loop) gets both corners moved and its plane
+// re-derived from the resulting three points in one step, not two
+// sequential single-vertex moves (which would leave the first move's own
+// intermediate, possibly-invalid plane to validate against). Every face
+// touching only one endpoint is handled exactly as
+// `MoveVertexConvexPlanar()` already handles it; every face touching
+// neither keeps its own original plane and is re-clipped against the
+// updated planes the same way.
+//
+// Same triangle-only scope as `MoveVertexConvexPlanar()`, for the same
+// reason: every face incident to either endpoint must be a triangle,
+// since only a triangle's plane is always well-defined regardless of
+// where its corners sit. Throws std::invalid_argument if `old_p0` and
+// `old_p1` coincide (a degenerate, zero-length edge - not a valid edge to
+// name), for the same per-endpoint failure modes
+// `MoveVertexConvexPlanar()` already documents (an endpoint not landing on
+// any vertex, a non-triangular incident face, an orientation flip, or a
+// collapsed face), and propagates the same convex-solid precondition
+// failure `MoveVertexConvexPlanar()` shares with the rest of this family.
+Brep MoveEdgeConvexPlanar(const Brep& solid, const Point3d& old_p0, const Point3d& old_p1, const Point3d& new_p0,
+                           const Point3d& new_p1);
 
 // PARITY_MAP's kernel: Local / direct-edit operations "Delete face with
 // heal (remove face, grow neighbours to close the gap)" gap - previously
