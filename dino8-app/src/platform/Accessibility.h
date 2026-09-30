@@ -5,9 +5,11 @@
 // finalized edits, the document's saved Named Views and Named CPlanes, its
 // Linetypes, its Materials, its Clipping Planes, its Layouts, its Block
 // Manager, its Layer State Manager, its Document User Text, its Lights, its
-// Annotation Styles, its Notes, its render Environment settings, and the
-// last Audit run's results to assistive technology, so a screen reader can
-// read and be notified of them without a sighted user's help.
+// Annotation Styles, its Notes, its render Environment settings, the last
+// Audit run's results, its pending Undo/Redo history, the loaded Hatch
+// Pattern library, and its loaded plug-ins to assistive technology, so a
+// screen reader can read and be notified of them without a sighted user's
+// help.
 //
 // Real implementation: AT-SPI2 over D-Bus on Linux (see
 // AccessibilityLinux.cpp). A no-op everywhere else, and on Linux too if the
@@ -39,8 +41,9 @@ void InitAccessibility(const std::string& app_name);
 // `viewports_panel`, `activity_log`, `named_views`, `named_cplanes`,
 // `linetypes`, `materials`, `clipping_planes`, `layouts`, `block_manager`,
 // `layer_state_manager`, `document_user_text`, `lights`,
-// `annotation_styles`, `document_notes`, `environments` and `audit_results`
-// are typically
+// `annotation_styles`, `document_notes`, `environments`, `audit_results`,
+// `undo_history`, `redo_history`, `hatch_patterns` and `plugins` are
+// typically
 // ui::LastMenuBarAccessibleTree(), ui::CommandOptionsAccessibleTree(app),
 // ui::LayersPanelAccessibleTree(app), ui::PropertiesPanelAccessibleTree(app),
 // ui::ViewportsAccessibleTree(app), ui::ActivityLogAccessibleTree(app),
@@ -50,9 +53,12 @@ void InitAccessibility(const std::string& app_name);
 // ui::BlockManagerAccessibleTree(app), ui::LayerStateManagerAccessibleTree(app),
 // ui::DocumentUserTextAccessibleTree(app), ui::LightsAccessibleTree(app),
 // ui::AnnotationStylesAccessibleTree(app), ui::DocumentNotesAccessibleTree(app),
-// ui::EnvironmentsAccessibleTree(app) and ui::AuditResultsAccessibleTree(app)
-// (see src/ui/Panels.h) - passed in rather than computed here so this module
-// stays independent of app::Application/Document.
+// ui::EnvironmentsAccessibleTree(app), ui::AuditResultsAccessibleTree(app),
+// ui::UndoHistoryAccessibleTree(app), ui::RedoHistoryAccessibleTree(app),
+// ui::HatchPatternsAccessibleTree() and plugins::PluginsAccessibleTree()
+// (see src/ui/Panels.h and src/plugins/PluginPanel.h) - passed in rather
+// than computed here so this module stays independent of
+// app::Application/Document.
 void UpdateAccessibility(const std::string& prompt, const std::string& command_input,
                           const std::deque<std::string>& history, const AccessibleNode& menu_bar,
                           const AccessibleNode& command_options, const AccessibleNode& layers_panel,
@@ -64,7 +70,9 @@ void UpdateAccessibility(const std::string& prompt, const std::string& command_i
                           const AccessibleNode& layer_state_manager, const AccessibleNode& document_user_text,
                           const AccessibleNode& lights, const AccessibleNode& annotation_styles,
                           const AccessibleNode& document_notes, const AccessibleNode& environments,
-                          const AccessibleNode& audit_results);
+                          const AccessibleNode& audit_results, const AccessibleNode& undo_history,
+                          const AccessibleNode& redo_history, const AccessibleNode& hatch_patterns,
+                          const AccessibleNode& plugins);
 
 // Just the request-processing half of UpdateAccessibility, without touching
 // any published content. Used by main.cpp's `waitfile` script directive

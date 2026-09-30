@@ -2120,6 +2120,22 @@ void RegisterDrafting2Commands(CommandEngine& e) {
 // Panels
 // ---------------------------------------------------------------------------
 
+// AT-SPI2-queryable snapshot of HatchLibrary::Instance().Patterns() (see
+// docs/ACCESSIBILITY.md): built straight from the library's own state,
+// independent of whether DrawHatchPatternsPanel itself has ever been drawn
+// or is open right now - mirrors each pattern's name (thumbnail's own label)
+// and its already human-readable description text (thumbnail's hover
+// tooltip) as a ListItem's name/Description. Non-empty from startup, unlike
+// the document-scoped regions above, since the library always carries its
+// built-in patterns.
+dino8::platform::AccessibleNode HatchPatternsAccessibleTree() {
+  std::vector<dino8::platform::HatchPatternSummary> summaries;
+  const std::vector<HatchPattern>& patterns = HatchLibrary::Instance().Patterns();
+  summaries.reserve(patterns.size());
+  for (const HatchPattern& p : patterns) summaries.push_back({p.name, p.description});
+  return dino8::platform::BuildHatchPatternsNode(summaries);
+}
+
 void DrawHatchPatternsPanel(Application& app) {
   ImGui::SetNextWindowSize(ImVec2(420, 460), ImGuiCond_Appearing);
   if (!ImGui::Begin("Hatch Patterns", &app.Panels().hatch_patterns)) { ImGui::End(); return; }

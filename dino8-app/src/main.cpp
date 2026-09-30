@@ -73,6 +73,7 @@
 #include "doc/Document.h"
 #include "platform/Accessibility.h"
 #include "platform/Clipboard.h"
+#include "plugins/PluginPanel.h"
 #include "ui/Panels.h"
 #include "ui/Theme.h"
 #include "util/ThreadPool.h"
@@ -655,7 +656,11 @@ int main(int argc, char** argv) {
                                           dino8::app::AnnotationStylesAccessibleTree(app),
                                           dino8::app::DocumentNotesAccessibleTree(app),
                                           dino8::app::EnvironmentsAccessibleTree(app),
-                                          dino8::app::AuditResultsAccessibleTree(app));
+                                          dino8::app::AuditResultsAccessibleTree(app),
+                                          dino8::app::UndoHistoryAccessibleTree(app),
+                                          dino8::app::RedoHistoryAccessibleTree(app),
+                                          dino8::app::HatchPatternsAccessibleTree(),
+                                          dino8::plugins::PluginsAccessibleTree());
     // Catch up history_printed to whatever on_print_line already flushed
     // live as each line was recorded (see its own comment on why that has
     // to happen from inside CommandEngine::Print(), not here) - printing

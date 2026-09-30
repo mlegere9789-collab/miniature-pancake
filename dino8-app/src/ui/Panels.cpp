@@ -1631,6 +1631,22 @@ void DrawBoxEditPanel(Application& app) {
   ImGui::End();
 }
 
+// AT-SPI2-queryable snapshot of Document::UndoLabels() (see
+// docs/ACCESSIBILITY.md): built straight from Document state, independent of
+// whether DrawUndoMultipleWindow itself has ever been drawn or is open right
+// now - mirrors the same numbered "N. label" rows that window shows for the
+// Undo direction. Starts empty on a fresh document, the same way Named
+// Views/CPlanes and Audit Results start empty.
+dino8::platform::AccessibleNode UndoHistoryAccessibleTree(Application& app) {
+  return dino8::platform::BuildUndoHistoryNode(app.Doc().UndoLabels());
+}
+
+// The Redo-direction counterpart of UndoHistoryAccessibleTree, mirroring
+// Document::RedoLabels() the same way.
+dino8::platform::AccessibleNode RedoHistoryAccessibleTree(Application& app) {
+  return dino8::platform::BuildRedoHistoryNode(app.Doc().RedoLabels());
+}
+
 void DrawUndoMultipleWindow(Application& app, bool redo) {
   bool& flag = redo ? app.Panels().redo_multiple : app.Panels().undo_multiple;
   if (!ImGui::Begin(PanelTitle(redo ? "panel.redo_multiple" : "panel.undo_multiple", redo ? "RedoMultiple" : "UndoMultiple").c_str(), &flag, ImGuiWindowFlags_AlwaysAutoResize)) { ImGui::End(); return; }

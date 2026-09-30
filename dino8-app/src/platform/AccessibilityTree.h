@@ -23,9 +23,12 @@
 // User Text (see BuildDocumentUserTextNode), its Lights (see
 // BuildLightsPanelNode), its Annotation Styles (see
 // BuildAnnotationStylesNode), its Notes (see BuildDocumentNotesNode), its
-// render Environment settings (see BuildEnvironmentsPanelNode), and the last
-// Audit run's results (see BuildAuditResultsNode).
-// The 3D viewport's own rendered content and the ~25 other panels/dialogs are
+// render Environment settings (see BuildEnvironmentsPanelNode), the last
+// Audit run's results (see BuildAuditResultsNode), its pending Undo/Redo
+// history (see BuildUndoHistoryNode/BuildRedoHistoryNode), the loaded Hatch
+// Pattern library (see BuildHatchPatternsNode), and its loaded plug-ins (see
+// BuildPluginsNode).
+// The 3D viewport's own rendered content and the ~22 other panels/dialogs are
 // still not mirrored into this tree.
 #pragma once
 
@@ -493,5 +496,83 @@ struct AuditIssueSummary {
 // command line (see cmd_analyze.cpp), the same "starts empty, gains rows"
 // shape Named Views/CPlanes already use.
 AccessibleNode BuildAuditResultsNode(const std::vector<AuditIssueSummary>& issues);
+
+// Builds the "Undo History" List accessible: one ListItem per pending-or-undoable
+// edit, in the same order Document::UndoLabels() holds them (most recent
+// first, the pending in-progress edit if any first of all) - the same
+// numbered "1. Line" rows DrawUndoMultipleWindow(app, /*redo=*/false) shows,
+// so a screen-reader user can read exactly how many steps a given Undo would
+// need to reach any past edit. Independent of whether the Undo panel window
+// is actually open right now, the same way the other panel-backed regions
+// above don't depend on their own panel window. Starts empty on a fresh
+// document, the same "starts empty, gains rows" shape Named Views/CPlanes
+// and Audit Results already use.
+AccessibleNode BuildUndoHistoryNode(const std::vector<std::string>& labels);
+
+// Builds the "Redo History" List accessible: the Redo-direction counterpart
+// of BuildUndoHistoryNode, one ListItem per label in Document::RedoLabels()
+// order, matching DrawUndoMultipleWindow(app, /*redo=*/true)'s own numbered
+// rows. Empties out the moment a fresh edit is made after an Undo, the same
+// way the on-screen Redo panel does.
+AccessibleNode BuildRedoHistoryNode(const std::vector<std::string>& labels);
+
+// One Hatch Patterns entry (drafting::HatchLibrary's HatchPattern, reduced
+// to plain data the same way the summaries above keep this module
+// independent of its owning subsystem): the pattern's name and its own
+// human-readable description text (HatchPattern::description, e.g. "ANSI
+// Iron, Brick, Stone masonry" - already plain text parsed straight out of
+// the .pat file, unlike Linetypes' dash array which BuildLinetypesNode has
+// to render into text itself).
+struct HatchPatternSummary {
+  std::string name;
+  std::string description;
+};
+
+// Builds the "Hatch Patterns" List accessible: one ListItem per pattern, in
+// the same order HatchLibrary::Instance().Patterns() holds them, each named
+// after it with a Description giving its own descriptive text - the same
+// two facts DrawHatchPatternsPanel's thumbnail grid conveys visually per
+// pattern (name below the thumbnail, description as its hover tooltip),
+// independent of whether the Hatch Patterns panel window is actually open
+// right now, the same way the other panel-backed regions above don't depend
+// on their own panel window. Non-empty from application startup (the
+// library always carries its built-in patterns even with no data/*.pat
+// files present), unlike the "starts empty" regions above.
+AccessibleNode BuildHatchPatternsNode(const std::vector<HatchPatternSummary>& patterns);
+
+// One loaded plug-in (plugins::Manager's LoadedPlugin, reduced to plain data
+// the same way the summaries above keep this module independent of its
+// owning subsystem): its name and version, whether it loaded successfully,
+// the load error text when it didn't, and how many commands and Dino Flow
+// nodes it registered - the same facts DrawPlugInManagerPanel's
+// Name/Version/Commands/Flow Nodes/Status table columns show per row
+// (Status's own hover-tooltip error text folded in directly here, since
+// AT-SPI has no per-cell tooltip to mirror it into).
+struct PluginSummary {
+  std::string name;
+  std::string version;
+  bool loaded_ok = true;
+  std::string error;
+  int command_count = 0;
+  int flow_node_count = 0;
+};
+
+// Builds the "Plug-ins" List accessible: one ListItem per loaded plug-in, in
+// the same order plugins::Manager::Get().Plugins() holds them, each named
+// after its name/version and Loaded/Error status with a Description giving
+// its command and flow-node counts (plus the error text when it failed to
+// load) - independent of whether the Plug-in Manager panel window is
+// actually open right now, the same way the other panel-backed regions
+// above don't depend on their own panel window. Not empty by default in a
+// real build: `Application`'s own constructor runs
+// `plugins::Manager::ScanDefaultFolders` at startup (see Application.cpp),
+// so any plug-in already sitting in the config/exe-dir plugins folders
+// (including this repository's own bundled example plug-ins) is already
+// loaded and listed here before a screen-reader user does anything - the
+// same "never empty" shape Hatch Patterns uses, not the "starts empty,
+// gains rows" shape the document-scoped regions above use. It's the
+// Plug-in Manager panel's own Load File.../Rescan Folders buttons that add
+// more entries after that.
+AccessibleNode BuildPluginsNode(const std::vector<PluginSummary>& plugins);
 
 }  // namespace dino8::platform

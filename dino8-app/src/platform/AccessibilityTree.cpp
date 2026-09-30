@@ -412,4 +412,67 @@ AccessibleNode BuildAuditResultsNode(const std::vector<AuditIssueSummary>& issue
   return list;
 }
 
+namespace {
+AccessibleNode BuildUndoRedoHistoryNode(const std::string& list_name, const std::vector<std::string>& labels) {
+  AccessibleNode list;
+  list.name = list_name;
+  list.role = AccessibleRole::List;
+
+  for (size_t i = 0; i < labels.size(); ++i) {
+    AccessibleNode item;
+    item.role = AccessibleRole::ListItem;
+    item.name = std::to_string(i + 1) + ". " + labels[i];
+    list.children.push_back(std::move(item));
+  }
+  return list;
+}
+}  // namespace
+
+AccessibleNode BuildUndoHistoryNode(const std::vector<std::string>& labels) {
+  return BuildUndoRedoHistoryNode("Undo History", labels);
+}
+
+AccessibleNode BuildRedoHistoryNode(const std::vector<std::string>& labels) {
+  return BuildUndoRedoHistoryNode("Redo History", labels);
+}
+
+AccessibleNode BuildHatchPatternsNode(const std::vector<HatchPatternSummary>& patterns) {
+  AccessibleNode list;
+  list.name = "Hatch Patterns";
+  list.role = AccessibleRole::List;
+  char count_buf[32];
+  std::snprintf(count_buf, sizeof(count_buf), "%zu hatch patterns", patterns.size());
+  list.description = count_buf;
+
+  for (const HatchPatternSummary& p : patterns) {
+    AccessibleNode item;
+    item.role = AccessibleRole::ListItem;
+    item.name = p.name;
+    item.description = p.description;
+    list.children.push_back(std::move(item));
+  }
+  return list;
+}
+
+AccessibleNode BuildPluginsNode(const std::vector<PluginSummary>& plugins) {
+  AccessibleNode list;
+  list.name = "Plug-ins";
+  list.role = AccessibleRole::List;
+  char count_buf[32];
+  std::snprintf(count_buf, sizeof(count_buf), "%zu plug-in(s)", plugins.size());
+  list.description = count_buf;
+
+  for (const PluginSummary& p : plugins) {
+    AccessibleNode item;
+    item.role = AccessibleRole::ListItem;
+    item.name = p.name + " " + p.version + ", " + (p.loaded_ok ? "Loaded" : "Error");
+    item.description = std::to_string(p.command_count) + (p.command_count == 1 ? " command, " : " commands, ") +
+                        std::to_string(p.flow_node_count) +
+                        (p.flow_node_count == 1 ? " flow node" : " flow nodes");
+    if (!p.loaded_ok) item.description += "; " + p.error;
+    list.children.push_back(std::move(item));
+  }
+  return list;
+}
+
 }  // namespace dino8::platform

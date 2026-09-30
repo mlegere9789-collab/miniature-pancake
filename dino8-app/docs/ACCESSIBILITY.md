@@ -188,7 +188,7 @@ through each platform's native accessibility API - exactly the scope the
 ImGui maintainers have discussed for years without landing project-wide.
 That has not changed and is not what shipped here.
 
-### What has shipped: a real AT-SPI2 bridge for the command line, the menu bar, the Layers/Properties panels, the viewports, the Activity Log, Named Views, Named CPlanes, Linetypes, Materials, Clipping Planes, Layouts, Block Manager, Layer State Manager, Document User Text, Lights, Annotation Styles, and Notes (Linux)
+### What has shipped: a real AT-SPI2 bridge for the command line, the menu bar, the Layers/Properties panels, the viewports, the Activity Log, Named Views, Named CPlanes, Linetypes, Materials, Clipping Planes, Layouts, Block Manager, Layer State Manager, Document User Text, Lights, Annotation Styles, Notes, Environments, Audit Results, Undo/Redo History, Hatch Patterns, and Plug-ins (Linux)
 
 The one place in Dino 8 blind command-line-driven use is already the
 primary interaction model - the command line itself
@@ -205,8 +205,9 @@ the real registry daemon and the real `pyatspi` client library (see
 menu bar, the Layers/Properties panels' content, each viewport's title/
 view-menu button state, the Activity Log, Named Views, Named CPlanes,
 Linetypes, Materials, Clipping Planes, Layouts, Block Manager, Layer State
-Manager, Document User Text, Lights, Annotation Styles, and Notes,
-described below.
+Manager, Document User Text, Lights, Annotation Styles, Notes, Environments,
+Audit Results, Undo/Redo History, Hatch Patterns, and Plug-ins, described
+below.
 
 **Command line**: exactly one accessible object, named "Command Line"
 (`ATSPI_ROLE_LOG` - "a text widget or container holding log content"),
@@ -559,6 +560,66 @@ at all; `MakeInvalidCurve` (test/QC-only, same file) deliberately builds one
 genuinely invalid curve so this can be exercised without hand-corrupting a
 real document.
 
+**Undo History and Redo History**: an "Undo History" and a "Redo History"
+accessible (both `ATSPI_ROLE_LIST`), each with one `ATSPI_ROLE_LIST_ITEM`
+per pending-or-undoable (respectively redoable) edit, named `"N. label"` in
+the same numbered order the on-screen `DrawUndoMultipleWindow` popup shows
+for that direction (e.g. `"1. Move"`, `"2. Line"`) - so a screen-reader user
+can read exactly how many steps a given Undo or Redo would need to reach any
+past edit, the same information a sighted user gets by opening the Undo
+Multiple / Redo Multiple window and counting rows. Built from
+`Document::UndoLabels()`/`RedoLabels()` (`ui::UndoHistoryAccessibleTree`/
+`RedoHistoryAccessibleTree`, `src/ui/Panels.cpp`), independent of whether
+either popup window is actually open on screen right now, the same way the
+other panel-backed regions above don't depend on their own panel windows
+being open. Both start empty on a fresh document, the same "starts empty,
+gains rows" shape Named Views/Named CPlanes and Audit Results already use;
+Redo History also empties out the moment a fresh edit is made after an
+Undo, matching the real Redo stack. A screen-reader user can drive either
+direction entirely from the command line (`Undo`/`Redo`, see `Document.cpp`)
+without needing to see either popup at all.
+
+**Hatch Patterns**: a "Hatch Patterns" accessible (`ATSPI_ROLE_LIST`) with
+one `ATSPI_ROLE_LIST_ITEM` per pattern in the loaded Hatch Pattern library,
+named after the pattern (e.g. `"ANSI31"`) with its own human-readable
+description text (`HatchPattern::description`, e.g. `"ANSI Iron, Brick,
+Stone masonry"`, already plain text parsed straight out of the `.pat` file)
+as its `Description` - the same two facts `DrawHatchPatternsPanel`'s
+thumbnail grid conveys visually per pattern (the name below the thumbnail,
+the description as its hover tooltip). Built from
+`HatchLibrary::Instance().Patterns()` (`ui::HatchPatternsAccessibleTree`,
+`src/commands/cmd_drafting2.cpp`), independent of whether the Hatch Patterns
+panel window is actually open on screen right now, the same way the other
+panel-backed regions above don't depend on their own panel windows being
+open. Unlike the document-scoped regions above, this list is never empty
+from application startup: the library always carries its built-in patterns
+even with no `data/*.pat` files present, the same "never empty" shape
+Environments uses. A screen-reader user can apply any pattern entirely from
+the command line (`Hatch`, see `cmd_drafting2.cpp`) after selecting a
+boundary, without needing to see the thumbnail grid at all.
+
+**Plug-ins**: a "Plug-ins" accessible (`ATSPI_ROLE_LIST`) with one
+`ATSPI_ROLE_LIST_ITEM` per loaded plug-in, named after its name, version and
+Loaded/Error status (e.g. `"Fillet Helper 1.2, Loaded"`) with a `Description`
+giving its command and Dino Flow node counts (plus the load error text when
+it failed to load) - the same facts `DrawPlugInManagerPanel`'s
+Name/Version/Commands/Flow Nodes/Status table columns show per row, its
+Status column's hover-tooltip error text folded directly into the row's
+`Description` since AT-SPI has no per-cell tooltip to mirror it into. Built
+from `plugins::Manager::Get().Plugins()` (`plugins::PluginsAccessibleTree`,
+`src/plugins/PluginPanel.cpp`), independent of whether the Plug-in Manager
+panel window is actually open on screen right now, the same way the other
+panel-backed regions above don't depend on their own panel windows being
+open. Not empty by default in a real build: `Application`'s own constructor
+runs `Manager::ScanDefaultFolders` at startup (`app/Application.cpp`), so
+any plug-in already sitting in the config/exe-dir plugins folders -
+including this repository's own bundled `mesh_tools`/`curve_tools`/
+`analysis_tools`/`sample` example plug-ins - is already loaded and listed
+here before a screen-reader user does anything, the same "never empty"
+shape Hatch Patterns uses above, not the "starts empty, gains rows" shape
+Named Views/Named CPlanes and Audit Results use. The panel's own "Load
+File..."/"Rescan Folders" buttons add further entries after that.
+
 **Why these regions and not the rest of the UI**: the command line is the
 one region where "expose the text" is both sufficient (there is no
 meaningful spatial layout to convey - it *is* a stream of text) and
@@ -567,7 +628,8 @@ reachable by typing into it, per section 2). The menu bar, the
 Layers/Properties panels, the viewports, the Activity Log, Named Views,
 Named CPlanes, Linetypes, Materials, Clipping Planes, Layouts, Block
 Manager, Layer State Manager, Document User Text, Lights, Annotation Styles,
-Notes, Environments and Audit Results extend this to the
+Notes, Environments, Audit Results, Undo/Redo History, Hatch Patterns and
+Plug-ins extend this to the
 next-most load-bearing UI surfaces - discovering what commands exist by
 name, inspecting/editing layer and object state, knowing where you're
 looking, reviewing what actually happened to the document, recalling a
@@ -579,11 +641,14 @@ each are placed, recalling a saved layer state, knowing what document
 user-text metadata is stored, knowing which lights exist and whether each is
 on, knowing which annotation style is current and its text height/arrow
 size/font, reading the document's free-text Notes, knowing the render
-Environment's background/ground plane/sun and sky settings, and reviewing
-which objects the last Audit run found invalid and why - without requiring
+Environment's background/ground plane/sun and sky settings, reviewing which
+objects the last Audit run found invalid and why, knowing how many steps an
+Undo or Redo would take to reach a given past edit, knowing which hatch
+patterns are available to apply, and knowing which plug-ins are loaded and
+whether each loaded successfully - without requiring
 the full
 shadow-tree-for-every-widget effort described above.
-Mirroring the 3D viewport and the ~25 remaining panels/dialogs the same way
+Mirroring the 3D viewport and the ~22 remaining panels/dialogs the same way
 would still need that effort; this does not extrapolate to "screen reader
 support" for those in the way a browser or native-toolkit app would provide
 it, and this document does not claim otherwise.
@@ -751,6 +816,30 @@ hang.
   command-line path to *write* this value at all, only to read it (`Notes`
   just opens the panel - see `cmd_file.cpp`'s registration and this
   region's own writeup above).
+- Undo History and Redo History have the same read-only gap as the other
+  list regions above (no `Action` interface - jumping straight to a given
+  numbered entry over AT-SPI itself is not possible, only reading how many
+  steps away it is; a screen-reader user still drives that through the
+  equivalent number of `Undo`/`Redo` command invocations, or the on-screen
+  popup's own click-a-row shortcut), and, matching `DrawUndoMultipleWindow`
+  itself, exposes only each entry's label - not what objects or properties
+  it actually touched, which stays queryable only via `List`/`What` on the
+  objects themselves after the fact.
+- Hatch Patterns has the same read-only gap (no `Action` interface -
+  applying a pattern to the current selection over AT-SPI itself is not
+  possible; a screen-reader user still drives that through the equivalent
+  `Hatch Pattern=<name>` command by name), and it does not expose each
+  pattern's line-family geometry (angle/spacing/dash arrays) - only its name
+  and description text, matching what the on-screen thumbnail conveys
+  without hovering for the tooltip.
+- Plug-ins has the same read-only gap (no `Action` interface - loading,
+  unloading or enabling/disabling a plug-in over AT-SPI itself is not
+  possible; a screen-reader user still drives that through the Plug-in
+  Manager panel's own Load File.../Rescan Folders buttons, since there is no
+  command-line equivalent), and it does not expose each plug-in's registered
+  command/flow-node *names* - only their counts, matching what
+  `DrawPlugInManagerPanel`'s own collapsed table row shows without expanding
+  it further (there is no further expansion on screen either).
 
 **Internal design, independent of AT-SPI itself**: the accessible tree's
 *shape and text* are built by a small, pure, platform-independent module,
@@ -761,7 +850,9 @@ hang.
 `BuildNamedCPlanesNode`, `BuildLinetypesNode`, `BuildMaterialsPanelNode`,
 `BuildClippingPlanesPanelNode`, `BuildLayoutsPanelNode`, `BuildBlockManagerNode`,
 `BuildLayerStateManagerNode`, `BuildDocumentUserTextNode`, `BuildLightsPanelNode`,
-`BuildAnnotationStylesNode`, `BuildDocumentNotesNode`), with its own unit test
+`BuildAnnotationStylesNode`, `BuildDocumentNotesNode`, `BuildEnvironmentsPanelNode`,
+`BuildAuditResultsNode`, `BuildUndoHistoryNode`, `BuildRedoHistoryNode`,
+`BuildHatchPatternsNode`, `BuildPluginsNode`), with its own unit test
 (`tests/test_accessibility_tree.cpp`, registered as the
 `dino8_accessibility_tree` CTest target) that needs no display, no D-Bus, and
 no AT-SPI2 build at all - it runs on every platform and every CI job. The
@@ -780,18 +871,28 @@ Annotation Styles mirrors
 `LinetypesAccessibleTree`/`ClippingPlanesAccessibleTree`/
 `LayoutsAccessibleTree`/`LayerStateManagerAccessibleTree`/
 `DocumentUserTextAccessibleTree`/`AnnotationStylesAccessibleTree`, plus the
-single-Text-value `DocumentNotesAccessibleTree`, `src/ui/RenderPanels.cpp`'s
-`MaterialsAccessibleTree` and `LightsAccessibleTree`, and
+single-Text-value `DocumentNotesAccessibleTree`, plus `UndoHistoryAccessibleTree`/
+`RedoHistoryAccessibleTree` (built from `Document::UndoLabels()`/`RedoLabels()`,
+alongside `DrawUndoMultipleWindow` itself), `src/ui/RenderPanels.cpp`'s
+`MaterialsAccessibleTree`, `LightsAccessibleTree` and `EnvironmentsAccessibleTree`,
 `src/commands/cmd_drafting.cpp`'s
-`BlockManagerAccessibleTree`, alongside `DrawBlockManagerPanel` itself) are
-built straight from `Document`/`Application`/`CommandEngine` state,
-independent of
+`BlockManagerAccessibleTree`, alongside `DrawBlockManagerPanel` itself,
+`src/commands/cmd_drafting2.cpp`'s `HatchPatternsAccessibleTree` (built from
+the global `HatchLibrary::Instance()` singleton rather than `Document`,
+alongside `DrawHatchPatternsPanel` itself), and `src/plugins/PluginPanel.cpp`'s
+`PluginsAccessibleTree` (built from the global `plugins::Manager::Get()`
+singleton, alongside `DrawPlugInManagerPanel` itself) are
+built straight from `Document`/`Application`/`CommandEngine` state (or, for
+Hatch Patterns and Plug-ins, their own global singleton), independent of
 `DrawLayersPanel`/`DrawPropertiesPanel`/`DrawCommandLine`/`Viewport::DrawUI`/
 `DrawActivityLogPanel`/`DrawNamedViewsPanel`/`DrawNamedCPlanesPanel`/
 `DrawLinetypesPanel`/`DrawMaterialsPanel`/`DrawClippingPlanesPanel`/
 `DrawLayoutsPanel`/`DrawBlockManagerPanel`/`DrawLayerStateManager`/
 `DrawDocumentUserTextPanel`/`DrawLightsPanel`/
-`DrawDocumentPropertiesWindow`/`DrawNotesPanel`.
+`DrawDocumentPropertiesWindow`/`DrawNotesPanel`/`DrawUndoMultipleWindow`/
+`DrawHatchPatternsPanel`/`DrawPlugInManagerPanel`. `src/ui/Panels.cpp`'s own
+`AuditResultsAccessibleTree` (built from `Application::AuditResults()`,
+alongside `DrawAuditResultsPanel` itself) follows the same shape.
 `AccessibilityLinux.cpp` is a thin transport on top
 of all of this: every frame it receives the whole tree wholesale
 (`platform::PlatformSetAccessibleTree`) and answers AT-SPI's
@@ -881,5 +982,5 @@ requirement and runs as part of the normal CTest suite everywhere.
 |---|---|
 | High-contrast theme | Shipped: Options > General > Theme > High Contrast |
 | Keyboard-only operability | Audited; one real bug found and fixed (toolbar/sidebar/tab-strip/bell/viewport-title buttons were `InvisibleButton` without `EnableNav`, so Tab skipped them); nav-focus tooltips added for icon-only buttons; free 3D viewport orbit and a few inherently-drag widgets remain mouse-only by design, same as in Rhino |
-| Screen-reader support (command line, menu bar, command options, Layers/Properties panels, viewports, Activity Log, Named Views, Named CPlanes, Linetypes, Materials, Clipping Planes, Layouts, Block Manager, Layer State Manager, Document User Text, Lights, Annotation Styles, Notes, Environments, Audit Results) | Shipped on Linux: a real AT-SPI2 bridge (`src/platform/AccessibilityLinux.cpp`) exposes the command line's live text and full history log, the main menu bar (mirroring exactly what's currently open, built live alongside `ui/MenuBar.cpp`'s own drawing calls), the running command's options (with per-option guidance on how to change it), the Layers/Properties panels' current content (Properties rows note which are real value editors), every viewport's title/view-menu button state (name, active/maximized, current display mode), the persisted Activity Log of finalized edits (timestamp/action/summary per entry, distinct from the command line's own raw text log), the document's saved Named Views (name per saved view), its saved Named CPlanes (name per saved construction plane), its Linetypes (name and dash pattern per linetype), its Materials (name and diffuse colour per material), its Clipping Planes (name, on/off state and viewport scope per plane), its Layouts (name per layout, with the active one called out), its Block Manager (name plus object/instance counts per block definition), its Layer State Manager (name plus layer count per saved state), its Document User Text (key/value per document user-text entry), its Lights (name, type and on/off state per light), its Annotation Styles (name and current-style flag per style, plus text height/arrow size/font as Description), its Notes (the document's free-text Notes, as a single Text value), its render Environment settings (background/ground plane/sun and sky, as Label: value rows), and the last Audit run's results (id/type per invalid object, with the failure reason as Description) as queryable, updating accessible objects, verified end-to-end against the real registry daemon and `pyatspi` (`tests/smoke_accessibility.py`), including the new Environments/Audit Results checks. Windows/macOS not implemented. Built only when `atspi-2`/`gio-2.0` are available; a silent no-op otherwise |
-| Screen-reader support (rest of the UI) | Not implemented - hard ImGui platform limitation (no accessibility-tree bridge for the 3D viewport's own rendered content or the ~25 remaining panels/dialogs on any OS). Descriptive text/tooltips exist everywhere as a prerequisite, but that is not screen-reader support |
+| Screen-reader support (command line, menu bar, command options, Layers/Properties panels, viewports, Activity Log, Named Views, Named CPlanes, Linetypes, Materials, Clipping Planes, Layouts, Block Manager, Layer State Manager, Document User Text, Lights, Annotation Styles, Notes, Environments, Audit Results, Undo/Redo History, Hatch Patterns, Plug-ins) | Shipped on Linux: a real AT-SPI2 bridge (`src/platform/AccessibilityLinux.cpp`) exposes the command line's live text and full history log, the main menu bar (mirroring exactly what's currently open, built live alongside `ui/MenuBar.cpp`'s own drawing calls), the running command's options (with per-option guidance on how to change it), the Layers/Properties panels' current content (Properties rows note which are real value editors), every viewport's title/view-menu button state (name, active/maximized, current display mode), the persisted Activity Log of finalized edits (timestamp/action/summary per entry, distinct from the command line's own raw text log), the document's saved Named Views (name per saved view), its saved Named CPlanes (name per saved construction plane), its Linetypes (name and dash pattern per linetype), its Materials (name and diffuse colour per material), its Clipping Planes (name, on/off state and viewport scope per plane), its Layouts (name per layout, with the active one called out), its Block Manager (name plus object/instance counts per block definition), its Layer State Manager (name plus layer count per saved state), its Document User Text (key/value per document user-text entry), its Lights (name, type and on/off state per light), its Annotation Styles (name and current-style flag per style, plus text height/arrow size/font as Description), its Notes (the document's free-text Notes, as a single Text value), its render Environment settings (background/ground plane/sun and sky, as Label: value rows), the last Audit run's results (id/type per invalid object, with the failure reason as Description), its pending Undo/Redo history (numbered label per pending-or-undoable/redoable edit), the loaded Hatch Pattern library (name and description per pattern), and its loaded plug-ins (name/version/status plus command and flow-node counts per plug-in) as queryable, updating accessible objects, verified end-to-end against the real registry daemon and `pyatspi` (`tests/smoke_accessibility.py`), including the new Undo/Redo History/Hatch Patterns/Plug-ins checks. Windows/macOS not implemented. Built only when `atspi-2`/`gio-2.0` are available; a silent no-op otherwise |
+| Screen-reader support (rest of the UI) | Not implemented - hard ImGui platform limitation (no accessibility-tree bridge for the 3D viewport's own rendered content or the ~22 remaining panels/dialogs on any OS). Descriptive text/tooltips exist everywhere as a prerequisite, but that is not screen-reader support |
