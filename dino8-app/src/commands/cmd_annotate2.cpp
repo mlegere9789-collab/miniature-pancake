@@ -65,7 +65,11 @@ Point3d CenterOf(const SceneObject& o) {
 }
 
 // A leader annotation: arrow at `anchor`, landing at `at`, text after it.
-int AddLeaderText(CommandContext& ctx, const std::string& kind, Point3d anchor, Point3d at, const std::string& text) {
+// `extra_tags` (e.g. a measured dimension's MeasureRefIds/MeasureAt - see
+// MeasureDimCommand/UpdateMeasureDims below) is copied onto every curve in
+// the group, same purpose as AddAnnotationGroup's own `extra_tags` param.
+int AddLeaderText(CommandContext& ctx, const std::string& kind, Point3d anchor, Point3d at, const std::string& text,
+                  const std::map<std::string, std::string>& extra_tags = {}) {
   const ON_Plane pl = ActivePlane(ctx);
   const double h = AnnotationTextHeight(ctx);
   std::vector<kernel::NurbsCurve> curves;
@@ -76,16 +80,93 @@ int AddLeaderText(CommandContext& ctx, const std::string& kind, Point3d anchor, 
   GlyphSpec g;
   g.text = text; g.height = h; g.plane = pl; g.center = false;
   g.plane.SetOrigin(at + pl.xaxis * (h * 0.4) - pl.yaxis * (h * 0.5));
-  return AddAnnotationGroup(ctx, kind, curves, g);
+  return AddAnnotationGroup(ctx, kind, curves, g, -1, extra_tags);
+}
+
+// Encodes/decodes a list of object ids as "id,id,id" for a user_text tag -
+// same encoding as cmd_drafting2.cpp's IdsTag/ParseIdsTag (BomRefIds), kept
+// as its own copy here since the two files share no common helper header for
+// it (annotate_common.h is the shared one, and this encoding is specific to
+// the measured-dimension associativity below).
+std::string ObjIdsTag(const std::vector<ObjectId>& ids) {
+  std::string s;
+  for (ObjectId id : ids) { if (!s.empty()) s += ","; s += std::to_string(id); }
+  return s;
+}
+std::vector<ObjectId> ParseObjIdsTag(const std::string& s) {
+  std::vector<ObjectId> out;
+  std::string cur;
+  auto flush = [&]() { if (!cur.empty()) { out.push_back(static_cast<ObjectId>(std::strtoull(cur.c_str(), nullptr, 10))); cur.clear(); } };
+  for (char c : s) { if (c == ',') flush(); else cur += c; }
+  flush();
+  return out;
 }
 
 // ---------------------------------------------------------------------------
-// Measured dimensions: DimArea, DimCurveLength, DimVolume
+// Measured dimensions: DimArea, DimCurveLength, DimVolume. Associative when
+// every measured object still resolves (MeasureRefIds - see
+// UpdateMeasureDims below): the recorded object ids are re-measured with the
+// exact same MeasureOne math the creating command used, so an edit to a
+// source curve/surface/solid's shape (not just its position) is picked up,
+// unlike the coincident-point anchoring DimLinear/DimAngle use. A since-
+// deleted id is dropped from the sum on update, same as BillOfMaterials's
+// own BomRefIds re-derivation (cmd_drafting2.cpp).
 // ---------------------------------------------------------------------------
+
+enum class MeasureDimKind { Area, Length, Volume };
+
+const char* MeasureDimLabel(MeasureDimKind k) {
+  switch (k) {
+    case MeasureDimKind::Area: return "DimArea";
+    case MeasureDimKind::Length: return "DimCurveLength";
+    default: return "DimVolume";
+  }
+}
+
+// Measures one object for `kind`, same math for both the creating command
+// (MeasureDimCommand::OnObjects) and UpdateMeasureDims's re-derivation.
+// Returns false (leaving `v`/`anchor` untouched) when the object doesn't
+// measure under this kind (wrong type, curve not closed for Area, mesh not a
+// closed manifold for Volume, ...) - the caller drops it from the sum, same
+// "an unmeasurable member no longer counts" rule BomRefIds/PanelRefIds use
+// for a since-changed source object.
+bool MeasureOne(const SceneObject& o, MeasureDimKind kind, double& v, Point3d& anchor) {
+  switch (kind) {
+    case MeasureDimKind::Area: {
+      const double a = AreaOf(o);
+      if (a <= 0) return false;
+      v = a; anchor = CenterOf(o); return true;
+    }
+    case MeasureDimKind::Length: {
+      if (o.kind != ObjectKind::Curve || !o.curve) return false;
+      const double len = o.curve->Length();
+      if (len <= 0) return false;
+      v = len;
+      anchor = o.curve->PointAt(o.curve->Domain().min + (o.curve->Domain().max - o.curve->Domain().min) / 2);
+      return true;
+    }
+    case MeasureDimKind::Volume: {
+      std::optional<kernel::Mesh> m = MeshOf(o, 0.005);
+      if (!m || !m->IsClosedManifold()) return false;
+      const double vol = std::fabs(m->Volume());
+      if (vol <= 0) return false;
+      v = vol; anchor = CenterOf(o); return true;
+    }
+  }
+  return false;
+}
+
+std::string MeasureDimText(MeasureDimKind kind, double value, const std::string& units) {
+  switch (kind) {
+    case MeasureDimKind::Area: return "Area = " + FormatNumber(value) + " square " + units;
+    case MeasureDimKind::Length: return "Length = " + FormatNumber(value) + " " + units;
+    default: return "Volume = " + FormatNumber(value) + " cubic " + units;
+  }
+}
 
 class MeasureDimCommand : public Command {
  public:
-  enum class Kind { Area, Length, Volume };
+  using Kind = MeasureDimKind;
   explicit MeasureDimCommand(Kind k) : kind_(k) {}
   void Begin(CommandContext&) override {
     switch (kind_) {
@@ -97,38 +178,30 @@ class MeasureDimCommand : public Command {
   void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
     for (ObjectId id : ids) {
       const SceneObject* o = ctx.Doc().Find(id);
-      if (!o) continue;
       double v = 0;
-      if (kind_ == Kind::Area) v = AreaOf(*o);
-      else if (kind_ == Kind::Length) v = o->kind == ObjectKind::Curve && o->curve ? o->curve->Length() : 0;
-      else { std::optional<kernel::Mesh> m = MeshOf(*o, 0.005); if (m && m->IsClosedManifold()) v = std::fabs(m->Volume()); }
-      if (v <= 0) continue;
+      Point3d a;
+      if (!o || !MeasureOne(*o, kind_, v, a)) continue;
       value_ += v;
-      anchor_ = CenterOf(*o);
-      if (kind_ == Kind::Length && o->kind == ObjectKind::Curve) anchor_ = o->curve->PointAt(o->curve->Domain().min + (o->curve->Domain().max - o->curve->Domain().min) / 2);
-      ++count_;
+      anchor_ = a;
+      ids_.push_back(id);
     }
-    if (count_ == 0) { ctx.Warn(kind_ == Kind::Area ? "Select a closed planar curve, surface or polysurface" : kind_ == Kind::Length ? "Select a curve" : "Select a closed object"); Finish(); return; }
+    if (ids_.empty()) { ctx.Warn(kind_ == Kind::Area ? "Select a closed planar curve, surface or polysurface" : kind_ == Kind::Length ? "Select a curve" : "Select a closed object"); Finish(); return; }
     WantPoint("Leader location");
   }
   void OnPoint(CommandContext& ctx, Point3d p) override {
     ctx.ClearPreview();
-    std::string label, text;
-    switch (kind_) {
-      case Kind::Area: label = "DimArea"; text = "Area = " + FormatNumber(value_) + " square " + Units(ctx); break;
-      case Kind::Length: label = "DimCurveLength"; text = "Length = " + FormatNumber(value_) + " " + Units(ctx); break;
-      case Kind::Volume: label = "DimVolume"; text = "Volume = " + FormatNumber(value_) + " cubic " + Units(ctx); break;
-    }
+    const std::string label = MeasureDimLabel(kind_);
+    const std::string text = MeasureDimText(kind_, value_, Units(ctx));
     ctx.Doc().BeginChange(label);
-    AddLeaderText(ctx, label, anchor_, p, text);
-    ctx.Print(label + ": " + text);
+    AddLeaderText(ctx, label, anchor_, p, text, {{"MeasureRefIds", ObjIdsTag(ids_)}, {"MeasureAt", PointTag(p)}});
+    ctx.Print(label + ": " + text + " (associative to the measured object(s))");
     Finish();
   }
-  void OnHover(CommandContext& ctx, Point3d h) override { if (count_ > 0) { ctx.ClearPreview(); ctx.AddPreviewLine(anchor_, h); } }
+  void OnHover(CommandContext& ctx, Point3d h) override { if (!ids_.empty()) { ctx.ClearPreview(); ctx.AddPreviewLine(anchor_, h); } }
   void OnCancel(CommandContext& ctx) override { ctx.ClearPreview(); }
   Kind kind_;
   double value_ = 0;
-  int count_ = 0;
+  std::vector<ObjectId> ids_;
   Point3d anchor_;
 };
 
@@ -209,6 +282,23 @@ bool DirectionOf(const SceneObject& o, Vector3d& out, bool& is_normal) {
   return false;
 }
 
+// Wraps DirectionOf with the object's center, so both DimCreaseAngleCommand
+// and UpdateMeasureDims's re-derivation share one "resolve an object to its
+// measured direction" path - same reasoning as annotate_common.h's own
+// ResolveArcAnchor/ResolveLineAnchor for DimRadius/CenterLine.
+bool ResolveDirectionAnchor(Document& doc, ObjectId id, Vector3d& dir, bool& is_normal, Point3d& center) {
+  const SceneObject* o = doc.Find(id);
+  if (!o || !DirectionOf(*o, dir, is_normal)) return false;
+  center = CenterOf(*o);
+  return true;
+}
+
+// Associative when both measured objects still resolve (DimRefObj1/
+// DimRefObj2, re-evaluated by UpdateMeasureDims below): an edit that changes
+// either object's direction (a line re-pointed, a face's plane tilted) is
+// picked up, not just a move of the object as a whole - same "shape edits
+// propagate, not just position" contract MeasureDimCommand's MeasureRefIds
+// gives DimArea/DimCurveLength/DimVolume above.
 class DimCreaseAngleCommand : public Command {
  public:
   void Begin(CommandContext&) override { WantObjects("Select two lines or two planar faces", 2); }
@@ -220,7 +310,7 @@ class DimCreaseAngleCommand : public Command {
       const SceneObject* o = ctx.Doc().Find(id);
       Vector3d d;
       bool n = false;
-      if (o && DirectionOf(*o, d, n)) { dirs.push_back(d); centers.push_back(CenterOf(*o)); normal = normal || n; }
+      if (o && DirectionOf(*o, d, n)) { dirs.push_back(d); centers.push_back(CenterOf(*o)); normal = normal || n; ref_ids_.push_back(id); }
       if (dirs.size() == 2) break;
     }
     if (dirs.size() < 2) { ctx.Warn("Select two lines or two planar faces"); Finish(); return; }
@@ -234,8 +324,9 @@ class DimCreaseAngleCommand : public Command {
     ctx.ClearPreview();
     const std::string text = FormatNumber(angle_) + " deg" + (normal_ ? " (crease " + FormatNumber(180.0 - angle_) + " deg)" : "");
     ctx.Doc().BeginChange("DimCreaseAngle");
-    AddLeaderText(ctx, "DimCreaseAngle", anchor_, p, text);
-    ctx.Print("DimCreaseAngle: " + text);
+    AddLeaderText(ctx, "DimCreaseAngle", anchor_, p, text,
+                  {{"DimRefObj1", std::to_string(ref_ids_[0])}, {"DimRefObj2", std::to_string(ref_ids_[1])}, {"MeasureAt", PointTag(p)}});
+    ctx.Print("DimCreaseAngle: " + text + " (associative to both measured objects)");
     Finish();
   }
   void OnHover(CommandContext& ctx, Point3d h) override { ctx.ClearPreview(); ctx.AddPreviewLine(anchor_, h); }
@@ -243,6 +334,7 @@ class DimCreaseAngleCommand : public Command {
   double angle_ = 0;
   bool normal_ = false;
   Point3d anchor_;
+  std::vector<ObjectId> ref_ids_;
 };
 
 // ---------------------------------------------------------------------------
@@ -1322,6 +1414,70 @@ void RegisterAnnotate2Commands(CommandEngine& e) {
   Reg(e, "DimVolume", Make<MeasureDimCommand>(MeasureDimCommand::Kind::Volume), CommandStatus::Implemented, curves);
   Reg(e, "DimOrdinate", Make<DimOrdinateCommand>(), CommandStatus::Implemented, curves);
   Reg(e, "DimCreaseAngle", Make<DimCreaseAngleCommand>(), CommandStatus::Implemented, "Angle between two lines or the first planar faces of two objects; no face-level sub-object picking on polysurfaces (nothing in this app has that yet), so a polysurface always measures from its first planar face.");
+  Reg(e, "UpdateMeasureDims", Immediate([](CommandContext& ctx) {
+        static const std::vector<std::string> kKinds = {"DimArea", "DimCurveLength", "DimVolume", "DimCreaseAngle"};
+        std::vector<int> groups;
+        std::map<int, std::string> kind_of;
+        for (const SceneObject& o : ctx.Doc().Objects()) {
+          auto it = o.user_text.find("Annotation");
+          if (it == o.user_text.end() || std::find(kKinds.begin(), kKinds.end(), it->second) == kKinds.end()) continue;
+          if (!o.user_text.count("MeasureRefIds") && !o.user_text.count("DimRefObj1")) continue;
+          if (o.group_id >= 0 && !kind_of.count(o.group_id)) { kind_of[o.group_id] = it->second; groups.push_back(o.group_id); }
+        }
+        if (groups.empty()) { ctx.Print("UpdateMeasureDims: no associative measured dimensions in this document"); return; }
+        ctx.Doc().BeginChange("UpdateMeasureDims");
+        int updated = 0, skipped = 0;
+        for (int g : groups) {
+          const std::string kind = kind_of[g];
+          std::string ref_ids_tag, at_tag, ref1_tag, ref2_tag;
+          for (const SceneObject& o : ctx.Doc().Objects()) {
+            if (o.group_id != g) continue;
+            if (auto it = o.user_text.find("MeasureRefIds"); it != o.user_text.end()) ref_ids_tag = it->second;
+            if (auto it = o.user_text.find("MeasureAt"); it != o.user_text.end()) at_tag = it->second;
+            if (auto it = o.user_text.find("DimRefObj1"); it != o.user_text.end()) ref1_tag = it->second;
+            if (auto it = o.user_text.find("DimRefObj2"); it != o.user_text.end()) ref2_tag = it->second;
+          }
+          Point3d at;
+          if (!ParsePointTag(at_tag, at)) { ++skipped; continue; }
+          if (kind == "DimCreaseAngle") {
+            if (ref1_tag.empty() || ref2_tag.empty()) { ++skipped; continue; }
+            const ObjectId r1 = static_cast<ObjectId>(std::strtoull(ref1_tag.c_str(), nullptr, 10));
+            const ObjectId r2 = static_cast<ObjectId>(std::strtoull(ref2_tag.c_str(), nullptr, 10));
+            Vector3d d1, d2; bool n1 = false, n2 = false; Point3d c1, c2;
+            if (!ResolveDirectionAnchor(ctx.Doc(), r1, d1, n1, c1) || !ResolveDirectionAnchor(ctx.Doc(), r2, d2, n2, c2)) { ++skipped; continue; }
+            const double c = std::clamp(ON_DotProduct(d1, d2), -1.0, 1.0);
+            const double angle = std::acos(c) * 180.0 / ON_PI;
+            const bool normal = n1 || n2;
+            const Point3d anchor = (c1 + c2) / 2.0;
+            const std::string text = FormatNumber(angle) + " deg" + (normal ? " (crease " + FormatNumber(180.0 - angle) + " deg)" : "");
+            for (ObjectId id : ctx.Doc().GroupMembers(g)) ctx.Doc().Remove(id);
+            if (AddLeaderText(ctx, "DimCreaseAngle", anchor, at, text, {{"DimRefObj1", ref1_tag}, {"DimRefObj2", ref2_tag}, {"MeasureAt", at_tag}}) >= 0) {
+              ++updated;
+              ctx.Print("UpdateMeasureDims:   DimCreaseAngle now " + text);
+            } else ++skipped;
+            continue;
+          }
+          const MeasureDimKind mk = kind == "DimArea" ? MeasureDimKind::Area : kind == "DimCurveLength" ? MeasureDimKind::Length : MeasureDimKind::Volume;
+          std::vector<ObjectId> ids;
+          for (ObjectId id : ParseObjIdsTag(ref_ids_tag)) if (ctx.Doc().Find(id)) ids.push_back(id);
+          double value = 0; Point3d anchor = at; bool any = false;
+          for (ObjectId id : ids) {
+            const SceneObject* o = ctx.Doc().Find(id);
+            double v = 0; Point3d a;
+            if (!o || !MeasureOne(*o, mk, v, a)) continue;
+            value += v; anchor = a; any = true;
+          }
+          if (!any) { ++skipped; continue; }
+          const std::string text = MeasureDimText(mk, value, Units(ctx));
+          for (ObjectId id : ctx.Doc().GroupMembers(g)) ctx.Doc().Remove(id);
+          if (AddLeaderText(ctx, kind, anchor, at, text, {{"MeasureRefIds", ObjIdsTag(ids)}, {"MeasureAt", at_tag}}) >= 0) {
+            ++updated;
+            ctx.Print("UpdateMeasureDims:   " + kind + " now " + text);
+          } else ++skipped;
+        }
+        ctx.Print("UpdateMeasureDims: " + std::to_string(updated) + " updated, " + std::to_string(skipped) + " skipped");
+      }), CommandStatus::Implemented,
+      "Re-derives DimArea/DimCurveLength/DimVolume (summed from every recorded source object's current shape, MeasureRefIds) and DimCreaseAngle (from its two recorded objects' current direction, DimRefObj1/DimRefObj2) and rebuilds each leader/text in place - the same explicit-recompute shape as UpdateDimensions (cmd_annotate.cpp) and UpdateTitleBlock/UpdatePanelSchedule/UpdateBillOfMaterials (cmd_drafting2.cpp), not an automatic hook on every document edit. A dimension built before this window (no MeasureRefIds/DimRefObj1 tag), or one whose recorded object(s) no longer measure under their kind (deleted, or a shape edit made a DimArea curve non-closed etc.), is skipped and stays (or reverts to) a static baked measurement; the leader's landing point (MeasureAt) is kept fixed across an update, only the value and arrowhead position change.");
   Reg(e, "DimRecenterText", OnSelection("Select dimensions to recenter text", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         const int n = EditGroups(ctx, ids, "DimRecenterText", [](GlyphSpec&) {});
         ctx.Print("DimRecenterText: " + std::to_string(n) + " annotation(s) rebuilt at their original text position");

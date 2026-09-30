@@ -139,24 +139,69 @@ Move 700,0,0 720,15,0
 UpdateDimensions
 SelNone
 # Two parallel vertical lines 20 units apart (x=800 and x=820, y 0..10);
-# CenterLine's midline runs x=810, y 0..10. The id (157/158; verified by
-# running this exact script and reading back its own "Object id" trace,
-# same approach as boolean_adversarial_script.txt's header comment
-# describes) is needed since CenterLine takes exactly these two lines
-# selected, not whatever SelLast/SelAll would grab.
+# CenterLine's midline runs x=810, y 0..10. A dedicated NewLayer (made
+# current, so both new lines land on it and nothing else does) plus
+# SelLayer selects exactly these two lines for CenterLine's 2-object pick -
+# corrected 2026-09-30, was a hardcoded SelID pair that had drifted stale:
+# a *wrong-but-real* id is accepted by SelID without complaint (unlike a
+# truly invalid one, which at least warns), so a stale pair fails quietly
+# with the wrong midline instead of an obvious error, and when both ids
+# happen to resolve to nothing at all (as this one had) CenterLine's own
+# WantObjects(2) never gets satisfied and it sits waiting for more picks,
+# silently swallowing every subsequent script line as an object pick/point
+# instead of a command - no-op'ing everything below it, including this
+# file's own later checks. A per-block layer sidesteps id-counting
+# entirely.
+NewLayer CenterLineTest
 Line 800,0,0 800,10,0
+SelLast
+SetObjectName CenterLine1
 Line 820,0,0 820,10,0
-SelID 157 158
+SelNone
+SelLayer
 CenterLine
 SelNone
-# Moving the first line (id 157) to x=780 shifts the midline from x=810 to
-# x=800, which UpdateDimensions must pick up - proving CenterLine tracks
-# the live geometry, not a static copy drawn once. SelID adds rather than
-# replaces the current selection (see cmd_select.cpp), hence the SelNone
-# right above: without it, id 158 would still be selected too and Move
-# would translate both lines together, which would still (coincidentally)
-# shift the midline and could mask a real associativity regression.
-SelID 157
+# Moving the first line to x=780 shifts the midline from x=810 to x=800,
+# which UpdateDimensions must pick up - proving CenterLine tracks the live
+# geometry, not a static copy drawn once.
+SelName CenterLine1
 Move 800,0,0 780,0,0
 UpdateDimensions
+SelNone
+# --- Associative DimVolume: a closed Box solid measured, then Scale1D
+# stretches it along its x-extent (900-910 -> 900-920) doubling its volume
+# from 1000 to 2000; UpdateMeasureDims must re-measure the box's current
+# volume instead of the value baked at creation time (MeasureRefIds - see
+# cmd_annotate2.cpp).
+Box 900,0,0 910,10,0 10
+SelLast
+SetObjectName VolBox
+DimVolume
+920,20,0
+SelName VolBox
+Scale1D 900,0,0 2
+UpdateMeasureDims
+SelNone
+# --- Associative DimCreaseAngle: two real Line objects measured directly
+# (whole-object reference, not coincident-point matching - same shape as
+# DimRadius/CenterLine). Same dedicated-layer + SelLayer technique as the
+# CenterLine fix above selects exactly these two lines for DimCreaseAngle's
+# 2-object pick, instead of a hardcoded SelID pair that can silently drift
+# onto some other, unrelated real object (see that block's comment for why
+# this bit both blocks during this window's own development). Rotating the
+# second line 45 degrees about their shared corner (1000,0,0) changes the
+# angle between them from 90 to 45 degrees; UpdateMeasureDims must redraw
+# it as 45, not the original 90.
+NewLayer CreaseAngleTest
+Line 1000,0,0 1000,10,0
+Line 1000,0,0 1010,0,0
+SelLast
+SetObjectName CreaseLine2
+SelNone
+SelLayer
+DimCreaseAngle
+1010,10,0
+SelName CreaseLine2
+Rotate 1000,0,0 45
+UpdateMeasureDims
 SelNone
