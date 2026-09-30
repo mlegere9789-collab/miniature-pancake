@@ -908,16 +908,42 @@ kernel::Mesh BuildFilletSolid(const std::vector<Point3d>& spine_in, const std::v
 class FilletTwoSurfacesCommand : public Command {
  public:
   enum class Mode { Fillet, Chamfer, VariableFillet, VariableChamfer };
+  // Same three settings as FilletEdgeCommand's own RailType (cmd_fillet.cpp)
+  // - a separate enum rather than a shared one purely because this class is
+  // defined ahead of FilletEdgeCommand in this file, not a difference in
+  // meaning.
+  enum class RailType { RollingBall, DistFromEdge, DistBetweenRails };
   explicit FilletTwoSurfacesCommand(Mode m) : mode_(m) {}
   void Begin(CommandContext&) override {
     options = {{"Radius", FormatNumber(radius_), {}, true, false}};
     if (mode_ == Mode::VariableFillet || mode_ == Mode::VariableChamfer) options.push_back({"EndRadius", FormatNumber(end_radius_), {}, true, false});
+    // Rho (strictly between 0 and 1): kernel::FilletConvexEdgeConic/
+    // FilletConcaveEdgeConic's own exact ellipse/parabola/hyperbola
+    // cross-section, the same option FilletEdgeCommand's own single-edge
+    // Fillet mode already exposes (cmd_fillet.cpp). Fillet mode only - the
+    // approximate RuledBetween chamfer path and the plane+cylinder/general
+    // variable-radius lofts have no non-circular cross-section to select
+    // between, so there is nothing for Rho to switch there.
+    if (mode_ == Mode::Fillet) {
+      options.push_back({"Rho", "", {}, true, false});
+      // RailType (default RollingBall): kernel::FilletConvexEdgeByDistanceFromEdge/
+      // ByDistanceBetweenRails (and their concave mirrors) - the SAME
+      // circular rolling-ball fillet as a plain Radius, just specified as a
+      // distance instead, mirroring FilletEdgeCommand's own RailType option.
+      // Radius supplies that distance under either non-default setting.
+      // Mutually exclusive with Rho by construction (Rho's own block in Run()
+      // always returns once Rho is set, the same precedence FilletEdgeCommand
+      // already establishes between its own Rho and RailType blocks).
+      options.push_back({"RailType", "RollingBall", {"RollingBall", "DistFromEdge", "DistBetweenRails"}, false, false});
+    }
     options.push_back({"Trim", "Yes", {"Yes", "No"}, false, true});
     WantPoint("Click the first surface");
   }
   void OnOption(CommandContext&, const std::string& n, const std::string& v) override {
     if (n == "Radius") radius_ = std::atof(v.c_str());
     if (n == "EndRadius") end_radius_ = std::atof(v.c_str());
+    if (n == "Rho") rho_ = v.empty() ? std::nullopt : std::optional<double>(std::atof(v.c_str()));
+    if (n == "RailType") rail_type_ = v == "DistFromEdge" ? RailType::DistFromEdge : v == "DistBetweenRails" ? RailType::DistBetweenRails : RailType::RollingBall;
     if (n == "Trim") trim_ = (v == "Yes");
   }
   void OnPoint(CommandContext& ctx, Point3d p) override {
@@ -997,6 +1023,195 @@ class FilletTwoSurfacesCommand : public Command {
       // Exact path unavailable here (not adjacent, curved faces, or a
       // non-manifold third face) - fall through to the approximate path
       // below exactly as before this wiring existed.
+    }
+    // Exact conic ("Rho") fillet: kernel::FilletConvexEdgeConic/
+    // FilletConcaveEdgeConic's own ellipse/parabola/hyperbola cross-section
+    // blend, requested via the Rho option above - previously exposed only
+    // from FilletEdgeCommand's own single-edge Fillet mode
+    // (TryExactConicFillet, cmd_fillet.cpp), never from this independently-
+    // picked-faces command at all (there was no Rho option here before this
+    // pass). Reachable under the same "same solid, Trim=Yes" condition as
+    // the exact chamfer block above, for the identical reason
+    // (FilletConvexEdgeConic/FilletConcaveEdgeConic both need one shared
+    // ON_BrepEdge, which only exists when both picks land on one object).
+    // Like the single-edge Rho case, there is deliberately no fallthrough
+    // to the approximate path on failure, for ANY reason (not just a
+    // PlanarFaces() rejection): BuildFillet/RuledBetween below can only
+    // ever build a circular cross-section, so a Rho request they can't
+    // satisfy exactly always warns and returns rather than silently
+    // building a plain round fillet that quietly ignores Rho - including
+    // when the two picks are genuinely independent surfaces (fa.id !=
+    // fb.id, no shared edge to identify at all) or Trim=No (the exact path
+    // always replaces the whole solid, unlike the Chamfer/RailType/
+    // VariableFillet blocks above and below, which fall through silently
+    // for those same two reasons because their own approximate paths CAN
+    // still honor a plain Radius/EndRadius under Trim=No or independent
+    // surfaces - there is no equivalent honest approximation for Rho).
+    // Symmetric distance only (distance_i == distance_j == radius_) -
+    // unlike FilletEdgeCommand's own Rho wiring, this command has no
+    // Distance2 option to supply an independent second setback.
+    if (mode_ == Mode::Fillet && rho_.has_value()) {
+      std::optional<ON_Brep> solid = (fa.id == fb.id) ? BrepOfObject(*oa) : std::nullopt;
+      Point3d p0, p1;
+      bool got = false;
+      std::string convex_err, concave_err, reason;
+      ON_Brep exact;
+      if (!trim_) {
+        reason = "Trim=No (the exact path always replaces the whole solid)";
+      } else if (fa.id != fb.id) {
+        reason = "the two picks are independent surfaces with no shared edge";
+      } else if (!solid || !FindSharedEdgeEndpoints(*solid, fa.face, fb.face, p0, p1)) {
+        reason = "the two faces are not adjacent on one solid";
+      } else {
+        kernel::Brep kb;
+        kb.raw() = *solid;
+        try {
+          exact = kernel::FilletConvexEdgeConic(kb, p0, p1, radius_, radius_, *rho_).raw();
+          got = true;
+        } catch (const std::exception& ex) { convex_err = ex.what(); }
+        if (!got) {
+          try {
+            exact = kernel::FilletConcaveEdgeConic(kb, p0, p1, radius_, radius_, *rho_).raw();
+            got = true;
+          } catch (const std::exception& ex) { concave_err = ex.what(); }
+        }
+        if (!got) reason = "convex attempt: " + convex_err + "; concave attempt: " + concave_err;
+      }
+      if (got) {
+        ctx.Doc().BeginChange("FilletSrf");
+        if (SceneObject* orig = ctx.Doc().Find(fa.id)) {
+          orig->kind = ObjectKind::Brep;
+          if (!orig->brep) orig->brep = std::make_unique<kernel::Brep>();
+          orig->brep->raw() = exact;
+          orig->surface.reset();
+          orig->InvalidateDisplay();
+        }
+        ctx.Doc().Select(fa.id, true);
+        ctx.Print("FilletSrf: faces " + std::to_string(fa.face) + " and " + std::to_string(fb.face) + " of object " + std::to_string(fa.id) +
+                   " replaced with an exact conic fillet (rho " + FormatNumber(*rho_) + ", distance " + FormatNumber(radius_) + ")");
+        return;
+      }
+      ctx.Warn("FilletSrf: an exact conic (Rho) fillet needs the two faces to share an edge on one planar-faced solid with Trim=Yes (" + reason +
+                "); use a plain Radius for the approximate rolling-ball-derived fillet instead");
+      return;
+    }
+    // Exact RailType (DistFromEdge/DistBetweenRails) fillet: kernel::
+    // FilletConvexEdgeByDistanceFromEdge/ByDistanceBetweenRails (and their
+    // concave mirrors) - the same circular rolling-ball fillet a plain
+    // Radius builds, just specified as a distance via RailType instead of
+    // the radius directly, mirroring FilletEdgeCommand's own RailType
+    // wiring (TryExactRailFillet, cmd_fillet.cpp) - previously exposed only
+    // from that single-edge command, never from this independently-picked-
+    // faces command (there was no RailType option here before this pass).
+    // Reachable when Rho did NOT already fire (Rho's own block above always
+    // returns once Rho is set - the same mutual-exclusivity FilletEdgeCommand's
+    // own Rho/RailType blocks already have). Like Rho, there is deliberately
+    // no fallthrough to the approximate path on failure, for ANY reason:
+    // EdgeDihedralAngleForRailType (the conversion both kernel functions
+    // dispatch through) requires the whole solid to be planar-faced, so a
+    // request that can't be satisfied exactly always warns and returns
+    // rather than silently reinterpreting the typed distance as a literal
+    // radius - including for independent surfaces or Trim=No, the same two
+    // extra reasons Rho's own block above always refuses rather than
+    // silently falling back to a plain-Radius interpretation.
+    if (mode_ == Mode::Fillet && rail_type_ != RailType::RollingBall) {
+      std::optional<ON_Brep> solid = (fa.id == fb.id) ? BrepOfObject(*oa) : std::nullopt;
+      Point3d p0, p1;
+      bool got = false;
+      std::string convex_err, concave_err, reason;
+      ON_Brep exact;
+      const bool from_edge = rail_type_ == RailType::DistFromEdge;
+      if (!trim_) {
+        reason = "Trim=No (the exact path always replaces the whole solid)";
+      } else if (fa.id != fb.id) {
+        reason = "the two picks are independent surfaces with no shared edge";
+      } else if (!solid || !FindSharedEdgeEndpoints(*solid, fa.face, fb.face, p0, p1)) {
+        reason = "the two faces are not adjacent on one solid";
+      } else {
+        kernel::Brep kb;
+        kb.raw() = *solid;
+        try {
+          exact = (from_edge ? kernel::FilletConvexEdgeByDistanceFromEdge(kb, p0, p1, radius_)
+                              : kernel::FilletConvexEdgeByDistanceBetweenRails(kb, p0, p1, radius_))
+                      .raw();
+          got = true;
+        } catch (const std::exception& ex) { convex_err = ex.what(); }
+        if (!got) {
+          try {
+            exact = (from_edge ? kernel::FilletConcaveEdgeByDistanceFromEdge(kb, p0, p1, radius_)
+                                : kernel::FilletConcaveEdgeByDistanceBetweenRails(kb, p0, p1, radius_))
+                        .raw();
+            got = true;
+          } catch (const std::exception& ex) { concave_err = ex.what(); }
+        }
+        if (!got) reason = "convex attempt: " + convex_err + "; concave attempt: " + concave_err;
+      }
+      if (got) {
+        ctx.Doc().BeginChange("FilletSrf");
+        if (SceneObject* orig = ctx.Doc().Find(fa.id)) {
+          orig->kind = ObjectKind::Brep;
+          if (!orig->brep) orig->brep = std::make_unique<kernel::Brep>();
+          orig->brep->raw() = exact;
+          orig->surface.reset();
+          orig->InvalidateDisplay();
+        }
+        ctx.Doc().Select(fa.id, true);
+        ctx.Print("FilletSrf: faces " + std::to_string(fa.face) + " and " + std::to_string(fb.face) + " of object " + std::to_string(fa.id) +
+                   " replaced with an exact fillet (RailType=" + std::string(from_edge ? "DistFromEdge" : "DistBetweenRails") + ", distance " + FormatNumber(radius_) + ")");
+        return;
+      }
+      ctx.Warn("FilletSrf: an exact RailType=" + std::string(from_edge ? "DistFromEdge" : "DistBetweenRails") +
+                " fillet needs the two faces to share an edge on one planar-faced solid with Trim=Yes (" + reason +
+                "); use RailType=RollingBall for the approximate rolling-ball-derived fillet instead");
+      return;
+    }
+    // Exact TAPERED fillet, tried FIRST for VariableFillet (r0 != r1):
+    // kernel::FilletConvexEdgeTapered's own two-radius overload builds the
+    // SAME piecewise-linear rolling-ball taper BuildPlaneCylinderVariableFillet
+    // below already claims is exact for a plane+perpendicular-cylinder pair,
+    // but as the genuine closed-form kernel construction (real ConicalFace
+    // segments, corner-notch splicing included) rather than the app's own
+    // separate arc-lofting reimplementation of the same math - the identical
+    // "try the exact kernel construction first" pattern FilletEdgeCommand's
+    // own TryExactTaperedFillet (cmd_fillet.cpp) already established for a
+    // single picked edge. Reachable under the SAME conditions as the exact
+    // chamfer block just above (same solid, Trim=Yes - the exact path
+    // always replaces the whole solid with an already-trimmed result), plus
+    // r0 != r1 (a constant-radius VariableFillet run falls through to the
+    // untapered general construction, unchanged - Mode::Fillet's own
+    // approximate offset+SSX path already works exactly on planes too, so
+    // there is nothing to close for that case the way there was here).
+    // Convex only: no FilletConcaveEdgeTapered exists in the kernel yet, so
+    // a concave edge simply throws inside FilletConvexEdgeTapered's own
+    // convexity check and this falls through, exactly as the exact chamfer
+    // block above falls through to its own concave attempt (there is none
+    // here to cascade to).
+    if (mode_ == Mode::VariableFillet && trim_ && fa.id == fb.id && r0 != r1) {
+      std::optional<ON_Brep> solid = BrepOfObject(*oa);
+      Point3d p0, p1;
+      if (solid && FindSharedEdgeEndpoints(*solid, fa.face, fb.face, p0, p1)) {
+        kernel::Brep kb;
+        kb.raw() = *solid;
+        try {
+          ON_Brep exact = kernel::FilletConvexEdgeTapered(kb, p0, p1, r0, r1).raw();
+          ctx.Doc().BeginChange("FilletSrf");
+          if (SceneObject* orig = ctx.Doc().Find(fa.id)) {
+            orig->kind = ObjectKind::Brep;
+            if (!orig->brep) orig->brep = std::make_unique<kernel::Brep>();
+            orig->brep->raw() = exact;
+            orig->surface.reset();
+            orig->InvalidateDisplay();
+          }
+          ctx.Doc().Select(fa.id, true);
+          ctx.Print("FilletSrf: faces " + std::to_string(fa.face) + " and " + std::to_string(fb.face) + " of object " + std::to_string(fa.id) +
+                     " replaced with an exact tapered fillet (radius " + FormatNumber(r0) + " to " + FormatNumber(r1) + ")");
+          return;
+        } catch (const std::exception&) {
+          // Exact path unavailable here (a concave edge, a curved adjacent
+          // face, etc.) - fall through to the approximate cascade below
+          // exactly as before this wiring existed.
+        }
+      }
     }
     FilletBuild fb2;
     // Same exact plane+perpendicular-cylinder closed form FilletEdge uses
@@ -1126,6 +1341,8 @@ class FilletTwoSurfacesCommand : public Command {
  private:
   Mode mode_;
   double radius_ = 5, end_radius_ = 2;
+  std::optional<double> rho_;  // Fillet only: conic shape parameter in (0,1) for the exact FilletConvexEdgeConic/FilletConcaveEdgeConic path; unset = default rolling-ball circular fillet
+  RailType rail_type_ = RailType::RollingBall;  // Fillet only: alternate distance-based input for the same circular rolling-ball fillet; RollingBall = plain Radius (default)
   bool trim_ = true;
   std::optional<FacePick> first_;
 };

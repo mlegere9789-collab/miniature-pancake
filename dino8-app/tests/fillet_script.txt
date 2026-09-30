@@ -398,3 +398,68 @@ Radius=2
 SelAll
 List
 Volume
+# --- VariableFilletSrf between two independently-picked faces of the SAME
+# solid: kernel::FilletConvexEdgeTapered's own two-radius overload, reached
+# from FilletTwoSurfacesCommand for the first time (previously only
+# FilletEdgeCommand's own single-edge Radii= path reached it - see the
+# Radii=0:1,1:3 FilletEdge case above). Same box-edge construction and same
+# radius0=1/radius1=3 ramp as that case, just picked as two faces
+# (1610,5,5: the right face; 1605,10,5: the back face - the identical
+# right-then-back pick pattern the ChamferSrf case above uses) instead of
+# one edge, so this is the SAME exact kernel result and should read the
+# identical tessellated Volume = 990.8 that case already verifies.
+SelAll
+Hide
+Box 1600,0,0 1610,10,0 10
+VariableFilletSrf
+Radius=1
+EndRadius=3
+1610,5,5
+1605,10,5
+SelAll
+Volume
+# --- FilletSrf Rho: kernel::FilletConvexEdgeConic reached from
+# FilletTwoSurfacesCommand for the first time (previously only
+# FilletEdgeCommand's own single-edge Rho path reached it - see the
+# Radius=2/Rho=0.5 FilletEdge case above). Same box-corner construction and
+# same distance=2/rho=0.5 parabola as that case, picked as two faces
+# instead of one edge, so this reproduces the identical exact Volume =
+# 993.3 that case already verifies.
+SelAll
+Hide
+Box 1650,0,0 1660,10,0 10
+FilletSrf
+Radius=2
+Rho=0.5
+1660,5,5
+1655,10,5
+SelAll
+Volume
+# --- FilletSrf RailType=DistFromEdge/DistBetweenRails: kernel::
+# FilletConvexEdgeByDistanceFromEdge/ByDistanceBetweenRails reached from
+# FilletTwoSurfacesCommand for the first time (previously only
+# FilletEdgeCommand's own single-edge RailType path reached them - see the
+# two RailType FilletEdge cases above). Same box-corner construction and
+# same distance=2 as those cases, picked as two faces instead of one edge,
+# so these reproduce the identical exact Volume = 991.4 / 995.7 those
+# cases already verify.
+SelAll
+Hide
+Box 1700,0,0 1710,10,0 10
+FilletSrf
+Radius=2
+RailType=DistFromEdge
+1710,5,5
+1705,10,5
+SelAll
+Volume
+SelAll
+Hide
+Box 1750,0,0 1760,10,0 10
+FilletSrf
+Radius=2
+RailType=DistBetweenRails
+1760,5,5
+1755,10,5
+SelAll
+Volume
