@@ -20,7 +20,7 @@ Dino8 --serve 8080
 ```
 $ curl -s -X POST --data 'rs.Command("Box 0,0,0 5,5,0 5")
 print("objects: " .. #rs.AllObjects())' http://127.0.0.1:8080/run
-history: objects: 1
+objects: 1
 ```
 
 Like `--script` (see `BATCH_SCRIPTING.md`), `--serve` runs headless: the
@@ -41,10 +41,11 @@ same as every other headless mode this app already has).
   (objects, layers, the undo stack, ...) persists from one request to the
   next, exactly like typing into the command line yourself would.
 - The response body is the script's captured `print()` output, one line per
-  `history: ...` entry, the same lines that would otherwise land in the
-  Command History panel. HTTP status is `200` on success or `500` if the
-  script raised a Lua error or tried to suspend on an interactive prompt
-  (see below).
+  call, the same text that would otherwise land in the Command History panel
+  (there prefixed with `history: `; the compute server's response is the
+  raw text only). HTTP status is `200` on success or `500` if the script
+  raised a Lua error or tried to suspend on an interactive prompt (see
+  below).
 
 ## What this deliberately does not do
 
