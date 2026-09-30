@@ -163,6 +163,25 @@ Scripting**'s "Python API breadth" bullet) is now **69**, not 66.
 honest-narrowing status as the notes above: the gap this bullet names -
 the rest of the object model, and no interactive prompts - is unchanged).
 
+**2026-09-30 addendum (same day, later session):** three more Python
+object-model bindings landed since the note above, closing gaps against
+Lua's `rs.*` module: `CopyObject` (copies objects, optionally translated),
+`RotateObject` (rotates objects about an axis through a center) and
+`ScaleObject` (scales objects about an origin) - each in `PythonEngine.cpp`,
+in place or onto copies per a `copy` flag, mirroring its `rs_*` counterpart's
+logic and skip/throw semantics exactly (`CopyObject`/`RotateObject`/
+`ScaleObject` share a `TransformIds` helper mirroring `LuaEngine.cpp`'s own
+`TransformIds`, which `MoveObject` now also calls instead of duplicating its
+translate-in-place loop). Like `AddCylinder`/`AddCone`'s vector-only axis
+argument, `ScaleObject`'s `scale` parameter is a single `Vector3d` rather
+than Lua's number-or-vector overload (pass `Vector3d(s, s, s)` for a uniform
+scale). Python API breadth (**Dino 8: Scripting**'s "Python API breadth"
+bullet) is now **72**, not 69. `dino8_app_tests` re-run clean after this
+pass (new cases in `python_script.txt`/`smoke.sh` cover all three). No score
+effect (same honest-narrowing status as the notes above: the gap this
+bullet names - the rest of the object model, and no interactive prompts -
+is unchanged).
+
 **2026-09-28 re-verification addendum (same day, later session):** the brief for
 this addendum claimed "roughly 60+" capability-adding commits had landed since
 the 66.2%/71.5% measurement above. That premise was false: `git log --oneline
@@ -4395,7 +4414,7 @@ start line) — all citation-precision fixes, not scoring changes.
 
 **Dino 8: Scripting, automation & visual programming** (app_scripting):
 - [partial] Embedded Python 3 — `dino8-app/CMakeLists.txt:146` sets `option(DINO8_ENABLE_PYTHON ... OFF)` on Windows specifically, `:148` `ON` elsewhere; shipped Windows builds have no Python at all; mid-script prompts are also missing.
-- [partial] Python API breadth — `RunCommand` reaches every registered command; the real gap is the object model (69 bindings, up from 66, versus Lua's 160 `rs.*` functions — `BooleanDifference`/`BooleanIntersection`/`MoveObject` added this window) and no interactive prompts.
+- [partial] Python API breadth — `RunCommand` reaches every registered command; the real gap is the object model (72 bindings, up from 69, versus Lua's 160 `rs.*` functions — `CopyObject`/`RotateObject`/`ScaleObject` added this window) and no interactive prompts.
 - [partial] Headless/batch scripting mode — `dino8-app/src/main.cpp:5-7,322-327`: `--smoke N --script FILE [--screenshot]` is real and documented in the file's own header comments; still framed as a QA mode needing a GL context/display server, not a supported batch product.
 - [missing] Cloud/network compute service (Rhino.Compute equivalent) — no server/socket/HTTP code anywhere in the source.
 - [missing] AI-assisted modeling or scripting — no neural/inference code anywhere; the one "smart" feature explicitly documents its own technique as not machine learning.

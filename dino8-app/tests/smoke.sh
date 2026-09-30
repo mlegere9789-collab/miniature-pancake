@@ -1812,6 +1812,32 @@ print("move returned circle id: " + str(move_ids == [circle_id]))
 print("move missing skipped: " + str(dino8.doc.Objects.MoveObject([999999], dino8.Vector3d(1, 0, 0))))
 print("object count with move: %d" % len(dino8.doc.Objects.AllObjects()))
 
+copy_ids = dino8.doc.Objects.CopyObject([circle_id])
+print("copy is new id: " + str(len(copy_ids) == 1 and copy_ids[0] != circle_id))
+print("copy original survives: " + str(dino8.doc.Objects.Find(circle_id) is not None))
+print("object count with copy: %d" % len(dino8.doc.Objects.AllObjects()))
+copy_moved_ids = dino8.doc.Objects.CopyObject([circle_id], dino8.Vector3d(200, 0, 0))
+print("object count with copy moved: %d" % len(dino8.doc.Objects.AllObjects()))
+print("copy missing skipped: " + str(dino8.doc.Objects.CopyObject([999999])))
+
+rotate_line_id = dino8.doc.Objects.AddLine(dino8.Point3d(1, 0, 0), dino8.Point3d(2, 0, 0))
+rotate_ids = dino8.doc.Objects.RotateObject([rotate_line_id], dino8.Point3d(0, 0, 0), 90)
+print("rotate returned same id: " + str(rotate_ids == [rotate_line_id]))
+print("object count with rotate: %d" % len(dino8.doc.Objects.AllObjects()))
+rotate_copy_ids = dino8.doc.Objects.RotateObject([rotate_line_id], dino8.Point3d(0, 0, 0), 45, dino8.Vector3d(0, 0, 1), True)
+print("rotate copy is new id: " + str(len(rotate_copy_ids) == 1 and rotate_copy_ids[0] != rotate_line_id))
+print("object count with rotate copy: %d" % len(dino8.doc.Objects.AllObjects()))
+print("rotate missing skipped: " + str(dino8.doc.Objects.RotateObject([999999], dino8.Point3d(0, 0, 0), 90)))
+
+scale_box_id = dino8.doc.Objects.AddBox(dino8.Point3d(50, 0, 0), dino8.Vector3d(2, 2, 2))
+scale_ids = dino8.doc.Objects.ScaleObject([scale_box_id], dino8.Point3d(50, 0, 0), dino8.Vector3d(2, 2, 2))
+print("scale returned same id: " + str(scale_ids == [scale_box_id]))
+print("object count with scale: %d" % len(dino8.doc.Objects.AllObjects()))
+scale_copy_ids = dino8.doc.Objects.ScaleObject([scale_box_id], dino8.Point3d(50, 0, 0), dino8.Vector3d(2, 2, 2), True)
+print("scale copy is new id: " + str(len(scale_copy_ids) == 1 and scale_copy_ids[0] != scale_box_id))
+print("object count with scale copy: %d" % len(dino8.doc.Objects.AllObjects()))
+print("scale missing skipped: " + str(dino8.doc.Objects.ScaleObject([999999], dino8.Point3d(0, 0, 0), dino8.Vector3d(2, 2, 2))))
+
 dino8.RunCommand("NewLayer", "Parts")
 PY
 sed "s|@TMP@|$TMPW|g" "$HERE/python_script.txt" > "$TMPW/python_script.txt"
@@ -1902,7 +1928,22 @@ else
   pscheck "history: move returned circle id: True" "dino8.doc.Objects.MoveObject translated the circle in place and returned its own id back, matching rs.MoveObject"
   pscheck "history: move missing skipped: \[\]" "MoveObject returned an empty list for an id that no longer exists, matching LuaEngine.cpp's TransformIds skip-missing loop instead of raising"
   pscheck "history: object count with move: 17" "MoveObject translates objects in place, so AllObjects is unchanged by it"
-  pscheck "^ok   expect_objects 17" "RunPythonScript left the box, the circle, the cone, the torus, the interpolated curve, the arc, the srf, the planar surface, three points, the extruded surface, the extruded solid, the union mesh, the difference mesh and the intersection mesh (the sphere, the two union input boxes, the two difference input boxes and the two intersection input boxes were removed from inside the script)"
+  pscheck "history: copy is new id: True" "dino8.doc.Objects.CopyObject returned a single fresh id distinct from the source, matching rs.CopyObject"
+  pscheck "history: copy original survives: True" "CopyObject left the source object in place, matching rs.CopyObject copying rather than moving"
+  pscheck "history: object count with copy: 18" "AllObjects gained the untranslated copy of the circle"
+  pscheck "history: object count with copy moved: 19" "AllObjects gained the second, translated copy of the circle"
+  pscheck "history: copy missing skipped: \[\]" "CopyObject returned an empty list for an id that no longer exists, matching LuaEngine.cpp's TransformIds skip-missing loop instead of raising"
+  pscheck "history: rotate returned same id: True" "dino8.doc.Objects.RotateObject rotated the line in place and returned its own id back, matching rs.RotateObject(id, center, angleDeg, axis, copy=false)"
+  pscheck "history: object count with rotate: 20" "RotateObject without copy=True transforms in place, so AllObjects only gained the new line"
+  pscheck "history: rotate copy is new id: True" "RotateObject with copy=True left the line in place and added a rotated duplicate under a fresh id, matching rs.RotateObject(id, center, angleDeg, axis, copy=true)"
+  pscheck "history: object count with rotate copy: 21" "AllObjects gained the rotated copy of the line"
+  pscheck "history: rotate missing skipped: \[\]" "RotateObject returned an empty list for an id that no longer exists, matching LuaEngine.cpp's TransformIds skip-missing loop instead of raising"
+  pscheck "history: scale returned same id: True" "dino8.doc.Objects.ScaleObject scaled the box in place and returned its own id back, matching rs.ScaleObject(id, origin, scale, copy=false)"
+  pscheck "history: object count with scale: 22" "ScaleObject without copy=True transforms in place, so AllObjects only gained the new box"
+  pscheck "history: scale copy is new id: True" "ScaleObject with copy=True left the box in place and added a scaled duplicate under a fresh id, matching rs.ScaleObject(id, origin, scale, copy=true)"
+  pscheck "history: object count with scale copy: 23" "AllObjects gained the scaled copy of the box"
+  pscheck "history: scale missing skipped: \[\]" "ScaleObject returned an empty list for an id that no longer exists, matching LuaEngine.cpp's TransformIds skip-missing loop instead of raising"
+  pscheck "^ok   expect_objects 23" "RunPythonScript left the box, the circle, the cone, the torus, the interpolated curve, the arc, the srf, the planar surface, three points, the extruded surface, the extruded solid, the union mesh, the difference mesh, the intersection mesh, the two circle copies, the rotate line and its rotated copy, and the scale box and its scaled copy (the sphere, the two union input boxes, the two difference input boxes and the two intersection input boxes were removed from inside the script)"
   grep -q "! Python error" <<<"$PS" && { echo "FAIL python_script.txt printed a Python error"; fail=1; } || echo "ok   no Python script errors"
 fi
 

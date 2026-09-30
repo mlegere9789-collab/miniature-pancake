@@ -425,21 +425,68 @@ struct PyObjectTable {
     return RunBooleanTwoSets(ids, otherIds, delete_input, kernel::BooleanOp::Intersection, "BooleanIntersection");
   }
 
-  // Mirrors rs.MoveObject(ids, vector) in LuaEngine.cpp: translates each of
-  // `ids` in place, skipping ids that no longer exist rather than raising -
-  // same as LuaEngine.cpp's TransformIds skip-missing loop.
-  std::vector<ObjectId> MoveObject(std::vector<ObjectId> ids, Vector3d v) {
+  // Mirrors LuaEngine.cpp's TransformIds: applies `xf` to each of `ids`,
+  // either in place (copy=false) or to a duplicate added under a fresh id
+  // (copy=true), skipping ids that no longer exist rather than raising -
+  // shared by MoveObject/CopyObject/RotateObject/ScaleObject below the same
+  // way LuaEngine.cpp's rs.MoveObject/rs.CopyObject/rs.RotateObject/
+  // rs.ScaleObject share it.
+  std::vector<ObjectId> TransformIds(const std::vector<ObjectId>& ids, const ON_Xform& xf, bool copy, const char* label) {
     Document& d = DocOf();
-    d.BeginChange("MoveObject");
+    d.BeginChange(label);
     std::vector<ObjectId> out;
     for (ObjectId id : ids) {
       SceneObject* o = d.Find(id);
       if (!o) continue;
-      o->Transform(ON_Xform::TranslationTransformation(v));
-      out.push_back(id);
+      if (copy) {
+        SceneObject dup = *o;
+        dup.id = kNoObject;
+        dup.selected = false;
+        dup.Transform(xf);
+        out.push_back(d.Add(std::move(dup)));
+      } else {
+        o->Transform(xf);
+        out.push_back(id);
+      }
     }
     d.Touch();
     return out;
+  }
+
+  // Mirrors rs.MoveObject(ids, vector) in LuaEngine.cpp: translates each of
+  // `ids` in place, skipping ids that no longer exist rather than raising -
+  // same as LuaEngine.cpp's TransformIds skip-missing loop.
+  std::vector<ObjectId> MoveObject(std::vector<ObjectId> ids, Vector3d v) {
+    return TransformIds(ids, ON_Xform::TranslationTransformation(v), false, "MoveObject");
+  }
+
+  // Mirrors rs.CopyObject(ids, vector={0,0,0}) in LuaEngine.cpp: copies each
+  // of `ids`, optionally translated by `vector`, returning the new ids and
+  // skipping ids that no longer exist rather than raising.
+  std::vector<ObjectId> CopyObject(std::vector<ObjectId> ids, py::object vector) {
+    Vector3d v = vector.is_none() ? Vector3d(0, 0, 0) : vector.cast<Vector3d>();
+    return TransformIds(ids, ON_Xform::TranslationTransformation(v), true, "CopyObject");
+  }
+
+  // Mirrors rs.RotateObject(ids, center, angleDeg, axis={0,0,1}, copy=false)
+  // in LuaEngine.cpp: rotates each of `ids` by `angleDeg` degrees about
+  // `axis` through `center`, in place or onto copies.
+  std::vector<ObjectId> RotateObject(std::vector<ObjectId> ids, Point3d center, double angleDeg, py::object axis, bool copy) {
+    Vector3d a = axis.is_none() ? Vector3d(0, 0, 1) : axis.cast<Vector3d>();
+    if (!a.Unitize()) a = Vector3d(0, 0, 1);
+    ON_Xform xf;
+    xf.Rotation(angleDeg * ON_PI / 180.0, a, center);
+    return TransformIds(ids, xf, copy, "RotateObject");
+  }
+
+  // Mirrors rs.ScaleObject(ids, origin, scale, copy=false) in
+  // LuaEngine.cpp: scales each of `ids` about `origin` by `scale`, in place
+  // or onto copies. Like AddCylinder/AddCone above, `scale` is taken as a
+  // single Vector3d rather than Lua's number-or-vector overload - pass
+  // Vector3d(s, s, s) for a uniform scale.
+  std::vector<ObjectId> ScaleObject(std::vector<ObjectId> ids, Point3d origin, Vector3d scale, bool copy) {
+    const ON_Xform xf = ON_Xform::TranslationTransformation(origin - ON_3dPoint::Origin) * ON_Xform::DiagonalTransformation(scale.x, scale.y, scale.z) * ON_Xform::TranslationTransformation(ON_3dPoint::Origin - origin);
+    return TransformIds(ids, xf, copy, "ScaleObject");
   }
 
   py::object AddMesh(std::vector<Point3d> verts, std::vector<std::vector<int>> faces) {
@@ -576,6 +623,9 @@ PYBIND11_EMBEDDED_MODULE(dino8, m) {
       .def("BooleanDifference", &PyObjectTable::BooleanDifference, py::arg("ids"), py::arg("subtractIds"), py::arg("delete") = true)
       .def("BooleanIntersection", &PyObjectTable::BooleanIntersection, py::arg("ids"), py::arg("otherIds"), py::arg("delete") = true)
       .def("MoveObject", &PyObjectTable::MoveObject, py::arg("ids"), py::arg("vector"))
+      .def("CopyObject", &PyObjectTable::CopyObject, py::arg("ids"), py::arg("vector") = py::none())
+      .def("RotateObject", &PyObjectTable::RotateObject, py::arg("ids"), py::arg("center"), py::arg("angleDeg"), py::arg("axis") = py::none(), py::arg("copy") = false)
+      .def("ScaleObject", &PyObjectTable::ScaleObject, py::arg("ids"), py::arg("origin"), py::arg("scale"), py::arg("copy") = false)
       .def("AddBox", &PyObjectTable::AddBox, py::arg("corner"), py::arg("size"))
       .def("AddSphere", &PyObjectTable::AddSphere, py::arg("center"), py::arg("radius"))
       .def("AddCylinder", &PyObjectTable::AddCylinder, py::arg("base"), py::arg("axis"), py::arg("radius"), py::arg("cap") = true)
