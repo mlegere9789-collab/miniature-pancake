@@ -2909,7 +2909,11 @@ if echo "$MM" | grep -q "^FAIL"; then fail=1; fi
 # wire's length/endpoints from its new position. No @expect_objects in the
 # script itself (ElecTag/PanelSchedule bake font-dependent glyph curve
 # counts), so ElecTag/PanelSchedule are each checked by their own printed
-# summary line instead of a total object count.
+# summary line instead of a total object count. PanelSchedule's own
+# associativity (ElecCircuit assigning Resistor #1/Lamp #5 to real panel
+# circuits, an associative PanelSchedule built from that selection, then
+# UpdatePanelSchedule re-deriving it after Lamp #5's load changes) is
+# checked the same way - by its printed row summary, not object ids.
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   EL="$("$BIN" --smoke 150 --script "$HERE/elec_script.txt" 2>&1)" || { echo "$EL"; echo "FAIL: electrical script exited non-zero"; exit 1; }
 else
@@ -2939,6 +2943,13 @@ elcheck "CV\[0\] 15,10,0" "the rebuilt WireRun's own start point is the moved an
 elcheck "CV\[1\] 10,20,0" "the rebuilt WireRun's end point is the untouched second anchor's position"
 elcheck "ElecTag: \"R1\" baked as [0-9]* curve(s)" "ElecTag baked a real reference-designator string as font-outline curves (count is font-dependent, same as Text's own smoke check)"
 elcheck "PanelSchedule: 3 circuit row(s) built" "PanelSchedule built a real data table with the exact row count from its Circuits= option, via the same Table/BuildTableGroup mechanism as RevisionTable/BillOfMaterials"
+elcheck "ElecCircuit: Resistor #1 -> circuit 1 (100 VA)" "ElecCircuit assigned Resistor #1 to circuit 1 at 100 VA, stored on the component rather than as geometry"
+elcheck "ElecCircuit: Lamp #5 -> circuit 2 (60 VA)" "ElecCircuit assigned Lamp #5 to circuit 2 at 60 VA"
+elcheck "PanelSchedule: 2 circuit row(s) built, associative to the selected component(s)" "a second PanelSchedule with no Circuits= option instead selected the two circuit-assigned components and built an associative table"
+elcheck "PanelSchedule:   circuit 1: Resistor #1 100 VA; circuit 2: Lamp #5 60 VA" "the associative PanelSchedule's rows reflect the real ElecCircuit assignment (not hand-typed text), sorted by circuit"
+elcheck "ElecCircuit: Lamp #5 -> circuit 2 (90 VA)" "Lamp #5's load was bumped from 60 to 90 VA via a second ElecCircuit call"
+elcheck "UpdatePanelSchedule:   Panel A: 2 circuit row(s) (circuit 1: Resistor #1 100 VA; circuit 2: Lamp #5 90 VA)" "UpdatePanelSchedule re-derived the table from the components' *current* assignment (90, not the 60 baked when the table was first built)"
+elcheck "UpdatePanelSchedule: 1 table(s) regenerated" "UpdatePanelSchedule found and regenerated exactly the one associative panel schedule, leaving the earlier hand-typed Circuits= table (which carries neither PanelAll nor PanelRefIds) untouched"
 echo "$EL" | grep -E "^(ok|FAIL)" || true
 if echo "$EL" | grep -q "^FAIL"; then fail=1; fi
 

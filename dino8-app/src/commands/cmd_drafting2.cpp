@@ -16,6 +16,7 @@
 #include "drafting/HatchLibrary.h"
 #include "drafting/SectionView.h"
 #include "drafting/Table.h"
+#include "elec/ElecComponents.h"
 #include "ui/Panels.h"
 #include "util/json_mini.h"
 
@@ -92,6 +93,26 @@ std::vector<ObjectId> ParseIdsTag(const std::string& s) {
   std::vector<ObjectId> out;
   std::string cur;
   auto flush = [&]() { if (!cur.empty()) { out.push_back(static_cast<ObjectId>(std::strtoull(cur.c_str(), nullptr, 10))); cur.clear(); } };
+  for (char c : s) { if (c == ',') flush(); else cur += c; }
+  flush();
+  return out;
+}
+
+// Same encoding as IdsTag/ParseIdsTag above, but for a list of
+// elec::ElecComponent ids (PanelRefIds) rather than ObjectIds - a
+// PanelSchedule's associative link is to the *component*, not to whichever
+// curve objects its last rebuild happened to produce (those change on every
+// ElecRebuild, same reason WireRun's own has_ref0/ref1 anchor a real object
+// rather than another component).
+std::string ElecIdsTag(const std::vector<int>& ids) {
+  std::string s;
+  for (int id : ids) { if (!s.empty()) s += ","; s += std::to_string(id); }
+  return s;
+}
+std::vector<int> ParseElecIdsTag(const std::string& s) {
+  std::vector<int> out;
+  std::string cur;
+  auto flush = [&]() { if (!cur.empty()) { out.push_back(std::atoi(cur.c_str())); cur.clear(); } };
   for (char c : s) { if (c == ',') flush(); else cur += c; }
   flush();
   return out;
@@ -824,6 +845,59 @@ class RevisionTableCommand : public Command {
   Point3d origin_{0, 0, 0};
 };
 
+// Aggregates the electrical components (elec/ElecComponents.h) carrying a
+// panel-circuit assignment (ElecCircuit, cmd_elec.cpp) into a PanelSchedule
+// TableSpec (rows/cols/cells only - caller fills in origin/plane) - the
+// associative counterpart to PanelScheduleCommand's original hand-typed
+// Circuits= rows below. `component_ids` selects which components to include
+// when `all` is false (an explicit selection, mirroring BuildBomSpec's
+// `ids` above); when `all` is true every component in the document with a
+// non-empty circuit is included instead - a full re-scan, so a component
+// ElecCircuit-tagged *after* the table was built still joins on the next
+// UpdatePanelSchedule, unlike BillOfMaterials's own explicit-selection mode.
+// Shared by PanelScheduleCommand's auto mode and UpdatePanelSchedule so a
+// re-derive produces byte-identical logic to the original bake. `rows_out`,
+// when given, is filled with the same components in row order (mirroring
+// BuildBomSpec's own `csv_rows` out-param) so a caller can print a summary
+// of exactly what went into each row, not just a row count.
+TableSpec BuildPanelScheduleSpec(CommandContext& ctx, const std::vector<int>& component_ids, bool all, const std::string& name,
+                                  std::vector<elec::ElecComponent>* rows_out = nullptr) {
+  std::vector<elec::ElecComponent> rows_src;
+  for (const elec::ElecComponent& c : elec::LoadElec(ctx.Doc())) {
+    if (all) { if (!c.circuit.empty()) rows_src.push_back(c); }
+    else if (std::find(component_ids.begin(), component_ids.end(), c.id) != component_ids.end()) rows_src.push_back(c);
+  }
+  std::sort(rows_src.begin(), rows_src.end(), [](const elec::ElecComponent& a, const elec::ElecComponent& b) {
+    return a.circuit != b.circuit ? a.circuit < b.circuit : a.id < b.id;
+  });
+  TableSpec spec;
+  spec.cols = 3;
+  spec.cells = {"Circuit #", "Description", "Load (VA)"};
+  spec.col_widths = {20, 64, 24};
+  spec.title = name + " - Panel Schedule";
+  int rows = 1;
+  for (const elec::ElecComponent& c : rows_src) {
+    spec.cells.push_back(c.circuit.empty() ? "-" : c.circuit);
+    spec.cells.push_back(std::string(elec::ElecTypeName(c.type)) + " #" + std::to_string(c.id));
+    spec.cells.push_back(c.load_va > 0 ? FormatNumber(c.load_va) : "-");
+    ++rows;
+    if (rows_out) rows_out->push_back(c);
+  }
+  spec.rows = rows;
+  return spec;
+}
+
+// A compact one-line-per-row summary of `rows` (circuit/description/load),
+// same "confirm the aggregated fields, not just the row count" purpose as
+// UpdateBillOfMaterials's own summary line above.
+std::string PanelRowSummary(const std::vector<elec::ElecComponent>& rows) {
+  std::string s;
+  for (const elec::ElecComponent& c : rows)
+    s += (s.empty() ? "" : "; ") + std::string("circuit ") + (c.circuit.empty() ? "-" : c.circuit) + ": " +
+         elec::ElecTypeName(c.type) + " #" + std::to_string(c.id) + " " + (c.load_va > 0 ? FormatNumber(c.load_va) : "0") + " VA";
+  return s;
+}
+
 // PanelSchedule (Electrical vertical-market toolset, elec/ElecComponents.h -
 // see that header's own scope comment): a real data table of electrical
 // panel circuit rows {circuit #, description, load VA}, built through the
@@ -833,13 +907,23 @@ class RevisionTableCommand : public Command {
 // engineering calculation, and no NEC/IEC code-compliance check (same
 // explicit-scope discipline as MepDiameterFromFlow's own doc comment in
 // ArchComponents.h).
+//
+// Two independent, mutually exclusive modes, exactly like BillOfMaterials's
+// own explicit-selection-vs-Enter split: Circuits=... (unchanged from
+// before this comment - hand-typed rows, never associative, since they are
+// not tied to any object) when that option is given; otherwise a real
+// object selection (or Enter for every ElecCircuit-assigned component in
+// the document), associative via BuildPanelScheduleSpec above, with
+// PanelRefIds/PanelAll recording the link so UpdatePanelSchedule can
+// re-derive the rows later.
 class PanelScheduleCommand : public Command {
  public:
   void Begin(CommandContext& ctx) override {
     auto opts = TakeOptionTokens(ctx);
     circuits_ = OptionOr(opts, "circuits", "");
     name_ = OptionOr(opts, "name", "Panel A");
-    WantPoint("Panel schedule location (top-left corner)");
+    if (!circuits_.empty()) { WantPoint("Panel schedule location (top-left corner)"); return; }
+    WantObjects("Select electrical components for the panel schedule (Enter for every circuit-assigned component)");
   }
   void OnPoint(CommandContext& ctx, Point3d p) override {
     TableSpec spec;
@@ -861,6 +945,30 @@ class PanelScheduleCommand : public Command {
     const int g = BuildTableGroup(ctx, spec, "PanelSchedule");
     ctx.Print("PanelSchedule: " + std::to_string(spec.rows - 1) + " circuit row(s)" + (g < 0 ? " (failed)" : " built"));
     Finish();
+  }
+  void OnEnter(CommandContext& ctx) override { RunAuto(ctx, {}, /*all=*/true); Finish(); }
+  void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override { RunAuto(ctx, ids, /*all=*/false); Finish(); }
+  void RunAuto(CommandContext& ctx, const std::vector<ObjectId>& ids, bool all) {
+    std::vector<int> component_ids;
+    if (!all) {
+      for (ObjectId id : ids) {
+        elec::ElecComponent c;
+        if (elec::FindElecComponentByObject(ctx.Doc(), id, c) &&
+            std::find(component_ids.begin(), component_ids.end(), c.id) == component_ids.end())
+          component_ids.push_back(c.id);
+      }
+    }
+    std::vector<elec::ElecComponent> rows;
+    TableSpec spec = BuildPanelScheduleSpec(ctx, component_ids, all, name_, &rows);
+    spec.origin = ctx.HoverPoint().value_or(Point3d(0, 0, 0));
+    spec.plane = ActivePlane(ctx);
+    ctx.Doc().BeginChange("PanelSchedule");
+    std::map<std::string, std::string> tags;
+    if (all) tags["PanelAll"] = "1"; else tags["PanelRefIds"] = ElecIdsTag(component_ids);
+    const int g = BuildTableGroup(ctx, spec, "PanelSchedule", -1, tags);
+    ctx.Print("PanelSchedule: " + std::to_string(spec.rows - 1) + " circuit row(s)" + (g < 0 ? " (failed)" : " built") +
+              (all ? ", associative to every circuit-assigned component" : ", associative to the selected component(s)"));
+    if (!rows.empty()) ctx.Print("PanelSchedule:   " + PanelRowSummary(rows));
   }
 
  private:
@@ -1703,7 +1811,50 @@ void RegisterDrafting2Commands(CommandEngine& e) {
   Reg(e, "BillOfMaterials", Make<BillOfMaterialsCommand>(), CommandStatus::Implemented,
       "Associative: the table records which objects (or 'every visible object') it was built from and UpdateBillOfMaterials re-derives every row's count/layer/material/length-area-volume from their current state. Built from an explicit selection, it re-checks only those objects (a deleted one drops out; a new object never joins on its own) - only the Enter/'every visible object' mode picks up newcomers, since only it has a re-scan rule instead of a fixed id list.");
   Reg(e, "PanelSchedule", Make<PanelScheduleCommand>(), CommandStatus::Implemented,
-      "A real data table (Circuit #/Description/Load VA rows, Circuits=1,Lighting,500;2,Receptacles,900 option syntax) via the same Table/TableSpec/BuildTableGroup mechanism as RevisionTable/BillOfMaterials - NOT a panel-schedule engineering calculation (no breaker sizing, phase load-balancing, or NEC/IEC code-compliance check) and not associative to any electrical component in the drawing.");
+      "A real data table (Circuit #/Description/Load VA rows) via the same Table/TableSpec/BuildTableGroup mechanism as RevisionTable/BillOfMaterials - NOT a panel-schedule engineering calculation (no breaker sizing, phase load-balancing, or NEC/IEC code-compliance check). Circuits=1,Lighting,500;2,Receptacles,900 still builds the table from that hand-typed text exactly as before, never associative (it isn't tied to any object); without Circuits=, it instead selects electrical components (Enter for every ElecCircuit-assigned one, cmd_elec.cpp) and is associative like BillOfMaterials - UpdatePanelSchedule re-derives its rows from those components' current circuit/load assignment.");
+  Reg(e, "UpdatePanelSchedule", Immediate([](CommandContext& ctx) {
+        std::vector<int> groups;
+        for (const SceneObject& o : ctx.Doc().Objects())
+          if (o.group_id >= 0 && o.user_text.count("Annotation") && o.user_text.at("Annotation") == "PanelSchedule" &&
+              (o.user_text.count("PanelAll") || o.user_text.count("PanelRefIds")) &&
+              std::find(groups.begin(), groups.end(), o.group_id) == groups.end())
+            groups.push_back(o.group_id);
+        if (groups.empty()) { ctx.Print("UpdatePanelSchedule: no associative panel schedules in this document"); return; }
+        ctx.Doc().BeginChange("UpdatePanelSchedule");
+        int updated = 0;
+        for (int g : groups) {
+          TableSpec old;
+          if (!LoadTableSpec(ctx.Doc(), g, old)) continue;  // group has no TableData - nothing to rebuild from
+          std::string name = "Panel A", ref_ids_tag;
+          bool all = false;
+          for (const SceneObject& o : ctx.Doc().Objects()) {
+            if (o.group_id != g) continue;
+            if (auto it = o.user_text.find("PanelAll"); it != o.user_text.end() && it->second == "1") all = true;
+            if (auto it = o.user_text.find("PanelRefIds"); it != o.user_text.end()) ref_ids_tag = it->second;
+            break;
+          }
+          // Recover the panel name PanelScheduleCommand folded into the title
+          // ("<name> - Panel Schedule") rather than storing it as its own tag.
+          const std::string suffix = " - Panel Schedule";
+          if (old.title.size() > suffix.size() && old.title.compare(old.title.size() - suffix.size(), suffix.size(), suffix) == 0)
+            name = old.title.substr(0, old.title.size() - suffix.size());
+          const std::vector<int> component_ids = all ? std::vector<int>() : ParseElecIdsTag(ref_ids_tag);
+          std::vector<elec::ElecComponent> rows;
+          TableSpec spec = BuildPanelScheduleSpec(ctx, component_ids, all, name, &rows);
+          spec.origin = old.origin;
+          spec.plane = old.plane;
+          for (ObjectId id : ctx.Doc().GroupMembers(g)) ctx.Doc().Remove(id);
+          std::map<std::string, std::string> tags;
+          if (all) tags["PanelAll"] = "1"; else tags["PanelRefIds"] = ElecIdsTag(component_ids);
+          if (BuildTableGroup(ctx, spec, "PanelSchedule", -1, tags) >= 0) {
+            ++updated;
+            ctx.Print("UpdatePanelSchedule:   " + name + ": " + std::to_string(spec.rows - 1) + " circuit row(s)" +
+                      (rows.empty() ? "" : " (" + PanelRowSummary(rows) + ")"));
+          }
+        }
+        ctx.Print("UpdatePanelSchedule: " + std::to_string(updated) + " table(s) regenerated");
+      }), CommandStatus::Implemented,
+      "Re-derives every associative PanelSchedule's rows (circuit/description/load) from the current circuit/load assignment (ElecCircuit, cmd_elec.cpp) of the electrical components it was built from - or, for the Enter/'every circuit-assigned component' mode, every currently-assigned component in the document - replacing the old baked rows in place, the same explicit-recompute shape as UpdateBillOfMaterials above. A PanelSchedule built from hand-typed Circuits= text carries neither PanelAll nor PanelRefIds and is left untouched, same as before this change.");
 
   Reg(e, "FeatureControlFrame", Make<FeatureControlFrameCommand>(), CommandStatus::Implemented,
       "Characteristic symbols (flatness, position, etc.) are drawn as vector curves matching the ASME Y14.5 shapes; material-condition modifiers (S)/(L)/(M) use Unicode circled letters as a stand-in, since this build has no dedicated GD&T symbol font to draw the real modifier glyphs from. Associative like MultiLeader: when the feature point (the leader's start) sits exactly on a real object (same FindPointAnchor coincidence rule), UpdateGdtSymbols re-evaluates that object's current position and redraws the leader/frame from it, keeping the frame's own location fixed. A feature point that isn't on any object stays a static baked leader.");

@@ -8,6 +8,7 @@
 // exception - both of its points are real endpoints, and ElecRebuild
 // re-resolves them the same way UpdateBillOfMaterials/UpdateDimensions
 // re-derive other associative annotations elsewhere in this app.
+#include <algorithm>
 #include <sstream>
 
 #include "commands/annotate_common.h"
@@ -236,6 +237,53 @@ class ElecTagCommand : public Command {
   std::string text_;
 };
 
+// ElecCircuit: assigns an already-placed electrical component to a panel
+// circuit (a circuit name/number plus its rated load in VA), stored on the
+// ElecComponent record itself (circuit/load_va, ElecComponents.h) rather
+// than as baked geometry - the same "tag an existing symbol" shape as
+// ElecTag, but data PanelSchedule/UpdatePanelSchedule (cmd_drafting2.cpp)
+// can later read back to build/rebuild a real panel-schedule table from the
+// document's *current* components instead of hand-typed Circuits= text.
+// Neither field affects the component's own geometry - re-running
+// ElecCircuit never rebuilds it.
+class ElecCircuitCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantObjects("Select an electrical component to assign to a circuit"); }
+  void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
+    for (ObjectId oid : ids) {
+      ElecComponent c;
+      if (elec::FindElecComponentByObject(ctx.Doc(), oid, c)) { id_ = c.id; type_ = c.type; break; }
+    }
+    if (id_ < 0) { ctx.Warn("ElecCircuit: selection has no electrical component"); Finish(); return; }
+    WantText("Circuit # (e.g. 1, or blank to remove from any panel schedule)", std::string());
+  }
+  void OnText(CommandContext& ctx, const std::string& t) override {
+    circuit_ = t;
+    if (circuit_.empty()) { Run(ctx); return; }
+    WantNumber("Load (VA)", 0);
+  }
+  void OnNumber(CommandContext& ctx, double v) override { load_va_ = v; Run(ctx); }
+  void Run(CommandContext& ctx) {
+    std::vector<ElecComponent> list = elec::LoadElec(ctx.Doc());
+    auto it = std::find_if(list.begin(), list.end(), [&](const ElecComponent& c) { return c.id == id_; });
+    if (it == list.end()) { ctx.Warn("ElecCircuit: component no longer exists"); Finish(); return; }
+    ctx.Doc().BeginChange("ElecCircuit");
+    it->circuit = circuit_;
+    it->load_va = circuit_.empty() ? 0 : load_va_;
+    elec::SaveElec(ctx.Doc(), list);
+    const std::string label = std::string(elec::ElecTypeName(type_)) + " #" + std::to_string(id_);
+    ctx.Print(circuit_.empty() ? "ElecCircuit: " + label + " removed from any panel schedule"
+                                : "ElecCircuit: " + label + " -> circuit " + circuit_ + " (" + FormatNumber(load_va_) + " VA)");
+    Finish();
+  }
+
+ private:
+  int id_ = -1;
+  ElecType type_ = ElecType::Resistor;
+  std::string circuit_;
+  double load_va_ = 0;
+};
+
 }  // namespace
 
 void RegisterElecCommands(CommandEngine& e) {
@@ -267,6 +315,8 @@ void RegisterElecCommands(CommandEngine& e) {
       "Re-resolves every WireRun whose endpoint(s) are anchored to a real object (see WireRun's own note) to that object's *current* position and rebuilds the wire - the same explicit-recompute shape as UpdateBillOfMaterials/UpdateDimensions elsewhere in this app, not an automatic hook on every document edit.");
   Reg(e, "ElecTag", Make<ElecTagCommand>(), CommandStatus::Implemented,
       "Bakes a reference-designator string (e.g. R1, C3) as real font-outline curve geometry via the same TextToCurves/AddGlyphCurves path cmd_annotate.cpp's Text command uses - a static bake, not a live-linked callout tied to a particular symbol's id.");
+  Reg(e, "ElecCircuit", Make<ElecCircuitCommand>(), CommandStatus::Implemented,
+      "Assigns a selected Resistor/Capacitor/Switch/Ground/Lamp/WireRun to a panel circuit (a circuit #/name and a rated load in VA), stored on the component itself rather than as geometry - blank circuit removes the assignment. PanelSchedule (cmd_drafting2.cpp) can build a table row per circuit-assigned component instead of hand-typed Circuits= text, and UpdatePanelSchedule re-derives those rows from the components' current assignment.");
 }
 
 }  // namespace dino8::app

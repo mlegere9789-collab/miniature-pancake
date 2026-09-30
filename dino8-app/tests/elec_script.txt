@@ -115,3 +115,34 @@ R1
 # of font-glyph curve counts.
 PanelSchedule circuits=1,Lighting,500;2,Receptacles,900;3,HVAC-AC,3600
 0,-2,0
+# --- ElecCircuit/PanelSchedule associativity: Resistor #1 (object 1) and
+# Lamp #5 (object 19, its circle) are each assigned to a panel circuit via
+# ElecCircuit, stored on the component itself (circuit/load_va,
+# ElecComponents.h), not as geometry. A second PanelSchedule with no
+# Circuits= option instead selects real components (SelID below) and is
+# associative - its rows read back "Resistor #1"/"Lamp #5" plus the
+# assigned circuit/load, not hand-typed text (PanelRefIds records the two
+# component ids so UpdatePanelSchedule can find them again). Re-running
+# ElecCircuit on Lamp #5 to bump its load from 60 to 90, then
+# UpdatePanelSchedule, re-derives the table from that *current* assignment
+# instead of the value frozen when the table was first built - the same
+# explicit-recompute associativity UpdateBillOfMaterials already has.
+SelNone
+SelID 1
+ElecCircuit
+1
+100
+SelNone
+SelID 19
+ElecCircuit
+2
+60
+SelNone
+SelID 1 19
+PanelSchedule
+SelNone
+SelID 19
+ElecCircuit
+2
+90
+UpdatePanelSchedule
