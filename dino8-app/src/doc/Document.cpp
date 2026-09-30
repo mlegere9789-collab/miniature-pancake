@@ -1276,10 +1276,19 @@ void Document::ClearUndo() {
   redo_.clear();
 }
 
+// Resolves the whole id list via FindMany() - one O(document size + ids
+// size) pass - instead of the old Find()-per-id loop (O(ids size x
+// document size)). That loop shape is the same bug already fixed for the
+// property/transform/group commands (see FindMany()'s own comment above),
+// but this call site is hotter than any single command: Gumball::Update()
+// (src/ui/Gumball.cpp) calls BoundingBoxOf(doc.SelectedIds(), ...) once
+// per frame, every frame, for as long as anything is selected and the
+// gumball isn't being dragged - so on a large document with even a modest
+// selection, this was quadratic work running continuously at the UI frame
+// rate, not just once per user action.
 bool Document::BoundingBoxOf(const std::vector<ObjectId>& ids, kernel::BoundingBox& out) const {
   bool has = false;
-  for (ObjectId id : ids) {
-    const SceneObject* o = Find(id);
+  for (const SceneObject* o : FindMany(ids)) {
     if (!o) continue;
     const kernel::BoundingBox b = o->BoundingBox();
     if (!has) {

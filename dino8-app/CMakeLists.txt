@@ -736,6 +736,20 @@ if(DINO8_BUILD_TESTS)
   target_link_libraries(dino8_group_bench PRIVATE dino8_kernel)
   add_test(NAME dino8_group_bench COMMAND dino8_group_bench)
 
+  # Timing benchmark + regression guard for Document::BoundingBoxOf() (see
+  # tests/bbox_bench.cpp): used to call Find(id) - an O(document size) scan -
+  # once per id in the selection (O(selection size x document size)), and
+  # backs Gumball::Update()'s per-frame "where's the selection's centre"
+  # query, so the quadratic cost ran every rendered frame, not just once per
+  # command. Fixed to resolve the whole selection with a single FindMany()
+  # call. Same style as dino8_properties_bench/dino8_layer_bench/
+  # dino8_group_bench above: asserts a same-run relative speedup.
+  add_executable(dino8_bbox_bench tests/bbox_bench.cpp src/doc/Document.cpp src/doc/SceneObject.cpp
+                                   src/doc/SubObjectEdit.cpp src/geom/BrepMesher.cpp)
+  target_include_directories(dino8_bbox_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(dino8_bbox_bench PRIVATE dino8_kernel)
+  add_test(NAME dino8_bbox_bench COMMAND dino8_bbox_bench)
+
   # DWG round-trip fixture generator (see tests/dwg_fixture_gen.c and
   # smoke.sh's DWG section): builds a small real DWG file directly through
   # LibreDWG's public dwg_add_* API - the same API LibreDWG's own
