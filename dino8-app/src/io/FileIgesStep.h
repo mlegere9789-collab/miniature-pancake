@@ -41,4 +41,32 @@ bool ExportStep(const Document& doc, const std::string& path, bool selected_only
 // unit are honoured. `summary` describes the result.
 bool ImportStep(Document& doc, const std::string& path, std::string& summary);
 
+// ---- IFC (BIM) --------------------------------------------------------------
+// A real, valid IFC4 file - the same ISO-10303-21 Part 21 physical-file
+// syntax STEP above uses, just a different EXPRESS schema/entity
+// vocabulary - built on the same P21 writer/reader as ExportStep/ImportStep.
+// Deliberately scoped to geometry exchange, not authoring-tool BIM data:
+// each exported object becomes one IFCBUILDINGELEMENTPROXY (a generic BIM
+// element, since Dino 8 has no wall/door/beam classification to map onto
+// IFC's real building-element types) inside a minimal but complete
+// IFCPROJECT/IFCSITE/IFCBUILDING/IFCBUILDINGSTOREY spatial hierarchy real
+// IFC consumers expect, with its shape as an IFCTRIANGULATEDFACESET (IFC4's
+// own tessellated-mesh representation, the same "no fabricated precision"
+// scope ExportPly/ExportMeshFile already apply to Breps/Surfaces/SubDs -
+// they're tessellated to a mesh first, not carried through as NURBS/B-rep,
+// unlike ExportStep/ExportIges above). Every exported GlobalId is a real,
+// unique 22-character string from IFC's own base64-like GUID alphabet -
+// see DigitalSignature-style honesty note on GenerateIfcGuid() in the .cpp
+// for exactly how it differs from the official buildingSMART UUID
+// compression. Verified against a real third-party IFC toolkit
+// (IfcOpenShell), not just this codebase's own reader, during development.
+bool ExportIfc(const Document& doc, const std::string& path, bool selected_only, std::string& error);
+
+// Reads every IFCTRIANGULATEDFACESET in the file (resolving its
+// IFCCARTESIANPOINTLIST3D coordinate list and CoordIndex triangle list) and
+// merges them into a single mesh object - the same "whole file as one
+// mesh, no per-object split" scope ImportMeshFile's own OBJ reader already
+// documents. `summary` describes what was read.
+bool ImportIfc(Document& doc, const std::string& path, std::string& summary);
+
 }  // namespace dino8::app

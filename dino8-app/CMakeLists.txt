@@ -259,6 +259,7 @@ set(DINO8_SOURCES
   src/main.cpp
   src/gl/gl_loader.cpp
   src/app/Application.cpp
+  src/app/ShortcutRules.cpp
   src/app/Settings.cpp
   src/i18n/I18n.cpp
   src/input/SpaceMouse.cpp
@@ -349,6 +350,8 @@ set(DINO8_SOURCES
   src/util/Sha256.cpp
   src/util/Inflate.cpp
   src/drafting/Xlsx.cpp
+  src/util/BigUint.cpp
+  src/io/DigitalSignature.cpp
   src/flow/FlowData.cpp
   src/flow/FlowGraph.cpp
   src/flow/FlowNodesCore.cpp
@@ -373,6 +376,7 @@ set(DINO8_SOURCES
   src/compare/DwgCompare.cpp
   src/commands/cmd_compare.cpp
   src/commands/cmd_sheetset.cpp
+  src/net/ComputeServer.cpp
 )
 
 # Real OS-clipboard image backend for ViewCaptureToClipboard/
@@ -599,6 +603,19 @@ if(DINO8_BUILD_TESTS)
   target_link_libraries(dino8_test_g2_blend PRIVATE dino8_kernel)
   add_test(NAME dino8_g2_blend COMMAND dino8_test_g2_blend)
 
+  # RSA/SHA-256/PKCS#1v1.5 file signing (io/DigitalSignature.h,
+  # util/BigUint.h - see tests/test_digital_signature.cpp): BigUint
+  # arithmetic against the textbook RSA worked example, then a real
+  # generated keypair signing and verifying a file, with tamper- and
+  # wrong-key-detection checks. Standalone like dino8_test_aci_palette -
+  # provides its own dino8::app::ConfigDirectory() stub instead of linking
+  # app/Settings.cpp (which would otherwise pull in the full
+  # app/Application.h dependency graph for a function this test never
+  # actually calls into).
+  add_executable(dino8_test_digital_signature tests/test_digital_signature.cpp src/io/DigitalSignature.cpp src/util/BigUint.cpp src/util/Sha256.cpp)
+  target_include_directories(dino8_test_digital_signature PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  add_test(NAME dino8_digital_signature COMMAND dino8_test_digital_signature)
+
   # Verifies BuildBlendSurfaceG1Adaptive/BuildBlendSurfaceG2Adaptive (geom/
   # BlendSurface.h): the adaptive, max_gap-enforcing wrapper that closes
   # PARITY_MAP.md's "Rolling-ball blend surface accuracy on freeform
@@ -669,6 +686,69 @@ if(DINO8_BUILD_TESTS)
   target_include_directories(dino8_test_variable_blend PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_link_libraries(dino8_test_variable_blend PRIVATE dino8_kernel)
   add_test(NAME dino8_variable_blend COMMAND dino8_test_variable_blend)
+
+  # Dynamic-block Flip parameter (src/doc/BlockInstances.cpp's
+  # SetBlockInstanceFlip/PlaceFiltered): mirrors a placed instance about a
+  # vertical plane through its block's base point without moving the insert
+  # point, persists through the same dino8.block_instances JSON user-text
+  # every other BlockInstance field already round-trips through, and is
+  # reversible. See PARITY_MAP.md's "Dynamic blocks" item. Needs a real
+  # Document (BlockDefinition/SceneObject/group bookkeeping), same dependency
+  # shape as dino8_find_bench above, plus json_mini.cpp for the user-text
+  # (de)serialization BlockInstances.cpp itself calls.
+  add_executable(dino8_test_block_flip tests/test_block_flip.cpp src/doc/Document.cpp src/doc/SceneObject.cpp
+                                        src/doc/SubObjectEdit.cpp src/doc/BlockInstances.cpp
+                                        src/geom/BrepMesher.cpp src/util/json_mini.cpp)
+  target_include_directories(dino8_test_block_flip PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(dino8_test_block_flip PRIVATE dino8_kernel)
+  add_test(NAME dino8_block_flip COMMAND dino8_test_block_flip)
+
+  # AnnotationStyle::precision/unit_suffix/ext_offset/ext_extension/
+  # text_placement / DimStyleParams+FormatMeasurement (commands/DimGeometry.h)
+  # - see tests/test_dim_precision.cpp's own file comment for why this is
+  # header-only against DimGeometry.h (no Document/CommandContext needed)
+  # with locally-defined FormatNumber/DecimalComma stand-ins rather than
+  # linking commands/CommandEngine.cpp's real ones, which would drag in
+  # app/Application.h and the whole GL/ImGui app.
+  add_executable(dino8_test_dim_precision tests/test_dim_precision.cpp)
+  target_include_directories(dino8_test_dim_precision PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(dino8_test_dim_precision PRIVATE dino8_kernel)
+  add_test(NAME dino8_dim_precision COMMAND dino8_test_dim_precision)
+
+  # Layer::print_width_mm / LayerPrints / EffectivePrintWidthMm (doc/
+  # Document.h) - see tests/test_print_width.cpp's own file comment. Purely
+  # header-only (no Document/SceneObject instantiated, so no Document.cpp/
+  # SceneObject.cpp/etc. needed) - dino8_kernel is linked only for its
+  # public include directories (doc/SceneObject.h, pulled in transitively by
+  # Document.h, needs dino8/kernel/brep.h et al. to be on the include path
+  # to parse at all, even though nothing in the kernel is actually called).
+  add_executable(dino8_test_print_width tests/test_print_width.cpp)
+  target_include_directories(dino8_test_print_width PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(dino8_test_print_width PRIVATE dino8_kernel)
+  add_test(NAME dino8_print_width COMMAND dino8_test_print_width)
+
+  # Keyboard-shortcut chord table (src/app/ShortcutRules.cpp's
+  # IsReservedShortcut): every chord Application::HandleShortcuts hardcodes
+  # a built-in default for, and that a user shortcut (Options > Shortcuts)
+  # now replaces instead of being blocked by (see PARITY_MAP.md's Command
+  # aliases and shortcut customization item). Standalone like
+  # dino8_test_aci_palette - ShortcutRules.cpp only needs ImGuiKey's enum
+  # values from imgui.h, so this links no imgui/GLFW/GL code at all.
+  add_executable(dino8_test_shortcuts tests/test_shortcuts.cpp src/app/ShortcutRules.cpp)
+  target_include_directories(dino8_test_shortcuts PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${imgui_SOURCE_DIR})
+  add_test(NAME dino8_shortcuts COMMAND dino8_test_shortcuts)
+
+  # Minimal HTTP request server (src/net/ComputeServer.h/.cpp) - see
+  # PARITY_MAP.md's "Cloud/network compute service (Rhino.Compute
+  # equivalent)" item, which had no server/socket/HTTP code anywhere before
+  # this. Standalone like dino8_test_aci_palette - ComputeServer.cpp has no
+  # Document/Application dependency at all, so this links no dino8_kernel/
+  # imgui/GLFW/GL code. Covers request parsing (including a request split
+  # across two partial reads) purely in memory, plus a genuine end-to-end
+  # round trip over a real loopback TCP socket.
+  add_executable(dino8_test_compute_server tests/test_compute_server.cpp src/net/ComputeServer.cpp)
+  target_include_directories(dino8_test_compute_server PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  add_test(NAME dino8_compute_server COMMAND dino8_test_compute_server)
 
   # Standalone timing benchmark for Document's diff-based undo/redo history
   # (see tests/undo_bench.cpp and tests/undo_scaling_notes.md) - not an

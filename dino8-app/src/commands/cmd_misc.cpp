@@ -109,6 +109,33 @@ class MacroRunCommand : public Command {
   }
 };
 
+// RecordMacro: the macro editor's action recorder (PARITY_MAP.md's "VBA-
+// style macro recorder and editor" item). While on, CommandEngine::Execute
+// appends every top-level typed command line verbatim to
+// AppState::macro_text - see its own comment there and Execute's call
+// site in CommandEngine.cpp. Same On/Off-report shape as History/
+// RecordHistory (cmd_history.cpp's ToggleOrReport): no argument reports
+// the current state, On/Off (Yes/No/1/0 also accepted) sets it.
+void ToggleOrReportMacroRecording(CommandContext& ctx) {
+  bool& on = ctx.App().State().macro_recording;
+  if (std::optional<std::string> tok = ctx.Engine().TakePendingInput()) {
+    const std::string v = ToLower(*tok);
+    if (v == "on" || v == "yes" || v == "y" || v == "1") on = true;
+    else if (v == "off" || v == "no" || v == "n" || v == "0") on = false;
+    else { ctx.Warn("RecordMacro: expected On or Off"); return; }
+    ctx.Print(std::string("Macro recording: ") + (on ? "on - every command line you type is appended to the Macro Editor's buffer" : "off"));
+    return;
+  }
+  // No argument: report the On/Off state and dump the buffer's current
+  // contents line by line, so a recorded session can be inspected/verified
+  // from the command line or a script, not only by opening the Macro
+  // Editor panel.
+  ctx.Print(std::string("Macro recording: ") + (on ? "on" : "off") + (on ? "" : " (type On to start)") + ". Buffer:");
+  std::istringstream in(ctx.App().State().macro_text);
+  std::string line;
+  while (std::getline(in, line)) ctx.Print("  " + line);
+}
+
 class HelpCommand : public Command {
  public:
   void Begin(CommandContext& ctx) override {
@@ -364,6 +391,8 @@ void RegisterMiscCommands(CommandEngine& e) {
   Reg(e, "CalcRPN", Make<CalcRPNCommand>(), CommandStatus::Implemented, "Evaluates a postfix expression (numbers then + - * / ^ or sqrt/neg/sin/cos/tan/abs) with an explicit operand stack.");
   Reg(e, "Macro", Make<MacroRunCommand>());
   Reg(e, "MacroEditor", Immediate([](CommandContext& ctx) { ctx.App().Panels().macro_editor = true; }));
+  Reg(e, "RecordMacro", Immediate(ToggleOrReportMacroRecording), CommandStatus::Implemented,
+      "A real action recorder for the Macro Editor's buffer: with no argument, reports the On/Off state and dumps the buffer's current contents line by line; On/Off (Yes/No/1/0 also accepted) toggles it. While on, every top-level command line you type on the command line (or via the Macro Editor's own Record button) is appended verbatim to the Macro Editor's buffer, which already Run/Copy and persists across restarts - so a session of typed commands can be replayed or saved as a macro without retyping them. Scope: this observes typed command LINES, the same unit Rhino's own command-line macro recording captures - not raw mouse clicks or panel interactions with no command-line equivalent.");
   Reg(e, "ReadCommandFile", Immediate([](CommandContext& ctx) {
         Application& app = ctx.App();
         app.ShowFileDialog("Read command file", {".txt", ".dino", ".cmd"}, false, [&app](const std::string& path) {

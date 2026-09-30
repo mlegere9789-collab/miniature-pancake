@@ -258,6 +258,10 @@ void DrawLayersPanel(Application& app) {
           static char desc[512];
           if (ImGui::IsWindowAppearing()) std::snprintf(desc, sizeof(desc), "%s", L.description.c_str());
           if (ImGui::InputTextMultiline("Notes", desc, sizeof(desc), ImVec2(240, 60))) L.description = desc;
+          {
+            float pw = static_cast<float>(L.print_width_mm);
+            if (ImGui::InputFloat("Print width mm (0=default, <0=no print)", &pw, 0, 0, "%.3f")) { doc.BeginChange("Layer print width"); L.print_width_mm = pw; }
+          }
           if (ImGui::MenuItem("Select objects on layer")) {
             doc.SelectWhere([i](const SceneObject& o) { return o.layer_index == i; });
           }
@@ -1318,12 +1322,44 @@ void DrawOptionsWindow(Application& app) {
     if (ImGui::BeginTabItem(Tr("options.tab_shortcuts").c_str())) {
       static char key_name[32] = "L", shortcut_cmd[128] = "";
       static bool ctrl_mod = true, shift_mod = false, alt_mod = false;
-      static std::string warning;
+      static std::string warning, note;
       ImGui::TextWrapped(
           "Key name exactly as ImGui reports it: a letter/digit, F1-F24, Up/Down/Left/Right, Escape, Delete, "
-          "Tab, Space, Home, End, PageUp, PageDown, Insert, and similar. Built-in bindings (Ctrl+Z/C/V/X/S/O/N/A/G/H, "
-          "F1-F11, Delete, Escape, Home, PageUp/PageDown, the arrow keys) always win over a colliding shortcut here.");
+          "Tab, Space, Home, End, PageUp, PageDown, Insert, and similar. A shortcut on a built-in chord "
+          "(Ctrl+Z/C/V/X/S/O/N/A/G/H, F1-F11, Delete, Escape, Home, PageUp/PageDown, the arrow keys) replaces "
+          "that default action, same as any other Options > Shortcuts entry.");
       ImGui::InputText("Key", key_name, sizeof(key_name));
+      ImGui::SameLine();
+      // "Click here, then press the key" capture flow: while capturing,
+      // every other frame HandleShortcuts (Application.cpp) sits out
+      // entirely (capturing_shortcut), so the very first non-modifier key
+      // this loop sees is unambiguously for the new binding, not also
+      // firing whatever that chord already does. Fills the same key_name/
+      // *_mod fields the typed-name path above already used, so Add/Update
+      // below (KeyShortcutFromName(key_name)) needs no separate code path.
+      if (app.capturing_shortcut) {
+        ImGui::TextColored(ImVec4(1, 0.8f, 0.2f, 1), "Press a key... (Esc to cancel)");
+        ImGuiIO& io = ImGui::GetIO();
+        if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+          app.capturing_shortcut = false;
+        } else {
+          for (int k = ImGuiKey_NamedKey_BEGIN; k < ImGuiKey_NamedKey_END; ++k) {
+            const ImGuiKey key = static_cast<ImGuiKey>(k);
+            if (IsUnbindableCaptureKey(k)) continue;
+            if (!ImGui::IsKeyPressed(key, false)) continue;
+            const char* n = ImGui::GetKeyName(key);
+            if (!n || !*n) continue;
+            std::snprintf(key_name, sizeof(key_name), "%s", n);
+            ctrl_mod = io.KeyCtrl;
+            shift_mod = io.KeyShift;
+            alt_mod = io.KeyAlt;
+            app.capturing_shortcut = false;
+            break;
+          }
+        }
+      } else if (ImGui::Button("Press a key...")) {
+        app.capturing_shortcut = true;
+      }
       ImGui::SameLine(); ImGui::Checkbox("Ctrl", &ctrl_mod);
       ImGui::SameLine(); ImGui::Checkbox("Shift", &shift_mod);
       ImGui::SameLine(); ImGui::Checkbox("Alt", &alt_mod);
@@ -1332,17 +1368,22 @@ void DrawOptionsWindow(Application& app) {
         const int key = KeyShortcutFromName(key_name);
         if (key == 0) {
           warning = std::string("Unrecognized key name: ") + key_name;
+          note.clear();
         } else {
           std::vector<KeyShortcut>& v = app.user_shortcuts;
           auto it = std::find_if(v.begin(), v.end(), [&](const KeyShortcut& s) {
             return s.key == key && s.ctrl == ctrl_mod && s.shift == shift_mod && s.alt == alt_mod;
           });
           if (it != v.end()) it->command = shortcut_cmd; else v.push_back({key, ctrl_mod, shift_mod, alt_mod, shortcut_cmd});
+          note = IsReservedShortcut(key, ctrl_mod, shift_mod, alt_mod)
+                     ? "This replaces that chord's built-in default action."
+                     : "";
           shortcut_cmd[0] = 0;
           warning.clear();
         }
       }
       if (!warning.empty()) { ImGui::TextColored(ImVec4(1, 0.5f, 0.3f, 1), "%s", warning.c_str()); }
+      else if (!note.empty()) { ImGui::TextDisabled("%s", note.c_str()); }
       ImGui::Separator();
       for (size_t i = 0; i < app.user_shortcuts.size();) {
         KeyShortcut& s = app.user_shortcuts[i];
@@ -1875,6 +1916,16 @@ void DrawMacroEditor(Application& app) {
   }
   ImGui::SameLine();
   if (ImGui::Button("Copy")) ImGui::SetClipboardText(text.c_str());
+  ImGui::SameLine();
+  // RecordMacro (cmd_commands.cpp/cmd_misc.cpp): every command line typed
+  // from here on is appended to `text` above automatically - a real action
+  // recorder, not just this static starter buffer. Goes through Execute,
+  // same as a typed "RecordMacro On/Off", so the command-line feedback
+  // line and this button's own label always agree on the current state.
+  const bool recording = app.State().macro_recording;
+  if (recording) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.75f, 0.15f, 0.15f, 1));
+  if (ImGui::Button(recording ? "Recording... (click to stop)" : "Record")) app.Engine().Execute(recording ? "RecordMacro Off" : "RecordMacro On");
+  if (recording) ImGui::PopStyleColor();
   ImGui::End();
 }
 

@@ -77,6 +77,34 @@ std::vector<IntersectionCurve> IntersectSurfaces(const ON_Surface& a, const ON_S
 // where it leaves a face). `face_a`/`face_b` may be null (= untrimmed).
 std::vector<IntersectionCurve> IntersectFaces(const ON_BrepFace* face_a, const ON_Surface& a, const ON_BrepFace* face_b, const ON_Surface& b, const IntersectOptions& opt);
 
+// One SSX result between a specific face of `a` and a specific face of
+// `b`, as returned by IntersectBreps() below.
+struct BrepBrepIntersection {
+  int face_a = -1;
+  int face_b = -1;
+  IntersectionCurve curve;
+};
+
+// B-rep/B-rep intersection as a public kernel API - the Brep-level
+// counterpart to IntersectFaces() above, composing it over every
+// bounding-box-overlapping face pair of `a` and `b` (the same pruning
+// BooleanCombineGeneral()'s own face-pair loop uses, boolean_general.cpp).
+// PARITY_MAP.md's own "kernel: Intersections & projections" evidence named
+// this gap directly: "only face-level kernel entry points exist
+// (IntersectFaces, IntersectCurveSurface); the app composes the B-rep loop
+// itself (IntersectAny) ... there is no public Brep-level Intersect." This
+// is that function - general to any two B-reps' faces (not enumerated per
+// surface-type-pair, the same "general building block" scope this file's
+// own top comment states), trimmed to each face's own trim loops exactly
+// as IntersectFaces() already does, and returned un-stitched (one entry
+// per face-pair-and-curve, `face_a`/`face_b` naming which faces produced
+// it) - a caller needing one merged chain per physical intersection would
+// stitch these the same way BooleanCombineGeneral()'s own StitchChains
+// does, which is deliberately NOT duplicated here since this function's
+// job is exposing the raw per-face-pair SSX results, not building a
+// specific boolean engine's own topology.
+std::vector<BrepBrepIntersection> IntersectBreps(const ON_Brep& a, const ON_Brep& b, const IntersectOptions& opt);
+
 struct CurveSurfaceHit {
   double t = 0;           // curve parameter
   ON_2dPoint uv;          // surface parameters
@@ -84,6 +112,39 @@ struct CurveSurfaceHit {
   double error = 0;       // |C(t) - S(u,v)| after refinement
 };
 std::vector<CurveSurfaceHit> IntersectCurveSurface(const ON_Curve& c, const ON_Surface& s, const IntersectOptions& opt);
+
+// One CSX hit between a curve and a specific (trimmed) face of a B-rep, as
+// returned by IntersectCurveBrep() below.
+struct CurveBrepHit {
+  int face_index = -1;
+  CurveSurfaceHit hit;
+};
+
+// Curve/B-rep intersection as a public kernel API - runs IntersectCurveSurface()
+// against every face of `b` whose surface bounding box can plausibly meet
+// `c`, then drops any hit whose (u, v) falls outside that face's own trim
+// loops (FaceContainsUV(), the identical trim test IntersectFaces() already
+// applies to SSX results). Closes the other half of the same PARITY_MAP.md
+// gap IntersectBreps() above closes: "only face-level kernel entry points
+// exist ... the app composes the B-rep loop itself (IntersectAny)."
+std::vector<CurveBrepHit> IntersectCurveBrep(const ON_Curve& c, const ON_Brep& b, const IntersectOptions& opt);
+
+// A curve/plane crossing - the curve-level counterpart to CurveSurfaceHit
+// above, but against a caller-supplied INFINITE ON_Plane rather than a
+// bounded ON_Surface. PARITY_MAP.md's own "Curve/plane intersection" gap:
+// IntersectCurveSurface() can be handed a bounded ON_PlaneSurface, but "no
+// dedicated infinite-plane API" existed (a caller had to first decide how
+// big a rectangle to bound the plane with - and any curve point beyond
+// that rectangle's edge is silently missed, a real correctness hazard an
+// actually-infinite plane doesn't have). This solves the true implicit
+// equation directly (signed distance to the plane), not a bounded-surface
+// stand-in for it.
+struct CurvePlaneHit {
+  double t = 0;      // curve parameter
+  Point3d point;
+  double error = 0;  // |plane.DistanceTo(point)| after refinement
+};
+std::vector<CurvePlaneHit> IntersectCurvePlane(const ON_Curve& c, const ON_Plane& plane, const IntersectOptions& opt);
 
 struct CurveCurveHit {
   double ta = 0;    // parameter on curve a
@@ -118,6 +179,99 @@ struct CurveCurveHit {
 // of isolated points its finite sampling happens to converge to, not the
 // shared span itself.
 std::vector<CurveCurveHit> IntersectCurves(const ON_Curve& a, const ON_Curve& b, const IntersectOptions& opt);
+
+// A single curve's own self-intersections (a figure-eight-style crossing,
+// or any other point where the curve genuinely passes through itself at
+// two distinct parameters) - PARITY_MAP.md's own "Curve self-intersection"
+// gap: "the kernel's own IntersectCurves(c, c) is still not usable for
+// this (spurious self-hits on a plain line)" - IntersectCurves(c, c) is
+// NOT what this delegates to (see its own "not intended for coincident
+// curves" caveat just above: every parameter trivially equals itself,
+// which is exactly the "coincident over a real span" case that caveat
+// warns about, not a bug this function tries to route around). Instead,
+// this is a dedicated self-intersection primitive: seeded the same
+// segment-pair way as IntersectCurves(), but ONLY for sample-index pairs
+// (i, j) separated by at least 2 segments (wrapping for a closed curve) -
+// immediately-adjacent segments always meet at (or near) their shared
+// sample point, which is the curve's own ordinary continuity, not a
+// self-crossing, so they are never seeded at all rather than relying on
+// post-hoc dedup to paper over a flood of trivial adjacent-segment hits.
+// A genuine crossing still gets Newton-refined to full opt.tolerance
+// precision, exactly like IntersectCurves(); a refined (ta, tb) pair that
+// nonetheless converges back within one segment step of the diagonal
+// (ta == tb) is discarded as the same "not a real crossing" case, a
+// second, post-refinement instance of the same check (Newton is free to
+// walk away from its own seed). A straight line, or any other
+// non-self-intersecting curve, correctly returns empty - the concrete
+// "usability" gap PARITY_MAP.md's own evidence names.
+std::vector<CurveCurveHit> IntersectCurveSelfIntersections(const ON_Curve& c, const IntersectOptions& opt);
+
+struct PullbackResult {
+  ON_NurbsCurve pcurve;         // 2D curve in the surface's (u, v) parameter space
+  ON_NurbsCurve pulled_curve;   // the literal 3D "Pull curve to surface" result: S(pcurve(t)), refit as its own 3D curve
+  std::vector<ON_2dPoint> uv;   // the (u, v) found at each sample (same order as `t`)
+  std::vector<double> t;        // the curve parameters (in c.Domain()) that were sampled
+  std::vector<double> params;   // pcurve's/pulled_curve's own chord-length parameters (same order as `uv`/`t`)
+  double max_error = 0;         // largest |S(u, v) - C(t)| at any SAMPLED point
+  bool on_surface = false;      // true iff max_error <= opt.tolerance
+};
+
+// General-purpose pullback AND pull: projects an ARBITRARY 3D curve (on,
+// near, or genuinely far from a surface) onto that surface, returning BOTH
+// a 2D pcurve in the surface's own (u, v) parameter space and the literal
+// 3D "pull curve to surface" result (Rhino's Pull command semantics -
+// `pulled_curve`, the pcurve mapped back through the surface as its own 3D
+// curve). This is the general-purpose sibling of two things the kernel
+// previously only did as a by-product of something else: the pullback
+// ReplaceEdgeCurve()/SplitNakedEdgeAt() already do internally (brep.cpp) as
+// part of a topology edit (2D, but only reachable from inside those edits),
+// and the plain closest-point projection SurfaceClosestPoint/Global already
+// do per POINT (3D, but with no curve-level call to drive it across a whole
+// input curve and refit the result as one curve).
+//
+// The curve is sampled at a resolution driven by opt.mesh_tolerance (same
+// formula as IntersectCurveSurface), each sample is closest-point-projected
+// onto the surface (SurfaceClosestPointGlobal for the first sample, then
+// SurfaceClosestPoint seeded from the PREVIOUS sample's (u, v) for
+// continuity - re-seeded globally whenever the local Newton polish fails or
+// lands implausibly far from the sample point, so a warm seed that has
+// wandered off a disconnected sheet or across a awkward periodic seam
+// self-corrects rather than silently drifting), and the resulting (u, v)
+// samples are fit with InterpolateCubic(..., dim=2) for `pcurve` and the
+// matching S(u, v) samples are separately fit with InterpolateCubic(...,
+// dim=3) for `pulled_curve` - the exact same cubic-fit call
+// IntersectSurfaces() itself uses to build pcurve_a/pcurve_b (and, for
+// `pulled_curve`, its 3D `curve` field).
+//
+// Honesty notes (read before trusting the result):
+//  - max_error is the worst per-SAMPLE closest-point residual; unlike
+//    IntersectSurfaces()'s own post-fit pass, neither fitted curve's
+//    deviation from the surface/input BETWEEN samples is independently
+//    re-checked or refined with inserted points - a caller who needs a
+//    tighter guarantee on a highly-curved input should tighten
+//    opt.mesh_tolerance (more samples), not rely on this call to notice
+//    and self-correct.
+//  - `pulled_curve` (the literal "Pull to surface" result) is meaningful
+//    for ANY input, on-surface or not - that is the definition of a Pull
+//    operation, and on_surface need not be true to trust it. `pcurve` and
+//    `on_surface`, by contrast, are about PARAMETER-SPACE correspondence:
+//    when the curve does NOT actually lie on the surface within tolerance
+//    (on_surface == false), `pcurve` is still returned (it is whatever
+//    curve interpolates the raw closest-point (u, v) projections), but
+//    treating it as a meaningful pullback of THIS curve's own shape is not
+//    warranted - it is closest-point noise reparametrized, not a pullback.
+//    Callers MUST check on_surface before trusting `pcurve` as a shape-
+//    preserving parametrization; this call does not throw or return an
+//    empty curve for an off-surface input, since "far from the surface"
+//    has no single correct threshold this general-purpose call can assume
+//    for every caller.
+//  - Like IntersectSurfaces()'s own pcurve_a/pcurve_b, a raw (u, v) sample
+//    sequence that crosses a periodic surface direction's seam is not
+//    unwrapped - the cubic fit can swing through the domain's middle
+//    between the two bracketing samples there (a visibly wrong `pcurve`
+//    shape for that specific stretch, even though the individual `uv`
+//    samples, `pulled_curve`, and max_error remain correct).
+PullbackResult PullbackCurveToSurface(const ON_Curve& c, const ON_Surface& s, const IntersectOptions& opt);
 
 // --- numerical helpers ------------------------------------------------------
 

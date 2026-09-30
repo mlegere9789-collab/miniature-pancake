@@ -12,6 +12,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "app/ShortcutRules.h"
 #include "app/ViewTools.h"
 #include "commands/CommandCatalog.h"
 #include "commands/CommandEngine.h"
@@ -119,10 +120,12 @@ struct RenderImage {
 // A single user-assignable keyboard shortcut (Options > Shortcuts):
 // modifier chord + one ImGui key -> a command line, checked by
 // Application::HandleShortcuts alongside its own built-in Ctrl+Z/F1-F11/etc
-// bindings (which always take priority - a user shortcut that collides with
-// one of those never fires, exactly like Rhino's own built-in bindings
-// winning over a customized one). `key` is an ImGuiKey value; stored as int
-// here (not ImGuiKey) so this header does not have to include imgui.h.
+// bindings. A shortcut assigned to a chord that also has a built-in default
+// (IsReservedShortcut below) REPLACES that default rather than being
+// blocked by it - Rhino's own Tools > Options > Keyboard behavior, where
+// even Ctrl+Z itself can be reassigned. `key` is an ImGuiKey value; stored
+// as int here (not ImGuiKey) so this header does not have to include
+// imgui.h.
 struct KeyShortcut {
   int key = 0;
   bool ctrl = false, shift = false, alt = false;
@@ -169,6 +172,7 @@ struct AppState {
   bool dig_beep = false;             // DigBeep: terminal-bell feedback per digitized point
   std::string content_filter;        // ContentFilter: case-insensitive name substring for the Materials/Textures/Environments panels
   std::string macro_text = "! _Box 0,0,0 10,10,10\n_ZoomExtents\n";  // MacroEditor's buffer (Options.cpp Settings persists this, like startup_script)
+  bool macro_recording = false;      // RecordMacro On/Off: while on, CommandEngine::Execute appends each typed top-level command line to macro_text - see cmd_misc.cpp's RecordMacro
 };
 
 struct FileDialogState {
@@ -349,6 +353,12 @@ class Application {
   std::string language = "en";
   std::vector<std::string> toolbar_commands;  // customizable Standard toolbar (empty = default set)
   std::vector<KeyShortcut> user_shortcuts;    // Options > Shortcuts (persisted in Settings); see HandleShortcuts
+  // Options > Shortcuts "Press a key..." capture button (Panels.cpp): while
+  // true, HandleShortcuts skips ALL of its own dispatch for the frame (same
+  // as the existing text_active guard) so a chord being captured for a new
+  // binding can never also fire its own current action or an unrelated
+  // existing user_shortcuts entry out from under the capture.
+  bool capturing_shortcut = false;
   // Toolbar appearance (Options > Toolbar), persisted in Settings.
   int toolbar_icon_size = 24;        // 24, 32 or 40 px
   bool toolbar_labels = true;        // small caption under each icon

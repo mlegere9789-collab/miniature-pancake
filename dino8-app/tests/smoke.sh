@@ -2024,6 +2024,40 @@ print("layers count final: %d" % dino8.doc.Layers.Count())
 print("layers is layer after delete: " + str(dino8.doc.Layers.IsLayer("QCLayer")))
 
 dino8.RunCommand("NewLayer", "Parts")
+
+print("unit system before: %d" % dino8.doc.UnitSystem)
+dino8.doc.UnitSystem = "Feet"
+print("unit system after set by name: %d" % dino8.doc.UnitSystem)
+print("unit system name after set: " + dino8.doc.UnitSystemName)
+dino8.doc.UnitSystem = 2
+print("unit system after set by code: " + dino8.doc.UnitSystemName)
+
+print("doc name: " + dino8.doc.Name)
+print("doc path: " + str(dino8.doc.Path))
+print("doc modified before: " + str(dino8.doc.Modified))
+dino8.doc.Modified = False
+print("doc modified after set: " + str(dino8.doc.Modified))
+dino8.doc.Modified = True
+
+dino8.doc.BeginUndo("QCPointGroup")
+undo_pt = dino8.doc.Objects.AddPoint(600, 0, 0)
+print("object count before undo: %d" % len(dino8.doc.Objects.AllObjects()))
+print("undo point present: " + str(dino8.doc.Objects.Find(undo_pt) is not None))
+print("undo returned: " + str(dino8.doc.Undo()))
+print("object count after undo: %d" % len(dino8.doc.Objects.AllObjects()))
+print("undo point gone: " + str(dino8.doc.Objects.Find(undo_pt) is None))
+print("redo returned: " + str(dino8.doc.Redo()))
+print("object count after redo: %d" % len(dino8.doc.Objects.AllObjects()))
+print("redo point back: " + str(dino8.doc.Objects.Find(undo_pt) is not None))
+print("final undo returned: " + str(dino8.doc.Undo()))
+print("object count after final undo: %d" % len(dino8.doc.Objects.AllObjects()))
+
+print("last command name: " + dino8.LastCommandName())
+print("version starts with Dino 8: " + str(dino8.Version().startswith("Dino 8 ")))
+print("command history has last command: " + str(dino8.LastCommandName() in dino8.CommandHistory()))
+dino8.ClearCommandHistory()
+print("command history empty after clear: " + str(dino8.CommandHistory() == ""))
+print("last command survives history clear: " + str(dino8.LastCommandName() == "RunPythonScript"))
 PY
 sed "s|@TMP@|$TMPW|g" "$HERE/python_script.txt" > "$TMPW/python_script.txt"
 # Captured with set +e, not "|| { ...; exit 1; }": python_script.txt's own
@@ -2201,7 +2235,30 @@ else
   pscheck "history: layers delete after switch: True" "Delete succeeded once the layer was no longer current"
   pscheck "history: layers count final: 1" "Layers.Count is back to 1 after the delete"
   pscheck "history: layers is layer after delete: False" "IsLayer no longer finds the deleted layer"
-  pscheck "^ok   expect_objects 36" "RunPythonScript left the box, the circle, the cone, the torus, the interpolated curve, the arc, the srf, the planar surface, three points, the extruded surface, the extruded solid, the union mesh, the difference mesh, the intersection mesh, the two circle copies, the rotate line and its rotated copy, the scale box and its scaled copy, the mirror line and its mirrored copy, the transform line and its transformed copy, the curve-query line, its 3 create=True divide points, the bounding-box test box, the surface-closest-point sphere, the AddMesh triangle, and the two fresh ObjectsByType test points (the sphere, the two union input boxes, the two difference input boxes and the two intersection input boxes were removed from inside the script)"
+  pscheck "history: unit system before: 2" "dino8.doc.UnitSystem read back the default document unit system (2, Millimeters), matching rs.UnitSystem's getter form and Document::Settings().unit_system's default"
+  pscheck "history: unit system after set by name: 9" "assigning dino8.doc.UnitSystem = \"Feet\" resolved the name to Rhino's own unit code (9), matching rs.UnitSystem's setter-by-name form and UnitCode's table in LuaEngine.cpp"
+  pscheck "history: unit system name after set: Feet" "dino8.doc.UnitSystemName read back the word form after the by-name set, matching rs.UnitSystemName"
+  pscheck "history: unit system after set by code: Millimeters" "assigning dino8.doc.UnitSystem = 2 (an int) resolved through the same code table, matching rs.UnitSystem's setter-by-code form"
+  pscheck "history: doc name: Untitled" "dino8.doc.Name reported \"Untitled\" for a document with no path yet, matching rs.DocumentName"
+  pscheck "history: doc path: None" "dino8.doc.Path is None for an unsaved document, matching rs.DocumentPath pushing nil instead of an empty string"
+  pscheck "history: doc modified before: True" "dino8.doc.Modified reflects the many edits this script already made, matching rs.DocumentModified's getter form"
+  pscheck "history: doc modified after set: False" "assigning dino8.doc.Modified = False round-tripped, matching rs.DocumentModified's setter form"
+  pscheck "history: object count before undo: 37" "dino8.doc.Objects.AddPoint after dino8.doc.BeginUndo(\"QCPointGroup\") added the one new point, matching rs.BeginUndo/rs.AddPoint"
+  pscheck "history: undo point present: True" "the freshly added point resolves through Find before any undo"
+  pscheck "history: undo returned: True" "dino8.doc.Undo() reported success, matching rs.Undo() - previously entirely unported to Python per the PARITY_MAP note on undo/document-state functions"
+  pscheck "history: object count after undo: 36" "Undo() removed exactly the point BeginUndo's group added"
+  pscheck "history: undo point gone: True" "the undone point no longer resolves through Find"
+  pscheck "history: redo returned: True" "dino8.doc.Redo() reported success, matching rs.Redo() - also previously entirely unported to Python"
+  pscheck "history: object count after redo: 37" "Redo() restored exactly the point Undo() had removed"
+  pscheck "history: redo point back: True" "the redone point resolves through Find again"
+  pscheck "history: final undo returned: True" "a second dino8.doc.Undo() call cleanly reverted the redo, leaving the document's object count where the rest of this script expects it"
+  pscheck "history: object count after final undo: 36" "the undo/redo round trip nets to zero extra objects, so the final @expect_objects count below is unaffected"
+  pscheck "history: last command name: RunPythonScript" "dino8.LastCommandName() reported RunPythonScript itself, matching rs.LastCommandName - CommandEngine::RunNested saves/restores last_command_ around a nested dino8.RunCommand call the same way rs.Command does, so the earlier NewLayer/AddLayer/etc. nested calls never clobber it"
+  pscheck "history: version starts with Dino 8: True" "dino8.Version() reports a Dino 8 version string, matching rs.Version() - previously entirely unported to Python"
+  pscheck "history: command history has last command: True" "dino8.CommandHistory() includes the line-1 \"Command: RunPythonScript ...\" entry LastCommandName just named, matching rs.CommandHistory()"
+  pscheck "history: command history empty after clear: True" "dino8.ClearCommandHistory() actually cleared it, matching rs.ClearCommandHistory()"
+  pscheck "history: last command survives history clear: True" "clearing the history deque leaves last_command_ itself untouched, matching rs.ClearCommandHistory() only ever clearing rs.CommandHistory()'s own log"
+  pscheck "^ok   expect_objects 36" "RunPythonScript left the box, the circle, the cone, the torus, the interpolated curve, the arc, the srf, the planar surface, three points, the extruded surface, the extruded solid, the union mesh, the difference mesh, the intersection mesh, the two circle copies, the rotate line and its rotated copy, the scale box and its scaled copy, the mirror line and its mirrored copy, the transform line and its transformed copy, the curve-query line, its 3 create=True divide points, the bounding-box test box, the surface-closest-point sphere, the AddMesh triangle, and the two fresh ObjectsByType test points (the sphere, the two union input boxes, the two difference input boxes and the two intersection input boxes were removed from inside the script, and the undo/redo group's own point was undone again at the end)"
   grep -q "! Python error" <<<"$PS" && { echo "FAIL python_script.txt printed a Python error"; fail=1; } || echo "ok   no Python script errors"
 fi
 
@@ -2958,6 +3015,66 @@ test -s "$TMPW/file/export1.obj" && echo "ok   export1.obj exists" || { echo "FA
 flcheck "Exported $TMPW/file/exportorigin.obj (origin at 5,5,0)" "ExportWithOrigin re-based to the picked point"
 test -s "$TMPW/file/exportorigin.obj" && echo "ok   exportorigin.obj exists" || { echo "FAIL exportorigin.obj missing"; fail=1; }
 grep -q "^v -5 -5 0$" "$TMPW/file/exportorigin.obj" && echo "ok   ExportWithOrigin translated the box corner to -5,-5,0" || { echo "FAIL ExportWithOrigin did not re-base the geometry"; fail=1; }
+
+# Point-cloud exchange at the app level (XYZ/PTS/LAS - see
+# io/FileExchange.cpp's ExportXyz/ImportXyz/ExportPts/ImportPts/ExportLas/
+# ImportLas) and digital signing of an exported file (io/DigitalSignature.h -
+# see point_cloud_io_script.txt). DigitalSign's first-ever call generates a
+# real 2048-bit RSA keypair from scratch (a one-time, roughly one-minute
+# cost - see BigUint::GenerateProbablePrime - paid fresh every run since
+# XDG_CONFIG_HOME above is a clean per-run scratch directory), so this is
+# the one script in this file that can legitimately take noticeably longer
+# than the others; --smoke is a frame-count target, not a wall-clock
+# timeout, so it simply waits.
+mkdir -p "$TMPW/pointcloud"
+sed "s|@TMP@|$TMPW/pointcloud|g" "$HERE/point_cloud_io_script.txt" > "$TMPW/point_cloud_io_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  PC="$("$BIN" --smoke 60 --script "$TMPW/point_cloud_io_script.txt" 2>&1)" || { echo "$PC"; echo "FAIL: point cloud io script exited non-zero"; exit 1; }
+else
+  PC="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$TMPW/point_cloud_io_script.txt" 2>&1)" || { echo "$PC"; echo "FAIL: point cloud io script exited non-zero"; exit 1; }
+fi
+echo "$PC" | grep -E "^(ok|FAIL)"
+if echo "$PC" | grep -q "^FAIL"; then fail=1; fi
+pccheck() { if echo "$PC" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$PC" "$1"; fail=1; fi; }
+pccheck "Exported $TMPW/pointcloud/cloud.xyz" "Export wrote cloud.xyz"
+pccheck "Exported $TMPW/pointcloud/cloud.pts" "Export wrote cloud.pts"
+pccheck "Exported $TMPW/pointcloud/cloud.las" "Export wrote cloud.las"
+test -s "$TMPW/pointcloud/cloud.xyz" && echo "ok   cloud.xyz exists" || { echo "FAIL cloud.xyz missing"; fail=1; }
+test -s "$TMPW/pointcloud/cloud.pts" && echo "ok   cloud.pts exists" || { echo "FAIL cloud.pts missing"; fail=1; }
+test -s "$TMPW/pointcloud/cloud.las" && echo "ok   cloud.las exists" || { echo "FAIL cloud.las missing"; fail=1; }
+grep -q "^0 0 0$" "$TMPW/pointcloud/cloud.xyz" && echo "ok   cloud.xyz has real ASCII XYZ content" || { echo "FAIL cloud.xyz content looks wrong"; fail=1; }
+grep -q "^3$" "$TMPW/pointcloud/cloud.pts" && echo "ok   cloud.pts has the real .pts point-count header" || { echo "FAIL cloud.pts content looks wrong"; fail=1; }
+head -c4 "$TMPW/pointcloud/cloud.las" | grep -q "LASF" && echo "ok   cloud.las has the real LAS file signature" || { echo "FAIL cloud.las is missing the LASF signature"; fail=1; }
+# Each of the three re-imported clouds prints the same real fingerprint
+# (3 points) as the original - proves the round trip actually carried the
+# points through, not just that some object landed in the document.
+PC_POINTS_COUNT=$(echo "$PC" | grep -c "^history:   3 points$")
+[ "$PC_POINTS_COUNT" = "4" ] && echo "ok   the point cloud's exact 3-point fingerprint survived all three XYZ/PTS/LAS round trips (List ran 4 times, all matched)" || { echo "FAIL the 3-point fingerprint did not appear exactly 4 times (got $PC_POINTS_COUNT) - a round trip silently dropped/added points"; fail=1; }
+pccheck "DigitalSign: wrote $TMPW/pointcloud/cloud.xyz.sig" "DigitalSign wrote a .sig sidecar"
+test -s "$TMPW/pointcloud/cloud.xyz.sig" && echo "ok   cloud.xyz.sig exists" || { echo "FAIL cloud.xyz.sig missing"; fail=1; }
+pccheck "VerifySignature: OK, signed by key fingerprint" "VerifySignature accepts a signature matching the current file"
+pccheck "VerifySignature: FAILED (Signature does not match this file/key)" "VerifySignature rejects the same signature once the file changes"
+
+# IFC (BIM) exchange at the app level (io/FileIgesStep.cpp's ExportIfc/
+# ImportIfc - see ifc_script.txt). Verified during development against a
+# real third-party IFC toolkit (IfcOpenShell)'s schema validator and
+# geometry engine, not just this app's own reader.
+mkdir -p "$TMPW/ifc"
+sed "s|@TMP@|$TMPW/ifc|g" "$HERE/ifc_script.txt" > "$TMPW/ifc_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  IFCOUT="$("$BIN" --smoke 40 --script "$TMPW/ifc_script.txt" 2>&1)" || { echo "$IFCOUT"; echo "FAIL: ifc script exited non-zero"; exit 1; }
+else
+  IFCOUT="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 40 --script "$TMPW/ifc_script.txt" 2>&1)" || { echo "$IFCOUT"; echo "FAIL: ifc script exited non-zero"; exit 1; }
+fi
+echo "$IFCOUT" | grep -E "^(ok|FAIL)"
+if echo "$IFCOUT" | grep -q "^FAIL"; then fail=1; fi
+ifccheck() { if echo "$IFCOUT" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$IFCOUT" "$1"; fail=1; fi; }
+ifccheck "Exported $TMPW/ifc/box.ifc" "Export wrote box.ifc"
+test -s "$TMPW/ifc/box.ifc" && echo "ok   box.ifc exists" || { echo "FAIL box.ifc missing"; fail=1; }
+grep -q "FILE_SCHEMA(('IFC4'))" "$TMPW/ifc/box.ifc" && echo "ok   box.ifc declares the IFC4 schema" || { echo "FAIL box.ifc is missing the IFC4 FILE_SCHEMA"; fail=1; }
+grep -q "IFCTRIANGULATEDFACESET" "$TMPW/ifc/box.ifc" && echo "ok   box.ifc has a real IFCTRIANGULATEDFACESET" || { echo "FAIL box.ifc has no IFCTRIANGULATEDFACESET"; fail=1; }
+ifccheck "IFC: 1 mesh element (14 vertices, 24 faces)" "Import read the box's tessellated mesh back with the exact vertex/face count Dino 8's own Export wrote"
+ifccheck "Nothing to export: select meshes, surfaces, polysurfaces or SubDs" "Export refuses a selection with nothing IFC-shaped (a bare point) instead of writing an empty file"
 
 # Creation: Points/Lines/InterpCrv/CurveThroughPt/Sketch/Circle3Pt/CircleD/Arc3Pt/
 # Rectangle3Pt/Polygon/PolygonStar/Ellipse/Helix/Spiral/PointGrid/Divide/ClosestPt/
@@ -4371,12 +4488,52 @@ echo "$HS" | grep -q "^smoke:" || { echo "$HS"; echo "FAIL: history script produ
 hcheck() { if echo "$HS" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$HS" "$1"; fail=1; fi; }
 hcheck "History recording: off. 0 object(s) with live construction history" "History defaults Off and reports it"
 hcheck "UpdateHistory: 0 object(s) re-evaluated from their source curve(s)' current geometry" "an Extrude made while History was Off recorded nothing for UpdateHistory to redo"
-hcheck "History recording: on - new Extrude/ExtrudeCrvToPoint/Revolve/Loft/SubDLoft results will remember their source curve(s) for UpdateHistory" "History On toggled recording on"
+hcheck "History recording: on - new Extrude/ExtrudeCrvToPoint/Revolve/Loft/SubDLoft/Pipe results will remember their source curve(s) for UpdateHistory" "History On toggled recording on"
 hcheck "Bounding box min 20,0,0 max 30,0,5" "the freshly-extruded surface's bounding box, before the source curve moves"
 hcheck "UpdateHistory: 1 object(s) re-evaluated from their source curve(s)' current geometry" "UpdateHistory found and rebuilt exactly the one object History was tracking"
 hcheck "Bounding box min 20,0,20 max 30,0,25" "UpdateHistory genuinely re-derived the extruded surface's geometry from the source curve's new z=20 position - not the z=0..5 box baked at creation time"
 hcheck "History recording: on. 1 object(s) with live construction history:" "the live report lists exactly one tracked object"
 hcheck "object 4: Extrude <- 3" "the report names the real dependent/source pair (surface 4 built from curve 3)"
+
+# History extended to a sixth command, Pipe (PipeCommand, cmd_surface.cpp;
+# RebuildPipe, history_rebuild.h) - see history_pipe_script.txt's own
+# header comment for exactly what this checks. Same real-bounding-box-move
+# money check as the Extrude case above, not just an object count.
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  HSP="$("$BIN" --smoke 100 --script "$HERE/history_pipe_script.txt" 2>&1)" || { echo "$HSP"; echo "FAIL: history-pipe script exited non-zero"; exit 1; }
+else
+  HSP="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 100 --script "$HERE/history_pipe_script.txt" 2>&1)" || { echo "$HSP"; echo "FAIL: history-pipe script exited non-zero"; exit 1; }
+fi
+echo "$HSP" | grep -E "^(ok|FAIL)"
+if echo "$HSP" | grep -q "^FAIL"; then fail=1; fi
+echo "$HSP" | grep -q "^smoke:" || { echo "$HSP"; echo "FAIL: history-pipe script produced no smoke line"; fail=1; }
+hspcheck() { if echo "$HSP" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$HSP" "$1"; fail=1; fi; }
+hspcheck "object 2: Pipe <- 1" "History tracks a Pipe result (object 2) built from its rail curve (object 1)"
+hspcheck "Bounding box min 0,-1,-1 max 10,1,1" "the freshly-built pipe's bounding box, before the rail curve moves"
+hspcheck "UpdateHistory: 1 object(s) re-evaluated from their source curve(s)' current geometry" "UpdateHistory found and rebuilt exactly the one Pipe History was tracking"
+hspcheck "Bounding box min 0,-1,4 max 10,1,6" "UpdateHistory genuinely re-derived the pipe's geometry from the rail curve's new z=5 position - not the z=-1..1 mesh baked at creation time"
+
+# RecordMacro: a real action recorder for the Macro Editor's buffer (see
+# record_macro_script.txt's own header comment for exactly what this
+# checks) - PARITY_MAP.md's "VBA-style macro recorder and editor" item.
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  RMAC="$("$BIN" --smoke 100 --script "$HERE/record_macro_script.txt" 2>&1)" || { echo "$RMAC"; echo "FAIL: record-macro script exited non-zero"; exit 1; }
+else
+  RMAC="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 100 --script "$HERE/record_macro_script.txt" 2>&1)" || { echo "$RMAC"; echo "FAIL: record-macro script exited non-zero"; exit 1; }
+fi
+echo "$RMAC" | grep -E "^(ok|FAIL)"
+if echo "$RMAC" | grep -q "^FAIL"; then fail=1; fi
+echo "$RMAC" | grep -q "^smoke:" || { echo "$RMAC"; echo "FAIL: record-macro script produced no smoke line"; fail=1; }
+rmaccheck() { if echo "$RMAC" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$RMAC" "$1"; fail=1; fi; }
+rmaccheck "Macro recording: off (type On to start). Buffer:" "RecordMacro with no argument reports Off and dumps the buffer before anything was recorded"
+rmaccheck "Macro recording: on - every command line you type is appended to the Macro Editor's buffer" "RecordMacro On reports the state changed"
+rmaccheck "  Line 0,0,0 10,0,0" "the Line command typed while recording was on was appended to the buffer verbatim"
+rmaccheck "  Box 20,0,0 25,5,5 5" "the Box command typed while recording was on was appended to the buffer verbatim, in order after Line"
+RMAC_LINE50_COUNT="$(echo "$RMAC" | grep -cF "Line 50,0,0 60,0,0" || true)"
+[ "$RMAC_LINE50_COUNT" = "1" ] && echo "ok   the Line command typed AFTER RecordMacro Off was run but NOT appended to the buffer (it appears exactly once, as the typed command line itself, not a second time in the final dump)" || { echo "FAIL a command typed after RecordMacro Off leaked into the buffer (expected 1 occurrence, got $RMAC_LINE50_COUNT)"; fail=1; }
+RMAC_SELF_COUNT="$(echo "$RMAC" | grep -cF "  RecordMacro" || true)"
+[ "$RMAC_SELF_COUNT" = "0" ] && echo "ok   RecordMacro never recorded itself into its own buffer" || { echo "FAIL RecordMacro recorded one of its own toggle lines into the buffer"; fail=1; }
+
 # Undo id-reuse regression (see the last section of history_script.txt):
 # a Box drawn right after undoing a tracked Extrude used to be handed the
 # undone extrusion's own id (6), so its HistoryRecord/Provenance entries -
@@ -5132,6 +5289,69 @@ elif [ "$BSF_EC" -eq 2 ] && echo "$BSF_OUT" | grep -q "^FAIL expect_objects 99";
   echo "ok   batch mode exits 2 (not 0, not a hang) when the script's own @expect_objects check fails"
 else
   echo "$BSF_OUT"; echo "FAIL: batch mode with a failing @expect_objects exited $BSF_EC, expected 2"; fail=1
+fi
+
+# --serve: the minimal compute server (net/ComputeServer.h, docs/
+# COMPUTE_SERVER.md) - see PARITY_MAP.md's "Cloud/network compute service"
+# item, which had no server/socket/HTTP code anywhere before this. Starts
+# the real app with --serve 0 (an OS-assigned ephemeral port, so this can
+# never collide with another process on a fixed port) and
+# --serve-max-requests 3 so the process is self-terminating like batch
+# --script mode above, backgrounds it, waits (bounded, not an unbounded
+# sleep loop) for its own "serve: listening on port N" line, then drives it
+# over a real loopback HTTP connection with curl: a POST that builds
+# geometry and reads back its printed output, a GET that must be rejected
+# with 405, and a POST calling an interactive rs.Get* prompt that must be
+# rejected instead of hanging the connection - see
+# tests/test_compute_server.cpp for the lower-level, no-app unit coverage
+# of the request parsing/response formatting this end-to-end check builds
+# on top of.
+if ! command -v curl >/dev/null 2>&1; then
+  echo "skip --serve compute-server checks (curl not available)"
+else
+  SERVE_LOG="$TMPW/serve.log"
+  if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+    timeout 30 "$BIN" --serve 0 --serve-max-requests 3 > "$SERVE_LOG" 2>&1 &
+  else
+    timeout 30 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --serve 0 --serve-max-requests 3 > "$SERVE_LOG" 2>&1 &
+  fi
+  SERVE_PID=$!
+
+  SERVE_PORT=""
+  for _ in $(seq 1 100); do
+    if grep -q "^serve: listening on port " "$SERVE_LOG" 2>/dev/null; then
+      SERVE_PORT="$(grep "^serve: listening on port " "$SERVE_LOG" | head -1 | awk '{print $NF}')"
+      break
+    fi
+    sleep 0.1
+  done
+
+  if [ -z "$SERVE_PORT" ]; then
+    cat "$SERVE_LOG"; echo "FAIL: --serve never printed its listening port within 10s"; fail=1
+    kill "$SERVE_PID" 2>/dev/null || true
+    wait "$SERVE_PID" 2>/dev/null || true
+  else
+    echo "ok   --serve started headless and printed its bound port ($SERVE_PORT)"
+
+    set +e
+    RESP1="$(curl -s --max-time 10 -X POST --data 'rs.Command("Box 0,0,0 5,5,0 5")
+print("objects: " .. #rs.AllObjects())' "http://127.0.0.1:$SERVE_PORT/run")"
+    CODE2="$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$SERVE_PORT/run")"
+    RESP3="$(curl -s --max-time 10 -X POST --data 'rs.GetPoint()' "http://127.0.0.1:$SERVE_PORT/run")"
+    set -e
+    echo "$RESP1" | grep -q "^objects: 1$" && echo "ok   POST /run built a box over HTTP and read back its printed object count" || { echo "$RESP1"; echo "FAIL --serve POST /run did not report objects: 1"; fail=1; }
+    [ "$CODE2" = "405" ] && echo "ok   a GET request to the compute server is rejected with 405 Method Not Allowed" || { echo "FAIL --serve GET /run returned HTTP $CODE2, expected 405"; fail=1; }
+    echo "$RESP3" | grep -q "compute error: script requires interactive input" && echo "ok   a script calling an interactive rs.Get* prompt is rejected instead of hanging the connection" || { echo "$RESP3"; echo "FAIL --serve interactive-prompt script was not rejected as expected"; fail=1; }
+
+    set +e; wait "$SERVE_PID"; SERVE_EC=$?; set -e
+    if [ "$SERVE_EC" -eq 124 ]; then
+      cat "$SERVE_LOG"; echo "FAIL: --serve process hung and was killed by the 30s timeout instead of exiting after --serve-max-requests"; fail=1
+    elif [ "$SERVE_EC" -ne 0 ]; then
+      cat "$SERVE_LOG"; echo "FAIL: --serve process exited $SERVE_EC, expected 0"; fail=1
+    else
+      grep -q "^serve: done requests=3$" "$SERVE_LOG" && echo "ok   --serve exited cleanly on its own after --serve-max-requests 3 real HTTP requests" || { cat "$SERVE_LOG"; echo "FAIL --serve done-summary line missing or wrong"; fail=1; }
+    fi
+  fi
 fi
 
 exit $fail

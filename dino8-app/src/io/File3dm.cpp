@@ -457,6 +457,7 @@ bool Load3dm(Document& doc, const std::string& path, std::string& error) {
       auto me = layer_by_id.find(layer->Id());
       auto lt = linetype_by_index.find(layer->LinetypeIndex());
       if (me != layer_by_id.end() && lt != linetype_by_index.end()) doc.Layers()[static_cast<size_t>(me->second)].linetype = lt->second;
+      if (me != layer_by_id.end()) doc.Layers()[static_cast<size_t>(me->second)].print_width_mm = layer->PlotWeight();
     }
   }
   // Viewports and layout pages: model views give clipping planes their
@@ -814,10 +815,27 @@ bool Load3dm(Document& doc, const std::string& path, std::string& error) {
     ON_ClassArray<ON_UserString> strings;
     model.GetDocumentUserStrings(strings);
     std::map<std::string, std::string> render_strings;
+    // Deferred, not applied inline: "Dino8.AnnotationStylePrecision.<name>"
+    // (see below) can appear before its style's own "Dino8.AnnotationStyle.
+    // <name>" entry in model.GetDocumentUserStrings()'s order, which is
+    // whatever order OpenNURBS happened to store them in, not necessarily
+    // write order - so every precision override is collected here and
+    // applied only after the loop below has finished loading every style.
+    std::map<std::string, int> pending_precision;
     for (int i = 0; i < strings.Count(); ++i) {
       const std::string key = FromWide(strings[i].m_key);
       if (key.compare(0, 13, "Dino8.Render.") == 0) { render_strings[key] = FromWide(strings[i].m_string_value); continue; }
       const std::string value = FromWide(strings[i].m_string_value);
+      // Checked before the plain style_prefix below: without the distinct
+      // "...StylePrecision." spelling (no "." right after "AnnotationStyle"
+      // in style_prefix, so the prefixes cannot collide either way) this
+      // would itself match style_prefix and get loaded as a bogus style
+      // literally named "Precision.<name>".
+      const std::string precision_prefix = "Dino8.AnnotationStylePrecision.";
+      if (key.compare(0, precision_prefix.size(), precision_prefix) == 0) {
+        pending_precision[key.substr(precision_prefix.size())] = std::atoi(value.c_str());
+        continue;
+      }
       const std::string style_prefix = "Dino8.AnnotationStyle.";
       if (key.compare(0, style_prefix.size(), style_prefix) == 0) {
         // New format (this window on): "height;arrow;precision;angprec;
@@ -885,6 +903,18 @@ bool Load3dm(Document& doc, const std::string& path, std::string& error) {
       if (key.compare(0, 6, "Dino8.") == 0) continue;  // settings, handled above
       doc.UserText()[key] = value;
     }
+    // Backward-compat fallback only: a style already carrying a precision
+    // from the new unified "height;arrow;precision;..." format (below) is
+    // left alone; this only fills in `precision` for a style whose
+    // "Dino8.AnnotationStyle.<name>" entry was still the old 3-field
+    // "height;arrow;font" line (pre-dates *both* precision mechanisms) but
+    // which somehow also carries this separate key (e.g. a file written by
+    // a build that used the short-lived separate-key format).
+    for (const auto& [style_name, precision] : pending_precision) {
+      if (AnnotationStyle* st = doc.FindAnnotationStyle(style_name)) {
+        if (st->precision < 0) st->precision = precision;
+      }
+    }
     ReadRenderSettings(render_strings, doc.Render());
   }
   // Named views.
@@ -948,7 +978,11 @@ bool Save3dm(const Document& doc, const std::string& path, std::string& error, b
     for (const AnnotationStyle& st : doc.AnnotationStyles()) {
       // "height;arrow;precision;angprec;suffix;extoffset;extext;placement;
       // tolmode;tolvalue;tolupper;tollower;font" - see the reader's own
-      // comment on this format and its old-file fallback.
+      // comment on this format and its old-file fallback. Precision now
+      // lives in this one unified line (st.precision), so no separate
+      // "Dino8.AnnotationStylePrecision.<name>" key is ever written any
+      // more - the reader still accepts one on load, as a fallback, for a
+      // file that predates this unified format.
       char style_buf[1024];
       std::snprintf(style_buf, sizeof(style_buf), "%g;%g;%d;%d;%s;%g;%g;%s;%s;%s;%s;%s;%s",
                     st.text_height, st.arrow_size, st.precision, st.angular_precision, st.unit_suffix.c_str(),
@@ -1082,6 +1116,7 @@ bool Save3dm(const Document& doc, const std::string& path, std::string& error, b
       stored->SetLocked(L.locked);
       if (!L.material.empty() && material_index.count(L.material)) stored->SetRenderMaterialIndex(material_index[L.material]);
       if (linetype_index(L.linetype) >= 0) stored->SetLinetypeIndex(linetype_index(L.linetype));
+      stored->SetPlotWeight(L.print_width_mm);  // real .3dm field, same 0/>0/<0 convention as Layer::print_width_mm
       for (size_t li = 0; li < doc.Layouts().size(); ++li) {
         const Layout& lay = doc.Layouts()[li];
         for (size_t di = 0; di < lay.details.size(); ++di) {

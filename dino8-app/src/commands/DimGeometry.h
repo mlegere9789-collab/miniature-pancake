@@ -26,6 +26,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <map>
 #include <string>
 #include <vector>
@@ -76,7 +77,10 @@ inline std::string FormatMeasurement(double v, int precision, const std::string&
     s = FormatNumber(v);
   } else {
     char buf[64];
-    std::snprintf(buf, sizeof(buf), "%.*f", std::clamp(precision, 0, 15), v);
+    const int p = std::clamp(precision, 0, 15);
+    std::snprintf(buf, sizeof(buf), "%.*f", p, v);
+    // Never "-0.00": see FormatNumber's own comment on the same sign-of-zero issue.
+    if (std::strtod(buf, nullptr) == 0) std::snprintf(buf, sizeof(buf), "%.*f", p, 0.0);
     s = buf;
     if (DecimalComma()) for (char& c : s) if (c == '.') c = ',';
   }

@@ -338,6 +338,31 @@ class BlockSetStateCommand : public Command {
   int group_ = -1;
 };
 
+// BlockToggleFlip: flips (or un-flips) one placed dynamic-block instance's
+// geometry about a vertical plane through its block definition's base
+// point, same rebuild-in-place pattern as BlockSetState (SetBlockInstanceFlip,
+// doc/BlockInstances.h) - the second dynamic-block parameter type alongside
+// Visibility states (only reachable on a block that already has at least
+// one named state, same scope limit BlockSetState has).
+class BlockToggleFlipCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantObjects("Select an object in the instance to flip", 1); }
+  void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
+    int group = -1;
+    for (ObjectId id : ids) if (const SceneObject* o = ctx.Doc().Find(id)) if (o->group_id >= 0) { group = o->group_id; break; }
+    BlockInstance inst;
+    if (group < 0 || !FindBlockInstanceByGroup(ctx.Doc(), group, inst)) {
+      ctx.Warn("Selection isn't a dynamic-block instance (use BlockAddState first)");
+      Finish();
+      return;
+    }
+    ctx.Doc().BeginChange("BlockToggleFlip");
+    if (!SetBlockInstanceFlip(ctx.Doc(), group, !inst.flipped)) ctx.Warn("Could not flip instance");
+    else ctx.Print(std::string("BlockToggleFlip: instance now ") + (!inst.flipped ? "flipped" : "unflipped"));
+    Finish();
+  }
+};
+
 }  // namespace
 
 // A block with no named visibility states behaves exactly as before (every
@@ -464,6 +489,11 @@ void RegisterDraftingCommands(CommandEngine& e) {
   Reg(e, "BlockSetState", Make<BlockSetStateCommand>(), CommandStatus::Implemented,
       "Switches one placed dynamic-block instance to a named visibility state and rebuilds just that instance's "
       "objects (delete old / build new, undoable like any other edit).");
+  Reg(e, "BlockToggleFlip", Make<BlockToggleFlipCommand>(), CommandStatus::Implemented,
+      "Flips (or un-flips) one placed dynamic-block instance about a vertical plane through its block's base point "
+      "and rebuilds just that instance's objects - a second dynamic-block parameter type (Flip) alongside Visibility "
+      "states; only reachable on a block that already has at least one named state (BlockAddState), same scope "
+      "BlockSetState has, since that is what makes a placed instance get a per-instance BlockInstance record at all.");
 }
 
 // AT-SPI2-queryable snapshot of Document::Blocks() (see

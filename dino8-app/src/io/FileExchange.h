@@ -1,12 +1,16 @@
 // Drafting / exchange formats that OpenNURBS does not cover: DXF (read and
 // write), DWG (read and write, via GNU LibreDWG - see the DWG section
-// below), SVG and PDF vector output of the current view (write), and ASCII
-// PLY meshes (read and write). The DXF/SVG/PDF/PLY writers are hand-rolled -
+// below), SVG and PDF vector output of the current view (write), ASCII
+// PLY meshes (read and write), and the point-cloud interchange formats XYZ/
+// PTS/LAS (read and write - app-level wiring for kernel::PointCloud's own
+// SaveXyz/LoadXyz/SavePts/LoadPts/SaveLas/LoadLas, which had no Import/
+// Export path before). The DXF/SVG/PDF/PLY/XYZ/PTS writers are hand-rolled -
 // no external libraries - and every entity carries its layer so a drawing
 // round-trips through AutoCAD, Illustrator, Inkscape or a PDF viewer with
 // structure intact. DWG is the one exception to "no external libraries":
 // unlike DXF it is not a published format, so ExportDwg/ImportDwg are built
-// on GNU LibreDWG instead of hand-rolled parsing (see below).
+// on GNU LibreDWG instead of hand-rolled parsing (see below). LAS is
+// binary but still hand-rolled, via the same kernel PointCloud methods.
 #pragma once
 
 #include <string>
@@ -114,5 +118,29 @@ bool ExportPdf(const Document& doc, const Viewport* view, const std::string& pat
 // ---- PLY ------------------------------------------------------------------
 bool ExportPly(const Document& doc, const std::string& path, bool selected_only, std::string& error);
 bool ImportPly(Document& doc, const std::string& path, std::string& error);
+
+// ---- Point-cloud exchange (XYZ / PTS / LAS) --------------------------------
+// The kernel (dino8::kernel::PointCloud::SaveXyz/SavePts/SaveLas and their
+// Load* counterparts) already has real readers/writers for these three
+// formats; nothing at the app level called them before - a PointCloud
+// object in a document could only round-trip through .3dm. These wrap that
+// existing kernel support the same way ExportPly/ImportPly above wrap
+// ON_Mesh: every PointCloud object in `doc` (or just the selection, when
+// `selected_only` is true) is merged into one cloud, in Objects() order, and
+// written; colors ride along only if every contributing cloud has them
+// (the same "all or nothing, no fabricated columns" convention
+// PointCloud::SetColors() itself enforces) - normals are not, since neither
+// PTS nor LAS has a normal column at all, and XYZ's own normal column would
+// be ambiguous once multiple clouds (each with or without normals) are
+// merged. Import reads the file into one new PointCloud object named after
+// the file. Returns false with `error` set if there is nothing to export
+// (no PointCloud objects, or none in a non-empty selection), or if the
+// underlying kernel Save*/Load* call fails.
+bool ExportXyz(const Document& doc, const std::string& path, bool selected_only, std::string& error);
+bool ImportXyz(Document& doc, const std::string& path, std::string& error);
+bool ExportPts(const Document& doc, const std::string& path, bool selected_only, std::string& error);
+bool ImportPts(Document& doc, const std::string& path, std::string& error);
+bool ExportLas(const Document& doc, const std::string& path, bool selected_only, std::string& error);
+bool ImportLas(Document& doc, const std::string& path, std::string& error);
 
 }  // namespace dino8::app

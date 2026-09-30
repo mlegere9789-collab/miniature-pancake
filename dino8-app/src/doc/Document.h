@@ -41,7 +41,43 @@ struct Layer {
   std::string material;
   std::string description;  // the "layer notes" Rhino 8 users asked for
   bool expanded = true;
+  // Print width (a real per-layer plot lineweight, in millimetres):
+  // io/FileExchange.cpp's ExportSvg/ExportPdf stroke this layer's paths at
+  // this width instead of the document-wide DrawingOptions::line_width_mm
+  // default. Deliberately the exact same three-way convention as real
+  // Rhino's own ON_Layer::PlotWeight/SetPlotWeight (opennurbs_layer.h),
+  // rather than a Dino8-only scheme, since io/File3dm.cpp round-trips it
+  // through that real .3dm field (Save3dm/Load3dm) - a file this writes
+  // carries a plot weight real Rhino itself understands, and one Rhino
+  // wrote carries a plot weight this app understands:
+  //   0 (the default): use the document/export default pen width.
+  //   > 0: an explicit pen width in mm.
+  //   < 0: this layer does not print at all (still displays on screen) -
+  //     CollectPaths skips its objects entirely in ExportSvg/ExportPdf.
+  // See PARITY_MAP.md's "Print and plot output" item: plot styles (CTB/STB)
+  // and real printer-device output remain unattempted - this closes only
+  // the "no lineweights" half (and adds the print-exclusion flag for free,
+  // since it is the same underlying field).
+  double print_width_mm = 0;
 };
+
+// Whether a layer's objects should appear in a vector Print/Export at all -
+// io/FileExchange.cpp's CollectPaths skips every object on a layer this
+// returns false for (Layer::print_width_mm's negative case). Unrelated to
+// Layer::visible/locked (on-screen display), same as real Rhino's own
+// PlotWeight < 0 convention this mirrors.
+inline bool LayerPrints(const Layer& layer) { return layer.print_width_mm >= 0; }
+
+// The print width a layer's paths should actually be stroked at
+// (io/FileExchange.cpp's ExportSvg/ExportPdf), once LayerPrints() has
+// already ruled out the non-printing case: an explicit positive
+// print_width_mm, else `doc_default` (DrawingOptions::line_width_mm) for
+// the default (0) case. Pure and header-only so it is unit-testable
+// (tests/test_print_width.cpp) without pulling in FileExchange.cpp's much
+// heavier Viewport/GL dependencies.
+inline double EffectivePrintWidthMm(const Layer& layer, double doc_default) {
+  return layer.print_width_mm > 0 ? layer.print_width_mm : doc_default;
+}
 
 // A block definition: a named set of objects with a base point. Instances
 // are grouped copies tagged with the block name (see cmd_drafting.cpp).

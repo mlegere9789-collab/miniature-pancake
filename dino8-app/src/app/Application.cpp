@@ -975,6 +975,18 @@ bool Application::SaveDocument(const std::string& path, std::string& error) {
   } else if (ext == ".stp" || ext == ".step") {
     ok = ExportStep(doc_, path, false, error);
     if (ok) Notify("Exported " + path);
+  } else if (ext == ".ifc") {
+    ok = ExportIfc(doc_, path, false, error);
+    if (ok) Notify("Exported " + path);
+  } else if (ext == ".xyz") {
+    ok = ExportXyz(doc_, path, false, error);
+    if (ok) Notify("Exported " + path);
+  } else if (ext == ".pts") {
+    ok = ExportPts(doc_, path, false, error);
+    if (ok) Notify("Exported " + path);
+  } else if (ext == ".las") {
+    ok = ExportLas(doc_, path, false, error);
+    if (ok) Notify("Exported " + path);
   } else if (ext == ".svg" || ext == ".pdf") {
     ok = ExportDrawing(path, false, 0.0, error);
   } else {
@@ -1008,6 +1020,14 @@ bool Application::ImportFile(const std::string& path, std::string& error) {
     ok = ImportIges(doc_, path, error);
   } else if (ext == ".stp" || ext == ".step") {
     ok = ImportStep(doc_, path, error);
+  } else if (ext == ".ifc") {
+    ok = ImportIfc(doc_, path, error);
+  } else if (ext == ".xyz") {
+    ok = ImportXyz(doc_, path, error);
+  } else if (ext == ".pts") {
+    ok = ImportPts(doc_, path, error);
+  } else if (ext == ".las") {
+    ok = ImportLas(doc_, path, error);
   } else {
     error = "Unsupported file type: " + ext;
   }
@@ -1034,6 +1054,10 @@ bool Application::ExportSelected(const std::string& path, std::string& error) {
   if (ext == ".ply") return ExportPly(doc_, path, true, error);
   if (ext == ".igs" || ext == ".iges") return ExportIges(doc_, path, true, error);
   if (ext == ".stp" || ext == ".step") return ExportStep(doc_, path, true, error);
+  if (ext == ".ifc") return ExportIfc(doc_, path, true, error);
+  if (ext == ".xyz") return ExportXyz(doc_, path, true, error);
+  if (ext == ".pts") return ExportPts(doc_, path, true, error);
+  if (ext == ".las") return ExportLas(doc_, path, true, error);
   if (ext == ".svg" || ext == ".pdf") return ExportDrawing(path, true, 0.0, error);
   return ExportMeshFile(doc_, path, true, error);
 }
@@ -1645,99 +1669,93 @@ int KeyShortcutFromName(const std::string& name) {
 }
 
 namespace {
-// Every chord Application::HandleShortcuts hardcodes below, so a
-// user-assigned shortcut (Options > Shortcuts) that collides with one of
-// these never double-fires alongside it - the built-in always wins, exactly
-// like Rhino's own built-in bindings take priority over a customized one.
-// AddOrUpdateShortcut (ui/Panels.cpp, Options > Shortcuts) also calls this
-// to refuse recording a reserved chord in the first place.
-bool IsReservedShortcut(int key_i, bool ctrl, bool shift, bool alt) {
-  const ImGuiKey key = static_cast<ImGuiKey>(key_i);
-  if (!ctrl && !shift && !alt) {
-    switch (key) {
-      case ImGuiKey_Escape: case ImGuiKey_Delete: case ImGuiKey_F1: case ImGuiKey_F2: case ImGuiKey_F3:
-      case ImGuiKey_F4: case ImGuiKey_F7: case ImGuiKey_F8: case ImGuiKey_F9: case ImGuiKey_F10: case ImGuiKey_F11:
-      case ImGuiKey_Home: case ImGuiKey_PageUp: case ImGuiKey_PageDown:
-      case ImGuiKey_LeftArrow: case ImGuiKey_RightArrow: case ImGuiKey_UpArrow: case ImGuiKey_DownArrow:
-        return true;
-      default: break;
-    }
+const KeyShortcut* FindUserShortcut(const std::vector<KeyShortcut>& shortcuts, ImGuiKey key, bool ctrl, bool shift, bool alt) {
+  for (const KeyShortcut& s : shortcuts) {
+    if (s.key == static_cast<int>(key) && s.ctrl == ctrl && s.shift == shift && s.alt == alt) return &s;
   }
-  if (ctrl && !shift && !alt) {
-    switch (key) {
-      case ImGuiKey_Z: case ImGuiKey_Y: case ImGuiKey_A: case ImGuiKey_S: case ImGuiKey_O: case ImGuiKey_N:
-      case ImGuiKey_G: case ImGuiKey_H: case ImGuiKey_C: case ImGuiKey_V: case ImGuiKey_X: case ImGuiKey_F1:
-        return true;
-      default: break;
-    }
-  }
-  if (ctrl && shift && !alt && key == ImGuiKey_S) return true;  // SaveAs
-  return false;
+  return nullptr;
 }
 }  // namespace
 
 void Application::HandleShortcuts() {
+  // Options > Shortcuts' "Press a key..." capture button (Panels.cpp) is
+  // itself reading key-press state this same frame to fill in a new
+  // binding; skip every binding below entirely while that's happening; see
+  // capturing_shortcut's own comment (Application.h) for why.
+  if (capturing_shortcut) return;
   ImGuiIO& io = ImGui::GetIO();
   const bool text_active = io.WantTextInput;
-  if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+  // A user shortcut (Options > Shortcuts) on a chord that also has a
+  // built-in default below now REPLACES that default instead of being
+  // silently blocked by it - Rhino's own fully remappable Tools > Options >
+  // Keyboard behavior, where even Ctrl+Z itself can be reassigned. Gated
+  // identically to the user-shortcut firing loop at the bottom of this
+  // function (!text_active && !engine_->IsRunning()) so `overridden` is
+  // never true in a state where that loop would fail to actually fire the
+  // replacement - a built-in is suppressed only when its replacement will
+  // genuinely run in its place, never left to silently do nothing.
+  auto overridden = [&](ImGuiKey key, bool ctrl, bool shift, bool alt) {
+    if (text_active || engine_->IsRunning()) return false;
+    return FindUserShortcut(user_shortcuts, key, ctrl, shift, alt) != nullptr;
+  };
+  if (ImGui::IsKeyPressed(ImGuiKey_Escape) && !overridden(ImGuiKey_Escape, false, false, false)) {
     if (engine_->IsRunning()) engine_->Cancel();
     else if (!sub_selection_.Empty()) sub_selection_.Clear();
     else doc_.SelectNone();
     command_input_.clear();
   }
   if (!text_active || engine_->IsRunning()) {
-    if (ImGui::IsKeyPressed(ImGuiKey_Delete) && !engine_->IsRunning()) {
+    if (ImGui::IsKeyPressed(ImGuiKey_Delete) && !engine_->IsRunning() && !overridden(ImGuiKey_Delete, false, false, false)) {
       if (!sub_selection_.Empty()) DeleteSubObjectSelection();
       else engine_->Execute("Delete");
     }
   }
   if (io.KeyCtrl && !text_active) {
-    if (ImGui::IsKeyPressed(ImGuiKey_Z)) engine_->Execute("Undo");
-    if (ImGui::IsKeyPressed(ImGuiKey_Y)) engine_->Execute("Redo");
-    if (ImGui::IsKeyPressed(ImGuiKey_A)) engine_->Execute("SelAll");
-    if (ImGui::IsKeyPressed(ImGuiKey_S)) engine_->Execute(io.KeyShift ? "SaveAs" : "Save");
-    if (ImGui::IsKeyPressed(ImGuiKey_O)) engine_->Execute("Open");
-    if (ImGui::IsKeyPressed(ImGuiKey_N)) engine_->Execute("New");
-    if (ImGui::IsKeyPressed(ImGuiKey_G)) engine_->Execute("Group");
-    if (ImGui::IsKeyPressed(ImGuiKey_H)) engine_->Execute("Hide");
-    if (ImGui::IsKeyPressed(ImGuiKey_C) && !engine_->IsRunning()) engine_->Execute("CopyToClipboard");
-    if (ImGui::IsKeyPressed(ImGuiKey_V) && !engine_->IsRunning()) engine_->Execute("Paste");
-    if (ImGui::IsKeyPressed(ImGuiKey_X) && !engine_->IsRunning()) engine_->Execute("Cut");
+    if (ImGui::IsKeyPressed(ImGuiKey_Z) && !overridden(ImGuiKey_Z, true, false, false)) engine_->Execute("Undo");
+    if (ImGui::IsKeyPressed(ImGuiKey_Y) && !overridden(ImGuiKey_Y, true, false, false)) engine_->Execute("Redo");
+    if (ImGui::IsKeyPressed(ImGuiKey_A) && !overridden(ImGuiKey_A, true, false, false)) engine_->Execute("SelAll");
+    if (ImGui::IsKeyPressed(ImGuiKey_S) && !overridden(ImGuiKey_S, true, io.KeyShift, false)) engine_->Execute(io.KeyShift ? "SaveAs" : "Save");
+    if (ImGui::IsKeyPressed(ImGuiKey_O) && !overridden(ImGuiKey_O, true, false, false)) engine_->Execute("Open");
+    if (ImGui::IsKeyPressed(ImGuiKey_N) && !overridden(ImGuiKey_N, true, false, false)) engine_->Execute("New");
+    if (ImGui::IsKeyPressed(ImGuiKey_G) && !overridden(ImGuiKey_G, true, false, false)) engine_->Execute("Group");
+    if (ImGui::IsKeyPressed(ImGuiKey_H) && !overridden(ImGuiKey_H, true, false, false)) engine_->Execute("Hide");
+    if (ImGui::IsKeyPressed(ImGuiKey_C) && !engine_->IsRunning() && !overridden(ImGuiKey_C, true, false, false)) engine_->Execute("CopyToClipboard");
+    if (ImGui::IsKeyPressed(ImGuiKey_V) && !engine_->IsRunning() && !overridden(ImGuiKey_V, true, false, false)) engine_->Execute("Paste");
+    if (ImGui::IsKeyPressed(ImGuiKey_X) && !engine_->IsRunning() && !overridden(ImGuiKey_X, true, false, false)) engine_->Execute("Cut");
   }
   // Rhino defaults: F1 help, F2 command history, F3 properties, F4 layers.
-  if (ImGui::IsKeyPressed(ImGuiKey_F1)) {
+  if (ImGui::IsKeyPressed(ImGuiKey_F1) && !overridden(ImGuiKey_F1, io.KeyCtrl, false, false)) {
     if (io.KeyCtrl) panels_.command_list = !panels_.command_list;
     else if (engine_->IsRunning()) ShowHelpFor(engine_->ActiveName());
     else if (!engine_->RecentCommands().empty()) ShowHelpFor(engine_->RecentCommands().front());
     else panels_.help = !panels_.help;
   }
-  if (ImGui::IsKeyPressed(ImGuiKey_F2)) panels_.command_history = !panels_.command_history;
-  if (ImGui::IsKeyPressed(ImGuiKey_F3)) panels_.properties = !panels_.properties;
-  if (ImGui::IsKeyPressed(ImGuiKey_F4)) panels_.layers = !panels_.layers;
-  if (ImGui::IsKeyPressed(ImGuiKey_F7)) doc_.Settings().show_grid = !doc_.Settings().show_grid;
-  if (ImGui::IsKeyPressed(ImGuiKey_F8)) snaps_.ortho = !snaps_.ortho;
-  if (ImGui::IsKeyPressed(ImGuiKey_F9)) snaps_.grid_snap = !snaps_.grid_snap;
-  if (ImGui::IsKeyPressed(ImGuiKey_F10)) show_control_points_for_selected = !show_control_points_for_selected;
-  if (ImGui::IsKeyPressed(ImGuiKey_F11)) show_control_points_for_selected = false;
+  if (ImGui::IsKeyPressed(ImGuiKey_F2) && !overridden(ImGuiKey_F2, false, false, false)) panels_.command_history = !panels_.command_history;
+  if (ImGui::IsKeyPressed(ImGuiKey_F3) && !overridden(ImGuiKey_F3, false, false, false)) panels_.properties = !panels_.properties;
+  if (ImGui::IsKeyPressed(ImGuiKey_F4) && !overridden(ImGuiKey_F4, false, false, false)) panels_.layers = !panels_.layers;
+  if (ImGui::IsKeyPressed(ImGuiKey_F7) && !overridden(ImGuiKey_F7, false, false, false)) doc_.Settings().show_grid = !doc_.Settings().show_grid;
+  if (ImGui::IsKeyPressed(ImGuiKey_F8) && !overridden(ImGuiKey_F8, false, false, false)) snaps_.ortho = !snaps_.ortho;
+  if (ImGui::IsKeyPressed(ImGuiKey_F9) && !overridden(ImGuiKey_F9, false, false, false)) snaps_.grid_snap = !snaps_.grid_snap;
+  if (ImGui::IsKeyPressed(ImGuiKey_F10) && !overridden(ImGuiKey_F10, false, false, false)) show_control_points_for_selected = !show_control_points_for_selected;
+  if (ImGui::IsKeyPressed(ImGuiKey_F11) && !overridden(ImGuiKey_F11, false, false, false)) show_control_points_for_selected = false;
   if (!text_active) {
-    if (ImGui::IsKeyPressed(ImGuiKey_Home)) engine_->Execute("UndoView");
+    if (ImGui::IsKeyPressed(ImGuiKey_Home) && !overridden(ImGuiKey_Home, false, false, false)) engine_->Execute("UndoView");
     if (Viewport* v = ActiveViewport(); v && !v->ViewLocked()) {
-      if (ImGui::IsKeyPressed(ImGuiKey_PageUp)) v->GetCamera().Dolly(1.0);
-      if (ImGui::IsKeyPressed(ImGuiKey_PageDown)) v->GetCamera().Dolly(-1.0);
-      if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow)) v->GetCamera().Orbit(-40, 0);
-      if (ImGui::IsKeyPressed(ImGuiKey_RightArrow)) v->GetCamera().Orbit(40, 0);
-      if (ImGui::IsKeyPressed(ImGuiKey_UpArrow)) v->GetCamera().Orbit(0, -40);
-      if (ImGui::IsKeyPressed(ImGuiKey_DownArrow)) v->GetCamera().Orbit(0, 40);
+      if (ImGui::IsKeyPressed(ImGuiKey_PageUp) && !overridden(ImGuiKey_PageUp, false, false, false)) v->GetCamera().Dolly(1.0);
+      if (ImGui::IsKeyPressed(ImGuiKey_PageDown) && !overridden(ImGuiKey_PageDown, false, false, false)) v->GetCamera().Dolly(-1.0);
+      if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow) && !overridden(ImGuiKey_LeftArrow, false, false, false)) v->GetCamera().Orbit(-40, 0);
+      if (ImGui::IsKeyPressed(ImGuiKey_RightArrow) && !overridden(ImGuiKey_RightArrow, false, false, false)) v->GetCamera().Orbit(40, 0);
+      if (ImGui::IsKeyPressed(ImGuiKey_UpArrow) && !overridden(ImGuiKey_UpArrow, false, false, false)) v->GetCamera().Orbit(0, -40);
+      if (ImGui::IsKeyPressed(ImGuiKey_DownArrow) && !overridden(ImGuiKey_DownArrow, false, false, false)) v->GetCamera().Orbit(0, 40);
     }
   }
   // User-assignable shortcuts (Options > Shortcuts, AppState-adjacent
-  // user_shortcuts, persisted in Settings.cpp): every built-in chord above
-  // always wins over a colliding user one (IsReservedShortcut), so a user
-  // shortcut can extend the command line's muscle-memory bindings without
-  // being able to silently override Undo, Save, the F-keys, and so on.
+  // user_shortcuts, persisted in Settings.cpp): fires for ANY chord,
+  // including one that also has a built-in default above - that default
+  // already skipped itself via `overridden`, so this is a replacement, not
+  // a double-fire.
   if (!text_active && !engine_->IsRunning()) {
     for (const KeyShortcut& s : user_shortcuts) {
-      if (IsReservedShortcut(s.key, s.ctrl, s.shift, s.alt)) continue;
       if (io.KeyCtrl == s.ctrl && io.KeyShift == s.shift && io.KeyAlt == s.alt &&
           ImGui::IsKeyPressed(static_cast<ImGuiKey>(s.key))) {
         engine_->Execute(s.command);

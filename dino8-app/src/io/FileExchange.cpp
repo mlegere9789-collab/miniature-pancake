@@ -2202,6 +2202,9 @@ std::vector<Path2> CollectPaths(const Document& doc, const Projector& proj, bool
   for (const SceneObject& o : doc.Objects()) {
     if (selected_only && !o.selected) continue;
     if (!doc.IsObjectVisible(o)) continue;
+    if (o.layer_index >= 0 && static_cast<size_t>(o.layer_index) < doc.Layers().size() &&
+        !LayerPrints(doc.Layers()[static_cast<size_t>(o.layer_index)]))
+      continue;  // Layer::print_width_mm < 0: "does not print", still visible on screen
     const Color color = doc.EffectiveColor(o);
     if (o.kind == ObjectKind::Point) {
       Path2 p;
@@ -2339,15 +2342,21 @@ bool ExportSvg(const Document& doc, const Viewport* view, const std::string& pat
      << "mm\" viewBox=\"0 0 " << Num(W, 3) << " " << Num(H, 3) << "\">\n";
   os << "<title>" << XmlEscape(doc.Settings().title.empty() ? std::filesystem::path(path).stem().string() : doc.Settings().title) << "</title>\n";
   os << "<desc>Exported by Dino 8" << (view ? " from the " + view->Name() + " viewport" : std::string(" (Top view)")) << "</desc>\n";
-  os << "<g fill=\"none\" stroke-width=\"" << Num(opts.line_width_mm > 0 ? opts.line_width_mm : 0.25, 3)
-     << "\" stroke-linecap=\"round\" stroke-linejoin=\"round\">\n";
-  // One group per layer so Illustrator / Inkscape keep the structure.
+  os << "<g fill=\"none\" stroke-linecap=\"round\" stroke-linejoin=\"round\">\n";
+  // One group per layer so Illustrator / Inkscape keep the structure - also
+  // exactly the right granularity for a per-layer print width/lineweight
+  // (DocumentSettings has none; Layer::print_width_mm does - see
+  // EffectivePrintWidthMm, doc/Document.h), since every path in one <g>
+  // shares a layer already.
+  const double default_width = opts.line_width_mm > 0 ? opts.line_width_mm : 0.25;
   std::map<int, std::vector<const Path2*>> by_layer;
   for (const Path2& p : paths) by_layer[p.layer].push_back(&p);
   int written = 0;
   for (const auto& [layer, list] : by_layer) {
-    std::string name = layer >= 0 && static_cast<size_t>(layer) < doc.Layers().size() ? doc.LayerFullPath(layer) : "Default";
-    os << "<g id=\"" << XmlEscape(name) << "\">\n";
+    const bool valid_layer = layer >= 0 && static_cast<size_t>(layer) < doc.Layers().size();
+    std::string name = valid_layer ? doc.LayerFullPath(layer) : "Default";
+    const double width = valid_layer ? EffectivePrintWidthMm(doc.Layers()[static_cast<size_t>(layer)], default_width) : default_width;
+    os << "<g id=\"" << XmlEscape(name) << "\" stroke-width=\"" << Num(width, 3) << "\">\n";
     for (const Path2* p : list) {
       os << "<path stroke=\"" << HexColor(p->color) << "\" d=\"";
       if (p->is_point) {
@@ -2381,10 +2390,15 @@ bool ExportPdf(const Document& doc, const Viewport* view, const std::string& pat
   const double marker = 1.0 * pt;
 
   // Content stream.
+  const double default_width = opts.line_width_mm > 0 ? opts.line_width_mm : 0.25;
   std::ostringstream cs;
-  cs << "q\n" << Num((opts.line_width_mm > 0 ? opts.line_width_mm : 0.25) * pt, 3) << " w 1 J 1 j\n";
+  cs << "q\n" << Num(default_width * pt, 3) << " w 1 J 1 j\n";
   std::string last_color;
+  double last_width = default_width;
   for (const Path2& p : paths) {
+    const bool valid_layer = p.layer >= 0 && static_cast<size_t>(p.layer) < doc.Layers().size();
+    const double width = valid_layer ? EffectivePrintWidthMm(doc.Layers()[static_cast<size_t>(p.layer)], default_width) : default_width;
+    if (std::fabs(width - last_width) > 1e-9) { cs << Num(width * pt, 3) << " w\n"; last_width = width; }
     const std::string color = Num(p.color.r, 3) + " " + Num(p.color.g, 3) + " " + Num(p.color.b, 3) + " RG\n";
     if (color != last_color) { cs << color; last_color = color; }
     if (p.is_point) {
@@ -2693,6 +2707,92 @@ bool ImportPly(Document& doc, const std::string& path, std::string& error) {
   SceneObject o = SceneObject::MakeMesh(mesh);
   o.name = std::filesystem::path(path).stem().string();
   doc.Add(std::move(o));
+  return true;
+}
+
+namespace {
+
+// Merges every PointCloud object in `doc` (or just the selected ones, when
+// `selected_only` is true) into a single kernel::PointCloud, in Objects()
+// order - the same "decide up front which objects are in, in document
+// order" shape ExportPly's own `included` pass above uses. Colors carry
+// over only if every contributing cloud has them (PointCloud::SetColors()'
+// own "all or nothing" convention would otherwise silently drop a partial
+// set down to none anyway; this just avoids assembling `colors` at all in
+// that case). Returns an empty cloud (PointCount() == 0) if nothing
+// qualified, which every Save*() caller below already treats as "nothing to
+// export".
+kernel::PointCloud CollectPointClouds(const Document& doc, bool selected_only) {
+  std::vector<const SceneObject*> included;
+  for (const SceneObject& o : doc.Objects()) {
+    if (selected_only && !o.selected) continue;
+    if (!doc.IsObjectVisible(o)) continue;
+    if (o.kind == ObjectKind::PointCloud && o.point_cloud) included.push_back(&o);
+  }
+  bool all_colored = !included.empty();
+  for (const SceneObject* o : included) if (!o->point_cloud->HasColors()) all_colored = false;
+  kernel::PointCloud merged;
+  std::vector<ON_Color> colors;
+  for (const SceneObject* o : included) {
+    const kernel::PointCloud& pc = *o->point_cloud;
+    for (int i = 0; i < pc.PointCount(); ++i) {
+      merged.AppendPoint(pc.PointAt(i));
+      if (all_colored) colors.push_back(pc.ColorAt(i));
+    }
+  }
+  if (all_colored && !colors.empty()) merged.SetColors(colors);
+  return merged;
+}
+
+// Adds `pc` to `doc` as one new PointCloud object named after `path`'s
+// filename stem, the same naming ImportPly above gives an imported mesh.
+void AddPointCloudObject(Document& doc, const kernel::PointCloud& pc, const std::string& path) {
+  SceneObject o = SceneObject::MakePointCloud(pc);
+  o.name = std::filesystem::path(path).stem().string();
+  doc.Add(std::move(o));
+}
+
+}  // namespace
+
+bool ExportXyz(const Document& doc, const std::string& path, bool selected_only, std::string& error) {
+  kernel::PointCloud pc = CollectPointClouds(doc, selected_only);
+  if (pc.PointCount() == 0) { error = "Nothing to export: select a point cloud"; return false; }
+  if (pc.SaveXyz(path) != kernel::Result::Ok) { error = "Could not write " + path; return false; }
+  return true;
+}
+
+bool ImportXyz(Document& doc, const std::string& path, std::string& error) {
+  kernel::PointCloud pc;
+  if (kernel::PointCloud::LoadXyz(path, pc) != kernel::Result::Ok) { error = "Could not read " + path; return false; }
+  AddPointCloudObject(doc, pc, path);
+  return true;
+}
+
+bool ExportPts(const Document& doc, const std::string& path, bool selected_only, std::string& error) {
+  kernel::PointCloud pc = CollectPointClouds(doc, selected_only);
+  if (pc.PointCount() == 0) { error = "Nothing to export: select a point cloud"; return false; }
+  if (pc.SavePts(path) != kernel::Result::Ok) { error = "Could not write " + path; return false; }
+  return true;
+}
+
+bool ImportPts(Document& doc, const std::string& path, std::string& error) {
+  kernel::PointCloud pc;
+  if (kernel::PointCloud::LoadPts(path, pc) != kernel::Result::Ok) { error = "Could not read " + path; return false; }
+  AddPointCloudObject(doc, pc, path);
+  return true;
+}
+
+bool ExportLas(const Document& doc, const std::string& path, bool selected_only, std::string& error) {
+  kernel::PointCloud pc = CollectPointClouds(doc, selected_only);
+  if (pc.PointCount() == 0) { error = "Nothing to export: select a point cloud"; return false; }
+  if (pc.SaveLas(path) != kernel::Result::Ok) { error = "Could not write " + path; return false; }
+  return true;
+}
+
+bool ImportLas(Document& doc, const std::string& path, std::string& error) {
+  kernel::PointCloud pc;
+  if (kernel::PointCloud::LoadLas(path, pc) != kernel::Result::Ok) { error = "Could not read " + path; return false; }
+  AddPointCloudObject(doc, pc, path);
   return true;
 }
 
