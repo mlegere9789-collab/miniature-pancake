@@ -247,11 +247,13 @@ Mesh MinkowskiDifference(const Mesh& a, const Mesh& b);
 // tessellation density - a rounded region in the result is only as
 // smooth as this sphere is, exactly as coarsely/finely tessellating the
 // sphere passed directly to MinkowskiSum()/MinkowskiDifference() would
-// be. Throws std::invalid_argument if `sphere_divisions < 3` (fewer
-// cannot tessellate a genuine 3D sphere at all), and whatever
-// MinkowskiSum()/MinkowskiDifference() themselves throw for other
-// failures (e.g. `solid` not a valid closed manifold, same requirement
-// as BooleanCombine()).
+// be. Throws std::invalid_argument if `distance` is not finite (NaN or
+// +/-infinity - checked before the `distance == 0.0` no-op case above, so
+// neither silently builds a NaN/infinite-radius rounding sphere) or if
+// `sphere_divisions < 3` (fewer cannot tessellate a genuine 3D sphere at
+// all), and whatever MinkowskiSum()/MinkowskiDifference() themselves
+// throw for other failures (e.g. `solid` not a valid closed manifold,
+// same requirement as BooleanCombine()).
 //
 // A real, deliberately enforced correctness guard, not an omission: a
 // shrink (`distance < 0`) whose magnitude exceeds `solid`'s own smallest

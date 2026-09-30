@@ -364,6 +364,9 @@ Mesh MinkowskiDifference(const Mesh& a, const Mesh& b) {
 }
 
 Mesh OffsetSolid(const Mesh& solid, double distance, int sphere_divisions) {
+  if (!std::isfinite(distance)) {
+    throw std::invalid_argument("dino8::kernel::OffsetSolid: distance must be finite");
+  }
   if (distance == 0.0) return solid;
   if (sphere_divisions < 3) {
     throw std::invalid_argument("dino8::kernel::OffsetSolid: sphere_divisions must be >= 3");

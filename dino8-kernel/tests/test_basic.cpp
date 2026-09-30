@@ -7592,6 +7592,37 @@ void TestOffsetSolidZeroDistanceIsIdentityAndArgumentChecks() {
     threw = true;
   }
   Check(threw, "OffsetSolid throws for sphere_divisions < 3 (cannot tessellate a genuine 3D sphere)");
+
+  // A non-finite distance used to sail straight past the `distance == 0.0`
+  // no-op check (NaN and +/-infinity both fail that comparison) and reach
+  // `Brep::Sphere(origin, std::fabs(distance))` - a NaN or infinite-radius
+  // "sphere" fed straight into TessellateToClosedMesh()/Manifold with no
+  // guard at all. Verified for both NaN and +infinity, and for both signs
+  // of a would-be shrink/grow (the check runs before the distance > 0.0
+  // grow/shrink branch, so it must catch -infinity too).
+  bool threw_nan_distance = false;
+  try {
+    OffsetSolid(box, std::numeric_limits<double>::quiet_NaN(), 24);
+  } catch (const std::invalid_argument&) {
+    threw_nan_distance = true;
+  }
+  Check(threw_nan_distance, "OffsetSolid throws for a NaN distance");
+
+  bool threw_pos_infinite_distance = false;
+  try {
+    OffsetSolid(box, std::numeric_limits<double>::infinity(), 24);
+  } catch (const std::invalid_argument&) {
+    threw_pos_infinite_distance = true;
+  }
+  Check(threw_pos_infinite_distance, "OffsetSolid throws for a +infinity distance");
+
+  bool threw_neg_infinite_distance = false;
+  try {
+    OffsetSolid(box, -std::numeric_limits<double>::infinity(), 24);
+  } catch (const std::invalid_argument&) {
+    threw_neg_infinite_distance = true;
+  }
+  Check(threw_neg_infinite_distance, "OffsetSolid throws for a -infinity distance");
 }
 
 // Every OffsetSolid test above (Grow/Shrink/ExcessiveShrink/ZeroDistance)
@@ -13587,6 +13618,28 @@ void TestMeshOffsetMovesVerticesAlongExactVertexNormal() {
                 std::fabs(after.z - before.z - 2.5) < 1e-9;
   }
   Check(all_exact, "every vertex moves by exactly (0, 0, 2.5) - the flat square's exact normal times the distance");
+
+  // A NaN or infinite distance has no meaningful per-vertex displacement -
+  // before this guard existed, either would silently propagate into every
+  // vertex (a NaN/Inf coordinate makes most downstream numeric comparisons
+  // false, so a self-intersection or volume-ordering guard built on top of
+  // Offset() - e.g. Shell()'s and Thicken()'s own - could not be trusted
+  // to catch it either).
+  bool threw_nan_distance = false;
+  try {
+    (void)square.Offset(std::numeric_limits<double>::quiet_NaN());
+  } catch (const std::invalid_argument&) {
+    threw_nan_distance = true;
+  }
+  Check(threw_nan_distance, "Offset() throws for a NaN distance");
+
+  bool threw_infinite_distance = false;
+  try {
+    (void)square.Offset(std::numeric_limits<double>::infinity());
+  } catch (const std::invalid_argument&) {
+    threw_infinite_distance = true;
+  }
+  Check(threw_infinite_distance, "Offset() throws for an infinite distance");
 }
 
 // OffsetDirectional(): the kernel-native counterpart to OpenNURBS' own
@@ -13635,6 +13688,25 @@ void TestMeshOffsetDirectionalMovesEveryVertexByTheSameFixedVector() {
     threw_zero_direction = true;
   }
   Check(threw_zero_direction, "OffsetDirectional() throws on a zero-vector direction");
+
+  // Same non-finite-distance hazard Offset() itself guards against - see
+  // that method's own test above for why silently propagating a NaN/Inf
+  // distance into every vertex is a real, not merely hypothetical, risk.
+  bool threw_nan_distance = false;
+  try {
+    (void)square.OffsetDirectional(std::numeric_limits<double>::quiet_NaN(), Vector3d(0, 0, 1));
+  } catch (const std::invalid_argument&) {
+    threw_nan_distance = true;
+  }
+  Check(threw_nan_distance, "OffsetDirectional() throws for a NaN distance");
+
+  bool threw_infinite_distance = false;
+  try {
+    (void)square.OffsetDirectional(std::numeric_limits<double>::infinity(), Vector3d(0, 0, 1));
+  } catch (const std::invalid_argument&) {
+    threw_infinite_distance = true;
+  }
+  Check(threw_infinite_distance, "OffsetDirectional() throws for an infinite distance");
 
   // The real distinguishing case: a V-groove whose two walls meet at a
   // shared apex edge. Offset() moves the apex vertices along their own
@@ -13717,6 +13789,28 @@ void TestMeshThickenBuildsExactUnitCubeFromFlatSquare() {
     threw_zero = true;
   }
   Check(threw_zero, "Thicken(0.0) throws - a zero-thickness solid is meaningless");
+
+  // Mesh::Thicken()'s own distance check used to be a bare `== 0.0` test,
+  // unlike its B-rep sibling Brep::Thicken() (see
+  // TestThickenRejectsInvalidArguments), which already rejects a
+  // non-finite thickness too - a real gap, not a hypothetical one: NaN and
+  // +/-infinity both fail `== 0.0`, so both used to sail past this guard
+  // and reach Offset()'s per-vertex arithmetic uncaught.
+  bool threw_nan = false;
+  try {
+    (void)square.Thicken(std::numeric_limits<double>::quiet_NaN());
+  } catch (const std::invalid_argument&) {
+    threw_nan = true;
+  }
+  Check(threw_nan, "Thicken() throws for a NaN distance, matching Brep::Thicken()'s own guard");
+
+  bool threw_infinite = false;
+  try {
+    (void)square.Thicken(std::numeric_limits<double>::infinity());
+  } catch (const std::invalid_argument&) {
+    threw_infinite = true;
+  }
+  Check(threw_infinite, "Thicken() throws for an infinite distance, matching Brep::Thicken()'s own guard");
 
   const Mesh box = Brep::Box(1, 1, 1, 2, 2, 2).TessellateToClosedMesh(1, 1);
   bool threw_closed = false;

@@ -1556,6 +1556,14 @@ class Mesh {
   // say) can fold the result over itself - the same disclosed tradeoff
   // every simple normal-offset mesher has, not attempted to be solved
   // here. Returns a new mesh; this one is untouched.
+  //
+  // Throws std::invalid_argument if `distance` is not finite (NaN or
+  // +/-infinity) - neither has a meaningful per-vertex displacement, and
+  // silently propagating one into every vertex would produce a mesh whose
+  // corruption is invisible to every downstream guard that compares
+  // against it (a NaN/Inf coordinate makes most numeric comparisons
+  // false, so a fold/self-intersection check built on top of Offset()
+  // could not be trusted to catch it either).
   Mesh Offset(double distance) const;
 
   // The fixed-direction counterpart to Offset(distance) above: every
@@ -1578,7 +1586,9 @@ class Mesh {
   // one is untouched.
   //
   // Throws std::invalid_argument if `direction` is the zero vector (no
-  // well-defined unit direction to offset along).
+  // well-defined unit direction to offset along), or if `distance` is not
+  // finite (NaN or +/-infinity) - same rationale as Offset()'s own guard
+  // above.
   Mesh OffsetDirectional(double distance, const Vector3d& direction) const;
 
   // Builds a solid shell from this (necessarily OPEN) mesh: an
@@ -1600,10 +1610,12 @@ class Mesh {
   // no special-casing.
   //
   // Throws std::invalid_argument if `distance` is exactly 0 (a
-  // zero-thickness "solid" is meaningless) or if this mesh has no naked
-  // edges at all (already closed - Thicken() only handles the open-sheet
-  // case; a closed mesh needs a hollowing/shell operation, which is a
-  // materially different problem this method does not attempt).
+  // zero-thickness "solid" is meaningless), if `distance` is not finite
+  // (NaN or +/-infinity - the same check its B-rep sibling Brep::Thicken
+  // already makes), or if this mesh has no naked edges at all (already
+  // closed - Thicken() only handles the open-sheet case; a closed mesh
+  // needs a hollowing/shell operation, which is a materially different
+  // problem this method does not attempt).
   Mesh Thicken(double distance) const;
 
   // Thicken()'s own missing "closed mesh needs a hollowing/shell

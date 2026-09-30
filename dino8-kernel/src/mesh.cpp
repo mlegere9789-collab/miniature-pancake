@@ -5638,6 +5638,9 @@ int Mesh::TrisToQuads(double max_dihedral_deg) {
 }
 
 Mesh Mesh::Offset(double distance) const {
+  if (!std::isfinite(distance)) {
+    throw std::invalid_argument("dino8::kernel::Mesh::Offset: distance must be finite");
+  }
   Mesh result = *this;
   const std::vector<Vector3d> normals = ComputeVertexNormals();
   for (int i = 0; i < result.mesh_.m_V.Count(); ++i) {
@@ -5650,6 +5653,9 @@ Mesh Mesh::Offset(double distance) const {
 }
 
 Mesh Mesh::OffsetDirectional(double distance, const Vector3d& direction) const {
+  if (!std::isfinite(distance)) {
+    throw std::invalid_argument("dino8::kernel::Mesh::OffsetDirectional: distance must be finite");
+  }
   Vector3d unit_direction = direction;
   if (!unit_direction.Unitize()) {
     throw std::invalid_argument(
@@ -5668,8 +5674,8 @@ Mesh Mesh::OffsetDirectional(double distance, const Vector3d& direction) const {
 }
 
 Mesh Mesh::Thicken(double distance) const {
-  if (distance == 0.0) {
-    throw std::invalid_argument("dino8::kernel::Mesh::Thicken: distance must be nonzero");
+  if (!std::isfinite(distance) || distance == 0.0) {
+    throw std::invalid_argument("dino8::kernel::Mesh::Thicken: distance must be finite and nonzero");
   }
   const CheckReport report = Check();
   if (report.naked_edge_list.empty()) {
