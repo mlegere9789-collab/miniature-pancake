@@ -12718,6 +12718,201 @@ void TestMeshFindOffsetSelfIntersectionsDetectsGenuineFold() {
         "FindOffsetSelfIntersections matches a manual Offset()+FindSelfIntersections() call exactly");
 }
 
+// A closed box mesh built specifically so ComputeVertexNormals() gives
+// every one of its 8 corners the EXACT diagonal unit normal
+// (+-1,+-1,+-1)/sqrt(3) - unlike MakeQuadBoxMesh (whose hardcoded
+// per-face 2-triangle diagonal choice was discovered, while building the
+// test below, to weight most corners UNEVENLY across their own 3
+// adjacent faces: e.g. its "back" and "right" faces both happen to split
+// along the diagonal that makes vertex 2 the OFF-diagonal corner, while
+// its "bottom" face's split makes that same vertex the ON-diagonal
+// corner - an inconsistency invisible until it silently warps Offset()'s
+// own output, since ComputeVertexNormals() area-weights a diagonal
+// vertex's contribution at 2x an off-diagonal vertex's for the same
+// face). A valid boundary walk of a square always alternates between a
+// corner's two parity classes (here, "even"/"odd" by (x+y+z) mod 2 in
+// 0/1 corner coordinates - any single-coordinate step along an edge
+// flips exactly one bit, hence the parity), so positions 0 and 2 of any
+// 4-vertex listing are automatically same-class - the fix is simply
+// choosing, for every one of the 6 faces, a STARTING corner (via a
+// cyclic rotation of MakeQuadBoxMesh's own listing, which cannot change
+// its winding/outward normal) that puts the SAME class ("even") at
+// positions 0/2 every time, so every corner's own weight (2x if even, 1x
+// if odd) is identical across all 3 of its adjacent faces - giving a
+// perfectly symmetric, equal-weighted corner normal regardless of which
+// class it falls in, hence a genuinely PLANAR offset copy of every face.
+dino8::kernel::Mesh MakeSymmetricCubeMesh(double x0, double y0, double z0, double x1, double y1, double z1) {
+  dino8::kernel::Mesh mesh;
+  ON_Mesh& raw = mesh.raw();
+
+  raw.m_V.Append(ON_3fPoint(x0, y0, z0));  // 0 (even)
+  raw.m_V.Append(ON_3fPoint(x1, y0, z0));  // 1 (odd)
+  raw.m_V.Append(ON_3fPoint(x1, y1, z0));  // 2 (even)
+  raw.m_V.Append(ON_3fPoint(x0, y1, z0));  // 3 (odd)
+  raw.m_V.Append(ON_3fPoint(x0, y0, z1));  // 4 (odd)
+  raw.m_V.Append(ON_3fPoint(x1, y0, z1));  // 5 (even)
+  raw.m_V.Append(ON_3fPoint(x1, y1, z1));  // 6 (odd)
+  raw.m_V.Append(ON_3fPoint(x0, y1, z1));  // 7 (even)
+
+  auto add_quad = [&raw](int a, int b, int c, int d) {
+    ON_MeshFace face;
+    face.vi[0] = a;
+    face.vi[1] = b;
+    face.vi[2] = c;
+    face.vi[3] = d;
+    raw.m_F.Append(face);
+  };
+
+  add_quad(0, 3, 2, 1);  // bottom (-z) - diagonal (0,2), both even
+  add_quad(5, 6, 7, 4);  // top (+z) - diagonal (5,7), both even (rotated from MakeQuadBoxMesh's (4,5,6,7))
+  add_quad(0, 1, 5, 4);  // front (-y) - diagonal (0,5), both even
+  add_quad(7, 6, 2, 3);  // back (+y) - diagonal (7,2), both even (rotated from (3,7,6,2))
+  add_quad(0, 4, 7, 3);  // left (-x) - diagonal (0,7), both even
+  add_quad(2, 6, 5, 1);  // right (+x) - diagonal (2,5), both even (rotated from (1,2,6,5))
+
+  return mesh;
+}
+
+// Mesh::Shell(): the closed-mesh counterpart Thicken()'s own doc comment
+// explicitly disclaims ("a closed mesh needs a hollowing/shell operation
+// this method doesn't attempt"). Verified on MakeSymmetricCubeMesh's own
+// welded box fixture (see that helper's own comment for why an ordinary
+// MakeQuadBoxMesh box will NOT do here) two ways: (1) a structural check
+// that the result really is "this mesh, unchanged, plus a flipped
+// Offset(-thickness) copy" - not a hand-re-derivation of Offset()'s own
+// per-vertex-normal math, the same "thin composition" standard
+// TestMeshFindOffsetSelfIntersectionsDetectsGenuineFold above already
+// applies to FindOffsetSelfIntersections(); and (2) a fully independent,
+// hand-derivable closed form that trusts neither Offset() nor Volume():
+// every corner's own vertex normal is exactly the diagonal unit vector
+// (+-1,+-1,+-1)/sqrt(3) on this fixture (by construction - see
+// MakeSymmetricCubeMesh's own comment), so an inward Offset(-thickness)
+// shrinks EVERY one of the box's 3 dimensions by exactly
+// 2*thickness/sqrt(3) - independent of the box's own aspect ratio, since
+// a face normal's magnitude never enters a UNIT vertex normal's own
+// direction - giving an exact closed-form new volume, the same
+// hand-derivable standard TestMeshThickenBuildsExactUnitCubeFromFlatSquare
+// above already holds Thicken() to.
+void TestMeshShellHollowsClosedBoxWithVolumeIdentityAndFlippedInnerWall() {
+  using dino8::kernel::Mesh;
+
+  const double dx = 4.0, dy = 4.0, dz = 4.0;
+  const auto box = MakeSymmetricCubeMesh(0, 0, 0, dx, dy, dz);
+  Check(std::fabs(box.Volume() - dx * dy * dz) < 1e-6, "sanity: the box fixture itself has the expected volume 4*4*4=64");
+
+  const double thickness = 0.5;
+  const Mesh shell = box.Shell(thickness);
+  const Mesh inner_unflipped = box.Offset(-thickness);
+
+  Check(shell.VertexCount() == box.VertexCount() * 2 && shell.FaceCount() == box.FaceCount() * 2,
+        "Shell() doubles both vertex and face counts - no side-wall faces, unlike Thicken()");
+
+  bool outer_layer_unchanged = true;
+  for (int i = 0; i < box.VertexCount(); ++i) {
+    const ON_3fPoint& a = box.raw().m_V[i];
+    const ON_3fPoint& b = shell.raw().m_V[i];
+    outer_layer_unchanged = outer_layer_unchanged && a.x == b.x && a.y == b.y && a.z == b.z;
+  }
+  for (int i = 0; i < box.FaceCount(); ++i) {
+    const ON_MeshFace& a = box.raw().m_F[i];
+    const ON_MeshFace& b = shell.raw().m_F[i];
+    for (int k = 0; k < 4; ++k) outer_layer_unchanged = outer_layer_unchanged && a.vi[k] == b.vi[k];
+  }
+  Check(outer_layer_unchanged, "Shell()'s outer layer (first half of vertices/faces) is this mesh, byte-for-byte "
+                               "unchanged - unlike Thicken(), which must flip its own original layer");
+
+  bool inner_layer_matches_offset = true;
+  const int n = box.VertexCount();
+  for (int i = 0; i < n; ++i) {
+    const ON_3fPoint& a = inner_unflipped.raw().m_V[i];
+    const ON_3fPoint& b = shell.raw().m_V[n + i];
+    inner_layer_matches_offset = inner_layer_matches_offset && a.x == b.x && a.y == b.y && a.z == b.z;
+  }
+  for (int i = 0; i < box.FaceCount(); ++i) {
+    ON_MeshFace expected = inner_unflipped.raw().m_F[i];
+    for (int k = 0; k < 4; ++k) expected.vi[k] += n;
+    // Flipped: a quad's vi[0]/vi[3] and vi[1]/vi[2] swap (see FlipNormals'
+    // own comment on why a triangle's vi[3] must keep following vi[2]).
+    std::swap(expected.vi[0], expected.vi[3]);
+    std::swap(expected.vi[1], expected.vi[2]);
+    const ON_MeshFace& actual = shell.raw().m_F[box.FaceCount() + i];
+    for (int k = 0; k < 4; ++k) inner_layer_matches_offset = inner_layer_matches_offset && expected.vi[k] == actual.vi[k];
+  }
+  Check(inner_layer_matches_offset,
+        "Shell()'s inner layer (second half) is exactly an Offset(-thickness) copy, reindexed and FLIPPED");
+
+  Check(shell.IsClosedManifold(),
+        "the two disjoint layers together still form a genuine closed 2-manifold (no wall faces needed - a closed "
+        "mesh has no naked edge to stitch one to)");
+
+  // Independent closed form: every dimension shrinks by exactly
+  // 2*thickness/sqrt(3) (see this test's own header comment for the
+  // derivation), so the inner (unflipped) copy's own volume - and hence
+  // the shell's total material volume - is hand-computable without
+  // trusting Offset()'s own output at all.
+  const double shrink = 2.0 * thickness / std::sqrt(3.0);
+  const double expected_inner_volume = (dx - shrink) * (dy - shrink) * (dz - shrink);
+  Check(std::fabs(inner_unflipped.Volume() - expected_inner_volume) < 1e-4,
+        "the inward offset copy's own volume matches the exact closed form (dx-2t/sqrt3)*(dy-2t/sqrt3)*(dz-2t/sqrt3)");
+
+  const double expected_shell_volume = box.Volume() - expected_inner_volume;
+  Check(expected_shell_volume > 0.0 && expected_shell_volume < box.Volume(),
+        "sanity: the closed-form inner volume is strictly between 0 and the original box's own");
+  Check(std::fabs(shell.Volume() - expected_shell_volume) < 1e-4,
+        "Shell()'s own total Volume() matches the exact closed-form shell volume (outer cube minus the "
+        "exactly-derivable shrunken inner cube) - not merely a plausible-looking number");
+}
+
+void TestMeshShellRefusesInvalidInput() {
+  using dino8::kernel::Mesh;
+
+  const auto box = MakeQuadBoxMesh(0, 0, 0, 4, 4, 4);
+
+  bool threw_zero = false;
+  try {
+    (void)box.Shell(0.0);
+  } catch (const std::invalid_argument&) {
+    threw_zero = true;
+  }
+  Check(threw_zero, "Shell(0.0) throws - a zero wall thickness is meaningless");
+
+  bool threw_negative = false;
+  try {
+    (void)box.Shell(-1.0);
+  } catch (const std::invalid_argument&) {
+    threw_negative = true;
+  }
+  Check(threw_negative, "Shell(-1.0) throws - thickness is a magnitude, not a signed direction (there is no "
+                        "'other side' to choose on an already-closed mesh)");
+
+  const auto open_square = MakeFlatUnitSquareMesh();
+  bool threw_open = false;
+  try {
+    (void)open_square.Shell(0.1);
+  } catch (const std::invalid_argument&) {
+    threw_open = true;
+  }
+  Check(threw_open, "Shell() on an open sheet (naked edges present) throws - Thicken() is the open-sheet operation, "
+                    "not this one");
+
+  // A thin slab whose smallest dimension (0.4, in z) is far narrower than
+  // twice the requested thickness (1.0): the inward offset must fold
+  // through the opposite wall well before it could ever nest safely
+  // inside. Found empirically (like the V-groove fixture's own
+  // FindOffsetSelfIntersections test above), not hand-waved: 1.0 is
+  // comfortably past the slab's own z half-extent (0.2) even once the
+  // corner-normal weighting's diagonal shortening is accounted for.
+  const auto slab = MakeQuadBoxMesh(0, 0, 0, 4, 4, 0.4);
+  bool threw_fold = false;
+  try {
+    (void)slab.Shell(1.0);
+  } catch (const std::invalid_argument&) {
+    threw_fold = true;
+  }
+  Check(threw_fold, "Shell() on a thin slab refuses a thickness that folds/inverts the inward offset through the "
+                    "opposite wall, rather than silently returning a turned-inside-out result");
+}
+
 // Perpendicular distance from `p` to the infinite line through `a`/`b`, in
 // 3D - a plain, independent geometric primitive (NOT InsetFace's own
 // miter-offset formula) used below to verify an inset corner's actual
@@ -47821,6 +48016,8 @@ int main() {
   TestMeshOffsetDirectionalMovesEveryVertexByTheSameFixedVector();
   TestMeshThickenBuildsExactUnitCubeFromFlatSquare();
   TestMeshFindOffsetSelfIntersectionsDetectsGenuineFold();
+  TestMeshShellHollowsClosedBoxWithVolumeIdentityAndFlippedInnerWall();
+  TestMeshShellRefusesInvalidInput();
   TestMeshInsetFaceUnitSquareMatchesExactConcentricSquare();
   TestMeshInsetFaceTriangleMatchesIndependentPerpendicularDistance();
   TestMeshInsetFaceRefusesInvalidInput();

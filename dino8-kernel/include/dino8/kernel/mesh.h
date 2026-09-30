@@ -1263,6 +1263,50 @@ class Mesh {
   // materially different problem this method does not attempt).
   Mesh Thicken(double distance) const;
 
+  // Thicken()'s own missing "closed mesh needs a hollowing/shell
+  // operation" counterpart: hollows this (necessarily CLOSED) mesh into a
+  // uniform-wall-thickness shell, the mesh-level answer to PARITY_MAP.md's
+  // "Closed hollow shell (uniform wall, no openings) of a solid" gap
+  // (currently only reachable via a mesh offset PLUS a separate mesh
+  // boolean subtraction). Unlike Thicken(), no wall faces are built at
+  // all: a closed mesh has no naked edge to stitch a wall to in the first
+  // place, so the result is simply the two layers left as two wholly
+  // disjoint closed 2-manifold components - a valid description of a
+  // hollow solid's own boundary (an outer surface plus a separate,
+  // nested, oppositely-facing inner surface, exactly the same shape a
+  // "solid minus its own inward offset" boolean would produce, without
+  // ever running the boolean).
+  //
+  // The outer layer is this mesh, entirely UNCHANGED (it already faces
+  // outward, away from the shell material, so - unlike Thicken(), which
+  // must flip its own untouched original layer into that role - nothing
+  // here needs flipping); the inner layer is an Offset(-thickness) copy
+  // (always inward, regardless of this mesh's own winding convention -
+  // "thickness" is a wall dimension, not a signed direction, so its sign
+  // is fixed here rather than left to the caller the way Thicken()'s own
+  // signed `distance` is) with its own winding FLIPPED, so its outward
+  // normal points into the cavity, away from the shell material between
+  // the two layers - mirroring Thicken()'s own "the layer that becomes
+  // the shell's inner wall must face outward relative to the material"
+  // rule, just with the flip and the offset copy swapped between which
+  // layer plays which role.
+  //
+  // Throws std::invalid_argument if `thickness` is not strictly positive
+  // (a wall thickness is a magnitude, not a signed offset - there is no
+  // "other side" to choose on an already-closed mesh the way there is for
+  // Thicken()'s open sheet), if this mesh is not itself a closed
+  // 2-manifold (IsClosedManifold() false - an open sheet needs Thicken(),
+  // not Shell()), or if `thickness` is large enough that the inward offset
+  // folds through itself or through the opposite wall: checked the same
+  // way FindOffsetSelfIntersections() already does (self-intersections on
+  // the offset-before-flip copy), plus an independent volume check (the
+  // offset copy's own enclosed volume, before flipping, must come out
+  // strictly between 0 and this mesh's own - a `thickness` exceeding the
+  // smallest local wall-to-wall distance anywhere can otherwise invert the
+  // inner layer through the far wall, producing a copy that LOOKS like a
+  // smaller nested solid but has silently turned inside out).
+  Mesh Shell(double thickness) const;
+
   // Answers the real hazard Offset()'s own doc comment above already
   // names but has no way to check on its own: whether Offset(distance)
   // applied to THIS mesh would fold over itself. Computes Offset(distance)

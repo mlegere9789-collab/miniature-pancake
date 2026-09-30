@@ -4496,6 +4496,63 @@ Mesh Mesh::Thicken(double distance) const {
   return result;
 }
 
+Mesh Mesh::Shell(double thickness) const {
+  if (!(thickness > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::Mesh::Shell: thickness must be strictly positive");
+  }
+  if (!IsClosedManifold()) {
+    throw std::invalid_argument(
+        "dino8::kernel::Mesh::Shell: this mesh is not a closed 2-manifold - "
+        "an open sheet needs Thicken(), not Shell()");
+  }
+
+  // Always inward - see this method's own header doc comment for why
+  // `thickness` is a magnitude, not a signed direction, unlike Thicken()'s
+  // own `distance`.
+  const Mesh inner_unflipped = Offset(-thickness);
+  if (!inner_unflipped.FindSelfIntersections().empty()) {
+    throw std::invalid_argument(
+        "dino8::kernel::Mesh::Shell: thickness folds the inward offset "
+        "through itself - exceeds the local wall-to-wall feasibility "
+        "somewhere on this mesh");
+  }
+  // A self-intersection-free result can still have silently turned inside
+  // out (every wall folded past the far side without any single pair of
+  // triangles crossing, on a shape thin/curved enough) - the enclosed
+  // volume must be strictly smaller than the original's, and still
+  // positive, or this "shell" isn't genuinely nested inside its own outer
+  // layer.
+  const double outer_volume = Volume();
+  const double inner_volume = inner_unflipped.Volume();
+  if (!(inner_volume > 0.0 && inner_volume < outer_volume)) {
+    throw std::invalid_argument(
+        "dino8::kernel::Mesh::Shell: thickness is too large - the inward "
+        "offset has collapsed or inverted through the opposite wall rather "
+        "than nesting inside this mesh");
+  }
+
+  const int n = mesh_.m_V.Count();
+  Mesh result;
+  ON_Mesh& raw = result.raw();
+  raw.m_V.Reserve(n * 2);
+  for (int i = 0; i < n; ++i) raw.m_V.Append(mesh_.m_V[i]);
+  for (int i = 0; i < n; ++i) raw.m_V.Append(inner_unflipped.raw().m_V[i]);
+
+  raw.m_F.Reserve(mesh_.m_F.Count() * 2);
+  // Outer wall: this mesh's own faces, entirely unchanged.
+  for (int i = 0; i < mesh_.m_F.Count(); ++i) {
+    raw.m_F.Append(mesh_.m_F[i]);
+  }
+  // Inner wall: the inward offset copy's faces, flipped, reindexed by +n.
+  for (int i = 0; i < mesh_.m_F.Count(); ++i) {
+    ON_MeshFace f = mesh_.m_F[i];
+    for (int k = 0; k < 4; ++k) f.vi[k] += n;
+    FlipOneFace(f);
+    raw.m_F.Append(f);
+  }
+  return result;
+}
+
 std::vector<std::pair<int, int>> Mesh::FindOffsetSelfIntersections(double distance, double tolerance) const {
   return Offset(distance).FindSelfIntersections(tolerance);
 }
