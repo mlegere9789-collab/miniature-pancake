@@ -1253,6 +1253,8 @@ flcheck "ChamferEdge: edge 10 of object 2 replaced with an exact chamfer (radius
 flcheck "Volume = 955 cubic" "a 10x10x10 box minus a 3x3 edge chamfer has volume 1000 - 10*3^2/2 = 955 exactly"
 flcheck "FilletSrf: built between object 4 and 6, radius 2; both surfaces trimmed" "FilletSrf trimmed two independently-picked planar surfaces"
 flcheck "Area = 31.41 square" "the r=2 fillet's quarter-cylinder lateral area is (pi/2)*2*10 = 31.42"
+flcheck "ChamferSrf: faces .* and .* of object .* replaced with an exact chamfer (distance 3)" "ChamferSrf's two-face-pick UI now reaches kernel::ChamferConvexEdge (the same exact construction ChamferEdge's own path uses) when both picks land on the same solid's own adjacent planar faces, instead of always building the approximate RuledBetween ruled surface"
+flcheck "Volume = 955 cubic" "a 10x10x10 box minus a 3x3 ChamferSrf chamfer has the identical exact volume as the plain ChamferEdge case above: 1000 - 10*3^2/2 = 955"
 flcheck "BlendEdge: blend surface added between the two faces at edge 10" "BlendEdge built a separate G1 blend surface"
 flcheck "MatchSrf: 2 boundary control point.s. moved to position on the target curve" "MatchSrf moved a plane's edge onto a target line"
 flcheck "MatchSrf: exact edge match (G1) to the target surface, max position error 0, max tangent error 0" "MatchSrf against a target *surface* edge now uses the kernel's exact NurbsSurface::MatchEdge() (self-checked by evaluation, both residuals genuinely ~0), not the app's older per-control-point loop that only assumed a shared parameterization"
@@ -1281,7 +1283,7 @@ flcheck "FilletEdge: edge 10 of object .* replaced with an exact fillet (RailTyp
 flcheck "Volume = 995.7 cubic" "a 10x10x10 box minus a DistBetweenRails=2 edge fillet: radius = rail_distance/(2*cos(45deg)) gives radius^2 = 2 exactly, so removed volume = 10*2*(1-pi/4) = 4.292, leaving 1000 - 4.292 = 995.7"
 echo "$FL" | grep -E "^(ok|FAIL)"
 if echo "$FL" | grep -q "^FAIL"; then fail=1; fi
-flcheck "^ok   expect_objects 40" "fillet script produced the expected object count"
+flcheck "^ok   expect_objects 41" "fillet script produced the expected object count"
 
 # Adversarial fillets: tiny/at-the-limit/too-large radii relative to the
 # shortest adjacent edge, a huge-coordinate-scale box (a genuine kernel
@@ -1308,6 +1310,8 @@ facheck "Volume = 986.7 cubic" "a 10x10x10 box minus an asymmetric distance1=2/d
 facheck "! FilletEdge: an exact conic .Rho. fillet needs the whole object to be planar-faced at this edge" "a Rho request on a cylinder's curved-adjacent-face rim edge fails outright instead of silently building a plain circular rolling-ball fillet that quietly ignores Rho - unlike Chamfer's symmetric-distance case, there is no approximate fallback a non-circular conic could ever be represented by"
 facheck "! FilletEdge: an exact RailType=DistFromEdge fillet needs the whole object to be planar-faced at this edge" "a RailType=DistFromEdge request on a cylinder's curved-adjacent-face rim edge fails outright instead of silently building a plain radius=1 rolling-ball fillet under a mismatched distance interpretation - like Rho, the dihedral-angle-to-radius conversion has no meaning on a curved adjacent face"
 facheck "! FilletSrf: the offset surfaces do not meet" "FilletSrf on two nearly-flat planes failed with its own clear diagnostic instead of a garbage surface"
+facheck "ChamferSrf: built between object .* and .*, radius 1" "ChamferSrf on a cylinder's own flat-top cap and curved side wall falls through to the approximate RuledBetween path (kernel::ChamferConvexEdge needs the WHOLE solid planar-faced, which a cylindrical face fails outright) instead of crashing or silently misbuilding"
+facheck "ChamferSrf: built between object .* and .*, radius 2" "ChamferSrf Trim=No on an otherwise-exact planar box corner also falls through to the approximate path - the exact kernel path always replaces the whole solid with an already-trimmed result, not the untrimmed separate surface Trim=No asks for"
 echo "$FA" | grep -E "^(ok|FAIL)"
 if echo "$FA" | grep -q "^FAIL"; then fail=1; fi
 facheck "^ok   expect_objects 0" "fillet-adversarial script cleaned up to zero objects at the end"
@@ -3130,6 +3134,8 @@ SetLanguage ja
 I18nSelfTest
 SetLanguage pt
 I18nSelfTest
+SetLanguage it
+I18nSelfTest
 SetLanguage English
 I18nSelfTest
 SetLanguage nope
@@ -3155,6 +3161,13 @@ i18ncheck "I18nSelfTest: menu\.file=ファイル" "a translated string (menu.fil
 i18ncheck "SetLanguage: pt" "SetLanguage switched to Portuguese"
 i18ncheck "I18nSelfTest: active=pt" "the active language is now pt"
 i18ncheck "I18nSelfTest: menu\.file=Arquivo" "a translated string (menu.file) reads Arquivo in Portuguese, proving pt.json is a real fifth hand-translated language, not a scaffold-only stub"
+i18ncheck "SetLanguage: it" "SetLanguage switched to Italian"
+i18ncheck "I18nSelfTest: active=it" "the active language is now it"
+# menu.file is genuinely the borrowed word "File" in Italian too (same as
+# English), so unlike the other languages this check alone can't prove
+# real translated content - it.json's non-trivial coverage is proven by
+# tests/test_i18n_coverage.cpp's exact-key-set check instead.
+i18ncheck "I18nSelfTest: menu\.file=File\$" "a translated string (menu.file) reads File in Italian (a genuine borrowed word, unlike the other languages), proving SetLanguage it actually loaded it.json rather than failing with an unknown-language warning"
 i18ncheck "I18nSelfTest: fallback(panel\.imgui_demo)=ImGui Demo (developer)" "a key missing from es.json falls back to the English text, not a blank string or the raw key"
 i18ncheck "I18nSelfTest: unknown_key=this\.key\.does\.not\.exist\.anywhere" "a key present in no language table at all falls back to the key itself rather than crashing or blanking"
 i18ncheck "SetLanguage: en" "SetLanguage switched back to English"

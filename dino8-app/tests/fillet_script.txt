@@ -41,6 +41,20 @@ Radius=2
 110,5,5
 105,10,5
 Area
+# --- ChamferSrf: exact planar chamfer between two of a SOLID box's own
+# adjacent faces (both picks land on the same object, unlike FilletSrf's
+# two independently-extracted surfaces just above) - reaches
+# kernel::ChamferConvexEdge, the same exact construction ChamferEdge's own
+# Distance1/Distance2 path already uses, via FilletTwoSurfacesCommand's
+# two-face-pick UI instead of a one-click edge pick. Same closed form as
+# the plain ChamferEdge case above: 1000 - 3^2*10/2 = 955.
+Box 120,0,0 130,10,0 10
+ChamferSrf
+Radius=3
+130,5,5
+125,10,5
+SelAll
+Volume
 # --- BlendEdge: a G1 blend surface added between the two faces at a box edge (not stitched in)
 SelAll
 Hide
@@ -259,7 +273,7 @@ Enter
 SelAll
 Volume
 SelNone
-@expect_objects 40
+@expect_objects 41
 # --- FilletEdge Rho (exact conic fillet): kernel::FilletConvexEdgeConic
 # via the Rho option, on the same box-corner construction as the plain
 # FilletEdge/ChamferEdge cases above. At rho=0.5 the conic is the exact

@@ -657,6 +657,18 @@ if(DINO8_BUILD_TESTS)
   target_link_libraries(dino8_delete_bench PRIVATE dino8_kernel)
   add_test(NAME dino8_delete_bench COMMAND dino8_delete_bench)
 
+  # Timing benchmark + regression guard for the "Isolate" command's
+  # selection-membership test (see tests/isolate_bench.cpp): std::find(ids...)
+  # inside a loop over every document object (O(document size * selection
+  # size)) vs hashing the selection once into an unordered_set first
+  # (O(document size + selection size)). Same style as dino8_find_bench/
+  # dino8_delete_bench above: asserts a same-run relative speedup.
+  add_executable(dino8_isolate_bench tests/isolate_bench.cpp src/doc/Document.cpp src/doc/SceneObject.cpp
+                                      src/doc/SubObjectEdit.cpp src/geom/BrepMesher.cpp)
+  target_include_directories(dino8_isolate_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(dino8_isolate_bench PRIVATE dino8_kernel)
+  add_test(NAME dino8_isolate_bench COMMAND dino8_isolate_bench)
+
   # DWG round-trip fixture generator (see tests/dwg_fixture_gen.c and
   # smoke.sh's DWG section): builds a small real DWG file directly through
   # LibreDWG's public dwg_add_* API - the same API LibreDWG's own

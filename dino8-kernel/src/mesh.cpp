@@ -2601,6 +2601,174 @@ Result Mesh::LoadCollada(const std::string& path, Mesh& out_mesh) {
   return Result::Ok;
 }
 
+namespace {
+
+// Finds the next opening tag named exactly `tag_name` at or after `from`
+// and returns the full tag text from its own '<' through its own closing
+// '>' (inclusive of a self-closing "/>" if present) - unlike
+// ExtractAmfElement()'s nested-element CONTENT, X3D encodes its
+// coordIndex/point fields as attributes on the tag itself, so the caller
+// needs the tag's own text, not what's between its open and close tags.
+// Same "don't false-match a longer tag name" guard FindAmfOpenTag()
+// already applies (searching for "X3D" must not match some other tag that
+// merely starts with those characters).
+size_t FindX3dTag(const std::string& text, const std::string& tag_name, size_t from,
+                   std::string& tag_text) {
+  const std::string needle = "<" + tag_name;
+  size_t pos = from;
+  while (true) {
+    pos = text.find(needle, pos);
+    if (pos == std::string::npos) return std::string::npos;
+    size_t after = pos + needle.size();
+    if (after < text.size()) {
+      char c = text[after];
+      if (c == '>' || c == '/' || std::isspace(static_cast<unsigned char>(c))) {
+        size_t gt = text.find('>', after);
+        if (gt == std::string::npos) return std::string::npos;
+        tag_text = text.substr(pos, gt - pos + 1);
+        return pos;
+      }
+    }
+    pos = after;
+  }
+}
+
+// Extracts the quoted value of `attr_name="..."` from a tag's own text (as
+// FindX3dTag() returns it). Returns false if the attribute isn't present
+// or its opening quote is never closed.
+bool ExtractX3dAttribute(const std::string& tag_text, const std::string& attr_name,
+                          std::string& out_value) {
+  const std::string needle = attr_name + "=\"";
+  size_t pos = tag_text.find(needle);
+  if (pos == std::string::npos) return false;
+  const size_t start = pos + needle.size();
+  const size_t end = tag_text.find('"', start);
+  if (end == std::string::npos) return false;
+  out_value = tag_text.substr(start, end - start);
+  return true;
+}
+
+}  // namespace
+
+Result Mesh::SaveX3d(const std::string& path) const {
+  std::ofstream out(path);
+  if (!out) {
+    return Result::Failed;
+  }
+
+  out << "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n";
+  out << "<X3D version=\"3.3\" profile=\"Interchange\">\n";
+  out << " <Scene>\n";
+  out << "  <Shape>\n";
+  out << "   <IndexedFaceSet coordIndex=\"";
+  for (int i = 0; i < mesh_.m_F.Count(); ++i) {
+    const ON_MeshFace& f = mesh_.m_F[i];
+    if (i > 0) out << ' ';
+    if (f.IsQuad()) {
+      out << f.vi[0] << ' ' << f.vi[1] << ' ' << f.vi[2] << ' ' << f.vi[3] << " -1";
+    } else {
+      out << f.vi[0] << ' ' << f.vi[1] << ' ' << f.vi[2] << " -1";
+    }
+  }
+  out << "\">\n";
+  out << "    <Coordinate point=\"";
+  for (int i = 0; i < mesh_.m_V.Count(); ++i) {
+    const ON_3fPoint& v = mesh_.m_V[i];
+    if (i > 0) out << ' ';
+    out << v.x << ' ' << v.y << ' ' << v.z;
+  }
+  out << "\"/>\n";
+  out << "   </IndexedFaceSet>\n";
+  out << "  </Shape>\n";
+  out << " </Scene>\n";
+  out << "</X3D>\n";
+
+  return out.good() ? Result::Ok : Result::Failed;
+}
+
+Result Mesh::LoadX3d(const std::string& path, Mesh& out_mesh) {
+  std::ifstream in(path, std::ios::binary);
+  if (!in) {
+    return Result::Failed;
+  }
+  std::ostringstream buffer;
+  buffer << in.rdbuf();
+  const std::string text = buffer.str();
+
+  std::string x3d_tag;
+  if (FindX3dTag(text, "X3D", 0, x3d_tag) == std::string::npos) {
+    return Result::Failed;  // not an X3D file at all - never silently misread
+  }
+
+  std::string coordinate_tag;
+  if (FindX3dTag(text, "Coordinate", 0, coordinate_tag) == std::string::npos) {
+    return Result::Failed;
+  }
+  std::string point_attr;
+  if (!ExtractX3dAttribute(coordinate_tag, "point", point_attr)) return Result::Failed;
+
+  Mesh result;
+  ON_Mesh& raw = result.mesh_;
+
+  {
+    std::vector<double> numbers;
+    if (!ParseColladaDoubles(point_attr, numbers)) return Result::Failed;
+    if (numbers.size() % 3 != 0) return Result::Failed;
+    for (size_t v = 0; v + 2 < numbers.size(); v += 3) {
+      raw.m_V.Append(ON_3fPoint(numbers[v], numbers[v + 1], numbers[v + 2]));
+    }
+  }
+
+  std::string indexed_face_set_tag;
+  if (FindX3dTag(text, "IndexedFaceSet", 0, indexed_face_set_tag) == std::string::npos) {
+    return Result::Failed;
+  }
+  std::string coord_index_attr;
+  if (!ExtractX3dAttribute(indexed_face_set_tag, "coordIndex", coord_index_attr)) {
+    return Result::Failed;
+  }
+
+  {
+    std::vector<int> indices;
+    if (!ParseColladaInts(coord_index_attr, indices)) return Result::Failed;
+
+    std::vector<int> current_face;
+    for (int value : indices) {
+      if (value == -1) {
+        if (current_face.size() < 3) return Result::Failed;
+        if (current_face.size() <= 4) {
+          ON_MeshFace face;
+          face.vi[0] = current_face[0];
+          face.vi[1] = current_face[1];
+          face.vi[2] = current_face[2];
+          face.vi[3] = (current_face.size() == 4) ? current_face[3] : current_face[2];
+          raw.m_F.Append(face);
+        } else {
+          // A genuine n-gon (5+ indices) doesn't fit ON_MeshFace -
+          // fan-triangulate from the run's own first index, the same
+          // accommodation LoadVrml()/LoadObj()/LoadOff() already make.
+          for (size_t c = 1; c + 1 < current_face.size(); ++c) {
+            ON_MeshFace face;
+            face.vi[0] = current_face[0];
+            face.vi[1] = current_face[c];
+            face.vi[2] = current_face[c + 1];
+            face.vi[3] = face.vi[2];
+            raw.m_F.Append(face);
+          }
+        }
+        current_face.clear();
+        continue;
+      }
+      if (value < 0 || value >= raw.m_V.Count()) return Result::Failed;
+      current_face.push_back(value);
+    }
+    if (!current_face.empty()) return Result::Failed;  // trailing run never closed with -1
+  }
+
+  out_mesh = std::move(result);
+  return Result::Ok;
+}
+
 Result Mesh::LoadStl(const std::string& path, Mesh& out_mesh) {
   // Distinguishes binary from ASCII the same way most real-world STL
   // readers do: an ASCII file's own text can start with "solid" and
