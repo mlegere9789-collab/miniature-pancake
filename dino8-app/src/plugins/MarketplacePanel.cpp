@@ -178,6 +178,27 @@ void DrawPluginMarketplacePanel(app::Application& app, bool& open) {
         }
       }
       ImGui::EndDisabled();
+      // Only offer to uninstall a copy the marketplace itself put in
+      // <config>/plugins - never the sample plug-ins auto-loaded from next
+      // to the executable, which UninstallById leaves alone (see its own
+      // comment in Marketplace.h).
+      ImGui::SameLine();
+      ImGui::BeginDisabled(!installed);
+      if (ImGui::SmallButton("Uninstall")) {
+        std::vector<std::string> removed;
+        std::string error;
+        if (market.UninstallById(e.id, removed, error)) {
+          status = "Uninstalled " + e.name + (removed.size() > 1 ? " and " + std::to_string(removed.size() - 1) +
+                                                                        " now-unneeded dependenc" +
+                                                                        (removed.size() == 2 ? "y" : "ies") + "."
+                                                                  : ".");
+          app.Notify("Plug-in Marketplace: uninstalled " + e.name);
+        } else {
+          status = "Uninstall failed: " + error;
+          app.Notify("Plug-in Marketplace: uninstall failed - " + error);
+        }
+      }
+      ImGui::EndDisabled();
       ImGui::PopID();
     }
     ImGui::EndTable();

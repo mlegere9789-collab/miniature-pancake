@@ -237,6 +237,29 @@ void RegisterFlowCommands(CommandEngine& e) {
         }
       }));
 
+  Reg(e, "PluginMarketplaceUninstall", Immediate([](CommandContext& ctx) {
+        std::vector<std::string> toks;
+        while (auto tok = ctx.Engine().TakePendingInput()) toks.push_back(*tok);
+        if (toks.empty()) {
+          ctx.Warn("PluginMarketplaceUninstall: give the id of an installed plug-in to remove (PluginMarketplaceList shows ids)");
+          return;
+        }
+        std::vector<std::string> removed;
+        std::string error;
+        if (plugins::Marketplace::Get().UninstallById(toks[0], removed, error)) {
+          std::string msg = "PluginMarketplaceUninstall: uninstalled " + toks[0];
+          if (removed.size() > 1) {
+            std::string extra;
+            for (size_t i = 1; i < removed.size(); ++i) extra += (i > 1 ? ", " : "") + removed[i];
+            msg += " - also removed " + std::to_string(removed.size() - 1) + " now-orphaned dependenc" +
+                   (removed.size() == 2 ? "y" : "ies") + " (" + extra + ")";
+          }
+          ctx.Print(msg);
+        } else {
+          ctx.Warn("PluginMarketplaceUninstall: " + error);
+        }
+      }));
+
   Reg(e, "PluginMarketplaceCheckUpdates", Immediate([](CommandContext& ctx) {
         const auto updates = plugins::Marketplace::Get().CheckForUpdates();
         if (updates.empty()) {

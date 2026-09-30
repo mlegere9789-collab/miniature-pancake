@@ -46,6 +46,23 @@ class Marketplace {
   // back on itself.
   bool InstallById(app::Application& app, const std::string& id, std::string& error);
 
+  // Uninstalls the plug-in InstallEntry put at `id`'s own <config>/plugins
+  // destination - the exact file/load an install of that entry would have
+  // written, never a sample plug-in auto-loaded from next to the executable
+  // or one dropped into <config>/plugins by hand outside the marketplace.
+  // Then cascades: any of `id`'s declared `dependencies` that no other
+  // still-installed entry in the loaded index still lists as a dependency is
+  // uninstalled too, recursively, so removing the top of a chain can clear
+  // the whole chain down to whatever's still shared. `removed` collects
+  // every id actually uninstalled, the requested one first, then each
+  // cascaded dependency in the order it came out. Fails - removing nothing
+  // for `id` itself - if `id` isn't in the loaded index or has nothing
+  // loaded from its marketplace install path; a dependency that fails to
+  // cascade (e.g. it's part of a dependency cycle, or was never installed
+  // via the marketplace) is simply left installed rather than failing the
+  // whole call.
+  bool UninstallById(const std::string& id, std::vector<std::string>& removed, std::string& error);
+
   // Matches `entry.name` (case-insensitively) against the plug-ins
   // plugins::Manager::Get() has actually loaded, and reports the loaded
   // one's version and update status if found. Returns false (out left
@@ -66,6 +83,13 @@ class Marketplace {
   // instead of recursing forever.
   bool InstallByIdChecked(app::Application& app, const std::string& id, std::vector<std::string>& chain,
                            std::string& error);
+  bool UninstallByIdChecked(const std::string& id, std::vector<std::string>& chain, std::vector<std::string>& removed,
+                             std::string& error);
+  // True if some other entry in the loaded index that still needs `dep_id`
+  // as a dependency is itself currently installed - i.e. uninstalling
+  // whatever brought `dep_id` in would leave that other entry broken, so
+  // `dep_id` must stay.
+  bool IsDependencyStillNeeded(const std::string& dep_id) const;
 
   MarketplaceIndex index_;
   std::string source_;

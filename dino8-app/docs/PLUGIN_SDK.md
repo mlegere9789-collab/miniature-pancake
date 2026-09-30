@@ -218,11 +218,12 @@ loaded and how many commands/nodes each plug-in registered.
 
 Copying a library by hand doesn't scale past one machine. `Window > Plug-in
 Marketplace` (or the `PluginMarketplace`/`PluginMarketplaceIndex`/
-`PluginMarketplaceList`/`PluginMarketplaceInstall` commands) loads a JSON
-**plug-in index** - a list of plug-ins with a name, version, author,
-description and where to get the library from - from a local file or an
-`http(s)://` URL, and installs any entry straight into `<config>/plugins`
-through the same `plugins::Manager::LoadFile` path described above.
+`PluginMarketplaceList`/`PluginMarketplaceInstall`/`PluginMarketplaceUninstall`
+commands) loads a JSON **plug-in index** - a list of plug-ins with a name,
+version, author, description and where to get the library from - from a
+local file or an `http(s)://` URL, and installs any entry straight into
+`<config>/plugins` through the same `plugins::Manager::LoadFile` path
+described above.
 
 The index format is documented in
 [`../plugin-index/SCHEMA.md`](../plugin-index/SCHEMA.md), and
@@ -233,3 +234,12 @@ real, no placeholder. Publishing an index is nothing more than hosting that
 JSON file somewhere reachable; there is no registration step and no
 authority this repository controls, matching the plug-in ABI's own "no
 licence, no accounts, no network" starting point.
+
+`PluginMarketplaceUninstall <id>` removes the exact `<config>/plugins` copy
+a matching `PluginMarketplaceInstall <id>` put there - never a plug-in only
+auto-loaded from next to the executable, and never one dropped into
+`<config>/plugins` by hand - then walks that entry's own `dependencies`:
+any one of them that no other still-installed entry in the loaded index
+still needs is uninstalled too, recursively, so removing the top of a
+dependency chain can clear the whole chain down to whatever's still shared
+by something else.

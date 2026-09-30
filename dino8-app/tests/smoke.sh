@@ -3892,4 +3892,26 @@ pmxdeepcheck "HelloDino sample plug-in loaded." "installing gadgettools resolved
 pmxdeepcheck "MeshTools sample plug-in loaded (TerrainMesh command" "installing gadgettools resolved through gizmotools (MeshTools), the middle of the chain"
 pmxdeepcheck "CurveTools sample plug-in loaded (Spiral command" "installing gadgettools loaded its own entry (CurveTools) after both dependencies"
 
+# Plug-in Marketplace: uninstall, including cascading removal of a
+# now-orphaned dependency (Marketplace::UninstallById/UninstallByIdChecked in
+# src/plugins/Marketplace.cpp). tests/plugin_marketplace_uninstall_index.json
+# sets up toolboxpro depending on both shareddeps and orphanlib, and
+# othersuite depending on shareddeps too: uninstalling toolboxpro must remove
+# orphanlib (nothing else needs it) but leave shareddeps in place (othersuite
+# still does) - proving the cascade actually checks for other consumers
+# rather than either never cascading or always cascading everything.
+sed "s|@DINO8ROOT@|$HEREW/..|g" "$HERE/plugin_marketplace_uninstall_script.txt" > "$TMPW/plugin_marketplace_uninstall_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  PMUN="$("$BIN" --smoke 60 --script "$TMPW/plugin_marketplace_uninstall_script.txt" 2>&1)" || { echo "$PMUN"; echo "FAIL: plugin marketplace uninstall script exited non-zero"; exit 1; }
+else
+  PMUN="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$TMPW/plugin_marketplace_uninstall_script.txt" 2>&1)" || { echo "$PMUN"; echo "FAIL: plugin marketplace uninstall script exited non-zero"; exit 1; }
+fi
+pmuncheck() { if echo "$PMUN" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$PMUN" "$1"; fail=1; fi; }
+pmuncheck "PluginMarketplaceIndex: loaded \"Uninstall Test Index (plugin dependency resolution fixture)\" - 4 plug-in(s)" "PluginMarketplaceIndex loaded the uninstall-fixture index"
+pmuncheck "PluginMarketplaceInstall: installed othersuite" "PluginMarketplaceInstall installs othersuite (and, along the way, its shareddeps dependency)"
+pmuncheck "PluginMarketplaceInstall: installed toolboxpro" "PluginMarketplaceInstall installs toolboxpro (and its orphanlib dependency; shareddeps is already installed)"
+pmuncheck "PluginMarketplaceUninstall: uninstalled toolboxpro - also removed 1 now-orphaned dependency (orphanlib)" "PluginMarketplaceUninstall removes toolboxpro and cascades to orphanlib, by name, in one reported call"
+pmuncheck "! PluginMarketplaceUninstall: OrphanLib (orphanlib) is not currently installed via the marketplace" "orphanlib is genuinely gone after the cascade - uninstalling it again fails, not just a printed claim"
+pmuncheck "PluginMarketplaceUninstall: uninstalled shareddeps" "shareddeps genuinely survived toolboxpro's cascade (othersuite still needs it) - it can still be uninstalled on its own"
+
 exit $fail

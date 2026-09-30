@@ -60,6 +60,26 @@ const MarketplaceEntry* FindEntryById(const MarketplaceIndex& index, const std::
   return nullptr;
 }
 
+// The exact <config>/plugins filename/path InstallEntry copies `entry` to -
+// factored out of InstallEntry so UninstallById can find (Manager::Unload
+// matches by exact path) and remove precisely the file it put there, never
+// a same-named plug-in loaded from anywhere else.
+std::string DestFilename(const MarketplaceEntry& entry) {
+  if (!entry.library_filename.empty()) return entry.library_filename;
+  if (!entry.bundled_path.empty()) return fs::path(entry.bundled_path + kLibExt).filename().string();
+  return DefaultFilenameFromUrl(entry.download_url);
+}
+
+std::string DestPath(const MarketplaceEntry& entry) {
+  return (fs::path(app::ConfigDirectory()) / "plugins" / DestFilename(entry)).string();
+}
+
+bool IsLoadedAt(const std::string& path) {
+  for (const LoadedPlugin& p : Manager::Get().Plugins())
+    if (p.loaded_ok && p.path == path) return true;
+  return false;
+}
+
 }  // namespace
 
 bool InstallEntry(app::Application& app, const MarketplaceEntry& entry, const std::string& exe_dir, std::string& error) {
@@ -114,10 +134,7 @@ bool InstallEntry(app::Application& app, const MarketplaceEntry& entry, const st
   const std::string dest_dir = app::ConfigDirectory() + "/plugins";
   std::error_code ec;
   fs::create_directories(dest_dir, ec);
-  const std::string filename = !entry.library_filename.empty() ? entry.library_filename
-                                : !entry.bundled_path.empty()  ? fs::path(source_path).filename().string()
-                                                                : DefaultFilenameFromUrl(entry.download_url);
-  const std::string dest_path = (fs::path(dest_dir) / filename).string();
+  const std::string dest_path = DestPath(entry);
   // dest_path can already be dlopen'd by this same process - e.g. auto-loaded
   // from <config>/plugins at startup, or installed earlier this session - in
   // which case overwriting its backing file out from under the still-mapped
@@ -178,6 +195,59 @@ bool Marketplace::InstallByIdChecked(app::Application& app, const std::string& i
   }
 
   return InstallEntry(app, *entry, app.ExeDir(), error);
+}
+
+bool Marketplace::UninstallById(const std::string& id, std::vector<std::string>& removed, std::string& error) {
+  std::vector<std::string> chain;
+  return UninstallByIdChecked(id, chain, removed, error);
+}
+
+bool Marketplace::UninstallByIdChecked(const std::string& id, std::vector<std::string>& chain,
+                                        std::vector<std::string>& removed, std::string& error) {
+  const MarketplaceEntry* entry = FindEntryById(index_, id);
+  if (!entry) {
+    error = "no plugin with id \"" + id + "\" in the loaded index (" + std::to_string(index_.plugins.size()) + " entries)";
+    return false;
+  }
+  if (std::find(chain.begin(), chain.end(), id) != chain.end()) {
+    error = entry->name + " (" + id + ") is part of a circular dependency chain";
+    return false;
+  }
+  chain.push_back(id);
+
+  const std::string dest_path = DestPath(*entry);
+  if (!Manager::Get().Unload(dest_path)) {
+    error = entry->name + " (" + id + ") is not currently installed via the marketplace (nothing loaded from " + dest_path + ")";
+    return false;
+  }
+  std::error_code ec;
+  fs::remove(dest_path, ec);
+  removed.push_back(id);
+
+  // Cascade: a dependency that nothing still-installed needs any more comes
+  // out too - but only if the marketplace is actually the one that put it
+  // there (never a sample plug-in that's merely auto-loaded from next to
+  // the executable). A dependency that fails to cascade (e.g. its own
+  // sub-dependency forms a cycle) is left installed; that failure isn't
+  // this call's own, so it doesn't fail the whole uninstall.
+  for (const std::string& dep_id : entry->dependencies) {
+    if (IsDependencyStillNeeded(dep_id)) continue;
+    const MarketplaceEntry* dep_entry = FindEntryById(index_, dep_id);
+    if (!dep_entry || !IsLoadedAt(DestPath(*dep_entry))) continue;
+    std::string dep_error;
+    UninstallByIdChecked(dep_id, chain, removed, dep_error);
+  }
+
+  return true;
+}
+
+bool Marketplace::IsDependencyStillNeeded(const std::string& dep_id) const {
+  for (const MarketplaceEntry& e : index_.plugins) {
+    if (e.id == dep_id) continue;
+    if (std::find(e.dependencies.begin(), e.dependencies.end(), dep_id) == e.dependencies.end()) continue;
+    if (IsLoadedAt(DestPath(e))) return true;
+  }
+  return false;
 }
 
 bool Marketplace::FindInstalled(const MarketplaceEntry& entry, std::string& installed_version, UpdateStatus& status) const {

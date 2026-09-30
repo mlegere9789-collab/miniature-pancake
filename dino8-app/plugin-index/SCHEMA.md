@@ -110,6 +110,13 @@ resolving its own dependencies the same way. Installing fails - with
 nothing installed - if a listed id isn't in the loaded index, or if the
 dependency graph cycles back on an id already being resolved.
 
+`PluginMarketplaceUninstall`/`Marketplace::UninstallById` reverses this: it
+removes the `<config>/plugins` copy it finds for the requested id, then
+walks that same `dependencies` list and removes any dependency that no
+other currently-installed entry in the loaded index still lists as a
+dependency, recursively. A dependency still needed by some other installed
+entry is left in place.
+
 ## Compatibility
 
 The panel and the `PluginMarketplaceList` command both show a per-entry
