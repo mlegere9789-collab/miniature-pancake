@@ -128,6 +128,42 @@ SelAll
 @expect_objects 1
 SelAll
 Delete
+# --- FilletEdge Rho with an asymmetric Distance2 (an elliptical, not
+# parabolic, conic cross-section): kernel::FilletConvexEdgeConic's own two-
+# INDEPENDENT-distance form, distance_i=2/distance_j=4/rho=0.5. Closed
+# form: removed area = distance_i*distance_j*sin(gamma)/6 (gamma = the
+# right angle between a box's own two adjacent faces), so removed volume =
+# 2*4*10/6 = 13.33, leaving 1000 - 13.33 = 986.7.
+Box 1300050,0,0 1300060,10,0 10
+FilletEdge
+Radius=2
+Rho=0.5
+Distance2=4
+1300060,10,5
+Enter
+SelAll
+Volume
+@expect_objects 1
+SelAll
+Delete
+# --- FilletEdge Rho on a curved-adjacent-face edge (a solid cylinder's own
+# flat-top rim): the exact conic path needs the WHOLE solid planar-faced,
+# same as the Chamfer Distance2/Angle case just above, and here there is
+# no approximate fallback AT ALL (a rolling-ball arc can never represent a
+# non-circular conic, so unlike Chamfer's symmetric-distance fallthrough,
+# this must fail outright rather than silently building a plain circular
+# fillet that quietly ignores Rho). The cylinder itself must survive
+# untouched.
+Cylinder 1300070,0,0 5 20
+FilletEdge
+Radius=1
+Rho=0.5
+1300070,5,20
+Enter
+SelAll
+@expect_objects 1
+SelAll
+Delete
 # --- FilletSrf on two nearly-flat (shallow bend, not a sharp corner)
 # planes: the offset surfaces diverge rather than converge at this shallow
 # an angle for the requested radius, so BuildFillet reports its own clear

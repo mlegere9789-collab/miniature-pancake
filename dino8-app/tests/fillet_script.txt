@@ -260,3 +260,20 @@ SelAll
 Volume
 SelNone
 @expect_objects 40
+# --- FilletEdge Rho (exact conic fillet): kernel::FilletConvexEdgeConic
+# via the Rho option, on the same box-corner construction as the plain
+# FilletEdge/ChamferEdge cases above. At rho=0.5 the conic is the exact
+# parabola, whose closed-form removed cross-section area is
+# distance_i*distance_j*sin(gamma)/6 (gamma = the right angle between a
+# box's own two adjacent faces = 90 degrees, sin(gamma) = 1) - so removed
+# volume = 2*2*10/6 = 6.667, leaving 1000 - 6.667 = 993.3 exactly.
+SelAll
+Hide
+Box 750,0,0 760,10,0 10
+FilletEdge
+Radius=2
+Rho=0.5
+760,10,5
+Enter
+SelAll
+Volume

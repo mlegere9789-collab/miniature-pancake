@@ -1068,6 +1068,20 @@ class FilletEdgeCommand : public Command {
       options.push_back({"Distance2", "", {}, true, false});
       options.push_back({"Angle", "", {}, true, false});
     }
+    if (mode_ == Mode::Fillet) {
+      // Rho (strictly between 0 and 1): kernel::FilletConvexEdgeConic/
+      // FilletConcaveEdgeConic's own conic cross-section shape parameter -
+      // an exact ellipse/parabola/hyperbola blend instead of the default
+      // circular rolling-ball arc. Only ever feeds that exact kernel path
+      // below (see the Chamfer Distance2/Angle comment just above for why:
+      // the approximate rolling-ball construction has no way to represent
+      // a non-circular cross-section at all, let alone one with two
+      // independent distances). Distance2 (reused from the Chamfer case
+      // above) supplies the conic's own independent second setback
+      // distance_j; unset defaults to symmetric (distance_j = Radius).
+      options.push_back({"Rho", "", {}, true, false});
+      options.push_back({"Distance2", "", {}, true, false});
+    }
     if (mode_ == Mode::Blend) options = {{"Continuity", "Tangency", {"Tangency", "Curvature"}, false, false}};
     options.push_back({"Preview", "No", {"Yes", "No"}, false, true});
     WantPoint("Click an edge to " + std::string(mode_ == Mode::Fillet ? "fillet" : mode_ == Mode::Chamfer ? "chamfer" : "blend") + " (Enter when done)");
@@ -1077,6 +1091,7 @@ class FilletEdgeCommand : public Command {
     if (n == "Radii") radii_ = ParseRadiusHandles(v);
     if (n == "Distance2") { distance2_ = v.empty() ? std::nullopt : std::optional<double>(std::atof(v.c_str())); if (distance2_) angle_deg_.reset(); }
     if (n == "Angle") { angle_deg_ = v.empty() ? std::nullopt : std::optional<double>(std::atof(v.c_str())); if (angle_deg_) distance2_.reset(); }
+    if (n == "Rho") rho_ = v.empty() ? std::nullopt : std::optional<double>(std::atof(v.c_str()));
     if (n == "Continuity") curvature_ = (v == "Curvature");
     if (n == "Preview") preview_ = (v == "Yes");
   }
@@ -1174,6 +1189,38 @@ class FilletEdgeCommand : public Command {
       // face, a non-planar third face at an end, etc.) - fall through to
       // the approximate rolling-ball-derived chamfer below exactly as
       // before this Distance2/Angle wiring existed.
+    }
+    // Exact conic ("Rho") fillet: kernel::FilletConvexEdgeConic/
+    // FilletConcaveEdgeConic's own ellipse/parabola/hyperbola cross-section
+    // blend, requested via the Rho option above. Unlike the Chamfer
+    // Distance2/Angle case, there is no symmetric fallthrough here: the
+    // rolling-ball approximate path below can ONLY ever build a circular
+    // arc, so any rho != the one specific value that happens to make the
+    // conic a circle for this edge's own dihedral (never special-cased or
+    // detected here) would be silently misrepresented as a plain round
+    // fillet - the same "misleading success" bug the Chamfer wiring's own
+    // Distance2-on-a-curved-edge case is documented to avoid. So a failure
+    // of the exact path with Rho set always warns and returns rather than
+    // falling back.
+    if (mode_ == Mode::Fillet && rho_.has_value() && radii_.empty() && !preview_) {
+      ON_Brep exact;
+      std::string detail;
+      if (TryExactConicFillet(*b, edge.PointAtStart(), edge.PointAtEnd(), exact, detail)) {
+        ctx.Doc().BeginChange(label);
+        if (SceneObject* orig = ctx.Doc().Find(pick.id)) {
+          orig->kind = ObjectKind::Brep;
+          if (!orig->brep) orig->brep = std::make_unique<kernel::Brep>();
+          orig->brep->raw() = exact;
+          orig->surface.reset();
+          orig->InvalidateDisplay();
+        }
+        ctx.Print(label + ": edge " + std::to_string(pick.edge) + " of object " + std::to_string(pick.id) +
+                   " replaced with an exact conic fillet (rho " + FormatNumber(*rho_) + ", " + ConicDistanceDescription() + ")");
+        return;
+      }
+      ctx.Warn(label + ": an exact conic (Rho) fillet needs the whole object to be planar-faced at this edge (" + detail +
+                "); Rho has no approximate rolling-ball equivalent, so this cannot silently fall back");
+      return;
     }
     ON_NurbsSurface built;
     std::vector<Point3d> spine;
@@ -1513,11 +1560,54 @@ class FilletEdgeCommand : public Command {
     return false;
   }
 
+  // Printable summary for the exact-conic-fillet path (mirrors
+  // ChamferDistanceDescription's own "radius N"/"distance1 N, distance2 M"
+  // split, just under the "distance" wording FilletConvexEdgeConic's own
+  // parameters use rather than "radius", since rho != 0.5 has no single
+  // radius to report).
+  std::string ConicDistanceDescription() const {
+    if (distance2_ && std::fabs(*distance2_ - radius_) > 1e-9) return "distance1 " + FormatNumber(radius_) + ", distance2 " + FormatNumber(*distance2_);
+    return "distance " + FormatNumber(radius_);
+  }
+
+  // Tries the exact kernel conic fillet (convex, then concave) between
+  // p0/p1 on `solid`'s own two adjacent faces, using radius_ as distance_i,
+  // distance2_.value_or(radius_) as distance_j, and rho_ as the conic shape
+  // parameter. Same convex-then-concave/detail-joining structure as
+  // TryExactChamfer above, for the identical reason: the caller doesn't
+  // know the edge's own convexity in advance, and both kernel functions
+  // already reject the wrong one cleanly via EdgeConvexity/
+  // RequireConcaveEdge.
+  bool TryExactConicFillet(const ON_Brep& solid, Point3d p0, Point3d p1, ON_Brep& out, std::string& detail) const {
+    kernel::Brep kb;
+    kb.raw() = solid;
+    const double d_i = radius_;
+    const double d_j = distance2_.value_or(d_i);
+    const double rho = *rho_;
+    std::string convex_err, concave_err;
+    auto attempt = [&](bool convex, std::string& err) -> bool {
+      try {
+        kernel::Brep result = convex ? kernel::FilletConvexEdgeConic(kb, p0, p1, d_i, d_j, rho)
+                                      : kernel::FilletConcaveEdgeConic(kb, p0, p1, d_i, d_j, rho);
+        out = result.raw();
+        return true;
+      } catch (const std::exception& ex) {
+        err = ex.what();
+        return false;
+      }
+    };
+    if (attempt(true, convex_err)) return true;
+    if (attempt(false, concave_err)) return true;
+    detail = "convex attempt: " + convex_err + "; concave attempt: " + concave_err;
+    return false;
+  }
+
   Mode mode_;
   double radius_ = 2;
   std::vector<std::pair<double, double>> radii_;  // (t in [0,1], radius) handles; empty = constant radius_
-  std::optional<double> distance2_;  // Chamfer only: second distance (Distance1/Distance2 mode); unset = symmetric
+  std::optional<double> distance2_;  // Chamfer/Fillet: second distance (Distance1/Distance2 mode); unset = symmetric
   std::optional<double> angle_deg_;  // Chamfer only: angle from face 1 in degrees (Distance/Angle mode); mutually exclusive with distance2_
+  std::optional<double> rho_;  // Fillet only: conic shape parameter in (0,1) for the exact FilletConvexEdgeConic/FilletConcaveEdgeConic path; unset = default rolling-ball circular fillet
   bool curvature_ = false;
   bool preview_ = false;
   bool variable_engine_used_ = false;  // set by Run(): true when BuildPlanarVariableFillet (the exact closed form) built the last variable-radius result
