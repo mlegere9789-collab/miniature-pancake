@@ -44,6 +44,30 @@ ObjectId AddObj(SceneObject o, const char* label) {
 
 ObjectId AddCurveObj(const kernel::NurbsCurve& c, const char* label) { return AddObj(SceneObject::MakeCurve(c), label); }
 
+// Mirrors LuaEngine.cpp's InterpolateCurve: global interpolation through
+// points (InterpCrv's fixed-point relaxation), used by AddInterpCurve
+// below the same way rs.AddInterpCurve uses it.
+bool InterpolateCurve(const std::vector<Point3d>& pts, kernel::NurbsCurve& out) {
+  if (pts.size() < 2) return false;
+  if (pts.size() == 2) { out = PolylineCurve(pts); return true; }
+  ON_3dPointArray arr;
+  for (const Point3d& p : pts) arr.Append(p);
+  ON_NurbsCurve nc;
+  const int order = std::min(4, arr.Count());  // degree 3 with four or more points
+  if (!nc.CreateClampedUniformNurbs(3, order, arr.Count(), arr.Array())) return false;
+  out.raw() = nc;
+  for (int iter = 0; iter < 30; ++iter) {
+    for (int i = 0; i < arr.Count(); ++i) {
+      const double t = out.raw().Domain().ParameterAt(static_cast<double>(i) / (arr.Count() - 1));
+      const Point3d on = out.raw().PointAt(t);
+      Point3d cv;
+      out.raw().GetCV(i, cv);
+      out.raw().SetCV(i, cv + (arr[i] - on));
+    }
+  }
+  return true;
+}
+
 kernel::Brep WrapBrep(ON_Brep* b) {
   kernel::Brep k;
   if (b) { k.raw() = *b; delete b; }
@@ -162,6 +186,16 @@ struct PyObjectTable {
     if (pts.size() < 2) throw std::runtime_error("AddCurve needs at least two points");
     if (degree <= 1) return PyObjId(AddCurveObj(PolylineCurve(pts), "AddCurve"));
     return PyObjId(AddCurveObj(kernel::NurbsCurve::FromControlPoints(pts, degree), "AddCurve"));
+  }
+
+  // Mirrors rs.AddInterpCurve(points) in LuaEngine.cpp: a degree-3 curve
+  // interpolated through the points, or None for fewer than two points
+  // (InterpolateCurve above returns false rather than throwing, same as
+  // rs.AddInterpCurve pushes nil instead of raising a Lua error).
+  py::object AddInterpCurve(std::vector<Point3d> pts) {
+    kernel::NurbsCurve k;
+    if (!InterpolateCurve(pts, k)) return py::none();
+    return PyObjId(AddCurveObj(k, "AddInterpCurve"));
   }
 
   // Mirrors rs.AddCircle(center, radius, normal={0,0,1}) in LuaEngine.cpp.
@@ -347,6 +381,7 @@ PYBIND11_EMBEDDED_MODULE(dino8, m) {
       .def("AddLine", &PyObjectTable::AddLine)
       .def("AddPolyline", &PyObjectTable::AddPolyline)
       .def("AddCurve", &PyObjectTable::AddCurve, py::arg("points"), py::arg("degree") = 3)
+      .def("AddInterpCurve", &PyObjectTable::AddInterpCurve)
       .def("AddCircle", &PyObjectTable::AddCircle, py::arg("center"), py::arg("radius"), py::arg("normal") = py::none())
       .def("AddBox", &PyObjectTable::AddBox, py::arg("corner"), py::arg("size"))
       .def("AddSphere", &PyObjectTable::AddSphere, py::arg("center"), py::arg("radius"))
