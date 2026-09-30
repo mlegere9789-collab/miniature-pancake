@@ -74,6 +74,14 @@ On Linux you need the OpenGL/X11 development headers
 * `Dino8 --smoke N --script file.txt --screenshot out.ppm` renders N frames
   of a scripted session and writes the final frame, for visual checks.
 
+## Batch scripting
+
+`Dino8 --script file.txt` (without `--smoke`) is a supported headless batch
+mode for automation: it runs the file's commands once each with its window
+hidden, then exits on its own with a real exit code - no `--smoke` frame
+count and no human needed to close a window. See
+[`docs/BATCH_SCRIPTING.md`](docs/BATCH_SCRIPTING.md).
+
 ## Packaging
 
 The GitHub Actions workflow `dino8-app.yml` builds and tests on Linux,

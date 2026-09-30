@@ -152,6 +152,45 @@ inline std::optional<kernel::Mesh> MeshOf(const SceneObject& o, double tol = 0.0
   return std::nullopt;
 }
 
+// Approximate surface area of any object kind that has one - shared by the
+// Lua rs.SurfaceArea/Python SurfaceArea bindings (both single-source this
+// rather than keeping their own copies, so the two engines can't silently
+// diverge on what "area" means for a Brep/SubD).
+inline double ObjectAreaOf(const SceneObject& o) {
+  switch (o.kind) {
+    case ObjectKind::Surface: return o.surface ? o.surface->ApproximateArea() : 0;
+    case ObjectKind::Mesh: return o.mesh ? o.mesh->Area() : 0;
+    case ObjectKind::Brep: { std::optional<kernel::Mesh> m = MeshOf(o, 0.005); return m ? m->Area() : 0; }
+    case ObjectKind::SubD: return o.subd ? o.subd->ToApproximateMesh().Area() : 0;
+    default: return 0;
+  }
+}
+
+// Volume of a closed solid, via its best-effort closed mesh (MeshOf above);
+// `closed` reports whether one was actually found, since an open/non-solid
+// object has no meaningful volume. Shared by rs.SurfaceVolume/
+// rs.IsObjectSolid and their Python SurfaceVolume/IsObjectSolid mirrors.
+inline double ObjectVolumeOf(const SceneObject& o, bool& closed) {
+  std::optional<kernel::Mesh> m = MeshOf(o, 0.005);
+  closed = m && m->IsClosedManifold();
+  return closed ? std::fabs(m->Volume()) : 0;
+}
+
+// Rhino object type mask (rs.ObjectType values) - shared by the Lua
+// TypeMaskFromArg/rs.ObjectsByType and the Python ObjectsByType binding, so
+// the two engines can't drift on what number means what type.
+inline int TypeMask(const SceneObject& o) {
+  switch (o.kind) {
+    case ObjectKind::Point: return 1;
+    case ObjectKind::Curve: return 4;
+    case ObjectKind::Surface: return 8;
+    case ObjectKind::Brep: return (o.brep && o.brep->FaceCount() == 1) ? 8 : 16;
+    case ObjectKind::Mesh: return 32;
+    case ObjectKind::SubD: return 262144;
+  }
+  return 0;
+}
+
 // Plane of the active viewport's construction plane.
 inline ON_Plane ActivePlane(CommandContext& ctx) {
   if (Viewport* vp = ctx.ActiveViewport()) {

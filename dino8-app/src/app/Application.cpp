@@ -1756,6 +1756,55 @@ float Application::CommandLineHeight() const {
   return ImGui::GetFrameHeightWithSpacing() * 2.0f + 8.0f;
 }
 
+namespace {
+// One row of the command-line autocomplete popup: either a real catalog
+// command (info set) or one of the user's own (or Rhino's default)
+// aliases (alias_target set) - `display` is what Tab/Enter/click complete
+// command_input_ to either way.
+struct AutocompleteRow {
+  std::string display;
+  const CommandInfo* info = nullptr;
+  std::string alias_target;
+};
+
+// Combines alias matches with the catalog's fuzzy command-name matches, so
+// a user's own aliases (and Rhino's shipped defaults - "b"->Box, "di"->
+// Distance, ...) show up while typing, not just catalog command names.
+// Before this, typing an alias produced no sign in the popup that the
+// alias existed or what it would run - only whatever catalog commands
+// happened to fuzzy-match the same letters (e.g. "di" alone matched no
+// catalog command by prefix at all, even though it is a real, working
+// default alias for Distance).
+std::vector<AutocompleteRow> BuildAutocompleteRows(CommandEngine& engine, const CommandCatalog& catalog,
+                                                    const std::string& prefix, size_t limit) {
+  std::vector<AutocompleteRow> rows;
+  const std::string lower = ToLower(prefix);
+  std::vector<std::pair<std::string, std::string>> alias_matches;  // (alias, target command)
+  for (const auto& [alias, target] : engine.Aliases()) {
+    if (alias.compare(0, lower.size(), lower) == 0) alias_matches.emplace_back(alias, target);
+  }
+  std::stable_sort(alias_matches.begin(), alias_matches.end(), [&](const auto& a, const auto& b) {
+    if ((a.first == lower) != (b.first == lower)) return a.first == lower;  // exact alias first
+    return a.first < b.first;
+  });
+  const size_t alias_budget = std::min<size_t>({alias_matches.size(), size_t{4}, limit});
+  for (size_t i = 0; i < alias_budget; ++i) {
+    AutocompleteRow row;
+    row.display = alias_matches[i].first;
+    row.alias_target = alias_matches[i].second;
+    rows.push_back(std::move(row));
+  }
+  const size_t remaining = limit > rows.size() ? limit - rows.size() : 0;
+  for (const CommandInfo* c : catalog.FuzzyMatch(prefix, remaining)) {
+    AutocompleteRow row;
+    row.display = c->name;
+    row.info = c;
+    rows.push_back(std::move(row));
+  }
+  return rows;
+}
+}  // namespace
+
 void Application::DrawCommandLine() {
   if (!state_.command_prompt) return;
   const ImGuiViewport* vp = ImGui::GetMainViewport();
@@ -1879,10 +1928,12 @@ void Application::DrawCommandLine() {
     std::fprintf(stderr, "[ui] frame %d active=%d entered=%d chars=%d want_text=%d buf='%s' enter_down=%d\n", ImGui::GetFrameCount(), input_active ? 1 : 0, entered ? 1 : 0, chars_before, io.WantTextInput ? 1 : 0, buf, ImGui::IsKeyDown(ImGuiKey_Enter) ? 1 : 0);
   }
   if (entered) {
-    // Enter with an autocomplete row highlighted runs that command.
+    // Enter with an autocomplete row highlighted runs that command (or, for
+    // an alias row, runs the alias text itself - Execute() below resolves
+    // it to its target the same way typing it directly would).
     if (autocomplete_index_ >= 0 && autocomplete_count_ > 0 && !engine_->IsRunning()) {
-      std::vector<const CommandInfo*> m = catalog_.FuzzyMatch(autocomplete_prefix_, 12);
-      if (autocomplete_index_ < static_cast<int>(m.size())) command_input_ = m[static_cast<size_t>(autocomplete_index_)]->name;
+      std::vector<AutocompleteRow> m = BuildAutocompleteRows(*engine_, catalog_, autocomplete_prefix_, 12);
+      if (autocomplete_index_ < static_cast<int>(m.size())) command_input_ = m[static_cast<size_t>(autocomplete_index_)].display;
     }
     autocomplete_index_ = -1;
     autocomplete_count_ = 0;
@@ -1902,7 +1953,7 @@ void Application::DrawCommandLine() {
   if (input_active && !engine_->IsRunning() && !command_input_.empty() && command_input_.find(' ') == std::string::npos) {
     std::string prefix = command_input_;
     while (!prefix.empty() && (prefix.front() == '_' || prefix.front() == '-' || prefix.front() == '!')) prefix.erase(prefix.begin());
-    std::vector<const CommandInfo*> matches = catalog_.FuzzyMatch(prefix, 12);
+    std::vector<AutocompleteRow> matches = BuildAutocompleteRows(*engine_, catalog_, prefix, 12);
     if (!matches.empty() && !prefix.empty()) {
       showing = true;
       if (prefix != autocomplete_prefix_) autocomplete_index_ = -1;
@@ -1924,10 +1975,12 @@ void Application::DrawCommandLine() {
         ImGui::TableSetupColumn("status", ImGuiTableColumnFlags_WidthFixed, 108.0f);
         ImGui::TableSetupColumn("desc", ImGuiTableColumnFlags_WidthStretch);
         for (int i = 0; i < static_cast<int>(matches.size()); ++i) {
-          const CommandInfo* c = matches[static_cast<size_t>(i)];
-          const RegisteredCommand* r = engine_->Find(c->name);
+          const AutocompleteRow& row = matches[static_cast<size_t>(i)];
+          const bool is_alias = !row.alias_target.empty();
+          const RegisteredCommand* r = is_alias ? nullptr : engine_->Find(row.display);
           const CommandStatus st = r ? r->status : CommandStatus::Planned;
-          const ImVec4 col = st == CommandStatus::Implemented ? ImVec4(ThemeColors::kOk[0], ThemeColors::kOk[1], ThemeColors::kOk[2], 1) :
+          const ImVec4 col = is_alias ? ThemeColors::Accent() :
+                             st == CommandStatus::Implemented ? ImVec4(ThemeColors::kOk[0], ThemeColors::kOk[1], ThemeColors::kOk[2], 1) :
                              st == CommandStatus::Partial ? ImVec4(ThemeColors::kWarn[0], ThemeColors::kWarn[1], ThemeColors::kWarn[2], 1) :
                              ImVec4(ThemeColors::kMuted[0], ThemeColors::kMuted[1], ThemeColors::kMuted[2], 1);
           ImGui::TableNextRow();
@@ -1937,21 +1990,25 @@ void Application::DrawCommandLine() {
           const float ih = ImGui::GetTextLineHeight();
           ImGui::Dummy(ImVec2(ih + 6, ih));
           ImGui::SameLine(0, 0);
-          DrawIcon(ImGui::GetWindowDrawList(), c->name.c_str(), p, ih, ImGui::GetColorU32(ImGuiCol_Text), ThemeColors::AccentU32());
-          if (ImGui::Selectable(c->name.c_str(), autocomplete_index_ == i, ImGuiSelectableFlags_SpanAllColumns)) {
-            command_input_ = c->name;
+          DrawIcon(ImGui::GetWindowDrawList(), is_alias ? row.alias_target.c_str() : row.display.c_str(), p, ih, ImGui::GetColorU32(ImGuiCol_Text), ThemeColors::AccentU32());
+          if (ImGui::Selectable(row.display.c_str(), autocomplete_index_ == i, ImGuiSelectableFlags_SpanAllColumns)) {
+            command_input_ = row.display;
             autocomplete_index_ = -1;
             focus_command_line_ = true;
           }
           ImGui::PopID();
           ImGui::TableNextColumn();
-          StatusBadge(CommandStatusName(st), col);
+          StatusBadge(is_alias ? "Alias" : CommandStatusName(st), col);
           ImGui::TableNextColumn();
-          std::string desc = c->description;
-          const size_t nl = desc.find('\n');
-          if (nl != std::string::npos) desc.erase(nl);
-          if (desc.size() > 52) desc = desc.substr(0, 49) + "...";
-          ImGui::TextDisabled("%s", desc.c_str());
+          if (is_alias) {
+            ImGui::TextDisabled("Alias for %s", row.alias_target.c_str());
+          } else {
+            std::string desc = row.info->description;
+            const size_t nl = desc.find('\n');
+            if (nl != std::string::npos) desc.erase(nl);
+            if (desc.size() > 52) desc = desc.substr(0, 49) + "...";
+            ImGui::TextDisabled("%s", desc.c_str());
+          }
         }
         ImGui::EndTable();
       }
@@ -1961,7 +2018,7 @@ void Application::DrawCommandLine() {
       // Tab completes to the highlighted (or first) match.
       if (ImGui::IsKeyPressed(ImGuiKey_Tab)) {
         const int pick = autocomplete_index_ >= 0 ? autocomplete_index_ : 0;
-        command_input_ = matches[static_cast<size_t>(pick)]->name;
+        command_input_ = matches[static_cast<size_t>(pick)].display;
         autocomplete_index_ = -1;
         focus_command_line_ = true;
       }

@@ -183,18 +183,8 @@ int PushBrep(lua_State* L, ON_Brep* b, const char* label) {
   return 1;
 }
 
-// Rhino object type mask (rs.ObjectType values).
-int TypeMask(const SceneObject& o) {
-  switch (o.kind) {
-    case ObjectKind::Point: return 1;
-    case ObjectKind::Curve: return 4;
-    case ObjectKind::Surface: return 8;
-    case ObjectKind::Brep: return (o.brep && o.brep->FaceCount() == 1) ? 8 : 16;
-    case ObjectKind::Mesh: return 32;
-    case ObjectKind::SubD: return 262144;
-  }
-  return 0;
-}
+// TypeMask(const SceneObject&) now lives in commands/cmd_common.h, shared
+// with PythonEngine.cpp's ObjectsByType binding.
 
 int TypeMaskFromArg(lua_State* L, int idx) {
   if (lua_isnoneornil(L, idx)) return 0;
@@ -209,21 +199,8 @@ int TypeMaskFromArg(lua_State* L, int idx) {
   return 0;
 }
 
-double ObjectAreaOf(const SceneObject& o) {
-  switch (o.kind) {
-    case ObjectKind::Surface: return o.surface ? o.surface->ApproximateArea() : 0;
-    case ObjectKind::Mesh: return o.mesh ? o.mesh->Area() : 0;
-    case ObjectKind::Brep: { std::optional<kernel::Mesh> m = MeshOf(o, 0.005); return m ? m->Area() : 0; }
-    case ObjectKind::SubD: return o.subd ? o.subd->ToApproximateMesh().Area() : 0;
-    default: return 0;
-  }
-}
-
-double ObjectVolumeOf(const SceneObject& o, bool& closed) {
-  std::optional<kernel::Mesh> m = MeshOf(o, 0.005);
-  closed = m && m->IsClosedManifold();
-  return closed ? std::fabs(m->Volume()) : 0;
-}
+// ObjectAreaOf/ObjectVolumeOf now live in commands/cmd_common.h, shared with
+// PythonEngine.cpp's SurfaceArea/SurfaceVolume/IsObjectSolid bindings.
 
 int LayerIndexArg(lua_State* L, int idx) {
   Document& d = DocOf(L);

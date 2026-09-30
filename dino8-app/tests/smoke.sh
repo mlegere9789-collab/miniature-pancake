@@ -1907,6 +1907,104 @@ unselect_all_count = dino8.doc.Objects.UnselectAllObjects()
 print("unselect all count: %d" % unselect_all_count)
 print("selected after unselect all: %d" % len(dino8.doc.Objects.GetSelectedObjects()))
 
+# Curve/surface/mesh query and layer-management bindings, added to close
+# ground on PARITY_MAP.md's "Python API breadth" item (dino8.doc.Objects.
+# CurveLength/CurveDomain/EvaluateCurve/CurveClosestPoint/DivideCurve/
+# SurfaceArea/SurfaceVolume/IsObjectSolid/SurfaceClosestPoint/MeshVertices/
+# ObjectsByName/ObjectsByType/BoundingBox and dino8.doc.Layers, all matching
+# their LuaEngine.cpp rs.* counterparts, that the dino8 module also lacked
+# until now). Built off in its own coordinate range (x>=100) so it can't
+# overlap the geometry built above.
+cq_line_id = dino8.doc.Objects.AddLine(dino8.Point3d(100, 0, 0), dino8.Point3d(103, 4, 0))
+print("object count with cq line: %d" % len(dino8.doc.Objects.AllObjects()))
+print("curve length: %.2f" % dino8.doc.Objects.CurveLength(cq_line_id))
+dom = dino8.doc.Objects.CurveDomain(cq_line_id)
+print("curve domain: %.1f,%.1f" % (dom[0], dom[1]))
+end_pt = dino8.doc.Objects.EvaluateCurve(cq_line_id, dom[1])
+print("evaluate curve at end: %.0f,%.0f,%.0f" % (end_pt.X, end_pt.Y, end_pt.Z))
+print("curve closest point at start: %.1f" % dino8.doc.Objects.CurveClosestPoint(cq_line_id, dino8.Point3d(100, 0, 0)))
+div_pts = dino8.doc.Objects.DivideCurve(cq_line_id, 4)
+print("divide curve point count: %d" % len(div_pts))
+print("divide curve first point: %.0f,%.0f,%.0f" % (div_pts[0].X, div_pts[0].Y, div_pts[0].Z))
+print("divide curve last point: %.0f,%.0f,%.0f" % (div_pts[-1].X, div_pts[-1].Y, div_pts[-1].Z))
+div_params = dino8.doc.Objects.DivideCurve(cq_line_id, 4, False, False)
+print("divide curve params: " + ",".join("%.2f" % p for p in div_params))
+try:
+    dino8.doc.Objects.DivideCurve(cq_line_id, 0)
+    print("bad divide: no error")
+except RuntimeError as e:
+    print("bad divide rejected: " + str(e))
+div_created = dino8.doc.Objects.DivideCurve(cq_line_id, 2, True)
+print("divide curve created point count: %d" % len(div_created))
+print("object count with divide created points: %d" % len(dino8.doc.Objects.AllObjects()))
+
+bbox_box_id = dino8.doc.Objects.AddBox(dino8.Point3d(200, 0, 0), dino8.Vector3d(5, 5, 5))
+print("object count with bbox box: %d" % len(dino8.doc.Objects.AllObjects()))
+bbox = dino8.doc.Objects.BoundingBox([bbox_box_id])
+print("bounding box corner0: %.0f,%.0f,%.0f" % (bbox[0].X, bbox[0].Y, bbox[0].Z))
+print("bounding box corner6: %.0f,%.0f,%.0f" % (bbox[6].X, bbox[6].Y, bbox[6].Z))
+print("bounding box missing: " + str(dino8.doc.Objects.BoundingBox([999999])))
+print("surface area box: %.1f" % dino8.doc.Objects.SurfaceArea(bbox_box_id))
+print("surface volume box: %.1f" % dino8.doc.Objects.SurfaceVolume(bbox_box_id))
+print("is object solid box: " + str(dino8.doc.Objects.IsObjectSolid(bbox_box_id)))
+print("is object solid line: " + str(dino8.doc.Objects.IsObjectSolid(cq_line_id)))
+print("surface volume line: " + str(dino8.doc.Objects.SurfaceVolume(cq_line_id)))
+
+sc_sphere_id = dino8.doc.Objects.AddSphere(dino8.Point3d(300, 0, 0), 4)
+print("object count with sc sphere: %d" % len(dino8.doc.Objects.AllObjects()))
+closest = dino8.doc.Objects.SurfaceClosestPoint(sc_sphere_id, dino8.Point3d(300, 0, 10))
+print("surface closest point: %.0f,%.0f,%.0f" % (closest.X, closest.Y, closest.Z))
+
+mesh_id = dino8.doc.Objects.AddMesh([dino8.Point3d(400, 0, 0), dino8.Point3d(401, 0, 0), dino8.Point3d(400, 1, 0)], [[0, 1, 2]])
+print("object count with mesh: %d" % len(dino8.doc.Objects.AllObjects()))
+mesh_verts = dino8.doc.Objects.MeshVertices(mesh_id)
+print("mesh vertices count: %d" % len(mesh_verts))
+print("mesh vertex 0: %.0f,%.0f,%.0f" % (mesh_verts[0].X, mesh_verts[0].Y, mesh_verts[0].Z))
+
+by_name_widget = dino8.doc.Objects.ObjectsByName("Widget")
+print("objects by name widget: " + str(len(by_name_widget) == 1 and by_name_widget[0].Id == box_id))
+print("objects by name none: " + str(dino8.doc.Objects.ObjectsByName("NoSuchNameXYZ")))
+dino8.doc.Objects.UnselectAllObjects()
+dino8.doc.Objects.ObjectsByName("Widget", True)
+print("objects by name select side effect: " + str(obj.IsSelected))
+
+type_before = len(dino8.doc.Objects.ObjectsByType("point"))
+fresh_pt_a = dino8.doc.Objects.AddPoint(500, 0, 0)
+fresh_pt_b = dino8.doc.Objects.AddPoint(501, 0, 0)
+print("object count with fresh points: %d" % len(dino8.doc.Objects.AllObjects()))
+type_after_ids = [o.Id for o in dino8.doc.Objects.ObjectsByType("point")]
+print("objects by type point delta: %d" % (len(dino8.doc.Objects.ObjectsByType("point")) - type_before))
+print("objects by type point contains fresh: " + str(fresh_pt_a in type_after_ids and fresh_pt_b in type_after_ids))
+print("objects by type none equals all objects: " + str(len(dino8.doc.Objects.ObjectsByType()) == len(dino8.doc.Objects.AllObjects())))
+dino8.doc.Objects.UnselectAllObjects()
+dino8.doc.Objects.ObjectsByType("point", True)
+print("objects by type select side effect: " + str(dino8.doc.Objects.Find(fresh_pt_a).IsSelected))
+
+print("layers count before: %d" % dino8.doc.Layers.Count())
+qc_layer_name = dino8.doc.Layers.Add("QCLayer", (0, 200, 100), True, False)
+print("layers add returned name: " + qc_layer_name)
+print("layers count after add: %d" % dino8.doc.Layers.Count())
+print("layers names include new: " + str("QCLayer" in dino8.doc.Layers.Names()))
+print("layers is layer: " + str(dino8.doc.Layers.IsLayer("QCLayer")))
+print("layers is layer bogus: " + str(dino8.doc.Layers.IsLayer("NoSuchLayerXYZ")))
+print("layers visible: " + str(dino8.doc.Layers.Visible("QCLayer")))
+dino8.doc.Layers.SetVisible("QCLayer", False)
+print("layers visible after set: " + str(dino8.doc.Layers.Visible("QCLayer")))
+print("layers locked: " + str(dino8.doc.Layers.Locked("QCLayer")))
+dino8.doc.Layers.SetLocked("QCLayer", True)
+print("layers locked after set: " + str(dino8.doc.Layers.Locked("QCLayer")))
+print("layers color: %d,%d,%d" % dino8.doc.Layers.Color("QCLayer"))
+dino8.doc.Layers.SetColor("QCLayer", (10, 20, 30))
+print("layers color after set: %d,%d,%d" % dino8.doc.Layers.Color("QCLayer"))
+print("layers current before: " + dino8.doc.Layers.CurrentLayer)
+dino8.doc.Layers.CurrentLayer = "QCLayer"
+print("layers current after set: " + dino8.doc.Layers.CurrentLayer)
+print("layers delete while current refused: " + str(dino8.doc.Layers.Delete("QCLayer") == False))
+dino8.doc.Layers.CurrentLayer = "Default"
+print("layers delete after switch: " + str(dino8.doc.Layers.Delete("QCLayer")))
+print("layers count final: %d" % dino8.doc.Layers.Count())
+print("layers is layer after delete: " + str(dino8.doc.Layers.IsLayer("QCLayer")))
+
 dino8.RunCommand("NewLayer", "Parts")
 PY
 sed "s|@TMP@|$TMPW|g" "$HERE/python_script.txt" > "$TMPW/python_script.txt"
@@ -2033,7 +2131,59 @@ else
   pscheck "history: selected after unselect: 1" "UnselectObject deselected both objects, leaving only the box selected"
   pscheck "history: unselect all count: 2" "dino8.doc.Objects.UnselectAllObjects returned how many objects were selected beforehand (the box plus the transform line just selected for this check), matching rs.UnselectAllObjects"
   pscheck "history: selected after unselect all: 0" "UnselectAllObjects deselected everything"
-  pscheck "^ok   expect_objects 27" "RunPythonScript left the box, the circle, the cone, the torus, the interpolated curve, the arc, the srf, the planar surface, three points, the extruded surface, the extruded solid, the union mesh, the difference mesh, the intersection mesh, the two circle copies, the rotate line and its rotated copy, the scale box and its scaled copy, the mirror line and its mirrored copy, and the transform line and its transformed copy (the sphere, the two union input boxes, the two difference input boxes and the two intersection input boxes were removed from inside the script)"
+  pscheck "history: object count with cq line: 28" "AllObjects gained the new curve-query line"
+  pscheck "history: curve length: 5.00" "dino8.doc.Objects.CurveLength measured a 3-4-5 triangle line, matching rs.CurveLength"
+  pscheck "history: curve domain: 0.0,1.0" "dino8.doc.Objects.CurveDomain reported the normalized 0..1 domain, matching rs.CurveDomain"
+  pscheck "history: evaluate curve at end: 103,4,0" "dino8.doc.Objects.EvaluateCurve at the domain's own end parameter returned the line's own end point, matching rs.EvaluateCurve"
+  pscheck "history: curve closest point at start: 0.0" "dino8.doc.Objects.CurveClosestPoint found parameter 0 for the line's own start point, matching rs.CurveClosestPoint"
+  pscheck "history: divide curve point count: 5" "dino8.doc.Objects.DivideCurve(id, 4) returned 5 points (4 segments), matching rs.DivideCurve"
+  pscheck "history: divide curve first point: 100,0,0" "DivideCurve's first point is the curve's own start"
+  pscheck "history: divide curve last point: 103,4,0" "DivideCurve's last point is the curve's own end"
+  pscheck "history: divide curve params: 0.00,0.25,0.50,0.75,1.00" "DivideCurve(id, 4, False, False) returned the 5 raw, evenly-spaced parameters instead of points"
+  pscheck "history: bad divide rejected:" "DivideCurve raised a Python exception for segments < 1 instead of silently returning, matching rs.DivideCurve's luaL_error"
+  pscheck "history: divide curve created point count: 3" "DivideCurve(id, 2, create=True) returned 3 points (2 segments)"
+  pscheck "history: object count with divide created points: 31" "DivideCurve's create=True also added one point object per returned point"
+  pscheck "history: object count with bbox box: 32" "AllObjects gained the new bounding-box test box"
+  pscheck "history: bounding box corner0: 200,0,0" "dino8.doc.Objects.BoundingBox's first corner is the box's own min corner, matching rs.BoundingBox's corner order"
+  pscheck "history: bounding box corner6: 205,5,5" "BoundingBox's seventh corner is the box's own max corner"
+  pscheck "history: bounding box missing: None" "BoundingBox returned None for an id that doesn't exist, matching rs.BoundingBox pushing nil instead of raising"
+  pscheck "history: surface area box: 150.0" "dino8.doc.Objects.SurfaceArea computed a 5x5x5 box's own surface area (6 faces), matching rs.SurfaceArea"
+  pscheck "history: surface volume box: 125.0" "dino8.doc.Objects.SurfaceVolume computed a 5x5x5 box's own volume, matching rs.SurfaceVolume"
+  pscheck "history: is object solid box: True" "dino8.doc.Objects.IsObjectSolid reported the closed box as solid, matching rs.IsObjectSolid"
+  pscheck "history: is object solid line: False" "IsObjectSolid reported the open line as not solid"
+  pscheck "history: surface volume line: None" "SurfaceVolume returned None for a non-solid line, matching rs.SurfaceVolume pushing nil instead of raising"
+  pscheck "history: object count with sc sphere: 33" "AllObjects gained the new surface-closest-point test sphere"
+  pscheck "history: surface closest point: 300,0,4" "dino8.doc.Objects.SurfaceClosestPoint found the sphere surface point closest to a point straight above its center, matching rs.SurfaceClosestPoint"
+  pscheck "history: object count with mesh: 34" "AllObjects gained the new AddMesh triangle"
+  pscheck "history: mesh vertices count: 3" "dino8.doc.Objects.MeshVertices returned all 3 vertices of the triangle, matching rs.MeshVertices"
+  pscheck "history: mesh vertex 0: 400,0,0" "MeshVertices' first vertex matches the mesh's own first input vertex"
+  pscheck "history: objects by name widget: True" "dino8.doc.Objects.ObjectsByName(\"Widget\") found exactly the earlier-renamed box, matching rs.ObjectsByName"
+  pscheck "history: objects by name none: \[\]" "ObjectsByName returned an empty list for a name nothing has, matching rs.ObjectsByName always pushing a table"
+  pscheck "history: objects by name select side effect: True" "ObjectsByName(name, select=True) selected the matching object, matching rs.ObjectsByName's optional select argument"
+  pscheck "history: object count with fresh points: 36" "AllObjects gained the two fresh ObjectsByType test points"
+  pscheck "history: objects by type point delta: 2" "dino8.doc.Objects.ObjectsByType(\"point\") grew by exactly 2 after adding exactly 2 point objects, matching rs.ObjectsByType"
+  pscheck "history: objects by type point contains fresh: True" "ObjectsByType(\"point\") included both freshly added points"
+  pscheck "history: objects by type none equals all objects: True" "ObjectsByType() with no type argument matched every object in the document, matching rs.ObjectsByType's mask-0-means-everything rule"
+  pscheck "history: objects by type select side effect: True" "ObjectsByType(type, select=True) selected the matching objects, matching rs.ObjectsByType's optional select argument"
+  pscheck "history: layers count before: 1" "dino8.doc.Layers.Count started at 1 (just the Default layer), matching rs.LayerCount"
+  pscheck "history: layers add returned name: QCLayer" "dino8.doc.Layers.Add returned the new layer's own name, matching rs.AddLayer"
+  pscheck "history: layers count after add: 2" "Layers.Count grew by one after Add"
+  pscheck "history: layers names include new: True" "dino8.doc.Layers.Names lists the new layer by its full path, matching rs.LayerNames"
+  pscheck "history: layers is layer: True" "dino8.doc.Layers.IsLayer found the new layer, matching rs.IsLayer"
+  pscheck "history: layers is layer bogus: False" "IsLayer returned False for a name that isn't a layer"
+  pscheck "history: layers visible: True" "Layers.Add's visible=True argument took effect, matching rs.AddLayer"
+  pscheck "history: layers visible after set: False" "dino8.doc.Layers.SetVisible/Visible round-tripped, matching rs.LayerVisible's get/set pair"
+  pscheck "history: layers locked: False" "a freshly added layer starts unlocked"
+  pscheck "history: layers locked after set: True" "dino8.doc.Layers.SetLocked/Locked round-tripped, matching rs.LayerLocked's get/set pair"
+  pscheck "history: layers color: 0,200,100" "Layers.Add's color=(0,200,100) argument took effect"
+  pscheck "history: layers color after set: 10,20,30" "dino8.doc.Layers.SetColor/Color round-tripped, matching rs.LayerColor's get/set pair"
+  pscheck "history: layers current before: Default" "dino8.doc.Layers.CurrentLayer read Default as the document's starting current layer, matching rs.CurrentLayer"
+  pscheck "history: layers current after set: QCLayer" "assigning dino8.doc.Layers.CurrentLayer changed the document's current layer, matching rs.CurrentLayer's setter form"
+  pscheck "history: layers delete while current refused: True" "dino8.doc.Layers.Delete returned False for the document's own current layer instead of raising, matching Document::RemoveLayer's refusal and rs.DeleteLayer"
+  pscheck "history: layers delete after switch: True" "Delete succeeded once the layer was no longer current"
+  pscheck "history: layers count final: 1" "Layers.Count is back to 1 after the delete"
+  pscheck "history: layers is layer after delete: False" "IsLayer no longer finds the deleted layer"
+  pscheck "^ok   expect_objects 36" "RunPythonScript left the box, the circle, the cone, the torus, the interpolated curve, the arc, the srf, the planar surface, three points, the extruded surface, the extruded solid, the union mesh, the difference mesh, the intersection mesh, the two circle copies, the rotate line and its rotated copy, the scale box and its scaled copy, the mirror line and its mirrored copy, the transform line and its transformed copy, the curve-query line, its 3 create=True divide points, the bounding-box test box, the surface-closest-point sphere, the AddMesh triangle, and the two fresh ObjectsByType test points (the sphere, the two union input boxes, the two difference input boxes and the two intersection input boxes were removed from inside the script)"
   grep -q "! Python error" <<<"$PS" && { echo "FAIL python_script.txt printed a Python error"; fail=1; } || echo "ok   no Python script errors"
 fi
 
@@ -2706,8 +2856,13 @@ s2check "Named position 'Pos1' restored: 1 of 1 object" "NamedPosition Restore r
 s2check "Bounding box: (60, 0, 0) to (70, 10, 10)" "NamedPosition Restore put the box back exactly"
 s2check "Named position 'Pos1' deleted" "NamedPosition Delete"
 s2check "[0-9]* snapshot(s)" "Snapshots (cmd_session.cpp's real implementation, no longer shadowed)"
-s2check "HistoryPurge: no construction history is recorded; nothing to purge" "HistoryPurge"
-s2check "HistoryUpdate: no construction history is recorded; nothing to update" "HistoryUpdate"
+# HistoryPurge/HistoryUpdate are real now (cmd_history.cpp's HistoryRecord
+# mechanism, replacing the old dead cmd_state.cpp stubs that always claimed
+# no history was recorded); the document is empty at this point in the
+# script (SelAll/Delete ran earlier), so both correctly report 0 objects -
+# see history_purge_script.txt below for the real-history, non-zero case.
+s2check "HistoryPurge: 0 object(s) had their recorded construction history removed (nothing to purge)" "HistoryPurge reports 0 with no recorded history in the (now empty) document"
+s2check "HistoryUpdate: 0 object(s) re-evaluated from their source curve(s)' current geometry" "HistoryUpdate (Rhino's alternate name for UpdateHistory) reports 0 the same way"
 s2check "[0-9]* attached reference model" "Worksession (cmd_session.cpp's real implementation, no longer shadowed)"
 s2check "LimitReferenceModel: 0 object(s) removed from 'nonexistent.3dm'" "LimitReferenceModel (cmd_session.cpp's real implementation, no longer shadowed)"
 s2check "ContentFilter: 'Wood' (Materials and Textures panels; ContentFilter Clear to remove)" "ContentFilter set a name filter"
@@ -3568,6 +3723,50 @@ fzcheck "^history: Command: Box$" "plain prefix 'Box' still autocompletes to its
 fzcheck "^history: Command: ZoomNonManifold$" "fuzzy subsequence 'zmanif' (not a prefix/substring of any command) autocompleted to the unique match ZoomNonManifold"
 fzcheck "gl_error=0" "fuzzy-autocomplete script ran without OpenGL errors"
 
+# Command-line autocomplete: aliases (the user's own, or Rhino's shipped
+# defaults - InstallDefaultAliases) must show up in the popup too, not just
+# catalog command names (see alias_autocomplete_script.txt's own header
+# comment for the full before/after explanation).
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  ALC="$("$BIN" --smoke 60 --script "$HERE/alias_autocomplete_script.txt" 2>&1)" || { echo "$ALC"; echo "FAIL: alias-autocomplete script exited non-zero"; exit 1; }
+else
+  ALC="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$HERE/alias_autocomplete_script.txt" 2>&1)" || { echo "$ALC"; echo "FAIL: alias-autocomplete script exited non-zero"; exit 1; }
+fi
+alccheck() { if echo "$ALC" | grep -qE "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$ALC" "$1"; fail=1; fi; }
+alccheck "^history: Command: b$" "typing the default alias 'b' and picking the first popup row (Down, Enter) runs the alias text itself, not a catalog fallback like Box"
+alccheck "gl_error=0" "alias-autocomplete script ran without OpenGL errors"
+
+# Command-line ambiguous prefixes: ResolveName only resolves a prefix that
+# matches exactly one registered command; typing one that matches several
+# (and isn't an alias) used to fall through to a flat "Unknown command",
+# leaving the user to guess or retype. It now reports what the prefix could
+# mean instead. "Pla" deliberately avoids the "pl"->Planar default alias
+# (InstallDefaultAliases) so this exercises the prefix-ambiguity path, not
+# alias resolution; its 12 matches are the 11 catalog commands starting with
+# "Pla" plus Plane3Pt (cmd_create.cpp), which is registered but, unlike
+# every other command here, has no data/commands.json catalog entry of its
+# own - PrefixMatches reports every *registered* command, catalog-backed or
+# not, so it correctly appears too. "ZoomNonM" (a real, unambiguous prefix
+# of the single catalog command ZoomNonManifold) is the regression check
+# that a genuinely unique prefix still resolves and runs for real;
+# "Zzzznotacommand" (no registered command starts with it at all) checks
+# the true-unknown case still reports plainly, not as a spurious
+# "ambiguous" match against nothing.
+cat > "$TMPW/ambiguous_script.txt" <<'EOS'
+Pla
+ZoomNonM
+Zzzznotacommand
+EOS
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  AMB="$("$BIN" --smoke 30 --script "$TMPW/ambiguous_script.txt" 2>&1)" || { echo "$AMB"; echo "FAIL: ambiguous-command script exited non-zero"; exit 1; }
+else
+  AMB="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/ambiguous_script.txt" 2>&1)" || { echo "$AMB"; echo "FAIL: ambiguous-command script exited non-zero"; exit 1; }
+fi
+ambcheck() { if echo "$AMB" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$AMB" "$1"; fail=1; fi; }
+ambcheck "Pla: ambiguous command name, could be: PlaceHole, Plan, Planar, PlanarDifference, PlanarIntersection, PlanarMesh, PlanarSrf, PlanarUnion, Plane, Plane3Pt, PlaneThroughPt, PlayAnimation" "an ambiguous prefix ('Pla', matching 12 registered commands) reports every command it could mean"
+ambcheck "ZoomNonManifold: no non-manifold meshes found" "a genuinely unique prefix ('ZoomNonM') still resolves and actually runs ZoomNonManifold (no regression from adding ambiguity detection)"
+ambcheck "Unknown command: Zzzznotacommand" "a prefix matching nothing at all is still reported as Unknown, not a spurious ambiguous match"
+
 # i18n: SetLanguage actually swaps the active string table, a key missing
 # from a language's table (panel.imgui_demo is deliberately absent from
 # es.json - see cmd_state.cpp's I18nSelfTest) falls back to English instead
@@ -4094,6 +4293,29 @@ hcheck "UpdateHistory: 1 object(s) re-evaluated from their source curve(s)' curr
   "UpdateHistory rebuilt only the still-live tracked surface (4) and reported the undone extrusion's record (6) as orphaned - it did NOT treat the new Box as a tracked object"
 hcheck_absent "Bounding box: (40, 0, 0) to (50, 0, 5)" "the Box was never rebuilt into line 5's extrusion (the exact silent wrong result the id reuse produced before)"
 hcheck "Bounding box: (50, 50, 0) to (60, 60, 10)" "the Box's own geometry is untouched after UpdateHistory"
+
+# HistoryPurge/HistoryUpdate/SelObjectsWithHistory against REAL recorded
+# history (see history_purge_script.txt's own header comment): before this
+# fix all three were dead - HistoryPurge/HistoryUpdate (cmd_state.cpp) always
+# claimed no history was recorded, and SelObjectsWithHistory (cmd_select2.cpp)
+# always selected 0 objects and claimed Dino 8 keeps no construction history
+# at all - regardless of what cmd_history.cpp's real mechanism, right next to
+# all three, actually had tracked.
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  HP="$("$BIN" --smoke 100 --script "$HERE/history_purge_script.txt" 2>&1)" || { echo "$HP"; echo "FAIL: history-purge script exited non-zero"; exit 1; }
+else
+  HP="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 100 --script "$HERE/history_purge_script.txt" 2>&1)" || { echo "$HP"; echo "FAIL: history-purge script exited non-zero"; exit 1; }
+fi
+echo "$HP" | grep -E "^(ok|FAIL)"
+if echo "$HP" | grep -q "^FAIL"; then fail=1; fi
+echo "$HP" | grep -q "^smoke:" || { echo "$HP"; echo "FAIL: history-purge script produced no smoke line"; fail=1; }
+hpcheck() { if echo "$HP" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$HP" "$1"; fail=1; fi; }
+hpcheck "2 object(s) selected" "SelObjectsWithHistory finds both tracked extrusions (objects 2 and 4) - real selection, not the old hardcoded 0"
+hpcheck "HistoryPurge: 1 object(s) had their recorded construction history removed; HistoryPurge will no longer rebuild it from a source curve" "HistoryPurge, with object 2 selected, purges only that one object's recorded history"
+hpcheck "1 object(s) selected" "SelObjectsWithHistory now finds only object 4 - object 2's history was really dropped, not just reported as dropped"
+hpcheck "HistoryUpdate: 1 object(s) re-evaluated from their source curve(s)' current geometry" "HistoryUpdate (the catalog's real name - see cmd_history.cpp) still finds and rebuilds the surviving tracked object"
+hpcheck "0 object(s) selected" "after a second HistoryPurge with nothing selected (whole-document purge), SelObjectsWithHistory finds nothing left"
+hpcheck "HistoryUpdate: 0 object(s) re-evaluated from their source curve(s)' current geometry" "HistoryUpdate confirms no recorded history remains anywhere in the document"
 
 # RemoveLayer must keep every OTHER holder of a layer index consistent, not
 # just live objects (see tests/layer_remap_script.txt): a layout detail's
@@ -4761,6 +4983,56 @@ if [ "$CT2" = "1" ] && [ "$CT3" = "2" ]; then
   echo "ok   installing curvetools added its own genuine second, independent load (1 auto-loaded from next to the executable, 2 after the marketplace install) once its version-constrained dependency was resolved"
 else
   echo "FAIL installing curvetools did not add its own independently-loaded copy (saw $CT2 before, $CT3 after)"; fail=1
+fi
+
+# Batch scripting mode: `--script FILE` given WITHOUT `--smoke` (see
+# docs/BATCH_SCRIPTING.md and main.cpp's own header comment). Before this
+# was made a real, supported mode, this exact combination opened a
+# *visible* window and never exited on its own - main.cpp's own
+# script-finished exit check only ever fired when --smoke was also given,
+# so the process just sat in the normal interactive loop forever, waiting
+# for a human to close a window nothing could see under Xvfb. `timeout`
+# below is the actual regression guard for that: if the old hang ever
+# comes back, this fails on its own (exit 124) instead of wedging the rest
+# of this script indefinitely.
+cat > "$TMPW/batch_script.txt" <<'EOF'
+Box 0,0,0 5,5,0 5
+Sphere 30,0,0 5
+@expect_objects 2
+EOF
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  set +e; BS_OUT="$(timeout 30 "$BIN" --script "$TMPW/batch_script.txt" 2>&1)"; BS_EC=$?; set -e
+else
+  set +e; BS_OUT="$(timeout 30 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --script "$TMPW/batch_script.txt" 2>&1)"; BS_EC=$?; set -e
+fi
+if [ "$BS_EC" -eq 124 ]; then
+  echo "$BS_OUT"; echo "FAIL: --script without --smoke hung instead of exiting on its own (batch scripting mode regression)"; fail=1
+elif [ "$BS_EC" -ne 0 ]; then
+  echo "$BS_OUT"; echo "FAIL: batch --script run exited $BS_EC, expected 0"; fail=1
+else
+  echo "$BS_OUT" | grep -E "^(ok|FAIL|script:)"
+  bscheck() { if echo "$BS_OUT" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$BS_OUT" "$1"; fail=1; fi; }
+  bscheck "^ok   expect_objects 2" "batch script's own @expect_objects check saw both objects it built"
+  bscheck "^script: done objects=2" "batch mode's own done-summary line reported the right object count and printed itself instead of falling into the interactive loop"
+fi
+
+# A failing @expect_* check in batch mode must still exit (not hang), with
+# the same exit code 2 --smoke already uses for one.
+cat > "$TMPW/batch_script_fail.txt" <<'EOF'
+Box 0,0,0 5,5,0 5
+@expect_objects 99
+EOF
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  set +e; BSF_OUT="$(timeout 30 "$BIN" --script "$TMPW/batch_script_fail.txt" 2>&1)"; BSF_EC=$?; set -e
+else
+  set +e; BSF_OUT="$(timeout 30 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --script "$TMPW/batch_script_fail.txt" 2>&1)"; BSF_EC=$?; set -e
+fi
+if [ "$BSF_EC" -eq 124 ]; then
+  echo "$BSF_OUT"; echo "FAIL: a failing @expect_objects in batch mode hung instead of exiting"; fail=1
+elif [ "$BSF_EC" -eq 2 ] && echo "$BSF_OUT" | grep -q "^FAIL expect_objects 99"; then
+  echo "ok   batch mode exits 2 (not 0, not a hang) when the script's own @expect_objects check fails"
+else
+  echo "$BSF_OUT"; echo "FAIL: batch mode with a failing @expect_objects exited $BSF_EC, expected 2"; fail=1
 fi
 
 exit $fail

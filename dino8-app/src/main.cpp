@@ -3,7 +3,16 @@
 //
 // Command line:
 //   --smoke N     render N frames and exit (used by headless QC under Xvfb)
-//   --script FILE run each line of FILE as a command after start-up
+//   --script FILE run each line of FILE as a command after start-up.
+//                 Given without --smoke, this is the supported *batch
+//                 scripting* mode: the window is created hidden (still
+//                 needs a GL context - a real display, or Xvfb+llvmpipe on
+//                 Linux CI/servers, per docs/BATCH_SCRIPTING.md), the file's
+//                 commands run once each, and the process exits on its own
+//                 the instant the script finishes (exit code 0, or 2 if an
+//                 `@expect_*` check failed) instead of falling into the
+//                 normal interactive loop. Combine with --smoke N to also
+//                 render/capture frames (the pre-existing headless QC use).
 //   --screenshot FILE.ppm   save the final frame (used with --smoke)
 //   --stress N    add N simple boxes to a fresh document, time object
 //                 creation / display-mesh warmup / viewport picking / an
@@ -375,7 +384,10 @@ int main(int argc, char** argv) {
   // with samples=0), so skip it in --smoke/--stress/--cull-test mode
   // rather than fail to even open a window.
   if (smoke_frames < 0) glfwWindowHint(GLFW_SAMPLES, 4);
-  if (smoke_frames >= 0) glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
+  // Hidden window for --smoke (headless QC) and for pure --script batch runs
+  // alike - a batch job has no user to look at a window, and creating one
+  // visible would steal focus / flash on screen for the run's duration.
+  if (smoke_frames >= 0 || !script_path.empty()) glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
   // Windows (and X11): size the window in screen pixels scaled by the
   // monitor's content scale, and let GLFW rescale it when it is dragged to
   // a monitor with a different DPI. The process is per-monitor-v2 DPI
@@ -408,10 +420,14 @@ int main(int argc, char** argv) {
   ImGuiIO& io = ImGui::GetIO();
   io.ConfigFlags |= ImGuiConfigFlags_DockingEnable | ImGuiConfigFlags_NavEnableKeyboard;
   io.ConfigWindowsMoveFromTitleBarOnly = true;
-  // Window layout persists in the user's config directory (not in smoke runs).
+  // Window layout persists in the user's config directory - not in smoke
+  // runs, and not in batch --script runs either (a hidden, unattended batch
+  // job has no real layout to save, and must never clobber the user's own
+  // saved interactive layout.ini).
+  const bool interactive_run = smoke_frames < 0 && script_path.empty();
   const std::string ini_path = dino8::app::ConfigDirectory() + "/layout.ini";
-  const bool has_layout = smoke_frames < 0 && std::filesystem::exists(ini_path);
-  io.IniFilename = smoke_frames < 0 ? ini_path.c_str() : nullptr;
+  const bool has_layout = interactive_run && std::filesystem::exists(ini_path);
+  io.IniFilename = interactive_run ? ini_path.c_str() : nullptr;
   float xscale = 1.0f, yscale = 1.0f;
   glfwGetWindowContentScale(window, &xscale, &yscale);
   float ui_scale = xscale > 0 ? xscale : 1.0f;
@@ -426,8 +442,18 @@ int main(int argc, char** argv) {
   app.ui_scale = ui_scale;
   app.has_saved_layout = has_layout;
   app.native_window = window;
-  app.headless = smoke_frames >= 0;
-  app.smoke_mode = smoke_frames >= 0;
+  // A pure --script run (no --smoke) is just as unattended as a --smoke
+  // run - its window is hidden too (see the GLFW_VISIBLE hint above) - so it
+  // needs the same headless treatment: ShowFileDialog's real OS file picker
+  // blocks the calling thread until a human clicks it (Application.cpp:557),
+  // which would hang a batch job forever the first time a script line calls
+  // a bare Save/Open with no path already supplied; ConfirmDiscard's
+  // unsaved-changes prompt has the same problem. Batch scripts are expected
+  // to always pass paths explicitly (matching how --script already has to
+  // for --smoke QC scripts), so headless=true only changes behavior for the
+  // case that would otherwise hang.
+  app.headless = !interactive_run;
+  app.smoke_mode = !interactive_run;
   std::string error;
   if (!app.Init(ExeDir(argv[0]), error)) {
     std::fprintf(stderr, "%s\n", error.c_str());
@@ -443,19 +469,19 @@ int main(int argc, char** argv) {
   // keeps its published text in sync every frame.
   dino8::platform::InitAccessibility("Dino8");
 
-  // In --smoke mode only (no console for a human to watch, this is what CI
-  // reads): flush each history line to stdout the instant CommandEngine
-  // records it, not after app.Frame()/Execute() returns. A command's own
-  // Begin()/handler runs strictly *after* CommandEngine::Print() already
-  // recorded "Command: X" but *before* control ever gets back to the
-  // history_printed loop below - so a crash inside a command's own logic
-  // (a real, hard, non-C++-exception crash the DINO8_GUARD in
-  // CommandEngine.cpp cannot catch) used to produce zero stdout output no
-  // matter how the earlier buffering/incremental-print fixes were tuned,
-  // because that print-after-the-fact loop was simply never reached. This
-  // makes the very next Windows CI run show exactly which command was
-  // executing at the moment of any such crash.
-  if (smoke_frames >= 0) {
+  // In --smoke and batch --script mode (no console for a human to watch,
+  // this is what CI/automation reads): flush each history line to stdout
+  // the instant CommandEngine records it, not after app.Frame()/Execute()
+  // returns. A command's own Begin()/handler runs strictly *after*
+  // CommandEngine::Print() already recorded "Command: X" but *before*
+  // control ever gets back to the history_printed loop below - so a crash
+  // inside a command's own logic (a real, hard, non-C++-exception crash the
+  // DINO8_GUARD in CommandEngine.cpp cannot catch) used to produce zero
+  // stdout output no matter how the earlier buffering/incremental-print
+  // fixes were tuned, because that print-after-the-fact loop was simply
+  // never reached. This makes the very next crashing CI/batch run show
+  // exactly which command was executing at the moment of any such crash.
+  if (!interactive_run) {
     // app.Init() above already ran the command catalog through Print() (the
     // "Command catalog: N commands loaded" line) before this hook existed
     // to catch it live - flush whatever's already in History() once, right
@@ -513,9 +539,10 @@ int main(int argc, char** argv) {
       glfwWaitEventsTimeout(0.1);
       continue;
     }
-    // A hidden smoke-test window never receives OS focus; tell ImGui it
-    // is focused so synthetic keyboard input is not discarded.
-    if (smoke_frames >= 0) io.AddFocusEvent(true);
+    // A hidden smoke-test or batch-script window never receives OS focus;
+    // tell ImGui it is focused so synthetic keyboard input / typed script
+    // command text is not discarded.
+    if (!interactive_run) io.AddFocusEvent(true);
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
@@ -716,6 +743,16 @@ int main(int argc, char** argv) {
       for (const auto& hist = app.Engine().History(); history_printed < hist.size(); ++history_printed) {
         if (!app.Engine().on_print_line) std::printf("history: %s\n", hist[history_printed].c_str());
       }
+      break;
+    }
+    // Pure batch-script mode (--script without --smoke): exit the instant
+    // the script has fully drained (no lines left, and no @wait/@click/@drag
+    // expansion still pending) instead of falling into the normal
+    // interactive loop - see docs/BATCH_SCRIPTING.md. wait_frames == 0 is
+    // the same "truly finished, not just between two expanded lines" guard
+    // the per-frame line-feed gate above uses.
+    if (smoke_frames < 0 && !script_path.empty() && script_cursor >= script_lines.size() && wait_frames == 0) {
+      std::printf("script: done objects=%zu commands=%zu\n", app.Doc().ObjectCount(), app.Engine().Registry().size());
       break;
     }
   }

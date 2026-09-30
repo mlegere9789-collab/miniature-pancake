@@ -1,6 +1,184 @@
 # Fossilith / Dino 8 parity map (2026-09-28, updated 2026-09-30)
 
-**Fossilith vs Parasolid/ACIS = 68.0% (weighted, verified); Dino 8 vs Rhino 8 + AutoCAD 2027 = 72.3%.**
+**Fossilith vs Parasolid/ACIS = 68.0% (weighted, verified); Dino 8 vs Rhino 8 + AutoCAD 2027 = 72.8%.**
+
+**2026-09-30 re-score (a rotation session on the app table's "Scripting,
+automation & visual programming" category — this session's own
+priority-order arithmetic ranked it joint-highest score-per-fix in the whole
+document, weight 1.0 over only 5 remaining items, and neither it nor the
+separate "Python scripting API" addendum sessions further below - which only
+ever narrowed the Python-breadth bullet in place - had closed any of this
+category's own tracked bullets before):** one of the category's 5 remaining
+bullets closed outright, one substantially narrowed in place, three left
+untouched:
+
+1. **Headless/batch scripting mode** moves `[partial]` -> `[present]`:
+   `--script FILE` given without `--smoke` (`dino8-app/src/main.cpp`) is now
+   a real, standalone, documented batch/automation mode instead of a
+   QA-only side effect of `--smoke`. Before this pass the combination
+   opened a *visible* window and never exited on its own - main.cpp's own
+   script-finished exit check only ever fired when `--smoke` was also given
+   (the `if (smoke_frames >= 0 && frame >= smoke_frames && ...)` block,
+   `main.cpp:736`), so a plain `--script` run just fell into the normal
+   interactive loop forever, waiting for a human to close a window nothing
+   could see once it inevitably ran under Xvfb. Now: the window is created
+   hidden the same way `--smoke`'s is; the process is treated as headless
+   (`Application::headless`/`smoke_mode`, gating `ShowFileDialog`'s
+   blocking OS file picker and the unsaved-changes-confirm prompt, both of
+   which would otherwise hang a batch job the first time a script called a
+   bare `Save`/`Open`); the process exits on its own the instant the script
+   finishes, with exit code 0 or 2 (matching `--smoke`'s own `@expect_*`
+   -failure convention) instead of continuing into the interactive loop;
+   and it no longer touches or clobbers the interactive session's saved
+   `layout.ini`. Documented as a supported feature in the new
+   `dino8-app/docs/BATCH_SCRIPTING.md` and a new README section, including
+   the same Xvfb+llvmpipe recipe this document already treats as this
+   project's own acceptable headless story elsewhere - this pass does not,
+   and does not claim to, eliminate that GL-context/display-server
+   requirement; a batch job still needs a real or virtual display, exactly
+   like the rest of this app. Three new `tests/smoke.sh` checks, across two
+   separate script runs, cover both directions: a script-only run that
+   builds two objects and exits 0 within a 30s `timeout` (the actual
+   regression guard for the old hang - if it ever comes back, this fails on
+   its own instead of wedging the rest of the suite), and a script with a
+   failing `@expect_objects` that exits 2 rather than hanging or exiting 0.
+2. **Python API breadth** stays `[partial]` (interactive prompts and
+   undo/document-state functions are still entirely unported - see the
+   bullet below) but is narrowed further: `PythonEngine.cpp`'s
+   `Dino8ObjectTable` gains 12 more methods mirroring `LuaEngine.cpp`'s
+   `rs.*` table - `ObjectsByName`/`ObjectsByType`/`BoundingBox` (object
+   query), `CurveLength`/`CurveDomain`/`EvaluateCurve`/`CurveClosestPoint`/
+   `DivideCurve` (curve query, a whole category previously missing from
+   Python), `SurfaceArea`/`SurfaceVolume`/`IsObjectSolid`/
+   `SurfaceClosestPoint`/`MeshVertices` (surface/mesh query, likewise
+   previously absent) - plus an entirely new `dino8.doc.Layers` table
+   (`Add`/`Count`/`Names`/`IsLayer`/`CurrentLayer`/`Visible`/`SetVisible`/
+   `Locked`/`SetLocked`/`Color`/`SetColor`/`Delete`), mirroring
+   `rs.AddLayer`/`rs.LayerCount`/`rs.LayerNames`/`rs.IsLayer`/
+   `rs.CurrentLayer`/`rs.LayerVisible`/`rs.LayerLocked`/`rs.LayerColor`/
+   `rs.DeleteLayer` - a whole category (layer management) the dino8 module
+   had no access to at all before this pass. `ObjectAreaOf`/
+   `ObjectVolumeOf`/`TypeMask` were lifted out of `LuaEngine.cpp`'s
+   anonymous namespace into `commands/cmd_common.h` so both engines share
+   one implementation instead of two that could silently drift apart. All
+   12 additions are exercised by 53 new `tests/smoke.sh` checks appended to
+   `tests/python_script.txt`'s existing scripted-QC fixture - not stubs:
+   every one is a real, working call verified against ground truth captured
+   by actually running the binary, including float-precision-sensitive
+   values like a 5x5x5 box's `SurfaceArea`=150.0/`SurfaceVolume`=125.0 and a
+   sphere's `SurfaceClosestPoint`.
+
+Neither the Windows-CPython-bundling half of "Embedded Python 3," the
+"Cloud/network compute service" item, nor "AI-assisted modeling or
+scripting" were attempted this round - the first needs an installer/CI
+packaging change this session can't build or verify (no Windows runner
+here), and the latter two need either a genuine network service or genuine
+ML work, both too large to responsibly scope into one pass - so 3 of the
+category's original 5 remaining items are untouched this pass, kept for a
+future rotation rather than rushed, the same "close what you can verify,
+keep the rest honest" standard this document has used throughout.
+
+Recomputed against the app table's own current 8 rows (this document's usual
+`sum(weight * (present + 0.5*partial) / items) / 7.75` check): the
+Scripting row's Present/Partial/Missing move from 10/3/2 (76.7%) to 11/2/2
+(80.0%), and the app table's weighted average recomputes to 72.76%, rounding
+to **72.8%** - the only headline that moves; the kernel headline (68.0%) is
+untouched, since no `dino8-kernel/src` file was touched this pass. Full
+`dino8_app_tests` ctest suite (18/18 passing) and `tests/smoke.sh` (0 FAIL
+lines across the whole suite) re-run clean after this pass, under
+Xvfb+llvmpipe.
+
+**2026-09-30 re-score (a dedicated round on the app table's "Command system
+& core commands" category, this pass's own priority-order arithmetic ranking
+it joint-third-highest score-per-fix in the app table): three real,
+verified fixes in `dino8-app`'s command engine and its registry-backed UI,
+found by reading `CommandEngine.{h,cpp}`, `Application.cpp`'s command-line
+autocomplete, and `cmd_history.cpp`/`cmd_state.cpp`/`cmd_select2.cpp` fresh
+rather than working only from this document's own prior text. No item flips
+`[partial]`/`[missing]` to `[present]` and the category's own weight is too
+small to move either headline figure at this precision, so **no score
+change** - the row's own Present/Partial/Missing stay 11/6/2 (73.7%) - but
+two of its bullets (Command aliases and shortcut customization; History /
+associative re-execution) each get real, narrower evidence below, and one
+genuine, previously-undocumented correctness bug is fixed outright:
+
+1. **`RunCommand` reported ambiguous command-name prefixes** —
+   `CommandEngine::ResolveName` already resolved a prefix matching exactly
+   one registered command (e.g. `Cir` -> `Circle`); a prefix matching
+   *several* (e.g. `Pla`, which matches 12 registered commands - 11 catalog
+   commands plus `Plane3Pt`, a `cmd_create.cpp` command with no
+   `data/commands.json` catalog entry of its own) used to fall straight
+   through to a flat `Unknown command: Pla`, leaving the user to guess or
+   retype rather than see what it could mean. `RunCommand` now calls the
+   same prefix-matching logic (factored out as `CommandEngine::
+   PrefixMatches`) on a resolution failure and, when it finds more than one
+   match, prints `Pla: ambiguous command name, could be: PlaceHole, Plan,
+   Planar, ...` instead. A unique prefix and a genuinely unknown one
+   (matching nothing at all) are both unchanged. This isn't a named gap
+   anywhere in this document (Rhino's own ambiguous-prefix behavior was
+   never scored here), so it doesn't itself move any item's status - a
+   real command-system robustness fix, not a scored parity closure.
+2. **Command aliases were invisible in the command-line autocomplete
+   popup** - narrows the "Command aliases and shortcut customization"
+   bullet below. The popup (`Application::DrawCommandLine`) only ever
+   consulted `CommandCatalog::FuzzyMatch`, which knows nothing about
+   `CommandEngine::Aliases()`: typing a default or user alias (e.g. `b` for
+   `Box`, `di` for `Distance`) showed only catalog command matches - for a
+   single-letter query like `b`, the shortest catalog command starting with
+   `b` (`Box` itself) ranked first, so Down+Enter on the first row
+   happened to run the right command, but with zero indication an alias
+   existed, what it was bound to, or that typing it directly would have
+   worked identically. A new `BuildAutocompleteRows` merges matching
+   aliases (exact match first, then prefix, ahead of catalog fuzzy matches)
+   into the popup with their own "Alias" badge and a "Alias for `<target>`"
+   description; selecting one fills in the alias text itself, which
+   `ResolveName` still resolves normally when it runs. Verified end-to-end
+   (`tests/alias_autocomplete_script.txt`, driven through the real
+   `@text`/`@key Down`/`@key Enter` popup interaction under Xvfb, the same
+   mechanism `fuzzy_autocomplete_script.txt` already uses) - the check
+   asserts the echoed command line reads `Command: b` (the alias text),
+   not `Command: Box` (the old catalog-fallback result), so a regression
+   back to the old behavior would be caught. Still doesn't touch the
+   bullet's own named remaining gaps (the ~20 hardcoded reserved shortcuts
+   a user binding still can't remap, the "type a key name" vs "press a
+   key to capture" binding flow), so the item stays `[partial]`.
+3. **`HistoryUpdate`, `HistoryPurge` and `SelObjectsWithHistory` were dead
+   stubs, contradicting the real History mechanism right next to them** -
+   directly closes the "History / associative re-execution" bullet's own
+   named contradiction below. `cmd_history.cpp`'s real, working
+   `HistoryRecord` rebuild logic had only ever been registered under
+   `"UpdateHistory"` - a name with no `data/commands.json` catalog entry of
+   its own; the catalog's actual name for the same Rhino command,
+   `HistoryUpdate`, was a separate `cmd_state.cpp` stub that always printed
+   `HistoryUpdate: no construction history is recorded; nothing to update`
+   regardless of what was genuinely tracked, so the real mechanism was
+   unreachable under its own catalog identity. `HistoryPurge` (a
+   `cmd_state.cpp` stub with the same always-empty claim) and
+   `SelObjectsWithHistory` (a `cmd_select2.cpp` stub that always selected 0
+   objects and asserted outright "Dino 8 keeps no construction history")
+   were the same shape of dead code. All three are now real:
+   `HistoryUpdate` shares `UpdateHistory`'s rebuild via a common
+   `DoUpdateHistory`, reporting under whichever of the two names was
+   typed (`CommandEngine::ActiveName()`); `HistoryPurge` drops the
+   recorded `HistoryRecord` for the current selection, or every tracked
+   object in the document when nothing is selected; `SelObjectsWithHistory`
+   selects every object `Document::FindHistoryRecord` still has a live
+   entry for. Verified end-to-end against real recorded history, not just
+   the pre-existing empty-document case (`tests/history_purge_script.txt`):
+   two tracked Extrude results, a selection-scoped `HistoryPurge` that
+   drops only one of them, `SelObjectsWithHistory`'s count confirming the
+   drop was real (not just reported), and a final whole-document
+   `HistoryPurge` clearing the rest. Does not touch the bullet's own named
+   scope limit (only Extrude/ExtrudeCrvToPoint/Revolve/Loft/SubDLoft ever
+   record history in the first place), so the item stays `[partial]`.
+
+Full `dino8-app` build (Ninja/Make, GCC 13, RelWithDebInfo) clean with no
+new warnings; `tests/smoke.sh` re-run twice end-to-end under Xvfb+llvmpipe
+(the first run's only new failure was a stale test-expectation string in
+`ambiguous_script.txt` missing `Plane3Pt`, not an app bug - fixed and
+re-verified green on the second run, alongside two unrelated, non-
+reproducing `curves2_script.txt` checks that passed cleanly on rerun and
+are not touched by this pass's own files).
 
 **2026-09-30 re-score (a nineteenth session, a dedicated rotation round on the
 app table's "Viewport display, rendering & visualization" category — this
@@ -1188,8 +1366,8 @@ Screen-reader support and Plugin marketplace both moving `missing`->
 
 | Rank | Category | Weight | Remaining (partial+missing) | Weight / Remaining |
 |---|---|---|---|---|
-| 1 | Viewport display, rendering & visualization | 1.0 | 5 | 0.200 |
-| 1 | Scripting, automation & visual programming | 1.0 | 5 | 0.200 |
+| 1 | Scripting, automation & visual programming | 1.0 | 4 | 0.250 |
+| 2 | Viewport display, rendering & visualization | 1.0 | 5 | 0.200 |
 | 3 | Command system & core commands | 1.5 | 8 | 0.188 |
 | 4 | 2D drafting, annotation & documentation | 1.0 | 6 | 0.167 |
 | 4 | UI/UX, accessibility & localization | 1.0 | 6 | 0.167 |
@@ -5541,7 +5719,7 @@ and `dino8-kernel/tests/test_basic.cpp`.
 | Dino 8: Command system & core commands | 1.5 | 19 | 11 | 6 | 2 | 73.7% |
 | Dino 8: 2D drafting, annotation & documentation | 1.0 | 18 | 12 | 5 | 1 | 80.6% |
 | Dino 8: Viewport display, rendering & visualization | 1.0 | 18 | 13 | 4 | 1 | 83.3% |
-| Dino 8: Scripting, automation & visual programming | 1.0 | 15 | 10 | 3 | 2 | 76.7% |
+| Dino 8: Scripting, automation & visual programming | 1.0 | 15 | 11 | 2 | 2 | 80.0% |
 | Dino 8: File I/O & interoperability (app level) | 1.0 | 17 | 5 | 5 | 7 | 44.1% |
 | Dino 8: SubD & mesh modeling toolset (app level) | 0.75 | 24 | 19 | 3 | 2 | 85.4% |
 | Dino 8: UI/UX, accessibility & localization | 1.0 | 19 | 13 | 3 | 3 | 76.3% |
@@ -5581,10 +5759,10 @@ start line) — all citation-precision fixes, not scoring changes.
 ### App category gaps (missing / partial items, with evidence)
 
 **Dino 8: Command system & core commands** (app_commands):
-- [partial] Command aliases and shortcut customization — Rhino's default aliases are built in and users can add aliases through the Alias command or panel. **Upgraded this pass on both named gaps, each still real in a narrower way.** Aliases now persist: `Settings.cpp`'s `LoadSettingsFrom`/`SaveSettingsTo` (the same JSON `OptionsExport`/`OptionsImport`/per-user `settings.json` already uses for every other setting) gained an `"aliases"` object, loaded as a wholesale replace of `CommandEngine::Aliases()` (`Settings.cpp:119-123`) rather than a merge on top of `InstallDefaultAliases()` — so a default alias the user deletes via the Options panel or a re-`Alias`-ed name stays gone across a restart or an `OptionsImport`, not silently reinstated. A genuine user-assignable keyboard-shortcut table also now exists: `Application::user_shortcuts` (`Application.h:342`, a `std::vector<KeyShortcut>`) is editable from a new Options > Shortcuts tab (`Panels.cpp:1148`, key name + Ctrl/Shift/Alt + command, add/remove), persisted the same way as aliases (`Settings.cpp`'s `"shortcuts"` array), and fired every frame by `Application::HandleShortcuts` (`Application.cpp:1708-1714`) alongside its own hardcoded bindings. Still partial, in a narrower way than before: the ~20 hardcoded chords `HandleShortcuts` itself defines (Ctrl+Z/Y/A/S/O/N/G/H/C/V/X, F1-F11, Escape, Delete, Home, PageUp/PageDown, the arrow keys) are a fixed reserved set a user shortcut can never remap or override (`IsReservedShortcut`, `Application.cpp:1623-1650`, checked both when firing and when adding one in the Options panel) — so this is additive keyboard customization for otherwise-unbound chords, not Rhino's fully remappable Tools > Options > Keyboard dialog where even Ctrl+Z itself can be reassigned; and binding a key still means typing its ImGui-reported name (`KeyShortcutFromName`, `Application.cpp:1613-1620`) rather than a "click here, then press the key" capture flow.
+- [partial] Command aliases and shortcut customization — Rhino's default aliases are built in and users can add aliases through the Alias command or panel. **Upgraded this pass on both named gaps, each still real in a narrower way.** Aliases now persist: `Settings.cpp`'s `LoadSettingsFrom`/`SaveSettingsTo` (the same JSON `OptionsExport`/`OptionsImport`/per-user `settings.json` already uses for every other setting) gained an `"aliases"` object, loaded as a wholesale replace of `CommandEngine::Aliases()` (`Settings.cpp:119-123`) rather than a merge on top of `InstallDefaultAliases()` — so a default alias the user deletes via the Options panel or a re-`Alias`-ed name stays gone across a restart or an `OptionsImport`, not silently reinstated. A genuine user-assignable keyboard-shortcut table also now exists: `Application::user_shortcuts` (`Application.h:342`, a `std::vector<KeyShortcut>`) is editable from a new Options > Shortcuts tab (`Panels.cpp:1148`, key name + Ctrl/Shift/Alt + command, add/remove), persisted the same way as aliases (`Settings.cpp`'s `"shortcuts"` array), and fired every frame by `Application::HandleShortcuts` (`Application.cpp:1708-1714`) alongside its own hardcoded bindings. Still partial, in a narrower way than before: the ~20 hardcoded chords `HandleShortcuts` itself defines (Ctrl+Z/Y/A/S/O/N/G/H/C/V/X, F1-F11, Escape, Delete, Home, PageUp/PageDown, the arrow keys) are a fixed reserved set a user shortcut can never remap or override (`IsReservedShortcut`, `Application.cpp:1623-1650`, checked both when firing and when adding one in the Options panel) — so this is additive keyboard customization for otherwise-unbound chords, not Rhino's fully remappable Tools > Options > Keyboard dialog where even Ctrl+Z itself can be reassigned; and binding a key still means typing its ImGui-reported name (`KeyShortcutFromName`, `Application.cpp:1613-1620`) rather than a "click here, then press the key" capture flow. **This pass** closes a related discoverability gap in the same area: the command-line autocomplete popup (`Application::DrawCommandLine`) only ever matched catalog command names (`CommandCatalog::FuzzyMatch`), with no sign a typed alias existed or what it resolved to; `BuildAutocompleteRows` now merges matching aliases into the popup (exact match first, then prefix, ahead of catalog fuzzy matches) with their own "Alias" badge and target - verified end-to-end (`tests/alias_autocomplete_script.txt`) that picking the highlighted row for a bare alias like `b` runs the alias text itself, not a catalog fallback. Does not touch the reserved-shortcut or key-capture limits above, so the item stays `[partial]`.
 - [partial] Surface construction commands — Loft, Revolve, Extrude, EdgeSrf, Sweep1, Sweep2 and NetworkSrf all exist, but Patch is "planar patch only", Sweep1/Sweep2 (`dino8-app/src/commands/cmd_surface.cpp:402` `Sweep1Command`, registered at :1413 as "Approximated by a lofted sweep... rotation-minimizing frames") are still RMF-lofted mesh/NURBS fits with no tolerance control and do not call the kernel's exact `Brep::Sweep1` (no `twist_total` or kernel `Sweep1` reference anywhere under `dino8-app/src/`), and NetworkSrf's 3-curve case still falls back to a fitted bilinear Coons patch. The 4-curve case uses the kernel's exact `CoonsPatch`, and ExtendSrf has a Linear type via the kernel's exact `ExtendLinear`.
 - [partial] Solid editing with B-rep results (booleans, fillet, shell, offset) — BooleanUnion/Difference/Intersection convert every operand to a mesh before combining (`dino8-app/src/commands/cmd_boolean.cpp:1`, "Boolean and splitting commands (mesh-based, via Manifold)"); the kernel's exact `BooleanCombineMixed` is never called from the app. FilletEdge is exact only when both adjacent faces are planar, else a mesh fallback. Shell, OffsetSrf on polysurfaces, and Pipe Cap=Yes all give meshes. New this window: `SplitByObjectCommand` (`cmd_boolean.cpp:290`) adds a general cutting-solid/surface split, but it is the same mesh-boolean pattern — its own status line literally prints "mesh boolean; results are meshes" (`cmd_boolean.cpp:386`) — so it reinforces rather than changes this bullet's partial status. (A same-day follow-up, commit 167baae, fixed the command silently deleting its cutter and re-meshing the target with zero real effect when the cutter merely missed or fully enclosed the target — a correctness fix, not a capability change; see kernel: Transformations for detail.) Solid primitives themselves are real Breps. **Correction (this pass):** the "BooleanUnion/Difference/Intersection convert every operand to a mesh before combining" half of the clause above is stale, not current — it predates **kernel: Boolean operations**'s own "B-rep-preserving booleans reachable from the application" bullet's "Twelfth note" (`TryExactBrepBoolean`, the shared helper `BooleanUnion`/`BooleanDifference`/`BooleanIntersection`/`Boolean2Objects` all now call first, dino8-app/src/commands/cmd_boolean.cpp, `BooleanCombinePlanarNAry`), which now also has its compound-operand support verified end-to-end (this same pass). The "the kernel's exact `BooleanCombineMixed` is never called from the app" half remains true and current, not stale — wiring it in as a second attempt (for an operand with a cylindrical face) was tried and reverted this same pass, after finding it can silently accept adversarial geometry the planar engine correctly refuses, and that a record-less operand's own result doesn't tessellate closed via the app's own generic mesh path (see that same bullet's own "A later pass" account for the full detail, including the real, narrower `MixedFaces()` kernel bug this investigation did fix). This item's own `partial` classification is unaffected (FilletEdge/Shell/OffsetSrf/Pipe remain exactly as described) - narrows, does not flip, the same already-partial item.
-- [partial] History / associative re-execution — real History/RecordHistory/UpdateHistory exist (`cmd_history.cpp`, `cmd_misc.cpp`, `cmd_solids.cpp`), but only for Extrude, ExtrudeCrvToPoint, Revolve, Loft and SubDLoft; stale stubs elsewhere in the app still print "no construction history is recorded" and are asserted on by a smoke test, contradicting the real mechanism.
+- [partial] History / associative re-execution — real History/RecordHistory/UpdateHistory exist (`cmd_history.cpp`, `cmd_misc.cpp`, `cmd_solids.cpp`), but only for Extrude, ExtrudeCrvToPoint, Revolve, Loft and SubDLoft. **Corrected this pass:** the "stale stubs elsewhere in the app still print 'no construction history is recorded', contradicting the real mechanism" half of this bullet is fixed, not merely narrowed. `HistoryUpdate` (the catalog's real name - `cmd_history.cpp`'s working rebuild had only ever been registered as `UpdateHistory`, a name with no `data/commands.json` entry of its own, so the real mechanism was unreachable under its own catalog identity), `HistoryPurge` and `SelObjectsWithHistory` were all dead `cmd_state.cpp`/`cmd_select2.cpp` stubs that always claimed no history was recorded or selected 0 objects outright, regardless of what was genuinely tracked. All three now check `Document::HistoryRecords()`/`FindHistoryRecord()` for real: `HistoryUpdate` shares `UpdateHistory`'s rebuild; `HistoryPurge` drops recorded history for the selection (or the whole document with nothing selected); `SelObjectsWithHistory` selects every object with a live record. Verified against real recorded history, not just the empty-document case (`tests/history_purge_script.txt`). The item's own remaining scope limit - only those five construction commands ever record history at all - is unchanged, so it stays `[partial]`.
 - [partial] Command-level feature editing (re-running a construction with new inputs) — only scoped, explicit-recompute mechanisms exist (UpdateHistory, hole features, a few UpdateDimensions/UpdateBakes commands); no universal parametric feature tree.
 - [partial] VBA-style macro recorder and editor — a macro editor does exist (`dino8-app/src/ui/Panels.cpp:1606` `DrawMacroEditor`, a multi-line panel with Run/Copy, `;`-separated command sequences, command-file playback, plus a Lua/Python script editor). **New this pass: the persistence half of the gap is closed.** The macro buffer moved out of a function-local `static char[4096]` into `AppState::macro_text` (`Application.h`, alongside `working_folder`/`startup_script`) and now round-trips through `Settings.cpp`'s own `"macro_text"` key the same as every other Option — survives an app restart (`LoadSettings`/`SaveSettings`, called from `Application::Init`/`Shutdown`) and an explicit `OptionsExport`/`OptionsImport`, not just for the life of one open panel. Still missing: any action recorder (nothing observes UI actions or command runs to append to the buffer automatically) and any VBA/object-model compatibility - the buffer is still a plain `;`-free, one-command-per-line text box, not a recorded, editable macro object with properties.
 - [missing] AutoLISP-equivalent command scripting language — no LISP dialect or AutoLISP compatibility anywhere; scripting is Lua, Python or Macro/command files.
@@ -5607,8 +5785,8 @@ start line) — all citation-precision fixes, not scoring changes.
 
 **Dino 8: Scripting, automation & visual programming** (app_scripting):
 - [partial] Embedded Python 3 — `dino8-app/CMakeLists.txt:146` sets `option(DINO8_ENABLE_PYTHON ... OFF)` on Windows specifically, `:148` `ON` elsewhere; shipped Windows builds have no Python at all; mid-script prompts are also missing.
-- [partial] Python API breadth — `RunCommand` reaches every registered command; the real gap is the object model (78 bindings, up from 75, versus Lua's 160 `rs.*` functions — `TransformObject`/`UnselectAllObjects`/`ObjectsByLayer` added this window) and no interactive prompts.
-- [partial] Headless/batch scripting mode — `dino8-app/src/main.cpp:5-7,322-327`: `--smoke N --script FILE [--screenshot]` is real and documented in the file's own header comments; still framed as a QA mode needing a GL context/display server, not a supported batch product.
+- [partial] Python API breadth — `RunCommand` reaches every registered command; the real gap is the object model and interactive prompts. `PythonEngine.cpp`'s object-model surface gained 12 methods this pass — `ObjectsByName`/`ObjectsByType`/`BoundingBox` (object query), `CurveLength`/`CurveDomain`/`EvaluateCurve`/`CurveClosestPoint`/`DivideCurve` (curve query, previously absent entirely), `SurfaceArea`/`SurfaceVolume`/`IsObjectSolid`/`SurfaceClosestPoint`/`MeshVertices` (surface/mesh query, likewise previously absent) — plus an entirely new `dino8.doc.Layers` table (`Add`/`Count`/`Names`/`IsLayer`/`CurrentLayer`/`Visible`/`SetVisible`/`Locked`/`SetLocked`/`Color`/`SetColor`/`Delete`, mirroring `rs.AddLayer`/`rs.LayerCount`/`rs.LayerNames`/`rs.IsLayer`/`rs.CurrentLayer`/`rs.LayerVisible`/`rs.LayerLocked`/`rs.LayerColor`/`rs.DeleteLayer` — layer management as a whole category, absent before this pass). Still genuinely partial: interactive prompts (`GetPoint`/`GetObject`/`GetString`/etc.) and undo/document-state functions (`Undo`/`Redo`/`UnitSystem`/etc.) remain entirely unported — Python scripts still run start-to-finish in one call with no coroutine-style suspend/resume the way Lua's `rs.GetPoint` has, so porting those needs a real architecture change, not a mechanical port like this pass's additions.
+- [present] Headless/batch scripting mode — **upgraded from partial.** `--script FILE` given WITHOUT `--smoke` (`dino8-app/src/main.cpp`) is now a real, standalone, documented batch/automation mode: the window is created hidden, the process is treated as headless (skipping `ShowFileDialog`'s blocking OS picker and the unsaved-changes-confirm prompt, either of which would otherwise hang a batch job), and it exits on its own the instant the script finishes (exit 0, or 2 on a failed `@expect_*` check) instead of falling into the interactive loop forever, which is what it did before this pass (main.cpp's own script-finished exit check only ever fired when `--smoke` was also given). Documented in the new `dino8-app/docs/BATCH_SCRIPTING.md` and a new README section; still genuinely needs a real or virtual display (Xvfb+llvmpipe on headless Linux, this project's own already-accepted headless story elsewhere) — this pass closes "framed as a QA mode, not a supported batch product," not the underlying GL-context requirement, which no claim here pretends is gone. Three new `tests/smoke.sh` checks across two script runs cover the fixed hang (a 30s `timeout` is the actual regression guard) and the exit-code-2 failure path.
 - [missing] Cloud/network compute service (Rhino.Compute equivalent) — no server/socket/HTTP code anywhere in the source.
 - [missing] AI-assisted modeling or scripting — no neural/inference code anywhere; the one "smart" feature explicitly documents its own technique as not machine learning.
 
