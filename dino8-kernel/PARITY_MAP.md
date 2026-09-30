@@ -1,6 +1,70 @@
 # Fossilith / Dino 8 parity map (2026-09-28, updated 2026-09-30)
 
-**Fossilith vs Parasolid/ACIS = 67.7% (weighted, verified); Dino 8 vs Rhino 8 + AutoCAD 2027 = 72.0%.**
+**Fossilith vs Parasolid/ACIS = 68.0% (weighted, verified); Dino 8 vs Rhino 8 + AutoCAD 2027 = 72.0%.**
+
+**2026-09-30 re-score (a seventeenth session, re-verifying against the last
+full re-score, `6080d7c`, ~5.5 hours earlier):** `git log --format='%H %ci %s'
+6080d7c..HEAD -- dino8-kernel/src dino8-app/src` returns 40 commits (4 merge
+commits, 36 real). Of those, 33 already self-score (touch `PARITY_MAP.md` in
+the same commit); this pass checked the other 7 by hand against the category
+bullets and master tables below, plus re-verified the two master tables'
+own weighted-average arithmetic against their current row counts directly
+(the doc's established "recompute from the table, don't just trust the
+tracked running total" check).
+
+Of the 7 unscored commits, 4 correctly need no scoring: a security fix
+(`1a15a3b`, Dino Flow untrusted-count allocation/CPU DoS + `Int()` UB), an
+out-of-bounds-read fix (`d2e9425`, IGES directory-entry parameter gather), a
+pure algorithmic-complexity fix with no capability change (`b7cc2f1`,
+Array/Copy transforms' `Find()`-per-id cost), and a merge-adjacent duplicate
+of already-scored work. Two are genuine, previously-undocumented narrowings
+of already-`partial` items — real work, no status flip, so no headline
+effect, the same "narrowing, not a flip" category this document uses
+throughout:
+
+1. **`Brep::Check()`'s `TrimEdgeGap` sampling** (`a49a9a4`) widened from 3
+   points (start/middle/end) to 9 evenly-spaced samples, closing exactly the
+   blind spot the "Geometric consistency validation" bullet already named
+   ("compares only 3 samples"). The bullet text below is corrected to match;
+   the item stays `partial` (a face/face self-intersection check between
+   faces sharing no boundary is still missing), so the kernel table's
+   Healing/repair row (19/10/1, 80.0%) is unchanged.
+2. **Plugin marketplace** (`105d4408`, `472eb52`) gained `min_app_version`
+   enforcement (previously parsed and displayed but never checked), the
+   Marketplace panel's Install/Update button now going through
+   `InstallById`'s dependency resolution instead of calling `InstallEntry`
+   directly (the UI path could previously install a plug-in with an unmet
+   dependency), a case-insensitive search filter over
+   id/name/author/description/tags, version-constrained dependencies
+   (`"id@1.2.0"` syntax), and a shared-dependency warning on direct
+   uninstall (naming every entry that still depends on it, without
+   blocking). All of this is still local install/dependency-graph
+   infrastructure, not the missing curated/hosted discovery index the item
+   is scored against, so it stays `partial` and the app table's Ecosystem
+   row (7/2/7, 50.0%) is unchanged.
+
+**Arithmetic correction (kernel headline only):** recomputing the kernel
+table's weighted average directly from its current 17 rows (`sum(weight *
+(present + 0.5*partial) / items) / 17.75`) gives 67.96%, which rounds to
+68.0% — not the 67.7% the header carried forward from a chain of
+per-commit `previous_headline + weight*delta/17.75` increments (most
+recently `92ecdda`'s correctly-computed +0.34pp for the Boolean operations
+row, 62.0%→66.0%). The increments themselves are each individually correct;
+the drift is in the starting point they were chained from, which predates
+this session's own 5.5-hour window (recomputing the table as it stood
+*before* `92ecdda`'s change gives 67.62%, itself already above the 67.4% it
+was tracked at) — an accumulation from earlier sessions' own rounding, not
+from anything landed in this window. Re-pointed to the recomputed, verified
+value; no row's Present/Partial/Missing changed, so this is a pure
+arithmetic fix, the same kind this document has made before (see the
+"Intersections & projections" 65.5%→69.0% correction noted below). The app
+table's own weighted average recomputes to 71.97% against its current
+rows, which rounds to the already-tracked 72.0% — no drift there; the
+concern that the app headline might again be lagging real work, the same
+way it did before the `6080d7c` session, did not hold up this time.
+
+`dino8_kernel_tests`/`dino8_app_tests` re-run clean after this pass
+(docs-only change, no source edited).
 
 **2026-09-30 re-score (a sixteenth session, prompted by a claim the headline had
 "gone nearly flat" despite ~94 commits landing over the prior ~44 hours):**
@@ -2940,7 +3004,7 @@ for rank 2, ahead of the four-way 0.091 tier it used to trail).*
 
 **kernel: Healing, repair, validation, tolerant modeling** (healing):
 - [partial] Tolerant sewing with edge splitting (partial-overlap edges, T-junctions, mismatched edge subdivision) — `Brep::SewTJunctions` (declaration brep.h:3273, implementation brep.cpp:7745-7797 — corrected 2026-09-28, was mis-cited brep.h:2766-2801; brep.cpp:6779-6836, a range that actually held `SplitNonManifoldVertex`/`Vertices` code) finds every T-junction among naked edges, splits the longer edge via `SplitNakedEdgeAt`, and finishes with `JoinNakedEdges`. Still partial: refuses every curved naked edge (`if (!a.IsLinear(tol)) continue;`); the app's own `JoinNakedEdges` does not call it; a latent bug re-confirmed by reading the current source — in the `for (int k = 0; k < 2; ++k)` inner loop the `break;` at line 7792 (corrected 2026-09-28, was mis-cited brep.cpp:6820) is unconditional, so if edge B's first endpoint (k=0) satisfies the on-line/strictly-interior test but `SplitNakedEdgeAt` then returns anything other than `Result::Ok`, the loop still breaks and B's second endpoint (k=1) is never tried in that pass.
-- [partial] Geometric consistency validation (edge curve lies on adjacent surfaces, 2D trim vs 3D edge agreement, face/face self-intersection check) — `Brep::Check()` reports `EdgeVertexGap`, `TrimEdgeGap`, `LoopGap`, `InvalidTrim`, 2D/3D loop self-intersection, and (new this pass — see honesty note above) `NonManifoldVertex` pinch-point detection via union-find over each vertex's incident-edge face groups (brep.cpp:6279-6286, calling `GroupVertexEdgesByFace`, brep.cpp:6155-6166+). Its heal, `Brep::SplitNonManifoldVertex`/`SplitNonManifoldVertices` (brep.h:2864-2875; brep.cpp:6745-6812 — corrected 2026-09-28, was mis-cited brep.h:2662-2700; brep.cpp:6538-6612), disjoins a pinch point into one vertex per face-group, never deleting or `Compact()`ing; it returns `Result::Failed` (not a crash, but a real refusal) when one of the vertex's incident edges is closed on itself at that same vertex (brep.h:2681-2689's own doc comment calls this genuinely rare but explicitly unhandled), and it is not called anywhere in dino8-app. Neither addition is strong enough to flip this item to present. (The `Brep::Check()` DegenerateFace false-positive this bullet used to describe as "confirmed still present" is fixed, by `b1ac7c9` — see the top-of-document honesty note for why the prior pass's re-confirmation was itself stale, and for where the fix actually lives in the current source.) Remaining gaps: `TrimEdgeGap` compares only 3 samples at matching normalized parameters; no face/face self-intersection check between faces sharing no boundary.
+- [partial] Geometric consistency validation (edge curve lies on adjacent surfaces, 2D trim vs 3D edge agreement, face/face self-intersection check) — `Brep::Check()` reports `EdgeVertexGap`, `TrimEdgeGap`, `LoopGap`, `InvalidTrim`, 2D/3D loop self-intersection, and (new this pass — see honesty note above) `NonManifoldVertex` pinch-point detection via union-find over each vertex's incident-edge face groups (brep.cpp:6279-6286, calling `GroupVertexEdgesByFace`, brep.cpp:6155-6166+). Its heal, `Brep::SplitNonManifoldVertex`/`SplitNonManifoldVertices` (brep.h:2864-2875; brep.cpp:6745-6812 — corrected 2026-09-28, was mis-cited brep.h:2662-2700; brep.cpp:6538-6612), disjoins a pinch point into one vertex per face-group, never deleting or `Compact()`ing; it returns `Result::Failed` (not a crash, but a real refusal) when one of the vertex's incident edges is closed on itself at that same vertex (brep.h:2681-2689's own doc comment calls this genuinely rare but explicitly unhandled), and it is not called anywhere in dino8-app. Neither addition is strong enough to flip this item to present. (The `Brep::Check()` DegenerateFace false-positive this bullet used to describe as "confirmed still present" is fixed, by `b1ac7c9` — see the top-of-document honesty note for why the prior pass's re-confirmation was itself stale, and for where the fix actually lives in the current source.) Remaining gaps: **`TrimEdgeGap` now compares 9 evenly-spaced samples, not 3** (widened by `a49a9a4`, closing the "cannot see a gap that peaks strictly between the old 3 samples" blind spot this bullet used to name — verified against a fixture built to be invisible to the old sampling); no face/face self-intersection check between faces sharing no boundary.
 - [partial] Gap closing by edge re-trim / trim refit (ReplaceEdgeCurve, RefitTrim, ReplaceEdge) — `Brep::ReplaceEdgeCurve` does closest-point re-projection of every trim, throwing when the fit fails; `CloseLoopGapsWithinTolerance` closes residual 2D loop gaps. No `RefitTrim` or general `ReplaceEdge`.
 - [partial] Micro/sliver edge removal (RemoveAllNakedMicroEdges / Brep::RemoveNakedMicroEdge) — `Brep::RemoveNakedMicroEdge` works only on an isolated naked sliver whose neighbours are also naked. `Brep::RemoveDegenerateEdges` (brep.h:2660) collapses shared or naked edges at or below tolerance.
 - [partial] Self-intersection detection (curves, meshes, surfaces/breps) — meshes: `Mesh::FindSelfIntersections`/`FindOffsetSelfIntersections`; breps: only loop boundaries via `Check()`'s `SelfIntersectingLoop`/`SelfIntersectingLoop3d`; curves: app-only sampled. No face-interior or face/face check anywhere.
@@ -3836,7 +3900,7 @@ start line) — all citation-precision fixes, not scoring changes.
 - [missing] Cloud model viewer / app builder (ShapeDiver equivalent) — no web-viewer or embed code exists.
 - [missing] Touch-first companion app (Rhino for iPad equivalent) — desktop only; a separate product, not a feature of this app. (Infeasible — see below.)
 - [missing] Code-signed / notarized installers — the signing CI steps only run if a certificate secret is set, and no certificate has been purchased. (Infeasible — see below.)
-- [partial] Plugin marketplace / discovery mechanism — **reclassified 2026-09-30, no longer infeasible.** `dino8-app/src/plugins/Marketplace.{h,cpp}`/`MarketplaceIndex.{h,cpp}`/`MarketplacePanel.{h,cpp}` is a real, tested system: `InstallEntry` fetches or copies a plug-in's library (with sha256 verification) into `<config>/plugins` and loads it; `InstallById`/`UninstallById` resolve and cascade a declared dependency graph (cycle-refusing) on install and uninstall respectively; local ratings/reviews are attached per entry. Still partial: there is no built-in curated/hosted index — a user must supply a local path or an http(s) URL to a JSON index by hand (`MarketplacePanel.cpp:94`) — so this is real plugin *installation* infrastructure without real *discovery*. (The separate "Third-party plugin ecosystem (real external adoption)" item below stays infeasible — a network-effect gap, not an engineering one.)
+- [partial] Plugin marketplace / discovery mechanism — **reclassified 2026-09-30, no longer infeasible.** `dino8-app/src/plugins/Marketplace.{h,cpp}`/`MarketplaceIndex.{h,cpp}`/`MarketplacePanel.{h,cpp}` is a real, tested system: `InstallEntry` fetches or copies a plug-in's library (with sha256 verification) into `<config>/plugins` and loads it; `InstallById`/`UninstallById` resolve and cascade a declared dependency graph (cycle-refusing) on install and uninstall respectively; local ratings/reviews are attached per entry. **Same-day follow-up:** `CheckCompatibility` now enforces `min_app_version` (`105d4408` — previously parsed/shown but never checked, refusing `InstallEntry` the same way an over-new `api_version` already was), and the panel's own Install/Update button now goes through `InstallById` instead of calling `InstallEntry` directly, so an install from the UI resolves dependencies the same way the command line already did. A later pass (`472eb52`) adds a case-insensitive search filter over id/name/author/description/tags (`MatchesFilter`, `MarketplaceIndex.cpp`), lets a `dependencies` entry name a minimum version (`"id@1.2.0"` syntax), and has `UninstallById` name every other installed entry that still declares a plug-in as a dependency when it is uninstalled directly rather than via cascade (a warning, not a block — a shared dependency was previously removable out from under a dependent with no notice). Still partial: there is no built-in curated/hosted index — a user must supply a local path or an http(s) URL to a JSON index by hand (`MarketplacePanel.cpp:94`) — so this is real plugin *installation* infrastructure without real *discovery*. (The separate "Third-party plugin ecosystem (real external adoption)" item below stays infeasible — a network-effect gap, not an engineering one.)
 - [missing] Third-party plugin ecosystem (real external adoption) — four first-party example plugins exist and no third-party plugins; a network-effect gap, not an engineering one. (Infeasible — see below.)
 - [missing] Real-time multi-user collaboration / co-editing — same evidence as the app_ux item; no network code anywhere.
 
