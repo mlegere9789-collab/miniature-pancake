@@ -2005,41 +2005,41 @@ print("layers delete after switch: " + str(dino8.doc.Layers.Delete("QCLayer")))
 print("layers count final: %d" % dino8.doc.Layers.Count())
 print("layers is layer after delete: " + str(dino8.doc.Layers.IsLayer("QCLayer")))
 
-# Document-state functions - dino8.Undo/Redo/BeginUndo/UnitSystem/
-# UnitSystemName/DocumentName, matching Lua's rs.Undo/rs.Redo/rs.BeginUndo/
-# rs.UnitSystem/rs.UnitSystemName/rs.DocumentName - closing part of
-# PARITY_MAP.md's "Python API breadth" gap (these "undo/document-state
-# functions" were entirely unported before now). A fresh, never-saved
-# document defaults to Untitled/Millimeters.
-print("document name: " + dino8.DocumentName())
-unit_before = dino8.UnitSystem()
-print("unit system before: %d" % unit_before)
-print("unit system name before: " + dino8.UnitSystemName())
-old_unit = dino8.UnitSystem("Feet")
-print("unit system set returned old: %d" % old_unit)
-print("unit system name after set: " + dino8.UnitSystemName())
-dino8.UnitSystem(unit_before)
-print("unit system name restored: " + dino8.UnitSystemName())
-
-undo_pt_id = dino8.doc.Objects.AddPoint(600, 0, 0)
-print("object count before undo: %d" % len(dino8.doc.Objects.AllObjects()))
-print("undo returned: " + str(dino8.Undo()))
-print("object count after undo: %d" % len(dino8.doc.Objects.AllObjects()))
-print("undone point gone: " + str(dino8.doc.Objects.Find(undo_pt_id) is None))
-print("redo returned: " + str(dino8.Redo()))
-print("object count after redo: %d" % len(dino8.doc.Objects.AllObjects()))
-print("redone point back: " + str(dino8.doc.Objects.Find(undo_pt_id) is not None))
-
-# BeginUndo just opens a labeled undo entry (identical to LuaEngine.cpp's
-# rs_BeginUndo calling the same Document::BeginChange) - Undo()'s own
-# FinalizePending() closes it out as an empty, no-op entry before popping
-# and reverting it, so this proves it pushed a real, poppable undo entry
-# without disturbing document state.
-dino8.BeginUndo("PythonScriptEdit")
-print("begin undo entry undone: " + str(dino8.Undo()))
-print("object count unaffected by empty begin-undo entry: %d" % len(dino8.doc.Objects.AllObjects()))
-
 dino8.RunCommand("NewLayer", "Parts")
+
+print("unit system before: %d" % dino8.doc.UnitSystem)
+dino8.doc.UnitSystem = "Feet"
+print("unit system after set by name: %d" % dino8.doc.UnitSystem)
+print("unit system name after set: " + dino8.doc.UnitSystemName)
+dino8.doc.UnitSystem = 2
+print("unit system after set by code: " + dino8.doc.UnitSystemName)
+
+print("doc name: " + dino8.doc.Name)
+print("doc path: " + str(dino8.doc.Path))
+print("doc modified before: " + str(dino8.doc.Modified))
+dino8.doc.Modified = False
+print("doc modified after set: " + str(dino8.doc.Modified))
+dino8.doc.Modified = True
+
+dino8.doc.BeginUndo("QCPointGroup")
+undo_pt = dino8.doc.Objects.AddPoint(600, 0, 0)
+print("object count before undo: %d" % len(dino8.doc.Objects.AllObjects()))
+print("undo point present: " + str(dino8.doc.Objects.Find(undo_pt) is not None))
+print("undo returned: " + str(dino8.doc.Undo()))
+print("object count after undo: %d" % len(dino8.doc.Objects.AllObjects()))
+print("undo point gone: " + str(dino8.doc.Objects.Find(undo_pt) is None))
+print("redo returned: " + str(dino8.doc.Redo()))
+print("object count after redo: %d" % len(dino8.doc.Objects.AllObjects()))
+print("redo point back: " + str(dino8.doc.Objects.Find(undo_pt) is not None))
+print("final undo returned: " + str(dino8.doc.Undo()))
+print("object count after final undo: %d" % len(dino8.doc.Objects.AllObjects()))
+
+print("last command name: " + dino8.LastCommandName())
+print("version starts with Dino 8: " + str(dino8.Version().startswith("Dino 8 ")))
+print("command history has last command: " + str(dino8.LastCommandName() in dino8.CommandHistory()))
+dino8.ClearCommandHistory()
+print("command history empty after clear: " + str(dino8.CommandHistory() == ""))
+print("last command survives history clear: " + str(dino8.LastCommandName() == "RunPythonScript"))
 PY
 sed "s|@TMP@|$TMPW|g" "$HERE/python_script.txt" > "$TMPW/python_script.txt"
 # Captured with set +e, not "|| { ...; exit 1; }": python_script.txt's own
@@ -2217,22 +2217,30 @@ else
   pscheck "history: layers delete after switch: True" "Delete succeeded once the layer was no longer current"
   pscheck "history: layers count final: 1" "Layers.Count is back to 1 after the delete"
   pscheck "history: layers is layer after delete: False" "IsLayer no longer finds the deleted layer"
-  pscheck "history: document name: Untitled" "dino8.DocumentName() reported Untitled for a never-saved document, matching rs.DocumentName()"
-  pscheck "history: unit system before: 2" "dino8.UnitSystem() read the document's default Millimeters (code 2), matching rs.UnitSystem()"
-  pscheck "history: unit system name before: Millimeters" "dino8.UnitSystemName() matched UnitSystem()'s code, matching rs.UnitSystemName()"
-  pscheck "history: unit system set returned old: 2" "dino8.UnitSystem(\"Feet\") returned the previous code (2), matching rs.UnitSystem's get-old/set-new contract"
-  pscheck "history: unit system name after set: Feet" "UnitSystemName reflects the just-set Feet unit system"
-  pscheck "history: unit system name restored: Millimeters" "dino8.UnitSystem(2) accepted a numeric Rhino unit code and restored Millimeters"
-  pscheck "history: object count before undo: 37" "AllObjects gained the new undo-test point"
-  pscheck "history: undo returned: True" "dino8.Undo() undid the AddPoint change, matching rs.Undo()"
-  pscheck "history: object count after undo: 36" "Undo() removed the undo-test point"
-  pscheck "history: undone point gone: True" "the undone point no longer resolves via Find"
-  pscheck "history: redo returned: True" "dino8.Redo() redid the undone AddPoint change, matching rs.Redo()"
-  pscheck "history: object count after redo: 37" "Redo() restored the undo-test point"
-  pscheck "history: redone point back: True" "the redone point resolves via Find again"
-  pscheck "history: begin undo entry undone: True" "dino8.BeginUndo(label) opened a real, poppable undo entry, matching rs.BeginUndo(label)"
-  pscheck "history: object count unaffected by empty begin-undo entry: 37" "BeginUndo's own empty entry round-tripped through Undo() with no side effect"
-  pscheck "^ok   expect_objects 37" "RunPythonScript left the box, the circle, the cone, the torus, the interpolated curve, the arc, the srf, the planar surface, three points, the extruded surface, the extruded solid, the union mesh, the difference mesh, the intersection mesh, the two circle copies, the rotate line and its rotated copy, the scale box and its scaled copy, the mirror line and its mirrored copy, the transform line and its transformed copy, the curve-query line, its 3 create=True divide points, the bounding-box test box, the surface-closest-point sphere, the AddMesh triangle, the two fresh ObjectsByType test points, and the Undo/Redo test point left behind by the redo (the sphere, the two union input boxes, the two difference input boxes and the two intersection input boxes were removed from inside the script)"
+  pscheck "history: unit system before: 2" "dino8.doc.UnitSystem read back the default document unit system (2, Millimeters), matching rs.UnitSystem's getter form and Document::Settings().unit_system's default"
+  pscheck "history: unit system after set by name: 9" "assigning dino8.doc.UnitSystem = \"Feet\" resolved the name to Rhino's own unit code (9), matching rs.UnitSystem's setter-by-name form and UnitCode's table in LuaEngine.cpp"
+  pscheck "history: unit system name after set: Feet" "dino8.doc.UnitSystemName read back the word form after the by-name set, matching rs.UnitSystemName"
+  pscheck "history: unit system after set by code: Millimeters" "assigning dino8.doc.UnitSystem = 2 (an int) resolved through the same code table, matching rs.UnitSystem's setter-by-code form"
+  pscheck "history: doc name: Untitled" "dino8.doc.Name reported \"Untitled\" for a document with no path yet, matching rs.DocumentName"
+  pscheck "history: doc path: None" "dino8.doc.Path is None for an unsaved document, matching rs.DocumentPath pushing nil instead of an empty string"
+  pscheck "history: doc modified before: True" "dino8.doc.Modified reflects the many edits this script already made, matching rs.DocumentModified's getter form"
+  pscheck "history: doc modified after set: False" "assigning dino8.doc.Modified = False round-tripped, matching rs.DocumentModified's setter form"
+  pscheck "history: object count before undo: 37" "dino8.doc.Objects.AddPoint after dino8.doc.BeginUndo(\"QCPointGroup\") added the one new point, matching rs.BeginUndo/rs.AddPoint"
+  pscheck "history: undo point present: True" "the freshly added point resolves through Find before any undo"
+  pscheck "history: undo returned: True" "dino8.doc.Undo() reported success, matching rs.Undo() - previously entirely unported to Python per the PARITY_MAP note on undo/document-state functions"
+  pscheck "history: object count after undo: 36" "Undo() removed exactly the point BeginUndo's group added"
+  pscheck "history: undo point gone: True" "the undone point no longer resolves through Find"
+  pscheck "history: redo returned: True" "dino8.doc.Redo() reported success, matching rs.Redo() - also previously entirely unported to Python"
+  pscheck "history: object count after redo: 37" "Redo() restored exactly the point Undo() had removed"
+  pscheck "history: redo point back: True" "the redone point resolves through Find again"
+  pscheck "history: final undo returned: True" "a second dino8.doc.Undo() call cleanly reverted the redo, leaving the document's object count where the rest of this script expects it"
+  pscheck "history: object count after final undo: 36" "the undo/redo round trip nets to zero extra objects, so the final @expect_objects count below is unaffected"
+  pscheck "history: last command name: RunPythonScript" "dino8.LastCommandName() reported RunPythonScript itself, matching rs.LastCommandName - CommandEngine::RunNested saves/restores last_command_ around a nested dino8.RunCommand call the same way rs.Command does, so the earlier NewLayer/AddLayer/etc. nested calls never clobber it"
+  pscheck "history: version starts with Dino 8: True" "dino8.Version() reports a Dino 8 version string, matching rs.Version() - previously entirely unported to Python"
+  pscheck "history: command history has last command: True" "dino8.CommandHistory() includes the line-1 \"Command: RunPythonScript ...\" entry LastCommandName just named, matching rs.CommandHistory()"
+  pscheck "history: command history empty after clear: True" "dino8.ClearCommandHistory() actually cleared it, matching rs.ClearCommandHistory()"
+  pscheck "history: last command survives history clear: True" "clearing the history deque leaves last_command_ itself untouched, matching rs.ClearCommandHistory() only ever clearing rs.CommandHistory()'s own log"
+  pscheck "^ok   expect_objects 36" "RunPythonScript left the box, the circle, the cone, the torus, the interpolated curve, the arc, the srf, the planar surface, three points, the extruded surface, the extruded solid, the union mesh, the difference mesh, the intersection mesh, the two circle copies, the rotate line and its rotated copy, the scale box and its scaled copy, the mirror line and its mirrored copy, the transform line and its transformed copy, the curve-query line, its 3 create=True divide points, the bounding-box test box, the surface-closest-point sphere, the AddMesh triangle, and the two fresh ObjectsByType test points (the sphere, the two union input boxes, the two difference input boxes and the two intersection input boxes were removed from inside the script, and the undo/redo group's own point was undone again at the end)"
   grep -q "! Python error" <<<"$PS" && { echo "FAIL python_script.txt printed a Python error"; fail=1; } || echo "ok   no Python script errors"
 fi
 

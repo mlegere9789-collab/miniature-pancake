@@ -1,5 +1,6 @@
 #include "script/PythonEngine.h"
 
+#include <algorithm>
 #include <cctype>
 #include <sstream>
 #include <fstream>
@@ -142,6 +143,23 @@ Color ColorArg(const py::tuple& rgb) {
 
 py::tuple ColorToTuple(const Color& c) {
   return py::make_tuple(static_cast<int>(std::lround(c.r * 255)), static_cast<int>(std::lround(c.g * 255)), static_cast<int>(std::lround(c.b * 255)));
+}
+
+// Mirrors LuaEngine.cpp's UnitCode/rs_UnitSystem table exactly (Rhino's own
+// unit codes: 1 Microns ... 10 Miles), so dino8.doc.UnitSystem and
+// rs.UnitSystem agree on every code/name for the same document.
+const char* const kUnitSystemNames[] = {"None", "Microns", "Millimeters", "Centimeters", "Meters", "Kilometers", "Microinches", "Mils", "Inches", "Feet", "Miles"};
+constexpr int kUnitSystemCount = 11;
+
+int UnitCode(const std::string& name) {
+  std::string n = name;
+  std::transform(n.begin(), n.end(), n.begin(), [](unsigned char c) { return std::tolower(c); });
+  for (int i = 1; i < kUnitSystemCount; ++i) {
+    std::string cand = kUnitSystemNames[i];
+    std::transform(cand.begin(), cand.end(), cand.begin(), [](unsigned char c) { return std::tolower(c); });
+    if (n == cand) return i;
+  }
+  return 0;
 }
 
 // Mirrors LuaEngine.cpp's NeedCurve/NeedMesh: fetches the object and raises
@@ -873,9 +891,46 @@ struct PyLayerTable {
 
 // dino8.doc - just enough of RhinoCommon's RhinoDoc to reach Objects/Layers;
 // more (ActiveDoc-style globals) can grow here the same way.
+//
+// The document-state members below (Undo/Redo/BeginUndo/UnitSystem/Name/
+// Path/Modified) mirror LuaEngine.cpp's rs_Undo/rs_Redo/rs_BeginUndo/
+// rs_UnitSystem/rs_UnitSystemName/rs_DocumentName/rs_DocumentPath/
+// rs_DocumentModified - previously entirely unported, per the PARITY_MAP
+// note that Python scripts had no way to undo a change or inspect/change
+// the document's unit system from inside a script.
 struct PyDoc {
   PyObjectTable objects;
   PyLayerTable layers;
+
+  bool Undo() { return DocOf().Undo(); }
+  bool Redo() { return DocOf().Redo(); }
+  void BeginUndo(const std::string& label) { DocOf().BeginChange(label); }
+
+  int GetUnitSystem() const { return UnitCode(DocOf().Settings().unit_system); }
+  void SetUnitSystem(py::object value) {
+    DocumentSettings& s = DocOf().Settings();
+    if (py::isinstance<py::int_>(value)) {
+      const int c = value.cast<int>();
+      if (c >= 0 && c < kUnitSystemCount) s.unit_system = kUnitSystemNames[c];
+    } else {
+      s.unit_system = value.cast<std::string>();
+    }
+    DocOf().Touch();
+  }
+  std::string UnitSystemName() const { return DocOf().Settings().unit_system; }
+
+  std::string Name() const {
+    const std::string& p = DocOf().Path();
+    return p.empty() ? "Untitled" : std::filesystem::path(p).filename().string();
+  }
+  py::object Path() const {
+    const std::string& p = DocOf().Path();
+    if (p.empty()) return py::none();
+    return py::cast(std::filesystem::path(p).parent_path().string());
+  }
+
+  bool GetModified() const { return DocOf().Modified(); }
+  void SetModified(bool m) { DocOf().SetModified(m); }
 };
 
 bool RunCommand(const std::string& name, py::args args) {
@@ -887,54 +942,19 @@ bool RunCommand(const std::string& name, py::args args) {
   return AppOf().Engine().RunNested(line);
 }
 
-// Document-state functions, matching rs.Undo/rs.Redo/rs.BeginUndo/
-// rs.UnitSystem/rs.UnitSystemName/rs.DocumentName in LuaEngine.cpp - the
-// "undo/document-state functions (Undo/Redo/UnitSystem/etc.) remain
-// entirely unported" half of PARITY_MAP.md's "Python API breadth" gap.
-// See LuaEngine.cpp's own rs_Undo/rs_Redo/rs_BeginUndo/rs_UnitSystem/
-// rs_UnitSystemName for the Lua-side twin of each of these.
-bool Undo() { return DocOf().Undo(); }
-bool Redo() { return DocOf().Redo(); }
-void BeginUndo(const std::string& label) { DocOf().BeginChange(label); }
-
-int UnitCode(const std::string& name) {
-  std::string n = name;
-  for (char& c : n) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-  if (n == "microns") return 1;
-  if (n == "millimeters") return 2;
-  if (n == "centimeters") return 3;
-  if (n == "meters") return 4;
-  if (n == "kilometers") return 5;
-  if (n == "microinches") return 6;
-  if (n == "mils") return 7;
-  if (n == "inches") return 8;
-  if (n == "feet") return 9;
-  if (n == "miles") return 10;
-  return 0;
+// Mirrors rs.CommandHistory/rs.ClearCommandHistory/rs.Version/
+// rs.LastCommandName in LuaEngine.cpp - module-level (not dino8.doc.*,
+// since they report on the command line/engine, not the document), and
+// previously entirely unported to Python per the PARITY_MAP note on
+// document-state functions.
+std::string CommandHistory() {
+  std::string all;
+  for (const std::string& line : AppOf().Engine().History()) { all += line; all += '\n'; }
+  return all;
 }
-
-int UnitSystem(py::object unit) {
-  DocumentSettings& s = DocOf().Settings();
-  const int old = UnitCode(s.unit_system);
-  if (!unit.is_none()) {
-    static const char* names[] = {"None", "Microns", "Millimeters", "Centimeters", "Meters", "Kilometers", "Microinches", "Mils", "Inches", "Feet", "Miles"};
-    if (py::isinstance<py::int_>(unit)) {
-      const int c = unit.cast<int>();
-      if (c >= 0 && c <= 10) s.unit_system = names[c];
-    } else {
-      s.unit_system = unit.cast<std::string>();
-    }
-    DocOf().Touch();
-  }
-  return old;
-}
-
-std::string UnitSystemName() { return DocOf().Settings().unit_system; }
-
-std::string DocumentName() {
-  const std::string& p = DocOf().Path();
-  return p.empty() ? "Untitled" : std::filesystem::path(p).filename().string();
-}
+void ClearCommandHistory() { AppOf().Engine().ClearHistory(); }
+std::string Version() { return "Dino 8 " DINO8_VERSION " (Python " PY_VERSION ")"; }
+std::string LastCommandName() { return AppOf().Engine().LastCommand(); }
 
 // Buffers Python's sys.stdout/sys.stderr writes and forwards them to the
 // engine one line at a time (print() issues one write() per argument/sep
@@ -1057,18 +1077,24 @@ PYBIND11_EMBEDDED_MODULE(dino8, m) {
 
   py::class_<PyDoc>(m, "Dino8Doc")
       .def_readonly("Objects", &PyDoc::objects)
-      .def_readonly("Layers", &PyDoc::layers);
+      .def_readonly("Layers", &PyDoc::layers)
+      .def("Undo", &PyDoc::Undo)
+      .def("Redo", &PyDoc::Redo)
+      .def("BeginUndo", &PyDoc::BeginUndo, py::arg("label") = "Script")
+      .def_property("UnitSystem", &PyDoc::GetUnitSystem, &PyDoc::SetUnitSystem)
+      .def_property_readonly("UnitSystemName", &PyDoc::UnitSystemName)
+      .def_property_readonly("Name", &PyDoc::Name)
+      .def_property_readonly("Path", &PyDoc::Path)
+      .def_property("Modified", &PyDoc::GetModified, &PyDoc::SetModified);
 
   // A single persistent PyDoc instance, like RhinoCommon's `scriptcontext.doc`.
   m.attr("doc") = PyDoc{};
 
   m.def("RunCommand", &RunCommand, "Runs one Dino 8 command line by name, exactly as if typed on the command line (dino8.RunCommand('Box 0,0,0 5,5,5')).");
-  m.def("Undo", &Undo, "Undoes the last change, matching rs.Undo().");
-  m.def("Redo", &Redo, "Redoes the last undone change, matching rs.Redo().");
-  m.def("BeginUndo", &BeginUndo, py::arg("label") = "Script", "Records an undo point with a label, matching rs.BeginUndo(label).");
-  m.def("UnitSystem", &UnitSystem, py::arg("unit") = py::none(), "Gets or sets the document unit system (Rhino codes: 2 mm, 3 cm, 4 m, 8 in, 9 ft), matching rs.UnitSystem([unit]).");
-  m.def("UnitSystemName", &UnitSystemName, "The unit system as a word, matching rs.UnitSystemName().");
-  m.def("DocumentName", &DocumentName, "The document's file name, or 'Untitled' if it has never been saved, matching rs.DocumentName().");
+  m.def("CommandHistory", &CommandHistory, "Every command-line history line so far, newline-separated.");
+  m.def("ClearCommandHistory", &ClearCommandHistory, "Clears the command-line history.");
+  m.def("Version", &Version, "The running Dino 8 version plus the embedded Python version.");
+  m.def("LastCommandName", &LastCommandName, "The name of the most recently run command.");
 
   // Internal: sys.stdout/sys.stderr are redirected to this on construction
   // (see PythonEngine::PythonEngine) so print() output reaches the command
