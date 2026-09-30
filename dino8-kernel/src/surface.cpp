@@ -2462,6 +2462,152 @@ Result NurbsSurface::OffsetAnalytic(double distance, NurbsSurface& out, double t
       ON_NurbsSurface ns;
       if (new_torus.GetNurbForm(ns) == 0) return Result::Failed;
       out.surface_ = ns;
+
+      // Preserve a partial patch's own extent in both directions - the
+      // same "GetNurbForm() always builds the FULL primitive" defect the
+      // sphere/cylinder/cone branches above already fix for their own
+      // domain(s). A genuinely different (and more surprising) wrinkle
+      // here, confirmed by reading the OpenNURBS source and by a direct
+      // PointAt() cross-check, not assumed: `ON_Torus::GetNurbForm()` is
+      // the only one of the four analytic families that builds via the
+      // generic `ON_RevSurface::TensorProduct` path, and BOTH the
+      // revolution-direction arc (`ON_RevSurface::GetNurbForm`'s own
+      // `a.SetDomain(m_t)`, `m_t == [0, 2*pi*MajorRadius()]`) and the
+      // tube profile's `ON_ArcCurve` (whose constructor sets its own
+      // domain to `[0, circle.Length()] == [0, 2*pi*minor_radius]`, not
+      // `[0, 2*pi]`) rescale the usual raw rational-quadratic circle
+      // parameter into ARC-LENGTH units - confirmed directly against
+      // `GetNurbForm()`'s own output domain (`[0, 2*pi*major_radius] x
+      // [0, 2*pi*minor_radius]`, not `[0,2*pi] x [0,2*pi]`). So
+      // converting a true angle to this surface's own domain value needs
+      // the usual `GetNurbFormParameterFromRadian()` conversion the
+      // sphere/cylinder/cone branches above already use, PLUS one extra
+      // multiply by the relevant radius: u = P(major_angle) *
+      // major_radius, v = P(minor_angle) * new_minor - the OFFSET tube
+      // radius, not the original, since unlike major_radius the tube
+      // radius genuinely changes under this offset and it's `new_torus`'s
+      // own `GetNurbForm()` this trim has to match.
+      //
+      // A second, genuinely separate discovery made verifying this:
+      // `ON_Torus::ClosestPointTo()`'s own `minor_angle` output (already
+      // computed, harmlessly unused, just above for the offset-sign
+      // point) is WRONG whenever `plane.origin` isn't the world origin -
+      // its internal minor-angle arithmetic subtracts
+      // `major_radius*raxis` (a bare direction vector) from the absolute
+      // `test_point` without first subtracting `plane.origin`, silently
+      // assuming the torus is centered at the world origin. Confirmed by
+      // direct comparison against an independently-derived true minor
+      // angle: exact zero error on a world-centered torus (where the bug
+      // is invisible - the missing term is zero), over 0.17 radians of
+      // spurious drift on an off-origin one, across two points that share
+      // the exact same true minor angle. A real OpenNURBS bug, not
+      // something to patch in a vendored dependency, so - like the
+      // cylinder branch above already works around its own
+      // `circle.plane.ClosestPointTo` bug - `minor_angle` is measured
+      // here via `MinorCircleRadians(major_angle)`'s OWN `ClosestPointTo`
+      // (the tube cross-section circle's own, general, independently
+      // verified-exact code path) rather than ever trusting
+      // `ON_Torus::ClosestPointTo()`'s own `minor_angle` output.
+      // NOTE: these spans are in this surface's own domain UNITS, which -
+      // per the arc-length rescale explained above - are radius-scaled,
+      // not raw radians like the sphere/cylinder/cone branches compare
+      // against directly. Comparing against a bare `2*pi` here would
+      // wrongly call almost any genuinely partial patch "full" (or vice
+      // versa) for any radius other than 1.
+      const bool trim_u = du.max - du.min < 2.0 * ON_PI * torus.major_radius - 1e-9;
+      const bool trim_v = dv.max - dv.min < 2.0 * ON_PI * torus.minor_radius - 1e-9;
+
+      if (trim_u || trim_v) {
+        const ON_Circle angle_ref(torus.plane, 1.0);
+        auto unwrap_near = [](double angle, double reference) {
+          while (angle - reference > ON_PI) angle -= 2.0 * ON_PI;
+          while (angle - reference < -ON_PI) angle += 2.0 * ON_PI;
+          return angle;
+        };
+
+        // Defensive check: the whole trim below assumes the ordinary
+        // (u=major, v=minor) convention every torus this codebase
+        // actually builds (`ON_Torus::GetNurbForm` itself, `Brep::Torus`,
+        // `Mesh::Torus`) uses - but `IsTorus()`'s own fallback fit (like
+        // `IsSphere()`'s own, above) can silently return a TRANSPOSED
+        // torus (major/minor swapped) for a surface built the other way
+        // around, with no flag distinguishing the two. Verified directly
+        // here (moving along u should change major_angle, not
+        // minor_angle) rather than trusted; a transposed surface is
+        // refused rather than mishandled.
+        const double du_span = du.max - du.min;
+        const Point3d q_a = PointAt(du.min + du_span / 3.0, vmid);
+        const Point3d q_b = PointAt(du.min + 2.0 * du_span / 3.0, vmid);
+        double maj_a, maj_b, minor_unused_a, minor_unused_b;
+        torus.ClosestPointTo(q_a, &maj_a, &minor_unused_a);
+        torus.ClosestPointTo(q_b, &maj_b, &minor_unused_b);
+        double min_a, min_b;
+        if (!torus.MinorCircleRadians(maj_a).ClosestPointTo(q_a, &min_a) ||
+            !torus.MinorCircleRadians(maj_b).ClosestPointTo(q_b, &min_b)) {
+          return Result::Failed;
+        }
+        const double d_major = std::abs(unwrap_near(maj_b, maj_a) - maj_a);
+        const double d_minor = std::abs(unwrap_near(min_b, min_a) - min_a);
+        if (!(d_major > d_minor)) return Result::Failed;
+
+        if (trim_u) {
+          const Point3d p_umin = PointAt(du.min, vmid);
+          const Point3d p_umax = PointAt(du.max, vmid);
+          const Point3d p_umid = PointAt(umid, vmid);
+          double angle_umin, angle_umax, angle_umid, unused;
+          torus.ClosestPointTo(p_umin, &angle_umin, &unused);
+          torus.ClosestPointTo(p_umax, &angle_umax, &unused);
+          torus.ClosestPointTo(p_umid, &angle_umid, &unused);
+          double nurb_umin, nurb_umax, nurb_umid;
+          if (!angle_ref.GetNurbFormParameterFromRadian(angle_umin, &nurb_umin) ||
+              !angle_ref.GetNurbFormParameterFromRadian(angle_umax, &nurb_umax) ||
+              !angle_ref.GetNurbFormParameterFromRadian(angle_umid, &nurb_umid)) {
+            return Result::Failed;
+          }
+          nurb_umin = unwrap_near(nurb_umin, nurb_umid);
+          nurb_umax = unwrap_near(nurb_umax, nurb_umid);
+          const double t0 = std::max(0.0, std::min(nurb_umin, nurb_umax));
+          const double t1 = std::min(2.0 * ON_PI, std::max(nurb_umin, nurb_umax));
+          if (!(t1 > t0 + 1e-9 && nurb_umid >= t0 - 1e-9 && nurb_umid <= t1 + 1e-9)) {
+            return Result::Failed;
+          }
+          if (out.Trim(0, t0 * torus.major_radius, t1 * torus.major_radius) != Result::Ok) {
+            return Result::Failed;
+          }
+        }
+
+        if (trim_v) {
+          double major_umid, unused2;
+          torus.ClosestPointTo(PointAt(umid, vmid), &major_umid, &unused2);
+          const ON_Circle minor_ref = torus.MinorCircleRadians(major_umid);
+          const Point3d p_vmin = PointAt(umid, dv.min);
+          const Point3d p_vmax = PointAt(umid, dv.max);
+          const Point3d p_vmid = PointAt(umid, vmid);
+          double minor_vmin, minor_vmax, minor_vmid;
+          if (!minor_ref.ClosestPointTo(p_vmin, &minor_vmin) ||
+              !minor_ref.ClosestPointTo(p_vmax, &minor_vmax) ||
+              !minor_ref.ClosestPointTo(p_vmid, &minor_vmid)) {
+            return Result::Failed;
+          }
+          double nurb_vmin, nurb_vmax, nurb_vmid;
+          if (!angle_ref.GetNurbFormParameterFromRadian(minor_vmin, &nurb_vmin) ||
+              !angle_ref.GetNurbFormParameterFromRadian(minor_vmax, &nurb_vmax) ||
+              !angle_ref.GetNurbFormParameterFromRadian(minor_vmid, &nurb_vmid)) {
+            return Result::Failed;
+          }
+          nurb_vmin = unwrap_near(nurb_vmin, nurb_vmid);
+          nurb_vmax = unwrap_near(nurb_vmax, nurb_vmid);
+          const double s0 = std::max(0.0, std::min(nurb_vmin, nurb_vmax));
+          const double s1 = std::min(2.0 * ON_PI, std::max(nurb_vmin, nurb_vmax));
+          if (!(s1 > s0 + 1e-9 && nurb_vmid >= s0 - 1e-9 && nurb_vmid <= s1 + 1e-9)) {
+            return Result::Failed;
+          }
+          if (out.Trim(1, s0 * new_minor, s1 * new_minor) != Result::Ok) {
+            return Result::Failed;
+          }
+        }
+      }
+
       return Result::Ok;
     }
   }

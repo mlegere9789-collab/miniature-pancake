@@ -43926,6 +43926,199 @@ void TestSurfaceOffsetAnalyticTorusIsExactCoaxialTorusAndRejectsSpindle() {
   Check(s.OffsetAnalytic(8.0, out, 1e-6) == Result::Failed, "OffsetAnalytic(+8.0) on this torus is refused (tube radius would reach/exceed the major radius - a spindle torus)");
 }
 
+void TestSurfaceOffsetAnalyticTorusPreservesPartialPatchExtent() {
+  using dino8::kernel::Interval;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  const double kMajor = 10.0, kMinor = 3.0;
+  const ON_Torus torus(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), kMajor, kMinor);
+  ON_NurbsSurface full_raw;
+  Check(torus.GetNurbForm(full_raw) != 0, "partial-torus setup: GetNurbForm succeeds");
+
+  NurbsSurface patch;
+  patch.raw() = full_raw;
+  // A quarter turn in major angle ([0, pi/2]) and a half turn in minor
+  // angle ([0, pi]) - both true radian values landing exactly on this
+  // construction's own quadrant/half knots (see the quarter-cylinder test
+  // above for why that matters), scaled into this surface's own
+  // arc-length domain units: `ON_Torus::GetNurbForm()` is the only one of
+  // the four analytic families that rescales its raw [0, 2*pi] circle
+  // parameter into ARC-LENGTH units (`[0, 2*pi*radius]`) rather than
+  // leaving it in raw radians, confirmed directly against this surface's
+  // own domain below rather than assumed.
+  const double u_end = 0.5 * ON_PI * kMajor;
+  const double v_end = ON_PI * kMinor;
+  Check(patch.Trim(0, 0.0, u_end) == Result::Ok, "partial-torus setup: Trim to a quarter major turn succeeds");
+  Check(patch.Trim(1, 0.0, v_end) == Result::Ok, "partial-torus setup: Trim to a half minor turn succeeds");
+
+  NurbsSurface out;
+  Check(patch.OffsetAnalytic(1.0, out) == Result::Ok, "OffsetAnalytic(+1.0) succeeds on a partial torus patch");
+
+  const Interval du = out.Domain(0);
+  const Interval dv = out.Domain(1);
+
+  // Every sampled point sits at exactly the offset tube radius (4.0) from
+  // the SAME major circle (radius 10, in the world XY plane).
+  double worst_radius = 0.0;
+  for (double t = 0.1; t < 1.0; t += 0.2) {
+    const double u = du.min + t * (du.max - du.min);
+    for (double s = 0.1; s < 1.0; s += 0.2) {
+      const double v = dv.min + s * (dv.max - dv.min);
+      const Point3d p = out.PointAt(u, v);
+      const double planar_r = std::hypot(p.x, p.y);
+      const double minor_dist = std::hypot(planar_r - kMajor, p.z);
+      worst_radius = std::max(worst_radius, std::abs(minor_dist - (kMinor + 1.0)));
+    }
+  }
+  Check(worst_radius < 1e-9, "OffsetAnalytic on a partial torus patch: every sampled point sits at exactly tube radius 4.0");
+
+  // The fix under test: the offset patch keeps this input's own
+  // quarter/half extent instead of GetNurbForm()'s own full closed torus.
+  // Major-angle boundaries sit at true angle 0 and pi/2 (world XY plane,
+  // checked via atan2); minor-angle boundaries sit at the tube's true
+  // outer equator (minor angle 0, planar radius major+tube) and inner
+  // equator (minor angle pi, planar radius major-tube) - both at z=0
+  // regardless of the (arbitrary, interior) major angle they're sampled
+  // at, since minor angle 0/pi always lie exactly in the major circle's
+  // own plane.
+  const double vmid = 0.5 * (dv.min + dv.max);
+  const Point3d p_umin = out.PointAt(du.min, vmid);
+  const Point3d p_umax = out.PointAt(du.max, vmid);
+  Check(std::abs(std::atan2(p_umin.y, p_umin.x) - 0.0) < 1e-6,
+        "offset partial-torus patch: major-angle U-min boundary sits at true angle 0");
+  Check(std::abs(std::atan2(p_umax.y, p_umax.x) - 0.5 * ON_PI) < 1e-6,
+        "offset partial-torus patch: major-angle U-max boundary sits at true angle pi/2");
+
+  const double umid = 0.5 * (du.min + du.max);
+  const Point3d p_vmin = out.PointAt(umid, dv.min);
+  const Point3d p_vmax = out.PointAt(umid, dv.max);
+  Check(std::abs(p_vmin.z) < 1e-9 && std::abs(std::hypot(p_vmin.x, p_vmin.y) - (kMajor + kMinor + 1.0)) < 1e-9,
+        "offset partial-torus patch: minor-angle V-min boundary sits at the tube's true outer equator (angle 0)");
+  Check(std::abs(p_vmax.z) < 1e-9 && std::abs(std::hypot(p_vmax.x, p_vmax.y) - (kMajor - kMinor - 1.0)) < 1e-9,
+        "offset partial-torus patch: minor-angle V-max boundary sits at the tube's true inner equator (angle pi)");
+
+  // Directly proves this isn't secretly a full torus: the trimmed patch's
+  // own U/V-domain spans are each a small fraction of the untrimmed
+  // GetNurbForm() torus's own full-turn spans.
+  const double full_u_span = full_raw.Domain(0)[1] - full_raw.Domain(0)[0];
+  const double full_v_span = full_raw.Domain(1)[1] - full_raw.Domain(1)[0];
+  Check((du.max - du.min) < 0.5 * full_u_span,
+        "offset partial-torus patch: U-domain span is a small fraction of a full turn, not the whole major circle");
+  Check((dv.max - dv.min) < 0.75 * full_v_span,
+        "offset partial-torus patch: V-domain span is a small fraction of a full turn, not the whole tube circle");
+}
+
+void TestSurfaceOffsetAnalyticTorusOffOriginTiltedPreservesArbitraryPatchExtent() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+  using dino8::kernel::Vector3d;
+
+  // Off-origin, non-axis-aligned torus with arbitrary (non-knot-aligned)
+  // trim bounds in BOTH directions - exercises the general case rather
+  // than the convenient quadrant-boundary fixture above: the wraparound-
+  // near-zero unwrap this method shares with the sphere/cylinder/cone
+  // branches, and a genuine, previously-undiscovered OpenNURBS bug this
+  // pass's own investigation found along the way - `ON_Torus::
+  // ClosestPointTo()`'s own minor_angle output silently assumes the torus
+  // is centered at the world origin (its internal arithmetic subtracts a
+  // bare direction vector from an absolute point without first
+  // subtracting `plane.origin`) - invisible on a world-centered fixture
+  // like the one above, but wrong by over a tenth of a radian here if
+  // this method trusted it instead of working around it.
+  ON_3dVector axis(0.2, -0.3, 0.9);
+  axis.Unitize();
+  const ON_Torus torus(ON_Plane(ON_3dPoint(1, 2, 3), axis), 10.0, 3.0);
+  ON_NurbsSurface full_raw;
+  Check(torus.GetNurbForm(full_raw) != 0, "off-origin-torus setup: GetNurbForm succeeds");
+
+  NurbsSurface s;
+  s.raw() = full_raw;
+  NurbsSurface patch = s;
+  Check(patch.Trim(0, 5.0, 20.0) == Result::Ok, "off-origin-torus setup: Trim to an arbitrary major sub-range succeeds");
+  Check(patch.Trim(1, 2.0, 10.0) == Result::Ok, "off-origin-torus setup: Trim to an arbitrary minor sub-range succeeds");
+
+  NurbsSurface out;
+  Check(patch.OffsetAnalytic(1.0, out) == Result::Ok, "OffsetAnalytic(+1.0) succeeds on an off-origin, tilted, arbitrarily-trimmed torus patch");
+
+  // Every sampled point sits at exactly the offset tube radius (4.0) from
+  // the same major circle (radius 10, in the torus's own tilted plane).
+  double worst_radius = 0.0;
+  const double du = out.Domain(0).max - out.Domain(0).min;
+  const double dv = out.Domain(1).max - out.Domain(1).min;
+  for (int i = 1; i < 8; ++i) {
+    for (int j = 1; j < 8; ++j) {
+      const double u = out.Domain(0).min + du * i / 8.0;
+      const double v = out.Domain(1).min + dv * j / 8.0;
+      const Point3d p = out.PointAt(u, v);
+      const Vector3d rel = p - torus.plane.origin;
+      const double axial = rel * torus.plane.zaxis;
+      const double radial = (rel - axial * torus.plane.zaxis).Length();
+      const double minor_dist = std::hypot(radial - 10.0, axial);
+      worst_radius = std::max(worst_radius, std::abs(minor_dist - 4.0));
+    }
+  }
+  Check(worst_radius < 1e-9,
+        "OffsetAnalytic on an off-origin tilted torus patch: every sampled point sits at exactly tube radius 4.0");
+
+  // The fix under test, checked the strong way: this input patch's own
+  // 4 domain corners, each offset by distance*normal, must land EXACTLY
+  // on `out`'s own 4 domain corners - not just "some full torus" or a
+  // differently-sized sub-range that happens to pass a radius check.
+  double worst_corner = 0.0;
+  for (int i = 0; i <= 1; ++i) {
+    for (int j = 0; j <= 1; ++j) {
+      const double pu = i == 0 ? patch.Domain(0).min : patch.Domain(0).max;
+      const double pv = j == 0 ? patch.Domain(1).min : patch.Domain(1).max;
+      const Point3d expected = patch.PointAt(pu, pv) + 1.0 * patch.NormalAt(pu, pv);
+      const double ou = i == 0 ? out.Domain(0).min : out.Domain(0).max;
+      const double ov = j == 0 ? out.Domain(1).min : out.Domain(1).max;
+      worst_corner = std::max(worst_corner, expected.DistanceTo(out.PointAt(ou, ov)));
+    }
+  }
+  Check(worst_corner < 1e-6,
+        "OffsetAnalytic on an off-origin tilted torus patch: all 4 domain corners land exactly on this patch's own point + distance*normal");
+
+  // Directly proves this isn't secretly a full torus.
+  const double full_u_span = full_raw.Domain(0)[1] - full_raw.Domain(0)[0];
+  const double full_v_span = full_raw.Domain(1)[1] - full_raw.Domain(1)[0];
+  Check(du < 0.5 * full_u_span, "off-origin tilted torus patch: U-domain span is a small fraction of a full turn");
+  Check(dv < 0.75 * full_v_span, "off-origin tilted torus patch: V-domain span is a small fraction of a full turn");
+}
+
+void TestSurfaceOffsetAnalyticTorusRefusesTransposedConvention() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Result;
+
+  // A torus surface with u/v deliberately swapped from the ordinary
+  // (u=major, v=minor) convention every torus this codebase actually
+  // builds uses. `IsTorus()`'s own fallback fit can silently return a
+  // transposed torus for a surface like this, with no flag distinguishing
+  // it from the ordinary case - the partial-patch trim logic detects this
+  // via a direct geometric probe (does moving along u change major_angle,
+  // as expected, or minor_angle?) and refuses rather than mishandling it.
+  const ON_Torus torus(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 10.0, 3.0);
+  ON_NurbsSurface full_raw;
+  Check(torus.GetNurbForm(full_raw) != 0, "transposed-torus setup: GetNurbForm succeeds");
+  Check(full_raw.Transpose(), "transposed-torus setup: Transpose succeeds");
+
+  NurbsSurface patch;
+  patch.raw() = full_raw;
+  // Trim BOTH directions of the (now-transposed) domain to a partial
+  // range, so the offset code's own partial-patch path actually runs
+  // rather than taking the (transposition-agnostic) full-torus fast path.
+  Check(patch.Trim(0, patch.Domain(0).min, patch.Domain(0).min + 0.25 * (patch.Domain(0).max - patch.Domain(0).min)) == Result::Ok,
+        "transposed-torus setup: Trim direction 0 succeeds");
+  Check(patch.Trim(1, patch.Domain(1).min, patch.Domain(1).min + 0.25 * (patch.Domain(1).max - patch.Domain(1).min)) == Result::Ok,
+        "transposed-torus setup: Trim direction 1 succeeds");
+
+  NurbsSurface out;
+  Check(patch.OffsetAnalytic(1.0, out) == Result::Failed,
+        "OffsetAnalytic on a partial patch of a TRANSPOSED torus is refused, not silently mistrimmed");
+}
+
 void TestSurfaceOffsetAnalyticPlanePreservesDomainAndTrimStructure() {
   using dino8::kernel::NurbsSurface;
   using dino8::kernel::Point3d;
@@ -46672,6 +46865,9 @@ int main() {
   TestSurfaceOffsetAnalyticConePreservesHalfAngleAndShiftsApex();
   TestSurfaceOffsetAnalyticConePreservesPartialPatchExtent();
   TestSurfaceOffsetAnalyticTorusIsExactCoaxialTorusAndRejectsSpindle();
+  TestSurfaceOffsetAnalyticTorusPreservesPartialPatchExtent();
+  TestSurfaceOffsetAnalyticTorusOffOriginTiltedPreservesArbitraryPatchExtent();
+  TestSurfaceOffsetAnalyticTorusRefusesTransposedConvention();
   TestSurfaceOffsetAnalyticPlanePreservesDomainAndTrimStructure();
   TestSurfaceOffsetAnalyticRefusesFreeformSurface();
   TestSurfaceOffsetAnalyticZeroDistanceIsNoOpCopy();
