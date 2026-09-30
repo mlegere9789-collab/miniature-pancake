@@ -129,6 +129,36 @@ UnitSystem FromLengthUnitSystem(ON::LengthUnitSystem units) {
   }
 }
 
+// Maps dino8::kernel::LightStyle to its ON::light_style counterpart, for
+// Model::AddLight() below. Both directions use the "world" (not "camera")
+// variant - this kernel's Point3d/Vector3d location/direction parameters
+// are always given in world coordinates, matching every other geometric
+// parameter elsewhere in this API (AddNamedView()'s own camera_location,
+// AddCurve()/AddBrep()'s own untransformed geometry, ...), never a
+// viewport-relative camera space.
+ON::light_style ToLightStyle(LightStyle style) {
+  switch (style) {
+    case LightStyle::Point: return ON::world_point_light;
+    case LightStyle::Directional: return ON::world_directional_light;
+  }
+  return ON::world_point_light;
+}
+
+// The read-side counterpart to ToLightStyle() above, for Model::LightAt()
+// below. A light this kernel didn't itself create via AddLight() - loaded
+// from a .3dm some other application wrote - can carry any of
+// ON::light_style's wider set (camera-space, spot, ambient, linear,
+// rectangular); those all fall back to LightStyle::Point, the same
+// "narrower kernel enum, unrecognized value falls back to a sane default"
+// contract FromLengthUnitSystem() above already uses for UnitSystem.
+LightStyle FromLightStyle(ON::light_style style) {
+  switch (style) {
+    case ON::world_point_light: return LightStyle::Point;
+    case ON::world_directional_light: return LightStyle::Directional;
+    default: return LightStyle::Point;
+  }
+}
+
 // Converts an OpenNURBS wide string to std::string, the same
 // ON_String(w)-then-cast pattern dino8-app/src/io/File3dm.cpp's own
 // FromWide() already uses for this exact conversion.
@@ -183,13 +213,31 @@ int Model::AddGroup(const std::string& name) {
   return managed_group != nullptr ? managed_group->Index() : -1;
 }
 
-int Model::AddMaterial(const std::string& name, Color diffuse_color) {
+int Model::AddMaterial(const std::string& name, Color diffuse_color,
+                        std::optional<Color> specular_color, std::optional<Color> emission_color,
+                        std::optional<double> shine, std::optional<double> transparency,
+                        std::optional<double> reflectivity) {
   if (name.empty()) {
     return -1;
   }
   ON_Material material;
   material.SetName(ON_wString(name.c_str()));
   material.SetDiffuse(ON_Color(diffuse_color.r, diffuse_color.g, diffuse_color.b));
+  if (specular_color.has_value()) {
+    material.SetSpecular(ON_Color(specular_color->r, specular_color->g, specular_color->b));
+  }
+  if (emission_color.has_value()) {
+    material.SetEmission(ON_Color(emission_color->r, emission_color->g, emission_color->b));
+  }
+  if (shine.has_value()) {
+    material.SetShine(*shine);
+  }
+  if (transparency.has_value()) {
+    material.SetTransparency(*transparency);
+  }
+  if (reflectivity.has_value()) {
+    material.SetReflectivity(*reflectivity);
+  }
   const ON_ModelComponentReference material_ref = model_.AddModelComponent(material, true);
   const ON_Material* managed_material = ON_Material::FromModelComponentRef(material_ref, nullptr);
   return managed_material != nullptr ? managed_material->Index() : -1;
@@ -373,6 +421,17 @@ MaterialInfo Model::MaterialAt(int material_index) const {
   result.diffuse_color = Color{static_cast<unsigned char>(diffuse.Red()),
                                 static_cast<unsigned char>(diffuse.Green()),
                                 static_cast<unsigned char>(diffuse.Blue())};
+  const ON_Color specular = material->Specular();
+  result.specular_color = Color{static_cast<unsigned char>(specular.Red()),
+                                 static_cast<unsigned char>(specular.Green()),
+                                 static_cast<unsigned char>(specular.Blue())};
+  const ON_Color emission = material->Emission();
+  result.emission_color = Color{static_cast<unsigned char>(emission.Red()),
+                                 static_cast<unsigned char>(emission.Green()),
+                                 static_cast<unsigned char>(emission.Blue())};
+  result.shine = material->Shine();
+  result.transparency = material->Transparency();
+  result.reflectivity = material->Reflectivity();
   return result;
 }
 
@@ -411,6 +470,137 @@ NamedViewInfo Model::NamedViewAt(int view_index) const {
   result.camera_location = view.m_vp.CameraLocation();
   result.target_point = view.TargetPoint();
   result.camera_up = view.m_vp.CameraUp();
+  return result;
+}
+
+int Model::AddLight(const std::string& name, LightStyle style, Point3d location,
+                     Vector3d direction, Color diffuse_color, double intensity, int layer_index,
+                     std::optional<Color> render_color, const UserStrings& user_strings,
+                     std::optional<int> linetype_index, const std::vector<int>& group_indices,
+                     std::optional<int> material_index) {
+  if (name.empty()) {
+    return -1;
+  }
+  auto* light = new ON_Light();
+  light->SetLightName(name.c_str());
+  light->SetStyle(ToLightStyle(style));
+  light->SetLocation(location);
+  light->SetDirection(direction);
+  light->SetDiffuse(ON_Color(diffuse_color.r, diffuse_color.g, diffuse_color.b));
+  light->SetIntensity(intensity);
+  const int index = LightCount();
+  ON_3dmObjectAttributes attributes = MakeAttributes(
+      name, layer_index, render_color, user_strings, linetype_index, group_indices, material_index);
+  model_.AddModelGeometryComponent(light, &attributes);
+  return index;
+}
+
+int Model::LightCount() const {
+  return static_cast<int>(model_.ActiveComponentCount(ON_ModelComponent::Type::RenderLight));
+}
+
+LightInfo Model::LightAt(int light_index) const {
+  LightInfo result;
+  if (light_index < 0) {
+    return result;
+  }
+  int position = 0;
+  // ON_ModelGeometryComponent::Geometry()'s own doc comment: "If the
+  // geometry is a light, then ComponentType() will return
+  // ON_ModelComponent::Type::RenderLight" - a light gets its own
+  // dedicated component type distinct from ModelGeometry (every other
+  // geometry kind AddMesh()/AddBrep()/etc. above add falls under
+  // ModelGeometry instead), confirmed the hard way when this method
+  // first filtered on ModelGeometry and found nothing at all. So a light
+  // added via AddLight() above is NOT one more entry in
+  // ObjectCount()/ObjectAttributesAt() the way a mesh is - it lives in
+  // this own table only, same as a layer or a material does.
+  ONX_ModelComponentIterator iterator(model_, ON_ModelComponent::Type::RenderLight);
+  for (const ON_ModelComponent* component = iterator.FirstComponent(); component != nullptr;
+       component = iterator.NextComponent()) {
+    const auto* geometry_component = static_cast<const ON_ModelGeometryComponent*>(component);
+    const ON_Light* light = ON_Light::Cast(geometry_component->Geometry(nullptr));
+    if (light == nullptr) {
+      continue;
+    }
+    if (position == light_index) {
+      result.name = ToStdString(light->LightName());
+      result.style = FromLightStyle(light->Style());
+      result.location = light->Location();
+      result.direction = light->Direction();
+      const ON_Color diffuse = light->Diffuse();
+      result.diffuse_color = Color{static_cast<unsigned char>(diffuse.Red()),
+                                    static_cast<unsigned char>(diffuse.Green()),
+                                    static_cast<unsigned char>(diffuse.Blue())};
+      result.intensity = light->Intensity();
+      return result;
+    }
+    ++position;
+  }
+  return result;
+}
+
+int Model::AddClippingPlane(const std::string& name, Point3d origin, Vector3d normal, bool enabled,
+                             int layer_index, std::optional<Color> render_color,
+                             const UserStrings& user_strings, std::optional<int> linetype_index,
+                             const std::vector<int>& group_indices,
+                             std::optional<int> material_index) {
+  if (name.empty()) {
+    return -1;
+  }
+  const ON_Plane plane(origin, normal);
+  if (!plane.IsValid()) {
+    return -1;
+  }
+  auto* surface = new ON_ClippingPlaneSurface(plane);
+  surface->m_clipping_plane.m_bEnabled = enabled;
+  const int index = ClippingPlaneCount();
+  ON_3dmObjectAttributes attributes = MakeAttributes(
+      name, layer_index, render_color, user_strings, linetype_index, group_indices, material_index);
+  model_.AddModelGeometryComponent(surface, &attributes);
+  return index;
+}
+
+int Model::ClippingPlaneCount() const {
+  int count = 0;
+  ONX_ModelComponentIterator iterator(model_, ON_ModelComponent::Type::ModelGeometry);
+  for (const ON_ModelComponent* component = iterator.FirstComponent(); component != nullptr;
+       component = iterator.NextComponent()) {
+    const auto* geometry_component = static_cast<const ON_ModelGeometryComponent*>(component);
+    if (ON_ClippingPlaneSurface::Cast(geometry_component->Geometry(nullptr)) != nullptr) {
+      ++count;
+    }
+  }
+  return count;
+}
+
+ClippingPlaneInfo Model::ClippingPlaneAt(int clipping_plane_index) const {
+  ClippingPlaneInfo result;
+  if (clipping_plane_index < 0) {
+    return result;
+  }
+  int position = 0;
+  ONX_ModelComponentIterator iterator(model_, ON_ModelComponent::Type::ModelGeometry);
+  for (const ON_ModelComponent* component = iterator.FirstComponent(); component != nullptr;
+       component = iterator.NextComponent()) {
+    const auto* geometry_component = static_cast<const ON_ModelGeometryComponent*>(component);
+    const ON_ClippingPlaneSurface* surface =
+        ON_ClippingPlaneSurface::Cast(geometry_component->Geometry(nullptr));
+    if (surface == nullptr) {
+      continue;
+    }
+    if (position == clipping_plane_index) {
+      const ON_3dmObjectAttributes* attributes = geometry_component->Attributes(nullptr);
+      if (attributes != nullptr) {
+        result.name = ToStdString(attributes->Name());
+      }
+      result.origin = surface->m_plane.origin;
+      result.normal = surface->m_plane.zaxis;
+      result.enabled = surface->m_clipping_plane.m_bEnabled;
+      return result;
+    }
+    ++position;
+  }
   return result;
 }
 

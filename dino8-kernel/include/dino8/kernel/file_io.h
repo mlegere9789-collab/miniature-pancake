@@ -84,12 +84,60 @@ enum class UnitSystem {
 };
 
 // A render material read back from Model::MaterialAt() below - the
-// read-side counterpart to AddMaterial()'s own `diffuse_color` parameter.
-// Only `diffuse_color` is populated, matching AddMaterial()'s own
-// "only Name()/Diffuse() are set" scope (see its doc comment).
+// read-side counterpart to AddMaterial()'s own `diffuse_color`/
+// `specular_color`/`emission_color`/`shine`/`transparency`/`reflectivity`
+// parameters. Every field is always populated (never optional), the same
+// "always set, even if to ON_Material's own constructor default" contract
+// `diffuse_color` alone used to have - AddMaterial()'s own new parameters
+// are what determines whether a field holds ON_Material's built-in default
+// or a caller-supplied value, not whether this struct carries it at all.
 struct MaterialInfo {
   std::string name;
   Color diffuse_color;
+  Color specular_color;
+  Color emission_color;
+  double shine = 0.0;
+  double transparency = 0.0;
+  double reflectivity = 0.0;
+};
+
+// Which of ON::light_style's real-world-usable styles Model::AddLight()
+// below supports - the two simplest, most common Rhino light types: a
+// point light (an omnidirectional bulb at a location, direction ignored)
+// and a directional light (parallel rays from a direction, location
+// ignored - the sun). ON::light_style's own spot/linear/rectangular/
+// ambient/camera-space variants are a materially larger surface (extra
+// per-style parameters like spot angle/exponent or length/width vectors)
+// and stay out of scope here, same as this bullet's own "narrowing, not
+// erasing" convention for a disclosed remaining gap.
+enum class LightStyle {
+  Point,
+  Directional,
+};
+
+// A light read back from Model::LightAt() below - the read-side
+// counterpart to Model::AddLight()'s own parameters.
+struct LightInfo {
+  std::string name;
+  LightStyle style = LightStyle::Point;
+  Point3d location;
+  Vector3d direction;
+  Color diffuse_color;
+  double intensity = 1.0;
+};
+
+// A clipping plane read back from Model::ClippingPlaneAt() below - the
+// read-side counterpart to Model::AddClippingPlane()'s own parameters.
+// `normal` is the plane's own zaxis, exactly as passed to
+// AddClippingPlane() (ON_Plane(origin, normal)'s own documented contract:
+// "zaxis = unitized normal") - which side of the plane a viewport actually
+// clips away is ON_ClippingPlane's own runtime behavior, not renegotiated
+// by this struct.
+struct ClippingPlaneInfo {
+  std::string name;
+  Point3d origin;
+  Vector3d normal;
+  bool enabled = true;
 };
 
 // A named view read back from Model::NamedViewAt() below - the read-side
@@ -200,12 +248,32 @@ class Model {
   // table, `ON_ModelComponent::Type::RenderMaterial`). Wraps `ON_Material`
   // (opennurbs_material.h), added to the model the same way
   // AddLayer()/AddLinetype()/AddGroup() add their own component types via
-  // AddModelComponent(). Only `Name()` and `Diffuse()` are set - texture
-  // maps, specular/emission/shine/transparency/reflectivity remain a
-  // disclosed gap, same as PARITY_MAP.md's own evidence already states.
-  // Returns -1 for an empty `name`, same contract as
+  // AddModelComponent(). Returns -1 for an empty `name`, same contract as
   // AddLayer()/AddLinetype()/AddGroup().
-  int AddMaterial(const std::string& name, Color diffuse_color = Color());
+  //
+  // `specular_color`/`emission_color`/`shine`/`transparency`/
+  // `reflectivity` close the rest of the gap this method's own doc comment
+  // used to disclose as open ("texture maps, specular/emission/shine/
+  // transparency/reflectivity remain a disclosed gap") - texture maps
+  // alone stay out of scope (a materially larger problem: an actual bitmap
+  // file reference/embedding, not just a scalar or color field). Each
+  // parameter is `std::nullopt` by default and left at `ON_Material`'s own
+  // constructor default when omitted - no behavior change for an existing
+  // caller who only ever passed `diffuse_color`, the same "absent means
+  // untouched" contract `render_color`/`linetype_index`/`material_index`
+  // already use elsewhere in this API. A present `shine`/`transparency`/
+  // `reflectivity` is written via `SetShine()`/`SetTransparency()`/
+  // `SetReflectivity()` unclamped - each setter's own documented range
+  // (`[0, ON_Material::MaxShine]` for shine, `[0, 1]` for the other two) is
+  // ON_Material's own contract to enforce, not re-validated here, matching
+  // how `AddLayer()`'s own `color`/`AddNamedView()`'s own `camera_up` are
+  // handed to OpenNURBS unclamped elsewhere in this file.
+  int AddMaterial(const std::string& name, Color diffuse_color = Color(),
+                   std::optional<Color> specular_color = std::nullopt,
+                   std::optional<Color> emission_color = std::nullopt,
+                   std::optional<double> shine = std::nullopt,
+                   std::optional<double> transparency = std::nullopt,
+                   std::optional<double> reflectivity = std::nullopt);
 
   // Every Add*() below takes an optional object `name` and `layer_index`.
   // Before `name` existed, every object this kernel ever put into a Model
@@ -477,6 +545,97 @@ class Model {
   // own component tables. `view_index` not naming a named view this model
   // actually has returns a default-constructed NamedViewInfo.
   NamedViewInfo NamedViewAt(int view_index) const;
+
+  // Adds a light (Rhino's own Point/Directional light object) to the model
+  // and returns its index (>= 0) among lights specifically - "lights" is
+  // the next field PARITY_MAP.md's own ".3dm attribute/metadata fidelity"
+  // evidence still names as open after named views closed. A light is a
+  // model GEOMETRY object (ON::light_object, ON_Light : public
+  // ON_Geometry), added via AddModelGeometryComponent() the same way
+  // AddMesh()/AddBrep()/AddCurve() above add their own geometry, and so
+  // takes every Add*() parameter those take (name/layer_index/
+  // render_color/user_strings/linetype_index/group_indices/
+  // material_index) - but OpenNURBS itself files a light under its OWN
+  // component type, ON_ModelComponent::Type::RenderLight, not
+  // ModelGeometry (ON_ModelGeometryComponent::Geometry()'s own doc
+  // comment: "If the geometry is a light, then ComponentType() will
+  // return ON_ModelComponent::Type::RenderLight"), so a light does NOT
+  // show up in ObjectCount()/ObjectAttributesAt() the way a mesh does -
+  // it lives in this own LightCount()/LightAt() table only, the same
+  // situation AddLayer()/AddMaterial() above have for their own tables.
+  // `style` selects between the two simplest, most common ON::light_style
+  // variants (see LightStyle's own doc comment for why spot/linear/
+  // rectangular/ambient are out of scope); `location` is used for Point,
+  // `direction` for Directional (ON::light_style's own "ignored for [the
+  // other]" contract - both are still stored and read back regardless of
+  // `style`, so a caller switching styles later doesn't lose the unused
+  // one). `diffuse_color` defaults to white and `intensity` to 1.0
+  // (full), ON_Light's own constructor defaults. Returns -1 for an empty
+  // `name`, same contract as AddLayer()/AddNamedView()/etc. above - needed
+  // here specifically because a caller needs this index back to read the
+  // light back via LightAt() below.
+  int AddLight(const std::string& name, LightStyle style, Point3d location, Vector3d direction,
+               Color diffuse_color = Color{255, 255, 255}, double intensity = 1.0,
+               int layer_index = -1, std::optional<Color> render_color = std::nullopt,
+               const UserStrings& user_strings = UserStrings(),
+               std::optional<int> linetype_index = std::nullopt,
+               const std::vector<int>& group_indices = std::vector<int>(),
+               std::optional<int> material_index = std::nullopt);
+
+  // Returns the number of lights added via AddLight() above.
+  int LightCount() const;
+
+  // Returns the light at `light_index` (as returned by AddLight() above) -
+  // the read-side counterpart to AddLight()'s own parameters, the same
+  // read-side gap ObjectAttributesAt()/LayerAt()/.../NamedViewAt() above
+  // each closed for their own tables. `light_index` not naming a light
+  // this model actually has returns a default-constructed LightInfo.
+  LightInfo LightAt(int light_index) const;
+
+  // Adds a clipping plane (Rhino's own Section/Clipping Plane object,
+  // View > Set Clipping Plane) to the model and returns its index (>= 0)
+  // among clipping planes specifically - the last field PARITY_MAP.md's
+  // own ".3dm attribute/metadata fidelity" evidence still names as open
+  // after lights closed above ("lights, clipping planes, layouts/details"
+  // - layouts/details alone remains, a materially larger, page-layout-
+  // specific problem out of scope here). A model GEOMETRY object like
+  // AddLight() above - ON::clipplane_object,
+  // ON_ClippingPlaneSurface : public ON_PlaneSurface - sharing every
+  // Add*() parameter AddMesh()/AddLight() take, but unlike a light (its
+  // own dedicated RenderLight component type - see AddLight()'s own doc
+  // comment), a clipping plane is NOT special-cased by OpenNURBS: it
+  // lands in the ordinary ON_ModelComponent::Type::ModelGeometry table
+  // AddMesh()/AddBrep()/etc. already use, so it DOES also show up in
+  // ObjectCount()/ObjectAttributesAt() alongside them, exactly like a
+  // mesh does. `origin`/`normal` build the underlying plane via
+  // ON_Plane(origin, normal) (that constructor's own documented contract:
+  // "zaxis = unitized normal"); returns -1 without adding anything if the
+  // resulting plane is not IsValid() (e.g. a zero `normal`), the same
+  // "refuse rather than silently write something broken" stance
+  // AddNamedView() takes for other degenerate input elsewhere in this
+  // file. `enabled` defaults to true, ON_ClippingPlane's own "active
+  // clipping plane" default a user creating one in Rhino gets immediately.
+  // Returns -1 for an empty `name` for the same reason AddLight() does:
+  // this index is needed back for ClippingPlaneAt() below.
+  int AddClippingPlane(const std::string& name, Point3d origin, Vector3d normal,
+                        bool enabled = true, int layer_index = -1,
+                        std::optional<Color> render_color = std::nullopt,
+                        const UserStrings& user_strings = UserStrings(),
+                        std::optional<int> linetype_index = std::nullopt,
+                        const std::vector<int>& group_indices = std::vector<int>(),
+                        std::optional<int> material_index = std::nullopt);
+
+  // Returns the number of clipping planes added via AddClippingPlane()
+  // above.
+  int ClippingPlaneCount() const;
+
+  // Returns the clipping plane at `clipping_plane_index` (as returned by
+  // AddClippingPlane() above) - the read-side counterpart to
+  // AddClippingPlane()'s own parameters, the same read-side gap every
+  // other `*At()` accessor above closes for its own table.
+  // `clipping_plane_index` not naming a clipping plane this model actually
+  // has returns a default-constructed ClippingPlaneInfo.
+  ClippingPlaneInfo ClippingPlaneAt(int clipping_plane_index) const;
 
   // Sets the model's length unit system - closing PARITY_MAP.md's own
   // "kernel-level data exchange" evidence for "Unit-system conversion":

@@ -6998,6 +6998,177 @@ void TestModelAddNamedViewRoundTrips() {
   std::remove(path.c_str());
 }
 
+void TestModelMaterialExtendedFieldsRoundTrip() {
+  using dino8::kernel::Color;
+  using dino8::kernel::Model;
+  using dino8::kernel::Result;
+
+  Model model;
+  const int plain_index = model.AddMaterial("PlainRed", Color{200, 20, 20});
+  const int full_index =
+      model.AddMaterial("ChromeLike", Color{10, 10, 10}, Color{250, 250, 250},
+                         Color{5, 5, 5}, 200.0, 0.25, 0.9);
+
+  const std::string path = "dino8_kernel_model_material_extended_fields_roundtrip_test.3dm";
+  Check(model.Save(path) == Result::Ok, ".3dm save succeeded");
+
+  Model loaded;
+  Check(Model::Load(path, loaded) == Result::Ok, ".3dm load succeeded");
+
+  const auto plain = loaded.MaterialAt(plain_index);
+  Check(plain.diffuse_color.r == 200 && plain.diffuse_color.g == 20 && plain.diffuse_color.b == 20,
+        "a material added with only diffuse_color still round-trips that field exactly");
+  Check(plain.shine == 0.0 && plain.transparency == 0.0 && plain.reflectivity == 0.0,
+        "a material added with no specular/emission/shine/transparency/reflectivity arguments "
+        "reads back ON_Material's own constructor defaults, not garbage");
+
+  const auto full = loaded.MaterialAt(full_index);
+  Check(full.diffuse_color.r == 10 && full.diffuse_color.g == 10 && full.diffuse_color.b == 10,
+        "diffuse_color still round-trips when every other field is also given");
+  Check(full.specular_color.r == 250 && full.specular_color.g == 250 && full.specular_color.b == 250,
+        "specular_color round-trips through an actual .3dm save/load");
+  Check(full.emission_color.r == 5 && full.emission_color.g == 5 && full.emission_color.b == 5,
+        "emission_color round-trips through an actual .3dm save/load");
+  Check(std::abs(full.shine - 200.0) < 1e-6, "shine round-trips through an actual .3dm save/load");
+  Check(std::abs(full.transparency - 0.25) < 1e-9,
+        "transparency round-trips through an actual .3dm save/load");
+  Check(std::abs(full.reflectivity - 0.9) < 1e-9,
+        "reflectivity round-trips through an actual .3dm save/load");
+
+  std::remove(path.c_str());
+}
+
+void TestModelAddLightRoundTrips() {
+  using dino8::kernel::Color;
+  using dino8::kernel::LightInfo;
+  using dino8::kernel::LightStyle;
+  using dino8::kernel::Model;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+  using dino8::kernel::Vector3d;
+
+  Model model;
+  Check(model.LightCount() == 0, "a fresh Model has no lights");
+  Check(model.AddLight("", LightStyle::Point, Point3d(0, 0, 0), Vector3d(0, 0, -1)) == -1,
+        "AddLight() returns -1 for an empty name, same contract as AddLayer()/AddNamedView() etc.");
+  Check(model.LightCount() == 0, "the empty-name call above added nothing");
+
+  const Point3d bulb_location(1, 2, 3);
+  const int point_index = model.AddLight("Bulb", LightStyle::Point, bulb_location,
+                                          Vector3d(0, 0, -1), Color{255, 200, 150}, 0.75);
+  Check(point_index == 0, "the first real AddLight() call returns index 0");
+  Check(model.LightCount() == 1, "model has one light after AddLight()");
+
+  const Vector3d sun_direction(1, -1, -1);
+  const int sun_index = model.AddLight("Sun", LightStyle::Directional, Point3d(0, 0, 0),
+                                        sun_direction);
+  Check(sun_index == 1, "a second AddLight() call returns index 1, among lights specifically");
+  Check(model.LightCount() == 2, "model has two lights after the second AddLight()");
+
+  // A light is filed under its own ON_ModelComponent::Type::RenderLight
+  // (ON_ModelGeometryComponent::Geometry()'s own documented contract),
+  // not the plain ModelGeometry table AddMesh()/AddBrep() use - so it
+  // does NOT show up in ObjectCount(), unlike a clipping plane (see
+  // TestModelAddClippingPlaneRoundTrips() below, which is NOT
+  // special-cased this way).
+  Check(model.ObjectCount() == 0,
+        "a light lives only in LightCount()'s own table, not ObjectCount()'s");
+
+  const LightInfo bulb = model.LightAt(point_index);
+  Check(bulb.name == "Bulb", "LightAt() reports the name AddLight() was given");
+  Check(bulb.style == LightStyle::Point, "LightAt() reports the style AddLight() was given");
+  Check(bulb.location.DistanceTo(bulb_location) < 1e-9,
+        "LightAt() reports the exact location AddLight() was given");
+  Check(bulb.diffuse_color.r == 255 && bulb.diffuse_color.g == 200 && bulb.diffuse_color.b == 150,
+        "LightAt() reports the exact diffuse_color AddLight() was given");
+  Check(std::abs(bulb.intensity - 0.75) < 1e-9,
+        "LightAt() reports the exact intensity AddLight() was given");
+
+  const LightInfo sun = model.LightAt(sun_index);
+  Check(sun.name == "Sun" && sun.style == LightStyle::Directional,
+        "the second light's name/style are independent of the first");
+  Check((sun.direction - sun_direction).Length() < 1e-9,
+        "LightAt() reports the exact direction AddLight() was given, unmodified - "
+        "ON_Light::SetDirection() stores it raw, with no unitization");
+
+  const LightInfo out_of_range = model.LightAt(9999);
+  Check(out_of_range.name.empty(),
+        "LightAt() on an index this model doesn't have returns a default-constructed LightInfo, "
+        "same contract as NamedViewAt()/MaterialAt() etc.");
+
+  const std::string path = "dino8_kernel_model_light_roundtrip_test.3dm";
+  Check(model.Save(path) == Result::Ok, ".3dm save with lights succeeded");
+
+  Model loaded;
+  Check(Model::Load(path, loaded) == Result::Ok, ".3dm load succeeded");
+  Check(loaded.LightCount() == 2, "both lights survive the .3dm round trip");
+  const LightInfo reloaded_bulb = loaded.LightAt(point_index);
+  Check(reloaded_bulb.name == "Bulb", "the reloaded light's name survives the round trip");
+  Check(reloaded_bulb.style == LightStyle::Point,
+        "the reloaded light's style survives the round trip");
+  Check(reloaded_bulb.location.DistanceTo(bulb_location) < 1e-6,
+        "the reloaded light's location survives the round trip");
+  Check(std::abs(reloaded_bulb.intensity - 0.75) < 1e-6,
+        "the reloaded light's intensity survives the round trip");
+
+  std::remove(path.c_str());
+}
+
+void TestModelAddClippingPlaneRoundTrips() {
+  using dino8::kernel::Model;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+  using dino8::kernel::Vector3d;
+
+  Model model;
+  Check(model.ClippingPlaneCount() == 0, "a fresh Model has no clipping planes");
+  Check(model.AddClippingPlane("", Point3d(0, 0, 0), Vector3d(0, 0, 1)) == -1,
+        "AddClippingPlane() returns -1 for an empty name, same contract as AddLight() etc.");
+  Check(model.AddClippingPlane("Degenerate", Point3d(0, 0, 0), Vector3d(0, 0, 0)) == -1,
+        "AddClippingPlane() returns -1 for a zero normal (not a valid plane), rather than "
+        "silently writing a broken one");
+  Check(model.ClippingPlaneCount() == 0, "neither refused call above added anything");
+
+  const Point3d origin(1, 2, 3);
+  const Vector3d normal(0, 0, 1);
+  const int index = model.AddClippingPlane("Section A", origin, normal, /*enabled=*/false);
+  Check(index == 0, "the first real AddClippingPlane() call returns index 0");
+  Check(model.ClippingPlaneCount() == 1, "model has one clipping plane after AddClippingPlane()");
+  Check(model.ObjectCount() == 1,
+        "a clipping plane is a real model geometry object, also counted by ObjectCount()");
+
+  const auto plane = model.ClippingPlaneAt(0);
+  Check(plane.name == "Section A", "ClippingPlaneAt() reports the name AddClippingPlane() was given");
+  Check(plane.origin.DistanceTo(origin) < 1e-9,
+        "ClippingPlaneAt() reports the exact origin AddClippingPlane() was given");
+  Check((plane.normal - normal).Length() < 1e-9,
+        "ClippingPlaneAt() reports the exact normal AddClippingPlane() was given");
+  Check(plane.enabled == false,
+        "ClippingPlaneAt() reports the exact enabled flag AddClippingPlane() was given");
+
+  const auto out_of_range = model.ClippingPlaneAt(9999);
+  Check(out_of_range.name.empty(),
+        "ClippingPlaneAt() on an index this model doesn't have returns a default-constructed "
+        "ClippingPlaneInfo, same contract as LightAt()/NamedViewAt() etc.");
+
+  const std::string path = "dino8_kernel_model_clipping_plane_roundtrip_test.3dm";
+  Check(model.Save(path) == Result::Ok, ".3dm save with a clipping plane succeeded");
+
+  Model loaded;
+  Check(Model::Load(path, loaded) == Result::Ok, ".3dm load succeeded");
+  Check(loaded.ClippingPlaneCount() == 1, "the clipping plane survives the .3dm round trip");
+  const auto reloaded = loaded.ClippingPlaneAt(0);
+  Check(reloaded.name == "Section A", "the reloaded clipping plane's name survives the round trip");
+  Check(reloaded.origin.DistanceTo(origin) < 1e-6,
+        "the reloaded clipping plane's origin survives the round trip");
+  Check((reloaded.normal - normal).Length() < 1e-6,
+        "the reloaded clipping plane's normal survives the round trip");
+  Check(reloaded.enabled == false,
+        "the reloaded clipping plane's enabled flag survives the round trip");
+
+  std::remove(path.c_str());
+}
+
 void TestModelUnitConversionFactor() {
   using dino8::kernel::Model;
   using dino8::kernel::UnitSystem;
@@ -56387,6 +56558,9 @@ int main() {
   TestModelMaterialAccessorsRoundTrip();
   TestModelUnitSystemRoundTrips();
   TestModelAddNamedViewRoundTrips();
+  TestModelMaterialExtendedFieldsRoundTrip();
+  TestModelAddLightRoundTrips();
+  TestModelAddClippingPlaneRoundTrips();
   TestModelUnitConversionFactor();
   TestModelConvertUnitsScalesGeometryAndUpdatesUnitSystem();
   TestModelLoadRejectsMeshWithOutOfRangeFaceIndex();
