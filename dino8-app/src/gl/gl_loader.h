@@ -110,6 +110,9 @@ typedef std::ptrdiff_t GLintptr;
 #ifndef GL_RGBA32F
 #define GL_RGBA32F 0x8814
 #endif
+#ifndef GL_RGB32F
+#define GL_RGB32F 0x8815
+#endif
 #ifndef GL_RGBA16F
 #define GL_RGBA16F 0x881A
 #endif
