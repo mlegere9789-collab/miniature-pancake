@@ -36,10 +36,15 @@ connection, the same way a screen reader would - to prove:
      title/view-menu button and corner display-mode label (see
      Viewport.cpp's title-overlay block).
   9. An "Activity Log" accessible (role LIST) is discoverable, and gains one
-     new ListItem naming the "Line" command right after that command
-     finishes - mirroring Document::ActivityLog(), the persisted, structured
-     record of every finalized edit (see Document::RecordActivityLogEntry),
-     which is distinct from the command line's own raw text log.
+     new ListItem naming the "Line" command once a second, otherwise
+     uninteresting edit finalizes it - mirroring Document::ActivityLog(), the
+     persisted, structured record of every finalized edit (see
+     Document::RecordActivityLogEntry), which is distinct from the command
+     line's own raw text log. An edit's own completion does not finalize it
+     into this log by itself: Document::FinalizePending() only runs when the
+     *next* Document::BeginChange() fires (see Document.cpp), so this check
+     - like the Command Options and command-line/Properties checks above -
+     drives one more real command through the app to observe it.
 
 This is a real integration test: at-spi2-registryd is the actual daemon
 GNOME uses, pyatspi is the actual library screen readers use, and Dino8 is
@@ -138,6 +143,7 @@ def main():
     sync0 = os.path.join(tmp, "sync0")
     sync1 = os.path.join(tmp, "sync1")
     sync2 = os.path.join(tmp, "sync2")
+    sync2b = os.path.join(tmp, "sync2b")
     sync3 = os.path.join(tmp, "sync3")
     script_path = os.path.join(tmp, "script.txt")
     with open(script_path, "w") as f:
@@ -163,6 +169,17 @@ def main():
         f.write("5\n")
         f.write(f"@waitfile {sync2}\n")
         f.write("Line 0,0,0 10,10,0\n")
+        f.write(f"@waitfile {sync2b}\n")
+        # Document::FinalizePending() only runs when the *next*
+        # Document::BeginChange() fires (see Document.cpp: BeginChange calls
+        # FinalizePending() on itself first) - so the first Line's own edit
+        # stays pending, and out of Document::ActivityLog(), until something
+        # else begins another edit. This second, otherwise uninteresting
+        # Line is exactly that: running it is what actually finalizes the
+        # first Line into the Activity Log, the same way starting this
+        # first Line above is what finalized Circle's entry (see check 9's
+        # own comment).
+        f.write("Line 5,5,0 6,6,0\n")
         f.write(f"@waitfile {sync3}\n")
 
     procs = []
@@ -383,8 +400,6 @@ def main():
         else:
             ok(f"Properties reports the document's object count before the command runs ({properties_before!r})")
 
-        activity_log_count_before = activity_log.childCount if activity_log is not None else None
-
         open(sync2, "w").close()  # let the script run "Line 0,0,0 10,10,0"
 
         deadline = time.time() + 10
@@ -416,6 +431,22 @@ def main():
         elif properties_after is not None:
             ok(f"Properties' object count updates after a command runs ({properties_before!r} -> {properties_after!r})")
 
+        # Line's own edit is not finalized into the Activity Log by its own
+        # completion - Document::FinalizePending() only runs when the *next*
+        # Document::BeginChange() fires (see Document.cpp) - it was starting
+        # *this* first Line that finalized Circle's entry above, the same
+        # way starting the second Line below is what will finalize this
+        # first Line's own entry. So the right baseline for that is
+        # whatever Activity Log holds right now (after Circle's entry has
+        # already settled in, above), not some earlier snapshot - AT-SPI's
+        # own cache can briefly lag behind the per-frame tree rebuild (see
+        # the "GetItems ... /org/a11y/atspi/cache" warning this bridge
+        # logs), but nothing here changes Activity Log's content again until
+        # sync2b is opened, so a single read taken right before it is safe.
+        activity_log_count_before = activity_log.childCount if activity_log is not None else None
+
+        open(sync2b, "w").close()  # let the script run the second "Line 5,5,0 6,6,0"
+
         if activity_log is not None:
             deadline = time.time() + 10
             newest = None
@@ -426,12 +457,13 @@ def main():
                     break
                 time.sleep(0.2)
             if newest is None:
-                fail(f"Activity Log did not gain a new entry after the Line command ran within 10s "
-                     f"(childCount stayed at {activity_log_count_before!r})")
+                fail(f"Activity Log did not gain a new entry after a later edit finalized the first Line "
+                     f"command within 10s (childCount stayed at {activity_log_count_before!r})")
             elif "Line" not in newest.name:
                 fail(f"Activity Log's newest entry does not name the finalized Line command (got {newest.name!r})")
             else:
-                ok(f"Activity Log gains a new entry naming the finalized command after it runs ({newest.name!r})")
+                ok(f"Activity Log gains a new entry naming a finalized command once a later edit flushes it "
+                   f"({newest.name!r})")
 
         open(sync3, "w").close()  # let the app finish its remaining frames/script and exit
 
