@@ -372,6 +372,76 @@ struct PyObjectTable {
     return out;
   }
 
+  // Meshes the closed solids among `ids` (skipping anything that isn't
+  // one) - the two-set counterpart of BooleanUnion's own collect loop
+  // above, shared by BooleanDifference/BooleanIntersection below.
+  std::vector<std::pair<ObjectId, kernel::Mesh>> CollectClosedMeshes(Document& d, const std::vector<ObjectId>& ids) {
+    std::vector<std::pair<ObjectId, kernel::Mesh>> out;
+    for (ObjectId id : ids) {
+      const SceneObject* o = d.Find(id);
+      if (!o) continue;
+      std::optional<kernel::Mesh> m = MeshOf(*o, 0.005);
+      if (!m || !m->IsClosedManifold()) continue;
+      out.push_back({id, *m});
+    }
+    return out;
+  }
+
+  // Mirrors LuaEngine.cpp's RunBoolean(op, two_sets=true): combines each of
+  // `ids`/`otherIds` down to one mesh via Union, then combines those two
+  // results with `op` - used by BooleanDifference/BooleanIntersection below
+  // the same way rs.BooleanDifference/rs.BooleanIntersection use RunBoolean.
+  py::object RunBooleanTwoSets(const std::vector<ObjectId>& ids, const std::vector<ObjectId>& otherIds, bool delete_input, kernel::BooleanOp op, const char* label) {
+    Document& d = DocOf();
+    std::vector<std::pair<ObjectId, kernel::Mesh>> ma = CollectClosedMeshes(d, ids);
+    std::vector<std::pair<ObjectId, kernel::Mesh>> mb = CollectClosedMeshes(d, otherIds);
+    if (ma.empty() || mb.empty()) return py::none();
+    kernel::Mesh result = ma[0].second;
+    const int layer = d.Find(ma[0].first) ? d.Find(ma[0].first)->layer_index : 0;
+    for (size_t i = 1; i < ma.size(); ++i) result = kernel::BooleanCombine(result, ma[i].second, kernel::BooleanOp::Union);
+    kernel::Mesh other = mb[0].second;
+    for (size_t i = 1; i < mb.size(); ++i) other = kernel::BooleanCombine(other, mb[i].second, kernel::BooleanOp::Union);
+    result = kernel::BooleanCombine(result, other, op);
+    d.BeginChange(label);
+    if (delete_input) { for (auto& [id, m] : ma) d.Remove(id); for (auto& [id, m] : mb) d.Remove(id); }
+    if (result.FaceCount() == 0) return py::none();
+    SceneObject n = SceneObject::MakeMesh(result);
+    n.layer_index = layer;
+    py::list out;
+    out.append(PyObjId(d.Add(std::move(n))));
+    return out;
+  }
+
+  // Mirrors rs.BooleanDifference(ids, subtractIds, delete=true) in
+  // LuaEngine.cpp: subtracts the closed solids in `subtractIds` from those
+  // in `ids`, returning None when either set had nothing closed to combine.
+  py::object BooleanDifference(std::vector<ObjectId> ids, std::vector<ObjectId> subtractIds, bool delete_input) {
+    return RunBooleanTwoSets(ids, subtractIds, delete_input, kernel::BooleanOp::Difference, "BooleanDifference");
+  }
+
+  // Mirrors rs.BooleanIntersection(ids, otherIds, delete=true) in
+  // LuaEngine.cpp: keeps the volume common to both closed-solid sets.
+  py::object BooleanIntersection(std::vector<ObjectId> ids, std::vector<ObjectId> otherIds, bool delete_input) {
+    return RunBooleanTwoSets(ids, otherIds, delete_input, kernel::BooleanOp::Intersection, "BooleanIntersection");
+  }
+
+  // Mirrors rs.MoveObject(ids, vector) in LuaEngine.cpp: translates each of
+  // `ids` in place, skipping ids that no longer exist rather than raising -
+  // same as LuaEngine.cpp's TransformIds skip-missing loop.
+  std::vector<ObjectId> MoveObject(std::vector<ObjectId> ids, Vector3d v) {
+    Document& d = DocOf();
+    d.BeginChange("MoveObject");
+    std::vector<ObjectId> out;
+    for (ObjectId id : ids) {
+      SceneObject* o = d.Find(id);
+      if (!o) continue;
+      o->Transform(ON_Xform::TranslationTransformation(v));
+      out.push_back(id);
+    }
+    d.Touch();
+    return out;
+  }
+
   py::object AddMesh(std::vector<Point3d> verts, std::vector<std::vector<int>> faces) {
     kernel::Mesh m;
     ON_Mesh& r = m.raw();
@@ -503,6 +573,9 @@ PYBIND11_EMBEDDED_MODULE(dino8, m) {
       .def("AddPlanarSrf", &PyObjectTable::AddPlanarSrf)
       .def("ExtrudeCurveStraight", &PyObjectTable::ExtrudeCurveStraight, py::arg("curveId"), py::arg("vector"))
       .def("BooleanUnion", &PyObjectTable::BooleanUnion, py::arg("ids"), py::arg("delete") = true)
+      .def("BooleanDifference", &PyObjectTable::BooleanDifference, py::arg("ids"), py::arg("subtractIds"), py::arg("delete") = true)
+      .def("BooleanIntersection", &PyObjectTable::BooleanIntersection, py::arg("ids"), py::arg("otherIds"), py::arg("delete") = true)
+      .def("MoveObject", &PyObjectTable::MoveObject, py::arg("ids"), py::arg("vector"))
       .def("AddBox", &PyObjectTable::AddBox, py::arg("corner"), py::arg("size"))
       .def("AddSphere", &PyObjectTable::AddSphere, py::arg("center"), py::arg("radius"))
       .def("AddCylinder", &PyObjectTable::AddCylinder, py::arg("base"), py::arg("axis"), py::arg("radius"), py::arg("cap") = true)

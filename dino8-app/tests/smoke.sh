@@ -1778,6 +1778,31 @@ print("object count with union: %d" % len(dino8.doc.Objects.AllObjects()))
 no_union = dino8.doc.Objects.BooleanUnion([extrude_line_id])
 print("union from non-solid: " + str(no_union))
 
+diff_a = dino8.doc.Objects.AddBox(dino8.Point3d(30, 0, 0), dino8.Vector3d(4, 4, 4))
+diff_b = dino8.doc.Objects.AddBox(dino8.Point3d(32, 0, 0), dino8.Vector3d(4, 4, 4))
+diff_ids = dino8.doc.Objects.BooleanDifference([diff_a], [diff_b])
+diff_obj = dino8.doc.Objects.Find(diff_ids[0])
+print("difference kind: " + diff_obj.ObjectType)
+print("difference input deleted: " + str(dino8.doc.Objects.Find(diff_a) is None))
+print("object count with difference: %d" % len(dino8.doc.Objects.AllObjects()))
+no_difference = dino8.doc.Objects.BooleanDifference([extrude_line_id], [union_ids[0]])
+print("difference from non-solid: " + str(no_difference))
+
+inter_a = dino8.doc.Objects.AddBox(dino8.Point3d(40, 0, 0), dino8.Vector3d(4, 4, 4))
+inter_b = dino8.doc.Objects.AddBox(dino8.Point3d(42, 0, 0), dino8.Vector3d(4, 4, 4))
+inter_ids = dino8.doc.Objects.BooleanIntersection([inter_a], [inter_b])
+inter_obj = dino8.doc.Objects.Find(inter_ids[0])
+print("intersection kind: " + inter_obj.ObjectType)
+print("intersection input deleted: " + str(dino8.doc.Objects.Find(inter_a) is None))
+print("object count with intersection: %d" % len(dino8.doc.Objects.AllObjects()))
+no_intersection = dino8.doc.Objects.BooleanIntersection([extrude_line_id], [union_ids[0]])
+print("intersection from non-solid: " + str(no_intersection))
+
+move_ids = dino8.doc.Objects.MoveObject([circle_id], dino8.Vector3d(100, 0, 0))
+print("move returned circle id: " + str(move_ids == [circle_id]))
+print("move missing skipped: " + str(dino8.doc.Objects.MoveObject([999999], dino8.Vector3d(1, 0, 0))))
+print("object count with move: %d" % len(dino8.doc.Objects.AllObjects()))
+
 dino8.RunCommand("NewLayer", "Parts")
 PY
 sed "s|@TMP@|$TMPW|g" "$HERE/python_script.txt" > "$TMPW/python_script.txt"
@@ -1857,7 +1882,18 @@ else
   pscheck "history: union input deleted: True" "BooleanUnion deleted its input solids by default, matching rs.BooleanUnion(ids, delete=true)"
   pscheck "history: object count with union: 15" "AllObjects lost the two input boxes and gained the one union mesh"
   pscheck "history: union from non-solid: None" "BooleanUnion returned None when the only id given was a curve, not a closed solid, matching rs.BooleanUnion pushing nil instead of raising"
-  pscheck "^ok   expect_objects 15" "RunPythonScript left the box, the circle, the cone, the torus, the interpolated curve, the arc, the srf, the planar surface, three points, the extruded surface, the extruded solid and the union mesh (the sphere and the two union input boxes were removed from inside the script)"
+  pscheck "history: difference kind: mesh" "dino8.doc.Objects.BooleanDifference subtracted one box from another into one mesh solid, matching rs.BooleanDifference"
+  pscheck "history: difference input deleted: True" "BooleanDifference deleted its input solids by default, matching rs.BooleanDifference(ids, subtractIds, delete=true)"
+  pscheck "history: object count with difference: 16" "AllObjects lost the two difference input boxes and gained the one difference mesh"
+  pscheck "history: difference from non-solid: None" "BooleanDifference returned None when the first set's only id was a curve, not a closed solid, matching rs.BooleanDifference pushing nil instead of raising"
+  pscheck "history: intersection kind: mesh" "dino8.doc.Objects.BooleanIntersection combined two overlapping boxes' common volume into one mesh solid, matching rs.BooleanIntersection"
+  pscheck "history: intersection input deleted: True" "BooleanIntersection deleted its input solids by default, matching rs.BooleanIntersection(ids, otherIds, delete=true)"
+  pscheck "history: object count with intersection: 17" "AllObjects lost the two intersection input boxes and gained the one intersection mesh"
+  pscheck "history: intersection from non-solid: None" "BooleanIntersection returned None when the first set's only id was a curve, not a closed solid, matching rs.BooleanIntersection pushing nil instead of raising"
+  pscheck "history: move returned circle id: True" "dino8.doc.Objects.MoveObject translated the circle in place and returned its own id back, matching rs.MoveObject"
+  pscheck "history: move missing skipped: \[\]" "MoveObject returned an empty list for an id that no longer exists, matching LuaEngine.cpp's TransformIds skip-missing loop instead of raising"
+  pscheck "history: object count with move: 17" "MoveObject translates objects in place, so AllObjects is unchanged by it"
+  pscheck "^ok   expect_objects 17" "RunPythonScript left the box, the circle, the cone, the torus, the interpolated curve, the arc, the srf, the planar surface, three points, the extruded surface, the extruded solid, the union mesh, the difference mesh and the intersection mesh (the sphere, the two union input boxes, the two difference input boxes and the two intersection input boxes were removed from inside the script)"
   grep -q "! Python error" <<<"$PS" && { echo "FAIL python_script.txt printed a Python error"; fail=1; } || echo "ok   no Python script errors"
 fi
 

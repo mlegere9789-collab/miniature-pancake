@@ -19,9 +19,15 @@
 # Lua's rs.AddPoints, that the dino8 module also lacked until now),
 # dino8.doc.Objects.ExtrudeCurveStraight (a curve extruded along a vector,
 # matching Lua's rs.ExtrudeCurveStraight, that the dino8 module also lacked
-# until now) and dino8.doc.Objects.BooleanUnion (closed solids combined
+# until now), dino8.doc.Objects.BooleanUnion (closed solids combined
 # into one mesh solid, matching Lua's rs.BooleanUnion, that the dino8
-# module also lacked until now).
+# module also lacked until now), dino8.doc.Objects.BooleanDifference and
+# dino8.doc.Objects.BooleanIntersection (the two-set counterparts of
+# BooleanUnion, matching Lua's rs.BooleanDifference/rs.BooleanIntersection,
+# that the dino8 module also lacked until now) and dino8.doc.Objects.MoveObject
+# (translates objects in place, skipping ids that no longer exist rather
+# than raising, matching Lua's rs.MoveObject, that the dino8 module also
+# lacked until now).
 # Unlike script_script.txt's Lua test, this never goes interactive
 # mid-script (see PythonEngine.h): Python scripts run start to finish in
 # one call, so there is no trailing point token to feed a GetPoint-style
@@ -29,4 +35,4 @@
 # smoke.sh substitutes @TMP@ with a scratch directory and writes @TMP@/t.py
 # before running this.
 RunPythonScript @TMP@/t.py
-@expect_objects 15
+@expect_objects 17
