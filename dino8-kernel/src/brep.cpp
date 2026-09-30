@@ -9490,8 +9490,21 @@ int Brep::SewTJunctions(double tolerance) {
           if (SplitNakedEdgeAt(ai, v, tol) == Result::Ok) {
             ++splits;
             found = true;
+            break;
           }
-          break;
+          // k=0's own candidate was geometrically valid but the split
+          // itself failed (SplitNakedEdgeAt's own reasons, e.g. a
+          // parameter-margin refusal near A's own domain ends) - try B's
+          // OTHER endpoint (k=1) against this same A before giving up on
+          // this bi entirely. PARITY_MAP.md's own honesty note: the old
+          // unconditional break here skipped k=1 whenever k=0 merely
+          // reached a failed split attempt, silently missing a
+          // legitimate, independently-valid second candidate. This is
+          // provably monotonic - SplitNakedEdgeAt() never mutates this
+          // Brep on failure (see its own doc comment), so trying k=1
+          // here can only ever ADD a healing opportunity this method
+          // would otherwise have missed, never remove or corrupt one
+          // that already worked.
         }
         if (found) break;
       }

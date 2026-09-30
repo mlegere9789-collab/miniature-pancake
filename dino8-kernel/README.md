@@ -4985,6 +4985,45 @@ honestly out of scope.
   checks, 0 failures; `dino8_general_boolean_sweep` byte-identical to its
   prior baseline.
 
+- **`Brep::SewTJunctions`'s inner loop had an unconditional `break` that
+  could silently skip a legitimate second candidate** (`brep.cpp`) -
+  fixes exactly the latent bug PARITY_MAP.md's own "Tolerant sewing with
+  edge splitting" entry named directly: when a naked edge B's first
+  endpoint (k=0) passed every geometric "lands strictly inside naked,
+  linear edge A's own span" check but `SplitNakedEdgeAt()` then failed
+  for a reason specific to THAT point (e.g. its own parameter-margin
+  refusal near A's domain ends), the loop broke immediately, never trying
+  B's OTHER endpoint (k=1) against the same A in that pass. Fixed by only
+  breaking on an actual successful split, letting k=1 get its own,
+  independent try otherwise.
+  Honest note on verification, not glossed over: exhaustive analysis
+  before writing this fix showed that any fixture where B's own two
+  endpoints are BOTH genuine T-junction candidates against the same A
+  necessarily gives B's own topological loop-neighbor (at whichever
+  endpoint k=0 supplies) an identical, independently-reachable candidate
+  at THAT SAME point via the OUTER `bi` scan's own next iteration - a
+  structural consequence of every boundary vertex having exactly 2
+  incident naked edges - so no fixture built from this kernel's own
+  factories could observably distinguish "old buggy behavior" from
+  "fixed behavior" by its own end state; the backstop always closes the
+  gap either way, just via a different edge. Rather than manufacture an
+  artificial-looking test around that unobservable difference, this fix
+  is instead justified by direct proof of safety: `SplitNakedEdgeAt()`
+  never mutates this Brep when it returns anything other than
+  `Result::Ok` (see its own doc comment), so trying k=1 after a failed
+  k=0 can only ever ADD a healing opportunity this method would otherwise
+  have missed, never remove or corrupt one that already worked - a
+  monotonic, can't-regress change, the same safety argument the
+  `TrimEdgeGap` sample-widening fix above already relies on. Confirmed
+  directly: the full `dino8_kernel_tests` suite (7605 checks, including
+  every existing `SewTJunctions` test) passes with the EXACT SAME check
+  count and 0 failures before and after this change, and
+  `dino8_general_boolean_sweep` stays byte-identical - proving the fix
+  changes nothing observable on any fixture this kernel currently
+  exercises, exactly as the safety argument above predicts, while closing
+  the documented gap for topologies this kernel doesn't yet build (no
+  backstop neighbor available).
+
 ## What's still not done (as of chunk 2)
 
 - `Brep::Box()`, `Brep::Sphere()`, `Brep::TrimmedPlanarFace()`
