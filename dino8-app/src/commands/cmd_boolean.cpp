@@ -5,13 +5,104 @@ namespace dino8::app {
 
 namespace {
 
+// Tries a genuine B-rep-preserving boolean before RunBoolean below falls
+// back to its own mesh/Manifold path - PARITY_MAP.md's own "kernel: Boolean
+// operations" category names "B-rep-preserving booleans reachable from the
+// application (polysurface in, polysurface out)" as the one item still
+// missing outright: every app boolean command tessellates its operands via
+// MeshOf and emits a mesh result, with zero references anywhere in
+// dino8-app/src to BooleanCombinePlanar/BooleanCombineMixed/
+// BooleanCombineGeneral. This closes that gap for the one case those kernel
+// functions actually cover end-to-end: every operand on both sides is
+// already a plain, single-lump ON_Brep (ObjectKind::Brep, not a surface,
+// mesh or SubD that would need tessellating just to find out), combined via
+// BooleanCombinePlanarNAry - the same convex-then-concave, "exact
+// construction first, fail open to the approximate path" structure
+// TryExactFillet/TryExactChamfer already use in cmd_fillet.cpp for the
+// identical reason (the caller can't know in advance whether the exact
+// engine's own PlanarFaces()-only, single-lump-per-op scope will accept
+// this particular selection). SymmetricDifference has no N-ary form (its
+// own result is a two-lump Brep::Compound that can't be folded further by
+// Union), so it only takes the exact path for exactly one Brep per side,
+// via a single direct BooleanCombinePlanar call. Returns nullopt - a
+// silent, ordinary fallback to RunBoolean's own mesh path below, not a
+// user-visible failure - whenever any operand isn't a plain Brep, the
+// group is empty, SymmetricDifference has more than one Brep per side, or
+// the exact engine itself throws (a curved face anywhere on any operand,
+// a compound operand fed to Union/SymmetricDifference, or any of that
+// engine's other disclosed scope limits). `second_ids` empty means a
+// single-group Union (RunBoolean's own !two_sets case, where every operand
+// - both `a` and `b` combined - folds into one result via Union); a
+// non-empty `second_ids` combines `first_ids`'s own fold against
+// `second_ids`'s own fold via `op`.
+std::optional<kernel::Brep> TryExactBrepBoolean(CommandContext& ctx, const std::vector<ObjectId>& first_ids, const std::vector<ObjectId>& second_ids,
+                                                 kernel::BooleanOp op) {
+  // IsSolid() (closed, manifold, actually enclosing a volume) is required
+  // here, not just ObjectKind::Brep - BooleanCombinePlanar's own PlanarFaces()
+  // precondition happily accepts an OPEN planar-faced shell (e.g. a box with
+  // one face deleted: still every remaining face is individually planar) and
+  // folds it into the result anyway, silently producing a wrong, non-closed
+  // answer instead of the "reject the bad operand, leave it untouched" the
+  // mesh path below already gives via its own IsClosedManifold() check - see
+  // boolean_adversarial_script.txt's own "Non-manifold input" case, which
+  // this precondition exists specifically to keep exact and mesh path
+  // agreeing on which operands are eligible in the first place.
+  auto collect = [&](const std::vector<ObjectId>& ids, std::vector<kernel::Brep>& out) -> bool {
+    for (ObjectId id : ids) {
+      const SceneObject* o = ctx.Doc().Find(id);
+      if (!o || o->kind != ObjectKind::Brep || !o->brep || !o->brep->raw().IsSolid()) return false;
+      out.push_back(*o->brep);
+    }
+    return !out.empty();
+  };
+  std::vector<kernel::Brep> g1, g2;
+  if (!collect(first_ids, g1)) return std::nullopt;
+  if (!second_ids.empty() && !collect(second_ids, g2)) return std::nullopt;
+  try {
+    if (second_ids.empty()) return kernel::BooleanCombinePlanarNAry(g1, {}, kernel::BooleanOp::Union);
+    if (op == kernel::BooleanOp::SymmetricDifference) {
+      if (g1.size() != 1 || g2.size() != 1) return std::nullopt;
+      return kernel::BooleanCombinePlanar(g1[0], g2[0], op);
+    }
+    return kernel::BooleanCombinePlanarNAry(g1, g2, op);
+  } catch (const std::exception&) {
+    return std::nullopt;
+  }
+}
+
 // Shared by BooleanCommand and Boolean2ObjectsCommand: unions each side's
 // own set (when there are several objects per side), then combines the two
 // sides with `op`. `swap_sides` runs the op with the sides reversed, so
 // e.g. Difference(A,B) can be flipped to Difference(B,A) without the caller
-// re-collecting meshes.
+// re-collecting meshes. `try_exact_brep` (BooleanUnion/BooleanDifference/
+// BooleanIntersection/Boolean2Objects; never the Mesh* aliases, which
+// promise a mesh result) tries TryExactBrepBoolean above first, ahead of
+// this function's own mesh path.
 void RunBoolean(CommandContext& ctx, const std::vector<ObjectId>& a, const std::vector<ObjectId>& b, kernel::BooleanOp op,
-                bool two_sets, const std::string& label, bool swap_sides = false) {
+                bool two_sets, const std::string& label, bool swap_sides = false, bool try_exact_brep = false) {
+  std::vector<ObjectId> all = a;
+  all.insert(all.end(), b.begin(), b.end());
+  if (try_exact_brep && !all.empty()) {
+    const std::vector<ObjectId>& ea = swap_sides ? b : a;
+    const std::vector<ObjectId>& eb = swap_sides ? a : b;
+    std::vector<ObjectId> first_ids = two_sets ? ea : all;
+    std::vector<ObjectId> second_ids = two_sets ? eb : std::vector<ObjectId>{};
+    if (std::optional<kernel::Brep> result = TryExactBrepBoolean(ctx, first_ids, second_ids, op)) {
+      ctx.Doc().BeginChange(label);
+      int layer = 0;
+      if (const SceneObject* o = ctx.Doc().Find(all.front())) layer = o->layer_index;
+      for (ObjectId id : all) ctx.Doc().Remove(id);
+      if (result->raw().m_F.Count() > 0) {
+        SceneObject n = SceneObject::MakeBrep(*result);
+        n.layer_index = layer;
+        ctx.Doc().Add(std::move(n));
+        ctx.Print(label + ": exact B-rep boolean (no tessellation), " + std::to_string(result->raw().m_F.Count()) + " face(s)");
+      } else {
+        ctx.Print(label + ": result is empty");
+      }
+      return;
+    }
+  }
   std::vector<std::pair<ObjectId, kernel::Mesh>> ma, mb;
   auto collect = [&](const std::vector<ObjectId>& ids, std::vector<std::pair<ObjectId, kernel::Mesh>>& out) {
     for (ObjectId id : ids) {
@@ -22,8 +113,6 @@ void RunBoolean(CommandContext& ctx, const std::vector<ObjectId>& a, const std::
       out.push_back({id, *m});
     }
   };
-  std::vector<ObjectId> all = a;
-  all.insert(all.end(), b.begin(), b.end());
   if (two_sets) { collect(a, ma); collect(b, mb); }
   else { collect(all, ma); }
   if (ma.empty() || (two_sets && mb.empty())) { ctx.Warn("Nothing to combine"); return; }
@@ -54,10 +143,14 @@ void RunBoolean(CommandContext& ctx, const std::vector<ObjectId>& a, const std::
   }
 }
 
-// Two-set boolean: first selection, then second selection.
+// Two-set boolean: first selection, then second selection. `try_exact_brep`
+// is set for the plain BooleanUnion/BooleanDifference/BooleanIntersection
+// registrations below, not their MeshBooleanX aliases, which promise a
+// mesh result even when an exact B-rep one would be available.
 class BooleanCommand : public Command {
  public:
-  BooleanCommand(kernel::BooleanOp op, const char* label, bool two_sets) : op_(op), label_(label), two_sets_(two_sets) {}
+  BooleanCommand(kernel::BooleanOp op, const char* label, bool two_sets, bool try_exact_brep = false)
+      : op_(op), label_(label), two_sets_(two_sets), try_exact_brep_(try_exact_brep) {}
   void Begin(CommandContext&) override { WantObjects(two_sets_ ? std::string("Select first set of objects") : "Select objects to " + std::string(label_)); }
   void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
     if (two_sets_ && a_.empty()) {
@@ -67,12 +160,13 @@ class BooleanCommand : public Command {
       accept_preselection = false;
       return;
     }
-    RunBoolean(ctx, a_, ids, op_, two_sets_, label_);
+    RunBoolean(ctx, a_, ids, op_, two_sets_, label_, /*swap_sides=*/false, try_exact_brep_);
     Finish();
   }
   kernel::BooleanOp op_;
   const char* label_;
   bool two_sets_;
+  bool try_exact_brep_;
   std::vector<ObjectId> a_;
 };
 
@@ -122,7 +216,7 @@ class Boolean2ObjectsCommand : public Command {
     else if (result_ == "A-B") op = kernel::BooleanOp::Difference;
     else if (result_ == "B-A") { op = kernel::BooleanOp::Difference; swap = true; }
     else if (result_ == "SymmetricDifference") op = kernel::BooleanOp::SymmetricDifference;
-    RunBoolean(ctx, a_, b_, op, true, "Boolean2Objects", swap);
+    RunBoolean(ctx, a_, b_, op, true, "Boolean2Objects", swap, /*try_exact_brep=*/true);
     Finish();
   }
   std::vector<ObjectId> a_, b_;
@@ -429,9 +523,9 @@ class MeshSmoothCommand : public Command {
 }  // namespace
 
 void RegisterBooleanCommands(CommandEngine& e) {
-  Reg(e, "BooleanUnion", Make<BooleanCommand>(kernel::BooleanOp::Union, "BooleanUnion", false));
-  Reg(e, "BooleanDifference", Make<BooleanCommand>(kernel::BooleanOp::Difference, "BooleanDifference", true));
-  Reg(e, "BooleanIntersection", Make<BooleanCommand>(kernel::BooleanOp::Intersection, "BooleanIntersection", true));
+  Reg(e, "BooleanUnion", Make<BooleanCommand>(kernel::BooleanOp::Union, "BooleanUnion", false, /*try_exact_brep=*/true));
+  Reg(e, "BooleanDifference", Make<BooleanCommand>(kernel::BooleanOp::Difference, "BooleanDifference", true, /*try_exact_brep=*/true));
+  Reg(e, "BooleanIntersection", Make<BooleanCommand>(kernel::BooleanOp::Intersection, "BooleanIntersection", true, /*try_exact_brep=*/true));
   Reg(e, "Boolean2Objects", Make<Boolean2ObjectsCommand>());
   Reg(e, "MeshBooleanUnion", Make<BooleanCommand>(kernel::BooleanOp::Union, "MeshBooleanUnion", false));
   Reg(e, "MeshBooleanDifference", Make<BooleanCommand>(kernel::BooleanOp::Difference, "MeshBooleanDifference", true));

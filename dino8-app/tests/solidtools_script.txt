@@ -401,3 +401,29 @@ ExtractOriginalCaptives
 SelLast
 BoundingBox
 @expect_objects 115
+# --- Clash CreateSolids=Yes: the real AutoCAD-style INTERFERE solid
+# (kernel::ComputeAllInterference - the actual Boolean intersection of the
+# clashing pair, not just the plain triangle-triangle yes/no the earlier
+# Clash section above already checks) - two 10x10x10 boxes overlapping by
+# 5 units in x share an exact 5x10x10 = 500 interference volume. The pair is
+# named (not SelID'd by number - the preceding Save/New/Open round trip
+# means their real ids are unknown here) and picked via SelName once Clash
+# is already active and CreateSolids=Yes is set, submitted with an explicit
+# Enter: preselecting before Clash starts would make its own ObjectsStep
+# consume the selection immediately on Begin(), before the CreateSolids=Yes
+# token is even read.
+SelNone
+Box 1900,0,0 1910,10,0 10
+SelLast
+SetObjectName ClashPair
+Box 1905,0,0 1915,10,0 10
+SelLast
+SetObjectName ClashPair
+SelNone
+Clash
+CreateSolids=Yes
+SelName ClashPair
+Enter
+SelLast
+Volume
+@expect_objects 118

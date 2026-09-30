@@ -1215,14 +1215,16 @@ void NonmanifoldMerge(CommandContext& ctx, const std::vector<ObjectId>& ids) {
 
 void Clash(CommandContext& ctx, const Input& in) {
   const double clearance = std::max(0.0, in.OptNum("Clearance", 0));
-  struct Item { ObjectId id; std::vector<Tri> tris; ON_BoundingBox box; };
+  const bool create_solids = in.Yes("CreateSolids");
+  struct Item { ObjectId id; std::vector<Tri> tris; ON_BoundingBox box; std::optional<kernel::Mesh> closed_mesh; };
   std::vector<Item> items;
   for (ObjectId id : in.O(0)) {
     const SceneObject* o = ctx.Doc().Find(id);
     if (!o) continue;
     std::optional<kernel::Mesh> m = MeshOf(*o, 0.01);
     if (!m || m->FaceCount() == 0) { ctx.Warn("Clash: object " + Id(id) + " has no surface; skipped"); continue; }
-    Item it{id, Triangles(m->raw()), ON_BoundingBox()};
+    Item it{id, Triangles(m->raw()), ON_BoundingBox(), std::nullopt};
+    if (create_solids && m->IsClosedManifold()) it.closed_mesh = Outward(*m);
     for (const Tri& t : it.tris) it.box.Union(t.box);
     items.push_back(std::move(it));
   }
@@ -1268,9 +1270,53 @@ void Clash(CommandContext& ctx, const Input& in) {
       else ctx.Print("Clash: objects " + Id(a.id) + " and " + Id(b.id) + " are " + FormatNumber(dist) + " apart (within clearance " + FormatNumber(clearance) + ")");
     }
   }
+  int interference_solids = 0;
+  if (create_solids) {
+    // AutoCAD-style INTERFERE: unlike the triangle-triangle clash test
+    // above (a yes/no flag per pair, any surface), this builds the real
+    // Boolean intersection solid(s) - kernel::ComputeAllInterference,
+    // shared pairwise-overlap pass feeding both the pairwise and N-way
+    // (3+ mutually-overlapping bodies) reports - and adds each one to the
+    // document, ready to inspect or measure. Only closed manifold objects
+    // qualify (ComputeAllInterference's own IsClosedManifold() precondition,
+    // the same requirement BooleanCombine itself has); an open surface still
+    // participates in the plain clash test above but is silently excluded
+    // here rather than failing the whole command.
+    std::vector<kernel::Mesh> closed;
+    std::vector<ObjectId> closed_ids;
+    for (const Item& it : items) if (it.closed_mesh) { closed.push_back(*it.closed_mesh); closed_ids.push_back(it.id); }
+    if (closed.size() < 2) {
+      if (!closed.empty()) ctx.Warn("Clash: CreateSolids needs at least two closed solids among the selection; skipped");
+    } else {
+      try {
+        kernel::AllInterferenceResult interference = kernel::ComputeAllInterference(closed, clearance);
+        const int layer = ctx.Doc().Find(closed_ids[0]) ? ctx.Doc().Find(closed_ids[0])->layer_index : 0;
+        if (!interference.pairwise.empty() || !interference.multi_way.empty()) ctx.Doc().BeginChange("Clash");
+        for (const kernel::InterferenceResult& r : interference.pairwise) {
+          SceneObject n = SceneObject::MakeMesh(r.solid);
+          n.layer_index = layer;
+          ObjectId nid = ctx.Doc().Add(std::move(n));
+          ++interference_solids;
+          ctx.Print("Clash: interference solid " + Id(nid) + " built from objects " + Id(closed_ids[r.a_index]) + " and " + Id(closed_ids[r.b_index]) + ", volume " + FormatNumber(r.solid.Volume()));
+        }
+        for (const kernel::MultiInterferenceResult& r : interference.multi_way) {
+          std::string names;
+          for (size_t k = 0; k < r.indices.size(); ++k) { if (k) names += ", "; names += Id(closed_ids[r.indices[k]]); }
+          SceneObject n = SceneObject::MakeMesh(r.solid);
+          n.layer_index = layer;
+          ObjectId nid = ctx.Doc().Add(std::move(n));
+          ++interference_solids;
+          ctx.Print("Clash: interference solid " + Id(nid) + " built from objects " + names + " (N-way), volume " + FormatNumber(r.solid.Volume()));
+        }
+      } catch (const std::exception& ex) {
+        ctx.Warn(std::string("Clash: CreateSolids failed: ") + ex.what());
+      }
+    }
+  }
   ctx.Doc().SelectNone();
   for (ObjectId id : clashing) ctx.Doc().Select(id, true);
-  ctx.Print("Clash: " + std::to_string(pairs) + " clashing pair(s) among " + std::to_string(items.size()) + " object(s)" + (clearance > 0 ? ", clearance " + FormatNumber(clearance) : ""));
+  ctx.Print("Clash: " + std::to_string(pairs) + " clashing pair(s) among " + std::to_string(items.size()) + " object(s)" + (clearance > 0 ? ", clearance " + FormatNumber(clearance) : "") +
+             (create_solids ? ", " + std::to_string(interference_solids) + " interference solid(s) built" : ""));
 }
 
 // ---------------------------------------------------------------------------
@@ -2231,7 +2277,11 @@ void RegisterSolidToolsCommands(CommandEngine& e) {
       "newly-adjacent coplanar faces sharing a manifold-safe (exactly two trims) edge into one bigger face. A "
       "genuinely non-manifold edge (three or more faces) is left untouched, exactly as Join already leaves it, "
       "since ON_Brep (unlike Manifold's own mesh format) already represents that topology natively.");
-  Reg(e, "Clash", Tool({ObjectsStep("Select objects to check for clashes", 2)}, {Numeric("Clearance", 0)}, Guarded("Clash", Clash)));
+  Reg(e, "Clash", Tool({ObjectsStep("Select objects to check for clashes", 2)}, {Numeric("Clearance", 0), Toggle("CreateSolids", false)}, Guarded("Clash", Clash)),
+      CommandStatus::Implemented,
+      "CreateSolids=Yes also builds the real AutoCAD-style INTERFERE solids (kernel::ComputeAllInterference: the actual "
+      "Boolean intersection of every clashing pair, plus any genuine 3-or-more-way mutual overlap) for every closed-solid "
+      "clash found, adding each one to the document - not just the plain triangle-triangle yes/no this command already gave.");
 
   // ---- planar curve booleans ------------------------------------------------
   Reg(e, "CurveBoolean", Tool({ObjectsStep("Select closed planar curves", 1)}, {Choice("Operation", "Union", {"Union", "Difference", "Intersection", "Regions"}), Toggle("DeleteInput", false)},
