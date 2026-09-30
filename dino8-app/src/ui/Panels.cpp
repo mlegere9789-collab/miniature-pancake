@@ -1318,11 +1318,12 @@ void DrawOptionsWindow(Application& app) {
     if (ImGui::BeginTabItem(Tr("options.tab_shortcuts").c_str())) {
       static char key_name[32] = "L", shortcut_cmd[128] = "";
       static bool ctrl_mod = true, shift_mod = false, alt_mod = false;
-      static std::string warning;
+      static std::string warning, note;
       ImGui::TextWrapped(
           "Key name exactly as ImGui reports it: a letter/digit, F1-F24, Up/Down/Left/Right, Escape, Delete, "
-          "Tab, Space, Home, End, PageUp, PageDown, Insert, and similar. Built-in bindings (Ctrl+Z/C/V/X/S/O/N/A/G/H, "
-          "F1-F11, Delete, Escape, Home, PageUp/PageDown, the arrow keys) always win over a colliding shortcut here.");
+          "Tab, Space, Home, End, PageUp, PageDown, Insert, and similar. A shortcut on a built-in chord "
+          "(Ctrl+Z/C/V/X/S/O/N/A/G/H, F1-F11, Delete, Escape, Home, PageUp/PageDown, the arrow keys) replaces "
+          "that default action, same as any other Options > Shortcuts entry.");
       ImGui::InputText("Key", key_name, sizeof(key_name));
       ImGui::SameLine(); ImGui::Checkbox("Ctrl", &ctrl_mod);
       ImGui::SameLine(); ImGui::Checkbox("Shift", &shift_mod);
@@ -1332,17 +1333,22 @@ void DrawOptionsWindow(Application& app) {
         const int key = KeyShortcutFromName(key_name);
         if (key == 0) {
           warning = std::string("Unrecognized key name: ") + key_name;
+          note.clear();
         } else {
           std::vector<KeyShortcut>& v = app.user_shortcuts;
           auto it = std::find_if(v.begin(), v.end(), [&](const KeyShortcut& s) {
             return s.key == key && s.ctrl == ctrl_mod && s.shift == shift_mod && s.alt == alt_mod;
           });
           if (it != v.end()) it->command = shortcut_cmd; else v.push_back({key, ctrl_mod, shift_mod, alt_mod, shortcut_cmd});
+          note = IsReservedShortcut(key, ctrl_mod, shift_mod, alt_mod)
+                     ? "This replaces that chord's built-in default action."
+                     : "";
           shortcut_cmd[0] = 0;
           warning.clear();
         }
       }
       if (!warning.empty()) { ImGui::TextColored(ImVec4(1, 0.5f, 0.3f, 1), "%s", warning.c_str()); }
+      else if (!note.empty()) { ImGui::TextDisabled("%s", note.c_str()); }
       ImGui::Separator();
       for (size_t i = 0; i < app.user_shortcuts.size();) {
         KeyShortcut& s = app.user_shortcuts[i];

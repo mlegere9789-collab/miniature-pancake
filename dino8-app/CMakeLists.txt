@@ -259,6 +259,7 @@ set(DINO8_SOURCES
   src/main.cpp
   src/gl/gl_loader.cpp
   src/app/Application.cpp
+  src/app/ShortcutRules.cpp
   src/app/Settings.cpp
   src/i18n/I18n.cpp
   src/input/SpaceMouse.cpp
@@ -670,6 +671,17 @@ if(DINO8_BUILD_TESTS)
   target_include_directories(dino8_test_variable_blend PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_link_libraries(dino8_test_variable_blend PRIVATE dino8_kernel)
   add_test(NAME dino8_variable_blend COMMAND dino8_test_variable_blend)
+
+  # Keyboard-shortcut chord table (src/app/ShortcutRules.cpp's
+  # IsReservedShortcut): every chord Application::HandleShortcuts hardcodes
+  # a built-in default for, and that a user shortcut (Options > Shortcuts)
+  # now replaces instead of being blocked by (see PARITY_MAP.md's Command
+  # aliases and shortcut customization item). Standalone like
+  # dino8_test_aci_palette - ShortcutRules.cpp only needs ImGuiKey's enum
+  # values from imgui.h, so this links no imgui/GLFW/GL code at all.
+  add_executable(dino8_test_shortcuts tests/test_shortcuts.cpp src/app/ShortcutRules.cpp)
+  target_include_directories(dino8_test_shortcuts PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${imgui_SOURCE_DIR})
+  add_test(NAME dino8_shortcuts COMMAND dino8_test_shortcuts)
 
   # Standalone timing benchmark for Document's diff-based undo/redo history
   # (see tests/undo_bench.cpp and tests/undo_scaling_notes.md) - not an
