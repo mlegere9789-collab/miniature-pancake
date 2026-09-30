@@ -1058,6 +1058,81 @@ Brep MoveVertexConvexPlanar(const Brep& solid, const Point3d& old_position, cons
 Brep MoveEdgeConvexPlanar(const Brep& solid, const Point3d& old_p0, const Point3d& old_p1, const Point3d& new_p0,
                            const Point3d& new_p1);
 
+// PARITY_MAP's kernel: Local / direct-edit operations "Move a single B-rep
+// vertex directly" gap's own remaining "single point only" limitation.
+// `MoveConvexPlanarPoints()` (this file's own private shared core, in
+// boolean.cpp) already accepts an arbitrary LIST of (old, new) point pairs
+// and moves every one of them in ONE shared re-trim pass - already
+// exercised internally by `MoveEdgeConvexPlanar()` immediately above, which
+// just hands it two points (an edge's own two endpoints) instead of one -
+// but until now there was no public entry point for a caller-chosen SET of
+// independent vertices. This is that entry point: a thin public wrapper
+// around the identical one-pass machinery, not a new reconstruction of its
+// own.
+//
+// The one-pass semantics matter, not just convenience: a face containing
+// TWO OR MORE of the named vertices has every one of its own matched
+// corners replaced before its plane is re-derived ONCE from the final
+// result, so a combination that is only valid once every named vertex has
+// reached its own new position - but would flip a face's own orientation
+// or collapse it to ~0 area after only the FIRST vertex moved - succeeds
+// here even though calling `MoveVertexConvexPlanar()` once per vertex in
+// sequence, each independently re-validating its own intermediate state,
+// would refuse partway through
+// (`TestMoveVerticesConvexPlanarSucceedsWhereASequentialSingleMoveWouldRefuse`,
+// tests/test_basic.cpp, exhibits exactly this on a hand-built case). It
+// also reaches a combination `MoveEdgeConvexPlanar()` itself cannot express
+// at all: three or more independently-named vertices in one call, not just
+// two
+// (`TestMoveVerticesConvexPlanarMovesAllFourTetrahedronVerticesMatchesExactVolumeFromSignedTripleProduct`).
+//
+// `moves` must be non-empty - throws std::invalid_argument otherwise. Each
+// entry's `old_position` is matched by position exactly as
+// `MoveVertexConvexPlanar()`'s own doc comment describes. Two entries whose
+// `old_position` name the SAME vertex (within this function's own relative
+// tolerance) are refused outright as ambiguous - which of their two
+// `new_position`s should apply is undefined - rather than silently keeping
+// only the one that happens to be matched first internally. Every face
+// incident to any named vertex must still be a triangle, for the identical
+// reason `MoveVertexConvexPlanar()` documents. Same convex-solid
+// precondition and every other per-vertex failure mode (unmatched
+// `old_position`, non-triangular incident face, orientation flip, collapsed
+// face) as `MoveVertexConvexPlanar()` above.
+Brep MoveVerticesConvexPlanar(const Brep& solid, const std::vector<std::pair<Point3d, Point3d>>& moves);
+
+// One entry of a `MoveEdgesConvexPlanar()` batch below: the same four
+// positional arguments `MoveEdgeConvexPlanar()` above takes one edge at a
+// time.
+struct EdgeMove {
+  Point3d old_p0;
+  Point3d old_p1;
+  Point3d new_p0;
+  Point3d new_p1;
+};
+
+// The identical batch generalization of `MoveEdgeConvexPlanar()` above that
+// `MoveVerticesConvexPlanar()` immediately above is of
+// `MoveVertexConvexPlanar()`: move a caller-chosen SET of independent
+// edges in one call, one shared re-trim pass, rather than N sequential
+// `MoveEdgeConvexPlanar()` calls each separately validating their own
+// intermediate state.
+//
+// Unlike `MoveVerticesConvexPlanar()` above, two entries in `edge_moves`
+// ARE allowed to name the same endpoint vertex - e.g. two adjacent edges of
+// one triangular face sharing a corner - as long as every entry naming
+// that vertex agrees (within tolerance) on its own `new_p0`/`new_p1` for
+// that shared corner; the shared endpoint is then folded into a single
+// moved point before the shared underlying pass runs, exactly as if the
+// caller had named it only once. Entries naming the same vertex with
+// DIFFERENT new positions are refused as ambiguous, the same as
+// `MoveVerticesConvexPlanar()` refuses an outright duplicate old_position.
+//
+// `edge_moves` must be non-empty - throws std::invalid_argument otherwise.
+// Same per-edge degenerate-edge check (`old_p0`/`old_p1` coincide) as
+// `MoveEdgeConvexPlanar()`, and the same triangle-only scope and every
+// other failure mode shared by the rest of this family.
+Brep MoveEdgesConvexPlanar(const Brep& solid, const std::vector<EdgeMove>& edge_moves);
+
 // PARITY_MAP's kernel: Local / direct-edit operations "Delete face with
 // heal (remove face, grow neighbours to close the gap)" gap - previously
 // only `Brep::CapPlanarHoles`, which re-caps the hole with a flat new

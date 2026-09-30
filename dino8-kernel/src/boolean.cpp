@@ -2205,6 +2205,73 @@ Brep MoveEdgeConvexPlanar(const Brep& solid, const Point3d& old_p0, const Point3
   return MoveConvexPlanarPoints(solid, {{old_p0, new_p0}, {old_p1, new_p1}}, "MoveEdgeConvexPlanar");
 }
 
+Brep MoveVerticesConvexPlanar(const Brep& solid, const std::vector<std::pair<Point3d, Point3d>>& moves) {
+  if (moves.empty()) {
+    throw std::invalid_argument("dino8::kernel::MoveVerticesConvexPlanar: moves must not be empty");
+  }
+  const std::vector<Brep::PlanarFace> faces = solid.PlanarFaces();
+  const double tol = RelativeTol(faces);
+  // Two entries naming the same vertex are ambiguous - which one's own
+  // new_position should apply is undefined - and, left unchecked, would
+  // silently fall through to MoveConvexPlanarPoints()'s own "only the
+  // first-in-list move ever matches a given loop vertex" internal
+  // tie-break, throwing the generic (and, for this case, misleading)
+  // "doesn't land on any vertex" diagnostic for whichever entry lost that
+  // internal race instead of naming the real problem.
+  for (size_t i = 0; i < moves.size(); ++i) {
+    for (size_t j = i + 1; j < moves.size(); ++j) {
+      if (moves[i].first.DistanceTo(moves[j].first) <= tol) {
+        throw std::invalid_argument(
+            "dino8::kernel::MoveVerticesConvexPlanar: two entries in moves name the same "
+            "vertex (within tolerance) - ambiguous which entry's new_position should apply");
+      }
+    }
+  }
+  return MoveConvexPlanarPoints(solid, moves, "MoveVerticesConvexPlanar");
+}
+
+Brep MoveEdgesConvexPlanar(const Brep& solid, const std::vector<EdgeMove>& edge_moves) {
+  if (edge_moves.empty()) {
+    throw std::invalid_argument("dino8::kernel::MoveEdgesConvexPlanar: edge_moves must not be empty");
+  }
+  const std::vector<Brep::PlanarFace> faces = solid.PlanarFaces();
+  const double tol = RelativeTol(faces);
+
+  // Flatten every edge's two endpoints into one point-move list, folding
+  // together endpoints that two (or more) named edges happen to share -
+  // e.g. two adjacent edges of the same face naming their common corner -
+  // as long as every edge naming that corner agrees on its own new
+  // position; refuse outright, rather than silently picking one, if they
+  // don't.
+  std::vector<std::pair<Point3d, Point3d>> moves;
+  moves.reserve(edge_moves.size() * 2);
+  for (const EdgeMove& edge : edge_moves) {
+    if (edge.old_p0.DistanceTo(edge.old_p1) <= tol) {
+      throw std::invalid_argument(
+          "dino8::kernel::MoveEdgesConvexPlanar: an entry's old_p0 and old_p1 coincide - "
+          "not a valid edge to name");
+    }
+    const std::pair<Point3d, Point3d> endpoints[2] = {{edge.old_p0, edge.new_p0}, {edge.old_p1, edge.new_p1}};
+    for (const auto& [old_point, new_point] : endpoints) {
+      bool folded = false;
+      for (auto& [existing_old, existing_new] : moves) {
+        if (existing_old.DistanceTo(old_point) <= tol) {
+          if (existing_new.DistanceTo(new_point) > tol) {
+            throw std::invalid_argument(
+                "dino8::kernel::MoveEdgesConvexPlanar: two entries name the same vertex "
+                "(within tolerance) but give it different new positions - ambiguous which "
+                "should apply");
+          }
+          folded = true;
+          break;
+        }
+      }
+      if (!folded) moves.emplace_back(old_point, new_point);
+    }
+  }
+  return MoveConvexPlanarPoints(solid, moves, "MoveEdgesConvexPlanar");
+}
+
 Brep DeleteFaceHealConvexPlanar(const Brep& solid, int face_index) {
   const std::vector<Brep::PlanarFace> faces = solid.PlanarFaces();
   const int n = static_cast<int>(faces.size());

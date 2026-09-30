@@ -24177,6 +24177,249 @@ void TestMoveEdgeConvexPlanarRefusesInvalidInput() {
   Check(threw, "MoveEdgeConvexPlanar refuses an old_p0 that doesn't land within tolerance of any vertex");
 }
 
+// PARITY_MAP's kernel: Local / direct-edit operations "Move a single B-rep
+// vertex directly" gap's own remaining "single point only" limitation.
+// `MoveVerticesConvexPlanar()` moves EVERY vertex of the tetrahedron (all
+// four) in one call - a combination `MoveEdgeConvexPlanar()` cannot even
+// express (it only ever takes exactly two points) and that four sequential
+// `MoveVertexConvexPlanar()` calls would have to build up one vertex at a
+// time. Volume is checked via the same general tetrahedron closed form
+// (signed scalar triple product of the edge vectors from one vertex, /6)
+// `TestMoveEdgeConvexPlanarTetrahedronMatchesExactVolumeFromSignedTripleProduct`
+// uses, applied to all four NEW vertices - independent of this function's
+// own half-space-clip arithmetic.
+void TestMoveVerticesConvexPlanarMovesAllFourTetrahedronVerticesMatchesExactVolumeFromSignedTripleProduct() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::MoveVerticesConvexPlanar;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  const Point3d apex(0, 0, 0);
+  const Point3d b0(2, 0, 3), b1(-1, 2, 3), b2(-1, -2, 3);
+  const Brep tet = MakeTestTetrahedron(apex, b0, b1, b2);
+
+  const Point3d new_apex(0.4, -0.3, -0.6);
+  const Point3d new_b0(2.6, 0.4, 3.5);
+  const Point3d new_b1(-1.4, 2.5, 3.4);
+  const Point3d new_b2(-1.3, -2.4, 3.3);
+  const Brep moved = MoveVerticesConvexPlanar(
+      tet, {{apex, new_apex}, {b0, new_b0}, {b1, new_b1}, {b2, new_b2}});
+
+  Check(moved.FaceCount() == 4, "MoveVerticesConvexPlanar keeps the tetrahedron's own 4-face topology");
+
+  const Vector3d e1 = new_b0 - new_apex;
+  const Vector3d e2 = new_b1 - new_apex;
+  const Vector3d e3 = new_b2 - new_apex;
+  const double expected_volume = std::fabs(ON_DotProduct(ON_CrossProduct(e1, e2), e3)) / 6.0;
+  const double measured_volume = PlanarBrepVolumeExact(moved);
+  Check(std::fabs(measured_volume - expected_volume) / expected_volume < 1e-9,
+        "moving all 4 tetrahedron vertices in one MoveVerticesConvexPlanar call matches the exact "
+        "signed-triple-product formula for the new 4 vertices, not merely a plausible-looking number");
+
+  Check(moved.TessellateToClosedMesh(1, 1).IsClosedManifold(),
+        "the moved tetrahedron also tessellates to a closed, watertight manifold");
+}
+
+// The one-pass semantics genuinely matter, not just call-count convenience:
+// moving b0 ALONE (holding b1 at its own old position) onto the infinite
+// line through apex and old b1 collapses face (apex,b1,b0)'s own triangle
+// to exactly 0 area - MoveVertexConvexPlanar() correctly refuses this
+// single move outright. But moving b0 to that SAME position while ALSO
+// moving b1 to a different final position, in one MoveVerticesConvexPlanar
+// call, never passes through that degenerate intermediate state at all -
+// the face's plane is re-derived once from both FINAL corners, which are
+// not collinear with apex - so the combined move succeeds where the first
+// step of the equivalent sequential single-vertex calls would already have
+// thrown.
+void TestMoveVerticesConvexPlanarSucceedsWhereASequentialSingleMoveWouldRefuse() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::MoveVertexConvexPlanar;
+  using dino8::kernel::MoveVerticesConvexPlanar;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  const Point3d apex(0, 0, 0);
+  const Point3d b0(2, 0, 3), b1(-1, 2, 3), b2(-1, -2, 3);
+  const Brep tet = MakeTestTetrahedron(apex, b0, b1, b2);
+
+  // On the infinite line through apex(0,0,0) and old b1(-1,2,3): apex +
+  // 0.5*(b1-apex).
+  const Point3d new_b0(-0.5, 1.0, 1.5);
+
+  bool threw = false;
+  try {
+    MoveVertexConvexPlanar(tet, b0, new_b0);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw,
+        "sanity check: moving b0 alone onto the apex-old_b1 line collapses face (apex,b1,b0) to ~0 area, so "
+        "MoveVertexConvexPlanar refuses it, exactly as the equivalent first step of a sequential batch would");
+
+  const Point3d new_b1(-4.0, 4.5, 5.0);
+  const Brep moved = MoveVerticesConvexPlanar(tet, {{b0, new_b0}, {b1, new_b1}});
+  Check(moved.FaceCount() == 4,
+        "moving b0 AND b1 together in one MoveVerticesConvexPlanar call succeeds and keeps all 4 faces, even "
+        "though moving b0 alone first would have refused");
+
+  const Vector3d e1 = new_b0 - apex;
+  const Vector3d e2 = new_b1 - apex;
+  const Vector3d e3 = b2 - apex;
+  const double expected_volume = std::fabs(ON_DotProduct(ON_CrossProduct(e1, e2), e3)) / 6.0;
+  const double measured_volume = PlanarBrepVolumeExact(moved);
+  Check(std::fabs(measured_volume - expected_volume) / expected_volume < 1e-9,
+        "the batch-moved tetrahedron's volume matches the exact signed-triple-product formula for its new "
+        "vertices - a genuinely different, valid final shape, not a rejected intermediate one");
+}
+
+void TestMoveVerticesConvexPlanarRefusesInvalidInput() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::MoveVerticesConvexPlanar;
+  using dino8::kernel::Point3d;
+
+  const Point3d apex(0, 0, 0);
+  const Point3d b0(2, 0, 3), b1(-1, 2, 3), b2(-1, -2, 3);
+  const Brep tet = MakeTestTetrahedron(apex, b0, b1, b2);
+
+  bool threw = false;
+  try {
+    MoveVerticesConvexPlanar(tet, {});
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "MoveVerticesConvexPlanar refuses an empty moves list");
+
+  threw = false;
+  try {
+    MoveVerticesConvexPlanar(tet, {{b0, Point3d(1, 1, 1)}, {b0, Point3d(2, 2, 2)}});
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "MoveVerticesConvexPlanar refuses two entries naming the same vertex (ambiguous new_position)");
+
+  threw = false;
+  try {
+    MoveVerticesConvexPlanar(tet, {{Point3d(99, 99, 99), Point3d(1, 1, 1)}});
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "MoveVerticesConvexPlanar refuses an old_position that doesn't land within tolerance of any vertex");
+
+  threw = false;
+  try {
+    const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+    MoveVerticesConvexPlanar(box, {{Point3d(0, 0, 0), Point3d(1, 1, 1)}});
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "MoveVerticesConvexPlanar refuses a vertex incident to a non-triangular (quad) face");
+}
+
+// PARITY_MAP's kernel: Local / direct-edit operations "Move/transform edge
+// (tweak edge)" gap's own remaining "single edge only" limitation.
+// `MoveEdgesConvexPlanar()` moves TWO adjacent edges sharing a common
+// vertex (apex) in one call, each naming apex with the SAME new position -
+// the "fold shared endpoints together" path unique to this function, not
+// exercised by `MoveVerticesConvexPlanar()`'s own tests (which never name
+// the same vertex twice). Face (apex,b1,b0) is touched by both edges at
+// once (all three of its own corners move), exercising the "many merged
+// moves on one face" path this fixture's other tests never reach either.
+void TestMoveEdgesConvexPlanarMovesTwoAdjacentEdgesSharingAVertexMatchesExactVolume() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::EdgeMove;
+  using dino8::kernel::MoveEdgesConvexPlanar;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  const Point3d apex(0, 0, 0);
+  const Point3d b0(2, 0, 3), b1(-1, 2, 3), b2(-1, -2, 3);
+  const Brep tet = MakeTestTetrahedron(apex, b0, b1, b2);
+
+  const Point3d new_apex(0.3, -0.2, -0.5);
+  const Point3d new_b0(2.5, 0.3, 3.2);
+  const Point3d new_b1(-1.3, 2.4, 3.3);
+
+  EdgeMove edge_a{apex, b0, new_apex, new_b0};
+  EdgeMove edge_b{apex, b1, new_apex, new_b1};  // shares apex with edge_a, same new_apex both times
+  const Brep moved = MoveEdgesConvexPlanar(tet, {edge_a, edge_b});
+
+  Check(moved.FaceCount() == 4, "MoveEdgesConvexPlanar keeps the tetrahedron's own 4-face topology");
+
+  const Vector3d e1 = new_b0 - new_apex;
+  const Vector3d e2 = new_b1 - new_apex;
+  const Vector3d e3 = b2 - new_apex;
+  const double expected_volume = std::fabs(ON_DotProduct(ON_CrossProduct(e1, e2), e3)) / 6.0;
+  const double measured_volume = PlanarBrepVolumeExact(moved);
+  Check(std::fabs(measured_volume - expected_volume) / expected_volume < 1e-9,
+        "the two-adjacent-edges batch move's volume matches the exact signed-triple-product formula for its new "
+        "4 vertices (b2 untouched by either edge)");
+
+  const std::vector<Brep::PlanarFace> result = moved.PlanarFaces();
+  auto loop_contains = [](const std::vector<Point3d>& loop, const Point3d& p) {
+    for (const Point3d& q : loop) {
+      if (q.DistanceTo(p) < 1e-9) return true;
+    }
+    return false;
+  };
+  bool found_untouched_base = false;
+  for (const Brep::PlanarFace& f : result) {
+    if (f.loop.size() == 3 && loop_contains(f.loop, b2) && loop_contains(f.loop, new_b0) &&
+        loop_contains(f.loop, new_b1)) {
+      found_untouched_base = true;
+    }
+  }
+  Check(found_untouched_base,
+        "the base face (b0,b2,b1), touched by both edges through b0/b1 but not through apex, ends up with "
+        "new_b0/new_b1 and its own untouched b2 corner exactly");
+}
+
+void TestMoveEdgesConvexPlanarRefusesInvalidInput() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::EdgeMove;
+  using dino8::kernel::MoveEdgesConvexPlanar;
+  using dino8::kernel::Point3d;
+
+  const Point3d apex(0, 0, 0);
+  const Point3d b0(2, 0, 3), b1(-1, 2, 3), b2(-1, -2, 3);
+  const Brep tet = MakeTestTetrahedron(apex, b0, b1, b2);
+
+  bool threw = false;
+  try {
+    MoveEdgesConvexPlanar(tet, {});
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "MoveEdgesConvexPlanar refuses an empty edge_moves list");
+
+  threw = false;
+  try {
+    MoveEdgesConvexPlanar(tet, {EdgeMove{apex, apex, Point3d(1, 1, 1), Point3d(2, 2, 2)}});
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "MoveEdgesConvexPlanar refuses an entry whose old_p0 and old_p1 coincide");
+
+  // Two entries name apex but give it two DIFFERENT new positions -
+  // ambiguous which one should apply.
+  threw = false;
+  try {
+    MoveEdgesConvexPlanar(tet, {EdgeMove{apex, b0, Point3d(1, 1, 1), Point3d(2, 0, 3)},
+                                 EdgeMove{apex, b1, Point3d(9, 9, 9), Point3d(-1, 2, 3)}});
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "MoveEdgesConvexPlanar refuses two entries naming the same shared vertex with different new positions");
+
+  threw = false;
+  try {
+    const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+    MoveEdgesConvexPlanar(box, {EdgeMove{Point3d(0, 0, 0), Point3d(10, 0, 0), Point3d(1, 1, 1), Point3d(9, 1, 1)}});
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "MoveEdgesConvexPlanar refuses an edge whose incident faces are non-triangular (a box's own quads)");
+}
+
 // PARITY_MAP's kernel: Local / direct-edit operations "Delete face with
 // heal (remove face, grow neighbours to close the gap)" gap - previously
 // only a flat re-cap (Brep::CapPlanarHoles), never a genuine heal.
@@ -50765,6 +51008,11 @@ int main() {
   TestMoveFaceConvexPlanarRefusesInvalidInput();
   TestMoveEdgeConvexPlanarTetrahedronMatchesExactVolumeFromSignedTripleProduct();
   TestMoveEdgeConvexPlanarRefusesInvalidInput();
+  TestMoveVerticesConvexPlanarMovesAllFourTetrahedronVerticesMatchesExactVolumeFromSignedTripleProduct();
+  TestMoveVerticesConvexPlanarSucceedsWhereASequentialSingleMoveWouldRefuse();
+  TestMoveVerticesConvexPlanarRefusesInvalidInput();
+  TestMoveEdgesConvexPlanarMovesTwoAdjacentEdgesSharingAVertexMatchesExactVolume();
+  TestMoveEdgesConvexPlanarRefusesInvalidInput();
   TestDeleteFaceHealConvexPlanarChamferedCubeRecoversExactUnitCube();
   TestDeleteFaceHealConvexPlanarRefusesInvalidInput();
   TestFilletConvexEdgeUnitCubeTopFrontCorner();
