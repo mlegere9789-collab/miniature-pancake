@@ -114,6 +114,15 @@ class PointCloud {
   // a sparse region).
   std::vector<PointCloudNeighbor> PointsWithinRadius(Point3d query, double radius) const;
 
+  // Every point within `band` of an infinite `plane` (|signed distance| <=
+  // band), sorted by ascending distance - the kernel-level counterpart to
+  // the app's own PointCloudSection command, which has no kernel API to
+  // call and only ever band-samples around a plane itself. Same
+  // conventions as PointsWithinRadius() above: a negative `band` throws
+  // std::invalid_argument, an empty result (nothing within the band) is a
+  // legitimate answer, and ties are broken by ascending index.
+  std::vector<PointCloudNeighbor> PointsNearPlane(const ON_Plane& plane, double band) const;
+
   // Writes this cloud to a plain-text ASCII XYZ point-cloud file - the
   // de facto point-cloud interchange format (CloudCompare, PCL, MeshLab
   // all read/write it) that this kernel had no path to at all: every
