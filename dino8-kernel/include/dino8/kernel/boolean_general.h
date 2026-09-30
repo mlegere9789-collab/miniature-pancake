@@ -50,15 +50,47 @@ namespace dino8::kernel {
 // disclosed scope limits (one crossing chain per face pair, genus-0
 // faces).
 //
-// Either operand being a `Brep::Compound()` of two or more lumps (e.g. a
-// SymmetricDifference result) is refused with std::invalid_argument -
-// this engine's fragment classification is a per-face ray-cast against the
-// OTHER operand with no lump-boundary awareness at all, so a compound
-// operand was never proven safe (see boolean_general.cpp's own
-// RefuseCompoundOperand doc comment). This engine's own output is never
-// itself compound (it builds one shell of kept fragments, not a
-// Brep::Compound), so chaining two BooleanCombineGeneral calls - including
-// every pairwise step BooleanCombineGeneralNAry makes - is unaffected.
+// `Union` still refuses either operand being a `Brep::Compound()` of two or
+// more lumps (e.g. a SymmetricDifference result) with std::invalid_argument -
+// compound lumps that touch or overlap have no single manifold shell for
+// this engine's per-face ray-cast classification to build, the same reason
+// boolean.cpp's own BooleanCombinePlanar/BooleanCombineMixed refuse one for
+// Union too (see boolean_general.cpp's own RefuseCompoundOperand doc
+// comment). `SymmetricDifference` is refused outright regardless of either
+// operand (see below). `Difference`/`Intersection` accept a compound operand
+// on either side - they distribute over a compound operand's lumps exactly,
+// and this engine's classification (a ClassifyPointVsBrep ray-cast against
+// the OTHER operand's full face list, or the coincident-face override's own
+// per-face normal comparison) already has no notion of which lump a face
+// came from, so it classifies a multi-lump operand exactly as correctly as
+// a single-lump one - the identical reasoning boolean.cpp's own two B-rep
+// engines already rely on for their own identical exemption; confirmed
+// directly, not merely assumed, by tessellating the resulting SHAPE as a
+// whole via TessellateGeneralBooleanClosedMesh() and getting a genuinely
+// closed manifold with the exact right combined volume (see
+// TestBooleanCombineGeneralDifference/IntersectionAcceptsCompoundOperand*,
+// tests/test_basic.cpp).
+//
+// Unlike BooleanCombinePlanar/BooleanCombineMixed (boolean.cpp), this
+// function does NOT recompute the result's true lump structure via
+// SplitDisjointPieces()/Brep::Compound() the way those two do - tried
+// directly while building this, not skipped out of caution:
+// SplitDisjointPieces()'s own ON_Brep::DuplicateFaces() step corrupts
+// whatever TessellateGeneralBooleanClosedMesh()'s own T-junction stitching
+// needs from this engine's own dense-polyline trim edges, so a result that
+// tessellates perfectly (closed, correct volume) as ONE unsplit Brep
+// tessellates WRONG (open, wrong volume) once split into pieces and
+// Compound()-ed back together - a regression the split introduces, not a
+// pre-existing defect it merely exposes. So a compound-input result from
+// this function always reports `LumpFaceRanges().size() == 1` - a real,
+// disclosed bookkeeping gap PARITY_MAP.md's "Multi-body / multi-tool
+// booleans" bullet leaves open for this one engine, not a hint that the
+// geometry itself is wrong (it isn't - see the closed/volume confirmation
+// above). This engine's own output is never itself a Brep::Compound() by
+// construction, so chaining two BooleanCombineGeneral calls - including
+// every pairwise step BooleanCombineGeneralNAry makes - sees an ordinary
+// single-lump-reporting Brep on the way back in, unaffected by whether the
+// call that produced it took a compound operand.
 Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op, double tolerance = 0.001);
 
 // N-ary counterpart of BooleanCombineGeneral - third and last of this

@@ -2797,6 +2797,16 @@ std::vector<FaceFrags> FragmentFaces(const ON_Brep& brep, int n, std::vector<std
 // way to tell a genuine unsupported-shape refusal from a subtly wrong
 // result. Refused with the same clear message boolean.cpp's own
 // RefuseCompoundOperand uses, rather than left an unhandled case.
+// **Updated**: `BooleanCombineGeneral` now only calls this for `Union`
+// (`SymmetricDifference` is refused unconditionally before either operand is
+// even inspected) - `Difference`/`Intersection` distribute over a compound
+// operand's lumps exactly, the same exemption boolean.cpp's own
+// BooleanCombinePlanar/BooleanCombineMixed already have, since the ray-cast
+// classification this doc comment describes needs no lump-boundary
+// awareness for those two ops either; see BooleanCombineGeneral's own call
+// site for the full detail, including the real, disclosed limitation that
+// this engine (unlike boolean.cpp's own two) does NOT recompute the
+// result's true lump structure afterward.
 void RefuseCompoundOperand(const Brep& operand, const char* function_name) {
   if (operand.LumpFaceRanges().size() <= 1) return;
   throw std::invalid_argument(std::string("dino8::kernel::") + function_name +
@@ -2819,8 +2829,28 @@ Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op, double to
   if (!(tolerance > 0.0)) {
     throw std::invalid_argument("dino8::kernel::BooleanCombineGeneral: tolerance must be positive");
   }
-  RefuseCompoundOperand(a, "BooleanCombineGeneral");
-  RefuseCompoundOperand(b, "BooleanCombineGeneral");
+  // Union still needs a lump-merge step this engine has no more of than
+  // boolean.cpp's own two B-rep engines do (compound lumps that touch or
+  // overlap have no single manifold shell for a per-face ray-cast to build)
+  // and stays refused. Difference/Intersection distribute over a compound
+  // operand's lumps exactly - the identical reasoning boolean.cpp's own
+  // BooleanCombinePlanar/BooleanCombineMixed already rely on for their own
+  // exemption applies here too: `process()` above classifies every fragment
+  // purely by a ClassifyPointVsBrep ray-cast against the OTHER operand's
+  // full face list (or, for the coincident-face override, by comparing two
+  // specific faces' own outward normals) - neither path has, or needs, any
+  // notion of which lump a face came from, so a multi-lump `a`/`b`
+  // classifies exactly as correctly as a single-lump one and the result's
+  // own SHAPE comes back correct - but, unlike boolean.cpp's own two B-rep
+  // engines, this function does NOT recompute the result's true lump
+  // structure afterward (see this function's own tail comment, right
+  // before its `kept`-list reassembly, for the real limitation found while
+  // trying to add that step). SymmetricDifference is already refused
+  // unconditionally above, so it never reaches here.
+  if (op == BooleanOp::Union) {
+    RefuseCompoundOperand(a, "BooleanCombineGeneral");
+    RefuseCompoundOperand(b, "BooleanCombineGeneral");
+  }
 
   const ON_Brep& ba = a.raw();
   const ON_Brep& bb = b.raw();
@@ -3098,6 +3128,43 @@ Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op, double to
     return Brep();
   }
 
+  // Difference/Intersection against a genuinely compound operand can leave
+  // the result as two or more physically disjoint solids (e.g. subtracting
+  // a tool from just one lump of a two-lump target) - the reassembly below
+  // builds each one correctly as SHAPE (every kept fragment, from either
+  // operand, goes through the exact same CollapseDuplicateVids/BuildLoop
+  // welding, so two fragments that don't actually touch never end up
+  // sharing a vertex or edge purely because they came from the same
+  // operand - confirmed directly: TestBooleanCombineGeneralDifference/
+  // IntersectionAcceptsCompoundOperand* tessellate `result` as a whole via
+  // TessellateGeneralBooleanClosedMesh() and get the exact right closed,
+  // correct-volume answer), but `result` never records that split in its
+  // own lump_face_ranges_, so LumpFaceRanges() keeps reporting one lump
+  // even when the true shape is two or more.
+  //
+  // **A real, previously-undocumented limitation found while building
+  // this, not assumed**: unlike BooleanCombinePlanar/BooleanCombineMixed
+  // (boolean.cpp), this engine does NOT recompute that split via
+  // SplitDisjointPieces()/Brep::Compound() at this tail. Tried directly,
+  // not merely skipped out of caution: SplitDisjointPieces()'s own
+  // ON_Brep::DuplicateFaces() step, on this engine's own faces, corrupts
+  // whatever TessellateGeneralBooleanClosedMesh()'s own T-junction
+  // stitching needs from a face's dense-polyline trim edges - confirmed by
+  // a standalone probe on exactly this bullet's own box1/box2/cutter
+  // fixture: `result` (unsplit, one Brep, LumpFaceRanges() = 1) tessellates
+  // via TessellateGeneralBooleanClosedMesh() as a genuinely closed manifold
+  // with the exact right volume 15 (7 + 8), but re-running
+  // SplitDisjointPieces() on that SAME result and tessellating either
+  // extracted single-lump piece the identical way gives a WRONG volume (12
+  // instead of 7 for the cut piece) and an open, non-manifold mesh - a
+  // regression from splitting, not a pre-existing defect the split merely
+  // exposes. So this tail deliberately does NOT call SplitDisjointPieces()
+  // at all: `result` keeps its correct SHAPE and the same best-effort
+  // single-lump `LumpFaceRanges()` report every other (non-compound-input)
+  // call to this function already has, rather than trade a working result
+  // for a confidently-wrong split one. See PARITY_MAP.md's "Multi-body /
+  // multi-tool booleans" bullet for the disclosed scope this leaves open.
+
   // Weld an untouched face's own boundary (or a cut face's own still-
   // untouched portion) into the same edge-identity scope its freshly-cut
   // neighbor already uses - see ReconcileFragmentBoundaries()'s own doc
@@ -3136,6 +3203,7 @@ Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op, double to
 
   brep.SetTrimIsoFlags();
   brep.SetTolerancesBoxesAndFlags(/*bLazy=*/true);
+
   return result;
 }
 

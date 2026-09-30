@@ -918,14 +918,22 @@ namespace {
 // extend to: `LumpFaceRanges()` bookkeeping for a compound-input result
 // that carries any CylindricalFace, which stays a best-effort single-lump
 // report rather than a recomputed one - see `BooleanCombineMixed`'s own
-// tail comment for why. `BooleanCombineGeneral` still
-// calls this unconditionally for every op (see its own file-local copy in
-// boolean_general.cpp): its per-face ray-cast classification has no notion
-// of which lump a face belongs to either, but unlike the two engines here
-// it has no lump-recomputation tail step of its own yet, so genuine
-// multi-lump SUPPORT (not just the refusal-vs-silent-mis-processing safety
-// fix already applied there) remains a separate, still-open gap for that
-// engine. Refused with a clear message rather than failing deep inside
+// tail comment for why. **Updated**: `BooleanCombineGeneral` now takes the
+// identical exemption too (see its own file-local copy in
+// boolean_general.cpp) - its per-face ray-cast classification has no notion
+// of which lump a face belongs to either, so a compound operand's SHAPE
+// comes back correct (closed, right volume - confirmed by tessellating the
+// whole result, not merely assumed). Unlike `BooleanCombinePlanar`/
+// `BooleanCombineMixed`, it has NO lump-recomputation tail step at all:
+// tried directly, `SplitDisjointPieces()`'s own `ON_Brep::DuplicateFaces()`
+// corrupts this engine's own dense-polyline trim edges enough to break
+// `TessellateGeneralBooleanClosedMesh()`, turning a correctly-closed result
+// into a wrong-volume, non-manifold one - so a compound-input result from
+// this engine always reports a single lump, a real, disclosed bookkeeping
+// gap (see `BooleanCombineGeneral`'s own doc comment in boolean_general.h),
+// not the "genuine multi-lump SUPPORT" this engine's own
+// `RefuseCompoundOperand` doc comment used to name as entirely unattempted.
+// Refused with a clear message rather than failing deep inside
 // FromMixedFaces.
 void RefuseCompoundOperand(const Brep& operand, const char* function_name) {
   if (operand.LumpFaceRanges().size() <= 1) return;

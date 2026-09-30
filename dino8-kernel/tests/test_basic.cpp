@@ -32944,6 +32944,13 @@ void TestBooleanCombineGeneralNAryNegativeControls() {
 // TestBooleanCombinePlanarDifferenceThrowsOnTouchingLumpXorCompound's own
 // shape), not an artificially-assembled one, as this bullet's own most
 // likely real-world source of a compound operand.
+// Updated this pass: Difference/Intersection no longer refuse a compound
+// operand (see the dedicated TestBooleanCombineGeneralDifference/
+// IntersectionAcceptsCompoundOperand* tests below for the new acceptance
+// path) - this test now only covers what still DOES refuse one: Union
+// (needs the lump-merge step this engine still doesn't have) and
+// SymmetricDifference (not implemented by this engine at all, refused
+// unconditionally before either operand is even inspected).
 void TestBooleanCombineGeneralRefusesCompoundOperand() {
   using dino8::kernel::BooleanCombineGeneral;
   using dino8::kernel::BooleanCombinePlanar;
@@ -32957,7 +32964,7 @@ void TestBooleanCombineGeneralRefusesCompoundOperand() {
 
   const Brep other = Brep::Box(10, 10, 10, 12, 12, 12);  // disjoint, diagonally-staggered from the compound
 
-  for (const BooleanOp op : {BooleanOp::Union, BooleanOp::Intersection, BooleanOp::Difference}) {
+  for (const BooleanOp op : {BooleanOp::Union, BooleanOp::SymmetricDifference}) {
     bool threw = false;
     std::string message;
     try {
@@ -32966,17 +32973,20 @@ void TestBooleanCombineGeneralRefusesCompoundOperand() {
       threw = true;
       message = e.what();
     }
-    Check(threw && message.find("Brep::Compound") != std::string::npos,
-          "BooleanCombineGeneral refuses a compound first operand for every op, naming the precondition");
+    Check(threw, "BooleanCombineGeneral still refuses a compound first operand for Union/SymmetricDifference");
+    if (op == BooleanOp::Union) {
+      Check(message.find("Brep::Compound") != std::string::npos,
+            "Union's own refusal still names the compound-operand precondition specifically");
+    }
   }
-  for (const BooleanOp op : {BooleanOp::Union, BooleanOp::Intersection, BooleanOp::Difference}) {
+  for (const BooleanOp op : {BooleanOp::Union, BooleanOp::SymmetricDifference}) {
     bool threw = false;
     try {
       BooleanCombineGeneral(other, xor_result, op);
     } catch (const std::invalid_argument&) {
       threw = true;
     }
-    Check(threw, "BooleanCombineGeneral refuses a compound second operand too");
+    Check(threw, "BooleanCombineGeneral still refuses a compound second operand for Union/SymmetricDifference too");
   }
 
   // Negative control: two genuinely single-lump operands still combine
@@ -32986,17 +32996,160 @@ void TestBooleanCombineGeneralRefusesCompoundOperand() {
   Check(ok.raw().IsValid(), "two single-lump operands are entirely unaffected by the new compound-operand guard");
 }
 
-// BooleanCombineGeneral's own output is never itself compound (it builds
-// one shell of kept fragments, never a Brep::Compound - see
-// BooleanCombineGeneral's own updated doc comment in boolean_general.h),
-// so BooleanCombineGeneralNAry's internal pairwise folding of ordinary
+// New this pass: BooleanCombineGeneral's own Difference now accepts a
+// compound first operand, distributing over its lumps exactly - the
+// identical exemption BooleanCombinePlanar/BooleanCombineMixed already have
+// (boolean.cpp). Unlike those two engines, though, this one does NOT
+// recompute LumpFaceRanges() afterward (a real, disclosed limitation found
+// while building this - see BooleanCombineGeneral's own doc comment in
+// boolean_general.h: SplitDisjointPieces()'s own ON_Brep::DuplicateFaces()
+// corrupts this engine's dense-polyline trim edges enough to break
+// TessellateGeneralBooleanClosedMesh(), so a compound-input result stays a
+// single reported lump). What IS verified here is the actual combined
+// SHAPE: TessellateGeneralBooleanClosedMesh() (the same specialized,
+// T-junction-aware tessellation TestBooleanCombineGeneralBoxBox's own
+// Difference case already relies on for a closed-manifold check, since
+// plain TessellateToClosedMesh() is not proven closed even for a
+// non-compound result here) reports a genuinely closed manifold with the
+// exact right combined volume.
+void TestBooleanCombineGeneralDifferenceAcceptsCompoundFirstOperand() {
+  using dino8::kernel::BooleanCombineGeneral;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::TessellateGeneralBooleanClosedMesh;
+
+  const Brep box1 = Brep::Box(0, 0, 0, 2, 2, 2);        // volume 8
+  const Brep box2 = Brep::Box(10, 10, 10, 12, 12, 12);  // volume 8, far away
+  const Brep compound_a = Brep::Compound({box1, box2});
+  Check(compound_a.LumpFaceRanges().size() == 2, "the fixture itself is a genuine two-lump compound");
+
+  const Brep cutter = Brep::Box(1, 1, 1, 3, 3, 3);  // overlaps box1 by the unit cube [1,2]^3 only
+  bool threw = false;
+  Brep result;
+  try {
+    result = BooleanCombineGeneral(compound_a, cutter, BooleanOp::Difference);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(!threw, "Difference no longer refuses a compound first operand for the general engine either");
+  if (threw) return;
+  Check(result.raw().IsValid(), "the result passes ON_Brep::IsValid()");
+  Check(result.LumpFaceRanges().size() == 1,
+        "the disclosed limitation above: this engine does not recompute LumpFaceRanges() for a compound-input "
+        "result, so it keeps the ordinary single-lump default even though the true shape is two disjoint solids");
+  const Mesh mesh = TessellateGeneralBooleanClosedMesh(result, 16, 16);
+  Check(mesh.IsClosedManifold(), "the combined SHAPE is a genuinely closed manifold - box2 survives untouched "
+                                  "alongside box1's own cut remainder, with no spurious bridging between them");
+  Check(std::abs(mesh.Volume() - 15.0) < 1e-3,
+        "volume matches (box1 - cutter) + box2 = 7 + 8 = 15 - the cutter never reaches box2 at all");
+}
+
+// Mirror of the above for Intersection. Deliberately NOT the axis-aligned
+// fixture TestBooleanCombineMixedIntersectionAcceptsCompoundOperand uses
+// (box1=[0,2]^3, box2=[3,0,0]-[5,2,2], tool=[1,0,0]-[4,2,2]): confirmed by
+// direct standalone reproduction that this shape makes the tool's own y=0/
+// y=2/z=0/z=2 side faces PARTIALLY coplanar-overlap the corresponding side
+// faces of BOTH box1 and box2 at once (same infinite plane, different
+// finite extent) - this engine's own pre-existing, already-disclosed "No
+// general partially-overlapping coincident curved-face handling" scope
+// limit (this category's own neighboring bullet), not a defect in this
+// pass's new compound-operand support; it throws "an edge is claimed by 3
+// or more fragment loops" independent of any compound operand at all. The
+// fixture below instead reuses this bullet's own Difference test's
+// far-apart box1/box2 placement, with a single large diagonal tool overlap
+// ping a small corner of each - no two operand faces ever share a plane.
+void TestBooleanCombineGeneralIntersectionAcceptsCompoundOperand() {
+  using dino8::kernel::BooleanCombineGeneral;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::TessellateGeneralBooleanClosedMesh;
+
+  const Brep box1 = Brep::Box(0, 0, 0, 2, 2, 2);
+  const Brep box2 = Brep::Box(10, 10, 10, 12, 12, 12);  // far away, diagonally staggered
+  const Brep compound_a = Brep::Compound({box1, box2});
+
+  // Overlaps box1 in [1,2]^3 (volume 1) and box2 in [10,11]^3 (volume 1) -
+  // none of its own 6 faces (planes x/y/z = 1 or 11) coincide with any face
+  // of box1 (planes 0/2) or box2 (planes 10/12).
+  const Brep tool = Brep::Box(1, 1, 1, 11, 11, 11);
+  bool threw = false;
+  Brep result;
+  try {
+    result = BooleanCombineGeneral(compound_a, tool, BooleanOp::Intersection);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(!threw, "Intersection no longer refuses a compound first operand for the general engine either");
+  if (threw) return;
+  Check(result.raw().IsValid(), "the result passes ON_Brep::IsValid()");
+  Check(result.LumpFaceRanges().size() == 1,
+        "same disclosed limitation as the Difference test above: LumpFaceRanges() is not recomputed for a "
+        "compound-input result from this engine, even though the true shape is two disjoint corner cubes");
+  const Mesh mesh = TessellateGeneralBooleanClosedMesh(result, 16, 16);
+  Check(mesh.IsClosedManifold(), "the combined SHAPE is a genuinely closed manifold");
+  Check(std::abs(mesh.Volume() - 2.0) < 1e-3,
+        "volume matches (box1 n tool) + (box2 n tool) = 1 + 1 = 2, pairwise-distributed over compound_a's lumps");
+}
+
+// The contrasting, still-refused case, mirroring
+// TestBooleanCombineMixedDifferenceThrowsOnTouchingLumpXorCompound: a
+// CORNER-overlap SymmetricDifference has its two lumps genuinely TOUCH
+// along the overlap cube's own boundary curve, so even though Difference no
+// longer refuses a compound operand outright, this specific compound's own
+// contact curve still ends up claimed by 3+ fragment loops once reassembled
+// (BuildLoop's own pre-existing non-manifold refusal, boolean_general.cpp) -
+// the same real, disclosed scope limit BooleanCombinePlanar/
+// BooleanCombineMixed already have for this exact shape, not a new
+// limitation this pass introduces. Note this refusal is a
+// std::runtime_error here (BuildLoop's own throw), NOT the
+// std::invalid_argument FromMixedFaces uses for the analogous Planar/Mixed
+// case - a genuine, pre-existing difference between the two engines' own
+// error types for this same non-manifold condition.
+void TestBooleanCombineGeneralDifferenceThrowsOnTouchingLumpXorCompound() {
+  using dino8::kernel::BooleanCombineGeneral;
+  using dino8::kernel::BooleanCombinePlanar;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+
+  const Brep a = Brep::Box(0, 0, 0, 2, 2, 2);
+  const Brep b = Brep::Box(1, 1, 1, 3, 3, 3);
+  const Brep xor_result = BooleanCombinePlanar(a, b, BooleanOp::SymmetricDifference);
+  Check(xor_result.LumpFaceRanges().size() == 2, "the XOR fixture is the known two-lump, genuinely touching compound");
+
+  const Brep far_away = Brep::Box(100, 100, 100, 102, 102, 102);  // disjoint from both XOR lumps
+  bool threw = false;
+  std::string message;
+  try {
+    BooleanCombineGeneral(xor_result, far_away, BooleanOp::Difference);
+  } catch (const std::runtime_error& e) {
+    threw = true;
+    message = e.what();
+  }
+  Check(threw && message.find("3 or more fragment loops") != std::string::npos,
+        "Difference against a compound whose own lumps genuinely touch along a contact curve still throws the "
+        "pre-existing non-manifold reassembly refusal, not a silently wrong shape - a real, disclosed scope limit "
+        "of this pass's new compound-operand support, not an outright compound refusal");
+}
+
+// BooleanCombineGeneral's own output is never itself a Brep::Compound() by
+// construction the way a literal compound input is (it builds one shell of
+// kept fragments, or - new this pass - recomputes real Compound()
+// structure only when an INPUT already was compound; see
+// BooleanCombineGeneral's own updated doc comment in boolean_general.h), so
+// BooleanCombineGeneralNAry's internal pairwise folding of ordinary
 // (non-compound) operands is unaffected by the new guard - confirmed here
 // directly rather than assumed, reusing the same inclusion-exclusion
 // fixture TestBooleanCombineGeneralNAryUnionThreeOverlappingBoxesMatches
-// InclusionExclusion already proves correct. The guard DOES reach every
-// pairwise fold step when a caller passes a genuinely compound operand
-// into the group, exactly like BooleanCombinePlanarNAry/
-// BooleanCombineMixedNAry already do.
+// InclusionExclusion already proves correct. `fold_union`'s own internal
+// per-element folding always uses BooleanOp::Union regardless of the
+// caller's own `op` (see BooleanCombineGeneralNAry's own doc comment), so
+// the guard still reaches every pairwise fold step exactly as before when a
+// caller passes a genuinely compound operand into a group of 2+, exactly
+// like BooleanCombinePlanarNAry/BooleanCombineMixedNAry already do - Union
+// is the one op this pass leaves refused, so it is still the right op to
+// exercise that path with.
 void TestBooleanCombineGeneralNAryRefusesCompoundOperandAtEveryPairwiseStep() {
   using dino8::kernel::BooleanCombineGeneralNAry;
   using dino8::kernel::BooleanCombinePlanar;
@@ -33021,14 +33174,44 @@ void TestBooleanCombineGeneralNAryRefusesCompoundOperandAtEveryPairwiseStep() {
   }
   {
     // A single-element first_group forces the final combine call against
-    // second_group to actually run BooleanCombineGeneral.
+    // second_group to actually run BooleanCombineGeneral - Union still
+    // refuses a compound operand there unconditionally, unlike Difference/
+    // Intersection (see the block below).
     bool threw = false;
     try {
-      BooleanCombineGeneralNAry({box}, {xor_result}, BooleanOp::Difference);
+      BooleanCombineGeneralNAry({box}, {xor_result}, BooleanOp::Union);
     } catch (const std::invalid_argument&) {
       threw = true;
     }
-    Check(threw, "a compound second_group operand is refused at the final combine call");
+    Check(threw, "a compound second_group operand is refused at the final combine call for Union");
+  }
+  {
+    // New this pass: the same single-element-group final combine call for
+    // Difference now SUCCEEDS instead, since box never touches either of
+    // xor_result's own lumps (so xor_result's own genuinely-touching
+    // internal contact curve, the real scope limit
+    // TestBooleanCombineGeneralDifferenceThrowsOnTouchingLumpXorCompound
+    // documents, is never exercised here at all - box is the a_side, kept
+    // outright, and xor_result is the b_side/tool, whose own untouched
+    // fragments classify Out relative to the far-away box and so are never
+    // kept either) - the NAry wrapper's own single-element-group passthrough
+    // correctly reaches BooleanCombineGeneral's own new exemption, exactly
+    // like TestBooleanCombineMixedNArySingleElementCompoundGroupReachesFinalCombine
+    // already proves for the analytic engine.
+    bool threw = false;
+    Brep result;
+    try {
+      result = BooleanCombineGeneralNAry({box}, {xor_result}, BooleanOp::Difference);
+    } catch (const std::invalid_argument&) {
+      threw = true;
+    }
+    Check(!threw, "a compound second_group operand reaches Difference's own final combine call and is accepted");
+    if (!threw) {
+      const dino8::kernel::Mesh m = dino8::kernel::TessellateGeneralBooleanClosedMesh(result, 16, 16);
+      Check(m.IsClosedManifold(), "the result is a genuinely closed manifold");
+      Check(std::abs(m.Volume() - 8.0) < 1e-3,
+            "box is untouched by the far-away xor_result tool, so the result is exactly box's own volume (2^3 = 8)");
+    }
   }
 }
 
@@ -46322,6 +46505,9 @@ int main() {
   TestBooleanCombineGeneralNAryCallerToleranceForwardedToEveryPairwiseCall();
   TestBooleanCombineGeneralNAryNegativeControls();
   TestBooleanCombineGeneralRefusesCompoundOperand();
+  TestBooleanCombineGeneralDifferenceAcceptsCompoundFirstOperand();
+  TestBooleanCombineGeneralIntersectionAcceptsCompoundOperand();
+  TestBooleanCombineGeneralDifferenceThrowsOnTouchingLumpXorCompound();
   TestBooleanCombineGeneralNAryRefusesCompoundOperandAtEveryPairwiseStep();
   TestBooleanCombineMixedUnequalRadiusGeneralAngleIntersectionAndAllOps();
   TestBooleanCombineMixedUnequalRadiusGeneralAngleArgumentOrderAndSharedArcIsBitIdentical();

@@ -2371,6 +2371,70 @@ category's 8/15/2/25 (62.0%) split is unchanged. Full `dino8_kernel_tests`
 suite: 100% passing (5727 checks, 0 failures, exit code 0), 0 regressions.
 The kernel-only headline is unaffected (no bucket moved).*
 
+*Ninth note on this category's score (this pass): `BooleanCombineGeneral`
+(boolean_general.cpp) closes the last remaining gap the Seventh/Eighth notes
+above left open in the "Multi-body / multi-tool booleans" bullet — genuine
+compound-operand SUPPORT for the third and last B-rep engine, not just the
+"silently unguarded" safety fix the Seventh note already applied. `Union`
+still refuses either operand being a `Brep::Compound()` of two or more lumps
+(unchanged, same reason as the other two engines); `Difference`/
+`Intersection` now accept one on either side, the identical exemption
+`BooleanCombinePlanar`/`BooleanCombineMixed` already have — this engine's own
+per-face ray-cast classification (`ClassifyPointVsBrep` against the OTHER
+operand's full face list, or the coincident-face override's per-face normal
+comparison) already has no notion of which lump a face came from, so a
+multi-lump operand classifies exactly as correctly as a single-lump one.
+Verified (`TestBooleanCombineGeneralDifferenceAcceptsCompoundFirstOperand`,
+`TestBooleanCombineGeneralIntersectionAcceptsCompoundOperand`,
+`TestBooleanCombineGeneralDifferenceThrowsOnTouchingLumpXorCompound`, plus an
+updated `TestBooleanCombineGeneralRefusesCompoundOperand` and a third block on
+`TestBooleanCombineGeneralNAryRefusesCompoundOperandAtEveryPairwiseStep`,
+tests/test_basic.cpp) against a disjoint two-lump target (one lump touched by
+the cutter/tool, the other untouched) for both ops, plus the same
+still-refused touching-lump-XOR-compound case the other two engines have
+(throws the pre-existing non-manifold reassembly refusal — a `std::runtime_error`
+here specifically, `BuildLoop`'s own throw, not the `std::invalid_argument`
+`FromMixedFaces` uses for the identical condition on the other two engines,
+a genuine pre-existing difference between the engines' own error types this
+pass found and documented, not introduced).
+**A real, previously-undocumented limitation found while building this, not
+assumed, and the reason this item stays `partial` rather than flipping to
+`present`:** unlike `BooleanCombinePlanar`/`BooleanCombineMixed`, this engine
+does NOT recompute the result's true `LumpFaceRanges()` split afterward.
+Tried directly, not skipped out of caution: `SplitDisjointPieces()`'s own
+`ON_Brep::DuplicateFaces()` step corrupts whatever
+`TessellateGeneralBooleanClosedMesh()`'s own T-junction stitching needs from
+this engine's dense-polyline trim edges — a standalone probe confirmed a
+compound-input result tessellates as a genuinely closed manifold with the
+exact right combined volume when left as ONE unsplit Brep, but re-running
+`SplitDisjointPieces()` on that same result and tessellating either extracted
+single-lump piece the identical way gives a WRONG volume and a non-manifold
+mesh, a regression the split itself introduces rather than a pre-existing
+defect it merely exposes. So a compound-input result from this engine always
+reports a single lump — the actual combined SHAPE is correct (closed, right
+volume, confirmed via `TessellateGeneralBooleanClosedMesh()` in the tests
+above), only `LumpFaceRanges()` bookkeeping is affected, the same class of
+disclosed gap the Eighth note's own cylindrical-face finding already
+established for `BooleanCombineMixed`, now found to affect this engine's
+tessellation tooling too, for a different underlying reason. Separately:
+this engine's own pre-existing "No general partially-overlapping coincident
+curved-face handling" scope limit (this bullet's neighboring bullet) means a
+naive reuse of `BooleanCombineMixed`'s own axis-aligned Intersection fixture
+(a tool sharing a coplanar, partially-overlapping side face with BOTH lumps
+of a compound target at once) throws independent of any compound-operand
+concern — confirmed by direct standalone reproduction, not assumed — so this
+engine's own new tests use a diagonally-offset fixture instead, avoiding any
+shared face plane between operands. Still partial, unchanged: genuine
+multi-lump/Compound operand SUPPORT for the app layer (no app command calls
+any of the three engines at all, unchanged), and a compound operand mid-fold
+in any of the three N-ary wrappers still refuses (each wrapper still folds a
+group via pairwise Union calls internally, and Union stays refused for a
+compound operand on all three engines) — the category's 8/15/2/25 (62.0%)
+split is unchanged, since this item was already `partial` for reasons this
+pass does not fully close. Full `dino8_kernel_tests` suite: 100% passing
+(5855 checks, 0 failures, exit code 0), 0 regressions. The kernel-only
+headline is unaffected (no bucket moved).*
+
 **Blending & chamfering** (blending):
 - [partial] Constant-radius edge fillet on curved adjacent faces (cylinder/plane, cylinder/cylinder, freeform, closed/periodic rims) with B-rep trimming — every kernel fillet still requires both adjacent faces to be planar (fillet.h:147-159), so fillets cannot be chained onto a solid that already carries a curved face. App `FilletEdge` produces a genuine B-rep trim only when both faces are planar (cmd_fillet.cpp:175, "exact for planes; approximate elsewhere").
 - [partial] Concave (internal) edge fillet — kernel-native and exact: `FilletConcaveEdge` (fillet.cpp:1070 — corrected 2026-09-28, was mis-cited fillet.cpp:989; fillet.h:162-270) builds the mirrored rolling-ball construction with outward=false, closing perpendicular and oblique third faces; `FilletConcaveEdges` (fillet.cpp:2746; fillet.h:1111-1205) fillets several independent edges plus m==3 trihedral concave spherical corners. Still partial: planar faces only, one radius, m>=2 or higher-valence corners throw, oblique third faces out of scope for `FilletConcaveEdges`, a mixed convex+concave solid cannot be fully filleted, nothing in the app calls it.
