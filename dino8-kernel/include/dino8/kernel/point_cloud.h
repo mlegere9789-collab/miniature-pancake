@@ -184,6 +184,70 @@ class PointCloud {
   // non-integer R/G/B value, or a column that fails to parse as a number.
   static Result LoadPts(const std::string& path, PointCloud& out_cloud);
 
+  // Writes this cloud to a plain-ASCII PCL Point Cloud Data (.pcd, v0.7)
+  // file - the third point-cloud interchange format this kernel gets a
+  // path to (after XYZ and .pts above), and the one PCL/ROS's own
+  // ecosystem of tools actually reads and writes natively. A real
+  // `.pcd`'s header can declare an arbitrary ordered FIELDS list; this
+  // writer only ever emits one of four fixed combinations, chosen by
+  // which optional data this cloud actually has - `x y z`, `x y z rgb`,
+  // `x y z normal_x normal_y normal_z`, or
+  // `x y z rgb normal_x normal_y normal_z` - the same "no fabricating a
+  // column this cloud has no data for" discipline SaveXyz()/SavePts()
+  // already apply to their own formats, but unlike either of those two
+  // (each limited to just one optional extra), this format can carry
+  // color AND normals in the same file, since real `.pcd` genuinely
+  // supports both at once. Color is packed into a single `rgb` field the
+  // way real PCL files do: `(r << 16) | (g << 8) | b` reinterpreted as an
+  // IEEE-754 float bit pattern, not three separate columns - so a color
+  // round trip through this writer and LoadPcd() below is exact (the
+  // packed float's bits are preserved, not just its decimal value).
+  // `WIDTH`/`POINTS` are both written as `PointCount()` and `HEIGHT` as
+  // `1` - this only ever writes an unorganized cloud, the same
+  // "positions are a flat list, not a 2D grid" shape this class has
+  // throughout. `DATA` is always `ascii` - the binary/binary_compressed
+  // DATA variants real `.pcd` files can also use are out of scope here,
+  // the same "plain text only" scope every other point-cloud/mesh format
+  // in this kernel already has. Returns Result::Failed if the file can't
+  // be opened for writing.
+  Result SavePcd(const std::string& path) const;
+
+  // Reads a plain-ASCII `.pcd` file written by SavePcd() (or a compatible
+  // v0.7-header PCL file using the same field set and packed-`rgb`
+  // convention documented on SavePcd() above) into `out_cloud`. This is a
+  // deliberately narrow scan for exactly that structure, not a general
+  // PCD reader: the header must contain a `VERSION` line (any value - the
+  // same "require the format's own marker, don't silently misread a
+  // different file" stance LoadVrml()'s `#VRML` check and LoadUsda()'s
+  // `#usda` check already take), a `FIELDS` line whose value is exactly
+  // one of the four whitespace-separated combinations SavePcd() can write
+  // (`x y z`, `x y z rgb`, `x y z normal_x normal_y normal_z`, or
+  // `x y z rgb normal_x normal_y normal_z`) - any other field list, order,
+  // or subset is rejected outright rather than guessed at - a `POINTS`
+  // line giving the exact point count, and a `DATA` line whose value is
+  // exactly `ascii` (`binary`/`binary_compressed` are rejected, out of
+  // scope per SavePcd()'s own doc comment). A `HEIGHT` line, if present,
+  // must be `1` (an organized/structured cloud - `HEIGHT > 1` - is out of
+  // scope, the same "flat list of positions" shape this class has
+  // throughout); `SIZE`/`TYPE`/`COUNT`/`WIDTH`/`VIEWPOINT` lines are
+  // tolerated but not otherwise validated, since everything this reader
+  // actually needs to parse the data section correctly already comes from
+  // `FIELDS` and `POINTS`. Exactly `POINTS` data lines follow, each with
+  // the column count `FIELDS` implies (3/4/6/7); an `rgb` column is
+  // parsed back to its exact original R/G/B by reversing SavePcd()'s own
+  // float-bit-pack (the token is read as a double - exactly representing
+  // the written float, since a double losslessly holds any float value -
+  // then narrowed to `float` and its bits reinterpreted as the packed
+  // `uint32_t`), so a color round trip through SavePcd()/LoadPcd() is
+  // exact even though the file itself never shows a plain integer R/G/B.
+  // Returns Result::Failed - leaving `out_cloud` untouched - if the file
+  // can't be opened, `VERSION`/`FIELDS`/`POINTS`/`DATA` isn't found,
+  // `FIELDS` isn't one of the four known combinations, `DATA` isn't
+  // `ascii`, `HEIGHT` is present and isn't `1`, the actual data-line count
+  // doesn't match `POINTS`, a data line's column count doesn't match what
+  // `FIELDS` implies, or any column fails to parse as a number.
+  static Result LoadPcd(const std::string& path, PointCloud& out_cloud);
+
   const ON_PointCloud& raw() const { return cloud_; }
   ON_PointCloud& raw() { return cloud_; }
 

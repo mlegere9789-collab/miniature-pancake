@@ -692,35 +692,46 @@ class Mesh {
   // (`ON_MeshFace::IsQuad()`) is written as its own native 4-index line,
   // not split into two triangles - the same "OFF/PLY have a real
   // variable-length face list, STL doesn't" distinction SavePly() already
-  // draws. This only ever writes the plain `OFF` header - none of the
-  // `NOFF`/`COFF`/`4OFF`/`STOFF` variants (per-vertex normals, color,
-  // homogeneous coordinates, texture coordinates) some tools also accept,
-  // since this kernel's Mesh has no independently-stored per-vertex
-  // normal or color to put there anyway (same reasoning SaveObj()'s `vn`
-  // and SavePly()'s `nx/ny/nz` already give for being geometry-derived,
-  // not stored). Returns Result::Failed if the file can't be opened for
-  // writing; does not validate the mesh's own geometry (an empty mesh
-  // writes a valid, empty .off with vertex_count/face_count both 0).
+  // draws. **Updated:** when `HasVertexColors()` is true, this now writes
+  // the `COFF` (color OFF) variant instead - header `COFF` and each
+  // vertex line becomes `x y z r g b a` (Geomview's own per-vertex RGBA
+  // convention), `r`/`g`/`b` taken straight from VertexColorAt() and `a`
+  // always written 255 (fully opaque - this kernel's Color has no alpha
+  // channel to source one from). Still only ever writes plain `OFF` or
+  // `COFF` - never `NOFF`/`4OFF`/`STOFF` (per-vertex normal, homogeneous
+  // coordinate, texture coordinate) - since this kernel's Mesh still has
+  // no independently-stored per-vertex normal to put in an `NOFF` (same
+  // reasoning SaveObj()'s `vn` and SavePly()'s `nx/ny/nz` already give:
+  // always geometry-derived via ComputeVertexNormals(), never stored) and
+  // no UV-per-corner/homogeneous-w concept either. Returns Result::Failed
+  // if the file can't be opened for writing; does not validate the mesh's
+  // own geometry (an empty mesh writes a valid, empty .off/.coff with
+  // vertex_count/face_count both 0).
   Result SaveOff(const std::string& path) const;
 
   // Reads a plain-text `.off` file written by SaveOff() (or any other
-  // reasonably well-formed plain-`OFF`-header file) into `out_mesh`. A
-  // `#` starts a comment that runs to the end of its line and may appear
-  // anywhere (a leading file comment before the `OFF` keyword, a trailing
-  // comment on a vertex or face line, or its own standalone line) - this
-  // parser tokenizes past whitespace and newlines uniformly, so it
-  // doesn't depend on the header/count/vertex/face groups matching up
-  // one-per-line the way a hand-written example file usually does, only
-  // on their order. The header keyword must be exactly `OFF` (case
-  // sensitive) - an `NOFF`/`COFF`/`4OFF`/`STOFF` variant file is rejected
-  // rather than silently misparsed, since this parser has no code to skip
-  // those variants' own extra per-vertex fields (a normal/color/homogeneous-w
-  // /texture-coordinate value sitting where this parser expects the next
-  // vertex's `x` would otherwise be silently read as if it were one).
-  // After the `<vertex_count> <face_count> <edge_count>` line (the edge
-  // count is read but never used - nothing here needs it, and OFF itself
-  // doesn't require it to be accurate), exactly `vertex_count` "x y z"
-  // triples are read, then exactly `face_count` face lines, each
+  // reasonably well-formed plain-`OFF`- or `COFF`-header file) into
+  // `out_mesh`. A `#` starts a comment that runs to the end of its line
+  // and may appear anywhere (a leading file comment before the header
+  // keyword, a trailing comment on a vertex or face line, or its own
+  // standalone line) - this parser tokenizes past whitespace and newlines
+  // uniformly, so it doesn't depend on the header/count/vertex/face
+  // groups matching up one-per-line the way a hand-written example file
+  // usually does, only on their order. The header keyword must be exactly
+  // `OFF` or `COFF` (case sensitive) - an `NOFF`/`4OFF`/`STOFF` variant
+  // file is still rejected rather than silently misparsed, since this
+  // parser has no code to skip those variants' own extra per-vertex
+  // fields (a normal/homogeneous-w/texture-coordinate value sitting where
+  // this parser expects the next vertex's `x`, or `COFF`'s own `r`, would
+  // otherwise be silently read as if it were one). After the
+  // `<vertex_count> <face_count> <edge_count>` line (the edge count is
+  // read but never used - nothing here needs it, and OFF itself doesn't
+  // require it to be accurate), exactly `vertex_count` vertex lines are
+  // read - "x y z" for a plain `OFF` header, or "x y z r g b a" for a
+  // `COFF` header, with `r`/`g`/`b`/`a` each required to be an integer in
+  // `[0, 255]` (a fractional or out-of-range component fails the whole
+  // load, the same strictness LoadPts() already applies to its own R/G/B
+  // columns) - then exactly `face_count` face lines, each
   // `<n> i0 i1 ... i(n-1)` with 0-based indices into the vertex list just
   // read. A face with fewer than 3 corners, or any index outside
   // `[0, vertex_count)`, fails the whole load (Result::Failed). A face
@@ -732,11 +743,15 @@ class Mesh {
   // line, for the same reason (this kernel's `ON_MeshFace` only holds a
   // triangle or quad) - exact for a convex polygon, not guarded against a
   // concave one producing a triangle whose interior falls outside the
-  // original face. No independent per-vertex normal/color/UV is read
-  // (plain `OFF` doesn't carry any). Returns Result::Failed if the file
-  // can't be opened, doesn't start with the `OFF` keyword, the counts
-  // line or any vertex/face line is malformed or short, or a face fails
-  // the checks above - `out_mesh` is left unspecified in that case, not
+  // original face. A `COFF` file's own per-vertex alpha column is read
+  // (so a malformed one still fails the load) but then discarded - this
+  // kernel's Color has nowhere to put it, the same "read but unused"
+  // treatment the edge count above already gets. No independent
+  // per-vertex normal/UV is read either way (neither plain `OFF` nor
+  // `COFF` carries one). Returns Result::Failed if the file can't be
+  // opened, doesn't start with the `OFF`/`COFF` keyword, the counts line
+  // or any vertex/face line is malformed or short, or a face fails the
+  // checks above - `out_mesh` is left unspecified in that case, not
   // partially filled and silently trusted.
   static Result LoadOff(const std::string& path, Mesh& out_mesh);
 

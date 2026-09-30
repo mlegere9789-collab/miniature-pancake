@@ -15451,6 +15451,262 @@ void TestPointCloudLoadPtsRejectsMalformedInput() {
   }
 }
 
+// PCD (.pcd v0.7, ASCII) round trips - the third point-cloud format, and
+// the first one able to carry BOTH color and normals in the same file
+// (XYZ above is position+normal-only, .pts is position+color-only).
+void TestPointCloudPcdRoundTrips() {
+  using dino8::kernel::Point3d;
+  using dino8::kernel::PointCloud;
+  using dino8::kernel::Result;
+  using dino8::kernel::Vector3d;
+
+  // Positions only.
+  {
+    PointCloud cloud;
+    cloud.AppendPoint(Point3d(0, 0, 0));
+    cloud.AppendPoint(Point3d(1.5, -2.25, 3.125));
+    cloud.AppendPoint(Point3d(-10, 20, -30));
+    Check(!cloud.HasColors() && !cloud.HasNormals(), "fixture: cloud has neither colors nor normals");
+
+    const std::string path = "dino8_kernel_point_cloud_pcd_positions_test.pcd";
+    Check(cloud.SavePcd(path) == Result::Ok, "SavePcd() succeeds for a positions-only cloud");
+
+    PointCloud loaded;
+    Check(PointCloud::LoadPcd(path, loaded) == Result::Ok, "LoadPcd() succeeds");
+    Check(loaded.PointCount() == cloud.PointCount(), "loaded point count matches (3)");
+    Check(!loaded.HasColors() && !loaded.HasNormals(), "loaded cloud has neither - FIELDS was 'x y z'");
+    for (int i = 0; i < cloud.PointCount(); ++i) {
+      Check(loaded.PointAt(i).DistanceTo(cloud.PointAt(i)) < 1e-9,
+            "round-tripped position matches exactly");
+    }
+    std::remove(path.c_str());
+  }
+
+  // Positions + colors only - exercises the packed-float rgb column.
+  {
+    PointCloud cloud;
+    cloud.AppendPoint(Point3d(0, 0, 0));
+    cloud.AppendPoint(Point3d(1, 2, 3));
+    cloud.SetColors({ON_Color(255, 0, 0), ON_Color(10, 200, 30)});
+
+    const std::string path = "dino8_kernel_point_cloud_pcd_colors_test.pcd";
+    Check(cloud.SavePcd(path) == Result::Ok, "SavePcd() succeeds for a cloud with colors");
+
+    PointCloud loaded;
+    Check(PointCloud::LoadPcd(path, loaded) == Result::Ok, "LoadPcd() succeeds");
+    Check(loaded.HasColors(), "loaded cloud has colors - FIELDS was 'x y z rgb'");
+    Check(!loaded.HasNormals(), "loaded cloud has no normals");
+    for (int i = 0; i < cloud.PointCount(); ++i) {
+      Check(loaded.PointAt(i).DistanceTo(cloud.PointAt(i)) < 1e-9, "round-tripped position matches");
+      Check(loaded.ColorAt(i) == cloud.ColorAt(i),
+            "round-tripped color matches exactly - the packed-float bits survive intact");
+    }
+    std::remove(path.c_str());
+  }
+
+  // Positions + normals only.
+  {
+    PointCloud cloud;
+    cloud.AppendPoint(Point3d(0, 0, 0));
+    cloud.AppendPoint(Point3d(1, 2, 3));
+    cloud.SetNormals({Vector3d(1, 0, 0), Vector3d(0, 1, 0)});
+
+    const std::string path = "dino8_kernel_point_cloud_pcd_normals_test.pcd";
+    Check(cloud.SavePcd(path) == Result::Ok, "SavePcd() succeeds for a cloud with normals");
+
+    PointCloud loaded;
+    Check(PointCloud::LoadPcd(path, loaded) == Result::Ok, "LoadPcd() succeeds");
+    Check(loaded.HasNormals(), "loaded cloud has normals - FIELDS was 'x y z normal_x normal_y normal_z'");
+    Check(!loaded.HasColors(), "loaded cloud has no colors");
+    for (int i = 0; i < cloud.PointCount(); ++i) {
+      const auto original_n = cloud.NormalAt(i);
+      const auto loaded_n = loaded.NormalAt(i);
+      Check(std::abs(loaded_n.x - original_n.x) < 1e-9 && std::abs(loaded_n.y - original_n.y) < 1e-9 &&
+                std::abs(loaded_n.z - original_n.z) < 1e-9,
+            "round-tripped normal matches exactly");
+    }
+    std::remove(path.c_str());
+  }
+
+  // Positions + colors + normals together - the combination neither XYZ
+  // nor .pts can represent at all, real .pcd's own distinguishing feature.
+  {
+    PointCloud cloud;
+    cloud.AppendPoint(Point3d(1, 1, 1));
+    cloud.AppendPoint(Point3d(-2, 3, -4));
+    cloud.SetColors({ON_Color(0, 128, 255), ON_Color(255, 255, 0)});
+    cloud.SetNormals({Vector3d(0, 0, 1), Vector3d(1, 0, 0)});
+
+    const std::string path = "dino8_kernel_point_cloud_pcd_colors_and_normals_test.pcd";
+    Check(cloud.SavePcd(path) == Result::Ok, "SavePcd() succeeds for a cloud with colors and normals");
+
+    PointCloud loaded;
+    Check(PointCloud::LoadPcd(path, loaded) == Result::Ok, "LoadPcd() succeeds");
+    Check(loaded.HasColors() && loaded.HasNormals(),
+          "loaded cloud has both - FIELDS was 'x y z rgb normal_x normal_y normal_z'");
+    for (int i = 0; i < cloud.PointCount(); ++i) {
+      Check(loaded.PointAt(i).DistanceTo(cloud.PointAt(i)) < 1e-9, "round-tripped position matches");
+      Check(loaded.ColorAt(i) == cloud.ColorAt(i), "round-tripped color matches exactly");
+      const auto original_n = cloud.NormalAt(i);
+      const auto loaded_n = loaded.NormalAt(i);
+      Check(std::abs(loaded_n.x - original_n.x) < 1e-9 && std::abs(loaded_n.y - original_n.y) < 1e-9 &&
+                std::abs(loaded_n.z - original_n.z) < 1e-9,
+            "round-tripped normal matches exactly");
+    }
+    std::remove(path.c_str());
+  }
+
+  // A hand-written file, not SavePcd()'s own output - a real minimal PCL
+  // .pcd file, checked against known values rather than just round-tripped
+  // through this kernel's own write/read pair.
+  {
+    const std::string path = "dino8_kernel_point_cloud_pcd_hand_written_test.pcd";
+    std::ofstream out(path);
+    out << "# .PCD v0.7 - Point Cloud Data file format\n"
+           "VERSION 0.7\n"
+           "FIELDS x y z\n"
+           "SIZE 4 4 4\n"
+           "TYPE F F F\n"
+           "COUNT 1 1 1\n"
+           "WIDTH 2\n"
+           "HEIGHT 1\n"
+           "VIEWPOINT 0 0 0 1 0 0 0\n"
+           "POINTS 2\n"
+           "DATA ascii\n"
+           "1 2 3\n"
+           "4 5 6\n";
+    out.close();
+
+    PointCloud loaded;
+    Check(PointCloud::LoadPcd(path, loaded) == Result::Ok, "LoadPcd() reads a real hand-written .pcd file");
+    Check(loaded.PointCount() == 2, "hand-written file: loaded the expected 2 points");
+    Check(loaded.PointAt(0).DistanceTo(Point3d(1, 2, 3)) < 1e-9, "hand-written file: first point matches");
+    Check(loaded.PointAt(1).DistanceTo(Point3d(4, 5, 6)) < 1e-9, "hand-written file: second point matches");
+    std::remove(path.c_str());
+  }
+}
+
+// Malformed/ambiguous PCD input is rejected outright (Result::Failed).
+void TestPointCloudLoadPcdRejectsMalformedInput() {
+  using dino8::kernel::PointCloud;
+  using dino8::kernel::Result;
+
+  auto write_file = [](const std::string& path, const std::string& contents) {
+    std::ofstream out(path);
+    out << contents;
+  };
+
+  const std::string kGoodHeader =
+      "VERSION 0.7\nFIELDS x y z\nSIZE 4 4 4\nTYPE F F F\nCOUNT 1 1 1\nWIDTH 2\nHEIGHT 1\n"
+      "VIEWPOINT 0 0 0 1 0 0 0\nPOINTS 2\nDATA ascii\n";
+
+  {
+    PointCloud loaded;
+    Check(PointCloud::LoadPcd("dino8_kernel_point_cloud_pcd_nonexistent.pcd", loaded) == Result::Failed,
+          "LoadPcd() fails on a file that doesn't exist");
+  }
+
+  // Control: the shared good header, with matching data, loads fine.
+  {
+    const std::string path = "dino8_kernel_point_cloud_pcd_control_test.pcd";
+    write_file(path, kGoodHeader + "1 2 3\n4 5 6\n");
+    PointCloud loaded;
+    Check(PointCloud::LoadPcd(path, loaded) == Result::Ok, "control: a well-formed file loads fine");
+    Check(loaded.PointCount() == 2, "control: loaded the expected 2 points");
+    std::remove(path.c_str());
+  }
+
+  // Missing VERSION line entirely.
+  {
+    const std::string path = "dino8_kernel_point_cloud_pcd_no_version_test.pcd";
+    write_file(path, "FIELDS x y z\nWIDTH 2\nHEIGHT 1\nPOINTS 2\nDATA ascii\n1 2 3\n4 5 6\n");
+    PointCloud loaded;
+    Check(PointCloud::LoadPcd(path, loaded) == Result::Failed, "LoadPcd() fails with no VERSION line");
+    std::remove(path.c_str());
+  }
+
+  // An unsupported FIELDS combination (not one of the four known sets).
+  {
+    const std::string path = "dino8_kernel_point_cloud_pcd_bad_fields_test.pcd";
+    write_file(path,
+               "VERSION 0.7\nFIELDS x y z intensity\nWIDTH 1\nHEIGHT 1\nPOINTS 1\nDATA ascii\n1 2 3 0.5\n");
+    PointCloud loaded;
+    Check(PointCloud::LoadPcd(path, loaded) == Result::Failed,
+          "LoadPcd() fails on a FIELDS combination it doesn't recognize (e.g. 'intensity')");
+    std::remove(path.c_str());
+  }
+
+  // FIELDS out of the expected x/y/z order.
+  {
+    const std::string path = "dino8_kernel_point_cloud_pcd_reordered_fields_test.pcd";
+    write_file(path, "VERSION 0.7\nFIELDS z y x\nWIDTH 1\nHEIGHT 1\nPOINTS 1\nDATA ascii\n1 2 3\n");
+    PointCloud loaded;
+    Check(PointCloud::LoadPcd(path, loaded) == Result::Failed,
+          "LoadPcd() fails on a reordered FIELDS list it doesn't recognize");
+    std::remove(path.c_str());
+  }
+
+  // DATA mode other than ascii.
+  {
+    const std::string path = "dino8_kernel_point_cloud_pcd_binary_test.pcd";
+    write_file(path, "VERSION 0.7\nFIELDS x y z\nWIDTH 2\nHEIGHT 1\nPOINTS 2\nDATA binary\n\x01\x02");
+    PointCloud loaded;
+    Check(PointCloud::LoadPcd(path, loaded) == Result::Failed,
+          "LoadPcd() fails on DATA binary - out of this reader's ascii-only scope");
+    std::remove(path.c_str());
+  }
+
+  // An organized cloud (HEIGHT > 1) - out of scope.
+  {
+    const std::string path = "dino8_kernel_point_cloud_pcd_organized_test.pcd";
+    write_file(path, "VERSION 0.7\nFIELDS x y z\nWIDTH 1\nHEIGHT 2\nPOINTS 2\nDATA ascii\n1 2 3\n4 5 6\n");
+    PointCloud loaded;
+    Check(PointCloud::LoadPcd(path, loaded) == Result::Failed,
+          "LoadPcd() fails on an organized cloud (HEIGHT > 1)");
+    std::remove(path.c_str());
+  }
+
+  // POINTS count doesn't match the actual number of data lines.
+  {
+    const std::string path = "dino8_kernel_point_cloud_pcd_count_mismatch_test.pcd";
+    write_file(path,
+               "VERSION 0.7\nFIELDS x y z\nWIDTH 3\nHEIGHT 1\nPOINTS 3\nDATA ascii\n1 2 3\n4 5 6\n");
+    PointCloud loaded;
+    Check(PointCloud::LoadPcd(path, loaded) == Result::Failed,
+          "LoadPcd() fails when POINTS (3) doesn't match the actual data-line count (2)");
+    std::remove(path.c_str());
+  }
+
+  // A data line whose column count doesn't match what FIELDS implies.
+  {
+    const std::string path = "dino8_kernel_point_cloud_pcd_column_mismatch_test.pcd";
+    write_file(path, "VERSION 0.7\nFIELDS x y z\nWIDTH 1\nHEIGHT 1\nPOINTS 1\nDATA ascii\n1 2 3 4\n");
+    PointCloud loaded;
+    Check(PointCloud::LoadPcd(path, loaded) == Result::Failed,
+          "LoadPcd() fails on a data line with more columns than plain 'x y z' implies");
+    std::remove(path.c_str());
+  }
+
+  // A non-numeric token in a data line.
+  {
+    const std::string path = "dino8_kernel_point_cloud_pcd_garbage_test.pcd";
+    write_file(path, "VERSION 0.7\nFIELDS x y z\nWIDTH 1\nHEIGHT 1\nPOINTS 1\nDATA ascii\n1 2 zzz\n");
+    PointCloud loaded;
+    Check(PointCloud::LoadPcd(path, loaded) == Result::Failed,
+          "LoadPcd() fails on a data line with a non-numeric token");
+    std::remove(path.c_str());
+  }
+
+  // No DATA line at all.
+  {
+    const std::string path = "dino8_kernel_point_cloud_pcd_no_data_test.pcd";
+    write_file(path, "VERSION 0.7\nFIELDS x y z\nWIDTH 1\nHEIGHT 1\nPOINTS 1\n1 2 3\n");
+    PointCloud loaded;
+    Check(PointCloud::LoadPcd(path, loaded) == Result::Failed, "LoadPcd() fails with no DATA line at all");
+    std::remove(path.c_str());
+  }
+}
+
 void TestMeshAreaCountsBothQuadTriangles() {
   using dino8::kernel::Mesh;
 
@@ -19502,6 +19758,110 @@ void TestMeshLoadOffFanTriangulatesNgonFaces() {
         "the 4 fan triangles' combined area exactly reproduces the "
         "convex hexagon's own shoelace area");
   std::remove(hexagon_path.c_str());
+}
+
+// SaveOff()/LoadOff() now also handle the COFF (color OFF) variant when the
+// mesh has per-vertex colors - closes the "NOFF/COFF/4OFF/STOFF variant
+// this parser doesn't support" half of the gap TestMeshLoadOffRejectsMalformedFiles
+// still exercises for NOFF above.
+void TestMeshSaveOffWritesAndReadsCoffColors() {
+  using dino8::kernel::Color;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Result;
+
+  auto box = MakeQuadBoxMesh(0, 0, 0, 2, 2, 2);
+  std::vector<Color> colors;
+  for (int i = 0; i < box.VertexCount(); ++i) {
+    colors.push_back(Color{static_cast<unsigned char>(i * 30), static_cast<unsigned char>(255 - i * 20),
+                            static_cast<unsigned char>(i * 10)});
+  }
+  Check(box.SetVertexColors(colors) == Result::Ok, "fixture: SetVertexColors succeeds for all 8 vertices");
+  Check(box.HasVertexColors(), "fixture: mesh now has per-vertex colors");
+
+  const std::string path = "dino8_kernel_mesh_coff_test.off";
+  Check(box.SaveOff(path) == Result::Ok, "SaveOff succeeds for a mesh with vertex colors");
+
+  std::ifstream in(path);
+  std::string header_line;
+  std::getline(in, header_line);
+  Check(header_line == "COFF",
+        "a mesh with vertex colors writes the 'COFF' header instead of plain 'OFF'");
+  std::string first_vertex_line;
+  std::getline(in, first_vertex_line);  // counts line
+  std::getline(in, first_vertex_line);  // first vertex line
+  std::istringstream vline(first_vertex_line);
+  double x = 0, y = 0, z = 0;
+  int r = -1, g = -1, b = -1, a = -1;
+  vline >> x >> y >> z >> r >> g >> b >> a;
+  Check(!vline.fail(), "the first COFF vertex line has all 7 fields (x y z r g b a)");
+  Check(r == static_cast<int>(colors[0].r) && g == static_cast<int>(colors[0].g) &&
+            b == static_cast<int>(colors[0].b) && a == 255,
+        "the first vertex's written r/g/b match SetVertexColors(), alpha is 255");
+  in.close();
+
+  Mesh reloaded;
+  Check(Mesh::LoadOff(path, reloaded) == Result::Ok, "LoadOff succeeds on SaveOff()'s own COFF output");
+  Check(reloaded.HasVertexColors(), "the reloaded mesh has per-vertex colors again");
+  bool all_colors_match = true;
+  for (int i = 0; i < box.VertexCount(); ++i) {
+    const Color loaded_c = reloaded.VertexColorAt(i);
+    const Color original_c = box.VertexColorAt(i);
+    if (loaded_c.r != original_c.r || loaded_c.g != original_c.g || loaded_c.b != original_c.b) {
+      all_colors_match = false;
+      break;
+    }
+  }
+  Check(all_colors_match, "every round-tripped vertex color matches the original exactly");
+  Check(std::abs(reloaded.Volume() - box.Volume()) < 1e-9,
+        "the reloaded COFF mesh's geometry (volume) is unaffected by the added color columns");
+  std::remove(path.c_str());
+
+  // Without colors, SaveOff() still writes the plain 'OFF' header - proof
+  // the COFF path is conditional, not always-on.
+  const auto plain_box = MakeQuadBoxMesh(0, 0, 0, 1, 1, 1);
+  const std::string plain_path = "dino8_kernel_mesh_off_no_colors_test.off";
+  Check(plain_box.SaveOff(plain_path) == Result::Ok, "SaveOff succeeds for a mesh without vertex colors");
+  std::ifstream plain_in(plain_path);
+  std::string plain_header;
+  std::getline(plain_in, plain_header);
+  Check(plain_header == "OFF", "a mesh with no vertex colors still writes the plain 'OFF' header");
+  std::remove(plain_path.c_str());
+
+  // A hand-written COFF file with an out-of-range alpha component fails -
+  // the alpha column is read (and must be valid), even though it's then
+  // discarded.
+  const std::string bad_alpha_path = "dino8_kernel_mesh_coff_test_bad_alpha.off";
+  {
+    std::ofstream bad(bad_alpha_path);
+    bad << "COFF\n3 1 0\n0 0 0 255 0 0 256\n1 0 0 0 255 0 255\n0 1 0 0 0 255 255\n3 0 1 2\n";
+  }
+  Mesh bad_alpha;
+  Check(Mesh::LoadOff(bad_alpha_path, bad_alpha) == Result::Failed,
+        "LoadOff fails on a COFF file whose alpha component is out of [0, 255]");
+  std::remove(bad_alpha_path.c_str());
+
+  // A hand-written COFF file, checked against known values rather than
+  // just round-tripped through SaveOff()'s own output.
+  const std::string hand_written_path = "dino8_kernel_mesh_coff_test_hand_written.off";
+  {
+    std::ofstream out(hand_written_path);
+    out << "COFF\n3 1 0\n";
+    out << "0 0 0 255 0 0 255\n";
+    out << "2 0 0 0 255 0 255\n";
+    out << "0 2 0 0 0 255 255\n";
+    out << "3 0 1 2\n";
+  }
+  Mesh hand_written;
+  Check(Mesh::LoadOff(hand_written_path, hand_written) == Result::Ok,
+        "LoadOff succeeds on a hand-written COFF file");
+  Check(hand_written.HasVertexColors(), "the hand-written COFF file's colors were read");
+  const Color c0 = hand_written.VertexColorAt(0);
+  const Color c1 = hand_written.VertexColorAt(1);
+  const Color c2 = hand_written.VertexColorAt(2);
+  Check(c0.r == 255 && c0.g == 0 && c0.b == 0, "hand-written COFF: first vertex is red");
+  Check(c1.r == 0 && c1.g == 255 && c1.b == 0, "hand-written COFF: second vertex is green");
+  Check(c2.r == 0 && c2.g == 0 && c2.b == 255, "hand-written COFF: third vertex is blue");
+  std::remove(hand_written_path.c_str());
 }
 
 void TestMeshSaveAmfRoundTrips() {
@@ -50878,6 +51238,8 @@ int main() {
   TestPointCloudLoadXyzRejectsMalformedInput();
   TestPointCloudPtsRoundTrips();
   TestPointCloudLoadPtsRejectsMalformedInput();
+  TestPointCloudPcdRoundTrips();
+  TestPointCloudLoadPcdRejectsMalformedInput();
   TestMeshAreaCountsBothQuadTriangles();
   TestSubDFromBoxSubdividesToExactCatmullClarkCounts();
   TestSubDFromControlMeshRejectsEmptyMesh();
@@ -50939,6 +51301,7 @@ int main() {
   TestMeshSaveOffRoundTrips();
   TestMeshLoadOffRejectsMalformedFiles();
   TestMeshLoadOffFanTriangulatesNgonFaces();
+  TestMeshSaveOffWritesAndReadsCoffColors();
   TestMeshSaveAmfRoundTrips();
   TestMeshLoadAmfRejectsMalformedFiles();
   TestMeshSaveVrmlRoundTrips();

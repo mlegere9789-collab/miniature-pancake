@@ -1947,11 +1947,18 @@ Result Mesh::SaveOff(const std::string& path) const {
     return Result::Failed;
   }
 
-  out << "OFF\n";
+  const bool write_colors = HasVertexColors();
+  out << (write_colors ? "COFF\n" : "OFF\n");
   out << mesh_.m_V.Count() << ' ' << mesh_.m_F.Count() << " 0\n";
   for (int i = 0; i < mesh_.m_V.Count(); ++i) {
     const ON_3fPoint& v = mesh_.m_V[i];
-    out << v.x << ' ' << v.y << ' ' << v.z << '\n';
+    out << v.x << ' ' << v.y << ' ' << v.z;
+    if (write_colors) {
+      const Color c = VertexColorAt(i);
+      out << ' ' << static_cast<int>(c.r) << ' ' << static_cast<int>(c.g) << ' '
+          << static_cast<int>(c.b) << " 255";
+    }
+    out << '\n';
   }
   for (int i = 0; i < mesh_.m_F.Count(); ++i) {
     const ON_MeshFace& f = mesh_.m_F[i];
@@ -1972,10 +1979,11 @@ Result Mesh::LoadOff(const std::string& path, Mesh& out_mesh) {
   }
 
   std::string token;
-  if (!NextOffToken(in, token) || token != "OFF") {
-    return Result::Failed;  // missing header, or an NOFF/COFF/4OFF/STOFF
+  if (!NextOffToken(in, token) || (token != "OFF" && token != "COFF")) {
+    return Result::Failed;  // missing header, or an NOFF/4OFF/STOFF
                              // variant this parser doesn't support
   }
+  const bool is_coff = (token == "COFF");
 
   int vertex_count = 0, face_count = 0, edge_count = 0;
   if (!NextOffToken(in, token) || !ParseOffInt(token, vertex_count)) return Result::Failed;
@@ -1988,6 +1996,8 @@ Result Mesh::LoadOff(const std::string& path, Mesh& out_mesh) {
 
   Mesh result;
   ON_Mesh& raw = result.mesh_;
+  std::vector<Color> colors;
+  if (is_coff) colors.reserve(static_cast<size_t>(vertex_count));
 
   for (int i = 0; i < vertex_count; ++i) {
     double x, y, z;
@@ -1995,6 +2005,15 @@ Result Mesh::LoadOff(const std::string& path, Mesh& out_mesh) {
     if (!NextOffToken(in, token) || !ParseOffDouble(token, y)) return Result::Failed;
     if (!NextOffToken(in, token) || !ParseOffDouble(token, z)) return Result::Failed;
     raw.m_V.Append(ON_3fPoint(x, y, z));
+    if (is_coff) {
+      int r = 0, g = 0, b = 0, a = 0;
+      if (!NextOffToken(in, token) || !ParseOffInt(token, r) || r < 0 || r > 255) return Result::Failed;
+      if (!NextOffToken(in, token) || !ParseOffInt(token, g) || g < 0 || g > 255) return Result::Failed;
+      if (!NextOffToken(in, token) || !ParseOffInt(token, b) || b < 0 || b > 255) return Result::Failed;
+      if (!NextOffToken(in, token) || !ParseOffInt(token, a) || a < 0 || a > 255) return Result::Failed;
+      colors.push_back(Color{static_cast<unsigned char>(r), static_cast<unsigned char>(g),
+                              static_cast<unsigned char>(b)});
+    }
   }
 
   for (int i = 0; i < face_count; ++i) {
@@ -2039,6 +2058,9 @@ Result Mesh::LoadOff(const std::string& path, Mesh& out_mesh) {
     }
   }
 
+  if (is_coff && !colors.empty()) {
+    result.SetVertexColors(colors);
+  }
   out_mesh = std::move(result);
   return Result::Ok;
 }
