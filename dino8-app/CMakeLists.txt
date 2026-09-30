@@ -347,6 +347,8 @@ set(DINO8_SOURCES
   src/commands/cmd_fillet.cpp
   src/util/json_mini.cpp
   src/util/Sha256.cpp
+  src/util/BigUint.cpp
+  src/io/DigitalSignature.cpp
   src/flow/FlowData.cpp
   src/flow/FlowGraph.cpp
   src/flow/FlowNodesCore.cpp
@@ -596,6 +598,19 @@ if(DINO8_BUILD_TESTS)
   target_include_directories(dino8_test_g2_blend PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_link_libraries(dino8_test_g2_blend PRIVATE dino8_kernel)
   add_test(NAME dino8_g2_blend COMMAND dino8_test_g2_blend)
+
+  # RSA/SHA-256/PKCS#1v1.5 file signing (io/DigitalSignature.h,
+  # util/BigUint.h - see tests/test_digital_signature.cpp): BigUint
+  # arithmetic against the textbook RSA worked example, then a real
+  # generated keypair signing and verifying a file, with tamper- and
+  # wrong-key-detection checks. Standalone like dino8_test_aci_palette -
+  # provides its own dino8::app::ConfigDirectory() stub instead of linking
+  # app/Settings.cpp (which would otherwise pull in the full
+  # app/Application.h dependency graph for a function this test never
+  # actually calls into).
+  add_executable(dino8_test_digital_signature tests/test_digital_signature.cpp src/io/DigitalSignature.cpp src/util/BigUint.cpp src/util/Sha256.cpp)
+  target_include_directories(dino8_test_digital_signature PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  add_test(NAME dino8_digital_signature COMMAND dino8_test_digital_signature)
 
   # Verifies the internal accessibility-tree mirror (see
   # src/platform/AccessibilityTree.h and docs/ACCESSIBILITY.md) that

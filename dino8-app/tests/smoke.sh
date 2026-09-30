@@ -2786,6 +2786,66 @@ flcheck "Exported $TMPW/file/exportorigin.obj (origin at 5,5,0)" "ExportWithOrig
 test -s "$TMPW/file/exportorigin.obj" && echo "ok   exportorigin.obj exists" || { echo "FAIL exportorigin.obj missing"; fail=1; }
 grep -q "^v -5 -5 0$" "$TMPW/file/exportorigin.obj" && echo "ok   ExportWithOrigin translated the box corner to -5,-5,0" || { echo "FAIL ExportWithOrigin did not re-base the geometry"; fail=1; }
 
+# Point-cloud exchange at the app level (XYZ/PTS/LAS - see
+# io/FileExchange.cpp's ExportXyz/ImportXyz/ExportPts/ImportPts/ExportLas/
+# ImportLas) and digital signing of an exported file (io/DigitalSignature.h -
+# see point_cloud_io_script.txt). DigitalSign's first-ever call generates a
+# real 2048-bit RSA keypair from scratch (a one-time, roughly one-minute
+# cost - see BigUint::GenerateProbablePrime - paid fresh every run since
+# XDG_CONFIG_HOME above is a clean per-run scratch directory), so this is
+# the one script in this file that can legitimately take noticeably longer
+# than the others; --smoke is a frame-count target, not a wall-clock
+# timeout, so it simply waits.
+mkdir -p "$TMPW/pointcloud"
+sed "s|@TMP@|$TMPW/pointcloud|g" "$HERE/point_cloud_io_script.txt" > "$TMPW/point_cloud_io_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  PC="$("$BIN" --smoke 60 --script "$TMPW/point_cloud_io_script.txt" 2>&1)" || { echo "$PC"; echo "FAIL: point cloud io script exited non-zero"; exit 1; }
+else
+  PC="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$TMPW/point_cloud_io_script.txt" 2>&1)" || { echo "$PC"; echo "FAIL: point cloud io script exited non-zero"; exit 1; }
+fi
+echo "$PC" | grep -E "^(ok|FAIL)"
+if echo "$PC" | grep -q "^FAIL"; then fail=1; fi
+pccheck() { if echo "$PC" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$PC" "$1"; fail=1; fi; }
+pccheck "Exported $TMPW/pointcloud/cloud.xyz" "Export wrote cloud.xyz"
+pccheck "Exported $TMPW/pointcloud/cloud.pts" "Export wrote cloud.pts"
+pccheck "Exported $TMPW/pointcloud/cloud.las" "Export wrote cloud.las"
+test -s "$TMPW/pointcloud/cloud.xyz" && echo "ok   cloud.xyz exists" || { echo "FAIL cloud.xyz missing"; fail=1; }
+test -s "$TMPW/pointcloud/cloud.pts" && echo "ok   cloud.pts exists" || { echo "FAIL cloud.pts missing"; fail=1; }
+test -s "$TMPW/pointcloud/cloud.las" && echo "ok   cloud.las exists" || { echo "FAIL cloud.las missing"; fail=1; }
+grep -q "^0 0 0$" "$TMPW/pointcloud/cloud.xyz" && echo "ok   cloud.xyz has real ASCII XYZ content" || { echo "FAIL cloud.xyz content looks wrong"; fail=1; }
+grep -q "^3$" "$TMPW/pointcloud/cloud.pts" && echo "ok   cloud.pts has the real .pts point-count header" || { echo "FAIL cloud.pts content looks wrong"; fail=1; }
+head -c4 "$TMPW/pointcloud/cloud.las" | grep -q "LASF" && echo "ok   cloud.las has the real LAS file signature" || { echo "FAIL cloud.las is missing the LASF signature"; fail=1; }
+# Each of the three re-imported clouds prints the same real fingerprint
+# (3 points) as the original - proves the round trip actually carried the
+# points through, not just that some object landed in the document.
+PC_POINTS_COUNT=$(echo "$PC" | grep -c "^history:   3 points$")
+[ "$PC_POINTS_COUNT" = "4" ] && echo "ok   the point cloud's exact 3-point fingerprint survived all three XYZ/PTS/LAS round trips (List ran 4 times, all matched)" || { echo "FAIL the 3-point fingerprint did not appear exactly 4 times (got $PC_POINTS_COUNT) - a round trip silently dropped/added points"; fail=1; }
+pccheck "DigitalSign: wrote $TMPW/pointcloud/cloud.xyz.sig" "DigitalSign wrote a .sig sidecar"
+test -s "$TMPW/pointcloud/cloud.xyz.sig" && echo "ok   cloud.xyz.sig exists" || { echo "FAIL cloud.xyz.sig missing"; fail=1; }
+pccheck "VerifySignature: OK, signed by key fingerprint" "VerifySignature accepts a signature matching the current file"
+pccheck "VerifySignature: FAILED (Signature does not match this file/key)" "VerifySignature rejects the same signature once the file changes"
+
+# IFC (BIM) exchange at the app level (io/FileIgesStep.cpp's ExportIfc/
+# ImportIfc - see ifc_script.txt). Verified during development against a
+# real third-party IFC toolkit (IfcOpenShell)'s schema validator and
+# geometry engine, not just this app's own reader.
+mkdir -p "$TMPW/ifc"
+sed "s|@TMP@|$TMPW/ifc|g" "$HERE/ifc_script.txt" > "$TMPW/ifc_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  IFCOUT="$("$BIN" --smoke 40 --script "$TMPW/ifc_script.txt" 2>&1)" || { echo "$IFCOUT"; echo "FAIL: ifc script exited non-zero"; exit 1; }
+else
+  IFCOUT="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 40 --script "$TMPW/ifc_script.txt" 2>&1)" || { echo "$IFCOUT"; echo "FAIL: ifc script exited non-zero"; exit 1; }
+fi
+echo "$IFCOUT" | grep -E "^(ok|FAIL)"
+if echo "$IFCOUT" | grep -q "^FAIL"; then fail=1; fi
+ifccheck() { if echo "$IFCOUT" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$IFCOUT" "$1"; fail=1; fi; }
+ifccheck "Exported $TMPW/ifc/box.ifc" "Export wrote box.ifc"
+test -s "$TMPW/ifc/box.ifc" && echo "ok   box.ifc exists" || { echo "FAIL box.ifc missing"; fail=1; }
+grep -q "FILE_SCHEMA(('IFC4'))" "$TMPW/ifc/box.ifc" && echo "ok   box.ifc declares the IFC4 schema" || { echo "FAIL box.ifc is missing the IFC4 FILE_SCHEMA"; fail=1; }
+grep -q "IFCTRIANGULATEDFACESET" "$TMPW/ifc/box.ifc" && echo "ok   box.ifc has a real IFCTRIANGULATEDFACESET" || { echo "FAIL box.ifc has no IFCTRIANGULATEDFACESET"; fail=1; }
+ifccheck "IFC: 1 mesh element (14 vertices, 24 faces)" "Import read the box's tessellated mesh back with the exact vertex/face count Dino 8's own Export wrote"
+ifccheck "Nothing to export: select meshes, surfaces, polysurfaces or SubDs" "Export refuses a selection with nothing IFC-shaped (a bare point) instead of writing an empty file"
+
 # Creation: Points/Lines/InterpCrv/CurveThroughPt/Sketch/Circle3Pt/CircleD/Arc3Pt/
 # Rectangle3Pt/Polygon/PolygonStar/Ellipse/Helix/Spiral/PointGrid/Divide/ClosestPt/
 # Plane3Pt/SrfPt (see create_script.txt).

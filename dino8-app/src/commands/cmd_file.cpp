@@ -1,5 +1,6 @@
 // File commands: New, Open, Save, SaveAs, Import, Export, Exit...
 #include "commands/cmd_common.h"
+#include "io/DigitalSignature.h"
 #include "io/File3dm.h"
 #include "io/FileExchange.h"
 #include "io/FileIgesStep.h"
@@ -22,8 +23,8 @@ std::string LowerExt(const std::string& path) {
   return e;
 }
 
-const std::vector<std::string> kModelExts = {".3dm", ".obj", ".stl", ".ply", ".dxf", ".dwg", ".igs", ".iges", ".stp", ".step"};
-const std::vector<std::string> kExportExts = {".3dm", ".obj", ".stl", ".ply", ".dxf", ".dwg", ".svg", ".pdf", ".igs", ".iges", ".stp", ".step"};
+const std::vector<std::string> kModelExts = {".3dm", ".obj", ".stl", ".ply", ".dxf", ".dwg", ".igs", ".iges", ".stp", ".step", ".ifc", ".xyz", ".pts", ".las"};
+const std::vector<std::string> kExportExts = {".3dm", ".obj", ".stl", ".ply", ".dxf", ".dwg", ".svg", ".pdf", ".igs", ".iges", ".stp", ".step", ".ifc", ".xyz", ".pts", ".las"};
 
 void SaveTo(CommandContext& ctx, const std::string& path) {
   std::string err;
@@ -71,6 +72,10 @@ bool ExportDocument(const Document& doc, const std::string& path, std::string& e
   if (ext == ".ply") return ExportPly(doc, path, true, error);
   if (ext == ".igs" || ext == ".iges") return ExportIges(doc, path, true, error);
   if (ext == ".stp" || ext == ".step") return ExportStep(doc, path, true, error);
+  if (ext == ".ifc") return ExportIfc(doc, path, true, error);
+  if (ext == ".xyz") return ExportXyz(doc, path, true, error);
+  if (ext == ".pts") return ExportPts(doc, path, true, error);
+  if (ext == ".las") return ExportLas(doc, path, true, error);
   return ExportMeshFile(doc, path, true, error);
 }
 
@@ -107,7 +112,8 @@ void RunExportWithOrigin(Application& app, Document& doc, const std::vector<Obje
 // ExportWithOrigin: select objects, pick a point to become the new origin,
 // then export copies of the selection translated so that point lands at
 // (0,0,0) - the vector/CAD interchange formats (.3dm/.obj/.stl/.dxf/.ply/
-// .igs/.stp) support this exactly since it's a plain object translation.
+// .igs/.stp/.ifc/.xyz/.pts/.las) support this exactly since it's a plain
+// object translation.
 // SVG/PDF (page-space drawings of the *view*, not object-space geometry)
 // have no origin to re-base, so those two extensions fall back to a plain
 // Export of the view.
@@ -264,6 +270,44 @@ void RegisterFileCommands(CommandEngine& e) {
         if (path) { std::string err; if (!app.ExportDrawing(*path, false, scale, err)) ctx.Warn(err); return; }
         app.ShowFileDialog("Print to PDF", {".pdf", ".svg"}, true, [&app, scale](const std::string& p) { std::string err; if (!app.ExportDrawing(p, false, scale, err)) app.Notify(err); });
       }), CommandStatus::Implemented, "Writes a vector PDF (or SVG) of the active view; Scale=<mm per unit> forces a print scale.");
+  // DigitalSign: signs an already-exported file with this machine's RSA-2048
+  // signing key (generated once, on first use, at
+  // <ConfigDirectory()>/signing_key.json), writing a "<path>.sig" sidecar
+  // next to it - see io/DigitalSignature.h for the actual RSA/SHA-256/
+  // PKCS#1v1.5 scheme. The path argument names any file on disk (typically
+  // one this app just exported), not a Dino 8 document.
+  Reg(e, "DigitalSign", Immediate([](CommandContext& ctx) {
+        Application& app = ctx.App();
+        auto sign = [&app](const std::string& path) {
+          RsaPrivateKey key;
+          std::string err;
+          if (!LoadOrCreateSigningKey(key, err)) { app.Notify("DigitalSign: " + err); return; }
+          if (!WriteSignatureSidecar(path, key, err)) { app.Notify("DigitalSign: " + err); return; }
+          app.Notify("DigitalSign: wrote " + path + ".sig");
+        };
+        if (auto p = ctx.Engine().TakePendingInput()) { sign(*p); return; }
+        app.ShowFileDialog("Select a file to sign", {}, false, sign);
+      }), CommandStatus::Implemented,
+      "Writes path.sig next to the given file, an RSA-2048/SHA-256/PKCS#1v1.5 signature from this machine's own "
+      "signing key (generated on first use). VerifySignature checks it back.");
+  // VerifySignature: checks a file against the "<path>.sig" sidecar
+  // DigitalSign wrote for it (any matching .sig, from this machine or
+  // another - verification only needs the sidecar's own embedded public
+  // key, not this machine's private one). Reports the signer's public-key
+  // fingerprint on success so it can be compared against a value the
+  // signer published elsewhere - this alone proves nothing about identity,
+  // the same "no certificate authority here" honesty VerifySignatureSidecar
+  // itself documents.
+  Reg(e, "VerifySignature", Immediate([](CommandContext& ctx) {
+        Application& app = ctx.App();
+        auto verify = [&app](const std::string& path) {
+          std::string fingerprint, err;
+          if (!VerifySignatureSidecar(path, "", fingerprint, err)) { app.Notify("VerifySignature: FAILED (" + err + ")"); return; }
+          app.Notify("VerifySignature: OK, signed by key fingerprint " + fingerprint.substr(0, 16) + "...");
+        };
+        if (auto p = ctx.Engine().TakePendingInput()) { verify(*p); return; }
+        app.ShowFileDialog("Select a file to verify", {}, false, verify);
+      }), CommandStatus::Implemented, "Verifies a file against the path.sig sidecar DigitalSign wrote for it.");
 }
 
 }  // namespace dino8::app
