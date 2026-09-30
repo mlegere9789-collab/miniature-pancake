@@ -1,4 +1,5 @@
 // Vector and Transform node categories.
+#include <algorithm>
 #include <cmath>
 
 #include "flow/FlowGraph.h"
@@ -158,7 +159,15 @@ void AddTransform() {
                 In("Distance", Kind::Number, Access::Item, Value::Number(5)), In("Count", Kind::Integer, Access::Item, Value::Integer(5))};
     d.outputs = {Out("Geometry", Kind::Any)};
     d.eval = [](EvalContext& c) {
-      const int n = std::max(1, c.Int(3));
+      // Clamped, not just floored: Count can come straight from a .dflow
+      // file's JSON, and each copy here is a full Transformed() clone of
+      // whatever geometry is wired in (a Brep or Mesh included), so an
+      // unbounded untrusted-file count would force unbounded
+      // allocation/looping here, the same bug class already fixed for
+      // RunSolverNode's gene_count/Population/Generations. Kept to the same
+      // 10000 ceiling as Population/Generations there (not Range/Series'
+      // 100000): each copy is a full geometry clone, not a single push_back.
+      const int n = std::clamp(c.Int(3), 1, 10000);
       Vector3d dir = c.Vec(1); if (dir.Length() > 1e-12) dir.Unitize();
       const double dist = c.Num(2);
       std::vector<Value> out;
@@ -172,7 +181,9 @@ void AddTransform() {
     d.inputs = {In("Geometry", Kind::Any), In("Plane", Kind::Plane, Access::Item, Value::PlaneV(Plane{})), In("Count", Kind::Integer, Access::Item, Value::Integer(6)), In("Angle", Kind::Number, Access::Item, Value::Number(360))};
     d.outputs = {Out("Geometry", Kind::Any)};
     d.eval = [](EvalContext& c) {
-      const int n = std::max(1, c.Int(2));
+      // Same untrusted-file allocation hazard as Linear Array's Count, above,
+      // and the same 10000 ceiling for the same reason.
+      const int n = std::clamp(c.Int(2), 1, 10000);
       Plane pl = c.PlaneIn(1);
       const double total = c.Num(3);
       std::vector<Value> out;

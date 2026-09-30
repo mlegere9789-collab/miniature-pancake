@@ -1,4 +1,5 @@
 // Curve node category.
+#include <algorithm>
 #include <cmath>
 
 #include "commands/cmd_common.h"
@@ -177,7 +178,16 @@ void AddCurve() {
     d.eval = [](EvalContext& c) {
       if (!c.In(0).curve) return;
       const auto& crv = *c.In(0).curve;
-      const int n = std::max(1, c.Int(1, 10));
+      // Clamped, not just floored: Count can come straight from a .dflow
+      // file's JSON, and DivideByCount(n) both reserves a vector of n+1
+      // doubles and calls ParameterAtArcLength() (itself O(samples)) n times,
+      // so an unbounded untrusted-file count would force a multi-GB
+      // allocation and/or a hang here, the same bug class already fixed for
+      // RunSolverNode's gene_count/Population/Generations. Kept to the same
+      // 10000 ceiling as Population/Generations there (not Range/Series'
+      // 100000): each of the n points here costs an O(samples)
+      // ParameterAtArcLength() call, not a single push_back.
+      const int n = std::clamp(c.Int(1, 10), 1, 10000);
       std::vector<double> ts = crv.DivideByCount(n);
       std::vector<Value> pts, tans;
       for (double t : ts) { pts.push_back(Value::Point(crv.PointAt(t))); tans.push_back(Value::Vector(crv.TangentAt(t))); }

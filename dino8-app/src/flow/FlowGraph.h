@@ -4,8 +4,11 @@
 // graph undo, and JSON (.dflow) persistence.
 #pragma once
 
+#include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <map>
 #include <memory>
 #include <optional>
@@ -57,7 +60,19 @@ class EvalContext {
   const std::vector<Value>& List(int i) const { return i < static_cast<int>(lists.size()) ? lists[i] : empty_; }
   const Tree* TreeIn(int i) const { return i < static_cast<int>(trees.size()) ? trees[i] : nullptr; }
   double Num(int i, double fallback = 0) const { double v; return In(i).AsNumber(v) ? v : fallback; }
-  int Int(int i, int fallback = 0) const { double v; return In(i).AsNumber(v) ? static_cast<int>(std::llround(v)) : fallback; }
+  // Clamps to int range before llround: a value read from a .dflow file's
+  // JSON is an arbitrary double (e.g. 1e300), and std::llround() is
+  // undefined behavior once the rounded result falls outside the return
+  // type's range - the same hazard RunSolverNode's own scalar_int lambda
+  // already guards against for the Solver's ports, just not yet here, where
+  // every other node's Access::Item integer input (Range/Series/Divide
+  // Curve/List Item/... Count, Index, Steps) goes through this one function.
+  int Int(int i, int fallback = 0) const {
+    double v;
+    if (!In(i).AsNumber(v) || !std::isfinite(v)) return fallback;
+    v = std::clamp(v, static_cast<double>(std::numeric_limits<int>::min()), static_cast<double>(std::numeric_limits<int>::max()));
+    return static_cast<int>(std::llround(v));
+  }
   bool Bool(int i, bool fallback = false) const { bool v; return In(i).AsBool(v) ? v : fallback; }
   std::string Text(int i) const { return In(i).AsText(); }
   Point3d Pt(int i, Point3d fallback = Point3d(0, 0, 0)) const { Point3d p; return In(i).AsPoint(p) ? p : fallback; }

@@ -1975,6 +1975,28 @@ fdcheck() { if echo "$FD" | grep -qE "$1"; then echo "ok   $2"; else echo "FAIL 
 fdcheck "^ok   expect_objects 1" "a Population of 2000000000 still baked exactly one point instead of crashing/hanging"
 fdcheck "Evolutionary Solver \(#4\) best fitness .* after 60 generation\(s\)" "the solver still ran all 60 generations to completion with Population clamped down to a sane size"
 
+# Dino Flow list/array node Count clamp: Range, Series, Random, Divide
+# Curve, Linear Array and Polar Array all size a loop and/or output vector
+# straight from an untrusted-file Count-ish input - the same hazard as
+# RunSolverNode's Population above, just never closed off for these six
+# (see flow_array_dos_script.txt / flow_array_dos_graph.dflow, which also
+# covers EvalContext::Int()'s own clamp-before-llround fix via Range's Steps
+# = 1e300). After the fix, each bakes a point whose X coordinate is the
+# node's own clamped list length instead of crashing or hanging.
+sed "s|@ARRAYDOSFILE@|$HEREW/flow_array_dos_graph.dflow|g" "$HERE/flow_array_dos_script.txt" > "$TMPW/flow_array_dos_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  FA="$("$BIN" --smoke 100 --script "$TMPW/flow_array_dos_script.txt" 2>&1)" || { echo "$FA"; echo "FAIL: flow array Count-clamp script exited non-zero (crashed or hung until the job's own timeout)"; exit 1; }
+else
+  FA="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 100 --script "$TMPW/flow_array_dos_script.txt" 2>&1)" || { echo "$FA"; echo "FAIL: flow array Count-clamp script exited non-zero (crashed or hung until the job's own timeout)"; exit 1; }
+fi
+facheck() { if echo "$FA" | grep -qE "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$FA" "$1"; fail=1; fi; }
+facheck "^ok   expect_objects 6" "all six Count-clamp nodes baked a point instead of crashing/hanging"
+FA_100000=$(echo "$FA" | grep -c "  100000,0,0" || true)
+if [ "$FA_100000" = "3" ]; then echo "ok   Range (Steps=1e300) and Series/Random (Count=2000000000) each clamped down to exactly 100000 items"; else echo "FAIL Range/Series/Random Count clamp"; near "$FA" "100000,0,0"; fail=1; fi
+facheck "  10001,0,0" "Divide Curve (Count=2000000000) clamped n to 10000, so DivideByCount's n+1 points come out to 10001"
+FA_10000=$(echo "$FA" | grep -c "  10000,0,0" || true)
+if [ "$FA_10000" = "2" ]; then echo "ok   Linear Array and Polar Array (Count=2000000000) each clamped down to exactly 10000 copies"; else echo "FAIL Linear/Polar Array Count clamp"; near "$FA" "10000,0,0"; fail=1; fi
+
 # Dino Flow plug-in geometry values: Spiral Curve (a plug-in node output of
 # kind CURVE) wired directly into Plugin Curve Length (a plug-in node INPUT
 # of kind CURVE) - proving the plugin ABI's opaque geometry handles round-

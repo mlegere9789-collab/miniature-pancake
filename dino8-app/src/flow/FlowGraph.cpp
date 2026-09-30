@@ -328,7 +328,11 @@ void RunSolverNode(Graph& g, Node& n, app::Document* doc) {
   const int population = scalar_int(3, 40, 4, 10000);
   const int generations = scalar_int(4, 60, 1, 10000);
   const double mutation_rate = std::clamp(scalar_num(5, 0.15), 0.0, 1.0);
-  const unsigned seed = static_cast<unsigned>(std::llround(scalar_num(6, 1)));
+  // Same clamp-before-llround requirement as scalar_int above: Seed is read
+  // via scalar_num directly (not scalar_int), so without this clamp an
+  // untrusted-file value like 1e300 here would still hit std::llround's
+  // undefined behavior for an out-of-range magnitude.
+  const unsigned seed = static_cast<unsigned>(std::llround(std::clamp(scalar_num(6, 1), 0.0, static_cast<double>(std::numeric_limits<unsigned>::max()))));
 
   std::mt19937 rng(seed);
   std::uniform_real_distribution<double> uni(0.0, 1.0);
@@ -421,7 +425,19 @@ void Graph::Evaluate(Node& n, app::Document* doc) {
 
   // Special node kinds bypass the generic evaluator plumbing.
   if (n.def->special == NodeDef::Special::Slider) {
-    n.outputs[0].data = Tree::Single(n.slider_integer ? Value::Integer(static_cast<long long>(std::llround(n.slider_value))) : Value::Number(n.slider_value));
+    if (n.slider_integer) {
+      // Clamped to long long's range before llround: slider_value is set
+      // straight from a .dflow file's JSON "slider_value" number in
+      // FromJson with no range check, and std::llround() is undefined
+      // behavior once the rounded result falls outside the range of its
+      // return type (e.g. an untrusted-file value like 1e300 here).
+      const double v = std::isfinite(n.slider_value)
+          ? std::clamp(n.slider_value, static_cast<double>(std::numeric_limits<long long>::min()), static_cast<double>(std::numeric_limits<long long>::max()))
+          : 0.0;
+      n.outputs[0].data = Tree::Single(Value::Integer(static_cast<long long>(std::llround(v))));
+    } else {
+      n.outputs[0].data = Tree::Single(Value::Number(n.slider_value));
+    }
     n.dirty = false;
     return;
   }

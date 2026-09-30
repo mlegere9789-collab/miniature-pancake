@@ -118,7 +118,12 @@ void AddMaths() {
     d.outputs = {Out("Range", Kind::Number)};
     d.eval = [](EvalContext& c) {
       const double a = c.Num(0), b = c.Num(1);
-      const int n = std::max(1, c.Int(2));
+      // Clamped, not just floored: Steps can come straight from a .dflow
+      // file's JSON straight into this loop and the output vector's push_backs,
+      // so an unbounded untrusted-file count would force unbounded
+      // allocation/looping here, the same bug class already fixed for
+      // RunSolverNode's gene_count/Population/Generations.
+      const int n = std::clamp(c.Int(2), 1, 100000);
       std::vector<Value> out;
       for (int i = 0; i < n; ++i) out.push_back(Value::Number(a + (b - a) * i / n));
       c.OutList(0, out);
@@ -131,7 +136,7 @@ void AddMaths() {
     d.outputs = {Out("Series", Kind::Number)};
     d.eval = [](EvalContext& c) {
       const double a = c.Num(0), s = c.Num(1);
-      const int n = std::max(0, c.Int(2));
+      const int n = std::clamp(c.Int(2), 0, 100000);
       std::vector<Value> out;
       for (int i = 0; i < n; ++i) out.push_back(Value::Number(a + s * i));
       c.OutList(0, out);
@@ -146,7 +151,7 @@ void AddMaths() {
     d.eval = [](EvalContext& c) {
       std::mt19937 rng(static_cast<unsigned>(c.Int(3)));
       std::uniform_real_distribution<double> dist(c.Num(0), c.Num(1));
-      const int n = std::max(0, c.Int(2));
+      const int n = std::clamp(c.Int(2), 0, 100000);
       std::vector<Value> out;
       for (int i = 0; i < n; ++i) out.push_back(Value::Number(dist(rng)));
       c.OutList(0, out);

@@ -471,7 +471,14 @@ void Editor::DrawNode(app::Application& app, Node& n, ImDrawList* dl, ImVec2 ori
   bool changed = false;
   switch (n.def->special) {
     case NodeDef::Special::Slider: {
-      if (n.slider_integer) { int v = static_cast<int>(std::llround(n.slider_value)); if (ImGui::SliderInt("##v", &v, static_cast<int>(n.slider_min), static_cast<int>(n.slider_max))) { n.slider_value = v; changed = true; } }
+      if (n.slider_integer) {
+        // Clamp before llround: n.slider_value can be an arbitrary double
+        // loaded straight from a .dflow file's JSON, and std::llround() is
+        // undefined behavior once the rounded result is out of int range.
+        const double clamped = std::isfinite(n.slider_value) ? std::clamp(n.slider_value, static_cast<double>(std::numeric_limits<int>::min()), static_cast<double>(std::numeric_limits<int>::max())) : 0.0;
+        int v = static_cast<int>(std::llround(clamped));
+        if (ImGui::SliderInt("##v", &v, static_cast<int>(n.slider_min), static_cast<int>(n.slider_max))) { n.slider_value = v; changed = true; }
+      }
       else if (ImGui::SliderScalar("##v", ImGuiDataType_Double, &n.slider_value, &n.slider_min, &n.slider_max, "%.3f")) changed = true;
       break;
     }
