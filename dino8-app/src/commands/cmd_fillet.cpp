@@ -20,6 +20,7 @@
 // back to a mesh boolean of a swept cutting tool, and says so in the
 // command's printed note ("mesh fallback").
 #include "commands/cmd_common.h"
+#include "dino8/kernel/boolean_general.h"
 #include "dino8/kernel/fillet.h"
 #include "geom/BlendSurface.h"
 #include "geom/BrepTrimFace.h"
@@ -1284,18 +1285,24 @@ class FilletTwoSurfacesCommand : public Command {
           // freestanding surfaces, so we only trim when the face already has
           // a single 4-sided outer loop we can splice one side of.
           okA = TrimWholeLoop(*ba, fa.face, fb2.contact_curve_a, ctx, fa.id, like);
+        } else {
+          // Non-planar input: TrimWholeLoop's own ON_BrepTrimmedPlane has
+          // no analogue here, but the kernel's own SplitFaceByCurve() is
+          // general to ANY surface - see TrimBySplit()'s own doc comment.
+          okA = TrimBySplit(*ba, fa.face, fb2.contact_curve_a, tol, ctx, fa.id);
         }
       }
       if (bb) {
         ON_Plane plane;
         if (bb->m_F[fb.face].SurfaceOf()->IsPlanar(&plane, tol * 10)) okB = TrimWholeLoop(*bb, fb.face, fb2.contact_curve_b, ctx, fb.id, like);
+        else okB = TrimBySplit(*bb, fb.face, fb2.contact_curve_b, tol, ctx, fb.id);
       }
       trimmed = (okA ? 1 : 0) + (okB ? 1 : 0);
       fell_back = trimmed < 2;
     }
     ctx.Doc().Select(fillet_id, true);
     ctx.Print(std::string(chamfer ? "ChamferSrf" : "FilletSrf") + ": built between object " + std::to_string(fa.id) + " and " + std::to_string(fb.id) + (variable ? (", radius " + FormatNumber(r0) + " to " + FormatNumber(r1)) : (", radius " + FormatNumber(radius_))) +
-              (trim_ ? (trimmed == 2 ? "; both surfaces trimmed" : (trimmed == 1 ? "; one surface trimmed (the other is not planar; left untrimmed)" : "; surfaces not planar, left untrimmed")) : "") +
+              (trim_ ? (trimmed == 2 ? "; both surfaces trimmed" : (trimmed == 1 ? "; one surface trimmed (the other could not be split)" : "; neither surface could be split, left untrimmed")) : "") +
               (fb2.max_gap > tol * 10 ? " (approximate: contact points off by up to " + FormatNumber(fb2.max_gap) + ")" : ""));
   }
   // Cuts a planar face's own (single, 4-ish-sided) outer loop against the
@@ -1364,6 +1371,82 @@ class FilletTwoSurfacesCommand : public Command {
     ON_NurbsCurve b2 = b;
     b2.SetDomain(a.Domain().Min(), a.Domain().Max());
     return RuledSurface(a, b2);
+  }
+  // General (non-planar) counterpart to TrimWholeLoop() above - closes the
+  // "otherwise the input is left untrimmed" half of this command's own
+  // PARITY_MAP.md gap (Blending & chamfering: "Face-face blend between two
+  // independently picked surfaces"). TrimWholeLoop's ON_BrepTrimmedPlane
+  // only knows how to build a planar trim loop; this uses the kernel's own
+  // SplitFaceByCurve() instead, which is general to ANY ON_Surface (see
+  // its own doc comment, boolean_general.h) - a real trim-loop split, not
+  // a mesh-boolean approximation.
+  bool TrimBySplit(const ON_Brep& b, int fi, const ON_NurbsCurve& contact, double tol, CommandContext& ctx, ObjectId id) {
+    if (fi < 0 || fi >= b.m_F.Count()) return false;
+    const ON_BrepFace& f = b.m_F[fi];
+    const ON_Surface* surf = f.SurfaceOf();
+    if (surf == nullptr) return false;
+    // Same "which side of the contact curve is kept" sign test
+    // TrimWholeLoop() uses (a reference interior point vs. a perpendicular
+    // in-surface direction), just evaluated off the surface's own normal
+    // at the contact curve's midpoint instead of a single shared plane
+    // normal, since a general surface has no one normal.
+    const ON_Interval du = surf->Domain(0), dv = surf->Domain(1);
+    const Point3d far_ref = surf->PointAt(du.Mid(), dv.Mid());
+    const Point3d c0 = contact.PointAtStart(), c1 = contact.PointAtEnd();
+    Vector3d along = c1 - c0;
+    if (!along.Unitize()) return false;
+    double mu = 0, mv = 0;
+    const Point3d mid3 = contact.PointAt(contact.Domain().Mid());
+    if (!SurfaceClosestPointGlobal(*surf, mid3, mu, mv)) return false;
+    const Vector3d normal = surf->NormalAt(mu, mv);
+    Vector3d perp = ON_CrossProduct(normal, along);
+    if (!perp.Unitize()) return false;
+    const double side_ref = ON_DotProduct(far_ref - c0, perp);
+    if (std::fabs(side_ref) < 1e-9) return false;  // degenerate: contact runs through the face's own middle
+
+    kernel::Brep kb;
+    kb.raw() = b;
+    kernel::NurbsCurve kc;
+    kc.raw() = contact;
+    kernel::Brep split;
+    try {
+      split = kernel::SplitFaceByCurve(kb, fi, kc, std::max(tol, 1e-6));
+    } catch (const std::exception&) {
+      return false;
+    }
+    if (split.FaceCount() != kb.FaceCount() + 1) return false;
+    // SplitFaceByCurve() keeps every face in original index order, with
+    // fi's own single face replaced by its 2 fragments in place - so the
+    // two fragments land at fi and fi+1, every later face shifted up by
+    // one (see that function's own "every other face carried through
+    // unchanged" doc comment and its own index-robust test,
+    // TestSplitFaceByCurveBoxTopFaceAsymmetricVSplit, tests/test_basic.cpp).
+    const std::vector<kernel::Mesh> meshes = split.Tessellate(16, 16);
+    int keep = -1, drop = -1;
+    for (int idx : {fi, fi + 1}) {
+      if (idx < 0 || idx >= static_cast<int>(meshes.size()) || meshes[static_cast<size_t>(idx)].VertexCount() == 0) continue;
+      const kernel::BoundingBox bb = meshes[static_cast<size_t>(idx)].GetBoundingBox();
+      const Point3d center((bb.min.x + bb.max.x) * 0.5, (bb.min.y + bb.max.y) * 0.5, (bb.min.z + bb.max.z) * 0.5);
+      const double s = ON_DotProduct(center - c0, perp);
+      if (s * side_ref > 0) keep = idx; else drop = idx;
+    }
+    if (keep < 0 || drop < 0) return false;
+    try {
+      split.DeleteFace(drop, /*heal=*/false);
+    } catch (const std::exception&) {
+      return false;
+    }
+    ON_Brep result = split.raw();
+    result.SetTolerancesBoxesAndFlags(false, true, false, true, true, true, true, true);
+    if (!result.IsValid(nullptr)) return false;
+    if (SceneObject* orig = ctx.Doc().Find(id)) {
+      orig->kind = ObjectKind::Brep;
+      if (!orig->brep) orig->brep = std::make_unique<kernel::Brep>();
+      orig->brep->raw() = result;
+      orig->surface.reset();
+      orig->InvalidateDisplay();
+    }
+    return true;
   }
 
  private:
@@ -1804,8 +1887,24 @@ class FilletEdgeCommand : public Command {
       };
       auto uv_a_fn = [&](double t) { return uv_at(t0, t); };
       auto uv_b_fn = [&](double t) { return uv_at(t1, t); };
-      ok = curvature_ ? BuildBlendSurfaceG2(ec, *sa, uv_a_fn, ec, *sb, uv_b_fn, 24, built)
-                      : BuildBlendSurfaceG1(ec, *sa, uv_a_fn, ec, *sb, uv_b_fn, false, 24, built);
+      // Adaptive, tolerance-enforcing build (geom/BlendSurface.h) instead
+      // of a bare fixed-24-sample call - closes the "tolerance enforcement
+      // exists in the geometry library but is not yet reachable from any
+      // app command" half of PARITY_MAP.md's own "Surface-to-surface
+      // continuity blend" gap for BlendEdge. `max_gap` floors at the same
+      // scale-aware bound FilletTwoSurfacesCommand::Run already uses
+      // (SurfaceScale * 1e-3, clamped against the document tolerance) so a
+      // tiny or huge edge pair gets a sane target either way. A failed
+      // CERTIFICATION (achieved_gap finite but above max_gap) still keeps
+      // the best surface BuildBlendSurfaceG1Adaptive/G2Adaptive built along
+      // the way - only a genuine build failure (too few usable samples,
+      // achieved_gap left at +infinity) is treated as this command's own
+      // failure, exactly the fixed-sample call's own failure mode.
+      const double max_gap = std::max(std::max(SurfaceScale(*sa), SurfaceScale(*sb)) * 1e-3, tol * 10);
+      double achieved_gap = std::numeric_limits<double>::infinity();
+      curvature_ ? BuildBlendSurfaceG2Adaptive(ec, *sa, uv_a_fn, ec, *sb, uv_b_fn, max_gap, 24, 384, built, &achieved_gap)
+                 : BuildBlendSurfaceG1Adaptive(ec, *sa, uv_a_fn, ec, *sb, uv_b_fn, false, max_gap, 24, 384, built, &achieved_gap);
+      ok = std::isfinite(achieved_gap);
       if (!ok) err = "could not build the blend surface";
     } else {
       // radii_ (from the Radii= option) makes this a genuine variable-radius
@@ -2499,8 +2598,15 @@ class BlendSrfCommand : public Command {
     auto uv_a_fn = [&](double t) { return uv_on(*sa, *ea, t); };
     auto uv_b_fn = [&](double t) { return uv_on(*sb, *eb, t); };
     ON_NurbsSurface built;
-    const bool ok = curvature_ ? BuildBlendSurfaceG2(*ea, *sa, uv_a_fn, *eb, *sb, uv_b_fn, 24, built)
-                               : BuildBlendSurfaceG1(*ea, *sa, uv_a_fn, *eb, *sb, uv_b_fn, false, 24, built);
+    // Adaptive, tolerance-enforcing build - see FilletEdgeCommand's own
+    // Mode::Blend block (cmd_fillet.cpp, above) for the full rationale;
+    // same scale-aware max_gap floor.
+    const double tol = std::max(ctx.Settings().absolute_tolerance, 1e-5);
+    const double max_gap = std::max(std::max(SurfaceScale(*sa), SurfaceScale(*sb)) * 1e-3, tol * 10);
+    double achieved_gap = std::numeric_limits<double>::infinity();
+    curvature_ ? BuildBlendSurfaceG2Adaptive(*ea, *sa, uv_a_fn, *eb, *sb, uv_b_fn, max_gap, 24, 384, built, &achieved_gap)
+               : BuildBlendSurfaceG1Adaptive(*ea, *sa, uv_a_fn, *eb, *sb, uv_b_fn, false, max_gap, 24, 384, built, &achieved_gap);
+    const bool ok = std::isfinite(achieved_gap);
     delete ea;
     delete eb;
     if (!ok) { ctx.Warn("BlendSrf: could not build the blend"); return; }
@@ -2595,8 +2701,15 @@ class VariableBlendSrfCommand : public Command {
     const double w0 = width0_, w1 = width1_;
     auto width_at = [w0, w1](double t) { return w0 + (w1 - w0) * t; };
     ON_NurbsSurface built;
-    const bool ok = curvature_ ? BuildBlendSurfaceG2(*ea, *sa, uv_a_fn, *eb, *sb, uv_b_fn, 24, built, width_at)
-                               : BuildBlendSurfaceG1(*ea, *sa, uv_a_fn, *eb, *sb, uv_b_fn, false, 24, built, width_at);
+    // Adaptive, tolerance-enforcing build - see FilletEdgeCommand's own
+    // Mode::Blend block (cmd_fillet.cpp, above) for the full rationale;
+    // same scale-aware max_gap floor.
+    const double tol = std::max(ctx.Settings().absolute_tolerance, 1e-5);
+    const double max_gap = std::max(std::max(SurfaceScale(*sa), SurfaceScale(*sb)) * 1e-3, tol * 10);
+    double achieved_gap = std::numeric_limits<double>::infinity();
+    curvature_ ? BuildBlendSurfaceG2Adaptive(*ea, *sa, uv_a_fn, *eb, *sb, uv_b_fn, max_gap, 24, 384, built, &achieved_gap, width_at)
+               : BuildBlendSurfaceG1Adaptive(*ea, *sa, uv_a_fn, *eb, *sb, uv_b_fn, false, max_gap, 24, 384, built, &achieved_gap, width_at);
+    const bool ok = std::isfinite(achieved_gap);
     delete ea;
     delete eb;
     if (!ok) { ctx.Warn("VariableBlendSrf: could not build the blend"); return; }

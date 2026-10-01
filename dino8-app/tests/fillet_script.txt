@@ -513,3 +513,43 @@ Rho=0.5
 Enter
 SelAll
 Volume
+# --- FilletSrf trimming a genuinely NON-PLANAR input: a bounded (open,
+# non-periodic) quarter-cylinder panel - the same Arc+ExtrudeCrv fixture
+# ConnectSrf's own general-trim case above uses, so the two surfaces are
+# already known to meet - and an oversized tilted plane. Before this
+# session, TrimWholeLoop (cmd_fillet.cpp) only ever trimmed a PLANAR pick
+# (ON_BrepTrimmedPlane has no non-planar analogue); the curved side was
+# always left untrimmed regardless of shape, closing only half of
+# PARITY_MAP.md's own "Face-face blend between two independently picked
+# surfaces... otherwise the input is left untrimmed" gap (Blending &
+# chamfering). TrimBySplit (cmd_fillet.cpp, new this session) instead uses
+# the kernel's own general kernel::SplitFaceByCurve() - genuine to ANY
+# ON_Surface, not just a plane (boolean_general.h) - so the panel's own
+# curved face is now really trimmed too: "both surfaces trimmed" below,
+# not "one surface trimmed (the other could not be split)" the way the
+# periodic cylinder-wall cases elsewhere in this file still read (a full
+# 360-degree wall's own contact curve is a closed loop, which
+# SplitFaceByCurve correctly refuses - see the VariableFilletSrf case
+# above - but this panel is open/bounded, so its contact curve genuinely
+# crosses the trim boundary at exactly two points). Radius kept small
+# (0.3) simply so the offset-SSX spine reliably converges on this
+# fixture, not because TrimBySplit itself needs it. Area is the real,
+# reproducible value this exact computation returns (169.1, stable across
+# repeated runs - confirmed by running this script three times in a row),
+# the same "no closed form, so check the actual reproducible number"
+# convention the ConnectSrf case above already uses.
+SelAll
+Hide
+Arc 1900,0,0 1905,0,0 1900,5,0
+SelCrv
+ExtrudeCrv 12
+Plane3Pt 1894,-6,1.2 1894,6,1.2 1906,6,10.8
+SelNone
+SelSrf
+FilletSrf
+Radius=0.3
+1903.54,3.54,6
+1898,2,4.4
+SelAll
+List
+Area
