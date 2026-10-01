@@ -13,11 +13,12 @@
 //    every document edit (this app has no such hook anywhere, and adding
 //    one here first would be a new, unproven mechanism instead of reuse).
 //
-// Scope: six construction commands record a doc::HistoryRecord for every
+// Scope: seven construction commands record a doc::HistoryRecord for every
 // object they build while History On is set - Extrude/ExtrudeCrv,
-// ExtrudeCrvToPoint, Revolve, Loft, SubDLoft and Pipe (see cmd_solids.cpp
-// and cmd_surface.cpp, which own the actual construction math via the free
-// Rebuild* functions declared in history_rebuild.h). These were chosen
+// ExtrudeCrvToPoint, Revolve, Loft, SubDLoft, Pipe and Sweep1 (single-
+// cross-section case only - see cmd_solids.cpp and cmd_surface.cpp, which
+// own the actual construction math via the free Rebuild* functions declared
+// in history_rebuild.h). These were chosen
 // because each has a simple, unambiguous "rebuild from current source
 // curve(s) + recorded parameters" definition with no hidden picked-in-3D-
 // space state besides what's recorded (Revolve's axis is the one
@@ -98,6 +99,17 @@ bool RebuildOneHistoryObject(CommandContext& ctx, SceneObject& target, const His
     // same way the object's own SceneObject geometry would be without
     // ReplaceGeometry below.
     if (fresh) ctx.Doc().SetPipeFeature(target.id, *src->curve);
+  } else if (rec.command == "Sweep1") {
+    // Sources recorded as {rail, section} (Sweep1Command::Build's single-
+    // cross-section case only - the live command never records history for
+    // its multi-section blend case, since RebuildSweep1 itself only takes
+    // one section).
+    if (rec.sources.size() != 2) return false;
+    const SceneObject* rail_src = ctx.Doc().Find(rec.sources[0]);
+    const SceneObject* section_src = ctx.Doc().Find(rec.sources[1]);
+    if (!rail_src || rail_src->kind != ObjectKind::Curve) return false;
+    if (!section_src || section_src->kind != ObjectKind::Curve) return false;
+    fresh = RebuildSweep1(ctx, *section_src->curve, *rail_src->curve, rec);
   } else {
     return false;  // unknown/future command name in an old side-table entry
   }
@@ -122,7 +134,7 @@ void ToggleOrReport(CommandContext& ctx, bool report) {
     if (v == "on" || v == "yes" || v == "y" || v == "1") on = true;
     else if (v == "off" || v == "no" || v == "n" || v == "0") on = false;
     else { ctx.Warn("History: expected On or Off"); return; }
-    ctx.Print(std::string("History recording: ") + (on ? "on - new Extrude/ExtrudeCrvToPoint/Revolve/Loft/SubDLoft/Pipe results will remember their source curve(s) for UpdateHistory"
+    ctx.Print(std::string("History recording: ") + (on ? "on - new Extrude/ExtrudeCrvToPoint/Revolve/Loft/SubDLoft/Pipe/Sweep1 (single section) results will remember their source curve(s) for UpdateHistory"
                                                          : "off - new construction results will not remember their source"));
     return;
   }
@@ -189,11 +201,11 @@ void DoHistoryPurge(CommandContext& ctx) {
 
 void RegisterHistoryCommands(CommandEngine& e) {
   Reg(e, "History", Immediate([](CommandContext& ctx) { ToggleOrReport(ctx, /*report=*/true); }), CommandStatus::Implemented,
-      "A real, scoped constructional-history mechanism: with no argument, reports the On/Off state and every object with live history and its source(s); On/Off toggles whether NEW results from Extrude/ExtrudeCrv, ExtrudeCrvToPoint, Revolve, Loft, SubDLoft and Pipe (only) record their source curve(s) and parameters - existing objects and every other construction command are unaffected, matching Rhino's own History On/Off gating 'new construction only'. UpdateHistory does the actual rebuild-on-edit. NOT a general dependency graph for all ~1050 commands - see UpdateHistory's own note for exactly why those six and the honest scope limit.");
+      "A real, scoped constructional-history mechanism: with no argument, reports the On/Off state and every object with live history and its source(s); On/Off toggles whether NEW results from Extrude/ExtrudeCrv, ExtrudeCrvToPoint, Revolve, Loft, SubDLoft, Pipe and Sweep1 (single cross-section only) record their source curve(s) and parameters - existing objects and every other construction command are unaffected, matching Rhino's own History On/Off gating 'new construction only'. UpdateHistory does the actual rebuild-on-edit. NOT a general dependency graph for all ~1050 commands - see UpdateHistory's own note for exactly why those seven and the honest scope limit.");
   Reg(e, "RecordHistory", Immediate([](CommandContext& ctx) { ToggleOrReport(ctx, /*report=*/false); }), CommandStatus::Implemented,
       "The same On/Off toggle as History (Rhino's own alternate name for it); use History with no argument for the live report.");
   Reg(e, "UpdateHistory", Immediate(DoUpdateHistory), CommandStatus::Implemented,
-      "Re-runs Extrude/ExtrudeCrvToPoint/Revolve/Loft/SubDLoft/Pipe for every object History recorded, against its source curve(s)' *current* geometry (moved, reshaped, or control-point-edited since), and replaces that object's geometry in place - same object id, same layer/color/name/user text, only the shape changes (Pipe's own PipeFeature rail tag is refreshed alongside it, so ExtractPipedCurve keeps working after a rebuild too). The same explicit-recompute shape as ElecRebuild (cmd_elec.cpp) and UpdateDimensions (cmd_annotate.cpp) use for their own associative rebuilds, not an automatic hook on every document edit. Revolve's axis is recorded as-picked and does not move with the curve, matching Rhino's own Revolve history. Objects made before History was turned On, or by any other command, have no recorded history and are left untouched.");
+      "Re-runs Extrude/ExtrudeCrvToPoint/Revolve/Loft/SubDLoft/Pipe/Sweep1 for every object History recorded, against its source curve(s)' *current* geometry (moved, reshaped, or control-point-edited since), and replaces that object's geometry in place - same object id, same layer/color/name/user text, only the shape changes (Pipe's own PipeFeature rail tag is refreshed alongside it, so ExtractPipedCurve keeps working after a rebuild too). The same explicit-recompute shape as ElecRebuild (cmd_elec.cpp) and UpdateDimensions (cmd_annotate.cpp) use for their own associative rebuilds, not an automatic hook on every document edit. Revolve's axis is recorded as-picked and does not move with the curve, matching Rhino's own Revolve history. Sweep1 only records when built from a single cross-section curve (the kernel's exact Brep::Sweep1 case) - the multi-section blend case records nothing, matching how it already behaved before this. Objects made before History was turned On, or by any other command, have no recorded history and are left untouched.");
   Reg(e, "HistoryUpdate", Immediate(DoUpdateHistory), CommandStatus::Implemented,
       "Rhino's own alternate name for UpdateHistory - identical rebuild, reported under whichever name was typed. Previously a dead cmd_state.cpp stub that always claimed no history was recorded; now the real mechanism.");
   Reg(e, "HistoryPurge", Immediate(DoHistoryPurge), CommandStatus::Implemented,

@@ -61,7 +61,21 @@ bool TryParseHttpRequest(const std::string& buffer, HttpRequest* out, size_t* co
       const std::string value = header_line.substr(vstart, vend - vstart);
       headers[key] = value;
       if (key == "content-length") {
-        content_length = static_cast<size_t>(std::strtoul(value.c_str(), nullptr, 10));
+        // strtoul accepts a leading '-' and negates the parsed value per
+        // the C standard, so "Content-Length: -1" would otherwise become
+        // SIZE_MAX/ULONG_MAX; added to body_start below, that overflows
+        // size_t and can wrap back under buffer.size(), making the
+        // "body not fully received yet" check below pass on a request
+        // whose body hasn't actually arrived. Reject anything that isn't a
+        // plain non-negative number, or that already exceeds the request
+        // size cap, instead of letting it wrap.
+        bool all_digits = !value.empty();
+        for (unsigned char c : value) all_digits = all_digits && std::isdigit(c);
+        if (!all_digits) return false;
+        errno = 0;
+        const unsigned long parsed = std::strtoul(value.c_str(), nullptr, 10);
+        if (errno == ERANGE || parsed > kMaxRequestBytes) return false;
+        content_length = parsed;
       }
     }
     pos = next + 2;
