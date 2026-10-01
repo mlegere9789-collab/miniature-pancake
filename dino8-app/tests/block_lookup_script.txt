@@ -1,0 +1,67 @@
+# BlockSetLookupTable/BlockSetLookup command-line wiring (PARITY_MAP.md
+# "Dynamic blocks" Lookup parameter - the fourth and last of the four named
+# parameter/action types alongside Visibility states, Flip (BlockToggleFlip)
+# and Array (BlockSetArraySpacing/BlockSetArrayCount), which all three
+# already closed). The Document-level SetBlockInstanceLookup/
+# ResolveLookupState math itself is unit-tested directly in
+# test_block_lookup.cpp; this instead exercises the real scriptable
+# commands end to end.
+#
+# A 2-object block "LookBlk": a Point at local 1,0,0 visible only in state
+# "Small", and a Point at local 2,0,0 visible only in state "Large" - same
+# per-object VisStates tagging shape dynamic_blocks_script.txt already
+# establishes for Visibility states.
+Point 1,0,0
+SelLast
+SetUserText
+Dino8.VisStates
+Small
+Point 2,0,0
+SelLast
+SetUserText
+Dino8.VisStates
+Large
+SelAll
+Block
+0,0,0
+LookBlk
+BlockAddState
+LookBlk
+Small
+BlockAddState
+LookBlk
+Large
+BlockSetLookupTable
+LookBlk
+S:Small,L:Large
+
+# Place one instance at 10,0,0 (defaults to the block's first state, Small -
+# local 1,0,0 lands at 11,0,0), then drive it through the lookup table:
+# key "L" must switch it to Large (local 2,0,0 -> 12,0,0), not just leave it
+# on its creation-time state. BlockSetLookup is retargeted with SelLast
+# (the freshest object in the document) rather than SelBlockInstanceOf,
+# since the latter would also catch the Block command's own leftover,
+# never-filtered defining instance (both VisStates-tagged points, same
+# "block-defining leftover instance" block_array_script.txt's own comment
+# already names) and land on the wrong (non-dynamic) group.
+Insert
+LookBlk
+10,0,0
+Enter
+SelLast
+BlockSetLookup
+L
+SelBlockInstanceOf
+LookBlk
+List
+
+# A key with no matching row falls back to the instance's own explicit
+# state (still "Small", its state when first placed - BlockSetLookup never
+# overwrote it, only its lookup_key) rather than leaving the Large geometry
+# in place or producing no geometry at all.
+SelLast
+BlockSetLookup
+NoSuchKey
+SelBlockInstanceOf
+LookBlk
+List
