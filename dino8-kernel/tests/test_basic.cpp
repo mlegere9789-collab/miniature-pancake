@@ -21034,6 +21034,156 @@ void TestSubDEvaluateFaceExtraordinaryCornerHasRealTangentPlane() {
   }
 }
 
+// Closes PARITY_MAP.md's own "SubD extraordinary-vertex limit-tangent
+// quality — semi-sharp edge handling" backlog item: before this pass,
+// ExactVertexCorner()'s call to ON_SubDVertex::GetSurfacePoint() silently
+// ignored any semi-sharp (finite, sub-MaximumValue) weight on an incident
+// Smooth-tagged edge, since GetSurfacePoint()'s own sector classification
+// only ever reads edge TAGS, never Sharpness()/EndSharpness() - verified
+// directly against OpenNURBS' own opennurbs_subd_eval.cpp
+// (GetSectorLimitPointHelper -> ON_SubDSectorType::Create), not assumed.
+void TestSubDEvaluateFaceExtraordinaryCornerHandlesSemiSharpEdge() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SubD;
+  using dino8::kernel::SubDSurfacePoint;
+
+  // Same level-1 cube fixture TestSubDEvaluateFaceExtraordinaryCornerHasRealTangentPlane
+  // uses: every original cube corner is a valence-3 extraordinary vertex
+  // after one level of Catmull-Clark refinement, with exactly 3 incident
+  // edges each.
+  const Mesh cube = MakeQuadBoxMesh(-1, -1, -1, 1, 1, 1);
+  SubD subd = SubD::FromControlMesh(cube);
+  subd.Subdivide(1);
+
+  const ON_SubDFace* target = nullptr;
+  int irregular_corner = -1;
+  ON_SubDFaceIterator fit = subd.raw().FaceIterator();
+  for (const ON_SubDFace* f = fit.FirstFace(); f != nullptr && target == nullptr; f = fit.NextFace()) {
+    if (f->EdgeCount() != 4) continue;
+    int irregular_count = 0, irregular_idx = -1;
+    bool all_smooth = true;
+    for (unsigned int i = 0; i < 4; ++i) {
+      const ON_SubDVertex* v = f->Vertex(i);
+      if (!v || !v->IsSmooth()) all_smooth = false;
+      if (!v || v->EdgeCount() != 4) {
+        ++irregular_count;
+        irregular_idx = static_cast<int>(i);
+      }
+    }
+    if (all_smooth && irregular_count == 1) {
+      target = f;
+      irregular_corner = irregular_idx;
+    }
+  }
+  Check(target != nullptr,
+        "found a level-1 cube face with exactly one still-extraordinary (valence-3) corner");
+
+  const unsigned int face_id = target->FaceId();
+  const double corner_u[4] = {0.0, 1.0, 1.0, 0.0};
+  const double corner_v[4] = {0.0, 0.0, 1.0, 1.0};
+  const int k = irregular_corner;
+
+  const ON_SubDVertex* ev = target->Vertex(static_cast<unsigned int>(k));
+  Check(ev != nullptr && ev->EdgeCount() == 3, "the extraordinary corner vertex has valence 3");
+  const ON_3dPoint original_corner = ev->ControlNetPoint();
+
+  const ON_SubDEdge* sharp_edge = nullptr;
+  for (unsigned int i = 0; i < ev->EdgeCount(); ++i) {
+    const ON_SubDEdge* e = ev->Edge(i);
+    if (e != nullptr && e->IsSmooth()) {
+      sharp_edge = e;
+      break;
+    }
+  }
+  Check(sharp_edge != nullptr, "the extraordinary vertex has a smooth (non-boundary) edge to "
+                               "make semi-sharp");
+  const ON_SubDVertex* other_end = sharp_edge->OtherEndVertex(ev);
+  const Point3d p0 = ev->ControlNetPoint();
+  const Point3d p1 = other_end->ControlNetPoint();
+
+  // Baseline: zero sharpness anywhere, the pre-existing (and, for the
+  // zero-sharpness case, still correct) eigenbasis answer.
+  const SubDSurfacePoint baseline = subd.EvaluateFace(face_id, corner_u[k], corner_v[k]);
+  Check(baseline.exact, "baseline corner evaluation reports exact");
+
+  Check(subd.SetEdgeSharpness(p0, p1, 1.0, 1e-9), "SetEdgeSharpness(1.0) succeeds on this edge");
+  const SubDSurfacePoint sharp_low = subd.EvaluateFace(face_id, corner_u[k], corner_v[k]);
+  Check(sharp_low.exact, "semi-sharp corner evaluation still reports exact");
+
+  const double kMax = ON_SubDEdgeSharpness::MaximumValue;  // 4.0
+  Check(subd.SetEdgeSharpness(p0, p1, kMax, 1e-9), "SetEdgeSharpness(MaximumValue) succeeds");
+  const SubDSurfacePoint sharp_high = subd.EvaluateFace(face_id, corner_u[k], corner_v[k]);
+  Check(sharp_high.exact, "maximally-semi-sharp corner evaluation still reports exact");
+
+  const double d_low = baseline.position.DistanceTo(sharp_low.position);
+  const double d_high = baseline.position.DistanceTo(sharp_high.position);
+  Check(d_low > 1e-6,
+        "a semi-sharp incident edge genuinely moves the corner's own exact limit point away "
+        "from the plain-smooth eigenbasis answer - proving the fix actually reads the "
+        "sharpness, where ON_SubDVertex::GetSurfacePoint()'s own sector-type classification "
+        "alone would silently ignore it");
+  Check(d_high > d_low,
+        "a higher stored sharpness weight pulls the limit point further from the smooth "
+        "baseline than a lower one - the effect scales with the stored weight rather than "
+        "being a fixed on/off perturbation");
+
+  // Independent cross-check using only ALREADY-TESTED public API (not
+  // ExactVertexCorner()'s own internals): a MaximumValue (4.0) semi-sharp
+  // edge takes exactly ceil(4.0) = 4 real SubD::Subdivide() calls to decay
+  // to plain smooth (ON_SubDEdgeSharpness::Subdivided()'s own
+  // decrement-by-1.0-per-level rule - see SetEdgeSharpness()'s own doc
+  // comment). At that point every one of the tracked vertex's own
+  // incident edges is ordinary smooth, so calling
+  // ON_SubDVertex::GetSurfacePoint() directly on it - with no decay logic
+  // of this test's or ExactVertexCorner()'s own involved - is already the
+  // exact closed-form answer, independently of how EvaluateFace() itself
+  // got there. The descendant is tracked by nearest-original-corner
+  // position among same-valence (3) vertices: the cube's 8 corners start
+  // more than 2 apart (edge length 2) while each level's own smoothing
+  // displacement is a small fraction of that (TestSubDFromBoxSubdivides
+  // ToExactCatmullClarkCounts's own measured level-2 volume shrink, 8 ->
+  // 2.80, confirms the displacement is substantial but not enough to
+  // cross half that gap), so nearest-corner identification is unambiguous.
+  SubD decayed = subd;  // already carries the MaximumValue sharpness set above
+  decayed.Subdivide(4);
+
+  const ON_SubDVertex* tracked = nullptr;
+  double best_distance = -1.0;
+  ON_SubDVertexIterator vit = decayed.raw().VertexIterator();
+  for (const ON_SubDVertex* v = vit.FirstVertex(); v != nullptr; v = vit.NextVertex()) {
+    if (v->EdgeCount() != 3) continue;  // extraordinary vertices alone keep valence 3 forever
+    const double d = v->ControlNetPoint().DistanceTo(original_corner);
+    if (tracked == nullptr || d < best_distance) {
+      tracked = v;
+      best_distance = d;
+    }
+  }
+  Check(tracked != nullptr, "found the same extraordinary vertex's own descendant 4 levels later");
+
+  double max_residual_sharpness = 0.0;
+  for (unsigned int i = 0; i < tracked->EdgeCount(); ++i) {
+    const ON_SubDEdge* e = tracked->Edge(i);
+    if (e != nullptr && e->IsSmooth()) {
+      max_residual_sharpness = std::max(max_residual_sharpness, e->EndSharpness(tracked));
+    }
+  }
+  Check(max_residual_sharpness == 0.0,
+        "4 levels fully decays a MaximumValue (4.0) semi-sharp edge to plain smooth (0), "
+        "confirmed directly on the tracked descendant rather than assumed");
+
+  ON_SubDSectorSurfacePoint reference_limit;
+  Check(tracked->GetSurfacePoint(tracked->Face(0), true, reference_limit),
+        "GetSurfacePoint succeeds directly on the fully-decayed descendant vertex");
+  const double cross_check_distance = sharp_high.position.DistanceTo(reference_limit.Point());
+  Check(cross_check_distance < 1e-6,
+        "EvaluateFace()'s own corner position for the MaximumValue semi-sharp edge matches, to "
+        "within numerical tolerance, an independent reference obtained by actually running 4 "
+        "real SubD::Subdivide() calls (a separate, already-tested code path) and reading the "
+        "fully-decayed descendant's own closed-form limit point directly - not merely "
+        "self-consistent with ExactVertexCorner()'s own internals");
+}
+
 void TestSubDEvaluateFaceThrowsOnBadInput() {
   using dino8::kernel::Mesh;
   using dino8::kernel::SubD;
@@ -23089,6 +23239,62 @@ void TestSubDBooleanToSubDPropagatesBooleanFailure() {
   Check(threw,
         "SubD::BooleanToSubD throws std::runtime_error when an operand's ToApproximateMesh() is "
         "open, the same precondition Boolean() itself already enforces");
+}
+
+// Closes part of PARITY_MAP.md's own "SubD boolean operations" gap ("every
+// face a raw triangle... no quad-dominant remeshing"): BooleanToSubD() now
+// runs the boolean mesh through the already-existing, already-tested
+// Mesh::TrisToQuads() before FromControlMesh() sees it, so the away-from-
+// the-cut faces of two disjoint box operands - each one a Manifold-
+// triangulated copy of an original quad face - recombine back into actual
+// quads in the returned SubD's own control cage, rather than staying two
+// triangles forever.
+void TestSubDBooleanToSubDRecombinesUntouchedFacesIntoQuads() {
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SubD;
+
+  // Same disjoint-box fixture as TestSubDBooleanUnionOfDisjointBoxesSumsVolumes:
+  // two box operands with NO shared boundary at all, so every one of
+  // Manifold's own output faces is an untouched copy of an original box
+  // face (split into 2 triangles), never genuinely re-triangulated at a
+  // cut - the case TrisToQuads()'s own doc comment names as where it
+  // actually helps.
+  const SubD a = SubD::FromControlMesh(MakeQuadBoxMesh(0, 0, 0, 2, 2, 2));
+  const SubD b = SubD::FromControlMesh(MakeQuadBoxMesh(5, 0, 0, 7, 2, 2));
+
+  const SubD with_quads = a.BooleanToSubD(b, BooleanOp::Union);
+
+  // Independent reference: the exact same boolean mesh, built into a SubD
+  // the OLD way (no TrisToQuads() step) - proves the comparison below is
+  // against what this method used to return, not a strawman.
+  const Mesh raw_result = a.Boolean(b, BooleanOp::Union);
+  const SubD without_quads = SubD::FromControlMesh(raw_result);
+
+  Check(without_quads.FaceCount() == 24,
+        "sanity: two disjoint boxes' raw triangulated boolean result is 2 boxes x 6 faces x 2 "
+        "triangles = 24 triangles, with no quad recombination at all");
+  Check(with_quads.FaceCount() == 12,
+        "BooleanToSubD()'s own TrisToQuads() pass recombines every one of the 24 raw triangles "
+        "back into the 12 original box faces (2 boxes x 6 faces), since none of them touch a "
+        "cut - the exact 2-to-1 reduction TestMeshTrisToQuadsRecombinesTessellatedBoxFaces "
+        "already proves for a single box");
+  Check(with_quads.FaceCount() < without_quads.FaceCount(),
+        "the quad-recombined control cage has strictly fewer faces than the raw triangulated one");
+
+  Check(std::abs(with_quads.ToApproximateMesh().Volume() - 16.0) < 1e-9,
+        "recombining triangles into quads before FromControlMesh() does not change the boolean "
+        "result's own volume (still the exact disjoint-union sum, 8+8=16)");
+  Check(with_quads.ToApproximateMesh().IsClosedManifold(),
+        "the quad-recombined control cage is still a genuine closed manifold, not just a "
+        "plausible-looking face count");
+
+  SubD further = with_quads;
+  further.Subdivide(1);
+  Check(std::abs(further.ToApproximateMesh().Volume() - 16.0) >
+            1e-9 /* strictly different, not necessarily smaller for a 2-body union */,
+        "the quad-recombined cage is a genuine, further-subdividable SubD control net (a real "
+        "Catmull-Clark refinement actually changes the shape), not a frozen copy");
 }
 
 void TestMeshComputeVertexNormals() {
@@ -58142,6 +58348,132 @@ void TestSurfaceOffsetApproximateArgumentChecksAndZeroDistance() {
   Check(out.PointAt(0.3, 0.2).DistanceTo(s.PointAt(0.3, 0.2)) < 1e-12, "OffsetApproximate(0.0) reproduces the same surface");
 }
 
+void TestSurfaceOffsetVariableIsExactOnAGenuinePlaneAndVariesLinearlyAlongU() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // Same consistently-oriented planar fixture
+  // TestSurfaceOffsetApproximateIsExactOnAGenuinePlane uses (see that
+  // test's own comment for why the OffsetAnalytic plane fixture elsewhere
+  // in this file isn't reused here).
+  std::vector<Point3d> grid;
+  for (int i = 0; i < 4; ++i)
+    for (int j = 0; j < 3; ++j)
+      grid.push_back(Point3d(i, j, 0.0));
+  const NurbsSurface s = NurbsSurface::FromControlGrid(grid, 4, 3, 3, 2);
+
+  NurbsSurface out;
+  Check(s.OffsetVariable(1.0, 3.0, out) == Result::Ok, "OffsetVariable(1.0, 3.0) succeeds on a plane");
+
+  const dino8::kernel::Interval du = s.Domain(0);
+  const dino8::kernel::Interval dv = s.Domain(1);
+  double worst = 0.0;
+  for (double u = du.min + 0.1; u < du.max; u += 0.3) {
+    const double frac = (u - du.min) / (du.max - du.min);
+    const double d = 1.0 + (3.0 - 1.0) * frac;
+    for (double v = dv.min + 0.1; v < dv.max; v += 0.3) {
+      const Point3d expected = s.PointAt(u, v) + d * s.NormalAt(u, v);
+      worst = std::max(worst, expected.DistanceTo(out.PointAt(u, v)));
+    }
+  }
+  Check(worst < 1e-9, "OffsetVariable(1.0, 3.0) on a genuine plane: exact everywhere at each point's own linearly-interpolated distance, not just at one sampled point");
+}
+
+void TestSurfaceOffsetVariableWithEqualEndsMatchesOffsetApproximateExactly() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // The same bulged freeform fixture
+  // TestSurfaceOffsetApproximateOnBulgedFreeformIsBoundedAndRejectsExcessiveDistance
+  // uses - a genuinely curved, non-planar surface, so this is a real
+  // regression guard (degenerate linear interpolation reproducing the
+  // constant-distance method) rather than a plane where every per-CV
+  // distance would trivially agree for an unrelated reason.
+  std::vector<Point3d> grid;
+  for (int i = 0; i < 4; ++i)
+    for (int j = 0; j < 4; ++j)
+      grid.push_back(Point3d(i, j, (i == 2 && j == 2) ? 3.0 : 0.0));
+  const NurbsSurface s = NurbsSurface::FromControlGrid(grid, 4, 4, 3, 3);
+
+  NurbsSurface approx, variable;
+  Check(s.OffsetApproximate(0.2, approx) == Result::Ok, "cross-check setup: OffsetApproximate(+0.2) succeeds on the bulge");
+  Check(s.OffsetVariable(0.2, 0.2, variable) == Result::Ok, "OffsetVariable(0.2, 0.2) succeeds on the bulge");
+
+  const dino8::kernel::Interval du = s.Domain(0);
+  const dino8::kernel::Interval dv = s.Domain(1);
+  double worst = 0.0;
+  for (double u = du.min + 0.1; u < du.max; u += 0.25) {
+    for (double v = dv.min + 0.1; v < dv.max; v += 0.25) {
+      worst = std::max(worst, approx.PointAt(u, v).DistanceTo(variable.PointAt(u, v)));
+    }
+  }
+  Check(worst < 1e-9, "OffsetVariable with equal U-min/U-max distances reproduces OffsetApproximate's own result exactly, not merely approximately");
+}
+
+void TestSurfaceOffsetVariableFoldGuardUsesTheLocallyInterpolatedDistance() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Result;
+
+  // Same radius-5 sphere OffsetApproximate's own fold-guard cross-check
+  // test uses, where a uniform distance of -5.0 or beyond folds through
+  // the sphere's own center (`distance * k >= 1.0` with k = -1/radius).
+  const ON_Sphere sphere(ON_3dPoint(1, 2, 3), 5.0);
+  ON_NurbsSurface raw;
+  Check(sphere.GetNurbForm(raw) != 0, "OffsetVariable sphere setup: GetNurbForm succeeds");
+  NurbsSurface s;
+  s.raw() = raw;
+
+  NurbsSurface out;
+  // A safe distance at the U-min end (-2.0, well short of the radius)
+  // paired with an unsafe one at the U-max end (-6.0, past the radius) -
+  // a single-global-distance guard averaging or only checking one end
+  // could miss this; sampling across the whole U domain must catch the
+  // hazard near U-max specifically. A sphere's curvature is the same
+  // (k = -1/radius) at every (u, v), independent of u, so this isolates
+  // the guard's own per-sample distance lookup rather than any curvature
+  // variation across the domain.
+  Check(s.OffsetVariable(-2.0, -6.0, out) == Result::Failed,
+        "OffsetVariable(-2.0, -6.0) on a radius-5 sphere is refused - the U-max end's own locally-interpolated distance folds through the center even though the U-min end alone would not");
+  Check(s.OffsetVariable(-2.0, -2.5, out) == Result::Ok,
+        "OffsetVariable(-2.0, -2.5) on a radius-5 sphere succeeds - both ends stay well short of the fold threshold");
+  // And the symmetric case: unsafe at U-min, safe at U-max.
+  Check(s.OffsetVariable(-6.0, -2.0, out) == Result::Failed,
+        "OffsetVariable(-6.0, -2.0) on a radius-5 sphere is refused - the U-min end folds even though U-max alone would not");
+}
+
+void TestSurfaceOffsetVariableArgumentChecksAndZeroDistance() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Result;
+
+  const ON_Sphere sphere(ON_3dPoint(0, 0, 0), 2.0);
+  ON_NurbsSurface raw;
+  sphere.GetNurbForm(raw);
+  NurbsSurface s;
+  s.raw() = raw;
+
+  NurbsSurface out;
+  bool threw = false;
+  try {
+    s.OffsetVariable(std::numeric_limits<double>::quiet_NaN(), 1.0, out);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "OffsetVariable(NaN, 1.0) throws std::invalid_argument");
+
+  threw = false;
+  try {
+    s.OffsetVariable(1.0, std::numeric_limits<double>::infinity(), out);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "OffsetVariable(1.0, +infinity) throws std::invalid_argument");
+
+  Check(s.OffsetVariable(0.0, 0.0, out) == Result::Ok, "OffsetVariable(0.0, 0.0) succeeds");
+  Check(out.PointAt(0.3, 0.2).DistanceTo(s.PointAt(0.3, 0.2)) < 1e-12, "OffsetVariable(0.0, 0.0) reproduces the same surface");
+}
+
 void TestSurfaceOffsetRefitIsExactOnAGenuinePlane() {
   using dino8::kernel::NurbsSurface;
   using dino8::kernel::Point3d;
@@ -58636,6 +58968,160 @@ void TestCurveOffsetInPlaneZeroDistanceIsNoOpCopy() {
   NurbsCurve out;
   Check(c.OffsetInPlane(0.0, out) == Result::Ok, "OffsetInPlane(0.0) succeeds");
   Check(out.PointAt(0.5).DistanceTo(c.PointAt(0.5)) < 1e-12, "OffsetInPlane(0.0) reproduces the same curve");
+}
+
+// Flat-plane fixture: NormalAt() is the same constant vector everywhere,
+// so OffsetOnSurfaceNormal()'s own sample+closest-point+normal-offset
+// construction is exactly checkable pointwise, not just bounded.
+dino8::kernel::NurbsSurface MakeFlatPlaneSurfaceForOffsetOnSurfaceNormal() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  std::vector<Point3d> grid;
+  for (int i = 0; i < 4; ++i)
+    for (int j = 0; j < 4; ++j)
+      grid.push_back(Point3d(i * 4.0, j * 4.0, 0.0));
+  return NurbsSurface::FromControlGrid(grid, 4, 4, 3, 3);
+}
+
+// Translates every control point of `c` by the Euclidean vector `v`,
+// exactly (not approximately): a rational curve's basis functions still
+// sum to 1 everywhere, so translating each CV's own homogeneous
+// (w*x, w*y, w*z, w) by (w*v.x, w*v.y, w*v.z) translates every curve
+// point by the same v, for any degree/rationality/closedness.
+dino8::kernel::NurbsCurve TranslateCurveForOffsetOnSurfaceNormalTests(const dino8::kernel::NurbsCurve& c,
+                                                                       const dino8::kernel::Vector3d& v) {
+  dino8::kernel::NurbsCurve out = c;
+  ON_NurbsCurve& raw = out.raw();
+  for (int i = 0; i < raw.CVCount(); ++i) {
+    ON_4dPoint cv;
+    raw.GetCV(i, cv);
+    cv.x += cv.w * v.x;
+    cv.y += cv.w * v.y;
+    cv.z += cv.w * v.z;
+    raw.SetCV(i, cv);
+  }
+  return out;
+}
+
+void TestCurveOffsetOnSurfaceNormalOpenCubicCurveIsExactOnAFlatPlane() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  const dino8::kernel::NurbsSurface plane = MakeFlatPlaneSurfaceForOffsetOnSurfaceNormal();
+  Check(plane.IsPlanar(1e-9), "OffsetOnSurfaceNormal flat-plane setup: the constructed grid is genuinely planar");
+
+  // A degree-3 curve lying in the same z=0 plane - not degree 1, so this
+  // exercises the InterpolateCubic() refit branch, not the exact-polyline
+  // one (see the dedicated polyline test below for that branch).
+  const std::vector<Point3d> cps = {Point3d(1, 1, 0), Point3d(4, 8, 0), Point3d(8, 3, 0), Point3d(11, 10, 0)};
+  const NurbsCurve c = NurbsCurve::FromControlPoints(cps, 3);
+
+  NurbsCurve out;
+  Check(c.OffsetOnSurfaceNormal(plane, 2.0, out) == Result::Ok, "OffsetOnSurfaceNormal(+2.0) succeeds on a curve lying in a flat plane");
+
+  // The surface's normal is the same (0,0,+/-1) everywhere on a flat
+  // plane, so translating c by that constant vector gives the EXACT
+  // offset curve - an independent ground truth, not a re-run of this
+  // method's own sample+refit construction. out's own refit uses a
+  // DIFFERENT (chord-length) parameterization than c's, so points are
+  // compared via ClosestPoint() rather than assuming the same parameter
+  // value lands on the same point on both curves.
+  const dino8::kernel::Vector3d n = plane.NormalAt(0.5, 0.5);
+  const NurbsCurve expected = TranslateCurveForOffsetOnSurfaceNormalTests(c, 2.0 * n);
+
+  double worst = 0.0;
+  const dino8::kernel::Interval od = out.Domain();
+  for (double t = od.min; t <= od.max; t += (od.max - od.min) / 20.0) {
+    const Point3d p = out.PointAt(t);
+    worst = std::max(worst, p.DistanceTo(expected.ClosestPoint(p)));
+  }
+  Check(worst < 1e-4, "OffsetOnSurfaceNormal(+2.0) on a flat plane: the refit curve stays close to the exact translated curve everywhere sampled, not just at the fit points");
+}
+
+void TestCurveOffsetOnSurfaceNormalOpenPolylineStaysAnExactPolyline() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  const dino8::kernel::NurbsSurface plane = MakeFlatPlaneSurfaceForOffsetOnSurfaceNormal();
+  const std::vector<Point3d> cps = {Point3d(1, 1, 0), Point3d(6, 5, 0), Point3d(10, 2, 0)};
+  const NurbsCurve polyline = NurbsCurve::FromControlPoints(cps, 1);
+  Check(polyline.Degree() == 1, "OffsetOnSurfaceNormal polyline setup: degree 1 as expected");
+
+  NurbsCurve out;
+  Check(polyline.OffsetOnSurfaceNormal(plane, 1.5, out) == Result::Ok, "OffsetOnSurfaceNormal(+1.5) succeeds on an open degree-1 polyline");
+  Check(out.Degree() == 1, "OffsetOnSurfaceNormal on an open degree-1 curve stays an exact polyline (not smoothed into a cubic)");
+
+  const dino8::kernel::Vector3d n = plane.NormalAt(0.5, 0.5);
+  Check(out.PointAt(out.Domain().min).DistanceTo(polyline.PointAt(polyline.Domain().min) + 1.5 * n) < 1e-9,
+        "OffsetOnSurfaceNormal polyline: start point is exactly the original start plus distance*normal");
+  Check(out.PointAt(out.Domain().max).DistanceTo(polyline.PointAt(polyline.Domain().max) + 1.5 * n) < 1e-9,
+        "OffsetOnSurfaceNormal polyline: end point is exactly the original end plus distance*normal");
+}
+
+void TestCurveOffsetOnSurfaceNormalClosedCurveStaysClosed() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  const dino8::kernel::NurbsSurface plane = MakeFlatPlaneSurfaceForOffsetOnSurfaceNormal();
+  const ON_Circle circle(ON_3dPoint(6, 6, 0), 2.0);
+  ON_NurbsCurve raw;
+  Check(circle.GetNurbForm(raw) != 0, "OffsetOnSurfaceNormal closed-curve setup: GetNurbForm succeeds");
+  NurbsCurve c;
+  c.raw() = raw;
+  Check(c.IsClosed(), "OffsetOnSurfaceNormal closed-curve setup: the circle is genuinely closed");
+
+  NurbsCurve out;
+  Check(c.OffsetOnSurfaceNormal(plane, 1.0, out) == Result::Ok, "OffsetOnSurfaceNormal(+1.0) succeeds on a closed curve lying in a flat plane");
+  Check(out.IsClosed(), "OffsetOnSurfaceNormal on a closed input curve produces a closed result");
+
+  // Ground truth: translating the circle by the flat plane's own constant
+  // normal is exact (same reasoning as the open-curve test above) - the
+  // circle does NOT grow in radius (that would be an IN-PLANE offset,
+  // PARITY_MAP's separate "Curve offset on surface" item), it moves off
+  // the plane entirely. Compared via ClosestPoint() since out's own
+  // chord-length parameterization around the seam doesn't correspond to
+  // the exact circle's own parameterization.
+  const dino8::kernel::Vector3d n = plane.NormalAt(0.5, 0.5);
+  const NurbsCurve expected = TranslateCurveForOffsetOnSurfaceNormalTests(c, 1.0 * n);
+
+  double worst = 0.0;
+  const dino8::kernel::Interval od = out.Domain();
+  for (double t = 0.0; t < 1.0; t += 0.05) {
+    const Point3d p = out.PointAt(od.min + (od.max - od.min) * t);
+    worst = std::max(worst, p.DistanceTo(expected.ClosestPoint(p)));
+  }
+  Check(worst < 1e-2, "OffsetOnSurfaceNormal on a closed planar circle: the refit stays close to the exact translated circle all the way around, including across the seam");
+}
+
+void TestCurveOffsetOnSurfaceNormalArgumentChecks() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+
+  const dino8::kernel::NurbsSurface plane = MakeFlatPlaneSurfaceForOffsetOnSurfaceNormal();
+  const std::vector<Point3d> cps = {Point3d(1, 1, 0), Point3d(4, 8, 0), Point3d(8, 3, 0), Point3d(11, 10, 0)};
+  const NurbsCurve c = NurbsCurve::FromControlPoints(cps, 3);
+
+  NurbsCurve out;
+  bool threw = false;
+  try {
+    c.OffsetOnSurfaceNormal(plane, std::numeric_limits<double>::quiet_NaN(), out);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "OffsetOnSurfaceNormal(NaN) throws std::invalid_argument");
+
+  threw = false;
+  try {
+    c.OffsetOnSurfaceNormal(plane, 1.0, out, 1);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "OffsetOnSurfaceNormal(sample_count=1) throws std::invalid_argument");
+
+  Check(c.OffsetOnSurfaceNormal(plane, 1.0, out, 5) == dino8::kernel::Result::Ok, "OffsetOnSurfaceNormal(sample_count=5) succeeds");
 }
 
 // An open, axis-aligned "U" bracket: 3 straight segments, 4 vertices,
@@ -62065,6 +62551,7 @@ int main() {
   TestSubDEvaluateFaceExactOnRegularFlatGrid();
   TestSubDEvaluateFaceAdaptiveOnIrregularFace();
   TestSubDEvaluateFaceExtraordinaryCornerHasRealTangentPlane();
+  TestSubDEvaluateFaceExtraordinaryCornerHandlesSemiSharpEdge();
   TestSubDEvaluateFaceThrowsOnBadInput();
   TestSubDToNurbsPatchesAdaptiveMatchesNonAdaptiveAtZeroLevels();
   TestSubDToNurbsPatchesAdaptiveSplitsIrregularFace();
@@ -62102,6 +62589,7 @@ int main() {
   TestSubDBooleanToSubDReturnsEditableSubDMatchingBooleanVolume();
   TestSubDBooleanToSubDIsGenuinelyFurtherSubdividable();
   TestSubDBooleanToSubDPropagatesBooleanFailure();
+  TestSubDBooleanToSubDRecombinesUntouchedFacesIntoQuads();
   TestMeshComputeVertexNormals();
   TestMeshSaveObjRoundTrips();
   TestMeshTextureCoordinates();
@@ -62714,6 +63202,11 @@ int main() {
   TestSurfaceOffsetApproximateOnBulgedFreeformIsBoundedAndRejectsExcessiveDistance();
   TestSurfaceOffsetApproximateArgumentChecksAndZeroDistance();
 
+  TestSurfaceOffsetVariableIsExactOnAGenuinePlaneAndVariesLinearlyAlongU();
+  TestSurfaceOffsetVariableWithEqualEndsMatchesOffsetApproximateExactly();
+  TestSurfaceOffsetVariableFoldGuardUsesTheLocallyInterpolatedDistance();
+  TestSurfaceOffsetVariableArgumentChecksAndZeroDistance();
+
   TestSurfaceOffsetRefitIsExactOnAGenuinePlane();
   TestSurfaceOffsetRefitOnSphereBeatsOffsetApproximateAtATighterTolerance();
   TestSurfaceOffsetRefitFoldGuardMatchesOffsetApproximate();
@@ -62732,6 +63225,12 @@ int main() {
   TestCurveOffsetInPlaneWithExplicitPlaneMatchesSinglePlaneOverloadWhenPlanesAgree();
   TestCurveOffsetInPlaneWithExplicitPlaneThrowsOnInvalidArguments();
   TestCurveOffsetInPlaneZeroDistanceIsNoOpCopy();
+
+  TestCurveOffsetOnSurfaceNormalOpenCubicCurveIsExactOnAFlatPlane();
+  TestCurveOffsetOnSurfaceNormalOpenPolylineStaysAnExactPolyline();
+  TestCurveOffsetOnSurfaceNormalClosedCurveStaysClosed();
+  TestCurveOffsetOnSurfaceNormalArgumentChecks();
+
   TestCurveOffsetInPlaneOpenPolylineExactSharpCorners();
   TestCurveOffsetInPlaneClosedPolygonMitersSeamCorner();
   TestCurveOffsetInPlaneConcavePolygonGeneralizesBeyondConvexOnlyMiter();
