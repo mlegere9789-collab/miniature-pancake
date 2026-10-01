@@ -219,6 +219,10 @@ SetObjectDisplayMode Shaded
 SelAll
 SetObjectDisplayMode Wireframe
 SelAll
+SetObjectDisplayMode Ghosted
+SelAll
+SetObjectDisplayMode X-Ray
+SelAll
 SetObjectDisplayMode UseViewport
 History
 RecordHistory

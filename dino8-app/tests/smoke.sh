@@ -2839,6 +2839,12 @@ echo "$S2" | grep -E "^(ok|FAIL)"
 if echo "$S2" | grep -q "^FAIL"; then fail=1; fi
 echo "$S2" | grep -q "^smoke:" || { echo "$S2"; echo "FAIL: state2 script produced no smoke line"; fail=1; }
 s2check() { if echo "$S2" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$S2" "$1"; fail=1; fi; }
+# SetObjectDisplayMode Ghosted/X-Ray (PARITY_MAP.md's "Per-object display
+# mode override" item, upgraded this pass from Wireframe/Shaded-only to
+# also cover these two alpha-based modes) - real per-object overrides, not
+# just accepted-and-ignored text.
+s2check "SetObjectDisplayMode: 1 object(s) now always shown Ghosted (35% opaque)" "SetObjectDisplayMode Ghosted is a genuine per-object override, not silently treated as UseViewport"
+s2check "SetObjectDisplayMode: 1 object(s) now always shown X-Ray (18% opaque)" "SetObjectDisplayMode X-Ray is a genuine per-object override, not silently treated as UseViewport"
 s2check "WhatsNew: opened the What's New window" "WhatsNew opens its own real changelog window, not the About box"
 # Regression guard for the "changelog.md never shipped" bug: WhatsNew's
 # confirmation print above only means the *window* opened - Panels.cpp's

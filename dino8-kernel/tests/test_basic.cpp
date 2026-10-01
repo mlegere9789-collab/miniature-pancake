@@ -4601,6 +4601,76 @@ void TestTrimSheetBySolidCallerTolerance() {
   Check(threw, "TrimSheetBySolid throws std::invalid_argument for a non-positive tolerance");
 }
 
+// PARITY_MAP.md's "Sheet/solid trim" bullet's own previously-named gap:
+// "only a flat cutting plane is tested for either half of this item (a
+// genuinely curved sheet or solid is unexercised)". This closes the
+// curved-SOLID half for SplitBySheet(): both `SplitBySheet` and
+// `TrimSheetBySolid` reuse `BooleanCombineGeneral`'s own SSX-fragmentation
+// machinery (their own doc comments say so directly), which has no
+// planar-only restriction on the `solid`/`sheet` argument it classifies
+// against - this test actually builds and runs a genuinely curved solid
+// through both functions rather than assuming that holds.
+//
+// A radius-1, height-4 cylinder (MakeCylinderZForBoxCylinderTest, the same
+// helper TestBooleanCombineGeneralBoxCylinder already proves correct) cut by
+// a flat sheet at z=0 that extends a full unit past the cylinder's own
+// radius on every side (footprint [-2,2]^2 vs. the cylinder's own radius-1
+// circle) - exactly the same "sever it completely" contract
+// TestSplitBySheetBoxCutInHalfByPlane's own flat-box fixture uses, just with
+// a curved solid instead of a planar-faced one.
+void TestSplitBySheetCurvedSolidCylinderCutByFlatSheet() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SplitBySheet;
+
+  const Brep cyl = MakeCylinderZForBoxCylinderTest(0, 0, -2, 2, 1.0);
+  const Brep sheet = MakePlanarSheetZ(-2, -2, 2, 2, 0.0);
+
+  const auto [positive_side, negative_side] = SplitBySheet(cyl, sheet);
+  Check(positive_side.raw().IsValid(), "SplitBySheet's positive_side (cylinder's z>0 half) is a valid ON_Brep");
+  Check(negative_side.raw().IsValid(), "SplitBySheet's negative_side (cylinder's z<0 half) is a valid ON_Brep");
+
+  const double expect_half = ON_PI * 1.0 * 1.0 * 2.0;  // pi * r^2 * (half the height)
+  const Mesh mp = positive_side.TessellateToClosedMesh(64, 16);
+  const Mesh mn = negative_side.TessellateToClosedMesh(64, 16);
+  Check(std::abs(mp.Volume() - expect_half) < 0.05,
+        "positive_side's volume matches the exact closed-form half-cylinder pi*r^2*2 (curved side wall, "
+        "unchanged, plus one untouched circular cap plus one new flat sheet cap)");
+  Check(std::abs(mn.Volume() - expect_half) < 0.05, "negative_side's volume matches the same closed-form half-cylinder");
+  Check(std::abs((mp.Volume() + mn.Volume()) - ON_PI * 1.0 * 1.0 * 4.0) < 0.1,
+        "the two halves' volumes sum back to the original cylinder's own exact volume (pi*r^2*4), within the "
+        "same tessellation-scale tolerance the individual halves above use (measured ~0.06 at (64,16)) - no "
+        "material gained or lost by splitting a genuinely curved solid");
+}
+
+// The TrimSheetBySolid() analogue of the test above - same curved cylinder,
+// used this time as the classification SOLID for a flat sheet threading
+// straight through its middle, closing this bullet's other named gap
+// ("trimming a sheet body BY a solid") for a genuinely curved `solid`
+// argument too.
+void TestTrimSheetBySolidCurvedSolidCylinder() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::TrimSheetBySolid;
+
+  const Brep cyl = MakeCylinderZForBoxCylinderTest(0, 0, -2, 2, 1.0);
+  const Brep sheet = MakePlanarSheetZ(-2, -2, 2, 2, 0.0);
+
+  const Brep inside = TrimSheetBySolid(sheet, cyl, /*keep_inside=*/true);
+  Check(inside.raw().IsValid(), "TrimSheetBySolid's inside portion (against a curved cylinder) is a valid ON_Brep");
+  const double inside_area = inside.TessellateToClosedMesh(64, 16).Area();
+  Check(std::abs(inside_area - ON_PI * 1.0 * 1.0) < 0.05,
+        "the kept portion's area is exactly the cylinder's own radius-1 circular footprint (pi*r^2), not the "
+        "sheet's full 4x4 extent (16)");
+
+  const Brep outside = TrimSheetBySolid(sheet, cyl, /*keep_inside=*/false);
+  Check(outside.raw().IsValid(), "TrimSheetBySolid's outside portion (against a curved cylinder) is a valid ON_Brep");
+  const double outside_area = outside.TessellateToClosedMesh(64, 16).Area();
+  Check(std::abs((inside_area + outside_area) - sheet.Area()) < 0.05,
+        "the inside and outside portions' areas still sum back to the original untrimmed sheet's own area "
+        "exactly, with a genuinely curved classification solid");
+}
+
 void TestSplitBrepBySolidOverlappingBoxesSumBackToOriginalVolume() {
   using dino8::kernel::Brep;
   using dino8::kernel::Mesh;
@@ -25599,6 +25669,480 @@ void TestMeshLoadIfcRejectsMalformedFiles() {
   std::remove(oob_index_path.c_str());
 }
 
+void TestMeshSaveStepAp242RoundTrips() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Result;
+
+  // PARITY_MAP.md's own "kernel: Kernel-level data exchange" evidence names
+  // AP242 as fully missing: "confirmed zero hits for TESSELLATED/
+  // TRIANGULATED_FACE/PMI/AP242 anywhere in dino8-app/src/io/*.cpp; only the
+  // AP214 schema string exists." Same MakeQuadBoxMesh fixture every other
+  // "other file format" round-trip test in this file uses.
+  const auto box = MakeQuadBoxMesh(0, 0, 0, 2, 2, 2);
+  const std::string path = "dino8_kernel_mesh_ap242_test.stp";
+  Check(box.SaveStepAp242(path) == Result::Ok, "Mesh::SaveStepAp242 succeeds");
+
+  std::ifstream in(path);
+  Check(static_cast<bool>(in), "the AP242 file SaveStepAp242 wrote can be reopened for reading");
+  std::string file_text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  Check(file_text.find("ISO-10303-21;") == 0, "the file starts with the ISO-10303-21 physical-file header");
+  Check(file_text.find("FILE_SCHEMA(('AP242_MANAGED_MODEL_BASED_3D_ENGINEERING_MIM_LF'))") != std::string::npos,
+        "the file declares the AP242 schema in its HEADER section");
+  Check(file_text.find("COORDINATES_LIST") != std::string::npos,
+        "the file has a COORDINATES_LIST entity");
+  Check(file_text.find("TRIANGULATED_FACE") != std::string::npos,
+        "the file has a TRIANGULATED_FACE entity - closing the PARITY_MAP-named gap directly");
+
+  const size_t faceset_pos = file_text.find("TRIANGULATED_FACE(#1,8,$,$,$,(");
+  Check(faceset_pos != std::string::npos,
+        "Triangles follows the documented Coordinates=#1, Pnmax=8, Normals=$, Pnindex=$, "
+        "TriangleStrips=$ argument order");
+
+  Mesh reloaded;
+  Check(Mesh::LoadStepAp242(path, reloaded) == Result::Ok,
+        "Mesh::LoadStepAp242 succeeds on SaveStepAp242()'s own output");
+  Check(reloaded.VertexCount() == box.VertexCount(),
+        "the reloaded mesh has the same vertex count as the original - COORDINATES_LIST is a real "
+        "shared vertex list, not duplicated per triangle");
+  Check(reloaded.FaceCount() == box.FaceCount() * 2,
+        "the reloaded mesh has 12 triangles for the original's 6 quads");
+  Check(std::abs(reloaded.Volume() - box.Volume()) < 1e-6,
+        "the reloaded mesh's volume exactly matches the original, within the triangle split");
+  std::remove(path.c_str());
+
+  // A hand-written file (not SaveStepAp242()'s own output) exercising a
+  // single triangle whose known corners let LoadStepAp242()'s geometry be
+  // checked exactly - the same independent-fixture discipline
+  // TestMeshSaveIfcRoundTrips() already uses.
+  const std::string hand_written_path = "dino8_kernel_mesh_ap242_test_hand_written.stp";
+  {
+    std::ofstream out(hand_written_path);
+    out << "ISO-10303-21;\n";
+    out << "HEADER;\n";
+    out << "FILE_SCHEMA(('AP242_MANAGED_MODEL_BASED_3D_ENGINEERING_MIM_LF'));\n";
+    out << "ENDSEC;\n";
+    out << "DATA;\n";
+    out << "#1 = COORDINATES_LIST( ( (0., 0., 0.) , (2.,0.,0.), (0., 2., 0.) ) ) ;\n";
+    out << "#2=TRIANGULATED_FACE(#1,3,$,$,$,((1,2,3)));\n";
+    out << "ENDSEC;\n";
+    out << "END-ISO-10303-21;\n";
+  }
+  Mesh hand_written;
+  Check(Mesh::LoadStepAp242(hand_written_path, hand_written) == Result::Ok,
+        "LoadStepAp242 succeeds on a hand-written file with irregular spacing around '='/parens");
+  Check(hand_written.VertexCount() == 3 && hand_written.FaceCount() == 1,
+        "the hand-written file's 3 points and 1 triangle are read correctly");
+  const ON_MeshFace& tri = hand_written.raw().m_F[0];
+  Check(tri.vi[0] == 0 && tri.vi[1] == 1 && tri.vi[2] == 2,
+        "AP242's 1-based Triangles (1,2,3) resolved to this kernel's own 0-based corners (0,1,2)");
+  std::remove(hand_written_path.c_str());
+}
+
+void TestMeshLoadStepAp242RejectsMalformedFiles() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Result;
+
+  const std::string missing_path = "dino8_kernel_mesh_ap242_test_does_not_exist.stp";
+  Mesh out;
+  Check(Mesh::LoadStepAp242(missing_path, out) == Result::Failed,
+        "LoadStepAp242 fails on a file that doesn't exist");
+
+  const std::string bad_header_path = "dino8_kernel_mesh_ap242_test_bad_header.stp";
+  {
+    std::ofstream bad(bad_header_path);
+    bad << "#1=COORDINATES_LIST(((0.,0.,0.),(1.,0.,0.),(0.,1.,0.)));\n"
+        << "#2=TRIANGULATED_FACE(#1,3,$,$,$,((1,2,3)));\n";
+  }
+  Check(Mesh::LoadStepAp242(bad_header_path, out) == Result::Failed,
+        "LoadStepAp242 fails on a file with no ISO-10303-21; header line at all");
+
+  const std::string no_points_path = "dino8_kernel_mesh_ap242_test_no_points.stp";
+  {
+    std::ofstream bad(no_points_path);
+    bad << "ISO-10303-21;\nDATA;\n#2=TRIANGULATED_FACE(#1,3,$,$,$,((1,2,3)));\nENDSEC;\n";
+  }
+  Check(Mesh::LoadStepAp242(no_points_path, out) == Result::Failed,
+        "LoadStepAp242 fails on a file with no COORDINATES_LIST entity at all");
+
+  const std::string no_face_path = "dino8_kernel_mesh_ap242_test_no_face.stp";
+  {
+    std::ofstream bad(no_face_path);
+    bad << "ISO-10303-21;\nDATA;\n#1=COORDINATES_LIST(((0.,0.,0.),(1.,0.,0.),(0.,1.,0.)));\nENDSEC;\n";
+  }
+  Check(Mesh::LoadStepAp242(no_face_path, out) == Result::Failed,
+        "LoadStepAp242 fails on a file with no TRIANGULATED_FACE entity at all");
+
+  const std::string bad_triple_path = "dino8_kernel_mesh_ap242_test_bad_triple.stp";
+  {
+    std::ofstream bad(bad_triple_path);
+    bad << "ISO-10303-21;\nDATA;\n#1=COORDINATES_LIST(((0.,0.,0.),(1.,0.,0.),(0.,1.,0.)));\n"
+        << "#2=TRIANGULATED_FACE(#1,3,$,$,$,((1,2)));\nENDSEC;\n";
+  }
+  Check(Mesh::LoadStepAp242(bad_triple_path, out) == Result::Failed,
+        "LoadStepAp242 fails on a Triangles tuple that isn't exactly 3 integers");
+
+  const std::string zero_index_path = "dino8_kernel_mesh_ap242_test_zero_index.stp";
+  {
+    std::ofstream bad(zero_index_path);
+    bad << "ISO-10303-21;\nDATA;\n#1=COORDINATES_LIST(((0.,0.,0.),(1.,0.,0.),(0.,1.,0.)));\n"
+        << "#2=TRIANGULATED_FACE(#1,3,$,$,$,((0,1,2)));\nENDSEC;\n";
+  }
+  Check(Mesh::LoadStepAp242(zero_index_path, out) == Result::Failed,
+        "LoadStepAp242 fails on a Triangles entry of 0 - STEP indices are 1-based, never 0");
+
+  const std::string oob_index_path = "dino8_kernel_mesh_ap242_test_oob_index.stp";
+  {
+    std::ofstream bad(oob_index_path);
+    bad << "ISO-10303-21;\nDATA;\n#1=COORDINATES_LIST(((0.,0.,0.),(1.,0.,0.),(0.,1.,0.)));\n"
+        << "#2=TRIANGULATED_FACE(#1,3,$,$,$,((1,2,4)));\nENDSEC;\n";
+  }
+  Check(Mesh::LoadStepAp242(oob_index_path, out) == Result::Failed,
+        "LoadStepAp242 fails on a Triangles entry referencing a point index that doesn't exist");
+
+  const std::string few_args_path = "dino8_kernel_mesh_ap242_test_few_args.stp";
+  {
+    std::ofstream bad(few_args_path);
+    bad << "ISO-10303-21;\nDATA;\n#1=COORDINATES_LIST(((0.,0.,0.),(1.,0.,0.),(0.,1.,0.)));\n"
+        << "#2=TRIANGULATED_FACE(#1,3,$);\nENDSEC;\n";
+  }
+  Check(Mesh::LoadStepAp242(few_args_path, out) == Result::Failed,
+        "LoadStepAp242 fails on a TRIANGULATED_FACE call with fewer than 6 top-level arguments");
+
+  std::remove(bad_header_path.c_str());
+  std::remove(no_points_path.c_str());
+  std::remove(no_face_path.c_str());
+  std::remove(bad_triple_path.c_str());
+  std::remove(zero_index_path.c_str());
+  std::remove(oob_index_path.c_str());
+  std::remove(few_args_path.c_str());
+}
+
+void TestMeshSave3mfRoundTrips() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Result;
+
+  // PARITY_MAP.md's own "Other mesh/scene exchange formats" evidence names
+  // 3MF as still zero code anywhere in the source, alongside FBX and
+  // SketchUp SKP, after glTF/GLB/OFF/AMF/VRML/X3D/Collada/USD all closed.
+  const auto box = MakeQuadBoxMesh(0, 0, 0, 2, 2, 2);
+  const std::string path = "dino8_kernel_mesh_3mf_test.3mf";
+  Check(box.Save3mf(path) == Result::Ok, "Mesh::Save3mf succeeds");
+
+  Mesh reloaded;
+  Check(Mesh::Load3mf(path, reloaded) == Result::Ok, "Mesh::Load3mf succeeds on Save3mf()'s own output");
+  Check(reloaded.VertexCount() == box.VertexCount(),
+        "the reloaded mesh has the same vertex count as the original - 3MF's <vertices> is a real "
+        "shared vertex list, not duplicated per triangle");
+  Check(reloaded.FaceCount() == box.FaceCount() * 2,
+        "the reloaded mesh has 12 triangles for the original's 6 quads - 3MF's core mesh is "
+        "triangle-only, so a quad face splits");
+  Check(std::abs(reloaded.Volume() - box.Volume()) < 1e-6,
+        "the reloaded mesh's volume exactly matches the original, within the triangle split");
+  std::remove(path.c_str());
+
+  // A hand-assembled 3MF package - not Save3mf()'s own output, and not
+  // built via this kernel's own WriteZipArchive() either: the ZIP bytes
+  // (local file header, raw stored data, central directory, End Of Central
+  // Directory record) are packed by hand right here, independently of
+  // mesh.cpp's own ZIP writer, the same "byte-for-byte per the container
+  // spec, not just a self-round-trip" discipline
+  // TestMeshSaveGlbRoundTrips() already uses for its own hand-assembled
+  // GLB container - ruling out a matched write/read bug that would cancel
+  // itself out in a self-round-trip alone.
+  const std::string hand_written_path = "dino8_kernel_mesh_3mf_test_hand_written.3mf";
+  {
+    const std::string model =
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+        "<model unit=\"millimeter\" xmlns=\"http://schemas.microsoft.com/3dmanufacturing/core/2015/02\">\n"
+        " <resources>\n"
+        "  <object id=\"1\" type=\"model\">\n"
+        "   <mesh>\n"
+        "    <vertices>\n"
+        "     <vertex x=\"0\" y=\"0\" z=\"0\"/>\n"
+        "     <vertex x=\"2\" y=\"0\" z=\"0\"/>\n"
+        "     <vertex x=\"0\" y=\"2\" z=\"0\"/>\n"
+        "    </vertices>\n"
+        "    <triangles>\n"
+        "     <triangle v1=\"0\" v2=\"1\" v3=\"2\"/>\n"
+        "    </triangles>\n"
+        "   </mesh>\n"
+        "  </object>\n"
+        " </resources>\n"
+        " <build>\n"
+        "  <item objectid=\"1\"/>\n"
+        " </build>\n"
+        "</model>\n";
+
+    // A from-scratch CRC-32 (IEEE 802.3), written independently of
+    // mesh.cpp's own Crc32() even though both necessarily implement the
+    // same one standard algorithm.
+    auto crc32_of = [](const std::string& data) {
+      uint32_t crc = 0xFFFFFFFFu;
+      for (unsigned char byte : data) {
+        crc ^= byte;
+        for (int bit = 0; bit < 8; ++bit) {
+          const uint32_t mask = 0u - (crc & 1u);
+          crc = (crc >> 1) ^ (0xEDB88320u & mask);
+        }
+      }
+      return ~crc;
+    };
+
+    std::ofstream out(hand_written_path, std::ios::binary);
+    auto write_u16 = [&](uint16_t v) { out.write(reinterpret_cast<const char*>(&v), 2); };
+    auto write_u32 = [&](uint32_t v) { out.write(reinterpret_cast<const char*>(&v), 4); };
+
+    struct Entry {
+      std::string name;
+      std::string data;
+      uint32_t offset;
+      uint32_t crc;
+    };
+    std::vector<Entry> entries_written;
+    const std::vector<std::pair<std::string, std::string>> parts = {
+        {"[Content_Types].xml",
+         "<?xml version=\"1.0\"?><Types "
+         "xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"><Default "
+         "Extension=\"model\" "
+         "ContentType=\"application/vnd.ms-package.3dmanufacturing-3dmodel+xml\"/></Types>"},
+        {"_rels/.rels",
+         "<?xml version=\"1.0\"?><Relationships "
+         "xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship "
+         "Target=\"/3D/3dmodel.model\" Id=\"rel0\" "
+         "Type=\"http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel\"/></Relationships>"},
+        {"3D/3dmodel.model", model},
+    };
+    for (const auto& [name, data] : parts) {
+      Entry e{name, data, static_cast<uint32_t>(out.tellp()), crc32_of(data)};
+      write_u32(0x04034b50);
+      write_u16(20);
+      write_u16(0);
+      write_u16(0);  // stored, no compression
+      write_u16(0);
+      write_u16(0x21);
+      write_u32(e.crc);
+      write_u32(static_cast<uint32_t>(data.size()));
+      write_u32(static_cast<uint32_t>(data.size()));
+      write_u16(static_cast<uint16_t>(name.size()));
+      write_u16(0);
+      out.write(name.data(), static_cast<std::streamsize>(name.size()));
+      out.write(data.data(), static_cast<std::streamsize>(data.size()));
+      entries_written.push_back(e);
+    }
+    const uint32_t central_offset = static_cast<uint32_t>(out.tellp());
+    for (const Entry& e : entries_written) {
+      write_u32(0x02014b50);
+      write_u16(20);
+      write_u16(20);
+      write_u16(0);
+      write_u16(0);
+      write_u16(0);
+      write_u16(0x21);
+      write_u32(e.crc);
+      write_u32(static_cast<uint32_t>(e.data.size()));
+      write_u32(static_cast<uint32_t>(e.data.size()));
+      write_u16(static_cast<uint16_t>(e.name.size()));
+      write_u16(0);
+      write_u16(0);
+      write_u16(0);
+      write_u16(0);
+      write_u32(0);
+      write_u32(e.offset);
+      out.write(e.name.data(), static_cast<std::streamsize>(e.name.size()));
+    }
+    const uint32_t central_size = static_cast<uint32_t>(out.tellp()) - central_offset;
+    write_u32(0x06054b50);
+    write_u16(0);
+    write_u16(0);
+    write_u16(static_cast<uint16_t>(entries_written.size()));
+    write_u16(static_cast<uint16_t>(entries_written.size()));
+    write_u32(central_size);
+    write_u32(central_offset);
+    write_u16(0);
+  }
+  Mesh hand_written;
+  Check(Mesh::Load3mf(hand_written_path, hand_written) == Result::Ok,
+        "Load3mf succeeds on a hand-assembled ZIP/3MF package built independently of this kernel's "
+        "own WriteZipArchive()/Save3mf()");
+  Check(hand_written.VertexCount() == 3 && hand_written.FaceCount() == 1,
+        "the package's 3 points and 1 triangle are read correctly");
+  const ON_MeshFace& tri = hand_written.raw().m_F[0];
+  Check(tri.vi[0] == 0 && tri.vi[1] == 1 && tri.vi[2] == 2,
+        "3MF's 0-based triangle indices match this kernel's own 0-based corners directly, no "
+        "off-by-one translation needed (unlike STEP/IFC's 1-based CoordIndex/Triangles)");
+  std::remove(hand_written_path.c_str());
+}
+
+void TestMeshLoad3mfRejectsMalformedFiles() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Result;
+
+  const std::string missing_path = "dino8_kernel_mesh_3mf_test_does_not_exist.3mf";
+  Mesh out;
+  Check(Mesh::Load3mf(missing_path, out) == Result::Failed, "Load3mf fails on a file that doesn't exist");
+
+  const std::string not_a_zip_path = "dino8_kernel_mesh_3mf_test_not_a_zip.3mf";
+  {
+    std::ofstream bad(not_a_zip_path);
+    bad << "this is not a zip file at all";
+  }
+  Check(Mesh::Load3mf(not_a_zip_path, out) == Result::Failed,
+        "Load3mf fails on a file with no End Of Central Directory record");
+  std::remove(not_a_zip_path.c_str());
+
+  const auto box = MakeQuadBoxMesh(0, 0, 0, 2, 2, 2);
+  const std::string truncated_path = "dino8_kernel_mesh_3mf_test_truncated.3mf";
+  Check(box.Save3mf(truncated_path) == Result::Ok, "Save3mf succeeds (used to build a file to truncate)");
+  {
+    std::ifstream in(truncated_path, std::ios::binary);
+    std::string full_data((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    in.close();
+    std::ofstream out_trunc(truncated_path, std::ios::binary);
+    out_trunc.write(full_data.data(), static_cast<std::streamsize>(full_data.size() / 2));
+  }
+  Check(Mesh::Load3mf(truncated_path, out) == Result::Failed,
+        "Load3mf fails on a ZIP archive truncated halfway through, well before any genuine EOCD");
+  std::remove(truncated_path.c_str());
+}
+
+void TestMeshSaveFbxRoundTrips() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Result;
+
+  // PARITY_MAP.md's own "Other mesh/scene exchange formats" evidence names
+  // FBX as still zero code anywhere in the source, alongside 3MF and
+  // SketchUp SKP.
+  const auto box = MakeQuadBoxMesh(0, 0, 0, 2, 2, 2);
+  const std::string path = "dino8_kernel_mesh_fbx_test.fbx";
+  Check(box.SaveFbx(path) == Result::Ok, "Mesh::SaveFbx succeeds");
+
+  std::ifstream in(path);
+  Check(static_cast<bool>(in), "the .fbx file SaveFbx wrote can be reopened for reading");
+  std::string file_text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  Check(file_text.find("; FBX 7.3.0 project file") == 0, "the file starts with the real FBX ASCII comment header");
+  Check(file_text.find("Vertices: *24 {") != std::string::npos,
+        "the file declares a Vertices array of 24 reals (8 vertices * 3)");
+  Check(file_text.find("PolygonVertexIndex: *24 {") != std::string::npos,
+        "the file declares a PolygonVertexIndex array of 24 entries (6 quad faces * 4) - a quad is kept "
+        "native, not split, unlike the triangle-only formats above");
+
+  Mesh reloaded;
+  Check(Mesh::LoadFbx(path, reloaded) == Result::Ok, "Mesh::LoadFbx succeeds on SaveFbx()'s own output");
+  Check(reloaded.VertexCount() == box.VertexCount(),
+        "the reloaded mesh has the same vertex count as the original");
+  Check(reloaded.FaceCount() == box.FaceCount(),
+        "the reloaded mesh has the same 6 quad faces as the original - FBX's PolygonVertexIndex is a "
+        "genuine variable-length polygon list, so a quad round-trips as a quad, not split into triangles");
+  Check(reloaded.raw().m_F[0].IsQuad(), "the reloaded first face is still a genuine quad");
+  Check(std::abs(reloaded.Volume() - box.Volume()) < 1e-6,
+        "the reloaded mesh's volume exactly matches the original - no triangle split to lose precision to");
+  std::remove(path.c_str());
+
+  // A hand-written file (not SaveFbx()'s own output) exercising a single
+  // triangle whose known corners let LoadFbx()'s geometry - and its
+  // one's-complement polygon-terminator decoding - be checked exactly.
+  const std::string hand_written_path = "dino8_kernel_mesh_fbx_test_hand_written.fbx";
+  {
+    std::ofstream out(hand_written_path);
+    out << "; FBX 7.3.0 project file\n";
+    out << "Objects:  {\n";
+    out << "\tGeometry: 1, \"Geometry::\", \"Mesh\" {\n";
+    out << "\t\tVertices: *9 {\n";
+    out << "\t\t\ta: 0,0,0,2,0,0,0,2,0\n";
+    out << "\t\t}\n";
+    out << "\t\tPolygonVertexIndex: *3 {\n";
+    out << "\t\t\ta: 0,1,-3\n";  // -3 is ~2, the one's-complement of real index 2
+    out << "\t\t}\n";
+    out << "\t}\n";
+    out << "}\n";
+  }
+  Mesh hand_written;
+  Check(Mesh::LoadFbx(hand_written_path, hand_written) == Result::Ok,
+        "LoadFbx succeeds on a hand-written file with a minimal Objects/Geometry block");
+  Check(hand_written.VertexCount() == 3 && hand_written.FaceCount() == 1,
+        "the hand-written file's 3 points and 1 triangle are read correctly");
+  const ON_MeshFace& tri = hand_written.raw().m_F[0];
+  Check(tri.vi[0] == 0 && tri.vi[1] == 1 && tri.vi[2] == 2,
+        "the one's-complement-terminated run (0,1,-3) decodes to real indices (0,1,2)");
+  std::remove(hand_written_path.c_str());
+}
+
+void TestMeshLoadFbxRejectsMalformedFiles() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Result;
+
+  const std::string missing_path = "dino8_kernel_mesh_fbx_test_does_not_exist.fbx";
+  Mesh out;
+  Check(Mesh::LoadFbx(missing_path, out) == Result::Failed, "LoadFbx fails on a file that doesn't exist");
+
+  const std::string binary_magic_path = "dino8_kernel_mesh_fbx_test_binary_magic.fbx";
+  {
+    std::ofstream bad(binary_magic_path, std::ios::binary);
+    bad << "Kaydara FBX Binary  \x00\x1a\x00";
+  }
+  Check(Mesh::LoadFbx(binary_magic_path, out) == Result::Failed,
+        "LoadFbx fails outright on a binary-FBX magic header, rather than trying to parse it as ASCII");
+
+  const std::string no_vertices_path = "dino8_kernel_mesh_fbx_test_no_vertices.fbx";
+  {
+    std::ofstream bad(no_vertices_path);
+    bad << "Objects:  {\n\tGeometry: 1, \"Geometry::\", \"Mesh\" {\n\t\tPolygonVertexIndex: *3 {\n"
+        << "\t\t\ta: 0,1,-3\n\t\t}\n\t}\n}\n";
+  }
+  Check(Mesh::LoadFbx(no_vertices_path, out) == Result::Failed,
+        "LoadFbx fails on a file with no Vertices array at all");
+
+  const std::string no_indices_path = "dino8_kernel_mesh_fbx_test_no_indices.fbx";
+  {
+    std::ofstream bad(no_indices_path);
+    bad << "Objects:  {\n\tGeometry: 1, \"Geometry::\", \"Mesh\" {\n\t\tVertices: *9 {\n"
+        << "\t\t\ta: 0,0,0,2,0,0,0,2,0\n\t\t}\n\t}\n}\n";
+  }
+  Check(Mesh::LoadFbx(no_indices_path, out) == Result::Failed,
+        "LoadFbx fails on a file with no PolygonVertexIndex array at all");
+
+  const std::string short_run_path = "dino8_kernel_mesh_fbx_test_short_run.fbx";
+  {
+    std::ofstream bad(short_run_path);
+    // A polygon run of only 2 real indices before its terminator - below
+    // the minimum 3 a polygon needs.
+    bad << "Objects:  {\n\tGeometry: 1, \"Geometry::\", \"Mesh\" {\n\t\tVertices: *9 {\n"
+        << "\t\t\ta: 0,0,0,2,0,0,0,2,0\n\t\t}\n\t\tPolygonVertexIndex: *2 {\n"
+        << "\t\t\ta: 0,-2\n\t\t}\n\t}\n}\n";
+  }
+  Check(Mesh::LoadFbx(short_run_path, out) == Result::Failed,
+        "LoadFbx fails on a polygon run with fewer than 3 real indices before its terminator");
+
+  const std::string oob_index_path = "dino8_kernel_mesh_fbx_test_oob_index.fbx";
+  {
+    std::ofstream bad(oob_index_path);
+    // Only 3 vertices declared (valid indices 0-2); index 5 doesn't exist.
+    bad << "Objects:  {\n\tGeometry: 1, \"Geometry::\", \"Mesh\" {\n\t\tVertices: *9 {\n"
+        << "\t\t\ta: 0,0,0,2,0,0,0,2,0\n\t\t}\n\t\tPolygonVertexIndex: *3 {\n"
+        << "\t\t\ta: 0,1,-6\n\t\t}\n\t}\n}\n";
+  }
+  Check(Mesh::LoadFbx(oob_index_path, out) == Result::Failed,
+        "LoadFbx fails on a PolygonVertexIndex entry referencing a vertex index that doesn't exist");
+
+  const std::string unterminated_path = "dino8_kernel_mesh_fbx_test_unterminated.fbx";
+  {
+    std::ofstream bad(unterminated_path);
+    // No negative (terminator) entry anywhere - the run never ends.
+    bad << "Objects:  {\n\tGeometry: 1, \"Geometry::\", \"Mesh\" {\n\t\tVertices: *9 {\n"
+        << "\t\t\ta: 0,0,0,2,0,0,0,2,0\n\t\t}\n\t\tPolygonVertexIndex: *3 {\n"
+        << "\t\t\ta: 0,1,2\n\t\t}\n\t}\n}\n";
+  }
+  Check(Mesh::LoadFbx(unterminated_path, out) == Result::Failed,
+        "LoadFbx fails on a PolygonVertexIndex run with no one's-complement terminator at all");
+
+  std::remove(binary_magic_path.c_str());
+  std::remove(no_vertices_path.c_str());
+  std::remove(no_indices_path.c_str());
+  std::remove(short_run_path.c_str());
+  std::remove(oob_index_path.c_str());
+  std::remove(unterminated_path.c_str());
+}
+
 void TestMeshSaveStlSplitsQuadsAndComputesNormals() {
   using dino8::kernel::Result;
 
@@ -41607,9 +42151,14 @@ void TestBooleanOperationErrorGeneralEngineFailureReasons() {
     Check(caught_as_base, (std::string(label) + ": still catchable as plain std::invalid_argument").c_str());
   };
 
-  // UnsupportedOperation: SymmetricDifference, on two different functions.
-  expect([&] { BooleanCombineGeneral(box, other, BooleanOp::SymmetricDifference); },
-         BooleanFailureReason::UnsupportedOperation, "BooleanCombineGeneral", "BooleanCombineGeneral SymmetricDifference");
+  // UnsupportedOperation: SymmetricDifference. Only BooleanCombineGeneralNAry
+  // still refuses it (a later pass implemented pairwise SymmetricDifference
+  // on BooleanCombineGeneral itself - see that function's own doc comment,
+  // boolean_general.h - so the plain, two-argument call this expectation
+  // used to make here no longer throws at all; this one check narrowed to
+  // the N-ary wrapper, which still refuses it for an unrelated, still-true
+  // reason - its own pairwise result is a two-lump compound that cannot be
+  // fed into a further Union fold, not that the op is unimplemented).
   expect([&] { BooleanCombineGeneralNAry({box}, {other}, BooleanOp::SymmetricDifference); },
          BooleanFailureReason::UnsupportedOperation, "BooleanCombineGeneralNAry",
          "BooleanCombineGeneralNAry SymmetricDifference");
@@ -42464,6 +43013,212 @@ void TestBooleanCombineGeneralDifferenceThrowsOnTouchingLumpXorCompound() {
         "Difference against a compound whose own lumps genuinely touch along a contact curve still throws the "
         "pre-existing non-manifold reassembly refusal, not a silently wrong shape - a real, disclosed scope limit "
         "of this pass's new compound-operand support, not an outright compound refusal");
+}
+
+// New this pass: BooleanCombineGeneral() now implements SymmetricDifference
+// (boolean_general.h/.cpp) - PARITY_MAP.md's "Multi-body / multi-tool
+// booleans" bullet previously named this as the one B-rep engine with no
+// SymmetricDifference support at all (BooleanCombinePlanar/BooleanCombineMixed
+// already had it). Built as the identical Brep::Compound({Difference(a, b),
+// Difference(b, a)}) construction those two engines already use - this test
+// is the general-engine analogue of TestBooleanCombineGeneralBoxBox above,
+// on the same box+box fixture so the expected numbers are directly
+// comparable (box1 volume 8, box2 volume 8, shared overlap volume 1).
+void TestBooleanCombineGeneralSymmetricDifferenceBoxBox() {
+  using dino8::kernel::BooleanCombineGeneral;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::TessellateGeneralBooleanClosedMesh;
+
+  const Brep a = Brep::Box(0, 0, 0, 2, 2, 2);
+  const Brep b = Brep::Box(1, 1, 1, 3, 3, 3);
+
+  // Independent ground truth first: each Difference direction is already
+  // its own separately-proven, independently-closed solid
+  // (TestBooleanCombineGeneralBoxBox above) - measured here again, standalone,
+  // as the basis for this test's own volume check below, since (see the next
+  // paragraph) the COMBINED result is not reliably tessellated as one unit.
+  const Mesh diff_ab = TessellateGeneralBooleanClosedMesh(BooleanCombineGeneral(a, b, BooleanOp::Difference), 8, 8);
+  const Mesh diff_ba = TessellateGeneralBooleanClosedMesh(BooleanCombineGeneral(b, a, BooleanOp::Difference), 8, 8);
+  Check(diff_ab.IsClosedManifold() && diff_ba.IsClosedManifold(), "each XOR lump is independently a closed manifold");
+  Check(std::abs((diff_ab.Volume() + diff_ba.Volume()) - 14.0) < 1e-3,
+        "the two lumps' volumes sum to the exact closed-form 14.0 (box1's own 8 minus the shared 1, plus box2's "
+        "own 8 minus the shared 1 - equivalently 8 + 8 - 2*1, the standard XOR-of-two-solids identity)");
+
+  const Brep sd = BooleanCombineGeneral(a, b, BooleanOp::SymmetricDifference);
+  Check(sd.raw().IsValid(), "box+box SymmetricDifference is a valid ON_Brep");
+  // NOT Brep::Compound()-built (see BooleanCombineGeneral's own doc comment,
+  // boolean_general.h, for why) - LumpFaceRanges() reports the ordinary
+  // single-lump default, the same already-disclosed bookkeeping gap this
+  // engine's compound-accepting Difference/Intersection already have.
+  Check(sd.LumpFaceRanges().size() == 1,
+        "LumpFaceRanges() reports the ordinary single-lump default - not tracked for this engine's own "
+        "ON_Brep::Append()-merged result, unlike BooleanCombinePlanar's/BooleanCombineMixed's Brep::Compound()");
+  Check(sd.SplitDisjointPieces().size() == 2,
+        "Brep::SplitDisjointPieces() (a real topology analysis, not bookkeeping replay) still correctly finds "
+        "the genuine two disjoint pieces");
+
+  // The same identity checked the OTHER way: SymmetricDifference(a, b) and
+  // SymmetricDifference(b, a) are the same set (XOR is symmetric in its
+  // arguments, unlike Difference), so both argument orders must produce a
+  // valid, genuinely two-piece result even though the two lumps are
+  // individually swapped.
+  const Brep sd_reverse = BooleanCombineGeneral(b, a, BooleanOp::SymmetricDifference);
+  Check(sd_reverse.raw().IsValid(), "SymmetricDifference(b, a) is also a valid ON_Brep");
+  Check(sd_reverse.SplitDisjointPieces().size() == 2,
+        "SymmetricDifference(b, a) is also genuinely two disjoint pieces - XOR is symmetric in its arguments");
+}
+
+// The freeform-operand analogue of the test above, reusing
+// TestBooleanCombineGeneralFreeformSurfaceOperand's own bicubic-Bezier-bump
+// fixture verbatim (see that test's own doc comment for why this exact
+// geometry keeps the crossing itself simple and in-scope): proves the new
+// SymmetricDifference construction generalizes past axis-aligned analytic
+// boxes to a genuinely doubly-curved, non-developable operand, the same way
+// that test already proved Union/Intersection/Difference do. There is still
+// no closed form for this fixture's own volumes, so this again leans on the
+// implementation-independent identity Volume(XOR(A,B)) == Volume(A) +
+// Volume(B) - 2*Volume(Intersection(A,B)), true for ANY two solids.
+void TestBooleanCombineGeneralSymmetricDifferenceFreeformSurfaceOperand() {
+  using dino8::kernel::BooleanCombineGeneral;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::TessellateGeneralBooleanClosedMesh;
+
+  const double z[4][4] = {
+      {0.3, 0.5, 0.4, 0.3},
+      {0.5, 1.0, 0.8, 0.4},
+      {0.4, 0.8, 0.9, 0.5},
+      {0.3, 0.4, 0.5, 0.3},
+  };
+  std::vector<Point3d> grid;
+  for (int i = 0; i < 4; ++i) {
+    for (int j = 0; j < 4; ++j) grid.push_back(Point3d(double(i), double(j), z[i][j]));
+  }
+  const NurbsSurface bump = NurbsSurface::FromControlGrid(grid, 4, 4, /*u_degree=*/3, /*v_degree=*/3);
+  const Brep sheet = Brep::FromSurface(bump);
+  const Brep freeform = Brep::Thicken(sheet, -1.5);
+  const Brep box = Brep::Box(-1, -1, -5, 4, 4, 0);
+
+  const double vol_freeform = freeform.TessellateToClosedMesh(24, 24).Volume();
+  const double vol_box = box.TessellateToClosedMesh(24, 24).Volume();
+  const double vol_intersection = TessellateGeneralBooleanClosedMesh(
+                                       BooleanCombineGeneral(freeform, box, BooleanOp::Intersection), 24, 24)
+                                       .Volume();
+
+  // Independent ground truth (see the box+box test above for why the
+  // COMBINED result isn't tessellated directly): each Difference direction
+  // tessellates as a genuine closed manifold entirely on its own.
+  const Mesh diff_fb = TessellateGeneralBooleanClosedMesh(
+      BooleanCombineGeneral(freeform, box, BooleanOp::Difference), 24, 24);
+  const Mesh diff_bf = TessellateGeneralBooleanClosedMesh(
+      BooleanCombineGeneral(box, freeform, BooleanOp::Difference), 24, 24);
+  Check(diff_fb.IsClosedManifold() && diff_bf.IsClosedManifold(),
+        "each freeform XOR lump is independently a closed manifold");
+
+  const Brep sd = BooleanCombineGeneral(freeform, box, BooleanOp::SymmetricDifference);
+  Check(sd.raw().IsValid(), "freeform+box SymmetricDifference is a valid ON_Brep");
+  Check(sd.SplitDisjointPieces().size() == 2,
+        "SplitDisjointPieces() finds the genuine two disjoint pieces, same as the box+box case above");
+
+  const double expected = vol_freeform + vol_box - 2.0 * vol_intersection;
+  Check(std::abs((diff_fb.Volume() + diff_bf.Volume()) - expected) < 0.01,
+        "the two lumps' volumes sum to Volume(freeform) + Volume(box) - 2*Volume(Intersection) - the "
+        "implementation-independent identity holding for a genuinely freeform operand, at the same loose "
+        "tolerance TestBooleanCombineGeneralFreeformSurfaceOperand's own Union/Intersection identity check "
+        "already uses");
+}
+
+// Closes the "still refused, but for the right reason" half of adding
+// SymmetricDifference support above: BooleanCombineGeneralNAry's own
+// refusal message used to say the op was "not yet implemented" at all
+// (BooleanCombineGeneral itself refused it outright); now that the pairwise
+// function implements it, the N-ary wrapper's refusal is purely about
+// fold-ability (its own pairwise result is a two-lump compound that cannot
+// be fed into a further Union), the identical reason
+// BooleanCombinePlanarNAry/BooleanCombineMixedNAry already give - verified
+// here directly rather than assumed, the same way
+// TestBooleanCombineGeneralRefusesCompoundOperand already checks specific
+// wording for its own refusal.
+void TestBooleanCombineGeneralNAryStillRefusesSymmetricDifferenceForTheRightReason() {
+  using dino8::kernel::BooleanCombineGeneralNAry;
+  using dino8::kernel::BooleanFailureReason;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::BooleanOperationError;
+  using dino8::kernel::Brep;
+
+  const Brep box = Brep::Box(0, 0, 0, 2, 2, 2);
+  const Brep other = Brep::Box(1, 1, 1, 3, 3, 3);
+
+  bool threw = false;
+  std::string message;
+  BooleanFailureReason reason{};
+  try {
+    BooleanCombineGeneralNAry({box}, {other}, BooleanOp::SymmetricDifference);
+  } catch (const BooleanOperationError& e) {
+    threw = true;
+    message = e.what();
+    reason = e.reason();
+  }
+  Check(threw, "BooleanCombineGeneralNAry still refuses SymmetricDifference");
+  Check(reason == BooleanFailureReason::UnsupportedOperation,
+        "the refusal is still catchable with a structured UnsupportedOperation reason");
+  Check(message.find("no well-defined N-ary fold") != std::string::npos &&
+            message.find("not yet implemented") == std::string::npos,
+        "the refusal now names the real reason (no well-defined fold for a two-lump pairwise result), not the "
+        "stale 'not yet implemented' wording from before BooleanCombineGeneral itself supported the op");
+}
+
+// The general-engine analogue of TestBooleanCombineMixedChainedSymmetric
+// Difference-style "compound built from a REAL SymmetricDifference call, not
+// just an artificially-assembled fixture" precedent (see
+// TestBooleanCombinePlanarDifferenceAcceptsGapSeparatedXorCompound's own doc
+// comment, boolean.cpp) - now that BooleanCombineGeneral itself produces
+// SymmetricDifference results, its own pre-existing "Difference/Intersection
+// accept a compound operand" support (TestBooleanCombineGeneralDifference
+// AcceptsCompoundFirstOperand above) can be exercised against a compound this
+// same engine actually built, not a Planar-engine stand-in.
+void TestBooleanCombineGeneralDifferenceAcceptsRealSymmetricDifferenceCompoundOperand() {
+  using dino8::kernel::BooleanCombineGeneral;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::TessellateGeneralBooleanClosedMesh;
+
+  // Genuinely DISJOINT (non-overlapping, non-touching) a/b - unlike the
+  // corner-overlap a=Box(0,0,0,2,2,2)/b=Box(1,1,1,3,3,3) fixture the tests
+  // above use, whose two XOR lumps inherently touch along the crossing
+  // curve (any genuine crossing XOR's own two pieces do - see
+  // BooleanCombineGeneral's own doc comment in boolean_general.h). A
+  // touching-lump compound correctly still throws "3 or more fragment
+  // loops" if fed into a further Difference/Intersection call here (the
+  // same pre-existing scope limit TestBooleanCombineGeneralDifferenceThrows
+  // OnTouchingLumpXorCompound above already tests for a Planar-built
+  // touching compound) - confirmed directly while building this test, not
+  // assumed: using a genuinely-crossing fixture here reproduces that exact
+  // throw instead of the success this test wants to demonstrate, which is
+  // why a disjoint fixture is used instead.
+  const Brep a = Brep::Box(0, 0, 0, 2, 2, 2);
+  const Brep b = Brep::Box(5, 0, 0, 7, 2, 2);
+  const Brep xor_result = BooleanCombineGeneral(a, b, BooleanOp::SymmetricDifference);
+  Check(xor_result.SplitDisjointPieces().size() == 2,
+        "the fixture is genuinely two disjoint pieces, built by this engine's own new SymmetricDifference");
+
+  // Disjoint from both of xor_result's own lumps (a at [0,2]^3, b at
+  // [5,7]x[0,2]x[0,2]).
+  const Brep cutter = Brep::Box(10, 10, 10, 12, 12, 12);
+  const Brep result = BooleanCombineGeneral(xor_result, cutter, BooleanOp::Difference);
+  Check(result.raw().IsValid(), "Difference against a REAL SymmetricDifference-produced compound is a valid ON_Brep");
+
+  const Mesh mesh = TessellateGeneralBooleanClosedMesh(result, 16, 16);
+  Check(mesh.IsClosedManifold(), "the combined shape is a genuine closed manifold");
+  Check(std::abs(mesh.Volume() - 16.0) < 1e-3,
+        "volume is unchanged at 16.0 (XOR = 8 + 8, disjoint a/b) - the disjoint cutter never reaches either "
+        "lump of the real XOR compound");
 }
 
 // BooleanCombineGeneral's own output is never itself a Brep::Compound() by
@@ -60265,6 +61020,8 @@ int main() {
   TestTrimSheetBySolidDisjointSheetKeepsWholeOrEmpty();
   TestTrimSheetBySolidRejectsEmptyOperands();
   TestTrimSheetBySolidCallerTolerance();
+  TestSplitBySheetCurvedSolidCylinderCutByFlatSheet();
+  TestTrimSheetBySolidCurvedSolidCylinder();
   TestSplitBrepBySolidOverlappingBoxesSumBackToOriginalVolume();
   TestSplitBrepBySolidDisjointCutterKeepsWholeTargetOutside();
   TestSplitBrepBySolidCutterFullyContainsTarget();
@@ -60495,6 +61252,12 @@ int main() {
   TestMeshLoadGlbRejectsMalformedFiles();
   TestMeshSaveIfcRoundTrips();
   TestMeshLoadIfcRejectsMalformedFiles();
+  TestMeshSaveStepAp242RoundTrips();
+  TestMeshLoadStepAp242RejectsMalformedFiles();
+  TestMeshSave3mfRoundTrips();
+  TestMeshLoad3mfRejectsMalformedFiles();
+  TestMeshSaveFbxRoundTrips();
+  TestMeshLoadFbxRejectsMalformedFiles();
   TestMeshSaveStlSplitsQuadsAndComputesNormals();
   TestMeshLoadStlRoundTrips();
   TestMeshLoadStlBinary();
@@ -60827,6 +61590,10 @@ int main() {
   TestBooleanCombineGeneralIntersectionAcceptsCompoundOperand();
   TestBooleanCombineGeneralDifferenceThrowsOnTouchingLumpXorCompound();
   TestBooleanCombineGeneralNAryRefusesCompoundOperandAtEveryPairwiseStep();
+  TestBooleanCombineGeneralSymmetricDifferenceBoxBox();
+  TestBooleanCombineGeneralSymmetricDifferenceFreeformSurfaceOperand();
+  TestBooleanCombineGeneralNAryStillRefusesSymmetricDifferenceForTheRightReason();
+  TestBooleanCombineGeneralDifferenceAcceptsRealSymmetricDifferenceCompoundOperand();
   TestBooleanCombinePlanarCallerTolerance();
   TestBooleanCombineMixedCallerTolerance();
   TestBooleanCombinePlanarNAryCallerToleranceForwardedToEveryPairwiseCall();
