@@ -334,30 +334,37 @@ class PythonScriptCommand : public Command {
 };
 
 // A genuine per-object display-mode override (SceneObject::force_wireframe /
-// force_shaded, honoured by Viewport::DrawObjects) for the two modes that
-// map onto a real per-object switch: Wireframe (never filled) and Shaded
-// (always filled, same as ShadeSelected). Other Rhino display modes
-// (Rendered, Ghosted, X-Ray, Technical, ...) are viewport-wide render
-// styles with no per-object equivalent in this renderer, so those fall
-// back to clearing the override (UseViewport) with an explanatory note.
+// force_shaded / force_ghosted / force_xray, honoured by
+// Viewport::DrawObjects) for the four modes that map onto a real per-object
+// switch: Wireframe (never filled), Shaded (always filled, same as
+// ShadeSelected), and now Ghosted/X-Ray (always filled at that mode's own
+// fixed transparency - 0.35/0.18, the same alpha Viewport.cpp's StyleFor
+// uses for the viewport-wide versions of these modes). The remaining Rhino
+// display modes (Rendered, Technical, Artistic, Pen, Arctic, Monochrome,
+// RayTraced, ...) are still viewport-wide render styles with no per-object
+// equivalent in this renderer, so those fall back to clearing the override
+// (UseViewport) with an explanatory note.
 class SetObjectDisplayModeCommand : public Command {
  public:
   void Begin(CommandContext&) override { WantObjects("Select objects to set a display mode for", 1); }
   void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
     if (ids.empty()) { Finish(); return; }
     ids_ = ids;
-    WantText("Mode (Wireframe/Shaded/UseViewport)", "Shaded");
+    WantText("Mode (Wireframe/Shaded/Ghosted/X-Ray/UseViewport)", "Shaded");
   }
   void OnText(CommandContext& ctx, const std::string& t) override {
-    const std::string mode = ToLower(t);
+    std::string mode = ToLower(t);
+    mode.erase(std::remove(mode.begin(), mode.end(), '-'), mode.end());
     Document& doc = ctx.Doc();
     int n = 0;
     for (ObjectId id : ids_) {
       SceneObject* o = doc.Find(id);
       if (!o) continue;
-      if (mode == "wireframe" || mode == "w") { o->force_wireframe = true; o->force_shaded = false; }
-      else if (mode == "shaded" || mode == "s") { o->force_shaded = true; o->force_wireframe = false; }
-      else { o->force_wireframe = o->force_shaded = false; }
+      o->force_wireframe = o->force_shaded = o->force_ghosted = o->force_xray = false;
+      if (mode == "wireframe" || mode == "w") o->force_wireframe = true;
+      else if (mode == "shaded" || mode == "s") o->force_shaded = true;
+      else if (mode == "ghosted" || mode == "g") o->force_ghosted = true;
+      else if (mode == "xray" || mode == "x") o->force_xray = true;
       o->InvalidateDisplay();
       ++n;
     }
@@ -365,8 +372,12 @@ class SetObjectDisplayModeCommand : public Command {
       ctx.Print("SetObjectDisplayMode: " + std::to_string(n) + " object(s) now always shown as wireframe, even in a shaded/rendered viewport.");
     else if (mode == "shaded" || mode == "s")
       ctx.Print("SetObjectDisplayMode: " + std::to_string(n) + " object(s) now always shown shaded (see ShadeSelected), even in Wireframe or another line-only viewport.");
+    else if (mode == "ghosted" || mode == "g")
+      ctx.Print("SetObjectDisplayMode: " + std::to_string(n) + " object(s) now always shown Ghosted (35% opaque), even in Wireframe or another viewport display mode.");
+    else if (mode == "xray" || mode == "x")
+      ctx.Print("SetObjectDisplayMode: " + std::to_string(n) + " object(s) now always shown X-Ray (18% opaque), even in Wireframe or another viewport display mode.");
     else
-      ctx.Print("SetObjectDisplayMode: " + std::to_string(n) + " object(s) reset to the viewport's own display mode. Other Rhino modes (Rendered/Ghosted/X-Ray/...) are viewport-wide render styles here, with no per-object equivalent - use the Display panel to change the viewport itself.");
+      ctx.Print("SetObjectDisplayMode: " + std::to_string(n) + " object(s) reset to the viewport's own display mode. Other Rhino modes (Rendered/Technical/Artistic/...) are viewport-wide render styles here, with no per-object equivalent - use the Display panel to change the viewport itself.");
     Finish();
   }
 
@@ -421,7 +432,7 @@ void RegisterMiscCommands(CommandEngine& e) {
   Reg(e, "Tutorials", Immediate([](CommandContext& ctx) { ctx.App().Panels().help = true; }));
   Reg(e, "SetRenderColor", Make<SetRenderColorCommand>(), CommandStatus::Implemented, "Sets the selected objects' own display colour to the given r,g,b value or colour name.");
   Reg(e, "SetObjectDisplayMode", Make<SetObjectDisplayModeCommand>(), CommandStatus::Implemented,
-      "A genuine per-object override for Wireframe and Shaded (see ShadeSelected); the other Rhino modes (Rendered/Ghosted/X-Ray/...) are viewport-wide render styles with no per-object equivalent, so Mode=UseViewport (or any other name) clears the override instead.");
+      "A genuine per-object override for Wireframe, Shaded (see ShadeSelected), Ghosted and X-Ray; the other Rhino modes (Rendered/Technical/Artistic/...) are viewport-wide render styles with no per-object equivalent, so Mode=UseViewport (or any other name) clears the override instead.");
   // Dragmode: same command name as cmd_state.cpp's "DragMode" (registry
   // keys are case-insensitive) - superseded by that real ChoiceCommand
   // (RegisterStateCommands runs after this file, so it always won here

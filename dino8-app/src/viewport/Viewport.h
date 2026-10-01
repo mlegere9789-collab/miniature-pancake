@@ -3,6 +3,7 @@
 // into navigation, point picks, and object selection.
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <optional>
 #include <string>
@@ -119,6 +120,13 @@ class Viewport {
   void SetName(const std::string& n) { name_ = n; }
   Camera& GetCamera() { return camera_; }
   const Camera& GetCamera() const { return camera_; }
+  // World units per screen pixel this viewport's camera currently shows
+  // (Camera::PixelSize, the same zoom-independent-sizing idiom
+  // DrawLightWidgets already uses for on-screen glyph size) - the "how
+  // zoomed in is this viewport" input to view-dependent adaptive
+  // tessellation (see FrameContext::lod_scale and LodScaleForPixelSize in
+  // AdaptiveTessellation.h).
+  double ZoomPixelSize() const { return camera_.PixelSize(std::max(height_, 1)); }
   DisplayMode Mode() const { return mode_; }
   void SetMode(DisplayMode m) { mode_ = m; }
   ConstructionPlane& CPlane() { return cplane_; }
@@ -171,6 +179,16 @@ class Viewport {
     bool show_control_points_for_selected = false;
     double curve_tolerance = 0.02;
     double surface_tolerance = 0.05;
+    // View-dependent adaptive tessellation: curve_tolerance/surface_tolerance
+    // above scaled by this factor before use (see AdaptiveTessellation.h's
+    // LodScaleForPixelSize). Set once per frame by Application::
+    // MakeFrameContext from the *active*
+    // viewport's own current zoom and shared by every viewport's DrawObjects
+    // this frame - not recomputed per viewport - so all open viewports
+    // tessellate a given object identically and never fight over its one
+    // shared SceneObject display cache by requesting different resolutions
+    // in the same frame. 1.0 (its default) means no scaling.
+    double lod_scale = 1.0;
     // App-wide surface analysis applied to objects whose own `analysis`
     // mode is None (null or mode None = plain shading).
     const AnalysisSettings* fallback_analysis = nullptr;

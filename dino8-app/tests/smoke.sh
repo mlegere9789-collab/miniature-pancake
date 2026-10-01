@@ -2813,6 +2813,12 @@ echo "$S2" | grep -E "^(ok|FAIL)"
 if echo "$S2" | grep -q "^FAIL"; then fail=1; fi
 echo "$S2" | grep -q "^smoke:" || { echo "$S2"; echo "FAIL: state2 script produced no smoke line"; fail=1; }
 s2check() { if echo "$S2" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$S2" "$1"; fail=1; fi; }
+# SetObjectDisplayMode Ghosted/X-Ray (PARITY_MAP.md's "Per-object display
+# mode override" item, upgraded this pass from Wireframe/Shaded-only to
+# also cover these two alpha-based modes) - real per-object overrides, not
+# just accepted-and-ignored text.
+s2check "SetObjectDisplayMode: 1 object(s) now always shown Ghosted (35% opaque)" "SetObjectDisplayMode Ghosted is a genuine per-object override, not silently treated as UseViewport"
+s2check "SetObjectDisplayMode: 1 object(s) now always shown X-Ray (18% opaque)" "SetObjectDisplayMode X-Ray is a genuine per-object override, not silently treated as UseViewport"
 s2check "WhatsNew: opened the What's New window" "WhatsNew opens its own real changelog window, not the About box"
 # Regression guard for the "changelog.md never shipped" bug: WhatsNew's
 # confirmation print above only means the *window* opened - Panels.cpp's
@@ -3423,6 +3429,8 @@ cp "$HERE/step_pentagon_fixture.stp" "$TMPW/step_pentagon_fixture.stp"
 cp "$HERE/step_recursive_fixture.stp" "$TMPW/step_recursive_fixture.stp"
 cp "$HERE/iges_bad_pd_ptr_fixture.igs" "$TMPW/iges_bad_pd_ptr_fixture.igs"
 cp "$HERE/iges_huge_composite_fixture.igs" "$TMPW/iges_huge_composite_fixture.igs"
+cp "$HERE/iges_cyclic_xform_fixture.igs" "$TMPW/iges_cyclic_xform_fixture.igs"
+cp "$HERE/step_huge_knot_multiplicity_fixture.stp" "$TMPW/step_huge_knot_multiplicity_fixture.stp"
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   IS="$("$BIN" --smoke 230 --script "$TMPW/igesstep_script.txt" 2>&1)" || { echo "$IS"; echo "FAIL: iges/step script exited non-zero"; exit 1; }
 else
@@ -3448,7 +3456,11 @@ ischeck "IGES: .*1 point" "the blank-pd_ptr IGES fixture's type-116 entity still
 [ "$(grep -c "IGES: 0 curves, 0 points, 0 surfaces, 0 breps (0 trimmed faces); 1 unsupported entity skipped" <<<"$IS")" -ge 2 ] \
   && echo "ok   the huge-N (2000000000-segment) composite-curve IGES fixture was rejected cleanly too, not just the self-referencing one (see BuildIgesCurve's segment-count cap)" \
   || { echo "FAIL: expected the 0-curves/0-points/0-surfaces/0-breps/1-skipped reject line twice (recursive fixture + huge-composite fixture)"; near "$IS" "0 curves, 0 points, 0 surfaces, 0 breps"; fail=1; }
-grep -q "Segmentation fault\|core dumped" <<<"$IS" && { echo "FAIL: iges/step script segfaulted on the recursive-composite-curve, blank-pd_ptr, or huge-composite-curve fixture"; fail=1; } || echo "ok   no segfault while importing the recursive-composite-curve, blank-pd_ptr, or huge-composite-curve fixture"
+[ "$(grep -c "IGES: .*1 point" <<<"$IS")" -ge 3 ] \
+  && echo "ok   the self-referencing type-124 transform-matrix IGES fixture still imported its point, not hung/crashed on (see TransformOf's recursion-depth guard)" \
+  || { echo "FAIL: expected an 'IGES: ... 1 point' line 3 times (t.igs + blank-pd_ptr fixture + cyclic-xform fixture)"; near "$IS" "IGES: .*1 point"; fail=1; }
+ischeck "No usable geometry found in .*step_huge_knot_multiplicity_fixture.stp" "a STEP B_SPLINE_CURVE_WITH_KNOTS with a 2000000000 knot multiplicity was rejected cleanly, not a multi-gigabyte allocation attempt (see StepModel::BuildCurve's/BuildSurface's multiplicity cap)"
+grep -q "Segmentation fault\|core dumped" <<<"$IS" && { echo "FAIL: iges/step script segfaulted on the recursive-composite-curve, blank-pd_ptr, huge-composite-curve, cyclic-xform, or huge-knot-multiplicity fixture"; fail=1; } || echo "ok   no segfault while importing the recursive-composite-curve, blank-pd_ptr, huge-composite-curve, cyclic-xform, or huge-knot-multiplicity fixture"
 grep -qE "^ {5}128" "$TMPW/t.igs" && grep -qE "^ {5}144" "$TMPW/t.igs" && echo "ok   t.igs uses 128 (surface) and 144 (trimmed surface) entities" || { echo "FAIL t.igs entity types"; fail=1; }
 grep -q "=ADVANCED_FACE(" "$TMPW/t.stp" && grep -q "B_SPLINE_SURFACE_WITH_KNOTS(" "$TMPW/t.stp" && echo "ok   t.stp uses ADVANCED_FACE and B_SPLINE_SURFACE_WITH_KNOTS entities" || { echo "FAIL t.stp entity types"; fail=1; }
 grep -q "^ISO-10303-21;$" "$TMPW/t.stp" && grep -q "^END-ISO-10303-21;$" "$TMPW/t.stp" && echo "ok   t.stp is a complete Part 21 file" || { echo "FAIL t.stp malformed"; fail=1; }

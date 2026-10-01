@@ -13,6 +13,7 @@
 #include "doc/SubObjectEdit.h"
 #include "imgui.h"
 #include "ui/Theme.h"
+#include "viewport/AdaptiveTessellation.h"
 
 namespace dino8::app {
 
@@ -85,6 +86,12 @@ void Viewport::SetStandardView(const std::string& view) {
 
 namespace {
 
+// Shared with the per-object SetObjectDisplayMode Ghosted/X-Ray override
+// below, so a per-object Ghosted/X-Ray object always matches whatever the
+// viewport-wide modes of the same name would have drawn.
+constexpr float kGhostedFillAlpha = 0.35f;
+constexpr float kXRayFillAlpha = 0.18f;
+
 struct ModeStyle {
   Color bg_top, bg_bottom;
   bool fill = true;
@@ -106,8 +113,8 @@ ModeStyle StyleFor(DisplayMode mode) {
     case DisplayMode::Wireframe: s.fill = false; s.edges = true; break;
     case DisplayMode::Shaded: break;
     case DisplayMode::Rendered: s.isocurves = false; s.edges = false; break;
-    case DisplayMode::Ghosted: s.fill_alpha = 0.35f; break;
-    case DisplayMode::XRay: s.fill_alpha = 0.18f; s.depth_lines = false; break;
+    case DisplayMode::Ghosted: s.fill_alpha = kGhostedFillAlpha; break;
+    case DisplayMode::XRay: s.fill_alpha = kXRayFillAlpha; s.depth_lines = false; break;
     case DisplayMode::Technical: s.monochrome = true; s.edge_color = Color::FromBytes(20, 20, 20); s.bg_top = s.bg_bottom = Color::FromBytes(235, 235, 235); break;
     case DisplayMode::Artistic: s.monochrome = true; s.bg_top = Color::FromBytes(242, 236, 220); s.bg_bottom = Color::FromBytes(222, 214, 195); s.edge_color = Color::FromBytes(60, 50, 40); break;
     case DisplayMode::Pen: s.force_white = true; s.lit = false; s.isocurves = false; s.bg_top = s.bg_bottom = Color::FromBytes(255, 255, 255); s.edge_color = Color::FromBytes(0, 0, 0); break;
@@ -120,6 +127,19 @@ ModeStyle StyleFor(DisplayMode mode) {
 
 Color Mix(Color a, Color b, float t) {
   return Color{a.r + (b.r - a.r) * t, a.g + (b.g - a.g) * t, a.b + (b.b - a.b) * t, a.a + (b.a - a.a) * t};
+}
+
+// SetObjectDisplayMode Ghosted/X-Ray: an object carrying one of these two
+// overrides always fills at that fixed alpha, the same mode-agnostic way
+// force_wireframe/force_shaded already override the viewport's own display
+// mode - so a Ghosted-tagged object stays translucent even viewed in
+// Shaded, Rendered or any other opaque viewport mode, and vice versa for a
+// viewport that is itself already Ghosted/X-Ray (the object's own override
+// still wins, since it names an alpha rather than merely "fill/don't").
+float EffectiveFillAlpha(const SceneObject& o, float viewport_alpha) {
+  if (o.force_ghosted) return kGhostedFillAlpha;
+  if (o.force_xray) return kXRayFillAlpha;
+  return viewport_alpha;
 }
 
 const Color kSelectionColor = Color::FromBytes(255, 210, 0);
@@ -836,6 +856,19 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx, Displa
   const Document& doc = *ctx.doc;
   const ModeStyle style = StyleFor(mode);
   const bool rendered = mode == DisplayMode::Rendered;
+  // View-dependent adaptive tessellation: ctx.lod_scale (the *active*
+  // viewport's zoom, shared by every viewport this frame - see
+  // FrameContext::lod_scale) scales the app-wide curve/surface tolerance
+  // Options up or down. Passed to every EnsureAdaptiveDisplay call below,
+  // so every pass in this one frame (fills, edges, the Z-buffer
+  // visualization, sub-object highlighting) tessellates each object at the
+  // same resolution. Skipped for ctx.for_render (Render/RenderView image
+  // export): that path already deliberately picks its own, generally finer,
+  // tolerance independent of any viewport's current zoom (see
+  // Application::RenderView) - the same reason it skips frustum culling above.
+  const double lod_factor = ctx.for_render ? 1.0 : ctx.lod_scale;
+  const double adaptive_curve_tolerance = ctx.curve_tolerance * lod_factor;
+  const double adaptive_surface_tolerance = ctx.surface_tolerance * lod_factor;
   // Rendered mode draws every opaque object first, then the transparent
   // ones back to front with depth writes off so glass composites properly.
   std::vector<std::pair<double, const SceneObject*>> transparent;
@@ -854,7 +887,11 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx, Displa
     }
     if (doc.IsObjectLocked(o)) rm.diffuse = Mix(rm.diffuse, kLockedColor, 0.6f);
     if (o.selected && !ctx.for_render) rm.diffuse = Mix(rm.diffuse, kSelectionColor, 0.55f);
-    rm.diffuse.a = std::clamp(1.f - m.transparency, 0.f, 1.f) * style.fill_alpha;
+    // A per-object Ghosted/X-Ray override wins outright, the same "always
+    // this fixed alpha" way it does outside Rendered mode - not merely
+    // multiplied with the material's own transparency.
+    rm.diffuse.a = (o.force_ghosted || o.force_xray) ? EffectiveFillAlpha(o, style.fill_alpha)
+                                                      : std::clamp(1.f - m.transparency, 0.f, 1.f) * style.fill_alpha;
     const std::vector<float>* uvs = nullptr;
     if (rm.texture) {
       const TextureMapping mapping = o.mapping != TextureMapping::Default ? o.mapping : m.mapping;
@@ -962,7 +999,7 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx, Displa
     for (std::size_t candidate_index : render_candidates) {
       const SceneObject& o = doc.Objects()[candidate_index];
       if (!shown(o)) continue;
-      o.EnsureDisplay(ctx.curve_tolerance, ctx.surface_tolerance);
+      o.EnsureAdaptiveDisplay(adaptive_curve_tolerance, adaptive_surface_tolerance);
       const DisplayCache& d = o.Display();
       if (d.triangles.empty()) continue;
       depth_objects.push_back(&o);
@@ -1004,7 +1041,7 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx, Displa
       // the fill pass even in a shaded/rendered/etc. viewport, so the
       // object still shows only edges/curves below.
       if (o.force_wireframe) continue;
-      o.EnsureDisplay(ctx.curve_tolerance, ctx.surface_tolerance);
+      o.EnsureAdaptiveDisplay(adaptive_curve_tolerance, adaptive_surface_tolerance);
       const DisplayCache& d = o.Display();
       if (d.triangles.empty()) continue;
       // Shaded/Ghosted/X-Ray fill with one light material like Rhino's
@@ -1016,7 +1053,8 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx, Displa
       else if (style.monochrome) c = Color::FromBytes(200, 200, 205);
       if (doc.IsObjectLocked(o)) c = Mix(c, kLockedColor, 0.6f);
       if (o.selected) c = Mix(c, kSelectionColor, 0.55f);
-      c.a = style.fill_alpha;
+      const float alpha = EffectiveFillAlpha(o, style.fill_alpha);
+      c.a = alpha;
       // Surface analysis: the object's own setting wins, else the app-wide
       // fallback (Zebra/EMap with nothing selected applies to every surface).
       const AnalysisSettings* analysis = nullptr;
@@ -1026,12 +1064,12 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx, Displa
         switch (analysis->mode) {
           case AnalysisMode::Zebra:
             renderer.DrawTrianglesZebra(d.triangles, analysis->zebra_direction == ZebraDirection::Vertical,
-                                        analysis->zebra_density, style.fill_alpha);
+                                        analysis->zebra_density, alpha);
             continue;
           case AnalysisMode::EMap: {
             Color tint = Color::FromBytes(255, 255, 255);
             if (o.selected) tint = Mix(tint, kSelectionColor, 0.2f);
-            tint.a = style.fill_alpha;
+            tint.a = alpha;
             renderer.DrawTrianglesEMap(d.triangles, tint);
             continue;
           }
@@ -1040,7 +1078,7 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx, Displa
           case AnalysisMode::Thickness:
             o.EnsureAnalysisColors(*analysis);
             if (!d.colors.empty()) {
-              renderer.DrawTriangles(d.triangles, d.colors, style.fill_alpha);
+              renderer.DrawTriangles(d.triangles, d.colors, alpha);
               continue;
             }
             break;
@@ -1051,12 +1089,12 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx, Displa
       // itself (e.g. from ComputeVertexColors) before falling back to a
       // flat per-object colour.
       if (!analysis && !d.mesh_vertex_colors.empty() && d.mesh_vertex_colors.size() == d.triangles.size() / 2) {
-        renderer.DrawTriangles(d.triangles, d.mesh_vertex_colors, style.fill_alpha);
+        renderer.DrawTriangles(d.triangles, d.mesh_vertex_colors, alpha);
         continue;
       }
       if (rendered) {
         const Material m = doc.MaterialFor(o);
-        if (m.transparency > 0.001f && !ctx.arctic) {
+        if ((m.transparency > 0.001f || o.force_ghosted || o.force_xray) && !ctx.arctic) {
           // Sort key: view-space depth of the bounding-box centre.
           const Point3d centre = d.has_bbox ? Point3d((d.bbox.min.x + d.bbox.max.x) / 2, (d.bbox.min.y + d.bbox.max.y) / 2, (d.bbox.min.z + d.bbox.max.z) / 2) : Point3d(0, 0, 0);
           transparent.emplace_back((centre - camera_.State().eye) * camera_.Forward(), &o);
@@ -1081,15 +1119,18 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx, Displa
     const ModeStyle shaded_style = StyleFor(DisplayMode::Shaded);
     for (std::size_t candidate_index : render_candidates) {
       const SceneObject& o = doc.Objects()[candidate_index];
-      if (!o.force_shaded || !shown(o)) continue;
-      o.EnsureDisplay(ctx.curve_tolerance, ctx.surface_tolerance);
+      // ShadeSelected's force_shaded and SetObjectDisplayMode's
+      // force_ghosted/force_xray all fill here - the only difference
+      // between them is the alpha EffectiveFillAlpha picks.
+      if ((!o.force_shaded && !o.force_ghosted && !o.force_xray) || !shown(o)) continue;
+      o.EnsureAdaptiveDisplay(adaptive_curve_tolerance, adaptive_surface_tolerance);
       const DisplayCache& d = o.Display();
       if (d.triangles.empty()) continue;
       Color c = Color::FromBytes(205, 207, 212);
       if (!o.material_name.empty() || !o.color_by_layer) c = doc.EffectiveColor(o);
       if (doc.IsObjectLocked(o)) c = Mix(c, kLockedColor, 0.6f);
       if (o.selected) c = Mix(c, kSelectionColor, 0.55f);
-      c.a = shaded_style.fill_alpha;
+      c.a = EffectiveFillAlpha(o, shaded_style.fill_alpha);
       renderer.DrawTriangles(d.triangles, c, shaded_style.lit);
     }
     renderer.EnablePolygonOffset(false);
@@ -1117,7 +1158,7 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx, Displa
     if (!doc.IsObjectVisible(o)) continue;
     if (o.kind == ObjectKind::Curve) o.SetDisplayDashes(doc.EffectiveDashes(o));
     if (!shown(o)) continue;
-    o.EnsureDisplay(ctx.curve_tolerance, ctx.surface_tolerance);
+    o.EnsureAdaptiveDisplay(adaptive_curve_tolerance, adaptive_surface_tolerance);
     const DisplayCache& d = o.Display();
     const bool is_curve_like = o.kind == ObjectKind::Curve;
     Color line_color = doc.EffectiveColor(o);
@@ -1191,7 +1232,7 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx, Displa
     for (const SubObjectRef& r : ctx.sub_selection->Items()) {
       const SceneObject* o = doc.Find(r.id);
       if (!o || !shown(*o)) continue;
-      o->EnsureDisplay(ctx.curve_tolerance, ctx.surface_tolerance);
+      o->EnsureAdaptiveDisplay(adaptive_curve_tolerance, adaptive_surface_tolerance);
       const DisplayCache& d = o->Display();
       if (r.kind == SubObjectKind::Face && o->kind == ObjectKind::Surface) {
         tris.insert(tris.end(), d.triangles.begin(), d.triangles.end());
