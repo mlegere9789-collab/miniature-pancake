@@ -1292,8 +1292,25 @@ bool PythonEngine::Suspended() const {
 // wakes the UI thread out of Start()/Resume*()'s own wait below, then blocks
 // - with the GIL released, so nothing is ever held while idle - until one of
 // ResumePoint/ResumeNil/Abort answers it.
+//
+// Checks abort_requested_ BEFORE registering a fresh suspend: Abort() sets
+// it once and then blocks until state_ reaches Finished, with nothing
+// left to ever clear it again mid-run. A script that catches the
+// "cancelled" exception this function throws below and simply calls
+// dino8.GetPoint() again (easy to write by accident with a bare
+// `except:`, not just deliberately) would otherwise re-enter here, flip
+// state_ back to Suspended, and wait on a resume that will never come -
+// deadlocking this worker thread AND Abort()'s own caller together,
+// permanently. Checking first instead means every call after the first
+// Abort() throws immediately rather than re-suspending, so Abort() is
+// still guaranteed to actually return.
 PythonEngine::PointWait PythonEngine::WaitForPoint(const std::string& prompt) {
   std::unique_lock<std::mutex> lk(mu_);
+  if (abort_requested_) {
+    lk.unlock();
+    cancelled_ = true;
+    throw std::runtime_error("cancelled");
+  }
   ScriptRequest r;
   r.want = ScriptWant::Point;
   r.prompt = prompt;
@@ -1334,9 +1351,15 @@ PythonEngine::PointWait PythonEngine::WaitForPoint(const std::string& prompt) {
 // carried on the ScriptRequest the same way LuaEngine.cpp's rs_GetString
 // does, so a bare Enter on the command line resolves to it (OnText, not
 // OnEnter - see Command::WantText/CommandEngine.cpp) before ResumeNil is
-// ever reached here.
+// ever reached here. Checks abort_requested_ up front for the same reason
+// WaitForPoint above does - see its own comment.
 PythonEngine::TextWait PythonEngine::WaitForText(const std::string& prompt, const std::optional<std::string>& default_text) {
   std::unique_lock<std::mutex> lk(mu_);
+  if (abort_requested_) {
+    lk.unlock();
+    cancelled_ = true;
+    throw std::runtime_error("cancelled");
+  }
   ScriptRequest r;
   r.want = ScriptWant::Text;
   r.prompt = prompt;

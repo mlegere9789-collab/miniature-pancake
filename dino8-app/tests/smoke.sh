@@ -5770,9 +5770,9 @@ if ! command -v curl >/dev/null 2>&1; then
 else
   SERVE_LOG="$TMPW/serve.log"
   if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
-    timeout 30 "$BIN" --serve 0 --serve-max-requests 6 > "$SERVE_LOG" 2>&1 &
+    timeout 30 "$BIN" --serve 0 --serve-max-requests 7 > "$SERVE_LOG" 2>&1 &
   else
-    timeout 30 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --serve 0 --serve-max-requests 6 > "$SERVE_LOG" 2>&1 &
+    timeout 30 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --serve 0 --serve-max-requests 7 > "$SERVE_LOG" 2>&1 &
   fi
   SERVE_PID=$!
 
@@ -5802,6 +5802,22 @@ id = dino8.doc.Objects.AddBox(dino8.Point3d(0,0,0), dino8.Vector3d(5,5,5))
 print("volume: %.1f" % dino8.doc.Objects.SurfaceVolume(id))' "http://127.0.0.1:$SERVE_PORT/run/python")"
     RESP6="$(curl -s --max-time 10 -X POST --data 'import dino8
 dino8.GetPoint()' "http://127.0.0.1:$SERVE_PORT/run/python")"
+    # A script that catches the "cancelled" exception compute_handler's own
+    # Abort() raises out of the first dino8.GetPoint() and simply calls
+    # GetPoint() again (an easy bare-except pattern, not a deliberately
+    # adversarial one) used to re-suspend PythonEngine's worker thread on a
+    # resume that would never come, deadlocking it together with this very
+    # Abort() call - which runs synchronously on the main loop that also
+    # drives this whole --serve process, so the hang wasn't scoped to one
+    # connection, it froze the entire server. This request must still get
+    # an ordinary response within the --max-time below, not hang until the
+    # outer `timeout 30` kills the whole process.
+    RESP7="$(curl -s --max-time 10 -X POST --data 'import dino8
+try:
+    dino8.GetPoint()
+except Exception:
+    pass
+dino8.GetPoint()' "http://127.0.0.1:$SERVE_PORT/run/python")"
     CODE5="$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' -X POST --data 'x' "http://127.0.0.1:$SERVE_PORT/run/nosuchroute")"
     set -e
     echo "$RESP1" | grep -q "^objects: 1$" && echo "ok   POST /run built a box over HTTP and read back its printed object count" || { echo "$RESP1"; echo "FAIL --serve POST /run did not report objects: 1"; fail=1; }
@@ -5812,6 +5828,7 @@ dino8.GetPoint()' "http://127.0.0.1:$SERVE_PORT/run/python")"
     else
       echo "$RESP4" | grep -q "^volume: 125.0$" && echo "ok   POST /run/python built a box through the dino8 module over HTTP and read back its printed volume" || { echo "$RESP4"; echo "FAIL --serve POST /run/python did not report volume: 125.0"; fail=1; }
       echo "$RESP6" | grep -q "compute error: script requires interactive input" && echo "ok   a POST /run/python script calling the now-real dino8.GetPoint() is rejected instead of hanging the connection (PythonEngine suspends on a worker thread now - see PythonEngine.h - so this is a real regression risk main.cpp's compute_handler guards against)" || { echo "$RESP6"; echo "FAIL --serve POST /run/python dino8.GetPoint() was not rejected as expected"; fail=1; }
+      echo "$RESP7" | grep -q "compute error: script requires interactive input" && echo "ok   a POST /run/python script that catches the cancelled GetPoint() and calls it again still gets an ordinary rejection, not a frozen connection/server" || { echo "$RESP7"; echo "FAIL --serve POST /run/python catch-and-retry GetPoint() hung or returned something unexpected"; fail=1; }
     fi
     [ "$CODE5" = "404" ] && echo "ok   a POST to an unrecognized path is rejected with 404 Not Found" || { echo "FAIL --serve POST to an unknown path returned HTTP $CODE5, expected 404"; fail=1; }
 
@@ -5821,7 +5838,7 @@ dino8.GetPoint()' "http://127.0.0.1:$SERVE_PORT/run/python")"
     elif [ "$SERVE_EC" -ne 0 ]; then
       cat "$SERVE_LOG"; echo "FAIL: --serve process exited $SERVE_EC, expected 0"; fail=1
     else
-      grep -q "^serve: done requests=6$" "$SERVE_LOG" && echo "ok   --serve exited cleanly on its own after --serve-max-requests 6 real HTTP requests" || { cat "$SERVE_LOG"; echo "FAIL --serve done-summary line missing or wrong"; fail=1; }
+      grep -q "^serve: done requests=7$" "$SERVE_LOG" && echo "ok   --serve exited cleanly on its own after --serve-max-requests 7 real HTTP requests" || { cat "$SERVE_LOG"; echo "FAIL --serve done-summary line missing or wrong"; fail=1; }
     fi
   fi
 
