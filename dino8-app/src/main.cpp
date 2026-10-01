@@ -614,12 +614,15 @@ int main(int argc, char** argv) {
         return resp;
       }
       const bool ok = app.Python().Start(req.body, "compute-request");
+      const bool suspended = app.Python().Suspended();
+      if (suspended) app.Python().Abort();
       std::string out;
       for (const std::string& line : app.Python().LastOutput()) {
         out += line;
         out += '\n';
       }
-      resp.status = ok ? 200 : 500;
+      if (suspended) out += "! compute error: script requires interactive input (dino8.GetPoint), which the compute server cannot satisfy\n";
+      resp.status = (ok && !suspended) ? 200 : 500;
       resp.body = out;
       return resp;
     }

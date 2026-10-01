@@ -69,4 +69,22 @@ bool ExportIfc(const Document& doc, const std::string& path, bool selected_only,
 // documents. `summary` describes what was read.
 bool ImportIfc(Document& doc, const std::string& path, std::string& summary);
 
+// ---- STEP AP242 (tessellated geometry) -------------------------------------
+// Wires the kernel's existing Mesh::SaveStepAp242/LoadStepAp242 (a real
+// AP242 - ISO 10303-242 - Part 21 file using AP242's own COORDINATES_LIST/
+// TRIANGULATED_FACE tessellated-geometry entities, not AP214's B-rep ones)
+// into the app, the same "kernel support already existed, nothing at the
+// app level ever called it" gap ExportXyz/ImportXyz (FileExchange.h) closed
+// for point clouds. Every exportable object is tessellated exactly like
+// ExportIfc above (TessellateForIfc) and merged into one mesh, since the
+// kernel API is single-mesh - the same scope ExportPly already has.
+bool ExportStepAp242(const Document& doc, const std::string& path, bool selected_only, std::string& error);
+
+// Reads a STEP AP242 file written by ExportStepAp242 (or any other
+// reasonably well-formed single-TRIANGULATED_FACE AP242 file) into one mesh
+// object. ImportStep above calls this automatically when a .stp/.step
+// file's own FILE_SCHEMA names AP242 rather than AP214/AP203, so Open/
+// Import need no special syntax for either schema.
+bool ImportStepAp242(Document& doc, const std::string& path, std::string& summary);
+
 }  // namespace dino8::app

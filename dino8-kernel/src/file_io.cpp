@@ -509,6 +509,35 @@ NamedViewInfo Model::NamedViewAt(int view_index) const {
   return result;
 }
 
+int Model::AddLayout(const std::string& name, double page_width_mm, double page_height_mm) {
+  if (name.empty() || !(page_width_mm > 0.0) || !(page_height_mm > 0.0)) {
+    return -1;
+  }
+  ON_3dmView view;
+  view.m_name = ON_wString(name.c_str());
+  view.m_view_type = ON::view_type::page_view_type;
+  view.m_page_settings.m_width_mm = page_width_mm;
+  view.m_page_settings.m_height_mm = page_height_mm;
+  model_.m_settings.m_views.Append(view);
+  return model_.m_settings.m_views.Count() - 1;
+}
+
+int Model::LayoutCount() const {
+  return model_.m_settings.m_views.Count();
+}
+
+LayoutInfo Model::LayoutAt(int layout_index) const {
+  LayoutInfo result;
+  if (layout_index < 0 || layout_index >= model_.m_settings.m_views.Count()) {
+    return result;
+  }
+  const ON_3dmView& view = model_.m_settings.m_views[layout_index];
+  result.name = ToStdString(view.m_name);
+  result.page_width_mm = view.m_page_settings.m_width_mm;
+  result.page_height_mm = view.m_page_settings.m_height_mm;
+  return result;
+}
+
 int Model::AddLight(const std::string& name, LightStyle style, Point3d location,
                      Vector3d direction, Color diffuse_color, double intensity, int layer_index,
                      std::optional<Color> render_color, const UserStrings& user_strings,
@@ -1037,6 +1066,73 @@ TextAnnotationInfo Model::TextAt(int text_index) const {
       }
       result.text = ToStdString(annotation->PlainText());
       result.plane = annotation->Plane();
+      return result;
+    }
+    ++position;
+  }
+  return result;
+}
+
+int Model::AddLeader(const std::string& text, const std::vector<Point3d>& points, const ON_Plane& plane,
+                      const std::string& name, int layer_index, std::optional<Color> render_color,
+                      const UserStrings& user_strings, std::optional<int> linetype_index,
+                      const std::vector<int>& group_indices, std::optional<int> material_index) {
+  if (name.empty() || text.empty() || !plane.IsValid() || points.size() < 2) {
+    return -1;
+  }
+  auto* annotation = new ON_Leader();
+  if (!annotation->Create(ON_wString(text.c_str()), &ON_DimStyle::Default,
+                           static_cast<int>(points.size()), points.data(), plane,
+                           /*bWrapped=*/false, /*rect_width=*/0.0)) {
+    delete annotation;
+    return -1;
+  }
+  const int index = LeaderCount();
+  ON_3dmObjectAttributes attributes = MakeAttributes(
+      name, layer_index, render_color, user_strings, linetype_index, group_indices, material_index);
+  model_.AddModelGeometryComponent(annotation, &attributes);
+  return index;
+}
+
+int Model::LeaderCount() const {
+  int count = 0;
+  ONX_ModelComponentIterator iterator(model_, ON_ModelComponent::Type::ModelGeometry);
+  for (const ON_ModelComponent* component = iterator.FirstComponent(); component != nullptr;
+       component = iterator.NextComponent()) {
+    const auto* geometry_component = static_cast<const ON_ModelGeometryComponent*>(component);
+    if (ON_Leader::Cast(geometry_component->Geometry(nullptr)) != nullptr) {
+      ++count;
+    }
+  }
+  return count;
+}
+
+LeaderInfo Model::LeaderAt(int leader_index) const {
+  LeaderInfo result;
+  if (leader_index < 0) {
+    return result;
+  }
+  int position = 0;
+  ONX_ModelComponentIterator iterator(model_, ON_ModelComponent::Type::ModelGeometry);
+  for (const ON_ModelComponent* component = iterator.FirstComponent(); component != nullptr;
+       component = iterator.NextComponent()) {
+    const auto* geometry_component = static_cast<const ON_ModelGeometryComponent*>(component);
+    const ON_Leader* annotation = ON_Leader::Cast(geometry_component->Geometry(nullptr));
+    if (annotation == nullptr) {
+      continue;
+    }
+    if (position == leader_index) {
+      const ON_3dmObjectAttributes* attributes = geometry_component->Attributes(nullptr);
+      if (attributes != nullptr) {
+        result.name = ToStdString(attributes->Name());
+      }
+      result.text = ToStdString(annotation->PlainText());
+      result.plane = annotation->Plane();
+      const ON_2dPointArray& points2d = annotation->Points2d();
+      result.points.reserve(static_cast<size_t>(points2d.Count()));
+      for (int i = 0; i < points2d.Count(); ++i) {
+        result.points.push_back(result.plane.PointAt(points2d[i].x, points2d[i].y));
+      }
       return result;
     }
     ++position;
