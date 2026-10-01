@@ -4391,6 +4391,89 @@ unaffected (no bucket moved); this category's own row counts in the tables
 above and in "Priority order for maximum score-per-fix" remain accurate as
 they stand and need no edit.*
 
+*Twentieth note on this category's score (this pass): `BooleanCombineGeneral`
+gains `SymmetricDifference` - PARITY_MAP.md's own "Multi-body / multi-tool
+booleans" bullet previously named this engine as the one B-rep engine with
+no XOR support at all (`BooleanCombineGeneral`/`BooleanCombineGeneralNAry`
+both refused it outright with `UnsupportedOperation`). Built from two
+`Difference()` calls (`diff_ab = BooleanCombineGeneral(a, b, Difference,
+tolerance)`, `diff_ba = BooleanCombineGeneral(b, a, Difference, tolerance)`,
+each already a genuinely closed, independently-valid solid on its own)
+merged into one returned `Brep` via `ON_Brep::Append()` - deliberately NOT
+`Brep::Compound()`, the construction `BooleanCombinePlanar`/
+`BooleanCombineMixed` use for the identical op: `Compound()` requires every
+lump's own per-face side tables to be in lockstep with its face count, a
+bookkeeping contract only `Brep::FromPlanarFaces()`/`FromMixedFaces()`
+maintain, and this engine's own `result.raw()`-built reassembly never
+populates those tables at all, so `Compound()` refused it outright as a
+"raw()-assigned ON_Brep" - confirmed directly, not assumed: an earlier
+version of this change called `Compound()` here and it threw exactly that
+refusal on the very first test written against it. Two real, disclosed
+consequences of using `Append()` instead, found and verified while building
+this rather than assumed away, not silently hidden: (1) `LumpFaceRanges()`
+on the result reports the ordinary single-lump default, not 2 - the same
+already-disclosed bookkeeping gap this engine's own compound-accepting
+`Difference`/`Intersection` already have (`Brep::SplitDisjointPieces()`, a
+real topology analysis rather than bookkeeping replay, still correctly
+finds the genuine two disjoint pieces). (2) Neither
+`TessellateGeneralBooleanClosedMesh()` nor plain `TessellateToClosedMesh()`
+is proven closed on the COMBINED two-lump result, though each of
+`diff_ab`/`diff_ba` tessellates as a genuine closed manifold independently -
+the merged whole measures `Mesh::IsClosedManifold() == false` whenever the
+two lumps touch along a shared boundary curve, which a genuine crossing
+XOR's own two pieces always do (the identical "XOR is an unwelded compound"
+property this category's own "Non-manifold boolean results" bullet already
+discloses for the other two engines - a real property of the shape itself,
+not a defect in this merge). `BooleanCombineGeneralNAry` still refuses
+`SymmetricDifference`, now for the right reason (its own pairwise result is
+a two-lump value that cannot be folded further via `Union`, the identical
+reason the other two engines' N-ary wrappers already give) rather than the
+stale "not yet implemented at all" wording from before this pass. Verified
+(`TestBooleanCombineGeneralSymmetricDifferenceBoxBox`,
+`...FreeformSurfaceOperand`,
+`...NAryStillRefusesSymmetricDifferenceForTheRightReason`,
+`...DifferenceAcceptsRealSymmetricDifferenceCompoundOperand`, tests/
+test_basic.cpp) on the standard box+box fixture (volumes sum to the exact
+8+8-2*1=14), a genuinely freeform bicubic-Bezier-bump operand (volumes sum
+to the inclusion-exclusion identity), the N-ary refusal's own structured
+reason/message text, and a REAL (not Planar-engine-stand-in)
+`SymmetricDifference`-produced compound fed into a further `Difference`
+call against a disjoint cutter. One pre-existing test's own expectation
+necessarily changed, not merely extended: `TestBooleanOperationError
+GeneralEngineFailureReasons` used to assert that
+`BooleanCombineGeneral(box, other, SymmetricDifference)` itself threw
+`UnsupportedOperation` - narrowed to the still-true `BooleanCombineGeneralNAry`
+case, since the plain two-argument call no longer refuses at all. Still
+partial: this one engine joining the other two's own op coverage doesn't
+close the bullet's remaining gaps (compound-OPERAND support for `Union`/
+`SymmetricDifference` across all three engines, still a genuine missing
+lump-merge step; no app command reaches any of the three engines'
+`SymmetricDifference`). Same pass also extends `SplitBySheet()`/
+`TrimSheetBySolid()` test coverage to a genuinely curved solid (a
+radius-1 cylinder cut by a flat sheet, and trimmed by it) - the "Sheet/
+solid trim" bullet's own previously-named gap ("only a flat cutting plane
+is tested for either half of this item... a genuinely curved sheet or
+solid is unexercised"); both already worked correctly on the first try
+(`TestSplitBySheetCurvedSolidCylinderCutByFlatSheet`,
+`TestTrimSheetBySolidCurvedSolidCylinder`, tests/test_basic.cpp), closing
+the curved-SOLID half of that gap (a genuinely curved SHEET remains
+unexercised). Same "genuine new evidence, unchanged partial score" pattern
+as every note above - the category's 9/15/1/25 (66.0%) split is unchanged:
+neither bullet touched crosses into `present` (each still has real,
+disclosed scope limits named above). Full `dino8_kernel_tests` suite (built
+via `cmake --build build --parallel $(nproc)`, run directly): 7900 checks,
+7899 passing - the one failure is
+`TestBooleanCombineMixedUnequalRadiusPerpendicularNegativeControls`'s own
+previously-disclosed 60-degree pinch-point exactness check (see this
+category's own "Analytic plane/cylinder..." bullet above), confirmed by its
+own identical message text, not a new or different failure; this session's
+own changes touch only `boolean_general.cpp`/`boolean_general.h` and
+`tests/test_basic.cpp`'s General-engine/SplitBySheet/TrimSheetBySolid test
+functions, nowhere near the Mixed-engine pinch-point code this pre-existing,
+already-disclosed intermittent failure is in. The kernel-only headline is
+unaffected (no bucket moved); this category's own row counts remain
+accurate as they stand and need no edit.*
+
 **Blending & chamfering** (blending):
 - [partial] Constant-radius edge fillet on curved adjacent faces (cylinder/plane, cylinder/cylinder, freeform, closed/periodic rims) with B-rep trimming — every kernel fillet still requires both adjacent faces to be planar (fillet.h:147-159), so fillets cannot be chained onto a solid that already carries a curved face. App `FilletEdge` produces a genuine B-rep trim only when both faces are planar (cmd_fillet.cpp:175, "exact for planes; approximate elsewhere") — historically via the generic offset+SSX `BuildFillet` path, not the closed-form kernel function itself (see the bullet just below for the "nothing in the app calls it" half this pass closes). **This pass:** `FilletEdgeCommand::Run`'s plain-Radius case (default `RailType=RollingBall`, no `Rho`) now tries a new `TryExactFillet` FIRST — `kernel::FilletConvexEdge`/`FilletConcaveEdge` directly, convex then concave — ahead of the unchanged `BuildFillet` path, the identical "exact kernel construction first, fail open to the approximate path on any `PlanarFaces()` rejection" structure `TryExactChamfer` already established for `ChamferEdge`'s own plain-Radius case. Still partial: curved adjacent faces remain fundamentally out of scope (the kernel's own `PlanarFaces()` requirement, unchanged) and `BuildFillet`'s approximate path is still what actually runs there; this closes a representation gap (which construction produces the planar-face result), not a capability gap (the printed message and volume for a planar-face fillet are unchanged, since `BuildFillet` was already numerically exact for planes too). Net effect on the scores below: narrows, does not flip, the SAME already-partial item.
 - [partial] Concave (internal) edge fillet — kernel-native and exact: `FilletConcaveEdge` (fillet.cpp:1070 — corrected 2026-09-28, was mis-cited fillet.cpp:989; fillet.h:162-270) builds the mirrored rolling-ball construction with outward=false, closing perpendicular and oblique third faces; `FilletConcaveEdges` (fillet.cpp:2746; fillet.h:1111-1205) fillets several independent edges plus m==3 trihedral concave spherical corners. **This pass:** closes the single-edge half of "nothing in the app calls it" — `FilletEdgeCommand`'s new `TryExactFillet` (see the bullet just above) tries `kernel::FilletConvexEdge` FIRST and `FilletConcaveEdge` SECOND on any planar-faced solid, the same convex-then-concave cascade `TryExactChamfer`/`TryExactConicFillet`/`TryExactRailFillet` already use elsewhere in this file for the identical reason (the command doesn't know the edge's own convexity in advance). Verified structurally and via the convex branch end-to-end (`fillet_script.txt`'s own existing plain-`Radius=2` box-corner case now goes through this exact dispatch, unchanged volume); the concave branch is NOT independently verified through the app in script form — building an app-level fixture with a genuinely planar-faced concave (reflex) edge turned out to be blocked by a separate, disclosed app-layer limitation: `ExtrudeCrv`'s own `ON_BrepTrimmedPlane`/`ON_BrepExtrudeFace` construction builds ONE ruled side-wall face per whole closed boundary loop, not one flat quad per polygon edge (confirmed directly: extruding a plain 4-sided rectangle profile also yields only 3 faces/3 edges total, the single ruled wall genuinely non-planar end-to-end, not just at the concave corner) — so no closed polygon profile extruded this way, convex or concave, can reach `PlanarFaces()`'s own exact-planar requirement at all, and the app has no other command that builds a multi-facet polygonal solid. Still partial, same remaining gaps as before: planar faces only, one radius, m>=2 or higher-valence corners throw, oblique third faces out of scope for `FilletConcaveEdges`, a mixed convex+concave solid cannot be fully filleted, and the multi-edge `FilletConcaveEdges` batch form remains entirely unreachable from the app. Net effect on the scores below: narrows, does not flip, the SAME already-partial item.
