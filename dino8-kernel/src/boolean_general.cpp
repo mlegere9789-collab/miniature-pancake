@@ -4067,6 +4067,84 @@ std::pair<Brep, Brep> SplitBrepByManySolids(const Brep& target, const std::vecto
   return SplitBrepBySolid(target, folded_cutter, tolerance);
 }
 
+std::pair<Brep, Brep> SplitBrepByPlane(const Brep& target, Vector3d plane_normal, double plane_offset,
+                                        double tolerance) {
+  if (target.raw().m_F.Count() == 0) {
+    throw BooleanOperationError(BooleanFailureReason::EmptyOperand, "SplitBrepByPlane",
+                                 "dino8::kernel::SplitBrepByPlane: target has no faces");
+  }
+  Vector3d n = plane_normal;
+  if (!n.Unitize()) {
+    throw std::invalid_argument("dino8::kernel::SplitBrepByPlane: plane_normal must be non-zero");
+  }
+  if (!(tolerance > 0.0)) {
+    throw BooleanOperationError(BooleanFailureReason::InvalidTolerance, "SplitBrepByPlane",
+                                 "dino8::kernel::SplitBrepByPlane: tolerance must be positive");
+  }
+
+  // An orthonormal (u, v, n) frame for the plane - same "pick whichever
+  // world axis is least parallel to the normal, cross it in" construction
+  // HoleToolProfileCurve() above already uses for an analogous "need any
+  // reference direction perpendicular to a given axis" need.
+  const Vector3d reference = (std::fabs(n.z) < 0.9) ? Vector3d(0, 0, 1) : Vector3d(1, 0, 0);
+  Vector3d u = ON_CrossProduct(reference, n);
+  u.Unitize();
+  Vector3d v = ON_CrossProduct(n, u);
+  v.Unitize();
+
+  // `p0`: the point on the plane closest to target's own bounding-box
+  // center - i.e. that center's own perpendicular projection onto the
+  // plane. Its (u, v) position is therefore identical to the bbox center's
+  // own (u, v) position (only the along-normal component changes), so a
+  // half-width sized off the bbox diagonal alone - with no separate
+  // correction for how far the plane itself sits from the bbox center -
+  // already safely clears target's own (u, v) extent on every side.
+  const BoundingBox bbox = target.GetTightBoundingBox();
+  const Point3d bbox_center = (bbox.min + bbox.max) * 0.5;
+  const double signed_dist = ON_DotProduct(Vector3d(bbox_center), n) - plane_offset;
+  const Point3d p0 = bbox_center - n * signed_dist;
+
+  const double diagonal = std::max((bbox.max - bbox.min).Length(), 1.0);
+  // Half-width across the plane (u, v directions): target's own (u, v)
+  // extent relative to p0 can never exceed its own bounding-box diagonal
+  // (see p0's own comment above), so padding well past that is enough
+  // regardless of where the plane sits.
+  const double half_width = diagonal * 4.0 + 1.0;
+  // Reach along +n from the plane: target's furthest point from the plane
+  // is at most |signed_dist| + diagonal away from it (triangle inequality
+  // through the bbox center), so this generously covers target's entire
+  // positive-side extent whether the plane cuts through its bbox or sits
+  // well outside it (the latter correctly yields an empty inside/outside
+  // half via SplitBrepBySolid()'s own "cutter misses entirely" contract).
+  const double reach = std::fabs(signed_dist) * 2.0 + diagonal * 4.0 + 1.0;
+
+  const Point3d a = p0 - u * half_width - v * half_width;
+  const Point3d b = p0 + u * half_width - v * half_width;
+  const Point3d c = p0 + u * half_width + v * half_width;
+  const Point3d d = p0 - u * half_width + v * half_width;
+  const Point3d a2 = a + n * reach;
+  const Point3d b2 = b + n * reach;
+  const Point3d c2 = c + n * reach;
+  const Point3d d2 = d + n * reach;
+
+  // Six untrimmed planar quads, each CCW as seen from outside the box
+  // (FromUntrimmedQuadFaces()'s own convention) - the near face (at the
+  // plane itself) faces -n, the far face faces +n, and the four walls face
+  // -v/+u/+v/-u in turn, derived the same way that function's own doc
+  // comment derives a CCW base rectangle's outward normal.
+  const Brep box = Brep::FromUntrimmedQuadFaces({
+      {a, d, c, b},    // near face (on the plane), outward -n
+      {a2, b2, c2, d2},  // far face, outward +n
+      {a, b, b2, a2},  // wall at v = -half_width, outward -v
+      {b, c, c2, b2},  // wall at u = +half_width, outward +u
+      {c, d, d2, c2},  // wall at v = +half_width, outward +v
+      {d, a, a2, d2},  // wall at u = -half_width, outward -u
+  });
+
+  auto [outside, inside] = SplitBrepBySolid(target, box, tolerance);
+  return {std::move(inside), std::move(outside)};
+}
+
 // --- MakeHole()/MakeCounterboreHole()/MakeCountersinkHole() ------------
 
 namespace {

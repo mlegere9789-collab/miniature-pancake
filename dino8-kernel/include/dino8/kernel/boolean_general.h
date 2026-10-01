@@ -388,6 +388,53 @@ std::pair<Brep, Brep> SplitBrepBySolid(const Brep& target, const Brep& cutter, d
 std::pair<Brep, Brep> SplitBrepByManySolids(const Brep& target, const std::vector<Brep>& cutters,
                                              double tolerance = 0.001);
 
+// The exact B-rep sibling of boolean.cpp's own mesh-level SplitByPlane() -
+// closes the specific gap PARITY_MAP.md's own "Keep/split options" bullet
+// names as still open even after SplitBrepBySolid()/SplitBrepByManySolids()
+// above landed: "BooleanSplit/MeshSplit/MeshBooleanSplit themselves remain
+// plane-only and mesh-level" - there was no B-rep-preserving way to cut a
+// solid by a plane at all, only by another solid. Splits `target` by the
+// plane `{p : dot(p, plane_normal) == plane_offset}` into the two real
+// B-rep pieces on either side, each a genuine `ON_Brep` solid with exact
+// planar/curved faces - never tessellated - with the identical
+// `{side_along_normal, opposite_side}` return convention boolean.cpp's own
+// SplitByPlane() already established (`side_along_normal` is the piece
+// where `dot(p, plane_normal) >= plane_offset`).
+//
+// Not a new algorithm: the plane is turned into a genuine closed cutting
+// SOLID - a single axis-aligned box built in the plane's own (u, v, normal)
+// frame via `Brep::FromUntrimmedQuadFaces()` (the same "six independent
+// untrimmed planar quads" construction `ExtrudeToBoundary()`'s own cutting
+// caps already use, chosen for the identical reason: `BooleanCombineGeneral()`'s
+// SSX machinery reads each operand face purely via its raw `ON_Surface`, so
+// an untrimmed quad whose domain equals its own shape is what that
+// machinery needs, not a trimmed face), sized from `target`'s own
+// `GetTightBoundingBox()` to safely engulf it on every side - and the
+// existing `SplitBrepBySolid(target, box, tolerance)` is reused as-is, so
+// this inherits that function's own proven correctness and scope limits
+// wholesale (one crossing component per face pair, genus-0 faces, no
+// self-crossing chains) rather than re-deriving them. The box's own near
+// face sits exactly ON the cutting plane and it extends generously past
+// `target` on every other side, so `target` is always cut by the TRUE
+// infinite plane within its own bounding box, never clipped short by the
+// box's own necessarily-finite extent.
+//
+// `plane_normal` need not be unit length (it is unitized internally, the
+// same convention boolean.cpp's own SplitByPlane() documents), but
+// `plane_offset` is measured in the same units as `plane_normal`'s own
+// magnitude - pass a unit vector unless that has been accounted for.
+//
+// Throws std::invalid_argument if `target` has no faces, if `plane_normal`
+// is zero, or if `tolerance` is not positive (the last two as typed
+// `BooleanOperationError`s - `BooleanFailureReason::EmptyOperand`/
+// `InvalidTolerance` - matching `SplitBrepBySolid()`'s own precondition
+// shape; `plane_normal` has no catalogued reason of its own, so it stays a
+// plain `std::invalid_argument`, the same choice `MakeHole()`'s own
+// zero-`axis` guard below already makes for an analogous non-Boolean-
+// specific direction-vector precondition).
+std::pair<Brep, Brep> SplitBrepByPlane(const Brep& target, Vector3d plane_normal, double plane_offset,
+                                        double tolerance = 0.001);
+
 // A blind or through round hole (Rhino/SolidWorks "Hole" feature), cut
 // straight into `solid` via BooleanCombineGeneral() above - so, unlike the
 // app's `RoundHole`/`MakeHole`/`PlaceHole` (dino8-app/src/commands/

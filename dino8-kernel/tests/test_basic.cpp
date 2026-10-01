@@ -5025,6 +5025,138 @@ void TestSplitBrepByManySolidsRejectsEmptyCutterGroup() {
   Check(threw, "SplitBrepByManySolids throws std::invalid_argument for an empty cutters group");
 }
 
+void TestSplitBrepByPlaneMatchesMeshLevelSplitByPlane() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SplitBrepByPlane;
+  using dino8::kernel::SplitByPlane;
+  using dino8::kernel::Vector3d;
+
+  // PARITY_MAP.md's "Keep/split options" bullet names this exact gap:
+  // "BooleanSplit/MeshSplit/MeshBooleanSplit themselves remain plane-only
+  // and mesh-level" - there was no B-rep-preserving plane split, only
+  // boolean.cpp's own mesh-level SplitByPlane(). Splitting the identical
+  // 2x2x2 box down its own midplane through both functions must land on
+  // the same two volumes and the same {side_along_normal, opposite_side}
+  // convention.
+  const Brep box = Brep::Box(0, 0, 0, 2, 2, 2);
+  const auto [side_along_normal, opposite_side] = SplitBrepByPlane(box, Vector3d(1, 0, 0), 1.0);
+  Check(side_along_normal.raw().IsValid(), "SplitBrepByPlane's side_along_normal piece is a valid ON_Brep");
+  Check(opposite_side.raw().IsValid(), "SplitBrepByPlane's opposite_side piece is a valid ON_Brep");
+
+  const Mesh m_along = side_along_normal.TessellateToClosedMesh(16, 16);
+  const Mesh m_opposite = opposite_side.TessellateToClosedMesh(16, 16);
+  Check(std::abs(m_along.Volume() - 4.0) < 0.5 && std::abs(m_opposite.Volume() - 4.0) < 0.5,
+        "both exact B-rep halves have the same volume (4.0 each) the mesh-level split produces");
+  Check(std::abs((m_along.Volume() + m_opposite.Volume()) - 8.0) < 1e-3,
+        "the two B-rep halves sum back to the original box's own volume (2^3=8) exactly");
+
+  const auto mesh_halves = SplitByPlane(box.TessellateToClosedMesh(16, 16), Vector3d(1, 0, 0), 1.0);
+  Check(std::abs(mesh_halves.first.Volume() - m_along.Volume()) < 0.5 &&
+            std::abs(mesh_halves.second.Volume() - m_opposite.Volume()) < 0.5,
+        "the B-rep split's own {side_along_normal, opposite_side} halves match the mesh-level SplitByPlane's own "
+        "{first, second} convention, not swapped");
+
+  // Brep::GetTightBoundingBox() is not used here: this result comes from
+  // BooleanCombineGeneral()'s own raw-ON_Brep assemble() reassembly (via
+  // SplitBrepBySolid()), the same already-disclosed "gives the underlying
+  // surface's own untrimmed domain box, not the real trim boundary"
+  // limitation this category's own "Sheet/solid trim" bullet names for
+  // SplitBySheet()/TrimSheetBySolid() - so the tessellated MESH's own
+  // bounding box (built from the real trimmed triangles) is the correct
+  // way to check which physical side a piece landed on.
+  const auto along_bounds = m_along.GetBoundingBox();
+  Check(along_bounds.min.x > 1.0 - 1e-6, "side_along_normal is the piece on the +normal side (x >= 1)");
+  const auto opposite_bounds = m_opposite.GetBoundingBox();
+  Check(opposite_bounds.max.x < 1.0 + 1e-6, "opposite_side is the piece on the other side (x <= 1)");
+}
+
+void TestSplitBrepByPlaneTiltedNormalSumsBackToOriginalVolume() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SplitBrepByPlane;
+  using dino8::kernel::Vector3d;
+
+  // A genuinely non-axis-aligned plane_normal - not just a coordinate-axis
+  // special case - through a box NOT centered at the world origin, to
+  // exercise the (u, v, n) frame construction and the p0/half_width/reach
+  // sizing (built off the box's own bounding box, not assumed centered at
+  // the origin) for real.
+  const Brep box = Brep::Box(-3, -3, -3, 3, 3, 3);
+  Vector3d n(1, 1, 1);
+  n.Unitize();
+  const auto [side_along_normal, opposite_side] = SplitBrepByPlane(box, n, 0.0);
+  Check(side_along_normal.raw().IsValid() && opposite_side.raw().IsValid(),
+        "a tilted plane through an off-origin box still produces two valid ON_Brep halves");
+  const Mesh m_along = side_along_normal.TessellateToClosedMesh(24, 24);
+  const Mesh m_opposite = opposite_side.TessellateToClosedMesh(24, 24);
+  Check(std::abs((m_along.Volume() + m_opposite.Volume()) - 216.0) < 1e-2,
+        "the two halves sum back to the original box's own volume (6^3=216) exactly");
+  // A plane through the exact center of a symmetric box splits it exactly
+  // in half, regardless of the normal's own direction.
+  Check(std::abs(m_along.Volume() - 108.0) < 1.0 && std::abs(m_opposite.Volume() - 108.0) < 1.0,
+        "a tilted plane through a symmetric box's own center still splits its volume exactly in half");
+}
+
+void TestSplitBrepByPlaneMissingTargetKeepsWholeTargetOnOneSide() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SplitBrepByPlane;
+  using dino8::kernel::Vector3d;
+
+  // A plane far beyond target's own bounding box never reaches it - the
+  // same "cutter misses entirely" contract SplitBrepBySolid() already
+  // documents, reached here through the plane-to-box construction instead
+  // of a caller-supplied cutter.
+  const Brep box = Brep::Box(0, 0, 0, 2, 2, 2);
+  const auto [side_along_normal, opposite_side] = SplitBrepByPlane(box, Vector3d(1, 0, 0), 100.0);
+  Check(side_along_normal.FaceCount() == 0,
+        "a plane entirely beyond target leaves the +normal side the empty Brep");
+  Check(opposite_side.raw().IsValid() && opposite_side.FaceCount() == box.FaceCount(),
+        "the whole, untouched target lands on the other side");
+  const Mesh m = opposite_side.TessellateToClosedMesh(8, 8);
+  Check(std::abs(m.Volume() - 8.0) < 1e-3, "the untouched side's volume is target's own, unchanged (2^3=8)");
+
+  const auto [side_along_normal2, opposite_side2] = SplitBrepByPlane(box, Vector3d(1, 0, 0), -100.0);
+  Check(opposite_side2.FaceCount() == 0,
+        "the same plane shifted to the other extreme leaves the opposite side the empty Brep instead");
+  Check(side_along_normal2.raw().IsValid() && side_along_normal2.FaceCount() == box.FaceCount(),
+        "...and the whole, untouched target lands on side_along_normal instead");
+}
+
+void TestSplitBrepByPlaneRejectsEmptyTargetZeroNormalAndNonPositiveTolerance() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::SplitBrepByPlane;
+  using dino8::kernel::Vector3d;
+
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+  const Brep empty;
+
+  bool threw = false;
+  try {
+    SplitBrepByPlane(empty, Vector3d(1, 0, 0), 0.5);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "SplitBrepByPlane throws std::invalid_argument for an empty target");
+
+  threw = false;
+  try {
+    SplitBrepByPlane(box, Vector3d(0, 0, 0), 0.5);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "SplitBrepByPlane throws std::invalid_argument for a zero plane_normal");
+
+  threw = false;
+  try {
+    SplitBrepByPlane(box, Vector3d(1, 0, 0), 0.5, -1.0);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "SplitBrepByPlane throws std::invalid_argument for a non-positive tolerance");
+}
+
 void TestSurfaceGetApproximateSize() {
   using dino8::kernel::NurbsSurface;
   using dino8::kernel::Point3d;
@@ -44082,6 +44214,60 @@ void TestBooleanCombineMixedCallerTolerance() {
         "looser than the operands' true separation can degrade a valid closed result into a non-manifold one");
 }
 
+// PARITY_MAP.md's "Boolean failure diagnostics" bullet names BooleanCombinePlanar/
+// BooleanCombineMixed's own precondition checks specifically as not yet
+// covered by the BooleanOperationError/BooleanFailureReason typed-refusal
+// catalogue - this is the first one: an explicit `tolerance` of exactly
+// 0.0 is neither negative (this engine's own "auto-derive" sentinel) nor
+// positive, so without a dedicated guard it would silently be used as-is,
+// demanding exact bit-for-bit coincidence from every distance test inside
+// the engine instead of being refused the way every other caller-tolerance
+// precondition in this kernel already is.
+void TestBooleanCombinePlanarAndMixedRejectExplicitZeroTolerance() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanCombinePlanar;
+  using dino8::kernel::BooleanFailureReason;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::BooleanOperationError;
+  using dino8::kernel::Brep;
+
+  const Brep a = Brep::Box(0, 0, 0, 2, 2, 2);
+  const Brep b = Brep::Box(1, 1, 1, 3, 3, 3);
+
+  bool threw = false;
+  try {
+    BooleanCombinePlanar(a, b, BooleanOp::Union, 0.0);
+  } catch (const BooleanOperationError& ex) {
+    threw = ex.reason() == BooleanFailureReason::InvalidTolerance && ex.function_name() == "BooleanCombinePlanar";
+  }
+  Check(threw, "BooleanCombinePlanar throws a typed InvalidTolerance BooleanOperationError for an explicit 0.0 tolerance");
+
+  threw = false;
+  try {
+    BooleanCombinePlanar(a, b, BooleanOp::Union, 0.0);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "...and it is still catchable as plain std::invalid_argument, same as every other typed refusal here");
+
+  threw = false;
+  try {
+    BooleanCombineMixed(a, b, BooleanOp::Union, 0.0);
+  } catch (const BooleanOperationError& ex) {
+    threw = ex.reason() == BooleanFailureReason::InvalidTolerance && ex.function_name() == "BooleanCombineMixed";
+  }
+  Check(threw, "BooleanCombineMixed throws a typed InvalidTolerance BooleanOperationError for an explicit 0.0 tolerance");
+
+  // A negative tolerance is untouched by this guard - it still means
+  // "auto-derive", exactly as before this check existed (the same fixture
+  // TestBooleanCombinePlanarCallerTolerance/TestBooleanCombineMixedCallerTolerance
+  // already exercise via the omitted-argument default).
+  const Brep ok1 = BooleanCombinePlanar(a, b, BooleanOp::Union, -1.0);
+  const Brep ok2 = BooleanCombineMixed(a, b, BooleanOp::Union, -1.0);
+  Check(ok1.raw().m_F.Count() > 0 && ok2.raw().m_F.Count() > 0,
+        "a negative tolerance still takes the auto-derived default path for both engines, unaffected by this guard");
+}
+
 // Mirrors TestBooleanCombineGeneralNAryCallerToleranceForwardedToEveryPairwiseCall
 // for the other two B-rep engines: a caller-supplied tolerance reaches every
 // pairwise fold step BooleanCombinePlanarNAry/BooleanCombineMixedNAry make,
@@ -62191,6 +62377,10 @@ int main() {
   TestSplitBrepBySolidRejectsEmptyOperandsAndNonPositiveTolerance();
   TestSplitBrepByManySolidsTwoDisjointCuttersSumBackToOriginalVolume();
   TestSplitBrepByManySolidsRejectsEmptyCutterGroup();
+  TestSplitBrepByPlaneMatchesMeshLevelSplitByPlane();
+  TestSplitBrepByPlaneTiltedNormalSumsBackToOriginalVolume();
+  TestSplitBrepByPlaneMissingTargetKeepsWholeTargetOnOneSide();
+  TestSplitBrepByPlaneRejectsEmptyTargetZeroNormalAndNonPositiveTolerance();
   TestSurfaceGetApproximateSize();
   TestSurfaceTessellateGridClippedExactRejectsTooFewPoints();
   TestSurfaceTessellateGridRejectsTooFewTrimPoints();
@@ -62766,6 +62956,7 @@ int main() {
   TestBooleanCombineGeneralDifferenceAcceptsRealSymmetricDifferenceCompoundOperand();
   TestBooleanCombinePlanarCallerTolerance();
   TestBooleanCombineMixedCallerTolerance();
+  TestBooleanCombinePlanarAndMixedRejectExplicitZeroTolerance();
   TestBooleanCombinePlanarNAryCallerToleranceForwardedToEveryPairwiseCall();
   TestBooleanCombineMixedNAryCallerToleranceForwardedToEveryPairwiseCall();
   TestBooleanCombineMixedUnequalRadiusGeneralAngleIntersectionAndAllOps();

@@ -985,6 +985,27 @@ void RefuseCompoundOperand(const Brep& operand, const char* function_name) {
 }  // namespace
 
 Brep BooleanCombinePlanar(const Brep& a, const Brep& b, BooleanOp op, double tolerance) {
+  // A caller-supplied `tolerance` of exactly 0.0 is the one value this
+  // function's own negative-sentinel convention cannot tell apart from a
+  // genuine mistake: it is not negative (so it is NOT treated as "use the
+  // auto-derived default"), yet it is also not positive, so every
+  // distance/coincidence test below would be asked for exact bit-for-bit
+  // equality - silently classifying away virtually every coincident-face
+  // pair this engine depends on, rather than refusing outright the way
+  // every OTHER caller-tolerance precondition in this file already does
+  // (SplitBrepBySolid()/SplitBrepByManySolids()/BooleanCombineGeneral(),
+  // boolean_general.cpp - "a caller tolerance that is not strictly
+  // positive"). PARITY_MAP.md's own "Boolean failure diagnostics" bullet
+  // names this engine's own precondition checks specifically as not yet
+  // covered by the typed-refusal catalogue; this closes one concrete site
+  // of that gap. A negative `tolerance` is untouched - it still means
+  // "auto-derive", exactly as before this check existed.
+  if (tolerance >= 0.0 && !(tolerance > 0.0)) {
+    throw BooleanOperationError(BooleanFailureReason::InvalidTolerance, "BooleanCombinePlanar",
+                                 "dino8::kernel::BooleanCombinePlanar: an explicit non-negative tolerance must be "
+                                 "positive (pass a negative value to request the auto-derived default)");
+  }
+
   // Union and SymmetricDifference still need the lump-merge step neither
   // pipeline below has (see RefuseCompoundOperand's own doc comment) and
   // stay refused. Difference and Intersection do NOT need one - they
@@ -7728,6 +7749,18 @@ std::vector<MixedFace> SynthesizeEndCaps(const std::vector<MixedFace>& fragments
 }  // namespace
 
 Brep BooleanCombineMixed(const Brep& a, const Brep& b, BooleanOp op, double tolerance) {
+  // Same explicit-zero-tolerance refusal BooleanCombinePlanar's own
+  // identical check above makes, for the identical reason: 0.0 is neither
+  // negative (the "auto-derive" sentinel) nor positive, so without this
+  // guard it would silently demand exact bit-for-bit coincidence from
+  // every distance test below instead of being refused up front the way
+  // every other caller-tolerance precondition in this file already is.
+  if (tolerance >= 0.0 && !(tolerance > 0.0)) {
+    throw BooleanOperationError(BooleanFailureReason::InvalidTolerance, "BooleanCombineMixed",
+                                 "dino8::kernel::BooleanCombineMixed: an explicit non-negative tolerance must be "
+                                 "positive (pass a negative value to request the auto-derived default)");
+  }
+
   // Union and SymmetricDifference still need the lump-merge step neither
   // pipeline here has (see RefuseCompoundOperand's own doc comment) and
   // stay refused. Difference and Intersection do not - see this function's
