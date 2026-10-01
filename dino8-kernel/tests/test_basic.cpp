@@ -2694,6 +2694,170 @@ void TestIntersectBrepByPlaneBoxSideWalls() {
 }
 
 // PARITY_MAP.md's own "kernel: Intersections & projections" category,
+// "Plane sections / contours of surfaces and B-reps (Section, Contour,
+// ClippingSections)" bullet: IntersectBrepByPlane() (tested just above)
+// closed the single-plane "Section" half; this bullet's own prior
+// evidence named "Contour" (a family of parallel sections at even
+// intervals) as still "entirely unaddressed" even after that. ContourBrep()
+// is that Contour API.
+void TestContourBrepParallelSections() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::BrepContourSection;
+  using dino8::kernel::ContourBrep;
+  using dino8::kernel::IntersectOptions;
+  using dino8::kernel::Point3d;
+
+  // A box [0,3]^3, contoured from a base plane at z=0.5 with spacing 1:
+  // Rhino's own Contour semantics cover the whole object automatically
+  // (a base plane + spacing, not a station count the caller has to
+  // guess), so the hand-derivable expectation is exactly three parallel
+  // sections, at z = 0.5, 1.5, 2.5 - none of them exactly on a face
+  // (unlike TestIntersectBrepByPlaneBoxSideWalls's own z=1 case), so no
+  // degenerate on-face-boundary ambiguity.
+  const Brep box = Brep::Box(0, 0, 0, 3, 3, 3);
+  const ON_Plane base_plane(ON_3dPoint(0, 0, 0.5), ON_3dVector(0, 0, 1));
+  IntersectOptions opt;
+  opt.tolerance = 1e-6;
+  opt.mesh_tolerance = 0.05;
+
+  const std::vector<BrepContourSection> sections = ContourBrep(box.raw(), base_plane, 1.0, opt);
+  Check(sections.size() == 3, "a box contoured at spacing 1 from a base plane at z=0.5 produces exactly 3 sections");
+
+  std::vector<double> offsets;
+  for (const BrepContourSection& sec : sections) offsets.push_back(sec.offset);
+  std::sort(offsets.begin(), offsets.end());
+  const bool offsets_match = offsets.size() == 3 && std::abs(offsets[0] - 0.0) < 1e-9 &&
+      std::abs(offsets[1] - 1.0) < 1e-9 && std::abs(offsets[2] - 2.0) < 1e-9;
+  Check(offsets_match, "the three sections' own offsets from the base plane are exactly 0, 1, 2 (landing at z = 0.5, 1.5, 2.5)");
+
+  for (const BrepContourSection& sec : sections) {
+    const double expected_z = 0.5 + sec.offset;
+    Check(sec.hits.size() >= 4, "each contour section crosses at least the box's own four side walls");
+    for (const auto& hit : sec.hits) {
+      for (const Point3d& p : hit.curve.points) {
+        Check(std::abs(p.z - expected_z) < 1e-4, "every point of a contour section sits at that section's own exact z offset");
+      }
+    }
+  }
+
+  // Non-positive spacing is refused outright, not treated as "zero
+  // stations" or looped forever.
+  Check(ContourBrep(box.raw(), base_plane, 0.0, opt).empty(), "spacing == 0 returns no sections");
+  Check(ContourBrep(box.raw(), base_plane, -1.0, opt).empty(), "a negative spacing returns no sections");
+
+  // A spacing larger than the object's own extent along the normal still
+  // covers it correctly - exactly one section, not zero and not a crash
+  // from stepping past the range on the first iteration.
+  const std::vector<BrepContourSection> wide = ContourBrep(box.raw(), base_plane, 10.0, opt);
+  Check(wide.size() == 1, "a spacing larger than the box's own extent still produces exactly one section");
+}
+
+// PARITY_MAP.md's own "kernel: Intersections & projections" category,
+// "CSX against trimmed faces and curve-on-surface overlap (coincident)
+// detection" bullet's own second half: "No overlap detection anywhere."
+// IntersectCurveSurfaceOverlap() is that overlap detector - a curve lying
+// IN a surface over a real span, not merely crossing through it, which
+// IntersectCurveSurface()'s triangle-piercing search is the wrong tool
+// for (the same "not intended for coincident curves" situation
+// IntersectCurves() already discloses for two coincident 3D curves).
+void TestIntersectCurveSurfaceOverlapDetectsCoincidentSpan() {
+  using dino8::kernel::CurveSurfaceOverlap;
+  using dino8::kernel::IntersectCurveSurfaceOverlap;
+  using dino8::kernel::IntersectOptions;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+
+  IntersectOptions opt;
+  opt.tolerance = 1e-6;
+  opt.mesh_tolerance = 0.05;
+
+  ON_PlaneSurface ground(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)));
+  ground.SetExtents(0, ON_Interval(-20, 20), true);
+  ground.SetExtents(1, ON_Interval(-20, 20), true);
+
+  // A curve genuinely coincident with the plane over its whole domain
+  // (every point at z == 0) must be reported as one overlap span
+  // covering the entire curve.
+  const NurbsCurve on_plane = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(3, 0, 0)}, 1);
+  const std::vector<CurveSurfaceOverlap> on_plane_spans = IntersectCurveSurfaceOverlap(on_plane.raw(), ground, opt);
+  Check(on_plane_spans.size() == 1, "a curve lying entirely on the plane reports exactly one overlap span");
+  if (on_plane_spans.size() == 1) {
+    Check(on_plane_spans[0].entire_curve, "the whole-curve overlap is flagged entire_curve == true");
+  }
+
+  // A curve held well clear of the plane (z == 5 throughout) has no
+  // overlap at all.
+  const NurbsCurve off_plane = NurbsCurve::FromControlPoints({Point3d(0, 0, 5), Point3d(3, 0, 5)}, 1);
+  Check(IntersectCurveSurfaceOverlap(off_plane.raw(), ground, opt).empty(), "a curve held clear of the plane reports no overlap span");
+
+  // A two-segment polyline whose first leg lies exactly in the plane and
+  // whose second leg climbs straight away from it must report exactly
+  // one overlap span, covering (only) the first leg.
+  const NurbsCurve bent = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(3, 0, 0), Point3d(3, 0, 5)}, 1);
+  const std::vector<CurveSurfaceOverlap> bent_spans = IntersectCurveSurfaceOverlap(bent.raw(), ground, opt);
+  Check(bent_spans.size() == 1, "the bent polyline reports exactly one overlap span (the first leg only)");
+  if (bent_spans.size() == 1) {
+    Check(!bent_spans[0].entire_curve, "the bent polyline's overlap does not cover its whole domain");
+    const ON_Interval d = bent.raw().Domain();
+    const double corner_t = d.ParameterAt(0.5);  // FromControlPoints' clamped-uniform knots put the shared vertex at the curve's own domain midpoint
+    Check(std::abs(bent_spans[0].t0 - d.Min()) < 1e-6, "the overlap span starts at the curve's own domain start");
+    Check(std::abs(bent_spans[0].t1 - corner_t) < 0.05, "the overlap span ends at (approximately) the polyline's own corner parameter, where the curve leaves the plane");
+  }
+}
+
+// PARITY_MAP.md's own "kernel: Intersections & projections" category,
+// "Surface / B-rep self-intersection detection" bullet: `Brep::Check()`'s
+// own SelfIntersectingLoop/SelfIntersectingLoop3d only check face
+// boundaries, leaving "no face-interior self-intersection test and no
+// face-vs-face crossing test within a B-rep" named directly as a gap.
+// FindBrepSelfIntersections() closes the face-vs-face half of that.
+void TestFindBrepSelfIntersectionsDetectsOverlappingLumpsOnly() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::BrepBrepIntersection;
+  using dino8::kernel::FindBrepSelfIntersections;
+  using dino8::kernel::IntersectOptions;
+
+  IntersectOptions opt;
+  opt.tolerance = 1e-6;
+  opt.mesh_tolerance = 0.05;
+
+  // A single ordinary Box() has every face pair either adjacent (sharing
+  // an edge - Brep::Check()'s own job, deliberately skipped here) or on
+  // opposite sides of the solid with no actual overlap: no false
+  // positives on a perfectly valid solid.
+  const Brep box = Brep::Box(0, 0, 0, 2, 2, 2);
+  Check(FindBrepSelfIntersections(box.raw(), opt).empty(), "a single valid box reports zero self-intersections");
+
+  // Two DISJOINT boxes, compounded into one Brep (Compound() deliberately
+  // never welds lumps together, so every face pair across the two lumps
+  // shares no edge either): still zero crossings, since the lumps never
+  // actually touch in space.
+  const Brep disjoint = Brep::Compound({Brep::Box(0, 0, 0, 2, 2, 2), Brep::Box(10, 10, 10, 12, 12, 12)});
+  Check(FindBrepSelfIntersections(disjoint.raw(), opt).empty(), "two disjoint compounded lumps report zero self-intersections");
+
+  // Two OVERLAPPING boxes, compounded (NOT boolean-unioned) into one
+  // Brep: a genuinely self-intersecting "solid" by construction - lump
+  // B's faces physically cross lump A's faces in several places, and
+  // since Compound() never welds the two lumps' topology, none of those
+  // crossing face pairs share an edge either.
+  const Brep overlapping = Brep::Compound({Brep::Box(0, 0, 0, 2, 2, 2), Brep::Box(1, 1, 1, 3, 3, 3)});
+  const std::vector<BrepBrepIntersection> hits = FindBrepSelfIntersections(overlapping.raw(), opt);
+  Check(!hits.empty(), "two overlapping compounded lumps report at least one self-intersecting face pair");
+
+  // Every reported pair must genuinely span the two different lumps
+  // (Box() always has 6 faces, and Compound() concatenates face lists in
+  // lump order, so lump A is faces 0-5 and lump B is faces 6-11) - this
+  // function must not be flagging two faces of the SAME box, which the
+  // plain single-box check above already shows does not happen on its
+  // own, confirmed directly on the compound too.
+  bool all_cross_lumps = true;
+  for (const BrepBrepIntersection& h : hits) {
+    if ((h.face_a < 6) == (h.face_b < 6)) { all_cross_lumps = false; break; }
+  }
+  Check(all_cross_lumps, "every reported self-intersecting face pair spans the two different (overlapping) lumps, not two faces of the same box");
+}
+
+// PARITY_MAP.md's own "kernel: Intersections & projections" category,
 // "Projection of curves/points onto surfaces along a direction (Project)"
 // bullet: "app ProjectCommand samples the curve and ray-casts along the
 // CPlane normal onto the render mesh, then refits. No kernel project
@@ -60235,6 +60399,9 @@ int main() {
   TestIntersectBrepsAndCurveBrep();
   TestPullbackCurveToSurfaceCylinderRulingLine();
   TestIntersectBrepByPlaneBoxSideWalls();
+  TestContourBrepParallelSections();
+  TestIntersectCurveSurfaceOverlapDetectsCoincidentSpan();
+  TestFindBrepSelfIntersectionsDetectsOverlappingLumpsOnly();
   TestProjectCurveToSurfaceFlatPlaneStraightDown();
   TestProjectCurveToSurfacePartialMiss();
   TestBooleanCombineGeneralBoxBox();
