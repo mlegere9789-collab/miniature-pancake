@@ -2629,6 +2629,194 @@ void TestPullbackCurveToSurfaceCylinderRulingLine() {
         "the far line's pulled_curve end lands at the hand-derived (2, 0, 4)");
 }
 
+// PARITY_MAP.md's own "kernel: Intersections & projections" category,
+// "Plane sections / contours of surfaces and B-reps" bullet: "the app
+// still slices render meshes (SliceObjects/SliceMesh). Kernel SplitByPlane
+// is mesh-only; the exact route (IntersectSurfaces per face) is not used
+// for sections." IntersectBrepByPlane() is that exact route.
+void TestIntersectBrepByPlaneBoxSideWalls() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::BrepPlaneIntersection;
+  using dino8::kernel::IntersectBrepByPlane;
+  using dino8::kernel::IntersectOptions;
+  using dino8::kernel::Point3d;
+
+  // A box [0,2]^3, sectioned by the plane z=1: Box()'s own six faces share
+  // no topology (its own doc comment), so the plane must cross the four
+  // SIDE walls (each getting exactly one straight-line section, since a
+  // Box() face's domain equals its whole untrimmed shape) and miss the
+  // top (z=2) and bottom (z=0) faces entirely (they sit at a single z,
+  // never touching z=1) - a hand-derivable exact result, not merely "some
+  // curves came back".
+  const Brep box = Brep::Box(0, 0, 0, 2, 2, 2);
+  const ON_Plane mid_plane(ON_3dPoint(0, 0, 1), ON_3dVector(0, 0, 1));
+  IntersectOptions opt;
+  opt.tolerance = 1e-6;
+  opt.mesh_tolerance = 0.05;
+
+  // Not asserting an exact curve COUNT: like IntersectBreps() (see
+  // TestIntersectBrepsAndCurveBrep()'s own doc comment), the mesh-seeded
+  // chainer underneath IntersectFaces() can legitimately split one
+  // physical straight-line section into more than one IntersectionCurve
+  // piece for the same face, especially for an exactly axis-aligned,
+  // exactly-integer-coordinate line like this fixture's own - so this
+  // checks the aggregate, honest properties instead (every side wall
+  // contributes at least one piece, every corner shows up SOMEWHERE, and
+  // nothing from the top/bottom faces leaks in).
+  const std::vector<BrepPlaneIntersection> sections = IntersectBrepByPlane(box.raw(), mid_plane, opt);
+  Check(sections.size() >= 4, "the z=1 plane produces at least one section curve per side wall");
+
+  std::set<int> distinct_faces;
+  bool every_point_at_z1 = true;
+  bool has_00 = false, has_02 = false, has_20 = false, has_22 = false;
+  for (const BrepPlaneIntersection& bpi : sections) {
+    distinct_faces.insert(bpi.face_index);
+    for (const Point3d& p : bpi.curve.points) {
+      if (std::abs(p.z - 1.0) > 1e-4) every_point_at_z1 = false;
+      if (p.DistanceTo(Point3d(0, 0, 1)) < 1e-3) has_00 = true;
+      if (p.DistanceTo(Point3d(0, 2, 1)) < 1e-3) has_02 = true;
+      if (p.DistanceTo(Point3d(2, 0, 1)) < 1e-3) has_20 = true;
+      if (p.DistanceTo(Point3d(2, 2, 1)) < 1e-3) has_22 = true;
+    }
+  }
+  Check(every_point_at_z1, "every returned section point genuinely sits at z == 1 (the top/bottom faces contributed nothing)");
+  Check(distinct_faces.size() == 4, "the 4 section curves each came from a distinct face - no face produced two pieces");
+  Check(has_00 && has_02 && has_20 && has_22,
+        "all four of the box's own vertical edges' z=1 crossings - (0,0,1), (0,2,1), (2,0,1), (2,2,1) - appear "
+        "among the returned section curves' points");
+
+  // A plane far outside the box's own bounding box entirely must produce
+  // no sections, pruned by the bounding-box broad phase rather than
+  // evaluated face by face and found empty.
+  const ON_Plane far_plane(ON_3dPoint(0, 0, 100), ON_3dVector(0, 0, 1));
+  const std::vector<BrepPlaneIntersection> far_sections = IntersectBrepByPlane(box.raw(), far_plane, opt);
+  Check(far_sections.empty(), "a plane far from the B-rep's own bounding box produces zero sections");
+}
+
+// PARITY_MAP.md's own "kernel: Intersections & projections" category,
+// "Projection of curves/points onto surfaces along a direction (Project)"
+// bullet: "app ProjectCommand samples the curve and ray-casts along the
+// CPlane normal onto the render mesh, then refits. No kernel project
+// API." ProjectCurveToSurface() is that kernel API, against the exact
+// surface rather than a tessellated stand-in.
+void TestProjectCurveToSurfaceFlatPlaneStraightDown() {
+  using dino8::kernel::IntersectOptions;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::ProjectCurveToSurface;
+  using dino8::kernel::ProjectedCurveResult;
+  using dino8::kernel::Vector3d;
+
+  // A flat, generously-bounded horizontal plane surface at z = 0.
+  ON_PlaneSurface ground(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)));
+  ground.SetExtents(0, ON_Interval(-100, 100), true);
+  ground.SetExtents(1, ON_Interval(-100, 100), true);
+
+  // A line held entirely above the ground plane, projected straight down
+  // along -Z: every sample must land at its own (x, y) with z == 0 exactly
+  // - a hand-derivable, independently-checkable closed form for THIS
+  // direction/surface pair (unlike Pull, which would instead move every
+  // point to its own nearest point on the plane - already the same (x, y,
+  // 0) here only because the plane happens to be horizontal; a projection
+  // along a direction that ISN'T the plane's own normal would diverge from
+  // Pull's answer, which this test doesn't need to exercise to prove the
+  // two operations are genuinely different calls).
+  const NurbsCurve held_line = NurbsCurve::FromControlPoints({Point3d(1, 1, 5), Point3d(3, 2, 7)}, /*degree=*/1);
+  IntersectOptions opt;
+  opt.tolerance = 1e-6;
+  opt.mesh_tolerance = 0.25;
+
+  const ProjectedCurveResult result = ProjectCurveToSurface(held_line.raw(), ground, Vector3d(0, 0, -1), opt);
+  Check(result.sample_count >= 2, "the curve was sampled at least twice");
+  Check(result.hit_count == result.sample_count, "every sample of a line held above an unbounded ground plane hits it");
+  bool all_correct = result.hit_count > 0;
+  for (size_t i = 0; i < result.points.size(); ++i) {
+    const ON_3dPoint original = held_line.raw().PointAt(result.t[i]);
+    const Point3d& landed = result.points[i];
+    if (std::abs(landed.x - original.x) > 1e-4 || std::abs(landed.y - original.y) > 1e-4 || std::abs(landed.z) > 1e-6) {
+      all_correct = false;
+    }
+  }
+  Check(all_correct, "every projected point keeps the original sample's own (x, y) and lands exactly at z == 0");
+  Check(result.projected_curve.IsValid(), "a curve with every sample hit gets a valid refit projected_curve");
+  const ON_3dPoint fit_start = result.projected_curve.PointAtStart();
+  const ON_3dPoint fit_end = result.projected_curve.PointAtEnd();
+  Check(Point3d(fit_start.x, fit_start.y, fit_start.z).DistanceTo(Point3d(1, 1, 0)) < 1e-3,
+        "projected_curve's own start lands at the hand-derived (1, 1, 0)");
+  Check(Point3d(fit_end.x, fit_end.y, fit_end.z).DistanceTo(Point3d(3, 2, 0)) < 1e-3,
+        "projected_curve's own end lands at the hand-derived (3, 2, 0)");
+
+  // Degenerate direction (zero length) must refuse outright, not divide by
+  // zero or silently return an empty-but-"successful" result.
+  const ProjectedCurveResult zero_dir = ProjectCurveToSurface(held_line.raw(), ground, Vector3d(0, 0, 0), opt);
+  Check(zero_dir.sample_count == 0 && zero_dir.hit_count == 0, "a zero-length direction returns an empty result rather than dividing by zero");
+
+  // ProjectPointToSurface() is the point-level sibling closing the other
+  // half of PARITY_MAP's own "curves/points" bullet: the same straight-down
+  // ray from one of this curve's own endpoints must land at the same
+  // hand-derived (1, 1, 0).
+  using dino8::kernel::PointProjectionHit;
+  using dino8::kernel::ProjectPointToSurface;
+  const PointProjectionHit point_hit = ProjectPointToSurface(Point3d(1, 1, 5), Vector3d(0, 0, -1), ground, opt);
+  Check(point_hit.hit, "a point held above an unbounded ground plane hits it");
+  Check(point_hit.point.DistanceTo(Point3d(1, 1, 0)) < 1e-4, "the projected point lands at the hand-derived (1, 1, 0)");
+  const PointProjectionHit zero_dir_point = ProjectPointToSurface(Point3d(1, 1, 5), Vector3d(0, 0, 0), ground, opt);
+  Check(!zero_dir_point.hit, "ProjectPointToSurface with a zero-length direction reports hit == false rather than dividing by zero");
+}
+
+void TestProjectCurveToSurfacePartialMiss() {
+  using dino8::kernel::IntersectOptions;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::ProjectCurveToSurface;
+  using dino8::kernel::ProjectedCurveResult;
+  using dino8::kernel::Vector3d;
+
+  // A ground plane bounded to x, y in [-1, 1] only - unlike Pull (which
+  // always finds SOME closest point, however far), a directional ray
+  // genuinely misses a bounded surface once the ray's own (x, y) falls
+  // outside it, so this is a real, distinct failure mode this call must
+  // report honestly (hit[i] == false, the sample dropped) rather than
+  // papering over.
+  ON_PlaneSurface bounded_ground(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)));
+  bounded_ground.SetExtents(0, ON_Interval(-1, 1), true);
+  bounded_ground.SetExtents(1, ON_Interval(-1, 1), true);
+
+  // A line from x=-3 to x=3 at y=0, z=5 - its middle third (|x| <= 1) sits
+  // over the bounded plane, its two outer thirds do not.
+  const NurbsCurve wide_line = NurbsCurve::FromControlPoints({Point3d(-3, 0, 5), Point3d(3, 0, 5)}, /*degree=*/1);
+  IntersectOptions opt;
+  opt.tolerance = 1e-6;
+  opt.mesh_tolerance = 0.1;
+
+  const ProjectedCurveResult result = ProjectCurveToSurface(wide_line.raw(), bounded_ground, Vector3d(0, 0, -1), opt);
+  Check(result.hit_count > 0, "at least the middle portion of the line, over the bounded plane, hits it");
+  Check(result.hit_count < result.sample_count, "the two outer thirds, off the bounded plane entirely, genuinely miss it");
+  Check(result.hit.size() == static_cast<size_t>(result.sample_count), "hit[] records one entry per attempted sample, hits and misses alike");
+
+  bool every_hit_inside_bounds = true, every_hit_lands_correctly = true;
+  for (size_t i = 0; i < result.points.size(); ++i) {
+    const Point3d& p = result.points[i];
+    if (p.x < -1.0 - 1e-3 || p.x > 1.0 + 1e-3) every_hit_inside_bounds = false;
+    const ON_3dPoint original = wide_line.raw().PointAt(result.t[i]);
+    if (std::abs(p.x - original.x) > 1e-4 || std::abs(p.y) > 1e-6 || std::abs(p.z) > 1e-6) every_hit_lands_correctly = false;
+  }
+  Check(every_hit_inside_bounds, "every reported hit's own (x, y) genuinely lies within the bounded plane's own domain");
+  Check(every_hit_lands_correctly, "every reported hit keeps the original sample's own x and lands at y == 0, z == 0");
+
+  // The same bounded-surface miss, at the single-point level:
+  // ProjectPointToSurface() must honestly report hit == false for a point
+  // whose straight-down ray falls outside the plane's own domain, and
+  // hit == true (landing correctly) for one that doesn't.
+  using dino8::kernel::PointProjectionHit;
+  using dino8::kernel::ProjectPointToSurface;
+  const PointProjectionHit inside_hit = ProjectPointToSurface(Point3d(0, 0, 5), Vector3d(0, 0, -1), bounded_ground, opt);
+  Check(inside_hit.hit && inside_hit.point.DistanceTo(Point3d(0, 0, 0)) < 1e-4,
+        "a point over the bounded plane's own domain hits it and lands at the hand-derived (0, 0, 0)");
+  const PointProjectionHit outside_hit = ProjectPointToSurface(Point3d(-3, 0, 5), Vector3d(0, 0, -1), bounded_ground, opt);
+  Check(!outside_hit.hit, "a point off the bounded plane's own domain entirely genuinely misses it");
+}
+
 void TestBooleanCombineGeneralBoxBox() {
   using dino8::kernel::BooleanCombineGeneral;
   using dino8::kernel::BooleanOp;
@@ -7784,6 +7972,82 @@ void TestModelAddHatchRoundTrips() {
   std::remove(path.c_str());
 }
 
+void TestModelAddHatchPatternLinesRoundTrips() {
+  using dino8::kernel::HatchFillType;
+  using dino8::kernel::HatchPatternLine;
+  using dino8::kernel::Model;
+  using dino8::kernel::Point2d;
+  using dino8::kernel::Result;
+
+  // HatchFillType's own doc comment in file_io.h names this exact gap: "a
+  // Lines pattern this kernel creates always has zero lines in it... this
+  // kernel adds no way to populate its actual dash/offset lines via
+  // ON_HatchPattern::AddHatchLine()" - PARITY_MAP.md's own evidence for the
+  // same item. Before this, AddHatchPattern() had no `lines` parameter at
+  // all.
+  Model model;
+  const int empty_pattern = model.AddHatchPattern("No Lines", HatchFillType::Lines);
+  Check(empty_pattern == 0, "AddHatchPattern() with no lines argument still succeeds, unchanged behavior");
+  Check(model.HatchPatternLineCount(empty_pattern) == 0,
+        "a pattern added with no lines argument has zero lines - the pre-existing behavior, unchanged");
+
+  HatchPatternLine solid_line;
+  solid_line.angle_radians = 0.0;
+  solid_line.base = Point2d(0.0, 0.0);
+  solid_line.offset = Point2d(0.0, 0.5);
+  // no dashes - a solid line, ON_HatchLine's own "no dashes means solid" contract
+
+  HatchPatternLine dashed_line;
+  dashed_line.angle_radians = ON_PI / 2.0;  // vertical
+  dashed_line.base = Point2d(0.25, 0.0);
+  dashed_line.offset = Point2d(0.0, 0.5);
+  dashed_line.dashes = {0.25, -0.125, 0.25};  // dash, gap, dash
+
+  const int pattern_index =
+      model.AddHatchPattern("Cross-Hatch", HatchFillType::Lines, {solid_line, dashed_line});
+  Check(pattern_index == 1, "the second AddHatchPattern() call returns index 1");
+  Check(model.HatchPatternLineCount(pattern_index) == 2,
+        "the pattern has exactly the 2 lines AddHatchPattern()'s own lines argument gave it");
+
+  const auto line0 = model.HatchPatternLineAt(pattern_index, 0);
+  Check(std::abs(line0.angle_radians - 0.0) < 1e-9, "the first line's angle survives HatchPatternLineAt()");
+  Check(line0.base.DistanceTo(ON_2dPoint(0.0, 0.0)) < 1e-9, "the first line's base survives HatchPatternLineAt()");
+  Check(line0.offset.DistanceTo(ON_2dPoint(0.0, 0.5)) < 1e-9,
+        "the first line's offset survives HatchPatternLineAt()");
+  Check(line0.dashes.empty(), "the first (solid) line reports no dashes");
+
+  const auto line1 = model.HatchPatternLineAt(pattern_index, 1);
+  Check(std::abs(line1.angle_radians - ON_PI / 2.0) < 1e-9, "the second line's angle survives HatchPatternLineAt()");
+  Check(line1.base.DistanceTo(ON_2dPoint(0.25, 0.0)) < 1e-9,
+        "the second line's base survives HatchPatternLineAt()");
+  Check(line1.dashes.size() == 3, "the second line's dash count survives HatchPatternLineAt()");
+  Check(line1.dashes.size() == 3 && std::abs(line1.dashes[0] - 0.25) < 1e-9 &&
+            std::abs(line1.dashes[1] - (-0.125)) < 1e-9 && std::abs(line1.dashes[2] - 0.25) < 1e-9,
+        "the second line's exact dash/gap lengths, in order, survive HatchPatternLineAt()");
+
+  const auto out_of_range = model.HatchPatternLineAt(pattern_index, 9999);
+  Check(out_of_range.dashes.empty() && std::abs(out_of_range.angle_radians) < 1e-12,
+        "HatchPatternLineAt() on a line index this pattern doesn't have returns a "
+        "default-constructed HatchPatternLine, same contract as HatchAt()/TextDotAt() etc.");
+  Check(model.HatchPatternLineCount(9999) == 0,
+        "HatchPatternLineCount() on a pattern index this model doesn't have returns 0");
+
+  const std::string path = "dino8_kernel_model_hatch_pattern_lines_roundtrip_test.3dm";
+  Check(model.Save(path) == Result::Ok, ".3dm save with a lined hatch pattern succeeded");
+
+  Model loaded;
+  Check(Model::Load(path, loaded) == Result::Ok, ".3dm load succeeded");
+  Check(loaded.HatchPatternLineCount(pattern_index) == 2,
+        "both lines survive the .3dm round trip");
+  const auto reloaded_line1 = loaded.HatchPatternLineAt(pattern_index, 1);
+  Check(std::abs(reloaded_line1.angle_radians - ON_PI / 2.0) < 1e-6,
+        "the reloaded second line's angle survives the .3dm round trip");
+  Check(reloaded_line1.dashes.size() == 3 && std::abs(reloaded_line1.dashes[0] - 0.25) < 1e-6,
+        "the reloaded second line's dash lengths survive the .3dm round trip");
+
+  std::remove(path.c_str());
+}
+
 void TestModelAddTextDotRoundTrips() {
   using dino8::kernel::Model;
   using dino8::kernel::Point3d;
@@ -7828,6 +8092,63 @@ void TestModelAddTextDotRoundTrips() {
   Check(reloaded.primary_text == "QC-1", "the reloaded text dot's primary_text survives the round trip");
   Check(reloaded.secondary_text == "Failed inspection on 2026-09-29",
         "the reloaded text dot's secondary_text survives the round trip");
+
+  std::remove(path.c_str());
+}
+
+void TestModelAddTextAnnotationRoundTrips() {
+  using dino8::kernel::Model;
+  using dino8::kernel::Result;
+
+  // PARITY_MAP.md's own "kernel: Kernel-level data exchange" evidence for
+  // "Rhino non-geometry/composite objects in .3dm" names annotations as
+  // entirely unaddressed: "annotations (ON_Annotation/dimension objects)
+  // remain entirely unaddressed, no kernel API for them at all" - before
+  // this, nothing in this kernel could create an ON_Text (or any other
+  // ON_Annotation subtype) at all.
+  Model model;
+  Check(model.TextCount() == 0, "a fresh Model has no text annotations");
+  const ON_Plane world_xy(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1));
+  Check(model.AddText("hi", world_xy, "") == -1,
+        "AddText() returns -1 for an empty name, same contract as AddTextDot()/AddLight() etc.");
+  Check(model.AddText("", world_xy, "Empty Text") == -1, "AddText() returns -1 for empty text content");
+  const ON_Plane invalid_plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 0));
+  Check(model.AddText("hi", invalid_plane, "Bad Plane") == -1,
+        "AddText() returns -1 for a degenerate (zero-normal) plane");
+  Check(model.TextCount() == 0, "none of the refused calls above added anything");
+
+  const ON_Plane plane(ON_3dPoint(1, 2, 3), ON_3dVector(0, 0, 1));
+  const int index = model.AddText("Hello, Fossilith", plane, "Note A");
+  Check(index == 0, "the first real AddText() call returns index 0");
+  Check(model.TextCount() == 1, "model has one text annotation after AddText()");
+  Check(model.ObjectCount() == 1,
+        "a text annotation is a real model geometry object, also counted by ObjectCount()");
+
+  const auto info = model.TextAt(0);
+  Check(info.name == "Note A", "TextAt() reports the name AddText() was given");
+  Check(info.text == "Hello, Fossilith", "TextAt() reports the exact text content AddText() was given");
+  Check(info.plane.origin.DistanceTo(plane.origin) < 1e-9,
+        "TextAt() reports the exact plane origin AddText() was given");
+  Check((info.plane.Normal() - plane.Normal()).Length() < 1e-9,
+        "TextAt() reports the exact plane normal AddText() was given");
+
+  const auto out_of_range = model.TextAt(9999);
+  Check(out_of_range.name.empty(),
+        "TextAt() on an index this model doesn't have returns a default-constructed "
+        "TextAnnotationInfo, same contract as TextDotAt()/HatchAt() etc.");
+
+  const std::string path = "dino8_kernel_model_text_annotation_roundtrip_test.3dm";
+  Check(model.Save(path) == Result::Ok, ".3dm save with a text annotation succeeded");
+
+  Model loaded;
+  Check(Model::Load(path, loaded) == Result::Ok, ".3dm load succeeded");
+  Check(loaded.TextCount() == 1, "the text annotation survives the .3dm round trip");
+  const auto reloaded = loaded.TextAt(0);
+  Check(reloaded.name == "Note A", "the reloaded text annotation's name survives the round trip");
+  Check(reloaded.text == "Hello, Fossilith",
+        "the reloaded text annotation's text content survives the round trip");
+  Check(reloaded.plane.origin.DistanceTo(plane.origin) < 1e-6,
+        "the reloaded text annotation's plane origin survives the round trip");
 
   std::remove(path.c_str());
 }
@@ -18033,6 +18354,59 @@ void TestPointCloudSpatialQueries() {
   }
 }
 
+// PARITY_MAP.md's own "kernel: Intersections & projections" category names
+// this gap directly under "Point-cloud contour/section as separate app
+// commands": "app-level band-sampling around a plane; the kernel
+// PointCloud has no section API." PointsNearPlane() is that kernel API.
+void TestPointCloudPointsNearPlane() {
+  using dino8::kernel::Point3d;
+  using dino8::kernel::PointCloud;
+
+  // Seven points with hand-derivable exact |distance| from the z=0 plane,
+  // appended out of distance order so a passing test can't be an accident
+  // of insertion order already being sorted:
+  //   idx 0: z=-2.0   distance 2.0   (outside the 0.5 band)
+  //   idx 1: z=-0.3   distance 0.3   (inside)
+  //   idx 2: z=0.0    distance 0.0   (inside, exact match)
+  //   idx 3: z=0.1    distance 0.1   (inside)
+  //   idx 4: z=1.5    distance 1.5   (outside)
+  //   idx 5: z=-0.5   distance 0.5   (inside: exactly at the band's own edge, inclusive)
+  //   idx 6: z=0.51   distance 0.51  (outside: just past the band's own edge)
+  PointCloud cloud;
+  cloud.AppendPoint(Point3d(0, 0, -2.0));
+  cloud.AppendPoint(Point3d(1, 0, -0.3));
+  cloud.AppendPoint(Point3d(2, 0, 0.0));
+  cloud.AppendPoint(Point3d(3, 0, 0.1));
+  cloud.AppendPoint(Point3d(4, 0, 1.5));
+  cloud.AppendPoint(Point3d(5, 0, -0.5));
+  cloud.AppendPoint(Point3d(6, 0, 0.51));
+
+  const ON_Plane z0_plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1));
+  const auto near_plane = cloud.PointsNearPlane(z0_plane, 0.5);
+  Check(near_plane.size() == 4, "PointsNearPlane(band=0.5) finds exactly the 4 points within 0.5 of z=0");
+  const std::vector<int> expected_order = {2, 3, 1, 5};  // ascending distance: 0, 0.1, 0.3, 0.5
+  bool order_ok = near_plane.size() == expected_order.size();
+  for (size_t i = 0; order_ok && i < expected_order.size(); ++i) order_ok = near_plane[i].index == expected_order[i];
+  Check(order_ok, "PointsNearPlane is sorted by ascending |distance|: idx 2, 3, 1, 5 (0, 0.1, 0.3, 0.5)");
+  Check(near_plane.size() == 4 && std::abs(near_plane[3].distance - 0.5) < 1e-12,
+        "the point exactly at the band's own edge (distance == band) is included, inclusive like PointsWithinRadius");
+
+  Check(cloud.PointsNearPlane(z0_plane, 10.0).size() == 7, "a band covering every point's distance finds all 7 points");
+  Check(cloud.PointsNearPlane(z0_plane, 0.0).size() == 1, "band=0 finds only the exact on-plane point (idx 2)");
+
+  bool threw_band = false;
+  try {
+    cloud.PointsNearPlane(z0_plane, -0.001);
+  } catch (const std::invalid_argument&) {
+    threw_band = true;
+  }
+  Check(threw_band, "PointsNearPlane(negative band) throws");
+
+  const PointCloud empty;
+  Check(empty.PointsNearPlane(z0_plane, 1e9).empty(),
+        "PointsNearPlane on an empty cloud returns an empty result, not an error");
+}
+
 // SaveXyz()/LoadXyz() close a real gap: before this, a PointCloud had no
 // Save/Load path of its own at all (only Model::AddPointCloud()'s .3dm
 // route) - no counterpart to Mesh's SaveObj/SaveStl for the point-cloud
@@ -25059,6 +25433,169 @@ void TestMeshLoadGlbRejectsMalformedFiles() {
   std::remove(declared_too_long_path.c_str());
   std::remove(missing_bin_path.c_str());
   std::remove(missing_json_path.c_str());
+  std::remove(oob_index_path.c_str());
+}
+
+void TestMeshSaveIfcRoundTrips() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Result;
+
+  // PARITY_MAP.md's own "kernel: Kernel-level data exchange" evidence names
+  // IFC as fully missing: "zero hits for IFC in dino8-app/src or
+  // dino8-kernel/src". Same MakeQuadBoxMesh fixture every other "other
+  // file format" round-trip test in this file uses: 8 vertices, 6 quad
+  // faces, known exact volume.
+  const auto box = MakeQuadBoxMesh(0, 0, 0, 2, 2, 2);
+  const std::string path = "dino8_kernel_mesh_ifc_test.ifc";
+  Check(box.SaveIfc(path) == Result::Ok, "Mesh::SaveIfc succeeds");
+
+  std::ifstream in(path);
+  Check(static_cast<bool>(in), "the .ifc file SaveIfc wrote can be reopened for reading");
+  std::string file_text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  Check(file_text.find("ISO-10303-21;") == 0, "the file starts with the ISO-10303-21 physical-file header");
+  Check(file_text.find("FILE_SCHEMA(('IFC4'))") != std::string::npos,
+        "the file declares the IFC4 schema in its HEADER section");
+  Check(file_text.find("IFCCARTESIANPOINTLIST3D") != std::string::npos,
+        "the file has an IfcCartesianPointList3D entity");
+  Check(file_text.find("IFCTRIANGULATEDFACESET") != std::string::npos,
+        "the file has an IfcTriangulatedFaceSet entity");
+
+  // Every one of the box's 6 quad faces splits into 2 triangles - count the
+  // "),(" triangle-tuple separators plus 1 between the CoordIndex list's
+  // own opening and closing parens to confirm 12 triangles were written,
+  // not 6 (i.e. that a quad genuinely split rather than one tuple per
+  // face).
+  const size_t faceset_pos = file_text.find("IFCTRIANGULATEDFACESET(#1,$,$,(");
+  Check(faceset_pos != std::string::npos,
+        "CoordIndex follows the documented Coordinates=#1, Normals=$, Closed=$ argument order");
+  const size_t coord_index_start = faceset_pos + std::string("IFCTRIANGULATEDFACESET(#1,$,$,(").size();
+  const size_t coord_index_end = file_text.find("),$);", coord_index_start);
+  Check(coord_index_end != std::string::npos, "CoordIndex's own list is closed before the trailing $ (PnIndex)");
+  const std::string coord_index_text = file_text.substr(coord_index_start, coord_index_end - coord_index_start);
+  size_t triangle_count = coord_index_text.empty() ? 0 : 1;
+  for (size_t pos = coord_index_text.find("),("); pos != std::string::npos;
+       pos = coord_index_text.find("),(", pos + 1)) {
+    ++triangle_count;
+  }
+  Check(triangle_count == static_cast<size_t>(box.FaceCount()) * 2,
+        "CoordIndex holds 2 triangles per quad face - 12 for the box's 6 quads, confirming a quad splits");
+
+  Mesh reloaded;
+  Check(Mesh::LoadIfc(path, reloaded) == Result::Ok, "Mesh::LoadIfc succeeds on SaveIfc()'s own output");
+  Check(reloaded.VertexCount() == box.VertexCount(),
+        "the reloaded mesh has the same vertex count as the original - IfcCartesianPointList3D is a real "
+        "shared vertex list, not duplicated per triangle");
+  Check(reloaded.FaceCount() == box.FaceCount() * 2,
+        "the reloaded mesh has 12 triangles for the original's 6 quads");
+  Check(std::abs(reloaded.Volume() - box.Volume()) < 1e-6,
+        "the reloaded mesh's volume exactly matches the original, within the triangle split");
+  std::remove(path.c_str());
+
+  // A hand-written file (not SaveIfc()'s own output) exercising a parent
+  // wrapping the recognized entities, extra whitespace, and a single
+  // triangle whose known corners let LoadIfc()'s geometry be checked
+  // exactly - the same independent-fixture discipline
+  // TestMeshSaveUsdaRoundTrips()/TestMeshSaveGltfRoundTrips() already use.
+  const std::string hand_written_path = "dino8_kernel_mesh_ifc_test_hand_written.ifc";
+  {
+    std::ofstream out(hand_written_path);
+    out << "ISO-10303-21;\n";
+    out << "HEADER;\n";
+    out << "FILE_DESCRIPTION((''),'2;1');\n";
+    out << "FILE_NAME('t','2026-09-30T00:00:00',(''),(''),'','','');\n";
+    out << "FILE_SCHEMA(('IFC4'));\n";
+    out << "ENDSEC;\n";
+    out << "DATA;\n";
+    out << "#1 = IFCCARTESIANPOINTLIST3D( ( (0., 0., 0.) , (2.,0.,0.), (0., 2., 0.) ) ) ;\n";
+    out << "#2=IFCTRIANGULATEDFACESET(#1,$,$,((1,2,3)),$);\n";
+    out << "ENDSEC;\n";
+    out << "END-ISO-10303-21;\n";
+  }
+  Mesh hand_written;
+  Check(Mesh::LoadIfc(hand_written_path, hand_written) == Result::Ok,
+        "LoadIfc succeeds on a hand-written file with irregular spacing around '='/parens");
+  Check(hand_written.VertexCount() == 3 && hand_written.FaceCount() == 1,
+        "the hand-written file's 3 points and 1 triangle are read correctly");
+  const ON_MeshFace& tri = hand_written.raw().m_F[0];
+  Check(tri.vi[0] == 0 && tri.vi[1] == 1 && tri.vi[2] == 2,
+        "IFC's 1-based CoordIndex (1,2,3) resolved to this kernel's own 0-based corners (0,1,2)");
+  const ON_3fPoint& p0 = hand_written.raw().m_V[0];
+  const ON_3fPoint& p1 = hand_written.raw().m_V[1];
+  const ON_3fPoint& p2 = hand_written.raw().m_V[2];
+  Check(p0.x == 0 && p0.y == 0 && p0.z == 0, "the first point reads back exactly as written");
+  Check(p1.x == 2 && p1.y == 0 && p1.z == 0, "the second point reads back exactly as written");
+  Check(p2.x == 0 && p2.y == 2 && p2.z == 0, "the third point reads back exactly as written");
+  std::remove(hand_written_path.c_str());
+}
+
+void TestMeshLoadIfcRejectsMalformedFiles() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Result;
+
+  const std::string missing_path = "dino8_kernel_mesh_ifc_test_does_not_exist.ifc";
+  Mesh out;
+  Check(Mesh::LoadIfc(missing_path, out) == Result::Failed, "LoadIfc fails on a file that doesn't exist");
+
+  const std::string bad_header_path = "dino8_kernel_mesh_ifc_test_bad_header.ifc";
+  {
+    std::ofstream bad(bad_header_path);
+    bad << "#1=IFCCARTESIANPOINTLIST3D(((0.,0.,0.),(1.,0.,0.),(0.,1.,0.)));\n"
+        << "#2=IFCTRIANGULATEDFACESET(#1,$,$,((1,2,3)),$);\n";
+  }
+  Check(Mesh::LoadIfc(bad_header_path, out) == Result::Failed,
+        "LoadIfc fails on a file with no ISO-10303-21; header line at all");
+
+  const std::string no_points_path = "dino8_kernel_mesh_ifc_test_no_points.ifc";
+  {
+    std::ofstream bad(no_points_path);
+    bad << "ISO-10303-21;\nDATA;\n#2=IFCTRIANGULATEDFACESET(#1,$,$,((1,2,3)),$);\nENDSEC;\n";
+  }
+  Check(Mesh::LoadIfc(no_points_path, out) == Result::Failed,
+        "LoadIfc fails on a file with no IfcCartesianPointList3D entity at all");
+
+  const std::string no_faceset_path = "dino8_kernel_mesh_ifc_test_no_faceset.ifc";
+  {
+    std::ofstream bad(no_faceset_path);
+    bad << "ISO-10303-21;\nDATA;\n#1=IFCCARTESIANPOINTLIST3D(((0.,0.,0.),(1.,0.,0.),(0.,1.,0.)));\nENDSEC;\n";
+  }
+  Check(Mesh::LoadIfc(no_faceset_path, out) == Result::Failed,
+        "LoadIfc fails on a file with no IfcTriangulatedFaceSet entity at all");
+
+  const std::string bad_triple_path = "dino8_kernel_mesh_ifc_test_bad_triple.ifc";
+  {
+    std::ofstream bad(bad_triple_path);
+    // A CoordIndex tuple with only 2 indices instead of 3.
+    bad << "ISO-10303-21;\nDATA;\n#1=IFCCARTESIANPOINTLIST3D(((0.,0.,0.),(1.,0.,0.),(0.,1.,0.)));\n"
+        << "#2=IFCTRIANGULATEDFACESET(#1,$,$,((1,2)),$);\nENDSEC;\n";
+  }
+  Check(Mesh::LoadIfc(bad_triple_path, out) == Result::Failed,
+        "LoadIfc fails on a CoordIndex tuple that isn't exactly 3 integers");
+
+  const std::string zero_index_path = "dino8_kernel_mesh_ifc_test_zero_index.ifc";
+  {
+    std::ofstream bad(zero_index_path);
+    // IFC's CoordIndex is 1-based (IfcPositiveInteger) - 0 is never valid.
+    bad << "ISO-10303-21;\nDATA;\n#1=IFCCARTESIANPOINTLIST3D(((0.,0.,0.),(1.,0.,0.),(0.,1.,0.)));\n"
+        << "#2=IFCTRIANGULATEDFACESET(#1,$,$,((0,1,2)),$);\nENDSEC;\n";
+  }
+  Check(Mesh::LoadIfc(zero_index_path, out) == Result::Failed,
+        "LoadIfc fails on a CoordIndex entry of 0 - IFC indices are 1-based, never 0");
+
+  const std::string oob_index_path = "dino8_kernel_mesh_ifc_test_oob_index.ifc";
+  {
+    std::ofstream bad(oob_index_path);
+    // Only 3 points declared (valid 1-based indices 1-3); index 4 doesn't exist.
+    bad << "ISO-10303-21;\nDATA;\n#1=IFCCARTESIANPOINTLIST3D(((0.,0.,0.),(1.,0.,0.),(0.,1.,0.)));\n"
+        << "#2=IFCTRIANGULATEDFACESET(#1,$,$,((1,2,4)),$);\nENDSEC;\n";
+  }
+  Check(Mesh::LoadIfc(oob_index_path, out) == Result::Failed,
+        "LoadIfc fails on a CoordIndex entry referencing a point index that doesn't exist");
+
+  std::remove(bad_header_path.c_str());
+  std::remove(no_points_path.c_str());
+  std::remove(no_faceset_path.c_str());
+  std::remove(bad_triple_path.c_str());
+  std::remove(zero_index_path.c_str());
   std::remove(oob_index_path.c_str());
 }
 
@@ -59697,6 +60234,9 @@ int main() {
   TestIntersectCurveSelfIntersectionsFindsBowtieAndRejectsSimpleCurves();
   TestIntersectBrepsAndCurveBrep();
   TestPullbackCurveToSurfaceCylinderRulingLine();
+  TestIntersectBrepByPlaneBoxSideWalls();
+  TestProjectCurveToSurfaceFlatPlaneStraightDown();
+  TestProjectCurveToSurfacePartialMiss();
   TestBooleanCombineGeneralBoxBox();
   TestBooleanCombineGeneralFreeformSurfaceOperand();
   TestBooleanCombineGeneralCoplanarBoxes();
@@ -59782,7 +60322,9 @@ int main() {
   TestModelAddClippingPlaneRoundTrips();
   TestModelAddInstanceReferenceRoundTrips();
   TestModelAddHatchRoundTrips();
+  TestModelAddHatchPatternLinesRoundTrips();
   TestModelAddTextDotRoundTrips();
+  TestModelAddTextAnnotationRoundTrips();
   TestModelUnitConversionFactor();
   TestModelConvertUnitsScalesGeometryAndUpdatesUnitSystem();
   TestModelLoadRejectsMeshWithOutOfRangeFaceIndex();
@@ -59853,6 +60395,7 @@ int main() {
   TestMeshDistanceTo();
   TestMeshClashWith();
   TestPointCloudSpatialQueries();
+  TestPointCloudPointsNearPlane();
   TestPointCloudXyzRoundTrips();
   TestPointCloudLoadXyzRejectsMalformedInput();
   TestPointCloudPtsRoundTrips();
@@ -59950,6 +60493,8 @@ int main() {
   TestMeshLoadGltfRejectsMalformedFiles();
   TestMeshSaveGlbRoundTrips();
   TestMeshLoadGlbRejectsMalformedFiles();
+  TestMeshSaveIfcRoundTrips();
+  TestMeshLoadIfcRejectsMalformedFiles();
   TestMeshSaveStlSplitsQuadsAndComputesNormals();
   TestMeshLoadStlRoundTrips();
   TestMeshLoadStlBinary();

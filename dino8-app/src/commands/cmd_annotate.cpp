@@ -116,11 +116,11 @@ std::string Fmt(double v) { return FormatNumber(v); }
 int BuildLinearDimensionGroup(CommandContext& ctx, Point3d p0, Point3d p1, const LinearDimLayout& L, double text_h,
                               bool has_ref1, ObjectId ref1, const std::string& end1,
                               bool has_ref2, ObjectId ref2, const std::string& end2, double* len_out = nullptr,
-                              int precision = -1) {
+                              const DimStyleParams& style = {}) {
   std::vector<kernel::NurbsCurve> curves;
   DimGlyphSpec dg;
   std::map<std::string, std::string> tags;
-  if (!BuildLinearDimensionGeometry(p0, p1, L, text_h, curves, dg, tags, len_out, precision)) return -1;
+  if (!BuildLinearDimensionGeometry(p0, p1, L, text_h, curves, dg, tags, len_out, style)) return -1;
   if (has_ref1) { tags["DimRefObj1"] = std::to_string(ref1); tags["DimRefEnd1"] = end1; }
   if (has_ref2) { tags["DimRefObj2"] = std::to_string(ref2); tags["DimRefEnd2"] = end2; }
   GlyphSpec g;
@@ -227,11 +227,12 @@ class DimLinearCommand : public Command {
     std::string end1, end2;
     const bool has1 = FindPointAnchor(ctx.Doc(), pts_[0], ref1, end1);
     const bool has2 = FindPointAnchor(ctx.Doc(), pts_[1], ref2, end2);
+    const AnnotationStyle& cur_style = ctx.Doc().CurrentAnnotationStyle();
     ctx.Doc().BeginChange(aligned_ ? "DimAligned" : "DimLinear");
     double len = 0;
-    const int g = BuildLinearDimensionGroup(ctx, pts_[0], pts_[1], L, h, has1, ref1, end1, has2, ref2, end2, &len,
-                                             AnnotationLinearPrecision(ctx));
+    const int g = BuildLinearDimensionGroup(ctx, pts_[0], pts_[1], L, h, has1, ref1, end1, has2, ref2, end2, &len, StyleParamsOf(cur_style));
     if (g < 0) { Finish(); return; }
+    ApplyStyleTolerance(ctx, g, cur_style);
     const std::string assoc = (has1 || has2) ? (has1 && has2 ? " (associative to both endpoints)" : " (associative to one endpoint)") : "";
     ctx.Print(std::string(aligned_ ? "DimAligned " : "DimLinear ") + Fmt(len) + assoc);
     Finish();
@@ -261,7 +262,8 @@ class DimLinearCommand : public Command {
 int BuildAngleDimensionGroup(CommandContext& ctx, Point3d vertex, Point3d p1, Point3d p2, const ON_Plane& pl, double text_h,
                              bool has0, ObjectId ref0, const std::string& end0,
                              bool has1, ObjectId ref1, const std::string& end1,
-                             bool has2, ObjectId ref2, const std::string& end2, double* deg_out = nullptr) {
+                             bool has2, ObjectId ref2, const std::string& end2, double* deg_out = nullptr,
+                             int angular_precision = -1) {
   Vector3d va = p1 - vertex, vb = p2 - vertex;
   const double r = std::min(va.Length(), vb.Length()) * 0.7;
   if (r <= 0) return -1;
@@ -293,7 +295,7 @@ int BuildAngleDimensionGroup(CommandContext& ctx, Point3d vertex, Point3d p1, Po
   if (has1) { tags["DimRefObj2"] = std::to_string(ref1); tags["DimRefEnd2"] = end1; }
   if (has2) { tags["DimRefObj3"] = std::to_string(ref2); tags["DimRefEnd3"] = end2; }
   GlyphSpec g;
-  g.text = Fmt(deg) + " deg"; g.height = text_h; g.plane = pl; g.plane.SetOrigin(tp); g.center = true;
+  g.text = FormatMeasurement(deg, angular_precision, "deg"); g.height = text_h; g.plane = pl; g.plane.SetOrigin(tp); g.center = true;
   return AddAnnotationGroup(ctx, "DimAngle", curves, g, -1, tags);
 }
 
@@ -365,10 +367,12 @@ class DimAngleCommand : public Command {
     const bool h0 = FindPointAnchor(ctx.Doc(), pts_[0], r0, e0);
     const bool h1 = FindPointAnchor(ctx.Doc(), pts_[1], r1, e1);
     const bool h2 = FindPointAnchor(ctx.Doc(), pts_[2], r2, e2);
+    const AnnotationStyle& cur_style = ctx.Doc().CurrentAnnotationStyle();
     ctx.Doc().BeginChange("DimAngle");
     double deg = 0;
-    const int g = BuildAngleDimensionGroup(ctx, pts_[0], pts_[1], pts_[2], pl, h, h0, r0, e0, h1, r1, e1, h2, r2, e2, &deg);
+    const int g = BuildAngleDimensionGroup(ctx, pts_[0], pts_[1], pts_[2], pl, h, h0, r0, e0, h1, r1, e1, h2, r2, e2, &deg, cur_style.angular_precision);
     if (g < 0) { Finish(); return; }
+    ApplyStyleTolerance(ctx, g, cur_style);
     const int nassoc = (h0 ? 1 : 0) + (h1 ? 1 : 0) + (h2 ? 1 : 0);
     ctx.Print("DimAngle " + Fmt(deg) + " deg" + (nassoc ? " (associative to " + std::to_string(nassoc) + " point(s))" : ""));
     Finish();
@@ -399,11 +403,11 @@ class DimAngleCommand : public Command {
 // ResolveRadiusDimGeom re-evaluates it via ResolveArcAnchor instead of the
 // fallback tags when it still resolves to an arc/circle.
 int BuildRadiusDimensionGroup(CommandContext& ctx, Point3d center, double radius, const RadiusDimLayout& L, double text_h,
-                              bool has_ref, ObjectId ref, double* val_out = nullptr, int precision = -1) {
+                              bool has_ref, ObjectId ref, double* val_out = nullptr, const DimStyleParams& style = {}) {
   std::vector<kernel::NurbsCurve> curves;
   DimGlyphSpec dg;
   std::map<std::string, std::string> tags;
-  if (!BuildRadiusDimensionGeometry(center, radius, L, text_h, curves, dg, tags, val_out, precision)) return -1;
+  if (!BuildRadiusDimensionGeometry(center, radius, L, text_h, curves, dg, tags, val_out, style)) return -1;
   if (has_ref) tags["DimRefObj1"] = std::to_string(ref);
   GlyphSpec g;
   g.text = dg.text; g.height = dg.height; g.plane = dg.plane; g.center = dg.center;
@@ -476,11 +480,12 @@ class DimRadiusCommand : public Command {
     L.dir = d;
     L.extra = extra;
     const double h = Height(ctx);
+    const AnnotationStyle& cur_style = ctx.Doc().CurrentAnnotationStyle();
     ctx.Doc().BeginChange(diameter_ ? "DimDiameter" : "DimRadius");
     double val = 0;
-    const int g = BuildRadiusDimensionGroup(ctx, arc_.Center(), arc_.Radius(), L, h, true, obj_, &val,
-                                             AnnotationLinearPrecision(ctx));
+    const int g = BuildRadiusDimensionGroup(ctx, arc_.Center(), arc_.Radius(), L, h, true, obj_, &val, StyleParamsOf(cur_style));
     if (g < 0) { Finish(); return; }
+    ApplyStyleTolerance(ctx, g, cur_style);
     ctx.Print(std::string(diameter_ ? "DimDiameter " : "DimRadius ") + Fmt(val) + " (associative to selected arc/circle)");
     Finish();
   }
@@ -604,11 +609,11 @@ void RegisterAnnotateCommands(CommandEngine& e) {
   // cross-cutting change far beyond this file, so it is not attempted here.
   const char* text_note = "Bakes the text as font-outline curve/surface geometry rather than a live TextEntity: it does not re-flow if the annotation style or text height changes later (TextObject is the same geometry, which matches its own intended meaning in Rhino).";
   const char* linear_dim_note =
-      "Bakes curve/arrow geometry like every dimension here, but is associative when a measured point sits exactly on a real object - a Point object; a curve's start/end, segment midpoint, arc-length midpoint or interior knot point; an arc/circle's center or quadrant point; or a B-rep's vertex (see FindPointAnchor, annotate_common.h, matching the viewport's own End/Mid/Knot/Cen/Quad/Vertex osnaps) - the dimension records which object and anchor it measured, and UpdateDimensions re-evaluates that object's current position and redraws the dimension line/text from it. A point that isn't on any object (free space, or a snap this build still doesn't resolve to an anchor, like Near/Perp/Tangent) still dimensions correctly but stays a static baked measurement for that endpoint, same as before this change. DimRotated builds the identical dimension as DimAligned (same command, same tagging), so it shares this associativity too.";
+      "Bakes curve/arrow geometry like every dimension here, but is associative when a measured point sits exactly on a real object - a Point object; a curve's start/end, segment midpoint, arc-length midpoint or interior knot point; an arc/circle's center or quadrant point; or a B-rep's vertex (see FindPointAnchor, annotate_common.h, matching the viewport's own End/Mid/Knot/Cen/Quad/Vertex osnaps) - the dimension records which object and anchor it measured, and UpdateDimensions re-evaluates that object's current position and redraws the dimension line/text from it. A point that isn't on any object (free space, or a snap this build still doesn't resolve to an anchor, like Near/Perp/Tangent) still dimensions correctly but stays a static baked measurement for that endpoint, same as before this change. DimRotated builds the identical dimension as DimAligned (same command, same tagging), so it shares this associativity too. Its current AnnotationStyle's precision/unit_suffix/ext_offset/ext_extension/text_placement/tolerance fields (Document.h) are real and wired in (DimStyleParams, DimGeometry.h/annotate_common.h): the measured text's decimal places and unit suffix, the extension lines' gap-from-point and overshoot-past-the-dimension-line, whether the line breaks for a centered text or stays unbroken with text above it, and an optional default tolerance suffix (the same suffix format the manual DimTolerance command builds) are all real per-style properties now, not stored-and-ignored ones - UpdateDimensions re-reads them from the dimension's own recorded style by name, so editing a style and re-running Update picks up the change.";
   const char* angle_dim_note =
-      "Bakes curve/arrow geometry, associative per point exactly like DimLinear (FindPointAnchor on the vertex and each of the two direction points - see annotate_common.h): UpdateDimensions re-evaluates whichever of the three points matched a real object and rebuilds the arc/extension-lines/text from their current positions. A point that isn't on any object stays a static baked measurement for that vertex, same as before this change.";
+      "Bakes curve/arrow geometry, associative per point exactly like DimLinear (FindPointAnchor on the vertex and each of the two direction points - see annotate_common.h): UpdateDimensions re-evaluates whichever of the three points matched a real object and rebuilds the arc/extension-lines/text from their current positions. A point that isn't on any object stays a static baked measurement for that vertex, same as before this change. Its style's angular_precision and default tolerance (if any) are real and wired in, the same way linear_dim_note describes.";
   const char* radius_dim_note =
-      "Bakes curve/arrow geometry, but is always associative: DimRadius/DimDiameter require selecting a real arc/circle curve to measure, so that curve's id is recorded directly (not by coincident-point matching) and UpdateDimensions re-evaluates its current center/radius (ResolveArcAnchor, annotate_common.h) and rebuilds the leader/text from it - the dimension-line direction and stand-off distance chosen at creation are kept fixed as the circle/arc moves or resizes.";
+      "Bakes curve/arrow geometry, but is always associative: DimRadius/DimDiameter require selecting a real arc/circle curve to measure, so that curve's id is recorded directly (not by coincident-point matching) and UpdateDimensions re-evaluates its current center/radius (ResolveArcAnchor, annotate_common.h) and rebuilds the leader/text from it - the dimension-line direction and stand-off distance chosen at creation are kept fixed as the circle/arc moves or resizes. Its style's precision/unit_suffix and default tolerance (if any) are real and wired in, the same way linear_dim_note describes (extension-line/text-placement fields don't apply to a radius/diameter leader).";
   const char* leader_dim_note =
       "Bakes curve/arrow geometry, associative when the arrowhead point sits exactly on a real object (FindPointAnchor, same coincidence rule as DimLinear, including its curve-midpoint/knot/arc-center/quadrant/B-rep-vertex anchors): UpdateDimensions re-evaluates that object's current position and redraws the whole leader (bend points and text keep their built offsets from the tip, so the shape translates with it) - a leader whose arrowhead isn't on any object stays a static baked leader, same as before this change.";
   // Baked-curve annotation is the established, accepted shape for this
@@ -658,10 +663,10 @@ void RegisterAnnotateCommands(CommandEngine& e) {
               if (auto it = o.user_text.find("DimRefObj2"); it != o.user_text.end()) { ref2 = static_cast<ObjectId>(std::strtoull(it->second.c_str(), nullptr, 10)); end2 = o.user_text.count("DimRefEnd2") ? o.user_text.at("DimRefEnd2") : "point"; has2 = true; }
             }
             const std::string tol = GroupToleranceSuffix(ctx, g, old_glyph);
-            const int precision = GroupLinearPrecision(ctx, g);
+            const DimStyleParams dim_style = StyleParamsByName(ctx.Doc(), GroupStyleName(ctx.Doc(), g));
             for (ObjectId id : ctx.Doc().GroupMembers(g)) ctx.Doc().Remove(id);
             double len = 0;
-            const int new_g = BuildLinearDimensionGroup(ctx, p0, p1, L, h, has1, ref1, end1, has2, ref2, end2, &len, precision);
+            const int new_g = BuildLinearDimensionGroup(ctx, p0, p1, L, h, has1, ref1, end1, has2, ref2, end2, &len, dim_style);
             if (new_g >= 0) {
               ReapplyToleranceSuffix(ctx, new_g, tol);
               ++updated;
@@ -683,9 +688,14 @@ void RegisterAnnotateCommands(CommandEngine& e) {
               if (auto it = o.user_text.find("DimRefObj3"); it != o.user_text.end()) { r2 = static_cast<ObjectId>(std::strtoull(it->second.c_str(), nullptr, 10)); e2 = o.user_text.count("DimRefEnd3") ? o.user_text.at("DimRefEnd3") : "point"; h2 = true; }
             }
             const std::string tol = GroupToleranceSuffix(ctx, g, old_glyph);
+            int angular_precision = -1;
+            {
+              const std::string style_name = GroupStyleName(ctx.Doc(), g);
+              if (const AnnotationStyle* st = ctx.Doc().FindAnnotationStyle(style_name)) angular_precision = st->angular_precision;
+            }
             for (ObjectId id : ctx.Doc().GroupMembers(g)) ctx.Doc().Remove(id);
             double deg = 0;
-            const int new_g = BuildAngleDimensionGroup(ctx, v, p1, p2, pl, h, h0, r0, e0, h1, r1, e1, h2, r2, e2, &deg);
+            const int new_g = BuildAngleDimensionGroup(ctx, v, p1, p2, pl, h, h0, r0, e0, h1, r1, e1, h2, r2, e2, &deg, angular_precision);
             if (new_g >= 0) {
               ReapplyToleranceSuffix(ctx, new_g, tol);
               ++updated;
@@ -704,10 +714,10 @@ void RegisterAnnotateCommands(CommandEngine& e) {
               if (auto it = o.user_text.find("DimRefObj1"); it != o.user_text.end()) { ref1 = static_cast<ObjectId>(std::strtoull(it->second.c_str(), nullptr, 10)); has1 = true; }
             }
             const std::string tol = GroupToleranceSuffix(ctx, g, old_glyph);
-            const int precision = GroupLinearPrecision(ctx, g);
+            const DimStyleParams dim_style = StyleParamsByName(ctx.Doc(), GroupStyleName(ctx.Doc(), g));
             for (ObjectId id : ctx.Doc().GroupMembers(g)) ctx.Doc().Remove(id);
             double val = 0;
-            const int new_g = BuildRadiusDimensionGroup(ctx, center, radius, L, h, has1, ref1, &val, precision);
+            const int new_g = BuildRadiusDimensionGroup(ctx, center, radius, L, h, has1, ref1, &val, dim_style);
             if (new_g >= 0) {
               ReapplyToleranceSuffix(ctx, new_g, tol);
               ++updated;
@@ -773,7 +783,7 @@ void RegisterAnnotateCommands(CommandEngine& e) {
         }
         ctx.Print("UpdateDimensions: " + std::to_string(updated) + " dimension(s) regenerated" + (skipped ? ", " + std::to_string(skipped) + " skipped (no resolvable layout/points)" : ""));
       }), CommandStatus::Implemented,
-      "Re-evaluates every associative dimension's anchor(s) - DimLinear/DimAligned/DimRotated, DimAngle, DimRadius/DimDiameter, Leader, Centermark, CenterLine - and rebuilds its curve/arrow/text geometry from their current position, replacing the old baked geometry in place - the associative counterpart to those dimension types' static bake, following the same explicit-recompute shape as UpdateSectionViews (cmd_drafting2.cpp) rather than an automatic hook on every document edit. This window fixes a gap in that rebuild for DimLinear/DimAligned, DimAngle and DimRadius/DimDiameter: a DimTolerance suffix (cmd_drafting2.cpp) on one of these used to be silently dropped, since the rebuilt text was always the freshly recomputed measurement alone. It is now diffed against the DimTolerance.Base tag DimTolerance itself leaves and re-appended to whatever the new measurement is (GroupToleranceSuffix/ReapplyToleranceSuffix, annotate_common.h) - a dimension carrying a tolerance keeps it through a move/edit, not just through the DimTolerance command's own idempotent re-run. Leader was never affected (its text is a static label copied verbatim, not recomputed), and Centermark/CenterLine have no text to lose.");
+      "Re-evaluates every associative dimension's anchor(s) - DimLinear/DimAligned/DimRotated, DimAngle, DimRadius/DimDiameter, Leader, Centermark, CenterLine - and rebuilds its curve/arrow/text geometry from their current position, replacing the old baked geometry in place - the associative counterpart to those dimension types' static bake, following the same explicit-recompute shape as UpdateSectionViews (cmd_drafting2.cpp) rather than an automatic hook on every document edit. This window fixes a gap in that rebuild for DimLinear/DimAligned, DimAngle and DimRadius/DimDiameter: a DimTolerance suffix (cmd_drafting2.cpp) on one of these used to be silently dropped, since the rebuilt text was always the freshly recomputed measurement alone. It is now diffed against the DimTolerance.Base tag DimTolerance itself leaves and re-appended to whatever the new measurement is (GroupToleranceSuffix/ReapplyToleranceSuffix, annotate_common.h) - a dimension carrying a tolerance keeps it through a move/edit, not just through the DimTolerance command's own idempotent re-run. Leader was never affected (its text is a static label copied verbatim, not recomputed), and Centermark/CenterLine have no text to lose. A later window wires DimLinear/DimAligned/DimAngle/DimRadius/DimDiameter's rebuild to the dimension's own recorded AnnotationStyle by name (StyleParamsByName, annotate_common.h): the style's precision/unit_suffix/ext_offset/ext_extension/text_placement are re-read live on every Update, not just baked in at creation, so editing a style's dimension properties and re-running UpdateDimensions reformats every dimension built with it.");
 }
 
 }  // namespace dino8::app
