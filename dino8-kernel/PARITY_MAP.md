@@ -1,8 +1,121 @@
 # Fossilith / Dino 8 parity map (2026-09-28, updated 2026-09-30)
 
-**Fossilith vs Parasolid/ACIS = 69.0% (weighted, verified); Dino 8 vs Rhino 8 + AutoCAD 2027 = 76.9%.**
+**Fossilith vs Parasolid/ACIS = 69.0% (weighted, verified); Dino 8 vs Rhino 8 + AutoCAD 2027 = 77.3%.**
 
-**2026-09-30, a further session: three real closures on `kernel: Kernel-level data exchange`.** `Mesh::SaveIfc`/`LoadIfc` (dino8-kernel/include/dino8/kernel/mesh.h; src/mesh.cpp) add a genuinely new plain-ASCII IFC4/STEP-Part-21 (ISO 10303-21) reader/writer, closing this category's own `[missing]` IFC bullet outright (`[missing]` -> `[present]`); `Model::AddText`/`TextCount`/`TextAt` (file_io.h/file_io.cpp) add this kernel's first `ON_Annotation` support (`ON_Text`), closing the "annotations... entirely unaddressed" half of the ".3dm composite objects" bullet's own "Still open" list; `Model::AddHatchPattern()`'s new `lines` parameter plus `HatchPatternLineCount()`/`HatchPatternLineAt()` close that same bullet's other named gap, "a `Lines`-fill hatch pattern has no way to populate its actual dash/offset lines (`ON_HatchPattern::AddHatchLine` isn't exposed)". See each bullet's own note below for full detail and verification (`TestMeshSaveIfcRoundTrips`/`TestMeshLoadIfcRejectsMalformedFiles`/`TestModelAddTextAnnotationRoundTrips`/`TestModelAddHatchPatternLinesRoundTrips`, tests/test_basic.cpp). Only the IFC closure changes this category's own Present/Partial/Missing counts (the other two are sub-gaps within an already-`partial` bullet, this document's own usual convention for a narrowing that doesn't flip the whole item) — Kernel-level data exchange moves 8/13/6 (53.7%) -> 9/13/5 (57.4%), moving its own weight/remaining priority-table ratio 0.053 -> 0.056 (now tied with Feature operations at rank 12 rather than sitting alone at rank 13 below it — see that table's own updated note). Re-deriving the kernel headline from the full 17-row table (still 17.75 total weight, only this one row's percentage changed) gives 68.8% -> **69.0%**. The app headline is unaffected by this pass (no `dino8-app`-table row changed by it) - its own 75.5% -> 76.9% move above lands from a concurrent session's own "Field text, Live external data linking and Dimension styles in 2D drafting" closures (see that session's own note below). Full `dino8_kernel_tests` suite (7941 checks) re-run clean, 0 regressions, after adding these.
+**Merge note:** this File I/O rotation (below) landed on this branch
+concurrently with a separate run of same-day sessions covering a doc-only
+audit pass, a Local/direct-edit transcription fix, a Feature-operations
+close, a second Intersections & projections rotation, a second Command
+system & core commands round, a FilletConcaveEdgeTapered kernel close, a
+Scripting-category rotation (Python API breadth's document-state functions
+plus a new Cloud/network compute service, moving that category's own row
+from 11/2/2 (80.0%) to 11/3/1 (83.3%)), and a 2D drafting rotation (Field
+text, Live external data linking and Dimension styles all closing to
+`[present]`, moving that category's own row from 12/5/1 (80.6%) to
+15/3/0 (91.7%) - see each session's own note further below). None of these
+touch the app table's File I/O row, so this rotation's own File I/O delta
+(61.8% -> 64.7%), the Scripting session's own delta (80.0% -> 83.3%), and
+the 2D drafting session's own delta (80.6% -> 91.7%) all apply
+independently on top of the same 7.75-total-weight app table:
+`(73.7*1.5 + 91.7 + 83.3 + 83.3 + 64.7 + 85.4*0.75 + 76.3 + 50.0*0.5) / 7.75`
+= 75.0% -> 77.3%, combined with the kernel headline these other sessions
+already arrived at (68.8%, unaffected by any app-level row).
+
+**2026-09-30 re-score (a second rotation pass on the app table's "File I/O &
+interoperability (app level)" category):** real fixes for three of this
+category's remaining `[partial]` items, with new test coverage for each -
+not the Parasolid/ACIS pair, which stays permanently out of scope by
+project policy.
+
+1. **OBJ** moves `[partial]` -> `[present]`: the headline gap this bullet
+   named - "the importer loads the whole file as one mesh with no per-
+   group/per-object split and no .mtl; the exporter ... merg[es] everything
+   into a single welded mesh, losing object identity and writing no
+   materials" - is genuinely closed. `dino8-app/src/io/File3dm.cpp`'s new
+   `ImportObjMulti`/`ExportObjMulti` sit above the kernel's own single-mesh
+   `Mesh::LoadObj`/`SaveObj` (unchanged, still used for `.stl` and as the
+   underlying per-group mesh builder): the importer splits on the file's
+   own `o`/`g` directives into real, separately-named document objects
+   (each a compact `ON_Mesh` built from only the vertices that group
+   actually references) and reads a referenced `.mtl`'s `newmtl`/`Kd`
+   pairs into each object's own render color via `usemtl`; the exporter is
+   the mirror, writing every exportable object (Mesh/Brep/Surface/SubD,
+   tessellated exactly as the old single-mesh exporter already did) as its
+   own `o <name>` group instead of merging/welding everything into one
+   blob, with a real sidecar `.mtl` carrying each object's own color via a
+   per-object `newmtl`/`usemtl` pair. Verified end-to-end through the real
+   app (`dino8-app/tests/obj_multi_script.txt`/`smoke.sh`): two
+   differently-colored boxes export to two real `o` groups plus a
+   two-material `.mtl`, then reimport as two distinctly-named objects, not
+   one merged mesh.
+   Honestly still scoped, not a full OBJ implementation: no per-face-corner
+   UV seam splitting *within* one object (a real seam collapses to one
+   shared value, the same "no correct answer" simplification the kernel's
+   own single-mesh `Mesh::LoadObj` already discloses for this), and curves
+   still don't round-trip through OBJ (mesh-only, unchanged from before).
+2. **Native .3dm read/write** stays `[partial]`, narrowed: `Load3dm` now
+   recognizes `ON_Hatch` - a hatch authored by a real, independent CAD tool
+   (not one of this app's own baked-geometry exports) previously had no
+   handling at all and was silently skipped on open. Its new case
+   (`dino8-app/src/io/File3dm.cpp`) reconstructs it via the exact same
+   `drafting::BuildSolidHatch`/`BuildPatternHatch` helpers the DXF/DWG
+   HATCH importer and the live Hatch command already share (looking up the
+   hatch's referenced `ON_HatchPattern` table entry for its real fill
+   type/name, falling back to ANSI31 for an unresolved line pattern the
+   same way the DXF importer already does), so it lands as a real,
+   `SelHatch`-findable hatch, not skipped geometry. Verified against a real
+   externally-authored `ON_Hatch` built directly through OpenNURBS' own API
+   (`dino8-app/tests/hatch3dm_fixture_gen.cpp`, independent of this app's
+   own exporter, which never writes a native `ON_Hatch` itself), not just a
+   round trip through Dino 8's own baked-geometry writer -
+   `dino8-app/tests/smoke.sh`'s new hatch3dm section. Still converts only
+   lights, clipping planes, detail views, points, curves, Breps, surfaces,
+   meshes, SubDs, extrusions, point clouds and now hatches - blocks/
+   instance references, real `ON_Annotation` text/dimension objects and
+   text dots are still silently skipped on open, and Dino-written
+   annotations/blocks still survive only as baked geometry plus private
+   user-string metadata.
+3. **DXF** stays `[partial]`, narrowed: the writer
+   (`WriteDxfHatchSolid`, `dino8-app/src/io/FileExchange.cpp`) now covers
+   solid-fill `HATCH` entities - a Dino8-made or DXF-imported solid hatch
+   (`drafting::BuildSolidHatch`'s own trimmed-planar-brep, tagged
+   `Hatch=Solid`) used to round-trip out to its bare boundary curves,
+   losing its fill entirely, since `ExportDxf` had no `HATCH` writer
+   function of any kind before this. Scoped like the rest of this writer's
+   own planar shortcuts (`WriteDxfPolyline`'s LWPOLYLINE branch): only a
+   boundary lying in a world-XY-parallel plane writes as a real `HATCH`;
+   anything else still falls back to the old boundary-curve export.
+   Verified end-to-end through the real app, not just at the file-format
+   level (`dino8-app/tests/dxf_hatch_export_script.txt`/`smoke.sh`): a
+   solid hatch is made in-app, exported, and reopened in a fresh document,
+   landing back as the exact same `SelHatch`-findable, 100-square-unit
+   hatch the existing DXF *import* fixture test already proves for a
+   hand-written HATCH fixture - proving the new writer and the existing
+   reader agree on the wire format. Pattern-fill hatches, and TEXT/MTEXT/
+   DIMENSION/INSERT, still have no writer function anywhere in this file;
+   the reader continues to cover TEXT/MTEXT/ELLIPSE/SPLINE/POLYLINE/
+   3DFACE/HATCH/DIMENSION.
+
+This category's own Present/Partial/Missing counts move from 8/5/4 (61.8%)
+to 9/4/4 (64.7%) (`(9 + 0.5*4) / 17`); recomputed against the app table's
+usual `sum(weight * row%) / 7.75` check, this row's own weight-1.0
+contribution alone would move the app headline from 75.0% to 75.4%
+(`(581.6 - 61.8 + 64.7) / 7.75`) - see the top-of-document merge note for
+the combined 77.3% figure once the concurrent Scripting-category session's
+own +3.3pp row delta (80.0% -> 83.3%) and the concurrent 2D-drafting
+session's own +11.1pp row delta (80.6% -> 91.7%) are both folded in
+alongside this one; the kernel headline (68.4% at the time this paragraph
+was written, 68.8% after folding in the other concurrent kernel-side
+sessions - again see the top-of-document merge note) is untouched by this
+pass, since no `dino8-kernel/src` file was touched here. Full
+`dino8_app_tests` ctest suite (24/24 passing) and `tests/smoke.sh` under
+Xvfb (2089 checks, 0 failures) re-run clean after this pass; a separate
+concurrent session's own `set -e`/`grep -c` fix to `tests/smoke.sh`'s
+RecordMacro section (needed to get a full, uninterrupted `smoke.sh` run at
+all once its own test was merged in) was folded in and re-verified clean
+too.
+
+**2026-09-30, a further session: three real closures on `kernel: Kernel-level data exchange`.** `Mesh::SaveIfc`/`LoadIfc` (dino8-kernel/include/dino8/kernel/mesh.h; src/mesh.cpp) add a genuinely new plain-ASCII IFC4/STEP-Part-21 (ISO 10303-21) reader/writer, closing this category's own `[missing]` IFC bullet outright (`[missing]` -> `[present]`); `Model::AddText`/`TextCount`/`TextAt` (file_io.h/file_io.cpp) add this kernel's first `ON_Annotation` support (`ON_Text`), closing the "annotations... entirely unaddressed" half of the ".3dm composite objects" bullet's own "Still open" list; `Model::AddHatchPattern()`'s new `lines` parameter plus `HatchPatternLineCount()`/`HatchPatternLineAt()` close that same bullet's other named gap, "a `Lines`-fill hatch pattern has no way to populate its actual dash/offset lines (`ON_HatchPattern::AddHatchLine` isn't exposed)". See each bullet's own note below for full detail and verification (`TestMeshSaveIfcRoundTrips`/`TestMeshLoadIfcRejectsMalformedFiles`/`TestModelAddTextAnnotationRoundTrips`/`TestModelAddHatchPatternLinesRoundTrips`, tests/test_basic.cpp). Only the IFC closure changes this category's own Present/Partial/Missing counts (the other two are sub-gaps within an already-`partial` bullet, this document's own usual convention for a narrowing that doesn't flip the whole item) — Kernel-level data exchange moves 8/13/6 (53.7%) -> 9/13/5 (57.4%), moving its own weight/remaining priority-table ratio 0.053 -> 0.056 (now tied with Feature operations at rank 12 rather than sitting alone at rank 13 below it — see that table's own updated note). Re-deriving the kernel headline from the full 17-row table (still 17.75 total weight, only this one row's percentage changed) gives 68.8% -> **69.0%**, reflected at the top of this document. The app headline is unaffected by this pass (no `dino8-app`-table row changed by it) - its own 77.3% figure above is this same document's independently-merged app-side work (File I/O, Scripting, 2D drafting - see the merge note just above). Full `dino8_kernel_tests` suite (7941 checks) re-run clean, 0 regressions, after adding these.
 
 **2026-09-30 re-score (a doc-only audit pass, no source changes):** re-derived
 every kernel/app category's own Present/Partial/Missing counts directly from
@@ -6397,7 +6510,7 @@ and `dino8-kernel/tests/test_basic.cpp`.
 | Dino 8: 2D drafting, annotation & documentation | 1.0 | 18 | 15 | 3 | 0 | 91.7% |
 | Dino 8: Viewport display, rendering & visualization | 1.0 | 18 | 13 | 4 | 1 | 83.3% |
 | Dino 8: Scripting, automation & visual programming | 1.0 | 15 | 11 | 3 | 1 | 83.3% |
-| Dino 8: File I/O & interoperability (app level) | 1.0 | 17 | 8 | 5 | 4 | 61.8% |
+| Dino 8: File I/O & interoperability (app level) | 1.0 | 17 | 9 | 4 | 4 | 64.7% |
 | Dino 8: SubD & mesh modeling toolset (app level) | 0.75 | 24 | 19 | 3 | 2 | 85.4% |
 | Dino 8: UI/UX, accessibility & localization | 1.0 | 19 | 13 | 3 | 3 | 76.3% |
 | Dino 8: Ecosystem, trust, cloud/AI & platform reach | 0.5 | 16 | 7 | 2 | 7 | 50.0% |
@@ -6523,10 +6636,10 @@ own), `dino8-app/docs/COMPUTE_SERVER.md` (new), and `dino8-app/README.md`.
 - [missing] AI-assisted modeling or scripting — no neural/inference code anywhere; the one "smart" feature explicitly documents its own technique as not machine learning.
 
 **Dino 8: File I/O & interoperability (app level)** (app_interop):
-- [partial] Native .3dm read/write — the reader converts only lights, clipping planes, detail views, points, curves, Breps, surfaces, meshes, SubDs, extrusions and point clouds — everything else is silently skipped on open. Dino-written annotations/blocks survive only as baked geometry plus private user-string metadata.
-- [partial] OBJ — the importer loads the whole file as one mesh with no per-group/per-object split and no .mtl; the exporter tessellates and merges everything into a single welded mesh, losing object identity and writing no materials or curves.
+- [partial] Native .3dm read/write — **narrowed this pass**: the reader also now recognizes `ON_Hatch` (`Load3dm`, `dino8-app/src/io/File3dm.cpp`) — previously no handling for it existed at all, so a hatch authored by a real, independent CAD tool was silently skipped on open. It reconstructs via the same `drafting::BuildSolidHatch`/`BuildPatternHatch` helpers the DXF/DWG HATCH importer and the live Hatch command already share (resolving the hatch's referenced `ON_HatchPattern` table entry for its real fill type/name, falling back to ANSI31 the same way the DXF importer does for an unresolved line pattern), so it lands as a real, `SelHatch`-findable hatch. Verified against a real externally-authored `ON_Hatch` built directly through OpenNURBS' own API (`hatch3dm_fixture_gen.cpp` — Dino 8 itself never writes a native `ON_Hatch`), not just a round trip. Still converts only lights, clipping planes, detail views, points, curves, Breps, surfaces, meshes, SubDs, extrusions, point clouds and now hatches — blocks/instance references and real `ON_Annotation` text/dimension objects are still silently skipped on open. Dino-written annotations/blocks still survive only as baked geometry plus private user-string metadata.
+- [present] OBJ — **closed this pass.** `ImportObjMulti`/`ExportObjMulti` (`dino8-app/src/io/File3dm.cpp`) sit above the kernel's own single-mesh `Mesh::LoadObj`/`SaveObj` (unchanged, still used for `.stl`): the importer splits on the file's own `o`/`g` directives into real, separately-named document objects (each a compact `ON_Mesh` built only from the vertices that group references) and reads a referenced `.mtl`'s `newmtl`/`Kd` pairs into each object's render color via `usemtl`; the exporter is the mirror, writing every exportable object as its own `o <name>` group instead of merging/welding everything into one blob, with a real sidecar `.mtl` carrying each object's own color. Verified end-to-end through the real app (`obj_multi_script.txt`/`smoke.sh`): two differently-colored boxes export to two real `o` groups plus a two-material `.mtl`, then reimport as two distinctly-named objects. Still honestly scoped: no per-face-corner UV seam splitting *within* one object (a real seam collapses to one shared value, the same limitation the kernel's own `Mesh::LoadObj` already discloses), and curves still don't round-trip through OBJ.
 - [partial] STEP AP203/AP214 — the writer and reader exist for basic B-rep entities, but the reader has no assembly structure at all (no NEXT_ASSEMBLY/MAPPED_ITEM/context handling), so multi-part assemblies lose their part placement transforms. AP242 is still entirely absent (zero hits for TESSELLATED/TRIANGULATED_FACE/PMI/AP242), scored as its own separate missing item below.
-- [partial] DXF — the writer path (`WriteDxfPolyline` dino8-app/src/io/FileExchange.cpp:265, `WriteDxfSpline`/`WriteDxfCurve`/`WriteDxfMesh` :303/:330/:390-604 — corrected 2026-09-28, was mis-cited as one range :304-604 that missed WriteDxfPolyline's real start) covers only polylines, splines/curves, lines/circles/arcs and 3dfaces; no TEXT/MTEXT/DIMENSION/HATCH/INSERT writer function exists anywhere in that file. The reader covers TEXT/MTEXT/ELLIPSE/SPLINE/POLYLINE/3DFACE/HATCH/DIMENSION.
+- [partial] DXF — **narrowed this pass**: the writer gained a `HATCH` entity function (`WriteDxfHatchSolid`, `dino8-app/src/io/FileExchange.cpp`) for solid-fill hatches lying in a world-XY-parallel plane (the same planar shortcut `WriteDxfPolyline`'s LWPOLYLINE branch already makes) — previously `ExportDxf` had no `HATCH` writer function of any kind, so a solid hatch round-tripped out to bare boundary curves, losing its fill. Verified end-to-end, not just at the file-format level (`dxf_hatch_export_script.txt`/`smoke.sh`): a solid hatch made in-app, exported, and reopened lands back as the same `SelHatch`-findable, 100-square-unit hatch the existing DXF *import* fixture test already proves. The writer path (`WriteDxfPolyline` dino8-app/src/io/FileExchange.cpp:265, `WriteDxfSpline`/`WriteDxfCurve`/`WriteDxfMesh` :303/:330/:390-604 — corrected 2026-09-28, was mis-cited as one range :304-604 that missed WriteDxfPolyline's real start) otherwise still covers only polylines, splines/curves, lines/circles/arcs and 3dfaces; pattern-fill hatches, and TEXT/MTEXT/DIMENSION/INSERT, still have no writer function anywhere in that file. The reader covers TEXT/MTEXT/ELLIPSE/SPLINE/POLYLINE/3DFACE/HATCH/DIMENSION.
 - [partial] DWG (via GPLv3 GNU LibreDWG) — the importer reads a broad entity set including text, dimensions, hatches and inserts; the exporter round-trips through a temporary DXF and inherits every DXF-writer limit above; no 3DSOLID entities in either direction.
 - [missing] STEP AP242 — the writer emits AP214 only, with no AP242 fixture, test, or PMI/TESSELLATED handler.
 - [missing] Parasolid (.x_t/.x_b) import/export — nothing found; **permanently out of scope by project policy.** (Infeasible — see below.)
