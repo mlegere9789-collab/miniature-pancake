@@ -1,10 +1,47 @@
 # Fossilith / Dino 8 parity map (2026-09-28, updated 2026-10-01)
 
-**Fossilith vs Parasolid/ACIS = 69.7% (weighted, verified); Dino 8 vs Rhino 8 + AutoCAD 2027 = 77.3%.**
+**Fossilith vs Parasolid/ACIS = 69.9% (weighted, verified); Dino 8 vs Rhino 8 + AutoCAD 2027 = 77.3%.**
 
-**2026-10-01, merge reconciliation of two concurrent same-day sessions:** the "fleet-merge re-score" below and the "kernel: Feature operations" session further down each independently moved one row of the same 17-row kernel table (Intersections & projections 18/9/2 (77.6%) → 18/10/1 (79.3%); Feature operations 6/17/1 (60.4%) → 6/18/0 (62.5%)) and so each computed a headline from a baseline that didn't yet have the other's own row update - 69.6% and 69.5% respectively, neither combining both. Both row changes are real and independently verified (their own notes below have the full detail); re-deriving the headline fresh from all 17 rows with BOTH corrections applied (still 17.75 total weight) gives **69.7%** (69.686%, rounded), reflected at the top of this document. Neither underlying session needs to re-run its own tests over this - it's a pure arithmetic reconciliation of two already-correct table rows, not a source or scope change.
+**2026-10-01, merge reconciliation of three concurrent same-day sessions:** three sessions landed on this branch around the same time, each moving a different row of the same 17-row kernel table and each computing its own headline from a baseline that didn't yet carry the OTHER two sessions' own row updates - Intersections & projections 18/9/2 (77.6%) → 18/10/1 (79.3%, landing at 69.6%); Offsetting, shelling, thickening 2/25/0 (50.0%) → 2/25/0 (53.7%, landing at 69.8% once combined with the Intersections fix); and Feature operations 6/17/1 (60.4%) → 6/18/0 (62.5%, landing at 69.7% once combined with just the Intersections fix). None of the three combined all three. All three row changes are real and independently verified (their own notes below have the full detail - this one is pure arithmetic, no further source or scope change). Re-deriving the kernel headline fresh from all 17 current rows (`sum(weight * (present + 0.5*partial) / items) / 17.75`, still 17.75 total weight) with ALL THREE corrections applied gives **69.9%** (69.897%, rounded) - the value actually reflected at the top of this document now. The app headline (77.3%) is untouched by any of the three. None of the three underlying sessions needs to re-run its own tests over this reconciliation.
 
 **2026-10-01, a session on `kernel: Feature operations`: three closures, one a genuine `[missing]` → `[partial]` flip.** (1) **Lattice/cellular infill** (`[missing]` → `[partial]`): `dino8::kernel::LatticeInfill()` (dino8-kernel/include/dino8/kernel/features.h; src/features.cpp) is this kernel's first cellular-infill code of any kind — a strut-based cubic lattice, not a gyroid/TPMS or Voronoi infill (both remain genuinely unimplemented) — built from `Mesh::Cylinder()` struts unioned together (one real Boolean Union per strut, needed because several struts converging on a shared grid node genuinely overlap in volume there, not merely touch — a confirmed, fixed pitfall: two COLLINEAR struts meeting flush end-to-end at a shared node are a genuinely hard degenerate tangency, giving a `IsClosedManifold()` but measurably too-small volume until every strut is extended by `strut_radius` at both ends) and trimmed to the target solid via a real `BooleanCombine()` Intersection. (2) **Sheet-metal features** (no count change, already `[partial]`): `dino8::kernel::MultiBend()` (sheet_metal.h/.cpp) generalizes `Bend()` from a single bend to an N-bend chain (a U-channel/hat-channel, each bend free to use its own radius), closing the item's own disclosed "no multi-bend flat pattern" gap — reduces EXACTLY to `Bend()`'s own construction at N=1; a confirmed finding along the way (`dino8_scratch_test` angle/leg-length sweeps) is that `Brep::Extrude()`'s own star-shaped capping limit shrinks much faster across a CHAIN of bends than across `Bend()`'s own single one, so a real chain stays valid only at short legs and modest (roughly 10-20 degree) per-bend angles, not the dramatic 90-degree turns a single `Bend()` call tolerates. (3) **Emboss/deboss** (no count change, already `[partial]`): `dino8::kernel::EmbossProfileWithHoles()` (boolean_general.h/.cpp) extends `EmbossProfile()` to a profile with one or more holes, closing the item's own disclosed "lettering with disconnected glyph counters (an 'O' or 'A''s own hole)" gap — each hole's own tool is placed by which boolean op it will combine with (not simply copying the outer tool's own margin convention, which was tried first and found to silently build an invalid result), refilling/re-cutting that hole's footprint flush with the surface. Two further pre-existing `BooleanCombineGeneral()` limitations surfaced while testing this, neither worked around: a large-enough absolute outer radius makes this two-boolean-op composition measurably more tolerance-sensitive than either op alone (an invalid `ON_Brep` at radius 3.0 on this bullet's own fixture, valid at radius 1.0 - what both new tests actually use); and two axis-aligned, edge-parallel polygon profiles (a square hole in a square outer profile) can separately hit a coincident-face degeneracy, confirmed the same way against a hand-written two-step composition with no helper function involved - a round profile at modest scale is unaffected. See each bullet's own note below for full construction and test detail (8 new tests total, tests/test_basic.cpp). Only the Lattice/cellular infill closure changes this category's own Present/Partial/Missing counts — Feature operations moves 6/17/1 (24 items, 60.4%) → 6/18/0 (24 items, 62.5%). The app headline is unaffected by this pass (no `dino8-app` command wires any of these three in yet). Full `dino8_kernel_tests` suite re-run clean, 0 regressions, after adding these (8298 checks).
+
+**2026-10-01, a second fleet-merge re-score (doc-only):** re-verified every
+category's Present/Partial/Missing counts against current source again
+(bullet-by-bullet count of `- [missing]`/`- [partial]` lines under each of
+the 17 kernel and 8 app category sections, cross-checked against both
+summary tables), since four more sessions landed on this branch after the
+prior fleet-merge re-score pass below: `0cb6655` (Topology & data
+structure — non-manifold construction, same-surface hole merging),
+`bea5f21` (Boolean operations — wiring `SplitBrepByManySolids`/
+`PolygonBooleanPlanar` into the app), `d15fd60` (Kernel-level data exchange
+— texture refs, DXF, T-junction healing), and `c489ce9` (Offsetting,
+shelling, thickening — `OffsetVariable`/`OffsetOnSurfaceNormal` closing to
+`[present]`). All 25 category rows (17 kernel + 8 app) already match their
+own section's current bullet counts exactly — each of the four sessions
+above had already corrected its own row (and, where it changed, the
+Priority order table) as part of its own commit; `0cb6655`/`bea5f21`
+narrowed evidence text without flipping any bullet's status, so their rows
+were already correct and unchanged. The one thing none of them touched was
+this top-line headline itself: `c489ce9`'s own Offsetting row change
+(50.0% -> 53.7%, see the Priority order table's own 2026-10-01 note) landed
+*after* the prior fleet-merge re-score below had already fixed the headline
+at 69.6% from the row values of that moment, so that row's later
+53.7%-vs-50.0% delta was never folded back in. Re-deriving the kernel
+headline fresh from all 17 current rows
+(`sum(weight * (present + 0.5*partial) / items) / 17.75`) gives **69.8%**
+(69.78%, rounded) — not 69.6% (see this document's own later merge-
+reconciliation note above, which combines this row fix with two other,
+concurrent ones to reach the headline actually carried at the top of this
+document). Re-deriving the app headline fresh from all
+8 rows the same way confirms 77.3% (77.28%, rounded) is still correct
+as-is; no app row changed since the last app-headline derivation. Both
+Priority order tables (kernel and app) were independently re-checked
+row-by-row against the current table's Items/Present/Partial/Missing
+columns and already match exactly — no rank changes needed beyond the one
+`c489ce9` itself already made (Offsetting, shelling, thickening swapping
+past Transformations, patterns, splitting to rank 16). `dino8_kernel_tests`/
+`dino8_app_tests` not re-run (docs-only change, no source edited).
 
 **2026-10-01 fleet-merge re-score (doc-only):** re-verified every category's
 Present/Partial/Missing counts against current source (bullet-by-bullet
@@ -6139,6 +6176,70 @@ re-run clean, 0 regressions, after adding these.
 - [partial] Quad-remeshing into a clean SubD-ready cage — **upgraded from missing, this session.** `QuadRemeshAction` (dino8-app/src/commands/cmd_remesh.cpp:249) is still app-only (a real, heavier SDF-voxelize-then-dual-contour remesher, `geom/Remesh.h`), but this kernel had literally nothing of its own - not even the much simpler local technique - until now: `Mesh::TrisToQuads(max_dihedral_deg = 20.0)` (dino8-kernel/include/dino8/kernel/mesh.h; src/mesh.cpp) is a genuine, if deliberately narrow, kernel-native quad-dominant remesher - the standard greedy "tris to quads" local pairing (the same operation behind Blender's own Tris to Quads menu item), not a stub. For every undirected edge shared by exactly two TRIANGLE faces, it computes the merged quad `(a, d, b, c)` (shared-edge endpoints `a`/`b`, the two triangles' own third vertices `d`/`c`, the shared edge dropped as the implicit diagonal), scores it by the dihedral angle between the two triangles' own normals, and refuses a candidate whose two triangles don't walk the shared edge in mutually consistent (opposite) directions, whose dihedral angle exceeds `max_dihedral_deg`, whose merged quad would be non-convex (checked via consecutive edge cross products against the pair's own averaged normal - catches a self-intersecting "dart" merge even at a perfect 0deg dihedral, which the angle gate alone would happily accept), or whose two third vertices coincide (the degenerate "same triangle twice" case). Every surviving candidate is applied greedily best-dihedral-first, each triangle consumed by at most one merge. Purely a face-list rewrite - no vertex is added, moved, or removed, so a mesh's naked-edge boundary, volume, and `IsClosedManifold()` status are provably unaffected (only interior triangle-triangle diagonals disappear). Verified by 24 new checks across 5 tests (tests/test_basic.cpp): a tessellated unit box (12 triangles, 2 coplanar diagonal-split triangles per face) recombines into exactly its 6 original quad faces - the 6 0deg diagonal pairs strictly beat every 90deg cube-edge pair at the default 20deg threshold, so no cross-face merge is even a candidate - with vertex count, volume (1), area (6), and `IsClosedManifold()` all exactly preserved (`TestMeshTrisToQuadsRecombinesTessellatedBoxFaces`); a hand-built "tent fold" pair merges at a shallow 5deg dihedral but is refused at a steep 90deg one under the default threshold, then merges once the caller explicitly raises `max_dihedral_deg` past 90 - both confirming the angle gate and, separately, confirming the exact `(a, d, b, c)` vertex order the doc comment derives (`TestMeshTrisToQuadsGatesOnDihedralAngle`); a perfectly flat (0deg) pair whose merged quad is self-intersecting is refused by the separate convexity guard alone (`TestMeshTrisToQuadsRefusesNonConvexMerge`); 3 spatially disjoint unit squares (6 triangles, no shared vertex between any two, so each square's own diagonal is its only candidate and the matching is unambiguous) all merge in one call, with total area and every square's own naked-edge count exactly unchanged (`TestMeshTrisToQuadsMergesSeveralIndependentSquaresInOneCall`); and two triangles sharing both their edge and their apex (a flipped duplicate) are refused rather than merged into a fake 3-distinct-vertex quad (`TestMeshTrisToQuadsRefusesCoincidentApexes`). Full `dino8_kernel_tests` suite (via `ctest`): 100% passing (1 test target, `dino8_kernel_smoke`, 5561 checks), 0 regressions. Still honestly `partial`, not `present`, and disclosed directly on `TrisToQuads()`'s own doc comment (mesh.h): this only ever merges two EXISTING adjacent triangles as-is, with no vertex relocation, global flow-field alignment, or singularity placement - the materially bigger "retopology" problem the app's own SDF/dual-contouring `QuadRemesh` command solves separately, which this neither replaces nor matches in quality; a mesh whose triangles are already irregular still produces an irregular quad mesh; and it is not wired into any `dino8-app` command or into `SubD::FromControlMesh` (the app's existing `QuadRemesh -> ConvertToSubD` path still goes through the app's own heavier remesher, not this).
 - [partial] SubD extraordinary-vertex limit-tangent quality — `EvaluateFace` (subd.cpp) exact away from the extraordinary quadrant. **Same-day follow-up:** the zero-vector tangent fallback AT the pole itself (a face-corner query landing exactly on an extraordinary/crease/boundary vertex) is closed — `ExactVertexCorner` (subd.cpp, the corner short-circuit `EvaluateFace`'s own adaptive recursion always resolves to) now calls `ON_SubDVertex::GetSurfacePoint(sector_face, ..., limit_point)`, the same real eigenbasis-based routine `SurfacePoint()`/`SurfaceNormal()` already called internally (verified by reading OpenNURBS v8.34's own `opennurbs_subd_eval.cpp`, not assumed - it builds the sector's point ring and solves it via `ON_SubDSectorType`'s subdivision-matrix eigenstructure, the same Stam-1998-eigenbasis machinery the class's own doc comments already named as "not implemented here"), and reports its real `m_limitT1`/`m_limitT2` unit tangent-plane basis instead of the zero vector. See below for the full detail; still `partial`, not `present` - interior-of-quadrant evaluation near (but not exactly at) an extraordinary vertex still falls back to the tolerance-bounded bilinear-corner approximation, a materially bigger problem (full Stam evaluation at an arbitrary interior parameter) deliberately out of scope here.
 
+**2026-10-01 follow-up (the "semi-sharp edge handling" gap this bullet's
+own backlog entry named by name):** `git log --oneline -5 -- dino8-kernel/
+src/subd.cpp` at the start of this session showed the `SubD::Tessellate`/
+`SubD::EdgeSharpnessAt` work above as the most recent commits touching
+this category, so this session picked the category's own remaining
+small-effort backlog item ("SubD extraordinary-vertex limit-tangent
+quality — semi-sharp edge handling", `PARITY_MAP.md`'s own "Small effort"
+ranked list) rather than duplicating either. Checked against OpenNURBS
+v8.34's own `opennurbs_subd_eval.cpp` directly, not assumed:
+`ON_SubDVertex::GetSurfacePoint()`'s own sector classification
+(`GetSectorLimitPointHelper` -> `ON_SubDSectorType::Create`) reads only
+edge TAGS (Smooth/Crease) - it never once reads `ON_SubDEdge::Sharpness()`/
+`EndSharpness()` anywhere in its own call chain. A finite, sub-`MaximumValue`
+sharpness weight on a Smooth-tagged edge keeps that Smooth tag, so
+`ExactVertexCorner()`'s corner-query shortcut was silently evaluating a
+semi-sharp vertex as if its sharp edge carried none at all - the
+fully-rounded smooth eigenbasis answer, not the partially-creased one a
+real semi-sharp edge is supposed to pull the limit surface toward.
+
+Fixed via the standard semi-sharp technique
+(`ON_SubDEdgeSharpness::Subdivided()`, already used by `SetEdgeSharpness()`
+above, decays a weight by exactly 1.0 per `GlobalSubdivide()` level):
+`ExactVertexCorner()` (subd.cpp) now checks the queried vertex's own
+incident edges for the largest `EndSharpness()` present and, if nonzero,
+globally subdivides a working copy `ceil()` that many times - tracking
+which descendant face/corner continues the same original corner via a new
+shared helper, `SubdivideTrackingCorner()` (subd.cpp, factored out of
+`EvaluateFaceAdaptive()`'s own pre-existing quadrant-subdivision-and-
+relocate logic so the two don't duplicate it) - before calling
+`GetSurfacePoint()`. The limit SURFACE itself is unchanged by subdividing
+its own control net, so the fully-decayed descendant's closed-form answer
+is the same true limit value a real semi-sharp evaluator would give, not a
+further approximation; a vertex with no semi-sharp edge nearby takes zero
+extra subdivide steps and reduces to exactly the prior behavior (confirmed
+by every pre-existing `EvaluateFace`/`ExactVertexCorner` test in this
+suite still passing unchanged). Verified by 14 new checks
+(`TestSubDEvaluateFaceExtraordinaryCornerHandlesSemiSharpEdge`,
+tests/test_basic.cpp), reusing the same level-1-cube "one still-valence-3
+corner" fixture `TestSubDEvaluateFaceExtraordinaryCornerHasRealTangentPlane`
+above already establishes: a sharpness of 1.0 on one of the corner's 3
+incident edges moves the corner's own exact limit point measurably away
+from the zero-sharpness baseline (proving the fix actually reads the
+weight, where the old code provably couldn't); raising the weight to
+`MaximumValue` (4.0) moves it further still, not by some fixed amount
+(scaling with the stored weight, not an on/off toggle); and - the
+strongest check - the `MaximumValue` case is cross-checked against a
+completely independent reference that never touches `ExactVertexCorner()`'s
+own internals: running 4 real, already-tested `SubD::Subdivide()` calls by
+hand (a semi-sharp weight of exactly 4.0 decays to exactly 0 after 4
+levels, confirmed directly on the tracked descendant rather than assumed),
+locating the same corner's own descendant vertex by nearest-position
+among same-valence vertices, and calling `GetSurfacePoint()` on it
+directly - which matches `EvaluateFace()`'s own reported position to
+within 1e-6. Full `dino8_kernel_tests` suite (via the test binary
+directly): 100% passing (8263/8263 checks), 0 regressions. Still honestly
+`partial`, not `present`: this closes the one specific backlog item it set
+out to (semi-sharp handling AT an extraordinary/crease/boundary vertex
+corner), not the item's own larger, already-disclosed remaining gap
+(interior-of-quadrant evaluation still uses the tolerance-bounded bilinear
+approximation, not a full Stam evaluation at an arbitrary parameter) -
+unaffected by this pass, and still a materially bigger problem. This
+session's only source edits are `dino8-kernel/src/subd.cpp` and
+`dino8-kernel/tests/test_basic.cpp`.
+
 **2026-09-30 follow-up (creasing edge case, not tied to a distinct checklist item):** `SubD::SetEdgeSharpness()`'s own doc comment previously disclosed a gap by name - "This wrapper exposes one constant weight per edge (both ends equal); OpenNURBS also supports a per-end-variable sharpness (linearly interpolated along the edge, decaying differently at each end) that this method does not expose - a caller needing that must use raw() directly." That gap is now closed: a new `SetEdgeSharpness(p0, p1, sharpness_at_p0, sharpness_at_p1, point_tolerance)` overload (dino8-kernel/include/dino8/kernel/subd.h, src/subd.cpp) writes a genuinely variable `ON_SubDEdgeSharpness::FromInterval(s0, s1)` instead of the constant-only `FromConstant(s)` the original overload was hardcoded to; the original constant-weight overload now just forwards to it with equal values, so no existing caller's behavior changes. The real content here is end-mapping, not the one-line `FromInterval` call: OpenNURBS stores an edge's own two ends positionally (`m_vertex[0]`/`m_vertex[1]`, in whichever order it happened to build the edge), which need not match the (`p0`, `p1`) order a caller passes in - the new overload detects which of the edge's own two ends is nearest `p0` (`e->Vertex(0u) == v0`) and swaps the two weights before writing if `p0` actually landed on the edge's own end 1, so the caller-visible mapping is always keyed to the point, never to OpenNURBS' internal storage order. Verified by 4 new checks (`TestSubDSetEdgeSharpnessSupportsPerEndVariableWeight`, tests/test_basic.cpp, using the same hinge fixture and fold_a/fold_b naming `TestSubDSetEdgeSharpnessCreatesRealSemiSharpCrease` already established): an out-of-range value on EITHER end refuses the whole call and leaves the edge completely untouched, not half-written; a genuinely uneven (MaximumValue at fold_a, 0 at fold_b) interval reads back exactly via `ON_SubDEdge::EndSharpness(vertex)` at each of the two physical vertices, and calling again with the two POINT arguments and their WEIGHTS both reversed lands on the identical physical assignment (proving the mapping tracks the point, not internal edge orientation); and a real `Subdivide()` call decays the two ends independently rather than averaging them up front - the child edge touching the high end decays by exactly 1.0 from its own starting value while the child edge touching the low end independently decays by exactly 1.0 from ITS starting value, matching `ON_SubDEdgeSharpness::Subdivided()`'s own documented per-end formula (verified by reading its implementation in OpenNURBS' `opennurbs_subd.cpp`, not assumed). Full `dino8_kernel_tests` suite (via `ctest`): 100% passing, 0 regressions. This does not flip any item's present/partial/missing status in this category's own checklist - the underlying "SubD display-level control"/creasing capability was already `partial` and this closes real, tested ground under it (an actual per-end-variable weight now genuinely exists, where before only a constant-across-the-edge weight did) without claiming a materially bigger problem (full live constrained editing, or anything beyond what `ON_SubDEdgeSharpness` itself already models) is now solved.
 
 **Same-day follow-up, closes the "SubD non-manifold/multi-body validity
@@ -6912,6 +7013,54 @@ returning form. This session's only source edits are
 `dino8-kernel/include/dino8/kernel/subd.h`, `dino8-kernel/src/subd.cpp`,
 and `dino8-kernel/tests/test_basic.cpp`.
 
+**2026-10-01 follow-up (narrows the "no quad-dominant remeshing" half of
+this item's own remaining gap, named by name just above):** this session's
+other pick in this category (alongside the "semi-sharp edge handling" fix
+credited under "SubD extraordinary-vertex limit-tangent quality" above)
+was the still-`[partial]` item with the next genuinely tractable, already-
+disclosed-as-tractable piece: `BooleanToSubD()` (subd.cpp) now runs the
+boolean mesh through the already-existing, already-tested
+`Mesh::TrisToQuads()` (credited under "Quad-remeshing into a clean
+SubD-ready cage" above) before handing it to `FromControlMesh()`, rather
+than leaving every face a raw triangle unconditionally. `TrisToQuads()` is
+a pure face-list rewrite (no vertex added, moved, or removed) that is a
+documented no-op wherever nothing qualifies (a steep dihedral angle, a
+non-convex merge, mismatched winding), so composing it in front of
+`FromControlMesh()` can only ever reduce triangle count - it cannot change
+the boolean result's own geometry, volume, or manifold-ness, and genuinely
+new material right at a boolean cut (the case this item's own remaining
+gap is actually about) is never claimed to become quad-clean by this: its
+dihedral/convexity/winding gates simply don't fire there in general. The
+concrete win is for the common case named in this document's own
+`TrisToQuads()` verification already (box-like operands whose faces don't
+touch the cut at all): each such face arrives as a Manifold-triangulated
+copy of ONE original quad, split along a single flat (0deg-dihedral)
+diagonal - exactly the shape `TrisToQuads()`'s own default 20deg threshold
+recombines, every time. Verified
+(`TestSubDBooleanToSubDRecombinesUntouchedFacesIntoQuads`, tests/
+test_basic.cpp) on the same disjoint-box fixture `TestSubDBooleanUnion
+OfDisjointBoxesSumsVolumes`/`TestSubDBooleanToSubDReturnsEditableSubD
+MatchingBooleanVolume` above already use (two box SubDs with no shared
+boundary at all, so EVERY output face is untouched by the "cut"): the raw,
+un-recombined boolean mesh is confirmed at the expected 24 triangles (2
+boxes x 6 faces x 2 triangles) via a direct, TrisToQuads()-free
+`FromControlMesh(Boolean(...))` reference built in the same test;
+`BooleanToSubD()`'s own result instead has exactly 12 faces (2 boxes x 6
+original quads), a real 2-to-1 reduction, not merely "fewer" by some
+unverified amount; the volume is unchanged (still the exact disjoint-union
+sum, 8+8=16) and the result is still a genuine closed manifold; and
+`Subdivide()`ing the recombined cage still genuinely changes the shape (a
+real further Catmull-Clark refinement), confirming this is a real,
+editable control net and not a frozen copy with suspiciously fewer faces.
+Full `dino8_kernel_tests` suite (via the test binary directly): 100%
+passing (8269/8269 checks), 0 regressions. Does not flip "SubD boolean
+operations" to `present` and this category's own counts stay unchanged at
+15/7/0/22 (84.1%): the cut itself is still raw triangles with no creases
+placed along it, the same topologically-reconstructed-cage gap this item's
+own text already names as out of scope. This session's only source edits
+are `dino8-kernel/include/dino8/kernel/subd.h`, `dino8-kernel/src/subd.cpp`,
+and `dino8-kernel/tests/test_basic.cpp`.
+
 ## App: Dino 8 vs Rhino 8 + AutoCAD 2027
 
 | Category | Weight | Items | Present | Partial | Missing | Parity % |
@@ -7217,7 +7366,7 @@ top 40:
 - [kernel/surfaceops] SrfSeam - test coverage caveat (partial)
 - [kernel/surfaceops] Kernel Rebuild() - wire into app's Rebuild/FitSrf commands (partial)
 - [kernel/surfaceops] Kernel MatchEdge() - wire G2 into MatchSrf (partial)
-- [kernel/subd_mesh] SubD extraordinary-vertex limit-tangent quality — semi-sharp edge handling (partial)
+- [kernel/subd_mesh] ~~SubD extraordinary-vertex limit-tangent quality — semi-sharp edge handling~~ **closed** — `ExactVertexCorner()` (subd.cpp) now decays a semi-sharp incident edge via real `GlobalSubdivide()` calls before evaluating, instead of silently treating it as plain smooth; see the category bullet above for the verification detail. Kept in the list for this row's own history; not an active item. The broader "SubD extraordinary-vertex limit-tangent quality" item itself stays `partial` — interior-of-quadrant evaluation near (not exactly at) an extraordinary vertex still falls back to the tolerance-bounded bilinear approximation, a materially bigger problem.
 - [app/app_commands] ~~Command aliases — persist to disk~~ **fixed** — `Settings.cpp`'s `"aliases"` key now round-trips `CommandEngine::Aliases()` through `settings.json`/`OptionsExport`/`OptionsImport`, wholesale-replacing (not merging onto `InstallDefaultAliases()`) so a deleted default alias stays deleted. Kept in the list for this row's own history; not an active item. The category's own remaining gap (no remappable keyboard-shortcut table for the built-in bindings, only an additive one for new chords) is tracked in the category bullet itself, not as a separate backlog row.
 - [app/app_drafting] ~~Dimension styles — units/precision/tolerance fields~~ **closed** (present; AnnotationStyle gains real precision/angular_precision/unit_suffix/ext_offset/ext_extension/text_placement/tolerance fields, wired into DimGeometry.h/annotate_common.h/cmd_annotate.cpp, and UpdateDimensions re-reads them live by the dimension's own recorded style name - see the category bullet above for detail, including the "shared table" clause's correction against Rhino 8's own documented behavior)
 - [app/app_display] Per-object display mode override — remaining modes (partial)
