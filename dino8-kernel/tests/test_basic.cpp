@@ -2857,6 +2857,117 @@ void TestFindBrepSelfIntersectionsDetectsOverlappingLumpsOnly() {
   Check(all_cross_lumps, "every reported self-intersecting face pair spans the two different (overlapping) lumps, not two faces of the same box");
 }
 
+// PARITY_MAP.md's own "kernel: Intersections & projections" category, "SSX
+// tangent / grazing contact (surfaces touching along a point or curve)"
+// bullet, named entirely `[missing]`: "There is no SSX tangency capability
+// to give partial credit for." FindSurfaceTangentContacts() closes the
+// isolated-point half of that gap.
+void TestFindSurfaceTangentContactsSphereOnPlane() {
+  using dino8::kernel::FindSurfaceTangentContacts;
+  using dino8::kernel::IntersectOptions;
+  using dino8::kernel::IntersectSurfaces;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SurfaceTangentContact;
+
+  IntersectOptions opt;
+  opt.tolerance = 1e-6;
+  opt.mesh_tolerance = 0.05;
+
+  ON_PlaneSurface ground(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)));
+  ground.SetExtents(0, ON_Interval(-10, 10), true);
+  ground.SetExtents(1, ON_Interval(-10, 10), true);
+
+  // A sphere of radius 2 resting on the ground plane, touching it at
+  // exactly one hand-derivable point: the origin. The two surfaces never
+  // cross - no triangle pair of the ordinary mesh-seeded SSX engine
+  // actually crosses here, so IntersectSurfaces() finds nothing at all,
+  // confirming this is genuinely the gap PARITY_MAP.md names, not a
+  // redundant check.
+  const double radius = 2.0;
+  const ON_Sphere on_sphere(ON_3dPoint(0, 0, radius), radius);
+  ON_NurbsSurface sphere_surface;
+  Check(on_sphere.GetNurbForm(sphere_surface) != 0, "ON_Sphere::GetNurbForm succeeds (resting sphere)");
+  Check(IntersectSurfaces(sphere_surface, ground, opt).empty(), "IntersectSurfaces() itself finds no crossing curve for a sphere merely tangent to a plane");
+
+  const std::vector<SurfaceTangentContact> contacts = FindSurfaceTangentContacts(sphere_surface, ground, opt);
+  Check(contacts.size() == 1, "a sphere resting on a plane reports exactly one tangent contact");
+  if (!contacts.empty()) {
+    Check(contacts[0].point.DistanceTo(Point3d(0, 0, 0)) < 1e-3, "the contact point is the hand-derivable origin");
+    Check(contacts[0].gap <= opt.tolerance, "the reported gap is within tolerance (a genuine touch, not a near-miss)");
+  }
+
+  // A sphere held well clear of the plane has no contact at all.
+  const ON_Sphere far_sphere(ON_3dPoint(0, 0, 10 * radius), radius);
+  ON_NurbsSurface far_sphere_surface;
+  Check(far_sphere.GetNurbForm(far_sphere_surface) != 0, "ON_Sphere::GetNurbForm succeeds (far sphere)");
+  Check(FindSurfaceTangentContacts(far_sphere_surface, ground, opt).empty(), "a sphere held well clear of the plane reports no tangent contact");
+
+  // A sphere pushed INTO the plane (a genuine crossing, a circle of radius
+  // sqrt(3)) must NOT also be reported as a tangent-only contact -
+  // IntersectSurfaces() already reports that crossing, which is this
+  // function's own stated "not my job" case.
+  const ON_Sphere crossing_sphere(ON_3dPoint(0, 0, radius * 0.5), radius);
+  ON_NurbsSurface crossing_sphere_surface;
+  Check(crossing_sphere.GetNurbForm(crossing_sphere_surface) != 0, "ON_Sphere::GetNurbForm succeeds (crossing sphere)");
+  Check(!IntersectSurfaces(crossing_sphere_surface, ground, opt).empty(), "a sphere pushed into the plane produces a real SSX crossing curve");
+  Check(FindSurfaceTangentContacts(crossing_sphere_surface, ground, opt).empty(),
+        "a sphere genuinely crossing the plane is not also reported as a tangent-only contact");
+}
+
+// PARITY_MAP.md's own "kernel: Intersections & projections" category, "SSX
+// coincident / overlapping surface regions" bullet: "IntersectSurfaces
+// still returns nothing for coincident surfaces. The only coincidence
+// handling is inside planar booleans." IntersectSurfacesOverlap() closes
+// the general-purpose-detection half of that gap.
+void TestIntersectSurfacesOverlapDetectsCoincidentRegion() {
+  using dino8::kernel::IntersectOptions;
+  using dino8::kernel::IntersectSurfaces;
+  using dino8::kernel::IntersectSurfacesOverlap;
+  using dino8::kernel::SurfaceOverlapRegion;
+
+  IntersectOptions opt;
+  opt.tolerance = 1e-6;
+  opt.mesh_tolerance = 0.25;
+
+  // Two finite rectangles of the SAME host plane: `a` spans x, y in
+  // [-5, 5]; `b` spans x, y in [0, 10]. They genuinely coincide (lie in the
+  // same plane) over the overlapping quarter [0, 5] x [0, 5] of `a`'s own
+  // domain, and nowhere else. No triangle pair of two coplanar surfaces
+  // ever actually crosses, so IntersectSurfaces() finds nothing here either
+  // - confirming this is genuinely the gap PARITY_MAP.md names.
+  const ON_Plane shared_plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1));
+  ON_PlaneSurface a(shared_plane);
+  a.SetExtents(0, ON_Interval(-5, 5), true);
+  a.SetExtents(1, ON_Interval(-5, 5), true);
+  ON_PlaneSurface b(shared_plane);
+  b.SetExtents(0, ON_Interval(0, 10), true);
+  b.SetExtents(1, ON_Interval(0, 10), true);
+  Check(IntersectSurfaces(a, b, opt).empty(), "IntersectSurfaces() itself finds no crossing curve for two coincident coplanar surfaces");
+
+  const std::vector<SurfaceOverlapRegion> regions = IntersectSurfacesOverlap(a, b, opt);
+  Check(regions.size() == 1, "two partially-overlapping coplanar surfaces report exactly one overlap region");
+  if (regions.size() == 1) {
+    const SurfaceOverlapRegion& r = regions[0];
+    Check(!r.entire_surface, "the overlap region does not cover all of a's own domain");
+    Check(std::abs(r.u0 - 0.0) < 0.5 && std::abs(r.u1 - 5.0) < 0.5, "the overlap region's own u-range matches the hand-derivable [0, 5] overlap");
+    Check(std::abs(r.v0 - 0.0) < 0.5 && std::abs(r.v1 - 5.0) < 0.5, "the overlap region's own v-range matches the hand-derivable [0, 5] overlap");
+  }
+
+  // Two surfaces with the exact same domain on the same plane coincide
+  // everywhere `a` is defined.
+  ON_PlaneSurface c(shared_plane);
+  c.SetExtents(0, ON_Interval(-5, 5), true);
+  c.SetExtents(1, ON_Interval(-5, 5), true);
+  const std::vector<SurfaceOverlapRegion> whole = IntersectSurfacesOverlap(a, c, opt);
+  Check(whole.size() == 1 && whole[0].entire_surface, "two identical coplanar surfaces report one region flagged entire_surface == true");
+
+  // Two parallel planes offset in z never coincide anywhere.
+  ON_PlaneSurface offset(ON_Plane(ON_3dPoint(0, 0, 5), ON_3dVector(0, 0, 1)));
+  offset.SetExtents(0, ON_Interval(-5, 5), true);
+  offset.SetExtents(1, ON_Interval(-5, 5), true);
+  Check(IntersectSurfacesOverlap(a, offset, opt).empty(), "two parallel, offset planes report no overlap region at all");
+}
+
 // PARITY_MAP.md's own "kernel: Intersections & projections" category,
 // "Projection of curves/points onto surfaces along a direction (Project)"
 // bullet: "app ProjectCommand samples the curve and ray-casts along the
@@ -61340,6 +61451,8 @@ int main() {
   TestContourBrepParallelSections();
   TestIntersectCurveSurfaceOverlapDetectsCoincidentSpan();
   TestFindBrepSelfIntersectionsDetectsOverlappingLumpsOnly();
+  TestFindSurfaceTangentContactsSphereOnPlane();
+  TestIntersectSurfacesOverlapDetectsCoincidentRegion();
   TestProjectCurveToSurfaceFlatPlaneStraightDown();
   TestProjectCurveToSurfacePartialMiss();
   TestBooleanCombineGeneralBoxBox();
