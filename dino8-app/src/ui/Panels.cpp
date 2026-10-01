@@ -1977,8 +1977,12 @@ void RunScriptEditor(Application& app) {
       std::string line;
       while (std::getline(in, line)) if (!line.empty() && line[0] != '#') app.Engine().Execute(line);
     } else {
-      // Runs to completion right here (no Lua-style coroutine pump needed).
-      app.Python().Start(s.text, s.file_name.empty() ? "Script Editor" : s.file_name);
+      // Routed through -RunPythonScript, the same way the Lua branch below
+      // goes through -RunScript, so a dino8.GetPoint() call mid-script can
+      // actually suspend and pump for a viewport pick (PythonEngine now runs
+      // scripts on a worker thread for exactly this - see PythonEngine.h).
+      app.QueueScript(s.text, s.file_name.empty() ? "Script Editor" : s.file_name, false);
+      app.Engine().Execute("-RunPythonScript");
     }
   } else {
     { std::ofstream out(app.ScriptsDirectory() + "/_last.lua", std::ios::binary); out << s.text; }
@@ -2066,14 +2070,16 @@ void DrawScriptEditor(Application& app) {
   }
 
   // Lua scripts can suspend mid-run (rs.GetPoint et al. yield the
-  // coroutine - see LuaEngine); Python scripts never do (PythonEngine runs
-  // start-to-finish inside Start(), see PythonEngine.h), so "Continue" /
-  // "Waiting for input" only ever apply to the Lua path.
-  const bool running = !is_python && app.Lua().Running();
-  ImGui::BeginDisabled(running && !app.Lua().Suspended());
+  // coroutine - see LuaEngine). Python scripts can now suspend too, but only
+  // on dino8.GetPoint() (PythonEngine runs the script on a worker thread and
+  // blocks it there - see PythonEngine.h); rs.GetObjects/GetString-style
+  // prompts remain Lua-only.
+  const bool running = is_python ? app.Python().Running() : app.Lua().Running();
+  const bool suspended = is_python ? app.Python().Suspended() : app.Lua().Suspended();
+  ImGui::BeginDisabled(running && !suspended);
   if (ImGui::Button((running ? "Continue" : "Run")) && !running) RunScriptEditor(app);
   ImGui::EndDisabled();
-  if (running) { ImGui::SameLine(); ImGui::TextColored(ImVec4(ThemeColors::kWarn[0], ThemeColors::kWarn[1], ThemeColors::kWarn[2], 1), app.Lua().Suspended() ? "Waiting for input in a viewport / the command line..." : "Running..."); }
+  if (running) { ImGui::SameLine(); ImGui::TextColored(ImVec4(ThemeColors::kWarn[0], ThemeColors::kWarn[1], ThemeColors::kWarn[2], 1), suspended ? "Waiting for input in a viewport / the command line..." : "Running..."); }
 
   ImGui::Separator();
   ImGui::Columns(2, "script_cols", true);

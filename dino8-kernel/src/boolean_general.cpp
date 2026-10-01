@@ -4324,6 +4324,30 @@ NurbsCurve HoleToolProfileCurve(Point3d axis_point, Vector3d unit_axis, const st
 
 }  // namespace
 
+namespace {
+
+// The capped cylindrical cutting tool MakeHole() itself builds, factored
+// out so MakeHoles() below can build one per center and fold them into a
+// single compound tool instead of repeating this construction inline.
+// `dir` must already be unit length; `diagonal` is the target's own tight
+// bounding-box diagonal (shared across every tool built for the same
+// solid, so callers computing several of these reuse one GetTightBoundingBox()
+// call rather than repeating it per hole).
+Brep BuildHoleTool(Point3d center, Vector3d dir, double radius, double depth, bool through, double diagonal) {
+  // Backs the tool's own near cap off `center` by `margin` so it pierces
+  // the entry surface cleanly (a transversal wall/face intersection) -
+  // the cap itself then sits in free space, never coincident with the
+  // solid's own surface - rather than starting the cylinder exactly ON
+  // that surface, a numerically degenerate tangent touch.
+  const double margin = std::max(radius, 1e-3 * std::max(diagonal, 1.0));
+  const double length = margin + (through ? 2.0 * diagonal + margin : depth);
+  const Point3d start = center - dir * margin;
+  const NurbsCurve rail = NurbsCurve::FromControlPoints({start, start + dir * length}, 1);
+  return Brep::Pipe(rail, radius, /*cap=*/true, /*stations=*/2);
+}
+
+}  // namespace
+
 Brep MakeHole(const Brep& solid, Point3d center, Vector3d axis, double radius, double depth, bool through) {
   if (solid.raw().m_F.Count() == 0) {
     throw std::invalid_argument("dino8::kernel::MakeHole: solid has no faces");
@@ -4341,46 +4365,61 @@ Brep MakeHole(const Brep& solid, Point3d center, Vector3d axis, double radius, d
 
   const BoundingBox bbox = solid.GetTightBoundingBox();
   const double diagonal = (bbox.max - bbox.min).Length();
-  // Backs the tool's own near cap off `center` by `margin` so it pierces
-  // the entry surface cleanly (a transversal wall/face intersection) -
-  // the cap itself then sits in free space, never coincident with the
-  // solid's own surface - rather than starting the cylinder exactly ON
-  // that surface, a numerically degenerate tangent touch.
-  const double margin = std::max(radius, 1e-3 * std::max(diagonal, 1.0));
-  const double length = margin + (through ? 2.0 * diagonal + margin : depth);
-
-  const Point3d start = center - dir * margin;
-  const NurbsCurve rail = NurbsCurve::FromControlPoints({start, start + dir * length}, 1);
-  const Brep tool = Brep::Pipe(rail, radius, /*cap=*/true, /*stations=*/2);
+  const Brep tool = BuildHoleTool(center, dir, radius, depth, through, diagonal);
   return BooleanCombineGeneral(solid, tool, BooleanOp::Difference);
 }
 
-Brep MakeCounterboreHole(const Brep& solid, Point3d center, Vector3d axis, double bore_radius, double bore_depth,
-                          bool bore_through, double counterbore_radius, double counterbore_depth) {
+Brep MakeHoles(const Brep& solid, const std::vector<Point3d>& centers, Vector3d axis, double radius, double depth,
+               bool through, double tolerance) {
   if (solid.raw().m_F.Count() == 0) {
-    throw std::invalid_argument("dino8::kernel::MakeCounterboreHole: solid has no faces");
+    throw std::invalid_argument("dino8::kernel::MakeHoles: solid has no faces");
   }
-  if (!(bore_radius > 0.0)) {
-    throw std::invalid_argument("dino8::kernel::MakeCounterboreHole: bore_radius must be positive");
+  if (centers.empty()) {
+    throw std::invalid_argument("dino8::kernel::MakeHoles: centers must not be empty");
   }
-  if (!(counterbore_radius > bore_radius)) {
-    throw std::invalid_argument("dino8::kernel::MakeCounterboreHole: counterbore_radius must exceed bore_radius");
+  if (!(radius > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::MakeHoles: radius must be positive");
   }
-  if (!(counterbore_depth > 0.0)) {
-    throw std::invalid_argument("dino8::kernel::MakeCounterboreHole: counterbore_depth must be positive");
-  }
-  if (!bore_through && !(bore_depth > counterbore_depth)) {
-    throw std::invalid_argument(
-        "dino8::kernel::MakeCounterboreHole: bore_depth must exceed counterbore_depth for a blind bore (the pilot "
-        "bore must reach past the counterbore recess it sits inside)");
+  if (!through && !(depth > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::MakeHoles: depth must be positive for a blind hole");
   }
   Vector3d dir = axis;
   if (!dir.Unitize()) {
-    throw std::invalid_argument("dino8::kernel::MakeCounterboreHole: axis must be non-zero");
+    throw std::invalid_argument("dino8::kernel::MakeHoles: axis must be non-zero");
   }
 
   const BoundingBox bbox = solid.GetTightBoundingBox();
   const double diagonal = (bbox.max - bbox.min).Length();
+  std::vector<Brep> tools;
+  tools.reserve(centers.size());
+  for (const Point3d& center : centers) {
+    tools.push_back(BuildHoleTool(center, dir, radius, depth, through, diagonal));
+  }
+  // Fold every tool into one compound cutter first (BooleanCombineGeneralNAry,
+  // same "build one compound tool, make a single Difference call against the
+  // target" shape MakeCounterboreHole()/MakeCountersinkHole() already use for
+  // their own single-hole compound profile) rather than chaining N separate
+  // Difference calls against `solid` itself - avoiding BooleanCombineGeneral()'s
+  // own disclosed "faces assumed genus-0, no pre-existing holes" scope limit
+  // that drilling into an already-holed target a second time would otherwise
+  // risk. This requires the requested holes not to overlap each other -
+  // exactly the same precondition SplitBrepByManySolids() already carries for
+  // its own cutters, folded via the identical BooleanCombineGeneralNAry() Union
+  // step.
+  const Brep folded_tool = BooleanCombineGeneralNAry(tools, {}, BooleanOp::Union, tolerance);
+  return BooleanCombineGeneral(solid, folded_tool, BooleanOp::Difference, tolerance);
+}
+
+namespace {
+
+// The compound stepped-profile Brep::Revolve() tool MakeCounterboreHole()
+// itself builds, factored out so MakeCounterboreHoles() below can build one
+// per center and fold them into a single compound tool. `dir` must already
+// be unit length; `diagonal` is the target's own tight bounding-box
+// diagonal (see BuildHoleTool()'s own doc comment for why callers share it
+// across several tools rather than recomputing it per hole).
+Brep BuildCounterboreTool(Point3d center, Vector3d dir, double bore_radius, double bore_depth, bool bore_through,
+                           double counterbore_radius, double counterbore_depth, double diagonal) {
   const double margin = std::max(counterbore_radius, 1e-3 * std::max(diagonal, 1.0));
   const double bore_full_depth = bore_through ? (2.0 * diagonal + margin) : bore_depth;
 
@@ -4399,43 +4438,91 @@ Brep MakeCounterboreHole(const Brep& solid, Point3d center, Vector3d axis, doubl
   };
   const Point3d tool_origin = center - dir * margin;
   const NurbsCurve profile_curve = HoleToolProfileCurve(tool_origin, dir, profile);
-  const Brep tool = Brep::Revolve(profile_curve, tool_origin, dir, 2.0 * ON_PI, /*cap=*/true);
+  return Brep::Revolve(profile_curve, tool_origin, dir, 2.0 * ON_PI, /*cap=*/true);
+}
+
+void ValidateCounterboreArgs(const char* fn, const Brep& solid, double bore_radius, double bore_depth,
+                              bool bore_through, double counterbore_radius, double counterbore_depth) {
+  if (solid.raw().m_F.Count() == 0) {
+    throw std::invalid_argument(std::string("dino8::kernel::") + fn + ": solid has no faces");
+  }
+  if (!(bore_radius > 0.0)) {
+    throw std::invalid_argument(std::string("dino8::kernel::") + fn + ": bore_radius must be positive");
+  }
+  if (!(counterbore_radius > bore_radius)) {
+    throw std::invalid_argument(std::string("dino8::kernel::") + fn + ": counterbore_radius must exceed bore_radius");
+  }
+  if (!(counterbore_depth > 0.0)) {
+    throw std::invalid_argument(std::string("dino8::kernel::") + fn + ": counterbore_depth must be positive");
+  }
+  if (!bore_through && !(bore_depth > counterbore_depth)) {
+    throw std::invalid_argument(
+        std::string("dino8::kernel::") + fn +
+        ": bore_depth must exceed counterbore_depth for a blind bore (the pilot "
+        "bore must reach past the counterbore recess it sits inside)");
+  }
+}
+
+}  // namespace
+
+Brep MakeCounterboreHole(const Brep& solid, Point3d center, Vector3d axis, double bore_radius, double bore_depth,
+                          bool bore_through, double counterbore_radius, double counterbore_depth) {
+  ValidateCounterboreArgs("MakeCounterboreHole", solid, bore_radius, bore_depth, bore_through, counterbore_radius,
+                           counterbore_depth);
+  Vector3d dir = axis;
+  if (!dir.Unitize()) {
+    throw std::invalid_argument("dino8::kernel::MakeCounterboreHole: axis must be non-zero");
+  }
+
+  const BoundingBox bbox = solid.GetTightBoundingBox();
+  const double diagonal = (bbox.max - bbox.min).Length();
+  const Brep tool = BuildCounterboreTool(center, dir, bore_radius, bore_depth, bore_through, counterbore_radius,
+                                          counterbore_depth, diagonal);
   return BooleanCombineGeneral(solid, tool, BooleanOp::Difference);
 }
 
-Brep MakeCountersinkHole(const Brep& solid, Point3d center, Vector3d axis, double bore_radius, double bore_depth,
-                          bool bore_through, double countersink_diameter, double countersink_angle_degrees) {
-  if (solid.raw().m_F.Count() == 0) {
-    throw std::invalid_argument("dino8::kernel::MakeCountersinkHole: solid has no faces");
+Brep MakeCounterboreHoles(const Brep& solid, const std::vector<Point3d>& centers, Vector3d axis, double bore_radius,
+                           double bore_depth, bool bore_through, double counterbore_radius, double counterbore_depth,
+                           double tolerance) {
+  ValidateCounterboreArgs("MakeCounterboreHoles", solid, bore_radius, bore_depth, bore_through, counterbore_radius,
+                           counterbore_depth);
+  if (centers.empty()) {
+    throw std::invalid_argument("dino8::kernel::MakeCounterboreHoles: centers must not be empty");
   }
-  if (!(bore_radius > 0.0)) {
-    throw std::invalid_argument("dino8::kernel::MakeCountersinkHole: bore_radius must be positive");
+  Vector3d dir = axis;
+  if (!dir.Unitize()) {
+    throw std::invalid_argument("dino8::kernel::MakeCounterboreHoles: axis must be non-zero");
   }
+
+  const BoundingBox bbox = solid.GetTightBoundingBox();
+  const double diagonal = (bbox.max - bbox.min).Length();
+  std::vector<Brep> tools;
+  tools.reserve(centers.size());
+  for (const Point3d& center : centers) {
+    tools.push_back(BuildCounterboreTool(center, dir, bore_radius, bore_depth, bore_through, counterbore_radius,
+                                          counterbore_depth, diagonal));
+  }
+  // Same single-compound-tool, single-Difference-call shape MakeHoles()
+  // above uses, for the identical "avoid drilling into an already-holed
+  // target a second time" reason - see that function's own doc comment.
+  const Brep folded_tool = BooleanCombineGeneralNAry(tools, {}, BooleanOp::Union, tolerance);
+  return BooleanCombineGeneral(solid, folded_tool, BooleanOp::Difference, tolerance);
+}
+
+namespace {
+
+// The compound cone+bore Brep::Revolve() tool MakeCountersinkHole() itself
+// builds, factored out the same way BuildCounterboreTool() above is so
+// MakeCountersinkHoles() below can build one per center and fold them into
+// a single compound tool.
+Brep BuildCountersinkTool(Point3d center, Vector3d dir, double bore_radius, double bore_depth, bool bore_through,
+                           double countersink_diameter, double countersink_angle_degrees, double diagonal) {
   const double countersink_radius = 0.5 * countersink_diameter;
-  if (!(countersink_radius > bore_radius)) {
-    throw std::invalid_argument(
-        "dino8::kernel::MakeCountersinkHole: countersink_diameter must exceed 2*bore_radius");
-  }
-  if (!(countersink_angle_degrees > 0.0) || !(countersink_angle_degrees < 180.0)) {
-    throw std::invalid_argument("dino8::kernel::MakeCountersinkHole: countersink_angle_degrees must be in (0, 180)");
-  }
   // Standard countersink geometry: a cone of full included angle `theta`
   // whose radius shrinks from `countersink_radius` to `bore_radius` over
   // an axial depth of (radius gap) / tan(theta / 2).
   const double half_angle = countersink_angle_degrees * ON_PI / 360.0;
   const double countersink_depth = (countersink_radius - bore_radius) / std::tan(half_angle);
-  if (!bore_through && !(bore_depth > countersink_depth)) {
-    throw std::invalid_argument(
-        "dino8::kernel::MakeCountersinkHole: bore_depth must exceed the countersink's own depth (derived from "
-        "countersink_diameter/countersink_angle_degrees) for a blind bore");
-  }
-  Vector3d dir = axis;
-  if (!dir.Unitize()) {
-    throw std::invalid_argument("dino8::kernel::MakeCountersinkHole: axis must be non-zero");
-  }
-
-  const BoundingBox bbox = solid.GetTightBoundingBox();
-  const double diagonal = (bbox.max - bbox.min).Length();
   const double margin = std::max(countersink_radius, 1e-3 * std::max(diagonal, 1.0));
   const double bore_full_depth = bore_through ? (2.0 * diagonal + margin) : bore_depth;
 
@@ -4454,8 +4541,75 @@ Brep MakeCountersinkHole(const Brep& solid, Point3d center, Vector3d axis, doubl
   };
   const Point3d tool_origin = center - dir * margin;
   const NurbsCurve profile_curve = HoleToolProfileCurve(tool_origin, dir, profile);
-  const Brep tool = Brep::Revolve(profile_curve, tool_origin, dir, 2.0 * ON_PI, /*cap=*/true);
+  return Brep::Revolve(profile_curve, tool_origin, dir, 2.0 * ON_PI, /*cap=*/true);
+}
+
+void ValidateCountersinkArgs(const char* fn, const Brep& solid, double bore_radius, double bore_depth,
+                              bool bore_through, double countersink_diameter, double countersink_angle_degrees) {
+  if (solid.raw().m_F.Count() == 0) {
+    throw std::invalid_argument(std::string("dino8::kernel::") + fn + ": solid has no faces");
+  }
+  if (!(bore_radius > 0.0)) {
+    throw std::invalid_argument(std::string("dino8::kernel::") + fn + ": bore_radius must be positive");
+  }
+  const double countersink_radius = 0.5 * countersink_diameter;
+  if (!(countersink_radius > bore_radius)) {
+    throw std::invalid_argument(std::string("dino8::kernel::") + fn + ": countersink_diameter must exceed 2*bore_radius");
+  }
+  if (!(countersink_angle_degrees > 0.0) || !(countersink_angle_degrees < 180.0)) {
+    throw std::invalid_argument(std::string("dino8::kernel::") + fn +
+                                 ": countersink_angle_degrees must be in (0, 180)");
+  }
+  const double half_angle = countersink_angle_degrees * ON_PI / 360.0;
+  const double countersink_depth = (countersink_radius - bore_radius) / std::tan(half_angle);
+  if (!bore_through && !(bore_depth > countersink_depth)) {
+    throw std::invalid_argument(std::string("dino8::kernel::") + fn +
+                                 ": bore_depth must exceed the countersink's own depth (derived from "
+                                 "countersink_diameter/countersink_angle_degrees) for a blind bore");
+  }
+}
+
+}  // namespace
+
+Brep MakeCountersinkHole(const Brep& solid, Point3d center, Vector3d axis, double bore_radius, double bore_depth,
+                          bool bore_through, double countersink_diameter, double countersink_angle_degrees) {
+  ValidateCountersinkArgs("MakeCountersinkHole", solid, bore_radius, bore_depth, bore_through, countersink_diameter,
+                           countersink_angle_degrees);
+  Vector3d dir = axis;
+  if (!dir.Unitize()) {
+    throw std::invalid_argument("dino8::kernel::MakeCountersinkHole: axis must be non-zero");
+  }
+
+  const BoundingBox bbox = solid.GetTightBoundingBox();
+  const double diagonal = (bbox.max - bbox.min).Length();
+  const Brep tool = BuildCountersinkTool(center, dir, bore_radius, bore_depth, bore_through, countersink_diameter,
+                                          countersink_angle_degrees, diagonal);
   return BooleanCombineGeneral(solid, tool, BooleanOp::Difference);
+}
+
+Brep MakeCountersinkHoles(const Brep& solid, const std::vector<Point3d>& centers, Vector3d axis, double bore_radius,
+                           double bore_depth, bool bore_through, double countersink_diameter,
+                           double countersink_angle_degrees, double tolerance) {
+  ValidateCountersinkArgs("MakeCountersinkHoles", solid, bore_radius, bore_depth, bore_through, countersink_diameter,
+                           countersink_angle_degrees);
+  if (centers.empty()) {
+    throw std::invalid_argument("dino8::kernel::MakeCountersinkHoles: centers must not be empty");
+  }
+  Vector3d dir = axis;
+  if (!dir.Unitize()) {
+    throw std::invalid_argument("dino8::kernel::MakeCountersinkHoles: axis must be non-zero");
+  }
+
+  const BoundingBox bbox = solid.GetTightBoundingBox();
+  const double diagonal = (bbox.max - bbox.min).Length();
+  std::vector<Brep> tools;
+  tools.reserve(centers.size());
+  for (const Point3d& center : centers) {
+    tools.push_back(BuildCountersinkTool(center, dir, bore_radius, bore_depth, bore_through, countersink_diameter,
+                                          countersink_angle_degrees, diagonal));
+  }
+  const Brep folded_tool = BooleanCombineGeneralNAry(tools, {}, BooleanOp::Union, tolerance);
+  return BooleanCombineGeneral(solid, folded_tool, BooleanOp::Difference, tolerance);
 }
 
 namespace {

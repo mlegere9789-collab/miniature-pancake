@@ -72,11 +72,11 @@
 # rs.Undo/rs.Redo/rs.BeginUndo) - the last three round-tripped here through
 # a real add/undo/redo/undo cycle on a fresh point, not just called and
 # ignored, so the net object count below is unaffected.
-# Unlike script_script.txt's Lua test, this never goes interactive
-# mid-script (see PythonEngine.h): Python scripts run start to finish in
-# one call, so there is no trailing point token to feed a GetPoint-style
-# prompt here.
+# dino8.GetPoint()/dino8.GetString() now suspend the script for real
+# (PythonEngine runs it on a worker thread, see PythonEngine.h) - like
+# script_script.txt's Lua test, the trailing "20,20,20 Widget2" below feeds
+# those two prompts in turn before the script resumes each time.
 # smoke.sh substitutes @TMP@ with a scratch directory and writes @TMP@/t.py
 # before running this.
-RunPythonScript @TMP@/t.py
-@expect_objects 36
+RunPythonScript @TMP@/t.py 20,20,20 Widget2
+@expect_objects 37

@@ -159,6 +159,15 @@ struct NamedViewInfo {
   Vector3d camera_up;
 };
 
+// A layout (Rhino's own page-space/"paper space" view) read back from
+// Model::LayoutAt() below - the read-side counterpart to
+// Model::AddLayout()'s own page_width_mm/page_height_mm parameters.
+struct LayoutInfo {
+  std::string name;
+  double page_width_mm = 0.0;
+  double page_height_mm = 0.0;
+};
+
 // One object's attributes, read back from Model::ObjectAttributesAt()
 // below - the read-side counterpart to every Add*() method's own name/
 // layer_index/render_color/user_strings/linetype_index/group_indices/
@@ -268,6 +277,19 @@ struct TextDotInfo {
 struct TextAnnotationInfo {
   std::string name;
   std::string text;
+  ON_Plane plane;
+};
+
+// A leader annotation read back from Model::LeaderAt() below - the
+// read-side counterpart to Model::AddLeader()'s own text/points/plane
+// parameters. `points` is reported in WORLD 3D coordinates (converted
+// back out of ON_Leader's own plane-local 2D point storage via
+// `plane.PointAt()`), matching the WORLD-space points AddLeader() itself
+// takes in, not the plane-local ones OpenNURBS stores internally.
+struct LeaderInfo {
+  std::string name;
+  std::string text;
+  std::vector<Point3d> points;
   ON_Plane plane;
 };
 
@@ -663,6 +685,41 @@ class Model {
   // actually has returns a default-constructed NamedViewInfo.
   NamedViewInfo NamedViewAt(int view_index) const;
 
+  // Adds a layout (Rhino's own page-space/"paper space" view, the
+  // ".3dm attribute/metadata fidelity" gap's own remaining "layouts" item
+  // after annotations/hatch-pattern-lines/textures/named-views/lights/
+  // clipping-planes each closed above) and returns its index (>= 0) among
+  // layouts - a plain ON_3dmView exactly like AddNamedView() builds, but
+  // with m_view_type set to ON::view_type::page_view_type (the one field
+  // that actually makes a view a "layout" rather than a plain 3D view,
+  // per OpenNURBS' own ON_3dmView::m_view_type doc comment) and
+  // m_page_settings carrying the page's physical width/height in
+  // millimetres - the same unit ON_3dmPageSettings::m_width_mm/
+  // m_height_mm are themselves documented in. Wraps
+  // ON_3dmSettings::m_views (an ON_ClassArray<ON_3dmView>, OpenNURBS' own
+  // "current viewports" table - the one Rhino's actual page/layout views
+  // are filed under, distinct from m_named_views above), the same table
+  // Save()/Load() below already carry through a .3dm unmodified as part
+  // of the settings chunk - purely new surface area on top of what
+  // already round-trips, the same situation AddNamedView() itself found.
+  // Returns -1 for an empty `name` or a non-positive page_width_mm/
+  // page_height_mm, same contract as AddLayer()/AddNamedView() above.
+  // Detail views (the viewport windows placed ON a layout, each framing
+  // part of model space at its own scale) are a separate, larger ON_
+  // Viewport-per-detail feature this call does not attempt - a layout
+  // added here has a page size but no details on it yet.
+  int AddLayout(const std::string& name, double page_width_mm, double page_height_mm);
+
+  // Returns the number of layouts added via AddLayout() above.
+  int LayoutCount() const;
+
+  // Returns the layout at `layout_index` (as returned by AddLayout()
+  // above) - the read-side counterpart to AddLayout()'s own
+  // page_width_mm/page_height_mm parameters. `layout_index` not naming a
+  // layout this model actually has returns a default-constructed
+  // LayoutInfo.
+  LayoutInfo LayoutAt(int layout_index) const;
+
   // Adds a light (Rhino's own Point/Directional light object) to the model
   // and returns its index (>= 0) among lights specifically - "lights" is
   // the next field PARITY_MAP.md's own ".3dm attribute/metadata fidelity"
@@ -982,6 +1039,40 @@ class Model {
   // tables. `text_index` not naming a text annotation this model actually
   // has returns a default-constructed TextAnnotationInfo.
   TextAnnotationInfo TextAt(int text_index) const;
+
+  // Adds a leader annotation (Rhino's own Leader command - a multi-segment
+  // pointer line from an arrowhead at `points.front()` to a text label at
+  // `points.back()`, ON_Leader underneath) to the model and returns its
+  // index (>= 0) among leaders specifically - narrowing PARITY_MAP.md's
+  // own "Rhino non-geometry/composite objects in .3dm" evidence further:
+  // "annotations besides plain ON_Text (dimensions, leaders)" remained
+  // open after AddText() above closed the plain-ON_Text half of that gap.
+  // `points` (at least 2, in WORLD 3D coordinates) is the leader's own
+  // pointer-line path; `text` is the plain string label at its end,
+  // parsed the same no-RTF-markup way AddText()'s own `text` is. Built via
+  // ON_Leader::Create(text, dimstyle, point_count, points, plane,
+  // bWrapped=false, rect_width=0.0) against OpenNURBS' own built-in
+  // ON_DimStyle::Default, the same narrowing AddText() itself already
+  // accepts for not having a dimstyle table of its own. Returns -1
+  // without adding anything if `name` or `text` is empty, `plane` is not
+  // a valid plane, `points` has fewer than 2 entries, or the underlying
+  // ON_Leader::Create() call itself fails.
+  int AddLeader(const std::string& text, const std::vector<Point3d>& points, const ON_Plane& plane,
+                const std::string& name = std::string(), int layer_index = -1,
+                std::optional<Color> render_color = std::nullopt,
+                const UserStrings& user_strings = UserStrings(),
+                std::optional<int> linetype_index = std::nullopt,
+                const std::vector<int>& group_indices = std::vector<int>(),
+                std::optional<int> material_index = std::nullopt);
+
+  // Returns the number of leaders added via AddLeader() above.
+  int LeaderCount() const;
+
+  // Returns the leader at `leader_index` (as counted by LeaderCount()
+  // above) - the read-side counterpart to AddLeader()'s own parameters.
+  // `leader_index` not naming a leader this model actually has returns a
+  // default-constructed LeaderInfo.
+  LeaderInfo LeaderAt(int leader_index) const;
 
   // Sets the model's length unit system - closing PARITY_MAP.md's own
   // "kernel-level data exchange" evidence for "Unit-system conversion":

@@ -314,6 +314,17 @@ void RunCullTest(dino8::app::Application& app, int far_count, const std::string&
               std::getenv("DINO8_DISABLE_FRUSTUM_CULL") ? "off" : "on");
 }
 
+// Compares two strings in time independent of where they first differ, so
+// the compute server's --serve-token check (the only gate in front of
+// arbitrary script execution) doesn't leak the token one byte at a time to
+// another local process timing repeated guesses against the loopback port.
+bool ConstantTimeEquals(const std::string& a, const std::string& b) {
+  if (a.size() != b.size()) return false;
+  unsigned char diff = 0;
+  for (size_t i = 0; i < a.size(); ++i) diff |= static_cast<unsigned char>(a[i]) ^ static_cast<unsigned char>(b[i]);
+  return diff == 0;
+}
+
 }  // namespace
 
 #if defined(_MSC_VER)
@@ -587,7 +598,7 @@ int main(int argc, char** argv) {
     }
     if (!serve_token.empty()) {
       const auto it = req.headers.find("authorization");
-      if (it == req.headers.end() || it->second != "Bearer " + serve_token) {
+      if (it == req.headers.end() || !ConstantTimeEquals(it->second, "Bearer " + serve_token)) {
         resp.status = 401;
         resp.body = "Dino 8 compute service: missing or incorrect Authorization: Bearer token\n";
         return resp;
@@ -614,12 +625,15 @@ int main(int argc, char** argv) {
         return resp;
       }
       const bool ok = app.Python().Start(req.body, "compute-request");
+      const bool suspended = app.Python().Suspended();
+      if (suspended) app.Python().Abort();
       std::string out;
       for (const std::string& line : app.Python().LastOutput()) {
         out += line;
         out += '\n';
       }
-      resp.status = ok ? 200 : 500;
+      if (suspended) out += "! compute error: script requires interactive input (dino8.GetPoint), which the compute server cannot satisfy\n";
+      resp.status = (ok && !suspended) ? 200 : 500;
       resp.body = out;
       return resp;
     }

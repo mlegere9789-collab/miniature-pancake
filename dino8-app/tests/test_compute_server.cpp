@@ -100,6 +100,32 @@ int main() {
     Check(req.body == body, "the fully-buffered split request's body is intact");
   }
 
+  // A negative Content-Length must be rejected outright, not parsed as a
+  // huge size_t: strtoul accepts a leading '-' and negates the result per
+  // the C standard, so without an explicit digits-only check this used to
+  // become SIZE_MAX/ULONG_MAX, which overflowed body_start+content_length
+  // back under the buffer's actual size and let an incomplete request be
+  // treated as fully received.
+  {
+    HttpRequest req;
+    size_t consumed = 0;
+    const bool ok = TryParseHttpRequest("POST /run HTTP/1.1\r\nContent-Length: -1\r\n\r\nshort", &req, &consumed);
+    Check(!ok, "a negative Content-Length is rejected rather than wrapping to a huge size");
+  }
+  // Same for a non-numeric or absurdly large (but digits-only) value.
+  {
+    HttpRequest req;
+    size_t consumed = 0;
+    Check(!TryParseHttpRequest("POST /run HTTP/1.1\r\nContent-Length: abc\r\n\r\n", &req, &consumed),
+          "a non-numeric Content-Length is rejected");
+  }
+  {
+    HttpRequest req;
+    size_t consumed = 0;
+    Check(!TryParseHttpRequest("POST /run HTTP/1.1\r\nContent-Length: 999999999999999\r\n\r\nshort", &req, &consumed),
+          "a Content-Length past the request-size cap is rejected rather than buffered forever");
+  }
+
   // Response formatting.
   {
     HttpResponse resp;
