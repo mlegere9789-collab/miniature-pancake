@@ -4640,6 +4640,99 @@ already-disclosed intermittent failure is in. The kernel-only headline is
 unaffected (no bucket moved); this category's own row counts remain
 accurate as they stand and need no edit.*
 
+*Twenty-first note on this category's score (a later session): four more
+genuine, independently-tested fixes land, across three bullets, again none
+a bucket move. **(1) "2D region / planar curve booleans":** the Nineteenth
+note's own `PolygonBooleanPlanar` disclosed "self-intersecting input is
+unchecked" as a remaining gap - previously fed straight through to
+`PrismFromPolygon()`/`BooleanCombinePlanar()`, which assumes a simple
+boundary and was never designed to classify a self-crossing operand
+correctly. Now refused outright: both `a` and `b` are checked, in their own
+2D (`plane.xaxis`, `plane.yaxis`) coordinates, via the same
+`detail::IsSimplePolygon()` surface.cpp's/mesh.cpp's own concave-trim/loft-
+cap clippers already share, and a new `BooleanFailureReason::InvalidPolygon`
+names the refusal (also now covering this function's own pre-existing
+"too few vertices"/"off-plane vertex" checks, previously plain
+`std::invalid_argument`, retyped for consistency). Verified
+(`TestPolygonBooleanPlanarRefusesSelfIntersectingOperand`,
+tests/test_basic.cpp) on a bowtie quadrilateral as either operand, with a
+negative control confirming the new check does not reject the existing
+non-convex L-shape fixture `TestPolygonBooleanPlanarNonConvexLShapeIntersection`
+already proves correct. Still partial, not present: an operand may still
+only be a single simple loop (no hole on the input side - unchanged), and
+nothing in the app calls this yet. **(2) "Tolerant booleans":** this
+bullet's own prior note left one disclosed gap after `BooleanCombineGeneral`/
+`ImprintFaces`/`SplitBySheet`/`TrimSheetBySolid` each gained a genuine
+caller `tolerance` - "the general engine's own separate bbox/coincident-
+face-detection epsilon (`const double tol = 1e-6`) is a different, still-
+fixed concern from the SSX solve tolerance above." Closed: all four
+functions' own `tol` is now `tolerance * 1e-3` instead of a bare constant -
+the ratio chosen so the prior implicit default (`tolerance == 0.001`)
+reproduces the old fixed `1e-6` bit for bit, so every existing caller/test
+(which never passes a tolerance) is unaffected, while a caller who
+explicitly widens `tolerance` now gets a proportionally wider coincident-
+face epsilon too. Verified
+(`TestBooleanCombineGeneralCoincidentFaceEpsilonScalesWithTolerance`,
+tests/test_basic.cpp): two boxes offset by a 5e-6 gap (bigger than the old
+fixed epsilon, smaller than a widened one) stay un-merged (12 faces) at the
+default tolerance - bit-identical to the pre-existing behavior - but
+genuinely merge into one clean 10-face box, matching
+`TestBooleanCombineGeneralCoplanarBoxes`' own exactly-touching fixture, at
+`tolerance = 0.02`. Still partial: `BooleanCombinePlanar`/`BooleanCombineMixed`
+(boolean.cpp) are a structurally different engine with no equivalent single
+epsilon to scale, and there is still no gap-healing of imprecise operands.
+**(3) "Boolean failure diagnostics":** three more untyped
+`std::invalid_argument` throws, all genuinely Boolean-specific (not a
+shared non-Boolean primitive like `PlanarFaces()`/`MixedFaces()`, the same
+boundary every prior typed-refusal note already drew), are retyped to
+`BooleanOperationError` with the existing `UnsupportedGeometry` reason:
+`ToMixed()`'s ConicalFace-operand refusal, and
+`SplitCylindricalByObliquePlane()`'s own two scope-limit refusals (a
+partial-sweep cylindrical fragment meeting an oblique plane, and a non-
+monotonic/re-entrant height interaction - the latter also closing a sliver
+of the "Analytic plane/cylinder... B-rep booleans" bullet's own disclosed
+"a partial-sweep oblique operand" out-of-scope case, by naming it with a
+structured reason instead of free text only). Fully backward compatible,
+the same way every earlier typed-refusal pass already was: identical
+`what()` text, still catchable as plain `std::invalid_argument`. Verified
+(`TestBooleanCombineMixedUnsupportedGeometryRefusalsAreTyped`,
+tests/test_basic.cpp) that `TestBooleanCombineMixedChainedNegativeControls`'
+own ConicalFace fixture is now also catchable as `BooleanOperationError`
+with `reason() == UnsupportedGeometry`, still separately catchable as plain
+`std::invalid_argument` too. **A real mistake caught while writing this
+test, not shipped:** `TestBooleanCombineMixedObliqueReentrantHeightThrows`'
+own re-entrant-height fixture was assumed, without checking, to throw from
+`SplitCylindricalByObliquePlane()`'s own retyped refusal - a first draft of
+the new test asserted exactly that and crashed the whole suite
+(`std::terminate`, uncaught exception) the first time it ran, because that
+fixture's refusal actually fires from `detail::ClipPolygonByEllipse3d`'s
+own separate, untouched "ellipse crosses the polygon's own boundary"
+precondition (reached one step earlier, from case (ii)'s planar-side split,
+before case (iii)'s own `SplitCylindricalByObliquePlane` is ever reached
+for this geometry) - confirmed directly by the crash itself, not assumed.
+The test now catches the base `std::invalid_argument` (matching the
+pre-existing test's own catch) and asserts this fixture's refusal is
+specifically NOT one of the two newly-typed sites, rather than silently
+mis-attributing it. Still partial: this is three more sites out of this
+file's own much larger untyped-throw catalogue, not a systematic rewrite;
+neither of `SplitCylindricalByObliquePlane()`'s two retyped refusals (the
+non-full-sweep fragment, and the non-monotonic/re-entrant height case) has
+a dedicated fixture in this suite proven to reach it - both retypings are
+backward compatible regardless (identical `what()` text, still catchable as
+plain `std::invalid_argument`), but are untested at the typed level, a
+real, disclosed gap this pass does not close. Same "genuine new evidence, unchanged
+partial score" pattern as every note above - the category's 9/15/1/25
+(66.0%) split is unchanged: none of the three bullets touched crosses into
+`present` (each still has a real, disclosed scope limit named above). Full
+`dino8_kernel_tests` suite (built via `cmake --build build --parallel
+$(nproc)`, run directly, each run twice in a row to confirm stability
+after the test-bug fix described above): 8056 checks before this pass,
+8067 after - 11 new checks, matching this pass's own new test coverage
+above - 100% passing both times, across repeated runs, 0 regressions. The
+kernel-only headline is unaffected (no bucket moved); this category's own
+row counts in the tables above and in "Priority order for maximum
+score-per-fix" remain accurate as they stand and need no edit.*
+
 **Blending & chamfering** (blending):
 - [partial] Constant-radius edge fillet on curved adjacent faces (cylinder/plane, cylinder/cylinder, freeform, closed/periodic rims) with B-rep trimming — every kernel fillet still requires both adjacent faces to be planar (fillet.h:147-159), so fillets cannot be chained onto a solid that already carries a curved face. App `FilletEdge` produces a genuine B-rep trim only when both faces are planar (cmd_fillet.cpp:175, "exact for planes; approximate elsewhere") — historically via the generic offset+SSX `BuildFillet` path, not the closed-form kernel function itself (see the bullet just below for the "nothing in the app calls it" half this pass closes). **This pass:** `FilletEdgeCommand::Run`'s plain-Radius case (default `RailType=RollingBall`, no `Rho`) now tries a new `TryExactFillet` FIRST — `kernel::FilletConvexEdge`/`FilletConcaveEdge` directly, convex then concave — ahead of the unchanged `BuildFillet` path, the identical "exact kernel construction first, fail open to the approximate path on any `PlanarFaces()` rejection" structure `TryExactChamfer` already established for `ChamferEdge`'s own plain-Radius case. Still partial: curved adjacent faces remain fundamentally out of scope (the kernel's own `PlanarFaces()` requirement, unchanged) and `BuildFillet`'s approximate path is still what actually runs there; this closes a representation gap (which construction produces the planar-face result), not a capability gap (the printed message and volume for a planar-face fillet are unchanged, since `BuildFillet` was already numerically exact for planes too). Net effect on the scores below: narrows, does not flip, the SAME already-partial item.
 - [partial] Concave (internal) edge fillet — kernel-native and exact: `FilletConcaveEdge` (fillet.cpp:1070 — corrected 2026-09-28, was mis-cited fillet.cpp:989; fillet.h:162-270) builds the mirrored rolling-ball construction with outward=false, closing perpendicular and oblique third faces; `FilletConcaveEdges` (fillet.cpp:2746; fillet.h:1111-1205) fillets several independent edges plus m==3 trihedral concave spherical corners. **This pass:** closes the single-edge half of "nothing in the app calls it" — `FilletEdgeCommand`'s new `TryExactFillet` (see the bullet just above) tries `kernel::FilletConvexEdge` FIRST and `FilletConcaveEdge` SECOND on any planar-faced solid, the same convex-then-concave cascade `TryExactChamfer`/`TryExactConicFillet`/`TryExactRailFillet` already use elsewhere in this file for the identical reason (the command doesn't know the edge's own convexity in advance). Verified structurally and via the convex branch end-to-end (`fillet_script.txt`'s own existing plain-`Radius=2` box-corner case now goes through this exact dispatch, unchanged volume); the concave branch is NOT independently verified through the app in script form — building an app-level fixture with a genuinely planar-faced concave (reflex) edge turned out to be blocked by a separate, disclosed app-layer limitation: `ExtrudeCrv`'s own `ON_BrepTrimmedPlane`/`ON_BrepExtrudeFace` construction builds ONE ruled side-wall face per whole closed boundary loop, not one flat quad per polygon edge (confirmed directly: extruding a plain 4-sided rectangle profile also yields only 3 faces/3 edges total, the single ruled wall genuinely non-planar end-to-end, not just at the concave corner) — so no closed polygon profile extruded this way, convex or concave, can reach `PlanarFaces()`'s own exact-planar requirement at all, and the app has no other command that builds a multi-facet polygonal solid. Still partial, same remaining gaps as before: planar faces only, one radius, m>=2 or higher-valence corners throw, oblique third faces out of scope for `FilletConcaveEdges`, a mixed convex+concave solid cannot be fully filleted, and the multi-edge `FilletConcaveEdges` batch form remains entirely unreachable from the app. Net effect on the scores below: narrows, does not flip, the SAME already-partial item.

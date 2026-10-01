@@ -1327,8 +1327,9 @@ std::vector<std::vector<Point3d>> PolygonBooleanPlanar(const std::vector<Point3d
                                                          const ON_Plane& plane, BooleanOp op, double tolerance) {
   const char* caller = "PolygonBooleanPlanar";
   if (a.size() < 3 || b.size() < 3) {
-    throw std::invalid_argument(std::string("dino8::kernel::") + caller +
-                                 ": both polygons need at least 3 vertices");
+    throw BooleanOperationError(BooleanFailureReason::InvalidPolygon, caller,
+                                 std::string("dino8::kernel::") + caller +
+                                     ": both polygons need at least 3 vertices");
   }
 
   double max_extent = kConvexTol;
@@ -1336,9 +1337,33 @@ std::vector<std::vector<Point3d>> PolygonBooleanPlanar(const std::vector<Point3d
     for (const Point3d& p : *poly) {
       max_extent = std::max({max_extent, std::fabs(p.x), std::fabs(p.y), std::fabs(p.z)});
       if (std::fabs(plane.DistanceTo(p)) > max_extent * 1e-6) {
-        throw std::invalid_argument(std::string("dino8::kernel::") + caller +
-                                     ": every vertex of both polygons must lie in `plane`");
+        throw BooleanOperationError(BooleanFailureReason::InvalidPolygon, caller,
+                                     std::string("dino8::kernel::") + caller +
+                                         ": every vertex of both polygons must lie in `plane`");
       }
+    }
+  }
+
+  // Self-intersecting input was previously silently fed through to
+  // PrismFromPolygon()/BooleanCombinePlanar() - see this function's own
+  // doc comment in boolean.h and BooleanFailureReason::InvalidPolygon's
+  // doc comment for why that's refused outright instead of attempted.
+  // Checked in the polygon's own 2D (plane.xaxis, plane.yaxis) coordinates
+  // - already-verified to lie in `plane` above - via the same
+  // detail::IsSimplePolygon() surface.cpp/mesh.cpp's own concave-trim/
+  // loft-cap clippers already rely on.
+  for (const auto& named : {std::make_pair(&a, "a"), std::make_pair(&b, "b")}) {
+    std::vector<Point2d> uv;
+    uv.reserve(named.first->size());
+    for (const Point3d& p : *named.first) {
+      const Vector3d rel = p - plane.origin;
+      uv.emplace_back(ON_DotProduct(rel, plane.xaxis), ON_DotProduct(rel, plane.yaxis));
+    }
+    if (!detail::IsSimplePolygon(uv)) {
+      throw BooleanOperationError(BooleanFailureReason::InvalidPolygon, caller,
+                                   std::string("dino8::kernel::") + caller + ": polygon `" + named.second +
+                                       "` is self-intersecting (two non-adjacent edges cross) - "
+                                       "BooleanCombinePlanar's own prism reduction assumes a simple boundary");
     }
   }
 
@@ -3080,8 +3105,14 @@ struct MixedFace {
 std::vector<MixedFace> ToMixed(const Brep::MixedFacesResult& mf) {
   if (!mf.conical.empty()) {
     // Previously dropped silently, leaving a tapered-fillet operand with
-    // a hole in its boundary - refused honestly instead.
-    throw std::invalid_argument(
+    // a hole in its boundary - refused honestly instead. UnsupportedGeometry
+    // (not UnsupportedOperation): the requested BooleanOp is fine, it's
+    // this specific operand's own geometry the mixed planar/cylindrical
+    // pipeline has no classifier for - the same distinction
+    // BooleanFailureReason::UnsupportedGeometry's own doc comment already
+    // draws for SynthesizeEndCaps' sibling refusals below.
+    throw BooleanOperationError(
+        BooleanFailureReason::UnsupportedGeometry, "BooleanCombineMixed",
         "dino8::kernel::BooleanCombineMixed: an operand has a ConicalFace (a "
         "tapered fillet) - the mixed planar/cylindrical pipeline has no cone "
         "splitter or classifier, so such an operand is refused rather than "
@@ -4361,7 +4392,14 @@ struct ObliqueCylinderSplit {
 ObliqueCylinderSplit SplitCylindricalByObliquePlane(const Brep::CylindricalFace& cf, const detail::EllipseFrame3d& ef,
                                                      double tol, int samples = 200) {
   if (!(cf.angle >= 2.0 * ON_PI - kAxisAlignTol)) {
-    throw std::invalid_argument(
+    // Same reason category as the ConicalFace/SynthesizeEndCaps refusals
+    // above: the requested BooleanOp is fine, this operand's own geometry
+    // (a partial-sweep cylindrical fragment meeting an oblique plane) is
+    // simply out of this function's scope - see PARITY_MAP.md's "Analytic
+    // plane/cylinder... B-rep booleans" bullet, "a partial-sweep oblique
+    // operand" among its own named out-of-scope cases.
+    throw BooleanOperationError(
+        BooleanFailureReason::UnsupportedGeometry, "BooleanCombineMixed",
         "dino8::kernel::BooleanCombineMixed: an oblique plane+cylinder "
         "interaction against a PARTIAL-sweep (angle < 2*pi) cylindrical "
         "fragment is out of scope for this increment - see "
@@ -4387,7 +4425,8 @@ ObliqueCylinderSplit SplitCylindricalByObliquePlane(const Brep::CylindricalFace&
     return result;
   }
   if (!all_inside) {
-    throw std::invalid_argument(
+    throw BooleanOperationError(
+        BooleanFailureReason::UnsupportedGeometry, "BooleanCombineMixed",
         "dino8::kernel::BooleanCombineMixed: an oblique plane's own "
         "intersection with a cylindrical face enters/exits that face's own "
         "[0, length] band across only PART of the swept angle (a "

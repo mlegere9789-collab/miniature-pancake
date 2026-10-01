@@ -2950,7 +2950,20 @@ Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op, double to
   const ON_BoundingBox bbox_a(tbb_a.min, tbb_a.max);
   const ON_BoundingBox bbox_b(tbb_b.min, tbb_b.max);
   const double ray_length = 4.0 * (bbox_a.Diagonal().Length() + bbox_b.Diagonal().Length() + 1.0);
-  const double tol = 1e-6;
+  // Coincident/bbox-classification epsilon, scaled off the caller's own
+  // SSX solve `tolerance` instead of a fixed 1e-6 - closes the "Tolerant
+  // booleans" PARITY_MAP.md bullet's own disclosed remaining gap ("the
+  // general engine's own separate bbox/coincident-face-detection epsilon
+  // ... is a different, still-fixed concern from the SSX solve tolerance
+  // above"). The 1e-3 ratio is chosen so the prior implicit default
+  // (tolerance == 0.001) reproduces the exact prior hardcoded 1e-6 bit for
+  // bit - every existing caller/test, which never passes a tolerance,
+  // sees identical behavior - while a caller who explicitly asks for a
+  // looser SSX solve tolerance (more gap-healing) now gets a
+  // proportionally looser coincident-face epsilon too, instead of one
+  // that silently stays three orders of magnitude tighter than what they
+  // asked for.
+  const double tol = tolerance * 1e-3;
 
   const int na = ba.m_F.Count();
   const int nb = bb.m_F.Count();
@@ -3381,7 +3394,9 @@ Brep ImprintFaces(const Brep& target, const Brep& tool, double tolerance) {
 
   IntersectOptions opt;
   opt.tolerance = tolerance;
-  const double tol = 1e-6;
+  // See BooleanCombineGeneral's own matching comment (boolean_general.cpp)
+  // for why this scales off `tolerance` instead of a fixed 1e-6.
+  const double tol = tolerance * 1e-3;
   const bool debug = std::getenv("DINO8_BOOL_DEBUG") != nullptr;
 
   std::vector<ON_BoundingBox> boxes_t(static_cast<size_t>(nt)), boxes_l(static_cast<size_t>(nl));
@@ -3733,7 +3748,9 @@ std::pair<Brep, Brep> SplitBySheet(const Brep& solid, const Brep& sheet, double 
 
   IntersectOptions opt;
   opt.tolerance = tolerance;
-  const double tol = 1e-6;
+  // See BooleanCombineGeneral's own matching comment (boolean_general.cpp)
+  // for why this scales off `tolerance` instead of a fixed 1e-6.
+  const double tol = tolerance * 1e-3;
   const bool debug = std::getenv("DINO8_BOOL_DEBUG") != nullptr;
 
   const BoundingBox tbb_s = solid.GetTightBoundingBox();
@@ -3908,7 +3925,9 @@ Brep TrimSheetBySolid(const Brep& sheet, const Brep& solid, bool keep_inside, do
 
   IntersectOptions opt;
   opt.tolerance = tolerance;
-  const double tol = 1e-6;
+  // See BooleanCombineGeneral's own matching comment (boolean_general.cpp)
+  // for why this scales off `tolerance` instead of a fixed 1e-6.
+  const double tol = tolerance * 1e-3;
   const bool debug = std::getenv("DINO8_BOOL_DEBUG") != nullptr;
 
   const BoundingBox tbb_h = sheet.GetTightBoundingBox();
