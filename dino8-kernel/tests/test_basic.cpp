@@ -4444,6 +4444,146 @@ void TestSplitFaceByCurveRejectsInvalidInput() {
   Check(threw_bad_samples, "SplitFaceByCurve throws std::invalid_argument for samples < 2");
 }
 
+// ImprintClosedCurveOnFace(): the curve-onto-face half of parity-map
+// "Imprint curve / face onto a body face (add edges without changing
+// geometry)" (localops category) - the CLOSED-loop case SplitFaceByCurve()
+// explicitly refuses (see TestSplitFaceByCurveRejectsInteriorOnlyLoop()
+// immediately above, and that function's own doc comment). Uses the
+// IDENTICAL fixture that refusal test does - a 1x1 square loop centered on
+// the box's own flat top face (z=1, x/y in [-2,2], area 16) - so the two
+// tests are a matched positive/negative pair proving the two functions are
+// genuinely complementary: the exact curve SplitFaceByCurve() refuses is
+// precisely the curve this function accepts.
+void TestImprintClosedCurveOnFaceBoxTopFaceSquareHole() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::ImprintClosedCurveOnFace;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+
+  const Brep box = Brep::Box(-2, -2, -1, 2, 2, 1);
+  const std::vector<Point3d> cvs = {Point3d(-0.5, -0.5, 1), Point3d(0.5, -0.5, 1), Point3d(0.5, 0.5, 1),
+                                     Point3d(-0.5, 0.5, 1), Point3d(-0.5, -0.5, 1)};
+  const NurbsCurve loop = NurbsCurve::FromControlPoints(cvs, /*degree=*/1);
+
+  const Brep imprinted = ImprintClosedCurveOnFace(box, /*face_index=*/1, loop);
+  Check(imprinted.raw().IsValid(), "ImprintClosedCurveOnFace on the box's top face is a valid ON_Brep");
+  Check(imprinted.FaceCount() == box.FaceCount() + 1,
+        "imprinting a closed interior loop gains exactly 1 face (the new interior disk, plus the original "
+        "face now carrying the loop as a hole - 2 fragments replacing the original 1)");
+
+  // No material removed: the box's own tessellated volume is unchanged.
+  const Mesh closed = imprinted.TessellateToClosedMesh(32, 32);
+  Check(std::abs(closed.Volume() - 32.0) < 0.2,
+        "imprinting a closed loop removes no material - the box's own tessellated volume stays 32 (4*4*2)");
+
+  // Identify the 2 flat z=1 fragments (the disk and the rest of the top
+  // face) by bounding box, the same robust-to-internal-ordering technique
+  // TestSplitFaceByCurveBoxTopFaceAsymmetricVSplit() already uses.
+  const std::vector<Mesh> per_face = imprinted.Tessellate(32, 32);
+  Check(per_face.size() == static_cast<size_t>(imprinted.FaceCount()), "one tessellated Mesh per face");
+  std::vector<double> top_face_areas;
+  for (const Mesh& m : per_face) {
+    if (m.VertexCount() == 0) continue;
+    const auto bb = m.GetBoundingBox();
+    if (std::abs(bb.min.z - 1.0) < 1e-6 && std::abs(bb.max.z - 1.0) < 1e-6) top_face_areas.push_back(m.Area());
+  }
+  Check(top_face_areas.size() == 2, "the imprinted top face produces exactly 2 flat z=1 fragments");
+  if (top_face_areas.size() == 2) {
+    const double lo = std::min(top_face_areas[0], top_face_areas[1]);
+    const double hi = std::max(top_face_areas[0], top_face_areas[1]);
+    Check(std::abs(lo - 1.0) < 0.05 && std::abs(hi - 15.0) < 0.2,
+          "the 2 fragments have exactly the areas the 1x1 interior loop implies: a 1x1 disk and a 16-1=15 "
+          "remainder - not some other split");
+  }
+
+  bool threw = false;
+  try {
+    dino8::kernel::SplitFaceByCurve(box, /*face_index=*/1, loop);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "...and the identical curve is still refused by SplitFaceByCurve() - the two functions are "
+               "genuinely complementary, not overlapping");
+}
+
+// The negative counterpart: an OPEN chain that reaches the face's own trim
+// boundary (the exact V-shaped curve TestSplitFaceByCurveBoxTopFaceAsymmetricVSplit()
+// above already proves SplitFaceByCurve() accepts) is refused here - this
+// function only ever imprints a closed interior loop.
+void TestImprintClosedCurveOnFaceRejectsOpenChain() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::ImprintClosedCurveOnFace;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+
+  const Brep box = Brep::Box(-2, -2, -1, 2, 2, 1);
+  const std::vector<Point3d> cvs = {Point3d(-2, 0, 1), Point3d(0, 1.5, 1), Point3d(2, 0, 1)};
+  const NurbsCurve curve = NurbsCurve::FromControlPoints(cvs, /*degree=*/1);
+
+  bool threw = false;
+  try {
+    ImprintClosedCurveOnFace(box, /*face_index=*/1, curve);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "ImprintClosedCurveOnFace throws std::invalid_argument for an open chain whose two ends "
+               "don't coincide (SplitFaceByCurve()'s own job instead)");
+}
+
+void TestImprintClosedCurveOnFaceRejectsInvalidInput() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::ImprintClosedCurveOnFace;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+
+  const Brep box = Brep::Box(-2, -2, -1, 2, 2, 1);
+  const std::vector<Point3d> cvs = {Point3d(-0.5, -0.5, 1), Point3d(0.5, -0.5, 1), Point3d(0.5, 0.5, 1),
+                                     Point3d(-0.5, 0.5, 1), Point3d(-0.5, -0.5, 1)};
+  const NurbsCurve loop = NurbsCurve::FromControlPoints(cvs, /*degree=*/1);
+  const Brep empty;
+
+  bool threw_empty_target = false;
+  try {
+    ImprintClosedCurveOnFace(empty, 0, loop);
+  } catch (const std::invalid_argument&) {
+    threw_empty_target = true;
+  }
+  Check(threw_empty_target, "ImprintClosedCurveOnFace throws std::invalid_argument for a faceless target");
+
+  bool threw_bad_index_low = false;
+  try {
+    ImprintClosedCurveOnFace(box, -1, loop);
+  } catch (const std::invalid_argument&) {
+    threw_bad_index_low = true;
+  }
+  Check(threw_bad_index_low, "ImprintClosedCurveOnFace throws std::invalid_argument for a negative face_index");
+
+  bool threw_bad_index_high = false;
+  try {
+    ImprintClosedCurveOnFace(box, box.FaceCount(), loop);
+  } catch (const std::invalid_argument&) {
+    threw_bad_index_high = true;
+  }
+  Check(threw_bad_index_high, "ImprintClosedCurveOnFace throws std::invalid_argument for an out-of-range face_index");
+
+  bool threw_bad_tolerance = false;
+  try {
+    ImprintClosedCurveOnFace(box, 1, loop, 0.0);
+  } catch (const std::invalid_argument&) {
+    threw_bad_tolerance = true;
+  }
+  Check(threw_bad_tolerance, "ImprintClosedCurveOnFace throws std::invalid_argument for a non-positive tolerance");
+
+  bool threw_bad_samples = false;
+  try {
+    ImprintClosedCurveOnFace(box, 1, loop, 0.001, 1);
+  } catch (const std::invalid_argument&) {
+    threw_bad_samples = true;
+  }
+  Check(threw_bad_samples, "ImprintClosedCurveOnFace throws std::invalid_argument for samples < 2");
+}
+
 void TestMutualImprintFacesBoxPiercedByCylinder() {
   using dino8::kernel::Brep;
   using dino8::kernel::ImprintFaces;
@@ -29095,6 +29235,77 @@ void TestDraftFacesConvexPlanarSingleFaceLeavesOppositeFaceExactlyUntouched() {
 
   Check(drafted.TessellateToClosedMesh(1, 1).IsClosedManifold(),
         "the single-face-drafted box also tessellates to a closed, watertight manifold");
+}
+
+// The per-face angle overload: closes DraftFacesConvexPlanar()'s own "one
+// shared angle across all named faces (no per-face angle vector)" gap.
+// Drafts the box's front (-y) and right (+x) walls - genuinely ADJACENT,
+// sharing the x=10,y=0 vertical edge, so their own re-trims actually
+// interact at that shared corner - by two DIFFERENT angles in one call,
+// and checks the result matches drafting them one at a time via two
+// SEQUENTIAL single-angle `DraftFacesConvexPlanar()` calls, in EITHER
+// order, proving the batch introduces no divergence of its own (the same
+// "one call, many targets" cross-check PushPullFaces()/FoldFacesConvexPlanar()
+// already use for their own batch siblings).
+void TestDraftFacesConvexPlanarPerFaceAnglesMatchesEitherSequentialOrder() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::DraftFacesConvexPlanar;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  // Box face order per Brep::Box()'s own comment: 0=bottom(-z) 1=top(+z)
+  // 2=front(-y) 3=back(+y) 4=left(-x) 5=right(+x).
+  const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+  const ON_Plane neutral(Point3d(0, 0, 0), Vector3d(0, 0, 1));
+  const double theta_front = std::atan(0.1);
+  const double theta_right = std::atan(0.2);
+
+  const Brep batched = DraftFacesConvexPlanar(box, {2, 5}, neutral, {theta_front, theta_right});
+  Check(batched.FaceCount() == 6, "the per-face-angle batch keeps exactly 6 faces (no topology change)");
+
+  const Brep seq_front_then_right =
+      DraftFacesConvexPlanar(DraftFacesConvexPlanar(box, {2}, neutral, theta_front), {5}, neutral, theta_right);
+  const Brep seq_right_then_front =
+      DraftFacesConvexPlanar(DraftFacesConvexPlanar(box, {5}, neutral, theta_right), {2}, neutral, theta_front);
+
+  auto matches_by_centroid = [](const Brep& a, const Brep& b) {
+    const std::vector<Brep::PlanarFace> fa = a.PlanarFaces();
+    const std::vector<Brep::PlanarFace> fb = b.PlanarFaces();
+    if (fa.size() != fb.size()) return false;
+    for (size_t i = 0; i < fa.size(); ++i) {
+      if (fa[i].loop.size() != fb[i].loop.size()) return false;
+      Point3d ca(0, 0, 0), cb(0, 0, 0);
+      for (const Point3d& p : fa[i].loop) ca = ca + p;
+      for (const Point3d& p : fb[i].loop) cb = cb + p;
+      ca = ca / static_cast<double>(fa[i].loop.size());
+      cb = cb / static_cast<double>(fb[i].loop.size());
+      if (ca.DistanceTo(cb) > 1e-9) return false;
+    }
+    return true;
+  };
+  Check(matches_by_centroid(batched, seq_front_then_right),
+        "the per-face-angle batch matches drafting front then right sequentially, face-for-face by centroid");
+  Check(matches_by_centroid(batched, seq_right_then_front),
+        "the per-face-angle batch matches drafting right then front sequentially too - order-independent");
+  Check(std::fabs(PlanarBrepVolumeExact(batched) - PlanarBrepVolumeExact(seq_front_then_right)) < 1e-9,
+        "the batch's own volume matches the sequential result's exactly, not merely a plausible-looking number");
+
+  bool threw = false;
+  try {
+    DraftFacesConvexPlanar(box, {2, 5}, neutral, std::vector<double>{theta_front});
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "DraftFacesConvexPlanar refuses angles_radians.size() != face_indices.size()");
+
+  threw = false;
+  try {
+    DraftFacesConvexPlanar(box, {2, 2}, neutral, std::vector<double>{theta_front, theta_right});
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "DraftFacesConvexPlanar refuses a duplicate face_index in the per-face-angle overload - two "
+               "entries would name two different angles for the same face");
 }
 
 // A pure normal-translate is exactly what OffsetFace() already does, so
@@ -61361,6 +61572,9 @@ int main() {
   TestSplitFaceByCurveBoxTopFaceAsymmetricVSplit();
   TestSplitFaceByCurveRejectsInteriorOnlyLoop();
   TestSplitFaceByCurveRejectsInvalidInput();
+  TestImprintClosedCurveOnFaceBoxTopFaceSquareHole();
+  TestImprintClosedCurveOnFaceRejectsOpenChain();
+  TestImprintClosedCurveOnFaceRejectsInvalidInput();
   TestMutualImprintFacesBoxPiercedByCylinder();
   TestMutualImprintFacesRejectsEmptyOrNonPositiveTolerance();
   TestSplitBySheetBoxCutInHalfByPlane();
@@ -61652,6 +61866,7 @@ int main() {
   TestPushPullFacesRefusesInvalidInput();
   TestDraftFacesConvexPlanarBoxAllWallsMatchesExactFrustumVolume();
   TestDraftFacesConvexPlanarSingleFaceLeavesOppositeFaceExactlyUntouched();
+  TestDraftFacesConvexPlanarPerFaceAnglesMatchesEitherSequentialOrder();
   TestReplaceFacePlaneConvexPlanarMatchesOffsetFaceForPureTranslate();
   TestReplaceFacePlaneConvexPlanarTiltedRoofMatchesExactIntegralAndRetrimsWalls();
   TestReplaceFacePlaneConvexPlanarRefusesInvalidInput();
