@@ -677,6 +677,15 @@ if(DINO8_BUILD_TESTS)
   target_include_directories(dino8_test_xlsx PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   add_test(NAME dino8_xlsx COMMAND dino8_test_xlsx)
 
+  # util/Inflate.cpp's InflateRaw max_output cap, standalone: a deflate
+  # stream's back-references can expand far past any caller-known size, so
+  # a decompression bomb must be rejected as soon as it would exceed the
+  # cap rather than after it's already been allocated. See dino8_xlsx and
+  # dino8_image_hdr, the two real call sites this guards.
+  add_executable(dino8_test_inflate tests/test_inflate.cpp src/util/Inflate.cpp)
+  target_include_directories(dino8_test_inflate PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  add_test(NAME dino8_inflate COMMAND dino8_test_inflate)
+
   # Numerically verifies VariableBlendSrf's own claim (cmd_fillet.cpp's
   # VariableBlendSrfCommand): that BuildBlendSurfaceG1/G2's new
   # width_frac_at hook makes the blend's cross-section width genuinely

@@ -148,7 +148,12 @@ bool FindZipEntry(const std::vector<unsigned char>& zip, const std::string& name
     if (method == 0) {
       data.assign(dptr, dptr + csize);
     } else if (method == 8) {
-      if (!InflateRaw(dptr, csize, data)) { error = "corrupt deflate stream in '" + name + "'"; return false; }
+      // Cap decompression at the entry's own declared uncompressed size
+      // (checked again below) rather than the generic default - a tiny
+      // deflate stream can expand by three orders of magnitude via
+      // back-references, so without this a crafted sheet entry could
+      // exhaust memory before the size/CRC check ever ran.
+      if (!InflateRaw(dptr, csize, data, usize)) { error = "corrupt deflate stream in '" + name + "'"; return false; }
     } else {
       error = "unsupported zip compression method (" + std::to_string(method) + ") in '" + name + "'";
       return false;
@@ -276,15 +281,29 @@ std::string ColumnLetters(int col0) {
   return s;
 }
 
+// The real OOXML worksheet limits (XFD1048576), used to reject absurd cell
+// references before they ever reach an int: without this, a column ref with
+// enough letters (e.g. 7+ Z's) overflows `long` on the multiply-by-26 below,
+// and the subsequent narrowing to int can land on a negative col0 that then
+// bypasses ParseSheetRows's `row.size() <= cc` bounds check and corrupts the
+// heap via an out-of-bounds `row[cc]` write.
+constexpr long kMaxXlsxColumn = 16384;
+constexpr long kMaxXlsxRow = 1048576;
+
 // A cell reference like "AB12" -> (row0, col0), both 0-based. False for an
-// unparseable reference (no leading letters, or no trailing digits).
+// unparseable reference (no leading letters, no trailing digits, or either
+// coordinate outside the real worksheet limits above).
 bool ParseCellRef(const std::string& ref, int& row0, int& col0) {
   size_t i = 0;
   long col = 0;
-  while (i < ref.size() && std::isalpha(static_cast<unsigned char>(ref[i]))) { col = col * 26 + (std::toupper(static_cast<unsigned char>(ref[i])) - 'A' + 1); ++i; }
+  while (i < ref.size() && std::isalpha(static_cast<unsigned char>(ref[i]))) {
+    col = col * 26 + (std::toupper(static_cast<unsigned char>(ref[i])) - 'A' + 1);
+    if (col > kMaxXlsxColumn) return false;
+    ++i;
+  }
   if (i == 0 || i >= ref.size()) return false;
   const long row = std::atol(ref.c_str() + i);
-  if (row <= 0 || col <= 0) return false;
+  if (row <= 0 || col <= 0 || row > kMaxXlsxRow) return false;
   row0 = static_cast<int>(row - 1);
   col0 = static_cast<int>(col - 1);
   return true;
@@ -364,8 +383,13 @@ void ParseSheetRows(const std::string& xml, const std::vector<std::string>& shar
   while (NextElement(xml, pos, "row", rtag, rinner, rnext)) {
     pos = rnext;
     const std::string rattr = AttrOf(rtag, "r");
-    int row0 = rattr.empty() ? -1 : std::atoi(rattr.c_str()) - 1;
-    if (row0 < 0) continue;  // malformed row index - skip rather than guess
+    // atol (not atoi): a huge digit string would overflow int in atoi's
+    // return type before the range check below ever sees it. A row index
+    // past the real worksheet limit is rejected rather than accepted, which
+    // would otherwise resize `rows` to an attacker-chosen multi-gigabyte size.
+    const long rval = rattr.empty() ? -1 : std::atol(rattr.c_str());
+    int row0 = (rval <= 0 || rval > kMaxXlsxRow) ? -1 : static_cast<int>(rval - 1);
+    if (row0 < 0) continue;  // malformed or out-of-range row index - skip rather than guess
     if (static_cast<int>(rows.size()) <= row0) rows.resize(static_cast<size_t>(row0) + 1);
     size_t cpos = 0;
     std::string ctag, cinner;
