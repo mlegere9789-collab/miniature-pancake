@@ -985,6 +985,27 @@ void RefuseCompoundOperand(const Brep& operand, const char* function_name) {
 }  // namespace
 
 Brep BooleanCombinePlanar(const Brep& a, const Brep& b, BooleanOp op, double tolerance) {
+  // A caller-supplied `tolerance` of exactly 0.0 is the one value this
+  // function's own negative-sentinel convention cannot tell apart from a
+  // genuine mistake: it is not negative (so it is NOT treated as "use the
+  // auto-derived default"), yet it is also not positive, so every
+  // distance/coincidence test below would be asked for exact bit-for-bit
+  // equality - silently classifying away virtually every coincident-face
+  // pair this engine depends on, rather than refusing outright the way
+  // every OTHER caller-tolerance precondition in this file already does
+  // (SplitBrepBySolid()/SplitBrepByManySolids()/BooleanCombineGeneral(),
+  // boolean_general.cpp - "a caller tolerance that is not strictly
+  // positive"). PARITY_MAP.md's own "Boolean failure diagnostics" bullet
+  // names this engine's own precondition checks specifically as not yet
+  // covered by the typed-refusal catalogue; this closes one concrete site
+  // of that gap. A negative `tolerance` is untouched - it still means
+  // "auto-derive", exactly as before this check existed.
+  if (tolerance >= 0.0 && !(tolerance > 0.0)) {
+    throw BooleanOperationError(BooleanFailureReason::InvalidTolerance, "BooleanCombinePlanar",
+                                 "dino8::kernel::BooleanCombinePlanar: an explicit non-negative tolerance must be "
+                                 "positive (pass a negative value to request the auto-derived default)");
+  }
+
   // Union and SymmetricDifference still need the lump-merge step neither
   // pipeline below has (see RefuseCompoundOperand's own doc comment) and
   // stay refused. Difference and Intersection do NOT need one - they
@@ -2160,20 +2181,38 @@ Brep PushPullFaces(const Brep& solid, const std::vector<std::pair<int, double>>&
 }
 
 Brep DraftFacesConvexPlanar(const Brep& solid, const std::vector<int>& face_indices, const ON_Plane& neutral_plane,
-                             double angle_radians) {
+                             const std::vector<double>& angles_radians) {
   const std::vector<Brep::PlanarFace> faces = solid.PlanarFaces();
   const int n = static_cast<int>(faces.size());
   if (face_indices.empty()) {
     throw std::invalid_argument("dino8::kernel::DraftFacesConvexPlanar: face_indices must not be empty");
   }
+  if (angles_radians.size() != face_indices.size()) {
+    throw std::invalid_argument(
+        "dino8::kernel::DraftFacesConvexPlanar: angles_radians.size() (" + std::to_string(angles_radians.size()) +
+        ") must equal face_indices.size() (" + std::to_string(face_indices.size()) +
+        ") - one angle per named face, the same positional pairing ShellConvexPlanar()'s own per-face "
+        "wall_thickness overload already uses");
+  }
   std::vector<bool> selected(static_cast<size_t>(n), false);
-  for (int idx : face_indices) {
+  std::vector<double> angle_of(static_cast<size_t>(n), 0.0);
+  for (size_t k = 0; k < face_indices.size(); ++k) {
+    const int idx = face_indices[k];
     if (idx < 0 || idx >= n) {
       throw std::invalid_argument(
           "dino8::kernel::DraftFacesConvexPlanar: face_indices contains an index "
           "out of range for solid.PlanarFaces()");
     }
+    if (selected[static_cast<size_t>(idx)]) {
+      throw std::invalid_argument(
+          "dino8::kernel::DraftFacesConvexPlanar: face_indices contains a duplicate index " +
+          std::to_string(idx) +
+          " - two entries would name two different angles for the same face, the same ambiguous-duplicate "
+          "refusal MoveFacesConvexPlanar()/ReplaceFacePlanesConvexPlanar() already enforce for their own "
+          "per-target lists");
+    }
     selected[static_cast<size_t>(idx)] = true;
+    angle_of[static_cast<size_t>(idx)] = angles_radians[k];
   }
 
   const double tol = RelativeTol(faces);
@@ -2212,10 +2251,10 @@ Brep DraftFacesConvexPlanar(const Brep& solid, const std::vector<int>& face_indi
 
     Vector3d axis = u;
     axis.Unitize();
-    // Negated so a POSITIVE angle_radians matches Brep::ExtrudeTapered()'s
+    // Negated so a POSITIVE angle matches Brep::ExtrudeTapered()'s
     // own sign convention (shrinks moving along +neutral_plane.zaxis) -
     // see this function's own doc comment.
-    const double theta = -angle_radians;
+    const double theta = -angle_of[static_cast<size_t>(i)];
     const double ca = std::cos(theta);
     const double sa = std::sin(theta);
     auto rotate = [&](const Vector3d& v) {
@@ -2276,6 +2315,18 @@ Brep DraftFacesConvexPlanar(const Brep& solid, const std::vector<int>& face_indi
   }
 
   return Brep::FromPlanarFaces(result);
+}
+
+// Thin delegation, not a second implementation - the same "scalar overload
+// forwards to the per-face-array one" shape ShellConvexPlanar()'s own
+// scalar `t` overload already uses toward its own per-face
+// `wall_thickness` sibling - so this overload's already-verified behavior
+// (including the convexity/parallel-plane/collapse checks above) is
+// provably unchanged by the per-face overload's existence.
+Brep DraftFacesConvexPlanar(const Brep& solid, const std::vector<int>& face_indices, const ON_Plane& neutral_plane,
+                             double angle_radians) {
+  return DraftFacesConvexPlanar(solid, face_indices, neutral_plane,
+                                 std::vector<double>(face_indices.size(), angle_radians));
 }
 
 Brep ReplaceFacePlaneConvexPlanar(const Brep& solid, int face_index, const ON_Plane& new_plane) {
@@ -7728,6 +7779,18 @@ std::vector<MixedFace> SynthesizeEndCaps(const std::vector<MixedFace>& fragments
 }  // namespace
 
 Brep BooleanCombineMixed(const Brep& a, const Brep& b, BooleanOp op, double tolerance) {
+  // Same explicit-zero-tolerance refusal BooleanCombinePlanar's own
+  // identical check above makes, for the identical reason: 0.0 is neither
+  // negative (the "auto-derive" sentinel) nor positive, so without this
+  // guard it would silently demand exact bit-for-bit coincidence from
+  // every distance test below instead of being refused up front the way
+  // every other caller-tolerance precondition in this file already is.
+  if (tolerance >= 0.0 && !(tolerance > 0.0)) {
+    throw BooleanOperationError(BooleanFailureReason::InvalidTolerance, "BooleanCombineMixed",
+                                 "dino8::kernel::BooleanCombineMixed: an explicit non-negative tolerance must be "
+                                 "positive (pass a negative value to request the auto-derived default)");
+  }
+
   // Union and SymmetricDifference still need the lump-merge step neither
   // pipeline here has (see RefuseCompoundOperand's own doc comment) and
   // stay refused. Difference and Intersection do not - see this function's

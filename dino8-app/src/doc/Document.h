@@ -59,6 +59,23 @@ struct Layer {
   // the "no lineweights" half (and adds the print-exclusion flag for free,
   // since it is the same underlying field).
   double print_width_mm = 0;
+  // Plot color override - the other half of PARITY_MAP.md's "Print and
+  // plot output" named "plot styles (CTB/STB)" gap, alongside
+  // print_width_mm's lineweight override above. Mirrors real Rhino's own
+  // ON_Layer::PlotColor/SetPlotColor (opennurbs_layer.h) and round-trips
+  // through that same real .3dm field (io/File3dm.cpp): when
+  // has_plot_color is true, io/FileExchange.cpp's ExportSvg/ExportPdf
+  // stroke this layer's paths in plot_color instead of each object's own
+  // on-screen display color - the same "print everything in this layer's
+  // pen color regardless of what it looks like on screen" behavior a named
+  // plot style table's per-layer color column gives in real Rhino/AutoCAD.
+  // has_plot_color false (the default) means "use display color", the
+  // same default real Rhino's own PlotColor has (ON_Color::UnsetColor,
+  // which PlotColor() itself resolves back to m_color) - a plain boolean
+  // rather than reusing Color's own fields as a sentinel, since Color has
+  // no spare channel to encode "unset" in in the first place.
+  bool has_plot_color = false;
+  Color plot_color = Color::FromBytes(0, 0, 0);
 };
 
 // Whether a layer's objects should appear in a vector Print/Export at all -
@@ -77,6 +94,16 @@ inline bool LayerPrints(const Layer& layer) { return layer.print_width_mm >= 0; 
 // heavier Viewport/GL dependencies.
 inline double EffectivePrintWidthMm(const Layer& layer, double doc_default) {
   return layer.print_width_mm > 0 ? layer.print_width_mm : doc_default;
+}
+
+// The pen color a layer's paths should actually be stroked at (io/
+// FileExchange.cpp's ExportSvg/ExportPdf): the layer's own plot_color
+// override when set (LayerPlotColor, cmd_layer.cpp), else `display_color`
+// (the object's own on-screen EffectiveColor) unchanged. Pure and
+// header-only for the same unit-testability reason EffectivePrintWidthMm
+// above is.
+inline Color EffectivePlotColor(const Layer& layer, const Color& display_color) {
+  return layer.has_plot_color ? layer.plot_color : display_color;
 }
 
 // A block definition: a named set of objects with a base point. Instances
@@ -104,6 +131,20 @@ struct BlockDefinition {
   // places exactly one copy, so an ordinary block is unaffected.
   kernel::Vector3d array_axis{1, 0, 0};
   double array_spacing = 0;
+  // Lookup parameter (BlockSetLookupTable, doc/BlockInstances.h): a named
+  // key -> visibility-state table, the fourth dynamic-block parameter/action
+  // type alongside Visibility states, Flip and Array. A placed instance's
+  // own lookup key (BlockInstance::lookup_key, set via BlockSetLookup) is
+  // matched against lookup_keys to pick the row in lookup_states to show,
+  // the same "table of inputs picks a named state" shape Rhino's own Lookup
+  // parameter has when it drives a Visibility parameter. Parallel vectors
+  // rather than a map so row order (and therefore which row wins a
+  // duplicate key, "first match") is stable and round-trips predictably,
+  // matching how `states` above is already stored as an ordered vector. A
+  // definition with no rows has no lookup parameter at all, the same
+  // "no-op until configured" contract array_spacing == 0 gives Array.
+  std::vector<std::string> lookup_keys;
+  std::vector<std::string> lookup_states;
 };
 
 struct Group {

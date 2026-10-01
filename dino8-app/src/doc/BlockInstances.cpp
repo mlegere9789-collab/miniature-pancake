@@ -65,6 +65,7 @@ std::vector<BlockInstance> LoadBlockInstances(const Document& doc) {
     // behavior to static_cast straight to int, and PlaceFiltered's own cap
     // (kMaxBlockArrayCount) only helps once this is a well-defined int.
     b.array_count = arr.number > 0 ? static_cast<int>(std::min(arr.number, 1e9)) : 1;
+    b.lookup_key = v["lookup"].AsString();
     const json::Value& objs = v["objects"];
     for (size_t j = 0; j < objs.Size(); ++j) b.objects.push_back(static_cast<ObjectId>(objs[j].number));
     out.push_back(std::move(b));
@@ -80,7 +81,8 @@ void SaveBlockInstances(Document& doc, const std::vector<BlockInstance>& list) {
     out << (i ? "," : "") << "{\"group\":" << b.group << ",\"block\":\"" << JsonEscape(b.block) << "\""
         << ",\"state\":\"" << JsonEscape(b.state) << "\""
         << ",\"ix\":" << b.insert.x << ",\"iy\":" << b.insert.y << ",\"iz\":" << b.insert.z
-        << ",\"flip\":" << (b.flipped ? 1 : 0) << ",\"array\":" << b.array_count << ",\"objects\":[";
+        << ",\"flip\":" << (b.flipped ? 1 : 0) << ",\"array\":" << b.array_count
+        << ",\"lookup\":\"" << JsonEscape(b.lookup_key) << "\",\"objects\":[";
     for (size_t j = 0; j < b.objects.size(); ++j) out << (j ? "," : "") << b.objects[j];
     out << "]}";
   }
@@ -159,6 +161,14 @@ std::vector<ObjectId> PlaceFiltered(Document& doc, const BlockDefinition& def, k
 }
 }  // namespace
 
+std::string ResolveLookupState(const BlockDefinition& def, const std::string& key, const std::string& fallback) {
+  if (key.empty()) return fallback;
+  for (size_t i = 0; i < def.lookup_keys.size() && i < def.lookup_states.size(); ++i) {
+    if (def.lookup_keys[i] == key) return def.lookup_states[i];
+  }
+  return fallback;  // no matching row: lookup has no effect, same as an empty key
+}
+
 int InstantiateDynamicBlock(Document& doc, const std::string& name, kernel::Point3d at, const std::string& state) {
   BlockDefinition* def = doc.FindBlock(name);
   if (!def) return -1;
@@ -191,7 +201,8 @@ bool RebuildBlockInstance(Document& doc, int group) {
   BlockDefinition* def = doc.FindBlock(it->block);
   if (!def) return false;
   for (ObjectId id : it->objects) doc.Remove(id);
-  it->objects = PlaceFiltered(doc, *def, it->insert, it->state, it->flipped, it->array_count);
+  const std::string place_state = ResolveLookupState(*def, it->lookup_key, it->state);
+  it->objects = PlaceFiltered(doc, *def, it->insert, place_state, it->flipped, it->array_count);
   // Re-attach the fresh objects to the same group id so selection/explode
   // (which key off Document::Group membership) still find this instance,
   // and rebuild the anchor-object provenance the same way InstantiateDynamicBlock does.
@@ -224,6 +235,15 @@ bool SetBlockInstanceArrayCount(Document& doc, int group, int count) {
   auto it = std::find_if(list.begin(), list.end(), [&](const BlockInstance& b) { return b.group == group; });
   if (it == list.end()) return false;
   it->array_count = std::max(1, count);
+  SaveBlockInstances(doc, list);
+  return RebuildBlockInstance(doc, group);
+}
+
+bool SetBlockInstanceLookup(Document& doc, int group, const std::string& key) {
+  std::vector<BlockInstance> list = LoadBlockInstances(doc);
+  auto it = std::find_if(list.begin(), list.end(), [&](const BlockInstance& b) { return b.group == group; });
+  if (it == list.end()) return false;
+  it->lookup_key = key;
   SaveBlockInstances(doc, list);
   return RebuildBlockInstance(doc, group);
 }

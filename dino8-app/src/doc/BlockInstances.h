@@ -66,6 +66,14 @@ struct BlockInstance {
   // of the stored value, same "no-op until configured" contract as Flip
   // being a no-op on a block with no named states.
   int array_count = 1;
+  // Lookup parameter: this instance's own input value for its block
+  // definition's lookup table (BlockDefinition::lookup_keys/lookup_states,
+  // set on the definition via BlockSetLookupTable). When non-empty and the
+  // definition has a matching row, RebuildBlockInstance places that row's
+  // state instead of `state` above - the fourth dynamic-block parameter
+  // type. Empty, or no matching row, falls back to `state` unchanged, same
+  // "no-op until configured/matched" contract Flip/Array already have.
+  std::string lookup_key;
 };
 
 std::vector<BlockInstance> LoadBlockInstances(const Document& doc);
@@ -116,6 +124,21 @@ bool SetBlockInstanceFlip(Document& doc, int group, bool flipped);
 // to at least 1) and rebuilds. Returns false if `group` isn't a known
 // dynamic-block instance.
 bool SetBlockInstanceArrayCount(Document& doc, int group, int count);
+
+// Looks up the stored record for `group`, sets its Lookup parameter's input
+// key and rebuilds - the key is matched against its block definition's
+// lookup_keys/lookup_states table (BlockSetLookupTable) to pick which state
+// to show, falling back to the instance's own `state` field when the key is
+// empty or matches no row. Returns false if `group` isn't a known
+// dynamic-block instance.
+bool SetBlockInstanceLookup(Document& doc, int group, const std::string& key);
+
+// Resolves which visibility state `def`'s lookup table says `key` should
+// show, or `fallback` (typically the instance's own explicit `state`) if
+// `key` is empty or matches no row in def.lookup_keys. Exposed for the
+// BlockSetLookupTable command's own preview/validation, not just internal
+// use by RebuildBlockInstance.
+std::string ResolveLookupState(const BlockDefinition& def, const std::string& key, const std::string& fallback);
 
 // Finds the BlockInstance owning `object_id` (one of its current objects).
 bool FindBlockInstanceByObject(const Document& doc, ObjectId object_id, BlockInstance& out);
