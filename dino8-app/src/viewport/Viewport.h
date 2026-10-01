@@ -324,16 +324,19 @@ class Viewport {
   void DrawScene(GlRenderer& renderer, const FrameContext& ctx, DisplayMode mode, double aspect);
   void DrawObjects(GlRenderer& renderer, const FrameContext& ctx, DisplayMode mode);
   // `out_lights`, when given, receives the same light list just uploaded
-  // via renderer.SetLights - DrawScene's shadow pre-pass uses out_lights[0]
-  // as the shadow-casting light without duplicating this function's own
-  // sun/point/spot/default-key-light priority logic.
+  // via renderer.SetLights - DrawScene's shadow pre-pass gives every entry
+  // in out_lights its own real shadow (see DrawShadowPass below) without
+  // duplicating this function's own sun/point/spot/default-key-light
+  // priority logic.
   void SetupLights(GlRenderer& renderer, const FrameContext& ctx, std::vector<GpuLight>* out_lights = nullptr);
   // Real-time shadow map pre-pass (GlRenderer::BeginShadowPass): frames the
-  // document's visible bounding box from `light_dir` and depth-only-draws
-  // every visible object's mesh into it. A no-op (renderer keeps whatever
-  // shadow map it already had this frame) if there is nothing visible or
-  // no usable light direction.
-  void DrawShadowPass(GlRenderer& renderer, const FrameContext& ctx, kernel::Vector3d light_dir);
+  // document's visible bounding box from each of `lights`' own direction in
+  // turn and depth-only-draws every visible object's mesh into that light's
+  // own shadow-atlas layer - a genuine per-light atlas (every enabled light
+  // gets its own real shadow), not just the strongest one. A given light is
+  // skipped (renderer keeps no shadow for it this frame) if there is
+  // nothing visible or that light has no usable direction.
+  void DrawShadowPass(GlRenderer& renderer, const FrameContext& ctx, const std::vector<GpuLight>& lights);
   void DrawGroundPlane(GlRenderer& renderer, const FrameContext& ctx);
   void DrawLightWidgets(GlRenderer& renderer, const Document& doc);
   void DrawAxesGizmo(GlRenderer& renderer);

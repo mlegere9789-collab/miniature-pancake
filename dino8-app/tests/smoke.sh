@@ -2845,6 +2845,11 @@ s2check() { if echo "$S2" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $
 # just accepted-and-ignored text.
 s2check "SetObjectDisplayMode: 1 object(s) now always shown Ghosted (35% opaque)" "SetObjectDisplayMode Ghosted is a genuine per-object override, not silently treated as UseViewport"
 s2check "SetObjectDisplayMode: 1 object(s) now always shown X-Ray (18% opaque)" "SetObjectDisplayMode X-Ray is a genuine per-object override, not silently treated as UseViewport"
+# SetObjectDisplayMode Monochrome (PARITY_MAP.md's "Per-object display mode
+# override" item, extended this pass from Wireframe/Shaded/Ghosted/X-Ray to
+# also cover this fifth mode) - a real per-object override, not just
+# accepted-and-ignored text.
+s2check "SetObjectDisplayMode: 1 object(s) now always shown Monochrome (flat grey, fully opaque)" "SetObjectDisplayMode Monochrome is a genuine per-object override, not silently treated as UseViewport"
 s2check "WhatsNew: opened the What's New window" "WhatsNew opens its own real changelog window, not the About box"
 # Regression guard for the "changelog.md never shipped" bug: WhatsNew's
 # confirmation print above only means the *window* opened - Panels.cpp's
@@ -4227,6 +4232,163 @@ r, g, b = get(fx, fy)
 assert r == g == b, f'far sample is not a pure grey (r,g,b)={(r, g, b)} - ShowZBuffer must not tint by material colour'
 assert far_gray > BG_THRESH, f'far box sample ({far_gray}) is indistinguishable from the black background'
 assert near_gray > far_gray + 40, f'near box ({near_gray}) is not clearly lighter than the far box ({far_gray})'
+PY
+
+# SetObjectDisplayMode Monochrome: pixel-level proof (PARITY_MAP.md's
+# "Per-object display mode override" item) that Monochrome is a real
+# per-object fill-colour override, not just a printed status line - two
+# differently-coloured boxes in a Shaded (never-Monochrome) Top view; see
+# tests/mono_script.txt for the full scene/capture sequence.
+mkdir -p "$TMPW/mono"
+sed "s|@TMP@|$TMPW/mono|g" "$HERE/mono_script.txt" > "$TMPW/mono_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  MONO="$("$BIN" --smoke 30 --script "$TMPW/mono_script.txt" 2>&1)" || { echo "$MONO"; echo "FAIL: mono script exited non-zero"; exit 1; }
+else
+  MONO="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/mono_script.txt" 2>&1)" || { echo "$MONO"; echo "FAIL: mono script exited non-zero"; exit 1; }
+fi
+monocheck() { if echo "$MONO" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$MONO" "$1"; fail=1; fi; }
+monocheck "^ok   expect_objects 2" "mono script left exactly the two boxes"
+monocheck "gl_error=0" "mono script ran without OpenGL errors"
+python3 - "$TMPW/mono/mono_off.bmp" "$TMPW/mono/mono_on.bmp" "$TMPW/mono/mono_off2.bmp" <<'PY' && echo "ok   SetObjectDisplayMode Monochrome genuinely overrides one object's own fill colour with the mode's flat grey, independent of the viewport's own (never-Monochrome) display mode, and UseViewport genuinely restores the object's own colour afterward" || { echo "FAIL SetObjectDisplayMode Monochrome pixel check"; fail=1; }
+import struct, sys
+
+def read_bmp(path):
+    d = open(path, 'rb').read()
+    assert d[:2] == b'BM', (path, 'signature')
+    size, off, hdr, w, h, planes, bpp = struct.unpack('<IxxxxIIiiHH', d[2:30])
+    assert hdr == 40 and planes == 1 and bpp == 24, (path, hdr, planes, bpp)
+    row = (w * 3 + 3) & ~3
+    px = d[off:]
+    assert len(px) == row * h, (path, 'pixel data size')
+    def get(x, y):  # y = 0 at the top of the image
+        r = h - 1 - y
+        i = r * row + x * 3
+        b, g, rr = px[i], px[i + 1], px[i + 2]
+        return rr, g, b
+    return w, h, get
+
+w, h, off = read_bmp(sys.argv[1])
+_, _, on = read_bmp(sys.argv[2])
+_, _, off2 = read_bmp(sys.argv[3])
+
+# Box A (left, never touched): find its red-dominant blob in the untouched
+# capture and sample its centre in all three captures.
+reds = [(x, y) for y in range(0, h, 2) for x in range(0, w, 2) if off(x, y)[0] > off(x, y)[1] + 30 and off(x, y)[0] > off(x, y)[2] + 30]
+assert reds, 'no red (Box A) pixels found in mono_off.bmp'
+axs, ays = [p[0] for p in reds], [p[1] for p in reds]
+acx, acy = (min(axs) + max(axs)) // 2, (min(ays) + max(ays)) // 2
+ra, rb, rc = off(acx, acy), on(acx, acy), off2(acx, acy)
+print(f'Box A (untouched) sample: off={ra} on={rb} off2={rc}')
+assert ra == rb == rc, f'Box A changed even though it was never given a SetObjectDisplayMode override: {ra} {rb} {rc}'
+assert ra[0] > ra[1] + 30 and ra[0] > ra[2] + 30, f'Box A does not read as red: {ra}'
+
+# Box B (right, Monochrome toggled on then off): find the blob where "off"
+# and "on" actually differ, and sample its centre in all three captures.
+diffs = [(x, y) for y in range(0, h) for x in range(0, w) if sum(abs(a - b) for a, b in zip(off(x, y), on(x, y))) > 15]
+assert diffs, 'Box B never changed between mono_off.bmp and mono_on.bmp - Monochrome had no visible effect'
+bxs, bys = [p[0] for p in diffs], [p[1] for p in diffs]
+bcx, bcy = (min(bxs) + max(bxs)) // 2, (min(bys) + max(bys)) // 2
+bo, bn, bo2 = off(bcx, bcy), on(bcx, bcy), off2(bcx, bcy)
+print(f'Box B (Monochrome toggled) sample: off={bo} on={bn} off2={bo2}')
+assert bo[2] > bo[0] + 30 and bo[2] > bo[1] + 30, f'Box B does not read as blue before the override: {bo}'
+assert bo == bo2, f'Box B does not return to its own colour after UseViewport: off={bo} off2={bo2}'
+assert max(bn) - min(bn) <= 8, f'Box B while Monochrome-tagged is not a neutral grey: {bn}'
+assert abs(bn[0] - 182) <= 15 and abs(bn[1] - 182) <= 15 and abs(bn[2] - 187) <= 15, f'Box B Monochrome grey is not the expected flat {{200,200,205}}-derived tone: {bn}'
+PY
+
+# Real-time shadow maps (per-light shadow atlas): pixel-level proof
+# (PARITY_MAP.md's "Real-time shadow maps in the rasterized renderer" item)
+# that two simultaneously-enabled lights now each cast their own real
+# shadow in the same frame, not just one documented shadow-caster - see
+# tests/shadow_script.txt for the full scene (a floating box over a flat
+# floor, lit by two DirectionalLights travelling in different horizontal
+# directions as they shine down).
+mkdir -p "$TMPW/shadow"
+sed "s|@TMP@|$TMPW/shadow|g" "$HERE/shadow_script.txt" > "$TMPW/shadow_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  SHAD="$("$BIN" --smoke 30 --script "$TMPW/shadow_script.txt" 2>&1)" || { echo "$SHAD"; echo "FAIL: shadow script exited non-zero"; exit 1; }
+else
+  SHAD="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/shadow_script.txt" 2>&1)" || { echo "$SHAD"; echo "FAIL: shadow script exited non-zero"; exit 1; }
+fi
+shadcheck() { if echo "$SHAD" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$SHAD" "$1"; fail=1; fi; }
+shadcheck "^ok   expect_objects 2" "shadow script left exactly the floor and the floating box"
+shadcheck "gl_error=0" "shadow script ran without OpenGL errors"
+python3 - "$TMPW/shadow/shadow_both.bmp" <<'PY' && echo "ok   GlRenderer's shadow pass is a genuine per-light atlas: two DirectionalLights travelling in different horizontal directions both cast a real shadow onto the floor in the same frame, which a single shared shadow-caster could not do" || { echo "FAIL shadow atlas pixel check"; fail=1; }
+import struct, sys
+
+def read_bmp(path):
+    d = open(path, 'rb').read()
+    assert d[:2] == b'BM', (path, 'signature')
+    size, off, hdr, w, h, planes, bpp = struct.unpack('<IxxxxIIiiHH', d[2:30])
+    assert hdr == 40 and planes == 1 and bpp == 24, (path, hdr, planes, bpp)
+    row = (w * 3 + 3) & ~3
+    px = d[off:]
+    assert len(px) == row * h, (path, 'pixel data size')
+    def get(x, y):  # y = 0 at the top of the image
+        r = h - 1 - y
+        i = r * row + x * 3
+        b, g, rr = px[i], px[i + 1], px[i + 2]
+        return rr, g, b
+    return w, h, get
+
+w, h, get = read_bmp(sys.argv[1])
+
+def luma(c):
+    r, g, b = c
+    return 0.299 * r + 0.587 * g + 0.114 * b
+
+# The plain lit floor is most of the frame, so its colour is whatever is
+# most common (sampled on a coarse grid for speed).
+counts = {}
+for y in range(0, h, 2):
+    for x in range(0, w, 2):
+        c = get(x, y)
+        counts[c] = counts.get(c, 0) + 1
+floor_lit = max(counts, key=counts.get)
+floor_luma = luma(floor_lit)
+print(f'floor, lit (baseline) colour: {floor_lit} (luma {floor_luma:.1f})')
+
+# A "shadow" pixel: still a neutral grey like the floor itself (not the
+# green box or one of its specular highlights), but meaningfully darker
+# than the lit floor - i.e. genuinely shadowed, not just a different
+# material. Flood-fill (4-connected) into components so two lights'
+# separate, non-touching shadows are counted as two, not accidentally
+# merged into one blob or confused with noise.
+mask = [[False] * w for _ in range(h)]
+for y in range(h):
+    for x in range(w):
+        c = get(x, y)
+        if max(c) - min(c) < 20 and luma(c) < floor_luma - 20:
+            mask[y][x] = True
+visited = [[False] * w for _ in range(h)]
+components = []
+for y0 in range(h):
+    for x0 in range(w):
+        if not mask[y0][x0] or visited[y0][x0]:
+            continue
+        stack, size = [(x0, y0)], 0
+        visited[y0][x0] = True
+        minx = maxx = x0
+        miny = maxy = y0
+        while stack:
+            x, y = stack.pop()
+            size += 1
+            minx, maxx = min(minx, x), max(maxx, x)
+            miny, maxy = min(miny, y), max(maxy, y)
+            for nx, ny in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)):
+                if 0 <= nx < w and 0 <= ny < h and mask[ny][nx] and not visited[ny][nx]:
+                    visited[ny][nx] = True
+                    stack.append((nx, ny))
+        components.append((size, (minx, maxx, miny, maxy)))
+components.sort(reverse=True)
+print(f'shadow components found: {len(components)}; largest two: {components[:2]}')
+# A single shared shadow-caster (the old behaviour) can only ever darken
+# one region of the floor in one frame; a real per-light atlas darkens one
+# region per enabled light. Two lights travelling in different directions
+# must therefore produce (at least) two distinct, reasonably-sized dark
+# regions - not one, and not mere noise.
+real = [c for c in components if c[0] >= 30]
+assert len(real) >= 2, f'expected at least 2 distinct real shadow regions (one per light), found {len(real)}: {components[:4]}'
 PY
 
 # Docs tutorials (docs/site/tutorials.html and README's "10 tutorials,
