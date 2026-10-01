@@ -462,7 +462,7 @@ struct ProvenanceInfo {
 // orphaned entry, cleared whenever the dependent object itself is removed -
 // same tradeoff HoleFeature/PipeFeature accept above).
 struct HistoryRecord {
-  std::string command;                        // "Extrude", "ExtrudeCrvToPoint", "Revolve", "Loft", "SubDLoft"
+  std::string command;                        // "Extrude", "ExtrudeCrvToPoint", "Revolve", "Loft", "SubDLoft", "Pipe", "Sweep1"
   std::vector<ObjectId> sources;               // source curve(s), in construction order
   std::map<std::string, double> num;           // e.g. "distance", "both", "solid", "ax","ay","az","bx","by","bz"
   bool straight = false;                       // Loft Style=Straight

@@ -62,4 +62,15 @@ std::optional<SceneObject> RebuildLoft(CommandContext& ctx, const std::vector<co
 // the live command derives it from c.IsClosed() rather than recording it.
 std::optional<SceneObject> RebuildPipe(CommandContext& ctx, const kernel::NurbsCurve& curve, const HistoryRecord& rec);
 
+// Sweep1 (Sweep1Command, cmd_surface.cpp), single-cross-section case only -
+// the kernel's own exact Brep::Sweep1 (RMF transport + skin, real caps when
+// the section is closed and planar). Reads no num parameters: stations and
+// cap are fixed the same way the live command's single-section call is.
+// Returns nullopt (no history recorded, live command falls back to its own
+// approximate multi-section construction) when the kernel itself refuses
+// the inputs (e.g. a non-planar closed section, or a degenerate rail/
+// section) - never throws.
+std::optional<SceneObject> RebuildSweep1(CommandContext& ctx, const kernel::NurbsCurve& section,
+                                          const kernel::NurbsCurve& rail, const HistoryRecord& rec);
+
 }  // namespace dino8::app
