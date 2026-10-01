@@ -484,6 +484,25 @@ int JoinEdges(ON_Brep& b, double tol) {
   return joined;
 }
 
+// JoinEdges() above only joins a naked-edge pair that matches endpoint to
+// endpoint; an importer regularly sees a genuine T-junction instead (one
+// exporter's face boundary split into more/shorter edges than its
+// neighbour's own matching boundary, so no single naked edge on one side
+// matches any single naked edge on the other end to end) which JoinEdges()
+// leaves naked. The kernel's own Brep::SewTJunctions() is exactly this
+// case's healer (split the longer naked edge where the shorter one's
+// endpoint lands, then join the resulting matching pairs) but, before this,
+// had zero call sites anywhere in the importer. Call after JoinEdges()
+// (which may have exposed new, now-joinable T-junctions by removing
+// matching naked edges) and before FinishBrepTrims() (so a freshly-sewn
+// edge's own trim type reflects its final, post-heal trim count).
+void SewTJunctionsHealed(ON_Brep& b, double tol) {
+  kernel::Brep k;
+  k.raw() = b;
+  k.SewTJunctions(tol);
+  b = k.raw();
+}
+
 // A face is exported through its surface's NURBS form; the face's trims are
 // re-expressed on that form. Returns nullptr-free copies.
 // Returns 0 (failed), 1 (same parameterisation) or 2 (the NURBS form is
@@ -1128,6 +1147,7 @@ class IgesImporter {
       ON_Brep merged;
       for (auto& f : faces) merged.Append(*f);
       JoinEdges(merged, tol_ * 10);
+      SewTJunctionsHealed(merged, tol_ * 10);
       FinishBrepTrims(merged);
       kernel::Brep k;
       k.raw() = merged;
@@ -2748,6 +2768,7 @@ bool ImportStep(Document& doc, const std::string& path, std::string& summary) {
       ON_Brep brep;
       for (int fid : ShellFaces(model, StepRef(p->args[1]))) BuildFaceInto(model, brep, fid, tol, stats);
       JoinEdges(brep, tol * 10);
+      SewTJunctionsHealed(brep, tol * 10);
       FinishBrepTrims(brep);
       if (brep.m_F.Count() == 0) continue;
       kernel::Brep k;
@@ -2764,6 +2785,8 @@ bool ImportStep(Document& doc, const std::string& path, std::string& summary) {
         ON_Brep brep;
         for (int fid : ShellFaces(model, sid)) BuildFaceInto(model, brep, fid, tol, stats);
         if (brep.m_F.Count() == 0) continue;
+        JoinEdges(brep, tol * 10);
+        SewTJunctionsHealed(brep, tol * 10);
         FinishBrepTrims(brep);
         kernel::Brep k;
         k.raw() = brep;
