@@ -91,6 +91,8 @@ int DivisionsFor(const ON_Surface& s, int dir, const IntersectOptions& opt) {
 SurfaceMesh TessellateWithUV(const ON_Surface& s, const IntersectOptions& opt) {
   SurfaceMesh m;
   const int nu = DivisionsFor(s, 0, opt), nv = DivisionsFor(s, 1, opt);
+  m.nu = nu;
+  m.nv = nv;
   const ON_Interval du = s.Domain(0), dv = s.Domain(1);
   m.pts.reserve(static_cast<size_t>((nu + 1) * (nv + 1)));
   m.uv.reserve(m.pts.capacity());
@@ -1874,6 +1876,39 @@ PullbackResult PullbackCurveToSurface(const ON_Curve& c, const ON_Surface& s, co
     const Point3d back = s.PointAt(p.x, p.y);
     p3.emplace_back(back.x, back.y, back.z);
   }
+  // Unwrap `pa` across either periodic surface direction before fitting.
+  // Each (u, v) in `out.uv` above comes from an independent closest-point
+  // search and is wrapped to the surface's own stated domain, so a 3D
+  // curve that physically crosses a periodic seam (e.g. a path on a
+  // cylinder wall passing through its own angular seam) produces a sample
+  // sequence that jumps from near one domain edge to near the other
+  // between two adjacent, physically-close samples. Fitting `pa` as given
+  // through that jump makes the cubic swing through the middle of the
+  // domain for that one stretch - the "not unwrapped" limitation this
+  // function's own header comment used to disclose. The fix is the same
+  // one `LerpUV`/`SplitAtSeams` already apply to SSX pcurves elsewhere in
+  // this file: whenever two consecutive samples in a closed direction
+  // differ by more than half that direction's domain length, shift the
+  // later one by a whole period so the sequence keeps moving the way it
+  // was already moving instead of jumping back through the middle; the
+  // fitted pcurve can then legitimately carry parameter values outside the
+  // surface's nominal domain for that stretch, the same over-range
+  // convention a seam-crossing trim pcurve already uses elsewhere in
+  // OpenNURBS-based kernels. `out.uv` itself (the per-sample field other
+  // callers read) is left untouched - only the curve fit into `pcurve`
+  // (and, via the shared chord-length `out.params`, `pulled_curve`'s own
+  // parametrization) is affected.
+  for (int dir = 0; dir < 2; ++dir) {
+    if (!s.IsClosed(dir)) continue;
+    const double L = s.Domain(dir).Length();
+    if (L <= 0) continue;
+    for (size_t i = 1; i < pa.size(); ++i) {
+      double& cur = dir == 0 ? pa[i].x : pa[i].y;
+      const double prev = dir == 0 ? pa[i - 1].x : pa[i - 1].y;
+      while (cur - prev > 0.5 * L) cur -= L;
+      while (prev - cur > 0.5 * L) cur += L;
+    }
+  }
   out.params = ChordParams(pa, closed);
   out.pcurve = InterpolateCubic(pa, out.params, closed, 2);
   out.pulled_curve = InterpolateCubic(p3, out.params, closed, 3);
@@ -2225,6 +2260,89 @@ std::vector<BrepBrepIntersection> FindBrepSelfIntersections(const ON_Brep& b, co
         if (on_both_boundaries) continue;  // ordinary touching seam, not a self-intersection
         out.push_back(BrepBrepIntersection{i, j, std::move(ic)});
       }
+    }
+  }
+  return out;
+}
+
+std::vector<FaceInteriorSelfIntersection> FindFaceInteriorSelfIntersections(const ON_Brep& b, const IntersectOptions& opt) {
+  std::vector<FaceInteriorSelfIntersection> out;
+  const int nf = b.m_F.Count();
+  const int kMinCellGap = 2;  // the surface-grid analogue of IntersectCurveSelfIntersections()'s "at least 2 segments"
+  for (int fi = 0; fi < nf; ++fi) {
+    const ON_BrepFace& f = b.m_F[fi];
+    const ON_Surface* srf = f.SurfaceOf();
+    if (!srf) continue;
+    const SurfaceMesh m = TessellateWithUV(*srf, opt);
+    if (m.nu <= 0 || m.nv <= 0 || m.tris.empty() || !m.bbox.IsValid()) continue;
+    const double eps = std::max(1e-9 * m.bbox.Diagonal().Length(), 1e-12);
+
+    // Only triangles genuinely inside the face's own trim loops can
+    // contribute to THIS face's self-intersection - the same FaceContainsUV()
+    // trim test IntersectFaces() already applies to SSX results, checked
+    // here against each triangle's own centroid (a sampling-resolution
+    // approximation, honestly no finer than the tessellation itself, the
+    // same caveat this file's other trim-aware functions already carry).
+    std::vector<char> keep(m.tris.size(), 1);
+    for (size_t t = 0; t < m.tris.size(); ++t) {
+      const auto& tri = m.tris[t];
+      const double cu = (m.uv[static_cast<size_t>(tri[0])].x + m.uv[static_cast<size_t>(tri[1])].x + m.uv[static_cast<size_t>(tri[2])].x) / 3.0;
+      const double cv = (m.uv[static_cast<size_t>(tri[0])].y + m.uv[static_cast<size_t>(tri[1])].y + m.uv[static_cast<size_t>(tri[2])].y) / 3.0;
+      keep[t] = FaceContainsUV(f, cu, cv) ? 1 : 0;
+    }
+
+    ON_BoundingBox region = m.bbox;
+    const double pad = std::max(eps * 100, 1e-9 * region.Diagonal().Length());
+    region.m_min -= ON_3dVector(pad, pad, pad);
+    region.m_max += ON_3dVector(pad, pad, pad);
+    Grid grid;
+    grid.Build(m, region);
+    std::vector<int> stamp(m.tris.size(), -1);
+    int mark = 0;
+    const auto cell_of = [&](int t) { const int c = t / 2; return std::pair<int, int>{c % m.nu, c / m.nu}; };
+
+    std::vector<FaceInteriorSelfIntersection> face_hits;
+    for (size_t ta = 0; ta < m.tris.size(); ++ta) {
+      if (!keep[ta]) continue;
+      const ON_BoundingBox box_a = Grid::TriBox(m, static_cast<int>(ta));
+      ++mark;
+      const std::pair<int, int> cell_a = cell_of(static_cast<int>(ta));
+      grid.Query(box_a, stamp, mark, [&](int tbi) {
+        if (tbi <= static_cast<int>(ta) || !keep[static_cast<size_t>(tbi)]) return;
+        const std::pair<int, int> cell_b = cell_of(tbi);
+        // Skip the ordinary local neighbourhood: a smoothly-varying patch's
+        // own nearby cells always sit close together in 3D too (that is
+        // continuity, not a self-crossing) - only triangle pairs genuinely
+        // distant IN THE DOMAIN, yet still close enough in 3D for TriTri to
+        // find a crossing, are candidates.
+        if (std::max(std::abs(cell_a.first - cell_b.first), std::abs(cell_a.second - cell_b.second)) < kMinCellGap) return;
+        Seg seg;
+        if (!TriTri(m, static_cast<int>(ta), m, tbi, eps, seg)) return;
+        for (const SegEnd& end : {seg.a, seg.b}) {
+          double ua = end.uva.x, va = end.uva.y, ub = end.uvb.x, vb = end.uvb.y;
+          // Same surface passed as both arguments - purely mechanical,
+          // RefineSurfaceSurfacePoint() only ever calls .PointAt() on each
+          // argument independently (see its own header comment above).
+          if (!RefineSurfaceSurfacePoint(*srf, *srf, ua, va, ub, vb, opt.tolerance)) continue;
+          // Discard convergence back onto the trivial ua==ub/va==vb
+          // diagonal (every point trivially coincides with itself) -
+          // Newton is free to walk away from its own seed, the same caveat
+          // IntersectCurveSelfIntersections() discloses one dimension down.
+          if (std::abs(ua - ub) < opt.tolerance * 50 && std::abs(va - vb) < opt.tolerance * 50) continue;
+          if (!FaceContainsUV(f, ua, va) || !FaceContainsUV(f, ub, vb)) continue;
+          const Point3d pa = srf->PointAt(ua, va), pb = srf->PointAt(ub, vb);
+          const double gap = pa.DistanceTo(pb);
+          if (gap > opt.tolerance * 4) continue;
+          face_hits.push_back(FaceInteriorSelfIntersection{fi, pa, ON_2dPoint(ua, va), ON_2dPoint(ub, vb), gap});
+        }
+      });
+    }
+    for (const FaceInteriorSelfIntersection& h : face_hits) {
+      bool dup = false;
+      for (const FaceInteriorSelfIntersection& existing : out) {
+        if (existing.face_index == fi && existing.point.DistanceTo(h.point) <= std::max(opt.tolerance * 4, 1e-9)) { dup = true; break; }
+      }
+      if (!dup) out.push_back(h);
     }
   }
   return out;
