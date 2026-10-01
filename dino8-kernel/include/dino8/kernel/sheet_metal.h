@@ -1,5 +1,7 @@
 #pragma once
 
+#include <vector>
+
 #include "dino8/kernel/brep.h"
 
 namespace dino8::kernel {
@@ -93,5 +95,53 @@ double BendAllowance(double thickness, double inside_radius, double bend_angle_d
 // section isn't star-shaped after all.
 Brep Bend(double leg1_length, double leg2_length, double width, double thickness, double inside_radius,
           double bend_angle_degrees);
+
+// A multi-bend sheet-metal part (parity-map "Sheet-metal features" -
+// closes this item's own disclosed "no multi-bend flat pattern" gap):
+// generalizes Bend() above from a single bend between exactly two legs to
+// a CHAIN of N bends between `leg_lengths.size()` (== N+1) legs - e.g. a
+// U-channel, a hat-section, or any other multi-sided convex bent profile a
+// real press brake builds as a sequence of sequential bends along one
+// flat blank.
+//
+// `leg_lengths[0..N]` are the N+1 flat segments, in order from one free
+// (cut) end to the other, using the exact same "measured from the far end
+// to the neutral axis's own tangent point" convention Bend()'s own
+// leg1_length/leg2_length already use. `bend_angles_degrees[0..N-1]` and
+// `inside_radii[0..N-1]` are bend i's own angle/radius, sitting between
+// leg i and leg i+1 - each bend may use a different radius (a real
+// multi-radius part), but ALL bends must turn the SAME rotational sense
+// (every entry in (0, 180), the identical range/convention Bend()'s own
+// single `bend_angle_degrees` already has - there is no second bend there
+// to turn the other way against). That restriction is deliberate, not an
+// oversight: a chain that reverses direction partway (a Z/S-bend) would
+// flip which side of the running path is "inside" partway through, a
+// genuinely different construction this function does not attempt - see
+// this function's own "Still partial" note in PARITY_MAP.md.
+//
+// Built the same way as Bend() itself, generalized: walks the chain once,
+// placing each bend's own circular arc so its own tangent point/direction
+// exactly continues from the previous leg's end (each later arc's own
+// center is wherever that arc's own `inside_radii[i]` places it, not a
+// shared fixed center the way Bend()'s own single arc has one) - then
+// assembles one closed 2D profile (outer boundary, then inner boundary
+// reversed, exactly like Bend()'s own profile, just with N legs/arcs each
+// instead of 2/1) and extrudes it by `width` via ONE Brep::Extrude() call.
+// Reduces EXACTLY to Bend(leg_lengths[0], leg_lengths[1], width,
+// thickness, inside_radii[0], bend_angles_degrees[0]) for a single bend
+// (N == 1) - the identical profile, not just a similar one - cross-checked
+// directly (TestMultiBendReducesToBendForASingleBend, tests/test_basic.cpp).
+//
+// Throws std::invalid_argument if `leg_lengths` has fewer than 2 entries
+// (at least one bend is required - a flat, unbent sheet is out of this
+// function's own scope), if `bend_angles_degrees`/`inside_radii` don't
+// each have exactly `leg_lengths.size() - 1` entries, for any non-positive
+// leg length/width/thickness/inside_radius, for any
+// `bend_angles_degrees` entry not in (0, 180) - plus whatever
+// Brep::Extrude() itself throws if the assembled chain's own profile isn't
+// star-shaped (correspondingly easier to exceed with more/sharper bends
+// than Bend()'s own single-bend case).
+Brep MultiBend(const std::vector<double>& leg_lengths, const std::vector<double>& bend_angles_degrees,
+               const std::vector<double>& inside_radii, double width, double thickness);
 
 }  // namespace dino8::kernel
