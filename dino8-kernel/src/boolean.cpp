@@ -2181,20 +2181,38 @@ Brep PushPullFaces(const Brep& solid, const std::vector<std::pair<int, double>>&
 }
 
 Brep DraftFacesConvexPlanar(const Brep& solid, const std::vector<int>& face_indices, const ON_Plane& neutral_plane,
-                             double angle_radians) {
+                             const std::vector<double>& angles_radians) {
   const std::vector<Brep::PlanarFace> faces = solid.PlanarFaces();
   const int n = static_cast<int>(faces.size());
   if (face_indices.empty()) {
     throw std::invalid_argument("dino8::kernel::DraftFacesConvexPlanar: face_indices must not be empty");
   }
+  if (angles_radians.size() != face_indices.size()) {
+    throw std::invalid_argument(
+        "dino8::kernel::DraftFacesConvexPlanar: angles_radians.size() (" + std::to_string(angles_radians.size()) +
+        ") must equal face_indices.size() (" + std::to_string(face_indices.size()) +
+        ") - one angle per named face, the same positional pairing ShellConvexPlanar()'s own per-face "
+        "wall_thickness overload already uses");
+  }
   std::vector<bool> selected(static_cast<size_t>(n), false);
-  for (int idx : face_indices) {
+  std::vector<double> angle_of(static_cast<size_t>(n), 0.0);
+  for (size_t k = 0; k < face_indices.size(); ++k) {
+    const int idx = face_indices[k];
     if (idx < 0 || idx >= n) {
       throw std::invalid_argument(
           "dino8::kernel::DraftFacesConvexPlanar: face_indices contains an index "
           "out of range for solid.PlanarFaces()");
     }
+    if (selected[static_cast<size_t>(idx)]) {
+      throw std::invalid_argument(
+          "dino8::kernel::DraftFacesConvexPlanar: face_indices contains a duplicate index " +
+          std::to_string(idx) +
+          " - two entries would name two different angles for the same face, the same ambiguous-duplicate "
+          "refusal MoveFacesConvexPlanar()/ReplaceFacePlanesConvexPlanar() already enforce for their own "
+          "per-target lists");
+    }
     selected[static_cast<size_t>(idx)] = true;
+    angle_of[static_cast<size_t>(idx)] = angles_radians[k];
   }
 
   const double tol = RelativeTol(faces);
@@ -2233,10 +2251,10 @@ Brep DraftFacesConvexPlanar(const Brep& solid, const std::vector<int>& face_indi
 
     Vector3d axis = u;
     axis.Unitize();
-    // Negated so a POSITIVE angle_radians matches Brep::ExtrudeTapered()'s
+    // Negated so a POSITIVE angle matches Brep::ExtrudeTapered()'s
     // own sign convention (shrinks moving along +neutral_plane.zaxis) -
     // see this function's own doc comment.
-    const double theta = -angle_radians;
+    const double theta = -angle_of[static_cast<size_t>(i)];
     const double ca = std::cos(theta);
     const double sa = std::sin(theta);
     auto rotate = [&](const Vector3d& v) {
@@ -2297,6 +2315,18 @@ Brep DraftFacesConvexPlanar(const Brep& solid, const std::vector<int>& face_indi
   }
 
   return Brep::FromPlanarFaces(result);
+}
+
+// Thin delegation, not a second implementation - the same "scalar overload
+// forwards to the per-face-array one" shape ShellConvexPlanar()'s own
+// scalar `t` overload already uses toward its own per-face
+// `wall_thickness` sibling - so this overload's already-verified behavior
+// (including the convexity/parallel-plane/collapse checks above) is
+// provably unchanged by the per-face overload's existence.
+Brep DraftFacesConvexPlanar(const Brep& solid, const std::vector<int>& face_indices, const ON_Plane& neutral_plane,
+                             double angle_radians) {
+  return DraftFacesConvexPlanar(solid, face_indices, neutral_plane,
+                                 std::vector<double>(face_indices.size(), angle_radians));
 }
 
 Brep ReplaceFacePlaneConvexPlanar(const Brep& solid, int face_index, const ON_Plane& new_plane) {

@@ -258,6 +258,59 @@ std::pair<Brep, Brep> MutualImprintFaces(const Brep& a, const Brep& b, double to
 Brep SplitFaceByCurve(const Brep& target, int face_index, const NurbsCurve& curve, double tolerance = 0.001,
                       int samples = 200);
 
+// Imprint a CLOSED curve onto a single face, entirely interior to its own
+// trim boundary - the curve-onto-face half of the PARITY_MAP "Imprint curve
+// / face onto a body face (add edges without changing geometry)" gap
+// (localops category): that bullet's own kernel answer, `ImprintFaces()`
+// above, only ever imprints a whole TOOL BODY's faces onto `target`; there
+// was no way to imprint a single caller-supplied curve at all (a grep for
+// "imprint" that isn't `ImprintFaces()`/`MutualImprintFaces()` itself found
+// nothing). `SplitFaceByCurve()` above is the OPEN-curve sibling (crosses
+// the boundary at exactly two points, splitting it into two pieces); this
+// is the CLOSED-curve case that function explicitly refuses and defers to
+// `ImprintFaces()`'s own "keeps every fragment" contract instead (see that
+// function's own doc comment) - so this is the real answer for a closed
+// loop, not a workaround.
+//
+// `curve` is pulled onto `face_index`'s own surface exactly as
+// `SplitFaceByCurve()` already does (point-by-point via
+// `SurfaceClosestPointGlobal()`, into a dense (u, v) polyline chain), then
+// handed to this file's own `FragmentFaces()` - the identical, already-
+// proven per-face SSX-chain-to-Fragment machinery `ImprintFaces()`/
+// `SplitFaceByCurve()` already share. A closed interior chain is the exact
+// case `FragmentFaces()`'s own `SplitFaceLoop()` already turns into a hole
+// PLUS a separate interior disk (see `BridgeHolesIntoOuter()`'s own doc
+// comment - `ImprintFaces()`'s "annulus-with-hole plus interior disk"
+// pattern on a piercing-cylinder tool, reached here through one caller-
+// supplied curve instead of a second operand body) - no new splitting
+// logic of its own, just the already-correct general machinery fed a
+// closed chain instead of an open one and REQUIRED to produce that
+// pattern, where `SplitFaceByCurve()` requires the opposite.
+//
+// No material is ever removed (the same "keep every fragment
+// unconditionally" contract `ImprintFaces()` itself promises): the
+// original face becomes two real, independently-tessellable faces on
+// the SAME underlying surface - the interior disk the curve bounds, and
+// the original face's own outer boundary with the curve now imprinted as
+// a genuine hole loop (bridged into one outer loop by the same
+// `BridgeHolesIntoOuter()` every other hole-producing path in this file
+// already uses, not a true second `ON_BrepLoop::inner`) - rather than a
+// single face with an edge drawn across it and no new topology at all.
+//
+// Throws std::invalid_argument if `face_index` is out of range, `curve`
+// has fewer than 2 control points, `tolerance` isn't positive, `samples`
+// is below 2, `curve` doesn't converge onto the face's own surface, it
+// collapses to a single point there, or - the defining requirement this
+// function places that `SplitFaceByCurve()` does not - its own two ends
+// (once pulled onto the surface) do NOT land within tolerance of each
+// other (not a closed loop at all), or the resulting split is anything
+// other than the exact "2 fragments, exactly one of them holding a hole"
+// pattern a genuine interior loop produces (e.g. the curve actually
+// reaches the face's own boundary, which is `SplitFaceByCurve()`'s own
+// job, not this function's).
+Brep ImprintClosedCurveOnFace(const Brep& target, int face_index, const NurbsCurve& curve, double tolerance = 0.001,
+                               int samples = 200);
+
 // Sheet/solid trim (parity-map "Sheet/solid trim (open surface as cutter
 // through a solid)"): splits `solid` (a closed Brep) into the two pieces
 // on either side of `sheet` (an OPEN Brep - one or more trimmed faces used

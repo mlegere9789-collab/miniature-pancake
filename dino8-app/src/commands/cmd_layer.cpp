@@ -1,9 +1,27 @@
 // Layer commands.
 #include "commands/cmd_common.h"
 
+#include <cstdio>
+
 namespace dino8::app {
 
 namespace {
+
+// "r,g,b" (0-255 each) or "ByLayer"/"Default"/"None" to clear the override
+// - the same small local parser shape cmd_render.cpp's own ParseColor has,
+// scoped down to just what LayerPlotColor needs (no named-color table: a
+// plot-style pen color is normally picked to match, not look pretty).
+bool ParsePlotColorArg(const std::string& text, bool& clear, Color& out) {
+  const std::string lower = [&] { std::string s = text; for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c))); return s; }();
+  if (lower == "bylayer" || lower == "default" || lower == "none" || lower.empty()) { clear = true; return true; }
+  int r, g, b;
+  if (std::sscanf(text.c_str(), "%d,%d,%d", &r, &g, &b) == 3) {
+    clear = false;
+    out = Color::FromBytes(std::clamp(r, 0, 255), std::clamp(g, 0, 255), std::clamp(b, 0, 255));
+    return true;
+  }
+  return false;
+}
 
 class NewLayerCommand : public Command {
  public:
@@ -225,6 +243,36 @@ void RegisterLayerCommands(CommandEngine& e) {
         ctx.Doc().Layers()[static_cast<size_t>(idx)].print_width_mm = w;
         const std::string desc = w > 0 ? FormatNumber(w) + " mm" : (w < 0 ? "does not print" : "document default");
         ctx.Print("Layer '" + ctx.Doc().LayerFullPath(idx) + "' print width: " + desc);
+      }));
+  // LayerPlotColor: sets a layer's Print and plot output pen color
+  // (Layer::has_plot_color/plot_color, doc/Document.h) - the color half of
+  // "plot styles (CTB/STB)" (PARITY_MAP.md's "Print and plot output" item),
+  // mirroring real Rhino's own ON_Layer::PlotColor/SetPlotColor the same
+  // way LayerPrintWidth above already mirrors ON_Layer::PlotWeight. Same
+  // scriptable "LayerPlotColor [layer name] r,g,b" two-token form as
+  // LayerPrintWidth; "ByLayer"/"Default"/"None" (or no color at all)
+  // clears the override back to the object's own on-screen display color.
+  Reg(e, "LayerPlotColor", Immediate([](CommandContext& ctx) {
+        int idx = ctx.Doc().CurrentLayer();
+        auto first = ctx.Engine().TakePendingInput();
+        std::optional<std::string> color_text = ctx.Engine().TakePendingInput();
+        if (first && color_text) {
+          idx = ctx.Doc().FindLayer(*first);
+          if (idx < 0) { ctx.Warn("No layer named '" + *first + "'"); return; }
+        } else if (first) {
+          color_text = first;  // one token: color for the current layer
+        }
+        if (!color_text) { ctx.Warn("Usage: LayerPlotColor [layer name] r,g,b (or ByLayer/Default/None to clear)"); return; }
+        bool clear = true;
+        Color c;
+        if (!ParsePlotColorArg(*color_text, clear, c)) { ctx.Warn("'" + *color_text + "' is not r,g,b or ByLayer/Default/None"); return; }
+        ctx.Doc().BeginChange("LayerPlotColor");
+        Layer& L = ctx.Doc().Layers()[static_cast<size_t>(idx)];
+        L.has_plot_color = !clear;
+        if (!clear) L.plot_color = c;
+        const std::string desc = clear ? "ByLayer (display color)" : std::to_string(static_cast<int>(c.r * 255 + 0.5f)) + "," +
+                                             std::to_string(static_cast<int>(c.g * 255 + 0.5f)) + "," + std::to_string(static_cast<int>(c.b * 255 + 0.5f));
+        ctx.Print("Layer '" + ctx.Doc().LayerFullPath(idx) + "' plot color: " + desc);
       }));
   Reg(e, "LayerStateManager", Immediate([](CommandContext& ctx) { ctx.App().Panels().layer_state_manager = true; }));
   Reg(e, "LayerState", Make<LayerStateCommand>());
