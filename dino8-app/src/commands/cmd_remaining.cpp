@@ -659,7 +659,14 @@ void MatchCrvDir(CommandContext& ctx, const std::vector<ObjectId>& ids) {
   ctx.Print("MatchCrvDir: " + std::to_string(flipped) + " of " + std::to_string(curves.size()) + " curve(s) reversed to match the reference");
 }
 
-// OffsetNormal: offsets a curve lying on a surface along the surface normal.
+// OffsetNormal: offsets a curve lying on a surface along the surface
+// normal - now wired to the kernel's own kernel::NurbsCurve::
+// OffsetOnSurfaceNormal() (dino8-kernel/include/dino8/kernel/curve.h)
+// rather than reimplementing the same sample + closest-point + normal-
+// offset + refit loop here: the real capability lives in the kernel,
+// usable by anything else that needs a surface-normal curve offset, and
+// this command only handles picking which curve/surface pair to run it
+// on and placing the result.
 void OffsetNormal(CommandContext& ctx, const std::vector<ObjectId>& ids, double d, const Opts&) {
   std::optional<kernel::NurbsSurface> srf;
   std::vector<std::pair<ObjectId, kernel::NurbsCurve>> curves;
@@ -673,17 +680,10 @@ void OffsetNormal(CommandContext& ctx, const std::vector<ObjectId>& ids, double 
   ctx.Doc().BeginChange("OffsetNormal");
   int made = 0;
   for (const auto& [id, c] : curves) {
-    const bool closed = c.IsClosed();
-    Row pts;
-    for (const Point3d& p : SampleCurve(c, closed ? 48 : 40, closed)) {
-      const kernel::Point2d uv = srf->ClosestPointParameter(p, 24, 24);
-      Vector3d n = srf->NormalAt(uv.x, uv.y);
-      if (!n.Unitize()) continue;
-      pts.push_back(p + n * d);
-    }
-    if (pts.size() < 2) continue;
+    kernel::NurbsCurve out;
+    if (c.OffsetOnSurfaceNormal(*srf, d, out) != kernel::Result::Ok) continue;
     const SceneObject* o = ctx.Doc().Find(id);
-    AddLike(ctx, SceneObject::MakeCurve(c.Degree() == 1 && !closed ? PolylineCurve(pts) : InterpolateCubic(pts, closed)), Attrs::Of(*o));
+    AddLike(ctx, SceneObject::MakeCurve(out), Attrs::Of(*o));
     ++made;
   }
   ctx.Print("OffsetNormal: " + std::to_string(made) + " curve(s) offset " + FormatNumber(d) + " along the surface normal");
