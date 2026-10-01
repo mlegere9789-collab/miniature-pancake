@@ -909,6 +909,15 @@ if(DINO8_BUILD_TESTS)
   add_executable(mesh_fixture_gen tests/mesh_fixture_gen.cpp)
   target_include_directories(mesh_fixture_gen PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_link_libraries(mesh_fixture_gen PRIVATE dino8_kernel)
+
+  # Real-ON_Hatch .3dm fixture generator (see tests/hatch3dm_fixture_gen.cpp
+  # and smoke.sh's Load3dm ON_Hatch-import section): Dino 8 never writes a
+  # native ON_Hatch itself (a hatch is always baked to a Brep/curves plus
+  # user_text - see drafting/HatchBuild.h), so this generator gives Load3dm's
+  # ON_Hatch handling a real externally-authored hatch to read.
+  add_executable(hatch3dm_fixture_gen tests/hatch3dm_fixture_gen.cpp)
+  target_include_directories(hatch3dm_fixture_gen PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(hatch3dm_fixture_gen PRIVATE dino8_kernel)
 endif()
 
 # ---------------------------------------------------------------------------

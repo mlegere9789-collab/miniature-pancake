@@ -193,6 +193,67 @@ class NurbsCurve {
   static Result ChamferCorner(Point3d p0, Point3d corner, Point3d p1, double distance0, double distance1,
                                NurbsCurve& out);
 
+  // CURVE-TO-CURVE BLEND with a caller-chosen continuity order (Rhino/
+  // AutoCAD BlendCrv/Blend between two independently picked curves) -
+  // PARITY_MAP.md's own "Curve-to-curve blend" gap: today this codebase's
+  // only such construction is app-only (`BlendCrvCommand`, cmd_curves2.cpp:
+  // G1 tangent cubic or G2 curvature-continuous quintic Hermite), with "No
+  // G3+ and no kernel API" named explicitly as the remaining gap. This is
+  // the genuine kernel API that was missing, generalized to any
+  // `continuity` in {1, 2, 3} (G1/G2/G3), not just the two cases the app
+  // command happens to hardcode.
+  //
+  // THE CONSTRUCTION - EXACT Hermite interpolation, not a fit: builds the
+  // unique Bezier-basis NURBS curve of degree `d = 2*continuity + 1` on
+  // the parameter domain [0, 1] whose position and derivatives up to
+  // order `continuity` match `curve0`'s own (at `t0`) at u=0 and
+  // `curve1`'s own (at `t1`) at u=1. This is possible in closed form,
+  // with no least-squares solve at all, because a Bezier's own k-th
+  // derivative at u=0 depends ONLY on control points P_0..P_k (the
+  // standard forward-difference identity B^(k)(0) = d!/(d-k)! * Delta^k
+  // P_0), and its k-th derivative at u=1 depends ONLY on P_(d-k)..P_d
+  // (the mirror backward-difference identity) - so P_0..P_continuity
+  // solve directly from curve0's own end data, P_(d-continuity)..P_d
+  // solve directly from curve1's own, and the two sets never overlap
+  // (continuity < d - continuity for any continuity >= 1, since d =
+  // 2*continuity + 1), together filling all d + 1 control points exactly.
+  // `continuity` = 1 gives a cubic (order 4 - the same "G1 tangent cubic"
+  // this file's own doc comments elsewhere already attribute to
+  // BlendCrv), 2 a quintic ("G2 curvature-continuous quintic", matching
+  // Blend), and 3 (the genuine new capability beyond what either app
+  // command builds) a septic.
+  //
+  // `reverse0`/`reverse1` each pick which DIRECTION along that curve's
+  // own parametrization the blend continues in, i.e. which of the two
+  // possible tangent senses at the picked end the blend should match -
+  // the real choice a two-curve pick-and-blend command needs from
+  // whichever end of each curve the caller actually selected. `false`
+  // means the blend's own derivative at that end equals the curve's OWN
+  // derivative there unchanged (the blend proceeds AWAY from the picked
+  // point in the curve's existing +t direction, as if inserted seamlessly
+  // mid-curve); `true` negates every ODD-order derivative first (`d^k P
+  // / dt^k` under t -> -t: position and even-order derivatives are
+  // unaffected, odd-order ones flip sign - elementary chain rule, the
+  // same reparametrization identity `Reverse()`'s own doc comment already
+  // relies on for a whole-curve reversal, applied here to one end's local
+  // derivative data instead).
+  //
+  // VALIDATION: `continuity` must be 1, 2 or 3 - only these three are
+  // implemented (a G4+ generalization is the identical construction at a
+  // higher degree, not attempted here since neither this kernel's own
+  // prior art nor the app commands this replaces go past G2 today, and
+  // PARITY_MAP.md's own gap is phrased as "G3+", not any specific higher
+  // bound). `t0` must lie within `curve0.Domain()`, `t1` within
+  // `curve1.Domain()`. Throws `std::invalid_argument` for either.
+  // Returns `Result::Failed`, `out` left unchanged, if curve0's position
+  // at `t0` coincides (within a relative tolerance of the two points'
+  // own scale) with curve1's position at `t1` (a zero-length blend has
+  // no well-defined tangent direction to solve for), or if the
+  // underlying `ON_Curve::Evaluate` fails to return `continuity`
+  // derivatives at either parameter (e.g. a degenerate/invalid curve).
+  static Result BlendCurves(const NurbsCurve& curve0, double t0, bool reverse0, const NurbsCurve& curve1, double t1,
+                             bool reverse1, int continuity, NurbsCurve& out);
+
   int Degree() const;
   int ControlPointCount() const;
 

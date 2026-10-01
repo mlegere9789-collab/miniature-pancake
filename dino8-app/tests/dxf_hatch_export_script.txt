@@ -1,0 +1,21 @@
+# DXF HATCH export QC: ExportDxf had no HATCH writer function at all before
+# this change (see WriteDxfHatchSolid in FileExchange.cpp) - a solid-fill
+# hatch made in-app round-tripped out to bare boundary curves, losing its
+# fill. A solid hatch (Hatch Pattern=Solid, drafting::BuildSolidHatch's own
+# trimmed-planar-brep) is exported to DXF, then reimported in a fresh
+# document: SelHatch/Area must find the same real, fill-tagged hatch DXF
+# HATCH import (DxfImporter::Hatch) already proves for a hand-written fixture
+# in dxf_hatch_script.txt - proving the new writer and the existing reader
+# agree on the wire format.
+# smoke.sh substitutes @TMP@ with a scratch directory before running this.
+Rectangle 0,0,0 10,10,0
+SelLast
+Hatch Pattern=Solid
+SelNone
+SelHatch
+Export @TMP@/dxf_hatch_export.dxf
+New
+Open @TMP@/dxf_hatch_export.dxf
+SelHatch
+List
+Area

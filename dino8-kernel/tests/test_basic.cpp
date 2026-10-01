@@ -2629,6 +2629,194 @@ void TestPullbackCurveToSurfaceCylinderRulingLine() {
         "the far line's pulled_curve end lands at the hand-derived (2, 0, 4)");
 }
 
+// PARITY_MAP.md's own "kernel: Intersections & projections" category,
+// "Plane sections / contours of surfaces and B-reps" bullet: "the app
+// still slices render meshes (SliceObjects/SliceMesh). Kernel SplitByPlane
+// is mesh-only; the exact route (IntersectSurfaces per face) is not used
+// for sections." IntersectBrepByPlane() is that exact route.
+void TestIntersectBrepByPlaneBoxSideWalls() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::BrepPlaneIntersection;
+  using dino8::kernel::IntersectBrepByPlane;
+  using dino8::kernel::IntersectOptions;
+  using dino8::kernel::Point3d;
+
+  // A box [0,2]^3, sectioned by the plane z=1: Box()'s own six faces share
+  // no topology (its own doc comment), so the plane must cross the four
+  // SIDE walls (each getting exactly one straight-line section, since a
+  // Box() face's domain equals its whole untrimmed shape) and miss the
+  // top (z=2) and bottom (z=0) faces entirely (they sit at a single z,
+  // never touching z=1) - a hand-derivable exact result, not merely "some
+  // curves came back".
+  const Brep box = Brep::Box(0, 0, 0, 2, 2, 2);
+  const ON_Plane mid_plane(ON_3dPoint(0, 0, 1), ON_3dVector(0, 0, 1));
+  IntersectOptions opt;
+  opt.tolerance = 1e-6;
+  opt.mesh_tolerance = 0.05;
+
+  // Not asserting an exact curve COUNT: like IntersectBreps() (see
+  // TestIntersectBrepsAndCurveBrep()'s own doc comment), the mesh-seeded
+  // chainer underneath IntersectFaces() can legitimately split one
+  // physical straight-line section into more than one IntersectionCurve
+  // piece for the same face, especially for an exactly axis-aligned,
+  // exactly-integer-coordinate line like this fixture's own - so this
+  // checks the aggregate, honest properties instead (every side wall
+  // contributes at least one piece, every corner shows up SOMEWHERE, and
+  // nothing from the top/bottom faces leaks in).
+  const std::vector<BrepPlaneIntersection> sections = IntersectBrepByPlane(box.raw(), mid_plane, opt);
+  Check(sections.size() >= 4, "the z=1 plane produces at least one section curve per side wall");
+
+  std::set<int> distinct_faces;
+  bool every_point_at_z1 = true;
+  bool has_00 = false, has_02 = false, has_20 = false, has_22 = false;
+  for (const BrepPlaneIntersection& bpi : sections) {
+    distinct_faces.insert(bpi.face_index);
+    for (const Point3d& p : bpi.curve.points) {
+      if (std::abs(p.z - 1.0) > 1e-4) every_point_at_z1 = false;
+      if (p.DistanceTo(Point3d(0, 0, 1)) < 1e-3) has_00 = true;
+      if (p.DistanceTo(Point3d(0, 2, 1)) < 1e-3) has_02 = true;
+      if (p.DistanceTo(Point3d(2, 0, 1)) < 1e-3) has_20 = true;
+      if (p.DistanceTo(Point3d(2, 2, 1)) < 1e-3) has_22 = true;
+    }
+  }
+  Check(every_point_at_z1, "every returned section point genuinely sits at z == 1 (the top/bottom faces contributed nothing)");
+  Check(distinct_faces.size() == 4, "the 4 section curves each came from a distinct face - no face produced two pieces");
+  Check(has_00 && has_02 && has_20 && has_22,
+        "all four of the box's own vertical edges' z=1 crossings - (0,0,1), (0,2,1), (2,0,1), (2,2,1) - appear "
+        "among the returned section curves' points");
+
+  // A plane far outside the box's own bounding box entirely must produce
+  // no sections, pruned by the bounding-box broad phase rather than
+  // evaluated face by face and found empty.
+  const ON_Plane far_plane(ON_3dPoint(0, 0, 100), ON_3dVector(0, 0, 1));
+  const std::vector<BrepPlaneIntersection> far_sections = IntersectBrepByPlane(box.raw(), far_plane, opt);
+  Check(far_sections.empty(), "a plane far from the B-rep's own bounding box produces zero sections");
+}
+
+// PARITY_MAP.md's own "kernel: Intersections & projections" category,
+// "Projection of curves/points onto surfaces along a direction (Project)"
+// bullet: "app ProjectCommand samples the curve and ray-casts along the
+// CPlane normal onto the render mesh, then refits. No kernel project
+// API." ProjectCurveToSurface() is that kernel API, against the exact
+// surface rather than a tessellated stand-in.
+void TestProjectCurveToSurfaceFlatPlaneStraightDown() {
+  using dino8::kernel::IntersectOptions;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::ProjectCurveToSurface;
+  using dino8::kernel::ProjectedCurveResult;
+  using dino8::kernel::Vector3d;
+
+  // A flat, generously-bounded horizontal plane surface at z = 0.
+  ON_PlaneSurface ground(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)));
+  ground.SetExtents(0, ON_Interval(-100, 100), true);
+  ground.SetExtents(1, ON_Interval(-100, 100), true);
+
+  // A line held entirely above the ground plane, projected straight down
+  // along -Z: every sample must land at its own (x, y) with z == 0 exactly
+  // - a hand-derivable, independently-checkable closed form for THIS
+  // direction/surface pair (unlike Pull, which would instead move every
+  // point to its own nearest point on the plane - already the same (x, y,
+  // 0) here only because the plane happens to be horizontal; a projection
+  // along a direction that ISN'T the plane's own normal would diverge from
+  // Pull's answer, which this test doesn't need to exercise to prove the
+  // two operations are genuinely different calls).
+  const NurbsCurve held_line = NurbsCurve::FromControlPoints({Point3d(1, 1, 5), Point3d(3, 2, 7)}, /*degree=*/1);
+  IntersectOptions opt;
+  opt.tolerance = 1e-6;
+  opt.mesh_tolerance = 0.25;
+
+  const ProjectedCurveResult result = ProjectCurveToSurface(held_line.raw(), ground, Vector3d(0, 0, -1), opt);
+  Check(result.sample_count >= 2, "the curve was sampled at least twice");
+  Check(result.hit_count == result.sample_count, "every sample of a line held above an unbounded ground plane hits it");
+  bool all_correct = result.hit_count > 0;
+  for (size_t i = 0; i < result.points.size(); ++i) {
+    const ON_3dPoint original = held_line.raw().PointAt(result.t[i]);
+    const Point3d& landed = result.points[i];
+    if (std::abs(landed.x - original.x) > 1e-4 || std::abs(landed.y - original.y) > 1e-4 || std::abs(landed.z) > 1e-6) {
+      all_correct = false;
+    }
+  }
+  Check(all_correct, "every projected point keeps the original sample's own (x, y) and lands exactly at z == 0");
+  Check(result.projected_curve.IsValid(), "a curve with every sample hit gets a valid refit projected_curve");
+  const ON_3dPoint fit_start = result.projected_curve.PointAtStart();
+  const ON_3dPoint fit_end = result.projected_curve.PointAtEnd();
+  Check(Point3d(fit_start.x, fit_start.y, fit_start.z).DistanceTo(Point3d(1, 1, 0)) < 1e-3,
+        "projected_curve's own start lands at the hand-derived (1, 1, 0)");
+  Check(Point3d(fit_end.x, fit_end.y, fit_end.z).DistanceTo(Point3d(3, 2, 0)) < 1e-3,
+        "projected_curve's own end lands at the hand-derived (3, 2, 0)");
+
+  // Degenerate direction (zero length) must refuse outright, not divide by
+  // zero or silently return an empty-but-"successful" result.
+  const ProjectedCurveResult zero_dir = ProjectCurveToSurface(held_line.raw(), ground, Vector3d(0, 0, 0), opt);
+  Check(zero_dir.sample_count == 0 && zero_dir.hit_count == 0, "a zero-length direction returns an empty result rather than dividing by zero");
+
+  // ProjectPointToSurface() is the point-level sibling closing the other
+  // half of PARITY_MAP's own "curves/points" bullet: the same straight-down
+  // ray from one of this curve's own endpoints must land at the same
+  // hand-derived (1, 1, 0).
+  using dino8::kernel::PointProjectionHit;
+  using dino8::kernel::ProjectPointToSurface;
+  const PointProjectionHit point_hit = ProjectPointToSurface(Point3d(1, 1, 5), Vector3d(0, 0, -1), ground, opt);
+  Check(point_hit.hit, "a point held above an unbounded ground plane hits it");
+  Check(point_hit.point.DistanceTo(Point3d(1, 1, 0)) < 1e-4, "the projected point lands at the hand-derived (1, 1, 0)");
+  const PointProjectionHit zero_dir_point = ProjectPointToSurface(Point3d(1, 1, 5), Vector3d(0, 0, 0), ground, opt);
+  Check(!zero_dir_point.hit, "ProjectPointToSurface with a zero-length direction reports hit == false rather than dividing by zero");
+}
+
+void TestProjectCurveToSurfacePartialMiss() {
+  using dino8::kernel::IntersectOptions;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::ProjectCurveToSurface;
+  using dino8::kernel::ProjectedCurveResult;
+  using dino8::kernel::Vector3d;
+
+  // A ground plane bounded to x, y in [-1, 1] only - unlike Pull (which
+  // always finds SOME closest point, however far), a directional ray
+  // genuinely misses a bounded surface once the ray's own (x, y) falls
+  // outside it, so this is a real, distinct failure mode this call must
+  // report honestly (hit[i] == false, the sample dropped) rather than
+  // papering over.
+  ON_PlaneSurface bounded_ground(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)));
+  bounded_ground.SetExtents(0, ON_Interval(-1, 1), true);
+  bounded_ground.SetExtents(1, ON_Interval(-1, 1), true);
+
+  // A line from x=-3 to x=3 at y=0, z=5 - its middle third (|x| <= 1) sits
+  // over the bounded plane, its two outer thirds do not.
+  const NurbsCurve wide_line = NurbsCurve::FromControlPoints({Point3d(-3, 0, 5), Point3d(3, 0, 5)}, /*degree=*/1);
+  IntersectOptions opt;
+  opt.tolerance = 1e-6;
+  opt.mesh_tolerance = 0.1;
+
+  const ProjectedCurveResult result = ProjectCurveToSurface(wide_line.raw(), bounded_ground, Vector3d(0, 0, -1), opt);
+  Check(result.hit_count > 0, "at least the middle portion of the line, over the bounded plane, hits it");
+  Check(result.hit_count < result.sample_count, "the two outer thirds, off the bounded plane entirely, genuinely miss it");
+  Check(result.hit.size() == static_cast<size_t>(result.sample_count), "hit[] records one entry per attempted sample, hits and misses alike");
+
+  bool every_hit_inside_bounds = true, every_hit_lands_correctly = true;
+  for (size_t i = 0; i < result.points.size(); ++i) {
+    const Point3d& p = result.points[i];
+    if (p.x < -1.0 - 1e-3 || p.x > 1.0 + 1e-3) every_hit_inside_bounds = false;
+    const ON_3dPoint original = wide_line.raw().PointAt(result.t[i]);
+    if (std::abs(p.x - original.x) > 1e-4 || std::abs(p.y) > 1e-6 || std::abs(p.z) > 1e-6) every_hit_lands_correctly = false;
+  }
+  Check(every_hit_inside_bounds, "every reported hit's own (x, y) genuinely lies within the bounded plane's own domain");
+  Check(every_hit_lands_correctly, "every reported hit keeps the original sample's own x and lands at y == 0, z == 0");
+
+  // The same bounded-surface miss, at the single-point level:
+  // ProjectPointToSurface() must honestly report hit == false for a point
+  // whose straight-down ray falls outside the plane's own domain, and
+  // hit == true (landing correctly) for one that doesn't.
+  using dino8::kernel::PointProjectionHit;
+  using dino8::kernel::ProjectPointToSurface;
+  const PointProjectionHit inside_hit = ProjectPointToSurface(Point3d(0, 0, 5), Vector3d(0, 0, -1), bounded_ground, opt);
+  Check(inside_hit.hit && inside_hit.point.DistanceTo(Point3d(0, 0, 0)) < 1e-4,
+        "a point over the bounded plane's own domain hits it and lands at the hand-derived (0, 0, 0)");
+  const PointProjectionHit outside_hit = ProjectPointToSurface(Point3d(-3, 0, 5), Vector3d(0, 0, -1), bounded_ground, opt);
+  Check(!outside_hit.hit, "a point off the bounded plane's own domain entirely genuinely misses it");
+}
+
 void TestBooleanCombineGeneralBoxBox() {
   using dino8::kernel::BooleanCombineGeneral;
   using dino8::kernel::BooleanOp;
@@ -18164,6 +18352,59 @@ void TestPointCloudSpatialQueries() {
     Check(threw_kneg, "KNearest(k < 0) throws");
     Check(threw_radius, "PointsWithinRadius(negative radius) throws");
   }
+}
+
+// PARITY_MAP.md's own "kernel: Intersections & projections" category names
+// this gap directly under "Point-cloud contour/section as separate app
+// commands": "app-level band-sampling around a plane; the kernel
+// PointCloud has no section API." PointsNearPlane() is that kernel API.
+void TestPointCloudPointsNearPlane() {
+  using dino8::kernel::Point3d;
+  using dino8::kernel::PointCloud;
+
+  // Seven points with hand-derivable exact |distance| from the z=0 plane,
+  // appended out of distance order so a passing test can't be an accident
+  // of insertion order already being sorted:
+  //   idx 0: z=-2.0   distance 2.0   (outside the 0.5 band)
+  //   idx 1: z=-0.3   distance 0.3   (inside)
+  //   idx 2: z=0.0    distance 0.0   (inside, exact match)
+  //   idx 3: z=0.1    distance 0.1   (inside)
+  //   idx 4: z=1.5    distance 1.5   (outside)
+  //   idx 5: z=-0.5   distance 0.5   (inside: exactly at the band's own edge, inclusive)
+  //   idx 6: z=0.51   distance 0.51  (outside: just past the band's own edge)
+  PointCloud cloud;
+  cloud.AppendPoint(Point3d(0, 0, -2.0));
+  cloud.AppendPoint(Point3d(1, 0, -0.3));
+  cloud.AppendPoint(Point3d(2, 0, 0.0));
+  cloud.AppendPoint(Point3d(3, 0, 0.1));
+  cloud.AppendPoint(Point3d(4, 0, 1.5));
+  cloud.AppendPoint(Point3d(5, 0, -0.5));
+  cloud.AppendPoint(Point3d(6, 0, 0.51));
+
+  const ON_Plane z0_plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1));
+  const auto near_plane = cloud.PointsNearPlane(z0_plane, 0.5);
+  Check(near_plane.size() == 4, "PointsNearPlane(band=0.5) finds exactly the 4 points within 0.5 of z=0");
+  const std::vector<int> expected_order = {2, 3, 1, 5};  // ascending distance: 0, 0.1, 0.3, 0.5
+  bool order_ok = near_plane.size() == expected_order.size();
+  for (size_t i = 0; order_ok && i < expected_order.size(); ++i) order_ok = near_plane[i].index == expected_order[i];
+  Check(order_ok, "PointsNearPlane is sorted by ascending |distance|: idx 2, 3, 1, 5 (0, 0.1, 0.3, 0.5)");
+  Check(near_plane.size() == 4 && std::abs(near_plane[3].distance - 0.5) < 1e-12,
+        "the point exactly at the band's own edge (distance == band) is included, inclusive like PointsWithinRadius");
+
+  Check(cloud.PointsNearPlane(z0_plane, 10.0).size() == 7, "a band covering every point's distance finds all 7 points");
+  Check(cloud.PointsNearPlane(z0_plane, 0.0).size() == 1, "band=0 finds only the exact on-plane point (idx 2)");
+
+  bool threw_band = false;
+  try {
+    cloud.PointsNearPlane(z0_plane, -0.001);
+  } catch (const std::invalid_argument&) {
+    threw_band = true;
+  }
+  Check(threw_band, "PointsNearPlane(negative band) throws");
+
+  const PointCloud empty;
+  Check(empty.PointsNearPlane(z0_plane, 1e9).empty(),
+        "PointsNearPlane on an empty cloud returns an empty result, not an error");
 }
 
 // SaveXyz()/LoadXyz() close a real gap: before this, a PointCloud had no
@@ -53009,6 +53250,230 @@ void TestFilletConcaveEdgeTaperedRejectsInvalidInput() {
         "FilletConcaveEdgeTapered rejects a radius1 too large to fit on the adjacent faces");
 }
 
+// ---------------------------------------------------------------------------
+// N-STATION generalization of FilletConcaveEdgeTapered (fillet.h/fillet.cpp,
+// BuildMultiStationTaperedFilletConcave) - closes PARITY_MAP.md's own
+// disclosed "the N-station piecewise-linear generalization has not been
+// re-derived for the concave sign convention" gap for the "Variable-radius
+// fillet" item under Blending & chamfering. Mirrors
+// TestFilletConvexEdgeTapered's own MultiStation* tests above, one by
+// one, on the concave fixtures TestFilletConcaveEdgeTapered's own
+// two-station tests already establish.
+
+void TestFilletConcaveEdgeTaperedMultiStationClosedFormVolumeMatchesFrustumFormula() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConcaveEdgeTapered;
+  using dino8::kernel::FilletRadiusStation;
+  using dino8::kernel::Point3d;
+
+  const Brep trough = ConcaveLShapedPrismWallsOnly();
+  const Point3d edge_p0(1, 1, 0), edge_p1(1, 1, 1);
+  const std::vector<FilletRadiusStation> stations = {{0.0, 0.15}, {0.4, 0.25}, {1.0, 0.35}};
+  const Brep filleted = FilletConcaveEdgeTapered(trough, edge_p0, edge_p1, stations);
+
+  const Brep::MixedFacesResult mf = filleted.MixedFaces();
+  Check(mf.conical.size() == 2, "MixedFaces() finds exactly the two concave conical fillet segments");
+  if (mf.conical.size() != 2) return;
+  for (const Brep::ConicalFace& cf : mf.conical) {
+    Check(cf.outward == false, "each concave N-station segment is marked outward=false, mirroring the two-station "
+                                "concave case");
+  }
+
+  double closed_form_volume = 0.0;
+  for (const Brep::ConicalFace& cf : mf.conical) {
+    closed_form_volume += (cf.angle / 6.0) * cf.length *
+                           (cf.radius0 * cf.radius0 + cf.radius0 * cf.radius1 + cf.radius1 * cf.radius1);
+  }
+  Check(closed_form_volume > 0.0, "sanity check: the summed closed-form frustum-sector volume is positive");
+
+  auto newell = [](const std::vector<Point3d>& loop) {
+    ON_3dVector n(0, 0, 0);
+    for (size_t i = 0; i < loop.size(); ++i) {
+      const Point3d& p = loop[i];
+      const Point3d& q = loop[(i + 1) % loop.size()];
+      n.x += (p.y - q.y) * (p.z + q.z);
+      n.y += (p.z - q.z) * (p.x + q.x);
+      n.z += (p.x - q.x) * (p.y + q.y);
+    }
+    n.Unitize();
+    return n;
+  };
+  auto make_face = [&](std::vector<Point3d> loop) {
+    Brep::PlanarFace f;
+    f.plane = ON_Plane(loop[0], newell(loop));
+    f.loop = std::move(loop);
+    return f;
+  };
+
+  // Per-segment self-contained test solid, wound with the SAME
+  // outward=false convention TestFilletConcaveEdgeTaperedClosedFormVolume
+  // MatchesFrustumFormula's own two-station version already verifies
+  // (opposite cap-sample winding from the convex multi-station test's own
+  // version, since the cone patch bounds material from the opposite
+  // side).
+  constexpr int kCapSamples = 1000;
+  double measured_volume_sum = 0.0;
+  for (const Brep::ConicalFace& cf : mf.conical) {
+    const double tan_half = (cf.radius1 - cf.radius0) / cf.length;
+    const double v0 = cf.radius0 / tan_half;
+    const double v1 = v0 + cf.length;
+    auto cone_pt = [&](double v, double phi) {
+      const double rho = tan_half * v;
+      return cf.frame.origin + v * cf.frame.zaxis + rho * (std::cos(phi) * cf.frame.xaxis + std::sin(phi) * cf.frame.yaxis);
+    };
+    const Point3d axis0 = cf.frame.origin + v0 * cf.frame.zaxis;
+    const Point3d axis1 = cf.frame.origin + v1 * cf.frame.zaxis;
+    const Point3d rail_i0 = cone_pt(v0, 0.0), rail_i1 = cone_pt(v1, 0.0);
+    const Point3d rail_j0 = cone_pt(v0, cf.angle), rail_j1 = cone_pt(v1, cf.angle);
+
+    std::vector<Point3d> v0cap_loop;
+    v0cap_loop.reserve(kCapSamples + 2);
+    v0cap_loop.push_back(axis0);
+    for (int s = 0; s <= kCapSamples; ++s) {
+      v0cap_loop.push_back(cone_pt(v0, cf.angle * static_cast<double>(s) / kCapSamples));
+    }
+    std::vector<Point3d> v1cap_loop;
+    v1cap_loop.reserve(kCapSamples + 2);
+    v1cap_loop.push_back(axis1);
+    for (int s = 0; s <= kCapSamples; ++s) {
+      v1cap_loop.push_back(cone_pt(v1, cf.angle * (1.0 - static_cast<double>(s) / kCapSamples)));
+    }
+    const std::vector<Point3d> wall_i_loop = {axis0, axis1, rail_i1, rail_i0};
+    const std::vector<Point3d> wall_j_loop = {axis0, rail_j0, rail_j1, axis1};
+
+    Brep::ConicalFace cf_copy = cf;
+    const Brep test_solid = Brep::FromMixedFaces(
+        {make_face(v0cap_loop), make_face(v1cap_loop), make_face(wall_i_loop), make_face(wall_j_loop)}, {}, {cf_copy});
+    measured_volume_sum += std::fabs(test_solid.TessellateToClosedMeshAdaptive(1e-8).Volume());
+  }
+
+  Check(std::fabs(measured_volume_sum - closed_form_volume) < 1e-5 * closed_form_volume,
+        "the SUM of each concave N-station segment's own independently-tessellated, self-contained "
+        "frustum-of-a-cone-sector test solid matches the SUM of each segment's own closed-form "
+        "(angle/6)*length*(r0^2+r0*r1+r1^2)");
+}
+
+void TestFilletConcaveEdgeTaperedMultiStationIsClosedManifoldAndSolid() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConcaveEdgeTapered;
+  using dino8::kernel::FilletRadiusStation;
+  using dino8::kernel::Point3d;
+
+  const Brep prism = ConcaveLShapedPrism();
+  const Point3d edge_p0(1, 1, 0), edge_p1(1, 1, 1);
+  const std::vector<FilletRadiusStation> stations = {{0.0, 0.10}, {0.4, 0.15}, {1.0, 0.22}};
+  const Brep filleted = FilletConcaveEdgeTapered(prism, edge_p0, edge_p1, stations);
+
+  ON_TextLog log;
+  Check(filleted.raw().IsValid(&log), "the multi-station tapered-concave-filleted closed prism passes ON_Brep::IsValid()");
+  bool oriented = false, has_boundary = true;
+  Check(filleted.raw().IsManifold(&oriented, &has_boundary) && oriented && !has_boundary,
+        "the multi-station tapered-concave-filleted prism is a genuinely oriented, CLOSED 2-manifold - "
+        "at BOTH outer corner-notches AND the interior-station join");
+  Check(filleted.raw().IsSolid(),
+        "the multi-station tapered-concave-filleted prism reports IsSolid() == true");
+
+  const double footprint_volume = prism.TessellateToClosedMesh(4, 4).Volume();
+  const double filled_volume = filleted.TessellateToClosedMeshAdaptive(1e-6).Volume();
+  Check(filled_volume > footprint_volume,
+        "the multi-station concave fillet genuinely ADDS material (fills the notch), the same direction "
+        "the two-station case's own test already establishes");
+}
+
+// The SAME fillet built via the N-station overload with exactly 2
+// stations and via the two-radius overload directly produce BIT-
+// IDENTICAL Breps - the concave mirror of
+// TestFilletConvexEdgeTaperedTwoStationDispatchIsBitIdenticalToTwoRadiusOverload.
+void TestFilletConcaveEdgeTaperedTwoStationDispatchIsBitIdenticalToTwoRadiusOverload() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConcaveEdgeTapered;
+  using dino8::kernel::FilletRadiusStation;
+  using dino8::kernel::Point3d;
+
+  const Brep prism = ConcaveLShapedPrism();
+  const Point3d edge_p0(1, 1, 0), edge_p1(1, 1, 1);
+  const double radius0 = 0.15, radius1 = 0.30;
+  const double L = edge_p0.DistanceTo(edge_p1);
+
+  const Brep via_stations = FilletConcaveEdgeTapered(
+      prism, edge_p0, edge_p1, std::vector<FilletRadiusStation>{{0.0, radius0}, {L, radius1}});
+  const Brep via_two_radius = FilletConcaveEdgeTapered(prism, edge_p0, edge_p1, radius0, radius1);
+
+  const ON_Brep& a = via_stations.raw();
+  const ON_Brep& b = via_two_radius.raw();
+  Check(a.m_S.Count() == b.m_S.Count() && a.m_F.Count() == b.m_F.Count() && a.m_V.Count() == b.m_V.Count() &&
+            a.m_E.Count() == b.m_E.Count(),
+        "the N-station overload called with exactly 2 stations and the two-radius overload called "
+        "directly produce Breps with identical raw topology counts");
+
+  bool all_vertices_match = a.m_V.Count() == b.m_V.Count();
+  for (int i = 0; all_vertices_match && i < a.m_V.Count(); ++i) {
+    if (a.m_V[i].point.DistanceTo(b.m_V[i].point) > 0.0) all_vertices_match = false;
+  }
+  Check(all_vertices_match,
+        "every welded vertex point is BIT-FOR-BIT identical between the two call forms - the two-radius "
+        "overload's own construction (BuildTwoStationTaperedFilletConcave) is exactly reproduced by the "
+        "N-station overload's own stations.size()==2 dispatch");
+
+  const double vol_a = via_stations.TessellateToClosedMeshAdaptive(1e-7).Volume();
+  const double vol_b = via_two_radius.TessellateToClosedMeshAdaptive(1e-7).Volume();
+  Check(std::fabs(vol_a - vol_b) < 1e-12, "the two tessellated volumes also match to full floating-point precision");
+}
+
+void TestFilletConcaveEdgeTaperedMultiStationRejectsInvalidStations() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConcaveEdgeTapered;
+  using dino8::kernel::FilletRadiusStation;
+  using dino8::kernel::Point3d;
+
+  const Brep prism = ConcaveLShapedPrism();
+  const Point3d edge_p0(1, 1, 0), edge_p1(1, 1, 1);
+
+  auto expect_throw = [&](const std::vector<FilletRadiusStation>& stations, const char* what) {
+    bool threw = false;
+    try {
+      FilletConcaveEdgeTapered(prism, edge_p0, edge_p1, stations);
+    } catch (const std::invalid_argument&) {
+      threw = true;
+    }
+    Check(threw, what);
+  };
+
+  expect_throw({{0.0, 0.10}, {0.5, 0.30}, {1.0, 0.15}},
+               "FilletConcaveEdgeTapered(stations) rejects a non-monotonic profile (interior radius max)");
+  expect_throw({{0.0, 0.10}}, "FilletConcaveEdgeTapered(stations) rejects fewer than 2 stations");
+  expect_throw({{0.0, 0.10}, {0.5, 0.20}, {0.3, 0.30}},
+               "FilletConcaveEdgeTapered(stations) rejects non-increasing t values");
+  expect_throw({{0.0, 0.10}, {0.5, 0.0}, {1.0, 0.20}},
+               "FilletConcaveEdgeTapered(stations) rejects a station with radius <= 0");
+  expect_throw({{0.0, 0.10}, {0.5, 0.10}, {1.0, 0.20}},
+               "FilletConcaveEdgeTapered(stations) rejects two consecutive (near-)equal-radius stations "
+               "inside a >2-station profile");
+
+  bool flat_two_station_threw = false;
+  try {
+    FilletConcaveEdgeTapered(prism, edge_p0, edge_p1, std::vector<FilletRadiusStation>{{0.0, 0.10}, {1.0, 0.10}});
+  } catch (const std::invalid_argument&) {
+    flat_two_station_threw = true;
+  }
+  Check(!flat_two_station_threw,
+        "a top-level 2-station profile with near-equal radii is explicitly ALLOWED (dispatches to "
+        "FilletConcaveEdge), exactly mirroring the convex overload's own identical allowance");
+
+  // Feeding a genuinely convex edge to the concave N-station overload is
+  // refused, the same EdgeConvexity check every other concave function in
+  // this file enforces.
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+  bool convex_edge_threw = false;
+  try {
+    FilletConcaveEdgeTapered(box, Point3d(0, 0, 1), Point3d(1, 0, 1),
+                              std::vector<FilletRadiusStation>{{0.0, 0.10}, {0.5, 0.15}, {1.0, 0.22}});
+  } catch (const std::invalid_argument&) {
+    convex_edge_threw = true;
+  }
+  Check(convex_edge_threw, "FilletConcaveEdgeTapered(stations) rejects a genuinely convex edge at >2 stations");
+}
+
 void TestFilletConcaveEdgeObliqueEndFaceIsExactAndClosed() {
   using dino8::kernel::Brep;
   using dino8::kernel::FilletConcaveEdge;
@@ -54196,6 +54661,218 @@ void TestFilletEdgeByDistanceRailTypeFunctionsRejectInvalidInput() {
   // Not a shared boundary edge at all.
   Check(throws([&] { FilletConvexEdgeByDistanceFromEdge(box, Point3d(0, 0, 1), Point3d(1, 1, 1), 0.2); }),
         "FilletConvexEdgeByDistanceFromEdge rejects a diagonal that is not a shared boundary edge");
+}
+
+// ---------------------------------------------------------------------------
+// MULTI-EDGE generalization of the RailType functions above
+// (FilletConvexEdgesByDistanceFromEdge/ByDistanceBetweenRails and their
+// FilletConcaveEdges counterparts, fillet.h) - PARITY_MAP.md's own
+// "Alternative blend rail types" item, "the multi-edge/vertex-blend form"
+// half of its remaining gap, for the uniform-dihedral-angle case (see
+// fillet.h's own doc comment on these four functions for exactly what
+// "uniform" means and why a mismatch is refused rather than guessed at).
+
+void TestFilletConvexEdgesByDistanceFromEdgeAndBetweenRailsMatchFilletConvexEdgesOnUniformDihedralEdges() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConvexEdges;
+  using dino8::kernel::FilletConvexEdgesByDistanceBetweenRails;
+  using dino8::kernel::FilletConvexEdgesByDistanceFromEdge;
+  using dino8::kernel::Point3d;
+
+  // (a) A box's own two parallel top edges: theta = pi/2 on both, so both
+  // RailType conversions agree trivially (radius == distance for
+  // DistFromEdge, radius == distance/sqrt(2) for DistBetweenRails) - the
+  // same "uniform dihedral" case this function's own doc comment names
+  // as the real target.
+  {
+    const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+    const std::vector<std::pair<Point3d, Point3d>> edges = {{Point3d(0, 0, 1), Point3d(1, 0, 1)},
+                                                              {Point3d(0, 1, 1), Point3d(1, 1, 1)}};
+    const double d = 0.2;
+    const Brep by_distance = FilletConvexEdgesByDistanceFromEdge(box, edges, d);
+    const Brep by_radius = FilletConvexEdges(box, edges, d);
+    Check(by_distance.raw().m_V.Count() == by_radius.raw().m_V.Count() &&
+              by_distance.raw().m_E.Count() == by_radius.raw().m_E.Count() &&
+              by_distance.FaceCount() == by_radius.FaceCount(),
+          "on two 90-degree box edges, multi-edge DistFromEdge(d) has identical topology to FilletConvexEdges "
+          "at radius=d");
+    Check(std::fabs(by_distance.TessellateToClosedMesh(6, 6).Volume() -
+                     by_radius.TessellateToClosedMesh(6, 6).Volume()) < 1e-9,
+          "and the same tessellated volume");
+
+    const double c = 0.2 * std::sqrt(2.0);
+    const Brep by_rails = FilletConvexEdgesByDistanceBetweenRails(box, edges, c);
+    const Brep by_radius2 = FilletConvexEdges(box, edges, 0.2);
+    Check(std::fabs(by_rails.TessellateToClosedMesh(6, 6).Volume() - by_radius2.TessellateToClosedMesh(6, 6).Volume()) <
+              1e-9,
+          "multi-edge DistBetweenRails(c) matches FilletConvexEdges at its own independently-derived equivalent "
+          "radius");
+  }
+
+  // (b) A regular hexagonal prism's own two INDEPENDENT (non-adjacent)
+  // vertical side/side edges: theta = 2*pi/3 (120 degrees) on both - a
+  // genuinely non-right dihedral, so this really exercises the per-edge
+  // tan(theta/2)/cos(theta/2) conversion, not a tan(45)==1 coincidence.
+  {
+    const int N = 6;
+    const double R = 1.0, H = 1.5;
+    std::vector<Point3d> bot, top;
+    for (int k = 0; k < N; ++k) {
+      const double ang = 2.0 * ON_PI * k / N;
+      bot.push_back(Point3d(R * std::cos(ang), R * std::sin(ang), 0));
+      top.push_back(Point3d(R * std::cos(ang), R * std::sin(ang), H));
+    }
+    std::vector<Brep::PlanarFace> faces;
+    faces.push_back(ChamferTestPlanarFace(std::vector<Point3d>(bot.rbegin(), bot.rend())));
+    faces.push_back(ChamferTestPlanarFace(top));
+    for (int k = 0; k < N; ++k) {
+      const int k1 = (k + 1) % N;
+      faces.push_back(ChamferTestPlanarFace({bot[k], bot[k1], top[k1], top[k]}));
+    }
+    const Brep prism = Brep::FromPlanarFaces(faces);
+
+    const std::vector<std::pair<Point3d, Point3d>> edges = {{bot[0], top[0]}, {bot[2], top[2]}};
+    const double theta = 2.0 * ON_PI / 3.0;
+
+    const double d = 0.15;
+    const double expected_radius = d * std::tan(theta / 2.0);
+    const Brep by_distance = FilletConvexEdgesByDistanceFromEdge(prism, edges, d);
+    const Brep by_radius = FilletConvexEdges(prism, edges, expected_radius);
+    Check(by_distance.raw().m_V.Count() == by_radius.raw().m_V.Count() &&
+              by_distance.raw().m_E.Count() == by_radius.raw().m_E.Count() &&
+              by_distance.FaceCount() == by_radius.FaceCount(),
+          "on two 120-degree prism edges, multi-edge DistFromEdge(d) matches FilletConvexEdges at the "
+          "independently-derived equivalent radius, topology-wise");
+    Check(std::fabs(by_distance.TessellateToClosedMeshAdaptive(1e-7).Volume() -
+                     by_radius.TessellateToClosedMeshAdaptive(1e-7).Volume()) < 1e-9,
+          "and volume-wise");
+    ON_TextLog log;
+    bool oriented = false, has_boundary = true;
+    Check(by_distance.raw().IsValid(&log) && by_distance.raw().IsManifold(&oriented, &has_boundary) && oriented &&
+              !has_boundary && by_distance.raw().IsSolid(),
+          "the multi-edge DistFromEdge result on two independent prism edges is a closed, oriented, manifold solid");
+
+    const double c = 0.3;
+    const double expected_radius2 = c / (2.0 * std::cos(theta / 2.0));
+    const Brep by_rails = FilletConvexEdgesByDistanceBetweenRails(prism, edges, c);
+    const Brep by_radius3 = FilletConvexEdges(prism, edges, expected_radius2);
+    Check(std::fabs(by_rails.TessellateToClosedMeshAdaptive(1e-7).Volume() -
+                     by_radius3.TessellateToClosedMeshAdaptive(1e-7).Volume()) < 1e-9,
+          "multi-edge DistBetweenRails(c) on two 120-degree prism edges matches FilletConvexEdges at the "
+          "independently-derived equivalent radius");
+  }
+}
+
+void TestFilletConcaveEdgesByDistanceFromEdgeAndBetweenRailsMatchFilletConcaveEdgesOnTwoIndependentNotches() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConcaveEdges;
+  using dino8::kernel::FilletConcaveEdgesByDistanceBetweenRails;
+  using dino8::kernel::FilletConcaveEdgesByDistanceFromEdge;
+  using dino8::kernel::Point3d;
+
+  // TwoConcaveNotchPrism's own two independent 90-degree reflex edges
+  // (TestFilletConcaveEdgesAddsExactVolumeForTwoIndependentNotches above
+  // already establishes both are genuine 90-degree concave dihedrals).
+  const Brep prism = TwoConcaveNotchPrism();
+  const std::vector<std::pair<Point3d, Point3d>> edges = {{Point3d(1, 1, 0), Point3d(1, 1, 1)},
+                                                            {Point3d(5, 2, 0), Point3d(5, 2, 1)}};
+
+  const double d = 0.15;
+  const Brep by_distance = FilletConcaveEdgesByDistanceFromEdge(prism, edges, d);
+  const Brep by_radius = FilletConcaveEdges(prism, edges, d);  // radius == d at theta == 90 degrees
+  Check(by_distance.raw().m_V.Count() == by_radius.raw().m_V.Count() &&
+            by_distance.raw().m_E.Count() == by_radius.raw().m_E.Count(),
+        "multi-edge FilletConcaveEdgesByDistanceFromEdge(d) matches FilletConcaveEdges(radius=d) on two "
+        "independent 90-degree concave notches");
+  Check(std::fabs(by_distance.TessellateToClosedMeshAdaptive(1e-6).Volume() -
+                   by_radius.TessellateToClosedMeshAdaptive(1e-6).Volume()) < 1e-9,
+        "and the same tessellated volume");
+
+  const double c = 0.15 * std::sqrt(2.0);
+  const Brep by_rails = FilletConcaveEdgesByDistanceBetweenRails(prism, edges, c);
+  const Brep by_radius2 = FilletConcaveEdges(prism, edges, 0.15);  // c / (2*cos(45deg)) == 0.15
+  Check(std::fabs(by_rails.TessellateToClosedMeshAdaptive(1e-6).Volume() -
+                   by_radius2.TessellateToClosedMeshAdaptive(1e-6).Volume()) < 1e-9,
+        "multi-edge FilletConcaveEdgesByDistanceBetweenRails(c) matches FilletConcaveEdges at its own "
+        "independently-derived equivalent radius");
+}
+
+void TestFilletEdgesByDistanceRailTypeFunctionsRejectMismatchedDihedralAnglesAndInvalidInput() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConcaveEdgesByDistanceBetweenRails;
+  using dino8::kernel::FilletConcaveEdgesByDistanceFromEdge;
+  using dino8::kernel::FilletConvexEdgesByDistanceBetweenRails;
+  using dino8::kernel::FilletConvexEdgesByDistanceFromEdge;
+  using dino8::kernel::Point3d;
+  auto throws = [](const std::function<void()>& fn) {
+    try {
+      fn();
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+    return false;
+  };
+
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+  const std::vector<std::pair<Point3d, Point3d>> two_box_edges = {{Point3d(0, 0, 1), Point3d(1, 0, 1)},
+                                                                    {Point3d(0, 1, 1), Point3d(1, 1, 1)}};
+
+  Check(throws([&] { FilletConvexEdgesByDistanceFromEdge(box, two_box_edges, 0.0); }),
+        "FilletConvexEdgesByDistanceFromEdge rejects distance == 0");
+  Check(throws([&] { FilletConvexEdgesByDistanceFromEdge(box, two_box_edges, -0.1); }),
+        "FilletConvexEdgesByDistanceFromEdge rejects a negative distance");
+  Check(throws([&] { FilletConvexEdgesByDistanceBetweenRails(box, two_box_edges, 0.0); }),
+        "FilletConvexEdgesByDistanceBetweenRails rejects rail_distance == 0");
+  Check(throws([&] { FilletConvexEdgesByDistanceFromEdge(box, {}, 0.2); }),
+        "FilletConvexEdgesByDistanceFromEdge rejects an empty edge list");
+
+  const Brep prism = TwoConcaveNotchPrism();
+  const std::vector<std::pair<Point3d, Point3d>> two_concave_edges = {{Point3d(1, 1, 0), Point3d(1, 1, 1)},
+                                                                        {Point3d(5, 2, 0), Point3d(5, 2, 1)}};
+  Check(throws([&] { FilletConcaveEdgesByDistanceFromEdge(prism, two_concave_edges, -0.2); }),
+        "FilletConcaveEdgesByDistanceFromEdge rejects a negative distance");
+  Check(throws([&] { FilletConcaveEdgesByDistanceBetweenRails(prism, two_concave_edges, 0.0); }),
+        "FilletConcaveEdgesByDistanceBetweenRails rejects rail_distance == 0");
+
+  // Convexity mismatch: a genuinely concave edge fed to the CONVEX
+  // wrapper (and vice versa) must be refused, not silently mis-dispatched.
+  Check(throws([&] { FilletConvexEdgesByDistanceFromEdge(prism, two_concave_edges, 0.2); }),
+        "FilletConvexEdgesByDistanceFromEdge rejects genuinely concave edges");
+  Check(throws([&] { FilletConcaveEdgesByDistanceFromEdge(box, two_box_edges, 0.2); }),
+        "FilletConcaveEdgesByDistanceFromEdge rejects genuinely convex edges");
+
+  // The real new check this function adds: two edges whose dihedral
+  // angles genuinely differ (a hexagonal prism's own 120-degree
+  // vertical side/side edge together with its 90-degree top/side edge)
+  // convert the SAME distance to two different radii - refused by name,
+  // not silently averaged or picked arbitrarily.
+  {
+    const int N = 6;
+    const double R = 1.0, H = 1.5;
+    std::vector<Point3d> bot, top;
+    for (int k = 0; k < N; ++k) {
+      const double ang = 2.0 * ON_PI * k / N;
+      bot.push_back(Point3d(R * std::cos(ang), R * std::sin(ang), 0));
+      top.push_back(Point3d(R * std::cos(ang), R * std::sin(ang), H));
+    }
+    std::vector<Brep::PlanarFace> faces;
+    faces.push_back(ChamferTestPlanarFace(std::vector<Point3d>(bot.rbegin(), bot.rend())));
+    faces.push_back(ChamferTestPlanarFace(top));
+    for (int k = 0; k < N; ++k) {
+      const int k1 = (k + 1) % N;
+      faces.push_back(ChamferTestPlanarFace({bot[k], bot[k1], top[k1], top[k]}));
+    }
+    const Brep hex_prism = Brep::FromPlanarFaces(faces);
+
+    const std::vector<std::pair<Point3d, Point3d>> mixed_angle_edges = {
+        {bot[0], top[0]},     // vertical side/side edge, theta = 120 degrees
+        {top[0], top[1]}};    // top/side edge, theta = 90 degrees
+    Check(throws([&] { FilletConvexEdgesByDistanceFromEdge(hex_prism, mixed_angle_edges, 0.2); }),
+          "FilletConvexEdgesByDistanceFromEdge rejects two edges whose dihedral angles genuinely differ, rather "
+          "than picking one radius arbitrarily");
+    Check(throws([&] { FilletConvexEdgesByDistanceBetweenRails(hex_prism, mixed_angle_edges, 0.2); }),
+          "FilletConvexEdgesByDistanceBetweenRails rejects the same mismatched-dihedral-angle pair");
+  }
 }
 
 void TestChamferConcaveEdgeAddsExactRightTriangleVolume() {
@@ -56822,6 +57499,220 @@ void TestNurbsCurveChamferCornerRejectsInvalidInput() {
         "does NOT reject a collinear corner - a straight-line chamfer is still a well-defined 4-point polyline");
 }
 
+namespace {
+
+// Two genuinely curved (nonzero curvature) NurbsCurve fixtures for the
+// BlendCurves tests below - two independent circles, so G2/G3 continuity
+// checks actually exercise real 2nd/3rd derivative matching rather than
+// the degenerate all-derivatives-past-1st-are-zero case a straight line
+// would give.
+dino8::kernel::NurbsCurve BlendTestCircle(dino8::kernel::Point3d center, double radius) {
+  const ON_Circle on_circle(ON_Plane(center, ON_3dVector(0, 0, 1)), radius);
+  ON_NurbsCurve nurbs_form;
+  on_circle.GetNurbForm(nurbs_form);
+  dino8::kernel::NurbsCurve out;
+  out.raw() = nurbs_form;
+  return out;
+}
+
+// Reads position + derivatives up to order 3 of `curve` at `t` directly
+// off the raw `ON_NurbsCurve`, independent of `NurbsCurve::BlendCurves`'
+// own internal `EvaluateBlendEnd` helper (curve.cpp) - so a test built on
+// this checks BlendCurves' OWN output against an independently-obtained
+// reference, not against a second call into the exact same helper it is
+// itself testing.
+void BlendTestEvaluate(const dino8::kernel::NurbsCurve& curve, double t, dino8::kernel::Point3d& point,
+                        dino8::kernel::Vector3d& d1, dino8::kernel::Vector3d& d2, dino8::kernel::Vector3d& d3) {
+  double v[12] = {0};
+  Check(curve.raw().Evaluate(t, 3, 3, v), "BlendTestEvaluate: underlying ON_Curve::Evaluate succeeded");
+  point = dino8::kernel::Point3d(v[0], v[1], v[2]);
+  d1 = dino8::kernel::Vector3d(v[3], v[4], v[5]);
+  d2 = dino8::kernel::Vector3d(v[6], v[7], v[8]);
+  d3 = dino8::kernel::Vector3d(v[9], v[10], v[11]);
+}
+
+}  // namespace
+
+void TestNurbsCurveBlendCurvesG1MatchesEndpointPositionsAndTangents() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+  using dino8::kernel::Vector3d;
+
+  const NurbsCurve c0 = BlendTestCircle(Point3d(0, 0, 0), 2.0);
+  const NurbsCurve c1 = BlendTestCircle(Point3d(10, 0, 0), 3.0);
+  const double t0 = c0.Domain().min, t1 = c1.Domain().min;
+
+  NurbsCurve out;
+  Check(NurbsCurve::BlendCurves(c0, t0, false, c1, t1, false, 1, out) == Result::Ok,
+        "BlendCurves(continuity=1) succeeds on two independent circles");
+  Check(out.Degree() == 3, "continuity=1 gives a cubic (degree 3, order 4) Bezier-basis curve");
+  Check(out.ControlPointCount() == 4, "a cubic has exactly 4 control points");
+
+  Point3d p0, p1;
+  Vector3d d0_1, d0_2, d0_3, d1_1, d1_2, d1_3;
+  BlendTestEvaluate(c0, t0, p0, d0_1, d0_2, d0_3);
+  BlendTestEvaluate(c1, t1, p1, d1_1, d1_2, d1_3);
+
+  const dino8::kernel::Interval out_dom = out.Domain();
+  Point3d out_p0, out_p1;
+  Vector3d out_d0_1, out_d0_2, out_d0_3, out_d1_1, out_d1_2, out_d1_3;
+  BlendTestEvaluate(out, out_dom.min, out_p0, out_d0_1, out_d0_2, out_d0_3);
+  BlendTestEvaluate(out, out_dom.max, out_p1, out_d1_1, out_d1_2, out_d1_3);
+
+  Check(out_p0.DistanceTo(p0) < 1e-9, "the blend's own start point is exactly curve0's point at t0");
+  Check(out_p1.DistanceTo(p1) < 1e-9, "the blend's own end point is exactly curve1's point at t1");
+  Check((out_d0_1 - d0_1).Length() < 1e-9 * std::max(1.0, d0_1.Length()),
+        "the blend's own first derivative at its start matches curve0's own first derivative at t0 (G1/tangent)");
+  Check((out_d1_1 - d1_1).Length() < 1e-9 * std::max(1.0, d1_1.Length()),
+        "the blend's own first derivative at its end matches curve1's own first derivative at t1 (G1/tangent)");
+}
+
+void TestNurbsCurveBlendCurvesG2MatchesCurvatureAtBothEnds() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+  using dino8::kernel::Vector3d;
+
+  const NurbsCurve c0 = BlendTestCircle(Point3d(0, 0, 0), 2.0);
+  const NurbsCurve c1 = BlendTestCircle(Point3d(10, 0, 0), 3.0);
+  const double t0 = c0.Domain().min, t1 = c1.Domain().min;
+
+  NurbsCurve out;
+  Check(NurbsCurve::BlendCurves(c0, t0, false, c1, t1, false, 2, out) == Result::Ok,
+        "BlendCurves(continuity=2) succeeds on two independent circles");
+  Check(out.Degree() == 5, "continuity=2 gives a quintic (degree 5, order 6) Bezier-basis curve");
+  Check(out.ControlPointCount() == 6, "a quintic has exactly 6 control points");
+
+  Point3d p0, p1;
+  Vector3d d0_1, d0_2, d0_3, d1_1, d1_2, d1_3;
+  BlendTestEvaluate(c0, t0, p0, d0_1, d0_2, d0_3);
+  BlendTestEvaluate(c1, t1, p1, d1_1, d1_2, d1_3);
+
+  const dino8::kernel::Interval out_dom = out.Domain();
+  Point3d out_p0, out_p1;
+  Vector3d out_d0_1, out_d0_2, out_d0_3, out_d1_1, out_d1_2, out_d1_3;
+  BlendTestEvaluate(out, out_dom.min, out_p0, out_d0_1, out_d0_2, out_d0_3);
+  BlendTestEvaluate(out, out_dom.max, out_p1, out_d1_1, out_d1_2, out_d1_3);
+
+  Check((out_d0_1 - d0_1).Length() < 1e-9 * std::max(1.0, d0_1.Length()), "G2 blend still matches 1st derivative at start");
+  Check((out_d1_1 - d1_1).Length() < 1e-9 * std::max(1.0, d1_1.Length()), "G2 blend still matches 1st derivative at end");
+  Check(d0_2.Length() > 1e-6, "sanity: curve0's own 2nd derivative at t0 is genuinely nonzero (a real circle, not "
+                              "a degenerate straight fixture)");
+  Check((out_d0_2 - d0_2).Length() < 1e-6 * std::max(1.0, d0_2.Length()),
+        "the blend's own 2nd derivative at its start matches curve0's own 2nd derivative at t0 (G2/curvature)");
+  Check((out_d1_2 - d1_2).Length() < 1e-6 * std::max(1.0, d1_2.Length()),
+        "the blend's own 2nd derivative at its end matches curve1's own 2nd derivative at t1 (G2/curvature)");
+}
+
+// The genuine new capability PARITY_MAP.md's own "Curve-to-curve blend"
+// bullet names as missing entirely ("No G3+ and no kernel API"):
+// continuity = 3 matches position and derivatives up to 3rd order at
+// both ends, on a real (nonzero-3rd-derivative) curved fixture.
+void TestNurbsCurveBlendCurvesG3MatchesThirdDerivativeAtBothEnds() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+  using dino8::kernel::Vector3d;
+
+  const NurbsCurve c0 = BlendTestCircle(Point3d(0, 0, 0), 2.0);
+  const NurbsCurve c1 = BlendTestCircle(Point3d(10, 0, 0), 3.0);
+  const double t0 = c0.Domain().min, t1 = c1.Domain().min;
+
+  NurbsCurve out;
+  Check(NurbsCurve::BlendCurves(c0, t0, false, c1, t1, false, 3, out) == Result::Ok,
+        "BlendCurves(continuity=3) succeeds on two independent circles");
+  Check(out.Degree() == 7, "continuity=3 gives a septic (degree 7, order 8) Bezier-basis curve");
+  Check(out.ControlPointCount() == 8, "a septic has exactly 8 control points");
+
+  Point3d p0, p1;
+  Vector3d d0_1, d0_2, d0_3, d1_1, d1_2, d1_3;
+  BlendTestEvaluate(c0, t0, p0, d0_1, d0_2, d0_3);
+  BlendTestEvaluate(c1, t1, p1, d1_1, d1_2, d1_3);
+
+  const dino8::kernel::Interval out_dom = out.Domain();
+  Point3d out_p0, out_p1;
+  Vector3d out_d0_1, out_d0_2, out_d0_3, out_d1_1, out_d1_2, out_d1_3;
+  BlendTestEvaluate(out, out_dom.min, out_p0, out_d0_1, out_d0_2, out_d0_3);
+  BlendTestEvaluate(out, out_dom.max, out_p1, out_d1_1, out_d1_2, out_d1_3);
+
+  Check(out_p0.DistanceTo(p0) < 1e-9 && out_p1.DistanceTo(p1) < 1e-9, "G3 blend matches both endpoint positions");
+  Check((out_d0_1 - d0_1).Length() < 1e-6 * std::max(1.0, d0_1.Length()) &&
+            (out_d1_1 - d1_1).Length() < 1e-6 * std::max(1.0, d1_1.Length()),
+        "G3 blend matches both endpoints' 1st derivative");
+  Check((out_d0_2 - d0_2).Length() < 1e-6 * std::max(1.0, d0_2.Length()) &&
+            (out_d1_2 - d1_2).Length() < 1e-6 * std::max(1.0, d1_2.Length()),
+        "G3 blend matches both endpoints' 2nd derivative");
+  Check(d0_3.Length() > 1e-6 && d1_3.Length() > 1e-6,
+        "sanity: both fixtures' own 3rd derivatives are genuinely nonzero");
+  Check((out_d0_3 - d0_3).Length() < 1e-4 * std::max(1.0, d0_3.Length()),
+        "the blend's own 3rd derivative at its start matches curve0's own 3rd derivative at t0 (G3, the new "
+        "capability this closes)");
+  Check((out_d1_3 - d1_3).Length() < 1e-4 * std::max(1.0, d1_3.Length()),
+        "the blend's own 3rd derivative at its end matches curve1's own 3rd derivative at t1 (G3)");
+}
+
+void TestNurbsCurveBlendCurvesReverseFlagNegatesOddDerivatives() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+  using dino8::kernel::Vector3d;
+
+  const NurbsCurve c0 = BlendTestCircle(Point3d(0, 0, 0), 2.0);
+  const NurbsCurve c1 = BlendTestCircle(Point3d(10, 0, 0), 3.0);
+  const double t0 = c0.Domain().min, t1 = c1.Domain().min;
+
+  NurbsCurve fwd, rev;
+  Check(NurbsCurve::BlendCurves(c0, t0, false, c1, t1, false, 2, fwd) == Result::Ok, "forward blend succeeds");
+  Check(NurbsCurve::BlendCurves(c0, t0, true, c1, t1, false, 2, rev) == Result::Ok,
+        "reverse0=true blend succeeds");
+
+  Point3d unused_p;
+  Vector3d fwd_d1, fwd_d2, fwd_d3, rev_d1, rev_d2, rev_d3;
+  BlendTestEvaluate(fwd, fwd.Domain().min, unused_p, fwd_d1, fwd_d2, fwd_d3);
+  BlendTestEvaluate(rev, rev.Domain().min, unused_p, rev_d1, rev_d2, rev_d3);
+
+  Check((rev_d1 + fwd_d1).Length() < 1e-6 * std::max(1.0, fwd_d1.Length()),
+        "reverse0=true negates the 1st (odd-order) derivative matched at the start, relative to reverse0=false");
+  Check((rev_d2 - fwd_d2).Length() < 1e-6 * std::max(1.0, fwd_d2.Length()),
+        "reverse0=true leaves the 2nd (even-order) derivative matched at the start UNCHANGED");
+}
+
+void TestNurbsCurveBlendCurvesRejectsInvalidInput() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  auto throws = [](const std::function<void()>& fn) {
+    try {
+      fn();
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+    return false;
+  };
+
+  const NurbsCurve c0 = BlendTestCircle(Point3d(0, 0, 0), 2.0);
+  const NurbsCurve c1 = BlendTestCircle(Point3d(10, 0, 0), 3.0);
+  const double t0 = c0.Domain().min, t1 = c1.Domain().min;
+  NurbsCurve out;
+
+  Check(throws([&] { NurbsCurve::BlendCurves(c0, t0, false, c1, t1, false, 0, out); }),
+        "BlendCurves rejects continuity == 0");
+  Check(throws([&] { NurbsCurve::BlendCurves(c0, t0, false, c1, t1, false, 4, out); }),
+        "BlendCurves rejects continuity == 4 (only 1/2/3 are implemented)");
+  Check(throws([&] { NurbsCurve::BlendCurves(c0, c0.Domain().max + 1.0, false, c1, t1, false, 1, out); }),
+        "BlendCurves rejects t0 outside curve0's own Domain()");
+  Check(throws([&] { NurbsCurve::BlendCurves(c0, t0, false, c1, c1.Domain().max + 1.0, false, 1, out); }),
+        "BlendCurves rejects t1 outside curve1's own Domain()");
+
+  // Coincident endpoints: blending a circle to ITSELF at the same
+  // parameter has zero-length position gap - no well-defined tangent
+  // direction to solve for.
+  Check(NurbsCurve::BlendCurves(c0, t0, false, c0, t0, false, 1, out) == Result::Failed,
+        "BlendCurves reports Result::Failed when both ends coincide");
+}
+
 // A genuinely 3D (non-coplanar-in-the-given-plane) polyline handed to the
 // explicit-plane overload: the exact per-corner miter formula does NOT
 // apply here (it only lands on both offset lines when every edge is
@@ -59343,6 +60234,9 @@ int main() {
   TestIntersectCurveSelfIntersectionsFindsBowtieAndRejectsSimpleCurves();
   TestIntersectBrepsAndCurveBrep();
   TestPullbackCurveToSurfaceCylinderRulingLine();
+  TestIntersectBrepByPlaneBoxSideWalls();
+  TestProjectCurveToSurfaceFlatPlaneStraightDown();
+  TestProjectCurveToSurfacePartialMiss();
   TestBooleanCombineGeneralBoxBox();
   TestBooleanCombineGeneralFreeformSurfaceOperand();
   TestBooleanCombineGeneralCoplanarBoxes();
@@ -59501,6 +60395,7 @@ int main() {
   TestMeshDistanceTo();
   TestMeshClashWith();
   TestPointCloudSpatialQueries();
+  TestPointCloudPointsNearPlane();
   TestPointCloudXyzRoundTrips();
   TestPointCloudLoadXyzRejectsMalformedInput();
   TestPointCloudPtsRoundTrips();
@@ -59729,6 +60624,10 @@ int main() {
   TestFilletConcaveEdgeTaperedDispatchesToConstantRadiusAtZeroTaper();
   TestFilletConcaveEdgeTaperedClosesCornerNotchAndIsSolid();
   TestFilletConcaveEdgeTaperedRejectsInvalidInput();
+  TestFilletConcaveEdgeTaperedMultiStationClosedFormVolumeMatchesFrustumFormula();
+  TestFilletConcaveEdgeTaperedMultiStationIsClosedManifoldAndSolid();
+  TestFilletConcaveEdgeTaperedTwoStationDispatchIsBitIdenticalToTwoRadiusOverload();
+  TestFilletConcaveEdgeTaperedMultiStationRejectsInvalidStations();
   TestFilletConcaveEdgeObliqueEndFaceIsExactAndClosed();
   TestFilletConcaveEdgesSingleEdgeMatchesFilletConcaveEdgeOnObliqueEnd();
   TestFilletConcaveEdgesRejectsOversizedRadiusAtObliqueEnd();
@@ -59752,6 +60651,9 @@ int main() {
   TestFilletConvexEdgeByDistanceBetweenRailsMatchesEquivalentRadius();
   TestFilletConcaveEdgeByDistanceFromEdgeAndByDistanceBetweenRailsMatchEquivalentRadius();
   TestFilletEdgeByDistanceRailTypeFunctionsRejectInvalidInput();
+  TestFilletConvexEdgesByDistanceFromEdgeAndBetweenRailsMatchFilletConvexEdgesOnUniformDihedralEdges();
+  TestFilletConcaveEdgesByDistanceFromEdgeAndBetweenRailsMatchFilletConcaveEdgesOnTwoIndependentNotches();
+  TestFilletEdgesByDistanceRailTypeFunctionsRejectMismatchedDihedralAnglesAndInvalidInput();
   TestChamferConcaveEdgeAddsExactRightTriangleVolume();
   TestChamferConcaveEdgeAngleMatchesTwoDistanceForm();
   TestChamferConcaveEdgeRejectsUnsupportedConfigurations();
@@ -60184,6 +61086,11 @@ int main() {
   TestNurbsCurveFilletCornerArcRejectsInvalidInput();
   TestNurbsCurveChamferCornerAsymmetricDistances();
   TestNurbsCurveChamferCornerRejectsInvalidInput();
+  TestNurbsCurveBlendCurvesG1MatchesEndpointPositionsAndTangents();
+  TestNurbsCurveBlendCurvesG2MatchesCurvatureAtBothEnds();
+  TestNurbsCurveBlendCurvesG3MatchesThirdDerivativeAtBothEnds();
+  TestNurbsCurveBlendCurvesReverseFlagNegatesOddDerivatives();
+  TestNurbsCurveBlendCurvesRejectsInvalidInput();
   TestCurveOffsetInPlaneWithExplicitPlaneNonCoplanarPolylineFallsBackToGeneralPath();
 
 
