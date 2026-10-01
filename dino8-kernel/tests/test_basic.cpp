@@ -35436,6 +35436,176 @@ void TestFromMixedFacesRejectsNonManifoldEdge() {
         "segment) rather than silently misbuilding a third trim onto an already-mated edge");
 }
 
+// `page_count` unit-square planar "pages" hinged on the one common spine
+// (0,0,0)-(0,0,1), page i swung to angle i*2*pi/page_count about the z
+// axis - a genuine non-manifold fan no manifold factory can build. Pages
+// alternate their loop winding (and so their plane normal): an even page
+// walks the spine top->bottom, an odd page bottom->top, so the spine's
+// trims fall into both TrimWalksMaterialLeft() classes - the same mixed
+// false/true/false bRev3d shape BuildNonManifoldEdgeBook() hand-sets, but
+// derived here purely from each face's own winding by
+// FromMixedFacesNonManifold()'s ordinary edge-reuse logic.
+std::vector<dino8::kernel::Brep::PlanarFace> NonManifoldFanPages(int page_count) {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  std::vector<Brep::PlanarFace> pages;
+  for (int i = 0; i < page_count; ++i) {
+    const double theta = i * (2.0 * M_PI / page_count);
+    const Point3d d(std::cos(theta), std::sin(theta), 0.0);
+    const Point3d bottom(0, 0, 0), top(0, 0, 1), d_top(d.x, d.y, 1.0);
+    Brep::PlanarFace f;
+    // (bottom -> d -> d_top -> top) is CCW about d x z.
+    const ON_3dVector n = ON_CrossProduct(ON_3dVector(d.x, d.y, 0.0), ON_3dVector(0, 0, 1));
+    if (i % 2 == 0) {
+      f.loop = {bottom, d, d_top, top};
+      f.plane = ON_Plane(bottom, n);
+    } else {
+      f.loop = {top, d_top, d, bottom};
+      f.plane = ON_Plane(bottom, -n);
+    }
+    pages.push_back(f);
+  }
+  return pages;
+}
+
+// Brep::FromMixedFacesNonManifold() - the "hand the kernel a non-manifold
+// TARGET shape and have it build a first-class non-manifold Brep in one
+// call" gap: the same 3-page fan FromMixedFaces() refuses (see
+// TestFromMixedFacesRejectsNonManifoldEdge above) is built with all three
+// trims on ONE spine edge, Check() names exactly that edge with its own
+// trim count and nothing else, and the existing SplitNonManifoldEdge()
+// heal works on it exactly as on the hand-built book fixture.
+void TestFromMixedFacesNonManifoldBuildsThreePageFan() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Result;
+
+  const std::vector<Brep::PlanarFace> pages = NonManifoldFanPages(3);
+
+  bool strict_threw = false;
+  try {
+    Brep::FromPlanarFaces(pages);
+  } catch (const std::invalid_argument& e) {
+    strict_threw = std::string(e.what()).find("shared by 3 or more faces") != std::string::npos;
+  }
+  Check(strict_threw, "FromPlanarFaces()/FromMixedFaces() still refuse the 3-page fan - the strict entry points "
+                      "are unchanged");
+
+  Brep fan = Brep::FromMixedFacesNonManifold(pages);
+  const ON_Brep& b = fan.raw();
+  Check(fan.FaceCount() == 3, "FromMixedFacesNonManifold builds all 3 pages");
+  Check(b.m_E.Count() == 10, "10 edges: 1 shared spine + 3 pages * 3 own sides (the spine is NOT duplicated)");
+  Check(b.m_V.Count() == 8, "8 vertices: 2 spine ends welded once + 3 pages * 2 outer corners");
+
+  int spine = -1;
+  for (int ei = 0; ei < b.m_E.Count(); ++ei) {
+    if (b.m_E[ei].TrimCount() == 3) {
+      Check(spine < 0, "only one edge carries 3 trims");
+      spine = ei;
+    } else {
+      Check(b.m_E[ei].TrimCount() == 1, "every other edge is an ordinary single-trim page side");
+    }
+  }
+  Check(spine >= 0, "the spine edge carries all 3 pages' trims");
+  if (spine < 0) return;
+  const ON_3dPoint s0 = b.m_V[b.m_E[spine].m_vi[0]].point, s1 = b.m_V[b.m_E[spine].m_vi[1]].point;
+  Check(std::min(s0.DistanceTo(ON_3dPoint(0, 0, 0)), s0.DistanceTo(ON_3dPoint(0, 0, 1))) < 1e-12 &&
+            std::min(s1.DistanceTo(ON_3dPoint(0, 0, 0)), s1.DistanceTo(ON_3dPoint(0, 0, 1))) < 1e-12 &&
+            s0.DistanceTo(s1) > 0.5,
+        "the 3-trim edge really is the spine (0,0,0)-(0,0,1)");
+
+  // Each trim's own bRev3d matches its own face's winding: the even pages
+  // walk top->bottom, the odd page bottom->top, so exactly the trims of
+  // one walking direction agree with the edge's own stored direction.
+  int forward = 0, reversed = 0;
+  for (int k = 0; k < 3; ++k) {
+    const ON_BrepTrim& t = b.m_T[b.m_E[spine].m_ti[k]];
+    const int walk_start = t.m_bRev3d ? b.m_E[spine].m_vi[1] : b.m_E[spine].m_vi[0];
+    const bool walks_down = b.m_V[walk_start].point.z > 0.5;
+    const bool even_page = (t.FaceIndexOf() % 2) == 0;
+    Check(walks_down == even_page, "each spine trim's bRev3d makes it walk the spine in its own page's loop direction");
+    (t.m_bRev3d ? reversed : forward) += 1;
+  }
+  Check(forward == 2 && reversed == 1, "two pages agree with the spine's stored direction, one opposes it");
+
+  ON_TextLog log;
+  Check(b.IsValid(&log), "the non-manifold fan is otherwise a valid ON_Brep");
+
+  const Brep::CheckReport before = fan.Check();
+  Check(before.Count(Brep::CheckIssue::Kind::NonManifoldEdge) == 1, "Check() reports exactly one NonManifoldEdge");
+  for (const Brep::CheckIssue& issue : before.issues) {
+    if (issue.kind == Brep::CheckIssue::Kind::NonManifoldEdge) {
+      Check(issue.index == spine && issue.other_index == 3, "...naming the spine itself and its trim count (3)");
+    }
+  }
+  Check(before.Count(Brep::CheckIssue::Kind::NonManifoldVertex) == 0,
+        "no false NonManifoldVertex at the spine ends - the pages are connected through the spine edge");
+  Check(before.Count(Brep::CheckIssue::Kind::NakedEdge) == 9, "the 9 page sides are naked, nothing else");
+  Check(before.Count(Brep::CheckIssue::Kind::InconsistentFaceOrientation) == 0,
+        "no InconsistentFaceOrientation false positive on the 3-trim edge");
+
+  // The existing heal on this newly constructible shape.
+  Check(fan.SplitNonManifoldEdge(spine) == Result::Ok, "SplitNonManifoldEdge() heals the constructed spine");
+  Check(fan.raw().m_E.Count() == 11, "one new edge for the odd trim out (10 -> 11)");
+  Check(fan.raw().m_E[spine].TrimCount() == 2, "the spine keeps exactly one opposite-direction manifold pair");
+  const Brep::CheckReport after = fan.Check();
+  Check(after.Count(Brep::CheckIssue::Kind::NonManifoldEdge) == 0, "no non-manifold edge remains after the heal");
+  Check(after.Count(Brep::CheckIssue::Kind::NakedEdge) == 10, "9 page sides + the odd trim's own new naked copy");
+  Check(after.Count(Brep::CheckIssue::Kind::InconsistentFaceOrientation) == 0,
+        "the surviving pair is well-oriented in Check()'s own sense");
+  Check(fan.raw().IsValid(), "still a valid ON_Brep after the heal");
+}
+
+// N > 3: a 4-page alternating fan puts 4 trims on the one spine, two of
+// each walking direction - SplitNonManifoldEdge() then splits it into two
+// genuine manifold pairs with no naked leftover. Also confirms an ordinary
+// manifold input goes through FromMixedFacesNonManifold() identically to
+// FromPlanarFaces() (it only ever differs where the strict call throws).
+void TestFromMixedFacesNonManifoldBuildsFourPageFanAndMatchesStrictOnManifoldInput() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Result;
+
+  Brep fan = Brep::FromMixedFacesNonManifold(NonManifoldFanPages(4));
+  Check(fan.FaceCount() == 4 && fan.raw().m_E.Count() == 13,
+        "4 pages: 13 edges (1 shared spine + 4 * 3 own sides)");
+  int spine = -1;
+  for (int ei = 0; ei < fan.raw().m_E.Count(); ++ei) {
+    if (fan.raw().m_E[ei].TrimCount() == 4) spine = ei;
+  }
+  Check(spine >= 0, "the spine carries all 4 trims");
+  const Brep::CheckReport before = fan.Check();
+  Check(before.Count(Brep::CheckIssue::Kind::NonManifoldEdge) == 1 &&
+            before.Count(Brep::CheckIssue::Kind::NonManifoldVertex) == 0,
+        "one NonManifoldEdge, no NonManifoldVertex");
+  if (spine >= 0) {
+    Check(fan.SplitNonManifoldEdge(spine) == Result::Ok, "SplitNonManifoldEdge() heals the 4-trim spine");
+  }
+  const Brep::CheckReport after = fan.Check();
+  Check(after.Count(Brep::CheckIssue::Kind::NonManifoldEdge) == 0 &&
+            after.Count(Brep::CheckIssue::Kind::NakedEdge) == 12 &&
+            after.Count(Brep::CheckIssue::Kind::InconsistentFaceOrientation) == 0,
+        "two well-oriented pairs, no leftover naked copy: only the 12 page sides are naked");
+  Check(fan.raw().m_E.Count() == 14, "exactly one duplicate edge for the second pair (13 -> 14)");
+
+  const std::vector<Brep::PlanarFace> box_faces = CheckHealBoxFaces();
+  Brep strict = Brep::FromPlanarFaces(box_faces);
+  Brep relaxed = Brep::FromMixedFacesNonManifold(box_faces);
+  Check(relaxed.FaceCount() == strict.FaceCount() && relaxed.raw().m_E.Count() == strict.raw().m_E.Count() &&
+            relaxed.raw().m_V.Count() == strict.raw().m_V.Count() && relaxed.raw().m_T.Count() == strict.raw().m_T.Count(),
+        "a manifold box builds with identical face/edge/vertex/trim counts through either entry point");
+  bool same_trims = true;
+  for (int ti = 0; ti < strict.raw().m_T.Count(); ++ti) {
+    if (strict.raw().m_T[ti].m_ei != relaxed.raw().m_T[ti].m_ei ||
+        strict.raw().m_T[ti].m_bRev3d != relaxed.raw().m_T[ti].m_bRev3d) {
+      same_trims = false;
+    }
+  }
+  Check(same_trims, "...trim-for-trim the same edge assignment and bRev3d");
+  const Brep::CheckReport box_report = relaxed.Check();
+  Check(box_report.Count(Brep::CheckIssue::Kind::NonManifoldEdge) == 0 &&
+            box_report.Count(Brep::CheckIssue::Kind::NakedEdge) == 0,
+        "the manifold box built through the non-manifold entry point is still a closed manifold");
+}
+
 // The strongest check this feature's own spec calls for: build a Brep
 // via FromPlanarFaces(), save it to a genuine .3dm, reload it, and wrap
 // the RELOADED raw ON_Brep in a FRESH dino8::kernel::Brep with EMPTY side
@@ -46201,6 +46371,213 @@ void TestMergeSameSurfaceFacesLeavesDistinctCoplanarSurfacesUntouched() {
   Check(flat.FaceCount() == 2, "...leaving both faces untouched, exactly as before");
   Check(flat.MergeCoplanarFaces() == 1, "...while MergeCoplanarFaces() still merges this same fixture, "
                                         "confirming the two methods are genuinely complementary, not overlapping");
+}
+
+// Cuts a real ON_BrepLoop::inner hole into face 0 of
+// BuildTwoFaceCylinderFixture(): the (u, v) rectangle spanning angles
+// [ang0, ang1] and heights [h0, h1], whose two constant-height sides are
+// genuine circular arcs (the cylinder's own IsoCurve(0, v)) and whose two
+// constant-angle sides are straight rulings - a CURVED-edged hole on a
+// NON-planar face, both of which MergeCoplanarFaces()' AddHoleLoop()-based
+// hole restoration refuses. The inner loop runs clockwise in (u, v).
+// Returns the 4 new hole edge indices.
+std::vector<int> AddCylinderFaceHole(dino8::kernel::Brep& brep, double radius, double ang0, double ang1, double h0,
+                                     double h1) {
+  ON_Brep& raw = brep.raw();
+  const ON_Surface* surface = raw.m_F[0].SurfaceOf();
+  const ON_Circle circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), radius);
+  double ua = 0.0, ub = 0.0;
+  if (!circle.GetNurbFormParameterFromRadian(ang0, &ua) || !circle.GetNurbFormParameterFromRadian(ang1, &ub)) {
+    throw std::runtime_error("AddCylinderFaceHole: GetNurbFormParameterFromRadian failed");
+  }
+  const ON_2dPoint uv[4] = {ON_2dPoint(ua, h0), ON_2dPoint(ua, h1), ON_2dPoint(ub, h1), ON_2dPoint(ub, h0)};  // clockwise in (u, v)
+  int vid[4];
+  for (int k = 0; k < 4; ++k) vid[k] = raw.NewVertex(surface->PointAt(uv[k].x, uv[k].y), 0.0).m_vertex_index;
+  const int loop_index = raw.NewLoop(ON_BrepLoop::inner, raw.m_F[0]).m_loop_index;
+  std::vector<int> edges;
+  for (int k = 0; k < 4; ++k) {
+    const ON_2dPoint a = uv[k], b = uv[(k + 1) % 4];
+    const bool along_u = (a.y == b.y);
+    ON_Curve* iso = along_u ? surface->IsoCurve(0, a.y) : surface->IsoCurve(1, a.x);
+    iso->Trim(along_u ? ON_Interval(std::min(a.x, b.x), std::max(a.x, b.x))
+                      : ON_Interval(std::min(a.y, b.y), std::max(a.y, b.y)));
+    if (along_u ? (a.x > b.x) : (a.y > b.y)) iso->Reverse();
+    const int c3i = raw.AddEdgeCurve(iso);
+    const int ei = raw.NewEdge(raw.m_V[vid[k]], raw.m_V[vid[(k + 1) % 4]], c3i).m_edge_index;
+    raw.m_E[ei].m_tolerance = 0.0;
+    auto* c2 = new ON_LineCurve(a, b);
+    c2->SetDomain(0.0, 1.0);
+    const int c2i = raw.AddTrimCurve(c2);
+    ON_BrepTrim& trim = raw.NewTrim(raw.m_E[ei], false, raw.m_L[loop_index], c2i);
+    trim.m_tolerance[0] = trim.m_tolerance[1] = 0.0;
+    edges.push_back(ei);
+  }
+  raw.SetTrimIsoFlags();
+  raw.SetTolerancesBoxesAndFlags();
+  for (int i = 0; i < raw.m_E.Count(); ++i) {
+    ON_BrepEdge& e = raw.m_E[i];
+    if (e.m_edge_index >= 0 && !(e.m_tolerance >= 0.0)) e.m_tolerance = 0.0;
+  }
+  return edges;
+}
+
+// Signed (u, v)-space area enclosed by a face's loops (outer positive,
+// holes negative), from each trim's own 2D start point - exact for the
+// straight-in-(u, v) trims these cylinder fixtures use. The (u, v) region a
+// face covers is what a same-surface merge must preserve exactly.
+double FaceUvSignedArea(const ON_Brep& b, int face_index) {
+  double area = 0.0;
+  const ON_BrepFace& f = b.m_F[face_index];
+  for (int li = 0; li < f.LoopCount(); ++li) {
+    const ON_BrepLoop* l = f.Loop(li);
+    const int n = l->TrimCount();
+    for (int k = 0; k < n; ++k) {
+      const ON_3dPoint p = l->Trim(k)->PointAtStart();
+      const ON_3dPoint q = l->Trim((k + 1) % n)->PointAtStart();
+      area += 0.5 * (p.x * q.y - q.x * p.y);
+    }
+  }
+  return area;
+}
+
+// MergeSameSurfaceFaces() now carries an existing hole across the merge
+// instead of skipping a holed face outright: the hole loop's own edges
+// (two exact arcs, two rulings) are reused verbatim on the merged face,
+// which covers exactly the same (u, v) region the two source faces did.
+// (The region is checked in (u, v) and by 3D hole-corner identity, not by
+// tessellated area: this kernel's tessellators do not trim a hole out of
+// a curved face exactly - TessellateAdaptive() drops a holed cylinder
+// face entirely and Tessellate() falls back to whole-cell clipping, both
+// already true BEFORE the merge, so a mesh area would test the
+// tessellator, not the merge.)
+void TestMergeSameSurfaceFacesCarriesCurvedHoleOnCylinder() {
+  using dino8::kernel::Brep;
+
+  const double radius = 2.0, height = 3.0, total_angle = 2.5, split_angle = 1.0;
+  const double ang0 = 0.3, ang1 = 0.7, h0 = 1.0, h1 = 2.0;
+  Brep tube = BuildTwoFaceCylinderFixture(radius, height, total_angle, split_angle);
+  const std::vector<int> hole_edges = AddCylinderFaceHole(tube, radius, ang0, ang1, h0, h1);
+  ON_TextLog log_before;
+  Check(tube.raw().IsValid(&log_before), "setup: the holed two-patch cylinder is a valid ON_Brep");
+  Check(tube.raw().m_F[0].LoopCount() == 2 && tube.raw().m_F[1].LoopCount() == 1,
+        "setup: face 0 has an outer loop plus one real inner hole loop");
+  int arc_edges = 0;
+  for (const int ei : hole_edges) {
+    if (!tube.raw().m_E[ei].IsLinear(1e-6)) ++arc_edges;
+  }
+  Check(arc_edges == 2, "setup: two of the hole's own edges are genuine circular arcs");
+
+  const double uv_before = FaceUvSignedArea(tube.raw(), 0) + FaceUvSignedArea(tube.raw(), 1);
+  std::vector<ON_3dPoint> hole_corners_before;
+  for (const int ei : hole_edges) hole_corners_before.push_back(tube.raw().m_E[ei].PointAtStart());
+
+  Check(tube.MergeCoplanarFaces() == 0, "MergeCoplanarFaces() refuses the non-planar pair, as before");
+  Check(tube.FaceCount() == 2, "...leaving it untouched");
+
+  const Brep::CheckReport report_before = tube.Check();
+  const int merges = tube.MergeSameSurfaceFaces();
+  Check(merges == 1, "MergeSameSurfaceFaces() merges the pair even though face 0 carries a hole");
+  Check(tube.FaceCount() == 1, "one merged face");
+  const ON_Brep& b = tube.raw();
+  Check(b.m_F[0].LoopCount() == 2, "the merged face carries exactly one outer loop plus the one hole");
+  int inner = 0, inner_trims = 0, inner_arcs = 0;
+  for (int li = 0; li < b.m_F[0].LoopCount(); ++li) {
+    const ON_BrepLoop* l = b.m_F[0].Loop(li);
+    if (l->m_type == ON_BrepLoop::inner) {
+      ++inner;
+      inner_trims = l->TrimCount();
+      for (int k = 0; k < l->TrimCount(); ++k) {
+        if (!l->Trim(k)->Edge()->IsLinear(1e-6)) ++inner_arcs;
+      }
+    } else {
+      Check(l->m_type == ON_BrepLoop::outer && l->TrimCount() == 6, "the outer loop is the 6-sided merged boundary");
+    }
+  }
+  Check(inner == 1 && inner_trims == 4 && inner_arcs == 2,
+        "the hole survives as a 4-trim inner loop whose two arc edges are still exact arcs, not re-fit chords");
+  ON_TextLog log_after;
+  Check(b.IsValid(&log_after), "the merged holed face is a valid ON_Brep");
+
+  Check(uv_before > 0.0 && std::abs(FaceUvSignedArea(b, 0) - uv_before) < 1e-12,
+        "the merged face covers exactly the (u, v) region the two source faces covered (outer minus hole)");
+  int corners_found = 0;
+  for (const ON_3dPoint& c : hole_corners_before) {
+    for (int li = 0; li < b.m_F[0].LoopCount(); ++li) {
+      const ON_BrepLoop* l = b.m_F[0].Loop(li);
+      if (l->m_type != ON_BrepLoop::inner) continue;
+      for (int k = 0; k < l->TrimCount(); ++k) {
+        if (l->Trim(k)->Edge()->PointAtStart().DistanceTo(c) == 0.0) ++corners_found;
+      }
+    }
+  }
+  Check(corners_found == 4, "every hole edge's own 3D start point is bit-identical after the merge (edges reused, "
+                            "not rebuilt)");
+
+  const Brep::CheckReport report_after = tube.Check();
+  Check(report_after.Count(Brep::CheckIssue::Kind::NakedEdge) == report_before.Count(Brep::CheckIssue::Kind::NakedEdge) &&
+            report_after.Count(Brep::CheckIssue::Kind::NakedEdge) == 10,
+        "the same 10 naked edges (6 outer boundary + 4 hole) before and after - only the shared seam was removed");
+  Check(report_after.Count(Brep::CheckIssue::Kind::NonManifoldEdge) == 0 &&
+            report_after.Count(Brep::CheckIssue::Kind::InconsistentFaceOrientation) == 0,
+        "no non-manifold or orientation issue introduced");
+  Check(tube.MergeSameSurfaceFaces() == 0, "a second call finds nothing left to merge");
+}
+
+// The hole may sit on EITHER face (here: the second face, fb, rather than
+// the face the scan starts from), and a pair with holes on both faces
+// merges with both holes carried across.
+void TestMergeSameSurfaceFacesCarriesHolesFromBothFaces() {
+  using dino8::kernel::Brep;
+
+  const double radius = 2.0, height = 3.0, total_angle = 2.5, split_angle = 1.0;
+  Brep tube = BuildTwoFaceCylinderFixture(radius, height, total_angle, split_angle);
+  AddCylinderFaceHole(tube, radius, 0.3, 0.7, 1.0, 2.0);
+  // Second hole, on face 1 (angles [1.5, 2.0], heights [0.5, 1.5]) - cut
+  // inline the same way AddCylinderFaceHole() cuts face 0's.
+  {
+    ON_Brep& raw = tube.raw();
+    const ON_Surface* surface = raw.m_F[1].SurfaceOf();
+    const ON_Circle circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), radius);
+    double ua = 0.0, ub = 0.0;
+    circle.GetNurbFormParameterFromRadian(1.5, &ua);
+    circle.GetNurbFormParameterFromRadian(2.0, &ub);
+    const ON_2dPoint uv[4] = {ON_2dPoint(ua, 0.5), ON_2dPoint(ua, 1.5), ON_2dPoint(ub, 1.5), ON_2dPoint(ub, 0.5)};
+    int vid[4];
+    for (int k = 0; k < 4; ++k) vid[k] = raw.NewVertex(surface->PointAt(uv[k].x, uv[k].y), 0.0).m_vertex_index;
+    const int loop_index = raw.NewLoop(ON_BrepLoop::inner, raw.m_F[1]).m_loop_index;
+    for (int k = 0; k < 4; ++k) {
+      const ON_2dPoint a = uv[k], c = uv[(k + 1) % 4];
+      const bool along_u = (a.y == c.y);
+      ON_Curve* iso = along_u ? surface->IsoCurve(0, a.y) : surface->IsoCurve(1, a.x);
+      iso->Trim(along_u ? ON_Interval(std::min(a.x, c.x), std::max(a.x, c.x))
+                        : ON_Interval(std::min(a.y, c.y), std::max(a.y, c.y)));
+      if (along_u ? (a.x > c.x) : (a.y > c.y)) iso->Reverse();
+      const int ei = raw.NewEdge(raw.m_V[vid[k]], raw.m_V[vid[(k + 1) % 4]], raw.AddEdgeCurve(iso)).m_edge_index;
+      auto* c2 = new ON_LineCurve(a, c);
+      c2->SetDomain(0.0, 1.0);
+      ON_BrepTrim& trim = raw.NewTrim(raw.m_E[ei], false, raw.m_L[loop_index], raw.AddTrimCurve(c2));
+      trim.m_tolerance[0] = trim.m_tolerance[1] = 0.0;
+    }
+    raw.SetTrimIsoFlags();
+    raw.SetTolerancesBoxesAndFlags();
+    for (int i = 0; i < raw.m_E.Count(); ++i) {
+      if (raw.m_E[i].m_edge_index >= 0 && !(raw.m_E[i].m_tolerance >= 0.0)) raw.m_E[i].m_tolerance = 0.0;
+    }
+  }
+  Check(tube.raw().IsValid() && tube.raw().m_F[0].LoopCount() == 2 && tube.raw().m_F[1].LoopCount() == 2,
+        "setup: both faces carry one real hole each and the Brep is valid");
+
+  const double uv_before = FaceUvSignedArea(tube.raw(), 0) + FaceUvSignedArea(tube.raw(), 1);
+  Check(tube.MergeSameSurfaceFaces() == 1, "the doubly-holed pair merges");
+  Check(tube.FaceCount() == 1 && tube.raw().m_F[0].LoopCount() == 3,
+        "one merged face: one outer loop plus BOTH holes");
+  Check(tube.raw().IsValid(), "the merged face is a valid ON_Brep");
+  Check(std::abs(FaceUvSignedArea(tube.raw(), 0) - uv_before) < 1e-12,
+        "the merged face covers exactly the source faces' (u, v) region minus both holes");
+  const Brep::CheckReport report = tube.Check();
+  Check(report.Count(Brep::CheckIssue::Kind::NakedEdge) == 14 &&
+            report.Count(Brep::CheckIssue::Kind::NonManifoldEdge) == 0,
+        "14 naked edges (6 outer + 4 + 4 hole), nothing non-manifold");
 }
 
 // Brep::ReplaceEdgeCurve() on a single, naked-boundary flat plate: since
@@ -62064,6 +62441,8 @@ int main() {
   TestShellConvexPlanarResultHasValidTopology();
   TestFilletConvexEdgeFreeBoundaryCapHasValidOpenTopology();
   TestFromMixedFacesRejectsNonManifoldEdge();
+  TestFromMixedFacesNonManifoldBuildsThreePageFan();
+  TestFromMixedFacesNonManifoldBuildsFourPageFanAndMatchesStrictOnManifoldInput();
   TestBrepFromPlanarFacesRoundTripsRealTopologyThroughDotThreeDM();
   TestFilletConvexEdgeRoundTripsCylindricalTopologyThroughDotThreeDM();
   TestMixedFacesRoundTripsCylindricalFace();
@@ -62257,6 +62636,8 @@ int main() {
   TestMergeSameSurfaceFacesLeavesDistinctCoplanarSurfacesUntouched();
   TestMergeSameSurfaceFacesWeldsCongruentButSeparateCylinderSurfaces();
   TestMergeSameSurfaceFacesLeavesGenuinelyDifferentCylindersUntouched();
+  TestMergeSameSurfaceFacesCarriesCurvedHoleOnCylinder();
+  TestMergeSameSurfaceFacesCarriesHolesFromBothFaces();
   TestReplaceEdgeCurveRefitsANakedEdgeToABowedSubstitute();
   TestReplaceEdgeCurveThrowsOnEndpointMismatch();
   TestReplaceEdgeCurveThrowsOnSurfaceMismatch();
