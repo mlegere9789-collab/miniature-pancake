@@ -2184,4 +2184,244 @@ std::vector<BrepBrepIntersection> FindBrepSelfIntersections(const ON_Brep& b, co
   return out;
 }
 
+namespace {
+
+// The 4-equation "both gradients vanish" stationary system for the squared
+// gap between two surfaces - deliberately NOT RefineSurfaceSurfacePoint()'s
+// 3-equation "Sa == Sb" system (that one is under-determined by one degree
+// of freedom whenever the surfaces actually cross, so NewtonSolve's
+// minimal-norm step lands it on SOME point of the shared crossing curve
+// rather than distinguishing a tangent touch from an ordinary point on one).
+// Converges to the closest-approach point from a seed near it, whether that
+// closest approach is a genuine touch (gap == 0) or not (gap > 0, the caller
+// checks).
+// The surface normal at (u, v), nudging away from an exact coordinate
+// singularity (a pole - an entire row/column of control points collapsed to
+// one point, where d/du or d/dv vanishes even though the surface itself has
+// a perfectly well-defined limiting tangent plane there) rather than
+// reporting it as undefined. Tries the exact point first, then a handful of
+// small steps in v and u (the same "nudge until well-conditioned" idea
+// PullbackCurveToSurface()'s own re-seeding already uses elsewhere in this
+// file, applied here to a normal instead of a closest-point search); a
+// zero-length result means every one of those also degenerated (a
+// genuinely malformed surface, not just a pole), which the caller treats as
+// "cannot verify" rather than guessing a direction.
+ON_3dVector RobustSurfaceNormal(const ON_Surface& s, double u, double v) {
+  const ON_Interval du = s.Domain(0), dv = s.Domain(1);
+  const double step_u = std::max(du.Length(), 1e-9) * 1e-4;
+  const double step_v = std::max(dv.Length(), 1e-9) * 1e-4;
+  const std::pair<double, double> offsets[] = {{0, 0}, {0, step_v}, {0, -step_v}, {step_u, 0}, {-step_u, 0}};
+  for (const auto& [du_off, dv_off] : offsets) {
+    const double uu = Clamp(u + du_off, du.Min(), du.Max());
+    const double vv = Clamp(v + dv_off, dv.Min(), dv.Max());
+    ON_3dPoint p;
+    ON_3dVector su, sv;
+    s.Ev1Der(uu, vv, p, su, sv);
+    const ON_3dVector n = ON_CrossProduct(su, sv);
+    if (n.Length() > 1e-9) return n;
+  }
+  return ON_3dVector(0, 0, 0);
+}
+
+bool RefineClosestApproach(const ON_Surface& a, const ON_Surface& b, double& ua, double& va, double& ub, double& vb, double tol) {
+  std::vector<double> x = {ua, va, ub, vb};
+  const std::vector<double> lo = {a.Domain(0).Min(), a.Domain(1).Min(), b.Domain(0).Min(), b.Domain(1).Min()};
+  const std::vector<double> hi = {a.Domain(0).Max(), a.Domain(1).Max(), b.Domain(0).Max(), b.Domain(1).Max()};
+  const double scale = SurfaceScale(a) + SurfaceScale(b);
+  Residual res = [&](const std::vector<double>& p) {
+    ON_3dPoint PA, PB;
+    ON_3dVector dau, dav, dbu, dbv;
+    a.Ev1Der(p[0], p[1], PA, dau, dav);
+    b.Ev1Der(p[2], p[3], PB, dbu, dbv);
+    const Vector3d d = PA - PB;
+    return std::vector<double>{ON_DotProduct(dau, d), ON_DotProduct(dav, d), ON_DotProduct(dbu, d), ON_DotProduct(dbv, d)};
+  };
+  const bool ok = NewtonSolve(res, x, lo, hi, 1e-10 * scale * scale, 60);
+  ua = x[0]; va = x[1]; ub = x[2]; vb = x[3];
+  (void)tol;
+  return ok;
+}
+
+}  // namespace
+
+std::vector<SurfaceTangentContact> FindSurfaceTangentContacts(const ON_Surface& a, const ON_Surface& b, const IntersectOptions& opt) {
+  std::vector<SurfaceTangentContact> out;
+  const ON_Interval dua = a.Domain(0), dva = a.Domain(1), dub = b.Domain(0), dvb = b.Domain(1);
+  if (!dua.IsIncreasing() || !dva.IsIncreasing() || !dub.IsIncreasing() || !dvb.IsIncreasing()) return out;
+
+  const ON_BoundingBox bba = a.BoundingBox(), bbb = b.BoundingBox();
+  const double scale = std::max({bba.IsValid() ? bba.Diagonal().Length() : 1.0, bbb.IsValid() ? bbb.Diagonal().Length() : 1.0, 1e-6});
+  // Quick reject: the two bounding boxes are not even close to touching -
+  // skip the O(grid^2) search entirely.
+  if (bba.IsValid() && bbb.IsValid()) {
+    const ON_3dPoint amin = bba.Min(), amax = bba.Max(), bmin = bbb.Min(), bmax = bbb.Max();
+    double gap2 = 0;
+    for (int k = 0; k < 3; ++k) {
+      const double lo_gap = amin[k] > bmax[k] ? amin[k] - bmax[k] : 0;
+      const double hi_gap = bmin[k] > amax[k] ? bmin[k] - amax[k] : 0;
+      const double g = std::max(lo_gap, hi_gap);
+      gap2 += g * g;
+    }
+    if (std::sqrt(gap2) > std::max(opt.tolerance * 8, scale * 0.01)) return out;
+  }
+
+  const int G = 24;
+  std::vector<Point3d> pa(static_cast<size_t>(G + 1) * (G + 1)), pb(static_cast<size_t>(G + 1) * (G + 1));
+  std::vector<ON_2dPoint> uva(pa.size()), uvb(pb.size());
+  for (int i = 0; i <= G; ++i)
+    for (int j = 0; j <= G; ++j) {
+      const size_t idx = static_cast<size_t>(i) * (G + 1) + j;
+      const double u = dua.ParameterAt(static_cast<double>(i) / G), v = dva.ParameterAt(static_cast<double>(j) / G);
+      pa[idx] = a.PointAt(u, v);
+      uva[idx] = ON_2dPoint(u, v);
+      const double u2 = dub.ParameterAt(static_cast<double>(i) / G), v2 = dvb.ParameterAt(static_cast<double>(j) / G);
+      pb[idx] = b.PointAt(u2, v2);
+      uvb[idx] = ON_2dPoint(u2, v2);
+    }
+
+  // For every grid point of `a`, find its nearest grid point of `b`; a pair
+  // close relative to the two surfaces' own scale is a plausible seed for a
+  // genuine touch nearby.
+  struct Seed { double ua, va, ub, vb; };
+  std::vector<Seed> seeds;
+  for (size_t ia = 0; ia < pa.size(); ++ia) {
+    double best = std::numeric_limits<double>::max();
+    size_t bestj = 0;
+    for (size_t ib = 0; ib < pb.size(); ++ib) {
+      const double d = pa[ia].DistanceTo(pb[ib]);
+      if (d < best) { best = d; bestj = ib; }
+    }
+    if (best < scale * 0.15) seeds.push_back({uva[ia].x, uva[ia].y, uvb[bestj].x, uvb[bestj].y});
+  }
+  if (seeds.empty()) return out;
+
+  for (const Seed& s : seeds) {
+    double ua = s.ua, va = s.va, ub = s.ub, vb = s.vb;
+    if (!RefineClosestApproach(a, b, ua, va, ub, vb, opt.tolerance)) continue;
+    const Point3d pa_pt = a.PointAt(ua, va), pb_pt = b.PointAt(ub, vb);
+    const double gap = pa_pt.DistanceTo(pb_pt);
+    if (gap > opt.tolerance) continue;  // stationary, but not an actual touch
+
+    // Every point where the gap genuinely reaches zero is automatically a
+    // stationary point (RefineClosestApproach's own 4-equation system is
+    // satisfied along an ordinary transversal crossing curve too - a
+    // nonnegative function that hits zero has a zero gradient there,
+    // crossing or not). What distinguishes a TANGENT touch from an ordinary
+    // crossing is the surfaces' own tangent planes: at a tangent touch they
+    // coincide (the two normals are parallel or antiparallel); at a
+    // transversal crossing they meet at a genuine nonzero angle. This is a
+    // purely local, sampling-independent test - unlike checking the
+    // candidate against IntersectSurfaces()'s own sampled crossing-curve
+    // points (tried first; rejected because a crossing curve's own
+    // mesh-driven sample spacing can leave a real crossing point farther
+    // from its nearest recorded sample than this function's own match
+    // tolerance, which both false-negatived - wrongly reporting a genuine
+    // crossing as a tangent contact - and would false-positive whenever a
+    // true tangent touch happens to be reached by IntersectSurfaces()'s own
+    // thinning/fitting pass). RobustSurfaceNormal(), not a plain Ev1Der
+    // cross product, so a contact that happens to land exactly on a
+    // surface's own coordinate pole (e.g. the most natural possible test
+    // of this whole function - a sphere resting on a plane directly below
+    // its center touches at precisely that sphere's own south pole in the
+    // default ON_Sphere parametrization) is still correctly classified,
+    // not silently dropped for a parametrization artifact that has nothing
+    // to do with the surface's real, perfectly smooth shape there.
+    const ON_3dVector na_raw = RobustSurfaceNormal(a, ua, va), nb_raw = RobustSurfaceNormal(b, ub, vb);
+    const double na_len = na_raw.Length(), nb_len = nb_raw.Length();
+    if (na_len < 1e-12 || nb_len < 1e-12) continue;  // a genuinely degenerate surface at this point - cannot verify tangency here
+    ON_3dVector na = na_raw, nb = nb_raw;
+    na /= na_len;
+    nb /= nb_len;
+    if (ON_CrossProduct(na, nb).Length() > 1e-3) continue;  // the tangent planes meet at a real angle: a genuine crossing, not a tangent-only contact
+    bool dup = false;
+    for (const SurfaceTangentContact& e : out)
+      if (e.point.DistanceTo(pa_pt) <= std::max(opt.tolerance * 4, 1e-9)) { dup = true; break; }
+    if (dup) continue;
+    out.push_back(SurfaceTangentContact{ON_2dPoint(ua, va), ON_2dPoint(ub, vb), pa_pt, gap});
+  }
+  return out;
+}
+
+std::vector<SurfaceOverlapRegion> IntersectSurfacesOverlap(const ON_Surface& a, const ON_Surface& b, const IntersectOptions& opt) {
+  std::vector<SurfaceOverlapRegion> out;
+  const ON_Interval dua = a.Domain(0), dva = a.Domain(1);
+  if (!dua.IsIncreasing() || !dva.IsIncreasing()) return out;
+
+  const ON_BoundingBox bba = a.BoundingBox();
+  const double diag = bba.IsValid() ? bba.Diagonal().Length() : 1;
+  const int n = static_cast<int>(Clamp(std::ceil(diag / std::max(opt.mesh_tolerance, 1e-6)), 12, 120));
+
+  std::vector<char> on(static_cast<size_t>(n + 1) * (n + 1), 0);
+  for (int i = 0; i <= n; ++i) {
+    double u = 0, v = 0;
+    for (int j = 0; j <= n; ++j) {
+      const double uu = dua.ParameterAt(static_cast<double>(i) / n);
+      const double vv = dva.ParameterAt(static_cast<double>(j) / n);
+      const Point3d p = a.PointAt(uu, vv);
+      bool ok;
+      if (j == 0) {
+        ok = SurfaceClosestPointGlobal(b, p, u, v);
+      } else {
+        ok = SurfaceClosestPoint(b, p, u, v);  // seeded from the PREVIOUS sample in this row, same discipline as IntersectCurveSurfaceOverlap()
+        const double try_err = ok ? b.PointAt(u, v).DistanceTo(p) : std::numeric_limits<double>::max();
+        if (!ok || try_err > opt.mesh_tolerance * 4) {
+          double gu = u, gv = v;
+          const bool gok = SurfaceClosestPointGlobal(b, p, gu, gv);
+          const double gerr = b.PointAt(gu, gv).DistanceTo(p);
+          if (gok && gerr < try_err) { u = gu; v = gv; }
+        }
+      }
+      const double err = b.PointAt(u, v).DistanceTo(p);
+      on[static_cast<size_t>(i) * (n + 1) + static_cast<size_t>(j)] = err <= opt.tolerance ? 1 : 0;
+    }
+  }
+
+  int on_count = 0;
+  for (char c : on) on_count += c;
+  if (on_count == 0) return out;
+  const bool whole_surface_coincides = (on_count == static_cast<int>(on.size()));
+
+  // Maximal 4-connected runs of on-`b` grid cells, each reported as its own
+  // axis-aligned (u, v) bounding box - not an exact boundary polygon (see
+  // this function's own doc comment).
+  std::vector<char> visited(on.size(), 0);
+  std::vector<std::pair<int, int>> stack;
+  for (int i0 = 0; i0 <= n; ++i0) {
+    for (int j0 = 0; j0 <= n; ++j0) {
+      const size_t idx0 = static_cast<size_t>(i0) * (n + 1) + static_cast<size_t>(j0);
+      if (!on[idx0] || visited[idx0]) continue;
+      stack.clear();
+      stack.push_back({i0, j0});
+      visited[idx0] = 1;
+      int imin = i0, imax = i0, jmin = j0, jmax = j0;
+      int cell_count = 0;
+      while (!stack.empty()) {
+        const auto [ci, cj] = stack.back();
+        stack.pop_back();
+        ++cell_count;
+        imin = std::min(imin, ci); imax = std::max(imax, ci);
+        jmin = std::min(jmin, cj); jmax = std::max(jmax, cj);
+        static const int kDI[4] = {1, -1, 0, 0}, kDJ[4] = {0, 0, 1, -1};
+        for (int k = 0; k < 4; ++k) {
+          const int ni = ci + kDI[k], nj = cj + kDJ[k];
+          if (ni < 0 || ni > n || nj < 0 || nj > n) continue;
+          const size_t nidx = static_cast<size_t>(ni) * (n + 1) + static_cast<size_t>(nj);
+          if (!on[nidx] || visited[nidx]) continue;
+          visited[nidx] = 1;
+          stack.push_back({ni, nj});
+        }
+      }
+      if (cell_count < 2) continue;  // a single isolated on-surface cell is a transient touch, not an overlap (FindSurfaceTangentContacts()'s job instead)
+      SurfaceOverlapRegion region;
+      region.u0 = dua.ParameterAt(static_cast<double>(imin) / n);
+      region.u1 = dua.ParameterAt(static_cast<double>(imax) / n);
+      region.v0 = dva.ParameterAt(static_cast<double>(jmin) / n);
+      region.v1 = dva.ParameterAt(static_cast<double>(jmax) / n);
+      region.entire_surface = whole_surface_coincides;
+      out.push_back(region);
+    }
+  }
+  return out;
+}
+
 }  // namespace dino8::kernel

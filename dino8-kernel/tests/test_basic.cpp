@@ -2857,6 +2857,117 @@ void TestFindBrepSelfIntersectionsDetectsOverlappingLumpsOnly() {
   Check(all_cross_lumps, "every reported self-intersecting face pair spans the two different (overlapping) lumps, not two faces of the same box");
 }
 
+// PARITY_MAP.md's own "kernel: Intersections & projections" category, "SSX
+// tangent / grazing contact (surfaces touching along a point or curve)"
+// bullet, named entirely `[missing]`: "There is no SSX tangency capability
+// to give partial credit for." FindSurfaceTangentContacts() closes the
+// isolated-point half of that gap.
+void TestFindSurfaceTangentContactsSphereOnPlane() {
+  using dino8::kernel::FindSurfaceTangentContacts;
+  using dino8::kernel::IntersectOptions;
+  using dino8::kernel::IntersectSurfaces;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SurfaceTangentContact;
+
+  IntersectOptions opt;
+  opt.tolerance = 1e-6;
+  opt.mesh_tolerance = 0.05;
+
+  ON_PlaneSurface ground(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)));
+  ground.SetExtents(0, ON_Interval(-10, 10), true);
+  ground.SetExtents(1, ON_Interval(-10, 10), true);
+
+  // A sphere of radius 2 resting on the ground plane, touching it at
+  // exactly one hand-derivable point: the origin. The two surfaces never
+  // cross - no triangle pair of the ordinary mesh-seeded SSX engine
+  // actually crosses here, so IntersectSurfaces() finds nothing at all,
+  // confirming this is genuinely the gap PARITY_MAP.md names, not a
+  // redundant check.
+  const double radius = 2.0;
+  const ON_Sphere on_sphere(ON_3dPoint(0, 0, radius), radius);
+  ON_NurbsSurface sphere_surface;
+  Check(on_sphere.GetNurbForm(sphere_surface) != 0, "ON_Sphere::GetNurbForm succeeds (resting sphere)");
+  Check(IntersectSurfaces(sphere_surface, ground, opt).empty(), "IntersectSurfaces() itself finds no crossing curve for a sphere merely tangent to a plane");
+
+  const std::vector<SurfaceTangentContact> contacts = FindSurfaceTangentContacts(sphere_surface, ground, opt);
+  Check(contacts.size() == 1, "a sphere resting on a plane reports exactly one tangent contact");
+  if (!contacts.empty()) {
+    Check(contacts[0].point.DistanceTo(Point3d(0, 0, 0)) < 1e-3, "the contact point is the hand-derivable origin");
+    Check(contacts[0].gap <= opt.tolerance, "the reported gap is within tolerance (a genuine touch, not a near-miss)");
+  }
+
+  // A sphere held well clear of the plane has no contact at all.
+  const ON_Sphere far_sphere(ON_3dPoint(0, 0, 10 * radius), radius);
+  ON_NurbsSurface far_sphere_surface;
+  Check(far_sphere.GetNurbForm(far_sphere_surface) != 0, "ON_Sphere::GetNurbForm succeeds (far sphere)");
+  Check(FindSurfaceTangentContacts(far_sphere_surface, ground, opt).empty(), "a sphere held well clear of the plane reports no tangent contact");
+
+  // A sphere pushed INTO the plane (a genuine crossing, a circle of radius
+  // sqrt(3)) must NOT also be reported as a tangent-only contact -
+  // IntersectSurfaces() already reports that crossing, which is this
+  // function's own stated "not my job" case.
+  const ON_Sphere crossing_sphere(ON_3dPoint(0, 0, radius * 0.5), radius);
+  ON_NurbsSurface crossing_sphere_surface;
+  Check(crossing_sphere.GetNurbForm(crossing_sphere_surface) != 0, "ON_Sphere::GetNurbForm succeeds (crossing sphere)");
+  Check(!IntersectSurfaces(crossing_sphere_surface, ground, opt).empty(), "a sphere pushed into the plane produces a real SSX crossing curve");
+  Check(FindSurfaceTangentContacts(crossing_sphere_surface, ground, opt).empty(),
+        "a sphere genuinely crossing the plane is not also reported as a tangent-only contact");
+}
+
+// PARITY_MAP.md's own "kernel: Intersections & projections" category, "SSX
+// coincident / overlapping surface regions" bullet: "IntersectSurfaces
+// still returns nothing for coincident surfaces. The only coincidence
+// handling is inside planar booleans." IntersectSurfacesOverlap() closes
+// the general-purpose-detection half of that gap.
+void TestIntersectSurfacesOverlapDetectsCoincidentRegion() {
+  using dino8::kernel::IntersectOptions;
+  using dino8::kernel::IntersectSurfaces;
+  using dino8::kernel::IntersectSurfacesOverlap;
+  using dino8::kernel::SurfaceOverlapRegion;
+
+  IntersectOptions opt;
+  opt.tolerance = 1e-6;
+  opt.mesh_tolerance = 0.25;
+
+  // Two finite rectangles of the SAME host plane: `a` spans x, y in
+  // [-5, 5]; `b` spans x, y in [0, 10]. They genuinely coincide (lie in the
+  // same plane) over the overlapping quarter [0, 5] x [0, 5] of `a`'s own
+  // domain, and nowhere else. No triangle pair of two coplanar surfaces
+  // ever actually crosses, so IntersectSurfaces() finds nothing here either
+  // - confirming this is genuinely the gap PARITY_MAP.md names.
+  const ON_Plane shared_plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1));
+  ON_PlaneSurface a(shared_plane);
+  a.SetExtents(0, ON_Interval(-5, 5), true);
+  a.SetExtents(1, ON_Interval(-5, 5), true);
+  ON_PlaneSurface b(shared_plane);
+  b.SetExtents(0, ON_Interval(0, 10), true);
+  b.SetExtents(1, ON_Interval(0, 10), true);
+  Check(IntersectSurfaces(a, b, opt).empty(), "IntersectSurfaces() itself finds no crossing curve for two coincident coplanar surfaces");
+
+  const std::vector<SurfaceOverlapRegion> regions = IntersectSurfacesOverlap(a, b, opt);
+  Check(regions.size() == 1, "two partially-overlapping coplanar surfaces report exactly one overlap region");
+  if (regions.size() == 1) {
+    const SurfaceOverlapRegion& r = regions[0];
+    Check(!r.entire_surface, "the overlap region does not cover all of a's own domain");
+    Check(std::abs(r.u0 - 0.0) < 0.5 && std::abs(r.u1 - 5.0) < 0.5, "the overlap region's own u-range matches the hand-derivable [0, 5] overlap");
+    Check(std::abs(r.v0 - 0.0) < 0.5 && std::abs(r.v1 - 5.0) < 0.5, "the overlap region's own v-range matches the hand-derivable [0, 5] overlap");
+  }
+
+  // Two surfaces with the exact same domain on the same plane coincide
+  // everywhere `a` is defined.
+  ON_PlaneSurface c(shared_plane);
+  c.SetExtents(0, ON_Interval(-5, 5), true);
+  c.SetExtents(1, ON_Interval(-5, 5), true);
+  const std::vector<SurfaceOverlapRegion> whole = IntersectSurfacesOverlap(a, c, opt);
+  Check(whole.size() == 1 && whole[0].entire_surface, "two identical coplanar surfaces report one region flagged entire_surface == true");
+
+  // Two parallel planes offset in z never coincide anywhere.
+  ON_PlaneSurface offset(ON_Plane(ON_3dPoint(0, 0, 5), ON_3dVector(0, 0, 1)));
+  offset.SetExtents(0, ON_Interval(-5, 5), true);
+  offset.SetExtents(1, ON_Interval(-5, 5), true);
+  Check(IntersectSurfacesOverlap(a, offset, opt).empty(), "two parallel, offset planes report no overlap region at all");
+}
+
 // PARITY_MAP.md's own "kernel: Intersections & projections" category,
 // "Projection of curves/points onto surfaces along a direction (Project)"
 // bullet: "app ProjectCommand samples the curve and ray-casts along the
@@ -21034,6 +21145,156 @@ void TestSubDEvaluateFaceExtraordinaryCornerHasRealTangentPlane() {
   }
 }
 
+// Closes PARITY_MAP.md's own "SubD extraordinary-vertex limit-tangent
+// quality — semi-sharp edge handling" backlog item: before this pass,
+// ExactVertexCorner()'s call to ON_SubDVertex::GetSurfacePoint() silently
+// ignored any semi-sharp (finite, sub-MaximumValue) weight on an incident
+// Smooth-tagged edge, since GetSurfacePoint()'s own sector classification
+// only ever reads edge TAGS, never Sharpness()/EndSharpness() - verified
+// directly against OpenNURBS' own opennurbs_subd_eval.cpp
+// (GetSectorLimitPointHelper -> ON_SubDSectorType::Create), not assumed.
+void TestSubDEvaluateFaceExtraordinaryCornerHandlesSemiSharpEdge() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SubD;
+  using dino8::kernel::SubDSurfacePoint;
+
+  // Same level-1 cube fixture TestSubDEvaluateFaceExtraordinaryCornerHasRealTangentPlane
+  // uses: every original cube corner is a valence-3 extraordinary vertex
+  // after one level of Catmull-Clark refinement, with exactly 3 incident
+  // edges each.
+  const Mesh cube = MakeQuadBoxMesh(-1, -1, -1, 1, 1, 1);
+  SubD subd = SubD::FromControlMesh(cube);
+  subd.Subdivide(1);
+
+  const ON_SubDFace* target = nullptr;
+  int irregular_corner = -1;
+  ON_SubDFaceIterator fit = subd.raw().FaceIterator();
+  for (const ON_SubDFace* f = fit.FirstFace(); f != nullptr && target == nullptr; f = fit.NextFace()) {
+    if (f->EdgeCount() != 4) continue;
+    int irregular_count = 0, irregular_idx = -1;
+    bool all_smooth = true;
+    for (unsigned int i = 0; i < 4; ++i) {
+      const ON_SubDVertex* v = f->Vertex(i);
+      if (!v || !v->IsSmooth()) all_smooth = false;
+      if (!v || v->EdgeCount() != 4) {
+        ++irregular_count;
+        irregular_idx = static_cast<int>(i);
+      }
+    }
+    if (all_smooth && irregular_count == 1) {
+      target = f;
+      irregular_corner = irregular_idx;
+    }
+  }
+  Check(target != nullptr,
+        "found a level-1 cube face with exactly one still-extraordinary (valence-3) corner");
+
+  const unsigned int face_id = target->FaceId();
+  const double corner_u[4] = {0.0, 1.0, 1.0, 0.0};
+  const double corner_v[4] = {0.0, 0.0, 1.0, 1.0};
+  const int k = irregular_corner;
+
+  const ON_SubDVertex* ev = target->Vertex(static_cast<unsigned int>(k));
+  Check(ev != nullptr && ev->EdgeCount() == 3, "the extraordinary corner vertex has valence 3");
+  const ON_3dPoint original_corner = ev->ControlNetPoint();
+
+  const ON_SubDEdge* sharp_edge = nullptr;
+  for (unsigned int i = 0; i < ev->EdgeCount(); ++i) {
+    const ON_SubDEdge* e = ev->Edge(i);
+    if (e != nullptr && e->IsSmooth()) {
+      sharp_edge = e;
+      break;
+    }
+  }
+  Check(sharp_edge != nullptr, "the extraordinary vertex has a smooth (non-boundary) edge to "
+                               "make semi-sharp");
+  const ON_SubDVertex* other_end = sharp_edge->OtherEndVertex(ev);
+  const Point3d p0 = ev->ControlNetPoint();
+  const Point3d p1 = other_end->ControlNetPoint();
+
+  // Baseline: zero sharpness anywhere, the pre-existing (and, for the
+  // zero-sharpness case, still correct) eigenbasis answer.
+  const SubDSurfacePoint baseline = subd.EvaluateFace(face_id, corner_u[k], corner_v[k]);
+  Check(baseline.exact, "baseline corner evaluation reports exact");
+
+  Check(subd.SetEdgeSharpness(p0, p1, 1.0, 1e-9), "SetEdgeSharpness(1.0) succeeds on this edge");
+  const SubDSurfacePoint sharp_low = subd.EvaluateFace(face_id, corner_u[k], corner_v[k]);
+  Check(sharp_low.exact, "semi-sharp corner evaluation still reports exact");
+
+  const double kMax = ON_SubDEdgeSharpness::MaximumValue;  // 4.0
+  Check(subd.SetEdgeSharpness(p0, p1, kMax, 1e-9), "SetEdgeSharpness(MaximumValue) succeeds");
+  const SubDSurfacePoint sharp_high = subd.EvaluateFace(face_id, corner_u[k], corner_v[k]);
+  Check(sharp_high.exact, "maximally-semi-sharp corner evaluation still reports exact");
+
+  const double d_low = baseline.position.DistanceTo(sharp_low.position);
+  const double d_high = baseline.position.DistanceTo(sharp_high.position);
+  Check(d_low > 1e-6,
+        "a semi-sharp incident edge genuinely moves the corner's own exact limit point away "
+        "from the plain-smooth eigenbasis answer - proving the fix actually reads the "
+        "sharpness, where ON_SubDVertex::GetSurfacePoint()'s own sector-type classification "
+        "alone would silently ignore it");
+  Check(d_high > d_low,
+        "a higher stored sharpness weight pulls the limit point further from the smooth "
+        "baseline than a lower one - the effect scales with the stored weight rather than "
+        "being a fixed on/off perturbation");
+
+  // Independent cross-check using only ALREADY-TESTED public API (not
+  // ExactVertexCorner()'s own internals): a MaximumValue (4.0) semi-sharp
+  // edge takes exactly ceil(4.0) = 4 real SubD::Subdivide() calls to decay
+  // to plain smooth (ON_SubDEdgeSharpness::Subdivided()'s own
+  // decrement-by-1.0-per-level rule - see SetEdgeSharpness()'s own doc
+  // comment). At that point every one of the tracked vertex's own
+  // incident edges is ordinary smooth, so calling
+  // ON_SubDVertex::GetSurfacePoint() directly on it - with no decay logic
+  // of this test's or ExactVertexCorner()'s own involved - is already the
+  // exact closed-form answer, independently of how EvaluateFace() itself
+  // got there. The descendant is tracked by nearest-original-corner
+  // position among same-valence (3) vertices: the cube's 8 corners start
+  // more than 2 apart (edge length 2) while each level's own smoothing
+  // displacement is a small fraction of that (TestSubDFromBoxSubdivides
+  // ToExactCatmullClarkCounts's own measured level-2 volume shrink, 8 ->
+  // 2.80, confirms the displacement is substantial but not enough to
+  // cross half that gap), so nearest-corner identification is unambiguous.
+  SubD decayed = subd;  // already carries the MaximumValue sharpness set above
+  decayed.Subdivide(4);
+
+  const ON_SubDVertex* tracked = nullptr;
+  double best_distance = -1.0;
+  ON_SubDVertexIterator vit = decayed.raw().VertexIterator();
+  for (const ON_SubDVertex* v = vit.FirstVertex(); v != nullptr; v = vit.NextVertex()) {
+    if (v->EdgeCount() != 3) continue;  // extraordinary vertices alone keep valence 3 forever
+    const double d = v->ControlNetPoint().DistanceTo(original_corner);
+    if (tracked == nullptr || d < best_distance) {
+      tracked = v;
+      best_distance = d;
+    }
+  }
+  Check(tracked != nullptr, "found the same extraordinary vertex's own descendant 4 levels later");
+
+  double max_residual_sharpness = 0.0;
+  for (unsigned int i = 0; i < tracked->EdgeCount(); ++i) {
+    const ON_SubDEdge* e = tracked->Edge(i);
+    if (e != nullptr && e->IsSmooth()) {
+      max_residual_sharpness = std::max(max_residual_sharpness, e->EndSharpness(tracked));
+    }
+  }
+  Check(max_residual_sharpness == 0.0,
+        "4 levels fully decays a MaximumValue (4.0) semi-sharp edge to plain smooth (0), "
+        "confirmed directly on the tracked descendant rather than assumed");
+
+  ON_SubDSectorSurfacePoint reference_limit;
+  Check(tracked->GetSurfacePoint(tracked->Face(0), true, reference_limit),
+        "GetSurfacePoint succeeds directly on the fully-decayed descendant vertex");
+  const double cross_check_distance = sharp_high.position.DistanceTo(reference_limit.Point());
+  Check(cross_check_distance < 1e-6,
+        "EvaluateFace()'s own corner position for the MaximumValue semi-sharp edge matches, to "
+        "within numerical tolerance, an independent reference obtained by actually running 4 "
+        "real SubD::Subdivide() calls (a separate, already-tested code path) and reading the "
+        "fully-decayed descendant's own closed-form limit point directly - not merely "
+        "self-consistent with ExactVertexCorner()'s own internals");
+}
+
 void TestSubDEvaluateFaceThrowsOnBadInput() {
   using dino8::kernel::Mesh;
   using dino8::kernel::SubD;
@@ -23089,6 +23350,62 @@ void TestSubDBooleanToSubDPropagatesBooleanFailure() {
   Check(threw,
         "SubD::BooleanToSubD throws std::runtime_error when an operand's ToApproximateMesh() is "
         "open, the same precondition Boolean() itself already enforces");
+}
+
+// Closes part of PARITY_MAP.md's own "SubD boolean operations" gap ("every
+// face a raw triangle... no quad-dominant remeshing"): BooleanToSubD() now
+// runs the boolean mesh through the already-existing, already-tested
+// Mesh::TrisToQuads() before FromControlMesh() sees it, so the away-from-
+// the-cut faces of two disjoint box operands - each one a Manifold-
+// triangulated copy of an original quad face - recombine back into actual
+// quads in the returned SubD's own control cage, rather than staying two
+// triangles forever.
+void TestSubDBooleanToSubDRecombinesUntouchedFacesIntoQuads() {
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SubD;
+
+  // Same disjoint-box fixture as TestSubDBooleanUnionOfDisjointBoxesSumsVolumes:
+  // two box operands with NO shared boundary at all, so every one of
+  // Manifold's own output faces is an untouched copy of an original box
+  // face (split into 2 triangles), never genuinely re-triangulated at a
+  // cut - the case TrisToQuads()'s own doc comment names as where it
+  // actually helps.
+  const SubD a = SubD::FromControlMesh(MakeQuadBoxMesh(0, 0, 0, 2, 2, 2));
+  const SubD b = SubD::FromControlMesh(MakeQuadBoxMesh(5, 0, 0, 7, 2, 2));
+
+  const SubD with_quads = a.BooleanToSubD(b, BooleanOp::Union);
+
+  // Independent reference: the exact same boolean mesh, built into a SubD
+  // the OLD way (no TrisToQuads() step) - proves the comparison below is
+  // against what this method used to return, not a strawman.
+  const Mesh raw_result = a.Boolean(b, BooleanOp::Union);
+  const SubD without_quads = SubD::FromControlMesh(raw_result);
+
+  Check(without_quads.FaceCount() == 24,
+        "sanity: two disjoint boxes' raw triangulated boolean result is 2 boxes x 6 faces x 2 "
+        "triangles = 24 triangles, with no quad recombination at all");
+  Check(with_quads.FaceCount() == 12,
+        "BooleanToSubD()'s own TrisToQuads() pass recombines every one of the 24 raw triangles "
+        "back into the 12 original box faces (2 boxes x 6 faces), since none of them touch a "
+        "cut - the exact 2-to-1 reduction TestMeshTrisToQuadsRecombinesTessellatedBoxFaces "
+        "already proves for a single box");
+  Check(with_quads.FaceCount() < without_quads.FaceCount(),
+        "the quad-recombined control cage has strictly fewer faces than the raw triangulated one");
+
+  Check(std::abs(with_quads.ToApproximateMesh().Volume() - 16.0) < 1e-9,
+        "recombining triangles into quads before FromControlMesh() does not change the boolean "
+        "result's own volume (still the exact disjoint-union sum, 8+8=16)");
+  Check(with_quads.ToApproximateMesh().IsClosedManifold(),
+        "the quad-recombined control cage is still a genuine closed manifold, not just a "
+        "plausible-looking face count");
+
+  SubD further = with_quads;
+  further.Subdivide(1);
+  Check(std::abs(further.ToApproximateMesh().Volume() - 16.0) >
+            1e-9 /* strictly different, not necessarily smaller for a 2-body union */,
+        "the quad-recombined cage is a genuine, further-subdividable SubD control net (a real "
+        "Catmull-Clark refinement actually changes the shape), not a frozen copy");
 }
 
 void TestMeshComputeVertexNormals() {
@@ -62152,6 +62469,8 @@ int main() {
   TestContourBrepParallelSections();
   TestIntersectCurveSurfaceOverlapDetectsCoincidentSpan();
   TestFindBrepSelfIntersectionsDetectsOverlappingLumpsOnly();
+  TestFindSurfaceTangentContactsSphereOnPlane();
+  TestIntersectSurfacesOverlapDetectsCoincidentRegion();
   TestProjectCurveToSurfaceFlatPlaneStraightDown();
   TestProjectCurveToSurfacePartialMiss();
   TestBooleanCombineGeneralBoxBox();
@@ -62345,6 +62664,7 @@ int main() {
   TestSubDEvaluateFaceExactOnRegularFlatGrid();
   TestSubDEvaluateFaceAdaptiveOnIrregularFace();
   TestSubDEvaluateFaceExtraordinaryCornerHasRealTangentPlane();
+  TestSubDEvaluateFaceExtraordinaryCornerHandlesSemiSharpEdge();
   TestSubDEvaluateFaceThrowsOnBadInput();
   TestSubDToNurbsPatchesAdaptiveMatchesNonAdaptiveAtZeroLevels();
   TestSubDToNurbsPatchesAdaptiveSplitsIrregularFace();
@@ -62382,6 +62702,7 @@ int main() {
   TestSubDBooleanToSubDReturnsEditableSubDMatchingBooleanVolume();
   TestSubDBooleanToSubDIsGenuinelyFurtherSubdividable();
   TestSubDBooleanToSubDPropagatesBooleanFailure();
+  TestSubDBooleanToSubDRecombinesUntouchedFacesIntoQuads();
   TestMeshComputeVertexNormals();
   TestMeshSaveObjRoundTrips();
   TestMeshTextureCoordinates();
