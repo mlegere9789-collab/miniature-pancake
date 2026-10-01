@@ -125,6 +125,37 @@ int main() {
     Check(clamped.array_count == 1, "a 0 count is clamped up to 1, not stored as 0 (no zero-copy instance)");
   }
 
+  // An absurdly large count (as could come from a loaded .3dm's own
+  // untrusted embedded JSON, not just this setter) must not make
+  // PlaceFiltered try to doc.Add() billions of objects - it's capped well
+  // below any plausible real use, rather than only clamped at the bottom.
+  Check(SetBlockInstanceArrayCount(doc, group, 50000000), "SetBlockInstanceArrayCount with a huge count still succeeds");
+  {
+    BlockInstance huge;
+    Check(FindBlockInstanceByGroup(doc, group, huge), "record found after a huge count");
+    Check(huge.objects.size() <= 2000, "the actually-placed object count is capped, not literally 50 million");
+    Check(huge.objects.size() > 1, "...but the array is still genuinely in effect, not silently dropped to 1");
+  }
+  Check(SetBlockInstanceArrayCount(doc, group, 1), "SetBlockInstanceArrayCount(1) after the huge-count test succeeds (cleanup)");
+
+  // The same hardening against a crafted/corrupt .3dm, exercised directly
+  // through the wire format LoadBlockInstances actually parses (not just
+  // this module's own setter): a JSON "array" value past INT_MAX is
+  // undefined behavior to static_cast straight to int, so it must be
+  // clamped to something well-defined (and still bounded) before the cast.
+  {
+    Document doc2;
+    doc2.UserText()["dino8.block_instances"] =
+        "[{\"group\":1,\"block\":\"X\",\"state\":\"\",\"ix\":0,\"iy\":0,\"iz\":0,\"flip\":0,"
+        "\"array\":1e18,\"objects\":[]}]";
+    std::vector<BlockInstance> parsed = LoadBlockInstances(doc2);
+    Check(parsed.size() == 1, "a single crafted record parses");
+    if (!parsed.empty()) {
+      Check(parsed[0].array_count > 0, "a JSON array count past INT_MAX still lands on a well-defined positive int");
+      Check(parsed[0].array_count <= 1000000000, "...and stays within the same sane clamp used elsewhere, not UB-dependent garbage");
+    }
+  }
+
   Check(!SetBlockInstanceArrayCount(doc, 99999, 3), "SetBlockInstanceArrayCount on an unknown group fails cleanly");
 
   if (failures) std::printf("%d FAILED\n", failures);

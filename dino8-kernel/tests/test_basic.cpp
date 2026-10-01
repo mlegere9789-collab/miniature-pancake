@@ -8521,6 +8521,67 @@ void TestModelAddNamedViewRoundTrips() {
   std::remove(path.c_str());
 }
 
+void TestModelAddLayoutRoundTrips() {
+  using dino8::kernel::LayoutInfo;
+  using dino8::kernel::Model;
+  using dino8::kernel::Result;
+
+  Model model;
+  Check(model.LayoutCount() == 0, "a fresh Model has no layouts");
+  Check(model.AddLayout("", 297.0, 210.0) == -1,
+        "AddLayout() returns -1 for an empty name, same contract as AddLayer() etc.");
+  Check(model.AddLayout("Bad width", 0.0, 210.0) == -1,
+        "AddLayout() returns -1 for a non-positive page_width_mm");
+  Check(model.AddLayout("Bad height", 297.0, -5.0) == -1,
+        "AddLayout() returns -1 for a non-positive page_height_mm");
+  Check(model.LayoutCount() == 0, "none of the rejected calls above added a layout");
+
+  const int index = model.AddLayout("A4 Landscape", 297.0, 210.0);
+  Check(index == 0, "the first real AddLayout() call returns index 0");
+  Check(model.LayoutCount() == 1, "model has one layout after AddLayout()");
+
+  const LayoutInfo info = model.LayoutAt(0);
+  Check(info.name == "A4 Landscape", "LayoutAt(0) reports the name AddLayout() was given");
+  Check(std::abs(info.page_width_mm - 297.0) < 1e-9,
+        "LayoutAt(0) reports the exact page_width_mm AddLayout() was given");
+  Check(std::abs(info.page_height_mm - 210.0) < 1e-9,
+        "LayoutAt(0) reports the exact page_height_mm AddLayout() was given");
+
+  const LayoutInfo out_of_range = model.LayoutAt(5);
+  Check(out_of_range.name.empty(),
+        "LayoutAt() on an index this model doesn't have returns a default-constructed "
+        "LayoutInfo, same contract as NamedViewAt()/LayerAt() etc.");
+
+  model.AddLayout("A3 Portrait", 297.0, 420.0);
+  Check(model.LayoutCount() == 2, "a second AddLayout() call adds a second layout");
+
+  // Real .3dm round trip: ON_3dmSettings::m_views (distinct from
+  // m_named_views above) is part of the settings chunk ONX_Model::Write/
+  // Read already carries through unmodified, the same situation
+  // AddNamedView() itself found for its own table - so no Save()/Load()
+  // change was needed to make this round-trip either.
+  const std::string path = "dino8_kernel_model_layout_roundtrip_test.3dm";
+  Check(model.Save(path) == Result::Ok, ".3dm save with layouts succeeded");
+
+  Model loaded;
+  Check(Model::Load(path, loaded) == Result::Ok, ".3dm load succeeded");
+  Check(loaded.LayoutCount() == 2, "both layouts survive the .3dm round trip");
+  const LayoutInfo reloaded0 = loaded.LayoutAt(0);
+  Check(reloaded0.name == "A4 Landscape", "the first reloaded layout's name survives the round trip");
+  Check(std::abs(reloaded0.page_width_mm - 297.0) < 1e-6,
+        "the first reloaded layout's page_width_mm survives the round trip");
+  Check(std::abs(reloaded0.page_height_mm - 210.0) < 1e-6,
+        "the first reloaded layout's page_height_mm survives the round trip");
+  const LayoutInfo reloaded1 = loaded.LayoutAt(1);
+  Check(reloaded1.name == "A3 Portrait", "the second reloaded layout's name survives the round trip");
+  Check(std::abs(reloaded1.page_width_mm - 297.0) < 1e-6,
+        "the second reloaded layout's page_width_mm survives the round trip");
+  Check(std::abs(reloaded1.page_height_mm - 420.0) < 1e-6,
+        "the second reloaded layout's page_height_mm survives the round trip");
+
+  std::remove(path.c_str());
+}
+
 void TestModelMaterialExtendedFieldsRoundTrip() {
   using dino8::kernel::Color;
   using dino8::kernel::Model;
@@ -9068,6 +9129,73 @@ void TestModelAddTextAnnotationRoundTrips() {
         "the reloaded text annotation's plane origin survives the round trip");
 
   std::remove(path.c_str());
+}
+
+void TestModelAddLeaderRoundTrips() {
+  using dino8::kernel::Model;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // Narrows PARITY_MAP.md's own "Rhino non-geometry/composite objects in
+  // .3dm" evidence further: "annotations besides plain ON_Text
+  // (dimensions, leaders)" remained open after AddText() closed the plain-
+  // ON_Text half of that gap - before this, nothing in this kernel could
+  // create an ON_Leader.
+  Model model;
+  Check(model.LeaderCount() == 0, "a fresh Model has no leaders");
+  const ON_Plane world_xy(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1));
+  const std::vector<Point3d> path = {Point3d(0, 0, 0), Point3d(2, 1, 0), Point3d(4, 1, 0)};
+  Check(model.AddLeader("hi", path, world_xy, "") == -1,
+        "AddLeader() returns -1 for an empty name, same contract as AddText() etc.");
+  Check(model.AddLeader("", path, world_xy, "Empty Text") == -1,
+        "AddLeader() returns -1 for empty text content");
+  const ON_Plane invalid_plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 0));
+  Check(model.AddLeader("hi", path, invalid_plane, "Bad Plane") == -1,
+        "AddLeader() returns -1 for a degenerate (zero-normal) plane");
+  const std::vector<Point3d> one_point = {Point3d(0, 0, 0)};
+  Check(model.AddLeader("hi", one_point, world_xy, "Too Few Points") == -1,
+        "AddLeader() returns -1 for fewer than 2 points");
+  Check(model.LeaderCount() == 0, "none of the refused calls above added anything");
+
+  const int index = model.AddLeader("See detail A", path, world_xy, "Leader A");
+  Check(index == 0, "the first real AddLeader() call returns index 0");
+  Check(model.LeaderCount() == 1, "model has one leader after AddLeader()");
+  Check(model.ObjectCount() == 1,
+        "a leader is a real model geometry object, also counted by ObjectCount()");
+
+  const auto info = model.LeaderAt(0);
+  Check(info.name == "Leader A", "LeaderAt() reports the name AddLeader() was given");
+  Check(info.text == "See detail A", "LeaderAt() reports the exact text content AddLeader() was given");
+  Check(info.points.size() == path.size(),
+        "LeaderAt() reports the same number of path points AddLeader() was given");
+  for (size_t i = 0; i < path.size() && i < info.points.size(); ++i) {
+    Check(info.points[i].DistanceTo(path[i]) < 1e-9,
+          "LeaderAt() reports the exact world-space path point AddLeader() was given, "
+          "converted back out of ON_Leader's own plane-local 2D storage");
+  }
+
+  const auto out_of_range = model.LeaderAt(9999);
+  Check(out_of_range.name.empty(),
+        "LeaderAt() on an index this model doesn't have returns a default-constructed "
+        "LeaderInfo, same contract as TextAt() etc.");
+
+  const std::string path_file = "dino8_kernel_model_leader_roundtrip_test.3dm";
+  Check(model.Save(path_file) == Result::Ok, ".3dm save with a leader succeeded");
+
+  Model loaded;
+  Check(Model::Load(path_file, loaded) == Result::Ok, ".3dm load succeeded");
+  Check(loaded.LeaderCount() == 1, "the leader survives the .3dm round trip");
+  const auto reloaded = loaded.LeaderAt(0);
+  Check(reloaded.name == "Leader A", "the reloaded leader's name survives the round trip");
+  Check(reloaded.text == "See detail A", "the reloaded leader's text content survives the round trip");
+  Check(reloaded.points.size() == path.size(),
+        "the reloaded leader's path point count survives the round trip");
+  for (size_t i = 0; i < path.size() && i < reloaded.points.size(); ++i) {
+    Check(reloaded.points[i].DistanceTo(path[i]) < 1e-6,
+          "the reloaded leader's path points survive the round trip");
+  }
+
+  std::remove(path_file.c_str());
 }
 
 void TestModelUnitConversionFactor() {
@@ -24387,18 +24515,11 @@ void TestMeshLoadObjFanTriangulatesNgonFaces() {
         "the pentagon's 5 vertices are all preserved, unduplicated");
   Check(pentagon_mesh.FaceCount() == 3,
         "a pentagon fan-triangulates into exactly 5-2=3 triangles");
-  const ON_MeshFace& p0 = pentagon_mesh.raw().m_F[0];
-  const ON_MeshFace& p1 = pentagon_mesh.raw().m_F[1];
-  const ON_MeshFace& p2 = pentagon_mesh.raw().m_F[2];
-  Check(p0.vi[0] == 0 && p0.vi[1] == 1 && p0.vi[2] == 2 && p0.vi[3] == 2,
-        "the first fan triangle is corners (0,1,2), stored as a "
-        "degenerate quad (vi[3]==vi[2]) the same way an explicit "
-        "triangle face already is");
-  Check(p1.vi[0] == 0 && p1.vi[1] == 2 && p1.vi[2] == 3,
-        "the second fan triangle is corners (0,2,3)");
-  Check(p2.vi[0] == 0 && p2.vi[1] == 3 && p2.vi[2] == 4,
-        "the third fan triangle is corners (0,3,4), reaching the "
-        "pentagon's last corner");
+  // Ear-clipping (not a fixed fan from corner 0) picks whichever ear
+  // is valid first, so the exact per-triangle corners aren't pinned
+  // down the way a naive always-from-vertex-0 fan's output would be -
+  // checked below via area instead, against one specific triangulation
+  // among the several equally correct ones.
   Check(std::abs(triangle_area_sum(pentagon_mesh) - shoelace_area(pentagon)) < 1e-9,
         "the 3 fan triangles' combined area exactly reproduces the "
         "convex pentagon's own shoelace area - proof the fan actually "
@@ -24429,6 +24550,37 @@ void TestMeshLoadObjFanTriangulatesNgonFaces() {
         "convex hexagon's own shoelace area");
   std::remove(hexagon_path.c_str());
 
+  // A CONCAVE hexagon (one reflex corner, the "notch" at (2,2)) - the real
+  // point of ear-clipping over a naive fan: fanning from this face's own
+  // first corner, (4,0), would produce a triangle ((4,0),(2,2),(2,4))
+  // whose interior pokes outside the polygon into the notch's own
+  // forbidden region (confirmed directly: that fan's own 4 triangles sum
+  // to 16, not this polygon's actual area of 12 - the notch's own 2x2=4
+  // area, double-counted). Ear-clipping's own interior-point test
+  // (PointInTriangle(), detail/polygon2d.h) never allows that ear.
+  const std::vector<std::pair<double, double>> concave_hexagon = {
+      {4, 0}, {4, 2}, {2, 2}, {2, 4}, {0, 4}, {0, 0}};
+  const std::string concave_path = "dino8_kernel_mesh_obj_test_concave_hexagon.obj";
+  {
+    std::ofstream out(concave_path);
+    for (const auto& [x, y] : concave_hexagon) {
+      out << "v " << x << ' ' << y << " 0\n";
+    }
+    out << "f 1 2 3 4 5 6\n";
+  }
+  Mesh concave_mesh;
+  Check(Mesh::LoadObj(concave_path, concave_mesh) == Result::Ok,
+        "LoadObj succeeds on a concave (reflex-cornered) hexagon face line");
+  Check(concave_mesh.VertexCount() == 6 && concave_mesh.FaceCount() == 4,
+        "the concave hexagon still triangulates into exactly 6-2=4 "
+        "triangles, no vertex duplication");
+  Check(std::abs(triangle_area_sum(concave_mesh) - shoelace_area(concave_hexagon)) < 1e-9,
+        "the 4 triangles' combined area exactly reproduces the concave "
+        "hexagon's own shoelace area (12, not the naive from-vertex-0 "
+        "fan's own 16) - proof ear-clipping keeps every triangle inside "
+        "the polygon even with a reflex corner present");
+  std::remove(concave_path.c_str());
+
   // Fan triangulation must resolve negative (relative) indices before
   // splitting into triangles, not treat them as a separate code path -
   // an all-relative pentagon must fan-triangulate identically to the
@@ -24445,12 +24597,23 @@ void TestMeshLoadObjFanTriangulatesNgonFaces() {
   Check(Mesh::LoadObj(relative_path, relative_mesh) == Result::Ok,
         "LoadObj succeeds on an all-relative-index pentagon face line");
   Check(relative_mesh.FaceCount() == 3,
-        "the all-relative pentagon fan-triangulates into 3 triangles, "
+        "the all-relative pentagon triangulates into 3 triangles, "
         "same as the equivalent all-absolute face");
-  const ON_MeshFace& r0 = relative_mesh.raw().m_F[0];
-  Check(r0.vi[0] == 0 && r0.vi[1] == 1 && r0.vi[2] == 2,
+  // '-5 -4 -3 -2 -1' must resolve to the exact same 0-based corners the
+  // equivalent absolute '1 2 3 4 5' face already resolved to before
+  // triangulating - checked by requiring an identical triangle list
+  // (ear-clipping is a deterministic function of its vertex ring, so two
+  // identical rings always produce the exact same triangles), not just a
+  // separately-matching face count.
+  bool identical_triangles = (relative_mesh.FaceCount() == pentagon_mesh.FaceCount());
+  for (int i = 0; identical_triangles && i < relative_mesh.FaceCount(); ++i) {
+    const ON_MeshFace& a = relative_mesh.raw().m_F[i];
+    const ON_MeshFace& b = pentagon_mesh.raw().m_F[i];
+    identical_triangles = (a.vi[0] == b.vi[0] && a.vi[1] == b.vi[1] && a.vi[2] == b.vi[2]);
+  }
+  Check(identical_triangles,
         "'-5 -4 -3 -2 -1' resolved to the same 0-based corners as the "
-        "equivalent absolute '1 2 3 4 5' would, before fan-triangulating");
+        "equivalent absolute '1 2 3 4 5' would, before triangulating");
   std::remove(relative_path.c_str());
 }
 
@@ -24695,18 +24858,11 @@ void TestMeshLoadOffFanTriangulatesNgonFaces() {
         "the pentagon's 5 vertices are all preserved, unduplicated");
   Check(pentagon_mesh.FaceCount() == 3,
         "a pentagon fan-triangulates into exactly 5-2=3 triangles");
-  const ON_MeshFace& p0 = pentagon_mesh.raw().m_F[0];
-  const ON_MeshFace& p1 = pentagon_mesh.raw().m_F[1];
-  const ON_MeshFace& p2 = pentagon_mesh.raw().m_F[2];
-  Check(p0.vi[0] == 0 && p0.vi[1] == 1 && p0.vi[2] == 2 && p0.vi[3] == 2,
-        "the first fan triangle is corners (0,1,2), stored as a "
-        "degenerate quad (vi[3]==vi[2]) the same way an explicit "
-        "triangle face already is");
-  Check(p1.vi[0] == 0 && p1.vi[1] == 2 && p1.vi[2] == 3,
-        "the second fan triangle is corners (0,2,3)");
-  Check(p2.vi[0] == 0 && p2.vi[1] == 3 && p2.vi[2] == 4,
-        "the third fan triangle is corners (0,3,4), reaching the "
-        "pentagon's last corner");
+  // Ear-clipping (not a fixed fan from corner 0) picks whichever ear
+  // is valid first, so the exact per-triangle corners aren't pinned
+  // down the way a naive always-from-vertex-0 fan's output would be -
+  // checked below via area instead, against one specific triangulation
+  // among the several equally correct ones.
   Check(std::abs(triangle_area_sum(pentagon_mesh) - shoelace_area(pentagon)) < 1e-9,
         "the 3 fan triangles' combined area exactly reproduces the "
         "convex pentagon's own shoelace area - proof the fan actually "
@@ -24737,6 +24893,34 @@ void TestMeshLoadOffFanTriangulatesNgonFaces() {
         "the 4 fan triangles' combined area exactly reproduces the "
         "convex hexagon's own shoelace area");
   std::remove(hexagon_path.c_str());
+
+  // A CONCAVE hexagon (one reflex corner, the "notch" at (2,2)) - see
+  // TestMeshLoadObjFanTriangulatesNgonFaces's own identical fixture for
+  // why fanning from this face's own first corner, (4,0), would be wrong
+  // (sums to 16, not this polygon's actual area of 12).
+  const std::vector<std::pair<double, double>> concave_hexagon = {
+      {4, 0}, {4, 2}, {2, 2}, {2, 4}, {0, 4}, {0, 0}};
+  const std::string concave_path = "dino8_kernel_mesh_off_test_concave_hexagon.off";
+  {
+    std::ofstream out(concave_path);
+    out << "OFF\n" << concave_hexagon.size() << " 1 0\n";
+    for (const auto& [x, y] : concave_hexagon) {
+      out << x << ' ' << y << " 0\n";
+    }
+    out << "6 0 1 2 3 4 5\n";
+  }
+  Mesh concave_mesh;
+  Check(Mesh::LoadOff(concave_path, concave_mesh) == Result::Ok,
+        "LoadOff succeeds on a concave (reflex-cornered) hexagon face line");
+  Check(concave_mesh.VertexCount() == 6 && concave_mesh.FaceCount() == 4,
+        "the concave hexagon still triangulates into exactly 6-2=4 "
+        "triangles, no vertex duplication");
+  Check(std::abs(triangle_area_sum(concave_mesh) - shoelace_area(concave_hexagon)) < 1e-9,
+        "the 4 triangles' combined area exactly reproduces the concave "
+        "hexagon's own shoelace area (12, not a naive from-vertex-0 fan's "
+        "own 16) - proof ear-clipping keeps every triangle inside the "
+        "polygon even with a reflex corner present");
+  std::remove(concave_path.c_str());
 }
 
 // SaveOff()/LoadOff() now also handle the COFF (color OFF) variant when the
@@ -25278,18 +25462,11 @@ void TestMeshLoadVrmlFanTriangulatesNgonFaces() {
         "the pentagon's 5 vertices are all preserved, unduplicated");
   Check(pentagon_mesh.FaceCount() == 3,
         "a pentagon fan-triangulates into exactly 5-2=3 triangles");
-  const ON_MeshFace& p0 = pentagon_mesh.raw().m_F[0];
-  const ON_MeshFace& p1 = pentagon_mesh.raw().m_F[1];
-  const ON_MeshFace& p2 = pentagon_mesh.raw().m_F[2];
-  Check(p0.vi[0] == 0 && p0.vi[1] == 1 && p0.vi[2] == 2 && p0.vi[3] == 2,
-        "the first fan triangle is corners (0,1,2), stored as a "
-        "degenerate quad (vi[3]==vi[2]) the same way an explicit "
-        "triangle face already is");
-  Check(p1.vi[0] == 0 && p1.vi[1] == 2 && p1.vi[2] == 3,
-        "the second fan triangle is corners (0,2,3)");
-  Check(p2.vi[0] == 0 && p2.vi[1] == 3 && p2.vi[2] == 4,
-        "the third fan triangle is corners (0,3,4), reaching the "
-        "pentagon's last corner");
+  // Ear-clipping (not a fixed fan from corner 0) picks whichever ear
+  // is valid first, so the exact per-triangle corners aren't pinned
+  // down the way a naive always-from-vertex-0 fan's output would be -
+  // checked below via area instead, against one specific triangulation
+  // among the several equally correct ones.
   Check(std::abs(triangle_area_sum(pentagon_mesh) - shoelace_area(pentagon)) < 1e-9,
         "the 3 fan triangles' combined area exactly reproduces the "
         "convex pentagon's own shoelace area");
@@ -25317,6 +25494,34 @@ void TestMeshLoadVrmlFanTriangulatesNgonFaces() {
         "the 4 fan triangles' combined area exactly reproduces the "
         "convex hexagon's own shoelace area");
   std::remove(hexagon_path.c_str());
+
+  // A CONCAVE hexagon (one reflex corner, the "notch" at (2,2)) - see
+  // TestMeshLoadObjFanTriangulatesNgonFaces's own identical fixture for
+  // why fanning from this face's own first corner, (4,0), would be wrong
+  // (sums to 16, not this polygon's actual area of 12).
+  const std::vector<std::pair<double, double>> concave_hexagon = {
+      {4, 0}, {4, 2}, {2, 2}, {2, 4}, {0, 4}, {0, 0}};
+  const std::string concave_path = "dino8_kernel_mesh_vrml_test_concave_hexagon.wrl";
+  {
+    std::ofstream out(concave_path);
+    out << "#VRML V2.0 utf8\nShape { geometry IndexedFaceSet {\n";
+    out << " coord Coordinate { point [\n";
+    for (const auto& [x, y] : concave_hexagon) out << "  " << x << ' ' << y << " 0,\n";
+    out << " ] }\n coordIndex [ 0, 1, 2, 3, 4, 5, -1 ]\n} }\n";
+  }
+  Mesh concave_mesh;
+  Check(Mesh::LoadVrml(concave_path, concave_mesh) == Result::Ok,
+        "LoadVrml succeeds on a concave (reflex-cornered) hexagon "
+        "coordIndex run");
+  Check(concave_mesh.VertexCount() == 6 && concave_mesh.FaceCount() == 4,
+        "the concave hexagon still triangulates into exactly 6-2=4 "
+        "triangles, no vertex duplication");
+  Check(std::abs(triangle_area_sum(concave_mesh) - shoelace_area(concave_hexagon)) < 1e-9,
+        "the 4 triangles' combined area exactly reproduces the concave "
+        "hexagon's own shoelace area (12, not a naive from-vertex-0 fan's "
+        "own 16) - proof ear-clipping keeps every triangle inside the "
+        "polygon even with a reflex corner present");
+  std::remove(concave_path.c_str());
 }
 
 void TestMeshSaveColladaRoundTrips() {
@@ -25554,18 +25759,11 @@ void TestMeshLoadColladaFanTriangulatesNgonFaces() {
         "the pentagon's 5 vertices are all preserved, unduplicated");
   Check(pentagon_mesh.FaceCount() == 3,
         "a pentagon fan-triangulates into exactly 5-2=3 triangles");
-  const ON_MeshFace& p0 = pentagon_mesh.raw().m_F[0];
-  const ON_MeshFace& p1 = pentagon_mesh.raw().m_F[1];
-  const ON_MeshFace& p2 = pentagon_mesh.raw().m_F[2];
-  Check(p0.vi[0] == 0 && p0.vi[1] == 1 && p0.vi[2] == 2 && p0.vi[3] == 2,
-        "the first fan triangle is corners (0,1,2), stored as a "
-        "degenerate quad (vi[3]==vi[2]) the same way an explicit "
-        "triangle face already is");
-  Check(p1.vi[0] == 0 && p1.vi[1] == 2 && p1.vi[2] == 3,
-        "the second fan triangle is corners (0,2,3)");
-  Check(p2.vi[0] == 0 && p2.vi[1] == 3 && p2.vi[2] == 4,
-        "the third fan triangle is corners (0,3,4), reaching the "
-        "pentagon's last corner");
+  // Ear-clipping (not a fixed fan from corner 0) picks whichever ear
+  // is valid first, so the exact per-triangle corners aren't pinned
+  // down the way a naive always-from-vertex-0 fan's output would be -
+  // checked below via area instead, against one specific triangulation
+  // among the several equally correct ones.
   Check(std::abs(triangle_area_sum(pentagon_mesh) - shoelace_area(pentagon)) < 1e-9,
         "the 3 fan triangles' combined area exactly reproduces the "
         "convex pentagon's own shoelace area");
@@ -25595,6 +25793,36 @@ void TestMeshLoadColladaFanTriangulatesNgonFaces() {
         "the 4 fan triangles' combined area exactly reproduces the "
         "convex hexagon's own shoelace area");
   std::remove(hexagon_path.c_str());
+
+  // A CONCAVE hexagon (one reflex corner, the "notch" at (2,2)) - see
+  // TestMeshLoadObjFanTriangulatesNgonFaces's own identical fixture for
+  // why fanning from this face's own first corner, (4,0), would be wrong
+  // (sums to 16, not this polygon's actual area of 12).
+  const std::vector<std::pair<double, double>> concave_hexagon = {
+      {4, 0}, {4, 2}, {2, 2}, {2, 4}, {0, 4}, {0, 0}};
+  const std::string concave_path = "dino8_kernel_mesh_collada_test_concave_hexagon.dae";
+  {
+    std::ofstream out(concave_path);
+    out << "<COLLADA><library_geometries><geometry><mesh>\n";
+    out << "<float_array count=\"" << (concave_hexagon.size() * 3) << "\">";
+    for (const auto& [x, y] : concave_hexagon) out << x << ' ' << y << " 0 ";
+    out << "</float_array>\n";
+    out << "<polylist count=\"1\"><vcount>6</vcount><p>0 1 2 3 4 5</p></polylist>\n";
+    out << "</mesh></geometry></library_geometries></COLLADA>\n";
+  }
+  Mesh concave_mesh;
+  Check(Mesh::LoadCollada(concave_path, concave_mesh) == Result::Ok,
+        "LoadCollada succeeds on a concave (reflex-cornered) hexagon "
+        "polylist entry");
+  Check(concave_mesh.VertexCount() == 6 && concave_mesh.FaceCount() == 4,
+        "the concave hexagon still triangulates into exactly 6-2=4 "
+        "triangles, no vertex duplication");
+  Check(std::abs(triangle_area_sum(concave_mesh) - shoelace_area(concave_hexagon)) < 1e-9,
+        "the 4 triangles' combined area exactly reproduces the concave "
+        "hexagon's own shoelace area (12, not a naive from-vertex-0 fan's "
+        "own 16) - proof ear-clipping keeps every triangle inside the "
+        "polygon even with a reflex corner present");
+  std::remove(concave_path.c_str());
 }
 
 void TestMeshSaveX3dRoundTrips() {
@@ -25888,18 +26116,11 @@ void TestMeshLoadX3dFanTriangulatesNgonFaces() {
         "the pentagon's 5 vertices are all preserved, unduplicated");
   Check(pentagon_mesh.FaceCount() == 3,
         "a pentagon fan-triangulates into exactly 5-2=3 triangles");
-  const ON_MeshFace& p0 = pentagon_mesh.raw().m_F[0];
-  const ON_MeshFace& p1 = pentagon_mesh.raw().m_F[1];
-  const ON_MeshFace& p2 = pentagon_mesh.raw().m_F[2];
-  Check(p0.vi[0] == 0 && p0.vi[1] == 1 && p0.vi[2] == 2 && p0.vi[3] == 2,
-        "the first fan triangle is corners (0,1,2), stored as a "
-        "degenerate quad (vi[3]==vi[2]) the same way an explicit "
-        "triangle face already is");
-  Check(p1.vi[0] == 0 && p1.vi[1] == 2 && p1.vi[2] == 3,
-        "the second fan triangle is corners (0,2,3)");
-  Check(p2.vi[0] == 0 && p2.vi[1] == 3 && p2.vi[2] == 4,
-        "the third fan triangle is corners (0,3,4), reaching the "
-        "pentagon's last corner");
+  // Ear-clipping (not a fixed fan from corner 0) picks whichever ear
+  // is valid first, so the exact per-triangle corners aren't pinned
+  // down the way a naive always-from-vertex-0 fan's output would be -
+  // checked below via area instead, against one specific triangulation
+  // among the several equally correct ones.
   Check(std::abs(triangle_area_sum(pentagon_mesh) - shoelace_area(pentagon)) < 1e-9,
         "the 3 fan triangles' combined area exactly reproduces the "
         "convex pentagon's own shoelace area");
@@ -25927,6 +26148,34 @@ void TestMeshLoadX3dFanTriangulatesNgonFaces() {
         "the 4 fan triangles' combined area exactly reproduces the "
         "convex hexagon's own shoelace area");
   std::remove(hexagon_path.c_str());
+
+  // A CONCAVE hexagon (one reflex corner, the "notch" at (2,2)) - see
+  // TestMeshLoadObjFanTriangulatesNgonFaces's own identical fixture for
+  // why fanning from this face's own first corner, (4,0), would be wrong
+  // (sums to 16, not this polygon's actual area of 12).
+  const std::vector<std::pair<double, double>> concave_hexagon = {
+      {4, 0}, {4, 2}, {2, 2}, {2, 4}, {0, 4}, {0, 0}};
+  const std::string concave_path = "dino8_kernel_mesh_x3d_test_concave_hexagon.x3d";
+  {
+    std::ofstream out(concave_path);
+    out << "<X3D><Scene><Shape><IndexedFaceSet coordIndex=\"0 1 2 3 4 5 -1\">\n";
+    out << "<Coordinate point=\"";
+    for (const auto& [x, y] : concave_hexagon) out << x << ' ' << y << " 0 ";
+    out << "\"/>\n</IndexedFaceSet></Shape></Scene></X3D>\n";
+  }
+  Mesh concave_mesh;
+  Check(Mesh::LoadX3d(concave_path, concave_mesh) == Result::Ok,
+        "LoadX3d succeeds on a concave (reflex-cornered) hexagon "
+        "coordIndex run");
+  Check(concave_mesh.VertexCount() == 6 && concave_mesh.FaceCount() == 4,
+        "the concave hexagon still triangulates into exactly 6-2=4 "
+        "triangles, no vertex duplication");
+  Check(std::abs(triangle_area_sum(concave_mesh) - shoelace_area(concave_hexagon)) < 1e-9,
+        "the 4 triangles' combined area exactly reproduces the concave "
+        "hexagon's own shoelace area (12, not a naive from-vertex-0 fan's "
+        "own 16) - proof ear-clipping keeps every triangle inside the "
+        "polygon even with a reflex corner present");
+  std::remove(concave_path.c_str());
 }
 
 void TestMeshSaveUsdaRoundTrips() {
@@ -26125,17 +26374,11 @@ void TestMeshLoadUsdaFanTriangulatesNgonFaces() {
         "the pentagon's 5 vertices are all preserved, unduplicated");
   Check(pentagon_mesh.FaceCount() == 3,
         "a pentagon fan-triangulates into exactly 5-2=3 triangles");
-  const ON_MeshFace& p0 = pentagon_mesh.raw().m_F[0];
-  const ON_MeshFace& p1 = pentagon_mesh.raw().m_F[1];
-  const ON_MeshFace& p2 = pentagon_mesh.raw().m_F[2];
-  Check(p0.vi[0] == 0 && p0.vi[1] == 1 && p0.vi[2] == 2 && p0.vi[3] == 2,
-        "the first fan triangle is corners (0,1,2), stored as a "
-        "degenerate quad (vi[3]==vi[2]) the same way an explicit "
-        "triangle face already is");
-  Check(p1.vi[0] == 0 && p1.vi[1] == 2 && p1.vi[2] == 3,
-        "the second fan triangle is corners (0,2,3)");
-  Check(p2.vi[0] == 0 && p2.vi[1] == 3 && p2.vi[2] == 4,
-        "the third fan triangle is corners (0,3,4), reaching the pentagon's last corner");
+  // Ear-clipping (not a fixed fan from corner 0) picks whichever ear
+  // is valid first, so the exact per-triangle corners aren't pinned
+  // down the way a naive always-from-vertex-0 fan's output would be -
+  // checked below via area instead, against one specific triangulation
+  // among the several equally correct ones.
   Check(std::abs(triangle_area_sum(pentagon_mesh) - shoelace_area(pentagon)) < 1e-9,
         "the 3 fan triangles' combined area exactly reproduces the "
         "convex pentagon's own shoelace area");
@@ -26163,6 +26406,36 @@ void TestMeshLoadUsdaFanTriangulatesNgonFaces() {
         "the 4 fan triangles' combined area exactly reproduces the "
         "convex hexagon's own shoelace area");
   std::remove(hexagon_path.c_str());
+
+  // A CONCAVE hexagon (one reflex corner, the "notch" at (2,2)) - see
+  // TestMeshLoadObjFanTriangulatesNgonFaces's own identical fixture for
+  // why fanning from this face's own first corner, (4,0), would be wrong
+  // (sums to 16, not this polygon's actual area of 12).
+  const std::vector<std::pair<double, double>> concave_hexagon = {
+      {4, 0}, {4, 2}, {2, 2}, {2, 4}, {0, 4}, {0, 0}};
+  const std::string concave_path = "dino8_kernel_mesh_usda_test_concave_hexagon.usda";
+  {
+    std::ofstream out(concave_path);
+    out << "#usda 1.0\ndef Mesh \"m\" {\n    point3f[] points = [";
+    for (size_t i = 0; i < concave_hexagon.size(); ++i) {
+      if (i > 0) out << ", ";
+      out << "(" << concave_hexagon[i].first << ", " << concave_hexagon[i].second << ", 0)";
+    }
+    out << "]\n    int[] faceVertexCounts = [6]\n";
+    out << "    int[] faceVertexIndices = [0, 1, 2, 3, 4, 5]\n}\n";
+  }
+  Mesh concave_mesh;
+  Check(Mesh::LoadUsda(concave_path, concave_mesh) == Result::Ok,
+        "LoadUsda succeeds on a concave (reflex-cornered) hexagon face");
+  Check(concave_mesh.VertexCount() == 6 && concave_mesh.FaceCount() == 4,
+        "the concave hexagon still triangulates into exactly 6-2=4 "
+        "triangles, no vertex duplication");
+  Check(std::abs(triangle_area_sum(concave_mesh) - shoelace_area(concave_hexagon)) < 1e-9,
+        "the 4 triangles' combined area exactly reproduces the concave "
+        "hexagon's own shoelace area (12, not a naive from-vertex-0 fan's "
+        "own 16) - proof ear-clipping keeps every triangle inside the "
+        "polygon even with a reflex corner present");
+  std::remove(concave_path.c_str());
 }
 
 void TestMeshSaveGltfRoundTrips() {
@@ -63525,6 +63798,7 @@ int main() {
   TestModelMaterialAccessorsRoundTrip();
   TestModelUnitSystemRoundTrips();
   TestModelAddNamedViewRoundTrips();
+  TestModelAddLayoutRoundTrips();
   TestModelMaterialExtendedFieldsRoundTrip();
   TestModelMaterialTextureRoundTrips();
   TestModelAddLightRoundTrips();
@@ -63534,6 +63808,7 @@ int main() {
   TestModelAddHatchPatternLinesRoundTrips();
   TestModelAddTextDotRoundTrips();
   TestModelAddTextAnnotationRoundTrips();
+  TestModelAddLeaderRoundTrips();
   TestModelUnitConversionFactor();
   TestModelConvertUnitsScalesGeometryAndUpdatesUnitSystem();
   TestModelLoadRejectsMeshWithOutOfRangeFaceIndex();

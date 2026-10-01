@@ -65,11 +65,15 @@ const short kLenExtra[] = {0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3,
 const short kDistBase[] = {1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577};
 const short kDistExtra[] = {0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13};
 
-bool InflateCodes(BitReader& br, std::vector<unsigned char>& out, const Huffman& lencode, const Huffman& distcode) {
+bool InflateCodes(BitReader& br, std::vector<unsigned char>& out, const Huffman& lencode, const Huffman& distcode, size_t max_output) {
   for (;;) {
     int sym = lencode.Decode(br);
     if (sym < 0) return false;
-    if (sym < 256) { out.push_back(static_cast<unsigned char>(sym)); continue; }
+    if (sym < 256) {
+      if (out.size() >= max_output) return false;
+      out.push_back(static_cast<unsigned char>(sym));
+      continue;
+    }
     if (sym == 256) return true;
     sym -= 257;
     if (sym >= 29) return false;
@@ -78,24 +82,26 @@ bool InflateCodes(BitReader& br, std::vector<unsigned char>& out, const Huffman&
     if (dsym < 0 || dsym >= 30) return false;
     const size_t dist = static_cast<size_t>(kDistBase[dsym] + br.Bits(kDistExtra[dsym]));
     if (br.overrun || dist > out.size()) return false;
+    if (static_cast<size_t>(len) > max_output - out.size()) return false;
     const size_t start = out.size() - dist;
     for (int i = 0; i < len; ++i) out.push_back(out[start + static_cast<size_t>(i)]);
   }
 }
 
-bool InflateStored(BitReader& br, std::vector<unsigned char>& out) {
+bool InflateStored(BitReader& br, std::vector<unsigned char>& out, size_t max_output) {
   br.bitbuf = 0; br.bitcnt = 0;  // drop to a byte boundary
   if (br.pos + 4 > br.size) return false;
   const unsigned len = br.data[br.pos] | (br.data[br.pos + 1] << 8);
   const unsigned nlen = br.data[br.pos + 2] | (br.data[br.pos + 3] << 8);
   br.pos += 4;
   if ((len ^ 0xffffu) != nlen || br.pos + len > br.size) return false;
+  if (len > max_output - out.size()) return false;
   out.insert(out.end(), br.data + br.pos, br.data + br.pos + len);
   br.pos += len;
   return true;
 }
 
-bool InflateFixed(BitReader& br, std::vector<unsigned char>& out) {
+bool InflateFixed(BitReader& br, std::vector<unsigned char>& out, size_t max_output) {
   static Huffman lencode, distcode;
   static bool built = false;
   if (!built) {
@@ -110,10 +116,10 @@ bool InflateFixed(BitReader& br, std::vector<unsigned char>& out) {
     distcode.Build(lengths, 30);
     built = true;
   }
-  return InflateCodes(br, out, lencode, distcode);
+  return InflateCodes(br, out, lencode, distcode, max_output);
 }
 
-bool InflateDynamic(BitReader& br, std::vector<unsigned char>& out) {
+bool InflateDynamic(BitReader& br, std::vector<unsigned char>& out, size_t max_output) {
   static const short order[19] = {16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15};
   const int nlen = br.Bits(5) + 257, ndist = br.Bits(5) + 1, ncode = br.Bits(4) + 4;
   if (nlen > 286 || ndist > 30 || br.overrun) return false;
@@ -136,7 +142,7 @@ bool InflateDynamic(BitReader& br, std::vector<unsigned char>& out) {
   if (lengths[256] == 0) return false;
   if (!lencode.Build(lengths, nlen)) return false;
   if (!distcode.Build(lengths + nlen, ndist)) return false;
-  return InflateCodes(br, out, lencode, distcode);
+  return InflateCodes(br, out, lencode, distcode, max_output);
 }
 
 }  // namespace
@@ -157,16 +163,16 @@ uint32_t Crc32(const unsigned char* data, size_t n) {
   return crc ^ 0xFFFFFFFFu;
 }
 
-bool InflateRaw(const unsigned char* data, size_t size, std::vector<unsigned char>& out) {
+bool InflateRaw(const unsigned char* data, size_t size, std::vector<unsigned char>& out, size_t max_output) {
   BitReader br{data, size};
   int last = 0;
   do {
     last = br.Bits(1);
     const int type = br.Bits(2);
     bool ok = false;
-    if (type == 0) ok = InflateStored(br, out);
-    else if (type == 1) ok = InflateFixed(br, out);
-    else if (type == 2) ok = InflateDynamic(br, out);
+    if (type == 0) ok = InflateStored(br, out, max_output);
+    else if (type == 1) ok = InflateFixed(br, out, max_output);
+    else if (type == 2) ok = InflateDynamic(br, out, max_output);
     if (!ok || br.overrun) return false;
   } while (!last);
   return true;
