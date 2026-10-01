@@ -64335,6 +64335,20 @@ void TestLatticeInfillRejectsInvalidArguments() {
         "LatticeInfill with an oversized cell_size still produces a genuine, positive-volume result");
   Check(Throws([&] { LatticeInfill(open_mesh, 0.2, 0.02, 12); }),
         "LatticeInfill throws when solid is not a closed manifold");
+
+  // The opposite of the oversized-cell_size case above: cell_size small
+  // relative to the solid's own bounding box must be rejected, not
+  // silently accepted into a grid with an intractable strut count (the
+  // fold after the strut-building loops is one real Boolean Union per
+  // strut) - or, for a cell_size small enough to overflow int outright in
+  // the ceil()-and-cast this kernel uses internally, undefined behavior
+  // instead of a clean exception.
+  Check(Throws([&] { LatticeInfill(box, 0.001, 0.0001, 12); }),
+        "LatticeInfill throws when cell_size is too small relative to the solid's own bounding box (an "
+        "intractable strut count), not left to build/union millions of struts");
+  Check(Throws([&] { LatticeInfill(box, 1e-12, 1e-13, 12); }),
+        "LatticeInfill throws for a cell_size small enough that the naive ratio would overflow int, instead of "
+        "hitting undefined behavior in the ceil()-and-cast");
 }
 
 int main() {
