@@ -7966,6 +7966,50 @@ void TestModelMaterialExtendedFieldsRoundTrip() {
   std::remove(path.c_str());
 }
 
+void TestModelMaterialTextureRoundTrips() {
+  using dino8::kernel::Color;
+  using dino8::kernel::Model;
+  using dino8::kernel::Result;
+
+  // A plain relative path, not a Windows-style "C:/..." one: OpenNURBS'
+  // own ON_FileReference::SetFullPath() runs every path through
+  // ON_FileSystemPath::CleanPath(), whose own documented contract is "If
+  // the Platform is not windows, the UNC host names and volume letters
+  // are deleted" - a "C:/..." fixture would silently lose its drive
+  // letter on this (Linux) test run, failing this test over the fixture's
+  // own platform-specific path, not over AddMaterial()/MaterialAt()
+  // themselves. "textures/checker.png" has no drive letter or UNC prefix
+  // to strip, so it round-trips unchanged on every platform this suite runs on.
+  const std::string texture_path = "textures/checker.png";
+
+  Model model;
+  const int untextured_index = model.AddMaterial("PlainRed", Color{200, 20, 20});
+  const int textured_index =
+      model.AddMaterial("Checkerboard", Color{255, 255, 255}, std::nullopt, std::nullopt,
+                         std::nullopt, std::nullopt, std::nullopt, texture_path);
+
+  Check(!model.MaterialAt(untextured_index).texture_filename.has_value(),
+        "a material added with no texture_filename reports std::nullopt, not an empty string "
+        "standing in for 'no texture'");
+  Check(model.MaterialAt(textured_index).texture_filename == texture_path,
+        "a material's texture_filename reads back exactly, in memory before any save");
+
+  const std::string path = "dino8_kernel_model_material_texture_roundtrip_test.3dm";
+  Check(model.Save(path) == Result::Ok, ".3dm save succeeded");
+
+  Model loaded;
+  Check(Model::Load(path, loaded) == Result::Ok, ".3dm load succeeded");
+
+  Check(!loaded.MaterialAt(untextured_index).texture_filename.has_value(),
+        "the untextured material still reports std::nullopt after a real .3dm save/reload");
+  Check(loaded.MaterialAt(textured_index).texture_filename == texture_path,
+        "the textured material's filename round-trips exactly through a real .3dm save/reload");
+  Check(loaded.MaterialAt(textured_index).diffuse_color.r == 255,
+        "adding a texture_filename doesn't disturb this same call's own diffuse_color");
+
+  std::remove(path.c_str());
+}
+
 void TestModelAddLightRoundTrips() {
   using dino8::kernel::Color;
   using dino8::kernel::LightInfo;
@@ -26349,6 +26393,117 @@ void TestMeshLoadFbxRejectsMalformedFiles() {
   std::remove(short_run_path.c_str());
   std::remove(oob_index_path.c_str());
   std::remove(unterminated_path.c_str());
+}
+
+void TestMeshSaveDxfRoundTrips() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Result;
+
+  // PARITY_MAP.md's own "kernel: Kernel-level data exchange" evidence
+  // names DXF as app-only ("PLY has a kernel API; STEP/IGES/DXF ... remain
+  // app-only Document entry points").
+  const auto box = MakeQuadBoxMesh(0, 0, 0, 2, 2, 2);
+  const std::string path = "dino8_kernel_mesh_dxf_test.dxf";
+  Check(box.SaveDxf(path) == Result::Ok, "Mesh::SaveDxf succeeds");
+
+  std::ifstream in(path);
+  Check(static_cast<bool>(in), "the .dxf file SaveDxf wrote can be reopened for reading");
+  std::string file_text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  Check(file_text.find("2\nENTITIES") != std::string::npos, "the file declares a real ENTITIES section");
+  const size_t face_count = [&] {
+    size_t count = 0, pos = 0;
+    while ((pos = file_text.find("0\n3DFACE", pos)) != std::string::npos) { ++count; pos += 1; }
+    return count;
+  }();
+  Check(face_count == 6, "exactly one 3DFACE entity per mesh face (6 for the box), none split");
+
+  Mesh reloaded;
+  Check(Mesh::LoadDxf(path, reloaded) == Result::Ok, "Mesh::LoadDxf succeeds on SaveDxf()'s own output");
+  Check(reloaded.FaceCount() == box.FaceCount(), "the reloaded mesh has the same 6 faces as the original");
+  Check(reloaded.raw().m_F[0].IsQuad(),
+        "the reloaded first face is still a genuine quad - 3DFACE is natively quad-capable, so a quad "
+        "isn't split the way an all-triangle format would require");
+  Check(std::abs(reloaded.Volume() - box.Volume()) < 1e-6,
+        "the reloaded mesh's volume exactly matches the original");
+  std::remove(path.c_str());
+
+  // A hand-written file (not SaveDxf()'s own output) exercising a genuine
+  // triangle (third and fourth corners identical, DXF's own documented
+  // convention) and a differently-ordered/padded set of group codes, the
+  // way a real-world DXF writer might lay them out.
+  const std::string hand_written_path = "dino8_kernel_mesh_dxf_test_hand_written.dxf";
+  {
+    std::ofstream out(hand_written_path);
+    out << "  0\nSECTION\n  2\nENTITIES\n";
+    out << "  0\n3DFACE\n  8\n0\n";
+    out << " 10\n0.0\n 20\n0.0\n 30\n0.0\n";
+    out << " 11\n2.0\n 21\n0.0\n 31\n0.0\n";
+    out << " 12\n0.0\n 22\n2.0\n 32\n0.0\n";
+    out << " 13\n0.0\n 23\n2.0\n 33\n0.0\n";  // repeats corner 2 - a triangle
+    out << "  0\nENDSEC\n  0\nEOF\n";
+  }
+  Mesh hand_written;
+  Check(Mesh::LoadDxf(hand_written_path, hand_written) == Result::Ok,
+        "LoadDxf succeeds on a hand-written file with padded group-code fields");
+  Check(hand_written.VertexCount() == 3 && hand_written.FaceCount() == 1,
+        "the repeated third/fourth corner collapses to a genuine 3-vertex triangle, not a degenerate quad");
+  const ON_MeshFace& tri = hand_written.raw().m_F[0];
+  Check(!tri.IsQuad() && tri.vi[0] == 0 && tri.vi[1] == 1 && tri.vi[2] == 2,
+        "the hand-written triangle's corners read back exactly in order");
+  std::remove(hand_written_path.c_str());
+}
+
+void TestMeshLoadDxfRejectsMalformedFiles() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Result;
+
+  const std::string missing_path = "dino8_kernel_mesh_dxf_test_does_not_exist.dxf";
+  Mesh out;
+  Check(Mesh::LoadDxf(missing_path, out) == Result::Failed, "LoadDxf fails on a file that doesn't exist");
+
+  const std::string no_entities_path = "dino8_kernel_mesh_dxf_test_no_entities.dxf";
+  {
+    std::ofstream bad(no_entities_path);
+    // A HEADER section only - no ENTITIES section anywhere.
+    bad << "0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1009\n0\nENDSEC\n0\nEOF\n";
+  }
+  Check(Mesh::LoadDxf(no_entities_path, out) == Result::Failed,
+        "LoadDxf fails on a file with no ENTITIES section at all");
+
+  const std::string missing_coord_path = "dino8_kernel_mesh_dxf_test_missing_coord.dxf";
+  {
+    std::ofstream bad(missing_coord_path);
+    // A 3DFACE missing its own 33 (corner 3's z) group code entirely.
+    bad << "0\nSECTION\n2\nENTITIES\n0\n3DFACE\n8\n0\n"
+        << "10\n0\n20\n0\n30\n0\n11\n1\n21\n0\n31\n0\n12\n0\n22\n1\n32\n0\n13\n0\n23\n1\n"
+        << "0\nENDSEC\n0\nEOF\n";
+  }
+  Check(Mesh::LoadDxf(missing_coord_path, out) == Result::Failed,
+        "LoadDxf fails on a 3DFACE missing one of its twelve required coordinate group codes");
+
+  const std::string non_numeric_path = "dino8_kernel_mesh_dxf_test_non_numeric.dxf";
+  {
+    std::ofstream bad(non_numeric_path);
+    bad << "0\nSECTION\n2\nENTITIES\n0\n3DFACE\n8\n0\n"
+        << "10\nnot_a_number\n20\n0\n30\n0\n11\n1\n21\n0\n31\n0\n12\n0\n22\n1\n32\n0\n13\n0\n23\n1\n33\n0\n"
+        << "0\nENDSEC\n0\nEOF\n";
+  }
+  Check(Mesh::LoadDxf(non_numeric_path, out) == Result::Failed,
+        "LoadDxf fails on a coordinate value that doesn't parse as a number");
+
+  const std::string truncated_path = "dino8_kernel_mesh_dxf_test_truncated.dxf";
+  {
+    std::ofstream bad(truncated_path);
+    // The file ends mid-entity, before even reaching corner 1.
+    bad << "0\nSECTION\n2\nENTITIES\n0\n3DFACE\n8\n0\n10\n0\n20\n0\n30\n0\n";
+  }
+  Check(Mesh::LoadDxf(truncated_path, out) == Result::Failed,
+        "LoadDxf fails on a file truncated before its one 3DFACE entity's own closing 0-code");
+
+  std::remove(no_entities_path.c_str());
+  std::remove(missing_coord_path.c_str());
+  std::remove(non_numeric_path.c_str());
+  std::remove(truncated_path.c_str());
 }
 
 void TestMeshSaveStlSplitsQuadsAndComputesNormals() {
@@ -61426,6 +61581,7 @@ int main() {
   TestModelUnitSystemRoundTrips();
   TestModelAddNamedViewRoundTrips();
   TestModelMaterialExtendedFieldsRoundTrip();
+  TestModelMaterialTextureRoundTrips();
   TestModelAddLightRoundTrips();
   TestModelAddClippingPlaneRoundTrips();
   TestModelAddInstanceReferenceRoundTrips();
@@ -61609,6 +61765,8 @@ int main() {
   TestMeshLoad3mfRejectsMalformedFiles();
   TestMeshSaveFbxRoundTrips();
   TestMeshLoadFbxRejectsMalformedFiles();
+  TestMeshSaveDxfRoundTrips();
+  TestMeshLoadDxfRejectsMalformedFiles();
   TestMeshSaveStlSplitsQuadsAndComputesNormals();
   TestMeshLoadStlRoundTrips();
   TestMeshLoadStlBinary();
