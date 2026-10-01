@@ -4557,6 +4557,89 @@ unaffected (no bucket moved); this category's own row counts in the tables
 above and in "Priority order for maximum score-per-fix" remain accurate as
 they stand and need no edit.*
 
+*Twentieth note on this category's score (this pass): `BooleanCombineGeneral`
+gains `SymmetricDifference` - PARITY_MAP.md's own "Multi-body / multi-tool
+booleans" bullet previously named this engine as the one B-rep engine with
+no XOR support at all (`BooleanCombineGeneral`/`BooleanCombineGeneralNAry`
+both refused it outright with `UnsupportedOperation`). Built from two
+`Difference()` calls (`diff_ab = BooleanCombineGeneral(a, b, Difference,
+tolerance)`, `diff_ba = BooleanCombineGeneral(b, a, Difference, tolerance)`,
+each already a genuinely closed, independently-valid solid on its own)
+merged into one returned `Brep` via `ON_Brep::Append()` - deliberately NOT
+`Brep::Compound()`, the construction `BooleanCombinePlanar`/
+`BooleanCombineMixed` use for the identical op: `Compound()` requires every
+lump's own per-face side tables to be in lockstep with its face count, a
+bookkeeping contract only `Brep::FromPlanarFaces()`/`FromMixedFaces()`
+maintain, and this engine's own `result.raw()`-built reassembly never
+populates those tables at all, so `Compound()` refused it outright as a
+"raw()-assigned ON_Brep" - confirmed directly, not assumed: an earlier
+version of this change called `Compound()` here and it threw exactly that
+refusal on the very first test written against it. Two real, disclosed
+consequences of using `Append()` instead, found and verified while building
+this rather than assumed away, not silently hidden: (1) `LumpFaceRanges()`
+on the result reports the ordinary single-lump default, not 2 - the same
+already-disclosed bookkeeping gap this engine's own compound-accepting
+`Difference`/`Intersection` already have (`Brep::SplitDisjointPieces()`, a
+real topology analysis rather than bookkeeping replay, still correctly
+finds the genuine two disjoint pieces). (2) Neither
+`TessellateGeneralBooleanClosedMesh()` nor plain `TessellateToClosedMesh()`
+is proven closed on the COMBINED two-lump result, though each of
+`diff_ab`/`diff_ba` tessellates as a genuine closed manifold independently -
+the merged whole measures `Mesh::IsClosedManifold() == false` whenever the
+two lumps touch along a shared boundary curve, which a genuine crossing
+XOR's own two pieces always do (the identical "XOR is an unwelded compound"
+property this category's own "Non-manifold boolean results" bullet already
+discloses for the other two engines - a real property of the shape itself,
+not a defect in this merge). `BooleanCombineGeneralNAry` still refuses
+`SymmetricDifference`, now for the right reason (its own pairwise result is
+a two-lump value that cannot be folded further via `Union`, the identical
+reason the other two engines' N-ary wrappers already give) rather than the
+stale "not yet implemented at all" wording from before this pass. Verified
+(`TestBooleanCombineGeneralSymmetricDifferenceBoxBox`,
+`...FreeformSurfaceOperand`,
+`...NAryStillRefusesSymmetricDifferenceForTheRightReason`,
+`...DifferenceAcceptsRealSymmetricDifferenceCompoundOperand`, tests/
+test_basic.cpp) on the standard box+box fixture (volumes sum to the exact
+8+8-2*1=14), a genuinely freeform bicubic-Bezier-bump operand (volumes sum
+to the inclusion-exclusion identity), the N-ary refusal's own structured
+reason/message text, and a REAL (not Planar-engine-stand-in)
+`SymmetricDifference`-produced compound fed into a further `Difference`
+call against a disjoint cutter. One pre-existing test's own expectation
+necessarily changed, not merely extended: `TestBooleanOperationError
+GeneralEngineFailureReasons` used to assert that
+`BooleanCombineGeneral(box, other, SymmetricDifference)` itself threw
+`UnsupportedOperation` - narrowed to the still-true `BooleanCombineGeneralNAry`
+case, since the plain two-argument call no longer refuses at all. Still
+partial: this one engine joining the other two's own op coverage doesn't
+close the bullet's remaining gaps (compound-OPERAND support for `Union`/
+`SymmetricDifference` across all three engines, still a genuine missing
+lump-merge step; no app command reaches any of the three engines'
+`SymmetricDifference`). Same pass also extends `SplitBySheet()`/
+`TrimSheetBySolid()` test coverage to a genuinely curved solid (a
+radius-1 cylinder cut by a flat sheet, and trimmed by it) - the "Sheet/
+solid trim" bullet's own previously-named gap ("only a flat cutting plane
+is tested for either half of this item... a genuinely curved sheet or
+solid is unexercised"); both already worked correctly on the first try
+(`TestSplitBySheetCurvedSolidCylinderCutByFlatSheet`,
+`TestTrimSheetBySolidCurvedSolidCylinder`, tests/test_basic.cpp), closing
+the curved-SOLID half of that gap (a genuinely curved SHEET remains
+unexercised). Same "genuine new evidence, unchanged partial score" pattern
+as every note above - the category's 9/15/1/25 (66.0%) split is unchanged:
+neither bullet touched crosses into `present` (each still has real,
+disclosed scope limits named above). Full `dino8_kernel_tests` suite (built
+via `cmake --build build --parallel $(nproc)`, run directly): 7900 checks,
+7899 passing - the one failure is
+`TestBooleanCombineMixedUnequalRadiusPerpendicularNegativeControls`'s own
+previously-disclosed 60-degree pinch-point exactness check (see this
+category's own "Analytic plane/cylinder..." bullet above), confirmed by its
+own identical message text, not a new or different failure; this session's
+own changes touch only `boolean_general.cpp`/`boolean_general.h` and
+`tests/test_basic.cpp`'s General-engine/SplitBySheet/TrimSheetBySolid test
+functions, nowhere near the Mixed-engine pinch-point code this pre-existing,
+already-disclosed intermittent failure is in. The kernel-only headline is
+unaffected (no bucket moved); this category's own row counts remain
+accurate as they stand and need no edit.*
+
 **Blending & chamfering** (blending):
 - [partial] Constant-radius edge fillet on curved adjacent faces (cylinder/plane, cylinder/cylinder, freeform, closed/periodic rims) with B-rep trimming — every kernel fillet still requires both adjacent faces to be planar (fillet.h:147-159), so fillets cannot be chained onto a solid that already carries a curved face. App `FilletEdge` produces a genuine B-rep trim only when both faces are planar (cmd_fillet.cpp:175, "exact for planes; approximate elsewhere") — historically via the generic offset+SSX `BuildFillet` path, not the closed-form kernel function itself (see the bullet just below for the "nothing in the app calls it" half this pass closes). **This pass:** `FilletEdgeCommand::Run`'s plain-Radius case (default `RailType=RollingBall`, no `Rho`) now tries a new `TryExactFillet` FIRST — `kernel::FilletConvexEdge`/`FilletConcaveEdge` directly, convex then concave — ahead of the unchanged `BuildFillet` path, the identical "exact kernel construction first, fail open to the approximate path on any `PlanarFaces()` rejection" structure `TryExactChamfer` already established for `ChamferEdge`'s own plain-Radius case. Still partial: curved adjacent faces remain fundamentally out of scope (the kernel's own `PlanarFaces()` requirement, unchanged) and `BuildFillet`'s approximate path is still what actually runs there; this closes a representation gap (which construction produces the planar-face result), not a capability gap (the printed message and volume for a planar-face fillet are unchanged, since `BuildFillet` was already numerically exact for planes too). Net effect on the scores below: narrows, does not flip, the SAME already-partial item.
 - [partial] Concave (internal) edge fillet — kernel-native and exact: `FilletConcaveEdge` (fillet.cpp:1070 — corrected 2026-09-28, was mis-cited fillet.cpp:989; fillet.h:162-270) builds the mirrored rolling-ball construction with outward=false, closing perpendicular and oblique third faces; `FilletConcaveEdges` (fillet.cpp:2746; fillet.h:1111-1205) fillets several independent edges plus m==3 trihedral concave spherical corners. **This pass:** closes the single-edge half of "nothing in the app calls it" — `FilletEdgeCommand`'s new `TryExactFillet` (see the bullet just above) tries `kernel::FilletConvexEdge` FIRST and `FilletConcaveEdge` SECOND on any planar-faced solid, the same convex-then-concave cascade `TryExactChamfer`/`TryExactConicFillet`/`TryExactRailFillet` already use elsewhere in this file for the identical reason (the command doesn't know the edge's own convexity in advance). Verified structurally and via the convex branch end-to-end (`fillet_script.txt`'s own existing plain-`Radius=2` box-corner case now goes through this exact dispatch, unchanged volume); the concave branch is NOT independently verified through the app in script form — building an app-level fixture with a genuinely planar-faced concave (reflex) edge turned out to be blocked by a separate, disclosed app-layer limitation: `ExtrudeCrv`'s own `ON_BrepTrimmedPlane`/`ON_BrepExtrudeFace` construction builds ONE ruled side-wall face per whole closed boundary loop, not one flat quad per polygon edge (confirmed directly: extruding a plain 4-sided rectangle profile also yields only 3 faces/3 edges total, the single ruled wall genuinely non-planar end-to-end, not just at the concave corner) — so no closed polygon profile extruded this way, convex or concave, can reach `PlanarFaces()`'s own exact-planar requirement at all, and the app has no other command that builds a multi-facet polygonal solid. Still partial, same remaining gaps as before: planar faces only, one radius, m>=2 or higher-valence corners throw, oblique third faces out of scope for `FilletConcaveEdges`, a mixed convex+concave solid cannot be fully filleted, and the multi-edge `FilletConcaveEdges` batch form remains entirely unreachable from the app. Net effect on the scores below: narrows, does not flip, the SAME already-partial item.
@@ -6648,10 +6731,29 @@ own), `dino8-app/docs/COMPUTE_SERVER.md` (new), and `dino8-app/README.md`.
 
 **Merge note (2026-09-30):** this category was worked on by two independent, concurrent sessions that both landed on `claude/pdf-audit-i2bvwm` and both edited this same row. One session (the "2026-09-30 re-score" dated entry above) narrowed Dynamic blocks (Flip), Print and plot output (lineweights/print widths) and Dimension styles (linear precision alone) without flipping any of the three to `[present]`. The other closed Field text (missing→present), Live external data linking (partial→present), and Dimension styles more broadly (precision/angular precision/unit suffix/extension-line/text-placement/tolerance, partial→present) - see the `linear_precision`/`FormatDimensionNumber`-vs-`precision`/`FormatMeasurement` reconciliation note inside the Dimension styles bullet above for how the two sessions' overlapping work on that one item was combined into a single field set rather than kept as two. Merging the two sessions' work moves this row from 12/5/1/18 (80.6%) to **15/3/0/18 (91.7%)** - Dimension styles, Field text and Live external data linking now `[present]`; Associative annotation updating, Print and plot output and Dynamic blocks remain `[partial]`, each for the sub-gaps their own bullets above still name. Recomputing the app table's own `sum(weight * (present + 0.5*partial) / items) / 7.75` headline with this one row's delta (+11.1 pp × 1.0 weight ÷ 7.75 total weight) moves the Dino 8 vs Rhino 8 + AutoCAD 2027 headline from 75.5% to **76.9%**, reflected at the top of this document; the other 7 app-table rows are untouched by this merge and unchanged. Full `ctest` suite and `tests/smoke.sh` re-run clean after resolving the merge (see this document's own git history for the merge commit).
 
+**2026-09-30 rotation on "Viewport display, rendering & visualization"**
+(app_display, a separate session on this same branch): two real, tested,
+narrower fixes on two already-`[partial]` items, neither flipping status -
+`SetObjectDisplayMode` gains genuine `Ghosted`/`X-Ray` per-object overrides
+(Per-object display mode override), and `Viewport::DrawObjects` gains real
+zoom-driven tessellation LOD plus hysteresis-gated re-tessellation on zoom
+(View-dependent adaptive tessellation) - see the two bullets below for the
+full account of each. Net effect on this category's own counts: **none** -
+both items stay `[partial]`, so the row's present/partial/missing counts
+(13/4/1 of 18, 83.3%) and the app-table headline are unchanged. Full
+`dino8_app_tests` ctest suite re-run clean: 28/28 targets passing, including
+the 2 new ones (`dino8_adaptive_tessellation`, `dino8_adaptive_display`).
+`tests/smoke.sh` re-run clean too: 2128/2128 checks passing, including two
+new ones for `SetObjectDisplayMode Ghosted`/`X-Ray` (one earlier run of the
+full script hit a single, non-reproducing `ArcBlend` check failure
+unrelated to any file this session touched - confirmed a flake, not a
+regression, by an isolated re-run of its own script immediately passing and
+a second full `smoke.sh` run passing 2128/2128 with zero failures).
+
 **Dino 8: Viewport display, rendering & visualization** (app_display):
 - [partial] Environments and image-based lighting — **the two rendering-surface gaps this bullet named are now closed; the HDR-loader gap is substantially narrowed.** (1) The interactive rasterizer's reflective Rendered-mode surfaces now sample the real environment image instead of only the procedural studio sky: `GlRenderer::SetEnvironmentMap`, fed by `Viewport.cpp`'s new `UpdateEnvironmentMap` from the same texture `DrawBackgroundImage` already draws, is sampled by a new `SampleEnvMap` equirectangular lookup inside the mesh fragment shader's `Shade()` reflectivity branch — the view-space reflection vector is carried back to world space with `transpose(mat3(u_view))` (a camera view matrix is orthonormal, so its transpose is its inverse). `DrawBackgroundImage`'s own flat full-viewport quad is unchanged (still a stretch, not a lat-long unwarp), but a chrome/glossy object now genuinely reflects the loaded image, not just the procedural sky. (2) `GpuRaytracer` no longer forces `bg_mode_ = 0` for `Background::Image`: a new `UploadEnvironmentMap` uploads the image as a real `GL_TEXTURE_2D` (`GL_RGB32F` for a true `.hdr` source, so an above-1.0 highlight isn't clamped away here either; `GL_RGB8` for every other supported format), sampled by `skyColor()`'s new `u_bg_mode==3` branch with the same equirectangular mapping `PathTracer::SkyColor` uses. (3) `ImageIO.cpp` gains a real, dependency-free Radiance `.hdr`/RGBE codec — `LoadImageHdr`/`SaveImageHdr`, decoding both new-style-RLE and flat scanlines (round-tripped, plus a hand-built RLE scanline and the malformed-input error paths, by `tests/test_image_hdr.cpp`/`dino8_image_hdr` in ctest) — and `PathTracer::TexCache` now carries a `.hdr` source's true unclamped linear radiance alongside the existing tone-mapped 8-bit copy (`TexCache::hdr`, read by `SampleBilinear` instead of the `/255` byte path whenever it is populated), so a `.hdr` environment delivers real HDR-range lighting - not just an LDR backdrop clamped to `[0,1]` - to both the CPU path tracer and, via the same `GL_RGB32F` texture, the GPU raytraced preview. Stays partial: `.exr` is still entirely unsupported (Radiance `.hdr` only), and the interactive rasterizer's own reflection/background above is still necessarily tone-mapped to 8-bit like the rest of its forward-rendering pipeline, so true HDR range reaches only 2 of the app's 3 render surfaces, and the CPU/GPU/rasterizer three-way split this bullet has tracked since it was first opened is not fully closed yet.
-- [partial] Per-object display mode override — only Wireframe and Shaded are supported per-object; every other mode is viewport-wide only.
-- [partial] View-dependent adaptive tessellation — real frustum culling exists, but there is still no LOD and no re-tessellation on zoom.
+- [partial] Per-object display mode override — only Wireframe and Shaded are supported per-object; every other mode is viewport-wide only. **Narrowed this pass:** `SetObjectDisplayMode` now also accepts `Ghosted`/`X-Ray`, two more real per-object overrides (`SceneObject::force_ghosted`/`force_xray`, `dino8-app/src/doc/SceneObject.h`), not just Mode names accepted and silently ignored. `Viewport::DrawObjects` (`EffectiveFillAlpha`) fills such an object at that mode's own fixed alpha (35%/18%, the same constants `StyleFor` uses for the viewport-wide versions) regardless of the viewport's own current display mode - honoured in all three places a fill happens: the normal opaque-fill pass, the Wireframe-mode "fill only the overridden objects" pass `ShadeSelected`'s `force_shaded` already used, and Rendered mode's own `draw_rendered`, where the override now also routes the object into the back-to-front transparency sort regardless of its material's own transparency (previously only a material's own `transparency > 0` value did). Verified end-to-end (`tests/smoke.sh`'s `state_script2.txt` run: `SetObjectDisplayMode Ghosted`/`X-Ray` on a real selected object, checked against the command's own printed confirmation). Stays `[partial]`: Rendered, Technical, Artistic, Pen, Arctic, Monochrome and RayTraced remain viewport-wide only, with `UseViewport` still the only way to clear an override - four of Rhino's ten-plus display modes now have a real per-object equivalent, not two.
+- [partial] View-dependent adaptive tessellation — real frustum culling exists, but there is still no LOD and no re-tessellation on zoom. **Narrowed this pass:** both named gaps now have a real mechanism behind them, not none. `Viewport::DrawObjects` scales the app's own curve/surface display-tolerance Options by a zoom-derived factor (`LodScaleForPixelSize`, `dino8-app/src/viewport/AdaptiveTessellation.h`/`.cpp` - a pure function of `Camera::PixelSize`, the same world-units-per-pixel idiom `DrawLightWidgets` already uses for its own on-screen glyph size, clamped to 0.2x-6x around a reference zoom), and a new `SceneObject::EnsureAdaptiveDisplay` (`doc/SceneObject.h`/`.cpp`) forces a real re-tessellation once the requested tolerance has drifted more than 1.35x from whatever tolerance actually built the cache currently held - so zooming in meaningfully produces a finer mesh and zooming out a coarser one, without re-tessellating every single frame from ordinary camera float noise. Scoped narrowly and honestly: this is zoom-level LOD, not per-object distance-based LOD - the factor comes from whichever viewport is active (`Application::MakeFrameContext`), shared by every open viewport's `DrawObjects` call the same frame, because every `SceneObject` has exactly one shared display-tessellation cache across all viewports; two viewports at very different zoom looking at the same object would otherwise fight over that one cache's resolution every frame. Skipped entirely for `Render`/`RenderView` image export (`ctx.for_render`), which already deliberately picks its own fixed, generally finer tolerance independent of any viewport's zoom - the same reason that path already skips frustum culling. Verified by two standalone ctest targets: `dino8_adaptive_tessellation` (the pure scale-factor function: reference zoom scales by exactly 1.0, zooming in/out moves the scale monotonically in the right direction, both ends are clamped, and a real `ZoomCommand`-strength "Zoom In" is confirmed to cross the 1.35x re-tessellation threshold) and `dino8_adaptive_display` (`EnsureAdaptiveDisplay`'s hysteresis decision on real Curve/Surface `SceneObject`s, including that a trivial drift does *not* force a rebuild and that `SetMeshSurfaceParameters`' per-object tolerance pin is compared against, and recorded as, its own effective value rather than spuriously "drifting" every frame). Stays `[partial]`: not per-object/per-viewport LOD, and the mesh a measurement command or a live-drag preview sees can momentarily differ from what is on screen if it happens to run between two viewport redraws at different zoom (self-correcting on the next redraw, never wrong geometry - see `EnsureAdaptiveDisplay`'s own file comment for the full account).
 - [partial] Real-time shadow maps in the rasterized renderer — **reclassified this window, no longer missing.** `GlRenderer` gains a real depth-only shadow pass, not just the pre-existing ground-plane contact-shadow `ShadowBlob`s (a screen-space blob fade, unrelated and still applied independently): `BeginShadowPass`/`EndShadowPass` render every visible mesh's geometry into a 2048x2048 `GL_DEPTH_COMPONENT24` texture from an orthographic camera that frames the document's visible bounding sphere along a shadow-casting light's direction, and the mesh shader's `Shade()` samples it with 3x3 PCF (`ShadowFactor()`) to attenuate that one light's diffuse/specular contribution — real object-on-object cast shadows in Rendered mode, the case this bullet previously said only the GPU-raytraced/CPU-path-traced modes could produce. `Viewport::DrawShadowPass` wires it in from `DrawScene`: the shadow-casting light is index 0 of the same list `SetupLights` already builds and uploads (the first enabled document light if any exist, else the sun when enabled, else the default key light), so the shadowed light and the scene's strongest light stay in sync without re-deriving that priority order. Stays genuinely partial, not a full shadow-mapping system: only that one light casts a shadow (every other simultaneous light in the up-to-8-light Rendered scene stays unshadowed — a documented single-shadow-caster scope, not a per-light shadow atlas); only the Rendered-mode `Shade()` path reads the map (Shaded and every other fill mode still light with no shadow term at all); and only objects inside the *viewing camera's own frustum* are depth-rendered into the map, so an object just outside the visible frame cannot cast a shadow into it. Real cast shadows also still appear in the GPU raytraced and CPU path-traced modes, as before.
 - [missing] SSAO in the rasterized renderer — no "ssao"/"ambient occlusion" hit anywhere in `dino8-app/src/render/`.
 

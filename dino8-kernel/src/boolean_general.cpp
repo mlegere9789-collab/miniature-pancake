@@ -2824,10 +2824,94 @@ void RefuseCompoundOperand(const Brep& operand, const char* function_name) {
 
 Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op, double tolerance) {
   if (op == BooleanOp::SymmetricDifference) {
-    throw BooleanOperationError(
-        BooleanFailureReason::UnsupportedOperation, "BooleanCombineGeneral",
-        "dino8::kernel::BooleanCombineGeneral: SymmetricDifference is not "
-        "yet implemented - see boolean_general.h's own disclosed scope");
+    // Still needs the same lump-merge step Union itself has no more of
+    // than boolean.cpp's own two B-rep engines do (see the RefuseCompoundOperand
+    // doc comment) - a compound OPERAND to XOR would need its own lumps
+    // distributed and then re-merged with the OTHER lump's own XOR
+    // contribution, not just concatenated, which is genuinely more than
+    // "run Difference twice" gets for free. Refused up front, exactly like
+    // BooleanCombinePlanar/BooleanCombineMixed's own identical guard ahead of
+    // their own SymmetricDifference branch (boolean.cpp) - not a new
+    // limitation this addition introduces.
+    RefuseCompoundOperand(a, "BooleanCombineGeneral");
+    RefuseCompoundOperand(b, "BooleanCombineGeneral");
+    // XOR = (A - B) u (B - A): the two differences touch along the
+    // intersection curve of the two boundaries, where the XOR boundary has
+    // four incident faces (A's outside, B's outside, and both flipped
+    // insides), so no single reassembled Brep can hold it as one shell -
+    // the identical reason boolean.cpp's own BooleanCombinePlanar/
+    // BooleanCombineMixed split their own XOR into two lumps too (see
+    // BooleanCombinePlanar's own SymmetricDifference branch). Trivially
+    // correct given Difference is already correct in both argument orders;
+    // no separate geometry or coincident-face rule is needed here at all.
+    // `a`/`b` are already confirmed single-lump by the guard above, so
+    // neither recursive Difference call below can itself receive a
+    // compound operand either. `tolerance`'s own positivity check and every
+    // other BooleanCombineGeneral precondition are still validated by each
+    // of them independently, exactly as BooleanCombinePlanar's own XOR
+    // branch defers to its own two Difference calls.
+    //
+    // Deliberately NOT `Brep::Compound({diff_ab, diff_ba})` the way
+    // boolean.cpp's own two engines join their own two lumps: `Compound()`
+    // requires every lump's own per-face side tables (face_trim_loops_/
+    // face_exact_clip_/face_hole_loops_/face_arc_runs_/face_notch_rows_/
+    // face_records_) to be in lockstep with its face count, a bookkeeping
+    // contract only `Brep::FromPlanarFaces()`/`FromMixedFaces()` (the
+    // OTHER two engines' own reassembly primitives) maintain - this
+    // engine's own reassembly (see this function's own tail, right before
+    // `kept`-list reassembly) builds its `ON_Brep` directly via `result.raw()`
+    // and never populates those tables at all (they exist for
+    // PlanarFace/MixedFace-based reconstruction, which this engine's dense-
+    // polyline trim edges don't use), so `Compound()` would refuse it as a
+    // "raw()-assigned ON_Brep" - confirmed directly, not assumed (an
+    // earlier version of this addition called `Compound()` here and it threw
+    // exactly that refusal on the very first test). `ON_Brep::Append()`
+    // (OpenNURBS's own "appends a copy of brep to this and updates indices
+    // of appended brep parts" primitive) merges the two independently-valid
+    // closed solids' real topology into one `ON_Brep` instead, with no
+    // per-face side-table requirement at all - each of `diff_ab`/`diff_ba`
+    // is already a genuinely closed, watertight solid entirely on its own
+    // (an XOR lump is a complete solid, not half of one needing the other
+    // to close), so simply concatenating their topology (no welding
+    // attempted or needed between the two disjoint shells) is exactly
+    // right for the RESULT'S OWN real topology. `TessellateGeneralBooleanClosedMesh()`/
+    // plain `TessellateToClosedMesh()` on the COMBINED two-lump result are NOT
+    // proven closed, though, and a caller should not rely on either - confirmed
+    // directly, not assumed (see TestBooleanCombineGeneralSymmetricDifferenceBoxBox,
+    // tests/test_basic.cpp): each of `diff_ab`/`diff_ba` tessellates as a genuine
+    // closed manifold entirely on its own (the ordinary, already-proven Difference
+    // contract), but once `Append()`-ed together, `Mesh::IsClosedManifold()` on the
+    // WHOLE thing measures false whenever the two lumps touch along a shared
+    // boundary curve (an inherent property of a genuine crossing XOR - see
+    // boolean.cpp's own "Non-manifold boolean results" bullet's "XOR is an
+    // unwelded compound" disclosure for why this is expected, not a defect: two
+    // otherwise-valid solids sharing part of their own boundary are a real,
+    // non-manifold polyhedral complex at that shared curve, not a modeling bug).
+    // A caller wanting a reliable, individually-closed mesh per lump should keep
+    // `diff_ab`/`diff_ba` themselves (or call `BooleanCombineGeneral(a, b,
+    // Difference, tolerance)`/`(b, a, ...)` directly) rather than tessellating
+    // this function's own combined return value as one unit.
+    // Like every OTHER compound-shaped result this engine already returns
+    // (the "Difference/Intersection accept a compound operand" exemption
+    // above), the true two-lump structure is NOT tracked in `LumpFaceRanges()`
+    // (which needs `Compound()`/`SplitDisjointPieces()`'s own bookkeeping,
+    // neither of which runs here) - `LumpFaceRanges()` reports the ordinary
+    // single-lump default instead, the identical disclosed gap this
+    // function's own doc comment in boolean_general.h already names.
+    // `Brep::SplitDisjointPieces()` (a real topology analysis, not
+    // bookkeeping replay) DOES still correctly find the two disjoint
+    // pieces if a caller wants that count - verified directly, not assumed
+    // (see the test above) - since this engine's own result genuinely has
+    // real ON_BrepVertex/Edge/Trim/Loop topology to analyze, unlike a bare
+    // `Brep::Box()`.
+    const Brep diff_ab = BooleanCombineGeneral(a, b, BooleanOp::Difference, tolerance);
+    const Brep diff_ba = BooleanCombineGeneral(b, a, BooleanOp::Difference, tolerance);
+    Brep result;
+    result.raw().Append(diff_ab.raw());
+    result.raw().Append(diff_ba.raw());
+    result.raw().SetTrimIsoFlags();
+    result.raw().SetTolerancesBoxesAndFlags(/*bLazy=*/true);
+    return result;
   }
   if (!(tolerance > 0.0)) {
     throw BooleanOperationError(BooleanFailureReason::InvalidTolerance, "BooleanCombineGeneral",
@@ -2849,8 +2933,8 @@ Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op, double to
   // engines, this function does NOT recompute the result's true lump
   // structure afterward (see this function's own tail comment, right
   // before its `kept`-list reassembly, for the real limitation found while
-  // trying to add that step). SymmetricDifference is already refused
-  // unconditionally above, so it never reaches here.
+  // trying to add that step). SymmetricDifference already returned above
+  // (after its own RefuseCompoundOperand check), so it never reaches here.
   if (op == BooleanOp::Union) {
     RefuseCompoundOperand(a, "BooleanCombineGeneral");
     RefuseCompoundOperand(b, "BooleanCombineGeneral");
@@ -3216,8 +3300,9 @@ Brep BooleanCombineGeneralNAry(const std::vector<Brep>& first_group, const std::
   if (op == BooleanOp::SymmetricDifference) {
     throw BooleanOperationError(
         BooleanFailureReason::UnsupportedOperation, "BooleanCombineGeneralNAry",
-        "dino8::kernel::BooleanCombineGeneralNAry: SymmetricDifference is not yet implemented - "
-        "BooleanCombineGeneral itself refuses it outright, so there is nothing for an N-ary fold to build on");
+        "dino8::kernel::BooleanCombineGeneralNAry: SymmetricDifference has no well-defined N-ary fold - its own "
+        "pairwise result is a Brep::Compound of two lumps that cannot be fed into a further Union (see "
+        "BooleanCombineGeneral's own SymmetricDifference branch above)");
   }
   if (first_group.empty()) {
     throw BooleanOperationError(BooleanFailureReason::EmptyOperandGroup, "BooleanCombineGeneralNAry",

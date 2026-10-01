@@ -117,6 +117,14 @@ struct DisplayCache {
   kernel::BoundingBox bbox{};
   bool has_bbox = false;
   bool dirty = true;
+  // The curve_tolerance/surface_tolerance EnsureDisplay actually rebuilt
+  // this cache with (whichever caller triggered the rebuild - a viewport
+  // redraw, a measurement command, a live-drag preview, ...), so a later
+  // caller can tell whether what is cached still matches what it needs
+  // rather than just whether *a* build has ever happened. -1 until the
+  // first real build. See SceneObject::EnsureAdaptiveDisplay.
+  double built_curve_tolerance = -1.0;
+  double built_surface_tolerance = -1.0;
 };
 
 class SceneObject {
@@ -161,6 +169,13 @@ class SceneObject {
   bool highlight_edges = false;  // ShowEdges: draw brep/mesh edges thick, naked edges in a second colour
   bool force_shaded = false;     // ShadeSelected: filled even in a display mode that otherwise draws no fills
   bool force_wireframe = false;  // SetObjectDisplayMode Wireframe: never filled, even in a shaded/rendered viewport
+  // SetObjectDisplayMode Ghosted/X-Ray: filled at a fixed transparency (the
+  // same alpha the viewport-wide Ghosted/X-Ray modes use) regardless of the
+  // viewport's own display mode - mutually exclusive with force_shaded/
+  // force_wireframe and each other; Viewport::DrawObjects honours these the
+  // same mode-agnostic way it already honours the other two overrides.
+  bool force_ghosted = false;
+  bool force_xray = false;
   bool show_render_mesh_wires = false;  // ToggleRenderMesh/ShowRenderMesh: overlay the tessellation's triangle edges
   // Per-object display tolerance override for surface/brep/SubD tessellation
   // (SetMeshSurfaceParameters); <= 0 means "use the app-wide setting".
@@ -202,7 +217,24 @@ class SceneObject {
   // `surface_tolerance` are chord tolerances for curve sampling and
   // surface tessellation, in model units.
   void EnsureDisplay(double curve_tolerance, double surface_tolerance) const;
-  void InvalidateDisplay() { cache_.dirty = true; cache_.colors_valid = false; }
+  // View-dependent adaptive tessellation entry point (Viewport::DrawObjects):
+  // behaves exactly like EnsureDisplay, except it first forces a rebuild if
+  // the cache's own Display().built_curve_tolerance/built_surface_tolerance
+  // (whatever actually produced the mesh that is cached right now, from
+  // whichever call site last rebuilt it) has drifted from the tolerance
+  // requested here by more than a hysteresis band - so zooming in/out
+  // meaningfully re-tessellates for a sharper/coarser mesh, the same
+  // frustum culling already keeps up-to-date for object count, while an
+  // unrelated tolerance request from a measurement command or a live-drag
+  // preview elsewhere in the app does not thrash it every frame. Only ever
+  // called from Viewport.cpp; every other existing EnsureDisplay call site
+  // is unchanged.
+  void EnsureAdaptiveDisplay(double curve_tolerance, double surface_tolerance) const;
+  // const: only ever touches the mutable display cache, and marking it so
+  // lets EnsureAdaptiveDisplay (itself const, like EnsureDisplay) call it
+  // directly - every existing non-const caller is unaffected, since a
+  // const method can still be called on a non-const object.
+  void InvalidateDisplay() const { cache_.dirty = true; cache_.colors_valid = false; }
   // Dash pattern (dash, gap... in model units, already scaled) the display
   // polylines of a curve are split with; empty draws continuous. Set by the
   // viewport from Document::EffectiveDashes before EnsureDisplay; a change
