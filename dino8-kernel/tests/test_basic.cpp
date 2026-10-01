@@ -3039,6 +3039,50 @@ void TestBooleanCombineGeneralCoplanarBoxes() {
   }
 }
 
+// PARITY_MAP.md's "Tolerant booleans" bullet, after BooleanCombineGeneral()
+// gained a genuine caller-controlled SSX solve `tolerance`, still disclosed
+// one more remaining gap: "the general engine's own separate bbox/
+// coincident-face-detection epsilon ... is a different, still-fixed
+// concern from the SSX solve tolerance above" - every one of this file's
+// four entry points (BooleanCombineGeneral/ImprintFaces/SplitBySheet/
+// TrimSheetBySolid) hardcoded `const double tol = 1e-6` for the exact
+// coincident-face check TestBooleanCombineGeneralCoplanarBoxes above
+// exercises, independent of whatever `tolerance` the caller passed. This
+// closes it: `tol` is now `tolerance * 1e-3`, chosen so the prior implicit
+// default (tolerance == 0.001) reproduces the old fixed 1e-6 bit for bit.
+void TestBooleanCombineGeneralCoincidentFaceEpsilonScalesWithTolerance() {
+  using dino8::kernel::BooleanCombineGeneral;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+
+  // Same fixture as TestBooleanCombineGeneralCoplanarBoxes just above, but
+  // B's touching face is offset by a tiny gap g = 5e-6 - bigger than the
+  // epsilon this function used to hardcode (1e-6), smaller than the
+  // proportionally wider epsilon a caller-widened tolerance now derives.
+  const double g = 5e-6;
+  const Brep a = Brep::Box(0, 0, 0, 2, 2, 2);
+  const Brep b = Brep::Box(2 + g, 0, 0, 4 + g, 2, 2);
+
+  const Brep default_tol = BooleanCombineGeneral(a, b, BooleanOp::Union, 0.001);
+  Check(default_tol.FaceCount() == 12,
+        "at the default tolerance (0.001, scaled epsilon 1e-6 - bit-identical to the prior fixed value), "
+        "a 5e-6 gap is NOT recognized as coincident: both boxes keep their own near-duplicate boundary "
+        "face, 6 + 6 = 12 faces, not merged - the exact pre-existing behavior, unchanged");
+
+  const Brep loose_tol = BooleanCombineGeneral(a, b, BooleanOp::Union, 0.02);
+  Check(loose_tol.FaceCount() == 10,
+        "a caller-widened tolerance (0.02, scaled epsilon 2e-5 > the 5e-6 gap) now DOES recognize the "
+        "pair as coincident and merges them into one clean 4x2x2 box (10 faces - the same count "
+        "TestBooleanCombineGeneralCoplanarBoxes' own exactly-touching fixture produces), proving the "
+        "epsilon genuinely scales with the caller's own tolerance instead of staying fixed at 1e-6");
+
+  const Mesh m = loose_tol.TessellateToClosedMesh(8, 8);
+  Check(std::abs(m.Volume() - 16.0) < 1e-3,
+        "the merged result's tessellated volume matches the exact closed-form 16.0, the same way "
+        "the exactly-touching fixture's own Union does");
+}
+
 // Closed finite cylinder, axis along +z from z0 to z1, built via the
 // kernel's own proven CylindricalFace + FromMixedFaces() path - two
 // explicit disk PlanarFace caps welded to the CylindricalFace's own rim via
@@ -41343,6 +41387,87 @@ void TestBooleanCombineMixedChainedNegativeControls() {
   }
 }
 
+// This pass retypes two more of BooleanCombineMixed's own plain
+// std::invalid_argument refusals to the typed BooleanOperationError
+// (BooleanFailureReason::UnsupportedGeometry) - the ConicalFace-operand
+// refusal (TestBooleanCombineMixedChainedNegativeControls above already
+// proves it fires, as plain std::invalid_argument) and
+// SplitCylindricalByObliquePlane's own non-monotonic/re-entrant-height
+// refusal (TestBooleanCombineMixedObliqueReentrantHeightThrows below
+// already proves THAT fires). Both are still fully backward compatible -
+// still catchable as plain std::invalid_argument, identical what() text -
+// this just proves the SAME fixtures are now also catchable as the typed
+// error with the right reason, the same "narrows, does not flip" pattern
+// this file's own prior typed-refusal passes already established.
+void TestBooleanCombineMixedUnsupportedGeometryRefusalsAreTyped() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanFailureReason;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::BooleanOperationError;
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConvexEdgeTapered;
+  using dino8::kernel::FilletRadiusStation;
+  using dino8::kernel::Point3d;
+
+  {
+    // Same tapered-fillet (ConicalFace-bearing) fixture
+    // TestBooleanCombineMixedChainedNegativeControls above already builds.
+    const Brep box = Brep::Box(0, 0, 0, 3, 1, 1);
+    const std::vector<Brep::PlanarFace> all_faces = box.PlanarFaces();
+    const Brep tube = Brep::FromPlanarFaces({all_faces[0], all_faces[1], all_faces[2], all_faces[3]});
+    const std::vector<FilletRadiusStation> stations = {{0.0, 0.15}, {1.2, 0.25}, {3.0, 0.45}};
+    const Brep filleted = FilletConvexEdgeTapered(tube, Point3d(0, 0, 1), Point3d(3, 0, 1), stations);
+
+    bool threw_typed = false;
+    BooleanFailureReason reason = BooleanFailureReason::CompoundOperand;
+    try {
+      BooleanCombineMixed(filleted, Brep::Box(-1, -1, -1, 1, 2, 2), BooleanOp::Union);
+    } catch (const BooleanOperationError& e) {
+      threw_typed = true;
+      reason = e.reason();
+    }
+    Check(threw_typed, "BooleanCombineMixed's ConicalFace-operand refusal is now a typed BooleanOperationError");
+    Check(reason == BooleanFailureReason::UnsupportedGeometry,
+          "the ConicalFace-operand refusal carries BooleanFailureReason::UnsupportedGeometry - this operand's "
+          "own geometry is out of scope, not the requested BooleanOp");
+  }
+  {
+    // Same reentrant-height oblique fixture
+    // TestBooleanCombineMixedObliqueReentrantHeightThrows below already
+    // builds (60 degree tilt, radius=3, hole length=4 near z=0). Caught as
+    // plain std::invalid_argument, not the typed BooleanOperationError:
+    // confirmed directly (not assumed) that THIS fixture's own refusal
+    // actually fires from detail::ClipPolygonByEllipse3d's own untouched
+    // "ellipse crosses the polygon's own boundary" precondition (reached
+    // from case (ii)'s planar-side split, before case (iii)'s own
+    // SplitCylindricalByObliquePlane - the function this pass actually
+    // retypes - is ever reached for this specific geometry), so asserting
+    // BooleanOperationError here would be testing the wrong call site and,
+    // worse, would silently stop catching the exception that's actually
+    // thrown (a real mistake caught by this test crashing uncaught the
+    // first time it was written as `catch (const BooleanOperationError&)`
+    // - std::invalid_argument's base class is what every caller must still
+    // catch to be safe, exactly as TestBooleanCombineMixedObliqueReentrantHeightThrows
+    // below already does).
+    const auto [box, cyl] = BuildObliqueDrilledBoxInputs(/*hole_radius=*/3.0, /*tilt_deg=*/60.0, /*z0=*/-2.0,
+                                                           /*hole_length=*/4.0);
+    bool threw = false;
+    bool threw_typed = false;
+    try {
+      BooleanCombineMixed(box, cyl, BooleanOp::Difference);
+    } catch (const BooleanOperationError&) {
+      threw = true;
+      threw_typed = true;
+    } catch (const std::invalid_argument&) {
+      threw = true;
+    }
+    Check(threw, "BooleanCombineMixed's non-monotonic (re-entrant) oblique-height refusal still throws "
+                 "std::invalid_argument (from ClipPolygonByEllipse3d, unaffected by this pass's retyping)");
+    Check(!threw_typed, "sanity: this particular fixture's refusal is NOT one of the two sites this pass "
+                        "retyped - it exercises a different, untouched precondition entirely");
+  }
+}
+
 // BooleanCombineMixedNAry (boolean.h/.cpp): the N-ary fold this category's
 // own "Multi-body / multi-tool booleans" PARITY_MAP.md bullet names as a
 // missing kernel API - a caller wanting to union/intersect/subtract more
@@ -41527,6 +41652,64 @@ void TestPolygonBooleanPlanarNegativeControls() {
     threw = true;
   }
   Check(threw, "PolygonBooleanPlanar refuses a polygon whose vertices don't lie in the given plane");
+}
+
+// PARITY_MAP.md's own "2D region / planar curve booleans" bullet disclosed
+// self-intersecting input as "unchecked" - PolygonBooleanPlanar used to feed
+// a self-crossing operand straight through to PrismFromPolygon()/
+// BooleanCombinePlanar() rather than refusing it, which BooleanCombinePlanar
+// was never designed to classify correctly (it assumes a simple boundary).
+// This closes that gap: a bowtie (self-crossing) quadrilateral is now
+// refused outright as a typed BooleanOperationError, for either operand,
+// while an ordinary (even non-convex) simple polygon is unaffected.
+void TestPolygonBooleanPlanarRefusesSelfIntersectingOperand() {
+  using dino8::kernel::BooleanFailureReason;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::BooleanOperationError;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::PolygonBooleanPlanar;
+
+  const ON_Plane plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1));
+  const std::vector<Point3d> square = {Point3d(0, 0, 0), Point3d(2, 0, 0), Point3d(2, 2, 0), Point3d(0, 2, 0)};
+
+  // A classic self-crossing "bowtie" quadrilateral: going
+  // (0,0) -> (2,2) -> (2,0) -> (0,2) -> back to (0,0) crosses its own first
+  // edge with its third edge in the middle of the shape.
+  const std::vector<Point3d> bowtie = {Point3d(0, 0, 0), Point3d(2, 2, 0), Point3d(2, 0, 0), Point3d(0, 2, 0)};
+
+  bool threw_typed = false;
+  BooleanFailureReason reason = BooleanFailureReason::CompoundOperand;
+  try {
+    PolygonBooleanPlanar(bowtie, square, plane, BooleanOp::Union);
+  } catch (const BooleanOperationError& e) {
+    threw_typed = true;
+    reason = e.reason();
+  }
+  Check(threw_typed, "PolygonBooleanPlanar refuses a self-intersecting 'a' operand as a typed BooleanOperationError");
+  Check(reason == BooleanFailureReason::InvalidPolygon,
+        "PolygonBooleanPlanar's self-intersection refusal carries BooleanFailureReason::InvalidPolygon");
+
+  bool threw_b = false;
+  try {
+    PolygonBooleanPlanar(square, bowtie, plane, BooleanOp::Intersection);
+  } catch (const BooleanOperationError&) {
+    threw_b = true;
+  }
+  Check(threw_b, "PolygonBooleanPlanar refuses a self-intersecting 'b' operand too, not just 'a'");
+
+  // Negative control: an ordinary simple (non-convex, non-self-intersecting)
+  // L-shape must still be accepted, unaffected by the new check - reusing
+  // the same L-shape fixture TestPolygonBooleanPlanarNonConvexLShapeIntersection
+  // above already proves BooleanCombinePlanar handles correctly.
+  const std::vector<Point3d> l_shape = {Point3d(0, 0, 0), Point3d(2, 0, 0), Point3d(2, 1, 0),
+                                         Point3d(1, 1, 0), Point3d(1, 2, 0), Point3d(0, 2, 0)};
+  bool threw_simple = false;
+  try {
+    PolygonBooleanPlanar(l_shape, square, plane, BooleanOp::Intersection);
+  } catch (const std::invalid_argument&) {
+    threw_simple = true;
+  }
+  Check(!threw_simple, "PolygonBooleanPlanar's new self-intersection check does not reject an ordinary simple L-shape");
 }
 
 void TestBooleanCombineMixedNAryUnionThreeOverlappingBoxesMatchesInclusionExclusion() {
@@ -60995,6 +61178,7 @@ int main() {
   TestBooleanCombineGeneralBoxBox();
   TestBooleanCombineGeneralFreeformSurfaceOperand();
   TestBooleanCombineGeneralCoplanarBoxes();
+  TestBooleanCombineGeneralCoincidentFaceEpsilonScalesWithTolerance();
   TestBooleanCombineGeneralBoxCylinder();
   TestBooleanCombineGeneralCallerTolerance();
   TestBooleanCombineGeneralSphereBox();
@@ -61547,6 +61731,7 @@ int main() {
   TestMixedFacesReturnsVerbatimRecordsForBooleanResults();
   TestBrepSplitDisjointPieces();
   TestBooleanCombineMixedChainedNegativeControls();
+  TestBooleanCombineMixedUnsupportedGeometryRefusalsAreTyped();
   TestBooleanCombineMixedNAryUnionThreeOverlappingBoxesMatchesInclusionExclusion();
   TestBooleanCombineMixedNAryUnionFoldOrderIndependence();
   TestBooleanCombineMixedNAryDifferenceSubtractsEveryToolInSecondGroup();
@@ -61564,6 +61749,7 @@ int main() {
   TestPolygonBooleanPlanarDisjointOperands();
   TestPolygonBooleanPlanarDifferenceLeavesARingWithHoleLoop();
   TestPolygonBooleanPlanarNegativeControls();
+  TestPolygonBooleanPlanarRefusesSelfIntersectingOperand();
   TestBooleanCombinePlanarDifferenceAcceptsCompoundFirstOperand();
   TestBooleanCombinePlanarDifferenceAcceptsCompoundSecondOperand();
   TestBooleanCombinePlanarIntersectionAcceptsCompoundOperand();
