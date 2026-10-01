@@ -3056,14 +3056,23 @@ class Brep {
   //   - both have exactly one loop (no inner/hole loops) - a v1
   //     narrowing; a face with a hole is left untouched rather than
   //     risking a wrong merge of its hole boundary.
-  //   - they share EXACTLY ONE edge, and that edge has EXACTLY TWO trims
-  //     (both belonging to fa and fb) - the "non-manifold-safe" condition
-  //     the class comment above promises: an edge a THIRD face also
-  //     touches is never removed, so merging never corrupts topology
-  //     anywhere else in a non-manifold assembly (e.g. one NonmanifoldMerge
-  //     produced by welding several solids' naked boundaries together
-  //     first). A pair touching along more than one edge (a shape whose
-  //     merge would not be a simple polygon) is left untouched too.
+  //   - every edge they share has EXACTLY TWO trims (both belonging to fa
+  //     and fb) - the "non-manifold-safe" condition the class comment
+  //     above promises: an edge a THIRD face also touches is never
+  //     removed, so merging never corrupts topology anywhere else in a
+  //     non-manifold assembly (e.g. one NonmanifoldMerge produced by
+  //     welding several solids' naked boundaries together first). A pair
+  //     touching along any such non-manifold edge, even alongside other
+  //     manifold-safe shared edges, is left completely untouched.
+  //   - those manifold-safe shared edges form ONE contiguous run in both
+  //     loops' own cyclic trim order - the ordinary single-shared-edge
+  //     case is the `run.size() == 1` instance of this, and a shared
+  //     boundary later subdivided into several collinear trims (e.g. by an
+  //     imprint, or a T-junction split applied to only one side) is a
+  //     genuine multi-edge instance this method also merges, in one pass,
+  //     not through several smaller merges. A pair touching along two
+  //     SEPARATE, non-adjacent edges (a shape whose merge would not be a
+  //     simple polygon) is left untouched.
   //
   // The merge itself walks each face's own outer loop (via ON_BrepTrim::
   // Edge()/m_bRev3d, not a re-derived polygon) to build the two boundary
