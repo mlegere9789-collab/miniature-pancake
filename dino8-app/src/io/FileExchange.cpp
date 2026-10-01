@@ -399,6 +399,38 @@ void WriteDxfMesh(DxfWriter& w, const ON_Mesh& m, const std::string& layer, cons
   }
 }
 
+// A solid-fill HATCH with a single polyline boundary path, world-XY-plane
+// only (same "elevation, no tilted-plane OCS" simplification
+// WriteDxfPolyline's own LWPOLYLINE branch already makes - a genuinely
+// tilted hatch falls back to the caller's old edge-curve export instead).
+// The group-code sequence matches exactly what this file's own
+// DxfImporter::Hatch() (see the reader above) reads back: 91=1 (one
+// boundary path), 92 with bit 0x2 set (polyline path type), 72=0 (no
+// bulges), 93=vertex count, one 10/20 pair per vertex, 70=1 (solid fill).
+// Was entirely missing before this change: DXF's own writer had no HATCH
+// function at all, so a Dino8-made or DXF-imported solid hatch round-
+// tripped out to bare boundary LINE/polyline entities, losing its fill.
+void WriteDxfHatchSolid(DxfWriter& w, const std::vector<Point3d>& pts, const std::string& layer, const Color* color) {
+  if (pts.size() < 3) return;
+  w.BeginEntity("HATCH", layer, color);
+  w.G(100, "AcDbHatch");
+  w.G(10, 0.0); w.G(20, 0.0); w.G(30, pts.front().z);  // elevation point
+  w.G(210, 0.0); w.G(220, 0.0); w.G(230, 1.0);         // extrusion normal: +Z
+  w.G(2, "SOLID");
+  w.G(70, 1);  // solid fill
+  w.G(71, 0);  // not associative
+  w.G(91, 1);  // one boundary path
+  w.G(92, 2);  // boundary path type: polyline
+  w.G(72, 0);  // no bulges
+  w.G(73, 1);  // closed
+  w.G(93, static_cast<int>(pts.size()));
+  for (const Point3d& p : pts) { w.G(10, p.x); w.G(20, p.y); }
+  w.G(97, 0);  // no source boundary objects
+  w.G(75, 0);  // hatch style: normal
+  w.G(76, 1);  // pattern type: predefined
+  w.G(98, 0);  // no seed points
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -525,9 +557,31 @@ bool ExportDxf(const Document& doc, const std::string& path, bool selected_only,
         if (o->mesh) { WriteDxfMesh(w, o->mesh->raw(), layer, color); ++written; }
         break;
       case ObjectKind::Brep: {
+        if (!o->brep) break;
+        // A solid-fill hatch (drafting::BuildSolidHatch's own trimmed-
+        // planar-brep, tagged Hatch=Solid - see HatchBuild.h) writes as a
+        // real HATCH entity instead of its bare boundary curves, so the
+        // fill survives export, not just the outline. Only for a boundary
+        // lying in a world-XY-parallel plane (WriteDxfHatchSolid's own
+        // documented scope, matching WriteDxfPolyline's LWPOLYLINE branch);
+        // anything else falls through to the ordinary edge-curve export
+        // below, same as before this case existed.
+        auto ht = o->user_text.find("Hatch");
+        if (ht != o->user_text.end() && ht->second == "Solid") {
+          const std::vector<Polyline3> loops = ObjectPolylines(*o);
+          if (!loops.empty() && loops.front().closed && loops.front().pts.size() >= 3) {
+            const std::vector<Point3d>& pts = loops.front().pts;
+            bool planar_xy = true;
+            for (const Point3d& p : pts) if (std::fabs(p.z - pts.front().z) > 1e-9) { planar_xy = false; break; }
+            if (planar_xy) {
+              WriteDxfHatchSolid(w, pts, layer, color);
+              ++written;
+              break;
+            }
+          }
+        }
         // Exact edge curves: a box becomes twelve LINEs, a cylinder two
         // CIRCLEs and a seam line.
-        if (!o->brep) break;
         const ON_Brep& b = o->brep->raw();
         int edges = 0;
         for (int i = 0; i < b.m_E.Count(); ++i) {

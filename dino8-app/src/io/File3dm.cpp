@@ -9,10 +9,14 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <iomanip>
 #include <map>
+#include <optional>
 #include <sstream>
 
+#include "drafting/HatchBuild.h"
+#include "drafting/HatchLibrary.h"
 #include "util/json_mini.h"
 
 namespace dino8::app {
@@ -337,6 +341,30 @@ bool MeshFaceIndicesInRange(const ON_Mesh& mesh) {
   return true;
 }
 
+// Looks up an ON_Hatch's referenced ON_HatchPattern in the file's pattern
+// table by index, the same way the layer/material/linetype lookups above do.
+// A negative index with no matching table entry is one of OpenNURBS' own
+// built-in stock patterns (ON_HatchPattern::Solid is index -1); only -1 is
+// treated as solid fill here (the rest are stock line patterns), matching
+// what real Rhino files actually emit for an unreferenced/default hatch.
+ON_HatchPattern::HatchFillType HatchFillTypeFor(const ONX_Model& model, int pattern_index) {
+  ONX_ModelComponentIterator it(model, ON_ModelComponent::Type::HatchPattern);
+  for (const ON_ModelComponent* c = it.FirstComponent(); c; c = it.NextComponent()) {
+    const ON_HatchPattern* p = ON_HatchPattern::Cast(c);
+    if (p && p->Index() == pattern_index) return p->FillType();
+  }
+  return pattern_index == -1 ? ON_HatchPattern::HatchFillType::Solid : ON_HatchPattern::HatchFillType::Lines;
+}
+
+std::string HatchPatternNameFor(const ONX_Model& model, int pattern_index) {
+  ONX_ModelComponentIterator it(model, ON_ModelComponent::Type::HatchPattern);
+  for (const ON_ModelComponent* c = it.FirstComponent(); c; c = it.NextComponent()) {
+    const ON_HatchPattern* p = ON_HatchPattern::Cast(c);
+    if (p && p->Index() == pattern_index) return FromWide(p->Name());
+  }
+  return std::string();
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -519,6 +547,48 @@ bool Load3dm(Document& doc, const std::string& path, std::string& error) {
       }
       if (attr) cp.name = FromWide(attr->Name());
       doc.AddClippingPlane(cp);
+      continue;
+    }
+    if (const ON_Hatch* h = ON_Hatch::Cast(g)) {
+      // Reconstructed via the same builders DXF/DWG HATCH import and the
+      // live Hatch command already share (drafting::BuildSolidHatch/
+      // BuildPatternHatch, see HatchBuild.h), so a hatch read from a real
+      // Rhino-written .3dm - previously silently skipped here entirely, no
+      // ON_Hatch handling existed at all - is indistinguishable from one
+      // made in-app: same object kind(s), same Hatch/HatchSpacing/
+      // HatchRotation/HatchBoundary user_text tags, selectable via SelHatch.
+      bool built = false;
+      if (h->LoopCount() > 0) {
+        if (ON_Curve* c3 = h->LoopCurve3d(0)) {
+          ON_NurbsCurve nc;
+          if (c3->GetNurbForm(nc) > 0) {
+            kernel::NurbsCurve boundary;
+            boundary.raw() = nc;
+            int layer_idx = 0;
+            Color color;
+            bool has_color = false;
+            if (attr) {
+              auto lm = layer_map.find(attr->m_layer_index);
+              if (lm != layer_map.end()) layer_idx = lm->second;
+              if (attr->ColorSource() == ON::color_from_object) { color = FromOnColor(attr->m_color); has_color = true; }
+            }
+            const double tol = doc.Settings().absolute_tolerance > 0 ? doc.Settings().absolute_tolerance : 0.001;
+            const Color* color_ptr = has_color ? &color : nullptr;
+            if (HatchFillTypeFor(model, h->PatternIndex()) == ON_HatchPattern::HatchFillType::Solid) {
+              built = drafting::BuildSolidHatch(doc, boundary, kNoObject, layer_idx, tol, color_ptr);
+            } else {
+              const drafting::HatchPattern* pat = drafting::HatchLibrary::Instance().Find(HatchPatternNameFor(model, h->PatternIndex()));
+              if (!pat) pat = drafting::HatchLibrary::Instance().Find("ANSI31");
+              if (pat) {
+                built = drafting::BuildPatternHatch(doc, *pat, boundary, kNoObject, layer_idx, tol, h->PatternScale(),
+                                                     h->PatternRotation() * 180.0 / ON_PI, doc.Settings().hatch_base, color_ptr);
+              }
+            }
+          }
+          delete c3;
+        }
+      }
+      if (!built) ++skipped;
       continue;
     }
     if (const ON_DetailView* dv = ON_DetailView::Cast(g)) {
@@ -1433,17 +1503,385 @@ bool Save3dm(const Document& doc, const std::string& path, std::string& error, b
 // OBJ / STL
 // ---------------------------------------------------------------------------
 
+namespace {
+
+// App-level multi-object .obj support: kernel::Mesh::LoadObj/SaveObj (used
+// below for .stl and as the single-mesh fallback) only ever produce/consume
+// one merged, welded ON_Mesh - by design, the kernel has no notion of
+// "document objects" at all. The functions in this block sit above that,
+// splitting/reassembling on .obj's own "o"/"g"/"usemtl" directives so
+// ImportObjMulti/ExportObjMulti below can round-trip real per-object
+// identity and a sidecar .mtl material file, closing the app_interop OBJ
+// gap ("the importer loads the whole file as one mesh with no per-group/
+// per-object split and no .mtl; the exporter... merg[es] everything into a
+// single welded mesh, losing object identity and writing no materials").
+
+bool ParseObjIndexField(const std::string& field, int& value) {
+  if (field.empty()) return false;
+  size_t consumed = 0;
+  int parsed = 0;
+  try {
+    parsed = std::stoi(field, &consumed);
+  } catch (const std::exception&) {
+    return false;
+  }
+  if (consumed != field.size() || parsed == 0) return false;
+  value = parsed;
+  return true;
+}
+
+// Same token grammar as the kernel's own ParseObjFaceIndex (mesh.cpp): the
+// plain "3" form, "3/4" (vertex/texture), and "3/4/5"/"3//5"
+// (vertex[/texture]/normal, normal parsed away and discarded - this
+// importer, like the kernel's, has no per-face-corner normal storage).
+bool ParseObjFaceToken(const std::string& token, int& v_index, int& vt_index, bool& has_vt) {
+  has_vt = false;
+  const size_t first_slash = token.find('/');
+  const std::string first = (first_slash == std::string::npos) ? token : token.substr(0, first_slash);
+  if (!ParseObjIndexField(first, v_index)) return false;
+  if (first_slash == std::string::npos) return true;
+  const size_t second_slash = token.find('/', first_slash + 1);
+  const std::string second =
+      (second_slash == std::string::npos) ? token.substr(first_slash + 1) : token.substr(first_slash + 1, second_slash - first_slash - 1);
+  if (second.empty()) return true;  // "v//vn" form
+  if (!ParseObjIndexField(second, vt_index)) return false;
+  has_vt = true;
+  return true;
+}
+
+struct ObjCorner {
+  int v = 0;
+  int vt = -1;
+};
+struct ObjFace {
+  std::vector<ObjCorner> corners;
+};
+struct ObjGroup {
+  std::string name;
+  std::string material;
+  std::vector<ObjFace> faces;
+};
+
+// Builds one group's own compact ON_Mesh: each referenced global vertex
+// gets a local index the first time this group sees it, so a per-object
+// group carries only the vertices it actually uses, not the whole file's
+// table. UV coverage uses each local vertex's first-seen `vt` (the same
+// "no correct answer" simplification kernel::Mesh::LoadObj's own doc
+// comment discloses for an ambiguous corner) - a real UV seam within one
+// object is not split into duplicate vertices here, unlike the kernel's
+// single-mesh loader; every vertex needs a `vt` for the group to carry
+// texture coordinates at all (ON_Mesh's own all-or-nothing convention).
+bool BuildMeshFromObjGroup(const std::vector<ON_3fPoint>& positions, const std::vector<kernel::Point2d>& texcoords,
+                            const ObjGroup& group, kernel::Mesh& out_mesh) {
+  std::map<int, int> local_of_global;
+  std::vector<int> vt_of_local;
+  ON_Mesh raw;
+  auto local_for = [&](const ObjCorner& c) -> int {
+    auto it = local_of_global.find(c.v);
+    if (it != local_of_global.end()) return it->second;
+    const int li = raw.m_V.Count();
+    local_of_global[c.v] = li;
+    vt_of_local.push_back(c.vt);
+    raw.m_V.Append(positions[static_cast<size_t>(c.v)]);
+    return li;
+  };
+  for (const ObjFace& f : group.faces) {
+    std::vector<int> local_indices;
+    local_indices.reserve(f.corners.size());
+    for (const ObjCorner& c : f.corners) local_indices.push_back(local_for(c));
+    if (local_indices.size() <= 4) {
+      ON_MeshFace face;
+      face.vi[0] = local_indices[0];
+      face.vi[1] = local_indices[1];
+      face.vi[2] = local_indices[2];
+      face.vi[3] = local_indices.size() == 4 ? local_indices[3] : local_indices[2];
+      raw.m_F.Append(face);
+    } else {
+      // n-gon (n > 4): fan-triangulate, same accommodation kernel::Mesh::LoadObj makes.
+      for (size_t i = 1; i + 1 < local_indices.size(); ++i) {
+        ON_MeshFace face;
+        face.vi[0] = local_indices[0];
+        face.vi[1] = local_indices[static_cast<int>(i)];
+        face.vi[2] = local_indices[static_cast<int>(i) + 1];
+        face.vi[3] = face.vi[2];
+        raw.m_F.Append(face);
+      }
+    }
+  }
+  if (raw.m_F.Count() == 0) return false;
+  out_mesh.raw() = raw;
+  bool has_uv = !vt_of_local.empty();
+  for (int vt : vt_of_local) {
+    if (vt < 0) { has_uv = false; break; }
+  }
+  if (has_uv) {
+    std::vector<kernel::Point2d> uvs(vt_of_local.size());
+    for (size_t i = 0; i < vt_of_local.size(); ++i) uvs[i] = texcoords[static_cast<size_t>(vt_of_local[i])];
+    out_mesh.SetTextureCoordinates(uvs);
+  }
+  return true;
+}
+
+// Parses a Wavefront .mtl file's `newmtl`/`Kd` pairs into name -> diffuse
+// color. Every other statement (Ka/Ks/Ns/map_Kd/illum/...) is silently
+// skipped, same "round-trips geometry (and now per-object color), not a
+// full material model" scope as the rest of this OBJ support.
+std::map<std::string, Color> ParseObjMtl(const std::string& mtl_path) {
+  std::map<std::string, Color> out;
+  std::ifstream in(mtl_path);
+  if (!in) return out;
+  std::string line, current;
+  while (std::getline(in, line)) {
+    std::istringstream ss(line);
+    std::string tag;
+    ss >> tag;
+    if (tag == "newmtl") {
+      ss >> current;
+    } else if (tag == "Kd" && !current.empty()) {
+      double r, g, b;
+      if (ss >> r >> g >> b) {
+        out[current] = Color{static_cast<float>(r), static_cast<float>(g), static_cast<float>(b), 1.f};
+      }
+    }
+  }
+  return out;
+}
+
+std::string ObjSanitizeName(std::string name) {
+  for (char& c : name) {
+    if (std::isspace(static_cast<unsigned char>(c)) || c == '/' || c == '\\') c = '_';
+  }
+  return name;
+}
+
+std::string ObjTrim(const std::string& s) {
+  size_t a = 0, b = s.size();
+  while (a < b && std::isspace(static_cast<unsigned char>(s[a]))) ++a;
+  while (b > a && std::isspace(static_cast<unsigned char>(s[b - 1]))) --b;
+  return s.substr(a, b - a);
+}
+
+bool ImportObjMulti(Document& doc, const std::string& path, std::string& error) {
+  std::ifstream in(path);
+  if (!in) {
+    error = "Could not open " + path;
+    return false;
+  }
+  std::vector<ON_3fPoint> positions;
+  std::vector<kernel::Point2d> texcoords;
+  std::vector<ObjGroup> groups;
+  std::string mtllib;
+  groups.push_back(ObjGroup{});  // implicit group for any faces before the first "o"/"g"
+
+  std::string line;
+  while (std::getline(in, line)) {
+    std::istringstream ss(line);
+    std::string tag;
+    ss >> tag;
+    if (tag == "v") {
+      double x, y, z;
+      if (!(ss >> x >> y >> z)) { error = "Malformed .obj: bad v line in " + path; return false; }
+      positions.push_back(ON_3fPoint(x, y, z));
+    } else if (tag == "vt") {
+      double u, v;
+      if (!(ss >> u >> v)) { error = "Malformed .obj: bad vt line in " + path; return false; }
+      texcoords.push_back(kernel::Point2d(u, v));
+    } else if (tag == "mtllib") {
+      ss >> mtllib;
+    } else if (tag == "usemtl") {
+      std::string m;
+      ss >> m;
+      groups.back().material = m;
+    } else if (tag == "o" || tag == "g") {
+      std::string name;
+      std::getline(ss, name);
+      groups.push_back(ObjGroup{});
+      groups.back().name = ObjTrim(name);
+    } else if (tag == "f") {
+      ObjFace face;
+      std::string token;
+      while (ss >> token) {
+        int v_index = 0, vt_index = 0;
+        bool has_vt = false;
+        if (!ParseObjFaceToken(token, v_index, vt_index, has_vt)) { error = "Malformed .obj: bad f line in " + path; return false; }
+        if (v_index < 0) v_index = static_cast<int>(positions.size()) + v_index + 1;
+        if (v_index < 1 || v_index > static_cast<int>(positions.size())) {
+          error = "Malformed .obj: vertex index out of range in " + path;
+          return false;
+        }
+        ObjCorner corner;
+        corner.v = v_index - 1;
+        if (has_vt) {
+          if (vt_index < 0) vt_index = static_cast<int>(texcoords.size()) + vt_index + 1;
+          if (vt_index < 1 || vt_index > static_cast<int>(texcoords.size())) {
+            error = "Malformed .obj: texture index out of range in " + path;
+            return false;
+          }
+          corner.vt = vt_index - 1;
+        }
+        face.corners.push_back(corner);
+      }
+      if (face.corners.size() < 3) { error = "Malformed .obj: face with fewer than 3 vertices in " + path; return false; }
+      groups.back().faces.push_back(std::move(face));
+    }
+    // Every other tag (comments, vn, s, ...) is silently skipped, same as kernel::Mesh::LoadObj.
+  }
+
+  std::map<std::string, Color> materials;
+  if (!mtllib.empty()) {
+    const std::filesystem::path mtl_path = std::filesystem::path(path).parent_path() / mtllib;
+    materials = ParseObjMtl(mtl_path.string());
+  }
+
+  int nonempty = 0;
+  for (const ObjGroup& g : groups) if (!g.faces.empty()) ++nonempty;
+  if (nonempty == 0) {
+    error = "Could not read a mesh from " + path;
+    return false;
+  }
+  const std::string stem = std::filesystem::path(path).stem().string();
+  int index = 0;
+  for (const ObjGroup& g : groups) {
+    if (g.faces.empty()) continue;
+    kernel::Mesh mesh;
+    if (!BuildMeshFromObjGroup(positions, texcoords, g, mesh)) continue;
+    ++index;
+    SceneObject o = SceneObject::MakeMesh(mesh);
+    o.name = !g.name.empty() ? g.name : (nonempty == 1 ? stem : "Group " + std::to_string(index));
+    if (!g.material.empty()) {
+      auto mit = materials.find(g.material);
+      if (mit != materials.end()) {
+        o.color = mit->second;
+        o.color_by_layer = false;
+      }
+    }
+    doc.Add(std::move(o));
+  }
+  return true;
+}
+
+bool ExportObjMulti(const Document& doc, const std::string& path, bool selected_only, std::string& error) {
+  struct ExportGroup {
+    std::string name;
+    kernel::Mesh mesh;
+    bool has_color = false;
+    Color color;
+  };
+  std::vector<ExportGroup> groups;
+  std::map<std::string, int> used_names;
+  for (const SceneObject& o : doc.Objects()) {
+    if (selected_only && !o.selected) continue;
+    if (!doc.IsObjectVisible(o)) continue;
+    std::optional<kernel::Mesh> m;
+    if (o.kind == ObjectKind::Mesh && o.mesh) {
+      m = *o.mesh;
+    } else if (o.kind == ObjectKind::Brep && o.brep) {
+      BrepMeshOptions opt;
+      opt.chord_tolerance = 0.01;
+      m = MeshBrepClosed(o.brep->raw(), opt);
+    } else if (o.kind == ObjectKind::Surface && o.surface) {
+      m = o.surface->TessellateGridAdaptive(0.01);
+    } else if (o.kind == ObjectKind::SubD && o.subd) {
+      m = o.subd->ToApproximateMesh();
+    }
+    if (!m || m->FaceCount() == 0) continue;
+    ExportGroup g;
+    std::string name = ObjSanitizeName(o.name.empty() ? "Object" : o.name);
+    const int n = ++used_names[name];
+    if (n > 1) name += "_" + std::to_string(n);
+    g.name = name;
+    g.mesh = std::move(*m);
+    if (!o.color_by_layer) {
+      g.has_color = true;
+      g.color = o.color;
+    } else if (!doc.Layers().empty()) {
+      const size_t li = static_cast<size_t>(std::clamp(o.layer_index, 0, static_cast<int>(doc.Layers().size()) - 1));
+      g.has_color = true;
+      g.color = doc.Layers()[li].color;
+    }
+    groups.push_back(std::move(g));
+  }
+  if (groups.empty()) {
+    error = "Nothing to export: select meshes, surfaces, polysurfaces or SubDs";
+    return false;
+  }
+
+  std::ofstream out(path);
+  if (!out) {
+    error = "Could not write " + path;
+    return false;
+  }
+  const std::string mtl_name = std::filesystem::path(path).stem().string() + ".mtl";
+  const std::string mtl_path = (std::filesystem::path(path).parent_path() / mtl_name).string();
+  std::ofstream mtl(mtl_path);
+  if (!mtl) {
+    error = "Could not write " + mtl_path;
+    return false;
+  }
+  out << "mtllib " << mtl_name << "\n";
+
+  int vertex_base = 0;
+  for (const ExportGroup& g : groups) {
+    const ON_Mesh& m = g.mesh.raw();
+    out << "o " << g.name << "\n";
+    if (g.has_color) {
+      out << "usemtl " << g.name << "\n";
+      mtl << "newmtl " << g.name << "\n";
+      mtl << "Kd " << g.color.r << ' ' << g.color.g << ' ' << g.color.b << "\n";
+      mtl << "d " << g.color.a << "\n\n";
+    }
+    for (int i = 0; i < m.m_V.Count(); ++i) {
+      const ON_3fPoint& v = m.m_V[i];
+      out << "v " << v.x << ' ' << v.y << ' ' << v.z << "\n";
+    }
+    const std::vector<kernel::Vector3d> normals = g.mesh.ComputeVertexNormals();
+    for (const kernel::Vector3d& n : normals) out << "vn " << n.x << ' ' << n.y << ' ' << n.z << "\n";
+    const bool has_uvs = g.mesh.HasTextureCoordinates();
+    if (has_uvs) {
+      for (int i = 0; i < m.m_V.Count(); ++i) {
+        const kernel::Point2d uv = g.mesh.TextureCoordinateAt(i);
+        out << "vt " << uv.x << ' ' << uv.y << "\n";
+      }
+    }
+    for (int i = 0; i < m.m_F.Count(); ++i) {
+      const ON_MeshFace& f = m.m_F[i];
+      auto write_corner = [&](int vi) {
+        const int gi = vertex_base + vi + 1;
+        if (has_uvs) out << gi << '/' << gi << '/' << gi;
+        else out << gi << "//" << gi;
+      };
+      out << "f ";
+      write_corner(f.vi[0]);
+      out << ' ';
+      write_corner(f.vi[1]);
+      out << ' ';
+      write_corner(f.vi[2]);
+      if (f.IsQuad()) {
+        out << ' ';
+        write_corner(f.vi[3]);
+      }
+      out << "\n";
+    }
+    vertex_base += m.m_V.Count();
+  }
+  if (!out.good() || !mtl.good()) {
+    error = "Could not write " + path;
+    return false;
+  }
+  return true;
+}
+
+}  // namespace
+
 bool ImportMeshFile(Document& doc, const std::string& path, std::string& error) {
   const std::string ext = LowerExt(path);
-  kernel::Mesh mesh;
-  kernel::Result r = kernel::Result::Failed;
-  if (ext == ".obj") r = kernel::Mesh::LoadObj(path, mesh);
-  else if (ext == ".stl") r = kernel::Mesh::LoadStl(path, mesh);
-  else {
+  if (ext == ".obj") return ImportObjMulti(doc, path, error);
+  if (ext != ".stl") {
     error = "Unsupported mesh format: " + ext;
     return false;
   }
-  if (r != kernel::Result::Ok || mesh.FaceCount() == 0) {
+  kernel::Mesh mesh;
+  if (kernel::Mesh::LoadStl(path, mesh) != kernel::Result::Ok || mesh.FaceCount() == 0) {
     error = "Could not read a mesh from " + path;
     return false;
   }
@@ -1455,6 +1893,11 @@ bool ImportMeshFile(Document& doc, const std::string& path, std::string& error) 
 
 bool ExportMeshFile(const Document& doc, const std::string& path, bool selected_only, std::string& error) {
   const std::string ext = LowerExt(path);
+  if (ext == ".obj") return ExportObjMulti(doc, path, selected_only, error);
+  if (ext != ".stl") {
+    error = "Unsupported export format: " + ext;
+    return false;
+  }
   std::vector<kernel::Mesh> meshes;
   for (const SceneObject& o : doc.Objects()) {
     if (selected_only && !o.selected) continue;
@@ -1474,14 +1917,7 @@ bool ExportMeshFile(const Document& doc, const std::string& path, bool selected_
     return false;
   }
   kernel::Mesh merged = meshes.size() == 1 ? meshes[0] : kernel::Mesh::MergeAndWeld(meshes);
-  kernel::Result r = kernel::Result::Failed;
-  if (ext == ".obj") r = merged.SaveObj(path);
-  else if (ext == ".stl") r = merged.SaveStlBinary(path);
-  else {
-    error = "Unsupported export format: " + ext;
-    return false;
-  }
-  if (r != kernel::Result::Ok) {
+  if (merged.SaveStlBinary(path) != kernel::Result::Ok) {
     error = "Could not write " + path;
     return false;
   }
