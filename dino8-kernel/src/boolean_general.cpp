@@ -3676,6 +3676,163 @@ Brep SplitFaceByCurve(const Brep& target, int face_index, const NurbsCurve& curv
   return result;
 }
 
+// ImprintClosedCurveOnFace(): parity-map "Imprint curve / face onto a body
+// face (add edges without changing geometry)" - the curve-onto-face half,
+// see boolean_general.h's own doc comment for the full contrast with
+// `SplitFaceByCurve()` (open chain, two-way split) and `ImprintFaces()`
+// (whole tool body). Pulls `curve` onto `face_index`'s own surface exactly
+// as `SplitFaceByCurve()` does, then hands the resulting chain to this
+// file's own `FragmentFaces()` - requiring the CLOSED-chain, one-hole-plus-
+// one-disk pattern that function already refuses, rather than the open,
+// clean-two-way-split pattern `SplitFaceByCurve()` requires.
+Brep ImprintClosedCurveOnFace(const Brep& target, int face_index, const NurbsCurve& curve, double tolerance,
+                               int samples) {
+  const ON_Brep& bt = target.raw();
+  const int nt = bt.m_F.Count();
+  if (nt == 0) {
+    throw std::invalid_argument("dino8::kernel::ImprintClosedCurveOnFace: target has no faces");
+  }
+  if (face_index < 0 || face_index >= nt) {
+    throw std::invalid_argument("dino8::kernel::ImprintClosedCurveOnFace: face_index out of range");
+  }
+  if (curve.ControlPointCount() < 2) {
+    throw std::invalid_argument("dino8::kernel::ImprintClosedCurveOnFace: curve has fewer than 2 control points");
+  }
+  if (!(tolerance > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::ImprintClosedCurveOnFace: tolerance must be positive");
+  }
+  if (samples < 2) {
+    throw std::invalid_argument("dino8::kernel::ImprintClosedCurveOnFace: samples must be at least 2");
+  }
+
+  const ON_Surface* face_surface = bt.m_F[face_index].SurfaceOf();
+  const Interval dom = curve.Domain();
+  Chain chain;
+  chain.reserve(static_cast<size_t>(samples) + 1);
+  double u = 0.0, v = 0.0;
+  for (int i = 0; i <= samples; ++i) {
+    const double t = dom.min + (dom.max - dom.min) * (static_cast<double>(i) / samples);
+    const Point3d sample = curve.PointAt(t);
+    if (!SurfaceClosestPointGlobal(*face_surface, sample, u, v)) {
+      throw std::invalid_argument(
+          "dino8::kernel::ImprintClosedCurveOnFace: curve does not converge onto the face's surface");
+    }
+    const Point3d p = face_surface->PointAt(u, v);
+    if (!chain.empty() && chain.back().p.DistanceTo(p) < 1e-9) continue;  // stalled sample, skip
+    chain.push_back({p, Point2d(u, v)});
+  }
+  if (chain.size() < 2) {
+    throw std::invalid_argument(
+        "dino8::kernel::ImprintClosedCurveOnFace: curve collapses to a single point on the surface");
+  }
+
+  IntersectOptions opt;
+  opt.tolerance = tolerance;
+  const double stitch_tol = std::max(1e-4, opt.tolerance * 20.0);
+  const bool debug = std::getenv("DINO8_BOOL_DEBUG") != nullptr;
+
+  // The defining requirement this function places that SplitFaceByCurve()
+  // does not (see that function's own explicit rejection of this exact
+  // case, and this function's own doc comment): `curve`'s own two ends
+  // must coincide once pulled onto the surface - this is the curve-is-a-
+  // closed-interior-loop case, not an open chain reaching the boundary.
+  if (chain.front().p.DistanceTo(chain.back().p) > stitch_tol) {
+    throw std::invalid_argument(
+        "dino8::kernel::ImprintClosedCurveOnFace: curve's own two ends do not coincide once pulled onto the "
+        "surface - this function only imprints a CLOSED loop entirely interior to the face; an open chain "
+        "reaching the face's own trim boundary is SplitFaceByCurve()'s job instead");
+  }
+
+  std::vector<std::vector<Chain>> raw_t(static_cast<size_t>(nt));
+  raw_t[static_cast<size_t>(face_index)].push_back(std::move(chain));
+
+  std::vector<FaceFrags> frags_t = FragmentFaces(bt, nt, raw_t, stitch_tol, opt, debug);
+
+  const FaceFrags* split_ff = nullptr;
+  for (const FaceFrags& ff : frags_t) {
+    if (ff.face_index == face_index) {
+      split_ff = &ff;
+      break;
+    }
+  }
+  // The genuine "closed interior loop" signature FragmentFaces()/
+  // SplitFaceLoop() already produce for this case (see
+  // BridgeHolesIntoOuter()'s own doc comment - ImprintFaces()'s own
+  // "annulus-with-hole plus interior disk" pattern on a piercing
+  // cylinder): exactly 2 fragments, exactly ONE of which carries exactly
+  // ONE hole (the curve just fed in) - the other is the plain interior
+  // disk. Anything else means the curve didn't actually land as a single
+  // clean interior loop (e.g. it also reaches the boundary, or crosses
+  // itself) and is refused rather than guessed at.
+  size_t frags_with_holes = 0;
+  size_t hole_count_on_that_frag = 0;
+  if (split_ff != nullptr) {
+    for (const Fragment& frag : split_ff->frags) {
+      if (!frag.holes.empty()) {
+        ++frags_with_holes;
+        hole_count_on_that_frag = frag.holes.size();
+      }
+    }
+  }
+  if (split_ff == nullptr || split_ff->frags.size() != 2 || frags_with_holes != 1 || hole_count_on_that_frag != 1) {
+    const size_t got = split_ff == nullptr ? 0 : split_ff->frags.size();
+    for (FaceFrags& ff : frags_t) delete ff.surface;
+    throw std::invalid_argument(
+        "dino8::kernel::ImprintClosedCurveOnFace: curve must form a single closed loop entirely interior to "
+        "the face's own trim boundary (got " +
+        std::to_string(got) + " fragment(s), " + std::to_string(frags_with_holes) +
+        " of them holding a hole) - this function only performs a clean interior-loop imprint");
+  }
+
+  // Same "keep every fragment of every face, unconditionally" reassembly
+  // ImprintFaces()/SplitFaceByCurve() above use - every other face
+  // produces exactly one Fragment (its own original, untouched boundary),
+  // same as any face no chain ever reaches.
+  std::vector<KeptFace> kept;
+  for (FaceFrags& ff : frags_t) {
+    for (Fragment& frag : ff.frags) {
+      KeptFace kf;
+      kf.surface = ff.surface->DuplicateSurface();
+      kf.rev = ff.base_rev;
+      kf.outer = frag.outer;
+      kf.holes = frag.holes;
+      if (!kf.holes.empty()) BridgeHolesIntoOuter(kf.outer, kf.holes, ff.surface);
+      kept.push_back(std::move(kf));
+    }
+  }
+  for (FaceFrags& ff : frags_t) delete ff.surface;
+
+  ReconcileFragmentBoundaries(kept);
+
+  Brep result;
+  ON_Brep& brep = result.raw();
+  VertexWelder welder;
+  for (KeptFace& kf : kept) {
+    CollapseDuplicateVids(kf.outer, welder, kf.surface);
+    for (auto& h : kf.holes) CollapseDuplicateVids(h, welder, kf.surface);
+  }
+  for (const Point3d& p : welder.Points()) brep.NewVertex(p);
+
+  std::unordered_map<uint64_t, int> edge_of_pair;
+  for (KeptFace& kf : kept) {
+    if (kf.outer.size() < 3) {
+      delete kf.surface;
+      continue;
+    }
+    const int surface_index = brep.AddSurface(kf.surface);
+    ON_BrepFace& face = brep.NewFace(surface_index);
+    face.m_bRev = kf.rev;
+    BuildLoop(brep, face, ON_BrepLoop::outer, kf.outer, welder, edge_of_pair);
+    for (const std::vector<UVPt>& h : kf.holes) {
+      if (h.size() >= 3) BuildLoop(brep, face, ON_BrepLoop::inner, h, welder, edge_of_pair);
+    }
+  }
+
+  brep.SetTrimIsoFlags();
+  brep.SetTolerancesBoxesAndFlags(/*bLazy=*/true);
+  return result;
+}
+
 // SplitBySheet(): sheet/solid trim (parity-map "Sheet/solid trim (open
 // surface as cutter through a solid)"). Splits `solid` (a closed Brep)
 // into the two pieces on either side of `sheet` (an OPEN Brep - one or
@@ -4223,6 +4380,26 @@ Brep MakeCountersinkHole(const Brep& solid, Point3d center, Vector3d axis, doubl
   return BooleanCombineGeneral(solid, tool, BooleanOp::Difference);
 }
 
+namespace {
+
+// The tool `EmbossProfile()` below builds from a single profile curve,
+// factored out so `EmbossProfileWithHoles()` can build the geometrically
+// IDENTICAL tool from each of its own hole profiles (same `mode`, same
+// margin placement) and combine it with the OPPOSITE boolean op instead of
+// a second, differently-shaped tool - see that function's own doc comment
+// for why that's what a hole/counter actually needs.
+Brep BuildEmbossTool(const NurbsCurve& profile, Vector3d dir, double depth, EmbossMode mode, double margin) {
+  const bool deboss = (mode == EmbossMode::Deboss);
+  ON_NurbsCurve base_raw = profile.raw();
+  base_raw.Translate(dir * (deboss ? -margin : margin));
+  NurbsCurve base;
+  base.raw() = base_raw;
+  const Vector3d extrude_vector = deboss ? dir * (margin + depth) : -dir * (margin + depth);
+  return Brep::Extrude(base, extrude_vector, /*cap=*/true);
+}
+
+}  // namespace
+
 Brep EmbossProfile(const Brep& solid, const NurbsCurve& profile, Vector3d direction, double depth, EmbossMode mode) {
   if (solid.raw().m_F.Count() == 0) {
     throw std::invalid_argument("dino8::kernel::EmbossProfile: solid has no faces");
@@ -4251,14 +4428,95 @@ Brep EmbossProfile(const Brep& solid, const NurbsCurve& profile, Vector3d direct
   // real overlap to fuse onto) and protrudes `depth` past it the other
   // way, outward.
   const bool deboss = (mode == EmbossMode::Deboss);
-  ON_NurbsCurve base_raw = profile.raw();
-  base_raw.Translate(dir * (deboss ? -margin : margin));
-  NurbsCurve base;
-  base.raw() = base_raw;
-
-  const Vector3d extrude_vector = deboss ? dir * (margin + depth) : -dir * (margin + depth);
-  const Brep tool = Brep::Extrude(base, extrude_vector, /*cap=*/true);
+  const Brep tool = BuildEmbossTool(profile, dir, depth, mode, margin);
   return BooleanCombineGeneral(solid, tool, deboss ? BooleanOp::Difference : BooleanOp::Union);
+}
+
+Brep EmbossProfileWithHoles(const Brep& solid, const NurbsCurve& outer_profile,
+                             const std::vector<NurbsCurve>& hole_profiles, Vector3d direction, double depth,
+                             EmbossMode mode) {
+  if (hole_profiles.empty()) {
+    throw std::invalid_argument(
+        "dino8::kernel::EmbossProfileWithHoles: hole_profiles must be non-empty - call EmbossProfile() directly "
+        "for a simple profile with no counters");
+  }
+  for (const NurbsCurve& hole : hole_profiles) {
+    if (!hole.raw().IsClosed()) {
+      throw std::invalid_argument("dino8::kernel::EmbossProfileWithHoles: every hole profile must be a closed curve");
+    }
+  }
+
+  // The outer profile is handled exactly like a plain EmbossProfile() call
+  // - same validation, same tool, same op.
+  Brep result = EmbossProfile(solid, outer_profile, direction, depth, mode);
+
+  Vector3d dir = direction;
+  dir.Unitize();  // already validated non-zero by the EmbossProfile() call above
+  const BoundingBox tbb = solid.GetTightBoundingBox();
+  const double diagonal = (tbb.max - tbb.min).Length();
+  const double margin = 1e-3 * std::max(diagonal, 1.0);
+  const bool deboss = (mode == EmbossMode::Deboss);
+
+  // Each hole's own tool is built DIRECTLY from the span it actually needs
+  // to touch - NOT `BuildEmbossTool()`'s own "margin outside the surface,
+  // reach depth past it" convention, which is right for cutting/fusing
+  // against an UNTOUCHED surface (the outer profile's own job) but wrong
+  // here: a first attempt reused that exact convention (same `mode`, same
+  // margin placement as the outer tool) and genuinely DID avoid the
+  // coincident-face throw the naive `depth`-only version hit - but it also
+  // silently built an INVALID result (confirmed directly,
+  // dino8_scratch_test: `IsValid()` false, tessellation not a closed
+  // manifold) with a real, measurable defect: Deboss's own hole tool,
+  // built with its base `margin` OUTSIDE the surface exactly like the outer
+  // tool's own Deboss convention, then got UNIONED there - adding a
+  // genuine `margin`-tall sliver of material ABOVE the original surface
+  // within the hole's own footprint (the model's own tight bounding box
+  // measurably exceeded the original height by exactly `margin`), not
+  // because `margin` was too large, but because the SAME "sit outside the
+  // surface" placement that is harmless for a Difference against solid
+  // material (subtracting empty space subtracts nothing) is NOT harmless
+  // for a Union (adding material where none should be).
+  //
+  // The fix: place each hole tool by which op it will actually combine
+  // with, not by which mode the OUTER tool used:
+  // - Deboss's hole tool (Union): the pocket's own entry is open air within
+  //   the hole's footprint (no existing face there to graze tangentially -
+  //   that hazard is specific to cutting into or fusing onto still-SOLID
+  //   material), so its own top sits flush at `outer_profile`'s own plane
+  //   with no margin needed there at all, and only its FAR end needs the
+  //   "land `margin` PAST an already-existing face, never exactly on it"
+  //   treatment this file already uses elsewhere (here, the pocket floor
+  //   the outer Deboss cut) - reaching `margin` deeper into the untouched,
+  //   already-solid material below it (adding more of the same material
+  //   there is a no-op).
+  // - Emboss's hole tool (Difference): the footprint's own material is now
+  //   CONTINUOUS solid bulk from the original box through the boss (the
+  //   outer Union dissolved any face at the original surface height within
+  //   this footprint), so the hole tool's own BOTTOM end also has no
+  //   existing face to land on within that bulk and needs no margin
+  //   either; only its TOP needs to clear the boss's own top face by
+  //   `margin` so it cuts all the way through rather than landing on it.
+  for (const NurbsCurve& hole : hole_profiles) {
+    ON_NurbsCurve base_raw = hole.raw();
+    Vector3d extrude_vector;
+    if (deboss) {
+      // Base stays exactly at the profile's own plane (flush, open air
+      // there); reach margin past the pocket floor.
+      extrude_vector = dir * (depth + margin);
+    } else {
+      // Base shifted `depth + margin` OUTWARD (past the boss's own top);
+      // reach back down `depth + 2*margin` so the far end lands `margin`
+      // BELOW the original surface - solid bulk either way, no margin
+      // needed on this end specifically, just comfortably past the top.
+      base_raw.Translate(-dir * (depth + margin));
+      extrude_vector = dir * (depth + 2.0 * margin);
+    }
+    NurbsCurve base;
+    base.raw() = base_raw;
+    const Brep hole_tool = Brep::Extrude(base, extrude_vector, /*cap=*/true);
+    result = BooleanCombineGeneral(result, hole_tool, deboss ? BooleanOp::Union : BooleanOp::Difference);
+  }
+  return result;
 }
 
 Brep MakeRevolvedCut(const Brep& solid, const NurbsCurve& profile, Point3d axis_point, Vector3d axis_direction,
