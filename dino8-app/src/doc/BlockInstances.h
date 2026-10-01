@@ -57,6 +57,15 @@ struct BlockInstance {
   // block with pure static geometry and no named states still instantiates
   // through InstantiateBlockInDocument's own untracked path, same as before.
   bool flipped = false;
+  // Array parameter: repeats the instance's state-filtered geometry this
+  // many times along its block definition's array_axis, array_spacing model
+  // units apart (BlockDefinition::array_spacing, doc/Document.h) - the third
+  // dynamic-block parameter/action type alongside Visibility states and
+  // Flip. Only takes effect when the definition actually defines a nonzero
+  // array_spacing (BlockSetArraySpacing); otherwise treated as 1 regardless
+  // of the stored value, same "no-op until configured" contract as Flip
+  // being a no-op on a block with no named states.
+  int array_count = 1;
 };
 
 std::vector<BlockInstance> LoadBlockInstances(const Document& doc);
@@ -102,6 +111,11 @@ bool SetBlockInstanceState(Document& doc, int group, const std::string& new_stat
 // Looks up the stored record for `group`, sets its Flip parameter and
 // rebuilds. Returns false if `group` isn't a known dynamic-block instance.
 bool SetBlockInstanceFlip(Document& doc, int group, bool flipped);
+
+// Looks up the stored record for `group`, sets its Array parameter (clamped
+// to at least 1) and rebuilds. Returns false if `group` isn't a known
+// dynamic-block instance.
+bool SetBlockInstanceArrayCount(Document& doc, int group, int count);
 
 // Finds the BlockInstance owning `object_id` (one of its current objects).
 bool FindBlockInstanceByObject(const Document& doc, ObjectId object_id, BlockInstance& out);

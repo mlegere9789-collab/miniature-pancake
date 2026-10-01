@@ -95,6 +95,15 @@ struct BlockDefinition {
   std::vector<SceneObject> objects;
   std::string description;
   std::vector<std::string> states;
+  // Array parameter (BlockSetArraySpacing, doc/BlockInstances.h): a placed
+  // instance may repeat its state-filtered geometry `array_count` times
+  // along `array_axis`, `array_spacing` model units apart, the way Rhino's
+  // own dynamic-block Array parameter/action lays out linear copies. A
+  // definition that never calls BlockSetArraySpacing keeps array_spacing at
+  // 0, which PlaceFiltered treats as "no array parameter defined" and always
+  // places exactly one copy, so an ordinary block is unaffected.
+  kernel::Vector3d array_axis{1, 0, 0};
+  double array_spacing = 0;
 };
 
 struct Group {

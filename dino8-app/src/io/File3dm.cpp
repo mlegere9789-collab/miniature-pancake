@@ -58,7 +58,8 @@ std::string EncodeBlocksMeta(const std::vector<BlockDefinition>& blocks) {
     out << (i ? "," : "") << "{\"name\":\"" << JsonEscapeBlock(b.name) << "\",\"desc\":\"" << JsonEscapeBlock(b.description) << "\""
         << ",\"bx\":" << b.base.x << ",\"by\":" << b.base.y << ",\"bz\":" << b.base.z << ",\"states\":[";
     for (size_t j = 0; j < b.states.size(); ++j) out << (j ? "," : "") << "\"" << JsonEscapeBlock(b.states[j]) << "\"";
-    out << "]}";
+    out << "],\"aax\":" << b.array_axis.x << ",\"aay\":" << b.array_axis.y << ",\"aaz\":" << b.array_axis.z
+        << ",\"aspc\":" << b.array_spacing << "}";
   }
   out << "]";
   return out.str();
@@ -78,6 +79,11 @@ std::map<std::string, BlockDefinition> DecodeBlocksMeta(const std::string& text)
     b.base = kernel::Point3d(v["bx"].number, v["by"].number, v["bz"].number);
     const json::Value& st = v["states"];
     for (size_t j = 0; j < st.Size(); ++j) b.states.push_back(st[j].AsString());
+    // Missing (a file saved before the Array parameter existed) reads back
+    // as 0/0/0 axis with 0 spacing - harmless, since PlaceFiltered treats
+    // array_spacing == 0 as "no array parameter defined" regardless of axis.
+    b.array_axis = kernel::Vector3d(v["aax"].number, v["aay"].number, v["aaz"].number);
+    b.array_spacing = v["aspc"].number;
     out[b.name] = b;
   }
   return out;

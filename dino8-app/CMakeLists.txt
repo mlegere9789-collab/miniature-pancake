@@ -704,6 +704,21 @@ if(DINO8_BUILD_TESTS)
   target_link_libraries(dino8_test_block_flip PRIVATE dino8_kernel)
   add_test(NAME dino8_block_flip COMMAND dino8_test_block_flip)
 
+  # Dynamic-block Array parameter (src/doc/BlockInstances.cpp's
+  # SetBlockInstanceArrayCount/PlaceFiltered): repeats a placed instance
+  # along its block's array axis/spacing without moving the first copy's
+  # insert point, persists through the same dino8.block_instances JSON
+  # user-text every other BlockInstance field already round-trips through,
+  # is reversible, and is a no-op on a definition with no configured
+  # spacing. See PARITY_MAP.md's "Dynamic blocks" item. Same dependency
+  # shape as dino8_test_block_flip above.
+  add_executable(dino8_test_block_array tests/test_block_array.cpp src/doc/Document.cpp src/doc/SceneObject.cpp
+                                         src/doc/SubObjectEdit.cpp src/doc/BlockInstances.cpp
+                                         src/geom/BrepMesher.cpp src/util/json_mini.cpp)
+  target_include_directories(dino8_test_block_array PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(dino8_test_block_array PRIVATE dino8_kernel)
+  add_test(NAME dino8_block_array COMMAND dino8_test_block_array)
+
   # AnnotationStyle::precision/unit_suffix/ext_offset/ext_extension/
   # text_placement / DimStyleParams+FormatMeasurement (commands/DimGeometry.h)
   # - see tests/test_dim_precision.cpp's own file comment for why this is
