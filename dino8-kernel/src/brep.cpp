@@ -213,6 +213,34 @@ Brep Brep::Box(double x0, double y0, double z0, double x1, double y1,
   return result;
 }
 
+Brep Brep::BoxWelded(double x0, double y0, double z0, double x1, double y1,
+                      double z1) {
+  if (!(x1 > x0) || !(y1 > y0) || !(z1 > z0)) {
+    throw std::invalid_argument(
+        "dino8::kernel::Brep::BoxWelded: requires x1 > x0, y1 > y0 and z1 > z0");
+  }
+  const std::vector<Point3d> b = {Point3d(x0, y0, z0), Point3d(x1, y0, z0),
+                                   Point3d(x1, y1, z0), Point3d(x0, y1, z0)};
+  const std::vector<Point3d> t = {Point3d(x0, y0, z1), Point3d(x1, y0, z1),
+                                   Point3d(x1, y1, z1), Point3d(x0, y1, z1)};
+  auto make_face = [](std::vector<Point3d> loop, ON_3dVector normal) {
+    PlanarFace f;
+    f.loop = std::move(loop);
+    f.plane = ON_Plane(f.loop[0], normal);
+    return f;
+  };
+  std::vector<PlanarFace> faces;
+  faces.push_back(make_face({b[3], b[2], b[1], b[0]}, ON_3dVector(0, 0, -1)));  // bottom
+  faces.push_back(make_face({t[0], t[1], t[2], t[3]}, ON_3dVector(0, 0, 1)));   // top
+  for (size_t i = 0; i < 4; ++i) {  // sides, in b's own CCW order
+    const size_t j = (i + 1) % 4;
+    ON_3dVector n = ON_CrossProduct(b[j] - b[i], t[i] - b[i]);
+    n.Unitize();
+    faces.push_back(make_face({b[i], b[j], t[j], t[i]}, n));
+  }
+  return FromPlanarFaces(faces);
+}
+
 Brep Brep::FromUntrimmedQuadFaces(const std::vector<std::vector<Point3d>>& quads) {
   Brep result;
   ON_Brep& brep = result.brep_;

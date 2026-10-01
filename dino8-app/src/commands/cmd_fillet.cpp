@@ -3075,6 +3075,32 @@ class SplitFaceCommand : public Command {
     if (!cutter) { ctx.Warn("SplitFace: no curve found near that point"); return; }
     (void)cutter_obj;
     const double tol = std::max(ctx.Settings().absolute_tolerance, 1e-5);
+    // A polysurface face keeps the body's real topology: the kernel's own
+    // general SplitFaceByCurve() (dino8/kernel/boolean_general.h) replaces
+    // just face_->face with two faces sharing a genuine new ON_BrepEdge on
+    // the SAME ON_Brep, leaving every other face of the body untouched -
+    // unlike the surface-only path below, which only ever produces two
+    // disconnected floating surfaces with no shared edge and (for a
+    // picked polysurface face) doesn't touch the original body at all.
+    if (o->kind == ObjectKind::Brep && o->brep) {
+      ON_NurbsCurve cnc;
+      if (cutter->GetNurbForm(cnc) <= 0) { ctx.Warn("SplitFace: could not read the cutter curve"); return; }
+      kernel::NurbsCurve kc;
+      kc.raw() = cnc;
+      kernel::Brep kb;
+      kb.raw() = *b;
+      try {
+        kernel::Brep split = kernel::SplitFaceByCurve(kb, face_->face, kc, tol);
+        ctx.Doc().BeginChange("SplitFace");
+        o->brep->raw() = split.raw();
+        o->InvalidateDisplay();
+        ctx.Doc().Select(face_->id, true);
+        ctx.Print("SplitFace: face " + std::to_string(face_->face) + " of object " + std::to_string(face_->id) + " split in place, body topology kept");
+      } catch (const std::exception& ex) {
+        ctx.Warn("SplitFace: " + std::string(ex.what()));
+      }
+      return;
+    }
     IntersectOptions opt;
     opt.tolerance = tol;
     opt.mesh_tolerance = std::max(tol * 4, 1e-4);
