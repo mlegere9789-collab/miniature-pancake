@@ -2300,17 +2300,6 @@ Brep BuildMultiStationTaperedFilletConcave(const Brep& solid, Point3d edge_p0, P
   for (size_t k = 0; k < n_stations; ++k) railI_pts.push_back(rail_i(stations[k].t));
   for (size_t k = n_stations; k-- > 0;) railJ_pts.push_back(rail_j(stations[k].t));
 
-  std::fprintf(stderr, "[DEBUG] idx_i=%d idx_j=%d\n", idx_i, idx_j);
-  std::fprintf(stderr, "[DEBUG] loop_i: ");
-  for (const Point3d& p : faces[static_cast<size_t>(idx_i)].loop) std::fprintf(stderr, "(%.3f,%.3f,%.3f) ", p.x, p.y, p.z);
-  std::fprintf(stderr, "\n[DEBUG] loop_j: ");
-  for (const Point3d& p : faces[static_cast<size_t>(idx_j)].loop) std::fprintf(stderr, "(%.3f,%.3f,%.3f) ", p.x, p.y, p.z);
-  std::fprintf(stderr, "\n[DEBUG] edge_p0=(%.3f,%.3f,%.3f) edge_p1=(%.3f,%.3f,%.3f)\n", edge_p0.x, edge_p0.y, edge_p0.z,
-               edge_p1.x, edge_p1.y, edge_p1.z);
-  std::fprintf(stderr, "[DEBUG] i_has(p0,p1)=%d i_has(p1,p0)=%d j_has(p1,p0)=%d j_has(p0,p1)=%d\n",
-               (int)loop_has_consecutive(idx_i, edge_p0, edge_p1), (int)loop_has_consecutive(idx_i, edge_p1, edge_p0),
-               (int)loop_has_consecutive(idx_j, edge_p1, edge_p0), (int)loop_has_consecutive(idx_j, edge_p0, edge_p1));
-
   Brep::PlanarFace retrimmed_i = faces[static_cast<size_t>(idx_i)];
   if (loop_has_consecutive(idx_i, edge_p0, edge_p1)) {
     retrimmed_i.loop = SpliceLoopEdge(retrimmed_i.loop, edge_p0, edge_p1, railI_pts, tol);
