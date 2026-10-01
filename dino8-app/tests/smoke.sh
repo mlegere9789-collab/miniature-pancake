@@ -4829,6 +4829,43 @@ barcheck "  11,0,0" "array copy 0 lands at the plain insert point (local 1,0,0 +
 barcheck "  16,0,0" "array copy 1 is stepped 5 units along X from copy 0, not stacked on top of it"
 barcheck "  21,0,0" "array copy 2 is stepped 10 units along X from copy 0"
 
+# BlockSetLookupTable/BlockSetLookup command-line wiring: PARITY_MAP.md
+# "Dynamic blocks" Lookup parameter/action - the fourth and last of the
+# four named parameter/action types, after Visibility states, Flip and
+# Array above (the Document-level math itself is unit-tested directly in
+# dino8_block_lookup/test_block_lookup.cpp) - see block_lookup_script.txt's
+# own header comment.
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  BLK="$("$BIN" --smoke 100 --script "$HERE/block_lookup_script.txt" 2>&1)" || { echo "$BLK"; echo "FAIL: block-lookup script exited non-zero"; exit 1; }
+else
+  BLK="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 100 --script "$HERE/block_lookup_script.txt" 2>&1)" || { echo "$BLK"; echo "FAIL: block-lookup script exited non-zero"; exit 1; }
+fi
+echo "$BLK" | grep -E "^(ok|FAIL)" || true
+if echo "$BLK" | grep -q "^FAIL"; then fail=1; fi
+echo "$BLK" | grep -q "^smoke:" || { echo "$BLK"; echo "FAIL: block-lookup script produced no smoke line"; fail=1; }
+blkcheck() { if echo "$BLK" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$BLK" "$1"; fail=1; fi; }
+blkcheck "  12,0,0" "lookup key 'L' switches the instance to state Large: local (2,0,0) + insert (10,0,0) = (12,0,0)"
+blkcheck "  11,0,0" "an unmatched lookup key falls back to the instance's own explicit state (Small): local (1,0,0) + insert (10,0,0) = (11,0,0)"
+
+# LayerPlotColor command-line wiring: PARITY_MAP.md "Print and plot output"
+# item - the color half of "plot styles (CTB/STB)", alongside
+# print_width_mm/LayerPrintWidth's lineweight half (the pure
+# EffectivePlotColor function itself is unit-tested directly in
+# dino8_plot_color/test_plot_color.cpp) - see plot_color_script.txt's own
+# header comment. Checked directly against the real exported SVG files'
+# stroke colors, not just a printed command confirmation.
+sed "s|@TMP@|$TMPW|g" "$HERE/plot_color_script.txt" > "$TMPW/plot_color_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  PLC="$("$BIN" --smoke 30 --script "$TMPW/plot_color_script.txt" 2>&1)" || { echo "$PLC"; echo "FAIL: plot-color script exited non-zero"; exit 1; }
+else
+  PLC="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/plot_color_script.txt" 2>&1)" || { echo "$PLC"; echo "FAIL: plot-color script exited non-zero"; exit 1; }
+fi
+echo "$PLC" | grep -E "^(ok|FAIL)" || true
+if echo "$PLC" | grep -q "^FAIL"; then fail=1; fi
+grep -q 'stroke="#000000"' "$TMPW/plot_color_off.svg" && echo "ok   with no plot color override, the exported SVG strokes the line in its own display color (black)" || { echo "FAIL plot_color_off.svg does not stroke black"; fail=1; }
+grep -q 'stroke="#ff0000"' "$TMPW/plot_color_on.svg" && echo "ok   LayerPlotColor 255,0,0 makes the exported SVG stroke the line red, not its unchanged on-screen display color" || { echo "FAIL plot_color_on.svg does not stroke red"; fail=1; }
+grep -q 'stroke="#000000"' "$TMPW/plot_color_cleared.svg" && echo "ok   LayerPlotColor ByLayer clears the override back to the display color (black)" || { echo "FAIL plot_color_cleared.svg does not stroke black again after clearing"; fail=1; }
+
 # Undo id-reuse regression (see the last section of history_script.txt):
 # a Box drawn right after undoing a tracked Extrude used to be handed the
 # undone extrusion's own id (6), so its HistoryRecord/Provenance entries -
