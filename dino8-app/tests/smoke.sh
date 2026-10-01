@@ -559,6 +559,24 @@ dhecheck "DXF: 0 curves, 0 points, 0 meshes, 1 hatch" "the reopened file's HATCH
 dhecheck "1 object(s) selected" "SelHatch found the round-tripped hatch"
 dhecheck "Area = 100 square" "the round-tripped hatch's area is exactly the 10x10 boundary"
 grep -q "^HATCH$" "$TMPW/dxf_hatch_export.dxf" && echo "ok   dxf_hatch_export.dxf contains a real HATCH entity, not just boundary LINE/POLYLINE entities" || { echo "FAIL dxf_hatch_export.dxf has no HATCH entity"; fail=1; }
+# DXF TEXT export: ExportDxf had no TEXT writer function at all until this
+# change (see WriteDxfTextIfPlanarXY in FileExchange.cpp) - a Dino8 "Text"
+# annotation used to round-trip out as its own baked glyph-outline curves,
+# losing the fact it was ever a single text object. Makes a real Text
+# annotation, exports it, reopens the exported file in a fresh document,
+# and checks SelText/FindText find the same real text object back.
+sed "s|@TMP@|$TMPW|g" "$HERE/dxf_text_export_script.txt" > "$TMPW/dxf_text_export_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  DTE="$("$BIN" --smoke 30 --script "$TMPW/dxf_text_export_script.txt" 2>&1)" || { echo "$DTE"; echo "FAIL: DXF TEXT export script exited non-zero"; exit 1; }
+else
+  DTE="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/dxf_text_export_script.txt" 2>&1)" || { echo "$DTE"; echo "FAIL: DXF TEXT export script exited non-zero"; exit 1; }
+fi
+dtecheck() { if echo "$DTE" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$DTE" "$1"; fail=1; fi; }
+dtecheck "Exported $TMPW/dxf_text_export.dxf" "ExportDxf wrote a file"
+dtecheck "DXF: 3 curves, 0 points, 0 meshes" "the reopened file's TEXT entity round-tripped as exactly 3 real glyph curves (H, i-stem, i-dot), the same count a hand-written TEXT fixture already gets"
+dtecheck "Text = Hi" "the round-tripped TEXT entity's string content survived exactly (What dumps each object's user text)"
+dtecheck "Annotation = Text" "the round-tripped curves carry the same Annotation=Text tag DxfImporter::Text() writes for a hand-written fixture"
+grep -q "^TEXT$" "$TMPW/dxf_text_export.dxf" && echo "ok   dxf_text_export.dxf contains a real TEXT entity, not just baked glyph-outline curves" || { echo "FAIL dxf_text_export.dxf has no TEXT entity"; fail=1; }
 # DWG SPLINE: built via LibreDWG's own dwg_add_SPLINE (marked "Experimental.
 # Does not work yet properly" in dwg_api.h - confirmed by hand it only ever
 # populates fit_pts, never real NURBS control points), so this exercises
@@ -1360,10 +1378,10 @@ flcheck "Intersect: 1 surface intersection curve.s., 0 curve/surface point.s." "
 flcheck "Intersect: 0 surface intersection curve.s., 1 curve/surface point.s." "Intersect (CSX) found where a line pierces a plane"
 flcheck "FilletEdge: edge 10 of object .* replaced with an exact fillet (variable radius: 1 at t=0, 3 at t=1 (exact))" "FilletEdge Radii= built a genuine variable-radius fillet via the exact planar closed form, not the constant-radius approximation"
 flcheck "Volume = 990.8 cubic" "a 10x10x10 box minus a variable r=1->3 edge fillet now goes through kernel::FilletConvexEdgeTapered: the naive closed-form integral of a linear radius ramp with a plain quarter-circle cross-section gives 1000 - (1-pi/4)*10*(1+3+9)/3 = 990.70, but that ignores the elliptical corner-notch splice the kernel builds at each end (see TestFilletConvexEdgeTaperedClosesCornerNotch) - a genuinely different, more faithful notch than the app's old RoundFaceCorner splice - so the tessellated (tol 0.005, not exact analytic) Volume lands one display digit away, at 990.8"
-flcheck "FilletSrf: built between object .* and .*, radius 1 to 2; one surface trimmed (the other is not planar; left untrimmed)" "VariableFilletSrf built a plane+cylinder variable-radius fillet via BuildPlaneCylinderVariableFillet, not the constant-radius approximation (no 'approximate' suffix means every sample landed exactly on the plane and exactly on the cylinder)"
+flcheck "FilletSrf: built between object .* and .*, radius 1 to 2; one surface trimmed (the other could not be split)" "VariableFilletSrf built a plane+cylinder variable-radius fillet via BuildPlaneCylinderVariableFillet, not the constant-radius approximation (no 'approximate' suffix means every sample landed exactly on the plane and exactly on the cylinder); the cylinder's own full-circumference contact curve is a closed loop, which TrimBySplit's kernel::SplitFaceByCurve correctly refuses to split (a closed loop can only become an interior hole, not a two-way split), so it still falls back to left-untrimmed there - the planar cap is the one TrimWholeLoop trims"
 flcheck "degree 2 x 3, CVs 3 x 33" "the plane+cylinder variable fillet lofted all 33 (samples+1) exact rows into its NURBS surface"
 flcheck "VariableBlendSrf: blend surface added between object .* and .*, width 0.2 to 0.8 .Continuity=Curvature: quintic blend, cross-boundary curvature matched exactly to both surfaces." "VariableBlendSrf built a real independent blend (BuildBlendSurfaceG2, same construction as BlendSrf/BlendEdge) with a width that genuinely ramps from 0.2 to 0.8 along the rail, not the rolling-ball fillet VariableFilletSrf uses"
-flcheck "degree 5 x 3, CVs 6 x 25" "VariableBlendSrf's Continuity=Curvature output is the degree-5x3 quintic-Hermite blend (25 = 24 samples + 1 rows), the same construction BuildBlendSurfaceG2 gives BlendSrf/BlendEdge - not a rolling-ball fillet arc, and see tests/test_variable_blend.cpp for the numeric proof the width itself (measured on the constructed surface's own control points) actually varies along the rail while the G2 curvature match still holds at both ends"
+flcheck "degree 5 x 3, CVs 6 x 49" "VariableBlendSrf's Continuity=Curvature output is the degree-5x3 quintic-Hermite blend, the same construction BuildBlendSurfaceG2 gives BlendSrf/BlendEdge - not a rolling-ball fillet arc, and see tests/test_variable_blend.cpp for the numeric proof the width itself (measured on the constructed surface's own control points) actually varies along the rail while the G2 curvature match still holds at both ends. 49 (not the old fixed-sample 24+1=25) rows: VariableBlendSrfCommand now builds through BuildBlendSurfaceG2Adaptive (geom/BlendSurface.h) instead of a bare fixed-sample call - PARITY_MAP.md's own disclosed 'tolerance enforcement exists in the geometry library but is not yet reachable from any app command' gap for Surface-to-surface continuity blend - so this box-face-to-extracted-face pair's own real measured gap at 24 samples exceeded the scale-aware max_gap floor and the adaptive wrapper genuinely doubled to 48 (49 rows) to certify it, rather than silently accepting the coarser build's own unmeasured error the way the fixed-sample call used to"
 flcheck "FilletEdge: edge .* -- mesh fallback (exact B-rep trim unavailable here; result is an approximate mesh, not a clean B-rep)" "FilletEdge succeeded on a solid cylinder's own closed (periodic) rim edge via the mesh fallback - this used to fail unconditionally with a watertight-gap error regardless of radius (see adversarial_corpus_notes.md SS3)"
 flcheck "FilletEdge: edge 10 of object .* replaced with an exact conic fillet (rho 0.5, distance 2)" "FilletEdge's Rho option wires straight to kernel::FilletConvexEdgeConic, a genuine ellipse/parabola/hyperbola cross-section blend distinct from the default rolling-ball circular arc"
 flcheck "Volume = 993.3 cubic" "a 10x10x10 box minus a rho=0.5 (exact parabola) conic edge fillet at distance 2 has volume 1000 - 2*2*sin(90deg)*10/6 = 993.3, the closed form FilletConvexEdgeConic's own doc comment derives for rho=0.5"
@@ -1392,6 +1410,8 @@ flcheck "FilletEdge: edge .* of object .* staged for an exact conic fillet (rho 
 flcheck "FilletEdge: edge .* of object .* staged for an exact conic fillet (rho 0.5, distance 2) - 2 staged, Enter to apply" "the second Rho pick, on the same object, is staged alongside the first rather than applied against the (still untouched) object"
 flcheck "FilletEdge: an exact conic (Rho) fillet of the 2 staged edge(s) on object .* failed (convex attempt:.*concave attempt:" "two staged Rho edges that share a face (this box's own TOP-front and TOP-back edges) are rejected as ONE atomic batch - kernel::FilletConvexEdgesConic's own 'two edges in this batch share a face' validation - instead of the pre-fix bug where the first edge's own committed conic result would silently apply, then the second pick would fail confusingly (already-curved solid no longer PlanarFaces()-describable)"
 flcheck "Volume = 1000 cubic" "neither staged edge touched the box - a clean atomic failure, not a partially-filleted object"
+flcheck "FilletSrf: built between object .* and .*, radius 0.3; both surfaces trimmed" "FilletSrf's TrimBySplit (cmd_fillet.cpp) genuinely trims a NON-planar pick too now, not just a planar one: a bounded quarter-cylinder panel (open, non-periodic - its contact curve crosses the trim boundary at exactly two points) built from the same Arc+ExtrudeCrv fixture ConnectSrf's own general-trim case uses, paired with an oversized tilted plane - kernel::SplitFaceByCurve (boolean_general.h) is general to ANY ON_Surface, unlike TrimWholeLoop's ON_BrepTrimmedPlane"
+flcheck "Area = 169.1 square" "the trimmed quarter-cylinder panel's real, reproducible combined area (stable across repeated runs; not a hand-derived closed form, the same 'no closed form, check the real number' convention the ConnectSrf case above uses)"
 echo "$FL" | grep -E "^(ok|FAIL)"
 if echo "$FL" | grep -q "^FAIL"; then fail=1; fi
 flcheck "^ok   expect_objects 41" "fillet script produced the expected object count"
@@ -1429,7 +1449,7 @@ facheck "! RemoveFillet: the picked face is not a recognized fillet, chamfer, or
 facheck "Volume = 1000 cubic" "the box RemoveFillet declined to touch survives with its exact original volume"
 facheck "! FilletVertex: not a supported trihedral corner" "a FilletVertex radius too large for a 2x2x2 box's own corner edges fails cleanly on both the convex and concave kernel attempts, not a crash or garbage geometry"
 facheck "Volume = 8 cubic" "the box a failed FilletVertex declined to touch survives with its exact original 2x2x2 volume"
-facheck "FilletSrf: built between object .* and .*, radius 1 to 2; surfaces not planar, left untrimmed" "VariableFilletSrf on a cylinder's own flat-top cap and curved side wall falls through to the approximate BuildPlaneCylinderVariableFillet/BuildFillet cascade (kernel::FilletConvexEdgeTapered needs the WHOLE solid planar-faced, which a cylindrical face fails outright) instead of crashing or silently misbuilding"
+facheck "FilletSrf: built between object .* and .*, radius 1 to 2; neither surface could be split, left untrimmed" "VariableFilletSrf on a cylinder's own flat-top cap and curved side wall falls through to the approximate BuildPlaneCylinderVariableFillet/BuildFillet cascade (kernel::FilletConvexEdgeTapered needs the WHOLE solid planar-faced, which a cylindrical face fails outright) instead of crashing or silently misbuilding; here the cap face is picked as part of the still-whole solid, so it is not the clean rectangular loop TrimWholeLoop assumes either, and the wall's own contact curve is a closed loop TrimBySplit correctly refuses - both sides stay untrimmed, honestly reported"
 facheck "FilletSrf: built between object .* and .*, radius 1 to 2$" "VariableFilletSrf Trim=No on an otherwise-exact planar box corner also falls through to the approximate cascade - the exact kernel path always replaces the whole solid, not the untrimmed separate surface Trim=No asks for"
 facheck "! FilletSrf: an exact conic (Rho) fillet needs the two faces to share an edge on one planar-faced solid with Trim=Yes (convex attempt:.*not planar" "FilletSrf Rho on a cylinder's own flat-top cap and curved side wall refuses with a clear diagnostic instead of silently building a plain round fillet that quietly ignores Rho - unlike Chamfer/VariableFillet just above, there is no approximate fallback a non-circular conic could ever be represented by"
 facheck "! FilletSrf: an exact conic (Rho) fillet needs the two faces to share an edge on one planar-faced solid with Trim=Yes (the two picks are independent surfaces with no shared edge)" "FilletSrf Rho on two genuinely independent (no shared edge) extracted surfaces refuses the same way - fa.id != fb.id means kernel::FilletConvexEdgeConic/FilletConcaveEdgeConic have no shared ON_BrepEdge to identify at all, not merely a curved-face rejection"
@@ -1715,11 +1735,12 @@ sccheck "history: ConstraintSolve: converged" "ConstraintSolve ran cleanly again
 # (see src/script/PythonEngine.cpp), when this build was compiled with a
 # Python 3 development install (DINO8_HAVE_PYTHON - see CMakeLists.txt).
 # Builds a box and a sphere, sets Name/Color on the box (and reads its
-# Layer), selects it, deletes the sphere, and exercises dino8.RunCommand
-# and Point3d/Vector3d arithmetic. Unlike script_script.txt's Lua test
-# there is no trailing script token: PythonEngine runs a script
-# start-to-finish with no GetPoint-style mid-script suspend (see
-# python_script.txt's own header).
+# Layer), selects it, deletes the sphere, and exercises dino8.RunCommand,
+# Point3d/Vector3d arithmetic, and - like script_script.txt's Lua test -
+# dino8.GetPoint() and dino8.GetString(), each fed by its own trailing
+# script token in turn (python_script.txt's own header), now that
+# PythonEngine actually suspends for them (worker thread, not a coroutine -
+# see PythonEngine.h).
 #
 # dino8.RunCommand only *queues* a nested command line while called from
 # inside another command's callback (CommandEngine::RunNested -> Execute,
@@ -2111,6 +2132,23 @@ print("command history has last command: " + str(dino8.LastCommandName() in dino
 dino8.ClearCommandHistory()
 print("command history empty after clear: " + str(dino8.CommandHistory() == ""))
 print("last command survives history clear: " + str(dino8.LastCommandName() == "RunPythonScript"))
+
+# dino8.GetPoint: now a real mid-script suspend (PythonEngine runs the
+# script on a worker thread - see PythonEngine.h), mirroring rs.GetPoint's
+# own trailing-script-token feed (script_script.txt's "RunScript t.lua
+# 20,20,20").
+p = dino8.GetPoint("Pick a marker point")
+print("picked point is None: " + str(p is None))
+if p is not None:
+    dino8.doc.Objects.AddPoint(p)
+    print("picked point %.0f,%.0f,%.0f" % (p.X, p.Y, p.Z))
+print("object count after GetPoint: %d" % len(dino8.doc.Objects.AllObjects()))
+
+# dino8.GetString: mirrors rs.GetString, same worker-thread suspend as
+# GetPoint above (see PythonEngine.h) - fed by the second trailing script
+# token (python_script.txt's "RunPythonScript @TMP@/t.py 20,20,20 Widget2").
+name = dino8.GetString("Name the marker point")
+print("got string: " + str(name))
 PY
 sed "s|@TMP@|$TMPW|g" "$HERE/python_script.txt" > "$TMPW/python_script.txt"
 # Captured with set +e, not "|| { ...; exit 1; }": python_script.txt's own
@@ -2321,7 +2359,11 @@ else
   pscheck "history: command history has last command: True" "dino8.CommandHistory() includes the line-1 \"Command: RunPythonScript ...\" entry LastCommandName just named, matching rs.CommandHistory()"
   pscheck "history: command history empty after clear: True" "dino8.ClearCommandHistory() actually cleared it, matching rs.ClearCommandHistory()"
   pscheck "history: last command survives history clear: True" "clearing the history deque leaves last_command_ itself untouched, matching rs.ClearCommandHistory() only ever clearing rs.CommandHistory()'s own log"
-  pscheck "^ok   expect_objects 36" "RunPythonScript left the box, the circle, the cone, the torus, the interpolated curve, the arc, the srf, the planar surface, three points, the extruded surface, the extruded solid, the union mesh, the difference mesh, the intersection mesh, the two circle copies, the rotate line and its rotated copy, the scale box and its scaled copy, the mirror line and its mirrored copy, the transform line and its transformed copy, the curve-query line, its 3 create=True divide points, the bounding-box test box, the surface-closest-point sphere, the AddMesh triangle, and the two fresh ObjectsByType test points (the sphere, the two union input boxes, the two difference input boxes and the two intersection input boxes were removed from inside the script, and the undo/redo group's own point was undone again at the end)"
+  pscheck "picked point is None: False" "dino8.GetPoint() was fed by the trailing script token (python_script.txt's \"RunPythonScript @TMP@/t.py 20,20,20 Widget2\"), returning a real Point3d, not None"
+  pscheck "picked point 20,20,20" "the resumed script read back the exact point the command line fed it"
+  pscheck "history: object count after GetPoint: 37" "AddPoint(p) added the one new object the suspend-and-resume round trip was supposed to produce"
+  pscheck "history: got string: Widget2" "dino8.GetString() suspended a second time (same worker-thread mechanism as GetPoint) and was fed by the second trailing script token, proving the suspend/resume round trip works for a second, different prompt type right after the first, not just once"
+  pscheck "^ok   expect_objects 37" "RunPythonScript left the box, the circle, the cone, the torus, the interpolated curve, the arc, the srf, the planar surface, three points, the extruded surface, the extruded solid, the union mesh, the difference mesh, the intersection mesh, the two circle copies, the rotate line and its rotated copy, the scale box and its scaled copy, the mirror line and its mirrored copy, the transform line and its transformed copy, the curve-query line, its 3 create=True divide points, the bounding-box test box, the surface-closest-point sphere, the AddMesh triangle, the two fresh ObjectsByType test points, and the dino8.GetPoint() marker point (the sphere, the two union input boxes, the two difference input boxes and the two intersection input boxes were removed from inside the script, and the undo/redo group's own point was undone again at the end)"
   grep -q "! Python error" <<<"$PS" && { echo "FAIL python_script.txt printed a Python error"; fail=1; } || echo "ok   no Python script errors"
 fi
 
@@ -3189,6 +3231,32 @@ grep -q "FILE_SCHEMA(('IFC4'))" "$TMPW/ifc/box.ifc" && echo "ok   box.ifc declar
 grep -q "IFCTRIANGULATEDFACESET" "$TMPW/ifc/box.ifc" && echo "ok   box.ifc has a real IFCTRIANGULATEDFACESET" || { echo "FAIL box.ifc has no IFCTRIANGULATEDFACESET"; fail=1; }
 ifccheck "IFC: 1 mesh element (14 vertices, 24 faces)" "Import read the box's tessellated mesh back with the exact vertex/face count Dino 8's own Export wrote"
 ifccheck "Nothing to export: select meshes, surfaces, polysurfaces or SubDs" "Export refuses a selection with nothing IFC-shaped (a bare point) instead of writing an empty file"
+
+# STEP AP242 (tessellated geometry) exchange at the app level
+# (io/FileIgesStep.cpp's ExportStepAp242/ImportStepAp242 - see
+# ap242_script.txt): wires the kernel's own Mesh::SaveStepAp242/
+# LoadStepAp242 into the app, closing the app-level "writer emits AP214
+# only, with no AP242 fixture, test, or PMI/TESSELLATED handler" gap.
+mkdir -p "$TMPW/ap242"
+sed "s|@TMP@|$TMPW/ap242|g" "$HERE/ap242_script.txt" > "$TMPW/ap242_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  AP242OUT="$("$BIN" --smoke 40 --script "$TMPW/ap242_script.txt" 2>&1)" || { echo "$AP242OUT"; echo "FAIL: ap242 script exited non-zero"; exit 1; }
+else
+  AP242OUT="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 40 --script "$TMPW/ap242_script.txt" 2>&1)" || { echo "$AP242OUT"; echo "FAIL: ap242 script exited non-zero"; exit 1; }
+fi
+echo "$AP242OUT" | grep -E "^(ok|FAIL)"
+if echo "$AP242OUT" | grep -q "^FAIL"; then fail=1; fi
+ap242check() { if echo "$AP242OUT" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$AP242OUT" "$1"; fail=1; fi; }
+ap242check "Exported $TMPW/ap242/box.stp" "ExportStepAp242 wrote box.stp"
+test -s "$TMPW/ap242/box.stp" && echo "ok   box.stp exists" || { echo "FAIL box.stp missing"; fail=1; }
+grep -q "AP242_MANAGED_MODEL_BASED_3D_ENGINEERING" "$TMPW/ap242/box.stp" && echo "ok   box.stp declares the AP242 schema" || { echo "FAIL box.stp is missing the AP242 FILE_SCHEMA"; fail=1; }
+grep -q "TRIANGULATED_FACE" "$TMPW/ap242/box.stp" && echo "ok   box.stp has a real TRIANGULATED_FACE entity" || { echo "FAIL box.stp has no TRIANGULATED_FACE"; fail=1; }
+# Open/Import auto-detects AP242 from the file's own FILE_SCHEMA (no
+# special command needed) and reads the box's tessellated mesh back with
+# the exact same vertex/face count ExportIfc's own box fixture gets -
+# both tessellate the same Box through the same TessellateForIfc helper.
+ap242check "STEP AP242: 14 vertices, 24 faces" "Import auto-detected AP242 (vs. AP214) from FILE_SCHEMA and read the box's tessellated mesh back with the exact vertex/face count Dino 8's own Export wrote"
+ap242check "Nothing to export: select meshes, surfaces, polysurfaces or SubDs" "ExportStepAp242 refuses a selection with nothing tessellatable (a bare point) instead of writing an empty file"
 
 # Creation: Points/Lines/InterpCrv/CurveThroughPt/Sketch/Circle3Pt/CircleD/Arc3Pt/
 # Rectangle3Pt/Polygon/PolygonStar/Ellipse/Helix/Spiral/PointGrid/Divide/ClosestPt/
@@ -5664,16 +5732,18 @@ fi
 # item, which had no server/socket/HTTP code anywhere before this. Starts
 # the real app with --serve 0 (an OS-assigned ephemeral port, so this can
 # never collide with another process on a fixed port) and
-# --serve-max-requests 5 so the process is self-terminating like batch
+# --serve-max-requests 6 so the process is self-terminating like batch
 # --script mode above, backgrounds it, waits (bounded, not an unbounded
 # sleep loop) for its own "serve: listening on port N" line, then drives it
 # over a real loopback HTTP connection with curl: a POST that builds
 # geometry and reads back its printed output, a GET that must be rejected
 # with 405, a POST calling an interactive rs.Get* prompt that must be
 # rejected instead of hanging the connection, a POST /run/python that
-# builds and queries geometry through the embedded Python module (or is
-# skipped gracefully on a build with no Python support), and a POST to an
-# unknown path that must come back 404 - see tests/test_compute_server.cpp
+# builds and queries geometry through the embedded Python module, a second
+# POST /run/python calling the now-real dino8.GetPoint() that must likewise
+# be rejected instead of hanging (or both /run/python checks are skipped
+# gracefully on a build with no Python support), and a POST to an unknown
+# path that must come back 404 - see tests/test_compute_server.cpp
 # for the lower-level, no-app unit coverage of the request parsing/response
 # formatting this end-to-end check builds on top of. A second, separate
 # server instance below covers --serve-token bearer-auth.
@@ -5682,9 +5752,9 @@ if ! command -v curl >/dev/null 2>&1; then
 else
   SERVE_LOG="$TMPW/serve.log"
   if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
-    timeout 30 "$BIN" --serve 0 --serve-max-requests 5 > "$SERVE_LOG" 2>&1 &
+    timeout 30 "$BIN" --serve 0 --serve-max-requests 6 > "$SERVE_LOG" 2>&1 &
   else
-    timeout 30 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --serve 0 --serve-max-requests 5 > "$SERVE_LOG" 2>&1 &
+    timeout 30 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --serve 0 --serve-max-requests 6 > "$SERVE_LOG" 2>&1 &
   fi
   SERVE_PID=$!
 
@@ -5712,15 +5782,18 @@ print("objects: " .. #rs.AllObjects())' "http://127.0.0.1:$SERVE_PORT/run")"
     RESP4="$(curl -s --max-time 10 -X POST --data 'import dino8
 id = dino8.doc.Objects.AddBox(dino8.Point3d(0,0,0), dino8.Vector3d(5,5,5))
 print("volume: %.1f" % dino8.doc.Objects.SurfaceVolume(id))' "http://127.0.0.1:$SERVE_PORT/run/python")"
+    RESP6="$(curl -s --max-time 10 -X POST --data 'import dino8
+dino8.GetPoint()' "http://127.0.0.1:$SERVE_PORT/run/python")"
     CODE5="$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' -X POST --data 'x' "http://127.0.0.1:$SERVE_PORT/run/nosuchroute")"
     set -e
     echo "$RESP1" | grep -q "^objects: 1$" && echo "ok   POST /run built a box over HTTP and read back its printed object count" || { echo "$RESP1"; echo "FAIL --serve POST /run did not report objects: 1"; fail=1; }
     [ "$CODE2" = "405" ] && echo "ok   a GET request to the compute server is rejected with 405 Method Not Allowed" || { echo "FAIL --serve GET /run returned HTTP $CODE2, expected 405"; fail=1; }
     echo "$RESP3" | grep -q "compute error: script requires interactive input" && echo "ok   a script calling an interactive rs.Get* prompt is rejected instead of hanging the connection" || { echo "$RESP3"; echo "FAIL --serve interactive-prompt script was not rejected as expected"; fail=1; }
     if echo "$RESP4" | grep -q "DINO8_HAVE_PYTHON"; then
-      echo "skip POST /run/python check (this build has no embedded Python - see DINO8_ENABLE_PYTHON in CMakeLists.txt)"
+      echo "skip POST /run/python checks (this build has no embedded Python - see DINO8_ENABLE_PYTHON in CMakeLists.txt)"
     else
       echo "$RESP4" | grep -q "^volume: 125.0$" && echo "ok   POST /run/python built a box through the dino8 module over HTTP and read back its printed volume" || { echo "$RESP4"; echo "FAIL --serve POST /run/python did not report volume: 125.0"; fail=1; }
+      echo "$RESP6" | grep -q "compute error: script requires interactive input" && echo "ok   a POST /run/python script calling the now-real dino8.GetPoint() is rejected instead of hanging the connection (PythonEngine suspends on a worker thread now - see PythonEngine.h - so this is a real regression risk main.cpp's compute_handler guards against)" || { echo "$RESP6"; echo "FAIL --serve POST /run/python dino8.GetPoint() was not rejected as expected"; fail=1; }
     fi
     [ "$CODE5" = "404" ] && echo "ok   a POST to an unrecognized path is rejected with 404 Not Found" || { echo "FAIL --serve POST to an unknown path returned HTTP $CODE5, expected 404"; fail=1; }
 
@@ -5730,7 +5803,7 @@ print("volume: %.1f" % dino8.doc.Objects.SurfaceVolume(id))' "http://127.0.0.1:$
     elif [ "$SERVE_EC" -ne 0 ]; then
       cat "$SERVE_LOG"; echo "FAIL: --serve process exited $SERVE_EC, expected 0"; fail=1
     else
-      grep -q "^serve: done requests=5$" "$SERVE_LOG" && echo "ok   --serve exited cleanly on its own after --serve-max-requests 5 real HTTP requests" || { cat "$SERVE_LOG"; echo "FAIL --serve done-summary line missing or wrong"; fail=1; }
+      grep -q "^serve: done requests=6$" "$SERVE_LOG" && echo "ok   --serve exited cleanly on its own after --serve-max-requests 6 real HTTP requests" || { cat "$SERVE_LOG"; echo "FAIL --serve done-summary line missing or wrong"; fail=1; }
     fi
   fi
 

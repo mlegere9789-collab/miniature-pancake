@@ -2706,8 +2706,14 @@ bool ImportStep(Document& doc, const std::string& path, std::string& summary) {
   if (!is) { summary = "Could not open " + path; return false; }
   std::ostringstream buf;
   buf << is.rdbuf();
+  const std::string text = buf.str();
+  // AP242 (tessellated-geometry schema) shares the .stp/.step extension with
+  // AP214/AP203 but has none of their B-rep entities - its own FILE_SCHEMA
+  // names AP242 outright, so Open/Import need no special syntax to pick the
+  // right reader for either schema.
+  if (text.find("AP242") != std::string::npos) return ImportStepAp242(doc, path, summary);
   StepModel model;
-  if (!ParseStepPhysicalFile(buf.str(), model, summary)) { summary += ": " + path; return false; }
+  if (!ParseStepPhysicalFile(text, model, summary)) { summary += ": " + path; return false; }
 
   // Colours: for every STYLED_ITEM, walk its style tree (bounded depth) for
   // a COLOUR_RGB and remember it against the item it decorates.
@@ -3088,6 +3094,46 @@ bool ImportIfc(Document& doc, const std::string& path, std::string& summary) {
   doc.Add(std::move(o));
   summary = "IFC: " + std::to_string(face_sets) + " mesh element" + (face_sets == 1 ? "" : "s") + " (" +
             std::to_string(out.VertexCount()) + " vertices, " + std::to_string(out.FaceCount()) + " faces)";
+  return true;
+}
+
+bool ExportStepAp242(const Document& doc, const std::string& path, bool selected_only, std::string& error) {
+  std::vector<const SceneObject*> objs = ExportObjects(doc, selected_only);
+  if (objs.empty()) { error = "Nothing to export"; return false; }
+  const double tol = doc.Settings().absolute_tolerance > 0 ? doc.Settings().absolute_tolerance : 0.001;
+
+  // Tessellate everything and merge into one mesh - the kernel's own
+  // Mesh::SaveStepAp242 is single-mesh (the same scope ExportPly's merged
+  // write already has), reusing ExportIfc's own TessellateForIfc above
+  // rather than duplicating its per-object-kind tessellation logic.
+  kernel::Mesh merged;
+  int included = 0;
+  for (const SceneObject* o : objs) {
+    std::optional<kernel::Mesh> m = TessellateForIfc(*o, tol);
+    if (!m) continue;
+    merged.raw().Append(m->raw());
+    ++included;
+  }
+  if (included == 0) { error = "Nothing to export: select meshes, surfaces, polysurfaces or SubDs"; return false; }
+
+  if (merged.SaveStepAp242(path) != kernel::Result::Ok) { error = "Could not write " + path; return false; }
+  error.clear();
+  return true;
+}
+
+bool ImportStepAp242(Document& doc, const std::string& path, std::string& summary) {
+  summary.clear();
+  kernel::Mesh mesh;
+  if (kernel::Mesh::LoadStepAp242(path, mesh) != kernel::Result::Ok || mesh.raw().FaceCount() == 0) {
+    summary = "No usable geometry (TRIANGULATED_FACE) found in " + path;
+    return false;
+  }
+  mesh.raw().ComputeVertexNormals();
+  const int vc = mesh.raw().VertexCount(), fc = mesh.raw().FaceCount();
+  SceneObject o = SceneObject::MakeMesh(mesh);
+  o.name = std::filesystem::path(path).stem().string();
+  doc.Add(std::move(o));
+  summary = "STEP AP242: " + std::to_string(vc) + " vertices, " + std::to_string(fc) + " faces";
   return true;
 }
 

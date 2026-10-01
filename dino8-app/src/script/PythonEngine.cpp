@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdlib>
 #include <sstream>
 #include <fstream>
 #include <filesystem>
@@ -1010,6 +1011,31 @@ void EmitStdout(const std::string& text) {
   g_engine->FeedStdout(text);
 }
 
+// dino8.GetPoint(prompt): mirrors rs.GetPoint - suspends the running script
+// until a point is picked in a viewport or typed on the command line, or
+// returns None if Enter is pressed with nothing picked. See PythonEngine.h's
+// file comment for how the suspend/resume actually works (a worker thread
+// blocked on a condition variable, not a Lua-style coroutine yield).
+py::object PyGetPoint(const std::string& prompt) {
+  if (!g_engine) throw std::runtime_error("GetPoint: no script is running");
+  PythonEngine::PointWait w = g_engine->WaitForPoint(prompt);
+  if (w.got_point) return py::cast(w.point);
+  return py::none();
+}
+
+// dino8.GetString(prompt, default_text): mirrors rs.GetString - suspends
+// the running script until text is typed on the command line, or returns
+// `default_text` (default None) if Enter is pressed with nothing typed.
+// See PyGetPoint/PythonEngine.h for how the suspend/resume works.
+py::object PyGetString(const std::string& prompt, py::object default_text) {
+  if (!g_engine) throw std::runtime_error("GetString: no script is running");
+  std::optional<std::string> def;
+  if (!default_text.is_none()) def = py::str(default_text).cast<std::string>();
+  PythonEngine::TextWait w = g_engine->WaitForText(prompt, def);
+  if (w.got_text) return py::cast(w.text);
+  return py::none();
+}
+
 }  // namespace
 
 PYBIND11_EMBEDDED_MODULE(dino8, m) {
@@ -1140,6 +1166,16 @@ PYBIND11_EMBEDDED_MODULE(dino8, m) {
   m.attr("doc") = PyDoc{};
 
   m.def("RunCommand", &RunCommand, "Runs one Dino 8 command line by name, exactly as if typed on the command line (dino8.RunCommand('Box 0,0,0 5,5,5')).");
+  m.def("GetPoint", &PyGetPoint, py::arg("prompt") = std::string("Pick a point"),
+        "Suspends the script until a point is picked in a viewport or typed on the command line; "
+        "returns None if Enter is pressed with nothing picked. Mirrors rs.GetPoint. Only runs when "
+        "the script was started through a command that can pump a suspended script (RunPythonScript, "
+        "the Script Editor's Run button) - calling it from a context with no viewport/command-line to "
+        "pick from (e.g. the compute server's /run/python) aborts the script instead of hanging.");
+  m.def("GetString", &PyGetString, py::arg("prompt") = std::string("Text"), py::arg("default_text") = py::none(),
+        "Suspends the script until text is typed on the command line; returns default_text (None if not "
+        "given) if Enter is pressed with nothing typed. Mirrors rs.GetString. Same suspend mechanism and "
+        "the same compute-server caveat as GetPoint above.");
   m.def("CommandHistory", &CommandHistory, "Every command-line history line so far, newline-separated.");
   m.def("ClearCommandHistory", &ClearCommandHistory, "Clears the command-line history.");
   m.def("Version", &Version, "The running Dino 8 version plus the embedded Python version.");
@@ -1156,6 +1192,14 @@ PYBIND11_EMBEDDED_MODULE(dino8, m) {
 namespace {
 #ifdef DINO8_HAVE_PYTHON
 bool g_interpreter_started = false;
+// Saved by PyEval_SaveThread() below, restored by RestoreMainThreadForFinalize
+// right before the process-lifetime py::scoped_interpreter's destructor runs
+// Py_Finalize() (see the comment at the PyEval_SaveThread() call site for why
+// this round trip is needed at all).
+PyThreadState* g_saved_main_thread_state = nullptr;
+void RestoreMainThreadForFinalize() {
+  if (g_saved_main_thread_state) PyEval_RestoreThread(g_saved_main_thread_state);
+}
 #endif
 }  // namespace
 
@@ -1163,8 +1207,23 @@ PythonEngine::PythonEngine(Application& app) : app_(app) {
 #ifdef DINO8_HAVE_PYTHON
   if (!g_interpreter_started) {
     static py::scoped_interpreter interpreter;  // lives for the process; never finalized early
+    // Py_Initialize() (above) leaves the GIL held by this thread. Release it
+    // once here so that ThreadMain's worker thread - and this constructor's
+    // own py::exec just below, and every later Start()/Resume*() call, main
+    // thread included - can each acquire it on demand via PyGILState_Ensure/
+    // Release instead of one thread holding it permanently. Py_Finalize()
+    // (called by `interpreter`'s own destructor at process-exit static
+    // teardown) requires the GIL to be held by the thread that calls it, so
+    // an atexit hook restores it right before that destructor runs - atexit
+    // functions and static destructors interleave in strict reverse-
+    // registration order, and this atexit call is registered immediately
+    // after `interpreter` is constructed, so it fires immediately before
+    // `interpreter`'s own destructor does.
+    g_saved_main_thread_state = PyEval_SaveThread();
+    std::atexit(RestoreMainThreadForFinalize);
     g_interpreter_started = true;
   }
+  PyGILState_STATE gstate = PyGILState_Ensure();
   try {
     py::exec(R"PY(
 import sys
@@ -1184,10 +1243,15 @@ sys.stderr = _Dino8Stdout()
     // interpreter is up); if it ever does, print() output just won't be
     // captured into the command history - scripts still run.
   }
+  PyGILState_Release(gstate);
 #endif
 }
 
-PythonEngine::~PythonEngine() = default;
+PythonEngine::~PythonEngine() {
+#ifdef DINO8_HAVE_PYTHON
+  if (worker_.joinable()) Abort();  // a script left suspended when the app shuts down must not leak a blocked thread
+#endif
+}
 
 bool PythonEngine::Available() {
 #ifdef DINO8_HAVE_PYTHON
@@ -1203,15 +1267,113 @@ void PythonEngine::Print(const std::string& line) {
   app_.Engine().Print(line);
 }
 
-bool PythonEngine::Run(const std::string& code, const std::string& chunk_name, bool as_expression) {
-#ifndef DINO8_HAVE_PYTHON
-  (void)code; (void)chunk_name; (void)as_expression;
-  Print("! Python error: this build of Dino 8 has no embedded Python interpreter (no Python 3 development install was found when it was built)");
-  return false;
-#else
-  output_.clear();
+void PythonEngine::FeedStdout(const std::string& text) {
+  print_buffer_ += text;
+  size_t pos;
+  while ((pos = print_buffer_.find('\n')) != std::string::npos) {
+    Print(print_buffer_.substr(0, pos));
+    print_buffer_.erase(0, pos + 1);
+  }
+}
+
+#ifdef DINO8_HAVE_PYTHON
+
+bool PythonEngine::Running() const {
+  std::lock_guard<std::mutex> lk(mu_);
+  return state_ == State::Running || state_ == State::Suspended;
+}
+
+bool PythonEngine::Suspended() const {
+  std::lock_guard<std::mutex> lk(mu_);
+  return state_ == State::Suspended;
+}
+
+// Called only from the worker thread (via PyGetPoint). Records the request,
+// wakes the UI thread out of Start()/Resume*()'s own wait below, then blocks
+// - with the GIL released, so nothing is ever held while idle - until one of
+// ResumePoint/ResumeNil/Abort answers it.
+PythonEngine::PointWait PythonEngine::WaitForPoint(const std::string& prompt) {
+  std::unique_lock<std::mutex> lk(mu_);
+  ScriptRequest r;
+  r.want = ScriptWant::Point;
+  r.prompt = prompt;
+  request_ = r;
+  state_ = State::Suspended;
+  resume_ready_ = false;
+  lk.unlock();
+  cv_.notify_all();
+  lk.lock();
+  {
+    py::gil_scoped_release release;
+    cv_.wait(lk, [this] { return resume_ready_; });
+  }
+  // Consume the handoff before anything else: WaitUntilSuspendedOrFinished
+  // (still blocked in the Resume*() call that woke us) waits on
+  // "!resume_ready_" specifically so it can't mistake this moment - state_
+  // briefly still reads Suspended, exactly as it did *before* the resume -
+  // for a fresh suspension and return early with the stale answer.
+  resume_ready_ = false;
+  PointWait result;
+  if (abort_requested_) {
+    result.cancelled = true;
+  } else if (resume_is_value_) {
+    result.got_point = true;
+    result.point = resume_point_;
+  }
+  state_ = State::Running;
+  lk.unlock();
+  cv_.notify_all();
+  if (result.cancelled) {
+    cancelled_ = true;
+    throw std::runtime_error("cancelled");
+  }
+  return result;
+}
+
+// Mirrors WaitForPoint above, for dino8.GetString(). `default_text` is
+// carried on the ScriptRequest the same way LuaEngine.cpp's rs_GetString
+// does, so a bare Enter on the command line resolves to it (OnText, not
+// OnEnter - see Command::WantText/CommandEngine.cpp) before ResumeNil is
+// ever reached here.
+PythonEngine::TextWait PythonEngine::WaitForText(const std::string& prompt, const std::optional<std::string>& default_text) {
+  std::unique_lock<std::mutex> lk(mu_);
+  ScriptRequest r;
+  r.want = ScriptWant::Text;
+  r.prompt = prompt;
+  r.default_text = default_text;
+  request_ = r;
+  state_ = State::Suspended;
+  resume_ready_ = false;
+  lk.unlock();
+  cv_.notify_all();
+  lk.lock();
+  {
+    py::gil_scoped_release release;
+    cv_.wait(lk, [this] { return resume_ready_; });
+  }
+  resume_ready_ = false;  // see the matching comment in WaitForPoint above
+  TextWait result;
+  if (abort_requested_) {
+    result.cancelled = true;
+  } else if (resume_is_value_) {
+    result.got_text = true;
+    result.text = resume_text_;
+  }
+  state_ = State::Running;
+  lk.unlock();
+  cv_.notify_all();
+  if (result.cancelled) {
+    cancelled_ = true;
+    throw std::runtime_error("cancelled");
+  }
+  return result;
+}
+
+void PythonEngine::ThreadMain(std::string code, std::string chunk_name, bool as_expression) {
+  PyGILState_STATE gstate = PyGILState_Ensure();
   g_engine = this;
   g_app = &app_;
+  cancelled_ = false;
   bool ok = true;
   try {
     py::object main_module = py::module_::import("__main__");
@@ -1228,7 +1390,11 @@ bool PythonEngine::Run(const std::string& code, const std::string& chunk_name, b
     }
     if (!handled) py::exec(code, globals, globals);
   } catch (const py::error_already_set& e) {
-    Print("! Python error in " + chunk_name + ": " + std::string(e.what()));
+    if (cancelled_) {
+      Print("Script cancelled: " + chunk_name);
+    } else {
+      Print("! Python error in " + chunk_name + ": " + std::string(e.what()));
+    }
     ok = false;
   } catch (const std::exception& e) {
     Print("! Python error in " + chunk_name + ": " + std::string(e.what()));
@@ -1237,25 +1403,126 @@ bool PythonEngine::Run(const std::string& code, const std::string& chunk_name, b
   if (!print_buffer_.empty()) { Print(print_buffer_); print_buffer_.clear(); }
   g_engine = nullptr;
   g_app = nullptr;
-  return ok;
-#endif
+  {
+    std::lock_guard<std::mutex> lk(mu_);
+    state_ = State::Finished;
+    final_ok_ = ok;
+  }
+  cv_.notify_all();
+  PyGILState_Release(gstate);
 }
 
-void PythonEngine::FeedStdout(const std::string& text) {
-  print_buffer_ += text;
-  size_t pos;
-  while ((pos = print_buffer_.find('\n')) != std::string::npos) {
-    Print(print_buffer_.substr(0, pos));
-    print_buffer_.erase(0, pos + 1);
+bool PythonEngine::WaitUntilSuspendedOrFinished() {
+  std::unique_lock<std::mutex> lk(mu_);
+  // !resume_ready_ matters on a Resume*() call: right after it sets
+  // resume_ready_ and notifies, state_ still reads Suspended - the value
+  // from *before* this resume, not a new one - until WaitForPoint/
+  // WaitForText actually wakes up and consumes it (clearing resume_ready_
+  // and only then moving state_ on). Without this, a resume could be
+  // mistaken for an immediate re-suspension on the very same request it
+  // just answered. On the very first call (from LaunchThread), resume_ready_
+  // is already false, so this reduces to the obvious wait.
+  cv_.wait(lk, [this] { return !resume_ready_ && (state_ == State::Suspended || state_ == State::Finished); });
+  if (state_ == State::Finished) {
+    lk.unlock();
+    worker_.join();
+    return final_ok_;
   }
+  return true;
 }
+
+bool PythonEngine::LaunchThread(const std::string& code, const std::string& chunk_name, bool as_expression) {
+  if (Running()) {
+    Print("! Python error: a script is already running (nested/concurrent Python execution is not supported)");
+    return false;
+  }
+  output_.clear();
+  {
+    std::lock_guard<std::mutex> lk(mu_);
+    state_ = State::Running;
+    resume_ready_ = false;
+    resume_is_value_ = false;
+    abort_requested_ = false;
+    request_ = ScriptRequest{};
+    final_ok_ = true;
+  }
+  worker_ = std::thread(&PythonEngine::ThreadMain, this, code, chunk_name, as_expression);
+  return WaitUntilSuspendedOrFinished();
+}
+
+bool PythonEngine::ResumePoint(kernel::Point3d p) {
+  if (!Suspended()) return false;
+  {
+    std::lock_guard<std::mutex> lk(mu_);
+    resume_point_ = p;
+    resume_is_value_ = true;
+    resume_ready_ = true;
+  }
+  cv_.notify_all();
+  return WaitUntilSuspendedOrFinished();
+}
+
+bool PythonEngine::ResumeText(const std::string& text) {
+  if (!Suspended()) return false;
+  {
+    std::lock_guard<std::mutex> lk(mu_);
+    resume_text_ = text;
+    resume_is_value_ = true;
+    resume_ready_ = true;
+  }
+  cv_.notify_all();
+  return WaitUntilSuspendedOrFinished();
+}
+
+bool PythonEngine::ResumeNil() {
+  if (!Suspended()) return false;
+  {
+    std::lock_guard<std::mutex> lk(mu_);
+    resume_is_value_ = false;
+    resume_ready_ = true;
+  }
+  cv_.notify_all();
+  return WaitUntilSuspendedOrFinished();
+}
+
+void PythonEngine::Abort() {
+  if (!Running()) return;
+  {
+    std::lock_guard<std::mutex> lk(mu_);
+    abort_requested_ = true;
+    resume_ready_ = true;
+  }
+  cv_.notify_all();
+  std::unique_lock<std::mutex> lk(mu_);
+  cv_.wait(lk, [this] { return state_ == State::Finished; });
+  lk.unlock();
+  worker_.join();
+}
+
+#else  // !DINO8_HAVE_PYTHON
+
+bool PythonEngine::Running() const { return false; }
+bool PythonEngine::Suspended() const { return false; }
+PythonEngine::PointWait PythonEngine::WaitForPoint(const std::string&) { return {}; }
+PythonEngine::TextWait PythonEngine::WaitForText(const std::string&, const std::optional<std::string>&) { return {}; }
+bool PythonEngine::ResumePoint(kernel::Point3d) { return false; }
+bool PythonEngine::ResumeText(const std::string&) { return false; }
+bool PythonEngine::ResumeNil() { return false; }
+void PythonEngine::Abort() {}
+
+bool PythonEngine::LaunchThread(const std::string&, const std::string&, bool) {
+  Print("! Python error: this build of Dino 8 has no embedded Python interpreter (no Python 3 development install was found when it was built)");
+  return false;
+}
+
+#endif  // DINO8_HAVE_PYTHON
 
 bool PythonEngine::Start(const std::string& code, const std::string& chunk_name) {
-  return Run(code, "@" + chunk_name, false);
+  return LaunchThread(code, "@" + chunk_name, false);
 }
 
 bool PythonEngine::StartExpression(const std::string& expr) {
-  return Run(expr, "=command line", true);
+  return LaunchThread(expr, "=command line", true);
 }
 
 bool PythonEngine::StartFile(const std::string& path) {
