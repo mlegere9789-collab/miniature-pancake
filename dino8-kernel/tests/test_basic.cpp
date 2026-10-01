@@ -2630,6 +2630,119 @@ void TestPullbackCurveToSurfaceCylinderRulingLine() {
 }
 
 // PARITY_MAP.md's own "kernel: Intersections & projections" category,
+// "Pullback of a 3D curve to surface parameter space" bullet: the fitted
+// `pcurve` used to swing through the middle of a periodic surface
+// direction's domain whenever the input curve crossed that direction's
+// seam (the raw per-sample (u, v) jumps from near one domain edge to near
+// the other, and the un-unwrapped cubic fit took the raw numeric jump at
+// face value). This exercises exactly that case on a cylinder wall - a
+// short arc of the cylinder's own base circle straddling angle 0, which is
+// also the NURBS surface's own u = 0 / u = 2*pi seam.
+void TestPullbackCurveToSurfaceAcrossPeriodicSeam() {
+  using dino8::kernel::IntersectOptions;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::PullbackCurveToSurface;
+  using dino8::kernel::PullbackResult;
+
+  const ON_Circle base_circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 2.0);
+  const ON_Cylinder on_cylinder(base_circle, 6.0);
+  ON_NurbsSurface cyl_surface;
+  Check(on_cylinder.GetNurbForm(cyl_surface) != 0, "ON_Cylinder::GetNurbForm succeeds (seam test)");
+  NurbsSurface wall;
+  wall.raw() = cyl_surface;
+
+  const dino8::kernel::Interval du = wall.Domain(0);
+  Check(std::abs((du.max - du.min) - 2.0 * ON_PI) < 1e-6, "the cylinder wall's own u domain spans a full turn (it is the seam direction)");
+
+  // A genuine arc of the base circle, straddling angle 0 == the surface's
+  // own u seam (u = du.min == du.max), held at a fixed height - every
+  // sample below is an EXACT point of the cylinder wall (computed directly
+  // from the circle's own trig parametrization, not fit or approximated),
+  // so the only error PullbackCurveToSurface() can introduce is its own
+  // closest-point search, not the input curve's shape.
+  const double theta0 = -0.3, theta1 = 0.3;
+  const double h = 3.0;
+  const int segs = 600;
+  std::vector<Point3d> pts;
+  pts.reserve(segs + 1);
+  for (int i = 0; i <= segs; ++i) {
+    const double theta = theta0 + (theta1 - theta0) * static_cast<double>(i) / segs;
+    ON_3dPoint p = base_circle.PointAt(theta);
+    p.z += h;
+    pts.emplace_back(p.x, p.y, p.z);
+  }
+  const NurbsCurve seam_arc = NurbsCurve::FromControlPoints(pts, /*degree=*/1);
+
+  IntersectOptions opt;
+  opt.tolerance = 1e-4;
+  opt.mesh_tolerance = 0.01;
+  const PullbackResult pb_result = PullbackCurveToSurface(seam_arc.raw(), wall.raw(), opt);
+  Check(pb_result.on_surface, "an arc of the cylinder's own base circle pulls back with on_surface == true");
+  Check(pb_result.uv.size() >= 2, "the seam arc sampled at least its two endpoints");
+
+  // The raw per-sample `uv` field is untouched by the unwrap fix and must
+  // still show the seam jump directly: consecutive wrapped-domain u values
+  // crossing from near du.max down to near du.min.
+  bool raw_seam_jump_seen = false;
+  for (size_t i = 1; i < pb_result.uv.size(); ++i) {
+    if (std::abs(pb_result.uv[i].x - pb_result.uv[i - 1].x) > ON_PI) { raw_seam_jump_seen = true; break; }
+  }
+  Check(raw_seam_jump_seen, "the raw per-sample uv field still shows the wrapped-domain seam jump (sanity check that this test actually exercises the seam)");
+
+  // The fitted pcurve's own control points, by contrast, must NOT swing
+  // back through the middle of the domain: sampled finely along its own
+  // domain, its u coordinate must change monotonically from one end to the
+  // other (allowing a tiny numerical slack), never doubling back by more
+  // than that slack - the concrete, previously-disclosed defect this fix
+  // closes.
+  const ON_Interval pdom = pb_result.pcurve.Domain();
+  const int check_samples = 200;
+  double prev_u = pb_result.pcurve.PointAt(pdom.Min()).x;
+  const double first_u = prev_u;
+  bool monotonic = true;
+  double max_backslide = 0;
+  for (int i = 1; i <= check_samples; ++i) {
+    const double t = pdom.ParameterAt(static_cast<double>(i) / check_samples);
+    const double u = pb_result.pcurve.PointAt(t).x;
+    if (u < prev_u - 1e-6) { monotonic = false; max_backslide = std::max(max_backslide, prev_u - u); }
+    prev_u = u;
+  }
+  const double last_u = prev_u;
+  Check(monotonic, "the fitted pcurve's own u coordinate moves monotonically across the seam crossing (no swing through the domain's middle)");
+  // The arc spans theta1 - theta0 = 0.6 radians total; the unwrapped pcurve
+  // must span close to that, not the ~2*pi - 0.6 "the long way around"
+  // shape the un-fixed swing produced.
+  Check(std::abs(std::abs(last_u - first_u) - (theta1 - theta0)) < 0.05,
+        "the fitted pcurve's own total u excursion matches the arc's actual 0.6 radian span, not a near-full-turn detour");
+
+  // Evaluating pcurve back through the surface must still land on the
+  // original arc's own endpoints, exactly as the non-seam ruling-line test
+  // above already checks for the non-seam case. Per this function's own
+  // documented caller contract (surface_intersect.h), an over-range u on a
+  // merely-closed (not necessarily periodic) direction must be reduced
+  // into the surface's own domain by whole periods before evaluating -
+  // this cylinder's standard NURBS form is closed but not periodic (a
+  // clamped-knot circular arc representation), so this is the one
+  // guaranteed-correct way to map it back, not an optional nicety.
+  const auto wrap_into_domain = [](double x, const dino8::kernel::Interval& d) {
+    const double L = d.max - d.min;
+    while (x < d.min) x += L;
+    while (x > d.max) x -= L;
+    return x;
+  };
+  Check(!wall.IsPeriodic(0), "sanity check: this cylinder's own u direction is closed but NOT periodic, the exact case this wrap contract is for");
+  const ON_3dPoint uv_start = pb_result.pcurve.PointAt(pdom.Min());
+  const ON_3dPoint uv_end = pb_result.pcurve.PointAt(pdom.Max());
+  const dino8::kernel::Interval wall_du = wall.Domain(0);
+  const Point3d back_start = wall.PointAt(wrap_into_domain(uv_start.x, wall_du), uv_start.y);
+  const Point3d back_end = wall.PointAt(wrap_into_domain(uv_end.x, wall_du), uv_end.y);
+  Check(back_start.DistanceTo(pts.front()) < 1e-2 && back_end.DistanceTo(pts.back()) < 1e-2,
+        "the seam-crossing pcurve's own two domain endpoints, wrapped back into the surface's domain, still map through the surface to the arc's own endpoints");
+}
+
+// PARITY_MAP.md's own "kernel: Intersections & projections" category,
 // "Plane sections / contours of surfaces and B-reps" bullet: "the app
 // still slices render meshes (SliceObjects/SliceMesh). Kernel SplitByPlane
 // is mesh-only; the exact route (IntersectSurfaces per face) is not used
@@ -2855,6 +2968,83 @@ void TestFindBrepSelfIntersectionsDetectsOverlappingLumpsOnly() {
     if ((h.face_a < 6) == (h.face_b < 6)) { all_cross_lumps = false; break; }
   }
   Check(all_cross_lumps, "every reported self-intersecting face pair spans the two different (overlapping) lumps, not two faces of the same box");
+}
+
+// PARITY_MAP.md's own "kernel: Intersections & projections" category,
+// "Surface / B-rep self-intersection detection" bullet's own remaining
+// "no face-interior self-intersection test" half (the face-vs-face half is
+// FindBrepSelfIntersections() above, tested just above this).
+// FindFaceInteriorSelfIntersections() closes this half - see its own doc
+// comment (surface_intersect.h) for why it is a dedicated function rather
+// than reusing IntersectSurfaces(s, s, opt) or FindBrepSelfIntersections().
+void TestFindFaceInteriorSelfIntersectionsDetectsFoldedFace() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FaceInteriorSelfIntersection;
+  using dino8::kernel::FindFaceInteriorSelfIntersections;
+  using dino8::kernel::IntersectOptions;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+
+  IntersectOptions opt;
+  opt.tolerance = 1e-5;
+  opt.mesh_tolerance = 0.1;
+
+  // A single face, EXTRUDED along Y from a degree-1 "bowtie" profile in the
+  // XZ plane - the exact same genuine-crossing shape
+  // TestIntersectCurveSelfIntersectionsFindsBowtieAndRejectsSimpleCurves()'s
+  // own bowtie fixture above uses (profile corners (0,0)->(10,10)->(10,0)->
+  // (0,10) in (x, z), whose two diagonal segments cross at the
+  // hand-derivable (x=5, z=5)). Both u and v are degree 1, so this NURBS
+  // surface IS its own control net exactly (no approximation): for any
+  // fixed v, S(u, v) traces that same flat profile translated by v along Y,
+  // so the whole surface is literally that self-crossing profile extruded
+  // straight along Y - two topologically distant strips of the SAME face
+  // (the "u in the first diagonal segment" strip and the "u in the second
+  // diagonal segment" strip) cross each other everywhere along a straight
+  // line at (x=5, z=5), for every v.
+  const double L = 4.0;  // extrusion length along Y
+  const std::vector<std::pair<double, double>> profile_xz = {
+      {0, 0}, {10, 10}, {10, 0}, {0, 10}, {0, 0},
+  };
+  std::vector<Point3d> grid;
+  grid.reserve(profile_xz.size() * 2);
+  for (const auto& [x, z] : profile_xz) {
+    grid.emplace_back(x, 0.0, z);
+    grid.emplace_back(x, L, z);
+  }
+  const NurbsSurface folded = NurbsSurface::FromControlGrid(grid, /*u_count=*/static_cast<int>(profile_xz.size()), /*v_count=*/2, /*u_degree=*/1, /*v_degree=*/1);
+  const Brep folded_brep = Brep::FromSurface(folded);
+
+  const std::vector<FaceInteriorSelfIntersection> hits = FindFaceInteriorSelfIntersections(folded_brep.raw(), opt);
+  Check(!hits.empty(), "the folded (self-crossing, extruded bowtie profile) face reports at least one face-interior self-intersection");
+
+  // Every reported hit's own 3D point must sit at the hand-derivable
+  // (x=5, z=5) (any y in [0, L]) - the profile's own diagonals cross
+  // EXACTLY there (the same point TestIntersectCurveSelfIntersections...'s
+  // own bowtie test independently verifies one dimension down), and the
+  // two reported (u, v) preimages must be genuinely distinct (not the
+  // trivial ua==ub/va==vb diagonal this function's own doc comment
+  // discloses it must reject).
+  bool all_at_crossing = true, all_distinct_preimages = true;
+  for (const FaceInteriorSelfIntersection& h : hits) {
+    if (std::abs(h.point.x - 5.0) > 1e-2 || std::abs(h.point.z - 5.0) > 1e-2) all_at_crossing = false;
+    const double du = std::abs(h.uv_a.x - h.uv_b.x), dv = std::abs(h.uv_a.y - h.uv_b.y);
+    if (du < 1e-3 && dv < 1e-3) all_distinct_preimages = false;
+  }
+  Check(all_at_crossing, "every reported face-interior self-intersection sits at the profile's own hand-derivable (x=5, z=5) crossing line");
+  Check(all_distinct_preimages, "every reported hit's two (u, v) preimages are genuinely distinct, not the trivial self-identity diagonal");
+
+  // A plain, non-self-crossing extruded face (just a flat rectangle this
+  // time) must report zero - no false positives on an ordinary face.
+  const std::vector<std::pair<double, double>> flat_xz = {{0, 0}, {10, 0}};
+  std::vector<Point3d> flat_grid;
+  for (const auto& [x, z] : flat_xz) {
+    flat_grid.emplace_back(x, 0.0, z);
+    flat_grid.emplace_back(x, L, z);
+  }
+  const NurbsSurface flat = NurbsSurface::FromControlGrid(flat_grid, 2, 2, 1, 1);
+  const Brep flat_brep = Brep::FromSurface(flat);
+  Check(FindFaceInteriorSelfIntersections(flat_brep.raw(), opt).empty(), "a plain, non-self-crossing flat face reports zero face-interior self-intersections");
 }
 
 // PARITY_MAP.md's own "kernel: Intersections & projections" category, "SSX
@@ -63152,10 +63342,12 @@ int main() {
   TestIntersectCurveSelfIntersectionsFindsBowtieAndRejectsSimpleCurves();
   TestIntersectBrepsAndCurveBrep();
   TestPullbackCurveToSurfaceCylinderRulingLine();
+  TestPullbackCurveToSurfaceAcrossPeriodicSeam();
   TestIntersectBrepByPlaneBoxSideWalls();
   TestContourBrepParallelSections();
   TestIntersectCurveSurfaceOverlapDetectsCoincidentSpan();
   TestFindBrepSelfIntersectionsDetectsOverlappingLumpsOnly();
+  TestFindFaceInteriorSelfIntersectionsDetectsFoldedFace();
   TestFindSurfaceTangentContactsSphereOnPlane();
   TestIntersectSurfacesOverlapDetectsCoincidentRegion();
   TestProjectCurveToSurfaceFlatPlaneStraightDown();
