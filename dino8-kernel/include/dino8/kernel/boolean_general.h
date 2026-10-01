@@ -258,6 +258,46 @@ std::pair<Brep, Brep> MutualImprintFaces(const Brep& a, const Brep& b, double to
 Brep SplitFaceByCurve(const Brep& target, int face_index, const NurbsCurve& curve, double tolerance = 0.001,
                       int samples = 200);
 
+// Batch sibling of SplitFaceByCurve() above - the same "one call, many
+// named targets" generalization this file's other single-target kernel
+// operations already gain elsewhere in this codebase (e.g.
+// MoveFacesConvexPlanar/ReplaceFacePlanesConvexPlanar/PushPullFaces,
+// boolean.cpp). `curves` is a caller-chosen list of independent open
+// curves, each pulled onto `face_index`'s own surface exactly as
+// SplitFaceByCurve() does for its one curve, then handed to this file's
+// own FragmentFaces() TOGETHER as separate chains on the same face in a
+// SINGLE call. This is a genuine capability, not merely a loop sugar over
+// repeated single calls: FragmentFaces()'s own open-chain worklist
+// (SplitFaceLoop(), boolean_general.cpp) splices each chain against
+// whichever fragment it actually lands on and grows the fragment list by
+// one per successful splice - exactly the "multiple non-interacting
+// chains on the same face are supported" scope this header's own top
+// comment already documents for the general engine - so N independent
+// curves produce N+1 fragments in one pass, genuinely more than
+// SplitFaceByCurve()'s own fixed two, with every resulting fragment still
+// on the SAME original surface and no new geometry fit for any of them.
+//
+// Each curve is still individually required to cross the face's own trim
+// boundary at exactly two points with no interior touch and no hole,
+// exactly as SplitFaceByCurve() requires of its one curve; crossing a
+// SIBLING curve in the same call is out of scope (the header comment's
+// own "chains that cross EACH OTHER... are not [supported]" limit).
+// Throws std::invalid_argument for an empty `curves` list, a non-positive
+// `tolerance`, `samples` below 2, or any of SplitFaceByCurve()'s own
+// per-curve input problems (fewer than 2 control points, failing to
+// converge onto the surface, collapsing to a single point, or a curve
+// whose own two ends coincide once pulled onto the surface - a closed
+// loop, ImprintClosedCurvesOnFace()'s job instead) - naming which
+// `curves[]` entry is at fault. Also throws if the actual fragment count
+// once every curve is spliced in is anything other than `curves.size() +
+// 1`, or any fragment carries a hole (two curves crossing each other, a
+// curve touching the boundary more than twice, or curves that only
+// jointly bound an interior region rather than each cleanly crossing the
+// face) - refusing rather than silently returning a different split than
+// the caller actually asked for.
+Brep SplitFaceByCurves(const Brep& target, int face_index, const std::vector<NurbsCurve>& curves,
+                       double tolerance = 0.001, int samples = 200);
+
 // Imprint a CLOSED curve onto a single face, entirely interior to its own
 // trim boundary - the curve-onto-face half of the PARITY_MAP "Imprint curve
 // / face onto a body face (add edges without changing geometry)" gap
@@ -310,6 +350,43 @@ Brep SplitFaceByCurve(const Brep& target, int face_index, const NurbsCurve& curv
 // job, not this function's).
 Brep ImprintClosedCurveOnFace(const Brep& target, int face_index, const NurbsCurve& curve, double tolerance = 0.001,
                                int samples = 200);
+
+// Batch sibling of ImprintClosedCurveOnFace() above - the same "one call,
+// many named targets" generalization SplitFaceByCurves() above gives its
+// own open-chain sibling, applied here to closed interior loops instead.
+// `curves` is a caller-chosen list of independent CLOSED curves, each
+// pulled onto `face_index`'s own surface exactly as
+// ImprintClosedCurveOnFace() does for its one curve, then handed to
+// FragmentFaces() together as separate closed chains on the same face in
+// a SINGLE call. Genuinely load-bearing, not mere convenience:
+// FragmentFaces()'s own closed-chain pass (the `for (const Chain& c :
+// closed_chains)` loop in SplitFaceLoop(), boolean_general.cpp) already
+// finds each closed chain's own owning fragment independently (by point-
+// in-polygon against the current fragment set) and gives it its own
+// interior-disk fragment, so N independent, non-nested, non-overlapping
+// closed curves correctly become N holes bridged into ONE outer fragment
+// plus N separate interior-disk fragments - N+1 total - in one pass, not
+// through N sequential single-hole calls each only ever able to add one
+// hole to the (unmodified-elsewhere) original boundary.
+//
+// Each curve is still individually required to close on itself (its own
+// two ends coincide within tolerance once pulled onto the surface) and
+// stay clear of the face's own trim boundary, exactly as
+// ImprintClosedCurveOnFace() requires of its one curve; two curves
+// nesting inside one another or overlapping are out of this function's
+// own scope (their own interaction is never classified) and may produce
+// an unexpected fragment count, which this function refuses rather than
+// guesses at. Throws std::invalid_argument for an empty `curves` list, a
+// non-positive `tolerance`, `samples` below 2, or any of
+// ImprintClosedCurveOnFace()'s own per-curve input problems (fewer than 2
+// control points, failing to converge onto the surface, collapsing to a
+// single point, or a curve whose own two ends do NOT coincide once pulled
+// onto the surface - an open chain, SplitFaceByCurves()'s job instead) -
+// naming which `curves[]` entry is at fault. Also throws if the actual
+// result is anything other than exactly one fragment holding exactly
+// `curves.size()` holes and every other fragment holding none.
+Brep ImprintClosedCurvesOnFace(const Brep& target, int face_index, const std::vector<NurbsCurve>& curves,
+                                double tolerance = 0.001, int samples = 200);
 
 // Sheet/solid trim (parity-map "Sheet/solid trim (open surface as cutter
 // through a solid)"): splits `solid` (a closed Brep) into the two pieces

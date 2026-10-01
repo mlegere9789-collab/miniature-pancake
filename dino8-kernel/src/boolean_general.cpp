@@ -3676,6 +3676,157 @@ Brep SplitFaceByCurve(const Brep& target, int face_index, const NurbsCurve& curv
   return result;
 }
 
+// SplitFaceByCurves(): parity-map "Split face by curve / surface (real
+// trim-loop split in place)" - batch sibling of SplitFaceByCurve() above,
+// see boolean_general.h's own doc comment for the full contract. Pulls
+// every curve onto face_index's own surface exactly as SplitFaceByCurve()
+// does for its one curve, builds one Chain per curve, and hands the whole
+// list to FragmentFaces() in a single call so its own open-chain worklist
+// splices every chain in one pass.
+Brep SplitFaceByCurves(const Brep& target, int face_index, const std::vector<NurbsCurve>& curves, double tolerance,
+                       int samples) {
+  const ON_Brep& bt = target.raw();
+  const int nt = bt.m_F.Count();
+  if (nt == 0) {
+    throw std::invalid_argument("dino8::kernel::SplitFaceByCurves: target has no faces");
+  }
+  if (face_index < 0 || face_index >= nt) {
+    throw std::invalid_argument("dino8::kernel::SplitFaceByCurves: face_index out of range");
+  }
+  if (curves.empty()) {
+    throw std::invalid_argument("dino8::kernel::SplitFaceByCurves: curves must not be empty");
+  }
+  if (!(tolerance > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::SplitFaceByCurves: tolerance must be positive");
+  }
+  if (samples < 2) {
+    throw std::invalid_argument("dino8::kernel::SplitFaceByCurves: samples must be at least 2");
+  }
+
+  const ON_Surface* face_surface = bt.m_F[face_index].SurfaceOf();
+  IntersectOptions opt;
+  opt.tolerance = tolerance;
+  const double stitch_tol = std::max(1e-4, opt.tolerance * 20.0);
+  const bool debug = std::getenv("DINO8_BOOL_DEBUG") != nullptr;
+
+  std::vector<Chain> chains;
+  chains.reserve(curves.size());
+  for (size_t ci = 0; ci < curves.size(); ++ci) {
+    const NurbsCurve& curve = curves[ci];
+    if (curve.ControlPointCount() < 2) {
+      throw std::invalid_argument("dino8::kernel::SplitFaceByCurves: curves[" + std::to_string(ci) +
+                                   "] has fewer than 2 control points");
+    }
+    const Interval dom = curve.Domain();
+    Chain chain;
+    chain.reserve(static_cast<size_t>(samples) + 1);
+    double u = 0.0, v = 0.0;
+    for (int i = 0; i <= samples; ++i) {
+      const double t = dom.min + (dom.max - dom.min) * (static_cast<double>(i) / samples);
+      const Point3d sample = curve.PointAt(t);
+      if (!SurfaceClosestPointGlobal(*face_surface, sample, u, v)) {
+        throw std::invalid_argument("dino8::kernel::SplitFaceByCurves: curves[" + std::to_string(ci) +
+                                     "] does not converge onto the face's surface");
+      }
+      const Point3d p = face_surface->PointAt(u, v);
+      if (!chain.empty() && chain.back().p.DistanceTo(p) < 1e-9) continue;  // stalled sample, skip
+      chain.push_back({p, Point2d(u, v)});
+    }
+    if (chain.size() < 2) {
+      throw std::invalid_argument("dino8::kernel::SplitFaceByCurves: curves[" + std::to_string(ci) +
+                                   "] collapses to a single point on the surface");
+    }
+    // Same closed-chain rejection SplitFaceByCurve() applies to its one
+    // curve (see that function's own comment) - a curve whose own two
+    // ends coincide is ImprintClosedCurvesOnFace()'s job, not this one's.
+    if (chain.front().p.DistanceTo(chain.back().p) <= stitch_tol) {
+      throw std::invalid_argument(
+          "dino8::kernel::SplitFaceByCurves: curves[" + std::to_string(ci) +
+          "]'s own two ends coincide (within tolerance) once pulled onto the surface - a closed loop only "
+          "ever becomes an interior hole, not an open-chain split; ImprintClosedCurvesOnFace() handles that "
+          "case instead");
+    }
+    chains.push_back(std::move(chain));
+  }
+
+  std::vector<std::vector<Chain>> raw_t(static_cast<size_t>(nt));
+  raw_t[static_cast<size_t>(face_index)] = chains;
+
+  std::vector<FaceFrags> frags_t = FragmentFaces(bt, nt, raw_t, stitch_tol, opt, debug);
+
+  const FaceFrags* split_ff = nullptr;
+  for (const FaceFrags& ff : frags_t) {
+    if (ff.face_index == face_index) {
+      split_ff = &ff;
+      break;
+    }
+  }
+  bool any_holes = false;
+  if (split_ff != nullptr) {
+    for (const Fragment& frag : split_ff->frags) {
+      if (!frag.holes.empty()) any_holes = true;
+    }
+  }
+  const size_t expected = curves.size() + 1;
+  if (split_ff == nullptr || split_ff->frags.size() != expected || any_holes) {
+    const size_t got = split_ff == nullptr ? 0 : split_ff->frags.size();
+    for (FaceFrags& ff : frags_t) delete ff.surface;
+    throw std::invalid_argument(
+        "dino8::kernel::SplitFaceByCurves: " + std::to_string(curves.size()) +
+        " curve(s) must each cross the face's own trim boundary at exactly two points, independently of one "
+        "another, producing exactly " + std::to_string(expected) + " fragment(s) with no interior hole (got " +
+        std::to_string(got) + " fragment(s)" + (any_holes ? ", with a hole" : "") +
+        ") - this function only performs a clean N-way split, with no curve crossing another or touching the "
+        "boundary more than twice");
+  }
+
+  // Same "keep every fragment of every face, unconditionally" reassembly
+  // SplitFaceByCurve()/ImprintFaces() above use.
+  std::vector<KeptFace> kept;
+  for (FaceFrags& ff : frags_t) {
+    for (Fragment& frag : ff.frags) {
+      KeptFace kf;
+      kf.surface = ff.surface->DuplicateSurface();
+      kf.rev = ff.base_rev;
+      kf.outer = frag.outer;
+      kf.holes = frag.holes;
+      if (!kf.holes.empty()) BridgeHolesIntoOuter(kf.outer, kf.holes, ff.surface);
+      kept.push_back(std::move(kf));
+    }
+  }
+  for (FaceFrags& ff : frags_t) delete ff.surface;
+
+  ReconcileFragmentBoundaries(kept);
+
+  Brep result;
+  ON_Brep& brep = result.raw();
+  VertexWelder welder;
+  for (KeptFace& kf : kept) {
+    CollapseDuplicateVids(kf.outer, welder, kf.surface);
+    for (auto& h : kf.holes) CollapseDuplicateVids(h, welder, kf.surface);
+  }
+  for (const Point3d& p : welder.Points()) brep.NewVertex(p);
+
+  std::unordered_map<uint64_t, int> edge_of_pair;
+  for (KeptFace& kf : kept) {
+    if (kf.outer.size() < 3) {
+      delete kf.surface;
+      continue;
+    }
+    const int surface_index = brep.AddSurface(kf.surface);
+    ON_BrepFace& face = brep.NewFace(surface_index);
+    face.m_bRev = kf.rev;
+    BuildLoop(brep, face, ON_BrepLoop::outer, kf.outer, welder, edge_of_pair);
+    for (const std::vector<UVPt>& h : kf.holes) {
+      if (h.size() >= 3) BuildLoop(brep, face, ON_BrepLoop::inner, h, welder, edge_of_pair);
+    }
+  }
+
+  brep.SetTrimIsoFlags();
+  brep.SetTolerancesBoxesAndFlags(/*bLazy=*/true);
+  return result;
+}
+
 // ImprintClosedCurveOnFace(): parity-map "Imprint curve / face onto a body
 // face (add edges without changing geometry)" - the curve-onto-face half,
 // see boolean_general.h's own doc comment for the full contrast with
@@ -3788,6 +3939,164 @@ Brep ImprintClosedCurveOnFace(const Brep& target, int face_index, const NurbsCur
   // ImprintFaces()/SplitFaceByCurve() above use - every other face
   // produces exactly one Fragment (its own original, untouched boundary),
   // same as any face no chain ever reaches.
+  std::vector<KeptFace> kept;
+  for (FaceFrags& ff : frags_t) {
+    for (Fragment& frag : ff.frags) {
+      KeptFace kf;
+      kf.surface = ff.surface->DuplicateSurface();
+      kf.rev = ff.base_rev;
+      kf.outer = frag.outer;
+      kf.holes = frag.holes;
+      if (!kf.holes.empty()) BridgeHolesIntoOuter(kf.outer, kf.holes, ff.surface);
+      kept.push_back(std::move(kf));
+    }
+  }
+  for (FaceFrags& ff : frags_t) delete ff.surface;
+
+  ReconcileFragmentBoundaries(kept);
+
+  Brep result;
+  ON_Brep& brep = result.raw();
+  VertexWelder welder;
+  for (KeptFace& kf : kept) {
+    CollapseDuplicateVids(kf.outer, welder, kf.surface);
+    for (auto& h : kf.holes) CollapseDuplicateVids(h, welder, kf.surface);
+  }
+  for (const Point3d& p : welder.Points()) brep.NewVertex(p);
+
+  std::unordered_map<uint64_t, int> edge_of_pair;
+  for (KeptFace& kf : kept) {
+    if (kf.outer.size() < 3) {
+      delete kf.surface;
+      continue;
+    }
+    const int surface_index = brep.AddSurface(kf.surface);
+    ON_BrepFace& face = brep.NewFace(surface_index);
+    face.m_bRev = kf.rev;
+    BuildLoop(brep, face, ON_BrepLoop::outer, kf.outer, welder, edge_of_pair);
+    for (const std::vector<UVPt>& h : kf.holes) {
+      if (h.size() >= 3) BuildLoop(brep, face, ON_BrepLoop::inner, h, welder, edge_of_pair);
+    }
+  }
+
+  brep.SetTrimIsoFlags();
+  brep.SetTolerancesBoxesAndFlags(/*bLazy=*/true);
+  return result;
+}
+
+// ImprintClosedCurvesOnFace(): parity-map "Imprint curve / face onto a body
+// face (add edges without changing geometry)" - batch sibling of
+// ImprintClosedCurveOnFace() above, see boolean_general.h's own doc
+// comment for the full contract. Pulls every curve onto face_index's own
+// surface exactly as ImprintClosedCurveOnFace() does for its one curve,
+// builds one closed Chain per curve, and hands the whole list to
+// FragmentFaces() in a single call so its own closed-chain pass (the
+// `for (const Chain& c : closed_chains)` loop in SplitFaceLoop()) gives
+// each one its own independently-found owning fragment and its own
+// interior-disk fragment in one pass.
+Brep ImprintClosedCurvesOnFace(const Brep& target, int face_index, const std::vector<NurbsCurve>& curves,
+                                double tolerance, int samples) {
+  const ON_Brep& bt = target.raw();
+  const int nt = bt.m_F.Count();
+  if (nt == 0) {
+    throw std::invalid_argument("dino8::kernel::ImprintClosedCurvesOnFace: target has no faces");
+  }
+  if (face_index < 0 || face_index >= nt) {
+    throw std::invalid_argument("dino8::kernel::ImprintClosedCurvesOnFace: face_index out of range");
+  }
+  if (curves.empty()) {
+    throw std::invalid_argument("dino8::kernel::ImprintClosedCurvesOnFace: curves must not be empty");
+  }
+  if (!(tolerance > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::ImprintClosedCurvesOnFace: tolerance must be positive");
+  }
+  if (samples < 2) {
+    throw std::invalid_argument("dino8::kernel::ImprintClosedCurvesOnFace: samples must be at least 2");
+  }
+
+  const ON_Surface* face_surface = bt.m_F[face_index].SurfaceOf();
+  IntersectOptions opt;
+  opt.tolerance = tolerance;
+  const double stitch_tol = std::max(1e-4, opt.tolerance * 20.0);
+  const bool debug = std::getenv("DINO8_BOOL_DEBUG") != nullptr;
+
+  std::vector<Chain> chains;
+  chains.reserve(curves.size());
+  for (size_t ci = 0; ci < curves.size(); ++ci) {
+    const NurbsCurve& curve = curves[ci];
+    if (curve.ControlPointCount() < 2) {
+      throw std::invalid_argument("dino8::kernel::ImprintClosedCurvesOnFace: curves[" + std::to_string(ci) +
+                                   "] has fewer than 2 control points");
+    }
+    const Interval dom = curve.Domain();
+    Chain chain;
+    chain.reserve(static_cast<size_t>(samples) + 1);
+    double u = 0.0, v = 0.0;
+    for (int i = 0; i <= samples; ++i) {
+      const double t = dom.min + (dom.max - dom.min) * (static_cast<double>(i) / samples);
+      const Point3d sample = curve.PointAt(t);
+      if (!SurfaceClosestPointGlobal(*face_surface, sample, u, v)) {
+        throw std::invalid_argument("dino8::kernel::ImprintClosedCurvesOnFace: curves[" + std::to_string(ci) +
+                                     "] does not converge onto the face's surface");
+      }
+      const Point3d p = face_surface->PointAt(u, v);
+      if (!chain.empty() && chain.back().p.DistanceTo(p) < 1e-9) continue;  // stalled sample, skip
+      chain.push_back({p, Point2d(u, v)});
+    }
+    if (chain.size() < 2) {
+      throw std::invalid_argument("dino8::kernel::ImprintClosedCurvesOnFace: curves[" + std::to_string(ci) +
+                                   "] collapses to a single point on the surface");
+    }
+    // The defining requirement this function places on EACH curve that
+    // SplitFaceByCurves() does not - see ImprintClosedCurveOnFace()'s own
+    // comment for the single-curve case.
+    if (chain.front().p.DistanceTo(chain.back().p) > stitch_tol) {
+      throw std::invalid_argument(
+          "dino8::kernel::ImprintClosedCurvesOnFace: curves[" + std::to_string(ci) +
+          "]'s own two ends do not coincide once pulled onto the surface - this function only imprints CLOSED "
+          "loops entirely interior to the face; an open chain reaching the face's own trim boundary is "
+          "SplitFaceByCurves()'s job instead");
+    }
+    chains.push_back(std::move(chain));
+  }
+
+  std::vector<std::vector<Chain>> raw_t(static_cast<size_t>(nt));
+  raw_t[static_cast<size_t>(face_index)] = chains;
+
+  std::vector<FaceFrags> frags_t = FragmentFaces(bt, nt, raw_t, stitch_tol, opt, debug);
+
+  const FaceFrags* split_ff = nullptr;
+  for (const FaceFrags& ff : frags_t) {
+    if (ff.face_index == face_index) {
+      split_ff = &ff;
+      break;
+    }
+  }
+  size_t frags_with_holes = 0;
+  size_t hole_count_on_that_frag = 0;
+  if (split_ff != nullptr) {
+    for (const Fragment& frag : split_ff->frags) {
+      if (!frag.holes.empty()) {
+        ++frags_with_holes;
+        hole_count_on_that_frag = frag.holes.size();
+      }
+    }
+  }
+  const size_t expected = curves.size() + 1;
+  if (split_ff == nullptr || split_ff->frags.size() != expected || frags_with_holes != 1 ||
+      hole_count_on_that_frag != curves.size()) {
+    const size_t got = split_ff == nullptr ? 0 : split_ff->frags.size();
+    for (FaceFrags& ff : frags_t) delete ff.surface;
+    throw std::invalid_argument(
+        "dino8::kernel::ImprintClosedCurvesOnFace: " + std::to_string(curves.size()) +
+        " curve(s) must form independent, non-nested, non-overlapping closed loops entirely interior to the "
+        "face's own trim boundary (got " + std::to_string(got) + " fragment(s), " +
+        std::to_string(frags_with_holes) + " of them holding a hole) - this function only performs a clean "
+        "multi-hole imprint");
+  }
+
+  // Same "keep every fragment of every face, unconditionally" reassembly
+  // ImprintClosedCurveOnFace()/ImprintFaces() above use.
   std::vector<KeptFace> kept;
   for (FaceFrags& ff : frags_t) {
     for (Fragment& frag : ff.frags) {
