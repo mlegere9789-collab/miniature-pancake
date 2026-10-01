@@ -21145,6 +21145,156 @@ void TestSubDEvaluateFaceExtraordinaryCornerHasRealTangentPlane() {
   }
 }
 
+// Closes PARITY_MAP.md's own "SubD extraordinary-vertex limit-tangent
+// quality — semi-sharp edge handling" backlog item: before this pass,
+// ExactVertexCorner()'s call to ON_SubDVertex::GetSurfacePoint() silently
+// ignored any semi-sharp (finite, sub-MaximumValue) weight on an incident
+// Smooth-tagged edge, since GetSurfacePoint()'s own sector classification
+// only ever reads edge TAGS, never Sharpness()/EndSharpness() - verified
+// directly against OpenNURBS' own opennurbs_subd_eval.cpp
+// (GetSectorLimitPointHelper -> ON_SubDSectorType::Create), not assumed.
+void TestSubDEvaluateFaceExtraordinaryCornerHandlesSemiSharpEdge() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SubD;
+  using dino8::kernel::SubDSurfacePoint;
+
+  // Same level-1 cube fixture TestSubDEvaluateFaceExtraordinaryCornerHasRealTangentPlane
+  // uses: every original cube corner is a valence-3 extraordinary vertex
+  // after one level of Catmull-Clark refinement, with exactly 3 incident
+  // edges each.
+  const Mesh cube = MakeQuadBoxMesh(-1, -1, -1, 1, 1, 1);
+  SubD subd = SubD::FromControlMesh(cube);
+  subd.Subdivide(1);
+
+  const ON_SubDFace* target = nullptr;
+  int irregular_corner = -1;
+  ON_SubDFaceIterator fit = subd.raw().FaceIterator();
+  for (const ON_SubDFace* f = fit.FirstFace(); f != nullptr && target == nullptr; f = fit.NextFace()) {
+    if (f->EdgeCount() != 4) continue;
+    int irregular_count = 0, irregular_idx = -1;
+    bool all_smooth = true;
+    for (unsigned int i = 0; i < 4; ++i) {
+      const ON_SubDVertex* v = f->Vertex(i);
+      if (!v || !v->IsSmooth()) all_smooth = false;
+      if (!v || v->EdgeCount() != 4) {
+        ++irregular_count;
+        irregular_idx = static_cast<int>(i);
+      }
+    }
+    if (all_smooth && irregular_count == 1) {
+      target = f;
+      irregular_corner = irregular_idx;
+    }
+  }
+  Check(target != nullptr,
+        "found a level-1 cube face with exactly one still-extraordinary (valence-3) corner");
+
+  const unsigned int face_id = target->FaceId();
+  const double corner_u[4] = {0.0, 1.0, 1.0, 0.0};
+  const double corner_v[4] = {0.0, 0.0, 1.0, 1.0};
+  const int k = irregular_corner;
+
+  const ON_SubDVertex* ev = target->Vertex(static_cast<unsigned int>(k));
+  Check(ev != nullptr && ev->EdgeCount() == 3, "the extraordinary corner vertex has valence 3");
+  const ON_3dPoint original_corner = ev->ControlNetPoint();
+
+  const ON_SubDEdge* sharp_edge = nullptr;
+  for (unsigned int i = 0; i < ev->EdgeCount(); ++i) {
+    const ON_SubDEdge* e = ev->Edge(i);
+    if (e != nullptr && e->IsSmooth()) {
+      sharp_edge = e;
+      break;
+    }
+  }
+  Check(sharp_edge != nullptr, "the extraordinary vertex has a smooth (non-boundary) edge to "
+                               "make semi-sharp");
+  const ON_SubDVertex* other_end = sharp_edge->OtherEndVertex(ev);
+  const Point3d p0 = ev->ControlNetPoint();
+  const Point3d p1 = other_end->ControlNetPoint();
+
+  // Baseline: zero sharpness anywhere, the pre-existing (and, for the
+  // zero-sharpness case, still correct) eigenbasis answer.
+  const SubDSurfacePoint baseline = subd.EvaluateFace(face_id, corner_u[k], corner_v[k]);
+  Check(baseline.exact, "baseline corner evaluation reports exact");
+
+  Check(subd.SetEdgeSharpness(p0, p1, 1.0, 1e-9), "SetEdgeSharpness(1.0) succeeds on this edge");
+  const SubDSurfacePoint sharp_low = subd.EvaluateFace(face_id, corner_u[k], corner_v[k]);
+  Check(sharp_low.exact, "semi-sharp corner evaluation still reports exact");
+
+  const double kMax = ON_SubDEdgeSharpness::MaximumValue;  // 4.0
+  Check(subd.SetEdgeSharpness(p0, p1, kMax, 1e-9), "SetEdgeSharpness(MaximumValue) succeeds");
+  const SubDSurfacePoint sharp_high = subd.EvaluateFace(face_id, corner_u[k], corner_v[k]);
+  Check(sharp_high.exact, "maximally-semi-sharp corner evaluation still reports exact");
+
+  const double d_low = baseline.position.DistanceTo(sharp_low.position);
+  const double d_high = baseline.position.DistanceTo(sharp_high.position);
+  Check(d_low > 1e-6,
+        "a semi-sharp incident edge genuinely moves the corner's own exact limit point away "
+        "from the plain-smooth eigenbasis answer - proving the fix actually reads the "
+        "sharpness, where ON_SubDVertex::GetSurfacePoint()'s own sector-type classification "
+        "alone would silently ignore it");
+  Check(d_high > d_low,
+        "a higher stored sharpness weight pulls the limit point further from the smooth "
+        "baseline than a lower one - the effect scales with the stored weight rather than "
+        "being a fixed on/off perturbation");
+
+  // Independent cross-check using only ALREADY-TESTED public API (not
+  // ExactVertexCorner()'s own internals): a MaximumValue (4.0) semi-sharp
+  // edge takes exactly ceil(4.0) = 4 real SubD::Subdivide() calls to decay
+  // to plain smooth (ON_SubDEdgeSharpness::Subdivided()'s own
+  // decrement-by-1.0-per-level rule - see SetEdgeSharpness()'s own doc
+  // comment). At that point every one of the tracked vertex's own
+  // incident edges is ordinary smooth, so calling
+  // ON_SubDVertex::GetSurfacePoint() directly on it - with no decay logic
+  // of this test's or ExactVertexCorner()'s own involved - is already the
+  // exact closed-form answer, independently of how EvaluateFace() itself
+  // got there. The descendant is tracked by nearest-original-corner
+  // position among same-valence (3) vertices: the cube's 8 corners start
+  // more than 2 apart (edge length 2) while each level's own smoothing
+  // displacement is a small fraction of that (TestSubDFromBoxSubdivides
+  // ToExactCatmullClarkCounts's own measured level-2 volume shrink, 8 ->
+  // 2.80, confirms the displacement is substantial but not enough to
+  // cross half that gap), so nearest-corner identification is unambiguous.
+  SubD decayed = subd;  // already carries the MaximumValue sharpness set above
+  decayed.Subdivide(4);
+
+  const ON_SubDVertex* tracked = nullptr;
+  double best_distance = -1.0;
+  ON_SubDVertexIterator vit = decayed.raw().VertexIterator();
+  for (const ON_SubDVertex* v = vit.FirstVertex(); v != nullptr; v = vit.NextVertex()) {
+    if (v->EdgeCount() != 3) continue;  // extraordinary vertices alone keep valence 3 forever
+    const double d = v->ControlNetPoint().DistanceTo(original_corner);
+    if (tracked == nullptr || d < best_distance) {
+      tracked = v;
+      best_distance = d;
+    }
+  }
+  Check(tracked != nullptr, "found the same extraordinary vertex's own descendant 4 levels later");
+
+  double max_residual_sharpness = 0.0;
+  for (unsigned int i = 0; i < tracked->EdgeCount(); ++i) {
+    const ON_SubDEdge* e = tracked->Edge(i);
+    if (e != nullptr && e->IsSmooth()) {
+      max_residual_sharpness = std::max(max_residual_sharpness, e->EndSharpness(tracked));
+    }
+  }
+  Check(max_residual_sharpness == 0.0,
+        "4 levels fully decays a MaximumValue (4.0) semi-sharp edge to plain smooth (0), "
+        "confirmed directly on the tracked descendant rather than assumed");
+
+  ON_SubDSectorSurfacePoint reference_limit;
+  Check(tracked->GetSurfacePoint(tracked->Face(0), true, reference_limit),
+        "GetSurfacePoint succeeds directly on the fully-decayed descendant vertex");
+  const double cross_check_distance = sharp_high.position.DistanceTo(reference_limit.Point());
+  Check(cross_check_distance < 1e-6,
+        "EvaluateFace()'s own corner position for the MaximumValue semi-sharp edge matches, to "
+        "within numerical tolerance, an independent reference obtained by actually running 4 "
+        "real SubD::Subdivide() calls (a separate, already-tested code path) and reading the "
+        "fully-decayed descendant's own closed-form limit point directly - not merely "
+        "self-consistent with ExactVertexCorner()'s own internals");
+}
+
 void TestSubDEvaluateFaceThrowsOnBadInput() {
   using dino8::kernel::Mesh;
   using dino8::kernel::SubD;
@@ -23200,6 +23350,62 @@ void TestSubDBooleanToSubDPropagatesBooleanFailure() {
   Check(threw,
         "SubD::BooleanToSubD throws std::runtime_error when an operand's ToApproximateMesh() is "
         "open, the same precondition Boolean() itself already enforces");
+}
+
+// Closes part of PARITY_MAP.md's own "SubD boolean operations" gap ("every
+// face a raw triangle... no quad-dominant remeshing"): BooleanToSubD() now
+// runs the boolean mesh through the already-existing, already-tested
+// Mesh::TrisToQuads() before FromControlMesh() sees it, so the away-from-
+// the-cut faces of two disjoint box operands - each one a Manifold-
+// triangulated copy of an original quad face - recombine back into actual
+// quads in the returned SubD's own control cage, rather than staying two
+// triangles forever.
+void TestSubDBooleanToSubDRecombinesUntouchedFacesIntoQuads() {
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SubD;
+
+  // Same disjoint-box fixture as TestSubDBooleanUnionOfDisjointBoxesSumsVolumes:
+  // two box operands with NO shared boundary at all, so every one of
+  // Manifold's own output faces is an untouched copy of an original box
+  // face (split into 2 triangles), never genuinely re-triangulated at a
+  // cut - the case TrisToQuads()'s own doc comment names as where it
+  // actually helps.
+  const SubD a = SubD::FromControlMesh(MakeQuadBoxMesh(0, 0, 0, 2, 2, 2));
+  const SubD b = SubD::FromControlMesh(MakeQuadBoxMesh(5, 0, 0, 7, 2, 2));
+
+  const SubD with_quads = a.BooleanToSubD(b, BooleanOp::Union);
+
+  // Independent reference: the exact same boolean mesh, built into a SubD
+  // the OLD way (no TrisToQuads() step) - proves the comparison below is
+  // against what this method used to return, not a strawman.
+  const Mesh raw_result = a.Boolean(b, BooleanOp::Union);
+  const SubD without_quads = SubD::FromControlMesh(raw_result);
+
+  Check(without_quads.FaceCount() == 24,
+        "sanity: two disjoint boxes' raw triangulated boolean result is 2 boxes x 6 faces x 2 "
+        "triangles = 24 triangles, with no quad recombination at all");
+  Check(with_quads.FaceCount() == 12,
+        "BooleanToSubD()'s own TrisToQuads() pass recombines every one of the 24 raw triangles "
+        "back into the 12 original box faces (2 boxes x 6 faces), since none of them touch a "
+        "cut - the exact 2-to-1 reduction TestMeshTrisToQuadsRecombinesTessellatedBoxFaces "
+        "already proves for a single box");
+  Check(with_quads.FaceCount() < without_quads.FaceCount(),
+        "the quad-recombined control cage has strictly fewer faces than the raw triangulated one");
+
+  Check(std::abs(with_quads.ToApproximateMesh().Volume() - 16.0) < 1e-9,
+        "recombining triangles into quads before FromControlMesh() does not change the boolean "
+        "result's own volume (still the exact disjoint-union sum, 8+8=16)");
+  Check(with_quads.ToApproximateMesh().IsClosedManifold(),
+        "the quad-recombined control cage is still a genuine closed manifold, not just a "
+        "plausible-looking face count");
+
+  SubD further = with_quads;
+  further.Subdivide(1);
+  Check(std::abs(further.ToApproximateMesh().Volume() - 16.0) >
+            1e-9 /* strictly different, not necessarily smaller for a 2-body union */,
+        "the quad-recombined cage is a genuine, further-subdividable SubD control net (a real "
+        "Catmull-Clark refinement actually changes the shape), not a frozen copy");
 }
 
 void TestMeshComputeVertexNormals() {
@@ -62458,6 +62664,7 @@ int main() {
   TestSubDEvaluateFaceExactOnRegularFlatGrid();
   TestSubDEvaluateFaceAdaptiveOnIrregularFace();
   TestSubDEvaluateFaceExtraordinaryCornerHasRealTangentPlane();
+  TestSubDEvaluateFaceExtraordinaryCornerHandlesSemiSharpEdge();
   TestSubDEvaluateFaceThrowsOnBadInput();
   TestSubDToNurbsPatchesAdaptiveMatchesNonAdaptiveAtZeroLevels();
   TestSubDToNurbsPatchesAdaptiveSplitsIrregularFace();
@@ -62495,6 +62702,7 @@ int main() {
   TestSubDBooleanToSubDReturnsEditableSubDMatchingBooleanVolume();
   TestSubDBooleanToSubDIsGenuinelyFurtherSubdividable();
   TestSubDBooleanToSubDPropagatesBooleanFailure();
+  TestSubDBooleanToSubDRecombinesUntouchedFacesIntoQuads();
   TestMeshComputeVertexNormals();
   TestMeshSaveObjRoundTrips();
   TestMeshTextureCoordinates();
