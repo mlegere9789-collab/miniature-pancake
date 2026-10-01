@@ -3676,6 +3676,163 @@ Brep SplitFaceByCurve(const Brep& target, int face_index, const NurbsCurve& curv
   return result;
 }
 
+// ImprintClosedCurveOnFace(): parity-map "Imprint curve / face onto a body
+// face (add edges without changing geometry)" - the curve-onto-face half,
+// see boolean_general.h's own doc comment for the full contrast with
+// `SplitFaceByCurve()` (open chain, two-way split) and `ImprintFaces()`
+// (whole tool body). Pulls `curve` onto `face_index`'s own surface exactly
+// as `SplitFaceByCurve()` does, then hands the resulting chain to this
+// file's own `FragmentFaces()` - requiring the CLOSED-chain, one-hole-plus-
+// one-disk pattern that function already refuses, rather than the open,
+// clean-two-way-split pattern `SplitFaceByCurve()` requires.
+Brep ImprintClosedCurveOnFace(const Brep& target, int face_index, const NurbsCurve& curve, double tolerance,
+                               int samples) {
+  const ON_Brep& bt = target.raw();
+  const int nt = bt.m_F.Count();
+  if (nt == 0) {
+    throw std::invalid_argument("dino8::kernel::ImprintClosedCurveOnFace: target has no faces");
+  }
+  if (face_index < 0 || face_index >= nt) {
+    throw std::invalid_argument("dino8::kernel::ImprintClosedCurveOnFace: face_index out of range");
+  }
+  if (curve.ControlPointCount() < 2) {
+    throw std::invalid_argument("dino8::kernel::ImprintClosedCurveOnFace: curve has fewer than 2 control points");
+  }
+  if (!(tolerance > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::ImprintClosedCurveOnFace: tolerance must be positive");
+  }
+  if (samples < 2) {
+    throw std::invalid_argument("dino8::kernel::ImprintClosedCurveOnFace: samples must be at least 2");
+  }
+
+  const ON_Surface* face_surface = bt.m_F[face_index].SurfaceOf();
+  const Interval dom = curve.Domain();
+  Chain chain;
+  chain.reserve(static_cast<size_t>(samples) + 1);
+  double u = 0.0, v = 0.0;
+  for (int i = 0; i <= samples; ++i) {
+    const double t = dom.min + (dom.max - dom.min) * (static_cast<double>(i) / samples);
+    const Point3d sample = curve.PointAt(t);
+    if (!SurfaceClosestPointGlobal(*face_surface, sample, u, v)) {
+      throw std::invalid_argument(
+          "dino8::kernel::ImprintClosedCurveOnFace: curve does not converge onto the face's surface");
+    }
+    const Point3d p = face_surface->PointAt(u, v);
+    if (!chain.empty() && chain.back().p.DistanceTo(p) < 1e-9) continue;  // stalled sample, skip
+    chain.push_back({p, Point2d(u, v)});
+  }
+  if (chain.size() < 2) {
+    throw std::invalid_argument(
+        "dino8::kernel::ImprintClosedCurveOnFace: curve collapses to a single point on the surface");
+  }
+
+  IntersectOptions opt;
+  opt.tolerance = tolerance;
+  const double stitch_tol = std::max(1e-4, opt.tolerance * 20.0);
+  const bool debug = std::getenv("DINO8_BOOL_DEBUG") != nullptr;
+
+  // The defining requirement this function places that SplitFaceByCurve()
+  // does not (see that function's own explicit rejection of this exact
+  // case, and this function's own doc comment): `curve`'s own two ends
+  // must coincide once pulled onto the surface - this is the curve-is-a-
+  // closed-interior-loop case, not an open chain reaching the boundary.
+  if (chain.front().p.DistanceTo(chain.back().p) > stitch_tol) {
+    throw std::invalid_argument(
+        "dino8::kernel::ImprintClosedCurveOnFace: curve's own two ends do not coincide once pulled onto the "
+        "surface - this function only imprints a CLOSED loop entirely interior to the face; an open chain "
+        "reaching the face's own trim boundary is SplitFaceByCurve()'s job instead");
+  }
+
+  std::vector<std::vector<Chain>> raw_t(static_cast<size_t>(nt));
+  raw_t[static_cast<size_t>(face_index)].push_back(std::move(chain));
+
+  std::vector<FaceFrags> frags_t = FragmentFaces(bt, nt, raw_t, stitch_tol, opt, debug);
+
+  const FaceFrags* split_ff = nullptr;
+  for (const FaceFrags& ff : frags_t) {
+    if (ff.face_index == face_index) {
+      split_ff = &ff;
+      break;
+    }
+  }
+  // The genuine "closed interior loop" signature FragmentFaces()/
+  // SplitFaceLoop() already produce for this case (see
+  // BridgeHolesIntoOuter()'s own doc comment - ImprintFaces()'s own
+  // "annulus-with-hole plus interior disk" pattern on a piercing
+  // cylinder): exactly 2 fragments, exactly ONE of which carries exactly
+  // ONE hole (the curve just fed in) - the other is the plain interior
+  // disk. Anything else means the curve didn't actually land as a single
+  // clean interior loop (e.g. it also reaches the boundary, or crosses
+  // itself) and is refused rather than guessed at.
+  size_t frags_with_holes = 0;
+  size_t hole_count_on_that_frag = 0;
+  if (split_ff != nullptr) {
+    for (const Fragment& frag : split_ff->frags) {
+      if (!frag.holes.empty()) {
+        ++frags_with_holes;
+        hole_count_on_that_frag = frag.holes.size();
+      }
+    }
+  }
+  if (split_ff == nullptr || split_ff->frags.size() != 2 || frags_with_holes != 1 || hole_count_on_that_frag != 1) {
+    const size_t got = split_ff == nullptr ? 0 : split_ff->frags.size();
+    for (FaceFrags& ff : frags_t) delete ff.surface;
+    throw std::invalid_argument(
+        "dino8::kernel::ImprintClosedCurveOnFace: curve must form a single closed loop entirely interior to "
+        "the face's own trim boundary (got " +
+        std::to_string(got) + " fragment(s), " + std::to_string(frags_with_holes) +
+        " of them holding a hole) - this function only performs a clean interior-loop imprint");
+  }
+
+  // Same "keep every fragment of every face, unconditionally" reassembly
+  // ImprintFaces()/SplitFaceByCurve() above use - every other face
+  // produces exactly one Fragment (its own original, untouched boundary),
+  // same as any face no chain ever reaches.
+  std::vector<KeptFace> kept;
+  for (FaceFrags& ff : frags_t) {
+    for (Fragment& frag : ff.frags) {
+      KeptFace kf;
+      kf.surface = ff.surface->DuplicateSurface();
+      kf.rev = ff.base_rev;
+      kf.outer = frag.outer;
+      kf.holes = frag.holes;
+      if (!kf.holes.empty()) BridgeHolesIntoOuter(kf.outer, kf.holes, ff.surface);
+      kept.push_back(std::move(kf));
+    }
+  }
+  for (FaceFrags& ff : frags_t) delete ff.surface;
+
+  ReconcileFragmentBoundaries(kept);
+
+  Brep result;
+  ON_Brep& brep = result.raw();
+  VertexWelder welder;
+  for (KeptFace& kf : kept) {
+    CollapseDuplicateVids(kf.outer, welder, kf.surface);
+    for (auto& h : kf.holes) CollapseDuplicateVids(h, welder, kf.surface);
+  }
+  for (const Point3d& p : welder.Points()) brep.NewVertex(p);
+
+  std::unordered_map<uint64_t, int> edge_of_pair;
+  for (KeptFace& kf : kept) {
+    if (kf.outer.size() < 3) {
+      delete kf.surface;
+      continue;
+    }
+    const int surface_index = brep.AddSurface(kf.surface);
+    ON_BrepFace& face = brep.NewFace(surface_index);
+    face.m_bRev = kf.rev;
+    BuildLoop(brep, face, ON_BrepLoop::outer, kf.outer, welder, edge_of_pair);
+    for (const std::vector<UVPt>& h : kf.holes) {
+      if (h.size() >= 3) BuildLoop(brep, face, ON_BrepLoop::inner, h, welder, edge_of_pair);
+    }
+  }
+
+  brep.SetTrimIsoFlags();
+  brep.SetTolerancesBoxesAndFlags(/*bLazy=*/true);
+  return result;
+}
+
 // SplitBySheet(): sheet/solid trim (parity-map "Sheet/solid trim (open
 // surface as cutter through a solid)"). Splits `solid` (a closed Brep)
 // into the two pieces on either side of `sheet` (an OPEN Brep - one or
@@ -4065,6 +4222,84 @@ std::pair<Brep, Brep> SplitBrepByManySolids(const Brep& target, const std::vecto
 
   const Brep folded_cutter = BooleanCombineGeneralNAry(cutters, {}, BooleanOp::Union, tolerance);
   return SplitBrepBySolid(target, folded_cutter, tolerance);
+}
+
+std::pair<Brep, Brep> SplitBrepByPlane(const Brep& target, Vector3d plane_normal, double plane_offset,
+                                        double tolerance) {
+  if (target.raw().m_F.Count() == 0) {
+    throw BooleanOperationError(BooleanFailureReason::EmptyOperand, "SplitBrepByPlane",
+                                 "dino8::kernel::SplitBrepByPlane: target has no faces");
+  }
+  Vector3d n = plane_normal;
+  if (!n.Unitize()) {
+    throw std::invalid_argument("dino8::kernel::SplitBrepByPlane: plane_normal must be non-zero");
+  }
+  if (!(tolerance > 0.0)) {
+    throw BooleanOperationError(BooleanFailureReason::InvalidTolerance, "SplitBrepByPlane",
+                                 "dino8::kernel::SplitBrepByPlane: tolerance must be positive");
+  }
+
+  // An orthonormal (u, v, n) frame for the plane - same "pick whichever
+  // world axis is least parallel to the normal, cross it in" construction
+  // HoleToolProfileCurve() above already uses for an analogous "need any
+  // reference direction perpendicular to a given axis" need.
+  const Vector3d reference = (std::fabs(n.z) < 0.9) ? Vector3d(0, 0, 1) : Vector3d(1, 0, 0);
+  Vector3d u = ON_CrossProduct(reference, n);
+  u.Unitize();
+  Vector3d v = ON_CrossProduct(n, u);
+  v.Unitize();
+
+  // `p0`: the point on the plane closest to target's own bounding-box
+  // center - i.e. that center's own perpendicular projection onto the
+  // plane. Its (u, v) position is therefore identical to the bbox center's
+  // own (u, v) position (only the along-normal component changes), so a
+  // half-width sized off the bbox diagonal alone - with no separate
+  // correction for how far the plane itself sits from the bbox center -
+  // already safely clears target's own (u, v) extent on every side.
+  const BoundingBox bbox = target.GetTightBoundingBox();
+  const Point3d bbox_center = (bbox.min + bbox.max) * 0.5;
+  const double signed_dist = ON_DotProduct(Vector3d(bbox_center), n) - plane_offset;
+  const Point3d p0 = bbox_center - n * signed_dist;
+
+  const double diagonal = std::max((bbox.max - bbox.min).Length(), 1.0);
+  // Half-width across the plane (u, v directions): target's own (u, v)
+  // extent relative to p0 can never exceed its own bounding-box diagonal
+  // (see p0's own comment above), so padding well past that is enough
+  // regardless of where the plane sits.
+  const double half_width = diagonal * 4.0 + 1.0;
+  // Reach along +n from the plane: target's furthest point from the plane
+  // is at most |signed_dist| + diagonal away from it (triangle inequality
+  // through the bbox center), so this generously covers target's entire
+  // positive-side extent whether the plane cuts through its bbox or sits
+  // well outside it (the latter correctly yields an empty inside/outside
+  // half via SplitBrepBySolid()'s own "cutter misses entirely" contract).
+  const double reach = std::fabs(signed_dist) * 2.0 + diagonal * 4.0 + 1.0;
+
+  const Point3d a = p0 - u * half_width - v * half_width;
+  const Point3d b = p0 + u * half_width - v * half_width;
+  const Point3d c = p0 + u * half_width + v * half_width;
+  const Point3d d = p0 - u * half_width + v * half_width;
+  const Point3d a2 = a + n * reach;
+  const Point3d b2 = b + n * reach;
+  const Point3d c2 = c + n * reach;
+  const Point3d d2 = d + n * reach;
+
+  // Six untrimmed planar quads, each CCW as seen from outside the box
+  // (FromUntrimmedQuadFaces()'s own convention) - the near face (at the
+  // plane itself) faces -n, the far face faces +n, and the four walls face
+  // -v/+u/+v/-u in turn, derived the same way that function's own doc
+  // comment derives a CCW base rectangle's outward normal.
+  const Brep box = Brep::FromUntrimmedQuadFaces({
+      {a, d, c, b},    // near face (on the plane), outward -n
+      {a2, b2, c2, d2},  // far face, outward +n
+      {a, b, b2, a2},  // wall at v = -half_width, outward -v
+      {b, c, c2, b2},  // wall at u = +half_width, outward +u
+      {c, d, d2, c2},  // wall at v = +half_width, outward +v
+      {d, a, a2, d2},  // wall at u = -half_width, outward -u
+  });
+
+  auto [outside, inside] = SplitBrepBySolid(target, box, tolerance);
+  return {std::move(inside), std::move(outside)};
 }
 
 // --- MakeHole()/MakeCounterboreHole()/MakeCountersinkHole() ------------

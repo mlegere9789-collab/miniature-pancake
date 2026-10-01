@@ -1052,6 +1052,47 @@ Brep PushPullFaces(const Brep& solid, const std::vector<std::pair<int, double>>&
 Brep DraftFacesConvexPlanar(const Brep& solid, const std::vector<int>& face_indices, const ON_Plane& neutral_plane,
                              double angle_radians);
 
+// Per-face draft angle override of DraftFacesConvexPlanar() above (the
+// same "scalar form delegates to a per-face array" shape ShellConvexPlanar()
+// already gives its own per-face `wall_thickness` overload): identical
+// construction and sign convention, except every place the scalar overload
+// above uses ONE shared `angle_radians` for every named face, this uses
+// THAT FACE's own `angles_radians[k]` instead - so two faces named in the
+// same call may tilt by genuinely different angles (e.g. a front wall
+// drafted steeply and a side wall drafted shallowly, about the SAME
+// neutral plane, in one call), closing the "one shared angle across all
+// named faces (no per-face angle vector)" gap the scalar overload's own
+// doc comment used to name.
+//
+// `angles_radians.size()` must equal `face_indices.size()` - one angle per
+// named face, by the same positional pairing (not indexed by
+// `solid.PlanarFaces()` position) ShellConvexPlanar()'s own
+// `wall_thickness` array uses relative to ITS OWN `removed_faces` - throws
+// std::invalid_argument on a mismatch rather than silently zip-truncating.
+// Two entries naming the same `face_index` are refused as ambiguous (which
+// of two angles would apply to that one face), the same "no silent
+// tie-break" discipline MoveFacesConvexPlanar()/ReplaceFacePlanesConvexPlanar()
+// already enforce for their own per-target lists - a restriction the
+// scalar overload above never needed, since repeating the same shared
+// angle for a duplicate index was never actually ambiguous.
+//
+// Every face's own new plane still only depends on ITS OWN old plane and
+// the shared `neutral_plane` - not on any other named face's own angle -
+// so, exactly as the equal-angle multi-face case already relies on, the
+// whole batch of (possibly different) new planes is still derived in one
+// shot from `solid`'s own ORIGINAL geometry and handed to the identical
+// half-space-intersection reconstruction in a single pass; two
+// independent per-face angles in one call match drafting each face alone
+// via two SEQUENTIAL single-face `DraftFacesConvexPlanar()` calls, in
+// either order, proving the batch introduces no divergence of its own.
+//
+// Same convex-solid precondition and failure mode as the scalar overload
+// above (`face_indices` empty, an out-of-range index, a named face's own
+// plane parallel to `neutral_plane`, or an angle collapsing some face's
+// own new boundary to fewer than 3 vertices or ~0 area).
+Brep DraftFacesConvexPlanar(const Brep& solid, const std::vector<int>& face_indices, const ON_Plane& neutral_plane,
+                             const std::vector<double>& angles_radians);
+
 // Swaps ONE face of a convex planar-faced solid for a caller-supplied
 // plane, re-extending/re-trimming every OTHER face so the result is still
 // a valid closed solid - the PARITY_MAP "Replace face (swap a face's
