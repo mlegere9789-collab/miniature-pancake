@@ -3,6 +3,7 @@
 // viewports dock, float and resize like any other panel.
 #pragma once
 
+#include <cstdint>
 #include <map>
 #include <set>
 #include <array>
@@ -114,23 +115,29 @@ class GlRenderer {
   // maps in the rasterized renderer" (only ground-plane ShadowBlob contact
   // shadows existed before - see DrawGroundPlane above, which is unrelated
   // and still applies independently: object-on-ground, not object-on-
-  // object). A single dominant light (the caller's choice - Viewport.cpp
-  // picks light index 0 of SetLights' own list) casts real shadows from a
-  // depth-only pass; every other light stays unshadowed, a documented
-  // single-shadow-caster scope rather than a full per-light shadow atlas.
+  // object). Every enabled light (up to kMaxGpuLights, the same cap
+  // SetLights already enforces) casts its own real shadow from its own
+  // depth-only pass into its own layer of a shared depth texture array - a
+  // genuine per-light shadow atlas, not a single documented shadow-caster.
   //
-  // BeginShadowPass binds the shadow FBO, computes an orthographic light-
-  // space view/projection framing a sphere of `radius` centred on `center`
-  // from `light_dir` (the direction the light travels, INTO the scene -
-  // the same convention GpuLight::direction/SetLightDirection use), and
-  // clears its depth buffer; every DrawTriangles*/DrawMesh call made
-  // before the matching EndShadowPass writes only into this depth map
-  // (DrawLines/DrawPoints are no-ops during the pass - only mesh geometry
-  // casts a shadow). Returns false (nothing drawn, no shadow this frame)
-  // if `light_dir` has no usable direction or the FBO fails to build.
-  bool BeginShadowPass(kernel::Vector3d light_dir, kernel::Point3d center, double radius);
+  // BeginShadowPass(light_index, ...) binds layer `light_index` of the
+  // shadow array FBO, computes an orthographic light-space view/projection
+  // framing a sphere of `radius` centred on `center` from `light_dir` (the
+  // direction the light travels, INTO the scene - the same convention
+  // GpuLight::direction/SetLightDirection use), and clears that layer's
+  // depth; every DrawTriangles*/DrawMesh call made before the matching
+  // EndShadowPass writes only into that one layer (DrawLines/DrawPoints are
+  // no-ops during the pass - only mesh geometry casts a shadow). Returns
+  // false (nothing drawn, no shadow for this light this frame) if
+  // `light_index` is out of range, `light_dir` has no usable direction, or
+  // the FBO fails to build. ClearShadowValidity should be called once per
+  // frame before the per-light BeginShadowPass/EndShadowPass loop, so a
+  // light that no longer exists this frame doesn't keep shading against a
+  // stale map from an earlier frame.
+  bool BeginShadowPass(int light_index, kernel::Vector3d light_dir, kernel::Point3d center, double radius);
   void EndShadowPass();
-  static constexpr int kShadowMapSize = 2048;
+  void ClearShadowValidity() { shadow_valid_mask_ = 0; }
+  static constexpr int kShadowMapSize = 1024;
   // Ground plane quad at world height z, centred on (cx, cy) with the
   // given half-size, fading out beyond `fade_radius`, with contact shadows.
   void DrawGroundPlane(double cx, double cy, double z, double half_size, double fade_radius, Color color,
@@ -185,15 +192,18 @@ class GlRenderer {
         mesh_u_light_spot_ = -1, mesh_u_ambient_ = -1, mesh_u_specular_ = -1, mesh_u_emission_ = -1,
         mesh_u_reflectivity_ = -1, mesh_u_use_texture_ = -1, mesh_u_texture_ = -1, mesh_u_blob_count_ = -1,
         mesh_u_blobs_ = -1, mesh_u_blob_strength_ = -1, mesh_u_ground_ = -1, mesh_u_env_map_ = -1,
-        mesh_u_env_map_valid_ = -1, mesh_u_light_vp_ = -1, mesh_u_shadow_map_ = -1, mesh_u_shadow_valid_ = -1;
+        mesh_u_env_map_valid_ = -1, mesh_u_light_vp_ = -1, mesh_u_shadow_map_ = -1, mesh_u_shadow_valid_mask_ = -1;
   GLuint env_map_tex_ = 0;
 
-  // Shadow-pass state (see BeginShadowPass/EndShadowPass above).
-  GLuint shadow_fbo_ = 0, shadow_tex_ = 0, shadow_program_ = 0;
+  // Shadow-pass state (see BeginShadowPass/EndShadowPass above). One
+  // GL_TEXTURE_2D_ARRAY with kMaxGpuLights layers, one layer per light
+  // index - a real per-light atlas rather than a single shared map.
+  GLuint shadow_fbo_ = 0, shadow_array_tex_ = 0, shadow_program_ = 0;
   GLint shadow_u_light_vp_ = -1;
-  bool shadow_pass_ = false;   // true only between BeginShadowPass/EndShadowPass
-  bool shadow_valid_ = false;  // true once a shadow map has actually been rendered this frame
-  Mat4 light_vp_ = Mat4::Identity();
+  bool shadow_pass_ = false;        // true only between BeginShadowPass/EndShadowPass
+  uint32_t shadow_valid_mask_ = 0;  // bit i set once light i's shadow layer has been rendered this frame
+  Mat4 light_vp_[kMaxGpuLights];    // light index -> that light's own view-projection, read by the fragment shader
+  Mat4 current_shadow_vp_ = Mat4::Identity();  // the light_vp_ entry the in-progress shadow pass is writing
   GLuint shadow_prev_fbo_ = 0;
   GLint shadow_prev_viewport_[4] = {0, 0, 0, 0};
   GLint line_u_mvp_ = -1, line_u_color_ = -1, line_u_size_ = -1, line_u_offset_ = -1;

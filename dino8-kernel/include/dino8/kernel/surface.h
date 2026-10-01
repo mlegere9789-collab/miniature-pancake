@@ -1267,6 +1267,38 @@ class NurbsSurface {
   // if `distance` isn't finite; `distance == 0.0` returns an exact copy.
   Result OffsetApproximate(double distance, NurbsSurface& out, double tolerance = -1.0) const;
 
+  // Variable (spatially-varying) counterpart to OffsetApproximate() above -
+  // the PARITY_MAP "Variable-distance surface offset" gap ("app
+  // VariableOffsetSrfCommand is a per-CV Greville-normal offset with
+  // distance varying linearly; app-only, no kernel API"). Same
+  // per-control-point Greville-normal translation OffsetApproximate() uses,
+  // generalized here to a distance that itself varies linearly along U
+  // between `distance_u_min` (at this surface's own U-domain minimum) and
+  // `distance_u_max` (at its U-domain maximum) - the identical
+  // interpolation the app's own command already performed by hand, now a
+  // real kernel entry point usable by anything else that needs it, not
+  // reimplemented ad hoc at the app layer.
+  //
+  // Fold guard: the same `distance * k >= 1.0` test OffsetApproximate()
+  // uses (see that method's own doc comment for the full derivation), but
+  // evaluated at each sampled u against THAT u's own locally-interpolated
+  // distance rather than one global constant - a genuinely stronger check
+  // than a single-distance guard would give here, since the two ends of a
+  // U-domain can have very different distances (including opposite signs)
+  // and a fold can occur near either end independently. The app's own prior
+  // implementation of this same interpolation had no fold guard at all.
+  //
+  // `tolerance` (default `<= 0`, meaning `tolerance::DistanceForSize()` of
+  // this surface's bounding-box diagonal) sets the guard's own sampling
+  // density via SuggestedDivisions(), exactly as OffsetApproximate() uses
+  // it. Throws std::invalid_argument if `distance_u_min`/`distance_u_max`
+  // isn't finite. `distance_u_min == distance_u_max == 0.0` returns an
+  // exact copy; a uniform (equal) pair otherwise reproduces
+  // OffsetApproximate()'s own result for that constant distance exactly,
+  // since the linear interpolation degenerates to a constant.
+  Result OffsetVariable(double distance_u_min, double distance_u_max, NurbsSurface& out,
+                         double tolerance = -1.0) const;
+
   // Tolerance-driven counterpart to OffsetApproximate() above - the
   // PARITY_MAP "Tolerance-driven offset refit" gap ("Surfaces do not:
   // OffsetApproximate never refits to a tolerance"), closed the same way

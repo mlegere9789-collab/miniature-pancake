@@ -18,7 +18,6 @@ layout(location = 2) in vec3 a_col;
 layout(location = 3) in vec2 a_uv;
 uniform mat4 u_mvp;
 uniform mat4 u_view;
-uniform mat4 u_light_vp;  // shadow-casting light's view-projection (Rendered mode only; see GlRenderer::BeginShadowPass)
 uniform vec4 u_clip[6];
 uniform int u_clip_count;
 out vec3 v_nrm_view;
@@ -27,7 +26,6 @@ out vec3 v_pos_view;
 out vec3 v_pos_world;
 out vec3 v_col;
 out vec2 v_uv;
-out vec4 v_pos_light;
 void main() {
   gl_Position = u_mvp * vec4(a_pos, 1.0);
   v_nrm_view = mat3(u_view) * a_nrm;
@@ -36,7 +34,6 @@ void main() {
   v_pos_world = a_pos;
   v_col = a_col;
   v_uv = a_uv;
-  v_pos_light = u_light_vp * vec4(a_pos, 1.0);
   vec4 wp = vec4(a_pos, 1.0);
   gl_ClipDistance[0] = (u_clip_count > 0) ? dot(u_clip[0], wp) : 1.0;
   gl_ClipDistance[1] = (u_clip_count > 1) ? dot(u_clip[1], wp) : 1.0;
@@ -57,7 +54,6 @@ in vec3 v_pos_view;
 in vec3 v_pos_world;
 in vec3 v_col;
 in vec2 v_uv;
-in vec4 v_pos_light;
 uniform vec4 u_color;
 uniform vec3 u_light;
 uniform int u_mode;
@@ -66,10 +62,11 @@ uniform int u_ortho;
 uniform mat4 u_view;  // shared with the vertex shader's own u_view (same GL uniform, one glUniform call sets both)
 uniform sampler2D u_env_map;    // Background::Image's real texture, valid only when u_env_map_valid == 1
 uniform int u_env_map_valid;
-uniform sampler2D u_shadow_map;  // light index 0's depth map, valid only when u_shadow_valid == 1
-uniform int u_shadow_valid;
 // Rendered mode.
 const int MAX_LIGHTS = 8;
+uniform sampler2DArray u_shadow_map;  // one depth layer per light index (GlRenderer::BeginShadowPass)
+uniform int u_shadow_valid_mask;      // bit i set when light i's own shadow layer was rendered this frame
+uniform mat4 u_light_vp[MAX_LIGHTS];  // light index -> that light's own view-projection, world space in
 uniform int u_light_count;
 uniform vec4 u_light_pos[MAX_LIGHTS];    // xyz view space; w = 0: xyz is the direction towards a directional light
 uniform vec3 u_light_dir[MAX_LIGHTS];    // spot axis, view space, from the light into the scene
@@ -118,21 +115,23 @@ vec3 SampleEnvMap(vec3 d) {
   return texture(u_env_map, vec2(fract(u), 1.0 - fract(v))).rgb;
 }
 
-// Real-time shadow map lookup for light index 0 (GlRenderer::BeginShadowPass
-// - a single documented shadow-caster, not every light). 3x3 PCF against
-// the depth map built from that light's own point of view; a fragment
-// outside the light's frustum, or behind its far plane, is never shadowed.
-float ShadowFactor() {
-  if (u_shadow_valid == 0) return 0.0;
-  vec3 proj = v_pos_light.xyz / v_pos_light.w;
+// Real-time shadow map lookup for light index `i` (GlRenderer::BeginShadowPass
+// - a genuine per-light atlas, every enabled light casts its own shadow, not
+// just one documented shadow-caster). 3x3 PCF against the depth layer built
+// from that light's own point of view; a fragment outside that light's
+// frustum, or behind its far plane, is never shadowed by it.
+float ShadowFactor(int i) {
+  if (((u_shadow_valid_mask >> i) & 1) == 0) return 0.0;
+  vec4 pos_light = u_light_vp[i] * vec4(v_pos_world, 1.0);
+  vec3 proj = pos_light.xyz / pos_light.w;
   proj = proj * 0.5 + 0.5;
   if (proj.x < 0.0 || proj.x > 1.0 || proj.y < 0.0 || proj.y > 1.0 || proj.z > 1.0) return 0.0;
   const float bias = 0.0015;
-  vec2 texel = 1.0 / vec2(textureSize(u_shadow_map, 0));
+  vec2 texel = 1.0 / vec2(textureSize(u_shadow_map, 0).xy);
   float shadow = 0.0;
   for (int dx = -1; dx <= 1; ++dx) {
     for (int dy = -1; dy <= 1; ++dy) {
-      float depth = texture(u_shadow_map, proj.xy + vec2(dx, dy) * texel).r;
+      float depth = texture(u_shadow_map, vec3(proj.xy + vec2(dx, dy) * texel, float(i))).r;
       shadow += (proj.z - bias > depth) ? 1.0 : 0.0;
     }
   }
@@ -146,12 +145,11 @@ vec3 Shade(vec3 base, vec3 n, vec3 view_dir) {
   // Hemispherical sky light: brighter on up-facing surfaces.
   float up = clamp(normalize(v_nrm_world).z * 0.5 + 0.5, 0.0, 1.0);
   vec3 color = base * u_ambient * mix(0.55, 1.0, up);
-  float shadow0 = ShadowFactor();
   for (int i = 0; i < u_light_count; ++i) {
     vec3 L = (u_light_pos[i].w < 0.5) ? normalize(u_light_pos[i].xyz) : normalize(u_light_pos[i].xyz - v_pos_view);
     float spot = 1.0;
     if (u_light_spot[i].x > -1.5) spot = smoothstep(u_light_spot[i].x, u_light_spot[i].y, dot(-L, u_light_dir[i]));
-    if (i == 0) spot *= (1.0 - shadow0);
+    spot *= (1.0 - ShadowFactor(i));
     float nd = max(dot(n, L), 0.0);
     vec3 H = normalize(L + V);
     float sp = (nd > 0.0) ? pow(max(dot(n, H), 0.0), u_specular.w) : 0.0;
@@ -436,9 +434,9 @@ bool GlRenderer::Init(std::string& error) {
   tex_u_sampler_ = glGetUniformLocation(tex_program_, "u_tex");
   mesh_u_mvp_ = glGetUniformLocation(mesh_program_, "u_mvp");
   mesh_u_view_ = glGetUniformLocation(mesh_program_, "u_view");
-  mesh_u_light_vp_ = glGetUniformLocation(mesh_program_, "u_light_vp");
+  mesh_u_light_vp_ = ArrayLocation(mesh_program_, "u_light_vp");
   mesh_u_shadow_map_ = glGetUniformLocation(mesh_program_, "u_shadow_map");
-  mesh_u_shadow_valid_ = glGetUniformLocation(mesh_program_, "u_shadow_valid");
+  mesh_u_shadow_valid_mask_ = glGetUniformLocation(mesh_program_, "u_shadow_valid_mask");
   mesh_u_color_ = glGetUniformLocation(mesh_program_, "u_color");
   mesh_u_light_ = glGetUniformLocation(mesh_program_, "u_light");
   mesh_u_mode_ = glGetUniformLocation(mesh_program_, "u_mode");
@@ -474,6 +472,20 @@ bool GlRenderer::Init(std::string& error) {
   line_u_clip_count_ = glGetUniformLocation(line_program_, "u_clip_count");
   bg_u_top_ = glGetUniformLocation(bg_program_, "u_top");
   bg_u_bottom_ = glGetUniformLocation(bg_program_, "u_bottom");
+  // Bind each sampler uniform to its own fixed texture unit right away,
+  // once, rather than only inside the per-draw kRendered/kGround branch:
+  // every sampler uniform in a program defaults to unit 0 until its value
+  // is set, and u_shadow_map (now sampler2DArray, for the per-light shadow
+  // atlas) defaulting to the same unit 0 as u_texture/u_env_map (sampler2D)
+  // is two *different* sampler types bound to the same unit - undefined
+  // behaviour that real drivers (this one included) raise
+  // GL_INVALID_OPERATION for on any draw with this program, even a plain
+  // Wireframe/Shaded one that never reaches the kRendered branch at all.
+  glUseProgram(mesh_program_);
+  glUniform1i(mesh_u_texture_, 0);
+  glUniform1i(mesh_u_env_map_, 1);
+  glUniform1i(mesh_u_shadow_map_, 2);
+  glUseProgram(0);
   glGenVertexArrays(1, &vao_);
   glGenBuffers(1, &vbo_);
   glGenBuffers(1, &color_vbo_);
@@ -489,9 +501,10 @@ void GlRenderer::Shutdown() {
   if (tex_program_) glDeleteProgram(tex_program_);
   if (shadow_program_) glDeleteProgram(shadow_program_);
   if (shadow_fbo_) glDeleteFramebuffers(1, &shadow_fbo_);
-  if (shadow_tex_) glDeleteTextures(1, &shadow_tex_);
-  shadow_program_ = shadow_fbo_ = shadow_tex_ = 0;
-  shadow_pass_ = shadow_valid_ = false;
+  if (shadow_array_tex_) glDeleteTextures(1, &shadow_array_tex_);
+  shadow_program_ = shadow_fbo_ = shadow_array_tex_ = 0;
+  shadow_pass_ = false;
+  shadow_valid_mask_ = 0;
   if (vbo_) glDeleteBuffers(1, &vbo_);
   if (color_vbo_) glDeleteBuffers(1, &color_vbo_);
   if (uv_vbo_) glDeleteBuffers(1, &uv_vbo_);
@@ -603,7 +616,7 @@ void GlRenderer::DrawMesh(const std::vector<float>& data, const std::vector<floa
     // ignored here - the same triangle data still casts a correct shadow
     // regardless of how the main pass would have shaded it.
     glUseProgram(shadow_program_);
-    glUniformMatrix4fv(shadow_u_light_vp_, 1, GL_FALSE, light_vp_.Data());
+    glUniformMatrix4fv(shadow_u_light_vp_, 1, GL_FALSE, current_shadow_vp_.Data());
     glBindVertexArray(vao_);
     glBindBuffer(GL_ARRAY_BUFFER, vbo_);
     glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(data.size() * sizeof(float)), data.data(), GL_DYNAMIC_DRAW);
@@ -628,7 +641,7 @@ void GlRenderer::DrawMesh(const std::vector<float>& data, const std::vector<floa
   glUseProgram(mesh_program_);
   glUniformMatrix4fv(mesh_u_mvp_, 1, GL_FALSE, mvp.Data());
   glUniformMatrix4fv(mesh_u_view_, 1, GL_FALSE, view_.Data());
-  glUniformMatrix4fv(mesh_u_light_vp_, 1, GL_FALSE, light_vp_.Data());
+  glUniformMatrix4fv(mesh_u_light_vp_, kMaxGpuLights, GL_FALSE, light_vp_[0].Data());
   glUniform4f(mesh_u_color_, color.r, color.g, color.b, color.a);
   glUniform3f(mesh_u_light_, static_cast<float>(light_.x), static_cast<float>(light_.y), static_cast<float>(light_.z));
   glUniform1i(mesh_u_mode_, static_cast<int>(mode));
@@ -647,10 +660,10 @@ void GlRenderer::DrawMesh(const std::vector<float>& data, const std::vector<floa
     glUniform1i(mesh_u_env_map_, 1);
     glActiveTexture(GL_TEXTURE1);
     glBindTexture(GL_TEXTURE_2D, env_map_tex_);
-    glUniform1i(mesh_u_shadow_valid_, shadow_valid_ ? 1 : 0);
+    glUniform1i(mesh_u_shadow_valid_mask_, static_cast<int>(shadow_valid_mask_));
     glUniform1i(mesh_u_shadow_map_, 2);
     glActiveTexture(GL_TEXTURE2);
-    glBindTexture(GL_TEXTURE_2D, shadow_tex_);
+    glBindTexture(GL_TEXTURE_2D_ARRAY, shadow_array_tex_);
     glActiveTexture(GL_TEXTURE0);
     if (mode == kGround) {
       float blobs[kMaxShadowBlobs * 4] = {}, strength[kMaxShadowBlobs] = {};
@@ -703,7 +716,7 @@ void GlRenderer::DrawMesh(const std::vector<float>& data, const std::vector<floa
     glActiveTexture(GL_TEXTURE1);
     glBindTexture(GL_TEXTURE_2D, 0);
     glActiveTexture(GL_TEXTURE2);
-    glBindTexture(GL_TEXTURE_2D, 0);
+    glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
     glActiveTexture(GL_TEXTURE0);
   }
 }
@@ -767,33 +780,33 @@ void GlRenderer::DrawGroundPlane(double cx, double cy, double z, double half_siz
   DrawMesh(tri, nullptr, nullptr, kGround, color, 0.f, 0.f);
 }
 
-bool GlRenderer::BeginShadowPass(kernel::Vector3d light_dir, kernel::Point3d center, double radius) {
-  if (!light_dir.Unitize()) { shadow_valid_ = false; return false; }
+bool GlRenderer::BeginShadowPass(int light_index, kernel::Vector3d light_dir, kernel::Point3d center, double radius) {
+  if (light_index < 0 || light_index >= kMaxGpuLights) return false;
+  if (!light_dir.Unitize()) return false;
   if (!(radius > 1e-6)) radius = 1.0;
   if (!shadow_fbo_) {
-    glGenTextures(1, &shadow_tex_);
-    glBindTexture(GL_TEXTURE_2D, shadow_tex_);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT24, kShadowMapSize, kShadowMapSize, 0, GL_DEPTH_COMPONENT,
-                 GL_FLOAT, nullptr);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER);
+    glGenTextures(1, &shadow_array_tex_);
+    glBindTexture(GL_TEXTURE_2D_ARRAY, shadow_array_tex_);
+    glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, GL_DEPTH_COMPONENT24, kShadowMapSize, kShadowMapSize, kMaxGpuLights, 0,
+                 GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER);
     const float border[4] = {1.f, 1.f, 1.f, 1.f};  // max depth outside the light's frustum: never shadowed
-    glTexParameterfv(GL_TEXTURE_2D, GL_TEXTURE_BORDER_COLOR, border);
-    glBindTexture(GL_TEXTURE_2D, 0);
+    glTexParameterfv(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_BORDER_COLOR, border);
+    glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
     glGenFramebuffers(1, &shadow_fbo_);
     glBindFramebuffer(GL_FRAMEBUFFER, shadow_fbo_);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, shadow_tex_, 0);
+    glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, shadow_array_tex_, 0, 0);
     glDrawBuffer(GL_NONE);
     glReadBuffer(GL_NONE);
     const bool ok = glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     if (!ok) {
       glDeleteFramebuffers(1, &shadow_fbo_);
-      glDeleteTextures(1, &shadow_tex_);
-      shadow_fbo_ = shadow_tex_ = 0;
-      shadow_valid_ = false;
+      glDeleteTextures(1, &shadow_array_tex_);
+      shadow_fbo_ = shadow_array_tex_ = 0;
       return false;
     }
   }
@@ -803,19 +816,21 @@ bool GlRenderer::BeginShadowPass(kernel::Vector3d light_dir, kernel::Point3d cen
   glGetIntegerv(GL_VIEWPORT, shadow_prev_viewport_);
   // The light sits well outside the scene's bounding sphere, looking back
   // at its centre; an orthographic frustum exactly big enough to cover
-  // that sphere keeps the whole visible scene in the shadow map at the
-  // available resolution.
+  // that sphere keeps the whole visible scene in this light's own shadow
+  // layer at the available resolution.
   const kernel::Point3d eye = center - light_dir * (radius * 3.0);
   kernel::Vector3d up(0, 0, 1);
   if (std::fabs(light_dir.z) > 0.95) up = kernel::Vector3d(0, 1, 0);
   const Mat4 light_view = Mat4::LookAt(eye, center, up);
   const Mat4 light_proj = Mat4::Ortho(-radius, radius, -radius, radius, 0.01, radius * 6.0);
-  light_vp_ = light_proj * light_view;
+  current_shadow_vp_ = light_proj * light_view;
+  light_vp_[static_cast<size_t>(light_index)] = current_shadow_vp_;
   glBindFramebuffer(GL_FRAMEBUFFER, shadow_fbo_);
+  glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, shadow_array_tex_, 0, light_index);
   glViewport(0, 0, kShadowMapSize, kShadowMapSize);
   glClear(GL_DEPTH_BUFFER_BIT);
   shadow_pass_ = true;
-  shadow_valid_ = true;
+  shadow_valid_mask_ |= (1u << static_cast<unsigned>(light_index));
   return true;
 }
 

@@ -2679,4 +2679,90 @@ Result NurbsSurface::OffsetApproximate(double distance, NurbsSurface& out, doubl
   return Result::Ok;
 }
 
+Result NurbsSurface::OffsetVariable(double distance_u_min, double distance_u_max, NurbsSurface& out,
+                                     double tolerance) const {
+  if (!ON_IsValid(distance_u_min) || !ON_IsValid(distance_u_max)) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsSurface::OffsetVariable: distance_u_min/distance_u_max must be finite");
+  }
+  if (distance_u_min == 0.0 && distance_u_max == 0.0) {
+    out.surface_ = surface_;
+    return Result::Ok;
+  }
+
+  ON_BoundingBox bbox;
+  surface_.GetBoundingBox(bbox, false);
+  const double tol = tolerance > 0.0 ? tolerance
+                                      : dino8::kernel::tolerance::DistanceForSize(bbox.Diagonal().Length());
+
+  const Interval du = Domain(0);
+  const Interval dv = Domain(1);
+  const double u_range = du.max - du.min;
+  const double v_range = dv.max - dv.min;
+
+  // Locally-interpolated distance at a given u - the same linear blend the
+  // per-CV loop below applies, factored out so the fold guard checks the
+  // SAME distance that u's own control points will actually move by.
+  const auto distance_at = [&](double u) {
+    const double frac = u_range > 0.0 ? (u - du.min) / u_range : 0.0;
+    return distance_u_min + (distance_u_max - distance_u_min) * frac;
+  };
+
+  // Fold-through-center-of-curvature guard - see OffsetApproximate()'s own
+  // header doc comment for the `distance * k >= 1.0` derivation, applied
+  // here with each sampled u's own locally-interpolated distance rather
+  // than a single global one.
+  const SurfaceDivisions divs = SuggestedDivisions(tol);
+  const int nu = std::max({divs.u, 4 * CVCountU(), 1});
+  const int nv = std::max({divs.v, 4 * CVCountV(), 1});
+  for (int i = 0; i < nu; ++i) {
+    const double u = du.min + u_range * (i + 0.5) / nu;
+    const double d = distance_at(u);
+    for (int j = 0; j < nv; ++j) {
+      const double v = dv.min + v_range * (j + 0.5) / nv;
+      const SurfaceCurvature sc = CurvatureAt(u, v);
+      if (d * sc.k1 >= 1.0 || d * sc.k2 >= 1.0) return Result::Failed;
+    }
+  }
+
+  // Per-control-point translation along this surface's own normal at that
+  // control point's Greville abscissa, exactly as OffsetApproximate() does,
+  // with the distance itself interpolated linearly along U per control
+  // point's own Greville U fraction (OffsetApproximate()'s own nudge-off-
+  // boundary reasoning applies identically here).
+  ON_NurbsSurface moved = surface_;
+  const int cv_count_u = moved.CVCount(0);
+  const int cv_count_v = moved.CVCount(1);
+  const double nudge_u = 1e-6 * u_range;
+  const double nudge_v = 1e-6 * v_range;
+  for (int i = 0; i < cv_count_u; ++i) {
+    // The distance uses this control point's own TRUE (unclamped) Greville
+    // U - only the point handed to NormalAt() needs nudging away from a
+    // possible domain-boundary pole. Clamping the value distance_at() sees
+    // too would break the exact linear reproduction this method relies on
+    // for a planar surface (see this method's own header doc comment):
+    // a clamped B-spline basis reproduces `u` exactly as
+    // `sum_i N_i(u) * greville_i`, which is what makes `distance_at()`
+    // evaluated at each control point's own Greville U, summed through the
+    // basis, reproduce the same linear distance function at every
+    // SAMPLED u too - an identity that only holds for the TRUE Greville
+    // value, not a nudged one.
+    const double true_gu = surface_.GrevilleAbcissa(0, i);
+    const double gu = std::clamp(true_gu, du.min + nudge_u, du.max - nudge_u);
+    const double d = distance_at(true_gu);
+    for (int j = 0; j < cv_count_v; ++j) {
+      const double gv = std::clamp(surface_.GrevilleAbcissa(1, j), dv.min + nudge_v, dv.max - nudge_v);
+      const Vector3d n = NormalAt(gu, gv);
+      ON_4dPoint cv;
+      moved.GetCV(i, j, cv);
+      cv.x += cv.w * d * n.x;
+      cv.y += cv.w * d * n.y;
+      cv.z += cv.w * d * n.z;
+      moved.SetCV(i, j, cv);
+    }
+  }
+  out.surface_ = moved;
+  return Result::Ok;
+}
+
 }  // namespace dino8::kernel
