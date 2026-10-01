@@ -4951,6 +4951,105 @@ full `ctest`/`tests/smoke.sh` suite was built and run end to end to verify
 both new sections and the full pre-existing corpus, 0 regressions. The
 kernel-only headline is unaffected (no bucket moved).*
 
+*Twenty-third note on this category's score (a later session, kernel-only
+pass): two genuine, narrowly-scoped kernel additions, each closing a
+concrete gap a prior note above named by function rather than merely
+arguing it.
+
+**(1) "Keep/split options":** `kernel::SplitBrepByPlane` (boolean_general.h/
+.cpp) is the exact B-rep sibling of boolean.cpp's own mesh-level
+`SplitByPlane()` - the specific remaining complaint the Twenty-second note
+above still names: "`BooleanSplit`/`MeshSplit`/`MeshBooleanSplit` remain
+plane-only and mesh-level." There was no B-rep-preserving way to cut a
+solid by a plane at all before this, only by another solid
+(`SplitBrepBySolid`/`SplitBrepByManySolids`, this category's own "Fourth
+note" above). Not a new algorithm: the plane is turned into a genuine
+closed cutting solid - a single axis-aligned-in-its-own-frame box built via
+`Brep::FromUntrimmedQuadFaces()` (the same "six independent untrimmed
+planar quads" construction `ExtrudeToBoundary()`'s own cutting caps already
+use, for the identical reason `BooleanCombineGeneral()`'s SSX machinery
+needs an untrimmed quad whose domain equals its own shape), sized off
+`target`'s own `GetTightBoundingBox()` to safely engulf it on every side -
+and the existing `SplitBrepBySolid(target, box, tolerance)` is reused
+as-is, inheriting its proven correctness and scope limits wholesale rather
+than re-deriving them. Returns the identical `{side_along_normal,
+opposite_side}` convention the mesh-level `SplitByPlane()` already
+established. Verified (`TestSplitBrepByPlaneMatchesMeshLevelSplitByPlane`,
+`TestSplitBrepByPlaneTiltedNormalSumsBackToOriginalVolume`,
+`TestSplitBrepByPlaneMissingTargetKeepsWholeTargetOnOneSide`,
+`TestSplitBrepByPlaneRejectsEmptyTargetZeroNormalAndNonPositiveTolerance`,
+tests/test_basic.cpp): a 2x2x2 box split down its own midplane matches the
+mesh-level `SplitByPlane()` on the same operand face-for-face in volume and
+side convention; a genuinely tilted (non-axis-aligned) `plane_normal`
+through a box NOT centered at the world origin still sums back to the
+exact original volume and splits a symmetric box's own center exactly in
+half, exercising the (u, v, n) frame construction and the p0/half_width/
+reach sizing for real rather than only the axis-aligned special case; a
+plane entirely beyond target's own bounding box (from either direction)
+correctly leaves the untouched whole target on one side and the empty Brep
+on the other, the same "cutter misses entirely" contract
+`SplitBrepBySolid()` already documents; and the precondition checks (empty
+target, zero `plane_normal`, non-positive tolerance) each throw
+`std::invalid_argument`. **A real pitfall found while writing these tests,
+not assumed:** `Brep::GetTightBoundingBox()` cannot be used to check which
+physical side a result landed on, since this result comes from
+`BooleanCombineGeneral()`'s own raw-`ON_Brep` `assemble()` reassembly (via
+`SplitBrepBySolid()`) - the exact same already-disclosed "gives the
+underlying surface's own untrimmed domain box, not the real trim boundary"
+limitation this category's "Sheet/solid trim" bullet already names for
+`SplitBySheet()`/`TrimSheetBySolid()`, now independently reconfirmed for
+this function's own output; the tests instead check the TESSELLATED mesh's
+own bounding box, built from the real trimmed triangles. Still partial, not
+present: no app command calls this function yet (the same "kernel-only, no
+caller in dino8-app" gap `SplitBrepBySolid`/`SplitBrepByManySolids`/
+`PolygonBooleanPlanar` each disclosed before the Twenty-second note above
+wired the latter two in) - `BooleanSplit`/`MeshSplit`/`MeshBooleanSplit`
+(cmd_boolean.cpp) still only call the mesh-level `SplitPlaneCommand`,
+unchanged; and it inherits `SplitBrepBySolid`'s own scope limits wholesale
+(one crossing component per face pair, genus-0 faces, no self-crossing
+chains).
+
+**(2) "Boolean failure diagnostics":** the Twentieth note above already
+closed this bullet's own disclosed gap that `BooleanCombinePlanar`/
+`BooleanCombineMixed`'s own precondition checks (distinct from
+`boolean_general.cpp`'s general-engine ones) were not yet covered by the
+typed-refusal catalogue - but only for the ConicalFace-operand/
+partial-sweep/re-entrant-height scope-limit refusals; neither engine's own
+newer caller-`tolerance` parameter (this category's "Tenth note" above) had
+a precondition guard of its own at all. An explicit `tolerance` of exactly
+0.0 is the one value these two engines' own negative-sentinel convention
+cannot tell apart from a caller mistake: not negative (so NOT treated as
+"use the auto-derived default"), yet not positive either, so it was
+silently used as-is - demanding exact bit-for-bit coincidence from every
+distance/coincidence test inside the engine instead of being refused
+outright the way every OTHER caller-tolerance precondition in this kernel
+already is (`SplitBrepBySolid`/`SplitBrepByManySolids`/
+`BooleanCombineGeneral`, boolean_general.cpp). Both `BooleanCombinePlanar`
+and `BooleanCombineMixed` now throw a typed `BooleanOperationError` with
+`BooleanFailureReason::InvalidTolerance` for this one case, still fully
+backward compatible (identical `what()` text shape, still catchable as
+plain `std::invalid_argument`) and leaving the negative-sentinel
+"auto-derive" path completely untouched. Verified
+(`TestBooleanCombinePlanarAndMixedRejectExplicitZeroTolerance`,
+tests/test_basic.cpp): both engines throw the typed error with the right
+`reason()`/`function_name()` for `tolerance == 0.0`, the same throw is
+still catchable as plain `std::invalid_argument`, and a negative tolerance
+still takes the auto-derived default path on both engines, producing a
+real (non-empty) result exactly as before this guard existed. Still
+partial: this is one more precondition site added to a catalogue that is
+still a small fraction of this file's own ~160 untyped throw sites: the
+non-manifold reassembly refusal and the mesh engine's own generic
+Manifold-status failure remain deliberately untyped (same reasons as
+always - see `BooleanFailureReason`'s own doc comment), and there is still
+no structured naked-edge reporting at all.
+
+Neither item crosses from `partial` to `present` - each still has a real,
+disclosed scope limit named above - so the category's 9/15/1/25 (66.0%)
+split is unchanged, the same "narrowing, not a flip" pattern every note
+above already uses. Full `dino8_kernel_tests` suite rebuilt and run twice
+in a row: 8385 checks, 100% passing, 0 regressions. The kernel-only
+headline is unaffected (no bucket moved).*
+
 **Blending & chamfering** (blending):
 - [partial] Constant-radius edge fillet on curved adjacent faces (cylinder/plane, cylinder/cylinder, freeform, closed/periodic rims) with B-rep trimming — every kernel fillet still requires both adjacent faces to be planar (fillet.h:147-159), so fillets cannot be chained onto a solid that already carries a curved face. App `FilletEdge` produces a genuine B-rep trim only when both faces are planar (cmd_fillet.cpp:175, "exact for planes; approximate elsewhere") — historically via the generic offset+SSX `BuildFillet` path, not the closed-form kernel function itself (see the bullet just below for the "nothing in the app calls it" half this pass closes). **This pass:** `FilletEdgeCommand::Run`'s plain-Radius case (default `RailType=RollingBall`, no `Rho`) now tries a new `TryExactFillet` FIRST — `kernel::FilletConvexEdge`/`FilletConcaveEdge` directly, convex then concave — ahead of the unchanged `BuildFillet` path, the identical "exact kernel construction first, fail open to the approximate path on any `PlanarFaces()` rejection" structure `TryExactChamfer` already established for `ChamferEdge`'s own plain-Radius case. Still partial: curved adjacent faces remain fundamentally out of scope (the kernel's own `PlanarFaces()` requirement, unchanged) and `BuildFillet`'s approximate path is still what actually runs there; this closes a representation gap (which construction produces the planar-face result), not a capability gap (the printed message and volume for a planar-face fillet are unchanged, since `BuildFillet` was already numerically exact for planes too). Net effect on the scores below: narrows, does not flip, the SAME already-partial item.
 - [partial] Concave (internal) edge fillet — kernel-native and exact: `FilletConcaveEdge` (fillet.cpp:1070 — corrected 2026-09-28, was mis-cited fillet.cpp:989; fillet.h:162-270) builds the mirrored rolling-ball construction with outward=false, closing perpendicular and oblique third faces; `FilletConcaveEdges` (fillet.cpp:2746; fillet.h:1111-1205) fillets several independent edges plus m==3 trihedral concave spherical corners. **This pass:** closes the single-edge half of "nothing in the app calls it" — `FilletEdgeCommand`'s new `TryExactFillet` (see the bullet just above) tries `kernel::FilletConvexEdge` FIRST and `FilletConcaveEdge` SECOND on any planar-faced solid, the same convex-then-concave cascade `TryExactChamfer`/`TryExactConicFillet`/`TryExactRailFillet` already use elsewhere in this file for the identical reason (the command doesn't know the edge's own convexity in advance). Verified structurally and via the convex branch end-to-end (`fillet_script.txt`'s own existing plain-`Radius=2` box-corner case now goes through this exact dispatch, unchanged volume); the concave branch is NOT independently verified through the app in script form — building an app-level fixture with a genuinely planar-faced concave (reflex) edge turned out to be blocked by a separate, disclosed app-layer limitation: `ExtrudeCrv`'s own `ON_BrepTrimmedPlane`/`ON_BrepExtrudeFace` construction builds ONE ruled side-wall face per whole closed boundary loop, not one flat quad per polygon edge (confirmed directly: extruding a plain 4-sided rectangle profile also yields only 3 faces/3 edges total, the single ruled wall genuinely non-planar end-to-end, not just at the concave corner) — so no closed polygon profile extruded this way, convex or concave, can reach `PlanarFaces()`'s own exact-planar requirement at all, and the app has no other command that builds a multi-facet polygonal solid. Still partial, same remaining gaps as before: planar faces only, one radius, m>=2 or higher-valence corners throw, oblique third faces out of scope for `FilletConcaveEdges`, a mixed convex+concave solid cannot be fully filleted, and the multi-edge `FilletConcaveEdges` batch form remains entirely unreachable from the app. Net effect on the scores below: narrows, does not flip, the SAME already-partial item.
