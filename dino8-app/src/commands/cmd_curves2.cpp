@@ -1823,24 +1823,9 @@ class OffsetCrvOnSrfCommand : public Command {
     ctx.Doc().BeginChange("OffsetCrvOnSrf");
     int made = 0;
     for (const CurveCopy& c : curves_) {
-      std::vector<Point3d> pts;
-      for (double t : c.curve.SuggestedParameterValues(0.01)) {
-        Point3d p = c.curve.PointAt(t);
-        ON_2dPoint uv = srf_->ClosestPointParameter(p);
-        ON_3dPoint sp; ON_3dVector du, dv;
-        srf_->raw().Ev1Der(uv.x, uv.y, sp, du, dv);
-        Vector3d n = ON_CrossProduct(du, dv);
-        if (!n.Unitize()) continue;
-        Vector3d tan = c.curve.TangentAt(t);
-        Vector3d side = ON_CrossProduct(tan, n);
-        if (!side.Unitize()) continue;
-        Point3d moved = sp + side * d;
-        // Re-project so the offset point actually lands back on the surface.
-        ON_2dPoint uv2 = srf_->ClosestPointParameter(moved);
-        pts.push_back(srf_->PointAt(uv2.x, uv2.y));
-      }
-      if (pts.size() < 2) continue;
-      AddCurveLike(ctx, c.curve.Degree() == 1 ? PolylineCurve(pts) : kernel::NurbsCurve::FromControlPoints(pts, std::min(3, static_cast<int>(pts.size()) - 1)), c.attrs);
+      kernel::NurbsCurve offset;
+      if (c.curve.OffsetInSurface(*srf_, d, offset) != kernel::Result::Ok) continue;
+      AddCurveLike(ctx, offset, c.attrs);
       ++made;
     }
     ctx.Print("OffsetCrvOnSrf: " + std::to_string(made) + " curve(s) offset along the surface");

@@ -362,6 +362,58 @@ class SubD {
   // back an untransformed or partially-transformed copy.
   SubD Transform(const ON_Xform& xform) const;
 
+  // Offsets this SubD's entire control cage by moving every vertex along
+  // its own EXACT Catmull-Clark limit-surface normal (`LimitPoints()`'s
+  // own `limit_normal`) by `distance` - closes the "No kernel SubD
+  // offset" half of PARITY_MAP.md's offsetshell "SubD offset / thicken"
+  // gap: `dino8-app`'s own `OffsetNet` (cmd_subd.cpp:595) offsets the raw
+  // control net along each vertex's own CONTROL-NET normal instead, a
+  // genuinely cruder direction for anything but a flat or very fine
+  // cage, since the control net's facets generally aren't tangent to the
+  // limit surface the way the limit normal is by definition - moving
+  // along the limit normal keeps the offset in the direction the LIMIT
+  // SURFACE will actually grow or shrink along, not the polygonal
+  // approximation of it.
+  //
+  // This is still only an approximate offset, the same honest caveat
+  // every other per-vertex offset in this codebase already carries
+  // (`Mesh::Offset()`, `NurbsSurface::OffsetApproximate()`): moving each
+  // control vertex by a fixed distance along its OWN limit normal does
+  // not reproduce the limit surface of a hypothetical "offset cage" that
+  // would itself subdivide to the true constant-distance offset surface,
+  // since Catmull-Clark subdivision is not a one-vertex-at-a-time local
+  // operation (a moved vertex's neighbors still pull the recomputed
+  // limit surface back toward their own unmoved positions). It is,
+  // however, a real improvement in DIRECTION over the app's existing
+  // control-net-normal technique: the two only coincide exactly where a
+  // vertex's one-ring is already planar (this method's own test verifies
+  // that case directly, on a cube cage's exact body-diagonal limit
+  // normals), and diverge wherever the surface is genuinely curved there
+  // - exactly the case a limit-surface normal is the geometrically
+  // meaningful one to offset along.
+  //
+  // A vertex whose own `limit_normal` is the zero vector (OpenNURBS
+  // reports the limit normal undefined there - see `SubDLimitPoint`'s own
+  // doc comment) is left at its original position, unmoved: the same
+  // "can't offset along a normal that doesn't exist" fallback
+  // `Mesh::ComputeVertexNormals()`/`Mesh::Offset()` already use for a
+  // degenerate mesh-vertex normal, not a new convention invented here.
+  //
+  // Delegates per-vertex position changes to the real
+  // `ON_SubDVertex::SetControlNetPoint(point, bClearNeighborhoodCache)`
+  // primitive (verified by reading `opennurbs_subd_data.cpp`: it updates
+  // the vertex's own control point and, when asked, invalidates every
+  // neighboring edge's and face's cached subdivision point too) rather
+  // than the snapshot-and-rebuild-a-fresh-ON_SubD technique `Weld()`
+  // above needs - unlike a weld, an offset never changes topology (every
+  // vertex/edge/face id, every edge tag and sharpness, stays exactly as
+  // it was), so there is nothing to remap and no tag to re-derive.
+  //
+  // Throws std::invalid_argument if `distance` isn't finite. Returns an
+  // unchanged copy (still a deep copy, never aliasing `*this`) if
+  // `distance` is 0 or if this SubD has no vertices.
+  SubD Offset(double distance) const;
+
   // Mirrors this SubD's entire control cage across the plane
   // `{p : p . plane_normal == plane_offset}` (same convention as
   // `SplitByPlane()` in boolean.h) and combines the original half with

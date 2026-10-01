@@ -1053,6 +1053,60 @@ class NurbsCurve {
   Result OffsetOnSurfaceNormal(const NurbsSurface& surface, double distance, NurbsCurve& out,
                                 int sample_count = -1) const;
 
+  // Offsets this curve - assumed to (approximately) lie on `surface` -
+  // IN the surface, staying on it rather than moving off along its
+  // normal: the kernel counterpart to the separate, harder
+  // "Curve offset on surface (in-surface, geodesic-style)" PARITY_MAP
+  // item `OffsetOnSurfaceNormal()`'s own doc comment above explicitly
+  // excludes. Identical technique dino8-app's own `OffsetCrvOnSrfCommand`
+  // previously implemented entirely by hand (cmd_curves2.cpp): this
+  // curve is sampled at `sample_count` parameter values; at each sample,
+  // the closest point on `surface` (`ClosestPointParameter()`) gives a
+  // local frame there (`NormalAt()` for the surface normal, `TangentAt(t)
+  // x normal` for the in-surface sideways direction perpendicular to both
+  // this curve's own tangent and the surface's normal); the sample moves
+  // by `distance` along that sideways direction and is immediately
+  // re-projected back onto `surface` via a second `ClosestPointParameter`
+  // + `PointAt()` round trip - the step that keeps the result genuinely
+  // ON the surface rather than merely near it, since moving a flat
+  // distance in a straight line along a tangent-plane direction leaves a
+  // curved surface the instant the direction itself curves away - and a
+  // new curve is refit through the re-projected points.
+  //
+  // Calling this a "geodesic-style" offset, not a true geodesic one, is
+  // deliberate honesty, inherited unchanged from the app technique this
+  // replaces: a true geodesic offset would move each point along the
+  // surface's own geodesic normal to the curve at that point (a curve
+  // confined to stay perpendicular to the curve's own in-surface
+  // tangent, measured intrinsically); this instead moves a fixed
+  // DISTANCE along `TangentAt(t) x surface_normal`, extrinsically
+  // straight, then snaps back to the surface - a good approximation
+  // wherever the surface's curvature is mild relative to `distance`, the
+  // same approximation Rhino's own OffsetCrvOnSrf documentation itself
+  // describes, not a new limitation introduced here.
+  //
+  // An OPEN curve of degree 1 is rebuilt as an exact degree-1 polyline
+  // through the offset samples; any other curve (higher degree, or
+  // closed) is refit as a global chord-length cubic interpolant - the
+  // same convention `OffsetOnSurfaceNormal()` above already uses, for
+  // the same "don't oversmooth a polyline into a cubic" reason.
+  //
+  // `sample_count` (default `<= 0`, meaning 40 for an open curve or 48
+  // for a closed one, the same defaults `OffsetOnSurfaceNormal()` uses)
+  // sets how densely this curve is sampled before offsetting and
+  // refitting.
+  //
+  // Throws std::invalid_argument if `distance` isn't finite, or if
+  // `sample_count` is positive but less than 2. Returns `Result::Failed`
+  // if fewer than 2 samples produce a usable local frame - either the
+  // surface normal or `TangentAt(t) x normal` fails to unitize there (the
+  // latter exactly when this curve's own tangent runs parallel to the
+  // surface's normal at that sample, the in-surface analogue of
+  // `OffsetInPlane()`'s own degenerate-tangent refusal) - not enough
+  // points left to build a curve from.
+  Result OffsetInSurface(const NurbsSurface& surface, double distance, NurbsCurve& out,
+                          int sample_count = -1) const;
+
   const ON_NurbsCurve& raw() const { return curve_; }
   ON_NurbsCurve& raw() { return curve_; }
 

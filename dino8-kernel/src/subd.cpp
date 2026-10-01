@@ -273,6 +273,39 @@ SubD SubD::Transform(const ON_Xform& xform) const {
   return result;
 }
 
+SubD SubD::Offset(double distance) const {
+  if (!ON_IsValid(distance)) {
+    throw std::invalid_argument("dino8::kernel::SubD::Offset: distance must be finite");
+  }
+
+  // Computed on the ORIGINAL (un-moved) control net, before the copy
+  // below exists - every vertex's own limit normal depends on its
+  // neighbors' current positions, so this must be a single snapshot
+  // taken before any vertex moves, not recomputed vertex-by-vertex as
+  // the loop below mutates `result` (which would make each vertex's
+  // offset direction depend on the arbitrary order vertices happen to
+  // be visited in).
+  const std::vector<SubDLimitPoint> limit_points = LimitPoints();
+
+  SubD result = *this;  // ON_SubD's copy ctor deep-copies (verified in SetEdgeSharpness()'s own comment)
+  for (const SubDLimitPoint& lp : limit_points) {
+    if (lp.limit_normal.IsZero()) continue;  // undefined limit normal: leave this vertex unmoved (see this method's own doc comment)
+    ON_SubDVertex* v = const_cast<ON_SubDVertex*>(result.subd_.VertexFromId(lp.vertex_id));
+    if (v == nullptr) {
+      // Unreachable in practice: `lp.vertex_id` was enumerated from the
+      // exact same control net `result` was just deep-copied from, so
+      // every id LimitPoints() returned must still resolve here.
+      throw std::runtime_error("dino8::kernel::SubD::Offset: a vertex present before the copy is missing after it");
+    }
+    const Point3d moved = lp.control_point + distance * lp.limit_normal;
+    if (!v->SetControlNetPoint(moved, /*bClearNeighborhoodCache=*/true)) {
+      throw std::runtime_error(
+          "dino8::kernel::SubD::Offset: ON_SubDVertex::SetControlNetPoint failed (offset position is not finite)");
+    }
+  }
+  return result;
+}
+
 SubD SubD::Symmetrize(Vector3d plane_normal, double plane_offset, double point_tolerance) const {
   if (!plane_normal.Unitize()) {
     throw std::invalid_argument(

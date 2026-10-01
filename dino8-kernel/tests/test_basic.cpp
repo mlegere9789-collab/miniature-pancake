@@ -21080,6 +21080,105 @@ void TestSubDLimitPointsExactCubeAndFlatGrid() {
   Check(normals_ok, "every flat-grid limit normal is exactly (0, 0, 1)");
 }
 
+// PARITY_MAP.md's offsetshell category, "SubD offset / thicken": the cube
+// cage fixture TestSubDLimitPointsExactCubeAndFlatGrid above already
+// establishes, independently of SubD::Offset's own implementation, that
+// every corner's exact limit normal is its own unit outward body diagonal
+// - so Offset()'s result is pinned to an exact closed-form answer here,
+// not just checked for "looks plausible".
+void TestSubDOffsetCubeMovesEachCornerAlongItsOwnExactBodyDiagonalLimitNormal() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SubD;
+  using dino8::kernel::SubDLimitPoint;
+  using dino8::kernel::Vector3d;
+
+  const Mesh cube = MakeQuadBoxMesh(-1, -1, -1, 1, 1, 1);
+  const SubD subd = SubD::FromControlMesh(cube);
+  const std::vector<SubDLimitPoint> lps = subd.LimitPoints();
+
+  const SubD offset = subd.Offset(0.3);
+  Check(offset.VertexCount() == subd.VertexCount() && offset.FaceCount() == subd.FaceCount() &&
+            offset.EdgeCount() == subd.EdgeCount(),
+        "Offset() changes no topology at all - same vertex/face/edge counts as the original cage");
+  Check(offset.IsValid(), "the offset cube cage is still a topologically valid SubD");
+
+  bool all_exact = true;
+  for (const SubDLimitPoint& lp : lps) {
+    // The cube's own exact outward unit normal at this corner, by
+    // symmetry: its own control point, normalized - the SAME
+    // independent ground truth TestSubDLimitPointsExactCubeAndFlatGrid
+    // already checks lp.limit_normal against.
+    Vector3d diag(lp.control_point.x, lp.control_point.y, lp.control_point.z);
+    diag.Unitize();
+    const Point3d expect = lp.control_point + 0.3 * diag;
+    const ON_SubDVertex* v = offset.raw().VertexFromId(lp.vertex_id);
+    if (v == nullptr || v->ControlNetPoint().DistanceTo(expect) > 1e-9) all_exact = false;
+  }
+  Check(all_exact, "Offset(+0.3) moves every cube corner by exactly 0.3 along its own exact "
+                   "body-diagonal limit normal - not the control-net (face-average) normal, "
+                   "which would point the same way here only by this cube's own high symmetry");
+
+  // The ORIGINAL cage is untouched - Offset() returns a new SubD, it
+  // doesn't mutate `subd` in place (the same copy-not-mutate convention
+  // Transform()/Symmetrize() above already establish for this class).
+  bool original_unchanged = true;
+  for (const SubDLimitPoint& lp : lps) {
+    const ON_SubDVertex* v = subd.raw().VertexFromId(lp.vertex_id);
+    if (v == nullptr || v->ControlNetPoint().DistanceTo(lp.control_point) > 1e-12) original_unchanged = false;
+  }
+  Check(original_unchanged, "Offset() leaves the original SubD's own control net untouched");
+}
+
+void TestSubDOffsetZeroDistanceLeavesEveryPositionUnchanged() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SubD;
+  using dino8::kernel::SubDLimitPoint;
+
+  const Mesh cube = MakeQuadBoxMesh(-1, -1, -1, 1, 1, 1);
+  const SubD subd = SubD::FromControlMesh(cube);
+  const SubD offset = subd.Offset(0.0);
+
+  bool all_same = true;
+  for (const SubDLimitPoint& lp : subd.LimitPoints()) {
+    const ON_SubDVertex* v = offset.raw().VertexFromId(lp.vertex_id);
+    if (v == nullptr || v->ControlNetPoint().DistanceTo(lp.control_point) > 1e-12) all_same = false;
+  }
+  Check(all_same, "Offset(0.0) reproduces every control-net vertex's own position exactly");
+}
+
+void TestSubDOffsetArgumentChecksRejectNonFiniteDistance() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SubD;
+
+  const Mesh cube = MakeQuadBoxMesh(-1, -1, -1, 1, 1, 1);
+  const SubD subd = SubD::FromControlMesh(cube);
+
+  bool threw = false;
+  try {
+    subd.Offset(std::numeric_limits<double>::quiet_NaN());
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "Offset(NaN) throws std::invalid_argument");
+
+  threw = false;
+  try {
+    subd.Offset(std::numeric_limits<double>::infinity());
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "Offset(+infinity) throws std::invalid_argument");
+
+  threw = false;
+  try {
+    subd.Offset(-std::numeric_limits<double>::infinity());
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "Offset(-infinity) throws std::invalid_argument");
+}
+
 void TestSubDEvaluateFaceExactOnRegularFlatGrid() {
   using dino8::kernel::Mesh;
   using dino8::kernel::Point3d;
@@ -59734,6 +59833,230 @@ void TestCurveOffsetOnSurfaceNormalArgumentChecks() {
   Check(c.OffsetOnSurfaceNormal(plane, 1.0, out, 5) == dino8::kernel::Result::Ok, "OffsetOnSurfaceNormal(sample_count=5) succeeds");
 }
 
+// PARITY_MAP.md's offsetshell category, "Curve offset on surface
+// (in-surface, geodesic-style)": on a FLAT plane, OffsetInSurface's own
+// `TangentAt(t) x surface_normal` sideways direction is IDENTICAL to
+// OffsetInPlane's own general-case in-plane direction `TangentAt(t) x
+// plane.zaxis` - and re-projecting a point already in a flat plane back
+// onto that same plane is a no-op - so the two methods must agree
+// exactly (up to each one's own independent sampling/refit numerics),
+// giving a genuine independent cross-check neither method's own isolated
+// test can provide.
+void TestCurveOffsetInSurfaceOpenCubicCurveMatchesOffsetInPlaneOnFlatPlane() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  const dino8::kernel::NurbsSurface plane = MakeFlatPlaneSurfaceForOffsetOnSurfaceNormal();
+  Check(plane.IsPlanar(1e-9), "OffsetInSurface flat-plane setup: the constructed grid is genuinely planar");
+
+  // Unlike OffsetOnSurfaceNormal's own fixture above (which moves OFF the
+  // plane, so how close a sample sits to the plane's own domain edge
+  // never matters), this curve must stay well clear of the plane's own
+  // [0, 12] x [0, 12] domain boundary on EVERY side: OffsetInSurface
+  // re-projects each offset sample back onto the surface, and a sample
+  // that would land outside the domain is honestly clamped to the
+  // boundary instead - correct behavior for a genuinely bounded surface,
+  // but not what this test's own independent (infinite-plane) ground
+  // truth formula assumes. A margin of 3 on every side, against a
+  // distance of 1.5, leaves ample room.
+  const std::vector<Point3d> cps = {Point3d(3, 3, 0), Point3d(5, 8, 0), Point3d(7, 4, 0), Point3d(9, 9, 0)};
+  const NurbsCurve c = NurbsCurve::FromControlPoints(cps, 3);
+
+  NurbsCurve out;
+  Check(c.OffsetInSurface(plane, 1.5, out) == Result::Ok, "OffsetInSurface(+1.5) succeeds on a curve lying in a flat plane");
+
+  const dino8::kernel::Vector3d n = plane.NormalAt(0.5, 0.5);
+  const ON_Plane matching_plane(ON_3dPoint(0, 0, 0), n);
+  NurbsCurve expected;
+  Check(c.OffsetInPlane(matching_plane, 1.5, expected) == Result::Ok,
+        "OffsetInSurface cross-check setup: OffsetInPlane(same plane, +1.5) succeeds");
+
+  double worst = 0.0;
+  const dino8::kernel::Interval od = out.Domain();
+  for (double t = od.min; t <= od.max; t += (od.max - od.min) / 20.0) {
+    const Point3d p = out.PointAt(t);
+    worst = std::max(worst, p.DistanceTo(expected.ClosestPoint(p)));
+  }
+  Check(worst < 1e-3,
+        "OffsetInSurface on a flat plane matches OffsetInPlane(same plane) everywhere sampled - both methods "
+        "move along the identical TangentAt(t) x normal direction there, and re-projecting onto a flat plane "
+        "changes nothing");
+}
+
+void TestCurveOffsetInSurfaceOpenPolylineEndpointsMoveByTheExactSidewaysDistance() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+  using dino8::kernel::Vector3d;
+
+  const dino8::kernel::NurbsSurface plane = MakeFlatPlaneSurfaceForOffsetOnSurfaceNormal();
+  // Same "stay clear of the plane's own domain edge" reasoning as
+  // TestCurveOffsetInSurfaceOpenCubicCurveMatchesOffsetInPlaneOnFlatPlane
+  // above - a margin of 3 on every side against a distance of 1.5.
+  const std::vector<Point3d> cps = {Point3d(3, 3, 0), Point3d(6, 5, 0), Point3d(9, 9, 0)};
+  const NurbsCurve polyline = NurbsCurve::FromControlPoints(cps, 1);
+  Check(polyline.Degree() == 1, "OffsetInSurface polyline setup: degree 1 as expected");
+
+  NurbsCurve out;
+  Check(polyline.OffsetInSurface(plane, 1.5, out) == Result::Ok, "OffsetInSurface(+1.5) succeeds on an open degree-1 polyline");
+  Check(out.Degree() == 1, "OffsetInSurface on an open degree-1 curve stays an exact polyline (not smoothed into a cubic)");
+
+  // Each endpoint's own sideways direction, computed independently of
+  // this method's own construction: tangent (along the first/last
+  // segment) crossed with the flat plane's constant normal - and since
+  // the result is already exactly in the plane, re-projection changes
+  // nothing MATHEMATICALLY, so the moved endpoint should land at
+  // distance*side from the original - but unlike OffsetOnSurfaceNormal's
+  // own polyline test (pure vector arithmetic, exact to the bit), this
+  // method's own re-projection goes through ClosestPointParameter()'s own
+  // iterative grid-refinement search TWICE per sample, which converges
+  // closely but not to machine precision (measured ~1e-9 to 1e-8 here
+  // before this comment was written, not assumed) - so the tolerance
+  // below is set to what that search actually achieves, not a weakened
+  // claim of exactness.
+  const Vector3d n = plane.NormalAt(0.5, 0.5);
+  const double d0 = polyline.Domain().min, d1 = polyline.Domain().max;
+  Vector3d side0 = ON_CrossProduct(polyline.TangentAt(d0), n);
+  Vector3d side1 = ON_CrossProduct(polyline.TangentAt(d1), n);
+  Check(side0.Unitize() && side1.Unitize(), "OffsetInSurface polyline setup: both endpoint sideways directions are well-defined");
+
+  Check(out.PointAt(out.Domain().min).DistanceTo(polyline.PointAt(d0) + 1.5 * side0) < 1e-6,
+        "OffsetInSurface polyline: start point is exactly the original start plus distance*(tangent x normal), "
+        "up to ClosestPointParameter's own iterative-search precision");
+  Check(out.PointAt(out.Domain().max).DistanceTo(polyline.PointAt(d1) + 1.5 * side1) < 1e-6,
+        "OffsetInSurface polyline: end point is exactly the original end plus distance*(tangent x normal), "
+        "up to ClosestPointParameter's own iterative-search precision");
+}
+
+void TestCurveOffsetInSurfaceClosedCircleStaysAConcentricCircleInThePlane() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  const dino8::kernel::NurbsSurface plane = MakeFlatPlaneSurfaceForOffsetOnSurfaceNormal();
+  const Point3d center(6, 6, 0);
+  const double radius = 2.0;
+  const ON_Circle circle(ON_Plane(center, ON_3dVector(0, 0, 1)), radius);
+  ON_NurbsCurve raw;
+  Check(circle.GetNurbForm(raw) != 0, "OffsetInSurface closed-curve setup: GetNurbForm succeeds");
+  NurbsCurve c;
+  c.raw() = raw;
+  Check(c.IsClosed(), "OffsetInSurface closed-curve setup: the circle is genuinely closed");
+
+  NurbsCurve out;
+  Check(c.OffsetInSurface(plane, 1.0, out) == Result::Ok, "OffsetInSurface(+1.0) succeeds on a closed curve lying in a flat plane");
+  Check(out.IsClosed(), "OffsetInSurface on a closed input curve produces a closed result");
+
+  // Ground truth: offsetting a circle SIDEWAYS (in its own plane) is
+  // exactly a concentric circle of radius +/- distance - the IN-PLANE
+  // counterpart to OffsetOnSurfaceNormal's own "moves the whole circle
+  // off the plane, radius unchanged" ground truth. Which sign the
+  // construction's own tangent x normal convention picks is not
+  // asserted up front; instead the first sampled point's own
+  // center-distance pins down which of the two the construction actually
+  // took, and every other sampled point is then checked against that SAME
+  // value - a genuine circle invariant, not a tautology, since a
+  // non-circular (or off-center) result would fail this uniformity check
+  // even if one single point happened to match by chance.
+  const dino8::kernel::Interval od = out.Domain();
+  const double first_radius = out.PointAt(od.min).DistanceTo(center);
+  Check(std::fabs(first_radius - (radius + 1.0)) < 1e-2 || std::fabs(first_radius - (radius - 1.0)) < 1e-2,
+        "OffsetInSurface circle: the offset radius is exactly radius+distance or radius-distance, not some other value");
+
+  double worst = 0.0;
+  for (double t = 0.0; t < 1.0; t += 0.05) {
+    const Point3d p = out.PointAt(od.min + (od.max - od.min) * t);
+    worst = std::max(worst, std::fabs(p.DistanceTo(center) - first_radius));
+    worst = std::max(worst, std::fabs(p.z));
+  }
+  Check(worst < 1e-2,
+        "OffsetInSurface on a closed planar circle: every sampled point stays at the SAME radius from the "
+        "center (a genuine concentric circle) and exactly in the z=0 plane, all the way around the seam");
+}
+
+// The same bulged-control-net fixture
+// TestSurfaceOffsetApproximateOnBulgedFreeformIsBoundedAndRejectsExcessiveDistance
+// already uses - a genuinely curved (not flat, not analytic) freeform
+// surface, the one case that actually distinguishes OffsetInSurface from
+// OffsetOnSurfaceNormal: both methods move "sideways" from the curve's
+// own point, but only OffsetInSurface re-projects the result back onto
+// the surface afterward, so only its own output should actually land ON
+// the surface (zero closest-surface-point distance, within sampling
+// resolution) - OffsetOnSurfaceNormal's output, by contrast, moves OFF
+// the surface by construction and is never expected to land back on it.
+void TestCurveOffsetInSurfaceStaysOnACurvedSurfaceUnlikeOffsetOnSurfaceNormal() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  std::vector<Point3d> grid;
+  for (int i = 0; i < 4; ++i)
+    for (int j = 0; j < 4; ++j)
+      grid.push_back(Point3d(i, j, (i == 2 && j == 2) ? 3.0 : 0.0));
+  const NurbsSurface s = NurbsSurface::FromControlGrid(grid, 4, 4, 3, 3);
+
+  // A curve roughly through the middle of the patch, close enough to the
+  // surface for ClosestPointParameter's own sampling-based search to find
+  // a genuine nearby point reliably.
+  const std::vector<Point3d> cps = {Point3d(0.5, 0.5, 0.1), Point3d(1.5, 1.0, 0.3),
+                                     Point3d(2.0, 2.0, 1.0), Point3d(1.0, 2.5, 0.2)};
+  const NurbsCurve c = NurbsCurve::FromControlPoints(cps, 3);
+
+  NurbsCurve in_surface;
+  Check(c.OffsetInSurface(s, 0.2, in_surface) == Result::Ok, "OffsetInSurface(+0.2) succeeds on a genuinely curved surface");
+  NurbsCurve off_surface;
+  Check(c.OffsetOnSurfaceNormal(s, 0.2, off_surface) == Result::Ok,
+        "OffsetInSurface cross-check setup: OffsetOnSurfaceNormal(+0.2) also succeeds on the same curve/surface");
+
+  const auto surface_distance = [&](const NurbsCurve& curve) {
+    double worst = 0.0;
+    const dino8::kernel::Interval od = curve.Domain();
+    for (double t = od.min; t <= od.max; t += (od.max - od.min) / 20.0) {
+      const Point3d p = curve.PointAt(t);
+      const dino8::kernel::Point2d uv = s.ClosestPointParameter(p, 40, 40);
+      worst = std::max(worst, p.DistanceTo(s.PointAt(uv.x, uv.y)));
+    }
+    return worst;
+  };
+
+  Check(surface_distance(in_surface) < 1e-3,
+        "OffsetInSurface's own result lies genuinely ON the curved surface (every sampled point's closest-"
+        "surface-point distance is ~0), unlike a point merely moved sideways in a straight line and left there");
+  Check(surface_distance(off_surface) > 0.1,
+        "OffsetOnSurfaceNormal's own result, by contrast, lies OFF the curved surface by roughly the offset "
+        "distance - proof the two methods are genuinely solving different problems, not just named differently");
+}
+
+void TestCurveOffsetInSurfaceArgumentChecks() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+
+  const dino8::kernel::NurbsSurface plane = MakeFlatPlaneSurfaceForOffsetOnSurfaceNormal();
+  const std::vector<Point3d> cps = {Point3d(1, 1, 0), Point3d(4, 8, 0), Point3d(8, 3, 0), Point3d(11, 10, 0)};
+  const NurbsCurve c = NurbsCurve::FromControlPoints(cps, 3);
+
+  NurbsCurve out;
+  bool threw = false;
+  try {
+    c.OffsetInSurface(plane, std::numeric_limits<double>::quiet_NaN(), out);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "OffsetInSurface(NaN) throws std::invalid_argument");
+
+  threw = false;
+  try {
+    c.OffsetInSurface(plane, 1.0, out, 1);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "OffsetInSurface(sample_count=1) throws std::invalid_argument");
+
+  Check(c.OffsetInSurface(plane, 1.0, out, 5) == dino8::kernel::Result::Ok, "OffsetInSurface(sample_count=5) succeeds");
+}
+
 // An open, axis-aligned "U" bracket: 3 straight segments, 4 vertices,
 // planar in z = 0. Exercises the new exact per-corner-miter polyline
 // path `OffsetInPlane` now takes instead of falling to the general
@@ -63355,6 +63678,9 @@ int main() {
   TestSubDFlatQuadGridStaysFlatAndAreaExact();
   TestSubDToNurbsPatchesExactOnRegularFlatGrid();
   TestSubDLimitPointsExactCubeAndFlatGrid();
+  TestSubDOffsetCubeMovesEachCornerAlongItsOwnExactBodyDiagonalLimitNormal();
+  TestSubDOffsetZeroDistanceLeavesEveryPositionUnchanged();
+  TestSubDOffsetArgumentChecksRejectNonFiniteDistance();
   TestSubDEvaluateFaceExactOnRegularFlatGrid();
   TestSubDEvaluateFaceAdaptiveOnIrregularFace();
   TestSubDEvaluateFaceExtraordinaryCornerHasRealTangentPlane();
@@ -64042,6 +64368,12 @@ int main() {
   TestCurveOffsetOnSurfaceNormalOpenPolylineStaysAnExactPolyline();
   TestCurveOffsetOnSurfaceNormalClosedCurveStaysClosed();
   TestCurveOffsetOnSurfaceNormalArgumentChecks();
+
+  TestCurveOffsetInSurfaceOpenCubicCurveMatchesOffsetInPlaneOnFlatPlane();
+  TestCurveOffsetInSurfaceOpenPolylineEndpointsMoveByTheExactSidewaysDistance();
+  TestCurveOffsetInSurfaceClosedCircleStaysAConcentricCircleInThePlane();
+  TestCurveOffsetInSurfaceStaysOnACurvedSurfaceUnlikeOffsetOnSurfaceNormal();
+  TestCurveOffsetInSurfaceArgumentChecks();
 
   TestCurveOffsetInPlaneOpenPolylineExactSharpCorners();
   TestCurveOffsetInPlaneClosedPolygonMitersSeamCorner();

@@ -621,6 +621,52 @@ Result NurbsCurve::OffsetOnSurfaceNormal(const NurbsSurface& surface, double dis
   return Result::Ok;
 }
 
+Result NurbsCurve::OffsetInSurface(const NurbsSurface& surface, double distance, NurbsCurve& out,
+                                    int sample_count) const {
+  if (!ON_IsValid(distance)) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsCurve::OffsetInSurface: distance must be finite");
+  }
+  const bool closed = IsClosed();
+  const int n = sample_count > 0 ? sample_count : (closed ? 48 : 40);
+  if (n < 2) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsCurve::OffsetInSurface: sample_count must be at least 2");
+  }
+
+  const Interval d = Domain();
+  std::vector<ON_3dPoint> offset_pts;
+  offset_pts.reserve(static_cast<size_t>(n));
+  const int steps = closed ? n : n - 1;
+  for (int i = 0; i < n; ++i) {
+    const double t = d.min + (d.max - d.min) * (static_cast<double>(i) / steps);
+    const Point3d p = PointAt(t);
+    const Point2d uv = surface.ClosestPointParameter(p, 24, 24);
+    Vector3d normal = surface.NormalAt(uv.x, uv.y);
+    if (!normal.Unitize()) continue;
+    Vector3d side = ON_CrossProduct(TangentAt(t), normal);
+    if (!side.Unitize()) continue;
+    const Point3d moved = surface.PointAt(uv.x, uv.y) + distance * side;
+    // Re-project so the offset point actually lands back on the surface,
+    // rather than merely near it along a straight tangent-plane step -
+    // see this method's own doc comment for why that second step is
+    // what makes this an IN-surface offset rather than OffsetOnSurfaceNormal's
+    // deliberately off-surface one.
+    const Point2d uv2 = surface.ClosestPointParameter(moved, 24, 24);
+    offset_pts.push_back(surface.PointAt(uv2.x, uv2.y));
+  }
+  if (offset_pts.size() < 2) return Result::Failed;
+
+  const bool fit_closed = closed && offset_pts.size() == static_cast<size_t>(n);
+  if (Degree() == 1 && !closed) {
+    out = NurbsCurve::FromControlPoints(offset_pts, 1);
+  } else {
+    const std::vector<double> params = ChordParams(offset_pts, fit_closed);
+    out.raw() = InterpolateCubic(offset_pts, params, fit_closed, 3);
+  }
+  return Result::Ok;
+}
+
 // --- face containment ------------------------------------------------------------
 
 bool PointInPolygon(const std::vector<ON_2dPoint>& poly, ON_2dPoint p) {
