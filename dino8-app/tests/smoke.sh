@@ -2059,6 +2059,22 @@ dino8.doc.Modified = False
 print("doc modified after set: " + str(dino8.doc.Modified))
 dino8.doc.Modified = True
 
+print("object user text before set: " + str(obj.GetUserText()))
+obj.SetUserText("Material", "Steel")
+print("object user text value: " + str(obj.GetUserText("Material")))
+print("object user text keys: " + str(obj.GetUserText()))
+print("object user text missing key: " + str(obj.GetUserText("NoSuchKeyXYZ")))
+obj.SetUserText("Material", None)
+print("object user text after erase: " + str(obj.GetUserText("Material")))
+print("object user text keys after erase: " + str(obj.GetUserText()))
+
+print("document user text before set: " + str(dino8.doc.GetDocumentUserText()))
+dino8.doc.SetDocumentUserText("Project", "Acme")
+print("document user text value: " + str(dino8.doc.GetDocumentUserText("Project")))
+print("document user text keys: " + str(dino8.doc.GetDocumentUserText()))
+dino8.doc.SetDocumentUserText("Project", None)
+print("document user text after erase: " + str(dino8.doc.GetDocumentUserText("Project")))
+
 dino8.doc.BeginUndo("QCPointGroup")
 undo_pt = dino8.doc.Objects.AddPoint(600, 0, 0)
 print("object count before undo: %d" % len(dino8.doc.Objects.AllObjects()))
@@ -2263,6 +2279,16 @@ else
   pscheck "history: doc path: None" "dino8.doc.Path is None for an unsaved document, matching rs.DocumentPath pushing nil instead of an empty string"
   pscheck "history: doc modified before: True" "dino8.doc.Modified reflects the many edits this script already made, matching rs.DocumentModified's getter form"
   pscheck "history: doc modified after set: False" "assigning dino8.doc.Modified = False round-tripped, matching rs.DocumentModified's setter form"
+  pscheck "history: object user text before set: \[\]" "Dino8Object.GetUserText() with no key returns no keys before any are set, matching rs.GetUserText's no-key form"
+  pscheck "history: object user text value: Steel" "Dino8Object.SetUserText/GetUserText round-tripped a per-object attribute value, matching rs.SetUserText/rs.GetUserText - previously entirely unported to Python"
+  pscheck "history: object user text keys: \['Material'\]" "GetUserText() with no key lists the one key just set"
+  pscheck "history: object user text missing key: None" "GetUserText of an unset key returns None, matching rs.GetUserText pushing nil"
+  pscheck "history: object user text after erase: None" "SetUserText(key, None) erased the value, matching rs.SetUserText's \"no value removes\" behavior"
+  pscheck "history: object user text keys after erase: \[\]" "the erased key no longer appears in GetUserText()'s key list"
+  pscheck "history: document user text before set: \[\]" "Dino8Doc.GetDocumentUserText() with no key returns no keys before any are set, matching rs.GetDocumentUserText's no-key form"
+  pscheck "history: document user text value: Acme" "Dino8Doc.SetDocumentUserText/GetDocumentUserText round-tripped a document-level attribute value, matching rs.SetDocumentUserText/rs.GetDocumentUserText - also previously entirely unported to Python"
+  pscheck "history: document user text keys: \['Project'\]" "GetDocumentUserText() with no key lists the one key just set"
+  pscheck "history: document user text after erase: None" "SetDocumentUserText(key, None) erased the value, matching rs.SetDocumentUserText's \"no value removes\" behavior"
   pscheck "history: object count before undo: 37" "dino8.doc.Objects.AddPoint after dino8.doc.BeginUndo(\"QCPointGroup\") added the one new point, matching rs.BeginUndo/rs.AddPoint"
   pscheck "history: undo point present: True" "the freshly added point resolves through Find before any undo"
   pscheck "history: undo returned: True" "dino8.doc.Undo() reported success, matching rs.Undo() - previously entirely unported to Python per the PARITY_MAP note on undo/document-state functions"
@@ -2813,6 +2839,12 @@ echo "$S2" | grep -E "^(ok|FAIL)"
 if echo "$S2" | grep -q "^FAIL"; then fail=1; fi
 echo "$S2" | grep -q "^smoke:" || { echo "$S2"; echo "FAIL: state2 script produced no smoke line"; fail=1; }
 s2check() { if echo "$S2" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$S2" "$1"; fail=1; fi; }
+# SetObjectDisplayMode Ghosted/X-Ray (PARITY_MAP.md's "Per-object display
+# mode override" item, upgraded this pass from Wireframe/Shaded-only to
+# also cover these two alpha-based modes) - real per-object overrides, not
+# just accepted-and-ignored text.
+s2check "SetObjectDisplayMode: 1 object(s) now always shown Ghosted (35% opaque)" "SetObjectDisplayMode Ghosted is a genuine per-object override, not silently treated as UseViewport"
+s2check "SetObjectDisplayMode: 1 object(s) now always shown X-Ray (18% opaque)" "SetObjectDisplayMode X-Ray is a genuine per-object override, not silently treated as UseViewport"
 s2check "WhatsNew: opened the What's New window" "WhatsNew opens its own real changelog window, not the About box"
 # Regression guard for the "changelog.md never shipped" bug: WhatsNew's
 # confirmation print above only means the *window* opened - Panels.cpp's
@@ -3423,6 +3455,8 @@ cp "$HERE/step_pentagon_fixture.stp" "$TMPW/step_pentagon_fixture.stp"
 cp "$HERE/step_recursive_fixture.stp" "$TMPW/step_recursive_fixture.stp"
 cp "$HERE/iges_bad_pd_ptr_fixture.igs" "$TMPW/iges_bad_pd_ptr_fixture.igs"
 cp "$HERE/iges_huge_composite_fixture.igs" "$TMPW/iges_huge_composite_fixture.igs"
+cp "$HERE/iges_cyclic_xform_fixture.igs" "$TMPW/iges_cyclic_xform_fixture.igs"
+cp "$HERE/step_huge_knot_multiplicity_fixture.stp" "$TMPW/step_huge_knot_multiplicity_fixture.stp"
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   IS="$("$BIN" --smoke 230 --script "$TMPW/igesstep_script.txt" 2>&1)" || { echo "$IS"; echo "FAIL: iges/step script exited non-zero"; exit 1; }
 else
@@ -3448,7 +3482,11 @@ ischeck "IGES: .*1 point" "the blank-pd_ptr IGES fixture's type-116 entity still
 [ "$(grep -c "IGES: 0 curves, 0 points, 0 surfaces, 0 breps (0 trimmed faces); 1 unsupported entity skipped" <<<"$IS")" -ge 2 ] \
   && echo "ok   the huge-N (2000000000-segment) composite-curve IGES fixture was rejected cleanly too, not just the self-referencing one (see BuildIgesCurve's segment-count cap)" \
   || { echo "FAIL: expected the 0-curves/0-points/0-surfaces/0-breps/1-skipped reject line twice (recursive fixture + huge-composite fixture)"; near "$IS" "0 curves, 0 points, 0 surfaces, 0 breps"; fail=1; }
-grep -q "Segmentation fault\|core dumped" <<<"$IS" && { echo "FAIL: iges/step script segfaulted on the recursive-composite-curve, blank-pd_ptr, or huge-composite-curve fixture"; fail=1; } || echo "ok   no segfault while importing the recursive-composite-curve, blank-pd_ptr, or huge-composite-curve fixture"
+[ "$(grep -c "IGES: .*1 point" <<<"$IS")" -ge 3 ] \
+  && echo "ok   the self-referencing type-124 transform-matrix IGES fixture still imported its point, not hung/crashed on (see TransformOf's recursion-depth guard)" \
+  || { echo "FAIL: expected an 'IGES: ... 1 point' line 3 times (t.igs + blank-pd_ptr fixture + cyclic-xform fixture)"; near "$IS" "IGES: .*1 point"; fail=1; }
+ischeck "No usable geometry found in .*step_huge_knot_multiplicity_fixture.stp" "a STEP B_SPLINE_CURVE_WITH_KNOTS with a 2000000000 knot multiplicity was rejected cleanly, not a multi-gigabyte allocation attempt (see StepModel::BuildCurve's/BuildSurface's multiplicity cap)"
+grep -q "Segmentation fault\|core dumped" <<<"$IS" && { echo "FAIL: iges/step script segfaulted on the recursive-composite-curve, blank-pd_ptr, huge-composite-curve, cyclic-xform, or huge-knot-multiplicity fixture"; fail=1; } || echo "ok   no segfault while importing the recursive-composite-curve, blank-pd_ptr, huge-composite-curve, cyclic-xform, or huge-knot-multiplicity fixture"
 grep -qE "^ {5}128" "$TMPW/t.igs" && grep -qE "^ {5}144" "$TMPW/t.igs" && echo "ok   t.igs uses 128 (surface) and 144 (trimmed surface) entities" || { echo "FAIL t.igs entity types"; fail=1; }
 grep -q "=ADVANCED_FACE(" "$TMPW/t.stp" && grep -q "B_SPLINE_SURFACE_WITH_KNOTS(" "$TMPW/t.stp" && echo "ok   t.stp uses ADVANCED_FACE and B_SPLINE_SURFACE_WITH_KNOTS entities" || { echo "FAIL t.stp entity types"; fail=1; }
 grep -q "^ISO-10303-21;$" "$TMPW/t.stp" && grep -q "^END-ISO-10303-21;$" "$TMPW/t.stp" && echo "ok   t.stp is a complete Part 21 file" || { echo "FAIL t.stp malformed"; fail=1; }
@@ -5394,24 +5432,27 @@ fi
 # item, which had no server/socket/HTTP code anywhere before this. Starts
 # the real app with --serve 0 (an OS-assigned ephemeral port, so this can
 # never collide with another process on a fixed port) and
-# --serve-max-requests 3 so the process is self-terminating like batch
+# --serve-max-requests 5 so the process is self-terminating like batch
 # --script mode above, backgrounds it, waits (bounded, not an unbounded
 # sleep loop) for its own "serve: listening on port N" line, then drives it
 # over a real loopback HTTP connection with curl: a POST that builds
 # geometry and reads back its printed output, a GET that must be rejected
-# with 405, and a POST calling an interactive rs.Get* prompt that must be
-# rejected instead of hanging the connection - see
-# tests/test_compute_server.cpp for the lower-level, no-app unit coverage
-# of the request parsing/response formatting this end-to-end check builds
-# on top of.
+# with 405, a POST calling an interactive rs.Get* prompt that must be
+# rejected instead of hanging the connection, a POST /run/python that
+# builds and queries geometry through the embedded Python module (or is
+# skipped gracefully on a build with no Python support), and a POST to an
+# unknown path that must come back 404 - see tests/test_compute_server.cpp
+# for the lower-level, no-app unit coverage of the request parsing/response
+# formatting this end-to-end check builds on top of. A second, separate
+# server instance below covers --serve-token bearer-auth.
 if ! command -v curl >/dev/null 2>&1; then
   echo "skip --serve compute-server checks (curl not available)"
 else
   SERVE_LOG="$TMPW/serve.log"
   if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
-    timeout 30 "$BIN" --serve 0 --serve-max-requests 3 > "$SERVE_LOG" 2>&1 &
+    timeout 30 "$BIN" --serve 0 --serve-max-requests 5 > "$SERVE_LOG" 2>&1 &
   else
-    timeout 30 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --serve 0 --serve-max-requests 3 > "$SERVE_LOG" 2>&1 &
+    timeout 30 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --serve 0 --serve-max-requests 5 > "$SERVE_LOG" 2>&1 &
   fi
   SERVE_PID=$!
 
@@ -5436,10 +5477,20 @@ else
 print("objects: " .. #rs.AllObjects())' "http://127.0.0.1:$SERVE_PORT/run")"
     CODE2="$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$SERVE_PORT/run")"
     RESP3="$(curl -s --max-time 10 -X POST --data 'rs.GetPoint()' "http://127.0.0.1:$SERVE_PORT/run")"
+    RESP4="$(curl -s --max-time 10 -X POST --data 'import dino8
+id = dino8.doc.Objects.AddBox(dino8.Point3d(0,0,0), dino8.Vector3d(5,5,5))
+print("volume: %.1f" % dino8.doc.Objects.SurfaceVolume(id))' "http://127.0.0.1:$SERVE_PORT/run/python")"
+    CODE5="$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' -X POST --data 'x' "http://127.0.0.1:$SERVE_PORT/run/nosuchroute")"
     set -e
     echo "$RESP1" | grep -q "^objects: 1$" && echo "ok   POST /run built a box over HTTP and read back its printed object count" || { echo "$RESP1"; echo "FAIL --serve POST /run did not report objects: 1"; fail=1; }
     [ "$CODE2" = "405" ] && echo "ok   a GET request to the compute server is rejected with 405 Method Not Allowed" || { echo "FAIL --serve GET /run returned HTTP $CODE2, expected 405"; fail=1; }
     echo "$RESP3" | grep -q "compute error: script requires interactive input" && echo "ok   a script calling an interactive rs.Get* prompt is rejected instead of hanging the connection" || { echo "$RESP3"; echo "FAIL --serve interactive-prompt script was not rejected as expected"; fail=1; }
+    if echo "$RESP4" | grep -q "DINO8_HAVE_PYTHON"; then
+      echo "skip POST /run/python check (this build has no embedded Python - see DINO8_ENABLE_PYTHON in CMakeLists.txt)"
+    else
+      echo "$RESP4" | grep -q "^volume: 125.0$" && echo "ok   POST /run/python built a box through the dino8 module over HTTP and read back its printed volume" || { echo "$RESP4"; echo "FAIL --serve POST /run/python did not report volume: 125.0"; fail=1; }
+    fi
+    [ "$CODE5" = "404" ] && echo "ok   a POST to an unrecognized path is rejected with 404 Not Found" || { echo "FAIL --serve POST to an unknown path returned HTTP $CODE5, expected 404"; fail=1; }
 
     set +e; wait "$SERVE_PID"; SERVE_EC=$?; set -e
     if [ "$SERVE_EC" -eq 124 ]; then
@@ -5447,7 +5498,57 @@ print("objects: " .. #rs.AllObjects())' "http://127.0.0.1:$SERVE_PORT/run")"
     elif [ "$SERVE_EC" -ne 0 ]; then
       cat "$SERVE_LOG"; echo "FAIL: --serve process exited $SERVE_EC, expected 0"; fail=1
     else
-      grep -q "^serve: done requests=3$" "$SERVE_LOG" && echo "ok   --serve exited cleanly on its own after --serve-max-requests 3 real HTTP requests" || { cat "$SERVE_LOG"; echo "FAIL --serve done-summary line missing or wrong"; fail=1; }
+      grep -q "^serve: done requests=5$" "$SERVE_LOG" && echo "ok   --serve exited cleanly on its own after --serve-max-requests 5 real HTTP requests" || { cat "$SERVE_LOG"; echo "FAIL --serve done-summary line missing or wrong"; fail=1; }
+    fi
+  fi
+
+  # --serve-token: a second, independent server instance (its own ephemeral
+  # port) started with a bearer token required. Checks both directions: a
+  # request with no/wrong Authorization header is rejected with 401 (its
+  # script body, "should not run", is never passed to Lua.Start at all -
+  # see main.cpp's compute_handler, which checks the token before touching
+  # req.path/req.body), and the same request with the right header succeeds
+  # exactly like the token-less server above.
+  TOKEN_LOG="$TMPW/serve_token.log"
+  if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+    timeout 30 "$BIN" --serve 0 --serve-token hunter2 --serve-max-requests 3 > "$TOKEN_LOG" 2>&1 &
+  else
+    timeout 30 xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --serve 0 --serve-token hunter2 --serve-max-requests 3 > "$TOKEN_LOG" 2>&1 &
+  fi
+  TOKEN_PID=$!
+
+  TOKEN_PORT=""
+  for _ in $(seq 1 100); do
+    if grep -q "^serve: listening on port " "$TOKEN_LOG" 2>/dev/null; then
+      TOKEN_PORT="$(grep "^serve: listening on port " "$TOKEN_LOG" | head -1 | awk '{print $NF}')"
+      break
+    fi
+    sleep 0.1
+  done
+
+  if [ -z "$TOKEN_PORT" ]; then
+    cat "$TOKEN_LOG"; echo "FAIL: --serve-token server never printed its listening port within 10s"; fail=1
+    kill "$TOKEN_PID" 2>/dev/null || true
+    wait "$TOKEN_PID" 2>/dev/null || true
+  else
+    echo "ok   --serve-token started a second compute server headless on its own bound port ($TOKEN_PORT)"
+
+    set +e
+    CODE_NOAUTH="$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' -X POST --data 'print("should not run")' "http://127.0.0.1:$TOKEN_PORT/run")"
+    CODE_WRONGAUTH="$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer wrongtoken' -X POST --data 'print("should not run")' "http://127.0.0.1:$TOKEN_PORT/run")"
+    RESP_OKAUTH="$(curl -s --max-time 10 -H 'Authorization: Bearer hunter2' -X POST --data 'print("authorized ok")' "http://127.0.0.1:$TOKEN_PORT/run")"
+    set -e
+    [ "$CODE_NOAUTH" = "401" ] && echo "ok   --serve-token rejects a request with no Authorization header with 401" || { echo "FAIL --serve-token no-auth request returned HTTP $CODE_NOAUTH, expected 401"; fail=1; }
+    [ "$CODE_WRONGAUTH" = "401" ] && echo "ok   --serve-token rejects a request with the wrong bearer token with 401" || { echo "FAIL --serve-token wrong-token request returned HTTP $CODE_WRONGAUTH, expected 401"; fail=1; }
+    echo "$RESP_OKAUTH" | grep -q "^authorized ok$" && echo "ok   --serve-token accepts a request with the correct Authorization: Bearer header and runs the script" || { echo "$RESP_OKAUTH"; echo "FAIL --serve-token correct-token request did not run the script"; fail=1; }
+
+    set +e; wait "$TOKEN_PID"; TOKEN_EC=$?; set -e
+    if [ "$TOKEN_EC" -eq 124 ]; then
+      cat "$TOKEN_LOG"; echo "FAIL: --serve-token process hung and was killed by the 30s timeout instead of exiting after --serve-max-requests"; fail=1
+    elif [ "$TOKEN_EC" -ne 0 ]; then
+      cat "$TOKEN_LOG"; echo "FAIL: --serve-token process exited $TOKEN_EC, expected 0"; fail=1
+    else
+      grep -q "^serve: done requests=3$" "$TOKEN_LOG" && echo "ok   --serve-token server exited cleanly on its own after 3 real HTTP requests" || { cat "$TOKEN_LOG"; echo "FAIL --serve-token done-summary line missing or wrong"; fail=1; }
     fi
   fi
 fi

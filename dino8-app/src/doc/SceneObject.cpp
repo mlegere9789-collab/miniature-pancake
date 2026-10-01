@@ -93,6 +93,8 @@ void SceneObject::CopyFrom(const SceneObject& other) {
   highlight_edges = other.highlight_edges;
   force_shaded = other.force_shaded;
   force_wireframe = other.force_wireframe;
+  force_ghosted = other.force_ghosted;
+  force_xray = other.force_xray;
   show_render_mesh_wires = other.show_render_mesh_wires;
   custom_mesh_tolerance = other.custom_mesh_tolerance;
   analysis = other.analysis;
@@ -731,6 +733,32 @@ void SceneObject::EnsureDisplay(double curve_tolerance, double surface_tolerance
     }
   }
   cache_.dirty = false;
+  cache_.built_curve_tolerance = curve_tolerance;
+  cache_.built_surface_tolerance = surface_tolerance;
+}
+
+namespace {
+// Hysteresis band for EnsureAdaptiveDisplay: a tolerance is considered a
+// real change worth re-tessellating for only once it has moved more than
+// this factor away from whatever built the cache currently in hand -
+// otherwise a barely-perceptible camera nudge (or float noise) would force
+// a rebuild every frame.
+constexpr double kLodHysteresis = 1.35;
+
+bool DriftedPastHysteresis(double built, double requested) {
+  if (built <= 0.0) return true;  // never built at a known tolerance yet
+  const double ratio = requested / built;
+  return ratio > kLodHysteresis || ratio < 1.0 / kLodHysteresis;
+}
+}  // namespace
+
+void SceneObject::EnsureAdaptiveDisplay(double curve_tolerance, double surface_tolerance) const {
+  const double effective_surface_tolerance = custom_mesh_tolerance > 0.0 ? custom_mesh_tolerance : surface_tolerance;
+  if (DriftedPastHysteresis(cache_.built_curve_tolerance, curve_tolerance) ||
+      DriftedPastHysteresis(cache_.built_surface_tolerance, effective_surface_tolerance)) {
+    InvalidateDisplay();
+  }
+  EnsureDisplay(curve_tolerance, surface_tolerance);
 }
 
 void SceneObject::EnsureMappedUVs(TextureMapping mapping, float scale) const {

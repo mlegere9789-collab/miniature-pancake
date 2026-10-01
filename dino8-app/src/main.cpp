@@ -32,14 +32,19 @@
 //                 PORT (0 asks the OS for a free ephemeral port - see the
 //                 "serve: listening on port N" line this prints) and run
 //                 headless, exactly like a pure --script batch run: each
-//                 POST /run request's body is run as a Lua script against
-//                 the same LuaEngine the command line uses, and the
-//                 captured print() output comes back as the response body.
-//                 See docs/COMPUTE_SERVER.md and PARITY_MAP.md's "Cloud/
-//                 network compute service" item.
+//                 POST /run request's body is run as a Lua script, and each
+//                 POST /run/python request's body as a Python script
+//                 (dino8 module), against the same LuaEngine/PythonEngine
+//                 the command line uses, with the captured print() output
+//                 coming back as the response body. See docs/COMPUTE_SERVER.md
+//                 and PARITY_MAP.md's "Cloud/network compute service" item.
 //   --serve-max-requests N   with --serve: exit after N requests have been
 //                 serviced instead of running until killed (used by
 //                 tests/smoke.sh for a deterministic, self-terminating run).
+//   --serve-token TOKEN   with --serve: require every request to carry a
+//                 matching "Authorization: Bearer TOKEN" header, rejecting
+//                 any other request with 401 before it ever reaches the
+//                 script engine. Omit for the previous, fully open behavior.
 //
 // Script lines starting with '@' are synthetic input for UI tests:
 //   @move X Y | @down [button] | @up [button] | @click X Y [button]
@@ -350,6 +355,7 @@ int main(int argc, char** argv) {
   std::string cull_screenshot_path;
   int serve_port = -1;
   int serve_max_requests = -1;
+  std::string serve_token;
   for (int i = 1; i < argc; ++i) {
     if (std::strcmp(argv[i], "--smoke") == 0 && i + 1 < argc) smoke_frames = std::atoi(argv[++i]);
     else if (std::strcmp(argv[i], "--stress") == 0 && i + 1 < argc) stress_count = std::atoi(argv[++i]);
@@ -359,6 +365,7 @@ int main(int argc, char** argv) {
     else if (std::strcmp(argv[i], "--screenshot") == 0 && i + 1 < argc) screenshot_path = argv[++i];
     else if (std::strcmp(argv[i], "--serve") == 0 && i + 1 < argc) serve_port = std::atoi(argv[++i]);
     else if (std::strcmp(argv[i], "--serve-max-requests") == 0 && i + 1 < argc) serve_max_requests = std::atoi(argv[++i]);
+    else if (std::strcmp(argv[i], "--serve-token") == 0 && i + 1 < argc) serve_token = argv[++i];
     else if (std::strcmp(argv[i], "--version") == 0) { std::printf("Dino 8 %s\n", DINO8_VERSION); return 0; }
     else if (argv[i][0] != '-') open_path = argv[i];
   }
@@ -548,11 +555,18 @@ int main(int argc, char** argv) {
   // frame loop, exactly like script_lines above is prepared before the
   // loop feeds it one line per frame. compute_handler runs a POST /run
   // request's body as a Lua script against the running document's own
-  // LuaEngine - the same engine the command line and RunScript already
-  // use - and returns its captured print() output as the response. A
-  // script that suspends on an rs.Get*-style prompt can't be satisfied
-  // over a synchronous HTTP request, so that case is aborted and reported
-  // as an error instead of hanging the connection.
+  // LuaEngine, or a POST /run/python request's body as a Python script
+  // against PythonEngine - the same two engines the command line and
+  // RunScript/RunPythonScript already use - and returns the captured
+  // print() output as the response. A Lua script that suspends on an
+  // rs.Get*-style prompt can't be satisfied over a synchronous HTTP
+  // request, so that case is aborted and reported as an error instead of
+  // hanging the connection; PythonEngine never suspends in the first place
+  // (see script/PythonEngine.h) - a dino8.GetPoint()-style call there is
+  // simply not a function the module defines, so it surfaces as an
+  // ordinary Python error in the response body. --serve-token, when given,
+  // requires a matching "Authorization: Bearer TOKEN" header on every
+  // request, checked here before either engine ever sees the body.
   dino8::app::ComputeServer compute_server;
   int serve_requests_handled = 0;
   if (serve_port >= 0) {
@@ -564,24 +578,53 @@ int main(int argc, char** argv) {
     std::printf("serve: listening on port %d\n", compute_server.Port());
     std::fflush(stdout);
   }
-  const dino8::app::ComputeHandler compute_handler = [&app](const dino8::app::HttpRequest& req) {
+  const dino8::app::ComputeHandler compute_handler = [&app, &serve_token](const dino8::app::HttpRequest& req) {
     dino8::app::HttpResponse resp;
     if (req.method != "POST") {
       resp.status = 405;
-      resp.body = "Dino 8 compute service: only POST /run is supported\n";
+      resp.body = "Dino 8 compute service: only POST /run and POST /run/python are supported\n";
       return resp;
     }
-    const bool ok = app.Lua().Start(req.body, "compute-request");
-    const bool suspended = app.Lua().Suspended();
-    if (suspended) app.Lua().Abort();
-    std::string out;
-    for (const std::string& line : app.Lua().LastOutput()) {
-      out += line;
-      out += '\n';
+    if (!serve_token.empty()) {
+      const auto it = req.headers.find("authorization");
+      if (it == req.headers.end() || it->second != "Bearer " + serve_token) {
+        resp.status = 401;
+        resp.body = "Dino 8 compute service: missing or incorrect Authorization: Bearer token\n";
+        return resp;
+      }
     }
-    if (suspended) out += "! compute error: script requires interactive input (rs.Get*), which the compute server cannot satisfy\n";
-    resp.status = (ok && !suspended) ? 200 : 500;
-    resp.body = out;
+    if (req.path == "/run") {
+      const bool ok = app.Lua().Start(req.body, "compute-request");
+      const bool suspended = app.Lua().Suspended();
+      if (suspended) app.Lua().Abort();
+      std::string out;
+      for (const std::string& line : app.Lua().LastOutput()) {
+        out += line;
+        out += '\n';
+      }
+      if (suspended) out += "! compute error: script requires interactive input (rs.Get*), which the compute server cannot satisfy\n";
+      resp.status = (ok && !suspended) ? 200 : 500;
+      resp.body = out;
+      return resp;
+    }
+    if (req.path == "/run/python") {
+      if (!dino8::app::PythonEngine::Available()) {
+        resp.status = 500;
+        resp.body = "Dino 8 compute service: this build was compiled without a Python 3 development install (no DINO8_HAVE_PYTHON)\n";
+        return resp;
+      }
+      const bool ok = app.Python().Start(req.body, "compute-request");
+      std::string out;
+      for (const std::string& line : app.Python().LastOutput()) {
+        out += line;
+        out += '\n';
+      }
+      resp.status = ok ? 200 : 500;
+      resp.body = out;
+      return resp;
+    }
+    resp.status = 404;
+    resp.body = "Dino 8 compute service: unknown path (supported: POST /run, POST /run/python)\n";
     return resp;
   };
 

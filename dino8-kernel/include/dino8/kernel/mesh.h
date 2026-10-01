@@ -1222,6 +1222,174 @@ class Mesh {
   // not partially filled and silently trusted.
   static Result LoadIfc(const std::string& path, Mesh& out_mesh);
 
+  // Writes this mesh as a plain-ASCII STEP AP242 (ISO 10303-242,
+  // "Managed model-based 3D engineering") file using AP242's own
+  // *tessellated geometry* representation - PARITY_MAP.md's own "kernel:
+  // Kernel-level data exchange" evidence named this as fully missing:
+  // "confirmed zero hits for TESSELLATED/TRIANGULATED_FACE/PMI/AP242
+  // anywhere in dino8-app/src/io/*.cpp; only the AP214 schema string
+  // exists." Same ISO 10303-21 physical-file syntax SaveIfc() already
+  // writes (`HEADER;`/`DATA;`/`ENDSEC;`), with `FILE_SCHEMA` naming AP242's
+  // own edition-2 schema (`AP242_MANAGED_MODEL_BASED_3D_ENGINEERING_MIM_LF`)
+  // instead of IFC4, and two real AP242 entities instead of IFC's: a
+  // `COORDINATES_LIST` (one `(x, y, z)` triple per vertex - AP242's own
+  // flat shared point-list representation, the identical shape
+  // `IFCCARTESIANPOINTLIST3D` already uses) and a `TRIANGULATED_FACE`
+  // referencing it (`Coordinates`, `Pnmax` = vertex count, `Normals`
+  // unset, `Pnindex` unset, `TriangleStrips` unset, `Triangles` - a LIST of
+  // 1-based index triples, the same STEP-wide 1-based convention
+  // `IfcTriangulatedFaceSet.CoordIndex` already uses). `TRIANGULATED_FACE`
+  // has no native quad or n-gon (its own `Triangles` attribute is fixed at
+  // `LIST [3:3]`, the same shape IFC's `CoordIndex` has), so a quad face
+  // (`ON_MeshFace::IsQuad()`) is split into its two triangles on write, the
+  // same accommodation `SaveIfc()`/`SaveStl()` already make for the
+  // identical reason. Deliberately narrow, same scope SaveIfc() already
+  // discloses for IFC: no product/shape-representation wrapper entities
+  // (`PRODUCT`, `SHAPE_REPRESENTATION`, `ADVANCED_BREP_SHAPE_REPRESENTATION`,
+  // ...) and no PMI (Product Manufacturing Information - GD&T annotations,
+  // AP242's own headline feature over AP214) - just the bare tessellated-
+  // geometry entities this gap's own evidence named as absent. Returns
+  // Result::Failed if the file can't be opened for writing; does not
+  // validate the mesh's own geometry (an empty mesh writes a valid, empty
+  // `TRIANGULATED_FACE`).
+  Result SaveStepAp242(const std::string& path) const;
+
+  // Reads a plain-ASCII STEP AP242 file written by SaveStepAp242() (or any
+  // other reasonably well-formed AP242 file built from a single
+  // `COORDINATES_LIST` + `TRIANGULATED_FACE` pair) into `out_mesh`. A
+  // deliberately narrow, hand-rolled scan for exactly this structure - not
+  // a general STEP/EXPRESS parser - built directly on `LoadIfc()`'s own
+  // helpers (`FindIfcEntityArgs`/`SplitIfcTopLevelArgs`/
+  // `ParseIfcIntTriples`/`ParseUsdaPointTuples`, mesh.cpp, anonymous
+  // namespace), since both formats share the identical ISO 10303-21
+  // physical-file syntax: requires an `ISO-10303-21;` header line, then
+  // reads only the FIRST `COORDINATES_LIST(...)` and FIRST
+  // `TRIANGULATED_FACE(...)` found anywhere in the file (the same "first
+  // one found wins" convention `LoadIfc()` already uses for its own two
+  // entities), takes `TRIANGULATED_FACE`'s 6th top-level argument as
+  // `Triangles` (`Coordinates`, `Pnmax`, `Normals`, `Pnindex`,
+  // `TriangleStrips`, `Triangles` - the exact attribute order
+  // SaveStepAp242() writes), and converts each 1-based index triple back to
+  // this kernel's own 0-based `ON_MeshFace::vi`. Returns Result::Failed if
+  // the file can't be opened, it has no `ISO-10303-21;` header, either
+  // required entity is missing, `Coordinates` isn't a whole number of
+  // `(x, y, z)` triples, a `Triangles` entry isn't exactly 3 integers, any
+  // index is below 1 or exceeds the point list's own count, or the
+  // `TRIANGULATED_FACE(...)` call has fewer than 6 top-level arguments -
+  // `out_mesh` is left unspecified in that case, not partially filled and
+  // silently trusted.
+  static Result LoadStepAp242(const std::string& path, Mesh& out_mesh);
+
+  // Writes this mesh as a 3MF (`.3mf`, 3D Manufacturing Format, ISO/IEC
+  // 23510) package - the eleventh "other file format" here, and the first
+  // one that is itself a ZIP container rather than a single text/binary
+  // file (`glTF/GLB, 3MF, FBX, and SketchUp SKP all still have zero code
+  // anywhere in the source`, this bullet's own prior disclosure). A real
+  // OPC (Open Packaging Conventions) package: `[Content_Types].xml`
+  // (declares the `.rels`/`.model` parts' content types), `_rels/.rels`
+  // (points at the model part), and `3D/3dmodel.model` (the actual mesh,
+  // in 3MF's own core-spec XML: a `<resources><object><mesh>` holding a
+  // `<vertices>` list of `<vertex x=".." y=".." z=".."/>` elements and a
+  // `<triangles>` list of `<triangle v1=".." v2=".." v3=".."/>` elements,
+  // 0-based into the shared vertex list - unlike STEP/IFC above, 3MF's own
+  // index convention is 0-based, matching this kernel's own
+  // `ON_MeshFace::vi` directly with no off-by-one translation - plus a
+  // `<build><item objectid="1"/></build>` referencing it). `<triangles>`
+  // has no native quad (3MF's core mesh is triangle-only), so a quad face
+  // (`ON_MeshFace::IsQuad()`) is split into its two triangles on write, the
+  // same accommodation `SaveGltf()`/`SaveIfc()` already make for the
+  // identical reason. The ZIP container itself (`WriteZipArchive()`,
+  // mesh.cpp, anonymous namespace) writes every entry "stored" - no
+  // deflate - a legal, spec-compliant ZIP a real archive tool can still
+  // open, just not the smallest possible one; see `WriteZipArchive()`'s own
+  // doc comment for why. Deliberately narrow, the same scope every other
+  // "other file format" writer here already discloses: no materials,
+  // colors, metadata, multiple objects/build items, or any 3MF production
+  // extension - a single untextured triangle mesh is the whole scope.
+  // Returns Result::Failed if the file can't be opened for writing.
+  Result Save3mf(const std::string& path) const;
+
+  // Reads a 3MF file written by Save3mf() (or any other reasonably
+  // well-formed 3MF package using the same single-object/single-mesh
+  // structure, as long as its ZIP entries are stored rather than deflate-
+  // compressed - see `ReadZipArchive()`'s own doc comment, mesh.cpp,
+  // anonymous namespace) into `out_mesh`. A deliberately narrow, hand-
+  // rolled scan for exactly the `3D/3dmodel.model` structure Save3mf()
+  // writes - not a general OPC/3MF reader (no relationship resolution, no
+  // multi-object/multi-build-item models, no production extension) - that
+  // reads every self-closing `<vertex .../>` and `<triangle .../>` element
+  // found anywhere in that one part, in document order, the same "scan for
+  // exactly this element shape" approach `LoadX3d()`'s own attribute
+  // extraction already uses. Returns Result::Failed if the file can't be
+  // opened, isn't a valid ZIP archive (or uses deflate compression - out of
+  // this narrow reader's scope), has no `3D/3dmodel.model` entry, that part
+  // has no recognizable `<vertex>`/`<triangle>` elements, a `<vertex>`/
+  // `<triangle>` element is missing one of its required `x`/`y`/`z` or
+  // `v1`/`v2`/`v3` attributes, any attribute fails to parse as a number, or
+  // any triangle index falls outside the vertex list's range - `out_mesh`
+  // is left unspecified in that case, not partially filled and silently
+  // trusted.
+  static Result Load3mf(const std::string& path, Mesh& out_mesh);
+
+  // Writes this mesh as a plain-ASCII Autodesk FBX file (the classic,
+  // human-readable ASCII FBX dialect FBX SDK versions up to 2016 both wrote
+  // and read, before Autodesk made binary the only default) - the twelfth
+  // "other file format" here, and this bullet's own last remaining zero-
+  // code format besides SketchUp SKP's proprietary binary (left out of
+  // scope, same "permanently out of scope" reasoning this document already
+  // gives Parasolid/ACIS elsewhere). A minimal but genuine FBX 7.3 ASCII
+  // document: an `FBXHeaderExtension`/`GlobalSettings` block, then
+  // `Objects:` holding one `Geometry: <id>, "Geometry::", "Mesh"` node with
+  // a `Vertices: *N { a: x,y,z,x,y,z,... }` array (one flat run of three
+  // reals per vertex, FBX's own convention) and a `PolygonVertexIndex: *N {
+  // a: ... }` array (FBX's own flat, per-polygon-terminated index list: a
+  // polygon's LAST corner is written as the one's-complement of its real
+  // index, `~i` - always negative since a real index is never negative -
+  // the exact convention real FBX exporters use so a reader can find each
+  // polygon's end without a separate count array), then one `Model: <id>,
+  // "Model::mesh", "Mesh"` node and a `Connections:` block wiring the
+  // geometry to the model and the model to the scene root (object `0`).
+  // Unlike every triangle-only format above (glTF/IFC/AP242/3MF),
+  // `PolygonVertexIndex` is a genuine variable-length polygon list, so a
+  // quad face (`ON_MeshFace::IsQuad()`) is written as its own native 4-
+  // index run, the same "not forced into all-triangle" reasoning
+  // `SaveOff()`/`SaveVrml()`/`SaveX3d()` already give for their own
+  // formats. Deliberately narrow, the same scope every other "other file
+  // format" writer here already discloses: no `Definitions:` counts block,
+  // no node transform/`Model` properties, no materials/normals/UVs/
+  // skinning - a single untextured mesh node is the whole scope, same as
+  // `SaveVrml()`'s own single-`Shape` scope. Returns Result::Failed if the
+  // file can't be opened for writing.
+  Result SaveFbx(const std::string& path) const;
+
+  // Reads a plain-ASCII FBX file written by SaveFbx() (or any other
+  // reasonably well-formed FBX ASCII file using the same single-Geometry-
+  // node structure) into `out_mesh`. A deliberately narrow, hand-rolled
+  // scan for exactly that structure - not a general FBX SDK-compatible
+  // parser (no node-property parsing, no `Definitions:`/`Connections:`
+  // graph resolution, no binary FBX support at all - a `Kaydara FBX Binary
+  // ...` magic-prefixed file is rejected outright, the same "require the
+  // format's own real marker" stance `LoadVrml()`'s `#VRML` check already
+  // takes) - that reads only the FIRST `Vertices: *N { a: ... }` and FIRST
+  // `PolygonVertexIndex: *N { a: ... }` array found anywhere in the file,
+  // the same "first one found wins" convention `LoadAmf()`/
+  // `LoadStepAp242()` above already use for a second sibling element. Each
+  // polygon's own
+  // one's-complement-terminated run is decoded back to real, non-negative
+  // indices (`~i` wherever `i < 0`, exactly undoing SaveFbx()'s own
+  // encoding); a run of exactly 3 or 4 real indices is read as a native
+  // triangle/quad, and a genuine n-gon run (5+) is fan-triangulated from
+  // its own first index into `n-2` triangles, the same accommodation
+  // `LoadObj()`/`LoadOff()`/`LoadVrml()` already make for their own n-gon
+  // faces. Returns Result::Failed if the file can't be opened, has a binary
+  // FBX magic header, either required array is missing, the vertex array
+  // isn't a whole number of `(x, y, z)` triples, a polygon run has fewer
+  // than 3 real indices before its terminator (or never terminates at
+  // all), or any index falls outside the vertex list's range - `out_mesh`
+  // is left unspecified in that case, not partially filled and silently
+  // trusted.
+  static Result LoadFbx(const std::string& path, Mesh& out_mesh);
+
   const ON_Mesh& raw() const { return mesh_; }
   ON_Mesh& raw() { return mesh_; }
 

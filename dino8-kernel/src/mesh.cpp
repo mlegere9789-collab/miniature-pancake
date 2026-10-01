@@ -3847,6 +3847,649 @@ Result Mesh::LoadIfc(const std::string& path, Mesh& out_mesh) {
   return Result::Ok;
 }
 
+Result Mesh::SaveStepAp242(const std::string& path) const {
+  std::ofstream out(path);
+  if (!out) {
+    return Result::Failed;
+  }
+
+  out << "ISO-10303-21;\n";
+  out << "HEADER;\n";
+  out << "FILE_DESCRIPTION((''),'2;1');\n";
+  out << "FILE_NAME('','',(''),(''),'dino8-kernel','dino8-kernel','');\n";
+  out << "FILE_SCHEMA(('AP242_MANAGED_MODEL_BASED_3D_ENGINEERING_MIM_LF'));\n";
+  out << "ENDSEC;\n";
+  out << "\n";
+  out << "DATA;\n";
+
+  out << "#1=COORDINATES_LIST((";
+  for (int i = 0; i < mesh_.m_V.Count(); ++i) {
+    const ON_3fPoint& v = mesh_.m_V[i];
+    if (i > 0) out << ",";
+    out << "(" << v.x << "," << v.y << "," << v.z << ")";
+  }
+  out << "));\n";
+
+  // Coordinates, Pnmax, Normals, Pnindex, TriangleStrips, Triangles - the
+  // same attribute-order convention SaveIfc() already documents for its own
+  // IfcTriangulatedFaceSet, adapted to AP242's own tessellated_face entity
+  // chain (coordinates_list -> tessellated_face -> triangulated_face).
+  out << "#2=TRIANGULATED_FACE(#1," << mesh_.m_V.Count() << ",$,$,$,(";
+  bool first_triangle = true;
+  const auto write_triangle = [&](int a, int b, int c) {
+    if (!first_triangle) out << ",";
+    first_triangle = false;
+    // 1-based, the same STEP-wide convention IFCTRIANGULATEDFACESET's own
+    // CoordIndex already uses.
+    out << "(" << (a + 1) << "," << (b + 1) << "," << (c + 1) << ")";
+  };
+  for (int i = 0; i < mesh_.m_F.Count(); ++i) {
+    const ON_MeshFace& f = mesh_.m_F[i];
+    write_triangle(f.vi[0], f.vi[1], f.vi[2]);
+    if (f.IsQuad()) {
+      write_triangle(f.vi[0], f.vi[2], f.vi[3]);
+    }
+  }
+  out << "));\n";
+  out << "ENDSEC;\n";
+  out << "\n";
+  out << "END-ISO-10303-21;\n";
+
+  return out.good() ? Result::Ok : Result::Failed;
+}
+
+Result Mesh::LoadStepAp242(const std::string& path, Mesh& out_mesh) {
+  std::ifstream in(path, std::ios::binary);
+  if (!in) {
+    return Result::Failed;
+  }
+  std::ostringstream buffer;
+  buffer << in.rdbuf();
+  const std::string text = buffer.str();
+
+  if (text.find("ISO-10303-21;") == std::string::npos) {
+    return Result::Failed;  // not a STEP physical file at all - never silently misread
+  }
+
+  Mesh result;
+  ON_Mesh& raw = result.mesh_;
+
+  std::string points_args;
+  if (!FindIfcEntityArgs(text, "COORDINATES_LIST", 0, points_args)) return Result::Failed;
+  const std::string points_trimmed = TrimAmfWhitespace(points_args);
+  if (points_trimmed.size() < 2 || points_trimmed.front() != '(' || points_trimmed.back() != ')') {
+    return Result::Failed;
+  }
+  const std::string points_inner = points_trimmed.substr(1, points_trimmed.size() - 2);
+  std::vector<double> coords;
+  if (!ParseUsdaPointTuples(points_inner, coords)) return Result::Failed;
+  if (coords.size() % 3 != 0) return Result::Failed;
+  for (size_t v = 0; v + 2 < coords.size(); v += 3) {
+    raw.m_V.Append(ON_3fPoint(coords[v], coords[v + 1], coords[v + 2]));
+  }
+
+  std::string face_args;
+  if (!FindIfcEntityArgs(text, "TRIANGULATED_FACE", 0, face_args)) return Result::Failed;
+  const std::vector<std::string> top_level_args = SplitIfcTopLevelArgs(face_args);
+  // Coordinates, Pnmax, Normals, Pnindex, TriangleStrips, Triangles -
+  // Triangles is the 6th attribute.
+  if (top_level_args.size() < 6) return Result::Failed;
+  const std::string triangles_trimmed = TrimAmfWhitespace(top_level_args[5]);
+  if (triangles_trimmed.size() < 2 || triangles_trimmed.front() != '(' || triangles_trimmed.back() != ')') {
+    return Result::Failed;
+  }
+  const std::string triangles_inner = triangles_trimmed.substr(1, triangles_trimmed.size() - 2);
+  std::vector<int> one_based_indices;
+  if (!ParseIfcIntTriples(triangles_inner, one_based_indices)) return Result::Failed;
+  if (one_based_indices.size() % 3 != 0) return Result::Failed;
+  for (size_t i = 0; i + 2 < one_based_indices.size(); i += 3) {
+    ON_MeshFace face;
+    for (int c = 0; c < 3; ++c) {
+      const int one_based = one_based_indices[i + c];
+      if (one_based < 1 || one_based > raw.m_V.Count()) return Result::Failed;
+      face.vi[c] = one_based - 1;
+    }
+    face.vi[3] = face.vi[2];
+    raw.m_F.Append(face);
+  }
+
+  out_mesh = std::move(result);
+  return Result::Ok;
+}
+
+namespace {
+
+// CRC-32 (IEEE 802.3 / zlib) over `data`, computed bit-by-bit rather than
+// via a lookup table - every mesh file this kernel writes is small enough
+// that the table's own setup cost isn't worth it, and a bit-by-bit
+// implementation is easier to verify against the standard polynomial
+// directly rather than trusting a hand-copied 256-entry table.
+uint32_t Crc32(const std::string& data) {
+  uint32_t crc = 0xFFFFFFFFu;
+  for (const unsigned char byte : data) {
+    crc ^= byte;
+    for (int bit = 0; bit < 8; ++bit) {
+      const uint32_t mask = 0u - (crc & 1u);
+      crc = (crc >> 1) ^ (0xEDB88320u & mask);
+    }
+  }
+  return ~crc;
+}
+
+struct ZipFileEntry {
+  std::string name;
+  std::string data;
+};
+
+// Writes `entries` as a plain ZIP archive with every entry "stored" (no
+// deflate - compression method 0, compressed size == uncompressed size): a
+// local file header + raw data per entry, a central directory, then an End
+// Of Central Directory (EOCD) record, the three sections every real ZIP
+// reader (and the OPC/3MF spec itself, which only requires a valid ZIP
+// container, not any particular compression method) already expects. Used
+// by Save3mf() to build a real, spec-valid `.3mf` package - genuinely
+// readable by any ZIP tool, just not the smallest possible file, since
+// "stored" wastes the compression deflate would normally buy. Returns
+// false if `path` can't be opened for writing.
+bool WriteZipArchive(const std::string& path, const std::vector<ZipFileEntry>& entries) {
+  std::ofstream out(path, std::ios::binary);
+  if (!out) return false;
+
+  struct CentralRecord {
+    std::string name;
+    uint32_t crc = 0;
+    uint32_t size = 0;
+    uint32_t local_offset = 0;
+  };
+  std::vector<CentralRecord> central;
+  central.reserve(entries.size());
+
+  for (const ZipFileEntry& entry : entries) {
+    CentralRecord rec;
+    rec.name = entry.name;
+    rec.crc = Crc32(entry.data);
+    rec.size = static_cast<uint32_t>(entry.data.size());
+    rec.local_offset = static_cast<uint32_t>(out.tellp());
+
+    WriteBinaryScalar(out, static_cast<uint32_t>(0x04034b50), false);  // local file header signature
+    WriteBinaryScalar(out, static_cast<uint16_t>(20), false);          // version needed to extract
+    WriteBinaryScalar(out, static_cast<uint16_t>(0), false);           // general purpose flag
+    WriteBinaryScalar(out, static_cast<uint16_t>(0), false);           // compression method: stored
+    WriteBinaryScalar(out, static_cast<uint16_t>(0), false);           // last mod file time
+    WriteBinaryScalar(out, static_cast<uint16_t>(0x21), false);        // last mod file date (1980-01-01)
+    WriteBinaryScalar(out, rec.crc, false);
+    WriteBinaryScalar(out, rec.size, false);  // compressed size
+    WriteBinaryScalar(out, rec.size, false);  // uncompressed size
+    WriteBinaryScalar(out, static_cast<uint16_t>(rec.name.size()), false);
+    WriteBinaryScalar(out, static_cast<uint16_t>(0), false);  // extra field length
+    out.write(rec.name.data(), static_cast<std::streamsize>(rec.name.size()));
+    out.write(entry.data.data(), static_cast<std::streamsize>(entry.data.size()));
+
+    central.push_back(rec);
+  }
+
+  const uint32_t central_directory_offset = static_cast<uint32_t>(out.tellp());
+  for (const CentralRecord& rec : central) {
+    WriteBinaryScalar(out, static_cast<uint32_t>(0x02014b50), false);  // central directory signature
+    WriteBinaryScalar(out, static_cast<uint16_t>(20), false);          // version made by
+    WriteBinaryScalar(out, static_cast<uint16_t>(20), false);          // version needed to extract
+    WriteBinaryScalar(out, static_cast<uint16_t>(0), false);           // general purpose flag
+    WriteBinaryScalar(out, static_cast<uint16_t>(0), false);           // compression method
+    WriteBinaryScalar(out, static_cast<uint16_t>(0), false);           // last mod file time
+    WriteBinaryScalar(out, static_cast<uint16_t>(0x21), false);        // last mod file date
+    WriteBinaryScalar(out, rec.crc, false);
+    WriteBinaryScalar(out, rec.size, false);
+    WriteBinaryScalar(out, rec.size, false);
+    WriteBinaryScalar(out, static_cast<uint16_t>(rec.name.size()), false);
+    WriteBinaryScalar(out, static_cast<uint16_t>(0), false);  // extra field length
+    WriteBinaryScalar(out, static_cast<uint16_t>(0), false);  // file comment length
+    WriteBinaryScalar(out, static_cast<uint16_t>(0), false);  // disk number start
+    WriteBinaryScalar(out, static_cast<uint16_t>(0), false);  // internal file attributes
+    WriteBinaryScalar(out, static_cast<uint32_t>(0), false);  // external file attributes
+    WriteBinaryScalar(out, rec.local_offset, false);
+    out.write(rec.name.data(), static_cast<std::streamsize>(rec.name.size()));
+  }
+  const uint32_t central_directory_size =
+      static_cast<uint32_t>(out.tellp()) - central_directory_offset;
+
+  WriteBinaryScalar(out, static_cast<uint32_t>(0x06054b50), false);  // EOCD signature
+  WriteBinaryScalar(out, static_cast<uint16_t>(0), false);           // disk number
+  WriteBinaryScalar(out, static_cast<uint16_t>(0), false);           // disk with central directory
+  WriteBinaryScalar(out, static_cast<uint16_t>(central.size()), false);  // entries on this disk
+  WriteBinaryScalar(out, static_cast<uint16_t>(central.size()), false);  // total entries
+  WriteBinaryScalar(out, central_directory_size, false);
+  WriteBinaryScalar(out, central_directory_offset, false);
+  WriteBinaryScalar(out, static_cast<uint16_t>(0), false);  // comment length
+
+  return out.good();
+}
+
+// Reads a ZIP archive written by WriteZipArchive() (or any other ZIP whose
+// entries are all "stored" - compression method 0) by locating the EOCD
+// record (scanning backward for its signature, since a comment field - a
+// real archive tool might add one, though this kernel's own writer never
+// does - means it isn't necessarily the file's last 22 bytes), then
+// reading every entry straight out of the central directory. Returns false
+// if `path` can't be opened, is too small to hold an EOCD at all, has no
+// EOCD signature anywhere, the central directory it points at is
+// truncated/out of range, any entry's compression method isn't 0 (a
+// deflate-compressed entry - out of this narrow reader's scope, since
+// implementing INFLATE is a much larger, separate problem than the ZIP
+// *container* format this function actually exists to read), or any
+// entry's actual data doesn't match its own recorded CRC-32 (a corrupt or
+// truncated file, caught rather than silently trusted).
+bool ReadZipArchive(const std::string& path, std::vector<ZipFileEntry>& out_entries) {
+  std::ifstream in(path, std::ios::binary);
+  if (!in) return false;
+  std::ostringstream buffer;
+  buffer << in.rdbuf();
+  const std::string data = buffer.str();
+
+  if (data.size() < 22) return false;
+  size_t eocd_pos = std::string::npos;
+  for (size_t i = data.size() - 22;; --i) {
+    uint32_t sig = 0;
+    std::memcpy(&sig, data.data() + i, 4);
+    if (sig == 0x06054b50u) {
+      eocd_pos = i;
+      break;
+    }
+    if (i == 0) break;
+  }
+  if (eocd_pos == std::string::npos) return false;
+
+  uint16_t entry_count = 0;
+  uint32_t central_dir_size = 0, central_dir_offset = 0;
+  std::memcpy(&entry_count, data.data() + eocd_pos + 10, 2);
+  std::memcpy(&central_dir_size, data.data() + eocd_pos + 12, 4);
+  std::memcpy(&central_dir_offset, data.data() + eocd_pos + 16, 4);
+  if (static_cast<size_t>(central_dir_offset) + central_dir_size > data.size()) return false;
+
+  size_t pos = central_dir_offset;
+  for (uint16_t i = 0; i < entry_count; ++i) {
+    if (pos + 46 > data.size()) return false;
+    uint32_t sig = 0;
+    std::memcpy(&sig, data.data() + pos, 4);
+    if (sig != 0x02014b50u) return false;
+    uint16_t compression = 0, name_len = 0, extra_len = 0, comment_len = 0;
+    uint32_t crc = 0, comp_size = 0, uncomp_size = 0, local_offset = 0;
+    std::memcpy(&compression, data.data() + pos + 10, 2);
+    std::memcpy(&crc, data.data() + pos + 16, 4);
+    std::memcpy(&comp_size, data.data() + pos + 20, 4);
+    std::memcpy(&uncomp_size, data.data() + pos + 24, 4);
+    std::memcpy(&name_len, data.data() + pos + 28, 2);
+    std::memcpy(&extra_len, data.data() + pos + 30, 2);
+    std::memcpy(&comment_len, data.data() + pos + 32, 2);
+    std::memcpy(&local_offset, data.data() + pos + 42, 4);
+    if (compression != 0) return false;  // deflate not supported - see this function's own doc comment
+    if (pos + 46 + name_len > data.size()) return false;
+    const std::string name = data.substr(pos + 46, name_len);
+    pos += 46 + name_len + extra_len + comment_len;
+
+    if (static_cast<size_t>(local_offset) + 30 > data.size()) return false;
+    uint32_t local_sig = 0;
+    std::memcpy(&local_sig, data.data() + local_offset, 4);
+    if (local_sig != 0x04034b50u) return false;
+    uint16_t local_name_len = 0, local_extra_len = 0;
+    std::memcpy(&local_name_len, data.data() + local_offset + 26, 2);
+    std::memcpy(&local_extra_len, data.data() + local_offset + 28, 2);
+    const size_t data_start =
+        static_cast<size_t>(local_offset) + 30 + local_name_len + local_extra_len;
+    if (data_start + comp_size > data.size()) return false;
+    std::string file_data = data.substr(data_start, comp_size);
+    if (file_data.size() != uncomp_size) return false;
+    if (Crc32(file_data) != crc) return false;
+
+    out_entries.push_back({name, std::move(file_data)});
+  }
+  return true;
+}
+
+// Finds every self-closing `<tag_name .../>` element in `xml` (3MF's own
+// convention - a `<vertex>`/`<triangle>` element is always self-closing)
+// and passes each one's own attribute text (from right after `tag_name` to
+// the closing `/>`) to `callback`, in document order. The character right
+// after `tag_name` must be whitespace, `/`, or `>` - the same "don't false-
+// match a longer tag name" guard `FindAmfOpenTag()` already applies, so a
+// search for `vertex` can't match `vertices`. Returns false if a match is
+// found but isn't actually self-closing (a `<vertex>...</vertex>` form 3MF
+// itself never produces) rather than silently skipping it.
+bool ForEachSelfClosingXmlTag(const std::string& xml, const std::string& tag_name,
+                               const std::function<void(const std::string&)>& callback) {
+  size_t pos = 0;
+  bool found_any = false;
+  while (true) {
+    pos = xml.find("<" + tag_name, pos);
+    if (pos == std::string::npos) break;
+    const size_t after = pos + 1 + tag_name.size();
+    if (after < xml.size() && !std::isspace(static_cast<unsigned char>(xml[after])) &&
+        xml[after] != '/' && xml[after] != '>') {
+      pos = after;
+      continue;
+    }
+    const size_t close = xml.find('>', after);
+    if (close == std::string::npos) return false;
+    if (close == 0 || xml[close - 1] != '/') return false;
+    callback(xml.substr(after, close - 1 - after));
+    found_any = true;
+    pos = close + 1;
+  }
+  return found_any;
+}
+
+// Extracts `attr_name="value"` from a self-closing tag's own attribute
+// text (as ForEachSelfClosingXmlTag() hands it to its callback). Returns
+// false if the attribute isn't present or its closing quote is missing.
+bool ExtractXmlAttribute(const std::string& tag_text, const std::string& attr_name,
+                          std::string& out_value) {
+  const std::string needle = attr_name + "=\"";
+  const size_t pos = tag_text.find(needle);
+  if (pos == std::string::npos) return false;
+  const size_t value_start = pos + needle.size();
+  const size_t value_end = tag_text.find('"', value_start);
+  if (value_end == std::string::npos) return false;
+  out_value = tag_text.substr(value_start, value_end - value_start);
+  return true;
+}
+
+}  // namespace
+
+Result Mesh::Save3mf(const std::string& path) const {
+  std::ostringstream model;
+  model << "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n";
+  model << "<model unit=\"millimeter\" xml:lang=\"en-US\" "
+           "xmlns=\"http://schemas.microsoft.com/3dmanufacturing/core/2015/02\">\n";
+  model << " <resources>\n";
+  model << "  <object id=\"1\" type=\"model\">\n";
+  model << "   <mesh>\n";
+  model << "    <vertices>\n";
+  for (int i = 0; i < mesh_.m_V.Count(); ++i) {
+    const ON_3fPoint& v = mesh_.m_V[i];
+    model << "     <vertex x=\"" << v.x << "\" y=\"" << v.y << "\" z=\"" << v.z << "\"/>\n";
+  }
+  model << "    </vertices>\n";
+  model << "    <triangles>\n";
+  const auto write_triangle = [&](int a, int b, int c) {
+    model << "     <triangle v1=\"" << a << "\" v2=\"" << b << "\" v3=\"" << c << "\"/>\n";
+  };
+  for (int i = 0; i < mesh_.m_F.Count(); ++i) {
+    const ON_MeshFace& f = mesh_.m_F[i];
+    write_triangle(f.vi[0], f.vi[1], f.vi[2]);
+    if (f.IsQuad()) {
+      write_triangle(f.vi[0], f.vi[2], f.vi[3]);
+    }
+  }
+  model << "    </triangles>\n";
+  model << "   </mesh>\n";
+  model << "  </object>\n";
+  model << " </resources>\n";
+  model << " <build>\n";
+  model << "  <item objectid=\"1\"/>\n";
+  model << " </build>\n";
+  model << "</model>\n";
+
+  const std::string content_types =
+      "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+      "<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">\n"
+      " <Default Extension=\"rels\" "
+      "ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>\n"
+      " <Default Extension=\"model\" "
+      "ContentType=\"application/vnd.ms-package.3dmanufacturing-3dmodel+xml\"/>\n"
+      "</Types>\n";
+
+  const std::string rels =
+      "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+      "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">\n"
+      " <Relationship Target=\"/3D/3dmodel.model\" Id=\"rel0\" "
+      "Type=\"http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel\"/>\n"
+      "</Relationships>\n";
+
+  const std::vector<ZipFileEntry> entries = {
+      {"[Content_Types].xml", content_types},
+      {"_rels/.rels", rels},
+      {"3D/3dmodel.model", model.str()},
+  };
+  return WriteZipArchive(path, entries) ? Result::Ok : Result::Failed;
+}
+
+Result Mesh::Load3mf(const std::string& path, Mesh& out_mesh) {
+  std::vector<ZipFileEntry> entries;
+  if (!ReadZipArchive(path, entries)) return Result::Failed;
+
+  const ZipFileEntry* model_part = nullptr;
+  for (const ZipFileEntry& entry : entries) {
+    if (entry.name == "3D/3dmodel.model") {
+      model_part = &entry;
+      break;
+    }
+  }
+  if (model_part == nullptr) return Result::Failed;
+
+  Mesh result;
+  ON_Mesh& raw = result.mesh_;
+
+  bool vertex_parse_failed = false;
+  const bool found_vertices =
+      ForEachSelfClosingXmlTag(model_part->data, "vertex", [&](const std::string& tag) {
+        std::string x_text, y_text, z_text;
+        double x = 0, y = 0, z = 0;
+        if (!ExtractXmlAttribute(tag, "x", x_text) || !ExtractXmlAttribute(tag, "y", y_text) ||
+            !ExtractXmlAttribute(tag, "z", z_text) || !ParseOffDouble(x_text, x) ||
+            !ParseOffDouble(y_text, y) || !ParseOffDouble(z_text, z)) {
+          vertex_parse_failed = true;
+          return;
+        }
+        raw.m_V.Append(ON_3fPoint(x, y, z));
+      });
+  if (!found_vertices || vertex_parse_failed) return Result::Failed;
+
+  bool triangle_parse_failed = false;
+  const bool found_triangles =
+      ForEachSelfClosingXmlTag(model_part->data, "triangle", [&](const std::string& tag) {
+        std::string v1_text, v2_text, v3_text;
+        int v1 = 0, v2 = 0, v3 = 0;
+        if (!ExtractXmlAttribute(tag, "v1", v1_text) || !ExtractXmlAttribute(tag, "v2", v2_text) ||
+            !ExtractXmlAttribute(tag, "v3", v3_text) || !ParseOffInt(v1_text, v1) ||
+            !ParseOffInt(v2_text, v2) || !ParseOffInt(v3_text, v3)) {
+          triangle_parse_failed = true;
+          return;
+        }
+        if (v1 < 0 || v1 >= raw.m_V.Count() || v2 < 0 || v2 >= raw.m_V.Count() || v3 < 0 ||
+            v3 >= raw.m_V.Count()) {
+          triangle_parse_failed = true;
+          return;
+        }
+        ON_MeshFace face;
+        face.vi[0] = v1;
+        face.vi[1] = v2;
+        face.vi[2] = v3;
+        face.vi[3] = v3;
+        raw.m_F.Append(face);
+      });
+  if (!found_triangles || triangle_parse_failed) return Result::Failed;
+
+  out_mesh = std::move(result);
+  return Result::Ok;
+}
+
+namespace {
+
+// Finds the first `array_name: *N { ... a: v,v,v,... }` block in a plain-
+// ASCII FBX file - the only shape SaveFbx() ever writes for `Vertices`/
+// `PolygonVertexIndex` - and splits its `a:` value list on commas into
+// `out_tokens` (still raw text, not yet parsed as numbers - the caller
+// knows whether it wants a real or an int). The same boundary guard
+// `FindIfcEntityArgs()` already applies: the character right before the
+// match can't be an identifier character, so a search for `Vertices`
+// cannot false-match a longer name ending the same way. Returns false if
+// `array_name:` is never found, or no `{`/`a:`/`}` follows it.
+bool FindFbxArrayValues(const std::string& text, const std::string& array_name,
+                         std::vector<std::string>& out_tokens) {
+  size_t pos = 0;
+  while (true) {
+    pos = text.find(array_name + ":", pos);
+    if (pos == std::string::npos) return false;
+    const bool boundary_before =
+        pos == 0 || !(std::isalnum(static_cast<unsigned char>(text[pos - 1])) || text[pos - 1] == '_');
+    if (boundary_before) break;
+    pos += array_name.size();
+  }
+  const size_t brace_open = text.find('{', pos);
+  if (brace_open == std::string::npos) return false;
+  const size_t a_pos = text.find("a:", brace_open);
+  if (a_pos == std::string::npos) return false;
+  const size_t brace_close = text.find('}', a_pos);
+  if (brace_close == std::string::npos) return false;
+
+  const std::string values_text = text.substr(a_pos + 2, brace_close - (a_pos + 2));
+  std::istringstream iss(values_text);
+  std::string token;
+  while (std::getline(iss, token, ',')) {
+    out_tokens.push_back(TrimAmfWhitespace(token));
+  }
+  return true;
+}
+
+}  // namespace
+
+Result Mesh::SaveFbx(const std::string& path) const {
+  std::ofstream out(path);
+  if (!out) {
+    return Result::Failed;
+  }
+
+  out << "; FBX 7.3.0 project file\n";
+  out << "; ----------------------------------------------------\n\n";
+  out << "FBXHeaderExtension:  {\n";
+  out << "\tFBXHeaderVersion: 1003\n";
+  out << "\tFBXVersion: 7300\n";
+  out << "}\n\n";
+  out << "GlobalSettings:  {\n";
+  out << "\tVersion: 1000\n";
+  out << "}\n\n";
+  out << "Objects:  {\n";
+  out << "\tGeometry: 1000000000, \"Geometry::\", \"Mesh\" {\n";
+  out << "\t\tVertices: *" << (mesh_.m_V.Count() * 3) << " {\n";
+  out << "\t\t\ta: ";
+  for (int i = 0; i < mesh_.m_V.Count(); ++i) {
+    const ON_3fPoint& v = mesh_.m_V[i];
+    if (i > 0) out << ",";
+    out << v.x << "," << v.y << "," << v.z;
+  }
+  out << "\n\t\t}\n";
+
+  // Quads/n-gons kept native in PolygonVertexIndex - unlike every triangle-
+  // only format above, FBX's own index list has a real variable-length
+  // polygon shape, so nothing here needs to be split.
+  int polygon_vertex_count = 0;
+  for (int i = 0; i < mesh_.m_F.Count(); ++i) {
+    polygon_vertex_count += mesh_.m_F[i].IsQuad() ? 4 : 3;
+  }
+  out << "\t\tPolygonVertexIndex: *" << polygon_vertex_count << " {\n";
+  out << "\t\t\ta: ";
+  bool first_value = true;
+  const auto write_index = [&](int index, bool is_last) {
+    if (!first_value) out << ",";
+    first_value = false;
+    // A polygon's last corner is written as the one's-complement of its
+    // real index - always negative, since a real index is never negative -
+    // the real FBX convention a reader uses to find each polygon's end
+    // without a separate per-polygon count array.
+    out << (is_last ? ~index : index);
+  };
+  for (int i = 0; i < mesh_.m_F.Count(); ++i) {
+    const ON_MeshFace& f = mesh_.m_F[i];
+    const int corner_count = f.IsQuad() ? 4 : 3;
+    for (int c = 0; c < corner_count; ++c) {
+      write_index(f.vi[c], c == corner_count - 1);
+    }
+  }
+  out << "\n\t\t}\n";
+  out << "\t}\n";
+  out << "\tModel: 2000000000, \"Model::mesh\", \"Mesh\" {\n";
+  out << "\t}\n";
+  out << "}\n\n";
+  out << "Connections:  {\n";
+  out << "\tC: \"OO\",1000000000,2000000000\n";
+  out << "\tC: \"OO\",2000000000,0\n";
+  out << "}\n";
+
+  return out.good() ? Result::Ok : Result::Failed;
+}
+
+Result Mesh::LoadFbx(const std::string& path, Mesh& out_mesh) {
+  std::ifstream in(path, std::ios::binary);
+  if (!in) {
+    return Result::Failed;
+  }
+  std::ostringstream buffer;
+  buffer << in.rdbuf();
+  const std::string text = buffer.str();
+
+  // Real FBX binary files start with this exact 23-byte magic string - the
+  // same "require the format's own real marker" stance LoadVrml()'s
+  // `#VRML` check already takes, here used to reject the OTHER real FBX
+  // dialect outright rather than trying (and failing) to parse its bytes
+  // as ASCII text.
+  if (text.rfind("Kaydara FBX Binary", 0) == 0) return Result::Failed;
+
+  std::vector<std::string> vertex_tokens;
+  if (!FindFbxArrayValues(text, "Vertices", vertex_tokens)) return Result::Failed;
+  if (vertex_tokens.empty() || vertex_tokens.size() % 3 != 0) return Result::Failed;
+
+  Mesh result;
+  ON_Mesh& raw = result.mesh_;
+  for (size_t i = 0; i + 2 < vertex_tokens.size(); i += 3) {
+    double x = 0, y = 0, z = 0;
+    if (!ParseOffDouble(vertex_tokens[i], x) || !ParseOffDouble(vertex_tokens[i + 1], y) ||
+        !ParseOffDouble(vertex_tokens[i + 2], z)) {
+      return Result::Failed;
+    }
+    raw.m_V.Append(ON_3fPoint(x, y, z));
+  }
+
+  std::vector<std::string> index_tokens;
+  if (!FindFbxArrayValues(text, "PolygonVertexIndex", index_tokens)) return Result::Failed;
+  if (index_tokens.empty()) return Result::Failed;
+
+  std::vector<int> current_polygon;
+  for (const std::string& token : index_tokens) {
+    int value = 0;
+    if (!ParseOffInt(token, value)) return Result::Failed;
+    const bool is_last = value < 0;
+    const int real_index = is_last ? ~value : value;
+    if (real_index < 0 || real_index >= raw.m_V.Count()) return Result::Failed;
+    current_polygon.push_back(real_index);
+    if (is_last) {
+      if (current_polygon.size() < 3) return Result::Failed;
+      if (current_polygon.size() <= 4) {
+        ON_MeshFace face;
+        face.vi[0] = current_polygon[0];
+        face.vi[1] = current_polygon[1];
+        face.vi[2] = current_polygon[2];
+        face.vi[3] = current_polygon.size() == 4 ? current_polygon[3] : current_polygon[2];
+        raw.m_F.Append(face);
+      } else {
+        // Fan-triangulate a genuine n-gon from its own first corner, the
+        // same accommodation LoadObj()/LoadOff()/LoadVrml() already make.
+        for (size_t k = 1; k + 1 < current_polygon.size(); ++k) {
+          ON_MeshFace face;
+          face.vi[0] = current_polygon[0];
+          face.vi[1] = current_polygon[k];
+          face.vi[2] = current_polygon[k + 1];
+          face.vi[3] = current_polygon[k + 1];
+          raw.m_F.Append(face);
+        }
+      }
+      current_polygon.clear();
+    }
+  }
+  if (!current_polygon.empty()) return Result::Failed;  // a run that never hit its terminator
+
+  out_mesh = std::move(result);
+  return Result::Ok;
+}
+
 Result Mesh::LoadStl(const std::string& path, Mesh& out_mesh) {
   // Distinguishes binary from ASCII the same way most real-world STL
   // readers do: an ASCII file's own text can start with "solid" and

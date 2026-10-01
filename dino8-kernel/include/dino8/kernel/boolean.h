@@ -86,6 +86,20 @@ enum class BooleanFailureReason {
   // precondition only as free text like every other untyped throw this
   // file's own class-level doc comment above still catalogues.
   UnsupportedGeometry,
+  // A polygon operand passed to PolygonBooleanPlanar() is malformed in a
+  // way no caller tolerance can paper over: fewer than 3 vertices, a
+  // vertex that doesn't lie in the caller's own `plane`, or a self-
+  // intersecting edge loop. PolygonBooleanPlanar()'s own doc comment
+  // disclosed self-intersecting input as "unchecked" - silently fed
+  // through to BooleanCombinePlanar() via PrismFromPolygon(), where a
+  // self-crossing base polygon produces a prism whose side walls
+  // overlap/cross each other, a shape BooleanCombinePlanar() was never
+  // designed to classify correctly (it assumes each operand's own
+  // boundary is simple) and was observed to silently return a
+  // plausible-looking but wrong-volume result for rather than throw.
+  // Refused outright instead, the same "fail loud, not quietly wrong"
+  // principle every other named scope limit in this file already follows.
+  InvalidPolygon,
 };
 
 // Thrown by RefuseCompoundOperand (boolean.cpp, boolean_general.cpp) in

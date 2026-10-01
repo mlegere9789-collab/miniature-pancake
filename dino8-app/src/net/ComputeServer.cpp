@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <map>
 #include <sstream>
 
 #ifndef _WIN32
@@ -44,6 +45,7 @@ bool TryParseHttpRequest(const std::string& buffer, HttpRequest* out, size_t* co
   if (!(request_line >> method >> path >> version)) return false;
 
   size_t content_length = 0;
+  std::map<std::string, std::string> headers;
   size_t pos = line_end + 2;
   while (pos < header_end) {
     size_t next = buffer.find("\r\n", pos);
@@ -54,8 +56,12 @@ bool TryParseHttpRequest(const std::string& buffer, HttpRequest* out, size_t* co
       const std::string key = ToLowerAscii(header_line.substr(0, colon));
       size_t vstart = colon + 1;
       while (vstart < header_line.size() && header_line[vstart] == ' ') ++vstart;
+      size_t vend = header_line.size();
+      while (vend > vstart && (header_line[vend - 1] == ' ' || header_line[vend - 1] == '\t')) --vend;
+      const std::string value = header_line.substr(vstart, vend - vstart);
+      headers[key] = value;
       if (key == "content-length") {
-        content_length = static_cast<size_t>(std::strtoul(header_line.c_str() + vstart, nullptr, 10));
+        content_length = static_cast<size_t>(std::strtoul(value.c_str(), nullptr, 10));
       }
     }
     pos = next + 2;
@@ -67,6 +73,7 @@ bool TryParseHttpRequest(const std::string& buffer, HttpRequest* out, size_t* co
   out->method = method;
   out->path = path;
   out->body = buffer.substr(body_start, content_length);
+  out->headers = std::move(headers);
   *consumed = body_start + content_length;
   return true;
 }
@@ -76,6 +83,8 @@ std::string BuildHttpResponse(const HttpResponse& resp) {
   switch (resp.status) {
     case 200: reason = "OK"; break;
     case 400: reason = "Bad Request"; break;
+    case 401: reason = "Unauthorized"; break;
+    case 404: reason = "Not Found"; break;
     case 405: reason = "Method Not Allowed"; break;
     case 413: reason = "Payload Too Large"; break;
     case 500: reason = "Internal Server Error"; break;

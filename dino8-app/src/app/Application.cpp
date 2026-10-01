@@ -23,6 +23,7 @@
 #include "ui/Icons.h"
 #include "ui/Panels.h"
 #include "ui/Theme.h"
+#include "viewport/AdaptiveTessellation.h"
 #include "app/Settings.h"
 #include "flow/FlowEditor.h"
 #include "plugins/PluginManager.h"
@@ -233,6 +234,11 @@ Viewport::FrameContext Application::MakeFrameContext() {
   ctx.show_control_points_for_selected = show_control_points_for_selected;
   ctx.curve_tolerance = curve_display_tolerance;
   ctx.surface_tolerance = surface_display_tolerance;
+  // View-dependent adaptive tessellation: driven by whichever viewport is
+  // active, shared by every viewport's DrawObjects this frame (see
+  // Viewport::FrameContext::lod_scale) so open viewports at different zoom
+  // levels never fight over a shared SceneObject's one display cache.
+  if (Viewport* active = ActiveViewport()) ctx.lod_scale = LodScaleForPixelSize(active->ZoomPixelSize());
   ctx.fallback_analysis = &analysis_fallback;
   ctx.sub_selection = &sub_selection_;
   ctx.overlay_lines = &overlay_lines;

@@ -85,10 +85,12 @@ count and no human needed to close a window. See
 ## Compute server
 
 `Dino8 --serve PORT` runs headless and starts a minimal HTTP server: POST a
-Lua script to it, get back its printed output, against the same running
-document every request shares. A first, deliberately small step toward a
-Rhino.Compute-style story - no auth, no concurrency, no geometry wire
-format. See [`docs/COMPUTE_SERVER.md`](docs/COMPUTE_SERVER.md).
+Lua script to `/run` (or a Python script to `/run/python`), get back its
+printed output, against the same running document every request shares. An
+optional `--serve-token TOKEN` requires a matching `Authorization: Bearer
+TOKEN` header. A first, deliberately small step toward a Rhino.Compute-style
+story - no concurrency, no TLS, no geometry wire format. See
+[`docs/COMPUTE_SERVER.md`](docs/COMPUTE_SERVER.md).
 
 ## Packaging
 
