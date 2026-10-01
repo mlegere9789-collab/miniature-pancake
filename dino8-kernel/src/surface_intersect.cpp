@@ -579,6 +579,48 @@ ON_NurbsCurve InterpolateCubic(const std::vector<ON_3dPoint>& in_pts, std::vecto
   return curve;
 }
 
+Result NurbsCurve::OffsetOnSurfaceNormal(const NurbsSurface& surface, double distance, NurbsCurve& out,
+                                          int sample_count) const {
+  if (!ON_IsValid(distance)) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsCurve::OffsetOnSurfaceNormal: distance must be finite");
+  }
+  const bool closed = IsClosed();
+  const int n = sample_count > 0 ? sample_count : (closed ? 48 : 40);
+  if (n < 2) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsCurve::OffsetOnSurfaceNormal: sample_count must be at least 2");
+  }
+
+  const Interval d = Domain();
+  std::vector<ON_3dPoint> offset_pts;
+  offset_pts.reserve(static_cast<size_t>(n));
+  // Sample at n points across the domain - n-1 steps for an open curve
+  // (endpoints included), n points around the full period for a closed
+  // one (the last sample coincides with the first, exactly as
+  // ChordParams()/InterpolateCubic() already expect for closed input).
+  const int steps = closed ? n : n - 1;
+  for (int i = 0; i < n; ++i) {
+    const double t = d.min + (d.max - d.min) * (static_cast<double>(i) / steps);
+    const Point3d p = PointAt(t);
+    const Point2d uv = surface.ClosestPointParameter(p, 24, 24);
+    Vector3d normal = surface.NormalAt(uv.x, uv.y);
+    if (!normal.Unitize()) continue;
+    const Point3d moved = p + distance * normal;
+    offset_pts.emplace_back(moved.x, moved.y, moved.z);
+  }
+  if (offset_pts.size() < 2) return Result::Failed;
+
+  const bool fit_closed = closed && offset_pts.size() == static_cast<size_t>(n);
+  if (Degree() == 1 && !closed) {
+    out = NurbsCurve::FromControlPoints(offset_pts, 1);
+  } else {
+    const std::vector<double> params = ChordParams(offset_pts, fit_closed);
+    out.raw() = InterpolateCubic(offset_pts, params, fit_closed, 3);
+  }
+  return Result::Ok;
+}
+
 // --- face containment ------------------------------------------------------------
 
 bool PointInPolygon(const std::vector<ON_2dPoint>& poly, ON_2dPoint p) {

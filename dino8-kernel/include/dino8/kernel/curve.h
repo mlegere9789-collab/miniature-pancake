@@ -8,6 +8,8 @@
 
 namespace dino8::kernel {
 
+class NurbsSurface;
+
 // Wraps ON_NurbsCurve. Deliberately exposes the underlying ON_NurbsCurve
 // (via raw()) rather than re-declaring every accessor OpenNURBS already
 // has — later chunks (booleans, display) need the real object, not a
@@ -1008,6 +1010,48 @@ class NurbsCurve {
   // if `distance` isn't finite or `plane` isn't `ON_Plane::IsValid()`.
   Result OffsetInPlane(const ON_Plane& plane, double distance, NurbsCurve& out,
                        double tolerance = -1.0) const;
+
+  // Offsets this curve - assumed to (approximately) lie on `surface` -
+  // along `surface`'s own normal, sampled and refit: the kernel
+  // counterpart to PARITY_MAP's "Curve offset normal to surface
+  // (OffsetNormal)" gap ("app `OffsetNormal`: samples moved along the
+  // surface normal, then cubic interpolation. App-only"). Identical
+  // technique dino8-app's own OffsetNormal command previously implemented
+  // entirely by hand (cmd_remaining.cpp): this curve is sampled at
+  // `sample_count` parameter values, each sample's closest point on
+  // `surface` (`NurbsSurface::ClosestPointParameter()`) gives the normal
+  // to move it along by `distance`, and a new curve is refit through the
+  // offset points - now a real kernel entry point, usable by anything
+  // else that needs a surface-normal curve offset, not reimplemented ad
+  // hoc at the app layer.
+  //
+  // This is explicitly NOT the separate, harder "Curve offset on surface"
+  // PARITY_MAP item (an in-surface, geodesic-style offset that stays
+  // within the surface): this method moves along the surface's normal,
+  // off the surface entirely, exactly as the app technique it replaces
+  // always did.
+  //
+  // An OPEN curve of degree 1 is rebuilt as an exact degree-1 polyline
+  // through the offset samples (`FromControlPoints(..., 1)`); any other
+  // curve (higher degree, or closed) is refit as a global chord-length
+  // cubic interpolant through the offset samples (`InterpolateCubic()`,
+  // closed-aware) - the same "don't oversmooth a polyline into a cubic"
+  // choice the app technique already made, not a new claim of exactness
+  // (a straight segment offset along a genuinely varying surface normal
+  // is not literally straight anymore either way).
+  //
+  // `sample_count` (default `<= 0`, meaning 40 for an open curve or 48
+  // for a closed one, this method's own prior app-level constants) sets
+  // how densely this curve is sampled before offsetting and refitting.
+  //
+  // Throws std::invalid_argument if `distance` isn't finite, or if
+  // `sample_count` is positive but less than 2 (`sample_count <= 0` means
+  // "use the default" instead, same convention `tolerance <= 0` uses
+  // elsewhere in this class). Returns `Result::Failed` if fewer than 2
+  // samples produce a usable (unitizable) surface normal - not enough
+  // points left to build a curve from.
+  Result OffsetOnSurfaceNormal(const NurbsSurface& surface, double distance, NurbsCurve& out,
+                                int sample_count = -1) const;
 
   const ON_NurbsCurve& raw() const { return curve_; }
   ON_NurbsCurve& raw() { return curve_; }
