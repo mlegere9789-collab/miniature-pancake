@@ -176,6 +176,12 @@ class SceneObject {
   // same mode-agnostic way it already honours the other two overrides.
   bool force_ghosted = false;
   bool force_xray = false;
+  // SetObjectDisplayMode Monochrome: filled in the same flat grey the
+  // viewport-wide Monochrome display mode uses, fully opaque, regardless of
+  // the viewport's own display mode or this object's own material/colour -
+  // mutually exclusive with the four overrides above; Viewport::DrawObjects
+  // honours it the same mode-agnostic way.
+  bool force_monochrome = false;
   bool show_render_mesh_wires = false;  // ToggleRenderMesh/ShowRenderMesh: overlay the tessellation's triangle edges
   // Per-object display tolerance override for surface/brep/SubD tessellation
   // (SetMeshSurfaceParameters); <= 0 means "use the app-wide setting".
