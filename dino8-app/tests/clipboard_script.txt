@@ -1,0 +1,12 @@
+# Regression coverage for the real OS-clipboard image write behind
+# ViewCaptureToClipboard/ScreenCaptureToClipboard/CopyRenderWindowToClipboard
+# (src/platform/Clipboard.h). smoke.sh runs this with DINO8_CLIPBOARD_DEBUG_FILE
+# set, so it can assert the exact bytes handed to the platform clipboard
+# writer are a real, non-trivial PNG - proof this code path actually ran and
+# produced real image data, not just that the command didn't crash.
+Box 0,0,0 5,5,0 5
+ZoomExtents
+Render 64 64
+CopyRenderWindowToClipboard
+ViewCaptureToClipboard
+ScreenCaptureToClipboard

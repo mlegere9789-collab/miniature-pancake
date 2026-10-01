@@ -1,0 +1,2418 @@
+#pragma once
+
+#include <array>
+#include <string>
+#include <vector>
+
+#include <opennurbs.h>
+
+#include "dino8/kernel/brep.h"
+#include "dino8/kernel/tolerance.h"
+#include "dino8/kernel/types.h"
+
+namespace dino8::kernel {
+
+// Exact volume mass properties of a closed solid at unit density, from
+// Mesh::VolumeMassProperties(). Every second moment below uses the
+// "products of inertia" convention: `ixx = integral of (y^2 + z^2) dV`,
+// `ixy = integral of (x * y) dV` (NOT its negative), so the inertia
+// tensor is assembled as
+//
+//   I = [[ ixx, -ixy, -ixz ],
+//        [ -ixy, iyy, -iyz ],
+//        [ -ixz, -iyz, izz ]]
+//
+// - the convention Rhino's own MassProperties reports and every
+// engineering reference tabulates. Multiply every moment by the actual
+// density to get real mass moments (volume by density gives mass).
+struct MassProperties {
+  double volume = 0;
+  Point3d centroid;
+
+  // Second moments about the WORLD ORIGIN.
+  double ixx_origin = 0, iyy_origin = 0, izz_origin = 0;
+  double ixy_origin = 0, iyz_origin = 0, ixz_origin = 0;
+
+  // Second moments about the CENTROID (parallel-axis theorem applied to
+  // the origin moments above).
+  double ixx = 0, iyy = 0, izz = 0;
+  double ixy = 0, iyz = 0, ixz = 0;
+
+  // Eigen-decomposition of the centroidal tensor: `principal_moments`
+  // in ascending order, `principal_axes[k]` the unit axis of
+  // `principal_moments[k]`. The three axes form a right-handed
+  // orthonormal frame (the third is the cross product of the first two,
+  // which is still an eigenvector). An eigenvector's sign is arbitrary
+  // (it's an axis, not a direction), and for a repeated eigenvalue
+  // (a body with an axis of rotational symmetry, e.g. a cylinder or
+  // torus) any orthonormal pair in that eigenspace is equally valid -
+  // callers must not assume a specific pair comes back in that case.
+  std::array<double, 3> principal_moments{};
+  std::array<Vector3d, 3> principal_axes{};
+
+  // `sqrt(principal_moments[k] / volume)` - the distance from the
+  // principal axis at which the whole volume, concentrated, would have
+  // the same moment.
+  std::array<double, 3> radii_of_gyration{};
+};
+
+// An oriented bounding box, from Mesh::GetOrientedBoundingBox(): a box
+// exactly `2 * half_extents[k]` long along each `axes[k]` (unit,
+// mutually orthogonal, right-handed - the SAME frame convention
+// MassProperties::principal_axes uses, and in fact the same axes: see
+// GetOrientedBoundingBox()'s own doc comment), centered at `center`.
+// Every vertex of the mesh it was built from lies within the box by
+// construction (`half_extents[k]` is exactly the largest projection onto
+// `axes[k]` found among all of that mesh's vertices), never merely
+// approximately.
+struct OrientedBoundingBox {
+  Point3d center;
+  std::array<Vector3d, 3> axes;
+  std::array<double, 3> half_extents{};
+};
+
+// One crossing of a ray with a mesh, from Mesh::FireRay().
+struct RayHit {
+  // Ray parameter: the hit is at `origin + t * direction`, in units of
+  // `direction`'s own length (t is a multiple of `direction`, NOT a
+  // distance, unless `direction` is unit length).
+  double t = 0;
+  Point3d point;
+  int face_index = -1;  // index into the mesh's own face list
+  // Whether the ray enters the solid here (crosses the face against its
+  // outward normal, direction . normal < 0) or leaves it. Only meaningful
+  // on a consistently-oriented (CCW from outside) mesh.
+  bool entering = false;
+};
+
+// Closest pair of points between two meshes' surfaces, from
+// Mesh::DistanceTo().
+struct MeshDistance {
+  double distance = 0;  // exactly 0 when the surfaces touch or cross
+  Point3d point_on_this;
+  Point3d point_on_other;
+  int face_on_this = -1;
+  int face_on_other = -1;
+};
+
+// Solid-level relationship between two closed meshes, from
+// Mesh::ClashWith(). Mutually exclusive, decided in the order listed on
+// the doc comment there.
+enum class Clash {
+  Clear,             // no shared volume, surfaces further apart than the distance tolerance
+  ThisInsideOther,   // (essentially) all of this mesh's volume lies inside `other`
+  OtherInsideThis,   // (essentially) all of `other`'s volume lies inside this mesh
+  Intersecting,      // the solids share positive volume, but neither contains the other
+  Touching,          // no shared volume, but the surfaces meet (shared face, edge or corner contact)
+};
+
+// Wraps ON_Mesh. OpenNURBS' polygon-mesh representation, produced by
+// tessellating a Brep — this is as far as OpenNURBS' public API goes
+// toward "meshing"; it has no boolean/CSG operations on top of it (see
+// the note on Brep::Tessellate below).
+class Mesh {
+ public:
+  int VertexCount() const;
+  int FaceCount() const;
+
+  // Signed volume via the divergence theorem (sum of signed tetrahedron
+  // volumes from the origin to each triangle). Only meaningful for a
+  // closed, consistently-oriented (CCW from outside) mesh - exactly the
+  // kind BooleanCombine requires as input and produces as output.
+  double Volume() const;
+
+  // Volume-weighted centroid (center of mass, assuming uniform density),
+  // via the same divergence-theorem decomposition Volume() uses: each
+  // triangle (plus the origin) forms a tetrahedron whose own centroid is
+  // the average of its 4 vertices and whose signed volume is already
+  // exactly what Volume() sums; the mesh's centroid is the volume-weighted
+  // average of those per-tetrahedron centroids. Only meaningful for a
+  // closed, consistently-oriented mesh, same requirement as Volume() (and
+  // for the same reason - GetBoundingBox() computes a plain vertex
+  // average/extent instead, which needs no such assumption). Throws
+  // std::invalid_argument if the mesh's volume is (near) zero - the
+  // centroid of an open surface or a degenerate/zero-volume solid isn't
+  // well-defined by this formula (it would divide by ~0).
+  Point3d GetCentroid() const;
+
+  // Sum of face areas (each via half the cross-product magnitude of its
+  // one or two triangles - a quad face's second triangle is included,
+  // same as Volume()'s own IsQuad() handling). Unlike Volume(), meaningful
+  // for open surfaces too - e.g. a single trimmed planar face isn't
+  // closed, so Volume() doesn't apply to it.
+  double Area() const;
+
+  // Axis-aligned bounding box over every vertex, regardless of whether
+  // it's actually used by a face - a real, if narrow, gap: nothing
+  // earlier in this file could answer "roughly how big/where is this,"
+  // which any future viewport (camera framing) or spatial query (a
+  // coarse overlap test before a real boolean) needs. Throws
+  // std::invalid_argument on a mesh with no vertices, rather than
+  // returning a degenerate all-zero box that would look like a valid
+  // point-sized mesh at the origin.
+  BoundingBox GetBoundingBox() const;
+
+  // A tighter box than GetBoundingBox() for anything not already
+  // axis-aligned: oriented to the solid's own principal axes of inertia
+  // rather than the world's. GetBoundingBox()'s own box can waste
+  // arbitrary volume on a rotated shape (a long thin box at 45 degrees
+  // gets an AABB nearly twice as wide as it is), which matters for a
+  // viewport's camera framing or a broad-phase overlap test's own
+  // tightness - nothing here could answer that before.
+  //
+  // The axes are exactly VolumeMassProperties()'s own `principal_axes` -
+  // not a separate PCA computation over vertex POSITIONS (the common,
+  // simpler technique, and a real alternative this deliberately isn't):
+  // a vertex-covariance PCA is biased by tessellation density (a region
+  // meshed more finely pulls the axes toward it even though the true
+  // shape hasn't changed), whereas the inertia tensor's eigenvectors -
+  // computed, like Volume()/GetCentroid(), by the divergence-theorem
+  // integral over the solid's actual enclosed volume - depend only on
+  // the real shape, not how finely any part of it happens to be
+  // triangulated. (The two are related, not unrelated formulas pressed
+  // into service: for the standard second-moment convention, inertia
+  // tensor I = trace(covariance) * Identity - covariance, so I and the
+  // volume-weighted covariance matrix are simultaneously diagonalized -
+  // same eigenVECTORS, just a different, monotonic map from eigenvalue
+  // to eigenvalue - which is exactly why reusing principal_axes here is
+  // mathematically the volume-weighted PCA frame, not an approximation
+  // of it.) Requires the same closed, consistently-oriented (CCW from
+  // outside), positive-volume precondition VolumeMassProperties() has -
+  // this delegates to it directly, so that method's own exceptions (both
+  // std::invalid_argument on a zero/negative volume and std::runtime_error
+  // from its eigensolver) surface here unchanged, not re-wrapped.
+  //
+  // `half_extents[k]` is then the tightest slab along `axes[k]` that
+  // contains every one of this mesh's own vertices - the largest
+  // absolute projection onto that axis, found by direct search over all
+  // vertices, not estimated - so the returned box provably contains the
+  // whole mesh, with `center` at the midpoint of each slab (not
+  // GetCentroid() - the box's own middle, generally a different point
+  // from the volume centroid for a shape that isn't symmetric about it).
+  //
+  // Honest scope: this is the standard, principal-axis-aligned oriented
+  // box, not a search for the GLOBALLY minimum-volume box over every
+  // possible orientation (that problem's practical 3D algorithms - e.g.
+  // an exhaustive rotating-calipers search over every face normal - are
+  // a materially different, much more expensive undertaking this does
+  // not attempt). For a solid whose own principal axes of inertia
+  // already line up with its tightest orientation - an axis-aligned box
+  // itself is the simplest example - the two coincide exactly, verified
+  // below; for a shape whose principal axes genuinely diverge from its
+  // tightest orientation (some non-convex or very asymmetric shapes),
+  // this box can be looser than that unattempted global minimum.
+  OrientedBoundingBox GetOrientedBoundingBox() const;
+
+  // Whether `point` lies inside this mesh - a real "is this point part
+  // of the solid" query nothing here could answer before (every existing
+  // query - Volume(), GetCentroid(), GetBoundingBox() - describes the
+  // solid as a whole, not a specific point's relationship to it). Uses
+  // the standard ray-casting rule: casts a ray from `point` in the fixed
+  // +X direction and counts how many of the mesh's triangles it crosses
+  // (a quad face's own two triangles, same split Area()/Volume() already
+  // use, each counted independently) - an odd count means `point` is
+  // inside. Only meaningful for a closed, consistently-oriented mesh
+  // (IsClosedManifold()), the same requirement Volume() already has, for
+  // the same reason: an open surface has no well-defined "inside" at
+  // all. `point` exactly on the boundary, or a ray that happens to pass
+  // exactly through an edge or vertex, is an unhandled degenerate case
+  // (the standard caveat any single-direction ray-cast test has) - not
+  // hardened against here.
+  bool ContainsPoint(Point3d point) const;
+
+  // The closest point on this mesh's surface to `point` (brute force over
+  // every triangle - a quad face's own two triangles, same split
+  // Area()/Volume()/ContainsPoint() already use, each checked
+  // independently - no spatial acceleration structure). A real query
+  // nothing here could answer before: ContainsPoint() only answers
+  // "inside or not," not "how far, and to where" for a point that isn't.
+  // Per-triangle closest point uses the standard region-based algorithm
+  // (Ericson, "Real-Time Collision Detection"): classify `point`'s
+  // projection against each of the triangle's 3 vertex/3 edge/1 interior
+  // Voronoi regions in barycentric-coordinate terms, then return the
+  // corresponding vertex, clamped edge point, or interior projection -
+  // not an iterative or approximate search. Throws std::invalid_argument
+  // on a mesh with no faces (no surface to be close to).
+  Point3d ClosestPoint(Point3d point) const;
+
+  // Signed distance from `point` to this mesh's surface: negative if
+  // `point` is inside, positive if outside, computed as
+  // `+/- (ClosestPoint(point) - point).Length()` with the sign from
+  // ContainsPoint() - the combination neither query alone gives (an
+  // "inside/outside plus how far" answer a CSG or offset-surface
+  // operation would need). Only meaningful under the same
+  // "closed, consistently-oriented mesh" requirement ContainsPoint()
+  // and Volume() already have. Not a true signed-distance-*field*
+  // (no interpolation/gradient, no acceleration structure) - just this
+  // one query, exactly as expensive as one ClosestPoint() call plus one
+  // ContainsPoint() call.
+  double SignedDistance(Point3d point) const;
+
+  // The full volume mass properties (see MassProperties above) - volume,
+  // centroid, the complete inertia tensor about both the world origin
+  // and the centroid, and its principal moments/axes. Volume() and
+  // GetCentroid() were the only mass-property queries here before; no
+  // second moment (inertia, product of inertia, radius of gyration)
+  // existed at all, and the public OpenNURBS SDK has no mesh
+  // mass-property implementation to delegate to (grepped: no
+  // `ON_Mesh::VolumeMassProperties` anywhere in the source).
+  //
+  // EXACT, not sampled: every integral of 1, x, y, z, x^2, y^2, z^2, xy,
+  // yz, zx over the enclosed volume is reduced by the divergence theorem
+  // to a closed-form polynomial in each triangle's three vertices
+  // (Eberly, "Polyhedral Mass Properties (Revisited)") and summed - the
+  // same principle Volume() uses for the volume alone, extended to the
+  // first and second moments. So a box's moments are exactly its
+  // textbook `V*(b^2 + c^2)/12`, and a tessellated curved solid's are
+  // exactly those of the polyhedron it actually is (converging to the
+  // smooth shape's as the tessellation refines, like Volume()). A quad
+  // face contributes both of its triangles, same split as Volume().
+  //
+  // The principal decomposition delegates to OpenNURBS'
+  // `ON_Sym3x3EigenSolver` (verified a real implementation - a Jacobi
+  // rotation to tridiagonal form plus a closed-form tridiagonal solve -
+  // not a stub), with the results sorted ascending and re-unitized here.
+  //
+  // Only meaningful for a closed, consistently-oriented (CCW from
+  // outside) mesh - the same requirement Volume()/GetCentroid() have.
+  // Throws std::invalid_argument if the signed volume is (near) zero (an
+  // open surface or degenerate solid: no volume to have moments) OR
+  // negative (an inside-out mesh - every moment would come back negated;
+  // FlipNormals() it first). Throws std::runtime_error only if the
+  // eigen-solver itself reports failure, which a finite symmetric
+  // tensor should never trigger.
+  MassProperties VolumeMassProperties() const;
+
+  // Every crossing of the ray `origin + t * direction` (t > 0, i.e.
+  // strictly ahead of `origin`) with this mesh's faces, sorted by
+  // increasing t - the first entry is the nearest hit, which is what a
+  // pick, a shadow/visibility test, or a "shoot a ray and see what it
+  // lands on" query wants. ContainsPoint() has always fired a ray
+  // internally, but only ever counted its crossings; nothing here could
+  // report WHERE a ray hits, or on which face. Exact Moller-Trumbore
+  // per triangle (the same formula ContainsPoint() uses, now returning
+  // its parameter and barycentrics instead of a bool) - not a march or
+  // a sampled search - with no spatial acceleration structure (every
+  // triangle is tested; a quad face's own two triangles both, same split
+  // Area()/Volume() use). Returns empty for a miss. A hit exactly on a
+  // quad face's shared diagonal is reported once, not once per
+  // triangle. A ray exactly grazing an edge or vertex shared by two
+  // faces is the usual unhandled degenerate case (it may be reported
+  // once per face touched, or missed by both) - not hardened against,
+  // same caveat ContainsPoint() documents. A ray parallel to a face's
+  // plane never hits that face, even if it lies in it. Throws
+  // std::invalid_argument on a zero-length `direction`.
+  std::vector<RayHit> FireRay(Point3d origin, Vector3d direction) const;
+
+  // The exact minimum distance between this mesh's surface and
+  // `other`'s, with the pair of points (and faces) where it's attained
+  // - the clearance query a clash/interference check, an assembly
+  // fit, or a "how far apart are these two parts" measurement needs,
+  // which nothing here could answer before (ClosestPoint() is
+  // point-to-mesh only). Exact per triangle pair: the minimum distance
+  // between two triangles is attained either at a vertex of one and the
+  // closest point on the other (the same Ericson region test
+  // ClosestPoint() uses, 6 vertex/triangle pairs) or between two edges
+  // (the closed-form segment/segment closest points, 9 edge pairs), and
+  // is exactly 0 when an edge of one pierces the other's interior
+  // (segment/triangle intersection, 6 edge/triangle pairs) - all three
+  // families are checked, so a crossing pair reports 0 rather than the
+  // nearest vertex's or edge's positive distance. Returns
+  // `distance == 0` for touching or crossing surfaces. Meaningful for
+  // open surfaces too (it's a surface/surface query, not a solid one).
+  // Brute force over every triangle pair with a per-pair bounding-box
+  // reject against the best distance found so far; no BVH. Throws
+  // std::invalid_argument if either mesh has no faces.
+  MeshDistance DistanceTo(const Mesh& other) const;
+
+  // Solid-level classification of how this closed mesh and `other`
+  // relate (see Clash) - the interference check an assembly needs, which
+  // nothing here could answer before. Decided from the EXACT overlap
+  // volume `vol(this ∩ other)`, computed with the existing Manifold-
+  // backed BooleanCombine(), plus DistanceTo() for contact, in this
+  // order: ThisInsideOther if the overlap is at least
+  // `(1 - relative_volume_tolerance) * Volume()` (so an identical pair,
+  // or a part nestled against its container's wall from inside, reports
+  // this); else OtherInsideThis by the mirror test; else Intersecting if
+  // the overlap exceeds `relative_volume_tolerance * min(volumes)`; else
+  // Touching if the surfaces come within `distance_tolerance` of each
+  // other; else Clear. Two boxes sharing exactly one face (or an edge,
+  // or a corner) are Touching, not Intersecting: they meet but share no
+  // volume.
+  //
+  // Why overlap volume rather than edge/face piercing predicates: the
+  // most ordinary CAD clash - two equal-height boxes overlapping in plan
+  // - has every edge/face crossing landing exactly on a face's edge or
+  // lying in a face's own plane, degenerate for any such predicate,
+  // whereas its overlap volume is plainly positive. Manifold's boolean
+  // (exact predicates with symbolic perturbation) is built for exactly
+  // that coincident geometry. The volume tolerance is relative because
+  // ON_Mesh stores vertices as single-precision floats, so a touching
+  // pair whose coordinates aren't exactly representable can carry a
+  // round-off sliver of overlap (~1e-7 relative); 1e-6 is comfortably
+  // above that and far below any real interference. Requires both meshes
+  // to be closed, consistently oriented (IsClosedManifold()) and of
+  // positive volume - checked directly, throwing std::invalid_argument
+  // otherwise (also if a tolerance is out of range); BooleanCombine()'s
+  // own std::runtime_error can still surface if Manifold rejects a mesh
+  // that passed those checks. Not a high-performance broad-phase check -
+  // it runs a full boolean.
+  Clash ClashWith(const Mesh& other, double distance_tolerance = 1e-6,
+                  double relative_volume_tolerance = 1e-6) const;
+
+  // Per-vertex normals: for each vertex, the area-weighted sum of every
+  // adjacent face's own flat (non-normalized) triangle normal, then
+  // normalized - the standard "average of what touches this vertex,
+  // weighted by how much surface each neighbor actually covers" smoothing
+  // normal, not a placeholder or a plain unweighted average. A quad
+  // face's own two triangles (the same diagonal split Area()/Volume()
+  // already use) are summed separately rather than treating the quad as
+  // one unit, so a vertex on a non-planar quad still gets a real
+  // per-triangle contribution instead of one undefined "quad normal".
+  // Returns one entry per vertex, in vertex-index order, aligned with
+  // Mesh's own vertex indices; a vertex with no adjacent faces gets the
+  // zero vector (nothing to average).
+  std::vector<Vector3d> ComputeVertexNormals() const;
+
+  // Sets one (u, v) texture coordinate per vertex, stored in ON_Mesh's own
+  // `m_S` array (not the deprecated `m_T` - OpenNURBS' own header flags
+  // `m_T` "DEPRECATED... use m_S instead", confirmed by reading
+  // opennurbs_mesh.h rather than assumed). Same per-vertex-only
+  // granularity every other piece of data here has (one position, one
+  // computed normal per vertex) - there's no per-face-corner UV storage,
+  // so a genuine UV seam (the same vertex needing different texture
+  // coordinates depending on which face is looking at it, e.g. wrapping a
+  // texture around a cylinder's seam) can't be represented; the caller
+  // gets one shared value for that vertex across every face touching it.
+  // Returns Result::Failed if `uvs.size()` doesn't exactly equal
+  // `VertexCount()` rather than silently truncating or leaving vertices
+  // unset.
+  Result SetTextureCoordinates(const std::vector<Point2d>& uvs);
+
+  // Whether this mesh currently has a texture coordinate for every vertex
+  // - true only if SetTextureCoordinates() was called with exactly
+  // VertexCount() many entries (ON_Mesh's own convention: `m_S.Count() ==
+  // m_V.Count()` means "has texture coordinates", any other count means
+  // "ignore m_S entirely", so a partially-set or stale `m_S` from before a
+  // vertex-count-changing operation is correctly reported as "no texture
+  // coordinates" rather than misread).
+  bool HasTextureCoordinates() const;
+
+  // The texture coordinate at `vertex_index`, previously set via
+  // SetTextureCoordinates(). Caller must check HasTextureCoordinates()
+  // first; behavior is whatever ON_Mesh's own `m_S[]` array indexing does
+  // if it doesn't (out-of-range access), not a checked exception.
+  Point2d TextureCoordinateAt(int vertex_index) const;
+
+  // Sets one RGB color per vertex, stored in ON_Mesh's own `m_C` array -
+  // the same array dino8-app's `ComputeVertexColors` command already
+  // writes directly via raw() (cmd_meshtools.cpp) and the viewport already
+  // reads for display (SceneObject.cpp's `mesh_vertex_colors`); this just
+  // gives the kernel itself a typed accessor, same "one per vertex, no
+  // per-face-corner storage" granularity SetTextureCoordinates() already
+  // has. Returns Result::Failed if `colors.size()` doesn't exactly equal
+  // `VertexCount()`, same all-or-nothing rule SetTextureCoordinates()
+  // already applies (and the same convention ON_Mesh itself uses to decide
+  // whether `m_C` counts as "present" - see HasVertexColors()).
+  Result SetVertexColors(const std::vector<Color>& colors);
+
+  // Whether this mesh currently has a color for every vertex - true only
+  // if SetVertexColors() was called with exactly VertexCount() many
+  // entries, or another path (e.g. dino8-app's ComputeVertexColors, or a
+  // loaded file) filled `m_C` to that same count directly. Mirrors
+  // HasTextureCoordinates()'s own "count matches VertexCount(), anything
+  // else means ignore it" rule.
+  bool HasVertexColors() const;
+
+  // The color at `vertex_index`, previously set via SetVertexColors() (or
+  // another path that filled `m_C`). Caller must check HasVertexColors()
+  // first; behavior is whatever ON_Mesh's own `m_C[]` array indexing does
+  // if it doesn't (out-of-range access), not a checked exception - same
+  // contract as TextureCoordinateAt().
+  Color VertexColorAt(int vertex_index) const;
+
+  // Returns a copy of this mesh with every face's winding reversed (each
+  // face's own vertex loop reversed in place, not the vertex list
+  // reordered) - flipping which side is "outward" without moving a single
+  // vertex. The missing piece for a mesh built (or loaded) with the wrong
+  // handedness: everything else here (Volume(), ComputeVertexNormals(),
+  // BooleanCombine()) assumes CCW-from-outside winding and silently gives
+  // a sign-flipped or inside-out answer otherwise, with nothing earlier
+  // to correct it after the fact. Flipping twice is an exact involution -
+  // FlipNormals().FlipNormals() reproduces the original mesh's vertex
+  // order exactly, not just an equivalent one.
+  Mesh FlipNormals() const;
+
+  // Whether this mesh is a closed, consistently-oriented 2-manifold - the
+  // exact precondition Volume()/GetCentroid()/BooleanCombine() all
+  // silently assume rather than check. Two independent conditions, both
+  // required: every edge borders exactly 2 faces (closed - no boundary,
+  // and no non-manifold edge shared by 3+ faces), and no directed edge
+  // (a, b) appears twice (consistent orientation - two adjacent faces
+  // that both "walk" a shared edge the same way, rather than opposite
+  // ways, means one of them is wound backwards relative to the other).
+  // Built directly from this mesh's own face list rather than by running
+  // a boolean and checking whether Manifold accepted it - a real
+  // diagnostic that answers the question directly, not a side effect of
+  // an unrelated operation.
+  bool IsClosedManifold() const;
+
+  // Applies `xform` to a copy of this mesh and returns it - the missing
+  // piece that let every primitive here be positioned/oriented only via
+  // its own constructor parameters (Cylinder()'s base_center/axis, say),
+  // with no way to move, rotate, or scale a mesh already built. Delegates
+  // directly to ON_Mesh::Transform (verified as a real, working
+  // implementation, not a stub like ON_Brep::CreateMesh) rather than
+  // reimplementing per-vertex transformation here. Callers build `xform`
+  // from OpenNURBS' own factories (already available via the <opennurbs.h>
+  // this header already includes) - e.g.
+  // ON_Xform::TranslationTransformation(offset) or an ON_Xform whose
+  // Rotation(angle_radians, axis, center) member sets a rotation - rather
+  // than this class adding narrower Translate()/Rotate()/Scale() wrappers
+  // around the same thing.
+  Mesh Transform(const ON_Xform& xform) const;
+
+  // Writes this mesh as a plain-text Wavefront .obj file (`v x y z`
+  // vertex lines, `f i j k` / `f i j k l` 1-indexed face lines - OBJ
+  // supports quad faces natively, so a quad face is written as one
+  // 4-index line rather than split into two triangles). Also writes each
+  // vertex's own `vn` line, via ComputeVertexNormals(), so a viewer gets
+  // real smooth-shading normals instead of falling back to its own flat
+  // per-facet ones. If HasTextureCoordinates() is true, also writes each
+  // vertex's own `vt` line and references it from every face line in
+  // `v/vt/vn` form; otherwise face lines use `v//vn` (the middle slot
+  // left empty, OBJ's own convention for "no vt") - same as before this
+  // texture-coordinate support existed. This is the first "other file
+  // format" this kernel writes, alongside the .3dm support in
+  // file_io.h - a deliberately simple, widely-supported format so
+  // anything built here can actually be opened and looked at in an
+  // ordinary 3D viewer (Blender, MeshLab, etc.), not just verified by its
+  // own numbers. Returns Result::Failed if the file can't be opened for
+  // writing; does not validate the mesh's own geometry (an empty mesh
+  // writes a valid, empty .obj).
+  Result SaveObj(const std::string& path) const;
+
+  // Reads a plain-text Wavefront .obj file written by SaveObj() (or any
+  // other reasonably well-formed .obj) into `out_mesh`. `v` (vertex), `f`
+  // (face), and `vt` (texture coordinate) lines are understood; `vn`
+  // (including the ones SaveObj() itself writes - vertex normals here are
+  // always geometry-derived via ComputeVertexNormals(), never stored
+  // independently), materials, and groups are all silently skipped. A
+  // negative (relative) `v`/`vt` face index is resolved against the
+  // running vertex/texture-coordinate count at that exact point in the
+  // file (the standard .obj convention some incremental/streaming
+  // exporters use), not rejected. A face line with more than 4 indices
+  // (an n-gon) is fan-triangulated from its own first corner into `n-2`
+  // triangular `ON_MeshFace` entries (this kernel's own `ON_MeshFace` only
+  // ever holds a triangle or quad) - exact for a convex polygon, not
+  // detected/guarded for a concave one. If any face line carries a `vt`
+  // reference (the `v/vt` or `v/vt/vn` forms), the referenced texture
+  // coordinate is stored for that corner's vertex
+  // (SetTextureCoordinates()'s own per-vertex granularity, not per-
+  // corner) - if two or more different face corners sharing an original
+  // `v` index reference GENUINELY DIFFERENT `vt` entries (a legitimate
+  // general-OBJ construct for a real UV seam, e.g. a cube corner where
+  // each adjacent face wants its own UV for the shared position), the
+  // loaded mesh gains one duplicate vertex per distinct `vt` value seen
+  // for that position - same position, different UV - and each face
+  // corner is rewired to its own matching duplicate, rather than one
+  // silently overwriting another the way naive per-vertex-only storage
+  // otherwise would. A corner that references the seam vertex WITHOUT a
+  // `vt` at all uses that vertex's own first-seen `vt` value (there is no
+  // per-corner information to pick a "correct" one from in that case).
+  // When no vertex has more than one distinct `vt` value (the common,
+  // non-seam case, including a file with no `vt` references at all), no
+  // duplication happens and vertex indices/order match the file's own `v`
+  // lines exactly, unchanged from before this seam handling existed.
+  // Loading a file where at least one referenced vertex never gets a `vt`
+  // from any corner at all leaves HasTextureCoordinates() false on the
+  // result entirely (ON_Mesh's own "every vertex or none" convention has
+  // no way to represent partial coverage), same as a mesh that never had
+  // SetTextureCoordinates() called - a vertex never referenced by any
+  // face at all counts as "never gets a `vt`" here too, so an unused
+  // vertex sharing a file with an otherwise fully-UV'd mesh also discards
+  // the whole mesh's texture coordinates, not just its own.
+  // Returns Result::Failed if the file can't be opened, a face line
+  // references a vertex or texture-coordinate index that doesn't exist
+  // yet (must appear before any face referencing it, same requirement any
+  // valid .obj already satisfies), or a face has fewer than 3 indices -
+  // `out_mesh` is left unspecified in that case, not partially filled and
+  // silently trusted.
+  static Result LoadObj(const std::string& path, Mesh& out_mesh);
+
+  // Writes this mesh as an ASCII Wavefront `.stl` file - the second
+  // "other file format" here, aimed at the specific tools/workflows that
+  // want STL rather than OBJ (3D printing slicers in particular). Unlike
+  // `.obj`, STL is triangle-only and carries no shared vertex list - each
+  // facet repeats its own 3 vertex positions, and a quad face
+  // (`ON_MeshFace::IsQuad()`) is split into its two triangles rather than
+  // written as a single facet, since the format has no quad facet at all.
+  // Each facet's normal is computed directly from its own 3 vertices
+  // (`(v1-v0) x (v2-v0)`, normalized) rather than written as the
+  // permitted-but-not-required all-zero placeholder, so the file is
+  // actually useful to a consumer that reads facet normals. Returns
+  // Result::Failed if the file can't be opened for writing.
+  Result SaveStl(const std::string& path) const;
+
+  // Writes this mesh as a binary `.stl` file - the format LoadStl()
+  // already reads but SaveStl() never wrote, closing that asymmetry.
+  // Same triangle-only, no-shared-vertex-list, real-computed-normal
+  // semantics as SaveStl(); only the on-disk encoding differs (an
+  // 80-byte header - left all zero, since this kernel has no metadata to
+  // put there - a little-endian uint32 triangle count, then that many
+  // 50-byte records: 3 floats normal, 3x3 floats vertices, a 2-byte
+  // attribute byte count written as 0). Assumes a little-endian host,
+  // same assumption LoadStl()'s binary reader already makes. Returns
+  // Result::Failed if the file can't be opened for writing.
+  Result SaveStlBinary(const std::string& path) const;
+
+  // Reads a `.stl` file written by SaveStl() (or any other reasonably
+  // well-formed STL, ASCII or binary) into `out_mesh` - closing the
+  // "export-only" gap SaveStl() itself used to flag. Auto-detects which
+  // of the two genuinely different STL formats the file actually is by
+  // its exact size, not by sniffing for the text `solid` (which a binary
+  // file's own 80-byte header can start with too, per the spec, so that
+  // keyword alone isn't a reliable discriminator): a binary STL's total
+  // size is always exactly `80 + 4 + count*50` bytes for the triangle
+  // count its own header claims, so a file matching that formula is
+  // parsed as binary; anything else falls back to the ASCII parser.
+  //
+  // ASCII path: parses `facet normal ... outer loop / vertex x y z (x3) /
+  // endloop / endfacet` blocks; the `facet normal` line's own values are
+  // read but discarded (recomputing per-facet normals here would just
+  // reproduce SaveStl()'s own logic, and this kernel's Mesh has nowhere
+  // to store a facet normal distinct from the vertex positions it's
+  // derived from anyway).
+  //
+  // Binary path: reads the little-endian 80-byte header (discarded),
+  // uint32 triangle count, then that many 50-byte records (3 floats facet
+  // normal - discarded, same reason as the ASCII path; 3x3 floats vertex
+  // positions; a 2-byte attribute byte count - also discarded, nowhere
+  // in this kernel's Mesh to put it). Assumes a little-endian host, true
+  // for every platform this kernel is actually built on.
+  //
+  // Both paths are faithful to STL's own "no shared vertex list" nature:
+  // 3 new vertices are appended per facet, exactly as the file stores
+  // them, not deduplicated against each other the way
+  // `Mesh::MergeAndWeld()` would - a caller wanting a welded mesh (fewer
+  // vertices, adjacency-aware operations like `ComputeVertexNormals()`
+  // giving a real smoothing average rather than each vertex only ever
+  // "sharing" its own single facet) can call `MergeAndWeld({loaded_mesh})`
+  // afterward. Returns Result::Failed if the file can't be opened, an
+  // ASCII `vertex`/`facet`/`endfacet` line is malformed (wrong token
+  // count, unparsable number - which already covers a "nan"/"inf" token,
+  // since stream parsing refuses those), a binary file is truncated
+  // mid-record, or a binary vertex coordinate is non-finite (NaN/Inf
+  // bit patterns are perfectly encodable in the 32-bit floats a binary
+  // record stores; letting one through used to hand back a Result::Ok
+  // mesh whose Volume()/GetCentroid() were silently NaN and whose
+  // poisoned vertex could never weld - confirmed by a debug run) -
+  // `out_mesh` is left unspecified in that case, not partially filled and
+  // silently trusted.
+  static Result LoadStl(const std::string& path, Mesh& out_mesh);
+
+  // Writes this mesh as a PLY (Stanford Polygon) file, ASCII by default or
+  // `binary_little_endian` when `binary` is true - the third "other file
+  // format" here, and a genuine gap this kernel had zero PLY code for at
+  // all before this. Unlike `.stl`, PLY's face element is a genuine
+  // variable-length list, so a quad face (`ON_MeshFace::IsQuad()`) is
+  // written as its own native 4-index face, not split into two triangles
+  // the way SaveStl() has to. Every vertex line always carries a
+  // geometry-derived normal (`ComputeVertexNormals()`, same convention as
+  // SaveObj()'s `vn`/SaveStl()'s facet normal - never a stored,
+  // independent one), and a `u`/`v` texture-coordinate pair per vertex
+  // when `HasTextureCoordinates()` is true (PLY has no single standard UV
+  // property name across tools - some use `s`/`t` - `u`/`v` is chosen
+  // here to match this kernel's own OBJ `vt` semantics exactly: one UV
+  // per vertex, not per face corner), and a `red`/`green`/`blue` uchar
+  // triple per vertex when `HasVertexColors()` is true - the ordinary PLY
+  // vertex-color convention most tools (MeshLab, CloudCompare, Blender's
+  // importer) read by exactly these property names; no alpha (PLY's own
+  // `alpha` is a separate, less universal convention, and this kernel's
+  // `Color` has no alpha channel to write - out of scope, disclosed).
+  // The binary payload writes every vertex position/normal/UV property as
+  // a genuine 4-byte IEEE-754 float, each color channel as its own 1-byte
+  // uchar, and every face as a 1-byte unsigned corner count followed by
+  // that many 4-byte signed indices - matching the header's own declared
+  // `float`/`uchar`/`int` property types exactly, the widths LoadPly()
+  // below reads back. `big_endian` selects `format binary_big_endian`
+  // over the default `binary_little_endian` (both write the exact same
+  // values, just with
+  // each multi-byte property's bytes reversed on disk); it's ignored when
+  // `binary` is false, since `ascii` has no byte order. Returns
+  // Result::Failed if the file can't be opened for writing.
+  Result SavePly(const std::string& path, bool binary = false, bool big_endian = false) const;
+
+  // Reads a PLY file into `out_mesh` - written by SavePly() or by another
+  // tool - in the `ascii`, `binary_little_endian`, or `binary_big_endian`
+  // format (the on-disk byte order is read from the file's own header,
+  // never assumed from the host - see ReadPlyBinaryScalar() in mesh.cpp).
+  // Follows PLY's ordinary shape: a `vertex` element with
+  // `x`/`y`/`z` scalar properties (in any order, and tolerating extra
+  // properties this kernel doesn't use, by name rather than assuming a
+  // fixed column layout - genuinely parses the header's own property list
+  // instead of guessing a position), optional `nx`/`ny`/`nz` (read but
+  // discarded, same "always geometry-derived" convention LoadObj()'s `vn`
+  // and LoadStl()'s facet normal already have - there's nowhere in this
+  // kernel's Mesh to store an independent per-vertex normal), optional
+  // `u`/`v` (stored via SetTextureCoordinates() only if present on every
+  // vertex, same all-or-nothing rule LoadObj() already applies), and
+  // optional `red`/`green`/`blue` (stored via SetVertexColors() under the
+  // same all-or-nothing rule, each channel read at its own declared type
+  // - `uchar` as SavePly() itself writes, but also `float`/`double` etc.
+  // from another tool - and clamped/rounded to the 0-255 byte `Color`
+  // holds; an `alpha` property, if present, is read as an ordinary
+  // ignored extra property, same as any other name this kernel doesn't
+  // recognize - out of scope, disclosed above at SavePly()); and a `face`
+  // element with exactly one list property
+  // (whatever its declared name - `vertex_indices`/`vertex_index` are
+  // both common) giving each face's 0-based vertex indices, 3 or 4 per
+  // face (this kernel's `ON_MeshFace` holds a triangle or quad only, same
+  // limit LoadObj() already has for `.obj`'s `f` lines - a 5+-gon face is
+  // rejected, not silently fan-triangulated). Any other element name
+  // (e.g. a color-only `edge` element) has its data skipped, not
+  // rejected - in the binary format, skipped at that element's own
+  // declared property widths (so the stream stays correctly aligned for
+  // whatever follows it), never by assuming a fixed byte count. Every
+  // property's own declared scalar type - `char`/`uchar` through
+  // `double`/`float64`, PLY's full type-name set, not just the
+  // `float`/`uchar`/`int` set SavePly() itself writes - is read at its
+  // correct binary byte width, so a file from another tool using
+  // `double` positions or `ushort` face-index lists still reads
+  // correctly. Returns Result::Failed - `out_mesh` left unspecified, not
+  // partially filled - if the file can't be opened, isn't
+  // `ply`/`format ascii ...`/`format binary_little_endian ...`/
+  // `format binary_big_endian ...`, the
+  // vertex element is missing `x`/`y`/`z`, the face element's list
+  // property is missing or isn't a list, a face has fewer than 3 or more
+  // than 4 indices, a face index is out of range, a property declares a
+  // scalar type this kernel doesn't recognize (e.g. `int64`/`uint64` -
+  // out of scope), or any header/data line or binary record fails to
+  // parse (a truncated file included).
+  static Result LoadPly(const std::string& path, Mesh& out_mesh);
+
+  // Writes this mesh as a plain-text Geomview `.off` (Object File Format)
+  // file - the fourth "other file format" here, and a genuine gap this
+  // kernel had zero OFF code for at all before this: a simple, widely
+  // supported format (Blender, MeshLab, CGAL, Geomview itself all read
+  // and write it) named explicitly in this project's own parity tracking
+  // as an example of a still-missing mesh interchange format. The file is
+  // `OFF\n`, then one line `<vertex_count> <face_count> 0` (OFF's edge
+  // count is written as 0 - this kernel doesn't track a separate edge
+  // list, and a reader is required to tolerate an inaccurate/placeholder
+  // edge count per the format's own common practice), then one `x y z`
+  // line per vertex, then one face line per face: `<n> i0 i1 ... i(n-1)`
+  // with 0-based indices - unlike SaveObj()'s 1-based `f` lines, OFF
+  // indices are 0-based from the format's own definition. A quad face
+  // (`ON_MeshFace::IsQuad()`) is written as its own native 4-index line,
+  // not split into two triangles - the same "OFF/PLY have a real
+  // variable-length face list, STL doesn't" distinction SavePly() already
+  // draws. **Updated:** when `HasVertexColors()` is true, this now writes
+  // the `COFF` (color OFF) variant instead - header `COFF` and each
+  // vertex line becomes `x y z r g b a` (Geomview's own per-vertex RGBA
+  // convention), `r`/`g`/`b` taken straight from VertexColorAt() and `a`
+  // always written 255 (fully opaque - this kernel's Color has no alpha
+  // channel to source one from). Still only ever writes plain `OFF` or
+  // `COFF` - never `NOFF`/`4OFF`/`STOFF` (per-vertex normal, homogeneous
+  // coordinate, texture coordinate) - since this kernel's Mesh still has
+  // no independently-stored per-vertex normal to put in an `NOFF` (same
+  // reasoning SaveObj()'s `vn` and SavePly()'s `nx/ny/nz` already give:
+  // always geometry-derived via ComputeVertexNormals(), never stored) and
+  // no UV-per-corner/homogeneous-w concept either. Returns Result::Failed
+  // if the file can't be opened for writing; does not validate the mesh's
+  // own geometry (an empty mesh writes a valid, empty .off/.coff with
+  // vertex_count/face_count both 0).
+  Result SaveOff(const std::string& path) const;
+
+  // Reads a plain-text `.off` file written by SaveOff() (or any other
+  // reasonably well-formed plain-`OFF`- or `COFF`-header file) into
+  // `out_mesh`. A `#` starts a comment that runs to the end of its line
+  // and may appear anywhere (a leading file comment before the header
+  // keyword, a trailing comment on a vertex or face line, or its own
+  // standalone line) - this parser tokenizes past whitespace and newlines
+  // uniformly, so it doesn't depend on the header/count/vertex/face
+  // groups matching up one-per-line the way a hand-written example file
+  // usually does, only on their order. The header keyword must be exactly
+  // `OFF` or `COFF` (case sensitive) - an `NOFF`/`4OFF`/`STOFF` variant
+  // file is still rejected rather than silently misparsed, since this
+  // parser has no code to skip those variants' own extra per-vertex
+  // fields (a normal/homogeneous-w/texture-coordinate value sitting where
+  // this parser expects the next vertex's `x`, or `COFF`'s own `r`, would
+  // otherwise be silently read as if it were one). After the
+  // `<vertex_count> <face_count> <edge_count>` line (the edge count is
+  // read but never used - nothing here needs it, and OFF itself doesn't
+  // require it to be accurate), exactly `vertex_count` vertex lines are
+  // read - "x y z" for a plain `OFF` header, or "x y z r g b a" for a
+  // `COFF` header, with `r`/`g`/`b`/`a` each required to be an integer in
+  // `[0, 255]` (a fractional or out-of-range component fails the whole
+  // load, the same strictness LoadPts() already applies to its own R/G/B
+  // columns) - then exactly `face_count` face lines, each
+  // `<n> i0 i1 ... i(n-1)` with 0-based indices into the vertex list just
+  // read. A face with fewer than 3 corners, or any index outside
+  // `[0, vertex_count)`, fails the whole load (Result::Failed). A face
+  // with exactly 3 or 4 corners becomes one native `ON_MeshFace` triangle
+  // or quad; a genuine n-gon (5+ corners - OFF, unlike `.obj`, has no
+  // native quad-only ceiling on what a real exporter can emit) is
+  // fan-triangulated from its own first corner into `n-2` triangles, the
+  // same accommodation LoadObj() already makes for a `.obj` n-gon `f`
+  // line, for the same reason (this kernel's `ON_MeshFace` only holds a
+  // triangle or quad) - exact for a convex polygon, not guarded against a
+  // concave one producing a triangle whose interior falls outside the
+  // original face. A `COFF` file's own per-vertex alpha column is read
+  // (so a malformed one still fails the load) but then discarded - this
+  // kernel's Color has nowhere to put it, the same "read but unused"
+  // treatment the edge count above already gets. No independent
+  // per-vertex normal/UV is read either way (neither plain `OFF` nor
+  // `COFF` carries one). Returns Result::Failed if the file can't be
+  // opened, doesn't start with the `OFF`/`COFF` keyword, the counts line
+  // or any vertex/face line is malformed or short, or a face fails the
+  // checks above - `out_mesh` is left unspecified in that case, not
+  // partially filled and silently trusted.
+  static Result LoadOff(const std::string& path, Mesh& out_mesh);
+
+  // Writes this mesh as a plain-XML Additive Manufacturing File Format
+  // (.amf, ISO/ASTM 52915) file - the fifth "other file format" here, and
+  // a genuine gap this kernel had zero AMF code for at all before this:
+  // one `<amf>` root holding a single `<object><mesh>`, a `<vertices>`
+  // list of `<vertex><coordinates><x>/<y>/<z></coordinates></vertex>`
+  // entries, and a `<volume>` list of `<triangle><v1>/<v2>/<v3></triangle>`
+  // entries with 0-based indices into the vertex list. AMF's own
+  // `<volume>` element is triangle-only (no quad/n-gon primitive the way
+  // OFF/PLY have) - a quad face (`ON_MeshFace::IsQuad()`) is split into
+  // its two triangles on write, the same accommodation `SaveStl()` already
+  // makes for the same reason. The spec's own compressed (.amf inside a
+  // zip) packaging, multiple `<object>`/`<volume>` elements, `<metadata>`,
+  // `<material>`, `<color>`, and `<texture>` are all out of scope - this
+  // only ever writes the single plain-XML structure described above, with
+  // a hardcoded `unit="millimeter"` (this kernel's Mesh carries no unit of
+  // its own to read one from). Returns Result::Failed if the file can't be
+  // opened for writing; does not validate the mesh's own geometry (an
+  // empty mesh writes a valid, empty `<volume>`).
+  Result SaveAmf(const std::string& path) const;
+
+  // Reads a plain-XML `.amf` file written by SaveAmf() (or any other
+  // reasonably well-formed single-object, single-mesh, uncompressed AMF
+  // file) into `out_mesh`. This is a deliberately narrow, hand-rolled scan
+  // for exactly the structure SaveAmf() writes - not a general XML parser
+  // - so it tolerates attributes on any element (e.g. `unit` on
+  // `<amf unit="millimeter">`, `id` on `<object>`) and arbitrary
+  // whitespace/formatting between tags, but reads only the first
+  // `<vertices>` element and the first `<volume>` element found anywhere
+  // in the file (in a well-formed single-object AMF, these are the only
+  // ones) - a second `<object>` or a second `<volume>` (AMF's own
+  // multi-material convention: several `<volume>` elements sharing one
+  // `<mesh>`'s vertex list) is silently ignored, not merged in or
+  // rejected. `<metadata>`, `<material>`, `<color>`, `<texture>`, and the
+  // compressed zip packaging are not understood at all - a compressed
+  // `.amf` (a zip archive, not plain text) fails to parse and returns
+  // Result::Failed the same as any other malformed file. Every
+  // `<triangle>` becomes one `ON_MeshFace` triangle (AMF has no native
+  // quad/n-gon primitive to fan-triangulate here the way
+  // LoadObj()/LoadOff() do for their own formats). Returns Result::Failed
+  // if the file can't be opened, no `<vertices>` or `<volume>` element is
+  // found, a `<vertex>`'s `<coordinates>` is missing an `<x>`/`<y>`/`<z>`
+  // value or one fails to parse as a number, a `<triangle>` is missing a
+  // `<v1>`/`<v2>`/`<v3>` value or one fails to parse as an integer, or any
+  // triangle index falls outside `[0, vertex_count)` - `out_mesh` is left
+  // unspecified in that case, not partially filled and silently trusted.
+  static Result LoadAmf(const std::string& path, Mesh& out_mesh);
+
+  // Writes this mesh as a plain-text VRML97 (`.wrl`, ISO/IEC 14772) file -
+  // the sixth "other file format" here, and a genuine gap this kernel had
+  // zero VRML/X3D code for at all before this (this bullet's own remaining
+  // two named formats, glTF/GLB and 3MF, are both zip/binary-container
+  // formats out of this narrow scope): the standard header line
+  // `#VRML V2.0 utf8`, then a single `Shape { geometry IndexedFaceSet { ... } }`
+  // node holding a `coord Coordinate { point [ x y z, ... ] }` vertex list
+  // and a `coordIndex [ i0 i1 i2 -1, ... ]` face list - VRML's own
+  // "one flat list of indices per shape, each face terminated by a -1
+  // sentinel" convention, rather than a per-face count prefix the way
+  // `.obj`'s `f` line or `.off`'s face line each use. A quad face
+  // (`ON_MeshFace::IsQuad()`) is written as its own native 4-index run
+  // (`i0 i1 i2 i3 -1`), not split into two triangles - the same
+  // "IndexedFaceSet has a real variable-length face list" reasoning
+  // `SaveOff()`/`SavePly()` already give for their own formats. When
+  // `HasVertexColors()` is true, a `color Color { color [ r g b, ... ] }`
+  // node (one triple per vertex, VRML97's own `[0, 1]` float color range -
+  // not the 0-255 byte range `Color` itself stores, so each channel is
+  // divided by 255 on the way out) plus a `colorPerVertex TRUE` field are
+  // also written, the same "one value per vertex, all-or-nothing" shape
+  // `SaveOff()`'s own `COFF` variant already has; an uncolored mesh writes
+  // no `Color` node at all, same as `SaveOff()` writing a plain `OFF`
+  // header rather than `COFF`. No per-vertex normal, `Appearance`/
+  // `Material`, or any node besides this single `Shape` is written - this
+  // kernel's `Mesh` has nowhere to source those from anyway (same reasoning
+  // `SaveOff()`'s own doc comment gives for normals). Returns
+  // Result::Failed if the file can't be opened for writing; does not
+  // validate the mesh's own geometry (an empty mesh writes a valid `Shape`
+  // with empty `point`/`coordIndex` lists).
+  Result SaveVrml(const std::string& path) const;
+
+  // Reads a plain-text VRML97 `.wrl` file written by SaveVrml() (or any
+  // other reasonably well-formed single-`IndexedFaceSet` VRML97 file) into
+  // `out_mesh`. This is a deliberately narrow, hand-rolled scan for
+  // exactly the `point [...]` / `coordIndex [...]` structure SaveVrml()
+  // writes - not a general VRML/X3D scene-graph parser - so it tolerates
+  // arbitrary whitespace/newlines and commas used as separators (VRML
+  // treats a comma as insignificant whitespace between values, same as a
+  // space or newline), but reads only the FIRST `point [...]` array and
+  // the FIRST `coordIndex [...]` array found anywhere in the file (in a
+  // well-formed single-`Shape` file, these are the only ones) - a second
+  // `IndexedFaceSet` (e.g. a second `Shape` sibling) is silently ignored,
+  // not merged in or rejected, the same "first one found wins" convention
+  // `LoadAmf()` already uses for a second `<object>`/`<volume>`. The first
+  // line must literally be `#VRML V...` (case-sensitive on `VRML`) -
+  // anything else is rejected outright, the same "no variant/other-format
+  // file silently misread" stance `LoadOff()` already takes for a
+  // non-`OFF` header. A `coordIndex` run of exactly 3 or 4 indices before
+  // its `-1` becomes one native `ON_MeshFace` triangle or quad; a genuine
+  // n-gon run (5+ indices) is fan-triangulated from its own first index
+  // into `n-2` triangles, the same accommodation `LoadObj()`/`LoadOff()`
+  // already make for their own n-gon faces. A `Color { color [ ... ] }`
+  // node (found by its capitalized node-type token, distinct from the
+  // lowercase `color` field name both introducing it and naming its own
+  // value array) is optional - a file with none leaves the mesh with no
+  // vertex colors - but when present must carry exactly one `[0, 1]` RGB
+  // triple per vertex (each component clamped to `[0, 1]` then rounded to
+  // the nearest 0-255 byte); a per-face color list (VRML97's other,
+  // `colorPerVertex FALSE` option) doesn't fit this kernel's per-vertex-
+  // only color model and is rejected outright rather than silently
+  // misapplied. `Appearance`/`Material`/`Normal`/`TextureCoordinate` nodes
+  // and any node besides `Coordinate`/`IndexedFaceSet`/`Color` are not
+  // understood at all - present or absent, they have no effect on the
+  // result. Returns Result::Failed if the file can't be opened, its first
+  // line isn't a `#VRML` header, no `point` or `coordIndex` array is found,
+  // a `point` entry isn't a valid "x y z" triple, a `coordIndex` run has
+  // fewer than 3 indices before its `-1`, any index falls outside the
+  // vertex list's range, or a `Color` node's own value count doesn't equal
+  // the vertex count - `out_mesh` is left unspecified in that case, not
+  // partially filled and silently trusted.
+  static Result LoadVrml(const std::string& path, Mesh& out_mesh);
+
+  // Writes this mesh as a plain-XML COLLADA (`.dae`, ISO/IEC 17506) file -
+  // the seventh "other file format" here, and a genuine gap this kernel
+  // had zero COLLADA code for at all before this (this bullet's remaining
+  // named formats - glTF/GLB, 3MF, FBX, SketchUp SKP, USD - are each a
+  // zip/binary-container or much larger schema, out of this narrow scope,
+  // the same reasoning already given for X3D above): a `<COLLADA>` root
+  // holding one `<library_geometries><geometry><mesh>` with a `<source>`
+  // carrying a flat `<float_array>` of "x y z" vertex triples, a
+  // `<vertices>` element pointing at that source, and a `<polylist>`
+  // holding a `<vcount>` list (one entry per face, its corner count) and a
+  // matching flat `<p>` index list - COLLADA's own "one shared vertex
+  // list, faces of any size" convention, the same "a real variable-length
+  // face list" reasoning `SaveOff()`/`SaveVrml()` already give for their
+  // own formats. A quad face (`ON_MeshFace::IsQuad()`) is written as its
+  // own native 4-count `<vcount>` entry, not split into two triangles. No
+  // `<library_visual_scenes>`, `<instance_geometry>`, material/effect
+  // library, per-vertex normal/color, or any element besides this single
+  // `<geometry>` is written - this kernel's `Mesh` has nothing to source
+  // those from anyway (same reasoning `SaveVrml()`'s own doc comment
+  // gives). Returns Result::Failed if the file can't be opened for
+  // writing; does not validate the mesh's own geometry (an empty mesh
+  // writes a valid, empty `<polylist>`).
+  Result SaveCollada(const std::string& path) const;
+
+  // Reads a plain-XML `.dae` file written by SaveCollada() (or any other
+  // reasonably well-formed single-geometry COLLADA file whose mesh uses a
+  // `<polylist>` or `<triangles>` face list) into `out_mesh`. This is a
+  // deliberately narrow, hand-rolled scan for exactly this structure - not
+  // a general COLLADA/XML parser - so it reads only the FIRST
+  // `<float_array>` found anywhere in the file as the vertex position list
+  // (grouped into x/y/z triples), and only the FIRST `<polylist>` or, if
+  // none exists, the FIRST `<triangles>` element as the face list, the
+  // same "first one found wins" convention `LoadAmf()`/`LoadVrml()` already
+  // use for a second sibling element. The `<vertices>`/`<input>` indirection
+  // that lets a real COLLADA file wire an arbitrary source id to an
+  // arbitrary semantic/offset is not resolved at all - a single `VERTEX`
+  // input at offset 0 is assumed, the same "no material/normal/UV wiring
+  // understood" scope `LoadVrml()` already has for its own `Appearance`/
+  // `Material` nodes. A `<polylist>`'s `<vcount>` entry of exactly 3 or 4
+  // becomes one native `ON_MeshFace` triangle or quad; a genuine n-gon
+  // entry (5+) is fan-triangulated from its own first corner into `n-2`
+  // triangles, the same accommodation `LoadObj()`/`LoadOff()`/`LoadVrml()`
+  // already make for their own n-gon faces; a `<triangles>` element (no
+  // `<vcount>` of its own) is read as an implicit run of 3-index groups.
+  // Returns Result::Failed if the file can't be opened, no `<float_array>`
+  // is found or its value count isn't a multiple of 3, neither a
+  // `<polylist>` nor a `<triangles>` element is found, a `<polylist>`'s
+  // `<vcount>` entry is below 3, its `<p>` list doesn't hold exactly the
+  // indices its `<vcount>` list calls for, or any index falls outside
+  // `[0, vertex_count)` - `out_mesh` is left unspecified in that case, not
+  // partially filled and silently trusted.
+  static Result LoadCollada(const std::string& path, Mesh& out_mesh);
+
+  // Writes this mesh as a plain-XML X3D (`.x3d`, ISO/IEC 19775, VRML97's
+  // XML-encoded successor) file - the eighth "other file format" here, and
+  // the genuine gap `SaveVrml()`'s own doc comment already named and
+  // deferred ("VRML's XML-based successor... remains a separate, larger,
+  // XML-schema lift out of scope"): an `<X3D><Scene><Shape>` holding one
+  // `<IndexedFaceSet>` element whose `coordIndex` XML ATTRIBUTE (not a
+  // nested element the way COLLADA's `<p>` is) carries VRML's own flat,
+  // `-1`-terminated-per-face index convention, and whose child
+  // `<Coordinate>` element's own `point` attribute carries the flat
+  // "x y z x y z ..." vertex list. A quad face (`ON_MeshFace::IsQuad()`) is
+  // written as its own native 4-index run (`i0 i1 i2 i3 -1`), the same
+  // "a real variable-length face list" reasoning `SaveVrml()`/`SaveOff()`/
+  // `SaveCollada()` already give for their own formats. When
+  // `HasVertexColors()` is true, the `<IndexedFaceSet>` tag also gains a
+  // `colorPerVertex="true"` attribute and a child `<Color color="r g b r g
+  // b ..."/>` element (one `[0, 1]`-range triple per vertex, X3D's own
+  // float color range - not the 0-255 byte range `Color` itself stores, so
+  // each channel is divided by 255 on the way out), the same "one value per
+  // vertex, all-or-nothing" shape `SaveVrml()`'s own `Color` node already
+  // has; an uncolored mesh writes neither attribute nor element. No
+  // `Appearance`/`Material`, per-vertex normal, or any node besides this
+  // single `Shape` is written - this kernel's `Mesh` has nowhere to source
+  // those from anyway (same reasoning `SaveVrml()`'s own doc comment gives
+  // for normals). Returns Result::Failed if the file can't be opened for
+  // writing; does not validate the mesh's own geometry (an empty mesh
+  // writes a valid `IndexedFaceSet` with empty `coordIndex`/`point`
+  // attributes).
+  Result SaveX3d(const std::string& path) const;
+
+  // Reads a plain-XML X3D `.x3d` file written by SaveX3d() (or any other
+  // reasonably well-formed single-`IndexedFaceSet` X3D file) into
+  // `out_mesh`. This is a deliberately narrow, hand-rolled scan for exactly
+  // the attribute-based structure SaveX3d() writes - not a general X3D/XML
+  // parser - so it requires an `<X3D` root tag (the same "no variant/other-
+  // format file silently misread" stance `LoadVrml()`'s own `#VRML` header
+  // check and `LoadOff()`'s own header check already take), then reads only
+  // the FIRST `<IndexedFaceSet>`'s own `coordIndex` attribute and the FIRST
+  // `<Coordinate>`'s own `point` attribute found anywhere in the file (in a
+  // well-formed single-`Shape` file, these are the only ones) - a second
+  // `IndexedFaceSet` (e.g. a second `Shape` sibling) is silently ignored,
+  // not merged in or rejected, the same "first one found wins" convention
+  // `LoadAmf()`/`LoadVrml()`/`LoadCollada()` already use for a second
+  // sibling element. A `coordIndex` run of exactly 3 or 4 indices before
+  // its `-1` becomes one native `ON_MeshFace` triangle or quad; a genuine
+  // n-gon run (5+ indices) is fan-triangulated from its own first index
+  // into `n-2` triangles, the same accommodation `LoadVrml()` already
+  // makes for its own n-gon `coordIndex` runs - X3D's XML encoding keeps
+  // VRML's exact per-face `-1` sentinel convention, unlike COLLADA's
+  // per-face `<vcount>` prefix. A `<Color color="...">` element (found by
+  // tag name, never confused with the earlier `<Coordinate>` search -
+  // `FindX3dTag()`'s own "don't false-match a longer tag name" guard
+  // already rules that out) is optional - a file with none leaves the mesh
+  // with no vertex colors - but when present must carry exactly one
+  // `[0, 1]` RGB triple per vertex (each component clamped to `[0, 1]` then
+  // rounded to the nearest 0-255 byte); a per-face color list doesn't fit
+  // this kernel's per-vertex-only color model and is rejected outright
+  // rather than silently misapplied. `Appearance`/`Material`/`Normal`/
+  // `TextureCoordinate` nodes and any node besides `Coordinate`/
+  // `IndexedFaceSet`/`Color` are not understood at all - present or absent,
+  // they have no effect on the result. Returns Result::Failed if the file
+  // can't be opened, it has no `<X3D` root tag, no `IndexedFaceSet` or
+  // `Coordinate` element is found, either one's required attribute is
+  // missing, a `coordIndex` run has fewer than 3 indices before its `-1`,
+  // a trailing run is never closed with a `-1`, any index falls outside the
+  // vertex list's range, or a `Color` element's own value count doesn't
+  // equal the vertex count - `out_mesh` is left unspecified in that case,
+  // not partially filled and silently trusted.
+  static Result LoadX3d(const std::string& path, Mesh& out_mesh);
+
+  // Writes this mesh as a plain-ASCII USD (`.usda`, Universal Scene
+  // Description's own human-readable text encoding, Pixar) file - the
+  // ninth "other file format" here. A single `def Mesh "mesh" { ... }`
+  // prim holding USD's own three real mesh attributes: `point3f[] points`
+  // (one `(x, y, z)` tuple per vertex), `int[] faceVertexCounts` (one
+  // entry per face, its corner count - USD's own real variable-length
+  // face list, the same "not forced into all-triangle" shape `SaveOff()`/
+  // `SaveVrml()`/`SaveCollada()`/`SaveX3d()` already have, unlike AMF/STL's
+  // triangle-only formats), and `int[] faceVertexIndices` (one flat run of
+  // 0-based vertex indices, `faceVertexCounts[i]` values per face `i`, USD's
+  // own convention - unlike VRML/X3D's `-1`-terminated runs, a USD reader
+  // walks this list by consulting `faceVertexCounts` alongside it, not a
+  // sentinel). A quad face (`ON_MeshFace::IsQuad()`) is written as its own
+  // native 4-count/4-index entry, never split. No `normals`, `primvars:st`
+  // (UVs), `displayColor`, material binding, or any prim besides this
+  // single `Mesh` is written - this kernel's `Mesh` has nothing further to
+  // source a full USD scene graph from anyway (same reasoning `SaveVrml()`'s
+  // own doc comment gives for its own narrower scope). Returns
+  // Result::Failed if the file can't be opened for writing; does not
+  // validate the mesh's own geometry (an empty mesh writes a valid `Mesh`
+  // prim with empty arrays).
+  Result SaveUsda(const std::string& path) const;
+
+  // Reads a plain-ASCII USD `.usda` file written by SaveUsda() (or any
+  // other reasonably well-formed single-`Mesh`-prim `.usda` file) into
+  // `out_mesh`. This is a deliberately narrow, hand-rolled scan for exactly
+  // the three attributes SaveUsda() writes - not a general USD/Sdf text
+  // parser (no prim hierarchy, references, variants, or layer composition
+  // understood at all) - so it requires a `#usda` header line (the same
+  // "no variant/other-format file silently misread" stance `LoadVrml()`'s
+  // own `#VRML` header check already takes), then reads only the FIRST
+  // `points`, FIRST `faceVertexCounts`, and FIRST `faceVertexIndices`
+  // array found anywhere in the file - a second `Mesh` prim is silently
+  // ignored, not merged in or rejected, the same "first one found wins"
+  // convention `LoadAmf()`/`LoadVrml()`/`LoadCollada()`/`LoadX3d()` already
+  // use for a second sibling element. `faceVertexCounts` and
+  // `faceVertexIndices` are walked together exactly as USD itself defines:
+  // each successive count `n` consumes the next `n` indices from the flat
+  // index list as one face - `n` of 3 or 4 becomes one native `ON_MeshFace`
+  // triangle or quad; a genuine n-gon (`n` >= 5) is fan-triangulated from
+  // its own first index into `n-2` triangles, the same accommodation
+  // `LoadVrml()`/`LoadX3d()` already make for their own n-gon faces.
+  // `normals`/`primvars:st`/`displayColor` and any attribute besides these
+  // three are not understood at all - present or absent, they have no
+  // effect on the result. Returns Result::Failed if the file can't be
+  // opened, it has no `#usda` header, any of the three required arrays is
+  // missing, `points` isn't a whole number of `(x, y, z)` tuples, the sum
+  // of `faceVertexCounts` doesn't exactly match `faceVertexIndices`'s own
+  // length, a count is below 3, or any index falls outside the vertex
+  // list's range - `out_mesh` is left unspecified in that case, not
+  // partially filled and silently trusted.
+  static Result LoadUsda(const std::string& path, Mesh& out_mesh);
+
+  // Writes this mesh as a single self-contained glTF 2.0 (`.gltf`) file -
+  // the tenth "other file format" here, and the first one whose binary
+  // vertex/index data is embedded as a base64 `data:` URI inside the JSON
+  // itself (glTF's own "embedded buffer" convention, a single valid,
+  // portable `.gltf` file with no companion `.bin`) rather than written as
+  // plain text the way every prior format's numbers are. Unlike every
+  // other format here, glTF's `TRIANGLES` primitive mode has no native
+  // quad or n-gon - so a quad face (`ON_MeshFace::IsQuad()`) is split into
+  // its two triangles on write, the same accommodation `SaveStl()`/
+  // `SaveAmf()` already make for the identical reason. The buffer holds
+  // the position array first (`float` XYZ triples, accessor 0, `VEC3`)
+  // immediately followed by the index array (`unsigned int` scalars,
+  // accessor 1, `SCALAR`) - both already 4-byte-aligned, so no inter-view
+  // padding is needed. `asset`/`buffers`/`bufferViews`/`accessors`/
+  // `meshes`/`nodes`/`scenes`/`scene` are all written (a real, spec-valid
+  // minimal glTF a general-purpose viewer can open), but only the
+  // `POSITION` attribute - no `NORMAL`, `TEXCOORD_0`, materials, or any
+  // node transform - this kernel's `Mesh` has nothing further to source a
+  // full glTF scene from anyway (same reasoning `SaveVrml()`'s own doc
+  // comment gives for its own narrower scope). Returns Result::Failed if
+  // the file can't be opened for writing; does not validate the mesh's
+  // own geometry (an empty mesh writes a structurally valid but empty
+  // buffer/accessor pair).
+  Result SaveGltf(const std::string& path) const;
+
+  // Reads a glTF 2.0 `.gltf` file written by SaveGltf() into `out_mesh`.
+  // This is a deliberately narrow, hand-rolled scan for exactly the
+  // structure SaveGltf() writes - not a general glTF/JSON parser (an
+  // external `.bin` buffer `uri`, sparse accessors, or multi-primitive/
+  // multi-mesh scenes are still not understood at all; the `.glb` binary
+  // container is its own separate pair, LoadGlb() below, not handled
+  // here) -
+  // built on a small brace/bracket-depth JSON object/array scanner
+  // (`FindNextJsonObject`/`FindJsonArrayContent`, mesh.cpp, anonymous
+  // namespace) that does not need to be string-literal-aware, because
+  // the only JSON string value it ever has to skip past (the base64
+  // `data:` URI itself) is guaranteed by the base64 alphabet to contain
+  // none of `{}[]` - a general-purpose glTF file whose *other* string
+  // fields (names, extras) happened to contain one of those characters
+  // could still desync this scanner, a disclosed limitation this narrow
+  // reader accepts for files it itself wrote. It requires the buffer's
+  // own `uri` to start with `data:application/octet-stream;base64,`
+  // (rejecting an external-`.bin` reference outright rather than trying
+  // and failing to open a relative path), decodes that payload, then
+  // reads the FIRST two `bufferViews` entries as the position/index byte
+  // ranges directly - vertex and triangle counts come from those byte
+  // lengths (`byteLength / 12`, a `float` VEC3 or an `unsigned int` triple)
+  // rather than from the `accessors` array's own `count` fields, the same
+  // fixed "bufferView 0 is POSITION, bufferView 1 is indices" assumption
+  // `LoadCollada()` already makes about a single `VERTEX` input at offset
+  // 0, rather than actually resolving `meshes[0].primitives[0].attributes`
+  // /`indices` through `accessors` at all. Every triangle read back is a
+  // genuine triangle (glTF has
+  // no native quad), so no fan-triangulation or quad-merging is attempted
+  // - unlike every text-based format here, a glTF round trip through this
+  // pair does not preserve `ON_MeshFace::IsQuad()` faces as quads. Returns
+  // Result::Failed if the file can't be opened, it has no recognizable
+  // `bufferViews`/`accessors`/buffer `uri`, the `uri` isn't a base64 data
+  // URI, the base64 payload fails to decode, the position bufferView's
+  // byte length isn't an exact multiple of 12 (`float` VEC3), the index
+  // bufferView's byte length isn't an exact multiple of 4 (`unsigned int`
+  // SCALAR) or of 12 (a whole number of triangles), or any index falls
+  // outside the position count's range - `out_mesh` is left unspecified
+  // in that case, not partially filled and silently trusted.
+  static Result LoadGltf(const std::string& path, Mesh& out_mesh);
+
+  // Writes this mesh as a binary glTF 2.0 `.glb` file - the same geometry
+  // SaveGltf() writes (position/index bufferViews, `POSITION`-only
+  // attribute, no normals/UVs/materials - see its own doc comment for that
+  // shared scope), just packaged per the GLB container spec instead of a
+  // JSON text file with a base64 `data:` URI: a 12-byte header (magic
+  // `glTF`, version 2, total byte length), then a JSON chunk (the same
+  // JSON SaveGltf() builds, but its one `buffers` entry has no `uri` -
+  // per spec, a GLB buffer with no `uri` means "this container's own BIN
+  // chunk"), then the BIN chunk holding the raw position/index bytes
+  // directly - no base64 anywhere, and about 1/3 smaller on disk for it.
+  // Both chunks are padded to a 4-byte boundary as the spec requires (JSON
+  // with trailing spaces, BIN with trailing zero bytes); the header's
+  // total length accounts for that padding. Returns Result::Failed if the
+  // file can't be opened for writing.
+  Result SaveGlb(const std::string& path) const;
+
+  // Reads a binary glTF 2.0 `.glb` file written by SaveGlb() (or any other
+  // reasonably well-formed single-BIN-chunk GLB file whose JSON matches
+  // the structure LoadGltf() already understands) into `out_mesh`. Checks
+  // the 12-byte header's magic (`glTF`) and version (must be exactly 2),
+  // then walks the chunk list by each chunk's own declared length looking
+  // for the one JSON chunk and the one BIN chunk (an unrecognized chunk
+  // type - a spec-sanctioned extension this reader doesn't understand - is
+  // skipped, not rejected); the JSON is then handed to the same
+  // bufferViews-reading logic LoadGltf() itself uses, sourced from the BIN
+  // chunk's own bytes instead of a decoded base64 payload, so it has the
+  // exact same "position/index bufferView 0 and 1" assumption and quad-
+  // preservation limits already documented there. Returns Result::Failed
+  // if the file can't be opened, is shorter than 12 bytes, has the wrong
+  // magic/version, declares a total length longer than the file actually
+  // is, is missing either chunk, or the shared bufferViews-reading logic
+  // itself fails for any of the reasons LoadGltf() already documents -
+  // `out_mesh` is left unspecified in that case, not partially filled and
+  // silently trusted.
+  static Result LoadGlb(const std::string& path, Mesh& out_mesh);
+
+  // Writes this mesh as a plain-ASCII IFC4 (Industry Foundation Classes,
+  // ISO 16739-1) file in STEP Part 21 physical-file syntax (ISO 10303-21) -
+  // IFC's own physical file format literally IS ISO 10303-21 with an IFC
+  // EXPRESS schema instead of an AP203/214/242 one, the same textual
+  // encoding STEP itself uses. Before this, PARITY_MAP.md's own "kernel:
+  // Kernel-level data exchange" evidence named IFC as fully missing: "zero
+  // hits for IFC in dino8-app/src or dino8-kernel/src". Writes the minimal
+  // ISO-10303-21 HEADER section (FILE_DESCRIPTION/FILE_NAME/
+  // FILE_SCHEMA(('IFC4'))) plus a DATA section holding exactly two
+  // entities: an `IFCCARTESIANPOINTLIST3D` (one (x, y, z) triple per
+  // vertex - IFC4's own flat point-list representation, the same shared-
+  // vertex-list shape `SaveAmf()`/`SaveCollada()` already use, unlike
+  // .stl's unshared-per-triangle one) and an `IFCTRIANGULATEDFACESET`
+  // referencing it (`Coordinates`, `Normals` unset, `Closed` unset,
+  // `CoordIndex` - a LIST of 1-based, per STEP's own IfcPositiveInteger
+  // convention (unlike this kernel's own 0-based ON_MeshFace::vi) -
+  // triangle index triples, `PnIndex` unset). Unlike OFF/PLY/VRML/X3D/
+  // Collada/USD above, `IfcTriangulatedFaceSet.CoordIndex` has no native
+  // quad or n-gon at all (its own EXPRESS definition fixes it at
+  // `LIST [3:3]`), so a quad face (`ON_MeshFace::IsQuad()`) is split into
+  // its two triangles on write, the same accommodation `SaveStl()`/
+  // `SaveAmf()`/`SaveGltf()` already make for the identical reason. Returns
+  // Result::Failed if the file can't be opened for writing; does not
+  // validate the mesh's own geometry (an empty mesh writes a valid, empty
+  // `IfcTriangulatedFaceSet`).
+  Result SaveIfc(const std::string& path) const;
+
+  // Reads a plain-ASCII IFC `.ifc` file written by SaveIfc() (or any other
+  // reasonably well-formed IFC4 file built from a single
+  // `IfcCartesianPointList3D` + `IfcTriangulatedFaceSet` pair) into
+  // `out_mesh`. This is a deliberately narrow, hand-rolled scan for exactly
+  // this structure - not a general STEP/IFC/EXPRESS parser (no entity
+  // cross-reference resolution, no other IFC entity type, no other IFC
+  // schema version understood at all) - so it requires an `ISO-10303-21;`
+  // header line (the same "no variant/other-format file silently misread"
+  // stance `LoadVrml()`'s own `#VRML` check already takes), then reads only
+  // the FIRST `IFCCARTESIANPOINTLIST3D(...)` and FIRST
+  // `IFCTRIANGULATEDFACESET(...)` found anywhere in the file - a second
+  // instance of either, or the `#`-numbered cross-reference the real STEP
+  // `Coordinates` attribute uses to point at a particular one, is not
+  // resolved at all, the same "first one found wins" convention
+  // `LoadAmf()`/`LoadVrml()`/`LoadCollada()`/`LoadX3d()`/`LoadUsda()`
+  // already use for a second sibling element. Every `CoordIndex` triple is
+  // read as a native triangle (this entity's own `LIST [3:3]` shape leaves
+  // no n-gon or quad case to fan-triangulate, unlike every text format
+  // above), each 1-based index converted back to this kernel's own 0-based
+  // `ON_MeshFace::vi`. Returns Result::Failed if the file can't be opened,
+  // it has no `ISO-10303-21;` header, either required entity is missing,
+  // `Coordinates` isn't a whole number of `(x, y, z)` triples, a
+  // `CoordIndex` entry isn't exactly 3 integers, any index is below 1 or
+  // exceeds the point list's own count, or the `IFCTRIANGULATEDFACESET(...)`
+  // call has fewer than 4 top-level arguments (`Coordinates`, `Normals`,
+  // `Closed`, `CoordIndex`) - `out_mesh` is left unspecified in that case,
+  // not partially filled and silently trusted.
+  static Result LoadIfc(const std::string& path, Mesh& out_mesh);
+
+  // Writes this mesh as a plain-ASCII STEP AP242 (ISO 10303-242,
+  // "Managed model-based 3D engineering") file using AP242's own
+  // *tessellated geometry* representation - PARITY_MAP.md's own "kernel:
+  // Kernel-level data exchange" evidence named this as fully missing:
+  // "confirmed zero hits for TESSELLATED/TRIANGULATED_FACE/PMI/AP242
+  // anywhere in dino8-app/src/io/*.cpp; only the AP214 schema string
+  // exists." Same ISO 10303-21 physical-file syntax SaveIfc() already
+  // writes (`HEADER;`/`DATA;`/`ENDSEC;`), with `FILE_SCHEMA` naming AP242's
+  // own edition-2 schema (`AP242_MANAGED_MODEL_BASED_3D_ENGINEERING_MIM_LF`)
+  // instead of IFC4, and two real AP242 entities instead of IFC's: a
+  // `COORDINATES_LIST` (one `(x, y, z)` triple per vertex - AP242's own
+  // flat shared point-list representation, the identical shape
+  // `IFCCARTESIANPOINTLIST3D` already uses) and a `TRIANGULATED_FACE`
+  // referencing it (`Coordinates`, `Pnmax` = vertex count, `Normals`
+  // unset, `Pnindex` unset, `TriangleStrips` unset, `Triangles` - a LIST of
+  // 1-based index triples, the same STEP-wide 1-based convention
+  // `IfcTriangulatedFaceSet.CoordIndex` already uses). `TRIANGULATED_FACE`
+  // has no native quad or n-gon (its own `Triangles` attribute is fixed at
+  // `LIST [3:3]`, the same shape IFC's `CoordIndex` has), so a quad face
+  // (`ON_MeshFace::IsQuad()`) is split into its two triangles on write, the
+  // same accommodation `SaveIfc()`/`SaveStl()` already make for the
+  // identical reason. Deliberately narrow, same scope SaveIfc() already
+  // discloses for IFC: no product/shape-representation wrapper entities
+  // (`PRODUCT`, `SHAPE_REPRESENTATION`, `ADVANCED_BREP_SHAPE_REPRESENTATION`,
+  // ...) and no PMI (Product Manufacturing Information - GD&T annotations,
+  // AP242's own headline feature over AP214) - just the bare tessellated-
+  // geometry entities this gap's own evidence named as absent. Returns
+  // Result::Failed if the file can't be opened for writing; does not
+  // validate the mesh's own geometry (an empty mesh writes a valid, empty
+  // `TRIANGULATED_FACE`).
+  Result SaveStepAp242(const std::string& path) const;
+
+  // Reads a plain-ASCII STEP AP242 file written by SaveStepAp242() (or any
+  // other reasonably well-formed AP242 file built from a single
+  // `COORDINATES_LIST` + `TRIANGULATED_FACE` pair) into `out_mesh`. A
+  // deliberately narrow, hand-rolled scan for exactly this structure - not
+  // a general STEP/EXPRESS parser - built directly on `LoadIfc()`'s own
+  // helpers (`FindIfcEntityArgs`/`SplitIfcTopLevelArgs`/
+  // `ParseIfcIntTriples`/`ParseUsdaPointTuples`, mesh.cpp, anonymous
+  // namespace), since both formats share the identical ISO 10303-21
+  // physical-file syntax: requires an `ISO-10303-21;` header line, then
+  // reads only the FIRST `COORDINATES_LIST(...)` and FIRST
+  // `TRIANGULATED_FACE(...)` found anywhere in the file (the same "first
+  // one found wins" convention `LoadIfc()` already uses for its own two
+  // entities), takes `TRIANGULATED_FACE`'s 6th top-level argument as
+  // `Triangles` (`Coordinates`, `Pnmax`, `Normals`, `Pnindex`,
+  // `TriangleStrips`, `Triangles` - the exact attribute order
+  // SaveStepAp242() writes), and converts each 1-based index triple back to
+  // this kernel's own 0-based `ON_MeshFace::vi`. Returns Result::Failed if
+  // the file can't be opened, it has no `ISO-10303-21;` header, either
+  // required entity is missing, `Coordinates` isn't a whole number of
+  // `(x, y, z)` triples, a `Triangles` entry isn't exactly 3 integers, any
+  // index is below 1 or exceeds the point list's own count, or the
+  // `TRIANGULATED_FACE(...)` call has fewer than 6 top-level arguments -
+  // `out_mesh` is left unspecified in that case, not partially filled and
+  // silently trusted.
+  static Result LoadStepAp242(const std::string& path, Mesh& out_mesh);
+
+  // Writes this mesh as a 3MF (`.3mf`, 3D Manufacturing Format, ISO/IEC
+  // 23510) package - the eleventh "other file format" here, and the first
+  // one that is itself a ZIP container rather than a single text/binary
+  // file (`glTF/GLB, 3MF, FBX, and SketchUp SKP all still have zero code
+  // anywhere in the source`, this bullet's own prior disclosure). A real
+  // OPC (Open Packaging Conventions) package: `[Content_Types].xml`
+  // (declares the `.rels`/`.model` parts' content types), `_rels/.rels`
+  // (points at the model part), and `3D/3dmodel.model` (the actual mesh,
+  // in 3MF's own core-spec XML: a `<resources><object><mesh>` holding a
+  // `<vertices>` list of `<vertex x=".." y=".." z=".."/>` elements and a
+  // `<triangles>` list of `<triangle v1=".." v2=".." v3=".."/>` elements,
+  // 0-based into the shared vertex list - unlike STEP/IFC above, 3MF's own
+  // index convention is 0-based, matching this kernel's own
+  // `ON_MeshFace::vi` directly with no off-by-one translation - plus a
+  // `<build><item objectid="1"/></build>` referencing it). `<triangles>`
+  // has no native quad (3MF's core mesh is triangle-only), so a quad face
+  // (`ON_MeshFace::IsQuad()`) is split into its two triangles on write, the
+  // same accommodation `SaveGltf()`/`SaveIfc()` already make for the
+  // identical reason. The ZIP container itself (`WriteZipArchive()`,
+  // mesh.cpp, anonymous namespace) writes every entry "stored" - no
+  // deflate - a legal, spec-compliant ZIP a real archive tool can still
+  // open, just not the smallest possible one; see `WriteZipArchive()`'s own
+  // doc comment for why. Deliberately narrow, the same scope every other
+  // "other file format" writer here already discloses: no materials,
+  // colors, metadata, multiple objects/build items, or any 3MF production
+  // extension - a single untextured triangle mesh is the whole scope.
+  // Returns Result::Failed if the file can't be opened for writing.
+  Result Save3mf(const std::string& path) const;
+
+  // Reads a 3MF file written by Save3mf() (or any other reasonably
+  // well-formed 3MF package using the same single-object/single-mesh
+  // structure, as long as its ZIP entries are stored rather than deflate-
+  // compressed - see `ReadZipArchive()`'s own doc comment, mesh.cpp,
+  // anonymous namespace) into `out_mesh`. A deliberately narrow, hand-
+  // rolled scan for exactly the `3D/3dmodel.model` structure Save3mf()
+  // writes - not a general OPC/3MF reader (no relationship resolution, no
+  // multi-object/multi-build-item models, no production extension) - that
+  // reads every self-closing `<vertex .../>` and `<triangle .../>` element
+  // found anywhere in that one part, in document order, the same "scan for
+  // exactly this element shape" approach `LoadX3d()`'s own attribute
+  // extraction already uses. Returns Result::Failed if the file can't be
+  // opened, isn't a valid ZIP archive (or uses deflate compression - out of
+  // this narrow reader's scope), has no `3D/3dmodel.model` entry, that part
+  // has no recognizable `<vertex>`/`<triangle>` elements, a `<vertex>`/
+  // `<triangle>` element is missing one of its required `x`/`y`/`z` or
+  // `v1`/`v2`/`v3` attributes, any attribute fails to parse as a number, or
+  // any triangle index falls outside the vertex list's range - `out_mesh`
+  // is left unspecified in that case, not partially filled and silently
+  // trusted.
+  static Result Load3mf(const std::string& path, Mesh& out_mesh);
+
+  // Writes this mesh as a plain-ASCII Autodesk FBX file (the classic,
+  // human-readable ASCII FBX dialect FBX SDK versions up to 2016 both wrote
+  // and read, before Autodesk made binary the only default) - the twelfth
+  // "other file format" here, and this bullet's own last remaining zero-
+  // code format besides SketchUp SKP's proprietary binary (left out of
+  // scope, same "permanently out of scope" reasoning this document already
+  // gives Parasolid/ACIS elsewhere). A minimal but genuine FBX 7.3 ASCII
+  // document: an `FBXHeaderExtension`/`GlobalSettings` block, then
+  // `Objects:` holding one `Geometry: <id>, "Geometry::", "Mesh"` node with
+  // a `Vertices: *N { a: x,y,z,x,y,z,... }` array (one flat run of three
+  // reals per vertex, FBX's own convention) and a `PolygonVertexIndex: *N {
+  // a: ... }` array (FBX's own flat, per-polygon-terminated index list: a
+  // polygon's LAST corner is written as the one's-complement of its real
+  // index, `~i` - always negative since a real index is never negative -
+  // the exact convention real FBX exporters use so a reader can find each
+  // polygon's end without a separate count array), then one `Model: <id>,
+  // "Model::mesh", "Mesh"` node and a `Connections:` block wiring the
+  // geometry to the model and the model to the scene root (object `0`).
+  // Unlike every triangle-only format above (glTF/IFC/AP242/3MF),
+  // `PolygonVertexIndex` is a genuine variable-length polygon list, so a
+  // quad face (`ON_MeshFace::IsQuad()`) is written as its own native 4-
+  // index run, the same "not forced into all-triangle" reasoning
+  // `SaveOff()`/`SaveVrml()`/`SaveX3d()` already give for their own
+  // formats. Deliberately narrow, the same scope every other "other file
+  // format" writer here already discloses: no `Definitions:` counts block,
+  // no node transform/`Model` properties, no materials/normals/UVs/
+  // skinning - a single untextured mesh node is the whole scope, same as
+  // `SaveVrml()`'s own single-`Shape` scope. Returns Result::Failed if the
+  // file can't be opened for writing.
+  Result SaveFbx(const std::string& path) const;
+
+  // Reads a plain-ASCII FBX file written by SaveFbx() (or any other
+  // reasonably well-formed FBX ASCII file using the same single-Geometry-
+  // node structure) into `out_mesh`. A deliberately narrow, hand-rolled
+  // scan for exactly that structure - not a general FBX SDK-compatible
+  // parser (no node-property parsing, no `Definitions:`/`Connections:`
+  // graph resolution, no binary FBX support at all - a `Kaydara FBX Binary
+  // ...` magic-prefixed file is rejected outright, the same "require the
+  // format's own real marker" stance `LoadVrml()`'s `#VRML` check already
+  // takes) - that reads only the FIRST `Vertices: *N { a: ... }` and FIRST
+  // `PolygonVertexIndex: *N { a: ... }` array found anywhere in the file,
+  // the same "first one found wins" convention `LoadAmf()`/
+  // `LoadStepAp242()` above already use for a second sibling element. Each
+  // polygon's own
+  // one's-complement-terminated run is decoded back to real, non-negative
+  // indices (`~i` wherever `i < 0`, exactly undoing SaveFbx()'s own
+  // encoding); a run of exactly 3 or 4 real indices is read as a native
+  // triangle/quad, and a genuine n-gon run (5+) is fan-triangulated from
+  // its own first index into `n-2` triangles, the same accommodation
+  // `LoadObj()`/`LoadOff()`/`LoadVrml()` already make for their own n-gon
+  // faces. Returns Result::Failed if the file can't be opened, has a binary
+  // FBX magic header, either required array is missing, the vertex array
+  // isn't a whole number of `(x, y, z)` triples, a polygon run has fewer
+  // than 3 real indices before its terminator (or never terminates at
+  // all), or any index falls outside the vertex list's range - `out_mesh`
+  // is left unspecified in that case, not partially filled and silently
+  // trusted.
+  static Result LoadFbx(const std::string& path, Mesh& out_mesh);
+
+  // Writes this mesh as a plain-ASCII DXF (`.dxf`, Autodesk Drawing
+  // Exchange Format) file - the kernel-level counterpart PARITY_MAP.md's
+  // "kernel: Kernel-level data exchange" evidence names as missing ("PLY
+  // has a kernel API; STEP/IGES/DXF... remain app-only Document entry
+  // points"). A minimal `HEADER` section (`$ACADVER` AC1009, the plain
+  // R12 wire format every DXF reader - including Dino 8's own app-level
+  // `ExportDxf`/`ImportDxf`, FileExchange.cpp - already understands) plus
+  // an `ENTITIES` section holding one `3DFACE` entity per mesh face, each
+  // written as four absolute 3D points via DXF's own fixed group-code
+  // convention (10/20/30, 11/21/31, 12/22/32, 13/23/33 for the four
+  // corners) - no shared vertex list, since `3DFACE` itself has none:
+  // every entity carries its own corner coordinates directly, the same
+  // "no index table to populate" shape `SaveStl()` already has for the
+  // identical reason. A quad face (`ON_MeshFace::IsQuad()`) is written as
+  // its own native 4 distinct corners (`3DFACE` is natively quad-capable,
+  // unlike STL's triangle-only facets); a triangle is written with its
+  // third corner repeated as the fourth, exactly DXF's own documented
+  // "if the 3DFACE is a triangle, make the third and fourth points
+  // identical" convention, so a reader expecting a real DXF file's own
+  // triangle encoding sees exactly that, not a guessed-at approximation.
+  // Deliberately narrow, the same scope every other "other file format"
+  // writer in this kernel already discloses: no `BLOCKS`/`TABLES`
+  // sections, no layer/color/linetype properties beyond the fixed layer
+  // "0" every entity is filed under, no `POLYLINE`/`VERTEX`/`MESH`
+  // entity alternative. Returns Result::Failed if the file can't be
+  // opened for writing.
+  Result SaveDxf(const std::string& path) const;
+
+  // Reads a plain-ASCII DXF file written by SaveDxf() (or any other
+  // reasonably well-formed DXF file whose `ENTITIES` section holds
+  // `3DFACE` entities) into `out_mesh`. A deliberately narrow, hand-rolled
+  // scan for exactly this group-code-pair structure - not a general DXF
+  // parser (no `HEADER`/`TABLES`/`BLOCKS` section content is read, no
+  // `POLYLINE`/`VERTEX`/`LWPOLYLINE`/`MESH` entity understood at all,
+  // exactly `SaveDxf()`'s own disclosed scope) - that walks every
+  // (group code, value) line pair looking for `3DFACE` entities (an
+  // `0`-code line whose value is literally `3DFACE`) and reads each one's
+  // four corners from its own 1x/2x/3x group codes. Each `3DFACE`
+  // contributes its own fresh vertices (no cross-entity vertex sharing,
+  // matching `SaveDxf()`'s own unshared convention above, the same
+  // "nothing to deduplicate" shape `LoadStl()` already has); a triangle
+  // (third and fourth corners coincide, within a small fixed tolerance -
+  // `SaveDxf()`'s own documented convention) is read back as a genuine
+  // 3-corner `ON_MeshFace`, not a degenerate quad. Returns
+  // Result::Failed if the file can't be opened, has no `ENTITIES`
+  // section, a `3DFACE` entity is missing one of its twelve required
+  // coordinate group codes, or any coordinate value fails to parse as a
+  // number - `out_mesh` is left unspecified in that case, not partially
+  // filled and silently trusted.
+  static Result LoadDxf(const std::string& path, Mesh& out_mesh);
+
+  const ON_Mesh& raw() const { return mesh_; }
+  ON_Mesh& raw() { return mesh_; }
+
+  // --- Check / heal ------------------------------------------------------
+  //
+  // The mesh-level counterpart of Brep::Check() and its repairs: the
+  // same questions IsClosedManifold() answers with one bool, as COUNTS
+  // and LOCATIONS a caller can act on, plus the repairs that turn
+  // the common "almost closed" or "almost clean" meshes back into closed,
+  // valid ones (CloseNakedEdges() and FillSmallHoles() for naked_edges,
+  // UnifyNormals() for orientation_conflicts, RemoveDegenerateFaces() for
+  // degenerate_faces, RemoveDuplicateFaces() for duplicate_faces, below).
+  // Of CheckReport's conditions, only non_manifold_edges still has no
+  // repair here: fixing a 3+-face edge needs a judgment call - which
+  // faces stay grouped together - this class doesn't make for you (the
+  // same considered position SubD::Check()'s own non_manifold_edges
+  // already takes). Every other condition has one: CloseNakedEdges()/
+  // FillSmallHoles() for naked_edges, UnifyNormals() for
+  // orientation_conflicts, RemoveDegenerateFaces() for degenerate_faces,
+  // RemoveDuplicateFaces() for duplicate_faces, MergeDuplicateVertices()
+  // below for duplicate_vertices anywhere in the mesh (not merely the
+  // boundary-restricted case CloseNakedEdges() already covered; see that
+  // method's own doc comment for why it is a separate, explicitly-called
+  // repair rather than something run automatically), and -
+  // SubD::Check()'s own once-disclosed "Check() can find it, nothing can
+  // fix it" gap, mirrored and closed here too - SplitNonManifoldVertex()/
+  // SplitNonManifoldVertices() below for non_manifold_vertices.
+  struct CheckReport {
+    // Undirected edges used by exactly one face (the open boundary).
+    int naked_edges = 0;
+    // Undirected edges used by three or more faces.
+    int non_manifold_edges = 0;
+    // Vertices shared by faces that do not form one connected fan - a
+    // "bowtie" pinch point between two-or-more locally-disconnected
+    // pieces of the mesh that happen to touch at exactly one point,
+    // independent of non_manifold_edges: that condition fires when one
+    // EDGE has 3+ faces, this one fires when two fans share only a
+    // VERTEX with zero shared edges between them, which an edge-only
+    // count can never see (the same distinction SubD::Check()'s own
+    // non_manifold_vertices already draws for SubD). Detected the same
+    // way: for each vertex, its incident faces are grouped via union-find
+    // over shared edges that also touch that vertex, and more than one
+    // resulting group means the vertex is non-manifold.
+    int non_manifold_vertices = 0;
+    // Number of face-connected pieces this mesh's faces fall into - 1 for
+    // an ordinary single connected mesh, 0 if there are no faces at all,
+    // 2+ for a "multi-body" mesh (e.g. two separate boxes appended into
+    // one Mesh and never welded together). Two faces are in the same
+    // piece if they share an edge, transitively - the same definition
+    // SubD::SubDCheckReport::body_count already uses for SubD (itself
+    // modeled on Brep::SplitDisjointPieces()'s own
+    // ON_Brep::LabelConnectedComponents()), ported here so Mesh answers
+    // the same "is this actually several unrelated pieces" question
+    // IsClosedManifold() alone never reveals (each piece can be a
+    // perfectly clean closed manifold on its own).
+    int body_count = 0;
+    // Directed edges used twice - two faces walking a shared edge the
+    // same way, IsClosedManifold()'s own orientation-conflict condition.
+    int orientation_conflicts = 0;
+    // Faces with a repeated vertex index, an edge shorter than
+    // `tolerance`, or a height (2*area / longest edge) at or below
+    // `tolerance` - a face contributing nothing but bad edges.
+    int degenerate_faces = 0;
+    // Distinct vertex indices within `tolerance` of another (counted per
+    // vertex that has at least one such partner): the "same point stored
+    // twice" MergeAndWeld() exists to prevent, and CloseNakedEdges()
+    // repairs when it happened on a boundary.
+    int duplicate_vertices = 0;
+    // Faces that are the exact same polygon as another face already
+    // counted (same vertex indices, in the same cyclic order OR its
+    // exact reverse - i.e. the identical shape, winding-direction-
+    // agnostic) - counted per LATER occurrence, so two duplicates of the
+    // same triangle count as 1, not 2. Independent of degenerate_faces:
+    // two perfectly valid, non-degenerate triangles sitting exactly on
+    // top of each other (a common "appended the same geometry twice"
+    // import defect) trip this, not that.
+    int duplicate_faces = 0;
+    // Every naked edge as (a, b) in the direction its one face walks it,
+    // in face order - the input FillSmallHoles() chains into loops.
+    std::vector<std::pair<int, int>> naked_edge_list;
+    // Every non-manifold edge (3+ faces) as its two vertex indices
+    // (a, b) with a < b - undirected, since a 3+-face edge has no single
+    // "the" walking direction the way a naked or orientation-conflicted
+    // edge does. One entry per such edge (matching non_manifold_edges'
+    // own count), in the order first encountered walking the mesh's own
+    // face list - the localization non_manifold_edges' bare count never
+    // gave a caller: without this, "3 non-manifold edges" told you
+    // something was wrong, never where. Deliberately NOT a repair input
+    // the way naked_edge_list is for FillSmallHoles(): which faces
+    // should stay grouped together at a 3+-face edge is a judgment call
+    // this class still doesn't make (see Check()'s own class comment).
+    std::vector<std::pair<int, int>> non_manifold_edge_list;
+    // Every non-manifold (bowtie) vertex index, matching
+    // non_manifold_vertices' own count, in vertex-index order - the
+    // localization SplitNonManifoldVertex() below needs to act on a
+    // specific vertex rather than merely being told the mesh has one
+    // somewhere.
+    std::vector<int> non_manifold_vertex_list;
+    // Every duplicate vertex index, matching duplicate_vertices' own
+    // count, in vertex-index order - the localization
+    // MergeDuplicateVertices() below does not itself need (it welds every
+    // group at once) but a caller inspecting a report before deciding
+    // whether to call it does, the same "count told you something was
+    // wrong, never where" gap non_manifold_edge_list already closes for
+    // non_manifold_edges.
+    std::vector<int> duplicate_vertex_list;
+    // Same three conditions as Mesh::IsClosedManifold().
+    bool IsClosedManifold() const {
+      return naked_edges == 0 && non_manifold_edges == 0 && orientation_conflicts == 0;
+    }
+  };
+  CheckReport Check(double tolerance = tolerance::kDistance) const;
+
+  // Face pairs whose triangles genuinely cross in 3D - the "does this
+  // otherwise-closed-manifold mesh actually pass through itself" question
+  // Check() does not answer at all: CheckReport's six conditions are every
+  // one an EDGE-adjacency defect (naked/non-manifold edges, orientation,
+  // degenerate/duplicate faces, duplicate vertices), so a mesh with none of
+  // them - IsClosedManifold() true, Check() clean - can still be a genuinely
+  // self-overlapping shape: two unrelated sheets of the same result crossing
+  // each other, e.g. a general boolean/fillet/offset chain whose
+  // intermediate tolerance slop let one surface poke through another (see
+  // boolean_general.h's own investigation-log comments for how load-bearing
+  // that chain's tolerance handling already is). Returned as (face_a,
+  // face_b) with face_a < face_b, each pair reported once.
+  //
+  // Two triangles that SHARE A VERTEX (including two triangles that are a
+  // single quad face's own (0,1,2)/(0,2,3) split) are never reported - that
+  // is completely normal mesh connectivity, not a self-intersection, and is
+  // simply not the question this method answers (a wrong fan at a shared
+  // vertex shows up as a degenerate or duplicate face, or a bad normal, not
+  // here). For a pair sharing no vertex, the two triangles are each split by
+  // the other's plane and the resulting intervals along the two planes' own
+  // cross-product line must overlap by MORE than `tolerance` - so two
+  // triangles that merely touch (a shared boundary from a weld, or two
+  // patches coincident within tolerance) are not reported, only a genuine
+  // crossing is.
+  //
+  // A separate, second test covers the one case that construction cannot
+  // place along any such cross-product line at all: two triangles whose
+  // planes genuinely COINCIDE (not merely parallel - every vertex of one
+  // lies within `tolerance` of the other's plane too), where a real
+  // overlap is an AREA question, not a line-interval one (e.g. two
+  // duplicate-but-shifted flat faces, the "honest gap" this method's own
+  // history used to name). Both triangles are projected onto an
+  // orthonormal basis of their shared plane and tested with the standard
+  // two-convex-polygon separating-axis test (no separating line among
+  // either triangle's own 3 edge directions means a genuine positive-area
+  // overlap, not just a touch); non-coplanar pairs and coplanar pairs
+  // that don't actually overlap are both correctly left unreported.
+  //
+  // Honest remaining limitation: DETECTION ONLY - no repair. A genuine
+  // self-intersection has no single correct fix (split both triangles at
+  // the crossing? drop one sheet? re-run the operation at a tighter
+  // tolerance?) the way a duplicate face or a below-tolerance sliver does,
+  // so - the same considered position Check()'s own non_manifold_edges
+  // already takes, see CheckReport's class comment above - this kernel
+  // reports it and leaves the fix to the caller rather than guess.
+  //
+  // Broad-phase accelerated with a uniform grid over the mesh's own
+  // triangles (mirroring surface_intersect.cpp's own Grid), so this stays
+  // usable on the several-thousand-triangle meshes TessellateConforming()
+  // and the general boolean path produce - O(n) candidate pairs in the
+  // ordinary case, degrading to O(n^2) only if every triangle lands in one
+  // grid cell. Never modifies this mesh.
+  std::vector<std::pair<int, int>> FindSelfIntersections(double tolerance = tolerance::kDistance) const;
+
+  // The open boundary as closed loops of vertex indices: each naked edge
+  // (a, b) chained a -> b -> ... in the direction its face walks it, so
+  // walking a loop keeps the existing faces on the same side a
+  // reversed-edge fill needs. A loop through a vertex with more than one
+  // outgoing naked edge (a bowtie: two holes touching at one vertex) is
+  // ambiguous and is NOT returned (its edges are left unchained rather
+  // than guessed); a chain that never closes (only possible on a
+  // non-manifold boundary) is dropped the same way. Empty for a closed
+  // mesh.
+  std::vector<std::vector<int>> NakedEdgeLoops() const;
+
+  // Welds vertices that lie on naked edges and are within `tolerance`
+  // of another naked-edge vertex into one - a TRUE distance test (every
+  // pair within `tolerance` welds, unlike MergeAndWeld()'s grid snapping,
+  // which can leave two points a hair apart in adjacent cells unwelded),
+  // restricted to boundary vertices so an interior feature smaller than
+  // `tolerance` is never touched. The lowest-indexed vertex of each
+  // group survives at ITS OWN position (nothing is averaged or moved);
+  // faces are remapped, a face that collapses to fewer than 3 distinct
+  // vertices is dropped, a quad that collapses to 3 becomes a triangle,
+  // and vertices no longer used by any face are removed. This is the
+  // repair for a seam that construction left `tolerance`-wide open: a
+  // duplicated vertex (two copies of the same point, each used by
+  // different faces), or the mesh of a Brep whose JoinNakedEdges()
+  // recorded a tolerant edge (see brep.h). Returns the number of
+  // vertices welded away. Texture coordinates are dropped (a welded
+  // vertex has no single UV).
+  int CloseNakedEdges(double tolerance);
+
+  // The general-purpose counterpart to CloseNakedEdges() above: welds
+  // every group of `tolerance`-coincident vertices ANYWHERE in this mesh,
+  // not merely the ones sitting on a naked edge - the explicit, caller-
+  // opt-in repair this class's own Check() class comment used to name as
+  // still missing ("interior duplicate_vertices away from any naked edge
+  // ... is not the same bug as a seam left open by construction, and
+  // silently welding it could collapse real geometry"). That reasoning is
+  // exactly why this is a separate, explicitly-called method rather than
+  // something Check() or any other repair runs automatically: a caller
+  // who has actually decided two coincident-but-distinct vertex records
+  // really are the same point (e.g. two meshes appended via a plain
+  // ON_Mesh::Append() instead of MergeAndWeld(), or a naive concatenation
+  // that never welded anything at all) now has one direct way to say so,
+  // over the WHOLE mesh, mirroring SubD::MergeDuplicateVertices()'s own
+  // same-named repair for the sibling class.
+  //
+  // Reuses the exact grid/exact-distance grouping (mesh.cpp's own
+  // WeldGroups()) Check()'s own duplicate_vertices count already groups
+  // by, so Check(tolerance).duplicate_vertices == 0 after this runs at
+  // the same tolerance. The lowest-indexed vertex of each group survives
+  // at ITS OWN position (nothing averaged or moved); faces are remapped
+  // onto it, a face that collapses to fewer than 3 distinct vertices is
+  // dropped, and a quad that collapses to 3 becomes a triangle - the
+  // exact same repair shape CloseNakedEdges() already applies, just over
+  // every vertex rather than only the naked-edge ones. Welding two
+  // vertices together does NOT by itself merge any edge between their
+  // respective faces (that needs both endpoints of an edge to match, not
+  // just one shared vertex) - a caller who welds two independently-built
+  // patches at a single coincident corner this way, rather than along a
+  // whole shared boundary, gets a mesh whose two halves now share that
+  // one vertex but are otherwise still just as open as before; closing
+  // the resulting seam, if any, is CloseNakedEdges()'s own job, not this
+  // one's. Texture coordinates are dropped, same reason as
+  // CloseNakedEdges(). Returns the number of vertices welded away.
+  int MergeDuplicateVertices(double tolerance = tolerance::kDistance);
+
+  // The mesh-level counterpart of SubD::SplitNonManifoldVertex(): the same
+  // Parasolid/ACIS "disjoin" repair for a bowtie vertex - nothing about
+  // any face's own shape at the pinch point is wrong, only the topology
+  // of one vertex index being shared between two-or-more locally-
+  // disconnected fans of faces is. Groups `vertex_index`'s own incident
+  // faces via the identical union-find-over-shared-incident-edges
+  // Check()'s own non_manifold_vertices already computes; the first group
+  // encountered (in face-list order, the same first-seen convention
+  // Brep::SplitNonManifoldVertex()/SubD::SplitNonManifoldVertex() both
+  // already use) keeps `vertex_index` itself, every other group gets a
+  // freshly appended vertex at the same point with that group's own
+  // faces repointed onto it. Unlike the SubD version, this needs no
+  // watermark/id bookkeeping at all: a Mesh vertex is just an array
+  // position, so splitting one is a plain append plus a face-index
+  // rewrite, and no OTHER vertex's own index is ever touched, moved, or
+  // renumbered by this call. Returns false (and changes nothing) if
+  // `vertex_index` is out of range or is not, in fact, non-manifold
+  // (fewer than 2 incident faces, or its incident faces already form one
+  // connected fan) - a caller can always tell success from a no-op.
+  // Texture coordinates and any cached normals are dropped, same reason
+  // as MergeDuplicateVertices() above.
+  bool SplitNonManifoldVertex(int vertex_index);
+
+  // Runs Check(tolerance) once and calls SplitNonManifoldVertex() on
+  // every vertex index its own non_manifold_vertex_list reports, fixing
+  // every bowtie in one pass. Safe to do in one Check() call the same way
+  // SubD::SplitNonManifoldVertices() already is: splitting one vertex only
+  // ever appends a fresh vertex and repoints ITS OWN incident faces, so no
+  // other reported vertex's own index shifts out from under a later split
+  // in the same batch. Returns the number of vertices actually split.
+  int SplitNonManifoldVertices(double tolerance = tolerance::kDistance);
+
+  // The mesh-level counterpart of SubD::SplitDisjointPieces()/
+  // Brep::SplitDisjointPieces(): splits a multi-body mesh (Check()'s own
+  // body_count > 1) into that many separate single-body meshes, using the
+  // exact same face-connectivity-via-shared-edge definition body_count
+  // itself counts (reproduced here rather than shared, since body_count
+  // only needs the group COUNT while this needs the actual membership). A
+  // vertex shared by two otherwise-disconnected pieces only through a
+  // bowtie (see non_manifold_vertices above, zero shared edges) is
+  // duplicated into each piece it touches rather than left bridging them,
+  // consistent with body_count already treating those fans as separate
+  // bodies. Materially simpler than the SubD version: this is a plain
+  // per-piece vertex renumbering (each piece keeps its own member
+  // vertices, reindexed from 0, in original order) rather than a
+  // watermarked id-preserving rebuild - a Mesh vertex is just an array
+  // position, not an ON_SubD-managed id, so there is no stable id for a
+  // caller to look one up by afterward the way SubD::SplitDisjointPieces()
+  // preserves. Texture coordinates and any cached normals are dropped,
+  // same reason as MergeDuplicateVertices() above. Returns {*this} (one
+  // piece, a copy) for an already-single-body mesh, including the empty
+  // mesh (body_count == 0).
+  std::vector<Mesh> SplitDisjointPieces() const;
+
+  // Removes every face Check(tolerance) would count in degenerate_faces -
+  // literally the same test, not a redefinition of it (see Check()'s own
+  // comment: a repeated vertex index, an edge shorter than `tolerance`,
+  // or a height at or below `tolerance`), so a caller can trust that
+  // Check(tolerance).degenerate_faces == 0 after this runs. A vertex left
+  // referenced by no surviving face is then dropped and remaining faces
+  // reindexed, the same compaction CloseNakedEdges() already does. Never
+  // touches a face that ISN'T degenerate, even if removing it would make
+  // a neighboring hole "nicer" - this is strictly subtractive, no
+  // re-triangulation or hole-filling (FillSmallHoles() is the tool for
+  // the hole a removed sliver can leave behind). Texture coordinates are
+  // dropped, same reason as CloseNakedEdges() - a vertex surviving a
+  // removed face may have lost the only UV that referenced it uniquely.
+  // Returns the number of faces removed.
+  int RemoveDegenerateFaces(double tolerance = tolerance::kDistance);
+
+  // Removes every face Check() would count in duplicate_faces - the
+  // LATER occurrence of each repeated polygon is dropped, the first
+  // survives untouched at its original index order (only later indices
+  // shift down). "Duplicate" means the exact same vertex indices in the
+  // same cyclic order or its exact reverse (so a triangle and its
+  // opposite-wound twin both count, along with an ordinary reordered
+  // repeat) - not merely "close in space" the way CloseNakedEdges()'s
+  // vertex welding is; two faces built from entirely different vertex
+  // INDICES that happen to sit at the same 3D positions are a
+  // duplicate_vertices problem for CloseNakedEdges(), not this. Distinct
+  // from RemoveDegenerateFaces(): a duplicate pair can be two perfectly
+  // valid, non-degenerate triangles sitting exactly on top of each
+  // other (e.g. an import that appended the same geometry twice), which
+  // Check()'s degenerate_faces test alone would never catch (each one,
+  // taken alone, is a fine triangle). Compacts now-unused vertices and
+  // drops texture coordinates, same as RemoveDegenerateFaces(). Returns
+  // the number of faces removed.
+  int RemoveDuplicateFaces();
+
+  // Fills every boundary loop (NakedEdgeLoops()) whose vertices' axis-
+  // aligned bounding-box diagonal is at most `max_extent`: a 3-vertex
+  // loop gets one triangle, any larger loop a fan of triangles from a
+  // NEW vertex at the loop's own centroid (so a non-planar or non-convex
+  // hole still gets a valid, non-self-overlapping fill without any
+  // ear-clipping; a planar hole's fill lies exactly in its plane, since
+  // the centroid does). Every fill triangle walks its boundary edge in
+  // REVERSE of the existing face, so the result is orientation-
+  // consistent with the surrounding mesh. Loops larger than `max_extent`
+  // are left open (the bound is what keeps this from "filling" a whole
+  // missing side of a model with a fan nobody asked for). Returns the
+  // number of holes filled.
+  int FillSmallHoles(double max_extent);
+
+  // Makes face windings consistent across every manifold (2-face) edge
+  // by breadth-first traversal from each not-yet-visited face, flipping
+  // whichever neighbour walks a shared edge the same way (the same
+  // per-face reversal FlipNormals() applies to all faces), then, if the
+  // result IsClosedManifold() and Volume() is negative, flips every face
+  // so the mesh faces outward. Non-manifold (3+-face) edges are skipped
+  // (no single "other side" to agree with). Returns the number of face
+  // flips performed; an open mesh is only made consistent, not oriented
+  // outward.
+  int UnifyNormals();
+
+  // Greedily pairs adjacent triangles across a shared interior edge into
+  // one native ON_Mesh quad face (`vi[2] != vi[3]`), the standard "tris
+  // to quads" local remesh (the same operation Blender's own Tris to
+  // Quads menu item performs) - a real, if deliberately narrow, answer
+  // to this kernel's own "no quad-dominant remesher" gap: nothing here
+  // could turn an all-triangle mesh (the shape every tessellator in this
+  // kernel already produces) into a mostly-quad one before this existed.
+  //
+  // For each undirected edge shared by exactly two TRIANGLE faces (an
+  // edge already bordering an existing quad, a naked edge, or a non-
+  // manifold edge is never a candidate), the merged quad's vertex order
+  // is `(a, d, b, c)` where `a`/`b` are the shared edge's own two
+  // vertices and `c`/`d` are the two triangles' own third vertices -
+  // dropping the shared edge as the quad's implicit diagonal. A
+  // candidate is refused (left as two separate triangles) when: the two
+  // triangles don't walk the shared edge in opposite directions (an
+  // orientation-inconsistent pair - run UnifyNormals() first); either
+  // triangle is degenerate (zero-area, so no normal exists); the
+  // dihedral angle between the two triangles' own normals exceeds
+  // `max_dihedral_deg` (keeps merged quads reasonably flat rather than a
+  // folded bowtie); the resulting quad would be non-convex (a reflex
+  // vertex, checked via consecutive edge cross products against the
+  // pair's own averaged normal); or the two triangles' third vertices
+  // coincide (a degenerate "quad" that is really the same triangle
+  // twice). Every valid candidate is scored by its own dihedral angle
+  // (lower is better - closer to perfectly flat) and applied greedily
+  // best-first, each triangle merged into at most one quad, so a locally
+  // better merge elsewhere doesn't get blocked by a worse one claimed
+  // first.
+  //
+  // Purely a face-list rewrite: no vertex is added, moved, or removed
+  // (every quad's 4 vertices are 4 of the original mesh's own vertices),
+  // so the mesh's naked-edge boundary, volume, and IsClosedManifold()
+  // status are all unaffected - only interior triangle-triangle
+  // diagonals disappear. Returns the number of quads created; 0 means
+  // the mesh is unchanged. Honestly NOT a general quad-dominant
+  // remesher: this only ever merges two EXISTING adjacent triangles as-
+  // is, with no vertex relocation, global flow-field alignment, or
+  // singularity placement - the materially bigger "retopology" problem
+  // dino8-app's own QuadRemesh command solves at the application level
+  // via volumetric dual contouring (geom/Remesh.h), which this does not
+  // attempt to replace or match in quality; a mesh whose triangles are
+  // already irregular (very unequal sizes, sliver-heavy) still produces
+  // an irregular quad mesh, since nothing here retriangulates or moves a
+  // single vertex first.
+  int TrisToQuads(double max_dihedral_deg = 20.0);
+
+  // Moves every vertex by `distance` along its own ComputeVertexNormals()
+  // direction (the standard area-weighted, per-triangle-contribution
+  // vertex normal that method already computes) - the mesh-level
+  // "inflate/deflate", distinct from the Brep-level offset another
+  // session owns. A vertex with no adjacent faces (a zero-vector normal,
+  // per ComputeVertexNormals()'s own documented edge case) doesn't move.
+  // Honestly NOT topologically robust: this is a plain per-vertex
+  // push, with no self-intersection detection or repair, so a large
+  // `distance` relative to local feature size (a sharp concave corner,
+  // say) can fold the result over itself - the same disclosed tradeoff
+  // every simple normal-offset mesher has, not attempted to be solved
+  // here. Returns a new mesh; this one is untouched.
+  //
+  // Throws std::invalid_argument if `distance` is not finite (NaN or
+  // +/-infinity) - neither has a meaningful per-vertex displacement, and
+  // silently propagating one into every vertex would produce a mesh whose
+  // corruption is invisible to every downstream guard that compares
+  // against it (a NaN/Inf coordinate makes most numeric comparisons
+  // false, so a fold/self-intersection check built on top of Offset()
+  // could not be trusted to catch it either).
+  Mesh Offset(double distance) const;
+
+  // The fixed-direction counterpart to Offset(distance) above: every
+  // vertex moves by the SAME vector, `distance * direction.UnitVector()`,
+  // rather than along its own per-vertex normal - the kernel-native
+  // equivalent of OpenNURBS' own ON_Mesh::OffsetMesh(distance, direction),
+  // which this codebase never calls. Distinct from Offset() in a way that
+  // matters, not just in name: Offset() preserves a flat face's own
+  // planarity only when that face's normal already matches every one of
+  // its vertices' averaged normals (true for an isolated flat patch, false
+  // near a crease), while OffsetDirectional() preserves planarity of ANY
+  // flat region by construction - translating every point of a plane by
+  // the same vector is still a plane, regardless of neighboring
+  // curvature - at the cost of no longer keeping a curved region's own
+  // wall thickness uniform (every vertex moves the same amount along
+  // `direction`, not along the locally-varying true normal), the same
+  // tradeoff the fixed-direction OpenNURBS variant itself has. Face
+  // topology is untouched, so face indices stay in exact 1:1
+  // correspondence with this mesh's own faces. Returns a new mesh; this
+  // one is untouched.
+  //
+  // Throws std::invalid_argument if `direction` is the zero vector (no
+  // well-defined unit direction to offset along), or if `distance` is not
+  // finite (NaN or +/-infinity) - same rationale as Offset()'s own guard
+  // above.
+  Mesh OffsetDirectional(double distance, const Vector3d& direction) const;
+
+  // Builds a solid shell from this (necessarily OPEN) mesh: an
+  // Offset(distance) copy stitched to the original along every naked
+  // edge with a new quad "wall" face, so the result is a single closed
+  // 2-manifold enclosing the material between the two layers - the
+  // mesh-level "thicken a sheet into a solid" operation, distinct from
+  // Brep-level shell/thicken another session owns. The original layer
+  // is flipped (it becomes the shell's INNER wall, so it must face
+  // "outward" relative to the material, i.e. opposite its own original
+  // direction); the offset layer keeps its own winding (it's the
+  // shell's outer wall, already facing away from the material, per
+  // Offset()'s own construction along outward vertex normals); each
+  // wall quad is built directly from Check()'s own directed
+  // naked_edge_list (already recorded in the correct outward-walking
+  // order - see that field's own comment), so no separate orientation
+  // logic is needed for the walls. Multiple disjoint boundary loops
+  // (e.g. an annulus-shaped input) are all walled up the same way, with
+  // no special-casing.
+  //
+  // Throws std::invalid_argument if `distance` is exactly 0 (a
+  // zero-thickness "solid" is meaningless), if `distance` is not finite
+  // (NaN or +/-infinity - the same check its B-rep sibling Brep::Thicken
+  // already makes), or if this mesh has no naked edges at all (already
+  // closed - Thicken() only handles the open-sheet case; a closed mesh
+  // needs a hollowing/shell operation, which is a materially different
+  // problem this method does not attempt).
+  Mesh Thicken(double distance) const;
+
+  // Thicken()'s own missing "closed mesh needs a hollowing/shell
+  // operation" counterpart: hollows this (necessarily CLOSED) mesh into a
+  // uniform-wall-thickness shell, the mesh-level answer to PARITY_MAP.md's
+  // "Closed hollow shell (uniform wall, no openings) of a solid" gap
+  // (currently only reachable via a mesh offset PLUS a separate mesh
+  // boolean subtraction). Unlike Thicken(), no wall faces are built at
+  // all: a closed mesh has no naked edge to stitch a wall to in the first
+  // place, so the result is simply the two layers left as two wholly
+  // disjoint closed 2-manifold components - a valid description of a
+  // hollow solid's own boundary (an outer surface plus a separate,
+  // nested, oppositely-facing inner surface, exactly the same shape a
+  // "solid minus its own inward offset" boolean would produce, without
+  // ever running the boolean).
+  //
+  // The outer layer is this mesh, entirely UNCHANGED (it already faces
+  // outward, away from the shell material, so - unlike Thicken(), which
+  // must flip its own untouched original layer into that role - nothing
+  // here needs flipping); the inner layer is an Offset(-thickness) copy
+  // (always inward, regardless of this mesh's own winding convention -
+  // "thickness" is a wall dimension, not a signed direction, so its sign
+  // is fixed here rather than left to the caller the way Thicken()'s own
+  // signed `distance` is) with its own winding FLIPPED, so its outward
+  // normal points into the cavity, away from the shell material between
+  // the two layers - mirroring Thicken()'s own "the layer that becomes
+  // the shell's inner wall must face outward relative to the material"
+  // rule, just with the flip and the offset copy swapped between which
+  // layer plays which role.
+  //
+  // Throws std::invalid_argument if `thickness` is not strictly positive
+  // (a wall thickness is a magnitude, not a signed offset - there is no
+  // "other side" to choose on an already-closed mesh the way there is for
+  // Thicken()'s open sheet), if this mesh is not itself a closed
+  // 2-manifold (IsClosedManifold() false - an open sheet needs Thicken(),
+  // not Shell()), or if `thickness` is large enough that the inward offset
+  // folds through itself or through the opposite wall: checked the same
+  // way FindOffsetSelfIntersections() already does (self-intersections on
+  // the offset-before-flip copy), plus an independent volume check (the
+  // offset copy's own enclosed volume, before flipping, must come out
+  // strictly between 0 and this mesh's own - a `thickness` exceeding the
+  // smallest local wall-to-wall distance anywhere can otherwise invert the
+  // inner layer through the far wall, producing a copy that LOOKS like a
+  // smaller nested solid but has silently turned inside out).
+  Mesh Shell(double thickness) const;
+
+  // Shell()'s own "no openings" restriction, lifted: hollows this
+  // (necessarily CLOSED) mesh the same way the single-argument Shell()
+  // does, but with every face named in `removed_face_indices` cut away
+  // from BOTH the outer and inner layer first, and a ring of new side
+  // wall quads stitched around each resulting opening's own boundary -
+  // the mesh-level counterpart to PARITY_MAP.md's "Shell with removed/
+  // open faces (cup/case), including multi-face openings" gap, whose own
+  // kernel entry (`ShellConvexPlanar`, boolean.h) is exact but limited to
+  // a convex, all-planar Brep; this instead accepts any closed 2-manifold
+  // triangle/quad mesh, curved or not, convex or not - the same
+  // generality the no-opening `Shell(thickness)` overload above already
+  // has over `ShellClosedSphere`/`ShellClosedTorus`.
+  //
+  // Unlike a hand-rolled "delete faces from the result of Shell()"
+  // (which would leave the opening's own rim as two separate, unwelded
+  // naked loops - one on the outer layer, one on the inner - with no
+  // material connecting them, not a real cup/case wall), this reuses
+  // Thicken()'s own established IDEA for turning a naked boundary loop
+  // into a genuine wall (one new quad per naked edge) - but with the
+  // wall's own winding REVERSED from Thicken()'s `vi = {a, b, b+n,
+  // a+n}`, deliberately, not by oversight: Thicken()'s naked edge (a, b)
+  // is read off the sheet BEFORE that sheet gets flipped into the
+  // INNER-wall role, so its wall ends up correctly opposite the STORED
+  // (post-flip) inner face's own direction there. This method's outer
+  // layer, by contrast, is stored UNFLIPPED (see this class's own
+  // "outer layer unchanged" convention above) - so its wall must instead
+  // walk `vi = {b, a, a+n, b+n}` to land opposite the outer layer's own
+  // stored direction, and correspondingly opposite the (separately
+  // flipped) inner layer's own stored direction at the `(a+n, b+n)` edge
+  // too. Confirmed empirically, not just argued, before landing (a
+  // scratch `Check()` dump showed 8 `orientation_conflicts` with the
+  // naive un-reversed order, 0 with this one).
+  //
+  // `removed_face_indices` names faces of THIS mesh (not the offset
+  // copy) - the same face is removed from the inward-offset copy before
+  // it becomes the inner layer, so the opening lines up exactly between
+  // the two layers. Faces may be mutually adjacent (an opening spanning
+  // several faces) or come from more than one disjoint group (several
+  // separate openings, each stitched with its own ring of side walls,
+  // via however many naked-edge loops the post-removal outer layer
+  // actually has) - neither is refused the way `ShellConvexPlanar`'s own
+  // Brep-level convex-planar construction must refuse adjacent removed
+  // faces; there is no equivalent topological hazard at the mesh level,
+  // where a face is just a row in a flat list. The opening's own resulting
+  // naked-edge rim IS checked for a different hazard, though: a
+  // self-touching ("bowtie") boundary, where some vertex sits on more than
+  // 2 of the opening's own naked edges - the side-wall stitching below has
+  // no way to tell which two of that vertex's several naked edges belong
+  // to the same local corner, so this is refused rather than stitched
+  // ambiguously.
+  //
+  // The feasibility guards are the SAME ones `Shell(thickness)` already
+  // applies, checked against the FULL (pre-removal) mesh and its full
+  // inward offset - opening some faces up can only ever relax the
+  // wall-to-wall feasibility problem (there's less material left to fold
+  // through itself), never worsen it, so reusing the whole-mesh check
+  // is both correct and simpler than re-deriving a partial-mesh version.
+  //
+  // Throws std::invalid_argument if: `thickness` is not strictly
+  // positive; this mesh is not itself a closed 2-manifold (the same
+  // precondition `Shell(thickness)` applies - `removed_face_indices`
+  // describes an opening to cut INTO an already-closed solid, it is not
+  // itself the reason the input may already be open); `removed_face_indices`
+  // is empty (use the no-opening overload instead - a real, if
+  // unenforced-elsewhere, "don't call the more general overload for
+  // nothing" convention rather than silently degrading to it); contains
+  // an index outside [0, FaceCount()), a duplicate index, or names every
+  // face of the mesh (an entirely open shell has no "outer wall" left to
+  // define an inside/outside at all); `thickness` folds/inverts the
+  // full inward offset the same way the no-opening overload already
+  // refuses; or the opening's own naked-edge rim is a self-touching
+  // ("bowtie") boundary as described above.
+  Mesh Shell(double thickness, const std::vector<int>& removed_face_indices) const;
+
+  // The uniform-thickness Shell(double)'s own per-face generalization -
+  // the mesh-level answer to PARITY_MAP.md's "Per-face (multi-thickness)
+  // shell" gap, whose only prior kernel evidence (`ShellConvexPlanar`'s
+  // own per-face overload, boolean.h) is convex-planar-Brep-only.
+  // `face_thickness` names one thickness per face of THIS mesh (must
+  // match FaceCount() exactly, every entry strictly positive).
+  //
+  // A per-vertex offset mesh has no natural per-FACE wall (unlike a Brep,
+  // whose faces are independent planes/surfaces): every vertex is shared
+  // by several faces and moves along ONE shared vertex normal, so this
+  // reconciles a vertex's neighbouring faces' differing thicknesses into
+  // one effective distance for that vertex via the SAME area-weighted
+  // scheme ComputeVertexNormals() already uses for direction (each
+  // incident triangle contributes its own thickness weighted by its own
+  // area, not an unweighted per-face average) - a vertex touching three
+  // equal-area faces of thickness 0.2/0.3/0.3, say, offsets by their
+  // plain average, 0.2667. This is an honest reconciliation, not an
+  // approximation error: a mesh vertex genuinely has no way to carry two
+  // different thicknesses on either side of it at once the way a Brep's
+  // separately-clipped per-face planes can (see `ShellConvexPlanar`'s own
+  // per-face overload for that exact, sharper alternative when the
+  // convex-planar precondition holds).
+  //
+  // Uniform `face_thickness` (every entry equal to the same `t`) recovers
+  // `Shell(t)`'s own result up to ordinary floating-point roundoff in the
+  // area-weighted average's summation order - the area weighting cannot
+  // pull a constant away from itself, only differing neighbours ever do.
+  //
+  // Throws std::invalid_argument if `face_thickness.size()` does not
+  // equal `FaceCount()`, if any entry is not strictly positive, if this
+  // mesh is not a closed 2-manifold, or under the same self-intersection/
+  // volume-inversion guard the uniform-thickness overload already applies
+  // (checked against the per-vertex offset this method actually applies,
+  // not a uniform stand-in).
+  Mesh Shell(const std::vector<double>& face_thickness) const;
+
+  // The two overloads directly above, combined: a per-face thickness
+  // vector AND a set of removed (opening) faces in one call - closing the
+  // "still separate" gap PARITY_MAP.md's "Shell with removed/open faces"
+  // and "Per-face (multi-thickness) shell" bullets both disclose once each
+  // other existed. `face_thickness` names one thickness per face of THIS
+  // mesh (including a removed one - see below for why), `removed_face_
+  // indices` the faces to leave open, exactly like the two single-purpose
+  // overloads above.
+  //
+  // A removed face's own `face_thickness` entry still counts toward the
+  // area-weighted per-vertex blend at any vertex it shares with a kept
+  // neighbour - this method does not special-case removed faces out of
+  // that reconciliation, the same "no special-casing" choice the uniform-
+  // thickness `Shell(thickness, removed_face_indices)` overload already
+  // makes for its own feasibility guard (checked against the offset the
+  // FULL mesh would get, not just the post-removal part).
+  //
+  // The opening's own naked-edge rim is additionally refused if it is not
+  // a single simple loop (a "bowtie": some vertex on the rim shared by
+  // more than 2 of the opening's own naked edges) - the disclosed hazard
+  // the uniform-thickness removed-face overload's own doc comment already
+  // names as "not specially detected"; both removed-face overloads now
+  // detect it.
+  //
+  // Throws std::invalid_argument under every condition either parent
+  // overload already throws under (bad `face_thickness` size/sign, an
+  // open input, a bad `removed_face_indices` list, the fold/volume-
+  // inversion feasibility guard against the per-vertex offset this method
+  // actually applies), plus the new bowtie-boundary refusal above.
+  Mesh Shell(const std::vector<double>& face_thickness, const std::vector<int>& removed_face_indices) const;
+
+  // Answers the real hazard Offset()'s own doc comment above already
+  // names but has no way to check on its own: whether Offset(distance)
+  // applied to THIS mesh would fold over itself. Computes Offset(distance)
+  // and runs FindSelfIntersections(tolerance) directly on the result -
+  // an offset distance exceeding the local radius of curvature anywhere
+  // (a sharp concave corner or fold, say) pushes that region's own
+  // offset surface through itself, exactly the "self-intersection when
+  // offset distance exceeds local curvature radius" hazard a plain
+  // per-vertex-normal push has no way to notice by construction. DETECTION
+  // ONLY, the same considered position FindSelfIntersections() itself
+  // takes (see its own doc comment: no single correct repair - split at
+  // the crossing? clamp the distance? re-run at a smaller one? - the way
+  // a duplicate face or a below-tolerance sliver has): this does not
+  // clamp, retry, or choose a safe distance, it only reports the same
+  // (face_index_a, face_index_b) pairs FindSelfIntersections() would,
+  // computed on the OFFSET mesh (whose face indices are in exact 1:1
+  // correspondence with this mesh's own faces, since Offset() moves
+  // vertices only and never changes face topology) - empty means the
+  // offset is safe to use as-is. `tolerance` is forwarded to
+  // FindSelfIntersections() unchanged.
+  std::vector<std::pair<int, int>> FindOffsetSelfIntersections(double distance,
+                                                                double tolerance = tolerance::kDistance) const;
+
+  // Genuine "Inset" of a single mesh face: unlike the app-level
+  // `InsetFaces` (cmd_subd.cpp), which just drags each corner toward the
+  // face centroid, this moves every one of `face_index`'s own edges
+  // INWARD, staying PARALLEL to its original direction, and re-derives
+  // each new corner as the exact mitered intersection of its two
+  // adjacent moved edges - the same "moved edge, re-intersected at the
+  // corner" construction sweep.cpp's own `OffsetConvexPolyline` already
+  // uses for a curve profile, applied here to one mesh face's own
+  // boundary ring instead. The whole construction stays exactly in
+  // `face_index`'s own plane (no extrusion): the original face is
+  // replaced by a ring of `n` new quad "frame" faces (one per original
+  // edge, each spanning that edge and its own inset counterpart) plus
+  // one new inner face at the inset ring, coplanar with, and similar in
+  // shape to, the original - every original vertex keeps its own index
+  // and position; only `n` new vertices are appended. `depth`, if
+  // nonzero, additionally lifts the inner ring (and only the inner ring)
+  // along the face's own outward normal by that amount, so `depth == 0`
+  // is a flat inset and `depth != 0` is the bevelled/pushed variant of
+  // the same tool.
+  //
+  // Deliberately scoped like every other convex-planar-ring construction
+  // in this codebase (`ClipConvexPolygon`'s own callers, `OffsetConvexPolyline`):
+  // `face_index` must name a triangle or quad (an `ON_Mesh` face can be
+  // no larger), whose own ring must be planar, simple, and convex.
+  // Throws std::invalid_argument for an out-of-range `face_index`, a
+  // non-planar or self-intersecting quad, a reflex (concave) quad
+  // corner, or a `distance` that folds a corner back on itself (a
+  // near-180-degree corner) or is not strictly positive - the same
+  // "positive multiple of its own original direction" validity check
+  // `OffsetConvexPolyline` uses to catch an inset distance exceeding the
+  // face's own inradius, applied to a closed ring here. Returns a new
+  // mesh; this one is untouched.
+  Mesh InsetFace(int face_index, double distance, double depth = 0.0) const;
+
+  // Concatenates several independently-tessellated meshes into one and
+  // welds vertices within `tolerance` of each other into a single shared
+  // vertex. Needed because Brep::Tessellate() tessellates each face on
+  // its own: two faces meeting at a shared edge each produce their own
+  // copy of that edge's vertices, at identical (or near-identical,
+  // depending on tolerance) positions but as distinct array entries. A
+  // boolean engine like Manifold requires a genuinely closed manifold -
+  // coincident-but-separate vertices at a seam don't count - so this is
+  // the step that turns "several open patches that happen to line up"
+  // into "one watertight solid." The default is the kernel's weld
+  // distance, tolerance::kWeld (see tolerance.h) - the same 1e-6 it has
+  // always been, now named rather than a literal.
+  static Mesh MergeAndWeld(const std::vector<Mesh>& meshes,
+                            double tolerance = tolerance::kWeld);
+
+  // Sweeps `cap` (any open mesh with a well-defined boundary loop - a
+  // trimmed planar face's tessellation, an untrimmed one, or any other
+  // manifold-with-boundary patch) along `offset` into a closed solid:
+  // `cap` becomes one end as-is, a copy of it translated by `offset`
+  // (with reversed winding) becomes the other end, and side walls are
+  // generated to connect them.
+  //
+  // This is the general answer to the gap earlier chunks flagged
+  // ("nothing here builds the matching edges/walls a real trimmed solid
+  // needs"): rather than hand-deriving matching wall geometry per shape
+  // (as Box() and a hypothetical Cylinder() would each need to), this
+  // extracts `cap`'s boundary loop directly from its own triangle
+  // adjacency (an edge used by exactly one triangle is a boundary edge)
+  // and builds walls from that - so it works on any cap shape, including
+  // Brep::TrimmedPlanarFace()'s jagged/staircased trim boundary, without
+  // needing the wall geometry to be constructed to match some idealized
+  // curve. No welding tolerance is involved: top, bottom, and wall
+  // vertices at the shared seams reuse `cap`'s own vertex positions
+  // exactly (translated for the far end), so the result is already a
+  // single closed mesh - it does not need MergeAndWeld().
+  //
+  // `cap`'s boundary may be multiple disjoint loops (an annulus/washer
+  // face - outer boundary plus a hole - extrudes to a tube with
+  // independently-walled outer and inner surfaces), but every loop must
+  // be simple: each boundary vertex must have exactly one boundary edge
+  // leaving it and one arriving. Throws std::invalid_argument otherwise
+  // (a self-intersecting or "bowtie" boundary, or a cap with no boundary
+  // at all - i.e. already closed) rather than emitting overlapping or
+  // malformed wall geometry.
+  static Mesh ExtrudeCappedSolid(const Mesh& cap, Vector3d offset);
+
+  // Builds a real cylinder: a circular disk cap (Brep::TrimmedPlanarFace()
+  // with an N-gon trim polygon approximating a circle) swept along `axis`
+  // by `height` via ExtrudeCappedSolid(). Returns Mesh rather than Brep
+  // because it's already a closed-solid convenience, not a Brep
+  // primitive - the wall geometry comes from ExtrudeCappedSolid's
+  // boundary-edge extraction, not real trimmed-surface topology.
+  //
+  // This is the real test of ExtrudeCappedSolid() generalizing beyond a
+  // rectangular trim boundary: the circle's N-gon trim is approximated
+  // the same whole-cell-in/out way any TrimmedPlanarFace() is, so the
+  // resulting solid's volume approaches (not exactly equals) the ideal
+  // pi*r^2*h as circle_segments and the tessellation grid resolution
+  // increase - unlike Box()/the rectangular trim tests, which hit exact
+  // values by construction.
+  //
+  // Throws std::invalid_argument if `circle_segments` is less than 3 - a
+  // real, previously-missing check that turned up a genuinely serious
+  // silent-failure mode, not just an empty mesh: `circle_segments=0`
+  // built an *empty* trim polygon, and this kernel's own
+  // `Brep::Tessellate()` treats an empty trim loop as "no trim at all,"
+  // so the untrimmed ~1.2x-oversized square cap surface got tessellated
+  // and swept whole - a plausible-looking but completely wrong solid
+  // (confirmed with a debug run: `circle_segments=0` returned a real
+  // mesh with hundreds of faces, not a crash or an empty result, at
+  // roughly the square cap's own size instead of the requested circle).
+  static Mesh Cylinder(Point3d base_center, Vector3d axis, double radius,
+                        double height, int circle_segments = 48,
+                        int grid_divisions = 48);
+
+  // Cones `cap`'s boundary loop to a single point `apex`, closing it into
+  // a solid the way ExtrudeCappedSolid() closes it into a prism: `cap`
+  // becomes the base as-is, and each boundary edge becomes one triangle
+  // to `apex` instead of a translated-copy wall quad. Same boundary
+  // requirements as ExtrudeCappedSolid() (a set of simple, disjoint
+  // closed loops - one boundary edge leaving and one arriving at every
+  // boundary vertex), and the same "no welding needed" property (`apex`
+  // is a single new vertex all wall triangles share exactly).
+  static Mesh ConeToApex(const Mesh& cap, Point3d apex);
+
+  // Builds a real cone: a circular disk cap (Brep::TrimmedPlanarFace()
+  // with an N-gon trim polygon approximating a circle), same construction
+  // as Cylinder(), coned to a single apex point along `axis` at `height`
+  // via ConeToApex() instead of swept via ExtrudeCappedSolid(). Volume
+  // approaches (not exactly equals) the ideal (1/3)*pi*r^2*h as
+  // circle_segments and grid_divisions increase, same caveat as
+  // Cylinder(). Throws std::invalid_argument under the same
+  // `circle_segments < 3` condition Cylinder() does - see there.
+  static Mesh Cone(Point3d base_center, Vector3d axis, double radius,
+                    double height, int circle_segments = 48,
+                    int grid_divisions = 48);
+
+  // Revolves a 2D profile around `axis` by `angle` radians (default a
+  // full 2*pi revolution) into a closed solid of revolution (a lathe
+  // operation) - the general answer to "no revolve" that Cylinder()/
+  // Cone() don't cover (constant or linearly-tapering radius only).
+  // `profile[i] = (radius, height)`: radius >= 0 measured from `axis`,
+  // height measured along `axis` from `axis_point`.
+  //
+  // FULL angle (the default, and this function's original contract - no
+  // behavior change for an existing caller who never passes `angle`):
+  // an end whose radius is 0 (lies on the axis) is closed with a
+  // triangle fan to a single shared apex vertex, the same way
+  // ConeToApex() closes a cap; an end with nonzero radius instead gets a
+  // flat circular disc cap (a center vertex plus a fan to that end's
+  // ring, oriented outward: -axis at the start, +axis at the end - the
+  // same orientation ExtrudeCappedSolid()'s own caps use). Mixing the
+  // two is fine (e.g. an on-axis start tapering to an off-axis end,
+  // closed with a flat disc there). Every profile point becomes either a
+  // single apex vertex (on-axis end) or a `revolve_segments`-vertex ring
+  // (everywhere else, including an off-axis end). No MergeAndWeld() is
+  // needed: each ring's vertices are shared directly by the band
+  // before/after it and by that end's own cap fan if it has one (an
+  // on-axis end's fan reuses the same apex vertex for every triangle),
+  // so the result is already a single closed mesh - exact shared
+  // vertices, no welding tolerance, same property as
+  // ExtrudeCappedSolid() and ConeToApex().
+  //
+  // PARTIAL angle (< 2*pi): this function's own fast ring construction
+  // above has no notion of the two additional pie-slice side caps a
+  // partial revolve needs, so this delegates to Brep::Revolve() (which
+  // already has that cap logic, fully verified on its own) and
+  // tessellates the result instead - a NURBS-tessellation approximation,
+  // not the exact-shared-vertex construction the full-angle path above
+  // is; `revolve_segments` sets the angular tessellation density, and
+  // the profile's own point density sets its resolution (each straight
+  // run between consecutive profile points lies exactly on the true
+  // ruled wall regardless, but an interior profile vertex can still be
+  // rounded off by a too-coarse tessellation grid missing it - add more
+  // profile points for a sharper corner, the same tradeoff every other
+  // tessellated-from-NURBS mesh here has). Whatever profile-shape/cap
+  // combination Brep::Revolve() itself cannot cap at a partial angle
+  // (see its own doc comment - a partial angle with an off-axis
+  // endpoint, for one) throws exactly the exception it throws,
+  // propagated unchanged rather than reworded.
+  //
+  // `start_angle`: the sweep begins `start_angle` radians (any sign,
+  // any magnitude - it's just added to every sample angle) around from
+  // the profile's own given position, the same parameter and convention
+  // Brep::Revolve() already has. FULL angle: every ring sample's theta
+  // is simply offset by `start_angle` before its cos/sin - the ring
+  // construction never assumed theta started at 0, so this changes
+  // nothing else (still exact, still the same shared-vertex topology,
+  // and a full 2*pi sweep is unchanged as a SET of points, just
+  // reindexed around the ring). PARTIAL angle: passed straight through
+  // to the Brep::Revolve() delegate, which rigidly rotates the profile
+  // by `start_angle` before sweeping - see its own doc comment.
+  //
+  // Throws std::invalid_argument if `profile` has fewer than 2 points
+  // (fewer leaves nothing to revolve into a solid), if `revolve_segments`
+  // is less than 3 - a real gap found by checking whether `profile`'s
+  // own validation had a sibling for this parameter (it didn't): fewer
+  // than 3 segments can't form a non-degenerate ring at all, and a debug
+  // run confirmed the old, unguarded behavior wasn't even a clean crash
+  // (`revolve_segments=0` silently produced a near-empty, faceless mesh) -
+  // if `angle` is not finite or not in (0, 2*pi], or if `start_angle` is
+  // not finite.
+  static Mesh RevolveProfile(const std::vector<Point2d>& profile, Point3d axis_point,
+                              Vector3d axis, int revolve_segments = 48, double angle = 2.0 * ON_PI,
+                              double start_angle = 0.0);
+
+  // Lofts a sequence of closed polygonal cross-sections ("rings") into a
+  // closed solid - the general answer to "no loft" that RevolveProfile()
+  // doesn't cover (a shape that changes profile shape along its length,
+  // not just radius). Every ring must have the same vertex count
+  // (>= 3) and must be listed in the same rotational order: CCW as seen
+  // looking from beyond the last ring back toward the first (the same
+  // "u_dir x v_dir = outward normal" convention this file already uses
+  // everywhere else) - not validated here, since checking a ring's
+  // winding requires assuming it's planar, which correctly building the
+  // two end caps below already requires. The first and last rings are
+  // closed off with an ear-clipping triangulation each (each ring's own
+  // Newell-normal-derived 2D projection, via
+  // dino8::kernel::detail::EarClipTriangulate - the same triangulator
+  // TessellateGridClippedExact() uses for a concave trim), so a ring may
+  // be concave, not just convex. The first and last rings must still be
+  // planar and simple/non-self-intersecting - both now checked (planarity
+  // via a relative-tolerance out-of-plane distance against a normal found
+  // from the ring's own points; simplicity via
+  // dino8::kernel::detail::IsSimplePolygon on that ring's own 2D
+  // projection - the same check and requirement
+  // TessellateGridClippedExact() applies to its trim_polygon); interior
+  // rings only feed bands and aren't checked either way. Throws
+  // std::invalid_argument if fewer than 2 rings are given, ring vertex
+  // counts don't match, or the first/last ring is non-planar or
+  // self-intersecting.
+  //
+  // No MergeAndWeld() is needed: consecutive rings' vertices are shared
+  // directly between the band before and after them, and each end cap's
+  // fan reuses that ring's own vertices - same "exact shared vertices, no
+  // welding tolerance" property as ExtrudeCappedSolid(), ConeToApex(),
+  // and RevolveProfile().
+  static Mesh LoftClosedRings(const std::vector<std::vector<Point3d>>& rings);
+
+  // Same band skinning as LoftClosedRings(), but for a spine that loops back
+  // on itself: ring i gets a band to ring (i+1) % rings.size() (the last
+  // ring wraps back to the first) and there are no end caps, since a
+  // periodic spine's tube is already a closed loop with no open ends to cap.
+  // Use this instead of LoftClosedRings() whenever the ring sequence itself
+  // represents a full loop (e.g. a tube swept all the way around a closed
+  // edge) - capping both ends of a loop that already closes on itself
+  // produces two coincident flat caps at the seam instead of a manifold
+  // tube. Throws std::invalid_argument if fewer than 3 rings are given or
+  // ring vertex counts don't match.
+  static Mesh LoftPeriodicRings(const std::vector<std::vector<Point3d>>& rings);
+
+  // Builds a real torus: a circular tube of `minor_radius`, swept around
+  // `axis` at `major_radius` from `center`. Doesn't fit any earlier
+  // primitive's shape: RevolveProfile()'s profile must start and end on
+  // the axis, but a torus's circular cross-section never touches the
+  // axis at all (it's a full loop offset from it) - a genuinely different
+  // case, not a special case of RevolveProfile() with different
+  // parameters. Built directly as a `major_segments` x `minor_segments`
+  // quad grid that wraps in *both* directions (unlike Cylinder()/Cone(),
+  // there's no boundary anywhere on a torus, so no end caps or
+  // ExtrudeCappedSolid()/ConeToApex() call is needed - the grid is
+  // already a closed manifold by construction).
+  //
+  // The winding was derived independently from Cylinder()'s/
+  // RevolveProfile()'s (a torus isn't built from either), but checks
+  // against the same standing rule this file always uses: parameterizing
+  // by (major angle, minor angle) and evaluating (d/d-major-angle) x
+  // (d/d-minor-angle) at the tube's outer equator gives the radially
+  // outward direction, confirming grid cell winding
+  // tri1=(v(i,j),v(i+1,j),v(i+1,j+1)), tri2=(v(i,j),v(i+1,j+1),v(i,j+1))
+  // (the same cell-winding convention TessellateGrid() uses) is correct
+  // here too.
+  //
+  // Volume approaches (not exactly equals) the ideal
+  // 2*pi^2*major_radius*minor_radius^2 as `major_segments`/
+  // `minor_segments` increase, same caveat as Cylinder()/Cone()'s
+  // circular approximation.
+  //
+  // Throws std::invalid_argument if either segment count is less than
+  // 3 - the same real, previously-missing validation
+  // `RevolveProfile()`'s own `revolve_segments` just got: a debug run
+  // confirmed a `0` count here has the identical silent-failure pattern
+  // (a `major_segments`/`minor_segments` value of 0 makes the
+  // corresponding vertex-generation loop simply never run, producing a
+  // fully empty, faceless mesh instead of a thrown error).
+  static Mesh Torus(Point3d center, Vector3d axis, double major_radius, double minor_radius,
+                     int major_segments = 48, int minor_segments = 24);
+
+ private:
+  friend class Brep;
+  friend class NurbsSurface;
+
+  // Shared by ExtrudeCappedSolid() and ConeToApex(): extracts `cap`'s
+  // boundary edges from triangle adjacency (an edge used by exactly one
+  // triangle is a boundary edge) and validates they form a set of simple,
+  // disjoint closed loops, throwing std::invalid_argument (naming
+  // `caller` in the message) otherwise - see ExtrudeCappedSolid()'s own
+  // comment for why an already-closed cap or a bowtie/self-intersecting
+  // boundary can't be trusted to "probably be fine."
+  static std::vector<std::pair<int, int>> ExtractValidatedBoundaryEdges(
+      const ON_Mesh& cap, const char* caller);
+
+  ON_Mesh mesh_;
+};
+
+}  // namespace dino8::kernel

@@ -1,0 +1,29 @@
+# RegionBoolean exact-polygon path: kernel::PolygonBooleanPlanar now backs
+# PlanarUnion/PlanarDifference/CurveBoolean/CreateRegions's own two-region
+# case when both input curves are genuine closed polylines (no curved
+# edges) - a real, non-tessellated 2D boolean instead of the existing
+# mesh-slab approximation (PARITY_MAP.md's "kernel: Boolean operations"
+# category's "2D region / planar curve booleans" bullet, which named "No
+# exact 2D curve boolean in the kernel" as the gap even though
+# kernel::PolygonBooleanPlanar already existed and was already tested
+# standalone, with zero callers anywhere in dino8-app).
+#
+# Two overlapping axis-aligned rectangles (Rectangle builds a real closed
+# ON_PolylineCurve via PolylineCurve(), cmd_create.cpp) - straight edges
+# only, so this is the lossless case ExactPolygonOf (cmd_solidtools.cpp)
+# recognizes via ON_Curve::IsPolyline(), not an approximation of a curved
+# boundary. PlanarUnion's own DeleteInput option defaults to false (the
+# same default solidtools_script.txt's own pre-existing CurveBoolean test
+# relies on), so the two source rectangles stay in the document alongside
+# the new result curve: 2 + 1 = 3. Fresh document, so ids are 1 and 2.
+SetActiveViewport Top
+Rectangle 0,0,0 4,4,0
+Rectangle 2,0,0 6,4,0
+SelNone
+SelID 1
+SelID 2
+PlanarUnion
+@expect_objects 3
+SelAll
+Delete
+@expect_objects 0

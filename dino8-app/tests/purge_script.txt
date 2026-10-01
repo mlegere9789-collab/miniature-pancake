@@ -1,0 +1,46 @@
+# Purge QC: Purge sweeps every named-item table the document keeps (layers,
+# block definitions, materials, linetypes, annotation styles, empty groups),
+# not just layers - see cmd_layer.cpp. Each block below creates one item of
+# a kind, makes it genuinely unused, and the run at the bottom asserts the
+# whole document is back to its untouched defaults (see smoke.sh's purge
+# checks for the exact reported counts).
+SetActiveViewport Top
+
+# --- Unused layer: NewLayer makes the new layer current, so switch back to
+# Default (still empty) before Purge runs.
+NewLayer PurgeUnusedLayer
+SetLayer Default
+
+# --- Unused block: define TestBlock from a circle, then delete the placed
+# instance Block leaves behind, so the definition itself has zero instances.
+Circle 0,0,0 5
+SelLast
+Block
+0,0,0
+TestBlock
+SelLast
+Delete
+
+# --- Unused material: AssignBlankTexture creates and owns a material for
+# the selected object; deleting that object leaves the material referenced
+# by nobody (not an object, not a layer).
+Circle 0,0,0 3
+SelLast
+AssignBlankTexture
+SelLast
+Delete
+
+# --- Unused custom linetype: added directly, never assigned to any object
+# or layer.
+SetCustomLinetype Name=PurgeUnusedLinetype Pattern=1,1
+
+# --- Unused annotation style: created without switching Current to it, so
+# no annotation was ever tagged with its name.
+AnnotationStyles Name=PurgeUnusedStyle Current=No
+
+# Every setup object above has been deleted again - the document should be
+# back to zero objects, with only the unused named items left to purge (plus
+# the one empty group Block's now-deleted instance leaves behind).
+@expect_objects 0
+Purge
+List

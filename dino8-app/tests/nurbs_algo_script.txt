@@ -1,0 +1,57 @@
+# QC for this increment's real NURBS algorithm work (see smoke.sh):
+# RefitTrim (a real constrained least-squares curve fit), ExtractPipedCurve
+# (Pipe now tags its result with the rail curve), and MakePeriodic Smooth=No
+# (the exact-shape-preserving re-knot).
+SetActiveViewport Top
+
+# --- RefitTrim on a cylinder's own end-cap circle: a real end-to-end run
+# of the whole command (pick an edge, sample its trim curve, least-squares
+# fit at increasing control-point counts, clamp into the surface's own
+# (u,v) domain, re-verify the tolerance). This specific surface's domain is
+# exactly the trim curve's own tight bounding square (a cap's underlying
+# plane is sized to the circle itself, with no margin to spare), and any
+# NURBS approximation of a circular arc has control points that overshoot
+# the arc's own radius (a real, hand-verifiable geometric fact - see
+# kernel test TestCurveFitLeastSquaresConstrainedRefit, which proves the
+# identical algorithm SUCCEEDS with real domain margin and only reports
+# this exact kind of case infeasible when the domain is genuinely tight) -
+# so the command's honest "left unchanged" refusal here is the CORRECT
+# answer, not a bug, and is itself the thing this checks.
+Cylinder 0,0,0 5 10
+RefitTrim
+5,0,10
+0.01
+SelAll
+Delete
+@expect_objects 0
+
+# --- ExtractPipedCurve: Pipe tags its surface with the rail curve (a real
+# geometry copy, not a live reference), so ExtractPipedCurve pulls a new,
+# independent curve object back out - even after the original rail curve
+# is deleted.
+Line 0,0,0 20,0,0
+SelLast
+Pipe Cap=No
+1
+@expect_objects 2
+SelCrv
+Delete
+@expect_objects 1
+SelLast
+ExtractPipedCurve
+@expect_objects 2
+SelAll
+Delete
+@expect_objects 0
+
+# --- MakePeriodic Smooth=No: the real exact-shape-preserving re-knot on a
+# closed, non-periodic curve (a circle's own clamped NURBS form).
+Circle 100,0,0 5
+SelLast
+MakePeriodic
+Smooth=No
+Enter
+SelLast
+List
+Delete
+@expect_objects 0

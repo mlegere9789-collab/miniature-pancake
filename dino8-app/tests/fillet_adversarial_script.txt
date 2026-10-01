@@ -1,0 +1,373 @@
+# Adversarial fillet QC: radii and geometry chosen to stress BuildFillet's
+# tolerance handling and RoundFaceCorner's vertex-corner detection, not just
+# the clean 10x10x10-box case in fillet_script.txt. Each section deletes
+# its own objects afterward so @expect_objects checks stay per-section
+# (unlike fillet_script.txt's Hide-and-check-at-the-end style). See
+# dino8-app/tests/adversarial_corpus_notes.md for the two genuine
+# kernel-level limitations this corpus found (both confirmed reproducible
+# on the unmodified, pristine code too, not introduced by any fix here).
+SetActiveViewport Top
+# --- Asymmetric box (100 x 5 x 2): the vertical (height) edge at a corner
+# is only 2 units long while the other two edges meeting at that same
+# vertex are 100 and 5 - a vertex where the three adjacent edges have very
+# different lengths, unlike a cube's equal-length corner.
+# --- Tiny radius relative to the shortest adjacent edge (0.02, vs a 2-unit
+# edge): must still build a real, exact fillet, not skip or degrade it.
+Box 0,0,0 100,5,0 2
+FilletEdge
+Radius=0.02
+100,5,1
+Enter
+SelAll
+Volume
+@expect_objects 1
+SelAll
+Delete
+# --- Radius at the geometric limit of the shortest adjacent edge (radius
+# equal to half that edge's own length, 1.0 for a 2-unit-tall edge): the
+# rolling-ball offset surfaces are pushed right to where the face's own
+# extent runs out - must still build a valid closed solid, not garbage.
+Box 100,0,0 200,5,0 2
+FilletEdge
+Radius=1
+200,5,1
+Enter
+SelAll
+List
+@expect_objects 1
+SelAll
+Delete
+# --- Radius larger than the shortest adjacent edge supports (5, vs a
+# 2-unit-tall edge - more than double what the geometry can resolve):
+# expect FilletEdge's own graceful failure message, not a hang, crash, or
+# a self-intersecting/garbage fillet surface silently accepted as "ok" -
+# and the original box must survive untouched, not be left half-modified.
+Box 200,0,0 300,5,0 2
+FilletEdge
+Radius=5
+300,5,1
+Enter
+SelAll
+Volume
+@expect_objects 1
+SelAll
+Delete
+# --- Huge-scale box (1e6-unit coordinates) with an otherwise perfectly
+# ordinary radius (2, on a 10-unit box - identical proportions to
+# fillet_script.txt's own working case, just translated far from the
+# origin). This USED TO BE known infeasible at this coordinate magnitude
+# for the reason adversarial_corpus_notes.md still documents in full
+# (dino8::kernel::Mesh stores vertices as single-precision ON_3fPoint
+# floats, and 1e6 * 2^-23 ~= 0.12 units of quantization swamps a 2-unit
+# fillet feature once the result is tessellated), and the old generic
+# BuildFillet path - built from independently numerically-intersected
+# spine samples, then validated by tessellating and checking closure -
+# still hits exactly that gap and still fails gracefully the same way.
+# **This pass:** the new TryExactFillet path (see cmd_fillet.cpp) reaches
+# this case FIRST now, and it does not fail - kernel::FilletConvexEdge
+# builds the whole result as ONE coherent double-precision Brep sharing
+# literal vertex positions across every trim, rather than stitching
+# together independently-computed offset-surface-intersection samples, so
+# a later float-mesh tessellation for Volume quantizes every shared vertex
+# the SAME way instead of drifting the two sides of a seam apart - no gap
+# ever opens. Verified, not assumed: Volume below comes back 991.4, the
+# same exact closed-form value fillet_script.txt's own origin-scale
+# Radius=2 box case already verifies, not 0/"not closed". Still
+# genuinely infeasible for whatever falls through to the old approximate
+# path (a curved adjacent face, Radii=, or any other PlanarFaces()
+# rejection) - see adversarial_corpus_notes.md's own updated note.
+Box 1000000,0,0 1000010,10,0 10
+FilletEdge
+Radius=2
+1000010,10,5
+Enter
+SelAll
+Volume
+@expect_objects 1
+SelAll
+Delete
+# --- ChamferEdge Distance2 (asymmetric two-distance chamfer): wires
+# straight to kernel::ChamferConvexEdge(solid, p0, p1, distance_i,
+# distance_j) - a genuine flat planar bevel with two INDEPENDENT
+# distances, not the rolling-ball-derived approximate path below (whose
+# RuledBetween() ruled surface runs between two EQUAL-offset contact
+# curves, so it can only ever build a symmetric chamfer regardless of what
+# Distance2 asks for). Closed form: removed volume = distance_i *
+# distance_j * edge_length / 2 (the chamfer's right-triangle
+# cross-section prism) = 2 * 4 * 10 / 2 = 40, so 1000 - 40 = 960 exactly.
+Box 1300000,0,0 1300010,10,0 10
+ChamferEdge
+Radius=2
+Distance2=4
+1300010,10,5
+Enter
+SelAll
+Volume
+@expect_objects 1
+SelAll
+Delete
+# --- ChamferEdge Angle (Distance/Angle mode): kernel::ChamferConvexEdgeAngle
+# dispatches to the same two-distance construction via the law of sines;
+# at 45 degrees on a right-angle edge distance_j == distance_i EXACTLY (see
+# that function's own doc comment), so this must land on the identical
+# exact volume as a plain symmetric Radius=2 chamfer: 1000 - 2*2*10/2 = 980.
+Box 1300020,0,0 1300030,10,0 10
+ChamferEdge
+Radius=2
+Angle=45
+1300030,10,5
+Enter
+SelAll
+Volume
+@expect_objects 1
+SelAll
+Delete
+# --- ChamferEdge Distance2 on a curved-adjacent-face edge (a solid
+# cylinder's own flat-top rim: one planar face, one cylindrical face): the
+# exact kernel path needs the WHOLE solid planar-faced
+# (kernel::Brep::PlanarFaces()'s own scope), so an asymmetric request here
+# must fail with a clear diagnostic instead of silently building a
+# SYMMETRIC approximate chamfer that quietly ignores Distance2 - exactly
+# the misleading-success bug this Distance2/Angle wiring must not
+# reintroduce. The cylinder itself must survive untouched.
+Cylinder 1300040,0,0 5 20
+ChamferEdge
+Radius=1
+Distance2=2
+1300040,5,20
+Enter
+SelAll
+@expect_objects 1
+SelAll
+Delete
+# --- FilletEdge Rho with an asymmetric Distance2 (an elliptical, not
+# parabolic, conic cross-section): kernel::FilletConvexEdgeConic's own two-
+# INDEPENDENT-distance form, distance_i=2/distance_j=4/rho=0.5. Closed
+# form: removed area = distance_i*distance_j*sin(gamma)/6 (gamma = the
+# right angle between a box's own two adjacent faces), so removed volume =
+# 2*4*10/6 = 13.33, leaving 1000 - 13.33 = 986.7.
+Box 1300050,0,0 1300060,10,0 10
+FilletEdge
+Radius=2
+Rho=0.5
+Distance2=4
+1300060,10,5
+Enter
+SelAll
+Volume
+@expect_objects 1
+SelAll
+Delete
+# --- FilletEdge Rho on a curved-adjacent-face edge (a solid cylinder's own
+# flat-top rim): the exact conic path needs the WHOLE solid planar-faced,
+# same as the Chamfer Distance2/Angle case just above, and here there is
+# no approximate fallback AT ALL (a rolling-ball arc can never represent a
+# non-circular conic, so unlike Chamfer's symmetric-distance fallthrough,
+# this must fail outright rather than silently building a plain circular
+# fillet that quietly ignores Rho). The cylinder itself must survive
+# untouched.
+Cylinder 1300070,0,0 5 20
+FilletEdge
+Radius=1
+Rho=0.5
+1300070,5,20
+Enter
+SelAll
+@expect_objects 1
+SelAll
+Delete
+# --- FilletEdge RailType=DistFromEdge on the same kind of curved-adjacent-
+# face edge: EdgeDihedralAngleForRailType (the closed-form distance-to-
+# radius conversion both RailType functions dispatch through) walks the
+# solid's own PlanarFaces() - the same whole-object-planar-faced
+# requirement Rho needs, for the same reason (there is no single dihedral
+# angle to convert on a curved face) - so this must also fail outright
+# rather than silently building a plain radius=1 rolling-ball fillet under
+# a mismatched distance interpretation. The cylinder itself must survive
+# untouched.
+Cylinder 1300080,0,0 5 20
+FilletEdge
+Radius=1
+RailType=DistFromEdge
+1300080,5,20
+Enter
+SelAll
+@expect_objects 1
+SelAll
+Delete
+# --- FilletSrf on two nearly-flat (shallow bend, not a sharp corner)
+# planes: the offset surfaces diverge rather than converge at this shallow
+# an angle for the requested radius, so BuildFillet reports its own clear
+# "offset surfaces do not meet" diagnostic - expected, not a hang or a
+# garbage self-intersecting surface silently accepted as valid.
+Plane3Pt 1200000,0,0 1200010,0,0 1200010,10,0
+Plane3Pt 1200010,0,0 1200020,0.5,0 1200020,10.5,0
+FilletSrf
+Radius=1
+1200005,5,0
+1200015,5,0.25
+SelAll
+List
+SelAll
+Delete
+@expect_objects 0
+# --- ChamferSrf on a curved-adjacent-face pair (a cylinder's own flat top
+# cap and its cylindrical side wall, picked as two faces of the SAME
+# object, unlike FilletSrf's independently-extracted-surfaces case above):
+# kernel::ChamferConvexEdge/ChamferConcaveEdge need the WHOLE solid
+# planar-faced (Brep::PlanarFaces()'s own scope, the identical requirement
+# ChamferEdge's own Distance2 exact path already has), and a cylindrical
+# face fails that outright - so this must fall through to the approximate
+# RuledBetween path below exactly as before this wiring existed, not
+# crash, hang, or silently misbuild.
+Cylinder 1300090,0,0 5 20
+ChamferSrf
+Radius=1
+1300090,0,20
+1300095,0,10
+SelAll
+List
+@expect_objects 2
+SelAll
+Delete
+# --- ChamferSrf Trim=No on a planar box's own two adjacent faces (same
+# object, otherwise identical to the exact case fillet_script.txt already
+# covers): the exact kernel path always replaces the WHOLE solid with an
+# already-trimmed result, which is not what Trim=No asks for (an
+# untrimmed separate surface, the pre-existing behavior), so this must
+# also fall through to the approximate path rather than silently ignoring
+# Trim=No.
+Box 1300100,0,0 1300110,10,0 10
+ChamferSrf
+Radius=2
+Trim=No
+1300110,5,5
+1300105,10,5
+SelAll
+List
+@expect_objects 2
+SelAll
+Delete
+# --- RemoveFillet on a plain flat face (not a fillet, chamfer, or vertex-
+# chamfer facet at all): kernel::RemoveBlend's own MixedFaces() search
+# finds no cylindrical/conical/spherical patch near the pick at all.
+# kernel::RemoveChamfer's own quad check does accept a box face (it is a
+# quad too), but its discriminating rail-pairing check does not: a box
+# face's two opposite-neighbour pairs (left/right, top/bottom) are each
+# mutually PARALLEL, not meeting at a finite edge the way a real chamfer's
+# two original faces do, so n_a x n_b is degenerate for BOTH candidate
+# pairings - zero succeed, and RemoveChamfer requires exactly one to,
+# throwing rather than guessing. kernel::RemoveChamferVertex's own
+# triangular-facet check rejects a 4-point loop outright. So all three
+# must decline with a clear diagnostic naming every attempt, not crash or
+# silently "succeed" by returning the object unchanged under a misleading
+# label. The box itself must survive completely untouched.
+Box 1300150,0,0 1300160,10,0 10
+RemoveFillet
+1300150,5,5
+SelAll
+List
+Volume
+@expect_objects 1
+SelAll
+Delete
+@expect_objects 0
+# --- FilletVertex: radius too large for the 3 edges meeting at a picked
+# vertex (a fresh 2x2x2 box's own corner can't take radius=5) - expect a
+# clean diagnostic from both the convex and concave kernel attempts, not a
+# crash or garbage geometry, and the box left completely untouched.
+Box 1300200,0,0 1300202,2,0 2
+FilletVertex
+Radius=5
+1300200,0,0
+SelAll
+Volume
+@expect_objects 1
+SelAll
+Delete
+@expect_objects 0
+# --- VariableFilletSrf on a curved-adjacent-face pair (a cylinder's own
+# flat top cap and its cylindrical side wall, same object): kernel::
+# FilletConvexEdgeTapered needs the WHOLE solid planar-faced
+# (Brep::PlanarFaces()'s own scope), and a cylindrical face fails that
+# outright, so this must fall through to the approximate
+# BuildPlaneCylinderVariableFillet/BuildFillet cascade below (the same
+# fallthrough ChamferSrf's own curved-face negative control above already
+# exercises for the Chamfer case), not crash or silently misbuild.
+Cylinder 1300300,0,0 5 20
+VariableFilletSrf
+Radius=1
+EndRadius=2
+1300300,0,20
+1300305,0,10
+SelAll
+List
+@expect_objects 2
+SelAll
+Delete
+# --- VariableFilletSrf Trim=No on a planar box's own two adjacent faces
+# (same object, otherwise identical to the exact case fillet_script.txt
+# covers): the exact kernel path always replaces the WHOLE solid, which is
+# not what Trim=No asks for (an untrimmed separate surface), so this must
+# also fall through to the approximate cascade rather than silently
+# ignoring Trim=No.
+Box 1300310,0,0 1300320,10,0 10
+VariableFilletSrf
+Radius=1
+EndRadius=2
+Trim=No
+1300320,5,5
+1300315,10,5
+SelAll
+List
+@expect_objects 2
+SelAll
+Delete
+# --- FilletSrf Rho on a curved-adjacent-face pair (a cylinder's own flat
+# top cap and cylindrical side wall): unlike Chamfer/VariableFillet above,
+# there is deliberately NO fallthrough to the approximate path for Rho (it
+# can only ever build a circular cross-section, so silently building one
+# here would quietly ignore the caller's own Rho request) - this must
+# refuse with a clear diagnostic instead, and the cylinder is left
+# completely untouched.
+Cylinder 1300330,0,0 5 20
+FilletSrf
+Radius=1
+Rho=0.5
+1300330,0,20
+1300335,0,10
+SelAll
+List
+@expect_objects 1
+SelAll
+Delete
+@expect_objects 0
+# --- FilletSrf Rho on two genuinely INDEPENDENT surfaces (extracted from
+# two different boxes, no shared edge at all - the ordinary FilletSrf case
+# fillet_script.txt's own plain-Radius section above exercises): the same
+# "no fallthrough for Rho" refusal as the curved-face case just above,
+# since fa.id != fb.id means kernel::FilletConvexEdgeConic/
+# FilletConcaveEdgeConic have no shared ON_BrepEdge to identify at all, not
+# merely a PlanarFaces() rejection - both independently-picked surfaces
+# are left completely untouched.
+Box 1300340,0,0 1300350,10,0 10
+ExtractSrf
+1300350,5,5
+Enter
+SelNone
+Box 1300360,0,0 1300370,10,0 10
+ExtractSrf
+1300360,5,5
+Enter
+SelNone
+FilletSrf
+Radius=1
+Rho=0.5
+1300350,5,5
+1300360,5,5
+SelAll
+List
+@expect_objects 4
+SelAll
+Delete
+@expect_objects 0

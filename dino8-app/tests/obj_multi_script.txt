@@ -1,0 +1,21 @@
+# OBJ per-object/material round trip QC: ImportMeshFile/ExportMeshFile used
+# to always merge every exported object into one single welded mesh with no
+# "o"/"g" split and no .mtl material file at all (see ImportObjMulti/
+# ExportObjMulti in File3dm.cpp). Two boxes with distinct colors, exported
+# together, must come back as two separate named objects with their own
+# colors intact - not one merged, colorless blob.
+# smoke.sh substitutes @TMP@ with a scratch directory before running this.
+Box 0,0,0 10,10,0 10
+SelLast
+SetRenderColor 255,0,0
+Box 20,0,0 30,10,0 10
+SelLast
+SetRenderColor 0,255,0
+SelAll
+Export @TMP@/obj_multi.obj
+New
+@expect_objects 0
+Import @TMP@/obj_multi.obj
+@expect_objects 2
+SelAll
+List

@@ -1,0 +1,15 @@
+# GrasshopperUpdateBakes associativity, across a real close/reopen: the
+# @FLOWFILE@ .dflow saved by flow_script.txt has since been edited on disk
+# (its Number Slider's value changed 30 -> 55, done by smoke.sh between the
+# two runs) - reopening the document that run's Save wrote and running
+# GrasshopperUpdateBakes against the same .dflow path should re-solve the
+# now-different graph and replace the previously-baked FlowLine object in
+# place (same object count, new length), not add a second one next to it.
+Open @FLOWSAVE@
+@expect_objects 2
+SelLast
+Length
+GrasshopperUpdateBakes @FLOWFILE@
+@expect_objects 2
+SelLast
+Length

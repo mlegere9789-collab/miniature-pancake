@@ -1,0 +1,82 @@
+# Python scripting QC: a .py file run through RunPythonScript that builds
+# geometry via the dino8 module, exercises object property access
+# (Name/Layer/Color), selection, deletion, dino8.RunCommand,
+# Point3d/Vector3d arithmetic, dino8.doc.Objects.AddCircle (a curve type
+# Lua's rs.AddCircle exposes that the dino8 module lacked until now),
+# dino8.doc.Objects.AddCone (a polysurface Lua's rs.AddCone exposes that
+# the dino8 module also lacked until now), dino8.doc.Objects.AddTorus
+# (likewise a polysurface Lua's rs.AddTorus exposes that the dino8 module
+# lacked until now), dino8.doc.Objects.AddInterpCurve (a curve
+# interpolated through points, matching Lua's rs.AddInterpCurve, that the
+# dino8 module also lacked until now), dino8.doc.Objects.AddArc3Pt (a
+# curve through three points, matching Lua's rs.AddArc3Pt, that the dino8
+# module also lacked until now), dino8.doc.Objects.AddSrfPt (a bilinear
+# surface through three or four corner points, matching Lua's rs.AddSrfPt,
+# that the dino8 module also lacked until now), dino8.doc.Objects.AddPlanarSrf
+# (trimmed planar surfaces from closed planar curves, matching Lua's
+# rs.AddPlanarSrf, that the dino8 module also lacked until now),
+# dino8.doc.Objects.AddPoints (one point object per input point, matching
+# Lua's rs.AddPoints, that the dino8 module also lacked until now),
+# dino8.doc.Objects.ExtrudeCurveStraight (a curve extruded along a vector,
+# matching Lua's rs.ExtrudeCurveStraight, that the dino8 module also lacked
+# until now), dino8.doc.Objects.BooleanUnion (closed solids combined
+# into one mesh solid, matching Lua's rs.BooleanUnion, that the dino8
+# module also lacked until now), dino8.doc.Objects.BooleanDifference and
+# dino8.doc.Objects.BooleanIntersection (the two-set counterparts of
+# BooleanUnion, matching Lua's rs.BooleanDifference/rs.BooleanIntersection,
+# that the dino8 module also lacked until now), dino8.doc.Objects.MoveObject
+# (translates objects in place, skipping ids that no longer exist rather
+# than raising, matching Lua's rs.MoveObject, that the dino8 module also
+# lacked until now), dino8.doc.Objects.CopyObject (copies objects,
+# optionally translated, matching Lua's rs.CopyObject, that the dino8
+# module also lacked until now), dino8.doc.Objects.RotateObject (rotates
+# objects about an axis through a center, in place or onto copies, matching
+# Lua's rs.RotateObject, that the dino8 module also lacked until now) and
+# dino8.doc.Objects.ScaleObject (scales objects about an origin, in place
+# or onto copies, matching Lua's rs.ScaleObject, that the dino8 module also
+# lacked until now), dino8.doc.Objects.MirrorObject (mirrors objects across
+# the vertical plane through a line, in place or onto copies, matching
+# Lua's rs.MirrorObject, that the dino8 module also lacked until now), and
+# dino8.doc.Objects.SelectObject/UnselectObject (select/deselect objects,
+# matching Lua's rs.SelectObject/rs.UnselectObject, that the dino8 module
+# also lacked until now), dino8.doc.Objects.TransformObject (applies an
+# arbitrary 4x4 transform, given as four rows of four numbers, sharing
+# TransformIds with MoveObject/CopyObject/RotateObject/ScaleObject/
+# MirrorObject above, matching Lua's rs.TransformObject, that the dino8
+# module also lacked until now), dino8.doc.Objects.UnselectAllObjects
+# (deselects every object and returns how many were selected beforehand,
+# matching Lua's rs.UnselectAllObjects, that the dino8 module also lacked
+# until now), and dino8.doc.Objects.ObjectsByLayer (ids of the objects on
+# a named layer, optionally selecting them, raising for a layer that
+# doesn't exist, matching Lua's rs.ObjectsByLayer, that the dino8 module
+# also lacked until now), dino8.doc.Objects.CurveLength/CurveDomain/
+# EvaluateCurve/CurveClosestPoint/DivideCurve (curve query, matching Lua's
+# rs.CurveLength/rs.CurveDomain/rs.EvaluateCurve/rs.CurveClosestPoint/
+# rs.DivideCurve, that the dino8 module also lacked until now),
+# dino8.doc.Objects.SurfaceArea/SurfaceVolume/IsObjectSolid/
+# SurfaceClosestPoint/MeshVertices (surface/mesh query, matching Lua's
+# rs.SurfaceArea/rs.SurfaceVolume/rs.IsObjectSolid/rs.SurfaceClosestPoint/
+# rs.MeshVertices, that the dino8 module also lacked until now),
+# dino8.doc.Objects.ObjectsByName/ObjectsByType/BoundingBox (matching Lua's
+# rs.ObjectsByName/rs.ObjectsByType/rs.BoundingBox, that the dino8 module
+# also lacked until now), dino8.doc.Layers - a new LayerTable
+# (Add/Count/Names/IsLayer/CurrentLayer/Visible/Locked/Color/Delete,
+# matching Lua's rs.AddLayer/rs.LayerCount/rs.LayerNames/rs.IsLayer/
+# rs.CurrentLayer/rs.LayerVisible/rs.LayerLocked/rs.LayerColor/
+# rs.DeleteLayer, that the dino8 module lacked entirely until now), and the
+# document-state functions PARITY_MAP.md's app_scripting row called out as
+# "entirely unported": dino8.doc.UnitSystem/UnitSystemName (get-by-code,
+# set-by-name-or-code, matching rs.UnitSystem/rs.UnitSystemName),
+# dino8.doc.Name/Path/Modified (matching rs.DocumentName/rs.DocumentPath/
+# rs.DocumentModified), and dino8.doc.Undo/Redo/BeginUndo (matching
+# rs.Undo/rs.Redo/rs.BeginUndo) - the last three round-tripped here through
+# a real add/undo/redo/undo cycle on a fresh point, not just called and
+# ignored, so the net object count below is unaffected.
+# dino8.GetPoint()/dino8.GetString() now suspend the script for real
+# (PythonEngine runs it on a worker thread, see PythonEngine.h) - like
+# script_script.txt's Lua test, the trailing "20,20,20 Widget2" below feeds
+# those two prompts in turn before the script resumes each time.
+# smoke.sh substitutes @TMP@ with a scratch directory and writes @TMP@/t.py
+# before running this.
+RunPythonScript @TMP@/t.py 20,20,20 Widget2
+@expect_objects 37

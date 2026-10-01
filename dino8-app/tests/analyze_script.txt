@@ -1,0 +1,121 @@
+# Analyze QC: Distance/Length/Area/Volume/AreaCentroid/VolumeCentroid/What/List/
+# BoundingBox/Dir/Check/SelBadObjects/Angle/Radius/Diameter/Curvature/EvaluatePt/
+# CurvatureGraph/Zebra/EMap/CurvatureAnalysis/DraftAngleAnalysis/ShowEdges (see smoke.sh).
+SetActiveViewport Top
+# --- Distance / Angle / EvaluatePt
+Distance 0,0,0 3,4,0
+Angle 0,0,0 10,0,0 0,10,0
+EvaluatePt 5,5,5
+# --- Length of a line and a circle
+Line 0,0,0 10,0,0
+SelLast
+Length
+Delete
+Circle 0,0,0 10
+SelLast
+Length
+Delete
+# --- Area and Volume of a box and Radius/Diameter of a circle
+Box 0,0,0 10,10,0 5
+SelLast
+Volume
+SelLast
+Area
+SelLast
+VolumeCentroid
+SelLast
+AreaCentroid
+SelAll
+Delete
+Circle 0,0,0 8
+SelLast
+Radius
+SelLast
+Diameter
+SelLast
+Curvature
+Delete
+# --- BoundingBox on a box, What / List / Check on a curve, SelBadObjects
+Box 0,0,0 20,10,0 5
+SelLast
+BoundingBox
+SelLast
+What
+SelLast
+List
+SelLast
+Check
+SelAll
+Delete
+SelBadObjects
+@expect_selected 0
+# --- Dir on a line, Flip, EvaluatePt/CurvatureGraph on a circle
+Line 0,0,0 10,0,0
+SelLast
+Dir
+Delete
+Circle 0,0,0 5
+SelLast
+CurvatureGraph
+@expect_objects 1
+SelAll
+Delete
+# --- Zebra / EMap / CurvatureAnalysis / DraftAngleAnalysis toggles on a sphere, ShowEdges on a box
+Sphere 0,0,0 10
+SelLast
+Zebra
+SelLast
+ZebraOff
+SelLast
+EMap
+SelLast
+EMapOff
+SelLast
+CurvatureAnalysis Style=Gaussian
+SelLast
+CurvatureAnalysisOff
+SelLast
+DraftAngleAnalysis Direction=World
+SelLast
+DraftAngleAnalysisOff
+Delete
+Box 0,0,0 10,10,0 10
+SelLast
+ShowEdges
+ShowEdgesOff
+SelAll
+Delete
+# --- CrvDeviation / PointDeviation
+Line 0,0,0 10,0,0
+Line 0,1,0 10,1,0
+SelAll
+CrvDeviation
+SelAll
+Delete
+Sphere 0,0,0 5
+Point 5,0,0
+Point 0,0,0
+SelAll
+PointDeviation
+SelAll
+Delete
+# --- Audit / SystemInfo (document-wide, no selection needed)
+Line 0,0,0 5,0,0
+Audit
+SystemInfo
+SelAll
+Delete
+@expect_objects 0
+# --- Front / Right viewports: measurements still use world distances
+SetActiveViewport Front
+Line 0,0,0 0,10,0
+SelLast
+Length
+Distance 0,0,0 0,10,0
+Delete
+SetActiveViewport Right
+Line 0,0,0 0,10,0
+SelLast
+Length
+Delete
+@expect_objects 0

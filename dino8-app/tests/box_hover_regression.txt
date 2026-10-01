@@ -1,0 +1,41 @@
+# Regression for da0a4eb ("Fix Box's typed-height field being silently
+# reinterpreted as a hover-distance point"): CommandEngine::FeedText's
+# Want::Point dispatch, when a command is waiting for its next point and the
+# next token is a bare number, tries a "distance toward the cursor"
+# interpretation first whenever hover_point_ happens to be set - that used
+# to fire for BoxCommand's typed height too, silently re-deriving "height"
+# as the (incidental) hover point's projection onto the construction-plane
+# normal instead of the literal typed number. On Windows CI this triggered
+# from incidental ImGui/GLFW hover state a headless run never explicitly
+# sets - and this harness's own Xvfb runs never report a viewport as
+# "hovered" even after moving the mouse into it with @world/@move (verified
+# directly: IsWindowHovered() stays false), so the real-mouse route can't
+# reproduce this deterministically here either. @forcehoverfeed sets
+# CommandEngine's hover_point_ directly instead (bypassing ImGui's hover
+# detection entirely) and feeds the height token in the same step, before
+# this frame's own Draw() call would otherwise recompute and overwrite
+# hover_point_ back to unset from the (always-unhovered here) real mouse
+# state - so this is a real, reproducible check on every platform this
+# harness runs on, not a Windows-only or GUI-timing-dependent accident.
+# Confirmed to actually catch a regression: reverting CommandEngine.cpp's
+# `!active_->NumberIsLiteralValue()` guard makes this script fail with
+# "! Height must be non-zero" (0 objects created) instead of building the
+# box; restoring the guard makes it pass again with the correct height.
+#
+# The forced hover point sits off to the side of the box's own second base
+# corner (30,40,0), well off both the X and Y axes from it - the same kind
+# of off-axis hover the original Windows failure actually hit. Before
+# da0a4eb's fix, this made Box's OnNumber never fire at all for the typed
+# "10": CommandEngine synthesized a point 10 units from the last corner
+# toward this hover point instead, and Box's height came from THAT point's
+# projection onto the construction-plane normal (0, since the synthesized
+# point is offset purely in X/Y) - a height of 0, not the typed 10.
+SetActiveViewport Top
+Box 0,0,0 20,20,0
+@forcehoverfeed 30 40 0 10
+@expect_objects 1
+SelAll
+BoundingBox
+# BoundingBox (see cmd_analyze.cpp) adds its own visualization object for a
+# non-flat box (the height is not ~0), on top of the Box itself.
+@expect_objects 2

@@ -1,0 +1,115 @@
+# Mechanical/structural fastener + MEP run component QC (Bolt/Nut/Washer/
+# IBeam/Channel/Angle/Duct/Pipe/Conduit - arch/ArchComponents.h/.cpp,
+# cmd_arch.cpp). Same shared-component-id-counter convention as
+# arch_script.txt: ids run 1..9 in creation order. Each item's Size option
+# (where it has a MechSizeTable) must be set right after the command name,
+# before its first point - the option only applies while that command is
+# still active (see FastenerCommand/StructShapeCommand's Begin()).
+#
+# BoundingBox is verified LAST for each item and read back with a fresh
+# SelLast right after the geometry-producing command, because BoundingBox
+# itself adds a new box object to the document (becoming the new "last"
+# object) - so Volume/SizeDuct/SizePipe below always run before it, each
+# with their own SelLast, to select the actual component mesh rather than
+# a leftover bbox visualization box.
+#
+# --- Bolt: M10 (shank 0.010, head across-flats 0.017 -> circumscribing
+# diameter 0.017/cos(30) = 0.019630), axis +Z, shank length 0.05, head
+# height 0.0064 -> overall axial extent 0.05 + 0.0064 = 0.0564.
+Bolt
+Size=M10
+0,0,0
+0,0,1
+0.05
+SelLast
+BoundingBox
+# --- Nut: M10 (across-flats diameter 0.019630 same as Bolt's head,
+# thickness 0.008).
+Nut
+Size=M10
+2,0,0
+2,0,1
+SelLast
+BoundingBox
+# --- Washer: M10 (outer diameter 0.021, thickness 0.002) - a real hollow
+# ring, but BoundingBox only sees the outer envelope.
+Washer
+Size=M10
+4,0,0
+4,0,1
+SelLast
+BoundingBox
+# --- IBeam: IB200 (depth 0.200, flange width 0.100) along a 5-unit run.
+IBeam
+Size=IB200
+0,2,0
+5,2,0
+SelLast
+BoundingBox
+# --- Channel: C150 (depth 0.150, flange width 0.065), web at one edge so
+# the bounding box's Y extent is still the full flange width (+-0.0325),
+# same as IBeam/Angle - only BuildChannel's own web offset is asymmetric.
+Channel
+Size=C150
+0,3,0
+5,3,0
+SelLast
+BoundingBox
+# --- Angle: L75x75 (both legs 0.075) - unlike the others, its box starts
+# at the run line (corner at Y=0,Z=0) rather than being centred on it.
+AngleIron
+Size=L75x75
+0,4,0
+5,4,0
+SelLast
+BoundingBox
+# --- Duct: round, diameter 0.3 (radius 0.15) along a 5-unit run. Volume
+# checked against continuity (pi*r^2*L = pi*0.15^2*5 = 0.3534, faceted
+# mesh reads slightly under that at 0.3524) before SizeDuct re-derives its
+# diameter from a 250 CFM airflow input via MepDiameterFromFlow(flow_m3_s =
+# 250*0.00047194745, velocity_m_s = 6.0): area = flow/velocity, diameter =
+# sqrt(4*area/pi) = 0.158233 - matching both the printed message and the
+# rebuilt mesh's own radius (bounding box half-extent 0.07912 = 0.158233/2).
+Duct
+0,5,0
+5,5,0
+0.3
+SelLast
+Volume
+SelLast
+SizeDuct
+250
+SelLast
+BoundingBox
+# --- Pipe: round, diameter 0.1 (radius 0.05). Volume checked against
+# pi*0.05^2*5 = 0.03927 (faceted mesh reads 0.03916) before SizePipe
+# re-derives its diameter from a 30 GPM flow input via MepDiameterFromFlow
+# (flow_m3_s = 30*0.0000630902, velocity_m_s = 1.5): diameter = 0.0400822 -
+# matching both the printed message and the rebuilt radius (bbox half-extent
+# 0.02004 = 0.0400822/2).
+MepPipe
+0,6,0
+5,6,0
+0.1
+SelLast
+Volume
+SelLast
+SizePipe
+30
+SelLast
+BoundingBox
+# --- Conduit: round, diameter 0.02 (radius 0.01). Volume checked against
+# pi*0.01^2*5 = 0.001571 (faceted mesh reads 0.001566); no SizeConduit
+# command exists (only Duct/Pipe get a sizing command), so this is left at
+# its as-drawn diameter.
+Conduit
+0,7,0
+5,7,0
+0.02
+SelLast
+Volume
+SelLast
+BoundingBox
+SelAll
+List
+@expect_objects 18
