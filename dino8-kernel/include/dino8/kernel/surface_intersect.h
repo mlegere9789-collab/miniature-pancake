@@ -365,6 +365,96 @@ struct ProjectedCurveResult {
 // when fewer than 2 samples hit - not enough to fit a curve through.
 ProjectedCurveResult ProjectCurveToSurface(const ON_Curve& c, const ON_Surface& s, const Vector3d& direction, const IntersectOptions& opt);
 
+// A span of the curve's own parameter domain that lies ON the surface
+// (every sample in [t0, t1] within opt.tolerance of the surface), as
+// opposed to the isolated crossing POINTS IntersectCurveSurface() above
+// reports. PARITY_MAP.md's own "CSX against trimmed faces and
+// curve-on-surface overlap (coincident) detection" bullet named this
+// directly: "No overlap detection anywhere." - IntersectCurveSurface()'s
+// mesh-seeded triangle crossing search is the wrong tool for this (a
+// curve lying IN a surface, not crossing through it, produces no clean
+// triangle piercing at all, the same "not intended for coincident curves"
+// situation IntersectCurves() already discloses for two coincident 3D
+// curves) - so this is a dedicated sampling-based overlap finder instead.
+struct CurveSurfaceOverlap {
+  double t0 = 0, t1 = 0;   // the curve parameter sub-interval that lies on the surface
+  bool entire_curve = false;  // true iff t0/t1 cover the curve's whole domain
+};
+
+// Samples `c` at the same opt.mesh_tolerance-driven resolution
+// PullbackCurveToSurface() uses, closest-point-projects each sample onto
+// `s` (continuity-seeded from the previous sample, globally re-seeded on
+// failure or an implausible jump - identical discipline to
+// PullbackCurveToSurface()), and reports every maximal run of consecutive
+// samples whose closest-point distance is within opt.tolerance as one
+// overlap span. A curve nowhere near the surface returns empty; a curve
+// lying entirely on the surface returns one span with `entire_curve ==
+// true`. Honesty note: the span's own t0/t1 are only as precise as the
+// sampling resolution (no bisection refines the exact boundary where the
+// curve leaves the surface) - a caller needing the exact crossing
+// parameter there should follow up with IntersectCurveSurface() near that
+// boundary, the same way this function's own samples were seeded.
+std::vector<CurveSurfaceOverlap> IntersectCurveSurfaceOverlap(const ON_Curve& c, const ON_Surface& s, const IntersectOptions& opt);
+
+// One parallel plane section of a whole B-rep, as returned by
+// ContourBrep() below - `offset` is the signed distance from
+// `base_plane`, along `base_plane`'s own normal, that this section's
+// plane sits at (so `offset == 0` is `base_plane` itself).
+struct BrepContourSection {
+  double offset = 0;
+  std::vector<BrepPlaneIntersection> hits;
+};
+
+// A family of parallel plane sections at even intervals - the "Contour"
+// half of PARITY_MAP.md's own "Plane sections / contours of surfaces and
+// B-reps (Section, Contour, ClippingSections)" bullet, which named this
+// directly as still "entirely unaddressed" even after IntersectBrepByPlane()
+// closed the single-plane "Section" half. Builds directly on
+// IntersectBrepByPlane(): every plane parallel to `base_plane`, stepped
+// along `base_plane`'s own normal by a multiple of `spacing`, that could
+// plausibly meet the B-rep's own bounding box is sectioned, covering the
+// whole B-rep automatically (Rhino's own Contour semantics - the caller
+// picks a base plane and a spacing, not a station count). A section whose
+// plane produces zero hits (e.g. it only grazes the bounding box, not the
+// actual solid) is dropped rather than returned empty. `spacing <= 0` or
+// an invalid `base_plane` returns empty outright. Still honestly partial:
+// this is parallel sections of ONE object along ONE fixed direction
+// (`base_plane`'s own normal) - "ClippingSections" (multiple live, named,
+// arbitrarily-oriented clip planes, typically with hatching) is still
+// entirely unaddressed.
+std::vector<BrepContourSection> ContourBrep(const ON_Brep& b, const ON_Plane& base_plane, double spacing, const IntersectOptions& opt);
+
+// Face-vs-face crossing test WITHIN a single B-rep - not through shared
+// topology (that is Brep::Check()'s own SelfIntersectingLoop/
+// SelfIntersectingLoop3d job, brep.h), but two faces of the same B-rep
+// that do not share an edge yet still physically cross each other in
+// space. PARITY_MAP.md's own "Surface / B-rep self-intersection
+// detection" bullet named this directly as one of two remaining gaps:
+// "no face-interior self-intersection test and no face-vs-face crossing
+// test within a B-rep." This is that face-vs-face test: every pair of
+// faces NOT already sharing an edge (ordinary adjacency, Check()'s own
+// job, not this function's) is run through IntersectFaces() - the exact
+// same per-face-pair SSX IntersectBreps() already composes across two
+// SEPARATE B-reps, composed here across one B-rep's own faces instead.
+// Edge-index adjacency alone cannot be trusted here: several of this
+// kernel's own face-construction paths (Box()/FromUntrimmedQuadFaces(),
+// per their own doc comments) deliberately build adjacent faces with NO
+// shared ON_BrepEdge topology at all even though they genuinely touch in
+// 3D - so a per-pair result is additionally checked against both faces'
+// own boundary loops (sampled 3D polylines through their trims): a curve
+// that lies entirely on BOTH faces' own boundary at once is the ordinary
+// seam where two faces border each other, not one face's material
+// cutting through the other's, and is NOT reported; only a curve that
+// leaves at least one face's boundary (running through that face's
+// interior) is a genuine crossing. Returned un-stitched, one entry per
+// crossing face pair, the same shape IntersectBreps() already uses.
+// Still honestly partial: this only catches a crossing where it already
+// reaches another face's own trimmed region - "no face-interior
+// self-intersection test" (a single face folding back onto itself) is a
+// different, still entirely unaddressed question this function does not
+// answer.
+std::vector<BrepBrepIntersection> FindBrepSelfIntersections(const ON_Brep& b, const IntersectOptions& opt);
+
 // --- numerical helpers ------------------------------------------------------
 
 // Damped Gauss-Newton on residual(x) (m equations, n unknowns) with box

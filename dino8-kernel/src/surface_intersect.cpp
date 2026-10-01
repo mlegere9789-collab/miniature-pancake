@@ -5,6 +5,7 @@
 #include <limits>
 #include <map>
 #include <numeric>
+#include <set>
 
 namespace dino8::kernel {
 
@@ -1363,7 +1364,27 @@ std::vector<BrepBrepIntersection> IntersectBreps(const ON_Brep& a, const ON_Brep
 
 std::vector<BrepPlaneIntersection> IntersectBrepByPlane(const ON_Brep& b, const ON_Plane& plane, const IntersectOptions& opt) {
   std::vector<BrepPlaneIntersection> out;
-  const ON_BoundingBox bbox = b.BoundingBox();
+  // Deliberately NOT b.BoundingBox() - a real bug found while extending
+  // this file (see ContourBrep()'s own identical fix, added alongside
+  // this one): this OpenNURBS version's ON_Brep::GetBBox() tightens each
+  // face's cached bbox against its own trim loop's 2D parameter-space
+  // bbox before unioning them, which can come back degenerate for this
+  // kernel's own untrimmed Box()-style faces (confirmed directly: a
+  // Brep::Box(0,0,0,3,3,3)'s own b.BoundingBox() returns min=(0,0,0)
+  // max=(3,0,0) - y and z silently collapsed to zero - while every
+  // individual face's own SurfaceOf()->BoundingBox(), unioned below
+  // instead, is exactly correct). Left unfixed, this would have
+  // undersized `half` just below and defeated the very "never silently
+  // clipped at the plane surface's own edge" guarantee this function's
+  // own doc comment promises.
+  ON_BoundingBox bbox;
+  {
+    const int nf0 = b.m_F.Count();
+    for (int i = 0; i < nf0; ++i) {
+      const ON_Surface* s0 = b.m_F[i].SurfaceOf();
+      if (s0) bbox.Union(s0->BoundingBox());
+    }
+  }
   if (!bbox.IsValid() || !plane.IsValid()) return out;
   // The plane surface must reach past every face that could genuinely meet
   // it - sized off the WHOLE Brep's own bounding box (doubled) rather than
@@ -1891,6 +1912,233 @@ ProjectedCurveResult ProjectCurveToSurface(const ON_Curve& c, const ON_Surface& 
   const bool fit_closed = closed && out.hit_count == out.sample_count;
   const std::vector<double> params = ChordParams(p3, fit_closed);
   out.projected_curve = InterpolateCubic(p3, params, fit_closed, 3);
+  return out;
+}
+
+std::vector<CurveSurfaceOverlap> IntersectCurveSurfaceOverlap(const ON_Curve& c, const ON_Surface& s, const IntersectOptions& opt) {
+  std::vector<CurveSurfaceOverlap> out;
+  const ON_Interval d = c.Domain();
+  if (!d.IsIncreasing()) return out;
+  const ON_BoundingBox cb = c.BoundingBox();
+  const double clen = cb.IsValid() ? cb.Diagonal().Length() : 1;
+  const int n = static_cast<int>(Clamp(std::ceil(clen / std::max(opt.mesh_tolerance, 1e-6)), 64, 2000));
+
+  std::vector<double> ts(static_cast<size_t>(n) + 1);
+  std::vector<bool> on(static_cast<size_t>(n) + 1, false);
+  double u = 0, v = 0;
+  double prev_err = 0;
+  for (int i = 0; i <= n; ++i) {
+    const double t = d.ParameterAt(static_cast<double>(i) / n);
+    ts[static_cast<size_t>(i)] = t;
+    const Point3d p = c.PointAt(t);
+    bool ok;
+    if (i == 0) {
+      ok = SurfaceClosestPointGlobal(s, p, u, v);
+    } else {
+      ok = SurfaceClosestPoint(s, p, u, v);  // seeded from the PREVIOUS sample's (u, v), same discipline as PullbackCurveToSurface()
+      const double try_err = ok ? s.PointAt(u, v).DistanceTo(p) : std::numeric_limits<double>::max();
+      if (!ok || try_err > std::max(opt.mesh_tolerance * 4, prev_err * 8 + 1e-9)) {
+        double gu = u, gv = v;
+        const bool gok = SurfaceClosestPointGlobal(s, p, gu, gv);
+        const double gerr = s.PointAt(gu, gv).DistanceTo(p);
+        if (gok && gerr < try_err) { u = gu; v = gv; }
+      }
+    }
+    const double err = s.PointAt(u, v).DistanceTo(p);
+    prev_err = err;
+    on[static_cast<size_t>(i)] = err <= opt.tolerance;
+  }
+
+  // Merge every maximal run of consecutive on-surface samples into one
+  // span; a single isolated on-surface sample (both neighbours off) is a
+  // transient touch, not an overlap, and is left for IntersectCurveSurface()
+  // to report as a discrete crossing instead.
+  int i = 0;
+  while (i <= n) {
+    if (!on[static_cast<size_t>(i)]) { ++i; continue; }
+    int j = i;
+    while (j <= n && on[static_cast<size_t>(j)]) ++j;
+    if (j - 1 > i) {
+      CurveSurfaceOverlap ov;
+      ov.t0 = ts[static_cast<size_t>(i)];
+      ov.t1 = ts[static_cast<size_t>(j - 1)];
+      ov.entire_curve = (i == 0 && j - 1 == n);
+      out.push_back(ov);
+    }
+    i = j;
+  }
+  return out;
+}
+
+std::vector<BrepContourSection> ContourBrep(const ON_Brep& b, const ON_Plane& base_plane, double spacing, const IntersectOptions& opt) {
+  std::vector<BrepContourSection> out;
+  if (!(spacing > 0) || !base_plane.IsValid()) return out;
+  // Deliberately NOT b.BoundingBox(): a real bug found while building this
+  // - this OpenNURBS version's ON_Brep::GetBBox() tightens each face's
+  // cached bbox against its own trim loop's 2D parameter-space bbox
+  // (InternalFaceBoundingBox(), opennurbs_brep.cpp) before unioning them,
+  // and for this kernel's own untrimmed Box()-style faces that path can
+  // come back degenerate (confirmed directly: a Brep::Box(0,0,0,3,3,3)'s
+  // own b.BoundingBox() returns min=(0,0,0) max=(3,0,0) - y and z
+  // collapsed to zero - while every individual face's own
+  // SurfaceOf()->BoundingBox() is exactly correct). Unioning the per-face
+  // SURFACE boxes directly, the same source IntersectBreps()/
+  // IntersectBrepByPlane() already trust per face, sidesteps it entirely.
+  ON_BoundingBox bbox;
+  const int nf = b.m_F.Count();
+  for (int i = 0; i < nf; ++i) {
+    const ON_Surface* s = b.m_F[i].SurfaceOf();
+    if (!s) continue;
+    bbox.Union(s->BoundingBox());
+  }
+  if (!bbox.IsValid()) return out;
+
+  // The signed-distance range (along base_plane's own normal) that the
+  // B-rep's bounding box actually spans - every multiple of `spacing`
+  // inside this range gets its own parallel section, covering the whole
+  // object the way Rhino's own Contour command does (a base plane and a
+  // spacing, not a station count the caller has to guess).
+  double lo = std::numeric_limits<double>::max(), hi = -std::numeric_limits<double>::max();
+  for (int k = 0; k < 8; ++k) {
+    const ON_3dPoint corner((k & 1) ? bbox.m_max.x : bbox.m_min.x,
+                             (k & 2) ? bbox.m_max.y : bbox.m_min.y,
+                             (k & 4) ? bbox.m_max.z : bbox.m_min.z);
+    const double dist = base_plane.DistanceTo(corner);
+    lo = std::min(lo, dist);
+    hi = std::max(hi, dist);
+  }
+  if (lo > hi) return out;
+
+  const double start = std::ceil(lo / spacing - 1e-9) * spacing;
+  constexpr int kMaxSections = 10000;  // guards against a caller-supplied spacing too small for the object's own extent
+  int count = 0;
+  for (double off = start; off <= hi + 1e-9 && count < kMaxSections; off += spacing, ++count) {
+    ON_Plane plane = base_plane;
+    plane.Translate(base_plane.Normal() * off);
+    std::vector<BrepPlaneIntersection> hits = IntersectBrepByPlane(b, plane, opt);
+    if (hits.empty()) continue;
+    out.push_back(BrepContourSection{off, std::move(hits)});
+  }
+  return out;
+}
+
+namespace {
+
+// Every one of a face's own boundary loops, each as a closed 3D polyline
+// (sampled from its trims' exact curves, evaluated through the face's own
+// surface) - used below to tell a genuine face-vs-face crossing apart
+// from two faces that merely TOUCH along a shared physical edge. Built
+// from the trims' own 3D curves directly, not this kernel's ON_BrepEdge
+// topology - several of this kernel's own face-construction paths
+// (Box()/FromUntrimmedQuadFaces(), per their own doc comments) deliberately
+// build adjacent faces with NO shared edge topology at all, even though
+// they genuinely touch in 3D, so an edge-index adjacency test alone
+// cannot be trusted to rule out ordinary touching.
+std::vector<std::vector<Point3d>> FaceBoundaryLoops3D(const ON_Brep& b, const ON_BrepFace& f, int samples_per_trim = 48) {
+  std::vector<std::vector<Point3d>> loops;
+  const ON_Surface* s = f.SurfaceOf();
+  if (f.m_li.Count() == 0) {
+    // Untrimmed face (no loops at all) - the identical fallback
+    // FaceContainsUV() already uses: its own boundary IS the surface's
+    // natural (u, v) domain rectangle, not anything derived from trims.
+    const ON_Interval du = f.Domain(0), dv = f.Domain(1);
+    std::vector<Point3d> pts;
+    const auto add = [&](double u, double v) { pts.push_back(s->PointAt(u, v)); };
+    for (int i = 0; i < samples_per_trim; ++i) add(du.ParameterAt(static_cast<double>(i) / samples_per_trim), dv.Min());
+    for (int i = 0; i < samples_per_trim; ++i) add(du.Max(), dv.ParameterAt(static_cast<double>(i) / samples_per_trim));
+    for (int i = 0; i < samples_per_trim; ++i) add(du.ParameterAt(1.0 - static_cast<double>(i) / samples_per_trim), dv.Max());
+    for (int i = 0; i < samples_per_trim; ++i) add(du.Min(), dv.ParameterAt(1.0 - static_cast<double>(i) / samples_per_trim));
+    if (pts.size() >= 2) loops.push_back(std::move(pts));
+    return loops;
+  }
+  for (int li = 0; li < f.m_li.Count(); ++li) {
+    const ON_BrepLoop& loop = b.m_L[f.m_li[li]];
+    std::vector<Point3d> pts;
+    for (int k = 0; k < loop.m_ti.Count(); ++k) {
+      const ON_BrepTrim& trim = b.m_T[loop.m_ti[k]];
+      const ON_Interval d = trim.Domain();
+      if (!d.IsIncreasing()) continue;
+      for (int i = 0; i < samples_per_trim; ++i) {
+        const ON_3dPoint uv = trim.PointAt(d.ParameterAt(static_cast<double>(i) / samples_per_trim));
+        pts.push_back(s->PointAt(uv.x, uv.y));
+      }
+    }
+    if (pts.size() >= 2) loops.push_back(std::move(pts));
+  }
+  return loops;
+}
+
+// Closest distance from `p` to any segment of any of `loops`' own closed polylines.
+double DistanceToBoundaryLoops(const std::vector<std::vector<Point3d>>& loops, const Point3d& p) {
+  double best = std::numeric_limits<double>::max();
+  for (const std::vector<Point3d>& poly : loops) {
+    const size_t n = poly.size();
+    for (size_t i = 0; i < n; ++i) {
+      const Point3d& a = poly[i];
+      const Point3d& b2 = poly[(i + 1) % n];
+      const Vector3d ab = b2 - a;
+      const double len2 = ab.LengthSquared();
+      const double t = Clamp(len2 > 1e-300 ? ON_DotProduct(p - a, ab) / len2 : 0.0, 0.0, 1.0);
+      best = std::min(best, p.DistanceTo(a + ab * t));
+    }
+  }
+  return best;
+}
+
+}  // namespace
+
+std::vector<BrepBrepIntersection> FindBrepSelfIntersections(const ON_Brep& b, const IntersectOptions& opt) {
+  std::vector<BrepBrepIntersection> out;
+  const int nf = b.m_F.Count();
+  std::vector<std::set<int>> face_edges(static_cast<size_t>(nf));
+  std::vector<ON_BoundingBox> boxes(static_cast<size_t>(nf));
+  std::vector<std::vector<std::vector<Point3d>>> boundary(static_cast<size_t>(nf));
+  for (int i = 0; i < nf; ++i) {
+    const ON_BrepFace& f = b.m_F[i];
+    boxes[static_cast<size_t>(i)] = f.SurfaceOf()->BoundingBox();
+    boundary[static_cast<size_t>(i)] = FaceBoundaryLoops3D(b, f);
+    std::set<int>& edges = face_edges[static_cast<size_t>(i)];
+    for (int li = 0; li < f.m_li.Count(); ++li) {
+      const ON_BrepLoop& loop = b.m_L[f.m_li[li]];
+      for (int k = 0; k < loop.m_ti.Count(); ++k) edges.insert(b.m_T[loop.m_ti[k]].m_ei);
+    }
+  }
+  const double pad = std::max(opt.mesh_tolerance, opt.tolerance * 4);
+  const double on_boundary_tol = std::max(opt.tolerance * 8, opt.mesh_tolerance);
+  for (int i = 0; i < nf; ++i) {
+    ON_BoundingBox exp_i = boxes[static_cast<size_t>(i)];
+    exp_i.m_min -= ON_3dVector(pad, pad, pad);
+    exp_i.m_max += ON_3dVector(pad, pad, pad);
+    const ON_BrepFace& fi = b.m_F[i];
+    for (int j = i + 1; j < nf; ++j) {
+      bool shares_edge = false;
+      for (int e : face_edges[static_cast<size_t>(i)]) {
+        if (face_edges[static_cast<size_t>(j)].count(e)) { shares_edge = true; break; }
+      }
+      if (shares_edge) continue;  // ordinary adjacency - Brep::Check()'s own job, not this function's
+      if (exp_i.IsDisjoint(boxes[static_cast<size_t>(j)])) continue;
+      const ON_BrepFace& fj = b.m_F[j];
+      for (IntersectionCurve& ic : IntersectFaces(&fi, *fi.SurfaceOf(), &fj, *fj.SurfaceOf(), opt)) {
+        // Two faces that merely TOUCH along a shared physical edge (no
+        // shared ON_BrepEdge, but genuinely coincident in 3D - the case
+        // the shares_edge check above cannot see) produce an
+        // IntersectionCurve that lies entirely on BOTH faces' own
+        // boundary loops at once: that is the literal definition of
+        // "this is the seam where the two faces border each other", not
+        // one face's material cutting through the other's. A genuine
+        // crossing's own curve leaves at least one face's boundary
+        // (it runs through that face's interior) at some point.
+        bool on_both_boundaries = !ic.points.empty();
+        for (const Point3d& p : ic.points) {
+          const bool on_i = DistanceToBoundaryLoops(boundary[static_cast<size_t>(i)], p) <= on_boundary_tol;
+          const bool on_j = DistanceToBoundaryLoops(boundary[static_cast<size_t>(j)], p) <= on_boundary_tol;
+          if (!on_i || !on_j) { on_both_boundaries = false; break; }
+        }
+        if (on_both_boundaries) continue;  // ordinary touching seam, not a self-intersection
+        out.push_back(BrepBrepIntersection{i, j, std::move(ic)});
+      }
+    }
+  }
   return out;
 }
 
