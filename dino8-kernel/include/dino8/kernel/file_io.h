@@ -91,6 +91,14 @@ enum class UnitSystem {
 // `diffuse_color` alone used to have - AddMaterial()'s own new parameters
 // are what determines whether a field holds ON_Material's built-in default
 // or a caller-supplied value, not whether this struct carries it at all.
+// `texture_filename` is std::nullopt when AddMaterial() was never given a
+// `texture_filename` of its own (no bitmap texture on this material at
+// all) - the same std::nullopt-means-"not set" contract `ObjectAttributes`'
+// own `render_color`/`linetype_index`/`material_index` fields already use,
+// distinct from `diffuse_color`/`shine`/etc. above which are always
+// populated because ON_Material itself always has *some* value for those
+// (even if just its own constructor default); there is no meaningful
+// default bitmap texture to fall back to.
 struct MaterialInfo {
   std::string name;
   Color diffuse_color;
@@ -99,6 +107,7 @@ struct MaterialInfo {
   double shine = 0.0;
   double transparency = 0.0;
   double reflectivity = 0.0;
+  std::optional<std::string> texture_filename;
 };
 
 // Which of ON::light_style's real-world-usable styles Model::AddLight()
@@ -347,9 +356,7 @@ class Model {
   // `specular_color`/`emission_color`/`shine`/`transparency`/
   // `reflectivity` close the rest of the gap this method's own doc comment
   // used to disclose as open ("texture maps, specular/emission/shine/
-  // transparency/reflectivity remain a disclosed gap") - texture maps
-  // alone stay out of scope (a materially larger problem: an actual bitmap
-  // file reference/embedding, not just a scalar or color field). Each
+  // transparency/reflectivity remain a disclosed gap"). Each
   // parameter is `std::nullopt` by default and left at `ON_Material`'s own
   // constructor default when omitted - no behavior change for an existing
   // caller who only ever passed `diffuse_color`, the same "absent means
@@ -361,12 +368,29 @@ class Model {
   // ON_Material's own contract to enforce, not re-validated here, matching
   // how `AddLayer()`'s own `color`/`AddNamedView()`'s own `camera_up` are
   // handed to OpenNURBS unclamped elsewhere in this file.
+  //
+  // `texture_filename` closes the one piece of that same disclosed gap
+  // this method's own doc comment used to carve out as "a materially
+  // larger problem: an actual bitmap file reference/embedding" - on
+  // reflection, a reference is exactly what this needs, not embedding:
+  // `ON_Material::AddTexture(filename, type)` (opennurbs_material.h)
+  // stores a path string into the material's own `m_textures[]` table
+  // (an `ON_Texture::TYPE::bitmap_texture` entry's
+  // `m_image_file_reference`), the same "store the path, don't read or
+  // embed the file" scope every other filename this kernel ever takes
+  // already has (e.g. `Mesh::LoadGltf()`'s own rejection of an external
+  // `.bin` reference stays about a DIFFERENT concern - this kernel never
+  // reads image bytes at all, on either side of this parameter). A
+  // non-empty value adds exactly one `bitmap_texture` entry; an empty or
+  // omitted value (the default) leaves the material's `m_textures[]`
+  // table empty, same as before this parameter existed.
   int AddMaterial(const std::string& name, Color diffuse_color = Color(),
                    std::optional<Color> specular_color = std::nullopt,
                    std::optional<Color> emission_color = std::nullopt,
                    std::optional<double> shine = std::nullopt,
                    std::optional<double> transparency = std::nullopt,
-                   std::optional<double> reflectivity = std::nullopt);
+                   std::optional<double> reflectivity = std::nullopt,
+                   std::optional<std::string> texture_filename = std::nullopt);
 
   // Every Add*() below takes an optional object `name` and `layer_index`.
   // Before `name` existed, every object this kernel ever put into a Model
