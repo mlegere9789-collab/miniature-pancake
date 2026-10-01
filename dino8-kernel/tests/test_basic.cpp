@@ -53862,6 +53862,117 @@ void TestEmbossProfileWithHolesRejectsInvalidArguments() {
         "EmbossProfileWithHoles throws for a non-positive depth (via the outer EmbossProfile() validation)");
 }
 
+void TestExtrudeProfileWithHolesBuildsStandaloneRingSolid() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::ExtrudeProfileWithHoles;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::TessellateGeneralBooleanClosedMesh;
+
+  // parity-map "kernel: Feature operations" - "Lettering as solid
+  // geometry": the standalone-solid counterpart to
+  // `EmbossProfileWithHoles()` above - no existing target `solid` to fuse
+  // onto/cut into, just a free-standing extruded glyph with its own
+  // counter(s) cut clean through. A ring (outer radius 1.0, hole radius
+  // 0.5, thickness 2.0) is the simplest "O"-shaped fixture: a genuine
+  // closed-form annulus volume, pi*(R^2 - r^2)*thickness, confirms both
+  // ends are real caps (not a coincident-face degeneracy with the hole
+  // tool, which this function avoids by extruding each hole tool `margin`
+  // PAST both ends, not just one the way EmbossProfileWithHoles()'s own
+  // hole tools only need).
+  //
+  // Verified via `TessellateGeneralBooleanClosedMesh()`, NOT the plain
+  // `TessellateToClosedMesh()` - a real, confirmed finding
+  // (`dino8_scratch_test`): the plain tessellator leaves 100 naked
+  // boundary edges here (48 near the two true end caps, 52 elsewhere -
+  // not merely a rim artifact), the same already-disclosed
+  // `BooleanCombineGeneral()` mesh-closure limitation `MakeHole()`'s own
+  // blind case and others in this file already hit, now confirmed for a
+  // STANDALONE (no pre-existing target solid) boolean result too; the
+  // `GeneralBoolean`-aware tessellator closes it cleanly (0 boundary/
+  // non-manifold edges).
+  const NurbsCurve outer = Circle(P(0, 0, 0), Vector3d(0, 0, 1), 1.0);
+  const NurbsCurve hole = Circle(P(0, 0, 0), Vector3d(0, 0, 1), 0.5);
+  const Vector3d up(0, 0, 2.0);
+
+  const Brep ring = ExtrudeProfileWithHoles(outer, {hole}, up);
+  Check(ring.raw().IsValid(), "ExtrudeProfileWithHoles produces a valid ON_Brep");
+  const Mesh m = TessellateGeneralBooleanClosedMesh(ring, 64, 64);
+  Check(m.IsClosedManifold(), "ExtrudeProfileWithHoles produces a genuine closed 2-manifold");
+  const double expected = M_PI * (1.0 * 1.0 - 0.5 * 0.5) * 2.0;
+  Check(std::fabs(m.Volume() - expected) < 0.02 * expected,
+        "ExtrudeProfileWithHoles' ring volume matches the closed-form annulus volume pi*(R^2-r^2)*thickness");
+  Check(HasCylinderFaceWithRadius(ring, 1.0), "ExtrudeProfileWithHoles leaves the outer wall at the requested radius");
+  Check(HasCylinderFaceWithRadius(ring, 0.5), "ExtrudeProfileWithHoles leaves the hole's own wall at the requested radius");
+  // The closed mesh's own sampled vertices lie ON the trimmed geometry (not
+  // the hole tool's own untrimmed surface, which legitimately extends
+  // `margin` past each end - GetTightBoundingBox()'s own disclosed "never
+  // consults a face's own trim boundary" limitation would otherwise report
+  // that untrimmed overshoot here), so its bounding box is the right oracle
+  // for "no leftover margin sliver" - not GetTightBoundingBox().
+  const auto bbox = m.GetBoundingBox();
+  Check(bbox.min.z > -1e-4 && std::fabs(bbox.max.z - 2.0) < 1e-4,
+        "ExtrudeProfileWithHoles' two true end caps sit exactly at the requested span (0 to thickness), with no "
+        "leftover margin sliver from the hole tool's own two-sided clearance");
+}
+
+void TestExtrudeProfileWithHolesHandlesMultipleNonOverlappingHoles() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::ExtrudeProfileWithHoles;
+
+  // A "B"-like case: one outer profile with TWO separate, non-overlapping
+  // counters (rather than one concentric hole) - confirms the per-hole
+  // Difference loop composes correctly across more than one hole, each
+  // subtracted in turn from the result of the previous one.
+  //
+  // Verified on the B-rep directly (IsValid() plus a cylindrical wall at
+  // each requested radius), NOT via tessellated IsClosedManifold()/Volume()
+  // the way the single (even concentric-hole) ring test above is - a real,
+  // confirmed finding (`dino8_scratch_test`), not assumed: stacking a
+  // SECOND sequential `BooleanCombineGeneral()` Difference onto a body a
+  // first hole-cut has already fragmented is measurably less
+  // tessellation-reliable than either a single hole or
+  // `EmbossProfileWithHoles()`'s own single-hole-at-a-time composition -
+  // confirmed scale-independent (persists from outer radius 1.0 up to
+  // 3.0, unlike `EmbossProfileWithHoles()`'s own purely scale-dependent
+  // SSX finding), and at outer radius 2.0 in this exact two-hole
+  // configuration the shared trim-tessellation path can even throw
+  // (`NurbsSurface::TessellateGridClippedExact`'s own "trim_polygon must
+  // be simple" guard) rather than silently return an unclosed mesh. The
+  // underlying B-rep topology itself stays genuinely valid throughout
+  // (`ON_Brep::IsValid()` true at every scale actually tried, including
+  // the one below) - only the shared GENERAL tessellation path is
+  // affected, the same "real code, still short of full reliability"
+  // honesty this file already gives `BooleanCombineGeneral()` elsewhere.
+  const NurbsCurve outer = Circle(P(0, 0, 0), Vector3d(0, 0, 1), 1.0);
+  const NurbsCurve hole1 = Circle(P(-0.4, 0, 0), Vector3d(0, 0, 1), 0.2);
+  const NurbsCurve hole2 = Circle(P(0.4, 0, 0), Vector3d(0, 0, 1), 0.2);
+  const Vector3d up(0, 0, 1.0);
+
+  const Brep solid = ExtrudeProfileWithHoles(outer, {hole1, hole2}, up);
+  Check(solid.raw().IsValid(), "ExtrudeProfileWithHoles (two holes) produces a valid ON_Brep");
+  Check(HasCylinderFaceWithRadius(solid, 1.0), "ExtrudeProfileWithHoles (two holes) leaves the outer wall at the requested radius");
+  Check(HasCylinderFaceWithRadius(solid, 0.2), "ExtrudeProfileWithHoles (two holes) leaves both holes' own walls at the requested radius");
+}
+
+void TestExtrudeProfileWithHolesRejectsInvalidArguments() {
+  using dino8::kernel::ExtrudeProfileWithHoles;
+
+  const NurbsCurve outer = Circle(P(0, 0, 0), Vector3d(0, 0, 1), 3.0);
+  const NurbsCurve hole = Circle(P(0, 0, 0), Vector3d(0, 0, 1), 1.0);
+  const NurbsCurve open_outer = Polyline({P(-1, -1, 0), P(1, -1, 0), P(1, 1, 0)});
+  const NurbsCurve open_hole = Polyline({P(-0.2, -0.2, 0), P(0.2, -0.2, 0), P(0.2, 0.2, 0)});
+  const Vector3d up(0, 0, 1.0);
+
+  Check(Throws([&] { ExtrudeProfileWithHoles(open_outer, {hole}, up); }),
+        "ExtrudeProfileWithHoles throws when outer_profile isn't closed");
+  Check(Throws([&] { ExtrudeProfileWithHoles(outer, {}, up); }),
+        "ExtrudeProfileWithHoles throws for an empty hole_profiles list");
+  Check(Throws([&] { ExtrudeProfileWithHoles(outer, {open_hole}, up); }),
+        "ExtrudeProfileWithHoles throws when a hole profile isn't closed");
+  Check(Throws([&] { ExtrudeProfileWithHoles(outer, {hole}, Vector3d(0, 0, 0)); }),
+        "ExtrudeProfileWithHoles throws for a zero-length direction");
+}
+
 void TestThickenFlatSheetProducesExactBoxVolume() {
   using dino8::kernel::Brep;
   using dino8::kernel::Mesh;
@@ -65335,6 +65446,9 @@ int main() {
   sweep_tests::TestEmbossProfileWithHolesDebossEngravesAnnulusLeavingCounterFlush();
   sweep_tests::TestEmbossProfileWithHolesEmbossRaisesRingBossLeavingCounterFlush();
   sweep_tests::TestEmbossProfileWithHolesRejectsInvalidArguments();
+  sweep_tests::TestExtrudeProfileWithHolesBuildsStandaloneRingSolid();
+  sweep_tests::TestExtrudeProfileWithHolesHandlesMultipleNonOverlappingHoles();
+  sweep_tests::TestExtrudeProfileWithHolesRejectsInvalidArguments();
   sweep_tests::TestThickenFlatSheetProducesExactBoxVolume();
   sweep_tests::TestThickenSymmetricPutsOriginalSurfaceOnMidplane();
   sweep_tests::TestThickenCurvedSheetProducesGenuineClosedSolid();

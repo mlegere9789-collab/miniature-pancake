@@ -5060,6 +5060,51 @@ Brep EmbossProfileWithHoles(const Brep& solid, const NurbsCurve& outer_profile,
   return result;
 }
 
+Brep ExtrudeProfileWithHoles(const NurbsCurve& outer_profile, const std::vector<NurbsCurve>& hole_profiles,
+                              Vector3d direction) {
+  if (!outer_profile.raw().IsClosed()) {
+    throw std::invalid_argument("dino8::kernel::ExtrudeProfileWithHoles: outer_profile must be a closed curve");
+  }
+  if (hole_profiles.empty()) {
+    throw std::invalid_argument(
+        "dino8::kernel::ExtrudeProfileWithHoles: hole_profiles must be non-empty - call Brep::Extrude() directly "
+        "for a simple profile with no holes");
+  }
+  for (const NurbsCurve& hole : hole_profiles) {
+    if (!hole.raw().IsClosed()) {
+      throw std::invalid_argument("dino8::kernel::ExtrudeProfileWithHoles: every hole profile must be a closed curve");
+    }
+  }
+  Vector3d dir = direction;
+  if (!dir.Unitize()) {
+    throw std::invalid_argument("dino8::kernel::ExtrudeProfileWithHoles: direction must be non-zero");
+  }
+
+  Brep result = Brep::Extrude(outer_profile, direction, /*cap=*/true);
+
+  // Both ends of `result` are genuine true end caps (unlike
+  // EmbossProfileWithHoles()'s own hole tools, one of whose two ends always
+  // lands against still-untouched original material from the outer op
+  // instead) - so each hole tool needs `margin` clearance PAST both ends,
+  // the same two-sided convention MakeHole()'s own `through=true` case
+  // already uses, not just the one-sided convention immediately above.
+  ON_BoundingBox obb;
+  outer_profile.raw().GetBoundingBox(obb);
+  const double diagonal = (obb.m_max - obb.m_min).Length();
+  const double margin = 1e-3 * std::max({diagonal, direction.Length(), 1.0});
+
+  for (const NurbsCurve& hole : hole_profiles) {
+    ON_NurbsCurve base_raw = hole.raw();
+    base_raw.Translate(-dir * margin);
+    NurbsCurve base;
+    base.raw() = base_raw;
+    const Vector3d extrude_vector = dir * (direction.Length() + 2.0 * margin);
+    const Brep hole_tool = Brep::Extrude(base, extrude_vector, /*cap=*/true);
+    result = BooleanCombineGeneral(result, hole_tool, BooleanOp::Difference);
+  }
+  return result;
+}
+
 Brep MakeRevolvedCut(const Brep& solid, const NurbsCurve& profile, Point3d axis_point, Vector3d axis_direction,
                       double revolve_angle_degrees) {
   if (solid.raw().m_F.Count() == 0) {
