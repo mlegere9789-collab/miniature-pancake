@@ -519,6 +519,75 @@ class SplitByObjectCommand : public Command {
     Finish();
   }
   void Run(CommandContext& ctx, const std::vector<ObjectId>& cutter_ids) {
+    // Try a genuine B-rep solid-by-solid split first, ahead of the mesh
+    // pipeline below - PARITY_MAP.md's own "kernel: Boolean operations"
+    // category names this command specifically as "a general cutting-object
+    // split with true KeepAll semantics, but it is app-level mesh-boolean,
+    // not [the Keep/split options] item's B-rep solid-by-solid split", even
+    // though the kernel-level engine it needs (kernel::SplitBrepBySolid/
+    // SplitBrepByManySolids, boolean_general.h/.cpp) already exists and is
+    // already tested - it simply had zero callers anywhere in dino8-app.
+    // Only attempted when every target AND every cutter is already a
+    // plain, single-lump, closed (ON_Brep::IsSolid()) ObjectKind::Brep -
+    // the same eligibility TryExactBrepBoolean above uses for the same
+    // reason (PlanarFaces()-shaped engines happily accept an open
+    // planar-faced shell and would silently misclassify it). All-or-
+    // nothing across every selected target, mirroring
+    // TryExactBrepBoolean's own group semantics: if any target/cutter
+    // isn't eligible, or the kernel itself throws (BooleanCombineGeneral's
+    // own disclosed scope limits - genus-0 faces, one crossing component
+    // per opposing face pair, no self-crossing chains), or either
+    // resulting half of any target comes back with zero faces (the cutter
+    // missed or fully enclosed that target - the same "both halves must be
+    // non-empty" rule the mesh path below already enforces), this falls
+    // through silently to the existing mesh pipeline for every target,
+    // unchanged.
+    auto collect_solid_breps = [&](const std::vector<ObjectId>& ids, std::vector<kernel::Brep>& out) -> bool {
+      for (ObjectId id : ids) {
+        const SceneObject* o = ctx.Doc().Find(id);
+        if (!o || o->kind != ObjectKind::Brep || !o->brep || !o->brep->raw().IsSolid()) return false;
+        out.push_back(*o->brep);
+      }
+      return !out.empty();
+    };
+    std::vector<kernel::Brep> exact_targets, exact_cutters;
+    if (collect_solid_breps(target_ids_, exact_targets) && collect_solid_breps(cutter_ids, exact_cutters)) {
+      struct BrepResult { ObjectId id; int layer; kernel::Brep outside, inside; };
+      std::vector<BrepResult> brep_results;
+      bool all_ok = true;
+      for (size_t i = 0; i < target_ids_.size() && all_ok; ++i) {
+        try {
+          auto [outside, inside] = kernel::SplitBrepByManySolids(exact_targets[i], exact_cutters);
+          if (outside.raw().m_F.Count() == 0 || inside.raw().m_F.Count() == 0) { all_ok = false; break; }
+          const SceneObject* o = ctx.Doc().Find(target_ids_[i]);
+          brep_results.push_back({target_ids_[i], o ? o->layer_index : 0, std::move(outside), std::move(inside)});
+        } catch (const std::exception&) {
+          all_ok = false;
+        }
+      }
+      if (all_ok && !brep_results.empty()) {
+        ctx.Doc().BeginChange("SplitByObject");
+        for (ObjectId id : cutter_ids) ctx.Doc().Remove(id);
+        int made = 0;
+        for (BrepResult& res : brep_results) {
+          ctx.Doc().Remove(res.id);
+          for (kernel::Brep* piece : {&res.outside, &res.inside}) {
+            SceneObject s = SceneObject::MakeBrep(*piece);
+            s.layer_index = res.layer;
+            ctx.Doc().Add(std::move(s));
+            ++made;
+          }
+        }
+        ctx.Print("SplitByObject: " + std::to_string(brep_results.size()) + " solid(s) split into " + std::to_string(made) +
+                   " piece(s) (exact B-rep, no tessellation)");
+        return;
+      }
+      // Not every target split cleanly via the exact engine (an ineligible
+      // operand was never collected here in the first place) - fall
+      // through to the mesh pipeline below for every target, same as if
+      // the exact path had never been tried.
+    }
+
     std::vector<std::pair<ObjectId, kernel::Mesh>> targets;
     kernel::BoundingBox span;
     bool have_span = false;
