@@ -61,8 +61,9 @@ same as every other headless mode this app already has).
   (see below).
 
 ```
-$ curl -s -X POST --data 'id = dino8.doc.Objects.AddBox(dino8.Point3d(0,0,0), dino8.Vector3d(5,5,5))
-print("volume:", dino8.doc.Objects.SurfaceVolume(id))' http://127.0.0.1:8080/run/python
+$ curl -s -X POST --data 'import dino8
+id = dino8.doc.Objects.AddBox(dino8.Point3d(0,0,0), dino8.Vector3d(5,5,5))
+print("volume: %.1f" % dino8.doc.Objects.SurfaceVolume(id))' http://127.0.0.1:8080/run/python
 volume: 125.0
 
 $ curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8080/run   # no token given
