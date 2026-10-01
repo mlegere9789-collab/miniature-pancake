@@ -10431,6 +10431,46 @@ void TestBrepBoxIsClosedAndWatertight() {
         "Brep::Box -> Tessellate -> weld volume matches the box's true volume");
 }
 
+// Brep::BoxWelded() closes the "Box() uses the surface-only NewFace(int)"
+// half of the "Genuine topology produced by every constructor/primitive"
+// gap (kernel: Topology & data structure) for the simplest of its five
+// named cases: unlike Box() (checked above/below to have NO real topology
+// at all), this is a genuinely welded solid built through
+// FromPlanarFaces().
+void TestBrepBoxWeldedHasGenuineTopology() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+
+  const Brep box = Brep::BoxWelded(0, 0, 0, 2, 3, 4);
+  ON_TextLog discard_log;
+  Check(box.raw().IsValid(&discard_log),
+        "Brep::BoxWelded() is a valid ON_Brep, unlike Brep::Box()");
+  Check(box.raw().IsSolid(), "Brep::BoxWelded() reports IsSolid()");
+  Check(box.FaceCount() == 6 && box.LiveVertexCount() == 8 && box.LiveEdgeCount() == 12,
+        "Brep::BoxWelded() has 6 faces, 8 welded vertices and 12 welded edges");
+  const Brep::CheckReport r = box.Check();
+  Check(r.IsClean(), "Brep::BoxWelded()'s own Check() report is clean");
+  Check(std::abs(box.TessellateToClosedMesh(1, 1).Volume() - 24.0) < 1e-6,
+        "Brep::BoxWelded(0,0,0,2,3,4)'s volume is exactly 2*3*4 = 24");
+
+  // A real adjacency query, which Box()'s own surface-only faces can't
+  // support at all (TestBrepLacksFullOpenNurbsTopologyButStillUsable
+  // below confirms that side): every edge borders exactly 2 faces.
+  for (int ei = 0; ei < box.raw().m_E.Count(); ++ei) {
+    if (box.raw().m_E[ei].m_edge_index < 0) continue;
+    Check(box.FacesOfEdge(ei).size() == 2,
+          "every edge of a welded box borders exactly 2 faces");
+  }
+
+  bool threw = false;
+  try {
+    Brep::BoxWelded(2, 0, 0, 0, 3, 4);  // x1 < x0
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "Brep::BoxWelded() refuses a reversed x0/x1 pair");
+}
+
 void TestBrepLacksFullOpenNurbsTopologyButStillUsable() {
   using dino8::kernel::Brep;
 
@@ -23962,20 +24002,82 @@ void TestSubDTessellateFlatRegularPatchIsExactAtCoarsestGrid() {
   Check(std::abs(exact_pt.position.z) < 1e-12,
         "sanity: the exact regular-patch evaluation stays exactly on the flat grid's own z=0 plane");
 
-  // Tessellating the WHOLE grid (not just the center face) at an
-  // extremely tight tolerance still can't force the center face's own
-  // portion of the output below its already-exact, already-flat 1x1
-  // grid - the deviation there is identically 0.0, which no tolerance
-  // above 0.0 can fail. (Boundary faces may still need refinement, since
-  // Catmull-Clark's boundary/corner smoothing rule is not a pure
-  // straight-line reproduction - a real, different effect, not tested
-  // here.) So the total output face count must come out well under the
-  // "every face maxed out" bound.
+  // **Corrected, this session:** this used to assert the MERGED output
+  // stayed below the "every face maxed out" bound, reasoning that the
+  // center face's own already-exact flatness would keep its own portion
+  // of the output coarse. That was true of a per-face-INDEPENDENT
+  // resolution search (what Tessellate() used to do), but this session's
+  // own resolution-harmonization fix (see Tessellate()'s own doc comment
+  // in subd.h, and TestSubDTessellateHarmonizesResolutionAcrossMismatched
+  // Faces below) deliberately changes this: because every face here is
+  // one connected SubD (joined edge-to-edge), the 4 CORNER faces'
+  // genuine boundary curvature (Catmull-Clark's own boundary/corner rule
+  // is not a pure straight-line reproduction) measured directly, not
+  // assumed - needs the full `max_resolution` (8) at this extremely
+  // tight tolerance (1e-9), and harmonization now raises every OTHER
+  // face in the component, including this exactly-flat center face, to
+  // that SAME shared resolution - trading this face's own local
+  // coarseness for a crack-free merged result (the "T-junction/crack"
+  // gap Tessellate() used to disclose). The center face's own INDEPENDENT
+  // exactness is unaffected by this (confirmed above, at the
+  // `EvaluateFace()` level, which this fix doesn't touch) - only the
+  // final MERGED mesh's face count changed, and only because every face
+  // here shares one connected component with the corner faces that
+  // genuinely need the cap.
   const Mesh tessellated = subd.Tessellate(1e-9, 8);
-  Check(tessellated.FaceCount() < 9 * 8 * 8,
-        "tessellating the flat grid at a very tight tolerance does not max out every one of "
-        "its 9 faces to the 8x8 cap - the interior regular face's own exact flatness keeps at "
-        "least that face coarse");
+  Check(tessellated.FaceCount() == 9 * 8 * 8,
+        "tessellating the flat grid at a very tight tolerance now DOES max out every one of "
+        "its 9 faces to the 8x8 cap, including the exactly-flat center face - resolution-"
+        "harmonization intentionally raises every face in one connected SubD to the maximum "
+        "any single face in it needs, closing the crack a per-face-independent resolution "
+        "would otherwise leave between the corner faces (which genuinely need the cap here) "
+        "and their coarser neighbors");
+}
+
+void TestSubDTessellateHarmonizesResolutionAcrossMismatchedFaces() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SubD;
+
+  // Closes Tessellate()'s own previously-disclosed T-junction/crack
+  // limitation: since each face used to pick its resolution completely
+  // independently, two adjacent faces that genuinely need different
+  // resolutions left their shared edge sampled at mismatched densities,
+  // and MergeAndWeld()'s exact-position matching only welded the samples
+  // that happened to coincide - a real crack, not a cosmetic one. A
+  // level-1-subdivided NON-cubic box (8x1x1, not 1x1x1 - a cube's own
+  // symmetry maps every face to a resolution-equivalent one, hiding the
+  // mismatch) has 24 faces: 8 still touch one of the original box's
+  // valence-3 corners (genuinely more curved), the other 16 are fully
+  // regular - at tolerance 0.1, measured directly, the 16 regular faces
+  // converge to a 2x2 grid while the 8 corner faces need 4x4, a genuine,
+  // provoked mismatch (not assumed): rebuilding the exact pre-fix
+  // algorithm by hand against this same fixture (each face's own
+  // independent resolution, no harmonization) produces a mesh with 96
+  // naked edges and IsClosedManifold() == false, confirming the crack is
+  // real on this fixture, not a hypothetical one.
+  const Mesh quad_box = MakeQuadBoxMesh(0, 0, 0, 8, 1, 1);
+  SubD subd = SubD::FromControlMesh(quad_box);
+  subd.Subdivide(1);
+  Check(subd.FaceCount() == 24, "sanity: a level-1-subdivided box SubD has 24 faces");
+
+  const Mesh tessellated = subd.Tessellate(0.1, 16);
+  const Mesh::CheckReport report = tessellated.Check();
+  Check(report.naked_edges == 0,
+        "Tessellate()'s resolution-harmonization pass leaves zero naked edges on a fixture "
+        "whose faces genuinely need different resolutions - the shared boundary between a "
+        "2x2-sufficient face and a 4x4-needing face is now sampled at the SAME (harmonized) "
+        "density on both sides, so every sample coincides and MergeAndWeld() welds it");
+  Check(report.non_manifold_edges == 0, "...and introduces no non-manifold edges either");
+  Check(tessellated.IsClosedManifold(),
+        "the harmonized tessellation of a genuinely mismatched-resolution SubD is a real "
+        "closed manifold, not merely zero-naked-edges by some other defect");
+
+  // A much looser tolerance (0.2) provokes an even coarser mismatch
+  // (1x1 vs 2x2) and must close the same way.
+  const Mesh loose = subd.Tessellate(0.2, 16);
+  Check(loose.IsClosedManifold(),
+        "harmonization also closes a coarser (1x1 vs 2x2) resolution mismatch at a looser "
+        "tolerance on the same fixture");
 }
 
 void TestSubDBooleanUnionOfDisjointBoxesSumsVolumes() {
@@ -53661,6 +53763,117 @@ void TestEmbossProfileWithHolesRejectsInvalidArguments() {
         "EmbossProfileWithHoles throws for a non-positive depth (via the outer EmbossProfile() validation)");
 }
 
+void TestExtrudeProfileWithHolesBuildsStandaloneRingSolid() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::ExtrudeProfileWithHoles;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::TessellateGeneralBooleanClosedMesh;
+
+  // parity-map "kernel: Feature operations" - "Lettering as solid
+  // geometry": the standalone-solid counterpart to
+  // `EmbossProfileWithHoles()` above - no existing target `solid` to fuse
+  // onto/cut into, just a free-standing extruded glyph with its own
+  // counter(s) cut clean through. A ring (outer radius 1.0, hole radius
+  // 0.5, thickness 2.0) is the simplest "O"-shaped fixture: a genuine
+  // closed-form annulus volume, pi*(R^2 - r^2)*thickness, confirms both
+  // ends are real caps (not a coincident-face degeneracy with the hole
+  // tool, which this function avoids by extruding each hole tool `margin`
+  // PAST both ends, not just one the way EmbossProfileWithHoles()'s own
+  // hole tools only need).
+  //
+  // Verified via `TessellateGeneralBooleanClosedMesh()`, NOT the plain
+  // `TessellateToClosedMesh()` - a real, confirmed finding
+  // (`dino8_scratch_test`): the plain tessellator leaves 100 naked
+  // boundary edges here (48 near the two true end caps, 52 elsewhere -
+  // not merely a rim artifact), the same already-disclosed
+  // `BooleanCombineGeneral()` mesh-closure limitation `MakeHole()`'s own
+  // blind case and others in this file already hit, now confirmed for a
+  // STANDALONE (no pre-existing target solid) boolean result too; the
+  // `GeneralBoolean`-aware tessellator closes it cleanly (0 boundary/
+  // non-manifold edges).
+  const NurbsCurve outer = Circle(P(0, 0, 0), Vector3d(0, 0, 1), 1.0);
+  const NurbsCurve hole = Circle(P(0, 0, 0), Vector3d(0, 0, 1), 0.5);
+  const Vector3d up(0, 0, 2.0);
+
+  const Brep ring = ExtrudeProfileWithHoles(outer, {hole}, up);
+  Check(ring.raw().IsValid(), "ExtrudeProfileWithHoles produces a valid ON_Brep");
+  const Mesh m = TessellateGeneralBooleanClosedMesh(ring, 64, 64);
+  Check(m.IsClosedManifold(), "ExtrudeProfileWithHoles produces a genuine closed 2-manifold");
+  const double expected = M_PI * (1.0 * 1.0 - 0.5 * 0.5) * 2.0;
+  Check(std::fabs(m.Volume() - expected) < 0.02 * expected,
+        "ExtrudeProfileWithHoles' ring volume matches the closed-form annulus volume pi*(R^2-r^2)*thickness");
+  Check(HasCylinderFaceWithRadius(ring, 1.0), "ExtrudeProfileWithHoles leaves the outer wall at the requested radius");
+  Check(HasCylinderFaceWithRadius(ring, 0.5), "ExtrudeProfileWithHoles leaves the hole's own wall at the requested radius");
+  // The closed mesh's own sampled vertices lie ON the trimmed geometry (not
+  // the hole tool's own untrimmed surface, which legitimately extends
+  // `margin` past each end - GetTightBoundingBox()'s own disclosed "never
+  // consults a face's own trim boundary" limitation would otherwise report
+  // that untrimmed overshoot here), so its bounding box is the right oracle
+  // for "no leftover margin sliver" - not GetTightBoundingBox().
+  const auto bbox = m.GetBoundingBox();
+  Check(bbox.min.z > -1e-4 && std::fabs(bbox.max.z - 2.0) < 1e-4,
+        "ExtrudeProfileWithHoles' two true end caps sit exactly at the requested span (0 to thickness), with no "
+        "leftover margin sliver from the hole tool's own two-sided clearance");
+}
+
+void TestExtrudeProfileWithHolesHandlesMultipleNonOverlappingHoles() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::ExtrudeProfileWithHoles;
+
+  // A "B"-like case: one outer profile with TWO separate, non-overlapping
+  // counters (rather than one concentric hole) - confirms the per-hole
+  // Difference loop composes correctly across more than one hole, each
+  // subtracted in turn from the result of the previous one.
+  //
+  // Verified on the B-rep directly (IsValid() plus a cylindrical wall at
+  // each requested radius), NOT via tessellated IsClosedManifold()/Volume()
+  // the way the single (even concentric-hole) ring test above is - a real,
+  // confirmed finding (`dino8_scratch_test`), not assumed: stacking a
+  // SECOND sequential `BooleanCombineGeneral()` Difference onto a body a
+  // first hole-cut has already fragmented is measurably less
+  // tessellation-reliable than either a single hole or
+  // `EmbossProfileWithHoles()`'s own single-hole-at-a-time composition -
+  // confirmed scale-independent (persists from outer radius 1.0 up to
+  // 3.0, unlike `EmbossProfileWithHoles()`'s own purely scale-dependent
+  // SSX finding), and at outer radius 2.0 in this exact two-hole
+  // configuration the shared trim-tessellation path can even throw
+  // (`NurbsSurface::TessellateGridClippedExact`'s own "trim_polygon must
+  // be simple" guard) rather than silently return an unclosed mesh. The
+  // underlying B-rep topology itself stays genuinely valid throughout
+  // (`ON_Brep::IsValid()` true at every scale actually tried, including
+  // the one below) - only the shared GENERAL tessellation path is
+  // affected, the same "real code, still short of full reliability"
+  // honesty this file already gives `BooleanCombineGeneral()` elsewhere.
+  const NurbsCurve outer = Circle(P(0, 0, 0), Vector3d(0, 0, 1), 1.0);
+  const NurbsCurve hole1 = Circle(P(-0.4, 0, 0), Vector3d(0, 0, 1), 0.2);
+  const NurbsCurve hole2 = Circle(P(0.4, 0, 0), Vector3d(0, 0, 1), 0.2);
+  const Vector3d up(0, 0, 1.0);
+
+  const Brep solid = ExtrudeProfileWithHoles(outer, {hole1, hole2}, up);
+  Check(solid.raw().IsValid(), "ExtrudeProfileWithHoles (two holes) produces a valid ON_Brep");
+  Check(HasCylinderFaceWithRadius(solid, 1.0), "ExtrudeProfileWithHoles (two holes) leaves the outer wall at the requested radius");
+  Check(HasCylinderFaceWithRadius(solid, 0.2), "ExtrudeProfileWithHoles (two holes) leaves both holes' own walls at the requested radius");
+}
+
+void TestExtrudeProfileWithHolesRejectsInvalidArguments() {
+  using dino8::kernel::ExtrudeProfileWithHoles;
+
+  const NurbsCurve outer = Circle(P(0, 0, 0), Vector3d(0, 0, 1), 3.0);
+  const NurbsCurve hole = Circle(P(0, 0, 0), Vector3d(0, 0, 1), 1.0);
+  const NurbsCurve open_outer = Polyline({P(-1, -1, 0), P(1, -1, 0), P(1, 1, 0)});
+  const NurbsCurve open_hole = Polyline({P(-0.2, -0.2, 0), P(0.2, -0.2, 0), P(0.2, 0.2, 0)});
+  const Vector3d up(0, 0, 1.0);
+
+  Check(Throws([&] { ExtrudeProfileWithHoles(open_outer, {hole}, up); }),
+        "ExtrudeProfileWithHoles throws when outer_profile isn't closed");
+  Check(Throws([&] { ExtrudeProfileWithHoles(outer, {}, up); }),
+        "ExtrudeProfileWithHoles throws for an empty hole_profiles list");
+  Check(Throws([&] { ExtrudeProfileWithHoles(outer, {open_hole}, up); }),
+        "ExtrudeProfileWithHoles throws when a hole profile isn't closed");
+  Check(Throws([&] { ExtrudeProfileWithHoles(outer, {hole}, Vector3d(0, 0, 0)); }),
+        "ExtrudeProfileWithHoles throws for a zero-length direction");
+}
+
 void TestThickenFlatSheetProducesExactBoxVolume() {
   using dino8::kernel::Brep;
   using dino8::kernel::Mesh;
@@ -64221,6 +64434,7 @@ int main() {
   TestComputeMultiWayInterference();
   TestComputeAllInterference();
   TestBrepBoxIsClosedAndWatertight();
+  TestBrepBoxWeldedHasGenuineTopology();
   TestBrepLacksFullOpenNurbsTopologyButStillUsable();
   TestBrepGetTightBoundingBox();
   TestBrepGetTightBoundingBoxExactForTrimmedPlanarFaces();
@@ -64324,6 +64538,7 @@ int main() {
   TestSubDTessellateFinerGridForTighterTolerance();
   TestSubDTessellateWeldsCubeFacesIntoClosedManifold();
   TestSubDTessellateFlatRegularPatchIsExactAtCoarsestGrid();
+  TestSubDTessellateHarmonizesResolutionAcrossMismatchedFaces();
   TestSubDBooleanUnionOfDisjointBoxesSumsVolumes();
   TestSubDBooleanIntersectionOfOverlappingBoxesMatchesExactOverlap();
   TestSubDBooleanDifferenceSubtractsOnlyTheOverlap();
@@ -64905,6 +65120,9 @@ int main() {
   sweep_tests::TestEmbossProfileWithHolesDebossEngravesAnnulusLeavingCounterFlush();
   sweep_tests::TestEmbossProfileWithHolesEmbossRaisesRingBossLeavingCounterFlush();
   sweep_tests::TestEmbossProfileWithHolesRejectsInvalidArguments();
+  sweep_tests::TestExtrudeProfileWithHolesBuildsStandaloneRingSolid();
+  sweep_tests::TestExtrudeProfileWithHolesHandlesMultipleNonOverlappingHoles();
+  sweep_tests::TestExtrudeProfileWithHolesRejectsInvalidArguments();
   sweep_tests::TestThickenFlatSheetProducesExactBoxVolume();
   sweep_tests::TestThickenSymmetricPutsOriginalSurfaceOnMidplane();
   sweep_tests::TestThickenCurvedSheetProducesGenuineClosedSolid();

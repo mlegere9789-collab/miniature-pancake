@@ -2100,6 +2100,52 @@ ON_3dPoint BilinearCorners(const ON_3dPoint& p00, const ON_3dPoint& p10, const O
   return (1.0 - s) * (1.0 - t) * p00 + s * (1.0 - t) * p10 + s * t * p11 + (1.0 - s) * t * p01;
 }
 
+// A single face's (res+1) x (res+1) grid of real limit-surface points
+// (via EvaluateFace()), shared between Tessellate()'s own per-face
+// resolution search (which only needs the points to measure deviation)
+// and its final grid-building pass (which needs the exact same points to
+// turn into mesh quads) - factored out so neither copy can drift from the
+// other's sampling convention.
+std::vector<std::vector<ON_3dPoint>> SampleFaceGrid(const SubD& subd, unsigned int face_id, int res) {
+  std::vector<std::vector<ON_3dPoint>> grid(static_cast<size_t>(res) + 1,
+                                             std::vector<ON_3dPoint>(static_cast<size_t>(res) + 1));
+  for (int i = 0; i <= res; ++i) {
+    const double u = static_cast<double>(i) / res;
+    for (int j = 0; j <= res; ++j) {
+      const double v = static_cast<double>(j) / res;
+      grid[static_cast<size_t>(i)][static_cast<size_t>(j)] = subd.EvaluateFace(face_id, u, v).position;
+    }
+  }
+  return grid;
+}
+
+// Turns a SampleFaceGrid() result into one face's own all-quad Mesh,
+// ready for Mesh::MergeAndWeld() against its neighbors' grids.
+Mesh GridToFaceMesh(const std::vector<std::vector<ON_3dPoint>>& grid, int res) {
+  Mesh grid_mesh;
+  ON_Mesh& raw = grid_mesh.raw();
+  const int points = res + 1;
+  const auto grid_index = [points](int i, int j) { return i * points + j; };
+  raw.m_V.Reserve(points * points);
+  for (int i = 0; i <= res; ++i) {
+    for (int j = 0; j <= res; ++j) {
+      raw.m_V.Append(ON_3fPoint(grid[static_cast<size_t>(i)][static_cast<size_t>(j)]));
+    }
+  }
+  raw.m_F.Reserve(res * res);
+  for (int i = 0; i < res; ++i) {
+    for (int j = 0; j < res; ++j) {
+      ON_MeshFace face;
+      face.vi[0] = grid_index(i, j);
+      face.vi[1] = grid_index(i + 1, j);
+      face.vi[2] = grid_index(i + 1, j + 1);
+      face.vi[3] = grid_index(i, j + 1);
+      raw.m_F.Append(face);
+    }
+  }
+  return grid_mesh;
+}
+
 }  // namespace
 
 Mesh SubD::Tessellate(double tolerance, int max_resolution) const {
@@ -2110,7 +2156,7 @@ Mesh SubD::Tessellate(double tolerance, int max_resolution) const {
     throw std::invalid_argument("dino8::kernel::SubD::Tessellate: max_resolution must be at least 1");
   }
 
-  std::vector<unsigned int> face_ids;
+  std::vector<const ON_SubDFace*> faces;
   ON_SubDFaceIterator fit = subd_.FaceIterator();
   for (const ON_SubDFace* f = fit.FirstFace(); f != nullptr; f = fit.NextFace()) {
     // Same "quads only" convention as ToNurbsPatchesAdaptive() - a
@@ -2118,75 +2164,105 @@ Mesh SubD::Tessellate(double tolerance, int max_resolution) const {
     // requirement, which this delegates every sample point to).
     if (f->EdgeCount() != 4) continue;
     if (!f->Vertex(0) || !f->Vertex(1) || !f->Vertex(2) || !f->Vertex(3)) continue;
-    face_ids.push_back(f->FaceId());
+    faces.push_back(f);
   }
 
-  std::vector<Mesh> face_grids;
-  face_grids.reserve(face_ids.size());
+  if (faces.empty()) {
+    return Mesh();
+  }
 
-  for (unsigned int face_id : face_ids) {
-    const auto sample_grid = [&](int res) {
-      std::vector<std::vector<ON_3dPoint>> grid(static_cast<size_t>(res) + 1,
-                                                 std::vector<ON_3dPoint>(static_cast<size_t>(res) + 1));
-      for (int i = 0; i <= res; ++i) {
-        const double u = static_cast<double>(i) / res;
-        for (int j = 0; j <= res; ++j) {
-          const double v = static_cast<double>(j) / res;
-          grid[static_cast<size_t>(i)][static_cast<size_t>(j)] = EvaluateFace(face_id, u, v).position;
-        }
-      }
-      return grid;
-    };
+  std::unordered_map<const ON_SubDFace*, size_t> face_index;
+  face_index.reserve(faces.size() * 2);
+  for (size_t i = 0; i < faces.size(); ++i) face_index.emplace(faces[i], i);
 
+  // Pass 1: each face's own independently-required resolution, exactly
+  // the original per-face binary-doubling search (unchanged).
+  std::vector<int> own_resolution(faces.size());
+  for (size_t i = 0; i < faces.size(); ++i) {
+    const unsigned int face_id = faces[i]->FaceId();
     int n = 1;
-    std::vector<std::vector<ON_3dPoint>> samples = sample_grid(n);
+    std::vector<std::vector<ON_3dPoint>> samples = SampleFaceGrid(*this, face_id, n);
     for (;;) {
       double max_deviation = 0.0;
-      for (int i = 0; i < n; ++i) {
-        const double u_mid = (i + 0.5) / n;
-        for (int j = 0; j < n; ++j) {
-          const double v_mid = (j + 0.5) / n;
+      for (int ii = 0; ii < n; ++ii) {
+        const double u_mid = (ii + 0.5) / n;
+        for (int jj = 0; jj < n; ++jj) {
+          const double v_mid = (jj + 0.5) / n;
           const ON_3dPoint bilinear = BilinearCorners(
-              samples[static_cast<size_t>(i)][static_cast<size_t>(j)],
-              samples[static_cast<size_t>(i) + 1][static_cast<size_t>(j)],
-              samples[static_cast<size_t>(i) + 1][static_cast<size_t>(j) + 1],
-              samples[static_cast<size_t>(i)][static_cast<size_t>(j) + 1], 0.5, 0.5);
+              samples[static_cast<size_t>(ii)][static_cast<size_t>(jj)],
+              samples[static_cast<size_t>(ii) + 1][static_cast<size_t>(jj)],
+              samples[static_cast<size_t>(ii) + 1][static_cast<size_t>(jj) + 1],
+              samples[static_cast<size_t>(ii)][static_cast<size_t>(jj) + 1], 0.5, 0.5);
           const ON_3dPoint truth = EvaluateFace(face_id, u_mid, v_mid).position;
           max_deviation = std::max(max_deviation, bilinear.DistanceTo(truth));
         }
       }
       if (max_deviation <= tolerance || n >= max_resolution) break;
       n = std::min(n * 2, max_resolution);
-      samples = sample_grid(n);
+      samples = SampleFaceGrid(*this, face_id, n);
     }
-
-    Mesh grid_mesh;
-    ON_Mesh& raw = grid_mesh.raw();
-    const int points = n + 1;
-    const auto grid_index = [points](int i, int j) { return i * points + j; };
-    raw.m_V.Reserve(points * points);
-    for (int i = 0; i <= n; ++i) {
-      for (int j = 0; j <= n; ++j) {
-        raw.m_V.Append(ON_3fPoint(samples[static_cast<size_t>(i)][static_cast<size_t>(j)]));
-      }
-    }
-    raw.m_F.Reserve(n * n);
-    for (int i = 0; i < n; ++i) {
-      for (int j = 0; j < n; ++j) {
-        ON_MeshFace face;
-        face.vi[0] = grid_index(i, j);
-        face.vi[1] = grid_index(i + 1, j);
-        face.vi[2] = grid_index(i + 1, j + 1);
-        face.vi[3] = grid_index(i, j + 1);
-        raw.m_F.Append(face);
-      }
-    }
-    face_grids.push_back(std::move(grid_mesh));
+    own_resolution[i] = n;
   }
 
-  if (face_grids.empty()) {
-    return Mesh();
+  // Pass 2: harmonize resolution across shared edges so two faces that
+  // share one always sample their common boundary at the SAME density -
+  // closing the T-junction/crack gap this method's own doc comment
+  // discloses. Faces reachable from one another through a chain of
+  // shared (interior) edges are grouped via union-find, then every face
+  // in a group is raised to that group's own maximum independently-
+  // required resolution. Two faces sharing an edge, evaluated at the
+  // SAME number of equally-spaced samples along it, land on
+  // bit-identical 3D positions there (both sides evaluate the one real
+  // limit-surface curve that shared edge carries via the same
+  // EvaluateFace()), so MergeAndWeld()'s exact-position matching now
+  // welds every interior edge instead of leaving the finer side's extra
+  // mid-edge samples unwelded.
+  UnionFind uf(faces.size());
+  {
+    ON_SubDEdgeIterator eit = subd_.EdgeIterator();
+    for (const ON_SubDEdge* e = eit.FirstEdge(); e != nullptr; e = eit.NextEdge()) {
+      const unsigned int edge_face_count = e->FaceCount();
+      if (edge_face_count < 2) continue;
+      // Only harmonize across faces that are actually being tessellated
+      // here (quad faces with no missing corner) - a neighbor skipped
+      // above (e.g. a level-0 n-gon) contributes no grid of its own to
+      // merge against, so there's no boundary on that side to match.
+      std::vector<size_t> present;
+      for (unsigned int j = 0; j < edge_face_count; ++j) {
+        const auto it = face_index.find(e->Face(j));
+        if (it != face_index.end()) present.push_back(it->second);
+      }
+      for (size_t k = 1; k < present.size(); ++k) uf.Union(present[0], present[k]);
+    }
   }
+
+  std::vector<int> final_resolution(faces.size());
+  {
+    std::unordered_map<size_t, int> group_max;
+    for (size_t i = 0; i < faces.size(); ++i) {
+      const size_t root = uf.Find(i);
+      auto it = group_max.find(root);
+      if (it == group_max.end() || it->second < own_resolution[i]) group_max[root] = own_resolution[i];
+    }
+    for (size_t i = 0; i < faces.size(); ++i) final_resolution[i] = group_max[uf.Find(i)];
+  }
+
+  // Pass 3: build every face's grid at its (possibly raised) final
+  // resolution. Raising a face's resolution above its own measured
+  // minimum can only ever reduce its already-passing deviation further
+  // (a finer sampling of the same continuous limit surface), never
+  // reopen it, so every face still satisfies `tolerance` - just
+  // occasionally by more margin than strictly required of it alone, in
+  // order to match a neighbor it shares a boundary with.
+  std::vector<Mesh> face_grids;
+  face_grids.reserve(faces.size());
+  for (size_t i = 0; i < faces.size(); ++i) {
+    const unsigned int face_id = faces[i]->FaceId();
+    const int n = final_resolution[i];
+    const std::vector<std::vector<ON_3dPoint>> grid = SampleFaceGrid(*this, face_id, n);
+    face_grids.push_back(GridToFaceMesh(grid, n));
+  }
+
   return Mesh::MergeAndWeld(face_grids);
 }
 

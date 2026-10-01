@@ -14,6 +14,15 @@
 
 using namespace dino8::kernel;
 
+static NurbsCurve Circle(Point3d center, Vector3d normal, double radius) {
+  const ON_Circle circle(ON_Plane(center, normal), radius);
+  ON_NurbsCurve nurbs;
+  circle.GetNurbForm(nurbs);
+  NurbsCurve k;
+  k.raw() = nurbs;
+  return k;
+}
+
 // Diagnostic: report IsClosedManifold(), boundary-edge count, non-manifold
 // (3+ face) edge count, and print up to a handful of the offending edges'
 // own 3D positions plus which Brep edge (by index, matched via nearest
@@ -375,6 +384,74 @@ int main() {
       printf("  face %d: bbox=[(%.3f,%.3f,%.3f)-(%.3f,%.3f,%.3f)] is_cyl=%d radius=%.4f is_cone=%d half_angle_deg=%.4f is_planar=%d\n",
              i, bb.m_min.x, bb.m_min.y, bb.m_min.z, bb.m_max.x, bb.m_max.y, bb.m_max.z, (int)is_cyl,
              is_cyl ? cyl.circle.radius : -1.0, (int)is_cone, is_cone ? cone.AngleInDegrees() : -1.0, (int)is_pl);
+    }
+  }
+
+  // ExtrudeProfileWithHoles investigation: TestExtrudeProfileWithHolesBuildsStandaloneRingSolid
+  // fails IsClosedManifold()/bbox at TessellateToClosedMesh(64,64) - inspect directly.
+  try {
+    const NurbsCurve outer = Circle(Point3d(0, 0, 0), Vector3d(0, 0, 1), 1.0);
+    const NurbsCurve hole = Circle(Point3d(0, 0, 0), Vector3d(0, 0, 1), 0.5);
+    const Vector3d up(0, 0, 2.0);
+    Brep ring = ExtrudeProfileWithHoles(outer, {hole}, up);
+    ON_wString vlog_s;
+    ON_TextLog vlog(vlog_s);
+    bool valid = ring.raw().IsValid(&vlog);
+    printf("ExtrudeProfileWithHoles(ring): faces=%d valid=%d\n", ring.FaceCount(), (int)valid);
+    fflush(stdout);
+    if (!valid) { ON_String vlog_a(vlog_s); printf("  IsValid log:\n%s\n", vlog_a.Array()); }
+    const ON_Brep& raw = ring.raw();
+    for (int i = 0; i < raw.m_F.Count(); ++i) {
+      const ON_Surface* s = raw.m_F[i].SurfaceOf();
+      ON_BoundingBox bb = s->BoundingBox();
+      ON_Cylinder cyl;
+      bool is_cyl = s->IsCylinder(&cyl, 1e-4);
+      ON_Plane pl;
+      bool is_pl = s->IsPlanar(&pl, 1e-4);
+      printf("  face %d: rev=%d bbox=[(%.4f,%.4f,%.4f)-(%.4f,%.4f,%.4f)] is_cyl=%d radius=%.4f is_planar=%d\n", i,
+             (int)raw.m_F[i].m_bRev, bb.m_min.x, bb.m_min.y, bb.m_min.z, bb.m_max.x, bb.m_max.y, bb.m_max.z,
+             (int)is_cyl, is_cyl ? cyl.circle.radius : -1.0, (int)is_pl);
+    }
+    fflush(stdout);
+    Mesh m = ring.TessellateToClosedMesh(64, 64);
+    printf("ExtrudeProfileWithHoles(ring) volume=%f closed=%d\n", m.Volume(), (int)m.IsClosedManifold());
+    fflush(stdout);
+    DiagnoseManifold("ExtrudeProfileWithHoles(ring)", ring, m);
+    fflush(stdout);
+    Mesh mf = TessellateGeneralBooleanClosedMesh(ring, 64, 64);
+    printf("ExtrudeProfileWithHoles(ring) FIXED volume=%f closed=%d\n", mf.Volume(), (int)mf.IsClosedManifold());
+    fflush(stdout);
+    DiagnoseManifold("ExtrudeProfileWithHoles(ring) FIXED", ring, mf);
+    fflush(stdout);
+  } catch (const std::exception& e) {
+    printf("ExtrudeProfileWithHoles(ring): EXCEPTION %s\n", e.what());
+    fflush(stdout);
+  }
+  for (double outer_r : {3.0, 2.0, 1.5, 1.0}) {
+    try {
+      const double hr = outer_r * 0.2, off = outer_r * 0.4;
+      const NurbsCurve outer = Circle(Point3d(0, 0, 0), Vector3d(0, 0, 1), outer_r);
+      const NurbsCurve hole1 = Circle(Point3d(-off, 0, 0), Vector3d(0, 0, 1), hr);
+      const NurbsCurve hole2 = Circle(Point3d(off, 0, 0), Vector3d(0, 0, 1), hr);
+      const Vector3d up(0, 0, 1.0);
+      printf("=== outer_r=%.2f hole_r=%.2f offset=%.2f ===\n", outer_r, hr, off);
+      fflush(stdout);
+      Brep solid = ExtrudeProfileWithHoles(outer, {hole1, hole2}, up);
+      ON_wString vlog_s;
+      ON_TextLog vlog(vlog_s);
+      bool valid = solid.raw().IsValid(&vlog);
+      printf("ExtrudeProfileWithHoles(two holes): faces=%d valid=%d\n", solid.FaceCount(), (int)valid);
+      fflush(stdout);
+      if (!valid) { ON_String vlog_a(vlog_s); printf("  IsValid log:\n%s\n", vlog_a.Array()); }
+      fflush(stdout);
+      Mesh mf = TessellateGeneralBooleanClosedMesh(solid, 64, 64);
+      printf("ExtrudeProfileWithHoles(two holes) FIXED volume=%f closed=%d\n", mf.Volume(), (int)mf.IsClosedManifold());
+      fflush(stdout);
+      DiagnoseManifold("ExtrudeProfileWithHoles(two holes) FIXED", solid, mf);
+      fflush(stdout);
+    } catch (const std::exception& e) {
+      printf("ExtrudeProfileWithHoles(two holes, outer_r=%.2f): EXCEPTION %s\n", outer_r, e.what());
+      fflush(stdout);
     }
   }
   return 0;

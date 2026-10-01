@@ -3,6 +3,8 @@
 #include "commands/DimGeometry.h"
 #include "commands/annotate_common.h"
 #include "commands/cmd_common.h"
+#include "dino8/kernel/boolean_general.h"
+#include "dino8/kernel/surface_intersect.h"
 #include "geom/TextOutline.h"
 
 #include <filesystem>
@@ -12,7 +14,110 @@ namespace dino8::app {
 
 namespace {
 
-// Adds text curves as a group; returns the group id or -1.
+// Signed area of a 2D polygon (shoelace formula) - this file's own local
+// copy of the same algorithm boolean.cpp/surface.cpp/brep.cpp each already
+// keep a file-local copy of (see e.g. boolean.cpp's own PointInPolygon2D
+// comment), used here only to pick the SMALLEST of several candidate
+// containing contours (the immediate parent, not a further ancestor), not
+// for any fill-rule decision.
+double PolygonAreaAbs(const std::vector<ON_2dPoint>& poly) {
+  double a = 0;
+  for (size_t i = 0; i + 1 < poly.size(); ++i) a += poly[i].x * poly[i + 1].y - poly[i + 1].x * poly[i].y;
+  if (poly.size() > 1) a += poly.back().x * poly.front().y - poly.front().x * poly.back().y;
+  return std::fabs(a) * 0.5;
+}
+
+// Samples a closed glyph-contour curve into `plane`'s own local (u, v)
+// polygon, for the containment tests below.
+std::vector<ON_2dPoint> ContourPolygon2d(const kernel::NurbsCurve& c, const ON_Plane& plane, int samples = 48) {
+  std::vector<ON_2dPoint> poly;
+  double t0 = 0, t1 = 0;
+  c.raw().GetDomain(&t0, &t1);
+  for (int i = 0; i < samples; ++i) {
+    const double t = t0 + (t1 - t0) * (static_cast<double>(i) / samples);
+    double u, v;
+    plane.ClosestPointTo(c.raw().PointAt(t), &u, &v);
+    poly.emplace_back(u, v);
+  }
+  return poly;
+}
+
+// Groups `contours` (every glyph's own outline, flattened across the whole
+// text string by TextToCurves - one closed curve per TrueType contour, no
+// outer/counter distinction) into standalone solid letters: for a glyph
+// like "O"/"A"/"B" whose outline is more than one contour, the inner
+// contour(s) are its own counters (the hole in an "O", both counters in a
+// "B"), not separate glyphs. Classified purely by 2D containment (the same
+// even-odd nesting rule a font's own contours already follow - no reliance
+// on winding direction, which this codebase's own font decomposer doesn't
+// normalize): a contour's `depth` is how many OTHER contours' own polygons
+// contain it; even depth is solid material (a glyph's own outer boundary,
+// or a rare island nested inside a hole inside an outer - out of scope,
+// see below), odd depth is a hole. Each hole's immediate parent is the
+// smallest even-depth polygon that contains it (not merely a depth-0 one),
+// so this also handles a hole nested one level inside another (via its own
+// `depth-1` match), not just a flat one-level "letter + its holes" case.
+//
+// Builds one Brep per depth-0 contour via kernel::Brep::Extrude() (no
+// holes) or kernel::ExtrudeProfileWithHoles() (one or more). A contour at
+// depth 2 or deeper (an island nested inside a hole inside an outer - not
+// produced by any Latin/ASCII glyph in the font files this kernel
+// searches for, see TextOutline.cpp's own CandidateFontFiles()) is simply
+// not built as its own solid (out of scope, disclosed rather than
+// mishandled); a hole whose own immediate parent can't be found (the same
+// never-observed case) is dropped from its would-be parent's hole list
+// rather than left to corrupt the boolean composition.
+std::vector<kernel::Brep> BuildSolidLetters(const std::vector<kernel::NurbsCurve>& contours, const ON_Plane& plane,
+                                            double thickness, CommandContext& ctx) {
+  std::vector<kernel::Brep> result;
+  const int n = static_cast<int>(contours.size());
+  if (n == 0) return result;
+  std::vector<std::vector<ON_2dPoint>> polys(static_cast<size_t>(n));
+  std::vector<double> areas(static_cast<size_t>(n));
+  for (int i = 0; i < n; ++i) {
+    polys[static_cast<size_t>(i)] = ContourPolygon2d(contours[static_cast<size_t>(i)], plane);
+    areas[static_cast<size_t>(i)] = PolygonAreaAbs(polys[static_cast<size_t>(i)]);
+  }
+  std::vector<int> depth(static_cast<size_t>(n), 0);
+  for (int i = 0; i < n; ++i) {
+    if (polys[static_cast<size_t>(i)].empty()) continue;
+    for (int j = 0; j < n; ++j) {
+      if (i == j || polys[static_cast<size_t>(j)].empty()) continue;
+      if (kernel::PointInPolygon(polys[static_cast<size_t>(j)], polys[static_cast<size_t>(i)][0])) ++depth[static_cast<size_t>(i)];
+    }
+  }
+  std::vector<int> parent(static_cast<size_t>(n), -1);
+  for (int i = 0; i < n; ++i) {
+    if (depth[static_cast<size_t>(i)] % 2 == 0) continue;  // solid material, not a hole
+    int best = -1;
+    double best_area = 0;
+    for (int j = 0; j < n; ++j) {
+      if (j == i || depth[static_cast<size_t>(j)] % 2 != 0) continue;
+      if (!kernel::PointInPolygon(polys[static_cast<size_t>(j)], polys[static_cast<size_t>(i)][0])) continue;
+      if (best == -1 || areas[static_cast<size_t>(j)] < best_area) { best = j; best_area = areas[static_cast<size_t>(j)]; }
+    }
+    parent[static_cast<size_t>(i)] = best;
+  }
+
+  const Vector3d direction = plane.zaxis * thickness;
+  for (int i = 0; i < n; ++i) {
+    if (depth[static_cast<size_t>(i)] != 0) continue;  // only depth-0 contours anchor a standalone solid
+    std::vector<kernel::NurbsCurve> holes;
+    for (int j = 0; j < n; ++j) {
+      if (parent[static_cast<size_t>(j)] == i) holes.push_back(contours[static_cast<size_t>(j)]);
+    }
+    try {
+      kernel::Brep b = holes.empty() ? kernel::Brep::Extrude(contours[static_cast<size_t>(i)], direction, /*cap=*/true)
+                                     : kernel::ExtrudeProfileWithHoles(contours[static_cast<size_t>(i)], holes, direction);
+      result.push_back(b);
+    } catch (const std::exception& ex) {
+      ctx.Warn(std::string("Text (Solids): skipped one glyph contour - ") + ex.what());
+    }
+  }
+  return result;
+}
+
+// Adds text curves/surfaces as a group; returns the group id or -1.
 int AddTextCurves(CommandContext& ctx, const std::string& text, double height, const ON_Plane& plane, const std::string& label, bool make_surfaces) {
   ctx.Doc().BeginChange(label);
   std::vector<ObjectId> ids;
@@ -43,6 +148,38 @@ int AddTextCurves(CommandContext& ctx, const std::string& text, double height, c
   return g;
 }
 
+// Adds standalone solid letters (parity-map "kernel: Feature operations" -
+// "Lettering as solid geometry" - previously this command's own `Output`
+// option only ever had Curves/Surfaces, no Solids/Thickness, exactly the
+// gap this closes) as a group; returns the group id or -1. Each glyph -
+// its outer contour plus whichever of its own counters BuildSolidLetters()
+// (above) classifies as that glyph's holes - becomes one genuine capped
+// solid Brep via kernel::Brep::Extrude()/kernel::ExtrudeProfileWithHoles(),
+// not a curve or a bare (uncapped) surface.
+int AddTextSolids(CommandContext& ctx, const std::string& text, double height, double thickness, const ON_Plane& plane,
+                  const std::string& label) {
+  ctx.Doc().BeginChange(label);
+  std::string font;
+  std::vector<kernel::NurbsCurve> curves;
+  if (!TextToCurves(text, height, plane, curves, font)) {
+    ctx.Warn("No TrueType font found for text outlines (looked for the system sans-serif fonts)");
+    return -1;
+  }
+  const std::vector<kernel::Brep> letters = BuildSolidLetters(curves, plane, thickness, ctx);
+  if (letters.empty()) { ctx.Warn(label + ": no solid letters could be built from this text"); return -1; }
+  std::vector<ObjectId> ids;
+  const std::string style = ctx.Settings().annotation_style;
+  for (const kernel::Brep& b : letters) {
+    SceneObject s = SceneObject::MakeBrep(b);
+    TagAnnotation(s, label, style);
+    s.user_text["Text"] = text;
+    ids.push_back(ctx.Doc().Add(std::move(s)));
+  }
+  const int g = ctx.Doc().CreateGroup(ids, label);
+  ctx.Print(label + ": " + std::to_string(ids.size()) + " solid(s) from " + std::filesystem::path(font).filename().string());
+  return g;
+}
+
 double Height(CommandContext& ctx) { return AnnotationTextHeight(ctx); }
 
 class TextCommand : public Command {
@@ -51,11 +188,13 @@ class TextCommand : public Command {
   void Begin(CommandContext& ctx) override {
     height_ = Height(ctx);
     WantText("Text to create");
-    options = {{"Height", FormatNumber(height_), {}, true, false}, {"Output", "Curves", {"Curves", "Surfaces"}, false, false}};
+    options = {{"Height", FormatNumber(height_), {}, true, false}, {"Output", output_, {"Curves", "Surfaces", "Solids"}, false, false},
+               {"Thickness", FormatNumber(thickness_), {}, true, false}};
   }
   void OnOption(CommandContext&, const std::string& n, const std::string& v) override {
     if (n == "Height") { double h = std::atof(v.c_str()); if (h > 0) height_ = h; options[0].value = FormatNumber(height_); }
-    if (n == "Output") { surfaces_ = !surfaces_; options[1].value = surfaces_ ? "Surfaces" : "Curves"; }
+    if (n == "Output") { output_ = v; options[1].value = v; }
+    if (n == "Thickness") { double t = std::atof(v.c_str()); if (t > 0) thickness_ = t; options[2].value = FormatNumber(thickness_); }
   }
   void OnText(CommandContext&, const std::string& t) override {
     if (text_.empty()) { text_ = t; WantPoint("Start point of text"); }
@@ -63,12 +202,15 @@ class TextCommand : public Command {
   void OnPoint(CommandContext& ctx, Point3d p) override {
     ON_Plane pl = ActivePlane(ctx);
     pl.SetOrigin(p);
-    AddTextCurves(ctx, text_, height_, pl, object_ ? "TextObject" : "Text", surfaces_);
+    const std::string label = object_ ? "TextObject" : "Text";
+    if (output_ == "Solids") AddTextSolids(ctx, text_, height_, thickness_, pl, label);
+    else AddTextCurves(ctx, text_, height_, pl, label, output_ == "Surfaces");
     Finish();
   }
   bool object_;
-  bool surfaces_ = false;
+  std::string output_ = "Curves";
   double height_ = 1;
+  double thickness_ = 0.2;
   std::string text_;
 };
 
