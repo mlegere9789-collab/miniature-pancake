@@ -719,6 +719,24 @@ if(DINO8_BUILD_TESTS)
   target_link_libraries(dino8_test_block_array PRIVATE dino8_kernel)
   add_test(NAME dino8_block_array COMMAND dino8_test_block_array)
 
+  # Dynamic-block Lookup parameter (src/doc/BlockInstances.cpp's
+  # SetBlockInstanceLookup/ResolveLookupState): matches a placed instance's
+  # own input key against its block definition's lookup_keys/lookup_states
+  # table to pick which state to show, falls back to the instance's own
+  # explicit state on an empty/unmatched key, persists through the same
+  # dino8.block_instances JSON user-text every other BlockInstance field
+  # already round-trips through, and is a no-op (falls back to `state`) on
+  # a definition with no configured table. See PARITY_MAP.md's "Dynamic
+  # blocks" item - the fourth and last parameter/action type, after
+  # Visibility states, Flip and Array. Same dependency shape as
+  # dino8_test_block_array above.
+  add_executable(dino8_test_block_lookup tests/test_block_lookup.cpp src/doc/Document.cpp src/doc/SceneObject.cpp
+                                          src/doc/SubObjectEdit.cpp src/doc/BlockInstances.cpp
+                                          src/geom/BrepMesher.cpp src/util/json_mini.cpp)
+  target_include_directories(dino8_test_block_lookup PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(dino8_test_block_lookup PRIVATE dino8_kernel)
+  add_test(NAME dino8_block_lookup COMMAND dino8_test_block_lookup)
+
   # AnnotationStyle::precision/unit_suffix/ext_offset/ext_extension/
   # text_placement / DimStyleParams+FormatMeasurement (commands/DimGeometry.h)
   # - see tests/test_dim_precision.cpp's own file comment for why this is
@@ -742,6 +760,15 @@ if(DINO8_BUILD_TESTS)
   target_include_directories(dino8_test_print_width PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_link_libraries(dino8_test_print_width PRIVATE dino8_kernel)
   add_test(NAME dino8_print_width COMMAND dino8_test_print_width)
+
+  # Layer::has_plot_color/plot_color / EffectivePlotColor (doc/Document.h) -
+  # the color half of "plot styles (CTB/STB)", alongside print_width_mm's
+  # lineweight half just above. See tests/test_plot_color.cpp's own file
+  # comment. Same purely-header-only dependency shape as dino8_test_print_width.
+  add_executable(dino8_test_plot_color tests/test_plot_color.cpp)
+  target_include_directories(dino8_test_plot_color PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(dino8_test_plot_color PRIVATE dino8_kernel)
+  add_test(NAME dino8_plot_color COMMAND dino8_test_plot_color)
 
   # Keyboard-shortcut chord table (src/app/ShortcutRules.cpp's
   # IsReservedShortcut): every chord Application::HandleShortcuts hardcodes
